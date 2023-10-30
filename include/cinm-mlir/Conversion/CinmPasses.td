@@ -8,6 +8,8 @@
 #define CINM_CONVERSION_PASSES
 
 
+include "mlir/Pass/PassBase.td"
+
 //def ConvertCinmToLLVM : ConvertToLlvm<"Cinm", "cinm">;
 
 

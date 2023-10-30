@@ -24,19 +24,21 @@ include "mlir/Interfaces/SideEffectInterfaces.td"
 
 // Op templates
 
-defvar AnyScalar = AnyFloat; // todo 
+defvar AnyScalar = AnyType; // todo 
 
-// todo broadcast
+// no implicit broadcast
 class Cinm_TTT_Op<string name, list<Trait> traits = []> 
-    : Cinm_Op<name, traits> {
+    : Cinm_Op<name, traits # [SameOperandsAndResultType]> {
 
-    let arguments = (ins AnyTensor:$left, AnyTensor:$right);
+    let arguments = (ins AnyTensor:$lhs, AnyTensor:$rhs);
     let results = (outs AnyTensor:$result);
+
+    let assemblyFormat = "$lhs `,` $rhs attr-dict `:` type($result)";
 }
 
 class Cinm_Bitwise_Op<string name, list<Trait> traits = []> 
     : Cinm_Op<name, traits> {
-    let arguments = (ins AnyTensor:$left, AnyTensor:$right);
+    let arguments = (ins AnyTensor:$lhs, AnyTensor:$rhs);
     let results = (outs AnyTensor:$result);
 }
 
@@ -48,17 +50,19 @@ class Cinm_Bitwise_Op<string name, list<Trait> traits = []>
 def MinOp: Cinm_Op<"min", [Commutative, Pure]> {
     let arguments = (ins AnyTensor:$input);  
     let results = (outs AnyScalar:$result);
-    let summary = "Return the min value of the input AnyTensor";
+    let summary = "Return the min value of the input tensor";
+    let hasCustomAssemblyFormat = 1;
 }
 
 def MaxOp: Cinm_Op<"max", [Commutative, Pure]> {
     let arguments = (ins AnyTensor:$input);  
     let results = (outs AnyScalar:$result);
 
-    let summary = "Return the max value of the input AnyTensor";
+    let summary = "Return the max value of the input tensor";
+    let hasCustomAssemblyFormat = 1;
 }
 
-def Arith_AddIOp : Cinm_TTT_Op<"add", [Commutative, Pure]> {
+def Cinm_AddOp : Cinm_TTT_Op<"add", [Commutative, Pure]> {
   let summary = "Tensor addition operation";
   let description = [{
     TODO
@@ -104,6 +108,8 @@ def Cinm_GemvOp : Cinm_Op<"gemv", [Pure]> {
 }
 
 
+/// we infer the shape because verifying correctness of a
+/// hardcoded return type is as hard as inferring it.
 def Cinm_TransposeOp : Cinm_Op<"transpose", [InferShapedTypeOpAdaptor, Pure]> {
   let summary = "Transpose operator";
 
@@ -123,9 +129,6 @@ def Cinm_TransposeOp : Cinm_Op<"transpose", [InferShapedTypeOpAdaptor, Pure]> {
   let extraClassDeclaration = [{
     LogicalResult getConstantPerms(llvm::SmallVector<int64_t> &perms);
   }];
-
-  let hasCanonicalizer = 1;
-  let hasFolder = 1;
 }
 
 

@@ -5,8 +5,7 @@
 /// @author      Clément Fournier (clement.fournier@tu-dresden.de)
 
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
-#include "cinm-mlir/Dialect/Closure/IR/ClosureDialect.h"
-//#include "cinm-mlir/Dialect/cinm/IR/cinmDialect.h"
+#include "cinm-mlir/Dialect/Cinm/IR/CinmDialect.h"
 
 #include "mlir/IR/AsmState.h"
 #include "mlir/IR/Dialect.h"
@@ -17,7 +16,7 @@
 #include "mlir/Pass/PassManager.h"
 #include "mlir/Support/FileUtilities.h"
 #include "mlir/Tools/mlir-opt/MlirOptMain.h"
-#include "cinm-mlir/Conversion/ClosurePasses.h"
+#include "cinm-mlir/Conversion/CinmPasses.h"
 
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/InitLLVM.h"
@@ -32,13 +31,12 @@ int main(int argc, char* argv[])
     DialectRegistry registry;
     registerAllDialects(registry);
 
-    registry.insert<closure::ClosureDialect
-                    //, cinm::cinmDialect
+    registry.insert<
+                    cinm::CinmDialect
                     >();
 
     registerAllPasses();
-    registerClosureConversionPasses();
-    // registercinmConversionPasses();
+    registerCinmConversionPasses();
 
     return asMainReturnCode(
         MlirOptMain(argc, argv, "cinm-mlir optimizer driver\n", registry));

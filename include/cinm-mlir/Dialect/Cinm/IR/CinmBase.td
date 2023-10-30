@@ -20,7 +20,7 @@ def Cinm_Dialect : Dialect {
         TODO
     }];
 
-    let useDefaultTypePrinterParser = 1;
+//    let useDefaultTypePrinterParser = 1;
 
 
     code extraClassDeclaration = [{
