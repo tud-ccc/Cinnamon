@@ -10,6 +10,7 @@
 
 include "cinm-mlir/Dialect/Cinm/IR/CinmBase.td"
 include "cinm-mlir/Dialect/Cinm/IR/CinmTypes.td"
+include "cinm-mlir/Dialect/Cinm/IR/CinmAttributes.td"
 
 include "mlir/IR/EnumAttr.td"
 include "mlir/IR/OpAsmInterface.td"
@@ -41,6 +42,11 @@ class Cinm_Bitwise_Op<string name, list<Trait> traits = []>
     let arguments = (ins AnyTensor:$lhs, AnyTensor:$rhs);
     let results = (outs AnyTensor:$result);
 }
+
+
+
+
+
 
 
 
@@ -131,5 +137,150 @@ def Cinm_TransposeOp : Cinm_Op<"transpose", [InferShapedTypeOpAdaptor, Pure]> {
   }];
 }
 
+
+def Cinm_ScanOp : Cinm_Op<"scan", [SameOperandsAndResultType, Pure]> {
+  let summary = "Scan the tensor and return a tensor with the same shape.";
+
+  let description = [{
+
+  }];
+
+  let arguments = (ins
+    Cinm_ScanMethodAttr:$method,
+    AnyTensor:$input
+  );
+
+  let results = (
+    outs 
+    AnyTensor:$result
+  );
+
+  let extraClassDeclaration = [{
+  }];
+
+  let assemblyFormat = "$method `(` $input `)` attr-dict `:` type($input)";
+}
+
+def Cinm_ReduceOp : Cinm_Op<"reduce", [Pure]> {
+  let summary = "Reduce the tensor.";
+
+  let description = [{
+
+  }];
+
+  let arguments = (ins
+    Cinm_ReduceMethodAttr:$method,
+    AnyTensor:$input
+  );
+
+  let results = (
+    outs 
+    AnyScalar:$result
+  );
+
+  let extraClassDeclaration = [{
+  }];
+
+  let assemblyFormat = "$method `(` $input `)` attr-dict `:` type($input) `->` type($result)";
+}
+
+def Cinm_TopKOp : Cinm_Op<"topK", [InferShapedTypeOpAdaptor, Pure]> {
+  let summary = "Top K elements";
+
+  let description = [{
+
+  }];
+
+  let arguments = (ins
+    // todo what is enum parameter? it's an attribute though
+    // two tensor parameters to search, TODO must have same shape
+    AnyTensor:$input,
+    I64:$k // size of result tensor
+  );
+
+  let results = (
+    outs 
+    // these have dynamic sizes and rank 1
+    AnyTensor:$resultValues,
+    TensorOf<[Builtin_Index]>:$resultIndices
+  );
+
+  let extraClassDeclaration = [{
+  }];
+
+  let assemblyFormat = "$k `(` $input `)` attr-dict `:` type($input) `->` type($resultValues) `,` type($resultIndices)";
+}
+
+def Cinm_SimSearchOp : Cinm_Op<"simSearch", [InferShapedTypeOpAdaptor, Pure]> {
+  let summary = "Similarity search between two tensors";
+
+  let description = [{
+
+  }];
+
+  let arguments = (ins
+    // two tensor parameters to search, TODO must have same shape
+    Cinm_SimilarityMetricAttr:$metric,
+    AnyTensor:$left,
+    AnyTensor:$right,
+    I64:$k // size of result tensors
+  );
+
+  let results = (
+    outs 
+    // these have dynamic sizes and rank 1 
+    AnyTensor:$resultValues,
+    AnyTensor:$resultIndices
+  );
+
+  let extraClassDeclaration = [{
+  }];
+
+  //let assemblyFormat = "$k `(` $left `,` $right `)` attr-dict `:` type($left)";
+}
+
+def Cinm_MergePartialOp : Cinm_Op<"mergePartial", [Pure]> {
+  let summary = "Merge partial results of a sim search (?)";
+
+  let description = [{
+
+  }];
+
+  let arguments = (ins
+    // todo there are 2 enum parameters, what are they?
+    // What are constraints on these tensors?
+    // Should we use an out tensor? (ie is shape known?)
+    AnyTensor:$left,
+    AnyTensor:$right
+  );
+
+  let results = (
+    outs
+    AnyTensor:$result
+  );
+
+  let extraClassDeclaration = [{
+  }];
+}
+
+def Cinm_PopCountOp : Cinm_Op<"popCount", [Pure]> {
+  let summary = "Pop count on a vector of i1";
+
+  let description = [{
+
+  }];
+
+  let arguments = (ins
+    TensorOf<[I1]>:$left
+  );
+
+  let results = (
+    outs
+    I64:$result
+  );
+
+  let extraClassDeclaration = [{
+  }];
+}
 
 #endif

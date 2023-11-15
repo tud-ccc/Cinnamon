@@ -9,6 +9,7 @@
 
 //===- Generated includes -------------------------------------------------===//
 
+#include "cinm-mlir/Dialect/Cinm/IR/CinmEnums.h.inc"
 #define GET_ATTRDEF_CLASSES
 #include "cinm-mlir/Dialect/Cinm/IR/CinmAttributes.h.inc"
 

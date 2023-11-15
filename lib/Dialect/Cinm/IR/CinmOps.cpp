@@ -19,6 +19,8 @@ using namespace mlir::cinm;
 
 //===- Generated implementation -------------------------------------------===//
 
+#include "cinm-mlir/Dialect/Cinm/IR/CinmEnums.cpp.inc"
+
 #define GET_OP_CLASSES
 #include "cinm-mlir/Dialect/Cinm/IR/CinmOps.cpp.inc"
 
@@ -71,6 +73,39 @@ void printMinMaxOp(Value v, ::mlir::OpAsmPrinter &p) {
 void MaxOp::print(::mlir::OpAsmPrinter &p) { printMinMaxOp(getOperand(), p); }
 
 void MinOp::print(::mlir::OpAsmPrinter &p) { printMinMaxOp(getOperand(), p); }
+
+::mlir::LogicalResult SimSearchOp::inferReturnTypeComponents(
+    ::mlir::MLIRContext *context, std::optional<::mlir::Location> location,
+    Adaptor adaptor,
+    ::llvm::SmallVectorImpl<::mlir::ShapedTypeComponents>
+        &inferredReturnShapes) {
+
+  ShapeAdaptor inputShape(adaptor.getLeft().getType());
+  auto elt = inputShape.getElementType();
+
+  SmallVector<int64_t> outputShape;
+  outputShape.resize(1, ShapedType::kDynamic);
+  inferredReturnShapes.push_back(ShapedTypeComponents(outputShape, elt));
+  inferredReturnShapes.push_back(ShapedTypeComponents(outputShape, elt));
+  return success();
+}
+
+::mlir::LogicalResult TopKOp::inferReturnTypeComponents(
+    ::mlir::MLIRContext *context, std::optional<::mlir::Location> location,
+    Adaptor adaptor,
+    ::llvm::SmallVectorImpl<::mlir::ShapedTypeComponents>
+        &inferredReturnShapes) {
+
+  ShapeAdaptor inputShape(adaptor.getInput().getType());
+  auto elt = inputShape.getElementType();
+
+  SmallVector<int64_t> outputShape;
+  outputShape.resize(1, ShapedType::kDynamic);
+  inferredReturnShapes.push_back(ShapedTypeComponents(outputShape, elt));
+  inferredReturnShapes.push_back(ShapedTypeComponents(outputShape, elt));
+  return success();
+}
+
 
 // Copied from the TOSA codebase.
 ::mlir::LogicalResult TransposeOp::inferReturnTypeComponents(
