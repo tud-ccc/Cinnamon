@@ -22,3 +22,4 @@ _deps
 build-*
 build
 .cache
+.env

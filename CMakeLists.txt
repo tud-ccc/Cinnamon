@@ -66,6 +66,12 @@ add_compile_options(
     $<$<CXX_COMPILER_ID:Clang>:-fcolor-diagnostics>
 )
 
+# use mold linker if available
+find_program(MOLD "mold" NO_CACHE)
+if (MOLD)
+    add_link_options(-fuse-ld=mold)
+endif()
+
 add_link_options(--for-linker --color-diagnostics=always)
 
 add_subdirectory(include)
