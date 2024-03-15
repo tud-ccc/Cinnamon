@@ -65,6 +65,12 @@ add_compile_options(
     $<$<CXX_COMPILER_ID:Clang>:-fdebug-default-version=4>
 )
 
+# use mold linker if available
+find_program(MOLD "mold" NO_CACHE)
+if (MOLD)
+    add_link_options(-fuse-ld=mold)
+endif()
+
 add_subdirectory(include)
 add_subdirectory(lib)
 add_subdirectory(test)

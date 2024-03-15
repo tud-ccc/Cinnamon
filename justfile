@@ -19,6 +19,7 @@ cmake:
         -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
         -DCMAKE_C_COMPILER=clang \
         -DCMAKE_CXX_COMPILER=clang++ \
+        -DCMAKE_EXPORT_COMPILE_COMMANDS=ON \
 
 # execute a specific ninja target
 doNinja *ARGS:
@@ -28,7 +29,7 @@ doNinja *ARGS:
 # run build --first build needs cmake though
 build: doNinja
 
-alias b := build 
+alias b := build
 
 # run tests
 test: (doNinja "check-cinm-mlir")
@@ -43,7 +44,7 @@ debug-cinm-opt *ARGS:
     gdb --args {{build_dir}}/bin/cinm-opt {{ARGS}}
 
 # Invoke he LLVM IR compiler.
-llc *ARGS: 
+llc *ARGS:
     {{llvm_prefix}}/bin/llc {{ARGS}}
 
 

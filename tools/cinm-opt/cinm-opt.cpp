@@ -4,9 +4,17 @@
 /// @author      Karl F. A. Friebel (karl.friebel@tu-dresden.de)
 /// @author      Clément Fournier (clement.fournier@tu-dresden.de)
 
-#include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "cinm-mlir/Dialect/Cinm/IR/CinmDialect.h"
+#include "cinm-mlir/Dialect/Cnm/IR/CnmDialect.h"
+#include "cinm-mlir/Conversion/CinmPasses.h"
+#include "cinm-mlir/Conversion/CnmPasses.h"
 
+#include "llvm/Support/CommandLine.h"
+#include "llvm/Support/InitLLVM.h"
+#include "llvm/Support/SourceMgr.h"
+#include "llvm/Support/ToolOutputFile.h"
+
+#include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/IR/AsmState.h"
 #include "mlir/IR/Dialect.h"
 #include "mlir/IR/MLIRContext.h"
@@ -16,13 +24,6 @@
 #include "mlir/Pass/PassManager.h"
 #include "mlir/Support/FileUtilities.h"
 #include "mlir/Tools/mlir-opt/MlirOptMain.h"
-#include "cinm-mlir/Conversion/CinmPasses.h"
-
-#include "llvm/Support/CommandLine.h"
-#include "llvm/Support/InitLLVM.h"
-#include "llvm/Support/SourceMgr.h"
-#include "llvm/Support/ToolOutputFile.h"
-//#include "cinm-mlir/Conversion/cinmPasses.h"
 
 using namespace mlir;
 
@@ -32,11 +33,13 @@ int main(int argc, char* argv[])
     registerAllDialects(registry);
 
     registry.insert<
-                    cinm::CinmDialect
-                    >();
+        cinm::CinmDialect,
+        cnm::CnmDialect
+    >();
 
     registerAllPasses();
     registerCinmConversionPasses();
+    registerCnmConversionPasses();
 
     return asMainReturnCode(
         MlirOptMain(argc, argv, "cinm-mlir optimizer driver\n", registry));
