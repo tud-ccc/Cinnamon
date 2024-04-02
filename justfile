@@ -45,10 +45,14 @@ cinm-opt-help: (cinm-opt "--help")
 debug-cinm-opt *ARGS:
     gdb --args {{build_dir}}/bin/cinm-opt {{ARGS}}
 
+cinm-vulkan-runner FILE *ARGS:
+    {{build_dir}}/bin/cinm-vulkan-runner {{FILE}} \
+        --shared-libs=../llvm-project/build/lib/libvulkan-runtime-wrappers.so,../llvm-project/build/lib/libmlir_runner_utils.so.17 \
+        {{ARGS}}
+
 # Invoke he LLVM IR compiler.
 llc *ARGS:
     {{llvm_prefix}}/bin/llc {{ARGS}}
-
 
 # Lowers Sigi all the way to LLVM IR. Temporary files are left there.
 llvmDialectIntoExecutable FILE:
