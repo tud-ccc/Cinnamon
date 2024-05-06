@@ -8,6 +8,8 @@
 #include "cinm-mlir/Dialect/Cnm/IR/CnmDialect.h"
 #include "cinm-mlir/Conversion/CinmPasses.h"
 #include "cinm-mlir/Conversion/CnmPasses.h"
+#include "cinm-mlir/Dialect/Cinm/Transforms/Passes.h"
+#include "cinm-mlir/Dialect/Cnm/Transforms/Passes.h"
 
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/InitLLVM.h"
@@ -40,6 +42,9 @@ int main(int argc, char* argv[])
     registerAllPasses();
     registerCinmConversionPasses();
     registerCnmConversionPasses();
+    registerCnmSPIRVAttachKernelEntryPointAttributePass();
+    registerCnmSPIRVAttachTargetAttributePass();
+    registerCinmTileGemmOpPass();
 
     return asMainReturnCode(
         MlirOptMain(argc, argv, "cinm-mlir optimizer driver\n", registry));

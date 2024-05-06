@@ -5,6 +5,7 @@
 #pragma once
 
 #include "cinm-mlir/Dialect/Cinm/IR/CinmTypes.h"
+#include "cinm-mlir/Dialect/Cinm/Interfaces/TilingInterface.h"
 
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinTypes.h"
