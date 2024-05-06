@@ -6,8 +6,11 @@ DEPENDS
     CnmTransformPassesIncGen
 
 LINK_LIBS PUBLIC
-    MLIRGPUDialect
     MLIRIR
+    MLIRGPUDialect
+    MLIRLLVMDialect
+    MLIRAffineDialect
+    MLIRLinalgDialect
     MLIRSPIRVTarget
     MLIRTransformUtils
 )
