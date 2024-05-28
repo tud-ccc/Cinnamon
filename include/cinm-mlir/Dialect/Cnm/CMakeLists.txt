@@ -1,12 +1,11 @@
 ################################################################################
-# CinmIncGen
+# CnmIncGen
 #
-# MLIR Cinm dialect generated includes.
+# MLIR Cnm dialect generated includes.
 ################################################################################
 
-add_custom_target(CinmIncGen)
+add_custom_target(CnmIncGen)
 
 # Attributes, Dialect, Operations and Types.
-add_subdirectory(Interfaces)
 add_subdirectory(IR)
 add_subdirectory(Transforms)

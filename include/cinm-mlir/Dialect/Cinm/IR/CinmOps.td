@@ -11,6 +11,7 @@
 include "cinm-mlir/Dialect/Cinm/IR/CinmBase.td"
 include "cinm-mlir/Dialect/Cinm/IR/CinmTypes.td"
 include "cinm-mlir/Dialect/Cinm/IR/CinmAttributes.td"
+include "cinm-mlir/Dialect/Cinm/Interfaces/TilingInterface.td"
 
 include "mlir/IR/EnumAttr.td"
 include "mlir/IR/BuiltinAttributes.td"
@@ -96,7 +97,7 @@ def Cinm_DivOp : Cinm_TTT_Op<"div", []> {
   }];
 }
 
-def Cinm_GemmOp : Cinm_Op<"op.gemm", [Pure]> {
+def Cinm_GemmOp : Cinm_Op<"op.gemm", [Pure, DeclareOpInterfaceMethods<CinmTilingInterface>]> {
   let summary = "Generalized Matrix Matrix Multiplication operation";
   let description = [{
     TODO
