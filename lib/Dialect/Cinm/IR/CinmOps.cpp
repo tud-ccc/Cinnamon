@@ -4,6 +4,7 @@
 
 #include "cinm-mlir/Dialect/Cinm/IR/CinmOps.h"
 
+#include "cinm-mlir/Dialect/Cinm/IR/CinmAttributes.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/Matchers.h"
 #include "mlir/IR/OpImplementation.h"
@@ -11,6 +12,12 @@
 #include "mlir/IR/TypeUtilities.h"
 
 #include "llvm/ADT/APFloat.h"
+#include <cstdint>
+#include <llvm/ADT/APInt.h>
+#include <mlir/IR/BuiltinTypeInterfaces.h>
+#include <mlir/IR/BuiltinTypes.h>
+#include <mlir/IR/OperationSupport.h>
+#include <mlir/Support/LogicalResult.h>
 
 #define DEBUG_TYPE "cinm-ops"
 
@@ -278,12 +285,77 @@ void ComputeOp::print(OpAsmPrinter &p) {
   auto resultTy = getResult().getType();
   p.getStream() << " -> ";
   p.printType(resultTy);
-  
+
   // Print the body if this is not an external function.
   p << ' ';
   p.printRegion(body,
                 /*printEntryBlockArgs=*/false,
                 /*printBlockTerminators=*/true);
+}
+
+ParseResult SimSearchOp::parse(::mlir::OpAsmParser &parser,
+                               ::mlir::OperationState &result) {
+
+  //  let assemblyFormat= "$metric `,` $k `(` $left `,` $right `)` attr-dict `:`
+  //  type($left)";
+  std::string opname;
+  if (parser.parseKeywordOrString(&opname))
+    return failure();
+
+  SimilarityMetric metric;
+  if (opname == "cos") {
+    metric = SimilarityMetric::COS;
+  } else if (opname == "dot") {
+    metric = SimilarityMetric::DOT;
+  } else {
+    return parser.emitError(parser.getCurrentLocation(),
+                            "Expected a string \"cos\" or \"dot\"");
+  }
+
+  result.addAttribute(getMetricAttrName(result.name),
+                      SimilarityMetricAttr::get(result.getContext(), metric));
+
+  int64_t numK;
+  if (parser.parseComma() || parser.parseInteger(numK))
+    return failure();
+
+  auto i64Ty = IntegerType::get(result.getContext(), 64);
+  result.addAttribute(getKAttrName(result.name), IntegerAttr::get(i64Ty, numK));
+
+  OpAsmParser::UnresolvedOperand left, right;
+  NamedAttrList attrDict;
+  Type opTy;
+
+  if (parser.parseLParen() || parser.parseOperand(left, false) ||
+      parser.parseComma() || parser.parseOperand(right, false) ||
+      parser.parseRParen() || parser.parseColonType(opTy))
+    return failure();
+
+  result.addAttributes(attrDict);
+  if (parser.resolveOperand(left, opTy, result.operands) ||
+      parser.resolveOperand(right, opTy, result.operands))
+    return failure();
+
+  // finally add result types
+
+  auto eltTy = opTy.cast<RankedTensorType>().getElementType();
+  auto resultValuesTy = RankedTensorType::get({ShapedType::kDynamic}, eltTy);
+  auto resultIndicesTy = RankedTensorType::get({ShapedType::kDynamic}, i64Ty);
+  result.addTypes({resultValuesTy, resultIndicesTy});
+
+  return success();
+}
+
+void SimSearchOp::print(OpAsmPrinter &p) {
+  p << ' ';
+  p.printKeywordOrString(stringifySimilarityMetric(getMetric()));
+  p << ", " << getK();
+  p << " (";
+  p.printOperand(getLeft());
+  p << ", ";
+  p.printOperand(getRight());
+  p << ") : ";
+  p.printType(getLeft().getType());
 }
 
 } // namespace cinm

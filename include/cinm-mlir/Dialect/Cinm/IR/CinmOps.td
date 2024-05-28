@@ -13,6 +13,7 @@ include "cinm-mlir/Dialect/Cinm/IR/CinmTypes.td"
 include "cinm-mlir/Dialect/Cinm/IR/CinmAttributes.td"
 
 include "mlir/IR/EnumAttr.td"
+include "mlir/IR/BuiltinAttributes.td"
 include "mlir/IR/OpAsmInterface.td"
 include "mlir/IR/SymbolInterfaces.td"
 include "mlir/Interfaces/CallInterfaces.td"
@@ -223,7 +224,7 @@ def Cinm_SimSearchOp : Cinm_Op<"op.simSearch", [InferShapedTypeOpAdaptor, Pure]>
     Cinm_SimilarityMetricAttr:$metric,
     AnyTensor:$left,
     AnyTensor:$right,
-    I64:$k // size of result tensors
+    Builtin_IntegerAttr:$k // size of result tensors (maybe max size)
   );
 
   let results = (
@@ -237,7 +238,6 @@ def Cinm_SimSearchOp : Cinm_Op<"op.simSearch", [InferShapedTypeOpAdaptor, Pure]>
   }];
 
   let hasCustomAssemblyFormat = 1;
-//  let assemblyFormat = "$metric `,` $k `(` $left `,` $right `)` attr-dict `:` type($left) `,` type($right)";
 }
 
 def Cinm_MergePartialOp : Cinm_Op<"op.mergePartial", [Pure]> {
