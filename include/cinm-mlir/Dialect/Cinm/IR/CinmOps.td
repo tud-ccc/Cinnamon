@@ -217,6 +217,15 @@ def Cinm_SimSearchOp : Cinm_Op<"op.simSearch", [InferShapedTypeOpAdaptor, Pure]>
 
   let description = [{
 
+    Similarity search between tensors or the same shape. Two similarity metrics
+    are supported: cos and dot.
+
+        %sim1, %sim1i = cinm.op.simSearch cos 4 (%scan, %scan2) : tensor<6x6xi32>
+    
+    The type trailing the operator is the type of both operands.
+    The results are of dynamic shape, the first are values, the 
+    second are indices of the values. Here they are of type `tensor<?xi32>` and `tensor<?xindex>`
+
   }];
 
   let arguments = (ins
@@ -244,15 +253,8 @@ def Cinm_MergePartialOp : Cinm_Op<"op.mergePartial", [Pure]> {
   let summary = "Merge partial results of a sim search (?)";
 
   let description = [{
-
-  }];
-
-  let arguments = (ins
-    // todo there are 2 enum parameters, what are they?
-    // What are constraints on these tensors?
-    // Should we use an out tensor? (ie is shape known?)
-    AnyTensor:$left,
-    AnyTensor:$right
+    %sim1, %sim1i = cinm.op.simSearch cos 4 (%scan, %scan2) : tensor<6x6xi32>
+    %sim2, %sim2i = cinm.op.simSearch dot 4 (%scan, %scan2) : tensor<6x6xi32>
   );
 
   let results = (

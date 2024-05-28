@@ -316,7 +316,7 @@ ParseResult SimSearchOp::parse(::mlir::OpAsmParser &parser,
                       SimilarityMetricAttr::get(result.getContext(), metric));
 
   int64_t numK;
-  if (parser.parseComma() || parser.parseInteger(numK))
+  if (parser.parseInteger(numK))
     return failure();
 
   auto i64Ty = IntegerType::get(result.getContext(), 64);
@@ -340,7 +340,7 @@ ParseResult SimSearchOp::parse(::mlir::OpAsmParser &parser,
 
   auto eltTy = opTy.cast<RankedTensorType>().getElementType();
   auto resultValuesTy = RankedTensorType::get({ShapedType::kDynamic}, eltTy);
-  auto resultIndicesTy = RankedTensorType::get({ShapedType::kDynamic}, i64Ty);
+  auto resultIndicesTy = RankedTensorType::get({ShapedType::kDynamic}, IndexType::get(result.getContext()));
   result.addTypes({resultValuesTy, resultIndicesTy});
 
   return success();
@@ -349,7 +349,7 @@ ParseResult SimSearchOp::parse(::mlir::OpAsmParser &parser,
 void SimSearchOp::print(OpAsmPrinter &p) {
   p << ' ';
   p.printKeywordOrString(stringifySimilarityMetric(getMetric()));
-  p << ", " << getK();
+  p << ' ' << getK();
   p << " (";
   p.printOperand(getLeft());
   p << ", ";
