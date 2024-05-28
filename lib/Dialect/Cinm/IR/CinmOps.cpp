@@ -186,6 +186,34 @@ Value GemmOp::tile(OpBuilder builder, ArrayRef<int64_t> tileSizes) {
       });
 }
 
+::mlir::LogicalResult GemmOp::inferReturnTypeComponents(
+    ::mlir::MLIRContext *context, std::optional<::mlir::Location> location,
+    Adaptor adaptor,
+    ::llvm::SmallVectorImpl<::mlir::ShapedTypeComponents>
+        &inferredReturnShapes) {
+  ShapeAdaptor lhsShape(adaptor.getLeft().getType());
+  ShapeAdaptor rhsShape(adaptor.getRight().getType());
+
+  SmallVector<int64_t, 2> outShape;
+  outShape.push_back(lhsShape.getDimSize(0));
+  outShape.push_back(rhsShape.getDimSize(1));
+
+  inferredReturnShapes.push_back(ShapedTypeComponents(outShape));
+  return success();
+}
+
+::mlir::LogicalResult GemvOp::inferReturnTypeComponents(
+    ::mlir::MLIRContext *context, std::optional<::mlir::Location> location,
+    Adaptor adaptor,
+    ::llvm::SmallVectorImpl<::mlir::ShapedTypeComponents>
+        &inferredReturnShapes) {
+
+  auto result = ShapedTypeComponents(adaptor.getRight().getType());
+  inferredReturnShapes.emplace_back(std::move(result));
+  return success();
+}
+
+
 ::mlir::LogicalResult SimSearchOp::inferReturnTypeComponents(
     ::mlir::MLIRContext *context, std::optional<::mlir::Location> location,
     Adaptor adaptor,

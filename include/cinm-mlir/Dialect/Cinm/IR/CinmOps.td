@@ -33,16 +33,16 @@ defvar AnyScalar = AnyType; // todo
 class Cinm_TTT_Op<string name, list<Trait> traits = []> 
     : Cinm_Op<name, traits # [SameOperandsAndResultType]> {
 
-    let arguments = (ins AnyTensor:$lhs, AnyTensor:$rhs);
-    let results = (outs AnyTensor:$result);
+    let arguments = (ins AnyRankedTensor:$lhs, AnyRankedTensor:$rhs);
+    let results = (outs AnyRankedTensor:$result);
 
     let assemblyFormat = "$lhs `,` $rhs attr-dict `:` type($result)";
 }
 
 class Cinm_Bitwise_Op<string name, list<Trait> traits = []> 
     : Cinm_Op<name, traits> {
-    let arguments = (ins AnyTensor:$lhs, AnyTensor:$rhs);
-    let results = (outs AnyTensor:$result);
+    let arguments = (ins AnyRankedTensor:$lhs, AnyRankedTensor:$rhs);
+    let results = (outs AnyRankedTensor:$result);
 }
 
 
@@ -56,14 +56,14 @@ class Cinm_Bitwise_Op<string name, list<Trait> traits = []>
 
 
 def MinOp: Cinm_Op<"op.min", [Commutative, Pure]> {
-    let arguments = (ins AnyTensor:$input);  
+    let arguments = (ins AnyRankedTensor:$input);  
     let results = (outs AnyScalar:$result);
     let summary = "Return the min value of the input tensor";
     let hasCustomAssemblyFormat = 1;
 }
 
 def MaxOp: Cinm_Op<"op.max", [Commutative, Pure]> {
-    let arguments = (ins AnyTensor:$input);  
+    let arguments = (ins AnyRankedTensor:$input);  
     let results = (outs AnyScalar:$result);
 
     let summary = "Return the max value of the input tensor";
@@ -91,28 +91,30 @@ def Cinm_MulOp : Cinm_TTT_Op<"op.mul", [Commutative, Pure]> {
 }
 
 def Cinm_DivOp : Cinm_TTT_Op<"div", []> {
-  let summary = "AnyTensor division operation";
+  let summary = "AnyRankedTensor division operation";
   let description = [{
     TODO
   }];
 }
 
-def Cinm_GemmOp : Cinm_Op<"op.gemm", [Pure, DeclareOpInterfaceMethods<CinmTilingInterface>]> {
+def Cinm_GemmOp : Cinm_Op<"op.gemm", [Pure, InferShapedTypeOpAdaptor, DeclareOpInterfaceMethods<CinmTilingInterface>]> {
   let summary = "Generalized Matrix Matrix Multiplication operation";
   let description = [{
     TODO
   }];
-  let arguments = (ins AnyTensor:$left, AnyTensor:$right);
-  let results = (outs AnyTensor:$result);
+  let arguments = (ins AnyRankedTensor:$left, AnyRankedTensor:$right);
+  let results = (outs AnyRankedTensor:$result);
+  let assemblyFormat = "$left `,` $right attr-dict `:` `(` type($left) `,` type($right) `)` `->` type($result)";
 }
 
-def Cinm_GemvOp : Cinm_Op<"op.gemv", [Pure]> {
+def Cinm_GemvOp : Cinm_Op<"op.gemv", [Pure, InferShapedTypeOpAdaptor]> {
   let summary = "Generalized Matrix Vector Multiplication";
   let description = [{
     TODO
   }];
-  let arguments = (ins AnyTensor:$left, AnyTensor:$right);
-  let results = (outs AnyTensor:$result);
+  let arguments = (ins AnyRankedTensor:$left, 1DTensorOf<[AnyType]>:$right);
+  let results = (outs 1DTensorOf<[AnyType]>:$result);
+  let assemblyFormat = "$left `,` $right attr-dict `:` `(` type($left) `,` type($right) `)` `->` type($result)";
 }
 
 
@@ -126,12 +128,12 @@ def Cinm_TransposeOp : Cinm_Op<"op.transpose", [InferShapedTypeOpAdaptor, Pure]>
   }];
 
   let arguments = (ins
-    AnyTensor:$input1,
-    AnyTensor:$perms // TODO 
+    AnyRankedTensor:$input1,
+    AnyRankedTensor:$perms // TODO 
   );
 
   let results = (
-    outs AnyTensor:$output
+    outs AnyRankedTensor:$output
   );
 
   let extraClassDeclaration = [{
@@ -149,12 +151,12 @@ def Cinm_ScanOp : Cinm_Op<"op.scan", [SameOperandsAndResultType, Pure]> {
 
   let arguments = (ins
     Cinm_ScanMethodAttr:$method,
-    AnyTensor:$input
+    AnyRankedTensor:$input
   );
 
   let results = (
     outs 
-    AnyTensor:$result
+    AnyRankedTensor:$result
   );
 
   let extraClassDeclaration = [{
@@ -172,7 +174,7 @@ def Cinm_ReduceOp : Cinm_Op<"op.reduce", [Pure]> {
 
   let arguments = (ins
     Cinm_ReduceMethodAttr:$method,
-    AnyTensor:$input
+    AnyRankedTensor:$input
   );
 
   let results = (
@@ -196,14 +198,14 @@ def Cinm_TopKOp : Cinm_Op<"op.topK", [InferShapedTypeOpAdaptor, Pure]> {
   let arguments = (ins
     // todo what is enum parameter? it's an attribute though
     // two tensor parameters to search, TODO must have same shape
-    AnyTensor:$input,
+    AnyRankedTensor:$input,
     I64:$k // size of result tensor
   );
 
   let results = (
     outs 
     // these have dynamic sizes and rank 1
-    AnyTensor:$resultValues,
+    AnyRankedTensor:$resultValues,
     TensorOf<[Builtin_Index]>:$resultIndices
   );
 
@@ -232,16 +234,16 @@ def Cinm_SimSearchOp : Cinm_Op<"op.simSearch", [InferShapedTypeOpAdaptor, Pure]>
   let arguments = (ins
     // two tensor parameters to search, TODO must have same shape
     Cinm_SimilarityMetricAttr:$metric,
-    AnyTensor:$left,
-    AnyTensor:$right,
+    AnyRankedTensor:$left,
+    AnyRankedTensor:$right,
     Builtin_IntegerAttr:$k // size of result tensors (maybe max size)
   );
 
   let results = (
     outs 
     // these have dynamic sizes and rank 1 
-    AnyTensor:$resultValues,
-    AnyTensor:$resultIndices
+    AnyRankedTensor:$resultValues,
+    AnyRankedTensor:$resultIndices
   );
 
   let extraClassDeclaration = [{
@@ -260,7 +262,7 @@ def Cinm_MergePartialOp : Cinm_Op<"op.mergePartial", [Pure]> {
 
   let results = (
     outs
-    AnyTensor:$result
+    AnyRankedTensor:$result
   );
 
   let extraClassDeclaration = [{
@@ -303,8 +305,8 @@ def Cinm_ComputeOp : Cinm_Op<"compute", [
     }
   }];
 
-  let arguments = (ins Variadic<AnyTensor>:$inputs);
-  let results = (outs AnyTensor:$result); // todo should we support returning multiple?
+  let arguments = (ins Variadic<AnyRankedTensor>:$inputs);
+  let results = (outs AnyRankedTensor:$result); // todo should we support returning multiple?
   let regions = (region AnyRegion:$body);
 
 
