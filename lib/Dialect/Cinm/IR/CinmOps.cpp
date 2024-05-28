@@ -106,7 +106,6 @@ void MinOp::print(::mlir::OpAsmPrinter &p) { printMinMaxOp(getOperand(), p); }
   return success();
 }
 
-
 // Copied from the TOSA codebase.
 ::mlir::LogicalResult TransposeOp::inferReturnTypeComponents(
     ::mlir::MLIRContext *context, std::optional<::mlir::Location> location,
@@ -178,6 +177,83 @@ void MinOp::print(::mlir::OpAsmPrinter &p) { printMinMaxOp(getOperand(), p); }
   inferredReturnShapes.push_back(ShapedTypeComponents(outputShape));
   return success();
 }
+
+ParseResult
+parseCaptureArgs(OpAsmParser &parser,
+                 SmallVectorImpl<OpAsmParser::Argument> &lhs,
+                 SmallVectorImpl<OpAsmParser::UnresolvedOperand> &rhs,
+                 SmallVectorImpl<Type> &types) {
+  auto parseElt = [&]() -> ParseResult {
+    if (parser.parseArgument(lhs.emplace_back()) || parser.parseEqual() ||
+        parser.parseOperand(rhs.emplace_back()) ||
+        parser.parseColonType<Type>(types.emplace_back()))
+      return failure();
+    return success();
+  };
+  return parser.parseCommaSeparatedList(AsmParser::Delimiter::Paren, parseElt);
+}
+
+/*
+
+    %rbuf = cinm.compute(%arg0 = %inpt : tensor<...>) -> tensor<...> {
+      %flt = arith.constant <"...">: tensor<...>
+      %conv = cinm.op.gemm %arg0, %flt: tensor<...>, tensor<...>
+      cinm.yield %conv : tensor<...>
+    }
+*/
+ParseResult parseComputeOp(OpAsmParser &parser, OperationState &result) {
+
+  SmallVector<DictionaryAttr> resultAttrs;
+  SmallVector<Type> resultTypes;
+
+  SmallVector<OpAsmParser::Argument, 4> capturedParams;
+  SmallVector<OpAsmParser::UnresolvedOperand, 4> capturedArgs;
+  SmallVector<Type, 4> capturedArgsTypes;
+
+  if (parseCaptureArgs(parser, capturedParams, capturedArgs, capturedArgsTypes))
+    return failure();
+
+  SmallVector<Value, 4> resolvedCaptArgs;
+  if (parser.resolveOperands(std::move(capturedArgs), capturedArgsTypes,
+                             parser.getCurrentLocation(), resolvedCaptArgs))
+    return failure();
+
+  result.addOperands(std::move(resolvedCaptArgs));
+
+  SmallVector<Type, 4> resultTys;
+  if (parser.parseArrowTypeList(resultTys))
+    return parser.emitError(parser.getCurrentLocation(),
+                            "Expected -> return type");
+  result.addTypes(resultTys);
+
+  std::string errorMessage;
+  SmallVector<OpAsmParser::Argument> regionParams;
+  regionParams.reserve(capturedParams.size());
+  for (auto [arg, argT] : llvm::zip(capturedParams, capturedArgsTypes)) {
+    arg.type = argT;
+    regionParams.push_back(arg);
+  }
+
+  // Parse the body.
+  auto *body = result.addRegion();
+  SMLoc loc = parser.getCurrentLocation();
+  OptionalParseResult parseResult =
+      parser.parseRegion(*body, regionParams,
+                         /*enableNameShadowing=*/false);
+  if (parseResult.has_value()) {
+    if (failed(*parseResult))
+      return failure();
+    // Function body was parsed, make sure its not empty.
+    if (body->empty())
+      return parser.emitError(loc, "expected non-empty cinm.compute body");
+  }
+  return success();
+}
+
+ParseResult ComputeOp::parse(OpAsmParser &parser, OperationState &result) {
+  return parseComputeOp(parser, result);
+}
+
 } // namespace cinm
 } // namespace mlir
 

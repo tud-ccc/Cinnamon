@@ -63,6 +63,7 @@ add_compile_options(
     -Wno-ambiguous-reversed-operator
     # NOTE: GDB < 10.x can't handle DWARFv5 correctly.
     $<$<CXX_COMPILER_ID:Clang>:-fdebug-default-version=4>
+    $<$<CXX_COMPILER_ID:Clang>:-fcolor-diagnostics>
 )
 
 add_subdirectory(include)

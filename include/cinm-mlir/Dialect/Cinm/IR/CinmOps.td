@@ -53,14 +53,14 @@ class Cinm_Bitwise_Op<string name, list<Trait> traits = []>
 // Concrete op definitions
 
 
-def MinOp: Cinm_Op<"min", [Commutative, Pure]> {
+def MinOp: Cinm_Op<"op.min", [Commutative, Pure]> {
     let arguments = (ins AnyTensor:$input);  
     let results = (outs AnyScalar:$result);
     let summary = "Return the min value of the input tensor";
     let hasCustomAssemblyFormat = 1;
 }
 
-def MaxOp: Cinm_Op<"max", [Commutative, Pure]> {
+def MaxOp: Cinm_Op<"op.max", [Commutative, Pure]> {
     let arguments = (ins AnyTensor:$input);  
     let results = (outs AnyScalar:$result);
 
@@ -68,34 +68,34 @@ def MaxOp: Cinm_Op<"max", [Commutative, Pure]> {
     let hasCustomAssemblyFormat = 1;
 }
 
-def Cinm_AddOp : Cinm_TTT_Op<"add", [Commutative, Pure]> {
+def Cinm_AddOp : Cinm_TTT_Op<"op.add", [Commutative, Pure]> {
   let summary = "Tensor addition operation";
   let description = [{
     TODO
   }];
 }
-def Cinm_SubOp : Cinm_TTT_Op<"sub", [Pure]> {
+def Cinm_SubOp : Cinm_TTT_Op<"op.sub", [Pure]> {
   let summary = "Tensor subtraction operation";
   let description = [{
     TODO
   }];
 }
 // these two aren't in the paper
-def Cinm_MulOp : Cinm_TTT_Op<"mul", [Commutative, Pure]> {
+def Cinm_MulOp : Cinm_TTT_Op<"op.mul", [Commutative, Pure]> {
   let summary = "Hadamard product (element-wise multiplication)";
   let description = [{
     TODO
   }];
 }
 
-// def Cinm_DivOp : Cinm_TTT_Op<"div", []> {
-//   let summary = "AnyTensor division operation";
-//   let description = [{
-//     TODO
-//   }];
-// }
+def Cinm_DivOp : Cinm_TTT_Op<"div", []> {
+  let summary = "AnyTensor division operation";
+  let description = [{
+    TODO
+  }];
+}
 
-def Cinm_GemmOp : Cinm_Op<"gemm", [Pure]> {
+def Cinm_GemmOp : Cinm_Op<"op.gemm", [Pure]> {
   let summary = "Generalized Matrix Matrix Multiplication operation";
   let description = [{
     TODO
@@ -104,7 +104,7 @@ def Cinm_GemmOp : Cinm_Op<"gemm", [Pure]> {
   let results = (outs AnyTensor:$result);
 }
 
-def Cinm_GemvOp : Cinm_Op<"gemv", [Pure]> {
+def Cinm_GemvOp : Cinm_Op<"op.gemv", [Pure]> {
   let summary = "Generalized Matrix Vector Multiplication";
   let description = [{
     TODO
@@ -116,7 +116,7 @@ def Cinm_GemvOp : Cinm_Op<"gemv", [Pure]> {
 
 /// we infer the shape because verifying correctness of a
 /// hardcoded return type is as hard as inferring it.
-def Cinm_TransposeOp : Cinm_Op<"transpose", [InferShapedTypeOpAdaptor, Pure]> {
+def Cinm_TransposeOp : Cinm_Op<"op.transpose", [InferShapedTypeOpAdaptor, Pure]> {
   let summary = "Transpose operator";
 
   let description = [{
@@ -138,7 +138,7 @@ def Cinm_TransposeOp : Cinm_Op<"transpose", [InferShapedTypeOpAdaptor, Pure]> {
 }
 
 
-def Cinm_ScanOp : Cinm_Op<"scan", [SameOperandsAndResultType, Pure]> {
+def Cinm_ScanOp : Cinm_Op<"op.scan", [SameOperandsAndResultType, Pure]> {
   let summary = "Scan the tensor and return a tensor with the same shape.";
 
   let description = [{
@@ -161,7 +161,7 @@ def Cinm_ScanOp : Cinm_Op<"scan", [SameOperandsAndResultType, Pure]> {
   let assemblyFormat = "$method `(` $input `)` attr-dict `:` type($input)";
 }
 
-def Cinm_ReduceOp : Cinm_Op<"reduce", [Pure]> {
+def Cinm_ReduceOp : Cinm_Op<"op.reduce", [Pure]> {
   let summary = "Reduce the tensor.";
 
   let description = [{
@@ -184,7 +184,7 @@ def Cinm_ReduceOp : Cinm_Op<"reduce", [Pure]> {
   let assemblyFormat = "$method `(` $input `)` attr-dict `:` type($input) `->` type($result)";
 }
 
-def Cinm_TopKOp : Cinm_Op<"topK", [InferShapedTypeOpAdaptor, Pure]> {
+def Cinm_TopKOp : Cinm_Op<"op.topK", [InferShapedTypeOpAdaptor, Pure]> {
   let summary = "Top K elements";
 
   let description = [{
@@ -211,7 +211,7 @@ def Cinm_TopKOp : Cinm_Op<"topK", [InferShapedTypeOpAdaptor, Pure]> {
   let assemblyFormat = "$k `(` $input `)` attr-dict `:` type($input) `->` type($resultValues) `,` type($resultIndices)";
 }
 
-def Cinm_SimSearchOp : Cinm_Op<"simSearch", [InferShapedTypeOpAdaptor, Pure]> {
+def Cinm_SimSearchOp : Cinm_Op<"op.simSearch", [InferShapedTypeOpAdaptor, Pure]> {
   let summary = "Similarity search between two tensors";
 
   let description = [{
@@ -236,10 +236,11 @@ def Cinm_SimSearchOp : Cinm_Op<"simSearch", [InferShapedTypeOpAdaptor, Pure]> {
   let extraClassDeclaration = [{
   }];
 
-  //let assemblyFormat = "$k `(` $left `,` $right `)` attr-dict `:` type($left)";
+  let hasCustomAssemblyFormat = 1;
+//  let assemblyFormat = "$metric `,` $k `(` $left `,` $right `)` attr-dict `:` type($left) `,` type($right)";
 }
 
-def Cinm_MergePartialOp : Cinm_Op<"mergePartial", [Pure]> {
+def Cinm_MergePartialOp : Cinm_Op<"op.mergePartial", [Pure]> {
   let summary = "Merge partial results of a sim search (?)";
 
   let description = [{
@@ -263,7 +264,7 @@ def Cinm_MergePartialOp : Cinm_Op<"mergePartial", [Pure]> {
   }];
 }
 
-def Cinm_PopCountOp : Cinm_Op<"popCount", [Pure]> {
+def Cinm_PopCountOp : Cinm_Op<"op.popCount", [Pure]> {
   let summary = "Pop count on a vector of i1";
 
   let description = [{
@@ -282,5 +283,52 @@ def Cinm_PopCountOp : Cinm_Op<"popCount", [Pure]> {
   let extraClassDeclaration = [{
   }];
 }
+
+
+
+def Cinm_ComputeOp : Cinm_Op<"compute", [
+  AffineScope, AutomaticAllocationScope, 
+  IsolatedFromAbove //, Pure
+]> {
+  let summary = "TODO";
+  let description = [{
+
+    %rbuf = cinm.compute(%arg0 = %inpt : tensor<...>) -> tensor<...> {
+      %flt = arith.constant <"...">: tensor<...>
+      %conv = cinm.op.gemm %arg0, %flt: tensor<...>, tensor<...>
+      cinm.yield %conv : tensor<...>
+    }
+  }];
+
+  let arguments = (ins Variadic<AnyTensor>:$inputs);
+  let results = (outs AnyTensor:$result); // todo should we support returning multiple?
+  let regions = (region AnyRegion:$body);
+
+
+  let extraClassDeclaration = [{
+
+  }];
+  let hasCustomAssemblyFormat = 1;
+}
+
+
+//===----------------------------------------------------------------------===//
+// ReturnOp
+//===----------------------------------------------------------------------===//
+
+def Cinm_YieldOp : Cinm_Op<"yield", [Pure, HasParent<"ComputeOp">,
+                                     ReturnLike, Terminator]> {
+  let summary = "Yield the result of a cinm.compute operator.";
+  let description = [{
+      TODO
+  }];
+
+  let arguments = (ins Variadic<AnyType>:$operands);
+
+  //let hasVerifier = 1;
+  let hasCustomAssemblyFormat = 1;
+
+}
+
 
 #endif
