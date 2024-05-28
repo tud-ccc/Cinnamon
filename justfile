@@ -7,6 +7,7 @@ set dotenv-load := true
 
 llvm_prefix := env_var("LLVM_BUILD_DIR")
 build_type := env_var_or_default("LLVM_BUILD_TYPE", "RelWithDebInfo")
+linker := env_var_or_default("CMAKE_LINKER_TYPE", "DEFAULT")
 build_dir := "build"
 
 # execute cmake -- this is only needed on the first build
@@ -19,7 +20,7 @@ cmake:
         -DCMAKE_EXPORT_COMPILE_COMMANDS=1 \
         -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
         -DCMAKE_C_COMPILER=clang \
-        -DCMAKE_LINKER_TYPE=LLD \
+        -DCMAKE_LINKER_TYPE={{linker}} \
         -DCMAKE_CXX_COMPILER=clang++ \
         -DCMAKE_EXPORT_COMPILE_COMMANDS=ON \
 
