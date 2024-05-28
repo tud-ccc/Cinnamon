@@ -8,6 +8,7 @@
 #define CNM_TYPES
 
 include "mlir/IR/BuiltinTypeInterfaces.td"
+include "CnmBase.td"
 
 def WorkgroupType : Cnm_Type<"Workgroup"> {
   let mnemonic = "workgroup";

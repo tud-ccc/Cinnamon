@@ -5,6 +5,8 @@
 # Write LLVM_BUILD_DIR="path" into that file or set this env var in your shell.
 set dotenv-load := true
 
+# Make sure your LLVM is tags/llvmorg-18.1.6
+
 llvm_prefix := env_var("LLVM_BUILD_DIR")
 build_type := env_var_or_default("LLVM_BUILD_TYPE", "RelWithDebInfo")
 linker := env_var_or_default("CMAKE_LINKER_TYPE", "DEFAULT")
