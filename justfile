@@ -19,6 +19,7 @@ cmake:
         -DCMAKE_EXPORT_COMPILE_COMMANDS=1 \
         -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
         -DCMAKE_C_COMPILER=clang \
+        -DCMAKE_LINKER_TYPE=LLD \
         -DCMAKE_CXX_COMPILER=clang++ \
 
 # execute a specific ninja target

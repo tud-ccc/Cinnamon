@@ -66,6 +66,8 @@ add_compile_options(
     $<$<CXX_COMPILER_ID:Clang>:-fcolor-diagnostics>
 )
 
+add_link_options(--for-linker --color-diagnostics=always)
+
 add_subdirectory(include)
 add_subdirectory(lib)
 add_subdirectory(test)

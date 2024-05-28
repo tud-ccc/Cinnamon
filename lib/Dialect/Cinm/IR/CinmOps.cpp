@@ -254,6 +254,38 @@ ParseResult ComputeOp::parse(OpAsmParser &parser, OperationState &result) {
   return parseComputeOp(parser, result);
 }
 
+void ComputeOp::print(OpAsmPrinter &p) {
+  // Print the operation and the function name.
+  p << ' ';
+
+  Region &body = getBody();
+  ValueRange captured = getOperands();
+
+  unsigned numCapt = captured.size();
+  p << '(';
+  for (unsigned i = 0; i < numCapt; ++i) {
+    if (i > 0)
+      p << ", ";
+
+    p.printRegionArgument(body.getArgument(i), {}, /*omitType=*/true);
+    p << " = ";
+    p.printOperand(captured[i]);
+    p << " : ";
+    p.printType(captured[i].getType());
+  }
+  p << ')';
+
+  auto resultTy = getResult().getType();
+  p.getStream() << " -> ";
+  p.printType(resultTy);
+  
+  // Print the body if this is not an external function.
+  p << ' ';
+  p.printRegion(body,
+                /*printEntryBlockArgs=*/false,
+                /*printBlockTerminators=*/true);
+}
+
 } // namespace cinm
 } // namespace mlir
 

@@ -326,7 +326,7 @@ def Cinm_YieldOp : Cinm_Op<"yield", [Pure, HasParent<"ComputeOp">,
   let arguments = (ins Variadic<AnyType>:$operands);
 
   //let hasVerifier = 1;
-  let hasCustomAssemblyFormat = 1;
+  let assemblyFormat = "$operands attr-dict `:` type($operands)";
 
 }
 
