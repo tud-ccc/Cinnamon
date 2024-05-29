@@ -26,12 +26,39 @@ namespace mlir::cinm {
 using BodyBuilderCallback = function_ref<SmallVector<Value>(
     OpBuilder &, Location, ValueRange, ValueRange)>;
 
-ResultRange createNestedAffineForLoops(OpBuilder &builder, Location loc,
-                                       ArrayRef<int64_t> loopSizes,
-                                       ValueRange iterArgInit,
-                                       BodyBuilderCallback bodyBuilder);
+using ReduceAccumulatorCallback =
+    function_ref<Value(OpBuilder &, Location, Value, Value)>;
 
-Value createVectorReduceSum(OpBuilder &builder, Location loc, Value vector,
+SmallVector<Value> createNestedAffineForLoops(OpBuilder &builder, Location loc,
+                                              ArrayRef<int64_t> loopSizes,
+                                              ValueRange iterArgInit,
+                                              BodyBuilderCallback bodyBuilder);
+
+template <typename ReductionOp>
+Value createVectorReduce(OpBuilder &builder, Location loc, Value vector,
+                         Value init, int64_t clusterSize) {
+  return createVectorReduce(
+      builder, loc, vector, init,
+      [](OpBuilder &builder, Location loc, Value lhs, Value rhs) {
+        return builder.create<ReductionOp>(loc, lhs, rhs);
+      },
+      clusterSize);
+}
+
+Value createVectorReduce(OpBuilder &builder, Location loc, Value vector,
+                         Value init, ReduceAccumulatorCallback callback,
+                         int64_t clusterSize = 1);
+
+Value createVectorReduceAdd(OpBuilder &builder, Location loc, Value vector,
+                            int64_t clusterSize = 1);
+
+Value createVectorReduceMul(OpBuilder &builder, Location loc, Value vector,
+                            int64_t clusterSize = 1);
+
+Value createVectorReduceMin(OpBuilder &builder, Location loc, Value vector,
+                            int64_t clusterSize = 1);
+
+Value createVectorReduceMax(OpBuilder &builder, Location loc, Value vector,
                             int64_t clusterSize = 1);
 
 Value createMatmul(OpBuilder builder, Location loc, Value lhs, Value rhs,

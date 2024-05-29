@@ -27,10 +27,10 @@ include "mlir/Interfaces/SideEffectInterfaces.td"
 
 // Op templates
 
-defvar AnyScalar = AnyType; // todo 
+defvar AnyScalar = AnyType; // todo
 
 // no implicit broadcast
-class Cinm_TTT_Op<string name, list<Trait> traits = []> 
+class Cinm_TTT_Op<string name, list<Trait> traits = []>
     : Cinm_Op<name, traits # [SameOperandsAndResultType]> {
 
     let arguments = (ins AnyRankedTensor:$lhs, AnyRankedTensor:$rhs);
@@ -39,7 +39,7 @@ class Cinm_TTT_Op<string name, list<Trait> traits = []>
     let assemblyFormat = "$lhs `,` $rhs attr-dict `:` type($result)";
 }
 
-class Cinm_Bitwise_Op<string name, list<Trait> traits = []> 
+class Cinm_Bitwise_Op<string name, list<Trait> traits = []>
     : Cinm_Op<name, traits> {
     let arguments = (ins AnyRankedTensor:$lhs, AnyRankedTensor:$rhs);
     let results = (outs AnyRankedTensor:$result);
@@ -55,15 +55,15 @@ class Cinm_Bitwise_Op<string name, list<Trait> traits = []>
 // Concrete op definitions
 
 
-def MinOp: Cinm_Op<"op.min", [Commutative, Pure]> {
-    let arguments = (ins AnyRankedTensor:$input);  
+def MinOp: Cinm_Op<"op.min", [Commutative, Pure, DeclareOpInterfaceMethods<CinmTilingInterface>]> {
+    let arguments = (ins AnyRankedTensor:$input);
     let results = (outs AnyScalar:$result);
     let summary = "Return the min value of the input tensor";
     let hasCustomAssemblyFormat = 1;
 }
 
-def MaxOp: Cinm_Op<"op.max", [Commutative, Pure]> {
-    let arguments = (ins AnyRankedTensor:$input);  
+def MaxOp: Cinm_Op<"op.max", [Commutative, Pure, DeclareOpInterfaceMethods<CinmTilingInterface>]> {
+    let arguments = (ins AnyRankedTensor:$input);
     let results = (outs AnyScalar:$result);
 
     let summary = "Return the max value of the input tensor";
@@ -129,7 +129,7 @@ def Cinm_TransposeOp : Cinm_Op<"op.transpose", [InferShapedTypeOpAdaptor, Pure]>
 
   let arguments = (ins
     AnyRankedTensor:$input1,
-    AnyRankedTensor:$perms // TODO 
+    AnyRankedTensor:$perms // TODO
   );
 
   let results = (
@@ -155,7 +155,7 @@ def Cinm_ScanOp : Cinm_Op<"op.scan", [SameOperandsAndResultType, Pure]> {
   );
 
   let results = (
-    outs 
+    outs
     AnyRankedTensor:$result
   );
 
@@ -165,7 +165,7 @@ def Cinm_ScanOp : Cinm_Op<"op.scan", [SameOperandsAndResultType, Pure]> {
   let assemblyFormat = "$method `(` $input `)` attr-dict `:` type($input)";
 }
 
-def Cinm_ReduceOp : Cinm_Op<"op.reduce", [Pure]> {
+def Cinm_ReduceOp : Cinm_Op<"op.reduce", [Pure, DeclareOpInterfaceMethods<CinmTilingInterface>]> {
   let summary = "Reduce the tensor.";
 
   let description = [{
@@ -178,7 +178,7 @@ def Cinm_ReduceOp : Cinm_Op<"op.reduce", [Pure]> {
   );
 
   let results = (
-    outs 
+    outs
     AnyScalar:$result
   );
 
@@ -203,7 +203,7 @@ def Cinm_TopKOp : Cinm_Op<"op.topK", [InferShapedTypeOpAdaptor, Pure]> {
   );
 
   let results = (
-    outs 
+    outs
     // these have dynamic sizes and rank 1
     AnyRankedTensor:$resultValues,
     TensorOf<[Builtin_Index]>:$resultIndices
@@ -224,9 +224,9 @@ def Cinm_SimSearchOp : Cinm_Op<"op.simSearch", [InferShapedTypeOpAdaptor, Pure]>
     are supported: cos and dot.
 
         %sim1, %sim1i = cinm.op.simSearch cos 4 (%scan, %scan2) : tensor<6x6xi32>
-    
+
     The type trailing the operator is the type of both operands.
-    The results are of dynamic shape, the first are values, the 
+    The results are of dynamic shape, the first are values, the
     second are indices of the values. Here they are of type `tensor<?xi32>` and `tensor<?xindex>`
 
   }];
@@ -240,8 +240,8 @@ def Cinm_SimSearchOp : Cinm_Op<"op.simSearch", [InferShapedTypeOpAdaptor, Pure]>
   );
 
   let results = (
-    outs 
-    // these have dynamic sizes and rank 1 
+    outs
+    // these have dynamic sizes and rank 1
     AnyRankedTensor:$resultValues,
     AnyRankedTensor:$resultIndices
   );
@@ -292,7 +292,7 @@ def Cinm_PopCountOp : Cinm_Op<"op.popCount", [Pure]> {
 
 
 def Cinm_ComputeOp : Cinm_Op<"compute", [
-  AffineScope, AutomaticAllocationScope, 
+  AffineScope, AutomaticAllocationScope,
   IsolatedFromAbove //, Pure
 ]> {
   let summary = "TODO";

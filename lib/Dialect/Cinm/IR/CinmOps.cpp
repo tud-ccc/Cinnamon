@@ -59,6 +59,13 @@ namespace cinm {
   return MaxOp::parse(parser, result);
 }
 
+SmallVector<Value> MinOp::convertToTiledOps(OpBuilder builder,
+                                            ArrayRef<int64_t>,
+                                            int64_t reduceClusterSize) {
+  return {createVectorReduceMin(builder, getLoc(), getOperand(),
+                                reduceClusterSize)};
+}
+
 ::mlir::ParseResult MaxOp::parse(::mlir::OpAsmParser &parser,
                                  ::mlir::OperationState &result) {
   OpAsmParser::UnresolvedOperand input;
@@ -81,9 +88,17 @@ namespace cinm {
   }
 }
 
+SmallVector<Value> MaxOp::convertToTiledOps(OpBuilder builder,
+                                            ArrayRef<int64_t>,
+                                            int64_t reduceClusterSize) {
+  return {createVectorReduceMax(builder, getLoc(), getOperand(),
+                                reduceClusterSize)};
+}
+
 void printMinMaxOp(Value v, ::mlir::OpAsmPrinter &p) {
+  p << " ";
   p.printOperand(v);
-  p << ": ";
+  p << " : ";
   p.printType(v.getType());
 }
 
@@ -91,9 +106,9 @@ void MaxOp::print(::mlir::OpAsmPrinter &p) { printMinMaxOp(getOperand(), p); }
 
 void MinOp::print(::mlir::OpAsmPrinter &p) { printMinMaxOp(getOperand(), p); }
 
-ResultRange GemmOp::convertToTiledOps(OpBuilder builder,
-                                      ArrayRef<int64_t> tileCounts,
-                                      int64_t reduceClusterSize) {
+SmallVector<Value> GemmOp::convertToTiledOps(OpBuilder builder,
+                                             ArrayRef<int64_t> tileCounts,
+                                             int64_t reduceClusterSize) {
   assert(tileCounts.size() == 2);
   const Value lhs = getOperand(0);
   const Value rhs = getOperand(1);
@@ -285,6 +300,20 @@ ResultRange GemmOp::convertToTiledOps(OpBuilder builder,
 
   inferredReturnShapes.push_back(ShapedTypeComponents(outputShape));
   return success();
+}
+
+SmallVector<Value> ReduceOp::convertToTiledOps(OpBuilder builder,
+                                               ArrayRef<int64_t>,
+                                               int64_t reduceClusterSize) {
+  if (getMethod() == ReduceMethod::ADD) {
+    return {createVectorReduceAdd(builder, getLoc(), getOperand(),
+                                  reduceClusterSize)};
+  } else if (getMethod() == ReduceMethod::MUL) {
+    return {createVectorReduceMul(builder, getLoc(), getOperand(),
+                                  reduceClusterSize)};
+  } else {
+    abort();
+  }
 }
 
 ParseResult

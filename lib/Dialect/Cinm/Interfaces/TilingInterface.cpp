@@ -2,7 +2,9 @@
 
 #include "mlir/IR/OpImplementation.h"
 #include <cstdint>
+#include <limits>
 #include <mlir/Dialect/Affine/IR/AffineOps.h>
+#include <mlir/Dialect/Arith/IR/Arith.h>
 #include <mlir/Dialect/Linalg/IR/Linalg.h>
 #include <mlir/Dialect/Tensor/IR/Tensor.h>
 #include <mlir/IR/ValueRange.h>
@@ -19,10 +21,10 @@ using namespace mlir::cinm;
 
 namespace mlir::cinm {
 
-ResultRange createNestedAffineForLoops(OpBuilder &builder, Location loc,
-                                       ArrayRef<int64_t> loopSizes,
-                                       ValueRange iterArgsInit,
-                                       BodyBuilderCallback bodyBuilder) {
+SmallVector<Value> createNestedAffineForLoops(OpBuilder &builder, Location loc,
+                                              ArrayRef<int64_t> loopSizes,
+                                              ValueRange iterArgsInit,
+                                              BodyBuilderCallback bodyBuilder) {
   SmallVector<affine::AffineForOp> loops;
 
   SmallVector<Value> indices;
@@ -47,16 +49,16 @@ ResultRange createNestedAffineForLoops(OpBuilder &builder, Location loc,
   return loops.front().getResults();
 }
 
-Value createVectorReduceSum(OpBuilder &builder, Location loc, Value vector,
-                            int64_t clusterSize) {
+Value createVectorReduce(OpBuilder &builder, Location loc, Value vector,
+                         Value init, ReduceAccumulatorCallback callback,
+                         int64_t clusterSize) {
   const RankedTensorType vectorType = vector.getType().cast<RankedTensorType>();
   assert(vectorType.getRank() == 1);
   const int64_t vectorSize = vectorType.getDimSize(0);
   const Type elementType = vectorType.getElementType();
-  const Value zero =
-      builder.create<arith::ConstantOp>(loc, builder.getZeroAttr(elementType));
-  const Value zeroTensor = builder.create<tensor::FromElementsOp>(
-      loc, RankedTensorType::get({}, elementType), ValueRange{zero});
+
+  const Value initTensor = builder.create<tensor::FromElementsOp>(
+      loc, RankedTensorType::get({}, elementType), ValueRange{init});
 
   if (clusterSize > 1) {
     const int64_t clusterCount = vectorSize / clusterSize;
@@ -75,11 +77,10 @@ Value createVectorReduceSum(OpBuilder &builder, Location loc, Value vector,
               offsets, sizes, strides);
 
           linalg::ReduceOp sum = builder.create<linalg::ReduceOp>(
-              loc, ValueRange{slice}, ValueRange{zeroTensor},
+              loc, ValueRange{slice}, ValueRange{initTensor},
               SmallVector<int64_t>{0},
               [&](OpBuilder &builder, Location loc, ValueRange args) {
-                Value result =
-                    builder.create<arith::AddIOp>(loc, args[0], args[1]);
+                const Value result = callback(builder, loc, args[0], args[1]);
                 builder.create<linalg::YieldOp>(loc, result);
               });
 
@@ -90,13 +91,55 @@ Value createVectorReduceSum(OpBuilder &builder, Location loc, Value vector,
   }
 
   linalg::ReduceOp sum = builder.create<linalg::ReduceOp>(
-      loc, ValueRange{vector}, ValueRange{zeroTensor}, SmallVector<int64_t>{0},
-      [](OpBuilder &builder, Location loc, ValueRange args) {
-        Value result = builder.create<arith::AddIOp>(loc, args[0], args[1]);
+      loc, ValueRange{vector}, ValueRange{initTensor}, SmallVector<int64_t>{0},
+      [&](OpBuilder &builder, Location loc, ValueRange args) {
+        const Value result = callback(builder, loc, args[0], args[1]);
         builder.create<linalg::YieldOp>(loc, result);
       });
 
   return builder.create<tensor::ExtractOp>(loc, sum.getResult(0), ValueRange{});
+}
+
+Value createVectorReduceAdd(OpBuilder &builder, Location loc, Value vector,
+                            int64_t clusterSize) {
+  const Type elementType =
+      vector.getType().cast<RankedTensorType>().getElementType();
+  const Value init = builder.create<arith::ConstantOp>(
+      loc, builder.getIntegerAttr(elementType, 0));
+  return createVectorReduce<arith::AddIOp>(builder, loc, vector, init,
+                                           clusterSize);
+}
+
+Value createVectorReduceMul(OpBuilder &builder, Location loc, Value vector,
+                            int64_t clusterSize) {
+  const Type elementType =
+      vector.getType().cast<RankedTensorType>().getElementType();
+  const Value init = builder.create<arith::ConstantOp>(
+      loc, builder.getIntegerAttr(elementType, 1));
+  return createVectorReduce<arith::MulIOp>(builder, loc, vector, init,
+                                           clusterSize);
+}
+
+Value createVectorReduceMin(OpBuilder &builder, Location loc, Value vector,
+                            int64_t clusterSize) {
+  const Type elementType =
+      vector.getType().cast<RankedTensorType>().getElementType();
+  const Value init = builder.create<arith::ConstantOp>(
+      loc, builder.getIntegerAttr(elementType,
+                                  std::numeric_limits<uint64_t>::max()));
+  return createVectorReduce<arith::MinUIOp>(builder, loc, vector, init,
+                                            clusterSize);
+}
+
+Value createVectorReduceMax(OpBuilder &builder, Location loc, Value vector,
+                            int64_t clusterSize) {
+  const Type elementType =
+      vector.getType().cast<RankedTensorType>().getElementType();
+  const Value init = builder.create<arith::ConstantOp>(
+      loc, builder.getIntegerAttr(elementType,
+                                  std::numeric_limits<uint64_t>::min()));
+  return createVectorReduce<arith::MaxUIOp>(builder, loc, vector, init,
+                                            clusterSize);
 }
 
 Value createMatmul(OpBuilder builder, Location loc, Value lhs, Value rhs,
@@ -140,7 +183,7 @@ Value createMatmul(OpBuilder builder, Location loc, Value lhs, Value rhs,
         const Value product =
             builder.create<arith::MulIOp>(loc, lhsSlice, rhsSlice);
         const Value sum =
-            createVectorReduceSum(builder, loc, product, reduceClusterSize);
+            createVectorReduceAdd(builder, loc, product, reduceClusterSize);
         builder.create<tensor::YieldOp>(loc, sum);
       });
 }
