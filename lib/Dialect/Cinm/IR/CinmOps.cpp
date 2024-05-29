@@ -5,6 +5,7 @@
 #include "cinm-mlir/Dialect/Cinm/IR/CinmOps.h"
 
 #include "cinm-mlir/Dialect/Cinm/IR/CinmAttributes.h"
+#include "cinm-mlir/Dialect/Cinm/Interfaces/TilingInterface.h"
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Bufferization/IR/Bufferization.h"
@@ -22,6 +23,7 @@
 #include <llvm/ADT/APInt.h>
 #include <mlir/IR/BuiltinTypeInterfaces.h>
 #include <mlir/IR/BuiltinTypes.h>
+#include <mlir/IR/Location.h>
 #include <mlir/IR/OperationSupport.h>
 #include <mlir/Support/LogicalResult.h>
 
@@ -83,107 +85,75 @@ void printMinMaxOp(Value v, ::mlir::OpAsmPrinter &p) {
   p << ": ";
   p.printType(v.getType());
 }
+
 void MaxOp::print(::mlir::OpAsmPrinter &p) { printMinMaxOp(getOperand(), p); }
 
 void MinOp::print(::mlir::OpAsmPrinter &p) { printMinMaxOp(getOperand(), p); }
 
-Value GemmOp::tile(OpBuilder builder, ArrayRef<int64_t> tileSizes) {
-  MLIRContext *ctx = getContext();
+Value GemmOp::tile(OpBuilder builder, ArrayRef<int64_t> tileCounts) {
+  assert(tileCounts.size() == 2);
   const Value lhs = getOperand(0);
   const Value rhs = getOperand(1);
-  const ArrayRef<int64_t> lhsShape =
-      lhs.getType().dyn_cast<RankedTensorType>().getShape();
+
+  const RankedTensorType lhsType = lhs.getType().cast<RankedTensorType>();
+  const RankedTensorType rhsType = rhs.getType().cast<RankedTensorType>();
+
   const RankedTensorType resultType =
       getResult().getType().cast<RankedTensorType>();
   const ArrayRef<int64_t> resultShape = resultType.getShape();
 
-  return builder.create<tensor::GenerateOp>(
-      getLoc(), resultType, ValueRange{},
-      [&](OpBuilder &builder, Location loc, ValueRange indices) {
-        const SmallVector<int64_t> lhsOffsets{ShapedType::kDynamic, 0};
-        const SmallVector<int64_t> rhsOffsets{0, ShapedType::kDynamic};
-        const SmallVector<int64_t> lhsSizes{1, lhsShape[1]};
-        const SmallVector<int64_t> rhsSizes{lhsShape[1], 1};
-        const SmallVector<int64_t> strides{1, 1};
+  Value resultInit = builder.create<tensor::EmptyOp>(
+      getLoc(), resultShape, resultType.getElementType());
 
-        SmallVector<Value> lhsDynamicOffsets{indices[0]};
-        RankedTensorType lhsResultType =
-            tensor::ExtractSliceOp::inferResultType(
-                lhs.getType().cast<RankedTensorType>(), lhsOffsets, lhsSizes,
-                strides);
-        Value lhsSlice = builder.create<tensor::ExtractSliceOp>(
-            loc, lhsResultType, lhs, lhsDynamicOffsets, ValueRange{},
-            ValueRange{}, lhsOffsets, lhsSizes, strides);
+  SmallVector<int64_t, 2> tileSizes{resultShape};
+  for (uint64_t i = 0; i < 2; i++) {
+    assert(tileSizes[i] % tileCounts[i] == 0);
+    tileSizes[i] /= tileCounts[i];
+  }
 
-        SmallVector<Value> rhsDynamicOffsets{indices[1]};
-        Type rhsResultType = tensor::ExtractSliceOp::inferResultType(
-            rhs.getType().cast<RankedTensorType>(), rhsOffsets, rhsSizes,
-            strides);
-        Value rhsSlice = builder.create<tensor::ExtractSliceOp>(
-            loc, rhsResultType, rhs, rhsDynamicOffsets, ValueRange{},
-            ValueRange{}, rhsOffsets, rhsSizes, strides);
-        rhsSlice = builder
-                       .create<linalg::TransposeOp>(
-                           loc, rhsSlice,
-                           builder.create<tensor::EmptyOp>(
-                               loc, lhsResultType.getShape(),
-                               lhsResultType.getElementType()),
-                           SmallVector<int64_t>{1, 0})
-                       .getResult()[0];
+  return createNestedAffineForLoops(
+             builder, getLoc(), tileCounts, ValueRange{resultInit},
+             [&](OpBuilder &builder, Location loc, ValueRange indices,
+                 ValueRange iterArgs) -> SmallVector<Value> {
+               const SmallVector<int64_t, 2> lhsOffsets{ShapedType::kDynamic,
+                                                        0};
+               const SmallVector<int64_t, 2> rhsOffsets{0,
+                                                        ShapedType::kDynamic};
+               const SmallVector<int64_t, 2> resultOffsets{
+                   ShapedType::kDynamic, ShapedType::kDynamic};
+               const SmallVector<int64_t, 2> lhsSizes{tileSizes[0],
+                                                      lhsType.getDimSize(1)};
+               const SmallVector<int64_t, 2> rhsSizes{rhsType.getDimSize(0),
+                                                      tileSizes[1]};
+               const SmallVector<int64_t, 2> resultSizes = tileSizes;
+               const SmallVector<int64_t, 2> strides = tileSizes;
 
-        Value prod = builder.create<arith::MulIOp>(loc, lhsSlice, rhsSlice);
+               const SmallVector<Value> lhsDynamicOffsets{indices[0]};
+               const RankedTensorType lhsSliceType =
+                   tensor::ExtractSliceOp::inferCanonicalRankReducedResultType(
+                       1, lhsType, lhsOffsets, lhsSizes, strides);
+               const Value lhsSlice = builder.create<tensor::ExtractSliceOp>(
+                   loc, lhsSliceType, lhs, lhsDynamicOffsets, ValueRange{},
+                   ValueRange{}, lhsOffsets, lhsSizes, strides);
 
-        int64_t clusterSize = 16;
-        int64_t clusterCount = lhsShape[1] / clusterSize;
+               const SmallVector<Value> rhsDynamicOffsets{indices[1]};
+               const Type rhsSliceType =
+                   tensor::ExtractSliceOp::inferCanonicalRankReducedResultType(
+                       1, rhsType, rhsOffsets, rhsSizes, strides);
+               const Value rhsSlice = builder.create<tensor::ExtractSliceOp>(
+                   loc, rhsSliceType, rhs, rhsDynamicOffsets, ValueRange{},
+                   ValueRange{}, rhsOffsets, rhsSizes, strides);
 
-        RankedTensorType intermediateResultType = RankedTensorType::get(
-            SmallVector<int64_t>{clusterCount}, resultType.getElementType());
-        Type reduceResultType =
-            RankedTensorType::get({}, resultType.getElementType());
-        Value zero = builder.create<arith::ConstantOp>(
-            loc, builder.getZeroAttr(resultType.getElementType()));
-        Value init = builder.create<tensor::FromElementsOp>(
-            loc, reduceResultType, ValueRange{zero});
+               const Value resultSlice =
+                   createMatmul(builder, loc, lhsSlice, rhsSlice, 16);
 
-        Value sum = builder.create<tensor::GenerateOp>(
-            loc, intermediateResultType, ValueRange{},
-            [&](OpBuilder &builder, Location loc, ValueRange indices) {
-              SmallVector<int64_t> offsets{0, ShapedType::kDynamic};
-              SmallVector<int64_t> sizes{1, clusterSize};
-              SmallVector<int64_t> strides{1, clusterSize};
-              Type sliceType = tensor::ExtractSliceOp::inferResultType(
-                  prod.getType().cast<RankedTensorType>(), offsets, sizes,
-                  strides);
-              Value slice = builder.create<tensor::ExtractSliceOp>(
-                  loc, sliceType, prod, indices, ValueRange{}, ValueRange{},
-                  offsets, sizes, strides);
+               const Value result = builder.create<tensor::InsertSliceOp>(
+                   loc, resultSlice, iterArgs[0], indices, ValueRange{},
+                   ValueRange{}, resultOffsets, resultSizes, strides);
 
-              linalg::ReduceOp reduce = builder.create<linalg::ReduceOp>(
-                  loc, ValueRange{slice}, ValueRange{init},
-                  SmallVector<int64_t>{0, 1},
-                  [&](OpBuilder &builder, Location loc, ValueRange args) {
-                    Value result =
-                        builder.create<arith::AddIOp>(loc, args[0], args[1]);
-                    builder.create<linalg::YieldOp>(loc, result);
-                  });
-
-              builder.create<tensor::YieldOp>(
-                  loc, builder.create<tensor::ExtractOp>(
-                           loc, reduce.getResult(0), ValueRange{}));
-            });
-
-        linalg::ReduceOp reduce = builder.create<linalg::ReduceOp>(
-            loc, ValueRange{sum}, ValueRange{init}, SmallVector<int64_t>{0},
-            [&](OpBuilder &builder, Location loc, ValueRange args) {
-              Value result =
-                  builder.create<arith::AddIOp>(loc, args[0], args[1]);
-              builder.create<linalg::YieldOp>(loc, result);
-            });
-
-        builder.create<tensor::YieldOp>(
-            loc, builder.create<tensor::ExtractOp>(loc, reduce.getResult(0),
-                                                   ValueRange{}));
-      });
+               return {result};
+             })
+      .front();
 }
 
 ::mlir::LogicalResult GemmOp::inferReturnTypeComponents(
@@ -212,7 +182,6 @@ Value GemmOp::tile(OpBuilder builder, ArrayRef<int64_t> tileSizes) {
   inferredReturnShapes.emplace_back(std::move(result));
   return success();
 }
-
 
 ::mlir::LogicalResult SimSearchOp::inferReturnTypeComponents(
     ::mlir::MLIRContext *context, std::optional<::mlir::Location> location,

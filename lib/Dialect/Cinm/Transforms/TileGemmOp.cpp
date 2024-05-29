@@ -30,31 +30,36 @@ namespace mlir {
 //===----------------------------------------------------------------------===//
 
 struct CinmTileGemmOpPattern : public OpConversionPattern<cinm::GemmOp> {
-    using OpConversionPattern<cinm::GemmOp>::OpConversionPattern;
+  using OpConversionPattern<cinm::GemmOp>::OpConversionPattern;
 
-    LogicalResult matchAndRewrite(cinm::GemmOp op, OpAdaptor, ConversionPatternRewriter &rewriter) const override {
-        rewriter.replaceOp(op, op.tile(OpBuilder(op), SmallVector<int64_t>{16, 16, 32, 8, 4}));
-        return success();
-    }
+  LogicalResult
+  matchAndRewrite(cinm::GemmOp op, OpAdaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    rewriter.replaceOp(op,
+                       op.tile(OpBuilder(op), SmallVector<int64_t>{16, 16}));
+    return success();
+  }
 };
 
-struct CinmTileGemmOpPass : public impl::CinmTileGemmOpPassBase<CinmTileGemmOpPass> {
-    using Base::Base;
+struct CinmTileGemmOpPass
+    : public impl::CinmTileGemmOpPassBase<CinmTileGemmOpPass> {
+  using Base::Base;
 
-    void runOnOperation() final {
-        LLVMTypeConverter typeConverter(&getContext());
-        RewritePatternSet patterns(&getContext());
-        patterns.add<CinmTileGemmOpPattern>(&typeConverter.getContext());
+  void runOnOperation() final {
+    LLVMTypeConverter typeConverter(&getContext());
+    RewritePatternSet patterns(&getContext());
+    patterns.add<CinmTileGemmOpPattern>(&typeConverter.getContext());
 
-        ConversionTarget target(getContext());
-        target.addIllegalOp<cinm::GemmOp>();
+    ConversionTarget target(getContext());
+    target.addIllegalOp<cinm::GemmOp>();
 
-        target.markUnknownOpDynamicallyLegal([](Operation*) { return true; });
+    target.markUnknownOpDynamicallyLegal([](Operation *) { return true; });
 
-        if (failed(applyFullConversion(getOperation(), target, std::move(patterns)))) {
-            signalPassFailure();
-        }
+    if (failed(
+            applyFullConversion(getOperation(), target, std::move(patterns)))) {
+      signalPassFailure();
     }
+  }
 };
 
 } // namespace mlir

@@ -25,6 +25,8 @@ cmake:
         -DCMAKE_LINKER_TYPE={{linker}} \
         -DCMAKE_CXX_COMPILER=clang++ \
         -DCMAKE_EXPORT_COMPILE_COMMANDS=ON \
+        -DCMAKE_C_USING_LINKER_mold=-fuse-ld=mold \
+        -DCMAKE_CXX_USING_LINKER_mold=-fuse-ld=mold \
 
 # execute a specific ninja target
 doNinja *ARGS:
