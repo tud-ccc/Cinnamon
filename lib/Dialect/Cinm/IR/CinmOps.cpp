@@ -25,6 +25,7 @@
 #include <mlir/IR/BuiltinTypes.h>
 #include <mlir/IR/Location.h>
 #include <mlir/IR/OperationSupport.h>
+#include <mlir/IR/ValueRange.h>
 #include <mlir/Support/LogicalResult.h>
 
 #define DEBUG_TYPE "cinm-ops"
@@ -90,7 +91,9 @@ void MaxOp::print(::mlir::OpAsmPrinter &p) { printMinMaxOp(getOperand(), p); }
 
 void MinOp::print(::mlir::OpAsmPrinter &p) { printMinMaxOp(getOperand(), p); }
 
-Value GemmOp::tile(OpBuilder builder, ArrayRef<int64_t> tileCounts) {
+ResultRange GemmOp::convertToTiledOps(OpBuilder builder,
+                                      ArrayRef<int64_t> tileCounts,
+                                      int64_t reduceClusterSize) {
   assert(tileCounts.size() == 2);
   const Value lhs = getOperand(0);
   const Value rhs = getOperand(1);
@@ -112,48 +115,45 @@ Value GemmOp::tile(OpBuilder builder, ArrayRef<int64_t> tileCounts) {
   }
 
   return createNestedAffineForLoops(
-             builder, getLoc(), tileCounts, ValueRange{resultInit},
-             [&](OpBuilder &builder, Location loc, ValueRange indices,
-                 ValueRange iterArgs) -> SmallVector<Value> {
-               const SmallVector<int64_t, 2> lhsOffsets{ShapedType::kDynamic,
-                                                        0};
-               const SmallVector<int64_t, 2> rhsOffsets{0,
-                                                        ShapedType::kDynamic};
-               const SmallVector<int64_t, 2> resultOffsets{
-                   ShapedType::kDynamic, ShapedType::kDynamic};
-               const SmallVector<int64_t, 2> lhsSizes{tileSizes[0],
-                                                      lhsType.getDimSize(1)};
-               const SmallVector<int64_t, 2> rhsSizes{rhsType.getDimSize(0),
-                                                      tileSizes[1]};
-               const SmallVector<int64_t, 2> resultSizes = tileSizes;
-               const SmallVector<int64_t, 2> strides = tileSizes;
+      builder, getLoc(), tileCounts, ValueRange{resultInit},
+      [&](OpBuilder &builder, Location loc, ValueRange indices,
+          ValueRange iterArgs) -> SmallVector<Value> {
+        const SmallVector<int64_t, 2> lhsOffsets{ShapedType::kDynamic, 0};
+        const SmallVector<int64_t, 2> rhsOffsets{0, ShapedType::kDynamic};
+        const SmallVector<int64_t, 2> resultOffsets{ShapedType::kDynamic,
+                                                    ShapedType::kDynamic};
+        const SmallVector<int64_t, 2> lhsSizes{tileSizes[0],
+                                               lhsType.getDimSize(1)};
+        const SmallVector<int64_t, 2> rhsSizes{rhsType.getDimSize(0),
+                                               tileSizes[1]};
+        const SmallVector<int64_t, 2> resultSizes = tileSizes;
+        const SmallVector<int64_t, 2> strides = tileSizes;
 
-               const SmallVector<Value> lhsDynamicOffsets{indices[0]};
-               const RankedTensorType lhsSliceType =
-                   tensor::ExtractSliceOp::inferCanonicalRankReducedResultType(
-                       1, lhsType, lhsOffsets, lhsSizes, strides);
-               const Value lhsSlice = builder.create<tensor::ExtractSliceOp>(
-                   loc, lhsSliceType, lhs, lhsDynamicOffsets, ValueRange{},
-                   ValueRange{}, lhsOffsets, lhsSizes, strides);
+        const SmallVector<Value> lhsDynamicOffsets{indices[0]};
+        const RankedTensorType lhsSliceType =
+            tensor::ExtractSliceOp::inferCanonicalRankReducedResultType(
+                1, lhsType, lhsOffsets, lhsSizes, strides);
+        const Value lhsSlice = builder.create<tensor::ExtractSliceOp>(
+            loc, lhsSliceType, lhs, lhsDynamicOffsets, ValueRange{},
+            ValueRange{}, lhsOffsets, lhsSizes, strides);
 
-               const SmallVector<Value> rhsDynamicOffsets{indices[1]};
-               const Type rhsSliceType =
-                   tensor::ExtractSliceOp::inferCanonicalRankReducedResultType(
-                       1, rhsType, rhsOffsets, rhsSizes, strides);
-               const Value rhsSlice = builder.create<tensor::ExtractSliceOp>(
-                   loc, rhsSliceType, rhs, rhsDynamicOffsets, ValueRange{},
-                   ValueRange{}, rhsOffsets, rhsSizes, strides);
+        const SmallVector<Value> rhsDynamicOffsets{indices[1]};
+        const Type rhsSliceType =
+            tensor::ExtractSliceOp::inferCanonicalRankReducedResultType(
+                1, rhsType, rhsOffsets, rhsSizes, strides);
+        const Value rhsSlice = builder.create<tensor::ExtractSliceOp>(
+            loc, rhsSliceType, rhs, rhsDynamicOffsets, ValueRange{},
+            ValueRange{}, rhsOffsets, rhsSizes, strides);
 
-               const Value resultSlice =
-                   createMatmul(builder, loc, lhsSlice, rhsSlice, 16);
+        const Value resultSlice =
+            createMatmul(builder, loc, lhsSlice, rhsSlice, reduceClusterSize);
 
-               const Value result = builder.create<tensor::InsertSliceOp>(
-                   loc, resultSlice, iterArgs[0], indices, ValueRange{},
-                   ValueRange{}, resultOffsets, resultSizes, strides);
+        const Value result = builder.create<tensor::InsertSliceOp>(
+            loc, resultSlice, iterArgs[0], indices, ValueRange{}, ValueRange{},
+            resultOffsets, resultSizes, strides);
 
-               return {result};
-             })
-      .front();
+        return {result};
+      });
 }
 
 ::mlir::LogicalResult GemmOp::inferReturnTypeComponents(

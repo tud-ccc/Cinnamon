@@ -19,9 +19,9 @@ def CinmTilingInterface : OpInterface<"CinmTilingInterface"> {
         InterfaceMethod<
             /*desc=*/ [{
             }],
-            /*retTy=*/ "Value",
-            /*methodName=*/ "tile",
-            /*args=*/ (ins "OpBuilder":$builder, "ArrayRef<int64_t>":$tileSizes),
+            /*retTy=*/ "ResultRange",
+            /*methodName=*/ "convertToTiledOps",
+            /*args=*/ (ins "OpBuilder":$builder, "ArrayRef<int64_t>":$tileSizes, "int64_t":$reduceClusterSize),
             /*methodBody=*/ "",
             /*defaultImplementation=*/ "">];
 }

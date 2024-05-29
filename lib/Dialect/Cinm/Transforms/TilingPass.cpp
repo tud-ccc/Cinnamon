@@ -1,4 +1,5 @@
 #include "cinm-mlir/Dialect/Cinm/IR/CinmOps.h"
+#include "cinm-mlir/Dialect/Cinm/Interfaces/TilingInterface.h"
 #include "cinm-mlir/Dialect/Cinm/Transforms/Passes.h"
 
 #include <llvm/ADT/SmallVector.h>
@@ -19,41 +20,48 @@
 #include <mlir/IR/ValueRange.h>
 #include <mlir/Pass/Pass.h>
 #include <mlir/Support/LLVM.h>
+#include <mlir/Support/LogicalResult.h>
+#include <mlir/Transforms/DialectConversion.h>
 
 namespace mlir {
 
 //===- Generated passes ---------------------------------------------------===//
 
-#define GEN_PASS_DEF_CINMTILEGEMMOPPASS
+#define GEN_PASS_DEF_CINMTILINGPASS
 #include "cinm-mlir/Dialect/Cinm/Transforms/Passes.h.inc"
 
 //===----------------------------------------------------------------------===//
 
-struct CinmTileGemmOpPattern : public OpConversionPattern<cinm::GemmOp> {
-  using OpConversionPattern<cinm::GemmOp>::OpConversionPattern;
+struct CinmApplyTilingInterfacePattern
+    : public OpInterfaceConversionPattern<cinm::CinmTilingInterface> {
+  using OpInterfaceConversionPattern<
+      cinm::CinmTilingInterface>::OpInterfaceConversionPattern;
 
   LogicalResult
-  matchAndRewrite(cinm::GemmOp op, OpAdaptor,
+  matchAndRewrite(cinm::CinmTilingInterface op, ArrayRef<Value>,
                   ConversionPatternRewriter &rewriter) const override {
-    rewriter.replaceOp(op,
-                       op.tile(OpBuilder(op), SmallVector<int64_t>{16, 16}));
+    rewriter.replaceOp(
+        op, op.convertToTiledOps(rewriter, tileSizes, reduceClusterSize));
     return success();
   }
+
+private:
+  SmallVector<int64_t> tileSizes = {16, 16};
+  int64_t reduceClusterSize = 32;
 };
 
-struct CinmTileGemmOpPass
-    : public impl::CinmTileGemmOpPassBase<CinmTileGemmOpPass> {
+struct CinmTilingPass : public impl::CinmTilingPassBase<CinmTilingPass> {
   using Base::Base;
 
   void runOnOperation() final {
     LLVMTypeConverter typeConverter(&getContext());
     RewritePatternSet patterns(&getContext());
-    patterns.add<CinmTileGemmOpPattern>(&typeConverter.getContext());
+    patterns.add<CinmApplyTilingInterfacePattern>(&typeConverter.getContext());
 
     ConversionTarget target(getContext());
-    target.addIllegalOp<cinm::GemmOp>();
-
-    target.markUnknownOpDynamicallyLegal([](Operation *) { return true; });
+    target.markUnknownOpDynamicallyLegal([](Operation *op) {
+      return dyn_cast_or_null<cinm::CinmTilingInterface>(op) == nullptr;
+    });
 
     if (failed(
             applyFullConversion(getOperation(), target, std::move(patterns)))) {

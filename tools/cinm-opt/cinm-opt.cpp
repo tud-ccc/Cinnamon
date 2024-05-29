@@ -4,11 +4,11 @@
 /// @author      Karl F. A. Friebel (karl.friebel@tu-dresden.de)
 /// @author      Clément Fournier (clement.fournier@tu-dresden.de)
 
-#include "cinm-mlir/Dialect/Cinm/IR/CinmDialect.h"
-#include "cinm-mlir/Dialect/Cnm/IR/CnmDialect.h"
 #include "cinm-mlir/Conversion/CinmPasses.h"
 #include "cinm-mlir/Conversion/CnmPasses.h"
+#include "cinm-mlir/Dialect/Cinm/IR/CinmDialect.h"
 #include "cinm-mlir/Dialect/Cinm/Transforms/Passes.h"
+#include "cinm-mlir/Dialect/Cnm/IR/CnmDialect.h"
 #include "cinm-mlir/Dialect/Cnm/Transforms/Passes.h"
 
 #include "llvm/Support/CommandLine.h"
@@ -29,23 +29,19 @@
 
 using namespace mlir;
 
-int main(int argc, char* argv[])
-{
-    DialectRegistry registry;
-    registerAllDialects(registry);
+int main(int argc, char *argv[]) {
+  DialectRegistry registry;
+  registerAllDialects(registry);
 
-    registry.insert<
-        cinm::CinmDialect,
-        cnm::CnmDialect
-    >();
+  registry.insert<cinm::CinmDialect, cnm::CnmDialect>();
 
-    registerAllPasses();
-    registerCinmConversionPasses();
-    registerCnmConversionPasses();
-    registerCnmSPIRVAttachKernelEntryPointAttributePass();
-    registerCnmSPIRVAttachTargetAttributePass();
-    registerCinmTileGemmOpPass();
+  registerAllPasses();
+  registerCinmConversionPasses();
+  registerCnmConversionPasses();
+  registerCnmSPIRVAttachKernelEntryPointAttributePass();
+  registerCnmSPIRVAttachTargetAttributePass();
+  registerCinmTilingPass();
 
-    return asMainReturnCode(
-        MlirOptMain(argc, argv, "cinm-mlir optimizer driver\n", registry));
+  return asMainReturnCode(
+      MlirOptMain(argc, argv, "cinm-mlir optimizer driver\n", registry));
 }

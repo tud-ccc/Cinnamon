@@ -5,6 +5,7 @@
 #include <mlir/Dialect/Affine/IR/AffineOps.h>
 #include <mlir/Dialect/Linalg/IR/Linalg.h>
 #include <mlir/Dialect/Tensor/IR/Tensor.h>
+#include <mlir/IR/ValueRange.h>
 #include <mlir/Support/LogicalResult.h>
 
 using namespace mlir;
@@ -18,10 +19,10 @@ using namespace mlir::cinm;
 
 namespace mlir::cinm {
 
-SmallVector<Value> createNestedAffineForLoops(OpBuilder &builder, Location loc,
-                                              ArrayRef<int64_t> loopSizes,
-                                              ValueRange iterArgsInit,
-                                              BodyBuilderCallback bodyBuilder) {
+ResultRange createNestedAffineForLoops(OpBuilder &builder, Location loc,
+                                       ArrayRef<int64_t> loopSizes,
+                                       ValueRange iterArgsInit,
+                                       BodyBuilderCallback bodyBuilder) {
   SmallVector<affine::AffineForOp> loops;
 
   SmallVector<Value> indices;

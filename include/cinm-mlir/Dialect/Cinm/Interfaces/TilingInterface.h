@@ -11,6 +11,7 @@
 #include "llvm/ADT/STLExtras.h"
 
 #include <mlir/IR/Location.h>
+#include <mlir/IR/ValueRange.h>
 #include <mlir/Support/LLVM.h>
 #include <utility>
 
@@ -25,10 +26,10 @@ namespace mlir::cinm {
 using BodyBuilderCallback = function_ref<SmallVector<Value>(
     OpBuilder &, Location, ValueRange, ValueRange)>;
 
-SmallVector<Value> createNestedAffineForLoops(OpBuilder &builder, Location loc,
-                                              ArrayRef<int64_t> loopSizes,
-                                              ValueRange iterArgInit,
-                                              BodyBuilderCallback bodyBuilder);
+ResultRange createNestedAffineForLoops(OpBuilder &builder, Location loc,
+                                       ArrayRef<int64_t> loopSizes,
+                                       ValueRange iterArgInit,
+                                       BodyBuilderCallback bodyBuilder);
 
 Value createVectorReduceSum(OpBuilder &builder, Location loc, Value vector,
                             int64_t clusterSize = 1);

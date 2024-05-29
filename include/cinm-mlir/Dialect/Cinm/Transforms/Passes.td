@@ -9,8 +9,8 @@
 
 include "mlir/Pass/PassBase.td"
 
-def CinmTileGemmOpPass: Pass<"cinm-tile-gemm-op"> {
-  let summary = "Converts a cinm.gemm op to tiled affine.for loops.";
+def CinmTilingPass: Pass<"cinm-tiling"> {
+  let summary = "Applys tiling to all operations implementing the cinm tiling interface";
   let description = [{}];
 
   let dependentDialects = [
@@ -18,6 +18,7 @@ def CinmTileGemmOpPass: Pass<"cinm-tile-gemm-op"> {
     "mlir::affine::AffineDialect",
     "mlir::bufferization::BufferizationDialect",
     "mlir::linalg::LinalgDialect",
+    "mlir::tensor::TensorDialect",
   ];
 }
 
