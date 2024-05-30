@@ -55,7 +55,7 @@ func.func @conv(%img : tensor<1x128x128x3xi16>, %flt : tensor<3x3x3x8xi16>, %bia
             : tensor<128x32xi16> into !cnm.buffer<16x16xi16, level 0> of !cnm.workgroup<8x2>
         %sc_b_token = cnm.scatter %B_pad into %B_buf[#scatter_map] of %wg
             : tensor<32x16xi16> into !cnm.buffer<16x16xi16, level 0> of !cnm.workgroup<8x2>
-        %e_token = cnm.launch %wg (%A_buf, %B_buf, %C_buf: !cnm.buffer<16x16xi16, level 0>, !cnm.buffer<16x16xi16, level 0>, !cnm.buffer<16x16xi16, level 0>){
+        %e_token = cnm.launch %wg (%A_buf, %B_buf, %C_buf: !cnm.buffer<16x16xi16, level 0>, !cnm.buffer<16x16xi16, level 0>, !cnm.buffer<16x16xi16, level 0>) on !cnm.workgroup<8x2> {
             ^bb0(%A_space: memref<16x16xi16>, %B_space: memref<16x16xi16>, %C_space: memref<16x16xi16>):
                 affine.for %arg3 = 0 to 16 {
                     affine.for %arg4 = 0 to 16 {
@@ -69,7 +69,7 @@ func.func @conv(%img : tensor<1x128x128x3xi16>, %flt : tensor<3x3x3x8xi16>, %bia
                         }
                     }
                 } // This inner most block can be anything. Here is just as an example of how you can do the matmul using affine. it can be cinm op as well. 
-        } : !cnm.workgroup<8x2>
+        } 
 
         %C_tile, %g_token = cnm.gather %C_buf[#scatter_map] of %wg
             : !cnm.buffer<16x16xi16, level 0> of !cnm.workgroup<8x2> into tensor<128x16xi16>

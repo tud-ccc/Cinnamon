@@ -8,6 +8,7 @@
 #include "mlir/IR/OpImplementation.h"
 
 #include "llvm/ADT/APFloat.h"
+#include <mlir/Support/LogicalResult.h>
 
 #define DEBUG_TYPE "cnm-ops"
 
@@ -341,6 +342,10 @@ ParseResult mlir::cnm::LaunchOp::parse(mlir::OpAsmParser &parser, mlir::Operatio
         }
     }
 
+    if (parser.parseKeyword("on") || parser.parseType(operandTypes[0])) {
+        return ParseResult::failure();
+    }
+
     if (parser.parseRegion(*result.addRegion(), {}, false).failed()) {
         return ParseResult::failure();
     }
@@ -348,10 +353,6 @@ ParseResult mlir::cnm::LaunchOp::parse(mlir::OpAsmParser &parser, mlir::Operatio
     OpBuilder builder(result.getContext());
     builder.setInsertionPointToEnd(&result.regions.back()->back());
     builder.create<cnm::TerminatorOp>(result.location);
-
-    if (parser.parseColonType(operandTypes[0]).failed()) {
-        return ParseResult::failure();
-    }
 
     llvm::SmallVector<Value> operands;
     for (size_t i = 0; i < unresolvedOperands.size(); i++) {
