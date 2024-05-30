@@ -10,6 +10,7 @@
 
 #include "llvm/ADT/STLExtras.h"
 
+#include <llvm/ADT/ArrayRef.h>
 #include <mlir/IR/Location.h>
 #include <mlir/IR/ValueRange.h>
 #include <mlir/Support/LLVM.h>
@@ -63,5 +64,8 @@ Value createVectorReduceMax(OpBuilder &builder, Location loc, Value vector,
 
 Value createMatmul(OpBuilder builder, Location loc, Value lhs, Value rhs,
                    int64_t reduceClusterSize = 1);
+
+SmallVector<int64_t, 2> getTileSizes(ArrayRef<int64_t> tileCounts,
+                                     ArrayRef<int64_t> tensorShape);
 
 } // namespace mlir::cinm

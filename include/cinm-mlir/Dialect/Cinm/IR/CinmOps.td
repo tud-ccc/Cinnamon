@@ -107,7 +107,7 @@ def Cinm_GemmOp : Cinm_Op<"op.gemm", [Pure, InferShapedTypeOpAdaptor, DeclareOpI
   let assemblyFormat = "$left `,` $right attr-dict `:` `(` type($left) `,` type($right) `)` `->` type($result)";
 }
 
-def Cinm_GemvOp : Cinm_Op<"op.gemv", [Pure, InferShapedTypeOpAdaptor]> {
+def Cinm_GemvOp : Cinm_Op<"op.gemv", [Pure, InferShapedTypeOpAdaptor, DeclareOpInterfaceMethods<CinmTilingInterface>]> {
   let summary = "Generalized Matrix Vector Multiplication";
   let description = [{
     TODO

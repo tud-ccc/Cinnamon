@@ -146,39 +146,57 @@ Value createMatmul(OpBuilder builder, Location loc, Value lhs, Value rhs,
                    int64_t reduceClusterSize) {
   const RankedTensorType lhsType = lhs.getType().cast<RankedTensorType>();
   const RankedTensorType rhsType = rhs.getType().cast<RankedTensorType>();
-  assert(lhsType.getElementType() == rhsType.getElementType());
-  assert(lhsType.getRank() == 2 && rhsType.getRank() == 2);
-  assert(lhsType.getDimSize(1) == rhsType.getDimSize(0));
 
+  assert(lhsType.getElementType() == rhsType.getElementType());
   const Type elementType = lhsType.getElementType();
-  const RankedTensorType resultType = RankedTensorType::get(
-      SmallVector<int64_t, 2>{lhsType.getDimSize(0), rhsType.getDimSize(1)},
-      elementType);
+
+  RankedTensorType resultType;
+  if (lhsType.getRank() == 2 && rhsType.getRank() == 2) {
+    assert(lhsType.getDimSize(1) == rhsType.getDimSize(0));
+    resultType = RankedTensorType::get(
+        SmallVector<int64_t, 2>{lhsType.getDimSize(0), rhsType.getDimSize(1)},
+        elementType);
+  } else if (lhsType.getRank() == 1 && rhsType.getRank() == 2) {
+    assert(lhsType.getDimSize(0) == rhsType.getDimSize(0));
+    resultType = RankedTensorType::get(
+        SmallVector<int64_t, 1>{rhsType.getDimSize(1)}, elementType);
+  } else if (lhsType.getRank() == 2 && rhsType.getRank() == 1) {
+    assert(lhsType.getDimSize(1) == rhsType.getDimSize(0));
+    resultType = RankedTensorType::get(
+        SmallVector<int64_t, 1>{lhsType.getDimSize(0)}, elementType);
+  } else {
+    assert(false);
+  }
 
   return builder.create<tensor::GenerateOp>(
       loc, resultType, ValueRange{},
       [&](OpBuilder &builder, Location loc, ValueRange indices) {
-        const SmallVector<int64_t> lhsOffsets{ShapedType::kDynamic, 0};
-        const SmallVector<int64_t> rhsOffsets{0, ShapedType::kDynamic};
-        const SmallVector<int64_t> lhsSizes{1, lhsType.getDimSize(1)};
-        const SmallVector<int64_t> rhsSizes{rhsType.getDimSize(0), 1};
+        Value lhsSlice = lhs, rhsSlice = rhs;
         const SmallVector<int64_t> strides{1, 1};
 
-        SmallVector<Value> lhsDynamicOffsets{indices[0]};
-        RankedTensorType lhsSliceType =
-            tensor::ExtractSliceOp::inferCanonicalRankReducedResultType(
-                1, lhsType, lhsOffsets, lhsSizes, strides);
-        Value lhsSlice = builder.create<tensor::ExtractSliceOp>(
-            loc, lhsSliceType, lhs, lhsDynamicOffsets, ValueRange{},
-            ValueRange{}, lhsOffsets, lhsSizes, strides);
+        if (lhsType.getRank() == 2) {
+          const SmallVector<int64_t> lhsOffsets{ShapedType::kDynamic, 0};
+          const SmallVector<int64_t> lhsSizes{1, lhsType.getDimSize(1)};
+          const SmallVector<Value> lhsDynamicOffsets{indices.front()};
+          const RankedTensorType lhsSliceType =
+              tensor::ExtractSliceOp::inferCanonicalRankReducedResultType(
+                  1, lhsType, lhsOffsets, lhsSizes, strides);
+          lhsSlice = builder.create<tensor::ExtractSliceOp>(
+              loc, lhsSliceType, lhs, lhsDynamicOffsets, ValueRange{},
+              ValueRange{}, lhsOffsets, lhsSizes, strides);
+        }
 
-        SmallVector<Value> rhsDynamicOffsets{indices[1]};
-        Type rhsSliceType =
-            tensor::ExtractSliceOp::inferCanonicalRankReducedResultType(
-                1, rhsType, rhsOffsets, rhsSizes, strides);
-        Value rhsSlice = builder.create<tensor::ExtractSliceOp>(
-            loc, rhsSliceType, rhs, rhsDynamicOffsets, ValueRange{},
-            ValueRange{}, rhsOffsets, rhsSizes, strides);
+        if (rhsType.getRank() == 2) {
+          const SmallVector<int64_t> rhsOffsets{0, ShapedType::kDynamic};
+          const SmallVector<int64_t> rhsSizes{rhsType.getDimSize(0), 1};
+          const SmallVector<Value> rhsDynamicOffsets{indices.back()};
+          const Type rhsSliceType =
+              tensor::ExtractSliceOp::inferCanonicalRankReducedResultType(
+                  1, rhsType, rhsOffsets, rhsSizes, strides);
+          rhsSlice = builder.create<tensor::ExtractSliceOp>(
+              loc, rhsSliceType, rhs, rhsDynamicOffsets, ValueRange{},
+              ValueRange{}, rhsOffsets, rhsSizes, strides);
+        }
 
         const Value product =
             builder.create<arith::MulIOp>(loc, lhsSlice, rhsSlice);
@@ -186,6 +204,16 @@ Value createMatmul(OpBuilder builder, Location loc, Value lhs, Value rhs,
             createVectorReduceAdd(builder, loc, product, reduceClusterSize);
         builder.create<tensor::YieldOp>(loc, sum);
       });
+}
+
+SmallVector<int64_t, 2> getTileSizes(ArrayRef<int64_t> tileCounts,
+                                     ArrayRef<int64_t> tensorShape) {
+  SmallVector<int64_t, 2> tileSizes{tensorShape};
+  for (uint64_t i = 0; i < tileSizes.size(); i++) {
+    assert(tileSizes[i] % tileCounts[i] == 0);
+    tileSizes[i] /= tileCounts[i];
+  }
+  return tileSizes;
 }
 
 } // namespace mlir::cinm

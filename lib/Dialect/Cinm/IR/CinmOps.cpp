@@ -120,14 +120,11 @@ SmallVector<Value> GemmOp::convertToTiledOps(OpBuilder builder,
       getResult().getType().cast<RankedTensorType>();
   const ArrayRef<int64_t> resultShape = resultType.getShape();
 
-  Value resultInit = builder.create<tensor::EmptyOp>(
+  const Value resultInit = builder.create<tensor::EmptyOp>(
       getLoc(), resultShape, resultType.getElementType());
 
-  SmallVector<int64_t, 2> tileSizes{resultShape};
-  for (uint64_t i = 0; i < 2; i++) {
-    assert(tileSizes[i] % tileCounts[i] == 0);
-    tileSizes[i] /= tileCounts[i];
-  }
+  const SmallVector<int64_t, 2> tileSizes =
+      getTileSizes(tileCounts, resultShape);
 
   return createNestedAffineForLoops(
       builder, getLoc(), tileCounts, ValueRange{resultInit},
@@ -185,6 +182,56 @@ SmallVector<Value> GemmOp::convertToTiledOps(OpBuilder builder,
 
   inferredReturnShapes.push_back(ShapedTypeComponents(outShape));
   return success();
+}
+
+SmallVector<Value> GemvOp::convertToTiledOps(OpBuilder builder,
+                                             ArrayRef<int64_t> tileCounts,
+                                             int64_t reduceClusterSize) {
+  const Value lhs = getOperand(0);
+  const Value rhs = getOperand(1);
+
+  const RankedTensorType lhsType = lhs.getType().cast<RankedTensorType>();
+
+  const RankedTensorType resultType =
+      getResult().getType().cast<RankedTensorType>();
+  const ArrayRef<int64_t> resultShape = resultType.getShape();
+
+  const Value resultInit = builder.create<tensor::EmptyOp>(
+      getLoc(), resultShape, resultType.getElementType());
+
+  tileCounts = tileCounts.slice(resultShape.size());
+  const SmallVector<int64_t, 2> tileSizes =
+      getTileSizes(tileCounts, resultShape);
+
+  return createNestedAffineForLoops(
+      builder, getLoc(), tileCounts, ValueRange{resultInit},
+      [&](OpBuilder &builder, Location loc, ValueRange indices,
+          ValueRange iterArgs) -> SmallVector<Value> {
+        const SmallVector<int64_t, 2> lhsOffsets{ShapedType::kDynamic, 0};
+        const SmallVector<int64_t, 2> lhsSizes{tileSizes[0],
+                                               lhsType.getDimSize(1)};
+        const SmallVector<int64_t, 2> lhsStrides{tileSizes[0], 1};
+
+        const SmallVector<int64_t, 2> resultOffsets{ShapedType::kDynamic};
+        const SmallVector<int64_t, 2> resultSizes = tileSizes;
+        const SmallVector<int64_t, 2> resultStrides = tileSizes;
+
+        const RankedTensorType lhsSliceType =
+            tensor::ExtractSliceOp::inferCanonicalRankReducedResultType(
+                1, lhsType, lhsOffsets, lhsSizes, lhsStrides);
+        const Value lhsSlice = builder.create<tensor::ExtractSliceOp>(
+            loc, lhsSliceType, lhs, indices, ValueRange{}, ValueRange{},
+            lhsOffsets, lhsSizes, lhsStrides);
+
+        const Value resultSlice =
+            createMatmul(builder, loc, lhsSlice, rhs, reduceClusterSize);
+
+        const Value result = builder.create<tensor::InsertSliceOp>(
+            loc, resultSlice, iterArgs[0], indices, ValueRange{}, ValueRange{},
+            resultOffsets, resultSizes, resultStrides);
+
+        return {result};
+      });
 }
 
 ::mlir::LogicalResult GemvOp::inferReturnTypeComponents(
