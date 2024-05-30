@@ -131,38 +131,40 @@ SmallVector<Value> GemmOp::convertToTiledOps(OpBuilder builder,
       [&](OpBuilder &builder, Location loc, ValueRange indices,
           ValueRange iterArgs) -> SmallVector<Value> {
         const SmallVector<int64_t, 2> lhsOffsets{ShapedType::kDynamic, 0};
-        const SmallVector<int64_t, 2> rhsOffsets{0, ShapedType::kDynamic};
-        const SmallVector<int64_t, 2> resultOffsets{ShapedType::kDynamic,
-                                                    ShapedType::kDynamic};
         const SmallVector<int64_t, 2> lhsSizes{tileSizes[0],
                                                lhsType.getDimSize(1)};
+        const SmallVector<int64_t, 2> lhsStrides{tileSizes[0], 1};
+        const SmallVector<int64_t, 2> rhsOffsets{0, ShapedType::kDynamic};
         const SmallVector<int64_t, 2> rhsSizes{rhsType.getDimSize(0),
                                                tileSizes[1]};
+        const SmallVector<int64_t, 2> rhsStrides{1, tileSizes[1]};
+        const SmallVector<int64_t, 2> resultOffsets{ShapedType::kDynamic,
+                                                    ShapedType::kDynamic};
         const SmallVector<int64_t, 2> resultSizes = tileSizes;
-        const SmallVector<int64_t, 2> strides = tileSizes;
+        const SmallVector<int64_t, 2> resultStrides = tileSizes;
 
         const SmallVector<Value> lhsDynamicOffsets{indices[0]};
         const RankedTensorType lhsSliceType =
             tensor::ExtractSliceOp::inferCanonicalRankReducedResultType(
-                1, lhsType, lhsOffsets, lhsSizes, strides);
+                1, lhsType, lhsOffsets, lhsSizes, lhsStrides);
         const Value lhsSlice = builder.create<tensor::ExtractSliceOp>(
             loc, lhsSliceType, lhs, lhsDynamicOffsets, ValueRange{},
-            ValueRange{}, lhsOffsets, lhsSizes, strides);
+            ValueRange{}, lhsOffsets, lhsSizes, lhsStrides);
 
         const SmallVector<Value> rhsDynamicOffsets{indices[1]};
         const Type rhsSliceType =
             tensor::ExtractSliceOp::inferCanonicalRankReducedResultType(
-                1, rhsType, rhsOffsets, rhsSizes, strides);
+                1, rhsType, rhsOffsets, rhsSizes, rhsStrides);
         const Value rhsSlice = builder.create<tensor::ExtractSliceOp>(
             loc, rhsSliceType, rhs, rhsDynamicOffsets, ValueRange{},
-            ValueRange{}, rhsOffsets, rhsSizes, strides);
+            ValueRange{}, rhsOffsets, rhsSizes, rhsStrides);
 
         const Value resultSlice =
             createMatmul(builder, loc, lhsSlice, rhsSlice, reduceClusterSize);
 
         const Value result = builder.create<tensor::InsertSliceOp>(
             loc, resultSlice, iterArgs[0], indices, ValueRange{}, ValueRange{},
-            resultOffsets, resultSizes, strides);
+            resultOffsets, resultSizes, resultStrides);
 
         return {result};
       });
