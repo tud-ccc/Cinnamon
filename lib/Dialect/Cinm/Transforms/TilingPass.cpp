@@ -37,17 +37,23 @@ struct CinmApplyTilingInterfacePattern
   using OpInterfaceConversionPattern<
       cinm::CinmTilingInterface>::OpInterfaceConversionPattern;
 
+  CinmApplyTilingInterfacePattern(MLIRContext *context,
+                                  ArrayRef<int64_t> tileSizes,
+                                  int64_t reductionTileSize)
+      : OpInterfaceConversionPattern<cinm::CinmTilingInterface>(context, 1),
+        tileSizes(tileSizes), reductionTileSize(reductionTileSize) {}
+
   LogicalResult
   matchAndRewrite(cinm::CinmTilingInterface op, ArrayRef<Value>,
                   ConversionPatternRewriter &rewriter) const override {
     rewriter.replaceOp(
-        op, op.convertToTiledOps(rewriter, tileSizes, reduceClusterSize));
+        op, op.convertToTiledOps(rewriter, tileSizes, reductionTileSize));
     return success();
   }
 
 private:
-  SmallVector<int64_t> tileSizes = {16, 16};
-  int64_t reduceClusterSize = 32;
+  SmallVector<int64_t> tileSizes;
+  int64_t reductionTileSize;
 };
 
 struct CinmTilingPass : public impl::CinmTilingPassBase<CinmTilingPass> {
@@ -56,7 +62,9 @@ struct CinmTilingPass : public impl::CinmTilingPassBase<CinmTilingPass> {
   void runOnOperation() final {
     LLVMTypeConverter typeConverter(&getContext());
     RewritePatternSet patterns(&getContext());
-    patterns.add<CinmApplyTilingInterfacePattern>(&typeConverter.getContext());
+    patterns.add<CinmApplyTilingInterfacePattern>(&typeConverter.getContext(),
+                                                  SmallVector<int64_t>{16, 16},
+                                                  reductionTileSize);
 
     ConversionTarget target(getContext());
     target.markUnknownOpDynamicallyLegal([](Operation *op) {
