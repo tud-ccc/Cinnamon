@@ -59,6 +59,8 @@ Value createVectorReduce(OpBuilder &builder, Location loc, Value vector,
 
   const Value initTensor = builder.create<tensor::FromElementsOp>(
       loc, RankedTensorType::get({}, elementType), ValueRange{init});
+  const Value clusterSizeConst =
+      builder.create<arith::ConstantOp>(loc, builder.getIndexAttr(clusterSize));
 
   if (clusterSize > 1) {
     const int64_t clusterCount = vectorSize / clusterSize;
@@ -67,14 +69,18 @@ Value createVectorReduce(OpBuilder &builder, Location loc, Value vector,
     vector = builder.create<tensor::GenerateOp>(
         loc, intermediateResultType, ValueRange{},
         [&](OpBuilder &builder, Location loc, ValueRange indices) {
-          SmallVector<int64_t> offsets{ShapedType::kDynamic};
-          SmallVector<int64_t> sizes{clusterSize};
-          SmallVector<int64_t> strides{clusterSize};
-          Type sliceType = tensor::ExtractSliceOp::inferResultType(
+          const SmallVector<int64_t> offsets{ShapedType::kDynamic};
+          const SmallVector<int64_t> sizes{clusterSize};
+          const SmallVector<int64_t> strides{1};
+
+          const Value dynOffset =
+              builder.create<arith::MulIOp>(loc, indices[0], clusterSizeConst);
+
+          const Type sliceType = tensor::ExtractSliceOp::inferResultType(
               vectorType, offsets, sizes, strides);
-          Value slice = builder.create<tensor::ExtractSliceOp>(
-              loc, sliceType, vector, indices, ValueRange{}, ValueRange{},
-              offsets, sizes, strides);
+          const Value slice = builder.create<tensor::ExtractSliceOp>(
+              loc, sliceType, vector, ValueRange{dynOffset}, ValueRange{},
+              ValueRange{}, offsets, sizes, strides);
 
           linalg::ReduceOp sum = builder.create<linalg::ReduceOp>(
               loc, ValueRange{slice}, ValueRange{initTensor},
