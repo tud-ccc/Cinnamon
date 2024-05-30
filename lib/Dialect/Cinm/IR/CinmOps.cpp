@@ -109,9 +109,14 @@ void MinOp::print(::mlir::OpAsmPrinter &p) { printMinMaxOp(getOperand(), p); }
 SmallVector<Value> GemmOp::convertToTiledOps(OpBuilder builder,
                                              ArrayRef<int64_t> tileCounts,
                                              int64_t reduceClusterSize) {
-  assert(tileCounts.size() == 2);
   const Value lhs = getOperand(0);
   const Value rhs = getOperand(1);
+
+  if (tileCounts.empty()) {
+    return {createMatmul(builder, getLoc(), lhs, rhs, reduceClusterSize)};
+  }
+
+  assert(tileCounts.size() == 2);
 
   const RankedTensorType lhsType = lhs.getType().cast<RankedTensorType>();
   const RankedTensorType rhsType = rhs.getType().cast<RankedTensorType>();
@@ -191,6 +196,10 @@ SmallVector<Value> GemvOp::convertToTiledOps(OpBuilder builder,
                                              int64_t reduceClusterSize) {
   const Value lhs = getOperand(0);
   const Value rhs = getOperand(1);
+
+  if (tileCounts.empty()) {
+    return {createMatmul(builder, getLoc(), lhs, rhs, reduceClusterSize)};
+  }
 
   const RankedTensorType lhsType = lhs.getType().cast<RankedTensorType>();
 
