@@ -138,15 +138,16 @@ SmallVector<Value> GemmOp::convertToTiledOps(OpBuilder builder,
         const SmallVector<int64_t, 2> lhsOffsets{ShapedType::kDynamic, 0};
         const SmallVector<int64_t, 2> lhsSizes{tileSizes[0],
                                                lhsType.getDimSize(1)};
-        const SmallVector<int64_t, 2> lhsStrides{tileSizes[0], 1};
+        const SmallVector<int64_t, 2> unitStrides{1, 1};
+        const SmallVector<int64_t, 2> &lhsStrides = unitStrides;
         const SmallVector<int64_t, 2> rhsOffsets{0, ShapedType::kDynamic};
         const SmallVector<int64_t, 2> rhsSizes{rhsType.getDimSize(0),
                                                tileSizes[1]};
-        const SmallVector<int64_t, 2> rhsStrides{1, tileSizes[1]};
+        const SmallVector<int64_t, 2> &rhsStrides = unitStrides;
         const SmallVector<int64_t, 2> resultOffsets{ShapedType::kDynamic,
                                                     ShapedType::kDynamic};
-        const SmallVector<int64_t, 2> resultSizes = tileSizes;
-        const SmallVector<int64_t, 2> resultStrides = tileSizes;
+        const SmallVector<int64_t, 2> &resultSizes = tileSizes;
+        const SmallVector<int64_t, 2> resultStrides = unitStrides;
 
         const SmallVector<Value> lhsDynamicOffsets{indices[0]};
         const RankedTensorType lhsSliceType =
@@ -221,11 +222,11 @@ SmallVector<Value> GemvOp::convertToTiledOps(OpBuilder builder,
         const SmallVector<int64_t, 2> lhsOffsets{ShapedType::kDynamic, 0};
         const SmallVector<int64_t, 2> lhsSizes{tileSizes[0],
                                                lhsType.getDimSize(1)};
-        const SmallVector<int64_t, 2> lhsStrides{tileSizes[0], 1};
+        const SmallVector<int64_t, 2> lhsStrides{1, 1};
 
         const SmallVector<int64_t, 2> resultOffsets{ShapedType::kDynamic};
         const SmallVector<int64_t, 2> resultSizes = tileSizes;
-        const SmallVector<int64_t, 2> resultStrides = tileSizes;
+        const SmallVector<int64_t, 2> resultStrides{1};
 
         const RankedTensorType lhsSliceType =
             tensor::ExtractSliceOp::inferCanonicalRankReducedResultType(
