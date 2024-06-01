@@ -539,7 +539,7 @@ ParseResult SimSearchOp::parse(::mlir::OpAsmParser &parser,
 void SimSearchOp::print(OpAsmPrinter &p) {
   p << ' ';
   p.printKeywordOrString(stringifySimilarityMetric(getMetric()));
-  p << ' ' << getK();
+  p << ' ' << getK().getInt();
   p << " (";
   p.printOperand(getLeft());
   p << ", ";
