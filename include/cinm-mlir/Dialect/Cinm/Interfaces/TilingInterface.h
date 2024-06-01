@@ -46,8 +46,27 @@ Value createVectorReduce(OpBuilder &builder, Location loc, Value vector,
       clusterSize);
 }
 
+template <typename MergeOp, typename ReductionOp>
+Value createVectorReduce2(OpBuilder &builder, Location loc, Value vector, Value vector2,
+                         Value init, int64_t clusterSize) {
+  return createVectorReduce2(
+      builder, loc, vector, vector2, init,
+      [](OpBuilder &builder, Location loc, Value lhs, Value rhs) {
+        return builder.create<MergeOp>(loc, lhs, rhs);
+      },
+      [](OpBuilder &builder, Location loc, Value lhs, Value rhs) {
+        return builder.create<ReductionOp>(loc, lhs, rhs);
+      },
+      clusterSize);
+}
+
 Value createVectorReduce(OpBuilder &builder, Location loc, Value vector,
                          Value init, ReduceAccumulatorCallback callback,
+                         int64_t clusterSize = 1);
+
+Value createVectorReduce2(OpBuilder &builder, Location loc, Value vector, Value vector2,
+                         Value init, ReduceAccumulatorCallback merge2,
+                         ReduceAccumulatorCallback reduce,
                          int64_t clusterSize = 1);
 
 Value createVectorReduceAdd(OpBuilder &builder, Location loc, Value vector,

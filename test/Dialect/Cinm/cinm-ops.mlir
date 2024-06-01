@@ -3,10 +3,11 @@
 
 
 // CHECK-LABEL: simple
-func.func @simple(%t0: tensor<6x6xi32>) {
+func.func @simple(%t0: tensor<6x6xi32>, %t1 : tensor<6xf32> ) {
     %x = cinm.op.add %t0, %t0: tensor<6x6xi32>
     %y = cinm.op.sub %t0, %t0: tensor<6x6xi32>
     %z = cinm.op.max %t0: tensor<6x6xi32>
+    %q = cinm.op.min %t1: tensor<6xf32>
     %a = arith.addi %z, %z : i32
     %k = arith.constant 62: i64
     %t, %s = cinm.op.topK %k (%y): tensor<6x6xi32> -> tensor<?xi32>, tensor<?xindex>

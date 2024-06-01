@@ -7,6 +7,7 @@
 #include <mlir/Dialect/Arith/IR/Arith.h>
 #include <mlir/Dialect/Linalg/IR/Linalg.h>
 #include <mlir/Dialect/Tensor/IR/Tensor.h>
+#include <mlir/IR/BuiltinTypes.h>
 #include <mlir/IR/ValueRange.h>
 #include <mlir/Support/LogicalResult.h>
 
@@ -47,6 +48,71 @@ SmallVector<Value> createNestedAffineForLoops(OpBuilder &builder, Location loc,
 
   builder.setInsertionPointAfter(loops.front());
   return loops.front().getResults();
+}
+
+Value createVectorReduce2(OpBuilder &builder, Location loc, Value v0, Value v1,
+                          Value init, ReduceAccumulatorCallback merge2,
+                          ReduceAccumulatorCallback reduce,
+                          int64_t clusterSize) {
+  const RankedTensorType vectorType = v0.getType().cast<RankedTensorType>();
+  assert(vectorType.getRank() == 1);
+  assert(v0.getShape() == v1.getShape());
+  const int64_t vectorSize = vectorType.getDimSize(0);
+  const Type elementType = vectorType.getElementType();
+
+  const Value initTensor = builder.create<tensor::FromElementsOp>(
+      loc, RankedTensorType::get({}, elementType), ValueRange{init});
+  const Value clusterSizeConst =
+      builder.create<arith::ConstantOp>(loc, builder.getIndexAttr(clusterSize));
+
+  Value stage1Output;
+  if (clusterSize > 1) {
+    const int64_t clusterCount = vectorSize / clusterSize;
+    RankedTensorType intermediateResultType =
+        RankedTensorType::get(SmallVector<int64_t>{clusterCount}, elementType);
+    stage1Output = builder.create<tensor::GenerateOp>(
+        loc, intermediateResultType, ValueRange{},
+        [&](OpBuilder &builder, Location loc, ValueRange indices) {
+          const SmallVector<int64_t> offsets{ShapedType::kDynamic};
+          const SmallVector<int64_t> sizes{clusterSize};
+          const SmallVector<int64_t> strides{1};
+
+          const Value dynOffset =
+              builder.create<arith::MulIOp>(loc, indices[0], clusterSizeConst);
+
+          const Type sliceType = tensor::ExtractSliceOp::inferResultType(
+              vectorType, offsets, sizes, strides);
+          const Value slice0 = builder.create<tensor::ExtractSliceOp>(
+              loc, sliceType, v0, ValueRange{dynOffset}, ValueRange{},
+              ValueRange{}, offsets, sizes, strides);
+          const Value slice1 = builder.create<tensor::ExtractSliceOp>(
+              loc, sliceType, v1, ValueRange{dynOffset}, ValueRange{},
+              ValueRange{}, offsets, sizes, strides);
+
+          linalg::ReduceOp sum = builder.create<linalg::ReduceOp>(
+              loc, ValueRange{slice0, slice1}, ValueRange{initTensor},
+              SmallVector<int64_t>{0},
+              [&](OpBuilder &builder, Location loc, ValueRange args) {
+                const Value tmp = merge2(builder, loc, args[0], args[1]);
+                const Value result = reduce(builder, loc, tmp, args[2]);
+                builder.create<linalg::YieldOp>(loc, result);
+              });
+
+          builder.create<tensor::YieldOp>(
+              loc, builder.create<tensor::ExtractOp>(loc, sum.getResult(0),
+                                                     ValueRange{}));
+        });
+  }
+
+  linalg::ReduceOp sum = builder.create<linalg::ReduceOp>(
+      loc, ValueRange{stage1Output}, ValueRange{initTensor},
+      SmallVector<int64_t>{0},
+      [&](OpBuilder &builder, Location loc, ValueRange args) {
+        const Value result = reduce(builder, loc, args[0], args[1]);
+        builder.create<linalg::YieldOp>(loc, result);
+      });
+
+  return builder.create<tensor::ExtractOp>(loc, sum.getResult(0), ValueRange{});
 }
 
 Value createVectorReduce(OpBuilder &builder, Location loc, Value vector,
@@ -184,9 +250,8 @@ Value createMatmul(OpBuilder builder, Location loc, Value lhs, Value rhs,
           const SmallVector<int64_t> lhsOffsets{ShapedType::kDynamic, 0};
           const SmallVector<int64_t> lhsSizes{1, lhsType.getDimSize(1)};
           const SmallVector<Value> lhsDynamicOffsets{indices.front()};
-          const RankedTensorType lhsSliceType =
-              tensor::ExtractSliceOp::inferCanonicalRankReducedResultType(
-                  1, lhsType, lhsOffsets, lhsSizes, strides);
+          const RankedTensorType lhsSliceType = RankedTensorType::get(
+              {lhsType.getDimSize(1)}, lhsType.getElementType());
           lhsSlice = builder.create<tensor::ExtractSliceOp>(
               loc, lhsSliceType, lhs, lhsDynamicOffsets, ValueRange{},
               ValueRange{}, lhsOffsets, lhsSizes, strides);
@@ -196,19 +261,27 @@ Value createMatmul(OpBuilder builder, Location loc, Value lhs, Value rhs,
           const SmallVector<int64_t> rhsOffsets{0, ShapedType::kDynamic};
           const SmallVector<int64_t> rhsSizes{rhsType.getDimSize(0), 1};
           const SmallVector<Value> rhsDynamicOffsets{indices.back()};
-          const Type rhsSliceType =
-              tensor::ExtractSliceOp::inferCanonicalRankReducedResultType(
-                  1, rhsType, rhsOffsets, rhsSizes, strides);
+          const RankedTensorType rhsSliceType = RankedTensorType::get(
+              {lhsType.getDimSize(1)}, lhsType.getElementType());
           rhsSlice = builder.create<tensor::ExtractSliceOp>(
               loc, rhsSliceType, rhs, rhsDynamicOffsets, ValueRange{},
               ValueRange{}, rhsOffsets, rhsSizes, strides);
         }
 
-        const Value product =
-            builder.create<arith::MulIOp>(loc, lhsSlice, rhsSlice);
-        const Value sum =
-            createVectorReduceAdd(builder, loc, product, reduceClusterSize);
-        builder.create<tensor::YieldOp>(loc, sum);
+        const Type elementType = lhsType.getElementType();
+        const Value init = builder.create<arith::ConstantOp>(
+            loc, builder.getIntegerAttr(elementType, 0));
+
+        Value result;
+        if (elementType.isa<IntegerType>()) {
+        result = createVectorReduce2<arith::MulIOp, arith::AddIOp>(
+            builder, loc, lhsSlice, rhsSlice, init, reduceClusterSize);
+        } else {
+        result = createVectorReduce2<arith::MulFOp, arith::AddFOp>(
+            builder, loc, lhsSlice, rhsSlice, init, reduceClusterSize);
+        }
+
+        builder.create<tensor::YieldOp>(loc, result);
       });
 }
 
