@@ -24,3 +24,4 @@ build
 llvm
 .cache
 .env
+sandbox
