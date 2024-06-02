@@ -5,7 +5,8 @@
 #pragma once
 
 #include "cinm-mlir/Dialect/Cnm/IR/CnmAttributes.h"
-
+#include <functional>
+#include <numeric>
 
 //===- Generated includes -------------------------------------------------===//
 

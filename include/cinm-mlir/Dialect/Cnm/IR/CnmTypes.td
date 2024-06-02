@@ -17,15 +17,29 @@ def WorkgroupType : Cnm_Type<"Workgroup"> {
   let parameters = (ins ArrayRefParameter<"int64_t">:$shape);
 
   let hasCustomAssemblyFormat = 1;
+  let extraClassDeclaration = [{
+    int64_t getNumElements() {
+      auto wgShape = getShape();
+      return std::reduce(wgShape.begin(), wgShape.end(), 1, std::multiplies<>());
+    }
+  }];
 }
 
-def BufferType : Cnm_Type<"Buffer"> {
+def BufferType : Cnm_Type<"Buffer", [ShapedTypeInterface]> {
   let mnemonic = "buffer";
   let summary = "";
 
   let parameters = (ins ArrayRefParameter<"int64_t">:$shape, "Type":$element_type, "int64_t":$level);
 
   let hasCustomAssemblyFormat = 1;
+
+  let extraClassDeclaration = [{
+    bool hasRank() { return true; }
+    ShapedType cloneWith(::std::optional<::llvm::ArrayRef<int64_t>> newShape, ::mlir::Type elementType) {
+      auto shape = newShape.value_or(getShape());
+      return BufferType::get(getContext(), shape, elementType, getLevel());
+    }
+  }];
 }
 
 def ScatterTokenType : Cnm_Type<"ScatterToken"> {
