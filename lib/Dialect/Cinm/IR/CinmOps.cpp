@@ -132,7 +132,7 @@ SmallVector<Value> GemmOp::convertToTiledOps(OpBuilder builder,
       getTileSizes(tileCounts, resultShape);
 
   return createNestedAffineForLoops(
-      builder, getLoc(), tileCounts, ValueRange{resultInit},
+      builder, getLoc(), tileCounts, tileSizes, ValueRange{resultInit},
       [&](OpBuilder &builder, Location loc, ValueRange indices,
           ValueRange iterArgs) -> SmallVector<Value> {
         const SmallVector<int64_t, 2> lhsOffsets{ShapedType::kDynamic, 0};
@@ -216,7 +216,7 @@ SmallVector<Value> GemvOp::convertToTiledOps(OpBuilder builder,
       getTileSizes(tileCounts, resultShape);
 
   return createNestedAffineForLoops(
-      builder, getLoc(), tileCounts, ValueRange{resultInit},
+      builder, getLoc(), tileCounts, tileSizes, ValueRange{resultInit},
       [&](OpBuilder &builder, Location loc, ValueRange indices,
           ValueRange iterArgs) -> SmallVector<Value> {
         const SmallVector<int64_t, 2> lhsOffsets{ShapedType::kDynamic, 0};

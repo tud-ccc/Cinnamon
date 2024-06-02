@@ -32,6 +32,7 @@ using ReduceAccumulatorCallback =
 
 SmallVector<Value> createNestedAffineForLoops(OpBuilder &builder, Location loc,
                                               ArrayRef<int64_t> loopSizes,
+                                              ArrayRef<int64_t> loopSteps,
                                               ValueRange iterArgInit,
                                               BodyBuilderCallback bodyBuilder);
 

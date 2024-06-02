@@ -3,6 +3,7 @@
 #include "mlir/IR/OpImplementation.h"
 #include <cstdint>
 #include <limits>
+#include <llvm/ADT/STLExtras.h>
 #include <mlir/Dialect/Affine/IR/AffineOps.h>
 #include <mlir/Dialect/Arith/IR/Arith.h>
 #include <mlir/Dialect/Linalg/IR/Linalg.h>
@@ -24,16 +25,18 @@ namespace mlir::cinm {
 
 SmallVector<Value> createNestedAffineForLoops(OpBuilder &builder, Location loc,
                                               ArrayRef<int64_t> loopSizes,
+                                              ArrayRef<int64_t> loopSteps,
                                               ValueRange iterArgsInit,
                                               BodyBuilderCallback bodyBuilder) {
-  SmallVector<affine::AffineForOp> loops;
+  assert(loopSizes.length() == loopSteps.length());
 
+  SmallVector<affine::AffineForOp> loops;
   SmallVector<Value> indices;
   ValueRange iterArgs = iterArgsInit;
 
-  for (int64_t size : loopSizes) {
+  for (auto [size, step] : llvm::zip(loopSizes, loopSteps)) {
     affine::AffineForOp current =
-        builder.create<affine::AffineForOp>(loc, 0, size, 1, iterArgs);
+        builder.create<affine::AffineForOp>(loc, 0, size, step, iterArgs);
     if (!loops.empty()) {
       builder.create<affine::AffineYieldOp>(loc, current.getResults());
     }
@@ -274,11 +277,11 @@ Value createMatmul(OpBuilder builder, Location loc, Value lhs, Value rhs,
 
         Value result;
         if (elementType.isa<IntegerType>()) {
-        result = createVectorReduce2<arith::MulIOp, arith::AddIOp>(
-            builder, loc, lhsSlice, rhsSlice, init, reduceClusterSize);
+          result = createVectorReduce2<arith::MulIOp, arith::AddIOp>(
+              builder, loc, lhsSlice, rhsSlice, init, reduceClusterSize);
         } else {
-        result = createVectorReduce2<arith::MulFOp, arith::AddFOp>(
-            builder, loc, lhsSlice, rhsSlice, init, reduceClusterSize);
+          result = createVectorReduce2<arith::MulFOp, arith::AddFOp>(
+              builder, loc, lhsSlice, rhsSlice, init, reduceClusterSize);
         }
 
         builder.create<tensor::YieldOp>(loc, result);
