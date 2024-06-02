@@ -16,6 +16,7 @@ void registerDialect(DialectRegistry &registry);
 namespace cinm {
 class CinmDialect;
 } // namespace cinm
+namespace func { class FuncOp; }
 
 //===- Generated passes ---------------------------------------------------===//
 
