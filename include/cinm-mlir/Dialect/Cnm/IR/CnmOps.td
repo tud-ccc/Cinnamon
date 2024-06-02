@@ -18,6 +18,7 @@ include "mlir/Interfaces/CallInterfaces.td"
 include "mlir/Interfaces/ControlFlowInterfaces.td"
 include "mlir/Interfaces/InferTypeOpInterface.td"
 include "mlir/Interfaces/SideEffectInterfaces.td"
+include "mlir/IR/CommonAttrConstraints.td"
 
 def WorkgroupOp : Cnm_Op<"workgroup"> {
     let summary = "";
@@ -53,7 +54,7 @@ def ScatterOp: Cnm_Op<"scatter"> {
     let summary = "";
     let description = [{}];
 
-    let arguments = (ins Builtin_RankedTensor:$value, BufferType:$buffer, WorkgroupType:$wg);
+    let arguments = (ins Builtin_RankedTensor:$input, BufferType:$buffer, WorkgroupType:$wg, AffineMapAttr:$scatterMap);
     let results = (outs ScatterTokenType:$token);
 
     let hasCustomAssemblyFormat = 1;
@@ -63,8 +64,8 @@ def GatherOp: Cnm_Op<"gather"> {
     let summary = "";
     let description = [{}];
 
-    let arguments = (ins BufferType:$buffer, WorkgroupType:$wg);
-    let results = (outs Builtin_RankedTensor:$value, GatherTokenType:$token);
+    let arguments = (ins BufferType:$buffer, WorkgroupType:$wg, AffineMapAttr:$scatterMap);
+    let results = (outs Builtin_RankedTensor:$output, GatherTokenType:$token);
 
     let hasCustomAssemblyFormat = 1;
 }

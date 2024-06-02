@@ -13,7 +13,8 @@
 #include "mlir/Interfaces/ControlFlowInterfaces.h"
 #include "mlir/Interfaces/InferTypeOpInterface.h"
 #include "mlir/Interfaces/SideEffectInterfaces.h"
-
+#include "mlir/Bytecode/BytecodeOpInterface.h"
+#include "mlir/IR/AffineMap.h"
 
 
 //===- Generated includes -------------------------------------------------===//

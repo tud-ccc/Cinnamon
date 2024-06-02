@@ -129,7 +129,7 @@ namespace mlir::cnm {
             }
 
             // inner most loop body
-            const AffineMap map = op.getOperation()->getAttr("map").dyn_cast<AffineMapAttr>().getAffineMap();
+            const AffineMap map = op.getScatterMap();
             SmallVector<Value> workgroupIndices;
             for (size_t i = 0; i < workgroupType.getShape().size(); i++) {
                 workgroupIndices.push_back(rewriter.create<affine::AffineApplyOp>(op.getLoc(), map.getSubMap(i), indices));
@@ -192,7 +192,7 @@ namespace mlir::cnm {
             // inner most loop body
             const Value iterArg = loops.back().getBody()->getArgument(1);
 
-            const AffineMap map = op.getOperation()->getAttr("map").dyn_cast<AffineMapAttr>().getAffineMap();
+            const AffineMap map = op.getScatterMap();
             SmallVector<Value> workgroupIndices;
             for (size_t i = 0; i < workgroupType.getShape().size(); i++) {
                 workgroupIndices.push_back(rewriter.create<affine::AffineApplyOp>(op.getLoc(), map.getSubMap(i), indices));

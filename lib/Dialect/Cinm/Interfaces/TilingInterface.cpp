@@ -28,7 +28,7 @@ SmallVector<Value> createNestedAffineForLoops(OpBuilder &builder, Location loc,
                                               ArrayRef<int64_t> loopSteps,
                                               ValueRange iterArgsInit,
                                               BodyBuilderCallback bodyBuilder) {
-  assert(loopSizes.length() == loopSteps.length());
+  assert(loopSizes.size() == loopSteps.size());
 
   SmallVector<affine::AffineForOp> loops;
   SmallVector<Value> indices;
@@ -59,7 +59,7 @@ Value createVectorReduce2(OpBuilder &builder, Location loc, Value v0, Value v1,
                           int64_t clusterSize) {
   const RankedTensorType vectorType = v0.getType().cast<RankedTensorType>();
   assert(vectorType.getRank() == 1);
-  assert(v0.getShape() == v1.getShape());
+  assert(vectorType.getShape() == v1.getType().cast<RankedTensorType>().getShape());
   const int64_t vectorSize = vectorType.getDimSize(0);
   const Type elementType = vectorType.getElementType();
 
