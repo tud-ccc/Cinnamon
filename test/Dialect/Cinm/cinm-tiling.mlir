@@ -1,27 +1,48 @@
-// RUN: cinm-opt %s --cinm-tiling | FileCheck %s
+// RUN: cinm-opt %s --cinm-tiling -split-input-file | FileCheck %s
 
 
-// CHECK-LABEL: gemmSquare
-  func.func @gemmSquare(%a: tensor<1024x1024xi32>, %b: tensor<1024x1024xi32>) -> tensor<1024x1024xi32>{
+// CHECK-LABEL: @gemmSquare
+// CHECK-SAME:  (%[[A:.*]]: tensor<1024x1024xi32>, %[[B:.*]]:
+// CHECK:       affine.for %[[i:.*]] = 0 to 1024 step 64
+// CHECK-NEXT:  affine.for %[[j:.*]] = 0 to 1024 step 64
+// CHECK-NEXT:  %[[blockA:.*]] = tensor.extract_slice %[[A]][%[[i]], 0] [64, 1024] [1, 1]
+// CHECK-NEXT:  %[[blockB:.*]] = tensor.extract_slice %[[B]][0, %[[j]]] [1024, 64] [1, 1]
+// CHECK-NEXT:  tensor.generate
+// CHECK-NEXT:  ^{{.*}}(%[[ti:.*]]: index, %[[tj:.*]]: index):
+// CHECK-NEXT:  %[[row:.*]] = tensor.extract_slice %[[blockA]][%[[ti]], 0] [1, 1024] [1, 1]
+// CHECK-NEXT:  %[[col:.*]] = tensor.extract_slice %[[blockB]][0, %[[tj]]] [1024, 1] [1, 1]
+
+// CHECK:       %[[stage1:.*]] = tensor.generate
+// CHECK:       %[[rowTile:.*]] = tensor.extract_slice %[[row]][%[[off:.*]]] [32] [1]
+// CHECK-NEXT:  %[[colTile:.*]] = tensor.extract_slice %[[col]][%[[off]]] [32] [1]
+// CHECK-NEXT:  linalg.reduce ins(%[[rowTile]], %[[colTile]] : {{.*}}) outs(%{{.*}} : tensor<i32>) dimensions = [0]
+// CHECK-NEXT:  (%[[ei:.*]]: i32, %[[ej:.*]]: i32, %[[init:.*]]: i32)
+// CHECK-NEXT:  %[[mul:.*]] = arith.muli %[[ei]], %[[ej]]
+// CHECK-NEXT:  %[[add:.*]] = arith.addi %[[mul]], %[[init]]
+// CHECK-NEXT:  linalg.yield %[[add]]
+
+// CHECK:       linalg.reduce ins(%[[stage1]] : tensor<32xi32>)
+
+func.func @gemmSquare(%a: tensor<1024x1024xi32>, %b: tensor<1024x1024xi32>) -> tensor<1024x1024xi32>{
 	%d = cinm.op.gemm %a, %b : (tensor<1024x1024xi32>, tensor<1024x1024xi32>) -> tensor<1024x1024xi32>
 	return %d: tensor<1024x1024xi32>
-  }
+}
 
 
-// ------
+// -----
 
-// CHECK-LABEL: gemv
+// CHECK-LABEL: @gemv
 
-  func.func @gemv(%a: tensor<1024x1024xi32>, %b: tensor<1024xi32>) -> tensor<1024xi32>{
+func.func @gemv(%a: tensor<1024x1024xi32>, %b: tensor<1024xi32>) -> tensor<1024xi32>{
 	%d = cinm.op.gemv %a, %b : (tensor<1024x1024xi32>, tensor<1024xi32>) -> tensor<1024xi32>
 	return %d: tensor<1024xi32>
-  }
+}
 
-// ------
+// -----
 
-// CHECK-LABEL: max
+// CHECK-LABEL: @max
 
-  func.func @max(%a: tensor<1024xi32>) -> i32 {
+func.func @max(%a: tensor<1024xi32>) -> i32 {
 	%d = cinm.op.max %a: tensor<1024xi32>
 	return %d: i32
-  }
+}
