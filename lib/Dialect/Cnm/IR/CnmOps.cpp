@@ -81,19 +81,6 @@ void WorkgroupOp::print(mlir::OpAsmPrinter &printer) {
 
 ParseResult AllocOp::parse(mlir::OpAsmParser &parser,
                            mlir::OperationState &result) {
-  if (parser.parseLParen().failed()) {
-    return ParseResult::failure();
-  }
-
-  // TODO: maybe parameters?, not covered by the example cnm file
-
-  if (parser.parseRParen().failed()) {
-    return ParseResult::failure();
-  }
-
-  if (parser.parseKeyword("for").failed()) {
-    return ParseResult::failure();
-  }
 
   OpAsmParser::UnresolvedOperand wg;
   NamedAttrList attributes;
@@ -289,7 +276,6 @@ ParseResult LaunchOp::parse(mlir::OpAsmParser &parser,
   }
 
   result.addOperands(operands);
-  result.addTypes(LaunchTokenType::get(parser.getContext()));
 
   return ParseResult::success();
 }
