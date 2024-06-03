@@ -34,9 +34,10 @@ using namespace mlir;
 
 namespace {
 
-llvm::SmallVector<int64_t, 3>
-newShapeFittingWorkgroup(llvm::ArrayRef<int64_t> shape,
-                         cnm::WorkgroupType wgTy) {
+void computeShapeOfTensors(llvm::ArrayRef<int64_t> shape,
+                           cnm::WorkgroupType wgTy,
+                           llvm::SmallVectorImpl<int64_t> &shapeOfTensor,
+                           llvm::SmallVectorImpl<int64_t> &shapeOfBuffer) {
   auto wgShape = wgTy.getShape();
 
   auto numWgItems =
@@ -46,10 +47,13 @@ newShapeFittingWorkgroup(llvm::ArrayRef<int64_t> shape,
   assert(numBufItems % numWgItems == 0);
   auto remainder = numBufItems / numWgItems;
 
-  llvm::SmallVector<int64_t, 3> newShapeBuf(wgShape);
-  if (remainder != 1)
-    newShapeBuf.push_back(remainder);
-  return newShapeBuf;
+  shapeOfTensor.append(wgShape.begin(), wgShape.end());
+  if (remainder != 1) {
+    // tensor is WG shape + remainder
+    shapeOfTensor.push_back(remainder);
+    // buffer is just remainder, WG dimensions are implicit
+    shapeOfBuffer.push_back(remainder);
+  }
 }
 
 AffineMap computeAffineMap(cnm::WorkgroupType wgTy) {
@@ -75,20 +79,24 @@ Value convertInputIntoAlloc(Value inputBuf, Value workGroup,
   // For each input of the reduce, we need to
 
   auto inputTy = inputBuf.getType().cast<RankedTensorType>();
+  llvm::SmallVector<int64_t, 4> shapeOfTensor;
+  llvm::SmallVector<int64_t, 1> shapeOfBuffer;
+  computeShapeOfTensors(inputTy.getShape(), wgTy, shapeOfTensor, shapeOfBuffer);
   cnm::BufferType bufTy = cnm::BufferType::get(
-      rewriter.getContext(), inputTy.getShape(), inputTy.getElementType(), 0);
+      rewriter.getContext(), shapeOfBuffer, inputTy.getElementType(),
+      0); // todo level is hardcoded
 
-  // 1. Allocate a cinm buffer
+  // Reshape original tensor
+  Value shapeReified = rewriter.create<arith::ConstantOp>(
+      rewriter.getI64TensorAttr(shapeOfTensor));
+  Value reshaped = rewriter.create<tensor::ReshapeOp>(
+      inputTy.cloneWith(shapeOfTensor, inputTy.getElementType()), inputBuf,
+      shapeReified);
+
+  // Allocate a cinm buffer
   Value alloc = rewriter.create<cnm::AllocOp>(bufTy, workGroup);
 
-  // 2. Reshape original tensor
-  auto newShape = newShapeFittingWorkgroup(inputTy.getShape(), wgTy);
-  Value shapeReified =
-      rewriter.create<arith::ConstantOp>(rewriter.getI64TensorAttr(newShape));
-  Value reshaped = rewriter.create<tensor::ReshapeOp>(
-      inputTy.cloneWith(newShape, inputTy.getElementType()), inputBuf,
-      shapeReified);
-  // 2. Scatter into buffer
+  // Scatter into buffer
   scatterMap = computeAffineMap(wgTy);
   rewriter.create<cnm::ScatterOp>(reshaped, alloc, workGroup, scatterMap);
 
