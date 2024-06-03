@@ -36,16 +36,9 @@ void CnmDialect::registerTypes() {
 // parsers/printers
 
 Type mlir::cnm::WorkgroupType::parse(mlir::AsmParser &parser) {
-  if (parser.parseLess().failed()) {
-    return Type();
-  }
-
   SmallVector<int64_t, 2> shape;
-  if (parser.parseDimensionList(shape, false, false).failed()) {
-    return Type();
-  }
-
-  if (parser.parseGreater().failed()) {
+  if (parser.parseLess() || parser.parseDimensionList(shape, false, false) ||
+      parser.parseGreater()) {
     return Type();
   }
 
@@ -59,38 +52,20 @@ void mlir::cnm::WorkgroupType::print(mlir::AsmPrinter &printer) const {
 }
 
 Type mlir::cnm::BufferType::parse(mlir::AsmParser &parser) {
-  if (parser.parseLess().failed()) {
-    return Type();
-  }
-
-  SmallVector<int64_t> shape;
-  if (parser.parseDimensionList(shape, false, true).failed()) {
-    return Type();
-  }
-
-  Type element_type;
-  if (parser.parseType(element_type).failed()) {
-    return Type();
-  }
-
-  if (parser.parseComma().failed()) {
-    return Type();
-  }
-
-  if (parser.parseKeyword("level").failed()) {
-    return Type();
-  }
-
+  SmallVector<int64_t> shape, workgroupShape;
+  Type elementType;
   int64_t level;
-  if (parser.parseInteger(level).failed()) {
+
+  if (parser.parseLess() || parser.parseDimensionList(shape, false, true) ||
+      parser.parseType(elementType) || parser.parseKeyword("on") ||
+      parser.parseDimensionList(workgroupShape, false, false) ||
+      parser.parseComma().failed() || parser.parseKeyword("level") ||
+      parser.parseInteger(level) || parser.parseGreater()) {
     return Type();
   }
 
-  if (parser.parseGreater().failed()) {
-    return Type();
-  }
-
-  return cnm::BufferType::get(parser.getContext(), shape, element_type, level);
+  return cnm::BufferType::get(parser.getContext(), shape, elementType,
+                              workgroupShape, level);
 }
 
 void mlir::cnm::BufferType::print(mlir::AsmPrinter &printer) const {
@@ -100,6 +75,8 @@ void mlir::cnm::BufferType::print(mlir::AsmPrinter &printer) const {
     printer << "x";
   }
   printer << getElementType();
+  printer << " on ";
+  printer.printDimensionList(getWorkgroupShape());
   printer << ", level " << getLevel();
   printer << ">";
 }

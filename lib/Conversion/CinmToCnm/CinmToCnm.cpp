@@ -82,9 +82,10 @@ Value convertInputIntoAlloc(Value inputBuf, Value workGroup,
   llvm::SmallVector<int64_t, 4> shapeOfTensor;
   llvm::SmallVector<int64_t, 1> shapeOfBuffer;
   computeShapeOfTensors(inputTy.getShape(), wgTy, shapeOfTensor, shapeOfBuffer);
-  cnm::BufferType bufTy = cnm::BufferType::get(
-      rewriter.getContext(), shapeOfBuffer, inputTy.getElementType(),
-      0); // todo level is hardcoded
+  cnm::BufferType bufTy =
+      cnm::BufferType::get(rewriter.getContext(), shapeOfBuffer,
+                           inputTy.getElementType(), wgTy.getShape(),
+                           0); // todo level is hardcoded
 
   // Reshape original tensor
   Value shapeReified = rewriter.create<arith::ConstantOp>(

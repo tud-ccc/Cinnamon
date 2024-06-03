@@ -51,6 +51,8 @@ cinm-opt-help: (cinm-opt "--help")
 debug-cinm-opt *ARGS:
     gdb --args {{build_dir}}/bin/cinm-opt {{ARGS}}
 
+cnm-to-gpu FILE *ARGS: (cinm-opt FILE "--convert-cnm-to-gpu" ARGS)
+
 cinm-vulkan-runner FILE *ARGS:
     {{build_dir}}/bin/cinm-vulkan-runner {{FILE}} \
         --shared-libs=../llvm-project/build/lib/libvulkan-runtime-wrappers.so,../llvm-project/build/lib/libmlir_runner_utils.so.17 \
@@ -73,4 +75,3 @@ llvmDialectIntoExecutable FILE:
 
 addNewDialect DIALECT_NAME DIALECT_NS:
     just --justfile ./dialectTemplate/justfile applyTemplate {{DIALECT_NAME}} {{DIALECT_NS}} "cinm-mlir" {{justfile_directory()}}
-

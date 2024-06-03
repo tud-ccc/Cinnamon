@@ -8,7 +8,6 @@
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/OpImplementation.h"
 
-#include "llvm/ADT/APFloat.h"
 #include <llvm/Support/Casting.h>
 #include <mlir/IR/BuiltinTypes.h>
 #include <mlir/IR/Diagnostics.h>
@@ -45,6 +44,7 @@ ParseResult WorkgroupOp::parse(mlir::OpAsmParser &parser,
 
   int64_t current = 0;
   llvm::SmallVector<int64_t, 2> shape;
+  NamedAttrList attributes;
 
   OptionalParseResult dimension = parser.parseOptionalInteger(current);
   while (dimension.has_value()) {
@@ -56,17 +56,12 @@ ParseResult WorkgroupOp::parse(mlir::OpAsmParser &parser,
     dimension = parser.parseOptionalInteger(current);
   }
 
-  if (parser.parseRSquare().failed()) {
+  if (parser.parseRSquare() || parser.parseOptionalAttrDict(attributes)) {
     return ParseResult::failure();
   }
 
-  result.addTypes(WorkgroupType::get(result.getContext(), shape));
-
-  NamedAttrList attributes;
-  if (parser.parseOptionalAttrDict(attributes).failed()) {
-    return ParseResult::failure();
-  }
   result.addAttributes(attributes);
+  result.addTypes(WorkgroupType::get(result.getContext(), shape));
 
   return ParseResult::success();
 }
@@ -101,28 +96,15 @@ ParseResult AllocOp::parse(mlir::OpAsmParser &parser,
   }
 
   OpAsmParser::UnresolvedOperand wg;
-  if (parser.parseOperand(wg).failed()) {
-    return ParseResult::failure();
-  }
-
   NamedAttrList attributes;
-  if (parser.parseOptionalAttrDict(attributes).failed()) {
-    return ParseResult::failure();
-  }
-  result.addAttributes(attributes);
-
   Type bufferType;
-  if (parser.parseColonType(bufferType).failed()) {
-    return ParseResult::failure();
-  }
-  result.addTypes(bufferType);
-
-  if (parser.parseKeyword("for").failed()) {
-    return ParseResult::failure();
-  }
-
   Type workgroupType;
-  if (parser.parseType(workgroupType).failed()) {
+
+  if (parser.parseLParen() || parser.parseRParen() ||
+      parser.parseKeyword("for") || parser.parseOperand(wg) ||
+      parser.parseOptionalAttrDict(attributes) ||
+      parser.parseColonType(bufferType) || parser.parseKeyword("for") ||
+      parser.parseType(workgroupType)) {
     return ParseResult::failure();
   }
 
@@ -130,7 +112,10 @@ ParseResult AllocOp::parse(mlir::OpAsmParser &parser,
   if (parser.resolveOperand(wg, workgroupType, operands).failed()) {
     return ParseResult::failure();
   }
+
   result.addOperands(operands);
+  result.addAttributes(attributes);
+  result.addTypes(bufferType);
 
   return ParseResult::success();
 }
@@ -144,21 +129,16 @@ void AllocOp::print(mlir::OpAsmPrinter &printer) {
 ParseResult SetZeroOp::parse(mlir::OpAsmParser &parser,
                              mlir::OperationState &result) {
   OpAsmParser::UnresolvedOperand buffer;
-  if (parser.parseOperand(buffer).failed()) {
-    return ParseResult::failure();
-  }
-
   Type bufferType;
-  if (parser.parseColonType(bufferType).failed()) {
-    return ParseResult::failure();
-  }
-  result.addTypes(bufferType);
-
   llvm::SmallVector<Value, 1> operands;
-  if (parser.resolveOperand(buffer, bufferType, operands).failed()) {
+
+  if (parser.parseOperand(buffer) || parser.parseColonType(bufferType) ||
+      parser.resolveOperand(buffer, bufferType, operands)) {
     return ParseResult::failure();
   }
+
   result.addOperands(operands);
+  result.addTypes(bufferType);
 
   return ParseResult::success();
 }
@@ -170,69 +150,33 @@ void SetZeroOp::print(mlir::OpAsmPrinter &printer) {
 ParseResult ScatterOp::parse(mlir::OpAsmParser &parser,
                              mlir::OperationState &result) {
   SmallVector<OpAsmParser::UnresolvedOperand, 3> unresolvedOperands;
-  if (parser.parseOperand(unresolvedOperands.emplace_back()).failed()) {
-    return ParseResult::failure();
-  }
-
-  if (parser.parseKeyword("into").failed()) {
-    return ParseResult::failure();
-  }
-
-  if (parser.parseOperand(unresolvedOperands.emplace_back()).failed()) {
-    return ParseResult::failure();
-  }
-
-  if (parser.parseLSquare().failed()) {
-    return ParseResult::failure();
-  }
-
   AffineMapAttr mapAttr;
-  if (parser.parseAttribute(mapAttr, "scatterMap", result.attributes)) {
-    return ParseResult::failure();
-  }
-
-  if (parser.parseRSquare().failed()) {
-    return ParseResult::failure();
-  }
-
-  if (parser.parseKeyword("of").failed()) {
-    return ParseResult::failure();
-  }
-
-  if (parser.parseOperand(unresolvedOperands.emplace_back()).failed()) {
-    return ParseResult::failure();
-  }
-
   SmallVector<Type, 3> operandTypes;
-  if (parser.parseColonType(operandTypes.emplace_back()).failed()) {
-    return ParseResult::failure();
-  }
 
-  if (parser.parseKeyword("into").failed()) {
-    return ParseResult::failure();
-  }
-
-  if (parser.parseType(operandTypes.emplace_back()).failed()) {
-    return ParseResult::failure();
-  }
-
-  if (parser.parseKeyword("of").failed()) {
-    return ParseResult::failure();
-  }
-
-  if (parser.parseType(operandTypes.emplace_back()).failed()) {
+  if (parser.parseOperand(unresolvedOperands.emplace_back()) ||
+      parser.parseKeyword("into") ||
+      parser.parseOperand(unresolvedOperands.emplace_back()) ||
+      parser.parseLSquare() ||
+      parser.parseAttribute(mapAttr, "scatterMap", result.attributes) ||
+      parser.parseRSquare() || parser.parseKeyword("of") ||
+      parser.parseOperand(unresolvedOperands.emplace_back()) ||
+      parser.parseColonType(operandTypes.emplace_back()) ||
+      parser.parseKeyword("into") ||
+      parser.parseType(operandTypes.emplace_back()) ||
+      parser.parseKeyword("of") ||
+      parser.parseType(operandTypes.emplace_back())) {
     return ParseResult::failure();
   }
 
   llvm::SmallVector<Value, 3> operands;
   for (size_t i = 0; i < unresolvedOperands.size(); i++) {
-    if (parser.resolveOperand(unresolvedOperands[i], operandTypes[i], operands)
-            .failed()) {
+    if (parser.resolveOperand(unresolvedOperands[i], operandTypes[i],
+                              operands)) {
       return ParseResult::failure();
     }
   }
-  result.addOperands(operands);
 
+  result.addOperands(operands);
   result.addTypes(ScatterTokenType::get(parser.getContext()));
 
   return ParseResult::success();
@@ -272,8 +216,8 @@ ParseResult GatherOp::parse(mlir::OpAsmParser &parser,
       return ParseResult::failure();
     }
   }
-  result.addOperands(operands);
 
+  result.addOperands(operands);
   result.addTypes(result_type);
   result.addTypes(GatherTokenType::get(parser.getContext()));
 
@@ -295,11 +239,8 @@ ParseResult LaunchOp::parse(mlir::OpAsmParser &parser,
   SmallVector<Type> operandTypes;
   operandTypes.push_back(Type()); // workgroup type
 
-  if (parser.parseOperand(unresolvedOperands.emplace_back()).failed()) {
-    return ParseResult::failure();
-  }
-
-  if (parser.parseLParen().failed()) {
+  if (parser.parseOperand(unresolvedOperands.emplace_back()) ||
+      parser.parseLParen()) {
     return ParseResult::failure();
   }
 
@@ -327,11 +268,8 @@ ParseResult LaunchOp::parse(mlir::OpAsmParser &parser,
     }
   }
 
-  if (parser.parseKeyword("on") || parser.parseType(operandTypes[0])) {
-    return ParseResult::failure();
-  }
-
-  if (parser.parseRegion(*result.addRegion(), {}, false).failed()) {
+  if (parser.parseKeyword("on") || parser.parseType(operandTypes[0]) ||
+      parser.parseRegion(*result.addRegion(), {}, false)) {
     return ParseResult::failure();
   }
 
@@ -344,12 +282,14 @@ ParseResult LaunchOp::parse(mlir::OpAsmParser &parser,
 
   llvm::SmallVector<Value> operands;
   for (size_t i = 0; i < unresolvedOperands.size(); i++) {
-    if (parser.resolveOperand(unresolvedOperands[i], operandTypes[i], operands)
-            .failed()) {
+    if (parser.resolveOperand(unresolvedOperands[i], operandTypes[i],
+                              operands)) {
       return ParseResult::failure();
     }
   }
+
   result.addOperands(operands);
+  result.addTypes(LaunchTokenType::get(parser.getContext()));
 
   return ParseResult::success();
 }
@@ -374,11 +314,6 @@ void LaunchOp::print(mlir::OpAsmPrinter &printer) {
   printer.printRegion(getRegion());
 }
 
-ParseResult TerminatorOp::parse(mlir::OpAsmParser &, mlir::OperationState &) {
-  return ParseResult::success();
-}
-
-void TerminatorOp::print(mlir::OpAsmPrinter &) {}
 
 LogicalResult LaunchOp::verify() {
   auto bodyArgs = getBody().getArguments();
