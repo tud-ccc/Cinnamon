@@ -4,11 +4,15 @@
 
 #include "cinm-mlir/Dialect/Cnm/IR/CnmOps.h"
 
+#include "cinm-mlir/Dialect/Cnm/IR/CnmTypes.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/OpImplementation.h"
 
 #include "llvm/ADT/APFloat.h"
 #include <llvm/Support/Casting.h>
+#include <mlir/IR/BuiltinTypes.h>
+#include <mlir/IR/Diagnostics.h>
+#include <mlir/IR/TypeRange.h>
 #include <mlir/Support/LogicalResult.h>
 
 #define DEBUG_TYPE "cnm-ops"
@@ -31,11 +35,10 @@ void CnmDialect::registerOps() {
 #include "cinm-mlir/Dialect/Cnm/IR/CnmOps.cpp.inc"
       >();
 }
-
 // parsers/printers
 
-ParseResult mlir::cnm::WorkgroupOp::parse(mlir::OpAsmParser &parser,
-                                          mlir::OperationState &result) {
+ParseResult WorkgroupOp::parse(mlir::OpAsmParser &parser,
+                               mlir::OperationState &result) {
   if (parser.parseLSquare().failed()) {
     return ParseResult::failure();
   }
@@ -68,7 +71,7 @@ ParseResult mlir::cnm::WorkgroupOp::parse(mlir::OpAsmParser &parser,
   return ParseResult::success();
 }
 
-void mlir::cnm::WorkgroupOp::print(mlir::OpAsmPrinter &printer) {
+void WorkgroupOp::print(mlir::OpAsmPrinter &printer) {
   printer << " [";
   const auto shape = getType().getShape();
   for (uint64_t i = 0; i < shape.size(); i++) {
@@ -81,8 +84,8 @@ void mlir::cnm::WorkgroupOp::print(mlir::OpAsmPrinter &printer) {
   printer.printOptionalAttrDict(this->getOperation()->getAttrs());
 }
 
-ParseResult mlir::cnm::AllocOp::parse(mlir::OpAsmParser &parser,
-                                      mlir::OperationState &result) {
+ParseResult AllocOp::parse(mlir::OpAsmParser &parser,
+                           mlir::OperationState &result) {
   if (parser.parseLParen().failed()) {
     return ParseResult::failure();
   }
@@ -132,14 +135,14 @@ ParseResult mlir::cnm::AllocOp::parse(mlir::OpAsmParser &parser,
   return ParseResult::success();
 }
 
-void mlir::cnm::AllocOp::print(mlir::OpAsmPrinter &printer) {
+void AllocOp::print(mlir::OpAsmPrinter &printer) {
   printer << " () for " << getOperand();
   printer.printOptionalAttrDict(this->getOperation()->getAttrs());
   printer << " : " << getType() << " for " << getOperand().getType();
 }
 
-ParseResult mlir::cnm::SetZeroOp::parse(mlir::OpAsmParser &parser,
-                                        mlir::OperationState &result) {
+ParseResult SetZeroOp::parse(mlir::OpAsmParser &parser,
+                             mlir::OperationState &result) {
   OpAsmParser::UnresolvedOperand buffer;
   if (parser.parseOperand(buffer).failed()) {
     return ParseResult::failure();
@@ -160,12 +163,12 @@ ParseResult mlir::cnm::SetZeroOp::parse(mlir::OpAsmParser &parser,
   return ParseResult::success();
 }
 
-void mlir::cnm::SetZeroOp::print(mlir::OpAsmPrinter &printer) {
+void SetZeroOp::print(mlir::OpAsmPrinter &printer) {
   printer << " " << getOperand() << " : " << getOperand().getType();
 }
 
-ParseResult mlir::cnm::ScatterOp::parse(mlir::OpAsmParser &parser,
-                                        mlir::OperationState &result) {
+ParseResult ScatterOp::parse(mlir::OpAsmParser &parser,
+                             mlir::OperationState &result) {
   SmallVector<OpAsmParser::UnresolvedOperand, 3> unresolvedOperands;
   if (parser.parseOperand(unresolvedOperands.emplace_back()).failed()) {
     return ParseResult::failure();
@@ -235,7 +238,7 @@ ParseResult mlir::cnm::ScatterOp::parse(mlir::OpAsmParser &parser,
   return ParseResult::success();
 }
 
-void mlir::cnm::ScatterOp::print(mlir::OpAsmPrinter &printer) {
+void ScatterOp::print(mlir::OpAsmPrinter &printer) {
   printer << " " << getOperand(0) << " into " << getOperand(1) << "["
           << getScatterMapAttr() << "]"
           << " of " << getOperand(2);
@@ -243,8 +246,8 @@ void mlir::cnm::ScatterOp::print(mlir::OpAsmPrinter &printer) {
           << getOperand(1).getType() << " of " << getOperand(2).getType();
 }
 
-ParseResult mlir::cnm::GatherOp::parse(mlir::OpAsmParser &parser,
-                                       mlir::OperationState &result) {
+ParseResult GatherOp::parse(mlir::OpAsmParser &parser,
+                            mlir::OperationState &result) {
   SmallVector<OpAsmParser::UnresolvedOperand, 2> unresolvedOperands;
   Type result_type;
   SmallVector<Type, 2> operandTypes;
@@ -277,15 +280,15 @@ ParseResult mlir::cnm::GatherOp::parse(mlir::OpAsmParser &parser,
   return ParseResult::success();
 }
 
-void mlir::cnm::GatherOp::print(mlir::OpAsmPrinter &printer) {
+void GatherOp::print(mlir::OpAsmPrinter &printer) {
   printer << " " << getOperand(0) << "[" << getScatterMapAttr() << "]"
           << " of " << getOperand(1);
   printer << " : " << getOperand(0).getType() << " of "
           << getOperand(1).getType() << " into " << getResultTypes()[0];
 }
 
-ParseResult mlir::cnm::LaunchOp::parse(mlir::OpAsmParser &parser,
-                                       mlir::OperationState &result) {
+ParseResult LaunchOp::parse(mlir::OpAsmParser &parser,
+                            mlir::OperationState &result) {
   result.addTypes(LaunchTokenType::get(parser.getContext()));
 
   SmallVector<OpAsmParser::UnresolvedOperand> unresolvedOperands;
@@ -351,7 +354,7 @@ ParseResult mlir::cnm::LaunchOp::parse(mlir::OpAsmParser &parser,
   return ParseResult::success();
 }
 
-void mlir::cnm::LaunchOp::print(mlir::OpAsmPrinter &printer) {
+void LaunchOp::print(mlir::OpAsmPrinter &printer) {
   printer << " " << getOperand(0);
   printer << " (";
   for (uint64_t i = 1; i < getNumOperands(); i++) {
@@ -371,9 +374,33 @@ void mlir::cnm::LaunchOp::print(mlir::OpAsmPrinter &printer) {
   printer.printRegion(getRegion());
 }
 
-ParseResult mlir::cnm::TerminatorOp::parse(mlir::OpAsmParser &,
-                                           mlir::OperationState &) {
+ParseResult TerminatorOp::parse(mlir::OpAsmParser &, mlir::OperationState &) {
   return ParseResult::success();
 }
 
-void mlir::cnm::TerminatorOp::print(mlir::OpAsmPrinter &) {}
+void TerminatorOp::print(mlir::OpAsmPrinter &) {}
+
+LogicalResult LaunchOp::verify() {
+  auto bodyArgs = getBody().getArguments();
+  auto operands = getParams();
+  if (bodyArgs.size() != operands.size())
+    return emitOpError("expected ")
+           << operands.size() << " arguments, got " << bodyArgs.size();
+
+  for (auto [arg, operand] : llvm::zip(bodyArgs, operands)) {
+    if (auto bufTy = operand.getType().dyn_cast<cnm::BufferType>()) {
+      auto memrefTy = MemRefType::get(bufTy.getShape(), bufTy.getElementType());
+      if (arg.getType() != memrefTy)
+        return emitError("Mismatched type for launch argument, expected ")
+               << memrefTy << ", got " << arg.getType();
+    } else if (operand.getType().isIntOrIndexOrFloat()) {
+      if (arg.getType() != operand.getType())
+        return emitError("Mismatched type for launch argument, expected ")
+               << arg.getType();
+    } else {
+      return emitError("Invalid type for argument ")
+             << operand << ", expecting !cnm.buffer or scalar type";
+    }
+  }
+  return success();
+}

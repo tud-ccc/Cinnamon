@@ -71,7 +71,7 @@ def GatherOp: Cnm_Op<"gather"> {
 }
 
 def LaunchOp: Cnm_Op<"launch"> {
-    let summary = "";
+    let summary = "Launch a code kernel on a given workgroup. Input buffers should have been scattered beforehand.";
     let description = [{}];
 
     let arguments = (ins WorkgroupType:$wg, Variadic<AnyType>:$params);
@@ -79,6 +79,7 @@ def LaunchOp: Cnm_Op<"launch"> {
     let regions = (region SizedRegion<1>:$body);
 
     let hasCustomAssemblyFormat = 1;
+    let hasVerifier = 1;
 }
 
 def TerminatorOp: Cnm_Op<"terminator", [Terminator]> {
