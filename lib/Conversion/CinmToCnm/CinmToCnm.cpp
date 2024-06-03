@@ -15,6 +15,7 @@
 #include <mlir/IR/AffineExpr.h>
 #include <mlir/IR/AffineMap.h>
 #include <mlir/IR/Builders.h>
+#include <mlir/IR/BuiltinAttributes.h>
 #include <mlir/IR/BuiltinTypes.h>
 #include <mlir/IR/IRMapping.h>
 #include <mlir/IR/ImplicitLocOpBuilder.h>
@@ -25,6 +26,7 @@
 #include <mlir/Support/LogicalResult.h>
 #include <mlir/Transforms/DialectConversion.h>
 #include <numeric>
+#include <optional>
 
 using namespace mlir;
 #define GEN_PASS_CLASSES
@@ -45,7 +47,8 @@ newShapeFittingWorkgroup(llvm::ArrayRef<int64_t> shape,
   auto remainder = numBufItems / numWgItems;
 
   llvm::SmallVector<int64_t, 3> newShapeBuf(wgShape);
-  newShapeBuf.push_back(remainder);
+  if (remainder != 1)
+    newShapeBuf.push_back(remainder);
   return newShapeBuf;
 }
 
@@ -92,13 +95,18 @@ Value convertInputIntoAlloc(Value inputBuf, Value workGroup,
   return alloc;
 }
 
-void convertLinalgReduceIntoLaunch(ImplicitLocOpBuilder builder,
-                                   linalg::ReduceOp reduction, Value workgroup,
-                                   cnm::WorkgroupType wgTy) {
+llvm::SmallVector<Value, 1>
+convertLinalgReduceIntoLaunch(ImplicitLocOpBuilder builder,
+                              linalg::ReduceOp reduction,
+                              linalg::ReduceOp::Adaptor adaptor,
+                              Value workgroup, cnm::WorkgroupType wgTy) {
 
-  llvm::SmallVector<Value, 2> launchOperands;
-  llvm::SmallVector<AffineMap, 2> affineMaps;
-  for (auto input : reduction->getOperands()) {
+  llvm::SmallVector<Value, 3> launchOperands;
+  llvm::SmallVector<AffineMap, 3> affineMaps;
+  llvm::SmallVector<Type, 3> mappedArgTypes;
+
+  builder.setInsertionPointAfter(reduction);
+  for (auto input : adaptor.getOperands()) {
     launchOperands.emplace_back(convertInputIntoAlloc(
         input, workgroup, wgTy, affineMaps.emplace_back(), builder));
   }
@@ -107,29 +115,46 @@ void convertLinalgReduceIntoLaunch(ImplicitLocOpBuilder builder,
       builder.create<cnm::LaunchOp>(workgroup, launchOperands);
 
   {
-    builder.setInsertionPointToStart(&launchOp.getBody().front());
+    auto &launchBlock = launchOp.getBody().emplaceBlock();
     // arguments are memrefs with same shape as inputs
-    auto args = launchOp.getBody().getArguments();
-    auto firstOutput = args.begin() + reduction.getNumDpsInits();
+    for (auto input : adaptor.getOperands()) {
+      auto inputTy = input.getType().cast<RankedTensorType>();
+      auto mappedTy =
+          MemRefType::get(inputTy.getShape(), inputTy.getElementType());
+      launchBlock.addArgument(mappedTy, input.getLoc());
+    }
+    auto args = launchBlock.getArguments();
+    auto firstOutput = args.begin() + reduction.getNumDpsInputs();
     llvm::SmallVector<Value, 2> reduceInpts(args.begin(), firstOutput);
     llvm::SmallVector<Value, 1> reduceInits(firstOutput, args.end());
 
+    // Here we are copying the original reduce into the launch,
+    // except it's now operating on memrefs provided by cinm.
+    // This can be lowered to affine or whatever afterwards.
+    builder.setInsertionPointToStart(&launchBlock);
     auto innerReduce = builder.create<linalg::ReduceOp>(
         // no results bc memref
         TypeRange{}, reduceInpts, reduceInits, reduction.getDimensions());
+
     IRMapping irMapping;
     reduction.getRegion().cloneInto(&innerReduce.getRegion(), irMapping);
+    builder.create<cnm::TerminatorOp>();
   }
   builder.setInsertionPointAfter(launchOp);
-  for (auto [alloc, map, result] :
-       llvm::zip(launchOperands, affineMaps, reduction.getResults())) {
+
+  // gather the results (only the out buffers)
+
+  llvm::SmallVector<Value, 1> newResults;
+  for (size_t i = 0; i < reduction->getNumResults(); i++) {
+    auto result = reduction.getResult(i);
+    auto alloc = launchOperands[reduction.getNumDpsInputs() + i];
+    auto map = affineMaps[reduction.getNumDpsInputs() + i];
     auto res = builder.create<cnm::GatherOp>(
         result.getType(), cnm::GatherTokenType::get(builder.getContext()),
-        workgroup, alloc, map);
-    result.replaceAllUsesWith(res.getOutput());
+        alloc, workgroup, map);
+    newResults.push_back(res.getOutput());
   }
-
-  reduction->remove();
+  return newResults;
 }
 
 bool fitsIntoWorkgroup(Value value, cnm::WorkgroupType wgTy) {
@@ -139,22 +164,52 @@ bool fitsIntoWorkgroup(Value value, cnm::WorkgroupType wgTy) {
   return false;
 }
 
-struct ConvertLinalgReduceIntoLaunch
-    : public OpRewritePattern<linalg::ReduceOp> {
-  using OpRewritePattern::OpRewritePattern;
+struct WorkGroupMakerStrategy {
+  static std::optional<cnm::WorkgroupType>
+  determineWorkGroupTypeForRewrite(linalg::ReduceOp op);
+};
 
-  LogicalResult matchAndRewrite(linalg::ReduceOp op,
-                                PatternRewriter &rewriter) const override {
+// this strategy just tries to use a static workgroup shape
+template <unsigned... Shape> struct StaticWorkGroup {
+  static std::optional<cnm::WorkgroupType>
+  determineWorkGroupTypeForRewrite(linalg::ReduceOp op) {
+    cnm::WorkgroupType wgTy =
+        cnm::WorkgroupType::get(op.getContext(), {Shape...});
+
+    if (llvm::all_of(op->getOperands(),
+                     [&](Value v) { return fitsIntoWorkgroup(v, wgTy); }))
+      return wgTy;
+    return std::nullopt;
+  }
+};
+
+template <typename WGStrat>
+struct ConvertLinalgReduceIntoLaunch
+    : public OpConversionPattern<linalg::ReduceOp> {
+  using OpConversionPattern::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(linalg::ReduceOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
 
     ImplicitLocOpBuilder builder(op->getLoc(), rewriter);
-    cnm::WorkgroupType wgTy = cnm::WorkgroupType::get(getContext(), {4, 16});
-    if (!llvm::all_of(op->getOperands(),
+    auto wgTyOpt = WGStrat::determineWorkGroupTypeForRewrite(op);
+    if (!wgTyOpt)
+      return failure();
+    cnm::WorkgroupType wgTy = *wgTyOpt;
+    // Note we match only a form of linalg reduce for which
+    // all operands are mappable onto a workgroup explicitly.
+    // This means the operands of that reduce must be "big enough",
+    // including the result.
+    if (!llvm::all_of(adaptor.getOperands(),
                       [&](Value v) { return fitsIntoWorkgroup(v, wgTy); }))
       return failure();
 
     Value workgroup = builder.create<cnm::WorkgroupOp>(wgTy);
 
-    convertLinalgReduceIntoLaunch(builder, op, workgroup, wgTy);
+    auto results =
+        convertLinalgReduceIntoLaunch(builder, op, adaptor, workgroup, wgTy);
+    rewriter.replaceOp(op, results);
 
     return success();
   }
@@ -163,13 +218,22 @@ struct ConvertLinalgReduceIntoLaunch
 struct ConvertTiledCinmToCnm
     : public ConvertTiledCinmToCnmBase<ConvertTiledCinmToCnm> {
 
+  using WorkGroupMakerStrategy = StaticWorkGroup<4, 16>;
+
   void runOnOperation() override {
     RewritePatternSet patterns(&getContext());
-    patterns.insert<ConvertLinalgReduceIntoLaunch>(&getContext());
+    patterns.insert<ConvertLinalgReduceIntoLaunch<WorkGroupMakerStrategy>>(
+        &getContext());
     ConversionTarget target(getContext());
 
-    if (failed(applyPartialConversion(getOperation(), target,
-                                      std::move(patterns))))
+    target.addDynamicallyLegalOp<linalg::ReduceOp>(
+        [](linalg::ReduceOp op) -> bool {
+          return !WorkGroupMakerStrategy::determineWorkGroupTypeForRewrite(op);
+        });
+    target.markUnknownOpDynamicallyLegal([](...) { return true; });
+
+    if (failed(
+            applyFullConversion(getOperation(), target, std::move(patterns))))
       signalPassFailure();
   }
 };
