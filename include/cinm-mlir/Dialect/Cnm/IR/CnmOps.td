@@ -58,6 +58,7 @@ def ScatterOp: Cnm_Op<"scatter"> {
     let results = (outs ScatterTokenType:$token);
 
     let hasCustomAssemblyFormat = 1;
+    let hasVerifier = 1;
 }
 
 def GatherOp: Cnm_Op<"gather"> {
@@ -68,6 +69,7 @@ def GatherOp: Cnm_Op<"gather"> {
     let results = (outs Builtin_RankedTensor:$output, GatherTokenType:$token);
 
     let hasCustomAssemblyFormat = 1;
+    let hasVerifier = 1;
 }
 
 def LaunchOp: Cnm_Op<"launch"> {
