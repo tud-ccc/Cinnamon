@@ -5,6 +5,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <functional>
+#include <llvm/ADT/ArrayRef.h>
 #include <llvm/ADT/STLExtras.h>
 #include <llvm/ADT/SmallVector.h>
 #include <memory>
@@ -126,11 +127,14 @@ convertLinalgReduceIntoLaunch(ImplicitLocOpBuilder builder,
   {
     auto &launchBlock = launchOp.getBody().emplaceBlock();
     // arguments are memrefs with same shape as inputs
-    for (auto input : adaptor.getOperands()) {
-      auto inputTy = input.getType().cast<RankedTensorType>();
-      auto mappedTy =
-          MemRefType::get(inputTy.getShape(), inputTy.getElementType());
-      launchBlock.addArgument(mappedTy, input.getLoc());
+    for (auto input : launchOp.getParams()) {
+      if (auto inputTy = input.getType().cast<cnm::BufferType>()) {
+        auto mappedTy =
+            MemRefType::get(inputTy.getShape(), inputTy.getElementType());
+        launchBlock.addArgument(mappedTy, input.getLoc());
+      } else {
+        launchBlock.addArgument(input.getType(), input.getLoc());
+      }
     }
     auto args = launchBlock.getArguments();
     auto firstOutput = args.begin() + reduction.getNumDpsInputs();
@@ -143,7 +147,11 @@ convertLinalgReduceIntoLaunch(ImplicitLocOpBuilder builder,
     builder.setInsertionPointToStart(&launchBlock);
     auto innerReduce = builder.create<linalg::ReduceOp>(
         // no results bc memref
-        TypeRange{}, reduceInpts, reduceInits, reduction.getDimensions());
+        TypeRange{}, reduceInpts, reduceInits,
+        // todo we are hardcoding the dimensions
+        // This is because we flatten everything. This does not support
+        // custom reduction dimensions.
+        ArrayRef<int64_t>{0});
 
     IRMapping irMapping;
     reduction.getRegion().cloneInto(&innerReduce.getRegion(), irMapping);
@@ -166,9 +174,18 @@ convertLinalgReduceIntoLaunch(ImplicitLocOpBuilder builder,
   return newResults;
 }
 
-bool fitsIntoWorkgroup(Value value, cnm::WorkgroupType wgTy) {
-  if (auto shaped = value.getType().dyn_cast<RankedTensorType>()) {
-    return shaped.getNumElements() % wgTy.getNumElements() == 0;
+bool workgroupFitsParallelDims(Type ty, cnm::WorkgroupType wgTy,
+                               ArrayRef<int64_t> reductionDims) {
+  // reductionDims is sorted
+  if (auto tensorTy = ty.dyn_cast<RankedTensorType>()) {
+    auto shape = tensorTy.getShape();
+    int64_t numNonReduceElts = 1;
+    for (size_t i = 0, j = 0; i < shape.size(); i++) {
+      if (j >= reductionDims.size() || i != reductionDims[j++]) {
+        numNonReduceElts *= shape[i];
+      }
+    }
+    return numNonReduceElts % wgTy.getNumElements() == 0;
   }
   return false;
 }
@@ -185,10 +202,20 @@ template <unsigned... Shape> struct StaticWorkGroup {
     cnm::WorkgroupType wgTy =
         cnm::WorkgroupType::get(op.getContext(), {Shape...});
 
-    if (llvm::all_of(op->getOperands(),
-                     [&](Value v) { return fitsIntoWorkgroup(v, wgTy); }))
-      return wgTy;
-    return std::nullopt;
+    // output ops need to be big enough to be dispatchable on the WG
+    if (llvm::any_of(op.getDpsInits(), [&](Value v) {
+          return !workgroupFitsParallelDims(v.getType(), wgTy, {});
+        }))
+      return std::nullopt;
+
+    // in particular the input operands WITHOUT the reduction dimensions should
+    // fit
+    if (llvm::any_of(op.getDpsInputs(), [&](Value v) {
+          return !workgroupFitsParallelDims(v.getType(), wgTy,
+                                            op.getDimensions());
+        }))
+      return std::nullopt;
+    return wgTy;
   }
 };
 
@@ -206,14 +233,6 @@ struct ConvertLinalgReduceIntoLaunch
     if (!wgTyOpt)
       return failure();
     cnm::WorkgroupType wgTy = *wgTyOpt;
-    // Note we match only a form of linalg reduce for which
-    // all operands are mappable onto a workgroup explicitly.
-    // This means the operands of that reduce must be "big enough",
-    // including the result.
-    if (!llvm::all_of(adaptor.getOperands(),
-                      [&](Value v) { return fitsIntoWorkgroup(v, wgTy); }))
-      return failure();
-
     Value workgroup = builder.create<cnm::WorkgroupOp>(wgTy);
 
     auto results =
