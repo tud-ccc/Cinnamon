@@ -87,8 +87,6 @@ def TerminatorOp: Cnm_Op<"terminator", [Terminator]> {
 
     let arguments = (ins);
     let results = (outs);
-
-    let hasCustomAssemblyFormat = 1;
 }
 
 #endif
