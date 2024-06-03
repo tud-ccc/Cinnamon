@@ -1,4 +1,4 @@
-// RUN: cinm-opt %s --cinm-tiling -split-input-file | FileCheck %s
+// RUN: cinm-opt %s --cinm-tiling=reduction-tile-size=16 -split-input-file | FileCheck %s
 
 
 // CHECK-LABEL: @gemmSquare
@@ -12,16 +12,15 @@
 // CHECK-NEXT:  %[[row:.*]] = tensor.extract_slice %[[blockA]][%[[ti]], 0] [1, 1024] [1, 1]
 // CHECK-NEXT:  %[[col:.*]] = tensor.extract_slice %[[blockB]][0, %[[tj]]] [1024, 1] [1, 1]
 
-// CHECK:       %[[stage1:.*]] = tensor.generate
-// CHECK:       %[[rowTile:.*]] = tensor.extract_slice %[[row]][%[[off:.*]]] [32] [1]
-// CHECK-NEXT:  %[[colTile:.*]] = tensor.extract_slice %[[col]][%[[off]]] [32] [1]
-// CHECK-NEXT:  linalg.reduce ins(%[[rowTile]], %[[colTile]] : {{.*}}) outs(%{{.*}} : tensor<i32>) dimensions = [0]
-// CHECK-NEXT:  (%[[ei:.*]]: i32, %[[ej:.*]]: i32, %[[init:.*]]: i32)
-// CHECK-NEXT:  %[[mul:.*]] = arith.muli %[[ei]], %[[ej]]
-// CHECK-NEXT:  %[[add:.*]] = arith.addi %[[mul]], %[[init]]
-// CHECK-NEXT:  linalg.yield %[[add]]
+// CHECK:  		%[[batchedRow:.*]] = tensor.reshape %[[row]](%{{.*}}) : (tensor<1024xi32>, tensor<2xi64>) -> tensor<64x16xi32>
+// CHECK-NEXT:  %[[batchedCol:.*]] = tensor.reshape %[[col]](%{{.*}}) : (tensor<1024xi32>, tensor<2xi64>) -> tensor<64x16xi32>
+// CHECK-NEXT:  %[[stage1:.*]] = linalg.reduce ins(%[[batchedRow]], %[[batchedCol]] : {{.*}}) outs(%{{.*}} : tensor<64xi32>) dimensions = [1]
+// CHECK-NEXT:    (%[[ei:.*]]: i32, %[[ej:.*]]: i32, %[[init:.*]]: i32)
+// CHECK-NEXT:  	%[[mul:.*]] = arith.muli %[[ei]], %[[ej]]
+// CHECK-NEXT:  	%[[add:.*]] = arith.addi %[[mul]], %[[init]]
+// CHECK-NEXT:  	linalg.yield %[[add]]
 
-// CHECK:       linalg.reduce ins(%[[stage1]] : tensor<32xi32>)
+// CHECK:       linalg.reduce ins(%[[stage1]] : tensor<64xi32>)
 
 func.func @gemmSquare(%a: tensor<1024x1024xi32>, %b: tensor<1024x1024xi32>) -> tensor<1024x1024xi32>{
 	%d = cinm.op.gemm %a, %b : (tensor<1024x1024xi32>, tensor<1024x1024xi32>) -> tensor<1024x1024xi32>

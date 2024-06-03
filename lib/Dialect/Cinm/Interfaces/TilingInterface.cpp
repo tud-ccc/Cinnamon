@@ -8,6 +8,9 @@
 #include <mlir/Dialect/Arith/IR/Arith.h>
 #include <mlir/Dialect/Linalg/IR/Linalg.h>
 #include <mlir/Dialect/Tensor/IR/Tensor.h>
+#include <mlir/IR/Attributes.h>
+#include <mlir/IR/BuiltinAttributeInterfaces.h>
+#include <mlir/IR/BuiltinAttributes.h>
 #include <mlir/IR/BuiltinTypes.h>
 #include <mlir/IR/ValueRange.h>
 #include <mlir/Support/LogicalResult.h>
@@ -54,57 +57,50 @@ SmallVector<Value> createNestedAffineForLoops(OpBuilder &builder, Location loc,
 }
 
 Value createVectorReduce2(OpBuilder &builder, Location loc, Value v0, Value v1,
-                          Value init, ReduceAccumulatorCallback merge2,
+                          Attribute init, ReduceAccumulatorCallback merge2,
                           ReduceAccumulatorCallback reduce,
                           int64_t clusterSize) {
   const RankedTensorType vectorType = v0.getType().cast<RankedTensorType>();
   assert(vectorType.getRank() == 1);
-  assert(vectorType.getShape() == v1.getType().cast<RankedTensorType>().getShape());
+  assert(vectorType.getShape() ==
+         v1.getType().cast<RankedTensorType>().getShape());
   const int64_t vectorSize = vectorType.getDimSize(0);
   const Type elementType = vectorType.getElementType();
 
-  const Value initTensor = builder.create<tensor::FromElementsOp>(
-      loc, RankedTensorType::get({}, elementType), ValueRange{init});
-  const Value clusterSizeConst =
-      builder.create<arith::ConstantOp>(loc, builder.getIndexAttr(clusterSize));
-
+  const Value initTensor = builder.create<arith::ConstantOp>(
+      loc,
+      DenseElementsAttr::get(RankedTensorType::get({}, elementType), init));
   Value stage1Output;
   if (clusterSize > 1) {
     const int64_t clusterCount = vectorSize / clusterSize;
     RankedTensorType intermediateResultType =
         RankedTensorType::get(SmallVector<int64_t>{clusterCount}, elementType);
-    stage1Output = builder.create<tensor::GenerateOp>(
-        loc, intermediateResultType, ValueRange{},
-        [&](OpBuilder &builder, Location loc, ValueRange indices) {
-          const SmallVector<int64_t> offsets{ShapedType::kDynamic};
-          const SmallVector<int64_t> sizes{clusterSize};
-          const SmallVector<int64_t> strides{1};
+    RankedTensorType reshapedTy = RankedTensorType::get(
+        SmallVector<int64_t>{clusterCount, clusterSize}, elementType);
 
-          const Value dynOffset =
-              builder.create<arith::MulIOp>(loc, indices[0], clusterSizeConst);
+    const Value outTensor = builder.create<arith::ConstantOp>(
+        loc, DenseElementsAttr::get(intermediateResultType, init));
 
-          const Type sliceType = tensor::ExtractSliceOp::inferResultType(
-              vectorType, offsets, sizes, strides);
-          const Value slice0 = builder.create<tensor::ExtractSliceOp>(
-              loc, sliceType, v0, ValueRange{dynOffset}, ValueRange{},
-              ValueRange{}, offsets, sizes, strides);
-          const Value slice1 = builder.create<tensor::ExtractSliceOp>(
-              loc, sliceType, v1, ValueRange{dynOffset}, ValueRange{},
-              ValueRange{}, offsets, sizes, strides);
+    // reified shape clusterCount x clusterSize
+    auto shapeTensor = builder.create<arith::ConstantOp>(
+        loc, DenseIntElementsAttr::get(
+                 RankedTensorType::get({2}, builder.getI64Type()),
+                 {clusterCount, clusterSize}));
 
-          linalg::ReduceOp sum = builder.create<linalg::ReduceOp>(
-              loc, ValueRange{slice0, slice1}, ValueRange{initTensor},
-              SmallVector<int64_t>{0},
-              [&](OpBuilder &builder, Location loc, ValueRange args) {
-                const Value tmp = merge2(builder, loc, args[0], args[1]);
-                const Value result = reduce(builder, loc, tmp, args[2]);
-                builder.create<linalg::YieldOp>(loc, result);
-              });
+    auto reshape0 =
+        builder.create<tensor::ReshapeOp>(loc, reshapedTy, v0, shapeTensor);
+    auto reshape1 =
+        builder.create<tensor::ReshapeOp>(loc, reshapedTy, v1, shapeTensor);
 
-          builder.create<tensor::YieldOp>(
-              loc, builder.create<tensor::ExtractOp>(loc, sum.getResult(0),
-                                                     ValueRange{}));
+    linalg::ReduceOp reduceOp = builder.create<linalg::ReduceOp>(
+        loc, ValueRange{reshape0, reshape1}, ValueRange{outTensor},
+        ArrayRef<int64_t>{1},
+        [&](OpBuilder &builder, Location loc, ValueRange args) {
+          const Value tmp = merge2(builder, loc, args[0], args[1]);
+          const Value result = reduce(builder, loc, tmp, args[2]);
+          builder.create<linalg::YieldOp>(loc, result);
         });
+    stage1Output = reduceOp.getResults()[0];
   }
 
   linalg::ReduceOp sum = builder.create<linalg::ReduceOp>(
@@ -272,8 +268,7 @@ Value createMatmul(OpBuilder builder, Location loc, Value lhs, Value rhs,
         }
 
         const Type elementType = lhsType.getElementType();
-        const Value init = builder.create<arith::ConstantOp>(
-            loc, builder.getIntegerAttr(elementType, 0));
+        const Attribute init = builder.getIntegerAttr(elementType, 0);
 
         Value result;
         if (elementType.isa<IntegerType>()) {

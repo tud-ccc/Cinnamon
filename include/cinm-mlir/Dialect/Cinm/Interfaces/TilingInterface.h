@@ -49,7 +49,7 @@ Value createVectorReduce(OpBuilder &builder, Location loc, Value vector,
 
 template <typename MergeOp, typename ReductionOp>
 Value createVectorReduce2(OpBuilder &builder, Location loc, Value vector, Value vector2,
-                         Value init, int64_t clusterSize) {
+                         Attribute init, int64_t clusterSize) {
   return createVectorReduce2(
       builder, loc, vector, vector2, init,
       [](OpBuilder &builder, Location loc, Value lhs, Value rhs) {
@@ -66,7 +66,7 @@ Value createVectorReduce(OpBuilder &builder, Location loc, Value vector,
                          int64_t clusterSize = 1);
 
 Value createVectorReduce2(OpBuilder &builder, Location loc, Value vector, Value vector2,
-                         Value init, ReduceAccumulatorCallback merge2,
+                         Attribute init, ReduceAccumulatorCallback merge2,
                          ReduceAccumulatorCallback reduce,
                          int64_t clusterSize = 1);
 
