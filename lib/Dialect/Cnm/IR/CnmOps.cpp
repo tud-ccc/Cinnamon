@@ -7,7 +7,6 @@
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/OpImplementation.h"
 
-#include "llvm/ADT/APFloat.h"
 #include <llvm/Support/Casting.h>
 #include <mlir/Support/LogicalResult.h>
 

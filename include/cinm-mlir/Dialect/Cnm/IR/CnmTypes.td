@@ -29,7 +29,12 @@ def BufferType : Cnm_Type<"Buffer", [ShapedTypeInterface]> {
   let mnemonic = "buffer";
   let summary = "";
 
-  let parameters = (ins ArrayRefParameter<"int64_t">:$shape, "Type":$element_type, "int64_t":$level);
+  let parameters = (
+    ins ArrayRefParameter<"int64_t">:$shape,
+    "Type":$element_type,
+    ArrayRefParameter<"int64_t">:$workgroupShape,
+    "int64_t":$level
+  );
 
   let hasCustomAssemblyFormat = 1;
 
@@ -37,7 +42,7 @@ def BufferType : Cnm_Type<"Buffer", [ShapedTypeInterface]> {
     bool hasRank() { return true; }
     ShapedType cloneWith(::std::optional<::llvm::ArrayRef<int64_t>> newShape, ::mlir::Type elementType) {
       auto shape = newShape.value_or(getShape());
-      return BufferType::get(getContext(), shape, elementType, getLevel());
+      return BufferType::get(getContext(), shape, elementType, getWorkgroupShape(), getLevel());
     }
   }];
 }

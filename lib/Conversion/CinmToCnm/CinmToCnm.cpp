@@ -75,8 +75,9 @@ Value convertInputIntoAlloc(Value inputBuf, Value workGroup,
   // For each input of the reduce, we need to
 
   auto inputTy = inputBuf.getType().cast<RankedTensorType>();
-  cnm::BufferType bufTy = cnm::BufferType::get(
-      rewriter.getContext(), inputTy.getShape(), inputTy.getElementType(), 0);
+  cnm::BufferType bufTy =
+      cnm::BufferType::get(rewriter.getContext(), inputTy.getShape(),
+                           inputTy.getElementType(), wgTy.getShape(), 0);
 
   // 1. Allocate a cinm buffer
   Value alloc = rewriter.create<cnm::AllocOp>(bufTy, workGroup);
