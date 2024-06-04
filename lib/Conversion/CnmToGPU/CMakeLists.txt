@@ -11,6 +11,7 @@ add_mlir_conversion_library(MLIRCnmToGPU
     Core
 
     LINK_LIBS PUBLIC
+    CinmCommonPatterns
     CnmIR
     MLIRDialectUtils
     MLIRFuncDialect

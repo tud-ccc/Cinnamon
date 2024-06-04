@@ -1,8 +1,3 @@
-/// Declares the EKL TypeCheckOpInterface.
-///
-/// @file
-/// @author     Karl F. A. Friebel (karl.friebel@tu-dresden.de)
-
 #pragma once
 
 #include "mlir/IR/Builders.h"
@@ -24,17 +19,8 @@
 
 namespace mlir::cinm {
 
-using BodyBuilderCallback = function_ref<SmallVector<Value>(
-    OpBuilder &, Location, ValueRange, ValueRange)>;
-
 using ReduceAccumulatorCallback =
     function_ref<Value(OpBuilder &, Location, Value, Value)>;
-
-SmallVector<Value> createNestedAffineForLoops(OpBuilder &builder, Location loc,
-                                              ArrayRef<int64_t> loopSizes,
-                                              ArrayRef<int64_t> loopSteps,
-                                              ValueRange iterArgInit,
-                                              BodyBuilderCallback bodyBuilder);
 
 template <typename ReductionOp>
 Value createVectorReduce(OpBuilder &builder, Location loc, Value vector,
@@ -48,8 +34,8 @@ Value createVectorReduce(OpBuilder &builder, Location loc, Value vector,
 }
 
 template <typename MergeOp, typename ReductionOp>
-Value createVectorReduce2(OpBuilder &builder, Location loc, Value vector, Value vector2,
-                         Attribute init, int64_t clusterSize) {
+Value createVectorReduce2(OpBuilder &builder, Location loc, Value vector,
+                          Value vector2, Attribute init, int64_t clusterSize) {
   return createVectorReduce2(
       builder, loc, vector, vector2, init,
       [](OpBuilder &builder, Location loc, Value lhs, Value rhs) {
@@ -65,10 +51,11 @@ Value createVectorReduce(OpBuilder &builder, Location loc, Value vector,
                          Value init, ReduceAccumulatorCallback callback,
                          int64_t clusterSize = 1);
 
-Value createVectorReduce2(OpBuilder &builder, Location loc, Value vector, Value vector2,
-                         Attribute init, ReduceAccumulatorCallback merge2,
-                         ReduceAccumulatorCallback reduce,
-                         int64_t clusterSize = 1);
+Value createVectorReduce2(OpBuilder &builder, Location loc, Value vector,
+                          Value vector2, Attribute init,
+                          ReduceAccumulatorCallback merge2,
+                          ReduceAccumulatorCallback reduce,
+                          int64_t clusterSize = 1);
 
 Value createVectorReduceAdd(OpBuilder &builder, Location loc, Value vector,
                             int64_t clusterSize = 1);

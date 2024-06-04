@@ -1,4 +1,5 @@
 #include "cinm-mlir/Conversion/CnmToGPU/CnmToGPU.h"
+#include "cinm-mlir/Conversion/CommonPatterns.h"
 #include "cinm-mlir/Dialect/Cnm/IR/CnmOps.h"
 #include "cinm-mlir/Dialect/Cnm/IR/CnmTypes.h"
 
@@ -34,10 +35,11 @@
 #include <mlir/Support/LogicalResult.h>
 #include <mlir/Transforms/DialectConversion.h>
 
-#define GEN_PASS_CLASSES
+#define GEN_PASS_DEF_CONVERTCNMTOGPUPASS
 #include "cinm-mlir/Conversion/CnmPasses.h.inc"
 
 namespace mlir::cnm {
+namespace cnmtogpu {
 SmallVector<int64_t, 2> getBufferTypeShape(cnm::BufferType bufferType) {
   SmallVector<int64_t> shape{bufferType.getShape()};
   while (shape.size() < bufferType.getWorkgroupShape().size()) {
@@ -46,7 +48,7 @@ SmallVector<int64_t, 2> getBufferTypeShape(cnm::BufferType bufferType) {
   return shape;
 }
 
-MemRefType getMemrefType(cnm::BufferType bufferType) {
+MemRefType convertCnmBufferToMemRefType(cnm::BufferType bufferType) {
   ArrayRef<int64_t> workgroupShape = bufferType.getWorkgroupShape();
   SmallVector<int64_t, 2> shape = getBufferTypeShape(bufferType);
   for (size_t i = 0; i < workgroupShape.size(); i++) {
@@ -102,40 +104,9 @@ struct ConvertCnmAllocToGPU : public OpConversionPattern<cnm::AllocOp> {
   matchAndRewrite(cnm::AllocOp op, OpAdaptor,
                   ConversionPatternRewriter &rewriter) const override {
     const BufferType bufferType = op.getType();
-    const MemRefType allocType = getMemrefType(bufferType);
+    const MemRefType allocType = convertCnmBufferToMemRefType(bufferType);
     rewriter.replaceOp(
         op, rewriter.create<memref::AllocOp>(op.getLoc(), allocType));
-    return success();
-  }
-};
-
-struct ConvertCnmSetZeroToGPU : public OpConversionPattern<cnm::SetZeroOp> {
-  using OpConversionPattern<cnm::SetZeroOp>::OpConversionPattern;
-
-  LogicalResult
-  matchAndRewrite(cnm::SetZeroOp op, OpAdaptor,
-                  ConversionPatternRewriter &rewriter) const override {
-    const Value dst = rewriter.getRemappedValue(op.getOperand());
-
-    const MemRefType type = dst.getType().cast<MemRefType>();
-    SmallVector<affine::AffineForOp, 2> loops;
-    SmallVector<Value> indices;
-
-    for (int64_t size : type.getShape()) {
-      affine::AffineForOp loop =
-          rewriter.create<affine::AffineForOp>(op.getLoc(), 0, size, 1);
-      loops.push_back(loop);
-      indices.push_back(loop.getBody()->getArgument(0));
-      rewriter.setInsertionPointToStart(loop.getBody());
-    }
-
-    // inner most loop body
-    const Value zero = rewriter.create<arith::ConstantOp>(
-        op.getLoc(), rewriter.getZeroAttr(op.getType().getElementType()));
-    rewriter.create<memref::StoreOp>(op.getLoc(), zero, dst, indices);
-
-    rewriter.setInsertionPointAfter(loops[0]);
-    rewriter.replaceOp(op, {dst});
     return success();
   }
 };
@@ -151,8 +122,8 @@ struct ConvertCnmScatterToGPU : public OpConversionPattern<cnm::ScatterOp> {
     const SmallVector<int64_t, 2> bufferShape = getBufferTypeShape(bufferType);
 
     Value memref = rewriter.getRemappedValue(op.getOperand(1));
-    memref =
-        createCast(op.getLoc(), rewriter, getMemrefType(bufferType), memref);
+    memref = createCast(op.getLoc(), rewriter,
+                        convertCnmBufferToMemRefType(bufferType), memref);
 
     const Value tensor = op.getOperand(0);
     const RankedTensorType tensorType =
@@ -198,8 +169,8 @@ struct ConvertCnmGatherToGPU : public OpConversionPattern<cnm::GatherOp> {
     const SmallVector<int64_t, 2> bufferShape = getBufferTypeShape(bufferType);
 
     Value memref = rewriter.getRemappedValue(op.getOperand(0));
-    memref =
-        createCast(op.getLoc(), rewriter, getMemrefType(bufferType), memref);
+    memref = createCast(op.getLoc(), rewriter,
+                        convertCnmBufferToMemRefType(bufferType), memref);
 
     const RankedTensorType tensorType =
         op.getResultTypes()[0].cast<RankedTensorType>();
@@ -293,9 +264,9 @@ struct ConvertCnmLaunchToGPU : public OpConversionPattern<cnm::LaunchOp> {
       const SmallVector<int64_t, 2> bufferShape =
           getBufferTypeShape(bufferType);
 
-      const Value source =
-          createCast(op.getLoc(), rewriter, getMemrefType(bufferType),
-                     rewriter.getRemappedValue(param));
+      const Value source = createCast(op.getLoc(), rewriter,
+                                      convertCnmBufferToMemRefType(bufferType),
+                                      rewriter.getRemappedValue(param));
 
       const SmallVector<int64_t, 2> staticOffsets(workgroupShape.size(),
                                                   ShapedType::kDynamic);
@@ -312,8 +283,8 @@ struct ConvertCnmLaunchToGPU : public OpConversionPattern<cnm::LaunchOp> {
       }
 
       const Type resultType = memref::SubViewOp::inferRankReducedResultType(
-          bufferType.getShape(), getMemrefType(bufferType), staticOffsets,
-          staticSizes, staticStrides);
+          bufferType.getShape(), convertCnmBufferToMemRefType(bufferType),
+          staticOffsets, staticSizes, staticStrides);
 
       const Value subview = rewriter
                                 .create<memref::SubViewOp>(
@@ -345,19 +316,26 @@ struct ConvertCnmTerminatorToGPU
     return success();
   }
 };
+} // namespace cnmtogpu
 
-void populateCnmToGPUFinalTypeConversions(LLVMTypeConverter &) {}
+void populateCnmToGPUFinalTypeConversions(LLVMTypeConverter &typeConverter) {
+  typeConverter.addConversion(
+      [&](cnm::BufferType bufferType) -> std::optional<Type> {
+        return cnmtogpu::convertCnmBufferToMemRefType(bufferType);
+      });
+}
 
 void populateCnmToGPUConversionPatterns(LLVMTypeConverter &typeConverter,
                                         RewritePatternSet &patterns) {
-  patterns.add<ConvertCnmWorkgroupToGPU, ConvertCnmAllocToGPU,
-               ConvertCnmSetZeroToGPU, ConvertCnmScatterToGPU,
-               ConvertCnmGatherToGPU, ConvertCnmLaunchToGPU,
-               ConvertCnmTerminatorToGPU>(&typeConverter.getContext());
+  patterns
+      .add<cnmtogpu::ConvertCnmWorkgroupToGPU, cnmtogpu::ConvertCnmAllocToGPU,
+           ConvertCnmSetZeroToAffine, cnmtogpu::ConvertCnmScatterToGPU,
+           cnmtogpu::ConvertCnmGatherToGPU, cnmtogpu::ConvertCnmLaunchToGPU,
+           cnmtogpu::ConvertCnmTerminatorToGPU>(&typeConverter.getContext());
 }
 
 struct ConvertCnmToGPUPass
-    : public ConvertCnmToGPUPassBase<ConvertCnmToGPUPass> {
+    : public ::impl::ConvertCnmToGPUPassBase<ConvertCnmToGPUPass> {
   void runOnOperation() final {
     LLVMTypeConverter converter(&getContext());
     populateCnmToGPUFinalTypeConversions(converter);

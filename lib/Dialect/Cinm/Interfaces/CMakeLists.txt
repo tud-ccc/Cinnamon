@@ -4,4 +4,7 @@ add_mlir_library(CinmInterfaces
     ENABLE_AGGREGATION
     DEPENDS
         CinmIncGen
+
+    LINK_LIBS PUBLIC
+    CinmCommonPatterns
 )
