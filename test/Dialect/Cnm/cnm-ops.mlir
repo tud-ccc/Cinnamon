@@ -20,7 +20,7 @@ func.func @matmul(%A: tensor<1024x1024xi32>, %B: tensor<1024x1024xi32>) -> tenso
         // === Lower reduction loops ===
         // Reduction has already been split into two stages: reduce 1024 elements into 64 sums of batch=16 elements
         // We pick a workgroup size that adds up to 64: 4x16
-        %wg = cnm.workgroup [4 16] { cnm.physical_dims = ["dpu", "tasklet"] }
+        %wg = cnm.workgroup { cnm.physical_dims = ["dpu", "tasklet"] } : !cnm.workgroup<4x16>
 
         // We alloc the buffer for the batch (the 16 here is batch size)
         %A_buf = cnm.alloc() for %wg { cnm.physical_space = "global" } : !cnm.buffer<16xi32 on 4x16, level 0> for !cnm.workgroup<4x16>
