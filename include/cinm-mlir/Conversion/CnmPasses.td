@@ -15,4 +15,10 @@ def ConvertCnmToGPUPass : Pass<"convert-cnm-to-gpu"> {
     let dependentDialects = ["mlir::LLVM::LLVMDialect", "mlir::gpu::GPUDialect"];
 }
 
+def ConvertCnmToUPMEMPass : Pass<"convert-cnm-to-upmem"> {
+    let summary = "";
+    let constructor = "mlir::cnm::createConvertCnmToUPMEMPass()";
+    let dependentDialects = ["mlir::upmem::UPMEMDialect"];
+}
+
 #endif // CNM_CONVERSION_PASSES

@@ -5,6 +5,7 @@
 #pragma once
 
 #include "cinm-mlir/Conversion/CnmToGPU/CnmToGPU.h"
+#include "cinm-mlir/Conversion/CnmToUPMEM/CnmToUPMEM.h"
 
 namespace mlir {
 
