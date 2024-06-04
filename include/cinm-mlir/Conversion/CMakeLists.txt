@@ -11,3 +11,10 @@ add_public_tablegen_target(CnmConversionPassIncGen)
 
 add_mlir_doc(CnmPasses CnmConversionPasses ./ -gen-pass-doc)
 
+set(LLVM_TARGET_DEFINITIONS UPMEMPasses.td)
+mlir_tablegen(UPMEMPasses.h.inc -gen-pass-decls -name UPMEMConversion)
+add_public_tablegen_target(UPMEMConversionPassIncGen)
+
+add_mlir_doc(UPMEMPasses UPMEMConversionPasses ./ -gen-pass-doc)
+
+

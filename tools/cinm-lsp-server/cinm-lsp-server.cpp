@@ -2,6 +2,7 @@
 
 #include "cinm-mlir/Dialect/Cinm/IR/CinmDialect.h"
 #include "cinm-mlir/Dialect/Cnm/IR/CnmDialect.h"
+#include "cinm-mlir/Dialect/UPMEM/IR/UPMEMDialect.h"
 
 #include "mlir/IR/Dialect.h"
 #include "mlir/IR/MLIRContext.h"
@@ -22,6 +23,7 @@ int main(int argc, char* argv[])
 
     registry.insert<cinm::CinmDialect>();
     registry.insert<cnm::CnmDialect>();
+    registry.insert<upmem::UPMEMDialect>();
 
     return asMainReturnCode(MlirLspServerMain(argc, argv, registry));
 }

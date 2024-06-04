@@ -9,6 +9,7 @@
 #include "cinm-mlir/Dialect/Cinm/IR/CinmDialect.h"
 #include "cinm-mlir/Dialect/Cinm/Transforms/Passes.h"
 #include "cinm-mlir/Dialect/Cnm/IR/CnmDialect.h"
+#include "cinm-mlir/Dialect/UPMEM/IR/UPMEMDialect.h"
 #include "cinm-mlir/Dialect/Cnm/Transforms/Passes.h"
 
 #include "llvm/Support/CommandLine.h"
@@ -33,7 +34,7 @@ int main(int argc, char *argv[]) {
   DialectRegistry registry;
   registerAllDialects(registry);
 
-  registry.insert<cinm::CinmDialect, cnm::CnmDialect>();
+  registry.insert<cinm::CinmDialect, cnm::CnmDialect, upmem::UPMEMDialect>();
 
   registerAllPasses();
   registerCinmConversionPasses();
