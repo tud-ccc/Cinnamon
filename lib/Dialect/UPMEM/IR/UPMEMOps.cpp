@@ -30,6 +30,8 @@
 
 #include "mlir/IR/IRMapping.h"
 #include "llvm/ADT/MapVector.h"
+#include <llvm/ADT/SmallVector.h>
+#include <mlir/IR/Value.h>
 #include <mlir/Support/LogicalResult.h>
 
 #define DEBUG_TYPE "upmem-ops"
@@ -160,6 +162,7 @@ void LaunchOp::build(OpBuilder &builder, OperationState &result,
                      Type asyncTokenType, ValueRange asyncDependencies,
                      TypeRange workgroupAttributions,
                      TypeRange privateAttributions) {
+
   // Add a WorkGroup attribution attribute. This attribute is required to
   // identify private attributions in the list of block argguments.
   result.addAttribute(getNumWorkgroupAttributionsAttrName(),
@@ -235,17 +238,17 @@ KernelDim LaunchOp::getTaskletSizeClass() {
 }
 
 KernelDim LaunchOp::getRankSizeOperandValue() {
-  auto operands = getOperands().drop_front(getAsyncDependencies().size());
+  auto operands = getOperands().drop_front(1+getAsyncDependencies().size());
   return KernelDim{operands[0]};
 }
 
 KernelDim LaunchOp::getDPUSizeOperandValue() {
-  auto operands = getOperands().drop_front(getAsyncDependencies().size());
+  auto operands = getOperands().drop_front(1+getAsyncDependencies().size());
   return KernelDim{operands[1]};
 }
 
 KernelDim LaunchOp::getTaskletSizeOperandValue() {
-  auto operands = getOperands().drop_front(getAsyncDependencies().size());
+  auto operands = getOperands().drop_front(1+getAsyncDependencies().size());
   return KernelDim{operands[2]};
 }
 
@@ -299,6 +302,12 @@ static void printSizeAssignment(OpAsmPrinter &p, KernelDim size,
   p << '(' << id.x << ") in (";
   p << size.x << " = " << operand.x << ')';
 }
+static void printSizeAssignment(OpAsmPrinter &p, Value size,
+                                BlockArgument arg) {
+  p << '(';
+  p.printRegionArgument(arg, {}, true);
+  p << " upto " << size << ")";
+}
 
 void LaunchOp::print(OpAsmPrinter &p) {
   if (getAsyncToken()) {
@@ -307,27 +316,25 @@ void LaunchOp::print(OpAsmPrinter &p) {
       p << " [" << getAsyncDependencies() << ']';
   }
   // Print the launch configuration.
-  p << ' ' << getDeviceHierarchy() << ": " << getDeviceHierarchy().getType();
+  p << ' ' << getDeviceHierarchy();
   p << ' ' << getRanksKeyword();
-  printSizeAssignment(p, getRankSizeClass(), getRankSizeOperandValue(),
-                      getRankIdClass());
+  auto blockArgs = getRegion().getArguments();
+  printSizeAssignment(p, getRankSizeOperandValue().x, blockArgs[0]);
 
   p << ' ' << getDPUsKeyword();
-  printSizeAssignment(p, getDPUSizeClass(), getDPUSizeOperandValue(),
-                      getDPUIdClass());
+  printSizeAssignment(p, getDPUSizeOperandValue().x, blockArgs[1]);
 
   p << ' ' << getTaskletsKeyword();
-  printSizeAssignment(p, getTaskletSizeClass(), getTaskletSizeOperandValue(),
-                      getTaskletIdClass());
+  printSizeAssignment(p, getTaskletSizeOperandValue().x, blockArgs[2]);
 
   if (getDynamicSharedMemorySize())
     p << ' ' << getDynamicSharedMemorySizeKeyword() << ' '
       << getDynamicSharedMemorySize();
 
-  printAttributions(p, getWorkgroupKeyword(), getWorkgroupAttributions());
-  printAttributions(p, getPrivateKeyword(), getPrivateAttributions());
+  //printAttributions(p, getWorkgroupKeyword(), getWorkgroupAttributions());
+//  printAttributions(p, getPrivateKeyword(), getPrivateAttributions());
 
-  p << ' ';
+  p << " on " << getDeviceHierarchy().getType() << " ";
 
   p.printRegion(getBody(), /*printEntryBlockArgs=*/false);
   p.printOptionalAttrDict((*this)->getAttrs(), /*elidedAttrs=*/{
@@ -363,6 +370,17 @@ parseSizeAssignment(OpAsmParser &parser,
   return parser.parseRParen();
 }
 
+static ParseResult
+parseSizeAssignment(OpAsmParser &parser, OpAsmParser::Argument &arg,
+                    OpAsmParser::UnresolvedOperand &upperBound) {
+  if (parser.parseLParen() || parser.parseArgument(arg, false) ||
+      parser.parseKeyword("upto") || parser.parseOperand(upperBound) ||
+      parser.parseRParen())
+    return failure();
+  arg.type = parser.getBuilder().getIndexType();
+  return success();
+}
+
 /// Parses a Launch operation.
 /// operation ::= `upmem.launch` (`async` `[` ssa-id-list `]`)?
 ///       `blocks` `(` ssa-id-list `)` `in` ssa-reassignment
@@ -379,10 +397,10 @@ ParseResult LaunchOp::parse(OpAsmParser &parser, OperationState &result) {
   // Actual (data) operands passed to the kernel.
   SmallVector<OpAsmParser::UnresolvedOperand, 4> dataOperands;
 
+  SmallVector<Value, 1> deviceHierarchyOperand;
+  result.operands.emplace_back();
+
   // Region arguments to be created.
-  SmallVector<OpAsmParser::UnresolvedOperand, 10> regionArgs(
-      LaunchOp::kNumConfigRegionAttributes);
-  MutableArrayRef<OpAsmParser::UnresolvedOperand> regionArgsRef(regionArgs);
 
   // Parse optional async dependencies.
   SmallVector<OpAsmParser::UnresolvedOperand, 4> asyncDependencies;
@@ -396,12 +414,11 @@ ParseResult LaunchOp::parse(OpAsmParser &parser, OperationState &result) {
     result.types.push_back(asyncTokenType);
 
   OpAsmParser::UnresolvedOperand deviceHierarchy;
-  Type deviceHierarchyType;
-  if (parser.parseOperand(deviceHierarchy) ||
-      parser.parseType(deviceHierarchyType) ||
-      parser.resolveOperand(deviceHierarchy, deviceHierarchyType,
-                            result.operands) ||
-      parser.parseColon()) {
+  if (parser.parseOperand(deviceHierarchy)) {
+    //      parser.parseType(deviceHierarchyType) ||
+    //      parser.resolveOperand(deviceHierarchy, deviceHierarchyType,
+    //                            result.operands) ||
+    //      parser.parseColon()) {
     return failure();
   }
   // Parse the size assignment segments: the first segment assigns grid sizes
@@ -409,21 +426,35 @@ ParseResult LaunchOp::parse(OpAsmParser &parser, OperationState &result) {
   // sizes and defines values for thread identifiers.  In the region argument
   // list, identifiers precede sizes, and block-related values precede
   // thread-related values.
+  SmallVector<OpAsmParser::Argument> regionArgs2;
+  SmallVector<OpAsmParser::UnresolvedOperand> upperBounds;
   if (parser.parseKeyword(LaunchOp::getRanksKeyword().data()) ||
-      parseSizeAssignment(parser, sizesRef.take_front(1),
-                          regionArgsRef.slice(3, 1),
-                          regionArgsRef.slice(0, 1)) ||
+      parseSizeAssignment(parser, regionArgs2.emplace_back(),
+                          upperBounds.emplace_back()) ||
       parser.parseKeyword(LaunchOp::getDPUsKeyword().data()) ||
-      parseSizeAssignment(parser, sizesRef.drop_front(1).take_front(1),
-                          regionArgsRef.slice(4, 1),
-                          regionArgsRef.slice(1, 1)) ||
+      parseSizeAssignment(parser, regionArgs2.emplace_back(),
+                          upperBounds.emplace_back()) ||
       parser.parseKeyword(LaunchOp::getTaskletsKeyword().data()) ||
-      parseSizeAssignment(parser, sizesRef.drop_front(2),
-                          regionArgsRef.slice(5, 1),
-                          regionArgsRef.slice(2, 1)) ||
-      parser.resolveOperands(sizes, parser.getBuilder().getIndexType(),
+      parseSizeAssignment(parser, regionArgs2.emplace_back(),
+                          upperBounds.emplace_back()) ||
+      parser.resolveOperands(upperBounds, parser.getBuilder().getIndexType(),
                              result.operands))
     return failure();
+  // if (parser.parseKeyword(LaunchOp::getRanksKeyword().data()) ||
+  //     parseSizeAssignment(parser, sizesRef.take_front(1),
+  //                         regionArgsRef.slice(3, 1),
+  //                         regionArgsRef.slice(0, 1)) ||
+  //     parser.parseKeyword(LaunchOp::getDPUsKeyword().data()) ||
+  //     parseSizeAssignment(parser, sizesRef.drop_front(1).take_front(1),
+  //                         regionArgsRef.slice(4, 1),
+  //                         regionArgsRef.slice(1, 1)) ||
+  //     parser.parseKeyword(LaunchOp::getTaskletsKeyword().data()) ||
+  //     parseSizeAssignment(parser, sizesRef.drop_front(2),
+  //                         regionArgsRef.slice(5, 1),
+  //                         regionArgsRef.slice(2, 1)) ||
+  //     parser.resolveOperands(sizes, parser.getBuilder().getIndexType(),
+  //                            result.operands))
+  //   return failure();
 
   OpAsmParser::UnresolvedOperand dynamicSharedMemorySize;
   bool hasDynamicSharedMemorySize = false;
@@ -447,37 +478,40 @@ ParseResult LaunchOp::parse(OpAsmParser &parser, OperationState &result) {
   SmallVector<Type, LaunchOp::kNumConfigRegionAttributes> dataTypes(
       LaunchOp::kNumConfigRegionAttributes, index);
 
-  SmallVector<OpAsmParser::Argument> regionArguments;
-  for (auto ssaValueAndType : llvm::zip(regionArgs, dataTypes)) {
-    OpAsmParser::Argument arg;
-    arg.ssaName = std::get<0>(ssaValueAndType);
-    arg.type = std::get<1>(ssaValueAndType);
-    regionArguments.push_back(arg);
+  for (auto arg : regionArgs2) {
   }
+
+  Type deviceHierarchyType;
+  if (parser.parseKeyword("on") || parser.parseType(deviceHierarchyType) ||
+      parser.resolveOperand(deviceHierarchy, deviceHierarchyType,
+                            deviceHierarchyOperand)) {
+    return failure();
+  }
+  result.operands[0] = deviceHierarchyOperand[0];
 
   Builder &builder = parser.getBuilder();
   // Parse workgroup memory attributions.
   if (failed(parseAttributions(parser, LaunchOp::getWorkgroupKeyword(),
-                               regionArguments)))
+                               regionArgs2)))
     return failure();
 
   // Store the number of operands we just parsed as the number of workgroup
   // memory attributions.
   unsigned numWorkgroupAttrs =
-      regionArguments.size() - LaunchOp::kNumConfigRegionAttributes;
+      regionArgs2.size() - LaunchOp::kNumConfigRegionAttributes;
   result.addAttribute(LaunchOp::getNumWorkgroupAttributionsAttrName(),
                       builder.getI64IntegerAttr(numWorkgroupAttrs));
 
   // Parse private memory attributions.
   if (failed(parseAttributions(parser, LaunchOp::getPrivateKeyword(),
-                               regionArguments)))
+                               regionArgs2)))
     return failure();
 
   // Introduce the body region and parse it. The region has
   // kNumConfigRegionAttributes arguments that correspond to
   // block/thread identifiers and grid/block sizes, all having `index` type.
   Region *body = result.addRegion();
-  if (parser.parseRegion(*body, regionArguments) ||
+  if (parser.parseRegion(*body, regionArgs2) ||
       parser.parseOptionalAttrDict(result.attributes))
     return failure();
 

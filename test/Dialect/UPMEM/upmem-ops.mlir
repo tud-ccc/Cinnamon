@@ -1,6 +1,7 @@
 // RUN: cinm-opt %s | cinm-opt | FileCheck %s
 // RUN: cinm-opt %s --mlir-print-op-generic | cinm-opt | FileCheck %s
 
+// CHECK-LABEL: run_va
 module {
   func.func @run_va(%A : memref<2x32x8192xi32>, %B: memref<2x32x8192xi32>, %C: memref<2x32x8192xi32>) {
     %cst0 = arith.constant 0 : index
@@ -12,7 +13,7 @@ module {
     %base_offset = upmem.base_dpu_mem_offset : index
     %A_offset = upmem.scatter %A into %upmem_token at %base_offset : memref<2x32x8192xi32>, !upmem.hierarchy<2x32x16>, index -> index
     %B_offset = upmem.scatter %B into %upmem_token at %A_offset : memref<2x32x8192xi32>, !upmem.hierarchy<2x32x16>, index -> index
-    upmem.launch %upmem_token !upmem.hierarchy<2x32x16> : ranks(%arg0) in (%arg3 = %rank_count) dpus(%arg1) in (%arg4 = %dpu_count) tasklets(%arg2) in (%arg5 = %tasklet_count) {
+    upmem.launch %upmem_token ranks(%arg0 upto %rank_count) dpus(%arg1 upto %dpu_count) tasklets(%arg2 upto %tasklet_count) on !upmem.hierarchy<2x32x16>  {
         %ITER_I = arith.constant 16: index // number of tasklets
         %ITER_J = arith.constant 8 : index // number of chunks per tasklet
         %ITER_Z = arith.constant 64 : index // size of each chunk

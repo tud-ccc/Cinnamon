@@ -112,13 +112,17 @@ def UPMEM_PrivateWRAMAllocOp : UPMEM_Op<"pwram_alloc", [
 
 def UPMEM_LaunchOp : UPMEM_Op<"launch", [
       AutomaticAllocationScope, AttrSizedOperandSegments, UPMEM_AsyncOpInterface,
-      DeclareOpInterfaceMethods<InferIntRangeInterface>]>,
-    Arguments<(ins Variadic<UPMEM_AsyncToken>:$asyncDependencies, DeviceHierarchy:$device_hierarchy,
+      DeclareOpInterfaceMethods<InferIntRangeInterface>]> {
+  let summary = "UPMEM kernel launch operation";
+
+  let arguments = (ins 
+               Variadic<UPMEM_AsyncToken>:$asyncDependencies,
+               DeviceHierarchy:$device_hierarchy,
                Index:$rankSize, 
                Index:$dpuSize, Index:$taskletSize,
-               Optional<I32>:$dynamicSharedMemorySize)>,
-    Results<(outs Optional<UPMEM_AsyncToken>:$asyncToken)> {
-  let summary = "UPMEM kernel launch operation";
+               Optional<I32>:$dynamicSharedMemorySize);
+
+  let results = (outs Optional<UPMEM_AsyncToken>: $asyncToken);
 
   let description = [{
     Syntax:
@@ -140,7 +144,7 @@ def UPMEM_LaunchOp : UPMEM_Op<"launch", [
     Example:
 
     ```mlir
-    upmem.launch %upmem_token !upmem.hierarchy<2x64x16> ranks(%rd) in (%sr = %0)
+    upmem.launch %upmem_token as !upmem.hierarchy<2x64x16> ranks(%rd) in (%sr = %0)
                  dpus(%dd) in (%sd = %1)
                  tasklets(%td) in (%st= %3) {
       "some_op"(%bx, %tx) : (index, index) -> ()
