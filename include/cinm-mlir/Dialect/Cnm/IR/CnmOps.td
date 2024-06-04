@@ -27,7 +27,7 @@ def WorkgroupOp : Cnm_Op<"workgroup"> {
     let arguments = (ins);
     let results = (outs WorkgroupType:$result);
 
-    let hasCustomAssemblyFormat = 1;
+    let assemblyFormat = "attr-dict `:` type($result)";
 }
 
 def AllocOp : Cnm_Op<"alloc"> {
@@ -37,17 +37,17 @@ def AllocOp : Cnm_Op<"alloc"> {
     let arguments = (ins WorkgroupType:$wg);
     let results = (outs BufferType:$result);
 
-    let hasCustomAssemblyFormat = 1;
+    let assemblyFormat = "`(` `)` `for` $wg attr-dict `:` type($result) `for` type($wg)";
 }
 
-def SetZeroOp: Cnm_Op<"set_zero"> {
+def SetZeroOp: Cnm_Op<"set_zero", [SameOperandsAndResultType]> {
     let summary = "";
     let description = [{}];
 
     let arguments = (ins BufferType:$buffer);
     let results = (outs BufferType:$result);
 
-    let hasCustomAssemblyFormat = 1;
+    let assemblyFormat = "$buffer attr-dict `:` type($buffer)";
 }
 
 def ScatterOp: Cnm_Op<"scatter"> {
@@ -57,8 +57,9 @@ def ScatterOp: Cnm_Op<"scatter"> {
     let arguments = (ins Builtin_RankedTensor:$input, BufferType:$buffer, WorkgroupType:$wg, AffineMapAttr:$scatterMap);
     let results = (outs ScatterTokenType:$token);
 
-    let hasCustomAssemblyFormat = 1;
     let hasVerifier = 1;
+
+    let assemblyFormat = "$input `into` $buffer `[` $scatterMap `]` `of` $wg attr-dict `:` type($input) `into` type($buffer) `of` type($wg)";
 }
 
 def GatherOp: Cnm_Op<"gather"> {
@@ -68,11 +69,11 @@ def GatherOp: Cnm_Op<"gather"> {
     let arguments = (ins BufferType:$buffer, WorkgroupType:$wg, AffineMapAttr:$scatterMap);
     let results = (outs Builtin_RankedTensor:$output, GatherTokenType:$token);
 
-    let hasCustomAssemblyFormat = 1;
     let hasVerifier = 1;
+    let assemblyFormat = "$buffer `[` $scatterMap `]` `of` $wg attr-dict `:` type($buffer) `of` type($wg) `into` type($output)";
 }
 
-def LaunchOp: Cnm_Op<"launch"> {
+def LaunchOp: Cnm_Op<"launch", [SingleBlockImplicitTerminator<"TerminatorOp">]> {
     let summary = "Launch a code kernel on a given workgroup. Input buffers should have been scattered beforehand.";
     let description = [{}];
 
@@ -80,8 +81,8 @@ def LaunchOp: Cnm_Op<"launch"> {
     let results = (outs LaunchTokenType:$token);
     let regions = (region SizedRegion<1>:$body);
 
-    let hasCustomAssemblyFormat = 1;
     let hasVerifier = 1;
+    let assemblyFormat = "$wg `(` $params `:` type($params) `)` attr-dict `on` type($wg) $body";
 }
 
 def TerminatorOp: Cnm_Op<"terminator", [Terminator]> {
@@ -90,6 +91,7 @@ def TerminatorOp: Cnm_Op<"terminator", [Terminator]> {
 
     let arguments = (ins);
     let results = (outs);
+    let assemblyFormat = "attr-dict";
 }
 
 #endif
