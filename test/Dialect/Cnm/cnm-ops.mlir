@@ -23,11 +23,11 @@ func.func @matmul(%A: tensor<1024x1024xi32>, %B: tensor<1024x1024xi32>) -> tenso
         %wg = cnm.workgroup { cnm.physical_dims = ["dpu", "tasklet"] } : !cnm.workgroup<4x16>
 
         // We alloc the buffer for the batch (the 16 here is batch size)
-        %A_buf = cnm.alloc() for %wg { cnm.physical_space = "global" } : !cnm.buffer<16xi32 on 4x16, level 0> for !cnm.workgroup<4x16>
-        %sc_a_token = cnm.scatter %3 into %A_buf[#scatter_map] of %wg : tensor<1024xi32> into !cnm.buffer<16xi32 on 4x16, level 0> of !cnm.workgroup<4x16>
+        %A_buf = cnm.alloc() for %wg { cnm.physical_space = "global" } : !cnm.buffer<16xi32 on 4x16, level 0>
+        %sc_a_token = cnm.scatter %3 into %A_buf[#scatter_map] of %wg : tensor<1024xi32> into !cnm.buffer<16xi32 on 4x16, level 0>
 
         // We alloc a buffer for the reduction result (scalar)
-        %outbuf = cnm.alloc() for %wg { cnm.physical_space = "global" } : !cnm.buffer<i32 on 4x16, level 0> for !cnm.workgroup<4x16>
+        %outbuf = cnm.alloc() for %wg { cnm.physical_space = "global" } : !cnm.buffer<i32 on 4x16, level 0>
         // Then we launch the group
         %token2 = cnm.launch %wg (%A_buf, %outbuf: !cnm.buffer<16xi32 on 4x16, level 0>, !cnm.buffer<i32 on 4x16, level 0>) on !cnm.workgroup<4x16> {
             ^bb0(%arg0: memref<16xi32>, %arg1: memref<i32>):
@@ -42,7 +42,7 @@ func.func @matmul(%A: tensor<1024x1024xi32>, %B: tensor<1024x1024xi32>) -> tenso
         }
 
         // Finally gather results into a buffer with same shape as the workgroup
-        %ReductionStage1, %token3 = cnm.gather %outbuf[#gather_map] of %wg : !cnm.buffer<i32 on 4x16, level 0> of !cnm.workgroup<4x16> into tensor<4x16xi32>
+        %ReductionStage1, %token3 = cnm.gather %outbuf[#gather_map] of %wg : !cnm.buffer<i32 on 4x16, level 0> into tensor<4x16xi32>
 
         // === Second reduction loop ===
         // At this point there is a second linalg.reduce

@@ -1,3 +1,19 @@
+ninja: Entering directory `build'
+[1/24] Building CnmEnums.cpp.inc...
+[2/24] Building CnmBase.h.inc...
+[3/23] Building CnmAttributes.cpp.inc...
+[4/23] Building CnmEnums.h.inc...
+[5/23] Building CnmOps.h.inc...
+[6/23] Building CnmOps.cpp.inc...
+[7/23] Building CnmAttributes.h.inc...
+[8/23] Building CnmBase.cpp.inc...
+[9/23] Building CnmTypes.cpp.inc...
+[10/23] Building CnmTypes.h.inc...
+[11/15] Building CXX object lib/Dialect/Cnm/IR/CMakeFiles/obj.CnmIR.dir/CnmOps.cpp.o
+[12/15] Linking CXX static library lib/libCnmIR.a
+[13/15] Linking CXX executable bin/cinm-lsp-server
+[14/15] Linking CXX executable bin/cinm-opt
+[15/15] Linking CXX executable bin/cinm-vulkan-runner
 #map = affine_map<(d0, d1) -> (d0 floordiv 16, (d0 mod 16) floordiv 2, d0 mod 2, d1)>
 #map1 = affine_map<(d0) -> (d0 floordiv 16, (d0 mod 16) floordiv 2, d0 mod 2)>
 #map2 = affine_map<(d0, d1, d2) -> (d0 * 16 + d1 * 2 + d2)>
@@ -17,13 +33,13 @@ module {
           %cst_4 = arith.constant dense<[64, 16]> : tensor<2xi64>
           %reshape = tensor.reshape %extracted_slice_1(%cst_4) : (tensor<1024xi32>, tensor<2xi64>) -> tensor<64x16xi32>
           %reshape_5 = tensor.reshape %extracted_slice_2(%cst_4) : (tensor<1024xi32>, tensor<2xi64>) -> tensor<64x16xi32>
-          %3 = cnm.workgroup : <4x8x2>
-          %4 = cnm.alloc() for %3 : <16xi32 on 4x8x2, level 0> for <4x8x2>
-          %5 = cnm.scatter %reshape into %4[#map] of %3 : tensor<64x16xi32> into <16xi32 on 4x8x2, level 0> of <4x8x2>
-          %6 = cnm.alloc() for %3 : <16xi32 on 4x8x2, level 0> for <4x8x2>
-          %7 = cnm.scatter %reshape_5 into %6[#map] of %3 : tensor<64x16xi32> into <16xi32 on 4x8x2, level 0> of <4x8x2>
-          %8 = cnm.alloc() for %3 : <i32 on 4x8x2, level 0> for <4x8x2>
-          %9 = cnm.scatter %cst_3 into %8[#map1] of %3 : tensor<64xi32> into <i32 on 4x8x2, level 0> of <4x8x2>
+          %3 = cnm.workgroup : !cnm.workgroup<4x8x2>
+          %4 = cnm.alloc() for %3 : !cnm.buffer<16xi32 on 4x8x2, level 0>
+          %5 = cnm.scatter %reshape into %4[#map] of %3 : tensor<64x16xi32> into !cnm.buffer<16xi32 on 4x8x2, level 0>
+          %6 = cnm.alloc() for %3 : !cnm.buffer<16xi32 on 4x8x2, level 0>
+          %7 = cnm.scatter %reshape_5 into %6[#map] of %3 : tensor<64x16xi32> into !cnm.buffer<16xi32 on 4x8x2, level 0>
+          %8 = cnm.alloc() for %3 : !cnm.buffer<i32 on 4x8x2, level 0>
+          %9 = cnm.scatter %cst_3 into %8[#map1] of %3 : tensor<64xi32> into !cnm.buffer<i32 on 4x8x2, level 0>
           %10 = cnm.launch %3(%4, %6, %8 : !cnm.buffer<16xi32 on 4x8x2, level 0>, !cnm.buffer<16xi32 on 4x8x2, level 0>, !cnm.buffer<i32 on 4x8x2, level 0>) on <4x8x2> {
           ^bb0(%arg6: memref<16xi32>, %arg7: memref<16xi32>, %arg8: memref<i32>):
             linalg.reduce ins(%arg6, %arg7 : memref<16xi32>, memref<16xi32>) outs(%arg8 : memref<i32>) dimensions = [0] 
@@ -33,7 +49,7 @@ module {
                 linalg.yield %12 : i32
               }
           }
-          %output, %token = cnm.gather %8[#map2] of %3 : <i32 on 4x8x2, level 0> of <4x8x2> into tensor<64xi32>
+          %output, %token = cnm.gather %8[#map2] of %3 : !cnm.buffer<i32 on 4x8x2, level 0> into tensor<64xi32>
           %reduced = linalg.reduce ins(%output : tensor<64xi32>) outs(%cst : tensor<i32>) dimensions = [0] 
             (%in: i32, %init: i32) {
               %11 = arith.addi %in, %init : i32

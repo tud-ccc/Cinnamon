@@ -27,19 +27,22 @@ def WorkgroupOp : Cnm_Op<"workgroup"> {
     let arguments = (ins);
     let results = (outs WorkgroupType:$result);
 
-    let assemblyFormat = "attr-dict `:` type($result)";
+    let assemblyFormat = "attr-dict `:` qualified(type($result))";
 }
 
-def AllocOp : Cnm_Op<"alloc"> {
+class InferWorkgroupTypeFromBuffer<string buffer, string wg>
+: TypesMatchWith<"workgroup shape matches buffer shape", buffer, wg,
+                               "cnm::WorkgroupType::get($_self.getContext(), ::llvm::cast<cnm::BufferType>($_self).getWorkgroupShape())">;
+
+def AllocOp : Cnm_Op<"alloc", [InferWorkgroupTypeFromBuffer<"result", "wg">]> {
     let summary = "";
     let description = [{}];
 
     let arguments = (ins WorkgroupType:$wg);
     let results = (outs BufferType:$result);
 
-    let assemblyFormat = "`(` `)` `for` $wg attr-dict `:` type($result) `for` type($wg)";
+    let assemblyFormat = "`(` `)` `for` $wg attr-dict `:` qualified(type($result))";
 }
-
 def SetZeroOp: Cnm_Op<"set_zero", [SameOperandsAndResultType]> {
     let summary = "";
     let description = [{}];
@@ -47,10 +50,10 @@ def SetZeroOp: Cnm_Op<"set_zero", [SameOperandsAndResultType]> {
     let arguments = (ins BufferType:$buffer);
     let results = (outs BufferType:$result);
 
-    let assemblyFormat = "$buffer attr-dict `:` type($buffer)";
+    let assemblyFormat = "$buffer attr-dict `:` qualified(type($buffer))";
 }
 
-def ScatterOp: Cnm_Op<"scatter"> {
+def ScatterOp: Cnm_Op<"scatter", [InferWorkgroupTypeFromBuffer<"buffer", "wg">]> {
     let summary = "";
     let description = [{}];
 
@@ -59,10 +62,10 @@ def ScatterOp: Cnm_Op<"scatter"> {
 
     let hasVerifier = 1;
 
-    let assemblyFormat = "$input `into` $buffer `[` $scatterMap `]` `of` $wg attr-dict `:` type($input) `into` type($buffer) `of` type($wg)";
+    let assemblyFormat = "$input `into` $buffer `[` $scatterMap `]` `of` $wg attr-dict `:` type($input) `into` qualified(type($buffer))";
 }
 
-def GatherOp: Cnm_Op<"gather"> {
+def GatherOp: Cnm_Op<"gather", [InferWorkgroupTypeFromBuffer<"buffer", "wg">]> {
     let summary = "";
     let description = [{}];
 
@@ -70,7 +73,7 @@ def GatherOp: Cnm_Op<"gather"> {
     let results = (outs Builtin_RankedTensor:$output, GatherTokenType:$token);
 
     let hasVerifier = 1;
-    let assemblyFormat = "$buffer `[` $scatterMap `]` `of` $wg attr-dict `:` type($buffer) `of` type($wg) `into` type($output)";
+    let assemblyFormat = "$buffer `[` $scatterMap `]` `of` $wg attr-dict `:` qualified(type($buffer)) `into` type($output)";
 }
 
 def LaunchOp: Cnm_Op<"launch", [SingleBlockImplicitTerminator<"TerminatorOp">]> {
