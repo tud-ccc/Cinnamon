@@ -12,13 +12,28 @@ include "mlir/Pass/PassBase.td"
 def ConvertCnmToGPUPass : Pass<"convert-cnm-to-gpu"> {
     let summary = "";
     let constructor = "mlir::cnm::createConvertCnmToGPUPass()";
-    let dependentDialects = ["mlir::LLVM::LLVMDialect", "mlir::gpu::GPUDialect"];
+    let dependentDialects = [
+        "mlir::LLVM::LLVMDialect",
+        "mlir::affine::AffineDialect",
+        "mlir::arith::ArithDialect",
+        "mlir::bufferization::BufferizationDialect",
+        "mlir::gpu::GPUDialect",
+        "mlir::memref::MemRefDialect",
+        "mlir::tensor::TensorDialect"
+    ];
 }
 
 def ConvertCnmToUPMEMPass : Pass<"convert-cnm-to-upmem"> {
     let summary = "";
     let constructor = "mlir::cnm::createConvertCnmToUPMEMPass()";
-    let dependentDialects = ["mlir::upmem::UPMEMDialect"];
+    let dependentDialects = [
+        "mlir::LLVM::LLVMDialect",
+        "mlir::affine::AffineDialect",
+        "mlir::arith::ArithDialect",
+        "mlir::memref::MemRefDialect",
+        "mlir::tensor::TensorDialect",
+        "mlir::upmem::UPMEMDialect"
+    ];
 }
 
 #endif // CNM_CONVERSION_PASSES
