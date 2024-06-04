@@ -7,7 +7,6 @@
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/OpImplementation.h"
 
-#include "llvm/ADT/APFloat.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/IR/Attributes.h"
@@ -23,6 +22,7 @@
 #include "mlir/Interfaces/FunctionImplementation.h"
 #include "mlir/Interfaces/SideEffectInterfaces.h"
 #include "mlir/Transforms/InliningUtils.h"
+#include "llvm/ADT/APFloat.h"
 #include "llvm/ADT/TypeSwitch.h"
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/ErrorHandling.h"
@@ -30,8 +30,7 @@
 
 #include "mlir/IR/IRMapping.h"
 #include "llvm/ADT/MapVector.h"
-
-
+#include <mlir/Support/LogicalResult.h>
 
 #define DEBUG_TYPE "upmem-ops"
 
@@ -47,19 +46,17 @@ using namespace mlir::upmem;
 // UPMEMDialect
 //===----------------------------------------------------------------------===//
 
-void UPMEMDialect::registerOps()
-{
-    addOperations<
+void UPMEMDialect::registerOps() {
+  addOperations<
 #define GET_OP_LIST
 #include "cinm-mlir/Dialect/UPMEM/IR/UPMEMOps.cpp.inc"
-        >();
+      >();
 }
 
 // parsers/printers
 
-
 LogicalResult UPMEMDialect::verifyOperationAttribute(Operation *op,
-                                                   NamedAttribute attr) {
+                                                     NamedAttribute attr) {
   if (!llvm::isa<UnitAttr>(attr.getValue()) ||
       attr.getName() != getContainerModuleAttrName())
     return success();
@@ -71,7 +68,6 @@ LogicalResult UPMEMDialect::verifyOperationAttribute(Operation *op,
            << ModuleOp::getOperationName() << '\'';
   return success();
 }
-
 
 static ParseResult parseAsyncDependencies(
     OpAsmParser &parser, Type &asyncTokenType,
@@ -126,12 +122,12 @@ static void printAttributions(OpAsmPrinter &p, StringRef keyword,
 //       continue;
 //     if (addressSpace.getValue() != memorySpace)
 //       return op->emitOpError()
-//              << "expected memory space " << stringifyAddressSpace(memorySpace)
+//              << "expected memory space " <<
+//              stringifyAddressSpace(memorySpace)
 //              << " in attribution";
 //   }
 //   return success();
 // }
-
 
 //===----------------------------------------------------------------------===//
 // AsyncOpInterface
@@ -154,14 +150,13 @@ void upmem::addAsyncDependency(Operation *op, Value token) {
   op->setAttr(attrName, Builder(op->getContext()).getDenseI32ArrayAttr(sizes));
 }
 
-
 //===----------------------------------------------------------------------===//
 // LaunchOp
 //===----------------------------------------------------------------------===//
 
-void LaunchOp::build(OpBuilder &builder, OperationState &result, Value device_hierarchy,
-                     Value rankSize, Value dpuSize, Value taskletSize,
-                     Value dynamicSharedMemorySize,
+void LaunchOp::build(OpBuilder &builder, OperationState &result,
+                     Value device_hierarchy, Value rankSize, Value dpuSize,
+                     Value taskletSize, Value dynamicSharedMemorySize,
                      Type asyncTokenType, ValueRange asyncDependencies,
                      TypeRange workgroupAttributions,
                      TypeRange privateAttributions) {
@@ -265,11 +260,12 @@ LogicalResult LaunchOp::verifyRegions() {
   }
 
   // Verify Attributions Address Spaces.
-//   if (failed(verifyAttributions(getOperation(), getWorkgroupAttributions(),
-//                                 UPMEMDialect::getWorkgroupAddressSpace())) ||
-//       failed(verifyAttributions(getOperation(), getPrivateAttributions(),
-//                                 UPMEMDialect::getPrivateAddressSpace())))
-//     return failure();
+  //   if (failed(verifyAttributions(getOperation(), getWorkgroupAttributions(),
+  //                                 UPMEMDialect::getWorkgroupAddressSpace()))
+  //                                 ||
+  //       failed(verifyAttributions(getOperation(), getPrivateAttributions(),
+  //                                 UPMEMDialect::getPrivateAddressSpace())))
+  //     return failure();
 
   // Block terminators without successors are expected to exit the kernel region
   // and must be `upmem.terminator`.
@@ -359,11 +355,11 @@ parseSizeAssignment(OpAsmParser &parser,
   std::move(args.begin(), args.end(), indices.begin());
 
   // for (int i = 0; i < 3; ++i) {
-    // if (i != 0 && parser.parseComma())
-    //   return failure();
+  // if (i != 0 && parser.parseComma())
+  //   return failure();
   if (parser.parseOperand(regionSizes[0], /*allowResultNumber=*/false) ||
-        parser.parseEqual() || parser.parseOperand(sizes[0]))
-      return failure();
+      parser.parseEqual() || parser.parseOperand(sizes[0]))
+    return failure();
   return parser.parseRParen();
 }
 
@@ -400,12 +396,14 @@ ParseResult LaunchOp::parse(OpAsmParser &parser, OperationState &result) {
     result.types.push_back(asyncTokenType);
 
   OpAsmParser::UnresolvedOperand deviceHierarchy;
-  parser.parseOperand(deviceHierarchy);
   Type deviceHierarchyType;
-  parser.parseType(deviceHierarchyType);
-  parser.resolveOperand(deviceHierarchy, deviceHierarchyType, result.operands);
-  // deviceHierarchyType.print(llvm::dbgs());
-  parser.parseColon();
+  if (parser.parseOperand(deviceHierarchy) ||
+      parser.parseType(deviceHierarchyType) ||
+      parser.resolveOperand(deviceHierarchy, deviceHierarchyType,
+                            result.operands) ||
+      parser.parseColon()) {
+    return failure();
+  }
   // Parse the size assignment segments: the first segment assigns grid sizes
   // and defines values for block identifiers; the second segment assigns block
   // sizes and defines values for thread identifiers.  In the region argument
@@ -422,10 +420,9 @@ ParseResult LaunchOp::parse(OpAsmParser &parser, OperationState &result) {
       parser.parseKeyword(LaunchOp::getTaskletsKeyword().data()) ||
       parseSizeAssignment(parser, sizesRef.drop_front(2),
                           regionArgsRef.slice(5, 1),
-                          regionArgsRef.slice(2, 1)) || 
+                          regionArgsRef.slice(2, 1)) ||
       parser.resolveOperands(sizes, parser.getBuilder().getIndexType(),
-                             result.operands)
-                             )
+                             result.operands))
     return failure();
 
   OpAsmParser::UnresolvedOperand dynamicSharedMemorySize;

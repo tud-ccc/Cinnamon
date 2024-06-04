@@ -333,7 +333,9 @@ struct ConvertTiledCinmToCnm
     target.addLegalOp<cnm::LaunchOp>();
     target.markOpRecursivelyLegal<cnm::LaunchOp>();
 
-    applyPartialConversion(getOperation(), target, std::move(patterns));
+    if (applyPartialConversion(getOperation(), target, std::move(patterns))
+            .failed())
+      signalPassFailure();
   }
 };
 
