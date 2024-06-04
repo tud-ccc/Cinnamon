@@ -5,7 +5,7 @@ module {
     %rank_count = arith.constant 2 : index
     %dpu_count = arith.constant 32: index
     %tasklet_count = arith.constant 16 : index
-    %upmem_token = upmem.alloc_dpus : !upmem.hierarchy<8x32x16>
+    %upmem_token = upmem.alloc_dpus : !upmem.hierarchy<2x32x16>
     %base_offset = upmem.base_dpu_mem_offset : index
     %A_offset = upmem.scatter %A into %upmem_token at %base_offset : memref<2x32x8192xi32>, !upmem.hierarchy<2x32x16>, index -> index
     %B_offset = upmem.scatter %B into %upmem_token at %A_offset : memref<2x32x8192xi32>, !upmem.hierarchy<2x32x16>, index -> index
