@@ -85,7 +85,7 @@ def LaunchOp: Cnm_Op<"launch", [SingleBlockImplicitTerminator<"TerminatorOp">]> 
     let regions = (region SizedRegion<1>:$body);
 
     let hasVerifier = 1;
-    let assemblyFormat = "$wg `(` $params `:` type($params) `)` attr-dict `on` type($wg) $body";
+    let assemblyFormat = "$wg `(` $params `:` type($params) `)` attr-dict `on` qualified(type($wg)) $body";
 }
 
 def TerminatorOp: Cnm_Op<"terminator", [Terminator]> {

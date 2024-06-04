@@ -311,7 +311,7 @@ def UPMEM_AllocDPUsOp: UPMEM_Op <"alloc_dpus", []> {
   let results = (outs DeviceHierarchy:$hierarchy_shape);
 
   let assemblyFormat = [{
-     attr-dict `:` type($hierarchy_shape)
+     attr-dict `:` qualified(type($hierarchy_shape))
   }];
 }
 
@@ -348,7 +348,7 @@ def UPMEM_ScatterOp: UPMEM_Op <"scatter", []> {
 
   let results = (outs Index:$new_mem_offset);
   let assemblyFormat = [{
-     $host_data `into` $hierarchy `at` $dpu_mem_offset attr-dict `:` type($host_data)`,` type($hierarchy) `,` type($dpu_mem_offset)  `->` type($new_mem_offset)
+     $host_data `into` $hierarchy `at` $dpu_mem_offset attr-dict `:` type($host_data)`,` qualified(type($hierarchy)) `,` type($dpu_mem_offset)  `->` type($new_mem_offset)
   }];
 }
 
@@ -364,7 +364,7 @@ def UPMEM_GatherOp: UPMEM_Op <"gather", []> {
 
   let results = (outs Index:$new_mem_offset);
   let assemblyFormat = [{
-     $host_memref `from` $hierarchy `at` $dpu_mem_offset attr-dict `:` type($host_memref)`,` type($hierarchy) `,` type($dpu_mem_offset)  `->` type($new_mem_offset)
+     $host_memref `from` $hierarchy `at` $dpu_mem_offset attr-dict `:` type($host_memref)`,` qualified(type($hierarchy)) `,` type($dpu_mem_offset)  `->` type($new_mem_offset)
   }];
 }
 
