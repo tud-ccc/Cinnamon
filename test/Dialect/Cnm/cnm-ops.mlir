@@ -4,7 +4,8 @@
 
 // CHECK-LABEL: matmul
 
-#red_scatter_map = affine_map<(d0, d1) -> (d0 floordiv 4, d1 floordiv 16, d0 mod 4, d1 mod 16)>
+#scatter_map = affine_map<(i) -> (i floordiv 64 mod 4, i floordiv 64, i mod 64)>
+#gather_map = affine_map<(d0, d1) -> (d0, d1)>
 
 func.func @matmul(%A: tensor<1024x1024xi32>, %B: tensor<1024x1024xi32>) -> tensor<1024x1024xi32> {
 
@@ -20,15 +21,10 @@ func.func @matmul(%A: tensor<1024x1024xi32>, %B: tensor<1024x1024xi32>) -> tenso
         // Reduction has already been split into two stages: reduce 1024 elements into 64 sums of batch=16 elements
         // We pick a workgroup size that adds up to 64: 4x16
         %wg = cnm.workgroup [4 16] { cnm.physical_dims = ["dpu", "tasklet"] }
-        // We reshape the tensor to start with these dimensions
-        %shape = arith.constant dense<[ 4, 16, 16 ]> : tensor<3xi32>
-        %reshaped = tensor.reshape %3(%shape): (tensor<1024xi32>, tensor<3xi32>) -> tensor<4x16x16xi32>
 
         // We alloc the buffer for the batch (the 16 here is batch size)
         %A_buf = cnm.alloc() for %wg { cnm.physical_space = "global" } : !cnm.buffer<16xi32 on 4x16, level 0> for !cnm.workgroup<4x16>
-        // Scatter. Scatter map is (d0, d1) -> (d0 floordiv WG[0], d1 floordiv WG[1], d0 mod WG[0], d1 mod WG[1])
-        // where WG[0], WG[1] are dimensions of workgroup
-        %sc_a_token = cnm.scatter %reshaped into %A_buf[#red_scatter_map] of %wg : tensor<4x16x16xi32> into !cnm.buffer<16xi32 on 4x16, level 0> of !cnm.workgroup<4x16>
+        %sc_a_token = cnm.scatter %3 into %A_buf[#scatter_map] of %wg : tensor<1024xi32> into !cnm.buffer<16xi32 on 4x16, level 0> of !cnm.workgroup<4x16>
 
         // We alloc a buffer for the reduction result (scalar)
         %outbuf = cnm.alloc() for %wg { cnm.physical_space = "global" } : !cnm.buffer<i32 on 4x16, level 0> for !cnm.workgroup<4x16>
@@ -46,7 +42,7 @@ func.func @matmul(%A: tensor<1024x1024xi32>, %B: tensor<1024x1024xi32>) -> tenso
         }
 
         // Finally gather results into a buffer with same shape as the workgroup
-        %ReductionStage1, %token3 = cnm.gather %outbuf[#red_scatter_map] of %wg : !cnm.buffer<i32 on 4x16, level 0> of !cnm.workgroup<4x16> into tensor<4x16xi32>
+        %ReductionStage1, %token3 = cnm.gather %outbuf[#gather_map] of %wg : !cnm.buffer<i32 on 4x16, level 0> of !cnm.workgroup<4x16> into tensor<4x16xi32>
 
         // === Second reduction loop ===
         // At this point there is a second linalg.reduce

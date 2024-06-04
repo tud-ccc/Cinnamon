@@ -1,4 +1,5 @@
 
+#include "cinm-mlir/Dialect/Cnm/IR/CnmBase.h"
 #include "cinm-mlir/Dialect/Cnm/IR/CnmTypes.h"
 #include <cinm-mlir/Conversion/CinmPasses.h>
 #include <cinm-mlir/Dialect/Cnm/IR/CnmOps.h>
@@ -7,6 +8,7 @@
 #include <functional>
 #include <llvm/ADT/ArrayRef.h>
 #include <llvm/ADT/STLExtras.h>
+#include <llvm/ADT/Sequence.h>
 #include <llvm/ADT/SmallVector.h>
 #include <memory>
 #include <mlir/Dialect/Arith/IR/Arith.h>
@@ -35,90 +37,152 @@ using namespace mlir;
 
 namespace {
 
-void computeShapeOfTensors(llvm::ArrayRef<int64_t> shape,
-                           cnm::WorkgroupType wgTy,
-                           llvm::SmallVectorImpl<int64_t> &shapeOfTensor,
-                           llvm::SmallVectorImpl<int64_t> &shapeOfBuffer) {
+struct ReduceToCnmRewriteParams {
+  cnm::WorkgroupType wgTy;
+  //  llvm::SmallVector<, unsigned int N>
+};
+
+LogicalResult
+computeShapeOfTensors(llvm::ArrayRef<int64_t> shape, cnm::WorkgroupType wgTy,
+                      // if empty then all dims are parallel
+                      // otherwise those dims are reductions. They are
+                      // used to select the size of the buffer. The rest of
+                      // the dimensions are used to create a scattermap
+                      llvm::ArrayRef<int64_t> reductionDims,
+                      AffineMap &scatterMap, AffineMap &gatherMap,
+                      llvm::SmallVectorImpl<int64_t> &shapeOfBuffer) {
   auto wgShape = wgTy.getShape();
 
   auto numWgItems =
       std::reduce(wgShape.begin(), wgShape.end(), 1, std::multiplies<>());
   auto numBufItems =
       std::reduce(shape.begin(), shape.end(), 1, std::multiplies<>());
-  assert(numBufItems % numWgItems == 0);
-  auto remainder = numBufItems / numWgItems;
+  if (numBufItems % numWgItems != 0)
+    return failure();
 
-  shapeOfTensor.append(wgShape.begin(), wgShape.end());
-  if (remainder != 1) {
-    // tensor is WG shape + remainder
-    shapeOfTensor.push_back(remainder);
-    // buffer is just remainder, WG dimensions are implicit
-    shapeOfBuffer.push_back(remainder);
+  llvm::SmallVector<int64_t> parallelDims;
+  int64_t numParallelElts = 1;
+
+  for (size_t i = 0, j = 0; i < shape.size(); i++) {
+    if (j >= reductionDims.size() || i != reductionDims[j]) {
+      // this is a parallel dim
+      parallelDims.push_back(shape[i]);
+      numParallelElts *= shape[i];
+    } else {
+      // this is a reduction dim
+      j++;
+      shapeOfBuffer.push_back(shape[i]);
+    }
   }
+  // Now we support two cases: either
+  // 1. tensor has shape of WG
+  if (parallelDims == wgShape) {
+    scatterMap = AffineMap::getMultiDimIdentityMap(
+        wgShape.size() + reductionDims.size(), wgTy.getContext());
+    gatherMap = scatterMap;
+    return success();
+  }
+  // or 2. tensor is flat, and numBufItems == numWgItems
+  //   (could be extended to handle numBufItems = k * numWgItems)
+  if (parallelDims.size() != 1 || numParallelElts != numWgItems)
+    return failure();
+
+  // Affine map has form (t, R1,..., Rn) -> (W1,...,Wm,R1,...,Rn)
+  // Where the working group has m dimensions
+  llvm::SmallVector<AffineExpr> affineDims;
+  affineDims.reserve(wgShape.size() + reductionDims.size());
+
+  AffineExpr index = mlir::getAffineDimExpr(0, wgTy.getContext());
+  int64_t sizeOfTrailing = numWgItems / wgShape[0];
+  affineDims.push_back(index.floorDiv(sizeOfTrailing));
+
+  AffineExpr gatherExpr = index * sizeOfTrailing;
+  size_t i = 1;
+
+  for (auto dim : wgShape.drop_front(1)) {
+    index = index % sizeOfTrailing;
+    sizeOfTrailing /= dim;
+    affineDims.push_back(index.floorDiv(sizeOfTrailing));
+    gatherExpr = gatherExpr +
+                 mlir::getAffineDimExpr(i, wgTy.getContext()) * sizeOfTrailing;
+    i++;
+  }
+  // reduction dims are identity
+  for (unsigned i = 0; i < reductionDims.size(); i++) {
+    affineDims.push_back(
+        mlir::getAffineDimExpr(i + parallelDims.size(), wgTy.getContext()));
+  }
+  scatterMap = AffineMap::get(1 + reductionDims.size(), 0, affineDims,
+                              wgTy.getContext());
+
+  llvm::SmallVector<AffineExpr> gatherMapResults;
+  gatherMapResults.reserve(1 + reductionDims.size());
+
+  gatherMapResults.push_back(gatherExpr);
+  for (unsigned i = 1; i < reductionDims.size(); i++) {
+    gatherMapResults.push_back(mlir::getAffineDimExpr(i, wgTy.getContext()));
+  }
+
+  gatherMap =
+      AffineMap::get(affineDims.size(), 0, gatherMapResults, wgTy.getContext());
+  return success();
 }
 
-AffineMap computeAffineMap(cnm::WorkgroupType wgTy) {
-  auto wgShape =
-      mlir::getAffineConstantExprs(wgTy.getShape(), wgTy.getContext());
-
-  SmallVector<AffineExpr, 4> dimExprs;
-  dimExprs.reserve(wgShape.size() * 2);
-  for (size_t i = 0; i < wgShape.size(); i++) {
-    auto index = mlir::getAffineDimExpr(i, wgTy.getContext());
-    dimExprs.emplace_back(index.floorDiv(wgShape[i]));
-  }
-  for (size_t i = 0; i < wgShape.size(); i++) {
-    auto index = mlir::getAffineDimExpr(i, wgTy.getContext());
-    dimExprs.emplace_back(index % wgShape[i]);
-  }
-  return AffineMap::get(dimExprs.size(), 0, dimExprs, wgTy.getContext());
-}
-
-Value convertInputIntoAlloc(Value inputBuf, Value workGroup,
-                            cnm::WorkgroupType wgTy, AffineMap &scatterMap,
-                            ImplicitLocOpBuilder &rewriter) {
+LogicalResult convertInputIntoAlloc(Value inputBuf, Value workGroup,
+                                    cnm::WorkgroupType wgTy,
+                                    ArrayRef<int64_t> reduceDims,
+                                    AffineMap &gatherMap, Value &result,
+                                    ImplicitLocOpBuilder &rewriter) {
   // For each input of the reduce, we need to
 
+  AffineMap scatterMap;
   auto inputTy = inputBuf.getType().cast<RankedTensorType>();
-  llvm::SmallVector<int64_t, 4> shapeOfTensor;
   llvm::SmallVector<int64_t, 1> shapeOfBuffer;
-  computeShapeOfTensors(inputTy.getShape(), wgTy, shapeOfTensor, shapeOfBuffer);
+  if (computeShapeOfTensors(inputTy.getShape(), wgTy, reduceDims, scatterMap,
+                            gatherMap, shapeOfBuffer)
+          .failed())
+    return failure();
+
+  // Allocate a cinm buffer
   cnm::BufferType bufTy =
       cnm::BufferType::get(rewriter.getContext(), shapeOfBuffer,
                            inputTy.getElementType(), wgTy.getShape(),
                            0); // todo level is hardcoded
 
-  // Reshape original tensor
-  Value shapeReified = rewriter.create<arith::ConstantOp>(
-      rewriter.getI64TensorAttr(shapeOfTensor));
-  Value reshaped = rewriter.create<tensor::ReshapeOp>(
-      inputTy.cloneWith(shapeOfTensor, inputTy.getElementType()), inputBuf,
-      shapeReified);
-
-  // Allocate a cinm buffer
   Value alloc = rewriter.create<cnm::AllocOp>(bufTy, workGroup);
 
   // Scatter into buffer
-  scatterMap = computeAffineMap(wgTy);
-  rewriter.create<cnm::ScatterOp>(reshaped, alloc, workGroup, scatterMap);
+  rewriter.create<cnm::ScatterOp>(inputBuf, alloc, workGroup, scatterMap);
+  result = alloc;
 
-  return alloc;
+  return success();
 }
 
-llvm::SmallVector<Value, 1>
-convertLinalgReduceIntoLaunch(ImplicitLocOpBuilder builder,
-                              linalg::ReduceOp reduction,
-                              linalg::ReduceOp::Adaptor adaptor,
-                              Value workgroup, cnm::WorkgroupType wgTy) {
+LogicalResult convertLinalgReduceIntoLaunch(
+    ImplicitLocOpBuilder builder, linalg::ReduceOp reduction,
+    linalg::ReduceOp::Adaptor adaptor, Value workgroup,
+    llvm::SmallVectorImpl<Value> &resultValues,
+    ReduceToCnmRewriteParams parms) {
+  cnm::WorkgroupType wgTy = parms.wgTy;
 
   llvm::SmallVector<Value, 3> launchOperands;
-  llvm::SmallVector<AffineMap, 3> affineMaps;
+  llvm::SmallVector<AffineMap, 3> gatherMaps;
   llvm::SmallVector<Type, 3> mappedArgTypes;
 
   builder.setInsertionPointAfter(reduction);
+  int i = 0;
   for (auto input : adaptor.getOperands()) {
-    launchOperands.emplace_back(convertInputIntoAlloc(
-        input, workgroup, wgTy, affineMaps.emplace_back(), builder));
+    auto reduceDims = reduction.getDimensions();
+    if (i >= reduction.getNumDpsInputs()) {
+      // this is an output
+      reduceDims = {};
+    }
+    if (convertInputIntoAlloc(input, workgroup, wgTy, reduceDims,
+                              gatherMaps.emplace_back(),
+                              launchOperands.emplace_back(), builder)
+            .failed())
+      return failure();
+    i++;
   }
 
   cnm::LaunchOp launchOp =
@@ -161,17 +225,16 @@ convertLinalgReduceIntoLaunch(ImplicitLocOpBuilder builder,
 
   // gather the results (only the out buffers)
 
-  llvm::SmallVector<Value, 1> newResults;
   for (size_t i = 0; i < reduction->getNumResults(); i++) {
     auto result = reduction.getResult(i);
     auto alloc = launchOperands[reduction.getNumDpsInputs() + i];
-    auto map = affineMaps[reduction.getNumDpsInputs() + i];
+    auto map = gatherMaps[reduction.getNumDpsInputs() + i];
     auto res = builder.create<cnm::GatherOp>(
         result.getType(), cnm::GatherTokenType::get(builder.getContext()),
         alloc, workgroup, map);
-    newResults.push_back(res.getOutput());
+    resultValues.push_back(res.getOutput());
   }
-  return newResults;
+  return success();
 }
 
 bool workgroupFitsParallelDims(Type ty, cnm::WorkgroupType wgTy,
@@ -181,8 +244,10 @@ bool workgroupFitsParallelDims(Type ty, cnm::WorkgroupType wgTy,
     auto shape = tensorTy.getShape();
     int64_t numNonReduceElts = 1;
     for (size_t i = 0, j = 0; i < shape.size(); i++) {
-      if (j >= reductionDims.size() || i != reductionDims[j++]) {
+      if (j >= reductionDims.size() || i != reductionDims[j]) {
         numNonReduceElts *= shape[i];
+      } else {
+        j++;
       }
     }
     return numNonReduceElts % wgTy.getNumElements() == 0;
@@ -197,7 +262,7 @@ struct WorkGroupMakerStrategy {
 
 // this strategy just tries to use a static workgroup shape
 template <unsigned... Shape> struct StaticWorkGroup {
-  static std::optional<cnm::WorkgroupType>
+  static std::optional<ReduceToCnmRewriteParams>
   determineWorkGroupTypeForRewrite(linalg::ReduceOp op) {
     cnm::WorkgroupType wgTy =
         cnm::WorkgroupType::get(op.getContext(), {Shape...});
@@ -215,7 +280,7 @@ template <unsigned... Shape> struct StaticWorkGroup {
                                             op.getDimensions());
         }))
       return std::nullopt;
-    return wgTy;
+    return ReduceToCnmRewriteParams{.wgTy = wgTy};
   }
 };
 
@@ -232,12 +297,15 @@ struct ConvertLinalgReduceIntoLaunch
     auto wgTyOpt = WGStrat::determineWorkGroupTypeForRewrite(op);
     if (!wgTyOpt)
       return failure();
-    cnm::WorkgroupType wgTy = *wgTyOpt;
-    Value workgroup = builder.create<cnm::WorkgroupOp>(wgTy);
+    ReduceToCnmRewriteParams parms = *wgTyOpt;
+    Value workgroup = builder.create<cnm::WorkgroupOp>(parms.wgTy);
 
-    auto results =
-        convertLinalgReduceIntoLaunch(builder, op, adaptor, workgroup, wgTy);
-    rewriter.replaceOp(op, results);
+    llvm::SmallVector<Value, 1> newResults;
+    if (convertLinalgReduceIntoLaunch(builder, op, adaptor, workgroup,
+                                      newResults, parms)
+            .failed())
+      return failure();
+    rewriter.replaceOp(op, newResults);
 
     return success();
   }
@@ -246,7 +314,7 @@ struct ConvertLinalgReduceIntoLaunch
 struct ConvertTiledCinmToCnm
     : public ConvertTiledCinmToCnmBase<ConvertTiledCinmToCnm> {
 
-  using WorkGroupMakerStrategy = StaticWorkGroup<4, 16>;
+  using WorkGroupMakerStrategy = StaticWorkGroup<4, 8, 2>;
 
   void runOnOperation() override {
     RewritePatternSet patterns(&getContext());
@@ -254,15 +322,18 @@ struct ConvertTiledCinmToCnm
         &getContext());
     ConversionTarget target(getContext());
 
-    target.addDynamicallyLegalOp<linalg::ReduceOp>(
-        [](linalg::ReduceOp op) -> bool {
-          return !WorkGroupMakerStrategy::determineWorkGroupTypeForRewrite(op);
-        });
-    target.markUnknownOpDynamicallyLegal([](...) { return true; });
+    //  target.addIllegalDialect<linalg::ReduceOp>();
+    //    target.addDynamicallyLegalOp<linalg::ReduceOp>(
+    //      [](linalg::ReduceOp op) -> bool {
+    //          return
+    //          !WorkGroupMakerStrategy::determineWorkGroupTypeForRewrite(op);
+    //      });
+    //    target.markUnknownOpDynamicallyLegal([](...) { return true; });
+    target.addLegalDialect<cnm::CnmDialect>();
+    target.addLegalOp<cnm::LaunchOp>();
+    target.markOpRecursivelyLegal<cnm::LaunchOp>();
 
-    if (failed(
-            applyFullConversion(getOperation(), target, std::move(patterns))))
-      signalPassFailure();
+    applyPartialConversion(getOperation(), target, std::move(patterns));
   }
 };
 
