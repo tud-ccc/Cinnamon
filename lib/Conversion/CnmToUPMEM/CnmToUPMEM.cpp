@@ -41,23 +41,27 @@ MemRefType convertCnmBufferToMemRefType(cnm::BufferType bufferType) {
 
 AffineMap getElementToMRAMOffsetAffineMap(MLIRContext *ctx,
                                           size_t chunksPerTasklet,
-                                          size_t chunkSize) {
-  const AffineExpr tasklet = getAffineDimExpr(0, ctx);
-  const AffineExpr chunk = getAffineDimExpr(1, ctx);
-  const AffineExpr element = getAffineDimExpr(2, ctx);
-  const AffineExpr result =
-      tasklet * (chunksPerTasklet * chunkSize) + chunk * chunkSize + element;
-  return AffineMap::get(3, 0, result);
+                                          ArrayRef<int64_t> chunkShape) {
+  AffineExpr result = getAffineDimExpr(0, ctx) * chunksPerTasklet;
+  for (size_t i = 0; i < chunkShape.size(); i++) {
+    result = (result + getAffineDimExpr(i + 1, ctx)) * chunkShape[i];
+  }
+  result = result + getAffineDimExpr(chunkShape.size() + 1, ctx);
+  return AffineMap::get(chunkShape.size() + 2, 0, result);
 }
 
 AffineMap getMRAMOffsetToElementAffineMap(MLIRContext *ctx,
                                           size_t chunksPerTasklet,
-                                          size_t chunkSize) {
+                                          ArrayRef<int64_t> chunkShape) {
+  SmallVector<AffineExpr> exprs;
   const AffineExpr offset = getAffineDimExpr(0, ctx);
-  const AffineExpr tasklet = offset.floorDiv(chunkSize * chunksPerTasklet);
-  const AffineExpr chunk = offset.floorDiv(chunkSize) % chunksPerTasklet;
-  const AffineExpr element = offset % chunkSize;
-  return AffineMap::get(1, 0, {tasklet, chunk, element}, ctx);
+  exprs.push_back(offset.floorDiv(reduceMul(chunkShape) * chunksPerTasklet));
+  exprs.push_back(offset.floorDiv(reduceMul(chunkShape)) % chunksPerTasklet);
+  for (size_t i = 0; i < chunkShape.size(); i++) {
+    exprs.push_back(offset.floorDiv(reduceMul(chunkShape.drop_front(i + 1))) %
+                    chunkShape[i]);
+  }
+  return AffineMap::get(1, 0, {exprs}, ctx);
 }
 
 struct ConvertCnmWorkgroupToUPMEM
@@ -105,12 +109,9 @@ struct ConvertCnmScatterToUPMEM : public OpConversionPattern<cnm::ScatterOp> {
     const Value memref = createOrFoldUnrealizedConversionCast(
         op.getLoc(), rewriter, memrefType, rewriter.getRemappedValue(buffer));
 
-    const size_t tensorSize = reduceMul(tensorType.getShape());
-    const size_t chunkCount = reduceMul(bufferType.getWorkgroupShape());
     const size_t chunksPerTasklet = bufferType.getWorkgroupShape().back();
-    const size_t chunkSize = tensorSize / chunkCount;
     const AffineMap mramMap = getElementToMRAMOffsetAffineMap(
-        op.getContext(), chunksPerTasklet, chunkSize);
+        op.getContext(), chunksPerTasklet, bufferType.getShape());
 
     createNestedAffineForLoops(
         rewriter, op.getLoc(), tensorType.getShape(),
@@ -130,8 +131,8 @@ struct ConvertCnmScatterToUPMEM : public OpConversionPattern<cnm::ScatterOp> {
           }
 
           const Value mramOffset = builder.create<affine::AffineApplyOp>(
-              loc, mramMap, ValueRange{bufferIndices}.take_back(3));
-          bufferIndices.pop_back_n(3);
+              loc, mramMap, ValueRange{bufferIndices}.drop_front(2));
+          bufferIndices.pop_back_n(bufferIndices.size() - 2);
           bufferIndices.push_back(mramOffset);
 
           builder.create<affine::AffineStoreOp>(loc, element, memref,
@@ -161,12 +162,9 @@ struct ConvertCnmGatherToUPMEM : public OpConversionPattern<cnm::GatherOp> {
     const Value memref = createOrFoldUnrealizedConversionCast(
         op.getLoc(), rewriter, memrefType, rewriter.getRemappedValue(buffer));
 
-    const size_t tensorSize = reduceMul(tensorType.getShape());
-    const size_t chunkCount = reduceMul(bufferType.getWorkgroupShape());
     const size_t chunksPerTasklet = bufferType.getWorkgroupShape().back();
-    const size_t chunkSize = tensorSize / chunkCount;
     const AffineMap mramMap = getMRAMOffsetToElementAffineMap(
-        op.getContext(), chunksPerTasklet, chunkSize);
+        op.getContext(), chunksPerTasklet, bufferType.getShape());
 
     const Value resultInit = rewriter.create<tensor::EmptyOp>(
         op.getLoc(), tensorType.getShape(), tensorType.getElementType());
@@ -218,8 +216,6 @@ struct ConvertCnmLaunchToUPMEM : public OpConversionPattern<cnm::LaunchOp> {
         rewriter.create<arith::ConstantIndexOp>(op.getLoc(), wgShape[1]);
     const Value taskletCount =
         rewriter.create<arith::ConstantIndexOp>(op.getLoc(), wgShape[2]);
-    const Value chunkCount =
-        rewriter.create<arith::ConstantIndexOp>(op.getLoc(), wgShape[3]);
 
     // scatter results from host memory to dpu memory
     Value addr = rewriter.create<upmem::BaseDPUMemOffsetOp>(op.getLoc());
@@ -249,9 +245,7 @@ struct ConvertCnmLaunchToUPMEM : public OpConversionPattern<cnm::LaunchOp> {
     size_t i = 0;
     for (Value buffer : op.getParams()) {
       const BufferType bufferType = buffer.getType().cast<BufferType>();
-      const size_t totalChunks = reduceMul(bufferType.getWorkgroupShape());
-      const size_t totalSize = totalChunks * reduceMul(bufferType.getShape());
-      const size_t chunkSize = totalSize / totalChunks;
+      const size_t chunkSize = reduceMul(bufferType.getShape());
       const size_t memoryPerTasklet = wgShape[3] * chunkSize;
       const size_t memoryPerDPU = wgShape[2] * memoryPerTasklet;
 
