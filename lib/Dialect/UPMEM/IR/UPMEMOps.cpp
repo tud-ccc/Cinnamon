@@ -194,7 +194,7 @@ void LaunchOp::build(OpBuilder &builder, OperationState &result,
     body->addArgument(argTy, result.location);
   kernelRegion->push_back(body);
   // Fill OperandSegmentSize Attribute.
-  SmallVector<int32_t, 5> segmentSizes(5, 1);
+  SmallVector<int32_t, 6> segmentSizes(6, 1);
   segmentSizes.front() = asyncDependencies.size();
   segmentSizes.back() = dynamicSharedMemorySize ? 1 : 0;
   result.addAttribute(getOperandSegmentSizeAttr(),
@@ -238,17 +238,17 @@ KernelDim LaunchOp::getTaskletSizeClass() {
 }
 
 KernelDim LaunchOp::getRankSizeOperandValue() {
-  auto operands = getOperands().drop_front(1+getAsyncDependencies().size());
+  auto operands = getOperands().drop_front(1 + getAsyncDependencies().size());
   return KernelDim{operands[0]};
 }
 
 KernelDim LaunchOp::getDPUSizeOperandValue() {
-  auto operands = getOperands().drop_front(1+getAsyncDependencies().size());
+  auto operands = getOperands().drop_front(1 + getAsyncDependencies().size());
   return KernelDim{operands[1]};
 }
 
 KernelDim LaunchOp::getTaskletSizeOperandValue() {
-  auto operands = getOperands().drop_front(1+getAsyncDependencies().size());
+  auto operands = getOperands().drop_front(1 + getAsyncDependencies().size());
   return KernelDim{operands[2]};
 }
 
@@ -516,18 +516,15 @@ BlockArgument LaunchOp::addPrivateAttribution(Type type, Location loc) {
   return getBody().addArgument(type, loc);
 }
 
-
-
 //===----------------------------------------------------------------------===//
 // UPMEMModuleOp
 //===----------------------------------------------------------------------===//
 
 void UPMEMModuleOp::build(OpBuilder &builder, OperationState &result,
-                        StringRef name) {
+                          StringRef name) {
   ensureTerminator(*result.addRegion(), builder, result.location);
   result.attributes.push_back(builder.getNamedAttr(
       ::mlir::SymbolTable::getSymbolAttrName(), builder.getStringAttr(name)));
-
 }
 
 ParseResult UPMEMModuleOp::parse(OpAsmParser &parser, OperationState &result) {

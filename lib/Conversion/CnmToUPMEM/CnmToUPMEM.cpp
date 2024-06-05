@@ -2,6 +2,7 @@
 #include "cinm-mlir/Conversion/CommonPatterns.h"
 #include "cinm-mlir/Dialect/Cnm/IR/CnmOps.h"
 #include "cinm-mlir/Dialect/Cnm/IR/CnmTypes.h"
+#include "cinm-mlir/Dialect/UPMEM/IR/UPMEMAttributes.h"
 #include "cinm-mlir/Dialect/UPMEM/IR/UPMEMOps.h"
 #include "cinm-mlir/Dialect/UPMEM/IR/UPMEMTypes.h"
 
@@ -98,7 +99,11 @@ struct ConvertCnmScatterToUPMEM : public OpConversionPattern<cnm::ScatterOp> {
     const RankedTensorType tensorType =
         tensor.getType().cast<RankedTensorType>();
     const BufferType bufferType = buffer.getType().cast<BufferType>();
+    const MemRefType memrefType = convertCnmBufferToMemRefType(bufferType);
     const AffineMap scatterMap = op.getScatterMap();
+
+    const Value memref = createOrFoldUnrealizedConversionCast(
+        op.getLoc(), rewriter, memrefType, rewriter.getRemappedValue(buffer));
 
     const size_t tensorSize = reduceMul(tensorType.getShape());
     const size_t chunkCount = reduceMul(bufferType.getWorkgroupShape());
@@ -129,7 +134,7 @@ struct ConvertCnmScatterToUPMEM : public OpConversionPattern<cnm::ScatterOp> {
           bufferIndices.pop_back_n(3);
           bufferIndices.push_back(mramOffset);
 
-          builder.create<affine::AffineStoreOp>(loc, element, buffer,
+          builder.create<affine::AffineStoreOp>(loc, element, memref,
                                                 bufferIndices);
 
           return {};
@@ -152,6 +157,9 @@ struct ConvertCnmGatherToUPMEM : public OpConversionPattern<cnm::GatherOp> {
     const BufferType bufferType = buffer.getType().cast<BufferType>();
     const MemRefType memrefType = convertCnmBufferToMemRefType(bufferType);
     const AffineMap gatherMap = op.getGatherMap();
+
+    const Value memref = createOrFoldUnrealizedConversionCast(
+        op.getLoc(), rewriter, memrefType, rewriter.getRemappedValue(buffer));
 
     const size_t tensorSize = reduceMul(tensorType.getShape());
     const size_t chunkCount = reduceMul(bufferType.getWorkgroupShape());
@@ -184,7 +192,7 @@ struct ConvertCnmGatherToUPMEM : public OpConversionPattern<cnm::GatherOp> {
           }
 
           const Value element =
-              builder.create<affine::AffineLoadOp>(loc, buffer, memrefIndices);
+              builder.create<affine::AffineLoadOp>(loc, memref, memrefIndices);
           return {builder.create<tensor::InsertOp>(loc, element, iterArgs[0],
                                                    tensorIndices)};
         });
@@ -201,6 +209,120 @@ struct ConvertCnmLaunchToUPMEM : public OpConversionPattern<cnm::LaunchOp> {
   LogicalResult
   matchAndRewrite(cnm::LaunchOp op, OpAdaptor,
                   ConversionPatternRewriter &rewriter) const override {
+    const Value wg = rewriter.getRemappedValue(op.getWg());
+    const ArrayRef<int64_t> wgShape = op.getWg().getType().getShape();
+
+    const Value rankCount =
+        rewriter.create<arith::ConstantIndexOp>(op.getLoc(), wgShape[0]);
+    const Value dpuCount =
+        rewriter.create<arith::ConstantIndexOp>(op.getLoc(), wgShape[1]);
+    const Value taskletCount =
+        rewriter.create<arith::ConstantIndexOp>(op.getLoc(), wgShape[2]);
+    const Value chunkCount =
+        rewriter.create<arith::ConstantIndexOp>(op.getLoc(), wgShape[3]);
+
+    // scatter results from host memory to dpu memory
+    Value addr = rewriter.create<upmem::BaseDPUMemOffsetOp>(op.getLoc());
+    for (Value buffer : op.getInBuffers()) {
+      const MemRefType memrefType =
+          convertCnmBufferToMemRefType(buffer.getType().cast<BufferType>());
+      const Value memref = createOrFoldUnrealizedConversionCast(
+          op.getLoc(), rewriter, memrefType, rewriter.getRemappedValue(buffer));
+      addr = rewriter.create<upmem::ScatterOp>(op.getLoc(), memref, addr, wg);
+    }
+
+    // build launch op body
+    upmem::LaunchOp launchOp = rewriter.create<upmem::LaunchOp>(
+        op.getLoc(), wg, rankCount, dpuCount, taskletCount);
+    rewriter.setInsertionPointToStart(&launchOp.getBody().front());
+
+    // calculate address of all buffer slices for the current tasklet & allocate
+    // wram to store the chunk data
+    struct BufferSliceInfo {
+      Value chunkSize;
+      Value mramAddr;   // address in mram for current tasklet
+      Value wramMemref; // memref allocated on wram to store the current chunk
+    };
+
+    Value dpuHeapAddr = rewriter.create<upmem::BaseMRAMAddrOp>(op.getLoc());
+    llvm::DenseMap<Value, BufferSliceInfo> bufferSlices;
+    size_t i = 0;
+    for (Value buffer : op.getParams()) {
+      const BufferType bufferType = buffer.getType().cast<BufferType>();
+      const size_t totalChunks = reduceMul(bufferType.getWorkgroupShape());
+      const size_t totalSize = totalChunks * reduceMul(bufferType.getShape());
+      const size_t chunkSize = totalSize / totalChunks;
+      const size_t memoryPerTasklet = wgShape[3] * chunkSize;
+      const size_t memoryPerDPU = wgShape[2] * memoryPerTasklet;
+
+      const MemRefType sliceType =
+          MemRefType::get(bufferType.getShape(), bufferType.getElementType());
+
+      const BufferSliceInfo slice{
+          rewriter.create<arith::ConstantIndexOp>(op.getLoc(), chunkSize),
+          dpuHeapAddr,
+          rewriter.create<upmem::PrivateWRAMAllocOp>(op.getLoc(), sliceType),
+      };
+
+      dpuHeapAddr = rewriter.create<arith::AddIOp>(
+          op.getLoc(), dpuHeapAddr,
+          rewriter.create<arith::ConstantIndexOp>(op.getLoc(), memoryPerDPU));
+
+      bufferSlices[buffer] = slice;
+      op.getBody().getArgument(i++).replaceAllUsesWith(slice.wramMemref);
+    }
+
+    // loop over chunks & execute launch body
+    affine::AffineForOp loop =
+        rewriter.create<affine::AffineForOp>(op.getLoc(), 0, wgShape[3], 1);
+
+    rewriter.setInsertionPointToStart(&loop.getRegion().front());
+    const Value currentChunk = loop.getRegion().front().getArguments().front();
+    // copy data from the input buffers to wram
+    for (Value buffer : op.getInBuffers()) {
+      const BufferSliceInfo slice = bufferSlices.at(buffer);
+      Value offset = rewriter.create<arith::MulIOp>(op.getLoc(), currentChunk,
+                                                    slice.chunkSize);
+      Value mramAddr =
+          rewriter.create<arith::AddIOp>(op.getLoc(), slice.mramAddr, offset);
+      rewriter.create<upmem::MemcpyOp>(
+          op.getLoc(), upmem::MemcpyDirOp::MRAMToWRAM, slice.wramMemref,
+          slice.chunkSize, mramAddr);
+    }
+
+    // insert original launch body into loop before the AffineYieldOp implicitly
+    // created by the AffineForOp
+    loop.getRegion().front().getOperations().splice(
+        (--loop.getRegion().front().end()),
+        op.getBody().front().getOperations());
+    rewriter.setInsertionPoint(&loop.getRegion().front().back());
+
+    // copy data from wram to output buffers
+    for (Value buffer : op.getOutBuffers()) {
+      const BufferSliceInfo slice = bufferSlices.at(buffer);
+      Value offset = rewriter.create<arith::MulIOp>(op.getLoc(), currentChunk,
+                                                    slice.chunkSize);
+      Value mramAddr =
+          rewriter.create<arith::AddIOp>(op.getLoc(), slice.mramAddr, offset);
+      rewriter.create<upmem::MemcpyOp>(
+          op.getLoc(), upmem::MemcpyDirOp::WRAMToMRAM, slice.wramMemref,
+          slice.chunkSize, mramAddr);
+    }
+
+    rewriter.setInsertionPointToEnd(&launchOp.getBody().front());
+    rewriter.create<upmem::TerminatorOp>(op.getLoc());
+
+    // gather results from dpu memory to host memory
+    rewriter.setInsertionPointAfter(launchOp);
+    for (Value buffer : op.getOutBuffers()) {
+      const MemRefType memrefType =
+          convertCnmBufferToMemRefType(buffer.getType().cast<BufferType>());
+      const Value memref = createOrFoldUnrealizedConversionCast(
+          op.getLoc(), rewriter, memrefType, rewriter.getRemappedValue(buffer));
+      addr = rewriter.create<upmem::GatherOp>(op.getLoc(), memref, addr, wg);
+    }
+
+    rewriter.eraseOp(op);
     return success();
   }
 };
@@ -212,7 +334,7 @@ struct ConvertCnmTerminatorToUPMEM
   LogicalResult
   matchAndRewrite(cnm::TerminatorOp op, OpAdaptor,
                   ConversionPatternRewriter &rewriter) const override {
-    rewriter.replaceOpWithNewOp<upmem::TerminatorOp>(op);
+    rewriter.eraseOp(op); // gets generated by ConvertCnmLaunchToUPMEM
     return success();
   }
 };
