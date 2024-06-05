@@ -9,7 +9,7 @@ module {
     %base_offset = upmem.base_dpu_mem_offset : index
     %A_offset = upmem.scatter %A into %upmem_token at %base_offset : memref<2x64x8192xi32>, !upmem.hierarchy<2x64x16>, index -> index
     %B_offset = upmem.scatter %B into %upmem_token at %A_offset : memref<2x64x8192xi32>, !upmem.hierarchy<2x64x16>, index -> index
-    upmem.launch %upmem_token !upmem.hierarchy<2x64x16> : ranks(%arg0) in (%arg3 = %rank_count) dpus(%arg1) in (%arg4 = %dpu_count) tasklets(%arg2) in (%arg5 = %tasklet_count) {
+    upmem.launch %upmem_token  ranks(%arg0 upto %rank_count) dpus(%arg1 upto %dpu_count) tasklets(%arg2 upto %tasklet_count) on !upmem.hierarchy<2x64x16> {
         %ITER_I = arith.constant 128: index
         %ITER_J = arith.constant 64 : index
         %A_SIZE = arith.muli %ITER_I, %ITER_J : index
