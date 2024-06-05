@@ -24,6 +24,8 @@ include "mlir/Interfaces/InferTypeOpInterface.td"
 include "mlir/Interfaces/SideEffectInterfaces.td"
 include "mlir/Interfaces/InferIntRangeInterface.td"
 include "mlir/Interfaces/DataLayoutInterfaces.td"
+include "mlir/Interfaces/FunctionInterfaces.td"
+
 
 
 class UPMEM_IndexOp<string mnemonic, list<Trait> traits = []> :
@@ -404,5 +406,100 @@ def UPMEM_ModuleEndOp : UPMEM_Op<"module_end", [
 
   let assemblyFormat = "attr-dict";
 }
+
+
+def UPMEM_UPMEMFuncOp : UPMEM_Op<"func", [
+    HasParent<"UPMEMModuleOp">, AutomaticAllocationScope, FunctionOpInterface,
+    IsolatedFromAbove
+  ]> {
+  let summary = "Function executable on a UPMEM";
+
+  let description = [{
+  }];
+
+  let arguments = (ins TypeAttrOf<FunctionType>:$function_type, OptionalAttr<DictArrayAttr>:$arg_attrs,
+                       OptionalAttr<DictArrayAttr>:$res_attrs);
+  let regions = (region AnyRegion:$body);
+
+  let skipDefaultBuilders = 1;
+
+  let builders = [
+    OpBuilder<(ins "StringRef":$name, "FunctionType":$type, CArg<"ArrayRef<NamedAttribute>", "{}">:$attrs)>
+
+  ];
+
+  let extraClassDeclaration = [{
+    /// Returns `true` if the GPU function defined by this Op is a kernel, i.e.
+    /// it is intended to be launched from host.
+    bool isKernel() {
+      return (*this)->getAttrOfType<UnitAttr>(
+          UPMEMDialect::getKernelFuncAttrName()) != nullptr;
+    }
+
+    static constexpr StringLiteral getKnownRankSizeAttrName() {
+      return StringLiteral("hamid.known_rank_size");
+    }
+
+    static constexpr StringLiteral getKnownDPUSizeAttrName() {
+      return StringLiteral("hamid.known_dpu_size");
+    }
+
+    static constexpr StringLiteral getKnownTaskletSizeAttrName() {
+      return StringLiteral("hamid.known_tasklet_size");
+    }
+
+    /// Returns the block size this kernel will be launched with along
+    /// dimension `dim` if known. The value of gpu.thread_id dim will be strictly
+    /// less than this size.
+    // std::optional<uint32_t> getKnownRankSize(hamid::Dimension dim) {
+    //   if (auto array =
+    //     (*this)->getAttrOfType<DenseI32ArrayAttr>(getKnownBlockSizeAttrName())) {
+    //     return array[static_cast<uint32_t>(dim)];
+    //   }
+    //   return std::nullopt;
+    // }
+
+    /// Returns the grid size this kernel will be launched with along
+    /// dimension `dim` if known. The value of gpu.block_id dim will be strictly
+    /// less than this size.
+    // std::optional<uint32_t> getKnownGridSize(gpu::Dimension dim) {
+    //   if (auto array =
+    //     (*this)->getAttrOfType<DenseI32ArrayAttr>(getKnownGridSizeAttrName())) {
+    //     return array[static_cast<uint32_t>(dim)];
+    //   }
+    //   return std::nullopt;
+    // }
+
+    /// Returns the argument types of this function.
+    ArrayRef<Type> getArgumentTypes() { return getFunctionType().getInputs(); }
+
+    /// Returns the result types of this function.
+    ArrayRef<Type> getResultTypes() { return getFunctionType().getResults(); }
+
+    Region *getCallableRegion() { return &getBody(); }
+
+
+    /// Hook for FunctionOpInterface verifier.
+    LogicalResult verifyType();
+
+    /// Verifies the body of the function.
+    LogicalResult verifyBody();
+
+    static StringRef getKernelKeyword() { return "kernel"; }
+  }];
+  let hasCustomAssemblyFormat = 1;
+
+  let hasVerifier = 1;
+}
+
+def UPMEM_ReturnOp : UPMEM_Op<"return", [HasParent<"UPMEMFuncOp">, Pure,
+                                     Terminator]>
+      {
+  let summary = "Terminator for UPMEM functions.";
+  let description = [{
+  }];
+  let assemblyFormat = "attr-dict";
+}
+
 
 #endif
