@@ -1,4 +1,5 @@
 #scatter_map = affine_map<(d0, d1) -> (d0 floordiv 16, d1 floordiv 16, d0 mod 16, d1 mod 16)>
+#gather_map = affine_map<(d0, d1, d2, d3) -> (d0 * 16 + d2, d1 * 16 + d3)>
 
 #im2col_traits = {
     indexing_maps = [
@@ -43,19 +44,19 @@ func.func @conv(%img : tensor<1x128x128x3xi16>, %flt : tensor<3x3x3x8xi16>, %bia
     %C_pad = scf.for %o0 = %cst0_i to %cst15888_i step %cst128 iter_args(%in_result = %in) -> tensor<15888x16xi16> {
         %A_tile = tensor.extract_slice %A_pad[%o0, %cst0_i][128, 32][1, 1]
             : tensor<15888x32xi16> to tensor<128x32xi16>
-        %wg = cnm.workgroup [8 2] { cnm.physical_dims = ["dpu", "thread"] }
+        %wg = cnm.workgroup : !cnm.workgroup<8x2>
         %A_buf = cnm.alloc() for %wg { cnm.physical_space = "global" }
-        : !cnm.buffer<16x16xi16 on 8x2, level 0> for !cnm.workgroup<8x2>
+        : !cnm.buffer<16x16xi16 on 8x2, level 0>
         %B_buf = cnm.alloc() for %wg { cnm.physical_space = "global" }
-        : !cnm.buffer<16x16xi16 on 8x2, level 0> for !cnm.workgroup<8x2>
+        : !cnm.buffer<16x16xi16 on 8x2, level 0>
         %C_buf_init = cnm.alloc() for %wg { cnm.physical_space = "global" }
-        : !cnm.buffer<16x16xi16 on 8x2, level 0> for !cnm.workgroup<8x2>
+        : !cnm.buffer<16x16xi16 on 8x2, level 0>
         %C_buf = cnm.set_zero %C_buf_init :  !cnm.buffer<16x16xi16 on 8x2, level 0>
         %sc_a_token = cnm.scatter %A_tile into %A_buf[#scatter_map] of %wg
-            : tensor<128x32xi16> into !cnm.buffer<16x16xi16 on 8x2, level 0> of !cnm.workgroup<8x2>
+            : tensor<128x32xi16> into !cnm.buffer<16x16xi16 on 8x2, level 0>
         %sc_b_token = cnm.scatter %B_pad into %B_buf[#scatter_map] of %wg
-            : tensor<32x16xi16> into !cnm.buffer<16x16xi16 on 8x2, level 0> of !cnm.workgroup<8x2>
-        %e_token = cnm.launch %wg (%A_buf, %B_buf, %C_buf: !cnm.buffer<16x16xi16 on 8x2, level 0>, !cnm.buffer<16x16xi16 on 8x2, level 0>, !cnm.buffer<16x16xi16 on 8x2, level 0>) on !cnm.workgroup<8x2> {
+            : tensor<32x16xi16> into !cnm.buffer<16x16xi16 on 8x2, level 0>
+        %e_token = cnm.launch %wg in(%A_buf, %B_buf : !cnm.buffer<16x16xi16 on 8x2, level 0>, !cnm.buffer<16x16xi16 on 8x2, level 0>) out(%C_buf : !cnm.buffer<16x16xi16 on 8x2, level 0>) on !cnm.workgroup<8x2> {
             ^bb0(%A_space: memref<16x16xi16>, %B_space: memref<16x16xi16>, %C_space: memref<16x16xi16>):
                 affine.for %arg3 = 0 to 16 {
                     affine.for %arg4 = 0 to 16 {
@@ -71,8 +72,8 @@ func.func @conv(%img : tensor<1x128x128x3xi16>, %flt : tensor<3x3x3x8xi16>, %bia
                 } // This inner most block can be anything. Here is just as an example of how you can do the matmul using affine. it can be cinm op as well.
         }
 
-        %C_tile, %g_token = cnm.gather %C_buf[#scatter_map] of %wg
-            : !cnm.buffer<16x16xi16 on 8x2, level 0> of !cnm.workgroup<8x2> into tensor<128x16xi16>
+        %C_tile, %g_token = cnm.gather %C_buf[#gather_map] of %wg
+            : !cnm.buffer<16x16xi16 on 8x2, level 0> into tensor<128x16xi16>
         %out_result = tensor.insert_slice %C_tile into %in_result[%o0, 0][128, 16][1, 1]
         : tensor<128x16xi16> into tensor<15888x16xi16>
         scf.yield %out_result: tensor<15888x16xi16>

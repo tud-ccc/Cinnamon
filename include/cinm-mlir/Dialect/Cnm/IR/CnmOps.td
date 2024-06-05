@@ -76,16 +76,24 @@ def GatherOp: Cnm_Op<"gather", [InferWorkgroupTypeFromBuffer<"buffer", "wg">]> {
     let assemblyFormat = "$buffer `[` $scatterMap `]` `of` $wg attr-dict `:` qualified(type($buffer)) `into` type($output)";
 }
 
-def LaunchOp: Cnm_Op<"launch", [SingleBlockImplicitTerminator<"TerminatorOp">]> {
+def LaunchOp: Cnm_Op<"launch", [AttrSizedOperandSegments, SingleBlockImplicitTerminator<"TerminatorOp">]> {
     let summary = "Launch a code kernel on a given workgroup. Input buffers should have been scattered beforehand.";
     let description = [{}];
 
-    let arguments = (ins WorkgroupType:$wg, Variadic<AnyType>:$params);
+    let arguments = (ins WorkgroupType:$wg, Variadic<BufferType>:$inBuffers, Variadic<BufferType>:$outBuffers);
     let results = (outs LaunchTokenType:$token);
     let regions = (region SizedRegion<1>:$body);
 
     let hasVerifier = 1;
-    let assemblyFormat = "$wg `(` $params `:` type($params) `)` attr-dict `on` qualified(type($wg)) $body";
+    let assemblyFormat = "$wg `in` `(` $inBuffers `:` type($inBuffers) `)` `out` `(` $outBuffers `:` type($outBuffers) `)` attr-dict `on` qualified(type($wg)) $body";
+
+    let extraClassDeclaration = [{
+        SmallVector<Value> getParams() {
+            SmallVector<Value> result{getInBuffers()};
+            result.append(getOutBuffers().begin(), getOutBuffers().end());
+            return result;
+        }
+    }];
 }
 
 def TerminatorOp: Cnm_Op<"terminator", [Terminator]> {

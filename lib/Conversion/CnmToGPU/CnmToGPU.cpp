@@ -29,6 +29,7 @@
 #include <mlir/IR/BuiltinTypes.h>
 #include <mlir/IR/MLIRContext.h>
 #include <mlir/IR/OpDefinition.h>
+#include <mlir/IR/PatternMatch.h>
 #include <mlir/IR/TypeRange.h>
 #include <mlir/IR/Value.h>
 #include <mlir/IR/ValueRange.h>
@@ -84,6 +85,43 @@ SmallVector<Value, 2> createCalculateScatterIndices(Location loc,
         loc, AffineMap::get(indices.size(), 0, indexExpr), indices));
   }
   return bufferIndices;
+}
+
+void convertLaunchParameter(ConversionPatternRewriter &rewriter, Location loc,
+                            Value buffer, ValueRange threadIds,
+                            ArrayRef<int64_t> workgroupShape,
+                            BlockArgument arg) {
+  const BufferType bufferType = buffer.getType().dyn_cast<cnm::BufferType>();
+  const SmallVector<int64_t, 2> bufferShape = getBufferTypeShape(bufferType);
+
+  const Value source =
+      createCast(loc, rewriter, convertCnmBufferToMemRefType(bufferType),
+                 rewriter.getRemappedValue(buffer));
+
+  const SmallVector<int64_t, 2> staticOffsets(workgroupShape.size(),
+                                              ShapedType::kDynamic);
+  const SmallVector<int64_t, 2> staticSizes{bufferShape};
+  const SmallVector<int64_t, 2> staticStrides(workgroupShape.size(), 1);
+
+  SmallVector<Value, 2> dynamicOffsets;
+  for (size_t i = 0; i < workgroupShape.size(); i++) {
+    const AffineExpr indexExpr = rewriter.getAffineDimExpr(0) * bufferShape[i];
+    dynamicOffsets.push_back(rewriter.create<affine::AffineApplyOp>(
+        loc, AffineMap::get(1, 0, indexExpr), ValueRange{threadIds[i]}));
+  }
+
+  const Type resultType = memref::SubViewOp::inferRankReducedResultType(
+      bufferType.getShape(), convertCnmBufferToMemRefType(bufferType),
+      staticOffsets, staticSizes, staticStrides);
+
+  const Value subview =
+      rewriter
+          .create<memref::SubViewOp>(loc, resultType, source, dynamicOffsets,
+                                     ValueRange{}, ValueRange{}, staticOffsets,
+                                     staticSizes, staticStrides)
+          .getResult();
+
+  arg.replaceAllUsesWith(subview);
 }
 
 struct ConvertCnmWorkgroupToGPU : public OpConversionPattern<cnm::WorkgroupOp> {
@@ -253,47 +291,10 @@ struct ConvertCnmLaunchToGPU : public OpConversionPattern<cnm::LaunchOp> {
     rewriter.setInsertionPointToEnd(&launchOp.getBody().front());
 
     // convert cnm.buffer parameters to memref subviews
-    for (size_t i = 0; i < op.getParams().size(); i++) {
-      const Value param = op.getParams()[i];
-      const BufferType bufferType =
-          param.getType().dyn_cast_or_null<cnm::BufferType>();
-      if (!bufferType) {
-        op.getBody().getArgument(i).replaceAllUsesWith(param);
-        continue;
-      }
-      const SmallVector<int64_t, 2> bufferShape =
-          getBufferTypeShape(bufferType);
-
-      const Value source = createCast(op.getLoc(), rewriter,
-                                      convertCnmBufferToMemRefType(bufferType),
-                                      rewriter.getRemappedValue(param));
-
-      const SmallVector<int64_t, 2> staticOffsets(workgroupShape.size(),
-                                                  ShapedType::kDynamic);
-      const SmallVector<int64_t, 2> staticSizes{bufferShape};
-      const SmallVector<int64_t, 2> staticStrides(workgroupShape.size(), 1);
-
-      SmallVector<Value, 2> dynamicOffsets;
-      for (size_t i = 0; i < workgroupShape.size(); i++) {
-        const AffineExpr indexExpr =
-            rewriter.getAffineDimExpr(0) * bufferShape[i];
-        dynamicOffsets.push_back(rewriter.create<affine::AffineApplyOp>(
-            op.getLoc(), AffineMap::get(1, 0, indexExpr),
-            ValueRange{threadIds[i]}));
-      }
-
-      const Type resultType = memref::SubViewOp::inferRankReducedResultType(
-          bufferType.getShape(), convertCnmBufferToMemRefType(bufferType),
-          staticOffsets, staticSizes, staticStrides);
-
-      const Value subview = rewriter
-                                .create<memref::SubViewOp>(
-                                    launchOp.getLoc(), resultType, source,
-                                    dynamicOffsets, ValueRange{}, ValueRange{},
-                                    staticOffsets, staticSizes, staticStrides)
-                                .getResult();
-
-      op.getBody().getArgument(i).replaceAllUsesWith(subview);
+    int64_t i = 0;
+    for (const Value &buffer : op.getParams()) {
+      convertLaunchParameter(rewriter, op.getLoc(), buffer, threadIds,
+                             workgroupShape, op.getBody().getArgument(i++));
     }
 
     launchOp.getBody().front().getOperations().splice(

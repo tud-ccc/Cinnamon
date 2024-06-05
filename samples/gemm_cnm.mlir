@@ -24,7 +24,7 @@ module {
           %7 = cnm.scatter %reshape_5 into %6[#map] of %3 : tensor<64x16xi32> into !cnm.buffer<16xi32 on 4x8x2, level 0>
           %8 = cnm.alloc() for %3 : !cnm.buffer<i32 on 4x8x2, level 0>
           %9 = cnm.scatter %cst_3 into %8[#map1] of %3 : tensor<64xi32> into !cnm.buffer<i32 on 4x8x2, level 0>
-          %10 = cnm.launch %3(%4, %6, %8 : !cnm.buffer<16xi32 on 4x8x2, level 0>, !cnm.buffer<16xi32 on 4x8x2, level 0>, !cnm.buffer<i32 on 4x8x2, level 0>) on !cnm.workgroup<4x8x2> {
+          %10 = cnm.launch %3 in(%4, %6 : !cnm.buffer<16xi32 on 4x8x2, level 0>, !cnm.buffer<16xi32 on 4x8x2, level 0>) out(%8 : !cnm.buffer<i32 on 4x8x2, level 0>) on !cnm.workgroup<4x8x2> {
           ^bb0(%arg6: memref<16xi32>, %arg7: memref<16xi32>, %arg8: memref<i32>):
             linalg.reduce ins(%arg6, %arg7 : memref<16xi32>, memref<16xi32>) outs(%arg8 : memref<i32>) dimensions = [0] 
               (%in: i32, %in_6: i32, %init: i32) {

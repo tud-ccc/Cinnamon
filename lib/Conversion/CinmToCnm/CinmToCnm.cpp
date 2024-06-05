@@ -185,8 +185,9 @@ LogicalResult convertLinalgReduceIntoLaunch(
     i++;
   }
 
-  cnm::LaunchOp launchOp =
-      builder.create<cnm::LaunchOp>(workgroup, launchOperands);
+  cnm::LaunchOp launchOp = builder.create<cnm::LaunchOp>(
+      workgroup, ValueRange{launchOperands}.take_front(2),
+      ValueRange{launchOperands}.take_back());
 
   {
     auto &launchBlock = launchOp.getBody().emplaceBlock();
