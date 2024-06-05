@@ -1,4 +1,5 @@
 #include "cinm-mlir/Dialect/UPMEM/Transforms/Passes.h"
+#include "cinm-mlir/Dialect/UPMEM/IR/UPMEMOps.h"
 
 #include <llvm/Support/Regex.h>
 #include <mlir/IR/Builders.h>
@@ -27,16 +28,15 @@ void UPMEMOutlineKernelPass::runOnOperation() {
     SymbolTable symbolTable(getOperation());
     bool modified = false;
     for (auto func : getOperation().getOps<func::FuncOp>()) {
-    //   // Insert just after the function.
-    //   Block::iterator insertPt(func->getNextNode());
-    //   auto funcWalkResult = func.walk([&](gpu::LaunchOp op) {
-    //     SetVector<Value> operands;
-    //     std::string kernelFnName =
-    //         Twine(op->getParentOfType<func::FuncOp>().getName(), "_kernel")
-    //             .str();
+      Block::iterator insertPt(func->getNextNode());
+      auto funcWalkResult = func.walk([&](upmem::LaunchOp op) {
+        SetVector<Value> operands;
+        std::string kernelFnName =
+            Twine(op->getParentOfType<func::FuncOp>().getName(), "_kernel")
+                .str();
 
-    //     gpu::GPUFuncOp outlinedFunc =
-    //         outlineKernelFuncImpl(op, kernelFnName, operands);
+        // upmem::UPMEMFuncOp outlinedFunc =
+        //     outlineKernelFuncImpl(op, kernelFnName, operands);
 
     //     // Create nested module and insert outlinedFunc. The module will
     //     // originally get the same name as the function, but may be renamed on
@@ -47,10 +47,10 @@ void UPMEMOutlineKernelPass::runOnOperation() {
     //     // Potentially changes signature, pulling in constants.
     //     convertToLaunchFuncOp(op, outlinedFunc, operands.getArrayRef());
     //     modified = true;
-    //     return WalkResult::advance();
-    //   });
-    //   if (funcWalkResult.wasInterrupted())
-    //     return signalPassFailure();
+        return WalkResult::advance();
+      });
+      if (funcWalkResult.wasInterrupted())
+        return signalPassFailure();
     }
 
     // // If any new module was inserted in this module, annotate this module as

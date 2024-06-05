@@ -253,25 +253,12 @@ KernelDim LaunchOp::getTaskletSizeOperandValue() {
 }
 
 LogicalResult LaunchOp::verifyRegions() {
-  // Kernel launch takes kNumConfigOperands leading operands for grid/block
-  // sizes and transforms them into kNumConfigRegionAttributes region arguments
-  // for block/thread identifiers and grid/block sizes.
   if (!getBody().empty()) {
     if (getBody().getNumArguments() <
         kNumConfigRegionAttributes + getNumWorkgroupAttributions())
       return emitOpError("unexpected number of region arguments");
   }
 
-  // Verify Attributions Address Spaces.
-  //   if (failed(verifyAttributions(getOperation(), getWorkgroupAttributions(),
-  //                                 UPMEMDialect::getWorkgroupAddressSpace()))
-  //                                 ||
-  //       failed(verifyAttributions(getOperation(), getPrivateAttributions(),
-  //                                 UPMEMDialect::getPrivateAddressSpace())))
-  //     return failure();
-
-  // Block terminators without successors are expected to exit the kernel region
-  // and must be `upmem.terminator`.
   for (Block &block : getBody()) {
     if (block.empty())
       continue;
@@ -293,10 +280,6 @@ LogicalResult LaunchOp::verifyRegions() {
   return success();
 }
 
-// Pretty-print the kernel grid/block size assignment as
-//   (%iter-x, %iter-y, %iter-z) in
-//   (%size-x = %ssa-use, %size-y = %ssa-use, %size-z = %ssa-use)
-// where %size-* and %iter-* will correspond to the body region arguments.
 static void printSizeAssignment(OpAsmPrinter &p, KernelDim size,
                                 KernelDim operand, KernelDim id) {
   p << '(' << id.x << ") in (";
@@ -331,9 +314,6 @@ void LaunchOp::print(OpAsmPrinter &p) {
     p << ' ' << getDynamicSharedMemorySizeKeyword() << ' '
       << getDynamicSharedMemorySize();
 
-  //printAttributions(p, getWorkgroupKeyword(), getWorkgroupAttributions());
-//  printAttributions(p, getPrivateKeyword(), getPrivateAttributions());
-
   p << " on " << getDeviceHierarchy().getType() << " ";
 
   p.printRegion(getBody(), /*printEntryBlockArgs=*/false);
@@ -342,12 +322,6 @@ void LaunchOp::print(OpAsmPrinter &p) {
                               getNumWorkgroupAttributionsAttrName()});
 }
 
-// Parse the size assignment blocks for blocks and threads.  These have the form
-//   (%region_arg, %region_arg, %region_arg) in
-//   (%region_arg = %operand, %region_arg = %operand, %region_arg = %operand)
-// where %region_arg are percent-identifiers for the region arguments to be
-// introduced further (SSA defs), and %operand are percent-identifiers for the
-// SSA value uses.
 static ParseResult
 parseSizeAssignment(OpAsmParser &parser,
                     MutableArrayRef<OpAsmParser::UnresolvedOperand> sizes,
@@ -361,9 +335,6 @@ parseSizeAssignment(OpAsmParser &parser,
     return failure();
   std::move(args.begin(), args.end(), indices.begin());
 
-  // for (int i = 0; i < 3; ++i) {
-  // if (i != 0 && parser.parseComma())
-  //   return failure();
   if (parser.parseOperand(regionSizes[0], /*allowResultNumber=*/false) ||
       parser.parseEqual() || parser.parseOperand(sizes[0]))
     return failure();
@@ -381,13 +352,6 @@ parseSizeAssignment(OpAsmParser &parser, OpAsmParser::Argument &arg,
   return success();
 }
 
-/// Parses a Launch operation.
-/// operation ::= `upmem.launch` (`async` `[` ssa-id-list `]`)?
-///       `blocks` `(` ssa-id-list `)` `in` ssa-reassignment
-///       `threads` `(` ssa-id-list `)` `in` ssa-reassignment
-///       memory-attribution
-///       region attr-dict?
-/// ssa-reassignment ::= `(` ssa-id `=` ssa-use (`,` ssa-id `=` ssa-use)* `)`
 ParseResult LaunchOp::parse(OpAsmParser &parser, OperationState &result) {
   // Sizes of the grid and block.
   SmallVector<OpAsmParser::UnresolvedOperand, LaunchOp::kNumConfigOperands>
@@ -415,17 +379,9 @@ ParseResult LaunchOp::parse(OpAsmParser &parser, OperationState &result) {
 
   OpAsmParser::UnresolvedOperand deviceHierarchy;
   if (parser.parseOperand(deviceHierarchy)) {
-    //      parser.parseType(deviceHierarchyType) ||
-    //      parser.resolveOperand(deviceHierarchy, deviceHierarchyType,
-    //                            result.operands) ||
-    //      parser.parseColon()) {
     return failure();
   }
-  // Parse the size assignment segments: the first segment assigns grid sizes
-  // and defines values for block identifiers; the second segment assigns block
-  // sizes and defines values for thread identifiers.  In the region argument
-  // list, identifiers precede sizes, and block-related values precede
-  // thread-related values.
+
   SmallVector<OpAsmParser::Argument> regionArgs2;
   SmallVector<OpAsmParser::UnresolvedOperand> upperBounds;
   if (parser.parseKeyword(LaunchOp::getRanksKeyword().data()) ||
@@ -440,21 +396,6 @@ ParseResult LaunchOp::parse(OpAsmParser &parser, OperationState &result) {
       parser.resolveOperands(upperBounds, parser.getBuilder().getIndexType(),
                              result.operands))
     return failure();
-  // if (parser.parseKeyword(LaunchOp::getRanksKeyword().data()) ||
-  //     parseSizeAssignment(parser, sizesRef.take_front(1),
-  //                         regionArgsRef.slice(3, 1),
-  //                         regionArgsRef.slice(0, 1)) ||
-  //     parser.parseKeyword(LaunchOp::getDPUsKeyword().data()) ||
-  //     parseSizeAssignment(parser, sizesRef.drop_front(1).take_front(1),
-  //                         regionArgsRef.slice(4, 1),
-  //                         regionArgsRef.slice(1, 1)) ||
-  //     parser.parseKeyword(LaunchOp::getTaskletsKeyword().data()) ||
-  //     parseSizeAssignment(parser, sizesRef.drop_front(2),
-  //                         regionArgsRef.slice(5, 1),
-  //                         regionArgsRef.slice(2, 1)) ||
-  //     parser.resolveOperands(sizes, parser.getBuilder().getIndexType(),
-  //                            result.operands))
-  //   return failure();
 
   OpAsmParser::UnresolvedOperand dynamicSharedMemorySize;
   bool hasDynamicSharedMemorySize = false;
@@ -468,12 +409,6 @@ ParseResult LaunchOp::parse(OpAsmParser &parser, OperationState &result) {
       return failure();
   }
 
-  // Create the region arguments, it has kNumConfigRegionAttributes arguments
-  // that correspond to block/thread identifiers and grid/block sizes, all
-  // having `index` type, a variadic number of WorkGroup Attributions and
-  // a variadic number of Private Attributions. The number of WorkGroup
-  // Attributions is stored in the attr with name:
-  // LaunchOp::getNumWorkgroupAttributionsAttrName().
   Type index = parser.getBuilder().getIndexType();
   SmallVector<Type, LaunchOp::kNumConfigRegionAttributes> dataTypes(
       LaunchOp::kNumConfigRegionAttributes, index);
@@ -579,4 +514,48 @@ BlockArgument LaunchOp::addPrivateAttribution(Type type, Location loc) {
   // Buffers on the private memory always come after buffers on the workgroup
   // memory.
   return getBody().addArgument(type, loc);
+}
+
+
+
+//===----------------------------------------------------------------------===//
+// UPMEMModuleOp
+//===----------------------------------------------------------------------===//
+
+void UPMEMModuleOp::build(OpBuilder &builder, OperationState &result,
+                        StringRef name) {
+  ensureTerminator(*result.addRegion(), builder, result.location);
+  result.attributes.push_back(builder.getNamedAttr(
+      ::mlir::SymbolTable::getSymbolAttrName(), builder.getStringAttr(name)));
+
+}
+
+ParseResult UPMEMModuleOp::parse(OpAsmParser &parser, OperationState &result) {
+  StringAttr nameAttr;
+  ArrayAttr targetsAttr;
+
+  if (parser.parseSymbolName(nameAttr, mlir::SymbolTable::getSymbolAttrName(),
+                             result.attributes))
+    return failure();
+
+  // If module attributes are present, parse them.
+  if (parser.parseOptionalAttrDictWithKeyword(result.attributes))
+    return failure();
+
+  // Parse the module body.
+  auto *body = result.addRegion();
+  if (parser.parseRegion(*body, {}))
+    return failure();
+
+  // Ensure that this module has a valid terminator.
+  UPMEMModuleOp::ensureTerminator(*body, parser.getBuilder(), result.location);
+  return success();
+}
+
+void UPMEMModuleOp::print(OpAsmPrinter &p) {
+  p << ' ';
+  p.printSymbolName(getName());
+
+  p.printRegion(getRegion(), /*printEntryBlockArgs=*/false,
+                /*printBlockTerminators=*/false);
 }

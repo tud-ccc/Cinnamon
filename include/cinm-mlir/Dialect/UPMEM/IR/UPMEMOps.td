@@ -75,6 +75,16 @@ def UPMEM_TaskletDimOp : UPMEM_IndexOp<"tasklet_dim"> {
   }];
 }
 
+def UPMEM_TaskletIDOp : UPMEM_Op<"tasklet_id"> {
+  let description = [{
+  }];
+  let results = (outs Index:$tasklet_id);
+  let assemblyFormat = [{
+     attr-dict `:` type($tasklet_id)
+  }];
+}
+
+
 
 def UPMEM_PrivateWRAMAllocOp : UPMEM_Op<"pwram_alloc", [
   ]> {
@@ -366,6 +376,33 @@ def UPMEM_GatherOp: UPMEM_Op <"gather", []> {
   let assemblyFormat = [{
      $host_memref `from` $hierarchy `at` $dpu_mem_offset attr-dict `:` type($host_memref)`,` qualified(type($hierarchy)) `,` type($dpu_mem_offset)  `->` type($new_mem_offset)
   }];
+}
+
+
+def UPMEM_UPMEMModuleOp : UPMEM_Op<"module", [
+      IsolatedFromAbove,
+      SymbolTable, Symbol, SingleBlockImplicitTerminator<"ModuleEndOp">
+    ]> {
+  let summary = "";
+  let description = [{
+  }];
+  let builders = [
+    OpBuilder<(ins "StringRef":$name)>,
+  ];
+  let regions = (region SizedRegion<1>:$bodyRegion);
+  let hasCustomAssemblyFormat = 1;
+}
+
+
+def UPMEM_ModuleEndOp : UPMEM_Op<"module_end", [
+  Terminator, HasParent<"UPMEMModuleOp">
+]> {
+  let summary = "A pseudo op that marks the end of a gpu.module.";
+  let description = [{
+    This op terminates the only block inside the only region of a `gpu.module`.
+  }];
+
+  let assemblyFormat = "attr-dict";
 }
 
 #endif
