@@ -29,7 +29,7 @@ func.func @matmul(%A: tensor<1024x1024xi32>, %B: tensor<1024x1024xi32>) -> tenso
         // We alloc a buffer for the reduction result (scalar)
         %outbuf = cnm.alloc() for %wg { cnm.physical_space = "global" } : !cnm.buffer<i32 on 4x16, level 0>
         // Then we launch the group
-        %token2 = cnm.launch %wg (%A_buf, %outbuf: !cnm.buffer<16xi32 on 4x16, level 0>, !cnm.buffer<i32 on 4x16, level 0>) on !cnm.workgroup<4x16> {
+        %token2 = cnm.launch %wg in(%A_buf: !cnm.buffer<16xi32 on 4x16, level 0>) out(%outbuf : !cnm.buffer<i32 on 4x16, level 0>) on !cnm.workgroup<4x16> {
             ^bb0(%arg0: memref<16xi32>, %arg1: memref<i32>):
             // Here we have an affine reduction loop
             %total = affine.for %x = 0 to 16 iter_args(%sum = %c0_i32) -> i32 {
