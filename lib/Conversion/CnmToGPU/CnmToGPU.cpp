@@ -236,9 +236,9 @@ struct ConvertCnmGatherToGPU : public OpConversionPattern<cnm::GatherOp> {
     // inner most loop body
     const Value iterArg = loops.back().getBody()->getArgument(1);
 
-    const AffineMap scatterMap = op.getScatterMap();
+    const AffineMap gatherMap = op.getGatherMap();
     SmallVector<Value> bufferIndices = createCalculateScatterIndices(
-        op.getLoc(), rewriter, scatterMap, indices, bufferType);
+        op.getLoc(), rewriter, gatherMap, indices, bufferType);
     const Value element =
         rewriter.create<memref::LoadOp>(op.getLoc(), memref, bufferIndices);
     const Value result = rewriter.create<tensor::InsertOp>(op.getLoc(), element,

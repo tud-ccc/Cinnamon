@@ -75,32 +75,36 @@ LogicalResult ScatterOp::verify() {
   }
 
   if (map.getNumResults() !=
-      bufferTy.getWorkgroupShape().size() + bufferTy.getShape().size())
-    return emitError() << "Affine map results (" << map.getNumInputs()
+      bufferTy.getWorkgroupShape().size() + bufferTy.getShape().size()) {
+    return emitError() << "Affine map results (" << map.getNumResults()
                        << ") do not correspond to workgroup + buffer dims ("
                        << bufferTy.getWorkgroupShape().size() << " + "
                        << bufferTy.getShape().size() << ")";
+  }
+
   return success();
 }
 
 LogicalResult GatherOp::verify() {
   auto tensorTy = getOutput().getType();
   auto bufferTy = getBuffer().getType();
-  auto map = getScatterMap();
-  // The affine map maps every index in the input tensor to
-  // a cnm index which is WG-element index, and element in the buffer.
-
-  if (map.getNumResults() != tensorTy.getShape().size()) {
-    return emitError() << "Affine map results (" << map.getNumInputs()
-                       << ") do not correspond to scattered tensor dimensions ("
-                       << tensorTy.getShape().size() << ")";
-  }
+  auto map = getGatherMap();
+  // The affine map maps every WG-element index and buffer element index
+  // to a result tensor index
 
   if (map.getNumInputs() !=
-      bufferTy.getWorkgroupShape().size() + bufferTy.getShape().size())
+      bufferTy.getWorkgroupShape().size() + bufferTy.getShape().size()) {
     return emitError() << "Affine map inputs (" << map.getNumInputs()
                        << ") do not correspond to workgroup + buffer dims ("
                        << bufferTy.getWorkgroupShape().size() << " + "
                        << bufferTy.getShape().size() << ")";
+  }
+
+  if (map.getNumResults() != tensorTy.getShape().size()) {
+    return emitError() << "Affine map results (" << map.getNumResults()
+                       << ") do not correspond to scattered tensor dimensions ("
+                       << tensorTy.getShape().size() << ")";
+  }
+
   return success();
 }

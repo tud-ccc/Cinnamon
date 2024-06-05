@@ -43,6 +43,7 @@ def AllocOp : Cnm_Op<"alloc", [InferWorkgroupTypeFromBuffer<"result", "wg">]> {
 
     let assemblyFormat = "`(` `)` `for` $wg attr-dict `:` qualified(type($result))";
 }
+
 def SetZeroOp: Cnm_Op<"set_zero", [SameOperandsAndResultType]> {
     let summary = "";
     let description = [{}];
@@ -69,11 +70,11 @@ def GatherOp: Cnm_Op<"gather", [InferWorkgroupTypeFromBuffer<"buffer", "wg">]> {
     let summary = "";
     let description = [{}];
 
-    let arguments = (ins BufferType:$buffer, WorkgroupType:$wg, AffineMapAttr:$scatterMap);
+    let arguments = (ins BufferType:$buffer, WorkgroupType:$wg, AffineMapAttr:$gatherMap);
     let results = (outs Builtin_RankedTensor:$output, GatherTokenType:$token);
 
     let hasVerifier = 1;
-    let assemblyFormat = "$buffer `[` $scatterMap `]` `of` $wg attr-dict `:` qualified(type($buffer)) `into` type($output)";
+    let assemblyFormat = "$buffer `[` $gatherMap `]` `of` $wg attr-dict `:` qualified(type($buffer)) `into` type($output)";
 }
 
 def LaunchOp: Cnm_Op<"launch", [AttrSizedOperandSegments, SingleBlockImplicitTerminator<"TerminatorOp">]> {
