@@ -5,6 +5,18 @@
 
 namespace mlir {
 
+Value createOrFoldUnrealizedConversionCast(Location loc, OpBuilder &builder,
+                                           Type dstType, Value value) {
+  if (value.getType() == dstType) {
+    return value;
+  }
+
+  SmallVector<Value, 1> tmp;
+  builder.createOrFold<UnrealizedConversionCastOp>(tmp, loc, TypeRange{dstType},
+                                                   ValueRange{value});
+  return tmp[0];
+}
+
 SmallVector<Value> createNestedAffineForLoops(OpBuilder &builder, Location loc,
                                               ArrayRef<int64_t> loopSizes,
                                               ArrayRef<int64_t> loopSteps,
@@ -19,7 +31,7 @@ SmallVector<Value> createNestedAffineForLoops(OpBuilder &builder, Location loc,
   for (auto [size, step] : llvm::zip(loopSizes, loopSteps)) {
     affine::AffineForOp current =
         builder.create<affine::AffineForOp>(loc, 0, size, step, iterArgs);
-    if (!loops.empty()) {
+    if (!loops.empty() && !iterArgs.empty()) {
       builder.create<affine::AffineYieldOp>(loc, current.getResults());
     }
     loops.push_back(current);
@@ -28,8 +40,10 @@ SmallVector<Value> createNestedAffineForLoops(OpBuilder &builder, Location loc,
     builder.setInsertionPointToStart(&current.getRegion().front());
   }
 
-  builder.create<affine::AffineYieldOp>(
-      loc, bodyBuilder(builder, loc, indices, iterArgs));
+  SmallVector<Value> result = bodyBuilder(builder, loc, indices, iterArgs);
+  if (!iterArgs.empty()) {
+    builder.create<affine::AffineYieldOp>(loc, result);
+  }
 
   builder.setInsertionPointAfter(loops.front());
   return loops.front().getResults();

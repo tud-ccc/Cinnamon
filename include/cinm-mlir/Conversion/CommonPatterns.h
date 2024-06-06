@@ -15,6 +15,9 @@
 
 namespace mlir {
 
+Value createOrFoldUnrealizedConversionCast(Location loc, OpBuilder &builder,
+                                           Type dstType, Value value);
+
 using BodyBuilderCallback = function_ref<SmallVector<Value>(
     OpBuilder &, Location, ValueRange, ValueRange)>;
 

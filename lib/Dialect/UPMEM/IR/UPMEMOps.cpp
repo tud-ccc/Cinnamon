@@ -194,7 +194,7 @@ void LaunchOp::build(OpBuilder &builder, OperationState &result,
     body->addArgument(argTy, result.location);
   kernelRegion->push_back(body);
   // Fill OperandSegmentSize Attribute.
-  SmallVector<int32_t, 5> segmentSizes(5, 1);
+  SmallVector<int32_t, 6> segmentSizes(6, 1);
   segmentSizes.front() = asyncDependencies.size();
   segmentSizes.back() = dynamicSharedMemorySize ? 1 : 0;
   result.addAttribute(getOperandSegmentSizeAttr(),
@@ -238,17 +238,17 @@ KernelDim LaunchOp::getTaskletSizeClass() {
 }
 
 KernelDim LaunchOp::getRankSizeOperandValue() {
-  auto operands = getOperands().drop_front(1+getAsyncDependencies().size());
+  auto operands = getOperands().drop_front(1 + getAsyncDependencies().size());
   return KernelDim{operands[0]};
 }
 
 KernelDim LaunchOp::getDPUSizeOperandValue() {
-  auto operands = getOperands().drop_front(1+getAsyncDependencies().size());
+  auto operands = getOperands().drop_front(1 + getAsyncDependencies().size());
   return KernelDim{operands[1]};
 }
 
 KernelDim LaunchOp::getTaskletSizeOperandValue() {
-  auto operands = getOperands().drop_front(1+getAsyncDependencies().size());
+  auto operands = getOperands().drop_front(1 + getAsyncDependencies().size());
   return KernelDim{operands[2]};
 }
 
@@ -516,18 +516,15 @@ BlockArgument LaunchOp::addPrivateAttribution(Type type, Location loc) {
   return getBody().addArgument(type, loc);
 }
 
-
-
 //===----------------------------------------------------------------------===//
 // UPMEMModuleOp
 //===----------------------------------------------------------------------===//
 
 void UPMEMModuleOp::build(OpBuilder &builder, OperationState &result,
-                        StringRef name) {
+                          StringRef name) {
   ensureTerminator(*result.addRegion(), builder, result.location);
   result.attributes.push_back(builder.getNamedAttr(
       ::mlir::SymbolTable::getSymbolAttrName(), builder.getStringAttr(name)));
-
 }
 
 ParseResult UPMEMModuleOp::parse(OpAsmParser &parser, OperationState &result) {
@@ -558,4 +555,103 @@ void UPMEMModuleOp::print(OpAsmPrinter &p) {
 
   p.printRegion(getRegion(), /*printEntryBlockArgs=*/false,
                 /*printBlockTerminators=*/false);
+}
+
+
+
+//===----------------------------------------------------------------------===//
+// UPMEMFuncOp
+//===----------------------------------------------------------------------===//
+
+void UPMEMFuncOp::build(OpBuilder &builder, OperationState &result,
+                      StringRef name, FunctionType type, ArrayRef<NamedAttribute> attrs) {
+  result.addAttribute(SymbolTable::getSymbolAttrName(),
+                      builder.getStringAttr(name));
+  result.addAttribute(getFunctionTypeAttrName(result.name),
+                      TypeAttr::get(type));
+  result.addAttributes(attrs);
+  Region *body = result.addRegion();
+  Block *entryBlock = new Block;
+
+  body->getBlocks().push_back(entryBlock);
+}
+
+ParseResult UPMEMFuncOp::parse(OpAsmParser &parser, OperationState &result) {
+  SmallVector<OpAsmParser::Argument> entryArgs;
+  SmallVector<DictionaryAttr> resultAttrs;
+  SmallVector<Type> resultTypes;
+  bool isVariadic;
+
+  // Parse the function name.
+  StringAttr nameAttr;
+  if (parser.parseSymbolName(nameAttr, ::mlir::SymbolTable::getSymbolAttrName(),
+                             result.attributes))
+    return failure();
+
+  auto signatureLocation = parser.getCurrentLocation();
+  if (failed(function_interface_impl::parseFunctionSignature(
+          parser, /*allowVariadic=*/false, entryArgs, isVariadic, resultTypes,
+          resultAttrs)))
+    return failure();
+
+  if (!entryArgs.empty() && entryArgs[0].ssaName.name.empty())
+    return parser.emitError(signatureLocation)
+           << "upmem.func requires named arguments";
+
+  // Construct the function type. More types will be added to the region, but
+  // not to the function type.
+  Builder &builder = parser.getBuilder();
+
+  SmallVector<Type> argTypes;
+  for (auto &arg : entryArgs)
+    argTypes.push_back(arg.type);
+  auto type = builder.getFunctionType(argTypes, resultTypes);
+  result.addAttribute(getFunctionTypeAttrName(result.name),
+                      TypeAttr::get(type));
+
+
+
+  // Parse the kernel attribute if present.
+  if (succeeded(parser.parseOptionalKeyword(UPMEMFuncOp::getKernelKeyword())))
+    result.addAttribute(UPMEMDialect::getKernelFuncAttrName(),
+                        builder.getUnitAttr());
+
+  auto *body = result.addRegion();
+  return parser.parseRegion(*body, entryArgs);
+}
+
+
+void UPMEMFuncOp::print(OpAsmPrinter &p) {
+  p << ' ';
+  p.printSymbolName(getName());
+
+  FunctionType type = getFunctionType();
+  function_interface_impl::printFunctionSignature(p, *this, type.getInputs(),
+                                                  /*isVariadic=*/false,
+                                                  type.getResults());
+
+  if (isKernel())
+    p << ' ' << getKernelKeyword();
+
+  p << ' ';
+  p.printRegion(getBody(), /*printEntryBlockArgs=*/false);
+}
+
+
+
+LogicalResult UPMEMFuncOp::verifyType() {
+  if (isKernel() && getFunctionType().getNumResults() != 0)
+    return emitOpError() << "expected void return type for kernel function";
+  return success();
+}
+
+LogicalResult UPMEMFuncOp::verifyBody() {
+  if (empty())
+    return emitOpError() << "expected body with at least one block";
+  return success();
+}
+
+
+LogicalResult UPMEMFuncOp::verify() {
+  return success();
 }

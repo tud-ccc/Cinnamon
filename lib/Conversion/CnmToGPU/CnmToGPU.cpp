@@ -58,18 +58,6 @@ MemRefType convertCnmBufferToMemRefType(cnm::BufferType bufferType) {
   return MemRefType::get(shape, bufferType.getElementType());
 }
 
-Value createCast(Location loc, ConversionPatternRewriter &rewriter,
-                 Type dstType, Value value) {
-  if (value.getType() == dstType) {
-    return value;
-  }
-
-  SmallVector<Value, 1> tmp;
-  rewriter.createOrFold<UnrealizedConversionCastOp>(
-      tmp, loc, TypeRange{dstType}, ValueRange{value});
-  return tmp[0];
-}
-
 SmallVector<Value, 2> createCalculateScatterIndices(Location loc,
                                                     OpBuilder &builder,
                                                     const AffineMap &scatterMap,
@@ -94,9 +82,9 @@ void convertLaunchParameter(ConversionPatternRewriter &rewriter, Location loc,
   const BufferType bufferType = buffer.getType().dyn_cast<cnm::BufferType>();
   const SmallVector<int64_t, 2> bufferShape = getBufferTypeShape(bufferType);
 
-  const Value source =
-      createCast(loc, rewriter, convertCnmBufferToMemRefType(bufferType),
-                 rewriter.getRemappedValue(buffer));
+  const Value source = createOrFoldUnrealizedConversionCast(
+      loc, rewriter, convertCnmBufferToMemRefType(bufferType),
+      rewriter.getRemappedValue(buffer));
 
   const SmallVector<int64_t, 2> staticOffsets(workgroupShape.size(),
                                               ShapedType::kDynamic);
@@ -141,10 +129,8 @@ struct ConvertCnmAllocToGPU : public OpConversionPattern<cnm::AllocOp> {
   LogicalResult
   matchAndRewrite(cnm::AllocOp op, OpAdaptor,
                   ConversionPatternRewriter &rewriter) const override {
-    const BufferType bufferType = op.getType();
-    const MemRefType allocType = convertCnmBufferToMemRefType(bufferType);
-    rewriter.replaceOp(
-        op, rewriter.create<memref::AllocOp>(op.getLoc(), allocType));
+    rewriter.replaceOpWithNewOp<memref::AllocOp>(
+        op, convertCnmBufferToMemRefType(op.getType()));
     return success();
   }
 };
@@ -160,8 +146,9 @@ struct ConvertCnmScatterToGPU : public OpConversionPattern<cnm::ScatterOp> {
     const SmallVector<int64_t, 2> bufferShape = getBufferTypeShape(bufferType);
 
     Value memref = rewriter.getRemappedValue(op.getOperand(1));
-    memref = createCast(op.getLoc(), rewriter,
-                        convertCnmBufferToMemRefType(bufferType), memref);
+    memref = createOrFoldUnrealizedConversionCast(
+        op.getLoc(), rewriter, convertCnmBufferToMemRefType(bufferType),
+        memref);
 
     const Value tensor = op.getOperand(0);
     const RankedTensorType tensorType =
@@ -207,8 +194,9 @@ struct ConvertCnmGatherToGPU : public OpConversionPattern<cnm::GatherOp> {
     const SmallVector<int64_t, 2> bufferShape = getBufferTypeShape(bufferType);
 
     Value memref = rewriter.getRemappedValue(op.getOperand(0));
-    memref = createCast(op.getLoc(), rewriter,
-                        convertCnmBufferToMemRefType(bufferType), memref);
+    memref = createOrFoldUnrealizedConversionCast(
+        op.getLoc(), rewriter, convertCnmBufferToMemRefType(bufferType),
+        memref);
 
     const RankedTensorType tensorType =
         op.getResultTypes()[0].cast<RankedTensorType>();
