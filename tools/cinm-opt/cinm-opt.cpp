@@ -9,8 +9,9 @@
 #include "cinm-mlir/Dialect/Cinm/IR/CinmDialect.h"
 #include "cinm-mlir/Dialect/Cinm/Transforms/Passes.h"
 #include "cinm-mlir/Dialect/Cnm/IR/CnmDialect.h"
-#include "cinm-mlir/Dialect/UPMEM/IR/UPMEMDialect.h"
 #include "cinm-mlir/Dialect/Cnm/Transforms/Passes.h"
+#include "cinm-mlir/Dialect/UPMEM/IR/UPMEMDialect.h"
+#include "cinm-mlir/Dialect/UPMEM/Transforms/Passes.h"
 
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/InitLLVM.h"
@@ -42,6 +43,7 @@ int main(int argc, char *argv[]) {
   registerCnmSPIRVAttachKernelEntryPointAttributePass();
   registerCnmSPIRVAttachTargetAttributePass();
   registerCinmTilingPass();
+  registerUPMEMOutlineKernelPass();
 
   return asMainReturnCode(
       MlirOptMain(argc, argv, "cinm-mlir optimizer driver\n", registry));
