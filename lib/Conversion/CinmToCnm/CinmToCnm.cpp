@@ -233,33 +233,6 @@ LogicalResult convertCinmToCnm(
   return success();
 }
 
-LogicalResult convertLinalgReduceIntoLaunch(
-    ImplicitLocOpBuilder builder, linalg::ReduceOp reduction,
-    linalg::ReduceOp::Adaptor adaptor, TypedValue<cnm::WorkgroupType> workgroup,
-    llvm::SmallVectorImpl<Value> &resultValues) {
-
-  return convertCinmToCnm(
-      builder, reduction, workgroup, reduction.getDimensions(),
-      adaptor.getInputs(), adaptor.getInits(), reduction->getResults(),
-      resultValues,
-      [&](ImplicitLocOpBuilder &builder, ValueRange memrefInputs,
-          ValueRange memrefOutputs) {
-        // Here we are copying the original reduce into the launch,
-        // except it's now operating on memrefs provided by cinm.
-        // This can be lowered to affine or whatever afterwards.
-        auto innerReduce = builder.create<linalg::ReduceOp>(
-            // no results bc memref
-            TypeRange{}, memrefInputs, memrefOutputs,
-            // todo we are hardcoding the dimensions
-            // This is because we flatten everything. This does not
-            // support custom reduction dimensions.
-            ArrayRef<int64_t>{0});
-
-        IRMapping irMapping;
-        reduction.getRegion().cloneInto(&innerReduce.getRegion(), irMapping);
-      });
-}
-
 bool workgroupFitsParallelDims(Type ty, cnm::WorkgroupType wgTy,
                                ArrayRef<int64_t> reductionDims) {
   // reductionDims is sorted
@@ -326,11 +299,30 @@ struct ConvertLinalgReduceIntoLaunch
     auto wgTyOpt = determineWorkGroupTypeForRewrite(op);
     if (!wgTyOpt)
       return failure();
-    Value workgroup = builder.create<cnm::WorkgroupOp>(*wgTyOpt);
+
+    cnm::WorkgroupOp workgroup = builder.create<cnm::WorkgroupOp>(*wgTyOpt);
 
     llvm::SmallVector<Value, 1> newResults;
-    if (convertLinalgReduceIntoLaunch(builder, op, adaptor, workgroup,
-                                      newResults, *wgTyOpt)
+    if (convertCinmToCnm(
+            builder, op, workgroup.getResult(), op.getDimensions(),
+            adaptor.getInputs(), adaptor.getInits(), op->getResults(),
+            newResults,
+            [&](ImplicitLocOpBuilder &builder, ValueRange memrefInputs,
+                ValueRange memrefOutputs) {
+              // Here we are copying the original reduce into the launch,
+              // except it's now operating on memrefs provided by cinm.
+              // This can be lowered to affine or whatever afterwards.
+              auto innerReduce = builder.create<linalg::ReduceOp>(
+                  // no results bc memref
+                  TypeRange{}, memrefInputs, memrefOutputs,
+                  // todo we are hardcoding the dimensions
+                  // This is because we flatten everything. This does not
+                  // support custom reduction dimensions.
+                  ArrayRef<int64_t>{0});
+
+              IRMapping irMapping;
+              op.getRegion().cloneInto(&innerReduce.getRegion(), irMapping);
+            })
             .failed())
       return failure();
     rewriter.replaceOp(op, newResults);
@@ -349,12 +341,12 @@ struct ConvertElementWiseToCnm : public OpConversionPattern<CinmOp> {
 
     ImplicitLocOpBuilder builder(op->getLoc(), rewriter);
     cinm::ComputeOp computeBlock = getEnclosingComputeBlock(op);
-    Value workgroup =
+    cnm::WorkgroupOp workgroup =
         builder.create<cnm::WorkgroupOp>(computeBlock.getCnmWorkgroupType());
 
     llvm::SmallVector<Value, 1> newResults;
-    if (convertLinalgReduceIntoLaunch(builder, op, adaptor, workgroup,
-                                      newResults,
+    if (convertLinalgReduceIntoLaunch(builder, op, adaptor,
+                                      workgroup.getResult(), newResults,
                                       computeBlock.getCnmWorkgroupType())
             .failed())
       return failure();

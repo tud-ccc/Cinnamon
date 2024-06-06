@@ -291,7 +291,7 @@ def Cinm_PopCountOp : Cinm_Op<"op.popCount", [Pure]> {
 
 
 
-def Cinm_ComputeOp : Cinm_Op<"compute", [
+def Cinm_ComputeOp : Cinm_Base_Op<"compute", [
   AffineScope, AutomaticAllocationScope
 //  IsolatedFromAbove //, Pure
 ]> {
@@ -308,7 +308,7 @@ def Cinm_ComputeOp : Cinm_Op<"compute", [
   /// These attributes are used for lowering of the contained cinm ops into CNM.
   let arguments = (ins DefaultValuedAttr<DenseI64ArrayAttr, "{2, 32, 16}">:$workgroupShape,
                      DefaultValuedAttr<I64Attr, "64">:$maxDpuBufferSize);
-  let results = (outs Variadic<AnyRankedTensor>:$results);
+  let results = (outs Variadic<AnyType>:$results);
   let regions = (region SizedRegion<1>:$body);
 
 
@@ -335,7 +335,7 @@ def Cinm_YieldOp : Cinm_Op<"yield", [Pure, HasParent<"ComputeOp">,
       TODO
   }];
 
-  let arguments = (ins Variadic<AnyRankedTensor>:$operands);
+  let arguments = (ins Variadic<AnyType>:$operands);
 
   //let hasVerifier = 1;
   let assemblyFormat = "$operands attr-dict `:` type($operands)";

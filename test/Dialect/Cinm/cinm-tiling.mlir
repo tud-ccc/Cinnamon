@@ -23,8 +23,11 @@
 // CHECK:       linalg.reduce ins(%[[stage1]] : tensor<64xi32>)
 
 func.func @gemmSquare(%a: tensor<1024x1024xi32>, %b: tensor<1024x1024xi32>) -> tensor<1024x1024xi32>{
-	%d = cinm.op.gemm %a, %b : (tensor<1024x1024xi32>, tensor<1024x1024xi32>) -> tensor<1024x1024xi32>
-	return %d: tensor<1024x1024xi32>
+	%res = cinm.compute -> tensor<1024x1024xi32> {
+		%d = cinm.op.gemm %a, %b : (tensor<1024x1024xi32>, tensor<1024x1024xi32>) -> tensor<1024x1024xi32>
+		cinm.yield %d: tensor<1024x1024xi32>
+	}
+	return %res: tensor<1024x1024xi32>
 }
 
 
@@ -33,8 +36,11 @@ func.func @gemmSquare(%a: tensor<1024x1024xi32>, %b: tensor<1024x1024xi32>) -> t
 // CHECK-LABEL: @gemv
 
 func.func @gemv(%a: tensor<1024x1024xi32>, %b: tensor<1024xi32>) -> tensor<1024xi32>{
-	%d = cinm.op.gemv %a, %b : (tensor<1024x1024xi32>, tensor<1024xi32>) -> tensor<1024xi32>
-	return %d: tensor<1024xi32>
+	%res = cinm.compute -> tensor<1024xi32> {
+		%d = cinm.op.gemv %a, %b : (tensor<1024x1024xi32>, tensor<1024xi32>) -> tensor<1024xi32>
+		cinm.yield %d: tensor<1024xi32>
+	}
+	return %res: tensor<1024xi32>
 }
 
 // -----
@@ -42,6 +48,9 @@ func.func @gemv(%a: tensor<1024x1024xi32>, %b: tensor<1024xi32>) -> tensor<1024x
 // CHECK-LABEL: @max
 
 func.func @max(%a: tensor<1024xi32>) -> i32 {
-	%d = cinm.op.max %a: tensor<1024xi32>
-	return %d: i32
+	%res = cinm.compute -> i32 {
+		%d = cinm.op.max %a: tensor<1024xi32>
+		cinm.yield %d : i32
+	}
+	return %res: i32
 }
