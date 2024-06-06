@@ -30,16 +30,6 @@ static upmem::UPMEMFuncOp outlineKernelFuncImpl(upmem::LaunchOp launchOp,
   OpBuilder builder(launchOp.getContext());
   Region &launchOpBody = launchOp.getBody();
 
-  // Identify uses from values defined outside of the scope of the launch
-  // operation.
-  SetVector<Value> outsideValues;
-  getUsedValuesDefinedAbove(launchOpBody, outsideValues);
-
-  //   SmallVector<Type, 4> kernelOperandTypes;
-  //   kernelOperandTypes.reserve(operands.size());
-  //   for (Value operand : operands) {
-  //     kernelOperandTypes.push_back(operand.getType());
-  //   }
   FunctionType type = FunctionType::get(launchOp.getContext(), {}, {});
   auto outlinedFunc =
       builder.create<upmem::UPMEMFuncOp>(loc, kernelFnName, type);
@@ -50,55 +40,24 @@ static upmem::UPMEMFuncOp outlineKernelFuncImpl(upmem::LaunchOp launchOp,
   IRMapping map;
   Region &outlinedFuncBody = outlinedFunc.getBody();
   Block &outlinedEntryBlock = outlinedFuncBody.front();
-  //   outlinedFuncBody.getBlocks().pop_back();
-
-  // Block &entryBlock = outlinedFuncBody.front();
-  //   for (const auto &operand : enumerate(operands))
-  //     map.map(operand.value(), entryBlock.getArgument(operand.index()));
 
   Block &launchOpEntry = launchOpBody.front();
 
+  ///  CLone the region into the func, we remap the block arguments
   {
-    //    map.map(&launchOpEntry, newBlock);
     auto taskletArg = launchOpEntry.getArgument(2);
     auto taskletId = builder.create<upmem::TaskletIDOp>(taskletArg.getLoc());
     map.map(taskletArg, taskletId);
     outlinedEntryBlock.push_back(taskletId);
 
-    for (auto value : outsideValues) {
-      // auto copy = value.getDefiningOp()->clone(map, cloneOptions);
-      auto copy = builder.clone(*value.getDefiningOp());
-      map.map(value.getDefiningOp(), copy);
-      outlinedEntryBlock.push_back(copy);
-    }
-
-    auto cloneOptions =
-        Operation::CloneOptions::all().cloneRegions(false).cloneOperands(true);
     builder.setInsertionPointToEnd(&outlinedEntryBlock);
 
-    for (auto &op : launchOpEntry) {
+    for (auto &op : launchOpEntry.without_terminator()) {
       builder.clone(op, map);
     }
-    // Clone the block arguments. The user might be deleting arguments to the
-    // block by specifying them in the mapper. If so, we don't add the
-    // argument to the cloned block.
-    // for (auto arg : block.getArguments())
-    //   if (!mapper.contains(arg))
-    //     mapper.map(arg, newBlock->addArgument(arg.getType(), arg.getLoc()));
-
-    // dest->getBlocks().insert(destPos, newBlock);
+    builder.create<upmem::ReturnOp>(launchOpEntry.getTerminator()->getLoc());
   }
 
-  //   Block *clonedLaunchOpEntry = map.lookup(&launchOpEntry);
-  //  builder.setInsertionPointToEnd(&outlinedFuncBody.front());
-  //   builder.create<cf::BranchOp>(loc, clonedLaunchOpEntry);
-  llvm::dbgs() << "Hello\n";
-  outlinedFunc.walk([](upmem::TerminatorOp op) {
-    llvm::dbgs() << "Found it\n";
-    OpBuilder replacer(op);
-    replacer.create<upmem::ReturnOp>(op.getLoc());
-    op.erase();
-  });
   return outlinedFunc;
 }
 
