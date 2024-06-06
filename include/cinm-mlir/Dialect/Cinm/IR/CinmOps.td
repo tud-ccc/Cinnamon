@@ -292,8 +292,8 @@ def Cinm_PopCountOp : Cinm_Op<"op.popCount", [Pure]> {
 
 
 def Cinm_ComputeOp : Cinm_Op<"compute", [
-  AffineScope, AutomaticAllocationScope,
-  IsolatedFromAbove //, Pure
+  AffineScope, AutomaticAllocationScope
+//  IsolatedFromAbove //, Pure
 ]> {
   let summary = "TODO";
   let description = [{
@@ -305,17 +305,17 @@ def Cinm_ComputeOp : Cinm_Op<"compute", [
     }
   }];
 
-  let arguments = (ins Variadic<AnyRankedTensor>:$inputs,
-                   OptionalAttr<DenseI64ArrayAttr>:$workgroupShape);
-  let results = (outs AnyRankedTensor:$result); // todo should we support returning multiple?
-  let regions = (region AnyRegion:$body);
+  let arguments = (ins OptionalAttr<DenseI64ArrayAttr>:$workgroupShape);
+  let results = (outs Variadic<AnyRankedTensor>:$results);
+  let regions = (region SizedRegion<1>:$body);
 
 
 
   let extraClassDeclaration = [{
 
   }];
-  let hasCustomAssemblyFormat = 1;
+//  let hasCustomAssemblyFormat = 1;
+  let assemblyFormat = "attr-dict `->` type($results) $body";
 }
 
 
@@ -330,7 +330,7 @@ def Cinm_YieldOp : Cinm_Op<"yield", [Pure, HasParent<"ComputeOp">,
       TODO
   }];
 
-  let arguments = (ins Variadic<AnyType>:$operands);
+  let arguments = (ins Variadic<AnyRankedTensor>:$operands);
 
   //let hasVerifier = 1;
   let assemblyFormat = "$operands attr-dict `:` type($operands)";

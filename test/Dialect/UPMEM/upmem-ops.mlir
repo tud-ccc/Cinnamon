@@ -4,8 +4,6 @@
 // CHECK-LABEL: run_va
 module {
   func.func @run_va(%A : memref<2x32x8192xi32>, %B: memref<2x32x8192xi32>, %C: memref<2x32x8192xi32>) {
-    %cst0 = arith.constant 0 : index
-    %cst1 = arith.constant 1 : index
     %rank_count = arith.constant 2 : index
     %dpu_count = arith.constant 32: index
     %tasklet_count = arith.constant 16 : index
@@ -14,6 +12,8 @@ module {
     %A_offset = upmem.scatter %A into %upmem_token at %base_offset : memref<2x32x8192xi32>, !upmem.hierarchy<2x32x16>, index -> index
     %B_offset = upmem.scatter %B into %upmem_token at %A_offset : memref<2x32x8192xi32>, !upmem.hierarchy<2x32x16>, index -> index
     upmem.launch %upmem_token ranks(%arg0 upto %rank_count) dpus(%arg1 upto %dpu_count) tasklets(%arg2 upto %tasklet_count) on !upmem.hierarchy<2x32x16>  {
+        %cst0 = arith.constant 0 : index
+        %cst1 = arith.constant 1 : index
         %ITER_I = arith.constant 16: index // number of tasklets
         %ITER_J = arith.constant 8 : index // number of chunks per tasklet
         %ITER_Z = arith.constant 64 : index // size of each chunk

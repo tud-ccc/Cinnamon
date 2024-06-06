@@ -23,9 +23,8 @@ func.func @simple(%t0: tensor<6x6xi32>, %t1 : tensor<6xf32> ) {
     %sim2, %sim2i = cinm.op.simSearch dot 4 (%scan, %scan2) : tensor<6x6xi32>
     
     
-    %d	= cinm.compute { workgroupShape= array<i64: 2,4,4,2> }
-		  (%arg0 = %t0: tensor<6x6xi32>, %arg1= %t0: tensor<6x6xi32>) -> tensor<6x6xi32> {
-		%d2 = cinm.op.gemm %arg0, %arg1 : (tensor<6x6xi32>, tensor<6x6xi32>) -> tensor<6x6xi32>
+    %d = cinm.compute { workgroupShape= array<i64: 2,4,4,2> } -> tensor<6x6xi32> {
+		%d2 = cinm.op.gemm %t0, %t0 : (tensor<6x6xi32>, tensor<6x6xi32>) -> tensor<6x6xi32>
 		cinm.yield %d2: tensor<6x6xi32>
 	}
 
