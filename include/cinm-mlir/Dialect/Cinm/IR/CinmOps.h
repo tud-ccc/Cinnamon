@@ -6,17 +6,16 @@
 
 #include "cinm-mlir/Dialect/Cinm/IR/CinmTypes.h"
 #include "cinm-mlir/Dialect/Cinm/Interfaces/TilingInterface.h"
+#include "cinm-mlir/Dialect/Cnm/IR/CnmTypes.h"
 
+#include "mlir/Bytecode/BytecodeOpInterface.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/Dialect.h"
 #include "mlir/IR/OpImplementation.h"
 #include "mlir/Interfaces/ControlFlowInterfaces.h"
-#include "mlir/Bytecode/BytecodeOpInterface.h"
 #include "mlir/Interfaces/InferTypeOpInterface.h"
 #include "mlir/Interfaces/SideEffectInterfaces.h"
-
-
 
 //===- Generated includes -------------------------------------------------===//
 

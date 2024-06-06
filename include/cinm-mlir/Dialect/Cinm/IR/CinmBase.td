@@ -35,8 +35,11 @@ def Cinm_Dialect : Dialect {
 // class Cinm_Attr<string name, list<Trait> traits = []>
 //         : AttrDef<Cinm_Dialect, name, traits>;
 // Template for ops.
-class Cinm_Op<string mnemonic, list<Trait> traits = []>
+class Cinm_Base_Op<string mnemonic, list<Trait> traits = []>
         : Op<Cinm_Dialect, mnemonic, traits>;
+
+class Cinm_Op<string mnemonic, list<Trait> traits = []>
+        : Cinm_Base_Op<mnemonic, !listconcat(traits, [HasParent<"ComputeOp">])>;
 // Template for types.
 class Cinm_Type<string name, list<Trait> traits = []>
         : TypeDef<Cinm_Dialect, name, traits>;

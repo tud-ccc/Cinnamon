@@ -1,4 +1,5 @@
 
+#include "cinm-mlir/Dialect/Cinm/IR/CinmBase.h"
 #include "cinm-mlir/Dialect/Cinm/IR/CinmOps.h"
 #include "cinm-mlir/Dialect/Cnm/IR/CnmBase.h"
 #include "cinm-mlir/Dialect/Cnm/IR/CnmTypes.h"
@@ -260,18 +261,20 @@ struct WorkGroupMakerStrategy {
   determineWorkGroupTypeForRewrite(linalg::ReduceOp op);
 };
 
-// this strategy just tries to use a static workgroup shape
-std::optional<cnm::WorkgroupType>
-determineWorkGroupTypeForRewrite(linalg::ReduceOp op) {
-  cnm::WorkgroupType wgTy = cnm::WorkgroupType::get(op.getContext(), {2, 4, 8});
+cinm::ComputeOp getEnclosingComputeBlock(Operation *op) {
   Operation *parent = op;
   while ((parent = parent->getParentOp())) {
     if (auto parentCompute = dyn_cast<cinm::ComputeOp>(parent))
-      if (auto shape = parentCompute.getWorkgroupShape()) {
-        wgTy = cnm::WorkgroupType::get(op->getContext(), *shape);
-        break;
-      }
+      return parentCompute;
   }
+
+  assert(false && "CINM operator is not inside a cinm.compute block");
+}
+
+// this strategy just tries to use a static workgroup shape
+std::optional<cnm::WorkgroupType>
+determineWorkGroupTypeForRewrite(linalg::ReduceOp op) {
+  cnm::WorkgroupType wgTy = getEnclosingComputeBlock(op).getCnmWorkgroupType();
 
   // output ops need to be big enough to be dispatchable on the WG
   if (llvm::any_of(op.getDpsInits(), [&](Value v) {
@@ -314,6 +317,29 @@ struct ConvertLinalgReduceIntoLaunch
   }
 };
 
+template <typename CinmOp, typename ArithOp>
+struct ConvertElementWiseToCnm : public OpConversionPattern<CinmOp> {
+  using OpConversionPattern<CinmOp>::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(CinmOp op, CinmOp::OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+
+    ImplicitLocOpBuilder builder(op->getLoc(), rewriter);
+    cinm::ComputeOp computeBlock = getEnclosingComputeBlock(op);
+    Value workgroup = builder.create<cnm::WorkgroupOp>(computeBlock.getCnmWorkgroupType());
+
+    llvm::SmallVector<Value, 1> newResults;
+    if (convertLinalgReduceIntoLaunch(builder, op, adaptor, workgroup,
+                                      newResults, computeBlock.getCnmWorkgroupType())
+            .failed())
+      return failure();
+    rewriter.replaceOp(op, newResults);
+
+    return success();
+  }
+};
+
 struct ConvertTiledCinmToCnm
     : public ConvertTiledCinmToCnmBase<ConvertTiledCinmToCnm> {
 
@@ -329,6 +355,7 @@ struct ConvertTiledCinmToCnm
     //          !WorkGroupMakerStrategy::determineWorkGroupTypeForRewrite(op);
     //      });
     //    target.markUnknownOpDynamicallyLegal([](...) { return true; });
+    target.addIllegalDialect<cinm::CinmDialect>();
     target.addLegalDialect<cnm::CnmDialect>();
     target.addLegalOp<cnm::LaunchOp>();
     target.markOpRecursivelyLegal<cnm::LaunchOp>();

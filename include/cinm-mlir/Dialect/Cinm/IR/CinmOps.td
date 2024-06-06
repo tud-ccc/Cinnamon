@@ -70,7 +70,7 @@ def MaxOp: Cinm_Op<"op.max", [Commutative, Pure, DeclareOpInterfaceMethods<CinmT
     let hasCustomAssemblyFormat = 1;
 }
 
-def Cinm_AddOp : Cinm_TTT_Op<"op.add", [Commutative, Pure]> {
+def Cinm_AddOp : Cinm_TTT_Op<"op.add", [Commutative, Pure, DeclareOpInterfaceMethods<CinmTilingInterface>]> {
   let summary = "Tensor addition operation";
   let description = [{
     TODO
@@ -305,13 +305,18 @@ def Cinm_ComputeOp : Cinm_Op<"compute", [
     }
   }];
 
-  let arguments = (ins OptionalAttr<DenseI64ArrayAttr>:$workgroupShape);
+  /// These attributes are used for lowering of the contained cinm ops into CNM.
+  let arguments = (ins DefaultValuedAttr<DenseI64ArrayAttr, "{2, 32, 16}">:$workgroupShape,
+                     DefaultValuedAttr<I64Attr, "64">:$maxDpuBufferSize);
   let results = (outs Variadic<AnyRankedTensor>:$results);
   let regions = (region SizedRegion<1>:$body);
 
 
 
   let extraClassDeclaration = [{
+    cnm::WorkgroupType getCnmWorkgroupType() {
+      return cnm::WorkgroupType::get(getContext(), getWorkgroupShape());
+    }
 
   }];
 //  let hasCustomAssemblyFormat = 1;

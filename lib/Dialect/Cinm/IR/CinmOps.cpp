@@ -10,12 +10,15 @@
 #include <llvm/ADT/APFloat.h>
 #include <llvm/ADT/APInt.h>
 
+#include <llvm/ADT/ArrayRef.h>
+#include <llvm/ADT/SmallVector.h>
 #include <mlir/Dialect/Affine/IR/AffineOps.h>
 #include <mlir/Dialect/Arith/IR/Arith.h>
 #include <mlir/Dialect/Bufferization/IR/Bufferization.h>
 #include <mlir/Dialect/LLVMIR/LLVMDialect.h>
 #include <mlir/Dialect/Linalg/IR/Linalg.h>
 #include <mlir/Dialect/Tensor/IR/Tensor.h>
+#include <mlir/IR/AffineMap.h>
 #include <mlir/IR/Attributes.h>
 #include <mlir/IR/Builders.h>
 #include <mlir/IR/BuiltinTypeInterfaces.h>
@@ -191,6 +194,66 @@ SmallVector<Value> GemmOp::convertToTiledOps(OpBuilder builder,
 
   inferredReturnShapes.push_back(ShapedTypeComponents(outShape));
   return success();
+}
+
+static Value flattenTensor(OpBuilder builder, Value tensor,
+                           RankedTensorType flatTy) {
+  Value reifiedShape = builder.create<arith::ConstantOp>(
+      tensor.getLoc(), RankedTensorType::get({1}, builder.getI64Type()),
+      builder.getDenseI64ArrayAttr({flatTy.getNumElements()}));
+  return builder.create<tensor::ReshapeOp>(tensor.getLoc(), flatTy, tensor,
+                                           reifiedShape);
+}
+
+SmallVector<Value> cinm::AddOp::convertToTiledOps(OpBuilder builder,
+                                                  ArrayRef<int64_t> tileCounts,
+                                                  int64_t reduceClusterSize) {
+
+  const RankedTensorType resultType = getResult().getType();
+  RankedTensorType flatTy = RankedTensorType::get({resultType.getNumElements()},
+                                                  resultType.getElementType());
+  const ArrayRef<int64_t> resultShape = resultType.getShape();
+
+  const Value leftOp = flattenTensor(builder, getLhs(), flatTy);
+  const Value rightOp = flattenTensor(builder, getRhs(), flatTy);
+
+  const Value resultInit = builder.create<tensor::EmptyOp>(
+      getLoc(), flatTy.getShape(), resultType.getElementType());
+
+  const int64_t tilingFactor = 64;
+  const SmallVector<int64_t, 2> loopSizes = {
+      flatTy.getNumElements() / tilingFactor, tilingFactor};
+
+  Value result = createNestedAffineForLoops(
+      builder, getLoc(), loopSizes, {tilingFactor, 1}, ValueRange{resultInit},
+      [&](OpBuilder &builder, Location loc, ValueRange indices,
+          ValueRange iterArgs) -> SmallVector<Value> {
+        const RankedTensorType lhsSliceType =
+            RankedTensorType::get({tilingFactor}, resultType.getElementType());
+
+        const Value lhsSlice = builder.create<tensor::ExtractSliceOp>(
+            loc, lhsSliceType, leftOp, indices, ValueRange{indices[0]},
+            ValueRange{}, ArrayRef<int64_t>{ShapedType::kDynamic},
+            ArrayRef<int64_t>{tilingFactor}, ArrayRef<int64_t>{1});
+        const Value rhsSlice = builder.create<tensor::ExtractSliceOp>(
+            loc, lhsSliceType, rightOp, indices, ValueRange{indices[0]},
+            ValueRange{}, ArrayRef<int64_t>{ShapedType::kDynamic},
+            ArrayRef<int64_t>{tilingFactor}, ArrayRef<int64_t>{1});
+
+        Value addi = builder.create<arith::AddIOp>(loc, lhsSlice, rhsSlice);
+
+        
+      })[0];
+
+  Value resultShapeReified = builder.create<arith::ConstantOp>(
+      result.getLoc(),
+      RankedTensorType::get({resultType.getRank()}, builder.getI64Type()),
+      builder.getDenseI64ArrayAttr(resultShape));
+  auto reshapeRes = builder.create<tensor::ReshapeOp>(
+      result.getLoc(), resultType, result, resultShapeReified);
+  SmallVector<Value, 1> resultValues;
+  resultValues.push_back(reshapeRes.getResult());
+  return resultValues;
 }
 
 SmallVector<Value> GemvOp::convertToTiledOps(OpBuilder builder,
@@ -375,7 +438,6 @@ SmallVector<Value> ReduceOp::convertToTiledOps(OpBuilder builder,
     abort();
   }
 }
-
 
 ParseResult SimSearchOp::parse(::mlir::OpAsmParser &parser,
                                ::mlir::OperationState &result) {
