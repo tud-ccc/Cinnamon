@@ -278,6 +278,15 @@ def UPMEM_TerminatorOp : UPMEM_Op<"terminator", [HasParent<"LaunchOp">,
   let assemblyFormat = "attr-dict";
 }
 
+def UPMEM_ReturnOp : UPMEM_Op<"return", [HasParent<"UPMEMFuncOp">, Pure,
+                                     Terminator]>, 
+    Arguments<(ins)>, Results<(outs)>
+      {
+  let summary = "Terminator for UPMEM functions.";
+  let description = [{
+  }];
+  let assemblyFormat = "attr-dict";
+}
 
 
 
@@ -410,8 +419,8 @@ def UPMEM_ModuleEndOp : UPMEM_Op<"module_end", [
 
 def UPMEM_UPMEMFuncOp : UPMEM_Op<"func", [
     HasParent<"UPMEMModuleOp">, AutomaticAllocationScope, FunctionOpInterface,
-    IsolatedFromAbove
-  ]> {
+    IsolatedFromAbove, SingleBlockImplicitTerminator<"ReturnOp">]
+  > {
   let summary = "Function executable on a UPMEM";
 
   let description = [{
@@ -492,14 +501,7 @@ def UPMEM_UPMEMFuncOp : UPMEM_Op<"func", [
   let hasVerifier = 1;
 }
 
-def UPMEM_ReturnOp : UPMEM_Op<"return", [HasParent<"UPMEMFuncOp">, Pure,
-                                     Terminator]>
-      {
-  let summary = "Terminator for UPMEM functions.";
-  let description = [{
-  }];
-  let assemblyFormat = "attr-dict";
-}
+
 
 
 
