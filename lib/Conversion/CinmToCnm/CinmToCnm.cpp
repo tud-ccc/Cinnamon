@@ -33,6 +33,7 @@
 #include <mlir/Support/LLVM.h>
 #include <mlir/Support/LogicalResult.h>
 #include <mlir/Transforms/DialectConversion.h>
+#include <mlir/Transforms/InliningUtils.h>
 #include <numeric>
 #include <optional>
 
@@ -356,12 +357,35 @@ struct ConvertElementWiseToCnm : public OpConversionPattern<CinmOp> {
   }
 };
 
+struct DeleteCinmCompute : public OpConversionPattern<cinm::ComputeOp> {
+  using OpConversionPattern::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(cinm::ComputeOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+
+    rewriter.setInsertionPointAfter(op);
+    IRMapping mapper;
+    for (auto &toCopy : op.getBody().front().without_terminator()) {
+      rewriter.clone(toCopy, mapper);
+    }
+    auto term = op->getBlock()->getTerminator();
+    for (auto [result, termOperand] :
+         llvm::zip(op->getResults(), term->getOperands())) {
+      rewriter.replaceAllUsesWith(result, mapper.lookup(termOperand));
+    }
+    rewriter.eraseOp(op);
+    return success();
+  }
+};
+
 struct ConvertTiledCinmToCnm
     : public ConvertTiledCinmToCnmBase<ConvertTiledCinmToCnm> {
 
   void runOnOperation() override {
     RewritePatternSet patterns(&getContext());
     patterns.insert<ConvertLinalgReduceIntoLaunch>(&getContext());
+    patterns.insert<DeleteCinmCompute>(&getContext());
     ConversionTarget target(getContext());
 
     //  target.addIllegalDialect<linalg::ReduceOp>();
@@ -370,11 +394,12 @@ struct ConvertTiledCinmToCnm
     //          return
     //          !WorkGroupMakerStrategy::determineWorkGroupTypeForRewrite(op);
     //      });
-    //    target.markUnknownOpDynamicallyLegal([](...) { return true; });
+    target.markUnknownOpDynamicallyLegal([](...) { return true; });
     target.addIllegalDialect<cinm::CinmDialect>();
     target.addLegalDialect<cnm::CnmDialect>();
     target.addLegalOp<cnm::LaunchOp>();
     target.markOpRecursivelyLegal<cnm::LaunchOp>();
+
 
     if (applyPartialConversion(getOperation(), target, std::move(patterns))
             .failed())
