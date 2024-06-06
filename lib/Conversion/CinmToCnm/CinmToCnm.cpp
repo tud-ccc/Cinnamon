@@ -12,6 +12,7 @@
 #include <llvm/ADT/STLExtras.h>
 #include <llvm/ADT/Sequence.h>
 #include <llvm/ADT/SmallVector.h>
+#include <llvm/ADT/StringExtras.h>
 #include <memory>
 #include <mlir/Dialect/Arith/IR/Arith.h>
 #include <mlir/Dialect/Func/IR/FuncOps.h>
@@ -27,7 +28,9 @@
 #include <mlir/IR/Location.h>
 #include <mlir/IR/PatternMatch.h>
 #include <mlir/IR/TypeRange.h>
+#include <mlir/IR/Value.h>
 #include <mlir/IR/ValueRange.h>
+#include <mlir/Support/LLVM.h>
 #include <mlir/Support/LogicalResult.h>
 #include <mlir/Transforms/DialectConversion.h>
 #include <numeric>
@@ -160,34 +163,40 @@ LogicalResult convertInputIntoAlloc(Value inputBuf, Value workGroup,
   return success();
 }
 
-LogicalResult convertLinalgReduceIntoLaunch(
-    ImplicitLocOpBuilder builder, linalg::ReduceOp reduction,
-    linalg::ReduceOp::Adaptor adaptor, Value workgroup,
-    llvm::SmallVectorImpl<Value> &resultValues, cnm::WorkgroupType wgTy) {
+LogicalResult convertCinmToCnm(
+    ImplicitLocOpBuilder builder, Operation *operation,
+    TypedValue<cnm::WorkgroupType> workgroup,
+    ArrayRef<int64_t> reductionDimensionsSorted, ValueRange operands,
+    ValueRange outputInitializers, ValueRange results,
+    llvm::SmallVectorImpl<Value> &resultValues,
+    function_ref<void(ImplicitLocOpBuilder &, ValueRange, ValueRange)>
+        createCnmLaunchBlock) {
 
-  llvm::SmallVector<Value, 3> launchOperands;
+  auto wgTy = workgroup.getType();
+
+  llvm::SmallVector<Value, 3> launchInputs;
+  llvm::SmallVector<Value, 3> launchOutputs;
   llvm::SmallVector<AffineMap, 3> gatherMaps;
   llvm::SmallVector<Type, 3> mappedArgTypes;
 
-  builder.setInsertionPointAfter(reduction);
-  int i = 0;
-  for (auto input : adaptor.getOperands()) {
-    auto reduceDims = reduction.getDimensions();
-    if (i >= reduction.getNumDpsInputs()) {
-      // this is an output
-      reduceDims = {};
-    }
-    if (convertInputIntoAlloc(input, workgroup, wgTy, reduceDims,
+  builder.setInsertionPointAfter(operation);
+  for (auto input : operands) {
+    if (convertInputIntoAlloc(input, workgroup, wgTy, reductionDimensionsSorted,
                               gatherMaps.emplace_back(),
-                              launchOperands.emplace_back(), builder)
+                              launchInputs.emplace_back(), builder)
             .failed())
       return failure();
-    i++;
+  }
+  for (auto output : outputInitializers) {
+    if (convertInputIntoAlloc(output, workgroup, wgTy, {},
+                              gatherMaps.emplace_back(),
+                              launchOutputs.emplace_back(), builder)
+            .failed())
+      return failure();
   }
 
-  cnm::LaunchOp launchOp = builder.create<cnm::LaunchOp>(
-      workgroup, ValueRange{launchOperands}.take_front(2),
-      ValueRange{launchOperands}.take_back());
+  cnm::LaunchOp launchOp =
+      builder.create<cnm::LaunchOp>(workgroup, launchInputs, launchOutputs);
 
   {
     auto &launchBlock = launchOp.getBody().emplaceBlock();
@@ -202,40 +211,53 @@ LogicalResult convertLinalgReduceIntoLaunch(
       }
     }
     auto args = launchBlock.getArguments();
-    auto firstOutput = args.begin() + reduction.getNumDpsInputs();
+    auto firstOutput = args.begin() + operands.size();
     llvm::SmallVector<Value, 2> reduceInpts(args.begin(), firstOutput);
     llvm::SmallVector<Value, 1> reduceInits(firstOutput, args.end());
 
-    // Here we are copying the original reduce into the launch,
-    // except it's now operating on memrefs provided by cinm.
-    // This can be lowered to affine or whatever afterwards.
     builder.setInsertionPointToStart(&launchBlock);
-    auto innerReduce = builder.create<linalg::ReduceOp>(
-        // no results bc memref
-        TypeRange{}, reduceInpts, reduceInits,
-        // todo we are hardcoding the dimensions
-        // This is because we flatten everything. This does not support
-        // custom reduction dimensions.
-        ArrayRef<int64_t>{0});
-
-    IRMapping irMapping;
-    reduction.getRegion().cloneInto(&innerReduce.getRegion(), irMapping);
+    createCnmLaunchBlock(builder, reduceInpts, reduceInits);
     builder.create<cnm::TerminatorOp>();
   }
   builder.setInsertionPointAfter(launchOp);
 
   // gather the results (only the out buffers)
 
-  for (size_t i = 0; i < reduction->getNumResults(); i++) {
-    auto result = reduction.getResult(i);
-    auto alloc = launchOperands[reduction.getNumDpsInputs() + i];
-    auto map = gatherMaps[reduction.getNumDpsInputs() + i];
+  for (auto [i, result, alloc] : llvm::enumerate(results, launchOutputs)) {
+    auto map = gatherMaps[launchInputs.size() + i];
     auto res = builder.create<cnm::GatherOp>(
         result.getType(), cnm::GatherTokenType::get(builder.getContext()),
         alloc, workgroup, map);
     resultValues.push_back(res.getOutput());
   }
   return success();
+}
+
+LogicalResult convertLinalgReduceIntoLaunch(
+    ImplicitLocOpBuilder builder, linalg::ReduceOp reduction,
+    linalg::ReduceOp::Adaptor adaptor, TypedValue<cnm::WorkgroupType> workgroup,
+    llvm::SmallVectorImpl<Value> &resultValues) {
+
+  return convertCinmToCnm(
+      builder, reduction, workgroup, reduction.getDimensions(),
+      adaptor.getInputs(), adaptor.getInits(), reduction->getResults(),
+      resultValues,
+      [&](ImplicitLocOpBuilder &builder, ValueRange memrefInputs,
+          ValueRange memrefOutputs) {
+        // Here we are copying the original reduce into the launch,
+        // except it's now operating on memrefs provided by cinm.
+        // This can be lowered to affine or whatever afterwards.
+        auto innerReduce = builder.create<linalg::ReduceOp>(
+            // no results bc memref
+            TypeRange{}, memrefInputs, memrefOutputs,
+            // todo we are hardcoding the dimensions
+            // This is because we flatten everything. This does not
+            // support custom reduction dimensions.
+            ArrayRef<int64_t>{0});
+
+        IRMapping irMapping;
+        reduction.getRegion().cloneInto(&innerReduce.getRegion(), irMapping);
+      });
 }
 
 bool workgroupFitsParallelDims(Type ty, cnm::WorkgroupType wgTy,
@@ -327,11 +349,13 @@ struct ConvertElementWiseToCnm : public OpConversionPattern<CinmOp> {
 
     ImplicitLocOpBuilder builder(op->getLoc(), rewriter);
     cinm::ComputeOp computeBlock = getEnclosingComputeBlock(op);
-    Value workgroup = builder.create<cnm::WorkgroupOp>(computeBlock.getCnmWorkgroupType());
+    Value workgroup =
+        builder.create<cnm::WorkgroupOp>(computeBlock.getCnmWorkgroupType());
 
     llvm::SmallVector<Value, 1> newResults;
     if (convertLinalgReduceIntoLaunch(builder, op, adaptor, workgroup,
-                                      newResults, computeBlock.getCnmWorkgroupType())
+                                      newResults,
+                                      computeBlock.getCnmWorkgroupType())
             .failed())
       return failure();
     rewriter.replaceOp(op, newResults);
