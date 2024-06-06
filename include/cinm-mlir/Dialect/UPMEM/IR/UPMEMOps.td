@@ -437,21 +437,21 @@ def UPMEM_UPMEMFuncOp : UPMEM_Op<"func", [
     }
 
     static constexpr StringLiteral getKnownRankSizeAttrName() {
-      return StringLiteral("hamid.known_rank_size");
+      return StringLiteral("upmem.known_rank_size");
     }
 
     static constexpr StringLiteral getKnownDPUSizeAttrName() {
-      return StringLiteral("hamid.known_dpu_size");
+      return StringLiteral("upmem.known_dpu_size");
     }
 
     static constexpr StringLiteral getKnownTaskletSizeAttrName() {
-      return StringLiteral("hamid.known_tasklet_size");
+      return StringLiteral("upmem.known_tasklet_size");
     }
 
     /// Returns the block size this kernel will be launched with along
     /// dimension `dim` if known. The value of gpu.thread_id dim will be strictly
     /// less than this size.
-    // std::optional<uint32_t> getKnownRankSize(hamid::Dimension dim) {
+    // std::optional<uint32_t> getKnownRankSize(upmem::Dimension dim) {
     //   if (auto array =
     //     (*this)->getAttrOfType<DenseI32ArrayAttr>(getKnownBlockSizeAttrName())) {
     //     return array[static_cast<uint32_t>(dim)];
@@ -499,6 +499,60 @@ def UPMEM_ReturnOp : UPMEM_Op<"return", [HasParent<"UPMEMFuncOp">, Pure,
   let description = [{
   }];
   let assemblyFormat = "attr-dict";
+}
+
+
+
+def UPMEM_LaunchFuncOp :UPMEM_Op<"launch_func", [
+      UPMEM_AsyncOpInterface, AttrSizedOperandSegments]>,
+    Arguments<(ins Variadic<UPMEM_AsyncToken>:$asyncDependencies,
+               SymbolRefAttr:$kernel,
+               DeviceHierarchy:$upmem_token,
+               Optional<I32>:$dynamicSharedMemorySize,
+               Variadic<AnyType>:$kernelOperands,
+               Optional<AnyType>:$asyncObject)>,
+    Results<(outs Optional<UPMEM_AsyncToken>:$asyncToken)> {
+  let summary = "Launches a function as a GPU kernel";
+
+  let description = [{
+  }];
+
+  let skipDefaultBuilders = 1;
+
+  let builders = [
+    OpBuilder<(ins "UPMEMFuncOp":$kernelFunc, "Value":$upmem_token, 
+      "Value":$dynamicSharedMemorySize, "ValueRange":$kernelOperands,
+      CArg<"Type", "nullptr">:$asyncTokenType,
+      CArg<"ValueRange", "{}">:$asyncDependencies)>
+  ];
+
+  let extraClassDeclaration = [{
+    /// The name of the kernel's containing module.
+    StringAttr getKernelModuleName();
+
+    /// The name of the kernel.
+    StringAttr getKernelName();
+
+    /// The number of operands passed to the kernel function.
+    unsigned getNumKernelOperands();
+
+    /// The i-th operand passed to the kernel function.
+    Value getKernelOperand(unsigned i);
+
+    // This needs to quietly verify if attributes with names defined below are
+    // present since it is run before the verifier of this op.
+    friend LogicalResult UPMEMDialect::verifyOperationAttribute(Operation *,
+                                                              NamedAttribute);
+  }];
+
+  let assemblyFormat = [{
+      custom<AsyncDependencies>(type($asyncToken), $asyncDependencies)
+      (`<` $asyncObject^ `:` type($asyncObject) `>`)?
+      $kernel $upmem_token `:` type($upmem_token)
+      (`dynamic_shared_memory_size` $dynamicSharedMemorySize^)?
+      custom<LaunchFuncOperands>($kernelOperands, type($kernelOperands)) attr-dict
+  }];
+  let hasVerifier = 1;
 }
 
 

@@ -39,10 +39,6 @@
 using namespace mlir;
 using namespace mlir::upmem;
 
-//===- Generated implementation -------------------------------------------===//
-
-#define GET_OP_CLASSES
-#include "cinm-mlir/Dialect/UPMEM/IR/UPMEMOps.cpp.inc"
 
 //===----------------------------------------------------------------------===//
 // UPMEMDialect
@@ -655,3 +651,132 @@ LogicalResult UPMEMFuncOp::verifyBody() {
 LogicalResult UPMEMFuncOp::verify() {
   return success();
 }
+
+
+//===----------------------------------------------------------------------===//
+// LaunchFuncOp
+//===----------------------------------------------------------------------===//
+
+void LaunchFuncOp::build(OpBuilder &builder, OperationState &result,
+                         UPMEMFuncOp kernelFunc, Value upmemToken, 
+                         Value dynamicSharedMemorySize,
+                         ValueRange kernelOperands, Type asyncTokenType,
+                         ValueRange asyncDependencies) {
+  result.addOperands(asyncDependencies);
+  if (asyncTokenType)
+    result.types.push_back(builder.getType<AsyncTokenType>());
+
+  // Add grid and block sizes as op operands, followed by the data operands.
+  result.addOperands({upmemToken});
+  if (dynamicSharedMemorySize)
+    result.addOperands(dynamicSharedMemorySize);
+  result.addOperands(kernelOperands);
+  auto kernelModule = kernelFunc->getParentOfType<UPMEMModuleOp>();
+  auto kernelSymbol =
+      SymbolRefAttr::get(kernelModule.getNameAttr(),
+                         {SymbolRefAttr::get(kernelFunc.getNameAttr())});
+
+  Properties &prop = result.getOrAddProperties<Properties>();
+  prop.kernel = kernelSymbol;
+  size_t segmentSizesLen = std::size(prop.operandSegmentSizes);
+  // Initialize the segment sizes to 1.
+  for (auto &sz : prop.operandSegmentSizes)
+    sz = 1;
+  prop.operandSegmentSizes[0] = asyncDependencies.size();
+  prop.operandSegmentSizes[segmentSizesLen - 3] =
+      dynamicSharedMemorySize ? 1 : 0;
+  prop.operandSegmentSizes[segmentSizesLen - 2] =
+      static_cast<int32_t>(kernelOperands.size());
+  prop.operandSegmentSizes[segmentSizesLen - 1] = 0;
+}
+
+
+StringAttr LaunchFuncOp::getKernelModuleName() {
+  return getKernel().getRootReference();
+}
+
+StringAttr LaunchFuncOp::getKernelName() {
+  return getKernel().getLeafReference();
+}
+
+unsigned LaunchFuncOp::getNumKernelOperands() {
+  return getKernelOperands().size();
+}
+
+Value LaunchFuncOp::getKernelOperand(unsigned i) {
+  return getKernelOperands()[i];
+}
+
+LogicalResult LaunchFuncOp::verify() {
+  auto module = (*this)->getParentOfType<ModuleOp>();
+  if (!module)
+    return emitOpError("expected to belong to a module");
+  return success();
+}
+
+static ParseResult parseLaunchDimType(OpAsmParser &parser, Type &dimTy) {
+  if (succeeded(parser.parseOptionalColon())) {
+    if (parser.parseType(dimTy))
+      return failure();
+  } else {
+    dimTy = IndexType::get(parser.getContext());
+  }
+  return success();
+}
+
+static void printLaunchDimType(OpAsmPrinter &printer, Operation *op,
+                               Type dimTy) {
+  if (!dimTy.isIndex())
+    printer << ": " << dimTy;
+}
+
+static ParseResult parseLaunchFuncOperands(
+    OpAsmParser &parser,
+    SmallVectorImpl<OpAsmParser::UnresolvedOperand> &argNames,
+    SmallVectorImpl<Type> &argTypes) {
+  if (parser.parseOptionalKeyword("args"))
+    return success();
+
+  auto parseElement = [&]() -> ParseResult {
+    return failure(parser.parseOperand(argNames.emplace_back()) ||
+                   parser.parseColonType(argTypes.emplace_back()));
+  };
+
+  return parser.parseCommaSeparatedList(OpAsmParser::Delimiter::Paren,
+                                        parseElement, " in argument list");
+}
+
+static void printLaunchFuncOperands(OpAsmPrinter &printer, Operation *,
+                                    OperandRange operands, TypeRange types) {
+  if (operands.empty())
+    return;
+  printer << "args(";
+  llvm::interleaveComma(llvm::zip(operands, types), printer,
+                        [&](const auto &pair) {
+                          printer.printOperand(std::get<0>(pair));
+                          printer << " : ";
+                          printer.printType(std::get<1>(pair));
+                        });
+  printer << ")";
+}
+
+
+static void printAsyncDependencies(OpAsmPrinter &printer, Operation *op,
+                                   Type asyncTokenType,
+                                   OperandRange asyncDependencies) {
+  if (asyncTokenType)
+    printer << "async";
+  if (asyncDependencies.empty())
+    return;
+  if (asyncTokenType)
+    printer << ' ';
+  printer << '[';
+  llvm::interleaveComma(asyncDependencies, printer);
+  printer << ']';
+}
+
+
+//===- Generated implementation -------------------------------------------===//
+
+#define GET_OP_CLASSES
+#include "cinm-mlir/Dialect/UPMEM/IR/UPMEMOps.cpp.inc"
