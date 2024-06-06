@@ -8,7 +8,7 @@ func.func @simple(%t0: tensor<6x6xi32>, %t1 : tensor<6xf32> ) {
     %y = cinm.op.sub %t0, %t0: tensor<6x6xi32>
     %z = cinm.op.max %t0: tensor<6x6xi32>
     %q = cinm.op.min %t1: tensor<6xf32>
-    %a = arith.addi %z, %z : i32
+    %i = arith.addi %z, %z : i32
     %k = arith.constant 62: i64
     %t, %s = cinm.op.topK %k (%y): tensor<6x6xi32> -> tensor<?xi32>, tensor<?xindex>
     %sum = cinm.op.reduce add (%y): tensor<6x6xi32> -> i32
@@ -23,6 +23,11 @@ func.func @simple(%t0: tensor<6x6xi32>, %t1 : tensor<6xf32> ) {
     %sim2, %sim2i = cinm.op.simSearch dot 4 (%scan, %scan2) : tensor<6x6xi32>
     
     
+    %d	= cinm.compute { workgroupShape= array<i64: 2,4,4,2> }
+		  (%arg0 = %t0: tensor<6x6xi32>, %arg1= %t0: tensor<6x6xi32>) -> tensor<6x6xi32> {
+		%d2 = cinm.op.gemm %arg0, %arg1 : (tensor<6x6xi32>, tensor<6x6xi32>) -> tensor<6x6xi32>
+		cinm.yield %d2: tensor<6x6xi32>
+	}
 
     return
 }

@@ -305,9 +305,11 @@ def Cinm_ComputeOp : Cinm_Op<"compute", [
     }
   }];
 
-  let arguments = (ins Variadic<AnyRankedTensor>:$inputs);
+  let arguments = (ins Variadic<AnyRankedTensor>:$inputs,
+                   OptionalAttr<DenseI64ArrayAttr>:$workgroupShape);
   let results = (outs AnyRankedTensor:$result); // todo should we support returning multiple?
   let regions = (region AnyRegion:$body);
+
 
 
   let extraClassDeclaration = [{

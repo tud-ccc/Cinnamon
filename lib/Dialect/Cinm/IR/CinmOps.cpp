@@ -16,6 +16,7 @@
 #include <mlir/Dialect/LLVMIR/LLVMDialect.h>
 #include <mlir/Dialect/Linalg/IR/Linalg.h>
 #include <mlir/Dialect/Tensor/IR/Tensor.h>
+#include <mlir/IR/Attributes.h>
 #include <mlir/IR/Builders.h>
 #include <mlir/IR/BuiltinTypeInterfaces.h>
 #include <mlir/IR/BuiltinTypes.h>
@@ -392,7 +393,7 @@ parseCaptureArgs(OpAsmParser &parser,
 
 /*
 
-    %rbuf = cinm.compute(%arg0 = %inpt : tensor<...>) -> tensor<...> {
+    %rbuf = cinm.compute { workgroupShape = [4, 16]}(%arg0 = %inpt : tensor<...>) -> tensor<...> {
       %flt = arith.constant <"...">: tensor<...>
       %conv = cinm.op.gemm %arg0, %flt: tensor<...>, tensor<...>
       cinm.yield %conv : tensor<...>
@@ -406,6 +407,9 @@ ParseResult parseComputeOp(OpAsmParser &parser, OperationState &result) {
   SmallVector<OpAsmParser::Argument, 4> capturedParams;
   SmallVector<OpAsmParser::UnresolvedOperand, 4> capturedArgs;
   SmallVector<Type, 4> capturedArgsTypes;
+
+  if (parser.parseOptionalAttrDict(result.attributes))
+    return failure();
 
   if (parseCaptureArgs(parser, capturedParams, capturedArgs, capturedArgsTypes))
     return failure();
@@ -457,6 +461,12 @@ void ComputeOp::print(OpAsmPrinter &p) {
 
   Region &body = getBody();
   ValueRange captured = getOperands();
+
+  if (auto wgShape = getWorkgroupShapeAttr()) {
+    p.printOptionalAttrDict(
+        {NamedAttribute(getWorkgroupShapeAttrName(), wgShape)});
+  }
+  p << ' ';
 
   unsigned numCapt = captured.size();
   p << '(';

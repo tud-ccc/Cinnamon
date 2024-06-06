@@ -1,4 +1,5 @@
 
+#include "cinm-mlir/Dialect/Cinm/IR/CinmOps.h"
 #include "cinm-mlir/Dialect/Cnm/IR/CnmBase.h"
 #include "cinm-mlir/Dialect/Cnm/IR/CnmTypes.h"
 #include <cinm-mlir/Conversion/CinmPasses.h>
@@ -161,9 +162,7 @@ LogicalResult convertInputIntoAlloc(Value inputBuf, Value workGroup,
 LogicalResult convertLinalgReduceIntoLaunch(
     ImplicitLocOpBuilder builder, linalg::ReduceOp reduction,
     linalg::ReduceOp::Adaptor adaptor, Value workgroup,
-    llvm::SmallVectorImpl<Value> &resultValues,
-    ReduceToCnmRewriteParams parms) {
-  cnm::WorkgroupType wgTy = parms.wgTy;
+    llvm::SmallVectorImpl<Value> &resultValues, cnm::WorkgroupType wgTy) {
 
   llvm::SmallVector<Value, 3> launchOperands;
   llvm::SmallVector<AffineMap, 3> gatherMaps;
@@ -262,30 +261,34 @@ struct WorkGroupMakerStrategy {
 };
 
 // this strategy just tries to use a static workgroup shape
-template <unsigned... Shape> struct StaticWorkGroup {
-  static std::optional<ReduceToCnmRewriteParams>
-  determineWorkGroupTypeForRewrite(linalg::ReduceOp op) {
-    cnm::WorkgroupType wgTy =
-        cnm::WorkgroupType::get(op.getContext(), {Shape...});
-
-    // output ops need to be big enough to be dispatchable on the WG
-    if (llvm::any_of(op.getDpsInits(), [&](Value v) {
-          return !workgroupFitsParallelDims(v.getType(), wgTy, {});
-        }))
-      return std::nullopt;
-
-    // in particular the input operands WITHOUT the reduction dimensions should
-    // fit
-    if (llvm::any_of(op.getDpsInputs(), [&](Value v) {
-          return !workgroupFitsParallelDims(v.getType(), wgTy,
-                                            op.getDimensions());
-        }))
-      return std::nullopt;
-    return ReduceToCnmRewriteParams{.wgTy = wgTy};
+std::optional<cnm::WorkgroupType>
+determineWorkGroupTypeForRewrite(linalg::ReduceOp op) {
+  cnm::WorkgroupType wgTy = cnm::WorkgroupType::get(op.getContext(), {2, 4, 8});
+  Operation *parent = op;
+  while ((parent = parent->getParentOp())) {
+    if (auto parentCompute = dyn_cast<cinm::ComputeOp>(parent))
+      if (auto shape = parentCompute.getWorkgroupShape()) {
+        wgTy = cnm::WorkgroupType::get(op->getContext(), *shape);
+        break;
+      }
   }
-};
 
-template <typename WGStrat>
+  // output ops need to be big enough to be dispatchable on the WG
+  if (llvm::any_of(op.getDpsInits(), [&](Value v) {
+        return !workgroupFitsParallelDims(v.getType(), wgTy, {});
+      }))
+    return std::nullopt;
+
+  // in particular the input operands WITHOUT the reduction dimensions should
+  // fit
+  if (llvm::any_of(op.getDpsInputs(), [&](Value v) {
+        return !workgroupFitsParallelDims(v.getType(), wgTy,
+                                          op.getDimensions());
+      }))
+    return std::nullopt;
+  return wgTy;
+}
+
 struct ConvertLinalgReduceIntoLaunch
     : public OpConversionPattern<linalg::ReduceOp> {
   using OpConversionPattern::OpConversionPattern;
@@ -295,15 +298,14 @@ struct ConvertLinalgReduceIntoLaunch
                   ConversionPatternRewriter &rewriter) const override {
 
     ImplicitLocOpBuilder builder(op->getLoc(), rewriter);
-    auto wgTyOpt = WGStrat::determineWorkGroupTypeForRewrite(op);
+    auto wgTyOpt = determineWorkGroupTypeForRewrite(op);
     if (!wgTyOpt)
       return failure();
-    ReduceToCnmRewriteParams parms = *wgTyOpt;
-    Value workgroup = builder.create<cnm::WorkgroupOp>(parms.wgTy);
+    Value workgroup = builder.create<cnm::WorkgroupOp>(*wgTyOpt);
 
     llvm::SmallVector<Value, 1> newResults;
     if (convertLinalgReduceIntoLaunch(builder, op, adaptor, workgroup,
-                                      newResults, parms)
+                                      newResults, *wgTyOpt)
             .failed())
       return failure();
     rewriter.replaceOp(op, newResults);
@@ -315,12 +317,9 @@ struct ConvertLinalgReduceIntoLaunch
 struct ConvertTiledCinmToCnm
     : public ConvertTiledCinmToCnmBase<ConvertTiledCinmToCnm> {
 
-  using WorkGroupMakerStrategy = StaticWorkGroup<4, 8, 2>;
-
   void runOnOperation() override {
     RewritePatternSet patterns(&getContext());
-    patterns.insert<ConvertLinalgReduceIntoLaunch<WorkGroupMakerStrategy>>(
-        &getContext());
+    patterns.insert<ConvertLinalgReduceIntoLaunch>(&getContext());
     ConversionTarget target(getContext());
 
     //  target.addIllegalDialect<linalg::ReduceOp>();
