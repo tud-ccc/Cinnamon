@@ -124,6 +124,7 @@ def UPMEM_PrivateWRAMAllocOp : UPMEM_Op<"pwram_alloc", [
 
 def UPMEM_LaunchOp : UPMEM_Op<"launch", [
       AutomaticAllocationScope, AttrSizedOperandSegments, UPMEM_AsyncOpInterface,
+      IsolatedFromAbove,
       DeclareOpInterfaceMethods<InferIntRangeInterface>]> {
   let summary = "UPMEM kernel launch operation";
 
