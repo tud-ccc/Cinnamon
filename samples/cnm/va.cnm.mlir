@@ -1,5 +1,3 @@
-ninja: Entering directory `build'
-ninja: no work to do.
 #map = affine_map<(d0) -> (d0 floordiv 8192, (d0 mod 8192) floordiv 64, d0 mod 64)>
 #map1 = affine_map<(d0, d1, d2) -> (d0 * 8192 + d1 * 64 + d2)>
 #map2 = affine_map<(d0) -> (d0 floordiv 4096, (d0 mod 4096) floordiv 32, d0 mod 32)>
