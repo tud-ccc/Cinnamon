@@ -28,10 +28,12 @@
 #include <mlir/IR/IRMapping.h>
 #include <mlir/IR/ImplicitLocOpBuilder.h>
 #include <mlir/IR/Location.h>
+#include <mlir/IR/MLIRContext.h>
 #include <mlir/IR/PatternMatch.h>
 #include <mlir/IR/TypeRange.h>
 #include <mlir/IR/Value.h>
 #include <mlir/IR/ValueRange.h>
+#include <mlir/Rewrite/FrozenRewritePatternSet.h>
 #include <mlir/Support/LLVM.h>
 #include <mlir/Support/LogicalResult.h>
 #include <mlir/Transforms/DialectConversion.h>
@@ -142,7 +144,7 @@ computeShapeOfTensors(llvm::ArrayRef<int64_t> shape, cnm::WorkgroupType wgTy,
   }
 
   AffineExpr index = mlir::getAffineDimExpr(0, wgTy.getContext());
-  int64_t sizeOfTrailing = numWgItems / fullWgShape[0];
+  int64_t sizeOfTrailing = numParallelElts / fullWgShape[0];
   affineDims.push_back(index.floorDiv(sizeOfTrailing));
 
   AffineExpr gatherExpr = index * sizeOfTrailing;
@@ -280,29 +282,6 @@ LogicalResult convertCinmToCnm(
   return success();
 }
 
-bool workgroupFitsParallelDims(Type ty, cnm::WorkgroupType wgTy,
-                               ArrayRef<int64_t> reductionDims) {
-  // reductionDims is sorted
-  if (auto tensorTy = ty.dyn_cast<RankedTensorType>()) {
-    auto shape = tensorTy.getShape();
-    int64_t numNonReduceElts = 1;
-    for (size_t i = 0, j = 0; i < shape.size(); i++) {
-      if (j >= reductionDims.size() || i != reductionDims[j]) {
-        numNonReduceElts *= shape[i];
-      } else {
-        j++;
-      }
-    }
-    return numNonReduceElts % wgTy.getNumElements() == 0;
-  }
-  return false;
-}
-
-struct WorkGroupMakerStrategy {
-  static std::optional<cnm::WorkgroupType>
-  determineWorkGroupTypeForRewrite(linalg::ReduceOp op);
-};
-
 cinm::ComputeOp getEnclosingComputeBlock(Operation *op) {
   Operation *parent = op;
   while ((parent = parent->getParentOp())) {
@@ -311,27 +290,6 @@ cinm::ComputeOp getEnclosingComputeBlock(Operation *op) {
   }
 
   assert(false && "CINM operator is not inside a cinm.compute block");
-}
-
-// this strategy just tries to use a static workgroup shape
-std::optional<cnm::WorkgroupType>
-determineWorkGroupTypeForRewrite(linalg::ReduceOp op) {
-  cnm::WorkgroupType wgTy = getEnclosingComputeBlock(op).getCnmWorkgroupType();
-
-  // output ops need to be big enough to be dispatchable on the WG
-  if (llvm::any_of(op.getDpsInits(), [&](Value v) {
-        return !workgroupFitsParallelDims(v.getType(), wgTy, {});
-      }))
-    return std::nullopt;
-
-  // in particular the input operands WITHOUT the reduction dimensions should
-  // fit
-  if (llvm::any_of(op.getDpsInputs(), [&](Value v) {
-        return !workgroupFitsParallelDims(v.getType(), wgTy,
-                                          op.getDimensions());
-      }))
-    return std::nullopt;
-  return wgTy;
 }
 
 struct ConvertLinalgReduceIntoLaunch
@@ -435,15 +393,17 @@ struct DeleteCinmCompute : public OpConversionPattern<cinm::ComputeOp> {
   }
 };
 
+void populateCinmRewritePatterns(RewritePatternSet &patterns,
+                                 MLIRContext *ctx) {
+  patterns.insert<ConvertLinalgReduceIntoLaunch>(ctx);
+  patterns.insert<ConvertElementWiseToCnm<cinm::AddOp, linalg::AddOp>>(ctx);
+}
 struct ConvertTiledCinmToCnm
     : public ConvertTiledCinmToCnmBase<ConvertTiledCinmToCnm> {
 
   void runOnOperation() override {
     RewritePatternSet patterns(&getContext());
-    patterns.insert<ConvertLinalgReduceIntoLaunch>(&getContext());
-    patterns.insert<ConvertElementWiseToCnm<cinm::AddOp, linalg::AddOp>>(
-        &getContext());
-    // patterns.insert<DeleteCinmCompute>(&getContext());
+    populateCinmRewritePatterns(patterns, &getContext());
     ConversionTarget target(getContext());
 
     //  target.addIllegalDialect<linalg::ReduceOp>();
@@ -457,9 +417,20 @@ struct ConvertTiledCinmToCnm
     target.addLegalDialect<cnm::CnmDialect>();
     target.addLegalOp<cnm::LaunchOp>();
     target.addLegalOp<cinm::ComputeOp>();
+    target.addLegalOp<cinm::YieldOp>();
     target.markOpRecursivelyLegal<cnm::LaunchOp>();
 
     if (applyPartialConversion(getOperation(), target, std::move(patterns))
+            .failed())
+      signalPassFailure();
+
+    // in a second phase we remove cinm compute blocks
+    
+    target.addIllegalOp<cinm::ComputeOp>();
+    target.addIllegalOp<cinm::YieldOp>();
+    RewritePatternSet patterns2 = RewritePatternSet(&getContext());
+    patterns2.insert<DeleteCinmCompute>(&getContext());
+    if (applyFullConversion(getOperation(), target, std::move(patterns2))
             .failed())
       signalPassFailure();
   }

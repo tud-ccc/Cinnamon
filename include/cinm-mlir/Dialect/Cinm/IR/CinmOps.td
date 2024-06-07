@@ -70,7 +70,7 @@ def MaxOp: Cinm_Op<"op.max", [Commutative, Pure, DeclareOpInterfaceMethods<CinmT
     let hasCustomAssemblyFormat = 1;
 }
 
-def Cinm_AddOp : Cinm_TTT_Op<"op.add", [Commutative, Pure]> {
+def Cinm_AddOp : Cinm_TTT_Op<"op.add", [Commutative, Pure, DeclareOpInterfaceMethods<CinmTilingInterface>]> {
   let summary = "Tensor addition operation";
   let description = [{
     TODO

@@ -7,6 +7,7 @@
 #include "cinm-mlir/Dialect/Cinm/IR/CinmAttributes.h"
 #include "cinm-mlir/Dialect/Cinm/Interfaces/TilingInterface.h"
 
+#include <cstdint>
 #include <llvm/ADT/APFloat.h>
 #include <llvm/ADT/APInt.h>
 
@@ -21,8 +22,10 @@
 #include <mlir/IR/AffineMap.h>
 #include <mlir/IR/Attributes.h>
 #include <mlir/IR/Builders.h>
+#include <mlir/IR/BuiltinAttributeInterfaces.h>
 #include <mlir/IR/BuiltinTypeInterfaces.h>
 #include <mlir/IR/BuiltinTypes.h>
+#include <mlir/IR/ImplicitLocOpBuilder.h>
 #include <mlir/IR/Location.h>
 #include <mlir/IR/Matchers.h>
 #include <mlir/IR/OpImplementation.h>
@@ -196,7 +199,6 @@ SmallVector<Value> GemmOp::convertToTiledOps(OpBuilder builder,
   return success();
 }
 
-
 SmallVector<Value> GemvOp::convertToTiledOps(OpBuilder builder,
                                              ArrayRef<int64_t> tileCounts,
                                              int64_t reduceClusterSize) {
@@ -249,6 +251,88 @@ SmallVector<Value> GemvOp::convertToTiledOps(OpBuilder builder,
 
         return {result};
       });
+}
+
+template <typename OP>
+SmallVector<Value> tileElementWiseBinaryOp(ImplicitLocOpBuilder builder, OP op,
+                                           ArrayRef<int64_t> tileCounts,
+                                           int64_t reduceClusterSize) {
+  Value lhs = op.getOperand(0);
+  Value rhs = op.getOperand(1);
+
+  RankedTensorType tensorTy = lhs.getType().cast<RankedTensorType>();
+  auto shape = tensorTy.getShape();
+  const RankedTensorType originalType = tensorTy;
+  Value originalShapeValue;
+  if (shape.size() > 1) {
+    // then flatten the tensors first
+    Value flatShapeValue = builder.create<arith::ConstantOp>(
+        RankedTensorType::get({1}, builder.getI64Type()),
+        builder.getI64TensorAttr({tensorTy.getNumElements()}));
+    originalShapeValue = builder.create<arith::ConstantOp>(
+        RankedTensorType::get({static_cast<int64_t>(shape.size())},
+                              builder.getI64Type()),
+        builder.getI64TensorAttr(shape));
+    RankedTensorType flatTy = RankedTensorType::get({tensorTy.getNumElements()},
+                                                    tensorTy.getElementType());
+    lhs = builder.create<tensor::ReshapeOp>(flatTy, lhs, flatShapeValue);
+    rhs = builder.create<tensor::ReshapeOp>(flatTy, rhs, flatShapeValue);
+    tensorTy = flatTy;
+    shape = tensorTy.getShape();
+  }
+
+  const Value resultInit =
+      builder.create<tensor::EmptyOp>(tensorTy, ValueRange{});
+
+  const SmallVector<int64_t, 2> tileSizes = {
+      tensorTy.getNumElements() / reduceClusterSize, reduceClusterSize};
+
+  SmallVector<Value, 1> result = createNestedAffineForLoops(
+      builder, op.getLoc(), {tensorTy.getNumElements()}, {reduceClusterSize},
+      ValueRange{resultInit},
+      [&](OpBuilder &builder, Location loc, ValueRange indices,
+          ValueRange iterArgs) -> SmallVector<Value> {
+        const SmallVector<int64_t, 2> offsets{ShapedType::kDynamic};
+        const SmallVector<int64_t, 2> sizes{reduceClusterSize};
+        const SmallVector<int64_t, 2> strides{1};
+
+        const Value constTileSize = builder.create<arith::ConstantOp>(
+            loc, builder.getIndexType(),
+            builder.getIndexAttr(reduceClusterSize));
+        const RankedTensorType sliceTy = RankedTensorType::get(
+            {reduceClusterSize}, tensorTy.getElementType());
+        const Value dynOffset =
+            builder.create<arith::MulIOp>(loc, indices[0], constTileSize);
+
+        const Value lhsSlice = builder.create<tensor::ExtractSliceOp>(
+            loc, sliceTy, lhs, ValueRange{dynOffset}, ValueRange{},
+            ValueRange{}, offsets, sizes, strides);
+        const Value rhsSlice = builder.create<tensor::ExtractSliceOp>(
+            loc, sliceTy, rhs, ValueRange{dynOffset}, ValueRange{},
+            ValueRange{}, offsets, sizes, strides);
+
+        // here we recreate the same op with smaller dimensions
+        const Value resultSlice = builder.create<OP>(loc, lhsSlice, rhsSlice);
+
+        const Value result = builder.create<tensor::InsertSliceOp>(
+            loc, resultSlice, iterArgs[0], ValueRange{dynOffset}, ValueRange{},
+            ValueRange{}, offsets, sizes, strides);
+
+        return {result};
+      });
+  if (originalType.getShape().size() > 1) {
+    result[0] = builder.create<tensor::ReshapeOp>(originalType, result[0],
+                                                  originalShapeValue);
+  }
+  return result;
+}
+
+SmallVector<Value> AddOp::convertToTiledOps(OpBuilder builder,
+                                            ArrayRef<int64_t> tileCounts,
+                                            int64_t reduceClusterSize) {
+  ImplicitLocOpBuilder ibuilder(getLoc(), builder);
+  return tileElementWiseBinaryOp<AddOp>(ibuilder, *this, tileCounts,
+                                        reduceClusterSize);
 }
 
 ::mlir::LogicalResult GemvOp::inferReturnTypeComponents(

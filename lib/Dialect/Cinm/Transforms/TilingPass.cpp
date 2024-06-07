@@ -67,12 +67,16 @@ struct CinmTilingPass : public impl::CinmTilingPassBase<CinmTilingPass> {
                                                   reductionTileSize);
 
     ConversionTarget target(getContext());
+
+    target.addDynamicallyLegalOp<cinm::AddOp>([&](cinm::AddOp op) {
+      return op.getResult().getType().getNumElements() <= reductionTileSize;
+    });
     target.markUnknownOpDynamicallyLegal([](Operation *op) {
       return dyn_cast_or_null<cinm::CinmTilingInterface>(op) == nullptr;
     });
 
-    if (failed(
-            applyFullConversion(getOperation(), target, std::move(patterns)))) {
+    if (failed(applyPartialConversion(getOperation(), target,
+                                      std::move(patterns)))) {
       signalPassFailure();
     }
   }

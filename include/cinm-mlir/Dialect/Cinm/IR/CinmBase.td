@@ -39,7 +39,10 @@ class Cinm_Base_Op<string mnemonic, list<Trait> traits = []>
         : Op<Cinm_Dialect, mnemonic, traits>;
 
 class Cinm_Op<string mnemonic, list<Trait> traits = []>
-        : Cinm_Base_Op<mnemonic, !listconcat(traits, [HasParent<"ComputeOp">])>;
+        : Cinm_Base_Op<mnemonic, !listconcat(traits, [
+            // we want an ancestor not a parent
+            // HasParent<"ComputeOp">
+        ])>;
 // Template for types.
 class Cinm_Type<string name, list<Trait> traits = []>
         : TypeDef<Cinm_Dialect, name, traits>;
