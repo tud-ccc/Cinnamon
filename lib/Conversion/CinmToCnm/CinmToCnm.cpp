@@ -61,6 +61,7 @@ computeShapeOfTensors(llvm::ArrayRef<int64_t> shape, cnm::WorkgroupType wgTy,
                       // the dimensions are used to create a scattermap
                       llvm::ArrayRef<int64_t> reductionDims,
                       AffineMap &scatterMap, AffineMap &gatherMap,
+                      int64_t &requireTilingBy,
                       llvm::SmallVectorImpl<int64_t> &shapeOfBuffer) {
   auto wgShape = wgTy.getShape();
 
@@ -97,8 +98,8 @@ computeShapeOfTensors(llvm::ArrayRef<int64_t> shape, cnm::WorkgroupType wgTy,
     return success();
   }
 
-  // or 2. tensor is flat, and numParallelItems == k * numWgItems
-  if (parallelDims.size() != 1 || numParallelElts % numWgItems != 0) {
+  // or 2. numParallelItems == k * numWgItems
+  if (numParallelElts % numWgItems != 0) {
     return failure();
   }
 
@@ -129,21 +130,26 @@ computeShapeOfTensors(llvm::ArrayRef<int64_t> shape, cnm::WorkgroupType wgTy,
       // heuristic but whatever.
       int gcd = std::gcd(k, maxBlockSize);
 
-      fullWgShape.insert(fullWgShape.begin(), k / gcd);
-      fullWgShape.push_back(gcd);
       // Since we cannot do more parallelism with this workgroup,
       // we need to add some iterations around our cnm launch.
-      // TODO this iteration logic is not implemented
-      // numIterations = k / gcd;
-      // The buffer that will be passed to the CINM launch has this dimension.
-      shapeOfBuffer.push_back(gcd);
-      assert(false && "This is not implemented, we could fail the conversion "
-                      " but know that the dimensions of the inputs are larger "
-                      "than what the DPUs can handle in a single go.");
+      requireTilingBy = gcd * numWgItems;
+      return failure();
     }
   }
 
   AffineExpr index = mlir::getAffineDimExpr(0, wgTy.getContext());
+  if (parallelDims.size() > 1) {
+    if (reductionDims.size() > 0)
+      return failure();
+    index = 0;
+    // then we "flatten" the original tensor expression
+    for (int i = 0; i < parallelDims.size() - 1; i++) {
+      index = index +
+              parallelDims[i] * mlir::getAffineDimExpr(i, wgTy.getContext());
+    }
+    index = index +
+            mlir::getAffineDimExpr(parallelDims.size() - 1, wgTy.getContext());
+  }
   int64_t sizeOfTrailing = numParallelElts / fullWgShape[0];
   affineDims.push_back(index.floorDiv(sizeOfTrailing));
 
@@ -163,8 +169,8 @@ computeShapeOfTensors(llvm::ArrayRef<int64_t> shape, cnm::WorkgroupType wgTy,
     affineDims.push_back(
         mlir::getAffineDimExpr(i + parallelDims.size(), wgTy.getContext()));
   }
-  scatterMap = AffineMap::get(1 + reductionDims.size(), 0, affineDims,
-                              wgTy.getContext());
+  scatterMap = AffineMap::get(parallelDims.size() + reductionDims.size(), 0,
+                              affineDims, wgTy.getContext());
 
   llvm::SmallVector<AffineExpr> gatherMapResults;
   gatherMapResults.reserve(1 + reductionDims.size());
@@ -179,19 +185,18 @@ computeShapeOfTensors(llvm::ArrayRef<int64_t> shape, cnm::WorkgroupType wgTy,
   return success();
 }
 
-LogicalResult convertInputIntoAlloc(Value inputBuf, Value workGroup,
-                                    cnm::WorkgroupType wgTy,
-                                    int64_t maxBlockSize,
-                                    ArrayRef<int64_t> reduceDims,
-                                    AffineMap &gatherMap, Value &result,
-                                    ImplicitLocOpBuilder &rewriter) {
+LogicalResult convertInputIntoAlloc(
+    Value inputBuf, Value workGroup, cnm::WorkgroupType wgTy,
+    int64_t maxBlockSize, ArrayRef<int64_t> reduceDims, AffineMap &gatherMap,
+    Value &result, int64_t &requireTilingBy, ImplicitLocOpBuilder &rewriter) {
   // For each input of the reduce, we need to
 
   AffineMap scatterMap;
   auto inputTy = inputBuf.getType().cast<RankedTensorType>();
   llvm::SmallVector<int64_t, 1> shapeOfBuffer;
   if (computeShapeOfTensors(inputTy.getShape(), wgTy, maxBlockSize, reduceDims,
-                            scatterMap, gatherMap, shapeOfBuffer)
+                            scatterMap, gatherMap, requireTilingBy,
+                            shapeOfBuffer)
           .failed())
     return failure();
 
@@ -215,7 +220,7 @@ LogicalResult convertCinmToCnm(
     TypedValue<cnm::WorkgroupType> workgroup, int64_t maxDpuMemory,
     ArrayRef<int64_t> reductionDimensionsSorted, ValueRange operands,
     ValueRange outputInitializers, ValueRange results,
-    llvm::SmallVectorImpl<Value> &resultValues,
+    llvm::SmallVectorImpl<Value> &resultValues, int64_t &requireTilingBy,
     function_ref<void(ImplicitLocOpBuilder &, ValueRange, ValueRange)>
         createCnmLaunchBlock) {
 
@@ -229,20 +234,32 @@ LogicalResult convertCinmToCnm(
   int maxBlockSize = maxDpuMemory; // simplification
 
   builder.setInsertionPointAfter(operation);
+
+  bool failed = false;
   for (auto input : operands) {
+    int64_t tilingRequest = 0;
     if (convertInputIntoAlloc(
             input, workgroup, wgTy, maxBlockSize, reductionDimensionsSorted,
-            gatherMaps.emplace_back(), launchInputs.emplace_back(), builder)
-            .failed())
-      return failure();
+            gatherMaps.emplace_back(), launchInputs.emplace_back(),
+            tilingRequest, builder)
+            .failed()) {
+      failed = true;
+      requireTilingBy = std::max(requireTilingBy, tilingRequest);
+    }
   }
   for (auto output : outputInitializers) {
+    int64_t tilingRequest = 0;
     if (convertInputIntoAlloc(output, workgroup, wgTy, maxBlockSize, {},
                               gatherMaps.emplace_back(),
-                              launchOutputs.emplace_back(), builder)
-            .failed())
-      return failure();
+                              launchOutputs.emplace_back(), tilingRequest,
+                              builder)
+            .failed()) {
+      failed = true;
+      requireTilingBy = std::max(requireTilingBy, tilingRequest);
+    }
   }
+  if (failed)
+    return failure();
 
   cnm::LaunchOp launchOp =
       builder.create<cnm::LaunchOp>(workgroup, launchInputs, launchOutputs);
@@ -307,10 +324,11 @@ struct ConvertLinalgReduceIntoLaunch
         builder.create<cnm::WorkgroupOp>(computeOp.getCnmWorkgroupType());
 
     llvm::SmallVector<Value, 1> newResults;
+    int64_t tilingRequest = 0;
     if (convertCinmToCnm(
             builder, op, workgroup.getResult(), computeOp.getMaxDpuBufferSize(),
             op.getDimensions(), adaptor.getInputs(), adaptor.getInits(),
-            op->getResults(), newResults,
+            op->getResults(), newResults, tilingRequest,
             [&](ImplicitLocOpBuilder &builder, ValueRange memrefInputs,
                 ValueRange memrefOutputs) {
               // Here we are copying the original reduce into the launch,
@@ -338,6 +356,10 @@ struct ConvertLinalgReduceIntoLaunch
 template <typename CinmOp, typename LinalgOp>
 struct ConvertElementWiseToCnm : public OpConversionPattern<CinmOp> {
   using OpConversionPattern<CinmOp>::OpConversionPattern;
+  ConvertElementWiseToCnm<CinmOp>(MLIRContext *ctx)
+      : mlir::OpConversionPattern<CinmOp>(ctx) {
+    this->setHasBoundedRewriteRecursion();
+  }
 
   LogicalResult
   matchAndRewrite(CinmOp op, OpConversionPattern<CinmOp>::OpAdaptor adaptor,
@@ -351,19 +373,25 @@ struct ConvertElementWiseToCnm : public OpConversionPattern<CinmOp> {
         op.getResult().getType(),
         builder.getZeroAttr(op.getResult().getType()));
 
+    int64_t tilingFactor = 0;
     llvm::SmallVector<Value, 1> newResults;
     if (convertCinmToCnm(builder, op, workgroup.getResult(),
                          computeBlock.getMaxDpuBufferSize(), {},
                          adaptor.getOperands(), ValueRange{outputInit},
-                         op->getResults(), newResults,
+                         op->getResults(), newResults, tilingFactor,
                          [&](ImplicitLocOpBuilder &builder, ValueRange inputs,
                              ValueRange outputs) {
-                           // todo need to loop here
                            builder.create<LinalgOp>(inputs, outputs);
-                           // todo write back into output
                          })
-            .failed())
+            .failed()) {
+      // if we failed because we couldn't fit the working group,
+      // we may be able to tile properly.
+      if (tilingFactor > 0) {
+        rewriter.replaceOp(op, op.convertToTiledOps(builder, {}, tilingFactor));
+        return success();
+      }
       return failure();
+    }
 
     rewriter.replaceOp(op, newResults);
 
@@ -425,7 +453,7 @@ struct ConvertTiledCinmToCnm
       signalPassFailure();
 
     // in a second phase we remove cinm compute blocks
-    
+
     target.addIllegalOp<cinm::ComputeOp>();
     target.addIllegalOp<cinm::YieldOp>();
     RewritePatternSet patterns2 = RewritePatternSet(&getContext());
