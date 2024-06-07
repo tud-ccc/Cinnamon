@@ -211,12 +211,14 @@ SmallVector<Value> GemvOp::convertToTiledOps(OpBuilder builder,
             loc, lhsSliceType, lhs, indices, ValueRange{}, ValueRange{},
             lhsOffsets, lhsSizes, lhsStrides);
 
-        // todo should be linalg reduce
-        const Value mult = builder.create<cinm::MulOp>(loc, lhsSlice, rhs);
-        const Value add = builder.create<cinm::AddOp>(loc, mult, iterArgs[0]);
+        // todo should be cinm.reduce (or linalg.reduce)
+        auto mult = builder.create<cinm::MulOp>(loc, lhsSlice, rhs);
+        auto add = builder.create<cinm::AddOp>(loc, mult, iterArgs[0]);
+        markOpAsNoTile(mult);
+        markOpAsNoTile(add);
 
         const Value result = builder.create<tensor::InsertSliceOp>(
-            loc, add, iterArgs[0], indices, ValueRange{}, ValueRange{},
+            loc, add.getResult(), iterArgs[0], indices, ValueRange{}, ValueRange{},
             resultOffsets, resultSizes, resultStrides);
 
         return {result};

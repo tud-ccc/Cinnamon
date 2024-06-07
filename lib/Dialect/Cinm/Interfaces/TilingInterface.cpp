@@ -241,7 +241,7 @@ Value createMatmul(OpBuilder builder, Location loc, Value lhs, Value rhs,
           const SmallVector<int64_t> rhsSizes{rhsType.getDimSize(0), 1};
           const SmallVector<Value> rhsDynamicOffsets{indices.back()};
           const RankedTensorType rhsSliceType = RankedTensorType::get(
-              {lhsType.getDimSize(1)}, lhsType.getElementType());
+              {rhsType.getDimSize(1)}, rhsType.getElementType());
           rhsSlice = builder.create<tensor::ExtractSliceOp>(
               loc, rhsSliceType, rhs, rhsDynamicOffsets, ValueRange{},
               ValueRange{}, rhsOffsets, rhsSizes, strides);

@@ -96,7 +96,7 @@ def Cinm_MulOp : Cinm_TTT_Op<"op.mul", [Commutative, Pure]> {
 }
 
 def Cinm_DivOp : Cinm_TTT_Op<"div", []> {
-  let summary = "AnyRankedTensor division operation";
+  let summary = "Tensor division operation";
   let description = [{
     TODO
   }];
@@ -107,8 +107,8 @@ def Cinm_GemmOp : Cinm_Op<"op.gemm", [Pure, InferShapedTypeOpAdaptor, DeclareOpI
   let description = [{
     TODO
   }];
-  let arguments = (ins AnyRankedTensor:$left, AnyRankedTensor:$right);
-  let results = (outs AnyRankedTensor:$result);
+  let arguments = (ins 2DTensorOf<[AnyType]>:$left, 2DTensorOf<[AnyType]>:$right);
+  let results = (outs 2DTensorOf<[AnyType]>:$result);
   let assemblyFormat = "$left `,` $right attr-dict `:` `(` type($left) `,` type($right) `)` `->` type($result)";
 }
 
@@ -117,7 +117,7 @@ def Cinm_GemvOp : Cinm_Op<"op.gemv", [Pure, InferShapedTypeOpAdaptor, DeclareOpI
   let description = [{
     TODO
   }];
-  let arguments = (ins AnyRankedTensor:$left, 1DTensorOf<[AnyType]>:$right);
+  let arguments = (ins 2DTensorOf<[AnyType]>:$left, 1DTensorOf<[AnyType]>:$right);
   let results = (outs 1DTensorOf<[AnyType]>:$result);
   let assemblyFormat = "$left `,` $right attr-dict `:` `(` type($left) `,` type($right) `)` `->` type($result)";
 }
