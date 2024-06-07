@@ -23,7 +23,7 @@ def CinmTilingPass: Pass<"cinm-tiling"> {
     "mlir::affine::AffineDialect",
     "mlir::bufferization::BufferizationDialect",
     "mlir::linalg::LinalgDialect",
-    "mlir::tensor::TensorDialect",
+    "mlir::tensor::TensorDialect"
   ];
 }
 

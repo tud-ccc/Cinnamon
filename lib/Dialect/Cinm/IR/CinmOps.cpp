@@ -61,69 +61,36 @@ void CinmDialect::registerOps() {
 namespace mlir {
 namespace cinm {
 
-::mlir::ParseResult MinOp::parse(::mlir::OpAsmParser &parser,
-                                 ::mlir::OperationState &result) {
-  return MaxOp::parse(parser, result);
+cinm::ComputeOp getEnclosingComputeBlock(Operation *op) {
+  Operation *parent = op;
+  while ((parent = parent->getParentOp())) {
+    if (auto parentCompute = dyn_cast<cinm::ComputeOp>(parent))
+      return parentCompute;
+  }
+
+  assert(false && "CINM operator is not inside a cinm.compute block");
 }
 
 SmallVector<Value> MinOp::convertToTiledOps(OpBuilder builder,
-                                            ArrayRef<int64_t>,
-                                            int64_t reduceClusterSize) {
-  return {createVectorReduceMin(builder, getLoc(), getOperand(),
-                                reduceClusterSize)};
-}
-
-::mlir::ParseResult MaxOp::parse(::mlir::OpAsmParser &parser,
-                                 ::mlir::OperationState &result) {
-  OpAsmParser::UnresolvedOperand input;
-  Type inputType;
-  if (parser.parseOperand(input) || parser.parseColonType(inputType))
-    return failure();
-
-  SmallVector<Value> typedInput;
-  if (parser.resolveOperand(input, inputType, typedInput))
-    return failure();
-
-  result.addOperands(typedInput);
-
-  if (auto shaped = dyn_cast<ShapedType>(inputType)) {
-    result.addTypes({shaped.getElementType()});
-    return success();
-  } else {
-    return parser.emitError(parser.getCurrentLocation(),
-                            "Expected a tensor type as operand");
-  }
+                                            TilingParameters params) {
+  auto ty = getInput().getType();
+  return {createVectorReduceMin(
+      builder, getLoc(), getOperand(),
+      params.reduceClusterSize(1, ty.getNumElements(), ty.getElementType()))};
 }
 
 SmallVector<Value> MaxOp::convertToTiledOps(OpBuilder builder,
-                                            ArrayRef<int64_t>,
-                                            int64_t reduceClusterSize) {
-  return {createVectorReduceMax(builder, getLoc(), getOperand(),
-                                reduceClusterSize)};
+                                            TilingParameters params) {
+  auto ty = getInput().getType();
+  return {createVectorReduceMax(
+      builder, getLoc(), getOperand(),
+      params.reduceClusterSize(1, ty.getNumElements(), ty.getElementType()))};
 }
-
-void printMinMaxOp(Value v, ::mlir::OpAsmPrinter &p) {
-  p << " ";
-  p.printOperand(v);
-  p << " : ";
-  p.printType(v.getType());
-}
-
-void MaxOp::print(::mlir::OpAsmPrinter &p) { printMinMaxOp(getOperand(), p); }
-
-void MinOp::print(::mlir::OpAsmPrinter &p) { printMinMaxOp(getOperand(), p); }
 
 SmallVector<Value> GemmOp::convertToTiledOps(OpBuilder builder,
-                                             ArrayRef<int64_t> tileCounts,
-                                             int64_t reduceClusterSize) {
+                                             TilingParameters params) {
   const Value lhs = getOperand(0);
   const Value rhs = getOperand(1);
-
-  if (tileCounts.empty()) {
-    return {createMatmul(builder, getLoc(), lhs, rhs, reduceClusterSize)};
-  }
-
-  assert(tileCounts.size() == 2);
 
   const RankedTensorType lhsType = lhs.getType().cast<RankedTensorType>();
   const RankedTensorType rhsType = rhs.getType().cast<RankedTensorType>();
@@ -135,8 +102,13 @@ SmallVector<Value> GemmOp::convertToTiledOps(OpBuilder builder,
   const Value resultInit = builder.create<tensor::EmptyOp>(
       getLoc(), resultShape, resultType.getElementType());
 
-  const SmallVector<int64_t, 2> tileSizes =
-      getTileSizes(tileCounts, resultShape);
+  // Size of the tile on the reduction dimension.
+  auto reduceClusterSize = params.reduceClusterSize(
+      2, resultType.getNumElements(), lhsType.getElementType());
+  auto parallelTileSize =
+      params.parallelClusterSize(rhsType.getDimSize(1), reduceClusterSize);
+
+  const SmallVector<int64_t, 2> tileSizes = {1, parallelTileSize};
 
   return createNestedAffineForLoops(
       builder, getLoc(), resultShape, tileSizes, ValueRange{resultInit},
@@ -200,16 +172,12 @@ SmallVector<Value> GemmOp::convertToTiledOps(OpBuilder builder,
 }
 
 SmallVector<Value> GemvOp::convertToTiledOps(OpBuilder builder,
-                                             ArrayRef<int64_t> tileCounts,
-                                             int64_t reduceClusterSize) {
+                                             TilingParameters params) {
   const Value lhs = getOperand(0);
   const Value rhs = getOperand(1);
 
-  if (tileCounts.empty()) {
-    return {createMatmul(builder, getLoc(), lhs, rhs, reduceClusterSize)};
-  }
-
   const RankedTensorType lhsType = lhs.getType().cast<RankedTensorType>();
+  const auto lhsShape = lhsType.getShape();
 
   const RankedTensorType resultType =
       getResult().getType().cast<RankedTensorType>();
@@ -217,23 +185,24 @@ SmallVector<Value> GemvOp::convertToTiledOps(OpBuilder builder,
 
   const Value resultInit = builder.create<tensor::EmptyOp>(
       getLoc(), resultShape, resultType.getElementType());
-
-  tileCounts = tileCounts.slice(resultShape.size());
-  const SmallVector<int64_t, 2> tileSizes =
-      getTileSizes(tileCounts, resultShape);
+  // Size of the tile on the reduction dimension.
+  auto reduceClusterSize = params.reduceClusterSize(
+      2, resultType.getNumElements(), lhsType.getElementType());
+  auto parallelTileSize =
+      params.parallelClusterSize(lhsShape[0], reduceClusterSize);
 
   return createNestedAffineForLoops(
-      builder, getLoc(), resultShape, tileSizes, ValueRange{resultInit},
+      builder, getLoc(), {lhsShape[0]}, {parallelTileSize},
+      ValueRange{resultInit},
       [&](OpBuilder &builder, Location loc, ValueRange indices,
           ValueRange iterArgs) -> SmallVector<Value> {
         const SmallVector<int64_t, 2> lhsOffsets{ShapedType::kDynamic, 0};
-        const SmallVector<int64_t, 2> lhsSizes{tileSizes[0],
-                                               lhsType.getDimSize(1)};
+        const SmallVector<int64_t, 2> lhsSizes{parallelTileSize, lhsShape[1]};
         const SmallVector<int64_t, 2> lhsStrides{1, 1};
 
-        const SmallVector<int64_t, 2> resultOffsets{ShapedType::kDynamic};
-        const SmallVector<int64_t, 2> resultSizes = tileSizes;
-        const SmallVector<int64_t, 2> resultStrides{1};
+        const SmallVector<int64_t, 1> resultOffsets{ShapedType::kDynamic};
+        const SmallVector<int64_t, 1> resultSizes{parallelTileSize};
+        const SmallVector<int64_t, 1> resultStrides{1};
 
         const RankedTensorType lhsSliceType =
             tensor::ExtractSliceOp::inferCanonicalRankReducedResultType(
@@ -242,11 +211,12 @@ SmallVector<Value> GemvOp::convertToTiledOps(OpBuilder builder,
             loc, lhsSliceType, lhs, indices, ValueRange{}, ValueRange{},
             lhsOffsets, lhsSizes, lhsStrides);
 
-        const Value resultSlice =
-            createMatmul(builder, loc, lhsSlice, rhs, reduceClusterSize);
+        // todo should be linalg reduce
+        const Value mult = builder.create<cinm::MulOp>(loc, lhsSlice, rhs);
+        const Value add = builder.create<cinm::AddOp>(loc, mult, iterArgs[0]);
 
         const Value result = builder.create<tensor::InsertSliceOp>(
-            loc, resultSlice, iterArgs[0], indices, ValueRange{}, ValueRange{},
+            loc, add, iterArgs[0], indices, ValueRange{}, ValueRange{},
             resultOffsets, resultSizes, resultStrides);
 
         return {result};
@@ -255,12 +225,21 @@ SmallVector<Value> GemvOp::convertToTiledOps(OpBuilder builder,
 
 template <typename OP>
 SmallVector<Value> tileElementWiseBinaryOp(ImplicitLocOpBuilder builder, OP op,
-                                           ArrayRef<int64_t> tileCounts,
-                                           int64_t reduceClusterSize) {
+                                           TilingParameters params) {
   Value lhs = op.getOperand(0);
   Value rhs = op.getOperand(1);
 
   RankedTensorType tensorTy = lhs.getType().cast<RankedTensorType>();
+  if (params.workingGroupSize() > tensorTy.getNumElements()) {
+    // this is dead code as the op is marked dynamically legal in this case
+    assert(false && "Working group is too large");
+  }
+
+  auto reduceClusterSize = params.reduceClusterSize(
+      3, tensorTy.getNumElements(), tensorTy.getElementType());
+  reduceClusterSize *= params.workingGroupSize();
+  assert(reduceClusterSize <= tensorTy.getNumElements());
+
   auto shape = tensorTy.getShape();
   const RankedTensorType originalType = tensorTy;
   Value originalShapeValue;
@@ -300,17 +279,18 @@ SmallVector<Value> tileElementWiseBinaryOp(ImplicitLocOpBuilder builder, OP op,
             {reduceClusterSize}, tensorTy.getElementType());
 
         const Value lhsSlice = builder.create<tensor::ExtractSliceOp>(
-            loc, sliceTy, lhs, indices, ValueRange{},
-            ValueRange{}, offsets, sizes, strides);
+            loc, sliceTy, lhs, indices, ValueRange{}, ValueRange{}, offsets,
+            sizes, strides);
         const Value rhsSlice = builder.create<tensor::ExtractSliceOp>(
-            loc, sliceTy, rhs, indices, ValueRange{},
-            ValueRange{}, offsets, sizes, strides);
+            loc, sliceTy, rhs, indices, ValueRange{}, ValueRange{}, offsets,
+            sizes, strides);
 
         // here we recreate the same op with smaller dimensions
-        const Value resultSlice = builder.create<OP>(loc, lhsSlice, rhsSlice);
+        OP smaller = builder.create<OP>(loc, lhsSlice, rhsSlice);
+        markOpAsNoTile(smaller);
 
         const Value result = builder.create<tensor::InsertSliceOp>(
-            loc, resultSlice, iterArgs[0], indices, ValueRange{},
+            loc, smaller.getResult(), iterArgs[0], indices, ValueRange{},
             ValueRange{}, offsets, sizes, strides);
 
         return {result};
@@ -323,11 +303,9 @@ SmallVector<Value> tileElementWiseBinaryOp(ImplicitLocOpBuilder builder, OP op,
 }
 
 SmallVector<Value> AddOp::convertToTiledOps(OpBuilder builder,
-                                            ArrayRef<int64_t> tileCounts,
-                                            int64_t reduceClusterSize) {
+                                            TilingParameters params) {
   ImplicitLocOpBuilder ibuilder(getLoc(), builder);
-  return tileElementWiseBinaryOp<AddOp>(ibuilder, *this, tileCounts,
-                                        reduceClusterSize);
+  return tileElementWiseBinaryOp<AddOp>(ibuilder, *this, params);
 }
 
 ::mlir::LogicalResult GemvOp::inferReturnTypeComponents(
@@ -446,8 +424,10 @@ SmallVector<Value> AddOp::convertToTiledOps(OpBuilder builder,
 }
 
 SmallVector<Value> ReduceOp::convertToTiledOps(OpBuilder builder,
-                                               ArrayRef<int64_t>,
-                                               int64_t reduceClusterSize) {
+                                               TilingParameters params) {
+  auto ty = getInput().getType();
+  auto reduceClusterSize =
+      params.reduceClusterSize(1, ty.getNumElements(), ty.getElementType());
   if (getMethod() == ReduceMethod::ADD) {
     return {createVectorReduceAdd(builder, getLoc(), getOperand(),
                                   reduceClusterSize)};

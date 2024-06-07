@@ -1,6 +1,7 @@
 
 #include "cinm-mlir/Dialect/Cinm/IR/CinmBase.h"
 #include "cinm-mlir/Dialect/Cinm/IR/CinmOps.h"
+#include "cinm-mlir/Dialect/Cinm/Interfaces/TilingInterface.h"
 #include "cinm-mlir/Dialect/Cnm/IR/CnmBase.h"
 #include "cinm-mlir/Dialect/Cnm/IR/CnmTypes.h"
 #include <cassert>
@@ -61,7 +62,6 @@ computeShapeOfTensors(llvm::ArrayRef<int64_t> shape, cnm::WorkgroupType wgTy,
                       // the dimensions are used to create a scattermap
                       llvm::ArrayRef<int64_t> reductionDims,
                       AffineMap &scatterMap, AffineMap &gatherMap,
-                      int64_t &requireTilingBy,
                       llvm::SmallVectorImpl<int64_t> &shapeOfBuffer) {
   auto wgShape = wgTy.getShape();
 
@@ -124,15 +124,7 @@ computeShapeOfTensors(llvm::ArrayRef<int64_t> shape, cnm::WorkgroupType wgTy,
       // The buffer that will be passed to the CINM launch has this dimension.
       shapeOfBuffer.push_back(k);
     } else {
-      // We need to factor k into a * b, where b <= maxBlockSize.
-      // If we say k = gcd(k, maxBlockSize) * x, we know that
-      // gcd(k, maxBlockSize) <= maxBlockSize. This is not a great
-      // heuristic but whatever.
-      int gcd = std::gcd(k, maxBlockSize);
-
-      // Since we cannot do more parallelism with this workgroup,
-      // we need to add some iterations around our cnm launch.
-      requireTilingBy = gcd * numWgItems;
+      // probably the op hasn't been tiled properly
       return failure();
     }
   }
@@ -185,18 +177,19 @@ computeShapeOfTensors(llvm::ArrayRef<int64_t> shape, cnm::WorkgroupType wgTy,
   return success();
 }
 
-LogicalResult convertInputIntoAlloc(
-    Value inputBuf, Value workGroup, cnm::WorkgroupType wgTy,
-    int64_t maxBlockSize, ArrayRef<int64_t> reduceDims, AffineMap &gatherMap,
-    Value &result, int64_t &requireTilingBy, ImplicitLocOpBuilder &rewriter) {
+LogicalResult convertInputIntoAlloc(Value inputBuf, Value workGroup,
+                                    cnm::WorkgroupType wgTy,
+                                    int64_t maxBlockSize,
+                                    ArrayRef<int64_t> reduceDims,
+                                    AffineMap &gatherMap, Value &result,
+                                    ImplicitLocOpBuilder &rewriter) {
   // For each input of the reduce, we need to
 
   AffineMap scatterMap;
   auto inputTy = inputBuf.getType().cast<RankedTensorType>();
   llvm::SmallVector<int64_t, 1> shapeOfBuffer;
   if (computeShapeOfTensors(inputTy.getShape(), wgTy, maxBlockSize, reduceDims,
-                            scatterMap, gatherMap, requireTilingBy,
-                            shapeOfBuffer)
+                            scatterMap, gatherMap, shapeOfBuffer)
           .failed())
     return failure();
 
@@ -220,7 +213,7 @@ LogicalResult convertCinmToCnm(
     TypedValue<cnm::WorkgroupType> workgroup, int64_t maxDpuMemory,
     ArrayRef<int64_t> reductionDimensionsSorted, ValueRange operands,
     ValueRange outputInitializers, ValueRange results,
-    llvm::SmallVectorImpl<Value> &resultValues, int64_t &requireTilingBy,
+    llvm::SmallVectorImpl<Value> &resultValues,
     function_ref<void(ImplicitLocOpBuilder &, ValueRange, ValueRange)>
         createCnmLaunchBlock) {
 
@@ -235,31 +228,22 @@ LogicalResult convertCinmToCnm(
 
   builder.setInsertionPointAfter(operation);
 
-  bool failed = false;
   for (auto input : operands) {
-    int64_t tilingRequest = 0;
     if (convertInputIntoAlloc(
             input, workgroup, wgTy, maxBlockSize, reductionDimensionsSorted,
-            gatherMaps.emplace_back(), launchInputs.emplace_back(),
-            tilingRequest, builder)
+            gatherMaps.emplace_back(), launchInputs.emplace_back(), builder)
             .failed()) {
-      failed = true;
-      requireTilingBy = std::max(requireTilingBy, tilingRequest);
+      return failure();
     }
   }
   for (auto output : outputInitializers) {
-    int64_t tilingRequest = 0;
     if (convertInputIntoAlloc(output, workgroup, wgTy, maxBlockSize, {},
                               gatherMaps.emplace_back(),
-                              launchOutputs.emplace_back(), tilingRequest,
-                              builder)
+                              launchOutputs.emplace_back(), builder)
             .failed()) {
-      failed = true;
-      requireTilingBy = std::max(requireTilingBy, tilingRequest);
+      return failure();
     }
   }
-  if (failed)
-    return failure();
 
   cnm::LaunchOp launchOp =
       builder.create<cnm::LaunchOp>(workgroup, launchInputs, launchOutputs);
@@ -299,16 +283,6 @@ LogicalResult convertCinmToCnm(
   return success();
 }
 
-cinm::ComputeOp getEnclosingComputeBlock(Operation *op) {
-  Operation *parent = op;
-  while ((parent = parent->getParentOp())) {
-    if (auto parentCompute = dyn_cast<cinm::ComputeOp>(parent))
-      return parentCompute;
-  }
-
-  assert(false && "CINM operator is not inside a cinm.compute block");
-}
-
 struct ConvertLinalgReduceIntoLaunch
     : public OpConversionPattern<linalg::ReduceOp> {
   using OpConversionPattern::OpConversionPattern;
@@ -318,17 +292,16 @@ struct ConvertLinalgReduceIntoLaunch
                   ConversionPatternRewriter &rewriter) const override {
 
     ImplicitLocOpBuilder builder(op->getLoc(), rewriter);
-    auto computeOp = getEnclosingComputeBlock(op);
+    auto computeOp = mlir::cinm::getEnclosingComputeBlock(op);
 
     cnm::WorkgroupOp workgroup =
         builder.create<cnm::WorkgroupOp>(computeOp.getCnmWorkgroupType());
 
     llvm::SmallVector<Value, 1> newResults;
-    int64_t tilingRequest = 0;
     if (convertCinmToCnm(
             builder, op, workgroup.getResult(), computeOp.getMaxDpuBufferSize(),
             op.getDimensions(), adaptor.getInputs(), adaptor.getInits(),
-            op->getResults(), newResults, tilingRequest,
+            op->getResults(), newResults,
             [&](ImplicitLocOpBuilder &builder, ValueRange memrefInputs,
                 ValueRange memrefOutputs) {
               // Here we are copying the original reduce into the launch,
@@ -366,30 +339,23 @@ struct ConvertElementWiseToCnm : public OpConversionPattern<CinmOp> {
                   ConversionPatternRewriter &rewriter) const override {
 
     ImplicitLocOpBuilder builder(op->getLoc(), rewriter);
-    cinm::ComputeOp computeBlock = getEnclosingComputeBlock(op);
+    cinm::ComputeOp computeBlock = mlir::cinm::getEnclosingComputeBlock(op);
     cnm::WorkgroupOp workgroup =
         builder.create<cnm::WorkgroupOp>(computeBlock.getCnmWorkgroupType());
     auto outputInit = builder.create<arith::ConstantOp>(
         op.getResult().getType(),
         builder.getZeroAttr(op.getResult().getType()));
 
-    int64_t tilingFactor = 0;
     llvm::SmallVector<Value, 1> newResults;
     if (convertCinmToCnm(builder, op, workgroup.getResult(),
                          computeBlock.getMaxDpuBufferSize(), {},
                          adaptor.getOperands(), ValueRange{outputInit},
-                         op->getResults(), newResults, tilingFactor,
+                         op->getResults(), newResults,
                          [&](ImplicitLocOpBuilder &builder, ValueRange inputs,
                              ValueRange outputs) {
                            builder.create<LinalgOp>(inputs, outputs);
                          })
             .failed()) {
-      // if we failed because we couldn't fit the working group,
-      // we may be able to tile properly.
-      if (tilingFactor > 0) {
-        rewriter.replaceOp(op, op.convertToTiledOps(builder, {}, tilingFactor));
-        return success();
-      }
       return failure();
     }
 

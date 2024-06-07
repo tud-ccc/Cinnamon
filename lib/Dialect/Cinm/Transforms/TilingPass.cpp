@@ -3,6 +3,7 @@
 #include "cinm-mlir/Dialect/Cinm/Transforms/Passes.h"
 
 #include <llvm/ADT/SmallVector.h>
+#include <llvm/Support/Casting.h>
 #include <mlir/Conversion/LLVMCommon/TypeConverter.h>
 #include <mlir/Dialect/Affine/IR/AffineOps.h>
 #include <mlir/Dialect/Arith/IR/Arith.h>
@@ -37,23 +38,17 @@ struct CinmApplyTilingInterfacePattern
   using OpInterfaceConversionPattern<
       cinm::CinmTilingInterface>::OpInterfaceConversionPattern;
 
-  CinmApplyTilingInterfacePattern(MLIRContext *context,
-                                  ArrayRef<int64_t> tileSizes,
-                                  int64_t reductionTileSize)
-      : OpInterfaceConversionPattern<cinm::CinmTilingInterface>(context, 1),
-        tileSizes(tileSizes), reductionTileSize(reductionTileSize) {}
+  CinmApplyTilingInterfacePattern(MLIRContext *context)
+      : OpInterfaceConversionPattern<cinm::CinmTilingInterface>(context, 1) {}
 
   LogicalResult
   matchAndRewrite(cinm::CinmTilingInterface op, ArrayRef<Value>,
                   ConversionPatternRewriter &rewriter) const override {
-    rewriter.replaceOp(
-        op, op.convertToTiledOps(rewriter, tileSizes, reductionTileSize));
+    auto computeBlock = mlir::cinm::getEnclosingComputeBlock(op);
+    auto tilingParms = cinm::TilingParameters::fromComputeBlock(computeBlock);
+    rewriter.replaceOp(op, op.convertToTiledOps(rewriter, tilingParms));
     return success();
   }
-
-private:
-  SmallVector<int64_t> tileSizes;
-  int64_t reductionTileSize;
 };
 
 struct CinmTilingPass : public impl::CinmTilingPassBase<CinmTilingPass> {
@@ -62,17 +57,14 @@ struct CinmTilingPass : public impl::CinmTilingPassBase<CinmTilingPass> {
   void runOnOperation() final {
     LLVMTypeConverter typeConverter(&getContext());
     RewritePatternSet patterns(&getContext());
-    patterns.add<CinmApplyTilingInterfacePattern>(&typeConverter.getContext(),
-                                                  SmallVector<int64_t>{16, 16},
-                                                  reductionTileSize);
+    patterns.add<CinmApplyTilingInterfacePattern>(&typeConverter.getContext());
 
     ConversionTarget target(getContext());
 
-    target.addDynamicallyLegalOp<cinm::AddOp>([&](cinm::AddOp op) {
-      return op.getResult().getType().getNumElements() <= reductionTileSize;
-    });
     target.markUnknownOpDynamicallyLegal([](Operation *op) {
-      return dyn_cast_or_null<cinm::CinmTilingInterface>(op) == nullptr;
+      if (auto tileable = llvm::dyn_cast_or_null<cinm::CinmTilingInterface>(op))
+        return tileable->hasAttr("notile");
+      return true;
     });
 
     if (failed(applyPartialConversion(getOperation(), target,

@@ -1,4 +1,5 @@
 #include "cinm-mlir/Dialect/Cinm/Interfaces/TilingInterface.h"
+#include "cinm-mlir/Dialect/Cinm/IR/CinmOps.h"
 
 #include <limits>
 
@@ -26,6 +27,15 @@ using namespace mlir::cinm;
 //===----------------------------------------------------------------------===//
 
 namespace mlir::cinm {
+
+void markOpAsNoTile(Operation *op) {
+  op->setAttr("notile", cinm::NoTileAttr::get(op->getContext()));
+}
+
+TilingParameters TilingParameters::fromComputeBlock(cinm::ComputeOp &op) {
+  return TilingParameters(op.getMaxDpuBufferSize() * 4, op.getWorkgroupShape());
+}
+
 Value createVectorReduce2(OpBuilder &builder, Location loc, Value v0, Value v1,
                           Attribute init, ReduceAccumulatorCallback merge2,
                           ReduceAccumulatorCallback reduce,

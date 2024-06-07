@@ -54,20 +54,25 @@ class Cinm_Bitwise_Op<string name, list<Trait> traits = []>
 
 // Concrete op definitions
 
+class TypeMatchesElementType<string tensorTy, string toInfer>:
+TypesMatchWith<"output type matches element type of input", toInfer, tensorTy,
+              "::llvm::cast<RankedTensorType>($_self).getElementType()">;
 
-def MinOp: Cinm_Op<"op.min", [Commutative, Pure, DeclareOpInterfaceMethods<CinmTilingInterface>]> {
+def MinOp: Cinm_Op<"op.min", [Commutative, Pure, DeclareOpInterfaceMethods<CinmTilingInterface>,
+TypeMatchesElementType<"result", "input">]> {
     let arguments = (ins AnyRankedTensor:$input);
     let results = (outs AnyScalar:$result);
     let summary = "Return the min value of the input tensor";
-    let hasCustomAssemblyFormat = 1;
+    let assemblyFormat = "$input attr-dict `:` type($input)";
 }
 
-def MaxOp: Cinm_Op<"op.max", [Commutative, Pure, DeclareOpInterfaceMethods<CinmTilingInterface>]> {
+def MaxOp: Cinm_Op<"op.max", [Commutative, Pure, DeclareOpInterfaceMethods<CinmTilingInterface>,
+TypeMatchesElementType<"result", "input">]> {
     let arguments = (ins AnyRankedTensor:$input);
     let results = (outs AnyScalar:$result);
 
     let summary = "Return the max value of the input tensor";
-    let hasCustomAssemblyFormat = 1;
+    let assemblyFormat = "$input attr-dict `:` type($input)";
 }
 
 def Cinm_AddOp : Cinm_TTT_Op<"op.add", [Commutative, Pure, DeclareOpInterfaceMethods<CinmTilingInterface>]> {
@@ -316,6 +321,10 @@ def Cinm_ComputeOp : Cinm_Base_Op<"compute", [
   let extraClassDeclaration = [{
     cnm::WorkgroupType getCnmWorkgroupType() {
       return cnm::WorkgroupType::get(getContext(), getWorkgroupShape());
+    }
+    long getWorkgroupSize() {
+      auto wgShape = getWorkgroupShape();
+      return std::reduce(wgShape.begin(), wgShape.end(), 1, std::multiplies<>());
     }
 
   }];

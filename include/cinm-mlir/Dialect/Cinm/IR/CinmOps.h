@@ -23,3 +23,9 @@
 #include "cinm-mlir/Dialect/Cinm/IR/CinmOps.h.inc"
 
 //===----------------------------------------------------------------------===//
+
+namespace mlir::cinm {
+
+cinm::ComputeOp getEnclosingComputeBlock(Operation *op);
+
+} // namespace mlir::cinm

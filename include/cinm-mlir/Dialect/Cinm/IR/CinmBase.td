@@ -21,6 +21,7 @@ def Cinm_Dialect : Dialect {
     }];
 
     let usePropertiesForAttributes = 0;
+    let useDefaultAttributePrinterParser = 1;
 //    let useDefaultTypePrinterParser = 1;
 
 
@@ -32,8 +33,8 @@ def Cinm_Dialect : Dialect {
 }
 
 // Template for attributes.
-// class Cinm_Attr<string name, list<Trait> traits = []>
-//         : AttrDef<Cinm_Dialect, name, traits>;
+ class Cinm_Attr<string name, list<Trait> traits = []>
+         : AttrDef<Cinm_Dialect, name, traits>;
 // Template for ops.
 class Cinm_Base_Op<string mnemonic, list<Trait> traits = []>
         : Op<Cinm_Dialect, mnemonic, traits>;
