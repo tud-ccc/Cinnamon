@@ -10,8 +10,8 @@
 
 include "mlir/Pass/PassBase.td"
 
-def ConvertTiledCinmToCnm : Pass<"convert-tiled-cinm-to-cnm", operation="func::FuncOp"> {
-    let summary = "Convert tiled CINM dialect (not actually cinm ops) to CNM dialect";
+def ConvertTiledCinmToCnm : Pass<"convert-cinm-to-cnm", operation="func::FuncOp"> {
+    let summary = "Convert CINM dialect to CNM dialect (may require --cinm-tiling before)";
     let constructor = "mlir::cinm::createConvertTiledCinmToCnmPass()";
     let dependentDialects = ["cnm::CnmDialect", "func::FuncDialect", 
         "arith::ArithDialect", "tensor::TensorDialect"];

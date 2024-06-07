@@ -1,4 +1,4 @@
-// cinm-opt $FILE --cinm-tiling=reduction-tile-size=65536 --convert-tiled-cinm-to-cnm
+// cinm-opt $FILE --convert-cinm-to-cnm
 
 module {
 
