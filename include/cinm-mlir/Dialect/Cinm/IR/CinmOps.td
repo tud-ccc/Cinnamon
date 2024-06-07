@@ -320,7 +320,7 @@ def Cinm_ComputeOp : Cinm_Base_Op<"compute", [
 
   }];
 //  let hasCustomAssemblyFormat = 1;
-  let assemblyFormat = "attr-dict `->` type($results) $body";
+  let assemblyFormat = "attr-dict-with-keyword (`->` type($results)^)? $body";
 }
 
 
@@ -338,7 +338,7 @@ def Cinm_YieldOp : Cinm_Op<"yield", [Pure, HasParent<"ComputeOp">,
   let arguments = (ins Variadic<AnyType>:$operands);
 
   //let hasVerifier = 1;
-  let assemblyFormat = "$operands attr-dict `:` type($operands)";
+  let assemblyFormat = "attr-dict ($operands^ `:` type($operands))?";
 
 }
 

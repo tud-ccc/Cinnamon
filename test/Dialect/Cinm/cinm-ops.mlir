@@ -4,7 +4,7 @@
 
 // CHECK-LABEL: simple
 func.func @simple(%t0: tensor<6x6xi32>, %t1 : tensor<6xf32> ) {
-    %d = cinm.compute { workgroupShape= array<i64: 2,4,4,2> } -> tensor<6x6xi32> {
+    %d = cinm.compute attributes { workgroupShape= array<i64: 2,4,4,2> } -> tensor<6x6xi32> {
         %x = cinm.op.add %t0, %t0: tensor<6x6xi32>
         %y = cinm.op.sub %t0, %t0: tensor<6x6xi32>
         %z = cinm.op.max %t0: tensor<6x6xi32>
@@ -26,6 +26,20 @@ func.func @simple(%t0: tensor<6x6xi32>, %t1 : tensor<6xf32> ) {
 		%d2 = cinm.op.gemm %t0, %t0 : (tensor<6x6xi32>, tensor<6x6xi32>) -> tensor<6x6xi32>
 		cinm.yield %d2: tensor<6x6xi32>
 	}
+
+    // different forms for compute
+    cinm.compute {
+        cinm.yield
+    }
+    cinm.compute attributes { maxDpuBufferSize = 64 } {
+        cinm.yield
+    }
+
+    %a0, %b0 = cinm.compute attributes {} -> i64, i64 {
+        %cst = arith.constant 32: i64
+        cinm.yield %cst, %cst: i64, i64
+    }
+    
 
     return
 }
