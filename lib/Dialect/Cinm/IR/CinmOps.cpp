@@ -296,26 +296,21 @@ SmallVector<Value> tileElementWiseBinaryOp(ImplicitLocOpBuilder builder, OP op,
         const SmallVector<int64_t, 2> sizes{reduceClusterSize};
         const SmallVector<int64_t, 2> strides{1};
 
-        const Value constTileSize = builder.create<arith::ConstantOp>(
-            loc, builder.getIndexType(),
-            builder.getIndexAttr(reduceClusterSize));
         const RankedTensorType sliceTy = RankedTensorType::get(
             {reduceClusterSize}, tensorTy.getElementType());
-        const Value dynOffset =
-            builder.create<arith::MulIOp>(loc, indices[0], constTileSize);
 
         const Value lhsSlice = builder.create<tensor::ExtractSliceOp>(
-            loc, sliceTy, lhs, ValueRange{dynOffset}, ValueRange{},
+            loc, sliceTy, lhs, indices, ValueRange{},
             ValueRange{}, offsets, sizes, strides);
         const Value rhsSlice = builder.create<tensor::ExtractSliceOp>(
-            loc, sliceTy, rhs, ValueRange{dynOffset}, ValueRange{},
+            loc, sliceTy, rhs, indices, ValueRange{},
             ValueRange{}, offsets, sizes, strides);
 
         // here we recreate the same op with smaller dimensions
         const Value resultSlice = builder.create<OP>(loc, lhsSlice, rhsSlice);
 
         const Value result = builder.create<tensor::InsertSliceOp>(
-            loc, resultSlice, iterArgs[0], ValueRange{dynOffset}, ValueRange{},
+            loc, resultSlice, iterArgs[0], indices, ValueRange{},
             ValueRange{}, offsets, sizes, strides);
 
         return {result};
