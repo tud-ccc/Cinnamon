@@ -102,7 +102,8 @@ def Cinm_DivOp : Cinm_TTT_Op<"div", []> {
   }];
 }
 
-def Cinm_GemmOp : Cinm_Op<"op.gemm", [Pure, InferShapedTypeOpAdaptor, DeclareOpInterfaceMethods<CinmTilingInterface>]> {
+def Cinm_GemmOp : Cinm_Op<"op.gemm", 
+    [Pure, InferTensorTypeAdaptor, DeclareOpInterfaceMethods<CinmTilingInterface>]> {
   let summary = "Generalized Matrix Matrix Multiplication operation";
   let description = [{
     TODO

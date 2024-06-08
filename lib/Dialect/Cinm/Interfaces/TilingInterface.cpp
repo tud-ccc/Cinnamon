@@ -5,6 +5,7 @@
 
 #include <llvm/ADT/STLExtras.h>
 
+#include <llvm/Support/raw_ostream.h>
 #include <mlir/Dialect/Affine/IR/AffineOps.h>
 #include <mlir/Dialect/Arith/IR/Arith.h>
 #include <mlir/Dialect/Linalg/IR/Linalg.h>

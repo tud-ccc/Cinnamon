@@ -42,7 +42,7 @@ alias b := build
 test: (doNinja "check-cinm-mlir")
 
 [no-cd]
-cinm-opt *ARGS: (build)
+cinm-opt *ARGS: (doNinja "cinm-opt")
     {{source_directory()}}/{{build_dir}}/bin/cinm-opt {{ARGS}}
 
 cinm-opt-help: (cinm-opt "--help")

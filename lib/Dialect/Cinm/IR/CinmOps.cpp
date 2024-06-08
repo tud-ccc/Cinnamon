@@ -23,6 +23,7 @@
 #include <mlir/IR/Attributes.h>
 #include <mlir/IR/Builders.h>
 #include <mlir/IR/BuiltinAttributeInterfaces.h>
+#include <mlir/IR/BuiltinOps.h>
 #include <mlir/IR/BuiltinTypeInterfaces.h>
 #include <mlir/IR/BuiltinTypes.h>
 #include <mlir/IR/ImplicitLocOpBuilder.h>
@@ -33,6 +34,7 @@
 #include <mlir/IR/PatternMatch.h>
 #include <mlir/IR/TypeUtilities.h>
 #include <mlir/IR/ValueRange.h>
+#include <mlir/Interfaces/InferTypeOpInterface.h>
 #include <mlir/Support/LogicalResult.h>
 
 #define DEBUG_TYPE "cinm-ops"
@@ -131,7 +133,7 @@ SmallVector<Value> GemmOp::convertToTiledOps(OpBuilder builder,
         const SmallVector<Value> lhsDynamicOffsets{indices[0]};
         const RankedTensorType lhsSliceType =
             tensor::ExtractSliceOp::inferCanonicalRankReducedResultType(
-                1, lhsType, lhsOffsets, lhsSizes, lhsStrides);
+                2, lhsType, lhsOffsets, lhsSizes, lhsStrides);
         const Value lhsSlice = builder.create<tensor::ExtractSliceOp>(
             loc, lhsSliceType, lhs, lhsDynamicOffsets, ValueRange{},
             ValueRange{}, lhsOffsets, lhsSizes, lhsStrides);
@@ -139,36 +141,45 @@ SmallVector<Value> GemmOp::convertToTiledOps(OpBuilder builder,
         const SmallVector<Value> rhsDynamicOffsets{indices[1]};
         const Type rhsSliceType =
             tensor::ExtractSliceOp::inferCanonicalRankReducedResultType(
-                1, rhsType, rhsOffsets, rhsSizes, rhsStrides);
+                2, rhsType, rhsOffsets, rhsSizes, rhsStrides);
         const Value rhsSlice = builder.create<tensor::ExtractSliceOp>(
             loc, rhsSliceType, rhs, rhsDynamicOffsets, ValueRange{},
             ValueRange{}, rhsOffsets, rhsSizes, rhsStrides);
 
-        const Value resultSlice =
-            createMatmul(builder, loc, lhsSlice, rhsSlice, reduceClusterSize);
+        GemmOp smallerGemm =
+            builder.create<cinm::GemmOp>(loc, lhsSlice, rhsSlice);
+        // may be tiled further
+        // cinm::markOpAsNoTile(smallerGemm);
 
         const Value result = builder.create<tensor::InsertSliceOp>(
-            loc, resultSlice, iterArgs[0], indices, ValueRange{}, ValueRange{},
-            resultOffsets, resultSizes, resultStrides);
+            loc, smallerGemm.getResult(), iterArgs[0], indices, ValueRange{},
+            ValueRange{}, resultOffsets, resultSizes, resultStrides);
 
         return {result};
       });
 }
 
 ::mlir::LogicalResult GemmOp::inferReturnTypeComponents(
-    ::mlir::MLIRContext *context, std::optional<::mlir::Location> location,
-    Adaptor adaptor,
+    ::mlir::MLIRContext *context, ::std::optional<::mlir::Location> location,
+    GemmOp::Adaptor adaptor,
     ::llvm::SmallVectorImpl<::mlir::ShapedTypeComponents>
         &inferredReturnShapes) {
   ShapeAdaptor lhsShape(adaptor.getLeft().getType());
   ShapeAdaptor rhsShape(adaptor.getRight().getType());
 
-  SmallVector<int64_t, 2> outShape;
-  outShape.push_back(lhsShape.getDimSize(0));
-  outShape.push_back(rhsShape.getDimSize(1));
+  if (lhsShape.getRank() == 2 && rhsShape.getRank() == 2 &&
+      lhsShape.getDimSize(1) == rhsShape.getDimSize(0) &&
+      lhsShape.getElementType() == rhsShape.getElementType()) {
 
-  inferredReturnShapes.push_back(ShapedTypeComponents(outShape));
-  return success();
+    SmallVector<int64_t, 2> outShape;
+    outShape.push_back(lhsShape.getDimSize(0));
+    outShape.push_back(rhsShape.getDimSize(1));
+
+    inferredReturnShapes.push_back(
+        ShapedTypeComponents(outShape, lhsShape.getElementType()));
+    return success();
+  }
+  return failure();
 }
 
 SmallVector<Value> GemvOp::convertToTiledOps(OpBuilder builder,
@@ -218,8 +229,8 @@ SmallVector<Value> GemvOp::convertToTiledOps(OpBuilder builder,
         markOpAsNoTile(add);
 
         const Value result = builder.create<tensor::InsertSliceOp>(
-            loc, add.getResult(), iterArgs[0], indices, ValueRange{}, ValueRange{},
-            resultOffsets, resultSizes, resultStrides);
+            loc, add.getResult(), iterArgs[0], indices, ValueRange{},
+            ValueRange{}, resultOffsets, resultSizes, resultStrides);
 
         return {result};
       });
