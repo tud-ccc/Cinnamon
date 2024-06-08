@@ -15,6 +15,7 @@
 #include <mlir/IR/BuiltinAttributes.h>
 #include <mlir/IR/BuiltinTypes.h>
 #include <mlir/IR/OpImplementation.h>
+#include <mlir/IR/Value.h>
 #include <mlir/IR/ValueRange.h>
 #include <mlir/Support/LogicalResult.h>
 
@@ -37,6 +38,17 @@ TilingParameters TilingParameters::fromComputeBlock(cinm::ComputeOp &op) {
   return TilingParameters(op.getMaxDpuBufferSize() * 4, op.getWorkgroupShape());
 }
 
+Value reshapeStatic(OpBuilder &builder, Location loc,
+                    TypedValue<RankedTensorType> value,
+                    llvm::ArrayRef<int64_t> newShape) {
+  auto newTy =
+      RankedTensorType::get(newShape, value.getType().getElementType());
+  auto reifiedShape = builder.create<arith::ConstantOp>(
+      loc, RankedTensorType::get({newTy.getRank()}, builder.getI64Type()),
+      builder.getI64TensorAttr(newShape));
+  return builder.create<tensor::ReshapeOp>(loc, newTy, value, reifiedShape);
+}
+
 Value createVectorReduce2(OpBuilder &builder, Location loc, Value v0, Value v1,
                           Attribute init, ReduceAccumulatorCallback merge2,
                           ReduceAccumulatorCallback reduce,
@@ -51,7 +63,7 @@ Value createVectorReduce2(OpBuilder &builder, Location loc, Value v0, Value v1,
   const Value initTensor = builder.create<arith::ConstantOp>(
       loc,
       DenseElementsAttr::get(RankedTensorType::get({}, elementType), init));
-  Value stage1Output;
+  ValueRange reduceArgs{v0, v1};
   if (clusterSize > 1) {
     const int64_t clusterCount = vectorSize / clusterSize;
     RankedTensorType intermediateResultType =
@@ -81,18 +93,19 @@ Value createVectorReduce2(OpBuilder &builder, Location loc, Value v0, Value v1,
           const Value result = reduce(builder, loc, tmp, args[2]);
           builder.create<linalg::YieldOp>(loc, result);
         });
-    stage1Output = reduceOp.getResults()[0];
+    reduceArgs = reduceOp.getResults();
   }
 
   linalg::ReduceOp sum = builder.create<linalg::ReduceOp>(
-      loc, ValueRange{stage1Output}, ValueRange{initTensor},
-      SmallVector<int64_t>{0},
+      loc, reduceArgs, ValueRange{initTensor}, SmallVector<int64_t>{0},
       [&](OpBuilder &builder, Location loc, ValueRange args) {
         const Value result = reduce(builder, loc, args[0], args[1]);
         builder.create<linalg::YieldOp>(loc, result);
       });
 
-  return builder.create<tensor::ExtractOp>(loc, sum.getResult(0), ValueRange{});
+  // return builder.create<tensor::ExtractOp>(loc, sum.getResult(0),
+  // ValueRange{});
+  return sum->getResult(0);
 }
 
 Value createVectorReduce(OpBuilder &builder, Location loc, Value vector,

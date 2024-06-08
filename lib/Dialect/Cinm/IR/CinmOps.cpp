@@ -89,13 +89,32 @@ SmallVector<Value> MaxOp::convertToTiledOps(OpBuilder builder,
       params.reduceClusterSize(1, ty.getNumElements(), ty.getElementType()))};
 }
 
+/** This tiling works this way: 
+    - Given a Gemm of dimensions (%A: <MxR>), (%B: <RxN>) -> <MxN>
+    - If M == 1 then
+      - determine optimal tile sizes RT and NT for the R and N dimensions
+      - then emit the following program:
+        affine.loop %j = 0 to N step NT iter_args(%acc0 = empty: <1xN>){
+          %tile: <1xNT> = affine.loop %k = 0 to R step RT iter_args(%acc = zeros: <1xNT>) {
+            %rowTile = slice %A[0, %k] [1, RT] [1, 1] : <1xRT>
+            %colTile = slice %B[%k, %j] [RT, NT] [1, 1] : <RTxNT>
+            %tmp = cinm.gemm %rowTile, %colTile : -> <1xNT>
+            %add = cinm.add %acc, tmp
+            affine.yield %add : <1xNT>
+          }
+          %tmp = insert_slice %tile, %acc0[0, %j] [1, NT] [1, 1]
+          affine.yield %tmp
+        }
+    - if M > 1 then the gemm is first reduced into a loop over M, and gemms of size <1xR> <RxN>
+ 
+ */
 SmallVector<Value> GemmOp::convertToTiledOps(OpBuilder builder,
                                              TilingParameters params) {
-  const Value lhs = getOperand(0);
-  const Value rhs = getOperand(1);
+  Value lhs = getLeft();
+  Value rhs = getRight();
 
-  const RankedTensorType lhsType = lhs.getType().cast<RankedTensorType>();
-  const RankedTensorType rhsType = rhs.getType().cast<RankedTensorType>();
+  const RankedTensorType lhsType = getLeft().getType();
+  const RankedTensorType rhsType = getRight().getType();
 
   const RankedTensorType resultType =
       getResult().getType().cast<RankedTensorType>();
@@ -110,25 +129,112 @@ SmallVector<Value> GemmOp::convertToTiledOps(OpBuilder builder,
   auto parallelTileSize =
       params.parallelClusterSize(rhsType.getDimSize(1), reduceClusterSize);
 
-  const SmallVector<int64_t, 2> tileSizes = {1, parallelTileSize};
+  if (lhsType.getDimSize(0) == 1) {
+    // then it's basically vector-mat multiplication
+    // arguments have shape <1xR>, <RxB>
+    auto r = lhsType.getDimSize(1);
+    auto b = rhsType.getDimSize(1);
+    auto eltTy = rhsType.getElementType();
+
+    // iterate over b (parallel loop)
+    return createNestedAffineForLoops(
+        builder, getLoc(), {b}, {parallelTileSize}, {resultInit},
+        [&](OpBuilder &builder, Location loc, ValueRange indices,
+            ValueRange iterArgs) -> SmallVector<Value> {
+          auto reductionAccTy =
+              RankedTensorType::get({1, parallelTileSize}, eltTy);
+          auto cst0 = builder.create<arith::ConstantOp>(
+              loc, builder.getZeroAttr(eltTy));
+          auto reductionAccInit =
+              builder.create<tensor::SplatOp>(loc, cst0, reductionAccTy);
+
+          const auto indexInParDim = indices[0];
+
+          // this is the reduction loop
+          SmallVector<Value, 1> reductionResult = createNestedAffineForLoops(
+              builder, loc, {r}, {reduceClusterSize},
+              reductionAccInit->getResults(),
+              [&](OpBuilder &builder, Location loc, ValueRange indices,
+                  ValueRange iterArgs) -> SmallVector<Value> {
+                const auto indexInRedDim = indices[0];
+
+                const ArrayRef<int64_t> lhsOffsets{0, ShapedType::kDynamic};
+                const ArrayRef<int64_t> lhsSizes{1, reduceClusterSize};
+                const ArrayRef<int64_t> lhsStrides{1, 1};
+
+                const Type lhsSliceType =
+                    RankedTensorType::get({1, reduceClusterSize}, eltTy);
+
+                const ArrayRef<Value> lhsDynamicOffsets{indexInRedDim};
+                const Value lhsSlice = builder.create<tensor::ExtractSliceOp>(
+                    loc, lhsSliceType, lhs, lhsDynamicOffsets, ValueRange{},
+                    ValueRange{}, lhsOffsets, lhsSizes, lhsStrides);
+
+                // todo this is still a square tile but the left tile is flat
+                const Type rhsSliceType = RankedTensorType::get(
+                    {reduceClusterSize, parallelTileSize}, eltTy);
+
+                const ArrayRef<int64_t> rhsOffsets{ShapedType::kDynamic,
+                                                   ShapedType::kDynamic};
+                const ArrayRef<int64_t> rhsSizes{reduceClusterSize,
+                                                 parallelTileSize};
+                const ArrayRef<int64_t> rhsStrides{1, 1};
+
+                const Value rhsSlice = builder.create<tensor::ExtractSliceOp>(
+                    loc, rhsSliceType, rhs,
+                    ValueRange{indexInParDim, indexInRedDim}, ValueRange{},
+                    ValueRange{}, rhsOffsets, rhsSizes, rhsStrides);
+
+                // now we have a LHS tile <reduceClusterSize>
+                // and RHS tile <reduceClusterSize x parallelTileSize>
+
+                // Conceptually:
+                //   rhsTileTranspose = transpose rhsTile: <rcs x pts> -> <pts x
+                //   rcs> broadcast = splat lhsTile: <rcs> -> <pts x rcs>
+                //   reduced = reduce ins(rhsTileTranspose, broadcast) outs(buf:
+                //   <pts>) : <pts>
+                //
+                // Here we're back to doing GEMM(ltile: <1xreduceClusterSize>,
+                // rtile: <reduceClustersize x parallelTileSize>)
+                auto tmpReduce = builder.create<cinm::GemmOp>(
+                    loc, iterArgs[0].getType(), lhsSlice, rhsSlice);
+                auto add = builder.create<cinm::AddOp>(loc, iterArgs[0], tmpReduce);
+                cinm::markOpAsNoTile(tmpReduce);
+                cinm::markOpAsNoTile(add);
+                return {add};
+              });
+
+          const ArrayRef<int64_t> resultOffsets{0, ShapedType::kDynamic};
+          const ArrayRef<int64_t> &resultSizes{1, parallelTileSize};
+          const ArrayRef<int64_t> resultStrides{1, 1};
+          const ValueRange resultDynamicOffsets{indexInParDim};
+
+          const Value result = builder.create<tensor::InsertSliceOp>(
+              loc, reductionResult[0], iterArgs[0], resultDynamicOffsets,
+              ValueRange{}, ValueRange{}, resultOffsets, resultSizes,
+              resultStrides);
+
+          return {result};
+        });
+  }
+
+  const ArrayRef<int64_t> tileSizes = {1, parallelTileSize};
 
   return createNestedAffineForLoops(
       builder, getLoc(), resultShape, tileSizes, ValueRange{resultInit},
       [&](OpBuilder &builder, Location loc, ValueRange indices,
           ValueRange iterArgs) -> SmallVector<Value> {
-        const SmallVector<int64_t, 2> lhsOffsets{ShapedType::kDynamic, 0};
-        const SmallVector<int64_t, 2> lhsSizes{tileSizes[0],
-                                               lhsType.getDimSize(1)};
-        const SmallVector<int64_t, 2> unitStrides{1, 1};
-        const SmallVector<int64_t, 2> &lhsStrides = unitStrides;
-        const SmallVector<int64_t, 2> rhsOffsets{0, ShapedType::kDynamic};
-        const SmallVector<int64_t, 2> rhsSizes{rhsType.getDimSize(0),
-                                               tileSizes[1]};
-        const SmallVector<int64_t, 2> &rhsStrides = unitStrides;
-        const SmallVector<int64_t, 2> resultOffsets{ShapedType::kDynamic,
-                                                    ShapedType::kDynamic};
-        const SmallVector<int64_t, 2> &resultSizes = tileSizes;
-        const SmallVector<int64_t, 2> resultStrides = unitStrides;
+        const ArrayRef<int64_t> lhsOffsets{ShapedType::kDynamic, 0};
+        const ArrayRef<int64_t> lhsSizes{tileSizes[0], lhsType.getDimSize(1)};
+        const ArrayRef<int64_t> unitStrides{1, 1};
+        const ArrayRef<int64_t> &lhsStrides = unitStrides;
+        const ArrayRef<int64_t> rhsOffsets{0, ShapedType::kDynamic};
+        const ArrayRef<int64_t> rhsSizes{rhsType.getDimSize(0), tileSizes[1]};
+        const ArrayRef<int64_t> &rhsStrides = unitStrides;
+        const ArrayRef<int64_t> resultOffsets{ShapedType::kDynamic,
+                                              ShapedType::kDynamic};
+        const ArrayRef<int64_t> &resultSizes = tileSizes;
+        const ArrayRef<int64_t> resultStrides = unitStrides;
 
         const SmallVector<Value> lhsDynamicOffsets{indices[0]};
         const RankedTensorType lhsSliceType =
@@ -258,18 +364,15 @@ SmallVector<Value> tileElementWiseBinaryOp(ImplicitLocOpBuilder builder, OP op,
   Value originalShapeValue;
   if (shape.size() > 1) {
     // then flatten the tensors first
-    Value flatShapeValue = builder.create<arith::ConstantOp>(
-        RankedTensorType::get({1}, builder.getI64Type()),
-        builder.getI64TensorAttr({tensorTy.getNumElements()}));
     originalShapeValue = builder.create<arith::ConstantOp>(
         RankedTensorType::get({static_cast<int64_t>(shape.size())},
                               builder.getI64Type()),
         builder.getI64TensorAttr(shape));
-    RankedTensorType flatTy = RankedTensorType::get({tensorTy.getNumElements()},
-                                                    tensorTy.getElementType());
-    lhs = builder.create<tensor::ReshapeOp>(flatTy, lhs, flatShapeValue);
-    rhs = builder.create<tensor::ReshapeOp>(flatTy, rhs, flatShapeValue);
-    tensorTy = flatTy;
+    lhs = cinm::reshapeStatic(builder, builder.getLoc(), op.getLhs(),
+                              {tensorTy.getNumElements()});
+    rhs = cinm::reshapeStatic(builder, builder.getLoc(), op.getRhs(),
+                              {tensorTy.getNumElements()});
+    tensorTy = lhs.getType().cast<RankedTensorType>();
     shape = tensorTy.getShape();
   }
 

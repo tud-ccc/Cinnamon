@@ -11,6 +11,7 @@
 #include <llvm/ADT/ArrayRef.h>
 #include <mlir/IR/BuiltinTypes.h>
 #include <mlir/IR/Location.h>
+#include <mlir/IR/Value.h>
 #include <mlir/IR/ValueRange.h>
 #include <mlir/Support/LLVM.h>
 #include <numeric>
@@ -67,6 +68,8 @@ struct TilingParameters {
 };
 
 void markOpAsNoTile(Operation*);
+
+Value reshapeStatic(OpBuilder&, Location loc, TypedValue<RankedTensorType> value, llvm::ArrayRef<int64_t> newShape);
 
 using ReduceAccumulatorCallback =
     function_ref<Value(OpBuilder &, Location, Value, Value)>;
