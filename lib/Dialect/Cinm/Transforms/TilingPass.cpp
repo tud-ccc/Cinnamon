@@ -35,11 +35,11 @@ namespace mlir {
 
 struct CinmApplyTilingInterfacePattern
     : public OpInterfaceConversionPattern<cinm::CinmTilingInterface> {
-  using OpInterfaceConversionPattern<
-      cinm::CinmTilingInterface>::OpInterfaceConversionPattern;
 
   CinmApplyTilingInterfacePattern(MLIRContext *context)
-      : OpInterfaceConversionPattern<cinm::CinmTilingInterface>(context, 1) {}
+      : OpInterfaceConversionPattern<cinm::CinmTilingInterface>(context, 1) {
+    setHasBoundedRewriteRecursion();
+  }
 
   LogicalResult
   matchAndRewrite(cinm::CinmTilingInterface op, ArrayRef<Value>,

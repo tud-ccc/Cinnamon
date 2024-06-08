@@ -186,16 +186,10 @@ SmallVector<Value> GemmOp::convertToTiledOps(OpBuilder builder,
                     ValueRange{}, rhsOffsets, rhsSizes, rhsStrides);
 
                 // now we have a LHS tile <reduceClusterSize>
-                // and RHS tile <reduceClusterSize x parallelTileSize>
+                // and RHS tile <reduceClusterSize x parallelTileSize
 
-                // Conceptually:
-                //   rhsTileTranspose = transpose rhsTile: <rcs x pts> -> <pts x
-                //   rcs> broadcast = splat lhsTile: <rcs> -> <pts x rcs>
-                //   reduced = reduce ins(rhsTileTranspose, broadcast) outs(buf:
-                //   <pts>) : <pts>
-                //
-                // Here we're back to doing GEMM(ltile: <1xreduceClusterSize>,
-                // rtile: <reduceClustersize x parallelTileSize>)
+                // Here we're back to doing 
+                // GEMM(ltile: <1 x rcs>, rtile: <rcs x pts>)
                 auto tmpReduce = builder.create<cinm::GemmOp>(
                     loc, iterArgs[0].getType(), lhsSlice, rhsSlice);
                 auto add = builder.create<cinm::AddOp>(loc, iterArgs[0], tmpReduce);
