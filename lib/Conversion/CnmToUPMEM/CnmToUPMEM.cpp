@@ -13,6 +13,7 @@
 #include <mlir/IR/AffineExpr.h>
 #include <mlir/IR/AffineMap.h>
 #include <mlir/IR/BuiltinTypes.h>
+#include <mlir/IR/Diagnostics.h>
 #include <mlir/IR/ValueRange.h>
 
 #define GEN_PASS_DEF_CONVERTCNMTOUPMEMPASS
@@ -231,6 +232,22 @@ struct ConvertCnmLaunchToUPMEM : public OpConversionPattern<cnm::LaunchOp> {
                   ConversionPatternRewriter &rewriter) const override {
     const Value wg = rewriter.getRemappedValue(op.getWg());
     const ArrayRef<int64_t> wgShape = op.getWg().getType().getShape();
+
+    const size_t availableWRAM = 32 * 1024;
+    size_t requiredWRAM = 0;
+    for (Value buffer : op.getParams()) {
+      const BufferType bufferType = buffer.getType().cast<BufferType>();
+      const size_t elementSize =
+          bufferType.getElementType().getIntOrFloatBitWidth() / 8;
+      requiredWRAM += reduceMul(bufferType.getShape()) * elementSize;
+    }
+
+    if (requiredWRAM > availableWRAM) {
+      emitError(op.getLoc(), "required wram (" + std::to_string(requiredWRAM) +
+                                 " bytes) exceeds available wram (" +
+                                 std::to_string(availableWRAM) + " bytes)");
+      return failure();
+    }
 
     const Value rankCount =
         rewriter.create<arith::ConstantIndexOp>(op.getLoc(), wgShape[0]);
