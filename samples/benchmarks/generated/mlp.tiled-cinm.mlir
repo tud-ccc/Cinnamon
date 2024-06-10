@@ -1,8 +1,7 @@
-ninja: Entering directory `build'
-ninja: no work to do.
 module {
   func.func @mm_dimm1_nopt(%arg0: tensor<1x1024xi32>, %arg1: tensor<1024x512xi32>) {
-    cinm.compute attributes {workgroupShape = array<i64: 1, 128>} {
+    cinm.compute attributes {workgroupShape = array<i64: 1, 128>, maxDpuBufferSize=128} {
+
       %0 = tensor.empty() : tensor<1x512xi32>
       %1 = affine.for %arg2 = 0 to 512 step 128 iter_args(%arg3 = %0) -> (tensor<1x512xi32>) {
         %c0_i32 = arith.constant 0 : i32
@@ -10,7 +9,7 @@ module {
         %2 = affine.for %arg4 = 0 to 1024 step 32 iter_args(%arg5 = %splat) -> (tensor<1x128xi32>) {
           %extracted_slice = tensor.extract_slice %arg0[0, %arg4] [1, 32] [1, 1] : tensor<1x1024xi32> to tensor<1x32xi32>
           %extracted_slice_0 = tensor.extract_slice %arg1[%arg2, %arg4] [32, 128] [1, 1] : tensor<1024x512xi32> to tensor<32x128xi32>
-          %3 = cinm.op.gemm %extracted_slice, %extracted_slice_0 plus %arg5 {notile = #cinm.notile} : (tensor<1x32xi32>, tensor<32x128xi32>) -> tensor<1x128xi32>
+          %3 = cinm.op.gemm %extracted_slice, %extracted_slice_0 plus %arg5 {cinm.notile} : (tensor<1x32xi32>, tensor<32x128xi32>) -> tensor<1x128xi32>
           affine.yield %3 : tensor<1x128xi32>
         }
         %inserted_slice = tensor.insert_slice %2 into %arg3[0, %arg2] [1, 128] [1, 1] : tensor<1x128xi32> into tensor<1x512xi32>

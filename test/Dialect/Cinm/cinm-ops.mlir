@@ -28,7 +28,7 @@ func.func @simple(%t0: tensor<6x6xi32>, %t1 : tensor<6xf32> ) {
         %a01 = tensor.empty (): tensor<4x22xi32>
         %a02 = tensor.empty (): tensor<6x22xi32>
         %d4 = cinm.op.gemm %a00, %a01 : (tensor<6x4xi32>, tensor<4x22xi32>) -> tensor<6x22xi32>
-        %d3 = cinm.op.gemm %a00, %a01 plus %a02: (tensor<6x4xi32>, tensor<4x22xi32>) -> tensor<6x22xi32>
+        %d3 = cinm.op.gemm %a00, %a01 plus %a02 {cinm.notile}: (tensor<6x4xi32>, tensor<4x22xi32>) -> tensor<6x22xi32>
         cinm.yield %d2: tensor<6x6xi32>
     }
 

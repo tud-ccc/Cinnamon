@@ -63,7 +63,7 @@ struct CinmTilingPass : public impl::CinmTilingPassBase<CinmTilingPass> {
 
     target.markUnknownOpDynamicallyLegal([](Operation *op) {
       if (auto tileable = llvm::dyn_cast_or_null<cinm::CinmTilingInterface>(op))
-        return tileable->hasAttr("notile");
+        return tileable->hasAttr("cinm.notile");
       return true;
     });
 

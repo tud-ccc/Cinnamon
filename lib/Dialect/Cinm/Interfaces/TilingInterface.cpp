@@ -31,7 +31,7 @@ using namespace mlir::cinm;
 namespace mlir::cinm {
 
 void markOpAsNoTile(Operation *op) {
-  op->setAttr("notile", cinm::NoTileAttr::get(op->getContext()));
+  op->setAttr("cinm.notile", UnitAttr::get(op->getContext()));
 }
 
 TilingParameters TilingParameters::fromComputeBlock(cinm::ComputeOp &op) {

@@ -89,24 +89,23 @@ SmallVector<Value> MaxOp::convertToTiledOps(OpBuilder builder,
       params.reduceClusterSize(1, ty.getNumElements(), ty.getElementType()))};
 }
 
-/** This tiling works this way: 
+/** This tiling works this way:
     - Given a Gemm of dimensions (%A: <MxR>), (%B: <RxN>) -> <MxN>
     - If M == 1 then
       - determine optimal tile sizes RT and NT for the R and N dimensions
       - then emit the following program:
         affine.loop %j = 0 to N step NT iter_args(%acc0 = empty: <1xN>){
-          %tile: <1xNT> = affine.loop %k = 0 to R step RT iter_args(%acc = zeros: <1xNT>) {
-            %rowTile = slice %A[0, %k] [1, RT] [1, 1] : <1xRT>
-            %colTile = slice %B[%k, %j] [RT, NT] [1, 1] : <RTxNT>
-            %tmp = cinm.gemm %rowTile, %colTile : -> <1xNT>
-            %add = cinm.add %acc, tmp
-            affine.yield %add : <1xNT>
+          %tile: <1xNT> = affine.loop %k = 0 to R step RT iter_args(%acc =
+   zeros: <1xNT>) { %rowTile = slice %A[0, %k] [1, RT] [1, 1] : <1xRT> %colTile
+   = slice %B[%k, %j] [RT, NT] [1, 1] : <RTxNT> %tmp = cinm.gemm %rowTile,
+   %colTile : -> <1xNT> %add = cinm.add %acc, tmp affine.yield %add : <1xNT>
           }
           %tmp = insert_slice %tile, %acc0[0, %j] [1, NT] [1, 1]
           affine.yield %tmp
         }
-    - if M > 1 then the gemm is first reduced into a loop over M, and gemms of size <1xR> <RxN>
- 
+    - if M > 1 then the gemm is first reduced into a loop over M, and gemms of
+   size <1xR> <RxN>
+
  */
 SmallVector<Value> GemmOp::convertToTiledOps(OpBuilder builder,
                                              TilingParameters params) {
@@ -188,7 +187,7 @@ SmallVector<Value> GemmOp::convertToTiledOps(OpBuilder builder,
                 // now we have a LHS tile <reduceClusterSize>
                 // and RHS tile <reduceClusterSize x parallelTileSize
 
-                // Here we're back to doing 
+                // Here we're back to doing
                 // GEMM(ltile: <1 x rcs>, rtile: <rcs x pts>) + iterArgs[0]
                 auto tmpReduce = builder.create<cinm::GemmOp>(
                     loc, lhsSlice, rhsSlice, iterArgs[0]);
@@ -258,7 +257,7 @@ SmallVector<Value> GemmOp::convertToTiledOps(OpBuilder builder,
 }
 
 ::mlir::LogicalResult GemmOp::inferReturnTypeComponents(
-    ::mlir::MLIRContext *context, ::std::optional<::mlir::Location> location,
+    ::mlir::MLIRContext *, ::std::optional<::mlir::Location>,
     GemmOp::Adaptor adaptor,
     ::llvm::SmallVectorImpl<::mlir::ShapedTypeComponents>
         &inferredReturnShapes) {
@@ -278,6 +277,7 @@ SmallVector<Value> GemmOp::convertToTiledOps(OpBuilder builder,
     return success();
   }
   return failure();
+  //  return context->emitError("operand types are not compatible");
 }
 
 SmallVector<Value> GemvOp::convertToTiledOps(OpBuilder builder,
@@ -417,10 +417,10 @@ SmallVector<Value> AddOp::convertToTiledOps(OpBuilder builder,
 }
 
 ::mlir::LogicalResult GemvOp::inferReturnTypeComponents(
-    ::mlir::MLIRContext *context, std::optional<::mlir::Location> location,
-    Adaptor adaptor,
+    ::mlir::MLIRContext *, std::optional<::mlir::Location>, Adaptor adaptor,
     ::llvm::SmallVectorImpl<::mlir::ShapedTypeComponents>
         &inferredReturnShapes) {
+  // todo verify sizes
 
   auto result = ShapedTypeComponents(adaptor.getRight().getType());
   inferredReturnShapes.emplace_back(std::move(result));
@@ -428,8 +428,7 @@ SmallVector<Value> AddOp::convertToTiledOps(OpBuilder builder,
 }
 
 ::mlir::LogicalResult SimSearchOp::inferReturnTypeComponents(
-    ::mlir::MLIRContext *context, std::optional<::mlir::Location> location,
-    Adaptor adaptor,
+    ::mlir::MLIRContext *, std::optional<::mlir::Location>, Adaptor adaptor,
     ::llvm::SmallVectorImpl<::mlir::ShapedTypeComponents>
         &inferredReturnShapes) {
 
@@ -444,8 +443,7 @@ SmallVector<Value> AddOp::convertToTiledOps(OpBuilder builder,
 }
 
 ::mlir::LogicalResult TopKOp::inferReturnTypeComponents(
-    ::mlir::MLIRContext *context, std::optional<::mlir::Location> location,
-    Adaptor adaptor,
+    ::mlir::MLIRContext *, std::optional<::mlir::Location>, Adaptor adaptor,
     ::llvm::SmallVectorImpl<::mlir::ShapedTypeComponents>
         &inferredReturnShapes) {
 
@@ -461,8 +459,7 @@ SmallVector<Value> AddOp::convertToTiledOps(OpBuilder builder,
 
 // Copied from the TOSA codebase.
 ::mlir::LogicalResult TransposeOp::inferReturnTypeComponents(
-    ::mlir::MLIRContext *context, std::optional<::mlir::Location> location,
-    Adaptor adaptor,
+    ::mlir::MLIRContext *, std::optional<::mlir::Location>, Adaptor adaptor,
     ::llvm::SmallVectorImpl<::mlir::ShapedTypeComponents>
         &inferredReturnShapes) {
   ShapeAdaptor inputShape(adaptor.getInput1().getType());

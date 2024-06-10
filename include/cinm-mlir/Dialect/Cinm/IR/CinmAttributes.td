@@ -45,21 +45,6 @@ def Cinm_SimilarityMetricAttr : I64EnumAttr<
   let cppNamespace = "::mlir::cinm";
 }
   
-class Cinm_UnitAttr<string mnemonic0, string name> : Cinm_Attr<name> {  
-  let storageType = "::mlir::UnitAttr";
-  let constBuilderCall = "(($0) ? $_builder.getUnitAttr() : nullptr)";  
-  let returnType = "bool";  
-  let convertFromStorage = "$_self != nullptr";  
-  //let defaultValue = false;  
-  let valueType = NoneType;  
-  let isOptional = 1;  
-  let mnemonic = mnemonic0;  
-}  
-  
-// Mark a cinm op as legal in the tiling pass  
-def Cinm_NoTiledAttribute : Cinm_UnitAttr<"notile", "NoTile">;
-
-
 //def Cinm_SimilarityMetricAttr : EnumAttr<Cinm_Dialect, Cinm_SimilarityMetric, "metric">;
 //def Cinm_ReduceMethodAttr : EnumAttr<Cinm_Dialect, Cinm_ReduceMethod, "method">;
 //def Cinm_ScanMethodAttr : EnumAttr<Cinm_Dialect, Cinm_ScanMethod, "method">;

@@ -7,6 +7,7 @@
 #include "cinm-mlir/Dialect/Cinm/IR/CinmDialect.h"
 #include <llvm/ADT/TypeSwitch.h>
 #include <mlir/IR/DialectImplementation.h>
+#include <mlir/Support/LogicalResult.h>
 
 #define DEBUG_TYPE "cinm-base"
 
@@ -32,4 +33,18 @@ void CinmDialect::initialize() {
 #define GET_ATTRDEF_LIST
 #include "cinm-mlir/Dialect/Cinm/IR/CinmAttributes.cpp.inc"
       >();
+}
+
+::mlir::LogicalResult
+CinmDialect::verifyOperationAttribute(::mlir::Operation *op,
+                                      ::mlir::NamedAttribute attribute) {
+
+  if (attribute.getName() == "cinm.notile") {
+    if (op->getDialect() == this) {
+      return success();
+    }
+    return op->emitOpError(
+        "notile attribute can only be used on cinm dialect operations");
+  }
+  return op->emitOpError("unknown attribute ") << attribute.getName();
 }

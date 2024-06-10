@@ -47,7 +47,7 @@ struct TilingParameters {
     return 1;
   }
 
-  int64_t parallelClusterSize(int64_t parallelElements, int64_t reduceClusterSize) {
+  int64_t parallelClusterSize(int64_t parallelElements, int64_t /*reduceClusterSize*/) {
     /// need to find a number that divides parallelElements and the working group size
     return std::gcd(parallelElements, workingGroupSize());
   }
