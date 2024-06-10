@@ -52,31 +52,6 @@ SmallVector<Value> ReduceOp::convertToTiledOps(OpBuilder &builder,
   }
 }
 
-Value scatterTensorIntoMemref(OpBuilder &builder, Value value,
-                              int64_t numCopies) {
-  auto inputTy = value.getType().cast<RankedTensorType>();
-  assert(inputTy.getRank() == 2 && inputTy.getDimSize(0) == 1);
-  // layout map
-  // (d0, d1) -> (d1)
-  auto layoutMap =
-      AffineMap::get(2, 0, getAffineDimExpr(1, value.getContext()));
-
-  auto baseMemrefTy =
-      MemRefType::get(inputTy.getShape(), inputTy.getElementType());
-  auto viewTy = MemRefType::get({numCopies, inputTy.getDimSize(1)},
-                                inputTy.getElementType(), layoutMap);
-
-  auto baseMemref =
-      builder.create<memref::AllocOp>(value.getLoc(), baseMemrefTy);
-
-  auto scatteredMemref = builder.create<memref::SubViewOp>(
-      value.getLoc(), viewTy, baseMemref, ArrayRef<int64_t>{0, 0},
-      ArrayRef<int64_t>{numCopies, inputTy.getDimSize(1)},
-      ArrayRef<int64_t>{1, 1});
-
-  return scatteredMemref;
-}
-
 /** This tiling works this way:
     - Given a Gemm of dimensions (%A: <MxR>), (%B: <RxN>) -> <MxN>
     - If M == 1 then
@@ -177,28 +152,9 @@ SmallVector<Value> GemmOp::convertToTiledOps(OpBuilder &builder,
 
                 // Here we're back to doing
                 // GEMM(ltile: <1 x rcs>, rtile: <rcs x pts>) + iterArgs[0]
-                //                auto tmpReduce = builder.create<cinm::GemmOp>(
-                // loc, lhsSlice, rhsSlice, iterArgs[0]);
-                //              cinm::markOpAsNoTile(tmpReduce);
-
-                const auto rowsEmpty = builder.create<memref::AllocOp>(
-                    loc, MemRefType::get(rhsSlice.getType()));
-                const auto rowsFull = builder.create<tensor::ScatterOp>(loc);
-                const
-
-                    linalg::ReduceOp reduceOp =
-                        builder.create<linalg::ReduceOp>(
-                            loc, ValueRange{reshape0, reshape1},
-                            ValueRange{outTensor}, ArrayRef<int64_t>{1},
-                            [&](OpBuilder &builder, Location loc,
-                                ValueRange args) {
-                              const Value tmp =
-                                  merge2(builder, loc, args[0], args[1]);
-                              const Value result =
-                                  reduce(builder, loc, tmp, args[2]);
-                              builder.create<linalg::YieldOp>(loc, result);
-                            });
-
+                auto tmpReduce = builder.create<cinm::GemmOp>(
+                    loc, lhsSlice, rhsSlice, iterArgs[0]);
+                cinm::markOpAsNoTile(tmpReduce);
                 return {tmpReduce};
               });
 
