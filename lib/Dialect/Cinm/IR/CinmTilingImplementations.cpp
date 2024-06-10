@@ -1,21 +1,19 @@
 
 
-
-#include "cinm-mlir/Dialect/Cinm/IR/CinmOps.h"
-#include "cinm-mlir/Dialect/Cinm/Interfaces/TilingInterface.h"
 #include "cinm-mlir/Conversion/CommonPatterns.h"
 #include "cinm-mlir/Dialect/Cinm/IR/CinmAttributes.h"
+#include "cinm-mlir/Dialect/Cinm/IR/CinmOps.h"
+#include "cinm-mlir/Dialect/Cinm/Interfaces/TilingInterface.h"
 
 #include <mlir/Dialect/Arith/IR/Arith.h>
-#include <mlir/Dialect/Tensor/IR/Tensor.h>
 #include <mlir/Dialect/Linalg/IR/Linalg.h>
+#include <mlir/Dialect/Tensor/IR/Tensor.h>
+#include <mlir/IR/ImplicitLocOpBuilder.h>
 
 using namespace mlir;
 using namespace mlir::cinm;
 
-
-
-SmallVector<Value> MinOp::convertToTiledOps(OpBuilder builder,
+SmallVector<Value> MinOp::convertToTiledOps(OpBuilder &builder,
                                             TilingParameters params) {
   auto ty = getInput().getType();
   return {createVectorReduceMin(
@@ -23,7 +21,7 @@ SmallVector<Value> MinOp::convertToTiledOps(OpBuilder builder,
       params.reduceClusterSize(1, ty.getNumElements(), ty.getElementType()))};
 }
 
-SmallVector<Value> MaxOp::convertToTiledOps(OpBuilder builder,
+SmallVector<Value> MaxOp::convertToTiledOps(OpBuilder &builder,
                                             TilingParameters params) {
   auto ty = getInput().getType();
   return {createVectorReduceMax(
@@ -49,7 +47,7 @@ SmallVector<Value> MaxOp::convertToTiledOps(OpBuilder builder,
    size <1xR> <RxN>
 
  */
-SmallVector<Value> GemmOp::convertToTiledOps(OpBuilder builder,
+SmallVector<Value> GemmOp::convertToTiledOps(OpBuilder &builder,
                                              TilingParameters params) {
   Value lhs = getLeft();
   Value rhs = getRight();
@@ -197,8 +195,7 @@ SmallVector<Value> GemmOp::convertToTiledOps(OpBuilder builder,
       });
 }
 
-
-SmallVector<Value> GemvOp::convertToTiledOps(OpBuilder builder,
+SmallVector<Value> GemvOp::convertToTiledOps(OpBuilder &builder,
                                              TilingParameters params) {
   const Value lhs = getOperand(0);
   const Value rhs = getOperand(1);
@@ -253,8 +250,9 @@ SmallVector<Value> GemvOp::convertToTiledOps(OpBuilder builder,
 }
 
 template <typename OP>
-SmallVector<Value> tileElementWiseBinaryOp(ImplicitLocOpBuilder builder, OP op,
+SmallVector<Value> tileElementWiseBinaryOp(OpBuilder &builder0, OP op,
                                            TilingParameters params) {
+  ImplicitLocOpBuilder builder(op.getLoc(), builder0);
   Value lhs = op.getOperand(0);
   Value rhs = op.getOperand(1);
 
@@ -328,14 +326,27 @@ SmallVector<Value> tileElementWiseBinaryOp(ImplicitLocOpBuilder builder, OP op,
   return result;
 }
 
-SmallVector<Value> AddOp::convertToTiledOps(OpBuilder builder,
+SmallVector<Value> AddOp::convertToTiledOps(OpBuilder &builder,
                                             TilingParameters params) {
-  ImplicitLocOpBuilder ibuilder(getLoc(), builder);
-  return tileElementWiseBinaryOp<AddOp>(ibuilder, *this, params);
+  return tileElementWiseBinaryOp<AddOp>(builder, *this, params);
 }
 
+SmallVector<Value> SubOp::convertToTiledOps(OpBuilder &builder,
+                                            TilingParameters params) {
+  return tileElementWiseBinaryOp<SubOp>(builder, *this, params);
+}
 
-SmallVector<Value> ReduceOp::convertToTiledOps(OpBuilder builder,
+SmallVector<Value> MulOp::convertToTiledOps(OpBuilder &builder,
+                                            TilingParameters params) {
+  return tileElementWiseBinaryOp<MulOp>(builder, *this, params);
+}
+
+SmallVector<Value> DivOp::convertToTiledOps(OpBuilder &builder,
+                                            TilingParameters params) {
+  return tileElementWiseBinaryOp<DivOp>(builder, *this, params);
+}
+
+SmallVector<Value> ReduceOp::convertToTiledOps(OpBuilder &builder,
                                                TilingParameters params) {
   auto ty = getInput().getType();
   auto reduceClusterSize =

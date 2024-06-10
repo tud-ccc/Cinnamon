@@ -21,7 +21,7 @@ def CinmTilingInterface : OpInterface<"CinmTilingInterface"> {
             }],
             /*retTy=*/ "SmallVector<Value>",
             /*methodName=*/ "convertToTiledOps",
-            /*args=*/ (ins "OpBuilder":$builder, "TilingParameters":$params),
+            /*args=*/ (ins "OpBuilder&":$builder, "TilingParameters":$params),
             /*methodBody=*/ "",
             /*defaultImplementation=*/ "">];
 }

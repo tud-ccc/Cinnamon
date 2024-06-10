@@ -81,21 +81,21 @@ def Cinm_AddOp : Cinm_TTT_Op<"op.add", [Commutative, Pure, DeclareOpInterfaceMet
     TODO
   }];
 }
-def Cinm_SubOp : Cinm_TTT_Op<"op.sub", [Pure]> {
+def Cinm_SubOp : Cinm_TTT_Op<"op.sub", [Pure,  DeclareOpInterfaceMethods<CinmTilingInterface>]> {
   let summary = "Tensor subtraction operation";
   let description = [{
     TODO
   }];
 }
 // these two aren't in the paper
-def Cinm_MulOp : Cinm_TTT_Op<"op.mul", [Commutative, Pure]> {
+def Cinm_MulOp : Cinm_TTT_Op<"op.mul", [Commutative, Pure, DeclareOpInterfaceMethods<CinmTilingInterface>]> {
   let summary = "Hadamard product (element-wise multiplication)";
   let description = [{
     TODO
   }];
 }
 
-def Cinm_DivOp : Cinm_TTT_Op<"div", []> {
+def Cinm_DivOp : Cinm_TTT_Op<"div", [Pure, DeclareOpInterfaceMethods<CinmTilingInterface>]> {
   let summary = "Tensor division operation";
   let description = [{
     TODO
