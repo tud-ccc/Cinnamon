@@ -15,7 +15,7 @@
 #include <mlir/IR/ValueRange.h>
 #include <mlir/Support/LLVM.h>
 #include <numeric>
-
+#include <utility>
 
 namespace mlir::cinm {
 struct ComputeOp;
@@ -47,11 +47,25 @@ struct TilingParameters {
     return 1;
   }
 
-  int64_t parallelClusterSize(int64_t parallelElements, int64_t /*reduceClusterSize*/) {
-    /// need to find a number that divides parallelElements and the working group size
-    return std::gcd(parallelElements, workingGroupSize());
-  }
+  /// Determine tiling factors for dimensions n and m.
+  std::pair<int64_t, int64_t> parallelClusterSize(int64_t n, int64_t m) {
+    /// need to find a number that divides parallelElements and the working
+    /// group size
+    auto wg = workingGroupSize();
+    auto a = std::gcd(n, wg);
+    auto b = std::gcd(m, wg);
 
+    if (b == wg)
+      return {1, b};
+    if (a == wg)
+      return {a, 1};
+    if (a * b == wg)
+      return {a, b};
+    if (a > b) {
+      return {a, 1};
+    } else
+      return {1, b};
+  }
 
   /// Number of parallel elements in the working group.
   int64_t workingGroupSize() {
@@ -64,12 +78,14 @@ struct TilingParameters {
     return maxBufferSizeInBytes / (bw / 8);
   }
 
-  static TilingParameters fromComputeBlock(cinm::ComputeOp&);
+  static TilingParameters fromComputeBlock(cinm::ComputeOp &);
 };
 
-void markOpAsNoTile(Operation*);
+void markOpAsNoTile(Operation *);
 
-Value reshapeStatic(OpBuilder&, Location loc, TypedValue<RankedTensorType> value, llvm::ArrayRef<int64_t> newShape);
+Value reshapeStatic(OpBuilder &, Location loc,
+                    TypedValue<RankedTensorType> value,
+                    llvm::ArrayRef<int64_t> newShape);
 
 using ReduceAccumulatorCallback =
     function_ref<Value(OpBuilder &, Location, Value, Value)>;

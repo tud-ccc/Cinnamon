@@ -14,8 +14,10 @@
 #include <mlir/IR/AffineExpr.h>
 #include <mlir/IR/AffineMap.h>
 #include <mlir/IR/Builders.h>
+#include <mlir/IR/BuiltinTypeInterfaces.h>
 #include <mlir/IR/BuiltinTypes.h>
 #include <mlir/IR/ImplicitLocOpBuilder.h>
+#include <mlir/IR/ValueRange.h>
 
 using namespace mlir;
 using namespace mlir::cinm;
@@ -86,134 +88,76 @@ SmallVector<Value> GemmOp::convertToTiledOps(OpBuilder &builder,
       getLoc(), resultShape, resultType.getElementType());
 
   // Size of the tile on the reduction dimension.
-  auto reduceClusterSize = params.reduceClusterSize(
-      2, resultType.getNumElements(), lhsType.getElementType());
-  auto parallelTileSize =
-      params.parallelClusterSize(rhsType.getDimSize(1), reduceClusterSize);
+  auto r = params.reduceClusterSize(2, resultType.getNumElements(),
+                                    lhsType.getElementType());
+  // Tile sizes of each parallel dimension
+  auto [p0, p1] =
+      params.parallelClusterSize(lhsType.getDimSize(0), rhsType.getDimSize(1));
 
-  if (lhsType.getDimSize(0) == 1) {
-    // then it's basically vector-mat multiplication
-    // arguments have shape <1xR>, <RxB>
-    auto r = lhsType.getDimSize(1);
-    auto b = rhsType.getDimSize(1);
-    auto eltTy = rhsType.getElementType();
-
-    // iterate over b (parallel loop)
-    return createNestedAffineForLoops(
-        builder, getLoc(), {b}, {parallelTileSize}, {resultInit},
-        [&](OpBuilder &builder, Location loc, ValueRange indices,
-            ValueRange iterArgs) -> SmallVector<Value> {
-          auto reductionAccTy =
-              RankedTensorType::get({1, parallelTileSize}, eltTy);
-          auto cst0 = builder.create<arith::ConstantOp>(
-              loc, builder.getZeroAttr(eltTy));
-          auto reductionAccInit =
-              builder.create<tensor::SplatOp>(loc, cst0, reductionAccTy);
-
-          const auto indexInParDim = indices[0];
-
-          // this is the reduction loop
-          SmallVector<Value, 1> reductionResult = createNestedAffineForLoops(
-              builder, loc, {r}, {reduceClusterSize},
-              reductionAccInit->getResults(),
-              [&](OpBuilder &builder, Location loc, ValueRange indices,
-                  ValueRange iterArgs) -> SmallVector<Value> {
-                const auto indexInRedDim = indices[0];
-
-                const ArrayRef<int64_t> lhsOffsets{0, ShapedType::kDynamic};
-                const ArrayRef<int64_t> lhsSizes{1, reduceClusterSize};
-                const ArrayRef<int64_t> lhsStrides{1, 1};
-
-                const Type lhsSliceType =
-                    RankedTensorType::get({1, reduceClusterSize}, eltTy);
-
-                const ArrayRef<Value> lhsDynamicOffsets{indexInRedDim};
-                const Value lhsSlice = builder.create<tensor::ExtractSliceOp>(
-                    loc, lhsSliceType, lhs, lhsDynamicOffsets, ValueRange{},
-                    ValueRange{}, lhsOffsets, lhsSizes, lhsStrides);
-
-                // todo this is still a square tile but the left tile is flat
-                const Type rhsSliceType = RankedTensorType::get(
-                    {reduceClusterSize, parallelTileSize}, eltTy);
-
-                const ArrayRef<int64_t> rhsOffsets{ShapedType::kDynamic,
-                                                   ShapedType::kDynamic};
-                const ArrayRef<int64_t> rhsSizes{reduceClusterSize,
-                                                 parallelTileSize};
-                const ArrayRef<int64_t> rhsStrides{1, 1};
-
-                const Value rhsSlice = builder.create<tensor::ExtractSliceOp>(
-                    loc, rhsSliceType, rhs,
-                    ValueRange{indexInParDim, indexInRedDim}, ValueRange{},
-                    ValueRange{}, rhsOffsets, rhsSizes, rhsStrides);
-
-                // now we have a LHS tile <reduceClusterSize>
-                // and RHS tile <reduceClusterSize x parallelTileSize
-
-                // Here we're back to doing
-                // GEMM(ltile: <1 x rcs>, rtile: <rcs x pts>) + iterArgs[0]
-                auto tmpReduce = builder.create<cinm::GemmOp>(
-                    loc, lhsSlice, rhsSlice, iterArgs[0]);
-                cinm::markOpAsNoTile(tmpReduce);
-                return {tmpReduce};
-              });
-
-          const ArrayRef<int64_t> resultOffsets{0, ShapedType::kDynamic};
-          const ArrayRef<int64_t> &resultSizes{1, parallelTileSize};
-          const ArrayRef<int64_t> resultStrides{1, 1};
-          const ValueRange resultDynamicOffsets{indexInParDim};
-
-          const Value result = builder.create<tensor::InsertSliceOp>(
-              loc, reductionResult[0], iterArgs[0], resultDynamicOffsets,
-              ValueRange{}, ValueRange{}, resultOffsets, resultSizes,
-              resultStrides);
-
-          return {result};
-        });
-  }
-
-  const ArrayRef<int64_t> tileSizes = {1, parallelTileSize};
+  auto nDim = lhsType.getDimSize(0);
+  auto rDim = lhsType.getDimSize(1);
+  auto bDim = rhsType.getDimSize(1);
+  auto eltTy = rhsType.getElementType();
 
   return createNestedAffineForLoops(
-      builder, getLoc(), resultShape, tileSizes, ValueRange{resultInit},
+      builder, getLoc(), resultShape, {p0, p1}, ValueRange{resultInit},
       [&](OpBuilder &builder, Location loc, ValueRange indices,
           ValueRange iterArgs) -> SmallVector<Value> {
-        const ArrayRef<int64_t> lhsOffsets{ShapedType::kDynamic, 0};
-        const ArrayRef<int64_t> lhsSizes{tileSizes[0], lhsType.getDimSize(1)};
+        const auto parIndices = indices;
         const ArrayRef<int64_t> unitStrides{1, 1};
-        const ArrayRef<int64_t> &lhsStrides = unitStrides;
-        const ArrayRef<int64_t> rhsOffsets{0, ShapedType::kDynamic};
-        const ArrayRef<int64_t> rhsSizes{rhsType.getDimSize(0), tileSizes[1]};
-        const ArrayRef<int64_t> &rhsStrides = unitStrides;
-        const ArrayRef<int64_t> resultOffsets{ShapedType::kDynamic,
-                                              ShapedType::kDynamic};
-        const ArrayRef<int64_t> &resultSizes = tileSizes;
-        const ArrayRef<int64_t> resultStrides = unitStrides;
+        const ArrayRef<int64_t> noStaticOffsets{ShapedType::kDynamic,
+                                                ShapedType::kDynamic};
 
-        const SmallVector<Value> lhsDynamicOffsets{indices[0]};
-        const RankedTensorType lhsSliceType =
-            tensor::ExtractSliceOp::inferCanonicalRankReducedResultType(
-                2, lhsType, lhsOffsets, lhsSizes, lhsStrides);
-        const Value lhsSlice = builder.create<tensor::ExtractSliceOp>(
-            loc, lhsSliceType, lhs, lhsDynamicOffsets, ValueRange{},
-            ValueRange{}, lhsOffsets, lhsSizes, lhsStrides);
+        const ArrayRef<int64_t> resultOffsets = noStaticOffsets;
+        const ArrayRef<int64_t> resultSizes = {p0, p1};
+        const ValueRange resultDynamicOffsets = parIndices;
 
-        const SmallVector<Value> rhsDynamicOffsets{indices[1]};
-        const Type rhsSliceType =
-            tensor::ExtractSliceOp::inferCanonicalRankReducedResultType(
-                2, rhsType, rhsOffsets, rhsSizes, rhsStrides);
-        const Value rhsSlice = builder.create<tensor::ExtractSliceOp>(
-            loc, rhsSliceType, rhs, rhsDynamicOffsets, ValueRange{},
-            ValueRange{}, rhsOffsets, rhsSizes, rhsStrides);
+        auto reductionAccTy = RankedTensorType::get({p0, p1}, eltTy);
+        auto cst0 =
+            builder.create<arith::ConstantOp>(loc, builder.getZeroAttr(eltTy));
+        auto reductionAccInit =
+            builder.create<tensor::SplatOp>(loc, cst0, reductionAccTy);
 
-        // will be tiled further
-        GemmOp smallerGemm =
-            builder.create<cinm::GemmOp>(loc, lhsSlice, rhsSlice);
+        // this is the reduction loop
+        SmallVector<Value, 1> reductionResult = createNestedAffineForLoops(
+            builder, loc, {rDim}, {r}, reductionAccInit->getResults(),
+            [&](OpBuilder &builder, Location loc, ValueRange indices,
+                ValueRange iterArgs) -> SmallVector<Value> {
+              const auto indexInRedDim = indices[0];
+
+              const ArrayRef<int64_t> lhsSizes{p0, r};
+
+              const Type lhsSliceType = RankedTensorType::get({p0, r}, eltTy);
+
+              const Value lhsSlice = builder.create<tensor::ExtractSliceOp>(
+                  loc, lhsSliceType, lhs,
+                  ValueRange{parIndices[0], indexInRedDim}, ValueRange{},
+                  ValueRange{}, noStaticOffsets, lhsSizes, unitStrides);
+
+              const Type rhsSliceType = RankedTensorType::get({r, p1}, eltTy);
+
+              const ArrayRef<int64_t> rhsSizes{r, p1};
+
+              const Value rhsSlice = builder.create<tensor::ExtractSliceOp>(
+                  loc, rhsSliceType, rhs,
+                  ValueRange{indexInRedDim, parIndices[1]}, ValueRange{},
+                  ValueRange{}, noStaticOffsets, rhsSizes, unitStrides);
+
+              // now we have a LHS tile <reduceClusterSize>
+              // and RHS tile <reduceClusterSize x parallelTileSize
+
+              // Here we're back to doing
+              // GEMM(ltile: <p0 x r>, rtile: <r x p1>) + iterArgs[0]
+              auto tmpReduce = builder.create<cinm::GemmOp>(
+                  loc, lhsSlice, rhsSlice, iterArgs[0]);
+              cinm::markOpAsNoTile(tmpReduce);
+              return {tmpReduce};
+            });
 
         const Value result = builder.create<tensor::InsertSliceOp>(
-            loc, smallerGemm.getResult(), iterArgs[0], indices, ValueRange{},
-            ValueRange{}, resultOffsets, resultSizes, resultStrides);
-
+            loc, reductionResult[0], iterArgs[0], resultDynamicOffsets,
+            ValueRange{}, ValueRange{}, resultOffsets, resultSizes,
+            unitStrides);
         return {result};
       });
 }
