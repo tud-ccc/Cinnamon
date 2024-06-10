@@ -283,6 +283,7 @@ LogicalResult convertCinmToCnm(
   return success();
 }
 
+// todo change that into
 struct ConvertLinalgReduceIntoLaunch
     : public OpConversionPattern<linalg::ReduceOp> {
   using OpConversionPattern::OpConversionPattern;

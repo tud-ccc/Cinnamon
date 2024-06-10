@@ -44,7 +44,6 @@ func.func @simple(%t0: tensor<6x6xi32>, %t1 : tensor<6xf32> ) {
         %cst = arith.constant 32: i64
         cinm.yield %cst, %cst: i64, i64
     }
-    
 
     return
 }
