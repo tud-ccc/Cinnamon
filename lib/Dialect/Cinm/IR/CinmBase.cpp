@@ -39,12 +39,13 @@ void CinmDialect::initialize() {
 CinmDialect::verifyOperationAttribute(::mlir::Operation *op,
                                       ::mlir::NamedAttribute attribute) {
 
-  if (attribute.getName() == "cinm.notile") {
+  if (attribute.getName() == CinmDialect::NOTILE_NAME) {
     if (op->getDialect() == this) {
       return success();
     }
-    return op->emitOpError(
-        "notile attribute can only be used on cinm dialect operations");
+    return op->emitOpError()
+           << CinmDialect::NOTILE_NAME
+           << " attribute can only be used on cinm dialect operations";
   }
   return op->emitOpError("unknown attribute ") << attribute.getName();
 }

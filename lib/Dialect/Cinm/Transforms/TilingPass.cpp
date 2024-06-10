@@ -1,3 +1,4 @@
+#include "cinm-mlir/Dialect/Cinm/IR/CinmBase.h"
 #include "cinm-mlir/Dialect/Cinm/IR/CinmOps.h"
 #include "cinm-mlir/Dialect/Cinm/Interfaces/TilingInterface.h"
 #include "cinm-mlir/Dialect/Cinm/Transforms/Passes.h"
@@ -63,7 +64,7 @@ struct CinmTilingPass : public impl::CinmTilingPassBase<CinmTilingPass> {
 
     target.markUnknownOpDynamicallyLegal([](Operation *op) {
       if (auto tileable = llvm::dyn_cast_or_null<cinm::CinmTilingInterface>(op))
-        return tileable->hasAttr("cinm.notile");
+        return tileable->hasAttr(cinm::CinmDialect::NOTILE_NAME);
       return true;
     });
 

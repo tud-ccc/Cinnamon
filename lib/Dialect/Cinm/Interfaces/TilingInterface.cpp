@@ -1,4 +1,5 @@
 #include "cinm-mlir/Dialect/Cinm/Interfaces/TilingInterface.h"
+#include "cinm-mlir/Dialect/Cinm/IR/CinmBase.h"
 #include "cinm-mlir/Dialect/Cinm/IR/CinmOps.h"
 
 #include <limits>
@@ -31,7 +32,7 @@ using namespace mlir::cinm;
 namespace mlir::cinm {
 
 void markOpAsNoTile(Operation *op) {
-  op->setAttr("cinm.notile", UnitAttr::get(op->getContext()));
+  op->setAttr(CinmDialect::NOTILE_NAME, UnitAttr::get(op->getContext()));
 }
 
 TilingParameters TilingParameters::fromComputeBlock(cinm::ComputeOp &op) {

@@ -27,6 +27,7 @@ def Cinm_Dialect : Dialect {
 
 
     code extraClassDeclaration = [{
+    constexpr static StringRef NOTILE_NAME = "cinm.notile";
     private:
         void registerOps();
         void registerTypes();
