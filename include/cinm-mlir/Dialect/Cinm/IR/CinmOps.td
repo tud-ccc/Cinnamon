@@ -103,14 +103,23 @@ def Cinm_DivOp : Cinm_TTT_Op<"div", []> {
 }
 
 def Cinm_GemmOp : Cinm_Op<"op.gemm", 
-    [Pure, InferTensorTypeAdaptor, DeclareOpInterfaceMethods<CinmTilingInterface>]> {
+    [Pure, InferTensorTypeAdaptor, DeclareOpInterfaceMethods<CinmTilingInterface>,
+     OptionalTypesMatchWith<"bias should have compatible type", "result", "bias", "$_self">]> {
   let summary = "Generalized Matrix Matrix Multiplication operation";
   let description = [{
     TODO
   }];
-  let arguments = (ins 2DTensorOf<[AnyType]>:$left, 2DTensorOf<[AnyType]>:$right);
+  let arguments = (ins 2DTensorOf<[AnyType]>:$left, 
+                       2DTensorOf<[AnyType]>:$right,
+                       Optional<2DTensorOf<[AnyType]>>:$bias);
   let results = (outs 2DTensorOf<[AnyType]>:$result);
-  let assemblyFormat = "$left `,` $right attr-dict `:` `(` type($left) `,` type($right) `)` `->` type($result)";
+  let assemblyFormat = "$left `,` $right (`plus` $bias^)? attr-dict `:` `(` type($left) `,` type($right) `)` `->` type($result)";
+
+  let builders=[
+    OpBuilder<(ins "Value":$left, "Value":$right), 
+      "build($_builder, $_state, ValueRange {left, right});">
+
+  ];
 }
 
 def Cinm_GemvOp : Cinm_Op<"op.gemv", [Pure, InferShapedTypeOpAdaptor, DeclareOpInterfaceMethods<CinmTilingInterface>]> {

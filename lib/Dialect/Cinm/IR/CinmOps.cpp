@@ -189,13 +189,11 @@ SmallVector<Value> GemmOp::convertToTiledOps(OpBuilder builder,
                 // and RHS tile <reduceClusterSize x parallelTileSize
 
                 // Here we're back to doing 
-                // GEMM(ltile: <1 x rcs>, rtile: <rcs x pts>)
+                // GEMM(ltile: <1 x rcs>, rtile: <rcs x pts>) + iterArgs[0]
                 auto tmpReduce = builder.create<cinm::GemmOp>(
-                    loc, iterArgs[0].getType(), lhsSlice, rhsSlice);
-                auto add = builder.create<cinm::AddOp>(loc, iterArgs[0], tmpReduce);
+                    loc, lhsSlice, rhsSlice, iterArgs[0]);
                 cinm::markOpAsNoTile(tmpReduce);
-                cinm::markOpAsNoTile(add);
-                return {add};
+                return {tmpReduce};
               });
 
           const ArrayRef<int64_t> resultOffsets{0, ShapedType::kDynamic};
