@@ -7,13 +7,15 @@ func.func @simple(%t0: tensor<6x6xi32>, %t1 : tensor<6xf32> ) {
     %d = cinm.compute attributes { workgroupShape= array<i64: 2,4,4,2> } -> tensor<6x6xi32> {
         %x = cinm.op.add %t0, %t0: tensor<6x6xi32>
         %y = cinm.op.sub %t0, %t0: tensor<6x6xi32>
-        %z = cinm.op.max %t0: tensor<6x6xi32>
-        %q = cinm.op.min %t1: tensor<6xf32>
+        %y2 = cinm.op.div %t0, %t0: tensor<6x6xi32>
+        %y2 = cinm.op.mul %t0, %t0: tensor<6x6xi32>
         %i = arith.addi %z, %z : i32
         %k = arith.constant 62: i64
         %t, %s = cinm.op.topK %k (%y): tensor<6x6xi32> -> tensor<?xi32>, tensor<?xindex>
-        %sum = cinm.op.reduce add (%y): tensor<6x6xi32> -> i32
-        %product = cinm.op.reduce mul (%y): tensor<6x6xi32> -> i32 
+        %z4 = cinm.op.reduce add (%y): tensor<6x6xi32>
+        %z0 = cinm.op.reduce mul (%y): tensor<6x6xi32>
+        %z1 = cinm.op.reduce max (%t0): tensor<6x6xi32>
+        %q2 = cinm.op.reduce min (%t1): tensor<6xf32>
 
         %scan = cinm.op.scan mul (%y): tensor<6x6xi32> 
         %scan2 = cinm.op.scan add (%y): tensor<6x6xi32>

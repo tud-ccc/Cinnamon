@@ -58,23 +58,6 @@ class TypeMatchesElementType<string tensorTy, string toInfer>:
 TypesMatchWith<"output type matches element type of input", toInfer, tensorTy,
               "::llvm::cast<RankedTensorType>($_self).getElementType()">;
 
-def MinOp: Cinm_Op<"op.min", [Commutative, Pure, DeclareOpInterfaceMethods<CinmTilingInterface>,
-TypeMatchesElementType<"result", "input">]> {
-    let arguments = (ins AnyRankedTensor:$input);
-    let results = (outs AnyScalar:$result);
-    let summary = "Return the min value of the input tensor";
-    let assemblyFormat = "$input attr-dict `:` type($input)";
-}
-
-def MaxOp: Cinm_Op<"op.max", [Commutative, Pure, DeclareOpInterfaceMethods<CinmTilingInterface>,
-TypeMatchesElementType<"result", "input">]> {
-    let arguments = (ins AnyRankedTensor:$input);
-    let results = (outs AnyScalar:$result);
-
-    let summary = "Return the max value of the input tensor";
-    let assemblyFormat = "$input attr-dict `:` type($input)";
-}
-
 def Cinm_AddOp : Cinm_TTT_Op<"op.add", [Commutative, Pure, DeclareOpInterfaceMethods<CinmTilingInterface>]> {
   let summary = "Tensor addition operation";
   let description = [{
@@ -180,8 +163,10 @@ def Cinm_ScanOp : Cinm_Op<"op.scan", [SameOperandsAndResultType, Pure]> {
   let assemblyFormat = "$method `(` $input `)` attr-dict `:` type($input)";
 }
 
-def Cinm_ReduceOp : Cinm_Op<"op.reduce", [Pure, DeclareOpInterfaceMethods<CinmTilingInterface>]> {
-  let summary = "Reduce the tensor.";
+def Cinm_ReduceOp : Cinm_Op<"op.reduce", 
+    [Pure, TypeMatchesElementType<"result", "input">, 
+    DeclareOpInterfaceMethods<CinmTilingInterface>]> {
+  let summary = "Reduce the tensor according to a given binary operator.";
 
   let description = [{
 
@@ -200,7 +185,7 @@ def Cinm_ReduceOp : Cinm_Op<"op.reduce", [Pure, DeclareOpInterfaceMethods<CinmTi
   let extraClassDeclaration = [{
   }];
 
-  let assemblyFormat = "$method `(` $input `)` attr-dict `:` type($input) `->` type($result)";
+  let assemblyFormat = "$method `(` $input `)` attr-dict `:` type($input)";
 }
 
 def Cinm_TopKOp : Cinm_Op<"op.topK", [InferShapedTypeOpAdaptor, Pure]> {

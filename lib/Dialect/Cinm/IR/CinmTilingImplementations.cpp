@@ -22,32 +22,24 @@
 using namespace mlir;
 using namespace mlir::cinm;
 
-SmallVector<Value> MinOp::convertToTiledOps(OpBuilder &builder,
-                                            TilingParameters params) {
-  auto ty = getInput().getType();
-  return {createVectorReduceMin(
-      builder, getLoc(), getOperand(),
-      params.reduceClusterSize(1, ty.getNumElements(), ty.getElementType()))};
-}
-
-SmallVector<Value> MaxOp::convertToTiledOps(OpBuilder &builder,
-                                            TilingParameters params) {
-  auto ty = getInput().getType();
-  return {createVectorReduceMax(
-      builder, getLoc(), getOperand(),
-      params.reduceClusterSize(1, ty.getNumElements(), ty.getElementType()))};
-}
-
 SmallVector<Value> ReduceOp::convertToTiledOps(OpBuilder &builder,
                                                TilingParameters params) {
   auto ty = getInput().getType();
   auto reduceClusterSize =
       params.reduceClusterSize(1, ty.getNumElements(), ty.getElementType());
-  if (getMethod() == ReduceMethod::ADD) {
+
+  auto method = getMethod();
+  if (method == ReduceMethod::ADD) {
     return {createVectorReduceAdd(builder, getLoc(), getOperand(),
                                   reduceClusterSize)};
-  } else if (getMethod() == ReduceMethod::MUL) {
+  } else if (method == ReduceMethod::MUL) {
     return {createVectorReduceMul(builder, getLoc(), getOperand(),
+                                  reduceClusterSize)};
+  } else if (method == ReduceMethod::MAX) {
+    return {createVectorReduceMax(builder, getLoc(), getOperand(),
+                                  reduceClusterSize)};
+  } else if (method == ReduceMethod::MIN) {
+    return {createVectorReduceMin(builder, getLoc(), getOperand(),
                                   reduceClusterSize)};
   } else {
     abort();
@@ -94,9 +86,7 @@ SmallVector<Value> GemmOp::convertToTiledOps(OpBuilder &builder,
   auto [p0, p1] =
       params.parallelClusterSize(lhsType.getDimSize(0), rhsType.getDimSize(1));
 
-  auto nDim = lhsType.getDimSize(0);
   auto rDim = lhsType.getDimSize(1);
-  auto bDim = rhsType.getDimSize(1);
   auto eltTy = rhsType.getElementType();
 
   return createNestedAffineForLoops(
