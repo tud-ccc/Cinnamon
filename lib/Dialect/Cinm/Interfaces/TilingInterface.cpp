@@ -2,7 +2,10 @@
 #include "cinm-mlir/Dialect/Cinm/IR/CinmBase.h"
 #include "cinm-mlir/Dialect/Cinm/IR/CinmOps.h"
 
+#include <algorithm>
+#include <functional>
 #include <limits>
+#include <numeric>
 
 #include <llvm/ADT/STLExtras.h>
 
@@ -39,6 +42,56 @@ TilingParameters TilingParameters::fromComputeBlock(cinm::ComputeOp &op) {
   return TilingParameters(op.getMaxDpuBufferSize() * 4, op.getWorkgroupShape());
 }
 
+/// Return the size of tiles on a reduce dimension.
+/// Computes this by assuming the reduction operation needs (maybe several)
+/// buffers of the same size, same element type. The returned tile size
+/// divides the number of reduced elements.
+int64_t TilingParameters::reduceClusterSize(int64_t numBuffers,
+                                            int64_t reducedElements,
+                                            Type elementTy) {
+  // in number of elements
+  auto maxSizePerBuffer = maxNumElementsOfType(elementTy) / numBuffers;
+  // Now we need to find the largest divisor of `reducedElements` that is
+  // smaller than maxSizePerBuffer
+  for (int i = maxSizePerBuffer; i > 0; i--) {
+    if (reducedElements % i == 0)
+      return i;
+  }
+  return 1;
+}
+
+/// Determine tiling factors for dimensions n and m.
+std::pair<int64_t, int64_t> TilingParameters::parallelClusterSize(int64_t n,
+                                                                  int64_t m) {
+  /// need to find a number that divides parallelElements and the working
+  /// group size
+  auto wg = workingGroupSize();
+  auto a = std::gcd(n, wg);
+  auto b = std::gcd(m, wg);
+
+  if (a * b == wg)
+    return {a, b};
+  else if (a > b)
+    return {a, wg / a};
+  else if (b != 1)
+    return {wg / b, b};
+  else
+    // fallback: don't tile. WG is not divisible by n or m.
+    // This means the CINM->CNM conversion will fail.
+    return {1, 1};
+}
+
+/// Number of parallel elements in the working group.
+int64_t TilingParameters::workingGroupSize() {
+  return std::reduce(workgroupShape.begin(), workgroupShape.end(), 1,
+                     std::multiplies<>());
+}
+
+int64_t TilingParameters::maxNumElementsOfType(Type ty) {
+  int64_t bw = std::max(8, static_cast<int>(ty.getIntOrFloatBitWidth()));
+  return maxBufferSizeInBytes / (bw / 8);
+}
+
 Value reshapeStatic(OpBuilder &builder, Location loc,
                     TypedValue<RankedTensorType> value,
                     llvm::ArrayRef<int64_t> newShape) {
@@ -50,64 +103,6 @@ Value reshapeStatic(OpBuilder &builder, Location loc,
   return builder.create<tensor::ReshapeOp>(loc, newTy, value, reifiedShape);
 }
 
-Value createVectorReduce2(OpBuilder &builder, Location loc, Value v0, Value v1,
-                          Attribute init, ReduceAccumulatorCallback merge2,
-                          ReduceAccumulatorCallback reduce,
-                          int64_t clusterSize) {
-  const RankedTensorType vectorType = v0.getType().cast<RankedTensorType>();
-  assert(vectorType.getRank() == 1);
-  assert(vectorType.getShape() ==
-         v1.getType().cast<RankedTensorType>().getShape());
-  const int64_t vectorSize = vectorType.getDimSize(0);
-  const Type elementType = vectorType.getElementType();
-
-  const Value initTensor = builder.create<arith::ConstantOp>(
-      loc,
-      DenseElementsAttr::get(RankedTensorType::get({}, elementType), init));
-  ValueRange reduceArgs{v0, v1};
-  if (clusterSize > 1) {
-    const int64_t clusterCount = vectorSize / clusterSize;
-    RankedTensorType intermediateResultType =
-        RankedTensorType::get(SmallVector<int64_t>{clusterCount}, elementType);
-    RankedTensorType reshapedTy = RankedTensorType::get(
-        SmallVector<int64_t>{clusterCount, clusterSize}, elementType);
-
-    const Value outTensor = builder.create<arith::ConstantOp>(
-        loc, DenseElementsAttr::get(intermediateResultType, init));
-
-    // reified shape clusterCount x clusterSize
-    auto shapeTensor = builder.create<arith::ConstantOp>(
-        loc, DenseIntElementsAttr::get(
-                 RankedTensorType::get({2}, builder.getI64Type()),
-                 {clusterCount, clusterSize}));
-
-    auto reshape0 =
-        builder.create<tensor::ReshapeOp>(loc, reshapedTy, v0, shapeTensor);
-    auto reshape1 =
-        builder.create<tensor::ReshapeOp>(loc, reshapedTy, v1, shapeTensor);
-
-    linalg::ReduceOp reduceOp = builder.create<linalg::ReduceOp>(
-        loc, ValueRange{reshape0, reshape1}, ValueRange{outTensor},
-        ArrayRef<int64_t>{1},
-        [&](OpBuilder &builder, Location loc, ValueRange args) {
-          const Value tmp = merge2(builder, loc, args[0], args[1]);
-          const Value result = reduce(builder, loc, tmp, args[2]);
-          builder.create<linalg::YieldOp>(loc, result);
-        });
-    reduceArgs = reduceOp.getResults();
-  }
-
-  linalg::ReduceOp sum = builder.create<linalg::ReduceOp>(
-      loc, reduceArgs, ValueRange{initTensor}, SmallVector<int64_t>{0},
-      [&](OpBuilder &builder, Location loc, ValueRange args) {
-        const Value result = reduce(builder, loc, args[0], args[1]);
-        builder.create<linalg::YieldOp>(loc, result);
-      });
-
-  // return builder.create<tensor::ExtractOp>(loc, sum.getResult(0),
-  // ValueRange{});
-  return sum->getResult(0);
-}
 
 Value createVectorReduce(OpBuilder &builder, Location loc, Value vector,
                          Value init, ReduceAccumulatorCallback callback,
@@ -206,86 +201,6 @@ Value createVectorReduceMax(OpBuilder &builder, Location loc, Value vector,
                                   std::numeric_limits<uint64_t>::min()));
   return createVectorReduce<arith::MaxUIOp>(builder, loc, vector, init,
                                             clusterSize);
-}
-
-Value createMatmul(OpBuilder builder, Location loc, Value lhs, Value rhs,
-                   int64_t reduceClusterSize) {
-  const RankedTensorType lhsType = lhs.getType().cast<RankedTensorType>();
-  const RankedTensorType rhsType = rhs.getType().cast<RankedTensorType>();
-
-  assert(lhsType.getElementType() == rhsType.getElementType());
-  const Type elementType = lhsType.getElementType();
-
-  RankedTensorType resultType;
-  if (lhsType.getRank() == 2 && rhsType.getRank() == 2) {
-    assert(lhsType.getDimSize(1) == rhsType.getDimSize(0));
-    resultType = RankedTensorType::get(
-        SmallVector<int64_t, 2>{lhsType.getDimSize(0), rhsType.getDimSize(1)},
-        elementType);
-  } else if (lhsType.getRank() == 1 && rhsType.getRank() == 2) {
-    assert(lhsType.getDimSize(0) == rhsType.getDimSize(0));
-    resultType = RankedTensorType::get(
-        SmallVector<int64_t, 1>{rhsType.getDimSize(1)}, elementType);
-  } else if (lhsType.getRank() == 2 && rhsType.getRank() == 1) {
-    assert(lhsType.getDimSize(1) == rhsType.getDimSize(0));
-    resultType = RankedTensorType::get(
-        SmallVector<int64_t, 1>{lhsType.getDimSize(0)}, elementType);
-  } else {
-    assert(false);
-  }
-
-  return builder.create<tensor::GenerateOp>(
-      loc, resultType, ValueRange{},
-      [&](OpBuilder &builder, Location loc, ValueRange indices) {
-        Value lhsSlice = lhs, rhsSlice = rhs;
-        const SmallVector<int64_t> strides{1, 1};
-
-        if (lhsType.getRank() == 2) {
-          const SmallVector<int64_t> lhsOffsets{ShapedType::kDynamic, 0};
-          const SmallVector<int64_t> lhsSizes{1, lhsType.getDimSize(1)};
-          const SmallVector<Value> lhsDynamicOffsets{indices.front()};
-          const RankedTensorType lhsSliceType = RankedTensorType::get(
-              {lhsType.getDimSize(1)}, lhsType.getElementType());
-          lhsSlice = builder.create<tensor::ExtractSliceOp>(
-              loc, lhsSliceType, lhs, lhsDynamicOffsets, ValueRange{},
-              ValueRange{}, lhsOffsets, lhsSizes, strides);
-        }
-
-        if (rhsType.getRank() == 2) {
-          const SmallVector<int64_t> rhsOffsets{0, ShapedType::kDynamic};
-          const SmallVector<int64_t> rhsSizes{rhsType.getDimSize(0), 1};
-          const SmallVector<Value> rhsDynamicOffsets{indices.back()};
-          const RankedTensorType rhsSliceType = RankedTensorType::get(
-              {rhsType.getDimSize(1)}, rhsType.getElementType());
-          rhsSlice = builder.create<tensor::ExtractSliceOp>(
-              loc, rhsSliceType, rhs, rhsDynamicOffsets, ValueRange{},
-              ValueRange{}, rhsOffsets, rhsSizes, strides);
-        }
-
-        const Type elementType = lhsType.getElementType();
-        const Attribute init = builder.getIntegerAttr(elementType, 0);
-
-        Value result;
-        if (elementType.isa<IntegerType>()) {
-          result = createVectorReduce2<arith::MulIOp, arith::AddIOp>(
-              builder, loc, lhsSlice, rhsSlice, init, reduceClusterSize);
-        } else {
-          result = createVectorReduce2<arith::MulFOp, arith::AddFOp>(
-              builder, loc, lhsSlice, rhsSlice, init, reduceClusterSize);
-        }
-
-        builder.create<tensor::YieldOp>(loc, result);
-      });
-}
-
-SmallVector<int64_t, 2> getTileSizes(ArrayRef<int64_t> tileCounts,
-                                     ArrayRef<int64_t> tensorShape) {
-  SmallVector<int64_t, 2> tileSizes{tensorShape};
-  for (uint64_t i = 0; i < tileSizes.size(); i++) {
-    assert(tileSizes[i] % tileCounts[i] == 0);
-    tileSizes[i] /= tileCounts[i];
-  }
-  return tileSizes;
 }
 
 } // namespace mlir::cinm

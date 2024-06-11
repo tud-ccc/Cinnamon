@@ -95,7 +95,7 @@ def Cinm_MulOp : Cinm_TTT_Op<"op.mul", [Commutative, Pure, DeclareOpInterfaceMet
   }];
 }
 
-def Cinm_DivOp : Cinm_TTT_Op<"div", [Pure, DeclareOpInterfaceMethods<CinmTilingInterface>]> {
+def Cinm_DivOp : Cinm_TTT_Op<"op.div", [Pure, DeclareOpInterfaceMethods<CinmTilingInterface>]> {
   let summary = "Tensor division operation";
   let description = [{
     TODO
