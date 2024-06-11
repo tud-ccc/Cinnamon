@@ -85,21 +85,21 @@ def Cinm_DivOp : Cinm_TTT_Op<"op.div", [Pure, DeclareOpInterfaceMethods<CinmTili
   }];
 }
 
-def Cinm_GemmOp : Cinm_Op<"op.gemm", 
+def Cinm_GemmOp : Cinm_Op<"op.gemm",
     [Pure, InferTensorTypeAdaptor, DeclareOpInterfaceMethods<CinmTilingInterface>,
      OptionalTypesMatchWith<"bias should have compatible type", "result", "bias", "$_self">]> {
   let summary = "Generalized Matrix Matrix Multiplication operation";
   let description = [{
     TODO
   }];
-  let arguments = (ins 2DTensorOf<[AnyType]>:$left, 
+  let arguments = (ins 2DTensorOf<[AnyType]>:$left,
                        2DTensorOf<[AnyType]>:$right,
                        Optional<2DTensorOf<[AnyType]>>:$bias);
   let results = (outs 2DTensorOf<[AnyType]>:$result);
   let assemblyFormat = "$left `,` $right (`plus` $bias^)? attr-dict `:` `(` type($left) `,` type($right) `)` `->` type($result)";
 
   let builders=[
-    OpBuilder<(ins "Value":$left, "Value":$right), 
+    OpBuilder<(ins "Value":$left, "Value":$right),
       "build($_builder, $_state, ValueRange {left, right});">
 
   ];
@@ -163,8 +163,8 @@ def Cinm_ScanOp : Cinm_Op<"op.scan", [SameOperandsAndResultType, Pure]> {
   let assemblyFormat = "$method `(` $input `)` attr-dict `:` type($input)";
 }
 
-def Cinm_ReduceOp : Cinm_Op<"op.reduce", 
-    [Pure, TypeMatchesElementType<"result", "input">, 
+def Cinm_ReduceOp : Cinm_Op<"op.reduce",
+    [Pure, TypeMatchesElementType<"result", "input">,
     DeclareOpInterfaceMethods<CinmTilingInterface>]> {
   let summary = "Reduce the tensor according to a given binary operator.";
 
@@ -215,7 +215,10 @@ def Cinm_TopKOp : Cinm_Op<"op.topK", [InferShapedTypeOpAdaptor, Pure]> {
   let assemblyFormat = "$k `(` $input `)` attr-dict `:` type($input) `->` type($resultValues) `,` type($resultIndices)";
 }
 
-def Cinm_SimSearchOp : Cinm_Op<"op.simSearch", [InferShapedTypeOpAdaptor, Pure]> {
+def Cinm_SimSearchOp : Cinm_Op<"op.simSearch",
+  [InferTensorTypeAdaptor, Pure,
+   TypesMatchWith<"Operands have same type", "left", "right", "$_self">]> {
+
   let summary = "Similarity search between two tensors";
 
   let description = [{
@@ -249,7 +252,7 @@ def Cinm_SimSearchOp : Cinm_Op<"op.simSearch", [InferShapedTypeOpAdaptor, Pure]>
   let extraClassDeclaration = [{
   }];
 
-  let hasCustomAssemblyFormat = 1;
+  let assemblyFormat = "$metric $k `(` $left `,` $right `)` attr-dict `:` type($left)";
 }
 
 def Cinm_MergePartialOp : Cinm_Op<"op.mergePartial", [Pure]> {

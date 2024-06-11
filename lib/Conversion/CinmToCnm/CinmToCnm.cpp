@@ -4,7 +4,6 @@
 #include "cinm-mlir/Dialect/Cinm/Interfaces/TilingInterface.h"
 #include "cinm-mlir/Dialect/Cnm/IR/CnmBase.h"
 #include "cinm-mlir/Dialect/Cnm/IR/CnmTypes.h"
-#include <cassert>
 #include <cinm-mlir/Conversion/CinmPasses.h>
 #include <cinm-mlir/Dialect/Cnm/IR/CnmOps.h>
 #include <cstddef>
@@ -40,7 +39,6 @@
 #include <mlir/Transforms/DialectConversion.h>
 #include <mlir/Transforms/InliningUtils.h>
 #include <numeric>
-#include <optional>
 
 using namespace mlir;
 #define GEN_PASS_CLASSES

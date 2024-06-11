@@ -8,10 +8,12 @@ func.func @simple(%t0: tensor<6x6xi32>, %t1 : tensor<6xf32> ) {
         %x = cinm.op.add %t0, %t0: tensor<6x6xi32>
         %y = cinm.op.sub %t0, %t0: tensor<6x6xi32>
         %y2 = cinm.op.div %t0, %t0: tensor<6x6xi32>
-        %y2 = cinm.op.mul %t0, %t0: tensor<6x6xi32>
+        %y8 = cinm.op.mul %t0, %t0: tensor<6x6xi32>
+        %z = cinm.op.reduce mul (%y): tensor<6x6xi32>
         %i = arith.addi %z, %z : i32
         %k = arith.constant 62: i64
         %t, %s = cinm.op.topK %k (%y): tensor<6x6xi32> -> tensor<?xi32>, tensor<?xindex>
+
         %z4 = cinm.op.reduce add (%y): tensor<6x6xi32>
         %z0 = cinm.op.reduce mul (%y): tensor<6x6xi32>
         %z1 = cinm.op.reduce max (%t0): tensor<6x6xi32>
