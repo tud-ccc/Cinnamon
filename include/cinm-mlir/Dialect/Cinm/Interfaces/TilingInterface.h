@@ -55,16 +55,16 @@ struct TilingParameters {
     auto a = std::gcd(n, wg);
     auto b = std::gcd(m, wg);
 
-    if (b == wg)
-      return {1, b};
-    if (a == wg)
-      return {a, 1};
     if (a * b == wg)
       return {a, b};
-    if (a > b) {
-      return {a, 1};
-    } else
-      return {1, b};
+    else if (a > b)
+      return {a, wg / a};
+    else if (b != 1)
+      return {wg / b, b};
+    else
+      // fallback: don't tile. WG is not divisible by n or m.
+      // This means the CINM->CNM conversion will fail.
+      return {1, 1};
   }
 
   /// Number of parallel elements in the working group.
