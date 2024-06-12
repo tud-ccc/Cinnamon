@@ -16,6 +16,8 @@
 
 #include "mlir/Conversion/LLVMCommon/Pattern.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
+#include "mlir/Conversion/MemRefToLLVM/MemRefToLLVM.h"
+
 
 #define GEN_PASS_DEF_CONVERTUPMEMTOLLVMPASS
 #include "cinm-mlir/Conversion/UPMEMPasses.h.inc"
@@ -70,27 +72,131 @@ public:
     SmallVector<Value, 1> castedOperands;
     castedOperands.push_back(maybeCast(rankCount, rewriter));
     castedOperands.push_back(maybeCast(dpuCount, rewriter));
-    Type resultType = LLVM::LLVMPointerType::get(rewriter.getContext(), 8);
+    Type resultType = LLVM::LLVMPointerType::get(rewriter.getContext(), 0);
     Type funcType = getFunctionType(resultType, castedOperands);
 
     LLVMFuncOp funcOp = appendOrGetFuncOp("alloc_dpu", funcType, op);
-    auto callOp =
-        rewriter.create<LLVM::CallOp>(op->getLoc(), funcOp, castedOperands);
-    rewriter.eraseOp(op);
+    // auto callOp =
+    //     rewriter.create<LLVM::CallOp>(op->getLoc(), funcOp, castedOperands);
+    rewriter.replaceOpWithNewOp<LLVM::CallOp>(op, funcOp, castedOperands);
     return success();
   }
 };
 
-// struct ConvertCnmScatterToUPMEM : public OpConversionPattern<cnm::ScatterOp> {
-//   using OpConversionPattern<cnm::ScatterOp>::OpConversionPattern;
+struct ScatterOpToFuncCallLowering : public ConvertOpToLLVMPattern<upmem::ScatterOp> {
+public:
+  explicit ScatterOpToFuncCallLowering(LLVMTypeConverter &lowering)
+      : ConvertOpToLLVMPattern<upmem::ScatterOp>(lowering) {}
+  
+  LogicalResult
+  matchAndRewrite(upmem::ScatterOp op, typename upmem::ScatterOp::Adaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    using LLVM::LLVMFuncOp;
 
-//   LogicalResult
-//   matchAndRewrite(cnm::ScatterOp op, OpAdaptor,
-//                   ConversionPatternRewriter &rewriter) const override {
-    
-//     return success();
-//   }
-// };
+    SmallVector<Value, 1> castedOperands;
+    castedOperands.push_back(rewriter.getRemappedValue(op.getHierarchy()));
+    Value promoted_memref = getTypeConverter()->promoteOneMemRefDescriptor(op.getLoc(), rewriter.getRemappedValue(op.getHostData()), rewriter);
+    castedOperands.push_back(promoted_memref);
+    // castedOperands.push_back(maybeCast(op.getHostData(), rewriter));
+    castedOperands.push_back(rewriter.getRemappedValue(op.getDpuMemOffset()));
+    // for (Value operand : adaptor.getOperands())
+      // castedOperands.push_back(maybeCast(operand, rewriter));
+
+    Type resultType = rewriter.getIntegerType(32);
+    Type funcType = getFunctionType(resultType, castedOperands);
+
+    LLVMFuncOp funcOp = appendOrGetFuncOp("upmem_scatter", funcType, op);
+    // auto callOp =
+    //     rewriter.create<LLVM::CallOp>(op->getLoc(), funcOp, castedOperands);
+    rewriter.replaceOpWithNewOp<LLVM::CallOp>(op, funcOp, castedOperands);
+    // rewriter.replaceOp(op, callOp);
+    return success();
+  }
+};
+
+
+struct GatherOpToFuncCallLowering : public ConvertOpToLLVMPattern<upmem::GatherOp> {
+public:
+  explicit GatherOpToFuncCallLowering(LLVMTypeConverter &lowering)
+      : ConvertOpToLLVMPattern<upmem::GatherOp>(lowering) {}
+  
+  LogicalResult
+  matchAndRewrite(upmem::GatherOp op, typename upmem::GatherOp::Adaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    using LLVM::LLVMFuncOp;
+
+    SmallVector<Value, 1> castedOperands;
+    castedOperands.push_back(rewriter.getRemappedValue(op.getHierarchy()));
+    Value promoted_memref = getTypeConverter()->promoteOneMemRefDescriptor(op.getLoc(), rewriter.getRemappedValue(op.getHostMemref()), rewriter);
+    castedOperands.push_back(promoted_memref);
+    // castedOperands.push_back(maybeCast(op.getHostData(), rewriter));
+    castedOperands.push_back(rewriter.getRemappedValue(op.getDpuMemOffset()));
+    // for (Value operand : adaptor.getOperands())
+      // castedOperands.push_back(maybeCast(operand, rewriter));
+
+    Type resultType = rewriter.getIntegerType(32);
+    Type funcType = getFunctionType(resultType, castedOperands);
+
+    LLVMFuncOp funcOp = appendOrGetFuncOp("upmem_gather", funcType, op);
+    // auto callOp =
+    //     rewriter.create<LLVM::CallOp>(op->getLoc(), funcOp, castedOperands);
+    rewriter.replaceOpWithNewOp<LLVM::CallOp>(op, funcOp, castedOperands);
+    // rewriter.replaceOp(op, callOp);
+    return success();
+  }
+};
+
+
+struct LaunchFuncOpToFuncCallLowering : public ConvertOpToLLVMPattern<upmem::LaunchFuncOp> {
+public:
+  explicit LaunchFuncOpToFuncCallLowering(LLVMTypeConverter &lowering)
+      : ConvertOpToLLVMPattern<upmem::LaunchFuncOp>(lowering) {}
+  
+  LogicalResult
+  matchAndRewrite(upmem::LaunchFuncOp op, typename upmem::LaunchFuncOp ::Adaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    using LLVM::LLVMFuncOp;
+
+    SmallVector<Value, 1> castedOperands;
+
+    castedOperands.push_back(rewriter.getRemappedValue(op.getUpmemToken()));
+
+    Type resultType = LLVM::LLVMVoidType::get(rewriter.getContext());
+    Type funcType = getFunctionType(resultType, castedOperands);
+
+    LLVMFuncOp funcOp = appendOrGetFuncOp("upmem_launch_dpu", funcType, op);
+    // auto callOp =
+    //     rewriter.create<LLVM::CallOp>(op->getLoc(), funcOp, castedOperands);
+    rewriter.replaceOpWithNewOp<LLVM::CallOp>(op, funcOp, castedOperands);
+    // rewriter.replaceOp(op, callOp);
+    return success();
+  }
+};
+
+
+struct BaseDPUMemOffsetOpLowering : public OpConversionPattern<upmem::BaseDPUMemOffsetOp> {
+public:
+  using OpConversionPattern<upmem::BaseDPUMemOffsetOp>::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(upmem::BaseDPUMemOffsetOp op, OpAdaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    rewriter.replaceOpWithNewOp<arith::ConstantOp>(op, rewriter.getI32IntegerAttr(0));
+    return success();
+  }
+};
+
+
+struct EraseUPMEMModule : public OpConversionPattern<upmem::UPMEMModuleOp> {
+  using OpConversionPattern<upmem::UPMEMModuleOp>::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(upmem::UPMEMModuleOp op, OpAdaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    rewriter.eraseOp(op);
+    return success();
+  }
+};
 
 // struct ConvertCnmGatherToUPMEM : public OpConversionPattern<cnm::GatherOp> {
 //   using OpConversionPattern<cnm::GatherOp>::OpConversionPattern;
@@ -130,19 +236,44 @@ public:
 
 } // namespace upmemtollvm
 
+void populateUPMEMToLLVMFinalTypeConversions(LLVMTypeConverter &typeConverter) {
+  typeConverter.addConversion(
+      [&](upmem::DeviceHierarchyType hierarchyType) -> std::optional<Type> {
+        return LLVM::LLVMPointerType::get(hierarchyType.getContext(), 0);
+      });
+
+  // typeConverter.addConversion(
+  //     [&](cnm::BufferType bufferType) -> std::optional<Type> {
+  //       return cnmtoupmem::convertCnmBufferToMemRefType(bufferType);
+  //     });
+}
 
 
 void populateUPMEMToLLVMConversionPatterns(LLVMTypeConverter &typeConverter,
                                           RewritePatternSet &patterns) {
   patterns.add<upmemtollvm::AllocDPUOpToFuncCallLowering>(typeConverter);
+  patterns.add<upmemtollvm::ScatterOpToFuncCallLowering>(typeConverter);
+  patterns.add<upmemtollvm::GatherOpToFuncCallLowering>(typeConverter);
+  patterns.add<upmemtollvm::LaunchFuncOpToFuncCallLowering>(typeConverter);
+  patterns.add<upmemtollvm::BaseDPUMemOffsetOpLowering>(&typeConverter.getContext());
+  patterns.add<upmemtollvm::EraseUPMEMModule>(&typeConverter.getContext());
 }
 
 struct ConvertUPMEMToLLVMPass
     : public ::impl::ConvertUPMEMToLLVMPassBase<ConvertUPMEMToLLVMPass> {
   void runOnOperation() final {
     LLVMTypeConverter converter(&getContext());
+    populateUPMEMToLLVMFinalTypeConversions(converter);
+    const auto addUnrealizedCast = [](OpBuilder &builder, Type type,
+                                      ValueRange inputs, Location loc) {
+      return builder.create<UnrealizedConversionCastOp>(loc, type, inputs)
+          .getResult(0);
+    };
+    converter.addSourceMaterialization(addUnrealizedCast);
+    converter.addTargetMaterialization(addUnrealizedCast);
 
     RewritePatternSet patterns(&getContext());
+    populateFinalizeMemRefToLLVMConversionPatterns(converter, patterns);
     populateUPMEMToLLVMConversionPatterns(converter, patterns);
     populateReconcileUnrealizedCastsPatterns(patterns);
 
