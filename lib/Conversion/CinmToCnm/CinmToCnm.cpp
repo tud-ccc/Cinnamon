@@ -25,6 +25,7 @@
 #include <mlir/IR/BuiltinAttributeInterfaces.h>
 #include <mlir/IR/BuiltinAttributes.h>
 #include <mlir/IR/BuiltinTypes.h>
+#include <mlir/IR/Diagnostics.h>
 #include <mlir/IR/IRMapping.h>
 #include <mlir/IR/ImplicitLocOpBuilder.h>
 #include <mlir/IR/Location.h>
@@ -52,8 +53,8 @@ struct ReduceToCnmRewriteParams {
 };
 
 LogicalResult
-computeShapeOfTensors(llvm::ArrayRef<int64_t> shape, cnm::WorkgroupType wgTy,
-                      int64_t maxBlockSize,
+computeShapeOfTensors(Location loc, llvm::ArrayRef<int64_t> shape,
+                      cnm::WorkgroupType wgTy, int64_t maxBlockSize,
                       // if empty then all dims are parallel
                       // otherwise those dims are reductions. They are
                       // used to select the size of the buffer. The rest of
@@ -84,8 +85,13 @@ computeShapeOfTensors(llvm::ArrayRef<int64_t> shape, cnm::WorkgroupType wgTy,
       numReductionElts *= shape[i];
     }
   }
-  if (numReductionElts > maxBlockSize)
+
+  if (numReductionElts > maxBlockSize) {
+    emitError(loc, "can't compute shape of tensors: numReductionElts (" +
+                       std::to_string(numReductionElts) + ") > maxBlockSize (" +
+                       std::to_string(maxBlockSize) + ")");
     return failure();
+  }
 
   // Now we support two cases: either
   // 1. tensor has shape of WG
@@ -98,6 +104,9 @@ computeShapeOfTensors(llvm::ArrayRef<int64_t> shape, cnm::WorkgroupType wgTy,
 
   // or 2. numParallelItems == k * numWgItems
   if (numParallelElts % numWgItems != 0) {
+    emitError(loc, "can't compute shape of tensors: numParallelElts (" +
+                       std::to_string(numParallelElts) + ") % numWgItems (" +
+                       std::to_string(numWgItems) + ") != 0");
     return failure();
   }
 
@@ -117,23 +126,33 @@ computeShapeOfTensors(llvm::ArrayRef<int64_t> shape, cnm::WorkgroupType wgTy,
   SmallVector<int64_t, 6> fullWgShape(wgShape);
   int64_t k = numBufItems / numWgItems;
   if (k != 1) {
-    if (k * numReductionElts <= maxBlockSize) {
-      fullWgShape.push_back(k);
-      // The buffer that will be passed to the CINM launch has this dimension.
-      shapeOfBuffer.push_back(k);
-    } else {
+    if (k * numReductionElts > maxBlockSize) {
       // probably the op hasn't been tiled properly
+      emitError(loc, "can't compute shape of tensors: k (" + std::to_string(k) +
+                         ") * numReductionElts (" +
+                         std::to_string(numReductionElts) +
+                         ") > "
+                         "maxBlockSize (" +
+                         std::to_string(maxBlockSize) + ")");
       return failure();
     }
+
+    fullWgShape.push_back(k);
+    // The buffer that will be passed to the CINM launch has this dimension.
+    shapeOfBuffer.push_back(k);
   }
 
   AffineExpr index = mlir::getAffineDimExpr(0, wgTy.getContext());
   if (parallelDims.size() > 1) {
-    if (reductionDims.size() > 0)
+    if (reductionDims.size() > 0) {
+      emitError(loc, "can't compute shape of tensors: reductionDims.size() (" +
+                         std::to_string(reductionDims.size()) + ") > 0");
       return failure();
+    }
+
     index = 0;
     // then we "flatten" the original tensor expression
-    for (int i = 0; i < parallelDims.size() - 1; i++) {
+    for (size_t i = 0; i < parallelDims.size() - 1; i++) {
       index = index +
               parallelDims[i] * mlir::getAffineDimExpr(i, wgTy.getContext());
     }
@@ -186,8 +205,9 @@ LogicalResult convertInputIntoAlloc(Value inputBuf, Value workGroup,
   AffineMap scatterMap;
   auto inputTy = inputBuf.getType().cast<RankedTensorType>();
   llvm::SmallVector<int64_t, 1> shapeOfBuffer;
-  if (computeShapeOfTensors(inputTy.getShape(), wgTy, maxBlockSize, reduceDims,
-                            scatterMap, gatherMap, shapeOfBuffer)
+  if (computeShapeOfTensors(rewriter.getLoc(), inputTy.getShape(), wgTy,
+                            maxBlockSize, reduceDims, scatterMap, gatherMap,
+                            shapeOfBuffer)
           .failed())
     return failure();
 
@@ -234,6 +254,7 @@ LogicalResult convertCinmToCnm(
       return failure();
     }
   }
+
   for (auto output : outputInitializers) {
     if (convertInputIntoAlloc(output, workgroup, wgTy, maxBlockSize, {},
                               gatherMaps.emplace_back(),
