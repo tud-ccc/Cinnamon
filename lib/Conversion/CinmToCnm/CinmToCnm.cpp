@@ -1,4 +1,5 @@
 
+#include "cinm-mlir/Dialect/Cinm/IR/CinmAttributes.h"
 #include "cinm-mlir/Dialect/Cinm/IR/CinmBase.h"
 #include "cinm-mlir/Dialect/Cinm/IR/CinmOps.h"
 #include "cinm-mlir/Dialect/Cinm/Interfaces/TilingInterface.h"
@@ -463,6 +464,68 @@ struct ConvertCinmGemvToCnm : public OpConversionPattern<cinm::GemvOp> {
   }
 };
 
+struct ConvertCinmReduceToCnm : public OpConversionPattern<cinm::ReduceOp> {
+  using OpConversionPattern<cinm::ReduceOp>::OpConversionPattern;
+  ConvertCinmReduceToCnm(MLIRContext *ctx)
+      : mlir::OpConversionPattern<cinm::ReduceOp>(ctx) {
+    this->setHasBoundedRewriteRecursion();
+  }
+
+  LogicalResult
+  matchAndRewrite(cinm::ReduceOp op,
+                  OpConversionPattern<cinm::ReduceOp>::OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+
+    ImplicitLocOpBuilder builder(op->getLoc(), rewriter);
+    cinm::ComputeOp computeBlock = mlir::cinm::getEnclosingComputeBlock(op);
+    cnm::WorkgroupOp workgroup =
+        builder.create<cnm::WorkgroupOp>(computeBlock.getCnmWorkgroupType());
+    auto outputInit = builder.create<arith::ConstantOp>(
+        op.getResult().getType(),
+        builder.getZeroAttr(op.getResult().getType()));
+
+    llvm::SmallVector<Value, 1> newResults;
+    if (convertCinmToCnm(
+            builder, op, workgroup.getResult(),
+            computeBlock.getMaxDpuBufferSize(), {}, adaptor.getOperands(),
+            ValueRange{outputInit}, op->getResults(), newResults,
+            [&](ImplicitLocOpBuilder &builder, ValueRange inputs,
+                ValueRange outputs) {
+              builder.create<linalg::ReduceOp>(
+                  inputs, outputs, ArrayRef<int64_t>{0},
+                  [&](OpBuilder &builder, Location loc,
+                      ValueRange inputs) -> void {
+                    Value result;
+                    switch (op.getMethod()) {
+                    case mlir::cinm::ReduceMethod::ADD: {
+                      result = builder.create<arith::AddIOp>(loc, inputs[0],
+                                                             inputs[1]);
+                    } break;
+                    case mlir::cinm::ReduceMethod::MUL: {
+                      result = builder.create<arith::MulIOp>(loc, inputs[0],
+                                                             inputs[1]);
+                    } break;
+                    case mlir::cinm::ReduceMethod::MAX: {
+                      result = builder.create<arith::MaxSIOp>(loc, inputs[0],
+                                                              inputs[1]);
+                    } break;
+                    case mlir::cinm::ReduceMethod::MIN: {
+                      result = builder.create<arith::MinSIOp>(loc, inputs[0],
+                                                              inputs[1]);
+                    } break;
+                    }
+                    builder.create<linalg::YieldOp>(loc, result);
+                  });
+            })
+            .failed()) {
+      return failure();
+    }
+
+    rewriter.replaceOp(op, newResults);
+    return success();
+  }
+};
+
 struct DeleteCinmCompute : public OpConversionPattern<cinm::ComputeOp> {
   using OpConversionPattern::OpConversionPattern;
 
@@ -496,6 +559,8 @@ void populateCinmRewritePatterns(RewritePatternSet &patterns,
   // matmul
   patterns.insert<ConvertCinmGemmToCnm>(ctx);
   patterns.insert<ConvertCinmGemvToCnm>(ctx);
+  // reduce
+  patterns.insert<ConvertCinmReduceToCnm>(ctx);
 }
 
 struct ConvertTiledCinmToCnm
