@@ -1,4 +1,27 @@
+// Map DPU index (r,d,t) to base index in input tensor.
+// :: WG -> T
+#scatter_map = #affine_map<(r, d, t) -> (r, d, t * 64)>
+// Reconstruct linear map
+// :: Lin(WG) -> WG
+#to_structured = #affine_map<(i) -> (i floordiv (16*64) mod 2, i floordiv 16 mod 64, i mod 16)>
+// Layout map of the tensor
+// :: T -> Lin(T)
+#to_linear_t = #affine_map<(r, d, t) -> r * 8192 * 64 + d * 8192 + t>
+// 
+
+// TODO we actually need something that maps linear index 
+//  to another linear index.
+
+// :: Lin(WG) -> Lin(T)
+//   to_structured . scatter_map . to_linear_t
+
+
 module {
+  // generate foo
+  func.func @foo(%a:index) -> index {
+    %res = affine.apply #scatter_map(%a): index
+  }
+
   func.func @run_va(%A : memref<2x64x8192xi32>, %B: memref<2x64x8192xi32>, %C: memref<2x64x8192xi32>) {
     %cst00 = arith.constant 0 : index
     %cst10 = arith.constant 1 : index
@@ -7,8 +30,8 @@ module {
     %tasklet_count = arith.constant 16 : index
     %upmem_token = upmem.alloc_dpus : !upmem.hierarchy<2x64x16>
     %base_offset = upmem.base_dpu_mem_offset : index
-    %A_offset = upmem.scatter %A into %upmem_token at %base_offset : memref<2x64x8192xi32>, !upmem.hierarchy<2x64x16>, index -> index
-    %B_offset = upmem.scatter %B into %upmem_token at %A_offset : memref<2x64x8192xi32>, !upmem.hierarchy<2x64x16>, index -> index
+    %A_offset = upmem.scatter %A[64, #scatter_map] into %upmem_token at %base_offset : memref<2x64x8192xi32>, !upmem.hierarchy<2x64x16>, index -> index
+    %B_offset = upmem.scatter %B[64, #scatter_map] into %upmem_token at %A_offset : memref<2x64x8192xi32>, !upmem.hierarchy<2x64x16>, index -> index
     upmem.launch %upmem_token  ranks(%arg0 upto %rank_count) dpus(%arg1 upto %dpu_count) tasklets(%arg2 upto %tasklet_count) on !upmem.hierarchy<2x64x16> {
         %cst0 = arith.constant 0 : index
         %cst1 = arith.constant 1 : index
