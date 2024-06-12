@@ -385,6 +385,84 @@ struct ConvertElementWiseToCnm : public OpConversionPattern<CinmOp> {
   }
 };
 
+struct ConvertCinmGemmToCnm : public OpConversionPattern<cinm::GemmOp> {
+  using OpConversionPattern<cinm::GemmOp>::OpConversionPattern;
+  ConvertCinmGemmToCnm(MLIRContext *ctx)
+      : mlir::OpConversionPattern<cinm::GemmOp>(ctx) {
+    this->setHasBoundedRewriteRecursion();
+  }
+
+  LogicalResult
+  matchAndRewrite(cinm::GemmOp op,
+                  OpConversionPattern<cinm::GemmOp>::OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+
+    ImplicitLocOpBuilder builder(op->getLoc(), rewriter);
+    cinm::ComputeOp computeBlock = mlir::cinm::getEnclosingComputeBlock(op);
+    cnm::WorkgroupOp workgroup =
+        builder.create<cnm::WorkgroupOp>(computeBlock.getCnmWorkgroupType());
+    auto outputInit = builder.create<arith::ConstantOp>(
+        op.getResult().getType(),
+        builder.getZeroAttr(op.getResult().getType()));
+
+    llvm::SmallVector<Value, 1> newResults;
+    if (convertCinmToCnm(
+            builder, op, workgroup.getResult(),
+            computeBlock.getMaxDpuBufferSize(), {}, adaptor.getOperands(),
+            ValueRange{outputInit}, op->getResults(), newResults,
+            [&](ImplicitLocOpBuilder &builder, ValueRange inputs,
+                ValueRange outputs) {
+              builder.create<linalg::MatmulOp>(inputs.take_front(2), outputs);
+              builder.create<linalg::AddOp>(ValueRange{inputs[2], outputs[0]},
+                                            outputs[0]);
+            })
+            .failed()) {
+      return failure();
+    }
+
+    rewriter.replaceOp(op, newResults);
+    return success();
+  }
+};
+
+struct ConvertCinmGemvToCnm : public OpConversionPattern<cinm::GemvOp> {
+  using OpConversionPattern<cinm::GemvOp>::OpConversionPattern;
+  ConvertCinmGemvToCnm(MLIRContext *ctx)
+      : mlir::OpConversionPattern<cinm::GemvOp>(ctx) {
+    this->setHasBoundedRewriteRecursion();
+  }
+
+  LogicalResult
+  matchAndRewrite(cinm::GemvOp op,
+                  OpConversionPattern<cinm::GemvOp>::OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+
+    ImplicitLocOpBuilder builder(op->getLoc(), rewriter);
+    cinm::ComputeOp computeBlock = mlir::cinm::getEnclosingComputeBlock(op);
+    cnm::WorkgroupOp workgroup =
+        builder.create<cnm::WorkgroupOp>(computeBlock.getCnmWorkgroupType());
+    auto outputInit = builder.create<arith::ConstantOp>(
+        op.getResult().getType(),
+        builder.getZeroAttr(op.getResult().getType()));
+
+    llvm::SmallVector<Value, 1> newResults;
+    if (convertCinmToCnm(builder, op, workgroup.getResult(),
+                         computeBlock.getMaxDpuBufferSize(), {},
+                         adaptor.getOperands(), ValueRange{outputInit},
+                         op->getResults(), newResults,
+                         [&](ImplicitLocOpBuilder &builder, ValueRange inputs,
+                             ValueRange outputs) {
+                           builder.create<linalg::MatvecOp>(inputs, outputs);
+                         })
+            .failed()) {
+      return failure();
+    }
+
+    rewriter.replaceOp(op, newResults);
+    return success();
+  }
+};
+
 struct DeleteCinmCompute : public OpConversionPattern<cinm::ComputeOp> {
   using OpConversionPattern::OpConversionPattern;
 
@@ -415,7 +493,11 @@ void populateCinmRewritePatterns(RewritePatternSet &patterns,
   patterns.insert<ConvertElementWiseToCnm<cinm::MulOp, linalg::MulOp>>(ctx);
   patterns.insert<ConvertElementWiseToCnm<cinm::SubOp, linalg::SubOp>>(ctx);
   patterns.insert<ConvertElementWiseToCnm<cinm::DivOp, linalg::DivOp>>(ctx);
+  // matmul
+  patterns.insert<ConvertCinmGemmToCnm>(ctx);
+  patterns.insert<ConvertCinmGemvToCnm>(ctx);
 }
+
 struct ConvertTiledCinmToCnm
     : public ConvertTiledCinmToCnmBase<ConvertTiledCinmToCnm> {
 
