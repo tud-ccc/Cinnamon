@@ -6,6 +6,7 @@
 
 #include "cinm-mlir/Conversion/CinmPasses.h"
 #include "cinm-mlir/Conversion/CnmPasses.h"
+#include "cinm-mlir/Conversion/UPMEMPasses.h"
 #include "cinm-mlir/Dialect/Cinm/IR/CinmDialect.h"
 #include "cinm-mlir/Dialect/Cinm/Transforms/Passes.h"
 #include "cinm-mlir/Dialect/Cnm/IR/CnmDialect.h"
@@ -44,6 +45,7 @@ int main(int argc, char *argv[]) {
   registerCnmSPIRVAttachTargetAttributePass();
   registerCinmTilingPass();
   registerUPMEMOutlineKernelPass();
+  registerUPMEMConversionPasses();
 
   return asMainReturnCode(
       MlirOptMain(argc, argv, "cinm-mlir optimizer driver\n", registry));
