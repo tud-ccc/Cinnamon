@@ -49,7 +49,7 @@ func.func @gemv(%a: tensor<1024x1024xi32>, %b: tensor<1024xi32>) -> tensor<1024x
 
 func.func @max(%a: tensor<1024xi32>) -> i32 {
 	%res = cinm.compute -> i32 {
-		%d = cinm.op.max %a: tensor<1024xi32>
+		%d = cinm.op.reduce max (%a): tensor<1024xi32>
 		cinm.yield %d : i32
 	}
 	return %res: i32
