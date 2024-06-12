@@ -4,6 +4,8 @@
 
 #pragma once
 
+#include "cinm-mlir/Conversion/UPMEMToLLVM/UPMEMToLLVM.h"
+
 namespace mlir {
 
 //===- Generated passes ---------------------------------------------------===//

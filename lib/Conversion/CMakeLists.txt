@@ -11,4 +11,5 @@ add_mlir_library(CinmCommonPatterns
 
 add_subdirectory(CnmToGPU)
 add_subdirectory(CnmToUPMEM)
+add_subdirectory(UPMEMToLLVM)
 add_subdirectory(CinmToCnm)

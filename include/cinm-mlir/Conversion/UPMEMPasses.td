@@ -9,7 +9,18 @@
 
 include "mlir/Pass/PassBase.td"
 
-// def ConvertUPMEMToLLVM : ConvertToLlvm<"UPMEM", "UPMEM">;
+def ConvertUPMEMToLLVMPass : Pass<"convert-upmem-to-llvm"> {
+    let summary = "";
+    let constructor = "mlir::upmem::createConvertUPMEMToLLVMPass()";
+    let dependentDialects = [
+        "mlir::LLVM::LLVMDialect",
+        "mlir::affine::AffineDialect",
+        "mlir::arith::ArithDialect",
+        "mlir::memref::MemRefDialect",
+        "mlir::tensor::TensorDialect",
+        "mlir::upmem::UPMEMDialect"
+    ];
+}
 
 
 #endif // UPMEM_CONVERSION_PASSES//===- Passes.td - UPMEM dialect passes ---------------------*- tablegen -*-===//
