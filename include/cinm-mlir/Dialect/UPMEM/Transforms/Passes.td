@@ -10,7 +10,7 @@
 include "mlir/Pass/PassBase.td"
 
 
-def UPMEMOutlineKernelPass: Pass<"upmem-outline-kenrel", "ModuleOp"> {
+def UPMEMOutlineKernelPass: Pass<"upmem-outline-kernel", "ModuleOp"> {
   let summary = "Outlines a launch operation to a kernel and replaces it with a function call";
   let description = [{
   }];

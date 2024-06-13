@@ -360,21 +360,6 @@ def UPMEM_BaseDPUMemOffsetOp: UPMEM_Op <"base_dpu_mem_offset", []> {
 }
 
 
-class ScatterLikeOp<string mnemonic, string kw>: UPMEM_Op<mnemonic, []> {
-
-  let arguments = (ins Arg<AnyMemRef, "", [MemRead]>:$hostBuffer,
-                  I64Attr:$count,
-                  AffineMapAttr:$scatterMap,
-                  Index:$dpuMemOffset, 
-                  DeviceHierarchy:$hierarchy);
-
-  let results = (outs Index:$newMemOffset);
-
-  let assemblyFormat = [{
-     $hostBuffer `[` $count `,` $scatterMap `]` `}] # kw # [{` $hierarchy `at` $dpuMemOffset attr-dict 
-     `:` type($hostBuffer) `onto` qualified(type($hierarchy))
-  }];
-}
 
 def UPMEM_ScatterOp: UPMEM_Op<"scatter", [MemoryEffects<[MemWrite]>]> {
   let summary = "scatter data to dpus";

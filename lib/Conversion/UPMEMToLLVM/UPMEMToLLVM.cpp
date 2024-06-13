@@ -3,6 +3,7 @@
 #include "cinm-mlir/Dialect/UPMEM/IR/UPMEMAttributes.h"
 #include "cinm-mlir/Dialect/UPMEM/IR/UPMEMOps.h"
 #include "cinm-mlir/Dialect/UPMEM/IR/UPMEMTypes.h"
+#include "cinm-mlir/Conversion/UPMEMPasses.h"
 
 #include <mlir/Dialect/Affine/IR/AffineOps.h>
 #include <mlir/Dialect/Arith/IR/Arith.h>
@@ -16,15 +17,109 @@
 
 #include "mlir/Conversion/LLVMCommon/Pattern.h"
 #include "mlir/Conversion/MemRefToLLVM/MemRefToLLVM.h"
-#include "mlir/Dialect/LLVMIR/LLVMDialect.h"
+#include "mlir/Dialect/Func/IR/FuncOps.h"
 
+namespace mlir{
 #define GEN_PASS_DEF_CONVERTUPMEMTOLLVMPASS
 #include "cinm-mlir/Conversion/UPMEMPasses.h.inc"
+}
+
+// namespace mlir{
+// static func::FuncOp createToOffsetCalcFunction(OpBuilder &builder, upmem::ScatterOp scatterOp, AffineMap scatterMap){
+
+    // OpBuilder builder(scatterOp.getContext());
+    // auto offsetCalcFuncType = FunctionType::get(
+    //     rewriter.getContext(), rewriter.getIntegerType(32), rewriter.getIntegerType(32));
+    // std::string funcName("dpu_offset_calc");
+    // MLIRContext *context = module.getContext();
+    // auto result = SymbolRefAttr::get(context, funcName);
+    // auto funcOp = module.lookupSymbol<func::FuncOp>(result.getAttr());
+    // if (!funcOp){
+
+      // FunctionType funcType = FunctionType::get(
+      //     builder.getContext(), {}, {});
+      // funcOp = builder.create<func::FuncOp>(funcName, funcType);
+
+      // OpBuilder::InsertionGuard insertionGuard(builder);
+      // builder.setInsertionPoint(insertPoint);
+      // Location loc = insertPoint.getLoc();
+      // func = builder.create<func::FuncOp>(
+      //     loc, nameOstream.str(),
+      //     FunctionType::get(context, operands.getTypes(), resultTypes));
+      // func.setPrivate();
+    // }
+
+    // auto offsetCalcFuncType = FunctionType::get(
+    //     builder.getContext(), {}, {});
+
+    // auto funcAttr = StringAttr::get(op->getContext(), funcName);
+    // Operation *funcOp = SymbolTable::lookupNearestSymbolFrom(op, funcAttr);
+    // if (funcOp)
+    //   return cast<LLVMFuncOp>(*funcOp);
+
+    // auto offsetCalcFunc = builder.create<func::FuncOp>(scatterOp.getLoc(), funcName, offsetCalcFuncType);
+    // Block *funcBody = offsetCalcFunc.addEntryBlock();
+    // builder.setInsertionPointToEnd(funcBody);
+    
+    // // rewriter.create<func::ReturnOp>(loc, offsetCalcFunc.getArgument(0));
+    // builder.create<func::ReturnOp>(scatterOp.getLoc());
+    // return funcOp;
+    // Region &outlinedFuncBody = offsetCalcFunc.getBody();
+    // Block &outlinedEntryBlock = outlinedFuncBody.front();
+
+    // // 
+    // llvm::SmallVector<AffineExpr> affineDims;
+    // upmem::DeviceHierarchyType hierarchyType = op.getHierarchy().getType();
+    // ArrayRef<int64_t> hierarchy = hierarchyType.getShape();
+    // AffineExpr index = mlir::getAffineDimExpr(0, hierarchyType.getContext());
+    // affineDims.push_back(index.floorDiv(hierarchy[1]*hierarchy[2]));
+    // affineDims.push_back(index.floorDiv(hierarchy[2]) % hierarchy[1]);
+    // affineDims.push_back(index % hierarchy[2]);
+
+    // AffineMap toLinearMap = AffineMap::get(3, 0,
+    //                           affineDims, hierarchyType.getContext());
+    // newIndex = rewriter.create<AffineApplyOp>(
+    //   loc, annotation.getMap().compose(lowerAndStep),
+    //   ValueRange{operand, step, lowerBound});
+
+    // builder.setInsertionPointToEnd(&outlinedEntryBlock);
+
+    // for (auto &op : launchOpEntry.without_terminator()) {
+    //   builder.clone(op, map);
+    // }
+    // builder.create<upmem::ReturnOp>(launchOpEntry.getTerminator()->getLoc());
+
+
+// }
+// }
+
 
 namespace mlir::upmem {
 namespace upmemtollvm {
 
-static Value maybeCast(Value operand, PatternRewriter &rewriter) {
+static LLVM::LLVMFuncOp createCalcOffset(Operation *op) { 
+  using LLVM::LLVMFuncOp;
+  StringRef funcName = "calc_scatter_offset";
+  Type funcType = LLVM::LLVMFunctionType::get(LLVM::LLVMVoidType::get(op->getContext()), {});
+
+  auto funcAttr = StringAttr::get(op->getContext(), funcName);
+  Operation *funcOp = SymbolTable::lookupNearestSymbolFrom(op, funcAttr);
+  if (funcOp)
+    return cast<LLVMFuncOp>(*funcOp);
+
+
+  mlir::OpBuilder b(op->getParentOfType<FunctionOpInterface>());
+  auto newFunc =  b.create<LLVMFuncOp>(op->getLoc(), funcName, funcType);
+
+  Region &newFuncBody = newFunc.getBody();
+  newFuncBody.emplaceBlock();
+  Block &newFuncBlock = newFuncBody.front();
+  b.setInsertionPointToEnd(&newFuncBlock);
+  // b.create<LLVM::ReturnOp>(op.getLoc(), ValueRange());
+  return newFunc;
+}
+
+static Value maybeCast(Value operand, PatternRewriter &rewriter){
   Type type = operand.getType();
   if (!isa<Float16Type>(type))
     return operand;
@@ -83,8 +178,7 @@ public:
   }
 };
 
-struct ScatterOpToFuncCallLowering
-    : public ConvertOpToLLVMPattern<upmem::ScatterOp> {
+struct ScatterOpToFuncCallLowering : public ConvertOpToLLVMPattern<upmem::ScatterOp> {
 public:
   explicit ScatterOpToFuncCallLowering(LLVMTypeConverter &lowering)
       : ConvertOpToLLVMPattern<upmem::ScatterOp>(lowering) {}
@@ -101,17 +195,23 @@ public:
         op.getLoc(), adaptor.getHostBuffer(), rewriter);
     castedOperands.push_back(promoted_memref);
     // castedOperands.push_back(maybeCast(op.getHostData(), rewriter));
-    castedOperands.push_back(adaptor.getDpuMemOffset());
+    castedOperands.push_back(rewriter.getRemappedValue(op.getDpuMemOffset()));
+
     // for (Value operand : adaptor.getOperands())
     // castedOperands.push_back(maybeCast(operand, rewriter));
 
-    Type resultType = rewriter.getIntegerType(32);
-    Type funcType = getFunctionType(resultType, castedOperands);
+    SmallVector<Type> operandTypes;
+    operandTypes.push_back(castedOperands[0].getType());
+    operandTypes.push_back(castedOperands[1].getType());
+    operandTypes.push_back(rewriter.getIntegerType(64));
 
-    LLVMFuncOp funcOp = appendOrGetFuncOp("upmem_scatter", funcType, op);
-    // auto callOp =
-    //     rewriter.create<LLVM::CallOp>(op->getLoc(), funcOp, castedOperands);
-    rewriter.replaceOpWithNewOp<LLVM::CallOp>(op, funcOp, castedOperands);
+    Type funcType = LLVM::LLVMFunctionType::get(rewriter.getIntegerType(32), {});
+
+    AffineMap scatter_map = op.getScatterMap();
+    LLVMFuncOp funcOp = createCalcOffset(op);
+    rewriter.create<LLVM::CallOp>(op.getLoc(), funcOp, ValueRange());
+
+    rewriter.eraseOp(op);
     // rewriter.replaceOp(op, callOp);
     return success();
   }
@@ -264,8 +364,9 @@ void populateUPMEMToLLVMConversionPatterns(LLVMTypeConverter &typeConverter,
 }
 
 struct ConvertUPMEMToLLVMPass
-    : public ::impl::ConvertUPMEMToLLVMPassBase<ConvertUPMEMToLLVMPass> {
+    : public impl::ConvertUPMEMToLLVMPassBase<ConvertUPMEMToLLVMPass> {
   void runOnOperation() final {
+    // ModuleOp module = getOperation();
     LLVMTypeConverter converter(&getContext());
     populateUPMEMToLLVMFinalTypeConversions(converter);
     const auto addUnrealizedCast = [](OpBuilder &builder, Type type,
