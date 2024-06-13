@@ -481,6 +481,17 @@ struct ConvertCinmGemmToCnm : public OpConversionPattern<cinm::GemmOp> {
     this->setHasBoundedRewriteRecursion();
   }
 
+  static Value transpose(ImplicitLocOpBuilder &builder, Value tensor) {
+    auto inTy = tensor.getType().cast<RankedTensorType>();
+    auto shape = inTy.getShape();
+    auto newShape = ArrayRef<int64_t>{shape[1], shape[0]};
+    auto output =
+        builder.create<tensor::EmptyOp>(newShape, inTy.getElementType());
+    auto transposeRight = builder.create<linalg::TransposeOp>(
+        tensor, output.getResult(), ArrayRef<int64_t>{1, 0});
+    return transposeRight->getResult(0);
+  }
+
   LogicalResult
   matchAndRewrite(cinm::GemmOp op,
                   OpConversionPattern<cinm::GemmOp>::OpAdaptor adaptor,
@@ -494,17 +505,21 @@ struct ConvertCinmGemmToCnm : public OpConversionPattern<cinm::GemmOp> {
         op.getResult().getType(),
         builder.getZeroAttr(op.getResult().getType()));
 
+    auto transposeRight = transpose(builder, adaptor.getRight());
+    SmallVector<Value, 3> realOperands(adaptor.getOperands());
+    realOperands[1] = transposeRight;
+
     llvm::SmallVector<Value, 1> newResults;
-    if (convertCinmToCnm(
-            builder, op, workgroup.getResult(),
-            computeBlock.getMaxDpuBufferSize(), {}, adaptor.getOperands(),
-            ValueRange{outputInit}, op->getResults(), newResults,
-            [&](ImplicitLocOpBuilder &builder, ValueRange inputs,
-                ValueRange outputs) {
-              builder.create<linalg::MatmulOp>(inputs.take_front(2), outputs);
-              builder.create<linalg::AddOp>(ValueRange{inputs[2], outputs[0]},
-                                            outputs[0]);
-            })
+    if (convertCinmToCnm(builder, op, workgroup.getResult(),
+                         computeBlock.getMaxDpuBufferSize(), {1}, realOperands,
+                         ValueRange{outputInit}, op->getResults(), newResults,
+                         [&](ImplicitLocOpBuilder &builder, ValueRange inputs,
+                             ValueRange outputs) {
+                           builder.create<linalg::MatmulTransposeBOp>(
+                               inputs.take_front(2), outputs);
+                           builder.create<linalg::AddOp>(
+                               ValueRange{inputs[2], outputs[0]}, outputs[0]);
+                         })
             .failed()) {
       return failure();
     }
@@ -623,10 +638,10 @@ struct DeleteCinmCompute : public OpConversionPattern<cinm::ComputeOp> {
 
     rewriter.setInsertionPointAfter(op);
     IRMapping mapper;
-    for (auto &toCopy : op.getBody().front().without_terminator()) {
+    for (auto &toCopy : adaptor.getBody().front().without_terminator()) {
       rewriter.clone(toCopy, mapper);
     }
-    auto term = op->getBlock()->getTerminator();
+    auto term = op.getBody().front().getTerminator();
     for (auto [result, termOperand] :
          llvm::zip(op->getResults(), term->getOperands())) {
       rewriter.replaceAllUsesWith(result, mapper.lookup(termOperand));
