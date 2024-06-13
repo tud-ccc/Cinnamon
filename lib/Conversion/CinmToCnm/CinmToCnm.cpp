@@ -101,7 +101,59 @@ computeShapeOfTensors(llvm::ArrayRef<int64_t> shape, cnm::WorkgroupType wgTy,
     return failure();
   }
 
-  // Affine map has form the form (with a working group that has m dimensions):
+  // Say we have p parallel dims, m working group dimensions, and r reduction dimensions.
+  // Affine map has the form
+
+
+  // In case we have 0 reduction dimensions:
+  // Affine map has the form
+  //   F: (W1, ..., Wm) -> (T1, ..., Tp)
+  // For all w=(w1, ..., wm), F(w) must be in range,
+  // that is to say, for each dim i, 0 <= F(w)_i < |T_i|,
+  // and 
+
+  // For example consider
+  //    gemm: (tensor<1x32xi32>, tensor<32x128xi32>) -> tensor<1x128xi32>
+  //    WG: <1x128>
+  //    bufsize: 32
+  //
+  // The first tensor is <1x32>. Num par elements is 1. Broadcast:
+  //    (w0, w1) -> (0, 0)
+  // The second tensor is <32x128>. Num par elements is 128 = |WG|.
+  //    (w0, w1) -> (0, lin(w0, w1))
+  // Here we see that the elements are not contiguous though.
+  //    Transpose: <32x128> -> <128x32>
+  //    (w0, w1) -> (lin(w0, w1), 0)
+  // The output tensor is <1x128>. It matches WG shape:
+  //    (w0, w1) -> (w0, w1)
+
+  // Another example. Elementwise operators have no reduction dims.
+  //    add: tensor<16384xi32>
+  //    WG: <8x128>
+  //    bufsize: 16
+  //
+  // Both input tensors and output have same shape.
+  // Num par elements is 16384. Break this down into
+  // 16384/16=1024 buffers of 16 elements and expand shape:
+  //   T': <16384> -> <1024x16>
+  // Then scatter map is
+  //   (w0, w1) -> (lin(w0, w1), 0)
+  
+  // What if I want to do this without expand_shape?
+  // (w0, w1) -> (lin(w0, w1) * 16)
+
+  /*
+  Summary:
+  We need to support the following cases:
+  - Tensor has exactly 1 parallel element. Then broadcast. (only if it is an input)
+  - Tensor is flat and needs to be chunked. 
+  - Tensor has parallel elts = |WG| but chunks are not contiguous.
+    Need a linalg.transpose.
+
+  */
+
+
+
   // if k = 1:
   //     (t, R1,..., Rn) -> (W1,...,Wm,R1,...,Rn)
   // if k * numReductionItems <= maxBlockSize:
