@@ -7,6 +7,7 @@
 
 #include <cstdint>
 #include <llvm/ADT/ArrayRef.h>
+#include <llvm/ADT/SmallVector.h>
 #include <llvm/ADT/StringRef.h>
 #include <mlir/Dialect/Affine/IR/AffineOps.h>
 #include <mlir/Dialect/Arith/IR/Arith.h>
@@ -63,6 +64,64 @@ static SmallString<20> getUniqueFunctionName(ModuleOp moduleOp,
     name.append(std::to_string(stringNumber++));
   } while (moduleOp.lookupSymbol(name));
   return name;
+}
+
+// TODO these two functions are duplicated from CinmToCnm.cpp, share them
+
+// Turn an index in the index space of the given shape into a linear index.
+AffineExpr linearizeIndices(MLIRContext *ctx, ArrayRef<int64_t> shape) {
+
+  AffineExpr index = getAffineConstantExpr(0, ctx);
+  int64_t dimIndex = shape.size() - 1;
+  int64_t trailing = 1;
+  for (auto it = shape.rbegin(); it != shape.rend(); it++) {
+    auto dim = *it;
+    index = trailing * getAffineDimExpr(dimIndex, ctx) + index;
+    trailing *= dim;
+    dimIndex--;
+  }
+  return index;
+}
+
+// inflate a linear index into the given shape
+void structureIndex(AffineExpr index, ArrayRef<int64_t> shape,
+                    SmallVectorImpl<AffineExpr> &map) {
+
+  int64_t sizeOfTrailing = computeProduct(shape) / shape[0];
+  map.push_back(index.floorDiv(sizeOfTrailing));
+
+  AffineExpr gatherExpr = index * sizeOfTrailing;
+  size_t i = 1;
+
+  for (auto dim : llvm::drop_begin(shape, 1)) {
+    index = index % sizeOfTrailing;
+    sizeOfTrailing /= dim;
+    map.push_back(index.floorDiv(sizeOfTrailing));
+    gatherExpr = gatherExpr +
+                 mlir::getAffineDimExpr(i, index.getContext()) * sizeOfTrailing;
+    i++;
+  }
+}
+static AffineMap linearizeAffineMap(AffineMap map, ArrayRef<int64_t> inputShape,
+                                    ArrayRef<int64_t> outputShape) {
+  auto ctx = map.getContext();
+  SmallVector<AffineExpr> inflatedIndices;
+  structureIndex(getAffineDimExpr(0, ctx), inputShape, inflatedIndices);
+  AffineMap inflateMap = AffineMap::get(1, 0, inflatedIndices, ctx);
+
+  // complete map with zero dims 
+  // todo do that in CNM->UPMEM
+  auto zero = getAffineConstantExpr(0, ctx);
+  for (int i = map.getNumResults(); i < outputShape.size(); i++) {
+    map = map.insertResult(zero, i);
+  }
+
+  auto linearIndex = linearizeIndices(ctx, outputShape);
+  AffineMap linearMap = AffineMap::get(outputShape.size(), 0, linearIndex);
+
+  auto result = linearMap.compose(map).compose(inflateMap);
+  assert(result.getNumResults() == 1 && result.getNumDims() == 1);
+  return result;
 }
 
 /*
@@ -162,20 +221,24 @@ public:
 
     // generate the function
     auto moduleOp = op->getParentOfType<ModuleOp>();
-    auto sizeTy = IndexType::get(moduleOp->getContext());
-    auto affineFunTy = functionPtrTy(sizeTy, {sizeTy});
 
     LLVM::LLVMFuncOp affineMapFun;
     {
       ConversionPatternRewriter::InsertionGuard guard(rewriter);
       rewriter.setInsertionPointToStart(moduleOp.getBody());
+
+      auto sizeTy = IndexType::get(moduleOp->getContext());
+      auto affineFunTy = LLVM::LLVMFunctionType::get(sizeTy, {sizeTy});
       affineMapFun = rewriter.create<LLVM::LLVMFuncOp>(
           getUniqueFunctionName(moduleOp, "scatter_map_"), affineFunTy,
           LLVM::Linkage::Private);
+      auto linearMap = linearizeAffineMap(
+          op.getScatterMap(), op.getHierarchy().getType().getShape(),
+          op.getHostBuffer().getType().getShape());
       ImplicitLocOpBuilder rewriter = ImplicitLocOpBuilder::atBlockBegin(
           op->getLoc(), affineMapFun.addEntryBlock());
       auto apply = rewriter.create<affine::AffineApplyOp>(
-          op.getScatterMap(), ValueRange{affineMapFun.getArguments()[0]});
+          linearMap, ValueRange{affineMapFun.getArguments()[0]});
       rewriter.create<LLVM::ReturnOp>(apply.getResult());
     }
 
