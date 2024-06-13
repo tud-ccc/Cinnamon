@@ -80,7 +80,7 @@ LogicalResult ScatterOp::verify() {
            << "Affine map results (" << map.getNumResults()
            << ") do not correspond to truncated scattered tensor dimensions ("
            << tensorTy.getShape().size() << " - " << bufferTy.getShape().size()
-           << " )";
+           << ")";
   }
 
   if (tensorTy.getShape().slice(truncatedDims) != bufferTy.getShape()) {

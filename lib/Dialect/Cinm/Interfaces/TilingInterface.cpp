@@ -92,17 +92,20 @@ int64_t TilingParameters::maxNumElementsOfType(Type ty) {
   return maxBufferSizeInBytes / (bw / 8);
 }
 
-Value reshapeStatic(OpBuilder &builder, Location loc,
+Value reshapeStatic(OpBuilder &b, Location loc,
                     TypedValue<RankedTensorType> value,
                     llvm::ArrayRef<int64_t> newShape) {
-  auto newTy =
-      RankedTensorType::get(newShape, value.getType().getElementType());
+  return reshapeStatic(b, loc, value, value.getType(), newShape);
+}
+
+Value reshapeStatic(OpBuilder &builder, Location loc, Value value,
+                    RankedTensorType type, llvm::ArrayRef<int64_t> newShape) {
+  auto newTy = RankedTensorType::get(newShape, type.getElementType());
   auto reifiedShape = builder.create<arith::ConstantOp>(
       loc, RankedTensorType::get({newTy.getRank()}, builder.getI64Type()),
       builder.getI64TensorAttr(newShape));
   return builder.create<tensor::ReshapeOp>(loc, newTy, value, reifiedShape);
 }
-
 
 Value createVectorReduce(OpBuilder &builder, Location loc, Value vector,
                          Value init, ReduceAccumulatorCallback callback,
