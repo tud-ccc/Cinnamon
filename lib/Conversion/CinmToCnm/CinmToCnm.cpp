@@ -20,6 +20,7 @@
 #include <mlir/Dialect/Func/IR/FuncOps.h>
 #include <mlir/Dialect/Linalg/IR/Linalg.h>
 #include <mlir/Dialect/Tensor/IR/Tensor.h>
+#include <mlir/Dialect/Utils/IndexingUtils.h>
 #include <mlir/IR/AffineExpr.h>
 #include <mlir/IR/AffineMap.h>
 #include <mlir/IR/Builders.h>
@@ -41,6 +42,7 @@
 #include <mlir/Transforms/DialectConversion.h>
 #include <mlir/Transforms/InliningUtils.h>
 #include <numeric>
+#include <optional>
 
 using namespace mlir;
 #define GEN_PASS_CLASSES
@@ -48,21 +50,52 @@ using namespace mlir;
 
 namespace {
 
-struct ReduceToCnmRewriteParams {
-  cnm::WorkgroupType wgTy;
-  //  llvm::SmallVector<, unsigned int N>
-};
+// Turn an index in the index space of the given shape into a linear index.
+AffineExpr linearizeIndices(MLIRContext *ctx, ArrayRef<int64_t> shape) {
 
-LogicalResult
-computeShapeOfTensors(Location loc, llvm::ArrayRef<int64_t> shape,
-                      cnm::WorkgroupType wgTy, int64_t maxBlockSize,
-                      // if empty then all dims are parallel
-                      // otherwise those dims are reductions. They are
-                      // used to select the size of the buffer. The rest of
-                      // the dimensions are used to create a scattermap
-                      llvm::ArrayRef<int64_t> reductionDims,
-                      AffineMap &scatterMap, AffineMap &gatherMap,
-                      llvm::SmallVectorImpl<int64_t> &shapeOfBuffer) {
+  AffineExpr index = getAffineConstantExpr(0, ctx);
+  int64_t dimIndex = shape.size() - 1;
+  int64_t trailing = 1;
+  for (auto it = shape.rbegin(); it != shape.rend(); it++) {
+    auto dim = *it;
+    index = trailing * getAffineDimExpr(dimIndex, ctx) + index;
+    trailing *= dim;
+    dimIndex--;
+  }
+  return index;
+}
+
+// inflate a linear index into the given shape
+void structureIndex(AffineExpr index, ArrayRef<int64_t> shape,
+                    SmallVectorImpl<AffineExpr> &map) {
+
+  int64_t sizeOfTrailing = computeProduct(shape) / shape[0];
+  map.push_back(index.floorDiv(sizeOfTrailing));
+
+  AffineExpr gatherExpr = index * sizeOfTrailing;
+  size_t i = 1;
+
+  for (auto dim : llvm::drop_begin(shape, 1)) {
+    index = index % sizeOfTrailing;
+    sizeOfTrailing /= dim;
+    map.push_back(index.floorDiv(sizeOfTrailing));
+    gatherExpr = gatherExpr +
+                 mlir::getAffineDimExpr(i, index.getContext()) * sizeOfTrailing;
+    i++;
+  }
+}
+
+LogicalResult computeShapeOfTensors(
+    Location loc, llvm::ArrayRef<int64_t> shape, cnm::WorkgroupType wgTy,
+    int64_t maxBlockSize,
+    // if empty then all dims are parallel
+    // otherwise those dims are reductions. They are
+    // used to select the size of the buffer. The rest of
+    // the dimensions are used to create a scattermap
+    llvm::ArrayRef<int64_t> reductionDims, AffineMap &scatterMap,
+    llvm::SmallVectorImpl<int64_t> &shapeOfBuffer,
+
+    std::optional<llvm::SmallVector<int64_t>> &reshapeInputTo) {
   auto wgShape = wgTy.getShape();
 
   auto numWgItems =
@@ -79,6 +112,11 @@ computeShapeOfTensors(Location loc, llvm::ArrayRef<int64_t> shape,
       // this is a parallel dim
       parallelDims.push_back(shape[i]);
       numParallelElts *= shape[i];
+      if (numReductionElts > 1) {
+        // This means the reduction dims are not all at the end
+        // Todo revisit, needs a transpose
+        return failure();
+      }
     } else {
       // this is a reduction dim
       j++;
@@ -99,35 +137,117 @@ computeShapeOfTensors(Location loc, llvm::ArrayRef<int64_t> shape,
   if (parallelDims == wgShape) {
     scatterMap = AffineMap::getMultiDimIdentityMap(
         wgShape.size() + reductionDims.size(), wgTy.getContext());
-    gatherMap = scatterMap;
     return success();
   }
 
   // or 2. numParallelItems == k * numWgItems
   if (numParallelElts % numWgItems != 0) {
-    emitError(loc, "can't compute shape of tensors: numParallelElts (" +
-                       std::to_string(numParallelElts) + ") % numWgItems (" +
-                       std::to_string(numWgItems) + ") != 0");
-    return failure();
+    return emitError(loc, "can't compute shape of tensors: numParallelElts (" +
+                              std::to_string(numParallelElts) +
+                              ") % numWgItems (" + std::to_string(numWgItems) +
+                              ") != 0");
   }
 
-  // Affine map has form the form (with a working group that has m dimensions):
+  // Say we have p parallel dims, m working group dimensions, and r reduction
+  // dimensions. Affine map has the form
+
+  // In case we have 0 reduction dimensions:
+  // Affine map has the form
+  //   F: (W1, ..., Wm) -> (T1, ..., Tp)
+  // For all w=(w1, ..., wm), F(w) must be in range,
+  // that is to say, for each dim i, 0 <= F(w)_i < |T_i|,
+  // and
+
+  // For example consider
+  //    gemm: (tensor<1x32xi32>, tensor<32x128xi32>) -> tensor<1x128xi32>
+  //    WG: <1x128>
+  //    bufsize: 32
+  //
+  // The first tensor is <1x32>. Num par elements is 1. Broadcast:
+  //    (w0, w1) -> (0, 0)
+  // The second tensor is <32x128>. Num par elements is 128 = |WG|.
+  //    (w0, w1) -> (0, lin(w0, w1))
+  // Here we see that the elements are not contiguous though.
+  //    Transpose: <32x128> -> <128x32>
+  //    (w0, w1) -> (lin(w0, w1), 0)
+  // The output tensor is <1x128>. It matches WG shape:
+  //    (w0, w1) -> (w0, w1)
+
+  // IMPLNOTE: the transpose is not done in this routine. It must be
+  //   done in the caller. This rountine will fail if the reduction
+  //   dims are not at the end.
+
+  // Another example. Elementwise operators have no reduction dims.
+  //    add: tensor<16384xi32>
+  //    WG: <8x128>
+  //    bufsize: 16
+  //
+  // Both input tensors and output have same shape.
+  // Num par elements is 16384. Break this down into
+  // 16384/16=1024 buffers of 16 elements and expand shape:
+  //   T': <16384> -> <1024x16>
+  // Then scatter map is
+  //   (w0, w1) -> (lin(w0, w1), 0)
+
+  // What if I want to do this without expand_shape?
+  // (w0, w1) -> (lin(w0, w1) * 16)
+
+  /*
+  Summary:
+  We need to support the following cases:
+  - Tensor has exactly 1 parallel element. Then broadcast. (only if it is an
+  input)
+  - Tensor is flat and needs to be chunked.
+  - Tensor has parallel elts = |WG| but chunks are not contiguous.
+    Need a linalg.transpose.
+
+  */
+
   // if k = 1:
   //     (t, R1,..., Rn) -> (W1,...,Wm,R1,...,Rn)
   // if k * numReductionItems <= maxBlockSize:
   //     (t, R1,..., Rn) -> (W1,...,Wm,ki,R1,...,Rn)
   //    where ki ranges from 0 to k
-  // otherwise:
-  //     (t, R1,..., Rn) -> (ki,W1,...,Wm,b,R1,...,Rn)
-  //    where ki ranges from 0 to k/maxBlockSize,
-  //          b ranges from 0 to maxBlockSize.
-  llvm::SmallVector<AffineExpr> affineDims;
-  affineDims.reserve(wgShape.size() + reductionDims.size());
+  //
 
-  SmallVector<int64_t, 6> fullWgShape(wgShape);
   int64_t k = numBufItems / numWgItems;
   if (k != 1) {
-    if (k * numReductionElts > maxBlockSize) {
+    if (k * numReductionElts <= maxBlockSize) {
+      // In this branch we handle the case where there are no reduction
+      // dimensions, in that case we do some parallel work on the DPU, and
+      // therefore push these extra parallel elts into the buffer.
+      shapeOfBuffer.push_back(k);
+
+      // expand dimension
+      int trailing = 1;
+      int numFlattened = 0;
+      for (auto it = parallelDims.rbegin(); it != parallelDims.rend(); it++) {
+        trailing *= *it;
+        numFlattened++;
+        if (trailing >= k && trailing % k == 0) {
+          break;
+        }
+      }
+      SmallVector<int64_t> newShape;
+      for (auto [i, dim] : llvm::enumerate(parallelDims)) {
+        if (i < parallelDims.size() - numFlattened) {
+          // not flattened
+          newShape.push_back(dim);
+        } else {
+          newShape.push_back(trailing / k);
+          newShape.push_back(k);
+          break;
+        }
+      }
+      parallelDims = newShape; // our parallel dims have changed
+      parallelDims.pop_back();
+
+      for (auto dim : reductionDims)
+        newShape.push_back(dim);
+
+      reshapeInputTo = std::make_optional(std::move(newShape));
+
+    } else {
       // probably the op hasn't been tiled properly
       emitError(loc, "can't compute shape of tensors: k (" + std::to_string(k) +
                          ") * numReductionElts (" +
@@ -137,80 +257,40 @@ computeShapeOfTensors(Location loc, llvm::ArrayRef<int64_t> shape,
                          std::to_string(maxBlockSize) + ")");
       return failure();
     }
-
-    fullWgShape.push_back(k);
-    // The buffer that will be passed to the CINM launch has this dimension.
-    shapeOfBuffer.push_back(k);
   }
 
-  AffineExpr index = mlir::getAffineDimExpr(0, wgTy.getContext());
-  if (parallelDims.size() > 1) {
-    if (reductionDims.size() > 0) {
-      emitError(loc, "can't compute shape of tensors: reductionDims.size() (" +
-                         std::to_string(reductionDims.size()) + ") > 0");
-      return failure();
-    }
+  AffineExpr index = linearizeIndices(wgTy.getContext(), wgShape);
 
-    index = 0;
-    // then we "flatten" the original tensor expression
-    for (size_t i = 0; i < parallelDims.size() - 1; i++) {
-      index = index +
-              parallelDims[i] * mlir::getAffineDimExpr(i, wgTy.getContext());
-    }
-    index = index +
-            mlir::getAffineDimExpr(parallelDims.size() - 1, wgTy.getContext());
-  }
-  int64_t sizeOfTrailing = numParallelElts / fullWgShape[0];
-  affineDims.push_back(index.floorDiv(sizeOfTrailing));
+  llvm::SmallVector<AffineExpr> scatterResults;
+  scatterResults.reserve(parallelDims.size());
+  structureIndex(index, parallelDims, scatterResults);
 
-  AffineExpr gatherExpr = index * sizeOfTrailing;
-  size_t i = 1;
-
-  for (auto dim : llvm::drop_begin(fullWgShape, 1)) {
-    index = index % sizeOfTrailing;
-    sizeOfTrailing /= dim;
-    affineDims.push_back(index.floorDiv(sizeOfTrailing));
-    gatherExpr = gatherExpr +
-                 mlir::getAffineDimExpr(i, wgTy.getContext()) * sizeOfTrailing;
-    i++;
-  }
-  // reduction dims are identity
-  for (unsigned i = 0; i < reductionDims.size(); i++) {
-    affineDims.push_back(
-        mlir::getAffineDimExpr(i + parallelDims.size(), wgTy.getContext()));
-  }
-  scatterMap = AffineMap::get(parallelDims.size() + reductionDims.size(), 0,
-                              affineDims, wgTy.getContext());
-
-  llvm::SmallVector<AffineExpr> gatherMapResults;
-  gatherMapResults.reserve(1 + reductionDims.size());
-
-  gatherMapResults.push_back(gatherExpr);
-  for (unsigned i = 1; i < reductionDims.size(); i++) {
-    gatherMapResults.push_back(mlir::getAffineDimExpr(i, wgTy.getContext()));
-  }
-
-  gatherMap =
-      AffineMap::get(affineDims.size(), 0, gatherMapResults, wgTy.getContext());
+  scatterMap =
+      AffineMap::get(wgShape.size(), 0, scatterResults, wgTy.getContext());
   return success();
 }
 
-LogicalResult convertInputIntoAlloc(Value inputBuf, Value workGroup,
+LogicalResult convertInputIntoAlloc(Value &inputBuf, Value workGroup,
                                     cnm::WorkgroupType wgTy,
                                     int64_t maxBlockSize,
                                     ArrayRef<int64_t> reduceDims,
-                                    AffineMap &gatherMap, Value &result,
+                                    AffineMap &scatterMap, Value &result,
                                     ImplicitLocOpBuilder &rewriter) {
   // For each input of the reduce, we need to
 
-  AffineMap scatterMap;
   auto inputTy = inputBuf.getType().cast<RankedTensorType>();
   llvm::SmallVector<int64_t, 1> shapeOfBuffer;
-  if (computeShapeOfTensors(rewriter.getLoc(), inputTy.getShape(), wgTy,
-                            maxBlockSize, reduceDims, scatterMap, gatherMap,
-                            shapeOfBuffer)
+  std::optional<SmallVector<int64_t>> reshapeInto;
+  if (computeShapeOfTensors(inputBuf.getLoc(), inputTy.getShape(), wgTy,
+                            maxBlockSize, reduceDims, scatterMap, shapeOfBuffer,
+                            reshapeInto)
           .failed())
     return failure();
+
+  if (reshapeInto) {
+    inputBuf = cinm::reshapeStatic(rewriter, rewriter.getLoc(), inputBuf,
+                                   inputTy, *reshapeInto);
+  }
 
   // Allocate a cinm buffer
   cnm::BufferType bufTy =
@@ -255,7 +335,8 @@ LogicalResult convertCinmToCnm(
       return failure();
     }
   }
-
+  // output values, may have been reshaped
+  llvm::SmallVector<Value, 1> reshapedOutputs;
   for (auto output : outputInitializers) {
     if (convertInputIntoAlloc(output, workgroup, wgTy, maxBlockSize, {},
                               gatherMaps.emplace_back(),
@@ -263,6 +344,7 @@ LogicalResult convertCinmToCnm(
             .failed()) {
       return failure();
     }
+    reshapedOutputs.push_back(output);
   }
 
   cnm::LaunchOp launchOp =
@@ -293,13 +375,19 @@ LogicalResult convertCinmToCnm(
 
   // gather the results (only the out buffers)
 
-  for (auto [i, result, alloc] : llvm::enumerate(results, launchOutputs)) {
+  for (auto [i, reshaped, result, alloc] :
+       llvm::enumerate(reshapedOutputs, results, launchOutputs)) {
     auto map = gatherMaps[launchInputs.size() + i];
     auto res = builder.create<cnm::GatherOp>(
-        result.getType(), cnm::GatherTokenType::get(builder.getContext()),
+        reshaped.getType(), cnm::GatherTokenType::get(builder.getContext()),
         alloc, workgroup, map);
-    resultValues.push_back(res.getOutput());
+    auto shapedBack = cinm::reshapeStatic(
+        builder, builder.getLoc(), res.getOutput(),
+        result.getType().cast<RankedTensorType>().getShape());
+
+    resultValues.push_back(shapedBack);
   }
+
   return success();
 }
 
@@ -393,6 +481,17 @@ struct ConvertCinmGemmToCnm : public OpConversionPattern<cinm::GemmOp> {
     this->setHasBoundedRewriteRecursion();
   }
 
+  static Value transpose(ImplicitLocOpBuilder &builder, Value tensor) {
+    auto inTy = tensor.getType().cast<RankedTensorType>();
+    auto shape = inTy.getShape();
+    auto newShape = ArrayRef<int64_t>{shape[1], shape[0]};
+    auto output =
+        builder.create<tensor::EmptyOp>(newShape, inTy.getElementType());
+    auto transposeRight = builder.create<linalg::TransposeOp>(
+        tensor, output.getResult(), ArrayRef<int64_t>{1, 0});
+    return transposeRight->getResult(0);
+  }
+
   LogicalResult
   matchAndRewrite(cinm::GemmOp op,
                   OpConversionPattern<cinm::GemmOp>::OpAdaptor adaptor,
@@ -406,17 +505,21 @@ struct ConvertCinmGemmToCnm : public OpConversionPattern<cinm::GemmOp> {
         op.getResult().getType(),
         builder.getZeroAttr(op.getResult().getType()));
 
+    auto transposeRight = transpose(builder, adaptor.getRight());
+    SmallVector<Value, 3> realOperands(adaptor.getOperands());
+    realOperands[1] = transposeRight;
+
     llvm::SmallVector<Value, 1> newResults;
-    if (convertCinmToCnm(
-            builder, op, workgroup.getResult(),
-            computeBlock.getMaxDpuBufferSize(), {}, adaptor.getOperands(),
-            ValueRange{outputInit}, op->getResults(), newResults,
-            [&](ImplicitLocOpBuilder &builder, ValueRange inputs,
-                ValueRange outputs) {
-              builder.create<linalg::MatmulOp>(inputs.take_front(2), outputs);
-              builder.create<linalg::AddOp>(ValueRange{inputs[2], outputs[0]},
-                                            outputs[0]);
-            })
+    if (convertCinmToCnm(builder, op, workgroup.getResult(),
+                         computeBlock.getMaxDpuBufferSize(), {1}, realOperands,
+                         ValueRange{outputInit}, op->getResults(), newResults,
+                         [&](ImplicitLocOpBuilder &builder, ValueRange inputs,
+                             ValueRange outputs) {
+                           builder.create<linalg::MatmulTransposeBOp>(
+                               inputs.take_front(2), outputs);
+                           builder.create<linalg::AddOp>(
+                               ValueRange{inputs[2], outputs[0]}, outputs[0]);
+                         })
             .failed()) {
       return failure();
     }
@@ -535,10 +638,10 @@ struct DeleteCinmCompute : public OpConversionPattern<cinm::ComputeOp> {
 
     rewriter.setInsertionPointAfter(op);
     IRMapping mapper;
-    for (auto &toCopy : op.getBody().front().without_terminator()) {
+    for (auto &toCopy : adaptor.getBody().front().without_terminator()) {
       rewriter.clone(toCopy, mapper);
     }
-    auto term = op->getBlock()->getTerminator();
+    auto term = op.getBody().front().getTerminator();
     for (auto [result, termOperand] :
          llvm::zip(op->getResults(), term->getOperands())) {
       rewriter.replaceAllUsesWith(result, mapper.lookup(termOperand));

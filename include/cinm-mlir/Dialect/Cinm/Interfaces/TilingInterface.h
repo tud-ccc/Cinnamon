@@ -47,7 +47,11 @@ struct TilingParameters {
 void markOpAsNoTile(Operation *);
 
 /// Create a tensor.reshape for a fully static tensor shape
-Value reshapeStatic(OpBuilder &, Location loc,
+Value reshapeStatic(OpBuilder &, Location loc, Value value,
+                    RankedTensorType type, llvm::ArrayRef<int64_t> newShape);
+
+/// Create a tensor.reshape for a fully static tensor shape
+Value reshapeStatic(OpBuilder &b, Location loc,
                     TypedValue<RankedTensorType> value,
                     llvm::ArrayRef<int64_t> newShape);
 

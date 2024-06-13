@@ -65,21 +65,29 @@ LogicalResult ScatterOp::verify() {
   auto tensorTy = getInput().getType();
   auto bufferTy = getBuffer().getType();
   auto map = getScatterMap();
-  // The affine map maps every index in the input tensor to
-  // a cnm index which is WG-element index, and element in the buffer.
+  // The affine map maps every WG element to a prefix of the input tensor which
+  // has buffer shape
 
-  if (map.getNumInputs() != tensorTy.getShape().size()) {
+  if (map.getNumInputs() != bufferTy.getWorkgroupShape().size()) {
     return emitError() << "Affine map inputs (" << map.getNumInputs()
-                       << ") do not correspond to scattered tensor dimensions ("
-                       << tensorTy.getShape().size() << ")";
+                       << " dims) do not correspond to workgroup dimensions ("
+                       << bufferTy.getWorkgroupShape().size() << " dims)";
   }
 
-  if (map.getNumResults() !=
-      bufferTy.getWorkgroupShape().size() + bufferTy.getShape().size()) {
-    return emitError() << "Affine map results (" << map.getNumResults()
-                       << ") do not correspond to workgroup + buffer dims ("
-                       << bufferTy.getWorkgroupShape().size() << " + "
-                       << bufferTy.getShape().size() << ")";
+  auto truncatedDims = tensorTy.getShape().size() - bufferTy.getShape().size();
+  if (map.getNumResults() != truncatedDims) {
+    return emitError()
+           << "Affine map results (" << map.getNumResults()
+           << ") do not correspond to truncated scattered tensor dimensions ("
+           << tensorTy.getShape().size() << " - " << bufferTy.getShape().size()
+           << ")";
+  }
+
+  if (tensorTy.getShape().slice(truncatedDims) != bufferTy.getShape()) {
+    return emitError()
+           << "Scattered tensor shape should end with buffer shape, ("
+           << tensorTy.getShape().slice(truncatedDims)
+           << " != " << bufferTy.getShape() << ")";
   }
 
   return success();
@@ -92,18 +100,26 @@ LogicalResult GatherOp::verify() {
   // The affine map maps every WG-element index and buffer element index
   // to a result tensor index
 
-  if (map.getNumInputs() !=
-      bufferTy.getWorkgroupShape().size() + bufferTy.getShape().size()) {
+  if (map.getNumInputs() != bufferTy.getWorkgroupShape().size()) {
     return emitError() << "Affine map inputs (" << map.getNumInputs()
-                       << ") do not correspond to workgroup + buffer dims ("
-                       << bufferTy.getWorkgroupShape().size() << " + "
-                       << bufferTy.getShape().size() << ")";
+                       << " dims) do not correspond to workgroup dimensions ("
+                       << bufferTy.getWorkgroupShape().size() << " dims)";
   }
 
-  if (map.getNumResults() != tensorTy.getShape().size()) {
-    return emitError() << "Affine map results (" << map.getNumResults()
-                       << ") do not correspond to scattered tensor dimensions ("
-                       << tensorTy.getShape().size() << ")";
+  auto truncatedDims = tensorTy.getShape().size() - bufferTy.getShape().size();
+  if (map.getNumResults() != truncatedDims) {
+    return emitError()
+           << "Affine map results (" << map.getNumResults()
+           << ") do not correspond to truncated scattered tensor dimensions ("
+           << tensorTy.getShape().size() << " - " << bufferTy.getShape().size()
+           << ")";
+  }
+
+  if (tensorTy.getShape().slice(truncatedDims) != bufferTy.getShape()) {
+    return emitError()
+           << "Scattered tensor shape should end with buffer shape, ("
+           << tensorTy.getShape().slice(truncatedDims)
+           << " != " << bufferTy.getShape() << ")";
   }
 
   return success();
