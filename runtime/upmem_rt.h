@@ -15,6 +15,10 @@
 /// @param offset_in_dpu    Offset in the DPU memory at which to start copying
 /// @param base_offset      Function mapping the index of a DPU to an offset in
 /// the input tensor.
-void scatter_dpu(struct dpu_set_t *dpu_set, void *A, size_t input_size,
-                 size_t copy_bytes, size_t offset_in_dpu,
-                 size_t (*base_offset)(size_t));
+void upmemrt_scatter_dpu(struct dpu_set_t *dpu_set, void *A, size_t input_size,
+                         size_t copy_bytes, size_t offset_in_dpu,
+                         size_t (*base_offset)(size_t));
+
+void upmemrt_gather_dpu(struct dpu_set_t *dpu_set, void *A, size_t input_size,
+                        size_t copy_bytes, size_t offset_in_dpu,
+                        size_t (*base_offset)(size_t));
