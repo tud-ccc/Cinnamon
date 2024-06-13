@@ -61,9 +61,7 @@ static upmem::UPMEMFuncOp outlineKernelFuncImpl(upmem::LaunchOp launchOp,
   return outlinedFunc;
 }
 
-/// Replace `gpu.launch` operations with an `gpu.launch_func` operation
-/// launching `kernelFunc`. The kernel func contains the body of the
-/// `gpu.launch` with constant region arguments inlined.
+
 static void convertToLaunchFuncOp(upmem::LaunchOp launchOp,
                                   upmem::UPMEMFuncOp kernelFunc,
                                   ValueRange operands) {
@@ -80,40 +78,6 @@ static void convertToLaunchFuncOp(upmem::LaunchOp launchOp,
   launchOp.erase();
 }
 
-// upmem::UPMEMFuncOp mlir::outlineKernelFunc(upmem::LaunchOp launchOp,
-//                                        StringRef kernelFnName,
-//                                        llvm::SmallVectorImpl<Value>
-//                                        &operands) {
-//   DenseSet<Value> inputOperandSet;
-//   inputOperandSet.insert(operands.begin(), operands.end());
-//   SetVector<Value> operandSet(operands.begin(), operands.end());
-//   auto funcOp = outlineKernelFuncImpl(launchOp, kernelFnName, operandSet);
-//   for (auto operand : operandSet) {
-//     if (!inputOperandSet.count(operand))
-//       operands.push_back(operand);
-//   }
-//   return funcOp;
-// }
-
-// /// Replace `gpu.launch` operations with an `gpu.launch_func` operation
-// /// launching `kernelFunc`. The kernel func contains the body of the
-// /// `gpu.launch` with constant region arguments inlined.
-// static void convertToLaunchFuncOp(gpu::LaunchOp launchOp,
-//                                   gpu::GPUFuncOp kernelFunc,
-//                                   ValueRange operands) {
-//   OpBuilder builder(launchOp);
-//   // The launch op has an optional dynamic shared memory size. If it doesn't
-//   // exist, we use zero.
-//   Value asyncToken = launchOp.getAsyncToken();
-//   auto launchFunc = builder.create<gpu::LaunchFuncOp>(
-//       launchOp.getLoc(), kernelFunc, launchOp.getGridSizeOperandValues(),
-//       launchOp.getBlockSizeOperandValues(),
-//       launchOp.getDynamicSharedMemorySize(), operands,
-//       asyncToken ? asyncToken.getType() : nullptr,
-//       launchOp.getAsyncDependencies());
-//   launchOp.replaceAllUsesWith(launchFunc);
-//   launchOp.erase();
-// }
 
 //===----------------------------------------------------------------------===//
 struct UPMEMOutlineKernelPass

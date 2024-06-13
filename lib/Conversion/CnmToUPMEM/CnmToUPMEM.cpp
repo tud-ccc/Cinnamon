@@ -264,7 +264,7 @@ struct ConvertCnmLaunchToUPMEM : public OpConversionPattern<cnm::LaunchOp> {
           convertCnmBufferToMemRefType(buffer.getType().cast<BufferType>());
       const Value memref = createOrFoldUnrealizedConversionCast(
           op.getLoc(), rewriter, memrefType, rewriter.getRemappedValue(buffer));
-      addr = rewriter.create<upmem::ScatterOp>(op.getLoc(), memref, addr, wg);
+      // addr = rewriter.create<upmem::ScatterOp>(op.getLoc(), memref, addr, wg); // TODO : Update here please based on the new operation
     }
 
     // build launch op body

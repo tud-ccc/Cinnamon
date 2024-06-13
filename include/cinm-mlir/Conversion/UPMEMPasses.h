@@ -5,6 +5,10 @@
 #pragma once
 
 #include "cinm-mlir/Conversion/UPMEMToLLVM/UPMEMToLLVM.h"
+#include "mlir/IR/BuiltinOps.h"
+#include "mlir/Pass/Pass.h"
+#include "mlir/Dialect/Func/IR/FuncOps.h"
+
 
 namespace mlir {
 

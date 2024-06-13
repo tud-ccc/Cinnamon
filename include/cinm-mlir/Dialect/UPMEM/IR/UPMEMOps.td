@@ -364,13 +364,13 @@ def UPMEM_ScatterOp: UPMEM_Op <"scatter", []> {
   let description = [{
   }];
 
-  let arguments = (ins Arg<AnyMemRef, "", [MemRead]>:$host_data,
+  let arguments = (ins Arg<AnyMemRef, "", [MemRead]>:$host_data, AffineMapAttr:$scatterMap, IndexAttr:$size_to_copy,
                   Index:$dpu_mem_offset, DeviceHierarchy:$hierarchy);
 
 
   let results = (outs Index:$new_mem_offset);
   let assemblyFormat = [{
-     $host_data `into` $hierarchy `at` $dpu_mem_offset attr-dict `:` type($host_data)`,` qualified(type($hierarchy)) `,` type($dpu_mem_offset)  `->` type($new_mem_offset)
+     $host_data `[` $size_to_copy `,` $scatterMap `]` `into` $hierarchy `at` $dpu_mem_offset attr-dict `:` type($host_data)`,` qualified(type($hierarchy)) `,` type($dpu_mem_offset)  `->` type($new_mem_offset)
   }];
 }
 

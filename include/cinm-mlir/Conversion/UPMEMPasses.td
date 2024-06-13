@@ -9,7 +9,7 @@
 
 include "mlir/Pass/PassBase.td"
 
-def ConvertUPMEMToLLVMPass : Pass<"convert-upmem-to-llvm"> {
+def ConvertUPMEMToLLVMPass : Pass<"convert-upmem-to-llvm", "ModuleOp"> {
     let summary = "";
     let constructor = "mlir::upmem::createConvertUPMEMToLLVMPass()";
     let dependentDialects = [
