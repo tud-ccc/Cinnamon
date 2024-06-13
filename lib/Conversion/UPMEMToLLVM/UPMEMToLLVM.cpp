@@ -15,9 +15,8 @@
 #include <mlir/IR/ValueRange.h>
 
 #include "mlir/Conversion/LLVMCommon/Pattern.h"
-#include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/Conversion/MemRefToLLVM/MemRefToLLVM.h"
-
+#include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 
 #define GEN_PASS_DEF_CONVERTUPMEMTOLLVMPASS
 #include "cinm-mlir/Conversion/UPMEMPasses.h.inc"
@@ -25,8 +24,7 @@
 namespace mlir::upmem {
 namespace upmemtollvm {
 
-
-static Value maybeCast(Value operand, PatternRewriter &rewriter){
+static Value maybeCast(Value operand, PatternRewriter &rewriter) {
   Type type = operand.getType();
   if (!isa<Float16Type>(type))
     return operand;
@@ -41,7 +39,7 @@ static Type getFunctionType(Type resultType, ValueRange operands) {
 }
 
 static LLVM::LLVMFuncOp appendOrGetFuncOp(StringRef funcName, Type funcType,
-                                    Operation *op) { 
+                                          Operation *op) {
   using LLVM::LLVMFuncOp;
 
   auto funcAttr = StringAttr::get(op->getContext(), funcName);
@@ -53,21 +51,23 @@ static LLVM::LLVMFuncOp appendOrGetFuncOp(StringRef funcName, Type funcType,
   return b.create<LLVMFuncOp>(op->getLoc(), funcName, funcType);
 }
 
-
-struct AllocDPUOpToFuncCallLowering : public ConvertOpToLLVMPattern<upmem::AllocDPUsOp> {
+struct AllocDPUOpToFuncCallLowering
+    : public ConvertOpToLLVMPattern<upmem::AllocDPUsOp> {
 public:
   explicit AllocDPUOpToFuncCallLowering(LLVMTypeConverter &lowering)
       : ConvertOpToLLVMPattern<upmem::AllocDPUsOp>(lowering) {}
-  
+
   LogicalResult
-  matchAndRewrite(upmem::AllocDPUsOp op, typename upmem::AllocDPUsOp::Adaptor adaptor,
+  matchAndRewrite(upmem::AllocDPUsOp op,
+                  typename upmem::AllocDPUsOp::Adaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
     using LLVM::LLVMFuncOp;
-    const ArrayRef<int64_t> hierarchyShape = op.getResult().getType().getShape();
-    const Value rankCount =
-        rewriter.create<arith::ConstantOp>(op.getLoc(), rewriter.getI32IntegerAttr(hierarchyShape[0]));
-    const Value dpuCount =
-        rewriter.create<arith::ConstantOp>(op.getLoc(), rewriter.getI32IntegerAttr(hierarchyShape[1]));
+    const ArrayRef<int64_t> hierarchyShape =
+        op.getResult().getType().getShape();
+    const Value rankCount = rewriter.create<arith::ConstantOp>(
+        op.getLoc(), rewriter.getI32IntegerAttr(hierarchyShape[0]));
+    const Value dpuCount = rewriter.create<arith::ConstantOp>(
+        op.getLoc(), rewriter.getI32IntegerAttr(hierarchyShape[1]));
 
     SmallVector<Value, 1> castedOperands;
     castedOperands.push_back(maybeCast(rankCount, rewriter));
@@ -83,24 +83,27 @@ public:
   }
 };
 
-struct ScatterOpToFuncCallLowering : public ConvertOpToLLVMPattern<upmem::ScatterOp> {
+struct ScatterOpToFuncCallLowering
+    : public ConvertOpToLLVMPattern<upmem::ScatterOp> {
 public:
   explicit ScatterOpToFuncCallLowering(LLVMTypeConverter &lowering)
       : ConvertOpToLLVMPattern<upmem::ScatterOp>(lowering) {}
-  
+
   LogicalResult
-  matchAndRewrite(upmem::ScatterOp op, typename upmem::ScatterOp::Adaptor adaptor,
+  matchAndRewrite(upmem::ScatterOp op,
+                  typename upmem::ScatterOp::Adaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
     using LLVM::LLVMFuncOp;
 
     SmallVector<Value, 1> castedOperands;
-    castedOperands.push_back(rewriter.getRemappedValue(op.getHierarchy()));
-    Value promoted_memref = getTypeConverter()->promoteOneMemRefDescriptor(op.getLoc(), rewriter.getRemappedValue(op.getHostData()), rewriter);
+    castedOperands.push_back(adaptor.getHierarchy());
+    Value promoted_memref = getTypeConverter()->promoteOneMemRefDescriptor(
+        op.getLoc(), adaptor.getHostBuffer(), rewriter);
     castedOperands.push_back(promoted_memref);
     // castedOperands.push_back(maybeCast(op.getHostData(), rewriter));
-    castedOperands.push_back(rewriter.getRemappedValue(op.getDpuMemOffset()));
+    castedOperands.push_back(adaptor.getDpuMemOffset());
     // for (Value operand : adaptor.getOperands())
-      // castedOperands.push_back(maybeCast(operand, rewriter));
+    // castedOperands.push_back(maybeCast(operand, rewriter));
 
     Type resultType = rewriter.getIntegerType(32);
     Type funcType = getFunctionType(resultType, castedOperands);
@@ -114,25 +117,26 @@ public:
   }
 };
 
-
-struct GatherOpToFuncCallLowering : public ConvertOpToLLVMPattern<upmem::GatherOp> {
+struct GatherOpToFuncCallLowering
+    : public ConvertOpToLLVMPattern<upmem::GatherOp> {
 public:
   explicit GatherOpToFuncCallLowering(LLVMTypeConverter &lowering)
       : ConvertOpToLLVMPattern<upmem::GatherOp>(lowering) {}
-  
+
   LogicalResult
   matchAndRewrite(upmem::GatherOp op, typename upmem::GatherOp::Adaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
     using LLVM::LLVMFuncOp;
 
     SmallVector<Value, 1> castedOperands;
-    castedOperands.push_back(rewriter.getRemappedValue(op.getHierarchy()));
-    Value promoted_memref = getTypeConverter()->promoteOneMemRefDescriptor(op.getLoc(), rewriter.getRemappedValue(op.getHostMemref()), rewriter);
+    castedOperands.push_back(adaptor.getHierarchy());
+    Value promoted_memref = getTypeConverter()->promoteOneMemRefDescriptor(
+        op.getLoc(), adaptor.getHostBuffer(), rewriter);
     castedOperands.push_back(promoted_memref);
     // castedOperands.push_back(maybeCast(op.getHostData(), rewriter));
-    castedOperands.push_back(rewriter.getRemappedValue(op.getDpuMemOffset()));
+    castedOperands.push_back(adaptor.getDpuMemOffset());
     // for (Value operand : adaptor.getOperands())
-      // castedOperands.push_back(maybeCast(operand, rewriter));
+    // castedOperands.push_back(maybeCast(operand, rewriter));
 
     Type resultType = rewriter.getIntegerType(32);
     Type funcType = getFunctionType(resultType, castedOperands);
@@ -146,14 +150,15 @@ public:
   }
 };
 
-
-struct LaunchFuncOpToFuncCallLowering : public ConvertOpToLLVMPattern<upmem::LaunchFuncOp> {
+struct LaunchFuncOpToFuncCallLowering
+    : public ConvertOpToLLVMPattern<upmem::LaunchFuncOp> {
 public:
   explicit LaunchFuncOpToFuncCallLowering(LLVMTypeConverter &lowering)
       : ConvertOpToLLVMPattern<upmem::LaunchFuncOp>(lowering) {}
-  
+
   LogicalResult
-  matchAndRewrite(upmem::LaunchFuncOp op, typename upmem::LaunchFuncOp ::Adaptor adaptor,
+  matchAndRewrite(upmem::LaunchFuncOp op,
+                  typename upmem::LaunchFuncOp ::Adaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
     using LLVM::LLVMFuncOp;
 
@@ -173,19 +178,19 @@ public:
   }
 };
 
-
-struct BaseDPUMemOffsetOpLowering : public OpConversionPattern<upmem::BaseDPUMemOffsetOp> {
+struct BaseDPUMemOffsetOpLowering
+    : public OpConversionPattern<upmem::BaseDPUMemOffsetOp> {
 public:
   using OpConversionPattern<upmem::BaseDPUMemOffsetOp>::OpConversionPattern;
 
   LogicalResult
   matchAndRewrite(upmem::BaseDPUMemOffsetOp op, OpAdaptor,
                   ConversionPatternRewriter &rewriter) const override {
-    rewriter.replaceOpWithNewOp<arith::ConstantOp>(op, rewriter.getI32IntegerAttr(0));
+    rewriter.replaceOpWithNewOp<arith::ConstantOp>(
+        op, rewriter.getI32IntegerAttr(0));
     return success();
   }
 };
-
 
 struct EraseUPMEMModule : public OpConversionPattern<upmem::UPMEMModuleOp> {
   using OpConversionPattern<upmem::UPMEMModuleOp>::OpConversionPattern;
@@ -204,7 +209,6 @@ struct EraseUPMEMModule : public OpConversionPattern<upmem::UPMEMModuleOp> {
 //   LogicalResult
 //   matchAndRewrite(cnm::GatherOp op, OpAdaptor,
 //                   ConversionPatternRewriter &rewriter) const override {
-    
 
 //     // rewriter.replaceOp(op, results);
 //     return success();
@@ -217,7 +221,7 @@ struct EraseUPMEMModule : public OpConversionPattern<upmem::UPMEMModuleOp> {
 //   LogicalResult
 //   matchAndRewrite(cnm::LaunchOp op, OpAdaptor,
 //                   ConversionPatternRewriter &rewriter) const override {
-    
+
 //     return success();
 //   }
 // };
@@ -248,14 +252,14 @@ void populateUPMEMToLLVMFinalTypeConversions(LLVMTypeConverter &typeConverter) {
   //     });
 }
 
-
 void populateUPMEMToLLVMConversionPatterns(LLVMTypeConverter &typeConverter,
-                                          RewritePatternSet &patterns) {
+                                           RewritePatternSet &patterns) {
   patterns.add<upmemtollvm::AllocDPUOpToFuncCallLowering>(typeConverter);
   patterns.add<upmemtollvm::ScatterOpToFuncCallLowering>(typeConverter);
   patterns.add<upmemtollvm::GatherOpToFuncCallLowering>(typeConverter);
   patterns.add<upmemtollvm::LaunchFuncOpToFuncCallLowering>(typeConverter);
-  patterns.add<upmemtollvm::BaseDPUMemOffsetOpLowering>(&typeConverter.getContext());
+  patterns.add<upmemtollvm::BaseDPUMemOffsetOpLowering>(
+      &typeConverter.getContext());
   patterns.add<upmemtollvm::EraseUPMEMModule>(&typeConverter.getContext());
 }
 

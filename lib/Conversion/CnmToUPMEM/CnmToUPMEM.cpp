@@ -6,12 +6,15 @@
 #include "cinm-mlir/Dialect/UPMEM/IR/UPMEMOps.h"
 #include "cinm-mlir/Dialect/UPMEM/IR/UPMEMTypes.h"
 
+#include <cstdint>
 #include <mlir/Dialect/Affine/IR/AffineOps.h>
 #include <mlir/Dialect/Arith/IR/Arith.h>
 #include <mlir/Dialect/MemRef/IR/MemRef.h>
 #include <mlir/Dialect/Tensor/IR/Tensor.h>
+#include <mlir/Dialect/Utils/IndexingUtils.h>
 #include <mlir/IR/AffineExpr.h>
 #include <mlir/IR/AffineMap.h>
+#include <mlir/IR/BuiltinOps.h>
 #include <mlir/IR/BuiltinTypes.h>
 #include <mlir/IR/Diagnostics.h>
 #include <mlir/IR/ValueRange.h>
@@ -28,6 +31,10 @@ template <typename T> T reduceMul(ArrayRef<T> arr) {
     result *= elem;
   }
   return result;
+}
+
+MemRefType convertTensorToMemref(RankedTensorType ty) {
+  return MemRefType::get(ty.getShape(), ty.getElementType());
 }
 
 MemRefType convertCnmBufferToMemRefType(cnm::BufferType bufferType) {
@@ -113,55 +120,26 @@ struct ConvertCnmScatterToUPMEM : public OpConversionPattern<cnm::ScatterOp> {
   using OpConversionPattern<cnm::ScatterOp>::OpConversionPattern;
 
   LogicalResult
-  matchAndRewrite(cnm::ScatterOp op, OpAdaptor,
+  matchAndRewrite(cnm::ScatterOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
-    const Value tensor = op.getOperand(0);
-    const Value buffer = op.getOperand(1);
+    const Value tensor = adaptor.getInput();
     const RankedTensorType tensorType =
         tensor.getType().cast<RankedTensorType>();
-    const BufferType bufferType = buffer.getType().cast<BufferType>();
-    const MemRefType memrefType = convertCnmBufferToMemRefType(bufferType);
-    const AffineMap scatterMap = op.getScatterMap();
+    const BufferType bufferType = op.getBuffer().getType();
 
-    const Value memref = createOrFoldUnrealizedConversionCast(
-        op.getLoc(), rewriter, memrefType, rewriter.getRemappedValue(buffer));
+    const Value inputAsMemref = createOrFoldUnrealizedConversionCast(
+        op.getLoc(), rewriter, convertTensorToMemref(tensorType), tensor);
 
-    const size_t chunksPerTasklet = bufferType.getWorkgroupShape().size() == 4
-                                        ? bufferType.getWorkgroupShape().back()
-                                        : 1;
+    const int64_t transferCount = computeProduct(bufferType.getShape());
+    // todo max of the dependencies
+    const Value dpuMemOffset =
+        rewriter.create<arith::ConstantIndexOp>(op->getLoc(), 0);
 
-    const AffineMap mramMap = getElementToMRAMOffsetAffineMap(
-        op.getContext(), chunksPerTasklet, bufferType.getShape());
+    auto upmemScatter = rewriter.create<upmem::ScatterOp>(
+        op->getLoc(), rewriter.getIndexType(), inputAsMemref, transferCount,
+        op.getScatterMap(), dpuMemOffset, adaptor.getWg());
 
-    createNestedAffineForLoops(
-        rewriter, op.getLoc(), tensorType.getShape(),
-        SmallVector<int64_t>(tensorType.getRank(), 1), ValueRange{},
-        [&](OpBuilder &builder, Location loc, ValueRange tensorIndices,
-            ValueRange) -> SmallVector<Value> {
-          const Value element =
-              builder.create<tensor::ExtractOp>(loc, tensor, tensorIndices);
-
-          SmallVector<Value> bufferIndices;
-          for (size_t i = 0; i < scatterMap.getNumResults(); i++) {
-            bufferIndices.push_back(builder.create<affine::AffineApplyOp>(
-                loc,
-                AffineMap::get(tensorIndices.size(), 0,
-                               scatterMap.getResult(i)),
-                tensorIndices));
-          }
-
-          const Value mramOffset = builder.create<affine::AffineApplyOp>(
-              loc, mramMap, ValueRange{bufferIndices}.drop_front(2));
-          bufferIndices.pop_back_n(bufferIndices.size() - 2);
-          bufferIndices.push_back(mramOffset);
-
-          builder.create<affine::AffineStoreOp>(loc, element, memref,
-                                                bufferIndices);
-
-          return {};
-        });
-
-    rewriter.replaceOpWithNewOp<arith::ConstantIndexOp>(op, 0);
+    rewriter.replaceOp(op, upmemScatter);
     return success();
   }
 };
@@ -170,56 +148,29 @@ struct ConvertCnmGatherToUPMEM : public OpConversionPattern<cnm::GatherOp> {
   using OpConversionPattern<cnm::GatherOp>::OpConversionPattern;
 
   LogicalResult
-  matchAndRewrite(cnm::GatherOp op, OpAdaptor,
+  matchAndRewrite(cnm::GatherOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
-    const Value buffer = op.getOperand(0);
-    const RankedTensorType tensorType =
-        op.getResultTypes()[0].cast<RankedTensorType>();
-    const BufferType bufferType = buffer.getType().cast<BufferType>();
-    const MemRefType memrefType = convertCnmBufferToMemRefType(bufferType);
-    const AffineMap gatherMap = op.getGatherMap();
+    const RankedTensorType tensorType = op.getOutput().getType();
+    const BufferType bufferType = op.getBuffer().getType();
 
-    const Value memref = createOrFoldUnrealizedConversionCast(
-        op.getLoc(), rewriter, memrefType, rewriter.getRemappedValue(buffer));
+    const Value outputBuf = rewriter.create<memref::AllocOp>(
+        op->getLoc(), convertTensorToMemref(tensorType));
 
-    const size_t chunksPerTasklet = bufferType.getWorkgroupShape().size() == 4
-                                        ? bufferType.getWorkgroupShape().back()
-                                        : 1;
+    const int64_t transferCount = computeProduct(bufferType.getShape());
+    // todo max of the dependencies
+    const Value dpuMemOffset =
+        rewriter.create<arith::ConstantIndexOp>(op->getLoc(), 0);
 
-    const AffineMap mramMap = getMRAMOffsetToElementAffineMap(
-        op.getContext(), chunksPerTasklet, bufferType.getShape());
+    rewriter.create<upmem::GatherOp>(op->getLoc(), outputBuf, transferCount,
+                                     op.getGatherMap(), dpuMemOffset,
+                                     adaptor.getWg());
 
-    const Value resultInit = rewriter.create<tensor::EmptyOp>(
-        op.getLoc(), tensorType.getShape(), tensorType.getElementType());
+    Value outputAsTensor = createOrFoldUnrealizedConversionCast(
+        op->getLoc(), rewriter, op.getOutput().getType(), outputBuf);
 
-    SmallVector<Value> results = createNestedAffineForLoops(
-        rewriter, op.getLoc(), memrefType.getShape(),
-        SmallVector<int64_t>(memrefType.getRank(), 1), ValueRange{resultInit},
-        [&](OpBuilder &builder, Location loc, ValueRange memrefIndices,
-            ValueRange iterArgs) -> SmallVector<Value> {
-          const Value mramOffset = memrefIndices.back();
-          SmallVector<Value> bufferIndices{memrefIndices.drop_back()};
-          for (AffineExpr e : mramMap.getResults()) {
-            bufferIndices.push_back(builder.create<affine::AffineApplyOp>(
-                loc, AffineMap::get(1, 0, e), mramOffset));
-          }
+    rewriter.replaceAllUsesWith(op.getOutput(), outputAsTensor);
 
-          SmallVector<Value> tensorIndices;
-          for (size_t i = 0; i < gatherMap.getNumResults(); i++) {
-            tensorIndices.push_back(builder.create<affine::AffineApplyOp>(
-                loc,
-                AffineMap::get(bufferIndices.size(), 0, gatherMap.getResult(i)),
-                bufferIndices));
-          }
-
-          const Value element =
-              builder.create<affine::AffineLoadOp>(loc, memref, memrefIndices);
-          return {builder.create<tensor::InsertOp>(loc, element, iterArgs[0],
-                                                   tensorIndices)};
-        });
-
-    results.push_back(rewriter.create<arith::ConstantIndexOp>(op.getLoc(), 0));
-    rewriter.replaceOp(op, results);
+    rewriter.eraseOp(op);
     return success();
   }
 };
@@ -256,16 +207,6 @@ struct ConvertCnmLaunchToUPMEM : public OpConversionPattern<cnm::LaunchOp> {
     const Value taskletCount =
         rewriter.create<arith::ConstantIndexOp>(op.getLoc(), wgShape[2]);
     const size_t chunksPerTasklet = wgShape.size() == 4 ? wgShape.back() : 1;
-
-    // scatter results from host memory to dpu memory
-    Value addr = rewriter.create<upmem::BaseDPUMemOffsetOp>(op.getLoc());
-    for (Value buffer : op.getInBuffers()) {
-      const MemRefType memrefType =
-          convertCnmBufferToMemRefType(buffer.getType().cast<BufferType>());
-      const Value memref = createOrFoldUnrealizedConversionCast(
-          op.getLoc(), rewriter, memrefType, rewriter.getRemappedValue(buffer));
-      addr = rewriter.create<upmem::ScatterOp>(op.getLoc(), memref, addr, wg);
-    }
 
     // build launch op body
     upmem::LaunchOp launchOp = rewriter.create<upmem::LaunchOp>(
@@ -372,16 +313,6 @@ struct ConvertCnmLaunchToUPMEM : public OpConversionPattern<cnm::LaunchOp> {
     }
 
     rewriter.create<upmem::TerminatorOp>(op.getLoc());
-
-    // gather results from dpu memory to host memory
-    rewriter.setInsertionPointAfter(launchOp);
-    for (Value buffer : op.getOutBuffers()) {
-      const MemRefType memrefType =
-          convertCnmBufferToMemRefType(buffer.getType().cast<BufferType>());
-      const Value memref = createOrFoldUnrealizedConversionCast(
-          op.getLoc(), rewriter, memrefType, rewriter.getRemappedValue(buffer));
-      addr = rewriter.create<upmem::GatherOp>(op.getLoc(), memref, addr, wg);
-    }
 
     rewriter.eraseOp(op);
     return success();

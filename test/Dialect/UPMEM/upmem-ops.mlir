@@ -7,11 +7,11 @@ module {
     %rank_count = arith.constant 2 : index
     %dpu_count = arith.constant 32: index
     %tasklet_count = arith.constant 16 : index
-    %upmem_token = upmem.alloc_dpus : !upmem.hierarchy<2x32x16>
+    %hierarchy = upmem.alloc_dpus : !upmem.hierarchy<2x32x16>
     %base_offset = upmem.base_dpu_mem_offset : index
-    %A_offset = upmem.scatter %A into %upmem_token at %base_offset : memref<2x32x8192xi32>, !upmem.hierarchy<2x32x16>, index -> index
-    %B_offset = upmem.scatter %B into %upmem_token at %A_offset : memref<2x32x8192xi32>, !upmem.hierarchy<2x32x16>, index -> index
-    upmem.launch %upmem_token ranks(%arg0 upto %rank_count) dpus(%arg1 upto %dpu_count) tasklets(%arg2 upto %tasklet_count) on !upmem.hierarchy<2x32x16>  {
+    %A_offset = upmem.scatter %A[64, #scatter_map] onto %hierarchy at %base_offset : memref<2x32x8192xi32>, !upmem.hierarchy<2x32x16>
+    %B_offset = upmem.scatter %B[64, #scatter_map] onto %hierarchy at %A_offset : memref<2x32x8192xi32>, !upmem.hierarchy<2x32x16>
+    upmem.launch %hierarchy ranks(%arg0 upto %rank_count) dpus(%arg1 upto %dpu_count) tasklets(%arg2 upto %tasklet_count) on !upmem.hierarchy<2x32x16>  {
         %cst0 = arith.constant 0 : index
         %cst1 = arith.constant 1 : index
         %ITER_I = arith.constant 16: index // number of tasklets
@@ -45,7 +45,7 @@ module {
         }
         upmem.terminator
     }
-    %C_offset = upmem.gather %C from %upmem_token at %base_offset : memref<2x32x8192xi32>, !upmem.hierarchy<2x32x16>, index -> index
+    %C_offset = upmem.gather %C[64, #scatter_map] from %hierarchy at %base_offset : memref<2x32x8192xi32>, !upmem.hierarchy<2x32x16>
     return
   }
 }

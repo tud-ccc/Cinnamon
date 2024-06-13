@@ -359,34 +359,59 @@ def UPMEM_BaseDPUMemOffsetOp: UPMEM_Op <"base_dpu_mem_offset", []> {
   }];
 }
 
-def UPMEM_ScatterOp: UPMEM_Op <"scatter", []> {
+
+class ScatterLikeOp<string mnemonic, string kw>: UPMEM_Op<mnemonic, []> {
+
+  let arguments = (ins Arg<AnyMemRef, "", [MemRead]>:$hostBuffer,
+                  I64Attr:$count,
+                  AffineMapAttr:$scatterMap,
+                  Index:$dpuMemOffset, 
+                  DeviceHierarchy:$hierarchy);
+
+  let results = (outs Index:$newMemOffset);
+
+  let assemblyFormat = [{
+     $hostBuffer `[` $count `,` $scatterMap `]` `}] # kw # [{` $hierarchy `at` $dpuMemOffset attr-dict 
+     `:` type($hostBuffer) `onto` qualified(type($hierarchy))
+  }];
+}
+
+def UPMEM_ScatterOp: UPMEM_Op<"scatter", [MemoryEffects<[MemWrite]>]> {
   let summary = "scatter data to dpus";
   let description = [{
   }];
 
-  let arguments = (ins Arg<AnyMemRef, "", [MemRead]>:$host_data,
-                  Index:$dpu_mem_offset, DeviceHierarchy:$hierarchy);
+  let arguments = (ins Arg<AnyMemRef, "", [MemRead]>:$hostBuffer,
+                  I64Attr:$count,
+                  AffineMapAttr:$scatterMap,
+                  Index:$dpuMemOffset, 
+                  DeviceHierarchy:$hierarchy);
 
+  let results = (outs Index:$newMemOffset);
 
-  let results = (outs Index:$new_mem_offset);
   let assemblyFormat = [{
-     $host_data `into` $hierarchy `at` $dpu_mem_offset attr-dict `:` type($host_data)`,` qualified(type($hierarchy)) `,` type($dpu_mem_offset)  `->` type($new_mem_offset)
+     $hostBuffer `[` $count `,` $scatterMap `]` `onto` $hierarchy `at` $dpuMemOffset attr-dict 
+     `:` type($hostBuffer) `onto` qualified(type($hierarchy))
   }];
 }
 
 
-def UPMEM_GatherOp: UPMEM_Op <"gather", []> {
-  let summary = "gather data from dpus";
+def UPMEM_GatherOp: UPMEM_Op<"gather", [MemoryEffects<[MemWrite]>]> {
+  let summary = "Gather data from dpus into a buffer on the host";
   let description = [{
   }];
 
-  let arguments = (ins Arg<AnyMemRef, "", [MemRead]>:$host_memref,
-                  Index:$dpu_mem_offset, DeviceHierarchy:$hierarchy);
+  let arguments = (ins Arg<AnyMemRef, "", [MemWrite]>:$hostBuffer,
+                  I64Attr:$count,
+                  AffineMapAttr:$scatterMap,
+                  Index:$dpuMemOffset, 
+                  DeviceHierarchy:$hierarchy);
 
+  let results = (outs);
 
-  let results = (outs Index:$new_mem_offset);
   let assemblyFormat = [{
-     $host_memref `from` $hierarchy `at` $dpu_mem_offset attr-dict `:` type($host_memref)`,` qualified(type($hierarchy)) `,` type($dpu_mem_offset)  `->` type($new_mem_offset)
+     $hostBuffer `[` $count `,` $scatterMap `]` `from` $hierarchy `at` $dpuMemOffset attr-dict 
+     `:` type($hostBuffer) `onto` qualified(type($hierarchy))
   }];
 }
 
