@@ -1,4 +1,5 @@
 
+#include "cinm-mlir/Dialect/Cinm/IR/CinmAttributes.h"
 #include "cinm-mlir/Dialect/Cinm/IR/CinmBase.h"
 #include "cinm-mlir/Dialect/Cinm/IR/CinmOps.h"
 #include "cinm-mlir/Dialect/Cinm/Interfaces/TilingInterface.h"
@@ -26,6 +27,7 @@
 #include <mlir/IR/BuiltinAttributeInterfaces.h>
 #include <mlir/IR/BuiltinAttributes.h>
 #include <mlir/IR/BuiltinTypes.h>
+#include <mlir/IR/Diagnostics.h>
 #include <mlir/IR/IRMapping.h>
 #include <mlir/IR/ImplicitLocOpBuilder.h>
 #include <mlir/IR/Location.h>
@@ -47,7 +49,6 @@ using namespace mlir;
 #include <cinm-mlir/Conversion/CinmPasses.h.inc>
 
 namespace {
-
 
 // Turn an index in the index space of the given shape into a linear index.
 AffineExpr linearizeIndices(MLIRContext *ctx, ArrayRef<int64_t> shape) {
@@ -85,7 +86,7 @@ void structureIndex(AffineExpr index, ArrayRef<int64_t> shape,
 }
 
 LogicalResult computeShapeOfTensors(
-    llvm::ArrayRef<int64_t> shape, cnm::WorkgroupType wgTy,
+    Location loc, llvm::ArrayRef<int64_t> shape, cnm::WorkgroupType wgTy,
     int64_t maxBlockSize,
     // if empty then all dims are parallel
     // otherwise those dims are reductions. They are
@@ -123,8 +124,13 @@ LogicalResult computeShapeOfTensors(
       numReductionElts *= shape[i];
     }
   }
-  if (numReductionElts > maxBlockSize)
+
+  if (numReductionElts > maxBlockSize) {
+    emitError(loc, "can't compute shape of tensors: numReductionElts (" +
+                       std::to_string(numReductionElts) + ") > maxBlockSize (" +
+                       std::to_string(maxBlockSize) + ")");
     return failure();
+  }
 
   // Now we support two cases: either
   // 1. tensor has shape of WG
@@ -136,7 +142,10 @@ LogicalResult computeShapeOfTensors(
 
   // or 2. numParallelItems == k * numWgItems
   if (numParallelElts % numWgItems != 0) {
-    return failure();
+    return emitError(loc, "can't compute shape of tensors: numParallelElts (" +
+                              std::to_string(numParallelElts) +
+                              ") % numWgItems (" + std::to_string(numWgItems) +
+                              ") != 0");
   }
 
   // Say we have p parallel dims, m working group dimensions, and r reduction
@@ -201,14 +210,12 @@ LogicalResult computeShapeOfTensors(
   //    where ki ranges from 0 to k
   //
 
-  SmallVector<int64_t, 6> fullWgShape(wgShape);
   int64_t k = numBufItems / numWgItems;
   if (k != 1) {
     if (k * numReductionElts <= maxBlockSize) {
       // In this branch we handle the case where there are no reduction
       // dimensions, in that case we do some parallel work on the DPU, and
       // therefore push these extra parallel elts into the buffer.
-      fullWgShape.push_back(k);
       shapeOfBuffer.push_back(k);
 
       // expand dimension
@@ -242,6 +249,12 @@ LogicalResult computeShapeOfTensors(
 
     } else {
       // probably the op hasn't been tiled properly
+      emitError(loc, "can't compute shape of tensors: k (" + std::to_string(k) +
+                         ") * numReductionElts (" +
+                         std::to_string(numReductionElts) +
+                         ") > "
+                         "maxBlockSize (" +
+                         std::to_string(maxBlockSize) + ")");
       return failure();
     }
   }
@@ -268,8 +281,9 @@ LogicalResult convertInputIntoAlloc(Value &inputBuf, Value workGroup,
   auto inputTy = inputBuf.getType().cast<RankedTensorType>();
   llvm::SmallVector<int64_t, 1> shapeOfBuffer;
   std::optional<SmallVector<int64_t>> reshapeInto;
-  if (computeShapeOfTensors(inputTy.getShape(), wgTy, maxBlockSize, reduceDims,
-                            scatterMap, shapeOfBuffer, reshapeInto)
+  if (computeShapeOfTensors(inputBuf.getLoc(), inputTy.getShape(), wgTy,
+                            maxBlockSize, reduceDims, scatterMap, shapeOfBuffer,
+                            reshapeInto)
           .failed())
     return failure();
 
@@ -367,9 +381,9 @@ LogicalResult convertCinmToCnm(
     auto res = builder.create<cnm::GatherOp>(
         reshaped.getType(), cnm::GatherTokenType::get(builder.getContext()),
         alloc, workgroup, map);
-    auto shapedBack =
-        cinm::reshapeStatic(builder, builder.getLoc(), res.getOutput(),
-                            result.getType().cast<RankedTensorType>().getShape());
+    auto shapedBack = cinm::reshapeStatic(
+        builder, builder.getLoc(), res.getOutput(),
+        result.getType().cast<RankedTensorType>().getShape());
 
     resultValues.push_back(shapedBack);
   }
@@ -460,6 +474,146 @@ struct ConvertElementWiseToCnm : public OpConversionPattern<CinmOp> {
   }
 };
 
+struct ConvertCinmGemmToCnm : public OpConversionPattern<cinm::GemmOp> {
+  using OpConversionPattern<cinm::GemmOp>::OpConversionPattern;
+  ConvertCinmGemmToCnm(MLIRContext *ctx)
+      : mlir::OpConversionPattern<cinm::GemmOp>(ctx) {
+    this->setHasBoundedRewriteRecursion();
+  }
+
+  LogicalResult
+  matchAndRewrite(cinm::GemmOp op,
+                  OpConversionPattern<cinm::GemmOp>::OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+
+    ImplicitLocOpBuilder builder(op->getLoc(), rewriter);
+    cinm::ComputeOp computeBlock = mlir::cinm::getEnclosingComputeBlock(op);
+    cnm::WorkgroupOp workgroup =
+        builder.create<cnm::WorkgroupOp>(computeBlock.getCnmWorkgroupType());
+    auto outputInit = builder.create<arith::ConstantOp>(
+        op.getResult().getType(),
+        builder.getZeroAttr(op.getResult().getType()));
+
+    llvm::SmallVector<Value, 1> newResults;
+    if (convertCinmToCnm(
+            builder, op, workgroup.getResult(),
+            computeBlock.getMaxDpuBufferSize(), {}, adaptor.getOperands(),
+            ValueRange{outputInit}, op->getResults(), newResults,
+            [&](ImplicitLocOpBuilder &builder, ValueRange inputs,
+                ValueRange outputs) {
+              builder.create<linalg::MatmulOp>(inputs.take_front(2), outputs);
+              builder.create<linalg::AddOp>(ValueRange{inputs[2], outputs[0]},
+                                            outputs[0]);
+            })
+            .failed()) {
+      return failure();
+    }
+
+    rewriter.replaceOp(op, newResults);
+    return success();
+  }
+};
+
+struct ConvertCinmGemvToCnm : public OpConversionPattern<cinm::GemvOp> {
+  using OpConversionPattern<cinm::GemvOp>::OpConversionPattern;
+  ConvertCinmGemvToCnm(MLIRContext *ctx)
+      : mlir::OpConversionPattern<cinm::GemvOp>(ctx) {
+    this->setHasBoundedRewriteRecursion();
+  }
+
+  LogicalResult
+  matchAndRewrite(cinm::GemvOp op,
+                  OpConversionPattern<cinm::GemvOp>::OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+
+    ImplicitLocOpBuilder builder(op->getLoc(), rewriter);
+    cinm::ComputeOp computeBlock = mlir::cinm::getEnclosingComputeBlock(op);
+    cnm::WorkgroupOp workgroup =
+        builder.create<cnm::WorkgroupOp>(computeBlock.getCnmWorkgroupType());
+    auto outputInit = builder.create<arith::ConstantOp>(
+        op.getResult().getType(),
+        builder.getZeroAttr(op.getResult().getType()));
+
+    llvm::SmallVector<Value, 1> newResults;
+    if (convertCinmToCnm(builder, op, workgroup.getResult(),
+                         computeBlock.getMaxDpuBufferSize(), {},
+                         adaptor.getOperands(), ValueRange{outputInit},
+                         op->getResults(), newResults,
+                         [&](ImplicitLocOpBuilder &builder, ValueRange inputs,
+                             ValueRange outputs) {
+                           builder.create<linalg::MatvecOp>(inputs, outputs);
+                         })
+            .failed()) {
+      return failure();
+    }
+
+    rewriter.replaceOp(op, newResults);
+    return success();
+  }
+};
+
+struct ConvertCinmReduceToCnm : public OpConversionPattern<cinm::ReduceOp> {
+  using OpConversionPattern<cinm::ReduceOp>::OpConversionPattern;
+  ConvertCinmReduceToCnm(MLIRContext *ctx)
+      : mlir::OpConversionPattern<cinm::ReduceOp>(ctx) {
+    this->setHasBoundedRewriteRecursion();
+  }
+
+  LogicalResult
+  matchAndRewrite(cinm::ReduceOp op,
+                  OpConversionPattern<cinm::ReduceOp>::OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+
+    ImplicitLocOpBuilder builder(op->getLoc(), rewriter);
+    cinm::ComputeOp computeBlock = mlir::cinm::getEnclosingComputeBlock(op);
+    cnm::WorkgroupOp workgroup =
+        builder.create<cnm::WorkgroupOp>(computeBlock.getCnmWorkgroupType());
+    auto outputInit = builder.create<arith::ConstantOp>(
+        op.getResult().getType(),
+        builder.getZeroAttr(op.getResult().getType()));
+
+    llvm::SmallVector<Value, 1> newResults;
+    if (convertCinmToCnm(
+            builder, op, workgroup.getResult(),
+            computeBlock.getMaxDpuBufferSize(), {}, adaptor.getOperands(),
+            ValueRange{outputInit}, op->getResults(), newResults,
+            [&](ImplicitLocOpBuilder &builder, ValueRange inputs,
+                ValueRange outputs) {
+              builder.create<linalg::ReduceOp>(
+                  inputs, outputs, ArrayRef<int64_t>{0},
+                  [&](OpBuilder &builder, Location loc,
+                      ValueRange inputs) -> void {
+                    Value result;
+                    switch (op.getMethod()) {
+                    case mlir::cinm::ReduceMethod::ADD: {
+                      result = builder.create<arith::AddIOp>(loc, inputs[0],
+                                                             inputs[1]);
+                    } break;
+                    case mlir::cinm::ReduceMethod::MUL: {
+                      result = builder.create<arith::MulIOp>(loc, inputs[0],
+                                                             inputs[1]);
+                    } break;
+                    case mlir::cinm::ReduceMethod::MAX: {
+                      result = builder.create<arith::MaxSIOp>(loc, inputs[0],
+                                                              inputs[1]);
+                    } break;
+                    case mlir::cinm::ReduceMethod::MIN: {
+                      result = builder.create<arith::MinSIOp>(loc, inputs[0],
+                                                              inputs[1]);
+                    } break;
+                    }
+                    builder.create<linalg::YieldOp>(loc, result);
+                  });
+            })
+            .failed()) {
+      return failure();
+    }
+
+    rewriter.replaceOp(op, newResults);
+    return success();
+  }
+};
+
 struct DeleteCinmCompute : public OpConversionPattern<cinm::ComputeOp> {
   using OpConversionPattern::OpConversionPattern;
 
@@ -490,7 +644,13 @@ void populateCinmRewritePatterns(RewritePatternSet &patterns,
   patterns.insert<ConvertElementWiseToCnm<cinm::MulOp, linalg::MulOp>>(ctx);
   patterns.insert<ConvertElementWiseToCnm<cinm::SubOp, linalg::SubOp>>(ctx);
   patterns.insert<ConvertElementWiseToCnm<cinm::DivOp, linalg::DivOp>>(ctx);
+  // matmul
+  patterns.insert<ConvertCinmGemmToCnm>(ctx);
+  patterns.insert<ConvertCinmGemvToCnm>(ctx);
+  // reduce
+  patterns.insert<ConvertCinmReduceToCnm>(ctx);
 }
+
 struct ConvertTiledCinmToCnm
     : public ConvertTiledCinmToCnmBase<ConvertTiledCinmToCnm> {
 
