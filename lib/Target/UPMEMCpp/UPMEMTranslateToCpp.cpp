@@ -268,7 +268,7 @@ static LogicalResult printOperation(CppEmitter &emitter,
                                     memref::StoreOp storeOp) {
   raw_ostream &os = emitter.ostream();
   os << emitter.getOrCreateName(storeOp->getOperand(1));
-  os << "[" << emitter.getOrCreateName(storeOp->getOperand(1))  << "]";
+  os << "[" << emitter.getOrCreateName(storeOp->getOperand(2))  << "]";
   os << " = " << emitter.getOrCreateName(storeOp->getOperand(0)) ;
   return success();
 }
@@ -289,7 +289,7 @@ static LogicalResult printOperation(CppEmitter &emitter,
   Type type = dyn_cast<MemRefType>(memcpyOp.getOperand(0).getType()).getElementType();
   std::string size_string; 
   if (dyn_cast<IntegerType>(type)){
-    size_string = "*sizeof(int))";
+    size_string = "*sizeof(int)";
   } else if (dyn_cast<FloatType>(type)){
     size_string = "*sizeof(float)";
   }
@@ -616,7 +616,7 @@ static LogicalResult printOperation(CppEmitter &emitter,
 static LogicalResult printOperation(CppEmitter &emitter,
                                     upmem::ReturnOp returnOp) {
   raw_ostream &os = emitter.ostream();
-  os << "return 0";
+  os << "return";
   return success();
 
 }
@@ -651,7 +651,7 @@ static LogicalResult printOperation(CppEmitter &emitter, ModuleOp moduleOp) {
 
 static void printUPMEMIncludes(CppEmitter &emitter) {
   raw_ostream &os = emitter.ostream();
-  os << "#include \"dpu_lib.h\n\"";
+  os << "#include \"dpu_lib.h\"\n";
 }
 
 static void printUPMEMInit(CppEmitter &emitter) {
