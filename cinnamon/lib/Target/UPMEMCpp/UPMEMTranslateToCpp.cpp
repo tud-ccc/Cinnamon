@@ -6,8 +6,8 @@
 //
 //===----------------------------------------------------------------------===//
 #include "cinm-mlir/Dialect/UPMEM/IR/UPMEMDialect.h"
+#include "cinm-mlir/Dialect/UPMEM/IR/UPMEMOps.h"
 #include "cinm-mlir/Target/UPMEMCpp/UPMEMCppEmitter.h"
-
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/ControlFlow/IR/ControlFlowOps.h"
@@ -27,6 +27,9 @@
 #include "llvm/ADT/TypeSwitch.h"
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/FormatVariadic.h"
+#include <llvm/Support/Casting.h>
+#include <mlir/IR/Visitors.h>
+#include <mlir/Support/LogicalResult.h>
 #include <utility>
 
 #define DEBUG_TYPE "translate-to-upmem-cpp"
@@ -103,7 +106,7 @@ struct CppEmitter {
                                         bool trailingSemicolon);
 
   LogicalResult emitMemVariableDeclaration(OpResult result,
-                                        bool trailingSemicolon);
+                                           bool trailingSemicolon);
 
   /// Emits the variable declaration and assignment prefix for 'op'.
   /// - emits separate variable followed by std::tie for multi-valued operation;
@@ -190,7 +193,6 @@ private:
 };
 } // namespace
 
-
 static LogicalResult printConstantOp(CppEmitter &emitter, Operation *operation,
                                      Attribute value) {
   OpResult result = operation->getResult(0);
@@ -225,7 +227,7 @@ static LogicalResult printOperation(CppEmitter &emitter,
   raw_ostream &os = emitter.ostream();
   if (failed(emitter.emitAssignPrefix(*heapOp)))
     return failure();
-  os << "(uint32_t)DPU_MRAM_HEAP_POINTER";
+  os << "(uint32_t) DPU_MRAM_HEAP_POINTER";
   return success();
 }
 
@@ -237,21 +239,20 @@ static LogicalResult printOperation(CppEmitter &emitter,
   MemRefType res_type = dyn_cast<MemRefType>(wramAllocOp.getResult().getType());
   int size = res_type.getNumElements();
   Type single_element = res_type.getElementType();
-  if (dyn_cast<IntegerType>(single_element)){
-    os << "(int *)";
-  } else if (dyn_cast<FloatType>(single_element)){
-    os << "(float *)";
+  if (dyn_cast<IntegerType>(single_element)) {
+    os << "(int*) ";
+  } else if (dyn_cast<FloatType>(single_element)) {
+    os << "(float*) ";
   }
-  os << "dpu_wram_alloc (" << size;
-  if (dyn_cast<IntegerType>(single_element)){
-    os << "*sizeof(int))";
-  } else if (dyn_cast<FloatType>(single_element)){
-    os << "*sizeof(float))";
+  os << "dpu_wram_alloc(" << size;
+  if (dyn_cast<IntegerType>(single_element)) {
+    os << " * sizeof(int))";
+  } else if (dyn_cast<FloatType>(single_element)) {
+    os << " * sizeof(float))";
   }
 
   return success();
 }
-
 
 static LogicalResult printOperation(CppEmitter &emitter,
                                     memref::LoadOp loadOp) {
@@ -260,7 +261,7 @@ static LogicalResult printOperation(CppEmitter &emitter,
     return failure();
 
   os << emitter.getOrCreateName(loadOp->getOperand(0));
-  os << "[" << emitter.getOrCreateName(loadOp->getOperand(1))  << "]";
+  os << "[" << emitter.getOrCreateName(loadOp->getOperand(1)) << "]";
   return success();
 }
 
@@ -268,42 +269,39 @@ static LogicalResult printOperation(CppEmitter &emitter,
                                     memref::StoreOp storeOp) {
   raw_ostream &os = emitter.ostream();
   os << emitter.getOrCreateName(storeOp->getOperand(1));
-  os << "[" << emitter.getOrCreateName(storeOp->getOperand(2))  << "]";
-  os << " = " << emitter.getOrCreateName(storeOp->getOperand(0)) ;
+  os << "[" << emitter.getOrCreateName(storeOp->getOperand(2)) << "]";
+  os << " = " << emitter.getOrCreateName(storeOp->getOperand(0));
   return success();
 }
-
-
 
 static LogicalResult printOperation(CppEmitter &emitter,
                                     upmem::MemcpyOp memcpyOp) {
   raw_ostream &os = emitter.ostream();
-  os << "dpu_memcpy (";
+  os << "dpu_memcpy(";
   auto direction = memcpyOp.getDirection();
-  if (direction == upmem::MemcpyDirOp::MRAMToWRAM){
-    os << "MRAMToWRAM,";
-  } else if (direction == upmem::MemcpyDirOp::WRAMToMRAM){
-    os << "WRAMToMRAM,";
+  if (direction == upmem::MemcpyDirOp::MRAMToWRAM) {
+    os << "MRAMToWRAM, ";
+  } else if (direction == upmem::MemcpyDirOp::WRAMToMRAM) {
+    os << "WRAMToMRAM, ";
   }
-  
-  Type type = dyn_cast<MemRefType>(memcpyOp.getOperand(0).getType()).getElementType();
-  std::string size_string; 
-  if (dyn_cast<IntegerType>(type)){
-    size_string = "*sizeof(int)";
-  } else if (dyn_cast<FloatType>(type)){
-    size_string = "*sizeof(float)";
+
+  Type type =
+      dyn_cast<MemRefType>(memcpyOp.getOperand(0).getType()).getElementType();
+  std::string size_string;
+  if (dyn_cast<IntegerType>(type)) {
+    size_string = " * sizeof(int)";
+  } else if (dyn_cast<FloatType>(type)) {
+    size_string = " * sizeof(float)";
   }
   os << emitter.getOrCreateName(memcpyOp->getOperand(0));
   os << ", ";
   os << emitter.getOrCreateName(memcpyOp->getOperand(1));
   os << size_string << ", ";
   os << emitter.getOrCreateName(memcpyOp->getOperand(2));
-  os << size_string << ")"; 
+  os << size_string << ")";
 
   return success();
 }
-
-
 
 static LogicalResult printOperation(CppEmitter &emitter,
                                     arith::ConstantOp constantOp) {
@@ -346,7 +344,6 @@ static LogicalResult printOperation(CppEmitter &emitter, arith::MulIOp mulOp) {
 
   return printBinaryOperation(emitter, operation, "*");
 }
-
 
 static LogicalResult printOperation(CppEmitter &emitter,
                                     cf::BranchOp branchOp) {
@@ -426,7 +423,6 @@ static LogicalResult printOperation(CppEmitter &emitter, func::CallOp callOp) {
   return success();
 }
 
-
 static LogicalResult printDPUIncludes(CppEmitter &emitter) {
   raw_ostream &os = emitter.ostream();
 
@@ -440,8 +436,6 @@ static LogicalResult printDPUReset(CppEmitter &emitter) {
   os << "dpu_reset();\n";
   return success();
 }
-
-
 
 static LogicalResult printOperation(CppEmitter &emitter, scf::ForOp forOp) {
 
@@ -612,17 +606,15 @@ static LogicalResult printOperation(CppEmitter &emitter,
   }
 }
 
-
 static LogicalResult printOperation(CppEmitter &emitter,
                                     upmem::ReturnOp returnOp) {
   raw_ostream &os = emitter.ostream();
   os << "return";
   return success();
-
 }
 
-
-static LogicalResult printOperation(CppEmitter &emitter, upmem::UPMEMModuleOp moduleOp) {
+static LogicalResult printOperation(CppEmitter &emitter,
+                                    upmem::UPMEMModuleOp moduleOp) {
   CppEmitter::Scope scope(emitter);
 
   for (Operation &op : moduleOp) {
@@ -635,7 +627,6 @@ static LogicalResult printOperation(CppEmitter &emitter, upmem::UPMEMModuleOp mo
 static LogicalResult printOperation(CppEmitter &emitter,
                                     upmem::ModuleEndOp op) {
   return success();
-
 }
 
 static LogicalResult printOperation(CppEmitter &emitter, ModuleOp moduleOp) {
@@ -648,7 +639,6 @@ static LogicalResult printOperation(CppEmitter &emitter, ModuleOp moduleOp) {
   return success();
 }
 
-
 static void printUPMEMIncludes(CppEmitter &emitter) {
   raw_ostream &os = emitter.ostream();
   os << "#include \"dpu_lib.h\"\n";
@@ -658,7 +648,6 @@ static void printUPMEMInit(CppEmitter &emitter) {
   raw_ostream &os = emitter.ostream();
   os << "init_tasklet();\n";
 }
-
 
 static LogicalResult printOperation(CppEmitter &emitter,
                                     upmem::UPMEMFuncOp functionOp) {
@@ -950,7 +939,6 @@ LogicalResult CppEmitter::emitVariableDeclaration(OpResult result,
   return success();
 }
 
-
 LogicalResult CppEmitter::emitAssignPrefix(Operation &op) {
   switch (op.getNumResults()) {
   case 0:
@@ -995,7 +983,8 @@ LogicalResult CppEmitter::emitOperation(Operation &op, bool trailingSemicolon) {
   LogicalResult status =
       llvm::TypeSwitch<Operation *, LogicalResult>(&op)
           // Builtin ops.
-          .Case<upmem::UPMEMModuleOp>([&](auto op) { return printOperation(*this, op); })
+          .Case<upmem::UPMEMModuleOp>(
+              [&](auto op) { return printOperation(*this, op); })
           .Case<ModuleOp>([&](auto op) { return printOperation(*this, op); })
           // CF ops.
           .Case<cf::BranchOp, cf::CondBranchOp>(
@@ -1004,7 +993,8 @@ LogicalResult CppEmitter::emitOperation(Operation &op, bool trailingSemicolon) {
           .Case<arith::MulIOp, arith::AddIOp>(
               [&](auto op) { return printOperation(*this, op); })
           // Func ops.
-          .Case<func::CallOp, func::ConstantOp, func::FuncOp, upmem::UPMEMFuncOp, func::ReturnOp, upmem::ReturnOp>(
+          .Case<func::CallOp, func::ConstantOp, func::FuncOp,
+                upmem::UPMEMFuncOp, func::ReturnOp, upmem::ReturnOp>(
               [&](auto op) { return printOperation(*this, op); })
           // SCF ops.
           .Case<scf::ForOp, scf::IfOp, scf::YieldOp>(
@@ -1025,7 +1015,7 @@ LogicalResult CppEmitter::emitOperation(Operation &op, bool trailingSemicolon) {
               [&](auto op) { return printOperation(*this, op); })
           .Case<memref::StoreOp>(
               [&](auto op) { return printOperation(*this, op); })
-              // [&](auto op) { skipSemicolon = true; return success(); })
+          // [&](auto op) { skipSemicolon = true; return success(); })
           .Default([&](Operation *) {
             return op.emitOpError("unable to find printer for op");
           });
@@ -1086,9 +1076,9 @@ LogicalResult CppEmitter::emitType(Location loc, Type type) {
     return emitTupleType(loc, tType.getTypes());
   if (auto pType = dyn_cast<MemRefType>(type)) {
     Type type = pType.getElementType();
-    if (auto t = dyn_cast<IntegerType>(type)){
-      os << "int "; 
-    } else if (auto t = dyn_cast<FloatType>(type)){
+    if (auto t = dyn_cast<IntegerType>(type)) {
+      os << "int ";
+    } else if (auto t = dyn_cast<FloatType>(type)) {
       os << "float ";
     }
     os << "*";
@@ -1119,7 +1109,16 @@ LogicalResult CppEmitter::emitTupleType(Location loc, ArrayRef<Type> types) {
 }
 
 LogicalResult upmem_emitc::UPMEMtranslateToCpp(Operation *op, raw_ostream &os,
-                                    bool declareVariablesAtTop) {
+                                               bool declareVariablesAtTop) {
   CppEmitter emitter(os, declareVariablesAtTop);
-  return emitter.emitOperation(*op, /*trailingSemicolon=*/false);
+  LogicalResult res = success();
+  op->walk<WalkOrder::PreOrder>([&](Operation *child) {
+    if (llvm::isa<upmem::UPMEMModuleOp>(child)) {
+      res = emitter.emitOperation(*child, /*trailingSemicolon=*/false);
+      return WalkResult::interrupt();
+    } else if (llvm::isa<ModuleOp>(child))
+      return WalkResult::advance();
+    return WalkResult::skip();
+  });
+  return res;
 }

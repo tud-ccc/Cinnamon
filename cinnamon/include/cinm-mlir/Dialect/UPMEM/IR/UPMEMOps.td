@@ -430,7 +430,7 @@ def UPMEM_ModuleEndOp : UPMEM_Op<"module_end", [
 
 def UPMEM_UPMEMFuncOp : UPMEM_Op<"func", [
     HasParent<"UPMEMModuleOp">, AutomaticAllocationScope, FunctionOpInterface,
-    IsolatedFromAbove, SingleBlockImplicitTerminator<"ReturnOp">]
+    IsolatedFromAbove]
   > {
   let summary = "Function executable on a UPMEM";
 

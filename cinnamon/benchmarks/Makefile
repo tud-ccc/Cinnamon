@@ -14,7 +14,7 @@ $(BENCH_NAME).cnm.mlir: $(BENCH_NAME).tiled.mlir
 	$(CINM_OPT) $< --convert-cinm-to-cnm --func-bufferize --lower-affine --scf-bufferize  --tensor-bufferize --arith-bufferize --bufferization-bufferize --cse > $@
 
 $(BENCH_NAME).upmem.mlir: $(BENCH_NAME).cnm.mlir
-	$(CINM_OPT) $< --convert-cnm-to-upmem --upmem-outline-kernel --cse > $@
+	$(CINM_OPT) $< --convert-cnm-to-upmem --convert-linalg-to-affine-loops --lower-affine --upmem-outline-kernel --cse > $@
 
 $(BENCH_NAME).llvm.mlir: $(BENCH_NAME).upmem.mlir
 	$(CINM_OPT) $< --mlir-print-ir-after-failure --canonicalize \
