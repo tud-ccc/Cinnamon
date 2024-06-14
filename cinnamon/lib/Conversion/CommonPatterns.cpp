@@ -1,9 +1,50 @@
 #include "cinm-mlir/Conversion/CommonPatterns.h"
 
+#include "mlir/Dialect/Bufferization/IR/Bufferization.h"
 #include <mlir/Dialect/Affine/IR/AffineOps.h>
 #include <mlir/Dialect/MemRef/IR/MemRef.h>
+#include <mlir/Transforms/DialectConversion.h>
 
 namespace mlir {
+
+namespace {
+
+struct DeleteToMemref : public OpConversionPattern<bufferization::ToMemrefOp> {
+  using OpConversionPattern::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(bufferization::ToMemrefOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter0) const override {
+
+    auto toCast = createOrFoldUnrealizedConversionCast(
+        op->getLoc(), rewriter0, op.getResult().getType(), adaptor.getTensor());
+
+    rewriter0.replaceAllUsesWith(op.getResult(), toCast);
+    rewriter0.eraseOp(op);
+    return success();
+  }
+};
+struct DeleteToTensor : public OpConversionPattern<bufferization::ToTensorOp> {
+  using OpConversionPattern::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(bufferization::ToTensorOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter0) const override {
+
+    auto toCast = createOrFoldUnrealizedConversionCast(
+        op->getLoc(), rewriter0, op.getResult().getType(), adaptor.getMemref());
+
+    rewriter0.replaceAllUsesWith(op.getResult(), toCast);
+    rewriter0.eraseOp(op);
+    return success();
+  }
+};
+} // namespace
+
+void populateFinalBufferizationPatterns(RewritePatternSet &set) {
+  set.insert<DeleteToMemref>(set.getContext());
+  set.insert<DeleteToTensor>(set.getContext());
+}
 
 Value createOrFoldUnrealizedConversionCast(Location loc, OpBuilder &builder,
                                            Type dstType, Value value) {

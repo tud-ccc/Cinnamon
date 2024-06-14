@@ -9,11 +9,14 @@
 #include <mlir/IR/Builders.h>
 #include <mlir/IR/Location.h>
 #include <mlir/IR/OpDefinition.h>
+#include <mlir/IR/PatternMatch.h>
 #include <mlir/IR/ValueRange.h>
 #include <mlir/Support/LLVM.h>
 #include <mlir/Transforms/DialectConversion.h>
 
 namespace mlir {
+
+void populateFinalBufferizationPatterns(RewritePatternSet& set);
 
 Value createOrFoldUnrealizedConversionCast(Location loc, OpBuilder &builder,
                                            Type dstType, Value value);

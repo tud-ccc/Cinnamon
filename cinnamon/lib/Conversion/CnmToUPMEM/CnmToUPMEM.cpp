@@ -9,6 +9,7 @@
 #include <cstdint>
 #include <mlir/Dialect/Affine/IR/AffineOps.h>
 #include <mlir/Dialect/Arith/IR/Arith.h>
+#include <mlir/Dialect/Bufferization/IR/Bufferization.h>
 #include <mlir/Dialect/MemRef/IR/MemRef.h>
 #include <mlir/Dialect/Tensor/IR/Tensor.h>
 #include <mlir/Dialect/Utils/IndexingUtils.h>
@@ -373,9 +374,11 @@ struct ConvertCnmToUPMEMPass
     RewritePatternSet patterns(&getContext());
     populateCnmToUPMEMConversionPatterns(converter, patterns);
     populateReconcileUnrealizedCastsPatterns(patterns);
+    populateFinalBufferizationPatterns(patterns);
 
     ConversionTarget target(getContext());
     target.addIllegalDialect<cnm::CnmDialect>();
+    target.addIllegalDialect<bufferization::BufferizationDialect>();
 
     target.markUnknownOpDynamicallyLegal([](Operation *) { return true; });
 

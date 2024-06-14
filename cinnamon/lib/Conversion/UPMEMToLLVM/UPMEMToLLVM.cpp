@@ -32,8 +32,8 @@
 
 #include "mlir/Conversion/LLVMCommon/Pattern.h"
 #include "mlir/Conversion/MemRefToLLVM/MemRefToLLVM.h"
-#include "mlir/Dialect/Bufferization/IR/Bufferization.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
+#include <mlir/Dialect/Bufferization/IR/Bufferization.h>
 #include <mlir/Dialect/LLVMIR/FunctionCallUtils.h>
 #include <mlir/IR/Visitors.h>
 #include <mlir/Support/LogicalResult.h>
@@ -337,7 +337,8 @@ public:
   matchAndRewrite(upmem::ScatterOp op,
                   typename upmem::ScatterOp::Adaptor adaptor,
                   ConversionPatternRewriter &rewriter0) const override {
-    return lowerScatterOrGather(op, adaptor, getTypeConverter(), rewriter0);
+    return lowerScatterOrGather(op, adaptor, getTypeConverter(), rewriter0,
+                                false);
   }
 };
 
@@ -350,44 +351,8 @@ public:
   LogicalResult
   matchAndRewrite(upmem::GatherOp op, typename upmem::GatherOp::Adaptor adaptor,
                   ConversionPatternRewriter &rewriter0) const override {
-    return lowerScatterOrGather(op, adaptor, getTypeConverter(), rewriter0);
-  }
-};
-
-struct DeleteToMemref
-    : public ConvertOpToLLVMPattern<bufferization::ToMemrefOp> {
-public:
-  explicit DeleteToMemref(LLVMTypeConverter &lowering)
-      : ConvertOpToLLVMPattern<bufferization::ToMemrefOp>(lowering) {}
-
-  LogicalResult
-  matchAndRewrite(bufferization::ToMemrefOp op, OpAdaptor adaptor,
-                  ConversionPatternRewriter &rewriter0) const override {
-
-    auto toCast = createOrFoldUnrealizedConversionCast(
-        op->getLoc(), rewriter0, op.getResult().getType(), adaptor.getTensor());
-
-    rewriter0.replaceAllUsesWith(op.getResult(), toCast);
-    rewriter0.eraseOp(op);
-    return success();
-  }
-};
-struct DeleteToTensor
-    : public ConvertOpToLLVMPattern<bufferization::ToTensorOp> {
-public:
-  explicit DeleteToTensor(LLVMTypeConverter &lowering)
-      : ConvertOpToLLVMPattern<bufferization::ToTensorOp>(lowering) {}
-
-  LogicalResult
-  matchAndRewrite(bufferization::ToTensorOp op, OpAdaptor adaptor,
-                  ConversionPatternRewriter &rewriter0) const override {
-
-    auto toCast = createOrFoldUnrealizedConversionCast(
-        op->getLoc(), rewriter0, op.getResult().getType(), adaptor.getMemref());
-
-    rewriter0.replaceAllUsesWith(op.getResult(), toCast);
-    rewriter0.eraseOp(op);
-    return success();
+    return lowerScatterOrGather(op, adaptor, getTypeConverter(), rewriter0,
+                                true);
   }
 };
 
@@ -501,8 +466,6 @@ void populateUPMEMToLLVMConversionPatterns(LLVMTypeConverter &typeConverter,
   patterns.add<LaunchFuncOpToFuncCallLowering>(typeConverter);
   patterns.add<BaseDPUMemOffsetOpLowering>(&typeConverter.getContext());
   patterns.add<EraseUPMEMModule>(&typeConverter.getContext());
-  patterns.add<DeleteToTensor>(typeConverter);
-  patterns.add<DeleteToMemref>(typeConverter);
 }
 
 struct ConvertUPMEMToLLVMPass
@@ -536,11 +499,11 @@ struct ConvertUPMEMToLLVMPass
     populateFinalizeMemRefToLLVMConversionPatterns(converter, patterns);
     populateUPMEMToLLVMConversionPatterns(converter, patterns);
     populateReconcileUnrealizedCastsPatterns(patterns);
+    populateFinalBufferizationPatterns(patterns);
 
     ConversionTarget target(getContext());
     target.addIllegalDialect<upmem::UPMEMDialect>();
-    target.addIllegalOp<bufferization::ToTensorOp>();
-    target.addIllegalOp<bufferization::ToMemrefOp>();
+    target.addIllegalDialect<bufferization::BufferizationDialect>();
 
     target.markUnknownOpDynamicallyLegal([](Operation *) { return true; });
 
