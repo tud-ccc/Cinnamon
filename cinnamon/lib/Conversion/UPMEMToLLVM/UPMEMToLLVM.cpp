@@ -32,6 +32,7 @@
 
 #include "mlir/Conversion/LLVMCommon/Pattern.h"
 #include "mlir/Conversion/MemRefToLLVM/MemRefToLLVM.h"
+#include "mlir/Dialect/Bufferization/IR/Bufferization.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include <mlir/Dialect/LLVMIR/FunctionCallUtils.h>
 #include <mlir/IR/Visitors.h>
@@ -261,6 +262,71 @@ outlineAffineMap(ImplicitLocOpBuilder &rewriter,
   return std::nullopt;
 }
 
+template <class Op>
+static LogicalResult
+lowerScatterOrGather(Op op, typename Op::Adaptor adaptor,
+                     LLVMTypeConverter const *tyConverter,
+                     ConversionPatternRewriter &rewriter0) {
+  ImplicitLocOpBuilder rewriter(op->getLoc(), rewriter0);
+
+  /*
+  The scatter/gather op does these things:
+  - generate a function that implements the affine map
+  - call upmemrt_[scatter/gather]_dpu
+  - return the new offset in the dpu (only scatter, not gather)
+  */
+
+  // generate the function
+  auto moduleOp = op->template getParentOfType<ModuleOp>();
+
+  auto affineMapFunOpt = outlineAffineMap(
+      rewriter, tyConverter, moduleOp, op.getScatterMap(),
+      op.getHierarchy().getType(), op.getHostBuffer().getType());
+  if (!affineMapFunOpt)
+    return emitError(op->getLoc(), "Cannot emit affine map");
+  /*
+  void upmemrt_scatter_dpu(struct dpu_set_t *dpu_set, void *A, size_t
+  input_size, size_t copy_bytes, size_t offset_in_dpu, size_t
+  (*base_offset)(size_t));
+  */
+  LLVM::LLVMFuncOp runtimeScatterFun =
+      getScatterOrGatherFunc(moduleOp, tyConverter, "upmemrt_scatter_dpu");
+
+  auto funPtrOp = rewriter.create<LLVM::AddressOfOp>(*affineMapFunOpt);
+  auto numBytesCopied = reifyAsIndex(
+      rewriter, tyConverter,
+      op.getCount() * op.getHostBuffer().getType().getElementTypeBitWidth());
+
+
+  Value bareHostBuf = adaptor.getHostBuffer();
+  if (adaptor.getHostBuffer().getType().template isa<LLVM::LLVMStructType>()) {
+    // converted memref
+    bareHostBuf =
+        rewriter.create<LLVM::ExtractValueOp>(adaptor.getHostBuffer(), 1);
+  } else {
+    return emitError(op->getLoc(), "Unhandled buffer type: ")
+           << adaptor.getHostBuffer().getType();
+  }
+
+  rewriter.create<LLVM::CallOp>(
+      runtimeScatterFun,
+      ValueRange{
+          adaptor.getHierarchy(), bareHostBuf,
+          reifyAsIndex(rewriter, tyConverter,
+                       computeProduct(op.getHostBuffer().getType().getShape())),
+          numBytesCopied, adaptor.getDpuMemOffset(), funPtrOp.getRes()});
+
+  if (op->getNumResults() > 0) {
+    // only for scatter
+    auto resultOffValue = rewriter.create<LLVM::AddOp>(
+        tyConverter->getIndexType(), adaptor.getDpuMemOffset(), numBytesCopied);
+
+    rewriter0.replaceAllUsesWith(op->getResult(0), resultOffValue.getResult());
+  }
+  rewriter0.eraseOp(op);
+  return success();
+}
+
 struct ScatterOpToFuncCallLowering
     : public ConvertOpToLLVMPattern<upmem::ScatterOp> {
 public:
@@ -271,58 +337,7 @@ public:
   matchAndRewrite(upmem::ScatterOp op,
                   typename upmem::ScatterOp::Adaptor adaptor,
                   ConversionPatternRewriter &rewriter0) const override {
-    ImplicitLocOpBuilder rewriter(op->getLoc(), rewriter0);
-
-    /*
-    The scatter op does these things:
-    - generate a function that implements the affine map
-    - call upmemrt_scatter_dpu
-    - return the new offset in the dpu
-    */
-
-    // generate the function
-    auto moduleOp = op->getParentOfType<ModuleOp>();
-
-    auto affineMapFunOpt = outlineAffineMap(
-        rewriter, getTypeConverter(), moduleOp, op.getScatterMap(),
-        op.getHierarchy().getType(), op.getHostBuffer().getType());
-    if (!affineMapFunOpt)
-      return emitError(op->getLoc(), "Cannot emit affine map");
-    /*
-    void upmemrt_scatter_dpu(struct dpu_set_t *dpu_set, void *A, size_t
-    input_size, size_t copy_bytes, size_t offset_in_dpu, size_t
-    (*base_offset)(size_t));
-    */
-    LLVM::LLVMFuncOp runtimeScatterFun = getScatterOrGatherFunc(
-        moduleOp, getTypeConverter(), "upmemrt_scatter_dpu");
-
-    auto funPtrOp = rewriter.create<LLVM::AddressOfOp>(*affineMapFunOpt);
-    auto numBytesCopied = reifyAsIndex(
-        rewriter, getTypeConverter(),
-        op.getCount() * op.getHostBuffer().getType().getElementTypeBitWidth());
-
-
-    auto barePtrTy = getTypeConverter()->convertCallingConventionType(
-        op.getHostBuffer().getType(), true);
-    auto bareHostBuf = createOrFoldUnrealizedConversionCast(
-        op->getLoc(), rewriter, barePtrTy, adaptor.getHostBuffer());
-
-    rewriter.create<LLVM::CallOp>(
-        runtimeScatterFun,
-        ValueRange{adaptor.getHierarchy(), bareHostBuf,
-                   reifyAsIndex(
-                       rewriter, getTypeConverter(),
-                       computeProduct(op.getHostBuffer().getType().getShape())),
-                   numBytesCopied, adaptor.getDpuMemOffset(),
-                   funPtrOp.getRes()});
-
-    auto resultOffValue =
-        rewriter.create<LLVM::AddOp>(getTypeConverter()->getIndexType(),
-                                     adaptor.getDpuMemOffset(), numBytesCopied);
-
-    rewriter0.replaceAllUsesWith(op.getResult(), resultOffValue.getResult());
-    rewriter0.eraseOp(op);
-    return success();
+    return lowerScatterOrGather(op, adaptor, getTypeConverter(), rewriter0);
   }
 };
 
@@ -335,50 +350,42 @@ public:
   LogicalResult
   matchAndRewrite(upmem::GatherOp op, typename upmem::GatherOp::Adaptor adaptor,
                   ConversionPatternRewriter &rewriter0) const override {
-    ImplicitLocOpBuilder rewriter(op->getLoc(), rewriter0);
+    return lowerScatterOrGather(op, adaptor, getTypeConverter(), rewriter0);
+  }
+};
 
-    /*
-    The scatter op does these things:
-    - generate a function that implements the affine map
-    - call upmemrt_scatter_dpu
-    - ~return the new offset in the dpu~ (only scatter does that)
-    */
+struct DeleteToMemref
+    : public ConvertOpToLLVMPattern<bufferization::ToMemrefOp> {
+public:
+  explicit DeleteToMemref(LLVMTypeConverter &lowering)
+      : ConvertOpToLLVMPattern<bufferization::ToMemrefOp>(lowering) {}
 
-    // generate the function
-    auto moduleOp = op->getParentOfType<ModuleOp>();
+  LogicalResult
+  matchAndRewrite(bufferization::ToMemrefOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter0) const override {
 
-    auto affineMapFunOpt = outlineAffineMap(
-        rewriter, getTypeConverter(), moduleOp, op.getScatterMap(),
-        op.getHierarchy().getType(), op.getHostBuffer().getType());
-    if (!affineMapFunOpt)
-      return emitError(op->getLoc(), "Cannot emit affine map");
-    /*
-    void upmemrt_scatter_dpu(struct dpu_set_t *dpu_set, void *A, size_t
-    input_size, size_t copy_bytes, size_t offset_in_dpu, size_t
-    (*base_offset)(size_t));
-    */
-    LLVM::LLVMFuncOp runtimeGatherFun = getScatterOrGatherFunc(
-        moduleOp, getTypeConverter(), "upmemrt_gather_dpu");
+    auto toCast = createOrFoldUnrealizedConversionCast(
+        op->getLoc(), rewriter0, op.getResult().getType(), adaptor.getTensor());
 
-    auto funPtrOp = rewriter.create<LLVM::AddressOfOp>(*affineMapFunOpt);
-    auto numBytesCopied = reifyAsIndex(
-        rewriter, getTypeConverter(),
-        op.getCount() * op.getHostBuffer().getType().getElementTypeBitWidth());
+    rewriter0.replaceAllUsesWith(op.getResult(), toCast);
+    rewriter0.eraseOp(op);
+    return success();
+  }
+};
+struct DeleteToTensor
+    : public ConvertOpToLLVMPattern<bufferization::ToTensorOp> {
+public:
+  explicit DeleteToTensor(LLVMTypeConverter &lowering)
+      : ConvertOpToLLVMPattern<bufferization::ToTensorOp>(lowering) {}
 
-    auto barePtrTy = getTypeConverter()->convertCallingConventionType(
-        op.getHostBuffer().getType(), true);
-    auto bareHostBuf = createOrFoldUnrealizedConversionCast(
-        op->getLoc(), rewriter, barePtrTy, adaptor.getHostBuffer());
+  LogicalResult
+  matchAndRewrite(bufferization::ToTensorOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter0) const override {
 
-    rewriter.create<LLVM::CallOp>(
-        runtimeGatherFun,
-        ValueRange{adaptor.getHierarchy(), bareHostBuf,
-                   reifyAsIndex(
-                       rewriter, getTypeConverter(),
-                       computeProduct(op.getHostBuffer().getType().getShape())),
-                   numBytesCopied, adaptor.getDpuMemOffset(),
-                   funPtrOp.getRes()});
+    auto toCast = createOrFoldUnrealizedConversionCast(
+        op->getLoc(), rewriter0, op.getResult().getType(), adaptor.getMemref());
 
+    rewriter0.replaceAllUsesWith(op.getResult(), toCast);
     rewriter0.eraseOp(op);
     return success();
   }
@@ -494,6 +501,8 @@ void populateUPMEMToLLVMConversionPatterns(LLVMTypeConverter &typeConverter,
   patterns.add<LaunchFuncOpToFuncCallLowering>(typeConverter);
   patterns.add<BaseDPUMemOffsetOpLowering>(&typeConverter.getContext());
   patterns.add<EraseUPMEMModule>(&typeConverter.getContext());
+  patterns.add<DeleteToTensor>(typeConverter);
+  patterns.add<DeleteToMemref>(typeConverter);
 }
 
 struct ConvertUPMEMToLLVMPass
@@ -506,12 +515,22 @@ struct ConvertUPMEMToLLVMPass
     LLVMTypeConverter converter(&getContext(), convOptions);
     populateUPMEMToLLVMFinalTypeConversions(converter);
     const auto addUnrealizedCast = [](OpBuilder &builder, Type type,
-                                      ValueRange inputs, Location loc) {
+                                      ValueRange inputs,
+                                      Location loc) -> Value {
+      // if (type.isa<BaseMemRefType>() && inputs.size() == 1 &&
+      //     inputs[0].getType().isa<RankedTensorType>()) {
+      //   return builder.create<bufferization::ToMemrefOp>(loc, type, inputs)
+      //       .getResult();
+      // }
       return builder.create<UnrealizedConversionCastOp>(loc, type, inputs)
           .getResult(0);
     };
     converter.addSourceMaterialization(addUnrealizedCast);
     converter.addTargetMaterialization(addUnrealizedCast);
+
+    converter.addConversion([](RankedTensorType ty) -> std::optional<Type> {
+      return MemRefType::get(ty.getShape(), ty.getElementType());
+    });
 
     RewritePatternSet patterns(&getContext());
     populateFinalizeMemRefToLLVMConversionPatterns(converter, patterns);
@@ -520,6 +539,8 @@ struct ConvertUPMEMToLLVMPass
 
     ConversionTarget target(getContext());
     target.addIllegalDialect<upmem::UPMEMDialect>();
+    target.addIllegalOp<bufferization::ToTensorOp>();
+    target.addIllegalOp<bufferization::ToMemrefOp>();
 
     target.markUnknownOpDynamicallyLegal([](Operation *) { return true; });
 

@@ -17,16 +17,20 @@ $(BENCH_NAME).upmem.mlir: $(BENCH_NAME).cnm.mlir
 	$(CINM_OPT) $< --convert-cnm-to-upmem --upmem-outline-kernel --cse > $@
 
 $(BENCH_NAME).llvm.mlir: $(BENCH_NAME).upmem.mlir
-	$(CINM_OPT) $< --convert-upmem-to-llvm --mlir-print-ir-after-failure  --canonicalize \
+	$(CINM_OPT) $< --mlir-print-ir-after-failure --canonicalize \
 	--convert-scf-to-cf --convert-cf-to-llvm --convert-arith-to-llvm \
+	--convert-upmem-to-llvm \
     --fold-memref-alias-ops --expand-strided-metadata --memref-expand --finalize-memref-to-llvm \
-	--convert-func-to-llvm=use-bare-ptr-memref-call-conv=true --cse \
+	--convert-func-to-llvm=use-bare-ptr-memref-call-conv=true --cse --reconcile-unrealized-casts --cse \
 	> $@
 
 $(BENCH_NAME).upmem.c: $(BENCH_NAME).upmem.mlir
 	../build/bin/cinm-translate --mlir-to-upmem-cpp $< > $@
 
-$(BENCH_NAME): $(BENCH_NAME).llvm.mlir $(BENCH_NAME).upmem.c
+$(BENCH_NAME).host.ll: $(BENCH_NAME).llvm.mlir
+	../build/bin/cinm-translate --mlir-to-llvmir $< | opt -O3 -S > $@
+
+$(BENCH_NAME): $(BENCH_NAME).host.ll $(BENCH_NAME).upmem.c
 
 clean:
-	rm $(BENCH_NAME).*.mlir $(BENCH_NAME).upmem.c
+	rm $(BENCH_NAME).*.mlir $(BENCH_NAME).upmem.c $(BENCH_NAME).*.ll
