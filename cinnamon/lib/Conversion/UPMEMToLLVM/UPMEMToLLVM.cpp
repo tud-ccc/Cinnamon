@@ -263,10 +263,10 @@ outlineAffineMap(ImplicitLocOpBuilder &rewriter,
 }
 
 template <class Op>
-static LogicalResult
-lowerScatterOrGather(Op op, typename Op::Adaptor adaptor,
-                     LLVMTypeConverter const *tyConverter,
-                     ConversionPatternRewriter &rewriter0) {
+static LogicalResult lowerScatterOrGather(Op op, typename Op::Adaptor adaptor,
+                                          LLVMTypeConverter const *tyConverter,
+                                          ConversionPatternRewriter &rewriter0,
+                                          bool isGather) {
   ImplicitLocOpBuilder rewriter(op->getLoc(), rewriter0);
 
   /*
@@ -289,14 +289,14 @@ lowerScatterOrGather(Op op, typename Op::Adaptor adaptor,
   input_size, size_t copy_bytes, size_t offset_in_dpu, size_t
   (*base_offset)(size_t));
   */
-  LLVM::LLVMFuncOp runtimeScatterFun =
-      getScatterOrGatherFunc(moduleOp, tyConverter, "upmemrt_scatter_dpu");
+  LLVM::LLVMFuncOp runtimeScatterFun = getScatterOrGatherFunc(
+      moduleOp, tyConverter,
+      isGather ? "upmemrt_gather_dpu" : "upmemrt_scatter_dpu");
 
   auto funPtrOp = rewriter.create<LLVM::AddressOfOp>(*affineMapFunOpt);
   auto numBytesCopied = reifyAsIndex(
       rewriter, tyConverter,
       op.getCount() * op.getHostBuffer().getType().getElementTypeBitWidth());
-
 
   Value bareHostBuf = adaptor.getHostBuffer();
   if (adaptor.getHostBuffer().getType().template isa<LLVM::LLVMStructType>()) {
