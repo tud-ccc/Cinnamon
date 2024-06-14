@@ -73,7 +73,5 @@ endif()
 
 add_subdirectory(include)
 add_subdirectory(lib)
-add_subdirectory(third-party)
-add_subdirectory(runtime)
 add_subdirectory(test)
 add_subdirectory(tools)
