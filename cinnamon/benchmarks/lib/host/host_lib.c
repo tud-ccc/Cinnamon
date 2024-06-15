@@ -17,7 +17,7 @@ void do_dpu_transfer(dpu_xfer_t xfer_type, struct dpu_set_t *dpu_set,
     size_t offset = base_offset(i);
     // assert(offset + copy_bytes < buf_size &&
     //        "Out of bounds index returned by base_offset");
-    DPU_ASSERT(dpu_prepare_xfer(dpu, host_buffer + offset));
+    DPU_ASSERT(dpu_prepare_xfer(dpu, (char*) host_buffer + offset));
   }
 
   DPU_ASSERT(dpu_push_xfer(*dpu_set, xfer_type, DPU_MRAM_HEAP_POINTER_NAME,

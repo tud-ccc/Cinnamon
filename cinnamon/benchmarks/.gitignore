@@ -1,3 +1,5 @@
 *.*.mlir
 *.upmem.c
 *.*.ll
+*.o
+*.s

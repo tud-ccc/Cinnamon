@@ -4,9 +4,10 @@ BENCH_NAME=va
 .DEFAULT_GOAL := $(BENCH_NAME)
 .PHONY: $(BENCH_NAME) clean
 
+CLANG_18_BASE=../../llvm/build/bin
+
 CINM_OPT=../build/bin/cinm-opt
 
-# Add optimization passes to this target 
 $(BENCH_NAME).tiled.mlir: $(BENCH_NAME).mlir
 	$(CINM_OPT) $< --cinm-tiling --cse > $@
 
@@ -30,7 +31,11 @@ $(BENCH_NAME).upmem.c: $(BENCH_NAME).upmem.mlir
 $(BENCH_NAME).host.ll: $(BENCH_NAME).llvm.mlir
 	../build/bin/cinm-translate --mlir-to-llvmir $< | opt -O3 -S > $@
 
-$(BENCH_NAME): $(BENCH_NAME).host.ll $(BENCH_NAME).upmem.c
+$(BENCH_NAME).host.o: $(BENCH_NAME).host.ll
+	$(CLANG_18_BASE)/llc $< -o $@ -filetype=obj
+
+$(BENCH_NAME): $(BENCH_NAME).host.o $(BENCH_NAME).upmem.c
+	clang++ apps/$(BENCH_NAME).cpp $(BENCH_NAME).host.o lib/host/host_lib.c -ldpu -L${UPMEM_HOME}/lib -I${UPMEM_HOME}/include/dpu
 
 clean:
 	rm $(BENCH_NAME).*.mlir $(BENCH_NAME).upmem.c $(BENCH_NAME).*.ll
