@@ -34,8 +34,11 @@ $(BENCH_NAME).host.ll: $(BENCH_NAME).llvm.mlir
 $(BENCH_NAME).host.o: $(BENCH_NAME).host.ll
 	$(CLANG_18_BASE)/llc $< -o $@ -filetype=obj
 
-$(BENCH_NAME): $(BENCH_NAME).host.o $(BENCH_NAME).upmem.c
-	clang++ apps/$(BENCH_NAME).cpp $(BENCH_NAME).host.o lib/host/host_lib.c -ldpu -L${UPMEM_HOME}/lib -I${UPMEM_HOME}/include/dpu
+hostlib.o:
+	clang lib/host/host_lib.c -I../../upmem/include/dpu -ldpu -ldpuverbose -c
+
+$(BENCH_NAME): $(BENCH_NAME).host.o $(BENCH_NAME).upmem.c hostlib.o
+	clang++ apps/$(BENCH_NAME).cpp $(BENCH_NAME).host.o hostlib.o -ldpu -L${UPMEM_HOME}/lib -I${UPMEM_HOME}/include/dpu
 
 clean:
 	rm $(BENCH_NAME).*.mlir $(BENCH_NAME).upmem.c $(BENCH_NAME).*.ll *.o *.s
