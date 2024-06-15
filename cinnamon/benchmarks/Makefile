@@ -38,4 +38,4 @@ $(BENCH_NAME): $(BENCH_NAME).host.o $(BENCH_NAME).upmem.c
 	clang++ apps/$(BENCH_NAME).cpp $(BENCH_NAME).host.o lib/host/host_lib.c -ldpu -L${UPMEM_HOME}/lib -I${UPMEM_HOME}/include/dpu
 
 clean:
-	rm $(BENCH_NAME).*.mlir $(BENCH_NAME).upmem.c $(BENCH_NAME).*.ll
+	rm $(BENCH_NAME).*.mlir $(BENCH_NAME).upmem.c $(BENCH_NAME).*.ll *.o *.s
