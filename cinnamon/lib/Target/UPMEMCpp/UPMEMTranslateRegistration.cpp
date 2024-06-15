@@ -21,6 +21,7 @@
 #include "mlir/Target/Cpp/CppEmitter.h"
 #include "mlir/Tools/mlir-translate/Translation.h"
 #include "llvm/Support/CommandLine.h"
+#include "mlir/InitAllDialects.h"
 
 using namespace mlir;
 using namespace mlir::upmem_emitc;
@@ -44,13 +45,9 @@ void mlir::upmem_emitc::registerUPMEMCppTranslation() {
       },
       [](DialectRegistry &registry) {
         // clang-format off
-        registry.insert<arith::ArithDialect,
-                        cf::ControlFlowDialect,
-                        func::FuncDialect,
-                        math::MathDialect,
-                        upmem::UPMEMDialect,
-                        memref::MemRefDialect,
-                        scf::SCFDialect>();
+        registerAllDialects(registry);
+
+        registry.insert<upmem::UPMEMDialect>();
         // clang-format on
       });
 }
