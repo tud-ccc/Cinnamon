@@ -609,7 +609,7 @@ static LogicalResult printOperation(CppEmitter &emitter,
 static LogicalResult printOperation(CppEmitter &emitter,
                                     upmem::ReturnOp returnOp) {
   raw_ostream &os = emitter.ostream();
-  os << "return";
+  os << "return 0";
   return success();
 }
 
@@ -661,10 +661,10 @@ static LogicalResult printOperation(CppEmitter &emitter,
 
   CppEmitter::Scope scope(emitter);
   raw_indented_ostream &os = emitter.ostream();
-  if (failed(emitter.emitTypes(functionOp.getLoc(),
-                               functionOp.getFunctionType().getResults())))
-    return failure();
-  os << " " << functionOp.getName();
+  // if (failed(emitter.emitTypes(functionOp.getLoc(),
+  //  functionOp.getFunctionType().getResults())))
+  // return failure();
+  os << "int " << functionOp.getName();
 
   os << "(";
   if (failed(interleaveCommaWithError(
