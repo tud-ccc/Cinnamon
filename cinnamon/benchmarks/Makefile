@@ -5,7 +5,6 @@ BENCH_NAME=va
 .PHONY: $(BENCH_NAME) clean
 
 CLANG_18_BASE=../../llvm/build/bin
-
 CINM_OPT=../build/bin/cinm-opt
 
 $(BENCH_NAME).tiled.mlir: $(BENCH_NAME).mlir
@@ -29,16 +28,20 @@ $(BENCH_NAME).upmem.c: $(BENCH_NAME).upmem.mlir
 	../build/bin/cinm-translate --mlir-to-upmem-cpp $< > $@
 
 $(BENCH_NAME).host.ll: $(BENCH_NAME).llvm.mlir
-	../build/bin/cinm-translate --mlir-to-llvmir $< | opt -O3 -S > $@
+	../build/bin/cinm-translate --mlir-to-llvmir $< > $@
 
-$(BENCH_NAME).host.o: $(BENCH_NAME).host.ll
-	$(CLANG_18_BASE)/llc $< -o $@ -filetype=obj
+$(BENCH_NAME).host.opt.ll: $(BENCH_NAME).host.ll
+	opt -O3 -S $< > $@
+#	TODO $(CLANG_18_BASE)/opt -O3 -S $< > $@
+
+$(BENCH_NAME).host.o: $(BENCH_NAME).host.opt.ll
+	$(CLANG_18_BASE)/llc -O3 $< -o $@ -filetype=obj -relocation-model=pic
 
 hostlib.o:
-	clang lib/host/host_lib.c -I../../upmem/include/dpu -ldpu -ldpuverbose -c
+	clang lib/host/host_lib.c -I${UPMEM_HOME}/include/dpu -ldpu -ldpuverbose -c -o $@
 
 $(BENCH_NAME): $(BENCH_NAME).host.o $(BENCH_NAME).upmem.c hostlib.o
-	clang++ apps/$(BENCH_NAME).cpp $(BENCH_NAME).host.o hostlib.o -ldpu -L${UPMEM_HOME}/lib -I${UPMEM_HOME}/include/dpu
+	clang++ apps/$(BENCH_NAME).cpp $(BENCH_NAME).host.o hostlib.o -fPIE -ldpu -L${UPMEM_HOME}/lib -I${UPMEM_HOME}/include/dpu
 
 clean:
-	rm $(BENCH_NAME).*.mlir $(BENCH_NAME).upmem.c $(BENCH_NAME).*.ll *.o *.s
+	rm -f $(BENCH_NAME).*.mlir $(BENCH_NAME).upmem.c $(BENCH_NAME).*.ll *.o *.s

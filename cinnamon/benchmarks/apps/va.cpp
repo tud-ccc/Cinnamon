@@ -2,8 +2,10 @@
 
 
 // linked with LLVM module
-void va_8(int*, int*);
-void va_16(int*, int*);
+extern "C" {
+	void va_8(int*, int*);
+	void va_16(int*, int*);
+}
 
 int main(void) {
   srand(0);
