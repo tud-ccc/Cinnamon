@@ -263,14 +263,14 @@ void executeGEMM(int execType, int DIMSIZE, int iter, int m, int n, int k, int d
 
 
 	// Print timing results
-	printf("M %d N %d Q %d\n", m, n, k);
-	printf("CPU-DPU Time (ms): ");
-	printf("Iter %d\n",iter);
+	// printf("M %d N %d Q %d\n", m, n, k);
+	// printf("CPU-DPU Time (ms): ");
+	// printf("Iter %d\n",iter);
 	print(&timer, 1, n_reps);
 	printf("DPU Kernel Time (ms): ");
-	print(&timer, 2, n_reps);
-	printf("DPU-CPU Time (ms): ");
-	print(&timer, 3, n_reps);
+	// print(&timer, 2, n_reps);
+	// printf("DPU-CPU Time (ms): ");
+	// print(&timer, 3, n_reps);
 	printf("\n");
 	
 	DPU_ASSERT(dpu_free(dpu_set));
