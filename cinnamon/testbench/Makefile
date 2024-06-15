@@ -47,18 +47,18 @@ $(IR_PREFIX).host.o: $(IR_PREFIX).host.opt.ll
 	$(CLANG_18_BASE)/llc -O3 $< -o $@ -filetype=obj -relocation-model=pic
 
 hostlib.o:
-	clang lib/host/host_lib.c -I${UPMEM_HOME}/include/dpu -ldpu -ldpuverbose -c -o $@
+	clang lib/host/host_lib.c -I${UPMEM_HOME}/include/dpu -c -o $@
 
 # DPU kernel executable
 $(OUT_DIR)/bin/dpu: $(IR_PREFIX).dpu.c
 	@mkdir -p $(@D)
 	cp lib/dpu/dpu_lib.h $(OUT_DIR)/irs
-	clang $< -o $@
+	dpu-upmem-dpurte-clang clang $< -o $@
 
 # HOST executable
 $(OUT_DIR)/bin/host: $(IR_PREFIX).host.o $(IR_PREFIX).dpu.c hostlib.o
 	@mkdir -p $(@D)
-	clang++ apps/$(BENCH_NAME).cpp $(IR_PREFIX).host.o hostlib.o -fPIE -ldpu -L${UPMEM_HOME}/lib -I${UPMEM_HOME}/include/dpu -o $@
+	clang++ apps/$(BENCH_NAME).cpp $(IR_PREFIX).host.o hostlib.o -fPIE -ldpu -ldpuverbose -L${UPMEM_HOME}/lib -I${UPMEM_HOME}/include/dpu -o $@
 
 $(BENCH_NAME): $(OUT_DIR)/bin/host $(OUT_DIR)/bin/dpu
 

@@ -2,6 +2,7 @@
 #include "cinm-mlir/Dialect/UPMEM/Transforms/Passes.h"
 
 #include "mlir/Dialect/ControlFlow/IR/ControlFlowOps.h"
+#include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/IR/IRMapping.h"
 #include "mlir/IR/SymbolTable.h"
 #include "mlir/Transforms/RegionUtils.h"
