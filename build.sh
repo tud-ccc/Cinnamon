@@ -28,7 +28,6 @@ cmake -S . -B "build" \
     -DLLVM_DIR="$llvm_prefix"/lib/cmake/llvm \
     -DMLIR_DIR="$llvm_prefix"/lib/cmake/mlir \
     -DCMAKE_EXPORT_COMPILE_COMMANDS=1 \
-    -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
     -DCMAKE_C_COMPILER=clang \
     -DCMAKE_LINKER_TYPE=DEFAULT \
     -DCMAKE_CXX_COMPILER=clang++ \
