@@ -1,12 +1,13 @@
 #include "cinm-mlir/Dialect/UPMEM/IR/UPMEMOps.h"
 #include "cinm-mlir/Dialect/UPMEM/Transforms/Passes.h"
 
-#include "mlir/Dialect/ControlFlow/IR/ControlFlowOps.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
+#include "mlir/Dialect/ControlFlow/IR/ControlFlowOps.h"
 #include "mlir/IR/IRMapping.h"
 #include "mlir/IR/SymbolTable.h"
 #include "mlir/Transforms/RegionUtils.h"
 #include "llvm/Support/Debug.h"
+#include <llvm/ADT/StringRef.h>
 #include <llvm/Support/Regex.h>
 #include <mlir/IR/Builders.h>
 #include <mlir/IR/BuiltinAttributes.h>
@@ -62,7 +63,6 @@ static upmem::UPMEMFuncOp outlineKernelFuncImpl(upmem::LaunchOp launchOp,
   return outlinedFunc;
 }
 
-
 static void convertToLaunchFuncOp(upmem::LaunchOp launchOp,
                                   upmem::UPMEMFuncOp kernelFunc,
                                   ValueRange operands) {
@@ -79,7 +79,6 @@ static void convertToLaunchFuncOp(upmem::LaunchOp launchOp,
   launchOp.erase();
 }
 
-
 //===----------------------------------------------------------------------===//
 struct UPMEMOutlineKernelPass
     : public impl::UPMEMOutlineKernelPassBase<UPMEMOutlineKernelPass> {
@@ -89,6 +88,7 @@ struct UPMEMOutlineKernelPass
 
   void getDependentDialects(DialectRegistry &registry) const override {}
   upmem::UPMEMModuleOp createKernelModule(upmem::UPMEMFuncOp kernelFunc,
+                                          StringRef moduleName,
                                           const SymbolTable &parentSymbolTable);
 };
 
@@ -103,7 +103,9 @@ void UPMEMOutlineKernelPass::runOnOperation() {
       upmem::UPMEMFuncOp outlinedFunc =
           outlineKernelFuncImpl(op, "main", operands);
 
-      auto kernelModule = createKernelModule(outlinedFunc, symbolTable);
+      auto moduleName = Twine(func.getName(), "_dpu");
+      auto kernelModule =
+          createKernelModule(outlinedFunc, moduleName, symbolTable);
       symbolTable.insert(kernelModule, insertPt);
 
       //     // Potentially changes signature, pulling in constants.
@@ -123,11 +125,12 @@ void UPMEMOutlineKernelPass::runOnOperation() {
 }
 
 upmem::UPMEMModuleOp UPMEMOutlineKernelPass::createKernelModule(
-    upmem::UPMEMFuncOp kernelFunc, const SymbolTable &parentSymbolTable) {
+    upmem::UPMEMFuncOp kernelFunc, StringRef moduleName,
+    const SymbolTable &parentSymbolTable) {
   auto *context = getOperation().getContext();
   OpBuilder builder(context);
-  auto kernelModule = builder.create<upmem::UPMEMModuleOp>(
-      kernelFunc.getLoc(), kernelFunc.getName());
+  auto kernelModule =
+      builder.create<upmem::UPMEMModuleOp>(kernelFunc.getLoc(), moduleName);
 
   SymbolTable symbolTable(kernelModule);
   symbolTable.insert(kernelFunc);
