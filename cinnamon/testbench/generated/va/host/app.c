@@ -29,15 +29,15 @@ static void init_data(T* A, T* B, uint32_t m_size) {
 
 int main() {
 
-	// unsigned int reps = 3;
-	// unsigned int warmup = 3;
+	unsigned int reps = 3;
+	unsigned int warmup = 3;
 
-	// uint32_t simulation = 0;
+	uint32_t simulation = 0;
 
-	unsigned int reps = 1;
-	unsigned int warmup = 0;
+	// unsigned int reps = 1;
+	// unsigned int warmup = 0;
 
-	uint32_t simulation = 1;
+	// uint32_t simulation = 1;
 
 	uint32_t DIMSIZE;
 	uint32_t dimm;

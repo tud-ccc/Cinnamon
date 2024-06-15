@@ -50,15 +50,15 @@ int main(int argc, char **argv) {
     struct dpu_set_t dpu_set, dpu;
     uint32_t nr_of_dpus;
     
-    // unsigned int reps = 3;
-	// unsigned int warmup = 3;
+    unsigned int reps = 3;
+	unsigned int warmup = 3;
 
-	// uint32_t simulation = 0;
+	uint32_t simulation = 0;
 
-    unsigned int reps = 1;
-	unsigned int warmup = 0;
+    // unsigned int reps = 1;
+	// unsigned int warmup = 0;
 
-	uint32_t simulation = 1;
+	// uint32_t simulation = 1;
 
 	uint32_t DIMSIZE;
 	uint32_t dimm;
