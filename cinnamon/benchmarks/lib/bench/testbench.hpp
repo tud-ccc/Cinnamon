@@ -5,13 +5,13 @@
 
 // todo call srand(0) before
 template <typename T, unsigned First, unsigned... Shape> T *init_matrix() {
-  unsigned size = First;
-  unsigned shape[] = {Shape...};
+  size_t size = First;
+  size_t shape[] = {Shape...};
   for (auto dim : shape) {
     size *= dim;
   }
 
-  T *mat = (T *)malloc(size);
+  T *mat = (T *)malloc(size * sizeof(T));
   for (size_t i = 0; i < size; i++) {
     while ((mat[i] = (T)(rand() % 100)) == 0)
       ;
