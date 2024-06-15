@@ -103,7 +103,7 @@ void UPMEMOutlineKernelPass::runOnOperation() {
       upmem::UPMEMFuncOp outlinedFunc =
           outlineKernelFuncImpl(op, "main", operands);
 
-      auto moduleName = Twine(func.getName(), "_dpu");
+      auto moduleName = (func.getName() + "_dpu").str();
       auto kernelModule =
           createKernelModule(outlinedFunc, moduleName, symbolTable);
       symbolTable.insert(kernelModule, insertPt);

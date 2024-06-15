@@ -242,6 +242,7 @@ static LogicalResult lowerScatterOrGather(Op op, typename Op::Adaptor adaptor,
                                           LLVMTypeConverter const *tyConverter,
                                           ConversionPatternRewriter &rewriter0,
                                           bool isGather) {
+  auto loc = op->getLoc();
   ImplicitLocOpBuilder rewriter(op->getLoc(), rewriter0);
 
   /*
@@ -266,38 +267,37 @@ static LogicalResult lowerScatterOrGather(Op op, typename Op::Adaptor adaptor,
   */
   LLVM::LLVMFuncOp runtimeScatterFun = getScatterOrGatherFunc(
       moduleOp, tyConverter,
-      isGather ? "upmemrt_dpu_gather" : "upmemrt_dpu_gather");
+      isGather ? "upmemrt_dpu_gather" : "upmemrt_dpu_scatter");
 
-  auto funPtrOp = rewriter.create<LLVM::AddressOfOp>(*affineMapFunOpt);
-  auto numBytesCopied = reifyAsIndex(
-      rewriter, tyConverter,
-      op.getCount() * op.getHostBuffer().getType().getElementTypeBitWidth());
+  auto funPtrOp = rewriter0.create<LLVM::AddressOfOp>(loc, *affineMapFunOpt);
+  auto dpuMemOffset = reifyAsIndex(rewriter, tyConverter, op.getDpuMemOffset());
+  auto numBytesCopied =
+      reifyAsIndex(rewriter, tyConverter, op.getDpuBufferSizeInBytes());
 
   Value bareHostBuf = adaptor.getHostBuffer();
   if (adaptor.getHostBuffer().getType().template isa<LLVM::LLVMStructType>()) {
     // converted memref
-    bareHostBuf =
-        rewriter.create<LLVM::ExtractValueOp>(adaptor.getHostBuffer(), 1);
+    Value basePtr =
+        rewriter0.create<LLVM::ExtractValueOp>(loc, adaptor.getHostBuffer(), 1);
+    Value offset =
+        rewriter0.create<LLVM::ExtractValueOp>(loc, adaptor.getHostBuffer(), 2);
+    // need to do our own pointer arithmetic here
+    bareHostBuf = rewriter0.create<LLVM::GEPOp>(
+        loc, basePtr.getType(), op.getHostBuffer().getType().getElementType(),
+        basePtr, ValueRange{offset}, /*inbounds*/ true);
   } else {
     return emitError(op->getLoc(), "Unhandled buffer type: ")
            << adaptor.getHostBuffer().getType();
   }
 
-  rewriter.create<LLVM::CallOp>(
-      runtimeScatterFun,
+  rewriter0.create<LLVM::CallOp>(
+      loc, runtimeScatterFun,
       ValueRange{
           adaptor.getHierarchy(), bareHostBuf,
           reifyAsIndex(rewriter, tyConverter,
                        computeProduct(op.getHostBuffer().getType().getShape())),
-          numBytesCopied, adaptor.getDpuMemOffset(), funPtrOp.getRes()});
+          numBytesCopied, dpuMemOffset, funPtrOp.getRes()});
 
-  if (op->getNumResults() > 0) {
-    // only for scatter
-    auto resultOffValue = rewriter.create<LLVM::AddOp>(
-        tyConverter->getIndexType(), adaptor.getDpuMemOffset(), numBytesCopied);
-
-    rewriter0.replaceAllUsesWith(op->getResult(0), resultOffValue.getResult());
-  }
   rewriter0.eraseOp(op);
   return success();
 }

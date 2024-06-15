@@ -7,6 +7,7 @@
 #include "cinm-mlir/Dialect/UPMEM/IR/UPMEMTypes.h"
 
 #include <cstdint>
+#include <llvm/Support/Casting.h>
 #include <mlir/Dialect/Affine/IR/AffineOps.h>
 #include <mlir/Dialect/Arith/IR/Arith.h>
 #include <mlir/Dialect/Bufferization/IR/Bufferization.h>
@@ -15,6 +16,7 @@
 #include <mlir/Dialect/Utils/IndexingUtils.h>
 #include <mlir/IR/AffineExpr.h>
 #include <mlir/IR/AffineMap.h>
+#include <mlir/IR/BuiltinAttributes.h>
 #include <mlir/IR/BuiltinOps.h>
 #include <mlir/IR/BuiltinTypes.h>
 #include <mlir/IR/Diagnostics.h>
@@ -132,15 +134,30 @@ struct ConvertCnmScatterToUPMEM : public OpConversionPattern<cnm::ScatterOp> {
         op.getLoc(), rewriter, convertTensorToMemref(tensorType), tensor);
 
     const int64_t transferCount = computeProduct(bufferType.getShape());
-    // todo max of the dependencies
-    const Value dpuMemOffset =
-        rewriter.create<arith::ConstantIndexOp>(op->getLoc(), 0);
 
-    auto upmemScatter = rewriter.create<upmem::ScatterOp>(
-        op->getLoc(), rewriter.getIndexType(), inputAsMemref, transferCount,
-        op.getScatterMap(), dpuMemOffset, adaptor.getWg());
+    int64_t dpuMemOffset = 0;
+    for (auto use : adaptor.getWg().getUsers()) {
+      if (upmem::ScatterOp scatter =
+              llvm::dyn_cast_or_null<upmem::ScatterOp>(use)) {
+        dpuMemOffset = std::max(scatter.getDpuMemMaxOffset(), dpuMemOffset);
+      }
+    }
 
-    rewriter.replaceOp(op, upmemScatter);
+    for (auto user : op.getBuffer().getUsers()) {
+      if (user == op)
+        continue;
+      else if (llvm::isa<cnm::GatherOp>(user)) {
+        // need to communicate the buffer offset to the gather op
+        user->setAttr("upmem.bufferOffset",
+                      rewriter.getI64IntegerAttr(dpuMemOffset));
+      }
+    }
+
+    rewriter.create<upmem::ScatterOp>(op->getLoc(), inputAsMemref, dpuMemOffset,
+                                      transferCount, op.getScatterMap(),
+                                      adaptor.getWg());
+
+    rewriter.eraseOp(op);
     return success();
   }
 };
@@ -158,12 +175,16 @@ struct ConvertCnmGatherToUPMEM : public OpConversionPattern<cnm::GatherOp> {
         op->getLoc(), convertTensorToMemref(tensorType));
 
     const int64_t transferCount = computeProduct(bufferType.getShape());
-    // todo max of the dependencies
-    const Value dpuMemOffset =
-        rewriter.create<arith::ConstantIndexOp>(op->getLoc(), 0);
+    int64_t dpuMemOffset;
+    if (auto attr = op->getAttrOfType<IntegerAttr>("upmem.bufferOffset")) {
+      dpuMemOffset = attr.getInt();
+    } else {
+      return op.emitOpError(
+          "has no corresponding scatter, cannot compute buffer offset");
+    }
 
-    rewriter.create<upmem::GatherOp>(op->getLoc(), outputBuf, transferCount,
-                                     op.getGatherMap(), dpuMemOffset,
+    rewriter.create<upmem::GatherOp>(op->getLoc(), outputBuf, dpuMemOffset,
+                                     transferCount, op.getGatherMap(),
                                      adaptor.getWg());
 
     Value outputAsTensor = createOrFoldUnrealizedConversionCast(

@@ -360,44 +360,49 @@ def UPMEM_BaseDPUMemOffsetOp: UPMEM_Op <"base_dpu_mem_offset", []> {
 }
 
 
+class ScatterGatherLike<string mnemonic, string kw, MemoryEffect effect>
+  : UPMEM_Op<mnemonic, [MemoryEffects<[MemWrite]>]> {
 
-def UPMEM_ScatterOp: UPMEM_Op<"scatter", [MemoryEffects<[MemWrite]>]> {
-  let summary = "scatter data to dpus";
-  let description = [{
-  }];
-
-  let arguments = (ins Arg<AnyMemRef, "", [MemRead]>:$hostBuffer,
-                  I64Attr:$count,
+  let arguments = (ins Arg<AnyMemRef, "", [effect]>:$hostBuffer,
+                  I64Attr:$dpuMemOffset, 
+                  I64Attr:$transferCount,
                   AffineMapAttr:$scatterMap,
-                  Index:$dpuMemOffset, 
-                  DeviceHierarchy:$hierarchy);
-
-  let results = (outs Index:$newMemOffset);
-
-  let assemblyFormat = [{
-     $hostBuffer `[` $count `,` $scatterMap `]` `onto` $hierarchy `at` $dpuMemOffset attr-dict 
-     `:` type($hostBuffer) `onto` qualified(type($hierarchy))
-  }];
-}
-
-
-def UPMEM_GatherOp: UPMEM_Op<"gather", [MemoryEffects<[MemWrite]>]> {
-  let summary = "Gather data from dpus into a buffer on the host";
-  let description = [{
-  }];
-
-  let arguments = (ins Arg<AnyMemRef, "", [MemWrite]>:$hostBuffer,
-                  I64Attr:$count,
-                  AffineMapAttr:$scatterMap,
-                  Index:$dpuMemOffset, 
                   DeviceHierarchy:$hierarchy);
 
   let results = (outs);
 
-  let assemblyFormat = [{
-     $hostBuffer `[` $count `,` $scatterMap `]` `from` $hierarchy `at` $dpuMemOffset attr-dict 
-     `:` type($hostBuffer) `onto` qualified(type($hierarchy))
+  let extraClassDeclaration = [{
+    int64_t getDpuBufferSizeInBits() {
+      return getTransferCount() * getHostBuffer().getType().getElementTypeBitWidth();
+    }
+
+    int64_t getDpuBufferSizeInBytes() {
+      return getDpuBufferSizeInBits() / 8;
+    }
+
+    int64_t getDpuMemMaxOffset() {
+      return getDpuMemOffset() + getDpuBufferSizeInBits() / 8;
+    }
   }];
+
+  let assemblyFormat = 
+     "$hostBuffer `[` $dpuMemOffset `,` $transferCount `,` $scatterMap `]` `" # kw # "` $hierarchy attr-dict"
+     # "`:` type($hostBuffer) `" # kw # "` qualified(type($hierarchy))";
+}
+
+def UPMEM_ScatterOp: ScatterGatherLike<"scatter", "onto", MemRead> {
+  let summary = "scatter data to dpus";
+  let description = [{
+  }];
+
+}
+
+
+def UPMEM_GatherOp: ScatterGatherLike<"gather", "from", MemWrite> {
+  let summary = "Gather data from dpus into a buffer on the host";
+  let description = [{
+  }];
+
 }
 
 
