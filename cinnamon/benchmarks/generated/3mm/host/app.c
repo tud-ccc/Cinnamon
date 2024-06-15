@@ -18,6 +18,7 @@ static T* A;
 static T* B;
 static T* C;
 
+// Create input arrays
 static void init_data(T* A, T* B, uint32_t m_size, uint32_t n_size, uint32_t q_size) {
 	srand(0);
 
@@ -36,6 +37,19 @@ void finalEvaluation();
 
 int main() {
 
+	unsigned int reps = 5;
+	unsigned int warmup = 3;
+
+	uint32_t simulation = 0;
+
+	uint32_t exec_type = 0;
+	uint32_t DIMSIZE;
+	uint32_t dimm;
+	uint32_t iter;
+	uint32_t m_size;
+	uint32_t n_size;
+	uint32_t k_size;
+	
 	finalEvaluation();
 
 
@@ -72,6 +86,7 @@ void finalEvaluation(){
 	k_size = 1024;
 	executeGEMM(exec_type, DIMSIZE, iter, m_size, n_size, k_size, dimm, simulation, reps, warmup);
 	executeGEMM(exec_type, DIMSIZE, iter, m_size, n_size, k_size, dimm, simulation, reps, warmup);
+	executeGEMM(exec_type, DIMSIZE, iter, m_size, n_size, k_size, dimm, simulation, reps, warmup);
 
 	
 	// DIMM 4 opt
@@ -82,6 +97,7 @@ void finalEvaluation(){
 	m_size = 16;
 	n_size = 128;
 	k_size = 1024;
+	executeGEMM(exec_type, DIMSIZE, iter, m_size, n_size, k_size, dimm, simulation, reps, warmup);
 	executeGEMM(exec_type, DIMSIZE, iter, m_size, n_size, k_size, dimm, simulation, reps, warmup);
 	executeGEMM(exec_type, DIMSIZE, iter, m_size, n_size, k_size, dimm, simulation, reps, warmup);
 
@@ -96,6 +112,7 @@ void finalEvaluation(){
 	k_size = 1024;
 	executeGEMM(exec_type, DIMSIZE, iter, m_size, n_size, k_size, dimm, simulation, reps, warmup);
 	executeGEMM(exec_type, DIMSIZE, iter, m_size, n_size, k_size, dimm, simulation, reps, warmup);
+	executeGEMM(exec_type, DIMSIZE, iter, m_size, n_size, k_size, dimm, simulation, reps, warmup);
 
 	
 	// DIMM 8 opt
@@ -106,6 +123,7 @@ void finalEvaluation(){
 	m_size = 16;
 	n_size = 64;
 	k_size = 1024;
+	executeGEMM(exec_type, DIMSIZE, iter, m_size, n_size, k_size, dimm, simulation, reps, warmup);
 	executeGEMM(exec_type, DIMSIZE, iter, m_size, n_size, k_size, dimm, simulation, reps, warmup);
 	executeGEMM(exec_type, DIMSIZE, iter, m_size, n_size, k_size, dimm, simulation, reps, warmup);
 
@@ -120,6 +138,7 @@ void finalEvaluation(){
 	k_size = 1024;
 	executeGEMM(exec_type, DIMSIZE, iter, m_size, n_size, k_size, dimm, simulation, reps, warmup);
 	executeGEMM(exec_type, DIMSIZE, iter, m_size, n_size, k_size, dimm, simulation, reps, warmup);
+	executeGEMM(exec_type, DIMSIZE, iter, m_size, n_size, k_size, dimm, simulation, reps, warmup);
 
 	
 	// DIMM 16 opt
@@ -130,6 +149,7 @@ void finalEvaluation(){
 	m_size = 16;
 	n_size = 32;
 	k_size = 1024;
+	executeGEMM(exec_type, DIMSIZE, iter, m_size, n_size, k_size, dimm, simulation, reps, warmup);
 	executeGEMM(exec_type, DIMSIZE, iter, m_size, n_size, k_size, dimm, simulation, reps, warmup);
 	executeGEMM(exec_type, DIMSIZE, iter, m_size, n_size, k_size, dimm, simulation, reps, warmup);
 
