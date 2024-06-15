@@ -19,11 +19,12 @@ template <typename T, unsigned First, unsigned... Shape> T *init_matrix() {
   return mat;
 }
 
-inline void timeAndExecute(int reps, int warmup, const char* name, std::function<void()> run) {
+inline void timeAndExecute(int reps, int warmup, const char *name,
+                           std::function<void()> run) {
+  using std::chrono::duration;
+  using std::chrono::duration_cast;
   using std::chrono::high_resolution_clock;
   using std::chrono::milliseconds;
-  using std::chrono::duration_cast;
-
 
   for (int i = 0; i < warmup; i++) {
     run();
@@ -34,11 +35,13 @@ inline void timeAndExecute(int reps, int warmup, const char* name, std::function
   }
   auto stop = high_resolution_clock::now();
 
-  auto ms_int = duration_cast<milliseconds>(start - stop);
-  printf("Average time (ms) over %d reps (%s): %ld", reps, name, ms_int.count());
+  duration<double, std::milli> ms_int =
+      duration_cast<milliseconds>(start - stop);
+  printf("Average time (ms) over %d reps (%s): %f", reps, name,
+         ms_int.count() / reps);
 }
 
 #define DO_BENCH(reps, warmup, code)                                           \
   do {                                                                         \
-    timeAndExecute((reps), (warmup), "" #code , [&]() { code; });                         \
+    timeAndExecute((reps), (warmup), "" #code, [&]() { code; });               \
   } while (false);
