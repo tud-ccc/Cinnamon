@@ -13,6 +13,12 @@ project(cinm-mlir
     LANGUAGES   C CXX
 )
 
+option(CINM_BUILD_GPU_SUPPORT "Enable vulkan runner and GPU libs" OFF)
+
+if (CINM_BUILD_GPU_SUPPORT)
+    add_compile_definitions(CINM_GPU_SUPPORT)
+endif()
+
 # Set global language standard to C++20.
 set(CMAKE_CXX_STANDARD 20 CACHE STRING "C++ standard to conform to")
 

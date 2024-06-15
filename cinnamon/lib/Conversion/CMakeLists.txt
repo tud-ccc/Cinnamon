@@ -9,7 +9,9 @@ add_mlir_library(CinmCommonPatterns
 )
 
 
-add_subdirectory(CnmToGPU)
+if (CINM_BUILD_GPU_SUPPORT)
+    add_subdirectory(CnmToGPU)
+endif()
 add_subdirectory(CnmToUPMEM)
 add_subdirectory(UPMEMToLLVM)
 add_subdirectory(CinmToCnm)

@@ -9,6 +9,7 @@
 
 include "mlir/Pass/PassBase.td"
 
+#ifdef CINM_GPU_SUPPORT
 def ConvertCnmToGPUPass : Pass<"convert-cnm-to-gpu"> {
     let summary = "";
     let constructor = "mlir::cnm::createConvertCnmToGPUPass()";
@@ -22,6 +23,7 @@ def ConvertCnmToGPUPass : Pass<"convert-cnm-to-gpu"> {
         "mlir::tensor::TensorDialect"
     ];
 }
+#endif
 
 def ConvertCnmToUPMEMPass : Pass<"convert-cnm-to-upmem"> {
     let summary = "";
