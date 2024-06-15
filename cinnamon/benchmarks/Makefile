@@ -53,7 +53,7 @@ hostlib.o:
 $(OUT_DIR)/bin/dpu: $(IR_PREFIX).dpu.c
 	@mkdir -p $(@D)
 	cp lib/dpu/dpu_lib.h $(OUT_DIR)/irs
-	clang $< -o $@
+	dpu-upmem-dpurte-clang clang $< -o $@
 
 # HOST executable
 $(OUT_DIR)/bin/host: $(IR_PREFIX).host.o $(IR_PREFIX).dpu.c hostlib.o
