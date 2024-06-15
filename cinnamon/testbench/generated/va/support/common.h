@@ -25,6 +25,7 @@ struct dpu_info_t {
     uint32_t m_size;
     uint32_t n_size;
     uint32_t q_size;
+    uint32_t buffer_size;
 };
 struct dpu_info_t *dpu_info;
 

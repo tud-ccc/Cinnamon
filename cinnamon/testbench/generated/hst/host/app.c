@@ -50,15 +50,15 @@ int main(int argc, char **argv) {
     struct dpu_set_t dpu_set, dpu;
     uint32_t nr_of_dpus;
     
-    unsigned int reps = 3;
-	unsigned int warmup = 3;
+    // unsigned int reps = 3;
+	// unsigned int warmup = 3;
 
-	uint32_t simulation = 0;
+	// uint32_t simulation = 0;
 
-    // unsigned int reps = 1;
-	// unsigned int warmup = 0;
+    unsigned int reps = 1;
+	unsigned int warmup = 0;
 
-	// uint32_t simulation = 1;
+	uint32_t simulation = 1;
 
 	uint32_t DIMSIZE;
 	uint32_t dimm;
@@ -67,7 +67,7 @@ int main(int argc, char **argv) {
     uint32_t bin_count = 128;
     uint32_t dpu_per_dimm = 128;
 
-
+    iter = 2;
     dimm = 4;
 	input_size = 4194304;
     printf("Non-opt %d\n", dimm);
@@ -75,7 +75,7 @@ int main(int argc, char **argv) {
     printf("Opt %d\n", dimm);
     executeHisto(DIMSIZE, iter, input_size, bin_count, dimm, simulation, reps, warmup, 512);
 
-
+    iter = 1;
     dimm = 8;
 	input_size = 4194304;
     printf("Non-opt %d\n", dimm);
@@ -157,8 +157,9 @@ void executeHisto(int DIMSIZE, int iter, int input_size, int bins, int dimm, int
         if(rep >= n_warmup) {
             start(&timer, 2, rep - n_warmup);
         }
-
-        DPU_ASSERT(dpu_launch(dpu_set, DPU_SYNCHRONOUS));
+        for (int x = 0; x < iter; x ++){
+            DPU_ASSERT(dpu_launch(dpu_set, DPU_SYNCHRONOUS));
+        }
         if(rep >= n_warmup) {
             stop(&timer, 2);
         }

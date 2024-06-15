@@ -11,7 +11,6 @@
 
 __host dpu_arguments_t DPU_INPUT_ARGUMENTS;
 
-// vector_addition: Computes the vector addition of a cached block 
 static void vector_addition(T *bufferB, T *bufferA, unsigned int l_size) {
     for (unsigned int i = 0; i < l_size; i++){
         bufferB[i] += bufferA[i];

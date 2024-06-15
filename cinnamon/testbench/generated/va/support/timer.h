@@ -56,4 +56,4 @@ void stop(Timer *timer, int i) {
                       (timer->stopTime[i].tv_usec - timer->startTime[i].tv_usec);
 }
 
-void print(Timer *timer, int i, int REP) { printf("%f\t", timer->time[i] / (1000 * REP)); }
+void print(Timer *timer, int i, int REP) { printf("%f\n", timer->time[i] / (1000 * REP)); }
