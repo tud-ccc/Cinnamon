@@ -1,7 +1,4 @@
 
-#define BUFFER_DIM 512
-
-
 #include <stdint.h>
 #include <stdio.h>
 #include <defs.h>
@@ -39,6 +36,7 @@ int main(void) {
     barrier_wait(&my_barrier);
 
     int m_size = DPU_INPUT_ARGUMENTS.m_size; 
+    int BUFFER_DIM = DPU_INPUT_ARGUMENTS.buffer_size; 
 
 
     uint32_t mram_base_addr_A = (uint32_t)DPU_MRAM_HEAP_POINTER;

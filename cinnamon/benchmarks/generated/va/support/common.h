@@ -17,6 +17,7 @@ typedef struct {
 
 typedef struct {
     uint32_t m_size;
+    uint32_t buffer_size;
 } dpu_arguments_t;
 
 // Specific information for each DPU

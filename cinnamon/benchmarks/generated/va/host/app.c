@@ -9,7 +9,7 @@
 #define DPU_BINARY "./bin/dpu"
 #endif
 
-void executeVecadd(int iter, int m, int dimm, int simulation, unsigned int n_reps, unsigned int n_warmup);
+void executeVecadd(int iter, int m, int dimm, int simulation, unsigned int n_reps, unsigned int n_warmup, int buffer_size);
 
 static T* A;
 static T* B;
@@ -53,14 +53,14 @@ int main() {
 	iter = 1;
 	m_size = 2097152;
 	printf("\nNon-opt %d\n", dimm);
-	executeVecadd(iter, m_size, dimm, simulation, reps, warmup);
+	executeVecadd(iter, m_size, dimm, simulation, reps, warmup, 16);
 
 	// DIMM 8 Non-opt
 	dimm = 8;
 	iter = 1;
 	m_size = 2097152;
 	printf("\nOpt %d\n", dimm);
-	executeVecadd(iter, m_size, dimm, simulation, reps, warmup);
+	executeVecadd(iter, m_size, dimm, simulation, reps, warmup, 512);
 
 
 	// DIMM 16 Non-opt
@@ -68,20 +68,20 @@ int main() {
 	iter = 1;
 	m_size = 1048576;
 	printf("\nNon-opt %d\n", dimm);
-	executeVecadd(iter, m_size, dimm, simulation, reps, warmup);
+	executeVecadd(iter, m_size, dimm, simulation, reps, warmup, 16);
 
 	// DIMM 16 opt
 	dimm = 16;
 	iter = 1;
 	m_size = 1048576;
 	printf("\nOpt %d\n", dimm);
-	executeVecadd(iter, m_size, dimm, simulation, reps, warmup);
+	executeVecadd(iter, m_size, dimm, simulation, reps, warmup, 512);
 
 	return 0;
 }
 
 
-void executeVecadd(int iter, int m, int dimm, int simulation, unsigned int n_reps, unsigned int n_warmup){
+void executeVecadd(int iter, int m, int dimm, int simulation, unsigned int n_reps, unsigned int n_warmup, int buffer_size){
 	uint32_t dpu_per_dimm = 128;
 
 	uint32_t allocate_this_dpus = dpu_per_dimm * dimm;
@@ -104,6 +104,7 @@ void executeVecadd(int iter, int m, int dimm, int simulation, unsigned int n_rep
 	i = 0;
 	DPU_FOREACH(dpu_set, dpu, i) {
 		dpu_info[i].m_size= m;
+		dpu_info[i].buffer_size = buffer_size;
 	}
 	
 	A = malloc(m * sizeof(T));
