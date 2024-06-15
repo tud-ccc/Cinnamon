@@ -13,7 +13,7 @@ linker := env_var_or_default("CMAKE_LINKER_TYPE", "DEFAULT")
 build_dir := "build"
 
 # execute cmake -- this is only needed on the first build
-cmake:
+cmake *ARGS:
     cmake -S . -B {{build_dir}} \
         -G Ninja \
         -DCMAKE_BUILD_TYPE={{build_type}} \
@@ -27,6 +27,7 @@ cmake:
         -DCMAKE_EXPORT_COMPILE_COMMANDS=ON \
         -DCMAKE_C_USING_LINKER_mold=-fuse-ld=mold \
         -DCMAKE_CXX_USING_LINKER_mold=-fuse-ld=mold \
+        {{ARGS}}
 
 # execute a specific ninja target
 doNinja *ARGS:
