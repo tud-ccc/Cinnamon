@@ -9,11 +9,11 @@
 #include <llvm/ADT/ArrayRef.h>
 #include <llvm/ADT/SmallVector.h>
 #include <llvm/ADT/StringRef.h>
+#include <llvm/IR/Constants.h>
 #include <mlir/Conversion/LLVMCommon/LoweringOptions.h>
 #include <mlir/Conversion/LLVMCommon/TypeConverter.h>
 #include <mlir/Dialect/Affine/IR/AffineOps.h>
 #include <mlir/Dialect/Affine/Utils.h>
-#include <mlir/Dialect/Arith/IR/Arith.h>
 #include <mlir/Dialect/LLVMIR/LLVMDialect.h>
 #include <mlir/Dialect/LLVMIR/LLVMTypes.h>
 #include <mlir/Dialect/MemRef/IR/MemRef.h>
@@ -32,7 +32,6 @@
 
 #include "mlir/Conversion/LLVMCommon/Pattern.h"
 #include "mlir/Conversion/MemRefToLLVM/MemRefToLLVM.h"
-#include "mlir/Dialect/Func/IR/FuncOps.h"
 #include <mlir/Dialect/Bufferization/IR/Bufferization.h>
 #include <mlir/Dialect/LLVMIR/FunctionCallUtils.h>
 #include <mlir/IR/Visitors.h>
@@ -152,31 +151,11 @@ getScatterOrGatherFunc(ModuleOp moduleOp, LLVMTypeConverter const *tyConverter,
       LLVM::LLVMVoidType::get(ctx));
 }
 
-static Value maybeCast(Value operand, PatternRewriter &rewriter) {
-  Type type = operand.getType();
-  if (!isa<Float16Type>(type))
-    return operand;
-
-  return rewriter.create<LLVM::FPExtOp>(
-      operand.getLoc(), Float32Type::get(rewriter.getContext()), operand);
-}
-
-static Type getFunctionType(Type resultType, ValueRange operands) {
-  SmallVector<Type> operandTypes(operands.getTypes());
-  return LLVM::LLVMFunctionType::get(resultType, operandTypes);
-}
-
-static LLVM::LLVMFuncOp appendOrGetFuncOp(StringRef funcName, Type funcType,
+static LLVM::LLVMFuncOp appendOrGetFuncOp(StringRef funcName, Type resultType,
+                                          ArrayRef<Type> paramTypes,
                                           Operation *op) {
-  using LLVM::LLVMFuncOp;
-
-  auto funcAttr = StringAttr::get(op->getContext(), funcName);
-  Operation *funcOp = SymbolTable::lookupNearestSymbolFrom(op, funcAttr);
-  if (funcOp)
-    return cast<LLVMFuncOp>(*funcOp);
-
-  mlir::OpBuilder b(op->getParentOfType<FunctionOpInterface>());
-  return b.create<LLVMFuncOp>(op->getLoc(), funcName, funcType);
+  auto module = op->getParentOfType<ModuleOp>();
+  return LLVM::lookupOrCreateFn(module, funcName, paramTypes, resultType);
 }
 
 struct AllocDPUOpToFuncCallLowering
@@ -189,24 +168,20 @@ public:
   matchAndRewrite(upmem::AllocDPUsOp op,
                   typename upmem::AllocDPUsOp::Adaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
-    using LLVM::LLVMFuncOp;
     const ArrayRef<int64_t> hierarchyShape =
         op.getResult().getType().getShape();
-    const Value rankCount = rewriter.create<arith::ConstantOp>(
+    const Value rankCount = rewriter.create<LLVM::ConstantOp>(
         op.getLoc(), rewriter.getI32IntegerAttr(hierarchyShape[0]));
-    const Value dpuCount = rewriter.create<arith::ConstantOp>(
+    const Value dpuCount = rewriter.create<LLVM::ConstantOp>(
         op.getLoc(), rewriter.getI32IntegerAttr(hierarchyShape[1]));
 
-    SmallVector<Value, 1> castedOperands;
-    castedOperands.push_back(maybeCast(rankCount, rewriter));
-    castedOperands.push_back(maybeCast(dpuCount, rewriter));
+    // struct dpu_set_t *upmemrt_dpu_alloc(int32_t num_ranks, int32_t num_dpus);
     Type resultType = LLVM::LLVMPointerType::get(rewriter.getContext(), 0);
-    Type funcType = getFunctionType(resultType, castedOperands);
-
-    LLVMFuncOp funcOp = appendOrGetFuncOp("alloc_dpu", funcType, op);
-    // auto callOp =
-    //     rewriter.create<LLVM::CallOp>(op->getLoc(), funcOp, castedOperands);
-    rewriter.replaceOpWithNewOp<LLVM::CallOp>(op, funcOp, castedOperands);
+    LLVM::LLVMFuncOp funcOp =
+        appendOrGetFuncOp("upmemrt_dpu_alloc", resultType,
+                          {rewriter.getI32Type(), rewriter.getI32Type()}, op);
+    rewriter.replaceOpWithNewOp<LLVM::CallOp>(op, funcOp,
+                                              ValueRange{rankCount, dpuCount});
     return success();
   }
 };
@@ -291,7 +266,7 @@ static LogicalResult lowerScatterOrGather(Op op, typename Op::Adaptor adaptor,
   */
   LLVM::LLVMFuncOp runtimeScatterFun = getScatterOrGatherFunc(
       moduleOp, tyConverter,
-      isGather ? "upmemrt_gather_dpu" : "upmemrt_scatter_dpu");
+      isGather ? "upmemrt_dpu_gather" : "upmemrt_dpu_gather");
 
   auto funPtrOp = rewriter.create<LLVM::AddressOfOp>(*affineMapFunOpt);
   auto numBytesCopied = reifyAsIndex(
@@ -366,20 +341,16 @@ public:
   matchAndRewrite(upmem::LaunchFuncOp op,
                   typename upmem::LaunchFuncOp ::Adaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
-    using LLVM::LLVMFuncOp;
-
-    SmallVector<Value, 1> castedOperands;
-
-    castedOperands.push_back(rewriter.getRemappedValue(op.getUpmemToken()));
 
     Type resultType = LLVM::LLVMVoidType::get(rewriter.getContext());
-    Type funcType = getFunctionType(resultType, castedOperands);
 
-    LLVMFuncOp funcOp = appendOrGetFuncOp("upmem_launch_dpu", funcType, op);
-    // auto callOp =
-    //     rewriter.create<LLVM::CallOp>(op->getLoc(), funcOp, castedOperands);
-    rewriter.replaceOpWithNewOp<LLVM::CallOp>(op, funcOp, castedOperands);
-    // rewriter.replaceOp(op, callOp);
+    // void upmemrt_dpu_launch(struct dpu_set_t *void_dpu_set) {
+    LLVM::LLVMFuncOp funcOp = appendOrGetFuncOp(
+        "upmemrt_dpu_lanch", resultType,
+        {getTypeConverter()->convertType(op.getUpmemToken().getType())}, op);
+
+    rewriter.replaceOpWithNewOp<LLVM::CallOp>(op, funcOp,
+                                              adaptor.getUpmemToken());
     return success();
   }
 };
@@ -392,7 +363,7 @@ public:
   LogicalResult
   matchAndRewrite(upmem::BaseDPUMemOffsetOp op, OpAdaptor,
                   ConversionPatternRewriter &rewriter) const override {
-    rewriter.replaceOpWithNewOp<arith::ConstantOp>(
+    rewriter.replaceOpWithNewOp<LLVM::ConstantOp>(
         op, rewriter.getI32IntegerAttr(0));
     return success();
   }
