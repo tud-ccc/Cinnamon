@@ -98,11 +98,9 @@ void UPMEMOutlineKernelPass::runOnOperation() {
     Block::iterator insertPt(func->getNextNode());
     auto funcWalkResult = func.walk([&](upmem::LaunchOp op) {
       SetVector<Value> operands;
-      std::string kernelFnName =
-          Twine(op->getParentOfType<func::FuncOp>().getName(), "_kernel").str();
 
       upmem::UPMEMFuncOp outlinedFunc =
-          outlineKernelFuncImpl(op, kernelFnName, operands);
+          outlineKernelFuncImpl(op, "main", operands);
 
       auto kernelModule = createKernelModule(outlinedFunc, symbolTable);
       symbolTable.insert(kernelModule, insertPt);
