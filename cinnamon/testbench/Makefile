@@ -28,9 +28,9 @@ $(IR_PREFIX).upmem.mlir: $(IR_PREFIX).cnm.mlir
 
 $(IR_PREFIX).llvm.mlir: $(IR_PREFIX).upmem.mlir
 	$(CINM_OPT) $< --mlir-print-ir-after-failure --canonicalize \
-	--convert-scf-to-cf --convert-cf-to-llvm --convert-arith-to-llvm \
+	--convert-scf-to-cf --convert-cf-to-llvm --fold-memref-alias-ops --lower-affine --convert-arith-to-llvm \
 	--convert-upmem-to-llvm \
-    --fold-memref-alias-ops --expand-strided-metadata --memref-expand --finalize-memref-to-llvm \
+    --expand-strided-metadata --memref-expand --finalize-memref-to-llvm --lower-affine --convert-arith-to-llvm \
 	--convert-func-to-llvm=use-bare-ptr-memref-call-conv=true --cse --reconcile-unrealized-casts --cse \
 	> $@
 

@@ -29,7 +29,6 @@ def ConvertCnmToUPMEMPass : Pass<"convert-cnm-to-upmem"> {
     let summary = "";
     let constructor = "mlir::cnm::createConvertCnmToUPMEMPass()";
     let dependentDialects = [
-        "mlir::LLVM::LLVMDialect",
         "mlir::affine::AffineDialect",
         "mlir::arith::ArithDialect",
         "mlir::memref::MemRefDialect",

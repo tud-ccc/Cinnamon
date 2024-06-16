@@ -261,7 +261,11 @@ static LogicalResult printOperation(CppEmitter &emitter,
     return failure();
 
   os << emitter.getOrCreateName(loadOp->getOperand(0));
-  os << "[" << emitter.getOrCreateName(loadOp->getOperand(1)) << "]";
+  if (loadOp->getNumOperands() > 1) {
+    os << "[" << emitter.getOrCreateName(loadOp->getOperand(1)) << "]";
+  } else {
+    os << "[0]";
+  }
   return success();
 }
 
@@ -269,7 +273,11 @@ static LogicalResult printOperation(CppEmitter &emitter,
                                     memref::StoreOp storeOp) {
   raw_ostream &os = emitter.ostream();
   os << emitter.getOrCreateName(storeOp->getOperand(1));
-  os << "[" << emitter.getOrCreateName(storeOp->getOperand(2)) << "]";
+  if (storeOp.getNumOperands() > 2) {
+    os << "[" << emitter.getOrCreateName(storeOp->getOperand(2)) << "]";
+  } else {
+    os << "[0]";
+  }
   os << " = " << emitter.getOrCreateName(storeOp->getOperand(0));
   return success();
 }

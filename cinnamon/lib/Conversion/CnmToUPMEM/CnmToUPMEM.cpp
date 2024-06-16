@@ -131,7 +131,7 @@ struct ConvertCnmScatterToUPMEM : public OpConversionPattern<cnm::ScatterOp> {
   matchAndRewrite(cnm::ScatterOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
     const Value tensor = adaptor.getInput();
-    const ShapedType inputTy = tensor.getType().cast<ShapedType>();
+    const ShapedType inputTy = op.getInput().getType();
 
     const Value inputAsMemref = createOrFoldUnrealizedConversionCast(
         op.getLoc(), rewriter, convertTensorToMemref(inputTy), tensor);
@@ -173,7 +173,8 @@ struct ConvertCnmGatherToUPMEM : public OpConversionPattern<cnm::GatherOp> {
                   ConversionPatternRewriter &rewriter) const override {
 
     Value outputBuf = adaptor.getOutputBuf();
-    if (!outputBuf.getType().isa<MemRefType>()) {
+    bool isBufferized = op.getOutputBuf().getType().isa<BaseMemRefType>();
+    if (!isBufferized) {
       outputBuf = rewriter.create<memref::AllocOp>(
           op->getLoc(), convertTensorToMemref(op.getOutputBuf().getType()));
     }
@@ -191,11 +192,12 @@ struct ConvertCnmGatherToUPMEM : public OpConversionPattern<cnm::GatherOp> {
                                      transferCount, op.getGatherMap(),
                                      adaptor.getWg());
 
-    Value outputAsTensor = createOrFoldUnrealizedConversionCast(
-        op->getLoc(), rewriter, op.getOutput().getType(), outputBuf);
+    if (!isBufferized) {
+      Value outputAsTensor = createOrFoldUnrealizedConversionCast(
+          op->getLoc(), rewriter, op.getOutput().getType(), outputBuf);
 
-    rewriter.replaceAllUsesWith(op.getOutput(), outputAsTensor);
-
+      rewriter.replaceAllUsesWith(op.getOutput(), outputAsTensor);
+    }
     rewriter.eraseOp(op);
     return success();
   }
@@ -360,16 +362,16 @@ struct ConvertCnmTerminatorToUPMEM
 } // namespace cnmtoupmem
 
 void populateCnmToUPMEMFinalTypeConversions(TypeConverter &typeConverter) {
-  typeConverter.addConversion(
-      [&](cnm::WorkgroupType wgType) -> std::optional<Type> {
-        return upmem::DeviceHierarchyType::get(wgType.getContext(),
-                                               wgType.getShape());
-      });
+  typeConverter.addConversion([&](cnm::WorkgroupType wgType) -> Type {
+    return upmem::DeviceHierarchyType::get(wgType.getContext(),
+                                           wgType.getShape());
+  });
 
-  typeConverter.addConversion(
-      [&](cnm::BufferType bufferType) -> std::optional<Type> {
-        return cnmtoupmem::convertCnmBufferToMemRefType(bufferType);
-      });
+  typeConverter.addConversion([&](cnm::BufferType bufferType) -> Type {
+    return cnmtoupmem::convertCnmBufferToMemRefType(bufferType);
+  });
+
+  typeConverter.addConversion([](ShapedType st) -> Type { return st; });
 }
 
 void populateCnmToUPMEMConversionPatterns(TypeConverter &typeConverter,
@@ -386,7 +388,7 @@ void populateCnmToUPMEMConversionPatterns(TypeConverter &typeConverter,
 struct ConvertCnmToUPMEMPass
     : public ::impl::ConvertCnmToUPMEMPassBase<ConvertCnmToUPMEMPass> {
   void runOnOperation() final {
-    LLVMTypeConverter converter(&getContext());
+    TypeConverter converter;
     populateCnmToUPMEMFinalTypeConversions(converter);
     const auto addUnrealizedCast = [](OpBuilder &builder, Type type,
                                       ValueRange inputs, Location loc) {
