@@ -562,6 +562,7 @@ struct ConvertCinmGemmToCnm : public OpConversionPattern<cinm::GemmOp> {
     cinm::ComputeOp computeBlock = mlir::cinm::getEnclosingComputeBlock(op);
     cnm::WorkgroupOp workgroup =
         builder.create<cnm::WorkgroupOp>(computeBlock.getCnmWorkgroupType());
+    auto wgShape = computeBlock.getWorkgroupShape();
 
     auto transposeRight = transpose(builder, adaptor.getRight());
 
@@ -573,14 +574,13 @@ struct ConvertCinmGemmToCnm : public OpConversionPattern<cinm::GemmOp> {
     }
     auto eltTy = op.getLeft().getType().getElementType();
     // buffer type for A and B
-    cnm::BufferType bufferType = cnm::BufferType::get(
-        {reductionSize}, eltTy, computeBlock.getWorkgroupShape());
+    cnm::BufferType bufferType =
+        cnm::BufferType::get({reductionSize}, eltTy, wgShape);
     Value bufferA = builder.create<cnm::AllocOp>(bufferType, workgroup);
     Value bufferB = builder.create<cnm::AllocOp>(bufferType, workgroup);
 
     // C has a single element and no dimensions
-    cnm::BufferType bufferCType =
-        cnm::BufferType::get({}, eltTy, computeBlock.getWorkgroupShape());
+    cnm::BufferType bufferCType = cnm::BufferType::get({}, eltTy, wgShape);
     Value bufferC = builder.create<cnm::AllocOp>(bufferCType, workgroup);
 
     //::mlir::Value input, ::mlir::Value buffer, ::mlir::Value wg,
@@ -594,7 +594,8 @@ struct ConvertCinmGemmToCnm : public OpConversionPattern<cinm::GemmOp> {
                                  scatterA, scatterB, scatterGatherC)
             .failed()) {
       return op->emitOpError("Cannot be converted to CINM, parallel dims "
-                             "cannot be mapped onto workgroup");
+                             "cannot be mapped onto workgroup (")
+             << wgShape << ")";
     }
     builder.create<cnm::ScatterOp>(adaptor.getLeft(), bufferA, workgroup,
                                    std::move(scatterA));
