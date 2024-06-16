@@ -1,7 +1,22 @@
 #!/bin/bash
-scp -P 2293 -r ../cinnamon/testbench/generated/ reviewer@ios.inf.uni-osnabrueck.de:/home/reviewer/generated
-ssh -p 2293 reviewer@ios.inf.uni-osnabrueck.de 
-#cd /home/reviewer/generated
-#source /opt/upmem/upmem-2023.2.0-Linux-x86_64/upmem_env.sh
-#python3 run_benchmarks.py
-#cat runtime.txt"
+
+# Get the directory where the script is located
+SCRIPT_DIR="$(dirname "$(readlink -f "$0")")"
+
+SOURCE_DIR="${SCRIPT_DIR}/../cinnamon/testbench/generated/"
+
+TARGET_DIR="reviewer@ios.inf.uni-osnabrueck.de:/home/reviewer/generated"
+SSH_HOST="reviewer@ios.inf.uni-osnabrueck.de"
+SSH_PORT="2293"
+
+# Use scp to copy files
+scp -P $SSH_PORT -r "$SOURCE_DIR" "$TARGET_DIR"
+
+# Check if scp was successful
+if [ $? -eq 0 ]; then
+  echo "Files copied successfully. Establishing SSH connection..."
+  # SSH into the remote server
+  ssh -p $SSH_PORT $SSH_HOST
+else
+  echo "Copy failed. SSH connection not established."
+fi
