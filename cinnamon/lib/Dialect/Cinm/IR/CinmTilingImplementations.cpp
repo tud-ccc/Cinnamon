@@ -90,7 +90,7 @@ SmallVector<Value> GemmOp::convertToTiledOps(OpBuilder &builder,
 
   return createNestedAffineForLoops(
       builder, getLoc(), resultShape, {p0, p1}, ValueRange{resultInit},
-      [&](OpBuilder &builder, Location loc, ValueRange indices,
+      [&, p0, p1](OpBuilder &builder, Location loc, ValueRange indices,
           ValueRange iterArgs) -> SmallVector<Value> {
         const auto parIndices = indices;
         const ArrayRef<int64_t> unitStrides{1, 1};

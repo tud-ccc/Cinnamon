@@ -460,7 +460,8 @@ struct ConvertElementWiseToCnm : public OpConversionPattern<CinmOp> {
   }
 
   LogicalResult
-  matchAndRewrite(CinmOp op, OpConversionPattern<CinmOp>::OpAdaptor adaptor,
+  matchAndRewrite(CinmOp op,
+                  typename OpConversionPattern<CinmOp>::OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
 
     ImplicitLocOpBuilder builder(op->getLoc(), rewriter);
