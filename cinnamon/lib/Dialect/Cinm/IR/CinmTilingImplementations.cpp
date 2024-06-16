@@ -79,15 +79,14 @@ SmallVector<Value> GemmOp::convertToTiledOps(OpBuilder &builder,
   const Value resultInit = builder.create<tensor::EmptyOp>(
       getLoc(), resultShape, resultType.getElementType());
 
+  auto rDim = lhsType.getDimSize(1);
+  auto eltTy = rhsType.getElementType();
+
   // Size of the tile on the reduction dimension.
-  auto r = params.reduceClusterSize(2, resultType.getNumElements(),
-                                    lhsType.getElementType());
+  auto r = params.reduceClusterSize(2, rDim, lhsType.getElementType());
   // Tile sizes of each parallel dimension
   auto [p0, p1] =
       params.parallelClusterSize(lhsType.getDimSize(0), rhsType.getDimSize(1));
-
-  auto rDim = lhsType.getDimSize(1);
-  auto eltTy = rhsType.getElementType();
 
   return createNestedAffineForLoops(
       builder, getLoc(), resultShape, {p0, p1}, ValueRange{resultInit},
@@ -200,9 +199,6 @@ SmallVector<Value> tileElementWiseBinaryOp(OpBuilder &builder0, OP op,
 
   const Value resultInit =
       builder.create<tensor::EmptyOp>(tensorTy, ValueRange{});
-
-  const SmallVector<int64_t, 2> tileSizes = {
-      tensorTy.getNumElements() / reduceClusterSize, reduceClusterSize};
 
   SmallVector<Value, 1> result = createNestedAffineForLoops(
       builder, op.getLoc(), {tensorTy.getNumElements()}, {reduceClusterSize},
