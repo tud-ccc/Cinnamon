@@ -157,7 +157,7 @@ def UPMEM_LaunchOp : UPMEM_Op<"launch", [
     Example:
 
     ```mlir
-    upmem.launch %upmem_token as !upmem.hierarchy<2x64x16> ranks(%rd) in (%sr = %0)
+    upmem.launch %hierarchy as !upmem.hierarchy<2x64x16> ranks(%rd) in (%sr = %0)
                  dpus(%dd) in (%sd = %1)
                  tasklets(%td) in (%st= %3) {
       "some_op"(%bx, %tx) : (index, index) -> ()
@@ -525,7 +525,7 @@ def UPMEM_LaunchFuncOp :UPMEM_Op<"launch_func", [
       UPMEM_AsyncOpInterface, AttrSizedOperandSegments]>,
     Arguments<(ins Variadic<UPMEM_AsyncToken>:$asyncDependencies,
                SymbolRefAttr:$kernel,
-               DeviceHierarchy:$upmem_token,
+               DeviceHierarchy:$hierarchy,
                Optional<I32>:$dynamicSharedMemorySize,
                Variadic<AnyType>:$kernelOperands,
                Optional<AnyType>:$asyncObject)>,
@@ -538,7 +538,7 @@ def UPMEM_LaunchFuncOp :UPMEM_Op<"launch_func", [
   let skipDefaultBuilders = 1;
 
   let builders = [
-    OpBuilder<(ins "UPMEMFuncOp":$kernelFunc, "Value":$upmem_token, 
+    OpBuilder<(ins "UPMEMFuncOp":$kernelFunc, "Value":$hierarchy, 
       "Value":$dynamicSharedMemorySize, "ValueRange":$kernelOperands,
       CArg<"Type", "nullptr">:$asyncTokenType,
       CArg<"ValueRange", "{}">:$asyncDependencies)>
@@ -566,7 +566,7 @@ def UPMEM_LaunchFuncOp :UPMEM_Op<"launch_func", [
   let assemblyFormat = [{
       custom<AsyncDependencies>(type($asyncToken), $asyncDependencies)
       (`<` $asyncObject^ `:` type($asyncObject) `>`)?
-      $kernel $upmem_token `:` type($upmem_token)
+      $kernel $hierarchy `:` qualified(type($hierarchy))
       (`dynamic_shared_memory_size` $dynamicSharedMemorySize^)?
       custom<LaunchFuncOperands>($kernelOperands, type($kernelOperands)) attr-dict
   }];

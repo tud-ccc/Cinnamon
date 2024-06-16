@@ -347,10 +347,10 @@ public:
     // void upmemrt_dpu_launch(struct dpu_set_t *void_dpu_set) {
     LLVM::LLVMFuncOp funcOp = appendOrGetFuncOp(
         "upmemrt_dpu_launch", resultType,
-        {getTypeConverter()->convertType(op.getUpmemToken().getType())}, op);
+        {getTypeConverter()->convertType(op.getHierarchy().getType())}, op);
 
     rewriter.replaceOpWithNewOp<LLVM::CallOp>(op, funcOp,
-                                              adaptor.getUpmemToken());
+                                              adaptor.getHierarchy());
     return success();
   }
 };
