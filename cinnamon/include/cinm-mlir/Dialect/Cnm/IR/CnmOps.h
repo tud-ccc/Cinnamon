@@ -16,6 +16,7 @@
 #include "mlir/Bytecode/BytecodeOpInterface.h"
 #include "mlir/IR/AffineMap.h"
 #include "mlir/Dialect/Utils/IndexingUtils.h"
+#include "mlir/Dialect/Bufferization/IR/Bufferization.h"
 
 
 //===- Generated includes -------------------------------------------------===//

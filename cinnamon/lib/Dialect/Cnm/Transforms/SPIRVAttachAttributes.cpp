@@ -10,7 +10,7 @@
 #include <mlir/Pass/Pass.h>
 #include <mlir/Target/SPIRV/Target.h>
 
-namespace mlir {
+namespace mlir::cnm {
 
 //===- Generated passes ---------------------------------------------------===//
 

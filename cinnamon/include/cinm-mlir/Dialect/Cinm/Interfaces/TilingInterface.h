@@ -6,6 +6,7 @@
 #include <cstdint>
 #include <llvm/ADT/ArrayRef.h>
 #include <mlir/Dialect/Arith/IR/Arith.h>
+#include <mlir/IR/BuiltinTypeInterfaces.h>
 #include <mlir/IR/BuiltinTypes.h>
 #include <mlir/IR/Location.h>
 #include <mlir/IR/Value.h>
@@ -49,7 +50,7 @@ void markOpAsNoTile(Operation *);
 
 /// Create a tensor.reshape for a fully static tensor shape
 Value reshapeStatic(OpBuilder &, Location loc, Value value,
-                    RankedTensorType type, llvm::ArrayRef<int64_t> newShape);
+                    ShapedType type, llvm::ArrayRef<int64_t> newShape);
 
 /// Create a tensor.reshape for a fully static tensor shape
 Value reshapeStatic(OpBuilder &b, Location loc,

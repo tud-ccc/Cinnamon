@@ -18,6 +18,7 @@
 #include <mlir/IR/AffineMap.h>
 #include <mlir/IR/BuiltinAttributes.h>
 #include <mlir/IR/BuiltinOps.h>
+#include <mlir/IR/BuiltinTypeInterfaces.h>
 #include <mlir/IR/BuiltinTypes.h>
 #include <mlir/IR/Diagnostics.h>
 #include <mlir/IR/ValueRange.h>
@@ -37,7 +38,10 @@ template <typename T> T reduceMul(ArrayRef<T> arr) {
   return result;
 }
 
-MemRefType convertTensorToMemref(RankedTensorType ty) {
+MemRefType convertTensorToMemref(ShapedType ty) {
+  if (ty.isa<MemRefType>())
+    return ty.cast<MemRefType>();
+
   return MemRefType::get(ty.getShape(), ty.getElementType());
 }
 
@@ -127,11 +131,10 @@ struct ConvertCnmScatterToUPMEM : public OpConversionPattern<cnm::ScatterOp> {
   matchAndRewrite(cnm::ScatterOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
     const Value tensor = adaptor.getInput();
-    const RankedTensorType tensorType =
-        tensor.getType().cast<RankedTensorType>();
+    const ShapedType inputTy = tensor.getType().cast<ShapedType>();
 
     const Value inputAsMemref = createOrFoldUnrealizedConversionCast(
-        op.getLoc(), rewriter, convertTensorToMemref(tensorType), tensor);
+        op.getLoc(), rewriter, convertTensorToMemref(inputTy), tensor);
 
     const int64_t transferCount = op.getTransferCountInItems();
 
@@ -168,10 +171,12 @@ struct ConvertCnmGatherToUPMEM : public OpConversionPattern<cnm::GatherOp> {
   LogicalResult
   matchAndRewrite(cnm::GatherOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
-    const RankedTensorType tensorType = op.getOutput().getType();
 
-    const Value outputBuf = rewriter.create<memref::AllocOp>(
-        op->getLoc(), convertTensorToMemref(tensorType));
+    Value outputBuf = adaptor.getOutputBuf();
+    if (!outputBuf.getType().isa<MemRefType>()) {
+      outputBuf = rewriter.create<memref::AllocOp>(
+          op->getLoc(), convertTensorToMemref(op.getOutputBuf().getType()));
+    }
 
     const int64_t transferCount = op.getTransferCountInItems();
     int64_t dpuMemOffset;

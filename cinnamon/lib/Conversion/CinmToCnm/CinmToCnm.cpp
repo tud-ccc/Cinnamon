@@ -27,6 +27,7 @@
 #include <mlir/IR/Builders.h>
 #include <mlir/IR/BuiltinAttributeInterfaces.h>
 #include <mlir/IR/BuiltinAttributes.h>
+#include <mlir/IR/BuiltinTypeInterfaces.h>
 #include <mlir/IR/BuiltinTypes.h>
 #include <mlir/IR/Diagnostics.h>
 #include <mlir/IR/IRMapping.h>
@@ -392,11 +393,12 @@ LogicalResult convertCinmToCnm(
   for (auto [i, reshaped, result, alloc] :
        llvm::enumerate(reshapedOutputs, results, launchOutputs)) {
     auto map = gatherMaps[launchInputs.size() + i];
-    auto res = builder.create<cnm::GatherOp>(
-        reshaped.getType(), cnm::GatherTokenType::get(builder.getContext()),
-        alloc, workgroup, map);
+    auto outBuf =
+        builder.create<tensor::EmptyOp>(reshaped.getType(), ValueRange{});
+    auto res = builder.create<cnm::GatherOp>(alloc, workgroup, map, outBuf);
     auto shapedBack = cinm::reshapeStatic(
-        builder, builder.getLoc(), res.getOutput(),
+        builder, builder.getLoc(),
+        res.getOutput().cast<TypedValue<RankedTensorType>>(),
         result.getType().cast<RankedTensorType>().getShape());
 
     resultValues.push_back(shapedBack);
@@ -625,10 +627,10 @@ struct ConvertCinmGemmToCnm : public OpConversionPattern<cinm::GemmOp> {
               });
         });
 
-    auto gather = builder.create<cnm::GatherOp>(
-        TypeRange{op.getResult().getType(),
-                  cnm::GatherTokenType::get(builder.getContext())},
-        bufferC, workgroup, scatterGatherC);
+    auto outbuf =
+        builder.create<tensor::EmptyOp>(op.getResult().getType(), ValueRange{});
+    auto gather = builder.create<cnm::GatherOp>(bufferC, workgroup,
+                                                scatterGatherC, outbuf);
 
     rewriter.replaceOp(op, ValueRange{gather.getOutput()});
     return success();

@@ -18,6 +18,7 @@ include "mlir/Interfaces/CallInterfaces.td"
 include "mlir/Interfaces/ControlFlowInterfaces.td"
 include "mlir/Interfaces/InferTypeOpInterface.td"
 include "mlir/Interfaces/SideEffectInterfaces.td"
+include "mlir/Dialect/Bufferization/IR/BufferizableOpInterface.td"
 include "mlir/IR/CommonAttrConstraints.td"
 
 def WorkgroupOp : Cnm_Op<"workgroup"> {
@@ -58,8 +59,8 @@ def ScatterOp: Cnm_Op<"scatter", [InferWorkgroupTypeFromBuffer<"buffer", "wg">]>
     let summary = "";
     let description = [{}];
 
-    let arguments = (ins Builtin_RankedTensor:$input, BufferType:$buffer, WorkgroupType:$wg, AffineMapAttr:$scatterMap);
-    let results = (outs ScatterTokenType:$token);
+    let arguments = (ins AnyShaped:$input, BufferType:$buffer, WorkgroupType:$wg, AffineMapAttr:$scatterMap);
+    let results = (outs);
 
     let extraClassDeclaration = [{
         int64_t getTransferCountInItems() {
@@ -73,12 +74,12 @@ def ScatterOp: Cnm_Op<"scatter", [InferWorkgroupTypeFromBuffer<"buffer", "wg">]>
     let assemblyFormat = "$input `into` $buffer `[` $scatterMap `]` `of` $wg attr-dict `:` type($input) `into` qualified(type($buffer))";
 }
 
-def GatherOp: Cnm_Op<"gather", [InferWorkgroupTypeFromBuffer<"buffer", "wg">]> {
+def GatherOp: Cnm_Op<"gather", [InferWorkgroupTypeFromBuffer<"buffer", "wg">, InferTensorTypeAdaptor]> {
     let summary = "";
     let description = [{}];
 
-    let arguments = (ins BufferType:$buffer, WorkgroupType:$wg, AffineMapAttr:$gatherMap);
-    let results = (outs Builtin_RankedTensor:$output, GatherTokenType:$token);
+    let arguments = (ins BufferType:$buffer, WorkgroupType:$wg, AffineMapAttr:$gatherMap, AnyShaped:$outputBuf);
+    let results = (outs Optional<AnyRankedTensor>:$output);
 
     let extraClassDeclaration = [{
         int64_t getTransferCountInItems() {
@@ -88,7 +89,7 @@ def GatherOp: Cnm_Op<"gather", [InferWorkgroupTypeFromBuffer<"buffer", "wg">]> {
     }];
 
     let hasVerifier = 1;
-    let assemblyFormat = "$buffer `[` $gatherMap `]` `of` $wg attr-dict `:` qualified(type($buffer)) `into` type($output)";
+    let assemblyFormat = "$buffer `[` $gatherMap `]` `of` $wg attr-dict `into` $outputBuf `:` qualified(type($buffer)) `into` type($outputBuf)";
 }
 
 def LaunchOp: Cnm_Op<"launch", [AttrSizedOperandSegments, SingleBlockImplicitTerminator<"TerminatorOp">]> {

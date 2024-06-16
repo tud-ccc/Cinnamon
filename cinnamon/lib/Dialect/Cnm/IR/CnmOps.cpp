@@ -9,9 +9,11 @@
 #include "mlir/IR/OpImplementation.h"
 
 #include <llvm/Support/Casting.h>
+#include <mlir/IR/BuiltinTypeInterfaces.h>
 #include <mlir/IR/BuiltinTypes.h>
 #include <mlir/IR/Diagnostics.h>
 #include <mlir/IR/TypeRange.h>
+#include <mlir/Interfaces/InferTypeOpInterface.h>
 #include <mlir/Support/LogicalResult.h>
 
 #define DEBUG_TYPE "cnm-ops"
@@ -34,7 +36,24 @@ void CnmDialect::registerOps() {
 #include "cinm-mlir/Dialect/Cnm/IR/CnmOps.cpp.inc"
       >();
 }
-// parsers/printers
+
+::mlir::LogicalResult GatherOp::inferReturnTypeComponents(
+    ::mlir::MLIRContext *, ::std::optional<::mlir::Location>,
+    GatherOp::Adaptor adaptor,
+    ::llvm::SmallVectorImpl<::mlir::ShapedTypeComponents>
+        &inferredReturnShapes) {
+  auto out = adaptor.getOutputBuf();
+  if (out.getType().isa<MemRefType>()) {
+    return success();
+  } else if (out.getType().isa<RankedTensorType>()) {
+    ShapedType ty = out.getType().cast<RankedTensorType>();
+
+    inferredReturnShapes.push_back(ShapedTypeComponents(ty));
+    return success();
+  }
+
+  return failure();
+}
 
 LogicalResult LaunchOp::verify() {
   auto bodyArgs = getBody().getArguments();
@@ -94,7 +113,7 @@ LogicalResult ScatterOp::verify() {
 }
 
 LogicalResult GatherOp::verify() {
-  auto tensorTy = getOutput().getType();
+  auto tensorTy = getOutputBuf().getType();
   auto bufferTy = getBuffer().getType();
   auto map = getGatherMap();
   // The affine map maps every WG-element index and buffer element index

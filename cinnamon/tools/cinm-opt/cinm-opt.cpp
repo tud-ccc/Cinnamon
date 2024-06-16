@@ -41,8 +41,9 @@ int main(int argc, char *argv[]) {
   registerAllPasses();
   registerCinmConversionPasses();
   registerCnmConversionPasses();
-  registerCnmSPIRVAttachKernelEntryPointAttributePass();
-  registerCnmSPIRVAttachTargetAttributePass();
+  cnm::registerCnmSPIRVAttachKernelEntryPointAttributePass();
+  cnm::registerCnmSPIRVAttachTargetAttributePass();
+  cnm::registerCnmBufferizePass();
   registerCinmTilingPass();
   registerUPMEMOutlineKernelPass();
   registerUPMEMConversionPasses();

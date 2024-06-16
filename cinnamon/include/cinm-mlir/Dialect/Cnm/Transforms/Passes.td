@@ -54,4 +54,15 @@ def CnmSPIRVAttachKernelEntryPointAttributePass: Pass<"cnm-spirv-attach-kernel-e
   ];
 }
 
+
+def CnmBufferizePass : Pass<"cnm-bufferize", "func::FuncOp"> {
+  let summary = "Bufferize the `cnm` dialect";
+  let description = [{
+
+  }];
+  let dependentDialects = ["bufferization::BufferizationDialect",
+                           "memref::MemRefDialect"];
+}
+
+
 #endif // CNM_TRANSFORM_PASSES

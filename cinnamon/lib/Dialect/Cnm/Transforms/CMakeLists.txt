@@ -1,5 +1,6 @@
 add_mlir_dialect_library(CnmTransforms
     SPIRVAttachAttributes.cpp
+    Bufferize.cpp
 
 DEPENDS
     CnmIncGen
@@ -8,6 +9,8 @@ DEPENDS
 LINK_LIBS PUBLIC
     MLIRIR
     MLIRGPUDialect
+    MLIRBufferizationDialect
+    MLIRMemRefDialect
     MLIRLLVMDialect
     MLIRAffineDialect
     MLIRLinalgDialect
