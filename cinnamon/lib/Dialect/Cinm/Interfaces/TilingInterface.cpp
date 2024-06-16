@@ -164,6 +164,8 @@ Value createVectorReduce(OpBuilder &builder, Location loc, Value vector,
   return builder.create<tensor::ExtractOp>(loc, sum.getResult(0), ValueRange{});
 }
 
+// todo these impls should work also for float types
+
 Value createVectorReduceAdd(OpBuilder &builder, Location loc, Value vector,
                             int64_t clusterSize) {
   const Type elementType =

@@ -5,6 +5,7 @@
 #include "cinm-mlir/Dialect/Cinm/Interfaces/TilingInterface.h"
 #include "cinm-mlir/Dialect/Cnm/IR/CnmBase.h"
 #include "cinm-mlir/Dialect/Cnm/IR/CnmTypes.h"
+#include <algorithm>
 #include <cinm-mlir/Conversion/CinmPasses.h>
 #include <cinm-mlir/Dialect/Cnm/IR/CnmOps.h>
 #include <cstddef>
@@ -58,8 +59,11 @@ AffineExpr linearizeIndices(MLIRContext *ctx, ArrayRef<int64_t> shape) {
   int64_t trailing = 1;
   for (auto it = shape.rbegin(); it != shape.rend(); it++) {
     auto dim = *it;
-    index = trailing * getAffineDimExpr(dimIndex, ctx) + index;
-    trailing *= dim;
+    if (dim != 1) {
+      // otherwise the only index in this space is zero, so we simplify it.
+      index = trailing * getAffineDimExpr(dimIndex, ctx) + index;
+      trailing *= dim;
+    }
     dimIndex--;
   }
   return index;
@@ -293,10 +297,9 @@ LogicalResult convertInputIntoAlloc(Value &inputBuf, Value workGroup,
   }
 
   // Allocate a cinm buffer
-  cnm::BufferType bufTy =
-      cnm::BufferType::get(rewriter.getContext(), shapeOfBuffer,
-                           inputTy.getElementType(), wgTy.getShape(),
-                           0); // todo level is hardcoded
+  cnm::BufferType bufTy = cnm::BufferType::get(
+      shapeOfBuffer, inputTy.getElementType(), wgTy.getShape(),
+      0); // todo level is hardcoded
 
   Value alloc = rewriter.create<cnm::AllocOp>(bufTy, workGroup);
 
@@ -305,6 +308,40 @@ LogicalResult convertInputIntoAlloc(Value &inputBuf, Value workGroup,
   result = alloc;
 
   return success();
+}
+
+cnm::LaunchOp createLaunchOp(
+    ImplicitLocOpBuilder &builder, Value workgroup, ValueRange inputs,
+    ValueRange outputs,
+    function_ref<void(ImplicitLocOpBuilder &, ValueRange, ValueRange)>
+        createCnmLaunchBlock) {
+
+  cnm::LaunchOp launchOp =
+      builder.create<cnm::LaunchOp>(workgroup, inputs, outputs);
+
+  {
+    auto &launchBlock = launchOp.getBody().emplaceBlock();
+    // arguments are memrefs with same shape as inputs
+    for (auto input : launchOp.getParams()) {
+      if (auto inputTy = input.getType().cast<cnm::BufferType>()) {
+        auto mappedTy =
+            MemRefType::get(inputTy.getShape(), inputTy.getElementType());
+        launchBlock.addArgument(mappedTy, input.getLoc());
+      } else {
+        launchBlock.addArgument(input.getType(), input.getLoc());
+      }
+    }
+    auto args = launchBlock.getArguments();
+    auto firstOutput = args.begin() + inputs.size();
+    llvm::SmallVector<Value, 2> reduceInpts(args.begin(), firstOutput);
+    llvm::SmallVector<Value, 1> reduceInits(firstOutput, args.end());
+
+    OpBuilder::InsertionGuard guard(builder);
+    builder.setInsertionPointToStart(&launchBlock);
+    createCnmLaunchBlock(builder, reduceInpts, reduceInits);
+    builder.create<cnm::TerminatorOp>();
+  }
+  return launchOp;
 }
 
 LogicalResult convertCinmToCnm(
@@ -347,31 +384,8 @@ LogicalResult convertCinmToCnm(
     reshapedOutputs.push_back(output);
   }
 
-  cnm::LaunchOp launchOp =
-      builder.create<cnm::LaunchOp>(workgroup, launchInputs, launchOutputs);
-
-  {
-    auto &launchBlock = launchOp.getBody().emplaceBlock();
-    // arguments are memrefs with same shape as inputs
-    for (auto input : launchOp.getParams()) {
-      if (auto inputTy = input.getType().cast<cnm::BufferType>()) {
-        auto mappedTy =
-            MemRefType::get(inputTy.getShape(), inputTy.getElementType());
-        launchBlock.addArgument(mappedTy, input.getLoc());
-      } else {
-        launchBlock.addArgument(input.getType(), input.getLoc());
-      }
-    }
-    auto args = launchBlock.getArguments();
-    auto firstOutput = args.begin() + operands.size();
-    llvm::SmallVector<Value, 2> reduceInpts(args.begin(), firstOutput);
-    llvm::SmallVector<Value, 1> reduceInits(firstOutput, args.end());
-
-    builder.setInsertionPointToStart(&launchBlock);
-    createCnmLaunchBlock(builder, reduceInpts, reduceInits);
-    builder.create<cnm::TerminatorOp>();
-  }
-  builder.setInsertionPointAfter(launchOp);
+  createLaunchOp(builder, workgroup, launchInputs, launchOutputs,
+                 createCnmLaunchBlock);
 
   // gather the results (only the out buffers)
 
@@ -474,6 +488,51 @@ struct ConvertElementWiseToCnm : public OpConversionPattern<CinmOp> {
   }
 };
 
+LogicalResult computeScatterMapForGemm(cnm::BufferType bufferTyAB,
+                                       int64_t rowsA, int64_t colsB,
+                                       AffineMap &scatterA, AffineMap &scatterB,
+                                       AffineMap &scatterGatherC) {
+
+  auto wgElts = 1;
+  SmallVector<int64_t, 4> wgShapeWithoutUnits; // only non unit dims
+  for (auto dim : bufferTyAB.getWorkgroupShape()) {
+    if (dim != 1) {
+      wgElts *= dim;
+      wgShapeWithoutUnits.push_back(dim);
+    }
+  }
+
+  // this assumption relies on the tiling phase
+  if (wgElts != rowsA * colsB)
+    return failure();
+
+  // couple of situations we know work
+  if (rowsA == 1 || colsB == 1 ||
+      wgShapeWithoutUnits == ArrayRef<int64_t>{rowsA, colsB} ||
+      wgShapeWithoutUnits == ArrayRef<int64_t>{colsB, rowsA}) {
+
+    auto ctx = bufferTyAB.getContext();
+    auto numInputs = bufferTyAB.getWorkgroupShape().size();
+    const auto linearInput =
+        linearizeIndices(ctx, bufferTyAB.getWorkgroupShape());
+
+    scatterA = mlir::simplifyAffineMap(
+        AffineMap::get(numInputs, 0, linearInput % rowsA));
+
+    scatterB = mlir::simplifyAffineMap(
+        AffineMap::get(numInputs, 0, linearInput % colsB));
+
+    SmallVector<AffineExpr> results;
+    structureIndex(linearInput, {rowsA, colsB}, results);
+    scatterGatherC = mlir::simplifyAffineMap(
+        AffineMap::get(numInputs, 0, std::move(results), ctx));
+
+    return success();
+  }
+
+  return failure();
+}
+
 struct ConvertCinmGemmToCnm : public OpConversionPattern<cinm::GemmOp> {
   using OpConversionPattern<cinm::GemmOp>::OpConversionPattern;
   ConvertCinmGemmToCnm(MLIRContext *ctx)
@@ -501,30 +560,77 @@ struct ConvertCinmGemmToCnm : public OpConversionPattern<cinm::GemmOp> {
     cinm::ComputeOp computeBlock = mlir::cinm::getEnclosingComputeBlock(op);
     cnm::WorkgroupOp workgroup =
         builder.create<cnm::WorkgroupOp>(computeBlock.getCnmWorkgroupType());
-    auto outputInit = builder.create<arith::ConstantOp>(
-        op.getResult().getType(),
-        builder.getZeroAttr(op.getResult().getType()));
 
     auto transposeRight = transpose(builder, adaptor.getRight());
-    SmallVector<Value, 3> realOperands(adaptor.getOperands());
-    realOperands[1] = transposeRight;
 
-    llvm::SmallVector<Value, 1> newResults;
-    if (convertCinmToCnm(builder, op, workgroup.getResult(),
-                         computeBlock.getMaxDpuBufferSize(), {1}, realOperands,
-                         ValueRange{outputInit}, op->getResults(), newResults,
-                         [&](ImplicitLocOpBuilder &builder, ValueRange inputs,
-                             ValueRange outputs) {
-                           builder.create<linalg::MatmulTransposeBOp>(
-                               inputs.take_front(2), outputs);
-                           builder.create<linalg::AddOp>(
-                               ValueRange{inputs[2], outputs[0]}, outputs[0]);
-                         })
-            .failed()) {
-      return failure();
+    // Check that the tiling pass chose a fitting reduction size.
+    auto reductionSize = op.getLeft().getType().getDimSize(1);
+    if ((uint64_t)reductionSize * 2 > computeBlock.getMaxDpuBufferSize()) {
+      return op->emitOpError(
+          "cannot be converted to CINM, reduction size is too large");
     }
+    auto eltTy = op.getLeft().getType().getElementType();
+    // buffer type for A and B
+    cnm::BufferType bufferType = cnm::BufferType::get(
+        {reductionSize}, eltTy, computeBlock.getWorkgroupShape());
+    Value bufferA = builder.create<cnm::AllocOp>(bufferType, workgroup);
+    Value bufferB = builder.create<cnm::AllocOp>(bufferType, workgroup);
 
-    rewriter.replaceOp(op, newResults);
+    // C has a single element and no dimensions
+    cnm::BufferType bufferCType =
+        cnm::BufferType::get({}, eltTy, computeBlock.getWorkgroupShape());
+    Value bufferC = builder.create<cnm::AllocOp>(bufferCType, workgroup);
+
+    //::mlir::Value input, ::mlir::Value buffer, ::mlir::Value wg,
+    //:::mlir::AffineMap scatterMap);
+    AffineMap scatterA;
+    AffineMap scatterB;
+    AffineMap scatterGatherC;
+    if (computeScatterMapForGemm(bufferType,
+                                 op.getLeft().getType().getDimSize(0),
+                                 op.getRight().getType().getDimSize(1),
+                                 scatterA, scatterB, scatterGatherC)
+            .failed()) {
+      return op->emitOpError("Cannot be converted to CINM, parallel dims "
+                             "cannot be mapped onto workgroup");
+    }
+    builder.create<cnm::ScatterOp>(adaptor.getLeft(), bufferA, workgroup,
+                                   std::move(scatterA));
+    builder.create<cnm::ScatterOp>(transposeRight, bufferB, workgroup,
+                                   std::move(scatterB));
+
+    // the bias is the initializer for the out buffer
+    // since it has same shape as output we can use same gather map
+    Value outputInit;
+    if (op.getBias()) {
+      outputInit = adaptor.getBias();
+    } else {
+      outputInit = builder.create<arith::ConstantOp>(
+          op.getResult().getType(),
+          builder.getZeroAttr(op.getResult().getType()));
+    }
+    builder.create<cnm::ScatterOp>(outputInit, bufferC, workgroup,
+                                   scatterGatherC);
+
+    createLaunchOp(
+        builder, workgroup, ValueRange{bufferA, bufferB}, ValueRange{bufferC},
+        [](ImplicitLocOpBuilder &builder, ValueRange ins, ValueRange outs) {
+          builder.create<linalg::ReduceOp>(
+              ins, outs, ArrayRef<int64_t>{0},
+              [](OpBuilder &builder, Location loc, ValueRange elts) {
+                Value mul =
+                    cinm::createArithMul(builder, loc, elts[0], elts[1]);
+                Value add = cinm::createArithAdd(builder, loc, mul, elts[2]);
+                builder.create<linalg::YieldOp>(loc, add);
+              });
+        });
+
+    auto gather = builder.create<cnm::GatherOp>(
+        TypeRange{op.getResult().getType(),
+                  cnm::GatherTokenType::get(builder.getContext())},
+        bufferC, workgroup, scatterGatherC);
+
+    rewriter.replaceOp(op, ValueRange{gather.getOutput()});
     return success();
   }
 };

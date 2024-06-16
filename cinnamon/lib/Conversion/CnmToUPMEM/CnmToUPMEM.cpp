@@ -21,6 +21,7 @@
 #include <mlir/IR/BuiltinTypes.h>
 #include <mlir/IR/Diagnostics.h>
 #include <mlir/IR/ValueRange.h>
+#include <mlir/Transforms/DialectConversion.h>
 
 #define GEN_PASS_DEF_CONVERTCNMTOUPMEMPASS
 #include "cinm-mlir/Conversion/CnmPasses.h.inc"
@@ -97,12 +98,12 @@ struct ConvertCnmWorkgroupToUPMEM
   LogicalResult
   matchAndRewrite(cnm::WorkgroupOp op, OpAdaptor,
                   ConversionPatternRewriter &rewriter) const override {
-    assert(op.getType().getShape().size() >= 3 &&
-           op.getType().getShape().size() <= 4);
-    const upmem::DeviceHierarchyType hierarchy =
-        upmem::DeviceHierarchyType::get(getContext(),
-                                        op.getType().getShape().take_front(3));
-    rewriter.replaceOpWithNewOp<upmem::AllocDPUsOp>(op, hierarchy);
+    if (op.getType().getShape().size() != 3)
+      return op->emitOpError(
+          "cannot be converted to UPMEM dialect. "
+          "UPMEM translation requires workgroup with 3 dimensions.");
+    rewriter.replaceOpWithNewOp<upmem::AllocDPUsOp>(
+        op, getTypeConverter()->convertType(op.getType()));
     return success();
   }
 };
@@ -128,12 +129,11 @@ struct ConvertCnmScatterToUPMEM : public OpConversionPattern<cnm::ScatterOp> {
     const Value tensor = adaptor.getInput();
     const RankedTensorType tensorType =
         tensor.getType().cast<RankedTensorType>();
-    const BufferType bufferType = op.getBuffer().getType();
 
     const Value inputAsMemref = createOrFoldUnrealizedConversionCast(
         op.getLoc(), rewriter, convertTensorToMemref(tensorType), tensor);
 
-    const int64_t transferCount = computeProduct(bufferType.getShape());
+    const int64_t transferCount = op.getTransferCountInItems();
 
     int64_t dpuMemOffset = 0;
     for (auto use : adaptor.getWg().getUsers()) {
@@ -169,12 +169,11 @@ struct ConvertCnmGatherToUPMEM : public OpConversionPattern<cnm::GatherOp> {
   matchAndRewrite(cnm::GatherOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
     const RankedTensorType tensorType = op.getOutput().getType();
-    const BufferType bufferType = op.getBuffer().getType();
 
     const Value outputBuf = rewriter.create<memref::AllocOp>(
         op->getLoc(), convertTensorToMemref(tensorType));
 
-    const int64_t transferCount = computeProduct(bufferType.getShape());
+    const int64_t transferCount = op.getTransferCountInItems();
     int64_t dpuMemOffset;
     if (auto attr = op->getAttrOfType<IntegerAttr>("upmem.bufferOffset")) {
       dpuMemOffset = attr.getInt();
@@ -355,11 +354,11 @@ struct ConvertCnmTerminatorToUPMEM
 
 } // namespace cnmtoupmem
 
-void populateCnmToUPMEMFinalTypeConversions(LLVMTypeConverter &typeConverter) {
+void populateCnmToUPMEMFinalTypeConversions(TypeConverter &typeConverter) {
   typeConverter.addConversion(
       [&](cnm::WorkgroupType wgType) -> std::optional<Type> {
         return upmem::DeviceHierarchyType::get(wgType.getContext(),
-                                               wgType.getShape().take_front(3));
+                                               wgType.getShape());
       });
 
   typeConverter.addConversion(
@@ -368,15 +367,15 @@ void populateCnmToUPMEMFinalTypeConversions(LLVMTypeConverter &typeConverter) {
       });
 }
 
-void populateCnmToUPMEMConversionPatterns(LLVMTypeConverter &typeConverter,
+void populateCnmToUPMEMConversionPatterns(TypeConverter &typeConverter,
                                           RewritePatternSet &patterns) {
   patterns.add<cnmtoupmem::ConvertCnmWorkgroupToUPMEM,
                cnmtoupmem::ConvertCnmAllocToUPMEM, ConvertCnmSetZeroToAffine,
                cnmtoupmem::ConvertCnmScatterToUPMEM,
                cnmtoupmem::ConvertCnmGatherToUPMEM,
                cnmtoupmem::ConvertCnmLaunchToUPMEM,
-               cnmtoupmem::ConvertCnmTerminatorToUPMEM>(
-      &typeConverter.getContext());
+               cnmtoupmem::ConvertCnmTerminatorToUPMEM>(typeConverter,
+                                                        patterns.getContext());
 }
 
 struct ConvertCnmToUPMEMPass

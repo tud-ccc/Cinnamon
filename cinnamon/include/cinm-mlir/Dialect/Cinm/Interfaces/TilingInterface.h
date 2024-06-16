@@ -5,6 +5,7 @@
 
 #include <cstdint>
 #include <llvm/ADT/ArrayRef.h>
+#include <mlir/Dialect/Arith/IR/Arith.h>
 #include <mlir/IR/BuiltinTypes.h>
 #include <mlir/IR/Location.h>
 #include <mlir/IR/Value.h>
@@ -67,6 +68,30 @@ Value createVectorReduce(OpBuilder &builder, Location loc, Value vector,
         return builder.create<ReductionOp>(loc, lhs, rhs);
       },
       clusterSize);
+}
+
+template <typename IntOp, typename FloatOp>
+Value createArithIntOrFloatOp(OpBuilder &builder, Location loc, Value a,
+                              Value b) {
+  assert(a.getType() == b.getType() && "Mismatched type");
+  assert(a.getType().isIntOrIndexOrFloat() && "Expected scalar type");
+  if (a.getType().isa<IntegerType>()) {
+    return builder.create<IntOp>(loc, a, b);
+  } else {
+    return builder.create<FloatOp>(loc, a, b);
+  }
+}
+
+inline Value createArithAdd(OpBuilder &builder, Location loc, Value a,
+                            Value b) {
+  return createArithIntOrFloatOp<arith::AddIOp, arith::AddFOp>(builder, loc, a,
+                                                               b);
+}
+
+inline Value createArithMul(OpBuilder &builder, Location loc, Value a,
+                            Value b) {
+  return createArithIntOrFloatOp<arith::MulIOp, arith::MulFOp>(builder, loc, a,
+                                                               b);
 }
 
 Value createVectorReduce(OpBuilder &builder, Location loc, Value vector,

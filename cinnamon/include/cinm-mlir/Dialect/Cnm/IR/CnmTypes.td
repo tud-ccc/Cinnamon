@@ -31,12 +31,23 @@ def BufferType : Cnm_Type<"Buffer", [ShapedTypeInterface]> {
 
   let parameters = (
     ins ArrayRefParameter<"int64_t">:$shape,
-    "Type":$element_type,
+    "Type":$elementType,
     ArrayRefParameter<"int64_t">:$workgroupShape,
     "int64_t":$level
   );
 
   let hasCustomAssemblyFormat = 1;
+
+  let builders = [
+    TypeBuilderWithInferredContext<(ins   
+    "ArrayRef<int64_t>":$shape, 
+    "Type": $elementType,
+    "ArrayRef<int64_t>":$workgroupShape,
+    CArg<"int64_t", "0">:$level
+    ), [{
+      return $_get(elementType.getContext(), shape, elementType, workgroupShape, level);
+    }]>
+  ];
 
   let extraClassDeclaration = [{
     bool hasRank() { return true; }

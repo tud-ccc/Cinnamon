@@ -61,6 +61,13 @@ def ScatterOp: Cnm_Op<"scatter", [InferWorkgroupTypeFromBuffer<"buffer", "wg">]>
     let arguments = (ins Builtin_RankedTensor:$input, BufferType:$buffer, WorkgroupType:$wg, AffineMapAttr:$scatterMap);
     let results = (outs ScatterTokenType:$token);
 
+    let extraClassDeclaration = [{
+        int64_t getTransferCountInItems() {
+            auto bufShape = getBuffer().getType().getShape();
+            return bufShape.empty() ? 1 : mlir::computeProduct(bufShape);
+        }
+    }];
+
     let hasVerifier = 1;
 
     let assemblyFormat = "$input `into` $buffer `[` $scatterMap `]` `of` $wg attr-dict `:` type($input) `into` qualified(type($buffer))";
@@ -72,6 +79,13 @@ def GatherOp: Cnm_Op<"gather", [InferWorkgroupTypeFromBuffer<"buffer", "wg">]> {
 
     let arguments = (ins BufferType:$buffer, WorkgroupType:$wg, AffineMapAttr:$gatherMap);
     let results = (outs Builtin_RankedTensor:$output, GatherTokenType:$token);
+
+    let extraClassDeclaration = [{
+        int64_t getTransferCountInItems() {
+            auto bufShape = getBuffer().getType().getShape();
+            return bufShape.empty() ? 1 : mlir::computeProduct(bufShape);
+        }
+    }];
 
     let hasVerifier = 1;
     let assemblyFormat = "$buffer `[` $gatherMap `]` `of` $wg attr-dict `:` qualified(type($buffer)) `into` type($output)";

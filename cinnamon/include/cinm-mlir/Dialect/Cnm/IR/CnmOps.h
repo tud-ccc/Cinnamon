@@ -15,6 +15,7 @@
 #include "mlir/Interfaces/SideEffectInterfaces.h"
 #include "mlir/Bytecode/BytecodeOpInterface.h"
 #include "mlir/IR/AffineMap.h"
+#include "mlir/Dialect/Utils/IndexingUtils.h"
 
 
 //===- Generated includes -------------------------------------------------===//

@@ -31,7 +31,7 @@ SmallVector<Value> createNestedAffineForLoops(OpBuilder &builder, Location loc,
                                               BodyBuilderCallback bodyBuilder);
 
 struct ConvertCnmSetZeroToAffine : public OpConversionPattern<cnm::SetZeroOp> {
-  ConvertCnmSetZeroToAffine(MLIRContext *context, PatternBenefit benefit = 1);
+  using OpConversionPattern<cnm::SetZeroOp>::OpConversionPattern;
 
   LogicalResult matchAndRewrite(cnm::SetZeroOp, OpAdaptor,
                                 ConversionPatternRewriter &) const override;

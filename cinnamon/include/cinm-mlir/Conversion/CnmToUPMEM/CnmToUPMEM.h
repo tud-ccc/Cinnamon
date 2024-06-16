@@ -6,8 +6,8 @@
 #include <mlir/Pass/Pass.h>
 
 namespace mlir::cnm {
-void populateCnmToUPMEMFinalTypeConversions(LLVMTypeConverter &typeConverter);
-void populateCnmToUPMEMConversionPatterns(LLVMTypeConverter &typeConverter,
+void populateCnmToUPMEMFinalTypeConversions(TypeConverter &typeConverter);
+void populateCnmToUPMEMConversionPatterns(TypeConverter &typeConverter,
                                           RewritePatternSet &patterns);
 std::unique_ptr<Pass> createConvertCnmToUPMEMPass();
 } // namespace mlir::cnm

@@ -90,9 +90,6 @@ SmallVector<Value> createNestedAffineForLoops(OpBuilder &builder, Location loc,
   return loops.front().getResults();
 }
 
-ConvertCnmSetZeroToAffine::ConvertCnmSetZeroToAffine(MLIRContext *context,
-                                                     PatternBenefit benefit)
-    : OpConversionPattern<cnm::SetZeroOp>(context, benefit) {}
 
 LogicalResult ConvertCnmSetZeroToAffine::matchAndRewrite(
     cnm::SetZeroOp op, OpAdaptor, ConversionPatternRewriter &rewriter) const {
