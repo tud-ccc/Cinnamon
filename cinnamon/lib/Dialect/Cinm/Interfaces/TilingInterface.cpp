@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <functional>
 #include <limits>
+#include <llvm/ADT/SmallVector.h>
 #include <mlir/IR/BuiltinTypeInterfaces.h>
 #include <numeric>
 
@@ -66,6 +67,18 @@ std::pair<int64_t, int64_t> TilingParameters::parallelClusterSize(int64_t n,
                                                                   int64_t m) {
   /// need to find a number that divides parallelElements and the working
   /// group size
+  SmallVector<int64_t, 4> wgShape(workgroupShape);
+  auto it = std::remove(wgShape.begin(), wgShape.end(), 1);
+  wgShape.erase(it);
+
+  if (wgShape.size() == 2) {
+    // try to fit perfectly
+    if (n % wgShape[0] == 0 && m % wgShape[1] == 0)
+      return {wgShape[0], wgShape[1]};
+    else if (n % wgShape[1] == 0 && m % wgShape[0] == 0)
+      return {wgShape[1], wgShape[0]};
+  }
+
   auto wg = workingGroupSize();
   auto a = std::gcd(n, wg);
   auto b = std::gcd(m, wg);
@@ -93,7 +106,8 @@ int64_t TilingParameters::maxNumElementsOfType(Type ty) {
   return maxBufferSizeInBytes / (bw / 8);
 }
 
-Value reshapeStatic(OpBuilder &b, Location loc, TypedValue<RankedTensorType> value,
+Value reshapeStatic(OpBuilder &b, Location loc,
+                    TypedValue<RankedTensorType> value,
                     llvm::ArrayRef<int64_t> newShape) {
   return reshapeStatic(b, loc, value, value.getType(), newShape);
 }
@@ -108,7 +122,7 @@ Value reshapeStatic(OpBuilder &builder, Location loc, Value value,
     return builder.create<tensor::ReshapeOp>(loc, newTy, value, reifiedShape);
   }
   // todo memref
-  assert (false && "not handled for memrefs for now");
+  assert(false && "not handled for memrefs for now");
 }
 
 Value createVectorReduce(OpBuilder &builder, Location loc, Value vector,
