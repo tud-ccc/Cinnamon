@@ -85,7 +85,7 @@ SmallVector<Value> GemmOp::convertToTiledOps(OpBuilder &builder,
   // Size of the tile on the reduction dimension.
   auto r = params.reduceClusterSize(2, rDim, lhsType.getElementType());
   // Tile sizes of each parallel dimension
-  auto [p0, p1] =
+  const auto [p0, p1] =
       params.parallelClusterSize(lhsType.getDimSize(0), rhsType.getDimSize(1));
 
   return createNestedAffineForLoops(
@@ -110,7 +110,7 @@ SmallVector<Value> GemmOp::convertToTiledOps(OpBuilder &builder,
         // this is the reduction loop
         SmallVector<Value, 1> reductionResult = createNestedAffineForLoops(
             builder, loc, {rDim}, {r}, reductionAccInit->getResults(),
-            [&](OpBuilder &builder, Location loc, ValueRange indices,
+            [&, p0, p1](OpBuilder &builder, Location loc, ValueRange indices,
                 ValueRange iterArgs) -> SmallVector<Value> {
               const auto indexInRedDim = indices[0];
 

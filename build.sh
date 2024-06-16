@@ -18,6 +18,8 @@ ninja
 ninja llc
 ninja opt
 
+export PATH=$(pwd)/bin:$PATH
+
 cd ../..
 cd cinnamon 
 llvm_prefix=../llvm/build
