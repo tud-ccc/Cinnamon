@@ -46,20 +46,32 @@ int main() {
 	uint32_t n_size;
 	uint32_t k_size;
 	
+	// DIMM 4 Non-opt
+	dimm = 4;
+	iter = 2;
+	m_size = 2097152;
+	printf("Non-opt %d\n", dimm);
+	executeVecadd(iter, m_size, dimm, simulation, reps, warmup, 16);
 
+	// DIMM 4opt
+	dimm = 4;
+	iter = 2;
+	m_size = 2097152;
+	printf("Opt %d\n", dimm);
+	executeVecadd(iter, m_size, dimm, simulation, reps, warmup, 512);
 
 	// DIMM 8 Non-opt
 	dimm = 8;
 	iter = 1;
 	m_size = 2097152;
-	printf("\nNon-opt %d\n", dimm);
+	printf("Non-opt %d\n", dimm);
 	executeVecadd(iter, m_size, dimm, simulation, reps, warmup, 16);
 
 	// DIMM 8 Non-opt
 	dimm = 8;
 	iter = 1;
 	m_size = 2097152;
-	printf("\nOpt %d\n", dimm);
+	printf("Opt %d\n", dimm);
 	executeVecadd(iter, m_size, dimm, simulation, reps, warmup, 512);
 
 
@@ -67,14 +79,14 @@ int main() {
 	dimm = 16;
 	iter = 1;
 	m_size = 1048576;
-	printf("\nNon-opt %d\n", dimm);
+	printf("Non-opt %d\n", dimm);
 	executeVecadd(iter, m_size, dimm, simulation, reps, warmup, 16);
 
 	// DIMM 16 opt
 	dimm = 16;
 	iter = 1;
 	m_size = 1048576;
-	printf("\nOpt %d\n", dimm);
+	printf("Opt %d\n", dimm);
 	executeVecadd(iter, m_size, dimm, simulation, reps, warmup, 512);
 
 	return 0;
@@ -118,11 +130,10 @@ void executeVecadd(int iter, int m, int dimm, int simulation, unsigned int n_rep
 
 		if (rep >= n_warmup)
 			start(&timer, 1, rep - n_warmup);
-		// Input arguments
 		i = 0;
 		DPU_FOREACH(dpu_set, dpu, i) {
-			// Copy input arguments to DPU
 			input_args[i].m_size = m;
+			input_args[i].buffer_size = buffer_size;
 			DPU_ASSERT(dpu_prepare_xfer(dpu, input_args+ i * 32 * sizeof(T)));
 		}
 
@@ -147,20 +158,14 @@ void executeVecadd(int iter, int m, int dimm, int simulation, unsigned int n_rep
 		{
 			start(&timer, 2, rep - n_warmup);
 		}
-
-		DPU_ASSERT(dpu_launch(dpu_set, DPU_SYNCHRONOUS));
+		for (int x = 0 ; x < 2; x++)
+			DPU_ASSERT(dpu_launch(dpu_set, DPU_SYNCHRONOUS));
 
 		if (rep >= n_warmup)
 		{
 			stop(&timer, 2);
 		}
 
-		// Display DPU Logs
-		// DPU_FOREACH(dpu_set, dpu) {
-		// 	DPU_ASSERT(dpulog_read_for_dpu(dpu.dpu, stdout));
-		// }
-
-		// Retrieve results
 		dpu_results_t dpu_result;
 		DPU_FOREACH (dpu_set, dpu, i) {
 			DPU_ASSERT(dpu_prepare_xfer(dpu, &dpu_result));
@@ -182,16 +187,7 @@ void executeVecadd(int iter, int m, int dimm, int simulation, unsigned int n_rep
 	free(C);
 
 
-	// Print timing results
-	// printf("M %d\n", m);
-	// printf("CPU-DPU Time (ms): ");
-	// printf("Iter %d\n",iter);
-	// print(&timer, 1, n_reps);
-	// printf("DPU Kernel Time (ms): ");
 	print(&timer, 2, n_reps);
-	// printf("DPU-CPU Time (ms): ");
-	// print(&timer, 3, n_reps);
-	printf("\n");
 	
 	DPU_ASSERT(dpu_free(dpu_set));
 
