@@ -91,7 +91,7 @@ SmallVector<Value> GemmOp::convertToTiledOps(OpBuilder &builder,
   return createNestedAffineForLoops(
       builder, getLoc(), resultShape, {p0, p1}, ValueRange{resultInit},
       [&, p0, p1](OpBuilder &builder, Location loc, ValueRange indices,
-          ValueRange iterArgs) -> SmallVector<Value> {
+                  ValueRange iterArgs) -> SmallVector<Value> {
         const auto parIndices = indices;
         const ArrayRef<int64_t> unitStrides{1, 1};
         const ArrayRef<int64_t> noStaticOffsets{ShapedType::kDynamic,
@@ -102,16 +102,14 @@ SmallVector<Value> GemmOp::convertToTiledOps(OpBuilder &builder,
         const ValueRange resultDynamicOffsets = parIndices;
 
         auto reductionAccTy = RankedTensorType::get({p0, p1}, eltTy);
-        auto cst0 =
-            builder.create<arith::ConstantOp>(loc, builder.getZeroAttr(eltTy));
-        auto reductionAccInit =
-            builder.create<tensor::SplatOp>(loc, cst0, reductionAccTy);
+        auto zeros = DenseIntElementsAttr::get(reductionAccTy, {0});
+        Value cst0 = builder.create<arith::ConstantOp>(loc, zeros);
 
         // this is the reduction loop
         SmallVector<Value, 1> reductionResult = createNestedAffineForLoops(
-            builder, loc, {rDim}, {r}, reductionAccInit->getResults(),
+            builder, loc, {rDim}, {r}, cst0,
             [&, p0, p1](OpBuilder &builder, Location loc, ValueRange indices,
-                ValueRange iterArgs) -> SmallVector<Value> {
+                        ValueRange iterArgs) -> SmallVector<Value> {
               const auto indexInRedDim = indices[0];
 
               const ArrayRef<int64_t> lhsSizes{p0, r};
@@ -158,7 +156,7 @@ SmallVector<Value> GemvOp::convertToTiledOps(OpBuilder &builder,
       builder, getLoc(), getRight(), {getRight().getType().getDimSize(0), 1});
   auto gemm = builder.create<cinm::GemmOp>(getLoc(), getLeft(), rhsAsMatrix);
   Value toVector = cinm::reshapeStatic(builder, getLoc(), gemm.getResult(),
-                                       getRight().getType().getShape());
+                                       getResult().getType().getShape());
   return {toVector};
 }
 
