@@ -573,7 +573,6 @@ def UPMEM_LaunchFuncOp :UPMEM_Op<"launch_func", [
   let hasVerifier = 1;
 }
 
-
 def UPMEM_FreeDPUsOp: UPMEM_Op <"free_dpus", []>{
   let summary = "UPMEM free dpus";
   let description = [{
@@ -584,6 +583,5 @@ def UPMEM_FreeDPUsOp: UPMEM_Op <"free_dpus", []>{
      $hierarchy attr-dict `:` qualified(type($hierarchy))
   }];
 }
-
 
 #endif
