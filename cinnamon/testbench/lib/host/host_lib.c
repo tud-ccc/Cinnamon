@@ -53,3 +53,9 @@ void upmemrt_dpu_launch(struct dpu_set_t *void_dpu_set) {
   struct dpu_set_t *dpu_set = (struct dpu_set_t *)void_dpu_set;
   DPU_ASSERT(dpu_launch(*dpu_set, DPU_SYNCHRONOUS));
 }
+
+
+void upmemrt_dpu_free(struct dpu_set_t *void_dpu_set) {
+  struct dpu_set_t *dpu_set = (struct dpu_set_t *)void_dpu_set;
+  DPU_ASSERT(dpu_free(*dpu_set));
+}
