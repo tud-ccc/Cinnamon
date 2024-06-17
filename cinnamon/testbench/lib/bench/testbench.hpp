@@ -4,11 +4,13 @@
 #include <functional>
 
 // todo call srand(0) before
-template <typename T, unsigned First, unsigned... Shape> T *init_matrix() {
-  size_t size = First;
+template <typename T, unsigned... Shape> T *init_matrix() {
+  size_t size = 1;
+  printf("%ld\n" , size);
   size_t shape[] = {Shape...};
   for (auto dim : shape) {
     size *= dim;
+    printf("dim %ld size %ld\n" , dim, size);
   }
 
   T *mat = (T *)malloc(size * sizeof(T));
