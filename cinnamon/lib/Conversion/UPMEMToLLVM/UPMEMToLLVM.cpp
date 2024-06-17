@@ -158,6 +158,40 @@ static LLVM::LLVMFuncOp appendOrGetFuncOp(StringRef funcName, Type resultType,
   return LLVM::lookupOrCreateFn(module, funcName, paramTypes, resultType);
 }
 
+struct FreeDPUsOpToFuncCallLowering
+    : public ConvertOpToLLVMPattern<upmem::FreeDPUsOp> {
+public:
+  explicit FreeDPUsOpToFuncCallLowering(LLVMTypeConverter &lowering)
+      : ConvertOpToLLVMPattern<upmem::FreeDPUsOp>(lowering) {}
+
+  LogicalResult
+  matchAndRewrite(upmem::FreeDPUsOp op,
+                  typename upmem::FreeDPUsOp::Adaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+
+    // Type resultType = LLVM::LLVMPointerType::get(rewriter.getContext(), 0);
+    // LLVM::LLVMFuncOp funcOp =
+    //     appendOrGetFuncOp("upmemrt_dpu_alloc", resultType,
+    //                       {rewriter.getI32Type(), rewriter.getI32Type()}, op);
+    // rewriter.replaceOpWithNewOp<LLVM::CallOp>(op, funcOp,
+    //                                           ValueRange{rankCount, dpuCount});
+
+    Type resultType = LLVM::LLVMVoidType::get(rewriter.getContext());
+
+    // void upmemrt_dpu_launch(struct dpu_set_t *void_dpu_set) {
+
+    LLVM::LLVMFuncOp funcOp = appendOrGetFuncOp(
+        "upmemrt_dpu_free", resultType,
+        {getTypeConverter()->convertType(op.getHierarchy().getType())}, op);
+
+    rewriter.replaceOpWithNewOp<LLVM::CallOp>(op, funcOp,
+                                              adaptor.getHierarchy());
+
+    return success();
+  }
+};
+
+
 struct AllocDPUOpToFuncCallLowering
     : public ConvertOpToLLVMPattern<upmem::AllocDPUsOp> {
 public:
@@ -355,6 +389,8 @@ public:
   }
 };
 
+
+
 struct BaseDPUMemOffsetOpLowering
     : public OpConversionPattern<upmem::BaseDPUMemOffsetOp> {
 public:
@@ -435,6 +471,7 @@ void populateUPMEMToLLVMConversionPatterns(LLVMTypeConverter &typeConverter,
   patterns.add<ScatterOpToFuncCallLowering>(typeConverter);
   patterns.add<GatherOpToFuncCallLowering>(typeConverter);
   patterns.add<LaunchFuncOpToFuncCallLowering>(typeConverter);
+  patterns.add<FreeDPUsOpToFuncCallLowering>(typeConverter);
   patterns.add<BaseDPUMemOffsetOpLowering>(&typeConverter.getContext());
   patterns.add<EraseUPMEMModule>(&typeConverter.getContext());
 }

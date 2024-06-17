@@ -79,6 +79,13 @@ static void convertToLaunchFuncOp(upmem::LaunchOp launchOp,
   launchOp.erase();
 }
 
+static void createFreeDPUsOp(upmem::GatherOp gatherOp) {
+  OpBuilder builder(gatherOp);
+  builder.setInsertionPointAfter(gatherOp);
+  auto launchFunc = builder.create<upmem::FreeDPUsOp>(
+      gatherOp.getLoc(), gatherOp.getHierarchy());
+}
+
 //===----------------------------------------------------------------------===//
 struct UPMEMOutlineKernelPass
     : public impl::UPMEMOutlineKernelPassBase<UPMEMOutlineKernelPass> {
@@ -114,6 +121,22 @@ void UPMEMOutlineKernelPass::runOnOperation() {
       return WalkResult::advance();
     });
     if (funcWalkResult.wasInterrupted())
+      return signalPassFailure();
+
+    // Inserting free dpus after the last gather operation on a dpu allocation
+    auto funcWalkResult2 = func.walk([&](upmem::AllocDPUsOp op) {
+      SetVector<Value> operands;
+      upmem::GatherOp lastOp;
+      for (auto user : op.getHierarchyShape().getUsers()){
+        if (dyn_cast_or_null<upmem::GatherOp>(user)){
+          lastOp = dyn_cast_or_null<upmem::GatherOp>(user);
+        }
+      }
+      createFreeDPUsOp(lastOp);      
+      modified = true;
+      return WalkResult::advance();
+    });
+    if (funcWalkResult2.wasInterrupted())
       return signalPassFailure();
   }
 
