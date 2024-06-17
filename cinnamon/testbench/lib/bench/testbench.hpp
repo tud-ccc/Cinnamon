@@ -14,6 +14,7 @@ template <typename T, unsigned... Shape> T *init_matrix() {
   }
 
   T *mat = (T *)malloc(size * sizeof(T));
+  assert(mat && "Size of allocation too large, malloc returned 0");
   for (size_t i = 0; i < size; i++) {
     while ((mat[i] = (T)(rand() % 100)) == 0)
       ;
