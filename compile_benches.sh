@@ -5,4 +5,5 @@ BENCH_NAME=mlp make
 BENCH_NAME=1mm make
 BENCH_NAME=2mm make
 BENCH_NAME=3mm make
+BENCH_NAME=mv make
 
