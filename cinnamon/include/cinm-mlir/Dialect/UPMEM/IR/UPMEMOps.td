@@ -574,4 +574,16 @@ def UPMEM_LaunchFuncOp :UPMEM_Op<"launch_func", [
 }
 
 
+def UPMEM_FreeDPUsOp: UPMEM_Op <"free_dpus", []>{
+  let summary = "UPMEM free dpus";
+  let description = [{
+  }];
+  let arguments = (ins DeviceHierarchy:$hierarchy);
+
+  let assemblyFormat = [{
+     $hierarchy attr-dict `:` qualified(type($hierarchy))
+  }];
+}
+
+
 #endif
