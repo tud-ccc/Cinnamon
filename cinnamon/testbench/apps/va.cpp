@@ -1,26 +1,28 @@
 #include "../lib/bench/testbench.hpp"
+#include <cstdint>
 
-
-// linked with LLVM module
 extern "C" {
-	void va_8(int32_t*, int32_t*);
-	void va_16(int32_t*, int32_t*);
+void va_8(int32_t *, int32_t *);
+void va_16(int32_t *, int32_t *);
 }
+
+#define REPS 15
+#define WARMUP 5
+
+#define BENCH_VA(ty, M, N, fun_name)                                           \
+  do {                                                                         \
+    ty *A = init_matrix<ty, M, N>();                                           \
+    ty *B = init_matrix<ty, N, N>();                                           \
+    DO_BENCH(REPS, WARMUP, fun_name(A, B));                                    \
+    free(A);                                                                   \
+    free(B);                                                                   \
+  } while (false)
 
 int main(void) {
   srand(0);
 
-  unsigned int reps = 3;
-  unsigned int warmup = 3;
-
-  int32_t *A = init_matrix<int32_t, 8, 2097152>();
-  int32_t *B = init_matrix<int32_t, 8, 2097152>();
-  
-  DO_BENCH(reps, warmup, va_8(A, B));
-  DO_BENCH(reps, warmup, va_16(A, B));
-
-  free(A);
-  free(B);
+  BENCH_VA(int32_t, 8, 2097152, va_8);
+  BENCH_VA(int32_t, 16, 1048576, va_16);
 
   return 0;
 }
