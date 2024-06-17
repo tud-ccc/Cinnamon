@@ -6,14 +6,13 @@
 // todo call srand(0) before
 template <typename T, unsigned... Shape> T *init_matrix() {
   size_t size = 1;
-  printf("%ld\n" , size);
   size_t shape[] = {Shape...};
   for (auto dim : shape) {
     size *= dim;
-    printf("dim %ld size %ld\n" , dim, size);
   }
 
   T *mat = (T *)malloc(size * sizeof(T));
+  assert(mat && "Size of allocation too large, malloc returned 0");
   for (size_t i = 0; i < size; i++) {
     while ((mat[i] = (T)(rand() % 100)) == 0)
       ;
