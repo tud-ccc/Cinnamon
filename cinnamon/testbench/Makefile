@@ -47,7 +47,7 @@ $(IR_PREFIX).host.o: $(IR_PREFIX).host.opt.ll
 	$(CLANG_18_BASE)/llc -O3 $< -o $@ -filetype=obj -relocation-model=pic
 
 hostlib.o:
-	clang lib/host/host_lib.c -I${UPMEM_HOME}/include/dpu -c -o $@
+	clang -g lib/host/host_lib.c -I${UPMEM_HOME}/include/dpu -c -o $@
 
 # DPU kernel executable
 $(OUT_DIR)/bin/dpu: $(IR_PREFIX).dpu.c
@@ -58,9 +58,10 @@ $(OUT_DIR)/bin/dpu: $(IR_PREFIX).dpu.c
 # HOST executable
 $(OUT_DIR)/bin/host: $(IR_PREFIX).host.o $(IR_PREFIX).dpu.c hostlib.o
 	@mkdir -p $(@D)
-	clang++ apps/$(BENCH_NAME).cpp $(IR_PREFIX).host.o hostlib.o -fPIE -ldpu -ldpuverbose -L${UPMEM_HOME}/lib -I${UPMEM_HOME}/include/dpu -o $@
+	clang++ -g apps/$(BENCH_NAME).cpp $(IR_PREFIX).host.o hostlib.o -fPIE -ldpu -ldpuverbose -L${UPMEM_HOME}/lib -I${UPMEM_HOME}/include/dpu -o $@
 
-$(BENCH_NAME): $(OUT_DIR)/bin/host $(OUT_DIR)/bin/dpu
+# $(BENCH_NAME): $(OUT_DIR)/bin/host $(OUT_DIR)/bin/dpu
+$(BENCH_NAME): $(IR_PREFIX).host.ll $(IR_PREFIX).dpu.c
 
 clean:
-	rm -rf $(OUT_DIR) hostlib.o
+	rm -rf $(OUT_DIR)/generated2/ hostlib.o
