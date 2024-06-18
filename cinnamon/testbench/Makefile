@@ -25,10 +25,10 @@ $(IR_PREFIX).cnm.mlir: $(IR_PREFIX).tiled.mlir
 
 $(IR_PREFIX).cnm.bufferized.mlir: $(IR_PREFIX).cnm.mlir
 	$(CINM_OPT) $< --lower-affine --one-shot-bufferize='bufferize-function-boundaries function-boundary-type-conversion=identity-layout-map'  \
-				  --convert-linalg-to-affine-loops --lower-affine --buffer-loop-hoisting --buffer-hoisting > $@
+				  --convert-linalg-to-affine-loops --lower-affine --buffer-loop-hoisting --buffer-hoisting --cse > $@
 
 $(IR_PREFIX).upmem.mlir: $(IR_PREFIX).cnm.bufferized.mlir
-	$(CINM_OPT) $< --convert-cnm-to-upmem --upmem-outline-kernel > $@
+	$(CINM_OPT) $< --convert-cnm-to-upmem --cse --upmem-outline-kernel > $@
 
 $(IR_PREFIX).llvm.mlir: $(IR_PREFIX).upmem.mlir
 	$(CINM_OPT) $< --mlir-print-ir-after-failure --canonicalize \
