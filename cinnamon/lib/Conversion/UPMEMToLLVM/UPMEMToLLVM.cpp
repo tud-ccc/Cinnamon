@@ -4,6 +4,7 @@
 #include "cinm-mlir/Dialect/UPMEM/IR/UPMEMAttributes.h"
 #include "cinm-mlir/Dialect/UPMEM/IR/UPMEMOps.h"
 #include "cinm-mlir/Dialect/UPMEM/IR/UPMEMTypes.h"
+#include <cinm-mlir/Utils/CinmUtils.h>
 
 #include <cstdint>
 #include <llvm/ADT/ArrayRef.h>
@@ -58,21 +59,6 @@ static LLVM::LLVMPointerType functionPtrTy(Type resultTy, ArrayRef<Type>) {
 static Value reifyAsIndex(ImplicitLocOpBuilder &builder,
                           LLVMTypeConverter const *converter, int64_t value) {
   return builder.create<LLVM::ConstantOp>(converter->getIndexType(), value);
-}
-
-static SmallString<20> getUniqueFunctionName(ModuleOp moduleOp,
-                                             const char prefix[]) {
-  // Get a unique global name.
-  unsigned stringNumber = 0;
-  size_t prefixLen = strlen(prefix);
-  assert(20 > 3 + prefixLen); // make sure this is bigger than the prefix
-                              // (prefixes are literals)
-  SmallString<20> name(prefix);
-  do {
-    name.truncate(prefixLen);
-    name.append(std::to_string(stringNumber++));
-  } while (moduleOp.lookupSymbol(name));
-  return name;
 }
 
 // TODO these two functions are duplicated from CinmToCnm.cpp, share them
@@ -172,9 +158,11 @@ public:
     // Type resultType = LLVM::LLVMPointerType::get(rewriter.getContext(), 0);
     // LLVM::LLVMFuncOp funcOp =
     //     appendOrGetFuncOp("upmemrt_dpu_alloc", resultType,
-    //                       {rewriter.getI32Type(), rewriter.getI32Type()}, op);
+    //                       {rewriter.getI32Type(), rewriter.getI32Type()},
+    //                       op);
     // rewriter.replaceOpWithNewOp<LLVM::CallOp>(op, funcOp,
-    //                                           ValueRange{rankCount, dpuCount});
+    //                                           ValueRange{rankCount,
+    //                                           dpuCount});
 
     Type resultType = LLVM::LLVMVoidType::get(rewriter.getContext());
 
@@ -191,7 +179,6 @@ public:
   }
 };
 
-
 struct AllocDPUOpToFuncCallLowering
     : public ConvertOpToLLVMPattern<upmem::AllocDPUsOp> {
 public:
@@ -200,7 +187,7 @@ public:
 
   LogicalResult
   matchAndRewrite(upmem::AllocDPUsOp op,
-                  typename upmem::AllocDPUsOp::Adaptor adaptor,
+                  typename upmem::AllocDPUsOp::Adaptor,
                   ConversionPatternRewriter &rewriter) const override {
     const ArrayRef<int64_t> hierarchyShape =
         op.getResult().getType().getShape();
@@ -247,7 +234,7 @@ outlineAffineMap(ImplicitLocOpBuilder &rewriter,
     return existingOp;
 
   auto affineMapFun = rewriter.create<LLVM::LLVMFuncOp>(
-      getUniqueFunctionName(moduleOp, "scatter_map_"), affineFunTy,
+      mlir::getUniqueFunctionName(SymbolTable(moduleOp), "scatter_map_"), affineFunTy,
       LLVM::Linkage::Private);
 
   // to find it later
@@ -388,8 +375,6 @@ public:
     return success();
   }
 };
-
-
 
 struct BaseDPUMemOffsetOpLowering
     : public OpConversionPattern<upmem::BaseDPUMemOffsetOp> {

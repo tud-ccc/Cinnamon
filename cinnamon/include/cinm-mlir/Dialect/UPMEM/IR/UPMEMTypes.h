@@ -24,8 +24,6 @@
 namespace mlir {
 namespace upmem {
 
-// Adds a `upmem.async.token` to the front of the argument list.
-void addAsyncDependency(Operation *op, Value token);
 
 } // namespace upmem
 } // namespace mlir

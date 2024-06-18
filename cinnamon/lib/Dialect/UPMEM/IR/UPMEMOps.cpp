@@ -90,18 +90,6 @@ parseAttributions(OpAsmParser &parser, StringRef keyword,
                                   /*allowType=*/true);
 }
 
-/// Prints a UPMEM function memory attribution.
-static void printAttributions(OpAsmPrinter &p, StringRef keyword,
-                              ArrayRef<BlockArgument> values) {
-  if (values.empty())
-    return;
-
-  p << ' ' << keyword << '(';
-  llvm::interleaveComma(
-      values, p, [&p](BlockArgument v) { p << v << " : " << v.getType(); });
-  p << ')';
-}
-
 /// Verifies a UPMEM function memory attribution.
 // static LogicalResult verifyAttributions(Operation *op,
 //                                         ArrayRef<BlockArgument> attributions,
@@ -485,56 +473,8 @@ BlockArgument LaunchOp::addPrivateAttribution(Type type, Location loc) {
 }
 
 //===----------------------------------------------------------------------===//
-// UPMEMModuleOp
-//===----------------------------------------------------------------------===//
-
-void UPMEMModuleOp::build(OpBuilder &builder, OperationState &result,
-                          StringRef name) {
-  ensureTerminator(*result.addRegion(), builder, result.location);
-  result.attributes.push_back(builder.getNamedAttr(
-      ::mlir::SymbolTable::getSymbolAttrName(), builder.getStringAttr(name)));
-}
-
-ParseResult UPMEMModuleOp::parse(OpAsmParser &parser, OperationState &result) {
-  StringAttr nameAttr;
-
-  if (parser.parseSymbolName(nameAttr, mlir::SymbolTable::getSymbolAttrName(),
-                             result.attributes))
-    return failure();
-
-  // If module attributes are present, parse them.
-  if (parser.parseOptionalAttrDictWithKeyword(result.attributes))
-    return failure();
-
-  // Parse the module body.
-  auto *body = result.addRegion();
-  if (parser.parseRegion(*body, {}))
-    return failure();
-
-  // Ensure that this module has a valid terminator.
-  UPMEMModuleOp::ensureTerminator(*body, parser.getBuilder(), result.location);
-  return success();
-}
-
-void UPMEMModuleOp::print(OpAsmPrinter &p) {
-  p << ' ';
-  p.printSymbolName(getName());
-
-  p.printRegion(getRegion(), /*printEntryBlockArgs=*/false,
-                /*printBlockTerminators=*/false);
-}
-
-//===----------------------------------------------------------------------===//
 // UPMEMFuncOp
 //===----------------------------------------------------------------------===//
-
-void UPMEMFuncOp::build(OpBuilder &builder, OperationState &result,
-                        StringRef name, ArrayRef<NamedAttribute> attrs) {
-  result.addAttribute(SymbolTable::getSymbolAttrName(),
-                      builder.getStringAttr(name));
-  result.addAttributes(attrs);
-  result.addRegion()->emplaceBlock();
-}
 
 ParseResult UPMEMFuncOp::parse(OpAsmParser &parser, OperationState &result) {
 
@@ -625,21 +565,6 @@ LogicalResult LaunchFuncOp::verify() {
   return success();
 }
 
-static ParseResult parseLaunchDimType(OpAsmParser &parser, Type &dimTy) {
-  if (succeeded(parser.parseOptionalColon())) {
-    if (parser.parseType(dimTy))
-      return failure();
-  } else {
-    dimTy = IndexType::get(parser.getContext());
-  }
-  return success();
-}
-
-static void printLaunchDimType(OpAsmPrinter &printer, Operation *op,
-                               Type dimTy) {
-  if (!dimTy.isIndex())
-    printer << ": " << dimTy;
-}
 
 static ParseResult parseLaunchFuncOperands(
     OpAsmParser &parser,

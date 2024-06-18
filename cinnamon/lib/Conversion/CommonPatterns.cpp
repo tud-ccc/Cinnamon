@@ -90,7 +90,6 @@ SmallVector<Value> createNestedAffineForLoops(OpBuilder &builder, Location loc,
   return loops.front().getResults();
 }
 
-
 LogicalResult ConvertCnmSetZeroToAffine::matchAndRewrite(
     cnm::SetZeroOp op, OpAdaptor, ConversionPatternRewriter &rewriter) const {
   const Value dst = rewriter.getRemappedValue(op.getOperand());

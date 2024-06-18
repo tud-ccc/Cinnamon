@@ -12,6 +12,7 @@ include "cinm-mlir/Dialect/UPMEM/IR/UPMEMBase.td"
 include "cinm-mlir/Dialect/UPMEM/IR/UPMEMTypes.td"
 include "cinm-mlir/Dialect/UPMEM/IR/UPMEMAttributes.td"
 
+
 include "AsyncOpInterface.td"
 
 include "mlir/Dialect/DLTI/DLTIBase.td"
@@ -26,6 +27,7 @@ include "mlir/Interfaces/SideEffectInterfaces.td"
 include "mlir/Interfaces/InferIntRangeInterface.td"
 include "mlir/Interfaces/DataLayoutInterfaces.td"
 include "mlir/Interfaces/FunctionInterfaces.td"
+include "mlir/IR/RegionKindInterface.td"
 
 
 
@@ -408,31 +410,16 @@ def UPMEM_GatherOp: ScatterGatherLike<"gather", "from", MemWrite> {
 
 
 def UPMEM_UPMEMModuleOp : UPMEM_Op<"module", [
-      IsolatedFromAbove,
-      SymbolTable, Symbol, SingleBlockImplicitTerminator<"ModuleEndOp">
-    ]> {
+   IsolatedFromAbove, NoRegionArguments, SymbolTable, Symbol,
+    ] # GraphRegionNoTerminator.traits > {
   let summary = "";
   let description = [{
   }];
-  let builders = [
-    OpBuilder<(ins "StringRef":$name)>,
-  ];
+
+  let arguments = (ins SymbolNameAttr:$sym_name);
   let regions = (region SizedRegion<1>:$bodyRegion);
-  let hasCustomAssemblyFormat = 1;
+  let assemblyFormat = "$sym_name attr-dict-with-keyword $bodyRegion";
 }
-
-
-def UPMEM_ModuleEndOp : UPMEM_Op<"module_end", [
-  Terminator, HasParent<"UPMEMModuleOp">
-]> {
-  let summary = "A pseudo op that marks the end of a gpu.module.";
-  let description = [{
-    This op terminates the only block inside the only region of a `gpu.module`.
-  }];
-
-  let assemblyFormat = "attr-dict";
-}
-
 
 def UPMEM_UPMEMFuncOp : UPMEM_Op<"func", [
     HasParent<"UPMEMModuleOp">, AutomaticAllocationScope,
@@ -444,14 +431,10 @@ def UPMEM_UPMEMFuncOp : UPMEM_Op<"func", [
   }];
 
   let arguments = (ins
-         StrAttr:$name,
+         StrAttr:$sym_name,
          I64Attr:$num_tasklets
   );
   let regions = (region MinSizedRegion<1>:$body);
-
-  let builders = [
-    OpBuilder<(ins "StringRef":$name, CArg<"ArrayRef<NamedAttribute>", "{}">:$attrs)>
-  ];
 
   let extraClassDeclaration = [{
     FunctionType getFunctionType() {

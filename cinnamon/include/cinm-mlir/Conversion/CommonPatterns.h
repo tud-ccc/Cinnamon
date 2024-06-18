@@ -16,7 +16,7 @@
 
 namespace mlir {
 
-void populateFinalBufferizationPatterns(RewritePatternSet& set);
+void populateFinalBufferizationPatterns(RewritePatternSet &set);
 
 Value createOrFoldUnrealizedConversionCast(Location loc, OpBuilder &builder,
                                            Type dstType, Value value);

@@ -632,10 +632,6 @@ static LogicalResult printOperation(CppEmitter &emitter,
   return success();
 }
 
-static LogicalResult printOperation(CppEmitter &emitter,
-                                    upmem::ModuleEndOp op) {
-  return success();
-}
 
 static LogicalResult printOperation(CppEmitter &emitter, ModuleOp moduleOp) {
   CppEmitter::Scope scope(emitter);
@@ -1010,7 +1006,6 @@ LogicalResult CppEmitter::emitOperation(Operation &op, bool trailingSemicolon) {
           // Arithmetic ops.
           .Case<arith::ConstantOp>(
               [&](auto op) { return printOperation(*this, op); })
-          .Case<upmem::ModuleEndOp>([&](auto op) { return success(); })
           .Case<upmem::TaskletIDOp>(
               [&](auto op) { return printOperation(*this, op); })
           .Case<upmem::BaseMRAMAddrOp>(

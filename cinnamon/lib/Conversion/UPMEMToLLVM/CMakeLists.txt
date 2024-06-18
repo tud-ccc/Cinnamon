@@ -13,6 +13,7 @@ add_mlir_conversion_library(MLIRUPMEMToLLVM
     LINK_LIBS PUBLIC
     CinmCommonPatterns
     UPMEMIR
+    CinmUtils
     MLIRDialectUtils
     MLIRFuncDialect
     MLIRTransformUtils
