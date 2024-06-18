@@ -9,6 +9,8 @@
 namespace mlir {
 namespace cnm {
 
+void registerCnmBufferizationExternalModels(DialectRegistry &registry);
+
 //===- Generated passes ---------------------------------------------------===//
 
 #define GEN_PASS_DECL

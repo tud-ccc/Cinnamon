@@ -44,7 +44,9 @@ int main(int argc, char *argv[]) {
   cnm::registerCnmSPIRVAttachKernelEntryPointAttributePass();
   cnm::registerCnmSPIRVAttachTargetAttributePass();
   cnm::registerCnmBufferizePass();
-  registerCinmTilingPass();
+  cnm::registerCnmBufferizationExternalModels(registry);
+  cinm::registerCinmTilingPass();
+
   registerUPMEMOutlineKernelPass();
   registerUPMEMConversionPasses();
 

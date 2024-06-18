@@ -18,6 +18,7 @@ include "mlir/Interfaces/CallInterfaces.td"
 include "mlir/Interfaces/ControlFlowInterfaces.td"
 include "mlir/Interfaces/InferTypeOpInterface.td"
 include "mlir/Interfaces/SideEffectInterfaces.td"
+include "mlir/Interfaces/DestinationStyleOpInterface.td"
 include "mlir/Dialect/Bufferization/IR/BufferizableOpInterface.td"
 include "mlir/IR/CommonAttrConstraints.td"
 
@@ -79,7 +80,7 @@ def ScatterOp: Cnm_Op<"scatter", [InferWorkgroupTypeFromBuffer<"buffer", "wg">]>
     let assemblyFormat = "$input `into` $buffer `[` $scatterMap `]` `of` $wg attr-dict `:` type($input) `into` qualified(type($buffer))";
 }
 
-def GatherOp: Cnm_Op<"gather", [InferWorkgroupTypeFromBuffer<"buffer", "wg">, InferTensorTypeAdaptor]> {
+def GatherOp: Cnm_Op<"gather", [InferWorkgroupTypeFromBuffer<"buffer", "wg">, InferTensorTypeAdaptor, DestinationStyleOpInterface]> {
     let summary = "";
     let description = [{}];
 
@@ -87,6 +88,10 @@ def GatherOp: Cnm_Op<"gather", [InferWorkgroupTypeFromBuffer<"buffer", "wg">, In
     let results = (outs Optional<AnyRankedTensor>:$output);
 
     let extraClassDeclaration = [{
+        MutableOperandRange getDpsInitsMutable() {
+            return getOutputBufMutable();
+        }
+
         int64_t getTransferCountInItems() {
             auto bufShape = getBuffer().getType().getShape();
             return bufShape.empty() ? 1 : mlir::computeProduct(bufShape);

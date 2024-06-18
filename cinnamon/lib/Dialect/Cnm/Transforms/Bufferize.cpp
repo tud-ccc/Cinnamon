@@ -22,6 +22,7 @@
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/IR/ImplicitLocOpBuilder.h"
 #include "mlir/Transforms/DialectConversion.h"
+#include <mlir/IR/DialectRegistry.h>
 #include <mlir/IR/ValueRange.h>
 
 namespace mlir {
@@ -81,9 +82,9 @@ struct GatherOpInterface
     return true;
   }
 
-  AliasingValueList getAliasingValues(Operation *, OpOperand &,
+  AliasingValueList getAliasingValues(Operation *op, OpOperand &,
                                       const AnalysisState &) const {
-    return {};
+    return {{op->getOpResult(0), BufferRelation::Equivalent}};
   }
 
   LogicalResult bufferize(Operation *op, RewriterBase &rewriter,
@@ -113,10 +114,13 @@ struct CnmBufferizePass
   void getDependentDialects(DialectRegistry &registry) const override {
     registry.insert<bufferization::BufferizationDialect, memref::MemRefDialect,
                     cnm::CnmDialect, scf::SCFDialect, arith::ArithDialect>();
-    registry.addExtension(+[](MLIRContext *ctx, cnm::CnmDialect *dialect) {
-      cnm::ScatterOp::attachInterface<ScatterOpInterface>(*ctx);
-      cnm::GatherOp::attachInterface<GatherOpInterface>(*ctx);
-    });
   }
 };
 } // namespace
+
+void cnm::registerCnmBufferizationExternalModels(DialectRegistry &registry) {
+  registry.addExtension(+[](MLIRContext *ctx, cnm::CnmDialect *) {
+    cnm::ScatterOp::attachInterface<ScatterOpInterface>(*ctx);
+    cnm::GatherOp::attachInterface<GatherOpInterface>(*ctx);
+  });
+}

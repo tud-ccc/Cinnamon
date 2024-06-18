@@ -25,7 +25,7 @@
 #include <mlir/Support/LogicalResult.h>
 #include <mlir/Transforms/DialectConversion.h>
 
-namespace mlir {
+namespace mlir::cinm {
 
 //===- Generated passes ---------------------------------------------------===//
 
@@ -75,4 +75,4 @@ struct CinmTilingPass : public impl::CinmTilingPassBase<CinmTilingPass> {
   }
 };
 
-} // namespace mlir
+} // namespace mlir::cinm

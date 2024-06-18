@@ -21,7 +21,7 @@ $(IR_PREFIX).tiled.mlir: $(BENCH_NAME).mlir
 	$(CINM_OPT) $< --cinm-tiling --cse > $@
 
 $(IR_PREFIX).cnm.mlir: $(IR_PREFIX).tiled.mlir
-	$(CINM_OPT) $< --convert-cinm-to-cnm --func-bufferize --lower-affine --scf-bufferize --tensor-bufferize --arith-bufferize --linalg-bufferize --bufferization-bufferize --cnm-bufferize --cse > $@
+	$(CINM_OPT) $< --convert-cinm-to-cnm --lower-affine --one-shot-bufferize='bufferize-function-boundaries function-boundary-type-conversion=identity-layout-map' --cse > $@
 
 $(IR_PREFIX).upmem.mlir: $(IR_PREFIX).cnm.mlir
 	$(CINM_OPT) $< --convert-cnm-to-upmem --convert-linalg-to-affine-loops --lower-affine --upmem-outline-kernel --buffer-loop-hoisting --cse > $@
