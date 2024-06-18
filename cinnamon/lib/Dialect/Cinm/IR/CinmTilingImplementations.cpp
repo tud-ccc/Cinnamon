@@ -98,7 +98,7 @@ SmallVector<Value> GemmOp::convertToTiledOps(OpBuilder &builder,
                                                 ShapedType::kDynamic};
 
         const ArrayRef<int64_t> resultOffsets = noStaticOffsets;
-        const ArrayRef<int64_t> resultSizes = {p0, p1};
+        const ArrayRef<int64_t> resultSizes {p0, p1};
         const ValueRange resultDynamicOffsets = parIndices;
 
         auto reductionAccTy = RankedTensorType::get({p0, p1}, eltTy);
