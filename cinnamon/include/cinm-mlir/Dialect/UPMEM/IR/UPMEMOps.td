@@ -18,6 +18,7 @@ include "mlir/Dialect/DLTI/DLTIBase.td"
 include "mlir/IR/EnumAttr.td"
 include "mlir/IR/OpAsmInterface.td"
 include "mlir/IR/SymbolInterfaces.td"
+include "mlir/IR/BuiltinAttributes.td"
 include "mlir/Interfaces/CallInterfaces.td"
 include "mlir/Interfaces/ControlFlowInterfaces.td"
 include "mlir/Interfaces/InferTypeOpInterface.td"
@@ -434,87 +435,42 @@ def UPMEM_ModuleEndOp : UPMEM_Op<"module_end", [
 
 
 def UPMEM_UPMEMFuncOp : UPMEM_Op<"func", [
-    HasParent<"UPMEMModuleOp">, AutomaticAllocationScope, FunctionOpInterface,
-    IsolatedFromAbove]
+    HasParent<"UPMEMModuleOp">, AutomaticAllocationScope,
+    IsolatedFromAbove, FunctionOpInterface]
   > {
-  let summary = "Function executable on a UPMEM";
+  let summary = "Function executable on an UPMEM DPU";
 
   let description = [{
   }];
 
-  let arguments = (ins TypeAttrOf<FunctionType>:$function_type, OptionalAttr<DictArrayAttr>:$arg_attrs,
-                       OptionalAttr<DictArrayAttr>:$res_attrs);
-  let regions = (region AnyRegion:$body);
-
-  let skipDefaultBuilders = 1;
+  let arguments = (ins
+         StrAttr:$name,
+         I64Attr:$num_tasklets
+  );
+  let regions = (region MinSizedRegion<1>:$body);
 
   let builders = [
-    OpBuilder<(ins "StringRef":$name, "FunctionType":$type, CArg<"ArrayRef<NamedAttribute>", "{}">:$attrs)>
-
+    OpBuilder<(ins "StringRef":$name, CArg<"ArrayRef<NamedAttribute>", "{}">:$attrs)>
   ];
 
   let extraClassDeclaration = [{
-    /// Returns `true` if the GPU function defined by this Op is a kernel, i.e.
-    /// it is intended to be launched from host.
-    bool isKernel() {
-      return (*this)->getAttrOfType<UnitAttr>(
-          UPMEMDialect::getKernelFuncAttrName()) != nullptr;
+    FunctionType getFunctionType() {
+      return FunctionType::get(getContext(), {}, {});
     }
-
-    static constexpr StringLiteral getKnownRankSizeAttrName() {
-      return StringLiteral("upmem.known_rank_size");
+    void setFunctionTypeAttr(TypeAttr ty) {
+      if (ty.getValue() != getFunctionType())
+        emitOpError("cannot set type ") << ty;
     }
-
-    static constexpr StringLiteral getKnownDPUSizeAttrName() {
-      return StringLiteral("upmem.known_dpu_size");
-    }
-
-    static constexpr StringLiteral getKnownTaskletSizeAttrName() {
-      return StringLiteral("upmem.known_tasklet_size");
-    }
-
-    /// Returns the block size this kernel will be launched with along
-    /// dimension `dim` if known. The value of gpu.thread_id dim will be strictly
-    /// less than this size.
-    // std::optional<uint32_t> getKnownRankSize(upmem::Dimension dim) {
-    //   if (auto array =
-    //     (*this)->getAttrOfType<DenseI32ArrayAttr>(getKnownBlockSizeAttrName())) {
-    //     return array[static_cast<uint32_t>(dim)];
-    //   }
-    //   return std::nullopt;
-    // }
-
-    /// Returns the grid size this kernel will be launched with along
-    /// dimension `dim` if known. The value of gpu.block_id dim will be strictly
-    /// less than this size.
-    // std::optional<uint32_t> getKnownGridSize(gpu::Dimension dim) {
-    //   if (auto array =
-    //     (*this)->getAttrOfType<DenseI32ArrayAttr>(getKnownGridSizeAttrName())) {
-    //     return array[static_cast<uint32_t>(dim)];
-    //   }
-    //   return std::nullopt;
-    // }
-
     /// Returns the argument types of this function.
-    ArrayRef<Type> getArgumentTypes() { return getFunctionType().getInputs(); }
+    ArrayRef<Type> getArgumentTypes() { return {}; }
 
     /// Returns the result types of this function.
-    ArrayRef<Type> getResultTypes() { return getFunctionType().getResults(); }
+    ArrayRef<Type> getResultTypes() { return {}; }
 
     Region *getCallableRegion() { return &getBody(); }
-
-
-    /// Hook for FunctionOpInterface verifier.
-    LogicalResult verifyType();
-
-    /// Verifies the body of the function.
-    LogicalResult verifyBody();
-
-    static StringRef getKernelKeyword() { return "kernel"; }
   }];
   let hasCustomAssemblyFormat = 1;
 
-  let hasVerifier = 1;
 }
 
 

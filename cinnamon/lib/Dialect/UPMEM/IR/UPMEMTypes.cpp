@@ -10,7 +10,6 @@
 
 #include "llvm/ADT/TypeSwitch.h"
 
-
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/IR/Attributes.h"
@@ -31,7 +30,10 @@
 
 #include "mlir/IR/IRMapping.h"
 #include "llvm/ADT/MapVector.h"
-
+#include <cstdint>
+#include <llvm/ADT/ArrayRef.h>
+#include <mlir/IR/Diagnostics.h>
+#include <mlir/Support/LogicalResult.h>
 
 #define DEBUG_TYPE "upmem-types"
 
@@ -49,14 +51,12 @@ using namespace mlir::upmem;
 // UPMEMDialect
 //===----------------------------------------------------------------------===//
 
-void UPMEMDialect::registerTypes()
-{
-    addTypes<
+void UPMEMDialect::registerTypes() {
+  addTypes<
 #define GET_TYPEDEF_LIST
 #include "cinm-mlir/Dialect/UPMEM/IR/UPMEMTypes.cpp.inc"
-        >();
+      >();
 }
-
 
 //===----------------------------------------------------------------------===//
 // DeviceHierarchyType
@@ -78,3 +78,10 @@ void mlir::upmem::DeviceHierarchyType::print(mlir::AsmPrinter &printer) const {
   printer << ">";
 }
 
+LogicalResult mlir::upmem ::DeviceHierarchyType::verify(
+    function_ref<InFlightDiagnostic()> emitError, ArrayRef<int64_t> shape) {
+  if (shape.size() != 3)
+    return emitError() << "upmem device hierarchy should have 3 dimensions: "
+                       << shape;
+  return success();
+}

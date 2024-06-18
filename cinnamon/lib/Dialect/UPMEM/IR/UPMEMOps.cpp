@@ -39,7 +39,6 @@
 using namespace mlir;
 using namespace mlir::upmem;
 
-
 //===----------------------------------------------------------------------===//
 // UPMEMDialect
 //===----------------------------------------------------------------------===//
@@ -276,11 +275,6 @@ LogicalResult LaunchOp::verifyRegions() {
   return success();
 }
 
-static void printSizeAssignment(OpAsmPrinter &p, KernelDim size,
-                                KernelDim operand, KernelDim id) {
-  p << '(' << id.x << ") in (";
-  p << size.x << " = " << operand.x << ')';
-}
 static void printSizeAssignment(OpAsmPrinter &p, Value size,
                                 BlockArgument arg) {
   p << '(';
@@ -316,25 +310,6 @@ void LaunchOp::print(OpAsmPrinter &p) {
   p.printOptionalAttrDict((*this)->getAttrs(), /*elidedAttrs=*/{
                               LaunchOp::getOperandSegmentSizeAttr(),
                               getNumWorkgroupAttributionsAttrName()});
-}
-
-static ParseResult
-parseSizeAssignment(OpAsmParser &parser,
-                    MutableArrayRef<OpAsmParser::UnresolvedOperand> sizes,
-                    MutableArrayRef<OpAsmParser::UnresolvedOperand> regionSizes,
-                    MutableArrayRef<OpAsmParser::UnresolvedOperand> indices) {
-  // assert(indices.size() == 3 && "space for three indices expected");
-  SmallVector<OpAsmParser::UnresolvedOperand, 1> args;
-  if (parser.parseOperandList(args, OpAsmParser::Delimiter::Paren,
-                              /*allowResultNumber=*/false) ||
-      parser.parseKeyword("in") || parser.parseLParen())
-    return failure();
-  std::move(args.begin(), args.end(), indices.begin());
-
-  if (parser.parseOperand(regionSizes[0], /*allowResultNumber=*/false) ||
-      parser.parseEqual() || parser.parseOperand(sizes[0]))
-    return failure();
-  return parser.parseRParen();
 }
 
 static ParseResult
@@ -408,9 +383,6 @@ ParseResult LaunchOp::parse(OpAsmParser &parser, OperationState &result) {
   Type index = parser.getBuilder().getIndexType();
   SmallVector<Type, LaunchOp::kNumConfigRegionAttributes> dataTypes(
       LaunchOp::kNumConfigRegionAttributes, index);
-
-  for (auto arg : regionArgs2) {
-  }
 
   Type deviceHierarchyType;
   if (parser.parseKeyword("on") || parser.parseType(deviceHierarchyType) ||
@@ -525,7 +497,6 @@ void UPMEMModuleOp::build(OpBuilder &builder, OperationState &result,
 
 ParseResult UPMEMModuleOp::parse(OpAsmParser &parser, OperationState &result) {
   StringAttr nameAttr;
-  ArrayAttr targetsAttr;
 
   if (parser.parseSymbolName(nameAttr, mlir::SymbolTable::getSymbolAttrName(),
                              result.attributes))
@@ -553,30 +524,19 @@ void UPMEMModuleOp::print(OpAsmPrinter &p) {
                 /*printBlockTerminators=*/false);
 }
 
-
-
 //===----------------------------------------------------------------------===//
 // UPMEMFuncOp
 //===----------------------------------------------------------------------===//
 
 void UPMEMFuncOp::build(OpBuilder &builder, OperationState &result,
-                      StringRef name, FunctionType type, ArrayRef<NamedAttribute> attrs) {
+                        StringRef name, ArrayRef<NamedAttribute> attrs) {
   result.addAttribute(SymbolTable::getSymbolAttrName(),
                       builder.getStringAttr(name));
-  result.addAttribute(getFunctionTypeAttrName(result.name),
-                      TypeAttr::get(type));
   result.addAttributes(attrs);
-  Region *body = result.addRegion();
-  Block *entryBlock = new Block;
-
-  body->getBlocks().push_back(entryBlock);
+  result.addRegion()->emplaceBlock();
 }
 
 ParseResult UPMEMFuncOp::parse(OpAsmParser &parser, OperationState &result) {
-  SmallVector<OpAsmParser::Argument> entryArgs;
-  SmallVector<DictionaryAttr> resultAttrs;
-  SmallVector<Type> resultTypes;
-  bool isVariadic;
 
   // Parse the function name.
   StringAttr nameAttr;
@@ -584,81 +544,33 @@ ParseResult UPMEMFuncOp::parse(OpAsmParser &parser, OperationState &result) {
                              result.attributes))
     return failure();
 
-  auto signatureLocation = parser.getCurrentLocation();
-  if (failed(function_interface_impl::parseFunctionSignature(
-          parser, /*allowVariadic=*/false, entryArgs, isVariadic, resultTypes,
-          resultAttrs)))
+  if (parser.parseLParen() || parser.parseRParen())
     return failure();
 
-  if (!entryArgs.empty() && entryArgs[0].ssaName.name.empty())
-    return parser.emitError(signatureLocation)
-           << "upmem.func requires named arguments";
-
-  // Construct the function type. More types will be added to the region, but
-  // not to the function type.
-  Builder &builder = parser.getBuilder();
-
-  SmallVector<Type> argTypes;
-  for (auto &arg : entryArgs)
-    argTypes.push_back(arg.type);
-  auto type = builder.getFunctionType(argTypes, resultTypes);
-  result.addAttribute(getFunctionTypeAttrName(result.name),
-                      TypeAttr::get(type));
-
-
-
-  // Parse the kernel attribute if present.
-  if (succeeded(parser.parseOptionalKeyword(UPMEMFuncOp::getKernelKeyword())))
-    result.addAttribute(UPMEMDialect::getKernelFuncAttrName(),
-                        builder.getUnitAttr());
+  if (parser.parseOptionalAttrDictWithKeyword(result.attributes))
+    return failure();
 
   auto *body = result.addRegion();
-  return parser.parseRegion(*body, entryArgs);
+  return parser.parseRegion(*body, {});
 }
-
 
 void UPMEMFuncOp::print(OpAsmPrinter &p) {
+  ::mlir::Builder odsBuilder{getContext()};
   p << ' ';
   p.printSymbolName(getName());
-
-  FunctionType type = getFunctionType();
-  function_interface_impl::printFunctionSignature(p, *this, type.getInputs(),
-                                                  /*isVariadic=*/false,
-                                                  type.getResults());
-
-  if (isKernel())
-    p << ' ' << getKernelKeyword();
-
-  p << ' ';
+  p << "() ";
+  p.printOptionalAttrDictWithKeyword({odsBuilder.getNamedAttr(
+      getNumTaskletsAttrName(),
+      odsBuilder.getI64IntegerAttr(getNumTasklets()))});
   p.printRegion(getBody(), /*printEntryBlockArgs=*/false);
 }
-
-
-
-LogicalResult UPMEMFuncOp::verifyType() {
-  if (isKernel() && getFunctionType().getNumResults() != 0)
-    return emitOpError() << "expected void return type for kernel function";
-  return success();
-}
-
-LogicalResult UPMEMFuncOp::verifyBody() {
-  if (empty())
-    return emitOpError() << "expected body with at least one block";
-  return success();
-}
-
-
-LogicalResult UPMEMFuncOp::verify() {
-  return success();
-}
-
 
 //===----------------------------------------------------------------------===//
 // LaunchFuncOp
 //===----------------------------------------------------------------------===//
 
 void LaunchFuncOp::build(OpBuilder &builder, OperationState &result,
-                         UPMEMFuncOp kernelFunc, Value upmemToken, 
+                         UPMEMFuncOp kernelFunc, Value upmemToken,
                          Value dynamicSharedMemorySize,
                          ValueRange kernelOperands, Type asyncTokenType,
                          ValueRange asyncDependencies) {
@@ -689,7 +601,6 @@ void LaunchFuncOp::build(OpBuilder &builder, OperationState &result,
       static_cast<int32_t>(kernelOperands.size());
   prop.operandSegmentSizes[segmentSizesLen - 1] = 0;
 }
-
 
 StringAttr LaunchFuncOp::getKernelModuleName() {
   return getKernel().getRootReference();
@@ -760,7 +671,6 @@ static void printLaunchFuncOperands(OpAsmPrinter &printer, Operation *,
   printer << ")";
 }
 
-
 static void printAsyncDependencies(OpAsmPrinter &printer, Operation *op,
                                    Type asyncTokenType,
                                    OperandRange asyncDependencies) {
@@ -774,7 +684,6 @@ static void printAsyncDependencies(OpAsmPrinter &printer, Operation *op,
   llvm::interleaveComma(asyncDependencies, printer);
   printer << ']';
 }
-
 
 //===- Generated implementation -------------------------------------------===//
 

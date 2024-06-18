@@ -26,12 +26,23 @@ def DeviceHierarchy : UPMEM_Type<"DeviceHierarchy"> {
   let parameters = (ins ArrayRefParameter<"int64_t">:$shape);
 
   let hasCustomAssemblyFormat = 1;
+  let genVerifyDecl = 1;
   let extraClassDeclaration = [{
     int64_t getNumElements() {
       auto wgShape = getShape();
       return std::reduce(wgShape.begin(), wgShape.end(), 1, std::multiplies<>());
     }
     int64_t getNumDims() { return getShape().size();}
+
+    int64_t getNumRanks() {
+      return getShape()[0];
+    }
+    int64_t getNumDpusPerRank() {
+      return getShape()[1];
+    }
+    int64_t getNumTaskletsPerDpu() {
+      return getShape()[2];
+    }
   }];
 }
 

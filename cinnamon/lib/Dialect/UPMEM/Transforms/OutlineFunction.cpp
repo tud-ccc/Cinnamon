@@ -9,6 +9,7 @@
 #include "llvm/Support/Debug.h"
 #include <llvm/ADT/StringRef.h>
 #include <llvm/Support/Regex.h>
+#include <mlir/IR/Attributes.h>
 #include <mlir/IR/Builders.h>
 #include <mlir/IR/BuiltinAttributes.h>
 #include <mlir/Pass/Pass.h>
@@ -30,19 +31,17 @@ static upmem::UPMEMFuncOp outlineKernelFuncImpl(upmem::LaunchOp launchOp,
   // Create a builder with no insertion point, insertion will happen separately
   // due to symbol table manipulation.
   OpBuilder builder(launchOp.getContext());
-  Region &launchOpBody = launchOp.getBody();
 
-  FunctionType type = FunctionType::get(launchOp.getContext(), {}, {});
-  auto outlinedFunc =
-      builder.create<upmem::UPMEMFuncOp>(loc, kernelFnName, type);
+  auto outlinedFunc = builder.create<upmem::UPMEMFuncOp>(loc, kernelFnName);
 
-  outlinedFunc->setAttr(upmem::UPMEMDialect::getKernelFuncAttrName(),
-                        builder.getUnitAttr());
+  outlinedFunc.setNumTasklets(
+      launchOp.getDeviceHierarchy().getType().getNumTaskletsPerDpu());
 
   IRMapping map;
   Region &outlinedFuncBody = outlinedFunc.getBody();
   Block &outlinedEntryBlock = outlinedFuncBody.front();
 
+  Region &launchOpBody = launchOp.getBody();
   Block &launchOpEntry = launchOpBody.front();
 
   ///  CLone the region into the func, we remap the block arguments
@@ -82,8 +81,7 @@ static void convertToLaunchFuncOp(upmem::LaunchOp launchOp,
 static void createFreeDPUsOp(upmem::GatherOp gatherOp) {
   OpBuilder builder(gatherOp);
   builder.setInsertionPointAfter(gatherOp);
-  auto launchFunc = builder.create<upmem::FreeDPUsOp>(
-      gatherOp.getLoc(), gatherOp.getHierarchy());
+  builder.create<upmem::FreeDPUsOp>(gatherOp.getLoc(), gatherOp.getHierarchy());
 }
 
 //===----------------------------------------------------------------------===//
@@ -127,12 +125,12 @@ void UPMEMOutlineKernelPass::runOnOperation() {
     auto funcWalkResult2 = func.walk([&](upmem::AllocDPUsOp op) {
       SetVector<Value> operands;
       upmem::GatherOp lastOp;
-      for (auto user : op.getHierarchyShape().getUsers()){
-        if (dyn_cast_or_null<upmem::GatherOp>(user)){
+      for (auto user : op.getHierarchyShape().getUsers()) {
+        if (dyn_cast_or_null<upmem::GatherOp>(user)) {
           lastOp = dyn_cast_or_null<upmem::GatherOp>(user);
         }
       }
-      createFreeDPUsOp(lastOp);      
+      createFreeDPUsOp(lastOp);
       modified = true;
       return WalkResult::advance();
     });
