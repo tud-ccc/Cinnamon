@@ -437,6 +437,9 @@ def UPMEM_UPMEMFuncOp : UPMEM_Op<"func", [
   let regions = (region MinSizedRegion<1>:$body);
 
   let extraClassDeclaration = [{
+    StringRef getName() {
+      return getSymName();
+    }
     FunctionType getFunctionType() {
       return FunctionType::get(getContext(), {}, {});
     }

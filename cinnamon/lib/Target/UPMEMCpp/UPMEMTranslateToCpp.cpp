@@ -27,9 +27,14 @@
 #include "llvm/ADT/TypeSwitch.h"
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/FormatVariadic.h"
+#include <llvm/ADT/SmallVector.h>
 #include <llvm/Support/Casting.h>
+#include <llvm/Support/raw_ostream.h>
+#include <mlir/IR/SymbolTable.h>
 #include <mlir/IR/Visitors.h>
+#include <mlir/Support/LLVM.h>
 #include <mlir/Support/LogicalResult.h>
+#include <string>
 #include <utility>
 
 #define DEBUG_TYPE "translate-to-upmem-cpp"
@@ -431,13 +436,6 @@ static LogicalResult printOperation(CppEmitter &emitter, func::CallOp callOp) {
   return success();
 }
 
-static LogicalResult printDPUIncludes(CppEmitter &emitter) {
-  raw_ostream &os = emitter.ostream();
-
-  os << "#include \"dpu_lib.h\"\n";
-  return success();
-}
-
 static LogicalResult printDPUReset(CppEmitter &emitter) {
   raw_ostream &os = emitter.ostream();
 
@@ -614,25 +612,6 @@ static LogicalResult printOperation(CppEmitter &emitter,
   }
 }
 
-static LogicalResult printOperation(CppEmitter &emitter,
-                                    upmem::ReturnOp returnOp) {
-  raw_ostream &os = emitter.ostream();
-  os << "return 0";
-  return success();
-}
-
-static LogicalResult printOperation(CppEmitter &emitter,
-                                    upmem::UPMEMModuleOp moduleOp) {
-  CppEmitter::Scope scope(emitter);
-
-  for (Operation &op : moduleOp) {
-    if (failed(emitter.emitOperation(op, /*trailingSemicolon=*/false)))
-      return failure();
-  }
-  return success();
-}
-
-
 static LogicalResult printOperation(CppEmitter &emitter, ModuleOp moduleOp) {
   CppEmitter::Scope scope(emitter);
 
@@ -643,20 +622,9 @@ static LogicalResult printOperation(CppEmitter &emitter, ModuleOp moduleOp) {
   return success();
 }
 
-static void printUPMEMIncludes(CppEmitter &emitter) {
-  raw_ostream &os = emitter.ostream();
-  os << "#include \"dpu_lib.h\"\n";
-}
-
-static void printUPMEMInit(CppEmitter &emitter) {
-  raw_ostream &os = emitter.ostream();
-  os << "init_tasklet();\n";
-}
-
 static LogicalResult printOperation(CppEmitter &emitter,
                                     upmem::UPMEMFuncOp functionOp) {
   // We need to declare variables at top if the function has multiple blocks.
-  printUPMEMIncludes(emitter);
   if (!emitter.shouldDeclareVariablesAtTop() &&
       functionOp.getBlocks().size() > 1) {
     return functionOp.emitOpError(
@@ -682,7 +650,6 @@ static LogicalResult printOperation(CppEmitter &emitter,
     return failure();
   os << ") {\n";
   os.indent();
-  printUPMEMInit(emitter);
   if (emitter.shouldDeclareVariablesAtTop()) {
     // Declare all variables that hold op results including those from nested
     // regions.
@@ -741,6 +708,61 @@ static LogicalResult printOperation(CppEmitter &emitter,
     }
   }
   os.unindent() << "}\n";
+  return success();
+}
+
+static LogicalResult printOperation(CppEmitter &emitter,
+                                    upmem::ReturnOp returnOp) {
+  raw_ostream &os = emitter.ostream();
+  os << "return 0";
+  return success();
+}
+
+static void printCompilationVar(upmem::UPMEMFuncOp &kernel, raw_ostream &os) {
+  os << "COMPILE_" << kernel.getSymName();
+}
+
+static LogicalResult printOperation(CppEmitter &emitter,
+                                    upmem::UPMEMModuleOp moduleOp) {
+  CppEmitter::Scope scope(emitter);
+
+  llvm::SmallVector<upmem::UPMEMFuncOp> kernels;
+  for (Operation &op : moduleOp) {
+    if (llvm::isa<upmem::UPMEMFuncOp>(op)) {
+      kernels.push_back(llvm::cast<upmem::UPMEMFuncOp>(op));
+    }
+  }
+
+  if (kernels.empty())
+    return failure();
+
+  raw_ostream &os = emitter.ostream();
+
+  os << "// UPMEM-TRANSLATE: ";
+  for (auto kernel : kernels) {
+    printCompilationVar(kernel, os);
+    os << ";";
+  }
+
+  os << "\n\n";
+  os << "#include \"dpu_lib.h\"\n\n";
+  os << "int main(void) {\n";
+  os << "  init_tasklet();\n";
+  for (auto kernel : kernels) {
+    os << "#ifdef ";
+    printCompilationVar(kernel, os);
+    os << "\n";
+    os << "  " << kernel.getName() << "();\n";
+    os << "#endif\n";
+  }
+  os << "  return 0;\n";
+  os << "}\n\n";
+
+  for (const auto kernel : kernels) {
+    if (failed(printOperation(emitter, kernel)))
+      return failure();
+  }
+
   return success();
 }
 
