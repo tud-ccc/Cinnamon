@@ -21,10 +21,14 @@ $(IR_PREFIX).tiled.mlir: $(BENCH_NAME).mlir
 	$(CINM_OPT) $< --cinm-tiling --cse > $@
 
 $(IR_PREFIX).cnm.mlir: $(IR_PREFIX).tiled.mlir
-	$(CINM_OPT) $< --convert-cinm-to-cnm --lower-affine --one-shot-bufferize='bufferize-function-boundaries function-boundary-type-conversion=identity-layout-map' --cse > $@
+	$(CINM_OPT) $< --convert-cinm-to-cnm > $@
 
-$(IR_PREFIX).upmem.mlir: $(IR_PREFIX).cnm.mlir
-	$(CINM_OPT) $< --convert-cnm-to-upmem --convert-linalg-to-affine-loops --lower-affine --upmem-outline-kernel --buffer-loop-hoisting --cse > $@
+$(IR_PREFIX).cnm.bufferized.mlir: $(IR_PREFIX).cnm.mlir
+	$(CINM_OPT) $< --lower-affine --one-shot-bufferize='bufferize-function-boundaries function-boundary-type-conversion=identity-layout-map'  \
+				  --convert-linalg-to-affine-loops --lower-affine --buffer-loop-hoisting --buffer-hoisting > $@
+
+$(IR_PREFIX).upmem.mlir: $(IR_PREFIX).cnm.bufferized.mlir
+	$(CINM_OPT) $< --convert-cnm-to-upmem --upmem-outline-kernel > $@
 
 $(IR_PREFIX).llvm.mlir: $(IR_PREFIX).upmem.mlir
 	$(CINM_OPT) $< --mlir-print-ir-after-failure --canonicalize \

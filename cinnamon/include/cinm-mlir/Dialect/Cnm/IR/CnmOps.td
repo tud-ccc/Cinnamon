@@ -102,7 +102,7 @@ def GatherOp: Cnm_Op<"gather", [InferWorkgroupTypeFromBuffer<"buffer", "wg">, In
     let assemblyFormat = "$buffer `[` $gatherMap `]` `of` $wg attr-dict `into` $outputBuf `:` qualified(type($buffer)) `into` type($outputBuf)";
 }
 
-def LaunchOp: Cnm_Op<"launch", [AttrSizedOperandSegments, SingleBlockImplicitTerminator<"TerminatorOp">]> {
+def LaunchOp: Cnm_Op<"launch", [AttrSizedOperandSegments, IsolatedFromAbove, SingleBlockImplicitTerminator<"TerminatorOp">]> {
     let summary = "Launch a code kernel on a given workgroup. Input buffers should have been scattered beforehand.";
     let description = [{}];
 

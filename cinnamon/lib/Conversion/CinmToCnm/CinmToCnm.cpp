@@ -629,8 +629,13 @@ struct ConvertCinmGemmToCnm : public OpConversionPattern<cinm::GemmOp> {
               });
         });
 
-    auto outbuf =
-        builder.create<tensor::EmptyOp>(op.getResult().getType(), ValueRange{});
+    Value outbuf;
+    if (op.getBias()) {
+      outbuf = adaptor.getBias();
+    } else {
+      outbuf = builder.create<tensor::EmptyOp>(op.getResult().getType(),
+                                               ValueRange{});
+    }
     auto gather = builder.create<cnm::GatherOp>(bufferC, workgroup,
                                                 scatterGatherC, outbuf);
 
