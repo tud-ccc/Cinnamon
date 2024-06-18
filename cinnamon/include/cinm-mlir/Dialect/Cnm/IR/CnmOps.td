@@ -42,6 +42,11 @@ def AllocOp : Cnm_Op<"alloc", [InferWorkgroupTypeFromBuffer<"result", "wg">]> {
     let arguments = (ins WorkgroupType:$wg);
     let results = (outs BufferType:$result);
 
+
+    let extraClassDeclaration = [{
+
+    }];
+
     let assemblyFormat = "`(` `)` `for` $wg attr-dict `:` qualified(type($result))";
 }
 

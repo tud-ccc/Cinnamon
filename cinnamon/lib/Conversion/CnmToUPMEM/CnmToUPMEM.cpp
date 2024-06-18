@@ -28,7 +28,7 @@
 #include "cinm-mlir/Conversion/CnmPasses.h.inc"
 
 namespace mlir::cnm {
-namespace cnmtoupmem {
+namespace {
 
 template <typename T> T reduceMul(ArrayRef<T> arr) {
   T result{1};
@@ -95,6 +95,7 @@ AffineMap getMRAMOffsetToElementAffineMap(MLIRContext *ctx,
   return AffineMap::get(1, 0, {exprs}, ctx);
 }
 
+static const StringRef BUFFER_OFFSET_ATTR = "upmem.bufferOffset";
 struct ConvertCnmWorkgroupToUPMEM
     : public OpConversionPattern<cnm::WorkgroupOp> {
   using OpConversionPattern<cnm::WorkgroupOp>::OpConversionPattern;
@@ -108,18 +109,16 @@ struct ConvertCnmWorkgroupToUPMEM
           "UPMEM translation requires workgroup with 3 dimensions.");
     rewriter.replaceOpWithNewOp<upmem::AllocDPUsOp>(
         op, getTypeConverter()->convertType(op.getType()));
-    return success();
-  }
-};
 
-struct ConvertCnmAllocToUPMEM : public OpConversionPattern<cnm::AllocOp> {
-  using OpConversionPattern<cnm::AllocOp>::OpConversionPattern;
+    int64_t dpuMemOffset = 0;
+    for (auto use : op.getResult().getUsers()) {
+      if (cnm::AllocOp alloc = llvm::dyn_cast_or_null<cnm::AllocOp>(use)) {
+        alloc->setAttr(BUFFER_OFFSET_ATTR,
+                       rewriter.getI64IntegerAttr(dpuMemOffset));
+        dpuMemOffset += alloc.getResult().getType().getSizeInBytes();
+      }
+    }
 
-  LogicalResult
-  matchAndRewrite(cnm::AllocOp op, OpAdaptor,
-                  ConversionPatternRewriter &rewriter) const override {
-    rewriter.replaceOpWithNewOp<memref::AllocOp>(
-        op, convertCnmBufferToMemRefType(op.getType()));
     return success();
   }
 };
@@ -137,24 +136,10 @@ struct ConvertCnmScatterToUPMEM : public OpConversionPattern<cnm::ScatterOp> {
         op.getLoc(), rewriter, convertTensorToMemref(inputTy), tensor);
 
     const int64_t transferCount = op.getTransferCountInItems();
-
-    int64_t dpuMemOffset = 0;
-    for (auto use : adaptor.getWg().getUsers()) {
-      if (upmem::ScatterOp scatter =
-              llvm::dyn_cast_or_null<upmem::ScatterOp>(use)) {
-        dpuMemOffset = std::max(scatter.getDpuMemMaxOffset(), dpuMemOffset);
-      }
-    }
-
-    for (auto user : op.getBuffer().getUsers()) {
-      if (user == op)
-        continue;
-      else if (llvm::isa<cnm::GatherOp>(user)) {
-        // need to communicate the buffer offset to the gather op
-        user->setAttr("upmem.bufferOffset",
-                      rewriter.getI64IntegerAttr(dpuMemOffset));
-      }
-    }
+    const int64_t dpuMemOffset =
+        llvm::cast<cnm::AllocOp>(op.getBuffer().getDefiningOp())
+            ->getAttrOfType<IntegerAttr>(BUFFER_OFFSET_ATTR)
+            .getInt();
 
     rewriter.create<upmem::ScatterOp>(op->getLoc(), inputAsMemref, dpuMemOffset,
                                       transferCount, op.getScatterMap(),
@@ -180,13 +165,10 @@ struct ConvertCnmGatherToUPMEM : public OpConversionPattern<cnm::GatherOp> {
     }
 
     const int64_t transferCount = op.getTransferCountInItems();
-    int64_t dpuMemOffset;
-    if (auto attr = op->getAttrOfType<IntegerAttr>("upmem.bufferOffset")) {
-      dpuMemOffset = attr.getInt();
-    } else {
-      return op.emitOpError(
-          "has no corresponding scatter, cannot compute buffer offset");
-    }
+    const int64_t dpuMemOffset =
+        llvm::cast<cnm::AllocOp>(op.getBuffer().getDefiningOp())
+            ->getAttrOfType<IntegerAttr>(BUFFER_OFFSET_ATTR)
+            .getInt();
 
     rewriter.create<upmem::GatherOp>(op->getLoc(), outputBuf, dpuMemOffset,
                                      transferCount, op.getGatherMap(),
@@ -359,7 +341,7 @@ struct ConvertCnmTerminatorToUPMEM
   }
 };
 
-} // namespace cnmtoupmem
+} // namespace
 
 void populateCnmToUPMEMFinalTypeConversions(TypeConverter &typeConverter) {
   typeConverter.addConversion([&](cnm::WorkgroupType wgType) -> Type {
@@ -367,22 +349,15 @@ void populateCnmToUPMEMFinalTypeConversions(TypeConverter &typeConverter) {
                                            wgType.getShape());
   });
 
-  typeConverter.addConversion([&](cnm::BufferType bufferType) -> Type {
-    return cnmtoupmem::convertCnmBufferToMemRefType(bufferType);
-  });
-
   typeConverter.addConversion([](ShapedType st) -> Type { return st; });
 }
 
 void populateCnmToUPMEMConversionPatterns(TypeConverter &typeConverter,
                                           RewritePatternSet &patterns) {
-  patterns.add<cnmtoupmem::ConvertCnmWorkgroupToUPMEM,
-               cnmtoupmem::ConvertCnmAllocToUPMEM, ConvertCnmSetZeroToAffine,
-               cnmtoupmem::ConvertCnmScatterToUPMEM,
-               cnmtoupmem::ConvertCnmGatherToUPMEM,
-               cnmtoupmem::ConvertCnmLaunchToUPMEM,
-               cnmtoupmem::ConvertCnmTerminatorToUPMEM>(typeConverter,
-                                                        patterns.getContext());
+  patterns.add<ConvertCnmWorkgroupToUPMEM, ConvertCnmSetZeroToAffine,
+               ConvertCnmScatterToUPMEM, ConvertCnmGatherToUPMEM,
+               ConvertCnmLaunchToUPMEM, ConvertCnmTerminatorToUPMEM>(
+      typeConverter, patterns.getContext());
 }
 
 struct ConvertCnmToUPMEMPass
@@ -405,7 +380,9 @@ struct ConvertCnmToUPMEMPass
 
     ConversionTarget target(getContext());
     target.addIllegalDialect<cnm::CnmDialect>();
-    target.addIllegalDialect<bufferization::BufferizationDialect>();
+    // alloc ops are deleted in second pass
+    target.addLegalOp<cnm::AllocOp>();
+    // target.addIllegalDialect<bufferization::BufferizationDialect>();
 
     target.markUnknownOpDynamicallyLegal([](Operation *) { return true; });
 
@@ -413,6 +390,8 @@ struct ConvertCnmToUPMEMPass
             applyFullConversion(getOperation(), target, std::move(patterns)))) {
       signalPassFailure();
     }
+
+    getOperation()->walk([](cnm::AllocOp op) { op->erase(); });
   }
 };
 

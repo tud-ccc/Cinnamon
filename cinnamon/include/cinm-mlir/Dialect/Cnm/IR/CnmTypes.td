@@ -55,6 +55,14 @@ def BufferType : Cnm_Type<"Buffer", [ShapedTypeInterface]> {
       auto shape = newShape.value_or(getShape());
       return BufferType::get(getContext(), shape, elementType, getWorkgroupShape(), getLevel());
     }
+    int64_t getItemCount() {
+      auto bufShape = getShape();
+      return bufShape.empty() ? 1 : mlir::computeProduct(bufShape);
+    }
+
+    int64_t getSizeInBytes() {
+      return getItemCount() * getElementTypeBitWidth() / 8;
+    }
   }];
 }
 

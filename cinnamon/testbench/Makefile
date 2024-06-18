@@ -64,4 +64,4 @@ $(OUT_DIR)/bin/host: $(IR_PREFIX).host.o $(IR_PREFIX).dpu.c hostlib.o
 $(BENCH_NAME): $(IR_PREFIX).host.ll $(IR_PREFIX).dpu.c
 
 clean:
-	rm -rf $(OUT_DIR)/generated2/ hostlib.o
+	rm -rf $(OUT_DIR) hostlib.o
