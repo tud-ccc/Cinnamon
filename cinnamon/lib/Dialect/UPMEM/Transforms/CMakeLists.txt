@@ -1,5 +1,6 @@
 add_mlir_dialect_library(UPMEMTransforms
     OutlineFunction.cpp
+    DedupKernels.cpp
 
 DEPENDS
     UPMEMIncGen
@@ -7,8 +8,5 @@ DEPENDS
 
 LINK_LIBS PUBLIC
     MLIRIR
-    MLIRLLVMDialect
-    MLIRAffineDialect
-    MLIRLinalgDialect
     MLIRTransformUtils
 )

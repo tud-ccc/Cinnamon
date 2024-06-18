@@ -41,13 +41,11 @@ int main(int argc, char *argv[]) {
   registerAllPasses();
   registerCinmConversionPasses();
   registerCnmConversionPasses();
-  cnm::registerCnmSPIRVAttachKernelEntryPointAttributePass();
-  cnm::registerCnmSPIRVAttachTargetAttributePass();
-  cnm::registerCnmBufferizePass();
   cnm::registerCnmBufferizationExternalModels(registry);
-  cinm::registerCinmTilingPass();
+  cnm::registerCnmTransformsPasses();
+  cinm::registerCinmTransformsPasses();
 
-  registerUPMEMOutlineKernelPass();
+  registerUPMEMTransformsPasses();
   registerUPMEMConversionPasses();
 
   return asMainReturnCode(
