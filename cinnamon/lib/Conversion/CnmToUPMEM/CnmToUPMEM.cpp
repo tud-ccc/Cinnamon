@@ -45,56 +45,6 @@ MemRefType convertTensorToMemref(ShapedType ty) {
   return MemRefType::get(ty.getShape(), ty.getElementType());
 }
 
-MemRefType convertCnmBufferToMemRefType(cnm::BufferType bufferType) {
-  SmallVector<int64_t, 3> shape{bufferType.getWorkgroupShape().take_front(2)};
-  const int64_t perDPUMemory =
-      reduceMul(bufferType.getWorkgroupShape().drop_front(2)) *
-      reduceMul(bufferType.getShape());
-  shape.push_back(perDPUMemory);
-  return MemRefType::get(shape, bufferType.getElementType());
-}
-
-AffineMap getElementToMRAMOffsetAffineMap(MLIRContext *ctx,
-                                          size_t chunksPerTasklet,
-                                          ArrayRef<int64_t> chunkShape) {
-  AffineExpr result;
-  size_t dimCount = 0;
-  if (chunksPerTasklet == 1) {
-    result = getAffineDimExpr(dimCount++, ctx) * reduceMul(chunkShape);
-  } else {
-    result = getAffineDimExpr(dimCount++, ctx) * reduceMul(chunkShape) *
-             chunksPerTasklet;
-    result = result + getAffineDimExpr(dimCount++, ctx) * reduceMul(chunkShape);
-  }
-
-  for (size_t i = 1; i <= chunkShape.size(); i++) {
-    result = result + getAffineDimExpr(dimCount++, ctx) *
-                          reduceMul(chunkShape.drop_front(i));
-  }
-
-  return AffineMap::get(dimCount, 0, result);
-}
-
-AffineMap getMRAMOffsetToElementAffineMap(MLIRContext *ctx,
-                                          size_t chunksPerTasklet,
-                                          ArrayRef<int64_t> chunkShape) {
-  SmallVector<AffineExpr> exprs;
-  const AffineExpr offset = getAffineDimExpr(0, ctx);
-
-  if (chunksPerTasklet == 1) {
-    exprs.push_back(offset.floorDiv(reduceMul(chunkShape)));
-  } else {
-    exprs.push_back(offset.floorDiv(reduceMul(chunkShape) * chunksPerTasklet));
-    exprs.push_back(offset.floorDiv(reduceMul(chunkShape)) % chunksPerTasklet);
-  }
-
-  for (size_t i = 0; i < chunkShape.size(); i++) {
-    exprs.push_back(offset.floorDiv(reduceMul(chunkShape.drop_front(i + 1))) %
-                    chunkShape[i]);
-  }
-  return AffineMap::get(1, 0, {exprs}, ctx);
-}
-
 static const StringRef BUFFER_OFFSET_ATTR = "upmem.bufferOffset";
 struct ConvertCnmWorkgroupToUPMEM
     : public OpConversionPattern<cnm::WorkgroupOp> {
