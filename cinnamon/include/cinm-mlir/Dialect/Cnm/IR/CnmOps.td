@@ -107,7 +107,7 @@ def LaunchOp: Cnm_Op<"launch", [AttrSizedOperandSegments, IsolatedFromAbove, Sin
     let description = [{}];
 
     let arguments = (ins WorkgroupType:$wg, Variadic<BufferType>:$inBuffers, Variadic<BufferType>:$outBuffers);
-    let results = (outs LaunchTokenType:$token);
+    let results = (outs);
     let regions = (region SizedRegion<1>:$body);
 
     let hasVerifier = 1;
@@ -123,7 +123,7 @@ def LaunchOp: Cnm_Op<"launch", [AttrSizedOperandSegments, IsolatedFromAbove, Sin
 }
 
 def TerminatorOp: Cnm_Op<"terminator", [Terminator]> {
-    let summary = "";
+    let summary = "Terminates an `upmem.launch` operator region.";
     let description = [{}];
 
     let arguments = (ins);

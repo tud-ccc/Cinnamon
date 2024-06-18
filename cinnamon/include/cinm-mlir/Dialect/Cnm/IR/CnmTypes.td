@@ -66,19 +66,5 @@ def BufferType : Cnm_Type<"Buffer", [ShapedTypeInterface]> {
   }];
 }
 
-def ScatterTokenType : Cnm_Type<"ScatterToken"> {
-  let mnemonic = "scatter_token";
-  let summary = "";
-}
-
-def GatherTokenType : Cnm_Type<"GatherToken"> {
-  let mnemonic = "gather_token";
-  let summary = "";
-}
-
-def LaunchTokenType : Cnm_Type<"LaunchToken"> {
-  let mnemonic = "launch_token";
-  let summary = "";
-}
 
 #endif
