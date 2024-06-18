@@ -307,14 +307,14 @@ struct ConvertCnmTerminatorToGPU
 };
 } // namespace cnmtogpu
 
-void populateCnmToGPUFinalTypeConversions(LLVMTypeConverter &typeConverter) {
+void populateCnmToGPUFinalTypeConversions(TypeConverter &typeConverter) {
   typeConverter.addConversion(
       [&](cnm::BufferType bufferType) -> std::optional<Type> {
         return cnmtogpu::convertCnmBufferToMemRefType(bufferType);
       });
 }
 
-void populateCnmToGPUConversionPatterns(LLVMTypeConverter &typeConverter,
+void populateCnmToGPUConversionPatterns(TypeConverter &typeConverter,
                                         RewritePatternSet &patterns) {
   patterns
       .add<cnmtogpu::ConvertCnmWorkgroupToGPU, cnmtogpu::ConvertCnmAllocToGPU,
@@ -326,7 +326,7 @@ void populateCnmToGPUConversionPatterns(LLVMTypeConverter &typeConverter,
 struct ConvertCnmToGPUPass
     : public ::impl::ConvertCnmToGPUPassBase<ConvertCnmToGPUPass> {
   void runOnOperation() final {
-    LLVMTypeConverter converter(&getContext());
+    TypeConverter converter(&getContext());
     populateCnmToGPUFinalTypeConversions(converter);
     const auto addUnrealizedCast = [](OpBuilder &builder, Type type,
                                       ValueRange inputs, Location loc) {
