@@ -48,7 +48,7 @@ module {
     return
   }
   upmem.module @va_8_dpu{
-    upmem.func @main() kernel {
+    upmem.func @main() {
       %0 = upmem.tasklet_id : index
       %c16 = arith.constant 16 : index
       %1 = upmem.dpu_heap_base_addr : index
@@ -108,7 +108,7 @@ module {
     return
   }
   upmem.module @va_16_dpu{
-    upmem.func @main() kernel {
+    upmem.func @main() {
       %0 = upmem.tasklet_id : index
       %c16 = arith.constant 16 : index
       %1 = upmem.dpu_heap_base_addr : index
