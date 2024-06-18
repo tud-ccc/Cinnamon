@@ -10,7 +10,9 @@
 #include <llvm/ADT/ArrayRef.h>
 #include <llvm/ADT/SmallVector.h>
 #include <llvm/ADT/StringRef.h>
+#include <llvm/ADT/Twine.h>
 #include <llvm/IR/Constants.h>
+#include <llvm/Support/Casting.h>
 #include <mlir/Conversion/LLVMCommon/LoweringOptions.h>
 #include <mlir/Conversion/LLVMCommon/TypeConverter.h>
 #include <mlir/Dialect/Affine/IR/AffineOps.h>
@@ -22,11 +24,13 @@
 #include <mlir/Dialect/Utils/IndexingUtils.h>
 #include <mlir/IR/AffineExpr.h>
 #include <mlir/IR/AffineMap.h>
+#include <mlir/IR/Builders.h>
 #include <mlir/IR/BuiltinOps.h>
 #include <mlir/IR/BuiltinTypeInterfaces.h>
 #include <mlir/IR/BuiltinTypes.h>
 #include <mlir/IR/Diagnostics.h>
 #include <mlir/IR/ImplicitLocOpBuilder.h>
+#include <mlir/IR/Location.h>
 #include <mlir/IR/SymbolTable.h>
 #include <mlir/IR/TypeRange.h>
 #include <mlir/IR/ValueRange.h>
@@ -59,6 +63,29 @@ static LLVM::LLVMPointerType functionPtrTy(Type resultTy, ArrayRef<Type>) {
 static Value reifyAsIndex(ImplicitLocOpBuilder &builder,
                           LLVMTypeConverter const *converter, int64_t value) {
   return builder.create<LLVM::ConstantOp>(converter->getIndexType(), value);
+}
+
+static LLVM::GlobalOp
+declareStringConstant(ModuleOp moduleOp, Location loc, StringRef value,
+                      bool zeroTerminated = true,
+                      std::optional<StringRef> globalName = std::nullopt) {
+  llvm::SmallString<20> str(value);
+  if (zeroTerminated)
+    str.push_back('\0'); // Null terminate for C
+
+  OpBuilder rewriter(moduleOp->getContext());
+  auto globalType =
+      LLVM::LLVMArrayType::get(rewriter.getI8Type(), str.size_in_bytes());
+  ConversionPatternRewriter::InsertionGuard guard(rewriter);
+  auto twine = llvm::Twine("const", value);
+  StringRef globalName2 = globalName.value_or(twine.str());
+  LLVM::GlobalOp global = rewriter.create<LLVM::GlobalOp>(
+      loc, globalType,
+      /*isConstant=*/true, LLVM::Linkage::Private, globalName2,
+      rewriter.getStringAttr(str),
+      /*allignment=*/0);
+  SymbolTable(moduleOp).insert(global);
+  return global;
 }
 
 // TODO these two functions are duplicated from CinmToCnm.cpp, share them
@@ -185,9 +212,30 @@ public:
   explicit AllocDPUOpToFuncCallLowering(LLVMTypeConverter &lowering)
       : ConvertOpToLLVMPattern<upmem::AllocDPUsOp>(lowering) {}
 
+  FailureOr<Value>
+  createConstantForDpuProgramName(ConversionPatternRewriter &rewriter,
+                                  upmem::AllocDPUsOp op) const {
+
+    StringRef dpuProgramName;
+    for (auto user : op->getUsers()) {
+      if (auto launch = llvm::dyn_cast_or_null<upmem::LaunchFuncOp>(user)) {
+        if (!dpuProgramName.empty() && dpuProgramName != launch.getKernelName())
+          return op->emitError(
+              "has several upmem.launch_func op with a different kernel");
+        dpuProgramName = launch.getKernelName();
+      }
+    }
+    if (dpuProgramName.empty())
+      return op->emitError("has no upmem.launch_func op");
+
+    LLVM::GlobalOp constant = declareStringConstant(
+        op->getParentOfType<ModuleOp>(), op->getLoc(), dpuProgramName);
+    Value result = rewriter.create<LLVM::AddressOfOp>(op->getLoc(), constant);
+    return success(result);
+  }
+
   LogicalResult
-  matchAndRewrite(upmem::AllocDPUsOp op,
-                  typename upmem::AllocDPUsOp::Adaptor,
+  matchAndRewrite(upmem::AllocDPUsOp op, typename upmem::AllocDPUsOp::Adaptor,
                   ConversionPatternRewriter &rewriter) const override {
     const ArrayRef<int64_t> hierarchyShape =
         op.getResult().getType().getShape();
@@ -196,13 +244,22 @@ public:
     const Value dpuCount = rewriter.create<LLVM::ConstantOp>(
         op.getLoc(), rewriter.getI32IntegerAttr(hierarchyShape[1]));
 
-    // struct dpu_set_t *upmemrt_dpu_alloc(int32_t num_ranks, int32_t num_dpus);
+    const auto maybeFailed = createConstantForDpuProgramName(rewriter, op);
+    if (failed(maybeFailed))
+      return failure();
+    const Value dpuProgramPath = *maybeFailed;
+
+    // struct dpu_set_t *upmemrt_dpu_alloc(int32_t num_ranks, int32_t
+    // num_dpus);
     Type resultType = LLVM::LLVMPointerType::get(rewriter.getContext(), 0);
     LLVM::LLVMFuncOp funcOp =
         appendOrGetFuncOp("upmemrt_dpu_alloc", resultType,
-                          {rewriter.getI32Type(), rewriter.getI32Type()}, op);
-    rewriter.replaceOpWithNewOp<LLVM::CallOp>(op, funcOp,
-                                              ValueRange{rankCount, dpuCount});
+                          {rewriter.getI32Type(), rewriter.getI32Type(),
+                           untypedPtrType(getContext())},
+                          op);
+
+    rewriter.replaceOpWithNewOp<LLVM::CallOp>(
+        op, funcOp, ValueRange{rankCount, dpuCount, dpuProgramPath});
     return success();
   }
 };
@@ -234,8 +291,8 @@ outlineAffineMap(ImplicitLocOpBuilder &rewriter,
     return existingOp;
 
   auto affineMapFun = rewriter.create<LLVM::LLVMFuncOp>(
-      mlir::getUniqueFunctionName(SymbolTable(moduleOp), "scatter_map_"), affineFunTy,
-      LLVM::Linkage::Private);
+      mlir::getUniqueFunctionName(SymbolTable(moduleOp), "scatter_map_"),
+      affineFunTy, LLVM::Linkage::Private); 
 
   // to find it later
   affineMapFun->setAttr("upmem.generated_from", AffineMapAttr::get(linearMap));

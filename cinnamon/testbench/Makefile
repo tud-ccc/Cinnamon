@@ -62,7 +62,7 @@ $(OUT_DIR)/bin/host: $(IR_PREFIX).host.o $(IR_PREFIX).dpu.c
 	clang++ -g apps/$(BENCH_NAME).cpp $(IR_PREFIX).host.o -lUpmemDialectRuntime -fPIE -ldpu -ldpuverbose -L${UPMEM_HOME}/lib -L../build/lib -I${UPMEM_HOME}/include/dpu -o $@
 
 # $(BENCH_NAME): $(OUT_DIR)/bin/host $(OUT_DIR)/bin/dpu
-$(BENCH_NAME): $(IR_PREFIX).host.ll $(IR_PREFIX).dpu.c
+$(BENCH_NAME): $(IR_PREFIX).host.opt.ll $(IR_PREFIX).dpu.c
 
 clean:
 	rm -rf $(OUT_DIR) hostlib.o
