@@ -58,7 +58,8 @@ void finalEvaluation(){
 	DIMSIZE = 65536;
 	dimm = 4;
 	iter = 1;
-	m_size = 65536;
+//m_size = 65536;
+	m_size = 128;
 	n_size = 128;
 	printf("Non-opt %d\n", dimm);
 	executeGEMV(OPT, DIMSIZE, iter, m_size, n_size,dimm, simulation, reps, warmup);
@@ -77,8 +78,8 @@ void finalEvaluation(){
 	DIMSIZE = 65536;
 	dimm = 8;
 	iter = 1;
+	m_size = 128;
 	m_size = 32768;
-	n_size = 128;
 	printf("Non-opt %d\n", dimm);
 	executeGEMV(OPT, DIMSIZE, iter, m_size, n_size,dimm, simulation, reps, warmup);
 
@@ -114,11 +115,6 @@ void finalEvaluation(){
 } 
 
 void executeGEMV(int funcType, int DIMSIZE, int iter, int m, int n, int dimm, int simulation, unsigned int n_reps, unsigned int n_warmup){
-	if(funcType == NOOPT){
-		printf("\nNo-opt");
-	} else {
-		printf("\nopt");
-	}
 
 	uint32_t dpu_per_dimm = 128;
 
