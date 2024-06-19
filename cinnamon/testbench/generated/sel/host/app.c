@@ -31,15 +31,15 @@ void execute(int iter, int input_size, int dimm, int simulation, unsigned int n_
 
 
 int main(int argc, char **argv) {
-    // unsigned int reps = 3;
-	// unsigned int warmup = 3;
+    unsigned int reps = 3;
+	unsigned int warmup = 3;
 
-	// uint32_t simulation = 0;
+	uint32_t simulation = 0;
 
-    unsigned int reps = 1;
-	unsigned int warmup = 0;
+    // unsigned int reps = 1;
+	// unsigned int warmup = 0;
 
-	uint32_t simulation = 1;
+	// uint32_t simulation = 1;
 
     int dimm;
     int iter;
