@@ -120,8 +120,6 @@ void executeGEMV(int funcType, int DIMSIZE, int iter, int m, int n, int dimm, in
 		printf("\nopt");
 	}
 
-	printf(" DIMSIZE %d dimm %d iter %d m_size %d n_size %d\n", DIMSIZE, dimm, iter, m, n);
-
 	uint32_t dpu_per_dimm = 128;
 
 	uint32_t allocate_this_dpus = dpu_per_dimm * dimm;
