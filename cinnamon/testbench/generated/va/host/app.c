@@ -134,7 +134,7 @@ void executeVecadd(int iter, int m, int dimm, int simulation, unsigned int n_rep
 		DPU_FOREACH(dpu_set, dpu, i) {
 			input_args[i].m_size = m;
 			input_args[i].buffer_size = buffer_size;
-			DPU_ASSERT(dpu_prepare_xfer(dpu, input_args+ i * 32 * sizeof(T)));
+			DPU_ASSERT(dpu_prepare_xfer(dpu, input_args));
 		}
 
 		DPU_ASSERT(dpu_push_xfer(dpu_set, DPU_XFER_TO_DPU, "DPU_INPUT_ARGUMENTS", 0, sizeof(dpu_arguments_t), DPU_XFER_DEFAULT));
@@ -158,7 +158,7 @@ void executeVecadd(int iter, int m, int dimm, int simulation, unsigned int n_rep
 		{
 			start(&timer, 2, rep - n_warmup);
 		}
-		for (int x = 0 ; x < 2; x++)
+		for (int x = 0 ; x < iter; x++)
 			DPU_ASSERT(dpu_launch(dpu_set, DPU_SYNCHRONOUS));
 
 		if (rep >= n_warmup)
@@ -184,7 +184,6 @@ void executeVecadd(int iter, int m, int dimm, int simulation, unsigned int n_rep
 	}
 	free(A);
 	free(B);
-	free(C);
 
 
 	print(&timer, 2, n_reps);

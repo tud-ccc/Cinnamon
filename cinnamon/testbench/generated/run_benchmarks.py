@@ -30,11 +30,14 @@ def run(bench):
 
 numbers = {}          
 benchmarks = ["1mm", "2mm", "3mm", "hst", "va", "red", "sel", "mv"]            
+# benchmarks = ["red", "sel", "mv", "hst", "va"]
 for bench in benchmarks:
+    print(bench)
     numbers[bench] = run(bench)
 
 f = open("runtime.txt", "w")
 dimm_counts = [4, 8, 16]
+print(numbers)
 for bench in benchmarks:
     f.write(bench + " ")
     for dimm_count in dimm_counts:
@@ -46,4 +49,3 @@ for bench in benchmarks:
      
 f.close()
 
-print(numbers)
