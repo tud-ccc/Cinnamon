@@ -29,8 +29,8 @@ def run(bench):
     return results
 
 numbers = {}          
-benchmarks = ["1mm", "2mm", "3mm", "hst", "va"]            
-# benchmarks = ["va", "hst"]            
+benchmarks = ["1mm", "2mm", "3mm", "hst", "va", "red", "sel"]            
+# benchmarks = ["sel"]            
 for bench in benchmarks:
     numbers[bench] = run(bench)
 
