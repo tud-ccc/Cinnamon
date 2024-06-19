@@ -741,6 +741,7 @@ static LogicalResult printOperation(CppEmitter &emitter,
   os << "// UPMEM-TRANSLATE: ";
   for (auto kernel : kernels) {
     printCompilationVar(kernel, os);
+    os << ":" << kernel.getNumTasklets();
     os << ";";
   }
 
