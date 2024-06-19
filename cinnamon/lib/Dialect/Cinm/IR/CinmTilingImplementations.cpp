@@ -93,11 +93,10 @@ SmallVector<Value> GemmOp::convertToTiledOps(OpBuilder &builder,
       [&, p0, p1](OpBuilder &builder, Location loc, ValueRange indices,
                   ValueRange iterArgs) -> SmallVector<Value> {
         const auto parIndices = indices;
-        const ArrayRef<int64_t> unitStrides{1, 1};
-        const ArrayRef<int64_t> noStaticOffsets{ShapedType::kDynamic,
-                                                ShapedType::kDynamic};
+        static const ArrayRef<int64_t> unitStrides{1, 1};
+        static const ArrayRef<int64_t> noStaticOffsets{ShapedType::kDynamic,
+                                                       ShapedType::kDynamic};
 
-        const ArrayRef<int64_t> resultOffsets = noStaticOffsets;
         const ArrayRef<int64_t> resultSizes {p0, p1};
         const ValueRange resultDynamicOffsets = parIndices;
 
@@ -143,7 +142,7 @@ SmallVector<Value> GemmOp::convertToTiledOps(OpBuilder &builder,
 
         const Value result = builder.create<tensor::InsertSliceOp>(
             loc, reductionResult[0], iterArgs[0], resultDynamicOffsets,
-            ValueRange{}, ValueRange{}, resultOffsets, resultSizes,
+            ValueRange{}, ValueRange{}, noStaticOffsets, resultSizes,
             unitStrides);
         return {result};
       });
