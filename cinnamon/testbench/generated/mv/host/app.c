@@ -58,48 +58,28 @@ void finalEvaluation(){
 	DIMSIZE = 65536;
 	dimm = 4;
 	iter = 1;
-	m_size = 128;
-	n_size = 65536;
+	m_size = 65536;
+	n_size = 128;
+	printf("Non-opt %d\n", dimm);
 	executeGEMV(OPT, DIMSIZE, iter, m_size, n_size,dimm, simulation, reps, warmup);
 
 	// DIMM 4 opt
 	DIMSIZE = 65536;
 	dimm = 4;
 	iter = 1;
-	m_size = 8192;
-	n_size = 1024;
+	m_size = 128;
+	n_size = 65536;
+	printf("Opt %d\n", dimm);
 	executeGEMV(OPT, DIMSIZE, iter, m_size, n_size,dimm, simulation, reps, warmup);
 
-	// DIMM 8 opt
-	DIMSIZE = 65536;
-	dimm = 8;
-	iter = 1;
-	m_size = 16384;
-	n_size = 512;
-	executeGEMV(OPT, DIMSIZE, iter, m_size, n_size,dimm, simulation, reps, warmup);
 
-	// DIMM 8 opt
+	// DIMM 8 Non-opt
 	DIMSIZE = 65536;
 	dimm = 8;
 	iter = 1;
 	m_size = 32768;
-	n_size = 256;
-	executeGEMV(OPT, DIMSIZE, iter, m_size, n_size,dimm, simulation, reps, warmup);
-
-	// DIMM 8 opt
-	DIMSIZE = 65536;
-	dimm = 8;
-	iter = 1;
-	m_size = 65536;
 	n_size = 128;
-	executeGEMV(OPT, DIMSIZE, iter, m_size, n_size,dimm, simulation, reps, warmup);
-
-	// DIMM 8 opt
-	DIMSIZE = 65536;
-	dimm = 8;
-	iter = 1;
-	m_size = 64;
-	n_size = 65536;
+	printf("Non-opt %d\n", dimm);
 	executeGEMV(OPT, DIMSIZE, iter, m_size, n_size,dimm, simulation, reps, warmup);
 
 	// DIMM 8 opt
@@ -108,151 +88,27 @@ void finalEvaluation(){
 	iter = 1;
 	m_size = 128;
 	n_size = 32768;
-	executeGEMV(OPT, DIMSIZE, iter, m_size, n_size,dimm, simulation, reps, warmup);
-
-	// DIMM 8 opt
-	DIMSIZE = 65536;
-	dimm = 8;
-	iter = 1;
-	m_size = 256;
-	n_size = 16384;
-	executeGEMV(OPT, DIMSIZE, iter, m_size, n_size,dimm, simulation, reps, warmup);
-
-	// DIMM 8 opt
-	DIMSIZE = 65536;
-	dimm = 8;
-	iter = 1;
-	m_size = 512;
-	n_size = 8192;
-	executeGEMV(OPT, DIMSIZE, iter, m_size, n_size,dimm, simulation, reps, warmup);
-
-	// DIMM 8 opt
-	DIMSIZE = 65536;
-	dimm = 8;
-	iter = 1;
-	m_size = 1024;
-	n_size = 4096;
-	executeGEMV(OPT, DIMSIZE, iter, m_size, n_size,dimm, simulation, reps, warmup);
-
-	// DIMM 8 opt
-	DIMSIZE = 65536;
-	dimm = 8;
-	iter = 1;
-	m_size = 2048;
-	n_size = 2048;
-	executeGEMV(OPT, DIMSIZE, iter, m_size, n_size,dimm, simulation, reps, warmup);
-
-	// DIMM 8 opt
-	DIMSIZE = 65536;
-	dimm = 8;
-	iter = 1;
-	m_size = 4096;
-	n_size = 1024;
-	executeGEMV(OPT, DIMSIZE, iter, m_size, n_size,dimm, simulation, reps, warmup);
-
-	// DIMM 8 opt
-	DIMSIZE = 65536;
-	dimm = 8;
-	iter = 1;
-	m_size = 8192;
-	n_size = 512;
-	executeGEMV(OPT, DIMSIZE, iter, m_size, n_size,dimm, simulation, reps, warmup);
-
-	// DIMM 8 opt
-	DIMSIZE = 65536;
-	dimm = 8;
-	iter = 1;
-	m_size = 16384;
-	n_size = 256;
-	executeGEMV(OPT, DIMSIZE, iter, m_size, n_size,dimm, simulation, reps, warmup);
-
-	// DIMM 8 opt
-	DIMSIZE = 65536;
-	dimm = 8;
-	iter = 1;
-	m_size = 32768;
-	n_size = 128;
+	printf("Opt %d\n", dimm);
 	executeGEMV(OPT, DIMSIZE, iter, m_size, n_size,dimm, simulation, reps, warmup);
 
 
-	// DIMM 16 opt
+	// DIMM 16 Non-opt
 	DIMSIZE = 65536;
-	dimm = 11;
-	iter = 1;
-	m_size = 32;
-	n_size = 65536;
-	executeGEMV(OPT, DIMSIZE, iter, m_size, n_size,dimm, simulation, reps, warmup);
-
-	// DIMM 16 opt
-	DIMSIZE = 65536;
-	dimm = 11;
-	iter = 1;
-	m_size = 64;
-	n_size = 32768;
-	executeGEMV(OPT, DIMSIZE, iter, m_size, n_size,dimm, simulation, reps, warmup);
-
-	// DIMM 16 opt
-	DIMSIZE = 65536;
-	dimm = 11;
+	dimm = 16;
 	iter = 1;
 	m_size = 128;
 	n_size = 16384;
+	printf("Non-opt %d\n", dimm);
 	executeGEMV(OPT, DIMSIZE, iter, m_size, n_size,dimm, simulation, reps, warmup);
+
 
 	// DIMM 16 opt
 	DIMSIZE = 65536;
-	dimm = 11;
+	dimm = 16;
 	iter = 1;
-	m_size = 256;
-	n_size = 8192;
-	executeGEMV(OPT, DIMSIZE, iter, m_size, n_size,dimm, simulation, reps, warmup);
-
-	// DIMM 16 opt
-	DIMSIZE = 65536;
-	dimm = 11;
-	iter = 1;
-	m_size = 512;
-	n_size = 4096;
-	executeGEMV(OPT, DIMSIZE, iter, m_size, n_size,dimm, simulation, reps, warmup);
-
-	// DIMM 16 opt
-	DIMSIZE = 65536;
-	dimm = 11;
-	iter = 1;
-	m_size = 1024;
-	n_size = 2048;
-	executeGEMV(OPT, DIMSIZE, iter, m_size, n_size,dimm, simulation, reps, warmup);
-
-	// DIMM 16 opt
-	DIMSIZE = 65536;
-	dimm = 11;
-	iter = 1;
-	m_size = 2048;
-	n_size = 1024;
-	executeGEMV(OPT, DIMSIZE, iter, m_size, n_size,dimm, simulation, reps, warmup);
-
-	// DIMM 16 opt
-	DIMSIZE = 65536;
-	dimm = 11;
-	iter = 1;
-	m_size = 4096;
-	n_size = 512;
-	executeGEMV(OPT, DIMSIZE, iter, m_size, n_size,dimm, simulation, reps, warmup);
-
-	// DIMM 16 opt
-	DIMSIZE = 65536;
-	dimm = 11;
-	iter = 1;
-	m_size = 8192;
-	n_size = 256;
-	executeGEMV(OPT, DIMSIZE, iter, m_size, n_size,dimm, simulation, reps, warmup);
-
-	// DIMM 16 opt
-	DIMSIZE = 65536;
-	dimm = 11;
-	iter = 1;
-	m_size = 16384;
-	n_size = 128;
+	m_size = 128;
+	n_size = 16384;
+	printf("Opt %d\n", dimm);
 	executeGEMV(OPT, DIMSIZE, iter, m_size, n_size,dimm, simulation, reps, warmup);
 
 } 
