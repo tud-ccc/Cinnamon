@@ -622,6 +622,11 @@ static LogicalResult printOperation(CppEmitter &emitter, ModuleOp moduleOp) {
   return success();
 }
 
+static LogicalResult printFwdDeclaration(CppEmitter &emitter,
+                                         upmem::UPMEMFuncOp functionOp) {
+  emitter.ostream() << "void " << functionOp.getSymName() << "();\n";
+  return success();
+}
 static LogicalResult printOperation(CppEmitter &emitter,
                                     upmem::UPMEMFuncOp functionOp) {
   // We need to declare variables at top if the function has multiple blocks.
@@ -636,7 +641,7 @@ static LogicalResult printOperation(CppEmitter &emitter,
   // if (failed(emitter.emitTypes(functionOp.getLoc(),
   //  functionOp.getFunctionType().getResults())))
   // return failure();
-  os << "int " << functionOp.getName();
+  os << "void " << functionOp.getName();
 
   os << "(";
   if (failed(interleaveCommaWithError(
@@ -713,8 +718,6 @@ static LogicalResult printOperation(CppEmitter &emitter,
 
 static LogicalResult printOperation(CppEmitter &emitter,
                                     upmem::ReturnOp returnOp) {
-  raw_ostream &os = emitter.ostream();
-  os << "return 0";
   return success();
 }
 
@@ -742,11 +745,18 @@ static LogicalResult printOperation(CppEmitter &emitter,
   for (auto kernel : kernels) {
     printCompilationVar(kernel, os);
     os << ":" << kernel.getNumTasklets();
+    os << ":" << kernel.getSymName(); // name of the binary
     os << ";";
   }
 
   os << "\n\n";
   os << "#include \"dpu_lib.h\"\n\n";
+
+  for (auto kernel : kernels) {
+    printFwdDeclaration(emitter, kernel);
+  }
+  os << "\n";
+
   os << "int main(void) {\n";
   os << "  init_tasklet();\n";
   for (auto kernel : kernels) {

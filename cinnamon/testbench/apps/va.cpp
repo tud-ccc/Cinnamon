@@ -12,7 +12,7 @@ void va_16(int32_t *, int32_t *);
 #define BENCH_VA(ty, M, N, fun_name)                                           \
   do {                                                                         \
     ty *A = init_matrix<ty, M, N>();                                           \
-    ty *B = init_matrix<ty, N, N>();                                           \
+    ty *B = init_matrix<ty, M, N>();                                           \
     DO_BENCH(REPS, WARMUP, fun_name(A, B));                                    \
     free(A);                                                                   \
     free(B);                                                                   \

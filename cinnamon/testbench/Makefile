@@ -2,7 +2,7 @@
 
 BENCH_NAME ?= va
 .DEFAULT_GOAL := $(BENCH_NAME)
-.PHONY: $(BENCH_NAME) clean
+.PHONY: $(BENCH_NAME) $(BENCH_NAME)-kernel-compile clean
 
 OUT_DIR=generated2/$(BENCH_NAME)
 OUT_DIR_IR=$(OUT_DIR)/irs
@@ -50,11 +50,9 @@ $(IR_PREFIX).host.opt.ll: $(IR_PREFIX).host.ll
 $(IR_PREFIX).host.o: $(IR_PREFIX).host.opt.ll
 	$(CLANG_18_BASE)/llc -O3 $< -o $@ -filetype=obj -relocation-model=pic
 
-# DPU kernel executable
-$(OUT_DIR)/bin/dpu: $(IR_PREFIX).dpu.c
-	@mkdir -p $(@D)
-	cp lib/dpu/dpu_lib.h $(OUT_DIR)/irs
-	dpu-upmem-dpurte-clang $< -o $@
+# Compile all DPU kernel executables
+$(BENCH_NAME)-kernel-compile: $(IR_PREFIX).dpu.c
+	lib/compile_dpu.sh $< $(OUT_DIR)/bin
 
 # HOST executable
 $(OUT_DIR)/bin/host: $(IR_PREFIX).host.o $(IR_PREFIX).dpu.c
@@ -63,6 +61,8 @@ $(OUT_DIR)/bin/host: $(IR_PREFIX).host.o $(IR_PREFIX).dpu.c
 
 # $(BENCH_NAME): $(OUT_DIR)/bin/host $(OUT_DIR)/bin/dpu
 $(BENCH_NAME): $(IR_PREFIX).host.opt.ll $(IR_PREFIX).dpu.c
+
+$(BENCH_NAME)-exe: $(OUT_DIR)/bin/host $(BENCH_NAME)-kernel-compile
 
 clean:
 	rm -rf $(OUT_DIR) hostlib.o
