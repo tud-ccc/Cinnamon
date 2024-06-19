@@ -76,15 +76,15 @@ declareStringConstant(ModuleOp moduleOp, Location loc, StringRef value,
   OpBuilder rewriter(moduleOp->getContext());
   auto globalType =
       LLVM::LLVMArrayType::get(rewriter.getI8Type(), str.size_in_bytes());
-  ConversionPatternRewriter::InsertionGuard guard(rewriter);
   auto twine = llvm::Twine("const", value).str();
   StringRef globalName2 = globalName.value_or(twine);
+  SymbolTable table(moduleOp);
   LLVM::GlobalOp global = rewriter.create<LLVM::GlobalOp>(
       loc, globalType,
       /*isConstant=*/true, LLVM::Linkage::Private, globalName2,
       rewriter.getStringAttr(str),
       /*allignment=*/0);
-  SymbolTable(moduleOp).insert(global);
+  table.insert(global);
   return global;
 }
 
@@ -228,8 +228,9 @@ public:
     if (dpuProgramName.empty())
       return op->emitError("has no upmem.launch_func op");
 
-    LLVM::GlobalOp constant = declareStringConstant(
-        op->getParentOfType<ModuleOp>(), op->getLoc(), dpuProgramName);
+    LLVM::GlobalOp constant =
+        declareStringConstant(op->getParentOfType<ModuleOp>(), op->getLoc(),
+                              dpuProgramName, true, "dpu_program");
     Value result = rewriter.create<LLVM::AddressOfOp>(op->getLoc(), constant);
     return success(result);
   }
@@ -292,7 +293,7 @@ outlineAffineMap(ImplicitLocOpBuilder &rewriter,
 
   auto affineMapFun = rewriter.create<LLVM::LLVMFuncOp>(
       mlir::getUniqueFunctionName(SymbolTable(moduleOp), "scatter_map_"),
-      affineFunTy, LLVM::Linkage::Private); 
+      affineFunTy, LLVM::Linkage::Private);
 
   // to find it later
   affineMapFun->setAttr("upmem.generated_from", AffineMapAttr::get(linearMap));
@@ -541,19 +542,13 @@ struct ConvertUPMEMToLLVMPass
     converter.addSourceMaterialization(addUnrealizedCast);
     converter.addTargetMaterialization(addUnrealizedCast);
 
-    converter.addConversion([](RankedTensorType ty) -> std::optional<Type> {
-      return MemRefType::get(ty.getShape(), ty.getElementType());
-    });
-
     RewritePatternSet patterns(&getContext());
     populateFinalizeMemRefToLLVMConversionPatterns(converter, patterns);
     populateUPMEMToLLVMConversionPatterns(converter, patterns);
     populateReconcileUnrealizedCastsPatterns(patterns);
-    populateFinalBufferizationPatterns(patterns);
 
     ConversionTarget target(getContext());
     target.addIllegalDialect<upmem::UPMEMDialect>();
-    target.addIllegalDialect<bufferization::BufferizationDialect>();
 
     target.markUnknownOpDynamicallyLegal([](Operation *) { return true; });
 

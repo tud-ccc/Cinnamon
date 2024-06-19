@@ -6,7 +6,13 @@
 #include <mlir/Pass/Pass.h>
 
 namespace mlir::upmem {
+
+void populateUPMEMToLLVMFinalTypeConversions(LLVMTypeConverter &typeConverter);
+
 void populateUPMEMToLLVMConversionPatterns(LLVMTypeConverter &typeConverter,
-                                          RewritePatternSet &patterns);
+                                           RewritePatternSet &patterns);
+
 std::unique_ptr<Pass> createConvertUPMEMToLLVMPass();
+
+void registerConvertUpmemToLLvmInterface(DialectRegistry &registry);
 } // namespace mlir::upmem

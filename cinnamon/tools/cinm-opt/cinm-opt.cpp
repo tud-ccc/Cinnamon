@@ -7,6 +7,7 @@
 #include "cinm-mlir/Conversion/CinmPasses.h"
 #include "cinm-mlir/Conversion/CnmPasses.h"
 #include "cinm-mlir/Conversion/UPMEMPasses.h"
+#include "cinm-mlir/Conversion/UPMEMToLLVM/UPMEMToLLVM.h"
 #include "cinm-mlir/Dialect/Cinm/IR/CinmDialect.h"
 #include "cinm-mlir/Dialect/Cinm/Transforms/Passes.h"
 #include "cinm-mlir/Dialect/Cnm/IR/CnmDialect.h"
@@ -14,23 +15,17 @@
 #include "cinm-mlir/Dialect/UPMEM/IR/UPMEMDialect.h"
 #include "cinm-mlir/Dialect/UPMEM/Transforms/Passes.h"
 
-#include "llvm/Support/CommandLine.h"
-#include "llvm/Support/InitLLVM.h"
-#include "llvm/Support/SourceMgr.h"
-#include "llvm/Support/ToolOutputFile.h"
+#include <mlir/IR/DialectRegistry.h>
+#include <mlir/InitAllExtensions.h>
 
-#include "mlir/Dialect/LLVMIR/LLVMDialect.h"
-#include "mlir/IR/AsmState.h"
-#include "mlir/IR/Dialect.h"
 #include "mlir/IR/MLIRContext.h"
 #include "mlir/InitAllDialects.h"
 #include "mlir/InitAllPasses.h"
-#include "mlir/Pass/Pass.h"
-#include "mlir/Pass/PassManager.h"
 #include "mlir/Support/FileUtilities.h"
 #include "mlir/Tools/mlir-opt/MlirOptMain.h"
 
 using namespace mlir;
+
 
 int main(int argc, char *argv[]) {
   DialectRegistry registry;
@@ -39,11 +34,13 @@ int main(int argc, char *argv[]) {
   registry.insert<cinm::CinmDialect, cnm::CnmDialect, upmem::UPMEMDialect>();
 
   registerAllPasses();
+  registerAllExtensions(registry);
   registerCinmConversionPasses();
   registerCnmConversionPasses();
   cnm::registerCnmBufferizationExternalModels(registry);
   cnm::registerCnmTransformsPasses();
   cinm::registerCinmTransformsPasses();
+  upmem::registerConvertUpmemToLLvmInterface(registry);
 
   registerUPMEMTransformsPasses();
   registerUPMEMConversionPasses();
