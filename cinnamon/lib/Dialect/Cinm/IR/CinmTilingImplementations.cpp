@@ -95,7 +95,7 @@ SmallVector<Value> GemmOp::convertToTiledOps(OpBuilder &builder,
         const auto parIndices = indices;
         const ArrayRef<int64_t> unitStrides{1, 1};
         const ArrayRef<int64_t> noStaticOffsets{ShapedType::kDynamic,
-                                                       ShapedType::kDynamic};
+                                                ShapedType::kDynamic};
 
         const ArrayRef<int64_t> resultSizes{p0, p1};
         const ValueRange resultDynamicOffsets = parIndices;
@@ -112,8 +112,8 @@ SmallVector<Value> GemmOp::convertToTiledOps(OpBuilder &builder,
               const auto indexInRedDim = indices[0];
 
               const ArrayRef<int64_t> unitStrides{1, 1};
-              const ArrayRef<int64_t> noStaticOffsets{
-                  ShapedType::kDynamic, ShapedType::kDynamic};
+              const ArrayRef<int64_t> noStaticOffsets{ShapedType::kDynamic,
+                                                      ShapedType::kDynamic};
               const ArrayRef<int64_t> lhsSizes{p0, r};
 
               const Type lhsSliceType = RankedTensorType::get({p0, r}, eltTy);
