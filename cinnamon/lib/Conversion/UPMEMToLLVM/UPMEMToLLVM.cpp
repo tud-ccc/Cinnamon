@@ -77,8 +77,8 @@ declareStringConstant(ModuleOp moduleOp, Location loc, StringRef value,
   auto globalType =
       LLVM::LLVMArrayType::get(rewriter.getI8Type(), str.size_in_bytes());
   ConversionPatternRewriter::InsertionGuard guard(rewriter);
-  auto twine = llvm::Twine("const", value);
-  StringRef globalName2 = globalName.value_or(twine.str());
+  auto twine = llvm::Twine("const", value).str();
+  StringRef globalName2 = globalName.value_or(twine);
   LLVM::GlobalOp global = rewriter.create<LLVM::GlobalOp>(
       loc, globalType,
       /*isConstant=*/true, LLVM::Linkage::Private, globalName2,

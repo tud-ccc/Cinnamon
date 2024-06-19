@@ -7,6 +7,7 @@ BENCH_NAME=mlp make clean
 BENCH_NAME=1mm make clean
 BENCH_NAME=2mm make clean
 BENCH_NAME=3mm make clean
+BENCH_NAME=mv make clean
 
 BENCH_NAME=va make
 BENCH_NAME=mlp make

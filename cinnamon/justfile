@@ -37,6 +37,11 @@ doNinja *ARGS:
 # run build --first build needs cmake though
 build: doNinja
 
+cleanBuild:
+    rm -rf {{build_dir}}
+    just cmake
+    just build
+
 alias b := build
 
 # run tests
