@@ -5,7 +5,7 @@ mkdir build
 cd build
 
 cmake -G "Ninja" ../llvm \
-  -DLLVM_ENABLE_PROJECTS="mlir;llvm" \
+  -DLLVM_ENABLE_PROJECTS="mlir;llvm;clang" \
   -DLLVM_TARGETS_TO_BUILD="host" \
   -DLLVM_ENABLE_ASSERTIONS=ON \
   -DMLIR_ENABLE_BINDINGS_PYTHON=OFF \
