@@ -3,6 +3,7 @@
 #include "cinm-mlir/Dialect/Cinm/IR/CinmOps.h"
 
 #include <algorithm>
+#include <cstdint>
 #include <functional>
 #include <limits>
 #include <llvm/ADT/SmallVector.h>
@@ -24,6 +25,8 @@
 #include <mlir/IR/Value.h>
 #include <mlir/IR/ValueRange.h>
 #include <mlir/Support/LogicalResult.h>
+#include <optional>
+#include <utility>
 
 using namespace mlir;
 using namespace mlir::cinm;
@@ -62,37 +65,39 @@ int64_t TilingParameters::reduceClusterSize(int64_t numBuffers,
   return 1;
 }
 
+using OptionalTileSizes = std::optional<std::pair<int64_t, int64_t>>;
+
 /// Determine tiling factors for dimensions n and m.
-std::pair<int64_t, int64_t> TilingParameters::parallelClusterSize(int64_t n,
-                                                                  int64_t m) {
+OptionalTileSizes TilingParameters::parallelClusterSize(int64_t n, int64_t m) {
   /// need to find a number that divides parallelElements and the working
   /// group size
   SmallVector<int64_t, 4> wgShape(workgroupShape);
   auto it = std::remove(wgShape.begin(), wgShape.end(), 1);
-  wgShape.erase(it);
+  if (it != wgShape.end())
+    wgShape.erase(it);
 
   if (wgShape.size() == 2) {
     // try to fit perfectly
     if (n % wgShape[0] == 0 && m % wgShape[1] == 0)
-      return {wgShape[0], wgShape[1]};
+      return OptionalTileSizes({wgShape[0], wgShape[1]});
     else if (n % wgShape[1] == 0 && m % wgShape[0] == 0)
-      return {wgShape[1], wgShape[0]};
+      return OptionalTileSizes({wgShape[1], wgShape[0]});
   }
 
   auto wg = workingGroupSize();
+  if (wg > m * n)
+    return std::nullopt;
   auto a = std::gcd(n, wg);
   auto b = std::gcd(m, wg);
 
   if (a * b == wg)
-    return {a, b};
+    return OptionalTileSizes({a, b});
   else if (a > b)
-    return {a, wg / a};
+    return OptionalTileSizes({a, wg / a});
   else if (b != 1)
-    return {wg / b, b};
+    return OptionalTileSizes({wg / b, b});
   else
-    // fallback: don't tile. WG is not divisible by n or m.
-    // This means the CINM->CNM conversion will fail.
-    return {1, 1};
+    return std::nullopt;
 }
 
 /// Number of parallel elements in the working group.

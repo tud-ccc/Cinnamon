@@ -29,7 +29,7 @@ using namespace mlir::cinm;
 using TilingResult2 = FailureOr<SmallVector<Value>>;
 
 TilingResult2 ReduceOp::convertToTiledOps(OpBuilder &builder,
-                                         TilingParameters params) {
+                                          TilingParameters params) {
   auto ty = getInput().getType();
   auto reduceClusterSize =
       params.reduceClusterSize(1, ty.getNumElements(), ty.getElementType());
@@ -37,16 +37,16 @@ TilingResult2 ReduceOp::convertToTiledOps(OpBuilder &builder,
   auto method = getMethod();
   if (method == ReduceMethod::ADD) {
     return TilingResult2({createVectorReduceAdd(builder, getLoc(), getOperand(),
-                                               reduceClusterSize)});
+                                                reduceClusterSize)});
   } else if (method == ReduceMethod::MUL) {
     return TilingResult2({createVectorReduceMul(builder, getLoc(), getOperand(),
-                                               reduceClusterSize)});
+                                                reduceClusterSize)});
   } else if (method == ReduceMethod::MAX) {
     return TilingResult2({createVectorReduceMax(builder, getLoc(), getOperand(),
-                                               reduceClusterSize)});
+                                                reduceClusterSize)});
   } else if (method == ReduceMethod::MIN) {
     return TilingResult2({createVectorReduceMin(builder, getLoc(), getOperand(),
-                                               reduceClusterSize)});
+                                                reduceClusterSize)});
   } else {
     abort();
   }
@@ -57,26 +57,8 @@ static constexpr std::array<int64_t, 2> noStaticOffsets{ShapedType::kDynamic,
 
 static constexpr std::array<int64_t, 2> unitStrides{1, 1};
 
-/** This tiling works this way:
-    - Given a Gemm of dimensions (%A: <MxR>), (%B: <RxN>) -> <MxN>
-    - If M == 1 then
-      - determine optimal tile sizes RT and NT for the R and N dimensions
-      - then emit the following program:
-        affine.loop %j = 0 to N step NT iter_args(%acc0 = empty: <1xN>){
-          %tile: <1xNT> = affine.loop %k = 0 to R step RT iter_args(%acc =
-   zeros: <1xNT>) { %rowTile = slice %A[0, %k] [1, RT] [1, 1] : <1xRT> %colTile
-   = slice %B[%k, %j] [RT, NT] [1, 1] : <RTxNT> %tmp = cinm.gemm %rowTile,
-   %colTile : -> <1xNT> %add = cinm.add %acc, tmp affine.yield %add : <1xNT>
-          }
-          %tmp = insert_slice %tile, %acc0[0, %j] [1, NT] [1, 1]
-          affine.yield %tmp
-        }
-    - if M > 1 then the gemm is first reduced into a loop over M, and gemms of
-   size <1xR> <RxN>
-
- */
-TilingResult2
-GemmOp::convertToTiledOps(OpBuilder &builder, TilingParameters params) {
+TilingResult2 GemmOp::convertToTiledOps(OpBuilder &builder,
+                                        TilingParameters params) {
   Value lhs = getLeft();
   Value rhs = getRight();
 
@@ -95,16 +77,20 @@ GemmOp::convertToTiledOps(OpBuilder &builder, TilingParameters params) {
 
   // Size of the tile on the reduction dimension.
   auto r = params.reduceClusterSize(2, rDim, lhsType.getElementType());
-  // Tile sizes of each parallel dimension
-  const auto [p0, p1] =
+  auto parallelTileSizes =
       params.parallelClusterSize(lhsType.getDimSize(0), rhsType.getDimSize(1));
+  if (!parallelTileSizes)
+    return failure();
+
+  // Tile sizes of each parallel dimension
+  const auto [p0, p1] = *parallelTileSizes;
 
   auto res = createNestedAffineForLoops(
       builder, getLoc(), resultShape, {p0, p1}, ValueRange{resultInit},
       [&, p0, p1](OpBuilder &builder, Location loc, ValueRange indices,
                   ValueRange iterArgs) -> SmallVector<Value> {
         const auto parIndices = indices;
-        const SmallVector<int64_t> resultSizes{p0, p1};
+        const SmallVector<int64_t, 2> resultSizes{p0, p1};
         const ValueRange resultDynamicOffsets = parIndices;
 
         auto reductionAccTy = RankedTensorType::get({p0, p1}, eltTy);
@@ -118,7 +104,7 @@ GemmOp::convertToTiledOps(OpBuilder &builder, TilingParameters params) {
                         ValueRange iterArgs) -> SmallVector<Value> {
               const auto indexInRedDim = indices[0];
 
-              const SmallVector<int64_t> lhsSizes{p0, r};
+              const SmallVector<int64_t, 2> lhsSizes{p0, r};
 
               const Type lhsSliceType = RankedTensorType::get({p0, r}, eltTy);
 
@@ -130,7 +116,7 @@ GemmOp::convertToTiledOps(OpBuilder &builder, TilingParameters params) {
 
               const Type rhsSliceType = RankedTensorType::get({r, p1}, eltTy);
 
-              const SmallVector<int64_t> rhsSizes{r, p1};
+              const SmallVector<int64_t, 2> rhsSizes{r, p1};
 
               const Value rhsSlice = builder.create<tensor::ExtractSliceOp>(
                   loc, rhsSliceType, rhs,
@@ -159,8 +145,7 @@ GemmOp::convertToTiledOps(OpBuilder &builder, TilingParameters params) {
 }
 
 // convert to a gemm, gemm pattern will be applied after
-TilingResult2 GemvOp::convertToTiledOps(OpBuilder &builder,
-                                                        TilingParameters) {
+TilingResult2 GemvOp::convertToTiledOps(OpBuilder &builder, TilingParameters) {
   auto rhsAsMatrix = cinm::reshapeStatic(
       builder, getLoc(), getRight(), {getRight().getType().getDimSize(0), 1});
   auto gemm = builder.create<cinm::GemmOp>(getLoc(), getLeft(), rhsAsMatrix);
@@ -171,14 +156,15 @@ TilingResult2 GemvOp::convertToTiledOps(OpBuilder &builder,
 
 template <typename OP>
 TilingResult2 tileElementWiseBinaryOp(OpBuilder &builder0, OP op,
-                                           TilingParameters params) {
+                                      TilingParameters params) {
   ImplicitLocOpBuilder builder(op.getLoc(), builder0);
   Value lhs = op.getOperand(0);
   Value rhs = op.getOperand(1);
 
   RankedTensorType tensorTy = lhs.getType().cast<RankedTensorType>();
   if (params.workingGroupSize() > tensorTy.getNumElements()) {
-    return emitWarning(op.getLoc()) << "Cannot tile, working group is too large";
+    return emitWarning(op.getLoc())
+           << "Cannot tile, working group is too large";
   }
 
   auto reduceClusterSize = params.reduceClusterSize(
@@ -243,21 +229,21 @@ TilingResult2 tileElementWiseBinaryOp(OpBuilder &builder0, OP op,
 }
 
 TilingResult2 AddOp::convertToTiledOps(OpBuilder &builder,
-                                            TilingParameters params) {
+                                       TilingParameters params) {
   return tileElementWiseBinaryOp<AddOp>(builder, *this, params);
 }
 
 TilingResult2 SubOp::convertToTiledOps(OpBuilder &builder,
-                                            TilingParameters params) {
+                                       TilingParameters params) {
   return tileElementWiseBinaryOp<SubOp>(builder, *this, params);
 }
 
 TilingResult2 MulOp::convertToTiledOps(OpBuilder &builder,
-                                            TilingParameters params) {
+                                       TilingParameters params) {
   return tileElementWiseBinaryOp<MulOp>(builder, *this, params);
 }
 
 TilingResult2 DivOp::convertToTiledOps(OpBuilder &builder,
-                                            TilingParameters params) {
+                                       TilingParameters params) {
   return tileElementWiseBinaryOp<DivOp>(builder, *this, params);
 }
