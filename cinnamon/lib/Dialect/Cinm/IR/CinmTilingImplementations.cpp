@@ -5,6 +5,7 @@
 #include "cinm-mlir/Dialect/Cinm/IR/CinmOps.h"
 #include "cinm-mlir/Dialect/Cinm/Interfaces/TilingInterface.h"
 
+#include <array>
 #include <cstdint>
 #include <llvm/ADT/ArrayRef.h>
 #include <mlir/Dialect/Arith/IR/Arith.h>
@@ -45,6 +46,11 @@ SmallVector<Value> ReduceOp::convertToTiledOps(OpBuilder &builder,
     abort();
   }
 }
+
+static constexpr std::array<int64_t, 2> noStaticOffsets{ShapedType::kDynamic,
+                                                        ShapedType::kDynamic};
+
+static constexpr std::array<int64_t, 2> unitStrides{1, 1};
 
 /** This tiling works this way:
     - Given a Gemm of dimensions (%A: <MxR>), (%B: <RxN>) -> <MxN>
@@ -93,10 +99,6 @@ SmallVector<Value> GemmOp::convertToTiledOps(OpBuilder &builder,
       [&, p0, p1](OpBuilder &builder, Location loc, ValueRange indices,
                   ValueRange iterArgs) -> SmallVector<Value> {
         const auto parIndices = indices;
-        const ArrayRef<int64_t> unitStrides{1, 1};
-        const ArrayRef<int64_t> noStaticOffsets{ShapedType::kDynamic,
-                                                ShapedType::kDynamic};
-
         const ArrayRef<int64_t> resultSizes{p0, p1};
         const ValueRange resultDynamicOffsets = parIndices;
 
@@ -111,9 +113,6 @@ SmallVector<Value> GemmOp::convertToTiledOps(OpBuilder &builder,
                         ValueRange iterArgs) -> SmallVector<Value> {
               const auto indexInRedDim = indices[0];
 
-              const ArrayRef<int64_t> unitStrides{1, 1};
-              const ArrayRef<int64_t> noStaticOffsets{ShapedType::kDynamic,
-                                                      ShapedType::kDynamic};
               const ArrayRef<int64_t> lhsSizes{p0, r};
 
               const Type lhsSliceType = RankedTensorType::get({p0, r}, eltTy);
@@ -121,7 +120,8 @@ SmallVector<Value> GemmOp::convertToTiledOps(OpBuilder &builder,
               const Value lhsSlice = builder.create<tensor::ExtractSliceOp>(
                   loc, lhsSliceType, lhs,
                   ValueRange{parIndices[0], indexInRedDim}, ValueRange{},
-                  ValueRange{}, noStaticOffsets, lhsSizes, unitStrides);
+                  ValueRange{}, ArrayRef(noStaticOffsets), lhsSizes,
+                  ArrayRef(unitStrides));
 
               const Type rhsSliceType = RankedTensorType::get({r, p1}, eltTy);
 
@@ -130,7 +130,8 @@ SmallVector<Value> GemmOp::convertToTiledOps(OpBuilder &builder,
               const Value rhsSlice = builder.create<tensor::ExtractSliceOp>(
                   loc, rhsSliceType, rhs,
                   ValueRange{indexInRedDim, parIndices[1]}, ValueRange{},
-                  ValueRange{}, noStaticOffsets, rhsSizes, unitStrides);
+                  ValueRange{}, ArrayRef(noStaticOffsets), rhsSizes,
+                  ArrayRef(unitStrides));
 
               // now we have a LHS tile <reduceClusterSize>
               // and RHS tile <reduceClusterSize x parallelTileSize
@@ -145,8 +146,8 @@ SmallVector<Value> GemmOp::convertToTiledOps(OpBuilder &builder,
 
         const Value result = builder.create<tensor::InsertSliceOp>(
             loc, reductionResult[0], iterArgs[0], resultDynamicOffsets,
-            ValueRange{}, ValueRange{}, noStaticOffsets, resultSizes,
-            unitStrides);
+            ValueRange{}, ValueRange{}, ArrayRef(noStaticOffsets), resultSizes,
+            ArrayRef(unitStrides));
         return {result};
       });
 }
