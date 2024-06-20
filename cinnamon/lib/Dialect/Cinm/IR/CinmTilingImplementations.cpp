@@ -8,6 +8,7 @@
 #include <array>
 #include <cstdint>
 #include <llvm/ADT/ArrayRef.h>
+#include <llvm/ADT/SmallVector.h>
 #include <mlir/Dialect/Arith/IR/Arith.h>
 #include <mlir/Dialect/Linalg/IR/Linalg.h>
 #include <mlir/Dialect/MemRef/IR/MemRef.h>
@@ -99,7 +100,7 @@ SmallVector<Value> GemmOp::convertToTiledOps(OpBuilder &builder,
       [&, p0, p1](OpBuilder &builder, Location loc, ValueRange indices,
                   ValueRange iterArgs) -> SmallVector<Value> {
         const auto parIndices = indices;
-        const ArrayRef<int64_t> resultSizes{p0, p1};
+        const SmallVector<int64_t> resultSizes{p0, p1};
         const ValueRange resultDynamicOffsets = parIndices;
 
         auto reductionAccTy = RankedTensorType::get({p0, p1}, eltTy);
@@ -113,7 +114,7 @@ SmallVector<Value> GemmOp::convertToTiledOps(OpBuilder &builder,
                         ValueRange iterArgs) -> SmallVector<Value> {
               const auto indexInRedDim = indices[0];
 
-              const ArrayRef<int64_t> lhsSizes{p0, r};
+              const SmallVector<int64_t> lhsSizes{p0, r};
 
               const Type lhsSliceType = RankedTensorType::get({p0, r}, eltTy);
 
@@ -125,7 +126,7 @@ SmallVector<Value> GemmOp::convertToTiledOps(OpBuilder &builder,
 
               const Type rhsSliceType = RankedTensorType::get({r, p1}, eltTy);
 
-              const ArrayRef<int64_t> rhsSizes{r, p1};
+              const SmallVector<int64_t> rhsSizes{r, p1};
 
               const Value rhsSlice = builder.create<tensor::ExtractSliceOp>(
                   loc, rhsSliceType, rhs,
