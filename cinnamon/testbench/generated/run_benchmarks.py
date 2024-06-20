@@ -28,24 +28,16 @@ def run(bench):
             results[last_dimm_count][last_exec_type] += float(line)
     return results
 
-numbers = {}          
-benchmarks = ["1mm", "2mm", "3mm", "hst", "va", "red", "sel", "mv"]            
-# benchmarks = ["red", "sel", "mv", "hst", "va"]
-for bench in benchmarks:
-    print(bench)
-    numbers[bench] = run(bench)
 
-f = open("runtime.txt", "w")
-dimm_counts = [4, 8, 16]
-print(numbers)
-for bench in benchmarks:
-    f.write(bench + " ")
-    for dimm_count in dimm_counts:
-        f.write(str(numbers[bench][dimm_count]["Non-opt"]))
-        f.write(" ")
-        f.write(str(numbers[bench][dimm_count]["Opt"]))
-        f.write(" ")
-    f.write("\n")
-     
-f.close()
 
+
+
+def run_cinm():
+    numbers = {}          
+    benchmarks = ["1mm", "2mm", "3mm", "hst", "va", "red", "sel", "mv"]            
+    # benchmarks = ["mv"]            
+    # benchmarks = ["red", "sel", "mv", "hst", "va"]
+    for bench in benchmarks:
+        print(bench)
+        numbers[bench] = run(bench)
+    return numbers
