@@ -542,11 +542,12 @@ struct ConvertCinmGemmToCnm : public OpConversionPattern<cinm::GemmOp> {
   static Value transpose(ImplicitLocOpBuilder &builder, Value tensor) {
     auto inTy = tensor.getType().cast<RankedTensorType>();
     auto shape = inTy.getShape();
-    auto newShape = ArrayRef<int64_t>{shape[1], shape[0]};
+    SmallVector<int64_t, 2> newShape{shape[1], shape[0]};
+    SmallVector<int64_t, 2> perms{1, 0};
     auto output =
         builder.create<tensor::EmptyOp>(newShape, inTy.getElementType());
-    auto transposeRight = builder.create<linalg::TransposeOp>(
-        tensor, output.getResult(), ArrayRef<int64_t>{1, 0});
+    auto transposeRight =
+        builder.create<linalg::TransposeOp>(tensor, output.getResult(), perms);
     return transposeRight->getResult(0);
   }
 
