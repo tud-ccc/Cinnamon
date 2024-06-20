@@ -1,3 +1,5 @@
+#!/bin/bash
+
 if [[ $1 != "no-llvm" ]]; then
 
 git clone https://github.com/oowekyala/llvm-project llvm
@@ -35,7 +37,7 @@ cmake -S . -B "build" \
     -DCMAKE_BUILD_TYPE=RelWithDebInfo \
     -DLLVM_DIR="$llvm_prefix"/lib/cmake/llvm \
     -DMLIR_DIR="$llvm_prefix"/lib/cmake/mlir \
-    -DUPMEM_DIR=/opt/upmem/upmem-2023.2.0-Linux-x86_64
+    -DUPMEM_DIR=/opt/upmem/upmem-2023.2.0-Linux-x86_64 \
     -DCMAKE_EXPORT_COMPILE_COMMANDS=1 \
     -DCMAKE_C_COMPILER=clang \
     -DCMAKE_LINKER_TYPE=DEFAULT \
