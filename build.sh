@@ -1,7 +1,9 @@
+if [[ $1 != "no-llvm" ]]; then
+
 git clone https://github.com/oowekyala/llvm-project llvm
 cd llvm
 git checkout cinnamon-llvm
-mkdir build   
+mkdir -p build   
 cd build
 
 cmake -G "Ninja" ../llvm \
@@ -21,6 +23,10 @@ ninja opt
 export PATH=$(pwd)/bin:$PATH
 
 cd ../..
+else
+export PATH=$(pwd)/llvm/build/bin:$PATH
+fi 
+
 cd cinnamon 
 llvm_prefix=../llvm/build
 
