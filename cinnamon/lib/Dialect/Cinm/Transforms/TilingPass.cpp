@@ -47,8 +47,14 @@ struct CinmApplyTilingInterfacePattern
                   ConversionPatternRewriter &rewriter) const override {
     auto computeBlock = mlir::cinm::getEnclosingComputeBlock(op);
     auto tilingParms = cinm::TilingParameters::fromComputeBlock(computeBlock);
-    rewriter.replaceOp(op, op.convertToTiledOps(rewriter, tilingParms));
-    return success();
+    auto result = op.convertToTiledOps(rewriter, tilingParms);
+    if (succeeded(result)) {
+      rewriter.replaceOp(op, *result);
+      return success();
+    } else {
+      markOpAsNoTile(op);
+    }
+    return failure();
   }
 };
 

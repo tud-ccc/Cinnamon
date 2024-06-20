@@ -18,31 +18,35 @@
 #include <mlir/IR/Builders.h>
 #include <mlir/IR/BuiltinTypeInterfaces.h>
 #include <mlir/IR/BuiltinTypes.h>
+#include <mlir/IR/Diagnostics.h>
 #include <mlir/IR/ImplicitLocOpBuilder.h>
 #include <mlir/IR/ValueRange.h>
 
 using namespace mlir;
 using namespace mlir::cinm;
 
-SmallVector<Value> ReduceOp::convertToTiledOps(OpBuilder &builder,
-                                               TilingParameters params) {
+// TilingResult is already a thing in MLIR
+using TilingResult2 = FailureOr<SmallVector<Value>>;
+
+TilingResult2 ReduceOp::convertToTiledOps(OpBuilder &builder,
+                                         TilingParameters params) {
   auto ty = getInput().getType();
   auto reduceClusterSize =
       params.reduceClusterSize(1, ty.getNumElements(), ty.getElementType());
 
   auto method = getMethod();
   if (method == ReduceMethod::ADD) {
-    return {createVectorReduceAdd(builder, getLoc(), getOperand(),
-                                  reduceClusterSize)};
+    return TilingResult2({createVectorReduceAdd(builder, getLoc(), getOperand(),
+                                               reduceClusterSize)});
   } else if (method == ReduceMethod::MUL) {
-    return {createVectorReduceMul(builder, getLoc(), getOperand(),
-                                  reduceClusterSize)};
+    return TilingResult2({createVectorReduceMul(builder, getLoc(), getOperand(),
+                                               reduceClusterSize)});
   } else if (method == ReduceMethod::MAX) {
-    return {createVectorReduceMax(builder, getLoc(), getOperand(),
-                                  reduceClusterSize)};
+    return TilingResult2({createVectorReduceMax(builder, getLoc(), getOperand(),
+                                               reduceClusterSize)});
   } else if (method == ReduceMethod::MIN) {
-    return {createVectorReduceMin(builder, getLoc(), getOperand(),
-                                  reduceClusterSize)};
+    return TilingResult2({createVectorReduceMin(builder, getLoc(), getOperand(),
+                                               reduceClusterSize)});
   } else {
     abort();
   }
@@ -71,8 +75,8 @@ static constexpr std::array<int64_t, 2> unitStrides{1, 1};
    size <1xR> <RxN>
 
  */
-SmallVector<Value> GemmOp::convertToTiledOps(OpBuilder &builder,
-                                             TilingParameters params) {
+TilingResult2
+GemmOp::convertToTiledOps(OpBuilder &builder, TilingParameters params) {
   Value lhs = getLeft();
   Value rhs = getRight();
 
@@ -95,7 +99,7 @@ SmallVector<Value> GemmOp::convertToTiledOps(OpBuilder &builder,
   const auto [p0, p1] =
       params.parallelClusterSize(lhsType.getDimSize(0), rhsType.getDimSize(1));
 
-  return createNestedAffineForLoops(
+  auto res = createNestedAffineForLoops(
       builder, getLoc(), resultShape, {p0, p1}, ValueRange{resultInit},
       [&, p0, p1](OpBuilder &builder, Location loc, ValueRange indices,
                   ValueRange iterArgs) -> SmallVector<Value> {
@@ -151,21 +155,22 @@ SmallVector<Value> GemmOp::convertToTiledOps(OpBuilder &builder,
             ArrayRef(unitStrides));
         return {result};
       });
+  return TilingResult2(res);
 }
 
 // convert to a gemm, gemm pattern will be applied after
-SmallVector<Value> GemvOp::convertToTiledOps(OpBuilder &builder,
-                                             TilingParameters) {
+TilingResult2 GemvOp::convertToTiledOps(OpBuilder &builder,
+                                                        TilingParameters) {
   auto rhsAsMatrix = cinm::reshapeStatic(
       builder, getLoc(), getRight(), {getRight().getType().getDimSize(0), 1});
   auto gemm = builder.create<cinm::GemmOp>(getLoc(), getLeft(), rhsAsMatrix);
   Value toVector = cinm::reshapeStatic(builder, getLoc(), gemm.getResult(),
                                        getResult().getType().getShape());
-  return {toVector};
+  return FailureOr<SmallVector<Value>>({toVector});
 }
 
 template <typename OP>
-SmallVector<Value> tileElementWiseBinaryOp(OpBuilder &builder0, OP op,
+TilingResult2 tileElementWiseBinaryOp(OpBuilder &builder0, OP op,
                                            TilingParameters params) {
   ImplicitLocOpBuilder builder(op.getLoc(), builder0);
   Value lhs = op.getOperand(0);
@@ -173,8 +178,7 @@ SmallVector<Value> tileElementWiseBinaryOp(OpBuilder &builder0, OP op,
 
   RankedTensorType tensorTy = lhs.getType().cast<RankedTensorType>();
   if (params.workingGroupSize() > tensorTy.getNumElements()) {
-    // this is dead code as the op is marked dynamically legal in this case
-    assert(false && "Working group is too large");
+    return emitWarning(op.getLoc()) << "Cannot tile, working group is too large";
   }
 
   auto reduceClusterSize = params.reduceClusterSize(
@@ -202,7 +206,7 @@ SmallVector<Value> tileElementWiseBinaryOp(OpBuilder &builder0, OP op,
   const Value resultInit =
       builder.create<tensor::EmptyOp>(tensorTy, ValueRange{});
 
-  SmallVector<Value, 1> result = createNestedAffineForLoops(
+  SmallVector<Value> result = createNestedAffineForLoops(
       builder, op.getLoc(), {tensorTy.getNumElements()}, {reduceClusterSize},
       ValueRange{resultInit},
       [&](OpBuilder &builder, Location loc, ValueRange indices,
@@ -235,25 +239,25 @@ SmallVector<Value> tileElementWiseBinaryOp(OpBuilder &builder0, OP op,
     result[0] = builder.create<tensor::ReshapeOp>(originalType, result[0],
                                                   originalShapeValue);
   }
-  return result;
+  return TilingResult2(result);
 }
 
-SmallVector<Value> AddOp::convertToTiledOps(OpBuilder &builder,
+TilingResult2 AddOp::convertToTiledOps(OpBuilder &builder,
                                             TilingParameters params) {
   return tileElementWiseBinaryOp<AddOp>(builder, *this, params);
 }
 
-SmallVector<Value> SubOp::convertToTiledOps(OpBuilder &builder,
+TilingResult2 SubOp::convertToTiledOps(OpBuilder &builder,
                                             TilingParameters params) {
   return tileElementWiseBinaryOp<SubOp>(builder, *this, params);
 }
 
-SmallVector<Value> MulOp::convertToTiledOps(OpBuilder &builder,
+TilingResult2 MulOp::convertToTiledOps(OpBuilder &builder,
                                             TilingParameters params) {
   return tileElementWiseBinaryOp<MulOp>(builder, *this, params);
 }
 
-SmallVector<Value> DivOp::convertToTiledOps(OpBuilder &builder,
+TilingResult2 DivOp::convertToTiledOps(OpBuilder &builder,
                                             TilingParameters params) {
   return tileElementWiseBinaryOp<DivOp>(builder, *this, params);
 }

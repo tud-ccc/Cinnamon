@@ -12,6 +12,7 @@
 #include <mlir/IR/Value.h>
 #include <mlir/IR/ValueRange.h>
 #include <mlir/Support/LLVM.h>
+#include <mlir/Support/LogicalResult.h>
 #include <utility>
 
 namespace mlir::cinm {
@@ -49,8 +50,8 @@ struct TilingParameters {
 void markOpAsNoTile(Operation *);
 
 /// Create a tensor.reshape for a fully static tensor shape
-Value reshapeStatic(OpBuilder &, Location loc, Value value,
-                    ShapedType type, llvm::ArrayRef<int64_t> newShape);
+Value reshapeStatic(OpBuilder &, Location loc, Value value, ShapedType type,
+                    llvm::ArrayRef<int64_t> newShape);
 
 /// Create a tensor.reshape for a fully static tensor shape
 Value reshapeStatic(OpBuilder &b, Location loc,

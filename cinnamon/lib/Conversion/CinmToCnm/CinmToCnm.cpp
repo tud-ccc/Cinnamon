@@ -538,10 +538,6 @@ LogicalResult computeScatterMapForGemm(cnm::BufferType bufferTyAB,
 
 struct ConvertCinmGemmToCnm : public OpConversionPattern<cinm::GemmOp> {
   using OpConversionPattern<cinm::GemmOp>::OpConversionPattern;
-  ConvertCinmGemmToCnm(MLIRContext *ctx)
-      : mlir::OpConversionPattern<cinm::GemmOp>(ctx) {
-    this->setHasBoundedRewriteRecursion();
-  }
 
   static Value transpose(ImplicitLocOpBuilder &builder, Value tensor) {
     auto inTy = tensor.getType().cast<RankedTensorType>();
