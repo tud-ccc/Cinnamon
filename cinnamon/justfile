@@ -10,6 +10,7 @@ set dotenv-load := true
 llvm_prefix := env_var("LLVM_BUILD_DIR")
 build_type := env_var_or_default("LLVM_BUILD_TYPE", "RelWithDebInfo")
 linker := env_var_or_default("CMAKE_LINKER_TYPE", "DEFAULT")
+upmem_dir := env_var_or_default("UPMEM_HOME", "")
 build_dir := "build"
 
 # execute cmake -- this is only needed on the first build
@@ -17,8 +18,9 @@ cmake *ARGS:
     cmake -S . -B {{build_dir}} \
         -G Ninja \
         -DCMAKE_BUILD_TYPE={{build_type}} \
-        -DLLVM_DIR={{llvm_prefix}}/lib/cmake/llvm \
-        -DMLIR_DIR={{llvm_prefix}}/lib/cmake/mlir \
+        "-DLLVM_DIR={{llvm_prefix}}/lib/cmake/llvm" \
+        "-DMLIR_DIR={{llvm_prefix}}/lib/cmake/mlir" \
+        "-DUPMEM_DIR={{upmem_dir}}" \
         -DCMAKE_EXPORT_COMPILE_COMMANDS=1 \
         -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
         -DCMAKE_C_COMPILER=clang \
