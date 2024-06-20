@@ -12,7 +12,7 @@ define conf_filename
 endef
 CONF := $(call conf_filename,${NR_DPUS},${NR_TASKLETS},${BL},${TYPE})
 
-HOST_TARGET := ${BUILDDIR}/host_code
+HOST_TARGET := ${BUILDDIR}/host
 DPU_TARGET := ${BUILDDIR}/dpu_code
 
 COMMON_INCLUDES := support

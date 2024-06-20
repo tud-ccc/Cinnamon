@@ -73,10 +73,21 @@ static void histogram_host(unsigned int* histo, T* A, unsigned int bins, unsigne
     }
 }
 
+void run(int input_size, struct Params p);
 // Main of the Host Application
 int main(int argc, char **argv) {
 
     struct Params p = input_params(argc, argv);
+    printf("PRIM %d\n", 4);
+    run(4194304, p);
+    run(4194304, p);
+    printf("PRIM %d\n", 8);
+    run(4194304, p);
+    printf("PRIM %d\n", 16);
+    run(2097152, p);
+}
+
+void run(int input_size, struct Params p){
 
     struct dpu_set_t dpu_set, dpu;
     uint32_t nr_of_dpus;
@@ -87,21 +98,22 @@ int main(int argc, char **argv) {
 #endif
 
     // Allocate DPUs and load binary
-    DPU_ASSERT(dpu_alloc(NR_DPUS, NULL, &dpu_set));
+    DPU_ASSERT(dpu_alloc(1, NULL, &dpu_set));
     DPU_ASSERT(dpu_load(dpu_set, DPU_BINARY, NULL));
     DPU_ASSERT(dpu_get_nr_dpus(dpu_set, &nr_of_dpus));
-    printf("Allocated %d DPU(s)\n", nr_of_dpus);
+    // printf("Allocated %d DPU(s)\n", nr_of_dpus);
 
     unsigned int i = 0;
-    unsigned int input_size; // Size of input image
+    // unsigned int input_size; // Size of input image
     unsigned int dpu_s = p.dpu_s;
-    if(p.exp == 0)
-        input_size = p.input_size * nr_of_dpus; // Size of input image
-    else if(p.exp == 1)
-        input_size = p.input_size; // Size of input image
-	else
-        input_size = p.input_size * dpu_s; // Size of input image
+    // if(p.exp == 0)
+    //     input_size = p.input_size * nr_of_dpus; // Size of input image
+    // else if(p.exp == 1)
+    //     input_size = p.input_size; // Size of input image
+	// else
+    //     input_size = p.input_size * dpu_s; // Size of input image
 
+    // input_size = 4194304;
     const unsigned int input_size_8bytes = 
         ((input_size * sizeof(T)) % 8) != 0 ? roundup(input_size, 8) : input_size; // Input size per DPU (max.), 8-byte aligned
     const unsigned int input_size_dpu = divceil(input_size, nr_of_dpus); // Input size per DPU (max.)
@@ -129,7 +141,7 @@ int main(int argc, char **argv) {
     // Timer declaration
     Timer timer;
 
-    printf("NR_TASKLETS\t%d\tBL\t%d\tinput_size\t%u\n", NR_TASKLETS, BL, input_size);
+    // printf("NR_TASKLETS\t%d\tBL\t%d\tinput_size\t%u\n", NR_TASKLETS, BL, input_size);
 
     // Loop over main kernel
     for(int rep = 0; rep < p.n_warmup + p.n_reps; rep++) {
@@ -143,7 +155,7 @@ int main(int argc, char **argv) {
         if(rep >= p.n_warmup)
             stop(&timer, 0);
 
-        printf("Load input data\n");
+        // printf("Load input data\n");
         if(rep >= p.n_warmup)
             start(&timer, 1, rep - p.n_warmup);
         // Input arguments
@@ -174,7 +186,7 @@ int main(int argc, char **argv) {
         if(rep >= p.n_warmup)
             stop(&timer, 1);
 
-        printf("Run program on DPU(s) \n");
+        // printf("Run program on DPU(s) \n");
         // Run DPU kernel
         if(rep >= p.n_warmup) {
             start(&timer, 2, rep - p.n_warmup);
@@ -202,7 +214,7 @@ int main(int argc, char **argv) {
         }
 #endif
 
-        printf("Retrieve results\n");
+        // printf("Retrieve results\n");
         i = 0;
         if(rep >= p.n_warmup)
             start(&timer, 3, rep - p.n_warmup);
@@ -224,14 +236,14 @@ int main(int argc, char **argv) {
     }
 
     // Print timing results
-    printf("CPU ");
-    print(&timer, 0, p.n_reps);
-    printf("CPU-DPU ");
-    print(&timer, 1, p.n_reps);
-    printf("DPU Kernel ");
+    // printf("CPU ");
+    // print(&timer, 0, p.n_reps);
+    // printf("CPU-DPU ");
+    // print(&timer, 1, p.n_reps);
+    // printf("DPU Kernel ");
     print(&timer, 2, p.n_reps);
-    printf("DPU-CPU ");
-    print(&timer, 3, p.n_reps);
+    // printf("DPU-CPU ");
+    // print(&timer, 3, p.n_reps);
 
     #if ENERGY
     double energy;
@@ -269,11 +281,11 @@ int main(int argc, char **argv) {
 #endif
             }
         }
-    if (status) {
-        printf("[" ANSI_COLOR_GREEN "OK" ANSI_COLOR_RESET "] Outputs are equal\n");
-    } else {
-        printf("[" ANSI_COLOR_RED "ERROR" ANSI_COLOR_RESET "] Outputs differ!\n");
-    }
+    // if (status) {
+    //     printf("[" ANSI_COLOR_GREEN "OK" ANSI_COLOR_RESET "] Outputs are equal\n");
+    // } else {
+    //     printf("[" ANSI_COLOR_RED "ERROR" ANSI_COLOR_RESET "] Outputs differ!\n");
+    // }
 
     // Deallocation
     free(A);

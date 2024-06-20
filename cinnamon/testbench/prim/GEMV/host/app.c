@@ -62,16 +62,31 @@ static void gemv_host(T* C, T* A, T* B, unsigned int m_size, unsigned int n_size
 	}
 }
 
+void run(int m_size, int n_size, struct Params p);
 // Main of the Host Application
 int main(int argc, char **argv) {
 
-	struct Params p = input_params(argc, argv);
+    struct Params p = input_params(argc, argv);
+    // printf("PRIM %d\n", 4);
+    // run(, p);
+    // run(, p);
+    printf("PRIM %d\n", 4);
+    run(65536/(4 * 128), 65536, p);
+    // printf("PRIM %d\n", 8);
+    printf("PRIM %d\n", 8);
+    run(65536/(8 * 128), 65536, p);
+    // run(, p);
+    printf("PRIM %d\n", 16);
+    run(65536/(16 * 128), 65536, p);
+}
+
+void run(int m_size, int n_size, struct Params p){
 
 	struct dpu_set_t dpu_set, dpu;
 	uint32_t nr_of_dpus;
-	uint32_t MAX_DPU = p.d_size;
+	// uint32_t MAX_DPU = p.d_size;
 	// Allocate DPUs and load binary
-	DPU_ASSERT(dpu_alloc(MAX_DPU, NULL, &dpu_set));
+	DPU_ASSERT(dpu_alloc(1, NULL, &dpu_set));
 	DPU_ASSERT(dpu_load(dpu_set, DPU_BINARY, NULL));
 	DPU_ASSERT(dpu_get_nr_dpus(dpu_set, &nr_of_dpus));
 	// printf("Number of running dpus %d\n", nr_of_dpus);
@@ -82,8 +97,8 @@ int main(int argc, char **argv) {
 #endif
 
 	unsigned int i;
-	unsigned int m_size = p.m_size;
-	unsigned int n_size = p.n_size;
+	// unsigned int m_size = p.m_size;
+	// unsigned int n_size = p.n_size;
 
 	// Initialize help data
 	dpu_info = (struct dpu_info_t *) malloc(nr_of_dpus * sizeof(struct dpu_info_t));

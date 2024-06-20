@@ -10,7 +10,7 @@ define conf_filename
 endef
 CONF := $(call conf_filename,${NR_DPUS},${NR_TASKLETS},${BL})
 
-HOST_TARGET := ${BUILDDIR}/gemv_host
+HOST_TARGET := ${BUILDDIR}/host
 DPU_TARGET := ${BUILDDIR}/gemv_dpu
 
 COMMON_INCLUDES := support
