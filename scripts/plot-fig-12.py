@@ -13,7 +13,9 @@ def read_data(file_path):
     return categories, np.array(data)
 
 # Read data from file
-categories, data = read_data('./testbench/scripts/exp-fig-12.txt')
+# categories, data = read_data('./testbench/scripts/exp-fig-12.txt')
+categories, data = read_data('/cinnamon/testbench/exp-fig-12.txt')
+
 
 # Data for each series
 cpu_opt = data[:, 0]
