@@ -51,7 +51,7 @@ int main(int argc, char **argv) {
     printf("Non-opt %d\n", dimm);
     execute(iter, input_size, dimm, simulation, reps, warmup, 16);
     printf("Opt %d\n", dimm);
-    execute(iter, input_size, dimm, simulation, reps, warmup, 256);
+    execute(iter, input_size, dimm, simulation, reps, warmup, 128);
 
     dimm = 8;
     iter = 1;
@@ -59,7 +59,7 @@ int main(int argc, char **argv) {
     printf("Non-opt %d\n", dimm);
     execute(iter, input_size, dimm, simulation, reps, warmup, 16);
     printf("Opt %d\n", dimm);
-    execute(iter, input_size, dimm, simulation, reps, warmup, 256);
+    execute(iter, input_size, dimm, simulation, reps, warmup, 128);
 
     dimm = 16;
     iter = 1;
@@ -67,7 +67,7 @@ int main(int argc, char **argv) {
     printf("Non-opt %d\n", dimm);
     execute(iter, input_size, dimm, simulation, reps, warmup, 16);
     printf("Opt %d\n", dimm);
-    execute(iter, input_size, dimm, simulation, reps, warmup, 256);
+    execute(iter, input_size, dimm, simulation, reps, warmup, 128);
 
 }
 
