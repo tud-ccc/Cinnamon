@@ -83,7 +83,6 @@ add_subdirectory(include)
 add_subdirectory(lib)
 add_subdirectory(test)
 add_subdirectory(tools)
-add_subdirectory(third-party)
 
 if (UPMEM_DIR)
     add_library(Upmem::dpu SHARED IMPORTED GLOBAL)
