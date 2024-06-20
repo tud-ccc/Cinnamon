@@ -277,7 +277,7 @@ LogicalResult computeShapeOfTensors(
 
 LogicalResult convertInputIntoAlloc(Value &inputBuf, Value workGroup,
                                     cnm::WorkgroupType wgTy,
-                                    int64_t maxBlockSize,
+                                    int64_t maxBlockSizeBytes,
                                     ArrayRef<int64_t> reduceDims,
                                     AffineMap &scatterMap, Value &result,
                                     ImplicitLocOpBuilder &rewriter) {
@@ -286,9 +286,11 @@ LogicalResult convertInputIntoAlloc(Value &inputBuf, Value workGroup,
   auto inputTy = inputBuf.getType().cast<RankedTensorType>();
   llvm::SmallVector<int64_t, 1> shapeOfBuffer;
   std::optional<SmallVector<int64_t>> reshapeInto;
+  auto maxBlockSizeItems =
+      maxBlockSizeBytes * 8 / inputTy.getElementTypeBitWidth();
   if (computeShapeOfTensors(inputBuf.getLoc(), inputTy.getShape(), wgTy,
-                            maxBlockSize, reduceDims, scatterMap, shapeOfBuffer,
-                            reshapeInto)
+                            maxBlockSizeItems, reduceDims, scatterMap,
+                            shapeOfBuffer, reshapeInto)
           .failed())
     return failure();
 
@@ -347,7 +349,7 @@ cnm::LaunchOp createLaunchOp(
 
 LogicalResult convertCinmToCnm(
     ImplicitLocOpBuilder builder, Operation *operation,
-    TypedValue<cnm::WorkgroupType> workgroup, int64_t maxDpuMemory,
+    TypedValue<cnm::WorkgroupType> workgroup, cinm::ComputeOp computeOp,
     ArrayRef<int64_t> reductionDimensionsSorted, ValueRange operands,
     ValueRange outputInitializers, ValueRange results,
     llvm::SmallVectorImpl<Value> &resultValues,
@@ -361,14 +363,16 @@ LogicalResult convertCinmToCnm(
   llvm::SmallVector<AffineMap, 3> gatherMaps;
   llvm::SmallVector<Type, 3> mappedArgTypes;
 
-  int maxBlockSize = maxDpuMemory; // simplification
+  auto tilingParms = cinm::TilingParameters::fromComputeBlock(computeOp);
+  int maxBlockSizeBytes = tilingParms.bufferSizeOfLeaf() / operands.size();
 
   builder.setInsertionPointAfter(operation);
 
   for (auto input : operands) {
-    if (convertInputIntoAlloc(
-            input, workgroup, wgTy, maxBlockSize, reductionDimensionsSorted,
-            gatherMaps.emplace_back(), launchInputs.emplace_back(), builder)
+    if (convertInputIntoAlloc(input, workgroup, wgTy, maxBlockSizeBytes,
+                              reductionDimensionsSorted,
+                              gatherMaps.emplace_back(),
+                              launchInputs.emplace_back(), builder)
             .failed()) {
       return failure();
     }
@@ -376,7 +380,7 @@ LogicalResult convertCinmToCnm(
   // output values, may have been reshaped
   llvm::SmallVector<Value, 1> reshapedOutputs;
   for (auto output : outputInitializers) {
-    if (convertInputIntoAlloc(output, workgroup, wgTy, maxBlockSize, {},
+    if (convertInputIntoAlloc(output, workgroup, wgTy, maxBlockSizeBytes, {},
                               gatherMaps.emplace_back(),
                               launchOutputs.emplace_back(), builder)
             .failed()) {
@@ -424,9 +428,9 @@ struct ConvertLinalgReduceIntoLaunch
 
     llvm::SmallVector<Value, 1> newResults;
     if (convertCinmToCnm(
-            builder, op, workgroup.getResult(), computeOp.getMaxDpuBufferSize(),
-            op.getDimensions(), adaptor.getInputs(), adaptor.getInits(),
-            op->getResults(), newResults,
+            builder, op, workgroup.getResult(), computeOp, op.getDimensions(),
+            adaptor.getInputs(), adaptor.getInits(), op->getResults(),
+            newResults,
             [&](ImplicitLocOpBuilder &builder, ValueRange memrefInputs,
                 ValueRange memrefOutputs) {
               // Here we are copying the original reduce into the launch,
@@ -473,8 +477,7 @@ struct ConvertElementWiseToCnm : public OpConversionPattern<CinmOp> {
         builder.getZeroAttr(op.getResult().getType()));
 
     llvm::SmallVector<Value, 1> newResults;
-    if (convertCinmToCnm(builder, op, workgroup.getResult(),
-                         computeBlock.getMaxDpuBufferSize(), {},
+    if (convertCinmToCnm(builder, op, workgroup.getResult(), computeBlock, {},
                          adaptor.getOperands(), ValueRange{outputInit},
                          op->getResults(), newResults,
                          [&](ImplicitLocOpBuilder &builder, ValueRange inputs,
@@ -564,9 +567,13 @@ struct ConvertCinmGemmToCnm : public OpConversionPattern<cinm::GemmOp> {
 
     auto transposeRight = transpose(builder, adaptor.getRight());
 
+    auto tilingParms = cinm::TilingParameters::fromComputeBlock(computeBlock);
+    auto elTyBytes = op.getLeft().getType().getElementTypeBitWidth() / 8;
+
     // Check that the tiling pass chose a fitting reduction size.
     auto reductionSize = op.getLeft().getType().getDimSize(1);
-    if ((uint64_t)reductionSize * 2 > computeBlock.getMaxDpuBufferSize()) {
+    if (reductionSize * 2 * elTyBytes >
+        tilingParms.bufferSizeOfLeaf() - elTyBytes) {
       return op->emitOpError(
           "cannot be converted to CINM, reduction size is too large");
     }
@@ -662,8 +669,7 @@ struct ConvertCinmGemvToCnm : public OpConversionPattern<cinm::GemvOp> {
         builder.getZeroAttr(op.getResult().getType()));
 
     llvm::SmallVector<Value, 1> newResults;
-    if (convertCinmToCnm(builder, op, workgroup.getResult(),
-                         computeBlock.getMaxDpuBufferSize(), {},
+    if (convertCinmToCnm(builder, op, workgroup.getResult(), computeBlock, {},
                          adaptor.getOperands(), ValueRange{outputInit},
                          op->getResults(), newResults,
                          [&](ImplicitLocOpBuilder &builder, ValueRange inputs,
@@ -700,38 +706,37 @@ struct ConvertCinmReduceToCnm : public OpConversionPattern<cinm::ReduceOp> {
         builder.getZeroAttr(op.getResult().getType()));
 
     llvm::SmallVector<Value, 1> newResults;
-    if (convertCinmToCnm(
-            builder, op, workgroup.getResult(),
-            computeBlock.getMaxDpuBufferSize(), {}, adaptor.getOperands(),
-            ValueRange{outputInit}, op->getResults(), newResults,
-            [&](ImplicitLocOpBuilder &builder, ValueRange inputs,
-                ValueRange outputs) {
-              builder.create<linalg::ReduceOp>(
-                  inputs, outputs, ArrayRef<int64_t>{0},
-                  [&](OpBuilder &builder, Location loc,
-                      ValueRange inputs) -> void {
-                    Value result;
-                    switch (op.getMethod()) {
-                    case mlir::cinm::ReduceMethod::ADD: {
-                      result = builder.create<arith::AddIOp>(loc, inputs[0],
-                                                             inputs[1]);
-                    } break;
-                    case mlir::cinm::ReduceMethod::MUL: {
-                      result = builder.create<arith::MulIOp>(loc, inputs[0],
-                                                             inputs[1]);
-                    } break;
-                    case mlir::cinm::ReduceMethod::MAX: {
-                      result = builder.create<arith::MaxSIOp>(loc, inputs[0],
-                                                              inputs[1]);
-                    } break;
-                    case mlir::cinm::ReduceMethod::MIN: {
-                      result = builder.create<arith::MinSIOp>(loc, inputs[0],
-                                                              inputs[1]);
-                    } break;
-                    }
-                    builder.create<linalg::YieldOp>(loc, result);
-                  });
-            })
+    if (convertCinmToCnm(builder, op, workgroup.getResult(), computeBlock, {},
+                         adaptor.getOperands(), ValueRange{outputInit},
+                         op->getResults(), newResults,
+                         [&](ImplicitLocOpBuilder &builder, ValueRange inputs,
+                             ValueRange outputs) {
+                           builder.create<linalg::ReduceOp>(
+                               inputs, outputs, ArrayRef<int64_t>{0},
+                               [&](OpBuilder &builder, Location loc,
+                                   ValueRange inputs) -> void {
+                                 Value result;
+                                 switch (op.getMethod()) {
+                                 case mlir::cinm::ReduceMethod::ADD: {
+                                   result = builder.create<arith::AddIOp>(
+                                       loc, inputs[0], inputs[1]);
+                                 } break;
+                                 case mlir::cinm::ReduceMethod::MUL: {
+                                   result = builder.create<arith::MulIOp>(
+                                       loc, inputs[0], inputs[1]);
+                                 } break;
+                                 case mlir::cinm::ReduceMethod::MAX: {
+                                   result = builder.create<arith::MaxSIOp>(
+                                       loc, inputs[0], inputs[1]);
+                                 } break;
+                                 case mlir::cinm::ReduceMethod::MIN: {
+                                   result = builder.create<arith::MinSIOp>(
+                                       loc, inputs[0], inputs[1]);
+                                 } break;
+                                 }
+                                 builder.create<linalg::YieldOp>(loc, result);
+                               });
+                         })
             .failed()) {
       return failure();
     }

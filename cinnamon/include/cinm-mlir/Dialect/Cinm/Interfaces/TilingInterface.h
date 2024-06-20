@@ -19,28 +19,34 @@
 namespace mlir::cinm {
 struct ComputeOp;
 struct TilingParameters {
-  /// Maximum size of all buffers inside a compute kernel.
-  const int64_t maxBufferSizeInBytes;
-  /// Workgroup shape being considered for tiling
+  /// Workgroup shape being considered for tiling.
   const llvm::ArrayRef<int64_t> workgroupShape;
+  /// Sizes of the different buffer levels.
+  /// Buffers at one level are shared with later levels.
+  /// For instance for a workgroup with shape {A,B,C}
+  /// and buffer sizes {M,N,P}, the space available
+  /// for each compute leaf is P + N/C + M/B/C.
+  const llvm::ArrayRef<int64_t> bufferSizesInBytes;
 
-  TilingParameters(int64_t maxBufferSizeInBytes,
+  TilingParameters(llvm::ArrayRef<int64_t> bufferSizesInBytes,
                    llvm::ArrayRef<int64_t> workgroupShape)
-      : maxBufferSizeInBytes(maxBufferSizeInBytes),
-        workgroupShape(workgroupShape) {}
+      : workgroupShape(workgroupShape),
+        bufferSizesInBytes(bufferSizesInBytes) {}
 
   /// Return the size of tiles on a reduce dimension.
   /// Computes this by assuming the reduction operation needs (maybe several)
   /// buffers of the same size, same element type. The returned tile size
   /// divides the number of reduced elements.
   int64_t reduceClusterSize(int64_t numBuffers, int64_t reducedElements,
-                            Type elementTy);
+                            Type elementTy, int64_t extraElements = 0);
 
   /// Determine tiling factors for dimensions n and m.
   std::optional<std::pair<int64_t, int64_t>> parallelClusterSize(int64_t n, int64_t m);
 
   /// Number of parallel elements in the working group.
   int64_t workingGroupSize();
+
+  int64_t bufferSizeOfLeaf();
 
   int64_t maxNumElementsOfType(Type ty);
 

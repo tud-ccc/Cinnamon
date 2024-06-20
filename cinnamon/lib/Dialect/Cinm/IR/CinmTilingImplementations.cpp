@@ -76,7 +76,8 @@ TilingResult2 GemmOp::convertToTiledOps(OpBuilder &builder,
   auto eltTy = rhsType.getElementType();
 
   // Size of the tile on the reduction dimension.
-  auto r = params.reduceClusterSize(2, rDim, lhsType.getElementType());
+  auto r = params.reduceClusterSize(2, rDim, lhsType.getElementType(),
+                                    /*extraElements=*/1);
   auto parallelTileSizes =
       params.parallelClusterSize(lhsType.getDimSize(0), rhsType.getDimSize(1));
   if (!parallelTileSizes)

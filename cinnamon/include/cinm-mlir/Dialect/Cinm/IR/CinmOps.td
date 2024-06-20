@@ -302,7 +302,7 @@ def Cinm_ComputeOp : Cinm_Base_Op<"compute", [
   let summary = "TODO";
   let description = [{
 
-    %rbuf = cinm.compute(%arg0 = %inpt : tensor<...>) -> tensor<...> {
+    %rbuf = cinm.compute attributes { ... } -> tensor<...> {
       %flt = arith.constant <"...">: tensor<...>
       %conv = cinm.op.gemm %arg0, %flt: tensor<...>, tensor<...>
       cinm.yield %conv : tensor<...>
@@ -311,7 +311,7 @@ def Cinm_ComputeOp : Cinm_Base_Op<"compute", [
 
   /// These attributes are used for lowering of the contained cinm ops into CNM.
   let arguments = (ins DefaultValuedAttr<DenseI64ArrayAttr, "{2, 32, 16}">:$workgroupShape,
-                     DefaultValuedAttr<I64Attr, "64">:$maxDpuBufferSize);
+                       DefaultValuedAttr<DenseI64ArrayAttr, "{0, 4096, 0}">:$bufferSizesInBytes);
   let results = (outs Variadic<AnyType>:$results);
   let regions = (region SizedRegion<1>:$body);
 

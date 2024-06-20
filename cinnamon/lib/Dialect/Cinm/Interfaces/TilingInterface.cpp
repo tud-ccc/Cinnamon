@@ -44,7 +44,7 @@ void markOpAsNoTile(Operation *op) {
 }
 
 TilingParameters TilingParameters::fromComputeBlock(cinm::ComputeOp &op) {
-  return TilingParameters(op.getMaxDpuBufferSize() * 4, op.getWorkgroupShape());
+  return TilingParameters(op.getBufferSizesInBytes(), op.getWorkgroupShape());
 }
 
 /// Return the size of tiles on a reduce dimension.
@@ -53,9 +53,11 @@ TilingParameters TilingParameters::fromComputeBlock(cinm::ComputeOp &op) {
 /// divides the number of reduced elements.
 int64_t TilingParameters::reduceClusterSize(int64_t numBuffers,
                                             int64_t reducedElements,
-                                            Type elementTy) {
+                                            Type elementTy,
+                                            int64_t extraElements) {
   // in number of elements
-  auto maxSizePerBuffer = maxNumElementsOfType(elementTy) / numBuffers;
+  auto maxSizePerBuffer =
+      (maxNumElementsOfType(elementTy) - extraElements) / numBuffers;
   // Now we need to find the largest divisor of `reducedElements` that is
   // smaller than maxSizePerBuffer
   for (int i = maxSizePerBuffer; i > 0; i--) {
@@ -106,9 +108,27 @@ int64_t TilingParameters::workingGroupSize() {
                      std::multiplies<>());
 }
 
+int64_t TilingParameters::bufferSizeOfLeaf() {
+  /// Buffers at one level are shared with later levels.
+  /// For instance for a workgroup with shape {A,B,C}
+  /// and buffer sizes {M,N,P}, the space available
+  /// for each compute leaf is P + N/C + M/B/C.
+
+  int64_t numLeafsInDim = 1;
+  int64_t bufSize = 0;
+  int i = 0;
+  do {
+    int lastIdx = bufferSizesInBytes.size() - 1 - i;
+    bufSize += bufferSizesInBytes[lastIdx] / numLeafsInDim;
+    numLeafsInDim *= workgroupShape[lastIdx];
+    i++;
+  } while (i < static_cast<int64_t>(bufferSizesInBytes.size()));
+  return bufSize;
+}
+
 int64_t TilingParameters::maxNumElementsOfType(Type ty) {
   int64_t bw = std::max(8, static_cast<int>(ty.getIntOrFloatBitWidth()));
-  return maxBufferSizeInBytes / (bw / 8);
+  return bufferSizeOfLeaf() / (bw / 8);
 }
 
 Value reshapeStatic(OpBuilder &b, Location loc,
