@@ -12,6 +12,8 @@
 #include <mlir/IR/Value.h>
 #include <mlir/IR/ValueRange.h>
 #include <mlir/Support/LLVM.h>
+#include <mlir/Support/LogicalResult.h>
+#include <optional>
 #include <utility>
 
 namespace mlir::cinm {
@@ -35,7 +37,7 @@ struct TilingParameters {
                             Type elementTy);
 
   /// Determine tiling factors for dimensions n and m.
-  std::pair<int64_t, int64_t> parallelClusterSize(int64_t n, int64_t m);
+  std::optional<std::pair<int64_t, int64_t>> parallelClusterSize(int64_t n, int64_t m);
 
   /// Number of parallel elements in the working group.
   int64_t workingGroupSize();
@@ -49,8 +51,8 @@ struct TilingParameters {
 void markOpAsNoTile(Operation *);
 
 /// Create a tensor.reshape for a fully static tensor shape
-Value reshapeStatic(OpBuilder &, Location loc, Value value,
-                    ShapedType type, llvm::ArrayRef<int64_t> newShape);
+Value reshapeStatic(OpBuilder &, Location loc, Value value, ShapedType type,
+                    llvm::ArrayRef<int64_t> newShape);
 
 /// Create a tensor.reshape for a fully static tensor shape
 Value reshapeStatic(OpBuilder &b, Location loc,
