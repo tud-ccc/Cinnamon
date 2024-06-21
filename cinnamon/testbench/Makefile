@@ -35,7 +35,7 @@ $(IR_PREFIX).llvm.mlir: $(IR_PREFIX).upmem.mlir
 	--convert-scf-to-cf --convert-cf-to-llvm --fold-memref-alias-ops --lower-affine --convert-arith-to-llvm \
 	--convert-upmem-to-llvm \
     --expand-strided-metadata --memref-expand --finalize-memref-to-llvm --lower-affine --convert-arith-to-llvm \
-	--convert-func-to-llvm=use-bare-ptr-memref-call-conv=true --cse --reconcile-unrealized-casts --llvm-legalize-for-export --cse \
+	--convert-func-to-llvm=use-bare-ptr-memref-call-conv=true --cse --reconcile-unrealized-casts --llvm-legalize-for-export --canonicalize --cse \
 	> $@
 
 $(IR_PREFIX).dpu.c: $(IR_PREFIX).upmem.mlir

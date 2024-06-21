@@ -355,6 +355,7 @@ static LogicalResult lowerScatterOrGather(Op op, typename Op::Adaptor adaptor,
 
   Value bareHostBuf = adaptor.getHostBuffer();
   if (adaptor.getHostBuffer().getType().template isa<LLVM::LLVMStructType>()) {
+    // Here we compute the pointer to the start of the memref
     // converted memref
     Value basePtr =
         rewriter0.create<LLVM::ExtractValueOp>(loc, adaptor.getHostBuffer(), 1);

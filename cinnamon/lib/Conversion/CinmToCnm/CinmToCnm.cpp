@@ -5,6 +5,7 @@
 #include "cinm-mlir/Dialect/Cinm/Interfaces/TilingInterface.h"
 #include "cinm-mlir/Dialect/Cnm/IR/CnmBase.h"
 #include "cinm-mlir/Dialect/Cnm/IR/CnmTypes.h"
+#include "cinm-mlir/Utils/CinmUtils.h"
 #include <algorithm>
 #include <cinm-mlir/Conversion/CinmPasses.h>
 #include <cinm-mlir/Dialect/Cnm/IR/CnmOps.h>
@@ -522,21 +523,22 @@ LogicalResult computeScatterMapForGemm(cnm::BufferType bufferTyAB,
     const auto linearInput =
         linearizeIndices(ctx, bufferTyAB.getWorkgroupShape());
 
-    scatterA = mlir::simplifyAffineMap(
-        AffineMap::get(numInputs, 0, linearInput % rowsA));
+    scatterA = mlir::simplifyAffineMapWithBounds(
+        AffineMap::get(numInputs, 0, linearInput % rowsA),
+        bufferTyAB.getWorkgroupShape());
 
-    scatterB = mlir::simplifyAffineMap(
-        AffineMap::get(numInputs, 0, linearInput % colsB));
+    scatterB = mlir::simplifyAffineMapWithBounds(
+        AffineMap::get(numInputs, 0, linearInput % colsB),
+        bufferTyAB.getWorkgroupShape());
 
     SmallVector<AffineExpr> results;
     structureIndex(linearInput, {rowsA, colsB}, results);
-    scatterGatherC = mlir::simplifyAffineMap(
-        AffineMap::get(numInputs, 0, std::move(results), ctx));
+    scatterGatherC = mlir::simplifyAffineMapWithBounds(
+        AffineMap::get(numInputs, 0, std::move(results), ctx),
+        bufferTyAB.getWorkgroupShape());
 
     return success();
   }
-
-  
 
   return failure();
 }
