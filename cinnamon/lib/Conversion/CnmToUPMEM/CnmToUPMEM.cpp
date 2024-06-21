@@ -66,6 +66,11 @@ struct ConvertCnmWorkgroupToUPMEM
         alloc->setAttr(BUFFER_OFFSET_ATTR,
                        rewriter.getI64IntegerAttr(dpuMemOffset));
         dpuMemOffset += alloc.getResult().getType().getSizeInBytes();
+
+        // buffer offsets must be 8 byte aligned
+        if (dpuMemOffset % 8 != 0) {
+          dpuMemOffset += 8 - (dpuMemOffset % 8);
+        }
       }
     }
 

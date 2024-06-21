@@ -388,6 +388,7 @@ class ScatterGatherLike<string mnemonic, string kw, MemoryEffect effect>
     }
   }];
 
+  let hasVerifier = 1;
   let assemblyFormat = 
      "$hostBuffer `[` $dpuMemOffset `,` $transferCount `,` $scatterMap `]` `" # kw # "` $hierarchy attr-dict"
      # "`:` type($hostBuffer) `" # kw # "` qualified(type($hierarchy))";

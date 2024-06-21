@@ -565,7 +565,6 @@ LogicalResult LaunchFuncOp::verify() {
   return success();
 }
 
-
 static ParseResult parseLaunchFuncOperands(
     OpAsmParser &parser,
     SmallVectorImpl<OpAsmParser::UnresolvedOperand> &argNames,
@@ -608,6 +607,17 @@ static void printAsyncDependencies(OpAsmPrinter &printer, Operation *op,
   printer << '[';
   llvm::interleaveComma(asyncDependencies, printer);
   printer << ']';
+}
+
+LogicalResult GatherOp::verify() {
+  auto count = getDpuMemOffset();
+  if (count % 8 != 0)
+    return emitOpError("The DPU memory offset needs to be 8-byte-aligned.");
+}
+LogicalResult ScatterOp::verify() {
+  auto count = getDpuMemOffset();
+  if (count % 8 != 0)
+    return emitOpError("The DPU memory offset needs to be 8-byte-aligned.");
 }
 
 //===- Generated implementation -------------------------------------------===//
