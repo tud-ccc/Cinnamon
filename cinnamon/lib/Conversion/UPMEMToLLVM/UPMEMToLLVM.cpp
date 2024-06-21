@@ -376,8 +376,13 @@ static LogicalResult lowerScatterOrGather(Op op, typename Op::Adaptor adaptor,
 
   auto funPtrOp = rewriter0.create<LLVM::AddressOfOp>(loc, *affineMapFunOpt);
   auto dpuMemOffset = reifyAsIndex(rewriter, tyConverter, op.getDpuMemOffset());
-  auto numBytesCopied =
-      reifyAsIndex(rewriter, tyConverter, op.getDpuBufferSizeInBytes());
+  auto numBytesCopied = op.getDpuBufferSizeInBytes();
+
+  // Transfer count must be 8-byte aligned
+  // TODO probably means we must pad the input
+  if (numBytesCopied % 8 != 0) {
+    numBytesCopied += 8 - (numBytesCopied % 8);
+  }
 
   Value bareHostBuf = adaptor.getHostBuffer();
   if (adaptor.getHostBuffer().getType().template isa<LLVM::LLVMStructType>()) {
@@ -404,7 +409,8 @@ static LogicalResult lowerScatterOrGather(Op op, typename Op::Adaptor adaptor,
       loc, runtimeScatterFun,
       ValueRange{adaptor.getHierarchy(), bareHostBuf,
                  reifyAsIndex(rewriter, tyConverter, sizeOfTensorBytes),
-                 numBytesCopied, dpuMemOffset, funPtrOp.getRes()});
+                 reifyAsIndex(rewriter, tyConverter, numBytesCopied),
+                 dpuMemOffset, funPtrOp.getRes()});
 
   rewriter0.eraseOp(op);
   return success();
