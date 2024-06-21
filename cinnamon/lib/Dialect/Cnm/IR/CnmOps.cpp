@@ -8,11 +8,16 @@
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/OpImplementation.h"
 
+#include <cstdint>
+#include <llvm/ADT/ArrayRef.h>
 #include <llvm/Support/Casting.h>
+#include <mlir/Dialect/MemRef/Utils/MemRefUtils.h>
+#include <mlir/IR/BuiltinAttributes.h>
 #include <mlir/IR/BuiltinTypeInterfaces.h>
 #include <mlir/IR/BuiltinTypes.h>
 #include <mlir/IR/Diagnostics.h>
 #include <mlir/IR/TypeRange.h>
+#include <mlir/IR/Value.h>
 #include <mlir/Interfaces/InferTypeOpInterface.h>
 #include <mlir/Support/LogicalResult.h>
 
@@ -80,6 +85,41 @@ LogicalResult LaunchOp::verify() {
   return success();
 }
 
+/// Check that the memref is contiguous in the dimensions corresponding to the bufShape, which
+/// is a suffix of the shape of the input tensor/memref.
+static bool scatteredMemrefIsContiguous(TypedValue<ShapedType> value, llvm::ArrayRef<int64_t> bufShape) {
+  if (value.getType().isa<MemRefType>()) {
+    auto type = value.getType().cast<MemRefType>();
+    if (!type.hasStaticShape())
+      return false;
+
+    SmallVector<int64_t> strides;
+    int64_t offset;// offset may be dynamic, we don't
+    if (failed(getStridesAndOffset(type, strides, offset)))
+      return false;
+
+    // MemRef is contiguous if outer dimensions are size-1 and inner
+    // dimensions have unit strides.
+    int64_t runningStride = 1;
+    int64_t curDim = strides.size() - 1;
+    int64_t lastDimToCheck = strides.size() - bufShape.size();
+    // Finds all inner dimensions with unit strides.
+    while (curDim >= lastDimToCheck && strides[curDim] == runningStride) {
+      runningStride *= type.getDimSize(curDim);
+      --curDim;
+    }
+
+    // Check if other dimensions are size-1.
+    while (curDim >= lastDimToCheck && type.getDimSize(curDim) == 1) {
+      --curDim;
+    }
+
+    // All dims are unit-strided or size-1.
+    return curDim < lastDimToCheck;
+  }
+  return true;
+}
+
 LogicalResult ScatterOp::verify() {
   auto tensorTy = getInput().getType();
   auto bufferTy = getBuffer().getType();
@@ -107,6 +147,10 @@ LogicalResult ScatterOp::verify() {
            << "Scattered tensor shape should end with buffer shape, ("
            << tensorTy.getShape().slice(truncatedDims)
            << " != " << bufferTy.getShape() << ")";
+  }
+
+  if (!scatteredMemrefIsContiguous(getInput(), bufferTy.getShape())) {
+    return emitOpError("should scatter a contiguous memref");
   }
 
   return success();
@@ -139,6 +183,10 @@ LogicalResult GatherOp::verify() {
            << "Scattered tensor shape should end with buffer shape, ("
            << tensorTy.getShape().slice(truncatedDims)
            << " != " << bufferTy.getShape() << ")";
+  }
+
+  if (!scatteredMemrefIsContiguous(getOutputBuf(), bufferTy.getShape())) {
+    return emitOpError("should gather into a contiguous memref");
   }
 
   return success();

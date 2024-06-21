@@ -536,6 +536,8 @@ LogicalResult computeScatterMapForGemm(cnm::BufferType bufferTyAB,
     return success();
   }
 
+  
+
   return failure();
 }
 

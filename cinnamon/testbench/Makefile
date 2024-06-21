@@ -21,11 +21,11 @@ $(IR_PREFIX).tiled.mlir: $(BENCH_NAME).mlir
 	$(CINM_OPT) $< --cinm-tiling --affine-loop-unroll='unroll-full unroll-full-threshold=1' --cse > $@
 
 $(IR_PREFIX).cnm.mlir: $(IR_PREFIX).tiled.mlir
-	$(CINM_OPT) $< --convert-cinm-to-cnm > $@
+	$(CINM_OPT) $< --convert-cinm-to-cnm --canonicalize --cse > $@
 
 $(IR_PREFIX).cnm.bufferized.mlir: $(IR_PREFIX).cnm.mlir
 	$(CINM_OPT) $< --lower-affine --one-shot-bufferize='bufferize-function-boundaries function-boundary-type-conversion=identity-layout-map'  \
-				  --convert-linalg-to-affine-loops --lower-affine --buffer-loop-hoisting --buffer-hoisting --cse > $@
+				  --convert-linalg-to-affine-loops --lower-affine --buffer-loop-hoisting --buffer-hoisting --canonicalize --cse > $@
 
 $(IR_PREFIX).upmem.mlir: $(IR_PREFIX).cnm.bufferized.mlir
 	$(CINM_OPT) $< --convert-cnm-to-upmem --cse --upmem-outline-kernel --upmem-dedup-kernels --cse > $@

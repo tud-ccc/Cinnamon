@@ -1,13 +1,13 @@
 module {
 
-    func.func @mv_dimm4_nopt(%A: tensor<128x65536xi32>, %B: tensor<65536xi32>) -> tensor<128xi32> {
+    // func.func @mv_dimm4_nopt(%A: tensor<128x65536xi32>, %B: tensor<65536xi32>) -> tensor<128xi32> {
 
-        %r0 = cinm.compute attributes { workgroupShape=array<i64: 4, 128, 1> } -> tensor<128xi32> {
-            %r = cinm.op.gemv %A, %B: (tensor<128x65536xi32>, tensor<65536xi32>) -> tensor<128xi32>
-            cinm.yield %r : tensor<128xi32>
-        }
-        return %r0 : tensor<128xi32>
-    }
+    //     %r0 = cinm.compute attributes { workgroupShape=array<i64: 4, 128, 1> } -> tensor<128xi32> {
+    //         %r = cinm.op.gemv %A, %B: (tensor<128x65536xi32>, tensor<65536xi32>) -> tensor<128xi32>
+    //         cinm.yield %r : tensor<128xi32>
+    //     }
+    //     return %r0 : tensor<128xi32>
+    // }
 
     func.func @mv_dimm4_opt(%A: tensor<4096x2048xi32>, %B: tensor<2048xi32>) -> tensor<4096xi32> {
 
