@@ -396,13 +396,15 @@ static LogicalResult lowerScatterOrGather(Op op, typename Op::Adaptor adaptor,
            << adaptor.getHostBuffer().getType();
   }
 
+  auto sizeOfTensorBytes =
+      computeProduct(op.getHostBuffer().getType().getShape()) *
+      op.getHostBuffer().getType().getElementTypeBitWidth() / 8;
+
   rewriter0.create<LLVM::CallOp>(
       loc, runtimeScatterFun,
-      ValueRange{
-          adaptor.getHierarchy(), bareHostBuf,
-          reifyAsIndex(rewriter, tyConverter,
-                       computeProduct(op.getHostBuffer().getType().getShape())),
-          numBytesCopied, dpuMemOffset, funPtrOp.getRes()});
+      ValueRange{adaptor.getHierarchy(), bareHostBuf,
+                 reifyAsIndex(rewriter, tyConverter, sizeOfTensorBytes),
+                 numBytesCopied, dpuMemOffset, funPtrOp.getRes()});
 
   rewriter0.eraseOp(op);
   return success();
