@@ -2,7 +2,7 @@
 #include <cstdint>
 
 extern "C" {
-int32_t *mv_dimm4_nopt(int32_t *, int32_t *);
+//int32_t *mv_dimm4_nopt(int32_t *, int32_t *);
 int32_t *mv_dimm4_opt(int32_t *, int32_t *);
 int32_t *mv_dimm8_nopt(int32_t *, int32_t *);
 // int32_t* mv_dimm8_opt(int32_t *, int32_t *);
@@ -25,7 +25,7 @@ int32_t *mv_dimm16_opt(int32_t *, int32_t *);
 int main(void) {
   srand(0);
 
-  BENCH_MV(int32_t, 128, 65536, mv_dimm4_nopt);
+//  BENCH_MV(int32_t, 128, 65536, mv_dimm4_nopt);
   BENCH_MV(int32_t, 4096, 2048, mv_dimm4_opt);
 
   BENCH_MV(int32_t, 16384, 512, mv_dimm8_nopt);
