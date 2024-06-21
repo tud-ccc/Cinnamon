@@ -162,6 +162,10 @@ static FailureOr<AffineMap> linearizeAffineMap(AffineMap map,
   auto result = MutableAffineMap(layoutMap.compose(map).compose(inflateMap));
   result.simplify();
   assert(result.getNumResults() == 1 && result.getNumDims() == 1);
+  // last step is making sure this map operates on bytes and not on elements
+  auto resExpr = result.getResult(0);
+  result.setResult(0, resExpr * (bufferTy.getElementTypeBitWidth() / 8));
+  result.simplify();
   return success(result.getAffineMap());
 }
 
