@@ -25,6 +25,7 @@
 #include <mlir/IR/AffineExpr.h>
 #include <mlir/IR/AffineMap.h>
 #include <mlir/IR/Builders.h>
+#include <mlir/IR/BuiltinAttributes.h>
 #include <mlir/IR/BuiltinOps.h>
 #include <mlir/IR/BuiltinTypeInterfaces.h>
 #include <mlir/IR/BuiltinTypes.h>
@@ -124,8 +125,14 @@ void structureIndex(AffineExpr index, ArrayRef<int64_t> shape,
     i++;
   }
 }
-static AffineMap linearizeAffineMap(AffineMap map, ArrayRef<int64_t> inputShape,
-                                    ArrayRef<int64_t> outputShape) {
+/// Linearize the scatter map.
+/// The map is from WG -> tensor, both index spaces are multidimensional.
+/// The input shape is the WG shape, the output shape is the tensor shape.
+///
+static FailureOr<AffineMap> linearizeAffineMap(AffineMap map,
+                                               ArrayRef<int64_t> inputShape,
+                                               MemRefType bufferTy) {
+
   auto ctx = map.getContext();
   SmallVector<AffineExpr> inflatedIndices;
   structureIndex(getAffineDimExpr(0, ctx), inputShape, inflatedIndices);
@@ -133,18 +140,29 @@ static AffineMap linearizeAffineMap(AffineMap map, ArrayRef<int64_t> inputShape,
 
   // complete map with zero dims
   // todo do that in CNM->UPMEM
+  auto outputShape = bufferTy.getShape();
   auto zero = getAffineConstantExpr(0, ctx);
-  for (int i = map.getNumResults(); i < outputShape.size(); i++) {
+  for (unsigned i = map.getNumResults(); i < outputShape.size(); i++) {
     map = map.insertResult(zero, i);
   }
 
-  auto linearIndex = linearizeIndices(ctx, outputShape);
-  AffineMap linearMap = AffineMap::get(outputShape.size(), 0, linearIndex);
+  auto layoutMap = bufferTy.getLayout().getAffineMap();
+  if (bufferTy.getLayout().isa<StridedLayoutAttr>()) {
+    // Replace offsets with 0 to delete the symbols.
+    // Offset is calculated outside of the affine map.
+    layoutMap = layoutMap.replaceDimsAndSymbols(
+        {}, {getAffineConstantExpr(0, ctx)}, layoutMap.getNumDims(), 0);
+  } else if (bufferTy.getLayout().isIdentity()) {
+    auto linearIndex = linearizeIndices(ctx, outputShape);
+    layoutMap = AffineMap::get(outputShape.size(), 0, linearIndex);
+  } else {
+    return failure();
+  }
 
-  auto result = MutableAffineMap(linearMap.compose(map).compose(inflateMap));
+  auto result = MutableAffineMap(layoutMap.compose(map).compose(inflateMap));
   result.simplify();
   assert(result.getNumResults() == 1 && result.getNumDims() == 1);
-  return result.getAffineMap();
+  return success(result.getAffineMap());
 }
 
 /*
@@ -265,19 +283,23 @@ public:
   }
 };
 
-static std::optional<LLVM::LLVMFuncOp>
+static FailureOr<LLVM::LLVMFuncOp>
 outlineAffineMap(ImplicitLocOpBuilder &rewriter,
                  LLVMTypeConverter const *tyConverter, ModuleOp moduleOp,
                  AffineMap map, DeviceHierarchyType hierarchyTy,
-                 ShapedType bufferTy) {
+                 MemRefType bufferTy) {
 
   ConversionPatternRewriter::InsertionGuard guard(rewriter);
   rewriter.setInsertionPointToStart(moduleOp.getBody());
 
   auto sizeTy =
       tyConverter->convertType(IndexType::get(moduleOp->getContext()));
-  auto linearMap =
-      linearizeAffineMap(map, hierarchyTy.getShape(), bufferTy.getShape());
+  auto linearMap = linearizeAffineMap(map, hierarchyTy.getShape(), bufferTy);
+  if (failed(linearMap)) {
+    emitError(rewriter.getLoc(), "Unsupported layout map for ") << bufferTy;
+    return failure();
+  }
+
   auto affineFunTy = LLVM::LLVMFunctionType::get(sizeTy, {sizeTy});
   LLVM::LLVMFuncOp existingOp;
   moduleOp.getBodyRegion().walk<WalkOrder::PreOrder>([&](LLVM::LLVMFuncOp op) {
@@ -296,7 +318,7 @@ outlineAffineMap(ImplicitLocOpBuilder &rewriter,
       affineFunTy, LLVM::Linkage::Private);
 
   // to find it later
-  affineMapFun->setAttr("upmem.generated_from", AffineMapAttr::get(linearMap));
+  affineMapFun->setAttr("upmem.generated_from", AffineMapAttr::get(*linearMap));
 
   rewriter = ImplicitLocOpBuilder::atBlockBegin(rewriter.getLoc(),
                                                 affineMapFun.addEntryBlock());
@@ -306,14 +328,14 @@ outlineAffineMap(ImplicitLocOpBuilder &rewriter,
                                              rewriter.getIndexType(), arg);
 
   if (auto resOpt = affine::expandAffineMap(rewriter, rewriter.getLoc(),
-                                            linearMap, ValueRange{arg})) {
+                                            *linearMap, ValueRange{arg})) {
     auto result = (*resOpt)[0];
     result = createOrFoldUnrealizedConversionCast(rewriter.getLoc(), rewriter,
                                                   sizeTy, result);
     rewriter.create<LLVM::ReturnOp>(ValueRange{result});
     return affineMapFun;
   }
-  return std::nullopt;
+  return failure();
 }
 
 template <class Op>
@@ -337,7 +359,7 @@ static LogicalResult lowerScatterOrGather(Op op, typename Op::Adaptor adaptor,
   auto affineMapFunOpt = outlineAffineMap(
       rewriter, tyConverter, moduleOp, op.getScatterMap(),
       op.getHierarchy().getType(), op.getHostBuffer().getType());
-  if (!affineMapFunOpt)
+  if (failed(affineMapFunOpt))
     return emitError(op->getLoc(), "Cannot emit affine map");
   /*
   void upmemrt_scatter_dpu(struct dpu_set_t *dpu_set, void *A, size_t
