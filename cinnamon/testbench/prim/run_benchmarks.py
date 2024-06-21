@@ -14,30 +14,34 @@ def run(bench):
     last_dimm_count = None
     last_exec_type = None
     for line in output.split("\n"):
-        if line.startswith("Non-opt") or line.startswith("Opt"):
+        if line.startswith("PRIM"):
             dimm_count = int(line.split(" ")[1])
-            exec_type = line.split(" ")[0]
             if dimm_count not in results :
-                results[dimm_count] = {}
-            if exec_type not in results[dimm_count]:
-                results[dimm_count][exec_type] = 0  
+                results[dimm_count] = 0
             last_dimm_count = dimm_count
-            last_exec_type = exec_type
         
         elif len(line) > 1:
-            results[last_dimm_count][last_exec_type] += float(line)
+            results[last_dimm_count] += float(line)
     return results
 
 
+def run_prim():
 
-
-
-def run_cinm():
     numbers = {}          
-    benchmarks = ["1mm", "2mm", "3mm", "hst", "va", "red", "sel", "mv"]            
-    # benchmarks = ["mv"]            
-    # benchmarks = ["red", "sel", "mv", "hst", "va"]
+    benchmarks = ["RED", "HST-L", "VA", "SEL", "GEMV"]
     for bench in benchmarks:
-        print(bench)
+        # print(bench)
         numbers[bench] = run(bench)
-    return numbers
+    return numbers 
+
+# for bench in benchmarks:
+#     f.write(bench + " ")
+#     for dimm_count in dimm_counts:
+#         f.write(str(numbers[bench][dimm_count]["Non-opt"]))
+#         f.write(" ")
+#         f.write(str(numbers[bench][dimm_count]["Opt"]))
+#         f.write(" ")
+#     f.write("\n")
+     
+# f.close()
+

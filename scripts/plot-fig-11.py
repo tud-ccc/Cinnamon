@@ -13,7 +13,8 @@ def read_data(file_path):
     return categories, np.array(data)
 
 # Read data from file
-categories, data = read_data('./testbench/scripts/exp-fig-11.txt')
+# categories, data = read_data('./testbench/scripts/exp-fig-11.txt')
+categories, data = read_data('/cinnamon/testbench/exp-fig-11.txt')
 
 # Data for each series
 cinm_4d = data[:, 0]

@@ -35,7 +35,7 @@ static T* C2;
 // Create input arrays
 static void read_input(T* A, T* B, unsigned int nr_elements) {
     srand(0);
-    printf("nr_elements\t%u\t", nr_elements);
+    // printf("nr_elements\t%u\t", nr_elements);
     for (unsigned int i = 0; i < nr_elements; i++) {
         A[i] = (T) (rand());
         B[i] = (T) (rand());
@@ -49,38 +49,39 @@ static void vector_addition_host(T* C, T* A, T* B, unsigned int nr_elements) {
     }
 }
 
-void run(int alloc_dpu, int input_size);
-
+void run(int input_size, struct Params p);
 // Main of the Host Application
 int main(int argc, char **argv) {
 
     struct Params p = input_params(argc, argv);
-
-    run(4, 2097152);
-    run(4, 2097152);
-
-    run(8, 2097152);
-
-    run(16, 1048576);
+    printf("PRIM %d\n", 4);
+    run(2097152, p);
+    run(2097152, p);
+    printf("PRIM %d\n", 8);
+    run(2097152, p);
+    printf("PRIM %d\n", 16);
+    run(1048576, p);
 }
 
-void run(int dim, int input_size){
-    int alloc_dpu = 128 * dim;
-    int nr_of_dpus;
+void run(int input_size, struct Params p){
+
+
     struct dpu_set_t dpu_set, dpu;
+    uint32_t nr_of_dpus;
+
 #if ENERGY
     struct dpu_probe_t probe;
     DPU_ASSERT(dpu_probe_init("energy_probe", &probe));
 #endif
+
     // Allocate DPUs and load binary
-    DPU_ASSERT(dpu_alloc(alloc_dpu, NULL, &dpu_set));
+    DPU_ASSERT(dpu_alloc(NR_DPUS, NULL, &dpu_set));
     DPU_ASSERT(dpu_load(dpu_set, DPU_BINARY, NULL));
     DPU_ASSERT(dpu_get_nr_dpus(dpu_set, &nr_of_dpus));
-    printf("PRIM %d\n", dim);
+    // printf("Allocated %d DPU(s)\n", nr_of_dpus);
     unsigned int i = 0;
-    
-    // const unsigned int input_size = p.exp == 0 ? p.input_size * nr_of_dpus : p.input_size; // Total input size (weak or strong scaling)
 
+    // const unsigned int input_size = p.exp == 0 ? p.input_size * nr_of_dpus : p.input_size; // Total input size (weak or strong scaling)
     const unsigned int input_size_8bytes = 
         ((input_size * sizeof(T)) % 8) != 0 ? roundup(input_size, 8) : input_size; // Input size per DPU (max.), 8-byte aligned
     const unsigned int input_size_dpu = divceil(input_size, nr_of_dpus); // Input size per DPU (max.)
@@ -101,30 +102,31 @@ void run(int dim, int input_size){
 
     // Timer declaration
     Timer timer;
-    int n_warmup = 3;
-    int n_reps = 3;
+
+    // printf("NR_TASKLETS\t%d\tBL\t%d\n", NR_TASKLETS, BL);
 
     // Loop over main kernel
-    for(int rep = 0; rep < n_warmup + n_reps; rep++) {
+    for(int rep = 0; rep < p.n_warmup + p.n_reps; rep++) {
 
         // Compute output on CPU (performance comparison and verification purposes)
-        if(rep >= n_warmup)
-            start(&timer, 0, rep - n_warmup);
+        if(rep >= p.n_warmup)
+            start(&timer, 0, rep - p.n_warmup);
         vector_addition_host(C, A, B, input_size);
-        if(rep >= n_warmup)
+        if(rep >= p.n_warmup)
             stop(&timer, 0);
 
-        if(rep >= n_warmup)
-            start(&timer, 1, rep - n_warmup);
+        // printf("Load input data\n");
+        if(rep >= p.n_warmup)
+            start(&timer, 1, rep - p.n_warmup);
         // Input arguments
         unsigned int kernel = 0;
-        dpu_arguments_t input_arguments[alloc_dpu];
+        dpu_arguments_t input_arguments[NR_DPUS];
         for(i=0; i<nr_of_dpus-1; i++) {
             input_arguments[i].size=input_size_dpu_8bytes * sizeof(T); 
             input_arguments[i].transfer_size=input_size_dpu_8bytes * sizeof(T); 
             input_arguments[i].kernel=kernel;
         }
-        input_arguments[nr_of_dpus-1].size=(input_size_8bytes - input_size_dpu_8bytes * (alloc_dpu-1)) * sizeof(T); 
+        input_arguments[nr_of_dpus-1].size=(input_size_8bytes - input_size_dpu_8bytes * (NR_DPUS-1)) * sizeof(T); 
         input_arguments[nr_of_dpus-1].transfer_size=input_size_dpu_8bytes * sizeof(T); 
         input_arguments[nr_of_dpus-1].kernel=kernel;
 
@@ -144,46 +146,60 @@ void run(int dim, int input_size){
             DPU_ASSERT(dpu_prepare_xfer(dpu, bufferB + input_size_dpu_8bytes * i));
         }
         DPU_ASSERT(dpu_push_xfer(dpu_set, DPU_XFER_TO_DPU, DPU_MRAM_HEAP_POINTER_NAME, input_size_dpu_8bytes * sizeof(T), input_size_dpu_8bytes * sizeof(T), DPU_XFER_DEFAULT));
-        if(rep >= n_warmup)
+        if(rep >= p.n_warmup)
             stop(&timer, 1);
 
+        // printf("Run program on DPU(s) \n");
         // Run DPU kernel
-        if(rep >= n_warmup) {
-            start(&timer, 2, rep - n_warmup);
+        if(rep >= p.n_warmup) {
+            start(&timer, 2, rep - p.n_warmup);
             #if ENERGY
             DPU_ASSERT(dpu_probe_start(&probe));
             #endif
         }
         DPU_ASSERT(dpu_launch(dpu_set, DPU_SYNCHRONOUS));
-        if(rep >= n_warmup) {
+        if(rep >= p.n_warmup) {
             stop(&timer, 2);
             #if ENERGY
             DPU_ASSERT(dpu_probe_stop(&probe));
             #endif
         }
 
-        if(rep >= n_warmup)
-            start(&timer, 3, rep - n_warmup);
+#if PRINT
+        {
+            unsigned int each_dpu = 0;
+            printf("Display DPU Logs\n");
+            DPU_FOREACH (dpu_set, dpu) {
+                printf("DPU#%d:\n", each_dpu);
+                DPU_ASSERT(dpulog_read_for_dpu(dpu.dpu, stdout));
+                each_dpu++;
+            }
+        }
+#endif
+
+        // printf("Retrieve results\n");
+        if(rep >= p.n_warmup)
+            start(&timer, 3, rep - p.n_warmup);
         i = 0;
         // PARALLEL RETRIEVE TRANSFER
         DPU_FOREACH(dpu_set, dpu, i) {
             DPU_ASSERT(dpu_prepare_xfer(dpu, bufferC + input_size_dpu_8bytes * i));
         }
         DPU_ASSERT(dpu_push_xfer(dpu_set, DPU_XFER_FROM_DPU, DPU_MRAM_HEAP_POINTER_NAME, input_size_dpu_8bytes * sizeof(T), input_size_dpu_8bytes * sizeof(T), DPU_XFER_DEFAULT));
-        if(rep >= n_warmup)
+        if(rep >= p.n_warmup)
             stop(&timer, 3);
 
     }
 
     // Print timing results
     // printf("CPU ");
-    // print(&timer, 0, n_reps);
+    // print(&timer, 0, p.n_reps);
     // printf("CPU-DPU ");
-    // print(&timer, 1, n_reps);
+    // print(&timer, 1, p.n_reps);
     // printf("DPU Kernel ");
-    print(&timer, 2, n_reps);
+    print(&timer, 2, p.n_reps);
     // printf("DPU-CPU ");
-    // print(&timer, 3, n_reps);
+    // print(&timer, 3, p.n_reps);
 
 #if ENERGY
     double energy;
@@ -201,11 +217,11 @@ void run(int dim, int input_size){
 #endif
         }
     }
-    if (status) {
-        printf("[" ANSI_COLOR_GREEN "OK" ANSI_COLOR_RESET "] Outputs are equal\n");
-    } else {
-        printf("[" ANSI_COLOR_RED "ERROR" ANSI_COLOR_RESET "] Outputs differ!\n");
-    }
+    // if (status) {
+    //     printf("[" ANSI_COLOR_GREEN "OK" ANSI_COLOR_RESET "] Outputs are equal\n");
+    // } else {
+    //     printf("[" ANSI_COLOR_RED "ERROR" ANSI_COLOR_RESET "] Outputs differ!\n");
+    // }
 
     // Deallocation
     free(A);
