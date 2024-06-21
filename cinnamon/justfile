@@ -66,6 +66,12 @@ cinm-vulkan-runner FILE *ARGS:
         --shared-libs=../llvm-project/build/lib/libvulkan-runtime-wrappers.so,../llvm-project/build/lib/libmlir_runner_utils.so.17 \
         {{ARGS}}
 
+genBench NAME:
+    #!/bin/bash
+    cd testbench
+    export BENCH_NAME="{{NAME}}"
+    make clean && make
+
 # Invoke he LLVM IR compiler.
 llc *ARGS:
     {{llvm_prefix}}/bin/llc {{ARGS}}
