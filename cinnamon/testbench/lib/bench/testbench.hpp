@@ -1,8 +1,8 @@
+#include <cassert>
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
 #include <functional>
-#include <cassert>
 // todo call srand(0) before
 template <typename T, unsigned... Shape> T *init_matrix() {
   size_t size = 1;
@@ -37,8 +37,8 @@ inline void timeAndExecute(int reps, int warmup, const char *name,
   auto stop = high_resolution_clock::now();
 
   duration<double, std::milli> ms_int =
-      duration_cast<milliseconds>(start - stop);
-  printf("Average time (ms) over %d reps (%s): %f", reps, name,
+      duration_cast<milliseconds>(stop - start);
+  printf("Average time (ms) over %d reps (%s): %f\n", reps, name,
          ms_int.count() / reps);
 }
 

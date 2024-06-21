@@ -15,11 +15,12 @@ void do_dpu_transfer(dpu_xfer_t xfer_type, struct dpu_set_t *dpu_set,
   struct dpu_set_t dpu;
   DPU_FOREACH(*dpu_set, dpu, i) {
     size_t offset = base_offset(i);
-    printf("%-4ld: Transfer %ld bytes from offset %ld \n", i, copy_bytes, offset);
-    fflush(stdout);
-    // TODO: This out-of-bounds check does not work when we are scattering a view, and the base tensor is larger than the view.
-    //assert(offset + copy_bytes < buf_size &&
-    //       "Out of bounds index returned by base_offset");
+    // printf("%-4ld: Transfer %ld bytes from offset %ld \n", i, copy_bytes,
+    // offset); fflush(stdout);
+    //  TODO: This out-of-bounds check does not work when we are scattering a
+    //  view, and the base tensor is larger than the view.
+    // assert(offset + copy_bytes < buf_size &&
+    //        "Out of bounds index returned by base_offset");
     DPU_ASSERT(dpu_prepare_xfer(dpu, (char *)host_buffer + offset));
   }
 
@@ -62,6 +63,3 @@ void upmemrt_dpu_free(struct dpu_set_t *void_dpu_set) {
   struct dpu_set_t *dpu_set = (struct dpu_set_t *)void_dpu_set;
   DPU_ASSERT(dpu_free(*dpu_set));
 }
-
-
-
