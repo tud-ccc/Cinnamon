@@ -72,6 +72,17 @@ genBench NAME:
     export BENCH_NAME="{{NAME}}"
     make clean && make
 
+genBenchExe NAME:
+    #!/bin/bash
+    set -e
+    cd testbench
+    export BENCH_NAME="{{NAME}}"
+    make clean && make {{NAME}}-exe
+    cd generated2/{{NAME}}/bin
+    ./host
+
+
+
 # Invoke he LLVM IR compiler.
 llc *ARGS:
     {{llvm_prefix}}/bin/llc {{ARGS}}

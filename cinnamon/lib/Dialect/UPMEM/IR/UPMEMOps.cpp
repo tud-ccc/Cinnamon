@@ -611,13 +611,16 @@ static void printAsyncDependencies(OpAsmPrinter &printer, Operation *op,
 
 LogicalResult GatherOp::verify() {
   auto count = getDpuMemOffset();
-  if (count % 8 != 0)
-    return emitOpError("The DPU memory offset needs to be 8-byte-aligned.");
+  if ((count % 8) != 0)
+    return emitOpError("has unaligned DPU memory offset ") << count << ", needs to be 8-byte-aligned.";
+  return success();
 }
+
 LogicalResult ScatterOp::verify() {
   auto count = getDpuMemOffset();
-  if (count % 8 != 0)
-    return emitOpError("The DPU memory offset needs to be 8-byte-aligned.");
+  if ((count % 8) != 0)
+    return emitOpError("has unaligned DPU memory offset ") << count << ", needs to be 8-byte-aligned.";
+  return success();
 }
 
 //===- Generated implementation -------------------------------------------===//
