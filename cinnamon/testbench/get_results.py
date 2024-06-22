@@ -15,13 +15,13 @@ f = open("exp-fig-12.txt", "w")
 dimm_counts = [4, 8, 16]
 print(results)
 
-benchmarks = {"va":"VA", "sel":"SEL", "mv":"GEMV", "hst":"HST-L", "red":"RED"}
+fig12 = {"va":"VA", "sel":"SEL", "mv":"GEMV", "hst":"HST-L", "red":"RED"}
 # benchmarks = {"mv":"GEMV"}
 
-for bench in benchmarks:
+for bench in fig12:
     f.write(bench + " ")
     for dimm_count in dimm_counts:
-        f.write(str(results["prim"][benchmarks[bench]][dimm_count]))
+        f.write(str(results["prim"][fig12[bench]][dimm_count]))
         f.write(" ")
         f.write(str(results["cinm"][bench][dimm_count]["Opt"]))
         f.write(" ")
@@ -32,7 +32,7 @@ f.close()
 f = open("exp-fig-11.txt", "w")
 fig11 = ["1mm", "2mm", "3mm", "mv"]
 
-for bench in benchmarks:
+for bench in fig11:
     f.write(bench + " ")
     for dimm_count in dimm_counts:
         f.write(str(results["cinm"][bench][dimm_count]["Non-opt"]))
