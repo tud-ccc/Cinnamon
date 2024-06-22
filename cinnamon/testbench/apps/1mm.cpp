@@ -2,13 +2,12 @@
 #include <cstdint>
 
 extern "C" {
-int32_t *mm_dimm4_nopt(int32_t *, int32_t *);
-int32_t *mm_dimm4_opt(int32_t *, int32_t *);
-int32_t *mm_dimm8_nopt(int32_t *, int32_t *);
-// TODO
-// int32_t *mm_dimm8_opt(int32_t *, int32_t *);
-// int32_t *mm_dimm16_nopt(int32_t *, int32_t *);
-// int32_t *mm_dimm16_opt(int32_t *, int32_t *);
+void *mm_dimm4_nopt(int32_t *, int32_t *);
+void *mm_dimm4_opt(int32_t *, int32_t *);
+void *mm_dimm8_nopt(int32_t *, int32_t *);
+void *mm_dimm8_opt(int32_t *, int32_t *);
+void *mm_dimm16_nopt(int32_t *, int32_t *);
+void *mm_dimm16_opt(int32_t *, int32_t *);
 }
 
 #define REPS 15

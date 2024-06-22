@@ -32,7 +32,7 @@ int main(void) {
   BENCH_MM(int32_t, 1, 1024, 256, mm_dimm2_nopt);
   BENCH_MM(int32_t, 16, 64, 256, mm_dimm2_opt);
 
-  BENCH_MM(int32_t, 1, 1024, 128, mm_dimm4_nopt);
+  //BENCH_MM(int32_t, 1, 1024, 128, mm_dimm4_nopt);
   BENCH_MM(int32_t, 16, 64, 128, mm_dimm4_opt);
 
   return 0;

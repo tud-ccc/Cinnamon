@@ -66,13 +66,19 @@ cinm-vulkan-runner FILE *ARGS:
         --shared-libs=../llvm-project/build/lib/libvulkan-runtime-wrappers.so,../llvm-project/build/lib/libmlir_runner_utils.so.17 \
         {{ARGS}}
 
-genBench NAME:
+genBench NAME: (doNinja "cinm-opt")
     #!/bin/bash
+    source "{{upmem_dir}}/upmem_env.sh"
     cd testbench
     export BENCH_NAME="{{NAME}}"
-    make clean && make
+    make clean && make {{NAME}}-exe
 
-bench NAME:
+runBench NAME:
+    #!/bin/bash
+    cd generated2/{{NAME}}/bin
+    ./host
+
+bench NAME: (doNinja "cinm-opt")
     #!/bin/bash
     set -e
     source "{{upmem_dir}}/upmem_env.sh"
