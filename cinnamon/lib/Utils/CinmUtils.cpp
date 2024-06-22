@@ -13,7 +13,7 @@
 
 namespace mlir {
 
-SmallString<20> getUniqueFunctionName(SymbolTable moduleOp, StringRef prefix) {
+SmallString<20> getUniqueFunctionName(SymbolTable &moduleOp, StringRef prefix) {
   // Get a unique global name.
   unsigned stringNumber = 0;
   size_t prefixLen = prefix.size();

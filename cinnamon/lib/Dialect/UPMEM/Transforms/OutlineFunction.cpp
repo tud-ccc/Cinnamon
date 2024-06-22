@@ -32,7 +32,7 @@ namespace {
 /// Set block and grid size bounds if known.
 static upmem::UPMEMFuncOp outlineKernelFuncImpl(func::FuncOp parent,
                                                 upmem::LaunchOp launchOp,
-                                                SymbolTable kernelContainer) {
+                                                SymbolTable& kernelContainer) {
   OpBuilder builder(parent->getContext());
   Location loc = launchOp.getLoc();
 

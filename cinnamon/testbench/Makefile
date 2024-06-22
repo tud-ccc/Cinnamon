@@ -19,7 +19,7 @@ CINM_OPT=../build/bin/cinm-opt
 
 $(IR_PREFIX).tiled.mlir: $(BENCH_NAME).mlir
 	@mkdir -p $(@D)
-	$(CINM_OPT) $< --cinm-tiling --affine-loop-unroll='unroll-full unroll-full-threshold=1' --cse > $@
+	$(CINM_OPT) $< --cinm-tiling --affine-loop-unroll='unroll-full unroll-full-threshold=1' > $@
 
 $(IR_PREFIX).cnm.mlir: $(IR_PREFIX).tiled.mlir
 	$(CINM_OPT) $< --convert-cinm-to-cnm --cnm-hoist-workgroups --canonicalize --cse > $@

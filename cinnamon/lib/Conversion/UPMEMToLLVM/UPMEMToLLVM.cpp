@@ -316,10 +316,10 @@ outlineAffineMap(ImplicitLocOpBuilder &rewriter,
   });
   if (existingOp)
     return existingOp;
-
+  SymbolTable symTable(moduleOp);
   auto affineMapFun = rewriter.create<LLVM::LLVMFuncOp>(
-      mlir::getUniqueFunctionName(SymbolTable(moduleOp), "scatter_map_"),
-      affineFunTy, LLVM::Linkage::Private);
+      "scatter_map", affineFunTy, LLVM::Linkage::Private);
+  symTable.insert(affineMapFun);
 
   // to find it later
   affineMapFun->setAttr("upmem.generated_from", AffineMapAttr::get(*linearMap));
