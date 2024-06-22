@@ -11,6 +11,7 @@
 #include <llvm/ADT/SmallVector.h>
 #include <llvm/ADT/StringRef.h>
 #include <mlir/IR/Builders.h>
+#include <mlir/IR/BuiltinAttributes.h>
 #include <mlir/IR/SymbolTable.h>
 
 namespace mlir {
@@ -106,7 +107,9 @@ struct UPMEMDedupKernelsPass
       if (callOp.getKernelModuleName() != module.getSymName())
         return;
       upmem::UPMEMFuncOp callee = getRepresentant[callOp.getKernelName()];
-      callOp.setKernelAttr(SymbolRefAttr::get(callee));
+      auto leaf = SymbolRefAttr::get(callee);
+      callOp.setKernelAttr(
+          SymbolRefAttr::get(callOp.getKernelModuleName(), {leaf}));
     });
 
     // Erase redundant func ops.
