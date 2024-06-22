@@ -34,8 +34,7 @@ def run(bench):
 
 def run_cinm():
     numbers = {}          
-    benchmarks = ["1mm", "2mm", "3mm", "hst", "va", "red", "sel", "mv"]            
-    # benchmarks = ["mv"]            
+    benchmarks = ["1mm", "2mm", "3mm", "hst", "va", "red", "sel", "mv", "conv"]            
     # benchmarks = ["red", "sel", "mv", "hst", "va"]
     for bench in benchmarks:
         print(bench)

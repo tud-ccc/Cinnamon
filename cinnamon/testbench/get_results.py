@@ -30,7 +30,7 @@ for bench in fig12:
 f.close()
 
 f = open("exp-fig-11.txt", "w")
-fig11 = ["1mm", "2mm", "3mm", "mv"]
+fig11 = ["1mm", "2mm", "3mm", "conv", "mv"]
 
 for bench in fig11:
     f.write(bench + " ")
