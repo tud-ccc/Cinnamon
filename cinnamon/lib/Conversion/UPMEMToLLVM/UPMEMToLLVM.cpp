@@ -203,16 +203,6 @@ public:
   matchAndRewrite(upmem::FreeDPUsOp op,
                   typename upmem::FreeDPUsOp::Adaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
-
-    // Type resultType = LLVM::LLVMPointerType::get(rewriter.getContext(), 0);
-    // LLVM::LLVMFuncOp funcOp =
-    //     appendOrGetFuncOp("upmemrt_dpu_alloc", resultType,
-    //                       {rewriter.getI32Type(), rewriter.getI32Type()},
-    //                       op);
-    // rewriter.replaceOpWithNewOp<LLVM::CallOp>(op, funcOp,
-    //                                           ValueRange{rankCount,
-    //                                           dpuCount});
-
     Type resultType = LLVM::LLVMVoidType::get(rewriter.getContext());
 
     // void upmemrt_dpu_launch(struct dpu_set_t *void_dpu_set) {

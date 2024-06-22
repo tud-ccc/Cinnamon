@@ -78,6 +78,18 @@ struct ConvertCnmWorkgroupToUPMEM
   }
 };
 
+struct ConvertCnmFreeWorkgroup
+    : public OpConversionPattern<cnm::FreeWorkgroupOp> {
+  using OpConversionPattern<cnm::FreeWorkgroupOp>::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(cnm::FreeWorkgroupOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    rewriter.replaceOpWithNewOp<upmem::FreeDPUsOp>(op, adaptor.getWorkgroup());
+    return success();
+  }
+};
+
 struct ConvertCnmScatterToUPMEM : public OpConversionPattern<cnm::ScatterOp> {
   using OpConversionPattern<cnm::ScatterOp>::OpConversionPattern;
 
@@ -311,7 +323,8 @@ void populateCnmToUPMEMConversionPatterns(TypeConverter &typeConverter,
                                           RewritePatternSet &patterns) {
   patterns.add<ConvertCnmWorkgroupToUPMEM, ConvertCnmSetZeroToAffine,
                ConvertCnmScatterToUPMEM, ConvertCnmGatherToUPMEM,
-               ConvertCnmLaunchToUPMEM, ConvertCnmTerminatorToUPMEM>(
+               ConvertCnmLaunchToUPMEM, ConvertCnmTerminatorToUPMEM,
+               ConvertCnmFreeWorkgroup>(
       typeConverter, patterns.getContext());
 }
 

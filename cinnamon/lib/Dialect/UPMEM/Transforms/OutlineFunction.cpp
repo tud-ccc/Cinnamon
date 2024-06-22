@@ -117,14 +117,6 @@ void UPMEMOutlineKernelPass::runOnOperation() {
       convertToLaunchFuncOp(op, outlinedFunc);
       return WalkResult::advance();
     });
-
-    // Inserting free dpus after the last gather operation on a dpu allocation
-    func.walk([&](upmem::AllocDPUsOp op) {
-      OpBuilder builder(op->getContext());
-      builder.setInsertionPoint(op->getBlock()->getTerminator());
-      builder.create<upmem::FreeDPUsOp>(op.getLoc(), op.getHierarchyShape());
-      return WalkResult::advance();
-    });
   }
 }
 } // namespace mlir

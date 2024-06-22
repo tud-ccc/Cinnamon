@@ -34,6 +34,17 @@ def WorkgroupOp : Cnm_Op<"workgroup", []> {
     let assemblyFormat = "attr-dict `:` qualified(type($result))";
 }
 
+def FreeWorkgroupOp : Cnm_Op<"free_workgroup", []> {
+    let summary = "Deallocate a workgroup.";
+    let description = [{}];
+
+    let arguments = (ins WorkgroupType:$workgroup);
+    let results = (outs);
+
+    let assemblyFormat = "$workgroup attr-dict `:` qualified(type($workgroup))";
+}
+
+
 class InferWorkgroupTypeFromBuffer<string buffer, string wg>
 : TypesMatchWith<"workgroup shape matches buffer shape", buffer, wg,
                                "cnm::WorkgroupType::get($_self.getContext(), ::llvm::cast<cnm::BufferType>($_self).getWorkgroupShape())">;

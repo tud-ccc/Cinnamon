@@ -409,6 +409,7 @@ LogicalResult convertCinmToCnm(
     resultValues.push_back(shapedBack);
   }
 
+  builder.create<cnm::FreeWorkgroupOp>(workgroup);
   return success();
 }
 
@@ -648,6 +649,7 @@ struct ConvertCinmGemmToCnm : public OpConversionPattern<cinm::GemmOp> {
                                                 scatterGatherC, outbuf);
 
     rewriter.replaceOp(op, ValueRange{gather.getOutput()});
+    builder.create<cnm::FreeWorkgroupOp>(workgroup);
     return success();
   }
 };
