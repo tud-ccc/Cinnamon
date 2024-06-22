@@ -1,8 +1,8 @@
 #!/bin/bash
 
 # Get the directory where the script is located
-
-MACHINE_DIR="/home/reviewer/Cinnamon/plot/" # Modify if you have cloned your own version
+CINNAMON_LOC="Cinnamon" # MODIFY if you are using a differet location
+MACHINE_DIR="/home/reviewer/$CINNAMON_LOC/plot/" 
 
 TARGET_DIR="." # modify to your liking
 SSH_HOST="reviewer@ios.inf.uni-osnabrueck.de"
