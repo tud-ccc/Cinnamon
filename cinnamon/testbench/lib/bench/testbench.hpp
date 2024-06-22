@@ -3,6 +3,10 @@
 #include <cstdio>
 #include <cstdlib>
 #include <functional>
+
+#define REPS 3
+#define WARMUP 1
+
 // todo call srand(0) before
 template <typename T, unsigned... Shape> T *init_matrix() {
   size_t size = 1;

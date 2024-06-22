@@ -10,9 +10,6 @@ int32_t *mv_dimm8_nopt(int32_t *, int32_t *);
 int32_t *mv_dimm16_opt(int32_t *, int32_t *);
 }
 
-#define REPS 3
-#define WARMUP 1
-
 #define BENCH_MV(ty, M, N, fun_name)                                           \
   do {                                                                         \
     ty *A = init_matrix<ty, M, N>();                                           \

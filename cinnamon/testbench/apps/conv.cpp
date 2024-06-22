@@ -11,9 +11,6 @@ int32_t *mm_dimm16_nopt(int32_t *, int32_t *);
 int32_t *mm_dimm16_opt(int32_t *, int32_t *);
 }
 
-#define REPS 15
-#define WARMUP 5
-
 #define BENCH_MM(ty, M, K, N, fun_name)                                        \
   do {                                                                         \
     ty *A = init_matrix<ty, M, K>();                                           \

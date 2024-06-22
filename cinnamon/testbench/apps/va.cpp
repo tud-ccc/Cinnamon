@@ -6,9 +6,6 @@ void va_8(int32_t *, int32_t *);
 void va_16(int32_t *, int32_t *);
 }
 
-#define REPS 3
-#define WARMUP 1
-
 #define BENCH_VA(ty, M, N, fun_name)                                           \
   do {                                                                         \
     ty *A = init_matrix<ty, M, N>();                                           \
