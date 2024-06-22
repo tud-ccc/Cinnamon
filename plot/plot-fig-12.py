@@ -61,4 +61,5 @@ ax.grid(False, axis='x')
 # Layout adjustments
 plt.tight_layout()
 
+plt.savefig('fig12.pdf')
 plt.show()
