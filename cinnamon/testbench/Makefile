@@ -66,4 +66,4 @@ $(BENCH_NAME): $(IR_PREFIX).host.opt.ll $(IR_PREFIX).dpu.c
 $(BENCH_NAME)-exe: $(OUT_DIR)/bin/host $(BENCH_NAME)-kernel-compile
 
 clean:
-	rm -rf $(OUT_BASE)
+	rm -rf $(OUT_DIR)
