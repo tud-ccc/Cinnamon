@@ -77,7 +77,7 @@ static AffineExpr simplifyAffineExprWithBounds(
     auto dimExpr = cast<AffineDimExpr>(expr);
     auto bound = dimUpperBounds[dimExpr.getPosition()];
     if (bound == 1)
-      return 0;
+      return getAffineConstantExpr(0, expr.getContext());
     return dimExpr;
   }
   case AffineExprKind::Add:
@@ -114,7 +114,7 @@ static AffineExpr simplifyAffineExprWithBounds(
         if (kind == AffineExprKind::Mod && *lhsUB < rhs) {
           return sLHS;
         } else if (kind == AffineExprKind::FloorDiv && *lhsUB < rhs) {
-          return 0;
+          return getAffineConstantExpr(0, expr.getContext());
         }
       }
     }
@@ -142,6 +142,7 @@ AffineMap simplifyAffineMapWithBounds(AffineMap map,
 
   SmallVector<AffineExpr, 8> exprs;
   for (auto e : map.getResults()) {
+    e = simplifyAffineExpr(e, map.getNumDims(), map.getNumSymbols());
     e = simplifyAffineExprWithBounds(e, map.getNumDims(), map.getNumSymbols(),
                                      lowerBounds, upperBounds);
     exprs.push_back(
