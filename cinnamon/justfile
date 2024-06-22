@@ -75,7 +75,8 @@ genBench NAME: (doNinja "cinm-opt")
 
 runBench NAME:
     #!/bin/bash
-    cd generated2/{{NAME}}/bin
+    source "{{upmem_dir}}/upmem_env.sh"
+    cd testbench/generated2/{{NAME}}/bin
     ./host
 
 bench NAME: (doNinja "cinm-opt")
