@@ -65,4 +65,13 @@ def CnmBufferizePass : Pass<"cnm-bufferize", "func::FuncOp"> {
 }
 
 
+def CnmHoistWorkgroupsPass : Pass<"cnm-hoist-workgroups", "func::FuncOp"> {
+  let summary = "Hoist worgroup creation outside of loops";
+  let description = [{
+
+  }];
+  let dependentDialects = [];
+}
+
+
 #endif // CNM_TRANSFORM_PASSES

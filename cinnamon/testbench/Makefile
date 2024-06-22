@@ -4,7 +4,8 @@ BENCH_NAME ?= va
 .DEFAULT_GOAL := $(BENCH_NAME)
 .PHONY: $(BENCH_NAME) $(BENCH_NAME)-kernel-compile clean
 
-OUT_DIR=generated2/$(BENCH_NAME)
+OUT_BASE=generated2
+OUT_DIR=$(OUT_BASE)/$(BENCH_NAME)
 OUT_DIR_IR=$(OUT_DIR)/irs
 OUT_DIR_BIN=$(OUT_DIR)/bin
 OUT_DIR_HOST=$(OUT_DIR)/host
@@ -21,7 +22,7 @@ $(IR_PREFIX).tiled.mlir: $(BENCH_NAME).mlir
 	$(CINM_OPT) $< --cinm-tiling --affine-loop-unroll='unroll-full unroll-full-threshold=1' --cse > $@
 
 $(IR_PREFIX).cnm.mlir: $(IR_PREFIX).tiled.mlir
-	$(CINM_OPT) $< --convert-cinm-to-cnm --canonicalize --cse > $@
+	$(CINM_OPT) $< --convert-cinm-to-cnm --cnm-hoist-workgroups --canonicalize --cse > $@
 
 $(IR_PREFIX).cnm.bufferized.mlir: $(IR_PREFIX).cnm.mlir
 	$(CINM_OPT) $< --lower-affine --one-shot-bufferize='bufferize-function-boundaries function-boundary-type-conversion=identity-layout-map'  \
@@ -65,4 +66,4 @@ $(BENCH_NAME): $(IR_PREFIX).host.opt.ll $(IR_PREFIX).dpu.c
 $(BENCH_NAME)-exe: $(OUT_DIR)/bin/host $(BENCH_NAME)-kernel-compile
 
 clean:
-	rm -rf $(OUT_DIR) hostlib.o
+	rm -rf $(OUT_BASE)

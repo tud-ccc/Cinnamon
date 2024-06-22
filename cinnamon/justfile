@@ -72,9 +72,10 @@ genBench NAME:
     export BENCH_NAME="{{NAME}}"
     make clean && make
 
-genBenchExe NAME:
+bench NAME:
     #!/bin/bash
     set -e
+    source "{{upmem_dir}}/upmem_env.sh"
     cd testbench
     export BENCH_NAME="{{NAME}}"
     make clean && make {{NAME}}-exe

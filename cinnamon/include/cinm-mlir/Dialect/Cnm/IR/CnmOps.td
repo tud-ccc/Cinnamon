@@ -20,10 +20,12 @@ include "mlir/Interfaces/InferTypeOpInterface.td"
 include "mlir/Interfaces/SideEffectInterfaces.td"
 include "mlir/Interfaces/DestinationStyleOpInterface.td"
 include "mlir/Dialect/Bufferization/IR/BufferizableOpInterface.td"
+include "mlir/Dialect/Bufferization/IR/AllocationOpInterface.td"
 include "mlir/IR/CommonAttrConstraints.td"
 
-def WorkgroupOp : Cnm_Op<"workgroup"> {
-    let summary = "";
+
+def WorkgroupOp : Cnm_Op<"workgroup", []> {
+    let summary = "Allocate a workgroup.";
     let description = [{}];
 
     let arguments = (ins);
@@ -37,7 +39,7 @@ class InferWorkgroupTypeFromBuffer<string buffer, string wg>
                                "cnm::WorkgroupType::get($_self.getContext(), ::llvm::cast<cnm::BufferType>($_self).getWorkgroupShape())">;
 
 def AllocOp : Cnm_Op<"alloc", [InferWorkgroupTypeFromBuffer<"result", "wg">]> {
-    let summary = "";
+    let summary = "Allocate a buffer for a given workgroup.";
     let description = [{}];
 
     let arguments = (ins WorkgroupType:$wg);
