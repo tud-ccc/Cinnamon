@@ -498,10 +498,11 @@ void UPMEMFuncOp::print(OpAsmPrinter &p) {
   ::mlir::Builder odsBuilder{getContext()};
   p << ' ';
   p.printSymbolName(getName());
-  p << "() ";
+  p << "()";
   p.printOptionalAttrDictWithKeyword({odsBuilder.getNamedAttr(
       getNumTaskletsAttrName(),
       odsBuilder.getI64IntegerAttr(getNumTasklets()))});
+  p << ' ';
   p.printRegion(getBody(), /*printEntryBlockArgs=*/false);
 }
 
