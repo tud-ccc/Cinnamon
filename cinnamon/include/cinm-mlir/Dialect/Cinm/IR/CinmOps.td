@@ -311,7 +311,7 @@ def Cinm_ComputeOp : Cinm_Base_Op<"compute", [
 
   /// These attributes are used for lowering of the contained cinm ops into CNM.
   let arguments = (ins DefaultValuedAttr<DenseI64ArrayAttr, "{2, 32, 16}">:$workgroupShape,
-                       DefaultValuedAttr<DenseI64ArrayAttr, "{0, 4096, 0}">:$bufferSizesInBytes);
+                       DefaultValuedAttr<DenseI64ArrayAttr, "{0, 65536, 0}">:$bufferSizesInBytes);
   let results = (outs Variadic<AnyType>:$results);
   let regions = (region SizedRegion<1>:$body);
 

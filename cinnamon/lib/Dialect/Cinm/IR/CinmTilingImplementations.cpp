@@ -163,15 +163,31 @@ TilingResult2 tileElementWiseBinaryOp(OpBuilder &builder0, OP op,
   Value rhs = op.getOperand(1);
 
   RankedTensorType tensorTy = lhs.getType().cast<RankedTensorType>();
-  if (params.workingGroupSize() > tensorTy.getNumElements()) {
+  auto wgSize = params.workingGroupSize();
+  auto numElements = tensorTy.getNumElements();
+  if (wgSize > numElements) {
     return emitWarning(op.getLoc())
            << "Cannot tile, working group is too large";
   }
 
-  auto reduceClusterSize = params.reduceClusterSize(
-      3, tensorTy.getNumElements(), tensorTy.getElementType());
-  reduceClusterSize *= params.workingGroupSize();
-  assert(reduceClusterSize <= tensorTy.getNumElements());
+  // This is the max number of reductions we can theoretically do on
+  // a single CNM.launch.
+  auto reduceClusterSize =
+      params.reduceClusterSize(3, numElements, tensorTy.getElementType());
+  // We need the actual tile size to not exceed that number, and
+  // be able to divide the input by the working group size.
+  if (reduceClusterSize * wgSize >= numElements) {
+    // we have too much compute
+    auto numLeavesNeeded = numElements / reduceClusterSize;
+    emitRemark(op.getLoc())
+        << "This computation could be done with a smaller working group,"
+           " theoretically as few as "
+        << numLeavesNeeded << " leaves (we have " << wgSize << ").";
+    reduceClusterSize = numElements / wgSize;
+  }
+  if (numElements % wgSize != 0)
+    return emitWarning(op.getLoc())
+           << "Cannot tile, working group does not divide tensor size";
 
   auto shape = tensorTy.getShape();
   const RankedTensorType originalType = tensorTy;
@@ -192,18 +208,19 @@ TilingResult2 tileElementWiseBinaryOp(OpBuilder &builder0, OP op,
 
   const Value resultInit =
       builder.create<tensor::EmptyOp>(tensorTy, ValueRange{});
+  const auto tileSize = reduceClusterSize * wgSize;
 
   SmallVector<Value> result = createNestedAffineForLoops(
-      builder, op.getLoc(), {tensorTy.getNumElements()}, {reduceClusterSize},
+      builder, op.getLoc(), {tensorTy.getNumElements()}, {tileSize},
       ValueRange{resultInit},
       [&](OpBuilder &builder, Location loc, ValueRange indices,
           ValueRange iterArgs) -> SmallVector<Value> {
         const SmallVector<int64_t, 2> offsets{ShapedType::kDynamic};
-        const SmallVector<int64_t, 2> sizes{reduceClusterSize};
+        const SmallVector<int64_t, 2> sizes{tileSize};
         const SmallVector<int64_t, 2> strides{1};
 
         const RankedTensorType sliceTy = RankedTensorType::get(
-            {reduceClusterSize}, tensorTy.getElementType());
+            {tileSize}, tensorTy.getElementType());
 
         const Value lhsSlice = builder.create<tensor::ExtractSliceOp>(
             loc, sliceTy, lhs, indices, ValueRange{}, ValueRange{}, offsets,

@@ -37,6 +37,10 @@ struct CnmHoistWorkgroupsPass
       while (parent->getParentOp() != fun) {
         parent = parent->getParentOp();
       }
+      if (parent == alloc) {
+        // nothing to hoist
+        continue;
+      }
       rewriter.setInsertionPoint(parent);
       auto newAlloc = rewriter.clone(*alloc, mapper);
       alloc.replaceAllUsesWith(newAlloc);
