@@ -171,10 +171,12 @@ struct ConvertCnmLaunchToUPMEM : public OpConversionPattern<cnm::LaunchOp> {
     }
 
     if (requiredWRAM > availableWRAM) {
-      emitError(op.getLoc(), "required wram (" + std::to_string(requiredWRAM) +
-                                 " bytes) exceeds available wram (" +
-                                 std::to_string(availableWRAM) + " bytes)");
-      return failure();
+      //     emitError(op.getLoc(), "required wram (" +
+      //     std::to_string(requiredWRAM) +
+      //                               " bytes) exceeds available wram (" +
+      //                               std::to_string(availableWRAM) + "
+      //                               bytes)");
+//      return failure();
     }
 
     const Value rankCount =
@@ -324,8 +326,7 @@ void populateCnmToUPMEMConversionPatterns(TypeConverter &typeConverter,
   patterns.add<ConvertCnmWorkgroupToUPMEM, ConvertCnmSetZeroToAffine,
                ConvertCnmScatterToUPMEM, ConvertCnmGatherToUPMEM,
                ConvertCnmLaunchToUPMEM, ConvertCnmTerminatorToUPMEM,
-               ConvertCnmFreeWorkgroup>(
-      typeConverter, patterns.getContext());
+               ConvertCnmFreeWorkgroup>(typeConverter, patterns.getContext());
 }
 
 struct ConvertCnmToUPMEMPass

@@ -2,6 +2,7 @@
 #include <cstdint>
 
 extern "C" {
+void va_64_fast(int32_t *, int32_t *);
 void va_8(int32_t *, int32_t *);
 void va_16(int32_t *, int32_t *);
 }
@@ -18,6 +19,7 @@ void va_16(int32_t *, int32_t *);
 int main(void) {
   srand(0);
 
+  BENCH_VA(int32_t, 8, 2097152, va_64_fast);
   BENCH_VA(int32_t, 8, 2097152, va_8);
   BENCH_VA(int32_t, 16, 1048576, va_16);
 
