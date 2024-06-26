@@ -6,6 +6,12 @@
 
 #include <cinm-mlir/Dialect/Cnm/IR/CnmTypes.h>
 #include <cinm-mlir/Utils/CinmUtils.h>
+#include <llvm/ADT/STLExtras.h>
+#include <llvm/ADT/Sequence.h>
+#include <llvm/ADT/SmallVector.h>
+#include <llvm/ADT/StringRef.h>
+#include <mlir/IR/AffineMap.h>
+#include <mlir/IR/Attributes.h>
 #include <mlir/IR/Builders.h>
 #include <mlir/IR/OpImplementation.h>
 
@@ -17,6 +23,7 @@
 #include <mlir/IR/BuiltinTypeInterfaces.h>
 #include <mlir/IR/BuiltinTypes.h>
 #include <mlir/IR/Diagnostics.h>
+#include <mlir/IR/OperationSupport.h>
 #include <mlir/IR/TypeRange.h>
 #include <mlir/IR/Value.h>
 #include <mlir/Interfaces/InferTypeOpInterface.h>
@@ -59,6 +66,130 @@ void CnmDialect::registerOps() {
   }
 
   return failure();
+}
+
+static ParseResult parseComputeOperand(OpAsmParser &parser,
+                                       Attribute &affineMapAttr,
+                                       OperationState &result) {
+  OpAsmParser::UnresolvedOperand operand;
+  AffineMapAttr affineMap;
+  Type type;
+
+  if (parser.parseOperand(operand) || parser.parseLSquare() ||
+      parser.parseAttribute<AffineMapAttr>(affineMap) || parser.parseRSquare() ||
+      parser.parseColonType(type) ||
+      parser.resolveOperand(operand, type, result.operands)) {
+    return failure();
+  }
+
+  affineMapAttr = affineMap;
+
+  return success();
+}
+
+static ParseResult
+parseComputeOperandList(OpAsmParser &parser, StringRef kw,
+                        llvm::SmallVectorImpl<Attribute> &affineMaps,
+                        OperationState &result) {
+
+  if (parser.parseKeyword(kw) || parser.parseLParen() ||
+      parser.parseCommaSeparatedList([&]() -> ParseResult {
+        return parseComputeOperand(parser, affineMaps.emplace_back(), result);
+      }) ||
+      parser.parseRParen())
+    return failure();
+  return success();
+}
+
+ParseResult ComputeOp::parse(OpAsmParser &parser, OperationState &result) {
+  /*
+  cnm.launch
+  ins(%as[(i)->(i)]: memref<2x512xi32>)
+  outs(%os[(i)->(i)]: memref<2x512xi32>)
+  on hierarchy<2>
+  do (%a1: memref<512xi32>,
+      %o1: memref<512xi32>)  {
+    affine.parallel (%i) = (0) to (512) {
+      %x = memref.load %a1[%i]
+      %t2 = arith.muli %x, 2
+      memref.store %t2, %o1[%i]
+    }
+  }
+  */
+  SmallVector<Attribute> affineMaps;
+  if (parseComputeOperandList(parser, "ins", affineMaps, result))
+    return failure();
+  const int64_t numInputs = affineMaps.size();
+  if (parseComputeOperandList(parser, "outs", affineMaps, result))
+    return failure();
+  result.addAttribute(
+      getNumInputsAttrName(result.name),
+      IntegerAttr::get(IntegerType::get(result.getContext(), 64), numInputs));
+  result.addAttribute(getAffineMapsAttrName(result.name),
+                      ArrayAttr::get(result.getContext(), affineMaps));
+
+  SmallVector<int64_t> workgroupDimensions;
+  if (parser.parseKeyword("on") || parser.parseKeyword("hierarchy") ||
+      parser.parseLess() ||
+      parser.parseDimensionList(workgroupDimensions, false, false) ||
+      parser.parseGreater())
+    return failure();
+
+  result.addAttribute(
+      getWorkgroupShapeAttrName(result.name),
+      DenseI64ArrayAttr::get(result.getContext(), workgroupDimensions));
+
+  SmallVector<OpAsmParser::Argument> args;
+  if (parser.parseKeyword("do") ||
+      parser.parseArgumentList(args, OpAsmParser::Delimiter::Paren,
+                               /*allowType=*/true)) {
+    return failure();
+  }
+  auto &region = *result.addRegion();
+  if (parser.parseRegion(region, args)) {
+    return failure();
+  }
+  // todo results
+
+  return success();
+}
+
+void ComputeOp::print(OpAsmPrinter &out) {
+  bool first = true;
+  out.increaseIndent();
+  out.printNewline();
+  out << "ins(";
+  for (auto [buf, map, i] :
+       llvm::zip(getBuffers(), getAffineMaps(), llvm::seq(0UL, 100000UL))) {
+    if (i == getNumInputs()) {
+      out << ")";
+      out.printNewline();
+      out << "outs(";
+      first = true;
+    }
+    if (!first) {
+      out << ", ";
+    }
+    first = false;
+
+    out.printOperand(buf);
+    out << "[";
+    out.printAttributeWithoutType(map);
+    out << "] : ";
+    out.printType(buf.getType());
+  }
+  out << ") ";
+  out.printNewline();
+  out << "on hierarchy<";
+  out.printDimensionList(getWorkgroupShape());
+  out << ">";
+  out.printNewline();
+  out << "do (";
+  llvm::interleaveComma(getBody().getArguments(), out,
+                        [&](auto arg) { out.printRegionArgument(arg); });
+  out << ") ";
+  out.printRegion(getBody(), false, true);
+  out.decreaseIndent();
 }
 
 LogicalResult LaunchOp::verify() {

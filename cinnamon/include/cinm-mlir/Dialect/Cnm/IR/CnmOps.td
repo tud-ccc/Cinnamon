@@ -135,6 +135,72 @@ def LaunchOp: Cnm_Op<"launch", [AttrSizedOperandSegments, IsolatedFromAbove, Sin
     }];
 }
 
+
+def ComputeOp: Cnm_Op<"compute", [IsolatedFromAbove, SingleBlockImplicitTerminator<"TerminatorOp">]> {
+    let summary = "Transformable operation";
+    let description = [{}];
+
+    let arguments = (ins DenseI64ArrayAttr:$workgroupShape,
+                         I64Attr:$numInputs,
+                         Variadic<AnyShaped>:$buffers,
+                         AffineMapArrayAttr:$affineMaps
+                         );
+
+    let results = (outs Variadic<AnyRankedTensor>:$results);
+    let regions = (region SizedRegion<1>:$body);
+
+    // let hasVerifier = 1;
+    let hasCustomAssemblyFormat = 1;
+
+    let extraClassDeclaration = [{
+        SmallVector<Value> getInBuffers() {
+            if (getNumInputs() == 0)
+                return {};
+            SmallVector<Value> result;
+            result.reserve(getNumInputs());
+            auto begin = getBuffers().begin();
+            result.append(begin, begin + getNumInputs());
+            return result;
+        }
+
+        SmallVector<Value> getOutBuffers() {
+            if (getNumOutputs() == 0)
+                return {};
+            SmallVector<Value> result;
+            result.reserve(getNumOutputs());
+            auto begin = getBuffers().begin() + getNumInputs();
+            result.append(getBuffers().begin() + getNumInputs(), getBuffers().end());
+            return result;
+        }
+
+        uint64_t getNumOutputs() {
+            return getBuffers().size() - getNumInputs();
+        }
+
+        SmallVector<AffineMap> getInMaps() {
+            if (getNumInputs() == 0)
+                return {};
+            SmallVector<AffineMap> result;
+            result.reserve(getNumInputs());
+            auto begin = getAffineMaps().getAsValueRange<AffineMapAttr>().begin();
+            result.append(begin, begin + getNumInputs());
+            return result;
+        }
+
+        SmallVector<AffineMap> getOutMaps() {
+            if (getNumOutputs() == 0)
+                return {};
+            SmallVector<AffineMap> result;
+            result.reserve(getNumOutputs());
+            auto it = getAffineMaps().getAsValueRange<AffineMapAttr>();
+            result.append(it.begin() + getNumInputs(), it.end());
+            return result;
+        }
+        
+    }];
+}
+
+
 def TerminatorOp: Cnm_Op<"terminator", [Terminator]> {
     let summary = "Terminates an `upmem.launch` operator region.";
     let description = [{}];
@@ -143,5 +209,6 @@ def TerminatorOp: Cnm_Op<"terminator", [Terminator]> {
     let results = (outs);
     let assemblyFormat = "attr-dict";
 }
+
 
 #endif
