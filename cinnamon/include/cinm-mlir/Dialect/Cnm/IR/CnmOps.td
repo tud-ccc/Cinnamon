@@ -149,6 +149,16 @@ def ComputeOp: Cnm_Op<"compute", [IsolatedFromAbove, SingleBlockImplicitTerminat
     let results = (outs Variadic<AnyRankedTensor>:$results);
     let regions = (region SizedRegion<1>:$body);
 
+    let builders = [
+        OpBuilder<(ins 
+            CArg<"ArrayRef<int64_t>">:$workgroupShape,
+            CArg<"ValueRange">:$inputs,
+            CArg<"ValueRange">:$inits,
+            CArg<"ArrayRef<AffineMap>">:$affineMaps
+        )>
+    ];
+
+    let skipDefaultBuilders = 1;
     let hasVerifier = 1;
     let hasCustomAssemblyFormat = 1;
 

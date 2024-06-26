@@ -154,6 +154,41 @@ ParseResult ComputeOp::parse(OpAsmParser &parser, OperationState &result) {
   return success();
 }
 
+void ComputeOp::build(::mlir::OpBuilder &builder, ::mlir::OperationState &state,
+                      ArrayRef<int64_t> workgroupShape, ValueRange inputs,
+                      ValueRange inits, ArrayRef<AffineMap> affineMaps) {
+
+  state.addOperands(inputs);
+  state.addOperands(inits);
+  state.addAttribute(getNumInputsAttrName(state.name),
+                     builder.getI64IntegerAttr(inputs.size()));
+  state.addAttribute(getWorkgroupShapeAttrName(state.name),
+                     builder.getDenseI64ArrayAttr(workgroupShape));
+  state.addAttribute(getAffineMapsAttrName(state.name),
+                     builder.getAffineMapArrayAttr(affineMaps));
+
+  auto &entry = state.addRegion()->emplaceBlock();
+  for (auto [i, buf] : llvm::enumerate(state.operands)) {
+    if (buf.getType().isa<ShapedType>()) {
+      auto bufTy = buf.getType().cast<ShapedType>();
+      auto bufShape = bufTy.getShape();
+      if (i < affineMaps.size()) {
+        auto map = affineMaps[i];
+        auto argRank = bufShape.size() - map.getNumResults();
+        if (argRank >= 0) {
+          auto argShape = bufShape.slice(map.getNumResults());
+          auto argTy = MemRefType::get(argShape, bufTy.getElementType());
+          entry.addArgument(argTy, state.location);
+        } else {
+          mlir::emitError(state.location, "Buffer of type ")
+              << buf.getType() << " cannot be addressed by map "
+              << AffineMapAttr::get(map);
+        }
+      }
+    }
+  }
+}
+
 void ComputeOp::print(OpAsmPrinter &out) {
   bool first = true;
   out.increaseIndent();
