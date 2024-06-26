@@ -149,7 +149,7 @@ def ComputeOp: Cnm_Op<"compute", [IsolatedFromAbove, SingleBlockImplicitTerminat
     let results = (outs Variadic<AnyRankedTensor>:$results);
     let regions = (region SizedRegion<1>:$body);
 
-    // let hasVerifier = 1;
+    let hasVerifier = 1;
     let hasCustomAssemblyFormat = 1;
 
     let extraClassDeclaration = [{

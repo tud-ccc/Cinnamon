@@ -76,8 +76,8 @@ static ParseResult parseComputeOperand(OpAsmParser &parser,
   Type type;
 
   if (parser.parseOperand(operand) || parser.parseLSquare() ||
-      parser.parseAttribute<AffineMapAttr>(affineMap) || parser.parseRSquare() ||
-      parser.parseColonType(type) ||
+      parser.parseAttribute<AffineMapAttr>(affineMap) ||
+      parser.parseRSquare() || parser.parseColonType(type) ||
       parser.resolveOperand(operand, type, result.operands)) {
     return failure();
   }
@@ -190,6 +190,58 @@ void ComputeOp::print(OpAsmPrinter &out) {
   out << ") ";
   out.printRegion(getBody(), false, true);
   out.decreaseIndent();
+}
+
+LogicalResult ComputeOp::verify() {
+  if (getAffineMaps().size() != getBuffers().size()) {
+    return emitOpError("affine map count does not match in/out buffer count (")
+           << getAffineMaps().size() << " != " << getBuffers().size() << ")";
+  }
+  auto args = getBody().getArguments();
+  if (args.size() != getBuffers().size()) {
+    return emitOpError(
+               "kernel argument count does not match in/out buffer count (")
+           << args.size() << " != " << getBuffers().size() << ")";
+  }
+
+  for (auto [arg, buf, map, i] : llvm::zip(
+           args, getBuffers(), getAffineMaps().getAsValueRange<AffineMapAttr>(),
+           llvm::seq(0UL, 10000000UL))) {
+    if (!arg.getType().isa<MemRefType>())
+      return emitOpError("kernel argument #") << i << " should be a memref";
+
+    if (map.getNumInputs() != getWorkgroupShape().size())
+      return emitOpError("map for argument #")
+             << i << " should have " << getWorkgroupShape().size()
+             << " inputs, got " << map.getNumInputs();
+
+    auto argTy = arg.getType().cast<MemRefType>();
+    auto inputTy = buf.getType().cast<ShapedType>();
+    if (argTy.getElementType() != inputTy.getElementType())
+      return emitOpError("kernel argument #")
+             << i << " should have element type " << inputTy.getElementType();
+
+    auto argShape = argTy.getShape();
+    auto bufShape = inputTy.getShape();
+
+    if (argShape.size() > bufShape.size())
+      return emitOpError("kernel argument #")
+             << i << " should have fewer than " << bufShape.size()
+             << " dimensions, got " << argShape.size();
+
+    if (map.getNumResults() + argShape.size() != bufShape.size())
+      return emitError("Buffer, map, and kernel argument #")
+             << i << " are incompatible";
+
+    if (bufShape.slice(map.getNumResults()) != argShape) {
+      return emitOpError("kernel argument #")
+             << i << "shape should be suffix of corresponding buffer shape, ("
+             << bufShape.slice(map.getNumResults()) << " != " << argShape
+             << ")";
+    }
+  }
+
+  return success();
 }
 
 LogicalResult LaunchOp::verify() {
