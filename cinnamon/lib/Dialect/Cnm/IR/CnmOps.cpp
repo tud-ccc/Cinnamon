@@ -225,7 +225,8 @@ void ComputeOp::print(OpAsmPrinter &out) {
 
     out.printOperand(buf);
     out << "[";
-    out.printAttributeWithoutType(map);
+    map.cast<AffineMapAttr>().getValue().print(out.getStream());
+    // out.printAttributeWithoutType(map);
     out << "] : ";
     out.printType(buf.getType());
   }

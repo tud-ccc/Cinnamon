@@ -2,11 +2,11 @@
 // RUN: cinm-opt %s --mlir-print-op-generic | cinm-opt | FileCheck %s
 
 
-// CHECK-LABEL: matmul
 
 #map1 = affine_map<(d0, d1, d2) -> (d0 * 1024 + d1 * 16 + d2)>
 #map = affine_map<(d0) -> (d0)>
 
+// CHECK-LABEL: va_8
   func.func @va_8(%arg0: tensor<8x2097152xi32>, %arg1: tensor<8x2097152xi32>) {
     %cst = arith.constant dense<0> : tensor<16384x1024xi32>
     %cst_0 = arith.constant dense<[16384, 1024]> : tensor<2xi64>
@@ -60,7 +60,7 @@
         cnm.terminator
       }
     %r = memref.expand_shape %arg1[[0,1]] : memref<1024xi32> into memref<2x512xi32>
-    
+
     cnm.compute
        ins(%arg0[(i, j) -> ()]: memref<1024xi32>)
        outs(%r[(i, j) -> (i, j)]: memref<2x512xi32>)
