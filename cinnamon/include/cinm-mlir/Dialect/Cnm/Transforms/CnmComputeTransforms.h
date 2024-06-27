@@ -33,9 +33,8 @@ namespace mlir::cnm {
 ///       memref.store %t2, %o1[]
 ///   }
 /// ```
-FailureOr<cnm::ComputeOp> expandWorkshoupDim(OpBuilder &builder,
-                                             cnm::ComputeOp compute,
-                                             uint64_t dim, int64_t factor);
+LogicalResult expandWorkshoupDim(cnm::ComputeOp compute, uint64_t dim,
+                                 int64_t factor);
 
 /// Turn the leftmost dimension of the workgroup into an outer parallel loop.
 /// This transformation might delete the op if the workgroup has only a single

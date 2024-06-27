@@ -11,6 +11,8 @@
 #include "cinm-mlir/Dialect/Cinm/IR/CinmDialect.h"
 #include "cinm-mlir/Dialect/Cinm/Transforms/Passes.h"
 #include "cinm-mlir/Dialect/Cnm/IR/CnmDialect.h"
+#include "cinm-mlir/Dialect/Cnm/TransformOps/CnmTransformOps.h"
+#include "cinm-mlir/Dialect/Cnm/TransformOps/CnmTransformPass.h"
 #include "cinm-mlir/Dialect/Cnm/Transforms/Passes.h"
 #include "cinm-mlir/Dialect/UPMEM/IR/UPMEMDialect.h"
 #include "cinm-mlir/Dialect/UPMEM/Transforms/Passes.h"
@@ -26,7 +28,6 @@
 
 using namespace mlir;
 
-
 int main(int argc, char *argv[]) {
   DialectRegistry registry;
   registerAllDialects(registry);
@@ -39,6 +40,8 @@ int main(int argc, char *argv[]) {
   registerCnmConversionPasses();
   cnm::registerCnmBufferizationExternalModels(registry);
   cnm::registerCnmTransformsPasses();
+  cnm::registerTransformDialectExtension(registry);
+  cnm::registerCnmTransformInterpreterPasses();
   cinm::registerCinmTransformsPasses();
   upmem::registerConvertUpmemToLLvmInterface(registry);
 

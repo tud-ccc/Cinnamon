@@ -2,6 +2,7 @@
 
 #include "cinm-mlir/Dialect/Cinm/IR/CinmDialect.h"
 #include "cinm-mlir/Dialect/Cnm/IR/CnmDialect.h"
+#include "cinm-mlir/Dialect/Cnm/TransformOps/CnmTransformOps.h"
 #include "cinm-mlir/Dialect/UPMEM/IR/UPMEMDialect.h"
 
 #include "mlir/IR/Dialect.h"
@@ -11,19 +12,18 @@
 
 using namespace mlir;
 
-static int asMainReturnCode(LogicalResult r)
-{
-    return r.succeeded() ? EXIT_SUCCESS : EXIT_FAILURE;
+static int asMainReturnCode(LogicalResult r) {
+  return r.succeeded() ? EXIT_SUCCESS : EXIT_FAILURE;
 }
 
-int main(int argc, char* argv[])
-{
-    DialectRegistry registry;
-    registerAllDialects(registry);
+int main(int argc, char *argv[]) {
+  DialectRegistry registry;
+  registerAllDialects(registry);
 
-    registry.insert<cinm::CinmDialect>();
-    registry.insert<cnm::CnmDialect>();
-    registry.insert<upmem::UPMEMDialect>();
+  registry.insert<cinm::CinmDialect>();
+  registry.insert<cnm::CnmDialect>();
+  registry.insert<upmem::UPMEMDialect>();
+  cnm::registerTransformDialectExtension(registry);
 
-    return asMainReturnCode(MlirLspServerMain(argc, argv, registry));
+  return asMainReturnCode(MlirLspServerMain(argc, argv, registry));
 }

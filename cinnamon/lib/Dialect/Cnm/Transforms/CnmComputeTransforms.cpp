@@ -5,14 +5,14 @@
 #include <mlir/IR/AffineExpr.h>
 #include <mlir/IR/AffineMap.h>
 #include <mlir/IR/BuiltinAttributes.h>
+#include <mlir/Support/LogicalResult.h>
 
 using namespace mlir;
 
 namespace mlir::cnm {
 
-FailureOr<cnm::ComputeOp> expandWorkshoupDim(OpBuilder &builder,
-                                             cnm::ComputeOp compute,
-                                             uint64_t dim, int64_t factor) {
+LogicalResult expandWorkshoupDim(cnm::ComputeOp compute, uint64_t dim,
+                                 int64_t factor) {
   auto wg = compute.getWorkgroupShape();
   if (dim >= wg.size() || wg[dim] % factor != 0)
     return failure();
@@ -21,12 +21,13 @@ FailureOr<cnm::ComputeOp> expandWorkshoupDim(OpBuilder &builder,
   newShape[dim] = factor;
   newShape.insert(newShape.begin() + dim + 1, tile);
 
-  auto ctx = builder.getContext();
+  auto ctx = compute.getContext();
   auto d0 = getAffineDimExpr(dim, ctx);
   auto d1 = getAffineDimExpr(dim + 1, ctx);
   auto newIx = d0 * tile + d1;
 
-  // Build an identity map that looks like (a,b,d0,d1,c) -> (a,b, d0 * tile + d1, c)
+  // Build an identity map that looks like (a,b,d0,d1,c) -> (a,b, d0 * tile +
+  // d1, c)
   SmallVector<AffineExpr> exprs;
   auto offset = 0;
   for (uint64_t i = 0; i < wg.size(); i++) {
@@ -46,10 +47,11 @@ FailureOr<cnm::ComputeOp> expandWorkshoupDim(OpBuilder &builder,
     map = map.compose(linearMap);
   }
 
-  auto result = builder.create<cnm::ComputeOp>(
-      compute->getLoc(), newShape, compute.getInBuffers(),
-      compute.getOutBuffers(), affineMaps);
-  return success(result);
+  OpBuilder b(ctx);
+  compute.setAffineMapsAttr(b.getAffineMapArrayAttr(affineMaps));
+  compute.setWorkgroupShape(newShape);
+
+  return success();
 }
 
 } // namespace mlir::cnm
