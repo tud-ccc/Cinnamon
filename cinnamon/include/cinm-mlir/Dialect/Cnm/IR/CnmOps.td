@@ -206,6 +206,16 @@ def ComputeOp: Cnm_Op<"compute", [IsolatedFromAbove, SingleBlockImplicitTerminat
             result.append(it.begin() + getNumInputs(), it.end());
             return result;
         }
+
+        template<unsigned N = llvm::CalculateSmallVectorDefaultInlinedElements<AffineMap>::value>
+        SmallVector<AffineMap, N> getAffineMapsVec() {
+            SmallVector<AffineMap, N> result(getAffineMaps().getAsValueRange<AffineMapAttr>());
+            return result;
+        }
+
+        MutableArrayRef<BlockArgument> getKernelArgs() {
+            return getBody().getArguments();
+        }
         
     }];
 }

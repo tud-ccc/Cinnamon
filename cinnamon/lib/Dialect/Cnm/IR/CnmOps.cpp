@@ -68,21 +68,36 @@ void CnmDialect::registerOps() {
   return failure();
 }
 
+static ParseResult parseAffineMapInlineOrNot(OpAsmParser &parser,
+                                             Attribute &affineMapAttr) {
+
+  if (failed(parser.parseCustomAttributeWithFallback(
+          affineMapAttr, Type(), [&](Attribute &result, Type) {
+            AffineMap inlineMap;
+            if (parser.parseAffineMap(inlineMap))
+              return failure();
+            result = AffineMapAttr::get(inlineMap);
+            return success();
+          })))
+    return failure();
+  if (!affineMapAttr.isa<AffineMapAttr>())
+    return parser.emitError(
+        parser.getCurrentLocation(),
+        "invalid kind of attribute specified, expected affine map");
+  return success();
+}
 static ParseResult parseComputeOperand(OpAsmParser &parser,
                                        Attribute &affineMapAttr,
                                        OperationState &result) {
   OpAsmParser::UnresolvedOperand operand;
-  AffineMapAttr affineMap;
   Type type;
 
   if (parser.parseOperand(operand) || parser.parseLSquare() ||
-      parser.parseAttribute<AffineMapAttr>(affineMap) ||
+      parseAffineMapInlineOrNot(parser, affineMapAttr) ||
       parser.parseRSquare() || parser.parseColonType(type) ||
       parser.resolveOperand(operand, type, result.operands)) {
     return failure();
   }
-
-  affineMapAttr = affineMap;
 
   return success();
 }
@@ -228,6 +243,9 @@ void ComputeOp::print(OpAsmPrinter &out) {
 }
 
 LogicalResult ComputeOp::verify() {
+  if (getWorkgroupShape().empty()) {
+    return emitOpError("has empty workgroup shape");
+  }
   if (getAffineMaps().size() != getBuffers().size()) {
     return emitOpError("affine map count does not match in/out buffer count (")
            << getAffineMaps().size() << " != " << getBuffers().size() << ")";

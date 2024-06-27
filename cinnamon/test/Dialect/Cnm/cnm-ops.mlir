@@ -33,35 +33,49 @@
 }
 
 
-func.func @transform(%A: memref<2x512xi32>, %O: memref<2x512xi32>) {
-  cnm.compute
-  ins(%A[#map]: memref<2x512xi32>)
-  outs(%O[#map]: memref<2x512xi32>)
-  on hierarchy<2>
-  do (%a1: memref<512xi32>,
-      %o1: memref<512xi32>)  {
-    affine.parallel (%i) = (0) to (512) {
-      %x = memref.load %a1[%i]: memref<512xi32>
-      %cst2 = arith.constant 2: i32
-      %t2 = arith.muli %x, %cst2: i32
-      memref.store %t2, %o1[%i] : memref<512xi32>
-    }
-    cnm.terminator
-  }
-   cnm.compute
-  ins(%A[#map]: memref<2x512xi32>)
-  outs(%O[#map]: memref<2x512xi32>)
-  on hierarchy<2>
-  do (%a1: memref<512xi32>,
-      %o1: memref<512xi32>)  {
-    affine.parallel (%i) = (0) to (512) {
-      %x = memref.load %a1[%i]: memref<512xi32>
-      %cst2 = arith.constant 2: i32
-      %t2 = arith.muli %x, %cst2: i32
-      memref.store %t2, %o1[%i] : memref<512xi32>
-    }
-    cnm.terminator
-  }
+  func.func @transform(%arg0: memref<1024xi32>, %arg1: memref<1024xi32>) {
+    cnm.compute
+      ins(%arg0[#map] : memref<1024xi32>)
+      outs(%arg1[#map] : memref<1024xi32>) 
+      on hierarchy<1024>
+      do (%arg2: memref<i32>, %arg3: memref<i32>) {
+        %0 = memref.load %arg2[] : memref<i32>
+        %c2_i32 = arith.constant 2 : i32
+        %1 = arith.muli %0, %c2_i32 : i32
+        memref.store %1, %arg3[] : memref<i32>
+        cnm.terminator
+      }
+
+    cnm.compute
+       ins(%arg0[(i, j) -> ()]: memref<1024xi32>)
+       outs(%arg1[(i, j) -> (i * 512 + j)]: memref<1024xi32>)
+       on hierarchy<2x512>
+       do (%a1: memref<1024xi32>, %o1: memref<i32>)  {
+        affine.for %i = 0 to 1024 {
+          %0 = memref.load %a1[%i] : memref<1024xi32>
+          %1 = memref.load %o1[] : memref<i32>
+          %2 = arith.addi %0, %1 : i32
+          memref.store %2, %o1[] : memref<i32>
+        }
+        cnm.terminator
+      }
+
+    %r = memref.expand_shape %arg1[[0,1]] : memref<1024xi32> into memref<2x512xi32>
+    cnm.compute
+       ins(%arg0[(i) -> ()]: memref<1024xi32>)
+       outs(%r[(i) -> (i)]: memref<2x512xi32>)
+       on hierarchy<2>
+       do (%a1: memref<1024xi32>, %o1: memref<512xi32>)  {
+        affine.for %j = 0 to 512 {
+            affine.for %i = 0 to 1024 {
+              %0 = memref.load %a1[%i] : memref<1024xi32>
+              %1 = memref.load %o1[%j] : memref<512xi32>
+              %2 = arith.addi %0, %1 : i32
+              memref.store %2, %o1[%j] : memref<512xi32>
+            }
+        }
+        cnm.terminator
+      }
   return
 
 }
