@@ -2,7 +2,10 @@
 #include <cinm-mlir/Dialect/Cnm/IR/CnmOps.h>
 #include <cinm-mlir/Dialect/Cnm/TransformOps/CnmTransformOps.h>
 #include <cinm-mlir/Dialect/Cnm/Transforms/CnmComputeTransforms.h>
+#include <llvm/ADT/SmallVector.h>
+#include <mlir/Dialect/Transform/IR/TransformInterfaces.h>
 #include <mlir/IR/Builders.h>
+#include <mlir/IR/Value.h>
 #include <mlir/Support/LogicalResult.h>
 
 #define GET_OP_CLASSES
@@ -66,5 +69,34 @@ void CnmExpandDimOp::getEffects(
   onlyReadsHandle(getTarget(), effects);
 
   // Indicate that the payload is modified by this operation.
+  modifiesPayload(effects);
+}
+
+DiagnosedSilenceableFailure CnmPeelRightOp::apply(TransformRewriter &rewriter,
+                                                  TransformResults &results,
+                                                  TransformState &state) {
+
+  auto payload = state.getPayloadOps(getTarget());
+
+  for (Operation *payloadOp : payload) {
+    auto compute = dyn_cast<::mlir::cnm::ComputeOp>(payloadOp);
+    if (!compute) {
+      return emitDefaultSilenceableFailure(payloadOp);
+    }
+    auto res = cnm::peelRight(rewriter, compute);
+    if (failed(res)) {
+      DiagnosedSilenceableFailure diag =
+          emitDefaultSilenceableFailure(payloadOp);
+      diag.attachNote() << "Transform failed";
+    }
+  }
+
+  // If everything went well, return success.
+  return DiagnosedSilenceableFailure::success();
+}
+
+void CnmPeelRightOp::getEffects(
+    ::llvm::SmallVectorImpl<::mlir::MemoryEffects::EffectInstance> &effects) {
+  onlyReadsHandle(getTarget(), effects);
   modifiesPayload(effects);
 }

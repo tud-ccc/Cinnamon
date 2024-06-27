@@ -13,6 +13,7 @@
 #include <mlir/IR/AffineMap.h>
 #include <mlir/IR/Attributes.h>
 #include <mlir/IR/Builders.h>
+#include <mlir/IR/Location.h>
 #include <mlir/IR/OpImplementation.h>
 
 #include <cstdint>
@@ -242,6 +243,17 @@ void ComputeOp::print(OpAsmPrinter &out) {
   out.decreaseIndent();
 }
 
+InFlightDiagnostic emitNiceError(Operation *op, Location loc,
+                                 const Twine &message) {
+  InFlightDiagnostic diag = mlir::emitError(loc, message);
+  if (op->getContext()->shouldPrintOpOnDiagnostic()) {
+    diag.attachNote(op->getLoc())
+        .append("see current operation: ")
+        .appendOp(*op, OpPrintingFlags().printGenericOpForm());
+  }
+  return diag;
+}
+
 LogicalResult ComputeOp::verify() {
   if (getWorkgroupShape().empty()) {
     return emitOpError("has empty workgroup shape");
@@ -261,7 +273,8 @@ LogicalResult ComputeOp::verify() {
            args, getBuffers(), getAffineMaps().getAsValueRange<AffineMapAttr>(),
            llvm::seq(0UL, 10000000UL))) {
     if (!arg.getType().isa<MemRefType>())
-      return emitOpError("kernel argument #") << i << " should be a memref";
+      return emitNiceError(*this, arg.getLoc(), "kernel argument #")
+             << i << " should be a memref";
 
     if (map.getNumInputs() != getWorkgroupShape().size())
       return emitOpError("map for argument #")
@@ -271,23 +284,24 @@ LogicalResult ComputeOp::verify() {
     auto argTy = arg.getType().cast<MemRefType>();
     auto inputTy = buf.getType().cast<ShapedType>();
     if (argTy.getElementType() != inputTy.getElementType())
-      return emitOpError("kernel argument #")
+      return emitNiceError(*this, arg.getLoc(), "Kernel argument #")
              << i << " should have element type " << inputTy.getElementType();
 
     auto argShape = argTy.getShape();
     auto bufShape = inputTy.getShape();
 
     if (argShape.size() > bufShape.size())
-      return emitOpError("kernel argument #")
+      return emitNiceError(*this, arg.getLoc(), "Kernel argument #")
              << i << " should have fewer than " << bufShape.size()
              << " dimensions, got " << argShape.size();
 
     if (map.getNumResults() + argShape.size() != bufShape.size())
-      return emitError("Buffer, map, and kernel argument #")
+      return emitNiceError(*this, arg.getLoc(),
+                           "Buffer, map, and kernel argument #")
              << i << " are incompatible";
 
     if (bufShape.slice(map.getNumResults()) != argShape) {
-      return emitOpError("kernel argument #")
+      return emitNiceError(*this, arg.getLoc(), "Kernel argument #")
              << i << "shape should be suffix of corresponding buffer shape, ("
              << bufShape.slice(map.getNumResults()) << " != " << argShape
              << ")";

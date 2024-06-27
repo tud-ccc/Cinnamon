@@ -27,3 +27,23 @@ def CnmExpandDimOp : Op<Transform_Dialect, "cnm.expand_dim",
   let extraClassDeclaration = [{
   }];
 }
+
+
+def CnmPeelRightOp : Op<Transform_Dialect, "cnm.peel_right",
+    [FunctionalStyleTransformOpTrait,
+     DeclareOpInterfaceMethods<TransformOpInterface>,
+     DeclareOpInterfaceMethods<MemoryEffectsOpInterface>,
+     TransformEachOpTrait,
+     ReportTrackingListenerFailuresOpTrait]> {
+  let description = [{
+
+  }];
+
+  let arguments = (ins TransformHandleTypeInterface:$target);
+  let results = (outs);
+  let assemblyFormat =
+      "$target attr-dict `:` functional-type(operands, results)";
+
+  let extraClassDeclaration = [{
+  }];
+}
