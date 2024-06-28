@@ -16,7 +16,6 @@ namespace mlir::cnm {
 } // namespace mlir::cnm
 
 using namespace mlir;
-namespace {}
 
 struct CnmHoistWorkgroupsPass
     : public cnm::impl::CnmHoistWorkgroupsPassBase<CnmHoistWorkgroupsPass> {

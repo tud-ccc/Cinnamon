@@ -167,4 +167,7 @@ LogicalResult peelRight(OpBuilder &builder, cnm::ComputeOp compute);
 ///   }
 /// ```
 LogicalResult normalizeInputs(OpBuilder &builder, cnm::ComputeOp compute);
+
+/// Lower a cnm.compute to lower level cnm ops
+void lowerComputeToLaunch(OpBuilder &builder, cnm::ComputeOp op);
 } // namespace mlir::cnm

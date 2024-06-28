@@ -31,6 +31,11 @@ def WorkgroupOp : Cnm_Op<"workgroup", []> {
     let arguments = (ins);
     let results = (outs WorkgroupType:$result);
 
+    let builders = [
+        OpBuilder<(ins "ArrayRef<int64_t>":$shape),
+          "build($_builder, $_state, WorkgroupType::get($_builder.getContext(), shape));">
+    ];
+
     let assemblyFormat = "attr-dict `:` qualified(type($result))";
 }
 
@@ -55,6 +60,11 @@ def AllocOp : Cnm_Op<"alloc", [InferWorkgroupTypeFromBuffer<"result", "wg">]> {
 
     let arguments = (ins WorkgroupType:$wg);
     let results = (outs BufferType:$result);
+
+    let builders = [
+        OpBuilder<(ins "ArrayRef<int64_t>":$bufShape, "Type":$elementTy, "Value":$wg, CArg<"int64_t", "0">:$level),
+          "build($_builder, $_state, BufferType::get(bufShape, elementTy, wg.getType().cast<cnm::WorkgroupType>().getShape(), level), wg);">
+    ];
 
 
     let extraClassDeclaration = [{

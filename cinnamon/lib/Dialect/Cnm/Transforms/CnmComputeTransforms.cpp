@@ -1,4 +1,5 @@
 
+#include "cinm-mlir/Dialect/Cnm/IR/CnmTypes.h"
 #include <cinm-mlir/Dialect/Cnm/Transforms/CnmComputeTransforms.h>
 #include <cstdint>
 #include <llvm/ADT/ArrayRef.h>
@@ -18,11 +19,13 @@
 #include <mlir/IR/BuiltinTypeInterfaces.h>
 #include <mlir/IR/BuiltinTypes.h>
 #include <mlir/IR/IRMapping.h>
+#include <mlir/IR/ImplicitLocOpBuilder.h>
 #include <mlir/IR/Location.h>
 #include <mlir/IR/Operation.h>
 #include <mlir/IR/TypeRange.h>
 #include <mlir/IR/Types.h>
 #include <mlir/IR/Value.h>
+#include <mlir/IR/ValueRange.h>
 #include <mlir/IR/Visitors.h>
 #include <mlir/Support/LogicalResult.h>
 #include <optional>
@@ -106,8 +109,8 @@ LogicalResult expandWorkshoupDim(cnm::ComputeOp compute, uint64_t dim,
 ///   }
 /// ```
 
-static void remapUse(Operation *usage, BlockArgument newArg, Value indexVal,
-                     OpBuilder &builder) {
+static void remapUse(Operation *usage, BlockArgument, Value indexVal,
+                     OpBuilder &) {
   if (auto load = dyn_cast_or_null<memref::LoadOp>(usage)) {
     // logically this load does not verify
     load.getIndicesMutable().append(indexVal);
@@ -115,33 +118,6 @@ static void remapUse(Operation *usage, BlockArgument newArg, Value indexVal,
   if (auto store = dyn_cast_or_null<memref::StoreOp>(usage)) {
     // logically this load does not verify
     store.getIndicesMutable().append(indexVal);
-  }
-}
-
-void wrapLoopOverKernel(int loopSize, cnm::ComputeOp originalCompute,
-                        ArrayRef<BlockArgument> originalArgs,
-                        ArrayRef<BlockArgument> newArgs,
-                        // affine maps that describe how the accesses to
-                        // each original argument must be remapped to the
-                        // new args
-                        ArrayRef<AffineMap> argMap, Block &originalBlock,
-                        Block &newBlock) {
-
-  IRMapping mapping;
-  for (auto [orig, newer] : llvm::zip(originalArgs, newArgs)) {
-    mapping.map(orig, newer);
-  }
-
-  OpBuilder builder(originalCompute->getContext());
-  builder.setInsertionPointToStart(&newBlock);
-  auto loop = builder.create<affine::AffineParallelOp>(
-      originalCompute->getLoc(), TypeRange{}, ArrayRef<arith::AtomicRMWKind>{},
-      ArrayRef<int64_t>{loopSize});
-
-  auto bodyBuilder = loop.getBodyBuilder();
-
-  for (auto &op : originalBlock) {
-    auto o = op.clone();
   }
 }
 
@@ -269,4 +245,46 @@ LogicalResult peelRight(OpBuilder &builder, cnm::ComputeOp compute) {
   return peelRightPerfect(builder, compute);
 }
 
+void lowerComputeToLaunch(OpBuilder &builder0, cnm::ComputeOp op) {
+  ImplicitLocOpBuilder builder(op.getLoc(), builder0);
+  builder.setInsertionPoint(op);
+  auto affineMaps = op.getAffineMapsVec();
+  Value wg = builder.create<cnm::WorkgroupOp>(op.getWorkgroupShape());
+  llvm::SmallVector<Value> cnmBuffers;
+  for (auto [buf, arg] : llvm::zip(op.getBuffers(), op.getKernelArgs())) {
+    auto argTy = arg.getType().cast<ShapedType>();
+    cnmBuffers.push_back(builder.create<cnm::AllocOp>(
+        argTy.getShape(), argTy.getElementType(), wg,
+        0 // level
+        ));
+  }
+
+  for (auto [buf, map, cnmBuf] :
+       llvm::zip(op.getBuffers(), affineMaps, cnmBuffers)) {
+    builder.create<cnm::ScatterOp>(buf, cnmBuf, wg, map);
+  }
+
+  const ArrayRef<Value> cnmBufferRef(cnmBuffers);
+
+  auto launch = builder.create<cnm::LaunchOp>(
+      wg, ValueRange(cnmBufferRef.slice(0, op.getNumInputs())),
+      ValueRange(cnmBufferRef.slice(op.getNumInputs(), op.getNumOutputs())));
+
+  launch.getBody().takeBody(op.getBody());
+
+  SmallVector<Value> results;
+  for (auto [cnmBuf, map, init] :
+       llvm::drop_begin(llvm::zip(cnmBuffers, affineMaps, op.getBuffers()),
+                        op.getNumInputs())) {
+    auto gather = builder.create<cnm::GatherOp>(cnmBuf, wg, map, init);
+    if (gather->getNumResults() > 0) {
+      results.push_back(gather.getOutput());
+    }
+  }
+
+  builder.create<cnm::FreeWorkgroupOp>(wg);
+
+  op->replaceAllUsesWith(results);
+  op.erase();
+}
 } // namespace mlir::cnm
