@@ -22,7 +22,7 @@
     cnm.scatter %reshape_4 into %2[#map1] of %0 : tensor<16384x1024xi32> into !cnm.buffer<1024xi32 on 16x64x16, level 0>
     %3 = cnm.alloc() for %0 : !cnm.buffer<1024xi32 on 16x64x16, level 0>
     cnm.scatter %cst into %3[#map1] of %0 : tensor<16384x1024xi32> into !cnm.buffer<1024xi32 on 16x64x16, level 0>
-    cnm.launch %0 in(%1, %2 : !cnm.buffer<1024xi32 on 16x64x16, level 0>, !cnm.buffer<1024xi32 on 16x64x16, level 0>) out(%3 : !cnm.buffer<1024xi32 on 16x64x16, level 0>) on !cnm.workgroup<16x64x16> {
+    cnm.launch %0 ins(%1, %2 : !cnm.buffer<1024xi32 on 16x64x16, level 0>, !cnm.buffer<1024xi32 on 16x64x16, level 0>) outs(%3 : !cnm.buffer<1024xi32 on 16x64x16, level 0>) on !cnm.workgroup<16x64x16> {
     ^bb0(%arg2: memref<1024xi32>, %arg3: memref<1024xi32>, %arg4: memref<1024xi32>):
       linalg.add ins(%arg2, %arg3 : memref<1024xi32>, memref<1024xi32>) outs(%arg4 : memref<1024xi32>)
     }

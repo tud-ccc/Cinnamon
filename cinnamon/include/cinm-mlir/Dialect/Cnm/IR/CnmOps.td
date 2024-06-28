@@ -134,7 +134,7 @@ def LaunchOp: Cnm_Op<"launch", [AttrSizedOperandSegments, IsolatedFromAbove, Sin
     let regions = (region SizedRegion<1>:$body);
 
     let hasVerifier = 1;
-    let assemblyFormat = "$wg `in` `(` $inBuffers `:` type($inBuffers) `)` `out` `(` $outBuffers `:` type($outBuffers) `)` attr-dict `on` qualified(type($wg)) $body";
+    let assemblyFormat = "$wg `ins` `(` $inBuffers `:` type($inBuffers) `)` `outs` `(` $outBuffers `:` type($outBuffers) `)` attr-dict `on` qualified(type($wg)) $body";
 
     let extraClassDeclaration = [{
         SmallVector<Value> getParams() {
