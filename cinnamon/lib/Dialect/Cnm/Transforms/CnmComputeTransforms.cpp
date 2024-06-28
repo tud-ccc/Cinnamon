@@ -18,6 +18,7 @@
 #include <mlir/IR/BuiltinAttributes.h>
 #include <mlir/IR/BuiltinTypeInterfaces.h>
 #include <mlir/IR/BuiltinTypes.h>
+#include <mlir/IR/Diagnostics.h>
 #include <mlir/IR/IRMapping.h>
 #include <mlir/IR/ImplicitLocOpBuilder.h>
 #include <mlir/IR/Location.h>
@@ -37,8 +38,18 @@ namespace mlir::cnm {
 LogicalResult expandWorkshoupDim(cnm::ComputeOp compute, uint64_t dim,
                                  int64_t factor) {
   auto wg = compute.getWorkgroupShape();
-  if (dim >= wg.size() || wg[dim] % factor != 0)
+  if (dim >= wg.size()) {
+    mlir::emitWarning(compute->getLoc())
+        << "Cannot expand dim #" << dim << " by factor " << factor
+        << " because workgroup only has " << wg.size() << " dimensions";
     return failure();
+  }
+  if (wg[dim] % factor != 0) {
+    mlir::emitWarning(compute->getLoc())
+        << "Cannot expand dim #" << dim << " by factor " << factor
+        << " because dimension (" << wg[dim] << ") is not divisible by factor";
+    return failure();
+  }
   auto tile = wg[dim] / factor;
   SmallVector<int64_t> newShape(wg);
   newShape[dim] = factor;
@@ -128,6 +139,8 @@ LogicalResult peelRightPerfect(OpBuilder &builder, cnm::ComputeOp compute) {
   auto wg = compute.getWorkgroupShape();
   assert(!wg.empty());
   if (wg.size() == 1) {
+    mlir::emitWarning(compute->getLoc())
+        << "Cannot peel right because workgroup has only 1 dimension";
     return failure();
   }
 
@@ -147,9 +160,6 @@ LogicalResult peelRightPerfect(OpBuilder &builder, cnm::ComputeOp compute) {
     auto argTy = arg.getType().cast<ShapedType>();
     auto argShape = argTy.getShape();
 
-    auto scatterShape = bufTy.getShape().slice(0, bufTy.getShape().size() -
-                                                      argTy.getShape().size());
-
     bool isBroadCast;
     if (map.getNumResults() > 0) {
       // all the first N-1 results have to not use the result.
@@ -161,6 +171,12 @@ LogicalResult peelRightPerfect(OpBuilder &builder, cnm::ComputeOp compute) {
       if (lastRes.isFunctionOfDim(dimIx)) {
         if (lastRes != getAffineDimExpr(dimIx, ctx)) {
           // todo we can support non-identity last dims later
+          return failure();
+        }
+        if (bufShape[dimIx] != peelDim) {
+          mlir::emitWarning(compute->getLoc())
+              << "Cannot peel right because the last dimension of buffer #" << i
+              << " needs to be " << peelDim << ", got " << bufShape[dimIx];
           return failure();
         }
         // drop last result
