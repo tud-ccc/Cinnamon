@@ -27,6 +27,7 @@
 #include <mlir/IR/OperationSupport.h>
 #include <mlir/IR/TypeRange.h>
 #include <mlir/IR/Value.h>
+#include <mlir/IR/ValueRange.h>
 #include <mlir/Interfaces/InferTypeOpInterface.h>
 #include <mlir/Support/LogicalResult.h>
 
@@ -120,6 +121,7 @@ parseComputeOperandList(OpAsmParser &parser, StringRef kw,
 ParseResult ComputeOp::parse(OpAsmParser &parser, OperationState &result) {
   /*
   cnm.launch
+  (symbols [%O1, %O2])?
   ins(%as[(i)->(i)]: memref<2x512xi32>)
   outs(%os[(i)->(i)]: memref<2x512xi32>)
   on hierarchy<2>
@@ -132,17 +134,35 @@ ParseResult ComputeOp::parse(OpAsmParser &parser, OperationState &result) {
     }
   }
   */
+  int numSymbols = 0;
+  if (succeeded(parser.parseOptionalKeyword("symbols"))) {
+    SmallVector<OpAsmParser::UnresolvedOperand> symbolBindings;
+    if (parser.parseOperandList(symbolBindings,
+                                OpAsmParser::Delimiter::Square) ||
+        parser.resolveOperands(symbolBindings,
+                               parser.getBuilder().getIndexType(),
+                               result.operands))
+      return failure();
+
+    numSymbols = symbolBindings.size();
+  }
+
   SmallVector<Attribute> affineMaps;
   if (parseComputeOperandList(parser, "ins", affineMaps, result))
     return failure();
   const int64_t numInputs = affineMaps.size();
   if (parseComputeOperandList(parser, "outs", affineMaps, result))
     return failure();
+  const int numBuffers = affineMaps.size();
   result.addAttribute(
       getNumInputsAttrName(result.name),
       IntegerAttr::get(IntegerType::get(result.getContext(), 64), numInputs));
   result.addAttribute(getAffineMapsAttrName(result.name),
                       ArrayAttr::get(result.getContext(), affineMaps));
+
+  result.addAttribute(
+      getOperandSegmentSizesAttrName(result.name),
+      parser.getBuilder().getDenseI32ArrayAttr({numSymbols, numBuffers}));
 
   SmallVector<int64_t> workgroupDimensions;
   if (parser.parseKeyword("on") || parser.parseKeyword("hierarchy") ||
@@ -166,7 +186,7 @@ ParseResult ComputeOp::parse(OpAsmParser &parser, OperationState &result) {
     return failure();
   }
   ComputeOp::ensureTerminator(region, parser.getBuilder(), result.location);
-  
+
   // todo results, bufferization
 
   return success();
@@ -174,10 +194,18 @@ ParseResult ComputeOp::parse(OpAsmParser &parser, OperationState &result) {
 
 void ComputeOp::build(::mlir::OpBuilder &builder, ::mlir::OperationState &state,
                       ArrayRef<int64_t> workgroupShape, ValueRange inputs,
-                      ValueRange inits, ArrayRef<AffineMap> affineMaps) {
+                      ValueRange inits, ArrayRef<AffineMap> affineMaps,
+                      ValueRange symbolBindings) {
 
+  state.addOperands(symbolBindings);
   state.addOperands(inputs);
   state.addOperands(inits);
+
+  state.addAttribute(getOperandSegmentSizesAttrName(state.name),
+                     builder.getDenseI32ArrayAttr(
+                         {static_cast<int>(symbolBindings.size()),
+                          static_cast<int>(inputs.size() + inits.size())}));
+
   state.addAttribute(getNumInputsAttrName(state.name),
                      builder.getI64IntegerAttr(inputs.size()));
   state.addAttribute(getWorkgroupShapeAttrName(state.name),
@@ -212,6 +240,13 @@ void ComputeOp::print(OpAsmPrinter &out) {
   bool first = true;
   out.increaseIndent();
   out.printNewline();
+  auto syms = getSymbolBindings();
+  if (!syms.empty()) {
+    out << "symbols [";
+    out.printOperands(syms);
+    out << "]";
+    out.printNewline();
+  }
   out << "ins(";
   for (auto [buf, map, i] :
        llvm::zip(getBuffers(), getAffineMaps(), llvm::seq(0UL, 100000UL))) {
@@ -272,6 +307,7 @@ LogicalResult ComputeOp::verify() {
                "kernel argument count does not match in/out buffer count (")
            << args.size() << " != " << getBuffers().size() << ")";
   }
+  const auto symbolCount = getSymbolBindings().size();
 
   for (auto [arg, buf, map, i] : llvm::zip(
            args, getBuffers(), getAffineMaps().getAsValueRange<AffineMapAttr>(),
@@ -280,10 +316,15 @@ LogicalResult ComputeOp::verify() {
       return emitNiceError(*this, arg.getLoc(), "kernel argument #")
              << i << " should be a memref";
 
-    if (map.getNumInputs() != getWorkgroupShape().size())
+    if (map.getNumDims() != getWorkgroupShape().size())
       return emitOpError("map for argument #")
              << i << " should have " << getWorkgroupShape().size()
-             << " inputs, got " << map.getNumInputs();
+             << " input dimensions, got " << map.getNumDims();
+
+    if (map.getNumSymbols() != symbolCount)
+      return emitOpError("map for argument #")
+             << i << " should have " << symbolCount << " input symbols, got "
+             << map.getNumSymbols();
 
     auto argTy = arg.getType().cast<MemRefType>();
     auto inputTy = buf.getType().cast<ShapedType>();

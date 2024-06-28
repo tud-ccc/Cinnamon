@@ -146,12 +146,15 @@ def LaunchOp: Cnm_Op<"launch", [AttrSizedOperandSegments, IsolatedFromAbove, Sin
 }
 
 
-def ComputeOp: Cnm_Op<"compute", [IsolatedFromAbove, SingleBlockImplicitTerminator<"TerminatorOp">]> {
+def ComputeOp: Cnm_Op<"compute", [IsolatedFromAbove, 
+    SingleBlockImplicitTerminator<"TerminatorOp">,
+    AttrSizedOperandSegments]> {
     let summary = "Transformable operation";
     let description = [{}];
 
     let arguments = (ins DenseI64ArrayAttr:$workgroupShape,
                          I64Attr:$numInputs,
+                         Variadic<Index>:$symbol_bindings,
                          Variadic<AnyShaped>:$buffers,
                          AffineMapArrayAttr:$affineMaps
                          );
@@ -164,7 +167,8 @@ def ComputeOp: Cnm_Op<"compute", [IsolatedFromAbove, SingleBlockImplicitTerminat
             CArg<"ArrayRef<int64_t>">:$workgroupShape,
             CArg<"ValueRange">:$inputs,
             CArg<"ValueRange">:$inits,
-            CArg<"ArrayRef<AffineMap>">:$affineMaps
+            CArg<"ArrayRef<AffineMap>">:$affineMaps,
+            CArg<"ValueRange", "{}">:$symbol_bindings
         )>
     ];
 
