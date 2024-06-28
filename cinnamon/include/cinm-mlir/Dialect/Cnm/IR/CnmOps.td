@@ -31,6 +31,11 @@ def WorkgroupOp : Cnm_Op<"workgroup", []> {
     let arguments = (ins);
     let results = (outs WorkgroupType:$result);
 
+    let builders = [
+        OpBuilder<(ins "ArrayRef<int64_t>":$shape),
+          "build($_builder, $_state, WorkgroupType::get($_builder.getContext(), shape));">
+    ];
+
     let assemblyFormat = "attr-dict `:` qualified(type($result))";
 }
 
@@ -55,6 +60,11 @@ def AllocOp : Cnm_Op<"alloc", [InferWorkgroupTypeFromBuffer<"result", "wg">]> {
 
     let arguments = (ins WorkgroupType:$wg);
     let results = (outs BufferType:$result);
+
+    let builders = [
+        OpBuilder<(ins "ArrayRef<int64_t>":$bufShape, "Type":$elementTy, "Value":$wg, CArg<"int64_t", "0">:$level),
+          "build($_builder, $_state, BufferType::get(bufShape, elementTy, wg.getType().cast<cnm::WorkgroupType>().getShape(), level), wg);">
+    ];
 
 
     let extraClassDeclaration = [{
@@ -124,7 +134,7 @@ def LaunchOp: Cnm_Op<"launch", [AttrSizedOperandSegments, IsolatedFromAbove, Sin
     let regions = (region SizedRegion<1>:$body);
 
     let hasVerifier = 1;
-    let assemblyFormat = "$wg `in` `(` $inBuffers `:` type($inBuffers) `)` `out` `(` $outBuffers `:` type($outBuffers) `)` attr-dict `on` qualified(type($wg)) $body";
+    let assemblyFormat = "$wg `ins` `(` $inBuffers `:` type($inBuffers) `)` `outs` `(` $outBuffers `:` type($outBuffers) `)` attr-dict `on` qualified(type($wg)) $body";
 
     let extraClassDeclaration = [{
         SmallVector<Value> getParams() {
@@ -135,6 +145,92 @@ def LaunchOp: Cnm_Op<"launch", [AttrSizedOperandSegments, IsolatedFromAbove, Sin
     }];
 }
 
+
+def ComputeOp: Cnm_Op<"compute", [IsolatedFromAbove, SingleBlockImplicitTerminator<"TerminatorOp">]> {
+    let summary = "Transformable operation";
+    let description = [{}];
+
+    let arguments = (ins DenseI64ArrayAttr:$workgroupShape,
+                         I64Attr:$numInputs,
+                         Variadic<AnyShaped>:$buffers,
+                         AffineMapArrayAttr:$affineMaps
+                         );
+
+    let results = (outs Variadic<AnyRankedTensor>:$results);
+    let regions = (region SizedRegion<1>:$body);
+
+    let builders = [
+        OpBuilder<(ins 
+            CArg<"ArrayRef<int64_t>">:$workgroupShape,
+            CArg<"ValueRange">:$inputs,
+            CArg<"ValueRange">:$inits,
+            CArg<"ArrayRef<AffineMap>">:$affineMaps
+        )>
+    ];
+
+    let skipDefaultBuilders = 1;
+    let hasVerifier = 1;
+    let hasCustomAssemblyFormat = 1;
+
+    let extraClassDeclaration = [{
+        SmallVector<Value> getInBuffers() {
+            if (getNumInputs() == 0)
+                return {};
+            SmallVector<Value> result;
+            result.reserve(getNumInputs());
+            auto begin = getBuffers().begin();
+            result.append(begin, begin + getNumInputs());
+            return result;
+        }
+
+        SmallVector<Value> getOutBuffers() {
+            if (getNumOutputs() == 0)
+                return {};
+            SmallVector<Value> result;
+            result.reserve(getNumOutputs());
+            auto begin = getBuffers().begin() + getNumInputs();
+            result.append(getBuffers().begin() + getNumInputs(), getBuffers().end());
+            return result;
+        }
+
+        uint64_t getNumOutputs() {
+            return getBuffers().size() - getNumInputs();
+        }
+
+        SmallVector<AffineMap> getInMaps() {
+            if (getNumInputs() == 0)
+                return {};
+            SmallVector<AffineMap> result;
+            result.reserve(getNumInputs());
+            auto begin = getAffineMaps().getAsValueRange<AffineMapAttr>().begin();
+            result.append(begin, begin + getNumInputs());
+            return result;
+        }
+
+        SmallVector<AffineMap> getOutMaps() {
+            if (getNumOutputs() == 0)
+                return {};
+            SmallVector<AffineMap> result;
+            result.reserve(getNumOutputs());
+            auto it = getAffineMaps().getAsValueRange<AffineMapAttr>();
+            result.append(it.begin() + getNumInputs(), it.end());
+            return result;
+        }
+
+        template<unsigned N = llvm::CalculateSmallVectorDefaultInlinedElements<AffineMap>::value>
+        SmallVector<AffineMap, N> getAffineMapsVec() {
+            SmallVector<AffineMap, N> result(getAffineMaps().getAsValueRange<AffineMapAttr>());
+            return result;
+        }
+
+        MutableArrayRef<BlockArgument> getKernelArgs() {
+            return getBody().getArguments();
+        }
+        
+    }];
+}
+
+
 def TerminatorOp: Cnm_Op<"terminator", [Terminator]> {
     let summary = "Terminates an `upmem.launch` operator region.";
     let description = [{}];
@@ -143,5 +239,6 @@ def TerminatorOp: Cnm_Op<"terminator", [Terminator]> {
     let results = (outs);
     let assemblyFormat = "attr-dict";
 }
+
 
 #endif

@@ -131,7 +131,7 @@ AffineMap simplifyAffineMapWithBounds(AffineMap map,
     if (dim == ShapedType::kDynamic)
       upperBounds.push_back(std::nullopt);
     else
-      upperBounds.push_back(std::make_optional(dim - 1));
+      upperBounds.push_back(std::make_optional(dim));
   }
 
   llvm::SmallVector<std::optional<int64_t>> lowerBounds;
