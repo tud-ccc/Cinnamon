@@ -19,7 +19,6 @@ module {
           %2 = arith.addi %0, %1 : i32
           memref.store %2, %o1[] : memref<i32>
         }
-        cnm.terminator
       }
     
     // into
@@ -36,7 +35,6 @@ module {
           %2 = arith.addi %0, %1 : i32
           memref.store %2, %o1[] : memref<i32>
         }
-        cnm.terminator
       }
 
     return

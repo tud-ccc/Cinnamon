@@ -10,7 +10,6 @@ module {
         %c2_i32 = arith.constant 2 : i32
         %1 = arith.muli %0, %c2_i32 : i32
         memref.store %1, %arg3[] : memref<i32>
-        cnm.terminator
       }
 
      cnm.compute
@@ -24,7 +23,6 @@ module {
           %2 = arith.addi %0, %1 : i32
           memref.store %2, %o1[] : memref<i32>
         }
-        cnm.terminator
       }
     return
   }

@@ -165,7 +165,9 @@ ParseResult ComputeOp::parse(OpAsmParser &parser, OperationState &result) {
   if (parser.parseRegion(region, args)) {
     return failure();
   }
-  // todo results
+  ComputeOp::ensureTerminator(region, parser.getBuilder(), result.location);
+  
+  // todo results, bufferization
 
   return success();
 }
@@ -203,6 +205,7 @@ void ComputeOp::build(::mlir::OpBuilder &builder, ::mlir::OperationState &state,
       }
     }
   }
+  ComputeOp::ensureTerminator(*state.regions[0], builder, state.location);
 }
 
 void ComputeOp::print(OpAsmPrinter &out) {
@@ -240,7 +243,7 @@ void ComputeOp::print(OpAsmPrinter &out) {
   llvm::interleaveComma(getBody().getArguments(), out,
                         [&](auto arg) { out.printRegionArgument(arg); });
   out << ") ";
-  out.printRegion(getBody(), false, true);
+  out.printRegion(getBody(), false, false);
   out.decreaseIndent();
 }
 
