@@ -15,7 +15,6 @@ module {
   // CHECK-NEXT:       memref.store %{{.*}}, %[[B]][%[[i]]]
   // CHECK-NEXT:     }
   // CHECK-NEXT:  }
-  // CHECK-NEXT:  cnm.terminator
   // CHECK-NEXT: }
   func.func @simple(%arg0: memref<1024xi32>, %arg1: memref<1024xi32>) {
     

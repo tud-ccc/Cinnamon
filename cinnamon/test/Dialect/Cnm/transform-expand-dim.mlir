@@ -36,6 +36,11 @@ module {
     return
   }
 
+  // CHECK-LABEL: @broadcast
+  // CHECK: cnm.compute
+  // CHECK-NEXT: ins(%arg0[(d0, d1, d2) -> ()] : memref<1024xi32>)
+  // CHECK-NEXT: outs(%arg1[(d0, d1, d2) -> (d0 * 512 + d2)] : memref<1024xi32>)
+  // CHECK-NEXT: on hierarchy<2x1x512>
   func.func @broadcast(%arg0: memref<1024xi32>, %arg1: memref<1024xi32>) {
     cnm.compute
        ins(%arg0[(i, j) -> ()]: memref<1024xi32>)

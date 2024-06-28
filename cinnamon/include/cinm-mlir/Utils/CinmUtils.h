@@ -1,5 +1,6 @@
 
 #include <llvm/ADT/StringRef.h>
+#include <mlir/IR/AffineExpr.h>
 #include <mlir/IR/BuiltinOps.h>
 
 namespace mlir {
@@ -13,8 +14,8 @@ bool scatteredMemrefIsContiguous(TypedValue<ShapedType> value,
 
 /// Simplify an affine map given static upper bounds on the inputs.
 /// This is used to simplify even more the affine maps on the CNM and UPMEM
-/// levels, given knowledge of the workgroup shape. That makes the generated code
-/// simpler, and gives more opportunities for broadcasting.
+/// levels, given knowledge of the workgroup shape. That makes the generated
+/// code simpler, and gives more opportunities for broadcasting.
 AffineMap simplifyAffineMapWithBounds(AffineMap map,
                                       llvm::ArrayRef<int64_t> dimSizes);
 } // namespace mlir

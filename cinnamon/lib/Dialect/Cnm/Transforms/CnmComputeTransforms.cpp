@@ -1,5 +1,6 @@
 
 #include "cinm-mlir/Dialect/Cnm/IR/CnmTypes.h"
+#include "cinm-mlir/Utils/CinmUtils.h"
 #include <cinm-mlir/Dialect/Cnm/Transforms/CnmComputeTransforms.h>
 #include <cstdint>
 #include <llvm/ADT/ArrayRef.h>
@@ -73,6 +74,7 @@ LogicalResult expandWorkshoupDim(cnm::ComputeOp compute, uint64_t dim,
     }
   }
   AffineMap linearMap = AffineMap::get(newShape.size(), 0, exprs, ctx);
+  linearMap = simplifyAffineMapWithBounds(linearMap, newShape);
 
   // apply the linear map first, then the original map
   auto affineMaps = compute.getAffineMapsVec();
