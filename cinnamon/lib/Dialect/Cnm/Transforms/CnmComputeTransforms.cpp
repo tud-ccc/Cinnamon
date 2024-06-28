@@ -136,8 +136,9 @@ static void remapUse(Operation *usage, BlockArgument, Value indexVal,
 
 // This transfo does peelright on a compute op where the
 // buffer dims are already correct (do not need reshape)
-LogicalResult peelRightPerfect(OpBuilder &builder, cnm::ComputeOp compute) {
-  auto ctx = builder.getContext();
+LogicalResult peelRight(cnm::ComputeOp compute) {
+  auto ctx = compute.getContext();
+  OpBuilder builder(ctx);
   auto wg = compute.getWorkgroupShape();
   assert(!wg.empty());
   if (wg.size() == 1) {
@@ -259,13 +260,23 @@ LogicalResult peelRightPerfect(OpBuilder &builder, cnm::ComputeOp compute) {
   return success();
 }
 
-LogicalResult peelRight(OpBuilder &builder, cnm::ComputeOp compute) {
-  return peelRightPerfect(builder, compute);
-}
-
-void lowerComputeToLaunch(OpBuilder &builder0, cnm::ComputeOp op) {
+LogicalResult normalizeInputs(cnm::ComputeOp op,
+                              OpBuilder::Listener *listener) {
+    
+  OpBuilder builder0(op->getContext());
+  builder0.setListener(listener);
   ImplicitLocOpBuilder builder(op.getLoc(), builder0);
   builder.setInsertionPoint(op);
+
+  // ok we need to find all tensors who are not broadcast?
+}
+
+void lowerComputeToLaunch(cnm::ComputeOp op, OpBuilder::Listener *listener) {
+  OpBuilder builder0(op->getContext());
+  builder0.setListener(listener);
+  ImplicitLocOpBuilder builder(op.getLoc(), builder0);
+  builder.setInsertionPoint(op);
+  
   auto affineMaps = op.getAffineMapsVec();
   Value wg = builder.create<cnm::WorkgroupOp>(op.getWorkgroupShape());
   llvm::SmallVector<Value> cnmBuffers;

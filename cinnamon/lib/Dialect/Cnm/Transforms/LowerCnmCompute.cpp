@@ -23,8 +23,7 @@ struct CnmLowerComputePass
     auto fun = getOperation();
 
     fun.walk([&](cnm::ComputeOp op) {
-      OpBuilder rewriter(&getContext());
-      cnm::lowerComputeToLaunch(rewriter, op);
+      cnm::lowerComputeToLaunch(op);
     });
   }
 };

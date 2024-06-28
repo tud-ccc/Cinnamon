@@ -28,11 +28,11 @@ using namespace mlir::transform;
 //   can be emitted to the user.
 DiagnosedSilenceableFailure CnmExpandDimOp::apply(
     // The rewriter that should be used when modifying IR.
-    TransformRewriter &rewriter,
+    TransformRewriter &,
     // The list of payload IR entities that will be associated with the
     // transform IR values defined by this transform operation. In this case, it
     // can remain empty as there are no results.
-    TransformResults &results,
+    TransformResults &,
     // The transform application state. This object can be used to query the
     // current associations between transform IR values and payload IR entities.
     // It can also carry additional user-defined state.
@@ -72,8 +72,8 @@ void CnmExpandDimOp::getEffects(
   modifiesPayload(effects);
 }
 
-DiagnosedSilenceableFailure CnmPeelRightOp::apply(TransformRewriter &rewriter,
-                                                  TransformResults &results,
+DiagnosedSilenceableFailure CnmPeelRightOp::apply(TransformRewriter &,
+                                                  TransformResults &,
                                                   TransformState &state) {
 
   auto payload = state.getPayloadOps(getTarget());
@@ -83,7 +83,7 @@ DiagnosedSilenceableFailure CnmPeelRightOp::apply(TransformRewriter &rewriter,
     if (!compute) {
       return emitDefaultSilenceableFailure(payloadOp);
     }
-    auto res = cnm::peelRight(rewriter, compute);
+    auto res = cnm::peelRight(compute);
     if (failed(res)) {
       DiagnosedSilenceableFailure diag =
           emitDefaultSilenceableFailure(payloadOp);

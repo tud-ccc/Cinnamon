@@ -9,10 +9,10 @@ module {
   // CHECK-NEXT: do (%[[A:.*]]: memref<1024xi32>, %[[B:.*]]: memref<512xi32>) {
   // CHECK-NEXT:   affine.parallel (%[[i:.*]]) = (0) to (512) {
   // CHECK-NEXT:     affine.for %[[k:.*]] = 0 to 1024 {
-  // CHECK-NEXT:       memref.load %[[A]][%[[k]]]
-  // CHECK-NEXT:       memref.load %[[B]][%[[i]]]
+  // CHECK-NEXT:       affine.load %[[A]][%[[k]]]
+  // CHECK-NEXT:       affine.load %[[B]][%[[i]]]
   // CHECK-NEXT:       arith.addi
-  // CHECK-NEXT:       memref.store %{{.*}}, %[[B]][%[[i]]]
+  // CHECK-NEXT:       affine.store %{{.*}}, %[[B]][%[[i]]]
   // CHECK-NEXT:     }
   // CHECK-NEXT:  }
   // CHECK-NEXT: }
@@ -25,10 +25,10 @@ module {
        on hierarchy<2x512>
        do (%a1: memref<1024xi32>, %o1: memref<i32>)  {
         affine.for %i = 0 to 1024 {
-          %0 = memref.load %a1[%i] : memref<1024xi32>
-          %1 = memref.load %o1[] : memref<i32>
+          %0 = affine.load %a1[%i] : memref<1024xi32>
+          %1 = affine.load %o1[] : memref<i32>
           %2 = arith.addi %0, %1 : i32
-          memref.store %2, %o1[] : memref<i32>
+          affine.store %2, %o1[] : memref<i32>
         }
       }
 
@@ -38,12 +38,12 @@ module {
     //    outs(%r[(i) -> (i)]: memref<2x512xi32>)
     //    on hierarchy<2>
     //    do (%a1: memref<1024xi32>, %o1: memref<512xi32>)  {
-    //     affine.for %j = 0 to 512 {
+    //     affine.parallel (%j) = (0) to (512) {
     //         affine.for %i = 0 to 1024 {
-    //           %0 = memref.load %a1[%i] : memref<1024xi32>
-    //           %1 = memref.load %o1[%j] : memref<512xi32>
+    //           %0 = affine.load %a1[%i] : memref<1024xi32>
+    //           %1 = affine.load %o1[%j] : memref<512xi32>
     //           %2 = arith.addi %0, %1 : i32
-    //           memref.store %2, %o1[%j] : memref<512xi32>
+    //           affine.store %2, %o1[%j] : memref<512xi32>
     //         }
     //     }
     //   }

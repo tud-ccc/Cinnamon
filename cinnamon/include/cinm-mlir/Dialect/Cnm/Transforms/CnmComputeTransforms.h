@@ -6,9 +6,14 @@
 #include <mlir/Support/LogicalResult.h>
 namespace mlir::cnm {
 
+// Note: in-place transformations don't use a listener,
+// others do.
+
 /// Reshape the workgroup by turning a dimension D at index `dim`
 /// into two dimensions, of size `factor` and `D/factor`. Fails if
 /// D is not divisible by factor.
+/// This is an in-place transformation.
+///
 /// ExpandWorkgroupDim(dim=0, factor=2) turns
 /// ```
 /// cnm.compute
@@ -66,19 +71,20 @@ LogicalResult expandWorkshoupDim(cnm::ComputeOp compute, uint64_t dim,
 ///      }
 /// }
 /// ```
-FailureOr<std::optional<cnm::ComputeOp>> peelLeft(OpBuilder &builder,
-                                                  cnm::ComputeOp compute);
+FailureOr<std::optional<cnm::ComputeOp>>
+peelLeft(cnm::ComputeOp compute, OpBuilder::Listener *listener = nullptr);
 
 /// Turn the rightmost dimension of the workgroup into a
 /// parallel loop within the kernel.
 /// This transformation fails if the workgroup
 /// has only a single dimension.
+/// This is an in-place transformation.
 /// ```
 /// cnm.compute
-///  ins(%a[(i,j)->(i*512+j)]: memref<1024xi32>)
-///  outs(%o[(i,j)->(i*512+j)]: memref<1024xi32>)
-///  on hierarchy<2x512>
-///  do (%a1: memref<i32>, %o1: memref<i32>)  {
+///   ins(%as[(i,j)->(i,j)]: memref<2x512xi32>)
+///   outs(%os[(i,j)->(i,j)]: memref<2x512xi32>)
+///   on hierarchy<2x512>
+///   do (%a1: memref<i32>, %o1: memref<i32>)  {
 ///       %x = memref.load %a1[]
 ///       %t2 = arith.muli %x, 2
 ///       memref.store %t2, %o1[]
@@ -86,8 +92,6 @@ FailureOr<std::optional<cnm::ComputeOp>> peelLeft(OpBuilder &builder,
 /// ```
 /// into
 /// ```
-/// %as = memref.reshape %a: memref<1024xi32> to memref<2x512xi32>
-/// %os = memref.reshape %o: memref<1024xi32> to memref<2x512xi32>
 /// cnm.compute
 ///   ins(%as[(i)->(i)]: memref<2x512xi32>)
 ///   outs(%os[(i)->(i)]: memref<2x512xi32>)
@@ -107,7 +111,7 @@ FailureOr<std::optional<cnm::ComputeOp>> peelLeft(OpBuilder &builder,
 /// ```
 /// cnm.compute
 ///    ins(%arg0[(i, j) -> ()]: memref<1024xi32>)
-///    outs(%arg1[(i, j) -> (i * 512 + j)]: memref<1024xi32>)
+///    outs(%arg1[(i, j) -> (i, j)]: memref<2x512xi32>)
 ///    on hierarchy<2x512>
 ///    do (%a1: memref<1024xi32>, %o1: memref<i32>)  {
 ///     affine.for %i = 0 to 1024 {
@@ -121,7 +125,6 @@ FailureOr<std::optional<cnm::ComputeOp>> peelLeft(OpBuilder &builder,
 /// ```
 /// into
 /// ```
-///     %r = memref.expand_shape %arg1[[0,1]] : memref<1024xi32> into
 ///     memref<2x512xi32> cnm.compute
 ///        ins(%arg0[(i) -> ()]: memref<1024xi32>)
 ///        outs(%r[(i) -> (i)]: memref<2x512xi32>)
@@ -138,9 +141,14 @@ FailureOr<std::optional<cnm::ComputeOp>> peelLeft(OpBuilder &builder,
 ///         cnm.terminator
 ///       }
 /// ```
-LogicalResult peelRight(OpBuilder &builder, cnm::ComputeOp compute);
+LogicalResult peelRight(cnm::ComputeOp compute);
 
 /// Reshape the inputs to so that they match the workgroup shape.
+/// Currently we support that only if the structuring of the affine
+/// maps into the new shape produces an identity map.
+///
+/// This is not an in-place transformation.
+///
 /// ```
 /// cnm.compute
 ///  ins(%a[(i,j)->(i*512+j)]: memref<1024xi32>)
@@ -166,8 +174,10 @@ LogicalResult peelRight(OpBuilder &builder, cnm::ComputeOp compute);
 ///       memref.store %t2, %o1[]
 ///   }
 /// ```
-LogicalResult normalizeInputs(OpBuilder &builder, cnm::ComputeOp compute);
+LogicalResult normalizeInputs(cnm::ComputeOp compute,
+                              OpBuilder::Listener *listener = nullptr);
 
 /// Lower a cnm.compute to lower level cnm ops
-void lowerComputeToLaunch(OpBuilder &builder, cnm::ComputeOp op);
+void lowerComputeToLaunch(cnm::ComputeOp op,
+                          OpBuilder::Listener *listener = nullptr);
 } // namespace mlir::cnm
