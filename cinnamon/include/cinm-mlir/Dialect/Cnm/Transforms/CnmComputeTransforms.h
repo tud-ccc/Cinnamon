@@ -41,6 +41,8 @@ namespace mlir::cnm {
 LogicalResult expandWorkshoupDim(cnm::ComputeOp compute, uint64_t dim,
                                  int64_t factor);
 
+LogicalResult swapWorkgroupDims(cnm::ComputeOp compute, uint64_t dim0, uint64_t dim1);
+
 /// Turn the leftmost dimension of the workgroup into an outer parallel loop.
 /// This transformation might delete the op if the workgroup has only a single
 /// dimension.

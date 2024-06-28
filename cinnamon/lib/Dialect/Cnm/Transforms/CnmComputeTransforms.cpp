@@ -89,6 +89,47 @@ LogicalResult expandWorkshoupDim(cnm::ComputeOp compute, uint64_t dim,
   return success();
 }
 
+LogicalResult swapWorkgroupDims(cnm::ComputeOp compute, uint64_t dim0,
+                                uint64_t dim1) {
+  auto wg = compute.getWorkgroupShape();
+  if (dim0 >= wg.size() || dim1 >= wg.size()) {
+    mlir::emitWarning(compute->getLoc())
+        << "Cannot swap dim #" << dim0 << " and #" << dim1
+        << " because workgroup only has " << wg.size() << " dimensions";
+    return failure();
+  }
+  auto ctx = compute.getContext();
+  // build a map where the two dims are swapped
+  SmallVector<AffineExpr> exprs;
+  for (uint64_t i = 0; i < wg.size(); i++) {
+    if (i == dim0) {
+      exprs.push_back(getAffineDimExpr(dim1, ctx));
+    } else if (i == dim1) {
+      exprs.push_back(getAffineDimExpr(dim0, ctx));
+    } else {
+      exprs.push_back(getAffineDimExpr(i, ctx));
+    }
+  }
+  AffineMap swapMap =
+      AffineMap::get(compute.getWorkgroupShape().size(), 0, exprs, ctx);
+
+  // apply the linear map first, then the original map
+  auto affineMaps = compute.getAffineMapsVec();
+  for (auto &map : affineMaps) {
+    map = map.compose(swapMap);
+  }
+
+  OpBuilder b(ctx);
+  compute.setAffineMapsAttr(b.getAffineMapArrayAttr(affineMaps));
+
+  SmallVector<int64_t> newShape(wg);
+  std::swap(newShape[dim0], newShape[dim1]);
+
+  compute.setWorkgroupShape(newShape);
+
+  return success();
+}
+
 /// Turn the rightmost dimension of the workgroup into a
 /// parallel loop within the kernel.
 /// This transformation might delete the op if the workgroup
@@ -262,7 +303,7 @@ LogicalResult peelRight(cnm::ComputeOp compute) {
 
 LogicalResult normalizeInputs(cnm::ComputeOp op,
                               OpBuilder::Listener *listener) {
-    
+
   OpBuilder builder0(op->getContext());
   builder0.setListener(listener);
   ImplicitLocOpBuilder builder(op.getLoc(), builder0);
@@ -276,7 +317,7 @@ void lowerComputeToLaunch(cnm::ComputeOp op, OpBuilder::Listener *listener) {
   builder0.setListener(listener);
   ImplicitLocOpBuilder builder(op.getLoc(), builder0);
   builder.setInsertionPoint(op);
-  
+
   auto affineMaps = op.getAffineMapsVec();
   Value wg = builder.create<cnm::WorkgroupOp>(op.getWorkgroupShape());
   llvm::SmallVector<Value> cnmBuffers;

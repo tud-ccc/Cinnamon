@@ -45,8 +45,10 @@ module {
     linalg.transpose ins(%arg1: memref<64x1024xi32>) outs(%arg1t: memref<1024x64xi32>) permutation = [1,0]
     %res = memref.alloc() : memref<1024x1024xi32>
 
+    // this is naive matmul
     cnm.compute
-       ins(%arg0[(i, j) -> (i)]: memref<1024x64xi32>, %arg1t[(i, j) -> (j)]: memref<1024x64xi32>)
+       ins(%arg0[(i, j) -> (i)]: memref<1024x64xi32>, 
+           %arg1t[(i, j) -> (j)]: memref<1024x64xi32>)
        outs(%res[(i, j) -> (i, j)]: memref<1024x1024xi32>)
        on hierarchy<1024x1024>
        do (%a1: memref<64xi32>, %b1: memref<64xi32>, %o: memref<i32>)  {
@@ -60,11 +62,44 @@ module {
         }
       }
     
-
+    // expand dim 1 factor 64  -> <1024x64x16>
     cnm.compute
-       ins(%arg0[(i, j) -> (i)]: memref<1024x64xi32>, %arg1t[(i, j) -> (j)]: memref<1024x64xi32>)
-       outs(%res[(i, j) -> (i, j)]: memref<1024x1024xi32>)
-       on hierarchy<1024x1024>
+       ins(%arg0[(i, j, k) -> (i)]: memref<1024x64xi32>, 
+           %arg1t[(i, j, k) -> (j * 16 + k)]: memref<1024x64xi32>)
+       outs(%res[(i, j, k) -> (i, j * 16 + k)]: memref<1024x1024xi32>)
+       on hierarchy<1024x64x16>
+       do (%a1: memref<64xi32>, %b1: memref<64xi32>, %o: memref<i32>)  {
+        affine.for %i = 0 to 64 {
+          %0 = affine.load %a1[%i] : memref<64xi32>
+          %1 = affine.load %a1[%i] : memref<64xi32>
+          %2 = arith.muli %0, %1 : i32
+          %3 = affine.load %o[] : memref<i32>
+          %4 = arith.addi %2, %3 : i32
+          affine.store %4, %o[] : memref<i32>
+        }
+      }
+    // expand dim 0 factor 64  -> <64x16x64x16>
+    cnm.compute
+       ins(%arg0[(i, j, k) -> (i)]: memref<1024x64xi32>, 
+           %arg1t[(i, j, k) -> (j * 16 + k)]: memref<1024x64xi32>)
+       outs(%res[(i, j, k) -> (i, j * 16 + k)]: memref<1024x1024xi32>)
+       on hierarchy<1024x64x16>
+       do (%a1: memref<64xi32>, %b1: memref<64xi32>, %o: memref<i32>)  {
+        affine.for %i = 0 to 64 {
+          %0 = affine.load %a1[%i] : memref<64xi32>
+          %1 = affine.load %a1[%i] : memref<64xi32>
+          %2 = arith.muli %0, %1 : i32
+          %3 = affine.load %o[] : memref<i32>
+          %4 = arith.addi %2, %3 : i32
+          affine.store %4, %o[] : memref<i32>
+        }
+      }
+    // swap dim 0 and 3        -> <64x64x16x16>
+    cnm.compute
+       ins(%arg0[(i, j, k, l) -> (i * 16 + k)]: memref<1024x64xi32>, 
+           %arg1t[(i, j, k, l) -> (j)]: memref<1024x64xi32>)
+       outs(%res[(i, j, k, l) -> (i, j)]: memref<1024x1024xi32>)
+       on hierarchy<64x64x16x16>
        do (%a1: memref<64xi32>, %b1: memref<64xi32>, %o: memref<i32>)  {
         affine.for %i = 0 to 64 {
           %0 = affine.load %a1[%i] : memref<64xi32>

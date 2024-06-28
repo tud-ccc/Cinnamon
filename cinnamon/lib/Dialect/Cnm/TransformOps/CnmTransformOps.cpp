@@ -100,3 +100,34 @@ void CnmPeelRightOp::getEffects(
   onlyReadsHandle(getTarget(), effects);
   modifiesPayload(effects);
 }
+
+
+
+DiagnosedSilenceableFailure CnmSwapDimsOp::apply(TransformRewriter &,
+                                                  TransformResults &,
+                                                  TransformState &state) {
+
+  auto payload = state.getPayloadOps(getTarget());
+
+  for (Operation *payloadOp : payload) {
+    auto compute = dyn_cast<::mlir::cnm::ComputeOp>(payloadOp);
+    if (!compute) {
+      return emitDefaultSilenceableFailure(payloadOp);
+    }
+    auto res = cnm::swapWorkgroupDims(compute, getDim0(), getDim1());
+    if (failed(res)) {
+      DiagnosedSilenceableFailure diag =
+          emitDefaultSilenceableFailure(payloadOp);
+      diag.attachNote() << "Transform failed";
+    }
+  }
+
+  // If everything went well, return success.
+  return DiagnosedSilenceableFailure::success();
+}
+
+void CnmSwapDimsOp::getEffects(
+    ::llvm::SmallVectorImpl<::mlir::MemoryEffects::EffectInstance> &effects) {
+  onlyReadsHandle(getTarget(), effects);
+  modifiesPayload(effects);
+}

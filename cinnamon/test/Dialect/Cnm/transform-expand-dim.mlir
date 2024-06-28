@@ -60,6 +60,6 @@ module {
 
   transform.sequence failures(propagate) {
   ^bb0(%arg0: !transform.op<"cnm.compute">):
-    transform.cnm.expand_dim %arg0 on 0 by factor 2: (!transform.op<"cnm.compute">) -> ()
+    transform.cnm.expand_dim %arg0 dim 0 by factor 2: (!transform.op<"cnm.compute">) -> ()
   }
 }
