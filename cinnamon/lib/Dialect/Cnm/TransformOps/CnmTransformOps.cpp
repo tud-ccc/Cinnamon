@@ -26,38 +26,16 @@ using namespace mlir::transform;
 //   for the transformation is not satisfied and the payload IR has not been
 //   modified. The silenceable failure additionally carries a Diagnostic that
 //   can be emitted to the user.
-DiagnosedSilenceableFailure CnmExpandDimOp::apply(
-    // The rewriter that should be used when modifying IR.
-    TransformRewriter &,
-    // The list of payload IR entities that will be associated with the
-    // transform IR values defined by this transform operation. In this case, it
-    // can remain empty as there are no results.
-    TransformResults &,
-    // The transform application state. This object can be used to query the
-    // current associations between transform IR values and payload IR entities.
-    // It can also carry additional user-defined state.
-    TransformState &state) {
+DiagnosedSilenceableFailure CnmExpandDimOp::applyToOne(TransformRewriter &,
+                                                       cnm::ComputeOp compute,
+                                                       ApplyToEachResultList &,
+                                                       TransformState &) {
 
-  // First, we need to obtain the list of payload operations that are associated
-  // with the operand handle.
-  auto payload = state.getPayloadOps(getTarget());
-
-  // Then, we iterate over the list of operands and call the actual IR-mutating
-  // function. We also check the preconditions here.
-  for (Operation *payloadOp : payload) {
-    auto compute = dyn_cast<::mlir::cnm::ComputeOp>(payloadOp);
-    if (!compute) {
-      return emitDefaultSilenceableFailure(payloadOp);
-    }
-
-    if (failed(cnm::expandWorkshoupDim(compute, getDim(), getFactor()))) {
-      DiagnosedSilenceableFailure diag =
-          emitDefaultSilenceableFailure(payloadOp);
-      diag.attachNote() << "Transform failed";
-    }
+  if (failed(cnm::expandWorkshoupDim(compute, getDim(), getFactor()))) {
+    DiagnosedSilenceableFailure diag = emitDefaultSilenceableFailure(compute);
+    diag.attachNote() << "Transform failed";
   }
 
-  // If everything went well, return success.
   return DiagnosedSilenceableFailure::success();
 }
 
@@ -72,26 +50,17 @@ void CnmExpandDimOp::getEffects(
   modifiesPayload(effects);
 }
 
-DiagnosedSilenceableFailure CnmPeelRightOp::apply(TransformRewriter &,
-                                                  TransformResults &,
-                                                  TransformState &state) {
+DiagnosedSilenceableFailure CnmPeelRightOp::applyToOne(TransformRewriter &,
+                                                       cnm::ComputeOp compute,
+                                                       ApplyToEachResultList &,
+                                                       TransformState &) {
 
-  auto payload = state.getPayloadOps(getTarget());
-
-  for (Operation *payloadOp : payload) {
-    auto compute = dyn_cast<::mlir::cnm::ComputeOp>(payloadOp);
-    if (!compute) {
-      return emitDefaultSilenceableFailure(payloadOp);
-    }
-    auto res = cnm::peelRight(compute);
-    if (failed(res)) {
-      DiagnosedSilenceableFailure diag =
-          emitDefaultSilenceableFailure(payloadOp);
-      diag.attachNote() << "Transform failed";
-    }
+  auto res = cnm::peelRight(compute);
+  if (failed(res)) {
+    DiagnosedSilenceableFailure diag = emitDefaultSilenceableFailure(compute);
+    diag.attachNote() << "Transform failed";
   }
 
-  // If everything went well, return success.
   return DiagnosedSilenceableFailure::success();
 }
 
@@ -101,28 +70,16 @@ void CnmPeelRightOp::getEffects(
   modifiesPayload(effects);
 }
 
+DiagnosedSilenceableFailure CnmSwapDimsOp::applyToOne(TransformRewriter &,
+                                                      cnm::ComputeOp compute,
+                                                      ApplyToEachResultList &,
+                                                      TransformState &) {
 
-
-DiagnosedSilenceableFailure CnmSwapDimsOp::apply(TransformRewriter &,
-                                                  TransformResults &,
-                                                  TransformState &state) {
-
-  auto payload = state.getPayloadOps(getTarget());
-
-  for (Operation *payloadOp : payload) {
-    auto compute = dyn_cast<::mlir::cnm::ComputeOp>(payloadOp);
-    if (!compute) {
-      return emitDefaultSilenceableFailure(payloadOp);
-    }
-    auto res = cnm::swapWorkgroupDims(compute, getDim0(), getDim1());
-    if (failed(res)) {
-      DiagnosedSilenceableFailure diag =
-          emitDefaultSilenceableFailure(payloadOp);
-      diag.attachNote() << "Transform failed";
-    }
+  auto res = cnm::swapWorkgroupDims(compute, getDim0(), getDim1());
+  if (failed(res)) {
+    DiagnosedSilenceableFailure diag = emitDefaultSilenceableFailure(compute);
+    diag.attachNote() << "Transform failed";
   }
-
-  // If everything went well, return success.
   return DiagnosedSilenceableFailure::success();
 }
 

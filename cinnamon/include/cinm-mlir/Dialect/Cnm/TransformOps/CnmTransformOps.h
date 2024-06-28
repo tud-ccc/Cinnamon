@@ -4,6 +4,8 @@
 #include <mlir/IR/DialectRegistry.h>
 #include <mlir/IR/OpImplementation.h>
 
+#include <cinm-mlir/Dialect/Cnm/IR/CnmOps.h>
+
 #include <mlir/Dialect/Transform/IR/MatchInterfaces.h>
 #include <mlir/Dialect/Transform/IR/TransformAttrs.h>
 #include <mlir/Dialect/Transform/IR/TransformDialect.h>
