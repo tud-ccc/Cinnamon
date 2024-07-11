@@ -33,20 +33,20 @@ module {
       }
 
 
-    // cnm.compute
-    //    ins(%arg0[(i) -> ()]: memref<1024xi32>)
-    //    outs(%r[(i) -> (i)]: memref<2x512xi32>)
-    //    on hierarchy<2>
-    //    do (%a1: memref<1024xi32>, %o1: memref<512xi32>)  {
-    //     affine.parallel (%j) = (0) to (512) {
-    //         affine.for %i = 0 to 1024 {
-    //           %0 = affine.load %a1[%i] : memref<1024xi32>
-    //           %1 = affine.load %o1[%j] : memref<512xi32>
-    //           %2 = arith.addi %0, %1 : i32
-    //           affine.store %2, %o1[%j] : memref<512xi32>
-    //         }
-    //     }
-    //   }
+    cnm.compute
+       ins(%arg0[(i) -> ()]: memref<1024xi32>)
+       outs(%r[(i) -> (i)]: memref<2x512xi32>)
+       on hierarchy<2>
+       do (%a1: memref<1024xi32>, %o1: memref<512xi32>)  {
+        affine.parallel (%j) = (0) to (512) {
+            affine.for %i = 0 to 1024 {
+              %0 = affine.load %a1[%i] : memref<1024xi32>
+              %1 = affine.load %o1[%j] : memref<512xi32>
+              %2 = arith.addi %0, %1 : i32
+              affine.store %2, %o1[%j] : memref<512xi32>
+            }
+        }
+      }
 
     return
   }

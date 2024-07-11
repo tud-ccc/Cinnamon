@@ -15,9 +15,10 @@ module {
        outs(%res[(i, j) -> (i, j)]: memref<1024x1024xi32>)
        on hierarchy<1024x1024>
        do (%a1: memref<64xi32>, %b1: memref<64xi32>, %o: memref<i32>)  {
-        affine.for %i = 0 to 64 {
-          %0 = affine.load %a1[%i] : memref<64xi32>
-          %1 = affine.load %a1[%i] : memref<64xi32>
+       // reduction look
+       affine.for %k = 0 to 64 {
+          %0 = affine.load %a1[%k] : memref<64xi32>
+          %1 = affine.load %b1[%k] : memref<64xi32>
           %2 = arith.muli %0, %1 : i32
           %3 = affine.load %o[] : memref<i32>
           %4 = arith.addi %2, %3 : i32
@@ -36,7 +37,7 @@ module {
       do (%arg2: memref<64xi32>, %arg3: memref<64xi32>, %arg4: memref<i32>) {
         affine.for %arg5 = 0 to 64 {
           %0 = affine.load %arg2[%arg5] : memref<64xi32>
-          %1 = affine.load %arg2[%arg5] : memref<64xi32>
+          %1 = affine.load %arg3[%arg5] : memref<64xi32>
           %2 = arith.muli %0, %1 : i32
           %3 = affine.load %arg4[] : memref<i32>
           %4 = arith.addi %2, %3 : i32
@@ -45,6 +46,11 @@ module {
       }
 
     // peel left 2
+    // This computes 16x16 tiles of the output on some dimms.
+    // - Can we lift the reduction loop outside of the nest? That's hard
+    // - Can we coarsen the output size (not use memref<i32> but memref<16xi32>)
+    //   - That's fine.
+    //     
     affine.parallel (%D0, %D1) = (0, 0) to (64, 64) {
       cnm.compute
         symbols [%D0, %D1]
@@ -55,7 +61,7 @@ module {
         do (%arg2: memref<64xi32>, %arg3: memref<64xi32>, %arg4: memref<i32>) {
           affine.for %arg5 = 0 to 64 {
             %0 = affine.load %arg2[%arg5] : memref<64xi32>
-            %1 = affine.load %arg2[%arg5] : memref<64xi32>
+            %1 = affine.load %arg3[%arg5] : memref<64xi32>
             %2 = arith.muli %0, %1 : i32
             %3 = affine.load %arg4[] : memref<i32>
             %4 = arith.addi %2, %3 : i32
@@ -63,6 +69,47 @@ module {
           }
         }
     }
+
+    // fork
+    cnm.compute
+      ins(%arg0[(d0, d1, d2, d3) -> (d0 * 16 + d2)] : memref<1024x64xi32>, 
+          %arg1t[(d0, d1, d2, d3) -> (d1 * 16 + d3)] : memref<1024x64xi32>)
+      outs(%res[(d0, d1, d2, d3) -> (d0 * 16 + d2, d1 * 16 + d3)] : memref<1024x1024xi32>) 
+      on hierarchy<64x64x16x16>
+      do (%arg2: memref<64xi32>, %arg3: memref<64xi32>, %arg4: memref<i32>) {
+        affine.for %arg5 = 0 to 64 {
+          %0 = affine.load %arg2[%arg5] : memref<64xi32>
+          %1 = affine.load %arg3[%arg5] : memref<64xi32>
+          %2 = arith.muli %0, %1 : i32
+          %3 = affine.load %arg4[] : memref<i32>
+          %4 = arith.addi %2, %3 : i32
+          affine.store %4, %arg4[] : memref<i32>
+        }
+      }
+
+    // peel right (need a reshape first), reshape turns output map into (i,j,k,l) -> (i*16+k,j,l)
+    %exp0 = memref.expand_shape %res[[0], [1, 2]] : memref<1024x1024xi32> into memref<1024x64x16xi32>
+    %expb = memref.expand_shape %arg1t[[0, 1], [2]] : memref<1024x64xi32> into memref<64x16x64xi32>
+
+    cnm.compute
+      ins(%arg0[(d0, d1, d2) -> (d0 * 16 + d2)] : memref<1024x64xi32>, 
+          %expb[(d0, d1, d2) -> (d1)] : memref<64x16x64xi32>)
+      outs(%exp0[(d0, d1, d2) -> (d0 * 16 + d2, d1)] : memref<1024x64x16xi32>) 
+      on hierarchy<64x64x16>
+      do (%arg2: memref<64xi32>, %arg3: memref<16x64xi32>, %arg4: memref<16xi32>) {
+        affine.parallel (%x) = (0) to (16) {
+          affine.for %arg5 = 0 to 64 {
+            %0 = affine.load %arg2[%arg5] : memref<64xi32>
+            %1 = affine.load %arg3[%x, %arg5] : memref<16x64xi32>
+            %2 = arith.muli %0, %1 : i32
+            %3 = affine.load %arg4[%x] : memref<16xi32>
+            %4 = arith.addi %2, %3 : i32
+            affine.store %4, %arg4[%x] : memref<16xi32>
+          }
+        }
+      }
+
+
 
     // affine.parallel (%D0, %D1) = (0, 0) to (64, 64) {
     //   cnm.compute 
