@@ -165,6 +165,13 @@ def ComputeOp: Cnm_Op<"compute", [IsolatedFromAbove,
     let builders = [
         OpBuilder<(ins 
             CArg<"ArrayRef<int64_t>">:$workgroupShape,
+            CArg<"ValueRange">:$allBuffers,
+            CArg<"uint64_t">:$numInputs,
+            CArg<"ArrayRef<AffineMap>">:$affineMaps,
+            CArg<"ValueRange", "{}">:$symbol_bindings
+        )>,
+        OpBuilder<(ins 
+            CArg<"ArrayRef<int64_t>">:$workgroupShape,
             CArg<"ValueRange">:$inputs,
             CArg<"ValueRange">:$inits,
             CArg<"ArrayRef<AffineMap>">:$affineMaps,
@@ -229,6 +236,10 @@ def ComputeOp: Cnm_Op<"compute", [IsolatedFromAbove,
 
         MutableArrayRef<BlockArgument> getKernelArgs() {
             return getBody().getArguments();
+        }
+
+        uint64_t getNumSymbols() {
+            return getSymbolBindings().size();
         }
         
     }];

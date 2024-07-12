@@ -90,7 +90,8 @@ static ParseResult parseAffineMapInlineOrNot(OpAsmParser &parser,
 }
 static ParseResult parseComputeOperand(OpAsmParser &parser,
                                        Attribute &affineMapAttr,
-                                       OperationState &result) {
+                                       OperationState &result,
+                                       bool canBeResult) {
   OpAsmParser::UnresolvedOperand operand;
   Type type;
 
@@ -100,6 +101,10 @@ static ParseResult parseComputeOperand(OpAsmParser &parser,
       parser.resolveOperand(operand, type, result.operands)) {
     return failure();
   }
+  // a tensor result
+  if (canBeResult && type.isa<TensorType>()) {
+    result.addTypes(type);
+  }
 
   return success();
 }
@@ -107,11 +112,12 @@ static ParseResult parseComputeOperand(OpAsmParser &parser,
 static ParseResult
 parseComputeOperandList(OpAsmParser &parser, StringRef kw,
                         llvm::SmallVectorImpl<Attribute> &affineMaps,
-                        OperationState &result) {
+                        OperationState &result, bool canBeResult = false) {
 
   if (parser.parseKeyword(kw) || parser.parseLParen() ||
       parser.parseCommaSeparatedList([&]() -> ParseResult {
-        return parseComputeOperand(parser, affineMaps.emplace_back(), result);
+        return parseComputeOperand(parser, affineMaps.emplace_back(), result,
+                                   canBeResult);
       }) ||
       parser.parseRParen())
     return failure();
@@ -151,7 +157,8 @@ ParseResult ComputeOp::parse(OpAsmParser &parser, OperationState &result) {
   if (parseComputeOperandList(parser, "ins", affineMaps, result))
     return failure();
   const int64_t numInputs = affineMaps.size();
-  if (parseComputeOperandList(parser, "outs", affineMaps, result))
+  if (parseComputeOperandList(parser, "outs", affineMaps, result,
+                              /*canBeResult=*/true))
     return failure();
   const int numBuffers = affineMaps.size();
   result.addAttribute(
@@ -193,6 +200,21 @@ ParseResult ComputeOp::parse(OpAsmParser &parser, OperationState &result) {
 }
 
 void ComputeOp::build(::mlir::OpBuilder &builder, ::mlir::OperationState &state,
+                      ArrayRef<int64_t> workgroupShape, ValueRange allBuffers,
+                      uint64_t numInputs, ArrayRef<AffineMap> affineMaps,
+                      ValueRange symbolBindings) {
+  if (numInputs > allBuffers.size()) {
+    mlir::emitError(state.location, "Invalid number of inputs ")
+        << numInputs << " > " << allBuffers.size();
+    return;
+  }
+
+  build(builder, state, workgroupShape, allBuffers.slice(0, numInputs),
+        allBuffers.slice(numInputs, allBuffers.size() - numInputs), affineMaps,
+        symbolBindings);
+}
+
+void ComputeOp::build(::mlir::OpBuilder &builder, ::mlir::OperationState &state,
                       ArrayRef<int64_t> workgroupShape, ValueRange inputs,
                       ValueRange inits, ArrayRef<AffineMap> affineMaps,
                       ValueRange symbolBindings) {
@@ -214,7 +236,9 @@ void ComputeOp::build(::mlir::OpBuilder &builder, ::mlir::OperationState &state,
                      builder.getAffineMapArrayAttr(affineMaps));
 
   auto &entry = state.addRegion()->emplaceBlock();
-  for (auto [i, buf] : llvm::enumerate(state.operands)) {
+  for (auto [i, buf] : llvm::enumerate(
+           llvm::drop_begin(state.operands, symbolBindings.size()))) {
+
     if (buf.getType().isa<ShapedType>()) {
       auto bufTy = buf.getType().cast<ShapedType>();
       auto bufShape = bufTy.getShape();
@@ -231,6 +255,9 @@ void ComputeOp::build(::mlir::OpBuilder &builder, ::mlir::OperationState &state,
               << AffineMapAttr::get(map);
         }
       }
+      // tensor result
+      if (i >= inputs.size() && buf.getType().isa<TensorType>())
+        state.addTypes(buf.getType());
     }
   }
   ComputeOp::ensureTerminator(*state.regions[0], builder, state.location);
@@ -307,6 +334,21 @@ LogicalResult ComputeOp::verify() {
                "kernel argument count does not match in/out buffer count (")
            << args.size() << " != " << getBuffers().size() << ")";
   }
+
+  // compute op may be partially bufferized
+  SmallVector<Type> tensorArgs;
+  for (auto [i, buf] : llvm::enumerate(getOutBuffers())) {
+    if (buf.getType().isa<RankedTensorType>()) {
+      tensorArgs.push_back(buf.getType());
+    } else if (!buf.getType().isa<MemRefType>()) {
+      return emitOpError("out argument #")
+             << i << " should be a tensor or memref";
+    }
+  }
+  if (tensorArgs != getResultTypes()) {
+    return emitOpError("tensor results do not match tensor arguments");
+  }
+
   const auto symbolCount = getSymbolBindings().size();
 
   for (auto [arg, buf, map, i] : llvm::zip(
@@ -326,7 +368,7 @@ LogicalResult ComputeOp::verify() {
              << i << " should have " << symbolCount << " input symbols, got "
              << map.getNumSymbols();
 
-    auto argTy = arg.getType().cast<MemRefType>();
+    auto argTy = arg.getType().cast<ShapedType>();
     auto inputTy = buf.getType().cast<ShapedType>();
     if (argTy.getElementType() != inputTy.getElementType())
       return emitNiceError(*this, arg.getLoc(), "Kernel argument #")

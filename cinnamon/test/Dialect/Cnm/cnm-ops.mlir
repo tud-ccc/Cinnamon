@@ -94,3 +94,23 @@
   return
 
 }
+
+  func.func @compute_tensor(%arg0: tensor<1024xi32>,
+   %arg1: tensor<1024xi32>,
+   %arg0m: memref<20xi32>, %arg1m: memref<1024xi32>) {
+
+   %out = cnm.compute
+      ins(%arg0[#map] : tensor<1024xi32>, %arg0m[(i) -> ()]: memref<20xi32>)
+      outs(%arg1[#map] : tensor<1024xi32>) 
+      on hierarchy<1024>
+      do (%arg2: memref<i32>, %argx: memref<20xi32>, %arg3: memref<i32>) {
+        %0 = affine.load %arg2[] : memref<i32>
+        %c2_i32 = arith.constant 2 : i32
+        %1 = arith.muli %0, %c2_i32 : i32
+        affine.store %1, %arg3[] : memref<i32>
+        cnm.terminator
+      }
+
+  return
+
+}
