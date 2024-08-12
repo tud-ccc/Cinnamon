@@ -38,12 +38,12 @@ namespace {
 //   return result;
 // }
 
-// MemRefType convertTensorToMemref(ShapedType ty) {
-//   if (ty.isa<MemRefType>())
-//     return ty.cast<MemRefType>();
+MemRefType convertTensorToMemref(ShapedType ty) {
+  if (ty.isa<MemRefType>())
+    return ty.cast<MemRefType>();
 
-//   return MemRefType::get(ty.getShape(), ty.getElementType());
-// }
+  return MemRefType::get(ty.getShape(), ty.getElementType());
+}
 
 // static const StringRef BUFFER_OFFSET_ATTR = "upmem.bufferOffset";
 struct ConvertCnmWorkgroupToHbmpim
@@ -153,21 +153,22 @@ struct ConvertCnmLaunchToHbmpim : public OpConversionPattern<cnm::LaunchOp> {
         // dim calculation 
         int64_t totalPE = wg.getNumElements();
         int64_t dim = totalPE/wgShape[0];
+        auto cst0 = rewriter.create<arith::ConstantIndexOp>(op.getLoc(), 0);
         auto dimVal = rewriter.create<arith::ConstantIndexOp>(op.getLoc(), dim);
         auto in1Val = rewriter.create<arith::ConstantIndexOp>(op.getLoc(), 0);
         auto resVal = rewriter.create<arith::ConstantIndexOp>(op.getLoc(), 128);
         auto in2Val = rewriter.create<arith::ConstantIndexOp>(op.getLoc(), 256);
         auto inBufs = op.getInBuffers();
+        SmallVector
         auto inBuf1Uses = inBufs[0].getUses(); 
         for (auto &use : inBuf1Uses){
           if (dyn_cast<cnm::ScatterOp>(use.getOwner())){
-            cnm::ScatterOp scatterOp = use.getOwner();
-            Value tensor = adaptor.getInput();
-            ShapedType inputTy = op.getInput().getType();
+            cnm::ScatterOp scatterOp = dyn_cast<cnm::ScatterOp>(use.getOwner());
+            Value tensor = scatterOp.getInput();
+            ShapedType inputTy = scatterOp.getInput().getType();
             Value inputAsMemref = createOrFoldUnrealizedConversionCast(
                 op.getLoc(), rewriter, convertTensorToMemref(inputTy), tensor);
-            rewriter.create<
-            auto origscatterOp.getInput();
+            rewriter.create<hbmpim::PreloadNoReplacementOp>(op.getLoc(), inputAsMemref, in1Val, cst0);
             llvm::dbgs() << "Found one of the scatter Op\n";
           }
         }
