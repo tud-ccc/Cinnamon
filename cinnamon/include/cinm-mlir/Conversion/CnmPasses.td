@@ -37,16 +37,4 @@ def ConvertCnmToUPMEMPass : Pass<"convert-cnm-to-upmem"> {
     ];
 }
 
-def ConvertCnmToHbmpimPass : Pass<"convert-cnm-to-hbmpim"> {
-    let summary = "";
-    let constructor = "mlir::cnm::createConvertCnmToHbmpimPass()";
-    let dependentDialects = [
-        "mlir::affine::AffineDialect",
-        "mlir::arith::ArithDialect",
-        "mlir::memref::MemRefDialect",
-        "mlir::tensor::TensorDialect",
-        "mlir::hbmpim::HbmpimDialect"
-    ];
-}
-
 #endif // CNM_CONVERSION_PASSES

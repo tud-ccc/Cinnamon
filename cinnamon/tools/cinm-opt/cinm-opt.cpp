@@ -12,8 +12,6 @@
 #include "cinm-mlir/Dialect/Cinm/Transforms/Passes.h"
 #include "cinm-mlir/Dialect/Cnm/IR/CnmDialect.h"
 #include "cinm-mlir/Dialect/Cnm/Transforms/Passes.h"
-#include "cinm-mlir/Dialect/Hbmpim/IR/HbmpimDialect.h"
-// #include "cinm-mlir/Dialect/Hbmpim/Transforms/Passes.h"
 #include "cinm-mlir/Dialect/UPMEM/IR/UPMEMDialect.h"
 #include "cinm-mlir/Dialect/UPMEM/Transforms/Passes.h"
 
@@ -33,7 +31,7 @@ int main(int argc, char *argv[]) {
   DialectRegistry registry;
   registerAllDialects(registry);
 
-  registry.insert<cinm::CinmDialect, cnm::CnmDialect, upmem::UPMEMDialect, hbmpim::HbmpimDialect>();
+  registry.insert<cinm::CinmDialect, cnm::CnmDialect, upmem::UPMEMDialect>();
 
   registerAllPasses();
   registerAllExtensions(registry);

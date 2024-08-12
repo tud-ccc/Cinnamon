@@ -6,7 +6,6 @@
 
 #include "cinm-mlir/Conversion/CnmToGPU/CnmToGPU.h"
 #include "cinm-mlir/Conversion/CnmToUPMEM/CnmToUPMEM.h"
-#include "cinm-mlir/Conversion/CnmToHbmpim/CnmToHbmpim.h"
 
 namespace mlir {
 

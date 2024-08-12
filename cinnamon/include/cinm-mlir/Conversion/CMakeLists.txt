@@ -21,8 +21,3 @@ add_public_tablegen_target(UPMEMConversionPassIncGen)
 add_mlir_doc(UPMEMPasses UPMEMConversionPasses ./ -gen-pass-doc)
 
 
-set(LLVM_TARGET_DEFINITIONS HbmpimPasses.td)
-mlir_tablegen(HbmpimPasses.h.inc -gen-pass-decls -name HbmpimConversion ${TBLGEN_EXTRA})
-add_public_tablegen_target(HbmpimConversionPassIncGen)
-
-add_mlir_doc(HbmpimPasses HbmpimConversionPasses ./ -gen-pass-doc)
