@@ -24,9 +24,9 @@ module {
         %c256 = arith.constant 256 : index
         %4 = builtin.unrealized_conversion_cast %reshape : tensor<1024x8xi32> to memref<1024x8xi32>
         hbmpim.preload_no_replacement %2, %4, %c0_4, %c0 : !hbmpim.configuration<16x64x1x8>, memref<1024x8xi32>, index, index
-        // %5 = builtin.unrealized_conversion_cast %reshape_2 : tensor<1024x8xi32> to memref<1024x8xi32>
-        // hbmpim.preload_no_replacement %2, %5, %c0_4, %c0 : !hbmpim.configuration<16x64x1x8>, memref<1024x8xi32>, index, index
-        // hbmpim.execute_el_wise %2, %c512, ALL_BANK, ADD, %c0_4, %c128, %c256 : !hbmpim.configuration<16x64x1x8>, index, index, index, index
+        %5 = builtin.unrealized_conversion_cast %reshape_2 : tensor<1024x8xi32> to memref<1024x8xi32>
+        hbmpim.preload_no_replacement %2, %5, %c0_4, %c0 : !hbmpim.configuration<16x64x1x8>, memref<1024x8xi32>, index, index
+        hbmpim.execute_el_wise %2, %c512, ALL_BANK, ADD, %c0_4, %c128, %c256 : !hbmpim.configuration<16x64x1x8>, index, index, index, index
         // %6 = builtin.unrealized_conversion_cast %reshape_3 : tensor<1024x8xi32> to memref<1024x8xi32>
         // hbmpim.read_data %2, %6, %c128, %c0 : !hbmpim.configuration<16x64x1x8>, memref<1024x8xi32>, index, index
       }

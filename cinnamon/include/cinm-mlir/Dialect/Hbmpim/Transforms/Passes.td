@@ -15,4 +15,12 @@ def HbmpimOutlineKernelPass: Pass<"hbmpim-outline-kernel", "ModuleOp"> {
   }];
 }
 
+def HbmpimRewriteDeviceCallsPass: Pass<"hbmpim-rewrite-device-calls", "ModuleOp"> {
+  let summary = "rewrites abstract operations to real device calls";
+  let description = [{
+  }];
+  let dependentDialects = [ 
+        "arith::ArithDialect", "scf::SCFDialect"];
+}
+
 #endif // HBMPIM_TRANSFORM_PASSES

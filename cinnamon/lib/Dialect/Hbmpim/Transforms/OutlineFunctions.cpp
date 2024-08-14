@@ -30,51 +30,70 @@ namespace {
 static hbmpim::HbmpimFuncOp outlineKernelFuncImpl(func::FuncOp parent,
                                                 hbmpim::SetDeviceConfigOp setOp,
                                                 SymbolTable& kernelContainer) {
-  OpBuilder builder(parent->getContext());
-  Location loc = setOp.getLoc();
+    OpBuilder builder(parent->getContext());
+    Location loc = setOp.getLoc();
 
-//   auto outlinedFunc = builder.create<hbmpim::HbmpimFuncOp>(
-//       loc, parent.getName());
-  // this also does renaming if name is not unique
-//   kernelContainer.insert(outlinedFunc);
+    auto outlinedFunc = builder.create<hbmpim::HbmpimFuncOp>(
+      loc, parent.getName());
 
-//   IRMapping map;
-//   Block &outlinedEntryBlock = outlinedFunc.getBody().emplaceBlock();
+    kernelContainer.insert(outlinedFunc);
 
-//   Region &launchOpBody = launchOp.getBody();
-//   Block &launchOpEntry = launchOpBody.front();
+    IRMapping map;
+    Block &outlinedEntryBlock = outlinedFunc.getBody().emplaceBlock();
 
-  ///  Clone the region into the func, we remap the block arguments
-  {
-    // auto taskletArg = launchOpEntry.getArgument(2);
-    // auto taskletId = builder.create<upmem::TaskletIDOp>(taskletArg.getLoc());
-    // map.map(taskletArg, taskletId);
+    builder.setInsertionPointToStart(&outlinedEntryBlock);
+    Operation *toClone = setOp;
+    builder.clone(*toClone, map);
 
-    // builder.setInsertionPointToEnd(&outlinedEntryBlock);
-    // Operation *toClone = setOp;
-    // builder.clone(*toClone, map);
-    // for (auto &use : setOp.getResult().getUses()){
-    //     Operation *toClone = use.getOwner();
-    //     builder.clone(*toClone, map);
-    // }
-    // for (auto &op : launchOpEntry.without_terminator()) {
-    //   builder.clone(op, map);
-    // }
-    // builder.create<hbmpim::ReturnOp>(loc);
-  }
+    for (auto &use : setOp.getResult().getUses()){
 
-//   return outlinedFunc;
-  return nullptr;
+        if (dyn_cast<hbmpim::PreloadNoReplacementOp>(use.getOwner())){
+            auto oldOp = dyn_cast<hbmpim::PreloadNoReplacementOp>(use.getOwner());
+            builder.clone(*oldOp.getStartRow().getDefiningOp(), map);
+            builder.clone(*oldOp.getStartCol().getDefiningOp(), map);
+            builder.create<hbmpim::SimulatorPreloadNoReplacementOp>(loc, map.lookup(oldOp.getConfig()),
+                 map.lookup(oldOp.getStartRow()), map.lookup(oldOp.getStartCol()));
+            // oldOp.erase();
+        }
+    }
+    for (auto &use : setOp.getResult().getUses()){
+        if (dyn_cast<hbmpim::ExecuteElementwiseOp>(use.getOwner())){
+            auto oldOp = dyn_cast<hbmpim::ExecuteElementwiseOp>(use.getOwner());
+            builder.clone(*oldOp.getDim().getDefiningOp(), map);
+            builder.clone(*oldOp.getInput0row().getDefiningOp(), map);
+            builder.clone(*oldOp.getResultRow().getDefiningOp(), map);
+            builder.clone(*oldOp.getInput1row().getDefiningOp(), map);
+            builder.create<hbmpim::ExecuteElementwiseOp>(loc, map.lookup(oldOp.getConfig()),
+                 map.lookup(oldOp.getDim()), oldOp.getBankType(), oldOp.getKernelType(), 
+                 map.lookup(oldOp.getInput0row()), map.lookup(oldOp.getResultRow()),
+                 map.lookup(oldOp.getInput1row()));
+            // oldOp.erase();
+        }
+    }
+    builder.create<hbmpim::ReturnOp>(loc);
+    // setOp.erase();
+    return outlinedFunc;
 }
 
 static void convertToLaunchFuncOp(hbmpim::SetDeviceConfigOp setOp,
                                   hbmpim::HbmpimFuncOp kernelFunc) {
-  OpBuilder builder(setOp);
-//   auto launchFunc = builder.create<hbmpim::LaunchFuncOp>(
-//       setOp.getLoc(), kernelFunc, ValueRange{});
-//   launchOp.replaceAllUsesWith(launchFunc);
-//   launchOp.erase();
+    OpBuilder builder(setOp);
+    // for (auto &use : setOp.getResult().getUses())
+    //     use.getOwner()->erase();
+    // setOp.erase();
+  
+    for (auto &use : setOp.getResult().getUses()){
+        if (dyn_cast<hbmpim::ExecuteElementwiseOp>(use.getOwner())){
+            auto oldOp = dyn_cast<hbmpim::ExecuteElementwiseOp>(use.getOwner());
+            auto launchFunc = builder.create<hbmpim::HbmpimLaunchFuncOp>(
+                oldOp.getLoc(), kernelFunc, ValueRange{});
+            // oldOp->replace(launchFunc);
+        }
+        // use.getOwner()->erase();
+
+    } 
 }
+
 } // namespace
 
 //===----------------------------------------------------------------------===//
@@ -112,6 +131,16 @@ void HbmpimOutlineKernelPass::runOnOperation() {
       //     // Potentially changes signature, pulling in constants.
       convertToLaunchFuncOp(op, outlinedFunc);
       return WalkResult::advance();
+    });
+  }
+  SmallVector<Operation*> operationsToDelete;
+    for (auto func : getOperation().getOps<func::FuncOp>()) {
+        func.walk([&](Operation *op) {
+            if (auto setOp = dyn_cast<hbmpim::SetDeviceConfigOp>(op)){
+                for (auto &use : setOp.getResult().getUses())
+                    use.getOwner()->erase(); 
+            }
+            return WalkResult::advance();
     });
   }
 }

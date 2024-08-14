@@ -21,7 +21,6 @@
 #include <mlir/IR/Value.h>
 #include <mlir/Interfaces/InferTypeOpInterface.h>
 #include <mlir/Support/LogicalResult.h>
-#include "mlir/Interfaces/FunctionImplementation.h"
 
 #define DEBUG_TYPE "hbmpimm-ops"
 
@@ -45,44 +44,15 @@ void HbmpimDialect::registerOps() {
 //===----------------------------------------------------------------------===//
 
 ParseResult HbmpimFuncOp::parse(OpAsmParser &parser, OperationState &result) {
-  SmallVector<OpAsmParser::Argument> entryArgs;
-  SmallVector<DictionaryAttr> resultAttrs;
-  SmallVector<Type> resultTypes;
-  bool isVariadic;
+
   // Parse the function name.
   StringAttr nameAttr;
   if (parser.parseSymbolName(nameAttr, ::mlir::SymbolTable::getSymbolAttrName(),
                              result.attributes))
     return failure();
 
-  auto signatureLocation = parser.getCurrentLocation();
-  if (failed(function_interface_impl::parseFunctionSignature(
-          parser, /*allowVariadic=*/false, entryArgs, isVariadic, resultTypes,
-          resultAttrs)))
+  if (parser.parseLParen() || parser.parseRParen())
     return failure();
-
-  if (!entryArgs.empty() && entryArgs[0].ssaName.name.empty())
-    return parser.emitError(signatureLocation)
-           << "hbmpim.func requires named arguments";
-
-  // Construct the function type. More types will be added to the region, but
-  // not to the function type.
-  Builder &builder = parser.getBuilder();
-
-  SmallVector<Type> argTypes;
-  for (auto &arg : entryArgs)
-    argTypes.push_back(arg.type);
-  // auto type = builder.getFunctionType(argTypes, resultTypes);
-  // result.addAttribute(getFunctionTypeAttrName(result.name),
-  //                     TypeAttr::get(type));
-
-  // function_interface_impl::addArgAndResultAttrs(
-  //     builder, result, entryArgs, resultAttrs, getArgAttrsAttrName(result.name),
-  //     getResAttrsAttrName(result.name));
-
-
-  // if (parser.parseLParen() || parser.parseRParen())
-  //   return failure();
 
   if (parser.parseOptionalAttrDictWithKeyword(result.attributes))
     return failure();
@@ -128,6 +98,23 @@ static void printLaunchFuncOperands(OpAsmPrinter &printer, Operation *,
                           printer.printType(std::get<1>(pair));
                         });
   printer << ")";
+}
+
+void HbmpimLaunchFuncOp::build(OpBuilder &builder, OperationState &result,
+                         HbmpimFuncOp kernelFunc, 
+                         ValueRange kernelOperands) {
+  result.addOperands(kernelOperands);
+  auto kernelModule = kernelFunc->getParentOfType<HbmpimModuleOp>();
+  auto kernelSymbol =
+      SymbolRefAttr::get(kernelModule.getNameAttr(),
+                         {SymbolRefAttr::get(kernelFunc.getNameAttr())});
+
+  Properties &prop = result.getOrAddProperties<Properties>();
+  prop.kernel = kernelSymbol;
+  // size_t segmentSizesLen = std::size(prop.operandSegmentSizes);
+  // Initialize the segment sizes to 1.
+  // for (auto &sz : prop.operandSegmentSizes)
+  //   sz = 1;
 }
 
 //===- Generated implementation -------------------------------------------===//

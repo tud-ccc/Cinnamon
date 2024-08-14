@@ -41,8 +41,26 @@ def PreloadNoReplacementOp: Hbmpim_Op<"preload_no_replacement", []>{
         qualified(type($config)) `,` type($inBuffer) `,` type($startRow) `,` type($startCol)}];
 }
 
+def SimulatorPreloadNoReplacementOp: Hbmpim_Op<"sim_preload_no_replacement", []>{
+    let summary = "Load data that are not being replaced";
+    let description = [{}];
+    let arguments = (ins DeviceConfiguration:$config, Index:$startRow, Index:$startCol);
+    let assemblyFormat = [{$config `,` $startRow `,` $startCol attr-dict `:` qualified(type($config)) `,` type($startRow) `,` type($startCol)}];
+}
+
+
 def ReadDataOp: Hbmpim_Op<"read_data", []>{
     let summary = "Read the results of a elementwise operation";
+    let description = [{Although it sounds weird, but this is how the simulator implements it.
+                        This only works for elementwise operations. }];
+    let arguments = (ins DeviceConfiguration:$config, AnyMemRef:$outBuffer,
+                  Index:$startRow, Index:$startCol);
+    let assemblyFormat = [{$config `,` $outBuffer `,` $startRow `,` $startCol attr-dict `:` 
+        qualified(type($config)) `,` type($outBuffer) `,` type($startRow) `,` type($startCol)}];
+}
+
+def SimulatorReadDataOp: Hbmpim_Op<"sim_read_data", []>{
+    let summary = "Simulator function for reading the results of a elementwise operation";
     let description = [{Although it sounds weird, but this is how the simulator implements it.
                         This only works for elementwise operations. }];
     let arguments = (ins DeviceConfiguration:$config, AnyMemRef:$outBuffer,
@@ -175,42 +193,29 @@ def HbmpimFuncOp : Hbmpim_Op<"func", [
   }];
 
   let arguments = (ins
-         TypeAttrOf<FunctionType>:$function_type
+         StrAttr:$sym_name
   );
-        //  StrAttr:$sym_name
   let regions = (region MinSizedRegion<1>:$body);
 
   let extraClassDeclaration = [{
-    // StringRef getName() {
-    //   return getSymName();
-    // }
-    // FunctionType getFunctionType() {
-    //   return FunctionType::get(getContext(), {}, {});
-    // }
-    // void setFunctionTypeAttr(TypeAttr ty) {
-    //   if (ty.getValue() != getFunctionType())
-    //     emitOpError("cannot set type ") << ty;
-    // }
+    StringRef getName() {
+      return getSymName();
+    }
+    FunctionType getFunctionType() {
+      return FunctionType::get(getContext(), {}, {});
+    }
+    void setFunctionTypeAttr(TypeAttr ty) {
+      if (ty.getValue() != getFunctionType())
+        emitOpError("cannot set type ") << ty;
+    }
     /// Returns the argument types of this function.
-    // ArrayRef<Type> getArgumentTypes() { return {}; }
-
-    // /// Returns the result types of this function.
-    // ArrayRef<Type> getResultTypes() { return {}; }
-
-    // Region *getCallableRegion() { return &getBody(); }
-        /// Returns the argument types of this function.
-
-    ArrayRef<Type> getArgumentTypes() { return getFunctionType().getInputs(); }
+    ArrayRef<Type> getArgumentTypes() { return {}; }
 
     /// Returns the result types of this function.
-    ArrayRef<Type> getResultTypes() { return getFunctionType().getResults(); }
+    ArrayRef<Type> getResultTypes() { return {}; }
 
     Region *getCallableRegion() { return &getBody(); }
   }];
-
-  let builders = [
-    OpBuilder<(ins "StringRef":$name, "FunctionType":$type)>
-  ];
   let hasCustomAssemblyFormat = 1;
 
 }
@@ -226,7 +231,7 @@ def ReturnOp : Hbmpim_Op<"return", [HasParent<"HbmpimFuncOp">, Pure,
 }
 
 
-def Hbmpim_LaunchFuncOp :Hbmpim_Op<"launch_func", []>,
+def HbmpimLaunchFuncOp :Hbmpim_Op<"launch_func", []>,
     Arguments<(ins SymbolRefAttr:$kernel, Variadic<AnyType>:$kernelOperands)> {
   let summary = "Launches a Hbmpim kernel instance";
   let description = [{
