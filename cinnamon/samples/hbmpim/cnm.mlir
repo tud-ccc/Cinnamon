@@ -26,11 +26,11 @@ func.func @va(%A: tensor<8192x8192xi32>, %B: tensor<8192x8192xi32>, %C: tensor<8
             cnm.scatter %sub_arr1_reshaped into %A_buf[#map] of %wg : tensor<1024x8xi32> into !cnm.buffer<8xi32 on 16x64x1x8, level 0>
             cnm.scatter %sub_arr2_reshaped into %B_buf[#map] of %wg : tensor<1024x8xi32> into !cnm.buffer<8xi32 on 16x64x1x8, level 0>
             cnm.scatter %sub_arr3_reshaped into %C_buf[#map] of %wg : tensor<1024x8xi32> into !cnm.buffer<8xi32 on 16x64x1x8, level 0>
-            cnm.launch %wg in(%A_buf: !cnm.buffer<8xi32 on 16x64x1x8, level 0>) out(%C_buf : !cnm.buffer<8xi32 on 16x64x1x8, level 0>) on !cnm.workgroup<16x64x1x8> {
-                ^bb0(%a: memref<8xi32>, %b: memref<8xi32>):
-                linalg.add ins(%a, %b: memref<8xi32>, memref<8xi32>) outs(%a: memref<8xi32>)
+            cnm.launch %wg in(%A_buf, %B_buf: !cnm.buffer<8xi32 on 16x64x1x8, level 0>, !cnm.buffer<8xi32 on 16x64x1x8, level 0>) out(%C_buf : !cnm.buffer<8xi32 on 16x64x1x8, level 0>) on !cnm.workgroup<16x64x1x8> {
+                ^bb0(%a: memref<8xi32>, %b: memref<8xi32>,  %c: memref<8xi32>):
+                linalg.add ins(%a, %b: memref<8xi32>, memref<8xi32>) outs(%c: memref<8xi32>)
             }
-            // %res = cnm.gather %C_buf[#map] of %wg into %sub_arr3_reshaped: !cnm.buffer<8xi32 on 16x64x1x8, level 0> into tensor<1024x8xi32>
+            %res = cnm.gather %C_buf[#map] of %wg into %sub_arr3_reshaped: !cnm.buffer<8xi32 on 16x64x1x8, level 0> into tensor<1024x8xi32>
             // cnm.free_workgroup %wg : !cnm.workgroup<16x64x1x8>
         }
     }

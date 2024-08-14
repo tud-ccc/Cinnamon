@@ -35,10 +35,40 @@ include "mlir/IR/BuiltinAttributes.td"
 def PreloadNoReplacementOp: Hbmpim_Op<"preload_no_replacement", []>{
     let summary = "Load data that are not being replaced";
     let description = [{}];
-    let arguments = (ins AnyMemRef:$inBuffer,
+    let arguments = (ins DeviceConfiguration:$config, AnyMemRef:$inBuffer,
                   Index:$startRow, Index:$startCol);
-    let assemblyFormat = [{$inBuffer `,` $startRow `,` $startCol attr-dict `:` 
-        type($inBuffer) `,` type($startRow) `,` type($startCol)}];
+    let assemblyFormat = [{$config `,` $inBuffer `,` $startRow `,` $startCol attr-dict `:` 
+        qualified(type($config)) `,` type($inBuffer) `,` type($startRow) `,` type($startCol)}];
+}
+
+def ReadDataOp: Hbmpim_Op<"read_data", []>{
+    let summary = "Read the results of a elementwise operation";
+    let description = [{Although it sounds weird, but this is how the simulator implements it.
+                        This only works for elementwise operations. }];
+    let arguments = (ins DeviceConfiguration:$config, AnyMemRef:$outBuffer,
+                  Index:$startRow, Index:$startCol);
+    let assemblyFormat = [{$config `,` $outBuffer `,` $startRow `,` $startCol attr-dict `:` 
+        qualified(type($config)) `,` type($outBuffer) `,` type($startRow) `,` type($startCol)}];
+}
+
+def PreloadGemvOp: Hbmpim_Op<"preload_gemv", []>{
+    let summary = "Load data for GEMV-based kernels";
+    let description = [{}];
+    let arguments = (ins DeviceConfiguration:$config, AnyMemRef:$inBuffer,
+                  Index:$startRow, Index:$startCol);
+    let assemblyFormat = [{$config `,` $inBuffer `,` $startRow `,` $startCol attr-dict `:` 
+       qualified(type($config)) `,` type($inBuffer) `,` type($startRow) `,` type($startCol)}];
+}
+
+def ReadResultOp: Hbmpim_Op<"read_result", []>{
+    let summary = "Read the result of a **gemv** operation";
+    let description = [{Although it sounds weird, but this is how the simulator implements it.
+                        This only works for gemv. }];
+    let arguments = (ins DeviceConfiguration:$config, AnyMemRef:$outBuffer, PimBankTypeAttr:$bank_type, Index:$out_dim,
+                  Index:$base_addr, Index:$startRow, Index:$startCol);
+    let assemblyFormat = [{$config `,` $outBuffer `,` $bank_type `,` $out_dim `,` $base_addr `,`
+        $startRow `,` $startCol attr-dict `:` qualified(type($config)) `,`
+        type($outBuffer) `,` type($out_dim) `,` type($base_addr) `,` type($startRow) `,` type($startCol)}];
 }
 
 def SetDeviceConfigOp : Hbmpim_Op<"set_dev_config", []> {
@@ -116,10 +146,10 @@ def GetNumElementsPerBlocksOp: Hbmpim_Op<"get_num_elements_per_block", []>{
 def ExecuteElementwiseOp: Hbmpim_Op<"execute_el_wise", []>{
   let summary = "Execute element-wise operations such as Relu, add, mul";
   let description = [{}];
-  let arguments = (ins Index: $dim, PimBankTypeAttr:$bankType, PimKernelTypeAttr:$kernelType, 
+  let arguments = (ins DeviceConfiguration:$config, Index: $dim, PimBankTypeAttr:$bankType, PimKernelTypeAttr:$kernelType, 
                    Index:$input0row, Index:$resultRow, Index:$input1row);
-  let assemblyFormat = [{$dim `,` $bankType `,` $kernelType `,` $input0row `,` $resultRow `,` $input1row
-      attr-dict `:` type($dim) `,` type($input0row) `,` type($resultRow) `,` type($input1row)}];
+  let assemblyFormat = [{$config`,` $dim `,` $bankType `,` $kernelType `,` $input0row `,` $resultRow `,` $input1row
+      attr-dict `:` qualified(type($config)) `,` type($dim) `,` type($input0row) `,` type($resultRow) `,` type($input1row)}];
 }
 
 
@@ -145,29 +175,42 @@ def HbmpimFuncOp : Hbmpim_Op<"func", [
   }];
 
   let arguments = (ins
-         StrAttr:$sym_name
+         TypeAttrOf<FunctionType>:$function_type
   );
+        //  StrAttr:$sym_name
   let regions = (region MinSizedRegion<1>:$body);
 
   let extraClassDeclaration = [{
-    StringRef getName() {
-      return getSymName();
-    }
-    FunctionType getFunctionType() {
-      return FunctionType::get(getContext(), {}, {});
-    }
-    void setFunctionTypeAttr(TypeAttr ty) {
-      if (ty.getValue() != getFunctionType())
-        emitOpError("cannot set type ") << ty;
-    }
+    // StringRef getName() {
+    //   return getSymName();
+    // }
+    // FunctionType getFunctionType() {
+    //   return FunctionType::get(getContext(), {}, {});
+    // }
+    // void setFunctionTypeAttr(TypeAttr ty) {
+    //   if (ty.getValue() != getFunctionType())
+    //     emitOpError("cannot set type ") << ty;
+    // }
     /// Returns the argument types of this function.
-    ArrayRef<Type> getArgumentTypes() { return {}; }
+    // ArrayRef<Type> getArgumentTypes() { return {}; }
+
+    // /// Returns the result types of this function.
+    // ArrayRef<Type> getResultTypes() { return {}; }
+
+    // Region *getCallableRegion() { return &getBody(); }
+        /// Returns the argument types of this function.
+
+    ArrayRef<Type> getArgumentTypes() { return getFunctionType().getInputs(); }
 
     /// Returns the result types of this function.
-    ArrayRef<Type> getResultTypes() { return {}; }
+    ArrayRef<Type> getResultTypes() { return getFunctionType().getResults(); }
 
     Region *getCallableRegion() { return &getBody(); }
   }];
+
+  let builders = [
+    OpBuilder<(ins "StringRef":$name, "FunctionType":$type)>
+  ];
   let hasCustomAssemblyFormat = 1;
 
 }
@@ -183,5 +226,36 @@ def ReturnOp : Hbmpim_Op<"return", [HasParent<"HbmpimFuncOp">, Pure,
 }
 
 
+def Hbmpim_LaunchFuncOp :Hbmpim_Op<"launch_func", []>,
+    Arguments<(ins SymbolRefAttr:$kernel, Variadic<AnyType>:$kernelOperands)> {
+  let summary = "Launches a Hbmpim kernel instance";
+  let description = [{
+  }];
+
+  let skipDefaultBuilders = 1;
+
+  let builders = [
+    OpBuilder<(ins "HbmpimFuncOp":$kernelFunc,  
+      "ValueRange":$kernelOperands)>
+  ];
+
+  let extraClassDeclaration = [{
+    /// The name of the kernel's containing module.
+    StringAttr getKernelModuleName();
+
+    /// The name of the kernel.
+    StringAttr getKernelName();
+
+    /// The number of operands passed to the kernel function.
+    unsigned getNumKernelOperands();
+
+    /// The i-th operand passed to the kernel function.
+    Value getKernelOperand(unsigned i);
+  }];
+
+  let assemblyFormat = [{
+        $kernel custom<LaunchFuncOperands>($kernelOperands, type($kernelOperands)) attr-dict
+  }];
+}
 
 #endif

@@ -143,37 +143,50 @@ struct ConvertCnmLaunchToHbmpim : public OpConversionPattern<cnm::LaunchOp> {
   LogicalResult
   matchAndRewrite(cnm::LaunchOp op, OpAdaptor,
                   ConversionPatternRewriter &rewriter) const override {
-    auto wg = op.getWg().getType();
-    const ArrayRef<int64_t> wgShape = wg.getShape();
+    auto wg = op.getWg();
+    auto wgType = wg.getType();
+    const ArrayRef<int64_t> wgShape = wgType.getShape();
+    const Value remapped_wg = rewriter.getRemappedValue(wg);
     // llvm::dbgs() << "operation count " << op.getBody().front().getOperations().size() << "\n";
     
     for(auto &operation: op.getBody().front().getOperations()){
       if(dyn_cast<linalg::AddOp>(operation)){
         // llvm::dbgs() << "Add operation found\n";
         // dim calculation 
-        int64_t totalPE = wg.getNumElements();
+        int64_t totalPE = wgType.getNumElements();
         int64_t dim = totalPE/wgShape[0];
         auto cst0 = rewriter.create<arith::ConstantIndexOp>(op.getLoc(), 0);
         auto dimVal = rewriter.create<arith::ConstantIndexOp>(op.getLoc(), dim);
         auto in1Val = rewriter.create<arith::ConstantIndexOp>(op.getLoc(), 0);
         auto resVal = rewriter.create<arith::ConstantIndexOp>(op.getLoc(), 128);
         auto in2Val = rewriter.create<arith::ConstantIndexOp>(op.getLoc(), 256);
-        auto inBufs = op.getInBuffers();
-        SmallVector
-        auto inBuf1Uses = inBufs[0].getUses(); 
-        for (auto &use : inBuf1Uses){
-          if (dyn_cast<cnm::ScatterOp>(use.getOwner())){
-            cnm::ScatterOp scatterOp = dyn_cast<cnm::ScatterOp>(use.getOwner());
-            Value tensor = scatterOp.getInput();
-            ShapedType inputTy = scatterOp.getInput().getType();
-            Value inputAsMemref = createOrFoldUnrealizedConversionCast(
-                op.getLoc(), rewriter, convertTensorToMemref(inputTy), tensor);
-            rewriter.create<hbmpim::PreloadNoReplacementOp>(op.getLoc(), inputAsMemref, in1Val, cst0);
-            llvm::dbgs() << "Found one of the scatter Op\n";
+
+        for (auto inBuf: op.getInBuffers()){
+          for (auto &use : inBuf.getUses()){
+            if (dyn_cast<cnm::ScatterOp>(use.getOwner())){
+              cnm::ScatterOp scatterOp = dyn_cast<cnm::ScatterOp>(use.getOwner());
+              Value tensor = scatterOp.getInput();
+              ShapedType inputTy = scatterOp.getInput().getType();
+              Value inputAsMemref = createOrFoldUnrealizedConversionCast(
+                  op.getLoc(), rewriter, convertTensorToMemref(inputTy), tensor);
+              rewriter.create<hbmpim::PreloadNoReplacementOp>(op.getLoc(), remapped_wg, inputAsMemref, in1Val, cst0);
+            }
           }
         }
-        rewriter.create<hbmpim::ExecuteElementwiseOp>(op.getLoc(), dimVal, hbmpim::PimBankType::ALL_BANK, 
-                hbmpim::PimKernelType::ADD, in1Val, resVal, in2Val);
+        rewriter.create<hbmpim::ExecuteElementwiseOp>(op.getLoc(), remapped_wg, dimVal, hbmpim::PimBankType::ALL_BANK, 
+                hbmpim::PimKernelType::ADD, in1Val, resVal, in2Val); 
+        for (auto outBuf: op.getOutBuffers()){
+          for (auto &use : outBuf.getUses()){
+            if (dyn_cast<cnm::GatherOp>(use.getOwner())){
+              cnm::GatherOp gatherOp = dyn_cast<cnm::GatherOp>(use.getOwner());
+              Value tensor = gatherOp.getOutputBuf();
+              ShapedType outputTy = gatherOp.getOutputBuf().getType();
+              Value outputAsMemref = createOrFoldUnrealizedConversionCast(
+                  op.getLoc(), rewriter, convertTensorToMemref(outputTy), tensor);
+              rewriter.create<hbmpim::ReadDataOp>(op.getLoc(), remapped_wg, outputAsMemref, resVal, cst0);
+            }
+          }
+        }
       } else if (!dyn_cast<cnm::TerminatorOp>(operation)){
         return op->emitOpError("operation not supported yet") ;
       }     
@@ -241,6 +254,7 @@ struct ConvertCnmToHbmpimPass
     // alloc ops are deleted in second pass
     target.addLegalOp<cnm::AllocOp>();
     target.addLegalOp<cnm::ScatterOp>();
+    target.addLegalOp<cnm::GatherOp>();
     // target.addIllegalDialect<bufferization::BufferizationDialect>();
 
     target.markUnknownOpDynamicallyLegal([](Operation *) { return true; });
@@ -249,6 +263,7 @@ struct ConvertCnmToHbmpimPass
             applyFullConversion(getOperation(), target, std::move(patterns)))) {
       signalPassFailure();
     }
+    getOperation()->walk([](cnm::GatherOp op) { op->erase(); });
     getOperation()->walk([](cnm::ScatterOp op) { op->erase(); });
     getOperation()->walk([](cnm::AllocOp op) { op->erase(); });
 

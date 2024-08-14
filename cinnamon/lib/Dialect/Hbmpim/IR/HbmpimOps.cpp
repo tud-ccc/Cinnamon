@@ -21,16 +21,13 @@
 #include <mlir/IR/Value.h>
 #include <mlir/Interfaces/InferTypeOpInterface.h>
 #include <mlir/Support/LogicalResult.h>
+#include "mlir/Interfaces/FunctionImplementation.h"
 
 #define DEBUG_TYPE "hbmpimm-ops"
 
 using namespace mlir;
 using namespace mlir::hbmpim;
 
-//===- Generated implementation -------------------------------------------===//
-
-#define GET_OP_CLASSES
-#include "cinm-mlir/Dialect/Hbmpim/IR/HbmpimOps.cpp.inc"
 
 //===----------------------------------------------------------------------===//
 // HbmpimDialect
@@ -48,15 +45,44 @@ void HbmpimDialect::registerOps() {
 //===----------------------------------------------------------------------===//
 
 ParseResult HbmpimFuncOp::parse(OpAsmParser &parser, OperationState &result) {
-
+  SmallVector<OpAsmParser::Argument> entryArgs;
+  SmallVector<DictionaryAttr> resultAttrs;
+  SmallVector<Type> resultTypes;
+  bool isVariadic;
   // Parse the function name.
   StringAttr nameAttr;
   if (parser.parseSymbolName(nameAttr, ::mlir::SymbolTable::getSymbolAttrName(),
                              result.attributes))
     return failure();
 
-  if (parser.parseLParen() || parser.parseRParen())
+  auto signatureLocation = parser.getCurrentLocation();
+  if (failed(function_interface_impl::parseFunctionSignature(
+          parser, /*allowVariadic=*/false, entryArgs, isVariadic, resultTypes,
+          resultAttrs)))
     return failure();
+
+  if (!entryArgs.empty() && entryArgs[0].ssaName.name.empty())
+    return parser.emitError(signatureLocation)
+           << "hbmpim.func requires named arguments";
+
+  // Construct the function type. More types will be added to the region, but
+  // not to the function type.
+  Builder &builder = parser.getBuilder();
+
+  SmallVector<Type> argTypes;
+  for (auto &arg : entryArgs)
+    argTypes.push_back(arg.type);
+  // auto type = builder.getFunctionType(argTypes, resultTypes);
+  // result.addAttribute(getFunctionTypeAttrName(result.name),
+  //                     TypeAttr::get(type));
+
+  // function_interface_impl::addArgAndResultAttrs(
+  //     builder, result, entryArgs, resultAttrs, getArgAttrsAttrName(result.name),
+  //     getResAttrsAttrName(result.name));
+
+
+  // if (parser.parseLParen() || parser.parseRParen())
+  //   return failure();
 
   if (parser.parseOptionalAttrDictWithKeyword(result.attributes))
     return failure();
@@ -73,3 +99,38 @@ void HbmpimFuncOp::print(OpAsmPrinter &p) {
   p << ' ';
   p.printRegion(getBody(), /*printEntryBlockArgs=*/false);
 }
+
+static ParseResult parseLaunchFuncOperands(
+    OpAsmParser &parser,
+    SmallVectorImpl<OpAsmParser::UnresolvedOperand> &argNames,
+    SmallVectorImpl<Type> &argTypes) {
+  if (parser.parseOptionalKeyword("args"))
+    return success();
+
+  auto parseElement = [&]() -> ParseResult {
+    return failure(parser.parseOperand(argNames.emplace_back()) ||
+                   parser.parseColonType(argTypes.emplace_back()));
+  };
+
+  return parser.parseCommaSeparatedList(OpAsmParser::Delimiter::Paren,
+                                        parseElement, " in argument list");
+}
+
+static void printLaunchFuncOperands(OpAsmPrinter &printer, Operation *,
+                                    OperandRange operands, TypeRange types) {
+  if (operands.empty())
+    return;
+  printer << "args(";
+  llvm::interleaveComma(llvm::zip(operands, types), printer,
+                        [&](const auto &pair) {
+                          printer.printOperand(std::get<0>(pair));
+                          printer << " : ";
+                          printer.printType(std::get<1>(pair));
+                        });
+  printer << ")";
+}
+
+//===- Generated implementation -------------------------------------------===//
+
+#define GET_OP_CLASSES
+#include "cinm-mlir/Dialect/Hbmpim/IR/HbmpimOps.cpp.inc"
