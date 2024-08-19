@@ -28,11 +28,13 @@ namespace mlir {
 
 namespace {
 static hbmpim::HbmpimFuncOp outlineKernelFuncImpl(func::FuncOp parent,
-                                                hbmpim::SetDeviceConfigOp setOp,
+                                                hbmpim::LaunchOp launchOp, 
                                                 SymbolTable& kernelContainer) {
     OpBuilder builder(parent->getContext());
-    Location loc = setOp.getLoc();
-
+    Location loc = launchOp.getLoc();
+    Region &launchOpBody = launchOp.getBody();
+    Block &launchOpEntry = launchOpBody.front();
+    hbmpim::SetDeviceConfigOp setOp = dyn_cast<hbmpim::SetDeviceConfigOp>(launchOp.getConfig().getDefiningOp());
     auto outlinedFunc = builder.create<hbmpim::HbmpimFuncOp>(
       loc, parent.getName());
 
@@ -44,54 +46,44 @@ static hbmpim::HbmpimFuncOp outlineKernelFuncImpl(func::FuncOp parent,
     builder.setInsertionPointToStart(&outlinedEntryBlock);
     Operation *toClone = setOp;
     builder.clone(*toClone, map);
-
-    for (auto &use : setOp.getResult().getUses()){
-
-        if (dyn_cast<hbmpim::PreloadNoReplacementOp>(use.getOwner())){
-            auto oldOp = dyn_cast<hbmpim::PreloadNoReplacementOp>(use.getOwner());
-            builder.clone(*oldOp.getStartRow().getDefiningOp(), map);
-            builder.clone(*oldOp.getStartCol().getDefiningOp(), map);
-            builder.create<hbmpim::SimulatorPreloadNoReplacementOp>(loc, map.lookup(oldOp.getConfig()),
+    for (auto &op : launchOpEntry.without_terminator()) {
+        if (dyn_cast<hbmpim::PreloadNoReplacementOp>(op)){
+            auto oldOp = dyn_cast<hbmpim::PreloadNoReplacementOp>(op);
+            builder.create<hbmpim::SimulatorPreloadNoReplacementOp>(loc,
                  map.lookup(oldOp.getStartRow()), map.lookup(oldOp.getStartCol()));
-            // oldOp.erase();
+        } else if (dyn_cast<hbmpim::PreloadGemvOp>(op)){
+            auto oldOp = dyn_cast<hbmpim::PreloadGemvOp>(op);
+            auto operandShape = dyn_cast<ShapedType>(oldOp.getInBuffer().getType()).getShape();
+            builder.create<hbmpim::SimulatorPreloadGemvOp>(loc, 
+                 map.lookup(oldOp.getStartRow()), map.lookup(oldOp.getStartCol()), builder.getDenseI64ArrayAttr(operandShape));
+        } else if (dyn_cast<hbmpim::ReadResultOp>(op)){
+            auto oldOp = dyn_cast<hbmpim::ReadResultOp>(op);
+            auto operandShape = dyn_cast<ShapedType>(oldOp.getOutBuffer().getType()).getShape();
+            builder.create<hbmpim::SimulatorReadResultOp>(loc, 
+                 oldOp.getBankType(), map.lookup(oldOp.getOutDim()), 
+                 map.lookup(oldOp.getBaseAddr()), map.lookup(oldOp.getStartRow()),
+                 map.lookup(oldOp.getStartCol()), builder.getDenseI64ArrayAttr(operandShape));
+        } else if (dyn_cast<hbmpim::ReadDataOp>(op)){
+            auto oldOp = dyn_cast<hbmpim::ReadDataOp>(op);
+            auto operandShape = dyn_cast<ShapedType>(oldOp.getOutBuffer().getType()).getShape();
+            builder.create<hbmpim::SimulatorReadDataOp>(loc, 
+                 map.lookup(oldOp.getStartRow()), map.lookup(oldOp.getStartCol()),
+                 builder.getDenseI64ArrayAttr(operandShape));
+        } else {
+            builder.clone(op, map);
         }
     }
-    for (auto &use : setOp.getResult().getUses()){
-        if (dyn_cast<hbmpim::ExecuteElementwiseOp>(use.getOwner())){
-            auto oldOp = dyn_cast<hbmpim::ExecuteElementwiseOp>(use.getOwner());
-            builder.clone(*oldOp.getDim().getDefiningOp(), map);
-            builder.clone(*oldOp.getInput0row().getDefiningOp(), map);
-            builder.clone(*oldOp.getResultRow().getDefiningOp(), map);
-            builder.clone(*oldOp.getInput1row().getDefiningOp(), map);
-            builder.create<hbmpim::ExecuteElementwiseOp>(loc, map.lookup(oldOp.getConfig()),
-                 map.lookup(oldOp.getDim()), oldOp.getBankType(), oldOp.getKernelType(), 
-                 map.lookup(oldOp.getInput0row()), map.lookup(oldOp.getResultRow()),
-                 map.lookup(oldOp.getInput1row()));
-            // oldOp.erase();
-        }
-    }
+  
     builder.create<hbmpim::ReturnOp>(loc);
-    // setOp.erase();
     return outlinedFunc;
 }
 
-static void convertToLaunchFuncOp(hbmpim::SetDeviceConfigOp setOp,
+static void convertToLaunchFuncOp(hbmpim::LaunchOp launchOp,
                                   hbmpim::HbmpimFuncOp kernelFunc) {
-    OpBuilder builder(setOp);
-    // for (auto &use : setOp.getResult().getUses())
-    //     use.getOwner()->erase();
-    // setOp.erase();
-  
-    for (auto &use : setOp.getResult().getUses()){
-        if (dyn_cast<hbmpim::ExecuteElementwiseOp>(use.getOwner())){
-            auto oldOp = dyn_cast<hbmpim::ExecuteElementwiseOp>(use.getOwner());
-            auto launchFunc = builder.create<hbmpim::HbmpimLaunchFuncOp>(
-                oldOp.getLoc(), kernelFunc, ValueRange{});
-            // oldOp->replace(launchFunc);
-        }
-        // use.getOwner()->erase();
-
-    } 
+    OpBuilder builder(launchOp);
+    auto launchFunc = builder.create<hbmpim::HbmpimLaunchFuncOp>(
+        launchOp.getLoc(), kernelFunc, ValueRange{});
+    launchOp.erase();
 }
 
 } // namespace
@@ -123,24 +115,25 @@ void HbmpimOutlineKernelPass::runOnOperation() {
 
   for (auto func : getOperation().getOps<func::FuncOp>()) {
     Block::iterator insertPt(func->getNextNode());
-    func.walk([&](hbmpim::SetDeviceConfigOp op) {
+    func.walk([&](hbmpim::LaunchOp op) {
       OpBuilder::InsertionGuard guard(builder);
       hbmpim::HbmpimFuncOp outlinedFunc =
           outlineKernelFuncImpl(func, op, kernelModuleSymTable);
-
-      //     // Potentially changes signature, pulling in constants.
       convertToLaunchFuncOp(op, outlinedFunc);
       return WalkResult::advance();
     });
   }
-  SmallVector<Operation*> operationsToDelete;
-    for (auto func : getOperation().getOps<func::FuncOp>()) {
-        func.walk([&](Operation *op) {
-            if (auto setOp = dyn_cast<hbmpim::SetDeviceConfigOp>(op)){
-                for (auto &use : setOp.getResult().getUses())
-                    use.getOwner()->erase(); 
-            }
-            return WalkResult::advance();
+  for (auto func : getOperation().getOps<func::FuncOp>()) {
+    Block::iterator insertPt(func->getNextNode());
+    func.walk([&](hbmpim::SetDeviceConfigOp op) {
+        // for (mlir::OpOperand &use : op.getResult().getUses()){
+            // auto op = use.getOwner();
+            // op->print(llvm::dbgs());
+            // llvm::dbgs() << "one use " << use << "\n";
+        // }
+        // op.erase();
+
+        return WalkResult::advance();
     });
   }
 }

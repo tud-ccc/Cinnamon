@@ -30,13 +30,6 @@
 namespace mlir::cnm {
 namespace {
 
-// template <typename T> T reduceMul(ArrayRef<T> arr) {
-//   T result{1};
-//   for (const T &elem : arr) {
-//     result *= elem;
-//   }
-//   return result;
-// }
 
 MemRefType convertTensorToMemref(ShapedType ty) {
   if (ty.isa<MemRefType>())
@@ -45,7 +38,29 @@ MemRefType convertTensorToMemref(ShapedType ty) {
   return MemRefType::get(ty.getShape(), ty.getElementType());
 }
 
-// static const StringRef BUFFER_OFFSET_ATTR = "upmem.bufferOffset";
+
+Value trimStaticShape(OpBuilder &builder, Location loc, Value value) {
+  ShapedType type = dyn_cast<ShapedType>(value.getType());
+  if (type.isa<RankedTensorType>()) {
+    SmallVector<int64_t> newShape;
+    bool trim = true;
+    for (auto dim : type.getShape())
+      if (dim != 1 || !trim) 
+        newShape.push_back(dim);
+      else trim = false;
+
+    auto reifiedShape = builder.create<arith::ConstantOp>(
+        loc, RankedTensorType::get({static_cast<int64_t>(newShape.size())}, builder.getI64Type()),
+        builder.getI64TensorAttr(newShape));
+
+    auto newType = RankedTensorType::get(newShape, type.getElementType());
+    // return builder.create<tensor::ReshapeOp>(RankedTensorType::get(newShape, type.getElementType()), value, reifiedShape);
+    return builder.create<tensor::ReshapeOp>(loc, newType, value, reifiedShape);
+  }
+  // todo memref
+  assert(false && "not handled for memrefs for now");
+}
+
 struct ConvertCnmWorkgroupToHbmpim
     : public OpConversionPattern<cnm::WorkgroupOp> {
   using OpConversionPattern<cnm::WorkgroupOp>::OpConversionPattern;
@@ -75,118 +90,139 @@ struct ConvertCnmFreeWorkgroup
   }
 };
 
-// struct ConvertCnmScatterToHbmpim : public OpConversionPattern<cnm::ScatterOp> {
-//   using OpConversionPattern<cnm::ScatterOp>::OpConversionPattern;
 
-//   LogicalResult
-//   matchAndRewrite(cnm::ScatterOp op, OpAdaptor adaptor,
-//                   ConversionPatternRewriter &rewriter) const override {
-//     const Value tensor = adaptor.getInput();
-//     const ShapedType inputTy = op.getInput().getType();
+hbmpim::LaunchOp createVALaunch(ImplicitLocOpBuilder &builder, int64_t totalPE, Value remapped_wg, SmallVector<Value> inputs, Value output) {
 
-//     const Value inputAsMemref = createOrFoldUnrealizedConversionCast(
-//         op.getLoc(), rewriter, convertTensorToMemref(inputTy), tensor);
 
-//     const int64_t transferCount = op.getTransferCountInItems();
-//     const int64_t dpuMemOffset =
-//         llvm::cast<cnm::AllocOp>(op.getBuffer().getDefiningOp())
-//             ->getAttrOfType<IntegerAttr>(BUFFER_OFFSET_ATTR)
-//             .getInt();
+  auto wgShape = dyn_cast<hbmpim::DeviceConfigurationType>(remapped_wg.getType()).getShape();
+  int64_t dim = totalPE/wgShape[0];
+  hbmpim::LaunchOp launchOp =
+    builder.create<hbmpim::LaunchOp>(remapped_wg, inputs, output);
+  auto &launchBlock = launchOp.getBody().emplaceBlock();
+  for (auto input : launchOp.getParams()) {
+    if (auto inputTy = input.getType().cast<MemRefType>()) {
+      auto mappedTy =
+        MemRefType::get(inputTy.getShape(), inputTy.getElementType());
+      launchBlock.addArgument(mappedTy, input.getLoc());
+    } else {
+      launchBlock.addArgument(input.getType(), input.getLoc());
+    }
+  } 
+  builder.setInsertionPointToStart(&launchBlock);
+  auto cst0 = builder.create<arith::ConstantIndexOp>(0);
+  auto dimVal = builder.create<arith::ConstantIndexOp>(dim);
+  auto in1Val = builder.create<arith::ConstantIndexOp>(0);
+  auto in2Val = builder.create<arith::ConstantIndexOp>(128);
+  auto resVal = builder.create<arith::ConstantIndexOp>(256);
+  builder.create<hbmpim::PreloadNoReplacementOp>(launchBlock.getArguments()[0], in1Val, cst0);
+  builder.create<hbmpim::PreloadNoReplacementOp>(launchBlock.getArguments()[1], in2Val, cst0);
+  builder.create<hbmpim::ExecuteElementwiseOp>(dimVal, hbmpim::PimBankType::ALL_BANK, 
+          hbmpim::PimKernelType::ADD, in1Val, resVal, in2Val); 
+  builder.create<hbmpim::ReadDataOp>(launchBlock.getArguments()[2], resVal, cst0);
+  builder.create<hbmpim::TerminatorOp>(); 
+  return launchOp;
+}
 
-//     rewriter.create<upmem::ScatterOp>(op->getLoc(), inputAsMemref, dpuMemOffset,
-//                                       transferCount, op.getScatterMap(),
-//                                       adaptor.getWg());
 
-//     rewriter.eraseOp(op);
-//     return success();
-//   }
-// };
 
-// struct ConvertCnmGatherToUPMEM : public OpConversionPattern<cnm::GatherOp> {
-//   using OpConversionPattern<cnm::GatherOp>::OpConversionPattern;
 
-//   LogicalResult
-//   matchAndRewrite(cnm::GatherOp op, OpAdaptor adaptor,
-//                   ConversionPatternRewriter &rewriter) const override {
+hbmpim::LaunchOp createGEMVLaunch(ImplicitLocOpBuilder &builder, Value remapped_wg, SmallVector<Value> inputs, Value output) {
 
-//     Value outputBuf = adaptor.getOutputBuf();
-//     bool isBufferized = op.getOutputBuf().getType().isa<BaseMemRefType>();
-//     if (!isBufferized) {
-//       outputBuf = rewriter.create<memref::AllocOp>(
-//           op->getLoc(), convertTensorToMemref(op.getOutputBuf().getType()));
-//     }
+  auto wgShape = dyn_cast<hbmpim::DeviceConfigurationType>(remapped_wg.getType()).getShape();
+  int64_t numGrf = wgShape[3];
+  int64_t totalPimBlocks = wgShape[0] * wgShape[1] / 2;
 
-//     const int64_t transferCount = op.getTransferCountInItems();
-//     const int64_t dpuMemOffset =
-//         llvm::cast<cnm::AllocOp>(op.getBuffer().getDefiningOp())
-//             ->getAttrOfType<IntegerAttr>(BUFFER_OFFSET_ATTR)
-//             .getInt();
+  hbmpim::LaunchOp launchOp =
+    builder.create<hbmpim::LaunchOp>(remapped_wg, inputs, output);
+  auto &launchBlock = launchOp.getBody().emplaceBlock();
+  for (auto input : launchOp.getParams()) {
+    if (auto inputTy = input.getType().cast<MemRefType>()) {
+      auto mappedTy =
+        MemRefType::get(inputTy.getShape(), inputTy.getElementType());
+      launchBlock.addArgument(mappedTy, input.getLoc());
+    } else {
+      launchBlock.addArgument(input.getType(), input.getLoc());
+    }
+  } 
+  builder.setInsertionPointToStart(&launchBlock);
+  auto cst0 = builder.create<arith::ConstantIndexOp>(0);
+  auto cst1 = builder.create<arith::ConstantIndexOp>(1);
+  auto cst2 = builder.create<arith::ConstantIndexOp>(2);
+  builder.create<hbmpim::PreloadGemvOp>(launchBlock.getArguments()[0], cst0, cst0);
+  builder.create<hbmpim::PreloadGemvOp>(launchBlock.getArguments()[1], cst0, cst0);
 
-//     rewriter.create<upmem::GatherOp>(op->getLoc(), outputBuf, dpuMemOffset,
-//                                      transferCount, op.getGatherMap(),
-//                                      adaptor.getWg());
 
-//     if (!isBufferized) {
-//       Value outputAsTensor = createOrFoldUnrealizedConversionCast(
-//           op->getLoc(), rewriter, op.getOutput().getType(), outputBuf);
+  auto in1Shape = dyn_cast<ShapedType>(launchBlock.getArguments()[0].getType()).getShape();
+  int64_t M = in1Shape[0];
+  int64_t N = in1Shape[1];
+  auto mValue = builder.create<arith::ConstantIndexOp>(M);
+  auto nValue = builder.create<arith::ConstantIndexOp>(N);
+  auto totalPimBlocksVal = builder.create<arith::ConstantIndexOp>(totalPimBlocks);
+  auto numGrfVal = builder.create<arith::ConstantIndexOp>(numGrf);
 
-//       rewriter.replaceAllUsesWith(op.getOutput(), outputAsTensor);
-//     }
-//     rewriter.eraseOp(op);
-//     return success();
-//   }
-// };
+  auto outputTiles = builder.create<arith::DivUIOp>(nValue, totalPimBlocksVal);
+  auto numInputTiles = builder.create<arith::DivUIOp>(mValue, numGrfVal);
+  auto temp1 = builder.create<arith::MulIOp>(outputTiles, numInputTiles);
+  auto temp2 = builder.create<arith::MulIOp>(numGrfVal, numGrfVal);
+  auto temp3 = builder.create<arith::MulIOp>(temp2, cst2);
+  auto resultCol = builder.create<arith::DivUIOp>(temp1, temp3);
+  builder.create<hbmpim::ExecuteGemvOp>(cst1, mValue, nValue, 
+          outputTiles, numInputTiles, false);
+  builder.create<hbmpim::ReadResultOp>(launchBlock.getArguments()[2], 
+    hbmpim::PimBankType::ODD_BANK, nValue, cst0, cst0, resultCol);
+  builder.create<hbmpim::TerminatorOp>(); 
+  return launchOp;
+}
 
 struct ConvertCnmLaunchToHbmpim : public OpConversionPattern<cnm::LaunchOp> {
   using OpConversionPattern<cnm::LaunchOp>::OpConversionPattern;
-
+  
   LogicalResult
   matchAndRewrite(cnm::LaunchOp op, OpAdaptor,
                   ConversionPatternRewriter &rewriter) const override {
+    ImplicitLocOpBuilder builder(op->getLoc(), rewriter);
     auto wg = op.getWg();
     auto wgType = wg.getType();
     const ArrayRef<int64_t> wgShape = wgType.getShape();
     const Value remapped_wg = rewriter.getRemappedValue(wg);
-    // llvm::dbgs() << "operation count " << op.getBody().front().getOperations().size() << "\n";
+    int64_t totalPE = wgType.getNumElements();
+    int64_t totalPimBlocks = wgShape[0] * wgShape[1] / 2;
+
     
+    SmallVector<Value> inputs;
+    SmallVector<Value> outputs;
+    for (auto inBuf: op.getInBuffers()){
+      for (auto &use : inBuf.getUses()){
+        if (dyn_cast<cnm::ScatterOp>(use.getOwner())){
+          cnm::ScatterOp scatterOp = dyn_cast<cnm::ScatterOp>(use.getOwner());
+          Value tensor = scatterOp.getInput();
+          Value trimmed_tensor = trimStaticShape(builder, op.getLoc(), tensor);
+          ShapedType inputTy = dyn_cast<ShapedType>(trimmed_tensor.getType());
+          Value inputAsMemref = createOrFoldUnrealizedConversionCast(
+              op.getLoc(), rewriter, convertTensorToMemref(inputTy), trimmed_tensor);
+          inputs.push_back(inputAsMemref);
+        }
+      }
+    }
+    for (auto outBuf: op.getOutBuffers()){
+      for (auto &use : outBuf.getUses()){
+        if (dyn_cast<cnm::GatherOp>(use.getOwner())){
+          cnm::GatherOp gatherOp = dyn_cast<cnm::GatherOp>(use.getOwner());
+          Value tensor = gatherOp.getOutputBuf();
+          Value trimmed_tensor = trimStaticShape(builder, op.getLoc(), tensor);
+          ShapedType outputTy = dyn_cast<ShapedType>(trimmed_tensor.getType());
+          Value outputAsMemref = createOrFoldUnrealizedConversionCast(
+              op.getLoc(), rewriter, convertTensorToMemref(outputTy), trimmed_tensor);
+          outputs.push_back(outputAsMemref); 
+        }
+      }
+    }
+
     for(auto &operation: op.getBody().front().getOperations()){
       if(dyn_cast<linalg::AddOp>(operation)){
-        // llvm::dbgs() << "Add operation found\n";
-        // dim calculation 
-        int64_t totalPE = wgType.getNumElements();
-        int64_t dim = totalPE/wgShape[0];
-        auto cst0 = rewriter.create<arith::ConstantIndexOp>(op.getLoc(), 0);
-        auto dimVal = rewriter.create<arith::ConstantIndexOp>(op.getLoc(), dim);
-        auto in1Val = rewriter.create<arith::ConstantIndexOp>(op.getLoc(), 0);
-        auto resVal = rewriter.create<arith::ConstantIndexOp>(op.getLoc(), 128);
-        auto in2Val = rewriter.create<arith::ConstantIndexOp>(op.getLoc(), 256);
-
-        for (auto inBuf: op.getInBuffers()){
-          for (auto &use : inBuf.getUses()){
-            if (dyn_cast<cnm::ScatterOp>(use.getOwner())){
-              cnm::ScatterOp scatterOp = dyn_cast<cnm::ScatterOp>(use.getOwner());
-              Value tensor = scatterOp.getInput();
-              ShapedType inputTy = scatterOp.getInput().getType();
-              Value inputAsMemref = createOrFoldUnrealizedConversionCast(
-                  op.getLoc(), rewriter, convertTensorToMemref(inputTy), tensor);
-              rewriter.create<hbmpim::PreloadNoReplacementOp>(op.getLoc(), remapped_wg, inputAsMemref, in1Val, cst0);
-            }
-          }
-        }
-        rewriter.create<hbmpim::ExecuteElementwiseOp>(op.getLoc(), remapped_wg, dimVal, hbmpim::PimBankType::ALL_BANK, 
-                hbmpim::PimKernelType::ADD, in1Val, resVal, in2Val); 
-        for (auto outBuf: op.getOutBuffers()){
-          for (auto &use : outBuf.getUses()){
-            if (dyn_cast<cnm::GatherOp>(use.getOwner())){
-              cnm::GatherOp gatherOp = dyn_cast<cnm::GatherOp>(use.getOwner());
-              Value tensor = gatherOp.getOutputBuf();
-              ShapedType outputTy = gatherOp.getOutputBuf().getType();
-              Value outputAsMemref = createOrFoldUnrealizedConversionCast(
-                  op.getLoc(), rewriter, convertTensorToMemref(outputTy), tensor);
-              rewriter.create<hbmpim::ReadDataOp>(op.getLoc(), remapped_wg, outputAsMemref, resVal, cst0);
-            }
-          }
-        }
+        createVALaunch(builder, totalPE, remapped_wg, inputs, outputs[0]);
+      } else if (dyn_cast<linalg::MatvecOp>(operation)){
+        createGEMVLaunch(builder, remapped_wg, inputs, outputs[0]);
       } else if (!dyn_cast<cnm::TerminatorOp>(operation)){
         return op->emitOpError("operation not supported yet") ;
       }     
@@ -223,10 +259,7 @@ void populateCnmToHbmpimConversionPatterns(TypeConverter &typeConverter,
 
   patterns.add<
   ConvertCnmWorkgroupToHbmpim
-    // ,ConvertCnmScatterToUPMEM
-    // ,ConvertCnmGatherToUPMEM
     ,ConvertCnmLaunchToHbmpim
-    // ,ConvertCnmTerminatorToUPMEM
     // ,ConvertCnmFreeWorkgroup
     >(typeConverter, patterns.getContext());
 }

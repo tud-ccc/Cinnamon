@@ -1,1 +1,2 @@
 add_subdirectory(UPMEMCpp)
+add_subdirectory(HbmpimCpp)
