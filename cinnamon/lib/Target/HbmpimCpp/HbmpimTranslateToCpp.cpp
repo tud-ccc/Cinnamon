@@ -680,7 +680,7 @@ static LogicalResult printOperation(CppEmitter &emitter, hbmpim::SimulatorPreloa
   return success();
 }
 
-static LogicalResult printOperation(CppEmitter &emitter, hbmpim::GetToggleCond op) {
+static LogicalResult printOperation(CppEmitter &emitter, hbmpim::GetToggleCondOp op) {
   if (failed(emitter.emitAssignPrefix(*op.getOperation())))
     return failure();
   raw_ostream &os = emitter.ostream();
@@ -1083,7 +1083,7 @@ LogicalResult CppEmitter::emitOperation(Operation &op, bool trailingSemicolon) {
               [&](auto op) { return printOperation(*this, op); })
           .Case<hbmpim::GetPimCmdsOp>(
               [&](auto op) { return printOperation(*this, op); })
-          .Case<hbmpim::GetToggleCond>(
+          .Case<hbmpim::GetToggleCondOp>(
               [&](auto op) { return printOperation(*this, op); })
           .Case<hbmpim::SetControlOp>(
               [&](auto op) { return printOperation(*this, op); })

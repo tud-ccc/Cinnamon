@@ -44,8 +44,8 @@ static hbmpim::HbmpimFuncOp outlineKernelFuncImpl(func::FuncOp parent,
     Block &outlinedEntryBlock = outlinedFunc.getBody().emplaceBlock();
 
     builder.setInsertionPointToStart(&outlinedEntryBlock);
-    Operation *toClone = setOp;
-    builder.clone(*toClone, map);
+    auto wgShape = launchOp.getConfig().getType().getShape();
+    builder.create<hbmpim::SimulatorSetDeviceConfigOp>(loc, wgShape[3], wgShape[2], wgShape[1], wgShape[0]);
     for (auto &op : launchOpEntry.without_terminator()) {
         if (dyn_cast<hbmpim::PreloadNoReplacementOp>(op)){
             auto oldOp = dyn_cast<hbmpim::PreloadNoReplacementOp>(op);
@@ -112,7 +112,7 @@ void HbmpimOutlineKernelPass::runOnOperation() {
   kernelModule.getBodyRegion().emplaceBlock();
   SymbolTable kernelModuleSymTable(kernelModule);
   builder.setInsertionPointToStart(&kernelModule.getBodyRegion().front());
-
+    
   for (auto func : getOperation().getOps<func::FuncOp>()) {
     Block::iterator insertPt(func->getNextNode());
     func.walk([&](hbmpim::LaunchOp op) {
@@ -123,18 +123,18 @@ void HbmpimOutlineKernelPass::runOnOperation() {
       return WalkResult::advance();
     });
   }
-  for (auto func : getOperation().getOps<func::FuncOp>()) {
-    Block::iterator insertPt(func->getNextNode());
-    func.walk([&](hbmpim::SetDeviceConfigOp op) {
-        // for (mlir::OpOperand &use : op.getResult().getUses()){
-            // auto op = use.getOwner();
-            // op->print(llvm::dbgs());
-            // llvm::dbgs() << "one use " << use << "\n";
-        // }
-        // op.erase();
+  // for (auto func : getOperation().getOps<func::FuncOp>()) {
+  //   Block::iterator insertPt(func->getNextNode());
+  //   func.walk([&](hbmpim::SetDeviceConfigOp op) {
+  //       for (mlir::OpOperand &use : op.getResult().getUses()){
+  //           auto op = use.getOwner();
+  //           op->print(llvm::dbgs());
+  //           llvm::dbgs() << "one use " << use << "\n";
+  //       }
+  //       op.erase();
 
-        return WalkResult::advance();
-    });
-  }
+  //       return WalkResult::advance();
+  //   });
+  // }
 }
 } // namespace mlir

@@ -167,7 +167,7 @@ hbmpim::LaunchOp createGEMVLaunch(ImplicitLocOpBuilder &builder, Value remapped_
   auto temp3 = builder.create<arith::MulIOp>(temp2, cst2);
   auto resultCol = builder.create<arith::DivUIOp>(temp1, temp3);
   builder.create<hbmpim::ExecuteGemvOp>(cst1, mValue, nValue, 
-          outputTiles, numInputTiles, false);
+          outputTiles, numInputTiles, false, wgShape[3], wgShape[2], wgShape[1], wgShape[0]);
   builder.create<hbmpim::ReadResultOp>(launchBlock.getArguments()[2], 
     hbmpim::PimBankType::ODD_BANK, nValue, cst0, cst0, resultCol);
   builder.create<hbmpim::TerminatorOp>(); 

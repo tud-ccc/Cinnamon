@@ -108,11 +108,18 @@ def SimulatorReadResultOp: Hbmpim_Op<"sim_read_result", []>{
         type($out_dim) `,` type($base_addr) `,` type($startRow) `,` type($startCol)}];
 }
 
-def SetDeviceConfigOp : Hbmpim_Op<"set_dev_config", []> {
+def SetDeviceConfigOp : Hbmpim_Op<"set_dev_config", [Pure]> {
     let summary = "Set the channels, ranks, ..., of the device.";
     let description = [{}];
     let results = (outs DeviceConfiguration:$config);
     let assemblyFormat = " attr-dict `:` qualified(type($config))";
+}
+
+def SimulatorSetDeviceConfigOp : Hbmpim_Op<"sim_set_dev_config", []> {
+    let summary = "Set the channels, ranks, ..., of the device.";
+    let description = [{}];
+    let arguments = (ins I64Attr:$numBank, I64Attr:$numChannel, I64Attr:$numRank, I64Attr:$numGrf);
+    let assemblyFormat = "attr-dict";
 }
 
 def GetPimCmdsOp : Hbmpim_Op<"get_pim_cmds", []> {
@@ -123,12 +130,25 @@ def GetPimCmdsOp : Hbmpim_Op<"get_pim_cmds", []> {
     let assemblyFormat = "$kerType `,` $jump_take `,` $odd_jump `,` $even_jump attr-dict `:` type($jump_take) `,` type($odd_jump) `,` type($even_jump) `->` qualified(type($result))";
 }
 
-def GetToggleCond : Hbmpim_Op<"get_toggle_cond", []> {
+def GetToggleCondOp : Hbmpim_Op<"get_toggle_cond", []> {
     let summary = "get the toggle condition, based on the type of bank";
     let description = [{}];
     let arguments = (ins PimBankTypeAttr:$pb_type);
     let results = (outs Index:$toggle_cond);
     let assemblyFormat = "$pb_type attr-dict `:` type($toggle_cond)";
+}
+
+def PimAddrGenOp: Hbmpim_Op<"pim_addr_gen", []> {
+    let summary = "generates address based on channel, rank, bankgroup, bank, row, col";
+    let description = [{}];
+    let arguments = (ins Index:$channel, Index:$rank, Index:$bankgroup, Index:$bank, 
+        Index:$row, Index:$col);
+    let results = (outs Index:$address);
+    let assemblyFormat = [{$channel `,` $rank `,` $bankgroup `,` $bank `,` $row  `,` $col
+        attr-dict `:` type($channel) `,` type($rank) `,` type($bankgroup) `,` type($bank)
+         `,` type($row) `,` type($col) `->` type($address)
+    
+    }];
 }
 
 def SetControlOp: Hbmpim_Op<"set_control", []> {
@@ -141,6 +161,13 @@ def SetControlOp: Hbmpim_Op<"set_control", []> {
 
 def ParkInOp: Hbmpim_Op<"park_in", []> {
     let summary = "Park in operation";
+    let description = [{}];
+    let extraClassDeclaration = [{}];
+    let assemblyFormat = "attr-dict";
+}
+
+def ParkOutOp: Hbmpim_Op<"park_out", []> {
+    let summary = "Park out operation";
     let description = [{}];
     let extraClassDeclaration = [{}];
     let assemblyFormat = "attr-dict";
@@ -171,6 +198,13 @@ def AddTransactionAllOp: Hbmpim_Op<"add_transaction_all", []>{
                           type($row) `,` type($col)  `,` type($num_loop) }];
 }
 
+def AddTransactionOp: Hbmpim_Op<"add_transaction", []>{
+    let summary = "Send transaction to all of the banks.";
+    let description = [{}];
+    let arguments = (ins BoolAttr:$is_write, Index:$addr, Index:$data_idx);
+    let assemblyFormat = [{ $is_write `,` $addr `,` $data_idx attr-dict `:` type($addr) `,` type($data_idx) }];
+}
+
 def GetNumElementsPerBlocksOp: Hbmpim_Op<"get_num_elements_per_block", []>{
     let summary = "Based on the device configuration (JEDEC_DATA_BUS_BITS and BL and the datatype it returns the number of elements per block)";
     let description = [{}];
@@ -192,7 +226,7 @@ def ExecuteElementwiseOp: Hbmpim_Op<"execute_el_wise", []>{
 def ExecuteGemvOp: Hbmpim_Op<"execute_gemv", []>{
   let summary = "Execute gemv operations, supporting tree based and normal gemv";
   let description = [{}];
-  let arguments = (ins Index: $batch, Index:$M, Index:$N, Index:$numOutputTile, Index:$numInputTile, BoolAttr:$is_tree);
+  let arguments = (ins Index: $batch, Index:$M, Index:$N, Index:$numOutputTile, Index:$numInputTile, BoolAttr:$is_tree, I64Attr:$numBank, I64Attr:$numChannel, I64Attr:$numRank, I64Attr:$numGrf);
   let assemblyFormat = [{$batch `,` $M `,` $N `,` $numOutputTile `,` $numInputTile
       attr-dict `:`  type($batch) `,` type($M) `,` type($N) `,` type($numOutputTile) `,` type($numInputTile)}];
 }

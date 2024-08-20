@@ -112,6 +112,31 @@ public:
   }
 };
 
+static void createComputeGemvLoops(ImplicitLocOpBuilder &builder, Value numPimChan, Value numPimRank, 
+  Value numGrf, Value numInputTile, Value numOutputTile, Value batchIdx, Value cst0, Value cst1) {
+
+  scf::ForOp forChan = builder.create<scf::ForOp>(cst0, numPimChan, cst1);
+  builder.setInsertionPointToStart(forChan.getBody());
+  scf::ForOp forRank = builder.create<scf::ForOp>(cst0, numPimRank, cst1);
+  builder.setInsertionPointToStart(forRank.getBody());
+  scf::ForOp forGrf = builder.create<scf::ForOp>(cst0, numGrf, cst1);
+  builder.setInsertionPointToStart(forGrf.getBody());
+  Value pim_reg_ra = builder.create<arith::ConstantIndexOp>(0x3fff);
+  // uint64_t addr =
+  //                   pim_addr_mgr_->addrGen(ch_idx, ra_idx, 0, 1, pim_reg_ra, 0x8 + gidx);
+  Value cst8 = builder.create<arith::ConstantIndexOp>(0x8);
+  Value offsetGidx = builder.create<arith::AddIOp>(forGrf.getInductionVar(), cst8);
+  Value addr = builder.create<hbmpim::PimAddrGenOp>(forChan.getInductionVar(), forRank.getInductionVar(), cst0, cst1, pim_reg_ra, offsetGidx);
+  // int input_idx =
+  //                   batchIdx * num_grfA_ * num_input_tiles + inputTile * num_grfA_ + gidx;
+  Value t1 = builder.create<arith::MulIOp>(batchIdx, numGrf);
+  Value t2 = builder.create<arith::MulIOp>(t1, numInputTile);
+  Value t3 = builder.create<arith::MulIOp>(numInputTile, numGrf);
+  Value t4 = builder.create<arith::AddIOp>(t2, t3);
+  Value input_idx = builder.create<arith::MulIOp>(t4, forGrf.getInductionVar());
+  // mem_->addTransaction(true, addr, str, &data->bData[input_idx]);
+  builder.create<hbmpim::AddTransactionOp>(true, addr, input_idx);
+}
 
 struct ExecuteGemvOpRewriter
     : public OpConversionPattern<hbmpim::ExecuteGemvOp> {
@@ -121,61 +146,80 @@ public:
   LogicalResult
   matchAndRewrite(hbmpim::ExecuteGemvOp op, OpAdaptor,
                   ConversionPatternRewriter &rewriter) const override {
-    // auto loc = op.getLoc();
-    // int64_t totalPe = op.getConfig().getType().getNumElements();
-    // int64_t numGrf = op.getConfig().getType().getNumGrf();
-    // Value cst0 = rewriter.create<arith::ConstantIndexOp>(loc, 0);
-    // Value cst1 = rewriter.create<arith::ConstantIndexOp>(loc, 1);
-    // Value cst2 = rewriter.create<arith::ConstantIndexOp>(loc, 2);
-    // Value numInputTiles = op.getNumInputTile();
-    // Value numOutputTiles = op.getNumOutputTile();
-    // Value temp1 = rewriter.create<arith::SubIOp>(loc, numInputTiles, cst1);
-    // Value temp2 = rewriter.create<arith::CeilDivUIOp>(loc, numInputTiles, cst2);
-    // Value temp3 = rewriter.create<arith::MulIOp>(loc, temp2, numGrf);
-    // Value numJumpEvenBank = rewriter.create<arith::SubIOp>(loc, temp3, cst1);
+    auto loc = op.getLoc();
+    int64_t numGrf = op.getNumGrf();
+    Value numBankVal = rewriter.create<arith::ConstantIndexOp>(loc, op.getNumBank());
+    Value numChannelVal = rewriter.create<arith::ConstantIndexOp>(loc, op.getNumChannel());
+    Value numRankVal = rewriter.create<arith::ConstantIndexOp>(loc, op.getNumRank());
+    Value numGrfVal = rewriter.create<arith::ConstantIndexOp>(loc, numGrf);
+    Value cst0 = rewriter.create<arith::ConstantIndexOp>(loc, 0);
+    Value cst1 = rewriter.create<arith::ConstantIndexOp>(loc, 1);
+    Value cst2 = rewriter.create<arith::ConstantIndexOp>(loc, 2);
+    Value numInputTiles = op.getNumInputTile();
+    Value numOutputTiles = op.getNumOutputTile();
+    Value numBatch = op.getBatch();
+    Value temp1 = rewriter.create<arith::SubIOp>(loc, numInputTiles, cst1);
+    Value temp2 = rewriter.create<arith::CeilDivUIOp>(loc, numInputTiles, cst2);
+    Value temp3 = rewriter.create<arith::MulIOp>(loc, temp2, numGrfVal);
+    Value numJumpEvenBank = rewriter.create<arith::SubIOp>(loc, temp3, cst1);
 
-    // Value temp4 = rewriter.create<arith::DivUIOp>(loc, numInputTiles, cst2);
-    // Value temp5 = rewriter.create<arith::MulIOp>(loc, temp4, numGrf);
-    // Value numJumpOddBank = rewriter.create<arith::SubIOp>(loc, temp5, cst1);
+    Value temp4 = rewriter.create<arith::DivUIOp>(loc, numInputTiles, cst2);
+    Value temp5 = rewriter.create<arith::MulIOp>(loc, temp4, numGrfVal);
+    Value numJumpOddBank = rewriter.create<arith::SubIOp>(loc, temp5, cst1);
 
-    // Value cmds = rewriter.create<hbmpim::GetPimCmdsOp>(loc, 
-    //     hbmpim::PIMCMDVecType::get(rewriter.getContext(), hbmpim::PimKernelType::GEMV), 
-    //     hbmpim::PimKernelType::GEMV, cst0, numJumpOddBank, numJumpEvenBank);
-    // Value toggleCond = rewriter.create<hbmpim::GetToggleCond>(loc, 
-    //     rewriter.getIndexType(), hbmpim::PimBankType::ALL_BANK);
-    // rewriter.create<hbmpim::SetControlOp>(loc, hbmpim::BurstType::bst_hab_pim_, 
-    //     true, toggleCond, false, true);
-    // rewriter.create<hbmpim::ParkInOp>(loc);
+    Value cmds = rewriter.create<hbmpim::GetPimCmdsOp>(loc, 
+        hbmpim::PIMCMDVecType::get(rewriter.getContext(), hbmpim::PimKernelType::GEMV), 
+        hbmpim::PimKernelType::GEMV, cst0, numJumpOddBank, numJumpEvenBank);
+    Value toggleCond = rewriter.create<hbmpim::GetToggleCondOp>(loc, 
+        rewriter.getIndexType(), hbmpim::PimBankType::ALL_BANK);
+    rewriter.create<hbmpim::SetControlOp>(loc, hbmpim::BurstType::bst_hab_pim_, 
+        true, toggleCond, false, true);
+    rewriter.create<hbmpim::ParkInOp>(loc);
 
-    // rewriter.create<hbmpim::ChangePIMModeOp>(loc, hbmpim::DRAMMode::SB,
-    //     hbmpim::DRAMMode::HAB);
-    // rewriter.create<hbmpim::ProgramCrfOp>(loc, cmds);
+    rewriter.create<hbmpim::ChangePIMModeOp>(loc, hbmpim::DRAMMode::SB,
+        hbmpim::DRAMMode::HAB);
+    rewriter.create<hbmpim::ProgramCrfOp>(loc, cmds);
 
-    // // rewriter.create<hbmpim::ChangePIMModeOp>(loc, hbmpim::DRAMMode::HAB,
-    // //     hbmpim::DRAMMode::HAB_PIM);
 
-    // auto savedPoint = rewriter.saveInsertionPoint();
+    auto savedPoint1 = rewriter.saveInsertionPoint();
 
-    // scf::ForOp forTiles = rewriter.create<scf::ForOp>(loc, cst0, numTile, cst1);
-    // rewriter.setInsertionPointToStart(forTiles.getBody());
+    scf::ForOp forOutputTiles = rewriter.create<scf::ForOp>(loc, cst0, numOutputTiles, cst1);
+    rewriter.setInsertionPointToStart(forOutputTiles.getBody());
+    scf::ForOp forBatchs = rewriter.create<scf::ForOp>(loc, cst0, numBatch, cst1);
+    rewriter.setInsertionPointToStart(forBatchs.getBody());
+    rewriter.create<hbmpim::ChangePIMModeOp>(loc, hbmpim::DRAMMode::HAB,
+        hbmpim::DRAMMode::HAB_PIM);
+
+    // int col = num_output_tiles * num_input_tiles / 2 * num_grfA_ * num_grfB_ + (j + b) * num_grfB_;
+    Value t1 = rewriter.create<arith::MulIOp>(loc, numOutputTiles, numInputTiles);
+    Value t2 = rewriter.create<arith::MulIOp>(loc, cst2, numGrfVal);
+    Value t3 = rewriter.create<arith::MulIOp>(loc, t2, numGrfVal);
+    Value t4 = rewriter.create<arith::DivUIOp>(loc, t1, t3);
+    Value t5 = rewriter.create<arith::AddIOp>(loc, forOutputTiles.getInductionVar(), forBatchs.getInductionVar());
+    Value t6 = rewriter.create<arith::MulIOp>(loc, t5, numGrfVal);
+    Value col = rewriter.create<arith::AddIOp>(loc, t6, t4);
+    ImplicitLocOpBuilder builder(op->getLoc(), rewriter);
+    auto savedPoint2 = rewriter.saveInsertionPoint();
+    scf::ForOp forInputTiles1 = rewriter.create<scf::ForOp>(loc, cst0, numInputTiles, cst2);
+    builder.setInsertionPointToStart(forInputTiles1.getBody());
+    createComputeGemvLoops(builder, numChannelVal, numRankVal, numGrfVal, 
+      numInputTiles, numOutputTiles, forBatchs.getInductionVar(), cst0, cst1);
+
+    scf::ForOp forInputTiles2 = rewriter.create<scf::ForOp>(loc, cst1, numInputTiles, cst2);
+    builder.setInsertionPointToStart(forInputTiles2.getBody());
+    createComputeGemvLoops(builder, numChannelVal, numRankVal, numGrfVal, 
+      numInputTiles, numOutputTiles, forBatchs.getInductionVar(), cst0, cst1);
+    rewriter.restoreInsertionPoint(savedPoint2);
+    rewriter.create<hbmpim::AddTransactionAllOp>(loc, true, cst0, cst1, 
+      cst0, col, hbmpim::BurstType::null_bst_, true, numGrfVal);
+    rewriter.create<hbmpim::ChangePIMModeOp>(loc, hbmpim::DRAMMode::HAB_PIM, 
+        hbmpim::DRAMMode::HAB);
     // Value c = rewriter.create<arith::MulIOp>(loc, forTiles.getInductionVar() , numGrfVal);
     // scf::ForOp forOddEvenBank = rewriter.create<scf::ForOp>(loc, cst0, cst1, cst2);
-    // rewriter.setInsertionPointToStart(forOddEvenBank.getBody());
-    // rewriter.create<hbmpim::AddTransactionAllOp>(loc, false, cst0, 
-    //     forOddEvenBank.getInductionVar(), op.getInput0row(), c, 
-    //     hbmpim::BurstType::null_bst_, true, numGrfVal);
-    // rewriter.create<hbmpim::AddTransactionAllOp>(loc, false, cst0, 
-    //     forOddEvenBank.getInductionVar(), op.getInput1row(), c, 
-    //     hbmpim::BurstType::null_bst_, true, numGrfVal);
-    // rewriter.create<hbmpim::AddTransactionAllOp>(loc, true, cst0, 
-    //     forOddEvenBank.getInductionVar(), op.getResultRow(), c, 
-    //     hbmpim::BurstType::null_bst_, true, numGrfVal);
-        
-    // rewriter.restoreInsertionPoint(savedPoint);
-    // rewriter.create<hbmpim::ChangePIMModeOp>(loc, hbmpim::DRAMMode::HAB_PIM, 
-    //     hbmpim::DRAMMode::HAB);
-    // rewriter.create<hbmpim::ChangePIMModeOp>(loc, hbmpim::DRAMMode::HAB, 
-    //     hbmpim::DRAMMode::SB);
+    rewriter.restoreInsertionPoint(savedPoint1);
+    rewriter.create<hbmpim::ChangePIMModeOp>(loc, hbmpim::DRAMMode::HAB, 
+        hbmpim::DRAMMode::SB);
+    rewriter.create<hbmpim::ParkOutOp>(loc);
     rewriter.eraseOp(op);
     return success();
   }
@@ -187,7 +231,8 @@ public:
 
 void populateDeviceRewritePatterns(TypeConverter &typeConverter,
                                            RewritePatternSet &patterns) {
-    patterns.add<ElementwiseOpRewriter>(patterns.getContext());
+    // patterns.add<ElementwiseOpRewriter>(patterns.getContext());
+    patterns.add<ExecuteGemvOpRewriter>(patterns.getContext());
 
 }
 
@@ -204,6 +249,7 @@ struct HbmpimRewriteDeviceCallsPass
 
     ConversionTarget target(getContext());
     target.addIllegalOp<hbmpim::ExecuteElementwiseOp>();
+    target.addIllegalOp<hbmpim::ExecuteGemvOp>();
     
 
     target.markUnknownOpDynamicallyLegal([](Operation *) { return true; });
