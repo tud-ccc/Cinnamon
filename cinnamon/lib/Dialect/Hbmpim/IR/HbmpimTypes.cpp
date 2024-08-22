@@ -156,3 +156,107 @@ LogicalResult mlir::hbmpim::DeviceConfigurationType::verify(
                        << shape;
   return success();
 }
+
+//===----------------------------------------------------------------------===//
+// BurstType 
+//===----------------------------------------------------------------------===//
+
+Type mlir::hbmpim::BurstType::parse(mlir::AsmParser &parser) {
+  if (parser.parseLess()) return Type();
+  DeviceBurstType kerType;
+  DeviceBurstTypeAttr kerType_attr;
+  NamedAttrList attrStorage;
+  auto loc = parser.getCurrentLocation();
+  StringRef attrStr;
+  StringAttr attrVal;
+  if(parser.parseKeyword(&attrStr)){
+    OptionalParseResult parseResult =
+      parser.parseOptionalAttribute(attrVal,
+                                    parser.getBuilder().getNoneType(),
+                                    "pim_kern_type", attrStorage);
+    if (parseResult.has_value()) {
+      if (failed(*parseResult)){
+        parser.emitError(loc, "expected string or keyword containing one of enum values for attribute burst_type"); 
+        return Type();
+      }
+
+      attrStr = attrVal.getValue();
+    } else {
+      parser.emitError(loc, "expected string or keyword containing one of enum values for attribute burst_type");
+      return Type();
+    }
+  }
+  if (!attrStr.empty()) {
+    auto attr = ::mlir::hbmpim::symbolizeDeviceBurstType(attrStr);
+    if (!attr){
+      parser.emitError(loc, "invalid ")
+               << "burst_type attribute specification: \"" << attrStr << '"';;
+      return Type();
+    }
+      if(parser.parseGreater()) return Type();
+      return hbmpim::BurstType::get(parser.getContext(), *attr); 
+  }
+  return Type();
+}
+
+void mlir::hbmpim::BurstType::print(mlir::AsmPrinter &printer) const {
+  printer << "<";
+  // printer.printDimensionList(getShape());
+  printer << ">";
+}
+
+//===----------------------------------------------------------------------===//
+// OperandDataDim 
+//===----------------------------------------------------------------------===//
+
+Type mlir::hbmpim::OperandDataDimType::parse(mlir::AsmParser &parser) {
+  if (parser.parseLess()) return Type();
+  DataDimType kerType;
+  DataDimTypeAttr kerType_attr;
+  NamedAttrList attrStorage;
+  auto loc = parser.getCurrentLocation();
+  StringRef attrStr;
+  StringAttr attrVal;
+  if(parser.parseKeyword(&attrStr)){
+    OptionalParseResult parseResult =
+      parser.parseOptionalAttribute(attrVal,
+                                    parser.getBuilder().getNoneType(),
+                                    "pim_kern_type", attrStorage);
+    if (parseResult.has_value()) {
+      if (failed(*parseResult)){
+        parser.emitError(loc, "expected string or keyword containing one of enum values for attribute burst_type"); 
+        return Type();
+      }
+
+      attrStr = attrVal.getValue();
+    } else {
+      parser.emitError(loc, "expected string or keyword containing one of enum values for attribute burst_type");
+      return Type();
+    }
+  }
+  if (!attrStr.empty()) {
+    auto attr = ::mlir::hbmpim::symbolizeDataDimType(attrStr);
+    if (!attr){
+      parser.emitError(loc, "invalid ")
+               << "burst_type attribute specification: \"" << attrStr << '"';;
+      return Type();
+    }
+      if(parser.parseGreater()) return Type();
+      return hbmpim::OperandDataDimType::get(parser.getContext(), *attr); 
+  }
+  return Type();
+}
+
+void mlir::hbmpim::OperandDataDimType::print(mlir::AsmPrinter &printer) const {
+  printer << "<";
+  // printer.printDimensionList(getShape());
+  printer << ">";
+}
+
+// LogicalResult mlir::hbmpim::BurstType::verify(
+//     function_ref<InFlightDiagnostic()> emitError, DeviceBurstType type) {
+//   // if (shape.size() != 4)
+//   //   return emitError() << "hbmpim device configuration should have 4 dimensions: "
+//   //                      << shape;
+//   return success();
+// }

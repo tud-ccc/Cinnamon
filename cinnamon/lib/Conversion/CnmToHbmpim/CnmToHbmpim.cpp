@@ -97,28 +97,28 @@ hbmpim::LaunchOp createVALaunch(ImplicitLocOpBuilder &builder, int64_t totalPE, 
   auto wgShape = dyn_cast<hbmpim::DeviceConfigurationType>(remapped_wg.getType()).getShape();
   int64_t dim = totalPE/wgShape[0];
   hbmpim::LaunchOp launchOp =
-    builder.create<hbmpim::LaunchOp>(remapped_wg, inputs, output);
-  auto &launchBlock = launchOp.getBody().emplaceBlock();
-  for (auto input : launchOp.getParams()) {
-    if (auto inputTy = input.getType().cast<MemRefType>()) {
-      auto mappedTy =
-        MemRefType::get(inputTy.getShape(), inputTy.getElementType());
-      launchBlock.addArgument(mappedTy, input.getLoc());
-    } else {
-      launchBlock.addArgument(input.getType(), input.getLoc());
-    }
-  } 
-  builder.setInsertionPointToStart(&launchBlock);
-  auto cst0 = builder.create<arith::ConstantIndexOp>(0);
-  auto dimVal = builder.create<arith::ConstantIndexOp>(dim);
-  auto in1Val = builder.create<arith::ConstantIndexOp>(0);
-  auto in2Val = builder.create<arith::ConstantIndexOp>(128);
-  auto resVal = builder.create<arith::ConstantIndexOp>(256);
-  builder.create<hbmpim::PreloadNoReplacementOp>(launchBlock.getArguments()[0], in1Val, cst0);
-  builder.create<hbmpim::PreloadNoReplacementOp>(launchBlock.getArguments()[1], in2Val, cst0);
-  builder.create<hbmpim::ExecuteElementwiseOp>(dimVal, hbmpim::PimBankType::ALL_BANK, 
-          hbmpim::PimKernelType::ADD, in1Val, resVal, in2Val); 
-  builder.create<hbmpim::ReadDataOp>(launchBlock.getArguments()[2], resVal, cst0);
+    builder.create<hbmpim::LaunchOp>(remapped_wg);
+  // auto &launchBlock = launchOp.getBody().emplaceBlock();
+  // for (auto input : launchOp.getParams()) {
+  //   if (auto inputTy = input.getType().cast<MemRefType>()) {
+  //     auto mappedTy =
+  //       MemRefType::get(inputTy.getShape(), inputTy.getElementType());
+  //     launchBlock.addArgument(mappedTy, input.getLoc());
+  //   } else {
+  //     launchBlock.addArgument(input.getType(), input.getLoc());
+  //   }
+  // } 
+  // builder.setInsertionPointToStart(&launchBlock);
+  // auto cst0 = builder.create<arith::ConstantIndexOp>(0);
+  // auto dimVal = builder.create<arith::ConstantIndexOp>(dim);
+  // auto in1Val = builder.create<arith::ConstantIndexOp>(0);
+  // auto in2Val = builder.create<arith::ConstantIndexOp>(128);
+  // auto resVal = builder.create<arith::ConstantIndexOp>(256);
+  // builder.create<hbmpim::PreloadNoReplacementOp>(launchBlock.getArguments()[0], in1Val, cst0);
+  // builder.create<hbmpim::PreloadNoReplacementOp>(launchBlock.getArguments()[1], in2Val, cst0);
+  // builder.create<hbmpim::ExecuteElementwiseOp>(dimVal, hbmpim::PimBankType::ALL_BANK, 
+  //         hbmpim::PimKernelType::ADD, in1Val, resVal, in2Val); 
+  // builder.create<hbmpim::ReadDataOp>(launchBlock.getArguments()[2], resVal, cst0);
   builder.create<hbmpim::TerminatorOp>(); 
   return launchOp;
 }
@@ -132,27 +132,20 @@ hbmpim::LaunchOp createGEMVLaunch(ImplicitLocOpBuilder &builder, Value remapped_
   int64_t numGrf = wgShape[3];
   int64_t totalPimBlocks = wgShape[0] * wgShape[1] / 2;
 
-  hbmpim::LaunchOp launchOp =
-    builder.create<hbmpim::LaunchOp>(remapped_wg, inputs, output);
+  builder.create<hbmpim::HostPreloadGemvOp>(hbmpim::DataDimType::weight_npbst_, inputs[0]);
+  builder.create<hbmpim::HostPreloadGemvOp>(hbmpim::DataDimType::input_npbst_, inputs[1] );
+
+  hbmpim::LaunchOp launchOp = builder.create<hbmpim::LaunchOp>(remapped_wg);
   auto &launchBlock = launchOp.getBody().emplaceBlock();
-  for (auto input : launchOp.getParams()) {
-    if (auto inputTy = input.getType().cast<MemRefType>()) {
-      auto mappedTy =
-        MemRefType::get(inputTy.getShape(), inputTy.getElementType());
-      launchBlock.addArgument(mappedTy, input.getLoc());
-    } else {
-      launchBlock.addArgument(input.getType(), input.getLoc());
-    }
-  } 
+  auto currPoint = builder.saveInsertionPoint();
   builder.setInsertionPointToStart(&launchBlock);
+
   auto cst0 = builder.create<arith::ConstantIndexOp>(0);
   auto cst1 = builder.create<arith::ConstantIndexOp>(1);
   auto cst2 = builder.create<arith::ConstantIndexOp>(2);
-  builder.create<hbmpim::PreloadGemvOp>(launchBlock.getArguments()[0], cst0, cst0);
-  builder.create<hbmpim::PreloadGemvOp>(launchBlock.getArguments()[1], cst0, cst0);
 
 
-  auto in1Shape = dyn_cast<ShapedType>(launchBlock.getArguments()[0].getType()).getShape();
+  auto in1Shape = dyn_cast<ShapedType>(inputs[0].getType()).getShape();
   int64_t M = in1Shape[0];
   int64_t N = in1Shape[1];
   auto mValue = builder.create<arith::ConstantIndexOp>(M);
@@ -165,12 +158,16 @@ hbmpim::LaunchOp createGEMVLaunch(ImplicitLocOpBuilder &builder, Value remapped_
   auto temp1 = builder.create<arith::MulIOp>(outputTiles, numInputTiles);
   auto temp2 = builder.create<arith::MulIOp>(numGrfVal, numGrfVal);
   auto temp3 = builder.create<arith::MulIOp>(temp2, cst2);
-  auto resultCol = builder.create<arith::DivUIOp>(temp1, temp3);
+  builder.create<hbmpim::PreloadGemvOp>(hbmpim::DataDimType::weight_npbst_, cst0, cst0);
   builder.create<hbmpim::ExecuteGemvOp>(cst1, mValue, nValue, 
           outputTiles, numInputTiles, false, wgShape[3], wgShape[2], wgShape[1], wgShape[0]);
-  builder.create<hbmpim::ReadResultOp>(launchBlock.getArguments()[2], 
-    hbmpim::PimBankType::ODD_BANK, nValue, cst0, cst0, resultCol);
+  auto resultCol = builder.create<arith::DivUIOp>(temp1, temp3);
+  builder.create<hbmpim::ReadResultOp>(hbmpim::DeviceBurstType::result, 
+          hbmpim::PimBankType::ODD_BANK, nValue, cst0, cst0, resultCol);
   builder.create<hbmpim::TerminatorOp>(); 
+  builder.restoreInsertionPoint(currPoint);
+  builder.create<hbmpim::HostReadResultOp>(hbmpim::DeviceBurstType::result, output);
+
   return launchOp;
 }
 

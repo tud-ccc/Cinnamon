@@ -295,6 +295,17 @@ static LogicalResult printOperation(CppEmitter &emitter, arith::DivUIOp divOp) {
   return printBinaryOperation(emitter, operation, "/");
 }
 
+static LogicalResult printOperation(CppEmitter &emitter, arith::CeilDivUIOp divOp) {
+  raw_ostream &os = emitter.ostream();
+  Operation *operation = divOp.getOperation();
+  if (failed(emitter.emitAssignPrefix(*operation)))
+    return failure();
+  os << "( " << emitter.getOrCreateName(operation->getOperand(0)) << " + ";
+  os << emitter.getOrCreateName(operation->getOperand(1)) << " - 1 )";
+  os << " / " << emitter.getOrCreateName(operation->getOperand(1));
+  return success();
+}
+
 static LogicalResult printOperation(CppEmitter &emitter, arith::SubIOp subOp) {
   Operation *operation = subOp.getOperation();
 
@@ -670,15 +681,15 @@ static LogicalResult printOperation(CppEmitter &emitter, hbmpim::SetDeviceConfig
   return success();
 }
 
-static LogicalResult printOperation(CppEmitter &emitter, hbmpim::SimulatorPreloadNoReplacementOp op) {
-  raw_ostream &os = emitter.ostream();
-  os << "SimulatorPreloadNoReplacement(" ;
-  os << emitter.getOrCreateName(op.getStartRow());
-  os << ", ";
-  os << emitter.getOrCreateName(op.getStartCol());
-  os << ")";
-  return success();
-}
+// static LogicalResult printOperation(CppEmitter &emitter, hbmpim::SimulatorPreloadNoReplacementOp op) {
+//   raw_ostream &os = emitter.ostream();
+//   os << "SimulatorPreloadNoReplacement(" ;
+//   os << emitter.getOrCreateName(op.getStartRow());
+//   os << ", ";
+//   os << emitter.getOrCreateName(op.getStartCol());
+//   os << ")";
+//   return success();
+// }
 
 static LogicalResult printOperation(CppEmitter &emitter, hbmpim::GetToggleCondOp op) {
   if (failed(emitter.emitAssignPrefix(*op.getOperation())))
@@ -691,6 +702,12 @@ static LogicalResult printOperation(CppEmitter &emitter, hbmpim::GetToggleCondOp
 static LogicalResult printOperation(CppEmitter &emitter, hbmpim::ParkInOp op) {
   raw_ostream &os = emitter.ostream();
   os << "parkIn()" ;
+  return success();
+}
+
+static LogicalResult printOperation(CppEmitter &emitter, hbmpim::ParkOutOp op) {
+  raw_ostream &os = emitter.ostream();
+  os << "parkOut()" ;
   return success();
 }
 
@@ -707,30 +724,48 @@ static LogicalResult printOperation(CppEmitter &emitter, hbmpim::ProgramCrfOp op
   return success();
 }
 
+static LogicalResult printOperation(CppEmitter &emitter, hbmpim::SimulatorSetDeviceConfigOp op) {
+  raw_ostream &os = emitter.ostream();
+  int64_t numBank = op.getNumBank();
+  int64_t numChannel = op.getNumChannel();
+  int64_t numRank = op.getNumRank();
+  int64_t numGrf = op.getNumGrf();
+  os << "simSetDeviceConfig(" << numBank << ", " << numChannel << ", " << numRank << ", " << numGrf << ")";
+  return success();
+}
+
+// static LogicalResult printOperation(CppEmitter &emitter, hbmpim::SimulatorPreloadGemvOp op) {
+//   raw_ostream &os = emitter.ostream();
+//   os << "simPreloadGemv(" ;
+//   os << emitter.getOrCreateName(op.getStartRow()) << ", " ;
+//   os << emitter.getOrCreateName(op.getStartCol()) << ")";
+//   return success();
+// }
+
 
 static LogicalResult printOperation(CppEmitter &emitter, hbmpim::SetControlOp op) {
   raw_ostream &os = emitter.ostream();
-  os << "setControl(&" << hbmpim::stringifyBurstType(op.getBurstType()) <<
-    ", " << getBool(op.getPimOp()) << ", " << emitter.getOrCreateName(op.getToggleCond()) <<
-    ", " << getBool(op.getGrfAZero()) <<  ", " << getBool(op.getGrfBZero()) << ")" ;
+  // os << "setControl(&" << hbmpim::stringifyBurstType(op.getBurstType()) <<
+  //   ", " << getBool(op.getPimOp()) << ", " << emitter.getOrCreateName(op.getToggleCond()) <<
+  //   ", " << getBool(op.getGrfAZero()) <<  ", " << getBool(op.getGrfBZero()) << ")" ;
 
   return success();
 }
 
-static LogicalResult printOperation(CppEmitter &emitter, hbmpim::AddTransactionAllOp op) {
-  raw_ostream &os = emitter.ostream();
-  os << "addTransactionAll(" << getBool(op.getIsWrite()) << 
-    ", " << emitter.getOrCreateName(op.getBgIdx()) << 
-    ", " << emitter.getOrCreateName(op.getBgIdx()) << 
-    ", " << emitter.getOrCreateName(op.getBankIdx()) << 
-    ", " << emitter.getOrCreateName(op.getRow()) << 
-    ", " << emitter.getOrCreateName(op.getCol()) << 
-    ", " << hbmpim::stringifyBurstType(op.getBst()) <<
-    ", " << getBool(op.getUseBarrier()) << 
-    ", " << emitter.getOrCreateName(op.getNumLoop()) << ")";
+// static LogicalResult printOperation(CppEmitter &emitter, hbmpim::AddTransactionAllOp op) {
+//   raw_ostream &os = emitter.ostream();
+//   os << "addTransactionAll(" << getBool(op.getIsWrite()) << 
+//     ", " << emitter.getOrCreateName(op.getBgIdx()) << 
+//     ", " << emitter.getOrCreateName(op.getBgIdx()) << 
+//     ", " << emitter.getOrCreateName(op.getBankIdx()) << 
+//     ", " << emitter.getOrCreateName(op.getRow()) << 
+//     ", " << emitter.getOrCreateName(op.getCol()) << 
+//     ", " << hbmpim::stringifyBurstType(op.getBst()) <<
+//     ", " << getBool(op.getUseBarrier()) << 
+//     ", " << emitter.getOrCreateName(op.getNumLoop()) << ")";
 
-  return success();
-}
+//   return success();
+// }
 
 static LogicalResult printOperation(CppEmitter &emitter, hbmpim::GetPimCmdsOp op) {
   if (failed(emitter.emitAssignPrefix(*op.getOperation())))
@@ -750,6 +785,31 @@ static LogicalResult printOperation(CppEmitter &emitter, hbmpim::GetPimCmdsOp op
   os << ")";
   return success();
 }
+
+static LogicalResult printOperation(CppEmitter &emitter, hbmpim::PimAddrGenOp op) {
+  raw_ostream &os = emitter.ostream();
+  os << "pim_addr_gen(" << op.getChannel() << 
+    ", " << emitter.getOrCreateName(op.getRank()) << 
+    ", " << emitter.getOrCreateName(op.getBankgroup()) << 
+    ", " << emitter.getOrCreateName(op.getBank()) << 
+    ", " << emitter.getOrCreateName(op.getRow()) << 
+    ", " << emitter.getOrCreateName(op.getCol()) << ")";
+
+  return success();
+}
+
+// static LogicalResult printOperation(CppEmitter &emitter, hbmpim::PimAddrGenOp op) {
+//   raw_ostream &os = emitter.ostream();
+//   os << "pim_addr_gen(" << getBool(op.getIsWrite()) << 
+//     ", " << emitter.getOrCreateName(op.getAddr()) << 
+//     ", " << emitter.getOrCreateName(op.getData()) << 
+//     ", " << emitter.getOrCreateName(op.getBank()) << 
+//     ", " << emitter.getOrCreateName(op.getRow()) << 
+//     ", " << emitter.getOrCreateName(op.getCol()) << ")";
+
+//   return success();
+// }
+
 
 static LogicalResult printFwdDeclaration(CppEmitter &emitter,
                                          hbmpim::HbmpimFuncOp functionOp) {
@@ -1061,7 +1121,8 @@ LogicalResult CppEmitter::emitOperation(Operation &op, bool trailingSemicolon) {
           .Case<cf::BranchOp, cf::CondBranchOp>(
               [&](auto op) { return printOperation(*this, op); })
           // Arith ops
-          .Case<arith::MulIOp, arith::AddIOp, arith::SubIOp, arith::DivUIOp>(
+          .Case<arith::MulIOp, arith::AddIOp, arith::SubIOp, arith::DivUIOp, 
+              arith::CeilDivUIOp>(
               [&](auto op) { return printOperation(*this, op); })
           // Func ops.
           .Case<func::CallOp, func::ConstantOp, func::FuncOp,
@@ -1079,8 +1140,8 @@ LogicalResult CppEmitter::emitOperation(Operation &op, bool trailingSemicolon) {
               [&](auto op) { return printOperation(*this, op); })
           .Case<hbmpim::SetDeviceConfigOp>(
               [&](auto op) { return printOperation(*this, op); })
-          .Case<hbmpim::SimulatorPreloadNoReplacementOp>(
-              [&](auto op) { return printOperation(*this, op); })
+          // .Case<hbmpim::SimulatorPreloadNoReplacementOp>(
+          //     [&](auto op) { return printOperation(*this, op); })
           .Case<hbmpim::GetPimCmdsOp>(
               [&](auto op) { return printOperation(*this, op); })
           .Case<hbmpim::GetToggleCondOp>(
@@ -1091,10 +1152,20 @@ LogicalResult CppEmitter::emitOperation(Operation &op, bool trailingSemicolon) {
               [&](auto op) { return printOperation(*this, op); })
           .Case<hbmpim::ProgramCrfOp>(
               [&](auto op) { return printOperation(*this, op); })
+          // .Case<hbmpim::SimulatorSetDeviceConfigOp>(
+          //     [&](auto op) { return printOperation(*this, op); })
+          // .Case<hbmpim::SimulatorPreloadGemvOp>(
+          //     [&](auto op) { return printOperation(*this, op); })
           .Case<hbmpim::ParkInOp>(
               [&](auto op) { return printOperation(*this, op); })
-          .Case<hbmpim::AddTransactionAllOp>(
+          .Case<hbmpim::ParkOutOp>(
               [&](auto op) { return printOperation(*this, op); })
+          // .Case<hbmpim::AddTransactionAllOp>(
+          //     [&](auto op) { return printOperation(*this, op); })
+          .Case<hbmpim::PimAddrGenOp>(
+              [&](auto op) { return printOperation(*this, op); })
+          // .Case<hbmpim::AddTransactionOp>(
+          //     [&](auto op) { return printOperation(*this, op); })
           // [&](auto op) { skipSemicolon = true; return success(); })
           .Default([&](Operation *) {
             return op.emitOpError("unable to find printer for op");

@@ -61,6 +61,44 @@ def PIMCommandsVectorType : Hbmpim_Type<"PIMCMDVec"> {
   let hasCustomAssemblyFormat = 1;
 }
 
+def NumpyBurstType : Hbmpim_Type<"NumpyBurstType"> {
+  let mnemonic = "NumpyBurstType";
+  let summary = "";
+
+  // let parameters = (ins "PimKernelType":$kerType);
+  let extraClassDeclaration = [{
+  }];
+  // let hasCustomAssemblyFormat = 1;
+}
+
+def Burst: Hbmpim_Type<"Burst"> {
+  let mnemonic = "Burst";
+  let summary = "";
+
+  let parameters = (ins "DeviceBurstType":$burstType);
+  let extraClassDeclaration = [{
+  }];
+  let hasCustomAssemblyFormat = 1;
+}
+
+def OperandDataDim: Hbmpim_Type<"OperandDataDim"> {
+  let mnemonic = "OperandDataDim";
+  let summary = "";
+
+  let parameters = (ins "DataDimType":$dataDim);
+  let extraClassDeclaration = [{
+  }];
+  let hasCustomAssemblyFormat = 1;
+}
+
+def OperandToken: Hbmpim_Type<"OperandToken"> {
+  let mnemonic = "OperandToken";
+  let summary = "";
+
+  let extraClassDeclaration = [{
+  }];
+}
+
 // def BufferType : Hbmpim_Type<"Buffer", [ShapedTypeInterface]> {
 //   let mnemonic = "buffer";
 //   let summary = "";

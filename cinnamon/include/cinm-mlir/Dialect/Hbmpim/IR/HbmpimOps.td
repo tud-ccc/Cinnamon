@@ -32,6 +32,51 @@ include "mlir/Interfaces/CallInterfaces.td"
 include "mlir/Dialect/DLTI/DLTIBase.td"
 include "mlir/IR/BuiltinAttributes.td"
 
+
+def PreloadGemvOp: Hbmpim_Op<"preload_gemv", []>{
+    let summary = "Load data for GEMV-based kernels";
+    let description = [{}];
+    let arguments = (ins DataDimTypeAttr:$dim,
+                  Index:$startRow, Index:$startCol);
+    let assemblyFormat = [{$dim `,` $startRow `,` $startCol attr-dict `:` 
+        type($startRow) `,` type($startCol)}];
+}
+
+def HostPreloadGemvOp: Hbmpim_Op<"host_preload_gemv", []>{
+    let summary = "Load data for GEMV-based kernels";
+    let description = [{}];
+    let arguments = (ins DataDimTypeAttr:$dim, AnyMemRef:$inBuffer);
+    let assemblyFormat = [{$dim `,` $inBuffer attr-dict `:` type($inBuffer) }];
+}
+
+def ExecuteGemvOp: Hbmpim_Op<"execute_gemv", []>{
+  let summary = "Execute gemv operations, supporting tree based and normal gemv";
+  let description = [{}];
+  let arguments = (ins Index:$batch, Index:$M, Index:$N, Index:$numOutputTile, Index:$numInputTile, BoolAttr:$is_tree, 
+    I64Attr:$numBank, I64Attr:$numChannel, I64Attr:$numRank, I64Attr:$numGrf);
+  let assemblyFormat = [{$batch `,` $M `,` $N `,` $numOutputTile `,` $numInputTile
+      attr-dict `:` type($batch) `,` type($M) `,` type($N) `,` type($numOutputTile) `,` type($numInputTile)}];
+}
+
+def ReadResultOp: Hbmpim_Op<"read_result", []>{
+    let summary = "Read the result of a **gemv** operation";
+    let description = [{Although it sounds weird, but this is how the simulator implements it.
+                        This only works for gemv. }];
+    let arguments = (ins DeviceBurstTypeAttr:$burst, PimBankTypeAttr:$bank_type, Index:$out_dim,
+                  Index:$base_addr, Index:$startRow, Index:$startCol);
+    let assemblyFormat = [{$burst `,` $bank_type `,` $out_dim `,` $base_addr `,`
+        $startRow `,` $startCol attr-dict `:` 
+        type($out_dim) `,` type($base_addr) `,` type($startRow) `,` type($startCol)}];
+}
+
+def HostReadResultOp: Hbmpim_Op<"host_read_result", []>{
+    let summary = "read results data for GEMV-based kernels";
+    let description = [{}];
+    let arguments = (ins DeviceBurstTypeAttr:$dim, AnyMemRef:$outBuffer);
+    let assemblyFormat = [{$dim `,` $outBuffer attr-dict `:` type($outBuffer) }];
+}
+
+
 def PreloadNoReplacementOp: Hbmpim_Op<"preload_no_replacement", []>{
     let summary = "Load data that are not being replaced";
     let description = [{}];
@@ -41,13 +86,6 @@ def PreloadNoReplacementOp: Hbmpim_Op<"preload_no_replacement", []>{
          type($inBuffer) `,` type($startRow) `,` type($startCol)}];
 }
 
-def SimulatorPreloadNoReplacementOp: Hbmpim_Op<"sim_preload_no_replacement", []>{
-    let summary = "Load data that are not being replaced";
-    let description = [{}];
-    let arguments = (ins Index:$startRow, Index:$startCol);
-    let assemblyFormat = [{$startRow `,` $startCol attr-dict `:`  type($startRow) `,` type($startCol)}];
-}
-
 
 def ReadDataOp: Hbmpim_Op<"read_data", []>{
     let summary = "Read the results of a elementwise operation";
@@ -55,58 +93,52 @@ def ReadDataOp: Hbmpim_Op<"read_data", []>{
                         This only works for elementwise operations. }];
     let arguments = (ins AnyMemRef:$outBuffer,
                   Index:$startRow, Index:$startCol);
+    let results = (outs Burst:$out_burst);
     let assemblyFormat = [{$outBuffer `,` $startRow `,` $startCol attr-dict `:` 
-         type($outBuffer) `,` type($startRow) `,` type($startCol)}];
+         type($outBuffer) `,` type($startRow) `,` type($startCol) `->` qualified(type($out_burst))}];
 }
 
-def SimulatorReadDataOp: Hbmpim_Op<"sim_read_data", []>{
-    let summary = "Simulator function for reading the results of a elementwise operation";
-    let description = [{Although it sounds weird, but this is how the simulator implements it.
-                        This only works for elementwise operations. }];
-    let arguments = (ins 
-                  Index:$startRow, Index:$startCol, DenseI64ArrayAttr:$dimensions);
-    let assemblyFormat = [{ $startRow `,` $startCol attr-dict `:` 
-         type($startRow) `,` type($startCol)}];
-}
 
-def PreloadGemvOp: Hbmpim_Op<"preload_gemv", []>{
-    let summary = "Load data for GEMV-based kernels";
-    let description = [{}];
-    let arguments = (ins AnyMemRef:$inBuffer,
-                  Index:$startRow, Index:$startCol);
-    let assemblyFormat = [{$inBuffer `,` $startRow `,` $startCol attr-dict `:` 
-        type($inBuffer) `,` type($startRow) `,` type($startCol)}];
-}
 
-def SimulatorPreloadGemvOp: Hbmpim_Op<"sim_preload_gemv", []>{
-    let summary = "Simulator function for loading data for GEMV-based kernels using the";
-    let description = [{}];
-    let arguments = (ins Index:$startRow, Index:$startCol, DenseI64ArrayAttr:$dimensions);
-    let assemblyFormat = [{$startRow `,` $startCol attr-dict `:` 
-        type($startRow) `,` type($startCol)}];
-}
+// def SimulatorPreloadNoReplacementOp: Hbmpim_Op<"sim_preload_no_replacement", []>{
+//     let summary = "Load data that are not being replaced";
+//     let description = [{}];
+//     let arguments = (ins Index:$startRow, Index:$startCol);
+//     let assemblyFormat = [{$startRow `,` $startCol attr-dict `:`  type($startRow) `,` type($startCol)}];
+// }
 
-def ReadResultOp: Hbmpim_Op<"read_result", []>{
-    let summary = "Read the result of a **gemv** operation";
-    let description = [{Although it sounds weird, but this is how the simulator implements it.
-                        This only works for gemv. }];
-    let arguments = (ins AnyMemRef:$outBuffer, PimBankTypeAttr:$bank_type, Index:$out_dim,
-                  Index:$base_addr, Index:$startRow, Index:$startCol);
-    let assemblyFormat = [{$outBuffer `,` $bank_type `,` $out_dim `,` $base_addr `,`
-        $startRow `,` $startCol attr-dict `:` 
-        type($outBuffer) `,` type($out_dim) `,` type($base_addr) `,` type($startRow) `,` type($startCol)}];
-}
 
-def SimulatorReadResultOp: Hbmpim_Op<"sim_read_result", []>{
-    let summary = "Read the result of a **gemv** operation";
-    let description = [{Although it sounds weird, but this is how the simulator implements it.
-                        This only works for gemv. }];
-    let arguments = (ins PimBankTypeAttr:$bank_type, Index:$out_dim,
-                  Index:$base_addr, Index:$startRow, Index:$startCol, DenseI64ArrayAttr:$dimensions);
-    let assemblyFormat = [{$bank_type `,` $out_dim `,` $base_addr `,`
-        $startRow `,` $startCol attr-dict `:` 
-        type($out_dim) `,` type($base_addr) `,` type($startRow) `,` type($startCol)}];
-}
+
+// def SimulatorReadDataOp: Hbmpim_Op<"sim_read_data", []>{
+//     let summary = "Simulator function for reading the results of a elementwise operation";
+//     let description = [{Although it sounds weird, but this is how the simulator implements it.
+//                         This only works for elementwise operations. }];
+//     let arguments = (ins 
+//                   Index:$startRow, Index:$startCol, DenseI64ArrayAttr:$dimensions);
+//     let assemblyFormat = [{ $startRow `,` $startCol attr-dict `:` 
+//          type($startRow) `,` type($startCol)}];
+// }
+
+
+// def SimulatorPreloadGemvOp: Hbmpim_Op<"sim_preload_gemv", []>{
+//     let summary = "Simulator function for loading data for GEMV-based kernels using the";
+//     let description = [{}];
+//     let arguments = (ins Index:$startRow, Index:$startCol, DenseI64ArrayAttr:$dimensions);
+//     let assemblyFormat = [{$startRow `,` $startCol attr-dict `:` 
+//         type($startRow) `,` type($startCol)}];
+// }
+
+
+// def SimulatorReadResultOp: Hbmpim_Op<"sim_read_result", []>{
+//     let summary = "Read the result of a **gemv** operation";
+//     let description = [{Although it sounds weird, but this is how the simulator implements it.
+//                         This only works for gemv. }];
+//     let arguments = (ins PimBankTypeAttr:$bank_type, Index:$out_dim,
+//                   Index:$base_addr, Index:$startRow, Index:$startCol, DenseI64ArrayAttr:$dimensions);
+//     let assemblyFormat = [{$bank_type `,` $out_dim `,` $base_addr `,`
+//         $startRow `,` $startCol attr-dict `:` 
+//         type($out_dim) `,` type($base_addr) `,` type($startRow) `,` type($startCol)}];
+// }
 
 def SetDeviceConfigOp : Hbmpim_Op<"set_dev_config", [Pure]> {
     let summary = "Set the channels, ranks, ..., of the device.";
@@ -151,12 +183,28 @@ def PimAddrGenOp: Hbmpim_Op<"pim_addr_gen", []> {
     }];
 }
 
+def PimAddrGenSafeOp: Hbmpim_Op<"pim_addr_gen_safe", []> {
+    let summary = "generates safe address based on channel, rank, bankgroup, bank, row, col";
+    let description = [{}];
+    let arguments = (ins Index:$channel, Index:$rank, Index:$bankgroup, Index:$bank, 
+        Index:$row, Index:$col);
+    let results = (outs Index:$address);
+    let assemblyFormat = [{$channel `,` $rank `,` $bankgroup `,` $bank `,` $row  `,` $col
+        attr-dict `:` type($channel) `,` type($rank) `,` type($bankgroup) `,` type($bank)
+         `,` type($row) `,` type($col) `->` type($address)
+    
+    }];
+}
+
 def SetControlOp: Hbmpim_Op<"set_control", []> {
     let summary = "Set the control register file";
     let description = [{}];
-    let arguments = (ins BurstTypeAttr:$burstType, BoolAttr:$pim_op, Index:$toggle_cond, BoolAttr:$grfA_zero, BoolAttr:$grfB_zero);
+    let arguments = (ins Burst:$burstType, BoolAttr:$pim_op, 
+            Index:$toggle_cond, BoolAttr:$grfA_zero, BoolAttr:$grfB_zero);
     let extraClassDeclaration = [{}];
-    let assemblyFormat = "$burstType `,` $pim_op `,` $toggle_cond `,` $grfA_zero `,` $grfB_zero attr-dict `:` type($toggle_cond) ";
+    let assemblyFormat = [{$burstType `,` $pim_op `,` $toggle_cond `,` 
+            $grfA_zero `,` $grfB_zero attr-dict `:` 
+            qualified(type($burstType)) `,` type($toggle_cond) }];
 }
 
 def ParkInOp: Hbmpim_Op<"park_in", []> {
@@ -188,15 +236,22 @@ def ProgramCrfOp: Hbmpim_Op<"program_crf", []>{
     let assemblyFormat = "$pim_cmds attr-dict `:` qualified(type($pim_cmds))";
 }
 
-def AddTransactionAllOp: Hbmpim_Op<"add_transaction_all", []>{
-    let summary = "Send transaction to all of the banks.";
+def GetDeviceBurst: Hbmpim_Op<"get_device_burst", []>{
+    let summary = "";
     let description = [{}];
-    let arguments = (ins BoolAttr:$is_write, Index:$bg_idx, Index:$bank_idx,
-                    Index:$row, Index:$col, BurstTypeAttr:$bst, BoolAttr:$use_barrier, Index:$num_loop);
-    let assemblyFormat = [{ $is_write `,` $bg_idx `,` $bank_idx `,` $row `,` $col `,` $bst `,` 
-                          $use_barrier `,` $num_loop attr-dict `:` type($bg_idx) `,` type($bank_idx) `,` 
-                          type($row) `,` type($col)  `,` type($num_loop) }];
+    let results = (outs Burst:$burstType);
+    let assemblyFormat = "attr-dict `:` qualified(type($burstType))";
 }
+
+// def AddTransactionAllOp: Hbmpim_Op<"add_transaction_all", []>{
+//     let summary = "Send transaction to all of the banks.";
+//     let description = [{}];
+//     let arguments = (ins BoolAttr:$is_write, Index:$bg_idx, Index:$bank_idx,
+//                     Index:$row, Index:$col, BurstTypeAttr:$bst, BoolAttr:$use_barrier, Index:$num_loop);
+//     let assemblyFormat = [{ $is_write `,` $bg_idx `,` $bank_idx `,` $row `,` $col `,` $bst `,` 
+//                           $use_barrier `,` $num_loop attr-dict `:` type($bg_idx) `,` type($bank_idx) `,` 
+//                           type($row) `,` type($col)  `,` type($num_loop) }];
+// }
 
 def AddTransactionOp: Hbmpim_Op<"add_transaction", []>{
     let summary = "Send transaction to all of the banks.";
@@ -223,13 +278,6 @@ def ExecuteElementwiseOp: Hbmpim_Op<"execute_el_wise", []>{
       attr-dict `:` type($dim) `,` type($input0row) `,` type($resultRow) `,` type($input1row)}];
 }
 
-def ExecuteGemvOp: Hbmpim_Op<"execute_gemv", []>{
-  let summary = "Execute gemv operations, supporting tree based and normal gemv";
-  let description = [{}];
-  let arguments = (ins Index: $batch, Index:$M, Index:$N, Index:$numOutputTile, Index:$numInputTile, BoolAttr:$is_tree, I64Attr:$numBank, I64Attr:$numChannel, I64Attr:$numRank, I64Attr:$numGrf);
-  let assemblyFormat = [{$batch `,` $M `,` $N `,` $numOutputTile `,` $numInputTile
-      attr-dict `:`  type($batch) `,` type($M) `,` type($N) `,` type($numOutputTile) `,` type($numInputTile)}];
-}
 
 
 def HbmpimModuleOp : Hbmpim_Op<"module", [
@@ -291,23 +339,18 @@ def ReturnOp : Hbmpim_Op<"return", [HasParent<"HbmpimFuncOp">, Pure,
   let assemblyFormat = "attr-dict";
 }
 
-def LaunchOp: Hbmpim_Op<"launch", [AttrSizedOperandSegments, IsolatedFromAbove, SingleBlockImplicitTerminator<"TerminatorOp">]> {
+def LaunchOp: Hbmpim_Op<"launch", [IsolatedFromAbove, SingleBlockImplicitTerminator<"TerminatorOp">]> {
     let summary = "Launch a code kernel on a given workgroup. Input buffers should have been scattered beforehand.";
     let description = [{}];
 
-    let arguments = (ins DeviceConfiguration:$config, Variadic<AnyMemRef>:$inBuffers, Variadic<AnyMemRef>:$outBuffers);
+    let arguments = (ins DeviceConfiguration:$config);
     let results = (outs);
     let regions = (region SizedRegion<1>:$body);
 
     // let hasVerifier = 1;
-    let assemblyFormat = "$config `in` `(` $inBuffers `:` type($inBuffers) `)` `out` `(` $outBuffers `:` type($outBuffers) `)` attr-dict `on` qualified(type($config)) $body";
+    let assemblyFormat = "$config attr-dict `on` qualified(type($config)) $body";
 
     let extraClassDeclaration = [{
-        SmallVector<Value> getParams() {
-            SmallVector<Value> result{getInBuffers()};
-            result.append(getOutBuffers().begin(), getOutBuffers().end());
-            return result;
-        }
     }];
 }
 

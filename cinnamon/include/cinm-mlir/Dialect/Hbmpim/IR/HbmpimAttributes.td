@@ -57,14 +57,26 @@ def DataTypeAttr : I64EnumAttr<
 
 
 
-def BurstTypeAttr : I64EnumAttr<
-    "BurstType", "",
+def DeviceBurstTypeAttr : I64EnumAttr<
+    "DeviceBurstType", "",
     [
       I64EnumAttrCase<"null_bst_", 0, "null_bst_">,
       I64EnumAttrCase<"bst_hab_pim_", 1, "bst_hab_pim_">,
       I64EnumAttrCase<"bst_hab_", 2, "bst_hab_">,
       I64EnumAttrCase<"crf_bst_", 3, "crf_bst_">,
-      I64EnumAttrCase<"srf_bst_", 4, "srf_bst_">
+      I64EnumAttrCase<"srf_bst_", 4, "srf_bst_">,
+      I64EnumAttrCase<"result", 5, "result">
+    ]> {
+  let cppNamespace = "::mlir::hbmpim";
+}
+
+def DataDimTypeAttr : I64EnumAttr<
+    "DataDimType", "",
+    [
+      I64EnumAttrCase<"input_npbst_", 0, "input_npbst_">,
+      I64EnumAttrCase<"input1_npbst_", 1, "input1_npbst_">,
+      I64EnumAttrCase<"weight_npbst_", 2, "weight_npbst_">,
+      I64EnumAttrCase<"output_npbst_", 3, "output_npbst_">
     ]> {
   let cppNamespace = "::mlir::hbmpim";
 }
