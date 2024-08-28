@@ -1,47 +1,43 @@
 #!/bin/bash
 
+project_root="$( cd -- "$(dirname "$0")" >/dev/null 2>&1 ; pwd -P )"
+llvm_path="$project_root/llvm"
+cinnamon_path="$project_root/cinnamon"
+
+export PATH=$llvm_path/build/bin:$PATH
+
 if [[ $1 != "no-llvm" ]]; then
+  if [ ! -d "$llvm_path" ]; then
+    git clone https://github.com/oowekyala/llvm-project "$llvm_path"
 
-git clone https://github.com/oowekyala/llvm-project llvm
-cd llvm
-git checkout cinnamon-llvm
-mkdir -p build   
-cd build
+    cd "$llvm_path"
 
-cmake -G "Ninja" ../llvm \
-  -DLLVM_ENABLE_PROJECTS="mlir;llvm;clang" \
-  -DLLVM_TARGETS_TO_BUILD="host" \
-  -DLLVM_ENABLE_ASSERTIONS=ON \
-  -DMLIR_ENABLE_BINDINGS_PYTHON=OFF \
-  -DLLVM_BUILD_TOOLS=OFF \
-  -DCMAKE_BUILD_TYPE=Release \
-  -DBUILD_SHARED_LIBS=ON \
-  -DLLVM_OPTIMIZED_TABLEGEN=ON
+    git checkout cinnamon-llvm
+    cmake -S llvm -B build \
+      -DLLVM_ENABLE_PROJECTS="mlir;llvm;clang" \
+      -DLLVM_TARGETS_TO_BUILD="host" \
+      -DLLVM_ENABLE_ASSERTIONS=ON \
+      -DMLIR_ENABLE_BINDINGS_PYTHON=OFF \
+      -DLLVM_BUILD_TOOLS=OFF \
+      -DCMAKE_BUILD_TYPE=Release \
+      -DBUILD_SHARED_LIBS=ON \
+      -DLLVM_OPTIMIZED_TABLEGEN=ON
+  fi
 
-ninja
-ninja llc
-ninja opt
+  cd "$llvm_path"
+  git pull
+  cmake --build build --target all llc opt
+fi
 
-export PATH=$(pwd)/bin:$PATH
+cd "$cinnamon_path"
 
-cd ../..
-else
-export PATH=$(pwd)/llvm/build/bin:$PATH
-fi 
-
-cd cinnamon 
-llvm_prefix=../llvm/build
-
-cmake -S . -B "build" \
-    -G Ninja \
+if [ ! -d "build" ]; then
+  cmake -S . -B "build" \
     -DCMAKE_BUILD_TYPE=RelWithDebInfo \
-    -DLLVM_DIR="$llvm_prefix"/lib/cmake/llvm \
-    -DMLIR_DIR="$llvm_prefix"/lib/cmake/mlir \
-    -DUPMEM_DIR=/opt/upmem/upmem-2023.2.0-Linux-x86_64 \
-    -DCMAKE_EXPORT_COMPILE_COMMANDS=1 \
-    -DCMAKE_C_COMPILER=clang \
-    -DCMAKE_LINKER_TYPE=DEFAULT \
-    -DCMAKE_CXX_COMPILER=clang++ \
-    -DCMAKE_EXPORT_COMPILE_COMMANDS=ON 
+    -DLLVM_DIR="$llvm_path"/build/lib/cmake/llvm \
+    -DMLIR_DIR="$llvm_path"/build/lib/cmake/mlir \
+    -DCMAKE_EXPORT_COMPILE_COMMANDS=ON \
+    $CINNAMON_CMAKE_OPTIONS
+fi
 
-cd build && ninja
+cmake --build build --target all
