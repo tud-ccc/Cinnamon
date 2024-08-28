@@ -41,6 +41,7 @@ int main(int argc, char *argv[]) {
   registerAllExtensions(registry);
   registerCinmConversionPasses();
   registerCnmConversionPasses();
+  cim::registerCimTransformsPasses();
   cnm::registerCnmBufferizationExternalModels(registry);
   cnm::registerCnmTransformsPasses();
   cinm::registerCinmTransformsPasses();
