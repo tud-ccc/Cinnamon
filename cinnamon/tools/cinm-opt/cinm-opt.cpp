@@ -4,6 +4,7 @@
 /// @author      Karl F. A. Friebel (karl.friebel@tu-dresden.de)
 /// @author      Clément Fournier (clement.fournier@tu-dresden.de)
 
+#include "cinm-mlir/Conversion/CimPasses.h"
 #include "cinm-mlir/Conversion/CinmPasses.h"
 #include "cinm-mlir/Conversion/CnmPasses.h"
 #include "cinm-mlir/Conversion/UPMEMPasses.h"
@@ -40,6 +41,7 @@ int main(int argc, char *argv[]) {
   registerAllPasses();
   registerAllExtensions(registry);
   registerCinmConversionPasses();
+  registerCimConversionPasses();
   registerCnmConversionPasses();
   cim::registerCimTransformsPasses();
   cnm::registerCnmBufferizationExternalModels(registry);
