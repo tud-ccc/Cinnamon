@@ -8,6 +8,8 @@
 #include "cinm-mlir/Conversion/CnmPasses.h"
 #include "cinm-mlir/Conversion/UPMEMPasses.h"
 #include "cinm-mlir/Conversion/UPMEMToLLVM/UPMEMToLLVM.h"
+#include "cinm-mlir/Dialect/Cim/IR/CimDialect.h"
+#include "cinm-mlir/Dialect/Cim/Transforms/Passes.h"
 #include "cinm-mlir/Dialect/Cinm/IR/CinmDialect.h"
 #include "cinm-mlir/Dialect/Cinm/Transforms/Passes.h"
 #include "cinm-mlir/Dialect/Cnm/IR/CnmDialect.h"
@@ -26,12 +28,14 @@
 
 using namespace mlir;
 
-
 int main(int argc, char *argv[]) {
   DialectRegistry registry;
   registerAllDialects(registry);
 
-  registry.insert<cinm::CinmDialect, cnm::CnmDialect, upmem::UPMEMDialect>();
+  registry.insert<cinm::CinmDialect, //
+                  cim::CimDialect,   //
+                  cnm::CnmDialect,   //
+                  upmem::UPMEMDialect>();
 
   registerAllPasses();
   registerAllExtensions(registry);
