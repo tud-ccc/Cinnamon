@@ -19,6 +19,12 @@ add_public_tablegen_target(CnmConversionPassIncGen)
 
 add_mlir_doc(CnmPasses CnmConversionPasses ./ -gen-pass-doc)
 
+set(LLVM_TARGET_DEFINITIONS MemristorPasses.td)
+mlir_tablegen(MemristorPasses.h.inc -gen-pass-decls -name MemristorConversion ${TBLGEN_EXTRA})
+add_public_tablegen_target(MemristorConversionPassIncGen)
+
+add_mlir_doc(MemristorPasses MemristorConversionPasses ./ -gen-pass-doc)
+
 set(LLVM_TARGET_DEFINITIONS UPMEMPasses.td)
 mlir_tablegen(UPMEMPasses.h.inc -gen-pass-decls -name UPMEMConversion ${TBLGEN_EXTRA})
 add_public_tablegen_target(UPMEMConversionPassIncGen)
