@@ -4,6 +4,8 @@
 
 #pragma once
 
+#include "cinm-mlir/Conversion/CimToMemristor/CimToMemristor.h"
+
 namespace mlir {
 
 //===- Generated passes ---------------------------------------------------===//

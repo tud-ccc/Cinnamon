@@ -9,4 +9,11 @@
 
 include "mlir/Pass/PassBase.td"
 
-#endif // CNM_CONVERSION_PASSES
+def ConvertCimToMemristorPass : Pass<"convert-cim-to-memristor", operation="func::FuncOp"> {
+    let summary = "Convert cim dialect to memristor dialect";
+    let constructor = "mlir::cim::createConvertCimToMemristorPass()";
+    let dependentDialects = ["cim::CimDialect", "memristor::MemristorDialect",
+        "bufferization::BufferizationDialect", "memref::MemRefDialect", "tensor::TensorDialect"];
+}
+
+#endif // CIM_CONVERSION_PASSES
