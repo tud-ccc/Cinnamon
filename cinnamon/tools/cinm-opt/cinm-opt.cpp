@@ -15,6 +15,8 @@
 #include "cinm-mlir/Dialect/Cinm/Transforms/Passes.h"
 #include "cinm-mlir/Dialect/Cnm/IR/CnmDialect.h"
 #include "cinm-mlir/Dialect/Cnm/Transforms/Passes.h"
+#include "cinm-mlir/Dialect/Memristor/IR/MemristorDialect.h"
+#include "cinm-mlir/Dialect/Memristor/Transforms/Passes.h"
 #include "cinm-mlir/Dialect/UPMEM/IR/UPMEMDialect.h"
 #include "cinm-mlir/Dialect/UPMEM/Transforms/Passes.h"
 
@@ -36,6 +38,7 @@ int main(int argc, char *argv[]) {
   registry.insert<cinm::CinmDialect, //
                   cim::CimDialect,   //
                   cnm::CnmDialect,   //
+                  memristor::MemristorDialect, //
                   upmem::UPMEMDialect>();
 
   registerAllPasses();
@@ -47,6 +50,7 @@ int main(int argc, char *argv[]) {
   cnm::registerCnmBufferizationExternalModels(registry);
   cnm::registerCnmTransformsPasses();
   cinm::registerCinmTransformsPasses();
+  memristor::registerMemristorTransformsPasses();
   upmem::registerConvertUpmemToLLvmInterface(registry);
 
   registerUPMEMTransformsPasses();
