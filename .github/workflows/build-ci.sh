@@ -1,6 +1,8 @@
 #!/bin/bash
 
-project_root="$( cd -- "$(dirname "$0")" >/dev/null 2>&1 ; pwd -P )"
+project_root="$( cd -- "$(dirname "$0")/../.." >/dev/null 2>&1 ; pwd -P )"
+echo "Project root: $project_root"
+
 llvm_path="$project_root/llvm"
 cinnamon_path="$project_root/cinnamon"
 # Upmem is installed from the debian package.
