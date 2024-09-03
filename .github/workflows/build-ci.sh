@@ -5,8 +5,7 @@ echo "Project root: $project_root"
 
 llvm_path="$project_root/llvm"
 cinnamon_path="$project_root/cinnamon"
-# Upmem is installed from the debian package.
-upmem_path="/usr"
+upmem_path="$project_root/upmem"
 
 export PATH=$llvm_path/build/bin:$PATH
 
@@ -33,6 +32,14 @@ if [[ $1 != "no-llvm" ]]; then
   cd "$llvm_path"
   git pull
   cmake --build build --target all llc opt
+fi
+
+if [ ! -d "$upmem_path" ]; then
+  upmem_archive="upmem.tar.gz"
+  curl http://sdk-releases.upmem.com/2024.1.0/ubuntu_22.04/upmem-2024.1.0-Linux-x86_64.tar.gz --output "$upmem_archive"
+  mkdir "$upmem_path"
+  tar xf "$upmem_archive" -C "$upmem_path" --strip-components=1
+  rm "$upmem_archive"
 fi
 
 cd "$cinnamon_path"

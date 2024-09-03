@@ -20,14 +20,15 @@ jobs:
       - name: Install build dependencies
         run: sudo apt-get install clang ninja-build mold libvulkan-dev
 
-      - name: Cache llvm build
-        id: cache-llvm
+      - name: Cache dependencies
+        id: dependency-cache
         uses: actions/cache@v3
         with:
-          path: llvm
-          key: llvm-build-${{ runner.os }}
-          restore-keys: |
-            llvm-build-${{ runner.os }}
+          path: |
+            - llvm
+            - upmem
+          key: cinnamon-dependencies-${{ runner.os }}
+          restore-keys: cinnamon-dependencies-${{ runner.os }}
       
       - name: Build 
         run: .github/workflows/build-ci.sh
