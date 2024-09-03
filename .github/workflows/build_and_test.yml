@@ -32,6 +32,13 @@ jobs:
       
       - name: Build 
         run: .github/workflows/build-ci.sh
+      - uses: actions/cache/save@v3
+        if: always()
+        with:
+          path: |
+            - llvm
+            - upmem
+          key: cinnamon-dependencies-${{ runner.os }}
       
       - name: Test
         working-directory: cinnamon/build
