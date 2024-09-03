@@ -20,26 +20,27 @@ jobs:
       - name: Install build dependencies
         run: sudo apt-get install clang ninja-build mold libvulkan-dev
 
-      - name: Cache dependencies
-        id: dependency-cache
-        uses: actions/cache@v3
+      - name: Restore dependency cache
+        id: dependency-cache-restore
+        uses: actions/cache/restore@v3
         with:
           path: |
-            - llvm
-            - upmem
+            llvm
+            upmem
           key: cinnamon-dependencies-${{ runner.os }}
-          restore-keys: cinnamon-dependencies-${{ runner.os }}
       
       - name: Build 
         run: .github/workflows/build-ci.sh
-      - uses: actions/cache/save@v3
-        if: always()
-        with:
-          path: |
-            - llvm
-            - upmem
-          key: cinnamon-dependencies-${{ runner.os }}
-      
+
       - name: Test
         working-directory: cinnamon/build
         run: ninja check-cinm-mlir
+
+      - name: Save dependency cache
+        uses: actions/cache/save@v3
+        if: always()
+        with:
+          path: |
+            llvm
+            upmem
+          key: ${{ steps.dependency-cache-restore.outputs.cache-primary-key }}
