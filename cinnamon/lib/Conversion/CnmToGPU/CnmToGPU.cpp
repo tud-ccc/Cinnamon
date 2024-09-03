@@ -314,19 +314,19 @@ void populateCnmToGPUFinalTypeConversions(TypeConverter &typeConverter) {
       });
 }
 
-void populateCnmToGPUConversionPatterns(TypeConverter &typeConverter,
-                                        RewritePatternSet &patterns) {
+void populateCnmToGPUConversionPatterns(RewritePatternSet &patterns,
+                                        MLIRContext *context) {
   patterns
       .add<cnmtogpu::ConvertCnmWorkgroupToGPU, cnmtogpu::ConvertCnmAllocToGPU,
            ConvertCnmSetZeroToAffine, cnmtogpu::ConvertCnmScatterToGPU,
            cnmtogpu::ConvertCnmGatherToGPU, cnmtogpu::ConvertCnmLaunchToGPU,
-           cnmtogpu::ConvertCnmTerminatorToGPU>(&typeConverter.getContext());
+           cnmtogpu::ConvertCnmTerminatorToGPU>(context);
 }
 
 struct ConvertCnmToGPUPass
     : public ::impl::ConvertCnmToGPUPassBase<ConvertCnmToGPUPass> {
   void runOnOperation() final {
-    TypeConverter converter(&getContext());
+    TypeConverter converter{};
     populateCnmToGPUFinalTypeConversions(converter);
     const auto addUnrealizedCast = [](OpBuilder &builder, Type type,
                                       ValueRange inputs, Location loc) {
@@ -337,7 +337,7 @@ struct ConvertCnmToGPUPass
     converter.addTargetMaterialization(addUnrealizedCast);
 
     RewritePatternSet patterns(&getContext());
-    populateCnmToGPUConversionPatterns(converter, patterns);
+    populateCnmToGPUConversionPatterns(patterns, &getContext());
     populateReconcileUnrealizedCastsPatterns(patterns);
 
     ConversionTarget target(getContext());
