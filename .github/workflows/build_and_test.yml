@@ -10,19 +10,15 @@ jobs:
     env:
       CC: clang
       CXX: clang++
+      LDFLAGS: -fuse-ld=mold
       CMAKE_GENERATOR: Ninja
+
     steps: 
       - name: Check out repository
         uses: actions/checkout@v3
 
       - name: Install build dependencies
-        run: sudo apt-get install clang ninja-build mold
-
-      - name: Download Upmem SDK
-        run: |
-          curl http://sdk-releases.upmem.com/2024.1.0/ubuntu_22.04/upmem_2024.1.0_amd64.deb --output ./upmem.deb
-          sudo apt install ./upmem.deb
-        working-directory: ${{ github.workspace }}
+        run: sudo apt-get install clang ninja-build mold libvulkan-dev
 
       - name: Cache llvm build
         id: cache-llvm
