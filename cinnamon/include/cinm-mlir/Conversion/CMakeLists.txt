@@ -7,6 +7,11 @@ add_public_tablegen_target(CinmConversionPassIncGen)
 
 add_mlir_doc(CinmPasses CinmConversionPasses ./ -gen-pass-doc)
 
+set(LLVM_TARGET_DEFINITIONS CimPasses.td)
+mlir_tablegen(CimPasses.h.inc -gen-pass-decls -name CimConversion ${TBLGEN_EXTRA})
+add_public_tablegen_target(CimConversionPassIncGen)
+
+add_mlir_doc(CimPasses CimConversionPasses ./ -gen-pass-doc)
 
 set(LLVM_TARGET_DEFINITIONS CnmPasses.td)
 mlir_tablegen(CnmPasses.h.inc -gen-pass-decls -name CnmConversion ${TBLGEN_EXTRA})
