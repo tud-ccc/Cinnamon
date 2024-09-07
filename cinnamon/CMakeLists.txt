@@ -14,12 +14,30 @@ project(cinm-mlir
 )
 
 option(CINM_BUILD_GPU_SUPPORT "Enable vulkan runner and GPU libs" OFF)
+option(TORCH_MLIR_DIR "Directory of the Torch-MLIR installation" "")
 option(UPMEM_DIR "Directory of the UPMEM installation" "")
 
 if (CINM_BUILD_GPU_SUPPORT)
     add_compile_definitions(CINM_GPU_SUPPORT)
 endif()
 
+if (TORCH_MLIR_DIR)
+    add_compile_definitions(CINM_TORCH_MLIR_ENABLED)
+
+    set(TORCH_MLIR_INCLUDE_DIR "${TORCH_MLIR_DIR}/include")
+    set(TORCH_MLIR_LIB_DIR "${TORCH_MLIR_DIR}/lib")
+    include_directories(SYSTEM ${TORCH_MLIR_INCLUDE_DIR})
+    link_directories(${TORCH_MLIR_LIB_DIR})
+
+    file(GLOB TORCH_MLIR_LIBS "${TORCH_MLIR_LIB_DIR}/*.a")
+
+    get_property(CINM_DEPENDENCY_LIBS GLOBAL PROPERTY CINM_DEPENDENCY_LIBS)
+    list(APPEND CINM_DEPENDENCY_LIBS ${TORCH_MLIR_LIBS})
+    set_property(GLOBAL PROPERTY CINM_DEPENDENCY_LIBS ${CINM_DEPENDENCY_LIBS})
+    
+else()
+    message(WARNING "TORCH_MLIR_DIR not set, torch frontend wont be available.")
+endif()
 
 # Set global language standard to C++20.
 set(CMAKE_CXX_STANDARD 20 CACHE STRING "C++ standard to conform to")
@@ -83,6 +101,15 @@ add_subdirectory(include)
 add_subdirectory(lib)
 add_subdirectory(test)
 add_subdirectory(tools)
+
+if (TORCH_MLIR_DIR)
+    set_property(GLOBAL PROPERTY TORCH_MLIR_ENABLED ON)
+    set(TORCH_MLIR_INCLUDE_DIR "${TORCH_MLIR_DIR}/include")
+    include_directories(SYSTEM ${TORCH_MLIR_INCLUDE_DIR})
+else()
+    set_property(GLOBAL PROPERTY TORCH_MLIR_ENABLED OFF)
+    message(WARNING "TORCH_MLIR_DIR not set")
+endif()
 
 if (UPMEM_DIR)
     add_library(Upmem::dpu SHARED IMPORTED GLOBAL)

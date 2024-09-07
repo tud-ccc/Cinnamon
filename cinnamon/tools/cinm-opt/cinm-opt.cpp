@@ -21,6 +21,10 @@
 #include "cinm-mlir/Dialect/UPMEM/IR/UPMEMDialect.h"
 #include "cinm-mlir/Dialect/UPMEM/Transforms/Passes.h"
 
+#ifdef CINM_TORCH_MLIR_ENABLED
+#include "torch-mlir/Dialect/Torch/IR/TorchDialect.h"
+#endif
+
 #include <mlir/IR/DialectRegistry.h>
 #include <mlir/InitAllExtensions.h>
 
@@ -41,6 +45,10 @@ int main(int argc, char *argv[]) {
                   cnm::CnmDialect,             //
                   memristor::MemristorDialect, //
                   upmem::UPMEMDialect>();
+
+#ifdef CINM_TORCH_MLIR_ENABLED
+  registry.insert<torch::Torch::TorchDialect>();
+#endif
 
   registerAllPasses();
   registerAllExtensions(registry);
