@@ -1,4 +1,7 @@
 .cache
 .vscode
+.directory
+.venv
 llvm
+torch-mlir
 upmem

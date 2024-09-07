@@ -25,7 +25,9 @@ jobs:
         uses: actions/cache/restore@v3
         with:
           path: |
+            .venv
             llvm
+            torch-mlir
             upmem
           key: cinnamon-dependencies-${{ runner.os }}
       
@@ -41,6 +43,8 @@ jobs:
         if: always()
         with:
           path: |
+            .venv
             llvm
+            torch-mlir
             upmem
           key: ${{ steps.dependency-cache-restore.outputs.cache-primary-key }}
