@@ -6,6 +6,7 @@
 
 #ifdef CINM_TORCH_MLIR_ENABLED
 #include "torch-mlir/Dialect/Torch/IR/TorchDialect.h"
+#include "torch-mlir/Dialect/TorchConversion/IR/TorchConversionDialect.h"
 #endif
 
 #include "mlir/IR/Dialect.h"
@@ -29,6 +30,7 @@ int main(int argc, char *argv[]) {
 
 #ifdef CINM_TORCH_MLIR_ENABLED
   registry.insert<torch::Torch::TorchDialect>();
+  registry.insert<torch::TorchConversion::TorchConversionDialect>();
 #endif
 
   return asMainReturnCode(MlirLspServerMain(argc, argv, registry));

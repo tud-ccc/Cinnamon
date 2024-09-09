@@ -1,6 +1,12 @@
 
 set(TBLGEN_EXTRA $<$<BOOL:${CINM_BUILD_GPU_SUPPORT}>:-DCINM_GPU_SUPPORT>)
 
+set(LLVM_TARGET_DEFINITIONS CinmFrontendPasses.td)
+mlir_tablegen(CinmFrontendPasses.h.inc -gen-pass-decls -name CinmFrontendConversion ${TBLGEN_EXTRA})
+add_public_tablegen_target(CinmFrontendConversionPassIncGen)
+
+add_mlir_doc(CinmFrontendPasses CinmFrontendConversionPasses ./ -gen-pass-doc)
+
 set(LLVM_TARGET_DEFINITIONS CinmPasses.td)
 mlir_tablegen(CinmPasses.h.inc -gen-pass-decls -name CinmConversion ${TBLGEN_EXTRA})
 add_public_tablegen_target(CinmConversionPassIncGen)

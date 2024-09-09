@@ -9,6 +9,8 @@ add_mlir_library(CinmCommonPatterns
 )
 
 
+add_subdirectory(TorchToCinm)
+
 if (CINM_BUILD_GPU_SUPPORT)
     add_subdirectory(CnmToGPU)
 endif()

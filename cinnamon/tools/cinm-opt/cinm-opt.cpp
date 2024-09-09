@@ -5,6 +5,7 @@
 /// @author      Clément Fournier (clement.fournier@tu-dresden.de)
 
 #include "cinm-mlir/Conversion/CimPasses.h"
+#include "cinm-mlir/Conversion/CinmFrontendPasses.h"
 #include "cinm-mlir/Conversion/CinmPasses.h"
 #include "cinm-mlir/Conversion/CnmPasses.h"
 #include "cinm-mlir/Conversion/MemristorPasses.h"
@@ -23,6 +24,7 @@
 
 #ifdef CINM_TORCH_MLIR_ENABLED
 #include "torch-mlir/Dialect/Torch/IR/TorchDialect.h"
+#include "torch-mlir/Dialect/TorchConversion/IR/TorchConversionDialect.h"
 #endif
 
 #include <mlir/IR/DialectRegistry.h>
@@ -48,10 +50,12 @@ int main(int argc, char *argv[]) {
 
 #ifdef CINM_TORCH_MLIR_ENABLED
   registry.insert<torch::Torch::TorchDialect>();
+  registry.insert<torch::TorchConversion::TorchConversionDialect>();
 #endif
 
   registerAllPasses();
   registerAllExtensions(registry);
+  registerCinmFrontendConversionPasses();
   registerCinmConversionPasses();
   registerCimConversionPasses();
   registerCnmConversionPasses();
