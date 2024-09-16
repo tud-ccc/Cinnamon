@@ -21,6 +21,7 @@
 #include <mlir/IR/Diagnostics.h>
 #include <mlir/IR/ImplicitLocOpBuilder.h>
 #include <mlir/IR/ValueRange.h>
+#include <type_traits>
 
 using namespace mlir;
 using namespace mlir::cinm;
@@ -155,7 +156,7 @@ TilingResult2 GemvOp::convertToTiledOps(OpBuilder &builder, TilingParameters) {
   return FailureOr<SmallVector<Value>>({toVector});
 }
 
-template <typename OP>
+template <typename OP, bool IsScalarOp>
 TilingResult2 tileElementWiseBinaryOp(OpBuilder &builder0, OP op,
                                       TilingParameters params) {
   ImplicitLocOpBuilder builder(op.getLoc(), builder0);
@@ -200,8 +201,11 @@ TilingResult2 tileElementWiseBinaryOp(OpBuilder &builder0, OP op,
         builder.getI64TensorAttr(shape));
     lhs = cinm::reshapeStatic(builder, builder.getLoc(), op.getLhs(),
                               {tensorTy.getNumElements()});
-    rhs = cinm::reshapeStatic(builder, builder.getLoc(), op.getRhs(),
-                              {tensorTy.getNumElements()});
+
+    if constexpr (!IsScalarOp) {
+      rhs = cinm::reshapeStatic(builder, builder.getLoc(), op.getRhs(),
+                                {tensorTy.getNumElements()});
+    }
     tensorTy = lhs.getType().cast<RankedTensorType>();
     shape = tensorTy.getShape();
   }
@@ -219,15 +223,19 @@ TilingResult2 tileElementWiseBinaryOp(OpBuilder &builder0, OP op,
         const SmallVector<int64_t, 2> sizes{tileSize};
         const SmallVector<int64_t, 2> strides{1};
 
-        const RankedTensorType sliceTy = RankedTensorType::get(
-            {tileSize}, tensorTy.getElementType());
+        const RankedTensorType sliceTy =
+            RankedTensorType::get({tileSize}, tensorTy.getElementType());
 
         const Value lhsSlice = builder.create<tensor::ExtractSliceOp>(
             loc, sliceTy, lhs, indices, ValueRange{}, ValueRange{}, offsets,
             sizes, strides);
-        const Value rhsSlice = builder.create<tensor::ExtractSliceOp>(
-            loc, sliceTy, rhs, indices, ValueRange{}, ValueRange{}, offsets,
-            sizes, strides);
+
+        Value rhsSlice = rhs;
+        if constexpr (!IsScalarOp) {
+          rhsSlice = builder.create<tensor::ExtractSliceOp>(
+              loc, sliceTy, rhs, indices, ValueRange{}, ValueRange{}, offsets,
+              sizes, strides);
+        }
 
         // here we recreate the same op with smaller dimensions
         OP smaller = builder.create<OP>(loc, lhsSlice, rhsSlice);
@@ -248,20 +256,40 @@ TilingResult2 tileElementWiseBinaryOp(OpBuilder &builder0, OP op,
 
 TilingResult2 AddOp::convertToTiledOps(OpBuilder &builder,
                                        TilingParameters params) {
-  return tileElementWiseBinaryOp<AddOp>(builder, *this, params);
+  return tileElementWiseBinaryOp<AddOp, false>(builder, *this, params);
+}
+
+TilingResult2 AddsOp::convertToTiledOps(OpBuilder &builder,
+                                        TilingParameters params) {
+  return tileElementWiseBinaryOp<AddsOp, true>(builder, *this, params);
 }
 
 TilingResult2 SubOp::convertToTiledOps(OpBuilder &builder,
                                        TilingParameters params) {
-  return tileElementWiseBinaryOp<SubOp>(builder, *this, params);
+  return tileElementWiseBinaryOp<SubOp, false>(builder, *this, params);
+}
+
+TilingResult2 SubsOp::convertToTiledOps(OpBuilder &builder,
+                                        TilingParameters params) {
+  return tileElementWiseBinaryOp<SubsOp, true>(builder, *this, params);
 }
 
 TilingResult2 MulOp::convertToTiledOps(OpBuilder &builder,
                                        TilingParameters params) {
-  return tileElementWiseBinaryOp<MulOp>(builder, *this, params);
+  return tileElementWiseBinaryOp<MulOp, false>(builder, *this, params);
+}
+
+TilingResult2 MulsOp::convertToTiledOps(OpBuilder &builder,
+                                        TilingParameters params) {
+  return tileElementWiseBinaryOp<MulsOp, true>(builder, *this, params);
 }
 
 TilingResult2 DivOp::convertToTiledOps(OpBuilder &builder,
                                        TilingParameters params) {
-  return tileElementWiseBinaryOp<DivOp>(builder, *this, params);
+  return tileElementWiseBinaryOp<DivOp, false>(builder, *this, params);
+}
+
+TilingResult2 DivsOp::convertToTiledOps(OpBuilder &builder,
+                                        TilingParameters params) {
+  return tileElementWiseBinaryOp<DivsOp, true>(builder, *this, params);
 }
