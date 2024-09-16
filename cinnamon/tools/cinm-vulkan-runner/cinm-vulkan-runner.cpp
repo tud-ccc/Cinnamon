@@ -58,7 +58,7 @@ static LogicalResult runMLIRPasses(Operation *op) {
                                                 // memref.load
   passManager.addPass(createLowerAffinePass()); // affine.apply -> arith ops
 
-  passManager.addPass(createCnmSPIRVAttachTargetAttributePass(
+  passManager.addPass(cnm::createCnmSPIRVAttachTargetAttributePass(
       cnm::CnmSPIRVAttachTargetAttributePassOptions{
           .spirvCapabilities = {"Shader"},
           .spirvExtensions = {"SPV_KHR_storage_buffer_storage_class"},

@@ -59,11 +59,28 @@ cinm-opt-help: (cinm-opt "--help")
 debug-cinm-opt *ARGS:
     gdb --args {{build_dir}}/bin/cinm-opt {{ARGS}}
 
+cinm-to-cnm FILE *ARGS: (
+	cinm-opt FILE
+	"--cinm-tiling"
+	"--affine-loop-unroll='unroll-full unroll-full-threshold=1'"
+	"--convert-cinm-to-cnm"
+	"--lower-affine"
+	"--one-shot-bufferize='bufferize-function-boundaries function-boundary-type-conversion=identity-layout-map'"
+	"--convert-linalg-to-affine-loops"
+	"--lower-affine"
+	"--buffer-loop-hoisting"
+	"--buffer-hoisting"
+	"--cse"
+	ARGS
+)
+
 cnm-to-gpu FILE *ARGS: (cinm-opt FILE "--convert-cnm-to-gpu" ARGS)
+cinm-to-gpu FILE *ARGS: (cinm-to-cnm FILE "--convert-cnm-to-gpu" ARGS)
 
 cinm-vulkan-runner FILE *ARGS:
     {{build_dir}}/bin/cinm-vulkan-runner {{FILE}} \
-        --shared-libs=../llvm-project/build/lib/libvulkan-runtime-wrappers.so,../llvm-project/build/lib/libmlir_runner_utils.so.17 \
+        --shared-libs={{llvm_prefix}}/lib/libvulkan-runtime-wrappers.so,{{llvm_prefix}}/lib/libmlir_runner_utils.so \
+        --entry-point-result=void \
         {{ARGS}}
 
 genBench NAME: (doNinja "cinm-opt")

@@ -27,6 +27,7 @@
 #include <mlir/IR/BuiltinOps.h>
 #include <mlir/IR/BuiltinTypeInterfaces.h>
 #include <mlir/IR/BuiltinTypes.h>
+#include <mlir/IR/Location.h>
 #include <mlir/IR/MLIRContext.h>
 #include <mlir/IR/OpDefinition.h>
 #include <mlir/IR/PatternMatch.h>
@@ -41,61 +42,28 @@
 
 namespace mlir::cnm {
 namespace cnmtogpu {
-SmallVector<int64_t, 2> getBufferTypeShape(cnm::BufferType bufferType) {
-  SmallVector<int64_t> shape{bufferType.getShape()};
-  while (shape.size() < bufferType.getWorkgroupShape().size()) {
-    shape.insert(shape.begin(), 1);
-  }
-  return shape;
-}
-
 MemRefType convertCnmBufferToMemRefType(cnm::BufferType bufferType) {
-  ArrayRef<int64_t> workgroupShape = bufferType.getWorkgroupShape();
-  SmallVector<int64_t, 2> shape = getBufferTypeShape(bufferType);
-  for (size_t i = 0; i < workgroupShape.size(); i++) {
-    shape[i] *= workgroupShape[i];
-  }
+  SmallVector<int64_t> shape{bufferType.getWorkgroupShape()};
+  shape.append(bufferType.getShape().begin(), bufferType.getShape().end());
   return MemRefType::get(shape, bufferType.getElementType());
-}
-
-SmallVector<Value, 2> createCalculateScatterIndices(Location loc,
-                                                    OpBuilder &builder,
-                                                    const AffineMap &scatterMap,
-                                                    ValueRange indices,
-                                                    BufferType bufferType) {
-  SmallVector<Value> bufferIndices;
-  ArrayRef<int64_t> workgroupShape = bufferType.getWorkgroupShape();
-  for (size_t i = 0; i < workgroupShape.size(); i++) {
-    const AffineExpr indexExpr =
-        scatterMap.getResult(i) * workgroupShape[i] +
-        scatterMap.getResult(workgroupShape.size() + i);
-    bufferIndices.push_back(builder.create<affine::AffineApplyOp>(
-        loc, AffineMap::get(indices.size(), 0, indexExpr), indices));
-  }
-  return bufferIndices;
 }
 
 void convertLaunchParameter(ConversionPatternRewriter &rewriter, Location loc,
                             Value buffer, ValueRange threadIds,
-                            ArrayRef<int64_t> workgroupShape,
                             BlockArgument arg) {
   const BufferType bufferType = buffer.getType().dyn_cast<cnm::BufferType>();
-  const SmallVector<int64_t, 2> bufferShape = getBufferTypeShape(bufferType);
+  const MemRefType memrefType = convertCnmBufferToMemRefType(bufferType);
 
   const Value source = createOrFoldUnrealizedConversionCast(
       loc, rewriter, convertCnmBufferToMemRefType(bufferType),
       rewriter.getRemappedValue(buffer));
 
-  const SmallVector<int64_t, 2> staticOffsets(workgroupShape.size(),
-                                              ShapedType::kDynamic);
-  const SmallVector<int64_t, 2> staticSizes{bufferShape};
-  const SmallVector<int64_t, 2> staticStrides(workgroupShape.size(), 1);
-
-  SmallVector<Value, 2> dynamicOffsets;
-  for (size_t i = 0; i < workgroupShape.size(); i++) {
-    const AffineExpr indexExpr = rewriter.getAffineDimExpr(0) * bufferShape[i];
-    dynamicOffsets.push_back(rewriter.create<affine::AffineApplyOp>(
-        loc, AffineMap::get(1, 0, indexExpr), ValueRange{threadIds[i]}));
+  SmallVector<int64_t> staticOffsets(memrefType.getRank(), 0);
+  SmallVector<int64_t> staticSizes{memrefType.getShape()};
+  const SmallVector<int64_t> staticStrides(memrefType.getRank(), 1);
+  for (unsigned i = 0; i < threadIds.size(); i++) {
+    staticSizes[i] = 1;
+    staticOffsets[i] = ShapedType::kDynamic;
   }
 
   const Type resultType = memref::SubViewOp::inferRankReducedResultType(
@@ -104,7 +72,7 @@ void convertLaunchParameter(ConversionPatternRewriter &rewriter, Location loc,
 
   const Value subview =
       rewriter
-          .create<memref::SubViewOp>(loc, resultType, source, dynamicOffsets,
+          .create<memref::SubViewOp>(loc, resultType, source, threadIds,
                                      ValueRange{}, ValueRange{}, staticOffsets,
                                      staticSizes, staticStrides)
           .getResult();
@@ -129,8 +97,15 @@ struct ConvertCnmAllocToGPU : public OpConversionPattern<cnm::AllocOp> {
   LogicalResult
   matchAndRewrite(cnm::AllocOp op, OpAdaptor,
                   ConversionPatternRewriter &rewriter) const override {
-    rewriter.replaceOpWithNewOp<memref::AllocOp>(
-        op, convertCnmBufferToMemRefType(op.getType()));
+    Type asyncToken;
+    ValueRange asyncDependencies;
+    ValueRange dynamicSizes;
+    ValueRange symbolOperands;
+    UnitAttr hostShared;
+
+    rewriter.replaceOpWithNewOp<gpu::AllocOp>(
+        op, convertCnmBufferToMemRefType(op.getType()), asyncToken,
+        asyncDependencies, dynamicSizes, symbolOperands, hostShared);
     return success();
   }
 };
@@ -141,44 +116,29 @@ struct ConvertCnmScatterToGPU : public OpConversionPattern<cnm::ScatterOp> {
   LogicalResult
   matchAndRewrite(cnm::ScatterOp op, OpAdaptor,
                   ConversionPatternRewriter &rewriter) const override {
+    const WorkgroupType workgroupType = op.getWg().getType();
+    const ArrayRef<int64_t> workgroupShape = workgroupType.getShape();
     const cnm::BufferType bufferType =
         op.getOperandTypes()[1].dyn_cast<cnm::BufferType>();
-    const SmallVector<int64_t, 2> bufferShape = getBufferTypeShape(bufferType);
 
-    Value memref = rewriter.getRemappedValue(op.getOperand(1));
-    memref = createOrFoldUnrealizedConversionCast(
-        op.getLoc(), rewriter, convertCnmBufferToMemRefType(bufferType),
-        memref);
+    Value src = rewriter.getRemappedValue(op.getOperand(0));
+    Value dst = rewriter.getRemappedValue(op.getOperand(1));
+    dst = createOrFoldUnrealizedConversionCast(
+        op.getLoc(), rewriter, convertCnmBufferToMemRefType(bufferType), dst);
 
-    const Value tensor = op.getOperand(0);
-    const RankedTensorType tensorType =
-        tensor.getType().dyn_cast<RankedTensorType>();
+    const SmallVector<int64_t> loopSteps(workgroupShape.size(), 1);
+    createNestedAffineForLoops(
+        rewriter, op.getLoc(), workgroupShape, loopSteps, ValueRange{},
+        [&](OpBuilder &builder, Location loc, ValueRange indices,
+            ValueRange) -> SmallVector<Value> {
+          const SmallVector<Value> mappedIndices =
+              createAffineApply(builder, loc, op.getScatterMap(), indices);
+          createMemrefSubviewCopy(builder, loc, src, dst, bufferType.getShape(),
+                                  mappedIndices, indices);
+          return {};
+        });
 
-    SmallVector<affine::AffineForOp, 2> loops;
-    SmallVector<Value> indices;
-
-    for (int64_t size : tensorType.getShape()) {
-      affine::AffineForOp loop =
-          rewriter.create<affine::AffineForOp>(op.getLoc(), 0, size, 1);
-      loops.push_back(loop);
-      indices.push_back(loop.getBody()->getArgument(0));
-      rewriter.setInsertionPointToStart(loop.getBody());
-    }
-
-    // inner most loop body
-    const AffineMap scatterMap = op.getScatterMap();
-    SmallVector<Value> bufferIndices = createCalculateScatterIndices(
-        op.getLoc(), rewriter, scatterMap, indices, bufferType);
-
-    const Value element =
-        rewriter.create<tensor::ExtractOp>(op.getLoc(), tensor, indices);
-    rewriter.create<memref::StoreOp>(op.getLoc(), element, memref,
-                                     bufferIndices);
-
-    // replace token with const 0
-    rewriter.setInsertionPointAfter(loops[0]);
-    rewriter.replaceOpWithNewOp<arith::ConstantIndexOp>(op, 0);
-
+    rewriter.eraseOp(op);
     return success();
   }
 };
@@ -189,55 +149,29 @@ struct ConvertCnmGatherToGPU : public OpConversionPattern<cnm::GatherOp> {
   LogicalResult
   matchAndRewrite(cnm::GatherOp op, OpAdaptor,
                   ConversionPatternRewriter &rewriter) const override {
+    const WorkgroupType workgroupType = op.getWg().getType();
+    const ArrayRef<int64_t> workgroupShape = workgroupType.getShape();
     const cnm::BufferType bufferType =
         op.getOperandTypes()[0].dyn_cast<cnm::BufferType>();
-    const SmallVector<int64_t, 2> bufferShape = getBufferTypeShape(bufferType);
 
-    Value memref = rewriter.getRemappedValue(op.getOperand(0));
-    memref = createOrFoldUnrealizedConversionCast(
-        op.getLoc(), rewriter, convertCnmBufferToMemRefType(bufferType),
-        memref);
+    Value src = rewriter.getRemappedValue(op.getOperand(0));
+    src = createOrFoldUnrealizedConversionCast(
+        op.getLoc(), rewriter, convertCnmBufferToMemRefType(bufferType), src);
+    Value dst = rewriter.getRemappedValue(op.getOperand(2));
 
-    const RankedTensorType tensorType =
-        op.getResultTypes()[0].cast<RankedTensorType>();
-    const Value tensor = rewriter.create<tensor::EmptyOp>(
-        op.getLoc(), tensorType.getShape(), tensorType.getElementType());
+    const SmallVector<int64_t> loopSteps(workgroupShape.size(), 1);
+    createNestedAffineForLoops(
+        rewriter, op.getLoc(), workgroupShape, loopSteps, ValueRange{},
+        [&](OpBuilder &builder, Location loc, ValueRange indices,
+            ValueRange) -> SmallVector<Value> {
+          const SmallVector<Value> mappedIndices =
+              createAffineApply(builder, loc, op.getGatherMap(), indices);
+          createMemrefSubviewCopy(builder, loc, src, dst, bufferType.getShape(),
+                                  indices, mappedIndices);
+          return {};
+        });
 
-    SmallVector<affine::AffineForOp, 2> loops;
-    SmallVector<Value> indices;
-
-    for (int64_t size : tensorType.getShape()) {
-      const Value iterArg =
-          loops.empty() ? tensor : loops.back().getBody()->getArgument(1);
-      affine::AffineForOp loop = rewriter.create<affine::AffineForOp>(
-          op.getLoc(), 0, size, 1, SmallVector<Value, 1>{iterArg});
-      indices.push_back(loop.getBody()->getArgument(0));
-
-      if (!loops.empty()) {
-        rewriter.create<affine::AffineYieldOp>(op.getLoc(), loop.getResult(0));
-      }
-
-      rewriter.setInsertionPointToStart(loop.getBody());
-      loops.push_back(loop);
-    }
-
-    // inner most loop body
-    const Value iterArg = loops.back().getBody()->getArgument(1);
-
-    const AffineMap gatherMap = op.getGatherMap();
-    SmallVector<Value> bufferIndices = createCalculateScatterIndices(
-        op.getLoc(), rewriter, gatherMap, indices, bufferType);
-    const Value element =
-        rewriter.create<memref::LoadOp>(op.getLoc(), memref, bufferIndices);
-    const Value result = rewriter.create<tensor::InsertOp>(op.getLoc(), element,
-                                                           iterArg, indices);
-    rewriter.create<affine::AffineYieldOp>(op.getLoc(), result);
-
-    // replace token with const 0
-    rewriter.setInsertionPointAfter(loops[0]);
-    const Value token = rewriter.create<arith::ConstantIndexOp>(op.getLoc(), 0);
-    rewriter.replaceOp(op, {loops.front().getResult(0), token});
-
+    rewriter.eraseOp(op);
     return success();
   }
 };
@@ -252,12 +186,11 @@ struct ConvertCnmLaunchToGPU : public OpConversionPattern<cnm::LaunchOp> {
     const ArrayRef<int64_t> workgroupShape = workgroupType.getShape();
 
     const Value one = rewriter.create<arith::ConstantIndexOp>(op.getLoc(), 1);
-    const Value gridSizeX = one, gridSizeY = one, gridSizeZ = one;
-    const Value blockSizeX =
-        rewriter.create<arith::ConstantIndexOp>(op.getLoc(), workgroupShape[0]);
-    const Value blockSizeY =
-        rewriter.create<arith::ConstantIndexOp>(op.getLoc(), workgroupShape[1]);
-    const Value blockSizeZ = one;
+    SmallVector<Value, 6> launchDimensions(6, one);
+    for (size_t i = 0; i < workgroupShape.size(); i++) {
+      launchDimensions[i] = rewriter.create<arith::ConstantIndexOp>(
+          op.getLoc(), workgroupShape[i]);
+    }
 
     const Value dynamicSharedMemorySize;
     const Type asyncTokenType;
@@ -266,23 +199,26 @@ struct ConvertCnmLaunchToGPU : public OpConversionPattern<cnm::LaunchOp> {
     const TypeRange privateAttributions;
 
     gpu::LaunchOp launchOp = rewriter.create<gpu::LaunchOp>(
-        op.getLoc(), gridSizeX, gridSizeY, gridSizeZ, blockSizeX, blockSizeY,
-        blockSizeZ, dynamicSharedMemorySize, asyncTokenType, asyncDependencies,
-        workgroupAttributions, privateAttributions);
+        op.getLoc(), launchDimensions[0], launchDimensions[1],
+        launchDimensions[2], launchDimensions[3], launchDimensions[4],
+        launchDimensions[5], dynamicSharedMemorySize, asyncTokenType,
+        asyncDependencies, workgroupAttributions, privateAttributions);
 
-    const SmallVector<Value, 3> threadIds{
-        launchOp.getThreadIds().x,
-        launchOp.getThreadIds().y,
-        launchOp.getThreadIds().z,
+    const SmallVector<Value, 6> allThreadIds{
+        launchOp.getBlockIds().x,  launchOp.getBlockIds().y,
+        launchOp.getBlockIds().z,  launchOp.getThreadIds().x,
+        launchOp.getThreadIds().y, launchOp.getThreadIds().z,
     };
+    const ValueRange usedThreadIds =
+        ValueRange{allThreadIds}.take_front(workgroupShape.size());
 
     rewriter.setInsertionPointToEnd(&launchOp.getBody().front());
 
     // convert cnm.buffer parameters to memref subviews
-    int64_t i = 0;
+    size_t i = 0;
     for (const Value &buffer : op.getParams()) {
-      convertLaunchParameter(rewriter, op.getLoc(), buffer, threadIds,
-                             workgroupShape, op.getBody().getArgument(i++));
+      convertLaunchParameter(rewriter, op.getLoc(), buffer, usedThreadIds,
+                             op.getBody().getArgument(i++));
     }
 
     launchOp.getBody().front().getOperations().splice(
@@ -312,21 +248,25 @@ void populateCnmToGPUFinalTypeConversions(TypeConverter &typeConverter) {
       [&](cnm::BufferType bufferType) -> std::optional<Type> {
         return cnmtogpu::convertCnmBufferToMemRefType(bufferType);
       });
+
+  typeConverter.addConversion([&](cnm::WorkgroupType t) -> std::optional<Type> {
+    return IndexType::get(t.getContext());
+  });
 }
 
 void populateCnmToGPUConversionPatterns(RewritePatternSet &patterns,
-                                        MLIRContext *context) {
+                                        MLIRContext *ctx) {
   patterns
       .add<cnmtogpu::ConvertCnmWorkgroupToGPU, cnmtogpu::ConvertCnmAllocToGPU,
            ConvertCnmSetZeroToAffine, cnmtogpu::ConvertCnmScatterToGPU,
            cnmtogpu::ConvertCnmGatherToGPU, cnmtogpu::ConvertCnmLaunchToGPU,
-           cnmtogpu::ConvertCnmTerminatorToGPU>(context);
+           cnmtogpu::ConvertCnmTerminatorToGPU>(ctx);
 }
 
 struct ConvertCnmToGPUPass
     : public ::impl::ConvertCnmToGPUPassBase<ConvertCnmToGPUPass> {
   void runOnOperation() final {
-    TypeConverter converter{};
+    TypeConverter converter;
     populateCnmToGPUFinalTypeConversions(converter);
     const auto addUnrealizedCast = [](OpBuilder &builder, Type type,
                                       ValueRange inputs, Location loc) {
@@ -341,15 +281,7 @@ struct ConvertCnmToGPUPass
     populateReconcileUnrealizedCastsPatterns(patterns);
 
     ConversionTarget target(getContext());
-    // target.addIllegalDialect<cnm::CnmDialect>();
-    target.addIllegalOp<cnm::WorkgroupOp>();
-    target.addIllegalOp<cnm::AllocOp>();
-    target.addIllegalOp<cnm::SetZeroOp>();
-    target.addIllegalOp<cnm::ScatterOp>();
-    target.addIllegalOp<cnm::GatherOp>();
-    target.addIllegalOp<cnm::LaunchOp>();
-    target.addIllegalOp<cnm::TerminatorOp>();
-
+    target.addIllegalDialect<cnm::CnmDialect>();
     target.markUnknownOpDynamicallyLegal([](Operation *) { return true; });
 
     if (failed(
