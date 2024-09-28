@@ -79,6 +79,10 @@ void convertLaunchParameter(ConversionPatternRewriter &rewriter, Location loc,
                             Value buffer, ValueRange threadIds,
                             ArrayRef<int64_t> workgroupShape,
                             BlockArgument arg) {
+  if (!buffer.getType().dyn_cast<cnm::BufferType>()) {
+    return;
+  }
+
   const BufferType bufferType = buffer.getType().dyn_cast<cnm::BufferType>();
   const SmallVector<int64_t, 2> bufferShape = getBufferTypeShape(bufferType);
 

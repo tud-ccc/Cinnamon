@@ -31,13 +31,26 @@ include "mlir/Interfaces/DestinationStyleOpInterface.td"
 defvar AnyScalar = AnyType; // todo
 
 // no implicit broadcast
-class Cinm_TTT_Op<string name, list<Trait> traits = []>
+class Cinm_Elementwise_Op<string name, list<Trait> traits = []>
     : Cinm_Op<name, traits # [SameOperandsAndResultType]> {
 
     let arguments = (ins AnyRankedTensor:$lhs, AnyRankedTensor:$rhs);
     let results = (outs AnyRankedTensor:$result);
 
     let assemblyFormat = "$lhs `,` $rhs attr-dict `:` type($result)";
+}
+
+class Cinm_Elementwise_Scalar_Op<string name, list<Trait> traits = []>
+    : Cinm_Op<name, traits # [
+        SameOperandsAndResultElementType,
+        TypesMatchWith<"lhs & result must have the same type", "lhs", "result", "$_self">,
+        TypesMatchWith<"rhs must be element type of lhs", "lhs", "rhs", "::llvm::cast<RankedTensorType>($_self).getElementType()">
+     ]> {
+
+    let arguments = (ins AnyRankedTensor:$lhs, AnyType:$rhs);
+    let results = (outs AnyRankedTensor:$result);
+
+    let assemblyFormat = "$lhs `,` $rhs attr-dict `:` type($lhs)";
 }
 
 class Cinm_Bitwise_Op<string name, list<Trait> traits = []>
@@ -59,31 +72,45 @@ class TypeMatchesElementType<string tensorTy, string toInfer>:
 TypesMatchWith<"output type matches element type of input", toInfer, tensorTy,
               "::llvm::cast<RankedTensorType>($_self).getElementType()">;
 
-def Cinm_AddOp : Cinm_TTT_Op<"op.add", [Commutative, Pure, DeclareOpInterfaceMethods<CinmTilingInterface>]> {
+def Cinm_AddOp : Cinm_Elementwise_Op<"op.add", [Commutative, Pure, DeclareOpInterfaceMethods<CinmTilingInterface>]> {
   let summary = "Tensor addition operation";
-  let description = [{
-    TODO
-  }];
-}
-def Cinm_SubOp : Cinm_TTT_Op<"op.sub", [Pure,  DeclareOpInterfaceMethods<CinmTilingInterface>]> {
-  let summary = "Tensor subtraction operation";
-  let description = [{
-    TODO
-  }];
-}
-// these two aren't in the paper
-def Cinm_MulOp : Cinm_TTT_Op<"op.mul", [Commutative, Pure, DeclareOpInterfaceMethods<CinmTilingInterface>]> {
-  let summary = "Hadamard product (element-wise multiplication)";
-  let description = [{
-    TODO
-  }];
+  let description = [{}];
 }
 
-def Cinm_DivOp : Cinm_TTT_Op<"op.div", [Pure, DeclareOpInterfaceMethods<CinmTilingInterface>]> {
+def Cinm_AddsOp : Cinm_Elementwise_Scalar_Op<"op.adds", [Commutative, Pure, DeclareOpInterfaceMethods<CinmTilingInterface>]> {
+  let summary = "Tensor & scalar addition operation";
+  let description = [{}];
+}
+
+def Cinm_SubOp : Cinm_Elementwise_Op<"op.sub", [Pure,  DeclareOpInterfaceMethods<CinmTilingInterface>]> {
+  let summary = "Tensor subtraction operation";
+  let description = [{}];
+}
+
+def Cinm_SubsOp : Cinm_Elementwise_Scalar_Op<"op.subs", [Pure,  DeclareOpInterfaceMethods<CinmTilingInterface>]> {
+  let summary = "Tensor & scalar subtraction operation";
+  let description = [{}];
+}
+
+// these two aren't in the paper
+def Cinm_MulOp : Cinm_Elementwise_Op<"op.mul", [Commutative, Pure, DeclareOpInterfaceMethods<CinmTilingInterface>]> {
+  let summary = "Hadamard product (element-wise multiplication)";
+  let description = [{}];
+}
+
+def Cinm_MulsOp : Cinm_Elementwise_Scalar_Op<"op.muls", [Commutative, Pure, DeclareOpInterfaceMethods<CinmTilingInterface>]> {
+  let summary = "Tensor & scalar multiplication operation";
+  let description = [{}];
+}
+
+def Cinm_DivOp : Cinm_Elementwise_Op<"op.div", [Pure, DeclareOpInterfaceMethods<CinmTilingInterface>]> {
   let summary = "Tensor division operation";
-  let description = [{
-    TODO
-  }];
+  let description = [{}];
+}
+
+def Cinm_DivsOp : Cinm_Elementwise_Scalar_Op<"op.divs", [Pure, DeclareOpInterfaceMethods<CinmTilingInterface>]> {
+  let summary = "Tensor & scalar division operation";
+  let description = [{}];
 }
 
 def Cinm_GemmOp : Cinm_Op<"op.gemm",

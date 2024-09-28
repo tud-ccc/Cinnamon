@@ -119,16 +119,16 @@ def LaunchOp: Cnm_Op<"launch", [AttrSizedOperandSegments, IsolatedFromAbove, Sin
     let summary = "Launch a code kernel on a given workgroup. Input buffers should have been scattered beforehand.";
     let description = [{}];
 
-    let arguments = (ins WorkgroupType:$wg, Variadic<BufferType>:$inBuffers, Variadic<BufferType>:$outBuffers);
+    let arguments = (ins WorkgroupType:$wg, Variadic<AnyType>:$inputs, Variadic<BufferType>:$outBuffers);
     let results = (outs);
     let regions = (region SizedRegion<1>:$body);
 
     let hasVerifier = 1;
-    let assemblyFormat = "$wg `in` `(` $inBuffers `:` type($inBuffers) `)` `out` `(` $outBuffers `:` type($outBuffers) `)` attr-dict `on` qualified(type($wg)) $body";
+    let assemblyFormat = "$wg `in` `(` $inputs `:` type($inputs) `)` `out` `(` $outBuffers `:` type($outBuffers) `)` attr-dict `on` qualified(type($wg)) $body";
 
     let extraClassDeclaration = [{
         SmallVector<Value> getParams() {
-            SmallVector<Value> result{getInBuffers()};
+            SmallVector<Value> result{getInputs()};
             result.append(getOutBuffers().begin(), getOutBuffers().end());
             return result;
         }

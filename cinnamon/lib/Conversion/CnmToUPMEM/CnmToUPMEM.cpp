@@ -22,6 +22,7 @@
 #include <mlir/IR/BuiltinTypes.h>
 #include <mlir/IR/Diagnostics.h>
 #include <mlir/IR/ValueRange.h>
+#include <mlir/Support/LLVM.h>
 #include <mlir/Transforms/DialectConversion.h>
 
 #define GEN_PASS_DEF_CONVERTCNMTOUPMEMPASS
@@ -202,6 +203,10 @@ struct ConvertCnmLaunchToUPMEM : public OpConversionPattern<cnm::LaunchOp> {
     llvm::DenseMap<Value, BufferSliceInfo> bufferSlices;
     size_t i = 0;
     for (Value buffer : op.getParams()) {
+      if (!dyn_cast<BufferType>(buffer.getType())) {
+        continue;
+      }
+
       const BufferType bufferType = buffer.getType().cast<BufferType>();
       const size_t chunkSize = reduceMul(bufferType.getShape());
       const size_t memoryPerTasklet = chunksPerTasklet * chunkSize;
@@ -227,7 +232,11 @@ struct ConvertCnmLaunchToUPMEM : public OpConversionPattern<cnm::LaunchOp> {
     // loop over chunks & execute launch body
     if (chunksPerTasklet == 1) {
       // copy data from the input buffers to wram
-      for (Value buffer : op.getInBuffers()) {
+      for (Value buffer : op.getInputs()) {
+        if (!dyn_cast<BufferType>(buffer.getType())) {
+          continue;
+        }
+
         const BufferSliceInfo slice = bufferSlices.at(buffer);
         rewriter.create<upmem::MemcpyOp>(
             op.getLoc(), upmem::MemcpyDirOp::MRAMToWRAM, slice.wramMemref,
@@ -256,7 +265,11 @@ struct ConvertCnmLaunchToUPMEM : public OpConversionPattern<cnm::LaunchOp> {
           loop.getRegion().front().getArguments().front();
 
       // copy data from the input buffers to wram
-      for (Value buffer : op.getInBuffers()) {
+      for (Value buffer : op.getInputs()) {
+        if (!dyn_cast<BufferType>(buffer.getType())) {
+          continue;
+        }
+
         const BufferSliceInfo slice = bufferSlices.at(buffer);
         Value offset = rewriter.create<arith::MulIOp>(op.getLoc(), currentChunk,
                                                       slice.chunkSize);
@@ -324,8 +337,7 @@ void populateCnmToUPMEMConversionPatterns(TypeConverter &typeConverter,
   patterns.add<ConvertCnmWorkgroupToUPMEM, ConvertCnmSetZeroToAffine,
                ConvertCnmScatterToUPMEM, ConvertCnmGatherToUPMEM,
                ConvertCnmLaunchToUPMEM, ConvertCnmTerminatorToUPMEM,
-               ConvertCnmFreeWorkgroup>(
-      typeConverter, patterns.getContext());
+               ConvertCnmFreeWorkgroup>(typeConverter, patterns.getContext());
 }
 
 struct ConvertCnmToUPMEMPass
