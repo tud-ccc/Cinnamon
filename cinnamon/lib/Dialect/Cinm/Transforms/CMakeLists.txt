@@ -1,4 +1,5 @@
 add_mlir_dialect_library(CinmTransforms
+    SoftmaxToCinmPass.cpp
     TilingPass.cpp
 
 DEPENDS

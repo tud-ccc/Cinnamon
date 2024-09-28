@@ -27,4 +27,14 @@ def CinmTilingPass: Pass<"cinm-tiling"> {
   ];
 }
 
+def SoftmaxToCinmPass: Pass<"softmax-to-cinm"> {
+  let summary = "converts the linalg::softmax op to cinm";
+  let description = [{}];
+
+  let dependentDialects = [
+    "mlir::LLVM::LLVMDialect",
+    "mlir::linalg::LinalgDialect",
+  ];
+}
+
 #endif // CINM_TRANSFORM_PASSES
