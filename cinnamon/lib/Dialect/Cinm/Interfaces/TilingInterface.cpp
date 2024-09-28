@@ -120,9 +120,10 @@ int64_t TilingParameters::bufferSizeOfLeaf() {
   int64_t bufSize = 0;
   int i = 0;
   do {
-    int lastIdx = bufferSizesInBytes.size() - 1 - i;
+    size_t lastIdx = bufferSizesInBytes.size() - 1 - i;
     bufSize += bufferSizesInBytes[lastIdx] / numLeafsInDim;
-    numLeafsInDim *= workgroupShape[lastIdx];
+    numLeafsInDim *=
+        lastIdx < workgroupShape.size() ? workgroupShape[lastIdx] : 1;
     i++;
   } while (i < static_cast<int64_t>(bufferSizesInBytes.size()));
   return bufSize;
