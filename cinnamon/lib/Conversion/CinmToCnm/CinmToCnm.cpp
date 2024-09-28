@@ -711,38 +711,64 @@ struct ConvertCinmReduceToCnm : public OpConversionPattern<cinm::ReduceOp> {
         op.getResult().getType(),
         builder.getZeroAttr(op.getResult().getType()));
 
+    const bool isFloatOp = op.getType()
+                               .cast<ShapedType>()
+                               .getElementType()
+                               .dyn_cast<FloatType>() != nullptr;
+
     llvm::SmallVector<Value, 1> newResults;
-    if (convertCinmToCnm(builder, op, workgroup.getResult(), computeBlock, {},
-                         adaptor.getOperands(), ValueRange{outputInit},
-                         op->getResults(), newResults,
-                         [&](ImplicitLocOpBuilder &builder, ValueRange inputs,
-                             ValueRange outputs) {
-                           builder.create<linalg::ReduceOp>(
-                               inputs, outputs, ArrayRef<int64_t>{0},
-                               [&](OpBuilder &builder, Location loc,
-                                   ValueRange inputs) -> void {
-                                 Value result;
-                                 switch (op.getMethod()) {
-                                 case mlir::cinm::ReduceMethod::ADD: {
-                                   result = builder.create<arith::AddIOp>(
-                                       loc, inputs[0], inputs[1]);
-                                 } break;
-                                 case mlir::cinm::ReduceMethod::MUL: {
-                                   result = builder.create<arith::MulIOp>(
-                                       loc, inputs[0], inputs[1]);
-                                 } break;
-                                 case mlir::cinm::ReduceMethod::MAX: {
-                                   result = builder.create<arith::MaxSIOp>(
-                                       loc, inputs[0], inputs[1]);
-                                 } break;
-                                 case mlir::cinm::ReduceMethod::MIN: {
-                                   result = builder.create<arith::MinSIOp>(
-                                       loc, inputs[0], inputs[1]);
-                                 } break;
-                                 }
-                                 builder.create<linalg::YieldOp>(loc, result);
-                               });
-                         })
+    if (convertCinmToCnm(
+            builder, op, workgroup.getResult(), computeBlock, {},
+            adaptor.getOperands(), ValueRange{outputInit}, op->getResults(),
+            newResults,
+            [&](ImplicitLocOpBuilder &builder, ValueRange inputs,
+                ValueRange outputs) {
+              builder.create<linalg::ReduceOp>(
+                  inputs, outputs, ArrayRef<int64_t>{0},
+                  [&](OpBuilder &builder, Location loc,
+                      ValueRange inputs) -> void {
+                    Value result;
+                    switch (op.getMethod()) {
+                    case mlir::cinm::ReduceMethod::ADD: {
+                      if (isFloatOp) {
+                        result = builder.create<arith::AddFOp>(loc, inputs[0],
+                                                               inputs[1]);
+                      } else {
+                        result = builder.create<arith::AddIOp>(loc, inputs[0],
+                                                               inputs[1]);
+                      }
+                    } break;
+                    case mlir::cinm::ReduceMethod::MUL: {
+                      if (isFloatOp) {
+                        result = builder.create<arith::MulFOp>(loc, inputs[0],
+                                                               inputs[1]);
+                      } else {
+                        result = builder.create<arith::MulIOp>(loc, inputs[0],
+                                                               inputs[1]);
+                      }
+                    } break;
+                    case mlir::cinm::ReduceMethod::MAX: {
+                      if (isFloatOp) {
+                        result = builder.create<arith::MaximumFOp>(
+                            loc, inputs[0], inputs[1]);
+                      } else {
+                        result = builder.create<arith::MaxSIOp>(loc, inputs[0],
+                                                                inputs[1]);
+                      }
+                    } break;
+                    case mlir::cinm::ReduceMethod::MIN: {
+                      if (isFloatOp) {
+                        result = builder.create<arith::MinimumFOp>(
+                            loc, inputs[0], inputs[1]);
+                      } else {
+                        result = builder.create<arith::MinSIOp>(loc, inputs[0],
+                                                                inputs[1]);
+                      }
+                    } break;
+                    }
+                    builder.create<linalg::YieldOp>(loc, result);
+                  });
+            })
             .failed()) {
       return failure();
     }

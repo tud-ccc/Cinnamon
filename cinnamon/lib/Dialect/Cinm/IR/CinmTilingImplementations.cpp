@@ -95,7 +95,18 @@ TilingResult2 GemmOp::convertToTiledOps(OpBuilder &builder,
         const ValueRange resultDynamicOffsets = parIndices;
 
         auto reductionAccTy = RankedTensorType::get({p0, p1}, eltTy);
-        auto zeros = DenseIntElementsAttr::get(reductionAccTy, {0});
+        DenseElementsAttr zeros;
+        if (auto floatType =
+                reductionAccTy.getElementType().dyn_cast<FloatType>()) {
+          zeros = DenseElementsAttr::get(
+              reductionAccTy,
+              {APFloat::getZero(floatType.getFloatSemantics())});
+        } else {
+          zeros = DenseElementsAttr::get(
+              reductionAccTy,
+              {APInt::getZero(reductionAccTy.getElementTypeBitWidth())});
+        }
+
         Value cst0 = builder.create<arith::ConstantOp>(loc, zeros);
 
         // this is the reduction loop
