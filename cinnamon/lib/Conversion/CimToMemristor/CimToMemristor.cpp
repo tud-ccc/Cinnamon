@@ -73,30 +73,54 @@ struct ConvertCimOpToMemristor : OpConversionPattern<CimOp> {
   }
 };
 
-struct ConvertCimAcquireToMemristor : OpConversionPattern<cim::AcquireOp> {
-  using OpConversionPattern<cim::AcquireOp>::OpConversionPattern;
+struct ConvertCimAcquireToMemristor
+    : OpConversionPattern<cim::AcquireDeviceOp> {
+  using OpConversionPattern<cim::AcquireDeviceOp>::OpConversionPattern;
 
   LogicalResult
-  matchAndRewrite(cim::AcquireOp op,
-                  OpConversionPattern<cim::AcquireOp>::OpAdaptor,
+  matchAndRewrite(cim::AcquireDeviceOp op,
+                  OpConversionPattern<cim::AcquireDeviceOp>::OpAdaptor,
                   ConversionPatternRewriter &rewriter) const override {
 
-    auto tileIdConstantOp = rewriter.create<arith::ConstantOp>(
-        op.getLoc(), rewriter.getI32Type(), rewriter.getI32IntegerAttr(0));
+    auto deviceId = op.getResult();
+    size_t tileId = 0;
 
-    op.getResult().replaceAllUsesWith(tileIdConstantOp.getResult());
+    for (auto *user : deviceId.getUsers()) {
+      if (!llvm::isa<cim::AcquireCrossbarOp>(user))
+        continue;
+
+      auto tileIdConstantOp = rewriter.create<arith::ConstantOp>(
+          user->getLoc(), rewriter.getI32Type(),
+          rewriter.getI32IntegerAttr(tileId++));
+
+      user->getResult(0).replaceAllUsesWith(tileIdConstantOp.getResult());
+      rewriter.eraseOp(user);
+    }
+
     rewriter.eraseOp(op);
 
     return success();
   }
 };
 
-struct EraseCimRelease : OpConversionPattern<cim::ReleaseOp> {
-  using OpConversionPattern<cim::ReleaseOp>::OpConversionPattern;
+struct EraseCimReleaseDevice : OpConversionPattern<cim::ReleaseDeviceOp> {
+  using OpConversionPattern<cim::ReleaseDeviceOp>::OpConversionPattern;
 
   LogicalResult
-  matchAndRewrite(cim::ReleaseOp op,
-                  OpConversionPattern<cim::ReleaseOp>::OpAdaptor,
+  matchAndRewrite(cim::ReleaseDeviceOp op,
+                  OpConversionPattern<cim::ReleaseDeviceOp>::OpAdaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    rewriter.eraseOp(op);
+    return success();
+  }
+};
+
+struct EraseCimReleaseCrossbar : OpConversionPattern<cim::ReleaseCrossbarOp> {
+  using OpConversionPattern<cim::ReleaseCrossbarOp>::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(cim::ReleaseCrossbarOp op,
+                  OpConversionPattern<cim::ReleaseCrossbarOp>::OpAdaptor,
                   ConversionPatternRewriter &rewriter) const override {
     rewriter.eraseOp(op);
     return success();
@@ -144,7 +168,8 @@ struct ConvertCimToMemristor
 
     RewritePatternSet secondPassPatterns(&ctx);
     secondPassPatterns
-        .insert<ConvertCimAcquireToMemristor, EraseCimRelease,
+        .insert<ConvertCimAcquireToMemristor, //
+                EraseCimReleaseDevice, EraseCimReleaseCrossbar,
                 ConvertCimOpToMemristor<cim::GemmOp, memristor::GemmOp>,
                 ConvertCimOpToMemristor<cim::GemvOp, memristor::GevmOp>>(&ctx);
 

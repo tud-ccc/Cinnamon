@@ -3,13 +3,14 @@
 /// @file
 
 #include <cinm-mlir/Dialect/Cim/IR/CimOps.h>
-
 #include <cinm-mlir/Dialect/Cim/IR/CimTypes.h>
 #include <cinm-mlir/Utils/CinmUtils.h>
 #include <mlir/Dialect/Linalg/IR/Linalg.h>
 #include <mlir/IR/Builders.h>
 #include <mlir/IR/OpImplementation.h>
 #include <mlir/Support/LogicalResult.h>
+
+#include <cstdio>
 
 #define DEBUG_TYPE "cim-ops"
 
@@ -30,6 +31,14 @@ void CimDialect::registerOps() {
 #define GET_OP_LIST
 #include "cinm-mlir/Dialect/Cim/IR/CimOps.cpp.inc"
       >();
+}
+
+void AcquireDeviceOp::getAsmResultNames(::mlir::OpAsmSetValueNameFn setNameFn) {
+  setNameFn(getResult(), "cim_dev");
+}
+
+void AcquireCrossbarOp::getAsmResultNames(::mlir::OpAsmSetValueNameFn setNameFn) {
+  setNameFn(getResult(), "cim_cbr");
 }
 
 ::mlir::LogicalResult GemmOp::verify() {

@@ -8,6 +8,8 @@
 #include "cinm-mlir/Dialect/Cinm/IR/CinmOps.h"
 #include "cinm-mlir/Utils/CinmUtils.h"
 
+#include <algorithm>
+#include <cassert>
 #include <llvm/Support/Casting.h>
 #include <mlir/Dialect/Func/IR/FuncOps.h>
 #include <mlir/Dialect/Tensor/IR/Tensor.h>
@@ -47,7 +49,8 @@ struct ConvertCinmComputeToCim : public OpConversionPattern<cinm::ComputeOp> {
   static bool preparedCinmComputeOp(Operation *op) {
     if (llvm::isa<cinm::ComputeOp>(op)) {
       auto computeOp = llvm::cast<cinm::ComputeOp>(op);
-      return llvm::isa<cim::AcquireOp>(computeOp.getBody().front().front());
+      return llvm::isa<cim::AcquireDeviceOp>(
+          computeOp.getBody().front().front());
     }
 
     if (llvm::isa<cinm::CinmDialect>(op->getDialect()))
@@ -66,14 +69,19 @@ struct ConvertCinmComputeToCim : public OpConversionPattern<cinm::ComputeOp> {
     // NOTE: The following accesses to the operation inside the compute op
     // ares safe because there always has to be at least one nested operation
 
-    // Acquire operation is needed for subsequent conversion passes
-    // The operation is inserted at the beginning of the block
+    // Acquire operations are needed for subsequent conversion passes
+    // The operations are inserted at the beginning of the block
     rewriter.setInsertionPoint(&op.getBody().front().front());
-    auto acquireOp = rewriter.create<cim::AcquireOp>(op->getLoc());
+    auto acquireDeviceOp = rewriter.create<cim::AcquireDeviceOp>(op->getLoc());
+    auto acquireCrossbarOp = rewriter.create<cim::AcquireCrossbarOp>(
+        op->getLoc(), acquireDeviceOp.getResult());
 
     // Release operation inserted at the end of the block
     rewriter.setInsertionPointAfter(&op.getBody().back().back());
-    rewriter.create<cim::ReleaseOp>(op->getLoc(), acquireOp.getResult());
+    rewriter.create<cim::ReleaseCrossbarOp>(op->getLoc(),
+                                            acquireCrossbarOp.getResult());
+    rewriter.create<cim::ReleaseDeviceOp>(op->getLoc(),
+                                          acquireDeviceOp.getResult());
 
     rewriter.finalizeOpModification(op);
 
@@ -122,13 +130,16 @@ struct CinmOneToOneNestedOpConversionPattern
                   ConversionPatternRewriter &rewriter) const override {
 
     auto parentComputeOp = op->template getParentOfType<cinm::ComputeOp>();
-    auto &acquireOp = parentComputeOp.getBody().front().front();
+    auto &acquireCrossbarOp =
+        *llvm::find_if(parentComputeOp.getBody().getOps(), [](Operation &op) {
+          return llvm::isa<cim::AcquireCrossbarOp>(op);
+        });
 
     auto resultType = getShapedType<cim::FutureType>(op.getResult());
 
     std::vector<Value> operands{};
     operands.reserve(op.getNumOperands() + 1);
-    operands.push_back(acquireOp.getResult(0));
+    operands.push_back(acquireCrossbarOp.getResult(0));
     for (auto operand : op.getOperands())
       operands.push_back(operand);
 
