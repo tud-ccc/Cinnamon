@@ -1,7 +1,9 @@
 /// Main entry point for the cinm-mlir MLIR language server.
 
 #include "cinm-mlir/Dialect/Cinm/IR/CinmDialect.h"
+#include "cinm-mlir/Dialect/Cim/IR/CimDialect.h"
 #include "cinm-mlir/Dialect/Cnm/IR/CnmDialect.h"
+#include "cinm-mlir/Dialect/Memristor/IR/MemristorDialect.h"
 #include "cinm-mlir/Dialect/UPMEM/IR/UPMEMDialect.h"
 
 #include "mlir/IR/Dialect.h"
@@ -22,7 +24,9 @@ int main(int argc, char* argv[])
     registerAllDialects(registry);
 
     registry.insert<cinm::CinmDialect>();
+    registry.insert<cim::CimDialect>();
     registry.insert<cnm::CnmDialect>();
+    registry.insert<memristor::MemristorDialect>();
     registry.insert<upmem::UPMEMDialect>();
 
     return asMainReturnCode(MlirLspServerMain(argc, argv, registry));
