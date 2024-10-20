@@ -178,3 +178,19 @@ if [ ! -d "build" ]; then
 fi
 
 cmake --build build --target all
+
+if [[ $setup_python_venv -eq 1 ]]; then
+  site_packages_dir="$(python -c 'from distutils.sysconfig import get_python_lib; print(get_python_lib())')"
+  cinnamon_python_package_dir_src="$project_root/cinnamon/python/cinnamon"
+  cinnamon_binaries_dir_src="$project_root/cinnamon/build/bin"
+  cinnamon_python_package_dir_dest="$site_packages_dir/cinnamon"
+  cinnamon_binaries_dir_dest="$site_packages_dir/cinnamon/_resources"
+
+  if [ ! -d "$cinnamon_python_package_dir_dest" ]; then
+      ln -s "$cinnamon_python_package_dir_src" "$cinnamon_python_package_dir_dest"
+  fi
+
+  if [ ! -d "$cinnamon_binaries_dir_dest" ]; then
+    ln -s "$cinnamon_binaries_dir_src" "$cinnamon_binaries_dir_dest"
+  fi
+fi
