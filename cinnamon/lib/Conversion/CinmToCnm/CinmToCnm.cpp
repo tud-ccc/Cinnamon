@@ -93,17 +93,19 @@ void structureIndex(AffineExpr index, ArrayRef<int64_t> shape,
   }
 }
 
-LogicalResult computeShapeOfTensors(
-    Location loc, llvm::ArrayRef<int64_t> shape, cnm::WorkgroupType wgTy,
-    int64_t maxBlockSize,
-    // if empty then all dims are parallel
-    // otherwise those dims are reductions. They are
-    // used to select the size of the buffer. The rest of
-    // the dimensions are used to create a scattermap
-    llvm::ArrayRef<int64_t> reductionDims, AffineMap &scatterMap,
-    llvm::SmallVectorImpl<int64_t> &shapeOfBuffer,
+LogicalResult
+computeShapeOfTensors(Location loc, llvm::ArrayRef<int64_t> shape,
+                      cnm::WorkgroupType wgTy, int64_t maxBlockSize,
+                      // if empty then all dims are parallel
+                      // otherwise those dims are reductions. They are
+                      // used to select the size of the buffer. The rest of
+                      // the dimensions are used to create a scattermap
+                      llvm::ArrayRef<int64_t> reductionDims,
+                      AffineMap &scatterMap,
+                      llvm::SmallVectorImpl<int64_t> &shapeOfBuffer,
 
-    std::optional<llvm::SmallVector<int64_t>> &reshapeInputTo) {
+                      std::optional<llvm::SmallVector<int64_t>> &reshapeInputTo,
+                      bool scatterScalar) {
   auto wgShape = wgTy.getShape();
 
   auto numWgItems =
@@ -142,12 +144,11 @@ LogicalResult computeShapeOfTensors(
 
   // Now we support 3 cases: either
   // 0. scattering a single element
-  if (numParallelElts == 1) {
+  if (scatterScalar) {
     const size_t numDims = wgShape.size() + reductionDims.size();
     scatterMap = AffineMap::get(
         numDims, 0,
-        SmallVector<AffineExpr>(numDims,
-                                getAffineConstantExpr(0, wgTy.getContext())),
+        SmallVector<AffineExpr>(1, getAffineConstantExpr(0, wgTy.getContext())),
         wgTy.getContext());
     return success();
   }
@@ -297,12 +298,13 @@ LogicalResult convertInputIntoAlloc(Location loc, Value &inputBuf,
                                     ImplicitLocOpBuilder &rewriter) {
   // For each input of the reduce, we need to
 
-  // convert single element to tensor<1xelementTy>
+  // convert single element to tensor<numTasklets x leafSize x ElementTy>
+  bool scatterScalar = false;
   if (!inputBuf.getType().dyn_cast<RankedTensorType>()) {
+    scatterScalar = true;
     inputBuf = rewriter.create<tensor::FromElementsOp>(
-        RankedTensorType::get(SmallVector<int64_t>(wgTy.getShape().size(), 1),
-                              inputBuf.getType()),
-        ValueRange{inputBuf});
+        RankedTensorType::get({wgTy.getShape()[2]}, inputBuf.getType()),
+        SmallVector<Value>(wgTy.getShape()[2], inputBuf));
   }
 
   auto inputType = inputBuf.getType().cast<RankedTensorType>();
@@ -313,7 +315,7 @@ LogicalResult convertInputIntoAlloc(Location loc, Value &inputBuf,
       maxBlockSizeBytes * 8 / inputType.getElementTypeBitWidth();
   if (computeShapeOfTensors(inputBuf.getLoc(), inputType.getShape(), wgTy,
                             maxBlockSizeItems, reduceDims, scatterMap,
-                            shapeOfBuffer, reshapeInto)
+                            shapeOfBuffer, reshapeInto, scatterScalar)
           .failed())
     return failure();
 
