@@ -1,5 +1,7 @@
 #!/bin/bash
 
+set -e
+
 project_root="$( cd -- "$(dirname "$0")/../.." >/dev/null 2>&1 ; pwd -P )"
 echo "Project root: $project_root"
 
@@ -9,29 +11,40 @@ llvm_path="$project_root/llvm"
 torch_mlir_path="$project_root/torch-mlir"
 upmem_path="$project_root/upmem"
 
-setup_python_venv=true
-checkout_and_build_llvm=true
-checkout_and_build_torch_mlir=true
-checkout_upmem=true
+setup_python_venv=1
+checkout_and_build_llvm=1
+checkout_and_build_torch_mlir=1
+checkout_upmem=1
+
+enable_cuda=0
+enable_roc=0
 
 if echo "$@" | grep -q "no-python-venv"; then
-  setup_python_venv=false
+  setup_python_venv=0
 fi
 
 if echo "$@" | grep -q "no-llvm"; then
-  checkout_and_build_llvm=false
+  checkout_and_build_llvm=0
 fi
 
 if echo "$@" | grep -q "no-torch-mlir"; then
-  checkout_and_build_torch_mlir=false
+  checkout_and_build_torch_mlir=0
 fi
 
 if echo "$@" | grep -q "no-upmem"; then
-  checkout_upmem=false
+  checkout_upmem=0
 fi
 
-if [[ $setup_python_venv ]]; then
-  deactivate 2> /dev/null
+if echo "$@" | grep -q "enable-cuda"; then
+  enable_cuda=1
+fi
+
+if echo "$@" | grep -q "enable-roc"; then
+  enable_roc=1
+fi
+
+if [[ $setup_python_venv -eq 1 ]]; then
+  deactivate 2> /dev/null || true
 
   if [ ! -d "$py_venv_path" ]; then
     python3 -m venv "$py_venv_path"
@@ -48,7 +61,7 @@ else
   echo "Make sure to have a correct Python environment set up"
 fi
 
-if [[ checkout_and_build_llvm ]]; then
+if [[ $checkout_and_build_llvm -eq 1 ]]; then
   if [ ! -d "$llvm_path" ]; then
     git clone https://github.com/oowekyala/llvm-project "$llvm_path"
 
@@ -78,7 +91,7 @@ else
   echo "The following steps will need LLVM_DIR and MLIR_DIR to be set in their respective <STEP>_CMAKE_OPTIONS"
 fi
 
-if [[ checkout_and_build_torch_mlir ]]; then
+if [[ $checkout_and_build_torch_mlir -eq 1 ]]; then
   if [ ! -d "$torch_mlir_path" ]; then
     git clone https://github.com/llvm/torch-mlir "$torch_mlir_path"
 
@@ -86,7 +99,7 @@ if [[ checkout_and_build_torch_mlir ]]; then
 
     dependency_paths=""
 
-    if [[ checkout_and_build_llvm ]]; then
+    if [[ $checkout_and_build_llvm -eq 1 ]]; then
       dependency_paths="$dependency_paths -DLLVM_DIR=$llvm_path/build/lib/cmake/llvm"
       dependency_paths="$dependency_paths -DMLIR_DIR=$llvm_path/build/lib/cmake/mlir"
     fi
@@ -94,6 +107,7 @@ if [[ checkout_and_build_torch_mlir ]]; then
     git checkout snapshot-20240127.1096
     cmake -S . -B build \
       $dependency_paths \
+      -DCMAKE_BUILD_TYPE=Release \
       -DTORCH_MLIR_OUT_OF_TREE_BUILD=ON \
       -DTORCH_MLIR_ENABLE_STABLEHLO=OFF \
       $TORCH_MLIR_CMAKE_OPTIONS
@@ -107,7 +121,7 @@ else
   echo "The following steps will need TORCH_MLIR_DIR to be set in their respective <STEP>_CMAKE_OPTIONS"
 fi
 
-if [[ checkout_upmem ]]; then
+if [[ $checkout_upmem -eq 1 ]]; then
   if [ ! -d "$upmem_path" ]; then
     upmem_archive="upmem.tar.gz"
     curl http://sdk-releases.upmem.com/2024.1.0/ubuntu_22.04/upmem-2024.1.0-Linux-x86_64.tar.gz --output "$upmem_archive"
@@ -126,16 +140,16 @@ if [ ! -d "build" ]; then
 
   dependency_paths=""
   
-  if [[ checkout_and_build_llvm ]]; then
+  if [[ $checkout_and_build_llvm -eq 1 ]]; then
     dependency_paths="$dependency_paths -DLLVM_DIR=$llvm_path/build/lib/cmake/llvm"
     dependency_paths="$dependency_paths -DMLIR_DIR=$llvm_path/build/lib/cmake/mlir"
   fi
 
-  if [[ checkout_and_build_torch_mlir ]]; then
+  if [[ $checkout_and_build_torch_mlir -eq 1 ]]; then
     dependency_paths="$dependency_paths -DTORCH_MLIR_DIR=$torch_mlir_path/install"  
   fi
 
-  if [[ checkout_upmem ]]; then
+  if [[ $checkout_upmem -eq 1 ]]; then
     dependency_paths="$dependency_paths -DUPMEM_DIR=$upmem_path"
   fi
 
