@@ -44,15 +44,22 @@ if echo "$@" | grep -q "enable-roc"; then
 fi
 
 if [[ $setup_python_venv -eq 1 ]]; then
-  deactivate 2> /dev/null || true
-
   if [ ! -d "$py_venv_path" ]; then
     python3 -m venv "$py_venv_path"
     source "$py_venv_path/bin/activate"
-    pip install --upgrade pip
+
     # https://pytorch.org/get-started/locally/
-    pip install torch --index-url https://download.pytorch.org/whl/cpu
-    pip install numpy pybind11
+    if [[ $enable_cuda -eq 1 ]]; then
+      torch_source=https://download.pytorch.org/whl/cu124
+    elif [[ $enable_roc -eq 1 ]]; then
+      torch_source=https://download.pytorch.org/whl/rocm6.1
+    else
+      torch_source=https://download.pytorch.org/whl/cpu
+    fi
+
+    pip install --upgrade pip
+    pip install torch torchvision torchaudio --index-url $torch_source
+    pip install pybind11
   else
     source "$py_venv_path/bin/activate"
   fi
@@ -114,8 +121,17 @@ if [[ $checkout_and_build_torch_mlir -eq 1 ]]; then
   fi
 
   cd "$torch_mlir_path"
-  cmake --build build
+  cmake --build build --target all TorchMLIRPythonModules
   cmake --install build --prefix install
+
+  if [[ $setup_python_venv -eq 1 ]]; then
+    python_package_dir=build/tools/torch-mlir/python_packages/torch_mlir
+    python_package_rel_build_dir=../../../python_packages/torch_mlir
+    mkdir -p $(dirname $python_package_dir)
+    ln -s "$python_package_rel_build_dir" "$python_package_dir" 2> /dev/null || true
+    TORCH_MLIR_CMAKE_BUILD_DIR_ALREADY_BUILT=1 TORCH_MLIR_CMAKE_BUILD_DIR=build python setup.py build install
+  fi
+
 else
   echo "Skipping Torch-MLIR checkout and build"
   echo "The following steps will need TORCH_MLIR_DIR to be set in their respective <STEP>_CMAKE_OPTIONS"
