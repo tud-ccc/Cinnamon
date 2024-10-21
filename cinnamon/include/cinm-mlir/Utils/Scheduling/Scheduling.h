@@ -15,11 +15,7 @@
 #include <limits>
 #include <list>
 #include <vector>
-
-#include "cinm-mlir/Dialect/Cim/IR/CimDialect.h"
-#include "cinm-mlir/Dialect/Cim/Transforms/Passes.h"
-
-namespace mlir::cim::scheduling {
+namespace mlir::cinm::utils::scheduling {
 
   struct DependencyGraphNode {
     Operation &operation;
@@ -141,4 +137,4 @@ namespace mlir::cim::scheduling {
     }
   }
 
-}  // namespace mlir::cim::scheduling
+}  // namespace mlir::cinm::utils::scheduling

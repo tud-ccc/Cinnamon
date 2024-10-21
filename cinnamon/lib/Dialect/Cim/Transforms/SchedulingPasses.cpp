@@ -183,14 +183,14 @@ namespace mlir::cim {
       auto [crossbars, roots] = prepareForScheduling(acquireDeviceOp, rewriter);
       Scheduler<Value> scheduler{crossbars};
 
-      scheduling::SchedulingHooks<Value> hooks{
+      cinm::utils::scheduling::SchedulingHooks<Value> hooks{
           .rescheduleOperationFilter = isCimOp,
           .schedulingStrategy =
               std::bind(&Scheduler<Value>::schedule, &scheduler, std::placeholders::_1),
           .operationScheduler = scheduleCimOpOnCrossbar,
           .barrierInserter = insertBarrierForCimOpResult};
 
-      scheduling::applyScheduling(rewriter, roots, hooks);
+      cinm::utils::scheduling::applyScheduling(rewriter, roots, hooks);
 
       op->setAttr("isFullyScheduled", rewriter.getBoolAttr(true));
 
@@ -230,7 +230,7 @@ namespace mlir::cim {
 
   //===----------------------------------------------------------------------===//
 
-  struct CimScheduleAsapPass : CimSchedulePassBase<scheduling::AsapScheduler, impl::CimScheduleAsapPassBase> {};
-  struct CimScheduleAlapPass : CimSchedulePassBase<scheduling::AlapScheduler, impl::CimScheduleAlapPassBase> {};
+  struct CimScheduleAsapPass : CimSchedulePassBase<cinm::utils::scheduling::AsapScheduler, impl::CimScheduleAsapPassBase> {};
+  struct CimScheduleAlapPass : CimSchedulePassBase<cinm::utils::scheduling::AlapScheduler, impl::CimScheduleAlapPassBase> {};
 
 }  // namespace mlir::cim

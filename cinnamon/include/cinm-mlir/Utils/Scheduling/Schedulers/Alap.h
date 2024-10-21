@@ -11,7 +11,7 @@
 
 #include "cinm-mlir/Utils/Scheduling/Scheduling.h"
 
-namespace mlir::cim::scheduling {
+namespace mlir::cinm::utils::scheduling {
 
   template<typename ComputeResource>
   class AlapScheduler {
@@ -68,4 +68,4 @@ namespace mlir::cim::scheduling {
 
     llvm::ArrayRef<ComputeResource> computeResources;
   };
-}  // namespace mlir::cim::scheduling
+}  // namespace mlir::cinm::utils::scheduling
