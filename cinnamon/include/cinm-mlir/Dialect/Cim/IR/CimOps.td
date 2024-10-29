@@ -24,18 +24,17 @@ include "mlir/Dialect/Bufferization/IR/AllocationOpInterface.td"
 include "mlir/IR/CommonAttrConstraints.td"
 
 
-def AcquireOp : Cim_Op<"acquire", []> {
-    let summary = "Acquire a (portion of a) cim device, returns id.";
-    let description = [{Resereves resources needed to execute the requested computations on the device.
-                       Depending on device capabilities, this may reserve the entire device or only a subset.}];
+def AcquireDeviceOp : Cim_Op<"acquire_device", [DeclareOpInterfaceMethods<OpAsmOpInterface, ["getAsmResultNames"]>]> {
+    let summary = "Acquire a cim device, returns id.";
+    let description = [{Resereves resources needed to execute the requested computations on the device.}];
 
-    let arguments = (ins);
+    let arguments = (ins DefaultValuedAttr<I32Attr, "1">:$availableCrossbarCount, DefaultValuedAttr<BoolAttr, "false">:$isFullyScheduled);
     let results = (outs DeviceIdType:$deviceId);
 
     let assemblyFormat = "attr-dict `->` qualified(type($deviceId))";
 }
 
-def ReleaseOp : Cim_Op<"release", []> {
+def ReleaseDeviceOp : Cim_Op<"release_device", []> {
     let summary = "Release the device.";
     let description = [{}];
 
@@ -43,6 +42,26 @@ def ReleaseOp : Cim_Op<"release", []> {
     let results = (outs);
 
     let assemblyFormat = "$deviceId attr-dict `:` qualified(type($deviceId))";
+}
+
+def AcquireCrossbarOp : Cim_Op<"acquire_crossbar", [DeclareOpInterfaceMethods<OpAsmOpInterface, ["getAsmResultNames"]>]> {
+    let summary = "Acquire a cim crossbar, returns id.";
+    let description = [{Resereves crossbar on the device.}];
+
+    let arguments = (ins DeviceIdType:$deviceId);
+    let results = (outs CrossbarIdType:$crossbarId);
+
+    let assemblyFormat = "$deviceId attr-dict `:` qualified(type($deviceId)) `->` qualified(type($crossbarId))";
+}
+
+def ReleaseCrossbarOp : Cim_Op<"release_crossbar", []> {
+    let summary = "Release the crossbar.";
+    let description = [{}];
+
+    let arguments = (ins CrossbarIdType:$crossbarId);
+    let results = (outs);
+
+    let assemblyFormat = "$crossbarId attr-dict `:` qualified(type($crossbarId))";
 }
 
 def BarrierOp : Cim_Op<"barrier", []> {
@@ -65,10 +84,10 @@ def GemmOp : Cim_Op<"op.gemm", []> {
     let summary = "Matrix matrix multiplication.";
     let description = [{}];
 
-    let arguments = (ins DeviceIdType:$deviceId, OpInput:$lhs, OpInput:$rhs);
+    let arguments = (ins CrossbarIdType:$crossbarId, OpInput:$lhs, OpInput:$rhs);
     let results = (outs FutureType:$result);
 
-    let assemblyFormat = "$deviceId `,` $lhs `,` $rhs attr-dict `:` qualified(type($deviceId)) `,` qualified(type($lhs)) `,` qualified(type($rhs)) `->` qualified(type($result))";
+    let assemblyFormat = "$crossbarId `,` $lhs `,` $rhs attr-dict `:` qualified(type($crossbarId)) `,` qualified(type($lhs)) `,` qualified(type($rhs)) `->` qualified(type($result))";
 
     let hasVerifier = 1;
 }
@@ -77,10 +96,10 @@ def GemvOp : Cim_Op<"op.gemv", []> {
     let summary = "Matrix vector multiplication.";
     let description = [{}];
 
-    let arguments = (ins DeviceIdType:$deviceId, OpInput:$lhs, OpInput:$rhs);
+    let arguments = (ins CrossbarIdType:$crossbarId, OpInput:$lhs, OpInput:$rhs);
     let results = (outs FutureType:$result);
 
-    let assemblyFormat = "$deviceId `,` $lhs `,` $rhs attr-dict `:` qualified(type($deviceId)) `,` qualified(type($lhs)) `,` qualified(type($rhs)) `->` qualified(type($result))";
+    let assemblyFormat = "$crossbarId `,` $lhs `,` $rhs attr-dict `:` qualified(type($crossbarId)) `,` qualified(type($lhs)) `,` qualified(type($rhs)) `->` qualified(type($result))";
 
     let hasVerifier = 1;
 }

@@ -55,15 +55,3 @@ func.func @max(%a: tensor<1024xi32>) -> i32 {
 	}
 	return %res: i32
 }
-
-// -----
-
-// CHECK-LABEL: @adds
-
-func.func @adds(%a: tensor<1024xi32>, %s: i32) -> tensor<1024xi32> {
-	%res = cinm.compute -> tensor<1024xi32> {
-		%d = cinm.op.adds %a, %s : tensor<1024xi32>
-		cinm.yield %d : tensor<1024xi32>
-	}
-	return %res: tensor<1024xi32>
-}

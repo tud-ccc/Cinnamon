@@ -15,6 +15,11 @@ def DeviceIdType : Cim_Type<"DeviceId"> {
   let summary = "Represents an acquired cim device.";
 }
 
+def CrossbarIdType : Cim_Type<"CrossbarId"> {
+  let mnemonic = "crossbarId";
+  let summary = "Represents an acquired cim crossbar.";
+}
+
 def FutureType : Cim_Type<"Future", [ShapedTypeInterface]> {
   let mnemonic = "future";
   let summary = "Result of a cim operation";

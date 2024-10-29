@@ -1,7 +1,5 @@
 add_mlir_dialect_library(CimTransforms
-    ScheduleAsap.cpp
-    ScheduleAlap.cpp
-    Utils.cpp
+    SchedulingPasses.cpp
 
 DEPENDS
     CimIncGen
