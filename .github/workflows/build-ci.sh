@@ -58,6 +58,7 @@ if [[ $setup_python_venv -eq 1 ]]; then
     fi
 
     pip install --upgrade pip
+    pip install ninja-build
     pip install torch torchvision torchaudio --index-url $torch_source
     pip install pybind11
   else
@@ -75,7 +76,7 @@ if [[ $checkout_and_build_llvm -eq 1 ]]; then
     cd "$llvm_path"
 
     git checkout cinnamon-llvm
-    cmake -S llvm -B build \
+    cmake -S llvm -B build -GNinja \
       -DLLVM_ENABLE_PROJECTS="mlir;llvm;clang" \
       -DLLVM_TARGETS_TO_BUILD="host" \
       -DLLVM_ENABLE_ASSERTIONS=ON \
@@ -95,32 +96,33 @@ if [[ $checkout_and_build_llvm -eq 1 ]]; then
   export PATH=$llvm_path/build/bin:$PATH
 else
   echo "Skipping LLVM checkout and build"
-  echo "The following steps will need LLVM_DIR and MLIR_DIR to be set in their respective <STEP>_CMAKE_OPTIONS"
+fi
+
+llvm_dir=${LLVM_BUILD_DIR:-"$llvm_path/build"}
+echo "Using LLVM installation in $llvm_dir"
+if [[ ! -d "$llvm_dir" ]]; then
+  echo "No LLVM installation found"
+  exit 1
 fi
 
 if [[ $checkout_and_build_torch_mlir -eq 1 ]]; then
   if [ ! -d "$torch_mlir_path" ]; then
     git clone https://github.com/llvm/torch-mlir "$torch_mlir_path"
-
-    cd "$torch_mlir_path"
-
-    dependency_paths=""
-
-    if [[ $checkout_and_build_llvm -eq 1 ]]; then
-      dependency_paths="$dependency_paths -DLLVM_DIR=$llvm_path/build/lib/cmake/llvm"
-      dependency_paths="$dependency_paths -DMLIR_DIR=$llvm_path/build/lib/cmake/mlir"
-    fi
+  fi
+  cd "$torch_mlir_path"
+  if [ ! -d "build" ]; then
+    mkdir build
 
     git checkout snapshot-20240127.1096
-    cmake -S . -B build \
-      $dependency_paths \
+    cmake -S . -B build -GNinja \
+      -DLLVM_DIR="$llvm_dir/lib/cmake/llvm" \
+      -DMLIR_DIR="$llvm_dir/lib/cmake/mlir" \
       -DCMAKE_BUILD_TYPE=Release \
       -DTORCH_MLIR_OUT_OF_TREE_BUILD=ON \
       -DTORCH_MLIR_ENABLE_STABLEHLO=OFF \
       $TORCH_MLIR_CMAKE_OPTIONS
   fi
 
-  cd "$torch_mlir_path"
   cmake --build build --target all TorchMLIRPythonModules
   cmake --install build --prefix install
 
@@ -134,7 +136,12 @@ if [[ $checkout_and_build_torch_mlir -eq 1 ]]; then
 
 else
   echo "Skipping Torch-MLIR checkout and build"
-  echo "The following steps will need TORCH_MLIR_DIR to be set in their respective <STEP>_CMAKE_OPTIONS"
+fi
+
+torch_mlir_dir=${TORCH_MLIR_INSTALL_DIR:-"$torch_mlir_path/install"}
+echo "Using torch-mlir installation in $torch_mlir_dir"
+if [[ ! -d "$torch_mlir_dir" ]]; then
+  echo "(warning) No torch-mlir installation found, project will be built without torch-mlir support"
 fi
 
 if [[ $checkout_upmem -eq 1 ]]; then
@@ -147,7 +154,12 @@ if [[ $checkout_upmem -eq 1 ]]; then
   fi
 else
   echo "Skipping UpMem checkout"
-  echo "The following steps will need UPMEM_DIR to be set in their respective <STEP>_CMAKE_OPTIONS"
+fi
+
+upmem_dir=${UPMEM_HOME:-"$upmem_path"}
+echo "Using UPMEM installation in $upmem_dir"
+if [[ ! -d "$upmem_dir" ]]; then
+  echo "(warning) No UPMEM installation found, project will be built without UPMEM support"
 fi
 
 cd "$cinnamon_path"
@@ -156,22 +168,20 @@ if [ ! -d "build" ]; then
 
   dependency_paths=""
   
-  if [[ $checkout_and_build_llvm -eq 1 ]]; then
-    dependency_paths="$dependency_paths -DLLVM_DIR=$llvm_path/build/lib/cmake/llvm"
-    dependency_paths="$dependency_paths -DMLIR_DIR=$llvm_path/build/lib/cmake/mlir"
+  if [[ -d "$torch_mlir_dir" ]]; then
+    dependency_paths="$dependency_paths -DTORCH_MLIR_DIR=$torch_mlir_dir"  
   fi
 
-  if [[ $checkout_and_build_torch_mlir -eq 1 ]]; then
-    dependency_paths="$dependency_paths -DTORCH_MLIR_DIR=$torch_mlir_path/install"  
+  if [[ -d "$upmem_dir" ]]; then
+    dependency_paths="$dependency_paths -DUPMEM_DIR=$upmem_dir"
   fi
 
-  if [[ $checkout_upmem -eq 1 ]]; then
-    dependency_paths="$dependency_paths -DUPMEM_DIR=$upmem_path"
-  fi
-
-  cmake -S . -B "build" \
+  cmake -S . -B "build" -GNinja \
     -DCMAKE_BUILD_TYPE=RelWithDebInfo \
     $dependency_paths \
+    -DLLVM_DIR="$llvm_dir/lib/cmake/llvm" \
+    -DMLIR_DIR="$llvm_dir/lib/cmake/mlir" \
+    -DTORCH_MLIR_DIR="$torch_mlir_dir" \
     -DCINM_BUILD_GPU_SUPPORT=ON \
     -DCMAKE_EXPORT_COMPILE_COMMANDS=ON \
     $CINNAMON_CMAKE_OPTIONS

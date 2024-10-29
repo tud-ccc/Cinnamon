@@ -486,7 +486,7 @@ template <typename CinmOp, typename ArithIOp, typename ArithFOp,
           bool IsScalarOp>
 struct ConvertElementWiseToCnm : public OpConversionPattern<CinmOp> {
   using OpConversionPattern<CinmOp>::OpConversionPattern;
-  ConvertElementWiseToCnm<CinmOp>(MLIRContext *ctx)
+  ConvertElementWiseToCnm(MLIRContext *ctx)
       : mlir::OpConversionPattern<CinmOp>(ctx) {
     this->setHasBoundedRewriteRecursion();
   }
