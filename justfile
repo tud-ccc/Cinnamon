@@ -7,7 +7,7 @@ set dotenv-load := true
 
 # Make sure your LLVM is tags/llvmorg-18.1.6
 
-llvm_prefix := env_var("LLVM_BUILD_DIR")
+llvm_prefix := env_var_or_default("LLVM_BUILD_DIR", "")
 build_type := env_var_or_default("LLVM_BUILD_TYPE", "RelWithDebInfo")
 linker := env_var_or_default("CMAKE_LINKER_TYPE", "DEFAULT")
 upmem_dir := env_var_or_default("UPMEM_HOME", "")
@@ -16,26 +16,8 @@ build_dir := "cinnamon/build"
 # Do a full build as if in CI. Only needed the first time you build the project.
 # Parameters: no-upmem enable-cuda enable-roc no-torch-mlir no-python-venv
 configure *ARGS:
-    .github/workflows/build-ci.sh {{ARGS}}
+    .github/workflows/build-ci.sh reconfigure {{ARGS}}
 
-
-# execute cmake -- this is only needed on the first build
-cmake *ARGS:
-    cmake -S . -B {{build_dir}} \
-        -G Ninja \
-        -DCMAKE_BUILD_TYPE={{build_type}} \
-        "-DLLVM_DIR={{llvm_prefix}}/lib/cmake/llvm" \
-        "-DMLIR_DIR={{llvm_prefix}}/lib/cmake/mlir" \
-        "-DUPMEM_DIR={{upmem_dir}}" \
-        -DCMAKE_EXPORT_COMPILE_COMMANDS=1 \
-        -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
-        -DCMAKE_C_COMPILER=clang \
-        -DCMAKE_LINKER_TYPE={{linker}} \
-        -DCMAKE_CXX_COMPILER=clang++ \
-        -DCMAKE_EXPORT_COMPILE_COMMANDS=ON \
-        -DCMAKE_C_USING_LINKER_mold=-fuse-ld=mold \
-        -DCMAKE_CXX_USING_LINKER_mold=-fuse-ld=mold \
-        {{ARGS}}
 
 # execute a specific ninja target
 doNinja *ARGS:
