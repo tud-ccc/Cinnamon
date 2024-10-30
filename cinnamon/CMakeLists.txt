@@ -102,6 +102,8 @@ add_subdirectory(lib)
 add_subdirectory(test)
 add_subdirectory(tools)
 
+add_subdirectory(runtime/Memristor)
+
 if (TORCH_MLIR_DIR)
     set_property(GLOBAL PROPERTY TORCH_MLIR_ENABLED ON)
     set(TORCH_MLIR_INCLUDE_DIR "${TORCH_MLIR_DIR}/include")
