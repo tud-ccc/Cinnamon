@@ -23,8 +23,12 @@
 
 #ifdef CINM_TORCH_MLIR_ENABLED
 #include "cinm-mlir/Conversion/CinmFrontendPasses.h" // Does the TorchToCinm pass
+#include "torch-mlir/Conversion/Passes.h"
 #include "torch-mlir/Dialect/Torch/IR/TorchDialect.h"
+#include "torch-mlir/Dialect/Torch/Transforms/Passes.h"
 #include "torch-mlir/Dialect/TorchConversion/IR/TorchConversionDialect.h"
+#include "torch-mlir/Dialect/TorchConversion/Transforms/Passes.h"
+#include "torch-mlir/RefBackend/Passes.h"
 #endif
 
 #include <mlir/IR/DialectRegistry.h>
@@ -51,6 +55,11 @@ int main(int argc, char *argv[]) {
 #ifdef CINM_TORCH_MLIR_ENABLED
   registry.insert<torch::Torch::TorchDialect>();
   registry.insert<torch::TorchConversion::TorchConversionDialect>();
+
+  torch::registerTorchConversionPasses();
+  torch::registerConversionPasses();
+  torch::registerTorchPasses();
+  torch::RefBackend::registerRefBackendPasses();
 #endif
 
   registerAllPasses();
