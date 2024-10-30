@@ -24,6 +24,7 @@
 #include <mlir/IR/ValueRange.h>
 #include <mlir/Support/LLVM.h>
 #include <mlir/Transforms/DialectConversion.h>
+#include <mlir/Conversion/ReconcileUnrealizedCasts/ReconcileUnrealizedCasts.h>
 
 #define GEN_PASS_DEF_CONVERTCNMTOUPMEMPASS
 #include "cinm-mlir/Conversion/CnmPasses.h.inc"
@@ -355,7 +356,6 @@ struct ConvertCnmToUPMEMPass
 
     RewritePatternSet patterns(&getContext());
     populateCnmToUPMEMConversionPatterns(converter, patterns);
-    populateReconcileUnrealizedCastsPatterns(patterns);
     populateFinalBufferizationPatterns(patterns);
 
     ConversionTarget target(getContext());

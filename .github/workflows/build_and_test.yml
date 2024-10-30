@@ -3,6 +3,7 @@ run-name: 'Build and Test: ${{ github.event.head_commit.message }}'
 on: 
   workflow_dispatch:
   push:
+  pull_request:
 jobs:
   main:
     name: Build and test
@@ -32,7 +33,7 @@ jobs:
           key: cinnamon-dependencies-${{ runner.os }}
       
       - name: Build 
-        run: .github/workflows/build-ci.sh
+        run: .github/workflows/build-ci.sh reconfigure
 
       - name: Test
         working-directory: cinnamon/build

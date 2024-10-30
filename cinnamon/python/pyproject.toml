@@ -1,0 +1,35 @@
+[build-system]
+requires = ["setuptools", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "cinnamon"
+version = "0.1.0"
+license = {file = "LICENSE"}
+description = "Python bindings for the Cinnamon compiler"
+authors = [{name = "Felix Reißmann"}]
+requires-python = ">=3.6"
+dependencies = [
+    "torch",
+    "torch-mlir"
+]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Operating System :: POSIX :: Linux",
+    "Operating System :: POSIX :: Linux x86_64",
+    "License :: OSI Approved :: MIT License",
+]
+
+[project.urls]
+homepage = "https://github.com/tud-ccc/Cinnamon"
+repository = "https://github.com/tud-ccc/Cinnamon"
+issues = "https://github.com/tud-ccc/Cinnamon/issues"
+
+[tool.setuptools]
+platforms = ["none"]
+
+[tool.setuptools.package-data]
+myModule = ["_resources/*"]
+
+[tool.distutils.bdist_wheel]
+plat-name = "manylinux1_x86_64"
