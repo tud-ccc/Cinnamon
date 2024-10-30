@@ -26,3 +26,4 @@ llvm
 sandbox
 
 python/cinnamon/_resources
+.env
