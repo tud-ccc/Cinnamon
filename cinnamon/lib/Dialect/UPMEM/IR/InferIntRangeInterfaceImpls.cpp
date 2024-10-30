@@ -65,7 +65,6 @@ static std::optional<uint64_t> getKnownLaunchDim(Op op, LaunchDims type) {
   return std::nullopt;
 }
 
-
 void RankDimOp::inferResultRanges(ArrayRef<ConstantIntRanges>,
                                   SetIntRangeFn setResultRange) {
   uint64_t max = getKnownLaunchDim(*this, LaunchDims::Rank).value_or(kMaxRankDim);

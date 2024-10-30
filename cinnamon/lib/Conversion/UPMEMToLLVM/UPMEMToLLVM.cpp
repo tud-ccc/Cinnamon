@@ -43,6 +43,7 @@
 #include <mlir/IR/Visitors.h>
 #include <mlir/Support/LogicalResult.h>
 #include <mlir/Transforms/DialectConversion.h>
+#include <mlir/Conversion/ReconcileUnrealizedCasts/ReconcileUnrealizedCasts.h>
 #include <optional>
 
 namespace mlir {
@@ -315,7 +316,7 @@ outlineAffineMap(ImplicitLocOpBuilder &rewriter,
   affineMapFun->setAttr("upmem.generated_from", AffineMapAttr::get(*linearMap));
 
   rewriter = ImplicitLocOpBuilder::atBlockBegin(rewriter.getLoc(),
-                                                affineMapFun.addEntryBlock());
+                                                affineMapFun.addEntryBlock(rewriter));
   Value arg = affineMapFun.getArgument(0);
   // affine expects to deal with index type only
   arg = createOrFoldUnrealizedConversionCast(rewriter.getLoc(), rewriter,
@@ -570,7 +571,6 @@ struct ConvertUPMEMToLLVMPass
     RewritePatternSet patterns(&getContext());
     populateFinalizeMemRefToLLVMConversionPatterns(converter, patterns);
     populateUPMEMToLLVMConversionPatterns(converter, patterns);
-    populateReconcileUnrealizedCastsPatterns(patterns);
 
     ConversionTarget target(getContext());
     target.addIllegalDialect<upmem::UPMEMDialect>();

@@ -282,7 +282,6 @@ struct ConvertCnmToGPUPass
 
     RewritePatternSet patterns(&getContext());
     populateCnmToGPUConversionPatterns(patterns, &getContext());
-    populateReconcileUnrealizedCastsPatterns(patterns);
 
     ConversionTarget target(getContext());
     target.addIllegalDialect<cnm::CnmDialect>();
