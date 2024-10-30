@@ -27,3 +27,4 @@ sandbox
 
 python/cinnamon/_resources
 .env
+**/__pycache__
