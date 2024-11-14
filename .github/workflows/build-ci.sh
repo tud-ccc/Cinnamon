@@ -125,10 +125,16 @@ if echo "$@" | grep -q -- "-enable-roc"; then
 fi
 
 if [[ $setup_python_venv -eq 1 ]]; then
+  # NOTE: This is a temporary workaround as some distros ship python3.13 which does not yet provide a torch package
+  supported_python_executable=python3
+  if command -v python3.12 &> /dev/null; then
+    supported_python_executable=python3.12
+  fi
+
   reconfigure_python_venv=0
   if [ ! -d "$py_venv_path" ]; then
     status "Creating Python venv"
-    python3.12 -m venv "$py_venv_path"
+    $supported_python_executable -m venv "$py_venv_path"
     source "$py_venv_path/bin/activate"
     reconfigure_python_venv=1
   else
