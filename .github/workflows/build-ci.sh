@@ -116,6 +116,14 @@ if [[ $checkout_and_build_llvm -eq 1 ]]; then
   reconfigure_llvm=0
   if [ ! -d "$llvm_path" ]; then
     git clone https://github.com/llvm/llvm-project "$llvm_path"
+
+    cd "$llvm_path"
+    git checkout llvmorg-19.1.3
+
+    patch_dir="$project_root/patches/llvm"
+    for patch in $(ls $patch_dir); do
+      git apply $patch_dir/$patch
+    done
     
     reconfigure_llvm=1
   fi
@@ -123,15 +131,6 @@ if [[ $checkout_and_build_llvm -eq 1 ]]; then
   cd "$llvm_path"
 
   if [ $reconfigure -eq 1 ] || [ $reconfigure_llvm -eq 1 ]; then
-    git reset --hard
-    git fetch
-    git checkout llvmorg-19.1.3
-
-    patch_dir="$project_root/patches/llvm"
-    for patch in $(ls $patch_dir); do
-      git apply $patch_dir/$patch
-    done
-
     cmake -S llvm -B build \
       -DLLVM_ENABLE_PROJECTS="mlir;llvm;clang" \
       -DLLVM_TARGETS_TO_BUILD="host" \
@@ -159,16 +158,15 @@ if [[ $checkout_and_build_torch_mlir -eq 1 ]]; then
   if [ ! -d "$torch_mlir_path" ]; then
     git clone https://github.com/llvm/torch-mlir "$torch_mlir_path"
 
+    cd "$torch_mlir_path"
+    git checkout 98e08023bbf71e00ab81e980eac9f7c96f1f24b4
+
     reconfigure_torch_mlir=1
   fi
 
   cd "$torch_mlir_path"
 
   if [ $reconfigure -eq 1 ] || [ $reconfigure_torch_mlir -eq 1 ]; then
-    git reset --hard
-    git fetch
-    git checkout 98e08023bbf71e00ab81e980eac9f7c96f1f24b4
-
     dependency_paths=""
 
     if [[ $checkout_and_build_llvm -eq 1 ]]; then
