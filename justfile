@@ -16,7 +16,7 @@ build_dir := "cinnamon/build"
 # Do a full build as if in CI. Only needed the first time you build the project.
 # Parameters: no-upmem enable-cuda enable-roc no-torch-mlir no-python-venv
 configure *ARGS:
-    .github/workflows/build-ci.sh reconfigure {{ARGS}}
+    .github/workflows/build-ci.sh -reconfigure {{ARGS}}
 
 
 # execute a specific ninja target

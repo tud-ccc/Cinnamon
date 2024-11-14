@@ -50,35 +50,35 @@ fi
 
 ###############################################################
 
-if echo "$@" | grep -q "reconfigure"; then
+if echo "$@" | grep -q "-reconfigure"; then
   reconfigure=1
 fi
 
-if echo "$@" | grep -q "no-python-venv"; then
+if echo "$@" | grep -q "-no-python-venv"; then
   setup_python_venv=0
 fi
 
-if echo "$@" | grep -q "no-llvm"; then
+if echo "$@" | grep -q "-no-llvm"; then
   checkout_and_build_llvm=0
 fi
 
-if echo "$@" | grep -q "no-torch-mlir"; then
+if echo "$@" | grep -q "-no-torch-mlir"; then
   checkout_and_build_torch_mlir=0
 fi
 
-if echo "$@" | grep -q "no-upmem"; then
+if echo "$@" | grep -q "-no-upmem"; then
   checkout_upmem=0
 fi
 
-if echo "$@" | grep -q "no-cinnamon-wheel"; then
+if echo "$@" | grep -q "-no-cinnamon-wheel"; then
   build_cinnamon_wheel=0
 fi
 
-if echo "$@" | grep -q "enable-cuda"; then
+if echo "$@" | grep -q "-enable-cuda"; then
   enable_cuda=1
 fi
 
-if echo "$@" | grep -q "enable-roc"; then
+if echo "$@" | grep -q "-enable-roc"; then
   enable_roc=1
 fi
 

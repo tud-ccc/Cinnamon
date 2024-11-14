@@ -33,7 +33,7 @@ jobs:
           key: cinnamon-dependencies-${{ runner.os }}
       
       - name: Build 
-        run: .github/workflows/build-ci.sh reconfigure
+        run: .github/workflows/build-ci.sh -reconfigure
 
       - name: Test
         working-directory: cinnamon/build
