@@ -94,7 +94,7 @@ LogicalResult ConvertCnmSetZeroToAffine::matchAndRewrite(
     cnm::SetZeroOp op, OpAdaptor, ConversionPatternRewriter &rewriter) const {
   const Value dst = rewriter.getRemappedValue(op.getOperand());
 
-  const MemRefType type = dst.getType().cast<MemRefType>();
+  const MemRefType type = cast<MemRefType>(dst.getType());
   const SmallVector<int64_t> loopSizes{type.getShape()};
   const SmallVector<int64_t> loopSteps(loopSizes.size(), 1);
 
@@ -125,8 +125,8 @@ SmallVector<Value> createAffineApply(OpBuilder &builder, Location loc,
 void createMemrefSubviewCopy(OpBuilder &builder, Location loc, Value src,
                              Value dst, ArrayRef<int64_t> sliceShape,
                              ValueRange srcOffsets, ValueRange dstOffsets) {
-  MemRefType srcType = src.getType().cast<MemRefType>();
-  MemRefType dstType = dst.getType().cast<MemRefType>();
+  MemRefType srcType = cast<MemRefType>(src.getType());
+  MemRefType dstType = cast<MemRefType>(dst.getType());
 
   SmallVector<int64_t> srcStaticOffsets(srcType.getRank(), 0);
   SmallVector<int64_t> srcStaticSizes{srcType.getShape()};

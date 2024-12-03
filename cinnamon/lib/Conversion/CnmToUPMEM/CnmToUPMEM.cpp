@@ -41,8 +41,8 @@ template <typename T> T reduceMul(ArrayRef<T> arr) {
 }
 
 MemRefType convertTensorToMemref(ShapedType ty) {
-  if (ty.isa<MemRefType>())
-    return ty.cast<MemRefType>();
+  if (isa<MemRefType>(ty))
+    return cast<MemRefType>(ty);
 
   return MemRefType::get(ty.getShape(), ty.getElementType());
 }
@@ -127,7 +127,7 @@ struct ConvertCnmGatherToUPMEM : public OpConversionPattern<cnm::GatherOp> {
                   ConversionPatternRewriter &rewriter) const override {
 
     Value outputBuf = adaptor.getOutputBuf();
-    bool isBufferized = op.getOutputBuf().getType().isa<BaseMemRefType>();
+    bool isBufferized = isa<BaseMemRefType>(op.getOutputBuf().getType());
     if (!isBufferized) {
       outputBuf = rewriter.create<memref::AllocOp>(
           op->getLoc(), convertTensorToMemref(op.getOutputBuf().getType()));
@@ -166,7 +166,7 @@ struct ConvertCnmLaunchToUPMEM : public OpConversionPattern<cnm::LaunchOp> {
     const size_t availableWRAM = 32 * 1024;
     size_t requiredWRAM = 0;
     for (Value buffer : op.getParams()) {
-      const BufferType bufferType = buffer.getType().cast<BufferType>();
+      const BufferType bufferType = cast<BufferType>(buffer.getType());
       const size_t elementSize =
           bufferType.getElementType().getIntOrFloatBitWidth() / 8;
       requiredWRAM += reduceMul(bufferType.getShape()) * elementSize;
@@ -208,7 +208,7 @@ struct ConvertCnmLaunchToUPMEM : public OpConversionPattern<cnm::LaunchOp> {
         continue;
       }
 
-      const BufferType bufferType = buffer.getType().cast<BufferType>();
+      const BufferType bufferType = cast<BufferType>(buffer.getType());
       const size_t chunkSize = reduceMul(bufferType.getShape());
       const size_t memoryPerTasklet = chunksPerTasklet * chunkSize;
       const size_t memoryPerDPU = wgShape[2] * memoryPerTasklet;

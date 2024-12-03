@@ -51,11 +51,11 @@ MemRefType convertCnmBufferToMemRefType(cnm::BufferType bufferType) {
 void convertLaunchParameter(ConversionPatternRewriter &rewriter, Location loc,
                             Value buffer, ValueRange threadIds,
                             BlockArgument arg) {
-  if (!buffer.getType().dyn_cast<cnm::BufferType>()) {
-    return;
-  }
+  const auto bufferType = dyn_cast<cnm::BufferType>(buffer.getType());
 
-  const BufferType bufferType = buffer.getType().dyn_cast<cnm::BufferType>();
+  if (!bufferType)
+    return;
+
   const MemRefType memrefType = convertCnmBufferToMemRefType(bufferType);
 
   const Value source = createOrFoldUnrealizedConversionCast(
@@ -122,8 +122,8 @@ struct ConvertCnmScatterToGPU : public OpConversionPattern<cnm::ScatterOp> {
                   ConversionPatternRewriter &rewriter) const override {
     const WorkgroupType workgroupType = op.getWg().getType();
     const ArrayRef<int64_t> workgroupShape = workgroupType.getShape();
-    const cnm::BufferType bufferType =
-        op.getOperandTypes()[1].dyn_cast<cnm::BufferType>();
+    const auto bufferType =
+        dyn_cast<cnm::BufferType>(op.getOperand(1).getType());
 
     Value src = rewriter.getRemappedValue(op.getOperand(0));
     Value dst = rewriter.getRemappedValue(op.getOperand(1));
@@ -155,8 +155,8 @@ struct ConvertCnmGatherToGPU : public OpConversionPattern<cnm::GatherOp> {
                   ConversionPatternRewriter &rewriter) const override {
     const WorkgroupType workgroupType = op.getWg().getType();
     const ArrayRef<int64_t> workgroupShape = workgroupType.getShape();
-    const cnm::BufferType bufferType =
-        op.getOperandTypes()[0].dyn_cast<cnm::BufferType>();
+    const auto bufferType =
+        dyn_cast<cnm::BufferType>(op.getOperand(0).getType());
 
     Value src = rewriter.getRemappedValue(op.getOperand(0));
     src = createOrFoldUnrealizedConversionCast(

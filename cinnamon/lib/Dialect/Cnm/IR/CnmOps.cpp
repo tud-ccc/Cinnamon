@@ -49,10 +49,10 @@ void CnmDialect::registerOps() {
     ::llvm::SmallVectorImpl<::mlir::ShapedTypeComponents>
         &inferredReturnShapes) {
   auto out = adaptor.getOutputBuf();
-  if (out.getType().isa<MemRefType>()) {
+  if (isa<MemRefType>(out.getType())) {
     return success();
-  } else if (out.getType().isa<RankedTensorType>()) {
-    ShapedType ty = out.getType().cast<RankedTensorType>();
+  } else if (isa<RankedTensorType>(out.getType())) {
+    ShapedType ty = cast<RankedTensorType>(out.getType());
 
     inferredReturnShapes.push_back(ShapedTypeComponents(ty));
     return success();
@@ -69,7 +69,7 @@ LogicalResult LaunchOp::verify() {
            << operands.size() << " arguments, got " << bodyArgs.size();
 
   for (auto [arg, operand] : llvm::zip(bodyArgs, operands)) {
-    if (auto bufTy = operand.getType().dyn_cast<cnm::BufferType>()) {
+    if (auto bufTy = dyn_cast<cnm::BufferType>(operand.getType())) {
       auto memrefTy = MemRefType::get(bufTy.getShape(), bufTy.getElementType());
       if (arg.getType() != memrefTy)
         return emitError("Mismatched type for launch argument, expected ")

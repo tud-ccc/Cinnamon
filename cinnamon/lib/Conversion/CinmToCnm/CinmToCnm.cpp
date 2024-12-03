@@ -298,14 +298,14 @@ LogicalResult convertInputIntoAlloc(Location loc, Value &inputBuf,
   // For each input of the reduce, we need to
 
   // convert single element to tensor<1xelementTy>
-  if (!inputBuf.getType().dyn_cast<RankedTensorType>()) {
+  if (!isa<RankedTensorType>(inputBuf.getType())) {
     inputBuf = rewriter.create<tensor::FromElementsOp>(
         RankedTensorType::get(SmallVector<int64_t>(wgTy.getShape().size(), 1),
                               inputBuf.getType()),
         ValueRange{inputBuf});
   }
 
-  auto inputType = inputBuf.getType().cast<RankedTensorType>();
+  auto inputType = cast<RankedTensorType>(inputBuf.getType());
 
   llvm::SmallVector<int64_t, 1> shapeOfBuffer;
   std::optional<SmallVector<int64_t>> reshapeInto;
@@ -318,9 +318,9 @@ LogicalResult convertInputIntoAlloc(Location loc, Value &inputBuf,
     return failure();
 
   if (reshapeInto) {
-    inputBuf =
-        cinm::reshapeStatic(rewriter, rewriter.getLoc(), inputBuf,
-                            inputType.cast<RankedTensorType>(), *reshapeInto);
+    inputBuf = cinm::reshapeStatic(rewriter, rewriter.getLoc(), inputBuf,
+                                   cast<RankedTensorType>(inputType),
+                                   *reshapeInto);
   }
 
   // Allocate a cinm buffer
@@ -350,7 +350,7 @@ cnm::LaunchOp createLaunchOp(
     auto &launchBlock = launchOp.getBody().emplaceBlock();
     // arguments are memrefs with same shape as inputs
     for (auto input : launchOp.getParams()) {
-      if (auto inputTy = input.getType().dyn_cast<cnm::BufferType>()) {
+      if (auto inputTy = dyn_cast<cnm::BufferType>(input.getType())) {
         auto mappedTy =
             MemRefType::get(inputTy.getShape(), inputTy.getElementType());
         launchBlock.addArgument(mappedTy, input.getLoc());
@@ -428,8 +428,8 @@ LogicalResult convertCinmToCnm(
     auto res = builder.create<cnm::GatherOp>(alloc, workgroup, map, outBuf);
     auto shapedBack = cinm::reshapeStatic(
         builder, builder.getLoc(),
-        res.getOutput().cast<TypedValue<RankedTensorType>>(),
-        result.getType().cast<RankedTensorType>().getShape());
+        cast<TypedValue<RankedTensorType>>(res.getOutput()),
+        cast<RankedTensorType>(result.getType()).getShape());
 
     resultValues.push_back(shapedBack);
   }
@@ -514,7 +514,7 @@ struct ConvertElementWiseToCnm : public OpConversionPattern<CinmOp> {
                 ValueRange outputs) {
               SmallVector<AffineMap> affineMaps;
               for (const auto &i : inputs) {
-                MemRefType t = i.getType().cast<MemRefType>();
+                MemRefType t = cast<MemRefType>(i.getType());
                 affineMaps.push_back(AffineMap::getMultiDimIdentityMap(
                     t.getRank(), op.getContext()));
 
@@ -541,7 +541,7 @@ struct ConvertElementWiseToCnm : public OpConversionPattern<CinmOp> {
                     Value rhs = IsScalarOp ? inputs[1u] : args[1u];
                     if constexpr (IsScalarOp) {
                       if (const auto memrefType =
-                              rhs.getType().dyn_cast<MemRefType>()) {
+                              dyn_cast<MemRefType>(rhs.getType())) {
                         const Value zero =
                             builder.create<arith::ConstantIndexOp>(loc, 0);
                         rhs = builder.create<memref::LoadOp>(
@@ -622,7 +622,7 @@ struct ConvertCinmGemmToCnm : public OpConversionPattern<cinm::GemmOp> {
   using OpConversionPattern<cinm::GemmOp>::OpConversionPattern;
 
   static Value transpose(ImplicitLocOpBuilder &builder, Value tensor) {
-    auto inTy = tensor.getType().cast<RankedTensorType>();
+    auto inTy = cast<RankedTensorType>(tensor.getType());
     auto shape = inTy.getShape();
     SmallVector<int64_t, 2> newShape{shape[1], shape[0]};
     SmallVector<int64_t, 2> perms{1, 0};
@@ -785,10 +785,8 @@ struct ConvertCinmReduceToCnm : public OpConversionPattern<cinm::ReduceOp> {
         op.getResult().getType(),
         builder.getZeroAttr(op.getResult().getType()));
 
-    const bool isFloatOp = op.getType()
-                               .cast<ShapedType>()
-                               .getElementType()
-                               .dyn_cast<FloatType>() != nullptr;
+    const bool isFloatOp = isa<FloatType>(
+        cast<ShapedType>(op.getType()).getElementType());
 
     llvm::SmallVector<Value, 1> newResults;
     if (convertCinmToCnm(

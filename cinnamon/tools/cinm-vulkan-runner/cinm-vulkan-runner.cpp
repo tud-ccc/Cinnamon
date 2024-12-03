@@ -62,6 +62,7 @@ static LogicalResult runMLIRPasses(Operation *op) {
       cnm::CnmSPIRVAttachTargetAttributePassOptions{
           .spirvCapabilities = {"Shader"},
           .spirvExtensions = {"SPV_KHR_storage_buffer_storage_class"},
+          .deviceId = 0,
       }));
 
   OpPassManager &gpuModulePM = passManager.nest<gpu::GPUModuleOp>();

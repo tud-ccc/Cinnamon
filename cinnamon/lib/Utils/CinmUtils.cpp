@@ -31,8 +31,8 @@ SmallString<20> getUniqueFunctionName(SymbolTable &moduleOp, StringRef prefix) {
 /// bufShape, which is a suffix of the shape of the input tensor/memref.
 bool scatteredMemrefIsContiguous(TypedValue<ShapedType> value,
                                  llvm::ArrayRef<int64_t> bufShape) {
-  if (value.getType().isa<MemRefType>()) {
-    auto type = value.getType().cast<MemRefType>();
+  if (isa<MemRefType>(value.getType())) {
+    auto type = cast<MemRefType>(value.getType());
     if (!type.hasStaticShape())
       return false;
 

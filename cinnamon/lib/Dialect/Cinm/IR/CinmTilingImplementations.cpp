@@ -67,7 +67,7 @@ TilingResult2 GemmOp::convertToTiledOps(OpBuilder &builder,
   const RankedTensorType rhsType = getRight().getType();
 
   const RankedTensorType resultType =
-      getResult().getType().cast<RankedTensorType>();
+      cast<RankedTensorType>(getResult().getType());
   const ArrayRef<int64_t> resultShape = resultType.getShape();
 
   const Value resultInit = builder.create<tensor::EmptyOp>(
@@ -98,7 +98,7 @@ TilingResult2 GemmOp::convertToTiledOps(OpBuilder &builder,
         auto reductionAccTy = RankedTensorType::get({p0, p1}, eltTy);
         DenseElementsAttr zeros;
         if (auto floatType =
-                reductionAccTy.getElementType().dyn_cast<FloatType>()) {
+                dyn_cast<FloatType>(reductionAccTy.getElementType())) {
           zeros = DenseElementsAttr::get(
               reductionAccTy,
               {APFloat::getZero(floatType.getFloatSemantics())});
@@ -174,7 +174,7 @@ TilingResult2 tileElementWiseBinaryOp(OpBuilder &builder0, OP op,
   Value lhs = op.getOperand(0);
   Value rhs = op.getOperand(1);
 
-  RankedTensorType tensorTy = lhs.getType().cast<RankedTensorType>();
+  RankedTensorType tensorTy = cast<RankedTensorType>(lhs.getType());
   auto wgSize = params.workingGroupSize();
   auto numElements = tensorTy.getNumElements();
   if (wgSize > numElements) {
@@ -217,7 +217,7 @@ TilingResult2 tileElementWiseBinaryOp(OpBuilder &builder0, OP op,
       rhs = cinm::reshapeStatic(builder, builder.getLoc(), op.getRhs(),
                                 {tensorTy.getNumElements()});
     }
-    tensorTy = lhs.getType().cast<RankedTensorType>();
+    tensorTy = cast<RankedTensorType>(lhs.getType());
     shape = tensorTy.getShape();
   }
 

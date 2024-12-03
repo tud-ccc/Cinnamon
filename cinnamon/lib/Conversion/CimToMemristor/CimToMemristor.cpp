@@ -40,7 +40,7 @@ struct ConvertCimOpToMemristor : OpConversionPattern<CimOp> {
                   ConversionPatternRewriter &rewriter) const override {
 
     auto tileId = op.getOperand(0);
-    auto resultShape = op.getResult().getType().template cast<ShapedType>();
+    auto resultShape = cast<ShapedType>(op.getResult().getType());
 
     auto resultAllocOp = rewriter.create<bufferization::AllocTensorOp>(
         op.getLoc(),
@@ -49,7 +49,7 @@ struct ConvertCimOpToMemristor : OpConversionPattern<CimOp> {
         ValueRange{});
 
     auto createBufferizeOp = [&](Value value) {
-      auto shapedType = value.getType().cast<ShapedType>();
+      auto shapedType = cast<ShapedType>(value.getType());
       return rewriter.create<bufferization::ToMemrefOp>(
           op.getLoc(),
           MemRefType::get(shapedType.getShape(), shapedType.getElementType()),

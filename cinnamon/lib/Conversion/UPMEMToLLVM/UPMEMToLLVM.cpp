@@ -148,7 +148,7 @@ static FailureOr<AffineMap> linearizeAffineMap(AffineMap map,
   }
 
   auto layoutMap = bufferTy.getLayout().getAffineMap();
-  if (bufferTy.getLayout().isa<StridedLayoutAttr>()) {
+  if (isa<StridedLayoutAttr>(bufferTy.getLayout())) {
     // Replace offsets with 0 to delete the symbols.
     // Offset is calculated outside of the affine map.
     layoutMap = layoutMap.replaceDimsAndSymbols(
@@ -315,8 +315,8 @@ outlineAffineMap(ImplicitLocOpBuilder &rewriter,
   // to find it later
   affineMapFun->setAttr("upmem.generated_from", AffineMapAttr::get(*linearMap));
 
-  rewriter = ImplicitLocOpBuilder::atBlockBegin(rewriter.getLoc(),
-                                                affineMapFun.addEntryBlock(rewriter));
+  rewriter = ImplicitLocOpBuilder::atBlockBegin(
+      rewriter.getLoc(), affineMapFun.addEntryBlock(rewriter));
   Value arg = affineMapFun.getArgument(0);
   // affine expects to deal with index type only
   arg = createOrFoldUnrealizedConversionCast(rewriter.getLoc(), rewriter,
@@ -376,7 +376,7 @@ static LogicalResult lowerScatterOrGather(Op op, typename Op::Adaptor adaptor,
   }
 
   Value bareHostBuf = adaptor.getHostBuffer();
-  if (adaptor.getHostBuffer().getType().template isa<LLVM::LLVMStructType>()) {
+  if (isa<LLVM::LLVMStructType>(adaptor.getHostBuffer().getType())) {
     // Here we compute the pointer to the start of the memref
     // converted memref
     Value basePtr =
@@ -557,8 +557,8 @@ struct ConvertUPMEMToLLVMPass
     const auto addUnrealizedCast = [](OpBuilder &builder, Type type,
                                       ValueRange inputs,
                                       Location loc) -> Value {
-      // if (type.isa<BaseMemRefType>() && inputs.size() == 1 &&
-      //     inputs[0].getType().isa<RankedTensorType>()) {
+      // if (isa<BaseMemRefType>(type) && inputs.size() == 1 &&
+      //     isa<RankedTensorType>(inputs[0].getType())) {
       //   return builder.create<bufferization::ToMemrefOp>(loc, type, inputs)
       //       .getResult();
       // }

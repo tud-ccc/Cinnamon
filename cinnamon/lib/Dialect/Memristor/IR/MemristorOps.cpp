@@ -33,7 +33,7 @@ void MemristorDialect::registerOps() {
 }
 
 static void appendMangledType(llvm::raw_string_ostream &ss, Type t) {
-  if (auto memref = t.dyn_cast<MemRefType>()) {
+  if (auto memref = dyn_cast<MemRefType>(t)) {
     ss << "view";
     for (auto size : memref.getShape())
       if (size < 0)
@@ -72,7 +72,7 @@ std::string mlir::memristor::generateLibraryCallName(Operation *op) {
 
 void mlir::memristor::appendOperandPrecision(llvm::raw_string_ostream &ss,
                                              Type t) {
-  if (auto memref = t.dyn_cast<MemRefType>()) {
+  if (auto memref = dyn_cast<MemRefType>(t)) {
     appendOperandPrecision(ss, memref.getElementType());
   } else if (t.isSignlessIntOrIndexOrFloat()) {
     ss << "_";

@@ -37,14 +37,15 @@ void AcquireDeviceOp::getAsmResultNames(::mlir::OpAsmSetValueNameFn setNameFn) {
   setNameFn(getResult(), "cim_dev");
 }
 
-void AcquireCrossbarOp::getAsmResultNames(::mlir::OpAsmSetValueNameFn setNameFn) {
+void AcquireCrossbarOp::getAsmResultNames(
+    ::mlir::OpAsmSetValueNameFn setNameFn) {
   setNameFn(getResult(), "cim_cbr");
 }
 
 ::mlir::LogicalResult GemmOp::verify() {
-  auto lhs = getLhs().getType().cast<ShapedType>();
-  auto rhs = getRhs().getType().cast<ShapedType>();
-  auto result = getResult().getType().cast<ShapedType>();
+  auto lhs = cast<ShapedType>(getLhs().getType());
+  auto rhs = cast<ShapedType>(getRhs().getType());
+  auto result = cast<ShapedType>(getResult().getType());
 
   if (lhs.getElementType() != rhs.getElementType())
     return emitOpError("lhs and rhs must have the same element type");
@@ -67,9 +68,9 @@ void AcquireCrossbarOp::getAsmResultNames(::mlir::OpAsmSetValueNameFn setNameFn)
 }
 
 ::mlir::LogicalResult GemvOp::verify() {
-  auto lhs = getLhs().getType().cast<ShapedType>();
-  auto rhs = getRhs().getType().cast<ShapedType>();
-  auto result = getResult().getType().cast<ShapedType>();
+  auto lhs = cast<ShapedType>(getLhs().getType());
+  auto rhs = cast<ShapedType>(getRhs().getType());
+  auto result = cast<ShapedType>(getResult().getType());
 
   if (lhs.getElementType() != rhs.getElementType())
     return emitOpError("lhs and rhs must have the same element type");

@@ -32,7 +32,7 @@ namespace {
 // Creates the specified type for a value with correct shape and element type
 // Condition: The value must be shaped type
 template <typename T> static T getShapedType(Value value) {
-  auto shapedType = value.getType().cast<ShapedType>();
+  auto shapedType = cast<ShapedType>(value.getType());
   return T::get(shapedType.getShape(), shapedType.getElementType());
 }
 

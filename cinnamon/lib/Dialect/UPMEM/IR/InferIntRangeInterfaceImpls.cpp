@@ -40,8 +40,6 @@ static Value valueByDim(KernelDim dims) {
   return dims.x;
 }
 
-static uint64_t zext(uint32_t arg) { return static_cast<uint64_t>(arg); }
-
 template <typename Op>
 static std::optional<uint64_t> getKnownLaunchDim(Op op, LaunchDims type) {
   if (auto launch = op->template getParentOfType<LaunchOp>()) {
