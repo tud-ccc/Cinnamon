@@ -2,6 +2,6 @@
 .vscode
 .directory
 .venv
-llvm
-torch-mlir
-upmem
+/llvm
+/torch-mlir
+/upmem
