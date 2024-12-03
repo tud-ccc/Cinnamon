@@ -4,6 +4,7 @@ on:
   workflow_dispatch:
   push:
   pull_request:
+      types: [opened, reopened]
 jobs:
   main:
     name: Build and test
