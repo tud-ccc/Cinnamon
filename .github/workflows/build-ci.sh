@@ -49,8 +49,8 @@ enable_roc=0
 
 if [ -n "$LLVM_BUILD_DIR" ]; then
   checkout_and_build_llvm=external
-  TORCH_MLIR_CMAKE_OPTIONS="$TORCH_MLIR_CMAKE_OPTIONS -DLLVM_DIR=$LLVM_BUILD_DIR/lib/cmake/llvm"
-  CINNAMON_CMAKE_OPTIONS="$CINNAMON_CMAKE_OPTIONS -DLLVM_DIR=$LLVM_BUILD_DIR/lib/cmake/llvm"
+  TORCH_MLIR_CMAKE_OPTIONS="$TORCH_MLIR_CMAKE_OPTIONS -DLLVM_DIR=$LLVM_BUILD_DIR/lib/cmake/llvm -DMLIR_DIR=$LLVM_BUILD_DIR/lib/cmake/mlir"
+  CINNAMON_CMAKE_OPTIONS="$CINNAMON_CMAKE_OPTIONS -DLLVM_DIR=$LLVM_BUILD_DIR/lib/cmake/llvm -DMLIR_DIR=$LLVM_BUILD_DIR/lib/cmake/mlir"
 
   info "Using environment variable LLVM_BUILD_DIR for configuration"
   info "Dependent targets will use '$LLVM_BUILD_DIR'"
@@ -235,6 +235,7 @@ if [[ $checkout_and_build_torch_mlir -eq 1 ]]; then
       dependency_paths="$dependency_paths -DMLIR_DIR=$llvm_path/build/lib/cmake/mlir"
     fi
     
+    status "TORCH_MLIR_CMAKE_OPTIONS=$TORCH_MLIR_CMAKE_OPTIONS"
     cmake -S . -B build \
       $dependency_paths \
       -Wno-dev \
