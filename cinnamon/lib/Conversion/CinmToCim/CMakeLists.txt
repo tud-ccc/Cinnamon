@@ -6,6 +6,7 @@ add_mlir_conversion_library(MLIRCinmToCim
 
     DEPENDS
     CinmConversionPassIncGen
+    CimIncGen
 
     LINK_COMPONENTS
     Core

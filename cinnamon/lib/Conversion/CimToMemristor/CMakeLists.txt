@@ -6,6 +6,7 @@ add_mlir_conversion_library(MLIRCimToMemristor
 
     DEPENDS
     CimConversionPassIncGen
+    MemristorIncGen
 
     LINK_COMPONENTS
     Core

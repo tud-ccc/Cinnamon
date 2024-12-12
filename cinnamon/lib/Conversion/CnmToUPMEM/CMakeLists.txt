@@ -6,6 +6,7 @@ add_mlir_conversion_library(MLIRCnmToUPMEM
 
     DEPENDS
     CnmConversionPassIncGen
+    UPMEMIncGen
 
     LINK_COMPONENTS
     Core

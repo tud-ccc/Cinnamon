@@ -116,6 +116,10 @@ if echo "$@" | grep -q -- "-no-cinnamon-wheel"; then
   build_cinnamon_wheel=0
 fi
 
+if echo "$@" | grep -q -- "-enable-gpu"; then
+  CINNAMON_CMAKE_OPTIONS="$CINNAMON_CMAKE_OPTIONS -DCINM_BUILD_GPU_SUPPORT=ON"
+fi
+
 if echo "$@" | grep -q -- "-enable-cuda"; then
   enable_cuda=1
 fi
@@ -304,7 +308,6 @@ if [ ! -d "build" ] || [ $reconfigure -eq 1 ]; then
   cmake -S . -B "build" \
     -DCMAKE_BUILD_TYPE=RelWithDebInfo \
     $dependency_paths \
-    -DCINM_BUILD_GPU_SUPPORT=ON \
     -DCMAKE_EXPORT_COMPILE_COMMANDS=ON \
     $CINNAMON_CMAKE_OPTIONS
 fi

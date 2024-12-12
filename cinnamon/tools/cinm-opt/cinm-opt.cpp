@@ -5,7 +5,6 @@
 /// @author      Clément Fournier (clement.fournier@tu-dresden.de)
 
 #include "cinm-mlir/Conversion/CimPasses.h"
-#include "cinm-mlir/Conversion/CinmFrontendPasses.h"
 #include "cinm-mlir/Conversion/CinmPasses.h"
 #include "cinm-mlir/Conversion/CnmPasses.h"
 #include "cinm-mlir/Conversion/MemristorPasses.h"
@@ -23,6 +22,7 @@
 #include "cinm-mlir/Dialect/UPMEM/Transforms/Passes.h"
 
 #ifdef CINM_TORCH_MLIR_ENABLED
+#include "cinm-mlir/Conversion/CinmFrontendPasses.h" // Does the TorchToCinm pass
 #include "torch-mlir/Dialect/Torch/IR/TorchDialect.h"
 #include "torch-mlir/Dialect/TorchConversion/IR/TorchConversionDialect.h"
 #endif
@@ -55,7 +55,9 @@ int main(int argc, char *argv[]) {
 
   registerAllPasses();
   registerAllExtensions(registry);
+#ifdef CINM_TORCH_MLIR_ENABLED
   registerCinmFrontendConversionPasses();
+#endif
   registerCinmConversionPasses();
   registerCimConversionPasses();
   registerCnmConversionPasses();

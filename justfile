@@ -14,7 +14,7 @@ upmem_dir := env_var_or_default("UPMEM_HOME", "")
 build_dir := "cinnamon/build"
 
 # Do a full build as if in CI. Only needed the first time you build the project.
-# Parameters: no-upmem enable-cuda enable-roc no-torch-mlir no-python-venv
+# Parameters: no-upmem enable-gpu enable-cuda enable-roc no-torch-mlir no-python-venv
 configure *ARGS:
     .github/workflows/build-ci.sh -reconfigure {{ARGS}}
 

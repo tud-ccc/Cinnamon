@@ -17,14 +17,6 @@
 
 Emerging compute-near-memory (CNM) and compute-in-memory (CIM) architectures have gained considerable attention in recent years, with some now commercially available. However, their programmability remains a significant challenge. These devices typically require very low-level code, directly using device-specific APIs, which restricts their usage to device experts. With Cinnamon, we are taking a step closer to bridging the substantial abstraction gap in application representation between what these architectures expect and what users typically write. The framework is based on MLIR, providing domain-specific and device-specific hierarchical abstractions. This repository includes the sources for these abstractions and the necessary transformations and conversion passes to progressively lower them. It emphasizes conversions to illustrate various intermediate representations (IRs) and transformations to demonstrate certain optimizations.
 
-<!-- 
-### Built With
-
-The CINM framework depends on a patched version of LLVM 18.1.6.
-Additionally, a number of software packages are required to build it, like CMake.  -->
-<!-- 
-* [![MLIR][mlir]][Mlir-url]
-* [![CMake][CMake]][React-url] -->
 
 <!-- GETTING STARTED -->
 ## Getting Started
@@ -33,23 +25,38 @@ This is an example of how you can build the framework locally.
 
 ### Prerequisites
 
-CINM depends on a patched version of `LLVM 18.1.6`.
-Additionally, a number of software packages are required to build it, like `CMake`. 
+CINM depends on a patched version of `LLVM 19.1.3`. This is built automatically.
+Additionally, a number of software packages are required to build it:
+- CMake (at least version 3.22)
+- [`just`](https://github.com/casey/just?tab=readme-ov-file#installation)
+- A somewhat recent Python installation (>=3.7?)
+
+On some systems you might need to update your C++ compiler or update the default, e.g. on Ubuntu 24.04:
+```sh
+sudo update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-13 70 --slave /usr/bin/g++ g++ /usr/bin/g++-13
+# Or use another compiler or gcc/g++ version supporting the C++ 20 standard.
+```
 
 ### Download and Build 
 
-The repository contains a script, `build.sh` that installs all needed dependencies and builds the sources.
+The repository contains a `justfile` that installs all needed dependencies and builds the sources.
 
 * Clone the repo
-   ```sh
-   git clone https://github.com/tud-ccc/Cinnamon.git
-   ```
-* Build the sources
-   ```sh
-   cd Cinnamon
-   chmod +x build.sh
-   ./build.sh
-   ```
+  ```sh
+  git clone https://github.com/tud-ccc/Cinnamon.git
+  ```
+* Set up the environment variables in a `.env`-file (in the root)
+  ```
+  # Example:
+  CMAKE_GENERATOR=Ninja
+  # You could add your own LLVM dir; the build script won't try to clone and build LLVM
+  LLVM_BUILD_DIR=/home/username/projects/Cinnamon/llvm/build/
+  ```
+* Download, configure, and build dependencies and the sources (without the torch-mlir frontend).
+  ```sh
+  cd Cinnamon
+  just configure -no-torch-mlir
+  ```
 
 <!-- USAGE EXAMPLES -->
 ## Usage
@@ -68,9 +75,9 @@ The user can also try running individual benchmarks by manually trying individua
 - [x] The `upmem` abstraction, its conversions and connection to the target
 - [x] The `tiling` transformation
 - [ ] `PyTorch` Front-end
-- [ ] The `xbar` abstraction, conversions and transformatons
+- [ ] The `xbar` abstraction, conversions and transformations
     - [ ] Associated conversions and transformations
-    - [ ] Establshing the backend connection
+    - [ ] Establishing the backend connection
 
 See the [open issues](https://github.com/tud-ccc/Cinnamon/issues) for a full list of proposed features (and known issues).
 
@@ -83,7 +90,7 @@ If you want to contribute in any way , that is also **greatly appreciated**.
 <!-- LICENSE -->
 ## License
 
-Distributed under the BSD 2-claues License. See `LICENSE.txt` for more information.
+Distributed under the BSD 2-clause License. See `LICENSE.txt` for more information.
 
 <!-- CONTACT -->
 ## Contributors

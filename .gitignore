@@ -1,7 +1,9 @@
 .cache
-.vscode
+/.vscode/
+/.idea/
 .directory
-.venv
-/llvm
-/torch-mlir
-/upmem
+/.venv/
+/llvm/
+/torch-mlir/
+/upmem/
+/.env
