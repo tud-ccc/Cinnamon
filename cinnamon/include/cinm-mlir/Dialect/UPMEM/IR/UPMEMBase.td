@@ -41,7 +41,15 @@ def UPMEM_Dialect : Dialect {
         // static AddressSpace getWorkgroupAddressSpace() { return AddressSpace::Workgroup; }
         // static AddressSpace getPrivateAddressSpace() { return AddressSpace::Private; }
     }];
-    // let dependentDialects = ["arith::ArithDialect"];
+
+    let dependentDialects = [
+        "mlir::scf::SCFDialect",
+        "mlir::arith::ArithDialect",
+        "mlir::func::FuncDialect",
+        "mlir::LLVM::LLVMDialect",
+        "mlir::memref::MemRefDialect",
+    ];
+
     let useDefaultAttributePrinterParser = 1;
     // let useDefaultTypePrinterParser = 1;
 }

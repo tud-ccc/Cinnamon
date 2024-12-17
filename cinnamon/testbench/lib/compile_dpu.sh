@@ -21,7 +21,7 @@ if [[ "$header" =~ $pat ]]; then
         bin_name="${BASH_REMATCH[3]}"
         bin_path=$(realpath "$OUTPATH/$bin_name")
 
-        command="'$dpuCompiler' -DNR_TASKLETS=$threads -D$var '$PROG' -o '$bin_path' '-I$curdir/dpu'"
+        command="'$dpuCompiler' -DNR_TASKLETS=$threads -D$var '$PROG' -o '$bin_path' '-I$curdir/dpu' -Wall -Wextra -Werror -Wno-unused-variable"
         echo $command
         eval "$command"
     fi
