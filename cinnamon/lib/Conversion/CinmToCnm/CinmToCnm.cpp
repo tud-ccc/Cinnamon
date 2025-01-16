@@ -27,6 +27,7 @@
 #include <mlir/Dialect/Utils/StructuredOpsUtils.h>
 #include <mlir/IR/AffineExpr.h>
 #include <mlir/IR/AffineMap.h>
+#include <mlir/IR/Attributes.h>
 #include <mlir/IR/Builders.h>
 #include <mlir/IR/BuiltinAttributeInterfaces.h>
 #include <mlir/IR/BuiltinAttributes.h>
@@ -572,6 +573,43 @@ struct ConvertElementWiseToCnm : public OpConversionPattern<CinmOp> {
   }
 };
 
+struct ConvertElementWiseUnaryToCnm : OpConversionPattern<cinm::Elementwise_Unary_Op> {
+  explicit ConvertElementWiseUnaryToCnm(MLIRContext *ctx) : OpConversionPattern(ctx) {
+    this->setHasBoundedRewriteRecursion();
+  }
+
+  LogicalResult matchAndRewrite(cinm::Elementwise_Unary_Op op,
+                                OpAdaptor adaptor,
+                                ConversionPatternRewriter &rewriter) const override {
+
+    ImplicitLocOpBuilder builder(op->getLoc(), rewriter);
+    cinm::ComputeOp computeBlock = getEnclosingComputeBlock(op);
+    auto workgroup = builder.create<cnm::WorkgroupOp>(computeBlock.getCnmWorkgroupType());
+
+    auto outputInit = builder.create<arith::ConstantOp>(op.getResult().getType(), builder.getZeroAttr(op.getResult().getType()));
+
+    SmallVector<Value, 1> newResults;
+    const auto conversionResult = convertCinmToCnm(
+        builder, op, workgroup.getResult(), computeBlock, {},
+        adaptor.getOperands(), ValueRange{outputInit}, op->getResults(),
+        newResults,
+        [&](ImplicitLocOpBuilder &builder, ValueRange inputs, ValueRange outputs) {
+
+          builder.create<linalg::ElemwiseUnaryOp>(TypeRange{}, ValueRange(inputs), ValueRange(outputs),
+            linalg::UnaryFnAttr::get(builder.getContext(), static_cast<linalg::UnaryFn>(op.getMethod())),
+            linalg::TypeFnAttr::get(builder.getContext(), linalg::TypeFn::cast_signed));
+        });
+
+    if (conversionResult.failed()) {
+      return failure();
+    }
+
+    rewriter.replaceOp(op, newResults);
+
+    return success();
+  }
+};
+
 LogicalResult computeScatterMapForGemm(cnm::BufferType bufferTyAB,
                                        int64_t rowsA, int64_t colsB,
                                        AffineMap &scatterA, AffineMap &scatterB,
@@ -894,6 +932,7 @@ void populateCinmRewritePatterns(RewritePatternSet &patterns,
                                           arith::DivFOp, false>>(ctx);
   patterns.insert<ConvertElementWiseToCnm<cinm::DivsOp, arith::DivSIOp,
                                           arith::DivFOp, true>>(ctx);
+  patterns.insert<ConvertElementWiseUnaryToCnm>(ctx);
   // matmul
   patterns.insert<ConvertCinmGemmToCnm>(ctx);
   patterns.insert<ConvertCinmGemvToCnm>(ctx);

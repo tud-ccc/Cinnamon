@@ -14,30 +14,22 @@
 #include "mlir/Dialect/EmitC/IR/EmitC.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
+#include "mlir/Dialect/Math/IR/Math.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/BuiltinTypes.h"
-#include "mlir/IR/Dialect.h"
 #include "mlir/IR/Operation.h"
 #include "mlir/Support/IndentedOstream.h"
 #include "mlir/Target/Cpp/CppEmitter.h"
-#include "llvm/ADT/DenseMap.h"
-#include "llvm/ADT/StringExtras.h"
-#include "llvm/ADT/StringMap.h"
 #include "llvm/ADT/TypeSwitch.h"
-#include "llvm/Support/Debug.h"
 #include "llvm/Support/FormatVariadic.h"
 #include <llvm/ADT/SmallVector.h>
-#include <llvm/IR/Constant.h>
 #include <llvm/IR/Constants.h>
-#include <llvm/IR/Intrinsics.h>
 #include <llvm/Support/Casting.h>
 #include <llvm/Support/raw_ostream.h>
 #include <mlir/IR/BuiltinAttributes.h>
-#include <mlir/IR/SymbolTable.h>
 #include <mlir/IR/Visitors.h>
-#include <mlir/Support/LLVM.h>
 #include <mlir/Support/LogicalResult.h>
 #include <string>
 #include <utility>
@@ -389,7 +381,7 @@ static LogicalResult printOperation(CppEmitter &emitter,
   if (arith::ConstantOp staticSize =
           dyn_cast<arith::ConstantOp>(size.getDefiningOp())) {
     size_t remainingElements =
-        staticSize.getValueAttr().dyn_cast<IntegerAttr>().getInt();
+        dyn_cast<IntegerAttr>(staticSize.getValueAttr()).getInt();
     size_t offset = 0;
     while (remainingElements > 0) {
       size_t chunkSize = std::min(2048lu / elementSize, remainingElements);
@@ -648,15 +640,26 @@ static LogicalResult printOperation(CppEmitter &emitter, arith::XOrIOp op) {
   return printBinaryOperation(emitter, op.getOperation(), "^");
 }
 
-static LogicalResult printOperation(CppEmitter &emitter, LLVM::ExpOp op) {
-  if (emitter.emitAssignPrefix(*op.getOperation()).failed()) {
+static LogicalResult printMathOperation(CppEmitter &emitter, Operation *op, StringRef mathOp) {
+  if (emitter.emitAssignPrefix(*op).failed()) {
     return failure();
   }
 
-  emitter.ostream() << "expf(" << emitter.getOrCreateName(op.getOperand())
-                    << ")";
+  emitter.ostream() << mathOp << "(" << emitter.getOrCreateName(op->getOperand(0)) << ")";
 
   return success();
+}
+
+static LogicalResult printOperation(CppEmitter &emitter, LLVM::ExpOp op) {
+  return printMathOperation(emitter, op.getOperation(), "expf");
+}
+
+static LogicalResult printOperation(CppEmitter &emitter, math::AbsFOp op) {
+  return printMathOperation(emitter, op.getOperation(), "absf");
+}
+
+static LogicalResult printOperation(CppEmitter &emitter, math::RsqrtOp op) {
+  return printMathOperation(emitter, op.getOperation(), "rsqrt");
 }
 
 static LogicalResult printOperation(CppEmitter &emitter,
@@ -1332,13 +1335,13 @@ LogicalResult CppEmitter::emitLabel(Block &block) {
   return success();
 }
 
-LogicalResult CppEmitter::emitOperation(Operation &op, bool trailingSemicolon) {
-  if (dyn_cast<arith::ConstantOp>(op)) {
+LogicalResult CppEmitter::emitOperation(Operation &operation, bool trailingSemicolon) {
+  if (dyn_cast<arith::ConstantOp>(operation)) {
     return success();
   }
 
   LogicalResult status =
-      llvm::TypeSwitch<Operation *, LogicalResult>(&op)
+      llvm::TypeSwitch<Operation *, LogicalResult>(&operation)
           // Builtin ops.
           .Case<upmem::UPMEMModuleOp>(
               [&](auto op) { return printOperation(*this, op); })
@@ -1456,6 +1459,8 @@ LogicalResult CppEmitter::emitOperation(Operation &op, bool trailingSemicolon) {
           .Case<arith::XOrIOp>(
               [&](auto op) { return printOperation(*this, op); })
           .Case<LLVM::ExpOp>([&](auto op) { return printOperation(*this, op); })
+          .Case<math::AbsFOp>([&](auto op) { return printOperation(*this, op); })
+          .Case<math::RsqrtOp>([&](auto op) { return printOperation(*this, op); })
           .Case<upmem::TaskletIDOp>(
               [&](auto op) { return printOperation(*this, op); })
           .Case<upmem::BaseMRAMAddrOp>(
@@ -1470,7 +1475,7 @@ LogicalResult CppEmitter::emitOperation(Operation &op, bool trailingSemicolon) {
               [&](auto op) { return printOperation(*this, op); })
           // [&](auto op) { skipSemicolon = true; return success(); })
           .Default([&](Operation *) {
-            return op.emitOpError("unable to find printer for op");
+            return operation.emitOpError("unable to find printer for op");
           });
 
   if (failed(status))

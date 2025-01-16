@@ -9,19 +9,14 @@
 #include "cinm-mlir/Target/UPMEMCpp/UPMEMCppEmitter.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
-#include "mlir/Dialect/ControlFlow/IR/ControlFlow.h"
-#include "mlir/Dialect/EmitC/IR/EmitC.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
+#include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/Dialect/Math/IR/Math.h"
-#include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
+#include "mlir/Dialect/SCF/IR/SCF.h"
 
-#include "mlir/IR/BuiltinOps.h"
-#include "mlir/IR/Dialect.h"
-#include "mlir/Target/Cpp/CppEmitter.h"
 #include "mlir/Tools/mlir-translate/Translation.h"
 #include "llvm/Support/CommandLine.h"
-#include "mlir/InitAllDialects.h"
 
 using namespace mlir;
 using namespace mlir::upmem_emitc;
@@ -45,6 +40,12 @@ void mlir::upmem_emitc::registerUPMEMCppTranslation() {
       },
       [](DialectRegistry &registry) {
         // clang-format off
+        registry.insert<arith::ArithDialect>();
+        registry.insert<func::FuncDialect>();
+        registry.insert<LLVM::LLVMDialect>();
+        registry.insert<math::MathDialect>();
+        registry.insert<memref::MemRefDialect>();
+        registry.insert<scf::SCFDialect>();
         registry.insert<upmem::UPMEMDialect>();
         // clang-format on
       });

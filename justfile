@@ -12,7 +12,7 @@ build_type := env_var_or_default("LLVM_BUILD_TYPE", "RelWithDebInfo")
 linker := env_var_or_default("CMAKE_LINKER_TYPE", "DEFAULT")
 upmem_dir := env_var_or_default("UPMEM_HOME", "")
 build_dir := "cinnamon/build"
-python37_dir := env_var("PYTHON_37_DIR")
+python310_dir := env_var("PYTHON_310_DIR")
 
 # Do a full build as if in CI. Only needed the first time you build the project.
 # Parameters: no-upmem enable-gpu enable-cuda enable-roc no-torch-mlir no-python-venv
@@ -75,7 +75,6 @@ cnm-to-upmem FILE *ARGS: (
     cinm-opt FILE
     "--convert-cnm-to-upmem"
     "--cse"
-    "--convert-math-to-llvm"
     "--upmem-outline-kernel"
     "--upmem-dedup-kernels"
     "--cse"
@@ -85,6 +84,7 @@ cnm-to-upmem FILE *ARGS: (
 upmem-to-llvm FILE *ARGS: (
     cinm-opt FILE
     "--mlir-print-debuginfo"
+    "--convert-math-to-llvm"
     "--convert-scf-to-cf"
     "--convert-cf-to-llvm"
     "--fold-memref-alias-ops"
@@ -119,19 +119,19 @@ translate-upmem-kernel-to-cpp FILE *ARGS: (
 )
 
 compile-upmem-kernels FILE OUTDIR:
-    bash "testbench/lib/compile_dpu.sh" {{FILE}} {{OUTDIR}}
+    bash "cinnamon/testbench/lib/compile_dpu.sh" {{FILE}} {{OUTDIR}}
 
 compile-upmem-runner *ARGS:
-    clang++ -g -c {{ARGS}}
+    /usr/bin/clang++ -g -c {{ARGS}}
 
 link-upmem-runner *ARGS:
-    clang++ -g {{ARGS}} -lUpmemDialectRuntime -fPIE -ldpu -ldpuverbose -L{{upmem_dir}}/lib -L{{build_dir}}/lib -I{{upmem_dir}}/include/dpu -rpath {{python37_dir}}
+    /usr/bin/clang++ -g {{ARGS}} -lUpmemDialectRuntime -fPIE -ldpu -ldpuverbose -L{{upmem_dir}}/lib -L{{build_dir}}/lib -I{{upmem_dir}}/include/dpu -rpath {{python310_dir}}
 
 remove-memref-alignment FILE:
 	sed -i 's/{alignment = 64 : i64} //' {{FILE}}
 
 build-transformer: \
-    (cinm-to-cnm "cinnamon/samples/asdf.mlir" "-o" "./transformer.cnm.mlir") \
+    (cinm-to-cnm "cinnamon/samples/transformer.mlir" "-o" "./transformer.cnm.mlir") \
     (build-transformer-from-cnm "./transformer.cnm.mlir")
 
 build-transformer-from-cnm FILE: \
@@ -142,8 +142,20 @@ build-transformer-from-cnm FILE: \
     (translate-upmem-kernel-to-cpp "./transformer.upmem.mlir" "-o" "./transformer.upmem.c") \
     (compile-upmem-kernels "./transformer.upmem.c" "cinnamon/build/samples") \
     (compile-upmem-runner "./transformer.ll" "-o" "cinnamon/build/samples/transformer.o") \
-    (compile-upmem-runner "./llama2.cpp" "-o" "cinnamon/build/samples/llama2.o") \
+    (compile-upmem-runner "cinnamon/samples/llama2.cpp" "-o" "cinnamon/build/samples/llama2.o") \
     (link-upmem-runner "cinnamon/build/samples/transformer.o" "cinnamon/build/samples/llama2.o" "-o" "cinnamon/build/samples/transformer")
+
+build-dorado: \
+    (cinm-to-cnm "cinnamon/samples/dorado/dorado.mlir" "-o" "./dorado.cnm.mlir") \
+    (cnm-to-upmem "./dorado.cnm.mlir" "-o" "./dorado.upmem.mlir") \
+    (remove-memref-alignment "./dorado.upmem.mlir") \
+    (upmem-to-llvm "./dorado.upmem.mlir" "-o" "./dorado.llvm.mlir") \
+    (translate-mlir-to-llvmir "./dorado.llvm.mlir" "-o" "./dorado.ll") \
+    (translate-upmem-kernel-to-cpp "./dorado.upmem.mlir" "-o" "./dorado.upmem.c") \
+    (compile-upmem-kernels "./dorado.upmem.c" "cinnamon/build/samples") \
+    (compile-upmem-runner "./dorado.ll" "-o" "cinnamon/build/samples/dorado.o") \
+    (compile-upmem-runner "cinnamon/samples/dorado/dorado.cpp" "-o" "cinnamon/build/samples/dorado_host.o" "-fopenmp") \
+    (link-upmem-runner "cinnamon/build/samples/dorado.o" "cinnamon/build/samples/dorado_host.o" "-o" "cinnamon/build/samples/dorado" "-fopenmp")
 
 cinm-vulkan-runner FILE *ARGS:
     {{build_dir}}/bin/cinm-vulkan-runner {{FILE}} \

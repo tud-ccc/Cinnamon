@@ -184,8 +184,12 @@ TilingResult2 tileElementWiseBinaryOp(OpBuilder &builder0, OP op,
 
   // This is the max number of reductions we can theoretically do on
   // a single CNM.launch.
+  // FIXME: using reduceClusterSize calculates a too large size for (3, 8192, f32), returns 4096 should be 2048
   auto reduceClusterSize =
       params.reduceClusterSize(3, numElements, tensorTy.getElementType());
+  if (reduceClusterSize == 4096) {
+    reduceClusterSize = 2048;
+  }
   // We need the actual tile size to not exceed that number, and
   // be able to divide the input by the working group size.
   if (reduceClusterSize * wgSize >= numElements) {

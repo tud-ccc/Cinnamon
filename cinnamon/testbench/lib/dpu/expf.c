@@ -66,3 +66,19 @@ float expf(float a) {
     r = s * s;
   return r;
 }
+
+float rsqrt(float number)
+{
+  union {
+    float        f;
+    unsigned int i;
+  } conv = { .f = number };
+  conv.i  = 0x5f37599e - (conv.i >> 1);
+  conv.f *= 1.5F - (number * 0.5F * conv.f * conv.f);
+  conv.f *= 1.5F - (number * 0.5F * conv.f * conv.f);
+  return conv.f;
+}
+
+float absf(float a) {
+  return a < 0 ? -a : a;
+}
