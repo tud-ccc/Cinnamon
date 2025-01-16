@@ -38,16 +38,16 @@ TilingResult2 ReduceOp::convertToTiledOps(OpBuilder &builder,
   auto method = getMethod();
   if (method == ReduceMethod::ADD) {
     return TilingResult2({createVectorReduceAdd(builder, getLoc(), getOperand(),
-                                                reduceClusterSize)});
+                                                getDimensionsAttr(), reduceClusterSize)});
   } else if (method == ReduceMethod::MUL) {
     return TilingResult2({createVectorReduceMul(builder, getLoc(), getOperand(),
-                                                reduceClusterSize)});
+                                                getDimensionsAttr(), reduceClusterSize)});
   } else if (method == ReduceMethod::MAX) {
     return TilingResult2({createVectorReduceMax(builder, getLoc(), getOperand(),
-                                                reduceClusterSize)});
+                                                getDimensionsAttr(), reduceClusterSize)});
   } else if (method == ReduceMethod::MIN) {
     return TilingResult2({createVectorReduceMin(builder, getLoc(), getOperand(),
-                                                reduceClusterSize)});
+                                                getDimensionsAttr(), reduceClusterSize)});
   } else {
     abort();
   }

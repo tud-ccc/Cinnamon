@@ -5,7 +5,6 @@
 // n_blocks: 18 (layers)
 // n_heads: 8
 // head_size: 64
-// vocab_size: 32000 > should be deleted?
 // seq_len T: 512
 
 //func.func @forward(%token : index, %pos : index,
@@ -212,8 +211,7 @@ func.func @mha(%q: tensor<512xf32>, %kc: tensor<512x512xf32>, %vc: tensor<512x51
 			%k = tensor.extract_slice %kc [%i, %hoff] [1, 64] [1, 1] : tensor<512x512xf32> to tensor<64xf32>
 			%score = cinm.compute attributes { workgroupShape = array<i64: 1,1,8> } -> f32 {
 				%0 = cinm.op.mul %qs, %k : tensor<64xf32>
-				//%1 = cinm.op.reduce add (%0) { dimensions = array<i64: 0> } : tensor<64xf32> -> f32
-				%1 = arith.constant 1.0 : f32
+				%1 = cinm.op.reduce add (%0) : tensor<64xf32> -> f32
 				%2 = arith.divf %1, %scale : f32
 				cinm.yield %2 : f32
 			}
@@ -253,7 +251,7 @@ func.func @rmsnorm(%v : tensor<512xf32>, %w : tensor<512xf32>) -> tensor<512xf32
 
 	%r = cinm.compute attributes { workgroupShape = array<i64: 1,1,16> } -> tensor<512xf32> {
 		%0 = cinm.op.mul %v, %v : tensor<512xf32>
-		%ss = cinm.op.reduce add (%0) { dimensions = array<i64: 0> } : tensor<512xf32> -> f32
+		%ss = cinm.op.reduce add (%0) : tensor<512xf32> -> f32
 		%s0 = arith.divf %ss, %len : f32
 		%s1 = arith.addf %s0, %epsilon : f32
 		%s = math.rsqrt %s1 : f32
@@ -271,7 +269,7 @@ func.func @rmsnorm_large(%v : tensor<262144xf32>, %w : tensor<262144xf32>) -> te
 
 	%r = cinm.compute attributes { workgroupShape = array<i64: 1,64,16> } -> tensor<262144xf32> {
 		%0 = cinm.op.mul %v, %v : tensor<262144xf32>
-		//%ss = cinm.op.reduce add (%0) { dimensions = array<i64: 0> } : tensor<262144xf32> -> f32
+		//%ss = cinm.op.reduce add (%0) : tensor<262144xf32> -> f32
 		%ss = arith.constant 1.0 : f32
 		%s0 = arith.divf %ss, %len : f32
 		%s1 = arith.addf %s0, %epsilon : f32
@@ -291,8 +289,7 @@ func.func @rmsnorm_batched(%v : tensor<512x512xf32>, %w : tensor<512xf32>) -> te
 
 	%r = cinm.compute attributes { workgroupShape = array<i64: 1,1,16> } -> tensor<512x512xf32> {
 		%0 = cinm.op.mul %v, %v : tensor<512x512xf32>
-		//%ss0 = cinm.op.reduce add (%0) { dimensions = array<i64: 1> } : tensor<512x512xf32> -> tensor<512xf32>
-		%ss0 = tensor.splat %c1 : tensor<512xf32>
+		%ss0 = cinm.op.reduce add (%0) : tensor<512x512xf32> -> tensor<512xf32>
 		%ss1 = cinm.op.divs %ss0, %len : tensor<512xf32>
 		%ss2 = cinm.op.adds %ss1, %epsilon : tensor<512xf32>
 		%s = cinm.op.element_wise rsqrt (%ss2) : tensor<512xf32>
@@ -311,11 +308,11 @@ func.func @rmsnorm_batched(%v : tensor<512x512xf32>, %w : tensor<512xf32>) -> te
 
 func.func @softmax(%vec : tensor<512xf32>) -> tensor<512xf32> {
 	%r = cinm.compute attributes { workgroupShape = array<i64: 1,8,16> } -> tensor<512xf32> {
-		%max = cinm.op.reduce max (%vec) { dimensions = array<i64: 0> } : tensor<512xf32> -> f32
+		%max = cinm.op.reduce max (%vec) : tensor<512xf32> -> f32
 		%t = cinm.op.subs %vec, %max : tensor<512xf32>
 		%shape = tensor.empty() : tensor<512xf32>
 		%e = linalg.exp ins(%t : tensor<512xf32>) outs(%shape : tensor<512xf32>) -> tensor<512xf32>
-		%s = cinm.op.reduce add (%e) { dimensions = array<i64: 0> } : tensor<512xf32> -> f32
+		%s = cinm.op.reduce add (%e) : tensor<512xf32> -> f32
 		%r = cinm.op.divs %e, %s : tensor<512xf32>
 		cinm.yield %r : tensor<512xf32>
 	}
@@ -329,13 +326,11 @@ func.func @softmax_batched(%x: tensor<512x512xf32>) -> tensor<512x512xf32> {
 
     %r = cinm.compute attributes { workgroupShape = array<i64: 1,8,16> } -> tensor<512x512xf32> {
         %shape = tensor.empty() : tensor<512x512xf32>
-        // FIXME: do max only along feature dim, not seq_len dim
-        %maxs = cinm.op.reduce max (%x) { dimensions = array<i64: 1> } : tensor<512x512xf32> -> tensor<512xf32>
+        %maxs = cinm.op.reduce max (%x) : tensor<512x512xf32> -> tensor<512xf32>
         %maxs_bc = linalg.broadcast ins(%maxs : tensor<512xf32>) outs(%shape : tensor<512x512xf32>) dimensions = [1]
         %tmp = cinm.op.sub %x, %maxs_bc : tensor<512x512xf32>
         %e = linalg.exp ins(%tmp : tensor<512x512xf32>) outs(%shape : tensor<512x512xf32>) -> tensor<512x512xf32>
-		// Ideal case: reduce along the batch size dimension only. Currently not possible.
-		%summed = cinm.op.reduce add (%e) { dimensions = array<i64: 1> } : tensor<512x512xf32> -> tensor<512xf32>
+		%summed = cinm.op.reduce add (%e) : tensor<512x512xf32> -> tensor<512xf32>
 		%summed_bc = linalg.broadcast ins(%summed : tensor<512xf32>) outs(%shape : tensor<512x512xf32>) dimensions = [1]
         %res = cinm.op.div %e, %summed_bc : tensor<512x512xf32>
         cinm.yield %res : tensor<512x512xf32>

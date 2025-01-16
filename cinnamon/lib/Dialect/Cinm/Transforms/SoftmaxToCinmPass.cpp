@@ -41,7 +41,7 @@ struct SoftmaxToCinmPattern : public OpConversionPattern<linalg::SoftmaxOp> {
 
     rewriter.setInsertionPointToEnd(&computeOp.getBody().emplaceBlock());
     const Value max = rewriter.create<cinm::ReduceOp>(
-        loc, inputType.getElementType(), ReduceMethod::MAX, input);
+        loc, inputType.getElementType(), ReduceMethod::MAX, input, /*dims=*/0);
     const Value t = rewriter.create<cinm::SubsOp>(loc, input, max);
     const Value init = rewriter.create<tensor::EmptyOp>(
         loc, inputType.getShape(), inputType.getElementType());
@@ -54,7 +54,7 @@ struct SoftmaxToCinmPattern : public OpConversionPattern<linalg::SoftmaxOp> {
                 ValueRange{t}, ValueRange{init})
             .getResult(0);
     const Value s = rewriter.create<cinm::ReduceOp>(
-        loc, inputType.getElementType(), ReduceMethod::ADD, e);
+        loc, inputType.getElementType(), ReduceMethod::ADD, e, /*dims=*/0);
     const Value result = rewriter.create<cinm::DivsOp>(loc, e, s);
     rewriter.create<cinm::YieldOp>(loc, ValueRange{result});
     return success();
