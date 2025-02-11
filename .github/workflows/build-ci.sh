@@ -171,15 +171,8 @@ if [[ $checkout_and_build_llvm -eq 1 ]]; then
   reconfigure_llvm=0
   if [ ! -d "$llvm_path" ]; then
     status "Checking out LLVM"
-    git clone --branch llvmorg-19.1.3 --depth 1 https://github.com/llvm/llvm-project "$llvm_path"
+    git clone --branch llvmorg-19.1.7 --depth 1 https://github.com/llvm/llvm-project "$llvm_path"
 
-    status "Applying patches to LLVM"
-    cd "$llvm_path"
-    patch_dir="$project_root/patches/llvm"
-    for patch in $(ls $patch_dir); do
-      git apply $patch_dir/$patch
-    done
-    
     reconfigure_llvm=1
   fi
 
