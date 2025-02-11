@@ -88,7 +88,7 @@ bench NAME: (doNinja "cinm-opt")
     #!/bin/bash
     set -e
     source "{{upmem_dir}}/upmem_env.sh"
-    cd testbench
+    cd cinnamon/testbench
     export BENCH_NAME="{{NAME}}"
     make clean && make {{NAME}}-exe
     cd generated2/{{NAME}}/bin
