@@ -64,7 +64,7 @@ int64_t TilingParameters::reduceClusterSize(int64_t numBuffers,
   // smaller than maxSizePerBuffer
   for (int i = maxSizePerBuffer; i > 0; i--) {
     if (reducedElements % i == 0)
-      return i;
+      return i / 2; // FIXME: why is this necessary, i.e. why is the cluster size too big.
   }
   return 1;
 }
@@ -183,11 +183,17 @@ Value createVectorReduce(OpBuilder &builder, Location loc, Value inputTensor,
     assert(dims.size() == 1 && "more than 1 reduction dim is not (yet) supported");
     int64_t dim = dims[0];
     if (dim < 0) {
+      if (dim < -vectorType.getRank()) {
+        emitError(loc, "Negative reduction dim (" + std::to_string(dim) + ") must be in [-input rank, 0)");
+        assert(false && "negative dim must be in [-input rank, 0)");
+      }
       // Indexing from back, e.g. dim=-1 -> rank(2) + dim(-1) = new dim(1)
       dim = vectorType.getRank() + dim;
-      assert(dim >= 0 && "negative dim must be in [-input rank, 0)");
     }
-    assert(dim >= 0 && "dim must be in [0, input rank)");
+    if (dim > vectorType.getRank()) {
+      emitError(loc, "Reduction dim (" + std::to_string(dim) + ") must be in [0, input rank)");
+      assert(false && "dim must be in [0, input rank)");
+    }
 
     const int64_t vectorSize = vectorType.getDimSize(dim);
     const Type elementType = vectorType.getElementType();
@@ -249,9 +255,23 @@ Value createVectorReduce(OpBuilder &builder, Location loc, Value inputTensor,
       // Reshape (collapse reduction dim) and return.
       // TODO: check simpler implementation that just drops shape[dim] since it's 1 anyway.
 
-      auto vec = vectorType.getShape().vec();
-      vec.erase(vectorType.getShape().vec().begin() + dim);
-      auto expectedOutputShape = ArrayRef(vec);
+      // auto vec = vectorType.getShape().vec();
+      // vec.erase(vectorType.getShape().vec().begin() + dim);
+      // auto expectedOutputShape = ArrayRef(vec);
+      long outshape[vectorType.getShape().size() - 1];
+      for (size_t i = 0; i < vectorType.getShape().size(); i++) {
+        if (i < dim) {
+          outshape[i] = vectorType.getShape()[i];
+        } else if (i > dim) {
+          outshape[i - 1] = vectorType.getShape()[i];
+        }
+      }
+      auto expectedOutputShape = ArrayRef(outshape, vectorType.getShape().size() - 1);
+
+      // if (expectedOutputShape.empty()) { // Rank == 0
+      //   // Extract scalar result of reducing vector to scalar.
+      //   return builder.create<tensor::ExtractOp>(loc, inputTensor, ValueRange{builder.create<arith::ConstantOp>(loc, builder.getIndexAttr(0))});
+      // }
 
       auto shape = createMLIRValueFromArrayRef(builder, loc, expectedOutputShape);
       auto result = builder.create<tensor::ReshapeOp>(loc, RankedTensorType::get(expectedOutputShape, vectorType.getElementType()), inputTensor, shape);
@@ -348,7 +368,7 @@ Value createVectorReduceMax(OpBuilder &builder, Location loc, Value vector,
       cast<RankedTensorType>(vector.getType()).getElementType();
   if (FloatType floatType = dyn_cast<FloatType>(elementType)) {
     const TypedAttr minValAttr = FloatAttr::get(
-        elementType, -APFloat::getInf(floatType.getFloatSemantics()));
+        elementType, APFloat::getInf(floatType.getFloatSemantics(), true));
     const Value init = builder.create<arith::ConstantOp>(loc, minValAttr);
     return createVectorReduce<arith::MaximumFOp>(builder, loc, vector, init,
                                                  dims, clusterSize);

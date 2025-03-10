@@ -120,14 +120,14 @@ void free_run_state(RunState *s) {
 }
 
 void create_rope_freqs(RunState *s, Config *p) {
-  const float theta = 10000.0f;
-  const int64_t max_seq_len = 2048;
+  constexpr static float theta = 10000.0f;
+  constexpr static uint64_t max_seq_len = 2048;
 
-  double *vec = (double *)calloc(p->dim / 2, sizeof(double));
+  double *vec = static_cast<double *>(calloc(p->dim / 2, sizeof(double)));
   if (!vec) {fprintf(stderr, "malloc failed!\n"); exit(EXIT_FAILURE);}
 
-  for (int i = 0; i < p->dim / 2; i++) {
-    double a = i * 2;
+  for (uint32_t i = 0; i < p->dim / 2; i++) {
+    const double a = i * 2;
     vec[i] = 1.0 / std::pow(static_cast<double>(theta), a / static_cast<double>(p->dim));
   }
 
@@ -136,8 +136,8 @@ void create_rope_freqs(RunState *s, Config *p) {
   float *cos_freqs = (float *)calloc(max_seq_len * p->dim / 2, sizeof(float));
   float *sin_freqs = (float *)calloc(max_seq_len * p->dim / 2, sizeof(float));
   if (!cos_freqs || !sin_freqs) {fprintf(stderr, "malloc failed!\n"); exit(EXIT_FAILURE);}
-  for (int i = 0; i < max_seq_len; i++) {
-    for (int j = 0; j < p->dim / 2; j++) {
+  for (uint32_t i = 0; i < max_seq_len; i++) {
+    for (uint32_t j = 0; j < p->dim / 2; j++) {
       cos_freqs[i * p->dim / 2 + j] = (float) std::cos(i * vec[j]);
       sin_freqs[i * p->dim / 2 + j] = (float) std::sin(i * vec[j]);
     }
@@ -145,6 +145,8 @@ void create_rope_freqs(RunState *s, Config *p) {
 
   s->cos_freqs = cos_freqs;
   s->sin_freqs = sin_freqs;
+
+  free(vec);
 }
 
 void memory_map_weights(TransformerWeights *w, Config *p, float *ptr, ssize_t file_size) {
@@ -188,12 +190,12 @@ void read_checkpoint(char *checkpoint, Config *config,
     fprintf(stderr, "Couldn't open file %s\n", checkpoint);
     exit(EXIT_FAILURE);
   }
-  uint32_t *magic_and_version = (uint32_t *) calloc(2, sizeof(uint32_t));
+  auto magic_and_version = static_cast<uint32_t *>(calloc(2, sizeof(uint32_t)));
   if (fread(magic_and_version, sizeof(uint32_t), 2, file) != 2) {
     fprintf(stderr, "Couldn't read magic number and version from file %s\n", checkpoint);
     exit(EXIT_FAILURE);
   }
-  if ((magic_and_version[0] != 0x616b3432) || (magic_and_version[1] != 1)) {
+  if (magic_and_version[0] != 0x616b3432 || magic_and_version[1] != 1) {
     fprintf(stderr, "Wrong magic number or incompatible version detected in file %s.\nMagic: %u; version: %d", checkpoint, magic_and_version[0], magic_and_version[1]);
   }
   // read in the config header
@@ -278,6 +280,7 @@ float *forward(uint64_t index, uint64_t pos, float *key_cache, float *value_cach
                const float *rms_final_weight, const float *wcls);
 
 float *mha(const float *q, const float *kc, const float *vc, int64_t pos);
+float *attn(const float *q, const float *k, const float *v);
 
 // v: tensor<512xf32>; w: tensor<512xf32>.
 float *rmsnorm(const float *v, const float *w);
@@ -286,13 +289,14 @@ float *rmsnorm_large(const float *v, const float *w);
 // v: tensor<512x512xf322> (seq_len x dim); w: tensor<512xf32> (dim).
 float *rmsnorm_batched(const float *v, const float *w);
 float *softmax(const float *x);
+float *softmax_batched(const float *x);
 }
 
 // Matrix-vector multiplication: W @ x -> xout.
 // xout: pointer to output data (d,);
 // x: input data vector (n,);
 // w: weight matrix (d, n);
-void matmul(float *xout, float *x, float *w, int A_cols, int A_rows) {
+void matmul(float *xout, const float *x, const float *w, const int A_cols, const int A_rows) {
   // W (d,n) @ x (n,) -> xout (d,)
   // by far the most amount of time is spent inside this little function
   int i;
@@ -310,7 +314,7 @@ void matmul(float *xout, float *x, float *w, int A_cols, int A_rows) {
 // A: (A_rows x A_cols);
 // B: (A_cols x B_cols);
 // C: (A_rows x B_cols).
-static void gemm(float *A, float *B, float *C, const int64_t A_rows, const int64_t A_cols, const int64_t B_cols,
+static void gemm(const float *A, const float *B, float *C, const int64_t A_rows, const int64_t A_cols, const int64_t B_cols,
                  const int64_t A_rows_offset = 0, const int64_t A_cols_offset = 0, const int64_t B_cols_offset = 0,
                  int64_t A_rows_end = -1, int64_t A_cols_end = -1, int64_t B_cols_end = -1) {
   //printf("GEMM   with A_rows = %ld, A_cols = %ld, B_cols = %ld\n", A_rows, A_cols, B_cols);
@@ -338,7 +342,7 @@ static void gemm(float *A, float *B, float *C, const int64_t A_rows, const int64
 // A: (A_rows x A_cols);
 // B: (B_rows x A_cols);
 // C: (A_rows x B_rows).
-static void gemm_t(float *A, float *B, float *C, const int64_t A_rows, const int64_t A_cols, const int64_t B_rows,
+static void gemm_t(const float *A, const float *B, float *C, const int64_t A_rows, const int64_t A_cols, const int64_t B_rows,
                    const int64_t A_rows_offset = 0, const int64_t A_cols_offset = 0, const int64_t B_rows_offset = 0,
                    int64_t A_rows_end = -1, int64_t A_cols_end = -1, int64_t B_rows_end = -1) {
   //printf("GEMM_T with A_rows = %ld, A_cols = %ld, B_rows = %ld\n", A_rows, A_cols, B_rows);
@@ -365,37 +369,37 @@ static void gemm_t(float *A, float *B, float *C, const int64_t A_rows, const int
   }
 }
 
-void rmsnorm_cpu(float *out, float *x, float *weight, int size) {
-  // calculate sum of squares
-  float ss = 0.0f;
-  for (int j = 0; j < size; j++) {
-    ss += x[j] * x[j];
+void rmsnorm_cpu(float *out, const float *x, const float *weight, const int size, const int seq_len = 1) {
+  for (int seqidx = 0; seqidx < seq_len; seqidx++) {
+    const int offset = seqidx * size;
+    // calculate sum of squares
+    float ss = 0.0f;
+    for (int j = 0; j < size; j++) {
+      ss += x[offset + j] * x[offset + j];
+    }
+    ss /= size;
+    ss += 1e-5f;
+    ss = 1.0f / sqrtf(ss);
+    // normalize and scale
+    for (int j = 0; j < size; j++) {
+      out[offset + j] = weight[j] * (ss * x[offset + j]);
+    }
   }
-  ss /= size;
-  ss += 1e-5f;
-  ss = 1.0f / sqrtf(ss);
-  // normalize and scale
-  for (int j = 0; j < size; j++) {
-    out[j] = weight[j] * (ss * x[j]);
+}
+
+void rmsnorm_upmem(float *out, const float *x, const float *weight, const int size, const int seq_len = 1) {
+  assert(size == 512 && "Size is hardcoded to 512 in UPMEM kernel");
+  for (int seqidx = 0; seqidx < seq_len; seqidx++) {
+    float *r = rmsnorm(x + seqidx * size, weight);
+    memcpy(out + seqidx * size, r, size * sizeof(float));
+    free(r);
   }
 }
 
-// TODO: add support for extra dim (sequence length) and ensure RMS is only taken and used along that dim.
-void rmsnorm_upmem(float *out, float *x, float *weight, int size) {
-  float *r = rmsnorm(x, weight);
-  memcpy(out, r, size * sizeof(float));
-  free(r);
-}
-
-void rmsnorm_upmem_large(float *out, float *x, float *weight, int size, int extra_dim_size = 1) {
-  float *r = rmsnorm_large(x, weight);
-  memcpy(out, r, size * extra_dim_size * sizeof(float));
-  free(r);
-}
-
-void rmsnorm_upmem_batched(float *out, float *x, float *weight, int size, int extra_dim_size = 1) {
+void rmsnorm_upmem_batched(float *out, const float *x, const float *weight, const int size, const int seq_len) {
+  assert(size == 512 && seq_len == 512 && "Size is hardcoded to 512x512 in UPMEM kernel");
   float *r = rmsnorm_batched(x, weight);
-  memcpy(out, r, size * extra_dim_size * sizeof(float));
+  memcpy(out, r, size * seq_len * sizeof(float));
   free(r);
 }
 
@@ -421,13 +425,20 @@ void softmax_cpu(float *x, int size, int extra_dim_size = 1) {
   }
 }
 
-// TODO: add support for extra dim in CINM kernel and ensure max is only taken and normalized along that dim.
-void softmax_upmem(float *x, int size, int extra_dim_size = 1) {
+void softmax_upmem(float *x, const int size, const int extra_dim_size = 1) {
+  assert(size == 512 && "Size is hardcoded to 512 in UPMEM kernel");
   for (int dim = 0; dim < extra_dim_size; dim++) {
-    float *r = softmax(x);
+    float *r = softmax(x + dim * size);
     memcpy(x + dim * size, r, size * sizeof(float));
     free(r);
   }
+}
+
+void softmax_upmem_batched(float *x, const int size, const int extra_dim_size) {
+  assert(size == 512 && extra_dim_size == 512 && "Size is hardcoded to 512x512 in UPMEM kernel");
+  float *r = softmax_batched(x);
+  memcpy(x, r, size * extra_dim_size * sizeof(float));
+  free(r);
 }
 
 // x: output; q/k/v: inputs; qb/qe: query begin/end indices; kvb/kve: key/value begin/end indices.
@@ -435,31 +446,50 @@ void scaled_dot_product_attention(float *x, float *q, float *k, float *v, int qb
   // q/k/v is NHTD (batch size, heads, seq_len, head size)
   float *matmul_qk = (float *) malloc(seq_len * seq_len * sizeof(float));
 
+  gemm(q, k, x, seq_len, seq_len, seq_len);
+  return;
+
   float sqrt_d_k = std::sqrt(head_size);
 
   for (int h = 0; h < heads; h++) {
     memset(matmul_qk, 0, seq_len * seq_len * sizeof(float));
-    gemm_t(q + h * head_size, k + h * head_size, matmul_qk,
-           seq_len, head_size, seq_len,
-           qb, 0, kvb,
-           qe, head_size, kve);
+//    gemm_t(q + h * head_size, k + h * head_size, matmul_qk,
+//           seq_len, head_size, seq_len,
+//           qb, 0, kvb,
+//           qe, head_size, kve);
+    // First, transpose k tensor<512x64xf32> -> tensor<64x512xf32>, then
+    // GEMM tensor<512x64xf32>, tensor<64x512xf32> -> tensor<512x512xf32>
+    gemm_t(q, k, /*out=*/matmul_qk,
+           seq_len, heads * head_size, seq_len,
+           0, h * head_size, 0, 512, (h+1) * head_size, 512);
 
+    //printf("tmp result: %f, %f, %f\n", matmul_qk[0], matmul_qk[1], matmul_qk[2]);
     for (int i = 0; i < seq_len * seq_len; i++) {
       matmul_qk[i] /= sqrt_d_k;
     }
 
     // Performs softmax along last dim only
     softmax_cpu(matmul_qk, seq_len, seq_len);
+//    softmax_upmem_batched(matmul_qk, heads * head_size, seq_len);
 
     // x.slice(-2 (T), qb, qe)
-    gemm(matmul_qk, v + h * head_size, x + h * head_size + qb,
-         seq_len, seq_len, head_size,
-         qb, kvb, 0,
-         qe, kve, head_size);
+//    gemm(matmul_qk, v + h * head_size, x + h * head_size + qb,
+//         seq_len, seq_len, head_size,
+//         qb, kvb, 0,
+//         qe, kve, head_size);
+    gemm(matmul_qk, v, x, // TODO: check x indexing
+         seq_len, seq_len, heads * head_size,
+         0, 0, h * head_size, 512, 512, (h+1) * head_size);
   }
 }
 
-void mha_cpu(float *x, float *att, float *qkv, int seq_len, int num_heads, int head_size) {
+void attn_upmem(float *out, float *q, float *k, float *v) {
+  float *r = attn(q, k, v);
+  memcpy(out, r, 512 * 512 * sizeof(float));
+  free(r);
+}
+
+void mha_cpu(float *x, float *qkv, int seq_len, int num_heads, int head_size) {
   int dim = num_heads * head_size;
   float *q = qkv;
   float *k = qkv + dim * seq_len;
@@ -478,7 +508,7 @@ void mha_cpu(float *x, float *att, float *qkv, int seq_len, int num_heads, int h
     int qe = std::min(seq_len, qb + elems_per_split);
     int kvb = std::max(0, qb - win_lower);
     int kve = std::min(seq_len, qe + win_upper);
-    //printf("qb %d, qe %d, kvb %d, kve %d\n", qb, qe, kvb, kve);
+    printf("qb %d, qe %d, kvb %d, kve %d\n", qb, qe, kvb, kve);
     // qkv is now supposed to be 3NHTD ({Q|K|V}, batch size, heads, seq_len, head size)
 
     // x.slice(-2 {seq_len dim}, qb, qe) =
@@ -486,11 +516,10 @@ void mha_cpu(float *x, float *att, float *qkv, int seq_len, int num_heads, int h
   }
 }
 
-void mha_upmem(float *x, float *att, float *q, float *kc, float *vc,
-               int64_t pos) {
-  float *r = mha(q, kc, vc, pos);
-  memcpy(x, r, 288 * sizeof(float));
-  free(r);
+void mha_upmem(float *x, float *q, float *kc, float *vc, int64_t pos) {
+//  float *r = mha(q, kc, vc, pos);
+//  memcpy(x, r, 288 * sizeof(float));
+//  free(r);
 }
 
 /////-----------------------
@@ -509,9 +538,9 @@ float *forward2(Transformer *transformer, float *input) {
   // TODO: implement convs
 
   // forward all the layers
-  for (unsigned int l = 0; l < p->n_layers; l++) {
+  for (uint32_t l = 0; l < p->n_layers; l++) {
     if (l == 0) {
-      for (int i = 0; i < p->dim * p->seq_len; i++) {
+      for (uint32_t i = 0; i < p->dim * p->seq_len; i++) {
         s->x[i] = input[i];
       }
     }
@@ -524,8 +553,8 @@ float *forward2(Transformer *transformer, float *input) {
 
     // RoPE relative positional encoding: complex-valued rotate q and k in each head (ROPE)
     if (l == 0) printf("  ROPE...      x[0] = %f\n", s->qkv[0]);
-    for (int i = 0; i < p->seq_len; i++) {
-      for (int j = 0; j < p->dim; j += 2) {
+    for (uint32_t i = 0; i < p->seq_len; i++) {
+      for (uint32_t j = 0; j < p->dim; j += 2) {
         int head_dim = j % head_size;
         float cos_factor = s->cos_freqs[i * p->dim / 2 + j];
         float sin_factor = s->sin_freqs[i * p->dim / 2 + j];
@@ -539,7 +568,7 @@ float *forward2(Transformer *transformer, float *input) {
 
     // MHA
     if (l == 0) printf("  MHA...       x[0] = %f\n", s->qkv[0]);
-    mha_cpu(s->xb, s->att, s->qkv, p->seq_len, p->n_heads, head_size);
+    mha_cpu(s->xb, s->qkv, p->seq_len, p->n_heads, head_size);
 
     // final matmul to get the output of the attention
     if (l == 0) printf("  OUTPROJ...   x[0] = %f\n", s->x[0]);
@@ -547,15 +576,13 @@ float *forward2(Transformer *transformer, float *input) {
          p->dim, p->dim, p->seq_len); // dims
 
     // residual connection back into x
-    for (int i = 0; i < p->seq_len * p->dim; i++) {
+    for (uint32_t i = 0; i < p->seq_len * p->dim; i++) {
       s->x[i] += s->xb[i] * deepnorm_alpha;
     }
 
     // Attention rmsnorm (NORM1)
     if (l == 0) printf("  RES&NORM1... x[0] = %f\n", s->xb[0]);
-    for (int i = 0; i < p->seq_len; i++) {
-      rmsnorm_cpu(s->x + i * p->dim, s->xb + i * p->dim, w->rms1 + l * p->dim, p->dim);
-    }
+    rmsnorm_upmem_batched(s->x, s->xb, w->rms1 + l * p->dim, p->dim, p->seq_len);
 
     // Gated MLP
 
@@ -570,9 +597,9 @@ float *forward2(Transformer *transformer, float *input) {
     gemm(w->w1 + l * p->dim * p->hidden_dim * 2, s->x, s->hb, p->hidden_dim * 2, p->dim, p->seq_len);
 
     if (l == 0) printf("  SWIGLU...    x[0] = %f\n", s->hb[0]);
-    for (int i = 0; i < p->seq_len; i++) {
+    for (uint32_t i = 0; i < p->seq_len; i++) {
       // SwiGLU non-linearity
-      for (int j = 0; j < p->hidden_dim; j++) {
+      for (uint32_t j = 0; j < p->hidden_dim; j++) {
         float val = s->hb[i * p->hidden_dim * 2 + j];
         // silu(x)=x*σ(x), where σ(x) is the logistic sigmoid
         val *= (1.0f / (1.0f + expf(-val)));
@@ -582,7 +609,7 @@ float *forward2(Transformer *transformer, float *input) {
     }
 
     if (l == 0) printf("  FC2...       x[0] = %f\n", s->hb[0]);
-    for (int i = 0; i < p->seq_len; i++) {
+    for (uint32_t i = 0; i < p->seq_len; i++) {
       // final matmul to get the output of the ffn
       matmul(s->xb + i * p->dim,
              s->hb + i * p->hidden_dim * 2,
@@ -591,7 +618,7 @@ float *forward2(Transformer *transformer, float *input) {
     }
 
     // residual connection
-    for (int i = 0; i < p->seq_len * p->dim; i++) {
+    for (uint32_t i = 0; i < p->seq_len * p->dim; i++) {
       s->xb[i] += s->x[i] * deepnorm_alpha;
     }
 
@@ -633,17 +660,6 @@ long time_in_ms() {
   return time.tv_sec * 1000 + time.tv_nsec / 1000000;
 }
 
-void read_stdin(const char *guide, char *buffer, size_t bufsize) {
-  // read a line from stdin, up to but not including \n
-  printf("%s", guide);
-  if (fgets(buffer, bufsize, stdin) != NULL) {
-    size_t len = strlen(buffer);
-    if (len > 0 && buffer[len - 1] == '\n') {
-      buffer[len - 1] = '\0'; // strip newline
-    }
-  }
-}
-
 // ----------------------------------------------------------------------------
 // CLI, include only if not testing
 #ifndef TESTING
@@ -654,77 +670,104 @@ void error_usage() {
   exit(EXIT_FAILURE);
 }
 
-#define benchmark(name, num_runs, body)                                        \
-  do {                                                                         \
-    {body};                                                                    \
-    {body};                                                                    \
-    clock_t duration = 0;                                                      \
-    for (size_t i = 0; i < num_runs; i++) {                                    \
-      clock_t start = clock();                                                 \
-      {body};                                                                  \
-      duration += clock() - start;                                             \
-    }                                                                          \
-    printf(name ": %fms\n", (double)(duration) * 1000.0 /                      \
-                                (double)CLOCKS_PER_SEC / (double)num_runs);    \
-  } while (false)
-
-extern "C" void *upmemrt_dpu_alloc(int32_t num_ranks, int32_t num_dpus,
-                                   const char *dpu_binary_path);
-
+extern "C" void *upmemrt_dpu_alloc(int32_t num_ranks, int32_t num_dpus, const char *dpu_binary_path);
 extern "C" void upmemrt_dpu_free(void *dpu_set);
 
-void run_benchmarks() {
-  float *a = (float *)malloc(262144 * sizeof(float));
-  float *b = (float *)malloc(262144 * sizeof(float));
+int compare_attns(float *in1, size_t dim_size, size_t seq_len = 1) {
+  int ret = 0;
+  auto out1 = static_cast<float *>(malloc(dim_size * seq_len * sizeof(float)));
+  auto out2 = static_cast<float *>(malloc(dim_size * seq_len * sizeof(float)));
 
-  float *q = (float *)malloc(32768 * sizeof(float));
-  float *kc = (float *)malloc(1024 * 32768 * sizeof(float));
-  float *vc = (float *)malloc(1024 * 32768 * sizeof(float));
-  float *qkv = (float *)malloc(3 * 1024 * 32768 * sizeof(float));
-  float *att = (float *)malloc(1024 * sizeof(float));
+  printf("attn cpu...\n");
+  scaled_dot_product_attention(out1, in1, in1, in1, 0, 512, 0, 512, seq_len, 8, 64);
+  printf("attn upmem...\n");
+  attn_upmem(out2, in1, in1, in1);
 
-  float *r_cpu = (float *)malloc(262144 * sizeof(float));
-  float *r_upmem;
-  unsigned long long rng = 1234;
-  for (size_t i = 0; i < 262144; i++) {
-    a[i] = random_f32(&rng);
-    b[i] = random_f32(&rng);
-  }
-
-  benchmark("vector add cpu", 32, {
-    for (size_t i = 0; i < 262144; i++) {
-      r_cpu[i] = a[i] + b[i];
+  printf("comparing...\n");
+  for (size_t seqidx = 0; seqidx < seq_len; seqidx++) {
+    const size_t offset = seqidx * dim_size;
+    for (size_t i = 0; i < dim_size; i++) {
+      if (fabsf(out1[offset + i] - out2[offset + i]) > 0.00001f) {
+        printf("[ERROR] Results don't match: %f != %f (seq = %ld, i = %ld, in = %f)\n", out1[offset + i], out2[offset + i], seqidx, i, in1[offset + i]);
+        if (i > 0)
+          i--;
+        if (seqidx > 0)
+          printf("[INFO]  out1[%ld][%ld..%ld+4] = %f, %f, %f, %f\n", seqidx-1, i, i, out1[offset-dim_size + i], out1[offset-dim_size + i + 1], out1[offset-dim_size + i + 2], out1[offset-dim_size + i + 3]);
+        printf("[INFO]  out1[%ld][%ld..%ld+4] = %f, %f, %f, %f\n", seqidx, i, i, out1[offset + i], out1[offset + i + 1], out1[offset + i + 2], out1[offset + i + 3]);
+        printf("[INFO]  out1[%ld][%ld..%ld+4] = %f, %f, %f, %f\n", seqidx+1, i, i, out1[offset+dim_size + i], out1[offset+dim_size + i + 1], out1[offset+dim_size + i + 2], out1[offset+dim_size + i + 3]);
+        printf("\n");
+        if (seqidx > 0)
+          printf("[INFO]  out2[%ld][%ld..%ld+4] = %f, %f, %f, %f\n", seqidx-1, i, i, out2[offset-dim_size + i], out2[offset-dim_size + i + 1], out2[offset-dim_size + i + 2], out2[offset-dim_size + i + 3]);
+        printf("[INFO]  out2[%ld][%ld..%ld+4] = %f, %f, %f, %f\n", seqidx, i, i, out2[offset + i], out2[offset + i + 1], out2[offset + i + 2], out2[offset + i + 3]);
+        printf("[INFO]  out2[%ld][%ld..%ld+4] = %f, %f, %f, %f\n", seqidx+1, i, i, out2[offset+dim_size + i], out2[offset+dim_size + i + 1], out2[offset+dim_size + i + 2], out2[offset+dim_size + i + 3]);
+        ret = -1;
+        goto end;
+      }
     }
-  });
-
-  benchmark("softmax cpu", 32, { softmax_cpu(a, 262144); });
-  benchmark("rmsnorm cpu", 32, { rmsnorm_cpu(r_cpu, a, b, 262144); });
-  benchmark("mha cpu", 32, { mha_cpu(r_cpu, att, qkv, 1024, 8, 4096); });
-}
-static void print_matrix(float *A, const int64_t A_rows, const int64_t A_cols) {
-
-  int64_t i, j;
-  printf("[");
-  for (i = 0; i < A_rows; ++i) {
-    for (j = 0; j < A_cols; ++j) {
-      printf("%f, ", A[i * A_cols + j]);
-    }
-    printf("\n");
   }
-  printf("]\n");
+end:
+  free(out1);
+  free(out2);
+  return ret;
 }
+
+typedef void (*comparable_fn)(float *, const float *, const float *, const int, const int);
+int compare_fns(comparable_fn fn1, comparable_fn fn2, float *in1, float *in2, size_t dim_size, size_t seq_len = 1) {
+  int ret = 0;
+  auto out1 = static_cast<float *>(malloc(dim_size * seq_len * sizeof(float)));
+  auto out2 = static_cast<float *>(malloc(dim_size * seq_len * sizeof(float)));
+
+  printf("fn1\n");
+  fn1(out1, in1, in2, dim_size, seq_len);
+  printf("fn2\n");
+  fn2(out2, in1, in2, dim_size, seq_len);
+
+  printf("cmp\n");
+  for (size_t seqidx = 0; seqidx < seq_len; seqidx++) {
+    const size_t offset = seqidx * dim_size;
+    for (size_t i = 0; i < dim_size; i++) {
+      if (fabsf(out1[offset + i] - out2[offset + i]) > 0.00001f) {
+        printf("[ERROR] Results don't match: %f != %f (seq = %ld, i = %ld, in = %f)\n", out1[offset + i], out2[offset + i], seqidx, i, in1[offset + i]);
+        if (seqidx > 0)
+          printf("[INFO]  out1[%ld][%ld..%ld+4] = %f, %f, %f, %f\n", seqidx-1, i, i, out1[offset-dim_size + i], out1[offset-dim_size + i + 1], out1[offset-dim_size + i + 2], out1[offset-dim_size + i + 3]);
+        printf("[INFO]  out1[%ld][%ld..%ld+4] = %f, %f, %f, %f\n", seqidx, i, i, out1[offset + i], out1[offset + i + 1], out1[offset + i + 2], out1[offset + i + 3]);
+        printf("[INFO]  out1[%ld][%ld..%ld+4] = %f, %f, %f, %f\n", seqidx+1, i, i, out1[offset+dim_size + i], out1[offset+dim_size + i + 1], out1[offset+dim_size + i + 2], out1[offset+dim_size + i + 3]);
+        printf("\n");
+        if (seqidx > 0)
+          printf("[INFO]  out2[%ld][%ld..%ld+4] = %f, %f, %f, %f\n", seqidx-1, i, i, out2[offset-dim_size + i], out2[offset-dim_size + i + 1], out2[offset-dim_size + i + 2], out2[offset-dim_size + i + 3]);
+        printf("[INFO]  out2[%ld][%ld..%ld+4] = %f, %f, %f, %f\n", seqidx, i, i, out2[offset + i], out2[offset + i + 1], out2[offset + i + 2], out2[offset + i + 3]);
+        printf("[INFO]  out2[%ld][%ld..%ld+4] = %f, %f, %f, %f\n", seqidx+1, i, i, out2[offset+dim_size + i], out2[offset+dim_size + i + 1], out2[offset+dim_size + i + 2], out2[offset+dim_size + i + 3]);
+        ret = -1;
+        goto end;
+      }
+    }
+  }
+end:
+  free(out1);
+  free(out2);
+  return ret;
+}
+
+void wrappersoftmax_cpu(float *out, const float *in, const float *, const int size, const int len) {
+  memcpy(out, in, size * len * sizeof(float));
+  softmax_cpu(out, size, len);
+}
+void wrappersoftmax_upmem(float *out, const float *in, const float *, const int size, const int len) {
+  memcpy(out, in, size * len * sizeof(float));
+  softmax_upmem(out, size, len);
+}
+void wrappersoftmax_upmem_batched(float *out, const float *in, const float *, const int size, const int len) {
+  memcpy(out, in, size * len * sizeof(float));
+  softmax_upmem_batched(out, size, len);
+}
+
 int main(int argc, char *argv[]) {
-  if (getenv("BENCHMARK")) {
-    run_benchmarks();
-    return 0;
-  }
-
-  {
-    size_t seq_len = 512;
-    size_t dim_size = 512;
-    float *sample_input = (float *)malloc(seq_len * dim_size * sizeof(float));
-    float *sample_weights = (float *)malloc(dim_size * sizeof(float));
-    float *sample_weights_large = (float *)malloc(seq_len * dim_size * sizeof(float));
+  { // Testing block
+    int ret = 0;
+    constexpr size_t seq_len = 512;
+    constexpr size_t dim_size = 512;
+    auto sample_input = static_cast<float *>(malloc(seq_len * dim_size * sizeof(float)));
+    auto sample_weights = static_cast<float *>(malloc(dim_size * sizeof(float)));
     unsigned long long rng = time_in_ms();
     for (size_t i = 0; i < seq_len * dim_size; i++) {
       sample_input[i] = random_f32(&rng);
@@ -732,27 +775,32 @@ int main(int argc, char *argv[]) {
     for (size_t i = 0; i < dim_size; i++) {
       sample_weights[i] = random_f32(&rng);
     }
-    float *out1 = (float *)malloc(dim_size * sizeof(float));
-    float *out2 = (float *)malloc(seq_len * dim_size * sizeof(float));
-    printf("Comparing rmsnorm upmem (un)batched...\n");
-    printf("Running rmsnorm upmem...\n");
-    rmsnorm_upmem(out1, sample_input, sample_weights, dim_size);
-    printf("Running rmsnorm upmem large...\n");
-    rmsnorm_upmem_large(out2, sample_input, sample_weights_large, dim_size, seq_len);
-    printf("Running rmsnorm upmem batched...\n");
-    rmsnorm_upmem_batched(out2, sample_input, sample_weights, dim_size, seq_len);
-    printf("Comparing...\n");
-    for (size_t i = 0; i < dim_size; i++) {
-      if (fabsf(out1[i] - out2[i]) > 0.00001f) {
-        printf("[ERROR] %f != %f\n", out1[i], out2[i]);
-        break;
-      }
-    }
+
+//    printf("Comparing rmsnorm cpu vs upmem batched...\n");
+//    int ret1 = compare_fns(&rmsnorm_cpu, &rmsnorm_upmem_batched, sample_input, sample_weights, dim_size, seq_len);
+//    if (ret1 != 0) ret = ret1;
+
+    printf("Comparing attn cpu vs upmem batched...\n");
+    int ret2 = compare_attns(sample_input, dim_size, seq_len);
+    if (ret2 != 0) ret = ret2;
+
+//    printf("Comparing rmsnorm upmem unbatched vs batched...\n");
+//    int ret2 = compare_fns(&rmsnorm_upmem, &rmsnorm_upmem_batched, sample_input, sample_weights, dim_size, seq_len);
+//    if (ret2 != 0) ret = ret2;
+//
+//    printf("Comparing softmax cpu vs upmem batched...\n");
+//    int ret3 = compare_fns(&wrappersoftmax_cpu, &wrappersoftmax_upmem_batched, sample_input, sample_weights, dim_size, seq_len);
+//    if (ret3 != 0) ret = ret3;
+
+//    printf("Comparing softmax upmem unbatched vs batched...\n");
+//    int ret4 = compare_fns(&wrappersoftmax_upmem, &wrappersoftmax_upmem_batched, sample_input, sample_weights, dim_size, seq_len);
+//    if (ret4 != 0) ret = ret4;
+
     free(sample_input);
     free(sample_weights);
-    free(out1);
-    free(out2);
-  }
+    if (ret != 0)
+      return ret;
+  } // End of testing block
 
   // default parameters
   char *checkpoint_path = NULL; // e.g. out/model.bin

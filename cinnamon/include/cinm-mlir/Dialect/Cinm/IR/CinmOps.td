@@ -59,8 +59,7 @@ class Cinm_Bitwise_Op<string name, list<Trait> traits = []>
     let results = (outs AnyRankedTensor:$result);
 }
 
-
-def Cinm_Elementwise_Unary_Op : Cinm_Op<"op.element_wise", [Pure, SameOperandsAndResultType]> {
+def Cinm_Elementwise_Unary_Op : Cinm_Op<"op.element_wise", [Pure, SameOperandsAndResultType, DeclareOpInterfaceMethods<CinmTilingInterface>]> {
   let summary = "Generic elementwise unary operation on a tensor";
   let description = [{
     Perform a unary operation on each element of a tensor. Example:

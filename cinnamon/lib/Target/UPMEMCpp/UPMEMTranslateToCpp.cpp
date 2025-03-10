@@ -252,7 +252,12 @@ static LogicalResult printOperation(CppEmitter &emitter,
   MemRefType res_type = dyn_cast<MemRefType>(wramAllocOp.getResult().getType());
   Type elementType = res_type.getElementType();
 
-  os << "__dma_aligned ";
+  if (emitter.emitType(wramAllocOp.getLoc(), elementType).failed()) {
+    return failure();
+  }
+
+  os << " *" << emitter.getOrCreateName(wramAllocOp) << " = (";
+
   if (emitter.emitType(wramAllocOp.getLoc(), elementType).failed()) {
     return failure();
   }
@@ -262,7 +267,13 @@ static LogicalResult printOperation(CppEmitter &emitter,
   if (size * elementSize < 8) {
     size = 8 / elementSize;
   }
-  os << " " << emitter.getOrCreateName(wramAllocOp) << "[" << size << "]";
+
+  os << " *) mem_alloc(" << size << " * sizeof(";
+
+  if (emitter.emitType(wramAllocOp.getLoc(), elementType).failed()) {
+    return failure();
+  }
+  os << "))";
 
   return success();
 }
@@ -656,6 +667,10 @@ static LogicalResult printOperation(CppEmitter &emitter, LLVM::ExpOp op) {
 
 static LogicalResult printOperation(CppEmitter &emitter, math::AbsFOp op) {
   return printMathOperation(emitter, op.getOperation(), "absf");
+}
+
+static LogicalResult printOperation(CppEmitter &emitter, math::ExpOp op) {
+  return printMathOperation(emitter, op.getOperation(), "expf");
 }
 
 static LogicalResult printOperation(CppEmitter &emitter, math::RsqrtOp op) {
@@ -1080,8 +1095,10 @@ static LogicalResult printOperation(CppEmitter &emitter,
   os << "BARRIER_INIT(my_barrier, NR_TASKLETS);\n\n";
 
   os << "int main(void) {\n";
+  os << "  if (me() == 0) {\n";
+  os << "    mem_reset();\n";
+  os << "  }\n";
   os << "  barrier_wait(&my_barrier);\n";
-  os << "  mem_reset();\n";
   for (auto kernel : kernels) {
     os << "#ifdef ";
     printCompilationVar(kernel, os);
@@ -1460,6 +1477,7 @@ LogicalResult CppEmitter::emitOperation(Operation &operation, bool trailingSemic
               [&](auto op) { return printOperation(*this, op); })
           .Case<LLVM::ExpOp>([&](auto op) { return printOperation(*this, op); })
           .Case<math::AbsFOp>([&](auto op) { return printOperation(*this, op); })
+          .Case<math::ExpOp>([&](auto op) { return printOperation(*this, op); })
           .Case<math::RsqrtOp>([&](auto op) { return printOperation(*this, op); })
           .Case<upmem::TaskletIDOp>(
               [&](auto op) { return printOperation(*this, op); })

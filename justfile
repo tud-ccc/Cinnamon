@@ -122,7 +122,7 @@ compile-upmem-kernels FILE OUTDIR:
     bash "cinnamon/testbench/lib/compile_dpu.sh" {{FILE}} {{OUTDIR}}
 
 compile-upmem-runner *ARGS:
-    /usr/bin/clang++ -g -c {{ARGS}}
+    llvm/build/bin/clang++ -g -c {{ARGS}}
 
 link-upmem-runner *ARGS:
     /usr/bin/clang++ -g {{ARGS}} -lUpmemDialectRuntime -fPIE -ldpu -ldpuverbose -L{{upmem_dir}}/lib -L{{build_dir}}/lib -I{{upmem_dir}}/include/dpu -rpath {{python310_dir}}
@@ -157,6 +157,10 @@ build-dorado: \
     (compile-upmem-runner "cinnamon/samples/dorado/dorado.cpp" "-o" "cinnamon/build/samples/dorado_host.o" "-fopenmp") \
     (link-upmem-runner "cinnamon/build/samples/dorado.o" "cinnamon/build/samples/dorado_host.o" "-o" "cinnamon/build/samples/dorado" "-fopenmp")
 
+[working-directory: 'cinnamon/build/samples']
+dorado:
+    ./dorado ~/Cinnamon/test
+
 cinm-vulkan-runner FILE *ARGS:
     {{build_dir}}/bin/cinm-vulkan-runner {{FILE}} \
         --shared-libs={{llvm_prefix}}/lib/libvulkan-runtime-wrappers.so,{{llvm_prefix}}/lib/libmlir_runner_utils.so \
@@ -166,21 +170,21 @@ cinm-vulkan-runner FILE *ARGS:
 genBench NAME: (doNinja "cinm-opt")
     #!/bin/bash
     source "{{upmem_dir}}/upmem_env.sh"
-    cd testbench
+    cd ./cinnamon/testbench
     export BENCH_NAME="{{NAME}}"
     make clean && make {{NAME}}-exe
 
 runBench NAME:
     #!/bin/bash
     source "{{upmem_dir}}/upmem_env.sh"
-    cd testbench/generated2/{{NAME}}/bin
+    cd ./cinnamon/testbench/generated2/{{NAME}}/bin
     ./host
 
 bench NAME: (doNinja "cinm-opt")
     #!/bin/bash
     set -e
     source "{{upmem_dir}}/upmem_env.sh"
-    cd testbench
+    cd ./cinnamon/testbench
     export BENCH_NAME="{{NAME}}"
     make clean && make {{NAME}}-exe
     cd generated2/{{NAME}}/bin

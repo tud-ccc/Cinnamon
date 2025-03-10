@@ -167,82 +167,161 @@
 //
 //	return %logits : tensor<32000xf32>
 //}
+//
+//func.func @rot(%v: tensor<512xf32>, %i: index, %fcr : f32, %fci : f32) -> tensor<512xf32> {
+//	%c1 = arith.constant 1 : index
+//	%i2 = arith.addi %i, %c1 : index
+//	%v0 = tensor.extract %v [%i] : tensor<512xf32>
+//	%v1 = tensor.extract %v [%i2] : tensor<512xf32>
+//	%0 = arith.mulf %v0, %fcr : f32
+//	%1 = arith.mulf %v1, %fci : f32
+//	%2 = arith.subf %0, %1 : f32
+//	%r0 = tensor.insert %2 into %v[%i] : tensor<512xf32>
+//	%3 = arith.mulf %v0, %fci : f32
+//	%4 = arith.mulf %v1, %fcr : f32
+//	%5 = arith.addf %3, %4 : f32
+//	%r1 = tensor.insert %2 into %r0[%i] : tensor<512xf32>
+//	return %r1 : tensor<512xf32>
+//}
 
-func.func @rot(%v: tensor<512xf32>, %i: index, %fcr : f32, %fci : f32) -> tensor<512xf32> {
-	%c1 = arith.constant 1 : index
-	%i2 = arith.addi %i, %c1 : index
-	%v0 = tensor.extract %v [%i] : tensor<512xf32>
-	%v1 = tensor.extract %v [%i2] : tensor<512xf32>
-	%0 = arith.mulf %v0, %fcr : f32
-	%1 = arith.mulf %v1, %fci : f32
-	%2 = arith.subf %0, %1 : f32
-	%r0 = tensor.insert %2 into %v[%i] : tensor<512xf32>
-	%3 = arith.mulf %v0, %fci : f32
-	%4 = arith.mulf %v1, %fcr : f32
-	%5 = arith.addf %3, %4 : f32
-	%r1 = tensor.insert %2 into %r0[%i] : tensor<512xf32>
-	return %r1 : tensor<512xf32>
+//// Q: features, KC: sequence length x features, VC: sequence length x features
+//func.func @mha(%q: tensor<512xf32>, %kc: tensor<512x512xf32>, %vc: tensor<512x512xf32>, %pos: index) -> tensor<512xf32> {
+//	%c0 = arith.constant 0 : index
+//	%c1 = arith.constant 1 : index
+//	%nheads = arith.constant 8 : index
+//	%head_dim = arith.constant 64 : index
+//	%c0f = arith.constant 0.0 : f32
+//	%scale = arith.constant 8.0 : f32 // sqrt(head_dim)
+//	%ninf = arith.constant 0xFF800000 : f32
+//
+//	%pos2 = arith.addi %pos, %c1 : index
+//
+//	%attn_init = tensor.generate {
+//	^bb0(%arg1: index):
+//		tensor.yield %ninf : f32
+//	} : tensor<512xf32>
+//
+//	%xb_init = tensor.empty() : tensor<512xf32>
+//	%xb = scf.for %head = %c0 to %nheads step %c1 iter_args(%xbi = %xb_init) -> (tensor<512xf32>) {
+//		%hoff = arith.muli %head, %head_dim : index
+//
+//		%attn = scf.for %i = %c0 to %pos2 step %c1 iter_args(%attn_i = %attn_init) -> (tensor<512xf32>) {
+//			%qs = tensor.extract_slice %q [%hoff] [64] [1] : tensor<512xf32> to tensor<64xf32>
+//			%k = tensor.extract_slice %kc [%i, %hoff] [1, 64] [1, 1] : tensor<512x512xf32> to tensor<64xf32>
+//			%score = cinm.compute attributes { workgroupShape = array<i64: 1,1,8> } -> f32 {
+//				%0 = cinm.op.mul %qs, %k : tensor<64xf32>
+//				%1 = cinm.op.reduce add (%0) : tensor<64xf32> -> f32
+//				%2 = arith.divf %1, %scale : f32
+//				cinm.yield %2 : f32
+//			}
+//			%attn_i2 = tensor.insert %score into %attn_i [%i] : tensor<512xf32>
+//			scf.yield %attn_i2 : tensor<512xf32>
+//		}
+//
+//		%attn3 = func.call @softmax(%attn) : (tensor<512xf32>) -> tensor<512xf32>
+//
+//		%xb_slice_init = tensor.generate {
+//		^bb0(%arg1: index):
+//			tensor.yield %c0f : f32
+//		} : tensor<64xf32>
+//
+//		%xb_slice = scf.for %i = %c0 to %pos2 step %c1 iter_args(%xb_slice_i = %xb_slice_init) -> (tensor<64xf32>) {
+//			%v = tensor.extract_slice %vc [%i, %hoff] [1, 64] [1, 1] : tensor<512x512xf32> to tensor<64xf32>
+//			%a = tensor.extract %attn3 [%i] : tensor<512xf32>
+//			%xb_slice = cinm.compute attributes { workgroupShape = array<i64: 1,1,8> } -> tensor<64xf32> {
+//				%0 = cinm.op.muls %v, %a : tensor<64xf32>
+//				%1 = cinm.op.add %xb_slice_i, %0 : tensor<64xf32>
+//				cinm.yield %1 : tensor<64xf32>
+//			}
+//			scf.yield %xb_slice : tensor<64xf32>
+//		}
+//
+//		%xbr = tensor.insert_slice %xb_slice into %xbi [%hoff] [64] [1] : tensor<64xf32> into tensor<512xf32>
+//		scf.yield %xbr : tensor<512xf32>
+//	}
+//
+//	return %xb : tensor<512xf32>
+//}
+
+// Multi-head scaled dot-product attention
+func.func @attn(%q : tensor<512x512xf32>, %k : tensor<512x512xf32>, %v : tensor<512x512xf32>) -> tensor<512x512xf32> {
+    %c0 = arith.constant 0 : index
+    %c1 = arith.constant 1 : index
+    %c512 = arith.constant 512 : index
+    %head_size = arith.constant 64 : index
+    %sqrt_d_k = arith.constant 8.0 : f32 // Should be: math.sqrt %head_size : index
+    %c0f = arith.constant 0.0 : f32
+
+    %init = tensor.empty() : tensor<512x512xf32>
+    // For each head, ...
+    %result = scf.for %h = %c0 to %c512 step %head_size iter_args(%result_acc = %init) -> tensor<512x512xf32> {
+        %q_slice = tensor.extract_slice %q [0, %h] [512, 64] [1, 1] : tensor<512x512xf32> to tensor<512x64xf32>
+        %k_slice = tensor.extract_slice %k [0, %h] [512, 64] [1, 1] : tensor<512x512xf32> to tensor<512x64xf32>
+        %tmp = tensor.empty() : tensor<64x512xf32>
+        %k_slice_t = linalg.transpose ins(%k_slice : tensor<512x64xf32>) outs(%tmp : tensor<64x512xf32>) permutation = [1, 0]
+        %v_slice = tensor.extract_slice %v [0, %h] [512, 64] [1, 1] : tensor<512x512xf32> to tensor<512x64xf32>
+
+        %qk_1 = cinm.compute attributes { workgroupShape = array<i64: 1,32,16> } -> tensor<512x512xf32> {
+            %qk_0 = cinm.op.gemm %q_slice, %k_slice_t : (tensor<512x64xf32>, tensor<64x512xf32>) -> tensor<512x512xf32>
+            %qk_1 = cinm.op.divs %qk_0, %sqrt_d_k : tensor<512x512xf32>
+            cinm.yield %qk_1 : tensor<512x512xf32>
+        }
+
+        %qk_2 = func.call @softmax_batched(%qk_1) : (tensor<512x512xf32>) -> tensor<512x512xf32>
+
+        %sub_result = cinm.compute attributes { workgroupShape = array<i64: 1,32,16> } -> tensor<512x64xf32> {
+            %r = cinm.op.gemm %qk_2, %v_slice : (tensor<512x512xf32>, tensor<512x64xf32>) -> tensor<512x64xf32>
+            cinm.yield %r : tensor<512x64xf32>
+        }
+
+        %out = tensor.insert_slice %sub_result into %result_acc [0, %h] [512, 64] [1, 1] : tensor<512x64xf32> into tensor<512x512xf32>
+        scf.yield %out : tensor<512x512xf32>
+    }
+
+    return %result : tensor<512x512xf32>
 }
 
-
-// Q: features, KC: sequence length x features, VC: sequence length x features
-func.func @mha(%q: tensor<512xf32>, %kc: tensor<512x512xf32>, %vc: tensor<512x512xf32>, %pos: index) -> tensor<512xf32> {
-	%c0 = arith.constant 0 : index
-	%c1 = arith.constant 1 : index
-	%nheads = arith.constant 8 : index
-	%head_dim = arith.constant 64 : index
-	%c0f = arith.constant 0.0 : f32
-	%scale = arith.constant 8.0 : f32 // sqrt(head_dim)
-	%ninf = arith.constant 0xFF800000 : f32
-
-	%pos2 = arith.addi %pos, %c1 : index
-
-	%attn_init = tensor.generate {
-	^bb0(%arg1: index):
-		tensor.yield %ninf : f32
-	} : tensor<512xf32>
-
-	%xb_init = tensor.empty() : tensor<512xf32>
-	%xb = scf.for %head = %c0 to %nheads step %c1 iter_args(%xbi = %xb_init) -> (tensor<512xf32>) {
-		%hoff = arith.muli %head, %head_dim : index
-
-		%attn = scf.for %i = %c0 to %pos2 step %c1 iter_args(%attn_i = %attn_init) -> (tensor<512xf32>) {
-			%qs = tensor.extract_slice %q [%hoff] [64] [1] : tensor<512xf32> to tensor<64xf32>
-			%k = tensor.extract_slice %kc [%i, %hoff] [1, 64] [1, 1] : tensor<512x512xf32> to tensor<64xf32>
-			%score = cinm.compute attributes { workgroupShape = array<i64: 1,1,8> } -> f32 {
-				%0 = cinm.op.mul %qs, %k : tensor<64xf32>
-				%1 = cinm.op.reduce add (%0) : tensor<64xf32> -> f32
-				%2 = arith.divf %1, %scale : f32
-				cinm.yield %2 : f32
-			}
-			%attn_i2 = tensor.insert %score into %attn_i [%i] : tensor<512xf32>
-			scf.yield %attn_i2 : tensor<512xf32>
-		}
-
-		%attn3 = func.call @softmax(%attn) : (tensor<512xf32>) -> tensor<512xf32>
-
-		%xb_slice_init = tensor.generate {
-		^bb0(%arg1: index):
-			tensor.yield %c0f : f32
-		} : tensor<64xf32>
-
-		%xb_slice = scf.for %i = %c0 to %pos2 step %c1 iter_args(%xb_slice_i = %xb_slice_init) -> (tensor<64xf32>) {
-			%v = tensor.extract_slice %vc [%i, %hoff] [1, 64] [1, 1] : tensor<512x512xf32> to tensor<64xf32>
-			%a = tensor.extract %attn3 [%i] : tensor<512xf32>
-			%xb_slice = cinm.compute attributes { workgroupShape = array<i64: 1,1,8> } -> tensor<64xf32> {
-				%0 = cinm.op.muls %v, %a : tensor<64xf32>
-				%1 = cinm.op.add %xb_slice_i, %0 : tensor<64xf32>
-				cinm.yield %1 : tensor<64xf32>
-			}
-			scf.yield %xb_slice : tensor<64xf32>
-		}
-
-		%xbr = tensor.insert_slice %xb_slice into %xbi [%hoff] [64] [1] : tensor<64xf32> into tensor<512xf32>
-		scf.yield %xbr : tensor<512xf32>
-	}
-
-	return %xb : tensor<512xf32>
-}
+//// Scaled dot-product attention that works with 8 splits over the query input.
+//func.func @split_attn(%q : tensor<512x512xf32>, %k : tensor<512x512xf32>, %v : tensor<512x512xf32>,
+//                %qb : index, %qe : index, %kvb : index, %kve : index,
+//                %heads : index, %head_size : index) -> tensor<512x512xf32> {
+//    %c0 = arith.constant 0 : index
+//    %c1 = arith.constant 1 : index
+//    %c512 = arith.constant 512 : index
+//    %sqrt_d_k = arith.constant 8.0 : f32 // Should be: math.sqrt %head_size : index
+//    %q_size = arith.subi %qe, %qb : index
+//    %kv_size = arith.subi %kve, %kvb : index
+//
+//    %init = tensor.empty() : tensor<512x512xf32>
+//    %result = scf.for %h = %c0 to %c512 step %head_size iter_args(%result_acc = %init) -> tensor<512x512xf32> {
+//        %qoff = arith.addi %h, %qb : index
+//        %kvoff = arith.addi %h, %kvb : index
+//        %q_slice = tensor.extract_slice %q [%qoff,  0] [64,  64] [1, 1] : tensor<512x512xf32> to tensor<64x64xf32>
+//        // FIXME: 320 should be 319, should be dynamic %kv_size, which is not always 320.
+//        %k_slice = tensor.extract_slice %k [%kvoff, 0] [320, 64] [1, 1] : tensor<512x512xf32> to tensor<320x64xf32>
+//        %tmp = tensor.empty() : tensor<64x320xf32>
+//        %k_slice_t = linalg.transpose ins(%k_slice : tensor<320x64xf32>) outs(%tmp : tensor<64x320xf32>) permutation = [1, 0]
+//
+//        %qk_1 = cinm.compute attributes { workgroupShape = array<i64: 1,1,1> } -> tensor<64x320xf32> {
+//            %qk_0 = cinm.op.gemm %q_slice, %k_slice_t : (tensor<64x64xf32>, tensor<64x320xf32>) -> tensor<64x320xf32>
+//            %qk_1 = cinm.op.divs %qk_0, %sqrt_d_k : tensor<64x320xf32>
+//            cinm.yield %qk_1 : tensor<64x320xf32>
+//        }
+//
+//        //%qk_2 = func.call @softmax_batched(%qk_1) : (tensor<?x?xf32>) -> tensor<?x?xf32>
+//
+//        %sub_result = cinm.compute attributes { workgroupShape = array<i64: 1,1,1> } -> tensor<64x64xf32> {
+//            %v_slice = tensor.extract_slice %v [%kvoff, 0] [320, 64] [1, 1] : tensor<512x512xf32> to tensor<320x64xf32>
+//            %sub_result = cinm.op.gemm %qk_1, %v_slice : (tensor<64x320xf32>, tensor<320x64xf32>) -> tensor<64x64xf32>
+//            cinm.yield %sub_result : tensor<64x64xf32>
+//        }
+//
+//        %out = tensor.insert_slice %sub_result into %result_acc [%h, %qb] [64, 64] [1, 1] : tensor<64x64xf32> into tensor<512x512xf32>
+//        scf.yield %out : tensor<512x512xf32>
+//    }
+//
+//    return %result : tensor<512x512xf32>
+//}
 
 func.func @rmsnorm(%v : tensor<512xf32>, %w : tensor<512xf32>) -> tensor<512xf32> {
 	%epsilon = arith.constant 1.0e-5 : f32
@@ -262,32 +341,13 @@ func.func @rmsnorm(%v : tensor<512xf32>, %w : tensor<512xf32>) -> tensor<512xf32
 	return %r : tensor<512xf32>
 }
 
-func.func @rmsnorm_large(%v : tensor<262144xf32>, %w : tensor<262144xf32>) -> tensor<262144xf32> {
-	%epsilon = arith.constant 1.0e-5 : f32
-	%c1 = arith.constant 1.0 : f32
-	%len = arith.constant 512.0 : f32
-
-	%r = cinm.compute attributes { workgroupShape = array<i64: 1,64,16> } -> tensor<262144xf32> {
-		%0 = cinm.op.mul %v, %v : tensor<262144xf32>
-		//%ss = cinm.op.reduce add (%0) : tensor<262144xf32> -> f32
-		%ss = arith.constant 1.0 : f32
-		%s0 = arith.divf %ss, %len : f32
-		%s1 = arith.addf %s0, %epsilon : f32
-		%s = math.rsqrt %s1 : f32
-		%x = cinm.op.muls %v, %s : tensor<262144xf32>
-		%r = cinm.op.mul %x, %w : tensor<262144xf32>
-		cinm.yield %r : tensor<262144xf32>
-	}
-	return %r : tensor<262144xf32>
-}
-
 // input: (batch size/seq len, input size)
 func.func @rmsnorm_batched(%v : tensor<512x512xf32>, %w : tensor<512xf32>) -> tensor<512x512xf32> {
 	%epsilon = arith.constant 1.0e-5 : f32
 	%c1 = arith.constant 1.0 : f32
 	%len = arith.constant 512.0 : f32
 
-	%r = cinm.compute attributes { workgroupShape = array<i64: 1,1,16> } -> tensor<512x512xf32> {
+	%r = cinm.compute attributes { workgroupShape = array<i64: 1,16,16> } -> tensor<512x512xf32> {
 		%0 = cinm.op.mul %v, %v : tensor<512x512xf32>
 		%ss0 = cinm.op.reduce add (%0) : tensor<512x512xf32> -> tensor<512xf32>
 		%ss1 = cinm.op.divs %ss0, %len : tensor<512xf32>
@@ -301,7 +361,7 @@ func.func @rmsnorm_batched(%v : tensor<512x512xf32>, %w : tensor<512xf32>) -> te
 		%w_broadcasted = linalg.broadcast ins(%w : tensor<512xf32>) outs(%shape : tensor<512x512xf32>) dimensions = [0]
 		%r = cinm.op.mul %x, %w_broadcasted : tensor<512x512xf32>
 
-		cinm.yield %0 : tensor<512x512xf32>
+		cinm.yield %r : tensor<512x512xf32>
 	}
 	return %r : tensor<512x512xf32>
 }
@@ -310,8 +370,7 @@ func.func @softmax(%vec : tensor<512xf32>) -> tensor<512xf32> {
 	%r = cinm.compute attributes { workgroupShape = array<i64: 1,8,16> } -> tensor<512xf32> {
 		%max = cinm.op.reduce max (%vec) : tensor<512xf32> -> f32
 		%t = cinm.op.subs %vec, %max : tensor<512xf32>
-		%shape = tensor.empty() : tensor<512xf32>
-		%e = linalg.exp ins(%t : tensor<512xf32>) outs(%shape : tensor<512xf32>) -> tensor<512xf32>
+		%e = cinm.op.element_wise exp (%t) : tensor<512xf32>
 		%s = cinm.op.reduce add (%e) : tensor<512xf32> -> f32
 		%r = cinm.op.divs %e, %s : tensor<512xf32>
 		cinm.yield %r : tensor<512xf32>
@@ -320,19 +379,21 @@ func.func @softmax(%vec : tensor<512xf32>) -> tensor<512xf32> {
 	return %r : tensor<512xf32>
 }
 
+// input: (batch size/seq len, input size)
 func.func @softmax_batched(%x: tensor<512x512xf32>) -> tensor<512x512xf32> {
-    %c1 = arith.constant 1.0 : f32
-    %all_ones = tensor.splat %c1 : tensor<512x512xf32>
-
-    %r = cinm.compute attributes { workgroupShape = array<i64: 1,8,16> } -> tensor<512x512xf32> {
-        %shape = tensor.empty() : tensor<512x512xf32>
+    %r = cinm.compute attributes { workgroupShape = array<i64: 1,16,16> } -> tensor<512x512xf32> {
         %maxs = cinm.op.reduce max (%x) : tensor<512x512xf32> -> tensor<512xf32>
-        %maxs_bc = linalg.broadcast ins(%maxs : tensor<512xf32>) outs(%shape : tensor<512x512xf32>) dimensions = [1]
-        %tmp = cinm.op.sub %x, %maxs_bc : tensor<512x512xf32>
-        %e = linalg.exp ins(%tmp : tensor<512x512xf32>) outs(%shape : tensor<512x512xf32>) -> tensor<512x512xf32>
-		%summed = cinm.op.reduce add (%e) : tensor<512x512xf32> -> tensor<512xf32>
-		%summed_bc = linalg.broadcast ins(%summed : tensor<512xf32>) outs(%shape : tensor<512x512xf32>) dimensions = [1]
-        %res = cinm.op.div %e, %summed_bc : tensor<512x512xf32>
+
+        %shape = tensor.empty() : tensor<512x512xf32>
+        %maxs_broadcasted = linalg.broadcast ins(%maxs : tensor<512xf32>) outs(%shape : tensor<512x512xf32>) dimensions = [1]
+        %tmp = cinm.op.sub %x, %maxs_broadcasted : tensor<512x512xf32>
+
+        %e = cinm.op.element_wise exp (%tmp) : tensor<512x512xf32>
+		%s = cinm.op.reduce add (%e) : tensor<512x512xf32> -> tensor<512xf32>
+
+		%s_broadcasted = linalg.broadcast ins(%s : tensor<512xf32>) outs(%shape : tensor<512x512xf32>) dimensions = [1]
+        %res = cinm.op.div %e, %s_broadcasted : tensor<512x512xf32>
+
         cinm.yield %res : tensor<512x512xf32>
     }
 

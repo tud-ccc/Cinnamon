@@ -21,6 +21,7 @@
 #include <mlir/Dialect/Arith/IR/Arith.h>
 #include <mlir/Dialect/Func/IR/FuncOps.h>
 #include <mlir/Dialect/Linalg/IR/Linalg.h>
+#include <mlir/Dialect/Math/IR/Math.h>
 #include <mlir/Dialect/MemRef/IR/MemRef.h>
 #include <mlir/Dialect/Tensor/IR/Tensor.h>
 #include <mlir/Dialect/Utils/IndexingUtils.h>
@@ -273,9 +274,9 @@ computeShapeOfTensors(Location loc, llvm::ArrayRef<int64_t> shape,
       emitError(loc, "can't compute shape of tensors: k (" + std::to_string(k) +
                          ") * numReductionElts (" +
                          std::to_string(numReductionElts) +
-                         ") > "
-                         "maxBlockSize (" +
-                         std::to_string(maxBlockSize) + ")");
+                         ") > maxBlockSize (" +
+                         std::to_string(maxBlockSize) + ")")
+        .attachNote() << "has the op been tiled properly?";
       return failure();
     }
   }
@@ -312,13 +313,14 @@ LogicalResult convertInputIntoAlloc(Location loc, Value &inputBuf,
 
   llvm::SmallVector<int64_t, 1> shapeOfBuffer;
   std::optional<SmallVector<int64_t>> reshapeInto;
-  auto maxBlockSizeItems =
+  const auto maxBlockSizeItems =
       maxBlockSizeBytes * 8 / inputType.getElementTypeBitWidth();
   if (computeShapeOfTensors(inputBuf.getLoc(), inputType.getShape(), wgTy,
                             maxBlockSizeItems, reduceDims, scatterMap,
                             shapeOfBuffer, reshapeInto, scatterScalar)
-          .failed())
+          .failed()) {
     return failure();
+  }
 
   if (reshapeInto) {
     inputBuf = cinm::reshapeStatic(rewriter, rewriter.getLoc(), inputBuf,
@@ -578,15 +580,15 @@ struct ConvertElementWiseUnaryToCnm : OpConversionPattern<cinm::Elementwise_Unar
     this->setHasBoundedRewriteRecursion();
   }
 
-  LogicalResult matchAndRewrite(cinm::Elementwise_Unary_Op op,
-                                OpAdaptor adaptor,
+  LogicalResult matchAndRewrite(cinm::Elementwise_Unary_Op op, OpAdaptor adaptor,
                                 ConversionPatternRewriter &rewriter) const override {
 
     ImplicitLocOpBuilder builder(op->getLoc(), rewriter);
     cinm::ComputeOp computeBlock = getEnclosingComputeBlock(op);
     auto workgroup = builder.create<cnm::WorkgroupOp>(computeBlock.getCnmWorkgroupType());
 
-    auto outputInit = builder.create<arith::ConstantOp>(op.getResult().getType(), builder.getZeroAttr(op.getResult().getType()));
+    // Initialize output for linalg.generic
+    auto outputInit = builder.create<tensor::EmptyOp>(op.getResult().getType(), ValueRange{});
 
     SmallVector<Value, 1> newResults;
     const auto conversionResult = convertCinmToCnm(
@@ -625,8 +627,10 @@ LogicalResult computeScatterMapForGemm(cnm::BufferType bufferTyAB,
   }
 
   // this assumption relies on the tiling phase
-  if (wgElts != rowsA * colsB)
+  if (wgElts != rowsA * colsB) {
+    llvm::errs() << "Tiling phase failed?\n";
     return failure();
+  }
 
   // couple of situations we know work
   if (rowsA == 1 || colsB == 1 ||
