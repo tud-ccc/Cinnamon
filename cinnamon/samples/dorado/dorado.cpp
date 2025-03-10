@@ -446,9 +446,6 @@ void scaled_dot_product_attention(float *x, float *q, float *k, float *v, int qb
   // q/k/v is NHTD (batch size, heads, seq_len, head size)
   float *matmul_qk = (float *) malloc(seq_len * seq_len * sizeof(float));
 
-  gemm(q, k, x, seq_len, seq_len, seq_len);
-  return;
-
   float sqrt_d_k = std::sqrt(head_size);
 
   for (int h = 0; h < heads; h++) {
