@@ -167,6 +167,83 @@ TilingResult2 GemvOp::convertToTiledOps(OpBuilder &builder, TilingParameters) {
   return FailureOr<SmallVector<Value>>({toVector});
 }
 
+TilingResult2 Elementwise_Unary_Op::convertToTiledOps(OpBuilder &builder0, TilingParameters params) {
+  ImplicitLocOpBuilder builder(getLoc(), builder0);
+  Value input = getInput();
+
+  auto tensorTy = cast<RankedTensorType>(input.getType());
+  const auto wgSize = params.workingGroupSize();
+  const auto numElements = tensorTy.getNumElements();
+  if (wgSize > numElements) {
+    return emitWarning("Cannot tile, working group is too large");
+  }
+
+  // This is the max number of reductions we can theoretically do on
+  // a single CNM.launch.
+  auto reduceClusterSize =
+      params.reduceClusterSize(2, numElements, tensorTy.getElementType());
+
+  // We need the actual tile size to not exceed that number, and
+  // be able to divide the input by the working group size.
+  if (reduceClusterSize * wgSize >= numElements) {
+    // we have too much compute
+    const auto numLeavesNeeded = numElements / reduceClusterSize;
+    emitRemark("This computation could be done with a smaller working group, theoretically as few as " +
+        std::to_string(numLeavesNeeded) + " leaves (we have " + std::to_string(wgSize) + ").");
+    reduceClusterSize = numElements / wgSize;
+  }
+  if (numElements % wgSize != 0) {
+    return emitWarning("Cannot tile, working group does not divide tensor size");
+  }
+
+  auto shape = tensorTy.getShape();
+  const RankedTensorType originalType = tensorTy;
+  Value originalShapeValue;
+  if (shape.size() > 1) {
+    // then flatten the tensors first
+    originalShapeValue = builder.create<arith::ConstantOp>(
+        RankedTensorType::get({static_cast<int64_t>(shape.size())}, builder.getI64Type()),
+        builder.getI64TensorAttr(shape));
+    input = reshapeStatic(builder, builder.getLoc(), getInput(), {tensorTy.getNumElements()});
+
+    tensorTy = cast<RankedTensorType>(input.getType());
+    shape = tensorTy.getShape();
+  }
+
+  const Value resultInit = builder.create<tensor::EmptyOp>(tensorTy, ValueRange{});
+  const auto tileSize = reduceClusterSize * wgSize;
+
+  SmallVector<Value> result = createNestedAffineForLoops(
+      builder, getLoc(), {tensorTy.getNumElements()}, {tileSize},
+      ValueRange{resultInit},
+      [&](OpBuilder &builder, Location loc, ValueRange indices, ValueRange iterArgs) -> SmallVector<Value> {
+        const SmallVector<int64_t, 2> offsets{ShapedType::kDynamic};
+        const SmallVector<int64_t, 2> sizes{tileSize};
+        const SmallVector<int64_t, 2> strides{1};
+
+        const auto sliceTy = RankedTensorType::get({tileSize}, tensorTy.getElementType());
+
+        const Value inputSlice = builder.create<tensor::ExtractSliceOp>(
+            loc, sliceTy, input, indices, ValueRange{}, ValueRange{}, offsets,
+            sizes, strides);
+
+        // here we recreate the same op with smaller dimensions
+        auto smaller = builder.create<Elementwise_Unary_Op>(loc, getMethod(), inputSlice);
+        markOpAsNoTile(smaller);
+
+        const Value subResult = builder.create<tensor::InsertSliceOp>(
+            loc, smaller.getResult(), iterArgs[0], indices, ValueRange{},
+            ValueRange{}, offsets, sizes, strides);
+
+        return {subResult};
+      });
+  if (originalType.getShape().size() > 1) {
+    result[0] = builder.create<tensor::ReshapeOp>(originalType, result[0],
+                                                  originalShapeValue);
+  }
+  return TilingResult2(result);
+}
+
 template <typename OP, bool IsScalarOp>
 TilingResult2 tileElementWiseBinaryOp(OpBuilder &builder0, OP op,
                                       TilingParameters params) {

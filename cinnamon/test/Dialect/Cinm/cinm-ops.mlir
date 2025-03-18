@@ -19,6 +19,9 @@ func.func @simple(%t0: tensor<6x6xi32>, %t1 : tensor<6xf32> ) {
         %z1 = cinm.op.reduce max (%t0): tensor<6x6xi32>
         %q2 = cinm.op.reduce min (%t1): tensor<6xf32>
 
+        %sqrts = cinm.op.element_wise sqrt (%x): tensor<6x6xi32>
+        %exps = cinm.op.element_wise exp (%y): tensor<6x6xi32>
+
         %scan = cinm.op.scan mul (%y): tensor<6x6xi32> 
         %scan2 = cinm.op.scan add (%y): tensor<6x6xi32>
 
