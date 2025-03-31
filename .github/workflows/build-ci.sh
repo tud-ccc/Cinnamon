@@ -128,6 +128,25 @@ if echo "$@" | grep -q -- "-enable-roc"; then
   enable_roc=1
 fi
 
+function git_clone_revision() {
+  repo_url=$1
+  revision=$2
+  path=$3
+  
+  if (echo a version 2.49.0; git --version) | sort -Vk3 | tail -1 | grep -q git; then
+    # Git 2.49.0 added the revision option
+    git clone --revision "$revision" --depth 1 "$repo_url" "$path"
+  else
+    mkdir -P "$path"
+    pushd "$path"
+    git init
+    git remote add origin "$repo_url"
+    git fetch origin "$revision"
+    git checkout FETCH_HEAD
+    popd
+  fi
+}
+
 if [[ $setup_python_venv -eq 1 ]]; then
   # NOTE: This is a temporary workaround as some distros ship python3.13 which does not yet provide a torch package
   supported_python_executable=python3
@@ -159,8 +178,7 @@ if [[ $setup_python_venv -eq 1 ]]; then
 
     verbose_cmd pip install --upgrade pip
     verbose_cmd pip install torch torchvision torchaudio --index-url $torch_source
-    verbose_cmd pip install pybind11
-    verbose_cmd pip install build
+    verbose_cmd pip install pybind11 nanobind build
   fi
 elif [[ $setup_python_venv -eq 0 ]]; then
   warning "Skipping Python venv setup"
@@ -171,12 +189,12 @@ if [[ $checkout_and_build_llvm -eq 1 ]]; then
   reconfigure_llvm=0
   if [ ! -d "$llvm_path" ]; then
     status "Checking out LLVM"
-    git clone --branch llvmorg-19.1.7 --depth 1 https://github.com/llvm/llvm-project "$llvm_path"
+    git_clone_revision  https://github.com/llvm/llvm-project 8885b5c0626065274cb8f8a634d45779a0f6ff2b "$llvm_path"
 
     reconfigure_llvm=1
   fi
-
   cd "$llvm_path"
+
 
   if [ $reconfigure -eq 1 ] || [ $reconfigure_llvm -eq 1 ]; then
     status "Configuring LLVM"
@@ -208,12 +226,7 @@ if [[ $checkout_and_build_torch_mlir -eq 1 ]]; then
   reconfigure_torch_mlir=0
   if [ ! -d "$torch_mlir_path" ]; then
     status "Checking out Torch-MLIR"
-    git clone --depth 1 https://github.com/llvm/torch-mlir "$torch_mlir_path"
-
-    cd "$torch_mlir_path"
-    git fetch --depth 1 origin 98e08023bbf71e00ab81e980eac9f7c96f1f24b4
-    git checkout 98e08023bbf71e00ab81e980eac9f7c96f1f24b4
-
+    git_clone_revision  https://github.com/llvm/torch-mlir 0c29ccf1439c91c7a2175a167d4bdb2c01a03e63 "$torch_mlir_path"
     reconfigure_torch_mlir=1
   fi
 
