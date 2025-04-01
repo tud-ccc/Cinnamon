@@ -12,29 +12,6 @@ include "cinm-mlir/Dialect/Cinm/IR/CinmBase.td"
 include "mlir/IR/EnumAttr.td"
 include "mlir/IR/CommonAttrConstraints.td"
 
-// This enum is exactly the same as MLIR's `UnaryFn` enum from
-// here: mlir/include/mlir/Dialect/Linalg/IR/LinalgEnums.td,
-// ensuring easy compatibility.
-def Cinm_UnaryOp : I64EnumAttr<
-    "Cinm_UnaryOp", "",
-    [
-      I64EnumAttrCase<"exp", 0>,
-      I64EnumAttrCase<"log", 1>,
-      I64EnumAttrCase<"abs", 2>,
-      I64EnumAttrCase<"ceil", 3>,
-      I64EnumAttrCase<"floor", 4>,
-      I64EnumAttrCase<"negf", 5>,
-      I64EnumAttrCase<"reciprocal", 6>,
-      I64EnumAttrCase<"round", 7>,
-      I64EnumAttrCase<"sqrt", 8>,
-      I64EnumAttrCase<"rsqrt", 9>,
-      I64EnumAttrCase<"square", 10>,
-      I64EnumAttrCase<"tanh", 11>,
-      I64EnumAttrCase<"erf", 12>
-    ]> {
-  let cppNamespace = "::mlir::cinm";
-}
-
 def Cinm_ScanMethodAttr : I64EnumAttr<
     "ScanMethod", "",
     [
@@ -43,7 +20,6 @@ def Cinm_ScanMethodAttr : I64EnumAttr<
     ]> {
   let cppNamespace = "::mlir::cinm";
 }
-
 
 def Cinm_ReduceMethodAttr : I64EnumAttr<
     "ReduceMethod", "",

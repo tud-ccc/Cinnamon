@@ -593,7 +593,7 @@ struct ConvertElementWiseUnaryToCnm : OpConversionPattern<cinm::Elementwise_Unar
         [&](ImplicitLocOpBuilder &builder, ValueRange inputs, ValueRange outputs) {
 
           builder.create<linalg::ElemwiseUnaryOp>(TypeRange{}, ValueRange(inputs), ValueRange(outputs),
-            linalg::UnaryFnAttr::get(builder.getContext(), static_cast<linalg::UnaryFn>(op.getMethod())),
+            linalg::UnaryFnAttr::get(builder.getContext(), op.getMethod()),
             linalg::TypeFnAttr::get(builder.getContext(), linalg::TypeFn::cast_signed));
         });
 

@@ -22,7 +22,14 @@ include "mlir/Interfaces/ControlFlowInterfaces.td"
 include "mlir/Interfaces/InferTypeOpInterface.td"
 include "mlir/Interfaces/SideEffectInterfaces.td"
 include "mlir/Interfaces/DestinationStyleOpInterface.td"
+include "mlir/Dialect/Linalg/IR/LinalgEnums.td"
 
+
+// Define the attribute enums matching elementwise op kind (e.g., add).
+def ElementwiseKindAttr : EnumAttr<Cinm_Dialect,
+                                   UnaryFn, "elemwise_kind"> {
+  let assemblyFormat = "`<` $value `>`";
+}
 
 
 
@@ -72,7 +79,7 @@ def Cinm_Elementwise_Unary_Op : Cinm_Op<"op.element_wise", [Pure, SameOperandsAn
   }];
 
   let arguments = (ins
-    Cinm_UnaryOp:$method,
+    ElementwiseKindAttr:$method,
     AnyRankedTensor:$input
   );
 
