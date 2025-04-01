@@ -214,12 +214,7 @@ if [[ $checkout_and_build_llvm -eq 1 ]]; then
   fi
 
   status "Building LLVM"
-  if [ $reconfigure_llvm -eq 1 ] || [ $(cat build/last-built-commit) -ne $(git rev-parse HEAD) ] then
-    cmake --build build --target all llc opt
-
-    # Cache the last built revision.
-    echo "$(git rev-parse HEAD)" > build/last-built-commit
-  fi
+  cmake --build build --target all llc opt
 
   export PATH=$llvm_path/build/bin:$PATH
 elif [[ $checkout_and_build_llvm -eq 0 ]]; then
