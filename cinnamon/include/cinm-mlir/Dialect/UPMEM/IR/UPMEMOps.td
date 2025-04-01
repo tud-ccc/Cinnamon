@@ -432,9 +432,16 @@ def UPMEM_UPMEMFuncOp : UPMEM_Op<"func", [
   }];
 
   let arguments = (ins
-         StrAttr:$sym_name,
-         I64Attr:$num_tasklets
+        StrAttr:$sym_name,
+        I64Attr:$num_tasklets,
+        OptionalAttr<DictArrayAttr>:$arg_attrs,
+        OptionalAttr<DictArrayAttr>:$res_attrs
   );
+  let builders = [OpBuilder<(ins
+    "StringRef":$name, "int64_t":$num_tasklets,
+    CArg<"ArrayRef<NamedAttribute>", "{}">:$attrs,
+    CArg<"ArrayRef<DictionaryAttr>", "{}">:$argAttrs)
+  >];
   let regions = (region MinSizedRegion<1>:$body);
 
   let extraClassDeclaration = [{

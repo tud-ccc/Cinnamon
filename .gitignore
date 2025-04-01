@@ -3,7 +3,7 @@
 /.idea/
 .directory
 /.venv/
-/llvm/
+/llvm
 /torch-mlir/
 /upmem/
 /.env
