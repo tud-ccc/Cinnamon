@@ -157,7 +157,10 @@ if [[ $setup_python_venv -eq 1 ]]; then
   reconfigure_python_venv=0
   if [ ! -d "$py_venv_path" ]; then
     status "Creating Python venv"
-    $supported_python_executable -m venv "$py_venv_path"
+    if [ ! $supported_python_executable -m venv "$py_venv_path" ]; then
+      echo "Error: cannot create venv"
+      exit 1
+    fi
     source "$py_venv_path/bin/activate"
     reconfigure_python_venv=1
   else
@@ -178,7 +181,7 @@ if [[ $setup_python_venv -eq 1 ]]; then
 
     verbose_cmd pip install --upgrade pip
     verbose_cmd pip install torch torchvision torchaudio --index-url $torch_source
-    verbose_cmd pip install pybind11 nanobind build numpy
+    verbose_cmd pip install pybind11 nanobind build numpy python3-venv
   fi
 elif [[ $setup_python_venv -eq 0 ]]; then
   warning "Skipping Python venv setup"
