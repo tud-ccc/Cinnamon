@@ -21,7 +21,7 @@ def Cinm_Dialect : Dialect {
     }];
 
     let usePropertiesForAttributes = 0;
-//    let useDefaultAttributePrinterParser = 1;
+    let useDefaultAttributePrinterParser = 1;
 //    let useDefaultTypePrinterParser = 1;
     let hasOperationAttrVerify = 1;
 

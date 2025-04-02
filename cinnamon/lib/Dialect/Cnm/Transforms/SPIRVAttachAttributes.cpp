@@ -51,7 +51,7 @@ void CnmSPIRVAttachKernelEntryPointAttributePass::runOnOperation() {
         const DenseI32ArrayAttr workgroup_size = DenseI32ArrayAttr::get(&getContext(), {1, 1, 1});
         const std::optional<int> subgroup_size;
 
-        gpuFunc->setAttr("spirv.entry_point_abi", spirv::EntryPointABIAttr::get(&getContext(), workgroup_size, subgroup_size));
+        gpuFunc->setAttr("spirv.entry_point_abi", spirv::EntryPointABIAttr::get(&getContext(), workgroup_size, subgroup_size, {}));
     });
 }
 

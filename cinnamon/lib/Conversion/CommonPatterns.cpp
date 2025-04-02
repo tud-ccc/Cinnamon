@@ -94,7 +94,7 @@ LogicalResult ConvertCnmSetZeroToAffine::matchAndRewrite(
     cnm::SetZeroOp op, OpAdaptor, ConversionPatternRewriter &rewriter) const {
   const Value dst = rewriter.getRemappedValue(op.getOperand());
 
-  const MemRefType type = dst.getType().cast<MemRefType>();
+  const MemRefType type = cast<MemRefType>(dst.getType());
   const SmallVector<int64_t> loopSizes{type.getShape()};
   const SmallVector<int64_t> loopSteps(loopSizes.size(), 1);
 
@@ -110,6 +110,51 @@ LogicalResult ConvertCnmSetZeroToAffine::matchAndRewrite(
 
   rewriter.replaceOp(op, {dst});
   return success();
+}
+
+SmallVector<Value> createAffineApply(OpBuilder &builder, Location loc,
+                                     AffineMap map, ValueRange values) {
+  SmallVector<Value> result;
+  for (unsigned i = 0; i < map.getNumResults(); i++) {
+    result.push_back(
+        builder.create<affine::AffineApplyOp>(loc, map.getSubMap({i}), values));
+  }
+  return result;
+}
+
+void createMemrefSubviewCopy(OpBuilder &builder, Location loc, Value src,
+                             Value dst, ArrayRef<int64_t> sliceShape,
+                             ValueRange srcOffsets, ValueRange dstOffsets) {
+  MemRefType srcType = cast<MemRefType>(src.getType());
+  MemRefType dstType = cast<MemRefType>(dst.getType());
+
+  SmallVector<int64_t> srcStaticOffsets(srcType.getRank(), 0);
+  SmallVector<int64_t> srcStaticSizes{srcType.getShape()};
+  SmallVector<int64_t> srcStaticStrides(srcType.getRank(), 1);
+  for (unsigned i = 0; i < srcOffsets.size(); i++) {
+    srcStaticSizes[i] = 1;
+    srcStaticOffsets[i] = ShapedType::kDynamic;
+  }
+
+  SmallVector<int64_t> dstStaticOffsets(dstType.getRank(), 0);
+  SmallVector<int64_t> dstStaticSizes{dstType.getShape()};
+  SmallVector<int64_t> dstStaticStrides(dstType.getRank(), 1);
+  for (unsigned i = 0; i < dstOffsets.size(); i++) {
+    dstStaticSizes[i] = 1;
+    dstStaticOffsets[i] = ShapedType::kDynamic;
+  }
+
+  const Type sliceType = memref::SubViewOp::inferRankReducedResultType(
+      sliceShape, dstType, dstStaticOffsets, dstStaticSizes, dstStaticStrides);
+
+  const Value src_slice = builder.create<memref::SubViewOp>(
+      loc, sliceType, src, srcOffsets, ValueRange{}, ValueRange{},
+      srcStaticOffsets, srcStaticSizes, srcStaticStrides);
+  const Value dst_slice = builder.create<memref::SubViewOp>(
+      loc, sliceType, dst, dstOffsets, ValueRange{}, ValueRange{},
+      dstStaticOffsets, dstStaticSizes, dstStaticStrides);
+
+  builder.create<memref::CopyOp>(loc, src_slice, dst_slice);
 }
 
 } // namespace mlir

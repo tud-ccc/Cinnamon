@@ -22,7 +22,9 @@
 #include <mlir/IR/BuiltinTypes.h>
 #include <mlir/IR/Diagnostics.h>
 #include <mlir/IR/ValueRange.h>
+#include <mlir/Support/LLVM.h>
 #include <mlir/Transforms/DialectConversion.h>
+#include <mlir/Conversion/ReconcileUnrealizedCasts/ReconcileUnrealizedCasts.h>
 
 #define GEN_PASS_DEF_CONVERTCNMTOUPMEMPASS
 #include "cinm-mlir/Conversion/CnmPasses.h.inc"
@@ -39,8 +41,8 @@ template <typename T> T reduceMul(ArrayRef<T> arr) {
 }
 
 MemRefType convertTensorToMemref(ShapedType ty) {
-  if (ty.isa<MemRefType>())
-    return ty.cast<MemRefType>();
+  if (isa<MemRefType>(ty))
+    return cast<MemRefType>(ty);
 
   return MemRefType::get(ty.getShape(), ty.getElementType());
 }
@@ -125,7 +127,7 @@ struct ConvertCnmGatherToUPMEM : public OpConversionPattern<cnm::GatherOp> {
                   ConversionPatternRewriter &rewriter) const override {
 
     Value outputBuf = adaptor.getOutputBuf();
-    bool isBufferized = op.getOutputBuf().getType().isa<BaseMemRefType>();
+    bool isBufferized = isa<BaseMemRefType>(op.getOutputBuf().getType());
     if (!isBufferized) {
       outputBuf = rewriter.create<memref::AllocOp>(
           op->getLoc(), convertTensorToMemref(op.getOutputBuf().getType()));
@@ -164,7 +166,7 @@ struct ConvertCnmLaunchToUPMEM : public OpConversionPattern<cnm::LaunchOp> {
     const size_t availableWRAM = 32 * 1024;
     size_t requiredWRAM = 0;
     for (Value buffer : op.getParams()) {
-      const BufferType bufferType = buffer.getType().cast<BufferType>();
+      const BufferType bufferType = cast<BufferType>(buffer.getType());
       const size_t elementSize =
           bufferType.getElementType().getIntOrFloatBitWidth() / 8;
       requiredWRAM += reduceMul(bufferType.getShape()) * elementSize;
@@ -202,7 +204,11 @@ struct ConvertCnmLaunchToUPMEM : public OpConversionPattern<cnm::LaunchOp> {
     llvm::DenseMap<Value, BufferSliceInfo> bufferSlices;
     size_t i = 0;
     for (Value buffer : op.getParams()) {
-      const BufferType bufferType = buffer.getType().cast<BufferType>();
+      if (!dyn_cast<BufferType>(buffer.getType())) {
+        continue;
+      }
+
+      const BufferType bufferType = cast<BufferType>(buffer.getType());
       const size_t chunkSize = reduceMul(bufferType.getShape());
       const size_t memoryPerTasklet = chunksPerTasklet * chunkSize;
       const size_t memoryPerDPU = wgShape[2] * memoryPerTasklet;
@@ -227,7 +233,11 @@ struct ConvertCnmLaunchToUPMEM : public OpConversionPattern<cnm::LaunchOp> {
     // loop over chunks & execute launch body
     if (chunksPerTasklet == 1) {
       // copy data from the input buffers to wram
-      for (Value buffer : op.getInBuffers()) {
+      for (Value buffer : op.getInputs()) {
+        if (!dyn_cast<BufferType>(buffer.getType())) {
+          continue;
+        }
+
         const BufferSliceInfo slice = bufferSlices.at(buffer);
         rewriter.create<upmem::MemcpyOp>(
             op.getLoc(), upmem::MemcpyDirOp::MRAMToWRAM, slice.wramMemref,
@@ -256,7 +266,11 @@ struct ConvertCnmLaunchToUPMEM : public OpConversionPattern<cnm::LaunchOp> {
           loop.getRegion().front().getArguments().front();
 
       // copy data from the input buffers to wram
-      for (Value buffer : op.getInBuffers()) {
+      for (Value buffer : op.getInputs()) {
+        if (!dyn_cast<BufferType>(buffer.getType())) {
+          continue;
+        }
+
         const BufferSliceInfo slice = bufferSlices.at(buffer);
         Value offset = rewriter.create<arith::MulIOp>(op.getLoc(), currentChunk,
                                                       slice.chunkSize);
@@ -324,8 +338,7 @@ void populateCnmToUPMEMConversionPatterns(TypeConverter &typeConverter,
   patterns.add<ConvertCnmWorkgroupToUPMEM, ConvertCnmSetZeroToAffine,
                ConvertCnmScatterToUPMEM, ConvertCnmGatherToUPMEM,
                ConvertCnmLaunchToUPMEM, ConvertCnmTerminatorToUPMEM,
-               ConvertCnmFreeWorkgroup>(
-      typeConverter, patterns.getContext());
+               ConvertCnmFreeWorkgroup>(typeConverter, patterns.getContext());
 }
 
 struct ConvertCnmToUPMEMPass
@@ -343,7 +356,6 @@ struct ConvertCnmToUPMEMPass
 
     RewritePatternSet patterns(&getContext());
     populateCnmToUPMEMConversionPatterns(converter, patterns);
-    populateReconcileUnrealizedCastsPatterns(patterns);
     populateFinalBufferizationPatterns(patterns);
 
     ConversionTarget target(getContext());

@@ -54,17 +54,6 @@ def CnmSPIRVAttachKernelEntryPointAttributePass: Pass<"cnm-spirv-attach-kernel-e
   ];
 }
 
-
-def CnmBufferizePass : Pass<"cnm-bufferize", "func::FuncOp"> {
-  let summary = "Bufferize the `cnm` dialect";
-  let description = [{
-
-  }];
-  let dependentDialects = ["bufferization::BufferizationDialect",
-                           "memref::MemRefDialect"];
-}
-
-
 def CnmHoistWorkgroupsPass : Pass<"cnm-hoist-workgroups", "func::FuncOp"> {
   let summary = "Hoist worgroup creation outside of loops";
   let description = [{

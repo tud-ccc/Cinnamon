@@ -129,7 +129,7 @@ def LaunchOp: Cnm_Op<"launch", [AttrSizedOperandSegments, IsolatedFromAbove, Sin
     let summary = "Launch a code kernel on a given workgroup. Input buffers should have been scattered beforehand.";
     let description = [{}];
 
-    let arguments = (ins WorkgroupType:$wg, Variadic<BufferType>:$inBuffers, Variadic<BufferType>:$outBuffers);
+    let arguments = (ins WorkgroupType:$wg, Variadic<AnyType>:$inputs, Variadic<BufferType>:$outBuffers);
     let results = (outs);
     let regions = (region SizedRegion<1>:$body);
 
@@ -138,7 +138,7 @@ def LaunchOp: Cnm_Op<"launch", [AttrSizedOperandSegments, IsolatedFromAbove, Sin
 
     let extraClassDeclaration = [{
         SmallVector<Value> getParams() {
-            SmallVector<Value> result{getInBuffers()};
+            SmallVector<Value> result{getInputs()};
             result.append(getOutBuffers().begin(), getOutBuffers().end());
             return result;
         }

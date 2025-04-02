@@ -88,7 +88,6 @@ struct UPMEMOutlineKernelPass
 
   void runOnOperation() final;
 
-  void getDependentDialects(DialectRegistry &) const override {}
   upmem::UPMEMModuleOp createKernelModule(StringRef moduleName,
                                           const SymbolTable &parentSymbolTable);
 };

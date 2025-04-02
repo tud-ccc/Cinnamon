@@ -33,7 +33,7 @@ include "mlir/IR/RegionKindInterface.td"
 
 class UPMEM_IndexOp<string mnemonic, list<Trait> traits = []> :
     UPMEM_Op<mnemonic, !listconcat(traits, [
-        Pure, DeclareOpInterfaceMethods<InferIntRangeInterface>])>, 
+        Pure, DeclareOpInterfaceMethods<InferIntRangeInterface, ["inferResultRanges"]>])>, 
         Results<(outs Index)> {
   let assemblyFormat = "attr-dict";
 }
@@ -128,7 +128,7 @@ def UPMEM_PrivateWRAMAllocOp : UPMEM_Op<"pwram_alloc", [
 def UPMEM_LaunchOp : UPMEM_Op<"launch", [
       AutomaticAllocationScope, AttrSizedOperandSegments, UPMEM_AsyncOpInterface,
       IsolatedFromAbove,
-      DeclareOpInterfaceMethods<InferIntRangeInterface>]> {
+      DeclareOpInterfaceMethods<InferIntRangeInterface, ["inferResultRanges"]>]> {
   let summary = "UPMEM kernel launch operation";
 
   let arguments = (ins 
@@ -432,9 +432,16 @@ def UPMEM_UPMEMFuncOp : UPMEM_Op<"func", [
   }];
 
   let arguments = (ins
-         StrAttr:$sym_name,
-         I64Attr:$num_tasklets
+        StrAttr:$sym_name,
+        I64Attr:$num_tasklets,
+        OptionalAttr<DictArrayAttr>:$arg_attrs,
+        OptionalAttr<DictArrayAttr>:$res_attrs
   );
+  let builders = [OpBuilder<(ins
+    "StringRef":$name, "int64_t":$num_tasklets,
+    CArg<"ArrayRef<NamedAttribute>", "{}">:$attrs,
+    CArg<"ArrayRef<DictionaryAttr>", "{}">:$argAttrs)
+  >];
   let regions = (region MinSizedRegion<1>:$body);
 
   let extraClassDeclaration = [{

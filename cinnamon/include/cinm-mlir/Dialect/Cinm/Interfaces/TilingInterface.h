@@ -84,7 +84,7 @@ Value createArithIntOrFloatOp(OpBuilder &builder, Location loc, Value a,
                               Value b) {
   assert(a.getType() == b.getType() && "Mismatched type");
   assert(a.getType().isIntOrIndexOrFloat() && "Expected scalar type");
-  if (a.getType().isa<IntegerType>()) {
+  if (isa<IntegerType>(a.getType())) {
     return builder.create<IntOp>(loc, a, b);
   } else {
     return builder.create<FloatOp>(loc, a, b);

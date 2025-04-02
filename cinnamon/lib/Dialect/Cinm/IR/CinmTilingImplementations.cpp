@@ -21,6 +21,7 @@
 #include <mlir/IR/Diagnostics.h>
 #include <mlir/IR/ImplicitLocOpBuilder.h>
 #include <mlir/IR/ValueRange.h>
+#include <type_traits>
 
 using namespace mlir;
 using namespace mlir::cinm;
@@ -66,7 +67,7 @@ TilingResult2 GemmOp::convertToTiledOps(OpBuilder &builder,
   const RankedTensorType rhsType = getRight().getType();
 
   const RankedTensorType resultType =
-      getResult().getType().cast<RankedTensorType>();
+      cast<RankedTensorType>(getResult().getType());
   const ArrayRef<int64_t> resultShape = resultType.getShape();
 
   const Value resultInit = builder.create<tensor::EmptyOp>(
@@ -95,7 +96,18 @@ TilingResult2 GemmOp::convertToTiledOps(OpBuilder &builder,
         const ValueRange resultDynamicOffsets = parIndices;
 
         auto reductionAccTy = RankedTensorType::get({p0, p1}, eltTy);
-        auto zeros = DenseIntElementsAttr::get(reductionAccTy, {0});
+        DenseElementsAttr zeros;
+        if (auto floatType =
+                dyn_cast<FloatType>(reductionAccTy.getElementType())) {
+          zeros = DenseElementsAttr::get(
+              reductionAccTy,
+              {APFloat::getZero(floatType.getFloatSemantics())});
+        } else {
+          zeros = DenseElementsAttr::get(
+              reductionAccTy,
+              {APInt::getZero(reductionAccTy.getElementTypeBitWidth())});
+        }
+
         Value cst0 = builder.create<arith::ConstantOp>(loc, zeros);
 
         // this is the reduction loop
@@ -155,14 +167,91 @@ TilingResult2 GemvOp::convertToTiledOps(OpBuilder &builder, TilingParameters) {
   return FailureOr<SmallVector<Value>>({toVector});
 }
 
-template <typename OP>
+TilingResult2 Elementwise_Unary_Op::convertToTiledOps(OpBuilder &builder0, TilingParameters params) {
+  ImplicitLocOpBuilder builder(getLoc(), builder0);
+  Value input = getInput();
+
+  auto tensorTy = cast<RankedTensorType>(input.getType());
+  const auto wgSize = params.workingGroupSize();
+  const auto numElements = tensorTy.getNumElements();
+  if (wgSize > numElements) {
+    return emitWarning("Cannot tile, working group is too large");
+  }
+
+  // This is the max number of reductions we can theoretically do on
+  // a single CNM.launch.
+  auto reduceClusterSize =
+      params.reduceClusterSize(2, numElements, tensorTy.getElementType());
+
+  // We need the actual tile size to not exceed that number, and
+  // be able to divide the input by the working group size.
+  if (reduceClusterSize * wgSize >= numElements) {
+    // we have too much compute
+    const auto numLeavesNeeded = numElements / reduceClusterSize;
+    emitRemark("This computation could be done with a smaller working group, theoretically as few as " +
+        std::to_string(numLeavesNeeded) + " leaves (we have " + std::to_string(wgSize) + ").");
+    reduceClusterSize = numElements / wgSize;
+  }
+  if (numElements % wgSize != 0) {
+    return emitWarning("Cannot tile, working group does not divide tensor size");
+  }
+
+  auto shape = tensorTy.getShape();
+  const RankedTensorType originalType = tensorTy;
+  Value originalShapeValue;
+  if (shape.size() > 1) {
+    // then flatten the tensors first
+    originalShapeValue = builder.create<arith::ConstantOp>(
+        RankedTensorType::get({static_cast<int64_t>(shape.size())}, builder.getI64Type()),
+        builder.getI64TensorAttr(shape));
+    input = reshapeStatic(builder, builder.getLoc(), getInput(), {tensorTy.getNumElements()});
+
+    tensorTy = cast<RankedTensorType>(input.getType());
+    shape = tensorTy.getShape();
+  }
+
+  const Value resultInit = builder.create<tensor::EmptyOp>(tensorTy, ValueRange{});
+  const auto tileSize = reduceClusterSize * wgSize;
+
+  SmallVector<Value> result = createNestedAffineForLoops(
+      builder, getLoc(), {tensorTy.getNumElements()}, {tileSize},
+      ValueRange{resultInit},
+      [&](OpBuilder &builder, Location loc, ValueRange indices, ValueRange iterArgs) -> SmallVector<Value> {
+        const SmallVector<int64_t, 2> offsets{ShapedType::kDynamic};
+        const SmallVector<int64_t, 2> sizes{tileSize};
+        const SmallVector<int64_t, 2> strides{1};
+
+        const auto sliceTy = RankedTensorType::get({tileSize}, tensorTy.getElementType());
+
+        const Value inputSlice = builder.create<tensor::ExtractSliceOp>(
+            loc, sliceTy, input, indices, ValueRange{}, ValueRange{}, offsets,
+            sizes, strides);
+
+        // here we recreate the same op with smaller dimensions
+        auto smaller = builder.create<Elementwise_Unary_Op>(loc, getMethod(), inputSlice);
+        markOpAsNoTile(smaller);
+
+        const Value subResult = builder.create<tensor::InsertSliceOp>(
+            loc, smaller.getResult(), iterArgs[0], indices, ValueRange{},
+            ValueRange{}, offsets, sizes, strides);
+
+        return {subResult};
+      });
+  if (originalType.getShape().size() > 1) {
+    result[0] = builder.create<tensor::ReshapeOp>(originalType, result[0],
+                                                  originalShapeValue);
+  }
+  return TilingResult2(result);
+}
+
+template <typename OP, bool IsScalarOp>
 TilingResult2 tileElementWiseBinaryOp(OpBuilder &builder0, OP op,
                                       TilingParameters params) {
   ImplicitLocOpBuilder builder(op.getLoc(), builder0);
   Value lhs = op.getOperand(0);
   Value rhs = op.getOperand(1);
 
-  RankedTensorType tensorTy = lhs.getType().cast<RankedTensorType>();
+  RankedTensorType tensorTy = cast<RankedTensorType>(lhs.getType());
   auto wgSize = params.workingGroupSize();
   auto numElements = tensorTy.getNumElements();
   if (wgSize > numElements) {
@@ -200,9 +289,12 @@ TilingResult2 tileElementWiseBinaryOp(OpBuilder &builder0, OP op,
         builder.getI64TensorAttr(shape));
     lhs = cinm::reshapeStatic(builder, builder.getLoc(), op.getLhs(),
                               {tensorTy.getNumElements()});
-    rhs = cinm::reshapeStatic(builder, builder.getLoc(), op.getRhs(),
-                              {tensorTy.getNumElements()});
-    tensorTy = lhs.getType().cast<RankedTensorType>();
+
+    if constexpr (!IsScalarOp) {
+      rhs = cinm::reshapeStatic(builder, builder.getLoc(), op.getRhs(),
+                                {tensorTy.getNumElements()});
+    }
+    tensorTy = cast<RankedTensorType>(lhs.getType());
     shape = tensorTy.getShape();
   }
 
@@ -219,15 +311,19 @@ TilingResult2 tileElementWiseBinaryOp(OpBuilder &builder0, OP op,
         const SmallVector<int64_t, 2> sizes{tileSize};
         const SmallVector<int64_t, 2> strides{1};
 
-        const RankedTensorType sliceTy = RankedTensorType::get(
-            {tileSize}, tensorTy.getElementType());
+        const RankedTensorType sliceTy =
+            RankedTensorType::get({tileSize}, tensorTy.getElementType());
 
         const Value lhsSlice = builder.create<tensor::ExtractSliceOp>(
             loc, sliceTy, lhs, indices, ValueRange{}, ValueRange{}, offsets,
             sizes, strides);
-        const Value rhsSlice = builder.create<tensor::ExtractSliceOp>(
-            loc, sliceTy, rhs, indices, ValueRange{}, ValueRange{}, offsets,
-            sizes, strides);
+
+        Value rhsSlice = rhs;
+        if constexpr (!IsScalarOp) {
+          rhsSlice = builder.create<tensor::ExtractSliceOp>(
+              loc, sliceTy, rhs, indices, ValueRange{}, ValueRange{}, offsets,
+              sizes, strides);
+        }
 
         // here we recreate the same op with smaller dimensions
         OP smaller = builder.create<OP>(loc, lhsSlice, rhsSlice);
@@ -248,20 +344,40 @@ TilingResult2 tileElementWiseBinaryOp(OpBuilder &builder0, OP op,
 
 TilingResult2 AddOp::convertToTiledOps(OpBuilder &builder,
                                        TilingParameters params) {
-  return tileElementWiseBinaryOp<AddOp>(builder, *this, params);
+  return tileElementWiseBinaryOp<AddOp, false>(builder, *this, params);
+}
+
+TilingResult2 AddsOp::convertToTiledOps(OpBuilder &builder,
+                                        TilingParameters params) {
+  return tileElementWiseBinaryOp<AddsOp, true>(builder, *this, params);
 }
 
 TilingResult2 SubOp::convertToTiledOps(OpBuilder &builder,
                                        TilingParameters params) {
-  return tileElementWiseBinaryOp<SubOp>(builder, *this, params);
+  return tileElementWiseBinaryOp<SubOp, false>(builder, *this, params);
+}
+
+TilingResult2 SubsOp::convertToTiledOps(OpBuilder &builder,
+                                        TilingParameters params) {
+  return tileElementWiseBinaryOp<SubsOp, true>(builder, *this, params);
 }
 
 TilingResult2 MulOp::convertToTiledOps(OpBuilder &builder,
                                        TilingParameters params) {
-  return tileElementWiseBinaryOp<MulOp>(builder, *this, params);
+  return tileElementWiseBinaryOp<MulOp, false>(builder, *this, params);
+}
+
+TilingResult2 MulsOp::convertToTiledOps(OpBuilder &builder,
+                                        TilingParameters params) {
+  return tileElementWiseBinaryOp<MulsOp, true>(builder, *this, params);
 }
 
 TilingResult2 DivOp::convertToTiledOps(OpBuilder &builder,
                                        TilingParameters params) {
-  return tileElementWiseBinaryOp<DivOp>(builder, *this, params);
+  return tileElementWiseBinaryOp<DivOp, false>(builder, *this, params);
+}
+
+TilingResult2 DivsOp::convertToTiledOps(OpBuilder &builder,
+                                        TilingParameters params) {
+  return tileElementWiseBinaryOp<DivsOp, true>(builder, *this, params);
 }

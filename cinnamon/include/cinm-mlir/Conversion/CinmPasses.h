@@ -4,6 +4,7 @@
 
 #pragma once
 
+#include <cinm-mlir/Conversion/CinmToCim/CinmToCim.h>
 #include <cinm-mlir/Conversion/CinmToCnm/CinmToCnm.h>
 
 namespace mlir {

@@ -6,6 +6,8 @@
 #include <llvm/ADT/ArrayRef.h>
 #include <llvm/ADT/STLExtras.h>
 
+#include <llvm/ADT/SmallVector.h>
+#include <mlir/IR/AffineMap.h>
 #include <mlir/IR/Builders.h>
 #include <mlir/IR/Location.h>
 #include <mlir/IR/OpDefinition.h>
@@ -36,5 +38,12 @@ struct ConvertCnmSetZeroToAffine : public OpConversionPattern<cnm::SetZeroOp> {
   LogicalResult matchAndRewrite(cnm::SetZeroOp, OpAdaptor,
                                 ConversionPatternRewriter &) const override;
 };
+
+SmallVector<Value> createAffineApply(OpBuilder &builder, Location loc,
+                                     AffineMap map, ValueRange values);
+
+void createMemrefSubviewCopy(OpBuilder &builder, Location loc, Value src,
+                             Value dst, ArrayRef<int64_t> sliceShape,
+                             ValueRange srcOffsets, ValueRange dstOffsets);
 
 } // namespace mlir

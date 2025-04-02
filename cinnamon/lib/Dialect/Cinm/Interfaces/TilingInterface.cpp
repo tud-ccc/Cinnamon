@@ -6,6 +6,8 @@
 #include <cstdint>
 #include <functional>
 #include <limits>
+#include <llvm/ADT/APFloat.h>
+#include <llvm/ADT/APInt.h>
 #include <llvm/ADT/SmallVector.h>
 #include <mlir/IR/BuiltinTypeInterfaces.h>
 #include <numeric>
@@ -118,9 +120,10 @@ int64_t TilingParameters::bufferSizeOfLeaf() {
   int64_t bufSize = 0;
   int i = 0;
   do {
-    int lastIdx = bufferSizesInBytes.size() - 1 - i;
+    size_t lastIdx = bufferSizesInBytes.size() - 1 - i;
     bufSize += bufferSizesInBytes[lastIdx] / numLeafsInDim;
-    numLeafsInDim *= workgroupShape[lastIdx];
+    numLeafsInDim *=
+        lastIdx < workgroupShape.size() ? workgroupShape[lastIdx] : 1;
     i++;
   } while (i < static_cast<int64_t>(bufferSizesInBytes.size()));
   return bufSize;
@@ -140,7 +143,7 @@ Value reshapeStatic(OpBuilder &b, Location loc,
 Value reshapeStatic(OpBuilder &builder, Location loc, Value value,
                     ShapedType type, llvm::ArrayRef<int64_t> newShape) {
   auto newTy = type.cloneWith(newShape, type.getElementType());
-  if (newTy.isa<RankedTensorType>()) {
+  if (isa<RankedTensorType>(newTy)) {
     auto reifiedShape = builder.create<arith::ConstantOp>(
         loc, RankedTensorType::get({newTy.getRank()}, builder.getI64Type()),
         builder.getI64TensorAttr(newShape));
@@ -153,7 +156,7 @@ Value reshapeStatic(OpBuilder &builder, Location loc, Value value,
 Value createVectorReduce(OpBuilder &builder, Location loc, Value vector,
                          Value init, ReduceAccumulatorCallback callback,
                          int64_t clusterSize) {
-  const RankedTensorType vectorType = vector.getType().cast<RankedTensorType>();
+  const auto vectorType = cast<RankedTensorType>(vector.getType());
   assert(vectorType.getRank() == 1);
   const int64_t vectorSize = vectorType.getDimSize(0);
   const Type elementType = vectorType.getElementType();
@@ -207,48 +210,80 @@ Value createVectorReduce(OpBuilder &builder, Location loc, Value vector,
   return builder.create<tensor::ExtractOp>(loc, sum.getResult(0), ValueRange{});
 }
 
-// todo these impls should work also for float types
-
 Value createVectorReduceAdd(OpBuilder &builder, Location loc, Value vector,
                             int64_t clusterSize) {
   const Type elementType =
-      vector.getType().cast<RankedTensorType>().getElementType();
-  const Value init = builder.create<arith::ConstantOp>(
-      loc, builder.getIntegerAttr(elementType, 0));
-  return createVectorReduce<arith::AddIOp>(builder, loc, vector, init,
-                                           clusterSize);
+      cast<RankedTensorType>(vector.getType()).getElementType();
+  if (FloatType floatType = dyn_cast<FloatType>(elementType)) {
+    const TypedAttr zeroAttr = FloatAttr::get(
+        elementType, APFloat::getZero(floatType.getFloatSemantics()));
+    const Value init = builder.create<arith::ConstantOp>(loc, zeroAttr);
+    return createVectorReduce<arith::AddFOp>(builder, loc, vector, init,
+                                             clusterSize);
+  } else {
+    const TypedAttr zeroAttr = IntegerAttr::get(elementType, 0);
+    const Value init = builder.create<arith::ConstantOp>(loc, zeroAttr);
+    return createVectorReduce<arith::AddIOp>(builder, loc, vector, init,
+                                             clusterSize);
+  }
 }
 
 Value createVectorReduceMul(OpBuilder &builder, Location loc, Value vector,
                             int64_t clusterSize) {
   const Type elementType =
-      vector.getType().cast<RankedTensorType>().getElementType();
-  const Value init = builder.create<arith::ConstantOp>(
-      loc, builder.getIntegerAttr(elementType, 1));
-  return createVectorReduce<arith::MulIOp>(builder, loc, vector, init,
-                                           clusterSize);
+      cast<RankedTensorType>(vector.getType()).getElementType();
+  if (FloatType floatType = dyn_cast<FloatType>(elementType)) {
+    const TypedAttr oneAttr =
+        FloatAttr::get(elementType, APFloat(floatType.getFloatSemantics(), 1));
+    const Value init = builder.create<arith::ConstantOp>(loc, oneAttr);
+    return createVectorReduce<arith::MulFOp>(builder, loc, vector, init,
+                                             clusterSize);
+  } else {
+    const TypedAttr oneAttr = IntegerAttr::get(elementType, 1);
+    const Value init = builder.create<arith::ConstantOp>(loc, oneAttr);
+    return createVectorReduce<arith::MulIOp>(builder, loc, vector, init,
+                                             clusterSize);
+  }
 }
 
 Value createVectorReduceMin(OpBuilder &builder, Location loc, Value vector,
                             int64_t clusterSize) {
   const Type elementType =
-      vector.getType().cast<RankedTensorType>().getElementType();
-  const Value init = builder.create<arith::ConstantOp>(
-      loc, builder.getIntegerAttr(elementType,
-                                  std::numeric_limits<uint64_t>::max()));
-  return createVectorReduce<arith::MinUIOp>(builder, loc, vector, init,
-                                            clusterSize);
+      cast<RankedTensorType>(vector.getType()).getElementType();
+  if (FloatType floatType = dyn_cast<FloatType>(elementType)) {
+    const TypedAttr maxValAttr = FloatAttr::get(
+        elementType, APFloat::getInf(floatType.getFloatSemantics()));
+    const Value init = builder.create<arith::ConstantOp>(loc, maxValAttr);
+    return createVectorReduce<arith::MinimumFOp>(builder, loc, vector, init,
+                                                 clusterSize);
+  } else {
+    const TypedAttr maxValAttr = IntegerAttr::get(
+        elementType,
+        APInt::getSignedMaxValue(elementType.getIntOrFloatBitWidth()));
+    const Value init = builder.create<arith::ConstantOp>(loc, maxValAttr);
+    return createVectorReduce<arith::MinSIOp>(builder, loc, vector, init,
+                                              clusterSize);
+  }
 }
 
 Value createVectorReduceMax(OpBuilder &builder, Location loc, Value vector,
                             int64_t clusterSize) {
   const Type elementType =
-      vector.getType().cast<RankedTensorType>().getElementType();
-  const Value init = builder.create<arith::ConstantOp>(
-      loc, builder.getIntegerAttr(elementType,
-                                  std::numeric_limits<uint64_t>::min()));
-  return createVectorReduce<arith::MaxUIOp>(builder, loc, vector, init,
-                                            clusterSize);
+      cast<RankedTensorType>(vector.getType()).getElementType();
+  if (FloatType floatType = dyn_cast<FloatType>(elementType)) {
+    const TypedAttr minValAttr = FloatAttr::get(
+        elementType, -APFloat::getInf(floatType.getFloatSemantics()));
+    const Value init = builder.create<arith::ConstantOp>(loc, minValAttr);
+    return createVectorReduce<arith::MaximumFOp>(builder, loc, vector, init,
+                                                 clusterSize);
+  } else {
+    const TypedAttr minValAttr = IntegerAttr::get(
+        elementType,
+        APInt::getSignedMinValue(elementType.getIntOrFloatBitWidth()));
+    const Value init = builder.create<arith::ConstantOp>(loc, minValAttr);
+    return createVectorReduce<arith::MaxSIOp>(builder, loc, vector, init,
+                                              clusterSize);
+  }
 }
 
 } // namespace mlir::cinm

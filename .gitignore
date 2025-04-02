@@ -1,5 +1,10 @@
 .cache
-.vscode
-llvm
-upmem
-upmem-src
+/.vscode/
+/.idea/
+.directory
+/.venv/
+/llvm
+/torch-mlir
+/upmem
+/upmem-src
+/.env

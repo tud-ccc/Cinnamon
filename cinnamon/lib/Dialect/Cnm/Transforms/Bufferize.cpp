@@ -166,21 +166,6 @@ struct ComputeOpInterface
   }
 };
 
-struct CnmBufferizePass
-    : public cnm::impl::CnmBufferizePassBase<CnmBufferizePass> {
-  void runOnOperation() override {
-    BufferizationOptions options = getPartialBufferizationOptions();
-    options.opFilter.allowDialect<cnm::CnmDialect>();
-
-    if (failed(bufferizeOp(getOperation(), options)))
-      signalPassFailure();
-  }
-
-  void getDependentDialects(DialectRegistry &registry) const override {
-    registry.insert<bufferization::BufferizationDialect, memref::MemRefDialect,
-                    cnm::CnmDialect, scf::SCFDialect, arith::ArithDialect>();
-  }
-};
 } // namespace
 
 void cnm::registerCnmBufferizationExternalModels(DialectRegistry &registry) {

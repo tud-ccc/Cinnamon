@@ -58,16 +58,17 @@ static LogicalResult runMLIRPasses(Operation *op) {
                                                 // memref.load
   passManager.addPass(createLowerAffinePass()); // affine.apply -> arith ops
 
-  passManager.addPass(createCnmSPIRVAttachTargetAttributePass(
-      CnmSPIRVAttachTargetAttributePassOptions{
+  passManager.addPass(cnm::createCnmSPIRVAttachTargetAttributePass(
+      cnm::CnmSPIRVAttachTargetAttributePassOptions{
           .spirvCapabilities = {"Shader"},
           .spirvExtensions = {"SPV_KHR_storage_buffer_storage_class"},
+          .deviceId = 0,
       }));
 
   OpPassManager &gpuModulePM = passManager.nest<gpu::GPUModuleOp>();
   gpuModulePM.addPass(createConvertMemRefToSPIRVPass());
   gpuModulePM.addPass(createConvertControlFlowToSPIRVPass());
-  gpuModulePM.addPass(createCnmSPIRVAttachKernelEntryPointAttributePass());
+  gpuModulePM.addPass(cnm::createCnmSPIRVAttachKernelEntryPointAttributePass());
 
   passManager.addPass(createConvertGPUToSPIRVPass(/*mapMemorySpace=*/true));
 
