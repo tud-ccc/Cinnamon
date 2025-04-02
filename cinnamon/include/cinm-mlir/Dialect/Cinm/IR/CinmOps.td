@@ -22,7 +22,14 @@ include "mlir/Interfaces/ControlFlowInterfaces.td"
 include "mlir/Interfaces/InferTypeOpInterface.td"
 include "mlir/Interfaces/SideEffectInterfaces.td"
 include "mlir/Interfaces/DestinationStyleOpInterface.td"
+include "mlir/Dialect/Linalg/IR/LinalgEnums.td"
 
+
+// Define the attribute enums matching elementwise op kind (e.g., add).
+def ElementwiseKindAttr : EnumAttr<Cinm_Dialect,
+                                   UnaryFn, "elemwise_kind"> {
+  let assemblyFormat = "$value";
+}
 
 
 
@@ -59,12 +66,29 @@ class Cinm_Bitwise_Op<string name, list<Trait> traits = []>
     let results = (outs AnyRankedTensor:$result);
 }
 
+def Cinm_Elementwise_Unary_Op : Cinm_Op<"op.element_wise", [Pure, SameOperandsAndResultType, DeclareOpInterfaceMethods<CinmTilingInterface>]> {
+  let summary = "Generic elementwise unary operation on a tensor";
+  let description = [{
+    Perform a unary operation on each element of a tensor. Example:
 
+    ```
+	%r = cinm.compute attributes { workgroupShape = array<i64: 1,1,16> } -> tensor<512xf32> {
+	    %sqrts = cinm.op.element_wise sqrt (%input) : tensor<512xf32>
+	    cinm.yield %sqrts : tensor<512xf32>
+    ```
+  }];
 
+  let arguments = (ins
+    ElementwiseKindAttr:$method,
+    AnyRankedTensor:$input
+  );
 
+  let results = (outs
+    AnyRankedTensor:$result
+  );
 
-
-
+  let assemblyFormat = "$method `(` $input `)` attr-dict `:` type($input)";
+}
 
 // Concrete op definitions
 
