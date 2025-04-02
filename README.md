@@ -41,6 +41,10 @@ sudo update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-13 70 --slave /
 
 The repository contains a `justfile` that installs all needed dependencies and builds the sources.
 
+* Make sure you install build dependencies:
+```sh
+sudo apt-get install clang ninja-build mold libvulkan-dev ccache
+```
 * Clone the repo
   ```sh
   git clone https://github.com/tud-ccc/Cinnamon.git
