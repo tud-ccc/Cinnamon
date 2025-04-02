@@ -181,7 +181,7 @@ if [[ $setup_python_venv -eq 1 ]]; then
 
     verbose_cmd pip install --upgrade pip
     verbose_cmd pip install torch torchvision torchaudio --index-url $torch_source
-    verbose_cmd pip install pybind11 nanobind build numpy python3-venv
+    verbose_cmd pip install pybind11 nanobind build numpy 
   fi
 elif [[ $setup_python_venv -eq 0 ]]; then
   warning "Skipping Python venv setup"

@@ -521,6 +521,7 @@ void UPMEMFuncOp::build(OpBuilder &builder, OperationState &result,
                       builder.getI64IntegerAttr(numTasklets));
   result.addAttribute(getResAttrsAttrName(result.name),
                       builder.getDictionaryAttr(attrs));
+  result.addRegion();
   // todo arg attrs
   // result.addAttribute(getArgAttrsAttrName(result.name),
   // builder.getArrayAttr())))
