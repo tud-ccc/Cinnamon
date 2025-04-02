@@ -3,7 +3,7 @@
 #include <cinm-mlir/Dialect/Cnm/TransformOps/CnmTransformOps.h>
 #include <cinm-mlir/Dialect/Cnm/Transforms/CnmComputeTransforms.h>
 #include <llvm/ADT/SmallVector.h>
-#include <mlir/Dialect/Transform/IR/TransformInterfaces.h>
+#include <mlir/Dialect/Transform/Interfaces/TransformInterfaces.h>
 #include <mlir/IR/Builders.h>
 #include <mlir/IR/Value.h>
 #include <mlir/Support/LogicalResult.h>
@@ -44,7 +44,7 @@ void CnmExpandDimOp::getEffects(
   // Indicate that the `call` handle is only read by this operation because the
   // associated operation is not erased but rather modified in-place, so the
   // reference to it remains valid.
-  onlyReadsHandle(getTarget(), effects);
+  onlyReadsHandle(getTargetMutable(), effects);
 
   // Indicate that the payload is modified by this operation.
   modifiesPayload(effects);
@@ -66,7 +66,7 @@ DiagnosedSilenceableFailure CnmPeelRightOp::applyToOne(TransformRewriter &,
 
 void CnmPeelRightOp::getEffects(
     ::llvm::SmallVectorImpl<::mlir::MemoryEffects::EffectInstance> &effects) {
-  onlyReadsHandle(getTarget(), effects);
+  onlyReadsHandle(getTargetMutable(), effects);
   modifiesPayload(effects);
 }
 
@@ -85,6 +85,6 @@ DiagnosedSilenceableFailure CnmSwapDimsOp::applyToOne(TransformRewriter &,
 
 void CnmSwapDimsOp::getEffects(
     ::llvm::SmallVectorImpl<::mlir::MemoryEffects::EffectInstance> &effects) {
-  onlyReadsHandle(getTarget(), effects);
+  onlyReadsHandle(getTargetMutable(), effects);
   modifiesPayload(effects);
 }

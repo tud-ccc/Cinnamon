@@ -1,7 +1,6 @@
 add_mlir_dialect_library(CnmTransformDialectExtension
     CnmTransformOps.cpp
     CnmTransformExtension.cpp
-    CnmApplyTransformPass.cpp
 
 DEPENDS
     CnmIncGen

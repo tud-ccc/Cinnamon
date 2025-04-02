@@ -82,7 +82,7 @@ static ParseResult parseAffineMapInlineOrNot(OpAsmParser &parser,
             return success();
           })))
     return failure();
-  if (!affineMapAttr.isa<AffineMapAttr>())
+  if (!isa<AffineMapAttr>(affineMapAttr))
     return parser.emitError(
         parser.getCurrentLocation(),
         "invalid kind of attribute specified, expected affine map");
@@ -102,7 +102,7 @@ static ParseResult parseComputeOperand(OpAsmParser &parser,
     return failure();
   }
   // a tensor result
-  if (canBeResult && type.isa<TensorType>()) {
+  if (canBeResult && isa<TensorType>(type)) {
     result.addTypes(type);
   }
 
@@ -239,8 +239,7 @@ void ComputeOp::build(::mlir::OpBuilder &builder, ::mlir::OperationState &state,
   for (auto [i, buf] : llvm::enumerate(
            llvm::drop_begin(state.operands, symbolBindings.size()))) {
 
-    if (buf.getType().isa<ShapedType>()) {
-      auto bufTy = buf.getType().cast<ShapedType>();
+    if (auto bufTy = llvm::cast_or_null<ShapedType>(buf.getType())) {
       auto bufShape = bufTy.getShape();
       if (i < affineMaps.size()) {
         auto map = affineMaps[i];
@@ -256,7 +255,7 @@ void ComputeOp::build(::mlir::OpBuilder &builder, ::mlir::OperationState &state,
         }
       }
       // tensor result
-      if (i >= inputs.size() && buf.getType().isa<TensorType>())
+      if (i >= inputs.size() && isa<TensorType>(buf.getType()))
         state.addTypes(buf.getType());
     }
   }
@@ -290,7 +289,7 @@ void ComputeOp::print(OpAsmPrinter &out) {
 
     out.printOperand(buf);
     out << "[";
-    map.cast<AffineMapAttr>().getValue().print(out.getStream());
+    llvm::cast<AffineMapAttr>(map).getValue().print(out.getStream());
     // out.printAttributeWithoutType(map);
     out << "] : ";
     out.printType(buf.getType());
@@ -338,9 +337,9 @@ LogicalResult ComputeOp::verify() {
   // compute op may be partially bufferized
   SmallVector<Type> tensorArgs;
   for (auto [i, buf] : llvm::enumerate(getOutBuffers())) {
-    if (buf.getType().isa<RankedTensorType>()) {
+    if (isa<RankedTensorType>(buf.getType())) {
       tensorArgs.push_back(buf.getType());
-    } else if (!buf.getType().isa<MemRefType>()) {
+    } else if (!isa<MemRefType>(buf.getType())) {
       return emitOpError("out argument #")
              << i << " should be a tensor or memref";
     }
@@ -354,7 +353,7 @@ LogicalResult ComputeOp::verify() {
   for (auto [arg, buf, map, i] : llvm::zip(
            args, getBuffers(), getAffineMaps().getAsValueRange<AffineMapAttr>(),
            llvm::seq(0UL, 10000000UL))) {
-    if (!arg.getType().isa<MemRefType>())
+    if (!isa<MemRefType>(arg.getType()))
       return emitNiceError(*this, arg.getLoc(), "kernel argument #")
              << i << " should be a memref";
 
@@ -368,8 +367,8 @@ LogicalResult ComputeOp::verify() {
              << i << " should have " << symbolCount << " input symbols, got "
              << map.getNumSymbols();
 
-    auto argTy = arg.getType().cast<ShapedType>();
-    auto inputTy = buf.getType().cast<ShapedType>();
+    auto argTy = llvm::cast<ShapedType>(arg.getType());
+    auto inputTy = llvm::cast<ShapedType>(buf.getType());
     if (argTy.getElementType() != inputTy.getElementType())
       return emitNiceError(*this, arg.getLoc(), "Kernel argument #")
              << i << " should have element type " << inputTy.getElementType();
