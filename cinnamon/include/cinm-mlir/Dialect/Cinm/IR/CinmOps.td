@@ -28,7 +28,7 @@ include "mlir/Dialect/Linalg/IR/LinalgEnums.td"
 // Define the attribute enums matching elementwise op kind (e.g., add).
 def ElementwiseKindAttr : EnumAttr<Cinm_Dialect,
                                    UnaryFn, "elemwise_kind"> {
-  let assemblyFormat = "`<` $value `>`";
+  let assemblyFormat = "$value";
 }
 
 
