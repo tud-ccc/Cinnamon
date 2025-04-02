@@ -172,9 +172,11 @@ static FailureOr<AffineMap> linearizeAffineMap(AffineMap map,
 }
 
 /*
-void upmemrt_scatter_dpu(struct dpu_set_t *dpu_set, void *A, size_t input_size,
-                       size_t copy_bytes, size_t offset_in_dpu,
-                       size_t (*base_offset)(size_t));
+size_t upmemrt_dpu_scatter(struct dpu_set_t *dpu_set, void *host_buffer,
+                           size_t element_size, size_t num_elements,
+                           size_t num_elements_per_tasklet, size_t copy_bytes,
+                           size_t offset_in_dpu_bytes,
+                           size_t (*base_offset)(size_t));
 */
 static FailureOr<LLVM::LLVMFuncOp>
 getScatterOrGatherFunc(ModuleOp moduleOp, LLVMTypeConverter const *tyConverter,
@@ -184,7 +186,8 @@ getScatterOrGatherFunc(ModuleOp moduleOp, LLVMTypeConverter const *tyConverter,
   auto sizeTy = tyConverter->getIndexType();
   auto funPtrTy = functionPtrTy(sizeTy, {sizeTy});
   return LLVM::lookupOrCreateFn(
-      moduleOp, name, {ptrTy, ptrTy, sizeTy, sizeTy, sizeTy, funPtrTy},
+      moduleOp, name,
+      {ptrTy, ptrTy, sizeTy, sizeTy, sizeTy, sizeTy, sizeTy, funPtrTy},
       LLVM::LLVMVoidType::get(ctx));
 }
 
@@ -346,7 +349,6 @@ static LogicalResult lowerScatterOrGather(Op op, typename Op::Adaptor adaptor,
                                           bool isGather) {
   auto loc = op->getLoc();
   ImplicitLocOpBuilder rewriter(op->getLoc(), rewriter0);
-
   /*
   The scatter/gather op does these things:
   - generate a function that implements the affine map
@@ -360,8 +362,10 @@ static LogicalResult lowerScatterOrGather(Op op, typename Op::Adaptor adaptor,
   auto affineMapFunOpt = outlineAffineMap(
       rewriter, tyConverter, moduleOp, op.getScatterMap(),
       op.getHierarchy().getType(), op.getHostBuffer().getType());
-  if (failed(affineMapFunOpt))
+  if (failed(affineMapFunOpt)) {
     return emitError(op->getLoc(), "Cannot emit affine map");
+  }
+
   /*
   void upmemrt_scatter_dpu(struct dpu_set_t *dpu_set, void *A, size_t
   input_size, size_t copy_bytes, size_t offset_in_dpu, size_t
@@ -400,14 +404,20 @@ static LogicalResult lowerScatterOrGather(Op op, typename Op::Adaptor adaptor,
            << adaptor.getHostBuffer().getType();
   }
 
-  auto sizeOfTensorBytes =
-      computeProduct(op.getHostBuffer().getType().getShape()) *
+  const size_t elementSize =
       op.getHostBuffer().getType().getElementTypeBitWidth() / 8;
+  const size_t numTasklets =
+      computeProduct(op.getHierarchy().getType().getShape());
+  const size_t numElements =
+      computeProduct(op.getHostBuffer().getType().getShape());
+  const size_t numElementsPerTasklet = numElements / numTasklets;
 
   rewriter0.create<LLVM::CallOp>(
       loc, *runtimeScatterFun,
       ValueRange{adaptor.getHierarchy(), bareHostBuf,
-                 reifyAsIndex(rewriter, tyConverter, sizeOfTensorBytes),
+                 reifyAsIndex(rewriter, tyConverter, elementSize),
+                 reifyAsIndex(rewriter, tyConverter, numElements),
+                 reifyAsIndex(rewriter, tyConverter, numElementsPerTasklet),
                  reifyAsIndex(rewriter, tyConverter, numBytesCopied),
                  dpuMemOffset, funPtrOp.getRes()});
 
