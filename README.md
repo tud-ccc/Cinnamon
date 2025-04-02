@@ -25,7 +25,7 @@ This is an example of how you can build the framework locally.
 
 ### Prerequisites
 
-CINM depends on a patched version of `LLVM 19.1.3`. This is built automatically.
+CINM depends on `LLVM 20.1`. This is built automatically.
 Additionally, a number of software packages are required to build it:
 - CMake (at least version 3.22)
 - [`just`](https://github.com/casey/just?tab=readme-ov-file#installation)
