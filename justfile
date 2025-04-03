@@ -54,17 +54,9 @@ debug-cinm-opt *ARGS:
 
 cinm-to-cnm FILE *ARGS: (
     cinm-opt FILE
-    "--cinm-tiling"
-    "--affine-loop-unroll='unroll-full unroll-full-threshold=1'"
-    "--convert-cinm-to-cnm"
-    "--lower-affine"
-    "--one-shot-bufferize='allow-return-allocs-from-loops allow-unknown-ops copy-before-write bufferize-function-boundaries function-boundary-type-conversion=identity-layout-map'"
-    "--convert-linalg-to-affine-loops"
-    "--lower-affine"
-    "--buffer-loop-hoisting"
-    "--buffer-hoisting"
-    "--canonicalize"
-    "--cse"
+    "--pass-pipeline='builtin.module(func.func(cinm-tiling,affine-loop-unroll{unroll-full unroll-full-threshold=1},convert-cinm-to-cnm,lower-affine),
+    one-shot-bufferize{allow-return-allocs-from-loops allow-unknown-ops copy-before-write bufferize-function-boundaries function-boundary-type-conversion=identity-layout-map},
+    convert-linalg-to-affine-loops, lower-affine, func.func(buffer-loop-hoisting, buffer-hoisting), canonicalize, cse)'"
     ARGS
 )
 
