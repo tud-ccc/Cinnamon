@@ -47,6 +47,9 @@ void mlir::upmem_emitc::registerUPMEMCppTranslation() {
         registry.insert<memref::MemRefDialect>();
         registry.insert<scf::SCFDialect>();
         registry.insert<upmem::UPMEMDialect>();
+        registry.insert<mlir::memref::MemRefDialect>();
+        registry.insert<mlir::func::FuncDialect>();
+        registry.insert<mlir::scf::SCFDialect>();
         // clang-format on
       });
 }

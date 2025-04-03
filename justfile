@@ -170,21 +170,21 @@ cinm-vulkan-runner FILE *ARGS:
 genBench NAME: (doNinja "cinm-opt")
     #!/bin/bash
     source "{{upmem_dir}}/upmem_env.sh"
-    cd ./cinnamon/testbench
+    cd cinnamon/testbench
     export BENCH_NAME="{{NAME}}"
     make clean && make {{NAME}}-exe
 
 runBench NAME:
     #!/bin/bash
     source "{{upmem_dir}}/upmem_env.sh"
-    cd ./cinnamon/testbench/generated2/{{NAME}}/bin
+    cd cinnamon/testbench/generated2/{{NAME}}/bin
     ./host
 
 bench NAME: (doNinja "cinm-opt")
     #!/bin/bash
     set -e
     source "{{upmem_dir}}/upmem_env.sh"
-    cd ./cinnamon/testbench
+    cd cinnamon/testbench
     export BENCH_NAME="{{NAME}}"
     make clean && make {{NAME}}-exe
     cd generated2/{{NAME}}/bin

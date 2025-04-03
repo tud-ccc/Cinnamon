@@ -13,6 +13,7 @@
 #include <llvm/ADT/Twine.h>
 #include <llvm/IR/Constants.h>
 #include <llvm/Support/Casting.h>
+#include <llvm/Support/LogicalResult.h>
 #include <mlir/Conversion/LLVMCommon/LoweringOptions.h>
 #include <mlir/Conversion/LLVMCommon/TypeConverter.h>
 #include <mlir/Dialect/Affine/IR/AffineOps.h>
@@ -38,12 +39,12 @@
 
 #include "mlir/Conversion/LLVMCommon/Pattern.h"
 #include "mlir/Conversion/MemRefToLLVM/MemRefToLLVM.h"
+#include <mlir/Conversion/ReconcileUnrealizedCasts/ReconcileUnrealizedCasts.h>
 #include <mlir/Dialect/Bufferization/IR/Bufferization.h>
 #include <mlir/Dialect/LLVMIR/FunctionCallUtils.h>
 #include <mlir/IR/Visitors.h>
 #include <mlir/Support/LogicalResult.h>
 #include <mlir/Transforms/DialectConversion.h>
-#include <mlir/Conversion/ReconcileUnrealizedCasts/ReconcileUnrealizedCasts.h>
 #include <optional>
 
 namespace mlir {
@@ -177,7 +178,7 @@ size_t upmemrt_dpu_scatter(struct dpu_set_t *dpu_set, void *host_buffer,
                            size_t offset_in_dpu_bytes,
                            size_t (*base_offset)(size_t));
 */
-static LLVM::LLVMFuncOp
+static FailureOr<LLVM::LLVMFuncOp>
 getScatterOrGatherFunc(ModuleOp moduleOp, LLVMTypeConverter const *tyConverter,
                        StringRef name) {
   auto ctx = moduleOp->getContext();
@@ -190,9 +191,10 @@ getScatterOrGatherFunc(ModuleOp moduleOp, LLVMTypeConverter const *tyConverter,
       LLVM::LLVMVoidType::get(ctx));
 }
 
-static LLVM::LLVMFuncOp appendOrGetFuncOp(StringRef funcName, Type resultType,
-                                          ArrayRef<Type> paramTypes,
-                                          Operation *op) {
+static FailureOr<LLVM::LLVMFuncOp> appendOrGetFuncOp(StringRef funcName,
+                                                     Type resultType,
+                                                     ArrayRef<Type> paramTypes,
+                                                     Operation *op) {
   auto module = op->getParentOfType<ModuleOp>();
   return LLVM::lookupOrCreateFn(module, funcName, paramTypes, resultType);
 }
@@ -211,11 +213,13 @@ public:
 
     // void upmemrt_dpu_launch(struct dpu_set_t *void_dpu_set) {
 
-    LLVM::LLVMFuncOp funcOp = appendOrGetFuncOp(
+    auto funcOp = appendOrGetFuncOp(
         "upmemrt_dpu_free", resultType,
         {getTypeConverter()->convertType(op.getHierarchy().getType())}, op);
+    if (llvm::failed(funcOp))
+      return failure();
 
-    rewriter.replaceOpWithNewOp<LLVM::CallOp>(op, funcOp,
+    rewriter.replaceOpWithNewOp<LLVM::CallOp>(op, *funcOp,
                                               adaptor.getHierarchy());
 
     return success();
@@ -269,14 +273,16 @@ public:
     // struct dpu_set_t *upmemrt_dpu_alloc(int32_t num_ranks, int32_t
     // num_dpus);
     Type resultType = LLVM::LLVMPointerType::get(rewriter.getContext(), 0);
-    LLVM::LLVMFuncOp funcOp =
+    auto funcOp =
         appendOrGetFuncOp("upmemrt_dpu_alloc", resultType,
                           {rewriter.getI32Type(), rewriter.getI32Type(),
                            untypedPtrType(getContext())},
                           op);
 
+    if (llvm::failed(funcOp))
+      return failure();
     rewriter.replaceOpWithNewOp<LLVM::CallOp>(
-        op, funcOp, ValueRange{rankCount, dpuCount, dpuProgramPath});
+        op, *funcOp, ValueRange{rankCount, dpuCount, dpuProgramPath});
     return success();
   }
 };
@@ -365,10 +371,12 @@ static LogicalResult lowerScatterOrGather(Op op, typename Op::Adaptor adaptor,
   input_size, size_t copy_bytes, size_t offset_in_dpu, size_t
   (*base_offset)(size_t));
   */
-  LLVM::LLVMFuncOp runtimeScatterFun = getScatterOrGatherFunc(
+  auto runtimeScatterFun = getScatterOrGatherFunc(
       moduleOp, tyConverter,
       isGather ? "upmemrt_dpu_gather" : "upmemrt_dpu_scatter");
 
+  if (llvm::failed(runtimeScatterFun))
+    return failure();
   auto funPtrOp = rewriter0.create<LLVM::AddressOfOp>(loc, *affineMapFunOpt);
   auto dpuMemOffset = reifyAsIndex(rewriter, tyConverter, op.getDpuMemOffset());
   auto numBytesCopied = op.getDpuBufferSizeInBytes();
@@ -405,7 +413,7 @@ static LogicalResult lowerScatterOrGather(Op op, typename Op::Adaptor adaptor,
   const size_t numElementsPerTasklet = numElements / numTasklets;
 
   rewriter0.create<LLVM::CallOp>(
-      loc, runtimeScatterFun,
+      loc, *runtimeScatterFun,
       ValueRange{adaptor.getHierarchy(), bareHostBuf,
                  reifyAsIndex(rewriter, tyConverter, elementSize),
                  reifyAsIndex(rewriter, tyConverter, numElements),
@@ -460,11 +468,13 @@ public:
     Type resultType = LLVM::LLVMVoidType::get(rewriter.getContext());
 
     // void upmemrt_dpu_launch(struct dpu_set_t *void_dpu_set) {
-    LLVM::LLVMFuncOp funcOp = appendOrGetFuncOp(
+    auto funcOp = appendOrGetFuncOp(
         "upmemrt_dpu_launch", resultType,
         {getTypeConverter()->convertType(op.getHierarchy().getType())}, op);
 
-    rewriter.replaceOpWithNewOp<LLVM::CallOp>(op, funcOp,
+    if (llvm::failed(funcOp))
+      return failure();
+    rewriter.replaceOpWithNewOp<LLVM::CallOp>(op, *funcOp,
                                               adaptor.getHierarchy());
     return success();
   }

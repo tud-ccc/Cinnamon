@@ -6,11 +6,8 @@
 func.func @simple(%t0: memref<6x6xi32>, %t1 : memref<6x6xi32>, %t2 : memref<6xi32>) {
     %tile = arith.constant 0 : i64
 
-    %rt0 = bufferization.alloc_tensor() : tensor<6x6xi32>
-    %rt1 = bufferization.alloc_tensor() : tensor<6xi32>
-
-    %rm0 = bufferization.to_memref %rt0 : memref<6x6xi32>
-    %rm1 = bufferization.to_memref %rt1 : memref<6xi32>
+    %rm0 = memref.alloc() : memref<6x6xi32>
+    %rm1 = memref.alloc() : memref<6xi32>
 
     memristor.write_to_crossbar %tile, %t1 : i64, memref<6x6xi32>
     memristor.gemm %tile, %t0, %rm0 : i64, memref<6x6xi32>, memref<6x6xi32>

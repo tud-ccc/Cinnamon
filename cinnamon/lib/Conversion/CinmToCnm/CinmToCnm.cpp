@@ -323,9 +323,9 @@ LogicalResult convertInputIntoAlloc(Location loc, Value &inputBuf,
   }
 
   if (reshapeInto) {
-    inputBuf = cinm::reshapeStatic(rewriter, rewriter.getLoc(), inputBuf,
-                                   cast<RankedTensorType>(inputType),
-                                   *reshapeInto);
+    inputBuf =
+        cinm::reshapeStatic(rewriter, rewriter.getLoc(), inputBuf,
+                            cast<RankedTensorType>(inputType), *reshapeInto);
   }
 
   // Allocate a cinm buffer
@@ -598,7 +598,7 @@ struct ConvertElementWiseUnaryToCnm : OpConversionPattern<cinm::Elementwise_Unar
         [&](ImplicitLocOpBuilder &builder, ValueRange inputs, ValueRange outputs) {
 
           builder.create<linalg::ElemwiseUnaryOp>(TypeRange{}, ValueRange(inputs), ValueRange(outputs),
-            linalg::UnaryFnAttr::get(builder.getContext(), static_cast<linalg::UnaryFn>(op.getMethod())),
+            linalg::UnaryFnAttr::get(builder.getContext(), op.getMethod()),
             linalg::TypeFnAttr::get(builder.getContext(), linalg::TypeFn::cast_signed));
         });
 
@@ -743,17 +743,18 @@ struct ConvertCinmGemmToCnm : public OpConversionPattern<cinm::GemmOp> {
     builder.create<cnm::ScatterOp>(outputInit, bufferC, workgroup,
                                    scatterGatherC);
 
+    SmallVector<AffineMap, 2> indexingMaps{
+        AffineMap::getMultiDimIdentityMap(1, getContext()),
+        AffineMap::getMultiDimIdentityMap(1, getContext()),
+        AffineMap::get(1, 0, getContext()),
+    };
+
     createLaunchOp(
         builder, workgroup, ValueRange{bufferA, bufferB}, ValueRange{bufferC},
-        [](ImplicitLocOpBuilder &builder, ValueRange ins, ValueRange outs) {
-          builder.create<linalg::ReduceOp>(
-              ins, outs, ArrayRef<int64_t>{0},
-              [](OpBuilder &builder, Location loc, ValueRange elts) {
-                Value mul =
-                    cinm::createArithMul(builder, loc, elts[0], elts[1]);
-                Value add = cinm::createArithAdd(builder, loc, mul, elts[2]);
-                builder.create<linalg::YieldOp>(loc, add);
-              });
+        [&](ImplicitLocOpBuilder &builder, ValueRange ins, ValueRange outs) {
+          builder.create<linalg::ContractOp>(
+              TypeRange{}, ins, outs,
+              builder.getAffineMapArrayAttr(indexingMaps));
         });
 
     Value outbuf;
@@ -829,8 +830,8 @@ struct ConvertCinmReduceToCnm : public OpConversionPattern<cinm::ReduceOp> {
         op.getResult().getType(),
         builder.getZeroAttr(op.getResult().getType()));
 
-    const bool isFloatOp = isa<FloatType>(
-        cast<ShapedType>(op.getType()).getElementType());
+    const bool isFloatOp =
+        isa<FloatType>(cast<ShapedType>(op.getType()).getElementType());
 
     llvm::SmallVector<Value, 1> newResults;
     if (convertCinmToCnm(

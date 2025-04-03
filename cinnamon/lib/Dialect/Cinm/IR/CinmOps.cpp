@@ -41,6 +41,7 @@
 
 using namespace mlir;
 using namespace mlir::cinm;
+using linalg::UnaryFn;
 
 //===- Generated implementation -------------------------------------------===//
 
