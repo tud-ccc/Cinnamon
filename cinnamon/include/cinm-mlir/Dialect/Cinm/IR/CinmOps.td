@@ -28,7 +28,9 @@ include "mlir/Dialect/Linalg/IR/LinalgEnums.td"
 // Define the attribute enums matching elementwise op kind (e.g., add).
 def ElementwiseKindAttr : EnumAttr<Cinm_Dialect,
                                    UnaryFn, "elemwise_kind"> {
-  let assemblyFormat = "$value";
+  // EnumAttr directly inherits the cppNamespace of the UnaryFn enumInfo, which
+  // is mlir::linalg in this case. However, we want to override to mlir::cinm.
+  let cppNamespace = "mlir::cinm";
 }
 
 
