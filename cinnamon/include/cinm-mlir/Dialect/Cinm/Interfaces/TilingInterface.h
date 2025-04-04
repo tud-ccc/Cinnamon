@@ -10,9 +10,7 @@
 #include <mlir/IR/BuiltinTypes.h>
 #include <mlir/IR/Location.h>
 #include <mlir/IR/Value.h>
-#include <mlir/IR/ValueRange.h>
 #include <mlir/Support/LLVM.h>
-#include <mlir/Support/LogicalResult.h>
 #include <optional>
 #include <utility>
 
@@ -20,16 +18,16 @@ namespace mlir::cinm {
 struct ComputeOp;
 struct TilingParameters {
   /// Workgroup shape being considered for tiling.
-  const llvm::ArrayRef<int64_t> workgroupShape;
+  const ArrayRef<int64_t> workgroupShape;
   /// Sizes of the different buffer levels.
   /// Buffers at one level are shared with later levels.
   /// For instance for a workgroup with shape {A,B,C}
   /// and buffer sizes {M,N,P}, the space available
   /// for each compute leaf is P + N/C + M/B/C.
-  const llvm::ArrayRef<int64_t> bufferSizesInBytes;
+  const ArrayRef<int64_t> bufferSizesInBytes;
 
-  TilingParameters(llvm::ArrayRef<int64_t> bufferSizesInBytes,
-                   llvm::ArrayRef<int64_t> workgroupShape)
+  TilingParameters(ArrayRef<int64_t> bufferSizesInBytes,
+                   ArrayRef<int64_t> workgroupShape)
       : workgroupShape(workgroupShape),
         bufferSizesInBytes(bufferSizesInBytes) {}
 
@@ -70,13 +68,13 @@ using ReduceAccumulatorCallback =
 
 template <typename ReductionOp>
 Value createVectorReduce(OpBuilder &builder, Location loc, Value vector,
-                         Value init, int64_t clusterSize) {
+                         Value init, DenseI64ArrayAttr dims, int64_t clusterSize) {
   return createVectorReduce(
       builder, loc, vector, init,
       [](OpBuilder &builder, Location loc, Value lhs, Value rhs) {
         return builder.create<ReductionOp>(loc, lhs, rhs);
       },
-      clusterSize);
+      dims, clusterSize);
 }
 
 template <typename IntOp, typename FloatOp>
@@ -105,19 +103,19 @@ inline Value createArithMul(OpBuilder &builder, Location loc, Value a,
 
 Value createVectorReduce(OpBuilder &builder, Location loc, Value vector,
                          Value init, ReduceAccumulatorCallback callback,
-                         int64_t clusterSize = 1);
+                         DenseI64ArrayAttr dims, int64_t clusterSize = 1);
 
 Value createVectorReduceAdd(OpBuilder &builder, Location loc, Value vector,
-                            int64_t clusterSize = 1);
+                            DenseI64ArrayAttr dims, int64_t clusterSize = 1);
 
 Value createVectorReduceMul(OpBuilder &builder, Location loc, Value vector,
-                            int64_t clusterSize = 1);
+                            DenseI64ArrayAttr dims, int64_t clusterSize = 1);
 
 Value createVectorReduceMin(OpBuilder &builder, Location loc, Value vector,
-                            int64_t clusterSize = 1);
+                            DenseI64ArrayAttr dims, int64_t clusterSize = 1);
 
 Value createVectorReduceMax(OpBuilder &builder, Location loc, Value vector,
-                            int64_t clusterSize = 1);
+                            DenseI64ArrayAttr dims, int64_t clusterSize = 1);
 
 } // namespace mlir::cinm
 

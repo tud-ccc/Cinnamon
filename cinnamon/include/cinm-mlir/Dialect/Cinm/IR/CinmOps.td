@@ -218,28 +218,44 @@ def Cinm_ScanOp : Cinm_Op<"op.scan", [SameOperandsAndResultType, Pure]> {
 }
 
 def Cinm_ReduceOp : Cinm_Op<"op.reduce",
-    [Pure, TypeMatchesElementType<"result", "input">,
-    DeclareOpInterfaceMethods<CinmTilingInterface>]> {
+    [Pure, DeclareOpInterfaceMethods<CinmTilingInterface>]> {
   let summary = "Reduce the tensor according to a given binary operator.";
 
   let description = [{
+    Add a dimension using the `dimensions` attribute. For now, only 1 reduction
+    dimension is allowed. Can be negative to index from the end. Default value
+    is -1 (last dim). 0-ranked result gets converted to scalar value. Example:
 
+    ```
+    %r = cinm.compute attributes { workgroupShape = array<i64: 1,8,16> } -> tensor<288xf32> {
+        // Simple vector to scalar: tensor<100xf32> -> f32
+        %reduced_vec = cinm.op.reduce min (%vec) : tensor<100xf32> -> f32
+        // Default: reduction dimension = -1 -> last dim -> on a 2D tensor, dim = 1
+        %max_along_dim1_a = cinm.op.reduce max (%x) : tensor<288x512xf32> -> tensor<288xf32>
+        // Equivalent
+        %max_along_dim1_b = cinm.op.reduce max (%x) { dimensions = array<i64: 1> } : tensor<288x512xf32> -> tensor<288xf32>
+        // Different dimension yields different result type tensor<512xf32>
+        %add_along_dim0 = cinm.op.reduce add (%x) { dimensions = array<i64: 0> } : tensor<288x512xf32> -> tensor<512xf32>
+        cinm.yield %max_along_dim1_a : tensor<288xf32>
+    }
+    ```
   }];
 
   let arguments = (ins
     Cinm_ReduceMethodAttr:$method,
-    AnyRankedTensor:$input
+    AnyNon0RankedTensor:$input,
+    DefaultValuedAttr<DenseI64ArrayAttr, "{-1}">:$dimensions
   );
 
   let results = (
     outs
-    AnyScalar:$result
+    AnyType:$result
   );
 
   let extraClassDeclaration = [{
   }];
 
-  let assemblyFormat = "$method `(` $input `)` attr-dict `:` type($input)";
+  let assemblyFormat = "$method `(` $input `)` attr-dict `:` type($input) `->` type($result)";
 }
 
 def Cinm_TopKOp : Cinm_Op<"op.topK", [InferShapedTypeOpAdaptor, Pure]> {
