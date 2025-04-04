@@ -41,7 +41,7 @@ module {
       %12 = bufferization.to_tensor %11 : memref<1024x16xi32>
       %13 = cnm.alloc() for %3 : !cnm.buffer<16xi32 on 8x128x1, level 0>
       %14 = cnm.scatter %12 into %13[#map] of %3 : tensor<1024x16xi32> into !cnm.buffer<16xi32 on 8x128x1, level 0>
-      %15 = cnm.launch %3 in(%6, %9 : !cnm.buffer<16xi32 on 8x128x1, level 0>, !cnm.buffer<16xi32 on 8x128x1, level 0>) out(%13 : !cnm.buffer<16xi32 on 8x128x1, level 0>) on !cnm.workgroup<8x128x1> {
+      %15 = cnm.launch %3 ins(%6, %9 : !cnm.buffer<16xi32 on 8x128x1, level 0>, !cnm.buffer<16xi32 on 8x128x1, level 0>) outs(%13 : !cnm.buffer<16xi32 on 8x128x1, level 0>) on !cnm.workgroup<8x128x1> {
       ^bb0(%arg4: memref<16xi32>, %arg5: memref<16xi32>, %arg6: memref<16xi32>):
         linalg.add ins(%arg4, %arg5 : memref<16xi32>, memref<16xi32>) outs(%arg6 : memref<16xi32>)
       }
@@ -87,7 +87,7 @@ module {
       %12 = bufferization.to_tensor %11 : memref<2048x16xi32>
       %13 = cnm.alloc() for %3 : !cnm.buffer<16xi32 on 16x128x1, level 0>
       %14 = cnm.scatter %12 into %13[#map] of %3 : tensor<2048x16xi32> into !cnm.buffer<16xi32 on 16x128x1, level 0>
-      %15 = cnm.launch %3 in(%6, %9 : !cnm.buffer<16xi32 on 16x128x1, level 0>, !cnm.buffer<16xi32 on 16x128x1, level 0>) out(%13 : !cnm.buffer<16xi32 on 16x128x1, level 0>) on !cnm.workgroup<16x128x1> {
+      %15 = cnm.launch %3 ins(%6, %9 : !cnm.buffer<16xi32 on 16x128x1, level 0>, !cnm.buffer<16xi32 on 16x128x1, level 0>) outs(%13 : !cnm.buffer<16xi32 on 16x128x1, level 0>) on !cnm.workgroup<16x128x1> {
       ^bb0(%arg4: memref<16xi32>, %arg5: memref<16xi32>, %arg6: memref<16xi32>):
         linalg.add ins(%arg4, %arg5 : memref<16xi32>, memref<16xi32>) outs(%arg6 : memref<16xi32>)
       }

@@ -5,7 +5,6 @@
 #pragma once
 
 #include "mlir/Pass/Pass.h"
-
 namespace mlir {
 namespace cnm {
 

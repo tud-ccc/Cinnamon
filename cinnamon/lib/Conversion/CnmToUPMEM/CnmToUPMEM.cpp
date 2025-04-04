@@ -233,7 +233,7 @@ struct ConvertCnmLaunchToUPMEM : public OpConversionPattern<cnm::LaunchOp> {
     // loop over chunks & execute launch body
     if (chunksPerTasklet == 1) {
       // copy data from the input buffers to wram
-      for (Value buffer : op.getInputs()) {
+      for (Value buffer : op.getInBuffers()) {
         if (!dyn_cast<BufferType>(buffer.getType())) {
           continue;
         }
@@ -266,7 +266,7 @@ struct ConvertCnmLaunchToUPMEM : public OpConversionPattern<cnm::LaunchOp> {
           loop.getRegion().front().getArguments().front();
 
       // copy data from the input buffers to wram
-      for (Value buffer : op.getInputs()) {
+      for (Value buffer : op.getInBuffers()) {
         if (!dyn_cast<BufferType>(buffer.getType())) {
           continue;
         }

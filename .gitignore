@@ -4,6 +4,7 @@
 .directory
 /.venv/
 /llvm
-/torch-mlir/
-/upmem/
+/torch-mlir
+/upmem
+/upmem-src
 /.env

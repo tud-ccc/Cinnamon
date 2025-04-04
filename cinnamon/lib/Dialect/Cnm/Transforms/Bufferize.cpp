@@ -23,6 +23,9 @@
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/IR/ImplicitLocOpBuilder.h"
 #include "mlir/Transforms/DialectConversion.h"
+#include <llvm/ADT/STLExtras.h>
+#include <llvm/ADT/SmallVector.h>
+#include <mlir/IR/BuiltinTypes.h>
 #include <mlir/IR/DialectRegistry.h>
 #include <mlir/IR/ValueRange.h>
 
@@ -102,11 +105,73 @@ struct GatherOpInterface
   }
 };
 
+struct ComputeOpInterface
+    : public BufferizableOpInterface::ExternalModel<ComputeOpInterface,
+                                                    cnm::ComputeOp> {
+  // == is an input
+  bool bufferizesToMemoryRead(Operation *op0, OpOperand &operand,
+                              const AnalysisState &) const {
+    auto op = cast<cnm::ComputeOp>(op0);
+    auto inStart = op.getNumSymbols();
+    return operand.getOperandNumber() >= inStart &&
+           operand.getOperandNumber() < inStart + op.getNumInputs();
+  }
+
+  // == is an output
+  bool bufferizesToMemoryWrite(Operation *op0, OpOperand &operand,
+                               const AnalysisState &) const {
+    auto op = cast<cnm::ComputeOp>(op0);
+    auto outStart = op.getNumSymbols() + op.getNumInputs();
+    return operand.getOperandNumber() >= outStart;
+  }
+
+  AliasingValueList getAliasingValues(Operation *op0, OpOperand &operand,
+                                      const AnalysisState &state) const {
+    if (bufferizesToMemoryWrite(op0, operand, state)) {
+      auto op = cast<cnm::ComputeOp>(op0);
+      auto outBufs = op.getOutBuffers();
+      auto i = 0;
+      for (auto buf : outBufs) {
+        if (buf == operand.get())
+          return {{op->getOpResult(i), BufferRelation::Equivalent}};
+
+        if (buf.getType().isa<RankedTensorType>()) {
+          i++;
+        }
+      }
+    }
+    return {};
+  }
+
+  LogicalResult bufferize(Operation *op, RewriterBase &rewriter,
+                          const BufferizationOptions &options) const {
+    auto compute = cast<cnm::ComputeOp>(op);
+    llvm::SmallVector<Value> newBuffers;
+    for (auto buf : compute.getBuffers()) {
+      if (buf.getType().isa<TensorType>()) {
+        FailureOr<Value> v = getBuffer(rewriter, buf, options);
+        if (failed(v)) {
+          newBuffers.push_back(buf);
+        } else {
+          newBuffers.push_back(*v);
+        }
+      }
+    }
+
+    replaceOpWithNewBufferizedOp<cnm::ComputeOp>(
+        rewriter, op, compute.getWorkgroupShape(),
+        newBuffers, compute.getNumInputs(),
+        compute.getAffineMapsVec(), compute.getSymbolBindings());
+    return success();
+  }
+};
+
 } // namespace
 
 void cnm::registerCnmBufferizationExternalModels(DialectRegistry &registry) {
   registry.addExtension(+[](MLIRContext *ctx, cnm::CnmDialect *) {
     cnm::ScatterOp::attachInterface<ScatterOpInterface>(*ctx);
     cnm::GatherOp::attachInterface<GatherOpInterface>(*ctx);
+    cnm::ComputeOp::attachInterface<ComputeOpInterface>(*ctx);
   });
 }

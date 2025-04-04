@@ -3,6 +3,7 @@
 #include "cinm-mlir/Dialect/Cinm/IR/CinmDialect.h"
 #include "cinm-mlir/Dialect/Cim/IR/CimDialect.h"
 #include "cinm-mlir/Dialect/Cnm/IR/CnmDialect.h"
+#include "cinm-mlir/Dialect/Cnm/TransformOps/CnmTransformOps.h"
 #include "cinm-mlir/Dialect/Memristor/IR/MemristorDialect.h"
 #include "cinm-mlir/Dialect/UPMEM/IR/UPMEMDialect.h"
 
@@ -31,6 +32,8 @@ int main(int argc, char *argv[]) {
   registry.insert<cnm::CnmDialect>();
   registry.insert<upmem::UPMEMDialect>();
   registry.insert<memristor::MemristorDialect>();
+
+  cnm::registerTransformDialectExtension(registry);
 
 #ifdef CINM_TORCH_MLIR_ENABLED
   registry.insert<torch::Torch::TorchDialect>();

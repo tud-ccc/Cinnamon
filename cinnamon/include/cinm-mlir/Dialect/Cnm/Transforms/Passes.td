@@ -63,4 +63,12 @@ def CnmHoistWorkgroupsPass : Pass<"cnm-hoist-workgroups", "func::FuncOp"> {
 }
 
 
+def CnmLowerComputePass : Pass<"cnm-lower-compute", "func::FuncOp"> {
+  let summary = "Lower cnm.compute into other cnm ops.";
+  let description = [{
+
+  }];
+  let dependentDialects = [];
+}
+
 #endif // CNM_TRANSFORM_PASSES

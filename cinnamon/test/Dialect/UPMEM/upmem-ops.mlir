@@ -11,8 +11,8 @@ module {
     %tasklet_count = arith.constant 16 : index
     %hierarchy = upmem.alloc_dpus : !upmem.hierarchy<2x32x16>
     %base_offset = upmem.base_dpu_mem_offset : index
-    %A_offset = upmem.scatter %A[64, #scatter_map] onto %hierarchy at %base_offset : memref<2x32x8192xi32> onto !upmem.hierarchy<2x32x16>
-    %B_offset = upmem.scatter %B[64, #scatter_map] onto %hierarchy at %A_offset : memref<2x32x8192xi32> onto !upmem.hierarchy<2x32x16>
+    upmem.scatter %A[0, 64, #scatter_map] onto %hierarchy : memref<2x32x8192xi32> onto !upmem.hierarchy<2x32x16>
+    upmem.scatter %B[256, 64, #scatter_map] onto %hierarchy : memref<2x32x8192xi32> onto !upmem.hierarchy<2x32x16>
     upmem.launch %hierarchy ranks(%arg0 upto %rank_count) dpus(%arg1 upto %dpu_count) tasklets(%arg2 upto %tasklet_count) on !upmem.hierarchy<2x32x16>  {
         %cst0 = arith.constant 0 : index
         %cst1 = arith.constant 1 : index
@@ -47,7 +47,7 @@ module {
         }
         upmem.terminator
     }
-    %C_offset = upmem.gather %C[64, #scatter_map] from %hierarchy at %base_offset : memref<2x32x8192xi32> from !upmem.hierarchy<2x32x16>
+    upmem.gather %C[512, 64, #scatter_map] from %hierarchy : memref<2x32x8192xi32> from !upmem.hierarchy<2x32x16>
     return
   }
 }
