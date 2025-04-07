@@ -1,4 +1,4 @@
-// RUN: cinm-opt %s --cinm-tiling=reduction-tile-size=16 -split-input-file | FileCheck %s
+// RUN: cinm-opt %s --cinm-tiling -split-input-file | FileCheck %s
 
 
 // CHECK-LABEL: @gemmSquare
@@ -40,25 +40,29 @@ func.func @gemv(%a: tensor<1024x1024xi32>, %b: tensor<1024xi32>) -> tensor<1024x
 
 // CHECK-LABEL: @max
 // CHECK-SAME:  (%[[input:.*]]: tensor<1024xi32>) -> i32
-// CHECK-NEXT:  %[[res:.*]] = cinm.compute -> i32 {
+// CHECK-NEXT:  %[[res:.*]] = cinm.compute attributes {{{.*}}} -> i32 {
 // CHECK:       %[[gen:.*]] = tensor.generate {
 // CHECK-NEXT:  ^{{.*}}(%[[idx:.*]]: {{.*}}):
-// CHECK-NEXT:  %[[idxOffset:.*]] = arith.muli %[[idx]]
-// CHECK-NEXT:       %[[extracted:.*]] = tensor.extract_slice %[[input]][%[[idx]]] [1024] [1]
-// CHECK-NEXT:  %[[reduce:.*]] = linalg.reduce ins(%[[extracted]] : {{.*}}) outs({{.*}}) dimensions = [0]
-// CHECK-NEXT:    (%[[in:.*]]: {{.*}}, %[[acc:.*]]: {{.*}})
-// CHECK-NEXT:       %[[res0:.*]] = arith.maxsi %[[in]], %[[acc]]
-// CHECK-NEXT:       linalg.yield %[[res0]]
+// CHECK-NEXT:    %[[idxOffset:.*]] = arith.muli %[[idx]]
+// CHECK-NEXT:    %[[extracted:.*]] = tensor.extract_slice %[[input]][%[[idx]]] [256] [1]
+// CHECK-NEXT:    %[[redInner:.*]] = linalg.reduce ins(%[[extracted]] : {{.*}}) outs({{.*}}) dimensions = [0]
+// CHECK-NEXT:      (%[[in0:.*]]: {{.*}}, %[[acc0:.*]]: {{.*}})
+// CHECK-NEXT:        %[[res0:.*]] = arith.maxsi %[[in0]], %[[acc0]]
+// CHECK-NEXT:        linalg.yield %[[res0]]
 
-// CHECK:       %[[extracted0:.*]] = tensor.extract %[[reduce]][] : tensor<i32>
-// CHECK-NEXT:  tensor.yield %[[extracted0]]
+// CHECK:         %[[extracted0:.*]] = tensor.extract %[[redInner]][] : tensor<i32>
+// CHECK-NEXT:    tensor.yield %[[extracted0]]
 
-// CHECK:       %[[reshaped:.*]] = tensor.reshape %[[gen]]({{.*}})
-// CHECK-NEXT:  %[[extracted1:.*]] = tensor.extract %[[reshaped]][]
+// CHECK:       %[[redOuter:.*]] = linalg.reduce ins(%[[gen]] : tensor<4xi32>) outs({{.*}}) dimensions = [0]
+// CHECK-NEXT:    (%[[in1:.*]]: {{.*}}, %[[acc1:.*]]: {{.*}})
+// CHECK-NEXT:      %[[res1:.*]] = arith.maxsi %[[in1]], %[[acc1]]
+// CHECK-NEXT:      linalg.yield %[[res1]]
+
+// CHECK:       %[[extracted1:.*]] = tensor.extract %[[redOuter]][]
 // CHECK-NEXT:  cinm.yield %[[extracted1]]
 
 func.func @max(%a: tensor<1024xi32>) -> i32 {
-	%res = cinm.compute -> i32 {
+	%res = cinm.compute attributes { workgroupShape = array<i64: 4>, bufferSizesInBytes = array<i64: 1024> } -> i32 {
 		%d = cinm.op.reduce max (%a): tensor<1024xi32> -> i32
 		cinm.yield %d : i32
 	}
