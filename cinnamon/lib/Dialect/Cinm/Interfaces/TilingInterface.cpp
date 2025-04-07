@@ -258,9 +258,6 @@ Value createVectorReduce(OpBuilder &builder, Location loc, Value inputTensor,
       // Reshape (collapse reduction dim) and return.
       // TODO: check simpler implementation that just drops shape[dim] since it's 1 anyway.
 
-      // auto vec = vectorType.getShape().vec();
-      // vec.erase(vectorType.getShape().vec().begin() + dim);
-      // auto expectedOutputShape = ArrayRef(vec);
       long outshape[vectorType.getShape().size() - 1];
       for (size_t i = 0; i < vectorType.getShape().size(); i++) {
         if (i < dim) {
@@ -270,12 +267,6 @@ Value createVectorReduce(OpBuilder &builder, Location loc, Value inputTensor,
         }
       }
       auto expectedOutputShape = ArrayRef(outshape, vectorType.getShape().size() - 1);
-
-      // if (expectedOutputShape.empty()) { // Rank == 0
-      //   // Extract scalar result of reducing vector to scalar.
-      //   return builder.create<tensor::ExtractOp>(loc, inputTensor, ValueRange{builder.create<arith::ConstantOp>(loc, builder.getIndexAttr(0))});
-      // }
-
       auto shape = createMLIRValueFromArrayRef(builder, loc, expectedOutputShape);
       auto result = builder.create<tensor::ReshapeOp>(loc, RankedTensorType::get(expectedOutputShape, vectorType.getElementType()), inputTensor, shape);
 
@@ -290,15 +281,9 @@ Value createVectorReduce(OpBuilder &builder, Location loc, Value inputTensor,
 
     // Otherwise make a second reduction op (non-tiled)
     // TODO: this step and the previous `if (shape[dim] == 1)` can/should probably be combined.
-    fprintf(stderr, "--\n(New) input tensor type: ");
-    inputTensor.getType().print(llvm::errs());
-    fprintf(stderr, "\n");
     // Reduce using linalg builtin reduce op. Also collapses reduced dim for us,
     // e.g. tensor<10x5xf32> -> tensor<10xf32> when reducing on dim=1
     linalg::ReduceOp reduceResult = makeReduceOp(builder, loc, inputTensor, initTensor, dim, callback);
-    fprintf(stderr, "Reduce result (dim=%ld): ", dim);
-    reduceResult.getResult(0).getType().print(llvm::errs());
-    fprintf(stderr, "\n");
 
     if (cast<RankedTensorType>(reduceResult.getResult(0).getType()).getRank() == 0) {
       // Extract scalar result of reducing vector to scalar.
