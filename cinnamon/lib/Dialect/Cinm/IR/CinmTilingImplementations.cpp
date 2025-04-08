@@ -1,5 +1,3 @@
-
-
 #include "cinm-mlir/Conversion/CommonPatterns.h"
 #include "cinm-mlir/Dialect/Cinm/IR/CinmAttributes.h"
 #include "cinm-mlir/Dialect/Cinm/IR/CinmOps.h"
@@ -10,18 +8,15 @@
 #include <llvm/ADT/ArrayRef.h>
 #include <llvm/ADT/SmallVector.h>
 #include <mlir/Dialect/Arith/IR/Arith.h>
-#include <mlir/Dialect/Linalg/IR/Linalg.h>
 #include <mlir/Dialect/MemRef/IR/MemRef.h>
 #include <mlir/Dialect/Tensor/IR/Tensor.h>
 #include <mlir/IR/AffineExpr.h>
-#include <mlir/IR/AffineMap.h>
 #include <mlir/IR/Builders.h>
 #include <mlir/IR/BuiltinTypeInterfaces.h>
 #include <mlir/IR/BuiltinTypes.h>
 #include <mlir/IR/Diagnostics.h>
 #include <mlir/IR/ImplicitLocOpBuilder.h>
 #include <mlir/IR/ValueRange.h>
-#include <type_traits>
 
 using namespace mlir;
 using namespace mlir::cinm;
@@ -38,16 +33,16 @@ TilingResult2 ReduceOp::convertToTiledOps(OpBuilder &builder,
   auto method = getMethod();
   if (method == ReduceMethod::ADD) {
     return TilingResult2({createVectorReduceAdd(builder, getLoc(), getOperand(),
-                                                reduceClusterSize)});
+                                                getDimensionsAttr(), reduceClusterSize)});
   } else if (method == ReduceMethod::MUL) {
     return TilingResult2({createVectorReduceMul(builder, getLoc(), getOperand(),
-                                                reduceClusterSize)});
+                                                getDimensionsAttr(), reduceClusterSize)});
   } else if (method == ReduceMethod::MAX) {
     return TilingResult2({createVectorReduceMax(builder, getLoc(), getOperand(),
-                                                reduceClusterSize)});
+                                                getDimensionsAttr(), reduceClusterSize)});
   } else if (method == ReduceMethod::MIN) {
     return TilingResult2({createVectorReduceMin(builder, getLoc(), getOperand(),
-                                                reduceClusterSize)});
+                                                getDimensionsAttr(), reduceClusterSize)});
   } else {
     abort();
   }

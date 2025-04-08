@@ -26,37 +26,34 @@ namespace mlir::cinm {
 
 //===----------------------------------------------------------------------===//
 
-struct SoftmaxToCinmPattern : public OpConversionPattern<linalg::SoftmaxOp> {
-  using OpConversionPattern<linalg::SoftmaxOp>::OpConversionPattern;
+struct SoftmaxToCinmPattern : OpConversionPattern<linalg::SoftmaxOp> {
+  using OpConversionPattern::OpConversionPattern;
 
   LogicalResult
-  matchAndRewrite(linalg::SoftmaxOp op,
-                  OpConversionPattern<linalg::SoftmaxOp>::OpAdaptor adaptor,
+  matchAndRewrite(linalg::SoftmaxOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
     const auto loc = op.getLoc();
     const auto input = op.getInput();
     const ShapedType inputType = input.getType();
-    cinm::ComputeOp computeOp =
-        rewriter.replaceOpWithNewOp<cinm::ComputeOp>(op, op.getResultTypes());
+    auto computeOp =
+        rewriter.replaceOpWithNewOp<ComputeOp>(op, op.getResultTypes());
 
     rewriter.setInsertionPointToEnd(&computeOp.getBody().emplaceBlock());
-    const Value max = rewriter.create<cinm::ReduceOp>(
-        loc, inputType.getElementType(), ReduceMethod::MAX, input);
-    const Value t = rewriter.create<cinm::SubsOp>(loc, input, max);
+    const Value max = rewriter.create<ReduceOp>(
+        loc, inputType.getElementType(), ReduceMethod::MAX, input, /*dims=*/0);
+    const Value t = rewriter.create<SubsOp>(loc, input, max);
     const Value init = rewriter.create<tensor::EmptyOp>(
         loc, inputType.getShape(), inputType.getElementType());
+    const auto types = TypeRange{RankedTensorType::get(inputType.getShape(),
+                                                  inputType.getElementType())};
     const Value e =
-        rewriter
-            .create<linalg::ExpOp>(
-                loc,
-                TypeRange{RankedTensorType::get(inputType.getShape(),
-                                                inputType.getElementType())},
-                ValueRange{t}, ValueRange{init})
+        rewriter.create<linalg::ExpOp>(
+            loc, types, ValueRange{t}, ValueRange{init})
             .getResult(0);
-    const Value s = rewriter.create<cinm::ReduceOp>(
-        loc, inputType.getElementType(), ReduceMethod::ADD, e);
-    const Value result = rewriter.create<cinm::DivsOp>(loc, e, s);
-    rewriter.create<cinm::YieldOp>(loc, ValueRange{result});
+    const Value s = rewriter.create<ReduceOp>(
+        loc, inputType.getElementType(), ReduceMethod::ADD, e, /*dims=*/0);
+    const Value result = rewriter.create<DivsOp>(loc, e, s);
+    rewriter.create<YieldOp>(loc, ValueRange{result});
     return success();
   }
 };
