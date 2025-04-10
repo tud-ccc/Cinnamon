@@ -3,7 +3,8 @@ import subprocess
 import torch
 import tempfile
 
-from torch_mlir import torchscript
+from torch_mlir import fx
+from torch_mlir.compiler_utils import OutputType
 
 from .resource_paths import ResourcePaths
 from ..exceptions import BackendException
@@ -64,7 +65,9 @@ class CompilerInvoker:
         return output_mlir
 
     def compile_torch_module(self, module: torch.nn.Module, inp: torch.Tensor) -> bytes:
-        compiled_module = torchscript.compile(module, inp)
+        compiled_module = fx.export_and_import(
+            module, inp, output_type=OutputType.TORCH
+        )
         module_mlir = str(compiled_module).encode("utf-8")
 
         self._dump("model.mlir", module_mlir)

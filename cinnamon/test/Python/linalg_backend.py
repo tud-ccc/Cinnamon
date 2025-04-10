@@ -49,4 +49,4 @@ model_invoker = backend.load(compiled_model)
 # CHECK: model via torch [1929786. 4658337.]
 print("model via torch", model(sample_input).detach().numpy()[0])
 # CHECK: model via cinm [1929786. 4658337.]
-print("model via cinm", model_invoker.forward(sample_input).numpy()[0])
+print("model via cinm", model_invoker.main(sample_input).numpy()[0])

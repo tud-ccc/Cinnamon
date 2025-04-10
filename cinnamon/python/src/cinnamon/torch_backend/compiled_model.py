@@ -13,6 +13,7 @@ class CompiledModel:
             f.writestr("shared_object.so", self._shared_object)
             f.writestr("signatures.json", pickle.dumps(self._function_signatures))
 
+    @staticmethod
     def load_from_file(filename: str) -> "CompiledModel":
         with zipfile(filename, "r") as f:
             shared_object = f.read("shared_object.so")
