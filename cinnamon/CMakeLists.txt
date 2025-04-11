@@ -102,6 +102,8 @@ add_subdirectory(lib)
 add_subdirectory(test)
 add_subdirectory(tools)
 
+add_subdirectory(runtime/Memristor)
+
 if (TORCH_MLIR_DIR)
     set_property(GLOBAL PROPERTY TORCH_MLIR_ENABLED ON)
     set(TORCH_MLIR_INCLUDE_DIR "${TORCH_MLIR_DIR}/include")
@@ -116,7 +118,7 @@ if (UPMEM_DIR)
     set_property(TARGET Upmem::dpu PROPERTY
                  IMPORTED_LOCATION ${UPMEM_DIR}/lib/libdpu.so)
     target_include_directories(Upmem::dpu INTERFACE ${UPMEM_DIR}/include/dpu)
-    add_subdirectory(runtime)
+    add_subdirectory(runtime/Upmem)
 else()
     message(WARNING "UPMEM_DIR not set, runtime lib will not be compiled.")
 endif()

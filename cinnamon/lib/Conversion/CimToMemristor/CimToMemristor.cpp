@@ -30,7 +30,7 @@ using namespace mlir;
 
 namespace {
 
-template <typename CimOp, typename MemristorOp>
+template <typename CimOp, typename MemristorOp, bool SwapOperands = false>
 struct ConvertCimOpToMemristor : OpConversionPattern<CimOp> {
 
   using OpConversionPattern<CimOp>::OpConversionPattern;
@@ -40,7 +40,7 @@ struct ConvertCimOpToMemristor : OpConversionPattern<CimOp> {
                   ConversionPatternRewriter &rewriter) const override {
 
     auto tileId = op.getOperand(0);
-    auto resultShape = cast<ShapedType>(op.getResult().getType());
+    auto resultShape = mlir::cast<ShapedType>(op.getResult().getType());
 
     auto resultAllocOp = rewriter.create<bufferization::AllocTensorOp>(
         op.getLoc(),
@@ -49,15 +49,18 @@ struct ConvertCimOpToMemristor : OpConversionPattern<CimOp> {
         ValueRange{});
 
     auto createBufferizeOp = [&](Value value) {
-      auto shapedType = cast<ShapedType>(value.getType());
+      auto shapedType = mlir::cast<ShapedType>(value.getType());
       return rewriter.create<bufferization::ToMemrefOp>(
           op.getLoc(),
           MemRefType::get(shapedType.getShape(), shapedType.getElementType()),
           value);
     };
 
-    auto aBufferizeOp = createBufferizeOp(op.getOperand(2));
-    auto bBufferizeOp = createBufferizeOp(op.getOperand(1));
+    auto aBufferizeOp = createBufferizeOp(op.getOperand(1));
+    auto bBufferizeOp = createBufferizeOp(op.getOperand(2));
+    if constexpr (SwapOperands)
+      std::swap(aBufferizeOp, bBufferizeOp);
+
     auto resultBufferizeOp = createBufferizeOp(resultAllocOp.getResult());
 
     rewriter.create<memristor::WriteToCrossbarOp>(op.getLoc(), tileId,
@@ -171,7 +174,8 @@ struct ConvertCimToMemristor
         .insert<ConvertCimAcquireToMemristor, //
                 EraseCimReleaseDevice, EraseCimReleaseCrossbar,
                 ConvertCimOpToMemristor<cim::GemmOp, memristor::GemmOp>,
-                ConvertCimOpToMemristor<cim::GemvOp, memristor::GevmOp>>(&ctx);
+                ConvertCimOpToMemristor<cim::GemvOp, memristor::GevmOp, true>>(
+            &ctx);
 
     if (failed(applyPartialConversion(getOperation(), target,
                                       std::move(secondPassPatterns))))
