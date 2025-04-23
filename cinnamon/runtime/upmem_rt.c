@@ -15,7 +15,7 @@ void do_dpu_transfer(dpu_xfer_t xfer_type, struct dpu_set_t *dpu_set,
   size_t i = 0;
   struct dpu_set_t dpu;
   DPU_FOREACH(*dpu_set, dpu, i) {
-    size_t offset = base_offset(i) * 16 * padding_ratio;
+    size_t offset = base_offset(i) * padding_ratio; // TODO this used to work with a factor 16 inserted.
     // printf("dpu %lu - offset %lu\n", i, offset);
     // printf("%-4ld: Transfer %ld bytes from offset %ld \n", i, copy_bytes,
     // offset); fflush(stdout);
