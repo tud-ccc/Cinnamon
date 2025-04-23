@@ -113,7 +113,8 @@ computeShapeOfTensors(Location loc, llvm::ArrayRef<int64_t> shape,
   int64_t numReductionElts = 1;
 
   for (size_t i = 0, j = 0; i < shape.size(); i++) {
-    if (j >= reductionDims.size() || i != reductionDims[j]) {
+    if (j >= reductionDims.size() ||
+        i != static_cast<size_t>(reductionDims[j])) {
       // this is a parallel dim
       parallelDims.push_back(shape[i]);
       numParallelElts *= shape[i];
@@ -285,8 +286,8 @@ computeShapeOfTensors(Location loc, llvm::ArrayRef<int64_t> shape,
   return success();
 }
 
-LogicalResult convertInputIntoAlloc(Location loc, Value &inputBuf,
-                                    Value workGroup, cnm::WorkgroupType wgTy,
+LogicalResult convertInputIntoAlloc(Value &inputBuf, Value workGroup,
+                                    cnm::WorkgroupType wgTy,
                                     int64_t maxBlockSizeBytes,
                                     ArrayRef<int64_t> reduceDims,
                                     AffineMap &scatterMap, Value &result,
@@ -295,7 +296,7 @@ LogicalResult convertInputIntoAlloc(Location loc, Value &inputBuf,
 
   // convert single element to tensor<numTasklets x leafSize x ElementTy>
   bool scatterScalar = false;
-  if (!inputBuf.getType().dyn_cast<RankedTensorType>()) {
+  if (!llvm::isa<RankedTensorType>(inputBuf.getType())) {
     scatterScalar = true;
     inputBuf = rewriter.create<tensor::FromElementsOp>(
         RankedTensorType::get({wgTy.getShape()[2]}, inputBuf.getType()),
@@ -391,8 +392,8 @@ LogicalResult convertCinmToCnm(
   builder.setInsertionPointAfter(operation);
 
   for (auto input : operands) {
-    if (convertInputIntoAlloc(builder.getLoc(), input, workgroup, wgTy,
-                              maxBlockSizeBytes, reductionDimensionsSorted,
+    if (convertInputIntoAlloc(input, workgroup, wgTy, maxBlockSizeBytes,
+                              reductionDimensionsSorted,
                               gatherMaps.emplace_back(),
                               launchInputs.emplace_back(), builder)
             .failed()) {
@@ -403,8 +404,8 @@ LogicalResult convertCinmToCnm(
   // output values, may have been reshaped
   llvm::SmallVector<Value, 1> reshapedOutputs;
   for (auto output : outputInitializers) {
-    if (convertInputIntoAlloc(builder.getLoc(), output, workgroup, wgTy,
-                              maxBlockSizeBytes, {}, gatherMaps.emplace_back(),
+    if (convertInputIntoAlloc(output, workgroup, wgTy, maxBlockSizeBytes, {},
+                              gatherMaps.emplace_back(),
                               launchOutputs.emplace_back(), builder)
             .failed()) {
       return failure();
@@ -567,31 +568,38 @@ struct ConvertElementWiseToCnm : public OpConversionPattern<CinmOp> {
   }
 };
 
-struct ConvertElementWiseUnaryToCnm : OpConversionPattern<cinm::Elementwise_Unary_Op> {
-  explicit ConvertElementWiseUnaryToCnm(MLIRContext *ctx) : OpConversionPattern(ctx) {
+struct ConvertElementWiseUnaryToCnm
+    : OpConversionPattern<cinm::Elementwise_Unary_Op> {
+  explicit ConvertElementWiseUnaryToCnm(MLIRContext *ctx)
+      : OpConversionPattern(ctx) {
     this->setHasBoundedRewriteRecursion();
   }
 
-  LogicalResult matchAndRewrite(cinm::Elementwise_Unary_Op op, OpAdaptor adaptor,
-                                ConversionPatternRewriter &rewriter) const override {
+  LogicalResult
+  matchAndRewrite(cinm::Elementwise_Unary_Op op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
 
     ImplicitLocOpBuilder builder(op->getLoc(), rewriter);
     cinm::ComputeOp computeBlock = getEnclosingComputeBlock(op);
-    auto workgroup = builder.create<cnm::WorkgroupOp>(computeBlock.getCnmWorkgroupType());
+    auto workgroup =
+        builder.create<cnm::WorkgroupOp>(computeBlock.getCnmWorkgroupType());
 
     // Initialize output for linalg.generic
-    auto outputInit = builder.create<tensor::EmptyOp>(op.getResult().getType(), ValueRange{});
+    auto outputInit =
+        builder.create<tensor::EmptyOp>(op.getResult().getType(), ValueRange{});
 
     SmallVector<Value, 1> newResults;
     const auto conversionResult = convertCinmToCnm(
         builder, op, workgroup.getResult(), computeBlock, {},
         adaptor.getOperands(), ValueRange{outputInit}, op->getResults(),
         newResults,
-        [&](ImplicitLocOpBuilder &builder, ValueRange inputs, ValueRange outputs) {
-
-          builder.create<linalg::ElemwiseUnaryOp>(TypeRange{}, ValueRange(inputs), ValueRange(outputs),
-            linalg::UnaryFnAttr::get(builder.getContext(), op.getMethod()),
-            linalg::TypeFnAttr::get(builder.getContext(), linalg::TypeFn::cast_signed));
+        [&](ImplicitLocOpBuilder &builder, ValueRange inputs,
+            ValueRange outputs) {
+          builder.create<linalg::ElemwiseUnaryOp>(
+              TypeRange{}, ValueRange(inputs), ValueRange(outputs),
+              linalg::UnaryFnAttr::get(builder.getContext(), op.getMethod()),
+              linalg::TypeFnAttr::get(builder.getContext(),
+                                      linalg::TypeFn::cast_signed));
         });
 
     if (conversionResult.failed()) {

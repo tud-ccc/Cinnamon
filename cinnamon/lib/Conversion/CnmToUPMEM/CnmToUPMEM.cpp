@@ -228,7 +228,7 @@ struct ConvertCnmLaunchToUPMEM : public OpConversionPattern<cnm::LaunchOp> {
               ->getAttrOfType<IntegerAttr>(BUFFER_OFFSET_ATTR)
               .getInt();
 
-      const BufferType bufferType = buffer.getType().cast<BufferType>();
+      const BufferType bufferType = llvm::cast<BufferType>(buffer.getType());
       const size_t elementTypeSize = bufferType.getElementTypeBitWidth() / 8;
       const size_t chunkSize = reduceMul(bufferType.getShape());
       size_t mramCopySize = chunkSize;

@@ -389,7 +389,7 @@ static LogicalResult printOperation(CppEmitter &emitter,
   if (arith::ConstantOp staticSize =
           dyn_cast<arith::ConstantOp>(size.getDefiningOp())) {
     size_t remainingElements =
-        staticSize.getValueAttr().dyn_cast<IntegerAttr>().getInt();
+        llvm::dyn_cast<IntegerAttr>(staticSize.getValueAttr()).getInt();
     size_t offset = 0;
     while (remainingElements > 0) {
       size_t chunkSize = std::min(2048lu / elementSize, remainingElements);

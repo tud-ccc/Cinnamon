@@ -4,6 +4,8 @@
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Pass/Pass.h"
 #include "mlir/Transforms/DialectConversion.h"
+#include <llvm/Support/Casting.h>
+#include <mlir/IR/BuiltinTypes.h>
 
 #define DEBUG_TYPE "mlir-memristor-to-func"
 
@@ -33,7 +35,7 @@ static LogicalResult createLibraryCall(MemristorOp &op,
   // Make any memref operands unranked.
   for (auto operand : op->getOperands()) {
     auto operandType = operand.getType();
-    if (auto memrefType = operandType.template dyn_cast<MemRefType>()) {
+    if (auto memrefType = llvm::dyn_cast_or_null<MemRefType>(operandType)) {
       auto shape = memrefType.getShape().vec();
       std::fill(shape.begin(), shape.end(), ShapedType::kDynamic);
       auto dynamicMemrefType =
