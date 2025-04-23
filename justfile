@@ -11,7 +11,7 @@ llvm_prefix := env_var_or_default("LLVM_BUILD_DIR", "")
 build_type := env_var_or_default("LLVM_BUILD_TYPE", "RelWithDebInfo")
 linker := env_var_or_default("CMAKE_LINKER_TYPE", "DEFAULT")
 upmem_dir := env_var_or_default("UPMEM_HOME", "")
-build_dir := "cinnamon/build"
+build_dir := "build"
 
 # Do a full build as if in CI. Only needed the first time you build the project.
 # Parameters: no-upmem enable-gpu enable-cuda enable-roc no-torch-mlir no-python-venv
@@ -136,7 +136,7 @@ translate-upmem-kernel-to-cpp FILE *ARGS: (
 )
 
 compile-upmem-kernels FILE OUTDIR:
-    cinnamon/testbench/lib/compile_dpu.sh {{FILE}} {{OUTDIR}}
+    testbench/lib/compile_dpu.sh {{FILE}} {{OUTDIR}}
 
 compile-upmem-runner *ARGS:
     clang++ -g -c {{ARGS}}
@@ -149,7 +149,7 @@ remove-memref-alignment FILE:
 
 build-transformer:
     mkdir -p {{build_dir}}/samples
-    just cinm-to-cnm cinnamon/samples/transformer.mlir -o {{build_dir}}/samples/transformer.cnm.mlir
+    just cinm-to-cnm samples/transformer.mlir -o {{build_dir}}/samples/transformer.cnm.mlir
     just build-transformer-from-cnm {{build_dir}}/samples/transformer.cnm.mlir
 
 build-transformer-from-cnm FILE:
@@ -160,7 +160,7 @@ build-transformer-from-cnm FILE:
     just translate-upmem-kernel-to-cpp {{build_dir}}/samples/transformer.upmem.mlir -o {{build_dir}}/samples/transformer.upmem.c
     just compile-upmem-kernels {{build_dir}}/samples/transformer.upmem.c {{build_dir}}/samples
     just compile-upmem-runner {{build_dir}}/samples/transformer.ll -o {{build_dir}}/samples/transformer.o
-    just compile-upmem-runner cinnamon/samples/llama2.cpp -o {{build_dir}}/samples/llama2.o
+    just compile-upmem-runner samples/llama2.cpp -o {{build_dir}}/samples/llama2.o
     just link-upmem-runner {{build_dir}}/samples/transformer.o {{build_dir}}/samples/llama2.o -o {{build_dir}}/samples/transformer
 
 cinm-vulkan-runner FILE *ARGS:
@@ -172,21 +172,21 @@ cinm-vulkan-runner FILE *ARGS:
 genBench NAME: (doNinja "cinm-opt")
     #!/bin/bash
     source "{{upmem_dir}}/upmem_env.sh"
-    cd cinnamon/testbench
+    cd testbench
     export BENCH_NAME="{{NAME}}"
     make clean && make {{NAME}}-exe
 
 runBench NAME:
     #!/bin/bash
     source "{{upmem_dir}}/upmem_env.sh"
-    cd cinnamon/testbench/generated2/{{NAME}}/bin
+    cd testbench/generated2/{{NAME}}/bin
     ./host
 
 bench NAME: (doNinja "cinm-opt")
     #!/bin/bash
     set -e
     source "{{upmem_dir}}/upmem_env.sh"
-    cd cinnamon/testbench
+    cd testbench
     export BENCH_NAME="{{NAME}}"
     make clean && make {{NAME}}-exe
     cd generated2/{{NAME}}/bin

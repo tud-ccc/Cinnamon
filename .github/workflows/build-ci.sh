@@ -24,12 +24,13 @@ function verbose_cmd {
 
 project_root="$( cd -- "$(dirname "$0")/../.." >/dev/null 2>&1 ; pwd -P )"
 status "Project root: $project_root"
+mkdir -p "$project_root/third-party"
 
 py_venv_path="$project_root/.venv"
-cinnamon_path="$project_root/cinnamon"
-llvm_path="$project_root/llvm"
-torch_mlir_path="$project_root/torch-mlir"
-upmem_path="$project_root/upmem"
+cinnamon_path="$project_root"
+llvm_path="$project_root/third-party/llvm"
+torch_mlir_path="$project_root/third-party/torch-mlir"
+upmem_path="$project_root/third-party/upmem"
 
 verbose=0
 reconfigure=0
@@ -267,7 +268,7 @@ if [[ $checkout_and_build_torch_mlir -eq 1 ]]; then
     status "Building and installing Torch-MLIR Python package"
     python_package_dir=build/tools/torch-mlir/python_packages/torch_mlir
     python_package_rel_build_dir=../../../python_packages/torch_mlir
-    mkdir -p $(dirname $python_package_dir)
+    mkdir -p "$(dirname "$python_package_dir")"
     ln -s "$python_package_rel_build_dir" "$python_package_dir" 2> /dev/null || true
     TORCH_MLIR_CMAKE_ALREADY_BUILT=1 TORCH_MLIR_CMAKE_BUILD_DIR=build PYTHONWARNINGS=ignore verbose_cmd python setup.py build install
   elif [[ $setup_python_venv -eq 0 ]]; then
@@ -283,7 +284,7 @@ fi
 if [[ $checkout_upmem -eq 1 ]]; then
   if [ ! -d "$upmem_path" ]; then
     status "Downloading UpMem SDK"
-    upmem_archive="upmem.tar.gz"
+    upmem_archive="third-party/upmem.tar.gz"
     curl http://sdk-releases.upmem.com/2024.1.0/ubuntu_22.04/upmem-2024.1.0-Linux-x86_64.tar.gz --output "$upmem_archive"
     mkdir "$upmem_path"
     tar xf "$upmem_archive" -C "$upmem_path" --strip-components=1
@@ -328,8 +329,8 @@ cmake --build build --target all
 if [[ $setup_python_venv -eq 1 ]] && [[ -n "$llvm_path" ]] && [[ -n "$torch_mlir_path" ]]; then
   status "Building Cinnamon Python package"
   site_packages_dir="$(python -c 'from distutils.sysconfig import get_python_lib; print(get_python_lib())')"
-  cinnamon_python_package_dir_src="$project_root/cinnamon/python/src/cinnamon"
-  cinnamon_python_package_dir_dest="$site_packages_dir/cinnamon"
+  cinnamon_python_package_dir_src="$project_root/python/src/cinnamon"
+  cinnamon_python_package_dir_dest="$site_packages_dir"
   cinnamon_python_package_resource_dir="$cinnamon_python_package_dir_dest/_resources"
 
   cinnamon_python_resources=""
