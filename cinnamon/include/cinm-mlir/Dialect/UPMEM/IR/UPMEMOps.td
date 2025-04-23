@@ -33,7 +33,7 @@ include "mlir/IR/RegionKindInterface.td"
 
 class UPMEM_IndexOp<string mnemonic, list<Trait> traits = []> :
     UPMEM_Op<mnemonic, !listconcat(traits, [
-        Pure, DeclareOpInterfaceMethods<InferIntRangeInterface, ["inferResultRanges"]>])>, 
+        Pure, DeclareOpInterfaceMethods<InferIntRangeInterface, ["inferResultRanges"]>])>,
         Results<(outs Index)> {
   let assemblyFormat = "attr-dict";
 }
@@ -47,7 +47,7 @@ def UPMEM_RankDimOp : UPMEM_IndexOp<"rank_dim"> {
     Example:
 
     ```mlir
-    %dId = upmem.rank_id 
+    %dId = upmem.rank_id
     ```
   }];
 }
@@ -62,7 +62,7 @@ def UPMEM_DPUDimOp : UPMEM_IndexOp<"dpu_dim"> {
     Example:
 
     ```mlir
-    %dId = upmem.dpu_dim 
+    %dId = upmem.dpu_dim
     ```
   }];
 }
@@ -96,14 +96,14 @@ def UPMEM_PrivateWRAMAllocOp : UPMEM_Op<"pwram_alloc", [
 
   let summary = "UPMEM WRAM (fast scratchpad) memory allocation operation for a single tasklet.";
   let description = [{
-    The `upmem.pwram_alloc` operation allocates a wram region that is supposed to be only accessible 
-    to a single tasklet. In reality, no constraints is placed on the memory itself, but this space 
-    is allocated by an allocator that allocates WRAM for each tasklet seperately and the addresses 
-    are assigned automatically. In the original C interface, it is possible to access the other 
-    tasklet space, but the goal here is to make it more abstract, simpler, and to not reduce the power 
-    as well. 
+    The `upmem.pwram_alloc` operation allocates a wram region that is supposed to be only accessible
+    to a single tasklet. In reality, no constraints is placed on the memory itself, but this space
+    is allocated by an allocator that allocates WRAM for each tasklet seperately and the addresses
+    are assigned automatically. In the original C interface, it is possible to access the other
+    tasklet space, but the goal here is to make it more abstract, simpler, and to not reduce the power
+    as well.
     Interface-wise, it is similar to the `memref.alloc` op.
-    TODO: support async 
+    TODO: support async
 
     Example:
 
@@ -131,10 +131,10 @@ def UPMEM_LaunchOp : UPMEM_Op<"launch", [
       DeclareOpInterfaceMethods<InferIntRangeInterface, ["inferResultRanges"]>]> {
   let summary = "UPMEM kernel launch operation";
 
-  let arguments = (ins 
+  let arguments = (ins
                Variadic<UPMEM_AsyncToken>:$asyncDependencies,
                DeviceHierarchy:$device_hierarchy,
-               Index:$rankSize, 
+               Index:$rankSize,
                Index:$dpuSize, Index:$taskletSize,
                Optional<I32>:$dynamicSharedMemorySize);
 
@@ -145,7 +145,7 @@ def UPMEM_LaunchOp : UPMEM_Op<"launch", [
 
     ```
     operation ::= `upmem.launch` (`async` (`[` ssa-id-list `]`)? )?
-                             ssa-id 
+                             ssa-id
                              `ranks` `(` ssa-id `)` `in` ssa-reassignment
                              `dpus` `(` ssa-id `)` `in` ssa-reassignment
                              `tasklets` `(` ssa-id `)` `in` ssa-reassignment
@@ -176,7 +176,7 @@ def UPMEM_LaunchOp : UPMEM_Op<"launch", [
 
   let builders = [
     OpBuilder<(ins "Value":$device_hierarchy, "Value":$rankSize, "Value":$dpuSize,
-      "Value":$taskletSize, 
+      "Value":$taskletSize,
       CArg<"Value", "nullptr">:$dynamicSharedMemorySize,
       CArg<"Type", "nullptr">:$asyncTokenType,
       CArg<"ValueRange", "{}">:$asyncDependencies,
@@ -188,7 +188,7 @@ def UPMEM_LaunchOp : UPMEM_Op<"launch", [
     KernelDim getRankIdClass();
     KernelDim getDPUIdClass();
     KernelDim getTaskletIdClass();
-    
+
     KernelDim getRankSizeClass();
     KernelDim getDPUSizeClass();
     KernelDim getTaskletSizeClass();
@@ -283,7 +283,7 @@ def UPMEM_TerminatorOp : UPMEM_Op<"terminator", [HasParent<"LaunchOp">,
 }
 
 def UPMEM_ReturnOp : UPMEM_Op<"return", [HasParent<"UPMEMFuncOp">, Pure,
-                                     Terminator]>, 
+                                     Terminator]>,
     Arguments<(ins)>, Results<(outs)>
       {
   let summary = "Terminator for UPMEM functions.";
@@ -367,7 +367,7 @@ class ScatterGatherLike<string mnemonic, string kw, MemoryEffect effect>
   : UPMEM_Op<mnemonic, [MemoryEffects<[MemWrite]>]> {
 
   let arguments = (ins Arg<AnyMemRef, "", [effect]>:$hostBuffer,
-                  I64Attr:$dpuMemOffset, 
+                  I64Attr:$dpuMemOffset,
                   I64Attr:$transferCount,
                   AffineMapAttr:$scatterMap,
                   DeviceHierarchy:$hierarchy);
@@ -389,7 +389,7 @@ class ScatterGatherLike<string mnemonic, string kw, MemoryEffect effect>
   }];
 
   let hasVerifier = 1;
-  let assemblyFormat = 
+  let assemblyFormat =
      "$hostBuffer `[` $dpuMemOffset `,` $transferCount `,` $scatterMap `]` `" # kw # "` $hierarchy attr-dict"
      # "`:` type($hostBuffer) `" # kw # "` qualified(type($hierarchy))";
 }
@@ -488,7 +488,7 @@ def UPMEM_LaunchFuncOp :UPMEM_Op<"launch_func", [
   let skipDefaultBuilders = 1;
 
   let builders = [
-    OpBuilder<(ins "UPMEMFuncOp":$kernelFunc, "Value":$hierarchy, 
+    OpBuilder<(ins "UPMEMFuncOp":$kernelFunc, "Value":$hierarchy,
       "Value":$dynamicSharedMemorySize, "ValueRange":$kernelOperands,
       CArg<"Type", "nullptr">:$asyncTokenType,
       CArg<"ValueRange", "{}">:$asyncDependencies)>

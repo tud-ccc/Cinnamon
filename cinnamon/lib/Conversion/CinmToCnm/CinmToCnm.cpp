@@ -1,23 +1,20 @@
 
+#include "cinm-mlir/Conversion/CinmPasses.h"
 #include "cinm-mlir/Dialect/Cinm/IR/CinmAttributes.h"
 #include "cinm-mlir/Dialect/Cinm/IR/CinmBase.h"
 #include "cinm-mlir/Dialect/Cinm/IR/CinmOps.h"
 #include "cinm-mlir/Dialect/Cinm/Interfaces/TilingInterface.h"
 #include "cinm-mlir/Dialect/Cnm/IR/CnmBase.h"
+#include "cinm-mlir/Dialect/Cnm/IR/CnmOps.h"
 #include "cinm-mlir/Dialect/Cnm/IR/CnmTypes.h"
 #include "cinm-mlir/Utils/CinmUtils.h"
-#include <algorithm>
-#include <cinm-mlir/Conversion/CinmPasses.h>
-#include <cinm-mlir/Dialect/Cnm/IR/CnmOps.h>
-#include <cstddef>
-#include <cstdint>
-#include <functional>
+
 #include <llvm/ADT/ArrayRef.h>
 #include <llvm/ADT/STLExtras.h>
 #include <llvm/ADT/Sequence.h>
 #include <llvm/ADT/SmallVector.h>
 #include <llvm/ADT/StringExtras.h>
-#include <memory>
+
 #include <mlir/Dialect/Arith/IR/Arith.h>
 #include <mlir/Dialect/Func/IR/FuncOps.h>
 #include <mlir/Dialect/Linalg/IR/Linalg.h>
@@ -46,8 +43,6 @@
 #include <mlir/Support/LogicalResult.h>
 #include <mlir/Transforms/DialectConversion.h>
 #include <mlir/Transforms/InliningUtils.h>
-#include <numeric>
-#include <optional>
 
 using namespace mlir;
 #define GEN_PASS_CLASSES
@@ -93,17 +88,19 @@ void structureIndex(AffineExpr index, ArrayRef<int64_t> shape,
   }
 }
 
-LogicalResult computeShapeOfTensors(
-    Location loc, llvm::ArrayRef<int64_t> shape, cnm::WorkgroupType wgTy,
-    int64_t maxBlockSize,
-    // if empty then all dims are parallel
-    // otherwise those dims are reductions. They are
-    // used to select the size of the buffer. The rest of
-    // the dimensions are used to create a scattermap
-    llvm::ArrayRef<int64_t> reductionDims, AffineMap &scatterMap,
-    llvm::SmallVectorImpl<int64_t> &shapeOfBuffer,
+LogicalResult
+computeShapeOfTensors(Location loc, llvm::ArrayRef<int64_t> shape,
+                      cnm::WorkgroupType wgTy, int64_t maxBlockSize,
+                      // if empty then all dims are parallel
+                      // otherwise those dims are reductions. They are
+                      // used to select the size of the buffer. The rest of
+                      // the dimensions are used to create a scattermap
+                      llvm::ArrayRef<int64_t> reductionDims,
+                      AffineMap &scatterMap,
+                      llvm::SmallVectorImpl<int64_t> &shapeOfBuffer,
 
-    std::optional<llvm::SmallVector<int64_t>> &reshapeInputTo) {
+                      std::optional<llvm::SmallVector<int64_t>> &reshapeInputTo,
+                      bool scatterScalar) {
   auto wgShape = wgTy.getShape();
 
   auto numWgItems =
@@ -116,7 +113,8 @@ LogicalResult computeShapeOfTensors(
   int64_t numReductionElts = 1;
 
   for (size_t i = 0, j = 0; i < shape.size(); i++) {
-    if (j >= reductionDims.size() || i != reductionDims[j]) {
+    if (j >= reductionDims.size() ||
+        i != static_cast<size_t>(reductionDims[j])) {
       // this is a parallel dim
       parallelDims.push_back(shape[i]);
       numParallelElts *= shape[i];
@@ -142,12 +140,11 @@ LogicalResult computeShapeOfTensors(
 
   // Now we support 3 cases: either
   // 0. scattering a single element
-  if (numParallelElts == 1) {
+  if (scatterScalar) {
     const size_t numDims = wgShape.size() + reductionDims.size();
     scatterMap = AffineMap::get(
         numDims, 0,
-        SmallVector<AffineExpr>(numDims,
-                                getAffineConstantExpr(0, wgTy.getContext())),
+        SmallVector<AffineExpr>(1, getAffineConstantExpr(0, wgTy.getContext())),
         wgTy.getContext());
     return success();
   }
@@ -289,20 +286,21 @@ LogicalResult computeShapeOfTensors(
   return success();
 }
 
-LogicalResult convertInputIntoAlloc(Location loc, Value &inputBuf,
-                                    Value workGroup, cnm::WorkgroupType wgTy,
+LogicalResult convertInputIntoAlloc(Value &inputBuf, Value workGroup,
+                                    cnm::WorkgroupType wgTy,
                                     int64_t maxBlockSizeBytes,
                                     ArrayRef<int64_t> reduceDims,
                                     AffineMap &scatterMap, Value &result,
                                     ImplicitLocOpBuilder &rewriter) {
   // For each input of the reduce, we need to
 
-  // convert single element to tensor<1xelementTy>
-  if (!isa<RankedTensorType>(inputBuf.getType())) {
+  // convert single element to tensor<numTasklets x leafSize x ElementTy>
+  bool scatterScalar = false;
+  if (!llvm::isa<RankedTensorType>(inputBuf.getType())) {
+    scatterScalar = true;
     inputBuf = rewriter.create<tensor::FromElementsOp>(
-        RankedTensorType::get(SmallVector<int64_t>(wgTy.getShape().size(), 1),
-                              inputBuf.getType()),
-        ValueRange{inputBuf});
+        RankedTensorType::get({wgTy.getShape()[2]}, inputBuf.getType()),
+        SmallVector<Value>(wgTy.getShape()[2], inputBuf));
   }
 
   auto inputType = cast<RankedTensorType>(inputBuf.getType());
@@ -313,7 +311,7 @@ LogicalResult convertInputIntoAlloc(Location loc, Value &inputBuf,
       maxBlockSizeBytes * 8 / inputType.getElementTypeBitWidth();
   if (computeShapeOfTensors(inputBuf.getLoc(), inputType.getShape(), wgTy,
                             maxBlockSizeItems, reduceDims, scatterMap,
-                            shapeOfBuffer, reshapeInto)
+                            shapeOfBuffer, reshapeInto, scatterScalar)
           .failed())
     return failure();
 
@@ -394,8 +392,8 @@ LogicalResult convertCinmToCnm(
   builder.setInsertionPointAfter(operation);
 
   for (auto input : operands) {
-    if (convertInputIntoAlloc(builder.getLoc(), input, workgroup, wgTy,
-                              maxBlockSizeBytes, reductionDimensionsSorted,
+    if (convertInputIntoAlloc(input, workgroup, wgTy, maxBlockSizeBytes,
+                              reductionDimensionsSorted,
                               gatherMaps.emplace_back(),
                               launchInputs.emplace_back(), builder)
             .failed()) {
@@ -406,8 +404,8 @@ LogicalResult convertCinmToCnm(
   // output values, may have been reshaped
   llvm::SmallVector<Value, 1> reshapedOutputs;
   for (auto output : outputInitializers) {
-    if (convertInputIntoAlloc(builder.getLoc(), output, workgroup, wgTy,
-                              maxBlockSizeBytes, {}, gatherMaps.emplace_back(),
+    if (convertInputIntoAlloc(output, workgroup, wgTy, maxBlockSizeBytes, {},
+                              gatherMaps.emplace_back(),
                               launchOutputs.emplace_back(), builder)
             .failed()) {
       return failure();
@@ -570,31 +568,38 @@ struct ConvertElementWiseToCnm : public OpConversionPattern<CinmOp> {
   }
 };
 
-struct ConvertElementWiseUnaryToCnm : OpConversionPattern<cinm::Elementwise_Unary_Op> {
-  explicit ConvertElementWiseUnaryToCnm(MLIRContext *ctx) : OpConversionPattern(ctx) {
+struct ConvertElementWiseUnaryToCnm
+    : OpConversionPattern<cinm::Elementwise_Unary_Op> {
+  explicit ConvertElementWiseUnaryToCnm(MLIRContext *ctx)
+      : OpConversionPattern(ctx) {
     this->setHasBoundedRewriteRecursion();
   }
 
-  LogicalResult matchAndRewrite(cinm::Elementwise_Unary_Op op, OpAdaptor adaptor,
-                                ConversionPatternRewriter &rewriter) const override {
+  LogicalResult
+  matchAndRewrite(cinm::Elementwise_Unary_Op op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
 
     ImplicitLocOpBuilder builder(op->getLoc(), rewriter);
     cinm::ComputeOp computeBlock = getEnclosingComputeBlock(op);
-    auto workgroup = builder.create<cnm::WorkgroupOp>(computeBlock.getCnmWorkgroupType());
+    auto workgroup =
+        builder.create<cnm::WorkgroupOp>(computeBlock.getCnmWorkgroupType());
 
     // Initialize output for linalg.generic
-    auto outputInit = builder.create<tensor::EmptyOp>(op.getResult().getType(), ValueRange{});
+    auto outputInit =
+        builder.create<tensor::EmptyOp>(op.getResult().getType(), ValueRange{});
 
     SmallVector<Value, 1> newResults;
     const auto conversionResult = convertCinmToCnm(
         builder, op, workgroup.getResult(), computeBlock, {},
         adaptor.getOperands(), ValueRange{outputInit}, op->getResults(),
         newResults,
-        [&](ImplicitLocOpBuilder &builder, ValueRange inputs, ValueRange outputs) {
-
-          builder.create<linalg::ElemwiseUnaryOp>(TypeRange{}, ValueRange(inputs), ValueRange(outputs),
-            linalg::UnaryFnAttr::get(builder.getContext(), op.getMethod()),
-            linalg::TypeFnAttr::get(builder.getContext(), linalg::TypeFn::cast_signed));
+        [&](ImplicitLocOpBuilder &builder, ValueRange inputs,
+            ValueRange outputs) {
+          builder.create<linalg::ElemwiseUnaryOp>(
+              TypeRange{}, ValueRange(inputs), ValueRange(outputs),
+              linalg::UnaryFnAttr::get(builder.getContext(), op.getMethod()),
+              linalg::TypeFnAttr::get(builder.getContext(),
+                                      linalg::TypeFn::cast_signed));
         });
 
     if (conversionResult.failed()) {

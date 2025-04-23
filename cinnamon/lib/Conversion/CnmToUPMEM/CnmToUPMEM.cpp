@@ -6,8 +6,8 @@
 #include "cinm-mlir/Dialect/UPMEM/IR/UPMEMOps.h"
 #include "cinm-mlir/Dialect/UPMEM/IR/UPMEMTypes.h"
 
-#include <cstdint>
 #include <llvm/Support/Casting.h>
+#include <mlir/Conversion/ReconcileUnrealizedCasts/ReconcileUnrealizedCasts.h>
 #include <mlir/Dialect/Affine/IR/AffineOps.h>
 #include <mlir/Dialect/Arith/IR/Arith.h>
 #include <mlir/Dialect/Bufferization/IR/Bufferization.h>
@@ -24,7 +24,6 @@
 #include <mlir/IR/ValueRange.h>
 #include <mlir/Support/LLVM.h>
 #include <mlir/Transforms/DialectConversion.h>
-#include <mlir/Conversion/ReconcileUnrealizedCasts/ReconcileUnrealizedCasts.h>
 
 #define GEN_PASS_DEF_CONVERTCNMTOUPMEMPASS
 #include "cinm-mlir/Conversion/CnmPasses.h.inc"
@@ -47,6 +46,10 @@ MemRefType convertTensorToMemref(ShapedType ty) {
   return MemRefType::get(ty.getShape(), ty.getElementType());
 }
 
+inline static constexpr size_t alignTo(size_t v, size_t alignment) {
+  return v % alignment == 0 ? v : v + alignment - v % alignment;
+}
+
 static const StringRef BUFFER_OFFSET_ATTR = "upmem.bufferOffset";
 struct ConvertCnmWorkgroupToUPMEM
     : public OpConversionPattern<cnm::WorkgroupOp> {
@@ -62,18 +65,26 @@ struct ConvertCnmWorkgroupToUPMEM
     rewriter.replaceOpWithNewOp<upmem::AllocDPUsOp>(
         op, getTypeConverter()->convertType(op.getType()));
 
-    int64_t dpuMemOffset = 0;
+    SmallVector<cnm::AllocOp> allocs;
     for (auto use : op.getResult().getUsers()) {
       if (cnm::AllocOp alloc = llvm::dyn_cast_or_null<cnm::AllocOp>(use)) {
-        alloc->setAttr(BUFFER_OFFSET_ATTR,
-                       rewriter.getI64IntegerAttr(dpuMemOffset));
-        dpuMemOffset += alloc.getResult().getType().getSizeInBytes();
-
-        // buffer offsets must be 8 byte aligned
-        if (dpuMemOffset % 8 != 0) {
-          dpuMemOffset += 8 - (dpuMemOffset % 8);
-        }
+        allocs.push_back(alloc);
       }
+    }
+
+    int64_t dpuMemOffset = 0;
+    const size_t numTasklets = op.getType().getShape()[2];
+    // getUsers returns users in reverse order so we have to reverse again to
+    // calculate the offset in the correct order
+    for (auto alloc : llvm::reverse(allocs)) {
+      alloc->setAttr(BUFFER_OFFSET_ATTR,
+                     rewriter.getI64IntegerAttr(dpuMemOffset));
+      const size_t memoryPerTasklet =
+          alloc.getResult().getType().getSizeInBytes();
+      dpuMemOffset += memoryPerTasklet * numTasklets;
+
+      // buffer offsets must be 8 byte aligned
+      dpuMemOffset = alignTo(dpuMemOffset, 8);
     }
 
     return success();
@@ -104,7 +115,8 @@ struct ConvertCnmScatterToUPMEM : public OpConversionPattern<cnm::ScatterOp> {
     const Value inputAsMemref = createOrFoldUnrealizedConversionCast(
         op.getLoc(), rewriter, convertTensorToMemref(inputTy), tensor);
 
-    const int64_t transferCount = op.getTransferCountInItems();
+    const size_t numTasklets = op.getWg().getType().getShape()[2];
+    const int64_t transferCount = op.getTransferCountInItems() * numTasklets;
     const int64_t dpuMemOffset =
         llvm::cast<cnm::AllocOp>(op.getBuffer().getDefiningOp())
             ->getAttrOfType<IntegerAttr>(BUFFER_OFFSET_ATTR)
@@ -133,7 +145,8 @@ struct ConvertCnmGatherToUPMEM : public OpConversionPattern<cnm::GatherOp> {
           op->getLoc(), convertTensorToMemref(op.getOutputBuf().getType()));
     }
 
-    const int64_t transferCount = op.getTransferCountInItems();
+    const size_t numTasklets = op.getWg().getType().getShape()[2];
+    const int64_t transferCount = op.getTransferCountInItems() * numTasklets;
     const int64_t dpuMemOffset =
         llvm::cast<cnm::AllocOp>(op.getBuffer().getDefiningOp())
             ->getAttrOfType<IntegerAttr>(BUFFER_OFFSET_ATTR)
@@ -196,11 +209,13 @@ struct ConvertCnmLaunchToUPMEM : public OpConversionPattern<cnm::LaunchOp> {
     // wram to store the chunk data
     struct BufferSliceInfo {
       Value chunkSize;
+      Value mramCopySize;
       Value mramAddr;   // address in mram for current tasklet
       Value wramMemref; // memref allocated on wram to store the current chunk
     };
 
     Value dpuHeapAddr = rewriter.create<upmem::BaseMRAMAddrOp>(op.getLoc());
+    Value taskletId = rewriter.create<upmem::TaskletIDOp>(op.getLoc());
     llvm::DenseMap<Value, BufferSliceInfo> bufferSlices;
     size_t i = 0;
     for (Value buffer : op.getParams()) {
@@ -208,20 +223,76 @@ struct ConvertCnmLaunchToUPMEM : public OpConversionPattern<cnm::LaunchOp> {
         continue;
       }
 
-      const BufferType bufferType = cast<BufferType>(buffer.getType());
+      const int64_t dpuMemOffset =
+          llvm::cast<cnm::AllocOp>(buffer.getDefiningOp())
+              ->getAttrOfType<IntegerAttr>(BUFFER_OFFSET_ATTR)
+              .getInt();
+
+      const BufferType bufferType = llvm::cast<BufferType>(buffer.getType());
+      const size_t elementTypeSize = bufferType.getElementTypeBitWidth() / 8;
       const size_t chunkSize = reduceMul(bufferType.getShape());
-      const size_t memoryPerTasklet = chunksPerTasklet * chunkSize;
-      const size_t memoryPerDPU = wgShape[2] * memoryPerTasklet;
+      size_t mramCopySize = chunkSize;
+
+      if (!bufferType.getShape().empty() &&
+          chunkSize * elementTypeSize % 8 != 0) {
+        emitError(op.getLoc(), "chunksize (" +
+                                   std::to_string(chunkSize * elementTypeSize) +
+                                   ") isn't 8-byte aligned");
+        return failure();
+      }
+
+      size_t memoryPerTasklet = chunksPerTasklet * chunkSize *
+                                bufferType.getElementTypeBitWidth() / 8;
 
       const MemRefType sliceType =
           MemRefType::get(bufferType.getShape(), bufferType.getElementType());
 
+      Value mramAddr;
+      bool isInput = false;
+      for (Value other : op.getInputs()) {
+        if (buffer == other) {
+          isInput = true;
+          break;
+        }
+      }
+
+      // When loading a value from a scalar buffer on the dpu we ignore the
+      // tasklet id to avoid alignment issues: when copying a single value for
+      // tasklet > 0 the mram address may not be 8-byte aligned. The values in
+      // the mram are the same for all tasklets anyway.
+      if (isInput && bufferType.getShape().empty()) {
+        mramAddr = dpuHeapAddr;
+      } else {
+        if (!isInput && memoryPerTasklet < 8) {
+          memoryPerTasklet = 8;
+          mramCopySize = 8 / elementTypeSize;
+        }
+
+        mramAddr = rewriter.create<arith::AddIOp>(
+            op.getLoc(), dpuHeapAddr,
+            rewriter.create<arith::MulIOp>(
+                op.getLoc(), taskletId,
+                rewriter.create<arith::ConstantIndexOp>(op.getLoc(),
+                                                        memoryPerTasklet)));
+      }
+
+      // To get to the minimum mram_read() size (8 bytes) we can copy
+      // additional bytes of the input as we don't care if they are garbage
+      // because we only use the first element. This doesn't apply to single
+      // output values as they would interfere with / overwrite the result
+      // values of other tasklets.
+      if (isInput && chunkSize * elementTypeSize < 8) {
+        mramCopySize = 8 / elementTypeSize;
+      }
+
       const BufferSliceInfo slice{
           rewriter.create<arith::ConstantIndexOp>(op.getLoc(), chunkSize),
-          dpuHeapAddr,
+          rewriter.create<arith::ConstantIndexOp>(op.getLoc(), mramCopySize),
+          mramAddr,
           rewriter.create<upmem::PrivateWRAMAllocOp>(op.getLoc(), sliceType),
       };
 
+      const size_t memoryPerDPU = alignTo(wgShape[2] * memoryPerTasklet, 8);
       dpuHeapAddr = rewriter.create<arith::AddIOp>(
           op.getLoc(), dpuHeapAddr,
           rewriter.create<arith::ConstantIndexOp>(op.getLoc(), memoryPerDPU));
@@ -241,7 +312,7 @@ struct ConvertCnmLaunchToUPMEM : public OpConversionPattern<cnm::LaunchOp> {
         const BufferSliceInfo slice = bufferSlices.at(buffer);
         rewriter.create<upmem::MemcpyOp>(
             op.getLoc(), upmem::MemcpyDirOp::MRAMToWRAM, slice.wramMemref,
-            slice.chunkSize, slice.mramAddr);
+            slice.mramCopySize, slice.mramAddr);
       }
 
       // insert original launch body into loop before the AffineYieldOp
@@ -255,7 +326,7 @@ struct ConvertCnmLaunchToUPMEM : public OpConversionPattern<cnm::LaunchOp> {
         const BufferSliceInfo slice = bufferSlices.at(buffer);
         rewriter.create<upmem::MemcpyOp>(
             op.getLoc(), upmem::MemcpyDirOp::WRAMToMRAM, slice.wramMemref,
-            slice.chunkSize, slice.mramAddr);
+            slice.mramCopySize, slice.mramAddr);
       }
     } else {
       affine::AffineForOp loop = rewriter.create<affine::AffineForOp>(
@@ -278,7 +349,7 @@ struct ConvertCnmLaunchToUPMEM : public OpConversionPattern<cnm::LaunchOp> {
             rewriter.create<arith::AddIOp>(op.getLoc(), slice.mramAddr, offset);
         rewriter.create<upmem::MemcpyOp>(
             op.getLoc(), upmem::MemcpyDirOp::MRAMToWRAM, slice.wramMemref,
-            slice.chunkSize, mramAddr);
+            slice.mramCopySize, mramAddr);
       }
 
       // insert original launch body into loop before the AffineYieldOp
@@ -297,7 +368,7 @@ struct ConvertCnmLaunchToUPMEM : public OpConversionPattern<cnm::LaunchOp> {
             rewriter.create<arith::AddIOp>(op.getLoc(), slice.mramAddr, offset);
         rewriter.create<upmem::MemcpyOp>(
             op.getLoc(), upmem::MemcpyDirOp::WRAMToMRAM, slice.wramMemref,
-            slice.chunkSize, mramAddr);
+            slice.mramCopySize, mramAddr);
       }
 
       rewriter.setInsertionPointToEnd(&launchOp.getBody().front());

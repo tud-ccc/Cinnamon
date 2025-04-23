@@ -137,7 +137,7 @@ function git_clone_revision() {
     # Git 2.49.0 added the revision option
     git clone --revision "$revision" --depth 1 "$repo_url" "$path"
   else
-    mkdir -P "$path"
+    mkdir -p "$path"
     pushd "$path"
     git init
     git remote add origin "$repo_url"
@@ -157,7 +157,8 @@ if [[ $setup_python_venv -eq 1 ]]; then
   reconfigure_python_venv=0
   if [ ! -d "$py_venv_path" ]; then
     status "Creating Python venv"
-    if [ ! $supported_python_executable -m venv "$py_venv_path" ]; then
+    
+    if ! $supported_python_executable -m venv "$py_venv_path"; then
       echo "Error: cannot create venv"
       exit 1
     fi

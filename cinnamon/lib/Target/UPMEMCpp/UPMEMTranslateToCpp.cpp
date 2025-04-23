@@ -13,6 +13,7 @@
 #include "mlir/Dialect/ControlFlow/IR/ControlFlowOps.h"
 #include "mlir/Dialect/EmitC/IR/EmitC.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
+#include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/IR/BuiltinOps.h"
@@ -28,8 +29,12 @@
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/FormatVariadic.h"
 #include <llvm/ADT/SmallVector.h>
+#include <llvm/IR/Constant.h>
+#include <llvm/IR/Constants.h>
+#include <llvm/IR/Intrinsics.h>
 #include <llvm/Support/Casting.h>
 #include <llvm/Support/raw_ostream.h>
+#include <mlir/IR/BuiltinAttributes.h>
 #include <mlir/IR/SymbolTable.h>
 #include <mlir/IR/Visitors.h>
 #include <mlir/Support/LLVM.h>
@@ -218,6 +223,19 @@ static LogicalResult printConstantOp(CppEmitter &emitter, Operation *operation,
   return emitter.emitAttribute(operation->getLoc(), value);
 }
 
+static LogicalResult printValueOrConstant(CppEmitter &emitter, Value value) {
+  Operation *op = value.getDefiningOp();
+  if (arith::ConstantOp constant = dyn_cast_or_null<arith::ConstantOp>(op)) {
+    if (emitter.emitAttribute(constant.getLoc(), constant.getValueAttr())
+            .failed()) {
+      return failure();
+    }
+  } else {
+    emitter.ostream() << emitter.getOrCreateName(value);
+  }
+  return success();
+}
+
 static LogicalResult printOperation(CppEmitter &emitter,
                                     upmem::TaskletIDOp idOp) {
   raw_ostream &os = emitter.ostream();
@@ -239,22 +257,20 @@ static LogicalResult printOperation(CppEmitter &emitter,
 static LogicalResult printOperation(CppEmitter &emitter,
                                     upmem::PrivateWRAMAllocOp wramAllocOp) {
   raw_ostream &os = emitter.ostream();
-  if (failed(emitter.emitAssignPrefix(*wramAllocOp)))
-    return failure();
   MemRefType res_type = dyn_cast<MemRefType>(wramAllocOp.getResult().getType());
-  int size = res_type.getNumElements();
-  Type single_element = res_type.getElementType();
-  if (dyn_cast<IntegerType>(single_element)) {
-    os << "(int*) ";
-  } else if (dyn_cast<FloatType>(single_element)) {
-    os << "(float*) ";
+  Type elementType = res_type.getElementType();
+
+  os << "__dma_aligned ";
+  if (emitter.emitType(wramAllocOp.getLoc(), elementType).failed()) {
+    return failure();
   }
-  os << "dpu_wram_alloc(" << size;
-  if (dyn_cast<IntegerType>(single_element)) {
-    os << " * sizeof(int))";
-  } else if (dyn_cast<FloatType>(single_element)) {
-    os << " * sizeof(float))";
+
+  size_t size = res_type.getNumElements();
+  const size_t elementSize = elementType.getIntOrFloatBitWidth() / 8;
+  if (size * elementSize < 8) {
+    size = 8 / elementSize;
   }
+  os << " " << emitter.getOrCreateName(wramAllocOp) << "[" << size << "]";
 
   return success();
 }
@@ -267,7 +283,11 @@ static LogicalResult printOperation(CppEmitter &emitter,
 
   os << emitter.getOrCreateName(loadOp->getOperand(0));
   if (loadOp->getNumOperands() > 1) {
-    os << "[" << emitter.getOrCreateName(loadOp->getOperand(1)) << "]";
+    os << "[";
+    if (printValueOrConstant(emitter, loadOp->getOperand(1)).failed()) {
+      return failure();
+    }
+    os << "]";
   } else {
     os << "[0]";
   }
@@ -279,49 +299,120 @@ static LogicalResult printOperation(CppEmitter &emitter,
   raw_ostream &os = emitter.ostream();
   os << emitter.getOrCreateName(storeOp->getOperand(1));
   if (storeOp.getNumOperands() > 2) {
-    os << "[" << emitter.getOrCreateName(storeOp->getOperand(2)) << "]";
+    os << "[";
+    if (printValueOrConstant(emitter, storeOp->getOperand(2)).failed()) {
+      return failure();
+    }
+    os << "]";
   } else {
     os << "[0]";
   }
-  os << " = " << emitter.getOrCreateName(storeOp->getOperand(0));
+  os << " = ";
+
+  if (printValueOrConstant(emitter, storeOp->getOperand(0)).failed()) {
+    return failure();
+  }
+  return success();
+}
+
+static LogicalResult printMRAMCopy(CppEmitter &emitter, Location loc,
+                                   upmem::MemcpyDirOp dir, Type elementType,
+                                   Value from, Value to, size_t staticSize,
+                                   Value dynamicSize, size_t offset) {
+  raw_ostream &os = emitter.ostream();
+  if (dir == upmem::MemcpyDirOp::MRAMToWRAM) {
+    os << "mram_read((const __mram_ptr ";
+  } else if (dir == upmem::MemcpyDirOp::WRAMToMRAM) {
+    os << "mram_write((const ";
+  }
+
+  if (emitter.emitType(loc, elementType).failed()) {
+    return failure();
+  }
+
+  os << "*)" << emitter.getOrCreateName(from);
+  if (offset > 0) {
+    os << " + " << offset;
+  }
+  os << ", ";
+
+  if (dir == upmem::MemcpyDirOp::MRAMToWRAM) {
+    os << "(";
+  } else if (dir == upmem::MemcpyDirOp::WRAMToMRAM) {
+    os << "(__mram_ptr ";
+  }
+
+  if (emitter.emitType(loc, elementType).failed()) {
+    return failure();
+  }
+
+  os << "*)" << emitter.getOrCreateName(to);
+  if (offset > 0) {
+    os << " + " << offset;
+  }
+  os << ", ";
+
+  if (dynamicSize) {
+    if (printValueOrConstant(emitter, dynamicSize).failed()) {
+      return failure();
+    }
+  } else {
+    os << staticSize;
+  }
+
+  os << " * sizeof(";
+  if (emitter.emitType(loc, elementType).failed()) {
+    return failure();
+  }
+  os << "))";
+
   return success();
 }
 
 static LogicalResult printOperation(CppEmitter &emitter,
                                     upmem::MemcpyOp memcpyOp) {
   raw_ostream &os = emitter.ostream();
-  os << "dpu_memcpy(";
   auto direction = memcpyOp.getDirection();
+  Value from, to;
   if (direction == upmem::MemcpyDirOp::MRAMToWRAM) {
-    os << "MRAMToWRAM, ";
+    from = memcpyOp->getOperand(2);
+    to = memcpyOp->getOperand(0);
   } else if (direction == upmem::MemcpyDirOp::WRAMToMRAM) {
-    os << "WRAMToMRAM, ";
+    from = memcpyOp->getOperand(0);
+    to = memcpyOp->getOperand(2);
   }
 
-  Type type =
+  Value size = memcpyOp->getOperand(1);
+  Type elementType =
       dyn_cast<MemRefType>(memcpyOp.getOperand(0).getType()).getElementType();
-  std::string size_string;
-  if (dyn_cast<IntegerType>(type)) {
-    size_string = " * sizeof(int)";
-  } else if (dyn_cast<FloatType>(type)) {
-    size_string = " * sizeof(float)";
+  size_t elementSize = elementType.getIntOrFloatBitWidth() / 8;
+  if (arith::ConstantOp staticSize =
+          dyn_cast<arith::ConstantOp>(size.getDefiningOp())) {
+    size_t remainingElements =
+        llvm::dyn_cast<IntegerAttr>(staticSize.getValueAttr()).getInt();
+    size_t offset = 0;
+    while (remainingElements > 0) {
+      size_t chunkSize = std::min(2048lu / elementSize, remainingElements);
+      if (printMRAMCopy(emitter, memcpyOp.getLoc(), direction, elementType,
+                        from, to, chunkSize, {}, offset)
+              .failed()) {
+        return failure();
+      }
+      offset += chunkSize;
+      remainingElements -= chunkSize;
+      if (remainingElements > 0) {
+        os << ";\n";
+      }
+    }
+  } else {
+    if (printMRAMCopy(emitter, memcpyOp.getLoc(), direction, elementType, from,
+                      to, 0, size, 0)
+            .failed()) {
+      return failure();
+    }
   }
-  os << emitter.getOrCreateName(memcpyOp->getOperand(0));
-  os << ", ";
-  os << emitter.getOrCreateName(memcpyOp->getOperand(1));
-  os << size_string << ", ";
-  os << emitter.getOrCreateName(memcpyOp->getOperand(2));
-  os << size_string << ")";
 
   return success();
-}
-
-static LogicalResult printOperation(CppEmitter &emitter,
-                                    arith::ConstantOp constantOp) {
-  Operation *operation = constantOp.getOperation();
-  Attribute value = constantOp.getValue();
-
-  return printConstantOp(emitter, operation, value);
 }
 
 static LogicalResult printOperation(CppEmitter &emitter,
@@ -339,23 +430,233 @@ static LogicalResult printBinaryOperation(CppEmitter &emitter,
 
   if (failed(emitter.emitAssignPrefix(*operation)))
     return failure();
-  os << emitter.getOrCreateName(operation->getOperand(0));
-  os << " " << binaryOperator;
-  os << " " << emitter.getOrCreateName(operation->getOperand(1));
+
+  if (printValueOrConstant(emitter, operation->getOperand(0)).failed()) {
+    return failure();
+  }
+  os << " " << binaryOperator << " ";
+  if (printValueOrConstant(emitter, operation->getOperand(1)).failed()) {
+    return failure();
+  }
 
   return success();
 }
 
-static LogicalResult printOperation(CppEmitter &emitter, arith::AddIOp addOp) {
-  Operation *operation = addOp.getOperation();
+// arith ops
 
-  return printBinaryOperation(emitter, operation, "+");
+static LogicalResult printOperation(CppEmitter &emitter, arith::AddFOp op) {
+  return printBinaryOperation(emitter, op.getOperation(), "+");
 }
 
-static LogicalResult printOperation(CppEmitter &emitter, arith::MulIOp mulOp) {
-  Operation *operation = mulOp.getOperation();
+static LogicalResult printOperation(CppEmitter &emitter, arith::AddIOp op) {
+  return printBinaryOperation(emitter, op.getOperation(), "+");
+}
 
-  return printBinaryOperation(emitter, operation, "*");
+static LogicalResult printOperation(CppEmitter &emitter,
+                                    arith::AddUIExtendedOp op) {
+  return printBinaryOperation(emitter, op.getOperation(), "+");
+}
+
+static LogicalResult printOperation(CppEmitter &emitter, arith::AndIOp op) {
+  return printBinaryOperation(emitter, op.getOperation(), "&");
+}
+
+static LogicalResult printOperation(CppEmitter &emitter, arith::BitcastOp op) {
+  assert(false && "todo: implement op printer");
+}
+
+static LogicalResult printOperation(CppEmitter &emitter,
+                                    arith::CeilDivSIOp op) {
+  assert(false && "todo: implement op printer");
+}
+
+static LogicalResult printOperation(CppEmitter &emitter,
+                                    arith::CeilDivUIOp op) {
+  assert(false && "todo: implement op printer");
+}
+
+static LogicalResult printOperation(CppEmitter &emitter, arith::CmpFOp op) {
+  assert(false && "todo: implement op printer");
+}
+
+static LogicalResult printOperation(CppEmitter &emitter, arith::CmpIOp op) {
+  assert(false && "todo: implement op printer");
+}
+
+static LogicalResult printOperation(CppEmitter &emitter, arith::ConstantOp op) {
+  return printConstantOp(emitter, op.getOperation(), op.getValue());
+}
+
+static LogicalResult printOperation(CppEmitter &emitter, arith::DivFOp op) {
+  return printBinaryOperation(emitter, op.getOperation(), "/");
+}
+
+static LogicalResult printOperation(CppEmitter &emitter, arith::DivSIOp op) {
+  return printBinaryOperation(emitter, op.getOperation(), "/");
+}
+
+static LogicalResult printOperation(CppEmitter &emitter, arith::DivUIOp op) {
+  return printBinaryOperation(emitter, op.getOperation(), "/");
+}
+
+static LogicalResult printOperation(CppEmitter &emitter, arith::ExtFOp op) {
+  assert(false && "todo: implement op printer");
+}
+
+static LogicalResult printOperation(CppEmitter &emitter, arith::ExtSIOp op) {
+  assert(false && "todo: implement op printer");
+}
+
+static LogicalResult printOperation(CppEmitter &emitter, arith::ExtUIOp op) {
+  assert(false && "todo: implement op printer");
+}
+
+static LogicalResult printOperation(CppEmitter &emitter,
+                                    arith::FloorDivSIOp op) {
+  assert(false && "todo: implement op printer");
+}
+
+static LogicalResult printOperation(CppEmitter &emitter, arith::FPToSIOp op) {
+  assert(false && "todo: implement op printer");
+}
+
+static LogicalResult printOperation(CppEmitter &emitter, arith::FPToUIOp op) {
+  assert(false && "todo: implement op printer");
+}
+
+static LogicalResult printOperation(CppEmitter &emitter,
+                                    arith::IndexCastOp op) {
+  assert(false && "todo: implement op printer");
+}
+
+static LogicalResult printOperation(CppEmitter &emitter,
+                                    arith::IndexCastUIOp op) {
+  assert(false && "todo: implement op printer");
+}
+
+static LogicalResult printOperation(CppEmitter &emitter, arith::MaximumFOp op) {
+  assert(false && "todo: implement op printer");
+}
+
+static LogicalResult printOperation(CppEmitter &emitter, arith::MaxNumFOp op) {
+  assert(false && "todo: implement op printer");
+}
+
+static LogicalResult printOperation(CppEmitter &emitter, arith::MaxSIOp op) {
+  assert(false && "todo: implement op printer");
+}
+
+static LogicalResult printOperation(CppEmitter &emitter, arith::MaxUIOp op) {
+  assert(false && "todo: implement op printer");
+}
+
+static LogicalResult printOperation(CppEmitter &emitter, arith::MinimumFOp op) {
+  assert(false && "todo: implement op printer");
+}
+
+static LogicalResult printOperation(CppEmitter &emitter, arith::MinNumFOp op) {
+  assert(false && "todo: implement op printer");
+}
+
+static LogicalResult printOperation(CppEmitter &emitter, arith::MinSIOp op) {
+  assert(false && "todo: implement op printer");
+}
+
+static LogicalResult printOperation(CppEmitter &emitter, arith::MinUIOp op) {
+  assert(false && "todo: implement op printer");
+}
+
+static LogicalResult printOperation(CppEmitter &emitter, arith::MulFOp op) {
+  return printBinaryOperation(emitter, op.getOperation(), "*");
+}
+
+static LogicalResult printOperation(CppEmitter &emitter, arith::MulIOp op) {
+  return printBinaryOperation(emitter, op.getOperation(), "*");
+}
+
+static LogicalResult printOperation(CppEmitter &emitter,
+                                    arith::MulSIExtendedOp op) {
+  assert(false && "todo: implement op printer");
+}
+
+static LogicalResult printOperation(CppEmitter &emitter,
+                                    arith::MulUIExtendedOp op) {
+  assert(false && "todo: implement op printer");
+}
+
+static LogicalResult printOperation(CppEmitter &emitter, arith::NegFOp op) {
+  assert(false && "todo: implement op printer");
+}
+
+static LogicalResult printOperation(CppEmitter &emitter, arith::OrIOp op) {
+  return printBinaryOperation(emitter, op.getOperation(), "|");
+}
+
+static LogicalResult printOperation(CppEmitter &emitter, arith::RemFOp op) {
+  assert(false && "todo: implement op printer");
+}
+
+static LogicalResult printOperation(CppEmitter &emitter, arith::RemSIOp op) {
+  return printBinaryOperation(emitter, op.getOperation(), "%");
+}
+
+static LogicalResult printOperation(CppEmitter &emitter, arith::RemUIOp op) {
+  return printBinaryOperation(emitter, op.getOperation(), "%");
+}
+
+static LogicalResult printOperation(CppEmitter &emitter, arith::SelectOp op) {
+  assert(false && "todo: implement op printer");
+}
+
+static LogicalResult printOperation(CppEmitter &emitter, arith::ShLIOp op) {
+  return printBinaryOperation(emitter, op.getOperation(), "<<");
+}
+
+static LogicalResult printOperation(CppEmitter &emitter, arith::ShRSIOp op) {
+  return printBinaryOperation(emitter, op.getOperation(), ">>");
+}
+
+static LogicalResult printOperation(CppEmitter &emitter, arith::ShRUIOp op) {
+  return printBinaryOperation(emitter, op.getOperation(), ">>");
+}
+
+static LogicalResult printOperation(CppEmitter &emitter, arith::SIToFPOp op) {
+  assert(false && "todo: implement op printer");
+}
+
+static LogicalResult printOperation(CppEmitter &emitter, arith::SubFOp op) {
+  return printBinaryOperation(emitter, op.getOperation(), "-");
+}
+
+static LogicalResult printOperation(CppEmitter &emitter, arith::SubIOp op) {
+  return printBinaryOperation(emitter, op.getOperation(), "-");
+}
+
+static LogicalResult printOperation(CppEmitter &emitter, arith::TruncFOp op) {
+  assert(false && "todo: implement op printer");
+}
+
+static LogicalResult printOperation(CppEmitter &emitter, arith::TruncIOp op) {
+  assert(false && "todo: implement op printer");
+}
+
+static LogicalResult printOperation(CppEmitter &emitter, arith::UIToFPOp op) {
+  assert(false && "todo: implement op printer");
+}
+
+static LogicalResult printOperation(CppEmitter &emitter, arith::XOrIOp op) {
+  return printBinaryOperation(emitter, op.getOperation(), "^");
+}
+
+static LogicalResult printOperation(CppEmitter &emitter, LLVM::ExpOp op) {
+  if (emitter.emitAssignPrefix(*op.getOperation()).failed()) {
+    return failure();
+  }
+
+  emitter.ostream() << "expf(" << emitter.getOrCreateName(op.getOperand())
+                    << ")";
+
+  return success();
 }
 
 static LogicalResult printOperation(CppEmitter &emitter,
@@ -474,15 +775,21 @@ static LogicalResult printOperation(CppEmitter &emitter, scf::ForOp forOp) {
   os << " ";
   os << emitter.getOrCreateName(forOp.getInductionVar());
   os << " = ";
-  os << emitter.getOrCreateName(forOp.getLowerBound());
+  if (printValueOrConstant(emitter, forOp.getLowerBound()).failed()) {
+    return failure();
+  }
   os << "; ";
   os << emitter.getOrCreateName(forOp.getInductionVar());
   os << " < ";
-  os << emitter.getOrCreateName(forOp.getUpperBound());
+  if (printValueOrConstant(emitter, forOp.getUpperBound()).failed()) {
+    return failure();
+  }
   os << "; ";
   os << emitter.getOrCreateName(forOp.getInductionVar());
   os << " += ";
-  os << emitter.getOrCreateName(forOp.getStep());
+  if (printValueOrConstant(emitter, forOp.getStep()).failed()) {
+    return failure();
+  }
   os << ") {\n";
   os.indent();
 
@@ -622,11 +929,6 @@ static LogicalResult printOperation(CppEmitter &emitter, ModuleOp moduleOp) {
   return success();
 }
 
-static LogicalResult printFwdDeclaration(CppEmitter &emitter,
-                                         upmem::UPMEMFuncOp functionOp) {
-  emitter.ostream() << "void " << functionOp.getSymName() << "();\n";
-  return success();
-}
 static LogicalResult printOperation(CppEmitter &emitter,
                                     upmem::UPMEMFuncOp functionOp) {
   // We need to declare variables at top if the function has multiple blocks.
@@ -718,6 +1020,7 @@ static LogicalResult printOperation(CppEmitter &emitter,
 
 static LogicalResult printOperation(CppEmitter &emitter,
                                     upmem::ReturnOp returnOp) {
+  emitter.ostream() << "return";
   return success();
 }
 
@@ -750,15 +1053,32 @@ static LogicalResult printOperation(CppEmitter &emitter,
   }
 
   os << "\n\n";
-  os << "#include \"dpu_lib.h\"\n\n";
+
+  os << "#include <alloc.h>\n"
+        "#include <barrier.h>\n"
+        "#include <defs.h>\n"
+        "#include <mram.h>\n"
+        "#include <perfcounter.h>\n\n"
+        "#include <stdint.h>\n"
+        "#include <stdio.h>\n"
+        "#include <stdlib.h>\n\n"
+        "#include \"expf.c\"\n"
+        "\n";
 
   for (auto kernel : kernels) {
-    printFwdDeclaration(emitter, kernel);
+    os << "#ifdef ";
+    printCompilationVar(kernel, os);
+    os << "\n";
+    if (failed(printOperation(emitter, kernel)))
+      return failure();
+    os << "#endif\n\n";
   }
-  os << "\n";
+
+  os << "BARRIER_INIT(my_barrier, NR_TASKLETS);\n\n";
 
   os << "int main(void) {\n";
-  os << "  init_tasklet();\n";
+  os << "  barrier_wait(&my_barrier);\n";
+  os << "  mem_reset();\n";
   for (auto kernel : kernels) {
     os << "#ifdef ";
     printCompilationVar(kernel, os);
@@ -766,13 +1086,9 @@ static LogicalResult printOperation(CppEmitter &emitter,
     os << "  " << kernel.getName() << "();\n";
     os << "#endif\n";
   }
+  os << "  mem_reset();\n";
   os << "  return 0;\n";
-  os << "}\n\n";
-
-  for (const auto kernel : kernels) {
-    if (failed(printOperation(emitter, kernel)))
-      return failure();
-  }
+  os << "}";
 
   return success();
 }
@@ -1017,6 +1333,10 @@ LogicalResult CppEmitter::emitLabel(Block &block) {
 }
 
 LogicalResult CppEmitter::emitOperation(Operation &op, bool trailingSemicolon) {
+  if (dyn_cast<arith::ConstantOp>(op)) {
+    return success();
+  }
+
   LogicalResult status =
       llvm::TypeSwitch<Operation *, LogicalResult>(&op)
           // Builtin ops.
@@ -1037,8 +1357,105 @@ LogicalResult CppEmitter::emitOperation(Operation &op, bool trailingSemicolon) {
           .Case<scf::ForOp, scf::IfOp, scf::YieldOp>(
               [&](auto op) { return printOperation(*this, op); })
           // Arithmetic ops.
+          .Case<arith::AddFOp>(
+              [&](auto op) { return printOperation(*this, op); })
+          .Case<arith::AddIOp>(
+              [&](auto op) { return printOperation(*this, op); })
+          .Case<arith::AddUIExtendedOp>(
+              [&](auto op) { return printOperation(*this, op); })
+          .Case<arith::AndIOp>(
+              [&](auto op) { return printOperation(*this, op); })
+          .Case<arith::BitcastOp>(
+              [&](auto op) { return printOperation(*this, op); })
+          .Case<arith::CeilDivSIOp>(
+              [&](auto op) { return printOperation(*this, op); })
+          .Case<arith::CeilDivUIOp>(
+              [&](auto op) { return printOperation(*this, op); })
+          .Case<arith::CmpFOp>(
+              [&](auto op) { return printOperation(*this, op); })
+          .Case<arith::CmpIOp>(
+              [&](auto op) { return printOperation(*this, op); })
           .Case<arith::ConstantOp>(
               [&](auto op) { return printOperation(*this, op); })
+          .Case<arith::DivFOp>(
+              [&](auto op) { return printOperation(*this, op); })
+          .Case<arith::DivSIOp>(
+              [&](auto op) { return printOperation(*this, op); })
+          .Case<arith::DivUIOp>(
+              [&](auto op) { return printOperation(*this, op); })
+          .Case<arith::ExtFOp>(
+              [&](auto op) { return printOperation(*this, op); })
+          .Case<arith::ExtSIOp>(
+              [&](auto op) { return printOperation(*this, op); })
+          .Case<arith::ExtUIOp>(
+              [&](auto op) { return printOperation(*this, op); })
+          .Case<arith::FloorDivSIOp>(
+              [&](auto op) { return printOperation(*this, op); })
+          .Case<arith::FPToSIOp>(
+              [&](auto op) { return printOperation(*this, op); })
+          .Case<arith::FPToUIOp>(
+              [&](auto op) { return printOperation(*this, op); })
+          .Case<arith::IndexCastOp>(
+              [&](auto op) { return printOperation(*this, op); })
+          .Case<arith::IndexCastUIOp>(
+              [&](auto op) { return printOperation(*this, op); })
+          .Case<arith::MaximumFOp>(
+              [&](auto op) { return printOperation(*this, op); })
+          .Case<arith::MaxNumFOp>(
+              [&](auto op) { return printOperation(*this, op); })
+          .Case<arith::MaxSIOp>(
+              [&](auto op) { return printOperation(*this, op); })
+          .Case<arith::MaxUIOp>(
+              [&](auto op) { return printOperation(*this, op); })
+          .Case<arith::MinimumFOp>(
+              [&](auto op) { return printOperation(*this, op); })
+          .Case<arith::MinNumFOp>(
+              [&](auto op) { return printOperation(*this, op); })
+          .Case<arith::MinSIOp>(
+              [&](auto op) { return printOperation(*this, op); })
+          .Case<arith::MinUIOp>(
+              [&](auto op) { return printOperation(*this, op); })
+          .Case<arith::MulFOp>(
+              [&](auto op) { return printOperation(*this, op); })
+          .Case<arith::MulIOp>(
+              [&](auto op) { return printOperation(*this, op); })
+          .Case<arith::MulSIExtendedOp>(
+              [&](auto op) { return printOperation(*this, op); })
+          .Case<arith::MulUIExtendedOp>(
+              [&](auto op) { return printOperation(*this, op); })
+          .Case<arith::NegFOp>(
+              [&](auto op) { return printOperation(*this, op); })
+          .Case<arith::OrIOp>(
+              [&](auto op) { return printOperation(*this, op); })
+          .Case<arith::RemFOp>(
+              [&](auto op) { return printOperation(*this, op); })
+          .Case<arith::RemSIOp>(
+              [&](auto op) { return printOperation(*this, op); })
+          .Case<arith::RemUIOp>(
+              [&](auto op) { return printOperation(*this, op); })
+          .Case<arith::SelectOp>(
+              [&](auto op) { return printOperation(*this, op); })
+          .Case<arith::ShLIOp>(
+              [&](auto op) { return printOperation(*this, op); })
+          .Case<arith::ShRSIOp>(
+              [&](auto op) { return printOperation(*this, op); })
+          .Case<arith::ShRUIOp>(
+              [&](auto op) { return printOperation(*this, op); })
+          .Case<arith::SIToFPOp>(
+              [&](auto op) { return printOperation(*this, op); })
+          .Case<arith::SubFOp>(
+              [&](auto op) { return printOperation(*this, op); })
+          .Case<arith::SubIOp>(
+              [&](auto op) { return printOperation(*this, op); })
+          .Case<arith::TruncFOp>(
+              [&](auto op) { return printOperation(*this, op); })
+          .Case<arith::TruncIOp>(
+              [&](auto op) { return printOperation(*this, op); })
+          .Case<arith::UIToFPOp>(
+              [&](auto op) { return printOperation(*this, op); })
+          .Case<arith::XOrIOp>(
+              [&](auto op) { return printOperation(*this, op); })
+          .Case<LLVM::ExpOp>([&](auto op) { return printOperation(*this, op); })
           .Case<upmem::TaskletIDOp>(
               [&](auto op) { return printOperation(*this, op); })
           .Case<upmem::BaseMRAMAddrOp>(
