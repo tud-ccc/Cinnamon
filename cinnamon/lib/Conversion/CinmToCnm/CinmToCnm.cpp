@@ -567,6 +567,43 @@ struct ConvertElementWiseToCnm : public OpConversionPattern<CinmOp> {
   }
 };
 
+struct ConvertElementWiseUnaryToCnm : OpConversionPattern<cinm::Elementwise_Unary_Op> {
+  explicit ConvertElementWiseUnaryToCnm(MLIRContext *ctx) : OpConversionPattern(ctx) {
+    this->setHasBoundedRewriteRecursion();
+  }
+
+  LogicalResult matchAndRewrite(cinm::Elementwise_Unary_Op op, OpAdaptor adaptor,
+                                ConversionPatternRewriter &rewriter) const override {
+
+    ImplicitLocOpBuilder builder(op->getLoc(), rewriter);
+    cinm::ComputeOp computeBlock = getEnclosingComputeBlock(op);
+    auto workgroup = builder.create<cnm::WorkgroupOp>(computeBlock.getCnmWorkgroupType());
+
+    // Initialize output for linalg.generic
+    auto outputInit = builder.create<tensor::EmptyOp>(op.getResult().getType(), ValueRange{});
+
+    SmallVector<Value, 1> newResults;
+    const auto conversionResult = convertCinmToCnm(
+        builder, op, workgroup.getResult(), computeBlock, {},
+        adaptor.getOperands(), ValueRange{outputInit}, op->getResults(),
+        newResults,
+        [&](ImplicitLocOpBuilder &builder, ValueRange inputs, ValueRange outputs) {
+
+          builder.create<linalg::ElemwiseUnaryOp>(TypeRange{}, ValueRange(inputs), ValueRange(outputs),
+            linalg::UnaryFnAttr::get(builder.getContext(), op.getMethod()),
+            linalg::TypeFnAttr::get(builder.getContext(), linalg::TypeFn::cast_signed));
+        });
+
+    if (conversionResult.failed()) {
+      return failure();
+    }
+
+    rewriter.replaceOp(op, newResults);
+
+    return success();
+  }
+};
+
 LogicalResult computeScatterMapForGemm(cnm::BufferType bufferTyAB,
                                        int64_t rowsA, int64_t colsB,
                                        AffineMap &scatterA, AffineMap &scatterB,
@@ -696,17 +733,18 @@ struct ConvertCinmGemmToCnm : public OpConversionPattern<cinm::GemmOp> {
     builder.create<cnm::ScatterOp>(outputInit, bufferC, workgroup,
                                    scatterGatherC);
 
+    SmallVector<AffineMap, 2> indexingMaps{
+        AffineMap::getMultiDimIdentityMap(1, getContext()),
+        AffineMap::getMultiDimIdentityMap(1, getContext()),
+        AffineMap::get(1, 0, getContext()),
+    };
+
     createLaunchOp(
         builder, workgroup, ValueRange{bufferA, bufferB}, ValueRange{bufferC},
-        [](ImplicitLocOpBuilder &builder, ValueRange ins, ValueRange outs) {
-          builder.create<linalg::ReduceOp>(
-              ins, outs, ArrayRef<int64_t>{0},
-              [](OpBuilder &builder, Location loc, ValueRange elts) {
-                Value mul =
-                    cinm::createArithMul(builder, loc, elts[0], elts[1]);
-                Value add = cinm::createArithAdd(builder, loc, mul, elts[2]);
-                builder.create<linalg::YieldOp>(loc, add);
-              });
+        [&](ImplicitLocOpBuilder &builder, ValueRange ins, ValueRange outs) {
+          builder.create<linalg::ContractOp>(
+              TypeRange{}, ins, outs,
+              builder.getAffineMapArrayAttr(indexingMaps));
         });
 
     Value outbuf;
@@ -889,6 +927,7 @@ void populateCinmRewritePatterns(RewritePatternSet &patterns,
                                           arith::DivFOp, false>>(ctx);
   patterns.insert<ConvertElementWiseToCnm<cinm::DivsOp, arith::DivSIOp,
                                           arith::DivFOp, true>>(ctx);
+  patterns.insert<ConvertElementWiseUnaryToCnm>(ctx);
   // matmul
   patterns.insert<ConvertCinmGemmToCnm>(ctx);
   patterns.insert<ConvertCinmGemvToCnm>(ctx);

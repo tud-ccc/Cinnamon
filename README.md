@@ -41,6 +41,10 @@ sudo update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-13 70 --slave /
 
 The repository contains a `justfile` that installs all needed dependencies and builds the sources.
 
+* Make sure you install build dependencies:
+```sh
+sudo apt-get install clang ninja-build mold libvulkan-dev ccache
+```
 * Clone the repo
   ```sh
   git clone https://github.com/tud-ccc/Cinnamon.git
@@ -52,7 +56,7 @@ The repository contains a `justfile` that installs all needed dependencies and b
   CMAKE_C_COMPILER=clang
   CMAKE_CXX_COMPILER=clang++
   CMAKE_LINKER_TYPE=MOLD
-  LLVM_CMAKE_OPTIONS='LLVM_CCACHE_BUILD=ON'
+  LLVM_CMAKE_OPTIONS='-DLLVM_CCACHE_BUILD=ON'
   TORCH_MLIR_CMAKE_OPTIONS='-DCMAKE_CXX_COMPILER=clang++ -DCMAKE_C_COMPILER=clang'                                                               CINNAMON_CMAKE_OPTIONS='-DCMAKE_CXX_COMPILER=clang++ -DCMAKE_C_COMPILER=clang -DLLVM_ENABLE_LIBCXX=ON'  
   # You could add your own LLVM dir; the build script won't try to clone and build LLVM
   LLVM_BUILD_DIR=/home/username/projects/Cinnamon/llvm/build/

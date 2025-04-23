@@ -6,6 +6,7 @@
 
 #include "cinm-mlir/Dialect/Cinm/IR/CinmBase.h"
 #include "mlir/IR/Attributes.h"
+#include <mlir/Dialect/Linalg/IR/Linalg.h>
 
 //===- Generated includes -------------------------------------------------===//
 

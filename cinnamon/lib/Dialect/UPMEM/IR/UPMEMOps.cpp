@@ -30,7 +30,11 @@
 
 #include "mlir/IR/IRMapping.h"
 #include "llvm/ADT/MapVector.h"
+#include <cstdint>
+#include <llvm/ADT/ArrayRef.h>
 #include <llvm/ADT/SmallVector.h>
+#include <llvm/ADT/StringRef.h>
+#include <mlir/IR/OperationSupport.h>
 #include <mlir/IR/Value.h>
 #include <mlir/Support/LogicalResult.h>
 
@@ -506,6 +510,23 @@ void UPMEMFuncOp::print(OpAsmPrinter &p) {
   p.printRegion(getBody(), /*printEntryBlockArgs=*/false);
 }
 
+void UPMEMFuncOp::build(OpBuilder &builder, OperationState &result,
+                        StringRef name, int64_t numTasklets,
+                        ArrayRef<NamedAttribute> attrs,
+                        ArrayRef<DictionaryAttr> argAttrs) {
+  result.addAttribute(getSymNameAttrName(result.name),
+                      builder.getStringAttr(name));
+
+  result.addAttribute(getNumTaskletsAttrName(result.name),
+                      builder.getI64IntegerAttr(numTasklets));
+  result.addAttribute(getResAttrsAttrName(result.name),
+                      builder.getDictionaryAttr(attrs));
+  result.addRegion();
+  // todo arg attrs
+  // result.addAttribute(getArgAttrsAttrName(result.name),
+  // builder.getArrayAttr())))
+}
+
 //===----------------------------------------------------------------------===//
 // LaunchFuncOp
 //===----------------------------------------------------------------------===//
@@ -613,14 +634,16 @@ static void printAsyncDependencies(OpAsmPrinter &printer, Operation *op,
 LogicalResult GatherOp::verify() {
   auto count = getDpuMemOffset();
   if ((count % 8) != 0)
-    return emitOpError("has unaligned DPU memory offset ") << count << ", needs to be 8-byte-aligned.";
+    return emitOpError("has unaligned DPU memory offset ")
+           << count << ", needs to be 8-byte-aligned.";
   return success();
 }
 
 LogicalResult ScatterOp::verify() {
   auto count = getDpuMemOffset();
   if ((count % 8) != 0)
-    return emitOpError("has unaligned DPU memory offset ") << count << ", needs to be 8-byte-aligned.";
+    return emitOpError("has unaligned DPU memory offset ")
+           << count << ", needs to be 8-byte-aligned.";
   return success();
 }
 

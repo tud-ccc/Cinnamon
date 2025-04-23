@@ -12,8 +12,6 @@ include "cinm-mlir/Dialect/Cinm/IR/CinmBase.td"
 include "mlir/IR/EnumAttr.td"
 include "mlir/IR/CommonAttrConstraints.td"
 
-
-
 def Cinm_ScanMethodAttr : I64EnumAttr<
     "ScanMethod", "",
     [
@@ -22,7 +20,6 @@ def Cinm_ScanMethodAttr : I64EnumAttr<
     ]> {
   let cppNamespace = "::mlir::cinm";
 }
-
 
 def Cinm_ReduceMethodAttr : I64EnumAttr<
     "ReduceMethod", "",
