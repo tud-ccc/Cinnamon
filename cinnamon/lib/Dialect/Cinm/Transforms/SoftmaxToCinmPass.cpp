@@ -44,14 +44,15 @@ struct SoftmaxToCinmPattern : OpConversionPattern<linalg::SoftmaxOp> {
     const Value t = rewriter.create<SubsOp>(loc, input, max);
     const Value init = rewriter.create<tensor::EmptyOp>(
         loc, inputType.getShape(), inputType.getElementType());
-    const auto types = TypeRange{RankedTensorType::get(inputType.getShape(),
-                                                  inputType.getElementType())};
+    const SmallVector<Type, 1> types{RankedTensorType::get(
+        inputType.getShape(), inputType.getElementType())};
+
     const Value e =
-        rewriter.create<linalg::ExpOp>(
-            loc, types, ValueRange{t}, ValueRange{init})
+        rewriter
+            .create<linalg::ExpOp>(loc, types, ValueRange{t}, ValueRange{init})
             .getResult(0);
-    const Value s = rewriter.create<ReduceOp>(
-        loc, inputType.getElementType(), ReduceMethod::ADD, e, /*dims=*/0);
+    const Value s = rewriter.create<ReduceOp>(loc, inputType.getElementType(),
+                                              ReduceMethod::ADD, e, /*dims=*/0);
     const Value result = rewriter.create<DivsOp>(loc, e, s);
     rewriter.create<YieldOp>(loc, ValueRange{result});
     return success();

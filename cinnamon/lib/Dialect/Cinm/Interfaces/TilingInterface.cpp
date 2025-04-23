@@ -156,7 +156,7 @@ Value reshapeStatic(OpBuilder &builder, Location loc, Value value,
 linalg::ReduceOp makeReduceOp(OpBuilder &builder, Location loc, Value input, Value init,
                               int64_t dim, ReduceAccumulatorCallback callback) {
     return builder.create<linalg::ReduceOp>(
-        loc, ValueRange{input}, ValueRange{init}, SmallVector{dim},
+        loc, ValueRange{input}, ValueRange{init}, SmallVector<int64_t>{dim},
         [&](OpBuilder &builder, Location loc, ValueRange args) {
           const Value result = callback(builder, loc, args[0], args[1]);
           builder.create<linalg::YieldOp>(loc, result);
@@ -184,16 +184,19 @@ Value createVectorReduce(OpBuilder &builder, Location loc, Value inputTensor,
     if (dims.size() != 1) {
       emitError(loc, "More than 1 reduction dimension is not (yet) supported");
     }
-    int64_t dim = dims[0];
-    if (dim < 0) {
-      if (dim < -vectorType.getRank()) {
-        emitError(loc, "Negative reduction dim (" + std::to_string(dim) + ") must be in [-input rank, 0)");
+    int64_t maybe_neg_dim = dims[0];
+    uint64_t dim;
+    if (maybe_neg_dim < 0) {
+      if (maybe_neg_dim < -vectorType.getRank()) {
+        emitError(loc, "Negative reduction dim (" + std::to_string(maybe_neg_dim) + ") must be in [-input rank, 0)");
         assert(false && "negative dim must be in [-input rank, 0)");
       }
       // Indexing from back, e.g. dim=-1 -> rank(2) + dim(-1) = new dim(1)
-      dim = vectorType.getRank() + dim;
+      dim = vectorType.getRank() + maybe_neg_dim;
+    } else {
+      dim = maybe_neg_dim;
     }
-    if (dim > vectorType.getRank()) {
+    if (dim > static_cast<uint64_t>(vectorType.getRank())) {
       emitError(loc, "Reduction dim (" + std::to_string(dim) + ") must be in [0, input rank)");
       assert(false && "dim must be in [0, input rank)");
     }
@@ -208,7 +211,7 @@ Value createVectorReduce(OpBuilder &builder, Location loc, Value inputTensor,
     }
 
     // Create the init tensor. Shape is all ones with 1 size smaller than input rank.
-    const SmallVector<int64_t> initSizes = SmallVector<int64_t>(vectorType.getRank() - 1, 1);
+    const SmallVector<int64_t> initSizes(vectorType.getRank() - 1, 1);
     const Value initTensor = builder.create<tensor::SplatOp>(
       loc, RankedTensorType::get(initSizes, elementType), ValueRange{init});
     const Value clusterSizeConst =
@@ -216,7 +219,7 @@ Value createVectorReduce(OpBuilder &builder, Location loc, Value inputTensor,
 
     if (clusterSize > 1) {
         const int64_t clusterCount = vectorSize / clusterSize;
-        auto tmp = SmallVector<int64_t>(vectorType.getShape());
+        SmallVector<int64_t> tmp(vectorType.getShape());
         tmp[dim] = clusterCount;
         RankedTensorType intermediateResultType = RankedTensorType::get(tmp, elementType);
 
@@ -226,10 +229,10 @@ Value createVectorReduce(OpBuilder &builder, Location loc, Value inputTensor,
         inputTensor = builder.create<tensor::GenerateOp>(
             loc, intermediateResultType, ValueRange{},
             [&](OpBuilder &builder, Location loc, const ValueRange indices) {
-              const SmallVector<int64_t> offsets = SmallVector(vectorType.getRank(), ShapedType::kDynamic);
-              SmallVector<int64_t> sizes = SmallVector<int64_t>(vectorType.getRank(), 1);
+              const SmallVector<int64_t> offsets(vectorType.getRank(), ShapedType::kDynamic);
+              SmallVector<int64_t> sizes(vectorType.getRank(), 1);
               sizes[dim] = clusterSize;
-              const SmallVector<int64_t> strides = SmallVector<int64_t>(vectorType.getRank(), 1);
+              const SmallVector<int64_t> strides(vectorType.getRank(), 1);
 
               // Offsets == indices except we need to multiply the reduction dim index with the size we're reducing
               const Value dynOffset = builder.create<arith::MulIOp>(loc, indices[dim], clusterSizeConst);
@@ -258,17 +261,16 @@ Value createVectorReduce(OpBuilder &builder, Location loc, Value inputTensor,
       // Reshape (collapse reduction dim) and return.
       // TODO: check simpler implementation that just drops shape[dim] since it's 1 anyway.
 
-      long outshape[vectorType.getShape().size() - 1];
+      SmallVector<long> outShape(vectorType.getShape().size() - 1, 0);
       for (size_t i = 0; i < vectorType.getShape().size(); i++) {
         if (i < dim) {
-          outshape[i] = vectorType.getShape()[i];
+          outShape[i] = vectorType.getShape()[i];
         } else if (i > dim) {
-          outshape[i - 1] = vectorType.getShape()[i];
+          outShape[i - 1] = vectorType.getShape()[i];
         }
       }
-      auto expectedOutputShape = ArrayRef(outshape, vectorType.getShape().size() - 1);
-      auto shape = createMLIRValueFromArrayRef(builder, loc, expectedOutputShape);
-      auto result = builder.create<tensor::ReshapeOp>(loc, RankedTensorType::get(expectedOutputShape, vectorType.getElementType()), inputTensor, shape);
+      auto shape = createMLIRValueFromArrayRef(builder, loc, outShape);
+      auto result = builder.create<tensor::ReshapeOp>(loc, RankedTensorType::get(outShape, vectorType.getElementType()), inputTensor, shape);
 
       if (cast<RankedTensorType>(result.getResult().getType()).getRank() == 0) {
         // Extract scalar result of reducing vector to scalar.
