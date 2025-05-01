@@ -1,6 +1,7 @@
 #!/bin/bash
 
-source "common.sh"
+script_dir="$( cd -- "$(dirname "$0")" >/dev/null 2>&1 ; pwd -P )"
+source "$script_dir/common.sh"
 
 if [[ $checkout_upmem -eq 1 ]]; then
   if [ ! -d "$upmem_path" ]; then

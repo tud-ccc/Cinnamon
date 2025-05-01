@@ -1,6 +1,7 @@
 #!/bin/bash
 
-source "common.sh"
+script_dir="$( cd -- "$(dirname "$0")" >/dev/null 2>&1 ; pwd -P )"
+source "$script_dir/common.sh"
 
 if [[ $setup_python_venv -eq 1 ]]; then
   # NOTE: This is a temporary workaround as some distros ship python3.13 which does not yet provide a torch package
