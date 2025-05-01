@@ -47,10 +47,10 @@ jobs:
           key: cinnamon-torch-mlir-${{ runner.os }}
       
       - name: Setup venv
-        run: .github/workflows/setup-venv.sh -reconfigure
+        run: .github/workflows/setup-venv.sh -reconfigure -verbose
 
       - name: Build LLVM
-        run: .github/workflows/build-llvm.sh -reconfigure
+        run: .github/workflows/build-llvm.sh -reconfigure -verbose
 
       - name: Save llvm cache
         uses: actions/cache/save@v3
@@ -60,7 +60,7 @@ jobs:
           key: ${{ steps.llvm-cache-restore.outputs.cache-primary-key }}
 
       - name: Build Torch-MLIR
-        run: .github/workflows/build-torch.sh -reconfigure
+        run: .github/workflows/build-torch.sh -reconfigure -verbose
 
       - name: Save torch-mlir cache
         uses: actions/cache/save@v3
@@ -70,10 +70,10 @@ jobs:
           key: ${{ steps.torch-mlir-cache-restore.outputs.cache-primary-key }}
 
       - name: Checkout upmem
-        run: .github/workflows/build-upmem.sh -reconfigure
+        run: .github/workflows/build-upmem.sh -reconfigure -verbose
 
       - name: Build CINM
-        run: .github/workflows/build-cinnamon.sh -reconfigure
+        run: .github/workflows/build-cinnamon.sh -reconfigure -verbose
 
       - name: Test CINM
         working-directory: build
