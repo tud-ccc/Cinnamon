@@ -124,6 +124,41 @@ def UPMEM_PrivateWRAMAllocOp : UPMEM_Op<"pwram_alloc", [
 }
 
 
+def UPMEM_SharedWRAMAllocOp : UPMEM_Op<"wram_alloc", [
+  ]> {
+
+  let summary = "UPMEM WRAM static memory allocation operation.";
+  let description = [{
+    The `upmem.wram_alloc` operation allocates a wram buffer that is accessible to all
+    tasklets. The size of the buffer must be statically known.
+
+    Example:
+
+    ```mlir
+    %memref = upmem.wram_alloc : memref<64xi32>
+    ```
+    Will be translated to a global variable:
+    ```c
+    _dma_aligned int32_t buffer[64];
+
+    int main(void) {
+      ...
+    }
+    ```
+  }];
+
+  let results = (outs Res<AnyMemRef, "", [MemAlloc]>:$memref);
+
+  let extraClassDeclaration = [{
+    MemRefType getBufferType() { return ::llvm::cast<MemRefType>(getMemref().getType()); }
+  }];
+
+  let assemblyFormat = [{
+     attr-dict `:` type($memref)
+  }];
+}
+
+
 
 def UPMEM_LaunchOp : UPMEM_Op<"launch", [
       AutomaticAllocationScope, AttrSizedOperandSegments, UPMEM_AsyncOpInterface,
