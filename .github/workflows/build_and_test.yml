@@ -29,27 +29,53 @@ jobs:
         with:
           path: |
             .venv
-            upmem
+            third-party/upmem
           key: cinnamon-runtimes-${{ runner.os }}
 
       - name: Restore llvm cache
         id: llvm-cache-restore
         uses: actions/cache/restore@v3
         with:
-          path: llvm
+          path: third-party/llvm
           key: cinnamon-llvm-${{ runner.os }}
 
       - name: Restore torch-mlir cache
         id: torch-mlir-cache-restore
         uses: actions/cache/restore@v3
         with:
-          path: torch-mlir
+          path: third-party/torch-mlir
           key: cinnamon-torch-mlir-${{ runner.os }}
       
-      - name: Build 
-        run: .github/workflows/build-ci.sh -reconfigure
+      - name: Setup venv
+        run: .github/workflows/setup-venv.sh -reconfigure
 
-      - name: Test
+      - name: Build LLVM
+        run: .github/workflows/build-llvm.sh -reconfigure
+
+      - name: Save llvm cache
+        uses: actions/cache/save@v3
+        if: always()
+        with:
+          path: third-party/llvm
+          key: ${{ steps.llvm-cache-restore.outputs.cache-primary-key }}
+
+      - name: Build Torch-MLIR
+        run: .github/workflows/build-torch.sh -reconfigure
+
+      - name: Save torch-mlir cache
+        uses: actions/cache/save@v3
+        if: always()
+        with:
+          path: third-party/torch-mlir
+          key: ${{ steps.torch-mlir-cache-restore.outputs.cache-primary-key }}
+
+      - name: Checkout upmem
+        run: .github/workflows/build-upmem.sh -reconfigure
+
+      - name: Build CINM
+        run: .github/workflows/build-cinnamon.sh -reconfigure
+
+      - name: Test CINM
         working-directory: build
         run: |
           source ../../.venv/bin/activate
@@ -61,19 +87,5 @@ jobs:
         with:
           path: |
             .venv
-            upmem
+            third-party/upmem
           key: ${{ steps.runtimes-cache-restore.outputs.cache-primary-key }}
-
-      - name: Save llvm cache
-        uses: actions/cache/save@v3
-        if: always()
-        with:
-          path: llvm
-          key: ${{ steps.llvm-cache-restore.outputs.cache-primary-key }}
-
-      - name: Save torch-mlir cache
-        uses: actions/cache/save@v3
-        if: always()
-        with:
-          path: torch-mlir
-          key: ${{ steps.torch-mlir-cache-restore.outputs.cache-primary-key }}
