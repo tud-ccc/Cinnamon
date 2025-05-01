@@ -8,7 +8,7 @@ if [[ $checkout_and_build_llvm -eq 1 ]]; then
   reconfigure_llvm=0
   if [ ! -d "$llvm_path" ]; then
     status "Checking out LLVM"
-    git_clone_revision  https://github.com/llvm/llvm-project 8885b5c0626065274cb8f8a634d45779a0f6ff2b "$llvm_path"
+    git clone  https://github.com/oowekyala/llvm-project --depth 1 --branch tilefirst-llvm "$llvm_path"
 
     reconfigure_llvm=1
   fi
