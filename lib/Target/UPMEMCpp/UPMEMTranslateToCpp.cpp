@@ -29,12 +29,15 @@
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/FormatVariadic.h"
 #include <llvm/ADT/SmallVector.h>
+#include <llvm/ADT/StringRef.h>
 #include <llvm/IR/Constant.h>
 #include <llvm/IR/Constants.h>
 #include <llvm/IR/Intrinsics.h>
 #include <llvm/Support/Casting.h>
+#include <llvm/Support/LogicalResult.h>
 #include <llvm/Support/raw_ostream.h>
 #include <mlir/IR/BuiltinAttributes.h>
+#include <mlir/IR/Location.h>
 #include <mlir/IR/SymbolTable.h>
 #include <mlir/IR/Visitors.h>
 #include <mlir/Support/LLVM.h>
@@ -929,6 +932,34 @@ static LogicalResult printOperation(CppEmitter &emitter, ModuleOp moduleOp) {
   return success();
 }
 
+static LogicalResult printStaticBufferDecl(CppEmitter &emitter, Location loc,
+                                           MemRefType bufferType,
+                                           Value bufferValue,
+                                           StringRef qualifier) {
+  if (failed(emitter.emitType(loc, bufferType.getElementType())))
+    return failure();
+
+  auto &out = emitter.ostream();
+  out << " " << qualifier << " ";
+  emitter.getOrCreateName(bufferValue);
+  for (auto dim : bufferType.getShape()) {
+    out << '[' << dim << ']';
+  }
+  out << ";\n";
+  return success();
+}
+static LogicalResult printBufferDecl(CppEmitter &emitter,
+                                     upmem::SharedMRAMAllocOp op) {
+  StringRef qualifier = op.getNoInit() ? "__mram_noinit" : "__mram";
+  return printStaticBufferDecl(emitter, op->getLoc(), op.getBufferType(),
+                               op.getMemref(), qualifier);
+}
+
+static LogicalResult printBufferDecl(CppEmitter &emitter,
+                                     upmem::SharedWRAMAllocOp op) {
+  return printStaticBufferDecl(emitter, op->getLoc(), op.getBufferType(),
+                               op.getMemref(), "__dma_aligned");
+}
 static LogicalResult printOperation(CppEmitter &emitter,
                                     upmem::UPMEMFuncOp functionOp) {
   // We need to declare variables at top if the function has multiple blocks.
@@ -937,6 +968,23 @@ static LogicalResult printOperation(CppEmitter &emitter,
     return functionOp.emitOpError(
         "with multiple blocks needs variables declared at top");
   }
+
+  // walk and declare all static buffers
+  WalkResult result =
+      functionOp.walk<WalkOrder::PreOrder>([&](Operation *op) -> WalkResult {
+        LogicalResult result = LogicalResult::success();
+        if (auto wram = llvm::dyn_cast_or_null<upmem::SharedWRAMAllocOp>(op)) {
+          result = printBufferDecl(emitter, wram);
+        } else if (auto mram =
+                       llvm::dyn_cast_or_null<upmem::SharedMRAMAllocOp>(op)) {
+          result = printBufferDecl(emitter, mram);
+        }
+        if (failed(result))
+          return WalkResult::interrupt();
+        return WalkResult::advance();
+      });
+  if (result.wasInterrupted())
+    return failure();
 
   CppEmitter::Scope scope(emitter);
   raw_indented_ostream &os = emitter.ostream();
@@ -1333,7 +1381,8 @@ LogicalResult CppEmitter::emitLabel(Block &block) {
 }
 
 LogicalResult CppEmitter::emitOperation(Operation &op, bool trailingSemicolon) {
-  if (dyn_cast<arith::ConstantOp>(op)) {
+  if (isa<arith::ConstantOp>(op) || isa<upmem::SharedWRAMAllocOp>(op) ||
+      isa<upmem::SharedMRAMAllocOp>(op)) {
     return success();
   }
 
