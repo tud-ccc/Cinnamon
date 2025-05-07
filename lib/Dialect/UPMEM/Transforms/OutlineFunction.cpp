@@ -77,10 +77,12 @@ void UPMEMOutlineKernelPass::runOnOperation() {
   auto *context = getOperation().getContext();
   OpBuilder builder(context);
   builder.setInsertionPointToEnd(&module.getBodyRegion().front());
+
   auto kernelModule = builder.create<ModuleOp>(module.getLoc(), "dpu_kernels");
-  kernelModule.getBodyRegion().emplaceBlock();
+  auto *newBlock = &kernelModule.getBodyRegion().front();
+
   SymbolTable kernelModuleSymTable(kernelModule);
-  builder.setInsertionPointToStart(&kernelModule.getBodyRegion().front());
+  builder.setInsertionPointToStart(newBlock);
 
   for (auto func : getOperation().getOps<func::FuncOp>()) {
     Block::iterator insertPt(func->getNextNode());

@@ -41,6 +41,19 @@ doNinja *ARGS:
     ninja -C{{build_dir}} {{ARGS}}
 
 
+@highlight:
+    pygmentize -l docs/MlirLexer.py:MlirLexer -x -O style=github-dark /dev/stdin
+
+# Run tilefirst-opt with the given arguments. You can use this if you haven't updated your PATH.
+[no-cd]
+cinm-opt *ARGS: (doNinja "cinm-opt")
+    #!/bin/sh
+    if [ -t 1 ] ; then
+     {{source_directory()}}/{{build_dir}}/bin/cinm-opt {{ARGS}} | just highlight
+    else
+     {{source_directory()}}/{{build_dir}}/bin/cinm-opt {{ARGS}}
+    fi
+
 # run build --first build needs cmake though
 build: doNinja
 
@@ -53,10 +66,6 @@ alias b := build
 
 # run tests
 test: (doNinja "check-cinm-mlir")
-
-[no-cd]
-cinm-opt *ARGS: (doNinja "cinm-opt")
-    {{source_directory()}}/{{build_dir}}/bin/cinm-opt {{ARGS}}
 
 [no-cd]
 cinm-translate *ARGS: (doNinja "cinm-opt")
@@ -206,6 +215,3 @@ llvmDialectIntoExecutable FILE:
     # creates {{FILE}}.s
     {{llvm_prefix}}/bin/llc -O0 ${FILEBASE}.ll
     clang-14 -fuse-ld=lld -L{{build_dir}}/lib -lSigiRuntime ${FILEBASE}.s -g -o ${FILEBASE}.exe -no-pie
-
-addNewDialect DIALECT_NAME DIALECT_NS:
-    just --justfile ./dialectTemplate/justfile applyTemplate {{DIALECT_NAME}} {{DIALECT_NS}} "cinm-mlir" {{justfile_directory()}}
