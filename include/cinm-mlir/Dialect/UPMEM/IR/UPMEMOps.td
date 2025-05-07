@@ -37,8 +37,6 @@ class IndexOp<string mnemonic, list<Trait> traits = []> :
 
 def RankDimOp : IndexOp<"rank_dim"> {
   let description = [{
-    NOTE: Not used at the moment.
-
     Returns the index of the running rank in the code.
 
     Example:
@@ -52,8 +50,6 @@ def RankDimOp : IndexOp<"rank_dim"> {
 
 def DPUDimOp : IndexOp<"dpu_dim"> {
   let description = [{
-    NOTE: Not used at the moment.
-
     Returns the index of the running dpu in the code.
 
     Example:
@@ -66,8 +62,6 @@ def DPUDimOp : IndexOp<"dpu_dim"> {
 
 def TaskletDimOp : IndexOp<"tasklet_dim", [DeclareOpInterfaceMethods<InferIntRangeInterface, ["inferResultRanges"]>]> {
   let description = [{
-    NOTE: Not used at the moment.
-
     Returns the index of the running task in the code.
     Example:
 
@@ -370,7 +364,7 @@ def AllocDPUsOp: Upmem_Op <"alloc_dpus",  [ DeclareOpInterfaceMethods<SymbolUser
   let builders = [
     OpBuilder<(ins "upmem::DpuSetOp":$dpuSet),
     [{
-      build($_builder, $_state, dpuSet.getDeviceHierarchy(), dpuSet.getDpuProgram());
+      build($_builder, $_state, dpuSet.getDeviceHierarchy(), dpuSet.getDpuProgramRef());
     }]>
   ];
 
@@ -396,9 +390,9 @@ def WaitForOp : Upmem_Op<"wait_for", [DeclareOpInterfaceMethods<SymbolUserOpInte
 
   }];
 
-  let arguments = (ins DeviceHierarchyType:$dpuSet, OptionalAttr<SymbolRefAttr>:$dpuProgram);
+  let arguments = (ins DeviceHierarchyType:$dpuSet, OptionalAttr<SymbolRefAttr>:$dpuProgramRef);
 
-  let assemblyFormat = "($dpuProgram^ `on`)? `wg` $dpuSet attr-dict `:` qualified(type($dpuSet))";
+  let assemblyFormat = "($dpuProgramRef^ `on`)? `wg` $dpuSet attr-dict `:` qualified(type($dpuSet))";
 
 }
 
@@ -408,10 +402,10 @@ def DpuSetOp : Upmem_Op<"dpu_set", [ Symbol, DeclareOpInterfaceMethods<SymbolUse
   let description = [{
   }];
 
-  let arguments = (ins SymbolNameAttr:$sym_name, I32Attr:$numRanks, I32Attr:$numDpus, SymbolRefAttr:$dpuProgram);
+  let arguments = (ins SymbolNameAttr:$sym_name, I32Attr:$numRanks, I32Attr:$numDpus, SymbolRefAttr:$dpuProgramRef);
 
 
-  let assemblyFormat = "$sym_name `(` $numRanks `x` $numDpus `)` `with` $dpuProgram attr-dict";
+  let assemblyFormat = "$sym_name `(` $numRanks `x` $numDpus `)` `with` $dpuProgramRef attr-dict";
   let extraClassDeclaration = [{
       upmem::DpuProgramOp resolveDpuProgram();
       upmem::DeviceHierarchyType getDeviceHierarchy() {

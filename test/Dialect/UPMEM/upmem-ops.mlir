@@ -11,9 +11,10 @@ module {
     %tasklet_count = arith.constant 16 : index
     %hierarchy = upmem.alloc_dpus : !upmem.hierarchy<2x32x16>
     %base_offset = upmem.base_dpu_mem_offset : index
-    %A_offset = upmem.scatter %A[64, #scatter_map] onto %hierarchy at %base_offset : memref<2x32x8192xi32> onto !upmem.hierarchy<2x32x16>
-    %B_offset = upmem.scatter %B[64, #scatter_map] onto %hierarchy at %A_offset : memref<2x32x8192xi32> onto !upmem.hierarchy<2x32x16>
-    upmem.launch %hierarchy ranks(%arg0 upto %rank_count) dpus(%arg1 upto %dpu_count) tasklets(%arg2 upto %tasklet_count) on !upmem.hierarchy<2x32x16>  {
+    upmem.scatter %A[64, 64, #scatter_map] onto %hierarchy : memref<2x32x8192xi32> onto !upmem.hierarchy<2x32x16>
+    upmem.scatter %B[64, 64, #scatter_map] onto %hierarchy : memref<2x32x8192xi32> onto !upmem.hierarchy<2x32x16>
+
+    upmem.inline_dpu_program for %hierarchy as !upmem.hierarchy<2x32x16> {
         %cst0 = arith.constant 0 : index
         %cst1 = arith.constant 1 : index
         %ITER_I = arith.constant 16: index // number of tasklets
@@ -24,7 +25,9 @@ module {
         %A_SIZE = arith.muli %total_chunk_per_tasklet, %ITER_I : index
         %B_ADDR = arith.addi %A_SIZE, %MRAM_ADDR : index
 
-        %tasklet_offset = arith.muli %total_chunk_per_tasklet, %arg2 : index
+        %tasklet_id = upmem.tasklet_dim
+
+        %tasklet_offset = arith.muli %total_chunk_per_tasklet, %tasklet_id : index
         %tasklet_A_MRAM_addr = arith.addi %tasklet_offset, %MRAM_ADDR : index
         %tasklet_B_MRAM_addr = arith.addi %tasklet_offset, %B_ADDR : index
 
@@ -45,9 +48,9 @@ module {
             %the_B_offset = arith.addi %b_temp_addr, %ITER_J : index 
             scf.yield %the_A_offset, %the_B_offset : index, index
         }
-        upmem.terminator
+        upmem.return
     }
-    %C_offset = upmem.gather %C[64, #scatter_map] from %hierarchy at %base_offset : memref<2x32x8192xi32> from !upmem.hierarchy<2x32x16>
+    upmem.gather %C[64, 64, #scatter_map] from %hierarchy : memref<2x32x8192xi32> from !upmem.hierarchy<2x32x16>
     return
   }
 }

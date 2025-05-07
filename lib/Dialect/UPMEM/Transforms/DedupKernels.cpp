@@ -138,7 +138,7 @@ struct UPMEMDedupKernelsPass
         return;
       auto ref = getSymbolPath(symtable, callee);
       if (llvm::succeeded(ref)) {
-        setOp.setDpuProgramAttr(*ref);
+        setOp.setDpuProgramRefAttr(*ref);
       }
     });
 
