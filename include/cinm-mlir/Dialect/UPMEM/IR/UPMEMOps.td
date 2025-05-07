@@ -399,6 +399,48 @@ copy_to_mram
 }
 
 
+
+def UPMEM_TransferOp : UPMEM_Op<"on_dpu_transfer", []> {
+
+  let summary = "UPMEM memcpy operation between mram and wram";
+
+  let description = [{
+    The `upmem.on_dpu_transfer` operation copies the content of one memref to another.
+    Note: 
+    - the memrefs may be views on another memref? ideally no - you need to know 
+    at this level that they're contiguous and aligned
+    - can this operator transfer more than 2048 bytes? Probably, 
+    we could abstract over transfer size.
+    - can this operator transfer multi-dimensional memrefs? Probably not
+
+    Translation strategy:
+    - tilefirst MRAM buffers are mapped to views on a linear i8 buffer (memref.view).
+    - transfers operate directly on the underlying buffer.
+
+    Example:
+
+    ```mlir
+    %token = upmem.memcpy mram_to_wram %dst, %src : memref<?xf32, 1>, memref<?xf32>
+    ```
+  }];
+
+  let arguments = (ins MemcpyDirAttr:$direction,
+                   Arg<AnyMemRef, "", [MemRead]>:$source,
+                   Arg<AnyMemRef, "", [MemWrite]>:$dest,
+                   Index:$sourceOffset,
+                   Index:$destOffset,
+                   Index:$count);
+
+  let assemblyFormat = [{
+    $direction $buffer `to` $buffer `:` type($buffer) attr-dict
+  }];
+
+  // let hasFolder = 1;
+  // let hasVerifier = 1;
+  // let hasCanonicalizer = 1;
+}
+
+
 def UPMEM_AllocDPUsOp: UPMEM_Op <"alloc_dpus", []> {
   let summary = "UPMEM alloc dpus";
   let description = [{
