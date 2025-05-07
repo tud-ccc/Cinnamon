@@ -398,7 +398,7 @@ static LogicalResult lowerScatterOrGather(Op op, typename Op::Adaptor adaptor,
     // need to do our own pointer arithmetic here
     bareHostBuf = rewriter0.create<LLVM::GEPOp>(
         loc, basePtr.getType(), op.getHostBuffer().getType().getElementType(),
-        basePtr, ValueRange{offset}, /*inbounds*/ true);
+        basePtr, ValueRange{offset});
   } else {
     return emitError(op->getLoc(), "Unhandled buffer type: ")
            << adaptor.getHostBuffer().getType();

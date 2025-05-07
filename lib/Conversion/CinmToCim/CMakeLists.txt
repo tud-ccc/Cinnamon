@@ -14,6 +14,7 @@ add_mlir_conversion_library(MLIRCinmToCim
     LINK_LIBS PUBLIC
     CimIR
     CinmUtils
+    CinmIR
     MLIRDialectUtils
     MLIRFuncDialect
     MLIRLinalgDialect

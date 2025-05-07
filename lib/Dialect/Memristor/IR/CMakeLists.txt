@@ -9,6 +9,7 @@ add_mlir_dialect_library(MemristorIR
 
     LINK_LIBS PUBLIC
         MLIRIR
+        MLIRTensorDialect
         MLIRParser
         MLIRSideEffectInterfaces
 )

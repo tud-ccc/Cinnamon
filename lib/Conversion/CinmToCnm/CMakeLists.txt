@@ -13,6 +13,7 @@ add_mlir_conversion_library(MLIRCinmToCnm
     LINK_LIBS PUBLIC
     CnmIR
     CinmUtils
+    CinmIR
     MLIRDialectUtils
     MLIRFuncDialect
     MLIRLinalgDialect

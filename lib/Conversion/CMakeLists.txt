@@ -6,6 +6,14 @@ add_mlir_library(CinmCommonPatterns
 
     LINK_LIBS PUBLIC
     MLIRDialectUtils
+    MLIRArithDialect
+    MLIRAffineDialect
+    MLIRBufferizationDialect
+    CnmIR
+    CinmIR
+    MLIRIR
+    MLIRTransformUtils
+
 )
 
 if (TORCH_MLIR_DIR)

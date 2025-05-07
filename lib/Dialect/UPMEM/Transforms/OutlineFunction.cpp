@@ -7,6 +7,7 @@
 // #include "mlir/Transforms/RegionUtils.h"
 #include "llvm/Support/Debug.h"
 #include <llvm/ADT/StringRef.h>
+#include <llvm/Support/LogicalResult.h>
 #include <llvm/Support/Regex.h>
 #include <mlir/Dialect/Func/IR/FuncOps.h>
 #include <mlir/IR/Attributes.h>
@@ -14,6 +15,7 @@
 #include <mlir/IR/BuiltinAttributes.h>
 #include <mlir/IR/BuiltinOps.h>
 #include <mlir/IR/ValueRange.h>
+#include <mlir/IR/Visitors.h>
 #include <mlir/Pass/Pass.h>
 
 namespace mlir {
@@ -27,33 +29,32 @@ namespace {
 /// Outline the `gpu.launch` operation body into a kernel function. Replace
 /// `gpu.terminator` operations by `gpu.return` in the generated function.
 /// Set block and grid size bounds if known.
-static void outlineKernelFuncImpl(func::FuncOp parent,
-                                  upmem::InlineDpuProgramOp launchOp,
-                                  SymbolTable &kernelContainer) {
+static LogicalResult outlineKernelFuncImpl(func::FuncOp parent,
+                                           upmem::InlineDpuProgramOp launchOp,
+                                           SymbolTable &kernelContainer) {
   OpBuilder builder(parent->getContext());
   Location loc = launchOp.getLoc();
-  auto hierarchy = launchOp.getWgShape();
+  auto hierarchy = launchOp.getWg().getType();
 
   auto outlinedFunc = builder.create<upmem::DpuProgramOp>(
       loc, parent.getName(), hierarchy.getNumTaskletsPerDpu());
   outlinedFunc.getBody().takeBody(launchOp.getBody());
-
   // this also does renaming if name is not unique
   kernelContainer.insert(outlinedFunc);
 
-  auto dpu_set_decl = builder.create<upmem::DpuSetOp>(
-      loc, parent.getName(), hierarchy.getNumRanks(), hierarchy.getNumDpusPerRank(),
-      outlinedFunc);
+  SymbolTable table(
+      SymbolTable::getNearestSymbolTable(launchOp->getParentOp()));
 
-  kernelContainer.insert(dpu_set_decl);
+  auto ref = upmem::getSymbolPath(table, outlinedFunc);
+  if (failed(ref))
+    return failure();
 
   builder.setInsertionPoint(launchOp);
-  auto alloc = builder.create<upmem::AllocDPUsOp>(loc, dpu_set_decl);
 
-  builder.create<upmem::WaitForOp>(loc, alloc.getResult());
-  builder.create<upmem::FreeDPUsOp>(loc, alloc.getResult());
+  builder.create<upmem::WaitForOp>(loc, launchOp.getWg(), *ref);
 
   launchOp->erase();
+  return success();
 }
 
 } // namespace
@@ -83,11 +84,16 @@ void UPMEMOutlineKernelPass::runOnOperation() {
 
   for (auto func : getOperation().getOps<func::FuncOp>()) {
     Block::iterator insertPt(func->getNextNode());
-    func.walk([&](upmem::InlineDpuProgramOp op) {
+    auto res = func.walk([&](upmem::InlineDpuProgramOp op) {
       OpBuilder::InsertionGuard guard(builder);
-      outlineKernelFuncImpl(func, op, kernelModuleSymTable);
+      if (outlineKernelFuncImpl(func, op, kernelModuleSymTable).failed())
+        return WalkResult::interrupt();
       return WalkResult::advance();
     });
+    if (res.wasInterrupted()) {
+      signalPassFailure();
+      return;
+    }
   }
 }
 } // namespace mlir

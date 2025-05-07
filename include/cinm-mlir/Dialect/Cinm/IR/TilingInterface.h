@@ -121,6 +121,6 @@ Value createVectorReduceMax(OpBuilder &builder, Location loc, Value vector,
 
 //===- Generated includes -------------------------------------------------===//
 
-#include "cinm-mlir/Dialect/Cinm/Interfaces/TilingInterface.h.inc"
+#include "cinm-mlir/Dialect/Cinm/IR/TilingInterface.h.inc"
 
 //===----------------------------------------------------------------------===//

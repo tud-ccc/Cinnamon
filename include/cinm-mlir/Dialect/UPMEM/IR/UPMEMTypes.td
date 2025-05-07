@@ -20,15 +20,14 @@ def DeviceHierarchyType : UPMEM_Type<"DeviceHierarchy"> {
   let parameters = (ins "int32_t":$numRanks, "int32_t":$numDpusPerRank, "int32_t":$numTaskletsPerDpu);
 
   let hasCustomAssemblyFormat = 1;
-  let genVerifyDecl = 1;
   let extraClassDeclaration = [{
-    int64_t getNumElements() {
+    int64_t getNumElements() const {
       return getNumRanks() * getNumDpusPerRank() * getNumTaskletsPerDpu();
     }
 
-    int64_t getNumDims() { return 3;}
+    int64_t getNumDims() const { return 3;}
 
-    SmallVector<int64_t, 3> getWgShape() {
+    SmallVector<int64_t, 3> getWgShape() const {
       return {getNumRanks(), getNumDpusPerRank(), getNumTaskletsPerDpu()};
     }
 

@@ -7,6 +7,7 @@ DEPENDS
 
 LINK_LIBS PUBLIC
     MLIRIR
+    MemristorIR
     MLIRMemRefDialect
     MLIRLLVMDialect
     MLIRAffineDialect

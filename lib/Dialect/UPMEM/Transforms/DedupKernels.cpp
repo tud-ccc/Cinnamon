@@ -6,8 +6,8 @@
 //
 //===----------------------------------------------------------------------===//
 
-#include "mlir/Dialect/Func/Transforms/Passes.h"
 #include <cinm-mlir/Dialect/UPMEM/IR/UPMEMOps.h>
+#include <cinm-mlir/Dialect/UPMEM/Transforms/Passes.h>
 #include <llvm/ADT/ArrayRef.h>
 #include <llvm/ADT/SmallVector.h>
 #include <llvm/ADT/StringRef.h>
@@ -83,7 +83,7 @@ struct DuplicateUPMEMFuncOpEquivalenceInfo
   }
 };
 
-static llvm::FailureOr<SymbolRefAttr> getSymbolPath(SymbolTable fromTable,
+llvm::FailureOr<SymbolRefAttr> upmem::getSymbolPath(SymbolTable fromTable,
                                                     SymbolOpInterface target) {
   if (!fromTable.getOp()->isAncestor(target))
     return failure();

@@ -5,7 +5,7 @@
 #pragma once
 
 #include "cinm-mlir/Dialect/Cinm/IR/CinmTypes.h"
-#include "cinm-mlir/Dialect/Cinm/Interfaces/TilingInterface.h"
+#include "cinm-mlir/Dialect/Cinm/IR/TilingInterface.h"
 #include "cinm-mlir/Dialect/Cnm/IR/CnmTypes.h"
 
 #include "mlir/Bytecode/BytecodeOpInterface.h"

@@ -5,7 +5,7 @@
 #include "cinm-mlir/Dialect/Cinm/IR/CinmOps.h"
 #include "cinm-mlir/Conversion/CommonPatterns.h"
 #include "cinm-mlir/Dialect/Cinm/IR/CinmAttributes.h"
-#include "cinm-mlir/Dialect/Cinm/Interfaces/TilingInterface.h"
+#include "cinm-mlir/Dialect/Cinm/IR/TilingInterface.h"
 
 #include <cstdint>
 #include <llvm/ADT/APFloat.h>

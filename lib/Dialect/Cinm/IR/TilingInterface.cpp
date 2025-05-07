@@ -1,4 +1,4 @@
-#include "cinm-mlir/Dialect/Cinm/Interfaces/TilingInterface.h"
+#include "cinm-mlir/Dialect/Cinm/IR/TilingInterface.h"
 #include "cinm-mlir/Dialect/Cinm/IR/CinmBase.h"
 #include "cinm-mlir/Dialect/Cinm/IR/CinmOps.h"
 
@@ -35,7 +35,7 @@ using namespace mlir::cinm;
 
 //===- Generated implementation -------------------------------------------===//
 
-#include "cinm-mlir/Dialect/Cinm/Interfaces/TilingInterface.cpp.inc"
+#include "cinm-mlir/Dialect/Cinm/IR/TilingInterface.cpp.inc"
 
 //===----------------------------------------------------------------------===//
 

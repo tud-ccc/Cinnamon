@@ -12,4 +12,6 @@ LINK_LIBS PUBLIC
     MLIRAffineDialect
     MLIRLinalgDialect
     MLIRTransformUtils
+    CinmIR
+    MLIRLLVMCommonConversion
 )

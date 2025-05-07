@@ -19,4 +19,9 @@ add_mlir_conversion_library(MLIRUPMEMToLLVM
     MLIRReconcileUnrealizedCasts
     MLIRLLVMDialect
     MLIRLLVMCommonConversion
+    MLIRAffineDialect
+    MLIRMemRefDialect
+    MLIRMemRefTransforms
+    MLIRMemRefToLLVM
+    MLIRAffineUtils
 )
