@@ -16,10 +16,6 @@ if [ ! -d "build" ] || [ $reconfigure -eq 1 ]; then
     dependency_paths="$dependency_paths -DMLIR_DIR=$llvm_path/build/lib/cmake/mlir"
   fi
 
-  if [[ $checkout_and_build_torch_mlir -eq 1 ]]; then
-    dependency_paths="$dependency_paths -DTORCH_MLIR_DIR=$torch_mlir_path/install"  
-  fi
-
   if [[ $checkout_upmem -eq 1 ]]; then
     dependency_paths="$dependency_paths -DUPMEM_DIR=$upmem_path"
   fi
