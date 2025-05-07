@@ -4,7 +4,6 @@
 
 #pragma once
 
-#include "cinm-mlir/Dialect/UPMEM/IR/AsyncOpInterface.h"  
 #include "cinm-mlir/Dialect/UPMEM/IR/UPMEMBase.h"
 #include "cinm-mlir/Dialect/UPMEM/IR/UPMEMTypes.h"
 
@@ -30,9 +29,6 @@ namespace upmem {
 struct KernelDim {
   Value x;
 };
-
-// Adds a `upmem.async.token` to the front of the argument list.
-void addAsyncDependency(Operation *op, Value token);
 
 } // namespace upmem
 } // namespace mlir

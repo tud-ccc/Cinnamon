@@ -13,12 +13,6 @@ include "mlir/IR/EnumAttr.td"
 include "mlir/IR/OpBase.td"
 include "UPMEMBase.td"
 
-
-def UPMEM_AsyncToken : UPMEM_Type<"AsyncToken"> {
-  let mnemonic = "async.token";
-  let summary = "";
-}
-
 def DeviceHierarchy : UPMEM_Type<"DeviceHierarchy"> {
   let mnemonic = "hierarchy";
   let summary = "";
