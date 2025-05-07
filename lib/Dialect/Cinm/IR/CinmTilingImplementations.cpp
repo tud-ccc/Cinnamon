@@ -1,7 +1,7 @@
-#include "cinm-mlir/Conversion/CommonPatterns.h"
 #include "cinm-mlir/Dialect/Cinm/IR/CinmAttributes.h"
 #include "cinm-mlir/Dialect/Cinm/IR/CinmOps.h"
-#include "cinm-mlir/Dialect/Cinm/Interfaces/TilingInterface.h"
+#include "cinm-mlir/Dialect/Cinm/IR/TilingInterface.h"
+#include "cinm-mlir/Dialect/Cinm/IR/CinmUtils.h"
 
 #include <array>
 #include <cstdint>
@@ -32,17 +32,21 @@ TilingResult2 ReduceOp::convertToTiledOps(OpBuilder &builder,
 
   auto method = getMethod();
   if (method == ReduceMethod::ADD) {
-    return TilingResult2({createVectorReduceAdd(builder, getLoc(), getOperand(),
-                                                getDimensionsAttr(), reduceClusterSize)});
+    return TilingResult2(
+        {createVectorReduceAdd(builder, getLoc(), getOperand(),
+                               getDimensionsAttr(), reduceClusterSize)});
   } else if (method == ReduceMethod::MUL) {
-    return TilingResult2({createVectorReduceMul(builder, getLoc(), getOperand(),
-                                                getDimensionsAttr(), reduceClusterSize)});
+    return TilingResult2(
+        {createVectorReduceMul(builder, getLoc(), getOperand(),
+                               getDimensionsAttr(), reduceClusterSize)});
   } else if (method == ReduceMethod::MAX) {
-    return TilingResult2({createVectorReduceMax(builder, getLoc(), getOperand(),
-                                                getDimensionsAttr(), reduceClusterSize)});
+    return TilingResult2(
+        {createVectorReduceMax(builder, getLoc(), getOperand(),
+                               getDimensionsAttr(), reduceClusterSize)});
   } else if (method == ReduceMethod::MIN) {
-    return TilingResult2({createVectorReduceMin(builder, getLoc(), getOperand(),
-                                                getDimensionsAttr(), reduceClusterSize)});
+    return TilingResult2(
+        {createVectorReduceMin(builder, getLoc(), getOperand(),
+                               getDimensionsAttr(), reduceClusterSize)});
   } else {
     abort();
   }
@@ -162,7 +166,8 @@ TilingResult2 GemvOp::convertToTiledOps(OpBuilder &builder, TilingParameters) {
   return FailureOr<SmallVector<Value>>({toVector});
 }
 
-TilingResult2 Elementwise_Unary_Op::convertToTiledOps(OpBuilder &builder0, TilingParameters params) {
+TilingResult2 Elementwise_Unary_Op::convertToTiledOps(OpBuilder &builder0,
+                                                      TilingParameters params) {
   ImplicitLocOpBuilder builder(getLoc(), builder0);
   Value input = getInput();
 
@@ -183,12 +188,15 @@ TilingResult2 Elementwise_Unary_Op::convertToTiledOps(OpBuilder &builder0, Tilin
   if (reduceClusterSize * wgSize >= numElements) {
     // we have too much compute
     const auto numLeavesNeeded = numElements / reduceClusterSize;
-    emitRemark("This computation could be done with a smaller working group, theoretically as few as " +
-        std::to_string(numLeavesNeeded) + " leaves (we have " + std::to_string(wgSize) + ").");
+    emitRemark("This computation could be done with a smaller working group, "
+               "theoretically as few as " +
+               std::to_string(numLeavesNeeded) + " leaves (we have " +
+               std::to_string(wgSize) + ").");
     reduceClusterSize = numElements / wgSize;
   }
   if (numElements % wgSize != 0) {
-    return emitWarning("Cannot tile, working group does not divide tensor size");
+    return emitWarning(
+        "Cannot tile, working group does not divide tensor size");
   }
 
   auto shape = tensorTy.getShape();
@@ -197,33 +205,39 @@ TilingResult2 Elementwise_Unary_Op::convertToTiledOps(OpBuilder &builder0, Tilin
   if (shape.size() > 1) {
     // then flatten the tensors first
     originalShapeValue = builder.create<arith::ConstantOp>(
-        RankedTensorType::get({static_cast<int64_t>(shape.size())}, builder.getI64Type()),
+        RankedTensorType::get({static_cast<int64_t>(shape.size())},
+                              builder.getI64Type()),
         builder.getI64TensorAttr(shape));
-    input = reshapeStatic(builder, builder.getLoc(), getInput(), {tensorTy.getNumElements()});
+    input = reshapeStatic(builder, builder.getLoc(), getInput(),
+                          {tensorTy.getNumElements()});
 
     tensorTy = cast<RankedTensorType>(input.getType());
     shape = tensorTy.getShape();
   }
 
-  const Value resultInit = builder.create<tensor::EmptyOp>(tensorTy, ValueRange{});
+  const Value resultInit =
+      builder.create<tensor::EmptyOp>(tensorTy, ValueRange{});
   const auto tileSize = reduceClusterSize * wgSize;
 
   SmallVector<Value> result = createNestedAffineForLoops(
       builder, getLoc(), {tensorTy.getNumElements()}, {tileSize},
       ValueRange{resultInit},
-      [&](OpBuilder &builder, Location loc, ValueRange indices, ValueRange iterArgs) -> SmallVector<Value> {
+      [&](OpBuilder &builder, Location loc, ValueRange indices,
+          ValueRange iterArgs) -> SmallVector<Value> {
         const SmallVector<int64_t, 2> offsets{ShapedType::kDynamic};
         const SmallVector<int64_t, 2> sizes{tileSize};
         const SmallVector<int64_t, 2> strides{1};
 
-        const auto sliceTy = RankedTensorType::get({tileSize}, tensorTy.getElementType());
+        const auto sliceTy =
+            RankedTensorType::get({tileSize}, tensorTy.getElementType());
 
         const Value inputSlice = builder.create<tensor::ExtractSliceOp>(
             loc, sliceTy, input, indices, ValueRange{}, ValueRange{}, offsets,
             sizes, strides);
 
         // here we recreate the same op with smaller dimensions
-        auto smaller = builder.create<Elementwise_Unary_Op>(loc, getMethod(), inputSlice);
+        auto smaller =
+            builder.create<Elementwise_Unary_Op>(loc, getMethod(), inputSlice);
         markOpAsNoTile(smaller);
 
         const Value subResult = builder.create<tensor::InsertSliceOp>(

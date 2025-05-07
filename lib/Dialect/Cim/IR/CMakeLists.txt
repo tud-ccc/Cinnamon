@@ -11,5 +11,6 @@ add_mlir_dialect_library(CimIR
         MLIRIR
         MLIRParser
         MLIRSideEffectInterfaces
+        MLIRInferTypeOpInterface
         CinmUtils
 )

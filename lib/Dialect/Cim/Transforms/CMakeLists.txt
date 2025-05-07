@@ -13,4 +13,5 @@ LINK_LIBS PUBLIC
     MLIRLinalgDialect
     MLIRSPIRVTarget
     MLIRTransformUtils
+    CimIR
 )

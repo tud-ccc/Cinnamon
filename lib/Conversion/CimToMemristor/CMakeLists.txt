@@ -13,6 +13,7 @@ add_mlir_conversion_library(MLIRCimToMemristor
 
     LINK_LIBS PUBLIC
     CimIR
+    MemristorIR
     MLIRDialectUtils
     MLIRBufferizationDialect
     MLIRMemRefDialect
