@@ -183,112 +183,6 @@ def LocalTransferOp : Upmem_Op<"local_transfer"> {
 
 
 
-def LaunchOp : Upmem_Op<"launch", [
-      AutomaticAllocationScope, IsolatedFromAbove,
-      SingleBlockImplicitTerminator<"ReturnOp">
-    ]> {
-
-  let summary = "UPMEM kernel launch operation";
-
-  let arguments = (ins
-               DeviceHierarchy:$device_hierarchy,
-               Index:$rankSize,
-               Index:$dpuSize, Index:$taskletSize,
-               Optional<I32>:$dynamicSharedMemorySize);
-
-  let description = [{
-    Syntax:
-
-    ```
-    operation ::= `upmem.launch` 
-                             ssa-id
-                             `rank` `(` ssa-id `)` 
-                             `dpu` `(` ssa-id `)` 
-                             `tasklet` `(` ssa-id `)`
-                             (dynamic_shared_memory_size ssa-use)?
-                             memory-attribution
-                             region attr-dict?
-    ssa-reassignment ::= `(` ssa-id `=` ssa-use (`,` ssa-id `=` ssa-use)* `)`
-    memory-attribution ::= (`workgroup` `(` ssa-id-and-type-list `)`)?
-                           (`private` `(` ssa-id-and-type-list `)`)?
-    ```
-
-    Example:
-
-    ```mlir
-    upmem.launch %hierarchy as !upmem.hierarchy<2x64x16> ranks(%rd) in (%sr = %0)
-                 dpus(%dd) in (%sd = %1)
-                 tasklets(%td) in (%st= %3) {
-      "some_op"(%bx, %tx) : (index, index) -> ()
-      %42 = load %val1[%bx] : memref<?xf32, 1>
-    }
-    }
-    ```
-  }];
-
-  let regions = (region AnyRegion:$body);
-
-  let skipDefaultBuilders = 1;
-
-  let builders = [
-    OpBuilder<(ins "Value":$device_hierarchy,
-      CArg<"Value", "{}">:$dynamicSharedMemorySize)>
-  ];
-
-  let extraClassDeclaration = [{
-}
-    static StringRef getDynamicSharedMemorySizeKeyword() {
-      return "dynamic_shared_memory_size";
-    }
-
-  }];
-
-  let hasCanonicalizer = 1;
-  let hasCustomAssemblyFormat = 1;
-  let hasRegionVerifier = 1;
-}
-
-
-def DpuProgramOp : Upmem_Op<"dpu_program",
-[
-  SingleBlockImplicitTerminator<"ReturnOp">,
-  SymbolTable,
-  Symbol
-]> {
-  let summary = "Represents the final DPU program";
-  let description = [{
-  }];
-
-  let arguments = (ins SymbolNameAttr:$sym_name, TypeAttrOf<DeviceHierarchy>:$wgShape);
-  let regions = (region SizedRegion<1>:$body);
-
-  let assemblyFormat = "$sym_name `(` `)` `on` $wgShape attr-dict-with-keyword $body";
-
-}
-
-def DpuSetOp : Upmem_Op<"dpu_set", [ Symbol, DeclareOpInterfaceMethods<SymbolUserOpInterface> ]> {
-
-  let summary = "Represents the dpu set in the Upmem API, ie, an instance of a program";
-  let description = [{
-  }];
-
-  let arguments = (ins SymbolNameAttr:$sym_name, I32Attr:$numRanks, I32Attr:$numDpus, SymbolRefAttr:$dpuProgram);
-
-  let assemblyFormat = "$sym_name `(` $numRanks `x` $numDpus `)` `with` $dpuProgram attr-dict";
-
-}
-
-def ReturnOp : Upmem_Op<"return", [ParentOneOf<["DpuProgramOp", "LaunchOp"]>, Pure, Terminator]>,
-    Arguments<(ins)>, Results<(outs)>
-      {
-  let summary = "Terminator for UPMEM functions.";
-  let description = [{
-  }];
-  let assemblyFormat = "attr-dict";
-}
-
-
-
 def MemcpyOp : Upmem_Op<"memcpy", []> {
 
   let summary = "UPMEM memcpy operation";
@@ -359,16 +253,6 @@ def TransferOp : Upmem_Op<"on_dpu_transfer", []> {
 }
 
 
-def AllocDPUsOp: Upmem_Op <"alloc_dpus", []> {
-  let summary = "UPMEM alloc dpus";
-  let description = [{
-  }];
-  let results = (outs DeviceHierarchy:$hierarchy_shape);
-
-  let assemblyFormat = [{
-     attr-dict `:` qualified(type($hierarchy_shape))
-  }];
-}
 
 def BaseMRAMAddrOp: Upmem_Op <"dpu_heap_base_addr", []> {
   let summary = "Base offset of the MRAM in the DPUs for starting data copy";
@@ -440,113 +324,15 @@ def GatherOp: ScatterGatherLike<"gather", "from", MemWrite> {
 }
 
 
-def UPMEMModuleOp : Upmem_Op<"module", [
-   IsolatedFromAbove, NoRegionArguments, SymbolTable, Symbol,
-    ] # GraphRegionNoTerminator.traits > {
-  let summary = "";
+def AllocDPUsOp: Upmem_Op <"alloc_dpus", []> {
+  let summary = "UPMEM alloc dpus";
   let description = [{
   }];
-
-  let arguments = (ins SymbolNameAttr:$sym_name);
-  let regions = (region SizedRegion<1>:$bodyRegion);
-  let assemblyFormat = "$sym_name attr-dict-with-keyword $bodyRegion";
-}
-
-def UPMEMFuncOp : Upmem_Op<"func", [
-    HasParent<"UPMEMModuleOp">, AutomaticAllocationScope,
-    IsolatedFromAbove, FunctionOpInterface]
-  > {
-  let summary = "Function executable on an UPMEM DPU";
-
-  let description = [{
-  }];
-
-  let arguments = (ins
-        StrAttr:$sym_name,
-        I64Attr:$num_tasklets,
-        OptionalAttr<DictArrayAttr>:$arg_attrs,
-        OptionalAttr<DictArrayAttr>:$res_attrs
-  );
-  let builders = [OpBuilder<(ins
-    "StringRef":$name, "int64_t":$num_tasklets,
-    CArg<"ArrayRef<NamedAttribute>", "{}">:$attrs,
-    CArg<"ArrayRef<DictionaryAttr>", "{}">:$argAttrs)
-  >];
-  let regions = (region MinSizedRegion<1>:$body);
-
-  let extraClassDeclaration = [{
-    StringRef getName() {
-      return getSymName();
-    }
-    FunctionType getFunctionType() {
-      return FunctionType::get(getContext(), {}, {});
-    }
-    void setFunctionTypeAttr(TypeAttr ty) {
-      if (ty.getValue() != getFunctionType())
-        emitOpError("cannot set type ") << ty;
-    }
-    /// Returns the argument types of this function.
-    ArrayRef<Type> getArgumentTypes() { return {}; }
-
-    /// Returns the result types of this function.
-    ArrayRef<Type> getResultTypes() { return {}; }
-
-    Region *getCallableRegion() { return &getBody(); }
-  }];
-  let hasCustomAssemblyFormat = 1;
-
-}
-
-
-
-
-
-def LaunchFuncOp :Upmem_Op<"launch_func", [
-      AttrSizedOperandSegments
-  ]> {
-  let summary = "Launches a function as a GPU kernel";
-
-  let description = [{
-  }];
-
-  let arguments = (ins
-               SymbolRefAttr:$kernel,
-               DeviceHierarchy:$hierarchy,
-               Optional<I32>:$dynamicSharedMemorySize,
-               Variadic<AnyType>:$kernelOperands);
-
-  let skipDefaultBuilders = 1;
-
-  let builders = [
-    OpBuilder<(ins "UPMEMFuncOp":$kernelFunc, "Value":$hierarchy,
-      "Value":$dynamicSharedMemorySize, "ValueRange":$kernelOperands)>
-  ];
-
-  let extraClassDeclaration = [{
-    /// The name of the kernel's containing module.
-    StringAttr getKernelModuleName();
-
-    /// The name of the kernel.
-    StringAttr getKernelName();
-
-    /// The number of operands passed to the kernel function.
-    unsigned getNumKernelOperands();
-
-    /// The i-th operand passed to the kernel function.
-    Value getKernelOperand(unsigned i);
-
-    // This needs to quietly verify if attributes with names defined below are
-    // present since it is run before the verifier of this op.
-    friend LogicalResult UPMEMDialect::verifyOperationAttribute(Operation *,
-                                                              NamedAttribute);
-  }];
+  let results = (outs DeviceHierarchy:$hierarchy_shape);
 
   let assemblyFormat = [{
-      $kernel $hierarchy `:` qualified(type($hierarchy))
-      (`dynamic_shared_memory_size` $dynamicSharedMemorySize^)?
-      custom<LaunchFuncOperands>($kernelOperands, type($kernelOperands)) attr-dict
+     attr-dict `:` qualified(type($hierarchy_shape))
   }];
-  let hasVerifier = 1;
 }
 
 def FreeDPUsOp: Upmem_Op <"free_dpus", []>{
@@ -558,6 +344,59 @@ def FreeDPUsOp: Upmem_Op <"free_dpus", []>{
   let assemblyFormat = [{
      $hierarchy attr-dict `:` qualified(type($hierarchy))
   }];
+}
+
+
+
+def DpuProgramOp : Upmem_Op<"dpu_program",
+[
+  SingleBlockImplicitTerminator<"ReturnOp">,
+  SymbolTable,
+  Symbol
+]> {
+  let summary = "Represents the final DPU program";
+  let description = [{
+  }];
+
+  let arguments = (ins SymbolNameAttr:$sym_name, TypeAttrOf<DeviceHierarchy>:$wgShape);
+  let regions = (region SizedRegion<1>:$body);
+
+  let assemblyFormat = "$sym_name `(` `)` `on` $wgShape attr-dict-with-keyword $body";
+
+}
+
+
+def WaitForOp : Upmem_Op<"wait_for", [ DeclareOpInterfaceMethods<SymbolUserOpInterface> ]> {
+  let summary = "Run a program on a dpu set synchronously";
+  let description = [{
+
+  }];
+
+  let arguments = (ins SymbolRefAttr:$dpuSet);
+
+  let assemblyFormat = "$dpuSet attr-dict";
+
+}
+
+def DpuSetOp : Upmem_Op<"dpu_set", [ Symbol, DeclareOpInterfaceMethods<SymbolUserOpInterface> ]> {
+
+  let summary = "Represents the dpu set in the Upmem API, ie, an instance of a program";
+  let description = [{
+  }];
+
+  let arguments = (ins SymbolNameAttr:$sym_name, I32Attr:$numRanks, I32Attr:$numDpus, SymbolRefAttr:$dpuProgram);
+
+  let assemblyFormat = "$sym_name `(` $numRanks `x` $numDpus `)` `with` $dpuProgram attr-dict";
+
+}
+
+def ReturnOp : Upmem_Op<"return", [ParentOneOf<["DpuProgramOp", "LaunchOp"]>, Pure, Terminator]>,
+    Arguments<(ins)>, Results<(outs)>
+      {
+  let summary = "Terminator for UPMEM functions.";
+  let description = [{
+  }];
+  let assemblyFormat = "attr-dict";
 }
 
 #endif

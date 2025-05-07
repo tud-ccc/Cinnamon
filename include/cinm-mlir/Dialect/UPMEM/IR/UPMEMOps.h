@@ -23,16 +23,6 @@
 #include "mlir/Interfaces/SideEffectInterfaces.h"
 #include "llvm/ADT/STLExtras.h"
 
-namespace mlir {
-namespace upmem {
-
-struct KernelDim {
-  Value x;
-};
-
-} // namespace upmem
-} // namespace mlir
-
 //===- Generated includes -------------------------------------------------===//
 
 #define GET_OP_CLASSES

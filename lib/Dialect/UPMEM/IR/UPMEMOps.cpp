@@ -4,34 +4,17 @@
 
 #include "cinm-mlir/Dialect/UPMEM/IR/UPMEMOps.h"
 
-#include "cinm-mlir/Dialect/UPMEM/IR/UPMEMTypes.h"
 #include "mlir/IR/Builders.h"
-#include "mlir/IR/OpImplementation.h"
 
-#include "mlir/Dialect/Arith/IR/Arith.h"
-#include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/IR/Attributes.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/BuiltinOps.h"
-#include "mlir/IR/BuiltinTypes.h"
-#include "mlir/IR/DialectImplementation.h"
-#include "mlir/IR/Matchers.h"
 #include "mlir/IR/OpImplementation.h"
-#include "mlir/IR/PatternMatch.h"
 #include "mlir/IR/TypeUtilities.h"
 #include "mlir/Interfaces/FunctionImplementation.h"
 #include "mlir/Interfaces/SideEffectInterfaces.h"
 #include "mlir/Transforms/InliningUtils.h"
-#include "llvm/ADT/APFloat.h"
-#include "llvm/ADT/TypeSwitch.h"
-#include "llvm/Support/CommandLine.h"
-#include "llvm/Support/ErrorHandling.h"
-#include "llvm/Support/StringSaver.h"
-
-#include "mlir/IR/IRMapping.h"
-#include "llvm/ADT/MapVector.h"
-#include <cstdint>
 #include <llvm/ADT/ArrayRef.h>
 #include <llvm/ADT/SmallVector.h>
 #include <llvm/ADT/StringRef.h>
@@ -42,13 +25,17 @@
 #define DEBUG_TYPE "upmem-ops"
 
 using namespace mlir;
-using namespace mlir::upmem;
+
+//===- Generated implementation -------------------------------------------===//
+
+#define GET_OP_CLASSES
+#include "cinm-mlir/Dialect/UPMEM/IR/UPMEMOps.cpp.inc"
 
 //===----------------------------------------------------------------------===//
 // UPMEMDialect
 //===----------------------------------------------------------------------===//
 
-void UPMEMDialect::registerOps() {
+void upmem::UPMEMDialect::registerOps() {
   addOperations<
 #define GET_OP_LIST
 #include "cinm-mlir/Dialect/UPMEM/IR/UPMEMOps.cpp.inc"
@@ -57,8 +44,9 @@ void UPMEMDialect::registerOps() {
 
 // parsers/printers
 
-LogicalResult UPMEMDialect::verifyOperationAttribute(Operation *op,
-                                                     NamedAttribute attr) {
+LogicalResult
+upmem::UPMEMDialect::verifyOperationAttribute(Operation *op,
+                                              NamedAttribute attr) {
   if (!llvm::isa<UnitAttr>(attr.getValue()) ||
       attr.getName() != getContainerModuleAttrName())
     return success();
@@ -71,390 +59,7 @@ LogicalResult UPMEMDialect::verifyOperationAttribute(Operation *op,
   return success();
 }
 
-static ParseResult parseAsyncDependencies(
-    OpAsmParser &parser, Type &asyncTokenType,
-    SmallVectorImpl<OpAsmParser::UnresolvedOperand> &asyncDependencies) {
-  auto loc = parser.getCurrentLocation();
-  if (succeeded(parser.parseOptionalKeyword("async"))) {
-    if (parser.getNumResults() == 0)
-      return parser.emitError(loc, "needs to be named when marked 'async'");
-    asyncTokenType = parser.getBuilder().getType<AsyncTokenType>();
-  }
-  return parser.parseOperandList(asyncDependencies,
-                                 OpAsmParser::Delimiter::OptionalSquare);
-}
-
-static ParseResult
-parseAttributions(OpAsmParser &parser, StringRef keyword,
-                  SmallVectorImpl<OpAsmParser::Argument> &args) {
-  // If we could not parse the keyword, just assume empty list and succeed.
-  if (failed(parser.parseOptionalKeyword(keyword)))
-    return success();
-
-  return parser.parseArgumentList(args, OpAsmParser::Delimiter::Paren,
-                                  /*allowType=*/true);
-}
-
-/// Verifies a UPMEM function memory attribution.
-// static LogicalResult verifyAttributions(Operation *op,
-//                                         ArrayRef<BlockArgument> attributions,
-//                                         upmem::AddressSpace memorySpace) {
-//   for (Value v : attributions) {
-//     auto type = llvm::dyn_cast<MemRefType>(v.getType());
-//     if (!type)
-//       return op->emitOpError() << "expected memref type in attribution";
-
-//     // We can only verify the address space if it hasn't already been lowered
-//     // from the AddressSpaceAttr to a target-specific numeric value.
-//     auto addressSpace =
-//         llvm::dyn_cast_or_null<upmem::AddressSpaceAttr>(type.getMemorySpace());
-//     if (!addressSpace)
-//       continue;
-//     if (addressSpace.getValue() != memorySpace)
-//       return op->emitOpError()
-//              << "expected memory space " <<
-//              stringifyAddressSpace(memorySpace)
-//              << " in attribution";
-//   }
-//   return success();
-// }
-
-//===----------------------------------------------------------------------===//
-// LaunchOp
-//===----------------------------------------------------------------------===//
-
-void LaunchOp::build(OpBuilder &builder, OperationState &result,
-                     Value device_hierarchy) {
-
-
-  // Add grid and block sizes as op operands, followed by the data operands.
-  result.addOperands(device_hierarchy);
-
-  // Create a kernel body region with kNumConfigRegionAttributes + N memory
-  // attributions, where the first kNumConfigRegionAttributes arguments have
-  // `index` type and the rest have the same types as the data operands.
-  Region *kernelRegion = result.addRegion();
-  Block *body = &kernelRegion->emplaceBlock();
-  // TODO: Allow passing in proper locations here.
-  for (unsigned i = 0; i < 3; ++i)
-    body->addArgument(builder.getIndexType(), result.location);
-}
-
-LogicalResult LaunchOp::verifyRegions() {
-  if (!getBody().empty()) {
-    if (getBody().getNumArguments() <
-        kNumConfigRegionAttributes + getNumWorkgroupAttributions())
-      return emitOpError("unexpected number of region arguments");
-  }
-
-  for (Block &block : getBody()) {
-    if (block.empty())
-      continue;
-    if (block.back().getNumSuccessors() != 0)
-      continue;
-    if (!isa<upmem::ReturnOp>(&block.back())) {
-      return block.back()
-          .emitError()
-          .append("expected '", upmem::ReturnOp::getOperationName(),
-                  "' or a terminator with successors")
-          .attachNote(getLoc())
-          .append("in '", LaunchOp::getOperationName(), "' body region");
-    }
-  }
-
-  return success();
-}
-
-static void printSizeAssignment(OpAsmPrinter &p, Value size,
-                                BlockArgument arg) {
-  p << '(';
-  p.printRegionArgument(arg, {}, true);
-  p << " upto " << size << ")";
-}
-
-void LaunchOp::print(OpAsmPrinter &p) {
-  // Print the launch configuration.
-  p << ' ' << getDeviceHierarchy();
-  p << ' ' << getRanksKeyword();
-  auto blockArgs = getRegion().getArguments();
-  printSizeAssignment(p, getRankSizeOperandValue().x, blockArgs[0]);
-
-  p << ' ' << getDPUsKeyword();
-  printSizeAssignment(p, getDPUSizeOperandValue().x, blockArgs[1]);
-
-  p << ' ' << getTaskletsKeyword();
-  printSizeAssignment(p, getTaskletSizeOperandValue().x, blockArgs[2]);
-
-  if (getDynamicSharedMemorySize())
-    p << ' ' << getDynamicSharedMemorySizeKeyword() << ' '
-      << getDynamicSharedMemorySize();
-
-  p << " on " << getDeviceHierarchy().getType() << " ";
-
-  p.printRegion(getBody(), /*printEntryBlockArgs=*/false);
-}
-
-static ParseResult parseSizeAssignment(OpAsmParser &parser, StringRef kw,
-                                       OpAsmParser::Argument &arg) {
-  if (parser.parseKeyword(kw) || parser.parseLParen() ||
-      parser.parseArgument(arg, false) || parser.parseRParen())
-    return failure();
-  arg.type = parser.getBuilder().getIndexType();
-  return success();
-}
-
-ParseResult LaunchOp::parse(OpAsmParser &parser, OperationState &result) {
-
-  // Region arguments to be created.
-
-  OpAsmParser::UnresolvedOperand deviceHierarchy;
-  if (parser.parseOperand(deviceHierarchy)) {
-    return failure();
-  }
-
-  OpAsmParser::UnresolvedOperand dynamicSharedMemorySize;
-  bool hasDynamicSharedMemorySize = false;
-  if (!parser.parseOptionalKeyword(
-          LaunchOp::getDynamicSharedMemorySizeKeyword())) {
-    hasDynamicSharedMemorySize = true;
-    if (parser.parseOperand(dynamicSharedMemorySize) ||
-        parser.resolveOperand(dynamicSharedMemorySize,
-                              parser.getBuilder().getI32Type(),
-                              result.operands))
-      return failure();
-  }
-
-  DeviceHierarchyType deviceHierarchyType;
-  if (parser.parseKeyword("on") || parser.parseType(deviceHierarchyType) ||
-      parser.resolveOperand(deviceHierarchy, deviceHierarchyType,
-                            result.operands)) {
-    return failure();
-  }
-
-  // Introduce the body region and parse it. The region has
-  // kNumConfigRegionAttributes arguments that correspond to
-  // block/thread identifiers and grid/block sizes, all having `index` type.
-  Region *body = result.addRegion();
-  if (parser.parseRegion(*body, regionArgs2))
-    return failure();
-
-  return success();
-}
-
-/// Simplify the upmem.launch when the range of a thread or block ID is
-/// trivially known to be one.
-struct FoldLaunchArguments : public OpRewritePattern<LaunchOp> {
-  using OpRewritePattern<LaunchOp>::OpRewritePattern;
-  LogicalResult matchAndRewrite(LaunchOp op,
-                                PatternRewriter &rewriter) const override {
-    // If the range implies a single value for `id`, replace `id`'s uses by
-    // zero.
-    Value zero;
-    bool simplified = false;
-    auto constPropIdUses = [&](Value id, Value size) {
-      // Check if size is trivially one.
-      if (!matchPattern(size, m_One()))
-        return;
-      if (id.getUses().empty())
-        return;
-      if (!simplified) {
-        // Create a zero value the first time.
-        OpBuilder::InsertionGuard guard(rewriter);
-        rewriter.setInsertionPointToStart(&op.getBody().front());
-        zero =
-            rewriter.create<arith::ConstantIndexOp>(op.getLoc(), /*value=*/0);
-      }
-      rewriter.replaceAllUsesWith(id, zero);
-      simplified = true;
-    };
-    constPropIdUses(op.getRankIdClass().x, op.getRankSizeClass().x);
-    constPropIdUses(op.getDPUIdClass().x, op.getDPUSizeClass().x);
-    constPropIdUses(op.getTaskletIdClass().x, op.getTaskletSizeClass().x);
-
-    return success(simplified);
-  }
-};
-
-void LaunchOp::getCanonicalizationPatterns(RewritePatternSet &rewrites,
-                                           MLIRContext *context) {
-  rewrites.add<FoldLaunchArguments>(context);
-}
-
-/// Adds a new block argument that corresponds to buffers located in
-/// workgroup memory.
-BlockArgument LaunchOp::addWorkgroupAttribution(Type type, Location loc) {
-  auto attrName = getNumWorkgroupAttributionsAttrName();
-  auto attr = (*this)->getAttrOfType<IntegerAttr>(attrName);
-  (*this)->setAttr(attrName,
-                   IntegerAttr::get(attr.getType(), attr.getValue() + 1));
-  return getBody().insertArgument(
-      LaunchOp::kNumConfigRegionAttributes + attr.getInt(), type, loc);
-}
-
-/// Adds a new block argument that corresponds to buffers located in
-/// private memory.
-BlockArgument LaunchOp::addPrivateAttribution(Type type, Location loc) {
-  // Buffers on the private memory always come after buffers on the workgroup
-  // memory.
-  return getBody().addArgument(type, loc);
-}
-
-//===----------------------------------------------------------------------===//
-// UPMEMFuncOp
-//===----------------------------------------------------------------------===//
-
-ParseResult UPMEMFuncOp::parse(OpAsmParser &parser, OperationState &result) {
-
-  // Parse the function name.
-  StringAttr nameAttr;
-  if (parser.parseSymbolName(nameAttr, ::mlir::SymbolTable::getSymbolAttrName(),
-                             result.attributes))
-    return failure();
-
-  if (parser.parseLParen() || parser.parseRParen())
-    return failure();
-
-  if (parser.parseOptionalAttrDictWithKeyword(result.attributes))
-    return failure();
-
-  auto *body = result.addRegion();
-  return parser.parseRegion(*body, {});
-}
-
-void UPMEMFuncOp::print(OpAsmPrinter &p) {
-  ::mlir::Builder odsBuilder{getContext()};
-  p << ' ';
-  p.printSymbolName(getName());
-  p << "()";
-  p.printOptionalAttrDictWithKeyword({odsBuilder.getNamedAttr(
-      getNumTaskletsAttrName(),
-      odsBuilder.getI64IntegerAttr(getNumTasklets()))});
-  p << ' ';
-  p.printRegion(getBody(), /*printEntryBlockArgs=*/false);
-}
-
-void UPMEMFuncOp::build(OpBuilder &builder, OperationState &result,
-                        StringRef name, int64_t numTasklets,
-                        ArrayRef<NamedAttribute> attrs,
-                        ArrayRef<DictionaryAttr> argAttrs) {
-  result.addAttribute(getSymNameAttrName(result.name),
-                      builder.getStringAttr(name));
-
-  result.addAttribute(getNumTaskletsAttrName(result.name),
-                      builder.getI64IntegerAttr(numTasklets));
-  result.addAttribute(getResAttrsAttrName(result.name),
-                      builder.getDictionaryAttr(attrs));
-  result.addRegion();
-  // todo arg attrs
-  // result.addAttribute(getArgAttrsAttrName(result.name),
-  // builder.getArrayAttr())))
-}
-
-//===----------------------------------------------------------------------===//
-// LaunchFuncOp
-//===----------------------------------------------------------------------===//
-
-void LaunchFuncOp::build(OpBuilder &builder, OperationState &result,
-                         UPMEMFuncOp kernelFunc, Value upmemToken,
-                         Value dynamicSharedMemorySize,
-                         ValueRange kernelOperands, Type asyncTokenType,
-                         ValueRange asyncDependencies) {
-  result.addOperands(asyncDependencies);
-  if (asyncTokenType)
-    result.types.push_back(builder.getType<AsyncTokenType>());
-
-  // Add grid and block sizes as op operands, followed by the data operands.
-  result.addOperands({upmemToken});
-  if (dynamicSharedMemorySize)
-    result.addOperands(dynamicSharedMemorySize);
-  result.addOperands(kernelOperands);
-  auto kernelModule = kernelFunc->getParentOfType<UPMEMModuleOp>();
-  auto kernelSymbol =
-      SymbolRefAttr::get(kernelModule.getNameAttr(),
-                         {SymbolRefAttr::get(kernelFunc.getNameAttr())});
-
-  Properties &prop = result.getOrAddProperties<Properties>();
-  prop.kernel = kernelSymbol;
-  size_t segmentSizesLen = std::size(prop.operandSegmentSizes);
-  // Initialize the segment sizes to 1.
-  for (auto &sz : prop.operandSegmentSizes)
-    sz = 1;
-  prop.operandSegmentSizes[0] = asyncDependencies.size();
-  prop.operandSegmentSizes[segmentSizesLen - 3] =
-      dynamicSharedMemorySize ? 1 : 0;
-  prop.operandSegmentSizes[segmentSizesLen - 2] =
-      static_cast<int32_t>(kernelOperands.size());
-  prop.operandSegmentSizes[segmentSizesLen - 1] = 0;
-}
-
-StringAttr LaunchFuncOp::getKernelModuleName() {
-  return getKernel().getRootReference();
-}
-
-StringAttr LaunchFuncOp::getKernelName() {
-  return getKernel().getLeafReference();
-}
-
-unsigned LaunchFuncOp::getNumKernelOperands() {
-  return getKernelOperands().size();
-}
-
-Value LaunchFuncOp::getKernelOperand(unsigned i) {
-  return getKernelOperands()[i];
-}
-
-LogicalResult LaunchFuncOp::verify() {
-  auto module = (*this)->getParentOfType<ModuleOp>();
-  if (!module)
-    return emitOpError("expected to belong to a module");
-  return success();
-}
-
-static ParseResult parseLaunchFuncOperands(
-    OpAsmParser &parser,
-    SmallVectorImpl<OpAsmParser::UnresolvedOperand> &argNames,
-    SmallVectorImpl<Type> &argTypes) {
-  if (parser.parseOptionalKeyword("args"))
-    return success();
-
-  auto parseElement = [&]() -> ParseResult {
-    return failure(parser.parseOperand(argNames.emplace_back()) ||
-                   parser.parseColonType(argTypes.emplace_back()));
-  };
-
-  return parser.parseCommaSeparatedList(OpAsmParser::Delimiter::Paren,
-                                        parseElement, " in argument list");
-}
-
-static void printLaunchFuncOperands(OpAsmPrinter &printer, Operation *,
-                                    OperandRange operands, TypeRange types) {
-  if (operands.empty())
-    return;
-  printer << "args(";
-  llvm::interleaveComma(llvm::zip(operands, types), printer,
-                        [&](const auto &pair) {
-                          printer.printOperand(std::get<0>(pair));
-                          printer << " : ";
-                          printer.printType(std::get<1>(pair));
-                        });
-  printer << ")";
-}
-
-static void printAsyncDependencies(OpAsmPrinter &printer, Operation *op,
-                                   Type asyncTokenType,
-                                   OperandRange asyncDependencies) {
-  if (asyncTokenType)
-    printer << "async";
-  if (asyncDependencies.empty())
-    return;
-  if (asyncTokenType)
-    printer << ' ';
-  printer << '[';
-  llvm::interleaveComma(asyncDependencies, printer);
-  printer << ']';
-}
-
-LogicalResult GatherOp::verify() {
+LogicalResult upmem::GatherOp::verify() {
   auto count = getDpuMemOffset();
   if ((count % 8) != 0)
     return emitOpError("has unaligned DPU memory offset ")
@@ -462,7 +67,7 @@ LogicalResult GatherOp::verify() {
   return success();
 }
 
-LogicalResult ScatterOp::verify() {
+LogicalResult upmem::ScatterOp::verify() {
   auto count = getDpuMemOffset();
   if ((count % 8) != 0)
     return emitOpError("has unaligned DPU memory offset ")
@@ -470,7 +75,27 @@ LogicalResult ScatterOp::verify() {
   return success();
 }
 
-//===- Generated implementation -------------------------------------------===//
+::mlir::LogicalResult
+upmem::DpuSetOp::verifySymbolUses(::mlir::SymbolTableCollection &symbolTable) {
 
-#define GET_OP_CLASSES
-#include "cinm-mlir/Dialect/UPMEM/IR/UPMEMOps.cpp.inc"
+  upmem::DpuProgramOp program =
+      symbolTable.lookupNearestSymbolFrom<upmem::DpuProgramOp>(*this,
+                                                               getDpuProgram());
+
+  if (!program)
+    return emitOpError("requires ")
+           << getDpuProgramAttr() << " to refer to an upmem.dpu_program op";
+  return success();
+}
+
+::mlir::LogicalResult
+upmem::WaitForOp::verifySymbolUses(::mlir::SymbolTableCollection &symbolTable) {
+
+  upmem::DpuSetOp program =
+      symbolTable.lookupNearestSymbolFrom<upmem::DpuSetOp>(*this, getDpuSet());
+
+  if (!program)
+    return emitOpError("requires ")
+           << getDpuSetAttr() << " to refer to an upmem.dpu_set op";
+  return success();
+}
