@@ -19,6 +19,7 @@
 #include <llvm/ADT/SmallVector.h>
 #include <llvm/ADT/StringRef.h>
 #include <mlir/IR/OperationSupport.h>
+#include <mlir/IR/SymbolTable.h>
 #include <mlir/IR/Value.h>
 #include <mlir/Support/LogicalResult.h>
 
@@ -88,8 +89,14 @@ upmem::DpuSetOp::verifySymbolUses(::mlir::SymbolTableCollection &symbolTable) {
   return success();
 }
 
+upmem::DpuProgramOp upmem::DpuSetOp::resolveDpuProgram() {
+  return (*this)
+      ->getParentOfType<SymbolTable>()
+      .lookupNearestSymbolFrom<upmem::DpuProgramOp>(*this, getDpuProgram());
+}
+
 ::mlir::LogicalResult
-upmem::WaitForOp::verifySymbolUses(::mlir::SymbolTableCollection &symbolTable) {
+upmem::AllocDPUsOp::verifySymbolUses(::mlir::SymbolTableCollection &symbolTable) {
 
   upmem::DpuSetOp program =
       symbolTable.lookupNearestSymbolFrom<upmem::DpuSetOp>(*this, getDpuSet());

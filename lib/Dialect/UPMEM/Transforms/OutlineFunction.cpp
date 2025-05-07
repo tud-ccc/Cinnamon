@@ -3,11 +3,8 @@
 
 #include <cinm-mlir/Utils/CinmUtils.h>
 
-#include "mlir/Dialect/Arith/IR/Arith.h"
-#include "mlir/Dialect/ControlFlow/IR/ControlFlowOps.h"
-#include "mlir/IR/IRMapping.h"
 #include "mlir/IR/SymbolTable.h"
-#include "mlir/Transforms/RegionUtils.h"
+// #include "mlir/Transforms/RegionUtils.h"
 #include "llvm/Support/Debug.h"
 #include <llvm/ADT/StringRef.h>
 #include <llvm/Support/Regex.h>
@@ -30,55 +27,33 @@ namespace {
 /// Outline the `gpu.launch` operation body into a kernel function. Replace
 /// `gpu.terminator` operations by `gpu.return` in the generated function.
 /// Set block and grid size bounds if known.
-static upmem::UPMEMFuncOp outlineKernelFuncImpl(func::FuncOp parent,
-                                                upmem::LaunchOp launchOp,
-                                                SymbolTable& kernelContainer) {
+static void outlineKernelFuncImpl(func::FuncOp parent,
+                                  upmem::InlineDpuProgramOp launchOp,
+                                  SymbolTable &kernelContainer) {
   OpBuilder builder(parent->getContext());
   Location loc = launchOp.getLoc();
+  auto hierarchy = launchOp.getWgShape();
 
-  auto outlinedFunc = builder.create<upmem::UPMEMFuncOp>(
-      loc, parent.getName(),
-      launchOp.getDeviceHierarchy().getType().getNumTaskletsPerDpu());
+  auto outlinedFunc = builder.create<upmem::DpuProgramOp>(
+      loc, parent.getName(), hierarchy.getNumTaskletsPerDpu());
+  outlinedFunc.getBody().takeBody(launchOp.getBody());
+
   // this also does renaming if name is not unique
   kernelContainer.insert(outlinedFunc);
 
-  IRMapping map;
-  Block &outlinedEntryBlock = outlinedFunc.getBody().emplaceBlock();
+  auto dpu_set_decl = builder.create<upmem::DpuSetOp>(
+      loc, hierarchy.getNumRanks(), hierarchy.getNumDpusPerRank(),
+      outlinedFunc);
 
-  Region &launchOpBody = launchOp.getBody();
-  Block &launchOpEntry = launchOpBody.front();
+  builder.setInsertionPoint(launchOp);
+  auto alloc = builder.create<upmem::AllocDPUsOp>(loc, dpu_set_decl);
 
-  ///  CLone the region into the func, we remap the block arguments
-  {
-    auto taskletArg = launchOpEntry.getArgument(2);
-    auto taskletId = builder.create<upmem::TaskletIDOp>(taskletArg.getLoc());
-    map.map(taskletArg, taskletId);
+  builder.create<upmem::WaitForOp>(loc, alloc.getResult());
+  builder.create<upmem::FreeDPUsOp>(loc, alloc.getResult());
 
-    builder.setInsertionPointToEnd(&outlinedEntryBlock);
-
-    for (auto &op : launchOpEntry.without_terminator()) {
-      builder.clone(op, map);
-    }
-    builder.create<upmem::ReturnOp>(launchOpEntry.getTerminator()->getLoc());
-  }
-
-  return outlinedFunc;
+  launchOp->erase();
 }
 
-static void convertToLaunchFuncOp(upmem::LaunchOp launchOp,
-                                  upmem::UPMEMFuncOp kernelFunc) {
-  OpBuilder builder(launchOp);
-  // The launch op has an optional dynamic shared memory size. If it doesn't
-  // exist, we use zero.
-  Value asyncToken = launchOp.getAsyncToken();
-  auto launchFunc = builder.create<upmem::LaunchFuncOp>(
-      launchOp.getLoc(), kernelFunc, launchOp.getDeviceHierarchy(),
-      launchOp.getDynamicSharedMemorySize(), ValueRange{},
-      asyncToken ? asyncToken.getType() : nullptr,
-      launchOp.getAsyncDependencies());
-  launchOp.replaceAllUsesWith(launchFunc);
-  launchOp.erase();
-}
 } // namespace
 
 //===----------------------------------------------------------------------===//
@@ -88,8 +63,8 @@ struct UPMEMOutlineKernelPass
 
   void runOnOperation() final;
 
-  upmem::UPMEMModuleOp createKernelModule(StringRef moduleName,
-                                          const SymbolTable &parentSymbolTable);
+  ModuleOp createKernelModule(StringRef moduleName,
+                              const SymbolTable &parentSymbolTable);
 };
 
 void UPMEMOutlineKernelPass::runOnOperation() {
@@ -99,21 +74,16 @@ void UPMEMOutlineKernelPass::runOnOperation() {
   auto *context = getOperation().getContext();
   OpBuilder builder(context);
   builder.setInsertionPointToEnd(&module.getBodyRegion().front());
-  auto kernelModule =
-      builder.create<upmem::UPMEMModuleOp>(module.getLoc(), "dpu_kernels");
+  auto kernelModule = builder.create<ModuleOp>(module.getLoc(), "dpu_kernels");
   kernelModule.getBodyRegion().emplaceBlock();
   SymbolTable kernelModuleSymTable(kernelModule);
   builder.setInsertionPointToStart(&kernelModule.getBodyRegion().front());
 
   for (auto func : getOperation().getOps<func::FuncOp>()) {
     Block::iterator insertPt(func->getNextNode());
-    func.walk([&](upmem::LaunchOp op) {
+    func.walk([&](upmem::InlineDpuProgramOp op) {
       OpBuilder::InsertionGuard guard(builder);
-      upmem::UPMEMFuncOp outlinedFunc =
-          outlineKernelFuncImpl(func, op, kernelModuleSymTable);
-
-      //     // Potentially changes signature, pulling in constants.
-      convertToLaunchFuncOp(op, outlinedFunc);
+      outlineKernelFuncImpl(func, op, kernelModuleSymTable);
       return WalkResult::advance();
     });
   }
