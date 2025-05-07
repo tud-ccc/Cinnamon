@@ -179,24 +179,24 @@ size_t upmemrt_dpu_scatter(struct dpu_set_t *dpu_set, void *host_buffer,
                            size_t (*base_offset)(size_t));
 */
 static FailureOr<LLVM::LLVMFuncOp>
-getScatterOrGatherFunc(ModuleOp moduleOp, LLVMTypeConverter const *tyConverter,
-                       StringRef name) {
+getScatterOrGatherFunc(OpBuilder &rewriter, ModuleOp moduleOp,
+                       LLVMTypeConverter const *tyConverter, StringRef name) {
   auto ctx = moduleOp->getContext();
   auto ptrTy = untypedPtrType(ctx);
   auto sizeTy = tyConverter->getIndexType();
   auto funPtrTy = functionPtrTy(sizeTy, {sizeTy});
   return LLVM::lookupOrCreateFn(
-      moduleOp, name,
+      rewriter, moduleOp, name,
       {ptrTy, ptrTy, sizeTy, sizeTy, sizeTy, sizeTy, sizeTy, funPtrTy},
       LLVM::LLVMVoidType::get(ctx));
 }
 
-static FailureOr<LLVM::LLVMFuncOp> appendOrGetFuncOp(StringRef funcName,
-                                                     Type resultType,
-                                                     ArrayRef<Type> paramTypes,
-                                                     Operation *op) {
+static FailureOr<LLVM::LLVMFuncOp>
+appendOrGetFuncOp(OpBuilder &rewriter, StringRef funcName, Type resultType,
+                  ArrayRef<Type> paramTypes, Operation *op) {
   auto module = op->getParentOfType<ModuleOp>();
-  return LLVM::lookupOrCreateFn(module, funcName, paramTypes, resultType);
+  return LLVM::lookupOrCreateFn(rewriter, module, funcName, paramTypes,
+                                resultType);
 }
 
 struct FreeDPUsOpToFuncCallLowering
@@ -214,7 +214,7 @@ public:
     // void upmemrt_dpu_launch(struct dpu_set_t *void_dpu_set) {
 
     auto funcOp = appendOrGetFuncOp(
-        "upmemrt_dpu_free", resultType,
+        rewriter, "upmemrt_dpu_free", resultType,
         {getTypeConverter()->convertType(op.getHierarchy().getType())}, op);
     if (llvm::failed(funcOp))
       return failure();
@@ -274,7 +274,7 @@ public:
     // num_dpus);
     Type resultType = LLVM::LLVMPointerType::get(rewriter.getContext(), 0);
     auto funcOp =
-        appendOrGetFuncOp("upmemrt_dpu_alloc", resultType,
+        appendOrGetFuncOp(rewriter, "upmemrt_dpu_alloc", resultType,
                           {rewriter.getI32Type(), rewriter.getI32Type(),
                            untypedPtrType(getContext())},
                           op);
@@ -372,7 +372,7 @@ static LogicalResult lowerScatterOrGather(Op op, typename Op::Adaptor adaptor,
   (*base_offset)(size_t));
   */
   auto runtimeScatterFun = getScatterOrGatherFunc(
-      moduleOp, tyConverter,
+      rewriter, moduleOp, tyConverter,
       isGather ? "upmemrt_dpu_gather" : "upmemrt_dpu_scatter");
 
   if (llvm::failed(runtimeScatterFun))
@@ -398,7 +398,7 @@ static LogicalResult lowerScatterOrGather(Op op, typename Op::Adaptor adaptor,
     // need to do our own pointer arithmetic here
     bareHostBuf = rewriter0.create<LLVM::GEPOp>(
         loc, basePtr.getType(), op.getHostBuffer().getType().getElementType(),
-        basePtr, ValueRange{offset}, /*inbounds*/ true);
+        basePtr, ValueRange{offset});
   } else {
     return emitError(op->getLoc(), "Unhandled buffer type: ")
            << adaptor.getHostBuffer().getType();
@@ -469,7 +469,7 @@ public:
 
     // void upmemrt_dpu_launch(struct dpu_set_t *void_dpu_set) {
     auto funcOp = appendOrGetFuncOp(
-        "upmemrt_dpu_launch", resultType,
+        rewriter, "upmemrt_dpu_launch", resultType,
         {getTypeConverter()->convertType(op.getHierarchy().getType())}, op);
 
     if (llvm::failed(funcOp))
