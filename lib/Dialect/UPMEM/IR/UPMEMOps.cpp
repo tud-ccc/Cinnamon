@@ -28,16 +28,6 @@
 
 using namespace mlir;
 
-namespace {
-llvm::ParseResult parseBuildLoadedProgramType(OpAsmParser &, const Type type,
-                                              Type &loadedTy) {
-  loadedTy = llvm::cast<upmem::DeviceHierarchyType>(type).asLoaded(true);
-  return success();
-}
-void printBuildLoadedProgramType(OpAsmPrinter &, Operation *,
-                                 upmem::DeviceHierarchyType,
-                                 upmem::DeviceHierarchyType) {}
-} // namespace
 
 //===- Generated implementation -------------------------------------------===//
 

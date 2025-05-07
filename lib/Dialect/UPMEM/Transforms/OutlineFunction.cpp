@@ -1,5 +1,6 @@
 #include "cinm-mlir/Dialect/UPMEM/IR/UPMEMOps.h"
 #include "cinm-mlir/Dialect/UPMEM/Transforms/Passes.h"
+#include <cinm-mlir/Dialect/UPMEM/Transforms/Utils.h>
 
 #include <cinm-mlir/Utils/CinmUtils.h>
 

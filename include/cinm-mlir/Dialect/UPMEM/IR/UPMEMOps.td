@@ -376,10 +376,9 @@ def LoadProgramOp: Upmem_Op <"load_program",  [ DeclareOpInterfaceMethods<Symbol
   let description = [{
   }];
   let arguments = (ins DeviceHierarchyType:$inputWg, SymbolRefAttr:$dpu_program_ref);
-  let results = (outs DeviceHierarchyType:$loadedWg);
 
   let assemblyFormat = [{
-     $dpu_program_ref `on` $inputWg attr-dict `:` qualified(type($inputWg)) custom<BuildLoadedProgramType>(ref(type($inputWg)), type($loadedWg))
+     $dpu_program_ref `on` $inputWg attr-dict `:` qualified(type($inputWg))
   }];
 }
 
@@ -420,7 +419,7 @@ def DpuSetOp : Upmem_Op<"dpu_set", [ Symbol, DeclareOpInterfaceMethods<SymbolUse
       upmem::DpuProgramOp resolveDpuProgram();
       upmem::DeviceHierarchyType getDeviceHierarchy() {
         auto tasklets = resolveDpuProgram().getNumTasklets();
-        return DeviceHierarchyType::get(getContext(), getNumRanks(), getNumDpus(), tasklets, true);
+        return DeviceHierarchyType::get(getContext(), getNumRanks(), getNumDpus(), tasklets);
       }
   }];
 }

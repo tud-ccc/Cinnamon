@@ -6,7 +6,12 @@
 #include "cinm-mlir/Dialect/UPMEM/IR/UPMEMOps.h"
 #include "cinm-mlir/Dialect/UPMEM/IR/UPMEMTypes.h"
 
+#include <cinm-mlir/Dialect/UPMEM/Transforms/Utils.h>
+#include <llvm/ADT/MapVector.h>
+#include <llvm/ADT/STLExtras.h>
+#include <llvm/ADT/SmallVector.h>
 #include <llvm/Support/Casting.h>
+#include <llvm/Support/LogicalResult.h>
 #include <mlir/Conversion/ReconcileUnrealizedCasts/ReconcileUnrealizedCasts.h>
 #include <mlir/Dialect/Affine/IR/AffineOps.h>
 #include <mlir/Dialect/Arith/IR/Arith.h>
@@ -16,12 +21,17 @@
 #include <mlir/Dialect/Utils/IndexingUtils.h>
 #include <mlir/IR/AffineExpr.h>
 #include <mlir/IR/AffineMap.h>
+#include <mlir/IR/Attributes.h>
 #include <mlir/IR/Builders.h>
+#include <mlir/IR/BuiltinAttributeInterfaces.h>
 #include <mlir/IR/BuiltinAttributes.h>
 #include <mlir/IR/BuiltinOps.h>
 #include <mlir/IR/BuiltinTypeInterfaces.h>
 #include <mlir/IR/BuiltinTypes.h>
 #include <mlir/IR/Diagnostics.h>
+#include <mlir/IR/IRMapping.h>
+#include <mlir/IR/MLIRContext.h>
+#include <mlir/IR/PatternMatch.h>
 #include <mlir/IR/SymbolTable.h>
 #include <mlir/IR/ValueRange.h>
 #include <mlir/Support/LLVM.h>
@@ -91,72 +101,159 @@ struct ConvertCnmFreeWorkgroup
   }
 };
 
-struct ConvertCnmScatterToUPMEM : public OpConversionPattern<cnm::ScatterOp> {
-  using OpConversionPattern<cnm::ScatterOp>::OpConversionPattern;
+static LogicalResult convertCnmGatherToUpmem(RewriterBase &rewriter,
+                                             cnm::GatherOp op,
+                                             upmem::AllocDPUsOp upmemWgAlloc,
+                                             SymbolRefAttr refToBuffer) {
 
-  LogicalResult
-  matchAndRewrite(cnm::ScatterOp op, OpAdaptor adaptor,
-                  ConversionPatternRewriter &rewriter) const override {
-    const Value tensor = adaptor.getInput();
-    const ShapedType inputTy = op.getInput().getType();
-
-    const Value inputAsMemref = createOrFoldUnrealizedConversionCast(
-        op.getLoc(), rewriter, convertTensorToMemref(inputTy), tensor);
-
-    const size_t numTasklets = op.getWg().getType().getShape()[2];
-    const int64_t transferCount = op.getTransferCountInItems() * numTasklets;
-    const int64_t dpuMemOffset =
-        llvm::cast<cnm::AllocOp>(op.getBuffer().getDefiningOp())
-            ->getAttrOfType<IntegerAttr>(BUFFER_OFFSET_ATTR)
-            .getInt();
-
-    rewriter.create<upmem::ScatterOp>(op->getLoc(), inputAsMemref, dpuMemOffset,
-                                      transferCount, op.getScatterMap(),
-                                      adaptor.getWg());
-
-    rewriter.eraseOp(op);
-    return success();
+  rewriter.setInsertionPoint(op);
+  Value outputBuf = op.getOutputBuf();
+  bool isBufferized = isa<BaseMemRefType>(op.getOutputBuf().getType());
+  if (!isBufferized) {
+    outputBuf = rewriter.create<memref::AllocOp>(
+        op->getLoc(), convertTensorToMemref(op.getOutputBuf().getType()));
   }
-};
 
-struct ConvertCnmGatherToUPMEM : public OpConversionPattern<cnm::GatherOp> {
-  using OpConversionPattern<cnm::GatherOp>::OpConversionPattern;
+  const size_t numTasklets = upmemWgAlloc.getType().getNumTaskletsPerDpu();
+  const int64_t transferCount = op.getTransferCountInItems() * numTasklets;
 
-  LogicalResult
-  matchAndRewrite(cnm::GatherOp op, OpAdaptor adaptor,
-                  ConversionPatternRewriter &rewriter) const override {
+  rewriter.create<upmem::GatherOp>(op->getLoc(), outputBuf, refToBuffer,
+                                   transferCount, op.getGatherMap(),
+                                   upmemWgAlloc.getResult());
 
-    Value outputBuf = adaptor.getOutputBuf();
-    bool isBufferized = isa<BaseMemRefType>(op.getOutputBuf().getType());
-    if (!isBufferized) {
-      outputBuf = rewriter.create<memref::AllocOp>(
-          op->getLoc(), convertTensorToMemref(op.getOutputBuf().getType()));
-    }
+  if (!isBufferized) {
+    Value outputAsTensor = createOrFoldUnrealizedConversionCast(
+        op->getLoc(), rewriter, op.getOutput().getType(), outputBuf);
 
-    const size_t numTasklets = op.getWg().getType().getShape()[2];
-    const int64_t transferCount = op.getTransferCountInItems() * numTasklets;
-    const int64_t dpuMemOffset =
-        llvm::cast<cnm::AllocOp>(op.getBuffer().getDefiningOp())
-            ->getAttrOfType<IntegerAttr>(BUFFER_OFFSET_ATTR)
-            .getInt();
-
-    rewriter.create<upmem::GatherOp>(op->getLoc(), outputBuf, dpuMemOffset,
-                                     transferCount, op.getGatherMap(),
-                                     adaptor.getWg());
-
-    if (!isBufferized) {
-      Value outputAsTensor = createOrFoldUnrealizedConversionCast(
-          op->getLoc(), rewriter, op.getOutput().getType(), outputBuf);
-
-      rewriter.replaceAllUsesWith(op.getOutput(), outputAsTensor);
-    }
-    rewriter.eraseOp(op);
-    return success();
+    rewriter.replaceAllUsesWith(op.getOutput(), outputAsTensor);
   }
-};
+  rewriter.eraseOp(op);
+  return success();
+}
+
+static LogicalResult convertCnmScatterToUpmem(RewriterBase &rewriter,
+                                              cnm::ScatterOp op,
+                                              upmem::AllocDPUsOp upmemWgAlloc,
+                                              SymbolRefAttr refToBuffer) {
+
+  rewriter.setInsertionPoint(op);
+  const Value tensor = op.getInput();
+  const ShapedType inputTy = op.getInput().getType();
+
+  const Value inputAsMemref = createOrFoldUnrealizedConversionCast(
+      op.getLoc(), rewriter, convertTensorToMemref(inputTy), tensor);
+
+  const size_t numTasklets = upmemWgAlloc.getType().getNumTaskletsPerDpu();
+  const int64_t transferCount = op.getTransferCountInItems() * numTasklets;
+
+  rewriter.create<upmem::ScatterOp>(op->getLoc(), inputAsMemref, refToBuffer,
+                                    transferCount, op.getScatterMap(),
+                                    upmemWgAlloc.getResult());
+
+  rewriter.eraseOp(op);
+  return success();
+}
+
+static LogicalResult convertCnmLaunchToUpmem(cnm::LaunchOp launch,
+                                             RewriterBase &rewriter,
+                                             ModuleOp dpuKernelModule) {
+
+  rewriter.clearInsertionPoint();
+
+  auto wg = launch.getWg().getType().getShape();
+  if (wg.size() != 3)
+    return launch.emitOpError("Should have working group with 3 entries");
+
+  const auto upmemTy =
+      rewriter.getType<upmem::DeviceHierarchyType>(wg[0], wg[1], wg[2]);
+
+  auto dpuProgram = rewriter.create<upmem::DpuProgramOp>(
+      launch->getLoc(), "program", upmemTy.getNumTaskletsPerDpu());
+
+  SymbolTable symTable(dpuKernelModule);
+  symTable.insert(dpuProgram);
+
+  auto wgAlloc = cast<cnm::WorkgroupOp>(launch.getWg().getDefiningOp());
+  rewriter.setInsertionPoint(wgAlloc);
+  auto upmemWgAlloc = rewriter.create<upmem::AllocDPUsOp>(
+      wgAlloc->getLoc(), upmemTy, dpuProgram.getSymNameAttr());
+
+  llvm::MapVector<Value, upmem::StaticAllocOp> buffersToMramBuf;
+
+  // rewriter.setInsertionPointToStart(&dpuProgram.getBody().front());
+
+  // create named static MRAM buffers for each cnm.alloc operation, put them in
+  // the dpu program
+
+  SymbolTable dpuProgramSymTable(dpuProgram);
+  for (auto user : launch.getWg().getUsers()) {
+    if (auto alloc = llvm::dyn_cast_or_null<cnm::AllocOp>(user)) {
+      auto bufferType = alloc.getType();
+
+      const MemRefType memrefTy =
+          MemRefType::get(bufferType.getShape(), bufferType.getElementType(),
+                          MemRefLayoutAttrInterface{}, bufferType.getLevel());
+
+      auto mrambuf = rewriter.create<upmem::StaticAllocOp>(
+          alloc->getLoc(), memrefTy, false, false, "buf");
+      dpuProgramSymTable.insert(mrambuf); // does renaming
+      buffersToMramBuf[alloc.getResult()] = mrambuf;
+    }
+  }
+
+  // then, replace all scatter/gather with the upmem equivalents
+
+  for (auto user : launch.getWg().getUsers()) {
+
+    if (auto scatter = llvm::dyn_cast_or_null<cnm::ScatterOp>(user)) {
+      auto alloc = buffersToMramBuf[scatter.getBuffer()];
+      if (alloc) {
+        auto ref = upmem::getSymbolPath(
+            SymbolTable::getNearestSymbolTable(scatter), alloc);
+        if (succeeded(ref)) {
+          if (failed(convertCnmScatterToUpmem(rewriter, scatter, upmemWgAlloc,
+                                              *ref)))
+            return failure();
+          continue;
+        }
+      }
+    }
+    if (auto gather = llvm::dyn_cast_or_null<cnm::GatherOp>(user)) {
+      auto alloc = buffersToMramBuf[gather.getBuffer()];
+      if (alloc) {
+        auto ref = upmem::getSymbolPath(
+            SymbolTable::getNearestSymbolTable(gather), alloc);
+        if (succeeded(ref)) {
+          if (failed(convertCnmGatherToUpmem(rewriter, gather, upmemWgAlloc,
+                                             *ref)))
+            return failure();
+          continue;
+        }
+      }
+    }
+  }
+  // At this point we have replaced (and deleted) the scatter and gather.
+  // We still need to move the body of the launch into the new DPU program,
+  // and delete all remaining CNM ops.
+
+  // wait no the memrefs inside have the type of the wram buffers.
+  // the mram buffers have tasklets * wram buffer size.
+  IRMapping mapping;
+  for (auto [cnmBuf, memref] : llvm::zip_equal(
+           llvm::concat<Value>(launch.getInputs(), launch.getOutBuffers()),
+           launch.getBody().getArguments())) {
+
+    mapping.map(memref, buffersToMramBuf[cnmBuf].getResult());
+  }
+
+  return success();
+}
 
 struct ConvertCnmLaunchToUPMEM : public OpConversionPattern<cnm::LaunchOp> {
-  using OpConversionPattern<cnm::LaunchOp>::OpConversionPattern;
+  ModuleOp kernelModuleOp;
+  ConvertCnmLaunchToUPMEM(MLIRContext *ctx, ModuleOp kernelModuleOp)
+      : mlir::OpConversionPattern<cnm::LaunchOp>(ctx),
+        kernelModuleOp(kernelModuleOp) {}
 
   LogicalResult
   matchAndRewrite(cnm::LaunchOp op, OpAdaptor,
@@ -381,7 +478,7 @@ void populateCnmToUPMEMFinalTypeConversions(TypeConverter &typeConverter) {
   typeConverter.addConversion([&](cnm::WorkgroupType wgType) -> Type {
     return upmem::DeviceHierarchyType::get(
         wgType.getContext(), wgType.getShape()[0], wgType.getShape()[1],
-        wgType.getShape()[2], true);
+        wgType.getShape()[2]);
   });
 
   typeConverter.addConversion([](ShapedType st) -> Type { return st; });
@@ -425,6 +522,13 @@ struct ConvertCnmToUPMEMPass
       builder.setInsertionPointToEnd(&rootModule.getBodyRegion().front());
       dpuKernelModule =
           builder.create<ModuleOp>(rootModule->getLoc(), "dpu_kernels");
+    }
+
+    SmallVector<LaunchOp> launchOps;
+    rootModule->walk(
+        [&](cnm::LaunchOp launch) { launchOps.push_back(launch); });
+
+    for (auto launch : launchOps) {
     }
 
     RewritePatternSet patterns(&getContext());

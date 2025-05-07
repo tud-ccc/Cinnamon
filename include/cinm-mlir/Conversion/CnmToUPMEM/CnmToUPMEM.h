@@ -7,8 +7,5 @@
 
 namespace mlir::cnm {
 void populateCnmToUPMEMFinalTypeConversions(TypeConverter &typeConverter);
-void populateCnmToUPMEMConversionPatterns(TypeConverter &typeConverter,
-                                          RewritePatternSet &patterns,
-                                          ModuleOp dpuKernelModule);
 std::unique_ptr<Pass> createConvertCnmToUPMEMPass();
 } // namespace mlir::cnm

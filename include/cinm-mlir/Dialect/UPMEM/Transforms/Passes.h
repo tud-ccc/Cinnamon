@@ -13,9 +13,6 @@ namespace mlir {
 //===- Generated passes ---------------------------------------------------===//
 namespace upmem {
 
-llvm::FailureOr<SymbolRefAttr> getSymbolPath(SymbolTable fromTable,
-                                             SymbolOpInterface target);
-
 } // namespace upmem
 
 #define GEN_PASS_DECL
