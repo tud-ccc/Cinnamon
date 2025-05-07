@@ -90,13 +90,13 @@ static llvm::FailureOr<SymbolRefAttr> getSymbolPath(SymbolTable fromTable,
 
   StringAttr rootPath = target.getNameAttr();
   llvm::SmallVector<FlatSymbolRefAttr> path;
-  auto table = target->getParentOfType<SymbolTable>();
-  while (table.getOp() != fromTable.getOp()) {
-    if (auto asSymbol =
-            llvm::dyn_cast_or_null<SymbolOpInterface>(table.getOp())) {
-      auto next = table.getOp()->getParentOfType<SymbolTable>();
+  Operation *table = SymbolTable::getNearestSymbolTable(target->getParentOp());
+  while (table != fromTable.getOp()) {
+    if (auto asSymbol = llvm::dyn_cast_or_null<SymbolOpInterface>(table)) {
+      auto next = SymbolTable::getNearestSymbolTable(table->getParentOp());
       path.push_back(FlatSymbolRefAttr::get(rootPath));
       rootPath = asSymbol.getNameAttr();
+      table = next;
     } else {
       return failure();
     }
@@ -129,7 +129,7 @@ struct UPMEMDedupKernelsPass
     // Update call ops to call unique func op representants.
     llvm::SmallVector<StringRef, 2> flatRef;
     module->getParentOp()->walk([&](upmem::DpuSetOp setOp) {
-      auto symtable = setOp->getParentOfType<SymbolTable>();
+      auto symtable = SymbolTable::getNearestSymbolTable(setOp);
       auto prog = setOp.resolveDpuProgram();
       if (!prog)
         return;

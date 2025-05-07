@@ -410,7 +410,7 @@ def DpuSetOp : Upmem_Op<"dpu_set", [ Symbol, DeclareOpInterfaceMethods<SymbolUse
 
   let arguments = (ins SymbolNameAttr:$sym_name, I32Attr:$numRanks, I32Attr:$numDpus, SymbolRefAttr:$dpuProgram);
   let builders = [
-    OpBuilder<(ins "SymbolNameAttr":$sym_name, "int32_t":$numRanks, "int32_t":$numDpus, "upmem::DpuProgramOp":$dpuProgram),
+    OpBuilder<(ins "StringAttr":$sym_name, "int32_t":$numRanks, "int32_t":$numDpus, "upmem::DpuProgramOp":$dpuProgram),
     [{
       build($_builder, $_state, sym_name, numRanks, numDpus, dpuProgram.getSymName());
     }]>

@@ -143,6 +143,8 @@ struct CppEmitter {
   /// Return the existing or a new name for a Value.
   StringRef getOrCreateName(Value val);
 
+  LogicalResult recordStaticName(Value val, StringRef name);
+
   /// Return the existing or a new label of a Block.
   StringRef getOrCreateName(Block &block);
 
@@ -922,49 +924,48 @@ static LogicalResult printOperation(CppEmitter &emitter,
   }
 }
 
-static LogicalResult printOperation(CppEmitter &emitter, ModuleOp moduleOp) {
-  CppEmitter::Scope scope(emitter);
+// static LogicalResult printOperation(CppEmitter &emitter, ModuleOp moduleOp) {
+//   CppEmitter::Scope scope(emitter);
 
-  for (Operation &op : moduleOp) {
-    if (failed(emitter.emitOperation(op, /*trailingSemicolon=*/false)))
-      return failure();
+//   for (Operation &op : moduleOp) {
+//     if (failed(emitter.emitOperation(op, /*trailingSemicolon=*/false)))
+//       return failure();
+//   }
+//   return success();
+// }
+
+static LogicalResult printBufferDecl(CppEmitter &emitter,
+                                     upmem::StaticAllocOp op) {
+  StringRef qualifier;
+  if (op.isWram()) {
+    qualifier = "__dma_aligned";
+  } else {
+    qualifier = op.getNoinit() ? "__mram_noinit" : "__mram";
   }
-  return success();
-}
+  auto bufferType = op.getBuffer().getType();
 
-static LogicalResult printStaticBufferDecl(CppEmitter &emitter, Location loc,
-                                           MemRefType bufferType,
-                                           Value bufferValue,
-                                           StringRef qualifier) {
-  if (failed(emitter.emitType(loc, bufferType.getElementType())))
+  if (failed(emitter.emitType(op->getLoc(), bufferType.getElementType())))
     return failure();
 
   auto &out = emitter.ostream();
   out << " " << qualifier << " ";
-  emitter.getOrCreateName(bufferValue);
+  if (op.getSymNameAttr()) {
+    out << op.getSymName();
+  } else {
+    emitter.getOrCreateName(op.getBuffer());
+  }
   for (auto dim : bufferType.getShape()) {
     out << '[' << dim << ']';
   }
   out << ";\n";
   return success();
 }
-static LogicalResult printBufferDecl(CppEmitter &emitter,
-                                     upmem::SharedMRAMAllocOp op) {
-  StringRef qualifier = op.getNoInit() ? "__mram_noinit" : "__mram";
-  return printStaticBufferDecl(emitter, op->getLoc(), op.getBufferType(),
-                               op.getMemref(), qualifier);
-}
 
-static LogicalResult printBufferDecl(CppEmitter &emitter,
-                                     upmem::SharedWRAMAllocOp op) {
-  return printStaticBufferDecl(emitter, op->getLoc(), op.getBufferType(),
-                               op.getMemref(), "__dma_aligned");
-}
 static LogicalResult printOperation(CppEmitter &emitter,
-                                    upmem::UPMEMFuncOp functionOp) {
+                                    upmem::DpuProgramOp functionOp) {
   // We need to declare variables at top if the function has multiple blocks.
   if (!emitter.shouldDeclareVariablesAtTop() &&
-      functionOp.getBlocks().size() > 1) {
+      functionOp.getBody().getBlocks().size() > 1) {
     return functionOp.emitOpError(
         "with multiple blocks needs variables declared at top");
   }
@@ -973,11 +974,8 @@ static LogicalResult printOperation(CppEmitter &emitter,
   WalkResult result =
       functionOp.walk<WalkOrder::PreOrder>([&](Operation *op) -> WalkResult {
         LogicalResult result = LogicalResult::success();
-        if (auto wram = llvm::dyn_cast_or_null<upmem::SharedWRAMAllocOp>(op)) {
-          result = printBufferDecl(emitter, wram);
-        } else if (auto mram =
-                       llvm::dyn_cast_or_null<upmem::SharedMRAMAllocOp>(op)) {
-          result = printBufferDecl(emitter, mram);
+        if (auto alloc = llvm::dyn_cast_or_null<upmem::StaticAllocOp>(op)) {
+          result = printBufferDecl(emitter, alloc);
         }
         if (failed(result))
           return WalkResult::interrupt();
@@ -991,19 +989,8 @@ static LogicalResult printOperation(CppEmitter &emitter,
   // if (failed(emitter.emitTypes(functionOp.getLoc(),
   //  functionOp.getFunctionType().getResults())))
   // return failure();
-  os << "void " << functionOp.getName();
+  os << "void " << functionOp.getName() << "(void) {\n";
 
-  os << "(";
-  if (failed(interleaveCommaWithError(
-          functionOp.getArguments(), os,
-          [&](BlockArgument arg) -> LogicalResult {
-            if (failed(emitter.emitType(functionOp.getLoc(), arg.getType())))
-              return failure();
-            os << " " << emitter.getOrCreateName(arg);
-            return success();
-          })))
-    return failure();
-  os << ") {\n";
   os.indent();
   if (emitter.shouldDeclareVariablesAtTop()) {
     // Declare all variables that hold op results including those from nested
@@ -1023,7 +1010,7 @@ static LogicalResult printOperation(CppEmitter &emitter,
       return failure();
   }
 
-  Region::BlockListType &blocks = functionOp.getBlocks();
+  Region::BlockListType &blocks = functionOp.getBody().getBlocks();
   // Create label names for basic blocks.
   for (Block &block : blocks) {
     emitter.getOrCreateName(block);
@@ -1066,24 +1053,22 @@ static LogicalResult printOperation(CppEmitter &emitter,
   return success();
 }
 
-static LogicalResult printOperation(CppEmitter &emitter,
-                                    upmem::ReturnOp returnOp) {
+static LogicalResult printOperation(CppEmitter &emitter, upmem::ReturnOp) {
   emitter.ostream() << "return";
   return success();
 }
 
-static void printCompilationVar(upmem::UPMEMFuncOp &kernel, raw_ostream &os) {
+static void printCompilationVar(upmem::DpuProgramOp &kernel, raw_ostream &os) {
   os << "COMPILE_" << kernel.getSymName();
 }
 
-static LogicalResult printOperation(CppEmitter &emitter,
-                                    upmem::UPMEMModuleOp moduleOp) {
+static LogicalResult printOperation(CppEmitter &emitter, ModuleOp moduleOp) {
   CppEmitter::Scope scope(emitter);
 
-  llvm::SmallVector<upmem::UPMEMFuncOp> kernels;
+  llvm::SmallVector<upmem::DpuProgramOp> kernels;
   for (Operation &op : moduleOp) {
-    if (llvm::isa<upmem::UPMEMFuncOp>(op)) {
-      kernels.push_back(llvm::cast<upmem::UPMEMFuncOp>(op));
+    if (auto prog = llvm::dyn_cast_or_null<upmem::DpuProgramOp>(op)) {
+      kernels.push_back(prog);
     }
   }
 
@@ -1157,6 +1142,13 @@ StringRef CppEmitter::getOrCreateName(Value val) {
   if (!valueMapper.count(val))
     valueMapper.insert(val, formatv("v{0}", ++valueInScopeCount.top()));
   return *valueMapper.begin(val);
+}
+LogicalResult CppEmitter::recordStaticName(Value val, StringRef name) {
+  if (valueMapper.count(val) && valueMapper.lookup(val) != name)
+    return failure();
+  std::string str(name);
+  valueMapper.insert(val, std::move(str));
+  return success();
 }
 
 /// Return the existing or a new label for a Block.
@@ -1381,16 +1373,13 @@ LogicalResult CppEmitter::emitLabel(Block &block) {
 }
 
 LogicalResult CppEmitter::emitOperation(Operation &op, bool trailingSemicolon) {
-  if (isa<arith::ConstantOp>(op) || isa<upmem::SharedWRAMAllocOp>(op) ||
-      isa<upmem::SharedMRAMAllocOp>(op)) {
+  if (isa<arith::ConstantOp>(op) || isa<upmem::StaticAllocOp>(op)) {
     return success();
   }
 
   LogicalResult status =
       llvm::TypeSwitch<Operation *, LogicalResult>(&op)
           // Builtin ops.
-          .Case<upmem::UPMEMModuleOp>(
-              [&](auto op) { return printOperation(*this, op); })
           .Case<ModuleOp>([&](auto op) { return printOperation(*this, op); })
           // CF ops.
           .Case<cf::BranchOp, cf::CondBranchOp>(
@@ -1400,7 +1389,7 @@ LogicalResult CppEmitter::emitOperation(Operation &op, bool trailingSemicolon) {
               [&](auto op) { return printOperation(*this, op); })
           // Func ops.
           .Case<func::CallOp, func::ConstantOp, func::FuncOp,
-                upmem::UPMEMFuncOp, func::ReturnOp, upmem::ReturnOp>(
+                upmem::DpuProgramOp, func::ReturnOp, upmem::ReturnOp>(
               [&](auto op) { return printOperation(*this, op); })
           // SCF ops.
           .Case<scf::ForOp, scf::IfOp, scf::YieldOp>(
@@ -1615,11 +1604,13 @@ LogicalResult upmem_emitc::UPMEMtranslateToCpp(Operation *op, raw_ostream &os,
   CppEmitter emitter(os, declareVariablesAtTop);
   LogicalResult res = success();
   op->walk<WalkOrder::PreOrder>([&](Operation *child) {
-    if (llvm::isa<upmem::UPMEMModuleOp>(child)) {
-      res = emitter.emitOperation(*child, /*trailingSemicolon=*/false);
-      return WalkResult::interrupt();
-    } else if (llvm::isa<ModuleOp>(child))
+    if (auto mod = llvm::dyn_cast_or_null<ModuleOp>(child)) {
+      if (mod.getSymName() == "dpu_kernels") {
+        res = emitter.emitOperation(*child, /*trailingSemicolon=*/false);
+        return WalkResult::interrupt();
+      }
       return WalkResult::advance();
+    }
     return WalkResult::skip();
   });
   return res;
