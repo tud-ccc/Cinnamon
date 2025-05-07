@@ -18,6 +18,7 @@
 #include <mlir/Conversion/LLVMCommon/TypeConverter.h>
 #include <mlir/Dialect/Affine/IR/AffineOps.h>
 #include <mlir/Dialect/Affine/Utils.h>
+#include <mlir/Dialect/LLVMIR/LLVMAttrs.h>
 #include <mlir/Dialect/LLVMIR/LLVMDialect.h>
 #include <mlir/Dialect/LLVMIR/LLVMTypes.h>
 #include <mlir/Dialect/MemRef/IR/MemRef.h>
@@ -66,6 +67,23 @@ static LLVM::LLVMPointerType functionPtrTy(Type resultTy, ArrayRef<Type>) {
 static Value reifyAsIndex(ImplicitLocOpBuilder &builder,
                           LLVMTypeConverter const *converter, int64_t value) {
   return builder.create<LLVM::ConstantOp>(converter->getIndexType(), value);
+}
+static Value reifyAsString(ImplicitLocOpBuilder &builder, ModuleOp container,
+                           StringAttr value) {
+  auto ptrTy = untypedPtrType(builder.getContext());
+  LLVM::GlobalOp global;
+  {
+    OpBuilder::InsertionGuard guard(builder);
+    builder.setInsertionPointToStart(&container.getBodyRegion().front());
+    //  Type type, bool isConstant, Linkage linkage, StringRef name, Attribute
+    //  value,
+    global = builder.create<LLVM::GlobalOp>(ptrTy, true, LLVM::Linkage::Private,
+                                            value.getValue(), value);
+    SymbolTable table(container);
+    table.insert(global);
+  }
+
+  return builder.create<LLVM::AddressOfOp>(global);
 }
 
 static LLVM::GlobalOp
@@ -175,7 +193,7 @@ static FailureOr<AffineMap> linearizeAffineMap(AffineMap map,
 size_t upmemrt_dpu_scatter(struct dpu_set_t *dpu_set, void *host_buffer,
                            size_t element_size, size_t num_elements,
                            size_t num_elements_per_tasklet, size_t copy_bytes,
-                           size_t offset_in_dpu_bytes,
+                           char* buffer_id,
                            size_t (*base_offset)(size_t));
 */
 static FailureOr<LLVM::LLVMFuncOp>
@@ -187,7 +205,7 @@ getScatterOrGatherFunc(OpBuilder &rewriter, ModuleOp moduleOp,
   auto funPtrTy = functionPtrTy(sizeTy, {sizeTy});
   return LLVM::lookupOrCreateFn(
       rewriter, moduleOp, name,
-      {ptrTy, ptrTy, sizeTy, sizeTy, sizeTy, sizeTy, sizeTy, funPtrTy},
+      {ptrTy, ptrTy, sizeTy, sizeTy, sizeTy, sizeTy, ptrTy, funPtrTy},
       LLVM::LLVMVoidType::get(ctx));
 }
 
@@ -378,7 +396,8 @@ static LogicalResult lowerScatterOrGather(Op op, typename Op::Adaptor adaptor,
   if (llvm::failed(runtimeScatterFun))
     return failure();
   auto funPtrOp = rewriter0.create<LLVM::AddressOfOp>(loc, *affineMapFunOpt);
-  auto dpuMemOffset = reifyAsIndex(rewriter, tyConverter, op.getDpuMemOffset());
+  auto bufferRef = op.getDpuBufRef().getLeafReference();
+  auto bufferId = reifyAsString(rewriter, moduleOp, bufferRef);
   auto numBytesCopied = op.getDpuBufferSizeInBytes();
 
   // Transfer count must be 8-byte aligned
@@ -417,8 +436,8 @@ static LogicalResult lowerScatterOrGather(Op op, typename Op::Adaptor adaptor,
                  reifyAsIndex(rewriter, tyConverter, elementSize),
                  reifyAsIndex(rewriter, tyConverter, numElements),
                  reifyAsIndex(rewriter, tyConverter, numElementsPerTasklet),
-                 reifyAsIndex(rewriter, tyConverter, numBytesCopied),
-                 dpuMemOffset, funPtrOp.getRes()});
+                 reifyAsIndex(rewriter, tyConverter, numBytesCopied), bufferId,
+                 funPtrOp.getRes()});
 
   rewriter0.eraseOp(op);
   return success();
