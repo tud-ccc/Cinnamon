@@ -333,23 +333,6 @@ def DpuProgramOp : Upmem_Op<"dpu_program",
 
 }
 
-def InlineDpuProgramOp : Upmem_Op<"inline_dpu_program",
-[
-  SingleBlockImplicitTerminator<"ReturnOp">,
-  IsolatedFromAbove,
-  SymbolTable
-]> {
-  let summary = "Represents the final DPU program as an inline kernel waiting to be outlined";
-  let description = [{
-  }];
-
-  let arguments = (ins DeviceHierarchyType:$wg);
-  let regions = (region SizedRegion<1>:$body);
-
-  let assemblyFormat = "`for` $wg `as` type($wg) attr-dict-with-keyword $body";
-
-}
-
 
 def AllocDPUsOp: Upmem_Op <"alloc_dpus",  [ DeclareOpInterfaceMethods<SymbolUserOpInterface> ]> {
   let summary = "UPMEM alloc dpus";
@@ -393,15 +376,15 @@ def FreeDPUsOp: Upmem_Op <"free_dpus", []>{
   }];
 }
 
-def WaitForOp : Upmem_Op<"wait_for", [DeclareOpInterfaceMethods<SymbolUserOpInterface>]> {
+def WaitForOp : Upmem_Op<"wait_for", []> {
   let summary = "Run a program on a dpu set synchronously";
   let description = [{
 
   }];
 
-  let arguments = (ins DeviceHierarchyType:$dpuSet, OptionalAttr<SymbolRefAttr>:$dpuProgramRef);
+  let arguments = (ins DeviceHierarchyType:$dpuSet);
 
-  let assemblyFormat = "($dpuProgramRef^ `on`)? `wg` $dpuSet attr-dict `:` qualified(type($dpuSet))";
+  let assemblyFormat = " $dpuSet attr-dict `:` qualified(type($dpuSet))";
 
 }
 
@@ -424,7 +407,7 @@ def DpuSetOp : Upmem_Op<"dpu_set", [ Symbol, DeclareOpInterfaceMethods<SymbolUse
   }];
 }
 
-def ReturnOp : Upmem_Op<"return", [ParentOneOf<["DpuProgramOp", "InlineDpuProgramOp"]>, Pure, Terminator]>,
+def ReturnOp : Upmem_Op<"return", [ParentOneOf<["DpuProgramOp"]>, Pure, Terminator]>,
     Arguments<(ins)>, Results<(outs)>
       {
   let summary = "Terminator for UPMEM functions.";

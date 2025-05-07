@@ -111,21 +111,6 @@ upmem::DpuProgramOp upmem::DpuSetOp::resolveDpuProgram() {
   return success();
 }
 
-::mlir::LogicalResult
-upmem::WaitForOp::verifySymbolUses(::mlir::SymbolTableCollection &symbolTable) {
-
-  if (getDpuProgramRefAttr()) {
-    upmem::DpuProgramOp program =
-        symbolTable.lookupNearestSymbolFrom<upmem::DpuProgramOp>(
-            *this, getDpuProgramRefAttr());
-
-    if (!program)
-      return emitOpError("requires ") << getDpuProgramRefAttr()
-                                      << " to refer to an upmem.dpu_program op";
-  }
-  return success();
-}
-
 ::mlir::LogicalResult upmem::LoadProgramOp::verifySymbolUses(
     ::mlir::SymbolTableCollection &symbolTable) {
 
