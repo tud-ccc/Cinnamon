@@ -30,8 +30,7 @@ include "mlir/IR/RegionKindInterface.td"
 
 
 class IndexOp<string mnemonic, list<Trait> traits = []> :
-    Upmem_Op<mnemonic, !listconcat(traits, [
-        Pure, DeclareOpInterfaceMethods<InferIntRangeInterface, ["inferResultRanges"]>])>,
+    Upmem_Op<mnemonic, !listconcat(traits, [Pure])>,
         Results<(outs Index)> {
   let assemblyFormat = "attr-dict";
 }
@@ -65,7 +64,7 @@ def DPUDimOp : IndexOp<"dpu_dim"> {
   }];
 }
 
-def TaskletDimOp : IndexOp<"tasklet_dim"> {
+def TaskletDimOp : IndexOp<"tasklet_dim", [DeclareOpInterfaceMethods<InferIntRangeInterface, ["inferResultRanges"]>]> {
   let description = [{
     NOTE: Not used at the moment.
 
@@ -284,7 +283,7 @@ class ScatterGatherLike<string mnemonic, string kw, MemoryEffect effect>
                   I64Attr:$dpuMemOffset,
                   I64Attr:$transferCount,
                   AffineMapAttr:$scatterMap,
-                  DeviceHierarchy:$hierarchy);
+                  DeviceHierarchyType:$hierarchy);
 
   let results = (outs);
 
@@ -324,11 +323,56 @@ def GatherOp: ScatterGatherLike<"gather", "from", MemWrite> {
 }
 
 
-def AllocDPUsOp: Upmem_Op <"alloc_dpus", []> {
+
+def DpuProgramOp : Upmem_Op<"dpu_program",
+[
+  SingleBlockImplicitTerminator<"ReturnOp">,
+  IsolatedFromAbove,
+  SymbolTable,
+  Symbol
+]> {
+  let summary = "Represents the final DPU program";
+  let description = [{
+  }];
+
+  let arguments = (ins SymbolNameAttr:$sym_name, I32Attr:$numTasklets);
+  let regions = (region SizedRegion<1>:$body);
+
+  let assemblyFormat = "$sym_name `(` `)` `tasklets` `(` $numTasklets `)` attr-dict-with-keyword $body";
+
+}
+
+def InlineDpuProgramOp : Upmem_Op<"inline_dpu_program",
+[
+  SingleBlockImplicitTerminator<"ReturnOp">,
+  IsolatedFromAbove,
+  SymbolTable
+]> {
+  let summary = "Represents the final DPU program as an inline kernel waiting to be outlined";
+  let description = [{
+  }];
+
+  let arguments = (ins TypeAttrOf<DeviceHierarchyType>:$wgShape);
+  let regions = (region SizedRegion<1>:$body);
+
+  let assemblyFormat = "`on` $wgShape attr-dict-with-keyword $body";
+
+}
+
+
+def AllocDPUsOp: Upmem_Op <"alloc_dpus",  [ DeclareOpInterfaceMethods<SymbolUserOpInterface> ]> {
   let summary = "UPMEM alloc dpus";
   let description = [{
   }];
-  let results = (outs DeviceHierarchy:$hierarchy_shape);
+  let arguments = (ins SymbolNameAttr:$dpu_set_ref);
+  let results = (outs DeviceHierarchyType:$hierarchy_shape);
+
+  let builders = [
+    OpBuilder<(ins "upmem::DpuSetOp":$dpuSet),
+    [{
+      build($_builder, $_state, dpuSet.getDeviceHierarchy(), dpuSet.getSymName());
+    }]>
+  ];
 
   let assemblyFormat = [{
      attr-dict `:` qualified(type($hierarchy_shape))
@@ -339,42 +383,22 @@ def FreeDPUsOp: Upmem_Op <"free_dpus", []>{
   let summary = "UPMEM free dpus";
   let description = [{
   }];
-  let arguments = (ins DeviceHierarchy:$hierarchy);
+  let arguments = (ins DeviceHierarchyType:$hierarchy);
 
   let assemblyFormat = [{
      $hierarchy attr-dict `:` qualified(type($hierarchy))
   }];
 }
 
-
-
-def DpuProgramOp : Upmem_Op<"dpu_program",
-[
-  SingleBlockImplicitTerminator<"ReturnOp">,
-  SymbolTable,
-  Symbol
-]> {
-  let summary = "Represents the final DPU program";
-  let description = [{
-  }];
-
-  let arguments = (ins SymbolNameAttr:$sym_name, TypeAttrOf<DeviceHierarchy>:$wgShape);
-  let regions = (region SizedRegion<1>:$body);
-
-  let assemblyFormat = "$sym_name `(` `)` `on` $wgShape attr-dict-with-keyword $body";
-
-}
-
-
-def WaitForOp : Upmem_Op<"wait_for", [ DeclareOpInterfaceMethods<SymbolUserOpInterface> ]> {
+def WaitForOp : Upmem_Op<"wait_for", []> {
   let summary = "Run a program on a dpu set synchronously";
   let description = [{
 
   }];
 
-  let arguments = (ins SymbolRefAttr:$dpuSet);
+  let arguments = (ins DeviceHierarchyType:$dpuSet);
 
-  let assemblyFormat = "$dpuSet attr-dict";
+  let assemblyFormat = "$dpuSet attr-dict `:` qualified(type($dpuSet))";
 
 }
 
@@ -385,12 +409,25 @@ def DpuSetOp : Upmem_Op<"dpu_set", [ Symbol, DeclareOpInterfaceMethods<SymbolUse
   }];
 
   let arguments = (ins SymbolNameAttr:$sym_name, I32Attr:$numRanks, I32Attr:$numDpus, SymbolRefAttr:$dpuProgram);
+  let builders = [
+    OpBuilder<(ins "SymbolNameAttr":$sym_name, "int32_t":$numRanks, "int32_t":$numDpus, "upmem::DpuProgramOp":$dpuProgram),
+    [{
+      build($_builder, $_state, sym_name, numRanks, numDpus, dpuProgram.getSymName());
+    }]>
+  ];
+
 
   let assemblyFormat = "$sym_name `(` $numRanks `x` $numDpus `)` `with` $dpuProgram attr-dict";
-
+  let extraClassDeclaration = [{
+      upmem::DpuProgramOp resolveDpuProgram();
+      upmem::DeviceHierarchyType getDeviceHierarchy() {
+        auto tasklets = resolveDpuProgram().getNumTasklets();
+        return DeviceHierarchyType::get(getContext(), getNumRanks(), getNumDpus(), tasklets);
+      }
+  }];
 }
 
-def ReturnOp : Upmem_Op<"return", [ParentOneOf<["DpuProgramOp", "LaunchOp"]>, Pure, Terminator]>,
+def ReturnOp : Upmem_Op<"return", [ParentOneOf<["DpuProgramOp", "InlineDpuProgramOp"]>, Pure, Terminator]>,
     Arguments<(ins)>, Results<(outs)>
       {
   let summary = "Terminator for UPMEM functions.";

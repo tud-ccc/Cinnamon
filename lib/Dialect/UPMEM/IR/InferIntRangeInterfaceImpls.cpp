@@ -18,22 +18,22 @@ static ConstantIntRanges getIndexRange(uint64_t umin, uint64_t umax) {
                                          APInt(width, umax));
 }
 
-void RankDimOp::inferResultRanges(ArrayRef<ConstantIntRanges>,
-                                  SetIntRangeFn setResultRange) {
-  auto parent = (*this)->getParentOfType<upmem::DpuProgramOp>();
-  auto max = parent.getWgShape().getNumRanks();
-  setResultRange(getResult(), getIndexRange(0, max - 1ULL));
-}
+// void RankDimOp::inferResultRanges(ArrayRef<ConstantIntRanges>,
+//                                   SetIntRangeFn setResultRange) {
+//   auto parent = (*this)->getParentOfType<upmem::DpuProgramOp>();
+//   auto max = parent.getWgShape().getNumRanks();
+//   setResultRange(getResult(), getIndexRange(0, max - 1ULL));
+// }
 
-void DPUDimOp::inferResultRanges(ArrayRef<ConstantIntRanges>,
-                                 SetIntRangeFn setResultRange) {
-  auto parent = (*this)->getParentOfType<upmem::DpuProgramOp>();
-  auto max = parent.getWgShape().getNumDpusPerRank();
-  setResultRange(getResult(), getIndexRange(0, max - 1ULL));
-}
+// void DPUDimOp::inferResultRanges(ArrayRef<ConstantIntRanges>,
+//                                  SetIntRangeFn setResultRange) {
+//   auto parent = (*this)->getParentOfType<upmem::DpuProgramOp>();
+//   auto max = parent.getWgShape().getNumDpusPerRank();
+//   setResultRange(getResult(), getIndexRange(0, max - 1ULL));
+// }
 void TaskletDimOp::inferResultRanges(ArrayRef<ConstantIntRanges>,
                                      SetIntRangeFn setResultRange) {
   auto parent = (*this)->getParentOfType<upmem::DpuProgramOp>();
-  auto max = parent.getWgShape().getNumTaskletsPerDpu();
+  auto max = parent.getNumTasklets();
   setResultRange(getResult(), getIndexRange(0, max - 1ULL));
 }

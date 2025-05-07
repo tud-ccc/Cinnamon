@@ -19,7 +19,7 @@ def UPMEMOutlineKernelPass: Pass<"upmem-outline-kernel", "ModuleOp"> {
   }];
 }
 
-def UPMEMDedupKernelsPass: Pass<"upmem-dedup-kernels", "upmem::UPMEMModuleOp"> {
+def UPMEMDedupKernelsPass: Pass<"upmem-dedup-kernels", "ModuleOp"> {
   let summary = "Deduplicate the DPU kernels within an upmem module";
   let description = [{
   }];
