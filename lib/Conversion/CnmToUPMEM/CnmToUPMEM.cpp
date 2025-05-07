@@ -62,8 +62,11 @@ struct ConvertCnmWorkgroupToUPMEM
       return op->emitOpError(
           "cannot be converted to UPMEM dialect. "
           "UPMEM translation requires workgroup with 3 dimensions.");
-    rewriter.replaceOpWithNewOp<upmem::AllocDPUsOp>(
-        op, getTypeConverter()->convertType(op.getType()));
+    auto upmemWg = llvm::cast<upmem::DeviceHierarchyType>(
+        getTypeConverter()->convertType(op.getType()));
+
+    rewriter.replaceOpWithNewOp<upmem::AllocDPUsOp>(op, upmemWg,
+                                                    SymbolRefAttr{});
 
     SmallVector<cnm::AllocOp> allocs;
     for (auto use : op.getResult().getUsers()) {
@@ -195,8 +198,8 @@ struct ConvertCnmLaunchToUPMEM : public OpConversionPattern<cnm::LaunchOp> {
     const size_t chunksPerTasklet = wgShape.size() == 4 ? wgShape.back() : 1;
 
     // build launch op body
-    upmem::LaunchOp launchOp = rewriter.create<upmem::LaunchOp>(
-        op.getLoc(), wg);
+    upmem::InlineDpuProgramOp launchOp =
+        rewriter.create<upmem::InlineDpuProgramOp>(op.getLoc(), wg);
     rewriter.setInsertionPointToStart(&launchOp.getBody().front());
 
     // calculate address of all buffer slices for the current tasklet & allocate
@@ -391,8 +394,9 @@ struct ConvertCnmTerminatorToUPMEM
 
 void populateCnmToUPMEMFinalTypeConversions(TypeConverter &typeConverter) {
   typeConverter.addConversion([&](cnm::WorkgroupType wgType) -> Type {
-    return upmem::DeviceHierarchyType::get(wgType.getContext(),
-                                           wgType.getShape());
+    return upmem::DeviceHierarchyType::get(
+        wgType.getContext(), wgType.getShape()[0], wgType.getShape()[1],
+        wgType.getShape()[2]);
   });
 
   typeConverter.addConversion([](ShapedType st) -> Type { return st; });

@@ -9,4 +9,6 @@ DEPENDS
 LINK_LIBS PUBLIC
     MLIRIR
     MLIRTransformUtils
+    UPMEMIR
+    MLIRFuncDialect
 )

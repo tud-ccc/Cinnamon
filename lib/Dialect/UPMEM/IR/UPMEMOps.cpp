@@ -90,8 +90,7 @@ upmem::DpuSetOp::verifySymbolUses(::mlir::SymbolTableCollection &symbolTable) {
 }
 
 upmem::DpuProgramOp upmem::DpuSetOp::resolveDpuProgram() {
-  return (*this)
-      ->getParentOfType<SymbolTable>()
+  return SymbolTable(SymbolTable::getNearestSymbolTable((*this)->getParentOp()))
       .lookupNearestSymbolFrom<upmem::DpuProgramOp>(*this, getDpuProgram());
 }
 
@@ -99,11 +98,24 @@ upmem::DpuProgramOp upmem::DpuSetOp::resolveDpuProgram() {
     ::mlir::SymbolTableCollection &symbolTable) {
 
   upmem::DpuSetOp program =
-      symbolTable.lookupNearestSymbolFrom<upmem::DpuSetOp>(*this,
-                                                           getDpuSetRefAttr());
+      symbolTable.lookupNearestSymbolFrom<upmem::DpuSetOp>(
+          *this, getDpuProgramRefAttr());
 
   if (!program)
     return emitOpError("requires ")
-           << getDpuSetRefAttr() << " to refer to an upmem.dpu_set op";
+           << getDpuProgramRefAttr() << " to refer to an upmem.dpu_program op";
+  return success();
+}
+
+::mlir::LogicalResult
+upmem::WaitForOp::verifySymbolUses(::mlir::SymbolTableCollection &symbolTable) {
+
+  upmem::DpuSetOp program =
+      symbolTable.lookupNearestSymbolFrom<upmem::DpuSetOp>(*this,
+                                                           getDpuProgramAttr());
+
+  if (!program)
+    return emitOpError("requires ")
+           << getDpuProgramAttr() << " to refer to an upmem.dpu_program op";
   return success();
 }

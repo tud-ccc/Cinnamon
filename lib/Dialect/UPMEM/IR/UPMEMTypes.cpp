@@ -68,20 +68,15 @@ Type mlir::upmem::DeviceHierarchyType::parse(mlir::AsmParser &parser) {
       parser.parseGreater()) {
     return Type();
   }
+  if (shape.size() != 3)
+    return {};
 
-  return upmem::DeviceHierarchyType::get(parser.getContext(), shape);
+  return upmem::DeviceHierarchyType::get(parser.getContext(), shape[0],
+                                         shape[1], shape[2]);
 }
 
 void mlir::upmem::DeviceHierarchyType::print(mlir::AsmPrinter &printer) const {
   printer << "<";
-  printer.printDimensionList(getShape());
+  printer.printDimensionList(getWgShape());
   printer << ">";
-}
-
-LogicalResult mlir::upmem ::DeviceHierarchyType::verify(
-    function_ref<InFlightDiagnostic()> emitError, ArrayRef<int64_t> shape) {
-  if (shape.size() != 3)
-    return emitError() << "upmem device hierarchy should have 3 dimensions: "
-                       << shape;
-  return success();
 }

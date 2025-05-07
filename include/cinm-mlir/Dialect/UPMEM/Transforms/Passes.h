@@ -4,13 +4,19 @@
 
 #pragma once
 
-#include "mlir/Pass/Pass.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/IR/BuiltinOps.h"
+#include "mlir/Pass/Pass.h"
 
 namespace mlir {
 
 //===- Generated passes ---------------------------------------------------===//
+namespace upmem {
+
+llvm::FailureOr<SymbolRefAttr> getSymbolPath(SymbolTable fromTable,
+                                             SymbolOpInterface target);
+
+} // namespace upmem
 
 #define GEN_PASS_DECL
 #define GEN_PASS_REGISTRATION

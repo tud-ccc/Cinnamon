@@ -1,7 +1,7 @@
 #pragma once
 
-#include "cinm-mlir/Dialect/Cinm/IR/CinmOps.h"
-#include "cinm-mlir/Dialect/Cnm/IR/CnmOps.h"
+#include <cinm-mlir/Dialect/Cinm/IR/CinmUtils.h>
+#include <cinm-mlir/Dialect/Cnm/IR/CnmOps.h>
 
 #include <llvm/ADT/ArrayRef.h>
 #include <llvm/ADT/STLExtras.h>
@@ -22,16 +22,6 @@ void populateFinalBufferizationPatterns(RewritePatternSet &set);
 
 Value createOrFoldUnrealizedConversionCast(Location loc, OpBuilder &builder,
                                            Type dstType, Value value);
-
-using BodyBuilderCallback = function_ref<SmallVector<Value>(
-    OpBuilder &, Location, ValueRange, ValueRange)>;
-
-SmallVector<Value> createNestedAffineForLoops(OpBuilder &builder, Location loc,
-                                              ArrayRef<int64_t> loopSizes,
-                                              ArrayRef<int64_t> loopSteps,
-                                              ValueRange iterArgInit,
-                                              BodyBuilderCallback bodyBuilder);
-
 struct ConvertCnmSetZeroToAffine : public OpConversionPattern<cnm::SetZeroOp> {
   using OpConversionPattern<cnm::SetZeroOp>::OpConversionPattern;
 

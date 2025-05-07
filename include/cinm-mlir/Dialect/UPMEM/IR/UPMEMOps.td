@@ -352,10 +352,10 @@ def InlineDpuProgramOp : Upmem_Op<"inline_dpu_program",
   let description = [{
   }];
 
-  let arguments = (ins TypeAttrOf<DeviceHierarchyType>:$wgShape);
+  let arguments = (ins DeviceHierarchyType:$wg);
   let regions = (region SizedRegion<1>:$body);
 
-  let assemblyFormat = "`on` $wgShape attr-dict-with-keyword $body";
+  let assemblyFormat = "`for` $wg `as` type($wg) attr-dict-with-keyword $body";
 
 }
 
@@ -364,18 +364,18 @@ def AllocDPUsOp: Upmem_Op <"alloc_dpus",  [ DeclareOpInterfaceMethods<SymbolUser
   let summary = "UPMEM alloc dpus";
   let description = [{
   }];
-  let arguments = (ins SymbolNameAttr:$dpu_set_ref);
-  let results = (outs DeviceHierarchyType:$hierarchy_shape);
+  let arguments = (ins OptionalAttr<SymbolRefAttr>:$dpu_program_ref);
+  let results = (outs DeviceHierarchyType:$wg);
 
   let builders = [
     OpBuilder<(ins "upmem::DpuSetOp":$dpuSet),
     [{
-      build($_builder, $_state, dpuSet.getDeviceHierarchy(), dpuSet.getSymName());
+      build($_builder, $_state, dpuSet.getDeviceHierarchy(), dpuSet.getDpuProgram());
     }]>
   ];
 
   let assemblyFormat = [{
-     attr-dict `:` qualified(type($hierarchy_shape))
+     ($dpu_program_ref^)? attr-dict `:` qualified(type($wg))
   }];
 }
 
@@ -390,15 +390,15 @@ def FreeDPUsOp: Upmem_Op <"free_dpus", []>{
   }];
 }
 
-def WaitForOp : Upmem_Op<"wait_for", []> {
+def WaitForOp : Upmem_Op<"wait_for", [DeclareOpInterfaceMethods<SymbolUserOpInterface>]> {
   let summary = "Run a program on a dpu set synchronously";
   let description = [{
 
   }];
 
-  let arguments = (ins DeviceHierarchyType:$dpuSet);
+  let arguments = (ins DeviceHierarchyType:$dpuSet, OptionalAttr<SymbolRefAttr>:$dpuProgram);
 
-  let assemblyFormat = "$dpuSet attr-dict `:` qualified(type($dpuSet))";
+  let assemblyFormat = "($dpuProgram^ `on`)? `wg` $dpuSet attr-dict `:` qualified(type($dpuSet))";
 
 }
 
@@ -409,12 +409,6 @@ def DpuSetOp : Upmem_Op<"dpu_set", [ Symbol, DeclareOpInterfaceMethods<SymbolUse
   }];
 
   let arguments = (ins SymbolNameAttr:$sym_name, I32Attr:$numRanks, I32Attr:$numDpus, SymbolRefAttr:$dpuProgram);
-  let builders = [
-    OpBuilder<(ins "StringAttr":$sym_name, "int32_t":$numRanks, "int32_t":$numDpus, "upmem::DpuProgramOp":$dpuProgram),
-    [{
-      build($_builder, $_state, sym_name, numRanks, numDpus, dpuProgram.getSymName());
-    }]>
-  ];
 
 
   let assemblyFormat = "$sym_name `(` $numRanks `x` $numDpus `)` `with` $dpuProgram attr-dict";

@@ -88,18 +88,6 @@ if [ -n "$LLVM_BUILD_DIR" ]; then
   fi
 fi
 
-if [ -n "$TORCH_MLIR_INSTALL_DIR" ]; then
-  checkout_and_build_torch_mlir=external
-  CINNAMON_CMAKE_OPTIONS="$CINNAMON_CMAKE_OPTIONS -DTORCH_MLIR_DIR=$TORCH_MLIR_INSTALL_DIR"
-
-  info "Using environment variable TORCH_MLIR_INSTALL_DIR for configuration"
-  info "Dependent targets will use '$TORCH_MLIR_INSTALL_DIR'"
-
-  if [ ! -d "$TORCH_MLIR_INSTALL_DIR" ]; then
-    warning "Directory '$TORCH_MLIR_INSTALL_DIR' does not exist"
-  fi
-fi
-
 if [ -n "$UPMEM_HOME" ]; then
   checkout_upmem=external
   CINNAMON_CMAKE_OPTIONS="$CINNAMON_CMAKE_OPTIONS -DUPMEM_DIR=$UPMEM_HOME"
@@ -155,6 +143,19 @@ fi
 
 if echo "$@" | grep -q -- "-enable-roc"; then
   enable_roc=1
+fi
+
+
+if [ -n "$TORCH_MLIR_INSTALL_DIR" ] && [ "$checkout_and_build_torch_mlir" -ne 0 ]; then
+  checkout_and_build_torch_mlir=external
+  CINNAMON_CMAKE_OPTIONS="$CINNAMON_CMAKE_OPTIONS -DTORCH_MLIR_DIR=$TORCH_MLIR_INSTALL_DIR"
+
+  info "Using environment variable TORCH_MLIR_INSTALL_DIR for configuration"
+  info "Dependent targets will use '$TORCH_MLIR_INSTALL_DIR'"
+
+  if [ ! -d "$TORCH_MLIR_INSTALL_DIR" ]; then
+    warning "Directory '$TORCH_MLIR_INSTALL_DIR' does not exist"
+  fi
 fi
 
 fi
