@@ -51,7 +51,7 @@ jobs:
 
       - name: Build LLVM
         run: |
-          source ../../.venv/bin/activate
+          source .venv/bin/activate
           .github/workflows/build-llvm.sh -reconfigure -verbose
 
       - name: Save llvm cache
@@ -63,7 +63,7 @@ jobs:
 
       - name: Build Torch-MLIR
         run: |
-          source ../../.venv/bin/activate
+          source .venv/bin/activate
           .github/workflows/build-torch.sh -reconfigure -verbose
 
       - name: Save torch-mlir cache
@@ -75,18 +75,18 @@ jobs:
 
       - name: Checkout upmem
         run: |
-          source ../../.venv/bin/activate
+          source .venv/bin/activate
           .github/workflows/build-upmem.sh -reconfigure -verbose
 
       - name: Build CINM
         run: |
-          source ../../.venv/bin/activate
+          source .venv/bin/activate
           .github/workflows/build-cinnamon.sh -reconfigure -verbose
 
       - name: Test CINM
         working-directory: build
         run: |
-          source ../../.venv/bin/activate
+          source .venv/bin/activate
           ninja check-cinm-mlir
 
       - name: Save runtime cache
