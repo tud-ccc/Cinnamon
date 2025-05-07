@@ -59,7 +59,7 @@ sudo apt-get install clang ninja-build mold libvulkan-dev ccache
   LLVM_CMAKE_OPTIONS='-DLLVM_CCACHE_BUILD=ON'
   TORCH_MLIR_CMAKE_OPTIONS='-DCMAKE_CXX_COMPILER=clang++ -DCMAKE_C_COMPILER=clang'                                                               CINNAMON_CMAKE_OPTIONS='-DCMAKE_CXX_COMPILER=clang++ -DCMAKE_C_COMPILER=clang -DLLVM_ENABLE_LIBCXX=ON'  
   # You could add your own LLVM dir; the build script won't try to clone and build LLVM
-  LLVM_BUILD_DIR=/home/username/projects/Cinnamon/llvm/build/
+  LLVM_BUILD_DIR=/home/username/projects/Cinnamon/third-party/llvm/build/
   ```
 * Download, configure, and build dependencies and the sources (without the torch-mlir frontend).
   ```sh
@@ -68,7 +68,7 @@ sudo apt-get install clang ninja-build mold libvulkan-dev ccache
 
 <!-- USAGE EXAMPLES -->
 ## Usage
-All benchmarks at the `cinm` abstraction are in this repository under `cinnamon/benchmarks/`. The `compile-benches.sh` script compiles all the benchmarks using the Cinnamon flow. The generated code and the intermediate IRs for each bench can be found under`cinnamon/benchmarks/generated/`.
+All benchmarks at the `cinm` abstraction are in this repository under `testbench/`. The `compile-benches.sh` script compiles all the benchmarks using the Cinnamon flow. The generated code and the intermediate IRs for each bench can be found under`testbench/gen/`.
 
    ```sh
    chmod +x compile-benches.sh

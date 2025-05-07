@@ -4,7 +4,7 @@
 - Create a file named `.env` in the clone directory
 - In this file, write `LLVM_BUILD_DIR="<path/to/llvm-project/build"` with an absolute path, eg
 ```shell
-LLVM_BUILD_DIR="/home/clem/Documents/CCC/cinnamon-oot/llvm/build"
+LLVM_BUILD_DIR="/home/clem/Documents/CCC/cinm-mlir/llvm/build"
 ```
 It should point to the build directory, whatever it is named.
 
