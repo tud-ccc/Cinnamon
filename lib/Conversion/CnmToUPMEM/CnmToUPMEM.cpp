@@ -192,17 +192,11 @@ struct ConvertCnmLaunchToUPMEM : public OpConversionPattern<cnm::LaunchOp> {
       return failure();
     }
 
-    const Value rankCount =
-        rewriter.create<arith::ConstantIndexOp>(op.getLoc(), wgShape[0]);
-    const Value dpuCount =
-        rewriter.create<arith::ConstantIndexOp>(op.getLoc(), wgShape[1]);
-    const Value taskletCount =
-        rewriter.create<arith::ConstantIndexOp>(op.getLoc(), wgShape[2]);
     const size_t chunksPerTasklet = wgShape.size() == 4 ? wgShape.back() : 1;
 
     // build launch op body
     upmem::LaunchOp launchOp = rewriter.create<upmem::LaunchOp>(
-        op.getLoc(), wg, rankCount, dpuCount, taskletCount);
+        op.getLoc(), wg);
     rewriter.setInsertionPointToStart(&launchOp.getBody().front());
 
     // calculate address of all buffer slices for the current tasklet & allocate
@@ -374,7 +368,7 @@ struct ConvertCnmLaunchToUPMEM : public OpConversionPattern<cnm::LaunchOp> {
       rewriter.setInsertionPointToEnd(&launchOp.getBody().front());
     }
 
-    rewriter.create<upmem::TerminatorOp>(op.getLoc());
+    rewriter.create<upmem::ReturnOp>(op.getLoc());
 
     rewriter.eraseOp(op);
     return success();

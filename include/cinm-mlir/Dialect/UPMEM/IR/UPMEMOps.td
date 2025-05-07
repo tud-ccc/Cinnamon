@@ -13,8 +13,6 @@ include "cinm-mlir/Dialect/UPMEM/IR/UPMEMTypes.td"
 include "cinm-mlir/Dialect/UPMEM/IR/UPMEMAttributes.td"
 
 
-include "AsyncOpInterface.td"
-
 include "mlir/Dialect/DLTI/DLTIBase.td"
 include "mlir/IR/EnumAttr.td"
 include "mlir/IR/OpAsmInterface.td"
@@ -31,14 +29,14 @@ include "mlir/IR/RegionKindInterface.td"
 
 
 
-class UPMEM_IndexOp<string mnemonic, list<Trait> traits = []> :
+class IndexOp<string mnemonic, list<Trait> traits = []> :
     Upmem_Op<mnemonic, !listconcat(traits, [
         Pure, DeclareOpInterfaceMethods<InferIntRangeInterface, ["inferResultRanges"]>])>,
         Results<(outs Index)> {
   let assemblyFormat = "attr-dict";
 }
 
-def UPMEM_RankDimOp : UPMEM_IndexOp<"rank_dim"> {
+def RankDimOp : IndexOp<"rank_dim"> {
   let description = [{
     NOTE: Not used at the moment.
 
@@ -53,7 +51,7 @@ def UPMEM_RankDimOp : UPMEM_IndexOp<"rank_dim"> {
 }
 
 
-def UPMEM_DPUDimOp : UPMEM_IndexOp<"dpu_dim"> {
+def DPUDimOp : IndexOp<"dpu_dim"> {
   let description = [{
     NOTE: Not used at the moment.
 
@@ -67,7 +65,7 @@ def UPMEM_DPUDimOp : UPMEM_IndexOp<"dpu_dim"> {
   }];
 }
 
-def UPMEM_TaskletDimOp : UPMEM_IndexOp<"tasklet_dim"> {
+def TaskletDimOp : IndexOp<"tasklet_dim"> {
   let description = [{
     NOTE: Not used at the moment.
 
@@ -80,7 +78,7 @@ def UPMEM_TaskletDimOp : UPMEM_IndexOp<"tasklet_dim"> {
   }];
 }
 
-def UPMEM_TaskletIDOp : Upmem_Op<"tasklet_id"> {
+def TaskletIDOp : Upmem_Op<"tasklet_id"> {
   let description = [{
   }];
   let results = (outs Index:$tasklet_id);
@@ -91,7 +89,7 @@ def UPMEM_TaskletIDOp : Upmem_Op<"tasklet_id"> {
 
 
 
-def UPMEM_PrivateWRAMAllocOp : Upmem_Op<"pwram_alloc", [
+def PrivateWRAMAllocOp : Upmem_Op<"pwram_alloc", [
   ]> {
 
   let summary = "UPMEM WRAM (fast scratchpad) memory allocation operation for a single tasklet.";
@@ -103,7 +101,6 @@ def UPMEM_PrivateWRAMAllocOp : Upmem_Op<"pwram_alloc", [
     tasklet space, but the goal here is to make it more abstract, simpler, and to not reduce the power
     as well.
     Interface-wise, it is similar to the `memref.alloc` op.
-    TODO: support async
 
     Example:
 
@@ -186,30 +183,28 @@ def LocalTransferOp : Upmem_Op<"local_transfer"> {
 
 
 
-def UPMEM_LaunchOp : Upmem_Op<"launch", [
-      AutomaticAllocationScope, AttrSizedOperandSegments, UPMEM_AsyncOpInterface,
-      IsolatedFromAbove,
-      DeclareOpInterfaceMethods<InferIntRangeInterface, ["inferResultRanges"]>]> {
+def LaunchOp : Upmem_Op<"launch", [
+      AutomaticAllocationScope, IsolatedFromAbove,
+      SingleBlockImplicitTerminator<"ReturnOp">
+    ]> {
+
   let summary = "UPMEM kernel launch operation";
 
   let arguments = (ins
-               Variadic<UPMEM_AsyncToken>:$asyncDependencies,
                DeviceHierarchy:$device_hierarchy,
                Index:$rankSize,
                Index:$dpuSize, Index:$taskletSize,
                Optional<I32>:$dynamicSharedMemorySize);
 
-  let results = (outs Optional<UPMEM_AsyncToken>: $asyncToken);
-
   let description = [{
     Syntax:
 
     ```
-    operation ::= `upmem.launch` (`async` (`[` ssa-id-list `]`)? )?
+    operation ::= `upmem.launch` 
                              ssa-id
-                             `ranks` `(` ssa-id `)` `in` ssa-reassignment
-                             `dpus` `(` ssa-id `)` `in` ssa-reassignment
-                             `tasklets` `(` ssa-id `)` `in` ssa-reassignment
+                             `rank` `(` ssa-id `)` 
+                             `dpu` `(` ssa-id `)` 
+                             `tasklet` `(` ssa-id `)`
                              (dynamic_shared_memory_size ssa-use)?
                              memory-attribution
                              region attr-dict?
@@ -236,93 +231,16 @@ def UPMEM_LaunchOp : Upmem_Op<"launch", [
   let skipDefaultBuilders = 1;
 
   let builders = [
-    OpBuilder<(ins "Value":$device_hierarchy, "Value":$rankSize, "Value":$dpuSize,
-      "Value":$taskletSize,
-      CArg<"Value", "nullptr">:$dynamicSharedMemorySize,
-      CArg<"Type", "nullptr">:$asyncTokenType,
-      CArg<"ValueRange", "{}">:$asyncDependencies,
-      CArg<"TypeRange", "{}">:$workgroupAttributions,
-      CArg<"TypeRange", "{}">:$privateAttributions)>
+    OpBuilder<(ins "Value":$device_hierarchy,
+      CArg<"Value", "{}">:$dynamicSharedMemorySize)>
   ];
 
   let extraClassDeclaration = [{
-    KernelDim getRankIdClass();
-    KernelDim getDPUIdClass();
-    KernelDim getTaskletIdClass();
-
-    KernelDim getRankSizeClass();
-    KernelDim getDPUSizeClass();
-    KernelDim getTaskletSizeClass();
-
-    KernelDim getRankSizeOperandValue();
-    KernelDim getDPUSizeOperandValue();
-    KernelDim getTaskletSizeOperandValue();
-
-    static StringRef getRanksKeyword() { return "ranks"; }
-    static StringRef getDPUsKeyword() { return "dpus"; }
-    static StringRef getTaskletsKeyword() { return "tasklets"; }
+}
     static StringRef getDynamicSharedMemorySizeKeyword() {
       return "dynamic_shared_memory_size";
     }
 
-    /// The number of launch configuration operands, placed at the leading
-    /// positions of the operand list.
-    static constexpr unsigned kNumConfigOperands = 3;
-
-    /// The number of region attributes containing the launch configuration,
-    /// placed in the leading positions of the argument list.
-    static constexpr unsigned kNumConfigRegionAttributes = 6;
-
-    /// Returns the keywords used in the custom syntax for this Op.
-    static StringRef getWorkgroupKeyword() { return "workgroup"; }
-    static StringRef getPrivateKeyword() { return "private"; }
-
-    /// Returns the number of buffers located in the workgroup memory.
-    unsigned getNumWorkgroupAttributions() {
-      auto attr = (*this)->getAttrOfType<IntegerAttr>(
-          getNumWorkgroupAttributionsAttrName());
-      return attr ? attr.getInt() : 0;
-    }
-
-    /// Returns a list of block arguments that correspond to buffers located in
-    /// the workgroup memory
-    ArrayRef<BlockArgument> getWorkgroupAttributions() {
-      auto begin =
-          std::next(getBody().args_begin(), kNumConfigRegionAttributes);
-      auto end = std::next(begin, getNumWorkgroupAttributions());
-      return {begin, end};
-    }
-
-    /// Adds a new block argument that corresponds to buffers located in
-    /// workgroup memory.
-    BlockArgument addWorkgroupAttribution(Type type, Location loc);
-
-    /// Returns the number of buffers located in the private memory.
-    unsigned getNumPrivateAttributions() {
-      return getBody().getNumArguments() - kNumConfigRegionAttributes -
-          getNumWorkgroupAttributions();
-    }
-
-    /// Returns a list of block arguments that correspond to buffers located in
-    /// the private memory.
-    ArrayRef<BlockArgument> getPrivateAttributions() {
-      // Buffers on the private memory always come after buffers on the workgroup
-      // memory.
-      auto begin =
-          std::next(getBody().args_begin(),
-                    kNumConfigRegionAttributes + getNumWorkgroupAttributions());
-      return {begin, getBody().args_end()};
-    }
-
-    /// Adds a new block argument that corresponds to buffers located in
-    /// private memory.
-    BlockArgument addPrivateAttribution(Type type, Location loc);
-
-    /// Returns the name of the attribute containing the number of buffers
-    /// located in the workgroup memory.
-    static StringRef getNumWorkgroupAttributionsAttrName() {
-      return "workgroup_attributions";
-    }
   }];
 
   let hasCanonicalizer = 1;
@@ -330,21 +248,37 @@ def UPMEM_LaunchOp : Upmem_Op<"launch", [
   let hasRegionVerifier = 1;
 }
 
-def UPMEM_TerminatorOp : Upmem_Op<"terminator", [HasParent<"LaunchOp">,
-                                             Pure, Terminator]>,
-    Arguments<(ins)>, Results<(outs)> {
-  let summary = "Terminator for UPMEM launch regions.";
+
+def DpuProgramOp : Upmem_Op<"dpu_program",
+[
+  SingleBlockImplicitTerminator<"ReturnOp">,
+  SymbolTable,
+  Symbol
+]> {
+  let summary = "Represents the final DPU program";
   let description = [{
-    A terminator operation for regions that appear in the body of `upmem.launch`
-    operation.  These regions are not expected to return any value so the
-    terminator takes no operands.
   }];
 
-  let assemblyFormat = "attr-dict";
+  let arguments = (ins SymbolNameAttr:$sym_name, TypeAttrOf<DeviceHierarchy>:$wgShape);
+  let regions = (region SizedRegion<1>:$body);
+
+  let assemblyFormat = "$sym_name `(` `)` `on` $wgShape attr-dict-with-keyword $body";
+
 }
 
-def UPMEM_ReturnOp : Upmem_Op<"return", [HasParent<"UPMEMFuncOp">, Pure,
-                                     Terminator]>,
+def DpuSetOp : Upmem_Op<"dpu_set", [ Symbol, DeclareOpInterfaceMethods<SymbolUserOpInterface> ]> {
+
+  let summary = "Represents the dpu set in the Upmem API, ie, an instance of a program";
+  let description = [{
+  }];
+
+  let arguments = (ins SymbolNameAttr:$sym_name, I32Attr:$numRanks, I32Attr:$numDpus, SymbolRefAttr:$dpuProgram);
+
+  let assemblyFormat = "$sym_name `(` $numRanks `x` $numDpus `)` `with` $dpuProgram attr-dict";
+
+}
+
+def ReturnOp : Upmem_Op<"return", [ParentOneOf<["DpuProgramOp", "LaunchOp"]>, Pure, Terminator]>,
     Arguments<(ins)>, Results<(outs)>
       {
   let summary = "Terminator for UPMEM functions.";
@@ -355,24 +289,17 @@ def UPMEM_ReturnOp : Upmem_Op<"return", [HasParent<"UPMEMFuncOp">, Pure,
 
 
 
-def UPMEM_MemcpyOp : Upmem_Op<"memcpy", []> {
+def MemcpyOp : Upmem_Op<"memcpy", []> {
 
   let summary = "UPMEM memcpy operation";
 
   let description = [{
-    The `upmem.memcpy` operation copies the content of one memref to another.
-
-    The op does not execute before all async dependencies have finished
-    executing.
-copy_to_mram
-    If the `async` keyword is present, the op is executed asynchronously (i.e.
-    it does not block until the execution has finished on the device). In
-    that case, it returns a !upmem.async.token.
+    The `upmem.memcpy` operation copies the content of one memref to another in a blocking manner.
 
     Example:
 
     ```mlir
-    %token = upmem.memcpy async [%dep] %dst, %src : memref<?xf32, 1>, memref<?xf32>
+    %token = upmem.memcpy [%dep] %dst, %src : memref<?xf32, 1>, memref<?xf32>
     ```
   }];
 
@@ -391,7 +318,7 @@ copy_to_mram
 
 
 
-def UPMEM_TransferOp : Upmem_Op<"on_dpu_transfer", []> {
+def TransferOp : Upmem_Op<"on_dpu_transfer", []> {
 
   let summary = "UPMEM memcpy operation between mram and wram";
 
@@ -416,14 +343,14 @@ def UPMEM_TransferOp : Upmem_Op<"on_dpu_transfer", []> {
   }];
 
   let arguments = (ins MemcpyDirAttr:$direction,
-                   Arg<AnyMemRef, "", [MemRead]>:$source,
-                   Arg<AnyMemRef, "", [MemWrite]>:$dest,
+                   Arg<I8MemRef, "", [MemRead]>:$source,
+                   Arg<I8MemRef, "", [MemWrite]>:$dest,
                    Index:$sourceOffset,
                    Index:$destOffset,
                    Index:$count);
 
   let assemblyFormat = [{
-    $direction $buffer `to` $buffer `:` type($buffer) attr-dict
+    $direction $source `[` $sourceOffset `]` `to` $dest `[` $destOffset `]` `count` $count attr-dict `:` type($source) `to` type($dest)
   }];
 
   // let hasFolder = 1;
@@ -432,7 +359,7 @@ def UPMEM_TransferOp : Upmem_Op<"on_dpu_transfer", []> {
 }
 
 
-def UPMEM_AllocDPUsOp: Upmem_Op <"alloc_dpus", []> {
+def AllocDPUsOp: Upmem_Op <"alloc_dpus", []> {
   let summary = "UPMEM alloc dpus";
   let description = [{
   }];
@@ -443,7 +370,7 @@ def UPMEM_AllocDPUsOp: Upmem_Op <"alloc_dpus", []> {
   }];
 }
 
-def UPMEM_BaseMRAMAddrOp: Upmem_Op <"dpu_heap_base_addr", []> {
+def BaseMRAMAddrOp: Upmem_Op <"dpu_heap_base_addr", []> {
   let summary = "Base offset of the MRAM in the DPUs for starting data copy";
   let description = [{
   }];
@@ -454,7 +381,7 @@ def UPMEM_BaseMRAMAddrOp: Upmem_Op <"dpu_heap_base_addr", []> {
   }];
 }
 
-def UPMEM_BaseDPUMemOffsetOp: Upmem_Op <"base_dpu_mem_offset", []> {
+def BaseDPUMemOffsetOp: Upmem_Op <"base_dpu_mem_offset", []> {
   let summary = "Base offset of the MRAM in the DPUs for starting data copy";
   let description = [{
   }];
@@ -497,7 +424,7 @@ class ScatterGatherLike<string mnemonic, string kw, MemoryEffect effect>
      # "`:` type($hostBuffer) `" # kw # "` qualified(type($hierarchy))";
 }
 
-def UPMEM_ScatterOp: ScatterGatherLike<"scatter", "onto", MemRead> {
+def ScatterOp: ScatterGatherLike<"scatter", "onto", MemRead> {
   let summary = "scatter data to dpus";
   let description = [{
   }];
@@ -505,7 +432,7 @@ def UPMEM_ScatterOp: ScatterGatherLike<"scatter", "onto", MemRead> {
 }
 
 
-def UPMEM_GatherOp: ScatterGatherLike<"gather", "from", MemWrite> {
+def GatherOp: ScatterGatherLike<"gather", "from", MemWrite> {
   let summary = "Gather data from dpus into a buffer on the host";
   let description = [{
   }];
@@ -513,7 +440,7 @@ def UPMEM_GatherOp: ScatterGatherLike<"gather", "from", MemWrite> {
 }
 
 
-def UPMEM_UPMEMModuleOp : Upmem_Op<"module", [
+def UPMEMModuleOp : Upmem_Op<"module", [
    IsolatedFromAbove, NoRegionArguments, SymbolTable, Symbol,
     ] # GraphRegionNoTerminator.traits > {
   let summary = "";
@@ -525,7 +452,7 @@ def UPMEM_UPMEMModuleOp : Upmem_Op<"module", [
   let assemblyFormat = "$sym_name attr-dict-with-keyword $bodyRegion";
 }
 
-def UPMEM_UPMEMFuncOp : Upmem_Op<"func", [
+def UPMEMFuncOp : Upmem_Op<"func", [
     HasParent<"UPMEMModuleOp">, AutomaticAllocationScope,
     IsolatedFromAbove, FunctionOpInterface]
   > {
@@ -574,27 +501,25 @@ def UPMEM_UPMEMFuncOp : Upmem_Op<"func", [
 
 
 
-def UPMEM_LaunchFuncOp :Upmem_Op<"launch_func", [
-      UPMEM_AsyncOpInterface, AttrSizedOperandSegments]>,
-    Arguments<(ins Variadic<UPMEM_AsyncToken>:$asyncDependencies,
-               SymbolRefAttr:$kernel,
-               DeviceHierarchy:$hierarchy,
-               Optional<I32>:$dynamicSharedMemorySize,
-               Variadic<AnyType>:$kernelOperands,
-               Optional<AnyType>:$asyncObject)>,
-    Results<(outs Optional<UPMEM_AsyncToken>:$asyncToken)> {
+def LaunchFuncOp :Upmem_Op<"launch_func", [
+      AttrSizedOperandSegments
+  ]> {
   let summary = "Launches a function as a GPU kernel";
 
   let description = [{
   }];
 
+  let arguments = (ins
+               SymbolRefAttr:$kernel,
+               DeviceHierarchy:$hierarchy,
+               Optional<I32>:$dynamicSharedMemorySize,
+               Variadic<AnyType>:$kernelOperands);
+
   let skipDefaultBuilders = 1;
 
   let builders = [
     OpBuilder<(ins "UPMEMFuncOp":$kernelFunc, "Value":$hierarchy,
-      "Value":$dynamicSharedMemorySize, "ValueRange":$kernelOperands,
-      CArg<"Type", "nullptr">:$asyncTokenType,
-      CArg<"ValueRange", "{}">:$asyncDependencies)>
+      "Value":$dynamicSharedMemorySize, "ValueRange":$kernelOperands)>
   ];
 
   let extraClassDeclaration = [{
@@ -617,8 +542,6 @@ def UPMEM_LaunchFuncOp :Upmem_Op<"launch_func", [
   }];
 
   let assemblyFormat = [{
-      custom<AsyncDependencies>(type($asyncToken), $asyncDependencies)
-      (`<` $asyncObject^ `:` type($asyncObject) `>`)?
       $kernel $hierarchy `:` qualified(type($hierarchy))
       (`dynamic_shared_memory_size` $dynamicSharedMemorySize^)?
       custom<LaunchFuncOperands>($kernelOperands, type($kernelOperands)) attr-dict
@@ -626,7 +549,7 @@ def UPMEM_LaunchFuncOp :Upmem_Op<"launch_func", [
   let hasVerifier = 1;
 }
 
-def UPMEM_FreeDPUsOp: Upmem_Op <"free_dpus", []>{
+def FreeDPUsOp: Upmem_Op <"free_dpus", []>{
   let summary = "UPMEM free dpus";
   let description = [{
   }];

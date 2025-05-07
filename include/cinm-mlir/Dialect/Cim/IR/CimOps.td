@@ -76,8 +76,8 @@ def BarrierOp : Cim_Op<"barrier", []> {
 }
 
 def OpInput : TypeConstraint<Or<[
-    CPred<[{$_self.isa<TensorType>()}]>,
-    CPred<[{$_self.isa<cim::FutureType>()}]>
+    CPred<[{llvm::isa<TensorType>($_self)}]>,
+    CPred<[{llvm::isa<cim::FutureType>($_self)}]>
 ]>> {}
 
 def GemmOp : Cim_Op<"op.gemm", []> {

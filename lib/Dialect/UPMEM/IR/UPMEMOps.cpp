@@ -4,6 +4,7 @@
 
 #include "cinm-mlir/Dialect/UPMEM/IR/UPMEMOps.h"
 
+#include "cinm-mlir/Dialect/UPMEM/IR/UPMEMTypes.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/OpImplementation.h"
 
@@ -119,124 +120,24 @@ parseAttributions(OpAsmParser &parser, StringRef keyword,
 // }
 
 //===----------------------------------------------------------------------===//
-// AsyncOpInterface
-//===----------------------------------------------------------------------===//
-
-void upmem::addAsyncDependency(Operation *op, Value token) {
-  op->insertOperands(0, {token});
-  if (!op->template hasTrait<OpTrait::AttrSizedOperandSegments>())
-    return;
-  auto attrName =
-      OpTrait::AttrSizedOperandSegments<void>::getOperandSegmentSizeAttr();
-  auto sizeAttr = op->template getAttrOfType<DenseI32ArrayAttr>(attrName);
-
-  // Async dependencies is the only variadic operand.
-  if (!sizeAttr)
-    return;
-
-  SmallVector<int32_t, 8> sizes(sizeAttr.asArrayRef());
-  ++sizes.front();
-  op->setAttr(attrName, Builder(op->getContext()).getDenseI32ArrayAttr(sizes));
-}
-
-//===----------------------------------------------------------------------===//
 // LaunchOp
 //===----------------------------------------------------------------------===//
 
 void LaunchOp::build(OpBuilder &builder, OperationState &result,
-                     Value device_hierarchy, Value rankSize, Value dpuSize,
-                     Value taskletSize, Value dynamicSharedMemorySize,
-                     Type asyncTokenType, ValueRange asyncDependencies,
-                     TypeRange workgroupAttributions,
-                     TypeRange privateAttributions) {
+                     Value device_hierarchy) {
 
-  // Add a WorkGroup attribution attribute. This attribute is required to
-  // identify private attributions in the list of block argguments.
-  result.addAttribute(getNumWorkgroupAttributionsAttrName(),
-                      builder.getI64IntegerAttr(workgroupAttributions.size()));
-
-  // Add Op operands.
-  result.addOperands(asyncDependencies);
-  if (asyncTokenType)
-    result.types.push_back(builder.getType<AsyncTokenType>());
 
   // Add grid and block sizes as op operands, followed by the data operands.
   result.addOperands(device_hierarchy);
-  result.addOperands({rankSize, dpuSize, taskletSize});
-  if (dynamicSharedMemorySize)
-    result.addOperands(dynamicSharedMemorySize);
 
   // Create a kernel body region with kNumConfigRegionAttributes + N memory
   // attributions, where the first kNumConfigRegionAttributes arguments have
   // `index` type and the rest have the same types as the data operands.
   Region *kernelRegion = result.addRegion();
-  Block *body = new Block();
+  Block *body = &kernelRegion->emplaceBlock();
   // TODO: Allow passing in proper locations here.
-  for (unsigned i = 0; i < kNumConfigRegionAttributes; ++i)
+  for (unsigned i = 0; i < 3; ++i)
     body->addArgument(builder.getIndexType(), result.location);
-  // Add WorkGroup & Private attributions to the region arguments.
-  for (Type argTy : workgroupAttributions)
-    body->addArgument(argTy, result.location);
-  for (Type argTy : privateAttributions)
-    body->addArgument(argTy, result.location);
-  kernelRegion->push_back(body);
-  // Fill OperandSegmentSize Attribute.
-  SmallVector<int32_t, 6> segmentSizes(6, 1);
-  segmentSizes.front() = asyncDependencies.size();
-  segmentSizes.back() = dynamicSharedMemorySize ? 1 : 0;
-  result.addAttribute(getOperandSegmentSizeAttr(),
-                      builder.getDenseI32ArrayAttr(segmentSizes));
-}
-
-KernelDim LaunchOp::getRankIdClass() {
-  assert(!getBody().empty() && "LaunchOp body must not be empty.");
-  auto args = getBody().getArguments();
-  return KernelDim{args[0]};
-}
-
-KernelDim LaunchOp::getDPUIdClass() {
-  assert(!getBody().empty() && "LaunchOp body must not be empty.");
-  auto args = getBody().getArguments();
-  return KernelDim{args[1]};
-}
-
-KernelDim LaunchOp::getTaskletIdClass() {
-  assert(!getBody().empty() && "LaunchOp body must not be empty.");
-  auto args = getBody().getArguments();
-  return KernelDim{args[2]};
-}
-
-KernelDim LaunchOp::getRankSizeClass() {
-  assert(!getBody().empty() && "LaunchOp body must not be empty.");
-  auto args = getBody().getArguments();
-  return KernelDim{args[3]};
-}
-
-KernelDim LaunchOp::getDPUSizeClass() {
-  assert(!getBody().empty() && "LaunchOp body must not be empty.");
-  auto args = getBody().getArguments();
-  return KernelDim{args[4]};
-}
-
-KernelDim LaunchOp::getTaskletSizeClass() {
-  assert(!getBody().empty() && "LaunchOp body must not be empty.");
-  auto args = getBody().getArguments();
-  return KernelDim{args[5]};
-}
-
-KernelDim LaunchOp::getRankSizeOperandValue() {
-  auto operands = getOperands().drop_front(1 + getAsyncDependencies().size());
-  return KernelDim{operands[0]};
-}
-
-KernelDim LaunchOp::getDPUSizeOperandValue() {
-  auto operands = getOperands().drop_front(1 + getAsyncDependencies().size());
-  return KernelDim{operands[1]};
-}
-
-KernelDim LaunchOp::getTaskletSizeOperandValue() {
-  auto operands = getOperands().drop_front(1 + getAsyncDependencies().size());
-  return KernelDim{operands[2]};
 }
 
 LogicalResult LaunchOp::verifyRegions() {
@@ -251,18 +152,15 @@ LogicalResult LaunchOp::verifyRegions() {
       continue;
     if (block.back().getNumSuccessors() != 0)
       continue;
-    if (!isa<upmem::TerminatorOp>(&block.back())) {
+    if (!isa<upmem::ReturnOp>(&block.back())) {
       return block.back()
           .emitError()
-          .append("expected '", upmem::TerminatorOp::getOperationName(),
+          .append("expected '", upmem::ReturnOp::getOperationName(),
                   "' or a terminator with successors")
           .attachNote(getLoc())
           .append("in '", LaunchOp::getOperationName(), "' body region");
     }
   }
-
-  if (getNumResults() == 0 && getAsyncToken())
-    return emitOpError("needs to be named when async keyword is specified");
 
   return success();
 }
@@ -275,11 +173,6 @@ static void printSizeAssignment(OpAsmPrinter &p, Value size,
 }
 
 void LaunchOp::print(OpAsmPrinter &p) {
-  if (getAsyncToken()) {
-    p << " async";
-    if (!getAsyncDependencies().empty())
-      p << " [" << getAsyncDependencies() << ']';
-  }
   // Print the launch configuration.
   p << ' ' << getDeviceHierarchy();
   p << ' ' << getRanksKeyword();
@@ -299,66 +192,25 @@ void LaunchOp::print(OpAsmPrinter &p) {
   p << " on " << getDeviceHierarchy().getType() << " ";
 
   p.printRegion(getBody(), /*printEntryBlockArgs=*/false);
-  p.printOptionalAttrDict((*this)->getAttrs(), /*elidedAttrs=*/{
-                              LaunchOp::getOperandSegmentSizeAttr(),
-                              getNumWorkgroupAttributionsAttrName()});
 }
 
-static ParseResult
-parseSizeAssignment(OpAsmParser &parser, OpAsmParser::Argument &arg,
-                    OpAsmParser::UnresolvedOperand &upperBound) {
-  if (parser.parseLParen() || parser.parseArgument(arg, false) ||
-      parser.parseKeyword("upto") || parser.parseOperand(upperBound) ||
-      parser.parseRParen())
+static ParseResult parseSizeAssignment(OpAsmParser &parser, StringRef kw,
+                                       OpAsmParser::Argument &arg) {
+  if (parser.parseKeyword(kw) || parser.parseLParen() ||
+      parser.parseArgument(arg, false) || parser.parseRParen())
     return failure();
   arg.type = parser.getBuilder().getIndexType();
   return success();
 }
 
 ParseResult LaunchOp::parse(OpAsmParser &parser, OperationState &result) {
-  // Sizes of the grid and block.
-  SmallVector<OpAsmParser::UnresolvedOperand, LaunchOp::kNumConfigOperands>
-      sizes(LaunchOp::kNumConfigOperands);
-  MutableArrayRef<OpAsmParser::UnresolvedOperand> sizesRef(sizes);
-
-  // Actual (data) operands passed to the kernel.
-  SmallVector<OpAsmParser::UnresolvedOperand, 4> dataOperands;
-
-  SmallVector<Value, 1> deviceHierarchyOperand;
-  result.operands.emplace_back();
 
   // Region arguments to be created.
-
-  // Parse optional async dependencies.
-  SmallVector<OpAsmParser::UnresolvedOperand, 4> asyncDependencies;
-  Type asyncTokenType;
-  if (failed(
-          parseAsyncDependencies(parser, asyncTokenType, asyncDependencies)) ||
-      parser.resolveOperands(asyncDependencies, asyncTokenType,
-                             result.operands))
-    return failure();
-  if (parser.getNumResults() > 0)
-    result.types.push_back(asyncTokenType);
 
   OpAsmParser::UnresolvedOperand deviceHierarchy;
   if (parser.parseOperand(deviceHierarchy)) {
     return failure();
   }
-
-  SmallVector<OpAsmParser::Argument> regionArgs2;
-  SmallVector<OpAsmParser::UnresolvedOperand> upperBounds;
-  if (parser.parseKeyword(LaunchOp::getRanksKeyword().data()) ||
-      parseSizeAssignment(parser, regionArgs2.emplace_back(),
-                          upperBounds.emplace_back()) ||
-      parser.parseKeyword(LaunchOp::getDPUsKeyword().data()) ||
-      parseSizeAssignment(parser, regionArgs2.emplace_back(),
-                          upperBounds.emplace_back()) ||
-      parser.parseKeyword(LaunchOp::getTaskletsKeyword().data()) ||
-      parseSizeAssignment(parser, regionArgs2.emplace_back(),
-                          upperBounds.emplace_back()) ||
-      parser.resolveOperands(upperBounds, parser.getBuilder().getIndexType(),
-                             result.operands))
-    return failure();
 
   OpAsmParser::UnresolvedOperand dynamicSharedMemorySize;
   bool hasDynamicSharedMemorySize = false;
@@ -372,49 +224,20 @@ ParseResult LaunchOp::parse(OpAsmParser &parser, OperationState &result) {
       return failure();
   }
 
-  Type index = parser.getBuilder().getIndexType();
-  SmallVector<Type, LaunchOp::kNumConfigRegionAttributes> dataTypes(
-      LaunchOp::kNumConfigRegionAttributes, index);
-
-  Type deviceHierarchyType;
+  DeviceHierarchyType deviceHierarchyType;
   if (parser.parseKeyword("on") || parser.parseType(deviceHierarchyType) ||
       parser.resolveOperand(deviceHierarchy, deviceHierarchyType,
-                            deviceHierarchyOperand)) {
+                            result.operands)) {
     return failure();
   }
-  result.operands[0] = deviceHierarchyOperand[0];
-
-  Builder &builder = parser.getBuilder();
-  // Parse workgroup memory attributions.
-  if (failed(parseAttributions(parser, LaunchOp::getWorkgroupKeyword(),
-                               regionArgs2)))
-    return failure();
-
-  // Store the number of operands we just parsed as the number of workgroup
-  // memory attributions.
-  unsigned numWorkgroupAttrs =
-      regionArgs2.size() - LaunchOp::kNumConfigRegionAttributes;
-  result.addAttribute(LaunchOp::getNumWorkgroupAttributionsAttrName(),
-                      builder.getI64IntegerAttr(numWorkgroupAttrs));
-
-  // Parse private memory attributions.
-  if (failed(parseAttributions(parser, LaunchOp::getPrivateKeyword(),
-                               regionArgs2)))
-    return failure();
 
   // Introduce the body region and parse it. The region has
   // kNumConfigRegionAttributes arguments that correspond to
   // block/thread identifiers and grid/block sizes, all having `index` type.
   Region *body = result.addRegion();
-  if (parser.parseRegion(*body, regionArgs2) ||
-      parser.parseOptionalAttrDict(result.attributes))
+  if (parser.parseRegion(*body, regionArgs2))
     return failure();
 
-  SmallVector<int32_t, 6> segmentSizes(6, 1);
-  segmentSizes.front() = asyncDependencies.size();
-  segmentSizes.back() = hasDynamicSharedMemorySize ? 1 : 0;
-  result.addAttribute(LaunchOp::getOperandSegmentSizeAttr(),
-                      parser.getBuilder().getDenseI32ArrayAttr(segmentSizes));
   return success();
 }
 
