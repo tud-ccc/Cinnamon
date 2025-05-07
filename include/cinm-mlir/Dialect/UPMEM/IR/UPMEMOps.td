@@ -4,8 +4,8 @@
 //
 //===----------------------------------------------------------------------===//
 
-#ifndef UPMEM_OPS
-#define UPMEM_OPS
+#ifndef Upmem_OpS
+#define Upmem_OpS
 
 
 include "cinm-mlir/Dialect/UPMEM/IR/UPMEMBase.td"
@@ -32,7 +32,7 @@ include "mlir/IR/RegionKindInterface.td"
 
 
 class UPMEM_IndexOp<string mnemonic, list<Trait> traits = []> :
-    UPMEM_Op<mnemonic, !listconcat(traits, [
+    Upmem_Op<mnemonic, !listconcat(traits, [
         Pure, DeclareOpInterfaceMethods<InferIntRangeInterface, ["inferResultRanges"]>])>,
         Results<(outs Index)> {
   let assemblyFormat = "attr-dict";
@@ -80,7 +80,7 @@ def UPMEM_TaskletDimOp : UPMEM_IndexOp<"tasklet_dim"> {
   }];
 }
 
-def UPMEM_TaskletIDOp : UPMEM_Op<"tasklet_id"> {
+def UPMEM_TaskletIDOp : Upmem_Op<"tasklet_id"> {
   let description = [{
   }];
   let results = (outs Index:$tasklet_id);
@@ -91,7 +91,7 @@ def UPMEM_TaskletIDOp : UPMEM_Op<"tasklet_id"> {
 
 
 
-def UPMEM_PrivateWRAMAllocOp : UPMEM_Op<"pwram_alloc", [
+def UPMEM_PrivateWRAMAllocOp : Upmem_Op<"pwram_alloc", [
   ]> {
 
   let summary = "UPMEM WRAM (fast scratchpad) memory allocation operation for a single tasklet.";
@@ -124,7 +124,7 @@ def UPMEM_PrivateWRAMAllocOp : UPMEM_Op<"pwram_alloc", [
 }
 
 
-def StaticAllocOp : UPMEM_Op<"static_alloc", [Symbol]> {
+def StaticAllocOp : Upmem_Op<"static_alloc", [Symbol]> {
   let summary = "static buffer allocation in wram or mram";
   let description = [{
     The `upmemx.static_alloc` op declares a buffer in wram or mram.
@@ -158,7 +158,7 @@ def StaticAllocOp : UPMEM_Op<"static_alloc", [Symbol]> {
 
 }
 
-def LocalTransferOp : UPMEM_Op<"local_transfer"> {
+def LocalTransferOp : Upmem_Op<"local_transfer"> {
   let summary = "transfer between memory spaces (wram or mram)";
   let description = [{
     The `upmemx.local_transfer` op copies a buffer into another buffer.
@@ -186,7 +186,7 @@ def LocalTransferOp : UPMEM_Op<"local_transfer"> {
 
 
 
-def UPMEM_LaunchOp : UPMEM_Op<"launch", [
+def UPMEM_LaunchOp : Upmem_Op<"launch", [
       AutomaticAllocationScope, AttrSizedOperandSegments, UPMEM_AsyncOpInterface,
       IsolatedFromAbove,
       DeclareOpInterfaceMethods<InferIntRangeInterface, ["inferResultRanges"]>]> {
@@ -330,7 +330,7 @@ def UPMEM_LaunchOp : UPMEM_Op<"launch", [
   let hasRegionVerifier = 1;
 }
 
-def UPMEM_TerminatorOp : UPMEM_Op<"terminator", [HasParent<"LaunchOp">,
+def UPMEM_TerminatorOp : Upmem_Op<"terminator", [HasParent<"LaunchOp">,
                                              Pure, Terminator]>,
     Arguments<(ins)>, Results<(outs)> {
   let summary = "Terminator for UPMEM launch regions.";
@@ -343,7 +343,7 @@ def UPMEM_TerminatorOp : UPMEM_Op<"terminator", [HasParent<"LaunchOp">,
   let assemblyFormat = "attr-dict";
 }
 
-def UPMEM_ReturnOp : UPMEM_Op<"return", [HasParent<"UPMEMFuncOp">, Pure,
+def UPMEM_ReturnOp : Upmem_Op<"return", [HasParent<"UPMEMFuncOp">, Pure,
                                      Terminator]>,
     Arguments<(ins)>, Results<(outs)>
       {
@@ -355,7 +355,7 @@ def UPMEM_ReturnOp : UPMEM_Op<"return", [HasParent<"UPMEMFuncOp">, Pure,
 
 
 
-def UPMEM_MemcpyOp : UPMEM_Op<"memcpy", []> {
+def UPMEM_MemcpyOp : Upmem_Op<"memcpy", []> {
 
   let summary = "UPMEM memcpy operation";
 
@@ -391,7 +391,7 @@ copy_to_mram
 
 
 
-def UPMEM_TransferOp : UPMEM_Op<"on_dpu_transfer", []> {
+def UPMEM_TransferOp : Upmem_Op<"on_dpu_transfer", []> {
 
   let summary = "UPMEM memcpy operation between mram and wram";
 
@@ -432,7 +432,7 @@ def UPMEM_TransferOp : UPMEM_Op<"on_dpu_transfer", []> {
 }
 
 
-def UPMEM_AllocDPUsOp: UPMEM_Op <"alloc_dpus", []> {
+def UPMEM_AllocDPUsOp: Upmem_Op <"alloc_dpus", []> {
   let summary = "UPMEM alloc dpus";
   let description = [{
   }];
@@ -443,7 +443,7 @@ def UPMEM_AllocDPUsOp: UPMEM_Op <"alloc_dpus", []> {
   }];
 }
 
-def UPMEM_BaseMRAMAddrOp: UPMEM_Op <"dpu_heap_base_addr", []> {
+def UPMEM_BaseMRAMAddrOp: Upmem_Op <"dpu_heap_base_addr", []> {
   let summary = "Base offset of the MRAM in the DPUs for starting data copy";
   let description = [{
   }];
@@ -454,7 +454,7 @@ def UPMEM_BaseMRAMAddrOp: UPMEM_Op <"dpu_heap_base_addr", []> {
   }];
 }
 
-def UPMEM_BaseDPUMemOffsetOp: UPMEM_Op <"base_dpu_mem_offset", []> {
+def UPMEM_BaseDPUMemOffsetOp: Upmem_Op <"base_dpu_mem_offset", []> {
   let summary = "Base offset of the MRAM in the DPUs for starting data copy";
   let description = [{
   }];
@@ -467,7 +467,7 @@ def UPMEM_BaseDPUMemOffsetOp: UPMEM_Op <"base_dpu_mem_offset", []> {
 
 
 class ScatterGatherLike<string mnemonic, string kw, MemoryEffect effect>
-  : UPMEM_Op<mnemonic, [MemoryEffects<[MemWrite]>]> {
+  : Upmem_Op<mnemonic, [MemoryEffects<[MemWrite]>]> {
 
   let arguments = (ins Arg<AnyMemRef, "", [effect]>:$hostBuffer,
                   I64Attr:$dpuMemOffset,
@@ -513,7 +513,7 @@ def UPMEM_GatherOp: ScatterGatherLike<"gather", "from", MemWrite> {
 }
 
 
-def UPMEM_UPMEMModuleOp : UPMEM_Op<"module", [
+def UPMEM_UPMEMModuleOp : Upmem_Op<"module", [
    IsolatedFromAbove, NoRegionArguments, SymbolTable, Symbol,
     ] # GraphRegionNoTerminator.traits > {
   let summary = "";
@@ -525,7 +525,7 @@ def UPMEM_UPMEMModuleOp : UPMEM_Op<"module", [
   let assemblyFormat = "$sym_name attr-dict-with-keyword $bodyRegion";
 }
 
-def UPMEM_UPMEMFuncOp : UPMEM_Op<"func", [
+def UPMEM_UPMEMFuncOp : Upmem_Op<"func", [
     HasParent<"UPMEMModuleOp">, AutomaticAllocationScope,
     IsolatedFromAbove, FunctionOpInterface]
   > {
@@ -574,7 +574,7 @@ def UPMEM_UPMEMFuncOp : UPMEM_Op<"func", [
 
 
 
-def UPMEM_LaunchFuncOp :UPMEM_Op<"launch_func", [
+def UPMEM_LaunchFuncOp :Upmem_Op<"launch_func", [
       UPMEM_AsyncOpInterface, AttrSizedOperandSegments]>,
     Arguments<(ins Variadic<UPMEM_AsyncToken>:$asyncDependencies,
                SymbolRefAttr:$kernel,
@@ -626,7 +626,7 @@ def UPMEM_LaunchFuncOp :UPMEM_Op<"launch_func", [
   let hasVerifier = 1;
 }
 
-def UPMEM_FreeDPUsOp: UPMEM_Op <"free_dpus", []>{
+def UPMEM_FreeDPUsOp: Upmem_Op <"free_dpus", []>{
   let summary = "UPMEM free dpus";
   let description = [{
   }];
