@@ -274,7 +274,7 @@ class ScatterGatherLike<string mnemonic, string kw, MemoryEffect effect>
   : Upmem_Op<mnemonic, [MemoryEffects<[MemWrite]>]> {
 
   let arguments = (ins Arg<AnyMemRef, "", [effect]>:$hostBuffer,
-                  I64Attr:$dpuMemOffset,
+                  SymbolRefAttr:$dpuBufRef,
                   I64Attr:$transferCount,
                   AffineMapAttr:$scatterMap,
                   DeviceHierarchyType:$hierarchy);
@@ -290,14 +290,11 @@ class ScatterGatherLike<string mnemonic, string kw, MemoryEffect effect>
       return getDpuBufferSizeInBits() / 8;
     }
 
-    int64_t getDpuMemMaxOffset() {
-      return getDpuMemOffset() + getDpuBufferSizeInBits() / 8;
-    }
   }];
 
   let hasVerifier = 1;
   let assemblyFormat =
-     "$hostBuffer `[` $dpuMemOffset `,` $transferCount `,` $scatterMap `]` `" # kw # "` $hierarchy attr-dict"
+     "$hostBuffer `[` $transferCount `,` $scatterMap `]` `" # kw # "` $dpuBufRef `of` $hierarchy attr-dict"
      # "`:` type($hostBuffer) `" # kw # "` qualified(type($hierarchy))";
 }
 
@@ -373,6 +370,19 @@ def AllocDPUsOp: Upmem_Op <"alloc_dpus",  [ DeclareOpInterfaceMethods<SymbolUser
   }];
 }
 
+
+def LoadProgramOp: Upmem_Op <"load_program",  [ DeclareOpInterfaceMethods<SymbolUserOpInterface> ]> {
+  let summary = "Load a program on a dpu array";
+  let description = [{
+  }];
+  let arguments = (ins DeviceHierarchyType:$inputWg, SymbolRefAttr:$dpu_program_ref);
+  let results = (outs DeviceHierarchyType:$loadedWg);
+
+  let assemblyFormat = [{
+     $dpu_program_ref `on` $inputWg attr-dict `:` qualified(type($inputWg)) custom<BuildLoadedProgramType>(ref(type($inputWg)), type($loadedWg))
+  }];
+}
+
 def FreeDPUsOp: Upmem_Op <"free_dpus", []>{
   let summary = "UPMEM free dpus";
   let description = [{
@@ -410,7 +420,7 @@ def DpuSetOp : Upmem_Op<"dpu_set", [ Symbol, DeclareOpInterfaceMethods<SymbolUse
       upmem::DpuProgramOp resolveDpuProgram();
       upmem::DeviceHierarchyType getDeviceHierarchy() {
         auto tasklets = resolveDpuProgram().getNumTasklets();
-        return DeviceHierarchyType::get(getContext(), getNumRanks(), getNumDpus(), tasklets);
+        return DeviceHierarchyType::get(getContext(), getNumRanks(), getNumDpus(), tasklets, true);
       }
   }];
 }

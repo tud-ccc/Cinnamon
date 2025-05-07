@@ -25,7 +25,7 @@ def ConvertCnmToGPUPass : Pass<"convert-cnm-to-gpu"> {
 }
 #endif
 
-def ConvertCnmToUPMEMPass : Pass<"convert-cnm-to-upmem"> {
+def ConvertCnmToUPMEMPass : Pass<"convert-cnm-to-upmem", "mlir::ModuleOp"> {
     let summary = "";
     let constructor = "mlir::cnm::createConvertCnmToUPMEMPass()";
     let dependentDialects = [
