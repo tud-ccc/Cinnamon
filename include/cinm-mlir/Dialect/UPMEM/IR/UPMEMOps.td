@@ -124,73 +124,64 @@ def UPMEM_PrivateWRAMAllocOp : UPMEM_Op<"pwram_alloc", [
 }
 
 
-def UPMEM_SharedWRAMAllocOp : UPMEM_Op<"wram_alloc", [
-  ]> {
-
-  let summary = "UPMEM WRAM static memory allocation operation.";
+def StaticAllocOp : UPMEM_Op<"static_alloc", [Symbol]> {
+  let summary = "static buffer allocation in wram or mram";
   let description = [{
-    The `upmem.wram_alloc` operation allocates a WRAM buffer that is accessible to all
-    tasklets. The size of the buffer must be statically known.
-
-    Example:
+    The `upmemx.static_alloc` op declares a buffer in wram or mram.
+    The buffer is shared between all threads, and the allocation happens statically.
+    Example 1:
 
     ```mlir
-    %memref = upmem.wram_alloc : memref<64xi32>
-    ```
-    Will be translated to a global variable:
-    ```c
-    __dma_aligned int32_t buffer[64];
-
-    int main(void) {
-      ...
-    }
+    upmemx.static_alloc(wram) : memref<100x100xf32, "wram">
+    upmemx.static_alloc @bufname(mram) : memref<100x100xf32, "mram">
     ```
   }];
 
-  let results = (outs Res<AnyMemRef, "", [MemAlloc]>:$memref);
+  let arguments = (ins UnitAttr:$isWram, DefaultValuedAttr<UnitAttr, "false">:$noinit, OptionalAttr<SymbolNameAttr>:$sym_name);
+  let results = (outs Res<AnyMemRef, "",
+                          [MemAlloc<DefaultResource, 0, FullEffect>]>:$buffer);
+
+  let assemblyFormat = "($sym_name^)? `(` (`wram` $isWram^):(`mram`)? `)` (`noinit` $noinit^)? attr-dict `:` type($buffer)";
 
   let extraClassDeclaration = [{
-    MemRefType getBufferType() { return ::llvm::cast<MemRefType>(getMemref().getType()); }
+
+    bool isOptionalSymbol() { return true; }
+  
+    bool isMram() {
+      return !getIsWram();
+    }
+
+    bool isWram() {
+      return getIsWram();
+    }
   }];
 
-  let assemblyFormat = [{
-     attr-dict `:` type($memref)
-  }];
 }
 
-def UPMEM_SharedMRAMAllocOp : UPMEM_Op<"mram_alloc", [
-  ]> {
-
-  let summary = "UPMEM MRAM static memory allocation operation.";
+def LocalTransferOp : UPMEM_Op<"local_transfer"> {
+  let summary = "transfer between memory spaces (wram or mram)";
   let description = [{
-    The `upmem.mram_alloc` operation allocates an MRAM buffer that is accessible to all
-    tasklets. The size of the buffer must be statically known.
-
-    Example:
+    The `upmemx.local_transfer` op copies a buffer into another buffer.
+    Both buffers should have same shape and element type, but the memory
+    spaces can differ (they must match the declared direction of the transfer).
+    When transferring part of a buffer, a memref.subview should be used
+    as the source or destination operand.
 
     ```mlir
-    %memref = upmem.mram_alloc : memref<64xi32>
-    ```
-    Will be translated to a global variable:
-    ```c
-    __mram int32_t buffer[64];
-
-    int main(void) {
-      ...
-    }
+    upmemx.local_transfer (wram to mram) %source, %dest : memref<2048xf32, "wram"> to memref<2048xf32, "mram">
     ```
   }];
 
-  let arguments = (ins UnitAttr:$no_init);
-  let results = (outs Res<AnyMemRef, "", [MemAlloc]>:$memref);
-
-  let extraClassDeclaration = [{
-    MemRefType getBufferType() { return ::llvm::cast<MemRefType>(getMemref().getType()); }
-  }];
+  let arguments = (ins UnitAttr:$mramToWram,
+                       Arg<AnyMemRef, "the memref to copy from",
+                           [MemReadAt<0, FullEffect>]>:$source,
+                       Arg<AnyMemRef, "the memref to copy to",
+                           [MemWriteAt<0, FullEffect>]>:$target);
 
   let assemblyFormat = [{
-     (`noinit` $no_init^)? attr-dict `:` type($memref)
+    `(` (`mram` `to` `wram` $mramToWram^):(`wram` `to` `mram`)? `)` $source `,` $target attr-dict `:` type($source) `to` type($target)
   }];
+
 }
 
 
