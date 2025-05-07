@@ -18,6 +18,7 @@
 #include <llvm/ADT/ArrayRef.h>
 #include <llvm/ADT/SmallVector.h>
 #include <llvm/ADT/StringRef.h>
+#include <llvm/Support/LogicalResult.h>
 #include <mlir/IR/OperationSupport.h>
 #include <mlir/IR/SymbolTable.h>
 #include <mlir/IR/Value.h>
@@ -26,6 +27,17 @@
 #define DEBUG_TYPE "upmem-ops"
 
 using namespace mlir;
+
+namespace {
+llvm::ParseResult parseBuildLoadedProgramType(OpAsmParser &, const Type type,
+                                              Type &loadedTy) {
+  loadedTy = llvm::cast<upmem::DeviceHierarchyType>(type).asLoaded(true);
+  return success();
+}
+void printBuildLoadedProgramType(OpAsmPrinter &, Operation *,
+                                 upmem::DeviceHierarchyType,
+                                 upmem::DeviceHierarchyType) {}
+} // namespace
 
 //===- Generated implementation -------------------------------------------===//
 
@@ -61,18 +73,18 @@ upmem::UPMEMDialect::verifyOperationAttribute(Operation *op,
 }
 
 LogicalResult upmem::GatherOp::verify() {
-  auto count = getDpuMemOffset();
-  if ((count % 8) != 0)
-    return emitOpError("has unaligned DPU memory offset ")
-           << count << ", needs to be 8-byte-aligned.";
+  // auto count = getDpuMemOffset();
+  // if ((count % 8) != 0)
+  //   return emitOpError("has unaligned DPU memory offset ")
+  //          << count << ", needs to be 8-byte-aligned.";
   return success();
 }
 
 LogicalResult upmem::ScatterOp::verify() {
-  auto count = getDpuMemOffset();
-  if ((count % 8) != 0)
-    return emitOpError("has unaligned DPU memory offset ")
-           << count << ", needs to be 8-byte-aligned.";
+  // auto count = getDpuMemOffset();
+  // if ((count % 8) != 0)
+  //   return emitOpError("has unaligned DPU memory offset ")
+  //          << count << ", needs to be 8-byte-aligned.";
   return success();
 }
 
@@ -80,8 +92,8 @@ LogicalResult upmem::ScatterOp::verify() {
 upmem::DpuSetOp::verifySymbolUses(::mlir::SymbolTableCollection &symbolTable) {
 
   upmem::DpuProgramOp program =
-      symbolTable.lookupNearestSymbolFrom<upmem::DpuProgramOp>(*this,
-                                                               getDpuProgramRef());
+      symbolTable.lookupNearestSymbolFrom<upmem::DpuProgramOp>(
+          *this, getDpuProgramRef());
 
   if (!program)
     return emitOpError("requires ")
@@ -121,5 +133,18 @@ upmem::WaitForOp::verifySymbolUses(::mlir::SymbolTableCollection &symbolTable) {
       return emitOpError("requires ") << getDpuProgramRefAttr()
                                       << " to refer to an upmem.dpu_program op";
   }
+  return success();
+}
+
+::mlir::LogicalResult upmem::LoadProgramOp::verifySymbolUses(
+    ::mlir::SymbolTableCollection &symbolTable) {
+
+  upmem::DpuProgramOp program =
+      symbolTable.lookupNearestSymbolFrom<upmem::DpuProgramOp>(
+          *this, getDpuProgramRefAttr());
+
+  if (!program)
+    return emitOpError("requires ")
+           << getDpuProgramRefAttr() << " to refer to an upmem.dpu_program op";
   return success();
 }

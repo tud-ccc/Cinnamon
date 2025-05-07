@@ -33,7 +33,7 @@ def BufferType : Cnm_Type<"Buffer", [ShapedTypeInterface]> {
     ins ArrayRefParameter<"int64_t">:$shape,
     "Type":$elementType,
     ArrayRefParameter<"int64_t">:$workgroupShape,
-    "int64_t":$level
+    "Attribute":$level
   );
 
   let hasCustomAssemblyFormat = 1;
@@ -43,7 +43,7 @@ def BufferType : Cnm_Type<"Buffer", [ShapedTypeInterface]> {
     "ArrayRef<int64_t>":$shape, 
     "Type": $elementType,
     "ArrayRef<int64_t>":$workgroupShape,
-    CArg<"int64_t", "0">:$level
+    CArg<"Attribute", "{}">:$level
     ), [{
       return $_get(elementType.getContext(), shape, elementType, workgroupShape, level);
     }]>

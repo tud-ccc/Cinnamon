@@ -54,13 +54,13 @@ void mlir::cnm::WorkgroupType::print(mlir::AsmPrinter &printer) const {
 Type mlir::cnm::BufferType::parse(mlir::AsmParser &parser) {
   SmallVector<int64_t> shape, workgroupShape;
   Type elementType;
-  int64_t level;
+  Attribute level;
 
   if (parser.parseLess() || parser.parseDimensionList(shape, false, true) ||
       parser.parseType(elementType) || parser.parseKeyword("on") ||
       parser.parseDimensionList(workgroupShape, false, false) ||
       parser.parseComma().failed() || parser.parseKeyword("level") ||
-      parser.parseInteger(level) || parser.parseGreater()) {
+      parser.parseAttribute(level) || parser.parseGreater()) {
     return Type();
   }
 

@@ -17,12 +17,16 @@ def DeviceHierarchyType : UPMEM_Type<"DeviceHierarchy"> {
   let mnemonic = "hierarchy";
   let summary = "";
 
-  let parameters = (ins "int32_t":$numRanks, "int32_t":$numDpusPerRank, "int32_t":$numTaskletsPerDpu);
+  let parameters = (ins "int32_t":$numRanks, "int32_t":$numDpusPerRank, "int32_t":$numTaskletsPerDpu, "bool":$programLoaded);
 
   let hasCustomAssemblyFormat = 1;
   let extraClassDeclaration = [{
     int64_t getNumElements() const {
       return getNumRanks() * getNumDpusPerRank() * getNumTaskletsPerDpu();
+    }
+
+    DeviceHierarchyType asLoaded(bool loaded=true) const {
+      return get(getContext(), getNumRanks(), getNumDpusPerRank(), getNumTaskletsPerDpu(), loaded);
     }
 
     int64_t getNumDims() const { return 3;}

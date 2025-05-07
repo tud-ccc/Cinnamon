@@ -16,11 +16,13 @@
 #include <mlir/Dialect/Utils/IndexingUtils.h>
 #include <mlir/IR/AffineExpr.h>
 #include <mlir/IR/AffineMap.h>
+#include <mlir/IR/Builders.h>
 #include <mlir/IR/BuiltinAttributes.h>
 #include <mlir/IR/BuiltinOps.h>
 #include <mlir/IR/BuiltinTypeInterfaces.h>
 #include <mlir/IR/BuiltinTypes.h>
 #include <mlir/IR/Diagnostics.h>
+#include <mlir/IR/SymbolTable.h>
 #include <mlir/IR/ValueRange.h>
 #include <mlir/Support/LLVM.h>
 #include <mlir/Transforms/DialectConversion.h>
@@ -50,7 +52,6 @@ inline static constexpr size_t alignTo(size_t v, size_t alignment) {
   return v % alignment == 0 ? v : v + alignment - v % alignment;
 }
 
-static const StringRef BUFFER_OFFSET_ATTR = "upmem.bufferOffset";
 struct ConvertCnmWorkgroupToUPMEM
     : public OpConversionPattern<cnm::WorkgroupOp> {
   using OpConversionPattern<cnm::WorkgroupOp>::OpConversionPattern;
@@ -74,22 +75,6 @@ struct ConvertCnmWorkgroupToUPMEM
         allocs.push_back(alloc);
       }
     }
-
-    int64_t dpuMemOffset = 0;
-    const size_t numTasklets = op.getType().getShape()[2];
-    // getUsers returns users in reverse order so we have to reverse again to
-    // calculate the offset in the correct order
-    for (auto alloc : llvm::reverse(allocs)) {
-      alloc->setAttr(BUFFER_OFFSET_ATTR,
-                     rewriter.getI64IntegerAttr(dpuMemOffset));
-      const size_t memoryPerTasklet =
-          alloc.getResult().getType().getSizeInBytes();
-      dpuMemOffset += memoryPerTasklet * numTasklets;
-
-      // buffer offsets must be 8 byte aligned
-      dpuMemOffset = alignTo(dpuMemOffset, 8);
-    }
-
     return success();
   }
 };
@@ -396,18 +381,22 @@ void populateCnmToUPMEMFinalTypeConversions(TypeConverter &typeConverter) {
   typeConverter.addConversion([&](cnm::WorkgroupType wgType) -> Type {
     return upmem::DeviceHierarchyType::get(
         wgType.getContext(), wgType.getShape()[0], wgType.getShape()[1],
-        wgType.getShape()[2]);
+        wgType.getShape()[2], true);
   });
 
   typeConverter.addConversion([](ShapedType st) -> Type { return st; });
 }
 
 void populateCnmToUPMEMConversionPatterns(TypeConverter &typeConverter,
-                                          RewritePatternSet &patterns) {
-  patterns.add<ConvertCnmWorkgroupToUPMEM, ConvertCnmSetZeroToAffine,
-               ConvertCnmScatterToUPMEM, ConvertCnmGatherToUPMEM,
-               ConvertCnmLaunchToUPMEM, ConvertCnmTerminatorToUPMEM,
-               ConvertCnmFreeWorkgroup>(typeConverter, patterns.getContext());
+                                          RewritePatternSet &patterns,
+                                          ModuleOp dpuKernelModule) {
+  patterns.add<ConvertCnmSetZeroToAffine, ConvertCnmTerminatorToUPMEM>(
+      typeConverter, patterns.getContext());
+
+  patterns.add<ConvertCnmWorkgroupToUPMEM, ConvertCnmScatterToUPMEM,
+               ConvertCnmGatherToUPMEM, ConvertCnmLaunchToUPMEM,
+               ConvertCnmFreeWorkgroup>(typeConverter, patterns.getContext(),
+                                        dpuKernelModule);
 }
 
 struct ConvertCnmToUPMEMPass
@@ -423,8 +412,23 @@ struct ConvertCnmToUPMEMPass
     converter.addSourceMaterialization(addUnrealizedCast);
     converter.addTargetMaterialization(addUnrealizedCast);
 
+    auto rootModule = getOperation();
+    auto sym = SymbolTable::lookupSymbolIn(rootModule, "dpu_kernels");
+    ModuleOp dpuKernelModule = llvm::dyn_cast_or_null<ModuleOp>(sym);
+    if (!dpuKernelModule && sym) {
+      mlir::emitError(sym->getLoc(), "Should be a module");
+      signalPassFailure();
+      return;
+    }
+    if (!dpuKernelModule) {
+      OpBuilder builder(&getContext());
+      builder.setInsertionPointToEnd(&rootModule.getBodyRegion().front());
+      dpuKernelModule =
+          builder.create<ModuleOp>(rootModule->getLoc(), "dpu_kernels");
+    }
+
     RewritePatternSet patterns(&getContext());
-    populateCnmToUPMEMConversionPatterns(converter, patterns);
+    populateCnmToUPMEMConversionPatterns(converter, patterns, dpuKernelModule);
     populateFinalBufferizationPatterns(patterns);
 
     ConversionTarget target(getContext());
