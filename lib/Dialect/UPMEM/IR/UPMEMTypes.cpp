@@ -70,23 +70,13 @@ Type mlir::upmem::DeviceHierarchyType::parse(mlir::AsmParser &parser) {
   }
   if (shape.size() != 3)
     return {};
-  bool loaded = false;
-  if (parser.parseOptionalComma().succeeded()) {
-    BoolAttr attr;
-    if (parser.parseCustomAttributeWithFallback(attr))
-      return {};
-    loaded = attr.getValue();
-  }
 
   return upmem::DeviceHierarchyType::get(parser.getContext(), shape[0],
-                                         shape[1], shape[2], loaded);
+                                         shape[1], shape[2]);
 }
 
 void mlir::upmem::DeviceHierarchyType::print(mlir::AsmPrinter &printer) const {
   printer << "<";
   printer.printDimensionList(getWgShape());
-  if (getProgramLoaded()) {
-    printer << ", true";
-  }
   printer << ">";
 }
