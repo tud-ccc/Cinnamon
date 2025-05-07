@@ -42,8 +42,10 @@ static void outlineKernelFuncImpl(func::FuncOp parent,
   kernelContainer.insert(outlinedFunc);
 
   auto dpu_set_decl = builder.create<upmem::DpuSetOp>(
-      loc, hierarchy.getNumRanks(), hierarchy.getNumDpusPerRank(),
+      loc, parent.getName(), hierarchy.getNumRanks(), hierarchy.getNumDpusPerRank(),
       outlinedFunc);
+
+  kernelContainer.insert(dpu_set_decl);
 
   builder.setInsertionPoint(launchOp);
   auto alloc = builder.create<upmem::AllocDPUsOp>(loc, dpu_set_decl);

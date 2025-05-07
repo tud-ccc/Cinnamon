@@ -95,14 +95,15 @@ upmem::DpuProgramOp upmem::DpuSetOp::resolveDpuProgram() {
       .lookupNearestSymbolFrom<upmem::DpuProgramOp>(*this, getDpuProgram());
 }
 
-::mlir::LogicalResult
-upmem::AllocDPUsOp::verifySymbolUses(::mlir::SymbolTableCollection &symbolTable) {
+::mlir::LogicalResult upmem::AllocDPUsOp::verifySymbolUses(
+    ::mlir::SymbolTableCollection &symbolTable) {
 
   upmem::DpuSetOp program =
-      symbolTable.lookupNearestSymbolFrom<upmem::DpuSetOp>(*this, getDpuSet());
+      symbolTable.lookupNearestSymbolFrom<upmem::DpuSetOp>(*this,
+                                                           getDpuSetRefAttr());
 
   if (!program)
     return emitOpError("requires ")
-           << getDpuSetAttr() << " to refer to an upmem.dpu_set op";
+           << getDpuSetRefAttr() << " to refer to an upmem.dpu_set op";
   return success();
 }

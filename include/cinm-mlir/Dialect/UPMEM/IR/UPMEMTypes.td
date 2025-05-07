@@ -28,7 +28,7 @@ def DeviceHierarchyType : UPMEM_Type<"DeviceHierarchy"> {
 
     int64_t getNumDims() { return 3;}
 
-    SmallVector<int32_t, 3> getWgShape() {
+    SmallVector<int64_t, 3> getWgShape() {
       return {getNumRanks(), getNumDpusPerRank(), getNumTaskletsPerDpu()};
     }
 
