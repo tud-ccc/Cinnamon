@@ -1,4 +1,5 @@
 #include "mlir/IR/BuiltinOps.h"
+#include <algorithm>
 
 namespace mlir::upmem {
 
@@ -8,7 +9,7 @@ static llvm::FailureOr<SymbolRefAttr> getSymbolPath(SymbolTable fromTable,
     return failure();
 
   StringAttr rootPath = target.getNameAttr();
-  llvm::SmallVector<FlatSymbolRefAttr> path;
+  llvm::SmallVector<FlatSymbolRefAttr, 4> path;
   Operation *table = SymbolTable::getNearestSymbolTable(target->getParentOp());
   while (table != fromTable.getOp()) {
     if (auto asSymbol = llvm::dyn_cast_or_null<SymbolOpInterface>(table)) {
@@ -20,6 +21,7 @@ static llvm::FailureOr<SymbolRefAttr> getSymbolPath(SymbolTable fromTable,
       return failure();
     }
   }
+  std::reverse(path.begin(), path.end());
   return SymbolRefAttr::get(rootPath, path);
 }
 

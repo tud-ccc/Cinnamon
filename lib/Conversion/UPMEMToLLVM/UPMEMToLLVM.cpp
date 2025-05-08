@@ -13,6 +13,7 @@
 #include <llvm/ADT/Twine.h>
 #include <llvm/IR/Constants.h>
 #include <llvm/Support/Casting.h>
+#include <llvm/Support/Debug.h>
 #include <llvm/Support/LogicalResult.h>
 #include <mlir/Conversion/LLVMCommon/LoweringOptions.h>
 #include <mlir/Conversion/LLVMCommon/TypeConverter.h>
@@ -34,7 +35,6 @@
 #include <mlir/IR/Diagnostics.h>
 #include <mlir/IR/ImplicitLocOpBuilder.h>
 #include <mlir/IR/Location.h>
-#include <mlir/IR/SymbolTable.h>
 #include <mlir/IR/TypeRange.h>
 #include <mlir/IR/ValueRange.h>
 
@@ -47,6 +47,8 @@
 #include <mlir/Support/LogicalResult.h>
 #include <mlir/Transforms/DialectConversion.h>
 #include <optional>
+
+#define DEBUG_TYPE "upmem-to-llvm"
 
 namespace mlir {
 #define GEN_PASS_DEF_CONVERTUPMEMTOLLVMPASS
@@ -68,23 +70,6 @@ static Value reifyAsIndex(ImplicitLocOpBuilder &builder,
                           LLVMTypeConverter const *converter, int64_t value) {
   return builder.create<LLVM::ConstantOp>(converter->getIndexType(), value);
 }
-static Value reifyAsString(ImplicitLocOpBuilder &builder, ModuleOp container,
-                           StringAttr value) {
-  auto ptrTy = untypedPtrType(builder.getContext());
-  LLVM::GlobalOp global;
-  {
-    OpBuilder::InsertionGuard guard(builder);
-    builder.setInsertionPointToStart(&container.getBodyRegion().front());
-    //  Type type, bool isConstant, Linkage linkage, StringRef name, Attribute
-    //  value,
-    global = builder.create<LLVM::GlobalOp>(ptrTy, true, LLVM::Linkage::Private,
-                                            value.getValue(), value);
-    SymbolTable table(container);
-    table.insert(global);
-  }
-
-  return builder.create<LLVM::AddressOfOp>(global);
-}
 
 static LLVM::GlobalOp
 declareStringConstant(ModuleOp moduleOp, Location loc, StringRef value,
@@ -98,56 +83,27 @@ declareStringConstant(ModuleOp moduleOp, Location loc, StringRef value,
   auto globalType =
       LLVM::LLVMArrayType::get(rewriter.getI8Type(), str.size_in_bytes());
   auto twine = llvm::Twine("const", value).str();
-  StringRef globalName2 = globalName.value_or(twine);
-  SymbolTable table(moduleOp);
-  LLVM::GlobalOp global = rewriter.create<LLVM::GlobalOp>(
+  auto name = getUniqueFunctionName(moduleOp, globalName.value_or(twine));
+
+  rewriter.setInsertionPointToStart(&moduleOp.getBodyRegion().front());
+  return rewriter.create<LLVM::GlobalOp>(
       loc, globalType,
-      /*isConstant=*/true, LLVM::Linkage::Private, globalName2,
+      /*isConstant=*/true, LLVM::Linkage::Private, rewriter.getStringAttr(name),
       rewriter.getStringAttr(str),
       /*allignment=*/0);
-  table.insert(global);
-  return global;
 }
 
-// TODO these two functions are duplicated from CinmToCnm.cpp, share them
-
-// Turn an index in the index space of the given shape into a linear index.
-AffineExpr linearizeIndices(MLIRContext *ctx, ArrayRef<int64_t> shape) {
-
-  AffineExpr index = getAffineConstantExpr(0, ctx);
-  int64_t dimIndex = shape.size() - 1;
-  int64_t trailing = 1;
-  for (auto it = shape.rbegin(); it != shape.rend(); it++) {
-    auto dim = *it;
-    index = trailing * getAffineDimExpr(dimIndex, ctx) + index;
-    trailing *= dim;
-    dimIndex--;
-  }
-  return index;
+static Value reifyAsString(ImplicitLocOpBuilder &builder, ModuleOp container,
+                           StringAttr value) {
+  LLVM::GlobalOp global = declareStringConstant(container, builder.getLoc(),
+                                                value, true, "prog_name");
+  return builder.create<LLVM::AddressOfOp>(global);
 }
 
-// inflate a linear index into the given shape
-void structureIndex(AffineExpr index, ArrayRef<int64_t> shape,
-                    SmallVectorImpl<AffineExpr> &map) {
-
-  int64_t sizeOfTrailing = computeProduct(shape) / shape[0];
-  map.push_back(index.floorDiv(sizeOfTrailing));
-
-  AffineExpr gatherExpr = index * sizeOfTrailing;
-  size_t i = 1;
-
-  for (auto dim : llvm::drop_begin(shape, 1)) {
-    index = index % sizeOfTrailing;
-    sizeOfTrailing /= dim;
-    map.push_back(index.floorDiv(sizeOfTrailing));
-    gatherExpr = gatherExpr +
-                 mlir::getAffineDimExpr(i, index.getContext()) * sizeOfTrailing;
-    i++;
-  }
-}
 /// Linearize the scatter map.
-/// The map is from WG -> tensor, both index spaces are multidimensional.
-/// The input shape is the WG shape, the output shape is the tensor shape.
+/// The map is from (rank, dpu) -> tensor, both index spaces are
+/// multidimensional. The input shape is the WG shape, the output shape is the
+/// tensor shape.
 ///
 static FailureOr<AffineMap> linearizeAffineMap(AffineMap map,
                                                ArrayRef<int64_t> inputShape,
@@ -155,17 +111,11 @@ static FailureOr<AffineMap> linearizeAffineMap(AffineMap map,
 
   auto ctx = map.getContext();
   SmallVector<AffineExpr> inflatedIndices;
-  structureIndex(getAffineDimExpr(0, ctx), inputShape, inflatedIndices);
+  cinm::structureIndex(getAffineDimExpr(0, ctx), inputShape, inflatedIndices);
   AffineMap inflateMap = AffineMap::get(1, 0, inflatedIndices, ctx);
 
   // complete map with zero dims
-  // todo do that in CNM->UPMEM
   auto outputShape = bufferTy.getShape();
-  auto zero = getAffineConstantExpr(0, ctx);
-  for (unsigned i = map.getNumResults(); i < outputShape.size(); i++) {
-    map = map.insertResult(zero, i);
-  }
-
   auto layoutMap = bufferTy.getLayout().getAffineMap();
   if (isa<StridedLayoutAttr>(bufferTy.getLayout())) {
     // Replace offsets with 0 to delete the symbols.
@@ -173,11 +123,16 @@ static FailureOr<AffineMap> linearizeAffineMap(AffineMap map,
     layoutMap = layoutMap.replaceDimsAndSymbols(
         {}, {getAffineConstantExpr(0, ctx)}, layoutMap.getNumDims(), 0);
   } else if (bufferTy.getLayout().isIdentity()) {
-    auto linearIndex = linearizeIndices(ctx, outputShape);
+    auto linearIndex = cinm::linearizeIndices(ctx, outputShape);
     layoutMap = AffineMap::get(outputShape.size(), 0, linearIndex);
   } else {
     return failure();
   }
+  LLVM_DEBUG(llvm::errs() << "linearize composition :\n");
+  LLVM_DEBUG(llvm::errs() << "- output type " << bufferTy << '\n');
+  LLVM_DEBUG(llvm::errs() << "- layout map " << layoutMap << '\n');
+  LLVM_DEBUG(llvm::errs() << "- map " << map << '\n');
+  LLVM_DEBUG(llvm::errs() << "- inflate map " << inflateMap << '\n');
 
   auto result = MutableAffineMap(layoutMap.compose(map).compose(inflateMap));
   result.simplify();
@@ -186,6 +141,7 @@ static FailureOr<AffineMap> linearizeAffineMap(AffineMap map,
   auto resExpr = result.getResult(0);
   result.setResult(0, resExpr * (bufferTy.getElementTypeBitWidth() / 8));
   result.simplify();
+  LLVM_DEBUG(llvm::errs() << "- result " << result.getAffineMap() << '\n');
   return success(result.getAffineMap());
 }
 
@@ -253,18 +209,11 @@ public:
   FailureOr<Value>
   createConstantForDpuProgramName(ConversionPatternRewriter &rewriter,
                                   upmem::AllocDPUsOp op) const {
-
-    StringRef dpuProgramName;
-    for (auto user : op->getUsers()) {
-      if (auto launch = llvm::dyn_cast_or_null<upmem::DpuProgramOp>(user)) {
-        if (!dpuProgramName.empty() && dpuProgramName != launch.getSymName())
-          return op->emitError(
-              "has several upmem.launch_func op with a different kernel");
-        dpuProgramName = launch.getSymName();
-      }
+    std::string dpuProgramName;
+    dpuProgramName.append(op.getDpuProgramRef().getRootReference().strref());
+    for (auto segment : op.getDpuProgramRef().getNestedReferences()) {
+      dpuProgramName.append(segment.getValue());
     }
-    if (dpuProgramName.empty())
-      return op->emitError("has no upmem.launch_func op");
 
     LLVM::GlobalOp constant =
         declareStringConstant(op->getParentOfType<ModuleOp>(), op->getLoc(),
@@ -316,7 +265,9 @@ outlineAffineMap(ImplicitLocOpBuilder &rewriter,
 
   auto sizeTy =
       tyConverter->convertType(IndexType::get(moduleOp->getContext()));
-  auto linearMap = linearizeAffineMap(map, hierarchyTy.getWgShape(), bufferTy);
+  auto shape = hierarchyTy.getWgShape();
+  auto linearMap =
+      linearizeAffineMap(map, ArrayRef<int64_t>(shape).drop_back(), bufferTy);
   if (failed(linearMap)) {
     emitError(rewriter.getLoc(), "Unsupported layout map for ") << bufferTy;
     return failure();
@@ -334,10 +285,10 @@ outlineAffineMap(ImplicitLocOpBuilder &rewriter,
   });
   if (existingOp)
     return existingOp;
-  SymbolTable symTable(moduleOp);
+  auto funName = getUniqueFunctionName(moduleOp, "scatter_map");
+  rewriter.setInsertionPointToStart(&moduleOp.getBodyRegion().front());
   auto affineMapFun = rewriter.create<LLVM::LLVMFuncOp>(
-      "scatter_map", affineFunTy, LLVM::Linkage::Private);
-  symTable.insert(affineMapFun);
+      rewriter.getStringAttr(funName), affineFunTy, LLVM::Linkage::Private);
 
   // to find it later
   affineMapFun->setAttr("upmem.generated_from", AffineMapAttr::get(*linearMap));
@@ -474,9 +425,7 @@ public:
 
 struct WaitForOpToFuncCallLowering
     : public ConvertOpToLLVMPattern<upmem::WaitForOp> {
-public:
-  explicit WaitForOpToFuncCallLowering(LLVMTypeConverter &lowering)
-      : ConvertOpToLLVMPattern<upmem::WaitForOp>(lowering) {}
+  using ConvertOpToLLVMPattern<upmem::WaitForOp>::ConvertOpToLLVMPattern;
 
   LogicalResult
   matchAndRewrite(upmem::WaitForOp op,
@@ -511,40 +460,16 @@ public:
   }
 };
 
-// struct ConvertCnmGatherToUPMEM : public OpConversionPattern<cnm::GatherOp> {
-//   using OpConversionPattern<cnm::GatherOp>::OpConversionPattern;
+struct EraseDpuProgram : public ConvertOpToLLVMPattern<upmem::DpuProgramOp> {
+  using ConvertOpToLLVMPattern<upmem::DpuProgramOp>::ConvertOpToLLVMPattern;
 
-//   LogicalResult
-//   matchAndRewrite(cnm::GatherOp op, OpAdaptor,
-//                   ConversionPatternRewriter &rewriter) const override {
-
-//     // rewriter.replaceOp(op, results);
-//     return success();
-//   }
-// };
-
-// struct ConvertCnmLaunchToUPMEM : public OpConversionPattern<cnm::LaunchOp> {
-//   using OpConversionPattern<cnm::LaunchOp>::OpConversionPattern;
-
-//   LogicalResult
-//   matchAndRewrite(cnm::LaunchOp op, OpAdaptor,
-//                   ConversionPatternRewriter &rewriter) const override {
-
-//     return success();
-//   }
-// };
-
-// struct ConvertCnmTerminatorToUPMEM
-//     : public OpConversionPattern<cnm::TerminatorOp> {
-//   using OpConversionPattern<cnm::TerminatorOp>::OpConversionPattern;
-
-//   LogicalResult
-//   matchAndRewrite(cnm::TerminatorOp op, OpAdaptor,
-//                   ConversionPatternRewriter &rewriter) const override {
-//     rewriter.eraseOp(op); // gets generated by ConvertCnmLaunchToUPMEM
-//     return success();
-//   }
-// };
+  LogicalResult
+  matchAndRewrite(upmem::DpuProgramOp op, OpAdaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    rewriter.eraseOp(op);
+    return success();
+  }
+};
 
 } // namespace
 
@@ -567,6 +492,7 @@ void populateUPMEMToLLVMConversionPatterns(LLVMTypeConverter &typeConverter,
   patterns.add<GatherOpToFuncCallLowering>(typeConverter);
   patterns.add<WaitForOpToFuncCallLowering>(typeConverter);
   patterns.add<FreeDPUsOpToFuncCallLowering>(typeConverter);
+  patterns.add<EraseDpuProgram>(typeConverter);
   patterns.add<BaseDPUMemOffsetOpLowering>(&typeConverter.getContext());
 }
 

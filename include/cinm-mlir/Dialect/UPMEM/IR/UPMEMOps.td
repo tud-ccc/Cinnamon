@@ -338,7 +338,7 @@ def AllocDPUsOp: Upmem_Op <"alloc_dpus",  [ DeclareOpInterfaceMethods<SymbolUser
   let summary = "UPMEM alloc dpus";
   let description = [{
   }];
-  let arguments = (ins OptionalAttr<SymbolRefAttr>:$dpu_program_ref);
+  let arguments = (ins SymbolRefAttr:$dpu_program_ref);
   let results = (outs DeviceHierarchyType:$wg);
 
   let builders = [
@@ -349,7 +349,7 @@ def AllocDPUsOp: Upmem_Op <"alloc_dpus",  [ DeclareOpInterfaceMethods<SymbolUser
   ];
 
   let assemblyFormat = [{
-     ($dpu_program_ref^)? attr-dict `:` qualified(type($wg))
+     `with` `program` $dpu_program_ref attr-dict `:` qualified(type($wg))
   }];
 }
 

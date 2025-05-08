@@ -3,6 +3,7 @@
 #include "cinm-mlir/Dialect/Cinm/IR/CinmAttributes.h"
 #include "cinm-mlir/Dialect/Cinm/IR/CinmBase.h"
 #include "cinm-mlir/Dialect/Cinm/IR/CinmOps.h"
+#include "cinm-mlir/Dialect/Cinm/IR/CinmUtils.h"
 #include "cinm-mlir/Dialect/Cinm/IR/TilingInterface.h"
 #include "cinm-mlir/Dialect/Cnm/IR/CnmBase.h"
 #include "cinm-mlir/Dialect/Cnm/IR/CnmOps.h"
@@ -49,44 +50,6 @@ using namespace mlir;
 #include <cinm-mlir/Conversion/CinmPasses.h.inc>
 
 namespace {
-
-// Turn an index in the index space of the given shape into a linear index.
-AffineExpr linearizeIndices(MLIRContext *ctx, ArrayRef<int64_t> shape) {
-
-  AffineExpr index = getAffineConstantExpr(0, ctx);
-  int64_t dimIndex = shape.size() - 1;
-  int64_t trailing = 1;
-  for (auto it = shape.rbegin(); it != shape.rend(); it++) {
-    auto dim = *it;
-    if (dim != 1) {
-      // otherwise the only index in this space is zero, so we simplify it.
-      index = trailing * getAffineDimExpr(dimIndex, ctx) + index;
-      trailing *= dim;
-    }
-    dimIndex--;
-  }
-  return index;
-}
-
-// inflate a linear index into the given shape
-void structureIndex(AffineExpr index, ArrayRef<int64_t> shape,
-                    SmallVectorImpl<AffineExpr> &map) {
-
-  int64_t sizeOfTrailing = computeProduct(shape) / shape[0];
-  map.push_back(index.floorDiv(sizeOfTrailing));
-
-  AffineExpr gatherExpr = index * sizeOfTrailing;
-  size_t i = 1;
-
-  for (auto dim : llvm::drop_begin(shape, 1)) {
-    index = index % sizeOfTrailing;
-    sizeOfTrailing /= dim;
-    map.push_back(index.floorDiv(sizeOfTrailing));
-    gatherExpr = gatherExpr +
-                 mlir::getAffineDimExpr(i, index.getContext()) * sizeOfTrailing;
-    i++;
-  }
-}
 
 LogicalResult
 computeShapeOfTensors(Location loc, llvm::ArrayRef<int64_t> shape,
@@ -275,11 +238,11 @@ computeShapeOfTensors(Location loc, llvm::ArrayRef<int64_t> shape,
     }
   }
 
-  AffineExpr index = linearizeIndices(wgTy.getContext(), wgShape);
+  AffineExpr index = cinm::linearizeIndices(wgTy.getContext(), wgShape);
 
   llvm::SmallVector<AffineExpr> scatterResults;
   scatterResults.reserve(parallelDims.size());
-  structureIndex(index, parallelDims, scatterResults);
+  cinm::structureIndex(index, parallelDims, scatterResults);
 
   scatterMap =
       AffineMap::get(wgShape.size(), 0, scatterResults, wgTy.getContext());
@@ -638,7 +601,7 @@ LogicalResult computeScatterMapForGemm(cnm::BufferType bufferTyAB,
     auto ctx = bufferTyAB.getContext();
     auto numInputs = bufferTyAB.getWorkgroupShape().size();
     const auto linearInput =
-        linearizeIndices(ctx, bufferTyAB.getWorkgroupShape());
+        cinm::linearizeIndices(ctx, bufferTyAB.getWorkgroupShape());
 
     scatterA = mlir::simplifyAffineMapWithBounds(
         AffineMap::get(numInputs, 0, linearInput % rowsA),
@@ -649,7 +612,7 @@ LogicalResult computeScatterMapForGemm(cnm::BufferType bufferTyAB,
         bufferTyAB.getWorkgroupShape());
 
     SmallVector<AffineExpr> results;
-    structureIndex(linearInput, {rowsA, colsB}, results);
+    cinm::structureIndex(linearInput, {rowsA, colsB}, results);
     scatterGatherC = mlir::simplifyAffineMapWithBounds(
         AffineMap::get(numInputs, 0, std::move(results), ctx),
         bufferTyAB.getWorkgroupShape());
