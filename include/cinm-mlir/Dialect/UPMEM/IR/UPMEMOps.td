@@ -176,33 +176,6 @@ def StaticAllocOp : Upmem_Op<"static_alloc", [Symbol,
 
 }
 
-def LocalTransferOp : Upmem_Op<"local_transfer"> {
-  let summary = "transfer between memory spaces (wram or mram)";
-  let description = [{
-    The `upmemx.local_transfer` op copies a buffer into another buffer.
-    Both buffers should have same shape and element type, but the memory
-    spaces can differ (they must match the declared direction of the transfer).
-    When transferring part of a buffer, a memref.subview should be used
-    as the source or destination operand.
-
-    ```mlir
-    upmemx.local_transfer (wram to mram) %source, %dest : memref<2048xf32, "wram"> to memref<2048xf32, "mram">
-    ```
-  }];
-
-  let arguments = (ins UnitAttr:$mramToWram,
-                       Arg<AnyMemRef, "the memref to copy from",
-                           [MemReadAt<0, FullEffect>]>:$source,
-                       Arg<AnyMemRef, "the memref to copy to",
-                           [MemWriteAt<0, FullEffect>]>:$target);
-
-  let assemblyFormat = [{
-    `(` (`mram` `to` `wram` $mramToWram^):(`wram` `to` `mram`)? `)` $source `,` $target attr-dict `:` type($source) `to` type($target)
-  }];
-
-}
-
-
 
 def MemcpyOp : Upmem_Op<"memcpy", []> {
 
@@ -233,7 +206,7 @@ def MemcpyOp : Upmem_Op<"memcpy", []> {
 
 
 
-def TransferOp : Upmem_Op<"on_dpu_transfer", []> {
+def TransferOp : Upmem_Op<"local_transfer", []> {
 
   let summary = "UPMEM memcpy operation between mram and wram";
 
@@ -253,7 +226,7 @@ def TransferOp : Upmem_Op<"on_dpu_transfer", []> {
     Example:
 
     ```mlir
-    %token = upmem.local_transfer %src[%offset] to %dst[%offset2] count %bytecount : memref<?xf32, 1>, memref<?xf32>
+    %token = upmem.local_transfer %src[%offset] to %dst[%offset2] count 16 : memref<16xf32, "wram">, memref<16xf32, "mram">
     ```
   }];
 
@@ -262,7 +235,7 @@ def TransferOp : Upmem_Op<"on_dpu_transfer", []> {
                    Arg<I8MemRef, "", [MemWrite]>:$dest,
                    Index:$sourceOffset,
                    Index:$destOffset,
-                   Index:$count);
+                   I64Attr:$count);
 
   let assemblyFormat = [{
     $source `[` $sourceOffset `]` `to` $dest `[` $destOffset `]` `count` $count attr-dict `:` type($source) `to` type($dest)
@@ -355,7 +328,8 @@ def DpuProgramOp : Upmem_Op<"dpu_program",
 [
   IsolatedFromAbove,
   SymbolTable,
-  Symbol
+  Symbol,
+  AffineScope
 ]> {
   let summary = "Represents the final DPU program";
   let description = [{
