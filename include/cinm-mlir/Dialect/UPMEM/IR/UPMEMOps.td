@@ -348,29 +348,12 @@ def AllocDPUsOp: Upmem_Op <"alloc_dpus",  [ DeclareOpInterfaceMethods<SymbolUser
   let arguments = (ins SymbolRefAttr:$dpu_program_ref);
   let results = (outs DeviceHierarchyType:$wg);
 
-  let builders = [
-    OpBuilder<(ins "upmem::DpuSetOp":$dpuSet),
-    [{
-      build($_builder, $_state, dpuSet.getDeviceHierarchy(), dpuSet.getDpuProgramRef());
-    }]>
-  ];
-
   let assemblyFormat = [{
      `with` `program` $dpu_program_ref attr-dict `:` qualified(type($wg))
   }];
 }
 
 
-def LoadProgramOp: Upmem_Op <"load_program",  [ DeclareOpInterfaceMethods<SymbolUserOpInterface> ]> {
-  let summary = "Load a program on a dpu array";
-  let description = [{
-  }];
-  let arguments = (ins DeviceHierarchyType:$inputWg, SymbolRefAttr:$dpu_program_ref);
-
-  let assemblyFormat = [{
-     $dpu_program_ref `on` $inputWg attr-dict `:` qualified(type($inputWg))
-  }];
-}
 
 def FreeDPUsOp: Upmem_Op <"free_dpus", []>{
   let summary = "UPMEM free dpus";
@@ -393,25 +376,6 @@ def WaitForOp : Upmem_Op<"wait_for", []> {
 
   let assemblyFormat = " $dpuSet attr-dict `:` qualified(type($dpuSet))";
 
-}
-
-def DpuSetOp : Upmem_Op<"dpu_set", [ Symbol, DeclareOpInterfaceMethods<SymbolUserOpInterface> ]> {
-
-  let summary = "Represents the dpu set in the Upmem API, ie, an instance of a program";
-  let description = [{
-  }];
-
-  let arguments = (ins SymbolNameAttr:$sym_name, I32Attr:$numRanks, I32Attr:$numDpus, SymbolRefAttr:$dpuProgramRef);
-
-
-  let assemblyFormat = "$sym_name `(` $numRanks `x` $numDpus `)` `with` $dpuProgramRef attr-dict";
-  let extraClassDeclaration = [{
-      upmem::DpuProgramOp resolveDpuProgram();
-      upmem::DeviceHierarchyType getDeviceHierarchy() {
-        auto tasklets = resolveDpuProgram().getNumTasklets();
-        return DeviceHierarchyType::get(getContext(), getNumRanks(), getNumDpus(), tasklets);
-      }
-  }];
 }
 
 def ReturnOp : Upmem_Op<"return", [ParentOneOf<["DpuProgramOp"]>, Pure, Terminator]>,

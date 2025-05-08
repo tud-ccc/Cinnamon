@@ -28,7 +28,6 @@
 
 using namespace mlir;
 
-
 //===- Generated implementation -------------------------------------------===//
 
 #define GET_OP_CLASSES
@@ -63,6 +62,11 @@ upmem::UPMEMDialect::verifyOperationAttribute(Operation *op,
 }
 
 LogicalResult upmem::GatherOp::verify() {
+  if (getScatterMap().getNumResults() !=
+          getHostBuffer().getType().getShape().size() ||
+      getScatterMap().getNumDims() != 2)
+    return emitOpError("Scatter map should map (rank, dpu) to a start index in "
+                       "the host buffer");
   // auto count = getDpuMemOffset();
   // if ((count % 8) != 0)
   //   return emitOpError("has unaligned DPU memory offset ")
@@ -71,29 +75,17 @@ LogicalResult upmem::GatherOp::verify() {
 }
 
 LogicalResult upmem::ScatterOp::verify() {
+  if (getScatterMap().getNumResults() !=
+          getHostBuffer().getType().getShape().size() ||
+      getScatterMap().getNumDims() != 2)
+    return emitOpError("Scatter map should map (rank, dpu) to a start index in "
+                       "the host buffer");
+
   // auto count = getDpuMemOffset();
   // if ((count % 8) != 0)
-  //   return emitOpError("has unaligned DPU memory offset ")
-  //          << count << ", needs to be 8-byte-aligned.";
+  // return emitOpError("has unaligned DPU memory offset ")
+  //        << count << ", needs to be 8-byte-aligned.";
   return success();
-}
-
-::mlir::LogicalResult
-upmem::DpuSetOp::verifySymbolUses(::mlir::SymbolTableCollection &symbolTable) {
-
-  upmem::DpuProgramOp program =
-      symbolTable.lookupNearestSymbolFrom<upmem::DpuProgramOp>(
-          *this, getDpuProgramRef());
-
-  if (!program)
-    return emitOpError("requires ")
-           << getDpuProgramRefAttr() << " to refer to an upmem.dpu_program op";
-  return success();
-}
-
-upmem::DpuProgramOp upmem::DpuSetOp::resolveDpuProgram() {
-  return SymbolTable(SymbolTable::getNearestSymbolTable((*this)->getParentOp()))
-      .lookupNearestSymbolFrom<upmem::DpuProgramOp>(*this, getDpuProgramRef());
 }
 
 ::mlir::LogicalResult upmem::AllocDPUsOp::verifySymbolUses(
