@@ -94,7 +94,7 @@ declareStringConstant(ModuleOp moduleOp, Location loc, StringRef value,
 }
 
 static Value reifyAsString(ImplicitLocOpBuilder &builder, ModuleOp container,
-                           StringAttr value) {
+                           StringRef value) {
   LLVM::GlobalOp global = declareStringConstant(container, builder.getLoc(),
                                                 value, true, "prog_name");
   return builder.create<LLVM::AddressOfOp>(global);
@@ -135,8 +135,12 @@ static FailureOr<AffineMap> linearizeAffineMap(AffineMap map,
   LLVM_DEBUG(llvm::errs() << "- inflate map " << inflateMap << '\n');
 
   auto result = MutableAffineMap(layoutMap.compose(map).compose(inflateMap));
+  LLVM_DEBUG(llvm::errs() << "- before simplification " << result.getAffineMap() << '\n');
   result.simplify();
+  LLVM_DEBUG(llvm::errs() << "- after simplification " << result.getAffineMap() << '\n');
+
   assert(result.getNumResults() == 1 && result.getNumDims() == 1);
+
   // last step is making sure this map operates on bytes and not on elements
   auto resExpr = result.getResult(0);
   result.setResult(0, resExpr * (bufferTy.getElementTypeBitWidth() / 8));
@@ -347,8 +351,7 @@ static LogicalResult lowerScatterOrGather(Op op, typename Op::Adaptor adaptor,
   if (llvm::failed(runtimeScatterFun))
     return failure();
   auto funPtrOp = rewriter0.create<LLVM::AddressOfOp>(loc, *affineMapFunOpt);
-  auto bufferRef = op.getDpuBufRef().getLeafReference();
-  auto bufferId = reifyAsString(rewriter, moduleOp, bufferRef);
+  auto bufferId = reifyAsString(rewriter, moduleOp, op.getDpuBufRef());
   auto numBytesCopied = op.getDpuBufferSizeInBytes();
 
   // Transfer count must be 8-byte aligned
