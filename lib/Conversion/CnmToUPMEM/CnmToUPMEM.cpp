@@ -200,8 +200,7 @@ static LogicalResult convertCnmLaunchToUpmem(cnm::LaunchOp launch,
                           MemRefLayoutAttrInterface{}, bufferType.getLevel());
 
       auto mrambuf = rewriter.create<upmem::StaticAllocOp>(
-          alloc->getLoc(), memrefTy, false, false,
-          rewriter.getStringAttr("buf"));
+          alloc->getLoc(), memrefTy, false, "buf", false);
       dpuProgramSymTable.insert(mrambuf); // this renames it to a unique name
       buffersToMramBuf[alloc.getResult()] = mrambuf;
     }
@@ -240,17 +239,47 @@ static LogicalResult convertCnmLaunchToUpmem(cnm::LaunchOp launch,
            llvm::concat<Value>(launch.getInputs(), launch.getOutBuffers()),
            launch.getBody().getArguments())) {
 
-    mapping.map(memref, buffersToPwramBuf[cnmBuf].getResult());
+    mapping.map(memref, buffersToPwramBuf[cnmBuf].getBuffer());
   }
 
+  // todo support moving tiles of the mram buffer into pwram
   rewriter.setInsertionPointToEnd(&dpuProgram.getBody().front());
+  for (auto [buf, mramBuf] : buffersToMramBuf) {
+    auto pwramBuf = buffersToPwramBuf[buf];
+
+    auto zero = rewriter.create<arith::ConstantIndexOp>(buf.getLoc(), 0);
+    auto byteCount = rewriter.create<arith::ConstantIndexOp>(
+        buf.getLoc(), pwramBuf.getBytes().getType().getNumElements());
+    rewriter.create<upmem::TransferOp>(buf.getLoc(), mramBuf.getBytes(),
+                                       pwramBuf.getBytes(), zero, zero,
+                                       byteCount);
+  }
+
+  // copy the old ops
   for (auto &op : launch.getBody().front().without_terminator()) {
     rewriter.clone(op, mapping);
   }
+
+  // transfer buffers back to mram
+  for (auto buf : launch.getOutBuffers()) {
+    auto pwramBuf = buffersToPwramBuf[buf];
+    auto mramBuf = buffersToMramBuf[buf];
+
+    auto zero = rewriter.create<arith::ConstantIndexOp>(buf.getLoc(), 0);
+    auto byteCount = rewriter.create<arith::ConstantIndexOp>(
+        buf.getLoc(), pwramBuf.getBytes().getType().getNumElements());
+    rewriter.create<upmem::TransferOp>(buf.getLoc(), pwramBuf.getBytes(),
+                                       mramBuf.getBytes(), zero, zero,
+                                       byteCount);
+  }
+
   rewriter.create<upmem::ReturnOp>(launch->getLoc());
 
   rewriter.setInsertionPoint(launch);
   rewriter.create<upmem::WaitForOp>(launch->getLoc(), upmemWgAlloc.getResult());
+
+  // cleanup
+
   rewriter.eraseOp(launch);
   for (auto op : allocsToDelete) {
     rewriter.eraseOp(op);

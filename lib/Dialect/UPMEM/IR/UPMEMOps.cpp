@@ -19,6 +19,8 @@
 #include <llvm/ADT/SmallVector.h>
 #include <llvm/ADT/StringRef.h>
 #include <llvm/Support/LogicalResult.h>
+#include <mlir/IR/BuiltinAttributeInterfaces.h>
+#include <mlir/IR/BuiltinTypes.h>
 #include <mlir/IR/OperationSupport.h>
 #include <mlir/IR/SymbolTable.h>
 #include <mlir/IR/Value.h>
@@ -44,6 +46,15 @@ void upmem::UPMEMDialect::registerOps() {
       >();
 }
 
+MemRefType upmem::detail::flatMemRefType(Type ty) {
+  MemRefType structured = llvm::cast<MemRefType>(ty);
+
+  auto numBytes =
+      structured.getNumElements() * structured.getElementTypeBitWidth() / 8;
+  return MemRefType::get(
+      {numBytes}, IntegerType::get(structured.getContext(), 8),
+      MemRefLayoutAttrInterface{}, structured.getMemorySpace());
+}
 // parsers/printers
 
 LogicalResult
@@ -59,6 +70,21 @@ upmem::UPMEMDialect::verifyOperationAttribute(Operation *op,
            << getContainerModuleAttrName() << "' attribute to be attached to '"
            << ModuleOp::getOperationName() << '\'';
   return success();
+}
+
+void upmem::StaticAllocOp::build(OpBuilder &builder, OperationState &result,
+                                 MemRefType ty, bool isWram, StringRef name,
+                                 bool noinit) {
+  if (isWram)
+    result.addAttribute(getIsWramAttrName(result.name), builder.getUnitAttr());
+  if (noinit)
+    result.addAttribute(getNoinitAttrName(result.name), builder.getUnitAttr());
+
+  if (!name.empty()) {
+    result.addAttribute(getSymNameAttrName(result.name),
+                        builder.getStringAttr(name));
+  }
+  result.addTypes({ty, detail::flatMemRefType(ty)});
 }
 
 LogicalResult upmem::GatherOp::verify() {
@@ -103,15 +129,13 @@ LogicalResult upmem::ScatterOp::verify() {
   return success();
 }
 
-::mlir::LogicalResult upmem::LoadProgramOp::verifySymbolUses(
-    ::mlir::SymbolTableCollection &symbolTable) {
+void upmem::PrivateWRAMAllocOp::getAsmResultNames(
+    ::mlir::OpAsmSetValueNameFn fn) {
+  fn(getBuffer(), "pwram_buf");
+  fn(getBytes(), "bytes");
+}
 
-  upmem::DpuProgramOp program =
-      symbolTable.lookupNearestSymbolFrom<upmem::DpuProgramOp>(
-          *this, getDpuProgramRefAttr());
-
-  if (!program)
-    return emitOpError("requires ")
-           << getDpuProgramRefAttr() << " to refer to an upmem.dpu_program op";
-  return success();
+void upmem::StaticAllocOp::getAsmResultNames(::mlir::OpAsmSetValueNameFn fn) {
+  fn(getBuffer(), getIsWram() ? "wram_buf" : "mram_buf");
+  fn(getBytes(), "bytes");
 }

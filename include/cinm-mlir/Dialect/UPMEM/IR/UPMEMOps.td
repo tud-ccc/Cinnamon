@@ -83,6 +83,9 @@ def TaskletIDOp : Upmem_Op<"tasklet_id"> {
 
 
 def PrivateWRAMAllocOp : Upmem_Op<"pwram_alloc", [
+   TypesMatchWith<"workgroup shape matches buffer shape", "buffer", "bytes",
+        "upmem::detail::flatMemRefType($_self)">,
+        DeclareOpInterfaceMethods<OpAsmOpInterface, ["getAsmResultNames"]>
   ]> {
 
   let summary = "UPMEM WRAM (fast scratchpad) memory allocation operation for a single tasklet.";
@@ -98,23 +101,37 @@ def PrivateWRAMAllocOp : Upmem_Op<"pwram_alloc", [
     Example:
 
     ```mlir
-    %memref = upmem.pwram_alloc : memref<64xf32>
+    %buffer, %bytes = upmem.pwram_alloc() : memref<64xf32>
     ```
   }];
 
-  let results = (outs Res<AnyMemRef, "", [MemAlloc]>:$memref);
+  let results = (outs Res<AnyMemRef, "", [MemAlloc]>:$buffer, I8MemRef:$bytes);
+  let skipDefaultBuilders = 1;
+  let builders = [
+    OpBuilder<(ins "MemRefType":$bufferTy), [{
+      $_state.addTypes({
+        bufferTy,
+        detail::flatMemRefType(bufferTy)
+      });
+    }]>
+  ];
 
   let extraClassDeclaration = [{
-    MemRefType getType() { return ::llvm::cast<MemRefType>(getMemref().getType()); }
+    MemRefType getType() { return ::llvm::cast<MemRefType>(getBuffer().getType()); }
+
   }];
 
   let assemblyFormat = [{
-     attr-dict `:` type($memref)
+     `(` `)` attr-dict `:` type($buffer)
   }];
 }
 
 
-def StaticAllocOp : Upmem_Op<"static_alloc", [Symbol]> {
+def StaticAllocOp : Upmem_Op<"static_alloc", [Symbol,
+ TypesMatchWith<"workgroup shape matches buffer shape", "buffer", "bytes",
+        "upmem::detail::flatMemRefType($_self)">,
+        DeclareOpInterfaceMethods<OpAsmOpInterface, ["getAsmResultNames"]>
+]> {
   let summary = "static buffer allocation in wram or mram";
   let description = [{
     The `upmemx.static_alloc` op declares a buffer in wram or mram.
@@ -128,9 +145,19 @@ def StaticAllocOp : Upmem_Op<"static_alloc", [Symbol]> {
   }];
 
   let arguments = (ins UnitAttr:$isWram, DefaultValuedAttr<UnitAttr, "false">:$noinit, OptionalAttr<SymbolNameAttr>:$sym_name);
-  let results = (outs Res<AnyMemRef, "",
-                          [MemAlloc<DefaultResource, 0, FullEffect>]>:$buffer);
+  let results = (outs Res<AnyMemRef, "structured view of the source buffer",
+                          [MemAlloc<DefaultResource, 0, FullEffect>]>:$buffer,
+                          Res<I8MemRef, "byte view on the source buffer">:$bytes);
 
+  let skipDefaultBuilders = 1;
+  let builders = [
+    OpBuilder<(ins
+      "MemRefType":$structuredType,
+      "bool":$isWram,
+      CArg<"StringRef", "{}">:$sym_name,
+      CArg<"bool", "false">:$noinit
+    )>
+  ];
   let assemblyFormat = "($sym_name^)? `(` (`wram` $isWram^):(`mram`)? `)` (`noinit` $noinit^)? attr-dict `:` type($buffer)";
 
   let extraClassDeclaration = [{
@@ -144,6 +171,7 @@ def StaticAllocOp : Upmem_Op<"static_alloc", [Symbol]> {
     bool isWram() {
       return getIsWram();
     }
+
   }];
 
 }
@@ -225,11 +253,11 @@ def TransferOp : Upmem_Op<"on_dpu_transfer", []> {
     Example:
 
     ```mlir
-    %token = upmem.memcpy mram_to_wram %dst, %src : memref<?xf32, 1>, memref<?xf32>
+    %token = upmem.local_transfer %src[%offset] to %dst[%offset2] count %bytecount : memref<?xf32, 1>, memref<?xf32>
     ```
   }];
 
-  let arguments = (ins MemcpyDirAttr:$direction,
+  let arguments = (ins 
                    Arg<I8MemRef, "", [MemRead]>:$source,
                    Arg<I8MemRef, "", [MemWrite]>:$dest,
                    Index:$sourceOffset,
@@ -237,7 +265,7 @@ def TransferOp : Upmem_Op<"on_dpu_transfer", []> {
                    Index:$count);
 
   let assemblyFormat = [{
-    $direction $source `[` $sourceOffset `]` `to` $dest `[` $destOffset `]` `count` $count attr-dict `:` type($source) `to` type($dest)
+    $source `[` $sourceOffset `]` `to` $dest `[` $destOffset `]` `count` $count attr-dict `:` type($source) `to` type($dest)
   }];
 
   // let hasFolder = 1;
