@@ -262,7 +262,7 @@ static LogicalResult printOperation(CppEmitter &emitter,
 static LogicalResult printOperation(CppEmitter &emitter,
                                     upmem::PrivateWRAMAllocOp wramAllocOp) {
   raw_ostream &os = emitter.ostream();
-  MemRefType res_type = dyn_cast<MemRefType>(wramAllocOp.getResult().getType());
+  MemRefType res_type = wramAllocOp.getBuffer().getType();
   Type elementType = res_type.getElementType();
 
   os << "__dma_aligned ";
@@ -275,7 +275,7 @@ static LogicalResult printOperation(CppEmitter &emitter,
   if (size * elementSize < 8) {
     size = 8 / elementSize;
   }
-  os << " " << emitter.getOrCreateName(wramAllocOp) << "[" << size << "]";
+  os << " " << emitter.getOrCreateName(wramAllocOp.getBuffer()) << "[" << size << "]";
 
   return success();
 }

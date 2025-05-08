@@ -25,6 +25,10 @@
 
 //===- Generated includes -------------------------------------------------===//
 
+namespace mlir::upmem::detail {
+  MemRefType flatMemRefType(Type structured);
+}
+
 #define GET_OP_CLASSES
 #include "cinm-mlir/Dialect/UPMEM/IR/UPMEMOps.h.inc"
 
