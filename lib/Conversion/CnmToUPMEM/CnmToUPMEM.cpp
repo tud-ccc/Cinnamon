@@ -85,7 +85,7 @@ static AffineMap adaptAffineMapCnmToUpmem(AffineMap map,
 static LogicalResult convertCnmGatherToUpmem(RewriterBase &rewriter,
                                              cnm::GatherOp op,
                                              upmem::AllocDPUsOp upmemWgAlloc,
-                                             SymbolRefAttr refToBuffer) {
+                                             StringAttr refToBuffer) {
 
   rewriter.setInsertionPoint(op);
   Value outputBuf = op.getOutputBuf();
@@ -116,7 +116,7 @@ static LogicalResult convertCnmGatherToUpmem(RewriterBase &rewriter,
 static LogicalResult convertCnmScatterToUpmem(RewriterBase &rewriter,
                                               cnm::ScatterOp op,
                                               upmem::AllocDPUsOp upmemWgAlloc,
-                                              SymbolRefAttr refToBuffer) {
+                                              StringAttr refToBuffer) {
 
   rewriter.setInsertionPoint(op);
   const Value tensor = op.getInput();
@@ -213,28 +213,18 @@ static LogicalResult convertCnmLaunchToUpmem(cnm::LaunchOp launch,
 
     if (auto scatter = llvm::dyn_cast_or_null<cnm::ScatterOp>(user)) {
       auto alloc = buffersToMramBuf[scatter.getBuffer()];
-      if (alloc) {
-        auto ref = upmem::getSymbolPath(
-            SymbolTable::getNearestSymbolTable(scatter), alloc);
-        if (succeeded(ref)) {
-          if (failed(convertCnmScatterToUpmem(rewriter, scatter, upmemWgAlloc,
-                                              *ref)))
-            return failure();
-          continue;
-        }
+      if (!alloc ||
+          failed(convertCnmScatterToUpmem(rewriter, scatter, upmemWgAlloc,
+                                          alloc.getSymNameAttr()))) {
+        return failure();
       }
     }
     if (auto gather = llvm::dyn_cast_or_null<cnm::GatherOp>(user)) {
       auto alloc = buffersToMramBuf[gather.getBuffer()];
-      if (alloc) {
-        auto ref = upmem::getSymbolPath(
-            SymbolTable::getNearestSymbolTable(gather), alloc);
-        if (succeeded(ref)) {
-          if (failed(convertCnmGatherToUpmem(rewriter, gather, upmemWgAlloc,
-                                             *ref)))
-            return failure();
-          continue;
-        }
+      if (!alloc ||
+          failed(convertCnmGatherToUpmem(rewriter, gather, upmemWgAlloc,
+                                         alloc.getSymNameAttr()))) {
+        return failure();
       }
     }
   }
@@ -257,8 +247,7 @@ static LogicalResult convertCnmLaunchToUpmem(cnm::LaunchOp launch,
   for (auto &op : launch.getBody().front().without_terminator()) {
     rewriter.clone(op, mapping);
   }
-  upmem::DpuProgramOp::ensureTerminator(dpuProgram.getBody(), rewriter,
-                                        launch->getLoc());
+  rewriter.create<upmem::ReturnOp>(launch->getLoc());
 
   rewriter.setInsertionPoint(launch);
   rewriter.create<upmem::WaitForOp>(launch->getLoc(), upmemWgAlloc.getResult());
@@ -270,7 +259,8 @@ static LogicalResult convertCnmLaunchToUpmem(cnm::LaunchOp launch,
   for (auto user : wgAlloc.getResult().getUsers()) {
     if (auto free = llvm::dyn_cast_or_null<cnm::FreeWorkgroupOp>(user)) {
       rewriter.setInsertionPoint(free);
-      rewriter.create<upmem::FreeDPUsOp>(free->getLoc(), upmemWgAlloc.getResult());
+      rewriter.create<upmem::FreeDPUsOp>(free->getLoc(),
+                                         upmemWgAlloc.getResult());
       rewriter.eraseOp(free);
     }
   }

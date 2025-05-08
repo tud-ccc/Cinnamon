@@ -274,12 +274,20 @@ class ScatterGatherLike<string mnemonic, string kw, MemoryEffect effect>
   : Upmem_Op<mnemonic, [MemoryEffects<[MemWrite]>]> {
 
   let arguments = (ins Arg<AnyMemRef, "", [effect]>:$hostBuffer,
-                  SymbolRefAttr:$dpuBufRef,
+                  FlatSymbolRefAttr:$dpuBufRef,
                   I64Attr:$transferCount,
                   AffineMapAttr:$scatterMap,
                   DeviceHierarchyType:$hierarchy);
 
   let results = (outs);
+
+  let description = [{
+    Scatter or gather a host buffer onto a DPU array.
+    The buffer ref is the simple name of a buffer declared with upmem.static_alloc in
+    the body of the upmem.dpu_program of the workgroup.
+    
+
+  }];
 
   let extraClassDeclaration = [{
     int64_t getDpuBufferSizeInBits() {
@@ -317,7 +325,6 @@ def GatherOp: ScatterGatherLike<"gather", "from", MemWrite> {
 
 def DpuProgramOp : Upmem_Op<"dpu_program",
 [
-  SingleBlockImplicitTerminator<"ReturnOp">,
   IsolatedFromAbove,
   SymbolTable,
   Symbol
@@ -327,7 +334,7 @@ def DpuProgramOp : Upmem_Op<"dpu_program",
   }];
 
   let arguments = (ins SymbolNameAttr:$sym_name, I32Attr:$numTasklets);
-  let regions = (region SizedRegion<1>:$body);
+  let regions = (region AnyRegion:$body);
 
   let assemblyFormat = "$sym_name `(` `)` `tasklets` `(` $numTasklets `)` attr-dict-with-keyword $body";
 
