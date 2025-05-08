@@ -329,7 +329,8 @@ def DpuProgramOp : Upmem_Op<"dpu_program",
   IsolatedFromAbove,
   SymbolTable,
   Symbol,
-  AffineScope
+  AffineScope,
+  OpAsmOpInterface
 ]> {
   let summary = "Represents the final DPU program";
   let description = [{
@@ -340,6 +341,11 @@ def DpuProgramOp : Upmem_Op<"dpu_program",
 
   let assemblyFormat = "$sym_name `(` `)` `tasklets` `(` $numTasklets `)` attr-dict-with-keyword $body";
 
+  let extraClassDeclaration = [{
+
+    static StringRef getDefaultDialect() { return "upmem"; }
+  
+  }];
 }
 
 
