@@ -14,7 +14,7 @@ OUT_DIR_DPU=$(OUT_DIR)/dpu
 IR_PREFIX=$(OUT_DIR)/irs/$(BENCH_NAME)
 BUILD_PREFIX=$(OUT_DIR)/out
 
-CLANG_18_BASE=../../llvm/build/bin
+CLANG_18_BASE=../third-party/llvm/build/bin
 CINM_OPT=../build/bin/cinm-opt
 
 $(IR_PREFIX).tiled.mlir: $(BENCH_NAME).mlir
