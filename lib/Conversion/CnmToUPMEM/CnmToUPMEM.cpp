@@ -31,6 +31,7 @@
 #include <mlir/IR/BuiltinTypes.h>
 #include <mlir/IR/Diagnostics.h>
 #include <mlir/IR/IRMapping.h>
+#include <mlir/IR/Location.h>
 #include <mlir/IR/MLIRContext.h>
 #include <mlir/IR/PatternMatch.h>
 #include <mlir/IR/SymbolTable.h>
@@ -137,6 +138,28 @@ static LogicalResult convertCnmScatterToUpmem(RewriterBase &rewriter,
   return success();
 }
 
+static void createTransfer(RewriterBase &rewriter, bool toWram, Location loc,
+                           upmem::StaticAllocOp mramBuf,
+                           upmem::PrivateWRAMAllocOp pwramBuf) {
+
+  auto zero = rewriter.create<arith::ConstantIndexOp>(loc, 0);
+
+  auto numEltsPerTasklet =
+      computeProduct(mramBuf.getBuffer().getType().getShape().drop_front()) *
+      mramBuf.getBuffer().getType().getElementTypeBitWidth() / 8;
+  auto numElts =
+      rewriter.create<arith::ConstantIndexOp>(loc, numEltsPerTasklet);
+  auto taskletId = rewriter.create<upmem::TaskletIDOp>(loc);
+  auto tileIx = rewriter.create<arith::MulIOp>(loc, taskletId, numElts);
+
+  auto byteCount = pwramBuf.getBytes().getType().getNumElements();
+  if (toWram)
+    rewriter.create<upmem::TransferOp>(
+        loc, mramBuf.getBytes(), pwramBuf.getBytes(), tileIx, zero, byteCount);
+  else
+    rewriter.create<upmem::TransferOp>(
+        loc, pwramBuf.getBytes(), mramBuf.getBytes(), zero, tileIx, byteCount);
+}
 static LogicalResult convertCnmLaunchToUpmem(cnm::LaunchOp launch,
                                              RewriterBase &rewriter,
                                              SymbolTable rootModule,
@@ -247,12 +270,7 @@ static LogicalResult convertCnmLaunchToUpmem(cnm::LaunchOp launch,
   for (auto [buf, mramBuf] : buffersToMramBuf) {
     auto pwramBuf = buffersToPwramBuf[buf];
 
-    auto zero = rewriter.create<arith::ConstantIndexOp>(buf.getLoc(), 0);
-    auto byteCount = rewriter.create<arith::ConstantIndexOp>(
-        buf.getLoc(), pwramBuf.getBytes().getType().getNumElements());
-    rewriter.create<upmem::TransferOp>(buf.getLoc(), mramBuf.getBytes(),
-                                       pwramBuf.getBytes(), zero, zero,
-                                       byteCount);
+    createTransfer(rewriter, true, buf.getLoc(), mramBuf, pwramBuf);
   }
 
   // copy the old ops
@@ -265,12 +283,7 @@ static LogicalResult convertCnmLaunchToUpmem(cnm::LaunchOp launch,
     auto pwramBuf = buffersToPwramBuf[buf];
     auto mramBuf = buffersToMramBuf[buf];
 
-    auto zero = rewriter.create<arith::ConstantIndexOp>(buf.getLoc(), 0);
-    auto byteCount = rewriter.create<arith::ConstantIndexOp>(
-        buf.getLoc(), pwramBuf.getBytes().getType().getNumElements());
-    rewriter.create<upmem::TransferOp>(buf.getLoc(), pwramBuf.getBytes(),
-                                       mramBuf.getBytes(), zero, zero,
-                                       byteCount);
+    createTransfer(rewriter, false, buf.getLoc(), mramBuf, pwramBuf);
   }
 
   rewriter.create<upmem::ReturnOp>(launch->getLoc());
