@@ -139,6 +139,7 @@ static LogicalResult convertCnmScatterToUpmem(RewriterBase &rewriter,
 
 static LogicalResult convertCnmLaunchToUpmem(cnm::LaunchOp launch,
                                              RewriterBase &rewriter,
+                                             SymbolTable rootModule,
                                              ModuleOp dpuKernelModule) {
 
   rewriter.clearInsertionPoint();
@@ -152,14 +153,17 @@ static LogicalResult convertCnmLaunchToUpmem(cnm::LaunchOp launch,
 
   auto dpuProgram = rewriter.create<upmem::DpuProgramOp>(
       launch->getLoc(), "program", upmemTy.getNumTaskletsPerDpu());
-
+  dpuProgram.getBody().emplaceBlock();
   SymbolTable symTable(dpuKernelModule);
   symTable.insert(dpuProgram);
+
+  auto programPath = upmem::getSymbolPath(rootModule, dpuProgram);
+  assert(llvm::succeeded(programPath));
 
   auto wgAlloc = cast<cnm::WorkgroupOp>(launch.getWg().getDefiningOp());
   rewriter.setInsertionPoint(wgAlloc);
   auto upmemWgAlloc = rewriter.create<upmem::AllocDPUsOp>(
-      wgAlloc->getLoc(), upmemTy, dpuProgram.getSymNameAttr());
+      wgAlloc->getLoc(), upmemTy, *programPath);
 
   llvm::MapVector<Value, upmem::StaticAllocOp> buffersToMramBuf;
   llvm::MapVector<Value, upmem::PrivateWRAMAllocOp> buffersToPwramBuf;
@@ -196,7 +200,8 @@ static LogicalResult convertCnmLaunchToUpmem(cnm::LaunchOp launch,
                           MemRefLayoutAttrInterface{}, bufferType.getLevel());
 
       auto mrambuf = rewriter.create<upmem::StaticAllocOp>(
-          alloc->getLoc(), memrefTy, false, false, "buf");
+          alloc->getLoc(), memrefTy, false, false,
+          rewriter.getStringAttr("buf"));
       dpuProgramSymTable.insert(mrambuf); // this renames it to a unique name
       buffersToMramBuf[alloc.getResult()] = mrambuf;
     }
@@ -238,8 +243,8 @@ static LogicalResult convertCnmLaunchToUpmem(cnm::LaunchOp launch,
   // We still need to move the body of the launch into the new DPU program,
   // and delete all remaining CNM ops.
 
-  // wait no the memrefs inside have the type of the wram buffers.
-  // the mram buffers have tasklets * wram buffer size.
+  // these memrefs map to the pwram bufs. TODO we need to transfer from mram to
+  // pwram
   IRMapping mapping;
   for (auto [cnmBuf, memref] : llvm::zip_equal(
            llvm::concat<Value>(launch.getInputs(), launch.getOutBuffers()),
@@ -248,9 +253,12 @@ static LogicalResult convertCnmLaunchToUpmem(cnm::LaunchOp launch,
     mapping.map(memref, buffersToPwramBuf[cnmBuf].getResult());
   }
 
+  rewriter.setInsertionPointToEnd(&dpuProgram.getBody().front());
   for (auto &op : launch.getBody().front().without_terminator()) {
     rewriter.clone(op, mapping);
   }
+  upmem::DpuProgramOp::ensureTerminator(dpuProgram.getBody(), rewriter,
+                                        launch->getLoc());
 
   rewriter.setInsertionPoint(launch);
   rewriter.create<upmem::WaitForOp>(launch->getLoc(), upmemWgAlloc.getResult());
@@ -261,7 +269,9 @@ static LogicalResult convertCnmLaunchToUpmem(cnm::LaunchOp launch,
 
   for (auto user : wgAlloc.getResult().getUsers()) {
     if (auto free = llvm::dyn_cast_or_null<cnm::FreeWorkgroupOp>(user)) {
-      rewriter.replaceOpWithNewOp<upmem::FreeDPUsOp>(free, free.getWorkgroup());
+      rewriter.setInsertionPoint(free);
+      rewriter.create<upmem::FreeDPUsOp>(free->getLoc(), upmemWgAlloc.getResult());
+      rewriter.eraseOp(free);
     }
   }
 
@@ -311,9 +321,12 @@ struct ConvertCnmToUPMEMPass
     rootModule->walk(
         [&](cnm::LaunchOp launch) { launchOps.push_back(launch); });
 
+    SymbolTable rootSymTable(rootModule);
+
     IRRewriter rewriter(&getContext());
     for (auto launch : launchOps) {
-      if (failed(convertCnmLaunchToUpmem(launch, rewriter, dpuKernelModule))) {
+      if (failed(convertCnmLaunchToUpmem(launch, rewriter, rootSymTable,
+                                         dpuKernelModule))) {
         signalPassFailure();
         return;
       }

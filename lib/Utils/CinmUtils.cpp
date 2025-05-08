@@ -8,12 +8,26 @@
 #include <mlir/IR/AffineExpr.h>
 #include <mlir/IR/AffineExprVisitor.h>
 #include <mlir/IR/AffineMap.h>
+#include <mlir/IR/BuiltinOps.h>
 #include <mlir/IR/BuiltinTypeInterfaces.h>
 #include <optional>
 
 namespace mlir {
 
-SmallString<20> getUniqueFunctionName(SymbolTable &moduleOp, StringRef prefix) {
+SmallString<20> getUniqueFunctionName(ModuleOp &moduleOp, StringRef prefix) {
+  // Note: here we don't use SymbolTable as we run into a bug in the LLVM
+  // conversion. Old memref.globals are not cleaned up in time, and for a while
+  // the memref.global and llvm.mlir.global exist in the module with the same name.
+  // Then SymbolTable cannot be created because names are not unique.
+  std::set<StringRef> usedNames;
+  for (auto &block : moduleOp.getBodyRegion()) {
+    for (auto &op : block) {
+      if (auto sym = llvm::dyn_cast_or_null<SymbolOpInterface>(op)) {
+        usedNames.insert(sym.getNameAttr());
+      }
+    }
+  }
+
   // Get a unique global name.
   unsigned stringNumber = 0;
   size_t prefixLen = prefix.size();
@@ -23,7 +37,7 @@ SmallString<20> getUniqueFunctionName(SymbolTable &moduleOp, StringRef prefix) {
   do {
     name.truncate(prefixLen);
     name.append(std::to_string(stringNumber++));
-  } while (moduleOp.lookup(name));
+  } while (usedNames.contains(name));
   return name;
 }
 

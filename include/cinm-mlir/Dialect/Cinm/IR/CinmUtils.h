@@ -23,5 +23,7 @@ SmallVector<Value> createNestedAffineForLoops(OpBuilder &builder, Location loc,
                                               ArrayRef<int64_t> loopSteps,
                                               ValueRange iterArgInit,
                                               BodyBuilderCallback bodyBuilder);
-
-} // namespace mlir
+AffineExpr linearizeIndices(MLIRContext *ctx, ArrayRef<int64_t> shape);
+void structureIndex(AffineExpr index, ArrayRef<int64_t> shape,
+                    SmallVectorImpl<AffineExpr> &map);
+} // namespace mlir::cinm

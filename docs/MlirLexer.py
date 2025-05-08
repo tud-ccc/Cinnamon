@@ -116,9 +116,14 @@ class MlirLexer(RegexLexer):
             (r'\b(fill_buf|empty_buf|transfer|kill_buffer|tile|scope|kernel|return|gather|yield|reduce|schedule)\b', Name.Function),
             (r'\b((hw)?parallel|vectorized|reduction|rankreduce|factor|attributes|ranks|tasklets|dpus|into|threaded|ins|outs|sdim|symbolic|dim|by|scheduler|variables|platform|par|red|to|with)\b', Keyword.Declaration),
         ],
+        'cinm': [
+            (r'\b(!upmem\.hierarchy)\b', Keyword.Type),
+            (r'\b(constant|onto|from|step|on|of)\b', Keyword.Declaration),
+        ],
 
         'root': [
             include('tfl'),
+            include('cinm'),
             include('sigils'),
             include('punctuation'),
             include('literals'),

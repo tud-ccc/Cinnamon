@@ -29,7 +29,7 @@ $(IR_PREFIX).cnm.bufferized.mlir: $(IR_PREFIX).cnm.mlir
 				  --convert-linalg-to-affine-loops --lower-affine --buffer-loop-hoisting --buffer-hoisting --canonicalize --cse > $@
 
 $(IR_PREFIX).upmem.mlir: $(IR_PREFIX).cnm.bufferized.mlir
-	$(CINM_OPT) $< --convert-cnm-to-upmem --cse --upmem-outline-kernel --upmem-dedup-kernels --cse > $@
+	$(CINM_OPT) $< --convert-cnm-to-upmem --cse --upmem-dedup-kernels --cse > $@
 
 $(IR_PREFIX).llvm.mlir: $(IR_PREFIX).upmem.mlir
 	$(CINM_OPT) $< --mlir-print-ir-after-failure --canonicalize \

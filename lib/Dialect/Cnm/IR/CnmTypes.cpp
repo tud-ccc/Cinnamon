@@ -58,9 +58,14 @@ Type mlir::cnm::BufferType::parse(mlir::AsmParser &parser) {
 
   if (parser.parseLess() || parser.parseDimensionList(shape, false, true) ||
       parser.parseType(elementType) || parser.parseKeyword("on") ||
-      parser.parseDimensionList(workgroupShape, false, false) ||
-      parser.parseComma().failed() || parser.parseKeyword("level") ||
-      parser.parseAttribute(level) || parser.parseGreater()) {
+      parser.parseDimensionList(workgroupShape, false, false))
+    return Type();
+
+  if (parser.parseOptionalComma().succeeded()) {
+    if (parser.parseKeyword("level") || parser.parseAttribute(level))
+      return Type();
+  }
+  if (parser.parseGreater()) {
     return Type();
   }
 
@@ -77,6 +82,7 @@ void mlir::cnm::BufferType::print(mlir::AsmPrinter &printer) const {
   printer << getElementType();
   printer << " on ";
   printer.printDimensionList(getWorkgroupShape());
-  printer << ", level " << getLevel();
+  if (getLevel())
+    printer << ", level " << getLevel();
   printer << ">";
 }
