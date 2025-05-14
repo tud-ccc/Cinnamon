@@ -84,7 +84,7 @@ void upmem::StaticAllocOp::build(OpBuilder &builder, OperationState &result,
     result.addAttribute(getSymNameAttrName(result.name),
                         builder.getStringAttr(name));
   }
-  result.addTypes({ty, detail::flatMemRefType(ty)});
+  result.addTypes(ty);
 }
 
 LogicalResult upmem::GatherOp::verify() {
@@ -132,10 +132,8 @@ LogicalResult upmem::ScatterOp::verify() {
 void upmem::PrivateWRAMAllocOp::getAsmResultNames(
     ::mlir::OpAsmSetValueNameFn fn) {
   fn(getBuffer(), "pwram_buf");
-  fn(getBytes(), "bytes");
 }
 
 void upmem::StaticAllocOp::getAsmResultNames(::mlir::OpAsmSetValueNameFn fn) {
   fn(getBuffer(), getIsWram() ? "wram_buf" : "mram_buf");
-  fn(getBytes(), "bytes");
 }
