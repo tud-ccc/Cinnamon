@@ -112,6 +112,10 @@ class MlirLexer(RegexLexer):
             (fr'{bare_id}', Name.Identifier),
         ],
 
+        # If your dialect has custom syntax, add it in a separate
+        # section and include it in the root. Eg if you have ops
+        # that may appear without dialect prefix, add their name
+        # here like so:
         'tfl': [
             (r'\b(fill_buf|empty_buf|transfer|kill_buffer|tile|scope|kernel|return|gather|yield|reduce|schedule)\b', Name.Function),
             (r'\b((hw)?parallel|vectorized|reduction|rankreduce|factor|attributes|ranks|tasklets|dpus|into|threaded|ins|outs|sdim|symbolic|dim|by|scheduler|variables|platform|par|red|to|with)\b', Keyword.Declaration),
@@ -131,17 +135,5 @@ class MlirLexer(RegexLexer):
             include('comments'),
         ]
     }
-
-
-class MlirSuperLexer(Lexer):
-    name = 'MLIR'
-    aliases = ['mlir']
-    filenames = ['*.mlir']
-
-    def __init__(self, **options):
-        super(MlirSuperLexer, self).__init__(**options)
-
-    def get_tokens_unprocessed(self, text):
-        pass
 
 
