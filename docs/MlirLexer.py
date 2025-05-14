@@ -2,6 +2,8 @@
 # Authors: Karl F. A. Friebel (@KFAFSP), Clément Fournier (@oowekyala)
 # Usage: pygmentize -x -l ./MLIRLexer.py:MLIRLexer file.mlir
 #
+# Star it at https://gist.github.com/oowekyala/110dacc9343dbc1b86b452902d7dc553
+#
 #  MIT License
 #
 # Copyright (c) 2024 Clément Fournier, Karl F. A. Friebel
