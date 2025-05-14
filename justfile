@@ -181,9 +181,8 @@ cinm-vulkan-runner FILE *ARGS:
 genBench NAME: (doNinja "cinm-opt")
     #!/bin/bash
     source "{{upmem_dir}}/upmem_env.sh"
-    cd testbench
     export BENCH_NAME="{{NAME}}"
-    make clean && make {{NAME}}-exe
+    make -Ctestbench clean && make -Ctestbench {{NAME}}-exe
 
 runBench NAME:
     #!/bin/bash
@@ -195,10 +194,9 @@ bench NAME: (doNinja "cinm-opt")
     #!/bin/bash
     set -e
     source "{{upmem_dir}}/upmem_env.sh"
-    cd testbench
     export BENCH_NAME="{{NAME}}"
-    make clean && make {{NAME}}-exe
-    cd generated2/{{NAME}}/bin
+    make -Ctestbench clean && make -Ctestbench {{NAME}}-exe
+    cd testbench/generated2/{{NAME}}/bin
     ./host
 
 # Invoke he LLVM IR compiler.
