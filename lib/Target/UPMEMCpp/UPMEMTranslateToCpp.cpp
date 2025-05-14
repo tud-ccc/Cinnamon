@@ -242,7 +242,7 @@ static LogicalResult printValueOrConstant(CppEmitter &emitter, Value value) {
 }
 
 static LogicalResult printOperation(CppEmitter &emitter,
-                                    upmem::TaskletIDOp idOp) {
+                                    upmem::TaskletDimOp idOp) {
   raw_ostream &os = emitter.ostream();
   if (failed(emitter.emitAssignPrefix(*idOp)))
     return failure();
@@ -1494,7 +1494,7 @@ LogicalResult CppEmitter::emitOperation(Operation &op, bool trailingSemicolon) {
           .Case<arith::XOrIOp>(
               [&](auto op) { return printOperation(*this, op); })
           .Case<LLVM::ExpOp>([&](auto op) { return printOperation(*this, op); })
-          .Case<upmem::TaskletIDOp>(
+          .Case<upmem::TaskletDimOp>(
               [&](auto op) { return printOperation(*this, op); })
           .Case<upmem::BaseMRAMAddrOp>(
               [&](auto op) { return printOperation(*this, op); })

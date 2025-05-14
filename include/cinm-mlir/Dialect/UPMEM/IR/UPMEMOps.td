@@ -32,7 +32,7 @@ include "mlir/IR/RegionKindInterface.td"
 class IndexOp<string mnemonic, list<Trait> traits = []> :
     Upmem_Op<mnemonic, !listconcat(traits, [Pure])>,
         Results<(outs Index)> {
-  let assemblyFormat = "attr-dict";
+  let assemblyFormat = "`(` `)` attr-dict";
 }
 
 def RankDimOp : IndexOp<"rank_dim"> {
@@ -70,16 +70,6 @@ def TaskletDimOp : IndexOp<"tasklet_dim", [DeclareOpInterfaceMethods<InferIntRan
     ```
   }];
 }
-
-def TaskletIDOp : Upmem_Op<"tasklet_id"> {
-  let description = [{
-  }];
-  let results = (outs Index:$tasklet_id);
-  let assemblyFormat = [{
-     attr-dict `:` type($tasklet_id)
-  }];
-}
-
 
 
 def PrivateWRAMAllocOp : Upmem_Op<"pwram_alloc", [
@@ -199,7 +189,7 @@ def MemcpyOp : Upmem_Op<"memcpy", []> {
 }
 
 
-def LocalTransferOp : Upmem_Op<"local_transfer2"> {
+def LocalTransferOp : Upmem_Op<"local_transfer"> {
   let summary = "transfer between memory spaces (wram or mram)";
   let description = [{
     The `upmemx.local_transfer` op copies a buffer into another buffer.
