@@ -178,7 +178,7 @@ cinm-vulkan-runner FILE *ARGS:
         --entry-point-result=void \
         {{ARGS}}
 
-genBench NAME: (doNinja "cinm-opt")
+genBench NAME: (doNinja "cinm-opt" "cinm-translate")
     #!/bin/bash
     source "{{upmem_dir}}/upmem_env.sh"
     export BENCH_NAME="{{NAME}}"

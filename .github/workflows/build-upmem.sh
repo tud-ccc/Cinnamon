@@ -7,7 +7,7 @@ if [[ $checkout_upmem -eq 1 ]]; then
   if [ ! -d "$upmem_path" ]; then
     status "Downloading UpMem SDK"
     upmem_archive="third-party/upmem.tar.gz"
-    curl http://sdk-releases.upmem.com/2024.1.0/ubuntu_22.04/upmem-2024.1.0-Linux-x86_64.tar.gz --output "$upmem_archive"
+    curl http://sdk-releases.upmem.com/2025.1.0/ubuntu_22.04/upmem-2025.1.0-Linux-x86_64.tar.gz --output "$upmem_archive"
     mkdir "$upmem_path"
     tar xf "$upmem_archive" -C "$upmem_path" --strip-components=1
     rm "$upmem_archive"

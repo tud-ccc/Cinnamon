@@ -34,7 +34,7 @@ void UPMEMDialect::initialize()
 {
     registerOps();
     registerTypes();
-    addAttributes<MemcpyDirOpAttr>();
+    addAttributes<TransferDirectionAttr>();
 }
 
 
