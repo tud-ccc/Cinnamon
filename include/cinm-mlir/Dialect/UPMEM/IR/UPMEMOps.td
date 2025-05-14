@@ -83,8 +83,6 @@ def TaskletIDOp : Upmem_Op<"tasklet_id"> {
 
 
 def PrivateWRAMAllocOp : Upmem_Op<"pwram_alloc", [
-   TypesMatchWith<"workgroup shape matches buffer shape", "buffer", "bytes",
-        "upmem::detail::flatMemRefType($_self)">,
         DeclareOpInterfaceMethods<OpAsmOpInterface, ["getAsmResultNames"]>
   ]> {
 
@@ -105,13 +103,12 @@ def PrivateWRAMAllocOp : Upmem_Op<"pwram_alloc", [
     ```
   }];
 
-  let results = (outs Res<AnyMemRef, "", [MemAlloc]>:$buffer, I8MemRef:$bytes);
+  let results = (outs Res<AnyMemRef, "", [MemAlloc]>:$buffer);
   let skipDefaultBuilders = 1;
   let builders = [
     OpBuilder<(ins "MemRefType":$bufferTy), [{
       $_state.addTypes({
-        bufferTy,
-        detail::flatMemRefType(bufferTy)
+        bufferTy
       });
     }]>
   ];
@@ -128,8 +125,6 @@ def PrivateWRAMAllocOp : Upmem_Op<"pwram_alloc", [
 
 
 def StaticAllocOp : Upmem_Op<"static_alloc", [Symbol,
- TypesMatchWith<"workgroup shape matches buffer shape", "buffer", "bytes",
-        "upmem::detail::flatMemRefType($_self)">,
         DeclareOpInterfaceMethods<OpAsmOpInterface, ["getAsmResultNames"]>
 ]> {
   let summary = "static buffer allocation in wram or mram";
@@ -146,8 +141,7 @@ def StaticAllocOp : Upmem_Op<"static_alloc", [Symbol,
 
   let arguments = (ins UnitAttr:$isWram, DefaultValuedAttr<UnitAttr, "false">:$noinit, OptionalAttr<SymbolNameAttr>:$sym_name);
   let results = (outs Res<AnyMemRef, "structured view of the source buffer",
-                          [MemAlloc<DefaultResource, 0, FullEffect>]>:$buffer,
-                          Res<I8MemRef, "byte view on the source buffer">:$bytes);
+                          [MemAlloc<DefaultResource, 0, FullEffect>]>:$buffer);
 
   let skipDefaultBuilders = 1;
   let builders = [
@@ -229,48 +223,6 @@ def LocalTransferOp : Upmem_Op<"local_transfer2"> {
   }];
 
 }
-
-
-def TransferOp : Upmem_Op<"local_transfer", []> {
-
-  let summary = "UPMEM memcpy operation between mram and wram";
-
-  let description = [{
-    The `upmem.on_dpu_transfer` operation copies the content of one memref to another.
-    Note: 
-    - the memrefs may be views on another memref? ideally no - you need to know 
-    at this level that they're contiguous and aligned
-    - can this operator transfer more than 2048 bytes? Probably, 
-    we could abstract over transfer size.
-    - can this operator transfer multi-dimensional memrefs? Probably not
-
-    Translation strategy:
-    - tilefirst MRAM buffers are mapped to views on a linear i8 buffer (memref.view).
-    - transfers operate directly on the underlying buffer.
-
-    Example:
-
-    ```mlir
-    %token = upmem.local_transfer %src[%offset] to %dst[%offset2] count 16 : memref<16xf32, "wram">, memref<16xf32, "mram">
-    ```
-  }];
-
-  let arguments = (ins 
-                   Arg<I8MemRef, "", [MemRead]>:$source,
-                   Arg<I8MemRef, "", [MemWrite]>:$dest,
-                   Index:$sourceOffset,
-                   Index:$destOffset,
-                   I64Attr:$count);
-
-  let assemblyFormat = [{
-    $source `[` $sourceOffset `]` `to` $dest `[` $destOffset `]` `count` $count attr-dict `:` type($source) `to` type($dest)
-  }];
-
-  // let hasFolder = 1;
-  // let hasVerifier = 1;
-  // let hasCanonicalizer = 1;
-}
-
 
 
 def BaseMRAMAddrOp: Upmem_Op <"dpu_heap_base_addr", []> {
