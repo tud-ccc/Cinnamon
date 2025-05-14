@@ -151,7 +151,7 @@ static void createTransfer(RewriterBase &rewriter, bool toWram, Location loc,
   auto wramBufTy = pwramBuf.getBuffer().getType();
   assert(mramBufTy.getRank() == wramBufTy.getRank() + 1);
 
-  auto taskletId = rewriter.create<upmem::TaskletIDOp>(loc);
+  auto taskletId = rewriter.create<upmem::TaskletDimOp>(loc);
 
   SmallVector<OpFoldResult, 4> offsets(mramBufTy.getRank(),
                                        rewriter.getIndexAttr(0));

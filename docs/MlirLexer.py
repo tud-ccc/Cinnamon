@@ -122,7 +122,7 @@ class MlirLexer(RegexLexer):
         ],
         'cinm': [
             (r'\b(!upmem\.hierarchy)\b', Keyword.Type),
-            (r'\b(pwram_alloc|static_alloc|local_transfer|tasklet_id|module)\b', Name.Function),
+            (r'\b(pwram_alloc|static_alloc|local_transfer|tasklet_dim|module)\b', Name.Function),
             (r'\b(constant|onto|from|step|on|of)\b', Keyword.Declaration),
         ],
 
