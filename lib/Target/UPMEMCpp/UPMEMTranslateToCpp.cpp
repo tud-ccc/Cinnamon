@@ -342,18 +342,18 @@ printMRAMCopyBytes(CppEmitter &emitter, upmem::TransferDirection dir,
                    const std::string &toOffsetExpr, size_t offsetBytes) {
   raw_ostream &os = emitter.ostream();
   if (dir == upmem::TransferDirection::MRAMToWRAM) {
-    os << "mram_read((const __mram_ptr char*) (void*) ";
+    os << "mram_read((const __mram_ptr char*) ";
   } else if (dir == upmem::TransferDirection::WRAMToMRAM) {
-    os << "mram_write((const char*) (void*) ";
+    os << "mram_write((const char*) ";
   }
 
   os << "&" << emitter.getOrCreateName(from) << "[" << fromOffsetExpr << " + "
      << offsetBytes << "], ";
 
   if (dir == upmem::TransferDirection::MRAMToWRAM) {
-    os << "(char*) (void*) ";
+    os << "(char*) ";
   } else if (dir == upmem::TransferDirection::WRAMToMRAM) {
-    os << "(__mram_ptr char*) (void*) ";
+    os << "(__mram_ptr char*) ";
   }
 
   os << "&" << emitter.getOrCreateName(to) << "[" << toOffsetExpr << " + "
