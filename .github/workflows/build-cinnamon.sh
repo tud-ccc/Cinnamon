@@ -21,7 +21,7 @@ if [ ! -d "build" ] || [ $reconfigure -eq 1 ]; then
   fi
 
   if [[ $checkout_and_build_torch_mlir -eq 1 ]]; then
-    dependency_paths="$dependency_paths -DTORCH_MLIR_DIR=$torch_mlir_path"
+    dependency_paths="$dependency_paths -DTORCH_MLIR_DIR=$torch_mlir_path/install"
   fi
 
   cmake -S . -B "build" \
