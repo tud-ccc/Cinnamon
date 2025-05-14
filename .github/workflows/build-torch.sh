@@ -8,7 +8,7 @@ if [[ $checkout_and_build_torch_mlir -eq 1 ]]; then
   reconfigure_torch_mlir=0
   if [ ! -d "$torch_mlir_path" ]; then
     status "Checking out Torch-MLIR"
-    git_clone_revision  https://github.com/llvm/torch-mlir 0c29ccf1439c91c7a2175a167d4bdb2c01a03e63 "$torch_mlir_path"
+    git_clone_revision  https://github.com/llvm/torch-mlir 389541fb9ddd33c3891650e47106f2c3b50b9322 "$torch_mlir_path"
     reconfigure_torch_mlir=1
   fi
 
