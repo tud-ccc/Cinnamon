@@ -84,10 +84,9 @@ jobs:
           .github/workflows/build-cinnamon.sh -reconfigure -verbose
 
       - name: Test CINM
-        working-directory: build
         run: |
           source .venv/bin/activate
-          ninja check-cinm-mlir
+          ninja -Cbuild check-cinm-mlir
 
       - name: Save runtime cache
         uses: actions/cache/save@v3
