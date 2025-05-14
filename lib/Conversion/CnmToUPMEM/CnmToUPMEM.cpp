@@ -138,28 +138,55 @@ static LogicalResult convertCnmScatterToUpmem(RewriterBase &rewriter,
   return success();
 }
 
+static MemRefType withMemrefMemspace(MemRefType fromTy, Attribute memspace) {
+  return MemRefType::get(fromTy.getShape(), fromTy.getElementType(),
+                         fromTy.getLayout(), memspace);
+}
+
 static void createTransfer(RewriterBase &rewriter, bool toWram, Location loc,
                            upmem::StaticAllocOp mramBuf,
                            upmem::PrivateWRAMAllocOp pwramBuf) {
 
-  auto zero = rewriter.create<arith::ConstantIndexOp>(loc, 0);
+  auto mramBufTy = mramBuf.getBuffer().getType();
+  auto wramBufTy = pwramBuf.getBuffer().getType();
+  assert(mramBufTy.getRank() == wramBufTy.getRank() + 1);
 
-  auto numEltsPerTasklet =
-      computeProduct(mramBuf.getBuffer().getType().getShape().drop_front()) *
-      mramBuf.getBuffer().getType().getElementTypeBitWidth() / 8;
-  auto numElts =
-      rewriter.create<arith::ConstantIndexOp>(loc, numEltsPerTasklet);
   auto taskletId = rewriter.create<upmem::TaskletIDOp>(loc);
-  auto tileIx = rewriter.create<arith::MulIOp>(loc, taskletId, numElts);
 
-  auto byteCount = pwramBuf.getBytes().getType().getNumElements();
+  SmallVector<OpFoldResult, 4> offsets(mramBufTy.getRank(),
+                                       rewriter.getIndexAttr(0));
+  offsets[0] = taskletId.getResult();
+
+  SmallVector<OpFoldResult, 4> sizes;
+  sizes.push_back(rewriter.getIndexAttr(1));
+  for (auto size : wramBufTy.getShape()) {
+    sizes.push_back(rewriter.getIndexAttr(size));
+  }
+
+  llvm::SmallVector<OpFoldResult, 4> strides(mramBufTy.getRank(),
+                                             rewriter.getIndexAttr(1));
+
+  auto [baseStrides, baseOffset] = mramBufTy.getStridesAndOffset();
+
+  // this is the type of the tile. We cannot let it be inferred as it may be
+  // rank-reduced.
+  MemRefType viewType = MemRefType::get(
+      wramBufTy.getShape(), wramBufTy.getElementType(),
+      rewriter.getAttr<StridedLayoutAttr>(
+          ShapedType::kDynamic, ArrayRef<long>(baseStrides).drop_front()),
+      mramBufTy.getMemorySpace());
+
+  Value tileMramView = rewriter.create<memref::SubViewOp>(
+      loc, viewType, mramBuf.getBuffer(), offsets, sizes, strides);
+
   if (toWram)
-    rewriter.create<upmem::TransferOp>(
-        loc, mramBuf.getBytes(), pwramBuf.getBytes(), tileIx, zero, byteCount);
+    rewriter.create<upmem::LocalTransferOp>(loc, tileMramView,
+                                            pwramBuf.getBuffer());
   else
-    rewriter.create<upmem::TransferOp>(
-        loc, pwramBuf.getBytes(), mramBuf.getBytes(), zero, tileIx, byteCount);
+    rewriter.create<upmem::LocalTransferOp>(loc, pwramBuf.getBuffer(),
+                                            tileMramView);
 }
+
 static LogicalResult convertCnmLaunchToUpmem(cnm::LaunchOp launch,
                                              RewriterBase &rewriter,
                                              SymbolTable rootModule,
@@ -198,6 +225,9 @@ static LogicalResult convertCnmLaunchToUpmem(cnm::LaunchOp launch,
   SmallVector<AllocOp> allocsToDelete;
 
   SymbolTable dpuProgramSymTable(dpuProgram);
+  auto mramMemspaceAttr = rewriter.getStringAttr("mram");
+  auto wramMemspaceAttr = rewriter.getStringAttr("wram");
+
   for (auto user : launch.getWg().getUsers()) {
     if (auto alloc = llvm::dyn_cast_or_null<cnm::AllocOp>(user)) {
       allocsToDelete.push_back(alloc);
@@ -209,7 +239,7 @@ static LogicalResult convertCnmLaunchToUpmem(cnm::LaunchOp launch,
       // the pwram buffer has the shape we expect
       MemRefType memrefTy =
           MemRefType::get(bufShape, bufferType.getElementType(),
-                          MemRefLayoutAttrInterface{}, bufferType.getLevel());
+                          MemRefLayoutAttrInterface{}, wramMemspaceAttr);
       auto pwramBuf =
           rewriter.create<upmem::PrivateWRAMAllocOp>(alloc.getLoc(), memrefTy);
 
@@ -218,9 +248,8 @@ static LogicalResult convertCnmLaunchToUpmem(cnm::LaunchOp launch,
       // the mram buffer type has tasklet dimension prepended.
       bufShape.insert(bufShape.begin(), upmemTy.getNumTaskletsPerDpu());
 
-      memrefTy =
-          MemRefType::get(bufShape, bufferType.getElementType(),
-                          MemRefLayoutAttrInterface{}, bufferType.getLevel());
+      memrefTy = MemRefType::get(bufShape, bufferType.getElementType(),
+                                 MemRefLayoutAttrInterface{}, mramMemspaceAttr);
 
       auto mrambuf = rewriter.create<upmem::StaticAllocOp>(
           alloc->getLoc(), memrefTy, false, "buf", false);

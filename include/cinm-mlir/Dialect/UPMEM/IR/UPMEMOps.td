@@ -205,6 +205,31 @@ def MemcpyOp : Upmem_Op<"memcpy", []> {
 }
 
 
+def LocalTransferOp : Upmem_Op<"local_transfer2"> {
+  let summary = "transfer between memory spaces (wram or mram)";
+  let description = [{
+    The `upmemx.local_transfer` op copies a buffer into another buffer.
+    Both buffers should have same shape and element type, but the memory
+    spaces can differ (they must match the declared direction of the transfer).
+    When transferring part of a buffer, a memref.subview should be used
+    as the source or destination operand.
+
+    ```mlir
+    upmemx.local_transfer (wram to mram) %source into %dest : memref<2048xf32, "wram"> to memref<2048xf32, "mram">
+    ```
+  }];
+
+  let arguments = (ins Arg<AnyMemRef, "the memref to copy from",
+                           [MemReadAt<0, FullEffect>]>:$source,
+                       Arg<AnyMemRef, "the memref to copy to",
+                           [MemWriteAt<0, FullEffect>]>:$target);
+
+  let assemblyFormat = [{
+    $source `into` $target attr-dict `:` type($source) `to` type($target)
+  }];
+
+}
+
 
 def TransferOp : Upmem_Op<"local_transfer", []> {
 
