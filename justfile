@@ -187,7 +187,7 @@ genBench NAME: (doNinja "cinm-opt")
 runBench NAME:
     #!/bin/bash
     source "{{upmem_dir}}/upmem_env.sh"
-    cd testbench/generated2/{{NAME}}/bin
+    cd testbench/gen/{{NAME}}/bin
     ./host
 
 bench NAME: (doNinja "cinm-opt")
@@ -196,7 +196,7 @@ bench NAME: (doNinja "cinm-opt")
     source "{{upmem_dir}}/upmem_env.sh"
     export BENCH_NAME="{{NAME}}"
     make -Ctestbench clean && make -Ctestbench {{NAME}}-exe
-    cd testbench/generated2/{{NAME}}/bin
+    cd testbench/gen/{{NAME}}/bin
     ./host
 
 # Invoke he LLVM IR compiler.
