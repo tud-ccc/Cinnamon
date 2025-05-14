@@ -60,10 +60,6 @@ MemRefType convertTensorToMemref(ShapedType ty) {
   return MemRefType::get(ty.getShape(), ty.getElementType());
 }
 
-inline static constexpr size_t alignTo(size_t v, size_t alignment) {
-  return v % alignment == 0 ? v : v + alignment - v % alignment;
-}
-
 // In CNM the affine map has 1 dim for rank, 1 for dpu, 1 for tasklet.
 // In upmem it has only one dim for rank and another for dpu. Dimensions
 // of the buffer shape are zero (they are the offset of the buffer start).

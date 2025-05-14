@@ -26,8 +26,8 @@ include "cinm-mlir/Dialect/UPMEM/IR/UPMEMBase.td"
 def UPMEM_MemcpyOpMRAMToWRAM: I32EnumAttrCase<"MRAMToWRAM", 0, "mram_to_wram">;
 def UPMEM_MemcpyOpWRAMToMRAM: I32EnumAttrCase<"WRAMToMRAM", 1, "wram_to_mram">;
 
-def MemcpyDir : I32EnumAttr<"MemcpyDirOp",
-  "copy operation between wram and mram", [
+def MemcpyDir : I32EnumAttr<"TransferDirection",
+  "copy direction between wram and mram", [
     UPMEM_MemcpyOpMRAMToWRAM,
     UPMEM_MemcpyOpWRAMToMRAM
   ]> {
@@ -36,7 +36,7 @@ def MemcpyDir : I32EnumAttr<"MemcpyDirOp",
 }
 
 def MemcpyDirAttr : EnumAttr<UPMEM_Dialect, MemcpyDir,
-                                  "memcpy_dir">;
+                                  "transfer_dir">;
 
 
 
