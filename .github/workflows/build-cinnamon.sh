@@ -20,6 +20,10 @@ if [ ! -d "build" ] || [ $reconfigure -eq 1 ]; then
     dependency_paths="$dependency_paths -DUPMEM_DIR=$upmem_path"
   fi
 
+  if [[ $checkout_and_build_torch_mlir -eq 1 ]]; then
+    dependency_paths="$dependency_paths -DTORCH_MLIR_DIR=$torch_mlir_path"
+  fi
+
   cmake -S . -B "build" \
     -DCMAKE_BUILD_TYPE=RelWithDebInfo \
     $dependency_paths \
