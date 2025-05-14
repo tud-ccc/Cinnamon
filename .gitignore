@@ -7,6 +7,7 @@
 /third-party/torch-mlir/
 /third-party/upmem*/
 /.env
+/testbench/gen
 
 
 # Created by https://www.toptal.com/developers/gitignore/api/cmake
@@ -38,3 +39,5 @@ sandbox
 python/cinnamon/_resources
 .env
 **/__pycache__
+
+
