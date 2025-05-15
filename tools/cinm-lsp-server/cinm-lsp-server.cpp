@@ -16,6 +16,8 @@
 #include "mlir/InitAllDialects.h"
 #include "mlir/Tools/mlir-lsp-server/MlirLspServerMain.h"
 
+#include <tilefirst-mlir/InitAll.h>
+
 using namespace mlir;
 
 static int asMainReturnCode(LogicalResult r) {
@@ -31,6 +33,9 @@ int main(int argc, char *argv[]) {
   registry.insert<cnm::CnmDialect>();
   registry.insert<upmem::UPMEMDialect>();
   registry.insert<memristor::MemristorDialect>();
+
+  tilefirst::initAllT1Dialects(registry);
+  tilefirst::initAllT1Extensions(registry);
 
 #ifdef CINM_TORCH_MLIR_ENABLED
   registry.insert<torch::Torch::TorchDialect>();

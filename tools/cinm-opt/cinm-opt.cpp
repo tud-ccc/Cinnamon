@@ -40,6 +40,8 @@
 #include "mlir/Support/FileUtilities.h"
 #include "mlir/Tools/mlir-opt/MlirOptMain.h"
 
+#include <tilefirst-mlir/InitAll.h>
+
 using namespace mlir;
 
 int main(int argc, char *argv[]) {
@@ -51,6 +53,10 @@ int main(int argc, char *argv[]) {
                   cnm::CnmDialect,             //
                   memristor::MemristorDialect, //
                   upmem::UPMEMDialect>();
+
+  tilefirst::initAllT1Dialects(registry);
+  tilefirst::initAllT1Extensions(registry);
+  tilefirst::initAllT1Passes();
 
 #ifdef CINM_TORCH_MLIR_ENABLED
   registry.insert<torch::Torch::TorchDialect>();
