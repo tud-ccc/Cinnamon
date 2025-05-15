@@ -19,4 +19,5 @@ add_mlir_conversion_library(MLIRTorchToCinm
     MLIRTensorDialect
     MLIRTransformUtils
     MLIRReconcileUnrealizedCasts
+    Torch::All
 )

@@ -81,6 +81,7 @@ jobs:
       - name: Build CINM
         run: |
           source .venv/bin/activate
+          export CINNAMON_CMAKE_OPTIONS='-DCMAKE_GENERATOR=Ninja'
           .github/workflows/build-cinnamon.sh -reconfigure -verbose
 
       - name: Test CINM

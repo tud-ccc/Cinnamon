@@ -12,7 +12,7 @@ if [[ $checkout_and_build_torch_mlir -eq 1 ]]; then
     reconfigure_torch_mlir=1
   fi
 
-  cd "$torch_mlir_path"
+  pushd "$torch_mlir_path"
 
   if [ $reconfigure -eq 1 ] || [ $reconfigure_torch_mlir -eq 1 ]; then
     status "Configuring Torch-MLIR"
@@ -57,3 +57,5 @@ elif [[ $checkout_and_build_torch_mlir -eq 0 ]]; then
   warning "Skipping Torch-MLIR checkout and build"
   warning "The following steps will need TORCH_MLIR_DIR to be set in their respective <STEP>_CMAKE_OPTIONS"
 fi
+
+popd

@@ -97,17 +97,28 @@ if (LTY STREQUAL "LLD")
     add_link_options(--for-linker --color-diagnostics=always)
 endif()
 
-add_subdirectory(include)
-add_subdirectory(lib)
-add_subdirectory(test)
-add_subdirectory(tools)
-
-add_subdirectory(runtime/Memristor)
-
 if (TORCH_MLIR_DIR)
     set_property(GLOBAL PROPERTY TORCH_MLIR_ENABLED ON)
     set(TORCH_MLIR_INCLUDE_DIR "${TORCH_MLIR_DIR}/include")
-    include_directories(SYSTEM ${TORCH_MLIR_INCLUDE_DIR})
+    # include_directories(SYSTEM ${TORCH_MLIR_INCLUDE_DIR})
+
+    add_library(Torch::TorchMLIRTorchDialect STATIC IMPORTED GLOBAL)
+    set_property(TARGET Torch::TorchMLIRTorchDialect PROPERTY
+                 IMPORTED_LOCATION ${TORCH_MLIR_DIR}/lib/libTorchMLIRTorchDialect.a)
+    add_library(Torch::TorchMLIRTorchUtils STATIC IMPORTED GLOBAL)
+    set_property(TARGET Torch::TorchMLIRTorchUtils PROPERTY
+                 IMPORTED_LOCATION ${TORCH_MLIR_DIR}/lib/libTorchMLIRTorchUtils.a)
+    add_library(Torch::TorchMLIRTorchConversionDialect STATIC IMPORTED GLOBAL)
+    set_property(TARGET Torch::TorchMLIRTorchConversionDialect PROPERTY
+                 IMPORTED_LOCATION ${TORCH_MLIR_DIR}/lib/libTorchMLIRTorchConversionDialect.a)
+                
+    add_library(Torch::All INTERFACE IMPORTED)
+    set_property(TARGET Torch::All PROPERTY
+      INTERFACE_LINK_LIBRARIES Torch::TorchMLIRTorchDialect 
+            Torch::TorchMLIRTorchUtils 
+            Torch::TorchMLIRTorchConversionDialect)
+    target_include_directories(Torch::All INTERFACE ${TORCH_MLIR_INCLUDE_DIR})
+
 else()
     set_property(GLOBAL PROPERTY TORCH_MLIR_ENABLED OFF)
     message(WARNING "TORCH_MLIR_DIR not set")
@@ -122,3 +133,11 @@ if (UPMEM_DIR)
 else()
     message(WARNING "UPMEM_DIR not set, runtime lib will not be compiled.")
 endif()
+
+
+add_subdirectory(include)
+add_subdirectory(lib)
+add_subdirectory(test)
+add_subdirectory(tools)
+
+add_subdirectory(runtime/Memristor)
