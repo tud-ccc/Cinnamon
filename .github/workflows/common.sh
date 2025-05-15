@@ -101,6 +101,19 @@ if [ -n "$UPMEM_HOME" ]; then
 fi
 
 
+
+if [ -n "$TILEFIRST_INSTALL_DIR" ]; then
+  CINNAMON_CMAKE_OPTIONS="$CINNAMON_CMAKE_OPTIONS -DTILEFIRST_DIR=$TILEFIRST_INSTALL_DIR"
+
+  if [ ! -d "$TILEFIRST_INSTALL_DIR" ]; then
+    warning "Directory TILEFIRST_INSTALL_DIR='$TILEFIRST_INSTALL_DIR' does not exist"
+  fi
+else
+  info "Should set env var TILEFIRST_INSTALL_DIR for configuration"
+  exit 1
+fi
+
+
 ###############################################################
 
 if echo "$@" | grep -q -- "-verbose"; then

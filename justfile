@@ -18,24 +18,6 @@ build_dir := "build"
 configure *ARGS:
     .github/workflows/build-local.sh -reconfigure {{ARGS}}
 
-# execute cmake -- this is only needed on the first build
-cmake *ARGS:
-    cmake -S . -B {{build_dir}} \
-        -G Ninja \
-        -DCMAKE_BUILD_TYPE={{build_type}} \
-        "-DLLVM_DIR={{llvm_prefix}}/lib/cmake/llvm" \
-        "-DMLIR_DIR={{llvm_prefix}}/lib/cmake/mlir" \
-        "-DUPMEM_DIR={{upmem_dir}}" \
-        -DCMAKE_EXPORT_COMPILE_COMMANDS=1 \
-        -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
-        -DCMAKE_C_COMPILER=clang \
-        -DCMAKE_LINKER_TYPE={{linker}} \
-        -DCMAKE_CXX_COMPILER=clang++ \
-        -DCMAKE_EXPORT_COMPILE_COMMANDS=ON \
-        -DCMAKE_C_USING_LINKER_mold=-fuse-ld=mold \
-        -DCMAKE_CXX_USING_LINKER_mold=-fuse-ld=mold \
-        {{ARGS}}
-
 # execute a specific ninja target
 doNinja *ARGS:
     ninja -C{{build_dir}} {{ARGS}}

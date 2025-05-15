@@ -31,6 +31,7 @@ def UPMEM_Dialect : Dialect {
     private:
         void registerOps();
         void registerTypes();
+        void registerAttributes();
     public:
         static StringRef getContainerModuleAttrName() {
             return "upmem.container_module";
@@ -48,6 +49,9 @@ def UPMEM_Dialect : Dialect {
 
 class Upmem_Op<string mnemonic, list<Trait> traits = []>
         : Op<UPMEM_Dialect, mnemonic, traits>;
+
+ class Upmem_Attr<string name, list<Trait> traits = []>
+         : AttrDef<UPMEM_Dialect, name, traits>;
 
 //===----------------------------------------------------------------------===//
 // UPMEM Enums.

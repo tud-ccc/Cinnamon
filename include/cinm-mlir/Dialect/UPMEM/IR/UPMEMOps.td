@@ -10,7 +10,8 @@
 
 include "cinm-mlir/Dialect/UPMEM/IR/UPMEMBase.td"
 include "cinm-mlir/Dialect/UPMEM/IR/UPMEMTypes.td"
-include "cinm-mlir/Dialect/UPMEM/IR/UPMEMAttributes.td"
+include "cinm-mlir/Dialect/UPMEM/IR/UPMEMEnums.td"
+include "cinm-mlir/Dialect/UPMEM/IR/UPMEMTileFirstAttributes.td"
 
 
 include "mlir/Dialect/DLTI/DLTIBase.td"

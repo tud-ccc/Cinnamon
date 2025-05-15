@@ -2,29 +2,27 @@
 ///
 /// @file
 
-#include "cinm-mlir/Dialect/UPMEM/IR/UPMEMOps.h"
+#include <cinm-mlir/Dialect/UPMEM/IR/UPMEMOps.h>
 
-#include "mlir/IR/Builders.h"
-
-#include "mlir/IR/Attributes.h"
-#include "mlir/IR/Builders.h"
-#include "mlir/IR/BuiltinAttributes.h"
-#include "mlir/IR/BuiltinOps.h"
-#include "mlir/IR/OpImplementation.h"
-#include "mlir/IR/TypeUtilities.h"
-#include "mlir/Interfaces/FunctionImplementation.h"
-#include "mlir/Interfaces/SideEffectInterfaces.h"
-#include "mlir/Transforms/InliningUtils.h"
 #include <llvm/ADT/ArrayRef.h>
 #include <llvm/ADT/SmallVector.h>
 #include <llvm/ADT/StringRef.h>
 #include <llvm/Support/LogicalResult.h>
+#include <mlir/IR/Attributes.h>
+#include <mlir/IR/Builders.h>
 #include <mlir/IR/BuiltinAttributeInterfaces.h>
+#include <mlir/IR/BuiltinAttributes.h>
+#include <mlir/IR/BuiltinOps.h>
 #include <mlir/IR/BuiltinTypes.h>
+#include <mlir/IR/OpImplementation.h>
 #include <mlir/IR/OperationSupport.h>
 #include <mlir/IR/SymbolTable.h>
+#include <mlir/IR/TypeUtilities.h>
 #include <mlir/IR/Value.h>
+#include <mlir/Interfaces/FunctionImplementation.h>
+#include <mlir/Interfaces/SideEffectInterfaces.h>
 #include <mlir/Support/LogicalResult.h>
+#include <mlir/Transforms/InliningUtils.h>
 
 #define DEBUG_TYPE "upmem-ops"
 

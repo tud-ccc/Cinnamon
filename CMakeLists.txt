@@ -16,6 +16,7 @@ project(cinm-mlir
 option(CINM_BUILD_GPU_SUPPORT "Enable vulkan runner and GPU libs" OFF)
 option(TORCH_MLIR_DIR "Directory of the Torch-MLIR installation" "")
 option(UPMEM_DIR "Directory of the UPMEM installation" "")
+option(TILEFIRST_DIR "Directory of the TileFirst installation" "")
 
 if (CINM_BUILD_GPU_SUPPORT)
     add_compile_definitions(CINM_GPU_SUPPORT)
@@ -58,6 +59,18 @@ endif()
 if(POLICY CMP0116)
     cmake_policy(SET CMP0116 OLD)
 endif()
+
+
+if (NOT TILEFIRST_DIR)
+    message(FATAL_ERROR "TILEFIRST_DIR should be set to the install dir of the TileFirst project")
+endif()
+
+message(STATUS "Using TileFirstConfig.cmake in: ${TILEFIRST_DIR}/lib/cmake/TileFirst")
+find_package(TileFirst REQUIRED CONFIG 
+  PATHS ${TILEFIRST_DIR}/lib/cmake/TileFirst
+)
+include_directories(SYSTEM ${TILEFIRST_INCLUDE_DIRS})
+
 
 # Find MLIR.
 find_package(MLIR REQUIRED CONFIG)

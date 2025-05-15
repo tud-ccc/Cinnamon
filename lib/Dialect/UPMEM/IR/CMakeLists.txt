@@ -1,7 +1,10 @@
 add_mlir_dialect_library(UPMEMIR
         UPMEMBase.cpp
         UPMEMOps.cpp
-        UPMEMTypes.cpp
+        UPMEMTypes.cpp 
+        UPMEMAttributes.cpp
+        UpmemxBtflScheduling.cpp
+        UpmemxBtflLowerings.cpp
         InferIntRangeInterfaceImpls.cpp
         
     DEPENDS
@@ -19,4 +22,9 @@ add_mlir_dialect_library(UPMEMIR
         MLIRInferIntRangeInterface
         MLIRMemRefDialect
         MLIRSupport
+
+        TileFirst::TileFirstIR
+        TileFirst::BtflIR
+        TileFirst::BtflTransforms
+        TileFirst::ThreadsIR
 )
