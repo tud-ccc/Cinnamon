@@ -10,7 +10,7 @@ set dotenv-load := true
 llvm_prefix := env_var_or_default("LLVM_BUILD_DIR", "")
 build_type := env_var_or_default("LLVM_BUILD_TYPE", "RelWithDebInfo")
 linker := env_var_or_default("CMAKE_LINKER_TYPE", "DEFAULT")
-upmem_dir := env_var_or_default("UPMEM_HOME", "")
+upmem_dir := env_var_or_default("UPMEM_HOME", "third-party/upmem")
 build_dir := "build"
 
 # Do a full build as if in CI. Only needed the first time you build the project.
