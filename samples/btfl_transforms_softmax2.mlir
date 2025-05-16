@@ -71,7 +71,7 @@ module {
 
 
     transform.sequence failures(propagate) {
-      ^bb0(%arg1: !transform.op<"btfl.block">, %arg3: !transform.op<"btfl.schedule">):
+      ^bb0(%arg1: !transform.op<"btfl.block">):
         // transform.btfl.expose_parallelism %arg1
         // transform.btfl.fuse_greedy %arg1 : (!transform.op<"btfl.block">) -> !transform.any_op
         transform.btfl.schedule_block %arg1
@@ -80,7 +80,7 @@ module {
         transform.btfl.lower.prepare_thread_assignment %arg1
         transform.btfl.lower.do_threads_assignment %arg1
         transform.btfl.lower.create_scoped_kernels %arg1
-        // transform.btfl.fuse_greedy %arg1 : (!transform.op<"btfl.block">) -> !transform.any_op
+        // transform.btfl.lower.finish_accelerator_lowering %arg1
 
         transform.yield
     }

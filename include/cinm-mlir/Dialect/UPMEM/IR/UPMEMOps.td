@@ -298,14 +298,15 @@ def DpuProgramOp : Upmem_Op<"dpu_program",
   SymbolTable,
   Symbol,
   AffineScope,
-  OpAsmOpInterface
+  OpAsmOpInterface,
+  SingleBlockImplicitTerminator<"ReturnOp">
 ]> {
   let summary = "Represents the final DPU program";
   let description = [{
   }];
 
   let arguments = (ins SymbolNameAttr:$sym_name, I32Attr:$numTasklets);
-  let regions = (region AnyRegion:$body);
+  let regions = (region SizedRegion<1>:$body);
 
   let assemblyFormat = "$sym_name `(` `)` `tasklets` `(` $numTasklets `)` attr-dict-with-keyword $body";
 

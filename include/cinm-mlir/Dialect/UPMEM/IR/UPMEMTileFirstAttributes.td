@@ -56,7 +56,7 @@ def UpmemPlatformAttr: Upmem_Attr<"UpmemPlatform", [
 
 def UpmemAcceleratorAttr: Upmem_Attr<"UpmemAccelerator", [
           DeclareAttrInterfaceMethods<TfAcceleratorAttrInterface, ["getThreadCountVarDef"]>,
-          DeclareAttrInterfaceMethods<BtflAcceleratorAttrInterfaceExtension>
+          DeclareAttrInterfaceMethods<BtflAcceleratorAttrInterfaceExtension, ["lowerAcceleratorOp", "lowerOpTopDown"]>
     ]> {
   let summary = "Accelerator description for upmem";
   let hasCustomAssemblyFormat = 1;

@@ -19,8 +19,8 @@ configure *ARGS:
     .github/workflows/build-local.sh -reconfigure {{ARGS}}
 
 # execute a specific ninja target
-doNinja *ARGS:
-    ninja -C{{build_dir}} {{ARGS}}
+@doNinja *ARGS:
+    ninja -C{{build_dir}} {{ARGS}} 1>&2
 
 
 @highlight:
