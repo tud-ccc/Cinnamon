@@ -8,6 +8,7 @@
 
 #include <cstdint>
 #include <llvm/ADT/ArrayRef.h>
+#include <llvm/ADT/SmallString.h>
 #include <llvm/ADT/SmallVector.h>
 #include <llvm/ADT/StringRef.h>
 #include <llvm/ADT/Twine.h>
@@ -79,24 +80,43 @@ declareStringConstant(ModuleOp moduleOp, Location loc, StringRef value,
   if (zeroTerminated)
     str.push_back('\0'); // Null terminate for C
 
-  OpBuilder rewriter(moduleOp->getContext());
+  OpBuilder builder(moduleOp->getContext());
   auto globalType =
-      LLVM::LLVMArrayType::get(rewriter.getI8Type(), str.size_in_bytes());
-  auto twine = llvm::Twine("const", value).str();
-  auto name = getUniqueFunctionName(moduleOp, globalName.value_or(twine));
+      LLVM::LLVMArrayType::get(builder.getI8Type(), str.size_in_bytes());
+  auto valueAttr = builder.getStringAttr(std::move(str));
 
-  rewriter.setInsertionPointToStart(&moduleOp.getBodyRegion().front());
-  return rewriter.create<LLVM::GlobalOp>(
+  // Try to find an existing identical constant
+  LLVM::GlobalOp found;
+  moduleOp->walk([&](LLVM::GlobalOp global) {
+    if (global.getConstant() &&
+        global.getLinkage() == LLVM::linkage::Linkage::Private &&
+        global.getValue() == valueAttr &&
+        global.getGlobalType() == globalType) {
+      found = global;
+      return WalkResult::interrupt();
+    }
+    return WalkResult::skip();
+  });
+  if (found) {
+    return found;
+  }
+  // Otherwise create one.
+
+  auto twine = llvm::Twine("const", value).str();
+  // str is reused to store the name
+  str = getUniqueFunctionName(moduleOp, globalName.value_or(twine));
+
+  builder.setInsertionPointToStart(&moduleOp.getBodyRegion().front());
+  return builder.create<LLVM::GlobalOp>(
       loc, globalType,
-      /*isConstant=*/true, LLVM::Linkage::Private, rewriter.getStringAttr(name),
-      rewriter.getStringAttr(str),
-      /*allignment=*/0);
+      /*isConstant=*/true, LLVM::Linkage::Private,
+      builder.getStringAttr(std::move(str)), valueAttr);
 }
 
 static Value reifyAsString(ImplicitLocOpBuilder &builder, ModuleOp container,
-                           StringRef value) {
-  LLVM::GlobalOp global = declareStringConstant(container, builder.getLoc(),
-                                                value, true, "prog_name");
+                           StringRef value, StringRef nameHint) {
+  LLVM::GlobalOp global =
+      declareStringConstant(container, builder.getLoc(), value, true, nameHint);
   return builder.create<LLVM::AddressOfOp>(global);
 }
 
@@ -135,9 +155,11 @@ static FailureOr<AffineMap> linearizeAffineMap(AffineMap map,
   LLVM_DEBUG(llvm::errs() << "- inflate map " << inflateMap << '\n');
 
   auto result = MutableAffineMap(layoutMap.compose(map).compose(inflateMap));
-  LLVM_DEBUG(llvm::errs() << "- before simplification " << result.getAffineMap() << '\n');
+  LLVM_DEBUG(llvm::errs() << "- before simplification " << result.getAffineMap()
+                          << '\n');
   result.simplify();
-  LLVM_DEBUG(llvm::errs() << "- after simplification " << result.getAffineMap() << '\n');
+  LLVM_DEBUG(llvm::errs() << "- after simplification " << result.getAffineMap()
+                          << '\n');
 
   assert(result.getNumResults() == 1 && result.getNumDims() == 1);
 
@@ -213,15 +235,11 @@ public:
   FailureOr<Value>
   createConstantForDpuProgramName(ConversionPatternRewriter &rewriter,
                                   upmem::AllocDPUsOp op) const {
-    std::string dpuProgramName;
-    dpuProgramName.append(op.getDpuProgramRef().getRootReference().strref());
-    for (auto segment : op.getDpuProgramRef().getNestedReferences()) {
-      dpuProgramName.append(segment.getValue());
-    }
+    auto leafName = op.getDpuProgramRef().getLeafReference().getValue();
 
     LLVM::GlobalOp constant =
         declareStringConstant(op->getParentOfType<ModuleOp>(), op->getLoc(),
-                              dpuProgramName, true, "dpu_program");
+                              leafName, true, "dpu_program");
     Value result = rewriter.create<LLVM::AddressOfOp>(op->getLoc(), constant);
     return success(result);
   }
@@ -351,7 +369,8 @@ static LogicalResult lowerScatterOrGather(Op op, typename Op::Adaptor adaptor,
   if (llvm::failed(runtimeScatterFun))
     return failure();
   auto funPtrOp = rewriter0.create<LLVM::AddressOfOp>(loc, *affineMapFunOpt);
-  auto bufferId = reifyAsString(rewriter, moduleOp, op.getDpuBufRef());
+  auto bufferId =
+      reifyAsString(rewriter, moduleOp, op.getDpuBufRef(), "buffer_name");
   auto numBytesCopied = op.getDpuBufferSizeInBytes();
 
   // Transfer count must be 8-byte aligned
