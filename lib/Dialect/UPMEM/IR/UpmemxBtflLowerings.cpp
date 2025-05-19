@@ -11,11 +11,15 @@
 #include <llvm/Support/LogicalResult.h>
 #include <mlir/Dialect/Arith/IR/Arith.h>
 #include <mlir/Dialect/MemRef/IR/MemRef.h>
+#include <mlir/Dialect/Transform/Interfaces/TransformInterfaces.h>
 #include <mlir/Dialect/Utils/IndexingUtils.h>
+#include <mlir/IR/AffineExpr.h>
+#include <mlir/IR/AffineMap.h>
 #include <mlir/IR/Attributes.h>
 #include <mlir/IR/Builders.h>
 #include <mlir/IR/BuiltinAttributes.h>
 #include <mlir/IR/BuiltinOps.h>
+#include <mlir/IR/BuiltinTypeInterfaces.h>
 #include <mlir/IR/BuiltinTypes.h>
 #include <mlir/IR/DialectImplementation.h>
 #include <mlir/IR/IRMapping.h>
@@ -42,6 +46,7 @@
 #include <cinm-mlir/Dialect/UPMEM/IR/UPMEMOps.h>
 #include <cinm-mlir/Dialect/UPMEM/IR/UPMEMTypes.h>
 #include <cinm-mlir/Dialect/UPMEM/Transforms/Utils.h>
+#include <utility>
 
 #define DEBUG_TYPE "upmem"
 
@@ -81,7 +86,7 @@ upmem::getUpmemMemspace(Location loc, TfMemSpaceAttr memspace, bool allowHost) {
   else if (name == "mram")
     return BufferMemspace::MRAM;
 
-  return emitDefiniteFailure(loc, "Buffer is not part of the upmem platform")
+  return emitSilenceableFailure(loc, "Buffer is not part of the upmem platform")
          << memspace;
 }
 
@@ -283,17 +288,102 @@ UpmemAcceleratorAttr::lowerAcceleratorOp(btfl::TopDownLoweringContext &ctx,
 }
 
 mlir::DiagnosedSilenceableFailure
+lowerScatterOrGather(btfl::TopDownLoweringContext &ctx,
+                     btfl::TransferOp transfer, UpmemAcceleratorAttr upmem,
+                     BufferMemspace sourceMemSpace,
+                     BufferMemspace targetMemSpace, Value wgValue) {
+
+  if (sourceMemSpace == mlir::upmem::BufferMemspace::WRAM ||
+      targetMemSpace == mlir::upmem::BufferMemspace::WRAM) {
+    // todo support scatter/gather to wram
+    return emitDefiniteFailure(
+        transfer, "Not implemented: transfer between host and wram");
+  }
+
+  auto rankIdx = ctx.getIndexVarOrZero(upmem.getNumRanks().getIndexVarName());
+  auto dpuIdx =
+      ctx.getIndexVarOrZero(upmem.getNumDpusPerRank().getIndexVarName());
+
+  auto broadCastRank = !llvm::isa<Value>(rankIdx);
+  auto broadCastDpu = !llvm::isa<Value>(dpuIdx);
+  if (!broadCastRank || !broadCastDpu) {
+    // todo this should be supported as a lowering for the tile op I think...
+    //  Unclear how to implement this
+    return emitDefiniteFailure(
+        transfer,
+        "Not implemented: scatter/gather over an array with index vars");
+  }
+
+  bool isScatter = sourceMemSpace == mlir::upmem::BufferMemspace::HOST;
+  auto hostVal = transfer.getSource();
+  auto dpuVal = transfer.getDest();
+  if (!isScatter) {
+    std::swap(hostVal, dpuVal);
+  }
+
+  auto hostBuf = ctx.getMappedValue(hostVal);
+  auto dpuBufName = ctx.getSymbolFor(dpuVal).getNameAttr();
+  auto tileDimensions =
+      tilefirst::toTensorDimensions(hostVal.getType().getTileShape());
+  int transferCount = ShapedType::getNumElements(tileDimensions);
+
+  SmallVector<AffineExpr, 4> offsets(
+      tileDimensions.size(), getAffineConstantExpr(0, ctx.getContext()));
+  AffineMap affineMap = AffineMap::get(2, 0, offsets, ctx.getContext());
+
+  if (isScatter) {
+    // ::mlir::Value hostBuffer, ::mlir::FlatSymbolRefAttr dpuBufRef,
+    // ::mlir::IntegerAttr transferCount, ::mlir::AffineMapAttr scatterMap,
+    // ::mlir::Value hierarchy);
+    ctx.rewriter.create<upmem::ScatterOp>(transfer->getLoc(), hostBuf,
+                                          dpuBufName, transferCount, affineMap,
+                                          wgValue);
+  } else {
+    ctx.rewriter.create<upmem::GatherOp>(transfer->getLoc(), hostBuf,
+                                         dpuBufName, transferCount, affineMap,
+                                         wgValue);
+  }
+
+  return DiagnosedSilenceableFailure::success();
+}
+
+mlir::DiagnosedSilenceableFailure
 UpmemAcceleratorAttr::lowerOpTopDown(::mlir::btfl::TopDownLoweringContext &ctx,
                                      ::mlir::Operation *op) const {
-  if (!cast<TfAcceleratorAttrInterface>(*this).ownsOperation(op))
-    return btfl::detail::defaultLowerOpTopDown(ctx, op);
   auto acc = ctx.getAcceleratorOp(*this);
   auto wgValue = ctx.getMappedValue(acc.getResult());
 
   return llvm::TypeSwitch<Operation *, DiagnosedSilenceableFailure>(op)
       .Case([&](btfl::ScopeOp scope) {
+        if (!cast<TfAcceleratorAttrInterface>(*this).ownsOperation(scope))
+          return btfl::detail::defaultLowerOpTopDown(ctx, scope);
+
         ctx.rewriter.create<upmem::WaitForOp>(scope->getLoc(), wgValue);
         return DiagnosedSilenceableFailure::success();
+      })
+      .Case([&](btfl::EmptyBufOp buf) {
+        TRY_GET(upmem::getUpmemMemspace(
+            buf->getLoc(), buf.getResult().getType().getMemorySpace(), false));
+
+        // If that succeeded then the buffer is in mram or wram. In that case
+        // we don't need additional host-side operations as the buffer has been
+        // declared already.
+        return DiagnosedSilenceableFailure::success();
+      })
+      .Case([&](btfl::TransferOp transfer) {
+        auto source = TRY_GET(upmem::getUpmemMemspace(
+            transfer->getLoc(), transfer.getSourceMemorySpace(), true));
+        auto target = TRY_GET(upmem::getUpmemMemspace(
+            transfer->getLoc(), transfer.getDestMemorySpace(), true));
+
+        if ((source == BufferMemspace::HOST) ^
+            (target == BufferMemspace::HOST)) {
+          // scatter or gather
+          return lowerScatterOrGather(ctx, transfer, *this, source, target,
+                                      wgValue);
+        }
+
+        return btfl::detail::defaultLowerOpTopDown(ctx, op);
       })
       .Default([&](Operation *op) {
         return btfl::detail::defaultLowerOpTopDown(ctx, op);
