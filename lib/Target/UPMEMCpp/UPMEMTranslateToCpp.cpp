@@ -48,6 +48,7 @@
 #include <mlir/Support/LogicalResult.h>
 #include <ranges>
 #include <string>
+#include <tilefirst-mlir/Dialect/Threads/IR/ThreadsDialect.h>
 #include <utility>
 
 #define DEBUG_TYPE "translate-to-upmem-cpp"
@@ -261,6 +262,21 @@ static LogicalResult printOperation(CppEmitter &emitter,
   if (failed(emitter.emitAssignPrefix(*idOp)))
     return failure();
   os << "me()";
+  return success();
+}
+
+static LogicalResult printOperation(CppEmitter &emitter,
+                                    threads::GetThreadIdOp idOp) {
+  raw_ostream &os = emitter.ostream();
+  if (failed(emitter.emitAssignPrefix(*idOp)))
+    return failure();
+  os << "me()";
+  return success();
+}
+
+static LogicalResult printOperation(CppEmitter &emitter, threads::BarrierOp) {
+  raw_ostream &os = emitter.ostream();
+  os << "  barrier_wait(&my_barrier);\n";
   return success();
 }
 
@@ -1549,6 +1565,10 @@ LogicalResult CppEmitter::emitOperation(Operation &op, bool trailingSemicolon) {
               [&](auto op) { return printOperation(*this, op); })
           .Case<upmem::LocalTransferOp>(
               [&](auto op) { return printLocalTransfer(*this, op); })
+          .Case<threads::GetThreadIdOp>(
+              [&](auto op) { return printOperation(*this, op); })
+          .Case<threads::BarrierOp>(
+              [&](auto op) { return printOperation(*this, op); })
           .Case<memref::LoadOp>(
               [&](auto op) { return printOperation(*this, op); })
           .Case<memref::StoreOp>(

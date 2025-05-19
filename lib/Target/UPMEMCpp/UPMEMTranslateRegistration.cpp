@@ -5,17 +5,20 @@
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
-#include "cinm-mlir/Dialect/UPMEM/IR/UPMEMDialect.h"
-#include "cinm-mlir/Target/UPMEMCpp/UPMEMCppEmitter.h"
+#include <cinm-mlir/Dialect/UPMEM/IR/UPMEMDialect.h>
+#include <cinm-mlir/Target/UPMEMCpp/UPMEMCppEmitter.h>
 
-#include "mlir/Dialect/Func/IR/FuncOps.h"
-#include "mlir/Dialect/LLVMIR/LLVMDialect.h"
-#include "mlir/Dialect/MemRef/IR/MemRef.h"
-#include "mlir/Dialect/SCF/IR/SCF.h"
+#include <tilefirst-mlir/Dialect/Threads/IR/ThreadsDialect.h>
 
-#include "mlir/Target/Cpp/CppEmitter.h"
-#include "mlir/Tools/mlir-translate/Translation.h"
-#include "llvm/Support/CommandLine.h"
+#include <mlir/Dialect/Arith/IR/Arith.h>
+#include <mlir/Dialect/Func/IR/FuncOps.h>
+#include <mlir/Dialect/LLVMIR/LLVMDialect.h>
+#include <mlir/Dialect/MemRef/IR/MemRef.h>
+#include <mlir/Dialect/SCF/IR/SCF.h>
+
+#include <llvm/Support/CommandLine.h>
+#include <mlir/Target/Cpp/CppEmitter.h>
+#include <mlir/Tools/mlir-translate/Translation.h>
 
 using namespace mlir;
 using namespace mlir::upmem_emitc;
@@ -44,6 +47,8 @@ void mlir::upmem_emitc::registerUPMEMCppTranslation() {
         registry.insert<mlir::LLVM::LLVMDialect>();
         registry.insert<mlir::memref::MemRefDialect>();
         registry.insert<mlir::scf::SCFDialect>();
+        registry.insert<mlir::arith::ArithDialect>();
+        registry.insert<mlir::threads::ThreadsDialect>();
         // clang-format on
       });
 }
