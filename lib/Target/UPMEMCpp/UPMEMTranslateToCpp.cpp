@@ -38,6 +38,7 @@
 #include <llvm/Support/Casting.h>
 #include <llvm/Support/LogicalResult.h>
 #include <llvm/Support/raw_ostream.h>
+#include <mlir/Dialect/Math/IR/Math.h>
 #include <mlir/IR/Builders.h>
 #include <mlir/IR/BuiltinAttributes.h>
 #include <mlir/IR/Location.h>
@@ -133,7 +134,7 @@ struct CppEmitter {
   /// - emits nothing if no value produced by op;
   /// Emits final '=' operator where a type is produced. Returns failure if
   /// any result type could not be converted.
-  LogicalResult emitAssignPrefix(Operation &op);
+  LogicalResult emitAssignPrefix(Operation *op);
 
   /// Emits a label for the block.
   LogicalResult emitLabel(Block &block);
@@ -238,7 +239,7 @@ static LogicalResult printConstantOp(CppEmitter &emitter, Operation *operation,
   }
 
   // Emit a variable declaration.
-  if (failed(emitter.emitAssignPrefix(*operation)))
+  if (failed(emitter.emitAssignPrefix(operation)))
     return failure();
   return emitter.emitAttribute(operation->getLoc(), value);
 }
@@ -259,7 +260,7 @@ static LogicalResult printValueOrConstant(CppEmitter &emitter, Value value) {
 static LogicalResult printOperation(CppEmitter &emitter,
                                     upmem::TaskletDimOp idOp) {
   raw_ostream &os = emitter.ostream();
-  if (failed(emitter.emitAssignPrefix(*idOp)))
+  if (failed(emitter.emitAssignPrefix(idOp)))
     return failure();
   os << "me()";
   return success();
@@ -268,7 +269,7 @@ static LogicalResult printOperation(CppEmitter &emitter,
 static LogicalResult printOperation(CppEmitter &emitter,
                                     threads::GetThreadIdOp idOp) {
   raw_ostream &os = emitter.ostream();
-  if (failed(emitter.emitAssignPrefix(*idOp)))
+  if (failed(emitter.emitAssignPrefix(idOp)))
     return failure();
   os << "me()";
   return success();
@@ -280,10 +281,19 @@ static LogicalResult printOperation(CppEmitter &emitter, threads::BarrierOp) {
   return success();
 }
 
+static LogicalResult printOperation(CppEmitter &emitter, math::ExpOp op) {
+  raw_ostream &os = emitter.ostream();
+
+  if (failed(emitter.emitAssignPrefix(op)))
+    return failure();
+  os << "expf(" << emitter.getOrCreateName(op.getOperand()) << ");\n";
+  return success();
+}
+
 static LogicalResult printOperation(CppEmitter &emitter,
                                     upmem::BaseMRAMAddrOp heapOp) {
   raw_ostream &os = emitter.ostream();
-  if (failed(emitter.emitAssignPrefix(*heapOp)))
+  if (failed(emitter.emitAssignPrefix(heapOp)))
     return failure();
   os << "(uint32_t) DPU_MRAM_HEAP_POINTER";
   return success();
@@ -314,7 +324,7 @@ static LogicalResult printOperation(CppEmitter &emitter,
 static LogicalResult printOperation(CppEmitter &emitter,
                                     memref::LoadOp loadOp) {
   raw_ostream &os = emitter.ostream();
-  if (failed(emitter.emitAssignPrefix(*loadOp)))
+  if (failed(emitter.emitAssignPrefix(loadOp)))
     return failure();
 
   os << emitter.getOrCreateName(loadOp->getOperand(0));
@@ -494,7 +504,7 @@ static LogicalResult printBinaryOperation(CppEmitter &emitter,
                                           StringRef binaryOperator) {
   raw_ostream &os = emitter.ostream();
 
-  if (failed(emitter.emitAssignPrefix(*operation)))
+  if (failed(emitter.emitAssignPrefix(operation)))
     return failure();
 
   if (printValueOrConstant(emitter, operation->getOperand(0)).failed()) {
@@ -715,7 +725,7 @@ static LogicalResult printOperation(CppEmitter &emitter, arith::XOrIOp op) {
 }
 
 static LogicalResult printOperation(CppEmitter &emitter, LLVM::ExpOp op) {
-  if (emitter.emitAssignPrefix(*op.getOperation()).failed()) {
+  if (emitter.emitAssignPrefix(op.getOperation()).failed()) {
     return failure();
   }
 
@@ -792,7 +802,7 @@ static LogicalResult printOperation(CppEmitter &emitter,
 }
 
 static LogicalResult printOperation(CppEmitter &emitter, func::CallOp callOp) {
-  if (failed(emitter.emitAssignPrefix(*callOp.getOperation())))
+  if (failed(emitter.emitAssignPrefix(callOp.getOperation())))
     return failure();
 
   raw_ostream &os = emitter.ostream();
@@ -1158,7 +1168,7 @@ static LogicalResult printOperation(CppEmitter &emitter, ModuleOp moduleOp) {
         "#include <stdint.h>\n"
         "#include <stdio.h>\n"
         "#include <stdlib.h>\n\n"
-        "#include \"expf.c\"\n"
+        "#include \"basic_math.h\"\n"
         "\n";
 
   for (auto kernel : kernels) {
@@ -1395,12 +1405,12 @@ LogicalResult CppEmitter::emitVariableDeclaration(OpResult result,
   return success();
 }
 
-LogicalResult CppEmitter::emitAssignPrefix(Operation &op) {
-  switch (op.getNumResults()) {
+LogicalResult CppEmitter::emitAssignPrefix(Operation *op) {
+  switch (op->getNumResults()) {
   case 0:
     break;
   case 1: {
-    OpResult result = op.getResult(0);
+    OpResult result = op->getResult(0);
     if (shouldDeclareVariablesAtTop()) {
       if (failed(emitVariableAssignment(result)))
         return failure();
@@ -1413,13 +1423,13 @@ LogicalResult CppEmitter::emitAssignPrefix(Operation &op) {
   }
   default:
     if (!shouldDeclareVariablesAtTop()) {
-      for (OpResult result : op.getResults()) {
+      for (OpResult result : op->getResults()) {
         if (failed(emitVariableDeclaration(result, /*trailingSemicolon=*/true)))
           return failure();
       }
     }
     os << "std::tie(";
-    interleaveComma(op.getResults(), os,
+    interleaveComma(op->getResults(), os,
                     [&](Value result) { os << getOrCreateName(result); });
     os << ") = ";
   }
@@ -1569,6 +1579,7 @@ LogicalResult CppEmitter::emitOperation(Operation &op, bool trailingSemicolon) {
               [&](auto op) { return printOperation(*this, op); })
           .Case<threads::BarrierOp>(
               [&](auto op) { return printOperation(*this, op); })
+          .Case<math::ExpOp>([&](auto op) { return printOperation(*this, op); })
           .Case<memref::LoadOp>(
               [&](auto op) { return printOperation(*this, op); })
           .Case<memref::StoreOp>(

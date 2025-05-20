@@ -72,7 +72,7 @@ void upmemrt_dpu_launch(struct dpu_set_t *void_dpu_set) {
   struct dpu_set_t *dpu_set = (struct dpu_set_t *)void_dpu_set;
   dpu_error_t error = dpu_launch(*dpu_set, DPU_SYNCHRONOUS);
   if (getenv("UPMEM_LOG")) {
-    size_t i = 0;
+    [[maybe_unused]] size_t i = 0;
     struct dpu_set_t dpu;
     DPU_FOREACH(*dpu_set, dpu, i) { dpu_log_read(dpu, stdout); }
   }

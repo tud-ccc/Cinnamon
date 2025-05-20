@@ -13,6 +13,7 @@
 #include <mlir/Dialect/Arith/IR/Arith.h>
 #include <mlir/Dialect/Func/IR/FuncOps.h>
 #include <mlir/Dialect/LLVMIR/LLVMDialect.h>
+#include <mlir/Dialect/Math/IR/Math.h>
 #include <mlir/Dialect/MemRef/IR/MemRef.h>
 #include <mlir/Dialect/SCF/IR/SCF.h>
 
@@ -47,6 +48,7 @@ void mlir::upmem_emitc::registerUPMEMCppTranslation() {
         registry.insert<mlir::LLVM::LLVMDialect>();
         registry.insert<mlir::memref::MemRefDialect>();
         registry.insert<mlir::scf::SCFDialect>();
+        registry.insert<mlir::math::MathDialect>();
         registry.insert<mlir::arith::ArithDialect>();
         registry.insert<mlir::threads::ThreadsDialect>();
         // clang-format on
