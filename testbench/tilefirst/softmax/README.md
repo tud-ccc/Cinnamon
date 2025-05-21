@@ -7,6 +7,4 @@ In order to compare with CINM I partially generate and manually edit some files 
 ```shell
 just cinm-opt source.mlir --btfl-apply-transforms > par.mlir
 ```
-2. Copy `par.mlir` to `par_mod.mlir`.
-Modify it manually:
-- schedule
+2. Copy `par.mlir` to `par1.mlir`. Modify it manually: Place intermediate buffers and reduction loops on host.
