@@ -52,8 +52,8 @@ the reduction. We have to split it open to separate the parallel and reduction p
 too greedily. Replace the schedule around that kernel with:
 ```mlir
 schedule<(par M) = (1) to (1048576 | (R * D))>
-              ins(%buf_4 = %buf : <f32> to host)
-              outs(%buf_5 = %tile : <(M), f32> to host) {
+        ins(%buf_4 = %buf : <f32> to host)
+        outs(%buf_5 = %tile : <(M), f32> to host) {
   kernel "sub+exp" ins(%arg1 = %buf_4 : <f32>) outs(%arg2 = %buf_5 : <1xf32>) {
     %0 = affine.load %arg2[0] : memref<1xf32>
     %1 = affine.load %arg1[] : memref<f32>
@@ -64,15 +64,18 @@ schedule<(par M) = (1) to (1048576 | (R * D))>
 }
 schedule<(red M) = (1) to (1048576 | (R * D))>
         ins(%buf_5 = %tile : <(M), f32> to host)
-        outs(%buf_6 = %tile_3 : <1xf32> to host) {
-  kernel "sum" ins(%arg2 = %buf_5 : <1xf32>) outs(%arg3 = %buf_6 : <1xf32>) {
+        outs(%buf_6 = %tile_3 : <f32> to host) {
+  kernel "sum" ins(%arg2 = %buf_5 : <1xf32>) outs(%arg3 = %buf_6 : <f32>) {
     %0 = affine.load %arg2[0] : memref<1xf32>
-    %4 = affine.load %arg3[0] : memref<1xf32>
+    %4 = affine.load %arg3[] : memref<f32>
     %5 = arith.addf %0, %4 : f32
-    affine.store %5, %arg3[0] : memref<1xf32>
+    affine.store %5, %arg3[] : memref<f32>
   }
 }
 ```
+Add the `rankreduce` keyword on the tile spec for the `(R*D)` partial buffers
+(those that have a schedule inside of them).
+
 Replace the transform program with:
 ```mlir
   transform.sequence  failures(propagate) {
@@ -80,6 +83,7 @@ Replace the transform program with:
       transform.btfl.schedule_block %arg1
   }
 ```
+
 
 
 Now IIUC, the remaining schedules represent 1-DPU only parts of the code. 

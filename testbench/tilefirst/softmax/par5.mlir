@@ -8,15 +8,15 @@ module {
     fill_buf %buf, 0xFF800000 : f32 : <f32, host>
     %buf_0 = empty_buf() : <(R * D), f32, host>
     fill_buf %buf_0, 0xFF800000 : f32 : <(R * D), f32, host>
-    tile[r * d] hwparallel factor symbolic<R * D> ins(%tile = %arg0 sdim 0 : <1048576xf32, host>) outs(%tile_3 = %buf_0 sdim 0 : <(R * D), f32, host>) {
+    tile[r * d] hwparallel factor symbolic<R * D> ins(%tile = %arg0 sdim 0 : <1048576xf32, host>) outs(%tile_3 = %buf_0 sdim 0 : <(R * D), f32, host> rankreduce) {
       schedule<(red N) = (1) to (1048576 | (R * D))>
               ins(%buf_4 = %tile : <(N), f32> to host)
-              outs(%buf_5 = %tile_3 : <1xf32> to host) {
-        kernel "max" ins(%arg1 = %buf_4 : <1xf32>) outs(%arg2 = %buf_5 : <1xf32>) {
+              outs(%buf_5 = %tile_3 : <f32> to host) {
+        kernel "max" ins(%arg1 = %buf_4 : <1xf32>) outs(%arg2 = %buf_5 : <f32>) {
           %0 = affine.load %arg1[0] : memref<1xf32>
-          %1 = affine.load %arg2[0] : memref<1xf32>
+          %1 = affine.load %arg2[] : memref<f32>
           %2 = arith.maximumf %0, %1 : f32
-          affine.store %2, %arg2[0] : memref<1xf32>
+          affine.store %2, %arg2[] : memref<f32>
         }
       }
     }
@@ -32,7 +32,7 @@ module {
     fill_buf %buf_1, 0.000000e+00 : f32 : <f32, host>
     %buf_2 = empty_buf() : <(R * D), f32, host>
     fill_buf %buf_2, 0.000000e+00 : f32 : <(R * D), f32, host>
-    tile[r * d] hwparallel factor symbolic<R * D> outs(%tile = %arg0 sdim 0 : <1048576xf32, host>, %tile_3 = %buf_2 sdim 0 : <(R * D), f32, host>) {
+    tile[r * d] hwparallel factor symbolic<R * D> outs(%tile = %arg0 sdim 0 : <1048576xf32, host>, %tile_3 = %buf_2 sdim 0 : <(R * D), f32, host> rankreduce) {
       schedule<(par M) = (1) to (1048576 | (R * D))>
               ins(%buf_4 = %buf : <f32> to host)
               outs(%buf_5 = %tile : <(M), f32> to host) {
@@ -46,12 +46,12 @@ module {
       }
       schedule<(red M) = (1) to (1048576 | (R * D))>
               ins(%buf_5 = %tile : <(M), f32> to host)
-              outs(%buf_6 = %tile_3 : <1xf32> to host) {
-        kernel "sum" ins(%arg2 = %buf_5 : <1xf32>) outs(%arg3 = %buf_6 : <1xf32>) {
+              outs(%buf_6 = %tile_3 : <f32> to host) {
+        kernel "sum" ins(%arg2 = %buf_5 : <1xf32>) outs(%arg3 = %buf_6 : <f32>) {
           %0 = affine.load %arg2[0] : memref<1xf32>
-          %4 = affine.load %arg3[0] : memref<1xf32>
+          %4 = affine.load %arg3[] : memref<f32>
           %5 = arith.addf %0, %4 : f32
-          affine.store %5, %arg3[0] : memref<1xf32>
+          affine.store %5, %arg3[] : memref<f32>
         }
       }
     }
