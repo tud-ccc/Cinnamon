@@ -43,6 +43,43 @@ just cinm-opt source.mlir --btfl-apply-transforms > par.mlir
     }
 ```
 This will create an explicit loop for the parallel `R*D` part.
+Execute the program:
+```shell
+ just cinm-opt par4.mlir --btfl-apply-transforms > par5.mlir
+```
+5. In `par5.mlir`, look at the kernel `sub+exp+sum`. Our goal is to extract parallelism again from 
+the reduction. We have to split it open to separate the parallel and reduction part, which were merged
+too greedily. Replace the schedule around that kernel with:
+```mlir
+schedule<(par M) = (1) to (1048576 | (R * D))>
+              ins(%buf_4 = %buf : <f32> to host)
+              outs(%buf_5 = %tile : <(M), f32> to host) {
+  kernel "sub+exp" ins(%arg1 = %buf_4 : <f32>) outs(%arg2 = %buf_5 : <1xf32>) {
+    %0 = affine.load %arg2[0] : memref<1xf32>
+    %1 = affine.load %arg1[] : memref<f32>
+    %2 = arith.subf %0, %1 : f32
+    %3 = math.exp %2 : f32
+    affine.store %3, %arg2[0] : memref<1xf32>
+  }
+}
+schedule<(red M) = (1) to (1048576 | (R * D))>
+        ins(%buf_5 = %tile : <(M), f32> to host)
+        outs(%buf_6 = %tile_3 : <1xf32> to host) {
+  kernel "sum" ins(%arg2 = %buf_5 : <1xf32>) outs(%arg3 = %buf_6 : <1xf32>) {
+    %0 = affine.load %arg2[0] : memref<1xf32>
+    %4 = affine.load %arg3[0] : memref<1xf32>
+    %5 = arith.addf %0, %4 : f32
+    affine.store %5, %arg3[0] : memref<1xf32>
+  }
+}
+```
+Replace the transform program with:
+```mlir
+  transform.sequence  failures(propagate) {
+    ^bb0(%arg1: !transform.op<"btfl.block">):
+      transform.btfl.schedule_block %arg1
+  }
+```
 
 
 Now IIUC, the remaining schedules represent 1-DPU only parts of the code. 

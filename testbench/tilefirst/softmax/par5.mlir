@@ -33,17 +33,24 @@ module {
     %buf_2 = empty_buf() : <(R * D), f32, host>
     fill_buf %buf_2, 0.000000e+00 : f32 : <(R * D), f32, host>
     tile[r * d] hwparallel factor symbolic<R * D> outs(%tile = %arg0 sdim 0 : <1048576xf32, host>, %tile_3 = %buf_2 sdim 0 : <(R * D), f32, host>) {
-      schedule<(red M) = (1) to (1048576 | (R * D))>
+      schedule<(par M) = (1) to (1048576 | (R * D))>
               ins(%buf_4 = %buf : <f32> to host)
-              outs(%buf_5 = %tile : <(M), f32> to host, %buf_6 = %tile_3 : <1xf32> to host) {
-        kernel "sub+exp+sum" ins(%arg1 = %buf_4 : <f32>) outs(%arg2 = %buf_5 : <1xf32>, %arg3 = %buf_6 : <1xf32>) {
+              outs(%buf_5 = %tile : <(M), f32> to host) {
+        kernel "sub+exp" ins(%arg1 = %buf_4 : <f32>) outs(%arg2 = %buf_5 : <1xf32>) {
           %0 = affine.load %arg2[0] : memref<1xf32>
           %1 = affine.load %arg1[] : memref<f32>
           %2 = arith.subf %0, %1 : f32
           %3 = math.exp %2 : f32
           affine.store %3, %arg2[0] : memref<1xf32>
+        }
+      }
+      schedule<(red M) = (1) to (1048576 | (R * D))>
+              ins(%buf_5 = %tile : <(M), f32> to host)
+              outs(%buf_6 = %tile_3 : <1xf32> to host) {
+        kernel "sum" ins(%arg2 = %buf_5 : <1xf32>) outs(%arg3 = %buf_6 : <1xf32>) {
+          %0 = affine.load %arg2[0] : memref<1xf32>
           %4 = affine.load %arg3[0] : memref<1xf32>
-          %5 = arith.addf %3, %4 : f32
+          %5 = arith.addf %0, %4 : f32
           affine.store %5, %arg3[0] : memref<1xf32>
         }
       }
@@ -70,9 +77,7 @@ module {
     }
     transform.sequence  failures(propagate) {
     ^bb0(%arg1: !transform.op<"btfl.block">):
-      %0 = transform.btfl.find_descendants "btfl.schedule" in %arg1 : (!transform.op<"btfl.block">) -> !transform.op<"btfl.schedule">
-      transform.btfl.tile_down %0 dim 0 by factor symbolic<R * D> scheduler hwparallel tsym symbolic<r * d> : !transform.op<"btfl.schedule">
-      transform.btfl.simplify_schedule %0
+      transform.btfl.schedule_block %arg1
     }
   }
 }
