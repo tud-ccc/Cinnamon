@@ -26,7 +26,13 @@ just cinm-opt source.mlir --btfl-apply-transforms > par.mlir
 - Parallelize the reductions `schedule` using the following scheme:
   - Split the `red R` dimension into a `par L, red R` couple, with kdims `(1,1)` and pdims `(R*D, 1048576 | (R*D))`
   - Add another schedule with no dimensions, that reduces the remaining `(R*D)` elements.
+  - Also delete the `Q` dimension.
 3. Copy `par2.mlir` to `par3.mlir`. Modify it manually:
 - Place the intermediate buffers and the reductions on host.
+- Execute the transform program to unwrap reduction schedules:
+```shell
+ just cinm-opt par3.mlir --btfl-apply-transforms > par4.mlir
+```
+4. On `par4.mlir`, change the transform program:
 
 

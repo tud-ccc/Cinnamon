@@ -61,23 +61,21 @@ module {
       }
     }
 
-    schedule<(par L, par M) = (1, Q) to (R * D, 1048576 | (R * D))>
+    schedule<(par L, par M) = (1, 1) to (R * D, 1048576 | (R * D))>
             ins(%buf_3 = %buf_1 : <f32> to host)
             outs(%buf_4 = %arg0 : <(L * M), f32> to host) {
-      tile parallel factor symbolic<Q> outs(%tile_5 = %buf_4 sdim 0 : <(Q), f32>) {
-        kernel "div" ins(%arg1 = %buf_3 : <f32>) outs(%arg2 = %tile_5 : <1xf32>) {
-          %0 = affine.load %arg2[0] : memref<1xf32>
-          %1 = affine.load %arg1[] : memref<f32>
-          %2 = arith.divf %0, %1 : f32
-          affine.store %2, %arg2[0] : memref<1xf32>
-        }
+      kernel "div" ins(%arg1 = %buf_3 : <f32>) outs(%arg2 = %buf_4 : <1xf32>) {
+        %0 = affine.load %arg2[0] : memref<1xf32>
+        %1 = affine.load %arg1[] : memref<f32>
+        %2 = arith.divf %0, %1 : f32
+        affine.store %2, %arg2[0] : memref<1xf32>
       }
     }
 
-    transform.sequence  failures(propagate) {
+    transform.sequence  failures(suppress) {
     ^bb0(%arg1: !transform.op<"btfl.block">):
-      // transform.btfl.expose_parallelism %arg1
-      // %0 = transform.btfl.fuse_greedy %arg1 : (!transform.op<"btfl.block">) -> !transform.any_op
+      %schedules = transform.btfl.find_descendants "btfl.schedule" in %arg1 : (!transform.op<"btfl.block">) -> !transform.op<"btfl.schedule">
+      transform.btfl.simplify_schedule %schedules unwrap empty
     }
   }
 }
