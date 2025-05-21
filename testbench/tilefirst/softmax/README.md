@@ -64,7 +64,10 @@ schedule<(red M) = (1) to (1048576 | (R * D))>
 ```mlir
   transform.sequence  failures(propagate) {
     ^bb0(%arg1: !transform.op<"btfl.block">):
-      transform.btfl.schedule_block %arg1
+      transform.btfl.expose_parallelism %arg1 
+           block by symbolic<Q>
+           parallelize by symbolic<T>
+           with par scheduler #threads.each
   }
 ```
 - Execute the program:
@@ -72,13 +75,9 @@ schedule<(red M) = (1) to (1048576 | (R * D))>
  just cinm-opt par5.mlir --btfl-apply-transforms > par6.mlir
 ```
 6. The resulting program inserted the wrong accelerator specification, but it has the shape we want.
-- Fix the accelerator spec
+- Add an accelerator spec
 ```mlir
-    %upmem = tilefirst.accelerator #upmem.array<ranks(r : R1 = 1), dpus(d : D1 = 1), tasklets(t : T = 8)>
-```
-to 
-```mlir
-    %upmem = tilefirst.accelerator #upmem.array<ranks(r : R = 1), dpus(d : D = 1), tasklets(t : T = 8)>
+    %upmem = tilefirst.accelerator #upmem.array<ranks(r : R in 1 to 8), dpus(d : D in 1 to 64), tasklets(t : T in 1 to 16)>
 ```
 
 

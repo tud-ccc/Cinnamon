@@ -76,7 +76,10 @@ module {
     }
     transform.sequence  failures(propagate) {
     ^bb0(%arg1: !transform.op<"btfl.block">):
-      transform.btfl.expose_parallelism %arg1
+      transform.btfl.expose_parallelism %arg1 
+           block by symbolic<Q>
+           parallelize by symbolic<T>
+           with par scheduler #threads.each
     }
   }
 }
