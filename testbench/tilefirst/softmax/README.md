@@ -33,6 +33,18 @@ just cinm-opt source.mlir --btfl-apply-transforms > par.mlir
 ```shell
  just cinm-opt par3.mlir --btfl-apply-transforms > par4.mlir
 ```
-4. On `par4.mlir`, change the transform program:
+4. On `par4.mlir`, change the transform program to:
+```mlir
+    transform.sequence failures(propagate) {
+    ^bb0(%arg1: !transform.op<"btfl.block">):
+      %0 = transform.btfl.find_descendants "btfl.schedule" in %arg1 : (!transform.op<"btfl.block">) -> !transform.op<"btfl.schedule">
+      transform.btfl.tile_down %0 dim 0 by factor symbolic<R * D> scheduler hwparallel tsym symbolic<r*d> : !transform.op<"btfl.schedule">
+      transform.btfl.simplify_schedule %0
+    }
+```
+This will create an explicit loop for the parallel `R*D` part.
+
+
+Now IIUC, the remaining schedules represent 1-DPU only parts of the code. 
 
 

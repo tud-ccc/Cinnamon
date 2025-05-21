@@ -62,10 +62,11 @@ module {
         affine.store %2, %arg2[0] : memref<1xf32>
       }
     }
-    transform.sequence  failures(suppress) {
+    transform.sequence failures(propagate) {
     ^bb0(%arg1: !transform.op<"btfl.block">):
       %0 = transform.btfl.find_descendants "btfl.schedule" in %arg1 : (!transform.op<"btfl.block">) -> !transform.op<"btfl.schedule">
-      transform.btfl.tile_down %0 dim 0 by factor symbolic<R * D> : !transform.op<"btfl.schedule">
+      transform.btfl.tile_down %0 dim 0 by factor symbolic<R * D> scheduler hwparallel tsym symbolic<r*d> : !transform.op<"btfl.schedule">
+      transform.btfl.simplify_schedule %0
     }
   }
 }
