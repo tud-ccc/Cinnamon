@@ -79,6 +79,8 @@ schedule<(red M) = (1) to (1048576 | (R * D))>
 ```mlir
     %upmem = tilefirst.accelerator #upmem.array<ranks(r : R in 1 to 8), dpus(d : D in 1 to 64), tasklets(t : T in 1 to 16)>
 ```
+- Place all buffers that are inside the schedule ops on `wram(r, d)`, and the partial result buffers that were produced by the last transformation step, and their reduction.
+- 
 
 
 

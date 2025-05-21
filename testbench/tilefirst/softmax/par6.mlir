@@ -9,14 +9,14 @@ module {
     %buf_0 = empty_buf() : <(R * D), f32, host>
     fill_buf %buf_0, 0xFF800000 : f32 : <(R * D), f32, host>
     tile[r * d] hwparallel factor symbolic<R * D> ins(%tile = %arg0 sdim 0 : <1048576xf32, host>) outs(%tile_2 = %buf_0 sdim 0 : <(R * D), f32, host> rankreduce) {
-      %buf_3 = empty_buf() : <(T), f32, host>
-      fill_buf %buf_3, 0xFF800000 : f32 : <(T), f32, host>
+      %buf_3 = empty_buf() : <(T), f32, wram(r,d)>
+      fill_buf %buf_3, 0xFF800000 : f32 : <(T), f32, wram(r,d)>
       schedule<(red N) = (T * Q) to (1048576 | (R * D))>
-              ins(%buf_4 = %tile : <(N), f32> to host)
-              outs(%buf_5 = %buf_3 : <(T), f32> to host) {
-        tile #threads.each factor symbolic<T> ins(%tile_6 = %buf_4 sdim 0 : <(T * Q), f32>) outs(%tile_7 = %buf_5 sdim 0 : <(T), f32> rankreduce) {
-          tile factor symbolic<Q> ins(%tile_8 = %tile_6 sdim 0 : <(Q), f32>) {
-            kernel "max" ins(%arg1 = %tile_8 : <1xf32>) outs(%arg2 = %tile_7 : <f32>) {
+              ins(%buf_4 = %tile : <(N), f32, wram(r, d)> to host)
+              outs(%buf_5 = %buf_3 : <(T), f32, wram(r, d)>) {
+        tile #threads.each factor symbolic<T> ins(%tile_6 = %buf_4 sdim 0 : <(T * Q), f32, wram(r, d)>) outs(%tile_7 = %buf_5 sdim 0 : <(T), f32, wram(r, d)> rankreduce) {
+          tile factor symbolic<Q> ins(%tile_8 = %tile_6 sdim 0 : <(Q), f32, wram(r, d)>) {
+            kernel "max" ins(%arg1 = %tile_8 : <1xf32, wram(r, d)>) outs(%arg2 = %tile_7 : <f32, wram(r, d)>) {
               %0 = affine.load %arg1[0] : memref<1xf32>
               %1 = affine.load %arg2[] : memref<f32>
               %2 = arith.maximumf %0, %1 : f32
@@ -26,10 +26,10 @@ module {
         }
       }
       schedule<(red N) = (T) to (T)>
-              ins(%buf_4 = %buf_3 : <(N), f32, host>)
-              outs(%buf_5 = %tile_2 : <f32, host>) {
-        tile reduction factor symbolic<T> ins(%tile_6 = %buf_4 sdim 0 : <(T), f32, host>) {
-          kernel "max" ins(%arg1 = %tile_6 : <1xf32, host>) outs(%arg2 = %buf_5 : <f32, host>) {
+              ins(%buf_4 = %buf_3 : <(N), f32, wram(r, d)>)
+              outs(%buf_5 = %tile_2 : <f32, wram(r, d)> to host) {
+        tile reduction factor symbolic<T> ins(%tile_6 = %buf_4 sdim 0 : <(T), f32, wram(r, d)>) {
+          kernel "max" ins(%arg1 = %tile_6 : <1xf32, wram(r, d)>) outs(%arg2 = %buf_5 : <f32, wram(r, d)>) {
             %0 = affine.load %arg1[0] : memref<1xf32>
             %1 = affine.load %arg2[] : memref<f32>
             %2 = arith.maximumf %0, %1 : f32
@@ -50,14 +50,14 @@ module {
     fill_buf %buf_1, 0.000000e+00 : f32 : <f32, host>
     fill_buf %buf_0, 0.000000e+00 : f32 : <(R * D), f32, host>
     tile[r * d] hwparallel factor symbolic<R * D> outs(%tile = %arg0 sdim 0 : <1048576xf32, host>, %tile_2 = %buf_0 sdim 0 : <(R * D), f32, host> rankreduce) {
-      %buf_3 = empty_buf() : <(T), f32, host>
-      fill_buf %buf_3, 0.000000e+00 : f32 : <(T), f32, host>
+      %buf_3 = empty_buf() : <(T), f32, wram(r, d)>
+      fill_buf %buf_3, 0.000000e+00 : f32 : <(T), f32, wram(r, d)>
       schedule<(red M) = (T * Q) to (1048576 | (R * D))>
-              ins(%buf_4 = %buf : <f32> to host)
-              outs(%buf_5 = %tile : <(M), f32> to host, %buf_6 = %buf_3 : <(T), f32> to host) {
-        tile #threads.each factor symbolic<T> outs(%tile_7 = %buf_5 sdim 0 : <(T * Q), f32>, %tile_8 = %buf_6 sdim 0 : <(T), f32> rankreduce) {
-          tile factor symbolic<Q> outs(%tile_9 = %tile_7 sdim 0 : <(Q), f32>) {
-            kernel "sub+exp+sum" ins(%arg1 = %buf_4 : <f32>) outs(%arg2 = %tile_9 : <1xf32>, %arg3 = %tile_8 : <f32>) {
+              ins(%buf_4 = %buf : <f32, wram(r, d)> to host)
+              outs(%buf_5 = %tile : <(M), f32, wram(r, d)> to host, %buf_6 = %buf_3 : <(T), f32, wram(r, d)>) {
+        tile #threads.each factor symbolic<T> outs(%tile_7 = %buf_5 sdim 0 : <(T * Q), f32, wram(r, d)>, %tile_8 = %buf_6 sdim 0 : <(T), f32, wram(r, d)> rankreduce) {
+          tile factor symbolic<Q> outs(%tile_9 = %tile_7 sdim 0 : <(Q), f32, wram(r, d)>) {
+            kernel "sub+exp+sum" ins(%arg1 = %buf_4 : <f32, wram(r, d)>) outs(%arg2 = %tile_9 : <1xf32, wram(r, d)>, %arg3 = %tile_8 : <f32, wram(r, d)>) {
               %0 = affine.load %arg2[0] : memref<1xf32>
               %1 = affine.load %arg1[] : memref<f32>
               %2 = arith.subf %0, %1 : f32
@@ -71,10 +71,10 @@ module {
         }
       }
       schedule<(red M) = (T) to (T)>
-              ins(%buf_4 = %buf_3 : <(M), f32, host>)
-              outs(%buf_5 = %tile_2 : <f32, host>) {
-        tile reduction factor symbolic<T> ins(%tile_6 = %buf_4 sdim 0 : <(T), f32, host>) {
-          kernel "sum" ins(%arg1 = %tile_6 : <1xf32, host>) outs(%arg2 = %buf_5 : <f32, host>) {
+              ins(%buf_4 = %buf_3 : <(M), f32, wram(r, d)>)
+              outs(%buf_5 = %tile_2 : <f32, wram(r, d)> to host) {
+        tile reduction factor symbolic<T> ins(%tile_6 = %buf_4 sdim 0 : <(T), f32, wram(r, d)>) {
+          kernel "sum" ins(%arg1 = %tile_6 : <1xf32, wram(r, d)>) outs(%arg2 = %buf_5 : <f32, wram(r, d)>) {
             %0 = affine.load %arg1[0] : memref<1xf32>
             %1 = affine.load %arg2[] : memref<f32>
             %2 = arith.addf %0, %1 : f32
@@ -93,11 +93,11 @@ module {
     }
     tile[r * d] hwparallel factor symbolic<R * D> outs(%tile = %arg0 sdim 0 : <1048576xf32, host>) {
       schedule<(par M) = (T * Q) to (1048576 | (R * D))>
-              ins(%buf_2 = %buf_1 : <f32> to host)
-              outs(%buf_3 = %tile : <(M), f32> to host) {
-        tile #threads.each factor symbolic<T> outs(%tile_4 = %buf_3 sdim 0 : <(T * Q), f32>) {
-          tile parallel factor symbolic<Q> outs(%tile_5 = %tile_4 sdim 0 : <(Q), f32>) {
-            kernel "div" ins(%arg1 = %buf_2 : <f32>) outs(%arg2 = %tile_5 : <1xf32>) {
+              ins(%buf_2 = %buf_1 : <f32, wram(r, d)> to host)
+              outs(%buf_3 = %tile : <(M), f32, wram(r, d)> to host) {
+        tile #threads.each factor symbolic<T> outs(%tile_4 = %buf_3 sdim 0 : <(T * Q), f32, wram(r, d)>) {
+          tile parallel factor symbolic<Q> outs(%tile_5 = %tile_4 sdim 0 : <(Q), f32, wram(r, d)>) {
+            kernel "div" ins(%arg1 = %buf_2 : <f32, wram(r, d)>) outs(%arg2 = %tile_5 : <1xf32, wram(r, d)>) {
               %0 = affine.load %arg2[0] : memref<1xf32>
               %1 = affine.load %arg1[] : memref<f32>
               %2 = arith.divf %0, %1 : f32
