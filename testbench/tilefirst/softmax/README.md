@@ -72,9 +72,14 @@ schedule<(red M) = (1) to (1048576 | (R * D))>
  just cinm-opt par5.mlir --btfl-apply-transforms > par6.mlir
 ```
 6. The resulting program inserted the wrong accelerator specification, but it has the shape we want.
-- Copy 
-
-
+- Fix the accelerator spec
+```mlir
+    %upmem = tilefirst.accelerator #upmem.array<ranks(r : R1 = 1), dpus(d : D1 = 1), tasklets(t : T = 8)>
+```
+to 
+```mlir
+    %upmem = tilefirst.accelerator #upmem.array<ranks(r : R = 1), dpus(d : D = 1), tasklets(t : T = 8)>
+```
 
 
 
