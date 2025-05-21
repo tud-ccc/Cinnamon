@@ -4,6 +4,31 @@
 module {
   btfl.block @softmax_initial outs(%arg0 : <1048576xf32, host>)  platform #upmem {
     %upmem = tilefirst.accelerator #upmem.array<ranks(r : R = 4), dpus(d : D = 64), tasklets(t : T = 16)>
+
+    %buf = empty_buf() : <f32, host>
+    fill_buf %buf, 0xFF800000 : f32 : <f32, host>
+    %part0 = empty_buf() : <(R * D), f32, host>
+    fill_buf %part0, 0xFF800000 : f32 : <(R * D), f32, host>
+    tile hwparallel factor symbolic<R * D> ins(%a = %arg0 sdim 0: <1048576xf32, host>) outs(%o = %part0 sdim 0 : <(R * D), f32, host> rankreduce) {
+
+      %bufx = empty_buf() : <(1048576 | (R * D)), f32, mram(r, d)>
+      transfer %a into %bufx : <(1048576 | (R * D)), f32, host> to mram(r, d)
+
+      %bufx = empty_buf() : <(1048576 | (R * D)), f32, mram(r, d)>
+
+      schedule<(red N) = (1) to (1048576 | (R * D))>
+              ins(%buf_3 = %a : <(N), f32, wram(r, d)> to host)
+              outs(%buf_4 = %part2 : <(T), f32, wram(r, d)> to host) {
+        kernel "max" ins(%arg1 = %tile_6 : <1xf32, wram(r,d)>) outs(%arg2 = %tile_5 : <f32, wram(r,d)>) {
+          %0 = affine.load %arg1[0] : memref<1xf32>
+          %1 = affine.load %arg2[] : memref<f32>
+          %2 = arith.maximumf %0, %1 : f32
+          affine.store %2, %arg2[] : memref<f32>
+        }
+      }
+    }
+
+
     %buf = empty_buf() : <f32, host>
     fill_buf %buf, 0xFF800000 : f32 : <f32, host>
     %buf_0 = empty_buf() : <(P), f32, host>
