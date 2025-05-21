@@ -7,22 +7,7 @@ In order to compare with CINM I partially generate and manually edit some files 
 ```shell
 just cinm-opt source.mlir --btfl-apply-transforms > par.mlir
 ```
-2. Copy `par.mlir` to `par1.mlir`. Modify it manually: 
-- Add accelerator def
-```mlir
-  %upmem = tilefirst.accelerator #upmem.array<ranks(r : R = 4), dpus(d : D = 64), tasklets(t : T = 16)>
-```
-- Place intermediate buffers and reduction loops on host.
-- Place buffers inside other schedule blocks in `wram(r, d)`
-- Change the transform program to 
-```mlir
-
-```
 2. Copy `par.mlir` to `par2.mlir`. Modify it manually:
-- Add accelerator def
-```mlir
-  %upmem = tilefirst.accelerator #upmem.array<ranks(r : R = 4), dpus(d : D = 64), tasklets(t : T = 16)>
-```
 - Parallelize the reductions `schedule` using the following scheme:
   - Split the `red R` dimension into a `par L, red R` couple, with kdims `(1,1)` and pdims `(R*D, 1048576 | (R*D))`
   - Add another schedule with no dimensions, that reduces the remaining `(R*D)` elements.
@@ -73,19 +58,23 @@ schedule<(red M) = (1) to (1048576 | (R * D))>
   }
 }
 ```
-Add the `rankreduce` keyword on the tile spec for the `(R*D)` partial buffers
+- Add the `rankreduce` keyword on the tile spec for the `(R*D)` partial buffers
 (those that have a schedule inside of them).
-
-Replace the transform program with:
+- Replace the transform program with:
 ```mlir
   transform.sequence  failures(propagate) {
     ^bb0(%arg1: !transform.op<"btfl.block">):
       transform.btfl.schedule_block %arg1
   }
 ```
+- Execute the program:
+```shell
+ just cinm-opt par5.mlir --btfl-apply-transforms > par6.mlir
+```
+6. The resulting program inserted the wrong accelerator specification, but it has the shape we want.
+- Copy 
 
 
 
-Now IIUC, the remaining schedules represent 1-DPU only parts of the code. 
 
 

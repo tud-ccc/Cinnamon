@@ -3,7 +3,6 @@
 #upmem = #upmem.platform<levels = [#mram, #wram], dimensions = (8 x 64 x 16)>
 module {
   btfl.block @softmax_initial outs(%arg0 : <1048576xf32, host>)  platform #upmem {
-    %upmem = tilefirst.accelerator #upmem.array<ranks(r : R = 4), dpus(d : D = 64), tasklets(t : T = 16)>
     %buf = empty_buf() : <f32, host>
     fill_buf %buf, 0xFF800000 : f32 : <f32, host>
     %buf_0 = empty_buf() : <(R * D), f32, host>
