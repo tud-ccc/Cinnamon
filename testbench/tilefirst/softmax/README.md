@@ -136,3 +136,9 @@ schedule<(red M) = (1) to (1048576 | (R * D))>
  just cinm-opt par8.mlir --btfl-apply-transforms > par9.mlir
 ```
 
+## Generic program 
+
+par8_generic is a fork of the above flow. Instead of solving `R`, `D` and `MR` greedily, we keep them in the program to instantiate them later to different combinations. The program constraints impose that `R*D*MR=128`, so we can substitute `MR` with `128/(R*D)`. The resulting generic program can be instantiated to different values of `R` and `D` to see different performance profiles.
+```shell
+ just cinm-opt par8_generic.mlir --btfl-apply-transforms > par9_generic.mlir
+```

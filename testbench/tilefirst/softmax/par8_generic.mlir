@@ -141,15 +141,12 @@ module {
     }
     transform.sequence  failures(propagate) {
     ^bb0(%arg1: !transform.op<"btfl.block">):
-      transform.btfl.block_solve_greedy %arg1 variables [D, MR, R] schedule_eq_constraints
-
+      transform.btfl.interpret_variables %arg1 variables [MR] = [128 | (R * D)]
       %0 = transform.btfl.find_descendants "btfl.schedule" in %arg1 : (!transform.op<"btfl.block">) -> !transform.op<"btfl.schedule">
       sequence %0 : !transform.op<"btfl.schedule"> failures(propagate) {
       ^bb0(%arg2: !transform.op<"btfl.schedule">):
         transform.btfl.simplify_schedule %arg2 unwrap empty
       }
-      transform.btfl.eliminate_transfers %arg1
-      transform.btfl.buffer_reuse_analysis %arg1
     }
   }
 }

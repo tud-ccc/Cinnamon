@@ -3,17 +3,17 @@
 #upmem = #upmem.platform<levels = [#mram, #wram], dimensions = (8 x 64 x 16)>
 module {
   btfl.block @softmax_initial outs(%arg0 : <1048576xf32, host>)  platform #upmem {
-    %upmem = tilefirst.accelerator #upmem.array<ranks(r : R = 1), dpus(d : D = 64), tasklets(t : T = 8)>
+    %upmem = tilefirst.accelerator #upmem.array<ranks(r : R in 1 to 8), dpus(d : D in 1 to 64), tasklets(t : T = 8)>
     %buf = empty_buf() : <f32, host>
     fill_buf %buf, 0xFF800000 : f32 : <f32, host>
-    %buf_0 = empty_buf() : <64xf32, host>
-    fill_buf %buf_0, 0xFF800000 : f32 : <64xf32, host>
-    tile[r * d] hwparallel factor 64 ins(%tile = %arg0 sdim 0 : <1048576xf32, host>) outs(%tile_2 = %buf_0 sdim 0 : <64xf32, host> rankreduce) {
+    %buf_0 = empty_buf() : <(R * D), f32, host>
+    fill_buf %buf_0, 0xFF800000 : f32 : <(R * D), f32, host>
+    tile[r * d] hwparallel factor symbolic<R * D> ins(%tile = %arg0 sdim 0 : <1048576xf32, host>) outs(%tile_2 = %buf_0 sdim 0 : <(R * D), f32, host> rankreduce) {
       %buf_3 = empty_buf() : <8xf32, wram(r, d)>
       fill_buf %buf_3, 0xFF800000 : f32 : <8xf32, wram(r, d)>
-      %buf_4 = empty_buf() : <16384xf32, mram(r, d)>
-      transfer %tile into %buf_4 : <16384xf32, host> to mram(r, d)
-      tile factor 2 ins(%tile_7 = %buf_4 sdim 0 : <16384xf32, mram(r, d)>) {
+      %buf_4 = empty_buf() : <(1048576 | (R * D)), f32, mram(r, d)>
+      transfer %tile into %buf_4 : <(1048576 | (R * D)), f32, host> to mram(r, d)
+      tile factor symbolic<128 | (R * D)> ins(%tile_7 = %buf_4 sdim 0 : <(1048576 | (R * D)), f32, mram(r, d)>) {
         %buf_8 = empty_buf() : <8192xf32, wram(r, d)>
         transfer %tile_7 into %buf_8 : <8192xf32, mram(r, d)> to wram(r, d)
         tile #threads.each factor 8 ins(%tile_9 = %buf_8 sdim 0 : <8192xf32, wram(r, d)>) outs(%tile_10 = %buf_3 sdim 0 : <8xf32, wram(r, d)> rankreduce) {
@@ -41,7 +41,7 @@ module {
       transfer %buf_5 into %buf_6 : <f32, wram(r, d)> to mram(r, d)
       transfer %buf_6 into %tile_2 : <f32, mram(r, d)> to host
     }
-    tile reduction factor 64 ins(%tile = %buf_0 sdim 0 : <64xf32, host>) {
+    tile reduction factor symbolic<R * D> ins(%tile = %buf_0 sdim 0 : <(R * D), f32, host>) {
       kernel "max" ins(%arg1 = %tile : <1xf32, host>) outs(%arg2 = %buf : <f32, host>) {
         %0 = affine.load %arg1[0] : memref<1xf32>
         %1 = affine.load %arg2[] : memref<f32>
@@ -51,15 +51,15 @@ module {
     }
     %buf_1 = empty_buf() : <f32, host>
     fill_buf %buf_1, 0.000000e+00 : f32 : <f32, host>
-    fill_buf %buf_0, 0.000000e+00 : f32 : <64xf32, host>
-    tile[r * d] hwparallel factor 64 outs(%tile = %arg0 sdim 0 : <1048576xf32, host>, %tile_2 = %buf_0 sdim 0 : <64xf32, host> rankreduce) {
+    fill_buf %buf_0, 0.000000e+00 : f32 : <(R * D), f32, host>
+    tile[r * d] hwparallel factor symbolic<R * D> outs(%tile = %arg0 sdim 0 : <1048576xf32, host>, %tile_2 = %buf_0 sdim 0 : <(R * D), f32, host> rankreduce) {
       %buf_3 = empty_buf() : <8xf32, wram(r, d)>
       fill_buf %buf_3, 0.000000e+00 : f32 : <8xf32, wram(r, d)>
       %buf_4 = empty_buf() : <f32, mram(r, d)>
-      %buf_5 = empty_buf() : <16384xf32, mram(r, d)>
+      %buf_5 = empty_buf() : <(1048576 | (R * D)), f32, mram(r, d)>
       transfer %buf into %buf_4 : <f32, host> to mram(r, d)
-      transfer %tile into %buf_5 : <16384xf32, host> to mram(r, d)
-      tile factor 2 outs(%tile_8 = %buf_5 sdim 0 : <16384xf32, mram(r, d)>) {
+      transfer %tile into %buf_5 : <(1048576 | (R * D)), f32, host> to mram(r, d)
+      tile factor symbolic<128 | (R * D)> outs(%tile_8 = %buf_5 sdim 0 : <(1048576 | (R * D)), f32, mram(r, d)>) {
         %buf_9 = empty_buf() : <f32, wram(r, d)>
         %buf_10 = empty_buf() : <8192xf32, wram(r, d)>
         transfer %buf_4 into %buf_9 : <f32, mram(r, d)> to wram(r, d)
@@ -80,7 +80,7 @@ module {
         }
         transfer %buf_10 into %tile_8 : <8192xf32, wram(r, d)> to mram(r, d)
       }
-      transfer %buf_5 into %tile : <16384xf32, mram(r, d)> to host
+      transfer %buf_5 into %tile : <(1048576 | (R * D)), f32, mram(r, d)> to host
       %buf_6 = empty_buf() : <f32, wram(r, d)>
       %buf_7 = empty_buf() : <f32, mram(r, d)>
       fill_buf %buf_7, 0.000000e+00 : f32 : <f32, mram(r, d)>
@@ -95,7 +95,7 @@ module {
       transfer %buf_6 into %buf_7 : <f32, wram(r, d)> to mram(r, d)
       transfer %buf_7 into %tile_2 : <f32, mram(r, d)> to host
     }
-    tile reduction factor 64 ins(%tile = %buf_0 sdim 0 : <64xf32, host>) {
+    tile reduction factor symbolic<R * D> ins(%tile = %buf_0 sdim 0 : <(R * D), f32, host>) {
       kernel "sum" ins(%arg1 = %tile : <1xf32, host>) outs(%arg2 = %buf_1 : <f32, host>) {
         %0 = affine.load %arg1[0] : memref<1xf32>
         %1 = affine.load %arg2[] : memref<f32>
@@ -103,12 +103,12 @@ module {
         affine.store %2, %arg2[] : memref<f32>
       }
     }
-    tile[r * d] hwparallel factor 64 outs(%tile = %arg0 sdim 0 : <1048576xf32, host>) {
+    tile[r * d] hwparallel factor symbolic<R * D> outs(%tile = %arg0 sdim 0 : <1048576xf32, host>) {
       %buf_2 = empty_buf() : <f32, mram(r, d)>
-      %buf_3 = empty_buf() : <16384xf32, mram(r, d)>
+      %buf_3 = empty_buf() : <(1048576 | (R * D)), f32, mram(r, d)>
       transfer %buf_1 into %buf_2 : <f32, host> to mram(r, d)
-      transfer %tile into %buf_3 : <16384xf32, host> to mram(r, d)
-      tile parallel factor 2 outs(%tile_4 = %buf_3 sdim 0 : <16384xf32, mram(r, d)>) {
+      transfer %tile into %buf_3 : <(1048576 | (R * D)), f32, host> to mram(r, d)
+      tile parallel factor symbolic<128 | (R * D)> outs(%tile_4 = %buf_3 sdim 0 : <(1048576 | (R * D)), f32, mram(r, d)>) {
         %buf_5 = empty_buf() : <f32, wram(r, d)>
         %buf_6 = empty_buf() : <8192xf32, wram(r, d)>
         transfer %buf_2 into %buf_5 : <f32, mram(r, d)> to wram(r, d)
@@ -125,18 +125,16 @@ module {
         }
         transfer %buf_6 into %tile_4 : <8192xf32, wram(r, d)> to mram(r, d)
       }
-      transfer %buf_3 into %tile : <16384xf32, mram(r, d)> to host
+      transfer %buf_3 into %tile : <(1048576 | (R * D)), f32, mram(r, d)> to host
     }
     transform.sequence  failures(propagate) {
     ^bb0(%arg1: !transform.op<"btfl.block">):
-      transform.btfl.block_solve_greedy %arg1 variables [D, MR, R] schedule_eq_constraints
+      transform.btfl.interpret_variables %arg1 variables [MR] = [128 | (R * D)]
       %0 = transform.btfl.find_descendants "btfl.schedule" in %arg1 : (!transform.op<"btfl.block">) -> !transform.op<"btfl.schedule">
       sequence %0 : !transform.op<"btfl.schedule"> failures(propagate) {
       ^bb0(%arg2: !transform.op<"btfl.schedule">):
         transform.btfl.simplify_schedule %arg2 unwrap empty
       }
-      transform.btfl.eliminate_transfers %arg1
-      transform.btfl.buffer_reuse_analysis %arg1
     }
   }
 }
