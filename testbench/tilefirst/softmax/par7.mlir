@@ -113,7 +113,7 @@ module {
       transform.sequence %0 : !transform.op<"btfl.schedule"> failures(suppress) {
       ^bb0(%arg2: !transform.op<"btfl.schedule">):
         transform.btfl.transfer_block_args %arg2 from mram(r,d) to wram(r,d)
-        transform.btfl.coarsen_up %arg2 dim 0 by factor symbolic<M>
+        transform.btfl.coarsen_up %arg2 dim 0 by factor symbolic<MR>
       }
       transform.sequence %0 : !transform.op<"btfl.schedule"> failures(suppress) {
       ^bb0(%arg2: !transform.op<"btfl.schedule">):
