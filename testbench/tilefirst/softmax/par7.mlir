@@ -109,7 +109,18 @@ module {
     }
     transform.sequence  failures(propagate) {
     ^bb0(%arg1: !transform.op<"btfl.block">):
-      transform.btfl.block_solve_greedy %arg1 variables [T, Q]
+      %0 = transform.btfl.find_descendants "btfl.schedule" in %arg1 : (!transform.op<"btfl.block">) -> !transform.op<"btfl.schedule">
+      transform.sequence %0 : !transform.op<"btfl.schedule"> failures(suppress) {
+      ^bb0(%arg2: !transform.op<"btfl.schedule">):
+        transform.btfl.transfer_block_args %arg2 from mram(r,d) to wram(r,d)
+        transform.btfl.coarsen_up %arg2 dim 0 by factor symbolic<M>
+      }
+      transform.sequence %0 : !transform.op<"btfl.schedule"> failures(suppress) {
+      ^bb0(%arg2: !transform.op<"btfl.schedule">):
+        transform.btfl.transfer_block_args %arg2 from host to mram(r,d)
+        transform.btfl.simplify_schedule %arg2 unwrap empty
+      }
+      transform.btfl.eliminate_transfers %arg1
     }
   }
 }

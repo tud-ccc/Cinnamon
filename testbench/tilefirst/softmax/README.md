@@ -96,6 +96,28 @@ schedule<(red M) = (1) to (1048576 | (R * D))>
 ```shell
  just cinm-opt par6.mlir --btfl-apply-transforms > par7.mlir
 ```
-
+7. In `par7.mlir`, replace the transform program:
+```mlir
+  transform.sequence  failures(propagate) {
+    ^bb0(%arg1: !transform.op<"btfl.block">):
+      %0 = transform.btfl.find_descendants "btfl.schedule" in %arg1 : (!transform.op<"btfl.block">) -> !transform.op<"btfl.schedule">
+      sequence %0 : !transform.op<"btfl.schedule"> failures(suppress) {
+      ^bb0(%arg2: !transform.op<"btfl.schedule">):
+        transform.btfl.transfer_block_args %arg2 from mram(r, d) to wram(r, d)
+        transform.btfl.coarsen_up %arg2 dim 0 by factor symbolic<M>
+      }
+      sequence %0 : !transform.op<"btfl.schedule"> failures(suppress) {
+      ^bb0(%arg2: !transform.op<"btfl.schedule">):
+        transform.btfl.transfer_block_args %arg2 from host to mram(r, d)
+        transform.btfl.simplify_schedule %arg2 unwrap empty
+      }
+      transform.btfl.eliminate_transfers %arg1
+    }
+```
+- Run it
+```shell
+ just cinm-opt par7.mlir --btfl-apply-transforms > par8.mlir
+```
+8.
 
 
