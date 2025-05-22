@@ -21,7 +21,7 @@ module {
 
       transfer %tile into %buf_4 : <(1048576 | (R * D)), f32, host> to mram(r, d)
 
-      scope(%upmem) ins(%b4 = %buf_4 : <(1048576 | (R * D)), f32, mram(r, d)>)
+      scope(%upmem) attributes{threads.count=8} ins(%b4 = %buf_4 : <(1048576 | (R * D)), f32, mram(r, d)>)
                     outs(%b6 = %buf_6 : <f32, mram(r,d)>) {
         %buf_3 = empty_buf() : <8xf32, wram(r, d)>
         fill_buf %buf_3, 0xFF800000 : f32 : <8xf32, wram(r, d)>
@@ -74,7 +74,7 @@ module {
              ) {
 
       transfer %buf into %buf_6 : <f32, host> to mram(r, d)
-      scope(%upmem) ins(%b44 = %buf_6 : <f32, mram(r,d)>)
+      scope(%upmem) attributes{threads.count=8}ins(%b44 = %buf_6 : <f32, mram(r,d)>)
                     outs(
                       %b55 = %buf_4 : <(1048576 | (R * D)), f32, mram(r, d)>,
                       %b77 = %buf_7 : <f32, mram(r,d)>) {
@@ -129,7 +129,7 @@ module {
                                                        %buf_4 = %mirror sdim 0 : <1048576xf32, mram(r, d)>,
                                                        %buf_2 = %partial_dist_2 sdim 0 : <(R*D), f32, mram(r,d)> rankreduce) {
       transfer %buf_1 into %buf_2 : <f32, host> to mram(r, d)
-      scope(%upmem) ins(%b22 = %buf_2 : <f32, mram(r,d)>)
+      scope(%upmem) attributes{threads.count=8}ins(%b22 = %buf_2 : <f32, mram(r,d)>)
                     outs(%b33 = %buf_4 : <(1048576 | (R * D)), f32, mram(r, d)>) {
         tile parallel factor symbolic<128 | (R * D)> outs(%tile_4 = %b33 sdim 0 : <(1048576 | (R * D)), f32, mram(r, d)>) {
           %buf_5 = empty_buf() : <f32, wram(r, d)>
@@ -153,12 +153,8 @@ module {
     }
     transform.sequence  failures(propagate) {
     ^bb0(%arg1: !transform.op<"btfl.block">):
-      transform.btfl.interpret_variables %arg1 variables [MR] = [128 | (R * D)]
-      %0 = transform.btfl.find_descendants "btfl.schedule" in %arg1 : (!transform.op<"btfl.block">) -> !transform.op<"btfl.schedule">
-      sequence %0 : !transform.op<"btfl.schedule"> failures(propagate) {
-      ^bb0(%arg2: !transform.op<"btfl.schedule">):
-        transform.btfl.simplify_schedule %arg2 unwrap empty
-      }
+      transform.btfl.lower.prepare_thread_assignment %arg1
+      transform.btfl.lower.do_threads_assignment %arg1
     }
   }
 }

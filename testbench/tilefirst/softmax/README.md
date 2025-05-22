@@ -143,3 +143,7 @@ par8_generic is a fork of the above flow. Instead of solving `R`, `D` and `MR` g
  just cinm-opt par8_generic.mlir --btfl-apply-transforms > par9_generic.mlir
 ```
 - Manually create scopes inside the `tile[r*d]` loops.
+- Copy to par10.generic
+- In par10_generic, I did manual buffer reuse analysis. This causes large program transformations in order to reuse the buffer that contains host tiles. But eventually this could be automated and integrated in the flow.
+- Run the transform program to perform thread assignment.
+- 
