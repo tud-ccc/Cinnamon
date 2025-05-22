@@ -68,6 +68,11 @@ schedule<(red M) = (1) to (1048576 | (R * D))>
            block by symbolic<Q>
            parallelize by symbolic<T>
            with par scheduler #threads.each
+      %0 = transform.btfl.find_descendants "btfl.schedule" in %arg1 : (!transform.op<"btfl.block">) -> !transform.op<"btfl.schedule">
+      transform.sequence %0 : !transform.op<"btfl.schedule"> failures(suppress) {
+      ^bb0(%arg2: !transform.op<"btfl.schedule">):
+        transform.btfl.simplify_schedule %arg2 unwrap empty
+      }
   }
 ```
 - Execute the program:
@@ -80,7 +85,17 @@ schedule<(red M) = (1) to (1048576 | (R * D))>
     %upmem = tilefirst.accelerator #upmem.array<ranks(r : R in 1 to 8), dpus(d : D in 1 to 64), tasklets(t : T in 1 to 16)>
 ```
 - Place all buffers that are inside the schedule ops on `wram(r, d)`, and the partial result buffers that were produced by the last transformation step, and their reduction.
-- 
+- Replace the transform program:
+```mlir
+    transform.sequence  failures(propagate) {
+    ^bb0(%arg1: !transform.op<"btfl.block">):
+      transform.btfl.block_solve_greedy %arg1 variables [T, Q]
+    }
+```
+- Run the transform program:
+```shell
+ just cinm-opt par6.mlir --btfl-apply-transforms > par7.mlir
+```
 
 
 

@@ -80,6 +80,11 @@ module {
            block by symbolic<Q>
            parallelize by symbolic<T>
            with par scheduler #threads.each
+      %0 = transform.btfl.find_descendants "btfl.schedule" in %arg1 : (!transform.op<"btfl.block">) -> !transform.op<"btfl.schedule">
+      transform.sequence %0 : !transform.op<"btfl.schedule"> failures(suppress) {
+      ^bb0(%arg2: !transform.op<"btfl.schedule">):
+        transform.btfl.simplify_schedule %arg2 unwrap empty
+      }
     }
   }
 }
