@@ -142,3 +142,4 @@ par8_generic is a fork of the above flow. Instead of solving `R`, `D` and `MR` g
 ```shell
  just cinm-opt par8_generic.mlir --btfl-apply-transforms > par9_generic.mlir
 ```
+- Manually create scopes inside the `tile[r*d]` loops.
