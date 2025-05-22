@@ -146,4 +146,9 @@ par8_generic is a fork of the above flow. Instead of solving `R`, `D` and `MR` g
 - Copy to par10.generic
 - In par10_generic, I did manual buffer reuse analysis. This causes large program transformations in order to reuse the buffer that contains host tiles. But eventually this could be automated and integrated in the flow.
 - Run the transform program to perform thread assignment.
-- 
+
+To perform the rest of the flow (lowering to upmem+affine), you need concrete values for `R` and `D`.
+
+We also need automatic generation of an automaton for the upmem program...
+
+

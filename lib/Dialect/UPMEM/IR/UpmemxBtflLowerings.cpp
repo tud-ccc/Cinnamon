@@ -1,7 +1,9 @@
 
 
+#include <cstdint>
 #include <llvm/ADT/ArrayRef.h>
 #include <llvm/ADT/MapVector.h>
+#include <llvm/ADT/STLExtras.h>
 #include <llvm/ADT/SmallString.h>
 #include <llvm/ADT/SmallVector.h>
 #include <llvm/ADT/StringRef.h>
@@ -11,6 +13,7 @@
 #include <llvm/Support/LogicalResult.h>
 #include <mlir/Dialect/Arith/IR/Arith.h>
 #include <mlir/Dialect/MemRef/IR/MemRef.h>
+#include <mlir/Dialect/SCF/IR/SCF.h>
 #include <mlir/Dialect/Transform/Interfaces/TransformInterfaces.h>
 #include <mlir/Dialect/Utils/IndexingUtils.h>
 #include <mlir/IR/AffineExpr.h>
@@ -32,7 +35,9 @@
 #include <mlir/IR/SymbolTable.h>
 #include <mlir/Transforms/InliningUtils.h>
 
+#include <optional>
 #include <tilefirst-mlir/Dialect/Btfl/IR/BtflInterfaces.h>
+#include <tilefirst-mlir/Dialect/Btfl/IR/BtflIrTransforms.h>
 #include <tilefirst-mlir/Dialect/Btfl/IR/BtflOps.h>
 #include <tilefirst-mlir/Dialect/Btfl/IR/BtflTopDownLoweringContext.h>
 #include <tilefirst-mlir/Dialect/Threads/IR/ThreadsDialect.h>
@@ -126,25 +131,31 @@ DiagnosedSilenceableFailure UpmemAcceleratorAttr::materializeTransfer(
   return DiagnosedSilenceableFailure::success();
 }
 
-static DiagnosedSilenceableFailure
-createBuffersInDpuProgram(btfl::TopDownLoweringContext &ctx,
-                          upmem::DpuProgramOp dpuProgram,
-                          btfl::KernelOp dpuBtflKernel, btfl::ScopeOp scope,
-                          llvm::SmallVectorImpl<Value> &kernelArgReplacements) {
+static DiagnosedSilenceableFailure createBuffersInDpuProgram(
+    btfl::TopDownLoweringContext &ctx, upmem::DpuProgramOp dpuProgram,
+    btfl::KernelOp dpuBtflKernel, btfl::ScopeOp scope,
+    IRMapping &oldBlockArgsToNewAllocs, int &nextNameNum) {
 
   auto &rewriter = ctx.rewriter;
   OpBuilder::InsertionGuard _(rewriter);
 
-  IRMapping oldBlockArgsToNewAllocs;
-
   rewriter.setInsertionPointToStart(&dpuProgram.getBody().front());
   llvm::SmallString<20> nextName("buf");
   const int resetLen = nextName.size();
-  int nextNameNum = 0;
   for (auto [outer, inner] : scope.getOperandsWithBlockArgs()) {
     if (!inner.hasOneUse() || *inner.getUsers().begin() != dpuBtflKernel)
       return emitSilenceableFailure(
           inner.getLoc(), "Should be used exactly once by the kernel");
+
+    auto kernelOpNum = inner.getUses().begin()->getOperandNumber();
+    auto memrefTy = llvm::cast<MemRefType>(
+        dpuBtflKernel.getKernelImplSig().getInput(kernelOpNum));
+
+    Value sourceValue = btfl::getSourceValue(outer);
+    if (SymbolOpInterface sym = ctx.getSymbolForOpt(sourceValue)) {
+      oldBlockArgsToNewAllocs.map(
+          dpuBtflKernel.getBufferBlockArgs()[kernelOpNum], sym->getResult(0));
+    }
 
     auto upmemMemspace = TRY_GET(upmem::getUpmemMemspace(
         outer.getLoc(),
@@ -152,13 +163,12 @@ createBuffersInDpuProgram(btfl::TopDownLoweringContext &ctx,
             .getMemorySpace(),
         false));
 
-    auto kernelOpNum = inner.getUses().begin()->getOperandNumber();
-    auto memrefTy = llvm::cast<MemRefType>(
-        dpuBtflKernel.getKernelImplSig().getInput(kernelOpNum));
-
     nextName.append(std::to_string(nextNameNum++));
     StringAttr symbolName = rewriter.getStringAttr(nextName);
     nextName.truncate(resetLen);
+
+    // todo don't generate alloc if the ctx already has a binding.
+    //  deduplicate bindings by their source value, not the actual tile.
 
     // MemRefType structuredType, bool isWram, StringRef sym_name = {}, bool
     // noinit = false);
@@ -170,11 +180,6 @@ createBuffersInDpuProgram(btfl::TopDownLoweringContext &ctx,
                                 alloc.getBuffer());
     // record this to be able to use it in transfers
     ctx.recordValueToSymbolMapping(outer, alloc);
-  }
-
-  // compute the replacement list for the block arguments
-  for (auto [outer, inner] : dpuBtflKernel.getOperandsWithBlockArgs()) {
-    kernelArgReplacements.push_back(oldBlockArgsToNewAllocs.lookup(inner));
   }
 
   return DiagnosedSilenceableFailure::success();
@@ -210,22 +215,35 @@ UpmemAcceleratorAttr::lowerAcceleratorOp(btfl::TopDownLoweringContext &ctx,
   // loops. This means we either need to lower all enclosing loops
   // simultaneously or we have to
 
-  if (!acc.getResult().hasOneUse())
-    return emitSilenceableFailure(
-        acc->getLoc(), "Not implemented, accelerator has multiple uses");
+  if (acc.getResult().use_empty())
+    return emitSilenceableFailure(acc->getLoc(),
+                                  "Not implemented, accelerator has no uses");
 
-  Operation *user = *acc.getResult().getUsers().begin();
-  auto scope = llvm::dyn_cast_or_null<btfl::ScopeOp>(user);
-  if (!scope)
-    return emitSilenceableFailure(user->getLoc(),
-                                  "Not implemented, user is not a scope");
+  Location loc = acc->getLoc();
+  SmallVector<btfl::KernelOp> scopedKernels;
+  std::optional<int32_t> numThreads;
+  for (auto *user : acc.getResult().getUsers()) {
+    auto scope = llvm::dyn_cast_or_null<btfl::ScopeOp>(user);
+    if (!scope)
+      return emitSilenceableFailure(user->getLoc(),
+                                    "Not implemented, user is not a scope");
 
-  auto dpuBtflKernel =
-      llvm::dyn_cast_or_null<btfl::KernelOp>(&scope.getBodyBlock()->front());
-  if (!dpuBtflKernel ||
-      !llvm::isa<btfl::YieldOp>(dpuBtflKernel->getNextNode())) {
-    return emitSilenceableFailure(
-        scope->getLoc(), "Scope requires single child that is a btfl.kernel");
+    auto dpuBtflKernel =
+        llvm::dyn_cast_or_null<btfl::KernelOp>(&scope.getBodyBlock()->front());
+    if (!dpuBtflKernel ||
+        !llvm::isa<btfl::YieldOp>(dpuBtflKernel->getNextNode())) {
+      return emitSilenceableFailure(
+          scope->getLoc(), "Scope requires single child that is a btfl.kernel");
+    }
+    auto numThreadsAttr =
+        scope->getAttrOfType<IntegerAttr>(threads::ThreadCountAttr::name);
+    int thisNumThreads = numThreadsAttr ? numThreadsAttr.getInt() : 1;
+    if (numThreads && thisNumThreads != *numThreads) {
+      return emitSilenceableFailure(scope->getLoc(), "Mismatched thread count ")
+             << numThreadsAttr.getInt();
+    }
+    numThreads = thisNumThreads;
+    scopedKernels.push_back(dpuBtflKernel);
   }
 
   auto &rewriter = ctx.rewriter;
@@ -241,35 +259,63 @@ UpmemAcceleratorAttr::lowerAcceleratorOp(btfl::TopDownLoweringContext &ctx,
     auto kernelsMod = modSymbols.lookup<ModuleOp>("dpu_kernels");
     if (!kernelsMod) {
       rewriter.setInsertionPointToEnd(&module.getBodyRegion().front());
-      kernelsMod = rewriter.create<ModuleOp>(
-          scope->getLoc(), rewriter.getStringAttr("dpu_kernels"));
+      kernelsMod =
+          rewriter.create<ModuleOp>(loc, rewriter.getStringAttr("dpu_kernels"));
     }
 
-    auto numThreadsAttr =
-        scope->getAttrOfType<IntegerAttr>(threads::ThreadCountAttr::name);
-    int numThreads = numThreadsAttr ? numThreadsAttr.getInt() : 1;
     rewriter.setInsertionPointToStart(&kernelsMod.getBodyRegion().front());
-    dpuProgram = rewriter.create<upmem::DpuProgramOp>(scope->getLoc(), "prog",
-                                                      numThreads);
+    dpuProgram = rewriter.create<upmem::DpuProgramOp>(loc, "prog", *numThreads);
     dpuProgram.getBody().emplaceBlock();
 
     // Create named buffers in the upmem.dpu_program to replace the arguments of
     // the scope/kernel. This also adds the remappings Value->Symbol to the
     // lowering context.
-    SmallVector<Value> kernelArgReplacements;
-    TRY(createBuffersInDpuProgram(ctx, dpuProgram, dpuBtflKernel, scope,
-                                  kernelArgReplacements));
+    IRMapping oldBlockArgsToNewAllocs;
+    int nextNameNum = 0;
+    for (auto dpuBtflKernel : scopedKernels) {
+      auto scope = dpuBtflKernel->getParentOfType<btfl::ScopeOp>();
 
+      TRY(createBuffersInDpuProgram(ctx, dpuProgram, dpuBtflKernel, scope,
+                                    oldBlockArgsToNewAllocs, nextNameNum));
+    }
     rewriter.setInsertionPointToEnd(&dpuProgram.getBody().front());
-    auto terminator = rewriter.create<upmem::ReturnOp>(scope->getLoc());
-    // erase terminator so that it is not inlined with the rest
-    rewriter.eraseOp(dpuBtflKernel.getBodyBlock()->getTerminator());
+    auto stateBuf = rewriter.create<upmem::StaticAllocOp>(
+        loc, MemRefType::get({}, rewriter.getI32Type()), false,
+        rewriter.getStringAttr("state"));
 
-    // Inline the body of the kernel into the new dpu_program, replacing kernel
-    // arguments with the new allocations.
-    rewriter.inlineBlockBefore(dpuBtflKernel.getBodyBlock(), terminator,
-                               kernelArgReplacements);
-    rewriter.eraseOp(dpuBtflKernel);
+    const Value state = rewriter.create<memref::LoadOp>(
+        loc, rewriter.getI32Type(), stateBuf.getBuffer(), ValueRange{});
+
+    for (auto [i, dpuBtflKernel] : llvm::enumerate(scopedKernels)) {
+
+      Value stateCst = rewriter.create<arith::ConstantOp>(
+          loc, rewriter.getI32IntegerAttr(i));
+      auto cond = rewriter.create<arith::CmpIOp>(loc, arith::CmpIPredicate::eq,
+                                                 state, stateCst);
+      scf::IfOp stateIf = rewriter.create<scf::IfOp>(loc, cond, true);
+
+      // compute the replacement list for the block arguments
+      SmallVector<Value> kernelArgReplacements;
+      for (auto [outer, inner] : dpuBtflKernel.getOperandsWithBlockArgs()) {
+        kernelArgReplacements.push_back(oldBlockArgsToNewAllocs.lookup(inner));
+      }
+
+      // erase terminator so that it is not inlined with the rest
+      rewriter.eraseOp(dpuBtflKernel.getBodyBlock()->getTerminator());
+
+      auto thenBlock = &stateIf.getThenRegion().front();
+      rewriter.setInsertionPointToStart(thenBlock);
+      // Inline the body of the kernel into the new dpu_program, replacing
+      // kernel arguments with the new allocations.
+      rewriter.inlineBlockBefore(dpuBtflKernel.getBodyBlock(),
+                                 thenBlock->getTerminator(),
+                                 kernelArgReplacements);
+      rewriter.eraseOp(dpuBtflKernel);
+
+      rewriter.setInsertionPointToStart(&stateIf.getElseRegion().front());
+    }
+    rewriter.setInsertionPointToEnd(&dpuProgram.getBody().front());
+    rewriter.create<upmem::ReturnOp>(loc);
   }
 
   // Finally create the alloc_dpus op, and remap the old !tilefirst.accelerator
