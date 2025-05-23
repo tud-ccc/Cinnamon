@@ -70,7 +70,7 @@ module {
         affine.store %2, %arg2[] : memref<f32>
       }
     }
-    tile[r * d] hwparallel factor 64 outs(%tile = %arg0 sdim 0 : <1048576xf32, host>, %tile_5 = %buf sdim 0 : <64xf32, host> rankreduce, %tile_6 = %buf_0 sdim 0 : <1048576xf32, mram(r, d)>, %tile_7 = %buf_1 sdim 0 : <64xf32, mram(r, d)> rankreduce, %tile_8 = %buf_2 sdim 0 : <64xf32, mram(r, d)> rankreduce) {
+    tile[r * d] hwparallel factor 64 outs(%tile_5 = %buf sdim 0 : <64xf32, host> rankreduce, %tile_6 = %buf_0 sdim 0 : <1048576xf32, mram(r, d)>, %tile_7 = %buf_1 sdim 0 : <64xf32, mram(r, d)> rankreduce, %tile_8 = %buf_2 sdim 0 : <64xf32, mram(r, d)> rankreduce) {
       transfer %buf_3 into %tile_7 : <f32, host> to mram(r, d)
       scope(%upmem) attributes {threads.count = 8 : i32} ins(%arg1 = %tile_7 : <f32, mram(r, d)>) outs(%arg2 = %tile_6 : <16384xf32, mram(r, d)>, %arg3 = %tile_8 : <f32, mram(r, d)>) {
         kernel "sub+exp+sum+sum" ins(%arg4 = %arg1 : <f32, mram(r, d)> as memref<f32, "mram">) outs(%arg5 = %arg2 : <16384xf32, mram(r, d)> as memref<16384xf32, "mram">, %arg6 = %arg3 : <f32, mram(r, d)> as memref<f32, "mram">) {

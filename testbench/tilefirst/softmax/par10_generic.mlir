@@ -65,8 +65,7 @@ module {
     }
 
     tile[r * d] hwparallel factor symbolic<R * D> 
-        outs(%tile = %arg0 sdim 0 : <1048576xf32, host>, 
-             %tile_2 = %buf_0 sdim 0 : <(R * D), f32, host> rankreduce,
+        outs(%tile_2 = %buf_0 sdim 0 : <(R * D), f32, host> rankreduce,
              %buf_4 = %mirror sdim 0 : <1048576xf32, mram(r, d)>,
 
              %buf_6 = %partial_dist sdim 0: <(R * D), f32, mram(r, d)> rankreduce,
