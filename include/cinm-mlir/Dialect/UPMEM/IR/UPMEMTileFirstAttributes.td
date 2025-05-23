@@ -54,6 +54,15 @@ def UpmemPlatformAttr: Upmem_Attr<"UpmemPlatform", [
 
 }
 
+
+def UpmemLaunchScheduler : Upmem_Attr<"UpmemLaunchScheduler", [DeclareAttrInterfaceMethods<BtflLoopSchedulerAttrInterface>]> {
+  let mnemonic = "launch";
+  let assemblyFormat = "`<` custom<PrettySymExpr>($tsym) `>`";
+  let parameters = (ins
+    Tf_SymExprAttrDef:$tsym
+  );
+}
+
 def UpmemAcceleratorAttr: Upmem_Attr<"UpmemAccelerator", [
           DeclareAttrInterfaceMethods<TfAcceleratorAttrInterface, ["getThreadCountVarDef"]>,
           DeclareAttrInterfaceMethods<BtflAcceleratorAttrInterfaceExtension, ["lowerAcceleratorOp", "lowerOpTopDown"]>

@@ -8,7 +8,7 @@ module {
     fill_buf %buf, 0xFF800000 : f32 : <f32, host>
     %buf_0 = empty_buf() : <(R * D), f32, host>
     fill_buf %buf_0, 0xFF800000 : f32 : <(R * D), f32, host>
-    tile[r * d] hwparallel factor symbolic<R * D> ins(%tile = %arg0 sdim 0 : <1048576xf32, host>) outs(%tile_2 = %buf_0 sdim 0 : <(R * D), f32, host> rankreduce) {
+    tile #upmem.launch<r * d> factor symbolic<R * D> ins(%tile = %arg0 sdim 0 : <1048576xf32, host>) outs(%tile_2 = %buf_0 sdim 0 : <(R * D), f32, host> rankreduce) {
       %buf_3 = empty_buf() : <8xf32, wram(r, d)>
       fill_buf %buf_3, 0xFF800000 : f32 : <8xf32, wram(r, d)>
       schedule<(red N) = (8192) to (1048576 | (R * D))>
@@ -49,7 +49,7 @@ module {
     %buf_1 = empty_buf() : <f32, host>
     fill_buf %buf_1, 0.000000e+00 : f32 : <f32, host>
     fill_buf %buf_0, 0.000000e+00 : f32 : <(R * D), f32, host>
-    tile[r * d] hwparallel factor symbolic<R * D> outs(%tile = %arg0 sdim 0 : <1048576xf32, host>, %tile_2 = %buf_0 sdim 0 : <(R * D), f32, host> rankreduce) {
+    tile #upmem.launch<r * d> factor symbolic<R * D> outs(%tile = %arg0 sdim 0 : <1048576xf32, host>, %tile_2 = %buf_0 sdim 0 : <(R * D), f32, host> rankreduce) {
       %buf_3 = empty_buf() : <8xf32, wram(r, d)>
       fill_buf %buf_3, 0.000000e+00 : f32 : <8xf32, wram(r, d)>
       schedule<(red M) = (8192) to (1048576 | (R * D))>
@@ -91,7 +91,7 @@ module {
         affine.store %2, %arg2[] : memref<f32>
       }
     }
-    tile[r * d] hwparallel factor symbolic<R * D> outs(%tile = %arg0 sdim 0 : <1048576xf32, host>) {
+    tile #upmem.launch<r * d> factor symbolic<R * D> outs(%tile = %arg0 sdim 0 : <1048576xf32, host>) {
       schedule<(par M) = (8192) to (1048576 | (R * D))>
               ins(%buf_2 = %buf_1 : <f32, wram(r, d)> to host)
               outs(%buf_3 = %tile : <(M), f32, wram(r, d)> to host) {

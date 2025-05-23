@@ -8,7 +8,7 @@ module {
     %buf_0 = empty_buf() : <1048576xf32, mram(r, d)>
     %buf_1 = empty_buf() : <(R * D), f32, mram(r, d)>
     %buf_2 = empty_buf() : <(R * D), f32, mram(r, d)>
-    tile[r * d] hwparallel factor symbolic<R * D> ins(%tile = %arg0 sdim 0 : <1048576xf32, host>) outs(%tile_5 = %buf sdim 0 : <(R * D), f32, host> rankreduce, %tile_6 = %buf_0 sdim 0 : <1048576xf32, mram(r, d)>, %tile_7 = %buf_1 sdim 0 : <(R * D), f32, mram(r, d)> rankreduce) {
+    tile #upmem.launch<r * d> factor symbolic<R * D> ins(%tile = %arg0 sdim 0 : <1048576xf32, host>) outs(%tile_5 = %buf sdim 0 : <(R * D), f32, host> rankreduce, %tile_6 = %buf_0 sdim 0 : <1048576xf32, mram(r, d)>, %tile_7 = %buf_1 sdim 0 : <(R * D), f32, mram(r, d)> rankreduce) {
       transfer %tile into %tile_6 : <(1048576 | (R * D)), f32, host> to mram(r, d)
       scope(%upmem) attributes {threads.count = 8 : i32} ins(%arg1 = %tile_6 : <(1048576 | (R * D)), f32, mram(r, d)>) outs(%arg2 = %tile_7 : <f32, mram(r, d)>) {
         %buf_8 = empty_buf() : <8xf32, wram(r, d)>
@@ -64,7 +64,7 @@ module {
         affine.store %2, %arg2[] : memref<f32>
       }
     }
-    tile[r * d] hwparallel factor symbolic<R * D> outs(%tile_5 = %buf sdim 0 : <(R * D), f32, host> rankreduce, %tile_6 = %buf_0 sdim 0 : <1048576xf32, mram(r, d)>, %tile_7 = %buf_1 sdim 0 : <(R * D), f32, mram(r, d)> rankreduce, %tile_8 = %buf_2 sdim 0 : <(R * D), f32, mram(r, d)> rankreduce) {
+    tile #upmem.launch<r * d> factor symbolic<R * D> outs(%tile_5 = %buf sdim 0 : <(R * D), f32, host> rankreduce, %tile_6 = %buf_0 sdim 0 : <1048576xf32, mram(r, d)>, %tile_7 = %buf_1 sdim 0 : <(R * D), f32, mram(r, d)> rankreduce, %tile_8 = %buf_2 sdim 0 : <(R * D), f32, mram(r, d)> rankreduce) {
       transfer %buf_3 into %tile_7 : <f32, host> to mram(r, d)
       scope(%upmem) attributes {threads.count = 8 : i32} ins(%arg1 = %tile_7 : <f32, mram(r, d)>) outs(%arg2 = %tile_6 : <(1048576 | (R * D)), f32, mram(r, d)>, %arg3 = %tile_8 : <f32, mram(r, d)>) {
         %buf_9 = empty_buf() : <8xf32, wram(r, d)>
@@ -132,7 +132,7 @@ module {
         affine.store %2, %arg2[] : memref<f32>
       }
     }
-    tile[r * d] hwparallel factor symbolic<R * D> outs(%tile = %arg0 sdim 0 : <1048576xf32, host>, %tile_5 = %buf_0 sdim 0 : <1048576xf32, mram(r, d)>, %tile_6 = %buf_2 sdim 0 : <(R * D), f32, mram(r, d)> rankreduce) {
+    tile #upmem.launch<r * d> factor symbolic<R * D> outs(%tile = %arg0 sdim 0 : <1048576xf32, host>, %tile_5 = %buf_0 sdim 0 : <1048576xf32, mram(r, d)>, %tile_6 = %buf_2 sdim 0 : <(R * D), f32, mram(r, d)> rankreduce) {
       transfer %buf_4 into %tile_6 : <f32, host> to mram(r, d)
       scope(%upmem) attributes {threads.count = 8 : i32} ins(%arg1 = %tile_6 : <f32, mram(r, d)>) outs(%arg2 = %tile_5 : <(1048576 | (R * D)), f32, mram(r, d)>) {
         tile parallel factor symbolic<128 | (R * D)> outs(%tile_7 = %arg2 sdim 0 : <(1048576 | (R * D)), f32, mram(r, d)>) {

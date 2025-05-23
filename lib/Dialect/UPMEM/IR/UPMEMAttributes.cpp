@@ -8,6 +8,7 @@
 #include <llvm/Support/LogicalResult.h>
 #include <mlir/Dialect/Arith/IR/Arith.h>
 #include <mlir/Dialect/MemRef/IR/MemRef.h>
+#include <mlir/Dialect/Transform/Interfaces/TransformInterfaces.h>
 #include <mlir/Dialect/Utils/IndexingUtils.h>
 #include <mlir/IR/Attributes.h>
 #include <mlir/IR/Builders.h>
@@ -18,14 +19,17 @@
 #include <mlir/IR/MLIRContext.h>
 #include <mlir/IR/OpDefinition.h>
 #include <mlir/IR/OpImplementation.h>
+#include <optional>
+#include <tilefirst-mlir/Dialect/Btfl/IR/BtflAttributes.h>
+#include <tilefirst-mlir/Dialect/Btfl/IR/BtflOps.h>
 #include <tilefirst-mlir/Dialect/TileFirst/IR/TfSchedulerDriver.h>
 #include <tilefirst-mlir/Dialect/TileFirst/IR/TileFirstAttributes.h>
 
-#include <cinm-mlir/Dialect/UPMEM/IR/UPMEMBase.h>
 #include <cinm-mlir/Dialect/UPMEM/IR/UPMEMAttributes.h>
+#include <cinm-mlir/Dialect/UPMEM/IR/UPMEMBase.h>
 
-using namespace mlir;
-
+// import custom directive
+using namespace mlir::tilefirst::detail::parsing;
 
 #define GET_ATTRDEF_CLASSES
 #include "cinm-mlir/Dialect/UPMEM/IR/UPMEMAttributes.cpp.inc"
@@ -119,4 +123,23 @@ TfAcceleratorAttrInterface UpmemAcceleratorAttr::instantiateDesignParams(
       getContext(), getImpl()->platform,
       tilefirst::detail::instantiateDesignParams(getImpl()->designParams,
                                                  instantiations));
+}
+
+bool UpmemLaunchSchedulerAttr::isParallel() const { return true; }
+std::optional<btfl::BtflLoopSchedulerAttrInterface>
+UpmemLaunchSchedulerAttr::fuse(
+    btfl::BtflLoopSchedulerAttrInterface other) const {
+  if (other == *this || other.isBuiltin(btfl::BuiltinSchedulerKind::PARALLEL) ||
+      other.isBuiltin(btfl::BuiltinSchedulerKind::HWPARALLEL))
+    return *this;
+  return std::nullopt;
+}
+
+DiagnosedSilenceableFailure
+mlir::upmem::UpmemLaunchSchedulerAttr::lowerIntoKernel(
+    mlir::RewriterBase &, mlir::btfl::TileOp const &loop,
+    mlir::btfl::KernelOp const &) const {
+  return emitSilenceableFailure(
+      loop->getLoc(),
+      "cannot be pushed into kernel, only supports top-down lowering");
 }
