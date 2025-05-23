@@ -394,6 +394,24 @@ lowerScatterOrGather(btfl::TopDownLoweringContext &ctx,
 }
 
 mlir::DiagnosedSilenceableFailure
+lowerLaunchLoop(btfl::TopDownLoweringContext &ctx, btfl::TileOp loop,
+                UpmemAcceleratorAttr upmem, UpmemLaunchSchedulerAttr scheduler,
+                Value wgValue) {
+
+  auto body = loop.getBodyBlock();
+  // todo compute affine maps for each tiled operand
+  // todo explicitly call scatter/gather lowering here with the correct affine
+  //  map
+  // todo if the body contains other tile loops, they should set the correct
+  //  affine map for those.
+  // todo should set the accelerator state too...
+
+  // todo this is too complicated I can't really do it rn.
+
+  return DiagnosedSilenceableFailure::success();
+}
+
+mlir::DiagnosedSilenceableFailure
 UpmemAcceleratorAttr::lowerOpTopDown(::mlir::btfl::TopDownLoweringContext &ctx,
                                      ::mlir::Operation *op) const {
   auto acc = ctx.getAcceleratorOp(*this);
@@ -415,6 +433,14 @@ UpmemAcceleratorAttr::lowerOpTopDown(::mlir::btfl::TopDownLoweringContext &ctx,
         // we don't need additional host-side operations as the buffer has been
         // declared already.
         return DiagnosedSilenceableFailure::success();
+      })
+      .Case([&](btfl::TileOp loop) {
+        if (auto launch =
+                llvm::dyn_cast_or_null<upmem::UpmemLaunchSchedulerAttr>(
+                    loop.getScheduler())) {
+          return lowerLaunchLoop(ctx, loop, *this, launch, wgValue);
+        }
+        return emitSilenceableFailure(loop, "Not an upmem scheduler");
       })
       .Case([&](btfl::TransferOp transfer) {
         auto source = TRY_GET(upmem::getUpmemMemspace(
