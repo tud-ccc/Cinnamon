@@ -167,7 +167,6 @@ module {
     ^bb0(%arg1: !transform.op<"btfl.block">):
       transform.btfl.interpret_variables %arg1 variables [R, D] = [2, 32]
       transform.btfl.lower.create_scoped_kernels %arg1
-      transform.btfl.lower.finish_accelerator_lowering %arg1
     }
   }
 }
