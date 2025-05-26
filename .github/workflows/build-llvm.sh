@@ -12,7 +12,7 @@ if [[ $checkout_and_build_llvm -eq 1 ]]; then
 
     reconfigure_llvm=1
   fi
-  cd "$llvm_path"
+  pushd "$llvm_path"
 
 
   if [ $reconfigure -eq 1 ] || [ $reconfigure_llvm -eq 1 ]; then
@@ -36,6 +36,7 @@ if [[ $checkout_and_build_llvm -eq 1 ]]; then
   cmake --build build --target all llc opt
 
   export PATH=$llvm_path/build/bin:$PATH
+  popd
 elif [[ $checkout_and_build_llvm -eq 0 ]]; then
   warning "Skipping LLVM checkout and build"
   warning "The following steps will need LLVM_DIR and MLIR_DIR to be set in their respective <STEP>_CMAKE_OPTIONS"
