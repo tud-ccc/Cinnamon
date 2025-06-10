@@ -29,31 +29,65 @@ jobs:
         with:
           path: |
             .venv
-            upmem
+            third-party/upmem
           key: cinnamon-runtimes-${{ runner.os }}
 
       - name: Restore llvm cache
         id: llvm-cache-restore
         uses: actions/cache/restore@v3
         with:
-          path: llvm
+          path: third-party/llvm
           key: cinnamon-llvm-${{ runner.os }}
 
       - name: Restore torch-mlir cache
         id: torch-mlir-cache-restore
         uses: actions/cache/restore@v3
         with:
-          path: torch-mlir
+          path: third-party/torch-mlir
           key: cinnamon-torch-mlir-${{ runner.os }}
       
-      - name: Build 
-        run: .github/workflows/build-ci.sh -reconfigure
+      - name: Setup venv
+        run: .github/workflows/setup-venv.sh -reconfigure -verbose
 
-      - name: Test
-        working-directory: cinnamon/build
+      - name: Build LLVM
         run: |
-          source ../../.venv/bin/activate
-          ninja check-cinm-mlir
+          source .venv/bin/activate
+          .github/workflows/build-llvm.sh -reconfigure -verbose
+
+      - name: Save llvm cache
+        uses: actions/cache/save@v3
+        if: always()
+        with:
+          path: third-party/llvm
+          key: ${{ steps.llvm-cache-restore.outputs.cache-primary-key }}
+
+      - name: Build Torch-MLIR
+        run: |
+          source .venv/bin/activate
+          .github/workflows/build-torch.sh -reconfigure -verbose
+
+      - name: Save torch-mlir cache
+        uses: actions/cache/save@v3
+        if: always()
+        with:
+          path: third-party/torch-mlir
+          key: ${{ steps.torch-mlir-cache-restore.outputs.cache-primary-key }}
+
+      - name: Checkout upmem
+        run: |
+          source .venv/bin/activate
+          .github/workflows/build-upmem.sh -reconfigure -verbose
+
+      - name: Build CINM
+        run: |
+          source .venv/bin/activate
+          export CINNAMON_CMAKE_OPTIONS='-DCMAKE_GENERATOR=Ninja'
+          .github/workflows/build-cinnamon.sh -reconfigure -verbose
+
+      - name: Test CINM
+        run: |
+          source .venv/bin/activate
+          ninja -Cbuild check-cinm-mlir
 
       - name: Save runtime cache
         uses: actions/cache/save@v3
@@ -61,19 +95,5 @@ jobs:
         with:
           path: |
             .venv
-            upmem
+            third-party/upmem
           key: ${{ steps.runtimes-cache-restore.outputs.cache-primary-key }}
-
-      - name: Save llvm cache
-        uses: actions/cache/save@v3
-        if: always()
-        with:
-          path: llvm
-          key: ${{ steps.llvm-cache-restore.outputs.cache-primary-key }}
-
-      - name: Save torch-mlir cache
-        uses: actions/cache/save@v3
-        if: always()
-        with:
-          path: torch-mlir
-          key: ${{ steps.torch-mlir-cache-restore.outputs.cache-primary-key }}

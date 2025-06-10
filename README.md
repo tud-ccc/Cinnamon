@@ -1,7 +1,7 @@
 
 <br />
 <div align="center">
-  
+
   <h3 align="center">CINM (Cinnamon): A Compilation Infrastructure for Heterogeneous Compute In-Memory and Compute Near-Memory Paradigms</h3>
 
   <p align="center">
@@ -37,7 +37,7 @@ sudo update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-13 70 --slave /
 # Or use another compiler or gcc/g++ version supporting the C++ 20 standard.
 ```
 
-### Download and Build 
+### Download and Build
 
 The repository contains a `justfile` that installs all needed dependencies and builds the sources.
 
@@ -56,10 +56,16 @@ sudo apt-get install clang ninja-build mold libvulkan-dev ccache
   CMAKE_C_COMPILER=clang
   CMAKE_CXX_COMPILER=clang++
   CMAKE_LINKER_TYPE=MOLD
-  LLVM_CMAKE_OPTIONS='-DLLVM_CCACHE_BUILD=ON'
-  TORCH_MLIR_CMAKE_OPTIONS='-DCMAKE_CXX_COMPILER=clang++ -DCMAKE_C_COMPILER=clang'                                                               CINNAMON_CMAKE_OPTIONS='-DCMAKE_CXX_COMPILER=clang++ -DCMAKE_C_COMPILER=clang -DLLVM_ENABLE_LIBCXX=ON'  
+
+  # Options passed to llvm when it is build by the build script
+  # Building llvm uses a lot of memory, so it is recommended to limit the number of parallel compile, link & tablegen jobs. The example values here work great for 32 GiB of RAM.
+  LLVM_CMAKE_OPTIONS='-DLLVM_CCACHE_BUILD=ON -DLLVM_PARALLEL_COMPILE_JOBS=16 -DLLVM_PARALLEL_LINK_JOBS=2 -DLLVM_PARALLEL_TABLEGEN_JOBS=8'
+
+  TORCH_MLIR_CMAKE_OPTIONS='-DCMAKE_CXX_COMPILER=clang++ -DCMAKE_C_COMPILER=clang'
+  CINNAMON_CMAKE_OPTIONS='-DCMAKE_CXX_COMPILER=clang++ -DCMAKE_C_COMPILER=clang -DLLVM_ENABLE_LIBCXX=ON'
+
   # You could add your own LLVM dir; the build script won't try to clone and build LLVM
-  LLVM_BUILD_DIR=/home/username/projects/Cinnamon/llvm/build/
+  LLVM_BUILD_DIR=/home/username/projects/Cinnamon/third-party/llvm/build/
   ```
 * Download, configure, and build dependencies and the sources (without the torch-mlir frontend).
   ```sh
@@ -68,7 +74,7 @@ sudo apt-get install clang ninja-build mold libvulkan-dev ccache
 
 <!-- USAGE EXAMPLES -->
 ## Usage
-All benchmarks at the `cinm` abstraction are in this repository under `cinnamon/benchmarks/`. The `compile-benches.sh` script compiles all the benchmarks using the Cinnamon flow. The generated code and the intermediate IRs for each bench can be found under`cinnamon/benchmarks/generated/`.
+All benchmarks at the `cinm` abstraction are in this repository under `testbench/`. The `compile-benches.sh` script compiles all the benchmarks using the Cinnamon flow. The generated code and the intermediate IRs for each bench can be found under`testbench/gen/`.
 
    ```sh
    chmod +x compile-benches.sh
@@ -79,7 +85,7 @@ The user can also try running individual benchmarks by manually trying individua
 <!-- ROADMAP -->
 ## Roadmap
 
-- [x] `cinm`, `cnm` and `cim` abstractions and their necessary conversions 
+- [x] `cinm`, `cnm` and `cim` abstractions and their necessary conversions
 - [x] The `upmem` abstraction, its conversions and connection to the target
 - [x] The `tiling` transformation
 - [ ] `PyTorch` Front-end
