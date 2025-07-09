@@ -68,7 +68,11 @@ find_package(TileFirst REQUIRED CONFIG
   PATHS ${TILEFIRST_DIR}/lib/cmake/TileFirst
 )
 include_directories(SYSTEM ${TILEFIRST_INCLUDE_DIRS})
-file(GLOB T1_LIBS "${TILEFIRST_LIB_DIR}/*.so")
+if(APPLE)
+    file(GLOB T1_LIBS "${TILEFIRST_LIB_DIR}/*.dylib")
+else()
+    file(GLOB T1_LIBS "${TILEFIRST_LIB_DIR}/*.so")
+endif()
 set_property(GLOBAL APPEND PROPERTY CINM_DEPENDENCY_LIBS ${T1_LIBS})
 
 # Find MLIR.

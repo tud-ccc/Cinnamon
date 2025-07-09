@@ -30,6 +30,7 @@
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/FormatVariadic.h"
 #include <cstddef>
+#include <cstdint>
 #include <llvm/ADT/SmallVector.h>
 #include <llvm/ADT/StringRef.h>
 #include <llvm/IR/Constant.h>
@@ -463,8 +464,8 @@ static LogicalResult printLocalTransfer(CppEmitter &emitter,
     return memcpyOp->emitOpError(
         "Copy source and target don't have same number of elements");
 
-  auto remainingBytes = from.getType().getNumElements() *
-                        from.getType().getElementTypeBitWidth() / 8;
+  int64_t remainingBytes = from.getType().getNumElements() *
+                           from.getType().getElementTypeBitWidth() / 8;
 
   Value fromBase, toBase;
   std::string fromOffset, toOffset;
@@ -474,7 +475,8 @@ static LogicalResult printLocalTransfer(CppEmitter &emitter,
 
   size_t offsetBytes = 0;
   while (remainingBytes > 0) {
-    size_t chunkSizeBytes = std::min(2048l, remainingBytes);
+    size_t chunkSizeBytes =
+        std::min(static_cast<int64_t>(2048l), remainingBytes);
     chunkSizeBytes = llvm::alignTo(chunkSizeBytes, 8);
 
     if (printMRAMCopyBytes(emitter, direction, fromBase, toBase, chunkSizeBytes,

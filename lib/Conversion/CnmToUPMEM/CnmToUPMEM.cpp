@@ -169,7 +169,7 @@ static void createTransfer(RewriterBase &rewriter, bool toWram, Location loc,
   MemRefType viewType = MemRefType::get(
       wramBufTy.getShape(), wramBufTy.getElementType(),
       rewriter.getAttr<StridedLayoutAttr>(
-          ShapedType::kDynamic, ArrayRef<long>(baseStrides).drop_front()),
+          ShapedType::kDynamic, ArrayRef<int64_t>(baseStrides).drop_front()),
       mramBufTy.getMemorySpace());
 
   Value tileMramView = rewriter.create<memref::SubViewOp>(
