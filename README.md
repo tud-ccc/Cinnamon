@@ -114,7 +114,7 @@ Distributed under the BSD 2-clause License. See `LICENSE.txt` for more informati
 ## Contributors
 
 - Clément Fournier (clement.fournier@tu-dresden.de)
-- Hamid Farzaneh (amid.farzaneh@tu-dresden.de)
+- Hamid Farzaneh (hamid.farzaneh@tu-dresden.de)
 - George M. Kunze (georg_maximilian.kunze@mailbox.tu-dresden.de)
 - Karl F. A. Friebel (karl.friebel@tu-dresden.de)
 - Asif Ali Khan (asif_ali.khan@tu-dresden.de)
