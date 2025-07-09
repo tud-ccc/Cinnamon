@@ -52,10 +52,8 @@ if [[ $checkout_and_build_torch_mlir -eq 1 ]]; then
     warning "Skipping Torch-MLIR Python package build"
     warning "Make sure to have a correct Python environment set up"
   fi
-
+popd
 elif [[ $checkout_and_build_torch_mlir -eq 0 ]]; then
   warning "Skipping Torch-MLIR checkout and build"
   warning "The following steps will need TORCH_MLIR_DIR to be set in their respective <STEP>_CMAKE_OPTIONS"
 fi
-
-popd
