@@ -12,6 +12,7 @@ build_type := env_var_or_default("LLVM_BUILD_TYPE", "RelWithDebInfo")
 linker := env_var_or_default("CMAKE_LINKER_TYPE", "DEFAULT")
 upmem_dir := env_var_or_default("UPMEM_HOME", "third-party/upmem")
 build_dir := "build"
+pygments_style := env_var_or_default("PYGMENTS_STYLE", "github-dark")
 
 # Do a full build as if in CI. Only needed the first time you build the project.
 # Parameters: no-upmem enable-gpu enable-cuda enable-roc no-torch-mlir no-python-venv
@@ -24,7 +25,7 @@ configure *ARGS:
 
 
 @highlight:
-    pygmentize -l docs/MlirLexer.py:MlirLexer -x -O style=github-dark /dev/stdin
+    pygmentize -l docs/MlirLexer.py:MlirLexer -x -O style={{pygments_style}} /dev/stdin
 
 # Run tilefirst-opt with the given arguments. You can use this if you haven't updated your PATH.
 [no-cd]
