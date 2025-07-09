@@ -66,6 +66,10 @@ sudo apt-get install clang ninja-build mold libvulkan-dev ccache
 
   # You could add your own LLVM dir; the build script won't try to clone and build LLVM
   LLVM_BUILD_DIR=/home/username/projects/Cinnamon/third-party/llvm/build/
+
+  # This is the style used to colorize output when running just cinm-opt.
+  PYGMENTS_STYLE=solarized-light
+
   ```
 * Download, configure, and build dependencies and the sources (without the torch-mlir frontend).
   ```sh
