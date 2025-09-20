@@ -2,6 +2,7 @@
 set -euo pipefail
 
 script_dir="$( cd -- "$(dirname "$0")" >/dev/null 2>&1 ; pwd -P )"
+# shellcheck source=/dev/null
 source "$script_dir/common.sh"
 
 # ---- Safe defaults ----
@@ -10,21 +11,26 @@ reconfigure="${reconfigure:-0}"
 llvm_path="${llvm_path:?Define 'llvm_path' in common.sh}"
 LLVM_CMAKE_OPTIONS="${LLVM_CMAKE_OPTIONS:-}"
 
+# Your desired config (override via env if needed)
+LLVM_PROJECTS="${LLVM_PROJECTS:-mlir;llvm;clang}"
+LLVM_TARGETS_TO_BUILD="${LLVM_TARGETS_TO_BUILD:-host;AArch64}"
+LLVM_EXPERIMENTAL_TARGETS="${LLVM_EXPERIMENTAL_TARGETS:-SPIRV}"
+LLVM_BUILD_TARGETS="${LLVM_BUILD_TARGETS:-all llc opt mlir-opt mlir-translate}"
+
 # Tools
 command -v ninja >/dev/null 2>&1 || { error "Ninja not found."; exit 1; }
 command -v cmake >/dev/null 2>&1 || { error "CMake not found."; exit 1; }
 
-# Collect extra cmake opts (space-separated env -> array)
+# Extra cmake opts (space-separated env -> array)
 EXTRA_CMAKE_OPTS=()
 if [[ -n "$LLVM_CMAKE_OPTIONS" ]]; then
   # shellcheck disable=SC2206
   EXTRA_CMAKE_OPTS=( $LLVM_CMAKE_OPTIONS )
 fi
 
-# If in a venv, ensure CMake uses that Python and finds pybind11
+# If in a venv, force using that Python + pybind11
 if [[ -n "${VIRTUAL_ENV:-}" ]]; then
   PYBIN="$(command -v python)"
-  # Ensure pybind11 is present and get its CMake dir
   if ! PYBIND11_DIR="$("$PYBIN" - <<'PY'
 import sys
 try:
@@ -35,85 +41,100 @@ except Exception:
 PY
 )"; then
     status "pybind11 not found in venv; installing…"
-    python -m pip install -U "pybind11>=2.10" numpy >/dev/null
+    "$PYBIN" -m pip install -U "pybind11>=2.10" numpy >/dev/null
     PYBIND11_DIR="$("$PYBIN" -c 'import pybind11; print(pybind11.get_cmake_dir())')"
   fi
   EXTRA_CMAKE_OPTS+=( -DPython3_EXECUTABLE="$PYBIN" -Dpybind11_DIR="$PYBIND11_DIR" -DPython3_FIND_VIRTUALENV=ONLY )
 fi
 
-if [[ "$checkout_and_build_llvm" -ne 1 ]]; then
-  warning "Skipping LLVM checkout and build (set checkout_and_build_llvm=1)."
-  exit 0
-fi
-
-# ---- Clone if missing ----
-need_config=0
+# ---- Clone if missing (only when requested) ----
 if [[ ! -d "$llvm_path" ]]; then
-  status "Checking out LLVM"
-  git clone https://github.com/h4midf/llvm-project.git --depth 1 --branch cinnamon-esweek-llvm "$llvm_path"
-  need_config=1
+  if [[ "$checkout_and_build_llvm" -eq 1 ]]; then
+    status "Checking out LLVM"
+    git clone https://github.com/h4midf/llvm-project.git --depth 1 --branch cinnamon-esweek-llvm "$llvm_path"
+  else
+    error "LLVM path '$llvm_path' does not exist. Set checkout_and_build_llvm=1 to clone, or create it manually."
+    exit 1
+  fi
 else
   status "Found existing LLVM at: $llvm_path"
 fi
 
 pushd "$llvm_path" >/dev/null
 
-# ---- Decide whether to (re)configure ----
-reason=""
-if [[ "$reconfigure" -eq 1 ]]; then
-  reason="forced reconfigure (reconfigure=1)"
-fi
-
-# Wrong generator -> wipe
-if [[ -z "$reason" && -f build/CMakeCache.txt && ! "$(grep -o 'CMAKE_GENERATOR:INTERNAL=[^ ]*' build/CMakeCache.txt || true)" =~ Ninja ]]; then
-  reason="existing build is not Ninja"
-fi
-
-# Missing build dir / cache / build.ninja
-if [[ -z "$reason" && ! -d build ]]; then reason="build/ directory missing"; fi
-if [[ -z "$reason" && ! -f build/CMakeCache.txt ]]; then reason="CMakeCache.txt missing"; fi
-if [[ -z "$reason" && ! -f build/build.ninja ]]; then reason="build.ninja missing"; fi
-
-# Cached Python mismatch with venv Python
-if [[ -z "$reason" && -f build/CMakeCache.txt && -n "${PYBIN:-}" ]]; then
+# ---- Should we clean build/? ----
+clean_reason=""
+if [[ "${reconfigure}" -eq 1 ]]; then
+  clean_reason="forced reconfigure (reconfigure=1)"
+elif [[ -f build/CMakeCache.txt && ! "$(grep -o 'CMAKE_GENERATOR:INTERNAL=[^ ]*' build/CMakeCache.txt || true)" =~ Ninja ]]; then
+  clean_reason="existing build is not Ninja"
+elif [[ -f build/CMakeCache.txt && -n "${PYBIN:-}" ]]; then
   cached_py="$(grep -E '^Python3_EXECUTABLE:FILEPATH=' build/CMakeCache.txt | sed 's/.*=//')"
-  if [[ -n "$cached_py" && "$cached_py" != "$PYBIN" ]]; then
-    reason="cached Python ($cached_py) != venv Python ($PYBIN)"
+  [[ -n "$cached_py" && "$cached_py" != "${PYBIN:-}" ]] && clean_reason="cached Python ($cached_py) != venv Python (${PYBIN:-system})"
+fi
+
+# Also clean if config hash changed (projects/targets/opts/python/etc.)
+hash_cmd() {
+  if command -v sha256sum >/dev/null 2>&1; then sha256sum; elif command -v shasum >/dev/null 2>&1; then shasum -a 256; else python - <<'PY'
+import sys,hashlib
+data=sys.stdin.read().encode();print(hashlib.sha256(data).hexdigest())
+PY
   fi
+}
+CURRENT_HASH="$(printf '%s\n' \
+  "PROJ=$LLVM_PROJECTS" \
+  "TGT=$LLVM_TARGETS_TO_BUILD" \
+  "EXP=$LLVM_EXPERIMENTAL_TARGETS" \
+  "OPTS=${EXTRA_CMAKE_OPTS[*]}" \
+  "PY=${PYBIN:-}" \
+  "GEN=Ninja" | hash_cmd | awk '{print $1}')"
+
+mkdir -p build
+HASH_FILE="build/.config.hash"
+if [[ -z "$clean_reason" && -f "$HASH_FILE" ]]; then
+  OLD_HASH="$(cat "$HASH_FILE" 2>/dev/null || true)"
+  [[ "$OLD_HASH" != "$CURRENT_HASH" ]] && clean_reason="configuration changed (hash mismatch)"
 fi
 
-if [[ -n "$reason" ]]; then
-  status "Reconfiguring because: $reason"
+if [[ -n "$clean_reason" ]]; then
+  status "Cleaning build/ because: $clean_reason"
   rm -rf build
-  status "Configuring LLVM (Ninja)"
-  cmake -S llvm -B build -G Ninja \
-    -Wno-dev \
-    -DLLVM_ENABLE_PROJECTS="mlir;clang" \
-    -DLLVM_TARGETS_TO_BUILD="host" \
-    -DLLVM_ENABLE_ASSERTIONS=ON \
-    -DMLIR_ENABLE_BINDINGS_PYTHON=ON \
-    -DLLVM_BUILD_TOOLS=ON \
-    -DCMAKE_BUILD_TYPE=Release \
-    -DBUILD_SHARED_LIBS=ON \
-    -DLLVM_INCLUDE_TESTS=OFF \
-    -DLLVM_INCLUDE_BENCHMARKS=OFF \
-    -DLLVM_OPTIMIZED_TABLEGEN=ON \
-    -DLLVM_EXPERIMENTAL_TARGETS_TO_BUILD=SPIRV \
-    "${EXTRA_CMAKE_OPTS[@]}"
-else
-  status "Using existing LLVM configuration in build/"
+  mkdir -p build
 fi
 
-# ---- Build with one automatic clean-retry ----
+# ---- Always run configure (idempotent) ----
+status "Configuring LLVM (Ninja; always run to catch changes)"
+cmake -S llvm -B build -G Ninja \
+  -Wno-dev \
+  -DLLVM_ENABLE_PROJECTS="$LLVM_PROJECTS" \
+  -DLLVM_TARGETS_TO_BUILD="$LLVM_TARGETS_TO_BUILD" \
+  -DLLVM_EXPERIMENTAL_TARGETS_TO_BUILD="$LLVM_EXPERIMENTAL_TARGETS" \
+  -DLLVM_ENABLE_ASSERTIONS=ON \
+  -DMLIR_ENABLE_BINDINGS_PYTHON=ON \
+  -DLLVM_BUILD_TOOLS=ON \
+  -DCMAKE_BUILD_TYPE=Release \
+  -DBUILD_SHARED_LIBS=ON \
+  -DLLVM_INCLUDE_TESTS=OFF \
+  -DLLVM_INCLUDE_BENCHMARKS=OFF \
+  -DLLVM_OPTIMIZED_TABLEGEN=ON \
+  "${EXTRA_CMAKE_OPTS[@]}"
+
+# Save config hash so we can detect future changes
+echo "$CURRENT_HASH" > "$HASH_FILE"
+
+# Sanity: ensure build.ninja exists
+[[ -f build/build.ninja ]] || { error "CMake configure did not produce build/build.ninja."; exit 1; }
+
+# ---- Build with one clean-retry ----
 status "Building LLVM (Ninja)"
-if ! cmake --build build --target all llc opt mlir-opt mlir-translate; then
+if ! cmake --build build --target ${LLVM_BUILD_TARGETS}; then
   warning "Build failed — cleaning build/ and retrying from fresh configure…"
   rm -rf build
-  status "Reconfiguring after failure"
   cmake -S llvm -B build -G Ninja \
     -Wno-dev \
-    -DLLVM_ENABLE_PROJECTS="mlir;clang" \
-    -DLLVM_TARGETS_TO_BUILD="host" \
+    -DLLVM_ENABLE_PROJECTS="$LLVM_PROJECTS" \
+    -DLLVM_TARGETS_TO_BUILD="$LLVM_TARGETS_TO_BUILD" \
+    -DLLVM_EXPERIMENTAL_TARGETS_TO_BUILD="$LLVM_EXPERIMENTAL_TARGETS" \
     -DLLVM_ENABLE_ASSERTIONS=ON \
     -DMLIR_ENABLE_BINDINGS_PYTHON=ON \
     -DLLVM_BUILD_TOOLS=ON \
@@ -122,9 +143,8 @@ if ! cmake --build build --target all llc opt mlir-opt mlir-translate; then
     -DLLVM_INCLUDE_TESTS=OFF \
     -DLLVM_INCLUDE_BENCHMARKS=OFF \
     -DLLVM_OPTIMIZED_TABLEGEN=ON \
-    -DLLVM_EXPERIMENTAL_TARGETS_TO_BUILD=SPIRV \
     "${EXTRA_CMAKE_OPTS[@]}"
-  cmake --build build --target all llc opt mlir-opt mlir-translate
+  cmake --build build --target ${LLVM_BUILD_TARGETS}
 fi
 
 export PATH="$llvm_path/build/bin:$PATH"

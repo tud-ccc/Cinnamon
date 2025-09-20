@@ -1,81 +1,162 @@
-#!/bin/bash
+#!/usr/bin/env bash
+set -euo pipefail
 
 script_dir="$( cd -- "$(dirname "$0")" >/dev/null 2>&1 ; pwd -P )"
+# shellcheck source=/dev/null
 source "$script_dir/common.sh"
 
-# Ensure Ninja is available
-if ! command -v ninja >/dev/null 2>&1; then
-  error "Ninja not found. Please install it (e.g., 'sudo apt install ninja-build')."
-  exit 1
-fi
+# ---- Safe defaults to avoid 'unbound variable' ----
+reconfigure="${reconfigure:-0}"
+setup_python_venv="${setup_python_venv:-0}"
+checkout_and_build_llvm="${checkout_and_build_llvm:-0}"
+checkout_and_build_torch_mlir="${checkout_and_build_torch_mlir:-0}"
+checkout_upmem="${checkout_upmem:-0}"
+CINNAMON_CMAKE_OPTIONS="${CINNAMON_CMAKE_OPTIONS:-}"
+
+# Required paths (defined in common.sh)
+project_root="${project_root:?Define 'project_root' in common.sh}"
+cinnamon_path="${cinnamon_path:?Define 'cinnamon_path' in common.sh}"
+llvm_path="${llvm_path:-}"
+torch_mlir_path="${torch_mlir_path:-}"
+upmem_path="${upmem_path:-}"
+
+# ---- Tools ----
+command -v ninja >/dev/null 2>&1 || { error "Ninja not found. Install it (e.g., 'sudo apt install ninja-build')."; exit 1; }
+command -v cmake >/dev/null 2>&1 || { error "CMake not found. Install it."; exit 1; }
 
 cd "$cinnamon_path"
 
-# If build dir exists but was configured with a different generator, recreate it
-if [ -f "build/CMakeCache.txt" ] && ! grep -q 'CMAKE_GENERATOR:INTERNAL=Ninja' build/CMakeCache.txt; then
-  status "Existing build dir was not generated with Ninja → recreating build/"
-  rm -rf build
+# ---- Build dir sanity: reconfigure if wrong generator / missing files ----
+need_config=0
+reason=""
+
+if [[ -f build/CMakeCache.txt ]] && ! grep -q 'CMAKE_GENERATOR:INTERNAL=Ninja' build/CMakeCache.txt; then
+  reason="existing build is not Ninja"
+fi
+if [[ -z "$reason" && ! -d build ]]; then reason="build/ directory missing"; fi
+if [[ -z "$reason" && -d build && ! -f build/CMakeCache.txt ]]; then reason="CMakeCache.txt missing"; fi
+if [[ -z "$reason" && -d build && ! -f build/build.ninja ]]; then reason="build.ninja missing"; fi
+if [[ -z "$reason" && "$reconfigure" -eq 1 ]]; then reason="forced reconfigure (reconfigure=1)"; fi
+
+# ---- If a venv is active, make CMake use it (Python + pybind11) ----
+EXTRA_OPTS=()
+if [[ -n "${VIRTUAL_ENV:-}" ]]; then
+  PYBIN="$(command -v python)"
+  # Ensure pybind11 is available and get its cmake dir
+  if ! PYBIND11_DIR="$("$PYBIN" - <<'PY'
+import sys
+try:
+    import pybind11
+    print(pybind11.get_cmake_dir())
+except Exception:
+    sys.exit(1)
+PY
+)"; then
+    status "pybind11 not found in venv; installing…"
+    "$PYBIN" -m pip install -U "pybind11>=2.10" numpy >/dev/null
+    PYBIND11_DIR="$("$PYBIN" -c 'import pybind11; print(pybind11.get_cmake_dir())')"
+  fi
+  EXTRA_OPTS+=( -DPython3_EXECUTABLE="$PYBIN" -Dpybind11_DIR="$PYBIND11_DIR" -DPython3_FIND_VIRTUALENV=ONLY )
+
+  # If cache exists but uses a different Python, force reconfigure
+  if [[ -z "$reason" && -f build/CMakeCache.txt ]]; then
+    cached_py="$(grep -E '^Python3_EXECUTABLE:FILEPATH=' build/CMakeCache.txt | sed 's/.*=//')"
+    if [[ -n "${cached_py:-}" && "$cached_py" != "$PYBIN" ]]; then
+      reason="cached Python ($cached_py) != venv Python ($PYBIN)"
+    fi
+  fi
 fi
 
-if [ ! -d "build" ] || [ "${reconfigure:-0}" -eq 1 ]; then
+# ---- Dependency locations (assembled safely as an array) ----
+DEP_OPTS=()
+if [[ "$checkout_and_build_llvm" -eq 1 && -n "${llvm_path:-}" ]]; then
+  DEP_OPTS+=( -DLLVM_DIR="$llvm_path/build/lib/cmake/llvm" )
+  DEP_OPTS+=( -DMLIR_DIR="$llvm_path/build/lib/cmake/mlir" )
+fi
+if [[ "$checkout_upmem" -eq 1 && -n "${upmem_path:-}" ]]; then
+  DEP_OPTS+=( -DUPMEM_DIR="$upmem_path" )
+fi
+if [[ "$checkout_and_build_torch_mlir" -eq 1 && -n "${torch_mlir_path:-}" ]]; then
+  DEP_OPTS+=( -DTORCH_MLIR_DIR="$torch_mlir_path/install" )
+fi
+
+# User-provided extra options (space-separated → array)
+if [[ -n "$CINNAMON_CMAKE_OPTIONS" ]]; then
+  # shellcheck disable=SC2206
+  EXTRA_USER_OPTS=( $CINNAMON_CMAKE_OPTIONS )
+else
+  EXTRA_USER_OPTS=()
+fi
+
+# ---- Configure helper ----
+configure() {
   status "Configuring Cinnamon (Ninja)"
   ln -s "$project_root/LICENSE" "$cinnamon_path/python/" 2>/dev/null || true
 
-  dependency_paths=""
-
-  if [[ ${checkout_and_build_llvm:-0} -eq 1 ]]; then
-    dependency_paths="$dependency_paths -DLLVM_DIR=$llvm_path/build/lib/cmake/llvm"
-    dependency_paths="$dependency_paths -DMLIR_DIR=$llvm_path/build/lib/cmake/mlir"
-  fi
-
-  if [[ ${checkout_upmem:-0} -eq 1 ]]; then
-    dependency_paths="$dependency_paths -DUPMEM_DIR=$upmem_path"
-  fi
-
-  if [[ ${checkout_and_build_torch_mlir:-0} -eq 1 ]]; then
-    dependency_paths="$dependency_paths -DTORCH_MLIR_DIR=$torch_mlir_path/install"
-  fi
-
   cmake -S . -B build -G Ninja \
     -DCMAKE_BUILD_TYPE=RelWithDebInfo \
-    $dependency_paths \
     -DCMAKE_EXPORT_COMPILE_COMMANDS=ON \
-    $CINNAMON_CMAKE_OPTIONS
+    "${DEP_OPTS[@]}" \
+    "${EXTRA_OPTS[@]}" \
+    "${EXTRA_USER_OPTS[@]}"
+}
+
+# ---- (Re)configure if needed ----
+if [[ -n "$reason" ]]; then
+  status "Reconfiguring because: $reason"
+  rm -rf build
+  configure
+elif [[ ! -f build/build.ninja ]]; then
+  # Extra guard: if config got skipped somehow
+  status "No build/build.ninja found → configuring"
+  configure
+else
+  status "Using existing Cinnamon configuration in build/"
 fi
 
+# ---- Build with one clean retry on failure ----
 status "Building Cinnamon (Ninja)"
-# Pass through extra args to Ninja if you like: -- -v or -- -j<N>
-cmake --build build --target all
+if ! cmake --build build --target all; then
+  warning "Build failed — cleaning build/ and retrying from fresh configure…"
+  rm -rf build
+  configure
+  cmake --build build --target all
+fi
 
-if [[ ${setup_python_venv:-0} -eq 1 ]] && [[ -n "${llvm_path:-}" ]] && [[ -n "${torch_mlir_path:-}" ]]; then
+# ---- Python package wiring (optional) ----
+if [[ "$setup_python_venv" -eq 1 && -n "${llvm_path:-}" && -n "${torch_mlir_path:-}" ]]; then
   status "Building Cinnamon Python package"
-  site_packages_dir="$(python -c 'from distutils.sysconfig import get_python_lib; print(get_python_lib())')"
+  # Prefer sysconfig (distutils may be absent)
+  site_packages_dir="$(python - <<'PY'
+import sys, sysconfig
+print(sysconfig.get_paths().get("platlib") or sysconfig.get_paths().get("purelib"))
+PY
+)"
   cinnamon_python_package_dir_src="$project_root/python/src/cinnamon"
   cinnamon_python_package_dir_dest="$site_packages_dir"
   cinnamon_python_package_resource_dir="$cinnamon_python_package_dir_dest/_resources"
 
-  cinnamon_python_resources=""
-  cinnamon_python_resources="$cinnamon_python_resources $cinnamon_path/build/bin/cinm-opt"
-  cinnamon_python_resources="$cinnamon_python_resources $cinnamon_path/build/lib/libMemristorDialectRuntime.so"
-  cinnamon_python_resources="$cinnamon_python_resources $torch_mlir_path/build/bin/torch-mlir-opt"
-  cinnamon_python_resources="$cinnamon_python_resources $llvm_path/build/bin/mlir-translate"
-  cinnamon_python_resources="$cinnamon_python_resources $llvm_path/build/bin/clang"
+  cinnamon_python_resources=()
+  cinnamon_python_resources+=( "$cinnamon_path/build/bin/cinm-opt" )
+  cinnamon_python_resources+=( "$cinnamon_path/build/lib/libMemristorDialectRuntime.so" )
+  [[ -n "${torch_mlir_path:-}" ]] && cinnamon_python_resources+=( "$torch_mlir_path/build/bin/torch-mlir-opt" )
+  [[ -n "${llvm_path:-}" ]] && cinnamon_python_resources+=( "$llvm_path/build/bin/mlir-translate" )
+  [[ -n "${llvm_path:-}" ]] && cinnamon_python_resources+=( "$llvm_path/build/bin/clang" )
 
-  if [ ! -d "$cinnamon_python_package_dir_dest" ]; then
-      ln -s "$cinnamon_python_package_dir_src" "$cinnamon_python_package_dir_dest"
+  if [[ ! -e "$cinnamon_python_package_dir_dest" ]]; then
+    ln -s "$cinnamon_python_package_dir_src" "$cinnamon_python_package_dir_dest"
   fi
 
   mkdir -p "$cinnamon_python_package_resource_dir" || true
-
-  for resource in $cinnamon_python_resources; do
+  for resource in "${cinnamon_python_resources[@]}"; do
     ln -s "$resource" "$cinnamon_python_package_resource_dir" 2>/dev/null || true
   done
 
-  if [[ ${build_cinnamon_wheel:-0} -eq 1 ]]; then
+  if [[ "${build_cinnamon_wheel:-0}" -eq 1 ]]; then
     cd "$cinnamon_path/python"
     PYTHONWARNINGS=ignore verbose_cmd python -m build
   fi
-elif [[ ${setup_python_venv:-0} -eq 0 ]]; then
+else
   warning "Skipping Cinnamon Python package build"
-  warning "Make sure to have a correct Python environment set up"
+  warning "Ensure your Python env is set up if you need it."
 fi
