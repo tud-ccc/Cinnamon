@@ -5,8 +5,11 @@
 #include <cinm-mlir/Dialect/Cim/IR/CimOps.h>
 #include <cinm-mlir/Dialect/Cim/IR/CimTypes.h>
 #include <cinm-mlir/Utils/CinmUtils.h>
-#include <mlir/Dialect/Linalg/IR/Linalg.h>
+
+#include "mlir/Bytecode/BytecodeOpInterface.h"
 #include <mlir/IR/Builders.h>
+#include <mlir/IR/BuiltinAttributes.h>
+#include <mlir/IR/BuiltinTypes.h>
 #include <mlir/IR/OpImplementation.h>
 #include <mlir/Support/LogicalResult.h>
 
@@ -42,52 +45,104 @@ void AcquireCrossbarOp::getAsmResultNames(
   setNameFn(getResult(), "cim_cbr");
 }
 
-::mlir::LogicalResult GemmOp::verify() {
-  auto lhs = cast<ShapedType>(getLhs().getType());
-  auto rhs = cast<ShapedType>(getRhs().getType());
-  auto result = cast<ShapedType>(getResult().getType());
+//===----------------------------------------------------------------------===//
+// Helpers
+//===----------------------------------------------------------------------===//
 
-  if (lhs.getElementType() != rhs.getElementType())
+static inline bool dimsEqualOrDynamic(int64_t a, int64_t b) {
+  return ShapedType::isDynamic(a) || ShapedType::isDynamic(b) || a == b;
+}
+
+::mlir::LogicalResult GemmOp::verify() {
+  // Operands must be memrefs of rank 2.
+  auto lhsTy = dyn_cast<MemRefType>(getLhs().getType());
+  auto rhsTy = dyn_cast<MemRefType>(getRhs().getType());
+  if (!lhsTy || lhsTy.getRank() != 2)
+    return emitOpError("lhs must be memref of rank 2");
+  if (!rhsTy || rhsTy.getRank() != 2)
+    return emitOpError("rhs must be memref of rank 2");
+
+  // Element types must match across operands.
+  if (lhsTy.getElementType() != rhsTy.getElementType())
     return emitOpError("lhs and rhs must have the same element type");
 
-  if (lhs.getElementType() != result.getElementType())
-    return emitOpError("operands and result must have the same element type");
+  // K compatibility: dim1(lhs) == dim0(rhs) (or dynamic).
+  if (!dimsEqualOrDynamic(lhsTy.getDimSize(1), rhsTy.getDimSize(0)))
+    return emitOpError("incompatible K: dim1(lhs) must equal dim0(rhs)");
 
-  if (lhs.getRank() != 2 || rhs.getRank() != 2)
-    return emitOpError("lhs and rhs must be matrices (rank 2)");
-
-  if (result.getRank() != 2)
-    return emitOpError("result must be a matrix (rank 2)");
-
-  if (lhs.getShape()[1] != rhs.getShape()[0] ||
-      lhs.getShape()[0] != result.getShape()[0] ||
-      rhs.getShape()[1] != result.getShape()[1])
-    return emitOpError("operands and result must have compatible shapes");
+  // Result must be a cim.future (payload not inspected here).
+  if (!isa<FutureType>(getResult().getType()))
+    return emitOpError("result must be a !cim.future");
 
   return success();
 }
 
 ::mlir::LogicalResult GemvOp::verify() {
-  auto lhs = cast<ShapedType>(getLhs().getType());
-  auto rhs = cast<ShapedType>(getRhs().getType());
-  auto result = cast<ShapedType>(getResult().getType());
+  auto lhsTy = dyn_cast<MemRefType>(getLhs().getType());
+  auto rhsTy = dyn_cast<MemRefType>(getRhs().getType());
+  if (!lhsTy || lhsTy.getRank() != 2)
+    return emitOpError("lhs must be memref of rank 2");
+  if (!rhsTy || rhsTy.getRank() != 1)
+    return emitOpError("rhs must be memref of rank 1");
 
-  if (lhs.getElementType() != rhs.getElementType())
+  if (lhsTy.getElementType() != rhsTy.getElementType())
     return emitOpError("lhs and rhs must have the same element type");
 
-  if (lhs.getElementType() != result.getElementType())
-    return emitOpError("operands and result must have the same element type");
+  if (!dimsEqualOrDynamic(lhsTy.getDimSize(0), rhsTy.getDimSize(0)))
+    return emitOpError("incompatible K: dim0(lhs) must equal dim0(rhs)");
 
-  if (lhs.getRank() != 2 || rhs.getRank() != 1)
-    return emitOpError(
-        "lhs must be a matrix (rank 2) and rhs must be a vector (rank 1)");
-
-  if (result.getRank() != 1)
-    return emitOpError("result must be a vector (rank 1)");
-
-  if (lhs.getShape()[1] != rhs.getShape()[0] ||
-      lhs.getShape()[0] != result.getShape()[0])
-    return emitOpError("operands and result must have compatible shapes");
+  if (!isa<FutureType>(getResult().getType()))
+    return emitOpError("result must be a !cim.future");
 
   return success();
+}
+
+::mlir::LogicalResult AddOp::verify() {
+  auto lhsTy = dyn_cast<MemRefType>(getLhs().getType());
+  auto rhsTy = dyn_cast<MemRefType>(getRhs().getType());
+  if (!lhsTy)
+    return emitOpError("lhs must be a memref");
+  if (!rhsTy)
+    return emitOpError("rhs must be a memref");
+
+  // Element types must match.
+  if (lhsTy.getElementType() != rhsTy.getElementType())
+    return emitOpError("lhs and rhs must have the same element type");
+
+  // Ranks must match.
+  if (lhsTy.getRank() != rhsTy.getRank())
+    return emitOpError("lhs and rhs must have the same rank");
+
+  // Shapes must match (dim-wise), allowing dynamics on either side.
+  for (int64_t d = 0; d < lhsTy.getRank(); ++d) {
+    if (!dimsEqualOrDynamic(lhsTy.getDimSize(d), rhsTy.getDimSize(d)))
+      return emitOpError() << "incompatible shapes at dimension " << d
+                           << ": got " << lhsTy.getDimSize(d) << " vs "
+                           << rhsTy.getDimSize(d);
+  }
+
+  // Result must be a future (payload verification omitted in this build).
+  if (!isa<FutureType>(getResult().getType()))
+    return emitOpError("result must be a !cim.future");
+
+  return success();
+}
+
+static llvm::LogicalResult verifyFutureOfSameMemRef(mlir::Operation *op,
+                                                    mlir::MemRefType inTy,
+                                                    mlir::Type resTy) {
+  if (!llvm::isa<mlir::cim::FutureType>(resTy))
+    return op->emitOpError("result must be !cim.future<...>");
+
+  if (!llvm::isa<mlir::FloatType>(inTy.getElementType()))
+    return op->emitOpError("input memref element type must be a floating type");
+
+  return mlir::success();
+}
+
+llvm::LogicalResult mlir::cim::ActivateOp::verify() {
+  auto inMR = llvm::dyn_cast<mlir::MemRefType>(getInput().getType());
+  if (!inMR)
+    return emitOpError("expects memref input");
+  return verifyFutureOfSameMemRef(*this, inMR, getResult().getType());
 }

@@ -1,114 +1,169 @@
-
 #include "cinm-mlir/Conversion/CinmPasses.h"
+
 #include "cinm-mlir/Dialect/Cim/IR/CimBase.h"
+#include "cinm-mlir/Dialect/Cim/IR/CimAttributes.h"
 #include "cinm-mlir/Dialect/Cim/IR/CimOps.h"
 #include "cinm-mlir/Dialect/Cim/IR/CimTypes.h"
+
 #include "cinm-mlir/Dialect/Cinm/IR/CinmAttributes.h"
 #include "cinm-mlir/Dialect/Cinm/IR/CinmBase.h"
 #include "cinm-mlir/Dialect/Cinm/IR/CinmOps.h"
+
 #include "cinm-mlir/Utils/CinmUtils.h"
 
-#include <algorithm>
-#include <cassert>
+#include <llvm/ADT/ArrayRef.h>
 #include <llvm/Support/Casting.h>
+
+#include <mlir/Dialect/Arith/IR/Arith.h>
+#include <mlir/Dialect/Bufferization/IR/Bufferization.h>
 #include <mlir/Dialect/Func/IR/FuncOps.h>
+#include <mlir/Dialect/MemRef/IR/MemRef.h>
 #include <mlir/Dialect/Tensor/IR/Tensor.h>
+
 #include <mlir/IR/BuiltinTypes.h>
 #include <mlir/IR/ImplicitLocOpBuilder.h>
-#include <mlir/IR/Operation.h>
 #include <mlir/IR/PatternMatch.h>
-#include <mlir/IR/ValueRange.h>
-#include <mlir/Support/LogicalResult.h>
 #include <mlir/Transforms/DialectConversion.h>
 
-#include <vector>
-
 using namespace mlir;
+
 #define GEN_PASS_CLASSES
-#include <cinm-mlir/Conversion/CinmPasses.h.inc>
+#include "cinm-mlir/Conversion/CinmPasses.h.inc"
 
 namespace {
 
-// Creates the specified type for a value with correct shape and element type
-// Condition: The value must be shaped type
-template <typename T> static T getShapedType(Value value) {
-  auto shapedType = cast<ShapedType>(value.getType());
-  return T::get(shapedType.getShape(), shapedType.getElementType());
+static Value toMemrefLike(ConversionPatternRewriter &rewriter, Location loc,
+                          Value v) {
+  Type ty = v.getType();
+  if (isa<MemRefType>(ty))
+    return v;
+  auto t = dyn_cast<RankedTensorType>(ty);
+  assert(t && "expected memref or ranked tensor");
+  auto memTy = MemRefType::get(t.getShape(), t.getElementType());
+  return rewriter.create<bufferization::ToMemrefOp>(loc, memTy, v);
 }
 
-// Prepares the cinm.compute operation for subsequent conversion passes
-// by inserting cim.acquire and cim.release operations
-struct ConvertCinmComputeToCim : public OpConversionPattern<cinm::ComputeOp> {
+static Value getCrossbarIdFromCompute(cinm::ComputeMemRefOp computeOp) {
+  for (Operation &nested : computeOp.getBody().getOps())
+    if (auto acq = dyn_cast<cim::AcquireCrossbarOp>(&nested))
+      return acq.getResult();
+  return {};
+}
 
-  ConvertCinmComputeToCim(MLIRContext *context)
-      : OpConversionPattern<cinm::ComputeOp>(context, 2) {}
+static inline cim::RoundingMode mapRounding(cinm::RoundingMode r) {
+  switch (r) {
+  case cinm::RoundingMode::Nearest:
+    return cim::RoundingMode::Nearest;
+  case cinm::RoundingMode::TowardsZero:
+    return cim::RoundingMode::TowardsZero;
+  }
+  llvm_unreachable("unknown cinm::RoundingMode");
+}
 
-  // Used for marking the operation legal once the acquire operation is inserted
-  // Actual replacement / erasure of the operation is done in a second pass
-  // with the InlineCinmCompute pattern
-  static bool preparedCinmComputeOp(Operation *op) {
-    if (llvm::isa<cinm::ComputeOp>(op)) {
-      auto computeOp = llvm::cast<cinm::ComputeOp>(op);
-      return llvm::isa<cim::AcquireDeviceOp>(
-          computeOp.getBody().front().front());
+static inline cim::ActivationKind toCimActivation(cinm::ActivationKind k) {
+  switch (k) {
+  case cinm::ActivationKind::RELU:
+    return cim::ActivationKind::RELU;
+  case cinm::ActivationKind::SIGMOID:
+    return cim::ActivationKind::SIGMOID;
+  case cinm::ActivationKind::TANH:
+    return cim::ActivationKind::TANH;
+  case cinm::ActivationKind::GELU:
+    return cim::ActivationKind::GELU;
+  }
+  llvm_unreachable("unsupported cinm::ActivationKind");
+}
+
+
+struct ConvertCinmComputeMemRefToCim
+    : public OpConversionPattern<cinm::ComputeMemRefOp> {
+  using OpConversionPattern::OpConversionPattern;
+
+  static bool preparedCinmComputeMemRefOp(Operation *op) {
+    if (isa<cinm::ComputeMemRefOp>(op)) {
+      auto computeOp = cast<cinm::ComputeMemRefOp>(op);
+      return !computeOp.getBody().empty() &&
+             !computeOp.getBody().front().empty() &&
+             isa<cim::AcquireDeviceOp>(computeOp.getBody().front().front());
     }
-
-    if (llvm::isa<cinm::CinmDialect>(op->getDialect()))
-      return false;
-
-    return true;
+    if (!isa<cinm::CinmDialect>(op->getDialect()))
+      return true;
+    return false;
   }
 
   LogicalResult
-  matchAndRewrite(cinm::ComputeOp op,
-                  OpConversionPattern<cinm::ComputeOp>::OpAdaptor,
+  matchAndRewrite(cinm::ComputeMemRefOp op, OpAdaptor,
                   ConversionPatternRewriter &rewriter) const override {
-
     rewriter.startOpModification(op);
 
-    // NOTE: The following accesses to the operation inside the compute op
-    // ares safe because there always has to be at least one nested operation
+    auto &entryBlock = op.getBody().front();
+    rewriter.setInsertionPoint(&entryBlock.front());
+    auto acquireDev = rewriter.create<cim::AcquireDeviceOp>(op.getLoc());
+    SmallVector<NamedAttribute> xbAttrs;
+    if (auto tiles = op->getAttrOfType<DenseI64ArrayAttr>("tileSizes")) {
+      auto vals = tiles.asArrayRef();
+      if (vals.size() >= 2) {
+        xbAttrs.emplace_back(rewriter.getStringAttr("height"),
+                             rewriter.getI64IntegerAttr(vals[0]));
+        xbAttrs.emplace_back(rewriter.getStringAttr("width"),
+                             rewriter.getI64IntegerAttr(vals[1]));
+      }
+    }
+    auto acquireXB = rewriter.create<cim::AcquireCrossbarOp>(
+        op.getLoc(),  acquireDev.getResult(),
+         xbAttrs);
 
-    // Acquire operations are needed for subsequent conversion passes
-    // The operations are inserted at the beginning of the block
-    rewriter.setInsertionPoint(&op.getBody().front().front());
-    auto acquireDeviceOp = rewriter.create<cim::AcquireDeviceOp>(op->getLoc());
-    auto acquireCrossbarOp = rewriter.create<cim::AcquireCrossbarOp>(
-        op->getLoc(), acquireDeviceOp.getResult());
-
-    // Release operation inserted at the end of the block
-    rewriter.setInsertionPointAfter(&op.getBody().back().back());
-    rewriter.create<cim::ReleaseCrossbarOp>(op->getLoc(),
-                                            acquireCrossbarOp.getResult());
-    rewriter.create<cim::ReleaseDeviceOp>(op->getLoc(),
-                                          acquireDeviceOp.getResult());
+    Operation &lastOp = op.getBody().back().back();
+    rewriter.setInsertionPointAfter(&lastOp);
+    rewriter.create<cim::ReleaseCrossbarOp>(op.getLoc(), acquireXB.getResult());
+    rewriter.create<cim::ReleaseDeviceOp>(op.getLoc(), acquireDev.getResult());
 
     rewriter.finalizeOpModification(op);
-
     return success();
   }
 };
 
-// Convert cinm.yield to cim.barrier
-// Each operand of cinm.yield is replaced by a cim.barrier operation
-struct ConvertCinmYieldToCim : public OpConversionPattern<cinm::YieldOp> {
-
-  using OpConversionPattern<cinm::YieldOp>::OpConversionPattern;
+struct ConvertCinmYieldInMemRefCompute
+    : public OpConversionPattern<cinm::YieldOp> {
+  using OpConversionPattern::OpConversionPattern;
 
   LogicalResult
-  matchAndRewrite(cinm::YieldOp op,
-                  OpConversionPattern<cinm::YieldOp>::OpAdaptor,
+  matchAndRewrite(cinm::YieldOp op, OpAdaptor,
                   ConversionPatternRewriter &rewriter) const override {
+    auto compute = op->getParentOfType<cinm::ComputeMemRefOp>();
+    if (!compute)
+      return op.emitOpError("must be nested in cinm.compute_memref");
 
-    auto parentComputeOp = op->getParentOfType<cinm::ComputeOp>();
+    Location loc = op.getLoc();
 
-    for (size_t i = 0; i < op->getNumOperands(); i++) {
-      auto result = parentComputeOp.getResult(i);
-      auto operand = op.getOperand(i);
-      auto barrierOp = rewriter.create<cim::BarrierOp>(
-          op.getLoc(), getShapedType<RankedTensorType>(operand), operand);
+    for (unsigned i = 0; i < op->getNumOperands(); ++i) {
+      Value operand = op.getOperand(i);
+      Value result = compute.getResult(i);
 
-      result.replaceAllUsesWith(barrierOp.getResult());
+      if (auto futTy = dyn_cast<cim::FutureType>(operand.getType())) {
+        (void)futTy;
+        auto resTy = dyn_cast<MemRefType>(result.getType());
+        if (!resTy)
+          return op.emitOpError() << "compute_memref result #" << i
+                                  << " must be a memref when yielding a future";
+        auto barrier = rewriter.create<cim::BarrierOp>(loc, resTy, operand);
+        result.replaceAllUsesWith(barrier.getResult());
+        continue;
+      }
+
+      Value forwarded = operand;
+      if (result.getType() != forwarded.getType()) {
+        if (isa<RankedTensorType>(forwarded.getType()) &&
+            isa<MemRefType>(result.getType())) {
+          forwarded = toMemrefLike(rewriter, loc, forwarded);
+        }
+      }
+      if (result.getType() != forwarded.getType())
+        return op.emitOpError()
+               << "type mismatch: result type " << result.getType()
+               << " does not match yielded value type " << forwarded.getType();
+
+      result.replaceAllUsesWith(forwarded);
     }
 
     rewriter.eraseOp(op);
@@ -116,109 +171,321 @@ struct ConvertCinmYieldToCim : public OpConversionPattern<cinm::YieldOp> {
   }
 };
 
-// One to one replacement of operations
-// The operation result of the replaced operation will be cim.future and a
-// additional deviceId operand will be prepended
-template <typename SourceOp, typename TargetOp>
-struct CinmOneToOneNestedOpConversionPattern
-    : public OpConversionPattern<SourceOp> {
 
-  using OpConversionPattern<SourceOp>::OpConversionPattern;
+struct LowerCinmActivateMemRef
+    : public OpConversionPattern<cinm::ActivateMemRefOp> {
+  using OpConversionPattern::OpConversionPattern;
 
   LogicalResult
-  matchAndRewrite(SourceOp op, OpConversionPattern<SourceOp>::OpAdaptor,
+  matchAndRewrite(cinm::ActivateMemRefOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
+    auto compute = op->getParentOfType<cinm::ComputeMemRefOp>();
+    if (!compute)
+      return op.emitOpError("must be nested in cinm.compute_memref");
 
-    auto parentComputeOp = op->template getParentOfType<cinm::ComputeOp>();
-    auto &acquireCrossbarOp =
-        *llvm::find_if(parentComputeOp.getBody().getOps(), [](Operation &op) {
-          return llvm::isa<cim::AcquireCrossbarOp>(op);
-        });
+    Location loc = op.getLoc();
 
-    auto resultType = getShapedType<cim::FutureType>(op.getResult());
+    if (adaptor.getOperands().size() != 2)
+      return op.emitOpError("expected (src, out) operands");
 
-    std::vector<Value> operands{};
-    operands.reserve(op.getNumOperands() + 1);
-    operands.push_back(acquireCrossbarOp.getResult(0));
-    for (auto operand : op.getOperands())
-      operands.push_back(operand);
+    Value src = adaptor.getOperands()[0];
+    Value out = adaptor.getOperands()[1];
 
-    auto targetOp =
-        rewriter.create<TargetOp>(op.getLoc(), resultType, operands);
-    op.getResult().replaceAllUsesWith(targetOp.getResult());
+    src = toMemrefLike(rewriter, loc, src);
+
+    auto outTy = dyn_cast<MemRefType>(out.getType());
+    if (!outTy)
+      return op.emitOpError("`out` must be a memref");
+
+    auto futTy = cim::FutureType::get(outTy.getShape(), outTy.getElementType());
+
+    OperationState st(loc, cim::ActivateOp::getOperationName());
+    st.addTypes(futTy);
+    st.addOperands(src);
+    st.addAttribute(
+        "kind", cim::ActivationKindAttr::get(rewriter.getContext(),
+                                             toCimActivation(op.getKind())));
+    Operation *act = rewriter.create(st);
+    Value fut = act->getResult(0);
+
+    Value y = rewriter.create<cim::BarrierOp>(loc, outTy, fut).getResult();
+    rewriter.create<memref::CopyOp>(loc, y, out);
+
     rewriter.eraseOp(op);
     return success();
   }
 };
 
-// Cleanup pattern. Just inlines all nested operations in cinm.compute
-struct InlineCinmCompute : public OpConversionPattern<cinm::ComputeOp> {
-
-  using OpConversionPattern<cinm::ComputeOp>::OpConversionPattern;
+struct LowerCinmQuantizeMemRef
+    : public OpConversionPattern<cinm::QuantizeMemRefOp> {
+  using OpConversionPattern::OpConversionPattern;
 
   LogicalResult
-  matchAndRewrite(cinm::ComputeOp op,
-                  OpConversionPattern<cinm::ComputeOp>::OpAdaptor,
+  matchAndRewrite(cinm::QuantizeMemRefOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
+    auto compute = op->getParentOfType<cinm::ComputeMemRefOp>();
+    if (!compute)
+      return op.emitOpError("must be nested in cinm.compute_memref");
+    Value xb = getCrossbarIdFromCompute(compute);
+    if (!xb)
+      return op.emitOpError("missing cim.acquire_crossbar in compute_memref");
 
+    Location loc = op.getLoc();
+
+    Value src = toMemrefLike(rewriter, loc, adaptor.getSrc());
+    Value out = adaptor.getOut();
+    auto outTy = dyn_cast<MemRefType>(out.getType());
+    if (!outTy)
+      return op.emitOpError("`out` must be a memref");
+
+    auto futTy = cim::FutureType::get(outTy.getShape(), outTy.getElementType());
+
+    OperationState st(loc, cim::QuantizeOp::getOperationName());
+    st.addTypes(futTy);
+    st.addOperands({xb, src});
+    st.addAttribute("scale", op.getScaleAttr());
+    st.addAttribute("zeroPoint", op.getZeroPointAttr());
+    if (auto axis = op.getAxisAttr())
+      st.addAttribute("axis", axis);
+    st.addAttribute("rounding",
+                    cim::RoundingModeAttr::get(rewriter.getContext(),
+                                               mapRounding(op.getRounding())));
+    st.addAttribute("narrowRange", rewriter.getBoolAttr(op.getNarrowRange()));
+
+    auto *qOp = rewriter.create(st);
+    Value fut = qOp->getResult(0);
+
+    Value y = rewriter.create<cim::BarrierOp>(loc, outTy, fut).getResult();
+    rewriter.create<memref::CopyOp>(loc, y, out);
+
+    rewriter.eraseOp(op);
+    return success();
+  }
+};
+
+struct LowerCinmDequantizeMemRef
+    : public OpConversionPattern<cinm::DequantizeMemRefOp> {
+  using OpConversionPattern::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(cinm::DequantizeMemRefOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    auto compute = op->getParentOfType<cinm::ComputeMemRefOp>();
+    if (!compute)
+      return op.emitOpError("must be nested in cinm.compute_memref");
+    Value xb = getCrossbarIdFromCompute(compute);
+    if (!xb)
+      return op.emitOpError("missing cim.acquire_crossbar in compute_memref");
+
+    Location loc = op.getLoc();
+
+    Value src = toMemrefLike(rewriter, loc, adaptor.getSrc());
+    Value out = adaptor.getOut();
+    auto outTy = dyn_cast<MemRefType>(out.getType());
+    if (!outTy)
+      return op.emitOpError("`out` must be a memref");
+
+    auto futTy = cim::FutureType::get(outTy.getShape(), outTy.getElementType());
+
+    OperationState st(loc, cim::DequantizeOp::getOperationName());
+    st.addTypes(futTy);
+    st.addOperands({xb, src});
+    st.addAttribute("scale", op.getScaleAttr());
+    st.addAttribute("zeroPoint", op.getZeroPointAttr());
+    if (auto axis = op.getAxisAttr())
+      st.addAttribute("axis", axis);
+
+    auto *dqOp = rewriter.create(st);
+    Value fut = dqOp->getResult(0);
+
+    Value y = rewriter.create<cim::BarrierOp>(loc, outTy, fut).getResult();
+    rewriter.create<memref::CopyOp>(loc, y, out);
+
+    rewriter.eraseOp(op);
+    return success();
+  }
+};
+
+struct LowerCinmGemmMemRef : public OpConversionPattern<cinm::GemmMemRefOp> {
+  using OpConversionPattern::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(cinm::GemmMemRefOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    auto compute = op->getParentOfType<cinm::ComputeMemRefOp>();
+    if (!compute)
+      return op.emitOpError("must be nested in cinm.compute_memref");
+
+    Value xb = getCrossbarIdFromCompute(compute);
+    if (!xb)
+      return op.emitOpError("missing cim.acquire_crossbar in compute_memref");
+
+    Location loc = op.getLoc();
+
+    Value A = toMemrefLike(rewriter, loc, adaptor.getLeft());
+    Value B = toMemrefLike(rewriter, loc, adaptor.getRight());
+    Value C = adaptor.getOut();
+
+    auto CTy = dyn_cast<MemRefType>(C.getType());
+    if (!CTy || CTy.getRank() != 2)
+      return op.emitOpError("`out` must be rank-2 memref");
+
+    auto futTy = cim::FutureType::get(CTy.getShape(), CTy.getElementType());
+
+    auto f = rewriter.create<cim::GemmOp>(loc, futTy, ValueRange{xb, A, B});
+    auto y = rewriter.create<cim::BarrierOp>(loc, CTy, f.getResult());
+    rewriter.create<memref::CopyOp>(loc, y.getResult(), C);
+
+    rewriter.eraseOp(op);
+    return success();
+  }
+};
+
+struct LowerCinmGemvMemRef : public OpConversionPattern<cinm::GemvMemRefOp> {
+  using OpConversionPattern::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(cinm::GemvMemRefOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    auto compute = op->getParentOfType<cinm::ComputeMemRefOp>();
+    if (!compute)
+      return op.emitOpError("must be nested in cinm.compute_memref");
+
+    Value xb = getCrossbarIdFromCompute(compute);
+    if (!xb)
+      return op.emitOpError("missing cim.acquire_crossbar in compute_memref");
+
+    Location loc = op.getLoc();
+
+    Value A = toMemrefLike(rewriter, loc, adaptor.getLeft());
+    Value x = toMemrefLike(rewriter, loc, adaptor.getRight());
+    Value yOut = adaptor.getOut();
+
+    auto yTy = dyn_cast<MemRefType>(yOut.getType());
+    if (!yTy || yTy.getRank() != 1)
+      return op.emitOpError("`out` must be rank-1 memref");
+
+    auto futTy = cim::FutureType::get(yTy.getShape(), yTy.getElementType());
+
+    auto f = rewriter.create<cim::GemvOp>(loc, futTy, ValueRange{xb, A, x});
+    auto y = rewriter.create<cim::BarrierOp>(loc, yTy, f.getResult());
+    rewriter.create<memref::CopyOp>(loc, y.getResult(), yOut);
+
+    rewriter.eraseOp(op);
+    return success();
+  }
+};
+
+struct LowerCinmAddMemRef : public OpConversionPattern<cinm::AddMemRefOp> {
+  using OpConversionPattern::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(cinm::AddMemRefOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    auto compute = op->getParentOfType<cinm::ComputeMemRefOp>();
+    if (!compute)
+      return op.emitOpError("must be nested in cinm.compute_memref");
+
+    Value xb = getCrossbarIdFromCompute(compute);
+    if (!xb)
+      return op.emitOpError("missing cim.acquire_crossbar in compute_memref");
+
+    Location loc = op.getLoc();
+
+    Value lhs = toMemrefLike(rewriter, loc, adaptor.getLhs());
+    Value rhs = toMemrefLike(rewriter, loc, adaptor.getRhs());
+    Value out = adaptor.getOut();
+
+    auto outTy = dyn_cast<MemRefType>(out.getType());
+    if (!outTy)
+      return op.emitOpError("`out` must be a memref");
+
+    auto futTy = cim::FutureType::get(outTy.getShape(), outTy.getElementType());
+
+    auto f = rewriter.create<cim::AddOp>(loc, futTy, ValueRange{xb, lhs, rhs});
+    auto y = rewriter.create<cim::BarrierOp>(loc, outTy, f.getResult());
+    rewriter.create<memref::CopyOp>(loc, y.getResult(), out);
+
+    rewriter.eraseOp(op);
+    return success();
+  }
+};
+
+
+struct InlineCinmComputeMemRef
+    : public OpConversionPattern<cinm::ComputeMemRefOp> {
+  using OpConversionPattern::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(cinm::ComputeMemRefOp op, OpAdaptor,
+                  ConversionPatternRewriter &rewriter) const override {
     Block *parentBlock = op->getBlock();
     auto insertionPoint = rewriter.getInsertionPoint();
-
-    for (auto &nestedOp : llvm::make_early_inc_range(op.getBody().getOps())) {
-      nestedOp.moveBefore(parentBlock, insertionPoint);
-    }
-
+    for (auto &nested : llvm::make_early_inc_range(op.getBody().getOps()))
+      nested.moveBefore(parentBlock, insertionPoint);
     rewriter.eraseOp(op);
-
     return success();
   }
 };
+
 
 struct ConvertTiledCinmToCim
     : public ConvertTiledCinmToCimBase<ConvertTiledCinmToCim> {
 
   void runOnOperation() override {
-    auto &ctx = getContext();
+    MLIRContext &ctx = getContext();
 
-    // First pass:
-    // First add cim.aquire and cim.release operations to cinm.compute
-    // Then convert all nested operations to cim operations
-    ConversionTarget firstPassTarget(ctx);
-    firstPassTarget.addLegalDialect<cim::CimDialect>();
-    firstPassTarget.markUnknownOpDynamicallyLegal(
-        ConvertCinmComputeToCim::preparedCinmComputeOp);
-    RewritePatternSet firstPassPatterns(&ctx);
-    firstPassPatterns.insert<
-        ConvertCinmComputeToCim,                                          //
-        ConvertCinmYieldToCim,                                            //
-        CinmOneToOneNestedOpConversionPattern<cinm::GemmOp, cim::GemmOp>, //
-        CinmOneToOneNestedOpConversionPattern<cinm::GemvOp, cim::GemvOp>>(&ctx);
+    {
+      ConversionTarget target(ctx);
+      target.addLegalDialect<cim::CimDialect>();
+      target.addLegalDialect<bufferization::BufferizationDialect>();
+      target.addLegalDialect<memref::MemRefDialect>();
+      target.addLegalDialect<arith::ArithDialect>();
+      target.addLegalDialect<func::FuncDialect>();
+      target.addLegalDialect<tensor::TensorDialect>();
 
-    if (failed(applyPartialConversion(getOperation(), firstPassTarget,
-                                      std::move(firstPassPatterns))))
-      signalPassFailure();
+      target.markUnknownOpDynamicallyLegal(
+          ConvertCinmComputeMemRefToCim::preparedCinmComputeMemRefOp);
 
-    // Second pass:
-    // Inline cinm.compute operations
-    RewritePatternSet secondPassPatterns(&ctx);
-    ConversionTarget secondPassTarget(ctx);
-    secondPassPatterns.insert<InlineCinmCompute>(&ctx);
-    secondPassTarget.markUnknownOpDynamicallyLegal([](...) { return true; });
-    secondPassTarget.addLegalDialect<cim::CimDialect>();
-    secondPassTarget.addIllegalDialect<cinm::CinmDialect>();
+      RewritePatternSet patterns(&ctx);
+      patterns
+          .insert<ConvertCinmComputeMemRefToCim,
+                  ConvertCinmYieldInMemRefCompute, LowerCinmActivateMemRef,
+                  LowerCinmGemmMemRef, LowerCinmGemvMemRef, LowerCinmAddMemRef,
+                  LowerCinmQuantizeMemRef, LowerCinmDequantizeMemRef>(&ctx);
 
-    if (failed(applyPartialConversion(getOperation(), secondPassTarget,
-                                      std::move(secondPassPatterns))))
-      signalPassFailure();
+      if (failed(applyPartialConversion(getOperation(), target,
+                                        std::move(patterns))))
+        return signalPassFailure();
+    }
+
+    {
+      ConversionTarget target(ctx);
+      target.addLegalDialect<cim::CimDialect>();
+      target.addLegalDialect<bufferization::BufferizationDialect>();
+      target.addLegalDialect<memref::MemRefDialect>();
+      target.addLegalDialect<arith::ArithDialect>();
+      target.addLegalDialect<func::FuncDialect>();
+      target.addLegalDialect<tensor::TensorDialect>();
+
+      target.addIllegalDialect<cinm::CinmDialect>();
+
+      RewritePatternSet patterns(&ctx);
+      patterns.insert<InlineCinmComputeMemRef>(&ctx);
+
+      if (failed(applyPartialConversion(getOperation(), target,
+                                        std::move(patterns))))
+        return signalPassFailure();
+    }
   }
 };
 
-} // namespace
+}
+
 
 std::unique_ptr<Pass> mlir::cinm::createConvertTiledCinmToCimPass() {
   return std::make_unique<ConvertTiledCinmToCim>();
 }
 
 void mlir::cinm::registerCinmToCimPipeline() {
-  // todo
 }
