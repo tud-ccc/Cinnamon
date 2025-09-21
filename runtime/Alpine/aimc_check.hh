@@ -55,10 +55,10 @@
 // SE runs. Defaults remain 4000x4000 if not specified. Provide runtime knobs
 // too, so a client can reconfigure via the C runtime (see alpine_rt.cc).
 #ifndef AIMC_HEIGHT
-#define AIMC_HEIGHT 64
+#define AIMC_HEIGHT 256
 #endif
 #ifndef AIMC_WIDTH
-#define AIMC_WIDTH 64
+#define AIMC_WIDTH 256
 #endif
 static int gAimcCfgHeight = AIMC_HEIGHT;
 static int gAimcCfgWidth = AIMC_WIDTH;
