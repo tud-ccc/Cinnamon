@@ -27,7 +27,9 @@ def _find_repo_root(start: Path) -> Path:
 NOTEBOOK_CWD = Path.cwd().resolve()
 REPO_ROOT = _find_repo_root(NOTEBOOK_CWD)
 TUTORIAL_DIR = REPO_ROOT / "tutorial"
-
+ASSETS_DIR = TUTORIAL_DIR / "assets"
+DRIVERS_DIR = ASSETS_DIR / "drivers"
+BINARY_OUTPUT_DIR = REPO_ROOT / "third-party/ALPINE/working_test"
 
 def _first_existing(paths: Iterable[Path]) -> Path | None:
     for path in paths:

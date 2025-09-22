@@ -128,6 +128,38 @@ def tools() -> Dict[str, Path]:
     return {name: path for name in desired if (path := _find_tool(name))}
 
 
+def mlir_translate(input_mlir: Path | str,
+                   output: Path | str | None = None,
+                   *,
+                   extra_args: Sequence[str] = ()) -> Path:
+    """Run ``mlir-translate`` on ``input_mlir`` and return the output path.
+
+    By default this converts LLVM-dialect MLIR into textual LLVM IR.  You can
+    pass additional flags through ``extra_args`` for other translations.
+    """
+
+    tool = tools().get("mlir-translate")
+    if not tool:
+        raise FileNotFoundError(
+            "mlir-translate not found; ensure LLVM was built or set MLIR_BIN_DIR")
+
+    input_mlir = Path(input_mlir).resolve()
+    if output is None:
+        output = input_mlir.with_suffix(".ll")
+    output = Path(output).resolve()
+
+    cmd: List[str] = [str(tool)]
+    if extra_args:
+        cmd.extend(str(arg) for arg in extra_args)
+    else:
+        # Default translation is LLVM IR emission.
+        cmd.append("--mlir-to-llvmir")
+    cmd.extend([str(input_mlir), "-o", str(output)])
+
+    run(cmd)
+    return output
+
+
 def mlir_opt_path() -> Path:
     """Return the path to ``mlir-opt`` or raise a helpful error."""
 
@@ -361,6 +393,7 @@ __all__ = [
     "clang_path", "llc_path",
     "compile_ll_to_obj", "compile_c_to_obj", "link_executable",
     "build_executable", "time_executable",
+    "mlir_translate",
     "platform_build_flags",
     "compile_ll_to_obj_with_flags",
     "compile_c_to_obj_with_flags",

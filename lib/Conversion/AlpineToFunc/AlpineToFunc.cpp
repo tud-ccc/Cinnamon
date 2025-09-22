@@ -35,8 +35,16 @@ static Value castToFullyDynamicMemRef(Value v, PatternRewriter &rewriter) {
     return v;
 
   SmallVector<int64_t, 4> dynShape(mr.getRank(), ShapedType::kDynamic);
-  auto dynMr = MemRefType::get(dynShape, mr.getElementType(), mr.getLayout(),
-                               mr.getMemorySpace());
+
+  auto ctx = rewriter.getContext();
+  SmallVector<int64_t> dynStrides(mr.getRank(), ShapedType::kDynamic);
+  int64_t dynOffset = ShapedType::kDynamic;
+  MemRefLayoutAttrInterface dynLayout =
+      StridedLayoutAttr::get(ctx, dynOffset, dynStrides);
+
+  auto dynMr =
+      MemRefType::get(dynShape, mr.getElementType(), dynLayout,
+                      mr.getMemorySpace());
   return rewriter.create<memref::CastOp>(v.getLoc(), dynMr, v);
 }
 

@@ -79,22 +79,35 @@ struct LowerCimQuantizeToAlpine : OpRewritePattern<memref::CopyOp> {
           copy, "zeroPoint out of i8 range [-128, 127]");
 
     Location loc = copy.getLoc();
+
+    Value srcForOp = q.getSrc();
+    MemRefType srcTy = dyn_cast<MemRefType>(srcForOp.getType());
+    if (!srcTy)
+      return rewriter.notifyMatchFailure(copy, "src must be memref");
+
+    if (auto altSrcTy = dyn_cast<MemRefType>(copy.getSource().getType())) {
+      if (altSrcTy.getRank() == srcTy.getRank() && altSrcTy != srcTy &&
+          memref::CastOp::areCastCompatible(srcTy, altSrcTy)) {
+        srcForOp = rewriter.create<memref::CastOp>(loc, altSrcTy, srcForOp);
+        srcTy = altSrcTy;
+      }
+    }
+
     Value dstForOp = dst;
-    if (auto srcTy = dyn_cast<MemRefType>(q.getSrc().getType())) {
-      if (srcTy.hasStaticShape() && srcTy.getRank() == dstMR.getRank()) {
-        auto expectedDstTy = MemRefType::get(srcTy.getShape(), dstMR.getElementType());
-        if (memref::CastOp::areCastCompatible(dstMR, expectedDstTy)) {
-          dstForOp = rewriter.create<memref::CastOp>(loc, expectedDstTy, dst);
-        }
+    if (srcTy.getRank() == dstMR.getRank()) {
+      SmallVector<int64_t> shape(srcTy.getShape().begin(), srcTy.getShape().end());
+      auto expectedDstTy =
+          MemRefType::get(shape, dstMR.getElementType(), dstMR.getLayout(),
+                          dstMR.getMemorySpace());
+      if (expectedDstTy != dstMR &&
+          memref::CastOp::areCastCompatible(dstMR, expectedDstTy)) {
+        dstForOp = rewriter.create<memref::CastOp>(loc, expectedDstTy, dst);
       }
     }
 
     rewriter.setInsertionPoint(copy);
     rewriter.create<alpine::QuantizeOp>(
-        loc,
-        q.getSrc(),
-        dstForOp,
-        q.getScaleAttr(),
+        loc, srcForOp, dstForOp, q.getScaleAttr(),
         rewriter.getI32IntegerAttr((int32_t)z64));
 
     rewriter.eraseOp(copy);
@@ -139,22 +152,35 @@ struct LowerCimDequantizeToAlpine : OpRewritePattern<memref::CopyOp> {
           copy, "zeroPoint out of i8 range [-128, 127]");
 
     Location loc = copy.getLoc();
+
+    Value srcForOp = dq.getSrc();
+    MemRefType srcTy = dyn_cast<MemRefType>(srcForOp.getType());
+    if (!srcTy)
+      return rewriter.notifyMatchFailure(copy, "src must be memref");
+
+    if (auto altSrcTy = dyn_cast<MemRefType>(copy.getSource().getType())) {
+      if (altSrcTy.getRank() == srcTy.getRank() && altSrcTy != srcTy &&
+          memref::CastOp::areCastCompatible(srcTy, altSrcTy)) {
+        srcForOp = rewriter.create<memref::CastOp>(loc, altSrcTy, srcForOp);
+        srcTy = altSrcTy;
+      }
+    }
+
     Value dstForOp = dst;
-    if (auto srcTy = dyn_cast<MemRefType>(dq.getSrc().getType())) {
-      if (srcTy.hasStaticShape() && srcTy.getRank() == dstMR.getRank()) {
-        auto expectedDstTy = MemRefType::get(srcTy.getShape(), dstMR.getElementType());
-        if (memref::CastOp::areCastCompatible(dstMR, expectedDstTy)) {
-          dstForOp = rewriter.create<memref::CastOp>(loc, expectedDstTy, dst);
-        }
+    if (srcTy.getRank() == dstMR.getRank()) {
+      SmallVector<int64_t> shape(srcTy.getShape().begin(), srcTy.getShape().end());
+      auto expectedDstTy =
+          MemRefType::get(shape, dstMR.getElementType(), dstMR.getLayout(),
+                          dstMR.getMemorySpace());
+      if (expectedDstTy != dstMR &&
+          memref::CastOp::areCastCompatible(dstMR, expectedDstTy)) {
+        dstForOp = rewriter.create<memref::CastOp>(loc, expectedDstTy, dst);
       }
     }
 
     rewriter.setInsertionPoint(copy);
     rewriter.create<alpine::DequantizeOp>(
-        loc,
-        dq.getSrc(),
-        dstForOp,
-        dq.getScaleAttr(),
+        loc, srcForOp, dstForOp, dq.getScaleAttr(),
         rewriter.getI32IntegerAttr((int32_t)z64));
 
     rewriter.eraseOp(copy);
@@ -263,9 +289,22 @@ struct LowerCimReluToAlpine : OpRewritePattern<memref::CopyOp> {
         !dstMR.getElementType().isF32())
       return rewriter.notifyMatchFailure(copy, "expects f32 memrefs");
 
+    Value srcForOp = act.getInput();
+    Value dst = copy.getTarget();
+    Value dstForOp = dst;
+    if (inMR.getRank() == dstMR.getRank()) {
+      SmallVector<int64_t> shape(inMR.getShape().begin(), inMR.getShape().end());
+      auto expectedDstTy = MemRefType::get(shape, dstMR.getElementType(),
+                                           inMR.getLayout(),
+                                           dstMR.getMemorySpace());
+      if (expectedDstTy != dstMR &&
+          memref::CastOp::areCastCompatible(dstMR, expectedDstTy))
+        dstForOp = rewriter.create<memref::CastOp>(copy.getLoc(), expectedDstTy,
+                                                   dst);
+    }
+
     rewriter.setInsertionPoint(copy);
-    rewriter.create<alpine::ReluOp>(copy.getLoc(), act.getInput(),
-                                    copy.getTarget());
+    rewriter.create<alpine::ReluOp>(copy.getLoc(), srcForOp, dstForOp);
 
     rewriter.eraseOp(copy);
     if (bar->use_empty())

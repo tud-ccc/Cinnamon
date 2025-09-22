@@ -111,9 +111,6 @@ static LogicalResult verifyFutureMatchesMemRef(Operation *op, MemRefType memTy,
   if (lhsTy.getElementType() != rhsTy.getElementType())
     return emitOpError("lhs and rhs must have the same element type");
 
-  if (!dimsEqualOrDynamic(lhsTy.getDimSize(0), rhsTy.getDimSize(0)))
-    return emitOpError("incompatible K: dim0(lhs) must equal dim0(rhs)");
-
   if (!isa<FutureType>(getResult().getType()))
     return emitOpError("result must be a !cim.future");
 
