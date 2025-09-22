@@ -32,8 +32,10 @@ queueVector(int size, int8_t * v, int tid = 0)
         tmp |= (v[i] & 0xff) << (8 * (i % 4));
     }
 
-    // Queue the leftover values, in case |v| % 4 != 0.
-    aimcQueue(tmp, tid);
+    // Queue the final pack. If size==0, skip; if size%4==0, this queues the last full pack.
+    if (size > 0) {
+        aimcQueue(tmp, tid);
+    }
 #endif // (LOOSELY_COUPLED_MMIO)
 
     return;

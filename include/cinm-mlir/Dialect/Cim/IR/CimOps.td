@@ -184,6 +184,8 @@ def QuantizeOp : Cim_Op<"op.quantize", []> {
     "$crossbarId `,` $src attr-dict `:` "
     "qualified(type($crossbarId)) `,` type($src) "
     "`->` qualified(type($result))";
+
+  let hasVerifier = 1;
 }
 
 def DequantizeOp : Cim_Op<"op.dequantize", []> {
@@ -211,6 +213,7 @@ def DequantizeOp : Cim_Op<"op.dequantize", []> {
     "qualified(type($crossbarId)) `,` type($src) "
     "`->` qualified(type($result))";
 
+  let hasVerifier = 1;
 }
 
 def Cim_ActivateOp : Cim_Op<"op.activate", []> {

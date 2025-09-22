@@ -7,6 +7,7 @@
 #include <cinm-mlir/Utils/CinmUtils.h>
 
 #include "mlir/Bytecode/BytecodeOpInterface.h"
+#include "llvm/ADT/STLExtras.h"
 #include <mlir/IR/Builders.h>
 #include <mlir/IR/BuiltinAttributes.h>
 #include <mlir/IR/BuiltinTypes.h>
@@ -51,6 +52,28 @@ void AcquireCrossbarOp::getAsmResultNames(
 
 static inline bool dimsEqualOrDynamic(int64_t a, int64_t b) {
   return ShapedType::isDynamic(a) || ShapedType::isDynamic(b) || a == b;
+}
+
+static LogicalResult verifyFutureMatchesMemRef(Operation *op, MemRefType memTy,
+                                               FutureType futureTy,
+                                               StringRef memName,
+                                               StringRef futureName) {
+  ArrayRef<int64_t> futureShape = futureTy.getShape();
+  if (static_cast<int64_t>(futureShape.size()) != memTy.getRank())
+    return op->emitOpError()
+           << "expects " << futureName << " to have rank " << memTy.getRank()
+           << " like " << memName << ", but got " << futureShape.size();
+
+  for (auto [idx, futDim] : llvm::enumerate(futureShape)) {
+    int64_t memDim = memTy.getDimSize(static_cast<unsigned>(idx));
+    if (!dimsEqualOrDynamic(memDim, futDim))
+      return op->emitOpError()
+             << "expects dimension " << idx << " of " << futureName << " ("
+             << futDim << ") to match " << memName << " (" << memDim
+             << ")";
+  }
+
+  return success();
 }
 
 ::mlir::LogicalResult GemmOp::verify() {
@@ -124,6 +147,52 @@ static inline bool dimsEqualOrDynamic(int64_t a, int64_t b) {
   // Result must be a future (payload verification omitted in this build).
   if (!isa<FutureType>(getResult().getType()))
     return emitOpError("result must be a !cim.future");
+
+  return success();
+}
+
+::llvm::LogicalResult QuantizeOp::verify() {
+  auto srcTy = dyn_cast<MemRefType>(getSrc().getType());
+  if (!srcTy)
+    return emitOpError("expects memref operand 'src'");
+
+  if (!isa<FloatType>(srcTy.getElementType()))
+    return emitOpError("expects element type of 'src' to be floating point");
+
+  auto futureTy = dyn_cast<FutureType>(getResult().getType());
+  if (!futureTy)
+    return emitOpError("result must be a !cim.future");
+
+  auto futureElemTy = dyn_cast<IntegerType>(futureTy.getElementType());
+  if (!futureElemTy || futureElemTy.getWidth() != 8)
+    return emitOpError("expects future element type to be i8");
+
+  if (failed(verifyFutureMatchesMemRef(*this, srcTy, futureTy, "src",
+                                       "result")))
+    return failure();
+
+  return success();
+}
+
+::llvm::LogicalResult DequantizeOp::verify() {
+  auto srcTy = dyn_cast<MemRefType>(getSrc().getType());
+  if (!srcTy)
+    return emitOpError("expects memref operand 'src'");
+
+  auto srcElemTy = dyn_cast<IntegerType>(srcTy.getElementType());
+  if (!srcElemTy || srcElemTy.getWidth() != 8)
+    return emitOpError("expects element type of 'src' to be i8");
+
+  auto futureTy = dyn_cast<FutureType>(getResult().getType());
+  if (!futureTy)
+    return emitOpError("result must be a !cim.future");
+
+  if (!isa<FloatType>(futureTy.getElementType()))
+    return emitOpError("expects future element type to be floating point");
+
+  if (failed(verifyFutureMatchesMemRef(*this, srcTy, futureTy, "src",
+                                       "result")))
+    return failure();
 
   return success();
 }

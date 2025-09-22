@@ -55,13 +55,13 @@
 // SE runs. Defaults remain 4000x4000 if not specified. Provide runtime knobs
 // too, so a client can reconfigure via the C runtime (see alpine_rt.cc).
 #ifndef AIMC_HEIGHT
-#define AIMC_HEIGHT 256
+#define AIMC_HEIGHT 2000
 #endif
 #ifndef AIMC_WIDTH
-#define AIMC_WIDTH 256
+#define AIMC_WIDTH 2000
 #endif
-static int gAimcCfgHeight = AIMC_HEIGHT;
-static int gAimcCfgWidth = AIMC_WIDTH;
+extern int gAimcCfgHeight;
+extern int gAimcCfgWidth;
 
 struct AnalogComputationalMemoryCore {
     // Constructor.
@@ -208,7 +208,7 @@ class AnalogComputationalMemory {
         int idx = cores[tid]->inputMemoryCounter;
         int length = cores[tid]->vectorization;
 
-        if ((idx + length) < cores[tid]->crossbarHeight) {
+        if ((idx + length) <= cores[tid]->crossbarHeight) {
             for (int i = 0; i < length; i++) {
                 int8_t currVal = (val >> (8 * i)) & 0xff;
                 cores[tid]->inputMemory[idx + i] = currVal;
@@ -227,7 +227,7 @@ class AnalogComputationalMemory {
         int idx = cores[tid]->outputMemoryCounter;
         int length = cores[tid]->vectorization;
 
-        if ((idx + length) < cores[tid]->crossbarWidth) {
+        if ((idx + length) <= cores[tid]->crossbarWidth) {
             for (int i = length-1; i > -1; i--) {
                 result <<= 8;
                 result |= 0xff & (cores[tid]->outputMemory[idx + i]);
@@ -237,6 +237,37 @@ class AnalogComputationalMemory {
         cores[tid]->outputMemoryCounter += length;
 
         return result;
+    }
+
+    // Debug peek helpers (non-mutating) for SE runs
+    int8_t peekInput(int tid, int idx) const {
+        if (tid < 0 || tid >= coreCount) return 0;
+        if (idx < 0 || idx >= cores[tid]->crossbarHeight) return 0;
+        return cores[tid]->inputMemory[idx];
+    }
+    int8_t peekOutput(int tid, int idx) const {
+        if (tid < 0 || tid >= coreCount) return 0;
+        if (idx < 0 || idx >= cores[tid]->crossbarWidth) return 0;
+        return cores[tid]->outputMemory[idx];
+    }
+
+    // Direct vector I/O helpers (checker-only convenience)
+    void writeInputVector(int tid, const int8_t *src, int len) {
+        if (tid < 0 || tid >= coreCount) return;
+        if (len < 0) return;
+        int n = (len <= cores[tid]->crossbarHeight) ? len : cores[tid]->crossbarHeight;
+        for (int i = 0; i < n; ++i) {
+            cores[tid]->inputMemory[i] = src[i];
+        }
+        cores[tid]->inputMemoryCounter = n;
+    }
+    void readOutputVector(int tid, int8_t *dst, int len) const {
+        if (tid < 0 || tid >= coreCount) return;
+        if (len < 0) return;
+        int n = (len <= cores[tid]->crossbarWidth) ? len : cores[tid]->crossbarWidth;
+        for (int i = 0; i < n; ++i) {
+            dst[i] = cores[tid]->outputMemory[i];
+        }
     }
 
     int8_t
@@ -270,29 +301,10 @@ class AnalogComputationalMemory {
 };
 
 
-// Lazy singleton to avoid relying on C++ global constructor order in
-// freestanding builds. This ensures construction happens on first use.
-// Avoid function-local static (no __cxa_guard dependency). Use a pointer
-// allocated on first use; no destructor in freestanding mode.
-static AnalogComputationalMemory *g_aimc_ptr = 0;
-static inline AnalogComputationalMemory &getAimc()
-{
-    if (!g_aimc_ptr) {
-        g_aimc_ptr = new AnalogComputationalMemory(8, gAimcCfgHeight, gAimcCfgWidth);
-    }
-    return *g_aimc_ptr;
-}
-
-// Runtime setter used by the C runtime to reconfigure the emulated array.
-static inline void aimcSetArrayDimsRuntime(int height, int width)
-{
-    if (height > 0) gAimcCfgHeight = height;
-    if (width > 0) gAimcCfgWidth = width;
-    if (g_aimc_ptr) {
-        delete g_aimc_ptr;
-        g_aimc_ptr = new AnalogComputationalMemory(8, gAimcCfgHeight, gAimcCfgWidth);
-    }
-}
+// Singleton accessor and runtime setter (defined in aimc_state.cc).
+class AnalogComputationalMemory;
+AnalogComputationalMemory &getAimc();
+void aimcSetArrayDimsRuntime(int height, int width);
 
 //////////////////////////
 // Intrinsics Emulation //

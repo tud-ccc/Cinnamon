@@ -79,11 +79,21 @@ struct LowerCimQuantizeToAlpine : OpRewritePattern<memref::CopyOp> {
           copy, "zeroPoint out of i8 range [-128, 127]");
 
     Location loc = copy.getLoc();
+    Value dstForOp = dst;
+    if (auto srcTy = dyn_cast<MemRefType>(q.getSrc().getType())) {
+      if (srcTy.hasStaticShape() && srcTy.getRank() == dstMR.getRank()) {
+        auto expectedDstTy = MemRefType::get(srcTy.getShape(), dstMR.getElementType());
+        if (memref::CastOp::areCastCompatible(dstMR, expectedDstTy)) {
+          dstForOp = rewriter.create<memref::CastOp>(loc, expectedDstTy, dst);
+        }
+      }
+    }
+
     rewriter.setInsertionPoint(copy);
     rewriter.create<alpine::QuantizeOp>(
         loc,
         q.getSrc(),
-        dst,
+        dstForOp,
         q.getScaleAttr(),
         rewriter.getI32IntegerAttr((int32_t)z64));
 
@@ -129,11 +139,21 @@ struct LowerCimDequantizeToAlpine : OpRewritePattern<memref::CopyOp> {
           copy, "zeroPoint out of i8 range [-128, 127]");
 
     Location loc = copy.getLoc();
+    Value dstForOp = dst;
+    if (auto srcTy = dyn_cast<MemRefType>(dq.getSrc().getType())) {
+      if (srcTy.hasStaticShape() && srcTy.getRank() == dstMR.getRank()) {
+        auto expectedDstTy = MemRefType::get(srcTy.getShape(), dstMR.getElementType());
+        if (memref::CastOp::areCastCompatible(dstMR, expectedDstTy)) {
+          dstForOp = rewriter.create<memref::CastOp>(loc, expectedDstTy, dst);
+        }
+      }
+    }
+
     rewriter.setInsertionPoint(copy);
     rewriter.create<alpine::DequantizeOp>(
         loc,
         dq.getSrc(),
-        dst,
+        dstForOp,
         dq.getScaleAttr(),
         rewriter.getI32IntegerAttr((int32_t)z64));
 

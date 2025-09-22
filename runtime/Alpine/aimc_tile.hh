@@ -57,9 +57,10 @@ mapMatrix(int aimc_x, int aimc_y, int height, int width, T max, T ** m)
 inline void
 mapMatrix(int aimc_x, int aimc_y, int height, int width, int8_t * m)
 {
+    // m is a flattened row-major [height][width] buffer.
     for (int i = 0; i < width; i++) {
         for (int j = 0; j < height; j++) {
-            aimcParamWrite(i + aimc_x, j + aimc_y, m[i * width + j]);
+            aimcParamWrite(i + aimc_x, j + aimc_y, m[j * width + i]);
         }
     }
 

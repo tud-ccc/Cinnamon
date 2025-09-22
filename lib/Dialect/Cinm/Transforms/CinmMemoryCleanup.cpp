@@ -15,6 +15,8 @@
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
 
+#include "llvm/Support/Casting.h"
+
 using namespace mlir;
 
 #define GEN_PASS_CLASSES
@@ -1124,6 +1126,45 @@ struct ReplaceLinalgGenericCapturedValueWithFill
     return success();
   }
 };
+
+static bool dimsCompatible(int64_t a, int64_t b) {
+  return ShapedType::isDynamic(a) || ShapedType::isDynamic(b) || a == b;
+}
+
+struct EraseDynamicStridedCast final : OpRewritePattern<memref::CastOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(memref::CastOp op,
+                                PatternRewriter &rewriter) const override {
+    auto srcTy = dyn_cast<MemRefType>(op.getSource().getType());
+    auto dstTy = dyn_cast<MemRefType>(op.getResult().getType());
+    if (!srcTy || !dstTy)
+      return failure();
+
+    if (srcTy.getElementType() != dstTy.getElementType())
+      return failure();
+    if (srcTy.getRank() != dstTy.getRank())
+      return failure();
+    if (srcTy.getMemorySpace() != dstTy.getMemorySpace())
+      return failure();
+
+    auto strided = dyn_cast_or_null<StridedLayoutAttr>(dstTy.getLayout());
+    if (!strided)
+      return failure();
+    if (strided.getOffset() != ShapedType::kDynamic)
+      return failure();
+    for (int64_t stride : strided.getStrides())
+      if (stride != ShapedType::kDynamic)
+        return failure();
+
+    for (int64_t dim = 0, e = dstTy.getRank(); dim < e; ++dim)
+      if (!dimsCompatible(dstTy.getDimSize(dim), srcTy.getDimSize(dim)))
+        return failure();
+
+    rewriter.replaceOp(op, op.getSource());
+    return success();
+  }
+};
 struct CinmMemoryCleanupPass
     : public CinmMemoryCleanupPassBase<CinmMemoryCleanupPass> {
   void runOnOperation() override {
@@ -1155,6 +1196,7 @@ struct CinmMemoryCleanupPass
     patterns.add<ReplaceLinalgGenericIndexYieldWithLoops>(&ctx);
     patterns.add<ReplaceLinalgGenericForwardToLoops>(&ctx);
     patterns.add<ReplaceSimpleAffineForToScf>(&ctx);
+    patterns.add<EraseDynamicStridedCast>(&ctx);
 
     GreedyRewriteConfig cfg;
     if (failed(applyPatternsGreedily(getOperation(), std::move(patterns), cfg)))
