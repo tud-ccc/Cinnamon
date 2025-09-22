@@ -219,6 +219,19 @@ struct BatchGemmToLoopedGemv final
 
     auto parentCompute = op->getParentOfType<cinm::ComputeOp>();
 
+    Value bias = op.getBias();
+    RankedTensorType biasTy;
+    if (bias) {
+      biasTy = dyn_cast<RankedTensorType>(bias.getType());
+      if (!biasTy || biasTy.getRank() != 3)
+        return rewriter.notifyMatchFailure(op, "bias must be ranked 3D tensor");
+      if (biasTy.getDimSize(0) != B || biasTy.getDimSize(1) != M ||
+          biasTy.getDimSize(2) != N)
+        return rewriter.notifyMatchFailure(op, "bias dims must match (B,M,N)");
+      if (biasTy.getElementType() != elemTy)
+        return rewriter.notifyMatchFailure(op, "bias element type must match");
+    }
+
     Value acc0 = rewriter.create<tensor::EmptyOp>(
         loc, ArrayRef<int64_t>{B, M, N}, elemTy);
 
@@ -245,6 +258,11 @@ struct BatchGemmToLoopedGemv final
       SmallVector<int64_t, 3> staticSizesY{1, M, 1};
       auto yVecTy = RankedTensorType::get({M}, elemTy);
 
+      SmallVector<int64_t, 3> staticSizesBias{1, M, 1};
+      auto biasColTy = RankedTensorType::get({1, M, 1}, elemTy);
+      SmallVector<ReassociationIndices, 1> collapseBias{{0, 1, 2}};
+      auto biasVecTy = RankedTensorType::get({M}, elemTy);
+
       finals = createNestedAffineForLoops(
           rewriter, loc, ArrayRef<int64_t>{B, N}, ArrayRef<int64_t>{1, 1},
           ValueRange{acc0},
@@ -267,8 +285,21 @@ struct BatchGemmToLoopedGemv final
             Value x = b.create<tensor::CollapseShapeOp>(loc2, xTy, bSlice,
                                                         collapseBCol);
 
-            Value y =
-                b.create<cinm::GemvOp>(loc2, yVecTy, aMat, x).getResult();
+            Value biasVec;
+            if (bias) {
+              Value biasSlice = b.create<tensor::ExtractSliceOp>(
+                  loc2, biasColTy, bias, ValueRange{batch, c0, j},
+                  ValueRange{}, ValueRange{}, dynOffsets3, staticSizesBias,
+                  unitStrides3);
+              biasVec = b.create<tensor::CollapseShapeOp>(loc2, biasVecTy,
+                                                          biasSlice, collapseBias);
+            }
+
+            Value y = bias
+                           ? b.create<cinm::GemvOp>(loc2, yVecTy, aMat, x, biasVec)
+                                 .getResult()
+                           : b.create<cinm::GemvOp>(loc2, yVecTy, aMat, x)
+                                 .getResult();
 
             Value yExpanded = b.create<tensor::ExpandShapeOp>(
                 loc2, yExpandedTy, y, expandY);
@@ -294,6 +325,11 @@ struct BatchGemmToLoopedGemv final
       auto bColTy = RankedTensorType::get({1, K, 1}, elemTy);
       SmallVector<ReassociationIndices, 1> collapseBCol{{0, 1, 2}};
       auto xTy = RankedTensorType::get({K}, elemTy);
+
+      SmallVector<int64_t, 3> staticSizesBias{1, 1, 1};
+      auto biasScalarTy = RankedTensorType::get({1, 1, 1}, elemTy);
+      SmallVector<ReassociationIndices, 1> collapseBias{{0, 1, 2}};
+      auto biasVecTy = RankedTensorType::get({1}, elemTy);
 
       SmallVector<ReassociationIndices, 1> expandScalar{{0, 1, 2}};
       auto yExpandedTy = RankedTensorType::get({1, 1, 1}, elemTy);
@@ -323,8 +359,21 @@ struct BatchGemmToLoopedGemv final
             Value x = b.create<tensor::CollapseShapeOp>(loc2, xTy, bSlice,
                                                         collapseBCol);
 
-            Value y =
-                b.create<cinm::GemvOp>(loc2, yScalarTy, aRow, x).getResult();
+            Value biasVec;
+            if (bias) {
+              Value biasSlice = b.create<tensor::ExtractSliceOp>(
+                  loc2, biasScalarTy, bias, ValueRange{batch, i, j},
+                  ValueRange{}, ValueRange{}, dynOffsets3, staticSizesBias,
+                  unitStrides3);
+              biasVec = b.create<tensor::CollapseShapeOp>(loc2, biasVecTy,
+                                                          biasSlice, collapseBias);
+            }
+
+            Value y = bias
+                           ? b.create<cinm::GemvOp>(loc2, yScalarTy, aRow, x, biasVec)
+                                 .getResult()
+                           : b.create<cinm::GemvOp>(loc2, yScalarTy, aRow, x)
+                                 .getResult();
 
             Value yExpanded = b.create<tensor::ExpandShapeOp>(
                 loc2, yExpandedTy, y, expandScalar);

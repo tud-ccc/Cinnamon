@@ -594,6 +594,32 @@ struct MatvecToCinm : public OpConversionPattern<linalg::MatvecOp> {
   }
 };
 
+struct BatchMatmulToCinm : public OpConversionPattern<linalg::BatchMatmulOp> {
+  using OpConversionPattern::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(linalg::BatchMatmulOp op, OpAdaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    ValueRange inputs = op.getInputs();
+    ValueRange outputs = op.getOutputs();
+    if (inputs.size() != 2 || outputs.size() != 1)
+      return rewriter.notifyMatchFailure(op, "unexpected arity");
+
+    Value A = inputs[0];
+    Value B = inputs[1];
+
+    if (!op->getResults().empty()) {
+      if (!isTensor(A) || !isTensor(B) || !isTensor(op->getResult(0)))
+        return rewriter.notifyMatchFailure(op, "requires tensor operands/results");
+      auto batch = rewriter.create<cinm::BatchGemmOp>(op.getLoc(), A, B);
+      rewriter.replaceOp(op, batch.getResult());
+      return success();
+    }
+
+    return rewriter.notifyMatchFailure(op, "memref path not supported yet");
+  }
+};
+
 struct GenericActivationToCinm : public OpConversionPattern<linalg::GenericOp> {
   using OpConversionPattern::OpConversionPattern;
 
@@ -1125,10 +1151,11 @@ struct ConvertLinalgToCinmPass
 
     target.addIllegalOp<linalg::MatmulOp>();
     target.addIllegalOp<linalg::MatvecOp>();
+    target.addIllegalOp<linalg::BatchMatmulOp>();
     target.addIllegalOp<linalg::BatchMatvecOp>();
 
     RewritePatternSet patterns(&ctx);
-    patterns.insert<MatmulToCinm, MatvecToCinm, BatchMatvecToCinm,
+    patterns.insert<MatmulToCinm, MatvecToCinm, BatchMatmulToCinm, BatchMatvecToCinm,
                     GenericContractionToCinm>(&ctx);
 
     if (failed(applyPartialConversion(getOperation(), target, std::move(patterns))))
