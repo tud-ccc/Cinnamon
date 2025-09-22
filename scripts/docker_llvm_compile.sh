@@ -134,6 +134,7 @@ docker run --rm \
     CXXFLAGS="-O3 -std=c++17 -I/workspace/runtime/Alpine -DUSE_CHECKER -ffreestanding -fno-exceptions -fno-rtti -fno-pic"
 
     aarch64-linux-gnu-g++ $CXXFLAGS -c /workspace/runtime/Alpine/alpine_runtime.cc   -o "$BUILD_DIR/alpine_runtime.o"
+    aarch64-linux-gnu-g++ $CXXFLAGS -c /workspace/runtime/Alpine/aimc_state.cc       -o "$BUILD_DIR/aimc_state.o"
     aarch64-linux-gnu-g++ $CXXFLAGS -c /workspace/runtime/Alpine/memref_rt_min.cc    -o "$BUILD_DIR/memref_rt_min.o"
     aarch64-linux-gnu-g++ $CXXFLAGS -c /workspace/runtime/Alpine/runtime_shims.cc    -o "$BUILD_DIR/runtime_shims.o"
     aarch64-linux-gnu-gcc  -O3 -std=gnu11 -ffreestanding -fno-pic -c "$DRIVER_SRC"   -o "$BUILD_DIR/driver.o"
@@ -144,6 +145,7 @@ docker run --rm \
       "$BUILD_DIR/driver.o" \
       "$LLVM_OBJ" \
       "$BUILD_DIR/alpine_runtime.o" \
+      "$BUILD_DIR/aimc_state.o" \
       "$BUILD_DIR/runtime_shims.o" \
       "$BUILD_DIR/memref_rt_min.o" \
       /workspace/runtime/Alpine/crt0.o

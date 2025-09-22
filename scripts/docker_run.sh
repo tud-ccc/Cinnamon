@@ -51,7 +51,10 @@ GEM5_BIN_C=/workspace/third-party/ALPINE/gem5-X-ALPINE/build/ARM/gem5.opt
 SE_CFG_C=/workspace/runtime/Alpine/se_alpine.py
 PYTHONPATH_C=/workspace/third-party/ALPINE/gem5-X-ALPINE/configs
 
-mkdir -p "$OUT_DIR_HOST"
+# Create out folder only if it's missing
+if [[ ! -d "$OUT_DIR_HOST" ]]; then
+  mkdir -p "$OUT_DIR_HOST"
+fi
 
 echo "[host] PWD: $(pwd)"
 echo "[host] ROOT: $ROOT"
