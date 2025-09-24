@@ -9,7 +9,7 @@ _add_to_path() {
   local var_name="$1"
   local new_path="$2"
   [ -d "$new_path" ] || return 0
-  eval "local current_value=\"\${$var_name}\""
+  eval "local current_value=\"\${$var_name-}\""
   if [ -z "$current_value" ]; then
     eval "$var_name=\"$new_path\""
     return 0
@@ -34,4 +34,5 @@ export PYTHONPATH
 unset -f _add_to_path
 unset _script_source
 unset _CINM_ROOT
-export LD_LIBRARY_PATH=$HOME/Cinnamon/third-party/llvm/build/lib:$LD_LIBRARY_PATH
+_existing_ld_library_path="${LD_LIBRARY_PATH-}"
+export LD_LIBRARY_PATH="$HOME/Cinnamon/third-party/llvm/build/lib${_existing_ld_library_path:+:$_existing_ld_library_path}"
