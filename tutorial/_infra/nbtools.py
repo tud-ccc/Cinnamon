@@ -96,15 +96,19 @@ def _find_tool(executable: str) -> Path | None:
         if override_path.is_file():
             return override_path
 
-    # Use shutil.which in case the environment already knows about it.
-    which = shutil.which(executable)
-    if which:
-        return Path(which).resolve()
-
+    # Prefer the toolchain we ship with the tutorial (or any directory the
+    # caller points us at via environment hints) before falling back to whatever
+    # happens to be first on PATH.  This avoids picking up the system clang on
+    # lab machines where an older distro toolchain would otherwise win.
     for directory in _candidate_tool_dirs():
         candidate = directory / executable
         if candidate.is_file():
             return candidate
+
+    # Finally, rely on PATH as a last resort.
+    which = shutil.which(executable)
+    if which:
+        return Path(which).resolve()
     return None
 
 
