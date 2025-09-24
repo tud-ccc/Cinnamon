@@ -20,7 +20,7 @@ Emerging compute-near-memory (CNM) and compute-in-memory (CIM) architectures hav
 
 <!-- GETTING STARTED -->
 ## Getting Started
-This repository supports the ESWEEK tutorial and adds ALPINE support.
+This repository is designed for the ESWEEK tutorial 2025 and adds ALPINE support.
 Tutorial notebooks live in `tutorial/notebooks`.
 
 ### Prerequisites
