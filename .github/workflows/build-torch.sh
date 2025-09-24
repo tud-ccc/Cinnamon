@@ -3,6 +3,18 @@
 script_dir="$( cd -- "$(dirname "$0")" >/dev/null 2>&1 ; pwd -P )"
 source "$script_dir/common.sh"
 
+# Ensure we have a Python interpreter available (prefer the repo venv).
+if [[ -z "${VIRTUAL_ENV:-}" && -d "$py_venv_path" ]]; then
+  # shellcheck disable=SC1091
+  source "$py_venv_path/bin/activate"
+fi
+
+PYTHON_BIN="$(command -v python3 || command -v python || true)"
+if [[ -z "$PYTHON_BIN" ]]; then
+  error "No Python interpreter found (python3/python)"
+  exit 1
+fi
+
 if [[ $checkout_and_build_torch_mlir -eq 1 ]]; then
   reconfigure_torch_mlir=0
   if [ ! -d "$torch_mlir_path" ]; then
@@ -65,7 +77,8 @@ if [[ $checkout_and_build_torch_mlir -eq 1 ]]; then
     python_package_rel_build_dir=../../../python_packages/torch_mlir
     mkdir -p "$(dirname "$python_package_dir")"
     ln -s "$python_package_rel_build_dir" "$python_package_dir" 2> /dev/null || true
-    TORCH_MLIR_CMAKE_ALREADY_BUILT=1 TORCH_MLIR_CMAKE_BUILD_DIR=build PYTHONWARNINGS=ignore verbose_cmd python setup.py build install
+    TORCH_MLIR_CMAKE_ALREADY_BUILT=1 TORCH_MLIR_CMAKE_BUILD_DIR=build PYTHONWARNINGS=ignore \
+      verbose_cmd "$PYTHON_BIN" setup.py build install
   elif [[ $setup_python_venv -eq 0 ]]; then
     warning "Skipping Torch-MLIR Python package build"
     warning "Make sure to have a correct Python environment set up"
