@@ -34,3 +34,4 @@ export PYTHONPATH
 unset -f _add_to_path
 unset _script_source
 unset _CINM_ROOT
+export LD_LIBRARY_PATH=$HOME/Cinnamon/third-party/llvm/build/lib:$LD_LIBRARY_PATH
