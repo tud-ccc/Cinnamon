@@ -167,7 +167,7 @@ docker run --rm $docker_platform_arg \
     export EXTRA_CXXFLAGS="-Wno-error -Wno-cast-function-type -Wno-ignored-qualifiers -Wno-deprecated-declarations -Wno-deprecated-copy ${EXTRA_CXXFLAGS:-}"; \
     export EXTRA_CCFLAGS="-Wno-error -Wno-ignored-qualifiers -Wno-deprecated-declarations ${EXTRA_CCFLAGS:-}"; \
     scons -c || true; \
-    scons build/ARM/gem5.opt -j\"$(nproc)\" Werror=0 GCC_WARNINGS="" \
+    scons build/ARM/gem5.opt -j $(nproc) Werror=0 GCC_WARNINGS="" \
          EXTRA_CXXFLAGS=\"$EXTRA_CXXFLAGS\" EXTRA_CCFLAGS=\"$EXTRA_CCFLAGS\" \
   '
 
