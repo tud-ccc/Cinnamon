@@ -56,6 +56,15 @@ def compile_binary(
     *,
     extra_env: dict | None = None,
 ) -> str:
+    # Older toolchains inside the Docker image expect the legacy names for the
+    # stack management intrinsics; rewrite them on the fly if needed.
+    ll_path = Path(llvm_ll)
+    if ll_path.is_file():
+        text = ll_path.read_text()
+        if "llvm.stacksave.p0" in text or "llvm.stackrestore.p0" in text:
+            text = text.replace("llvm.stacksave.p0", "llvm.stacksave")
+            text = text.replace("llvm.stackrestore.p0", "llvm.stackrestore")
+            ll_path.write_text(text)
     if not _COMPILE_SH.is_file():
         raise FileNotFoundError(f"Missing script: {_COMPILE_SH}")
     cmd = [_COMPILE_SH, _rel_to_repo(driver_c), _rel_to_repo(llvm_ll), _rel_to_repo(output_bin)]
