@@ -6,8 +6,8 @@
  * model emulation) is used or not.
  */
 
-#include "aimc.hh"
 #include "aimc_quantize.hh"
+#include "alpine_runtime.h"
 
 #include <memory>
 
@@ -107,12 +107,38 @@ int main(int argc, char *argv[]) {
       weights_q[row_major(r, c)] =
           aimc_quantize_scalar(weights_f[row_major(r, c)], scale_w, zp_w);
 
-  mapMatrix(0, 0, kTileDim, kTileDim, weights_q.get());
+  // Inform the runtime about the tile dimensions (updates gem5 checker too).
+  alpine_alloc_tile(kTileDim, kTileDim);
+
+  // Write the entire tile worth of weights (row-major).
+  alpine_write_weights(/*tile=*/0,
+                       /*alloc=*/weights_q.get(),
+                       /*aligned=*/weights_q.get(),
+                       /*offset=*/0,
+                       /*rows=*/kTileDim,
+                       /*cols=*/kTileDim,
+                       /*stride0=*/kTileDim,
+                       /*stride1=*/1,
+                       /*reserved=*/0);
 
   for (int iter = 0; iter < kInferences; ++iter) {
-    queueVector(kInputDim, input_q.get());
-    aimcProcess();
-    dequeueVector(kInputDim, output_q.get());
+    alpine_enqueue_vec(/*tile=*/0,
+                       /*alloc=*/input_q.get(),
+                       /*unused=*/input_q.get(),
+                       /*offset=*/0,
+                       /*size=*/kInputDim,
+                       /*stride=*/1,
+                       /*reserved=*/0);
+
+    alpine_process(/*tile=*/0);
+
+    alpine_dequeue_vec(/*tile=*/0,
+                       /*alloc=*/output_q.get(),
+                       /*unused=*/output_q.get(),
+                       /*offset=*/0,
+                       /*size=*/kInputDim,
+                       /*stride=*/1,
+                       /*reserved=*/0);
   }
 
   aimc_dequantize_vector(kInputDim, output_q.get(), output_f.get(), scale_y, zp_y);
