@@ -53,7 +53,7 @@ if [[ "$setup_python_venv" -eq 1 ]]; then
     # PyTorch first (per official guidance), then build tooling & bindings
     verbose_cmd pip install torch torchvision torchaudio --index-url "$torch_source"
     # Ensure pybind11 >= 2.10 for MLIR, plus numpy, nanobind, build
-    verbose_cmd pip install "pybind11>=2.10" numpy nanobind build
+    verbose_cmd pip install "pybind11>=2.10" numpy nanobind build wheel
   fi
 
   # Ensure CMake will use this venv's Python and find pybind11's CMake config

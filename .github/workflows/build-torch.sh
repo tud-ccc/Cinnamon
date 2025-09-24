@@ -30,6 +30,11 @@ if ! "$python_for_install" -m pip --version >/dev/null 2>&1; then
   exit 1
 fi
 
+if ! "$python_for_install" -m pip show wheel >/dev/null 2>&1; then
+  status "Installing wheel into Python environment ($python_for_install)"
+  verbose_cmd "$python_for_install" -m pip install wheel
+fi
+
 if [[ $checkout_and_build_torch_mlir -eq 1 ]]; then
   reconfigure_torch_mlir=0
   if [ ! -d "$torch_mlir_path" ]; then
