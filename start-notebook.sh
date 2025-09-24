@@ -20,7 +20,7 @@ if [[ -d "$repo_root/.venv" ]]; then
 fi
 
 if command -v jupyter >/dev/null 2>&1; then
-  exec jupyter notebook --notebook-dir="$repo_root"
+  exec jupyter notebook --notebook-dir="$repo_root" "$@"
 fi
 
 python="$(command -v python3 || command -v python || true)"
@@ -39,4 +39,4 @@ then
   "$python" -m pip install --quiet notebook
 fi
 
-exec "$python" -m notebook --notebook-dir="$repo_root"
+exec "$python" -m notebook --notebook-dir="$repo_root" "$@"
