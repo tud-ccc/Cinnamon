@@ -81,11 +81,10 @@ if [[ "$checkout_and_build_torch_mlir" -eq 1 && -n "${torch_mlir_path:-}" ]]; th
 fi
 
 # User-provided extra options (space-separated → array)
+EXTRA_USER_OPTS=()
 if [[ -n "$CINNAMON_CMAKE_OPTIONS" ]]; then
   # shellcheck disable=SC2206
   EXTRA_USER_OPTS=( $CINNAMON_CMAKE_OPTIONS )
-else
-  EXTRA_USER_OPTS=()
 fi
 
 # ---- Configure helper ----
@@ -93,12 +92,25 @@ configure() {
   status "Configuring Cinnamon (Ninja)"
   ln -s "$project_root/LICENSE" "$cinnamon_path/python/" 2>/dev/null || true
 
-  cmake -S . -B build -G Ninja \
-    -DCMAKE_BUILD_TYPE=RelWithDebInfo \
-    -DCMAKE_EXPORT_COMPILE_COMMANDS=ON \
-    "${DEP_OPTS[@]}" \
-    "${EXTRA_OPTS[@]}" \
-    "${EXTRA_USER_OPTS[@]}"
+  local cmake_args=(
+    -S .
+    -B build
+    -G Ninja
+    -DCMAKE_BUILD_TYPE=RelWithDebInfo
+    -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
+  )
+
+  if ((${#DEP_OPTS[@]})); then
+    cmake_args+=("${DEP_OPTS[@]}")
+  fi
+  if ((${#EXTRA_OPTS[@]})); then
+    cmake_args+=("${EXTRA_OPTS[@]}")
+  fi
+  if ((${#EXTRA_USER_OPTS[@]})); then
+    cmake_args+=("${EXTRA_USER_OPTS[@]}")
+  fi
+
+  cmake "${cmake_args[@]}"
 }
 
 # ---- (Re)configure if needed ----

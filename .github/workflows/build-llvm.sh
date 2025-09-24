@@ -69,7 +69,7 @@ if [[ "${reconfigure}" -eq 1 ]]; then
 elif [[ -f build/CMakeCache.txt && ! "$(grep -o 'CMAKE_GENERATOR:INTERNAL=[^ ]*' build/CMakeCache.txt || true)" =~ Ninja ]]; then
   clean_reason="existing build is not Ninja"
 elif [[ -f build/CMakeCache.txt && -n "${PYBIN:-}" ]]; then
-  cached_py="$(grep -E '^Python3_EXECUTABLE:FILEPATH=' build/CMakeCache.txt | sed 's/.*=//')"
+  cached_py="$(grep -E '^Python3_EXECUTABLE:(FILEPATH|UNINITIALIZED)=' build/CMakeCache.txt | sed 's/.*=//' || true)"
   [[ -n "$cached_py" && "$cached_py" != "${PYBIN:-}" ]] && clean_reason="cached Python ($cached_py) != venv Python (${PYBIN:-system})"
 fi
 
@@ -81,11 +81,12 @@ data=sys.stdin.read().encode();print(hashlib.sha256(data).hexdigest())
 PY
   fi
 }
+EXTRA_CMAKE_OPTS_JOIN="${EXTRA_CMAKE_OPTS[*]}"
 CURRENT_HASH="$(printf '%s\n' \
   "PROJ=$LLVM_PROJECTS" \
   "TGT=$LLVM_TARGETS_TO_BUILD" \
   "EXP=$LLVM_EXPERIMENTAL_TARGETS" \
-  "OPTS=${EXTRA_CMAKE_OPTS[*]}" \
+  "OPTS=${EXTRA_CMAKE_OPTS_JOIN}" \
   "PY=${PYBIN:-}" \
   "GEN=Ninja" | hash_cmd | awk '{print $1}')"
 
