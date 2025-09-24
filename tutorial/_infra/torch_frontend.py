@@ -88,9 +88,6 @@ def _require_tool(tool: str) -> Path:
         candidate = Path(override).expanduser().resolve()
         if candidate.is_file():
             return candidate
-    which = shutil.which(tool)
-    if which:
-        return Path(which).resolve()
     search_dirs: Sequence[Path | None] = (
         TORCH_MLIR_BIN,
         LLVM_BIN,
@@ -101,6 +98,9 @@ def _require_tool(tool: str) -> Path:
             candidate = directory / tool
             if candidate.is_file():
                 return candidate.resolve()
+    which = shutil.which(tool)
+    if which:
+        return Path(which).resolve()
     raise FileNotFoundError(
         f"{tool} not found; set {tool.upper().replace('-', '_')}_PATH or build torch-mlir."
     )
