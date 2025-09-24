@@ -1,4 +1,5 @@
 add_mlir_dialect_library(AlpineTransforms
+    HoistWriteWeights.cpp
     LowerMVMToStreaming.cpp
 
 DEPENDS

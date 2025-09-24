@@ -2,7 +2,7 @@ add_mlir_dialect_library(CinmTransforms
     SoftmaxToCinmPass.cpp
     TilingPass.cpp
     AnnotateTileSizesPass.cpp
-    LoopInterchangePass.cpp
+    GemvMinWrite.cpp
     CinmBufferizableOpInterface.cpp
     DecomposeAccumulations.cpp
     DecomposeGemmToGemv.cpp

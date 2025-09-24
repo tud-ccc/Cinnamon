@@ -1,5 +1,6 @@
 #include "cinm-mlir/Dialect/Cinm/IR/CinmAttributes.h"
 #include "cinm-mlir/Dialect/Cinm/IR/CinmOps.h"
+#include "cinm-mlir/Dialect/Cinm/Transforms/Passes.h"
 
 #include "mlir/IR/PatternMatch.h"
 #include "mlir/Pass/Pass.h"

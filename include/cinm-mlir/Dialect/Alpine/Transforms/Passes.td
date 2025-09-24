@@ -7,21 +7,22 @@
 
 include "mlir/Pass/PassBase.td"
 
-// def AlpineLowerMVMToStreamingPass : Pass<"alpine-lower-mvm-to-streaming"> {
-//   let summary = "Lower alpine.mvm into enqueue_vec → process(count=1) → dequeue_vec";
-//   let description = [{
-//     Rewrites each `alpine.mvm` op to the equivalent streaming sequence:
-//     - `alpine.enqueue_vec %tile, %x`
-//     - `alpine.process %tile { count = 1 }`
-//     - `alpine.dequeue_vec %tile, %y`
+def AlpineHoistWriteWeightsPass
+    : Pass<"alpine-hoist-write-weights", "mlir::func::FuncOp"> {
+  let summary = "Hoist alpine.write_weights out of column loops when operands are invariant";
+  let description = [{
+    Detects alpine.write_weights ops nested under GEMV-style loop nests and
+    hoists the weight upload together with the surrounding allocation / cast /
+    quantize chain out of inner column loops whenever the operands do not
+    depend on those loop induction variables. This reduces redundant crossbar
+    writes when the left-hand tile is reused across multiple GEMV columns.
+  }];
 
-//     This pass does not insert quantization or type conversions; it assumes the
-//     device contract is already satisfied (i8 buffers).
-//   }];
-
-//   let dependentDialects = [
-//     "mlir::alpine::AlpineDialect"
-//   ];
-// }
+  let dependentDialects = [
+    "mlir::alpine::AlpineDialect",
+    "mlir::memref::MemRefDialect",
+    "mlir::scf::SCFDialect"
+  ];
+}
 
 #endif // ALPINE_TRANSFORM_PASSES

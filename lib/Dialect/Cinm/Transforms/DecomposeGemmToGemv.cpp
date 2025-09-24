@@ -105,55 +105,58 @@ struct GemmToLoopedGemv final : OpRewritePattern<cinm::GemmOp> {
             return {accOut};
           });
     } else {
+      Value btInit =
+          rewriter.create<tensor::EmptyOp>(loc, ArrayRef<int64_t>{N, K}, elemTy);
+      Value bTransposed =
+          createNestedAffineForLoops(
+              rewriter, loc, ArrayRef<int64_t>{N, K}, ArrayRef<int64_t>{1, 1},
+              ValueRange{btInit},
+              [&](OpBuilder &b, Location loc2, ValueRange ivs,
+                  ValueRange iters) -> SmallVector<Value> {
+                Value j = ivs[0];
+                Value kVal = ivs[1];
+                Value element = b.create<tensor::ExtractOp>(
+                    loc2, op.getRight(), ValueRange{kVal, j});
+                Value updated = b.create<tensor::InsertOp>(loc2, element,
+                                                           iters.front(),
+                                                           ValueRange{j, kVal});
+                return {updated};
+              })
+              .front();
+
       finals = createNestedAffineForLoops(
-          rewriter, loc, ArrayRef<int64_t>{M, N},
-          ArrayRef<int64_t>{1, 1}, ValueRange{acc0},
+          rewriter, loc, ArrayRef<int64_t>{M}, ArrayRef<int64_t>{1},
+          ValueRange{acc0},
           [&](OpBuilder &b, Location loc2, ValueRange ivs,
               ValueRange iters) -> SmallVector<Value> {
             Value i = ivs[0];
-            Value j = ivs[1];
 
             SmallVector<int64_t, 2> staticSizesA{1, K};
             auto aRow2DTy = RankedTensorType::get({1, K}, elemTy);
             Value aRow2D = b.create<tensor::ExtractSliceOp>(
-                loc2, aRow2DTy, op.getLeft(),
-                ValueRange{i, c0},
-                ValueRange{}, ValueRange{}, staticOffsets,
-                staticSizesA, staticStrides);
+                loc2, aRow2DTy, op.getLeft(), ValueRange{i, c0}, ValueRange{},
+                ValueRange{}, staticOffsets, staticSizesA, staticStrides);
 
             SmallVector<ReassociationIndices, 1> collapse01{{0, 1}};
             auto aRowTy = RankedTensorType::get({K}, elemTy);
             Value aRow = b.create<tensor::CollapseShapeOp>(loc2, aRowTy, aRow2D,
                                                            collapse01);
 
-            SmallVector<int64_t, 2> staticSizesB{K, 1};
-            auto bCol2DTy = RankedTensorType::get({K, 1}, elemTy);
-            Value bCol2D = b.create<tensor::ExtractSliceOp>(
-                loc2, bCol2DTy, op.getRight(),
-                ValueRange{c0, j},
-                ValueRange{}, ValueRange{}, staticOffsets,
-                staticSizesB, staticStrides);
-
-            auto xTy = RankedTensorType::get({K}, elemTy);
-            Value x = b.create<tensor::CollapseShapeOp>(loc2, xTy, bCol2D,
-                                                        collapse01);
-
-            auto y1Ty = RankedTensorType::get({1}, elemTy);
-            Value y1 =
-                b.create<cinm::GemvOp>(loc2, y1Ty, aRow2D, x).getResult();
+            auto yRowTy = RankedTensorType::get({N}, elemTy);
+            Value yRow =
+                b.create<cinm::GemvOp>(loc2, yRowTy, bTransposed, aRow)
+                    .getResult();
 
             SmallVector<ReassociationIndices, 1> expand01{{0, 1}};
-            auto y11Ty = RankedTensorType::get({1, 1}, elemTy);
-            Value y11 =
-                b.create<tensor::ExpandShapeOp>(loc2, y11Ty, y1, expand01);
+            auto yRow2DTy = RankedTensorType::get({1, N}, elemTy);
+            Value yRow2D =
+                b.create<tensor::ExpandShapeOp>(loc2, yRow2DTy, yRow, expand01);
 
-            SmallVector<int64_t, 2> staticSizesY11{1, 1};
+            SmallVector<int64_t, 2> staticSizesY{1, N};
             Value accIn = iters.front();
             Value accOut = b.create<tensor::InsertSliceOp>(
-                loc2, y11, accIn,
-                ValueRange{i, j},
-                ValueRange{}, ValueRange{}, staticOffsets,
-                staticSizesY11, staticStrides);
+                loc2, yRow2D, accIn, ValueRange{i, c0}, ValueRange{},
+                ValueRange{}, staticOffsets, staticSizesY, staticStrides);
 
             return {accOut};
           });

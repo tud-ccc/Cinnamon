@@ -54,28 +54,16 @@ def CinmAnnotateTileSizesPass : Pass<"cinm-annotate-tiles"> {
   ];
 }
 
-def CinmLoopInterchangePass : Pass<"cinm-loop-interchange"> {
-  let summary = "Interchange a perfectly-nested affine.for band inside cinm.compute bodies";
+def CinmGemvMinWritePass : Pass<"cinm-gemv-min-write"> {
+  let summary = "Reschedule cinm GEMV tiles to minimize writes back to the first operand";
   let description = [{}];
 
   let dependentDialects = [
-    "mlir::affine::AffineDialect",
-    "mlir::tensor::TensorDialect",
-    "mlir::LLVM::LLVMDialect"
-  ];
-
-  let options = [
-    Option<"bandDepth", "band-depth", "unsigned", "0",
-           "0-based depth of the loop band inside cinm.compute to permute">,
-
-    Option<"numLoops", "num-loops", "unsigned", "0",
-           "Number of loops in the band (must be > 0)">,
-
-    Option<"permOpt", "perm", "std::string", "\"\"",
-           "Comma-separated permutation (e.g. 1,0 or 2,0,1) applied to the band">,
-
-    Option<"targetInnerOp", "target-op", "std::string", "\"cinm.op.gemm\"",
-           "Fully qualified op name required inside the band (e.g. cinm.op.gemm)">
+    "mlir::arith::ArithDialect",
+    "mlir::bufferization::BufferizationDialect",
+    "mlir::linalg::LinalgDialect",
+    "mlir::scf::SCFDialect",
+    "mlir::tensor::TensorDialect"
   ];
 }
 
