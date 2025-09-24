@@ -1,5 +1,13 @@
+#ifndef _POSIX_C_SOURCE
+#define _POSIX_C_SOURCE 200112L
+#endif
+
 #include <stdio.h>
 #include <stdlib.h>
+
+#if defined(_ISOC11_SOURCE) && !defined(_POSIX_C_SOURCE)
+#define _POSIX_C_SOURCE 200112L
+#endif
 #include <stdint.h>
 #include <string.h>
 
@@ -31,6 +39,8 @@ extern void _mlir_ciface_vecadd(MemRef1DF32 *ret,
 static float *alloc_aligned_i64(size_t n, size_t alignment) {
 #if defined(_MSC_VER)
   return (float *)_aligned_malloc(n * sizeof(float), alignment);
+#elif defined(_ISOC11_SOURCE)
+  return (float *)aligned_alloc(alignment, n * sizeof(float));
 #else
   void *p = NULL;
   if (posix_memalign(&p, alignment, n * sizeof(float)) != 0) return NULL;
