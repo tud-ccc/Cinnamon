@@ -106,7 +106,17 @@ def _require_tool(tool: str) -> Path:
     )
 
 
-torch_mlir_opt = _require_tool("torch-mlir-opt")
+_candidate_torch_mlir_opts = [
+    TORCH_MLIR_ROOT / "install" / "bin" / "torch-mlir-opt",
+    TORCH_MLIR_ROOT / "build" / "bin" / "torch-mlir-opt",
+]
+torch_mlir_opt = None
+for candidate in _candidate_torch_mlir_opts:
+    if candidate.is_file():
+        torch_mlir_opt = candidate.resolve()
+        break
+if torch_mlir_opt is None:
+    torch_mlir_opt = _require_tool("torch-mlir-opt")
 
 # ---------------------------------------------------------------------------
 # Subprocess helpers
