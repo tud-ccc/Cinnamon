@@ -15,6 +15,21 @@ if [[ -z "$PYTHON_BIN" ]]; then
   exit 1
 fi
 
+if [[ $setup_python_venv -eq 1 ]]; then
+  python_for_install="$py_venv_path/bin/python"
+  if [[ ! -x "$python_for_install" ]]; then
+    error "Expected Python venv at $py_venv_path. Run setup-venv.sh first."
+    exit 1
+  fi
+else
+  python_for_install="$PYTHON_BIN"
+fi
+
+if ! "$python_for_install" -m pip --version >/dev/null 2>&1; then
+  error "pip is not available for interpreter $python_for_install"
+  exit 1
+fi
+
 if [[ $checkout_and_build_torch_mlir -eq 1 ]]; then
   reconfigure_torch_mlir=0
   if [ ! -d "$torch_mlir_path" ]; then
@@ -72,16 +87,17 @@ if [[ $checkout_and_build_torch_mlir -eq 1 ]]; then
   verbose_cmd cmake --install build --prefix install
 
   if [[ $setup_python_venv -eq 1 ]]; then
-    status "Building and installing Torch-MLIR Python package"
+    status "Building and installing Torch-MLIR Python package into $py_venv_path"
     python_package_dir=build/tools/torch-mlir/python_packages/torch_mlir
     python_package_rel_build_dir=../../../python_packages/torch_mlir
     mkdir -p "$(dirname "$python_package_dir")"
     ln -s "$python_package_rel_build_dir" "$python_package_dir" 2> /dev/null || true
     TORCH_MLIR_CMAKE_ALREADY_BUILT=1 TORCH_MLIR_CMAKE_BUILD_DIR=build PYTHONWARNINGS=ignore \
-      verbose_cmd "$PYTHON_BIN" setup.py build install
+      verbose_cmd "$python_for_install" -m pip install --no-build-isolation --no-deps --force-reinstall .
   elif [[ $setup_python_venv -eq 0 ]]; then
-    warning "Skipping Torch-MLIR Python package build"
-    warning "Make sure to have a correct Python environment set up"
+    warning "Building Torch-MLIR Python package with interpreter: $python_for_install"
+    TORCH_MLIR_CMAKE_ALREADY_BUILT=1 TORCH_MLIR_CMAKE_BUILD_DIR=build PYTHONWARNINGS=ignore \
+      verbose_cmd "$python_for_install" -m pip install --no-build-isolation --no-deps --force-reinstall .
   fi
 
   popd >/dev/null

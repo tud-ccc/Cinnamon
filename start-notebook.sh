@@ -2,6 +2,14 @@
 set -euo pipefail
 
 repo_root="$( cd -- "$(dirname "$0")" >/dev/null 2>&1 ; pwd -P )"
+env_script="$repo_root/env.sh"
+
+if [[ -f "$env_script" ]]; then
+  # shellcheck disable=SC1091
+  source "$env_script"
+else
+  echo "warning: expected environment script not found at $env_script" >&2
+fi
 
 if [[ "$(uname -s)" == "Darwin" ]]; then
   llvm_lib_dir="$repo_root/third-party/llvm/build/lib"
