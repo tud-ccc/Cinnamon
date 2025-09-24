@@ -60,7 +60,7 @@ Distributed under the BSD 2-clause License. See `LICENSE.txt` for more informati
 <!-- CONTACT -->
 ## Contributors
 
-- Hamid Farzaneh (amid.farzaneh@tu-dresden.de)
+- Hamid Farzaneh (hamid.farzaneh@tu-dresden.de)
 - Clément Fournier (clement.fournier@tu-dresden.de)
 - George M. Kunze (georg_maximilian.kunze@mailbox.tu-dresden.de)
 - Asif Ali Khan (asif_ali.khan@tu-dresden.de)
