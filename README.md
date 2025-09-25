@@ -35,7 +35,7 @@ Tutorial notebooks live in `tutorial/notebooks`.
 ### Run remotely
 Note: The XX is the user id, and will be given during the tutorial.
 ```bash
-ssh -p 229X esweek25-cim-XX@ios.inf.uos.de
+ssh -p 229X -L 8888:127.0.0.1:8888 esweek25-cim-XX@ios.inf.uos.de
 cd Cinnamon
 ./start-notebook.sh --no-browser --ip=127.0.0.1 --port=8888
 ```
