@@ -33,6 +33,7 @@ Tutorial notebooks live in `tutorial/notebooks`.
 ```
 
 ### Run remotely
+Note: The XX is the user id, and will be given during the tutorial.
 ```bash
 ssh -p 229X esweek25-cim-XX@ios.inf.uos.de
 cd Cinnamon
