@@ -17,12 +17,12 @@ get_property(extension_libs GLOBAL PROPERTY MLIR_EXTENSION_LIBS)
 get_property(dependency_libs GLOBAL PROPERTY CINM_DEPENDENCY_LIBS)
 target_link_libraries(${PROJECT_NAME}
     PRIVATE
-        -Wl,--start-group
+        -Wl,$<IF:$<PLATFORM_ID:Darwin>,,--start-group>
         MLIROptLib
         ${dialect_libs}
         ${conversion_libs}
         ${extension_libs}
         ${dependency_libs}
         LLVMSupport
-        -Wl,--end-group
+        -Wl,$<IF:$<PLATFORM_ID:Darwin>,,--end-group>
 )
