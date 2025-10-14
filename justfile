@@ -11,19 +11,49 @@ llvm_prefix := env_var_or_default("LLVM_BUILD_DIR", "")
 build_type := env_var_or_default("LLVM_BUILD_TYPE", "RelWithDebInfo")
 linker := env_var_or_default("CMAKE_LINKER_TYPE", "DEFAULT")
 upmem_dir := env_var_or_default("UPMEM_HOME", "")
-build_dir := "cinnamon/build"
+build_dir := "build"
 python310_dir := env_var("PYTHON_310_DIR")
 
 # Do a full build as if in CI. Only needed the first time you build the project.
 # Parameters: no-upmem enable-gpu enable-cuda enable-roc no-torch-mlir no-python-venv
 configure *ARGS:
-    .github/workflows/build-ci.sh -reconfigure {{ARGS}}
+    .github/workflows/build-local.sh -reconfigure {{ARGS}}
 
+# execute cmake -- this is only needed on the first build
+cmake *ARGS:
+    cmake -S . -B {{build_dir}} \
+        -G Ninja \
+        -DCMAKE_BUILD_TYPE={{build_type}} \
+        "-DLLVM_DIR={{llvm_prefix}}/lib/cmake/llvm" \
+        "-DMLIR_DIR={{llvm_prefix}}/lib/cmake/mlir" \
+        "-DUPMEM_DIR={{upmem_dir}}" \
+        -DCMAKE_EXPORT_COMPILE_COMMANDS=1 \
+        -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
+        -DCMAKE_C_COMPILER=clang \
+        -DCMAKE_LINKER_TYPE={{linker}} \
+        -DCMAKE_CXX_COMPILER=clang++ \
+        -DCMAKE_EXPORT_COMPILE_COMMANDS=ON \
+        -DCMAKE_C_USING_LINKER_mold=-fuse-ld=mold \
+        -DCMAKE_CXX_USING_LINKER_mold=-fuse-ld=mold \
+        {{ARGS}}
 
 # execute a specific ninja target
 doNinja *ARGS:
     ninja -C{{build_dir}} {{ARGS}}
 
+
+@highlight:
+    pygmentize -l docs/MlirLexer.py:MlirLexer -x -O style=github-dark /dev/stdin
+
+# Run tilefirst-opt with the given arguments. You can use this if you haven't updated your PATH.
+[no-cd]
+cinm-opt *ARGS: (doNinja "cinm-opt")
+    #!/bin/sh
+    if [ -t 1 ] ; then
+     {{source_directory()}}/{{build_dir}}/bin/cinm-opt {{ARGS}} | just highlight
+    else
+     {{source_directory()}}/{{build_dir}}/bin/cinm-opt {{ARGS}}
+    fi
 
 # run build --first build needs cmake though
 build: doNinja
@@ -37,10 +67,6 @@ alias b := build
 
 # run tests
 test: (doNinja "check-cinm-mlir")
-
-[no-cd]
-cinm-opt *ARGS: (doNinja "cinm-opt")
-    {{source_directory()}}/{{build_dir}}/bin/cinm-opt {{ARGS}}
 
 [no-cd]
 cinm-translate *ARGS: (doNinja "cinm-opt")
@@ -67,6 +93,7 @@ cnm-to-upmem FILE *ARGS: (
     cinm-opt FILE
     "--convert-cnm-to-upmem"
     "--cse"
+    "--convert-math-to-llvm"
     "--upmem-outline-kernel"
     "--upmem-dedup-kernels"
     "--cse"
@@ -76,7 +103,6 @@ cnm-to-upmem FILE *ARGS: (
 upmem-to-llvm FILE *ARGS: (
     cinm-opt FILE
     "--mlir-print-debuginfo"
-    "--convert-math-to-llvm"
     "--convert-scf-to-cf"
     "--convert-cf-to-llvm"
     "--fold-memref-alias-ops"
@@ -111,31 +137,32 @@ translate-upmem-kernel-to-cpp FILE *ARGS: (
 )
 
 compile-upmem-kernels FILE OUTDIR:
-    bash "cinnamon/testbench/lib/compile_dpu.sh" {{FILE}} {{OUTDIR}}
+    bash "testbench/lib/compile_dpu.sh" {{FILE}} {{OUTDIR}}
 
 compile-upmem-runner *ARGS:
-    llvm/build/bin/clang++ -g -c {{ARGS}}
+    clang++ -g -c {{ARGS}}
 
 link-upmem-runner *ARGS:
-    /usr/bin/clang++ -g {{ARGS}} -lUpmemDialectRuntime -fPIE -ldpu -ldpuverbose -L{{upmem_dir}}/lib -L{{build_dir}}/lib -I{{upmem_dir}}/include/dpu -rpath {{python310_dir}}
+    clang++ -g {{ARGS}} -lUpmemDialectRuntime -fPIE -ldpu -ldpuverbose -L{{upmem_dir}}/lib -L{{build_dir}}/lib -I{{upmem_dir}}/include/dpu -rpath {{python310_dir}}
 
 remove-memref-alignment FILE:
 	sed -i 's/{alignment = 64 : i64} //' {{FILE}}
 
-build-transformer: \
-    (cinm-to-cnm "cinnamon/samples/transformer.mlir" "-o" "./transformer.cnm.mlir") \
-    (build-transformer-from-cnm "./transformer.cnm.mlir")
+build-transformer:
+    mkdir -p {{build_dir}}/samples
+    just cinm-to-cnm samples/transformer.mlir -o {{build_dir}}/samples/transformer.cnm.mlir
+    just build-transformer-from-cnm {{build_dir}}/samples/transformer.cnm.mlir
 
-build-transformer-from-cnm FILE: \
-    (cnm-to-upmem FILE "-o" "./transformer.upmem.mlir") \
-    (remove-memref-alignment "./transformer.upmem.mlir") \
-    (upmem-to-llvm "./transformer.upmem.mlir" "-o" "./transformer.llvm.mlir") \
-    (translate-mlir-to-llvmir "./transformer.llvm.mlir" "-o" "./transformer.ll") \
-    (translate-upmem-kernel-to-cpp "./transformer.upmem.mlir" "-o" "./transformer.upmem.c") \
-    (compile-upmem-kernels "./transformer.upmem.c" "cinnamon/build/samples") \
-    (compile-upmem-runner "./transformer.ll" "-o" "cinnamon/build/samples/transformer.o") \
-    (compile-upmem-runner "cinnamon/samples/llama2.cpp" "-o" "cinnamon/build/samples/llama2.o") \
-    (link-upmem-runner "cinnamon/build/samples/transformer.o" "cinnamon/build/samples/llama2.o" "-o" "cinnamon/build/samples/transformer")
+build-transformer-from-cnm FILE:
+    just cnm-to-upmem {{FILE}} -o {{build_dir}}/samples/transformer.upmem.mlir
+    just remove-memref-alignment {{build_dir}}/samples/transformer.upmem.mlir
+    just upmem-to-llvm {{build_dir}}/samples/transformer.upmem.mlir -o {{build_dir}}/samples/transformer.llvm.mlir
+    just translate-mlir-to-llvmir {{build_dir}}/samples/transformer.llvm.mlir -o {{build_dir}}/samples/transformer.ll
+    just translate-upmem-kernel-to-cpp {{build_dir}}/samples/transformer.upmem.mlir -o {{build_dir}}/samples/transformer.upmem.c
+    just compile-upmem-kernels {{build_dir}}/samples/transformer.upmem.c {{build_dir}}/samples
+    just compile-upmem-runner {{build_dir}}/samples/transformer.ll -o {{build_dir}}/samples/transformer.o
+    just compile-upmem-runner samples/llama2.cpp -o {{build_dir}}/samples/llama2.o
+    just link-upmem-runner {{build_dir}}/samples/transformer.o {{build_dir}}/samples/llama2.o -o {{build_dir}}/samples/transformer
 
 build-dorado: \
     (cinm-to-cnm "cinnamon/samples/dorado/dorado.mlir" "-o" "./dorado.cnm.mlir") \
@@ -162,24 +189,22 @@ cinm-vulkan-runner FILE *ARGS:
 genBench NAME: (doNinja "cinm-opt")
     #!/bin/bash
     source "{{upmem_dir}}/upmem_env.sh"
-    cd cinnamon/testbench
     export BENCH_NAME="{{NAME}}"
-    make clean && make {{NAME}}-exe
+    make -Ctestbench clean && make -Ctestbench {{NAME}}-exe
 
 runBench NAME:
     #!/bin/bash
     source "{{upmem_dir}}/upmem_env.sh"
-    cd cinnamon/testbench/generated2/{{NAME}}/bin
+    cd testbench/gen/{{NAME}}/bin
     ./host
 
 bench NAME: (doNinja "cinm-opt")
     #!/bin/bash
     set -e
     source "{{upmem_dir}}/upmem_env.sh"
-    cd cinnamon/testbench
     export BENCH_NAME="{{NAME}}"
-    make clean && make {{NAME}}-exe
-    cd generated2/{{NAME}}/bin
+    make -Ctestbench clean && make -Ctestbench {{NAME}}-exe
+    cd testbench/gen/{{NAME}}/bin
     ./host
 
 # Invoke he LLVM IR compiler.
@@ -196,6 +221,3 @@ llvmDialectIntoExecutable FILE:
     # creates {{FILE}}.s
     {{llvm_prefix}}/bin/llc -O0 ${FILEBASE}.ll
     clang-14 -fuse-ld=lld -L{{build_dir}}/lib -lSigiRuntime ${FILEBASE}.s -g -o ${FILEBASE}.exe -no-pie
-
-addNewDialect DIALECT_NAME DIALECT_NS:
-    just --justfile ./dialectTemplate/justfile applyTemplate {{DIALECT_NAME}} {{DIALECT_NS}} "cinm-mlir" {{justfile_directory()}}
