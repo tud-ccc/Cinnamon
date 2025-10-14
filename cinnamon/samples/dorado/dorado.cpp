@@ -290,6 +290,7 @@ float *rmsnorm_large(const float *v, const float *w);
 float *rmsnorm_batched(const float *v, const float *w);
 float *softmax(const float *x);
 float *softmax_batched(const float *x);
+float *upmem_gemm(const float *a, const float *b);
 }
 
 // Matrix-vector multiplication: W @ x -> xout.
@@ -757,6 +758,15 @@ void wrappersoftmax_upmem_batched(float *out, const float *in, const float *, co
   memcpy(out, in, size * len * sizeof(float));
   softmax_upmem_batched(out, size, len);
 }
+void wrapper_gemm_cpu(float *out, const float *a, const float *b, const int size, const int) {
+  gemm(a, b, out, size, size, size);
+}
+void wrapper_gemm_upmem(float *out, const float *a, const float *b, const int size, const int len_) {
+  float *result = upmem_gemm(a, b);
+  printf("Done with call to upmem\n");
+  memcpy(out, result, size * size * sizeof(float));
+  free(result);
+}
 
 int main(int argc, char *argv[]) {
   { // Testing block
@@ -773,25 +783,29 @@ int main(int argc, char *argv[]) {
       sample_weights[i] = random_f32(&rng);
     }
 
-//    printf("Comparing rmsnorm cpu vs upmem batched...\n");
-//    int ret1 = compare_fns(&rmsnorm_cpu, &rmsnorm_upmem_batched, sample_input, sample_weights, dim_size, seq_len);
-//    if (ret1 != 0) ret = ret1;
+  //  printf("Comparing rmsnorm cpu vs upmem batched...\n");
+  //  int ret1 = compare_fns(&rmsnorm_cpu, &rmsnorm_upmem_batched, sample_input, sample_weights, dim_size, seq_len);
+  //  if (ret1 != 0) ret = ret1;
 
-    printf("Comparing attn cpu vs upmem batched...\n");
-    int ret2 = compare_attns(sample_input, dim_size, seq_len);
-    if (ret2 != 0) ret = ret2;
+    // printf("Comparing attn cpu vs upmem batched...\n");
+    // int ret2 = compare_attns(sample_input, dim_size, seq_len);
+    // if (ret2 != 0) ret = ret2;
 
-//    printf("Comparing rmsnorm upmem unbatched vs batched...\n");
-//    int ret2 = compare_fns(&rmsnorm_upmem, &rmsnorm_upmem_batched, sample_input, sample_weights, dim_size, seq_len);
-//    if (ret2 != 0) ret = ret2;
-//
-//    printf("Comparing softmax cpu vs upmem batched...\n");
-//    int ret3 = compare_fns(&wrappersoftmax_cpu, &wrappersoftmax_upmem_batched, sample_input, sample_weights, dim_size, seq_len);
-//    if (ret3 != 0) ret = ret3;
+  //  printf("Comparing rmsnorm upmem unbatched vs batched...\n");
+  //  int ret2 = compare_fns(&rmsnorm_upmem, &rmsnorm_upmem_batched, sample_input, sample_weights, dim_size, seq_len);
+  //  if (ret2 != 0) ret = ret2;
 
-//    printf("Comparing softmax upmem unbatched vs batched...\n");
-//    int ret4 = compare_fns(&wrappersoftmax_upmem, &wrappersoftmax_upmem_batched, sample_input, sample_weights, dim_size, seq_len);
-//    if (ret4 != 0) ret = ret4;
+  //  printf("Comparing softmax cpu vs upmem batched...\n");
+  //  int ret3 = compare_fns(&wrappersoftmax_cpu, &wrappersoftmax_upmem_batched, sample_input, sample_weights, dim_size, seq_len);
+  //  if (ret3 != 0) ret = ret3;
+
+  //  printf("Comparing softmax upmem unbatched vs batched...\n");
+  //  int ret4 = compare_fns(&wrappersoftmax_upmem, &wrappersoftmax_upmem_batched, sample_input, sample_weights, dim_size, seq_len);
+  //  if (ret4 != 0) ret = ret4;
+
+   printf("Comparing gemm cpu vs upmem...\n");
+   int ret5 = compare_fns(&wrapper_gemm_cpu, &wrapper_gemm_upmem, sample_input, sample_input, dim_size, seq_len);
+   if (ret5 != 0) ret = ret5;
 
     free(sample_input);
     free(sample_weights);

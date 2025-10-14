@@ -399,3 +399,12 @@ func.func @softmax_batched(%x: tensor<512x512xf32>) -> tensor<512x512xf32> {
 
     return %r : tensor<512x512xf32>
 }
+
+func.func @upmem_gemm(%a: tensor<512x512xf32>, %b: tensor<512x512xf32>) -> tensor<512x512xf32> {
+	%r = cinm.compute attributes { workgroupShape = array<i64: 1, 4, 16> } -> tensor<512x512xf32> {
+		%res = cinm.op.gemm %a, %b : (tensor<512x512xf32>, tensor<512x512xf32>) -> tensor<512x512xf32>
+		cinm.yield %res : tensor<512x512xf32>
+	}
+
+	return %r : tensor<512x512xf32>
+}
