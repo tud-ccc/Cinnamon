@@ -83,7 +83,7 @@ module {
     }
     transform.sequence  failures(propagate) {
     ^bb0(%arg1: !transform.op<"btfl.block">):
-      // transform.btfl.expose_parallelism %arg1
+      transform.btfl.expose_parallelism %arg1
       // %0 = transform.btfl.fuse_greedy %arg1 : (!transform.op<"btfl.block">) -> !transform.any_op
     }
   }
