@@ -23,6 +23,9 @@ target_link_libraries(${PROJECT_NAME}
         ${conversion_libs}
         ${extension_libs}
         ${dependency_libs}
+        MLIRRegisterAllPasses
+        MLIRRegisterAllDialects
+        MLIRRegisterAllExtensions
         LLVMSupport
         -Wl,$<IF:$<PLATFORM_ID:Darwin>,,--end-group>
 )
