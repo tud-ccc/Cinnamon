@@ -57,9 +57,11 @@ struct ScatterOpInterface
   }
 
   LogicalResult bufferize(Operation *op, RewriterBase &rewriter,
-                          const BufferizationOptions &options) const {
+                          const BufferizationOptions &options,
+                          const BufferizationState &state) const {
     auto scatter = cast<cnm::ScatterOp>(op);
-    FailureOr<Value> v = getBuffer(rewriter, scatter.getInput(), options);
+    FailureOr<Value> v =
+        getBuffer(rewriter, scatter.getInput(), options, state);
     if (failed(v))
       return failure();
 
@@ -89,9 +91,11 @@ struct GatherOpInterface
   }
 
   LogicalResult bufferize(Operation *op, RewriterBase &rewriter,
-                          const BufferizationOptions &options) const {
+                          const BufferizationOptions &options,
+                          const BufferizationState &state) const {
     auto gather = cast<cnm::GatherOp>(op);
-    FailureOr<Value> v = getBuffer(rewriter, gather.getOutputBuf(), options);
+    FailureOr<Value> v =
+        getBuffer(rewriter, gather.getOutputBuf(), options, state);
     if (failed(v))
       return failure();
 
