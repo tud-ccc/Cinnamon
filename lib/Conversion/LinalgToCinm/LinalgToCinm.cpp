@@ -21,6 +21,7 @@
 #include "mlir/IR/PatternMatch.h"
 #include "mlir/Transforms/DialectConversion.h"
 #include "llvm/ADT/STLExtras.h"
+#include "llvm/ADT/TypeSwitch.h"
 #include "llvm/Support/Casting.h"
 #include "llvm/Support/raw_ostream.h"
 
@@ -104,42 +105,50 @@ static bool matchRelu(Value yielded, Value x) {
   auto cmpi = cond.getDefiningOp<arith::CmpIOp>();
 
   auto floatPos = [&](arith::CmpFPredicate p, Value lhs, Value rhs) {
-    bool direct = lhs == x && isZeroConst(rhs) &&
-                  (p == arith::CmpFPredicate::UGT || p == arith::CmpFPredicate::OGT ||
-                   p == arith::CmpFPredicate::UGE || p == arith::CmpFPredicate::OGE);
-    bool swapped = isZeroConst(lhs) && rhs == x &&
-                   (p == arith::CmpFPredicate::ULT || p == arith::CmpFPredicate::OLT ||
-                    p == arith::CmpFPredicate::ULE || p == arith::CmpFPredicate::OLE);
+    bool direct =
+        lhs == x && isZeroConst(rhs) &&
+        (p == arith::CmpFPredicate::UGT || p == arith::CmpFPredicate::OGT ||
+         p == arith::CmpFPredicate::UGE || p == arith::CmpFPredicate::OGE);
+    bool swapped =
+        isZeroConst(lhs) && rhs == x &&
+        (p == arith::CmpFPredicate::ULT || p == arith::CmpFPredicate::OLT ||
+         p == arith::CmpFPredicate::ULE || p == arith::CmpFPredicate::OLE);
     return direct || swapped;
   };
 
   auto floatNeg = [&](arith::CmpFPredicate p, Value lhs, Value rhs) {
-    bool direct = lhs == x && isZeroConst(rhs) &&
-                  (p == arith::CmpFPredicate::ULT || p == arith::CmpFPredicate::OLT ||
-                   p == arith::CmpFPredicate::ULE || p == arith::CmpFPredicate::OLE);
-    bool swapped = isZeroConst(lhs) && rhs == x &&
-                   (p == arith::CmpFPredicate::UGT || p == arith::CmpFPredicate::OGT ||
-                    p == arith::CmpFPredicate::UGE || p == arith::CmpFPredicate::OGE);
+    bool direct =
+        lhs == x && isZeroConst(rhs) &&
+        (p == arith::CmpFPredicate::ULT || p == arith::CmpFPredicate::OLT ||
+         p == arith::CmpFPredicate::ULE || p == arith::CmpFPredicate::OLE);
+    bool swapped =
+        isZeroConst(lhs) && rhs == x &&
+        (p == arith::CmpFPredicate::UGT || p == arith::CmpFPredicate::OGT ||
+         p == arith::CmpFPredicate::UGE || p == arith::CmpFPredicate::OGE);
     return direct || swapped;
   };
 
   auto intPos = [&](arith::CmpIPredicate p, Value lhs, Value rhs) {
-    bool direct = lhs == x && isZeroConst(rhs) &&
-                  (p == arith::CmpIPredicate::sgt || p == arith::CmpIPredicate::sge ||
-                   p == arith::CmpIPredicate::ugt || p == arith::CmpIPredicate::uge);
-    bool swapped = isZeroConst(lhs) && rhs == x &&
-                   (p == arith::CmpIPredicate::slt || p == arith::CmpIPredicate::sle ||
-                    p == arith::CmpIPredicate::ult || p == arith::CmpIPredicate::ule);
+    bool direct =
+        lhs == x && isZeroConst(rhs) &&
+        (p == arith::CmpIPredicate::sgt || p == arith::CmpIPredicate::sge ||
+         p == arith::CmpIPredicate::ugt || p == arith::CmpIPredicate::uge);
+    bool swapped =
+        isZeroConst(lhs) && rhs == x &&
+        (p == arith::CmpIPredicate::slt || p == arith::CmpIPredicate::sle ||
+         p == arith::CmpIPredicate::ult || p == arith::CmpIPredicate::ule);
     return direct || swapped;
   };
 
   auto intNeg = [&](arith::CmpIPredicate p, Value lhs, Value rhs) {
-    bool direct = lhs == x && isZeroConst(rhs) &&
-                  (p == arith::CmpIPredicate::slt || p == arith::CmpIPredicate::sle ||
-                   p == arith::CmpIPredicate::ult || p == arith::CmpIPredicate::ule);
-    bool swapped = isZeroConst(lhs) && rhs == x &&
-                   (p == arith::CmpIPredicate::sgt || p == arith::CmpIPredicate::sge ||
-                    p == arith::CmpIPredicate::ugt || p == arith::CmpIPredicate::uge);
+    bool direct =
+        lhs == x && isZeroConst(rhs) &&
+        (p == arith::CmpIPredicate::slt || p == arith::CmpIPredicate::sle ||
+         p == arith::CmpIPredicate::ult || p == arith::CmpIPredicate::ule);
+    bool swapped =
+        isZeroConst(lhs) && rhs == x &&
+        (p == arith::CmpIPredicate::sgt || p == arith::CmpIPredicate::sge ||
+         p == arith::CmpIPredicate::ugt || p == arith::CmpIPredicate::uge);
     return direct || swapped;
   };
 
@@ -190,9 +199,8 @@ static bool matchSigmoid(Value yielded, Value x) {
 
 enum class BinaryElementwiseKind { Add, Sub };
 
-static std::optional<BinaryElementwiseKind> matchBinaryAddSub(Value yielded,
-                                                              Value a,
-                                                              Value b) {
+static std::optional<BinaryElementwiseKind>
+matchBinaryAddSub(Value yielded, Value a, Value b) {
   if (auto addf = yielded.getDefiningOp<arith::AddFOp>()) {
     if ((addf.getLhs() == a && addf.getRhs() == b) ||
         (addf.getLhs() == b && addf.getRhs() == a))
@@ -216,8 +224,7 @@ static std::optional<BinaryElementwiseKind> matchBinaryAddSub(Value yielded,
 
 static std::optional<std::pair<BinaryElementwiseKind, arith::ConstantOp>>
 matchUnaryAddSubWithScalar(Value yielded, Value operand) {
-  auto check = [&](Value maybeConst)
-      -> std::optional<arith::ConstantOp> {
+  auto check = [&](Value maybeConst) -> std::optional<arith::ConstantOp> {
     if (auto cst = maybeConst.getDefiningOp<arith::ConstantOp>())
       return cst;
     return std::nullopt;
@@ -281,8 +288,8 @@ static LogicalResult rewriteActivationGeneric(linalg::GenericOp op,
     if (!isTensor(inputVal) || !isTensor(op->getResult(0)))
       return failure();
     auto resultTy = cast<RankedTensorType>(op->getResult(0).getType());
-    auto act = rewriter.create<cinm::ActivateOp>(op.getLoc(), resultTy, kindAttr,
-                                                 inputVal);
+    auto act = rewriter.create<cinm::ActivateOp>(op.getLoc(), resultTy,
+                                                 kindAttr, inputVal);
     rewriter.replaceOp(op, act.getResult());
     return success();
   }
@@ -294,7 +301,8 @@ static LogicalResult rewriteActivationGeneric(linalg::GenericOp op,
   return success();
 }
 
-static LogicalResult rewriteActivationMap(linalg::MapOp op, IRRewriter &rewriter) {
+static LogicalResult rewriteActivationMap(linalg::MapOp op,
+                                          IRRewriter &rewriter) {
   if (op.getInputs().size() != 1)
     return failure();
   Block &body = op.getMapper().front();
@@ -385,7 +393,8 @@ static LogicalResult rewriteAddSubGeneric(linalg::GenericOp op,
     if (!resultTy || tensor.getType() != resultTy)
       return failure();
 
-    auto cloned = rewriter.create<arith::ConstantOp>(loc, match->second.getValue());
+    auto cloned =
+        rewriter.create<arith::ConstantOp>(loc, match->second.getValue());
     switch (match->first) {
     case BinaryElementwiseKind::Add: {
       auto adds = rewriter.create<cinm::AddsOp>(loc, resultTy, tensor,
@@ -461,17 +470,18 @@ static LogicalResult rewriteAddSubMap(linalg::MapOp op, IRRewriter &rewriter) {
     if (tensor.getType() != resultTy)
       return failure();
 
-    auto cloned = rewriter.create<arith::ConstantOp>(loc, match->second.getValue());
+    auto cloned =
+        rewriter.create<arith::ConstantOp>(loc, match->second.getValue());
     switch (match->first) {
     case BinaryElementwiseKind::Add: {
-      auto adds =
-          rewriter.create<cinm::AddsOp>(loc, resultTy, tensor, cloned.getResult());
+      auto adds = rewriter.create<cinm::AddsOp>(loc, resultTy, tensor,
+                                                cloned.getResult());
       rewriter.replaceOp(op, adds.getResult());
       return success();
     }
     case BinaryElementwiseKind::Sub: {
-      auto subs =
-          rewriter.create<cinm::SubsOp>(loc, resultTy, tensor, cloned.getResult());
+      auto subs = rewriter.create<cinm::SubsOp>(loc, resultTy, tensor,
+                                                cloned.getResult());
       rewriter.replaceOp(op, subs.getResult());
       return success();
     }
@@ -491,8 +501,9 @@ static bool isContiguous(const ReassociationIndices &indices) {
   return true;
 }
 
-static RankedTensorType computeCollapsedType(RankedTensorType type,
-                                             ArrayRef<ReassociationIndices> groups) {
+static RankedTensorType
+computeCollapsedType(RankedTensorType type,
+                     ArrayRef<ReassociationIndices> groups) {
   SmallVector<int64_t> newShape;
   newShape.reserve(groups.size());
   for (const auto &group : groups) {
@@ -515,7 +526,8 @@ static RankedTensorType computeCollapsedType(RankedTensorType type,
   return RankedTensorType::get(newShape, type.getElementType());
 }
 
-static Value collapseTensor(PatternRewriter &rewriter, Location loc, Value value,
+static Value collapseTensor(PatternRewriter &rewriter, Location loc,
+                            Value value,
                             ArrayRef<ReassociationIndices> reassoc) {
   if (reassoc.empty())
     return value;
@@ -523,7 +535,8 @@ static Value collapseTensor(PatternRewriter &rewriter, Location loc, Value value
   if (!tensorTy)
     return value;
   auto collapsedTy = computeCollapsedType(tensorTy, reassoc);
-  return rewriter.create<tensor::CollapseShapeOp>(loc, collapsedTy, value, reassoc);
+  return rewriter.create<tensor::CollapseShapeOp>(loc, collapsedTy, value,
+                                                  reassoc);
 }
 
 static Value expandTensor(PatternRewriter &rewriter, Location loc, Value value,
@@ -531,14 +544,16 @@ static Value expandTensor(PatternRewriter &rewriter, Location loc, Value value,
                           ArrayRef<ReassociationIndices> reassoc) {
   if (reassoc.empty())
     return value;
-  return rewriter.create<tensor::ExpandShapeOp>(loc, targetType, value, reassoc);
+  return rewriter.create<tensor::ExpandShapeOp>(loc, targetType, value,
+                                                reassoc);
 }
 
 struct MatmulToCinm : public OpConversionPattern<linalg::MatmulOp> {
   using OpConversionPattern::OpConversionPattern;
 
   LogicalResult
-  matchAndRewrite(linalg::MatmulOp op, OpAdaptor, ConversionPatternRewriter &rewriter) const override {
+  matchAndRewrite(linalg::MatmulOp op, OpAdaptor,
+                  ConversionPatternRewriter &rewriter) const override {
     ValueRange inputs = op.getInputs();
     ValueRange outputs = op.getOutputs();
     if (inputs.size() != 2 || outputs.size() != 1)
@@ -550,9 +565,11 @@ struct MatmulToCinm : public OpConversionPattern<linalg::MatmulOp> {
 
     if (!op->getResults().empty()) {
       if (!isTensor(A) || !isTensor(B) || !isTensor(op->getResult(0)))
-        return rewriter.notifyMatchFailure(op, "requires tensor operands/results");
+        return rewriter.notifyMatchFailure(op,
+                                           "requires tensor operands/results");
       auto resultTy = cast<RankedTensorType>(op->getResult(0).getType());
-      auto gemm = rewriter.create<cinm::GemmOp>(op.getLoc(), resultTy, ValueRange{A, B});
+      auto gemm = rewriter.create<cinm::GemmOp>(op.getLoc(), resultTy,
+                                                ValueRange{A, B});
       rewriter.replaceOp(op, gemm.getResult());
       return success();
     }
@@ -568,7 +585,8 @@ struct MatvecToCinm : public OpConversionPattern<linalg::MatvecOp> {
   using OpConversionPattern::OpConversionPattern;
 
   LogicalResult
-  matchAndRewrite(linalg::MatvecOp op, OpAdaptor, ConversionPatternRewriter &rewriter) const override {
+  matchAndRewrite(linalg::MatvecOp op, OpAdaptor,
+                  ConversionPatternRewriter &rewriter) const override {
     ValueRange inputs = op.getInputs();
     ValueRange outputs = op.getOutputs();
     if (inputs.size() != 2 || outputs.size() != 1)
@@ -580,7 +598,8 @@ struct MatvecToCinm : public OpConversionPattern<linalg::MatvecOp> {
 
     if (!op->getResults().empty()) {
       if (!isTensor(A) || !isTensor(x) || !isTensor(op->getResult(0)))
-        return rewriter.notifyMatchFailure(op, "requires tensor operands/results");
+        return rewriter.notifyMatchFailure(op,
+                                           "requires tensor operands/results");
       auto resultTy = cast<RankedTensorType>(op->getResult(0).getType());
       auto gemv = rewriter.create<cinm::GemvOp>(op.getLoc(), resultTy, A, x);
       rewriter.replaceOp(op, gemv.getResult());
@@ -610,7 +629,8 @@ struct BatchMatmulToCinm : public OpConversionPattern<linalg::BatchMatmulOp> {
 
     if (!op->getResults().empty()) {
       if (!isTensor(A) || !isTensor(B) || !isTensor(op->getResult(0)))
-        return rewriter.notifyMatchFailure(op, "requires tensor operands/results");
+        return rewriter.notifyMatchFailure(op,
+                                           "requires tensor operands/results");
       auto batch = rewriter.create<cinm::BatchGemmOp>(op.getLoc(), A, B);
       rewriter.replaceOp(op, batch.getResult());
       return success();
@@ -657,10 +677,11 @@ struct GenericActivationToCinm : public OpConversionPattern<linalg::GenericOp> {
 
     if (!op->getResults().empty()) {
       if (!isTensor(inputVal) || !isTensor(op->getResult(0)))
-        return rewriter.notifyMatchFailure(op, "requires tensor operands/results");
+        return rewriter.notifyMatchFailure(op,
+                                           "requires tensor operands/results");
       auto resultTy = cast<RankedTensorType>(op->getResult(0).getType());
-      auto act = rewriter.create<cinm::ActivateOp>(op.getLoc(), resultTy, kindAttr,
-                                                   inputVal);
+      auto act = rewriter.create<cinm::ActivateOp>(op.getLoc(), resultTy,
+                                                   kindAttr, inputVal);
       rewriter.replaceOp(op, act.getResult());
       return success();
     }
@@ -680,7 +701,8 @@ struct MapActivationToCinm : public OpConversionPattern<linalg::MapOp> {
   matchAndRewrite(linalg::MapOp op, OpAdaptor,
                   ConversionPatternRewriter &rewriter) const override {
     if (op.getInputs().size() != 1)
-      return rewriter.notifyMatchFailure(op, "expected single input for activation");
+      return rewriter.notifyMatchFailure(
+          op, "expected single input for activation");
 
     Block &body = op.getMapper().front();
     auto *terminator = body.getTerminator();
@@ -709,17 +731,18 @@ struct MapActivationToCinm : public OpConversionPattern<linalg::MapOp> {
     if (op->getResults().empty()) {
       if (!isMemRef(inputVal) || !isMemRef(initVal))
         return rewriter.notifyMatchFailure(op, "requires memref input/out");
-      rewriter.replaceOpWithNewOp<cinm::ActivateMemRefOp>(op, kindAttr, inputVal,
-                                                          initVal);
+      rewriter.replaceOpWithNewOp<cinm::ActivateMemRefOp>(op, kindAttr,
+                                                          inputVal, initVal);
       return success();
     }
 
     if (!isTensor(inputVal) || !isTensor(op->getResult(0)))
-      return rewriter.notifyMatchFailure(op, "requires tensor operands/results");
+      return rewriter.notifyMatchFailure(op,
+                                         "requires tensor operands/results");
 
     auto resultTy = cast<RankedTensorType>(op->getResult(0).getType());
-    auto act = rewriter.create<cinm::ActivateOp>(op.getLoc(), resultTy, kindAttr,
-                                                 inputVal);
+    auto act = rewriter.create<cinm::ActivateOp>(op.getLoc(), resultTy,
+                                                 kindAttr, inputVal);
     rewriter.replaceOp(op, act.getResult());
     return success();
   }
@@ -785,14 +808,14 @@ struct MapAddSubToCinm : public OpConversionPattern<linalg::MapOp> {
 
       switch (kind) {
       case BinaryElementwiseKind::Add: {
-        auto adds =
-            rewriter.create<cinm::AddsOp>(loc, resultTy, tensor, cloned.getResult());
+        auto adds = rewriter.create<cinm::AddsOp>(loc, resultTy, tensor,
+                                                  cloned.getResult());
         rewriter.replaceOp(op, adds.getResult());
         return success();
       }
       case BinaryElementwiseKind::Sub: {
-        auto subs =
-            rewriter.create<cinm::SubsOp>(loc, resultTy, tensor, cloned.getResult());
+        auto subs = rewriter.create<cinm::SubsOp>(loc, resultTy, tensor,
+                                                  cloned.getResult());
         rewriter.replaceOp(op, subs.getResult());
         return success();
       }
@@ -818,8 +841,10 @@ struct BatchMatvecToCinm : public OpConversionPattern<linalg::BatchMatvecOp> {
     auto outType = dyn_cast<RankedTensorType>(op->getResult(0).getType());
 
     if (!lhsType || !rhsType || !outType)
-      return rewriter.notifyMatchFailure(op, "requires ranked tensor operands/results");
-    if (lhsType.getRank() != 3 || rhsType.getRank() != 2 || outType.getRank() != 2)
+      return rewriter.notifyMatchFailure(
+          op, "requires ranked tensor operands/results");
+    if (lhsType.getRank() != 3 || rhsType.getRank() != 2 ||
+        outType.getRank() != 2)
       return rewriter.notifyMatchFailure(op, "unexpected tensor ranks");
 
     auto dimEqual = [](int64_t a, int64_t b) {
@@ -835,8 +860,8 @@ struct BatchMatvecToCinm : public OpConversionPattern<linalg::BatchMatvecOp> {
       return rewriter.notifyMatchFailure(op, "incompatible shapes");
 
     auto resultTy = cast<RankedTensorType>(op->getResult(0).getType());
-    rewriter.replaceOpWithNewOp<cinm::BatchGemvOp>(op, resultTy, op.getInputs()[0],
-                                                   op.getInputs()[1]);
+    rewriter.replaceOpWithNewOp<cinm::BatchGemvOp>(
+        op, resultTy, op.getInputs()[0], op.getInputs()[1]);
     return success();
   }
 };
@@ -922,16 +947,19 @@ struct GenericAddSubToCinm : public OpConversionPattern<linalg::GenericOp> {
   }
 };
 
-struct GenericContractionToCinm : public OpConversionPattern<linalg::GenericOp> {
+struct GenericContractionToCinm
+    : public OpConversionPattern<linalg::GenericOp> {
   using OpConversionPattern::OpConversionPattern;
 
   LogicalResult
-  matchAndRewrite(linalg::GenericOp op, OpAdaptor, ConversionPatternRewriter &rewriter) const override {
+  matchAndRewrite(linalg::GenericOp op, OpAdaptor,
+                  ConversionPatternRewriter &rewriter) const override {
     if (op.getNumDpsInputs() != 2 || op.getNumDpsInits() != 1)
       return rewriter.notifyMatchFailure(op, "not a 2-input contraction");
 
     auto linalgOp = cast<linalg::LinalgOp>(op.getOperation());
-    FailureOr<linalg::ContractionDimensions> dimsOr = linalg::inferContractionDims(linalgOp);
+    FailureOr<linalg::ContractionDimensions> dimsOr =
+        linalg::inferContractionDims(linalgOp);
     if (failed(dimsOr))
       return rewriter.notifyMatchFailure(op, "not a contraction");
     linalg::ContractionDimensions dims = *dimsOr;
@@ -942,13 +970,15 @@ struct GenericContractionToCinm : public OpConversionPattern<linalg::GenericOp> 
     Value rhs = op.getDpsInputs()[1];
 
     if (op->getResults().empty())
-      return rewriter.notifyMatchFailure(op, "memref contractions not supported yet");
+      return rewriter.notifyMatchFailure(
+          op, "memref contractions not supported yet");
 
     auto lhsType = dyn_cast<RankedTensorType>(lhs.getType());
     auto rhsType = dyn_cast<RankedTensorType>(rhs.getType());
     auto resultType = dyn_cast<RankedTensorType>(op->getResult(0).getType());
     if (!lhsType || !rhsType || !resultType)
-      return rewriter.notifyMatchFailure(op, "requires ranked tensor operands/results");
+      return rewriter.notifyMatchFailure(
+          op, "requires ranked tensor operands/results");
 
     Location loc = op.getLoc();
 
@@ -1047,7 +1077,8 @@ struct GenericContractionToCinm : public OpConversionPattern<linalg::GenericOp> 
     if ((!lhsBatchIdx.empty() && !isContiguous(lhsBatchIdx)) ||
         !isContiguous(lhsMIdx) || !isContiguous(lhsKIdx) ||
         (!rhsBatchIdx.empty() && !isContiguous(rhsBatchIdx)) ||
-        !isContiguous(rhsKIdx) || (!rhsNIdx.empty() && !isContiguous(rhsNIdx)) ||
+        !isContiguous(rhsKIdx) ||
+        (!rhsNIdx.empty() && !isContiguous(rhsNIdx)) ||
         (!outBatchIdx.empty() && !isContiguous(outBatchIdx)) ||
         !isContiguous(outMIdx) || (!outNIdx.empty() && !isContiguous(outNIdx)))
       return rewriter.notifyMatchFailure(op, "non-contiguous dimensions");
@@ -1081,8 +1112,8 @@ struct GenericContractionToCinm : public OpConversionPattern<linalg::GenericOp> 
     Value newResult;
     if (hasBatch) {
       if (!outNIdx.empty()) {
-        auto batchGemm = rewriter.create<cinm::BatchGemmOp>(loc, collapsedLhs,
-                                                            collapsedRhs);
+        auto batchGemm =
+            rewriter.create<cinm::BatchGemmOp>(loc, collapsedLhs, collapsedRhs);
         newResult = batchGemm.getResult();
       } else {
         auto batchGemv = rewriter.create<cinm::BatchGemvOp>(
@@ -1091,8 +1122,8 @@ struct GenericContractionToCinm : public OpConversionPattern<linalg::GenericOp> 
       }
     } else {
       if (!outNIdx.empty()) {
-        auto gemm = rewriter.create<cinm::GemmOp>(loc, collapsedResultType,
-                                                  ValueRange{collapsedLhs, collapsedRhs});
+        auto gemm = rewriter.create<cinm::GemmOp>(
+            loc, collapsedResultType, ValueRange{collapsedLhs, collapsedRhs});
         newResult = gemm.getResult();
       } else {
         auto gemv = rewriter.create<cinm::GemvOp>(loc, collapsedResultType,
@@ -1103,10 +1134,522 @@ struct GenericContractionToCinm : public OpConversionPattern<linalg::GenericOp> 
 
     Value finalResult = newResult;
     if (collapsedResultType != resultType)
-      finalResult = expandTensor(rewriter, loc, newResult, resultType, outReassoc);
+      finalResult =
+          expandTensor(rewriter, loc, newResult, resultType, outReassoc);
 
     rewriter.replaceOp(op, finalResult);
     return success();
+  }
+};
+
+template <typename T> struct LinalgToCinmOpBuilder;
+
+template <typename SourceOp>
+struct ConvertLinalgOpToCinm : OpConversionPattern<SourceOp> {
+  using OpConversionPattern<SourceOp>::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(SourceOp op, SourceOp::Adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    cinm::ComputeOp computeOp =
+        rewriter.create<cinm::ComputeOp>(op.getLoc(), op.getResultTypes());
+    Block *computeBody = &computeOp.getRegion().front();
+
+    rewriter.setInsertionPointToStart(computeBody);
+    auto failureOrCinmOp = LinalgToCinmOpBuilder<SourceOp>::build(rewriter, op);
+    if (failed(failureOrCinmOp)) {
+      return failure();
+    }
+    auto cinmOp = *failureOrCinmOp;
+    rewriter.create<cinm::YieldOp>(op.getLoc(), cinmOp->getResults());
+
+    rewriter.replaceOpWithMultiple(op, computeOp.getResults());
+    computeOp.dump();
+    return success();
+  }
+};
+
+template <> struct LinalgToCinmOpBuilder<linalg::MatmulOp> {
+  static FailureOr<cinm::GemmOp> build(ConversionPatternRewriter &rewriter,
+                                       linalg::MatmulOp sourceOp) {
+    return rewriter.create<cinm::GemmOp>(
+        sourceOp.getLoc(), sourceOp.getOperand(0), sourceOp.getOperand(1));
+  }
+};
+
+template <> struct LinalgToCinmOpBuilder<linalg::MatvecOp> {
+  static FailureOr<cinm::GemvOp> build(ConversionPatternRewriter &rewriter,
+                                       linalg::MatvecOp sourceOp) {
+    return rewriter.create<cinm::GemvOp>(
+        sourceOp.getLoc(), sourceOp.getResultTypes()[0], sourceOp.getOperand(0),
+        sourceOp.getOperand(1));
+  }
+};
+
+template <> struct LinalgToCinmOpBuilder<linalg::ReduceOp> {
+  static FailureOr<cinm::ReduceMethod>
+  getReduceMethod(linalg::ReduceOp reduceOp) {
+    Block &body = reduceOp->getRegion(0).front();
+
+    // we only support reduce operations with a single arith + yield op in the
+    // body
+    size_t count = 0;
+    for (Operation &_ : body) {
+      count++;
+    }
+    if (count > 2) {
+      return failure();
+    }
+
+    linalg::YieldOp yieldOp = *body.getOps<linalg::YieldOp>().begin();
+
+    // we don't support reduce operations with more than 1 result
+    if (yieldOp->getOperands().size() != 1) {
+      return failure();
+    }
+
+    Operation *reductionOp = yieldOp.getOperand(0).getDefiningOp();
+    if (!reductionOp) {
+      return failure();
+    }
+
+    // we only support reduce operations, where the inputs to the reduction op
+    // are the block parameters of the reduce body
+    for (Value v : reductionOp->getOperands()) {
+      if (v.getParentBlock() != &body || !v.hasOneUse()) {
+        return failure();
+      }
+    }
+
+    if (llvm::dyn_cast<arith::AddFOp>(reductionOp) ||
+        llvm::dyn_cast<arith::AddIOp>(reductionOp)) {
+      return cinm::ReduceMethod::ADD;
+    }
+
+    if (llvm::dyn_cast<arith::MulFOp>(reductionOp) ||
+        llvm::dyn_cast<arith::MulIOp>(reductionOp)) {
+      return cinm::ReduceMethod::MUL;
+    }
+
+    if (llvm::dyn_cast<arith::MinimumFOp>(reductionOp) ||
+        llvm::dyn_cast<arith::MinSIOp>(reductionOp)) {
+      return cinm::ReduceMethod::MIN;
+    }
+
+    if (llvm::dyn_cast<arith::MaximumFOp>(reductionOp) ||
+        llvm::dyn_cast<arith::MaxSIOp>(reductionOp)) {
+      return cinm::ReduceMethod::MAX;
+    }
+
+    // unsupported reduction method
+    return failure();
+  }
+
+  static FailureOr<cinm::ReduceOp> build(ConversionPatternRewriter &rewriter,
+                                         linalg::ReduceOp sourceOp) {
+    FailureOr<cinm::ReduceMethod> m = getReduceMethod(sourceOp);
+    if (failed(m)) {
+      return failure();
+    }
+    return rewriter.create<cinm::ReduceOp>(sourceOp.getLoc(),
+                                           sourceOp.getResultTypes()[0], *m,
+                                           sourceOp.getOperand(0));
+  }
+};
+
+/// Elementwise unary ops
+
+template <typename LinalgOp, linalg::UnaryFn F>
+struct ElementwiseUnaryOpBuilder {
+  static FailureOr<cinm::Elementwise_Unary_Op>
+  build(ConversionPatternRewriter &rewriter, LinalgOp sourceOp) {
+    return rewriter.create<cinm::Elementwise_Unary_Op>(
+        sourceOp.getLoc(), linalg::UnaryFn::exp, sourceOp.getOperand(0));
+  }
+};
+
+template <>
+struct LinalgToCinmOpBuilder<linalg::AbsOp>
+    : public ElementwiseUnaryOpBuilder<linalg::AbsOp, linalg::UnaryFn::abs> {};
+
+template <>
+struct LinalgToCinmOpBuilder<linalg::CeilOp>
+    : public ElementwiseUnaryOpBuilder<linalg::CeilOp, linalg::UnaryFn::ceil> {
+};
+
+template <>
+struct LinalgToCinmOpBuilder<linalg::ErfOp>
+    : public ElementwiseUnaryOpBuilder<linalg::ErfOp, linalg::UnaryFn::erf> {};
+
+template <>
+struct LinalgToCinmOpBuilder<linalg::ExpOp>
+    : public ElementwiseUnaryOpBuilder<linalg::ExpOp, linalg::UnaryFn::exp> {};
+
+template <>
+struct LinalgToCinmOpBuilder<linalg::FloorOp>
+    : public ElementwiseUnaryOpBuilder<linalg::FloorOp,
+                                       linalg::UnaryFn::floor> {};
+
+template <>
+struct LinalgToCinmOpBuilder<linalg::LogOp>
+    : public ElementwiseUnaryOpBuilder<linalg::LogOp, linalg::UnaryFn::log> {};
+
+template <>
+struct LinalgToCinmOpBuilder<linalg::NegFOp>
+    : public ElementwiseUnaryOpBuilder<linalg::NegFOp, linalg::UnaryFn::negf> {
+};
+
+template <>
+struct LinalgToCinmOpBuilder<linalg::ReciprocalOp>
+    : public ElementwiseUnaryOpBuilder<linalg::ReciprocalOp,
+                                       linalg::UnaryFn::reciprocal> {};
+
+template <>
+struct LinalgToCinmOpBuilder<linalg::RoundOp>
+    : public ElementwiseUnaryOpBuilder<linalg::RoundOp,
+                                       linalg::UnaryFn::round> {};
+
+template <>
+struct LinalgToCinmOpBuilder<linalg::RsqrtOp>
+    : public ElementwiseUnaryOpBuilder<linalg::RsqrtOp,
+                                       linalg::UnaryFn::rsqrt> {};
+
+template <>
+struct LinalgToCinmOpBuilder<linalg::SqrtOp>
+    : public ElementwiseUnaryOpBuilder<linalg::SqrtOp, linalg::UnaryFn::sqrt> {
+};
+
+template <>
+struct LinalgToCinmOpBuilder<linalg::SquareOp>
+    : public ElementwiseUnaryOpBuilder<linalg::SquareOp,
+                                       linalg::UnaryFn::square> {};
+
+template <>
+struct LinalgToCinmOpBuilder<linalg::TanhOp>
+    : public ElementwiseUnaryOpBuilder<linalg::TanhOp, linalg::UnaryFn::tanh> {
+};
+
+/// Elementwise binary ops
+
+template <typename LinalgOp, typename CinmOp>
+struct ElementwiseBinaryOpBuilder {
+  static FailureOr<CinmOp> build(ConversionPatternRewriter &rewriter,
+                                 LinalgOp sourceOp) {
+    return rewriter.create<CinmOp>(sourceOp.getLoc(), sourceOp.getOperands()[0],
+                                   sourceOp.getOperands()[1]);
+  }
+};
+
+template <>
+struct LinalgToCinmOpBuilder<linalg::AddOp>
+    : public ElementwiseBinaryOpBuilder<linalg::AddOp, cinm::AddOp> {};
+
+template <>
+struct LinalgToCinmOpBuilder<linalg::SubOp>
+    : public ElementwiseBinaryOpBuilder<linalg::SubOp, cinm::SubOp> {};
+
+template <>
+struct LinalgToCinmOpBuilder<linalg::MulOp>
+    : public ElementwiseBinaryOpBuilder<linalg::MulOp, cinm::MulOp> {};
+
+template <>
+struct LinalgToCinmOpBuilder<linalg::DivOp>
+    : public ElementwiseBinaryOpBuilder<linalg::DivOp, cinm::DivOp> {};
+
+struct ConvertLinalgGenericOpToCinm : OpConversionPattern<linalg::GenericOp> {
+  using OpConversionPattern<linalg::GenericOp>::OpConversionPattern;
+
+  static bool isGenericOpElementwiseOp(linalg::GenericOp op) {
+    const auto indexingMaps = op.getIndexingMapsArray();
+    const auto iteratorTypes = op.getIteratorTypesArray();
+
+    bool areAllIndexingMapsIdentityMaps = true;
+    for (const auto &map : indexingMaps) {
+      areAllIndexingMapsIdentityMaps &= map.isIdentity();
+    }
+
+    bool areAllIteratorTypesParallel = true;
+    for (const auto &iteratorType : iteratorTypes) {
+      areAllIteratorTypesParallel &=
+          iteratorType == mlir::utils::IteratorType::parallel;
+    }
+
+    return areAllIndexingMapsIdentityMaps && areAllIteratorTypesParallel;
+  }
+
+  static FailureOr<Operation *>
+  buildElementwiseOp(ConversionPatternRewriter &rewriter, Operation *srcOp,
+                     ValueRange operands, Location loc) {
+    return TypeSwitch<mlir::Operation *, FailureOr<Operation *>>(srcOp)
+        .Case<arith::AddIOp>([&](arith::AddIOp) {
+          return rewriter.create<cinm::AddOp>(loc, operands[0], operands[1]);
+        })
+        .Case<arith::AddFOp>([&](arith::AddFOp) {
+          return rewriter.create<cinm::AddOp>(loc, operands[0], operands[1]);
+        })
+        .Case<arith::SubIOp>([&](arith::SubIOp) {
+          return rewriter.create<cinm::SubOp>(loc, operands[0], operands[1]);
+        })
+        .Case<arith::SubFOp>([&](arith::SubFOp) {
+          return rewriter.create<cinm::SubOp>(loc, operands[0], operands[1]);
+        })
+        .Case<arith::MulIOp>([&](arith::MulIOp) {
+          return rewriter.create<cinm::MulOp>(loc, operands[0], operands[1]);
+        })
+        .Case<arith::MulFOp>([&](arith::MulFOp) {
+          return rewriter.create<cinm::MulOp>(loc, operands[0], operands[1]);
+        })
+        .Case<arith::DivSIOp>([&](arith::DivSIOp) {
+          return rewriter.create<cinm::DivOp>(loc, operands[0], operands[1]);
+        })
+        .Case<arith::DivFOp>([&](arith::DivFOp) {
+          return rewriter.create<cinm::DivOp>(loc, operands[0], operands[1]);
+        })
+        .Default([&](Operation *) {
+          // unsupported elementwise operation
+          mlir::emitError(loc, "unsupported elementwise operation for "
+                               "conversion to cinm");
+          return failure();
+        });
+  }
+
+  static LogicalResult
+  convertElementwiseGenericBodyOpToCinm(Operation &op, IRMapping &mapper,
+                                        ConversionPatternRewriter &rewriter) {
+    SmallVector<Value, 3> mappedOperands;
+    for (auto &operand : op.getOpOperands()) {
+      mappedOperands.push_back(mapper.lookupOrDefault(operand.get()));
+    }
+
+    // create cinm op corresponding to the current operation
+    cinm::ComputeOp computeOp = rewriter.create<cinm::ComputeOp>(
+        op.getLoc(), mappedOperands[0].getType());
+    Block *computeBody = &computeOp.getBody().front();
+
+    rewriter.setInsertionPointToStart(computeBody);
+
+    auto failureOrCinmOp =
+        buildElementwiseOp(rewriter, &op, mappedOperands, op.getLoc());
+    if (failed(failureOrCinmOp)) {
+      return failure();
+    }
+
+    auto cinmOp = *failureOrCinmOp;
+    rewriter.create<cinm::YieldOp>(op.getLoc(), cinmOp->getResults());
+
+    for (size_t i = 0; i < op.getNumResults(); i++) {
+      mapper.map(op.getResult(i), computeOp.getResult(i));
+    }
+
+    rewriter.setInsertionPointAfter(computeOp);
+    return success();
+  }
+
+  static LogicalResult
+  convertElementwiseOp(linalg::GenericOp op,
+                       ConversionPatternRewriter &rewriter) {
+    // convert generic op to one or more elementwise cinm ops
+    IRMapping mapper;
+    Block *body = op.getBody();
+    for (size_t i = 0; i < op.getInputs().size(); i++) {
+      mapper.map(body->getArgument(i), op.getInputs()[i]);
+    }
+
+    SmallVector<Value> results;
+
+    for (auto &op : *body) {
+      if (llvm::dyn_cast_or_null<linalg::YieldOp>(&op)) {
+        for (Value v : op.getOperands()) {
+          results.push_back(mapper.lookupOrDefault(v));
+        }
+        continue;
+      }
+
+      if (failed(convertElementwiseGenericBodyOpToCinm(op, mapper, rewriter))) {
+        return failure();
+      }
+    }
+
+    rewriter.replaceOp(op, results);
+    return success();
+  }
+
+  static bool isGenericOpReductionOp(linalg::GenericOp op) {
+    const auto indexingMaps = op.getIndexingMapsArray();
+    const auto iteratorTypes = op.getIteratorTypesArray();
+
+    bool areAllIndexingMapsIdentityMaps = true;
+    for (const auto &map : indexingMaps) {
+      areAllIndexingMapsIdentityMaps &= map.isIdentity();
+    }
+
+    bool areAllIteratorTypesReduction = true;
+    for (const auto &iteratorType : iteratorTypes) {
+      areAllIteratorTypesReduction &=
+          iteratorType == mlir::utils::IteratorType::reduction;
+    }
+
+    return areAllIndexingMapsIdentityMaps && areAllIteratorTypesReduction;
+  }
+
+  static bool isAccumulationOp(Operation *op) {
+    if (op->getNumResults() != 1 || op->getNumOperands() < 2)
+      return false;
+
+    // the first operand must be the last block argument (the accumulator)
+    if (op->getOperand(0) !=
+        op->getBlock()->getArgument(op->getBlock()->getNumArguments() - 1))
+      return false;
+
+    // the result must be the value yielded by the generic body
+    if (!op->getResult(0).hasOneUse())
+      return false;
+    if (!dyn_cast_or_null<linalg::YieldOp>(
+            *op->getResult(0).getUsers().begin()))
+      return false;
+
+    return true;
+  }
+
+  static FailureOr<Operation *>
+  buildReductionOp(ConversionPatternRewriter &rewriter, Operation *srcOp,
+                   Value operand, Location loc) {
+    return TypeSwitch<mlir::Operation *, FailureOr<Operation *>>(srcOp)
+        .Case<arith::AddIOp>([&](arith::AddIOp) {
+          return rewriter.create<cinm::ReduceOp>(
+              loc, srcOp->getResultTypes()[0], cinm::ReduceMethod::ADD,
+              operand);
+        })
+        .Case<arith::AddFOp>([&](arith::AddFOp) {
+          return rewriter.create<cinm::ReduceOp>(
+              loc, srcOp->getResultTypes()[0], cinm::ReduceMethod::MUL,
+              operand);
+        })
+        .Case<arith::MulIOp>([&](arith::MulIOp) {
+          return rewriter.create<cinm::ReduceOp>(
+              loc, srcOp->getResultTypes()[0], cinm::ReduceMethod::MUL,
+              operand);
+        })
+        .Case<arith::MulFOp>([&](arith::MulFOp) {
+          return rewriter.create<cinm::ReduceOp>(
+              loc, srcOp->getResultTypes()[0], cinm::ReduceMethod::MUL,
+              operand);
+        })
+        .Case<arith::MinSIOp>([&](arith::MinSIOp) {
+          return rewriter.create<cinm::ReduceOp>(
+              loc, srcOp->getResultTypes()[0], cinm::ReduceMethod::MIN,
+              operand);
+        })
+        .Case<arith::MinimumFOp>([&](arith::MinimumFOp) {
+          return rewriter.create<cinm::ReduceOp>(
+              loc, srcOp->getResultTypes()[0], cinm::ReduceMethod::MIN,
+              operand);
+        })
+        .Case<arith::MaxSIOp>([&](arith::MaxSIOp) {
+          return rewriter.create<cinm::ReduceOp>(
+              loc, srcOp->getResultTypes()[0], cinm::ReduceMethod::MAX,
+              operand);
+        })
+        .Case<arith::MaximumFOp>([&](arith::MaximumFOp) {
+          return rewriter.create<cinm::ReduceOp>(
+              loc, srcOp->getResultTypes()[0], cinm::ReduceMethod::MAX,
+              operand);
+        })
+        .Default([&](Operation *) {
+          // unsupported elementwise operation
+          mlir::emitError(loc, "unsupported elementwise operation for "
+                               "conversion to cinm");
+          return failure();
+        });
+  }
+
+  static LogicalResult
+  convertReductionGenericBodyOpToCinm(Operation &op, IRMapping &mapper,
+                                      ConversionPatternRewriter &rewriter) {
+    // create cinm op corresponding to the current operation
+    Value operand = mapper.lookupOrDefault(op.getOperand(1));
+    cinm::ComputeOp computeOp =
+        rewriter.create<cinm::ComputeOp>(op.getLoc(), operand.getType());
+    Block *computeBody = &computeOp.getRegion().front();
+
+    rewriter.setInsertionPointToStart(computeBody);
+
+    auto failureOrCinmOp =
+        buildReductionOp(rewriter, &op, operand, op.getLoc());
+    if (failed(failureOrCinmOp)) {
+      return failure();
+    }
+
+    auto cinmOp = *failureOrCinmOp;
+    rewriter.create<cinm::YieldOp>(op.getLoc(), cinmOp->getResults());
+
+    for (size_t i = 0; i < op.getNumResults(); i++) {
+      mapper.map(op.getResult(i), computeOp.getResult(i));
+    }
+
+    rewriter.setInsertionPointAfter(computeOp);
+    return success();
+  }
+
+  static LogicalResult convertReductionOp(linalg::GenericOp op,
+                                          ConversionPatternRewriter &rewriter) {
+    // convert generic op to zero or more elementwise ops and one reduction op
+    IRMapping mapper;
+    Block *body = op.getBody();
+    for (size_t i = 0; i < op.getInputs().size(); i++) {
+      Value reshaped = op.getInputs()[i];
+      if (RankedTensorType inputType =
+              dyn_cast_or_null<RankedTensorType>(reshaped.getType())) {
+        if (inputType.getRank() > 1) {
+          // ...
+        }
+      } else if (MemRefType inputType =
+                     dyn_cast_or_null<MemRefType>(reshaped.getType())) {
+        if (inputType.getRank() > 1) {
+          // ...
+        }
+      }
+      mapper.map(body->getArgument(i), reshaped);
+    }
+
+    SmallVector<Value> results;
+
+    for (auto &op : *body) {
+      if (llvm::dyn_cast_or_null<linalg::YieldOp>(&op)) {
+        for (Value v : op.getOperands()) {
+          results.push_back(mapper.lookupOrDefault(v));
+        }
+        continue;
+      }
+
+      if (isAccumulationOp(&op)) {
+        if (failed(convertReductionGenericBodyOpToCinm(op, mapper, rewriter))) {
+          return failure();
+        }
+      } else {
+        if (failed(
+                convertElementwiseGenericBodyOpToCinm(op, mapper, rewriter))) {
+          return failure();
+        }
+      }
+    }
+
+    rewriter.replaceOp(op, results);
+    return success();
+  }
+
+  LogicalResult
+  matchAndRewrite(linalg::GenericOp op, linalg::GenericOp::Adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    if (isGenericOpElementwiseOp(op)) {
+      return convertElementwiseOp(op, rewriter);
+    } else if (isGenericOpReductionOp(op)) {
+      return convertReductionOp(op, rewriter);
+    } else {
+      emitError(op.getLoc(), "unsupported generic op for conversion to cinm");
+    }
+
+    return failure();
   }
 };
 
@@ -1117,10 +1660,11 @@ struct ConvertLinalgToCinmPass
 
   void runOnOperation() override {
     MLIRContext &ctx = getContext();
-    func::FuncOp func = getOperation();
 
+    func::FuncOp func = getOperation();
     IRRewriter rewriter(&ctx);
-    llvm::errs() << "ConvertLinalgToCinm on function " << func.getName() << "\n";
+    llvm::errs() << "ConvertLinalgToCinm on function " << func.getName()
+                 << "\n";
 
     SmallVector<linalg::GenericOp> genericOps;
     func.walk([&](linalg::GenericOp op) { genericOps.push_back(op); });
@@ -1141,24 +1685,65 @@ struct ConvertLinalgToCinmPass
     }
 
     ConversionTarget target(ctx);
+    target.markUnknownOpDynamicallyLegal([](...) { return true; });
     target.addLegalDialect<cinm::CinmDialect>();
-    target.addLegalDialect<arith::ArithDialect>();
-    target.addLegalDialect<func::FuncDialect>();
-    target.addLegalDialect<tensor::TensorDialect>();
-    target.addLegalDialect<memref::MemRefDialect>();
-    target.addLegalDialect<math::MathDialect>();
-    target.addLegalDialect<linalg::LinalgDialect>();
 
+    RewritePatternSet patterns(&ctx);
+
+    // patterns.add<ConvertLinalgOpToCinm<linalg::MatmulOp>>(&ctx);
+    // patterns.add<ConvertLinalgOpToCinm<linalg::MatvecOp>>(&ctx);
+    //  target.addIllegalOp<linalg::MatmulOp, linalg::MatvecOp>();
+    patterns.add<ConvertLinalgOpToCinm<linalg::ReduceOp>>(&ctx);
+    target.addIllegalOp<linalg::ReduceOp>();
+
+    /*
+        // Elementwise unary ops
+        patterns.add<ConvertLinalgOpToCinm<linalg::AbsOp>,
+                     ConvertLinalgOpToCinm<linalg::CeilOp>,
+                     ConvertLinalgOpToCinm<linalg::ErfOp>,
+                     ConvertLinalgOpToCinm<linalg::ExpOp>,
+                     ConvertLinalgOpToCinm<linalg::FloorOp>,
+                     ConvertLinalgOpToCinm<linalg::LogOp>,
+                     ConvertLinalgOpToCinm<linalg::NegFOp>,
+                     ConvertLinalgOpToCinm<linalg::ReciprocalOp>,
+                     ConvertLinalgOpToCinm<linalg::RoundOp>,
+                     ConvertLinalgOpToCinm<linalg::RsqrtOp>,
+                     ConvertLinalgOpToCinm<linalg::SqrtOp>,
+                     ConvertLinalgOpToCinm<linalg::SquareOp>,
+                     ConvertLinalgOpToCinm<linalg::TanhOp>>(&ctx);
+        target.addIllegalOp<linalg::AbsOp, linalg::CeilOp, linalg::ErfOp,
+                            linalg::ExpOp, linalg::FloorOp, linalg::LogOp,
+                            linalg::NegFOp, linalg::ReciprocalOp,
+       linalg::RoundOp, linalg::RsqrtOp, linalg::SqrtOp, linalg::SquareOp,
+                            linalg::TanhOp>();
+    */
+
+    // Elementwise binary ops
+    patterns.add<ConvertLinalgOpToCinm<linalg::AddOp>,
+                 ConvertLinalgOpToCinm<linalg::SubOp>,
+                 ConvertLinalgOpToCinm<linalg::MulOp>,
+                 ConvertLinalgOpToCinm<linalg::DivOp>>(&ctx);
+    target.addIllegalOp<linalg::AddOp, linalg::SubOp, linalg::MulOp,
+                        linalg::DivOp>();
+
+    patterns.add<ConvertLinalgGenericOpToCinm>(&ctx);
+    target.addDynamicallyLegalOp<linalg::GenericOp>(
+        [&](linalg::GenericOp op) -> bool {
+          return !(ConvertLinalgGenericOpToCinm::isGenericOpElementwiseOp(op) ||
+                   ConvertLinalgGenericOpToCinm::isGenericOpReductionOp(op));
+        });
+
+    patterns
+        .add<MatmulToCinm, MatvecToCinm, BatchMatmulToCinm, BatchMatvecToCinm>(
+            &ctx);
     target.addIllegalOp<linalg::MatmulOp>();
     target.addIllegalOp<linalg::MatvecOp>();
     target.addIllegalOp<linalg::BatchMatmulOp>();
     target.addIllegalOp<linalg::BatchMatvecOp>();
+    // patterns.add<GenericContractionToCinm>(&ctx);
 
-    RewritePatternSet patterns(&ctx);
-    patterns.insert<MatmulToCinm, MatvecToCinm, BatchMatmulToCinm, BatchMatvecToCinm,
-                    GenericContractionToCinm>(&ctx);
-
-    if (failed(applyPartialConversion(getOperation(), target, std::move(patterns))))
+    if (failed(applyPartialConversion(getOperation(), target,
+                                      std::move(patterns))))
       signalPassFailure();
   }
 };
