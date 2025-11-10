@@ -28,7 +28,7 @@ if [ ! -d "build" ] || [ "${reconfigure:-0}" -eq 1 ]; then
     dependency_paths="$dependency_paths -DMLIR_DIR=$llvm_path/build/lib/cmake/mlir"
   fi
 
-  if [[ ${checkout_upmem:-0} -eq 1 ]]; then
+  if [ ${checkout_upmem:-0} -eq 1 ] && [ -d "${upmem_path}" ]; then
     dependency_paths="$dependency_paths -DUPMEM_DIR=$upmem_path"
   fi
 
@@ -36,7 +36,7 @@ if [ ! -d "build" ] || [ "${reconfigure:-0}" -eq 1 ]; then
     dependency_paths="$dependency_paths -DTORCH_MLIR_DIR=$torch_mlir_path/install"
   fi
 
-  cmake -S . -B build -G Ninja \
+  print_and_run cmake -S . -B build -G Ninja \
     -DCMAKE_BUILD_TYPE=RelWithDebInfo \
     $dependency_paths \
     -DCMAKE_EXPORT_COMPILE_COMMANDS=ON \
