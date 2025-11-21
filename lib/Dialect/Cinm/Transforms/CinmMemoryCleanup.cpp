@@ -34,9 +34,8 @@ struct RewriteScfTensorIterArgsToMemref final : OpRewritePattern<scf::ForOp> {
     if (oldInits.empty())
       return failure();
 
-    bool anyTensor = llvm::any_of(oldInits, [](Value v) {
-      return isa<RankedTensorType>(v.getType());
-    });
+    bool anyTensor = llvm::any_of(
+        oldInits, [](Value v) { return isa<RankedTensorType>(v.getType()); });
     if (!anyTensor)
       return failure();
 
@@ -55,9 +54,10 @@ struct RewriteScfTensorIterArgsToMemref final : OpRewritePattern<scf::ForOp> {
       auto tt = dyn_cast<RankedTensorType>(init.getType());
       if (!tt)
         return failure();
-      BaseMemRefType mr = bufferization::getMemRefTypeWithFullyDynamicLayout(tt);
-      Value mem = rewriter.create<bufferization::ToMemrefOp>(loc, mr, init,
-                                                             false);
+      BaseMemRefType mr =
+          bufferization::getMemRefTypeWithFullyDynamicLayout(tt);
+      Value mem =
+          rewriter.create<bufferization::ToMemrefOp>(loc, mr, init, false);
       memInitArgs.push_back(mem);
       memIterTypes.push_back(mem.getType());
     }
@@ -132,8 +132,8 @@ struct RewriteScfTensorIterArgsToMemref final : OpRewritePattern<scf::ForOp> {
       Value res = it.value();
       Type oldTy = oldFor.getResult(it.index()).getType();
       if (isa<RankedTensorType>(oldTy)) {
-        Value t = rewriter.create<bufferization::ToTensorOp>(
-            loc, oldTy, res, true, true);
+        Value t = rewriter.create<bufferization::ToTensorOp>(loc, oldTy, res,
+                                                             true, true);
         repls.push_back(t);
       } else {
         repls.push_back(res);
@@ -144,7 +144,6 @@ struct RewriteScfTensorIterArgsToMemref final : OpRewritePattern<scf::ForOp> {
     return success();
   }
 };
-
 
 struct LowerDynamicShapeCopyAnyRank final : OpRewritePattern<memref::CopyOp> {
   using OpRewritePattern::OpRewritePattern;
@@ -500,7 +499,8 @@ struct ReplacePerfectAffineCopyNestWithMemRefCopy final
   }
 };
 
-struct ReplaceSimpleAffineForToScf final : OpRewritePattern<affine::AffineForOp> {
+struct ReplaceSimpleAffineForToScf final
+    : OpRewritePattern<affine::AffineForOp> {
   using OpRewritePattern::OpRewritePattern;
 
   static bool isConstZeroMap(AffineMap m) {
@@ -553,7 +553,8 @@ struct ReplaceSimpleAffineForToScf final : OpRewritePattern<affine::AffineForOp>
       if (isa<affine::AffineYieldOp>(op))
         continue;
       if (auto st = dyn_cast<affine::AffineStoreOp>(op)) {
-        rewriter.create<memref::StoreOp>(loc, st.getValue(), st.getMemRef(), iv);
+        rewriter.create<memref::StoreOp>(loc, st.getValue(), st.getMemRef(),
+                                         iv);
         continue;
       }
     }
@@ -729,7 +730,8 @@ struct ReplaceLinalgGenericIndexRange1DWithLoop
       return failure();
 
     auto outTy = dyn_cast<MemRefType>(op.getOutputs()[0].getType());
-    if (!outTy || outTy.getRank() != 1 || !outTy.getElementType().isSignlessInteger(64))
+    if (!outTy || outTy.getRank() != 1 ||
+        !outTy.getElementType().isSignlessInteger(64))
       return failure();
 
     auto &region = op.getRegion();
@@ -756,7 +758,8 @@ struct ReplaceLinalgGenericIndexRange1DWithLoop
     auto loop = rewriter.create<scf::ForOp>(loc, c0, ub, c1);
     rewriter.setInsertionPointToStart(loop.getBody());
     Value iv = loop.getInductionVar();
-    Value iv64 = rewriter.create<arith::IndexCastOp>(loc, rewriter.getI64Type(), iv);
+    Value iv64 =
+        rewriter.create<arith::IndexCastOp>(loc, rewriter.getI64Type(), iv);
     rewriter.create<memref::StoreOp>(loc, iv64, out, iv);
     rewriter.setInsertionPointAfter(loop);
     rewriter.eraseOp(op);
@@ -817,10 +820,12 @@ struct ReplaceLinalgGenericIndexRangeNDWithLoops
       steps[d] = c1;
     }
 
-    auto createNest = [&](auto &&self, unsigned d, SmallVector<Value> &ivs) -> void {
+    auto createNest = [&](auto &&self, unsigned d,
+                          SmallVector<Value> &ivs) -> void {
       if (d == rank) {
         Value which = ivs[dimK];
-        Value as64 = rewriter.create<arith::IndexCastOp>(loc, rewriter.getI64Type(), which);
+        Value as64 = rewriter.create<arith::IndexCastOp>(
+            loc, rewriter.getI64Type(), which);
         rewriter.create<memref::StoreOp>(loc, as64, out, ivs);
         return;
       }
@@ -852,7 +857,8 @@ struct ReplaceLinalgGenericForwardToLoops
 
   static bool isIdentity(AffineMap m) { return m.isIdentity(); }
 
-  static LogicalResult getDimPositions(AffineMap m, SmallVectorImpl<unsigned> &pos) {
+  static LogicalResult getDimPositions(AffineMap m,
+                                       SmallVectorImpl<unsigned> &pos) {
     if (m.getNumSymbols() != 0)
       return failure();
     pos.clear();
@@ -926,12 +932,14 @@ struct ReplaceLinalgGenericForwardToLoops
       steps[d] = c1;
     }
 
-    auto createNest = [&](auto &&self, unsigned d, SmallVector<Value> &ivs) -> void {
+    auto createNest = [&](auto &&self, unsigned d,
+                          SmallVector<Value> &ivs) -> void {
       if (d == rank) {
         SmallVector<Value, 4> inIdx;
         inIdx.reserve(inPos.size());
         for (unsigned p : inPos) {
-          if (p >= ivs.size()) return;
+          if (p >= ivs.size())
+            return;
           inIdx.push_back(ivs[p]);
         }
         Value val = rewriter.create<memref::LoadOp>(loc, inView, inIdx);
@@ -1007,10 +1015,12 @@ struct ReplaceLinalgGenericIndexYieldWithLoops
       steps[d] = c1;
     }
 
-    auto createNest = [&](auto &&self, unsigned d, SmallVector<Value> &ivs) -> void {
+    auto createNest = [&](auto &&self, unsigned d,
+                          SmallVector<Value> &ivs) -> void {
       if (d == rank) {
         Value which = ivs[dimK];
-        Value as64 = rewriter.create<arith::IndexCastOp>(loc, rewriter.getI64Type(), which);
+        Value as64 = rewriter.create<arith::IndexCastOp>(
+            loc, rewriter.getI64Type(), which);
         rewriter.create<memref::StoreOp>(loc, as64, out, ivs);
         return;
       }
@@ -1037,7 +1047,7 @@ struct FuseActivateTmpCopyPattern final : OpRewritePattern<memref::CopyOp> {
     Value tmp = copy.getSource();
     Value dst = copy.getTarget();
 
-    auto act = tmp.getDefiningOp<cinm::ActivateMemRefOp>();
+    auto act = tmp.getDefiningOp<cinm::ActivateOp>();
     if (!act)
       return failure();
 
@@ -1068,7 +1078,7 @@ struct FuseActivateTmpCopyPattern final : OpRewritePattern<memref::CopyOp> {
     Location loc = act.getLoc();
     Value src = act->getOperand(0);
 
-    OperationState st(loc, cinm::ActivateMemRefOp::getOperationName());
+    OperationState st(loc, cinm::ActivateOp::getOperationName());
     st.addOperands({src, dst});
     st.addAttribute("kind", cinm::ActivationKindAttr::get(rewriter.getContext(),
                                                           act.getKind()));
@@ -1205,10 +1215,10 @@ struct CinmMemoryCleanupPass
   }
 };
 
-}
+} // namespace
 
 namespace mlir::cinm {
 std::unique_ptr<Pass> createCinmMemoryCleanupPass() {
   return std::make_unique<CinmMemoryCleanupPass>();
 }
-}
+} // namespace mlir::cinm

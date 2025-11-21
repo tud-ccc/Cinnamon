@@ -1,14 +1,15 @@
+#include "cinm-mlir/Dialect/Cinm/IR/CinmAttributes.h"
 #include "cinm-mlir/Dialect/Cinm/IR/CinmOps.h"
 #include "cinm-mlir/Dialect/Cinm/Transforms/Passes.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
+#include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
 #include "mlir/Dialect/Utils/StructuredOpsUtils.h"
 #include "mlir/IR/AffineMap.h"
 #include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/BuiltinTypes.h"
-#include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Pass/Pass.h"
 
 using namespace mlir;
@@ -71,8 +72,8 @@ static FailureOr<Value> buildBinaryElementwise(
   return generic.getResult(0);
 }
 
-
-static FailureOr<Value> lowerAddLikeOp(IRRewriter &rewriter, cinm::AddOp op) {
+static FailureOr<Value> lowerAddLikeOp(IRRewriter &rewriter,
+                                       cinm::ElementwiseOp op) {
   auto resultType = cast<RankedTensorType>(op.getResult().getType());
   Type elemTy = resultType.getElementType();
   auto combine = [&](Value a, Value b) -> FailureOr<Value> {
@@ -82,11 +83,12 @@ static FailureOr<Value> lowerAddLikeOp(IRRewriter &rewriter, cinm::AddOp op) {
       return rewriter.create<arith::AddIOp>(op.getLoc(), a, b).getResult();
     return failure();
   };
-  return buildBinaryElementwise(rewriter, op.getLoc(), op.getLhs(),
-                                op.getRhs(), resultType, combine);
+  return buildBinaryElementwise(rewriter, op.getLoc(), op.getLhs(), op.getRhs(),
+                                resultType, combine);
 }
 
-static FailureOr<Value> lowerSubLikeOp(IRRewriter &rewriter, cinm::SubOp op) {
+static FailureOr<Value> lowerSubLikeOp(IRRewriter &rewriter,
+                                       cinm::ElementwiseOp op) {
   auto resultType = cast<RankedTensorType>(op.getResult().getType());
   Type elemTy = resultType.getElementType();
   auto combine = [&](Value a, Value b) -> FailureOr<Value> {
@@ -96,8 +98,8 @@ static FailureOr<Value> lowerSubLikeOp(IRRewriter &rewriter, cinm::SubOp op) {
       return rewriter.create<arith::SubIOp>(op.getLoc(), a, b).getResult();
     return failure();
   };
-  return buildBinaryElementwise(rewriter, op.getLoc(), op.getLhs(),
-                                op.getRhs(), resultType, combine);
+  return buildBinaryElementwise(rewriter, op.getLoc(), op.getLhs(), op.getRhs(),
+                                resultType, combine);
 }
 
 struct CinmRelowerPass
@@ -118,23 +120,25 @@ struct CinmRelowerPass
     func::FuncOp func = getOperation();
     IRRewriter rewriter(func.getContext());
 
-    SmallVector<cinm::AddOp> adds;
-    SmallVector<cinm::SubOp> subs;
+    SmallVector<cinm::ElementwiseOp> adds;
+    SmallVector<cinm::ElementwiseOp> subs;
 
     func.walk([&](Operation *op) {
-      if (auto add = dyn_cast<cinm::AddOp>(op)) {
-        if (!add->getParentOfType<cinm::ComputeOp>())
-          adds.push_back(add);
-      } else if (auto sub = dyn_cast<cinm::SubOp>(op)) {
-        if (!sub->getParentOfType<cinm::ComputeOp>())
-          subs.push_back(sub);
+      if (auto elementwiseOp = dyn_cast<cinm::ElementwiseOp>(op)) {
+        if (!elementwiseOp->getParentOfType<cinm::ComputeOp>()) {
+          if (elementwiseOp.getKind() == cinm::ElementwiseKind::Add) {
+            adds.push_back(elementwiseOp);
+          } else if (elementwiseOp.getKind() == cinm::ElementwiseKind::Sub) {
+            subs.push_back(elementwiseOp);
+          }
+        }
       }
     });
 
-    for (cinm::AddOp add : adds) {
-      if (failed(ensureTensorOperands(add.getOperation(),
-                                      {add.getLhs(), add.getRhs(),
-                                       add.getResult()}))) {
+    for (cinm::ElementwiseOp add : adds) {
+      if (failed(ensureTensorOperands(
+              add.getOperation(),
+              {add.getLhs(), add.getRhs(), add.getResult()}))) {
         signalPassFailure();
         return;
       }
@@ -148,10 +152,10 @@ struct CinmRelowerPass
       rewriter.replaceOp(add, *lowered);
     }
 
-    for (cinm::SubOp sub : subs) {
-      if (failed(ensureTensorOperands(sub.getOperation(),
-                                      {sub.getLhs(), sub.getRhs(),
-                                       sub.getResult()}))) {
+    for (cinm::ElementwiseOp sub : subs) {
+      if (failed(ensureTensorOperands(
+              sub.getOperation(),
+              {sub.getLhs(), sub.getRhs(), sub.getResult()}))) {
         signalPassFailure();
         return;
       }
@@ -167,10 +171,9 @@ struct CinmRelowerPass
   }
 };
 
-}
-}
+} // namespace
+} // namespace mlir::cinm
 
 std::unique_ptr<mlir::Pass> mlir::cinm::createCinmRelowerPass() {
   return std::make_unique<CinmRelowerPass>();
 }
-

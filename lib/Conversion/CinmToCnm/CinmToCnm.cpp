@@ -15,6 +15,7 @@
 #include <llvm/ADT/SmallVector.h>
 #include <llvm/ADT/StringExtras.h>
 
+#include <llvm/Support/Casting.h>
 #include <mlir/Dialect/Arith/IR/Arith.h>
 #include <mlir/Dialect/Func/IR/FuncOps.h>
 #include <mlir/Dialect/Linalg/IR/Linalg.h>
@@ -480,103 +481,48 @@ struct ConvertLinalgReduceIntoLaunch
   }
 };
 
-template <typename CinmOp, typename ArithIOp, typename ArithFOp,
-          bool IsScalarOp>
-struct ConvertElementWiseToCnm : public OpConversionPattern<CinmOp> {
-  using OpConversionPattern<CinmOp>::OpConversionPattern;
-  ConvertElementWiseToCnm(MLIRContext *ctx)
-      : mlir::OpConversionPattern<CinmOp>(ctx) {
-    this->setHasBoundedRewriteRecursion();
-  }
-
-  LogicalResult
-  matchAndRewrite(CinmOp op,
-                  typename OpConversionPattern<CinmOp>::OpAdaptor adaptor,
-                  ConversionPatternRewriter &rewriter) const override {
-
-    ImplicitLocOpBuilder builder(op->getLoc(), rewriter);
-    cinm::ComputeOp computeBlock = mlir::cinm::getEnclosingComputeBlock(op);
-    cnm::WorkgroupOp workgroup =
-        builder.create<cnm::WorkgroupOp>(computeBlock.getCnmWorkgroupType());
-    auto outputInit = builder.create<arith::ConstantOp>(
-        op.getResult().getType(),
-        builder.getZeroAttr(op.getResult().getType()));
-    auto elementType = op.getResult().getType().getElementType();
-
-    llvm::SmallVector<Value, 1> newResults;
-    if (convertCinmToCnm(
-            builder, op, workgroup.getResult(), computeBlock, {},
-            adaptor.getOperands(), ValueRange{outputInit}, op->getResults(),
-            newResults,
-            [&](ImplicitLocOpBuilder &builder, ValueRange inputs,
-                ValueRange outputs) {
-              SmallVector<AffineMap> affineMaps;
-              for (const auto &i : inputs) {
-                MemRefType t = cast<MemRefType>(i.getType());
-                affineMaps.push_back(AffineMap::getMultiDimIdentityMap(
-                    t.getRank(), op.getContext()));
-
-                if constexpr (IsScalarOp) {
-                  // for scalar ops only the first parameter is
-                  // passed to the linalg::generic op
-                  break;
-                }
-              }
-
-              affineMaps.push_back(AffineMap::getMultiDimIdentityMap(
-                  cast<MemRefType>(outputs[0u].getType()).getRank(),
-                  op.getContext()));
-
-              SmallVector<utils::IteratorType> iteratorTypes(
-                  cast<MemRefType>(inputs[0u].getType()).getRank(),
-                  utils::IteratorType::parallel);
-
-              builder.create<linalg::GenericOp>(
-                  IsScalarOp ? inputs.drop_back() : inputs, outputs, affineMaps,
-                  iteratorTypes,
-                  [&](OpBuilder &builder, Location loc, ValueRange args) {
-                    Value lhs = args[0u];
-                    Value rhs = IsScalarOp ? inputs[1u] : args[1u];
-                    if constexpr (IsScalarOp) {
-                      if (const auto memrefType =
-                              dyn_cast<MemRefType>(rhs.getType())) {
-                        const Value zero =
-                            builder.create<arith::ConstantIndexOp>(loc, 0);
-                        rhs = builder.create<memref::LoadOp>(
-                            loc, rhs,
-                            SmallVector<Value>(memrefType.getRank(), zero));
-                      }
-                    }
-
-                    Value result;
-                    if (dyn_cast<IntegerType>(elementType)) {
-                      result = builder.create<ArithIOp>(loc, lhs, rhs);
-                    } else {
-                      result = builder.create<ArithFOp>(loc, lhs, rhs);
-                    }
-
-                    builder.create<linalg::YieldOp>(loc, result);
-                  });
-            })
-            .failed()) {
-      return failure();
-    }
-
-    rewriter.replaceOp(op, newResults);
-
-    return success();
-  }
-};
-
-struct ConvertElementWiseUnaryToCnm
-    : OpConversionPattern<cinm::Elementwise_Unary_Op> {
-  explicit ConvertElementWiseUnaryToCnm(MLIRContext *ctx)
+struct ConvertElementwiseOpToCnm : OpConversionPattern<cinm::ElementwiseOp> {
+  explicit ConvertElementwiseOpToCnm(MLIRContext *ctx)
       : OpConversionPattern(ctx) {
     this->setHasBoundedRewriteRecursion();
   }
 
+  static std::optional<linalg::UnaryFn>
+  toLinalgUnaryFn(cinm::ElementwiseKind kind) {
+    switch (kind) {
+    case cinm::ElementwiseKind::Neg:
+      return linalg::UnaryFn::negf;
+    case cinm::ElementwiseKind::Abs:
+      return linalg::UnaryFn::abs;
+    case cinm::ElementwiseKind::Ceil:
+      return linalg::UnaryFn::ceil;
+    case cinm::ElementwiseKind::Erf:
+      return linalg::UnaryFn::erf;
+    case cinm::ElementwiseKind::Exp:
+      return linalg::UnaryFn::exp;
+    case cinm::ElementwiseKind::Floor:
+      return linalg::UnaryFn::floor;
+    case cinm::ElementwiseKind::Log:
+      return linalg::UnaryFn::log;
+    case cinm::ElementwiseKind::Reciprocal:
+      return linalg::UnaryFn::reciprocal;
+    case cinm::ElementwiseKind::Round:
+      return linalg::UnaryFn::round;
+    case cinm::ElementwiseKind::Rsqrt:
+      return linalg::UnaryFn::rsqrt;
+    case cinm::ElementwiseKind::Sqrt:
+      return linalg::UnaryFn::sqrt;
+    case cinm::ElementwiseKind::Square:
+      return linalg::UnaryFn::square;
+    case cinm::ElementwiseKind::Tanh:
+      return linalg::UnaryFn::tanh;
+    default:
+      return std::nullopt;
+    }
+  }
+
   LogicalResult
-  matchAndRewrite(cinm::Elementwise_Unary_Op op, OpAdaptor adaptor,
+  matchAndRewrite(cinm::ElementwiseOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
 
     ImplicitLocOpBuilder builder(op->getLoc(), rewriter);
@@ -587,6 +533,9 @@ struct ConvertElementWiseUnaryToCnm
     // Initialize output for linalg.generic
     auto outputInit =
         builder.create<tensor::EmptyOp>(op.getResult().getType(), ValueRange{});
+    const Type elementType =
+        dyn_cast_or_null<ShapedType>(op.getLhs().getType()).getElementType();
+    bool isScalarOp = op.getRhs() && op.getRhs().getType() == elementType;
 
     SmallVector<Value, 1> newResults;
     const auto conversionResult = convertCinmToCnm(
@@ -595,11 +544,119 @@ struct ConvertElementWiseUnaryToCnm
         newResults,
         [&](ImplicitLocOpBuilder &builder, ValueRange inputs,
             ValueRange outputs) {
-          builder.create<linalg::ElemwiseUnaryOp>(
-              TypeRange{}, ValueRange(inputs), ValueRange(outputs),
-              linalg::UnaryFnAttr::get(builder.getContext(), op.getMethod()),
-              linalg::TypeFnAttr::get(builder.getContext(),
-                                      linalg::TypeFn::cast_signed));
+          SmallVector<AffineMap> affineMaps;
+          for (const auto &i : inputs) {
+            MemRefType t = cast<MemRefType>(i.getType());
+            affineMaps.push_back(AffineMap::getMultiDimIdentityMap(
+                t.getRank(), op.getContext()));
+
+            if (isScalarOp) {
+              // for scalar ops only the first parameter is
+              // passed to the linalg::generic op
+              break;
+            }
+          }
+
+          affineMaps.push_back(AffineMap::getMultiDimIdentityMap(
+              cast<MemRefType>(outputs[0u].getType()).getRank(),
+              op.getContext()));
+
+          SmallVector<utils::IteratorType> iteratorTypes(
+              cast<MemRefType>(inputs[0u].getType()).getRank(),
+              utils::IteratorType::parallel);
+
+          if (auto fn = toLinalgUnaryFn(op.getKind())) {
+            builder.create<linalg::ElemwiseUnaryOp>(
+                TypeRange{}, ValueRange(inputs), ValueRange(outputs),
+                linalg::UnaryFnAttr::get(builder.getContext(), fn.value()),
+                linalg::TypeFnAttr::get(builder.getContext(),
+                                        linalg::TypeFn::cast_signed));
+          } else {
+            builder.create<linalg::GenericOp>(
+                isScalarOp ? inputs.drop_back() : inputs, outputs, affineMaps,
+                iteratorTypes,
+                [&](OpBuilder &builder, Location loc, ValueRange args) {
+                  Value lhs = args[0u];
+                  Value rhs = op.getRhs() ? (isScalarOp ? inputs[1u] : args[1u])
+                                          : Value();
+                  if (isScalarOp) {
+                    if (const auto memrefType =
+                            dyn_cast<MemRefType>(rhs.getType())) {
+                      const Value zero =
+                          builder.create<arith::ConstantIndexOp>(loc, 0);
+                      rhs = builder.create<memref::LoadOp>(
+                          loc, rhs,
+                          SmallVector<Value>(memrefType.getRank(), zero));
+                    }
+                  }
+
+                  Value result;
+                  bool isFloatOp = dyn_cast<FloatType>(elementType) != nullptr;
+                  switch (op.getKind()) {
+                  case cinm::ElementwiseKind::Add:
+                    result = isFloatOp
+                                 ? builder.create<arith::AddFOp>(loc, lhs, rhs)
+                                       .getResult()
+                                 : builder.create<arith::AddIOp>(loc, lhs, rhs)
+                                       .getResult();
+                    break;
+                  case cinm::ElementwiseKind::Sub:
+                    result = isFloatOp
+                                 ? builder.create<arith::SubFOp>(loc, lhs, rhs)
+                                       .getResult()
+                                 : builder.create<arith::SubIOp>(loc, lhs, rhs)
+                                       .getResult();
+                    break;
+                  case cinm::ElementwiseKind::Mul:
+                    result = isFloatOp
+                                 ? builder.create<arith::MulFOp>(loc, lhs, rhs)
+                                       .getResult()
+                                 : builder.create<arith::MulIOp>(loc, lhs, rhs)
+                                       .getResult();
+                    break;
+                  case cinm::ElementwiseKind::Div:
+                    result = isFloatOp
+                                 ? builder.create<arith::DivFOp>(loc, lhs, rhs)
+                                       .getResult()
+                                 : builder.create<arith::DivSIOp>(loc, lhs, rhs)
+                                       .getResult();
+                    break;
+                  case cinm::ElementwiseKind::Mod:
+                    result = isFloatOp
+                                 ? builder.create<arith::RemFOp>(loc, lhs, rhs)
+                                       .getResult()
+                                 : builder.create<arith::RemSIOp>(loc, lhs, rhs)
+                                       .getResult();
+                    break;
+                  case cinm::ElementwiseKind::And:
+                    result = builder.create<arith::AndIOp>(loc, lhs, rhs)
+                                 .getResult();
+                    break;
+                  case cinm::ElementwiseKind::Or:
+                    result =
+                        builder.create<arith::OrIOp>(loc, lhs, rhs).getResult();
+                    break;
+                  case cinm::ElementwiseKind::Xor:
+                    result = builder.create<arith::XOrIOp>(loc, lhs, rhs)
+                                 .getResult();
+                    break;
+                  case cinm::ElementwiseKind::Not: // ~a = a xor 0b111111111
+                    result =
+                        builder
+                            .create<arith::XOrIOp>(
+                                loc, lhs,
+                                builder.create<arith::ConstantOp>(
+                                    loc, lhs.getType(),
+                                    builder.getIntegerAttr(lhs.getType(), -1)))
+                            .getResult();
+                    break;
+                  default:
+                    break;
+                  }
+
+                  builder.create<linalg::YieldOp>(loc, result);
+                });
+          }
         });
 
     if (conversionResult.failed()) {
@@ -676,9 +733,18 @@ struct ConvertCinmGemmToCnm : public OpConversionPattern<cinm::GemmOp> {
   }
 
   LogicalResult
-  matchAndRewrite(cinm::GemmOp op,
-                  OpConversionPattern<cinm::GemmOp>::OpAdaptor adaptor,
+  matchAndRewrite(cinm::GemmOp op, OpConversionPattern<cinm::GemmOp>::OpAdaptor,
                   ConversionPatternRewriter &rewriter) const override {
+
+    TypedValue<MemRefType> lhs =
+        llvm::cast<TypedValue<MemRefType>>(op.getLhs());
+    TypedValue<MemRefType> rhs =
+        llvm::cast<TypedValue<MemRefType>>(op.getRhs());
+    // TODO: fix bias & out
+    TypedValue<MemRefType> bias =
+        llvm::cast<TypedValue<MemRefType>>(op.getBias());
+    TypedValue<MemRefType> out =
+        llvm::cast<TypedValue<MemRefType>>(op.getOut());
 
     ImplicitLocOpBuilder builder(op->getLoc(), rewriter);
     cinm::ComputeOp computeBlock = mlir::cinm::getEnclosingComputeBlock(op);
@@ -686,19 +752,19 @@ struct ConvertCinmGemmToCnm : public OpConversionPattern<cinm::GemmOp> {
         builder.create<cnm::WorkgroupOp>(computeBlock.getCnmWorkgroupType());
     auto wgShape = computeBlock.getWorkgroupShape();
 
-    auto transposeRight = transpose(builder, adaptor.getRight());
+    auto transposeRight = transpose(builder, rhs);
 
     auto tilingParms = cinm::TilingParameters::fromComputeBlock(computeBlock);
-    auto elTyBytes = op.getLeft().getType().getElementTypeBitWidth() / 8;
+    auto elTyBytes = lhs.getType().getElementTypeBitWidth() / 8;
 
     // Check that the tiling pass chose a fitting reduction size.
-    auto reductionSize = op.getLeft().getType().getDimSize(1);
+    auto reductionSize = lhs.getType().getDimSize(1);
     if (reductionSize * 2 * elTyBytes >
         tilingParms.bufferSizeOfLeaf() - elTyBytes) {
       return op->emitOpError(
           "cannot be converted to CINM, reduction size is too large");
     }
-    auto eltTy = op.getLeft().getType().getElementType();
+    auto eltTy = lhs.getType().getElementType();
     // buffer type for A and B
     cnm::BufferType bufferType =
         cnm::BufferType::get({reductionSize}, eltTy, wgShape);
@@ -714,16 +780,15 @@ struct ConvertCinmGemmToCnm : public OpConversionPattern<cinm::GemmOp> {
     AffineMap scatterA;
     AffineMap scatterB;
     AffineMap scatterGatherC;
-    if (computeScatterMapForGemm(bufferType,
-                                 op.getLeft().getType().getDimSize(0),
-                                 op.getRight().getType().getDimSize(1),
-                                 scatterA, scatterB, scatterGatherC)
+    if (computeScatterMapForGemm(bufferType, lhs.getType().getDimSize(0),
+                                 rhs.getType().getDimSize(1), scatterA,
+                                 scatterB, scatterGatherC)
             .failed()) {
       return op->emitOpError("Cannot be converted to CINM, parallel dims "
                              "cannot be mapped onto workgroup (")
              << wgShape << ")";
     }
-    builder.create<cnm::ScatterOp>(adaptor.getLeft(), bufferA, workgroup,
+    builder.create<cnm::ScatterOp>(op.getLhs(), bufferA, workgroup,
                                    std::move(scatterA));
     builder.create<cnm::ScatterOp>(transposeRight, bufferB, workgroup,
                                    std::move(scatterB));
@@ -732,7 +797,7 @@ struct ConvertCinmGemmToCnm : public OpConversionPattern<cinm::GemmOp> {
     // since it has same shape as output we can use same gather map
     Value outputInit;
     if (op.getBias()) {
-      outputInit = adaptor.getBias();
+      outputInit = op.getBias();
     } else {
       outputInit = builder.create<arith::ConstantOp>(
           op.getResult().getType(),
@@ -757,7 +822,7 @@ struct ConvertCinmGemmToCnm : public OpConversionPattern<cinm::GemmOp> {
 
     Value outbuf;
     if (op.getBias()) {
-      outbuf = adaptor.getBias();
+      outbuf = op.getBias();
     } else {
       outbuf = builder.create<tensor::EmptyOp>(op.getResult().getType(),
                                                ValueRange{});
@@ -919,23 +984,7 @@ void populateCinmRewritePatterns(RewritePatternSet &patterns,
                                  MLIRContext *ctx) {
   patterns.insert<ConvertLinalgReduceIntoLaunch>(ctx);
   // elementwise
-  patterns.insert<ConvertElementWiseToCnm<cinm::AddOp, arith::AddIOp,
-                                          arith::AddFOp, false>>(ctx);
-  patterns.insert<ConvertElementWiseToCnm<cinm::AddsOp, arith::AddIOp,
-                                          arith::AddFOp, true>>(ctx);
-  patterns.insert<ConvertElementWiseToCnm<cinm::MulOp, arith::MulIOp,
-                                          arith::MulFOp, false>>(ctx);
-  patterns.insert<ConvertElementWiseToCnm<cinm::MulsOp, arith::MulIOp,
-                                          arith::MulFOp, true>>(ctx);
-  patterns.insert<ConvertElementWiseToCnm<cinm::SubOp, arith::SubIOp,
-                                          arith::SubFOp, false>>(ctx);
-  patterns.insert<ConvertElementWiseToCnm<cinm::SubsOp, arith::SubIOp,
-                                          arith::SubFOp, true>>(ctx);
-  patterns.insert<ConvertElementWiseToCnm<cinm::DivOp, arith::DivSIOp,
-                                          arith::DivFOp, false>>(ctx);
-  patterns.insert<ConvertElementWiseToCnm<cinm::DivsOp, arith::DivSIOp,
-                                          arith::DivFOp, true>>(ctx);
-  patterns.insert<ConvertElementWiseUnaryToCnm>(ctx);
+  patterns.insert<ConvertElementwiseOpToCnm>(ctx);
   // matmul
   patterns.insert<ConvertCinmGemmToCnm>(ctx);
   patterns.insert<ConvertCinmGemvToCnm>(ctx);

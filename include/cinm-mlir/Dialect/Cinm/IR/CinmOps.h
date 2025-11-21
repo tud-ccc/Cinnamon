@@ -17,7 +17,6 @@
 #include "mlir/Interfaces/InferTypeOpInterface.h"
 #include "mlir/Interfaces/SideEffectInterfaces.h"
 
-
 //===- Generated includes -------------------------------------------------===//
 
 #define GET_OP_CLASSES
@@ -26,6 +25,8 @@
 //===----------------------------------------------------------------------===//
 
 namespace mlir::cinm {
+
+Type inferGemmReturnType(Type lhsType, Type rhsType);
 
 cinm::ComputeOp getEnclosingComputeBlock(Operation *op);
 
