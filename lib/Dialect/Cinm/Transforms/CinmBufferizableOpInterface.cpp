@@ -5,8 +5,8 @@
 #include "mlir/Dialect/Bufferization/IR/BufferizableOpInterface.h"
 #include "mlir/Dialect/Bufferization/IR/Bufferization.h"
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
-#include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
+#include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
 #include "mlir/Dialect/Utils/StructuredOpsUtils.h"
 #include "mlir/IR/Builders.h"
@@ -22,7 +22,6 @@ using namespace mlir;
 
 namespace mlir::cinm {
 
-
 static Value materializeZeroLikeTensor(RewriterBase &rewriter, Location loc,
                                        Type elemTy) {
   if (auto ft = dyn_cast<FloatType>(elemTy))
@@ -37,10 +36,12 @@ static Value materializeZeroLikeTensor(RewriterBase &rewriter, Location loc,
 static FailureOr<Value>
 materializeAsExactMemref(RewriterBase &rewriter, Location loc, Value v,
                          MemRefType expectedTy,
-                         const bufferization::BufferizationOptions &options) {
+                         const bufferization::BufferizationOptions &options,
+                         const bufferization::BufferizationState &state) {
   Value m = v;
   if (!isa<MemRefType>(m.getType())) {
-    FailureOr<Value> buf = bufferization::getBuffer(rewriter, m, options);
+    FailureOr<Value> buf =
+        bufferization::getBuffer(rewriter, m, options, state);
     if (failed(buf))
       return failure();
     m = *buf;
@@ -92,17 +93,17 @@ struct ComputeBufferizableInterface
       return MemRefType::get(rtt.getShape(), rtt.getElementType());
     return failure();
   }
-  FailureOr<BaseMemRefType>
-  getBufferType(Operation *, Value v,
-                const bufferization::BufferizationOptions &,
-                SmallVector<Value> &) const {
+  FailureOr<BaseMemRefType> getBufferType(
+      Operation *, Value v, const bufferization::BufferizationOptions &,
+      const bufferization::BufferizationState &, SmallVector<Value> &) const {
     if (auto rtt = dyn_cast<RankedTensorType>(v.getType()))
       return MemRefType::get(rtt.getShape(), rtt.getElementType());
     return failure();
   }
 
   LogicalResult bufferize(Operation *op, RewriterBase &rewriter,
-                          const bufferization::BufferizationOptions &) const {
+                          const bufferization::BufferizationOptions &,
+                          bufferization::BufferizationState &) const {
     auto oldCompute = cast<cinm::ComputeOp>(op);
     Location loc = op->getLoc();
 
@@ -123,15 +124,15 @@ struct ComputeBufferizableInterface
       }
       if (auto tt = dyn_cast<RankedTensorType>(v.getType())) {
         if (auto toTensor = v.getDefiningOp<bufferization::ToTensorOp>()) {
-          Value mem = toTensor.getMemref();
+          Value mem = toTensor.getBuffer();
           newYieldVals.push_back(mem);
           newResultTypes.push_back(mem.getType());
           continue;
         }
         BaseMemRefType mr =
             bufferization::getMemRefTypeWithFullyDynamicLayout(tt);
-        Value mem = rewriter.create<bufferization::ToMemrefOp>(
-            loc, mr, v, false);
+        Value mem =
+            rewriter.create<bufferization::ToBufferOp>(loc, mr, v, false);
         newYieldVals.push_back(mem);
         newResultTypes.push_back(mem.getType());
         continue;
@@ -159,8 +160,8 @@ struct ComputeBufferizableInterface
     replacement.reserve(newComputeMR->getNumResults());
     for (auto [idx, res] : llvm::enumerate(newComputeMR->getResults())) {
       Type wantedTensorTy = oldCompute->getResult(idx).getType();
-      Value t = rewriter.create<bufferization::ToTensorOp>(
-          loc, wantedTensorTy, res, true, true);
+      Value t = rewriter.create<bufferization::ToTensorOp>(loc, wantedTensorTy,
+                                                           res, true, true);
       replacement.push_back(t);
     }
 
@@ -168,7 +169,6 @@ struct ComputeBufferizableInterface
     return success();
   }
 };
-
 
 struct GemmBufferizableInterface
     : public bufferization::BufferizableOpInterface::ExternalModel<
@@ -208,17 +208,17 @@ struct GemmBufferizableInterface
       return MemRefType::get(rtt.getShape(), rtt.getElementType());
     return failure();
   }
-  FailureOr<BaseMemRefType>
-  getBufferType(Operation *, Value v,
-                const bufferization::BufferizationOptions &,
-                SmallVector<Value> &) const {
+  FailureOr<BaseMemRefType> getBufferType(
+      Operation *, Value v, const bufferization::BufferizationOptions &,
+      const bufferization::BufferizationState &, SmallVector<Value> &) const {
     if (auto rtt = dyn_cast<RankedTensorType>(v.getType()))
       return MemRefType::get(rtt.getShape(), rtt.getElementType());
     return failure();
   }
 
   LogicalResult bufferize(Operation *op, RewriterBase &rewriter,
-                          const bufferization::BufferizationOptions &) const {
+                          const bufferization::BufferizationOptions &,
+                          bufferization::BufferizationState &) const {
     auto gemm = cast<cinm::GemmOp>(op);
     Location loc = op->getLoc();
 
@@ -231,10 +231,8 @@ struct GemmBufferizableInterface
 
     auto aMR = bufferization::getMemRefTypeWithFullyDynamicLayout(aRT);
     auto bMR = bufferization::getMemRefTypeWithFullyDynamicLayout(bRT);
-    Value aMem = rewriter.create<bufferization::ToMemrefOp>(loc, aMR, aT,
-                                                            true);
-    Value bMem = rewriter.create<bufferization::ToMemrefOp>(loc, bMR, bT,
-                                                            true);
+    Value aMem = rewriter.create<bufferization::ToBufferOp>(loc, aMR, aT, true);
+    Value bMem = rewriter.create<bufferization::ToBufferOp>(loc, bMR, bT, true);
 
     auto dstMR = cast<MemRefType>(
         bufferization::getMemRefTypeWithStaticIdentityLayout(cRT));
@@ -249,8 +247,8 @@ struct GemmBufferizableInterface
 
     if (Value biasT = gemm.getBias()) {
       auto cMRdyn = bufferization::getMemRefTypeWithFullyDynamicLayout(cRT);
-      Value biasMem = rewriter.create<bufferization::ToMemrefOp>(
-          loc, cMRdyn, biasT, true);
+      Value biasMem =
+          rewriter.create<bufferization::ToBufferOp>(loc, cMRdyn, biasT, true);
       rewriter.create<memref::CopyOp>(loc, biasMem, dst);
     } else {
       Value zero = materializeZeroLikeTensor(rewriter, loc, elemTy);
@@ -263,9 +261,8 @@ struct GemmBufferizableInterface
 
     rewriter.create<cinm::GemmMemRefOp>(loc, aMem, bMem, dst);
 
-    Value t = rewriter.create<bufferization::ToTensorOp>(loc, dst,
-                                                         true,
-                                                         true);
+    Value t =
+        bufferization::ToTensorOp::create(rewriter, loc, cRT, dst, true, true);
     rewriter.replaceOp(op, t);
     return success();
   }
@@ -310,17 +307,17 @@ struct GemvBufferizableInterface
       return MemRefType::get(rtt.getShape(), rtt.getElementType());
     return failure();
   }
-  FailureOr<BaseMemRefType>
-  getBufferType(Operation *, Value v,
-                const bufferization::BufferizationOptions &,
-                SmallVector<Value> &) const {
+  FailureOr<BaseMemRefType> getBufferType(
+      Operation *, Value v, const bufferization::BufferizationOptions &,
+      const bufferization::BufferizationState &, SmallVector<Value> &) const {
     if (auto rtt = dyn_cast<RankedTensorType>(v.getType()))
       return MemRefType::get(rtt.getShape(), rtt.getElementType());
     return failure();
   }
 
   LogicalResult bufferize(Operation *op, RewriterBase &rewriter,
-                          const bufferization::BufferizationOptions &) const {
+                          const bufferization::BufferizationOptions &,
+                          bufferization::BufferizationState &) const {
     auto gemv = cast<cinm::GemvOp>(op);
     Location loc = gemv.getLoc();
 
@@ -334,10 +331,8 @@ struct GemvBufferizableInterface
 
     auto aMR = bufferization::getMemRefTypeWithFullyDynamicLayout(aRT);
     auto xMR = bufferization::getMemRefTypeWithFullyDynamicLayout(xRT);
-    Value aMem = rewriter.create<bufferization::ToMemrefOp>(loc, aMR, aT,
-                                                            true);
-    Value xMem = rewriter.create<bufferization::ToMemrefOp>(loc, xMR, xT,
-                                                            true);
+    Value aMem = rewriter.create<bufferization::ToBufferOp>(loc, aMR, aT, true);
+    Value xMem = rewriter.create<bufferization::ToBufferOp>(loc, xMR, xT, true);
 
     auto yMR = cast<MemRefType>(
         bufferization::getMemRefTypeWithStaticIdentityLayout(yRT));
@@ -360,8 +355,8 @@ struct GemvBufferizableInterface
 
     if (bT) {
       auto bMRdyn = bufferization::getMemRefTypeWithFullyDynamicLayout(yRT);
-      Value bMem = rewriter.create<bufferization::ToMemrefOp>(
-          loc, bMRdyn, bT, true);
+      Value bMem =
+          rewriter.create<bufferization::ToBufferOp>(loc, bMRdyn, bT, true);
       rewriter.create<memref::CopyOp>(loc, bMem, yMem);
     } else {
       Value zero = materializeZeroLikeTensor(rewriter, loc, elt);
@@ -374,9 +369,8 @@ struct GemvBufferizableInterface
 
     rewriter.create<cinm::GemvMemRefOp>(loc, aMem, xMem, yMem);
 
-    Value yT = rewriter.create<bufferization::ToTensorOp>(loc, yMem,
-                                                          true,
-                                                          true);
+    Value yT =
+        rewriter.create<bufferization::ToTensorOp>(loc, yRT, yMem, true, true);
     rewriter.replaceOp(op, yT);
     return success();
   }
@@ -420,17 +414,17 @@ struct AddBufferizableInterface
       return MemRefType::get(rtt.getShape(), rtt.getElementType());
     return failure();
   }
-  FailureOr<BaseMemRefType>
-  getBufferType(Operation *, Value v,
-                const bufferization::BufferizationOptions &,
-                SmallVector<Value> &) const {
+  FailureOr<BaseMemRefType> getBufferType(
+      Operation *, Value v, const bufferization::BufferizationOptions &,
+      const bufferization::BufferizationState &, SmallVector<Value> &) const {
     if (auto rtt = dyn_cast<RankedTensorType>(v.getType()))
       return MemRefType::get(rtt.getShape(), rtt.getElementType());
     return failure();
   }
 
   LogicalResult bufferize(Operation *op, RewriterBase &rewriter,
-                          const bufferization::BufferizationOptions &) const {
+                          const bufferization::BufferizationOptions &,
+                          bufferization::BufferizationState &) const {
     auto add = cast<cinm::AddOp>(op);
     Location loc = add.getLoc();
 
@@ -452,10 +446,10 @@ struct AddBufferizableInterface
 
     auto lhsMR = bufferization::getMemRefTypeWithFullyDynamicLayout(lhsRT);
     auto rhsMR = bufferization::getMemRefTypeWithFullyDynamicLayout(rhsRT);
-    Value lhsMem = rewriter.create<bufferization::ToMemrefOp>(
-        loc, lhsMR, lhsT, true);
-    Value rhsMem = rewriter.create<bufferization::ToMemrefOp>(
-        loc, rhsMR, rhsT, true);
+    Value lhsMem =
+        rewriter.create<bufferization::ToBufferOp>(loc, lhsMR, lhsT, true);
+    Value rhsMem =
+        rewriter.create<bufferization::ToBufferOp>(loc, rhsMR, rhsT, true);
 
     auto dstMR = cast<MemRefType>(
         bufferization::getMemRefTypeWithStaticIdentityLayout(resRT));
@@ -470,8 +464,8 @@ struct AddBufferizableInterface
 
     rewriter.create<cinm::AddMemRefOp>(loc, lhsMem, rhsMem, dst);
 
-    Value outT = rewriter.create<bufferization::ToTensorOp>(
-        loc, dst, true, true);
+    Value outT =
+        rewriter.create<bufferization::ToTensorOp>(loc, resRT, dst, true, true);
     rewriter.replaceOp(op, outT);
     return success();
   }
@@ -515,17 +509,17 @@ struct AddsBufferizableInterface
       return MemRefType::get(rtt.getShape(), rtt.getElementType());
     return failure();
   }
-  FailureOr<BaseMemRefType>
-  getBufferType(Operation *, Value v,
-                const bufferization::BufferizationOptions &,
-                SmallVector<Value> &) const {
+  FailureOr<BaseMemRefType> getBufferType(
+      Operation *, Value v, const bufferization::BufferizationOptions &,
+      const bufferization::BufferizationState &, SmallVector<Value> &) const {
     if (auto rtt = dyn_cast<RankedTensorType>(v.getType()))
       return MemRefType::get(rtt.getShape(), rtt.getElementType());
     return failure();
   }
 
   LogicalResult bufferize(Operation *op, RewriterBase &rewriter,
-                          const bufferization::BufferizationOptions &) const {
+                          const bufferization::BufferizationOptions &,
+                          bufferization::BufferizationState &) const {
     auto adds = cast<cinm::AddsOp>(op);
     Location loc = adds.getLoc();
 
@@ -534,22 +528,25 @@ struct AddsBufferizableInterface
     auto lhsRT = dyn_cast<RankedTensorType>(lhsT.getType());
     auto resRT = dyn_cast<RankedTensorType>(adds.getResult().getType());
     if (!lhsRT || !resRT)
-      return op->emitError("cinm.adds bufferize: expected ranked tensor lhs/result"),
+      return op->emitError(
+                 "cinm.adds bufferize: expected ranked tensor lhs/result"),
              failure();
     if (lhsRT.getShape() != resRT.getShape() ||
         lhsRT.getElementType() != resRT.getElementType())
-      return op->emitError("cinm.adds bufferize: mismatched shapes or element types"),
+      return op->emitError(
+                 "cinm.adds bufferize: mismatched shapes or element types"),
              failure();
 
     auto elemTy = resRT.getElementType();
     bool isFloat = isa<FloatType>(elemTy);
     bool isInt = isa<IntegerType>(elemTy);
     if (!isFloat && !isInt)
-      return op->emitError("cinm.adds bufferize: unsupported element type"), failure();
+      return op->emitError("cinm.adds bufferize: unsupported element type"),
+             failure();
 
     auto lhsMR = bufferization::getMemRefTypeWithFullyDynamicLayout(lhsRT);
-    Value lhsMem = rewriter.create<bufferization::ToMemrefOp>(
-        loc, lhsMR, lhsT, true);
+    Value lhsMem =
+        rewriter.create<bufferization::ToBufferOp>(loc, lhsMR, lhsT, true);
 
     auto dstMR = cast<MemRefType>(
         bufferization::getMemRefTypeWithStaticIdentityLayout(resRT));
@@ -575,11 +572,11 @@ struct AddsBufferizableInterface
         loc, TypeRange{}, ValueRange{lhsMem}, ValueRange{dst}, mapsAttr,
         iteratorAttr, StringAttr(), StringAttr(),
         [&](OpBuilder &nested, Location nestedLoc, ValueRange args) {
-          Value sum = isFloat
-                          ? nested.create<arith::AddFOp>(nestedLoc, args[0], scalar)
-                                .getResult()
-                          : nested.create<arith::AddIOp>(nestedLoc, args[0], scalar)
-                                .getResult();
+          Value sum =
+              isFloat ? nested.create<arith::AddFOp>(nestedLoc, args[0], scalar)
+                            .getResult()
+                      : nested.create<arith::AddIOp>(nestedLoc, args[0], scalar)
+                            .getResult();
           nested.create<linalg::YieldOp>(nestedLoc, sum);
         },
         ArrayRef<NamedAttribute>{});
@@ -630,17 +627,17 @@ struct SubBufferizableInterface
       return MemRefType::get(rtt.getShape(), rtt.getElementType());
     return failure();
   }
-  FailureOr<BaseMemRefType>
-  getBufferType(Operation *, Value v,
-                const bufferization::BufferizationOptions &,
-                SmallVector<Value> &) const {
+  FailureOr<BaseMemRefType> getBufferType(
+      Operation *, Value v, const bufferization::BufferizationOptions &,
+      const bufferization::BufferizationState &, SmallVector<Value> &) const {
     if (auto rtt = dyn_cast<RankedTensorType>(v.getType()))
       return MemRefType::get(rtt.getShape(), rtt.getElementType());
     return failure();
   }
 
   LogicalResult bufferize(Operation *op, RewriterBase &rewriter,
-                          const bufferization::BufferizationOptions &) const {
+                          const bufferization::BufferizationOptions &,
+                          bufferization::BufferizationState &) const {
     auto sub = cast<cinm::SubOp>(op);
     Location loc = sub.getLoc();
 
@@ -650,27 +647,30 @@ struct SubBufferizableInterface
     auto rhsRT = dyn_cast<RankedTensorType>(rhsT.getType());
     auto resRT = dyn_cast<RankedTensorType>(sub.getResult().getType());
     if (!lhsRT || !rhsRT || !resRT)
-      return op->emitError("cinm.sub bufferize: expected ranked tensor operands"),
+      return op->emitError(
+                 "cinm.sub bufferize: expected ranked tensor operands"),
              failure();
     if (lhsRT.getShape() != rhsRT.getShape() ||
         lhsRT.getShape() != resRT.getShape() ||
         lhsRT.getElementType() != rhsRT.getElementType() ||
         lhsRT.getElementType() != resRT.getElementType())
-      return op->emitError("cinm.sub bufferize: mismatched shapes/element types"),
+      return op->emitError(
+                 "cinm.sub bufferize: mismatched shapes/element types"),
              failure();
 
     auto elemTy = resRT.getElementType();
     bool isFloat = isa<FloatType>(elemTy);
     bool isInt = isa<IntegerType>(elemTy);
     if (!isFloat && !isInt)
-      return op->emitError("cinm.sub bufferize: unsupported element type"), failure();
+      return op->emitError("cinm.sub bufferize: unsupported element type"),
+             failure();
 
     auto lhsMR = bufferization::getMemRefTypeWithFullyDynamicLayout(lhsRT);
     auto rhsMR = bufferization::getMemRefTypeWithFullyDynamicLayout(rhsRT);
-    Value lhsMem = rewriter.create<bufferization::ToMemrefOp>(
-        loc, lhsMR, lhsT, true);
-    Value rhsMem = rewriter.create<bufferization::ToMemrefOp>(
-        loc, rhsMR, rhsT, true);
+    Value lhsMem =
+        rewriter.create<bufferization::ToBufferOp>(loc, lhsMR, lhsT, true);
+    Value rhsMem =
+        rewriter.create<bufferization::ToBufferOp>(loc, rhsMR, rhsT, true);
 
     auto dstMR = cast<MemRefType>(
         bufferization::getMemRefTypeWithStaticIdentityLayout(resRT));
@@ -696,11 +696,12 @@ struct SubBufferizableInterface
         loc, TypeRange{}, ValueRange{lhsMem, rhsMem}, ValueRange{dst}, mapsAttr,
         iteratorAttr, StringAttr(), StringAttr(),
         [&](OpBuilder &nested, Location nestedLoc, ValueRange args) {
-          Value diff = isFloat
-                           ? nested.create<arith::SubFOp>(nestedLoc, args[0], args[1])
-                                 .getResult()
-                           : nested.create<arith::SubIOp>(nestedLoc, args[0], args[1])
-                                 .getResult();
+          Value diff =
+              isFloat
+                  ? nested.create<arith::SubFOp>(nestedLoc, args[0], args[1])
+                        .getResult()
+                  : nested.create<arith::SubIOp>(nestedLoc, args[0], args[1])
+                        .getResult();
           nested.create<linalg::YieldOp>(nestedLoc, diff);
         },
         ArrayRef<NamedAttribute>{});
@@ -751,17 +752,17 @@ struct SubsBufferizableInterface
       return MemRefType::get(rtt.getShape(), rtt.getElementType());
     return failure();
   }
-  FailureOr<BaseMemRefType>
-  getBufferType(Operation *, Value v,
-                const bufferization::BufferizationOptions &,
-                SmallVector<Value> &) const {
+  FailureOr<BaseMemRefType> getBufferType(
+      Operation *, Value v, const bufferization::BufferizationOptions &,
+      const bufferization::BufferizationState &, SmallVector<Value> &) const {
     if (auto rtt = dyn_cast<RankedTensorType>(v.getType()))
       return MemRefType::get(rtt.getShape(), rtt.getElementType());
     return failure();
   }
 
   LogicalResult bufferize(Operation *op, RewriterBase &rewriter,
-                          const bufferization::BufferizationOptions &) const {
+                          const bufferization::BufferizationOptions &,
+                          bufferization::BufferizationState &) const {
     auto subs = cast<cinm::SubsOp>(op);
     Location loc = subs.getLoc();
 
@@ -770,22 +771,25 @@ struct SubsBufferizableInterface
     auto lhsRT = dyn_cast<RankedTensorType>(lhsT.getType());
     auto resRT = dyn_cast<RankedTensorType>(subs.getResult().getType());
     if (!lhsRT || !resRT)
-      return op->emitError("cinm.subs bufferize: expected ranked tensor lhs/result"),
+      return op->emitError(
+                 "cinm.subs bufferize: expected ranked tensor lhs/result"),
              failure();
     if (lhsRT.getShape() != resRT.getShape() ||
         lhsRT.getElementType() != resRT.getElementType())
-      return op->emitError("cinm.subs bufferize: mismatched shapes or element types"),
+      return op->emitError(
+                 "cinm.subs bufferize: mismatched shapes or element types"),
              failure();
 
     auto elemTy = resRT.getElementType();
     bool isFloat = isa<FloatType>(elemTy);
     bool isInt = isa<IntegerType>(elemTy);
     if (!isFloat && !isInt)
-      return op->emitError("cinm.subs bufferize: unsupported element type"), failure();
+      return op->emitError("cinm.subs bufferize: unsupported element type"),
+             failure();
 
     auto lhsMR = bufferization::getMemRefTypeWithFullyDynamicLayout(lhsRT);
-    Value lhsMem = rewriter.create<bufferization::ToMemrefOp>(
-        loc, lhsMR, lhsT, true);
+    Value lhsMem =
+        rewriter.create<bufferization::ToBufferOp>(loc, lhsMR, lhsT, true);
 
     auto dstMR = cast<MemRefType>(
         bufferization::getMemRefTypeWithStaticIdentityLayout(resRT));
@@ -811,11 +815,11 @@ struct SubsBufferizableInterface
         loc, TypeRange{}, ValueRange{lhsMem}, ValueRange{dst}, mapsAttr,
         iteratorAttr, StringAttr(), StringAttr(),
         [&](OpBuilder &nested, Location nestedLoc, ValueRange args) {
-          Value diff = isFloat
-                           ? nested.create<arith::SubFOp>(nestedLoc, args[0], scalar)
-                                 .getResult()
-                           : nested.create<arith::SubIOp>(nestedLoc, args[0], scalar)
-                                 .getResult();
+          Value diff =
+              isFloat ? nested.create<arith::SubFOp>(nestedLoc, args[0], scalar)
+                            .getResult()
+                      : nested.create<arith::SubIOp>(nestedLoc, args[0], scalar)
+                            .getResult();
           nested.create<linalg::YieldOp>(nestedLoc, diff);
         },
         ArrayRef<NamedAttribute>{});
@@ -827,7 +831,6 @@ struct SubsBufferizableInterface
     return success();
   }
 };
-
 
 struct QuantizeBufferizableInterface
     : public bufferization::BufferizableOpInterface::ExternalModel<
@@ -868,17 +871,17 @@ struct QuantizeBufferizableInterface
       return MemRefType::get(rtt.getShape(), rtt.getElementType());
     return failure();
   }
-  FailureOr<BaseMemRefType>
-  getBufferType(Operation *, Value v,
-                const bufferization::BufferizationOptions &,
-                SmallVector<Value> &) const {
+  FailureOr<BaseMemRefType> getBufferType(
+      Operation *, Value v, const bufferization::BufferizationOptions &,
+      const bufferization::BufferizationState &, SmallVector<Value> &) const {
     if (auto rtt = dyn_cast<RankedTensorType>(v.getType()))
       return MemRefType::get(rtt.getShape(), rtt.getElementType());
     return failure();
   }
 
   LogicalResult bufferize(Operation *op, RewriterBase &rewriter,
-                          const bufferization::BufferizationOptions &) const {
+                          const bufferization::BufferizationOptions &,
+                          bufferization::BufferizationState &) const {
     auto q = cast<cinm::QuantizeOp>(op);
     Location loc = q.getLoc();
 
@@ -887,8 +890,8 @@ struct QuantizeBufferizableInterface
     auto dstRT = cast<RankedTensorType>(q.getResult().getType());
 
     auto srcMR = bufferization::getMemRefTypeWithFullyDynamicLayout(srcRT);
-    Value srcMem = rewriter.create<bufferization::ToMemrefOp>(
-        loc, srcMR, srcT, true);
+    Value srcMem =
+        rewriter.create<bufferization::ToBufferOp>(loc, srcMR, srcT, true);
 
     auto dstMR = cast<MemRefType>(
         bufferization::getMemRefTypeWithStaticIdentityLayout(dstRT));
@@ -909,8 +912,8 @@ struct QuantizeBufferizableInterface
     rewriter.create<cinm::QuantizeMemRefOp>(loc, srcMem, dstMem, scale, zp,
                                             axis, round, narrow);
 
-    Value dstT = rewriter.create<bufferization::ToTensorOp>(
-        loc, dstRT, dstMem, true, true);
+    Value dstT = rewriter.create<bufferization::ToTensorOp>(loc, dstRT, dstMem,
+                                                            true, true);
     rewriter.replaceOp(op, dstT);
     return success();
   }
@@ -955,17 +958,17 @@ struct DequantizeBufferizableInterface
       return MemRefType::get(rtt.getShape(), rtt.getElementType());
     return failure();
   }
-  FailureOr<BaseMemRefType>
-  getBufferType(Operation *, Value v,
-                const bufferization::BufferizationOptions &,
-                SmallVector<Value> &) const {
+  FailureOr<BaseMemRefType> getBufferType(
+      Operation *, Value v, const bufferization::BufferizationOptions &,
+      const bufferization::BufferizationState &, SmallVector<Value> &) const {
     if (auto rtt = dyn_cast<RankedTensorType>(v.getType()))
       return MemRefType::get(rtt.getShape(), rtt.getElementType());
     return failure();
   }
 
   LogicalResult bufferize(Operation *op, RewriterBase &rewriter,
-                          const bufferization::BufferizationOptions &) const {
+                          const bufferization::BufferizationOptions &,
+                          bufferization::BufferizationState &) const {
     auto dq = cast<cinm::DequantizeOp>(op);
     Location loc = dq.getLoc();
 
@@ -974,8 +977,8 @@ struct DequantizeBufferizableInterface
     auto dstRT = cast<RankedTensorType>(dq.getResult().getType());
 
     auto srcMR = bufferization::getMemRefTypeWithFullyDynamicLayout(srcRT);
-    Value srcMem = rewriter.create<bufferization::ToMemrefOp>(
-        loc, srcMR, srcT, true);
+    Value srcMem =
+        rewriter.create<bufferization::ToBufferOp>(loc, srcMR, srcT, true);
 
     auto dstMR = cast<MemRefType>(
         bufferization::getMemRefTypeWithStaticIdentityLayout(dstRT));
@@ -994,8 +997,8 @@ struct DequantizeBufferizableInterface
     rewriter.create<cinm::DequantizeMemRefOp>(loc, srcMem, dstMem, scale, zp,
                                               axis);
 
-    Value dstT = rewriter.create<bufferization::ToTensorOp>(
-        loc, dstRT, dstMem, true, true);
+    Value dstT = rewriter.create<bufferization::ToTensorOp>(loc, dstRT, dstMem,
+                                                            true, true);
     rewriter.replaceOp(op, dstT);
     return success();
   }
@@ -1039,17 +1042,17 @@ struct ActivateBufferizableInterface
       return MemRefType::get(rtt.getShape(), rtt.getElementType());
     return failure();
   }
-  FailureOr<BaseMemRefType>
-  getBufferType(Operation *, Value v,
-                const bufferization::BufferizationOptions &,
-                SmallVector<Value> &) const {
+  FailureOr<BaseMemRefType> getBufferType(
+      Operation *, Value v, const bufferization::BufferizationOptions &,
+      const bufferization::BufferizationState &, SmallVector<Value> &) const {
     if (auto rtt = dyn_cast<RankedTensorType>(v.getType()))
       return MemRefType::get(rtt.getShape(), rtt.getElementType());
     return failure();
   }
 
   LogicalResult bufferize(Operation *op, RewriterBase &rewriter,
-                          const bufferization::BufferizationOptions &) const {
+                          const bufferization::BufferizationOptions &,
+                          bufferization::BufferizationState &) const {
     auto act = cast<cinm::ActivateOp>(op);
     Location loc = act.getLoc();
 
@@ -1058,8 +1061,8 @@ struct ActivateBufferizableInterface
     auto outRT = cast<RankedTensorType>(act->getResult(0).getType());
 
     auto inMR = bufferization::getMemRefTypeWithFullyDynamicLayout(inRT);
-    Value inMem = rewriter.create<bufferization::ToMemrefOp>(loc, inMR, inT,
-                                                             true);
+    Value inMem =
+        rewriter.create<bufferization::ToBufferOp>(loc, inMR, inT, true);
 
     auto outMR = cast<MemRefType>(
         bufferization::getMemRefTypeWithStaticIdentityLayout(outRT));
@@ -1085,8 +1088,8 @@ struct ActivateBufferizableInterface
 
     rewriter.create<cinm::ActivateMemRefOp>(loc, kindAttr, inMem, outMem);
 
-    Value outT = rewriter.create<bufferization::ToTensorOp>(
-        loc, outRT, outMem, true, true);
+    Value outT = rewriter.create<bufferization::ToTensorOp>(loc, outRT, outMem,
+                                                            true, true);
     rewriter.replaceOp(op, outT);
     return success();
   }
@@ -1133,18 +1136,17 @@ struct ScfForBufferizableInterface
       return bufferization::getMemRefTypeWithFullyDynamicLayout(rtt);
     return failure();
   }
-  FailureOr<BaseMemRefType>
-  getBufferType(Operation *, Value v,
-                const bufferization::BufferizationOptions &,
-                SmallVector<Value> &) const {
+  FailureOr<BaseMemRefType> getBufferType(
+      Operation *, Value v, const bufferization::BufferizationOptions &,
+      const bufferization::BufferizationState &, SmallVector<Value> &) const {
     if (auto rtt = dyn_cast<RankedTensorType>(v.getType()))
       return bufferization::getMemRefTypeWithFullyDynamicLayout(rtt);
     return failure();
   }
 
-  LogicalResult
-  bufferize(Operation *op, RewriterBase &rewriter,
-            const bufferization::BufferizationOptions &options) const {
+  LogicalResult bufferize(Operation *op, RewriterBase &rewriter,
+                          const bufferization::BufferizationOptions &options,
+                          bufferization::BufferizationState &state) const {
     auto oldFor = cast<scf::ForOp>(op);
     Location loc = oldFor.getLoc();
 
@@ -1163,7 +1165,8 @@ struct ScfForBufferizableInterface
         return op->emitError("scf.for: unexpected non-tensor init arg"),
                failure();
 
-      FailureOr<Value> buf = bufferization::getBuffer(rewriter, init, options);
+      FailureOr<Value> buf =
+          bufferization::getBuffer(rewriter, init, options, state);
       if (failed(buf))
         return op->emitError("scf.for: failed to get buffer for init arg"),
                failure();
@@ -1216,10 +1219,11 @@ struct ScfForBufferizableInterface
             cast<MemRefType>(newBody->getArgument(1 + i).getType());
 
         FailureOr<Value> exact = materializeAsExactMemref(rewriter, loc, mapped,
-                                                          expectedTy, options);
+                                                          expectedTy, options, state);
         if (failed(exact))
-          return op->emitError("scf.for: failed to materialize exact memref for "
-                               "yield #")
+          return op->emitError(
+                     "scf.for: failed to materialize exact memref for "
+                     "yield #")
                      << i,
                  failure();
 
@@ -1256,7 +1260,6 @@ struct ScfForBufferizableInterface
   }
 };
 
-
 void registerCinmBufferizableOpInterfaces(DialectRegistry &registry) {
   registry.addExtension<::mlir::cinm::CinmDialect>(
       +[](MLIRContext *ctx, ::mlir::cinm::CinmDialect *) {
@@ -1289,4 +1292,4 @@ void registerCinmBufferizableOpInterfaces(DialectRegistry &registry) {
       });
 }
 
-}
+} // namespace mlir::cinm

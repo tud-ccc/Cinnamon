@@ -17,6 +17,7 @@ add_mlir_conversion_library(MLIRLinalgToCinm
     MLIRDialectUtils
     MLIRFuncDialect
     MLIRLinalgDialect
+    MLIRLinalgTransforms
     MLIRTensorDialect
     MLIRTransformUtils
     MLIRReconcileUnrealizedCasts

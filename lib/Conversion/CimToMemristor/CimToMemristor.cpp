@@ -40,7 +40,7 @@ static Value toMemrefLike(ConversionPatternRewriter &rewriter, Location loc,
     return v;
   auto t = cast<RankedTensorType>(ty);
   auto memTy = MemRefType::get(t.getShape(), t.getElementType());
-  return rewriter.create<bufferization::ToMemrefOp>(loc, memTy, v);
+  return rewriter.create<bufferization::ToBufferOp>(loc, memTy, v);
 }
 
 /// Replace any direct `cim.barrier` users of `cimRes` with `replacementTensor`,
@@ -134,7 +134,7 @@ struct ConvertCimGemmToMemristor : OpConversionPattern<cim::GemmOp> {
                           .getResult();
     auto outMemTy = MemRefType::get({M, N}, elemTy);
     Value C =
-        rewriter.create<bufferization::ToMemrefOp>(loc, outMemTy, outTensor);
+        rewriter.create<bufferization::ToBufferOp>(loc, outMemTy, outTensor);
 
     Value Am = toMemrefLike(rewriter, loc, A);
     Value Bm = toMemrefLike(rewriter, loc, B);

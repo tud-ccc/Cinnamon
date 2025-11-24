@@ -8,6 +8,7 @@ DEPENDS
 
 LINK_LIBS PUBLIC
     MLIRIR
+    CinmIR
     AlpineIR
     MLIRMemRefDialect
     MLIRLLVMDialect
