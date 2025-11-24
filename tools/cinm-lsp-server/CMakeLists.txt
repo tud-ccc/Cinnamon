@@ -20,4 +20,7 @@ target_link_libraries(${PROJECT_NAME}
         ${dialect_libs}
         ${conversion_libs}
         ${dependency_libs}
+        MLIRRegisterAllPasses
+        MLIRRegisterAllDialects
+        MLIRRegisterAllExtensions
 )

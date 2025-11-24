@@ -89,7 +89,7 @@ struct ConvertCimGemvToMemristor : OpConversionPattern<cim::GemvOp> {
                           .getResult();
     auto outMemTy = MemRefType::get({rows}, elemTy);
     Value Y =
-        rewriter.create<bufferization::ToMemrefOp>(loc, outMemTy, outTensor);
+        rewriter.create<bufferization::ToBufferOp>(loc, outMemTy, outTensor);
 
     Value W = toMemrefLike(rewriter, loc, matVal);
     Value X = toMemrefLike(rewriter, loc, vecVal);
