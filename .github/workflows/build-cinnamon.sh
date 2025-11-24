@@ -110,21 +110,8 @@ configure() {
     cmake_args+=("${EXTRA_USER_OPTS[@]}")
   fi
 
-  cmake "${cmake_args[@]}"
+  print_and_run cmake "${cmake_args[@]}"
 }
-
-# ---- (Re)configure if needed ----
-if [[ -n "$reason" ]]; then
-  status "Reconfiguring because: $reason"
-  rm -rf build
-  configure
-elif [[ ! -f build/build.ninja ]]; then
-  # Extra guard: if config got skipped somehow
-  status "No build/build.ninja found → configuring"
-  configure
-else
-  status "Using existing Cinnamon configuration in build/"
-fi
 
 # ---- Build with one clean retry on failure ----
 status "Building Cinnamon (Ninja)"
