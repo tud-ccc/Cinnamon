@@ -12,7 +12,7 @@ llvm_path="${llvm_path:?Define 'llvm_path' in common.sh}"
 LLVM_CMAKE_OPTIONS="${LLVM_CMAKE_OPTIONS:-}"
 
 # Your desired config (override via env if needed)
-LLVM_PROJECTS="${LLVM_PROJECTS:-mlir;llvm;clang}"
+LLVM_PROJECTS="${LLVM_PROJECTS:-mlir;llvm}"
 LLVM_TARGETS_TO_BUILD="${LLVM_TARGETS_TO_BUILD:-host;AArch64}"
 LLVM_EXPERIMENTAL_TARGETS="${LLVM_EXPERIMENTAL_TARGETS:-SPIRV}"
 LLVM_BUILD_TARGETS="${LLVM_BUILD_TARGETS:-all llc opt mlir-opt mlir-translate}"
@@ -64,7 +64,7 @@ pushd "$llvm_path" >/dev/null
 
 # ---- Should we clean build/? ----
 clean_reason=""
-if [[ "${reconfigure}" -eq 1 ]]; then
+if [[ "${reconfigure}" -eq 1 && ! "${checkout_and_build_llvm}" -eq 0 ]]; then
   clean_reason="forced reconfigure (reconfigure=1)"
 elif [[ -f build/CMakeCache.txt && ! "$(grep -o 'CMAKE_GENERATOR:INTERNAL=[^ ]*' build/CMakeCache.txt || true)" =~ Ninja ]]; then
   clean_reason="existing build is not Ninja"
