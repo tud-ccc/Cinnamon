@@ -32,8 +32,8 @@ struct GemmToLoopedGemv final : OpRewritePattern<cinm::GemmOp> {
 
     cinm::ComputeOp parentCompute = op->getParentOfType<cinm::ComputeOp>();
 
-    auto aTy = dyn_cast<RankedTensorType>(op.getLeft().getType());
-    auto bTy = dyn_cast<RankedTensorType>(op.getRight().getType());
+    auto aTy = dyn_cast<RankedTensorType>(op.getLhs().getType());
+    auto bTy = dyn_cast<RankedTensorType>(op.getRhs().getType());
     auto yTy = dyn_cast<RankedTensorType>(op.getResult().getType());
     if (!aTy || !bTy || !yTy || aTy.getRank() != 2 || bTy.getRank() != 2 ||
         yTy.getRank() != 2)
@@ -66,8 +66,8 @@ struct GemmToLoopedGemv final : OpRewritePattern<cinm::GemmOp> {
 
     if (splitDim == 2) {
       finals = createNestedAffineForLoops(
-          rewriter, loc, ArrayRef<int64_t>{N},
-          ArrayRef<int64_t>{1}, ValueRange{acc0},
+          rewriter, loc, ArrayRef<int64_t>{N}, ArrayRef<int64_t>{1},
+          ValueRange{acc0},
           [&](OpBuilder &b, Location loc2, ValueRange ivs,
               ValueRange iters) -> SmallVector<Value> {
             Value j = ivs[0];
@@ -75,10 +75,8 @@ struct GemmToLoopedGemv final : OpRewritePattern<cinm::GemmOp> {
             SmallVector<int64_t, 2> staticSizesB{K, 1};
             auto bCol2DTy = RankedTensorType::get({K, 1}, elemTy);
             Value bCol2D = b.create<tensor::ExtractSliceOp>(
-                loc2, bCol2DTy, op.getRight(),
-                ValueRange{c0, j},
-                ValueRange{}, ValueRange{}, staticOffsets,
-                staticSizesB, staticStrides);
+                loc2, bCol2DTy, op.getRhs(), ValueRange{c0, j}, ValueRange{},
+                ValueRange{}, staticOffsets, staticSizesB, staticStrides);
 
             SmallVector<ReassociationIndices, 1> collapse{{0, 1}};
             auto xTy = RankedTensorType::get({K}, elemTy);
@@ -86,7 +84,8 @@ struct GemmToLoopedGemv final : OpRewritePattern<cinm::GemmOp> {
                 b.create<tensor::CollapseShapeOp>(loc2, xTy, bCol2D, collapse);
 
             auto yColTy = RankedTensorType::get({M}, elemTy);
-            Value yj = b.create<cinm::GemvOp>(loc2, yColTy, op.getLeft(), x)
+            Value yj = b.create<cinm::GemvOp>(loc2, yColTy, op.getLhs(), x,
+                                              Value(), Value())
                            .getResult();
 
             SmallVector<ReassociationIndices, 1> expand{{0, 1}};
@@ -97,16 +96,14 @@ struct GemmToLoopedGemv final : OpRewritePattern<cinm::GemmOp> {
             SmallVector<int64_t, 2> staticSizesY{M, 1};
             Value accIn = iters.front();
             Value accOut = b.create<tensor::InsertSliceOp>(
-                loc2, yCol2D, accIn,
-                ValueRange{c0, j},
-                ValueRange{}, ValueRange{}, staticOffsets,
-                staticSizesY, staticStrides);
+                loc2, yCol2D, accIn, ValueRange{c0, j}, ValueRange{},
+                ValueRange{}, staticOffsets, staticSizesY, staticStrides);
 
             return {accOut};
           });
     } else {
-      Value btInit =
-          rewriter.create<tensor::EmptyOp>(loc, ArrayRef<int64_t>{N, K}, elemTy);
+      Value btInit = rewriter.create<tensor::EmptyOp>(
+          loc, ArrayRef<int64_t>{N, K}, elemTy);
       Value bTransposed =
           createNestedAffineForLoops(
               rewriter, loc, ArrayRef<int64_t>{N, K}, ArrayRef<int64_t>{1, 1},
@@ -116,10 +113,9 @@ struct GemmToLoopedGemv final : OpRewritePattern<cinm::GemmOp> {
                 Value j = ivs[0];
                 Value kVal = ivs[1];
                 Value element = b.create<tensor::ExtractOp>(
-                    loc2, op.getRight(), ValueRange{kVal, j});
-                Value updated = b.create<tensor::InsertOp>(loc2, element,
-                                                           iters.front(),
-                                                           ValueRange{j, kVal});
+                    loc2, op.getRhs(), ValueRange{kVal, j});
+                Value updated = b.create<tensor::InsertOp>(
+                    loc2, element, iters.front(), ValueRange{j, kVal});
                 return {updated};
               })
               .front();
@@ -134,7 +130,7 @@ struct GemmToLoopedGemv final : OpRewritePattern<cinm::GemmOp> {
             SmallVector<int64_t, 2> staticSizesA{1, K};
             auto aRow2DTy = RankedTensorType::get({1, K}, elemTy);
             Value aRow2D = b.create<tensor::ExtractSliceOp>(
-                loc2, aRow2DTy, op.getLeft(), ValueRange{i, c0}, ValueRange{},
+                loc2, aRow2DTy, op.getLhs(), ValueRange{i, c0}, ValueRange{},
                 ValueRange{}, staticOffsets, staticSizesA, staticStrides);
 
             SmallVector<ReassociationIndices, 1> collapse01{{0, 1}};
@@ -143,9 +139,9 @@ struct GemmToLoopedGemv final : OpRewritePattern<cinm::GemmOp> {
                                                            collapse01);
 
             auto yRowTy = RankedTensorType::get({N}, elemTy);
-            Value yRow =
-                b.create<cinm::GemvOp>(loc2, yRowTy, bTransposed, aRow)
-                    .getResult();
+            Value yRow = b.create<cinm::GemvOp>(loc2, yRowTy, bTransposed, aRow,
+                                                Value(), Value())
+                             .getResult();
 
             SmallVector<ReassociationIndices, 1> expand01{{0, 1}};
             auto yRow2DTy = RankedTensorType::get({1, N}, elemTy);
@@ -186,8 +182,7 @@ struct GemmToLoopedGemv final : OpRewritePattern<cinm::GemmOp> {
   int splitDim;
 };
 
-struct BatchGemmToLoopedGemv final
-    : OpRewritePattern<cinm::BatchGemmOp> {
+struct BatchGemmToLoopedGemv final : OpRewritePattern<cinm::BatchGemmOp> {
   using OpRewritePattern<cinm::BatchGemmOp>::OpRewritePattern;
 
   explicit BatchGemmToLoopedGemv(MLIRContext *ctx, int splitDim)
@@ -291,27 +286,23 @@ struct BatchGemmToLoopedGemv final
             Value biasVec;
             if (bias) {
               Value biasSlice = b.create<tensor::ExtractSliceOp>(
-                  loc2, biasColTy, bias, ValueRange{batch, c0, j},
-                  ValueRange{}, ValueRange{}, dynOffsets3, staticSizesBias,
-                  unitStrides3);
-              biasVec = b.create<tensor::CollapseShapeOp>(loc2, biasVecTy,
-                                                          biasSlice, collapseBias);
+                  loc2, biasColTy, bias, ValueRange{batch, c0, j}, ValueRange{},
+                  ValueRange{}, dynOffsets3, staticSizesBias, unitStrides3);
+              biasVec = b.create<tensor::CollapseShapeOp>(
+                  loc2, biasVecTy, biasSlice, collapseBias);
             }
 
-            Value y = bias
-                           ? b.create<cinm::GemvOp>(loc2, yVecTy, aMat, x, biasVec)
-                                 .getResult()
-                           : b.create<cinm::GemvOp>(loc2, yVecTy, aMat, x)
-                                 .getResult();
+            Value y = b.create<cinm::GemvOp>(loc2, yVecTy, aMat, x,
+                                             bias ? biasVec : Value(), Value())
+                          .getResult();
 
-            Value yExpanded = b.create<tensor::ExpandShapeOp>(
-                loc2, yExpandedTy, y, expandY);
+            Value yExpanded =
+                b.create<tensor::ExpandShapeOp>(loc2, yExpandedTy, y, expandY);
 
             Value accIn = iters.front();
             Value accOut = b.create<tensor::InsertSliceOp>(
-                loc2, yExpanded, accIn, ValueRange{batch, c0, j},
-                ValueRange{}, ValueRange{}, dynOffsets3, staticSizesY,
-                unitStrides3);
+                loc2, yExpanded, accIn, ValueRange{batch, c0, j}, ValueRange{},
+                ValueRange{}, dynOffsets3, staticSizesY, unitStrides3);
 
             return {accOut};
           });
@@ -340,8 +331,8 @@ struct BatchGemmToLoopedGemv final
       auto yScalarTy = RankedTensorType::get({1}, elemTy);
 
       finals = createNestedAffineForLoops(
-          rewriter, loc, ArrayRef<int64_t>{B, M, N},
-          ArrayRef<int64_t>{1, 1, 1}, ValueRange{acc0},
+          rewriter, loc, ArrayRef<int64_t>{B, M, N}, ArrayRef<int64_t>{1, 1, 1},
+          ValueRange{acc0},
           [&](OpBuilder &b, Location loc2, ValueRange ivs,
               ValueRange iters) -> SmallVector<Value> {
             Value batch = ivs[0];
@@ -352,8 +343,8 @@ struct BatchGemmToLoopedGemv final
                 loc2, aRow3DTy, op.getLeft(), ValueRange{batch, i, c0},
                 ValueRange{}, ValueRange{}, dynOffsets3, staticSizesARow,
                 unitStrides3);
-            Value aRow = b.create<tensor::CollapseShapeOp>(loc2, aRow2DTy, aSlice,
-                                                           collapseARow);
+            Value aRow = b.create<tensor::CollapseShapeOp>(
+                loc2, aRow2DTy, aSlice, collapseARow);
 
             Value bSlice = b.create<tensor::ExtractSliceOp>(
                 loc2, bColTy, op.getRight(), ValueRange{batch, c0, j},
@@ -368,23 +359,21 @@ struct BatchGemmToLoopedGemv final
                   loc2, biasScalarTy, bias, ValueRange{batch, i, j},
                   ValueRange{}, ValueRange{}, dynOffsets3, staticSizesBias,
                   unitStrides3);
-              biasVec = b.create<tensor::CollapseShapeOp>(loc2, biasVecTy,
-                                                          biasSlice, collapseBias);
+              biasVec = b.create<tensor::CollapseShapeOp>(
+                  loc2, biasVecTy, biasSlice, collapseBias);
             }
 
-            Value y = bias
-                           ? b.create<cinm::GemvOp>(loc2, yScalarTy, aRow, x, biasVec)
-                                 .getResult()
-                           : b.create<cinm::GemvOp>(loc2, yScalarTy, aRow, x)
-                                 .getResult();
+            Value y = b.create<cinm::GemvOp>(loc2, yScalarTy, aRow, x,
+                                             bias ? biasVec : Value(), Value())
+                          .getResult();
 
-            Value yExpanded = b.create<tensor::ExpandShapeOp>(
-                loc2, yExpandedTy, y, expandScalar);
+            Value yExpanded = b.create<tensor::ExpandShapeOp>(loc2, yExpandedTy,
+                                                              y, expandScalar);
 
             Value accOut = b.create<tensor::InsertSliceOp>(
-                loc2, yExpanded, iters.front(),
-                ValueRange{batch, i, j}, ValueRange{}, ValueRange{},
-                dynOffsets3, staticSizesY, unitStrides3);
+                loc2, yExpanded, iters.front(), ValueRange{batch, i, j},
+                ValueRange{}, ValueRange{}, dynOffsets3, staticSizesY,
+                unitStrides3);
 
             return {accOut};
           });
@@ -406,9 +395,8 @@ struct BatchGemmToLoopedGemv final
             gemvTS = {arr[0], arr[2], arr[3]};
 
           rewriter.modifyOpInPlace(parentCompute, [&] {
-            parentCompute->setAttr(
-                "tileSizes",
-                rewriter.getDenseI64ArrayAttr(ArrayRef<int64_t>(gemvTS)));
+            parentCompute->setAttr("tileSizes", rewriter.getDenseI64ArrayAttr(
+                                                    ArrayRef<int64_t>(gemvTS)));
           });
         }
       }
@@ -420,8 +408,7 @@ struct BatchGemmToLoopedGemv final
   int splitDim;
 };
 
-struct BatchGemvToLoopedGemv final
-    : OpRewritePattern<cinm::BatchGemvOp> {
+struct BatchGemvToLoopedGemv final : OpRewritePattern<cinm::BatchGemvOp> {
   using OpRewritePattern<cinm::BatchGemvOp>::OpRewritePattern;
 
   explicit BatchGemvToLoopedGemv(MLIRContext *ctx)
@@ -436,7 +423,8 @@ struct BatchGemvToLoopedGemv final
     auto yTy = dyn_cast<RankedTensorType>(op.getResult().getType());
     if (!aTy || !xTy || !yTy || aTy.getRank() != 3 || xTy.getRank() != 2 ||
         yTy.getRank() != 2)
-      return rewriter.notifyMatchFailure(op, "expected ranked tensors (3D,2D,2D)");
+      return rewriter.notifyMatchFailure(op,
+                                         "expected ranked tensors (3D,2D,2D)");
 
     auto parentCompute = op->getParentOfType<cinm::ComputeOp>();
     if (!parentCompute)
@@ -531,19 +519,17 @@ struct BatchGemvToLoopedGemv final
             Value biasSlice = b.create<tensor::ExtractSliceOp>(
                 loc2, biasSliceTy, bias, ValueRange{batch, c0}, ValueRange{},
                 ValueRange{}, dynOffsets2, staticSizesBias, unitStrides2);
-            biasVec = b.create<tensor::CollapseShapeOp>(loc2, biasVecTy,
-                                                        biasSlice, collapseBias);
+            biasVec = b.create<tensor::CollapseShapeOp>(
+                loc2, biasVecTy, biasSlice, collapseBias);
           }
 
           auto yTy = RankedTensorType::get({M}, elemTy);
-          Value y = bias
-                        ? b.create<cinm::GemvOp>(loc2, yTy, aMat, xVec, biasVec)
-                              .getResult()
-                        : b.create<cinm::GemvOp>(loc2, yTy, aMat, xVec)
-                              .getResult();
+          Value y = b.create<cinm::GemvOp>(loc2, yTy, aMat, xVec,
+                                           bias ? biasVec : Value(), Value())
+                        .getResult();
 
-          Value yExpanded = b.create<tensor::ExpandShapeOp>(
-              loc2, resSliceTy, y, expandRes);
+          Value yExpanded =
+              b.create<tensor::ExpandShapeOp>(loc2, resSliceTy, y, expandRes);
 
           Value accOut = b.create<tensor::InsertSliceOp>(
               loc2, yExpanded, iters.front(), ValueRange{batch, c0},
@@ -555,15 +541,14 @@ struct BatchGemvToLoopedGemv final
     rewriter.replaceOp(op, finals.front());
 
     if (parentCompute) {
-      if (auto ts = parentCompute->getAttrOfType<DenseI64ArrayAttr>(
-              "tileSizes")) {
+      if (auto ts =
+              parentCompute->getAttrOfType<DenseI64ArrayAttr>("tileSizes")) {
         auto arr = ts.asArrayRef();
         if (arr.size() == 3) {
           SmallVector<int64_t, 2> gemvTS{arr[1], arr[2]};
           rewriter.modifyOpInPlace(parentCompute, [&] {
-            parentCompute->setAttr(
-                "tileSizes",
-                rewriter.getDenseI64ArrayAttr(ArrayRef<int64_t>(gemvTS)));
+            parentCompute->setAttr("tileSizes", rewriter.getDenseI64ArrayAttr(
+                                                    ArrayRef<int64_t>(gemvTS)));
           });
         }
       }
@@ -600,5 +585,5 @@ struct CinmGemmToLoopedGemvPass
   }
 };
 
-}
-}
+} // namespace
+} // namespace mlir::cinm

@@ -77,8 +77,9 @@ struct ConvertTorchTensorOpToCinm : OpConversionPattern<SourceOp> {
     rewriter.setInsertionPointToStart(computeBody);
 
     auto targetOp = rewriter.create<TargetOp>(
-        op.getLoc(), resultType.toBuiltinTensor(), lhsConversionOp.getResult(),
-        rhsConversionOp.getResult(), AdditionalOpArgs{}...);
+        op.getLoc(), resultType.toBuiltinTensor(),
+        ValueRange{lhsConversionOp.getResult(), rhsConversionOp.getResult(),
+                   AdditionalOpArgs{}...});
 
     rewriter.create<cinm::YieldOp>(op.getLoc(), targetOp.getResult());
 

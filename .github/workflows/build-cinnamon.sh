@@ -115,12 +115,13 @@ configure() {
 
 # ---- Build with one clean retry on failure ----
 status "Building Cinnamon (Ninja)"
-if ! cmake --build build --target all; then
-  warning "Build failed — cleaning build/ and retrying from fresh configure…"
-  rm -rf build
-  configure
-  cmake --build build --target all
-fi
+cmake --build build --target all -j 4
+# if ! cmake --build build --target all -j 8; then
+#   warning "Build failed — cleaning build/ and retrying from fresh configure…"
+#   rm -rf build
+#   configure
+#   cmake --build build --target all -j 8
+# fi
 
 # ---- Python package wiring (optional) ----
 if [[ "$setup_python_venv" -eq 1 && -n "${llvm_path:-}" && -n "${torch_mlir_path:-}" ]]; then
