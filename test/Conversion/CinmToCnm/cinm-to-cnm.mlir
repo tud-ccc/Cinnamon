@@ -21,7 +21,7 @@
 // CHECK: %{{.*}} = cnm.gather %[[bc]][#map2] of %[[wg]] into %[[emptyres]] : !cnm.buffer<i32 on 8x128x1, level 0> into tensor<8x128xi32>
 // CHECK: cnm.free_workgroup %[[wg]] : !cnm.workgroup<8x128x1>
         %r0 = cinm.compute attributes { workgroupShape=array<i64: 8, 128, 1> } -> tensor<8x128xi32> {
-            %r = cinm.op.gemm %A, %B: (tensor<8x1024xi32>, tensor<1024x128xi32>) -> tensor<8x128xi32>
+            %r = cinm.op.gemm %A, %B: tensor<8x1024xi32>, tensor<1024x128xi32> -> tensor<8x128xi32>
             cinm.yield %r : tensor<8x128xi32>
         }
         func.return %r0 : tensor<8x128xi32>
