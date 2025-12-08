@@ -234,7 +234,7 @@ void ElementwiseOp::print(::mlir::OpAsmPrinter &printer) {}
   result.addAttribute(
       "operandSegmentSizes",
       parser.getBuilder().getDenseI32ArrayAttr(
-          {static_cast<int32_t>(hasBias), static_cast<int32_t>(hasOut)}));
+          {1, 1, static_cast<int32_t>(hasBias), static_cast<int32_t>(hasOut)}));
 
   return success();
 }

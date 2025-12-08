@@ -723,7 +723,7 @@ struct ConvertCinmGemmToCnm : public OpConversionPattern<cinm::GemmOp> {
   using OpConversionPattern<cinm::GemmOp>::OpConversionPattern;
 
   static Value transpose(ImplicitLocOpBuilder &builder, Value tensor) {
-    auto inTy = cast<RankedTensorType>(tensor.getType());
+    auto inTy = cast<ShapedType>(tensor.getType());
     auto shape = inTy.getShape();
     SmallVector<int64_t, 2> newShape{shape[1], shape[0]};
     SmallVector<int64_t, 2> perms{1, 0};
@@ -738,15 +738,15 @@ struct ConvertCinmGemmToCnm : public OpConversionPattern<cinm::GemmOp> {
   matchAndRewrite(cinm::GemmOp op, OpConversionPattern<cinm::GemmOp>::OpAdaptor,
                   ConversionPatternRewriter &rewriter) const override {
 
-    TypedValue<MemRefType> lhs =
-        llvm::cast<TypedValue<MemRefType>>(op.getLhs());
-    TypedValue<MemRefType> rhs =
-        llvm::cast<TypedValue<MemRefType>>(op.getRhs());
+    TypedValue<ShapedType> lhs =
+        llvm::cast<TypedValue<ShapedType>>(op.getLhs());
+    TypedValue<ShapedType> rhs =
+        llvm::cast<TypedValue<ShapedType>>(op.getRhs());
     // TODO: fix bias & out
-    TypedValue<MemRefType> bias =
-        llvm::cast<TypedValue<MemRefType>>(op.getBias());
+    TypedValue<ShapedType> bias =
+        llvm::dyn_cast_or_null<TypedValue<ShapedType>>(op.getBias());
     TypedValue<MemRefType> out =
-        llvm::cast<TypedValue<MemRefType>>(op.getOut());
+        llvm::dyn_cast_or_null<TypedValue<MemRefType>>(op.getOut());
 
     ImplicitLocOpBuilder builder(op->getLoc(), rewriter);
     cinm::ComputeOp computeBlock = mlir::cinm::getEnclosingComputeBlock(op);
