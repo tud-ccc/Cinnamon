@@ -63,7 +63,7 @@ static Operation *findQuantizeProducer(Value weights) {
       }
       continue;
     }
-    if (auto quant = dyn_cast<cinm::QuantizeMemRefOp>(user)) {
+    if (auto quant = dyn_cast<cinm::QuantizeOp>(user)) {
       if (quant.getOut() == weights) {
         if (!found || quant->isBeforeInBlock(found))
           found = quant;
@@ -75,9 +75,9 @@ static Operation *findQuantizeProducer(Value weights) {
 
 /// Check whether all operands of the ops we plan to hoist are defined outside
 /// `loop`, discounting operands produced by other hoisted ops.
-static bool operandsLoopInvariant(
-    scf::ForOp loop, llvm::ArrayRef<Operation *> opsToMove,
-    const llvm::DenseSet<Operation *> &movable) {
+static bool operandsLoopInvariant(scf::ForOp loop,
+                                  llvm::ArrayRef<Operation *> opsToMove,
+                                  const llvm::DenseSet<Operation *> &movable) {
   for (Operation *op : opsToMove) {
     for (Value operand : op->getOperands()) {
       if (Operation *def = operand.getDefiningOp()) {

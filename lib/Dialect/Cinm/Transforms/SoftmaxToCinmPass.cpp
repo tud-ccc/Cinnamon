@@ -19,10 +19,8 @@
 
 namespace mlir::cinm {
 
-
 #define GEN_PASS_DEF_SOFTMAXTOCINMPASS
 #include "cinm-mlir/Dialect/Cinm/Transforms/Passes.h.inc"
-
 
 struct SoftmaxToCinmPattern : OpConversionPattern<linalg::SoftmaxOp> {
   using OpConversionPattern::OpConversionPattern;
@@ -37,9 +35,13 @@ struct SoftmaxToCinmPattern : OpConversionPattern<linalg::SoftmaxOp> {
         rewriter.replaceOpWithNewOp<ComputeOp>(op, op.getResultTypes());
 
     rewriter.setInsertionPointToEnd(&computeOp.getBody().emplaceBlock());
-    const Value max = rewriter.create<ReduceOp>(
-        loc, inputType.getElementType(), ReduceMethod::MAX, input, 0);
-    const Value t = rewriter.create<SubsOp>(loc, input, max);
+    const Value max = rewriter.create<ReduceOp>(loc, inputType.getElementType(),
+                                                ReduceMethod::MAX, input, 0);
+    const Value t = rewriter
+                        .create<cinm::ElementwiseOp>(loc, input.getType(),
+                                                     ElementwiseKind::Sub,
+                                                     input, max, Value())
+                        .getResult();
     const Value init = rewriter.create<tensor::EmptyOp>(
         loc, inputType.getShape(), inputType.getElementType());
     const SmallVector<Type, 1> types{RankedTensorType::get(
@@ -51,7 +53,11 @@ struct SoftmaxToCinmPattern : OpConversionPattern<linalg::SoftmaxOp> {
             .getResult(0);
     const Value s = rewriter.create<ReduceOp>(loc, inputType.getElementType(),
                                               ReduceMethod::ADD, e, 0);
-    const Value result = rewriter.create<DivsOp>(loc, e, s);
+    const Value result =
+        rewriter
+            .create<cinm::ElementwiseOp>(loc, e.getType(), ElementwiseKind::Div,
+                                         e, s, Value())
+            .getResult();
     rewriter.create<YieldOp>(loc, ValueRange{result});
     return success();
   }
@@ -74,4 +80,4 @@ struct SoftmaxToCinmPass
   }
 };
 
-}
+} // namespace mlir::cinm

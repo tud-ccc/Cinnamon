@@ -1,3 +1,4 @@
+#include "cinm-mlir/Dialect/Cinm/IR/CinmAttributes.h"
 #include "cinm-mlir/Dialect/Cinm/IR/CinmOps.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
@@ -15,7 +16,6 @@ using namespace mlir;
 namespace mlir::cinm {
 namespace {
 
-
 static Value buildZeroLike(OpBuilder &b, Location loc, Type elemTy) {
   if (auto ft = dyn_cast<FloatType>(elemTy))
     return b.create<arith::ConstantOp>(loc, b.getFloatAttr(ft, 0.0));
@@ -24,9 +24,7 @@ static Value buildZeroLike(OpBuilder &b, Location loc, Type elemTy) {
   return {};
 }
 
-
-static LogicalResult rewriteGemvMemRefOnce(cinm::GemvMemRefOp op,
-                                           IRRewriter &b) {
+static LogicalResult rewriteGemvMemRefOnce(cinm::GemvOp op, IRRewriter &b) {
   Location loc = op.getLoc();
 
   Value out = op.getOut();
@@ -49,17 +47,17 @@ static LogicalResult rewriteGemvMemRefOnce(cinm::GemvMemRefOp op,
     return op.emitOpError("unsupported element type for zero init");
   (void)b.create<linalg::FillOp>(loc, ValueRange{zero}, ValueRange{tmp});
 
-  b.create<cinm::GemvMemRefOp>(loc, op.getLeft(), op.getRight(), tmp);
+  b.create<cinm::GemvOp>(loc, Type(), op.getLhs(), op.getRhs(), Value(), tmp);
 
-  b.create<cinm::AddMemRefOp>(loc, out, tmp, out);
+  b.create<cinm::ElementwiseOp>(loc, Type(), ElementwiseKind::Add, out, tmp,
+                                out);
 
   b.create<memref::DeallocOp>(loc, tmp);
   op.erase();
   return success();
 }
 
-static LogicalResult rewriteGemmMemRefOnce(cinm::GemmMemRefOp op,
-                                           IRRewriter &b) {
+static LogicalResult rewriteGemmMemRefOnce(cinm::GemmOp op, IRRewriter &b) {
   Location loc = op.getLoc();
 
   Value out = op.getOut();
@@ -82,15 +80,15 @@ static LogicalResult rewriteGemmMemRefOnce(cinm::GemmMemRefOp op,
     return op.emitOpError("unsupported element type for zero init");
   (void)b.create<linalg::FillOp>(loc, ValueRange{zero}, ValueRange{tmp});
 
-  b.create<cinm::GemmMemRefOp>(loc, op.getLeft(), op.getRight(), tmp);
+  b.create<cinm::GemmOp>(loc, Type(), op.getLhs(), op.getRhs(), Value(), tmp);
 
-  b.create<cinm::AddMemRefOp>(loc, out, tmp, out);
+  b.create<cinm::ElementwiseOp>(loc, Type(), ElementwiseKind::Add, out, tmp,
+                                out);
 
   b.create<memref::DeallocOp>(loc, tmp);
   op.erase();
   return success();
 }
-
 
 static LogicalResult rewriteGemvTensorBias(cinm::GemvOp op, IRRewriter &b) {
   if (!op.getBias())
@@ -99,9 +97,12 @@ static LogicalResult rewriteGemvTensorBias(cinm::GemvOp op, IRRewriter &b) {
   Location loc = op.getLoc();
   auto resTy = cast<RankedTensorType>(op.getResult().getType());
 
-  auto pure = b.create<cinm::GemvOp>(loc, resTy, op.getLeft(), op.getRight());
+  auto pure = b.create<cinm::GemvOp>(loc, resTy, op.getLhs(), op.getRhs(),
+                                     Value(), Value());
 
-  auto sum = b.create<cinm::AddOp>(loc, resTy, pure.getResult(), op.getBias());
+  auto sum =
+      b.create<cinm::ElementwiseOp>(loc, resTy, ElementwiseKind::Add,
+                                    pure.getResult(), op.getBias(), Value());
 
   b.replaceOp(op, sum.getResult());
   return success();
@@ -114,14 +115,16 @@ static LogicalResult rewriteGemmTensorBias(cinm::GemmOp op, IRRewriter &b) {
   Location loc = op.getLoc();
   auto resTy = cast<RankedTensorType>(op.getResult().getType());
 
-  auto pure = b.create<cinm::GemmOp>(loc, op.getLeft(), op.getRight());
+  auto pure = b.create<cinm::GemmOp>(loc, resTy, op.getLhs(), op.getRhs(),
+                                     Value(), Value());
 
-  auto sum = b.create<cinm::AddOp>(loc, resTy, pure.getResult(), op.getBias());
+  auto sum =
+      b.create<cinm::ElementwiseOp>(loc, resTy, ElementwiseKind::Add,
+                                    pure.getResult(), op.getBias(), Value());
 
   b.replaceOp(op, sum.getResult());
   return success();
 }
-
 
 struct DecomposeCinmAccumulationsPass
     : PassWrapper<DecomposeCinmAccumulationsPass, OperationPass<func::FuncOp>> {
@@ -144,28 +147,33 @@ struct DecomposeCinmAccumulationsPass
     func::FuncOp func = getOperation();
     IRRewriter b(func.getContext());
 
-    SmallVector<cinm::GemvMemRefOp, 8> gemvMR;
-    SmallVector<cinm::GemmMemRefOp, 8> gemmMR;
+    SmallVector<cinm::GemvOp, 8> gemvMR;
+    SmallVector<cinm::GemmOp, 8> gemmMR;
     SmallVector<cinm::GemvOp, 8> gemvT;
     SmallVector<cinm::GemmOp, 8> gemmT;
 
     func.walk([&](Operation *op) {
-      if (auto gmv = dyn_cast<cinm::GemvMemRefOp>(op))
-        gemvMR.push_back(gmv);
-      else if (auto gmm = dyn_cast<cinm::GemmMemRefOp>(op))
-        gemmMR.push_back(gmm);
-      else if (auto gv = dyn_cast<cinm::GemvOp>(op))
-        gemvT.push_back(gv);
-      else if (auto gm = dyn_cast<cinm::GemmOp>(op))
-        gemmT.push_back(gm);
+      if (auto gemv = dyn_cast<cinm::GemvOp>(op)) {
+        if (dyn_cast<mlir::MemRefType>(gemv.getLhs().getType())) {
+          gemvMR.push_back(gemv);
+        } else {
+          gemvT.push_back(gemv);
+        }
+      } else if (auto gemm = dyn_cast<cinm::GemmOp>(op)) {
+        if (dyn_cast<mlir::MemRefType>(gemm.getLhs().getType())) {
+          gemmMR.push_back(gemm);
+        } else {
+          gemmT.push_back(gemm);
+        }
+      }
     });
 
-    for (cinm::GemvMemRefOp gmv : gemvMR) {
+    for (cinm::GemvOp gmv : gemvMR) {
       b.setInsertionPoint(gmv);
       if (failed(rewriteGemvMemRefOnce(gmv, b)))
         return signalPassFailure();
     }
-    for (cinm::GemmMemRefOp gmm : gemmMR) {
+    for (cinm::GemmOp gmm : gemmMR) {
       b.setInsertionPoint(gmm);
       if (failed(rewriteGemmMemRefOnce(gmm, b)))
         return signalPassFailure();
@@ -188,7 +196,7 @@ struct DecomposeCinmAccumulationsPass
   }
 };
 
-}
+} // namespace
 
 std::unique_ptr<Pass> createCinmDecomposeAccumulationPass() {
   return std::make_unique<DecomposeCinmAccumulationsPass>();
@@ -201,4 +209,4 @@ void registerDecomposeCinmAccumulationPass() {
       });
 }
 
-}
+} // namespace mlir::cinm

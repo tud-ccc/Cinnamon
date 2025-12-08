@@ -22,8 +22,9 @@ namespace mlir::cinm {
 #define GEN_PASS_DEF_INSERTCINMQUANTIZATION
 #include "cinm-mlir/Dialect/Cinm/Transforms/Passes.h.inc"
 
-namespace {
+// TODO: Fix Bias in rewriteGem*()
 
+namespace {
 
 static Type parseQuantElemType(StringRef s, MLIRContext &ctx) {
   std::string lowered = s.trim().lower();
@@ -89,7 +90,6 @@ static bool isFloatMemRef(Type t) {
   return mt && isa<FloatType>(mt.getElementType());
 }
 
-
 static Value buildQuantize(IRRewriter &rewriter, Location loc, Value src,
                            Type qElem, float scale, int64_t zp,
                            cinm::RoundingMode rounding, bool narrow) {
@@ -101,8 +101,8 @@ static Value buildQuantize(IRRewriter &rewriter, Location loc, Value src,
   auto rAttr = cinm::RoundingModeAttr::get(rewriter.getContext(), rounding);
   auto nAttr = rewriter.getBoolAttr(narrow);
 
-  auto q = rewriter.create<cinm::QuantizeOp>(
-      loc, qTy, src, fScale, iZp, IntegerAttr{}, rAttr, nAttr);
+  auto q = rewriter.create<cinm::QuantizeOp>(loc, qTy, src, Value(), fScale,
+                                             iZp, IntegerAttr{}, rAttr, nAttr);
   return q.getResult();
 }
 
@@ -113,8 +113,8 @@ static Value buildDequantize(IRRewriter &rewriter, Location loc, Value srcQ,
   auto fScale = rewriter.getF32FloatAttr(scale);
   auto iZp = rewriter.getI64IntegerAttr(zp);
 
-  auto dq = rewriter.create<cinm::DequantizeOp>(loc, outTy, srcQ, fScale, iZp,
-                                                IntegerAttr{});
+  auto dq = rewriter.create<cinm::DequantizeOp>(loc, outTy, srcQ, Value(),
+                                                fScale, iZp, IntegerAttr{});
   return dq.getResult();
 }
 
@@ -127,7 +127,7 @@ static LogicalResult rewriteGemmTensor(GemmOp op, Type qElem, float scale,
   if (op.getBias())
     return failure();
 
-  Value A = op.getLeft(), B = op.getRight();
+  Value A = op.getLhs(), B = op.getRhs();
   if (!isFloatTensor(A.getType()) || !isFloatTensor(B.getType()))
     return failure();
 
@@ -142,7 +142,7 @@ static LogicalResult rewriteGemmTensor(GemmOp op, Type qElem, float scale,
 
   auto qOutTy = RankedTensorType::get(outTy.getShape(), qElem);
   auto qGemm =
-      rewriter.create<cinm::GemmOp>(loc, qOutTy, Aq, Bq, Value());
+      rewriter.create<cinm::GemmOp>(loc, qOutTy, Aq, Bq, Value(), Value());
   Value dq = buildDequantize(rewriter, loc, qGemm.getResult(),
                              outTy.getElementType(), scale, zp);
 
@@ -159,7 +159,7 @@ static LogicalResult rewriteGemvTensor(GemvOp op, Type qElem, float scale,
   if (op.getBias())
     return failure();
 
-  Value A = op.getLeft(), x = op.getRight();
+  Value A = op.getLhs(), x = op.getRhs();
   if (!isFloatTensor(A.getType()) || !isFloatTensor(x.getType()))
     return failure();
 
@@ -174,14 +174,13 @@ static LogicalResult rewriteGemvTensor(GemvOp op, Type qElem, float scale,
 
   auto qOutTy = RankedTensorType::get(outTy.getShape(), qElem);
   auto qGemv =
-      rewriter.create<cinm::GemvOp>(loc, qOutTy, Aq, xq, Value());
+      rewriter.create<cinm::GemvOp>(loc, qOutTy, Aq, xq, Value(), Value());
   Value dq = buildDequantize(rewriter, loc, qGemv.getResult(),
                              outTy.getElementType(), scale, zp);
 
   rewriter.replaceOp(op, dq);
   return success();
 }
-
 
 static Value allocLikeWithElem(IRRewriter &rewriter, Location loc, Value like,
                                Type elemTy) {
@@ -202,22 +201,22 @@ static void emitQuantizeMemRef(IRRewriter &rewriter, Location loc, Value src,
   auto iZp = rewriter.getI64IntegerAttr(zp);
   auto rAttr = cinm::RoundingModeAttr::get(rewriter.getContext(), rounding);
   auto nAttr = rewriter.getBoolAttr(narrow);
-  rewriter.create<cinm::QuantizeMemRefOp>(loc, src, dst, fScale, iZp,
-                                          IntegerAttr{}, rAttr, nAttr);
+  rewriter.create<cinm::QuantizeOp>(loc, Type(), src, dst, fScale, iZp,
+                                    IntegerAttr{}, rAttr, nAttr);
 }
 
 static void emitDequantizeMemRef(IRRewriter &rewriter, Location loc, Value src,
                                  Value dst, float scale, int64_t zp) {
   auto fScale = rewriter.getF32FloatAttr(scale);
   auto iZp = rewriter.getI64IntegerAttr(zp);
-  rewriter.create<cinm::DequantizeMemRefOp>(loc, src, dst, fScale, iZp,
-                                            IntegerAttr{});
+  rewriter.create<cinm::DequantizeOp>(loc, Type(), src, dst, fScale, iZp,
+                                      IntegerAttr{});
 }
 
-static LogicalResult rewriteGemmMemRef(GemmMemRefOp op, Type qElem, float scale,
+static LogicalResult rewriteGemmMemRef(GemmOp op, Type qElem, float scale,
                                        int64_t zp, cinm::RoundingMode rounding,
                                        bool narrow, IRRewriter &rewriter) {
-  Value A = op.getLeft(), B = op.getRight(), C = op.getOut();
+  Value A = op.getLhs(), B = op.getRhs(), C = op.getOut();
   if (!isFloatMemRef(A.getType()) || !isFloatMemRef(B.getType()) ||
       !isFloatMemRef(C.getType()))
     return failure();
@@ -233,7 +232,7 @@ static LogicalResult rewriteGemmMemRef(GemmMemRefOp op, Type qElem, float scale,
   emitQuantizeMemRef(rewriter, loc, A, qA, scale, zp, rounding, narrow);
   emitQuantizeMemRef(rewriter, loc, B, qB, scale, zp, rounding, narrow);
 
-  rewriter.create<cinm::GemmMemRefOp>(loc, qA, qB, qC);
+  rewriter.create<cinm::GemmOp>(loc, qC.getType(), qA, qB, Value(), qC);
   emitDequantizeMemRef(rewriter, loc, qC, C, scale, zp);
 
   rewriter.create<memref::DeallocOp>(loc, qA);
@@ -243,10 +242,10 @@ static LogicalResult rewriteGemmMemRef(GemmMemRefOp op, Type qElem, float scale,
   return success();
 }
 
-static LogicalResult rewriteGemvMemRef(GemvMemRefOp op, Type qElem, float scale,
+static LogicalResult rewriteGemvMemRef(GemvOp op, Type qElem, float scale,
                                        int64_t zp, cinm::RoundingMode rounding,
                                        bool narrow, IRRewriter &rewriter) {
-  Value A = op.getLeft(), x = op.getRight(), y = op.getOut();
+  Value A = op.getLhs(), x = op.getRhs(), y = op.getOut();
   if (!isFloatMemRef(A.getType()) || !isFloatMemRef(x.getType()) ||
       !isFloatMemRef(y.getType()))
     return failure();
@@ -262,7 +261,7 @@ static LogicalResult rewriteGemvMemRef(GemvMemRefOp op, Type qElem, float scale,
   emitQuantizeMemRef(rewriter, loc, A, qA, scale, zp, rounding, narrow);
   emitQuantizeMemRef(rewriter, loc, x, qx, scale, zp, rounding, narrow);
 
-  rewriter.create<cinm::GemvMemRefOp>(loc, qA, qx, qy);
+  rewriter.create<cinm::GemvOp>(loc, qy.getType(), qA, qx, Value(), qy);
   emitDequantizeMemRef(rewriter, loc, qy, y, scale, zp);
 
   rewriter.create<memref::DeallocOp>(loc, qA);
@@ -271,7 +270,6 @@ static LogicalResult rewriteGemvMemRef(GemvMemRefOp op, Type qElem, float scale,
   rewriter.eraseOp(op);
   return success();
 }
-
 
 struct InsertCinmQuantization
     : public impl::InsertCinmQuantizationBase<InsertCinmQuantization> {
@@ -316,41 +314,37 @@ struct InsertCinmQuantization
         wl.push_back(op);
       if (doGemv && isa<cinm::GemvOp>(op))
         wl.push_back(op);
-      if (doGemmMR && isa<cinm::GemmMemRefOp>(op))
-        wl.push_back(op);
-      if (doGemvMR && isa<cinm::GemvMemRefOp>(op))
-        wl.push_back(op);
     });
 
     for (Operation *op : wl) {
       if (auto g = dyn_cast<cinm::GemmOp>(op)) {
-        (void)rewriteGemmTensor(g, qElem, (float)scale, (int64_t)zeroPoint,
-                                mode, (bool)narrowRange, rewriter);
+        if (dyn_cast<MemRefType>(g.getLhs().getType())) {
+          (void)rewriteGemmMemRef(g, qElem, (float)scale, (int64_t)zeroPoint,
+                                  mode, (bool)narrowRange, rewriter);
+        } else {
+          (void)rewriteGemmTensor(g, qElem, (float)scale, (int64_t)zeroPoint,
+                                  mode, (bool)narrowRange, rewriter);
+        }
         continue;
       }
       if (auto v = dyn_cast<cinm::GemvOp>(op)) {
-        (void)rewriteGemvTensor(v, qElem, (float)scale, (int64_t)zeroPoint,
-                                mode, (bool)narrowRange, rewriter);
-        continue;
-      }
-      if (auto gm = dyn_cast<cinm::GemmMemRefOp>(op)) {
-        (void)rewriteGemmMemRef(gm, qElem, (float)scale, (int64_t)zeroPoint,
-                                mode, (bool)narrowRange, rewriter);
-        continue;
-      }
-      if (auto gv = dyn_cast<cinm::GemvMemRefOp>(op)) {
-        (void)rewriteGemvMemRef(gv, qElem, (float)scale, (int64_t)zeroPoint,
-                                mode, (bool)narrowRange, rewriter);
+        if (dyn_cast<MemRefType>(v.getLhs().getType())) {
+          (void)rewriteGemvMemRef(v, qElem, (float)scale, (int64_t)zeroPoint,
+                                  mode, (bool)narrowRange, rewriter);
+        } else {
+          (void)rewriteGemvTensor(v, qElem, (float)scale, (int64_t)zeroPoint,
+                                  mode, (bool)narrowRange, rewriter);
+        }
         continue;
       }
     }
   }
 };
 
-}
+} // namespace
 
 std::unique_ptr<mlir::Pass> createInsertCinmQuantizationPass() {
   return std::make_unique<InsertCinmQuantization>();
 }
 
-}
+} // namespace mlir::cinm

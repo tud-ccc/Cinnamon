@@ -131,7 +131,7 @@ struct ConvertCnmScatterToGPU : public OpConversionPattern<cnm::ScatterOp> {
         op.getLoc(), rewriter, convertCnmBufferToMemRefType(bufferType), dst);
 
     const SmallVector<int64_t> loopSteps(workgroupShape.size(), 1);
-    createNestedAffineForLoops(
+    cinm::createNestedAffineForLoops(
         rewriter, op.getLoc(), workgroupShape, loopSteps, ValueRange{},
         [&](OpBuilder &builder, Location loc, ValueRange indices,
             ValueRange) -> SmallVector<Value> {
@@ -164,7 +164,7 @@ struct ConvertCnmGatherToGPU : public OpConversionPattern<cnm::GatherOp> {
     Value dst = rewriter.getRemappedValue(op.getOperand(2));
 
     const SmallVector<int64_t> loopSteps(workgroupShape.size(), 1);
-    createNestedAffineForLoops(
+    cinm::createNestedAffineForLoops(
         rewriter, op.getLoc(), workgroupShape, loopSteps, ValueRange{},
         [&](OpBuilder &builder, Location loc, ValueRange indices,
             ValueRange) -> SmallVector<Value> {

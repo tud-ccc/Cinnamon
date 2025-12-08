@@ -14,6 +14,7 @@
 #include "cinm-mlir/Dialect/Cinm/IR/CinmDialect.h"
 #include <llvm/ADT/ArrayRef.h>
 #include <llvm/ADT/SmallVector.h>
+#include <llvm/Support/Casting.h>
 #include <mlir/Dialect/Affine/IR/AffineOps.h>
 #include <mlir/Dialect/Arith/IR/Arith.h>
 #include <mlir/Dialect/Bufferization/IR/Bufferization.h>
@@ -30,6 +31,7 @@
 #include <mlir/IR/ImplicitLocOpBuilder.h>
 #include <mlir/IR/Location.h>
 #include <mlir/IR/Matchers.h>
+#include <mlir/IR/OpDefinition.h>
 #include <mlir/IR/OpImplementation.h>
 #include <mlir/IR/OperationSupport.h>
 #include <mlir/IR/PatternMatch.h>
@@ -79,13 +81,241 @@ static bool dimsCompatible(int64_t a, int64_t b) {
   return ShapedType::isDynamic(a) || ShapedType::isDynamic(b) || a == b;
 }
 
+cinm::ElementwiseKind ElementwiseOp::getKind() {
+  return getMethodAttr().getValue();
+}
+
+::mlir::ParseResult ElementwiseOp::parse(::mlir::OpAsmParser &parser,
+                                         ::mlir::OperationState &result) {
+  ElementwiseKindAttr kind;
+  if (parser.parseAttribute(kind, "kind", result.attributes).failed())
+    return failure();
+  result.addAttribute("kind", kind);
+
+  SmallVector<mlir::OpAsmParser::UnresolvedOperand> unresolved_operands;
+  if (parser
+          .parseOperandList(unresolved_operands,
+                            mlir::OpAsmParser::Delimiter::None, true, 1)
+          .failed())
+    return failure();
+
+  if (parser.parseOptionalAttrDict(result.attributes) || parser.parseColon())
+    return failure();
+
+  SmallVector<Type> operand_types;
+  if (parser.parseTypeList(operand_types).failed())
+    return failure();
+
+  if (operand_types.size() > 2) {
+    parser.emitError(parser.getNameLoc(), "expected at most two types");
+    return failure();
+  }
+
+  bool isTensorOp = true;
+  bool isMemrefOp = true;
+  bool isRhsScalar = false;
+  Type operandType = nullptr;
+  Type elementType = nullptr;
+
+  for (size_t i = 0; i < operand_types.size(); ++i) {
+    if (i == 1 && operand_types[i] == elementType) {
+      isRhsScalar = true;
+      continue;
+    }
+
+    if (TensorType t = dyn_cast_or_null<TensorType>(operand_types[i])) {
+      operandType = t;
+      elementType = t.getElementType();
+      isMemrefOp = false;
+    } else if (MemRefType m = dyn_cast_or_null<MemRefType>(operand_types[i])) {
+      operandType = m;
+      elementType = m.getElementType();
+      isTensorOp = false;
+    } else {
+      isTensorOp = false;
+      isMemrefOp = false;
+    }
+  }
+
+  bool hasRhsOperand =
+      isMemrefOp ? operand_types.size() == 3 : operand_types.size() == 2;
+
+  if (!isMemrefOp && !isTensorOp) {
+    parser.emitError(parser.getNameLoc(),
+                     "operation only supports memref or tensor types");
+    return failure();
+  }
+
+  if (parser
+          .resolveOperand(unresolved_operands[0], operandType, result.operands)
+          .failed())
+    return failure();
+
+  if (unresolved_operands.size() >= 2 && !isRhsScalar) {
+    if (parser
+            .resolveOperand(unresolved_operands[1], operandType,
+                            result.operands)
+            .failed())
+      return failure();
+  }
+
+  if (unresolved_operands.size() >= 2 && isRhsScalar) {
+    if (parser
+            .resolveOperand(unresolved_operands[1], elementType,
+                            result.operands)
+            .failed())
+      return failure();
+  }
+
+  if (unresolved_operands.size() == 3 && isMemrefOp) {
+    if (parser
+            .resolveOperand(unresolved_operands[2], operandType,
+                            result.operands)
+            .failed())
+      return failure();
+  }
+
+  if (isTensorOp)
+    result.addTypes(operandType);
+
+  result.addAttribute("operandSegmentSizes",
+                      parser.getBuilder().getDenseI32ArrayAttr(
+                          {static_cast<int32_t>(hasRhsOperand),
+                           static_cast<int32_t>(isMemrefOp)}));
+
+  return success();
+}
+
+void ElementwiseOp::print(::mlir::OpAsmPrinter &printer) {}
+
+::mlir::ParseResult parseGemmOp(::mlir::OpAsmParser &parser,
+                                ::mlir::OperationState &result) {
+  OpAsmParser::UnresolvedOperand lhs, rhs, bias, out;
+  bool hasBias = false, hasOut = false;
+  Type lhsType, rhsType, outType;
+
+  if (parser.parseOperand(lhs) || parser.parseComma() ||
+      parser.parseOperand(rhs))
+    return failure();
+
+  if (parser.parseOptionalKeyword("plus").succeeded()) {
+    if (parser.parseOperand(bias))
+      return failure();
+    hasBias = true;
+  }
+
+  if (parser.parseOptionalArrow().succeeded()) {
+    if (parser.parseOperand(out))
+      return failure();
+    hasOut = true;
+  }
+
+  if (parser.parseOptionalAttrDict(result.attributes).failed())
+    return failure();
+
+  if (parser.parseColon() || parser.parseType(lhsType) || parser.parseComma() ||
+      parser.parseType(rhsType) || parser.parseArrow() ||
+      parser.parseType(outType))
+    return failure();
+
+  if (parser.resolveOperand(lhs, lhsType, result.operands).failed())
+    return failure();
+  if (parser.resolveOperand(rhs, rhsType, result.operands).failed())
+    return failure();
+  if (hasBias && parser.resolveOperand(bias, outType, result.operands).failed())
+    return failure();
+  if (hasOut && parser.resolveOperand(out, outType, result.operands).failed())
+    return failure();
+
+  if (dyn_cast<RankedTensorType>(outType)) {
+    result.addTypes(outType);
+  }
+
+  result.addAttribute(
+      "operandSegmentSizes",
+      parser.getBuilder().getDenseI32ArrayAttr(
+          {static_cast<int32_t>(hasBias), static_cast<int32_t>(hasOut)}));
+
+  return success();
+}
+
+::mlir::ParseResult GemmOp::parse(::mlir::OpAsmParser &parser,
+                                  ::mlir::OperationState &result) {
+  return parseGemmOp(parser, result);
+}
+
+void GemmOp::print(::mlir::OpAsmPrinter &printer) {}
+
+::mlir::ParseResult GemvOp::parse(::mlir::OpAsmParser &parser,
+                                  ::mlir::OperationState &result) {
+  return parseGemmOp(parser, result);
+}
+
+void GemvOp::print(::mlir::OpAsmPrinter &printer) {}
+
+::mlir::ParseResult parseUnaryOp(::mlir::OpAsmParser &parser,
+                                 ::mlir::OperationState &result) {
+  OpAsmParser::UnresolvedOperand input, output;
+  Type operandType;
+
+  if (parser.parseOperand(input).failed()) {
+    return failure();
+  }
+
+  if (parser.parseOptionalComma().succeeded()) {
+    if (parser.parseOperand(output).failed()) {
+      return failure();
+    }
+  }
+
+  if (parser.parseOptionalAttrDict(result.attributes).failed())
+    return failure();
+
+  if (parser.parseColonType(operandType).failed())
+    return failure();
+
+  if (parser.resolveOperand(input, operandType, result.operands).failed())
+    return failure();
+  if (dyn_cast_or_null<MemRefType>(operandType)) {
+    if (parser.resolveOperand(output, operandType, result.operands).failed())
+      return failure();
+  }
+  result.addTypes(operandType);
+
+  return success();
+}
+
+::mlir::ParseResult ActivateOp::parse(::mlir::OpAsmParser &parser,
+                                      ::mlir::OperationState &result) {
+  ActivationKindAttr kind;
+  if (parser.parseAttribute(kind, "kind", result.attributes).failed())
+    return failure();
+  return parseUnaryOp(parser, result);
+}
+
+void ActivateOp::print(::mlir::OpAsmPrinter &printer) {}
+
+::mlir::ParseResult QuantizeOp::parse(::mlir::OpAsmParser &parser,
+                                      ::mlir::OperationState &result) {
+  return parseUnaryOp(parser, result);
+}
+
+void QuantizeOp::print(::mlir::OpAsmPrinter &printer) {}
+
+::mlir::ParseResult DequantizeOp::parse(::mlir::OpAsmParser &parser,
+                                        ::mlir::OperationState &result) {
+  return parseUnaryOp(parser, result);
+}
+
+void DequantizeOp::print(::mlir::OpAsmPrinter &printer) {}
+
 ::mlir::LogicalResult GemmOp::inferReturnTypeComponents(
     ::mlir::MLIRContext *, ::std::optional<::mlir::Location>,
     GemmOp::Adaptor adaptor,
     ::llvm::SmallVectorImpl<::mlir::ShapedTypeComponents>
         &inferredReturnShapes) {
-  ShapeAdaptor lhsShape(adaptor.getLeft().getType());
-  ShapeAdaptor rhsShape(adaptor.getRight().getType());
+  ShapeAdaptor lhsShape(adaptor.getOperands()[0].getType());
+  ShapeAdaptor rhsShape(adaptor.getOperands()[1].getType());
 
   if (lhsShape.getRank() == 2 && rhsShape.getRank() == 2 &&
       lhsShape.getDimSize(1) == rhsShape.getDimSize(0) &&
@@ -108,8 +338,8 @@ static bool dimsCompatible(int64_t a, int64_t b) {
     BatchGemmOp::Adaptor adaptor,
     ::llvm::SmallVectorImpl<::mlir::ShapedTypeComponents>
         &inferredReturnShapes) {
-  ShapeAdaptor lhsShape(adaptor.getLeft().getType());
-  ShapeAdaptor rhsShape(adaptor.getRight().getType());
+  ShapeAdaptor lhsShape(adaptor.getOperands()[0].getType());
+  ShapeAdaptor rhsShape(adaptor.getOperands()[1].getType());
 
   if (lhsShape.getRank() != 3 || rhsShape.getRank() != 3)
     return failure();
@@ -122,9 +352,8 @@ static bool dimsCompatible(int64_t a, int64_t b) {
   if (rhsShape.getElementType() != elementType)
     return failure();
 
-  SmallVector<int64_t, 3> outShape = {lhsShape.getDimSize(0),
-                                      lhsShape.getDimSize(1),
-                                      rhsShape.getDimSize(2)};
+  SmallVector<int64_t, 3> outShape = {
+      lhsShape.getDimSize(0), lhsShape.getDimSize(1), rhsShape.getDimSize(2)};
 
   if (Value bias = adaptor.getBias()) {
     ShapeAdaptor biasShape(bias.getType());
@@ -136,8 +365,7 @@ static bool dimsCompatible(int64_t a, int64_t b) {
       return failure();
   }
 
-  inferredReturnShapes.push_back(
-      ShapedTypeComponents(outShape, elementType));
+  inferredReturnShapes.push_back(ShapedTypeComponents(outShape, elementType));
   return success();
 }
 
@@ -172,8 +400,7 @@ static bool dimsCompatible(int64_t a, int64_t b) {
       return failure();
   }
 
-  inferredReturnShapes.push_back(
-      ShapedTypeComponents(outShape, elementType));
+  inferredReturnShapes.push_back(ShapedTypeComponents(outShape, elementType));
   return success();
 }
 
@@ -223,8 +450,8 @@ static bool dimsCompatible(int64_t a, int64_t b) {
     return success();
   }
 
-  // This would imply the number of permutations does not match the rank of the
-  // input which is illegal.
+  // This would imply the number of permutations does not match the rank of
+  // the input which is illegal.
   if (permsShape.getDimSize(0) != inputShape.getRank()) {
     return failure();
   }
@@ -281,14 +508,11 @@ static bool dimsCompatible(int64_t a, int64_t b) {
 LogicalResult cinm::YieldOp::verify() {
   Operation *parent = getOperation()->getParentOp();
   auto asCompute = dyn_cast_or_null<cinm::ComputeOp>(parent);
-  auto asComputeMR = dyn_cast_or_null<cinm::ComputeMemRefOp>(parent);
 
-  if (!asCompute && !asComputeMR)
-    return emitOpError()
-           << "must be inside 'cinm.compute' or 'cinm.compute_memref'";
+  if (!asCompute)
+    return emitOpError() << "must be inside 'cinm.compute'";
 
-  TypeRange expected = asCompute ? TypeRange(asCompute.getResultTypes())
-                                 : TypeRange(asComputeMR.getResultTypes());
+  TypeRange expected = TypeRange(asCompute.getResultTypes());
 
   if (getNumOperands() != expected.size())
     return emitOpError() << "has " << getNumOperands()
@@ -301,28 +525,6 @@ LogicalResult cinm::YieldOp::verify() {
       return emitOpError() << "operand #" << it.index()
                            << " type mismatch: expected " << it.value()
                            << " but got " << got;
-  }
-  return success();
-}
-
-LogicalResult ActivateMemRefOp::verify() {
-  auto inTy = dyn_cast<MemRefType>(getInput().getType());
-  auto outTy = dyn_cast<MemRefType>(getOut().getType());
-  if (!inTy || !outTy)
-    return emitOpError("expects memref types for input and out");
-
-  if (inTy.getElementType() != outTy.getElementType())
-    return emitOpError("element types must match: ") << inTy << " vs " << outTy;
-
-  if (inTy.getRank() != outTy.getRank())
-    return emitOpError("ranks must match: ")
-           << inTy.getRank() << " vs " << outTy.getRank();
-
-  for (int i = 0, e = inTy.getRank(); i < e; ++i) {
-    int64_t a = inTy.getDimSize(i), b = outTy.getDimSize(i);
-    if (a != ShapedType::kDynamic && b != ShapedType::kDynamic && a != b)
-      return emitOpError("static dims must match at dim ")
-             << i << ": " << a << " vs " << b;
   }
   return success();
 }
