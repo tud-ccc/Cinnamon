@@ -204,7 +204,7 @@ void ElementwiseOp::print(::mlir::OpAsmPrinter &printer) {}
     hasBias = true;
   }
 
-  if (parser.parseOptionalArrow().succeeded()) {
+  if (parser.parseOptionalKeyword("into").succeeded()) {
     if (parser.parseOperand(out))
       return failure();
     hasOut = true;
@@ -214,9 +214,16 @@ void ElementwiseOp::print(::mlir::OpAsmPrinter &printer) {}
     return failure();
 
   if (parser.parseColon() || parser.parseType(lhsType) || parser.parseComma() ||
-      parser.parseType(rhsType) || parser.parseArrow() ||
-      parser.parseType(outType))
+      parser.parseType(rhsType))
     return failure();
+
+  if (hasOut) {
+    if (parser.parseKeyword("into") || parser.parseType(outType))
+      return failure();
+  } else {
+    if (parser.parseArrow() || parser.parseType(outType))
+      return failure();
+  }
 
   if (parser.resolveOperand(lhs, lhsType, result.operands).failed())
     return failure();
@@ -244,14 +251,41 @@ void ElementwiseOp::print(::mlir::OpAsmPrinter &printer) {}
   return parseGemmOp(parser, result);
 }
 
-void GemmOp::print(::mlir::OpAsmPrinter &printer) {}
+template <typename Op>
+void printGemmLikeOp(OpAsmPrinter &out, Op op) {
+  out << " " << op.getLhs() << ", " << op.getRhs();
+  if (auto bias = op.getBias())
+    out << " plus " << bias;
+  Type outTy;
+  bool useIntoKw;
+  if (auto outBuf = op.getOut()) {
+    outTy = outBuf.getType();
+    out << " into " << outBuf;
+    useIntoKw = true;
+  } else {
+    outTy = op.getResult().getType();
+    useIntoKw = false;
+  }
+  out << " : " << op.getLhs().getType() << ", " << op.getRhs().getType();
+  if (useIntoKw) {
+    out << " into " << outTy;
+  } else {
+    out << " -> " << outTy;
+  }
+}
+
+void GemmOp::print(::mlir::OpAsmPrinter &printer) {
+  printGemmLikeOp<GemmOp>(printer, *this);
+}
 
 ::mlir::ParseResult GemvOp::parse(::mlir::OpAsmParser &parser,
                                   ::mlir::OperationState &result) {
   return parseGemmOp(parser, result);
 }
 
-void GemvOp::print(::mlir::OpAsmPrinter &printer) {}
+void GemvOp::print(::mlir::OpAsmPrinter &printer) {
+  printGemmLikeOp<GemvOp>(printer, *this);
+}
 
 ::mlir::ParseResult parseUnaryOp(::mlir::OpAsmParser &parser,
                                  ::mlir::OperationState &result) {
@@ -310,13 +344,17 @@ void QuantizeOp::print(::mlir::OpAsmPrinter &printer) {}
 void DequantizeOp::print(::mlir::OpAsmPrinter &printer) {}
 
 ::mlir::LogicalResult GemmOp::inferReturnTypeComponents(
-    ::mlir::MLIRContext *, ::std::optional<::mlir::Location>,
+    ::mlir::MLIRContext *context, ::std::optional<::mlir::Location> loc,
     GemmOp::Adaptor adaptor,
     ::llvm::SmallVectorImpl<::mlir::ShapedTypeComponents>
         &inferredReturnShapes) {
   ShapeAdaptor lhsShape(adaptor.getOperands()[0].getType());
   ShapeAdaptor rhsShape(adaptor.getOperands()[1].getType());
 
+  if (adaptor.getOut() && llvm::isa<MemRefType>(adaptor.getOut().getType())) {
+    // This is the out buffer. Don't add any results.
+    return success();
+  }
   if (lhsShape.getRank() == 2 && rhsShape.getRank() == 2 &&
       lhsShape.getDimSize(1) == rhsShape.getDimSize(0) &&
       lhsShape.getElementType() == rhsShape.getElementType()) {
@@ -329,8 +367,8 @@ void DequantizeOp::print(::mlir::OpAsmPrinter &printer) {}
         ShapedTypeComponents(outShape, lhsShape.getElementType()));
     return success();
   }
-  return failure();
-  //  return context->emitError("operand types are not compatible");
+  return mlir::emitError(*loc, "operand types are not compatible: ")
+         << adaptor.getLhs().getType() << " and " << adaptor.getRhs().getType();
 }
 
 ::mlir::LogicalResult BatchGemmOp::inferReturnTypeComponents(
