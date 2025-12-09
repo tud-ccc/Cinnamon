@@ -251,8 +251,7 @@ void ElementwiseOp::print(::mlir::OpAsmPrinter &printer) {}
   return parseGemmOp(parser, result);
 }
 
-template <typename Op>
-void printGemmLikeOp(OpAsmPrinter &out, Op op) {
+template <typename Op> void printGemmLikeOp(OpAsmPrinter &out, Op op) {
   out << " " << op.getLhs() << ", " << op.getRhs();
   if (auto bias = op.getBias())
     out << " plus " << bias;
@@ -291,12 +290,13 @@ void GemvOp::print(::mlir::OpAsmPrinter &printer) {
                                  ::mlir::OperationState &result) {
   OpAsmParser::UnresolvedOperand input, output;
   Type operandType;
+  bool hasOutput = false;
 
   if (parser.parseOperand(input).failed()) {
     return failure();
   }
-
-  if (parser.parseOptionalComma().succeeded()) {
+  if (parser.parseOptionalKeyword("into").succeeded()) {
+    hasOutput = true;
     if (parser.parseOperand(output).failed()) {
       return failure();
     }
@@ -310,11 +310,13 @@ void GemvOp::print(::mlir::OpAsmPrinter &printer) {
 
   if (parser.resolveOperand(input, operandType, result.operands).failed())
     return failure();
-  if (dyn_cast_or_null<MemRefType>(operandType)) {
+
+  if (hasOutput) {
     if (parser.resolveOperand(output, operandType, result.operands).failed())
       return failure();
+  } else {
+    result.addTypes(operandType);
   }
-  result.addTypes(operandType);
 
   return success();
 }
