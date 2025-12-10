@@ -350,8 +350,8 @@ void DequantizeOp::print(::mlir::OpAsmPrinter &printer) {}
     GemmOp::Adaptor adaptor,
     ::llvm::SmallVectorImpl<::mlir::ShapedTypeComponents>
         &inferredReturnShapes) {
-  ShapeAdaptor lhsShape(adaptor.getOperands()[0].getType());
-  ShapeAdaptor rhsShape(adaptor.getOperands()[1].getType());
+  ShapeAdaptor lhsShape(adaptor.getLhs().getType());
+  ShapeAdaptor rhsShape(adaptor.getRhs().getType());
 
   if (adaptor.getOut() && llvm::isa<MemRefType>(adaptor.getOut().getType())) {
     // This is the out buffer. Don't add any results.

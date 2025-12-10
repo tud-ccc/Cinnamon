@@ -725,13 +725,27 @@ struct ConvertCinmGemmToCnm : public OpConversionPattern<cinm::GemmOp> {
   static Value transpose(ImplicitLocOpBuilder &builder, Value tensor) {
     auto inTy = cast<ShapedType>(tensor.getType());
     auto shape = inTy.getShape();
+
     SmallVector<int64_t, 2> newShape{shape[1], shape[0]};
     SmallVector<int64_t, 2> perms{1, 0};
-    auto output =
-        tensor::EmptyOp::create(builder, newShape, inTy.getElementType());
+    Value output;
+    bool tensorOutput;
+    if (llvm::isa<TensorType>(tensor.getType())) {
+      output =
+          tensor::EmptyOp::create(builder, newShape, inTy.getElementType());
+      tensorOutput = true;
+    } else {
+      output = memref::AllocOp::create(
+          builder, MemRefType::get(newShape, inTy.getElementType()));
+      tensorOutput = false;
+    }
     auto transposeRight =
-        linalg::TransposeOp::create(builder, tensor, output.getResult(), perms);
-    return transposeRight->getResult(0);
+        linalg::TransposeOp::create(builder, tensor, output, perms);
+
+    if (tensorOutput)
+      return transposeRight->getResult(0);
+    else
+      return output;
   }
 
   LogicalResult
@@ -742,11 +756,6 @@ struct ConvertCinmGemmToCnm : public OpConversionPattern<cinm::GemmOp> {
         llvm::cast<TypedValue<ShapedType>>(op.getLhs());
     TypedValue<ShapedType> rhs =
         llvm::cast<TypedValue<ShapedType>>(op.getRhs());
-    // TODO: fix bias & out
-    TypedValue<ShapedType> bias =
-        llvm::dyn_cast_or_null<TypedValue<ShapedType>>(op.getBias());
-    TypedValue<MemRefType> out =
-        llvm::dyn_cast_or_null<TypedValue<MemRefType>>(op.getOut());
 
     ImplicitLocOpBuilder builder(op->getLoc(), rewriter);
     cinm::ComputeOp computeBlock = mlir::cinm::getEnclosingComputeBlock(op);
@@ -800,11 +809,15 @@ struct ConvertCinmGemmToCnm : public OpConversionPattern<cinm::GemmOp> {
     Value outputInit;
     if (op.getBias()) {
       outputInit = op.getBias();
-    } else {
+    } else if (op.getResult()) {
       outputInit = arith::ConstantOp::create(
           builder, op.getResult().getType(),
           builder.getZeroAttr(op.getResult().getType()));
+    } else {
+      // memref op with initializer
+      outputInit = op.getOut();
     }
+    assert(outputInit);
     cnm::ScatterOp::create(builder, outputInit, bufferC, workgroup,
                            scatterGatherC);
 
@@ -825,14 +838,20 @@ struct ConvertCinmGemmToCnm : public OpConversionPattern<cinm::GemmOp> {
     Value outbuf;
     if (op.getBias()) {
       outbuf = op.getBias();
-    } else {
+    } else if (op.getResult()) {
       outbuf = tensor::EmptyOp::create(builder, op.getResult().getType(),
                                        ValueRange{});
+    } else {
+      outbuf = op.getOut();
     }
     auto gather = cnm::GatherOp::create(builder, bufferC, workgroup,
                                         scatterGatherC, outbuf);
 
-    rewriter.replaceOp(op, ValueRange{gather.getOutput()});
+    if (op.getResult()) {
+      rewriter.replaceOp(op, ValueRange{gather.getOutput()});
+    } else {
+      rewriter.eraseOp(op);
+    }
     cnm::FreeWorkgroupOp::create(builder, workgroup);
     return success();
   }
