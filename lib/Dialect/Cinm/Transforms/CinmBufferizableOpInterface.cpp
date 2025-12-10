@@ -25,10 +25,10 @@ namespace mlir::cinm {
 static Value materializeZeroLikeTensor(RewriterBase &rewriter, Location loc,
                                        Type elemTy) {
   if (auto ft = dyn_cast<FloatType>(elemTy))
-    return rewriter.create<arith::ConstantOp>(loc,
+    return arith::ConstantOp::create(rewriter,loc,
                                               rewriter.getFloatAttr(ft, 0.0));
   if (auto it = dyn_cast<IntegerType>(elemTy))
-    return rewriter.create<arith::ConstantOp>(loc,
+    return arith::ConstantOp::create(rewriter,loc,
                                               rewriter.getIntegerAttr(it, 0));
   return {};
 }
@@ -48,7 +48,7 @@ materializeAsExactMemref(RewriterBase &rewriter, Location loc, Value v,
   }
   auto gotTy = cast<MemRefType>(m.getType());
   if (gotTy != expectedTy)
-    m = rewriter.create<memref::CastOp>(loc, expectedTy, m);
+    m = memref::CastOp::create(rewriter,loc, expectedTy, m);
   return m;
 }
 
@@ -132,7 +132,7 @@ struct ComputeBufferizableInterface
         BaseMemRefType mr =
             bufferization::getMemRefTypeWithFullyDynamicLayout(tt);
         Value mem =
-            rewriter.create<bufferization::ToBufferOp>(loc, mr, v, false);
+            bufferization::ToBufferOp::create(rewriter,loc, mr, v, false);
         newYieldVals.push_back(mem);
         newResultTypes.push_back(mem.getType());
         continue;
@@ -160,7 +160,7 @@ struct ComputeBufferizableInterface
     replacement.reserve(newComputeMR->getNumResults());
     for (auto [idx, res] : llvm::enumerate(newComputeMR->getResults())) {
       Type wantedTensorTy = oldCompute->getResult(idx).getType();
-      Value t = rewriter.create<bufferization::ToTensorOp>(loc, wantedTensorTy,
+      Value t = bufferization::ToTensorOp::create(rewriter,loc, wantedTensorTy,
                                                            res, true, true);
       replacement.push_back(t);
     }
@@ -217,49 +217,47 @@ struct GemmBufferizableInterface
   }
 
   LogicalResult bufferize(Operation *op, RewriterBase &rewriter,
-                          const bufferization::BufferizationOptions &,
-                          bufferization::BufferizationState &) const {
+                          const bufferization::BufferizationOptions &options,
+                          bufferization::BufferizationState &state) const {
     auto gemm = cast<cinm::GemmOp>(op);
     Location loc = op->getLoc();
 
     Value aT = gemm.getLhs();
     Value bT = gemm.getRhs();
-    auto aRT = cast<RankedTensorType>(aT.getType());
-    auto bRT = cast<RankedTensorType>(bT.getType());
     auto cRT = cast<RankedTensorType>(gemm.getResult().getType());
     Type elemTy = cRT.getElementType();
 
-    auto aMR = bufferization::getMemRefTypeWithFullyDynamicLayout(aRT);
-    auto bMR = bufferization::getMemRefTypeWithFullyDynamicLayout(bRT);
-    Value aMem = rewriter.create<bufferization::ToBufferOp>(loc, aMR, aT, true);
-    Value bMem = rewriter.create<bufferization::ToBufferOp>(loc, bMR, bT, true);
+    auto aMem = bufferization::getBuffer(rewriter, aT, options, state);
+    auto bMem = bufferization::getBuffer(rewriter, bT, options, state);
+    if (failed(aMem) || failed(bMem))
+      return failure();
 
     auto dstMR = cast<MemRefType>(
         bufferization::getMemRefTypeWithStaticIdentityLayout(cRT));
     SmallVector<Value> dynDims;
     for (int64_t i = 0; i < cRT.getRank(); ++i)
       if (cRT.isDynamicDim(i)) {
-        Value idx = rewriter.create<arith::ConstantIndexOp>(loc, i);
+        Value idx = arith::ConstantIndexOp::create(rewriter,loc, i);
         dynDims.push_back(
-            rewriter.create<tensor::DimOp>(loc, gemm.getResult(), idx));
+            tensor::DimOp::create(rewriter,loc, gemm.getResult(), idx));
       }
-    Value dst = rewriter.create<memref::AllocOp>(loc, dstMR, dynDims);
+    Value dst = memref::AllocOp::create(rewriter,loc, dstMR, dynDims);
 
     if (Value biasT = gemm.getBias()) {
-      auto cMRdyn = bufferization::getMemRefTypeWithFullyDynamicLayout(cRT);
-      Value biasMem =
-          rewriter.create<bufferization::ToBufferOp>(loc, cMRdyn, biasT, true);
-      rewriter.create<memref::CopyOp>(loc, biasMem, dst);
+      auto biasMem = bufferization::getBuffer(rewriter, biasT, options, state);
+      if (failed(biasMem))
+        return failure();
+      memref::CopyOp::create(rewriter,loc, *biasMem, dst);
     } else {
       Value zero = materializeZeroLikeTensor(rewriter, loc, elemTy);
       if (!zero)
         return op->emitError("cinm.gemm bufferize: unsupported element type"),
                failure();
-      (void)rewriter.create<linalg::FillOp>(loc, ValueRange{zero},
+      (void)linalg::FillOp::create(rewriter,loc, ValueRange{zero},
                                             ValueRange{dst});
     }
 
-    rewriter.create<cinm::GemmOp>(loc, Type(), aMem, bMem, Value(), dst);
+    cinm::GemmOp::create(rewriter, loc, *aMem, *bMem, Value(), dst);
 
     Value t =
         bufferization::ToTensorOp::create(rewriter, loc, cRT, dst, true, true);
@@ -331,8 +329,8 @@ struct GemvBufferizableInterface
 
     auto aMR = bufferization::getMemRefTypeWithFullyDynamicLayout(aRT);
     auto xMR = bufferization::getMemRefTypeWithFullyDynamicLayout(xRT);
-    Value aMem = rewriter.create<bufferization::ToBufferOp>(loc, aMR, aT, true);
-    Value xMem = rewriter.create<bufferization::ToBufferOp>(loc, xMR, xT, true);
+    Value aMem = bufferization::ToBufferOp::create(rewriter,loc, aMR, aT, true);
+    Value xMem = bufferization::ToBufferOp::create(rewriter,loc, xMR, xT, true);
 
     auto yMR = cast<MemRefType>(
         bufferization::getMemRefTypeWithStaticIdentityLayout(yRT));
@@ -340,37 +338,37 @@ struct GemvBufferizableInterface
     SmallVector<Value> dynDims;
     dynDims.reserve(yRT.getRank());
     if (yRT.isDynamicDim(0)) {
-      Value c0 = rewriter.create<arith::ConstantIndexOp>(loc, 0);
-      dynDims.push_back(rewriter.create<tensor::DimOp>(loc, aT, c0));
+      Value c0 = arith::ConstantIndexOp::create(rewriter,loc, 0);
+      dynDims.push_back(tensor::DimOp::create(rewriter,loc, aT, c0));
     }
     for (int64_t d = 1; d < yRT.getRank(); ++d) {
       if (yRT.isDynamicDim(d)) {
-        Value cd = rewriter.create<arith::ConstantIndexOp>(loc, d);
+        Value cd = arith::ConstantIndexOp::create(rewriter,loc, d);
         dynDims.push_back(
-            rewriter.create<tensor::DimOp>(loc, gemv.getResult(), cd));
+            tensor::DimOp::create(rewriter,loc, gemv.getResult(), cd));
       }
     }
 
-    Value yMem = rewriter.create<memref::AllocOp>(loc, yMR, dynDims);
+    Value yMem = memref::AllocOp::create(rewriter,loc, yMR, dynDims);
 
     if (bT) {
       auto bMRdyn = bufferization::getMemRefTypeWithFullyDynamicLayout(yRT);
       Value bMem =
-          rewriter.create<bufferization::ToBufferOp>(loc, bMRdyn, bT, true);
-      rewriter.create<memref::CopyOp>(loc, bMem, yMem);
+          bufferization::ToBufferOp::create(rewriter,loc, bMRdyn, bT, true);
+      memref::CopyOp::create(rewriter,loc, bMem, yMem);
     } else {
       Value zero = materializeZeroLikeTensor(rewriter, loc, elt);
       if (!zero)
         return op->emitError("cinm.gemv bufferize: unsupported element type"),
                failure();
-      (void)rewriter.create<linalg::FillOp>(loc, ValueRange{zero},
+      (void)linalg::FillOp::create(rewriter,loc, ValueRange{zero},
                                             ValueRange{yMem});
     }
 
-    rewriter.create<cinm::GemvOp>(loc, Type(), aMem, xMem, Value(), yMem);
+    cinm::GemvOp::create(rewriter,loc, Type(), aMem, xMem, Value(), yMem);
 
     Value yT =
-        rewriter.create<bufferization::ToTensorOp>(loc, yRT, yMem, true, true);
+        bufferization::ToTensorOp::create(rewriter,loc, yRT, yMem, true, true);
     rewriter.replaceOp(op, yT);
     return success();
   }
@@ -447,26 +445,26 @@ struct ElementwiseBufferizableInterface
     auto lhsMR = bufferization::getMemRefTypeWithFullyDynamicLayout(lhsRT);
     auto rhsMR = bufferization::getMemRefTypeWithFullyDynamicLayout(rhsRT);
     Value lhsMem =
-        rewriter.create<bufferization::ToBufferOp>(loc, lhsMR, lhsT, true);
+        bufferization::ToBufferOp::create(rewriter,loc, lhsMR, lhsT, true);
     Value rhsMem =
-        rewriter.create<bufferization::ToBufferOp>(loc, rhsMR, rhsT, true);
+        bufferization::ToBufferOp::create(rewriter,loc, rhsMR, rhsT, true);
 
     auto dstMR = cast<MemRefType>(
         bufferization::getMemRefTypeWithStaticIdentityLayout(resRT));
     SmallVector<Value> dynDims;
     for (int64_t d = 0; d < resRT.getRank(); ++d) {
       if (resRT.isDynamicDim(d)) {
-        Value cd = rewriter.create<arith::ConstantIndexOp>(loc, d);
-        dynDims.push_back(rewriter.create<tensor::DimOp>(loc, lhsT, cd));
+        Value cd = arith::ConstantIndexOp::create(rewriter,loc, d);
+        dynDims.push_back(tensor::DimOp::create(rewriter,loc, lhsT, cd));
       }
     }
-    Value dst = rewriter.create<memref::AllocOp>(loc, dstMR, dynDims);
+    Value dst = memref::AllocOp::create(rewriter,loc, dstMR, dynDims);
 
-    rewriter.create<cinm::ElementwiseOp>(loc, Type(), add.getKind(), lhsMem,
+    cinm::ElementwiseOp::create(rewriter,loc, Type(), add.getKind(), lhsMem,
                                          rhsMem, dst);
 
     Value outT =
-        rewriter.create<bufferization::ToTensorOp>(loc, resRT, dst, true, true);
+        bufferization::ToTensorOp::create(rewriter,loc, resRT, dst, true, true);
     rewriter.replaceOp(op, outT);
     return success();
   }
@@ -531,17 +529,17 @@ struct QuantizeBufferizableInterface
 
     auto srcMR = bufferization::getMemRefTypeWithFullyDynamicLayout(srcRT);
     Value srcMem =
-        rewriter.create<bufferization::ToBufferOp>(loc, srcMR, srcT, true);
+        bufferization::ToBufferOp::create(rewriter,loc, srcMR, srcT, true);
 
     auto dstMR = cast<MemRefType>(
         bufferization::getMemRefTypeWithStaticIdentityLayout(dstRT));
     SmallVector<Value> dynDims;
     for (int64_t i = 0, e = dstRT.getRank(); i < e; ++i)
       if (dstRT.isDynamicDim(i)) {
-        Value ci = rewriter.create<arith::ConstantIndexOp>(loc, i);
-        dynDims.push_back(rewriter.create<tensor::DimOp>(loc, srcT, ci));
+        Value ci = arith::ConstantIndexOp::create(rewriter,loc, i);
+        dynDims.push_back(tensor::DimOp::create(rewriter,loc, srcT, ci));
       }
-    Value dstMem = rewriter.create<memref::AllocOp>(loc, dstMR, dynDims);
+    Value dstMem = memref::AllocOp::create(rewriter,loc, dstMR, dynDims);
 
     FloatAttr scale = q.getScaleAttr();
     IntegerAttr zp = q.getZeroPointAttr();
@@ -549,10 +547,10 @@ struct QuantizeBufferizableInterface
     auto round = q.getRoundingAttr();
     auto narrow = q.getNarrowRangeAttr();
 
-    rewriter.create<cinm::QuantizeOp>(loc, Type(), srcMem, dstMem, scale, zp,
+    cinm::QuantizeOp::create(rewriter,loc, Type(), srcMem, dstMem, scale, zp,
                                       axis, round, narrow);
 
-    Value dstT = rewriter.create<bufferization::ToTensorOp>(loc, dstRT, dstMem,
+    Value dstT = bufferization::ToTensorOp::create(rewriter,loc, dstRT, dstMem,
                                                             true, true);
     rewriter.replaceOp(op, dstT);
     return success();
@@ -618,26 +616,26 @@ struct DequantizeBufferizableInterface
 
     auto srcMR = bufferization::getMemRefTypeWithFullyDynamicLayout(srcRT);
     Value srcMem =
-        rewriter.create<bufferization::ToBufferOp>(loc, srcMR, srcT, true);
+        bufferization::ToBufferOp::create(rewriter,loc, srcMR, srcT, true);
 
     auto dstMR = cast<MemRefType>(
         bufferization::getMemRefTypeWithStaticIdentityLayout(dstRT));
     SmallVector<Value> dynDims;
     for (int64_t i = 0, e = dstRT.getRank(); i < e; ++i)
       if (dstRT.isDynamicDim(i)) {
-        Value ci = rewriter.create<arith::ConstantIndexOp>(loc, i);
-        dynDims.push_back(rewriter.create<tensor::DimOp>(loc, srcT, ci));
+        Value ci = arith::ConstantIndexOp::create(rewriter,loc, i);
+        dynDims.push_back(tensor::DimOp::create(rewriter,loc, srcT, ci));
       }
-    Value dstMem = rewriter.create<memref::AllocOp>(loc, dstMR, dynDims);
+    Value dstMem = memref::AllocOp::create(rewriter,loc, dstMR, dynDims);
 
     FloatAttr scale = dq.getScaleAttr();
     IntegerAttr zp = dq.getZeroPointAttr();
     IntegerAttr axis = dq.getAxisAttr();
 
-    rewriter.create<cinm::DequantizeOp>(loc, Type(), srcMem, dstMem, scale, zp,
+    cinm::DequantizeOp::create(rewriter,loc, Type(), srcMem, dstMem, scale, zp,
                                         axis);
 
-    Value dstT = rewriter.create<bufferization::ToTensorOp>(loc, dstRT, dstMem,
+    Value dstT = bufferization::ToTensorOp::create(rewriter,loc, dstRT, dstMem,
                                                             true, true);
     rewriter.replaceOp(op, dstT);
     return success();
@@ -702,7 +700,7 @@ struct ActivateBufferizableInterface
 
     auto inMR = bufferization::getMemRefTypeWithFullyDynamicLayout(inRT);
     Value inMem =
-        rewriter.create<bufferization::ToBufferOp>(loc, inMR, inT, true);
+        bufferization::ToBufferOp::create(rewriter,loc, inMR, inT, true);
 
     auto outMR = cast<MemRefType>(
         bufferization::getMemRefTypeWithStaticIdentityLayout(outRT));
@@ -710,10 +708,10 @@ struct ActivateBufferizableInterface
     SmallVector<Value> dynDims;
     for (int64_t d = 0, e = outRT.getRank(); d < e; ++d)
       if (outRT.isDynamicDim(d)) {
-        Value cd = rewriter.create<arith::ConstantIndexOp>(loc, d);
-        dynDims.push_back(rewriter.create<tensor::DimOp>(loc, inT, cd));
+        Value cd = arith::ConstantIndexOp::create(rewriter,loc, d);
+        dynDims.push_back(tensor::DimOp::create(rewriter,loc, inT, cd));
       }
-    Value outMem = rewriter.create<memref::AllocOp>(loc, outMR, dynDims);
+    Value outMem = memref::AllocOp::create(rewriter,loc, outMR, dynDims);
 
     cinm::ActivationKindAttr kindAttr = act.getKindAttr();
     if (!kindAttr) {
@@ -726,9 +724,9 @@ struct ActivateBufferizableInterface
       }
     }
 
-    rewriter.create<cinm::ActivateOp>(loc, Type(), kindAttr, inMem, outMem);
+    cinm::ActivateOp::create(rewriter,loc, Type(), kindAttr, inMem, outMem);
 
-    Value outT = rewriter.create<bufferization::ToTensorOp>(loc, outRT, outMem,
+    Value outT = bufferization::ToTensorOp::create(rewriter,loc, outRT, outMem,
                                                             true, true);
     rewriter.replaceOp(op, outT);
     return success();
@@ -816,7 +814,7 @@ struct ScfForBufferizableInterface
     OpBuilder::InsertionGuard outerGuard(rewriter);
     rewriter.setInsertionPoint(oldFor);
 
-    auto newFor = rewriter.create<scf::ForOp>(loc, oldFor.getLowerBound(),
+    auto newFor = scf::ForOp::create(rewriter,loc, oldFor.getLowerBound(),
                                               oldFor.getUpperBound(),
                                               oldFor.getStep(), memInitArgs);
 
@@ -838,7 +836,7 @@ struct ScfForBufferizableInterface
           mapper.map(oldArg, newMem);
         } else {
           auto tt = cast<RankedTensorType>(oldArg.getType());
-          Value tview = rewriter.create<bufferization::ToTensorOp>(
+          Value tview = bufferization::ToTensorOp::create(rewriter,
               loc, tt, newMem, true, true);
           mapper.map(oldArg, tview);
         }
@@ -882,7 +880,7 @@ struct ScfForBufferizableInterface
         rewriter.replaceOpWithNewOp<scf::YieldOp>(maybeTerm, newYields);
       } else {
         rewriter.setInsertionPointToEnd(newBody);
-        rewriter.create<scf::YieldOp>(loc, newYields);
+        scf::YieldOp::create(rewriter,loc, newYields);
       }
     }
 
@@ -891,7 +889,7 @@ struct ScfForBufferizableInterface
     rewriter.setInsertionPointAfter(newFor);
     for (auto it : llvm::enumerate(newFor->getResults())) {
       Type wantedT = oldFor->getResult(it.index()).getType();
-      Value t = rewriter.create<bufferization::ToTensorOp>(
+      Value t = bufferization::ToTensorOp::create(rewriter,
           loc, wantedT, it.value(), true, true);
       replacements.push_back(t);
     }

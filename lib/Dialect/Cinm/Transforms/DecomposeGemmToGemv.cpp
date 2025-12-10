@@ -580,7 +580,7 @@ struct CinmGemmToLoopedGemvPass
     ps.add<GemmToLoopedGemv>(&getContext(), splitDimOpt);
     ps.add<BatchGemmToLoopedGemv>(&getContext(), splitDimOpt);
     ps.add<BatchGemvToLoopedGemv>(&getContext());
-    if (failed(applyPatternsAndFoldGreedily(getOperation(), std::move(ps))))
+    if (failed(applyPatternsGreedily(getOperation(), std::move(ps))))
       signalPassFailure();
   }
 };
