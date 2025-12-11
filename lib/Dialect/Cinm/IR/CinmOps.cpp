@@ -353,17 +353,44 @@ void DequantizeOp::print(::mlir::OpAsmPrinter &printer) {}
   ShapeAdaptor lhsShape(adaptor.getLhs().getType());
   ShapeAdaptor rhsShape(adaptor.getRhs().getType());
 
-  if (adaptor.getOut() && llvm::isa<MemRefType>(adaptor.getOut().getType())) {
-    // This is the out buffer. Don't add any results.
-    return success();
-  }
   if (lhsShape.getRank() == 2 && rhsShape.getRank() == 2 &&
       lhsShape.getDimSize(1) == rhsShape.getDimSize(0) &&
       lhsShape.getElementType() == rhsShape.getElementType()) {
 
+    if (adaptor.getOut() && llvm::isa<MemRefType>(adaptor.getOut().getType())) {
+      // This is the out buffer. Don't add any results.
+      return success();
+    }
     SmallVector<int64_t, 2> outShape;
     outShape.push_back(lhsShape.getDimSize(0));
     outShape.push_back(rhsShape.getDimSize(1));
+
+    inferredReturnShapes.push_back(
+        ShapedTypeComponents(outShape, lhsShape.getElementType()));
+    return success();
+  }
+  return mlir::emitError(*loc, "operand types are not compatible: ")
+         << adaptor.getLhs().getType() << " and " << adaptor.getRhs().getType();
+}
+
+::mlir::LogicalResult GemvOp::inferReturnTypeComponents(
+    ::mlir::MLIRContext *context, ::std::optional<::mlir::Location> loc,
+    GemvOp::Adaptor adaptor,
+    ::llvm::SmallVectorImpl<::mlir::ShapedTypeComponents>
+        &inferredReturnShapes) {
+  ShapeAdaptor lhsShape(adaptor.getLhs().getType());
+  ShapeAdaptor rhsShape(adaptor.getRhs().getType());
+
+  if (lhsShape.getRank() == 2 && rhsShape.getRank() == 1 &&
+      lhsShape.getDimSize(1) == rhsShape.getDimSize(0) &&
+      lhsShape.getElementType() == rhsShape.getElementType()) {
+    if (adaptor.getOut() && llvm::isa<MemRefType>(adaptor.getOut().getType())) {
+      // This is the out buffer. Don't add any results.
+      return success();
+    }
+
+    SmallVector<int64_t, 2> outShape;
+    outShape.push_back(lhsShape.getDimSize(0));
 
     inferredReturnShapes.push_back(
         ShapedTypeComponents(outShape, lhsShape.getElementType()));
