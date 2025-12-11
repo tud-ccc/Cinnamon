@@ -40,9 +40,9 @@ static SmallVector<Value> createNestedScfForLoops(
 
   SmallVector<Value> lbs(rank), ubs(rank), stepVals(rank);
   for (unsigned d = 0; d < rank; ++d) {
-    lbs[d] = builder.create<arith::ConstantIndexOp>(loc, 0);
-    ubs[d] = builder.create<arith::ConstantIndexOp>(loc, tripCounts[d]);
-    stepVals[d] = builder.create<arith::ConstantIndexOp>(loc, steps[d]);
+    lbs[d] = arith::ConstantIndexOp::create(builder, loc, 0);
+    ubs[d] = arith::ConstantIndexOp::create(builder, loc, tripCounts[d]);
+    stepVals[d] = arith::ConstantIndexOp::create(builder, loc, steps[d]);
   }
 
   SmallVector<Value> ivs;
@@ -52,12 +52,12 @@ static SmallVector<Value> createNestedScfForLoops(
     if (depth == rank) {
       return bodyBuilder(builder, loc, ivs, carried);
     }
-    auto loop = builder.create<scf::ForOp>(loc, lbs[depth], ubs[depth],
-                                           stepVals[depth], carried);
+    auto loop = scf::ForOp::create(builder, loc, lbs[depth], ubs[depth],
+                                   stepVals[depth], carried);
     builder.setInsertionPointToStart(loop.getBody());
     ivs.push_back(loop.getInductionVar());
     SmallVector<Value> yielded = build(depth + 1, loop.getRegionIterArgs());
-    builder.create<scf::YieldOp>(loc, yielded);
+    scf::YieldOp::create(builder, loc, yielded);
     ivs.pop_back();
     builder.setInsertionPointAfter(loop);
     return SmallVector<Value>(loop.getResults().begin(),
@@ -105,8 +105,7 @@ static constexpr std::array<int64_t, 3> noStaticOffsets3{
 static constexpr std::array<int64_t, 3> unitStrides3{1, 1, 1};
 
 static FailureOr<std::tuple<int64_t, int64_t, int64_t>>
-getGemmTilesFromAttributes(const RankedTensorType &lhsType,
-                           const RankedTensorType &rhsType,
+getGemmTilesFromAttributes(const ShapedType &lhsType, const ShapedType &rhsType,
                            const mlir::cinm::TilingParameters &params) {
   int64_t p0 = 0, p1 = 0;
   if (auto providedPar = params.getProvidedParallelTiles()) {
@@ -138,8 +137,8 @@ getGemmTilesFromAttributes(const RankedTensorType &lhsType,
 }
 
 static FailureOr<std::tuple<int64_t, int64_t, int64_t, int64_t>>
-getBatchGemmTilesFromAttributes(const RankedTensorType &lhsType,
-                                const RankedTensorType &rhsType,
+getBatchGemmTilesFromAttributes(const ShapedType &lhsType,
+                                const ShapedType &rhsType,
                                 const mlir::cinm::TilingParameters &params) {
   auto tiles = params.getTileSizes();
   if (!tiles || tiles->size() < 4)
@@ -165,8 +164,8 @@ getBatchGemmTilesFromAttributes(const RankedTensorType &lhsType,
 }
 
 static FailureOr<std::tuple<int64_t, int64_t, int64_t>>
-getBatchGemvTilesFromAttributes(const RankedTensorType &lhsType,
-                                const RankedTensorType &rhsType,
+getBatchGemvTilesFromAttributes(const ShapedType &lhsType,
+                                const ShapedType &rhsType,
                                 const mlir::cinm::TilingParameters &params) {
   auto tiles = params.getTileSizes();
   if (!tiles || tiles->size() < 3)
@@ -206,7 +205,8 @@ TilingResult2 ElementwiseOp::convertToTiledOps(OpBuilder &builder0,
   const RankedTensorType originalType = tensorTy;
   Value originalShapeValue;
   if (shape.size() > 1) {
-    originalShapeValue = builder.create<arith::ConstantOp>(
+    originalShapeValue = arith::ConstantOp::create(
+        builder,
         RankedTensorType::get({static_cast<int64_t>(shape.size())},
                               builder.getI64Type()),
         builder.getI64TensorAttr(shape));
@@ -233,9 +233,9 @@ TilingResult2 ElementwiseOp::convertToTiledOps(OpBuilder &builder0,
   const int64_t numElements = tensorTy.getNumElements();
   tileSize = std::max<int64_t>(1, std::min<int64_t>(tileSize, numElements));
 
-  Value resultInit = builder.create<tensor::EmptyOp>(tensorTy, ValueRange{});
-  Value totalC = builder.create<arith::ConstantIndexOp>(numElements);
-  Value tileC = builder.create<arith::ConstantIndexOp>(tileSize);
+  Value resultInit = tensor::EmptyOp::create(builder, tensorTy, ValueRange{});
+  Value totalC = arith::ConstantIndexOp::create(builder, numElements);
+  Value tileC = arith::ConstantIndexOp::create(builder, tileSize);
 
   SmallVector<Value> result = createNestedScfForLoops(
       builder, getLoc(), {numElements}, {tileSize}, ValueRange{resultInit},
@@ -244,34 +244,34 @@ TilingResult2 ElementwiseOp::convertToTiledOps(OpBuilder &builder0,
         Value base = indices[0];
         SmallVector<OpFoldResult, 1> off{base};
 
-        Value rem = b.create<arith::SubIOp>(loc, totalC, base);
-        Value useTile =
-            b.create<arith::CmpIOp>(loc, arith::CmpIPredicate::ugt, rem, tileC);
-        Value thisTile = b.create<arith::SelectOp>(loc, useTile, tileC, rem);
+        Value rem = arith::SubIOp::create(b, loc, totalC, base);
+        Value useTile = arith::CmpIOp::create(b, loc, arith::CmpIPredicate::ugt,
+                                              rem, tileC);
+        Value thisTile = arith::SelectOp::create(b, loc, useTile, tileC, rem);
         SmallVector<OpFoldResult, 1> siz{thisTile};
         SmallVector<OpFoldResult, 1> str{b.getI64IntegerAttr(1)};
 
         Value lhsSlice =
-            b.create<tensor::ExtractSliceOp>(loc, lhs, off, siz, str);
+            tensor::ExtractSliceOp::create(b, loc, lhs, off, siz, str);
 
         Value rhsSlice = nullptr;
         if (!isUnaryOp && !isScalarOp) {
-          rhsSlice = b.create<tensor::ExtractSliceOp>(loc, rhs, off, siz, str);
+          rhsSlice = tensor::ExtractSliceOp::create(b, loc, rhs, off, siz, str);
         }
 
-        ElementwiseOp smaller = b.create<ElementwiseOp>(
-            loc, lhsSlice.getType(), getKind(), lhsSlice, rhsSlice, Value());
+        ElementwiseOp smaller = ElementwiseOp::create(
+            b, loc, getKind(), lhsSlice, rhsSlice, Value());
         markOpAsNoTile(smaller);
 
-        Value subResult = b.create<tensor::InsertSliceOp>(
-            loc, smaller.getResult(), iterArgs[0], off, siz, str);
+        Value subResult = tensor::InsertSliceOp::create(
+            b, loc, smaller.getResult(), iterArgs[0], off, siz, str);
 
         return {subResult};
       });
 
   if (originalType.getRank() > 1) {
-    result[0] = builder.create<tensor::ReshapeOp>(originalType, result[0],
-                                                  originalShapeValue);
+    result[0] = tensor::ReshapeOp::create(builder, originalType, result[0],
+                                          originalShapeValue);
   }
   return TilingResult2(result);
 }
@@ -298,8 +298,8 @@ TilingResult2 GemmOp::convertToTiledOps(OpBuilder &builder,
       ShapedType::isDynamic(N))
     return failure();
 
-  Value resultInit = builder.create<tensor::EmptyOp>(
-      loc, resultType.getShape(), resultType.getElementType());
+  Value resultInit = tensor::EmptyOp::create(
+      builder, loc, resultType.getShape(), resultType.getElementType());
 
   int64_t p0 = 0, p1 = 0, r = 0;
   if (auto tiles = getGemmTilesFromAttributes(lhsType, rhsType, params);
@@ -314,12 +314,12 @@ TilingResult2 GemmOp::convertToTiledOps(OpBuilder &builder,
   Type eltTy = resultType.getElementType();
   TypedAttr zeroElt = builder.getZeroAttr(eltTy);
 
-  Value Mc = builder.create<arith::ConstantIndexOp>(loc, M);
-  Value Nc = builder.create<arith::ConstantIndexOp>(loc, N);
-  Value Kc = builder.create<arith::ConstantIndexOp>(loc, K);
-  Value p0c = builder.create<arith::ConstantIndexOp>(loc, p0);
-  Value p1c = builder.create<arith::ConstantIndexOp>(loc, p1);
-  Value rc = builder.create<arith::ConstantIndexOp>(loc, r);
+  Value Mc = arith::ConstantIndexOp::create(builder, loc, M);
+  Value Nc = arith::ConstantIndexOp::create(builder, loc, N);
+  Value Kc = arith::ConstantIndexOp::create(builder, loc, K);
+  Value p0c = arith::ConstantIndexOp::create(builder, loc, p0);
+  Value p1c = arith::ConstantIndexOp::create(builder, loc, p1);
+  Value rc = arith::ConstantIndexOp::create(builder, loc, r);
 
   SmallVector<Value> finals = createNestedScfForLoops(
       builder, loc, ArrayRef<int64_t>{M, N}, ArrayRef<int64_t>{p0, p1},
@@ -329,22 +329,22 @@ TilingResult2 GemmOp::convertToTiledOps(OpBuilder &builder,
         Value iM = ivs[0];
         Value jN = ivs[1];
 
-        Value remM = b.create<arith::SubIOp>(loc2, Mc, iM);
-        Value remN = b.create<arith::SubIOp>(loc2, Nc, jN);
-        Value useP0 =
-            b.create<arith::CmpIOp>(loc2, arith::CmpIPredicate::ugt, remM, p0c);
-        Value useP1 =
-            b.create<arith::CmpIOp>(loc2, arith::CmpIPredicate::ugt, remN, p1c);
-        Value pMTile = b.create<arith::SelectOp>(loc2, useP0, p0c, remM);
-        Value pNTile = b.create<arith::SelectOp>(loc2, useP1, p1c, remN);
+        Value remM = arith::SubIOp::create(b, loc2, Mc, iM);
+        Value remN = arith::SubIOp::create(b, loc2, Nc, jN);
+        Value useP0 = arith::CmpIOp::create(b, loc2, arith::CmpIPredicate::ugt,
+                                            remM, p0c);
+        Value useP1 = arith::CmpIOp::create(b, loc2, arith::CmpIPredicate::ugt,
+                                            remN, p1c);
+        Value pMTile = arith::SelectOp::create(b, loc2, useP0, p0c, remM);
+        Value pNTile = arith::SelectOp::create(b, loc2, useP1, p1c, remN);
 
-        Value zeroScalar = b.create<arith::ConstantOp>(loc2, zeroElt);
-        Value accEmpty = b.create<tensor::EmptyOp>(
-            loc2,
+        Value zeroScalar = arith::ConstantOp::create(b, loc2, zeroElt);
+        Value accEmpty = tensor::EmptyOp::create(
+            b, loc2,
             ArrayRef<int64_t>({ShapedType::kDynamic, ShapedType::kDynamic}),
             eltTy, ValueRange{pMTile, pNTile});
-        Value acc0 = b.create<linalg::FillOp>(loc2, ValueRange{zeroScalar},
-                                              ValueRange{accEmpty})
+        Value acc0 = linalg::FillOp::create(b, loc2, ValueRange{zeroScalar},
+                                            ValueRange{accEmpty})
                          .getResult(0);
 
         SmallVector<Value> red = createNestedScfForLoops(
@@ -353,15 +353,15 @@ TilingResult2 GemmOp::convertToTiledOps(OpBuilder &builder,
             [&](OpBuilder &b2, Location loc3, ValueRange ivs2,
                 ValueRange accArgs) -> SmallVector<Value> {
               Value k = ivs2[0];
-              Value remK = b2.create<arith::SubIOp>(loc3, Kc, k);
-              Value useR = b2.create<arith::CmpIOp>(
-                  loc3, arith::CmpIPredicate::ugt, remK, rc);
-              Value kTile = b2.create<arith::SelectOp>(loc3, useR, rc, remK);
+              Value remK = arith::SubIOp::create(b2, loc3, Kc, k);
+              Value useR = arith::CmpIOp::create(
+                  b2, loc3, arith::CmpIPredicate::ugt, remK, rc);
+              Value kTile = arith::SelectOp::create(b2, loc3, useR, rc, remK);
 
               auto lhsTileTy = RankedTensorType::get(
                   {ShapedType::kDynamic, ShapedType::kDynamic}, eltTy);
-              Value lhsSlice = b2.create<tensor::ExtractSliceOp>(
-                  loc3, lhsTileTy, lhs, ValueRange{iM, k},
+              Value lhsSlice = tensor::ExtractSliceOp::create(
+                  b2, loc3, lhsTileTy, lhs, ValueRange{iM, k},
                   ValueRange{pMTile, kTile}, ValueRange{},
 
                   ArrayRef<int64_t>(
@@ -373,8 +373,8 @@ TilingResult2 GemmOp::convertToTiledOps(OpBuilder &builder,
 
               auto rhsTileTy = RankedTensorType::get(
                   {ShapedType::kDynamic, ShapedType::kDynamic}, eltTy);
-              Value rhsSlice = b2.create<tensor::ExtractSliceOp>(
-                  loc3, rhsTileTy, rhs, ValueRange{k, jN},
+              Value rhsSlice = tensor::ExtractSliceOp::create(
+                  b2, loc3, rhsTileTy, rhs, ValueRange{k, jN},
                   ValueRange{kTile, pNTile}, ValueRange{},
 
                   ArrayRef<int64_t>(
@@ -384,19 +384,17 @@ TilingResult2 GemmOp::convertToTiledOps(OpBuilder &builder,
                       {ShapedType::kDynamic, ShapedType::kDynamic}),
                   ArrayRef<int64_t>({1, 1}));
 
-              auto tileResTy = RankedTensorType::get(
-                  {ShapedType::kDynamic, ShapedType::kDynamic}, eltTy);
-              auto tileGemm = b2.create<cinm::GemmOp>(
-                  loc3, tileResTy, ValueRange{lhsSlice, rhsSlice, accArgs[0]});
+              auto tileGemm = cinm::GemmOp::create(b2, loc3, lhsSlice, rhsSlice,
+                                                   accArgs[0]);
               cinm::markOpAsNoTile(tileGemm);
-              auto mat = b2.create<bufferization::MaterializeInDestinationOp>(
-                  loc3, tileGemm.getResult(), accArgs[0]);
+              auto mat = bufferization::MaterializeInDestinationOp::create(
+                  b2, loc3, tileGemm.getResult(), accArgs[0]);
               Value updatedAcc = mat.getResult();
               return SmallVector<Value>{updatedAcc};
             });
 
-        Value out = b.create<tensor::InsertSliceOp>(
-            loc2, red[0], iters[0], ValueRange{iM, jN},
+        Value out = tensor::InsertSliceOp::create(
+            b, loc2, red[0], iters[0], ValueRange{iM, jN},
             ValueRange{pMTile, pNTile}, ValueRange{},
 
             ArrayRef<int64_t>({ShapedType::kDynamic, ShapedType::kDynamic}),
@@ -414,10 +412,10 @@ TilingResult2 BatchGemmOp::convertToTiledOps(OpBuilder &builder,
                                              TilingParameters params) {
   Location loc = getLoc();
 
-  Value lhs = getLeft();
-  Value rhs = getRight();
-  auto lhsType = dyn_cast<RankedTensorType>(lhs.getType());
-  auto rhsType = dyn_cast<RankedTensorType>(rhs.getType());
+  Value lhs = getLhs();
+  Value rhs = getRhs();
+  auto lhsType = dyn_cast<ShapedType>(lhs.getType());
+  auto rhsType = dyn_cast<ShapedType>(rhs.getType());
   auto resultType = dyn_cast<RankedTensorType>(getResult().getType());
   if (!lhsType || !rhsType || !resultType)
     return failure();
@@ -446,18 +444,18 @@ TilingResult2 BatchGemmOp::convertToTiledOps(OpBuilder &builder,
   }
 
   Value resultInit =
-      builder.create<tensor::EmptyOp>(loc, resultType.getShape(), elementTy);
+      tensor::EmptyOp::create(builder, loc, resultType.getShape(), elementTy);
 
   TypedAttr zeroAttr = builder.getZeroAttr(elementTy);
 
-  Value Bc = builder.create<arith::ConstantIndexOp>(loc, B);
-  Value Mc = builder.create<arith::ConstantIndexOp>(loc, M);
-  Value Nc = builder.create<arith::ConstantIndexOp>(loc, N);
-  Value Kc = builder.create<arith::ConstantIndexOp>(loc, K);
-  Value bTileC = builder.create<arith::ConstantIndexOp>(loc, bTile);
-  Value mTileC = builder.create<arith::ConstantIndexOp>(loc, mTile);
-  Value nTileC = builder.create<arith::ConstantIndexOp>(loc, nTile);
-  Value rTileC = builder.create<arith::ConstantIndexOp>(loc, rTile);
+  Value Bc = arith::ConstantIndexOp::create(builder, loc, B);
+  Value Mc = arith::ConstantIndexOp::create(builder, loc, M);
+  Value Nc = arith::ConstantIndexOp::create(builder, loc, N);
+  Value Kc = arith::ConstantIndexOp::create(builder, loc, K);
+  Value bTileC = arith::ConstantIndexOp::create(builder, loc, bTile);
+  Value mTileC = arith::ConstantIndexOp::create(builder, loc, mTile);
+  Value nTileC = arith::ConstantIndexOp::create(builder, loc, nTile);
+  Value rTileC = arith::ConstantIndexOp::create(builder, loc, rTile);
 
   SmallVector<Value> finals = createNestedScfForLoops(
       builder, loc, ArrayRef<int64_t>{B, M, N},
@@ -468,29 +466,29 @@ TilingResult2 BatchGemmOp::convertToTiledOps(OpBuilder &builder,
         Value iM = ivs[1];
         Value jN = ivs[2];
 
-        Value remB = b.create<arith::SubIOp>(loc2, Bc, iB);
-        Value remM = b.create<arith::SubIOp>(loc2, Mc, iM);
-        Value remN = b.create<arith::SubIOp>(loc2, Nc, jN);
+        Value remB = arith::SubIOp::create(b, loc2, Bc, iB);
+        Value remM = arith::SubIOp::create(b, loc2, Mc, iM);
+        Value remN = arith::SubIOp::create(b, loc2, Nc, jN);
 
-        Value useB = b.create<arith::CmpIOp>(loc2, arith::CmpIPredicate::ugt,
-                                             remB, bTileC);
-        Value useM = b.create<arith::CmpIOp>(loc2, arith::CmpIPredicate::ugt,
-                                             remM, mTileC);
-        Value useN = b.create<arith::CmpIOp>(loc2, arith::CmpIPredicate::ugt,
-                                             remN, nTileC);
+        Value useB = arith::CmpIOp::create(b, loc2, arith::CmpIPredicate::ugt,
+                                           remB, bTileC);
+        Value useM = arith::CmpIOp::create(b, loc2, arith::CmpIPredicate::ugt,
+                                           remM, mTileC);
+        Value useN = arith::CmpIOp::create(b, loc2, arith::CmpIPredicate::ugt,
+                                           remN, nTileC);
 
-        Value bTileDyn = b.create<arith::SelectOp>(loc2, useB, bTileC, remB);
-        Value mTileDyn = b.create<arith::SelectOp>(loc2, useM, mTileC, remM);
-        Value nTileDyn = b.create<arith::SelectOp>(loc2, useN, nTileC, remN);
+        Value bTileDyn = arith::SelectOp::create(b, loc2, useB, bTileC, remB);
+        Value mTileDyn = arith::SelectOp::create(b, loc2, useM, mTileC, remM);
+        Value nTileDyn = arith::SelectOp::create(b, loc2, useN, nTileC, remN);
 
-        Value zeroScalar = b.create<arith::ConstantOp>(loc2, zeroAttr);
-        Value accEmpty = b.create<tensor::EmptyOp>(
-            loc2,
+        Value zeroScalar = arith::ConstantOp::create(b, loc2, zeroAttr);
+        Value accEmpty = tensor::EmptyOp::create(
+            b, loc2,
             ArrayRef<int64_t>({ShapedType::kDynamic, ShapedType::kDynamic,
                                ShapedType::kDynamic}),
             elementTy, ValueRange{bTileDyn, mTileDyn, nTileDyn});
-        Value acc0 = b.create<linalg::FillOp>(loc2, ValueRange{zeroScalar},
-                                              ValueRange{accEmpty})
+        Value acc0 = linalg::FillOp::create(b, loc2, ValueRange{zeroScalar},
+                                            ValueRange{accEmpty})
                          .getResult(0);
 
         SmallVector<Value> red = createNestedScfForLoops(
@@ -499,47 +497,43 @@ TilingResult2 BatchGemmOp::convertToTiledOps(OpBuilder &builder,
             [&](OpBuilder &b2, Location loc3, ValueRange redIvs,
                 ValueRange accArgs) -> SmallVector<Value> {
               Value k = redIvs[0];
-              Value remK = b2.create<arith::SubIOp>(loc3, Kc, k);
-              Value useR = b2.create<arith::CmpIOp>(
-                  loc3, arith::CmpIPredicate::ugt, remK, rTileC);
+              Value remK = arith::SubIOp::create(b2, loc3, Kc, k);
+              Value useR = arith::CmpIOp::create(
+                  b2, loc3, arith::CmpIPredicate::ugt, remK, rTileC);
               Value kTileDyn =
-                  b2.create<arith::SelectOp>(loc3, useR, rTileC, remK);
+                  arith::SelectOp::create(b2, loc3, useR, rTileC, remK);
 
               auto lhsTileTy = RankedTensorType::get({ShapedType::kDynamic,
                                                       ShapedType::kDynamic,
                                                       ShapedType::kDynamic},
                                                      elementTy);
-              Value lhsSlice = b2.create<tensor::ExtractSliceOp>(
-                  loc3, lhsTileTy, lhs, ValueRange{iB, iM, k},
+              Value lhsSlice = tensor::ExtractSliceOp::create(
+                  b2, loc3, lhsTileTy, lhs, ValueRange{iB, iM, k},
                   ValueRange{bTileDyn, mTileDyn, kTileDyn}, ValueRange{},
                   noStaticOffsets3,
                   ArrayRef<int64_t>({ShapedType::kDynamic, ShapedType::kDynamic,
                                      ShapedType::kDynamic}),
                   unitStrides3);
 
-              Value rhsSlice = b2.create<tensor::ExtractSliceOp>(
-                  loc3, lhsTileTy, rhs, ValueRange{iB, k, jN},
+              Value rhsSlice = tensor::ExtractSliceOp::create(
+                  b2, loc3, lhsTileTy, rhs, ValueRange{iB, k, jN},
                   ValueRange{bTileDyn, kTileDyn, nTileDyn}, ValueRange{},
                   noStaticOffsets3,
                   ArrayRef<int64_t>({ShapedType::kDynamic, ShapedType::kDynamic,
                                      ShapedType::kDynamic}),
                   unitStrides3);
 
-              auto tileResTy = RankedTensorType::get({ShapedType::kDynamic,
-                                                      ShapedType::kDynamic,
-                                                      ShapedType::kDynamic},
-                                                     elementTy);
-              auto tileGemm = b2.create<cinm::BatchGemmOp>(
-                  loc3, tileResTy, lhsSlice, rhsSlice, accArgs[0]);
+              auto tileGemm = cinm::BatchGemmOp::create(b2, loc3, lhsSlice,
+                                                        rhsSlice, accArgs[0]);
               cinm::markOpAsNoTile(tileGemm);
-              auto mat = b2.create<bufferization::MaterializeInDestinationOp>(
-                  loc3, tileGemm.getResult(), accArgs[0]);
+              auto mat = bufferization::MaterializeInDestinationOp::create(
+                  b2, loc3, tileGemm.getResult(), accArgs[0]);
               Value updatedAcc = mat.getResult();
               return SmallVector<Value>{updatedAcc};
             });
 
-        Value out = b.create<tensor::InsertSliceOp>(
-            loc2, red[0], iterArgs[0], ValueRange{iB, iM, jN},
+        Value out = tensor::InsertSliceOp::create(
+            b, loc2, red[0], iterArgs[0], ValueRange{iB, iM, jN},
             ValueRange{bTileDyn, mTileDyn, nTileDyn}, ValueRange{},
             noStaticOffsets3,
             ArrayRef<int64_t>({ShapedType::kDynamic, ShapedType::kDynamic,
@@ -556,8 +550,8 @@ TilingResult2 BatchGemvOp::convertToTiledOps(OpBuilder &builder,
                                              TilingParameters params) {
   Location loc = getLoc();
 
-  Value lhs = getLeft();
-  Value rhs = getRight();
+  Value lhs = getLhs();
+  Value rhs = getRhs();
   auto lhsType = dyn_cast<RankedTensorType>(lhs.getType());
   auto rhsType = dyn_cast<RankedTensorType>(rhs.getType());
   auto resultType = dyn_cast<RankedTensorType>(getResult().getType());
@@ -587,16 +581,16 @@ TilingResult2 BatchGemvOp::convertToTiledOps(OpBuilder &builder,
   }
 
   Value resultInit =
-      builder.create<tensor::EmptyOp>(loc, resultType.getShape(), elementTy);
+      tensor::EmptyOp::create(builder, loc, resultType.getShape(), elementTy);
 
   TypedAttr zeroAttr = builder.getZeroAttr(elementTy);
 
-  Value Bc = builder.create<arith::ConstantIndexOp>(loc, B);
-  Value Mc = builder.create<arith::ConstantIndexOp>(loc, M);
-  Value Kc = builder.create<arith::ConstantIndexOp>(loc, K);
-  Value bTileC = builder.create<arith::ConstantIndexOp>(loc, bTile);
-  Value mTileC = builder.create<arith::ConstantIndexOp>(loc, mTile);
-  Value rTileC = builder.create<arith::ConstantIndexOp>(loc, rTile);
+  Value Bc = arith::ConstantIndexOp::create(builder, loc, B);
+  Value Mc = arith::ConstantIndexOp::create(builder, loc, M);
+  Value Kc = arith::ConstantIndexOp::create(builder, loc, K);
+  Value bTileC = arith::ConstantIndexOp::create(builder, loc, bTile);
+  Value mTileC = arith::ConstantIndexOp::create(builder, loc, mTile);
+  Value rTileC = arith::ConstantIndexOp::create(builder, loc, rTile);
 
   SmallVector<Value> finals = createNestedScfForLoops(
       builder, loc, ArrayRef<int64_t>{B, M}, ArrayRef<int64_t>{bTile, mTile},
@@ -606,22 +600,22 @@ TilingResult2 BatchGemvOp::convertToTiledOps(OpBuilder &builder,
         Value iB = ivs[0];
         Value iM = ivs[1];
 
-        Value remB = b.create<arith::SubIOp>(loc2, Bc, iB);
-        Value remM = b.create<arith::SubIOp>(loc2, Mc, iM);
-        Value useB = b.create<arith::CmpIOp>(loc2, arith::CmpIPredicate::ugt,
-                                             remB, bTileC);
-        Value useM = b.create<arith::CmpIOp>(loc2, arith::CmpIPredicate::ugt,
-                                             remM, mTileC);
-        Value bTileDyn = b.create<arith::SelectOp>(loc2, useB, bTileC, remB);
-        Value mTileDyn = b.create<arith::SelectOp>(loc2, useM, mTileC, remM);
+        Value remB = arith::SubIOp::create(b, loc2, Bc, iB);
+        Value remM = arith::SubIOp::create(b, loc2, Mc, iM);
+        Value useB = arith::CmpIOp::create(b, loc2, arith::CmpIPredicate::ugt,
+                                           remB, bTileC);
+        Value useM = arith::CmpIOp::create(b, loc2, arith::CmpIPredicate::ugt,
+                                           remM, mTileC);
+        Value bTileDyn = arith::SelectOp::create(b, loc2, useB, bTileC, remB);
+        Value mTileDyn = arith::SelectOp::create(b, loc2, useM, mTileC, remM);
 
-        Value zeroScalar = b.create<arith::ConstantOp>(loc2, zeroAttr);
-        Value accEmpty = b.create<tensor::EmptyOp>(
-            loc2,
+        Value zeroScalar = arith::ConstantOp::create(b, loc2, zeroAttr);
+        Value accEmpty = tensor::EmptyOp::create(
+            b, loc2,
             ArrayRef<int64_t>({ShapedType::kDynamic, ShapedType::kDynamic}),
             elementTy, ValueRange{bTileDyn, mTileDyn});
-        Value acc0 = b.create<linalg::FillOp>(loc2, ValueRange{zeroScalar},
-                                              ValueRange{accEmpty})
+        Value acc0 = linalg::FillOp::create(b, loc2, ValueRange{zeroScalar},
+                                            ValueRange{accEmpty})
                          .getResult(0);
 
         SmallVector<Value> red = createNestedScfForLoops(
@@ -630,18 +624,18 @@ TilingResult2 BatchGemvOp::convertToTiledOps(OpBuilder &builder,
             [&](OpBuilder &b2, Location loc3, ValueRange redIvs,
                 ValueRange accArgs) -> SmallVector<Value> {
               Value k = redIvs[0];
-              Value remK = b2.create<arith::SubIOp>(loc3, Kc, k);
-              Value useR = b2.create<arith::CmpIOp>(
-                  loc3, arith::CmpIPredicate::ugt, remK, rTileC);
+              Value remK = arith::SubIOp::create(b2, loc3, Kc, k);
+              Value useR = arith::CmpIOp::create(
+                  b2, loc3, arith::CmpIPredicate::ugt, remK, rTileC);
               Value kTileDyn =
-                  b2.create<arith::SelectOp>(loc3, useR, rTileC, remK);
+                  arith::SelectOp::create(b2, loc3, useR, rTileC, remK);
 
               auto lhsTileTy = RankedTensorType::get({ShapedType::kDynamic,
                                                       ShapedType::kDynamic,
                                                       ShapedType::kDynamic},
                                                      elementTy);
-              Value lhsSlice = b2.create<tensor::ExtractSliceOp>(
-                  loc3, lhsTileTy, lhs, ValueRange{iB, iM, k},
+              Value lhsSlice = tensor::ExtractSliceOp::create(
+                  b2, loc3, lhsTileTy, lhs, ValueRange{iB, iM, k},
                   ValueRange{bTileDyn, mTileDyn, kTileDyn}, ValueRange{},
                   noStaticOffsets3,
                   ArrayRef<int64_t>({ShapedType::kDynamic, ShapedType::kDynamic,
@@ -650,27 +644,25 @@ TilingResult2 BatchGemvOp::convertToTiledOps(OpBuilder &builder,
 
               auto rhsTileTy = RankedTensorType::get(
                   {ShapedType::kDynamic, ShapedType::kDynamic}, elementTy);
-              Value rhsSlice = b2.create<tensor::ExtractSliceOp>(
-                  loc3, rhsTileTy, rhs, ValueRange{iB, k},
+              Value rhsSlice = tensor::ExtractSliceOp::create(
+                  b2, loc3, rhsTileTy, rhs, ValueRange{iB, k},
                   ValueRange{bTileDyn, kTileDyn}, ValueRange{},
                   noStaticOffsets2,
                   ArrayRef<int64_t>(
                       {ShapedType::kDynamic, ShapedType::kDynamic}),
                   unitStrides2);
 
-              auto tileResTy = RankedTensorType::get(
-                  {ShapedType::kDynamic, ShapedType::kDynamic}, elementTy);
-              auto tileGemv = b2.create<cinm::BatchGemvOp>(
-                  loc3, tileResTy, lhsSlice, rhsSlice, accArgs[0]);
+              auto tileGemv = cinm::BatchGemvOp::create(b2, loc3, lhsSlice,
+                                                        rhsSlice, accArgs[0]);
               cinm::markOpAsNoTile(tileGemv);
-              auto mat = b2.create<bufferization::MaterializeInDestinationOp>(
-                  loc3, tileGemv.getResult(), accArgs[0]);
+              auto mat = bufferization::MaterializeInDestinationOp::create(
+                  b2, loc3, tileGemv.getResult(), accArgs[0]);
               Value updatedAcc = mat.getResult();
               return SmallVector<Value>{updatedAcc};
             });
 
-        Value out = b.create<tensor::InsertSliceOp>(
-            loc2, red[0], iterArgs[0], ValueRange{iB, iM},
+        Value out = tensor::InsertSliceOp::create(
+            b, loc2, red[0], iterArgs[0], ValueRange{iB, iM},
             ValueRange{bTileDyn, mTileDyn}, ValueRange{}, noStaticOffsets2,
             ArrayRef<int64_t>({ShapedType::kDynamic, ShapedType::kDynamic}),
             unitStrides2);
@@ -717,14 +709,14 @@ TilingResult2 GemvOp::convertToTiledOps(OpBuilder &builder,
     return failure();
   }
 
-  Value init = builder.create<tensor::EmptyOp>(loc, yTy.getShape(), elt);
+  Value init = tensor::EmptyOp::create(builder, loc, yTy.getShape(), elt);
 
   TypedAttr zeroAttr = builder.getZeroAttr(elt);
 
-  Value Mc = builder.create<arith::ConstantIndexOp>(loc, M);
-  Value Kc = builder.create<arith::ConstantIndexOp>(loc, K);
-  Value pMc = builder.create<arith::ConstantIndexOp>(loc, pM);
-  Value rKc = builder.create<arith::ConstantIndexOp>(loc, rK);
+  Value Mc = arith::ConstantIndexOp::create(builder, loc, M);
+  Value Kc = arith::ConstantIndexOp::create(builder, loc, K);
+  Value pMc = arith::ConstantIndexOp::create(builder, loc, pM);
+  Value rKc = arith::ConstantIndexOp::create(builder, loc, rK);
 
   SmallVector<Value> results = createNestedScfForLoops(
       builder, loc, ArrayRef<int64_t>{M}, ArrayRef<int64_t>{pM},
@@ -733,17 +725,17 @@ TilingResult2 GemvOp::convertToTiledOps(OpBuilder &builder,
           ValueRange iters) -> SmallVector<Value> {
         Value iM = ivs[0];
 
-        Value remM = b.create<arith::SubIOp>(loc2, Mc, iM);
-        Value usePM =
-            b.create<arith::CmpIOp>(loc2, arith::CmpIPredicate::ugt, remM, pMc);
-        Value pMTile = b.create<arith::SelectOp>(loc2, usePM, pMc, remM);
+        Value remM = arith::SubIOp::create(b, loc2, Mc, iM);
+        Value usePM = arith::CmpIOp::create(b, loc2, arith::CmpIPredicate::ugt,
+                                            remM, pMc);
+        Value pMTile = arith::SelectOp::create(b, loc2, usePM, pMc, remM);
 
-        Value zeroScalar = b.create<arith::ConstantOp>(loc2, zeroAttr);
-        Value accEmpty = b.create<tensor::EmptyOp>(
-            loc2, ArrayRef<int64_t>({ShapedType::kDynamic}), elt,
+        Value zeroScalar = arith::ConstantOp::create(b, loc2, zeroAttr);
+        Value accEmpty = tensor::EmptyOp::create(
+            b, loc2, ArrayRef<int64_t>({ShapedType::kDynamic}), elt,
             ValueRange{pMTile});
-        Value acc0 = b.create<linalg::FillOp>(loc2, ValueRange{zeroScalar},
-                                              ValueRange{accEmpty})
+        Value acc0 = linalg::FillOp::create(b, loc2, ValueRange{zeroScalar},
+                                            ValueRange{accEmpty})
                          .getResult(0);
 
         SmallVector<Value> red = createNestedScfForLoops(
@@ -753,15 +745,15 @@ TilingResult2 GemvOp::convertToTiledOps(OpBuilder &builder,
                 ValueRange accArgs) -> SmallVector<Value> {
               Value k = kIvs[0];
 
-              Value remK = b2.create<arith::SubIOp>(loc3, Kc, k);
-              Value useR = b2.create<arith::CmpIOp>(
-                  loc3, arith::CmpIPredicate::ugt, remK, rKc);
-              Value kTile = b2.create<arith::SelectOp>(loc3, useR, rKc, remK);
+              Value remK = arith::SubIOp::create(b2, loc3, Kc, k);
+              Value useR = arith::CmpIOp::create(
+                  b2, loc3, arith::CmpIPredicate::ugt, remK, rKc);
+              Value kTile = arith::SelectOp::create(b2, loc3, useR, rKc, remK);
 
               auto aTileTy = RankedTensorType::get(
                   {ShapedType::kDynamic, ShapedType::kDynamic}, elt);
-              Value aTile = b2.create<tensor::ExtractSliceOp>(
-                  loc3, aTileTy, A, ValueRange{iM, k},
+              Value aTile = tensor::ExtractSliceOp::create(
+                  b2, loc3, aTileTy, A, ValueRange{iM, k},
                   ValueRange{pMTile, kTile}, ValueRange{},
 
                   ArrayRef<int64_t>(
@@ -772,25 +764,25 @@ TilingResult2 GemvOp::convertToTiledOps(OpBuilder &builder,
                   ArrayRef<int64_t>({1, 1}));
 
               auto xTileTy = RankedTensorType::get({ShapedType::kDynamic}, elt);
-              Value xTile = b2.create<tensor::ExtractSliceOp>(
-                  loc3, xTileTy, x, ValueRange{k}, ValueRange{kTile},
+              Value xTile = tensor::ExtractSliceOp::create(
+                  b2, loc3, xTileTy, x, ValueRange{k}, ValueRange{kTile},
                   ValueRange{}, ArrayRef<int64_t>({ShapedType::kDynamic}),
                   ArrayRef<int64_t>({ShapedType::kDynamic}),
                   ArrayRef<int64_t>({1}));
 
               auto yTileResTy =
                   RankedTensorType::get({ShapedType::kDynamic}, elt);
-              auto gemv = b2.create<cinm::GemvOp>(loc3, yTileResTy, aTile,
-                                                  xTile, accArgs[0], Value());
+              auto gemv =
+                  cinm::GemvOp::create(b2, loc3, aTile, xTile, accArgs[0]);
               cinm::markOpAsNoTile(gemv);
-              auto mat = b2.create<bufferization::MaterializeInDestinationOp>(
-                  loc3, gemv.getResult(), accArgs[0]);
+              auto mat = bufferization::MaterializeInDestinationOp::create(
+                  b2, loc3, gemv.getResult(), accArgs[0]);
               Value updatedAcc = mat.getResult();
               return SmallVector<Value>{updatedAcc};
             });
 
-        Value out = b.create<tensor::InsertSliceOp>(
-            loc2, red[0], iters[0], ValueRange{iM}, ValueRange{pMTile},
+        Value out = tensor::InsertSliceOp::create(
+            b, loc2, red[0], iters[0], ValueRange{iM}, ValueRange{pMTile},
             ValueRange{}, ArrayRef<int64_t>({ShapedType::kDynamic}),
             ArrayRef<int64_t>({ShapedType::kDynamic}), ArrayRef<int64_t>({1}));
 
@@ -812,8 +804,8 @@ TilingResult2 ActivateOp::convertToTiledOps(OpBuilder &builder0,
   const RankedTensorType originalTy = inTy;
   Value originalShapeValue;
   if (inTy.getRank() > 1) {
-    originalShapeValue = builder.create<arith::ConstantOp>(
-        RankedTensorType::get({inTy.getRank()}, builder.getI64Type()),
+    originalShapeValue = arith::ConstantOp::create(
+        builder, RankedTensorType::get({inTy.getRank()}, builder.getI64Type()),
         builder.getI64TensorAttr(inTy.getShape()));
     input = reshapeStatic(builder, builder.getLoc(), inputT,
                           ArrayRef<int64_t>{inTy.getNumElements()});
@@ -828,10 +820,10 @@ TilingResult2 ActivateOp::convertToTiledOps(OpBuilder &builder0,
     p = std::max<int64_t>(1, params.workingGroupSize());
   p = std::min<int64_t>(p, total);
 
-  Value init = builder.create<tensor::EmptyOp>(inTy.getShape(), elt);
+  Value init = tensor::EmptyOp::create(builder, inTy.getShape(), elt);
 
-  Value totalC = builder.create<arith::ConstantIndexOp>(total);
-  Value pC = builder.create<arith::ConstantIndexOp>(p);
+  Value totalC = arith::ConstantIndexOp::create(builder, total);
+  Value pC = arith::ConstantIndexOp::create(builder, p);
 
   SmallVector<Value> finals = createNestedScfForLoops(
       builder, getLoc(), ArrayRef<int64_t>{total}, ArrayRef<int64_t>{p},
@@ -840,30 +832,30 @@ TilingResult2 ActivateOp::convertToTiledOps(OpBuilder &builder0,
           ValueRange iters) -> SmallVector<Value> {
         Value i = ivs[0];
 
-        Value rem = b.create<arith::SubIOp>(loc, totalC, i);
+        Value rem = arith::SubIOp::create(b, loc, totalC, i);
         Value useP =
-            b.create<arith::CmpIOp>(loc, arith::CmpIPredicate::ugt, rem, pC);
-        Value thisTile = b.create<arith::SelectOp>(loc, useP, pC, rem);
+            arith::CmpIOp::create(b, loc, arith::CmpIPredicate::ugt, rem, pC);
+        Value thisTile = arith::SelectOp::create(b, loc, useP, pC, rem);
 
         SmallVector<OpFoldResult> off{i};
         SmallVector<OpFoldResult> siz{thisTile};
         SmallVector<OpFoldResult> str{b.getI64IntegerAttr(1)};
 
         auto inSlice =
-            b.create<tensor::ExtractSliceOp>(loc, input, off, siz, str);
+            tensor::ExtractSliceOp::create(b, loc, input, off, siz, str);
 
-        auto tile = b.create<cinm::ActivateOp>(loc, inSlice.getType(),
-                                               getKind(), inSlice, Value());
+        auto tile =
+            cinm::ActivateOp::create(b, loc, getKind(), inSlice, Value());
         cinm::markOpAsNoTile(tile);
 
-        Value out = b.create<tensor::InsertSliceOp>(loc, tile.getResult(),
-                                                    iters[0], off, siz, str);
+        Value out = tensor::InsertSliceOp::create(b, loc, tile.getResult(),
+                                                  iters[0], off, siz, str);
         return {out};
       });
 
   if (originalTy.getRank() > 1) {
-    finals[0] = builder.create<tensor::ReshapeOp>(originalTy, finals[0],
-                                                  originalShapeValue);
+    finals[0] = tensor::ReshapeOp::create(builder, originalTy, finals[0],
+                                          originalShapeValue);
   }
   return TilingResult2(finals);
 }

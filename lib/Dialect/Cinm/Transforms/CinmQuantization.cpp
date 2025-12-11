@@ -140,9 +140,8 @@ static LogicalResult rewriteGemmTensor(GemmOp op, Type qElem, float scale,
   Value Bq =
       buildQuantize(rewriter, loc, B, qElem, scale, zp, rounding, narrow);
 
-  auto qOutTy = RankedTensorType::get(outTy.getShape(), qElem);
   auto qGemm =
-      rewriter.create<cinm::GemmOp>(loc, qOutTy, Aq, Bq, Value(), Value());
+      rewriter.create<cinm::GemmOp>(loc, Aq, Bq, Value(), Value());
   Value dq = buildDequantize(rewriter, loc, qGemm.getResult(),
                              outTy.getElementType(), scale, zp);
 
@@ -172,9 +171,8 @@ static LogicalResult rewriteGemvTensor(GemvOp op, Type qElem, float scale,
   Value xq =
       buildQuantize(rewriter, loc, x, qElem, scale, zp, rounding, narrow);
 
-  auto qOutTy = RankedTensorType::get(outTy.getShape(), qElem);
   auto qGemv =
-      rewriter.create<cinm::GemvOp>(loc, qOutTy, Aq, xq, Value(), Value());
+      rewriter.create<cinm::GemvOp>(loc, Aq, xq, Value(), Value());
   Value dq = buildDequantize(rewriter, loc, qGemv.getResult(),
                              outTy.getElementType(), scale, zp);
 
@@ -232,7 +230,7 @@ static LogicalResult rewriteGemmMemRef(GemmOp op, Type qElem, float scale,
   emitQuantizeMemRef(rewriter, loc, A, qA, scale, zp, rounding, narrow);
   emitQuantizeMemRef(rewriter, loc, B, qB, scale, zp, rounding, narrow);
 
-  rewriter.create<cinm::GemmOp>(loc, qC.getType(), qA, qB, Value(), qC);
+  rewriter.create<cinm::GemmOp>(loc, qA, qB, Value(), qC);
   emitDequantizeMemRef(rewriter, loc, qC, C, scale, zp);
 
   rewriter.create<memref::DeallocOp>(loc, qA);
@@ -261,7 +259,7 @@ static LogicalResult rewriteGemvMemRef(GemvOp op, Type qElem, float scale,
   emitQuantizeMemRef(rewriter, loc, A, qA, scale, zp, rounding, narrow);
   emitQuantizeMemRef(rewriter, loc, x, qx, scale, zp, rounding, narrow);
 
-  rewriter.create<cinm::GemvOp>(loc, qy.getType(), qA, qx, Value(), qy);
+  rewriter.create<cinm::GemvOp>(loc, qA, qx, Value(), qy);
   emitDequantizeMemRef(rewriter, loc, qy, y, scale, zp);
 
   rewriter.create<memref::DeallocOp>(loc, qA);

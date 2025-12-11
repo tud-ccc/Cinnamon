@@ -648,16 +648,13 @@ static FailureOr<Value> buildRowCentric(GemvNest &nest, IRMapping &mapper,
 
   Value biasForGemv = accChunk;
   if (newBias)
-    biasForGemv =
-        rewriter
-            .create<cinm::ElementwiseOp>(loc, biasForGemv.getType(),
-                                         cinm::ElementwiseKind::Add,
-                                         biasForGemv, newBias, Value())
-            .getResult();
+    biasForGemv = rewriter
+                      .create<cinm::ElementwiseOp>(
+                          loc, cinm::ElementwiseKind::Add, biasForGemv, newBias)
+                      .getResult();
 
   auto newGemv =
-      rewriter.create<cinm::GemvOp>(loc, nest.gemv.getResult().getType(),
-                                    *aHoisted, *bRebuilt, biasForGemv, Value());
+      rewriter.create<cinm::GemvOp>(loc, *aHoisted, *bRebuilt, biasForGemv);
   newGemv->setAttrs(nest.gemv->getAttrDictionary());
   Value gemvResult = newGemv.getResult();
 

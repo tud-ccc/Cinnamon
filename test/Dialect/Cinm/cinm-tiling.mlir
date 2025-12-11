@@ -16,8 +16,8 @@
 // CHECK:       cinm.yield %[[res0]] : tensor<1024x1024xi32>
 
 func.func @gemmSquare(%a: tensor<1024x1024xi32>, %b: tensor<1024x1024xi32>) -> tensor<1024x1024xi32> {
-	%res = cinm.compute -> tensor<1024x1024xi32> {
-		%d = cinm.op.gemm %a, %b : (tensor<1024x1024xi32>, tensor<1024x1024xi32>) -> tensor<1024x1024xi32>
+	%res = cinm.compute attributes { workgroupShape = array<i64: 4>, bufferSizesInBytes = array<i64: 1024> } -> tensor<1024x1024xi32> {
+		%d = cinm.op.gemm %a, %b : tensor<1024x1024xi32>, tensor<1024x1024xi32> -> tensor<1024x1024xi32>
 		cinm.yield %d: tensor<1024x1024xi32>
 	}
 	return %res: tensor<1024x1024xi32>
@@ -29,8 +29,8 @@ func.func @gemmSquare(%a: tensor<1024x1024xi32>, %b: tensor<1024x1024xi32>) -> t
 // CHECK-LABEL: @gemv
 
 func.func @gemv(%a: tensor<1024x1024xi32>, %b: tensor<1024xi32>) -> tensor<1024xi32>{
-	%res = cinm.compute -> tensor<1024xi32> {
-		%d = cinm.op.gemv %a, %b : (tensor<1024x1024xi32>, tensor<1024xi32>) -> tensor<1024xi32>
+	%res = cinm.compute attributes { workgroupShape = array<i64: 4>, bufferSizesInBytes = array<i64: 1024> }-> tensor<1024xi32> {
+		%d = cinm.op.gemv %a, %b : tensor<1024x1024xi32>, tensor<1024xi32> -> tensor<1024xi32>
 		cinm.yield %d: tensor<1024xi32>
 	}
 	return %res: tensor<1024xi32>
