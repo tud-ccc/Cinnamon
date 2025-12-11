@@ -41,6 +41,7 @@ def Cinm_ElementwiseKindAttr : I64EnumAttr<
       I64EnumAttrCase<"Mul", 2, "mul">,
       I64EnumAttrCase<"Div", 3, "div">,
       I64EnumAttrCase<"Mod", 4, "mod">,
+      // unaries
       I64EnumAttrCase<"Neg", 5, "neg">,
       I64EnumAttrCase<"Abs", 6, "abs">,
       I64EnumAttrCase<"Ceil", 7, "ceil">,

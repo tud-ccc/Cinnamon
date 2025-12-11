@@ -25,7 +25,7 @@ include "mlir/Interfaces/DestinationStyleOpInterface.td"
 include "mlir/Dialect/Linalg/IR/LinalgEnums.td"
 
 def Cinm_ElementwiseOp
-    : Cinm_Op<"op.element_wise", [
+    : Cinm_Op<"op.elementwise", [
         Pure,
         DeclareOpInterfaceMethods<CinmTilingInterface>,
         AttrSizedOperandSegments
@@ -37,16 +37,15 @@ def Cinm_ElementwiseOp
     }];
 
     let arguments = (ins
-        Cinm_ElementwiseKindAttr:$method,
+        Cinm_ElementwiseKindAttr:$kind,
         AnyShaped:$lhs,
-        Optional<AnyType>:$rhs,
-        Optional<AnyType>:$out
+        Optional<AnyShaped>:$rhs,
+        Optional<AnyMemRef>:$out
     );
 
-    let results = (outs Optional<AnyShaped>:$result);
+    let results = (outs Optional<AnyRankedTensor>:$result);
 
     let extraClassDeclaration = [{
-        cinm::ElementwiseKind getKind();
     }];
 
     let hasCustomAssemblyFormat = true;

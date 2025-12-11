@@ -81,112 +81,80 @@ static bool dimsCompatible(int64_t a, int64_t b) {
   return ShapedType::isDynamic(a) || ShapedType::isDynamic(b) || a == b;
 }
 
-cinm::ElementwiseKind ElementwiseOp::getKind() {
-  return getMethodAttr().getValue();
-}
-
 ::mlir::ParseResult ElementwiseOp::parse(::mlir::OpAsmParser &parser,
                                          ::mlir::OperationState &result) {
-  ElementwiseKindAttr kind;
-  if (parser.parseAttribute(kind, "kind", result.attributes).failed())
+  std::string kindKw;
+  if (parser.parseKeywordOrString(&kindKw))
     return failure();
-  result.addAttribute("kind", kind);
+  auto kind = symbolizeElementwiseKind(kindKw);
+  if (!kind)
+    return failure();
+  result.addAttribute(getKindAttrName(result.name),
+                      parser.getBuilder().getAttr<ElementwiseKindAttr>(*kind));
 
-  SmallVector<mlir::OpAsmParser::UnresolvedOperand> unresolved_operands;
-  if (parser
-          .parseOperandList(unresolved_operands,
-                            mlir::OpAsmParser::Delimiter::None, true, 1)
-          .failed())
+  bool hasOut = false, hasRhs = false;
+  OpAsmParser::UnresolvedOperand lhs, rhs, out;
+  if (parser.parseOperand(lhs))
     return failure();
+
+  if (parser.parseOptionalComma().succeeded()) {
+    if (parser.parseOperand(rhs))
+      return failure();
+    hasRhs = true;
+  }
+  if (parser.parseOptionalKeyword("into").succeeded()) {
+    if (parser.parseOperand(out))
+      return failure();
+    hasOut = true;
+  }
 
   if (parser.parseOptionalAttrDict(result.attributes) || parser.parseColon())
     return failure();
 
-  SmallVector<Type> operand_types;
-  if (parser.parseTypeList(operand_types).failed())
+  Type lhsAndRhsTy;
+  Type outType;
+  if (parser.parseType(lhsAndRhsTy))
     return failure();
-
-  if (operand_types.size() > 2) {
-    parser.emitError(parser.getNameLoc(), "expected at most two types");
-    return failure();
-  }
-
-  bool isTensorOp = true;
-  bool isMemrefOp = true;
-  bool isRhsScalar = false;
-  Type operandType = nullptr;
-  Type elementType = nullptr;
-
-  for (size_t i = 0; i < operand_types.size(); ++i) {
-    if (i == 1 && operand_types[i] == elementType) {
-      isRhsScalar = true;
-      continue;
-    }
-
-    if (TensorType t = dyn_cast_or_null<TensorType>(operand_types[i])) {
-      operandType = t;
-      elementType = t.getElementType();
-      isMemrefOp = false;
-    } else if (MemRefType m = dyn_cast_or_null<MemRefType>(operand_types[i])) {
-      operandType = m;
-      elementType = m.getElementType();
-      isTensorOp = false;
-    } else {
-      isTensorOp = false;
-      isMemrefOp = false;
-    }
-  }
-
-  bool hasRhsOperand =
-      isMemrefOp ? operand_types.size() == 3 : operand_types.size() == 2;
-
-  if (!isMemrefOp && !isTensorOp) {
-    parser.emitError(parser.getNameLoc(),
-                     "operation only supports memref or tensor types");
-    return failure();
-  }
-
-  if (parser
-          .resolveOperand(unresolved_operands[0], operandType, result.operands)
-          .failed())
-    return failure();
-
-  if (unresolved_operands.size() >= 2 && !isRhsScalar) {
-    if (parser
-            .resolveOperand(unresolved_operands[1], operandType,
-                            result.operands)
-            .failed())
+  if (hasOut) {
+    if (parser.parseKeyword("into") || parser.parseType(outType))
       return failure();
   }
 
-  if (unresolved_operands.size() >= 2 && isRhsScalar) {
-    if (parser
-            .resolveOperand(unresolved_operands[1], elementType,
-                            result.operands)
-            .failed())
-      return failure();
+  if (parser.resolveOperand(lhs, lhsAndRhsTy, result.operands))
+    return failure();
+  if (hasRhs && parser.resolveOperand(rhs, lhsAndRhsTy, result.operands))
+    return failure();
+  if (hasOut && parser.resolveOperand(out, outType, result.operands))
+    return failure();
+
+  if (!hasOut) {
+    result.addTypes(lhsAndRhsTy);
   }
 
-  if (unresolved_operands.size() == 3 && isMemrefOp) {
-    if (parser
-            .resolveOperand(unresolved_operands[2], operandType,
-                            result.operands)
-            .failed())
-      return failure();
-  }
-
-  if (isTensorOp)
-    result.addTypes(operandType);
-
-  result.addAttribute("operandSegmentSizes",
-                      parser.getBuilder().getDenseI32ArrayAttr(
-                          {static_cast<int32_t>(hasRhsOperand),
-                           static_cast<int32_t>(isMemrefOp)}));
+  result.addAttribute(
+      "operandSegmentSizes",
+      parser.getBuilder().getDenseI32ArrayAttr(
+          {1, static_cast<int32_t>(hasRhs), static_cast<int32_t>(hasOut)}));
 
   return success();
 }
 
-void ElementwiseOp::print(::mlir::OpAsmPrinter &printer) {}
+void ElementwiseOp::print(::mlir::OpAsmPrinter &out) {
+  out << " ";
+  out.printKeywordOrString(stringifyElementwiseKind(getKind()));
+  out << getLhs();
+  if (getRhs()) {
+    out << ", " << getRhs();
+  }
+  if (getOut()) {
+    out << " into " << getOut();
+  }
+  out.printOptionalAttrDict((*this)->getAttrs(), {getKindAttrName(), getOperandSegmentSizesAttrName()});
+  out << " : " << getLhs().getType();
+  if (getOut()) {
+    out << " into " << getOut().getType();
+  }
+}
 
 ::mlir::ParseResult parseGemmOp(::mlir::OpAsmParser &parser,
                                 ::mlir::OperationState &result) {
