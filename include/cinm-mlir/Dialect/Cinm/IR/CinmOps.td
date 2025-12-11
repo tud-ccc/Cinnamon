@@ -80,6 +80,7 @@ def Cinm_GemmOp : Cinm_Op<"op.gemm", [
 
 def Cinm_GemvOp : Cinm_Op<"op.gemv",
   [ Pure,
+    InferTensorTypeAdaptor,
     DeclareOpInterfaceMethods<CinmTilingInterface>,
     OptionalTypesMatchWith<
       "bias should have compatible type", "result", "bias", "$_self">,

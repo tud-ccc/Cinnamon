@@ -878,7 +878,7 @@ struct ConvertCinmGemvToCnm : public OpConversionPattern<cinm::GemvOp> {
         builder.getZeroAttr(op.getResult().getType()));
 
     llvm::SmallVector<Value, 1> newResults;
-    if (convertCinmToCnm(builder, op, workgroup.getResult(), computeBlock, {},
+    if (convertCinmToCnm(builder, op, workgroup.getResult(), computeBlock, {1},
                          adaptor.getOperands(), ValueRange{outputInit},
                          op->getResults(), newResults,
                          [&](ImplicitLocOpBuilder &builder, ValueRange inputs,
@@ -919,7 +919,7 @@ struct ConvertCinmReduceToCnm : public OpConversionPattern<cinm::ReduceOp> {
 
     llvm::SmallVector<Value, 1> newResults;
     if (convertCinmToCnm(
-            builder, op, workgroup.getResult(), computeBlock, {},
+            builder, op, workgroup.getResult(), computeBlock, {1},
             adaptor.getOperands(), ValueRange{outputInit}, op->getResults(),
             newResults,
             [&](ImplicitLocOpBuilder &builder, ValueRange inputs,
