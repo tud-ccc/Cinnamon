@@ -79,6 +79,7 @@ struct ConvertTorchTensorOpToCinm : OpConversionPattern<SourceOp> {
     auto targetOp =
         TargetOp::create(rewriter, op.getLoc(), lhsConversionOp.getResult(),
                          rhsConversionOp.getResult());
+    assert(targetOp.getResult() && "Is a tensor gemmlike");
 
     rewriter.create<cinm::YieldOp>(op.getLoc(), targetOp.getResult());
 

@@ -50,6 +50,7 @@ using linalg::UnaryFn;
 
 #include "cinm-mlir/Dialect/Cinm/IR/CinmEnums.cpp.inc"
 
+template <typename Self>
 static void buildGemmLikeOp(OpBuilder &builder, OperationState &result,
                             Value lhs, Value rhs, Value bias, Value out) {
   result.addOperands({lhs, rhs});
@@ -63,8 +64,21 @@ static void buildGemmLikeOp(OpBuilder &builder, OperationState &result,
     outInt = 1;
   }
 
-  result.addAttribute(GemmOp::getOperandSegmentSizesAttrName(result.name),
-                      builder.getDenseI32ArrayAttr({2, biasInt, outInt}));
+  result.addAttribute("operandSegmentSizes",
+                      builder.getDenseI32ArrayAttr({1, 1, biasInt, outInt}));
+  if (!out) {
+    ::llvm::SmallVector<::mlir::Type, 2> inferredReturnTypes;
+    if (::mlir::succeeded(Self::inferReturnTypes(
+            result.getContext(), result.location, result.operands,
+            result.attributes.getDictionary(result.getContext()),
+            result.getRawProperties(), result.regions, inferredReturnTypes))) {
+      assert(inferredReturnTypes.size() == 1u &&
+             "mismatched number of return types");
+      result.addTypes(inferredReturnTypes);
+    } else {
+      ::llvm::report_fatal_error("Failed to infer result type(s).");
+    }
+  }
 }
 
 #define GET_OP_CLASSES

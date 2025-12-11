@@ -60,13 +60,13 @@ def Cinm_ElementwiseOp
     ];
 }
 
-class Cinm_GemmlikeOp<string name> : Cinm_Op<name, 
+class Cinm_GemmlikeOp<string name, string cppClassName> : Cinm_Op<name, 
   [
     Pure,
     InferTensorTypeAdaptor,
     DeclareOpInterfaceMethods<CinmTilingInterface>,
-    OptionalTypesMatchWith<
-      "bias should have compatible type", "result", "bias", "$_self">,
+    // OptionalTypesMatchWith<
+    //   "bias should have compatible type", "result", "bias", "$_self">,
     AttrSizedOperandSegments
   ]> {
 
@@ -79,12 +79,12 @@ class Cinm_GemmlikeOp<string name> : Cinm_Op<name,
 
   let results = (outs Optional<AnyRankedTensor>:$result);
   let assemblyFormat = 
-    "$lhs `,` $rhs (`plus` $bias^)? (`into` $out^)? attr-dict `:` type($lhs) `,` type($rhs) (`into` type($out)^):(`->` type($result))?";
+    "$lhs `,` $rhs (`plus` $bias^)? (`into` $out^)? attr-dict `:` type($lhs) `,` type($rhs) (`plus` type($bias)^)? (`into` type($out)^):(`->` type($result))?";
 
   let skipDefaultBuilders = 1;
   let builders = [
     OpBuilder<(ins "Value":$left, "Value":$right, "Value":$bias, "Value":$out), 
-      "buildGemmLikeOp($_builder, $_state, left, right, bias, out);">,
+      "buildGemmLikeOp<" # cppClassName # ">($_builder, $_state, left, right, bias, out);">,
     OpBuilder<(ins "Value":$left, "Value":$right, "Value":$bias),
       "build($_builder, $_state, left, right, bias, Value{});">,
     OpBuilder<(ins "Value":$left, "Value":$right),
@@ -92,22 +92,22 @@ class Cinm_GemmlikeOp<string name> : Cinm_Op<name,
   ];
 }
 
-def Cinm_GemmOp : Cinm_GemmlikeOp<"op.gemm"> {
+def Cinm_GemmOp : Cinm_GemmlikeOp<"op.gemm", "GemmOp"> {
 
   let summary = "Generalized Matrix Matrix Multiplication operation";
 
 }
 
-def Cinm_GemvOp : Cinm_GemmlikeOp<"op.gemv"> {
+def Cinm_GemvOp : Cinm_GemmlikeOp<"op.gemv", "GemvOp"> {
   let summary = "Generalized Matrix Vector Multiplication";
 }
 
-def Cinm_BatchGemmOp : Cinm_GemmlikeOp<"op.batch_gemm"> {
+def Cinm_BatchGemmOp : Cinm_GemmlikeOp<"op.batch_gemm", "BatchGemmOp"> {
   let summary = "Batched matrix multiplication";
   let description = [{}];
 }
 
-def Cinm_BatchGemvOp : Cinm_GemmlikeOp<"op.batch_gemv"> {
+def Cinm_BatchGemvOp : Cinm_GemmlikeOp<"op.batch_gemv", "BatchGemvOp"> {
   let summary = "Batched matrix vector multiplication";
   let description = [{}];
 }
