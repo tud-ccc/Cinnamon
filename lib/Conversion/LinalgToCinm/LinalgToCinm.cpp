@@ -279,7 +279,6 @@ static LogicalResult rewriteActivationGeneric(linalg::GenericOp op,
   else
     return failure();
 
-  auto kindAttr = cinm::ActivationKindAttr::get(rewriter.getContext(), *kind);
   Value inputVal = op.getDpsInputs()[0];
   Value outputVal = op.getDpsInits()[0];
 
@@ -287,17 +286,14 @@ static LogicalResult rewriteActivationGeneric(linalg::GenericOp op,
   if (!op->getResults().empty()) {
     if (!isTensor(inputVal) || !isTensor(op->getResult(0)))
       return failure();
-    auto resultTy = cast<RankedTensorType>(op->getResult(0).getType());
-    auto act = rewriter.create<cinm::ActivateOp>(op.getLoc(), resultTy,
-                                                 kindAttr, inputVal, Value());
+    auto act = cinm::ActivateOp::create(rewriter, op.getLoc(), *kind, inputVal);
     rewriter.replaceOp(op, act.getResult());
     return success();
   }
 
   if (!isMemRef(inputVal) || !isMemRef(outputVal))
     return failure();
-  rewriter.replaceOpWithNewOp<cinm::ActivateOp>(op, Type(), kindAttr, inputVal,
-                                                outputVal);
+  rewriter.replaceOpWithNewOp<cinm::ActivateOp>(op, *kind, inputVal, outputVal);
   return success();
 }
 
@@ -320,7 +316,6 @@ static LogicalResult rewriteActivationMap(linalg::MapOp op,
   else
     return failure();
 
-  auto kindAttr = cinm::ActivationKindAttr::get(rewriter.getContext(), *kind);
   Value inputVal = op.getInputs()[0];
   Value initVal = op.getInit();
 
@@ -328,16 +323,13 @@ static LogicalResult rewriteActivationMap(linalg::MapOp op,
   if (op->getResults().empty()) {
     if (!isMemRef(inputVal) || !isMemRef(initVal))
       return failure();
-    rewriter.replaceOpWithNewOp<cinm::ActivateOp>(op, Type(), kindAttr,
-                                                  inputVal, initVal);
+    rewriter.replaceOpWithNewOp<cinm::ActivateOp>(op, *kind, inputVal, initVal);
     return success();
   }
 
   if (!isTensor(inputVal) || !isTensor(op->getResult(0)))
     return failure();
-  auto resultTy = cast<RankedTensorType>(op->getResult(0).getType());
-  auto act = rewriter.create<cinm::ActivateOp>(op.getLoc(), resultTy, kindAttr,
-                                               inputVal, Value());
+  auto act = cinm::ActivateOp::create(rewriter, op.getLoc(), *kind, inputVal);
   rewriter.replaceOp(op, act.getResult());
   return success();
 }
@@ -369,14 +361,14 @@ static LogicalResult rewriteAddSubGeneric(linalg::GenericOp op,
 
     switch (*kind) {
     case BinaryElementwiseKind::Add: {
-      auto add = rewriter.create<cinm::ElementwiseOp>(
-          loc, resultTy, cinm::ElementwiseKind::Add, lhs, rhs, Value());
+      auto add = cinm::ElementwiseOp::create(
+          rewriter, loc, cinm::ElementwiseKind::Add, lhs, rhs);
       rewriter.replaceOp(op, add.getResult());
       return success();
     }
     case BinaryElementwiseKind::Sub: {
-      auto sub = rewriter.create<cinm::ElementwiseOp>(
-          loc, resultTy, cinm::ElementwiseKind::Sub, lhs, rhs, Value());
+      auto sub = cinm::ElementwiseOp::create(
+          rewriter, loc, cinm::ElementwiseKind::Sub, lhs, rhs);
       rewriter.replaceOp(op, sub.getResult());
       return success();
     }
@@ -396,19 +388,19 @@ static LogicalResult rewriteAddSubGeneric(linalg::GenericOp op,
       return failure();
 
     auto cloned =
-        rewriter.create<arith::ConstantOp>(loc, match->second.getValue());
+        arith::ConstantOp::create(rewriter, loc, match->second.getValue());
     switch (match->first) {
     case BinaryElementwiseKind::Add: {
-      auto adds = rewriter.create<cinm::ElementwiseOp>(
-          loc, resultTy, cinm::ElementwiseKind::Add, tensor, cloned.getResult(),
-          Value());
+      auto adds =
+          cinm::ElementwiseOp::create(rewriter, loc, cinm::ElementwiseKind::Add,
+                                      tensor, cloned.getResult());
       rewriter.replaceOp(op, adds.getResult());
       return success();
     }
     case BinaryElementwiseKind::Sub: {
-      auto subs = rewriter.create<cinm::ElementwiseOp>(
-          loc, resultTy, cinm::ElementwiseKind::Sub, tensor, cloned.getResult(),
-          Value());
+      auto subs =
+          cinm::ElementwiseOp::create(rewriter, loc, cinm::ElementwiseKind::Sub,
+                                      tensor, cloned.getResult());
       rewriter.replaceOp(op, subs.getResult());
       return success();
     }
@@ -430,7 +422,7 @@ static LogicalResult rewriteAddSubMap(linalg::MapOp op, IRRewriter &rewriter) {
     return failure();
 
   auto resultTy = dyn_cast<RankedTensorType>(op->getResult(0).getType());
-  if (!resultTy)
+  if (!op->getResult(0))
     return failure();
 
   rewriter.setInsertionPoint(op);
@@ -451,14 +443,14 @@ static LogicalResult rewriteAddSubMap(linalg::MapOp op, IRRewriter &rewriter) {
 
     switch (*kind) {
     case BinaryElementwiseKind::Add: {
-      auto add = rewriter.create<cinm::ElementwiseOp>(
-          loc, resultTy, cinm::ElementwiseKind::Add, lhs, rhs, Value());
+      auto add = cinm::ElementwiseOp::create(
+          rewriter, loc, cinm::ElementwiseKind::Add, lhs, rhs);
       rewriter.replaceOp(op, add.getResult());
       return success();
     }
     case BinaryElementwiseKind::Sub: {
-      auto sub = rewriter.create<cinm::ElementwiseOp>(
-          loc, resultTy, cinm::ElementwiseKind::Sub, lhs, rhs, Value());
+      auto sub = cinm::ElementwiseOp::create(
+          rewriter, loc, cinm::ElementwiseKind::Sub, lhs, rhs);
       rewriter.replaceOp(op, sub.getResult());
       return success();
     }
@@ -477,19 +469,19 @@ static LogicalResult rewriteAddSubMap(linalg::MapOp op, IRRewriter &rewriter) {
       return failure();
 
     auto cloned =
-        rewriter.create<arith::ConstantOp>(loc, match->second.getValue());
+        arith::ConstantOp::create(rewriter, loc, match->second.getValue());
     switch (match->first) {
     case BinaryElementwiseKind::Add: {
-      auto adds = rewriter.create<cinm::ElementwiseOp>(
-          loc, resultTy, cinm::ElementwiseKind::Add, tensor, cloned.getResult(),
-          Value());
+      auto adds =
+          cinm::ElementwiseOp::create(rewriter, loc, cinm::ElementwiseKind::Add,
+                                      tensor, cloned.getResult());
       rewriter.replaceOp(op, adds.getResult());
       return success();
     }
     case BinaryElementwiseKind::Sub: {
-      auto subs = rewriter.create<cinm::ElementwiseOp>(
-          loc, resultTy, cinm::ElementwiseKind::Sub, tensor, cloned.getResult(),
-          Value());
+      auto subs =
+          cinm::ElementwiseOp::create(rewriter, loc, cinm::ElementwiseKind::Sub,
+                                      tensor, cloned.getResult());
       rewriter.replaceOp(op, subs.getResult());
       return success();
     }
@@ -543,8 +535,8 @@ static Value collapseTensor(PatternRewriter &rewriter, Location loc,
   if (!tensorTy)
     return value;
   auto collapsedTy = computeCollapsedType(tensorTy, reassoc);
-  return rewriter.create<tensor::CollapseShapeOp>(loc, collapsedTy, value,
-                                                  reassoc);
+  return tensor::CollapseShapeOp::create(rewriter, loc, collapsedTy, value,
+                                         reassoc);
 }
 
 static Value expandTensor(PatternRewriter &rewriter, Location loc, Value value,
@@ -552,8 +544,8 @@ static Value expandTensor(PatternRewriter &rewriter, Location loc, Value value,
                           ArrayRef<ReassociationIndices> reassoc) {
   if (reassoc.empty())
     return value;
-  return rewriter.create<tensor::ExpandShapeOp>(loc, targetType, value,
-                                                reassoc);
+  return tensor::ExpandShapeOp::create(rewriter, loc, targetType, value,
+                                       reassoc);
 }
 
 struct MatmulToCinm : public OpConversionPattern<linalg::MatmulOp> {
@@ -575,16 +567,14 @@ struct MatmulToCinm : public OpConversionPattern<linalg::MatmulOp> {
       if (!isTensor(A) || !isTensor(B) || !isTensor(op->getResult(0)))
         return rewriter.notifyMatchFailure(op,
                                            "requires tensor operands/results");
-      auto resultTy = cast<RankedTensorType>(op->getResult(0).getType());
-      auto gemm = rewriter.create<cinm::GemmOp>(op.getLoc(), resultTy, A, B,
-                                                Value(), Value());
+      auto gemm = cinm::GemmOp::create(rewriter, op.getLoc(), A, B);
       rewriter.replaceOp(op, gemm.getResult());
       return success();
     }
 
     if (!isMemRef(A) || !isMemRef(B) || !isMemRef(C))
       return rewriter.notifyMatchFailure(op, "requires memref operands/outs");
-    rewriter.replaceOpWithNewOp<cinm::GemmOp>(op, Type(), A, B, Value(), C);
+    rewriter.replaceOpWithNewOp<cinm::GemmOp>(op, A, B, Value(), C);
     return success();
   }
 };
@@ -608,16 +598,14 @@ struct MatvecToCinm : public OpConversionPattern<linalg::MatvecOp> {
       if (!isTensor(A) || !isTensor(x) || !isTensor(op->getResult(0)))
         return rewriter.notifyMatchFailure(op,
                                            "requires tensor operands/results");
-      auto resultTy = cast<RankedTensorType>(op->getResult(0).getType());
-      auto gemv = rewriter.create<cinm::GemvOp>(op.getLoc(), resultTy, A, x,
-                                                Value(), Value());
+      auto gemv = cinm::GemvOp::create(rewriter, op.getLoc(), A, x);
       rewriter.replaceOp(op, gemv.getResult());
       return success();
     }
 
     if (!isMemRef(A) || !isMemRef(x) || !isMemRef(y))
       return rewriter.notifyMatchFailure(op, "requires memref operands/outs");
-    rewriter.replaceOpWithNewOp<cinm::GemvOp>(op, Type(), A, x, Value(), y);
+    rewriter.replaceOpWithNewOp<cinm::GemvOp>(op, A, x, Value(), y);
     return success();
   }
 };
@@ -640,7 +628,7 @@ struct BatchMatmulToCinm : public OpConversionPattern<linalg::BatchMatmulOp> {
       if (!isTensor(A) || !isTensor(B) || !isTensor(op->getResult(0)))
         return rewriter.notifyMatchFailure(op,
                                            "requires tensor operands/results");
-      auto batch = rewriter.create<cinm::BatchGemmOp>(op.getLoc(), A, B);
+      auto batch = cinm::BatchGemmOp::create(rewriter, op.getLoc(), A, B);
       rewriter.replaceOp(op, batch.getResult());
       return success();
     }
@@ -680,7 +668,6 @@ struct GenericActivationToCinm : public OpConversionPattern<linalg::GenericOp> {
     if (!kind)
       return rewriter.notifyMatchFailure(op, "not a recognized activation");
 
-    auto kindAttr = cinm::ActivationKindAttr::get(rewriter.getContext(), *kind);
     Value inputVal = op.getDpsInputs()[0];
     Value outputVal = op.getDpsInits()[0];
 
@@ -688,17 +675,16 @@ struct GenericActivationToCinm : public OpConversionPattern<linalg::GenericOp> {
       if (!isTensor(inputVal) || !isTensor(op->getResult(0)))
         return rewriter.notifyMatchFailure(op,
                                            "requires tensor operands/results");
-      auto resultTy = cast<RankedTensorType>(op->getResult(0).getType());
-      auto act = rewriter.create<cinm::ActivateOp>(op.getLoc(), resultTy,
-                                                   kindAttr, inputVal, Value());
+      auto act = cinm::ActivateOp::create(rewriter, op.getLoc(), *kind,
+                                          inputVal, Value());
       rewriter.replaceOp(op, act.getResult());
       return success();
     }
 
     if (!isMemRef(inputVal) || !isMemRef(outputVal))
       return rewriter.notifyMatchFailure(op, "requires memref input/out");
-    rewriter.replaceOpWithNewOp<cinm::ActivateOp>(op, Type(), kindAttr,
-                                                  inputVal, outputVal);
+    rewriter.replaceOpWithNewOp<cinm::ActivateOp>(op, *kind, inputVal,
+                                                  outputVal);
     return success();
   }
 };
@@ -733,15 +719,14 @@ struct MapActivationToCinm : public OpConversionPattern<linalg::MapOp> {
     if (!kind)
       return rewriter.notifyMatchFailure(op, "not a recognized activation");
 
-    auto kindAttr = cinm::ActivationKindAttr::get(rewriter.getContext(), *kind);
     Value inputVal = op.getInputs()[0];
     Value initVal = op.getInit();
 
     if (op->getResults().empty()) {
       if (!isMemRef(inputVal) || !isMemRef(initVal))
         return rewriter.notifyMatchFailure(op, "requires memref input/out");
-      rewriter.replaceOpWithNewOp<cinm::ActivateOp>(op, Type(), kindAttr,
-                                                    inputVal, initVal);
+      rewriter.replaceOpWithNewOp<cinm::ActivateOp>(op, *kind, inputVal,
+                                                    initVal);
       return success();
     }
 
@@ -749,9 +734,7 @@ struct MapActivationToCinm : public OpConversionPattern<linalg::MapOp> {
       return rewriter.notifyMatchFailure(op,
                                          "requires tensor operands/results");
 
-    auto resultTy = cast<RankedTensorType>(op->getResult(0).getType());
-    auto act = rewriter.create<cinm::ActivateOp>(op.getLoc(), resultTy,
-                                                 kindAttr, inputVal, Value());
+    auto act = cinm::ActivateOp::create(rewriter, op.getLoc(), *kind, inputVal);
     rewriter.replaceOp(op, act.getResult());
     return success();
   }
@@ -773,8 +756,7 @@ struct MapAddSubToCinm : public OpConversionPattern<linalg::MapOp> {
     if (op->getResults().empty())
       return rewriter.notifyMatchFailure(op, "memref path not supported yet");
 
-    auto resultTy = dyn_cast<RankedTensorType>(op->getResult(0).getType());
-    if (!resultTy)
+    if (!op->getResult(0))
       return rewriter.notifyMatchFailure(op, "requires ranked tensor result");
 
     Location loc = op.getLoc();
@@ -791,14 +773,14 @@ struct MapAddSubToCinm : public OpConversionPattern<linalg::MapOp> {
 
       switch (*kind) {
       case BinaryElementwiseKind::Add: {
-        auto add = rewriter.create<cinm::ElementwiseOp>(
-            loc, resultTy, cinm::ElementwiseKind::Add, lhs, rhs, Value());
+        auto add = cinm::ElementwiseOp::create(
+            rewriter, loc, cinm::ElementwiseKind::Add, lhs, rhs, Value());
         rewriter.replaceOp(op, add.getResult());
         return success();
       }
       case BinaryElementwiseKind::Sub: {
-        auto sub = rewriter.create<cinm::ElementwiseOp>(
-            loc, resultTy, cinm::ElementwiseKind::Sub, lhs, rhs, Value());
+        auto sub = cinm::ElementwiseOp::create(
+            rewriter, loc, cinm::ElementwiseKind::Sub, lhs, rhs, Value());
         rewriter.replaceOp(op, sub.getResult());
         return success();
       }
@@ -815,19 +797,19 @@ struct MapAddSubToCinm : public OpConversionPattern<linalg::MapOp> {
 
       BinaryElementwiseKind kind = match->first;
       auto cstOp = match->second;
-      auto cloned = rewriter.create<arith::ConstantOp>(loc, cstOp.getValue());
+      auto cloned = arith::ConstantOp::create(rewriter, loc, cstOp.getValue());
 
       switch (kind) {
       case BinaryElementwiseKind::Add: {
-        auto adds = rewriter.create<cinm::ElementwiseOp>(
-            loc, resultTy, cinm::ElementwiseKind::Add, tensor,
+        auto adds = cinm::ElementwiseOp::create(
+            rewriter, loc, cinm::ElementwiseKind::Add, tensor,
             cloned.getResult(), Value());
         rewriter.replaceOp(op, adds.getResult());
         return success();
       }
       case BinaryElementwiseKind::Sub: {
-        auto subs = rewriter.create<cinm::ElementwiseOp>(
-            loc, resultTy, cinm::ElementwiseKind::Sub, tensor,
+        auto subs = cinm::ElementwiseOp::create(
+            rewriter, loc, cinm::ElementwiseKind::Sub, tensor,
             cloned.getResult(), Value());
         rewriter.replaceOp(op, subs.getResult());
         return success();
@@ -872,9 +854,8 @@ struct BatchMatvecToCinm : public OpConversionPattern<linalg::BatchMatvecOp> {
         lhsType.getElementType() != outType.getElementType())
       return rewriter.notifyMatchFailure(op, "incompatible shapes");
 
-    auto resultTy = cast<RankedTensorType>(op->getResult(0).getType());
-    rewriter.replaceOpWithNewOp<cinm::BatchGemvOp>(
-        op, resultTy, op.getInputs()[0], op.getInputs()[1]);
+    rewriter.replaceOpWithNewOp<cinm::BatchGemvOp>(op, op.getInputs()[0],
+                                                   op.getInputs()[1]);
     return success();
   }
 };
@@ -897,8 +878,7 @@ struct GenericAddSubToCinm : public OpConversionPattern<linalg::GenericOp> {
     if (op->getResults().empty())
       return rewriter.notifyMatchFailure(op, "memref path not supported yet");
 
-    auto resultTy = dyn_cast<RankedTensorType>(op->getResult(0).getType());
-    if (!resultTy)
+    if (!op.getResult(0))
       return rewriter.notifyMatchFailure(op, "requires ranked tensor result");
 
     Location loc = op.getLoc();
@@ -915,14 +895,14 @@ struct GenericAddSubToCinm : public OpConversionPattern<linalg::GenericOp> {
 
       switch (*kind) {
       case BinaryElementwiseKind::Add: {
-        auto add = rewriter.create<cinm::ElementwiseOp>(
-            loc, resultTy, cinm::ElementwiseKind::Add, lhs, rhs, Value());
+        auto add = cinm::ElementwiseOp::create(
+            rewriter, loc, cinm::ElementwiseKind::Add, lhs, rhs, Value());
         rewriter.replaceOp(op, add.getResult());
         return success();
       }
       case BinaryElementwiseKind::Sub: {
-        auto sub = rewriter.create<cinm::ElementwiseOp>(
-            loc, resultTy, cinm::ElementwiseKind::Sub, lhs, rhs, Value());
+        auto sub = cinm::ElementwiseOp::create(
+            rewriter, loc, cinm::ElementwiseKind::Sub, lhs, rhs, Value());
         rewriter.replaceOp(op, sub.getResult());
         return success();
       }
@@ -939,19 +919,19 @@ struct GenericAddSubToCinm : public OpConversionPattern<linalg::GenericOp> {
 
       BinaryElementwiseKind kind = match->first;
       auto cstOp = match->second;
-      auto cloned = rewriter.create<arith::ConstantOp>(loc, cstOp.getValue());
+      auto cloned = arith::ConstantOp::create(rewriter, loc, cstOp.getValue());
 
       switch (kind) {
       case BinaryElementwiseKind::Add: {
-        auto adds = rewriter.create<cinm::ElementwiseOp>(
-            loc, resultTy, cinm::ElementwiseKind::Add, tensor,
+        auto adds = cinm::ElementwiseOp::create(
+            rewriter, loc, cinm::ElementwiseKind::Add, tensor,
             cloned.getResult(), Value());
         rewriter.replaceOp(op, adds.getResult());
         return success();
       }
       case BinaryElementwiseKind::Sub: {
-        auto subs = rewriter.create<cinm::ElementwiseOp>(
-            loc, resultTy, cinm::ElementwiseKind::Sub, tensor,
+        auto subs = cinm::ElementwiseOp::create(
+            rewriter, loc, cinm::ElementwiseKind::Sub, tensor,
             cloned.getResult(), Value());
         rewriter.replaceOp(op, subs.getResult());
         return success();
@@ -1129,23 +1109,22 @@ struct GenericContractionToCinm
     Value newResult;
     if (hasBatch) {
       if (!outNIdx.empty()) {
-        auto batchGemm =
-            rewriter.create<cinm::BatchGemmOp>(loc, collapsedLhs, collapsedRhs);
+        auto batchGemm = cinm::BatchGemmOp::create(rewriter, loc, collapsedLhs,
+                                                   collapsedRhs);
         newResult = batchGemm.getResult();
       } else {
-        auto batchGemv = rewriter.create<cinm::BatchGemvOp>(
-            loc, collapsedResultType, collapsedLhs, collapsedRhs);
+        auto batchGemv = cinm::BatchGemvOp::create(rewriter, loc, collapsedLhs,
+                                                   collapsedRhs);
         newResult = batchGemv.getResult();
       }
     } else {
       if (!outNIdx.empty()) {
-        auto gemm = rewriter.create<cinm::GemmOp>(
-            loc, collapsedResultType, ValueRange{collapsedLhs, collapsedRhs});
+        auto gemm =
+            cinm::GemmOp::create(rewriter, loc, collapsedLhs, collapsedRhs);
         newResult = gemm.getResult();
       } else {
-        auto gemv = rewriter.create<cinm::GemvOp>(loc, collapsedResultType,
-                                                  collapsedLhs, collapsedRhs,
-                                                  Value(), Value());
+        auto gemv =
+            cinm::GemvOp::create(rewriter, loc, collapsedLhs, collapsedRhs);
         newResult = gemv.getResult();
       }
     }
@@ -1170,7 +1149,7 @@ struct ConvertLinalgOpToCinm : OpConversionPattern<SourceOp> {
   matchAndRewrite(SourceOp op, SourceOp::Adaptor,
                   ConversionPatternRewriter &rewriter) const override {
     cinm::ComputeOp computeOp =
-        rewriter.create<cinm::ComputeOp>(op.getLoc(), op.getResultTypes());
+        cinm::ComputeOp::create(rewriter, op.getLoc(), op.getResultTypes());
     Block *computeBody = &computeOp.getRegion().front();
 
     rewriter.setInsertionPointToStart(computeBody);
@@ -1179,7 +1158,7 @@ struct ConvertLinalgOpToCinm : OpConversionPattern<SourceOp> {
       return failure();
     }
     auto cinmOp = *failureOrCinmOp;
-    rewriter.create<cinm::YieldOp>(op.getLoc(), cinmOp->getResults());
+    cinm::YieldOp::create(rewriter, op.getLoc(), cinmOp->getResults());
 
     rewriter.replaceOpWithMultiple(op, computeOp.getResults());
     computeOp.dump();
@@ -1190,18 +1169,17 @@ struct ConvertLinalgOpToCinm : OpConversionPattern<SourceOp> {
 template <> struct LinalgToCinmOpBuilder<linalg::MatmulOp> {
   static FailureOr<cinm::GemmOp> build(ConversionPatternRewriter &rewriter,
                                        linalg::MatmulOp sourceOp) {
-    return rewriter.create<cinm::GemmOp>(
-        sourceOp.getLoc(), sourceOp.getOperand(0), sourceOp.getOperand(1),
-        Value(), Value());
+    return cinm::GemmOp::create(rewriter, sourceOp.getLoc(),
+                                sourceOp.getOperand(0), sourceOp.getOperand(1));
   }
 };
 
 template <> struct LinalgToCinmOpBuilder<linalg::MatvecOp> {
   static FailureOr<cinm::GemvOp> build(ConversionPatternRewriter &rewriter,
                                        linalg::MatvecOp sourceOp) {
-    return rewriter.create<cinm::GemvOp>(
-        sourceOp.getLoc(), sourceOp.getResultTypes()[0], sourceOp.getOperand(0),
-        sourceOp.getOperand(1), Value(), Value());
+    return cinm::GemvOp::create(rewriter, sourceOp.getLoc(),
+                                sourceOp.getOperand(0), sourceOp.getOperand(1),
+                                Value(), Value());
   }
 };
 
@@ -1270,9 +1248,9 @@ template <> struct LinalgToCinmOpBuilder<linalg::ReduceOp> {
     if (failed(m)) {
       return failure();
     }
-    return rewriter.create<cinm::ReduceOp>(sourceOp.getLoc(),
-                                           sourceOp.getResultTypes()[0], *m,
-                                           sourceOp.getOperand(0));
+    return cinm::ReduceOp::create(rewriter, sourceOp.getLoc(),
+                                  sourceOp.getResultTypes()[0], *m,
+                                  sourceOp.getOperand(0));
   }
 };
 
@@ -1284,8 +1262,8 @@ struct ElementwiseOpBuilder {
   build(ConversionPatternRewriter &rewriter, LinalgOp sourceOp) {
     ValueRange inputs = sourceOp.getInputs();
     ValueRange outputs = sourceOp.getOutputs();
-    return rewriter.create<cinm::ElementwiseOp>(
-        sourceOp.getLoc(), sourceOp.getResultTypes()[0], Kind, inputs[0],
+    return cinm::ElementwiseOp::create(
+        rewriter, sourceOp.getLoc(), Kind, inputs[0],
         inputs.size() > 1 ? inputs[1] : Value(),
         outputs.size() >= 1 ? outputs[0] : Value());
   }
@@ -1394,44 +1372,44 @@ struct ConvertLinalgGenericOpToCinm : OpConversionPattern<linalg::GenericOp> {
                      ValueRange operands, Location loc) {
     return TypeSwitch<mlir::Operation *, FailureOr<Operation *>>(srcOp)
         .Case<arith::AddIOp>([&](arith::AddIOp) {
-          return rewriter.create<cinm::ElementwiseOp>(
-              loc, srcOp->getResultTypes()[0], cinm::ElementwiseKind::Add,
-              operands[0], operands[1], Value());
+          return cinm::ElementwiseOp::create(rewriter, loc,
+                                             cinm::ElementwiseKind::Add,
+                                             operands[0], operands[1], Value());
         })
         .Case<arith::AddFOp>([&](arith::AddFOp) {
-          return rewriter.create<cinm::ElementwiseOp>(
-              loc, srcOp->getResultTypes()[0], cinm::ElementwiseKind::Add,
-              operands[0], operands[1], Value());
+          return cinm::ElementwiseOp::create(rewriter, loc,
+                                             cinm::ElementwiseKind::Add,
+                                             operands[0], operands[1], Value());
         })
         .Case<arith::SubIOp>([&](arith::SubIOp) {
-          return rewriter.create<cinm::ElementwiseOp>(
-              loc, srcOp->getResultTypes()[0], cinm::ElementwiseKind::Sub,
-              operands[0], operands[1], Value());
+          return cinm::ElementwiseOp::create(rewriter, loc,
+                                             cinm::ElementwiseKind::Sub,
+                                             operands[0], operands[1], Value());
         })
         .Case<arith::SubFOp>([&](arith::SubFOp) {
-          return rewriter.create<cinm::ElementwiseOp>(
-              loc, srcOp->getResultTypes()[0], cinm::ElementwiseKind::Sub,
-              operands[0], operands[1], Value());
+          return cinm::ElementwiseOp::create(rewriter, loc,
+                                             cinm::ElementwiseKind::Sub,
+                                             operands[0], operands[1], Value());
         })
         .Case<arith::MulIOp>([&](arith::MulIOp) {
-          return rewriter.create<cinm::ElementwiseOp>(
-              loc, srcOp->getResultTypes()[0], cinm::ElementwiseKind::Mul,
-              operands[0], operands[1], Value());
+          return cinm::ElementwiseOp::create(rewriter, loc,
+                                             cinm::ElementwiseKind::Mul,
+                                             operands[0], operands[1], Value());
         })
         .Case<arith::MulFOp>([&](arith::MulFOp) {
-          return rewriter.create<cinm::ElementwiseOp>(
-              loc, srcOp->getResultTypes()[0], cinm::ElementwiseKind::Mul,
-              operands[0], operands[1], Value());
+          return cinm::ElementwiseOp::create(rewriter, loc,
+                                             cinm::ElementwiseKind::Mul,
+                                             operands[0], operands[1], Value());
         })
         .Case<arith::DivSIOp>([&](arith::DivSIOp) {
-          return rewriter.create<cinm::ElementwiseOp>(
-              loc, srcOp->getResultTypes()[0], cinm::ElementwiseKind::Div,
-              operands[0], operands[1], Value());
+          return cinm::ElementwiseOp::create(rewriter, loc,
+                                             cinm::ElementwiseKind::Div,
+                                             operands[0], operands[1], Value());
         })
         .Case<arith::DivFOp>([&](arith::DivFOp) {
-          return rewriter.create<cinm::ElementwiseOp>(
-              loc, srcOp->getResultTypes()[0], cinm::ElementwiseKind::Div,
-              operands[0], operands[1], Value());
+          return cinm::ElementwiseOp::create(rewriter, loc,
+                                             cinm::ElementwiseKind::Div,
+                                             operands[0], operands[1], Value());
         })
         .Default([&](Operation *) {
           // unsupported elementwise operation
@@ -1450,8 +1428,8 @@ struct ConvertLinalgGenericOpToCinm : OpConversionPattern<linalg::GenericOp> {
     }
 
     // create cinm op corresponding to the current operation
-    cinm::ComputeOp computeOp = rewriter.create<cinm::ComputeOp>(
-        op.getLoc(), mappedOperands[0].getType());
+    cinm::ComputeOp computeOp = cinm::ComputeOp::create(
+        rewriter, op.getLoc(), mappedOperands[0].getType());
     Block *computeBody = &computeOp.getBody().front();
 
     rewriter.setInsertionPointToStart(computeBody);
@@ -1463,7 +1441,7 @@ struct ConvertLinalgGenericOpToCinm : OpConversionPattern<linalg::GenericOp> {
     }
 
     auto cinmOp = *failureOrCinmOp;
-    rewriter.create<cinm::YieldOp>(op.getLoc(), cinmOp->getResults());
+    cinm::YieldOp::create(rewriter, op.getLoc(), cinmOp->getResults());
 
     for (size_t i = 0; i < op.getNumResults(); i++) {
       mapper.map(op.getResult(i), computeOp.getResult(i));
@@ -1545,44 +1523,44 @@ struct ConvertLinalgGenericOpToCinm : OpConversionPattern<linalg::GenericOp> {
                    Value operand, Location loc) {
     return TypeSwitch<mlir::Operation *, FailureOr<Operation *>>(srcOp)
         .Case<arith::AddIOp>([&](arith::AddIOp) {
-          return rewriter.create<cinm::ReduceOp>(
-              loc, srcOp->getResultTypes()[0], cinm::ReduceMethod::ADD,
-              operand);
+          return cinm::ReduceOp::create(rewriter, loc,
+                                        srcOp->getResultTypes()[0],
+                                        cinm::ReduceMethod::ADD, operand);
         })
         .Case<arith::AddFOp>([&](arith::AddFOp) {
-          return rewriter.create<cinm::ReduceOp>(
-              loc, srcOp->getResultTypes()[0], cinm::ReduceMethod::MUL,
-              operand);
+          return cinm::ReduceOp::create(rewriter, loc,
+                                        srcOp->getResultTypes()[0],
+                                        cinm::ReduceMethod::MUL, operand);
         })
         .Case<arith::MulIOp>([&](arith::MulIOp) {
-          return rewriter.create<cinm::ReduceOp>(
-              loc, srcOp->getResultTypes()[0], cinm::ReduceMethod::MUL,
-              operand);
+          return cinm::ReduceOp::create(rewriter, loc,
+                                        srcOp->getResultTypes()[0],
+                                        cinm::ReduceMethod::MUL, operand);
         })
         .Case<arith::MulFOp>([&](arith::MulFOp) {
-          return rewriter.create<cinm::ReduceOp>(
-              loc, srcOp->getResultTypes()[0], cinm::ReduceMethod::MUL,
-              operand);
+          return cinm::ReduceOp::create(rewriter, loc,
+                                        srcOp->getResultTypes()[0],
+                                        cinm::ReduceMethod::MUL, operand);
         })
         .Case<arith::MinSIOp>([&](arith::MinSIOp) {
-          return rewriter.create<cinm::ReduceOp>(
-              loc, srcOp->getResultTypes()[0], cinm::ReduceMethod::MIN,
-              operand);
+          return cinm::ReduceOp::create(rewriter, loc,
+                                        srcOp->getResultTypes()[0],
+                                        cinm::ReduceMethod::MIN, operand);
         })
         .Case<arith::MinimumFOp>([&](arith::MinimumFOp) {
-          return rewriter.create<cinm::ReduceOp>(
-              loc, srcOp->getResultTypes()[0], cinm::ReduceMethod::MIN,
-              operand);
+          return cinm::ReduceOp::create(rewriter, loc,
+                                        srcOp->getResultTypes()[0],
+                                        cinm::ReduceMethod::MIN, operand);
         })
         .Case<arith::MaxSIOp>([&](arith::MaxSIOp) {
-          return rewriter.create<cinm::ReduceOp>(
-              loc, srcOp->getResultTypes()[0], cinm::ReduceMethod::MAX,
-              operand);
+          return cinm::ReduceOp::create(rewriter, loc,
+                                        srcOp->getResultTypes()[0],
+                                        cinm::ReduceMethod::MAX, operand);
         })
         .Case<arith::MaximumFOp>([&](arith::MaximumFOp) {
-          return rewriter.create<cinm::ReduceOp>(
-              loc, srcOp->getResultTypes()[0], cinm::ReduceMethod::MAX,
-              operand);
+          return cinm::ReduceOp::create(rewriter, loc,
+                                        srcOp->getResultTypes()[0],
+                                        cinm::ReduceMethod::MAX, operand);
         })
         .Default([&](Operation *) {
           // unsupported elementwise operation
@@ -1598,7 +1576,7 @@ struct ConvertLinalgGenericOpToCinm : OpConversionPattern<linalg::GenericOp> {
     // create cinm op corresponding to the current operation
     Value operand = mapper.lookupOrDefault(op.getOperand(1));
     cinm::ComputeOp computeOp =
-        rewriter.create<cinm::ComputeOp>(op.getLoc(), operand.getType());
+        cinm::ComputeOp::create(rewriter, op.getLoc(), operand.getType());
     Block *computeBody = &computeOp.getRegion().front();
 
     rewriter.setInsertionPointToStart(computeBody);
@@ -1610,7 +1588,7 @@ struct ConvertLinalgGenericOpToCinm : OpConversionPattern<linalg::GenericOp> {
     }
 
     auto cinmOp = *failureOrCinmOp;
-    rewriter.create<cinm::YieldOp>(op.getLoc(), cinmOp->getResults());
+    cinm::YieldOp::create(rewriter, op.getLoc(), cinmOp->getResults());
 
     for (size_t i = 0; i < op.getNumResults(); i++) {
       mapper.map(op.getResult(i), computeOp.getResult(i));

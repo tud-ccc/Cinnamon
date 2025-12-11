@@ -49,9 +49,19 @@ def Cinm_ElementwiseOp
     }];
 
     let hasCustomAssemblyFormat = true;
+
+    let skipDefaultBuilders = 1;
+    let builders = [
+      OpBuilder<(ins "cinm::ElementwiseKind":$kind, "Value":$a, "Value":$b, "Value":$out)>,
+      OpBuilder<(ins "cinm::ElementwiseKind":$kind, "Value":$a, "Value":$b),
+        "build($_builder, $_state, kind, a, b, Value{});">,
+      OpBuilder<(ins "cinm::ElementwiseKind":$kind, "Value":$a),
+        "build($_builder, $_state, kind, a, Value{}, Value{});">
+    ];
 }
 
-def Cinm_GemmOp : Cinm_Op<"op.gemm", [
+class Cinm_GemmlikeOp<string name> : Cinm_Op<name, 
+  [
     Pure,
     InferTensorTypeAdaptor,
     DeclareOpInterfaceMethods<CinmTilingInterface>,
@@ -60,81 +70,46 @@ def Cinm_GemmOp : Cinm_Op<"op.gemm", [
     AttrSizedOperandSegments
   ]> {
 
-  let summary = "Generalized Matrix Matrix Multiplication operation";
-  let description = [{
-    TODO
-  }];
-
   let arguments = (ins
       AnyShaped:$lhs,
       AnyShaped:$rhs,
       Optional<AnyShaped>:$bias,
-      Optional<AnyType>:$out
+      Optional<AnyMemRef>:$out
   );
 
-  let results = (outs Optional<AnyShaped>:$result);
+  let results = (outs Optional<AnyRankedTensor>:$result);
+  let assemblyFormat = 
+    "$lhs `,` $rhs (`plus` $bias^)? (`into` $out^)? attr-dict `:` type($lhs) `,` type($rhs) (`into` type($out)^):(`->` type($result))?";
 
-  let hasCustomAssemblyFormat = true;
+  let skipDefaultBuilders = 1;
+  let builders = [
+    OpBuilder<(ins "Value":$left, "Value":$right, "Value":$bias, "Value":$out), 
+      "buildGemmLikeOp($_builder, $_state, left, right, bias, out);">,
+    OpBuilder<(ins "Value":$left, "Value":$right, "Value":$bias),
+      "build($_builder, $_state, left, right, bias, Value{});">,
+    OpBuilder<(ins "Value":$left, "Value":$right),
+      "build($_builder, $_state, left, right, Value{}, Value{});">
+  ];
 }
 
-def Cinm_GemvOp : Cinm_Op<"op.gemv",
-  [ Pure,
-    InferTensorTypeAdaptor,
-    DeclareOpInterfaceMethods<CinmTilingInterface>,
-    OptionalTypesMatchWith<
-      "bias should have compatible type", "result", "bias", "$_self">,
-    AttrSizedOperandSegments
-  ]> {
+def Cinm_GemmOp : Cinm_GemmlikeOp<"op.gemm"> {
+
+  let summary = "Generalized Matrix Matrix Multiplication operation";
+
+}
+
+def Cinm_GemvOp : Cinm_GemmlikeOp<"op.gemv"> {
   let summary = "Generalized Matrix Vector Multiplication";
-
-  let arguments = (ins
-    AnyShaped:$lhs,
-    AnyShaped:$rhs,
-    Optional<AnyShaped>:$bias,
-    Optional<AnyType>:$out
-  );
-
-  let results = (outs Optional<AnyShaped>:$result);
-
-  let hasCustomAssemblyFormat = true;
 }
 
-def Cinm_BatchGemmOp : Cinm_Op<"op.batch_gemm",
-    [Pure, InferTensorTypeAdaptor, DeclareOpInterfaceMethods<CinmTilingInterface>,
-     OptionalTypesMatchWith<"bias should have compatible type", "result", "bias", "$_self">]> {
+def Cinm_BatchGemmOp : Cinm_GemmlikeOp<"op.batch_gemm"> {
   let summary = "Batched matrix multiplication";
   let description = [{}];
-
-  let arguments = (ins AnyShaped:$left,
-                        AnyShaped:$right,
-                        Optional<AnyShaped>:$bias);
-  let results = (outs AnyShaped:$result);
-  let assemblyFormat = "$left `,` $right (`plus` $bias^)? attr-dict `:` `(` type($left) `,` type($right) `)` `->` type($result)";
-
-  let builders=[
-    OpBuilder<(ins "Value":$left, "Value":$right),
-      "build($_builder, $_state, ValueRange{left, right});">
-  ];
 }
 
-def Cinm_BatchGemvOp : Cinm_Op<"op.batch_gemv",
-    [Pure, InferTensorTypeAdaptor, DeclareOpInterfaceMethods<CinmTilingInterface>,
-     OptionalTypesMatchWith<"bias should have compatible type", "result", "bias", "$_self">]> {
+def Cinm_BatchGemvOp : Cinm_GemmlikeOp<"op.batch_gemv"> {
   let summary = "Batched matrix vector multiplication";
   let description = [{}];
-
-  let arguments = (ins AnyShaped:$left,
-                        AnyShaped:$right,
-                        Optional<AnyShaped>:$bias);
-  let results = (outs AnyShaped:$result);
-
-  let assemblyFormat =
-    "$left `,` $right (`plus` $bias^)? attr-dict `:` `(` type($left) `,` type($right) (`,` type($bias)^)? `)` `->` type($result)";
-
-  let builders = [
-    OpBuilder<(ins "Type":$result, "Value":$left, "Value":$right),
-      "build($_builder, $_state, TypeRange{result}, ValueRange{left, right});">
-  ];
 }
 
 
@@ -424,15 +399,15 @@ def Cinm_ActivateOp : Cinm_Op<"op.activate", [
   let arguments = (ins
     Cinm_ActivationKindAttr:$kind,
     AnyShaped:$input,
-    Optional<AnyShaped>:$out
+    Optional<AnyMemRef>:$out
   );
-  let results = (outs Optional<AnyShaped>:$result);
+  let results = (outs Optional<AnyRankedTensor>:$result);
 
+  let skipDefaultBuilders = 1;
   let builders=[
-    OpBuilder<(ins "ActivationKind":$kind, "TypedValue<TensorType>":$input),
-        "build($_builder, $_state, input.getType(), kind, input, Value());">,
-    OpBuilder<(ins "ActivationKind":$kind, "TypedValue<MemRefType>":$input, "TypedValue<MemRefType>":$output),
-        "build($_builder, $_state, Type(), kind, input, output);">
+    OpBuilder<(ins "ActivationKind":$kind, "Value":$input, "Value":$output)>,
+    OpBuilder<(ins "ActivationKind":$kind, "Value":$input),
+        "build($_builder, $_state, kind, input, Value{});">,
   ];
 
   let hasCustomAssemblyFormat = true;
@@ -461,7 +436,7 @@ def Cinm_QuantizeOp : Cinm_Op<"op.quantize", [Pure]> {
 
   let arguments = (ins
     AnyShaped:$src,
-    Optional<AnyShaped>:$out,
+    Optional<AnyMemRef>:$out,
     F32Attr:$scale,
     I64Attr:$zeroPoint,
     OptionalAttr<I64Attr>:$axis,
@@ -469,7 +444,7 @@ def Cinm_QuantizeOp : Cinm_Op<"op.quantize", [Pure]> {
     DefaultValuedAttr<BoolAttr, "false">:$narrowRange
   );
 
-  let results = (outs Optional<AnyShaped>:$result);
+  let results = (outs Optional<AnyRankedTensor>:$result);
 
   let hasCustomAssemblyFormat = true;
 }
@@ -494,13 +469,13 @@ def Cinm_DequantizeOp : Cinm_Op<"op.dequantize", [Pure]> {
 
   let arguments = (ins
     AnyShaped:$src,
-    Optional<AnyShaped>:$out,
+    Optional<AnyMemRef>:$out,
     F32Attr:$scale,
     I64Attr:$zeroPoint,
     OptionalAttr<I64Attr>:$axis
   );
 
-  let results = (outs Optional<AnyShaped>:$result);
+  let results = (outs Optional<AnyRankedTensor>:$result);
 
   let hasCustomAssemblyFormat = true;
 }

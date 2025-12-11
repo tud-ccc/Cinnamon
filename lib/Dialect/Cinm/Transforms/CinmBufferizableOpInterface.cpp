@@ -20,6 +20,24 @@
 
 using namespace mlir;
 
+namespace {
+
+static Value getReturnBuffer(OpBuilder &rewriter, Location loc,
+                             RankedTensorType bufTy) {
+
+  mlir::MemRefType dstMR = cast<mlir::MemRefType>(
+      bufferization::getMemRefTypeWithStaticIdentityLayout(bufTy));
+  // SmallVector<Value> dynDims;
+  // for (int64_t d = 0; d < bufTy.getRank(); ++d) {
+  //   if (bufTy.isDynamicDim(d)) {
+  //     Value cd = arith::ConstantIndexOp::create(rewriter, loc, d);
+  //     dynDims.push_back(tensor::DimOp::create(rewriter, loc, lhsT, cd));
+  //   }
+  // }
+  return memref::AllocOp::create(rewriter, loc, dstMR, ValueRange{});
+}
+
+} // namespace
 namespace mlir::cinm {
 
 static Value materializeZeroLikeTensor(RewriterBase &rewriter, Location loc,
@@ -232,16 +250,7 @@ struct GemmBufferizableInterface
     if (failed(aMem) || failed(bMem))
       return failure();
 
-    auto dstMR = cast<MemRefType>(
-        bufferization::getMemRefTypeWithStaticIdentityLayout(cRT));
-    SmallVector<Value> dynDims;
-    for (int64_t i = 0; i < cRT.getRank(); ++i)
-      if (cRT.isDynamicDim(i)) {
-        Value idx = arith::ConstantIndexOp::create(rewriter, loc, i);
-        dynDims.push_back(
-            tensor::DimOp::create(rewriter, loc, gemm.getResult(), idx));
-      }
-    Value dst = memref::AllocOp::create(rewriter, loc, dstMR, dynDims);
+    Value dst = getReturnBuffer(rewriter, loc, cRT);
 
     if (Value biasT = gemm.getBias()) {
       auto biasMem = bufferization::getBuffer(rewriter, biasT, options, state);
@@ -328,24 +337,7 @@ struct GemvBufferizableInterface
     if (failed(aMem) || failed(xMem))
       return failure();
 
-    auto yMR = cast<MemRefType>(
-        bufferization::getMemRefTypeWithStaticIdentityLayout(yRT));
-
-    SmallVector<Value> dynDims;
-    dynDims.reserve(yRT.getRank());
-    if (yRT.isDynamicDim(0)) {
-      Value c0 = arith::ConstantIndexOp::create(rewriter, loc, 0);
-      dynDims.push_back(tensor::DimOp::create(rewriter, loc, aT, c0));
-    }
-    for (int64_t d = 1; d < yRT.getRank(); ++d) {
-      if (yRT.isDynamicDim(d)) {
-        Value cd = arith::ConstantIndexOp::create(rewriter, loc, d);
-        dynDims.push_back(
-            tensor::DimOp::create(rewriter, loc, gemv.getResult(), cd));
-      }
-    }
-
-    Value dst = memref::AllocOp::create(rewriter, loc, yMR, dynDims);
+    Value dst = getReturnBuffer(rewriter, loc, yRT);
 
     if (Value biasT = gemv.getBias()) {
       auto biasMem = bufferization::getBuffer(rewriter, biasT, options, state);
@@ -354,7 +346,7 @@ struct GemvBufferizableInterface
       memref::CopyOp::create(rewriter, loc, *biasMem, dst);
     } else {
       Value zero =
-          materializeZeroLikeTensor(rewriter, loc, yMR.getElementType());
+          materializeZeroLikeTensor(rewriter, loc, yRT.getElementType());
       if (!zero)
         return op->emitError("cinm.gemv bufferize: unsupported element type"),
                failure();
@@ -418,51 +410,41 @@ struct ElementwiseBufferizableInterface
   }
 
   LogicalResult bufferize(Operation *op, RewriterBase &rewriter,
-                          const bufferization::BufferizationOptions &,
-                          bufferization::BufferizationState &) const {
+                          const bufferization::BufferizationOptions &options,
+                          bufferization::BufferizationState &state) const {
     auto add = cast<cinm::ElementwiseOp>(op);
     Location loc = add.getLoc();
 
-    Value lhsT = add.getLhs();
-    Value rhsT = add.getRhs();
-    auto lhsRT = dyn_cast<RankedTensorType>(lhsT.getType());
-    auto rhsRT = dyn_cast<RankedTensorType>(rhsT.getType());
-    auto resRT = dyn_cast<RankedTensorType>(add.getResult().getType());
-    if (!lhsRT || !rhsRT || !resRT)
-      return op->emitError("cinm.add bufferize: expected ranked tensor types"),
-             failure();
-    if (lhsRT.getShape() != rhsRT.getShape() ||
-        resRT.getShape() != lhsRT.getShape() ||
-        lhsRT.getElementType() != rhsRT.getElementType() ||
-        resRT.getElementType() != lhsRT.getElementType())
-      return op->emitError(
-                 "cinm.elementwise bufferize: mismatched shapes/element types"),
-             failure();
+    auto lhsMem =
+        bufferization::getBuffer(rewriter, add.getLhs(), options, state);
+    if (failed(lhsMem))
+      return failure();
 
-    auto lhsMR = bufferization::getMemRefTypeWithFullyDynamicLayout(lhsRT);
-    auto rhsMR = bufferization::getMemRefTypeWithFullyDynamicLayout(rhsRT);
-    Value lhsMem =
-        bufferization::ToBufferOp::create(rewriter, loc, lhsMR, lhsT, true);
-    Value rhsMem =
-        bufferization::ToBufferOp::create(rewriter, loc, rhsMR, rhsT, true);
-
-    auto dstMR = cast<MemRefType>(
-        bufferization::getMemRefTypeWithStaticIdentityLayout(resRT));
-    SmallVector<Value> dynDims;
-    for (int64_t d = 0; d < resRT.getRank(); ++d) {
-      if (resRT.isDynamicDim(d)) {
-        Value cd = arith::ConstantIndexOp::create(rewriter, loc, d);
-        dynDims.push_back(tensor::DimOp::create(rewriter, loc, lhsT, cd));
-      }
+    Value rhsMem;
+    if (add.getRhs()) {
+      auto rhsBuf =
+          bufferization::getBuffer(rewriter, add.getRhs(), options, state);
+      if (failed(rhsBuf))
+        return failure();
+      rhsMem = *rhsBuf;
     }
-    Value dst = memref::AllocOp::create(rewriter, loc, dstMR, dynDims);
+    Value dst;
+    if (add.getOut()) {
+      dst = add.getOut();
+    } else {
+      dst = getReturnBuffer(rewriter, loc, add.getResult().getType());
+    }
 
-    cinm::ElementwiseOp::create(rewriter, loc, Type(), add.getKind(), lhsMem,
-                                rhsMem, dst);
+    cinm::ElementwiseOp::create(rewriter, loc, add.getKind(), *lhsMem, rhsMem,
+                                dst);
 
-    Value outT = bufferization::ToTensorOp::create(rewriter, loc, resRT, dst,
-                                                   true, true);
-    rewriter.replaceOp(op, outT);
+    if (!add.getOut()) {
+      Value outT = bufferization::ToTensorOp::create(
+          rewriter, loc, add.getResult().getType(), dst, true, true);
+      rewriter.replaceOp(op, outT);
+    } else {
+      rewriter.eraseOp(op);
+    }
     return success();
   }
 };
@@ -710,18 +692,9 @@ struct ActivateBufferizableInterface
       }
     Value outMem = memref::AllocOp::create(rewriter, loc, outMR, dynDims);
 
-    cinm::ActivationKindAttr kindAttr = act.getKindAttr();
-    if (!kindAttr) {
-      if (auto intAttr = act->getAttrOfType<IntegerAttr>("kind")) {
-        auto kind = static_cast<cinm::ActivationKind>(intAttr.getInt());
-        kindAttr = cinm::ActivationKindAttr::get(op->getContext(), kind);
-      } else {
-        return op->emitError("cinm.activate missing 'kind' attribute"),
-               failure();
-      }
-    }
+    cinm::ActivationKind kind = act.getKind();
 
-    cinm::ActivateOp::create(rewriter, loc, Type(), kindAttr, inMem, outMem);
+    cinm::ActivateOp::create(rewriter, loc, kind, inMem, outMem);
 
     Value outT = bufferization::ToTensorOp::create(rewriter, loc, outRT, outMem,
                                                    true, true);

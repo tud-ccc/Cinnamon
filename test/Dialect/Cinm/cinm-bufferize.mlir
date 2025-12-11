@@ -35,3 +35,24 @@
         func.return %r0 : tensor<8xi32>
     }
 
+
+// CHECK-LABEL: eltwise
+func.func @simple(%t0: tensor<6x6xi32>, %t1 : tensor<6xf32> , %m0: memref<6xf32>) {
+    %d = cinm.compute attributes { workgroupShape= array<i64: 2,4,4,2> } -> tensor<6x6xi32> {
+        %x = cinm.op.elementwise add %t0, %t0: tensor<6x6xi32>
+        %y = cinm.op.elementwise sub %t0, %t0: tensor<6x6xi32>
+        %y2 = cinm.op.elementwise div %t0, %t0: tensor<6x6xi32>
+        %y8 = cinm.op.elementwise mul %t0, %t0: tensor<6x6xi32>
+        cinm.op.elementwise mul %t1, %t1 into %m0: tensor<6xf32> into memref<6xf32>
+
+        %000 = cinm.op.elementwise exp %t0: tensor<6x6xi32>
+        cinm.op.elementwise exp %t0 into %m0: tensor<6x6xi32> into memref<6xf32>
+
+        %sqrts = cinm.op.elementwise sqrt %x: tensor<6x6xi32>
+        %exps = cinm.op.elementwise exp %y: tensor<6x6xi32>
+
+        cinm.yield %exps: tensor<6x6xi32>
+    }
+
+    return
+}

@@ -50,6 +50,23 @@ using linalg::UnaryFn;
 
 #include "cinm-mlir/Dialect/Cinm/IR/CinmEnums.cpp.inc"
 
+static void buildGemmLikeOp(OpBuilder &builder, OperationState &result,
+                            Value lhs, Value rhs, Value bias, Value out) {
+  result.addOperands({lhs, rhs});
+  int biasInt = 0, outInt = 0;
+  if (bias) {
+    result.addOperands(bias);
+    biasInt = 1;
+  }
+  if (out) {
+    result.addOperands(out);
+    outInt = 1;
+  }
+
+  result.addAttribute(GemmOp::getOperandSegmentSizesAttrName(result.name),
+                      builder.getDenseI32ArrayAttr({2, biasInt, outInt}));
+}
+
 #define GET_OP_CLASSES
 #include "cinm-mlir/Dialect/Cinm/IR/CinmOps.cpp.inc"
 
@@ -142,6 +159,7 @@ static bool dimsCompatible(int64_t a, int64_t b) {
 void ElementwiseOp::print(::mlir::OpAsmPrinter &out) {
   out << " ";
   out.printKeywordOrString(stringifyElementwiseKind(getKind()));
+  out << " ";
   out << getLhs();
   if (getRhs()) {
     out << ", " << getRhs();
@@ -149,7 +167,9 @@ void ElementwiseOp::print(::mlir::OpAsmPrinter &out) {
   if (getOut()) {
     out << " into " << getOut();
   }
-  out.printOptionalAttrDict((*this)->getAttrs(), {getKindAttrName(), getOperandSegmentSizesAttrName()});
+  out.printOptionalAttrDict(
+      (*this)->getAttrs(),
+      {getKindAttrName(), getOperandSegmentSizesAttrName()});
   out << " : " << getLhs().getType();
   if (getOut()) {
     out << " into " << getOut().getType();
@@ -214,10 +234,10 @@ void ElementwiseOp::print(::mlir::OpAsmPrinter &out) {
   return success();
 }
 
-::mlir::ParseResult GemmOp::parse(::mlir::OpAsmParser &parser,
-                                  ::mlir::OperationState &result) {
-  return parseGemmOp(parser, result);
-}
+// ::mlir::ParseResult GemmOp::parse(::mlir::OpAsmParser &parser,
+//                                   ::mlir::OperationState &result) {
+//   return parseGemmOp(parser, result);
+// }
 
 template <typename Op> void printGemmLikeOp(OpAsmPrinter &out, Op op) {
   out << " " << op.getLhs() << ", " << op.getRhs();
@@ -241,18 +261,54 @@ template <typename Op> void printGemmLikeOp(OpAsmPrinter &out, Op op) {
   }
 }
 
-void GemmOp::print(::mlir::OpAsmPrinter &printer) {
-  printGemmLikeOp<GemmOp>(printer, *this);
+void ElementwiseOp::build(OpBuilder &builder, OperationState &state,
+                          ElementwiseKind kind, Value a, Value b, Value out) {
+  state.addOperands(a);
+  int bInt = 0, outInt = 0;
+  if (b) {
+    state.addOperands(b);
+    bInt = 1;
+  }
+  if (out) {
+    state.addOperands(out);
+    outInt = 1;
+  } else {
+    state.addTypes(a.getType());
+  }
+
+  state.addAttribute(getKindAttrName(state.name),
+                     builder.getAttr<ElementwiseKindAttr>(kind));
+  state.addAttribute(getOperandSegmentSizesAttrName(state.name),
+                     builder.getDenseI32ArrayAttr({1, bInt, outInt}));
 }
 
-::mlir::ParseResult GemvOp::parse(::mlir::OpAsmParser &parser,
-                                  ::mlir::OperationState &result) {
-  return parseGemmOp(parser, result);
+void ActivateOp::build(OpBuilder &builder, OperationState &state,
+                       ActivationKind kind, Value a, Value out) {
+  state.addOperands(a);
+  if (out) {
+    state.addOperands(out);
+  } else {
+    state.addTypes(a.getType());
+  }
+
+  state.addAttribute(getKindAttrName(state.name),
+                     builder.getAttr<ActivationKindAttr>(kind));
 }
 
-void GemvOp::print(::mlir::OpAsmPrinter &printer) {
-  printGemmLikeOp<GemvOp>(printer, *this);
-}
+// void GemmOp::print(::mlir::OpAsmPrinter &prin
+
+// void GemmOp::print(::mlir::OpAsmPrinter &printer) {
+//   printGemmLikeOp<GemmOp>(printer, *this);
+// }
+
+// ::mlir::ParseResult GemvOp::parse(::mlir::OpAsmParser &parser,
+//                                   ::mlir::OperationState &result) {
+//   return parseGemmOp(parser, result);
+// }
+
+// void GemvOp::print(::mlir::OpAsmPrinter &printer) {
+//   printGemmLikeOp<GemvOp>(printer, *this);
+// }
 
 ::mlir::ParseResult parseUnaryOp(::mlir::OpAsmParser &parser,
                                  ::mlir::OperationState &result) {
@@ -342,7 +398,7 @@ void DequantizeOp::print(::mlir::OpAsmPrinter &printer) {}
 }
 
 ::mlir::LogicalResult GemvOp::inferReturnTypeComponents(
-    ::mlir::MLIRContext *context, ::std::optional<::mlir::Location> loc,
+    ::mlir::MLIRContext *, ::std::optional<::mlir::Location> loc,
     GemvOp::Adaptor adaptor,
     ::llvm::SmallVectorImpl<::mlir::ShapedTypeComponents>
         &inferredReturnShapes) {
@@ -373,8 +429,8 @@ void DequantizeOp::print(::mlir::OpAsmPrinter &printer) {}
     BatchGemmOp::Adaptor adaptor,
     ::llvm::SmallVectorImpl<::mlir::ShapedTypeComponents>
         &inferredReturnShapes) {
-  ShapeAdaptor lhsShape(adaptor.getOperands()[0].getType());
-  ShapeAdaptor rhsShape(adaptor.getOperands()[1].getType());
+  ShapeAdaptor lhsShape(adaptor.getLhs().getType());
+  ShapeAdaptor rhsShape(adaptor.getRhs().getType());
 
   if (lhsShape.getRank() != 3 || rhsShape.getRank() != 3)
     return failure();
@@ -409,8 +465,8 @@ void DequantizeOp::print(::mlir::OpAsmPrinter &printer) {}
     BatchGemvOp::Adaptor adaptor,
     ::llvm::SmallVectorImpl<::mlir::ShapedTypeComponents>
         &inferredReturnShapes) {
-  ShapeAdaptor lhsShape(adaptor.getLeft().getType());
-  ShapeAdaptor rhsShape(adaptor.getRight().getType());
+  ShapeAdaptor lhsShape(adaptor.getLhs().getType());
+  ShapeAdaptor rhsShape(adaptor.getRhs().getType());
 
   if (lhsShape.getRank() != 3 || rhsShape.getRank() != 2)
     return failure();

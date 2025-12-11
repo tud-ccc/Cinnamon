@@ -40,7 +40,7 @@ using namespace mlir;
 
 namespace {
 
-template <typename SourceOp, typename TargetOp, typename... AdditionalOpArgs>
+template <typename SourceOp, typename TargetOp>
 struct ConvertTorchTensorOpToCinm : OpConversionPattern<SourceOp> {
   using OpConversionPattern<SourceOp>::OpConversionPattern;
 
@@ -76,10 +76,9 @@ struct ConvertTorchTensorOpToCinm : OpConversionPattern<SourceOp> {
     Block *computeBody = &cinmComputeOp.getRegion().front();
     rewriter.setInsertionPointToStart(computeBody);
 
-    auto targetOp = rewriter.create<TargetOp>(
-        op.getLoc(), resultType.toBuiltinTensor(),
-        ValueRange{lhsConversionOp.getResult(), rhsConversionOp.getResult(),
-                   AdditionalOpArgs{}...});
+    auto targetOp =
+        TargetOp::create(rewriter, op.getLoc(), lhsConversionOp.getResult(),
+                         rhsConversionOp.getResult());
 
     rewriter.create<cinm::YieldOp>(op.getLoc(), targetOp.getResult());
 
@@ -97,12 +96,9 @@ struct ConvertTorchToCinm : public ConvertTorchToCinmBase<ConvertTorchToCinm> {
 
     RewritePatternSet patterns(&ctx);
     patterns.add<
-        ConvertTorchTensorOpToCinm<torch::Torch::AtenMatmulOp, cinm::GemmOp, //
-                                   Value>, // Empty (optional) bias
-        ConvertTorchTensorOpToCinm<torch::Torch::AtenMmOp, cinm::GemmOp, //
-                                   Value>, // Empty (optional) bias
-        ConvertTorchTensorOpToCinm<torch::Torch::AtenMvOp, cinm::GemvOp> //
-        >(&ctx);
+        ConvertTorchTensorOpToCinm<torch::Torch::AtenMatmulOp, cinm::GemmOp>,
+        ConvertTorchTensorOpToCinm<torch::Torch::AtenMmOp, cinm::GemmOp>,
+        ConvertTorchTensorOpToCinm<torch::Torch::AtenMvOp, cinm::GemvOp>>(&ctx);
 
     ConversionTarget target(ctx);
     target.markUnknownOpDynamicallyLegal([](...) { return true; });
