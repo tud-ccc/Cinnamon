@@ -297,14 +297,14 @@ LogicalResult convertInputIntoAlloc(Value &inputBuf, Value workGroup,
 
   // convert single element to tensor<numTasklets x leafSize x ElementTy>
   bool scatterScalar = false;
-  if (!llvm::isa<RankedTensorType>(inputBuf.getType())) {
+  if (!llvm::isa<ShapedType>(inputBuf.getType())) {
     scatterScalar = true;
     inputBuf = rewriter.create<tensor::FromElementsOp>(
         RankedTensorType::get({wgTy.getShape()[2]}, inputBuf.getType()),
         SmallVector<Value>(wgTy.getShape()[2], inputBuf));
   }
 
-  auto inputType = cast<RankedTensorType>(inputBuf.getType());
+  auto inputType = cast<ShapedType>(inputBuf.getType());
 
   llvm::SmallVector<int64_t, 1> shapeOfBuffer;
   std::optional<SmallVector<int64_t>> reshapeInto;
@@ -319,7 +319,7 @@ LogicalResult convertInputIntoAlloc(Value &inputBuf, Value workGroup,
   if (reshapeInto) {
     inputBuf =
         cinm::reshapeStatic(rewriter, rewriter.getLoc(), inputBuf,
-                            cast<RankedTensorType>(inputType), *reshapeInto);
+                            cast<ShapedType>(inputType), *reshapeInto);
   }
 
   // Allocate a cinm buffer
@@ -427,8 +427,8 @@ LogicalResult convertCinmToCnm(
     auto res = cnm::GatherOp::create(builder, alloc, workgroup, map, outBuf);
     auto shapedBack = cinm::reshapeStatic(
         builder, builder.getLoc(),
-        cast<TypedValue<RankedTensorType>>(res.getOutput()),
-        cast<RankedTensorType>(result.getType()).getShape());
+        cast<TypedValue<ShapedType>>(res.getOutput()),
+        cast<ShapedType>(result.getType()).getShape());
 
     resultValues.push_back(shapedBack);
   }
@@ -873,9 +873,14 @@ struct ConvertCinmGemvToCnm : public OpConversionPattern<cinm::GemvOp> {
     cinm::ComputeOp computeBlock = mlir::cinm::getEnclosingComputeBlock(op);
     cnm::WorkgroupOp workgroup =
         cnm::WorkgroupOp::create(builder, computeBlock.getCnmWorkgroupType());
-    auto outputInit = arith::ConstantOp::create(
-        builder, op.getResult().getType(),
-        builder.getZeroAttr(op.getResult().getType()));
+    Value outputInit;
+    if (op.getResult()) {
+      outputInit = arith::ConstantOp::create(
+          builder, op.getResult().getType(),
+          builder.getZeroAttr(op.getResult().getType()));
+    } else {
+      outputInit = op.getOut();
+    }
 
     llvm::SmallVector<Value, 1> newResults;
     if (convertCinmToCnm(builder, op, workgroup.getResult(), computeBlock, {1},
