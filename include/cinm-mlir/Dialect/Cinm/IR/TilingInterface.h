@@ -77,13 +77,14 @@ struct TilingParameters {
 void markOpAsNoTile(Operation *);
 
 /// Create a tensor.reshape for a fully static tensor shape
-Value reshapeStatic(OpBuilder &, Location loc, Value value, ShapedType type,
-                    llvm::ArrayRef<int64_t> newShape);
+TypedValue<ShapedType> reshapeStatic(OpBuilder &, Location loc, Value value,
+                                     ShapedType type,
+                                     llvm::ArrayRef<int64_t> newShape);
 
 /// Create a tensor.reshape for a fully static tensor shape
-Value reshapeStatic(OpBuilder &b, Location loc,
-                    TypedValue<RankedTensorType> value,
-                    llvm::ArrayRef<int64_t> newShape);
+TypedValue<ShapedType> reshapeStatic(OpBuilder &b, Location loc,
+                                     TypedValue<ShapedType> value,
+                                     llvm::ArrayRef<int64_t> newShape);
 
 using ReduceAccumulatorCallback =
     function_ref<Value(OpBuilder &, Location, Value, Value)>;

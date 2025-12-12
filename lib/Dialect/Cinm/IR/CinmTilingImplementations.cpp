@@ -189,20 +189,14 @@ getBatchGemvTilesFromAttributes(const ShapedType &lhsType,
 TilingResult2 ElementwiseOp::convertToTiledOps(OpBuilder &builder0,
                                                TilingParameters params) {
   ImplicitLocOpBuilder builder(getLoc(), builder0);
-  const bool isUnaryOp = getNumOperands() == 1;
+  const bool isUnaryOp = !getRhs();
 
-  TypedValue<RankedTensorType> lhs =
-      llvm::cast<TypedValue<RankedTensorType>>(getLhs());
-  TypedValue<RankedTensorType> rhs =
-      !isUnaryOp
-          ? llvm::dyn_cast_or_null<TypedValue<RankedTensorType>>(getRhs())
-          : nullptr;
-  const bool isScalarOp = !rhs;
-  Value rhsScalar = isScalarOp ? getRhs() : nullptr;
+  TypedValue<ShapedType> lhs = getLhs();
+  TypedValue<ShapedType> rhs = getRhs();
 
-  RankedTensorType tensorTy = cast<RankedTensorType>(lhs.getType());
+  ShapedType tensorTy = cast<ShapedType>(lhs.getType());
   auto shape = tensorTy.getShape();
-  const RankedTensorType originalType = tensorTy;
+  const ShapedType originalType = tensorTy;
   Value originalShapeValue;
   if (shape.size() > 1) {
     originalShapeValue = arith::ConstantOp::create(
@@ -210,11 +204,11 @@ TilingResult2 ElementwiseOp::convertToTiledOps(OpBuilder &builder0,
         RankedTensorType::get({static_cast<int64_t>(shape.size())},
                               builder.getI64Type()),
         builder.getI64TensorAttr(shape));
-    lhs = llvm::cast<TypedValue<RankedTensorType>>(cinm::reshapeStatic(
-        builder, builder.getLoc(), lhs, {tensorTy.getNumElements()}));
-    if (!isUnaryOp && !isScalarOp) {
-      rhs = llvm::cast<TypedValue<RankedTensorType>>(cinm::reshapeStatic(
-          builder, builder.getLoc(), rhs, {tensorTy.getNumElements()}));
+    lhs = cinm::reshapeStatic(builder, builder.getLoc(), lhs,
+                              {tensorTy.getNumElements()});
+    if (!isUnaryOp) {
+      rhs = cinm::reshapeStatic(builder, builder.getLoc(), rhs,
+                                {tensorTy.getNumElements()});
     }
     tensorTy = cast<RankedTensorType>(lhs.getType());
   }
@@ -255,7 +249,7 @@ TilingResult2 ElementwiseOp::convertToTiledOps(OpBuilder &builder0,
             tensor::ExtractSliceOp::create(b, loc, lhs, off, siz, str);
 
         Value rhsSlice = nullptr;
-        if (!isUnaryOp && !isScalarOp) {
+        if (!isUnaryOp) {
           rhsSlice = tensor::ExtractSliceOp::create(b, loc, rhs, off, siz, str);
         }
 
@@ -263,10 +257,13 @@ TilingResult2 ElementwiseOp::convertToTiledOps(OpBuilder &builder0,
             b, loc, getKind(), lhsSlice, rhsSlice, Value());
         markOpAsNoTile(smaller);
 
-        Value subResult = tensor::InsertSliceOp::create(
-            b, loc, smaller.getResult(), iterArgs[0], off, siz, str);
-
-        return {subResult};
+        if (smaller.getResult()) {
+          Value subResult = tensor::InsertSliceOp::create(
+              b, loc, smaller.getResult(), iterArgs[0], off, siz, str);
+          return {subResult};
+        } else {
+          return {};
+        }
       });
 
   if (originalType.getRank() > 1) {
@@ -283,9 +280,14 @@ TilingResult2 GemmOp::convertToTiledOps(OpBuilder &builder,
   Value lhs = getLhs();
   Value rhs = getRhs();
 
-  auto lhsType = cast<RankedTensorType>(lhs.getType());
-  auto rhsType = cast<RankedTensorType>(rhs.getType());
-  auto resultType = cast<RankedTensorType>(getResult().getType());
+  auto lhsType = cast<ShapedType>(lhs.getType());
+  auto rhsType = cast<ShapedType>(rhs.getType());
+  ShapedType resultType;
+  if (getResult()) {
+    resultType = getResult().getType();
+  } else {
+    resultType = getOut().getType();
+  }
 
   if (lhsType.getRank() != 2 || rhsType.getRank() != 2 ||
       resultType.getRank() != 2)
@@ -416,7 +418,12 @@ TilingResult2 BatchGemmOp::convertToTiledOps(OpBuilder &builder,
   Value rhs = getRhs();
   auto lhsType = dyn_cast<ShapedType>(lhs.getType());
   auto rhsType = dyn_cast<ShapedType>(rhs.getType());
-  auto resultType = dyn_cast<RankedTensorType>(getResult().getType());
+  ShapedType resultType;
+  if (getResult()) {
+    resultType = getResult().getType();
+  } else {
+    resultType = getOut().getType();
+  }
   if (!lhsType || !rhsType || !resultType)
     return failure();
   if (lhsType.getRank() != 3 || rhsType.getRank() != 3 ||
@@ -552,9 +559,14 @@ TilingResult2 BatchGemvOp::convertToTiledOps(OpBuilder &builder,
 
   Value lhs = getLhs();
   Value rhs = getRhs();
-  auto lhsType = dyn_cast<RankedTensorType>(lhs.getType());
-  auto rhsType = dyn_cast<RankedTensorType>(rhs.getType());
-  auto resultType = dyn_cast<RankedTensorType>(getResult().getType());
+  auto lhsType = dyn_cast<ShapedType>(lhs.getType());
+  auto rhsType = dyn_cast<ShapedType>(rhs.getType());
+  ShapedType resultType;
+  if (getResult()) {
+    resultType = getResult().getType();
+  } else {
+    resultType = getOut().getType();
+  }
   if (!lhsType || !rhsType || !resultType)
     return failure();
   if (lhsType.getRank() != 3 || rhsType.getRank() != 2 ||
@@ -680,9 +692,14 @@ TilingResult2 GemvOp::convertToTiledOps(OpBuilder &builder,
   Value A = getLhs();
   Value x = getRhs();
 
-  auto aTy = cast<RankedTensorType>(A.getType());
-  auto xTy = cast<RankedTensorType>(x.getType());
-  auto yTy = cast<RankedTensorType>(getResult().getType());
+  auto aTy = cast<ShapedType>(A.getType());
+  auto xTy = cast<ShapedType>(x.getType());
+  ShapedType yTy;
+  if (getResult()) {
+    yTy = getResult().getType();
+  } else {
+    yTy = getOut().getType();
+  }
   if (aTy.getRank() != 2 || xTy.getRank() != 1 || yTy.getRank() != 1)
     return failure();
   if (aTy.getElementType() != xTy.getElementType() ||
@@ -795,21 +812,20 @@ TilingResult2 GemvOp::convertToTiledOps(OpBuilder &builder,
 TilingResult2 ActivateOp::convertToTiledOps(OpBuilder &builder0,
                                             TilingParameters params) {
   ImplicitLocOpBuilder builder(getLoc(), builder0);
-  auto inputT = llvm::cast<TypedValue<RankedTensorType>>(getInput());
+  auto inputT = getInput();
   auto inTy = inputT.getType();
-  Value input = inputT;
 
   Type elt = inTy.getElementType();
 
-  const RankedTensorType originalTy = inTy;
+  const ShapedType originalTy = inTy;
   Value originalShapeValue;
   if (inTy.getRank() > 1) {
     originalShapeValue = arith::ConstantOp::create(
         builder, RankedTensorType::get({inTy.getRank()}, builder.getI64Type()),
         builder.getI64TensorAttr(inTy.getShape()));
-    input = reshapeStatic(builder, builder.getLoc(), inputT,
-                          ArrayRef<int64_t>{inTy.getNumElements()});
-    inTy = cast<RankedTensorType>(input.getType());
+    inputT = reshapeStatic(builder, builder.getLoc(), inputT,
+                           ArrayRef<int64_t>{inTy.getNumElements()});
+    inTy = inputT.getType();
   }
 
   const int64_t total = inTy.getNumElements();
@@ -842,7 +858,7 @@ TilingResult2 ActivateOp::convertToTiledOps(OpBuilder &builder0,
         SmallVector<OpFoldResult> str{b.getI64IntegerAttr(1)};
 
         auto inSlice =
-            tensor::ExtractSliceOp::create(b, loc, input, off, siz, str);
+            tensor::ExtractSliceOp::create(b, loc, inputT, off, siz, str);
 
         auto tile =
             cinm::ActivateOp::create(b, loc, getKind(), inSlice, Value());

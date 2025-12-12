@@ -18,6 +18,7 @@
 #include <mlir/Dialect/Affine/IR/AffineOps.h>
 #include <mlir/Dialect/Arith/IR/Arith.h>
 #include <mlir/Dialect/Linalg/IR/Linalg.h>
+#include <mlir/Dialect/MemRef/IR/MemRef.h>
 #include <mlir/Dialect/Tensor/IR/Tensor.h>
 #include <mlir/IR/Attributes.h>
 #include <mlir/IR/BuiltinAttributeInterfaces.h>
@@ -145,23 +146,30 @@ int64_t TilingParameters::maxNumElementsOfType(Type ty) const {
   return bufferSizeOfLeaf() / (bw / 8);
 }
 
-Value reshapeStatic(OpBuilder &b, Location loc,
-                    TypedValue<RankedTensorType> value,
-                    llvm::ArrayRef<int64_t> newShape) {
+TypedValue<ShapedType> reshapeStatic(OpBuilder &b, Location loc,
+                                     TypedValue<ShapedType> value,
+                                     llvm::ArrayRef<int64_t> newShape) {
   return reshapeStatic(b, loc, value, value.getType(), newShape);
 }
 
-Value reshapeStatic(OpBuilder &builder, Location loc, Value value,
-                    ShapedType type, llvm::ArrayRef<int64_t> newShape) {
+TypedValue<ShapedType> reshapeStatic(OpBuilder &builder, Location loc,
+                                     Value value, ShapedType type,
+                                     llvm::ArrayRef<int64_t> newShape) {
   auto newTy = type.cloneWith(newShape, type.getElementType());
+  auto reifiedShape = builder.create<arith::ConstantOp>(
+      loc, RankedTensorType::get({newTy.getRank()}, builder.getI64Type()),
+      builder.getI64TensorAttr(newShape));
+
   if (isa<RankedTensorType>(newTy)) {
-    auto reifiedShape = builder.create<arith::ConstantOp>(
-        loc, RankedTensorType::get({newTy.getRank()}, builder.getI64Type()),
-        builder.getI64TensorAttr(newShape));
-    return builder.create<tensor::ReshapeOp>(loc, newTy, value, reifiedShape);
+    return dyn_cast<TypedValue<ShapedType>>(
+        builder.create<tensor::ReshapeOp>(loc, newTy, value, reifiedShape)
+            .getResult());
+  } else if (isa<MemRefType>(newTy)) {
+    return dyn_cast<TypedValue<ShapedType>>(
+        builder.create<memref::ReshapeOp>(loc, newTy, value, reifiedShape)
+            .getResult());
   }
-  // todo memref
-  assert(false && "not handled for memrefs for now");
+  assert(false && "must be memref or tensor");
 }
 
 linalg::ReduceOp makeReduceOp(OpBuilder &builder, Location loc, Value input,
