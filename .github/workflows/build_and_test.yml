@@ -37,7 +37,7 @@ jobs:
         uses: actions/cache/restore@v3
         with:
           path: third-party/llvm
-          key: cinnamon-llvm-3-${{ runner.os }}
+          key: cinnamon-llvm-${{ runner.os }}
 
       - name: Restore torch-mlir cache
         id: torch-mlir-cache-restore
@@ -46,6 +46,9 @@ jobs:
           path: third-party/torch-mlir
           key: cinnamon-torch-mlir-${{ runner.os }}
       
+      - name: Checkout LLVM if needed
+        run: .github/workflows/checkout-llvm.sh -verbose
+
       - name: Setup venv
         run: .github/workflows/setup-venv.sh -reconfigure -verbose
 
