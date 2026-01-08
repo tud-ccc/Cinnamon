@@ -50,6 +50,7 @@ if [[ "$setup_python_venv" -eq 1 ]]; then
   if [[ "$reconfigure" -eq 1 || "$reconfigure_python_venv" -eq 1 ]]; then
     status "Installing Python dependencies into venv"
     verbose_cmd python -m pip install --upgrade pip
+    verbose_cmd python -m pip install "cmake==4.2.1"
     # PyTorch first (per official guidance), then build tooling & bindings
     verbose_cmd pip install torch torchvision torchaudio --index-url "$torch_source"
     # Ensure pybind11 >= 2.10 for MLIR, plus numpy, nanobind, build

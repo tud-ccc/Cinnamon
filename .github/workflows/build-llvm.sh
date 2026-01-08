@@ -51,7 +51,7 @@ fi
 if [[ ! -d "$llvm_path" ]]; then
   if [[ "$checkout_and_build_llvm" -eq 1 ]]; then
     status "Checking out LLVM"
-    git clone https://github.com/h4midf/llvm-project.git --depth 1 --branch cinnamon-esweek-llvm "$llvm_path"
+    print_and_run git clone https://github.com/oowekyala/llvm-project.git --depth 1 --branch tilefirst-llvm "$llvm_path"
   else
     error "LLVM path '$llvm_path' does not exist. Set checkout_and_build_llvm=1 to clone, or create it manually."
     exit 1
