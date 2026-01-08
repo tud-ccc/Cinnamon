@@ -111,7 +111,7 @@ if [[ -n "$clean_reason" ]]; then
 fi
 # ---- Always run configure (idempotent) ----
 status "Configuring LLVM (Ninja; always run to catch changes)"
-cmake -S llvm -B build -G Ninja \
+print_and_run cmake -S llvm -B build -G Ninja \
   -Wno-dev \
   -DLLVM_ENABLE_PROJECTS="$LLVM_PROJECTS" \
   -DLLVM_TARGETS_TO_BUILD="$LLVM_TARGETS_TO_BUILD" \
