@@ -6,7 +6,7 @@ script_dir="$( cd -- "$(dirname "$0")" >/dev/null 2>&1 ; pwd -P )"
 source "$script_dir/common.sh"
 
 # ---- Safe defaults ----
-checkout_and_build_llvm="${checkout_and_build_llvm:-0}"
+checkout_and_build_llvm="${checkout_and_build_llvm:-1}"
 reconfigure="${reconfigure:-0}"
 llvm_path="${llvm_path:?Define 'llvm_path' in common.sh}"
 LLVM_CMAKE_OPTIONS="${LLVM_CMAKE_OPTIONS:-}"
@@ -60,7 +60,14 @@ else
   status "Found existing LLVM at: $llvm_path"
 fi
 
+if [[ "${checkout_and_build_llvm}" -eq 0 ]]; then
+  status "Not rebuilding/reconfiguring LLVM."
+  export PATH="$llvm_path/build/bin:$PATH"
+  return 0
+fi
+
 pushd "$llvm_path" >/dev/null
+
 
 # ---- Should we clean build/? ----
 clean_reason=""
@@ -102,7 +109,6 @@ if [[ -n "$clean_reason" ]]; then
   rm -rf build
   mkdir -p build
 fi
-
 # ---- Always run configure (idempotent) ----
 status "Configuring LLVM (Ninja; always run to catch changes)"
 cmake -S llvm -B build -G Ninja \
