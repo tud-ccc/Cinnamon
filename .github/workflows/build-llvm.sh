@@ -28,38 +28,6 @@ if [[ -n "$LLVM_CMAKE_OPTIONS" ]]; then
   EXTRA_CMAKE_OPTS=( $LLVM_CMAKE_OPTIONS )
 fi
 
-# If in a venv, force using that Python + pybind11
-if [[ -n "${VIRTUAL_ENV:-}" ]]; then
-  PYBIN="$(command -v python)"
-  if ! PYBIND11_DIR="$("$PYBIN" - <<'PY'
-import sys
-try:
-    import pybind11
-    print(pybind11.get_cmake_dir())
-except Exception:
-    sys.exit(1)
-PY
-)"; then
-    status "pybind11 not found in venv; installing…"
-    "$PYBIN" -m pip install -U "pybind11>=2.10" numpy >/dev/null
-    PYBIND11_DIR="$("$PYBIN" -c 'import pybind11; print(pybind11.get_cmake_dir())')"
-  fi
-  EXTRA_CMAKE_OPTS+=( -DPython3_EXECUTABLE="$PYBIN" -Dpybind11_DIR="$PYBIND11_DIR" -DPython3_FIND_VIRTUALENV=ONLY )
-fi
-
-# ---- Clone if missing (only when requested) ----
-if [[ ! -d "$llvm_path" ]]; then
-  if [[ "$checkout_and_build_llvm" -eq 1 ]]; then
-    status "Checking out LLVM"
-    print_and_run git clone https://github.com/oowekyala/llvm-project.git --depth 1 --branch tilefirst-llvm "$llvm_path"
-  else
-    error "LLVM path '$llvm_path' does not exist. Set checkout_and_build_llvm=1 to clone, or create it manually."
-    exit 1
-  fi
-else
-  status "Found existing LLVM at: $llvm_path"
-fi
-
 if [[ "${checkout_and_build_llvm}" -eq 0 ]]; then
   status "Not rebuilding/reconfiguring LLVM."
   export PATH="$llvm_path/build/bin:$PATH"

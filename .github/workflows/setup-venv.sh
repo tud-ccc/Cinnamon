@@ -53,8 +53,10 @@ if [[ "$setup_python_venv" -eq 1 ]]; then
     verbose_cmd python -m pip install "cmake==4.2.1"
     # PyTorch first (per official guidance), then build tooling & bindings
     verbose_cmd pip install torch torchvision torchaudio --index-url "$torch_source"
-    # Ensure pybind11 >= 2.10 for MLIR, plus numpy, nanobind, build
-    verbose_cmd pip install "pybind11>=2.10" numpy nanobind build wheel
+    # Build dependencies
+    verbose_cmd pip install build wheel
+    # Note this needs to be done after LLVM has been cloned.
+    verbose_cmd python -m pip install -r third-party/llvm/mlir/python/requirements.txt
   fi
 
   # Ensure CMake will use this venv's Python and find pybind11's CMake config
@@ -68,10 +70,9 @@ except Exception as e:
     sys.exit(1)
 PY
 )"; then
-    # If import failed (e.g., user skipped reconfigure), install pybind11 now.
-    status "pybind11 not found in venv; installing..."
-    verbose_cmd pip install "pybind11>=2.10"
-    PYBIND11_DIR="$("$PYBIN" -c 'import pybind11; print(pybind11.get_cmake_dir())')"
+    # If import failed (e.g., user skipped reconfigure) warn and 
+    error "pybind11 not found in venv; Run with -reconfigure or install MLIR dependencies manually"
+    exit 1
   fi
 
   # Export extra CMake flags for downstream scripts (LLVM/MLIR configure)
