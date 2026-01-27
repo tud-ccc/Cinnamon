@@ -60,7 +60,7 @@ def Cinm_ElementwiseOp
     ];
 }
 
-class Cinm_GemmlikeOp<string name, string cppClassName> : Cinm_Op<name, 
+class Cinm_GemmlikeOp<string name, string cppClassName> : Cinm_Op<name,
   [
     Pure,
     InferTensorTypeAdaptor,
@@ -78,12 +78,12 @@ class Cinm_GemmlikeOp<string name, string cppClassName> : Cinm_Op<name,
   );
 
   let results = (outs Optional<AnyRankedTensor>:$result);
-  let assemblyFormat = 
+  let assemblyFormat =
     "$lhs `,` $rhs (`plus` $bias^)? (`into` $out^)? attr-dict `:` type($lhs) `,` type($rhs) (`plus` type($bias)^)? (`into` type($out)^):(`->` type($result))?";
 
   let skipDefaultBuilders = 1;
   let builders = [
-    OpBuilder<(ins "Value":$left, "Value":$right, "Value":$bias, "Value":$out), 
+    OpBuilder<(ins "Value":$left, "Value":$right, "Value":$bias, "Value":$out),
       "buildGemmLikeOp<" # cppClassName # ">($_builder, $_state, left, right, bias, out);">,
     OpBuilder<(ins "Value":$left, "Value":$right, "Value":$bias),
       "build($_builder, $_state, left, right, bias, Value{});">,
@@ -358,18 +358,26 @@ def Cinm_ComputeOp : Cinm_Base_Op<"compute", [
 }
 
 //===----------------------------------------------------------------------===//
-// ReturnOp
+// SelectOp
 //===----------------------------------------------------------------------===//
+def Cinm_SelectOp : Cinm_Op<"select", [Pure]> {
+  let summary = "Select one of multiple child-regions depending on the cost-model estimates";
+  let description = [{}];
+
+  let results = (outs Variadic<AnyType>:$results);
+  let regions = (region VariadicRegion<AnyRegion>:$regions);
+
+  let assemblyFormat = "attr-dict `from` $regions (`->` type($results)^)?";
+}
 
 //===----------------------------------------------------------------------===//
 // YieldOp
 //===----------------------------------------------------------------------===//
 def Cinm_YieldOp : Cinm_Op<"yield", [Pure, ReturnLike, Terminator]> {
-  let summary = "Yield the result of a cinm.compute / cinm.compute_memref.";
+  let summary = "Yield the result of a cinm.compute / cinm.select.";
   let description = [{
-    Terminator for both `cinm.compute` (tensor results) and
-    `cinm.compute_memref` (memref results). The operand types must match
-    the parent op's result types exactly.
+    Terminator for both `cinm.compute` and `cinm.select`.
+    The operand types must match the parent op's result types exactly.
   }];
 
   let arguments = (ins Variadic<AnyType>:$operands);

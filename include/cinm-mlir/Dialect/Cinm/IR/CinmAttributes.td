@@ -104,4 +104,19 @@ def Cinm_RoundingMode : I32EnumAttr<
   let cppNamespace = "::mlir::cinm";
 }
 
+//===----------------------------------------------------------------------===//
+// Cost-Model
+//===----------------------------------------------------------------------===//
+
+def Cinm_CostModelData : Cinm_Attr<"CostModelData"> {
+    let parameters = (ins
+        "StringAttr": $name,
+        "FloatAttr": $cost
+    );
+
+    let mnemonic = "cost_model_data";
+    let assemblyFormat = "`<` struct($name, $cost) `>`";
+}
+
+
 #endif
