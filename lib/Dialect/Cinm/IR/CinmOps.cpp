@@ -613,11 +613,12 @@ void DequantizeOp::print(::mlir::OpAsmPrinter &printer) {}
 LogicalResult cinm::YieldOp::verify() {
   Operation *parent = getOperation()->getParentOp();
   auto asCompute = dyn_cast_or_null<cinm::ComputeOp>(parent);
+  auto asSelect = dyn_cast_or_null<cinm::SelectOp>(parent);
 
-  if (!asCompute)
-    return emitOpError() << "must be inside 'cinm.compute'";
+  if (!asCompute && !asSelect)
+    return emitOpError() << "must be inside 'cinm.compute' or 'cinm.select'";
 
-  TypeRange expected = TypeRange(asCompute.getResultTypes());
+  TypeRange expected = TypeRange(parent->getResultTypes());
 
   if (getNumOperands() != expected.size())
     return emitOpError() << "has " << getNumOperands()

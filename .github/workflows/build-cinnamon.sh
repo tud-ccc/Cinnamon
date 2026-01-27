@@ -12,6 +12,7 @@ checkout_and_build_llvm="${checkout_and_build_llvm:-0}"
 checkout_and_build_torch_mlir="${checkout_and_build_torch_mlir:-0}"
 checkout_upmem="${checkout_upmem:-0}"
 CINNAMON_CMAKE_OPTIONS="${CINNAMON_CMAKE_OPTIONS:-}"
+CINNAMON_BUILD_OPTIONS="${CINNAMON_BUILD_OPTIONS:-}"
 
 # Required paths (defined in common.sh)
 project_root="${project_root:?Define 'project_root' in common.sh}"
@@ -98,6 +99,8 @@ configure() {
     -G Ninja
     -DCMAKE_BUILD_TYPE=RelWithDebInfo
     -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
+    -DLLVM_ENABLE_EH=ON
+    -DLLVM_ENABLE_RTTI=ON
   )
 
   if ((${#DEP_OPTS[@]})); then
@@ -115,13 +118,12 @@ configure() {
 
 # ---- Build with one clean retry on failure ----
 status "Building Cinnamon (Ninja)"
-cmake --build build --target all -j 4
-# if ! cmake --build build --target all -j 8; then
-#   warning "Build failed — cleaning build/ and retrying from fresh configure…"
-#   rm -rf build
-#   configure
-#   cmake --build build --target all -j 8
-# fi
+if ! cmake --build build --target all $CINNAMON_BUILD_OPTIONS; then
+  warning "Build failed — cleaning build/ and retrying from fresh configure…"
+  rm -rf build
+  configure
+  cmake --build build --target all $CINNAMON_BUILD_OPTIONS
+fi
 
 # ---- Python package wiring (optional) ----
 if [[ "$setup_python_venv" -eq 1 && -n "${llvm_path:-}" && -n "${torch_mlir_path:-}" ]]; then

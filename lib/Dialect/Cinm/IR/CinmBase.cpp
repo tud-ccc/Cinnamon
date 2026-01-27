@@ -49,3 +49,12 @@ CinmDialect::verifyOperationAttribute(::mlir::Operation *op,
   }
   return op->emitOpError("unknown attribute ") << attribute.getName();
 }
+
+void CinmDialect::printAttribute(Attribute attr,
+                                 DialectAsmPrinter &printer) const {
+  if (auto myAttr = llvm::dyn_cast<CostModelDataAttr>(attr)) {
+    myAttr.print(printer);
+  } else {
+    llvm_unreachable("unhandled attribute");
+  }
+}

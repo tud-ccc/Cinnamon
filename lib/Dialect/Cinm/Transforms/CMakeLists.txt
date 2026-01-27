@@ -1,15 +1,16 @@
 add_mlir_dialect_library(CinmTransforms
-    SoftmaxToCinmPass.cpp
-    TilingPass.cpp
     AnnotateTileSizesPass.cpp
-    GemvMinWrite.cpp
     CinmBufferizableOpInterface.cpp
-    DecomposeAccumulations.cpp
-    DecomposeGemmToGemv.cpp
+    CinmMemoryCleanup.cpp
     CinmQuantization.cpp
     CleanupLinalgPass.cpp
+    CostModel.cpp
+    DecomposeAccumulations.cpp
+    DecomposeGemmToGemv.cpp
+    GemvMinWrite.cpp
     RelowerStandaloneOps.cpp
-    CinmMemoryCleanup.cpp
+    SoftmaxToCinmPass.cpp
+    TilingPass.cpp
 
 DEPENDS
     CinmIncGen
@@ -24,3 +25,5 @@ LINK_LIBS PUBLIC
     CinmIR
     MLIRLLVMCommonConversion
 )
+
+target_link_libraries(CinmTransforms PRIVATE pybind11::embed)

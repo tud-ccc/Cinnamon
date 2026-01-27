@@ -1,5 +1,12 @@
 #!/bin/bash
 
+# Load .env file and export all variables
+if [ -f ".env" ]; then
+  set -o allexport
+  source .env
+  set +o allexport
+fi
+
 if [[ -z "${PREAMBLE_LOADED:-}" ]]; then
 PREAMBLE_LOADED="1"
 

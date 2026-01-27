@@ -27,6 +27,7 @@ def Cinm_Dialect : Dialect {
 
 
     code extraClassDeclaration = [{
+    virtual void printAttribute(Attribute attr, DialectAsmPrinter &printer) const;
     constexpr static StringRef NOTILE_NAME = "cinm.notile";
     private:
         void registerOps();

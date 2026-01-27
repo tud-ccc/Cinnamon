@@ -77,58 +77,49 @@ if [[ -n "$clean_reason" ]]; then
   rm -rf build
   mkdir -p build
 fi
+
+# ---- Configure helper ----
+configure() {
+  status "Configuring LLVM (Ninja; always run to catch changes)"
+
+  print_and_run cmake -S llvm -B build -G Ninja \
+    -Wno-dev \
+    -DCMAKE_BUILD_TYPE=Release \
+    -DBUILD_SHARED_LIBS=ON \
+    -DLLVM_BUILD_TOOLS=ON \
+    -DLLVM_CCACHE_BUILD=ON \
+    -DLLVM_ENABLE_PROJECTS="$LLVM_PROJECTS" \
+    -DLLVM_ENABLE_ASSERTIONS=ON \
+    -DLLVM_ENABLE_EH=ON \
+    -DLLVM_ENABLE_RTTI=ON \
+    -DLLVM_EXPERIMENTAL_TARGETS_TO_BUILD="$LLVM_EXPERIMENTAL_TARGETS" \
+    -DLLVM_INCLUDE_BENCHMARKS=OFF \
+    -DLLVM_INCLUDE_TESTS=OFF \
+    -DLLVM_OPTIMIZED_TABLEGEN=ON \
+    -DMLIR_ENABLE_BINDINGS_PYTHON=ON \
+    -DLLVM_TARGETS_TO_BUILD="$LLVM_TARGETS_TO_BUILD" \
+    "${EXTRA_CMAKE_OPTS[@]}"
+
+  # Save config hash so we can detect future changes
+  echo "$CURRENT_HASH" > "$HASH_FILE"
+
+  # Sanity: ensure build.ninja exists
+  [[ -f build/build.ninja ]] || { error "CMake configure did not produce build/build.ninja."; exit 1; }
+}
+
 # ---- Always run configure (idempotent) ----
-status "Configuring LLVM (Ninja; always run to catch changes)"
-print_and_run cmake -S llvm -B build -G Ninja \
-  -Wno-dev \
-  -DLLVM_ENABLE_PROJECTS="$LLVM_PROJECTS" \
-  -DLLVM_TARGETS_TO_BUILD="$LLVM_TARGETS_TO_BUILD" \
-  -DLLVM_EXPERIMENTAL_TARGETS_TO_BUILD="$LLVM_EXPERIMENTAL_TARGETS" \
-  -DLLVM_ENABLE_ASSERTIONS=ON \
-  -DMLIR_ENABLE_BINDINGS_PYTHON=ON \
-  -DLLVM_BUILD_TOOLS=ON \
-  -DCMAKE_BUILD_TYPE=Release \
-  -DBUILD_SHARED_LIBS=ON \
-  -DLLVM_INCLUDE_TESTS=OFF \
-  -DLLVM_INCLUDE_BENCHMARKS=OFF \
-  -DLLVM_OPTIMIZED_TABLEGEN=ON \
-  -DLLVM_CCACHE_BUILD=ON \
-  -DLLVM_PARALLEL_COMPILE_JOBS=4 \
-  -DLLVM_PARALLEL_LINK_JOBS=1 \
-  -DLLVM_PARALLEL_TABLEGEN_JOBS=4 \
-  "${EXTRA_CMAKE_OPTS[@]}"
-
-# Save config hash so we can detect future changes
-echo "$CURRENT_HASH" > "$HASH_FILE"
-
-# Sanity: ensure build.ninja exists
-[[ -f build/build.ninja ]] || { error "CMake configure did not produce build/build.ninja."; exit 1; }
+configure
 
 # ---- Build with one clean-retry ----
 status "Building LLVM (Ninja)"
-if ! cmake --build build --target ${LLVM_BUILD_TARGETS}; then
-  warning "Build failed — cleaning build/ and retrying from fresh configure…"
-  rm -rf build
-  cmake -S llvm -B build -G Ninja \
-    -Wno-dev \
-    -DLLVM_ENABLE_PROJECTS="$LLVM_PROJECTS" \
-    -DLLVM_TARGETS_TO_BUILD="$LLVM_TARGETS_TO_BUILD" \
-    -DLLVM_EXPERIMENTAL_TARGETS_TO_BUILD="$LLVM_EXPERIMENTAL_TARGETS" \
-    -DLLVM_ENABLE_ASSERTIONS=ON \
-    -DMLIR_ENABLE_BINDINGS_PYTHON=ON \
-    -DLLVM_BUILD_TOOLS=ON \
-    -DCMAKE_BUILD_TYPE=Release \
-    -DBUILD_SHARED_LIBS=ON \
-    -DLLVM_INCLUDE_TESTS=OFF \
-    -DLLVM_INCLUDE_BENCHMARKS=OFF \
-    -DLLVM_OPTIMIZED_TABLEGEN=ON \
-    -DLLVM_CCACHE_BUILD=ON \
-    -DLLVM_PARALLEL_COMPILE_JOBS=4 \
-    -DLLVM_PARALLEL_LINK_JOBS=1 \
-    -DLLVM_PARALLEL_TABLEGEN_JOBS=4 \
-    "${EXTRA_CMAKE_OPTS[@]}"
-  cmake --build build --target ${LLVM_BUILD_TARGETS}
-fi
+cmake --build build --target ${LLVM_BUILD_TARGETS}
+
+#if ! cmake --build build --target ${LLVM_BUILD_TARGETS}; then
+#  warning "Build failed — cleaning build/ and retrying from fresh configure…"
+#  rm -rf build
+#  configure
+#  cmake --build build --target ${LLVM_BUILD_TARGETS}
+#fi
 
 export PATH="$llvm_path/build/bin:$PATH"
 popd >/dev/null

@@ -34,7 +34,7 @@ if (TORCH_MLIR_DIR)
     get_property(CINM_DEPENDENCY_LIBS GLOBAL PROPERTY CINM_DEPENDENCY_LIBS)
     list(APPEND CINM_DEPENDENCY_LIBS ${TORCH_MLIR_LIBS})
     set_property(GLOBAL PROPERTY CINM_DEPENDENCY_LIBS ${CINM_DEPENDENCY_LIBS})
-    
+
 else()
     message(WARNING "TORCH_MLIR_DIR not set, torch frontend wont be available.")
 endif()
@@ -111,11 +111,11 @@ if (TORCH_MLIR_DIR)
     add_library(Torch::TorchMLIRTorchConversionDialect STATIC IMPORTED GLOBAL)
     set_property(TARGET Torch::TorchMLIRTorchConversionDialect PROPERTY
                  IMPORTED_LOCATION ${TORCH_MLIR_DIR}/lib/libTorchMLIRTorchConversionDialect.a)
-                
+
     add_library(Torch::All INTERFACE IMPORTED)
     set_property(TARGET Torch::All PROPERTY
-      INTERFACE_LINK_LIBRARIES Torch::TorchMLIRTorchDialect 
-            Torch::TorchMLIRTorchUtils 
+      INTERFACE_LINK_LIBRARIES Torch::TorchMLIRTorchDialect
+            Torch::TorchMLIRTorchUtils
             Torch::TorchMLIRTorchConversionDialect)
     target_include_directories(Torch::All INTERFACE ${TORCH_MLIR_INCLUDE_DIR})
 
@@ -133,6 +133,20 @@ if (UPMEM_DIR)
 else()
     message(WARNING "UPMEM_DIR not set, runtime lib will not be compiled.")
 endif()
+
+
+# Add pybind11
+find_package(pybind11 OPTIONAL)
+if (NOT pybind11_FOUND)
+    set(PYBIND11_FINDPYTHON ON)
+    add_subdirectory("third-party/pybind11")
+    message(STATUS "using third-party/pybind11")
+endif()
+
+execute_process(COMMAND python3 -m pybind11 --includes OUTPUT_VARIABLE PYBIND_INCLUDES OUTPUT_STRIP_TRAILING_WHITESPACE)
+message(STATUS "using python headers from ${PYBIND_INCLUDES}")
+separate_arguments(PYBIND_INCLUDES UNIX_COMMAND "${PYBIND_INCLUDES}")
+add_compile_options(${PYBIND_INCLUDES})
 
 
 add_subdirectory(include)
