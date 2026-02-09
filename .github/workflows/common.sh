@@ -41,8 +41,9 @@ git_clone_revision() {
   fi
 }
 
-common_dir="$( cd -- "$(dirname "${BASH_SOURCE[0]:-$0}")" >/dev/null 2>&1 ; pwd -P )"
-project_root="$( cd -- "${common_dir}/../.." >/dev/null 2>&1 ; pwd -P )"
+script_dir="$( cd -- "$(dirname "${BASH_SOURCE[0]:-$0}")" >/dev/null 2>&1 ; pwd -P )"
+project_root="$( cd -- "${script_dir}" >/dev/null 2>&1 ; pwd -P )"
+project_root="$(realpath "$project_root"/../..)"
 status "Project root: $project_root"
 mkdir -p "$project_root/third-party"
 
