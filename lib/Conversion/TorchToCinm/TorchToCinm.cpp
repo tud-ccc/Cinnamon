@@ -40,7 +40,7 @@ using namespace mlir;
 
 namespace {
 
-template <typename SourceOp, typename TargetOp, typename... AdditionalOpArgs>
+template <typename SourceOp, typename TargetOp>
 struct ConvertTorchTensorOpToCinm : OpConversionPattern<SourceOp> {
   using OpConversionPattern<SourceOp>::OpConversionPattern;
 
@@ -63,8 +63,7 @@ struct ConvertTorchTensorOpToCinm : OpConversionPattern<SourceOp> {
             op.getLoc(), rhsType.toBuiltinTensor(), rhs);
 
     auto result = op.getResult();
-    auto resultType =
-        cast<torch::Torch::ValueTensorType>(result.getType());
+    auto resultType = cast<torch::Torch::ValueTensorType>(result.getType());
 
     rewriter.setInsertionPoint(op);
     auto cinmComputeOp = rewriter.create<cinm::ComputeOp>(
@@ -74,12 +73,13 @@ struct ConvertTorchTensorOpToCinm : OpConversionPattern<SourceOp> {
         rewriter.create<torch::TorchConversion::FromBuiltinTensorOp>(
             op.getLoc(), resultType, cinmComputeOp.getResult(0));
 
-    auto *computeBody = rewriter.createBlock(&cinmComputeOp.getRegion());
+    Block *computeBody = &cinmComputeOp.getRegion().front();
     rewriter.setInsertionPointToStart(computeBody);
 
-    auto targetOp = rewriter.create<TargetOp>(
-        op.getLoc(), resultType.toBuiltinTensor(), lhsConversionOp.getResult(),
-        rhsConversionOp.getResult(), AdditionalOpArgs{}...);
+    auto targetOp =
+        TargetOp::create(rewriter, op.getLoc(), lhsConversionOp.getResult(),
+                         rhsConversionOp.getResult());
+    assert(targetOp.getResult() && "Is a tensor gemmlike");
 
     rewriter.create<cinm::YieldOp>(op.getLoc(), targetOp.getResult());
 
@@ -97,12 +97,9 @@ struct ConvertTorchToCinm : public ConvertTorchToCinmBase<ConvertTorchToCinm> {
 
     RewritePatternSet patterns(&ctx);
     patterns.add<
-        ConvertTorchTensorOpToCinm<torch::Torch::AtenMatmulOp, cinm::GemmOp, //
-                                   Value>, // Empty (optional) bias
-        ConvertTorchTensorOpToCinm<torch::Torch::AtenMmOp, cinm::GemmOp, //
-                                   Value>, // Empty (optional) bias
-        ConvertTorchTensorOpToCinm<torch::Torch::AtenMvOp, cinm::GemvOp> //
-        >(&ctx);
+        ConvertTorchTensorOpToCinm<torch::Torch::AtenMatmulOp, cinm::GemmOp>,
+        ConvertTorchTensorOpToCinm<torch::Torch::AtenMmOp, cinm::GemmOp>,
+        ConvertTorchTensorOpToCinm<torch::Torch::AtenMvOp, cinm::GemvOp>>(&ctx);
 
     ConversionTarget target(ctx);
     target.markUnknownOpDynamicallyLegal([](...) { return true; });

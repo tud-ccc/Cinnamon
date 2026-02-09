@@ -21,7 +21,7 @@ jobs:
 
       - name: Install build dependencies
         run:
-          sudo apt-get install clang ninja-build mold libvulkan-dev python3.12-dev
+          sudo apt-get install clang ninja-build mold libvulkan-dev python3.12-dev ccache
 
       - name: Restore runtime cache
         id: runtimes-cache-restore
@@ -46,12 +46,16 @@ jobs:
           path: third-party/torch-mlir
           key: cinnamon-torch-mlir-${{ runner.os }}
       
+      - name: Checkout LLVM if needed
+        run: .github/workflows/checkout-llvm.sh -verbose
+
       - name: Setup venv
         run: .github/workflows/setup-venv.sh -reconfigure -verbose
 
       - name: Build LLVM
         run: |
           source .venv/bin/activate
+          export LLVM_CMAKE_OPTIONS='-DLLVM_CCACHE_BUILD=OFF'
           .github/workflows/build-llvm.sh -reconfigure -verbose
 
       - name: Save llvm cache

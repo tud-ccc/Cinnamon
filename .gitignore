@@ -3,6 +3,7 @@
 /.idea/
 .directory
 /.venv/
+/third-party/ALPINE/
 /third-party/llvm
 /third-party/torch-mlir/
 /third-party/upmem*/

@@ -1,11 +1,11 @@
-/// Declaration of the conversion pass within Cinm dialect.
-///
 /// @file
 
 #pragma once
 
 #include <cinm-mlir/Conversion/CinmToCim/CinmToCim.h>
 #include <cinm-mlir/Conversion/CinmToCnm/CinmToCnm.h>
+#include <cinm-mlir/Conversion/LinalgToCinm/Im2ColToMatmul.h>
+#include <cinm-mlir/Conversion/LinalgToCinm/LinalgToCinm.h>
 
 namespace mlir {
 

@@ -1,15 +1,11 @@
 /// Declaration of the Cim dialect attributes.
-///
-/// @file
-
 #pragma once
-
 #include "cinm-mlir/Dialect/Cim/IR/CimBase.h"
 #include "mlir/IR/Attributes.h"
 
-//===- Generated includes -------------------------------------------------===//
+// Enums first so scoped enumerators (e.g. ::mlir::cim::RoundingMode::Nearest)
+// exist
+#include "cinm-mlir/Dialect/Cim/IR/CimEnums.h.inc"
 
 #define GET_ATTRDEF_CLASSES
 #include "cinm-mlir/Dialect/Cim/IR/CimAttributes.h.inc"
-
-//===----------------------------------------------------------------------===//

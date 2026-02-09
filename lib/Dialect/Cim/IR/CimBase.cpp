@@ -1,27 +1,23 @@
-/// Implements the Cim dialect base.
-///
-/// @file
-
 #include "cinm-mlir/Dialect/Cim/IR/CimBase.h"
-
 #include "cinm-mlir/Dialect/Cim/IR/CimDialect.h"
-
-#define DEBUG_TYPE "cim-base"
 
 using namespace mlir;
 using namespace mlir::cim;
 
-//===- Generated implementation -------------------------------------------===//
-
 #include "cinm-mlir/Dialect/Cim/IR/CimBase.cpp.inc"
 
-//===----------------------------------------------------------------------===//
+// Bring in enum helpers (stringify/symbolize) once.
+#include "cinm-mlir/Dialect/Cim/IR/CimEnums.cpp.inc"
 
-//===----------------------------------------------------------------------===//
-// CimDialect
-//===----------------------------------------------------------------------===//
+// Bring in attribute class definitions once.
+#define GET_ATTRDEF_CLASSES
+#include "cinm-mlir/Dialect/Cim/IR/CimAttributes.cpp.inc"
 
 void CimDialect::initialize() {
   registerOps();
   registerTypes();
+  addAttributes<
+#define GET_ATTRDEF_LIST
+#include "cinm-mlir/Dialect/Cim/IR/CimAttributes.cpp.inc"
+      >();
 }

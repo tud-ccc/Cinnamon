@@ -3,12 +3,17 @@
 
 
 // CHECK-LABEL: simple
-func.func @simple(%t0: tensor<6x6xi32>, %t1 : tensor<6xf32> ) {
+func.func @simple(%t0: tensor<6x6xi32>, %t1 : tensor<6xf32> , %m0: memref<6xf32>) {
     %d = cinm.compute attributes { workgroupShape= array<i64: 2,4,4,2> } -> tensor<6x6xi32> {
-        %x = cinm.op.add %t0, %t0: tensor<6x6xi32>
-        %y = cinm.op.sub %t0, %t0: tensor<6x6xi32>
-        %y2 = cinm.op.div %t0, %t0: tensor<6x6xi32>
-        %y8 = cinm.op.mul %t0, %t0: tensor<6x6xi32>
+        %x = cinm.op.elementwise add %t0, %t0: tensor<6x6xi32>
+        %y = cinm.op.elementwise sub %t0, %t0: tensor<6x6xi32>
+        %y2 = cinm.op.elementwise div %t0, %t0: tensor<6x6xi32>
+        %y8 = cinm.op.elementwise mul %t0, %t0: tensor<6x6xi32>
+        cinm.op.elementwise mul %t1, %t1 into %m0: tensor<6xf32> into memref<6xf32>
+
+        %000 = cinm.op.elementwise exp %t0: tensor<6x6xi32>
+        cinm.op.elementwise exp %t0 into %m0: tensor<6x6xi32> into memref<6xf32>
+
         %z = cinm.op.reduce mul (%y) { dimensions = array<i64: 0, 1> } : tensor<6x6xi32> -> i32
         %i = arith.addi %z, %z : i32
         %k = arith.constant 62: i64
@@ -19,23 +24,23 @@ func.func @simple(%t0: tensor<6x6xi32>, %t1 : tensor<6xf32> ) {
         %z1 = cinm.op.reduce max (%t0): tensor<6x6xi32> -> tensor<6xi32>
         %q2 = cinm.op.reduce min (%t1): tensor<6xf32> -> f32
 
-        %sqrts = cinm.op.element_wise sqrt (%x): tensor<6x6xi32>
-        %exps = cinm.op.element_wise exp (%y): tensor<6x6xi32>
+        %sqrts = cinm.op.elementwise sqrt %x: tensor<6x6xi32>
+        %exps = cinm.op.elementwise exp %y: tensor<6x6xi32>
 
-        %scan = cinm.op.scan mul (%y): tensor<6x6xi32> 
+        %scan = cinm.op.scan mul (%y): tensor<6x6xi32>
         %scan2 = cinm.op.scan add (%y): tensor<6x6xi32>
 
-        %othert = tensor.empty() : tensor<6x12xi32> 
+        %othert = tensor.empty() : tensor<6x12xi32>
 
         %sim1, %sim1i = cinm.op.simSearch cos 4 (%scan, %scan2) : tensor<6x6xi32>
         %sim2, %sim2i = cinm.op.simSearch dot 4 (%scan, %scan2) : tensor<6x6xi32>
-    
-        %d2 = cinm.op.gemm %t0, %t0 : (tensor<6x6xi32>, tensor<6x6xi32>) -> tensor<6x6xi32>
+
+        %d2 = cinm.op.gemm %t0, %t0 : tensor<6x6xi32>, tensor<6x6xi32> -> tensor<6x6xi32>
         %a00 = tensor.empty (): tensor<6x4xi32>
         %a01 = tensor.empty (): tensor<4x22xi32>
         %a02 = tensor.empty (): tensor<6x22xi32>
-        %d4 = cinm.op.gemm %a00, %a01 : (tensor<6x4xi32>, tensor<4x22xi32>) -> tensor<6x22xi32>
-        %d3 = cinm.op.gemm %a00, %a01 plus %a02 {cinm.notile}: (tensor<6x4xi32>, tensor<4x22xi32>) -> tensor<6x22xi32>
+        %d4 = cinm.op.gemm %a00, %a01 : tensor<6x4xi32>, tensor<4x22xi32> -> tensor<6x22xi32>
+        %d3 = cinm.op.gemm %a00, %a01 plus %a02 {cinm.notile}: tensor<6x4xi32>, tensor<4x22xi32> plus tensor<6x22xi32> -> tensor<6x22xi32>
         cinm.yield %d2: tensor<6x6xi32>
     }
 
@@ -54,4 +59,3 @@ func.func @simple(%t0: tensor<6x6xi32>, %t1 : tensor<6xf32> ) {
 
     return
 }
-

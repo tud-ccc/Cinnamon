@@ -1,6 +1,7 @@
 #include <llvm/Support/Casting.h>
 #include <mlir/Dialect/Func/IR/FuncOps.h>
 #include <mlir/IR/Builders.h>
+#include <mlir/IR/BuiltinTypeInterfaces.h>
 #include <mlir/IR/BuiltinTypes.h>
 #include <mlir/IR/Location.h>
 #include <mlir/IR/MLIRContext.h>
@@ -38,12 +39,20 @@ static void scheduleCimOpOnCrossbar(Operation &op, Value crossbar) {
 static Operation *insertBarrierForCimOpResult(PatternRewriter &rewriter,
                                               Operation &cimOp) {
   auto future = cimOp.getResult(0);
-
   auto shapedType = cast<ShapedType>(future.getType());
-  auto barrierOp = rewriter.create<BarrierOp>(
-      cimOp.getLoc(),
-      RankedTensorType::get(shapedType.getShape(), shapedType.getElementType()),
-      future);
+
+  Type resultTy;
+  if (auto lastOperandTy = llvm::dyn_cast_or_null<ShapedType>(
+          cimOp.getOperands()[cimOp.getNumOperands() - 1].getType())) {
+    resultTy = lastOperandTy.cloneWith(shapedType.getShape(),
+                                       shapedType.getElementType());
+  } else {
+    resultTy = RankedTensorType::get(shapedType.getShape(),
+                                     shapedType.getElementType());
+  }
+
+  auto barrierOp =
+      BarrierOp::create(rewriter, cimOp.getLoc(), resultTy, future);
   future.replaceAllUsesExcept(barrierOp.getResult(), barrierOp);
   return barrierOp;
 }
@@ -125,8 +134,7 @@ prepareForScheduling(AcquireDeviceOp acquireDeviceOp,
     for (auto operand : cimOp->getOperands()) {
       // check if operand is a tensor created by a cim.barrier operation
       auto *definingOp = operand.getDefiningOp();
-      if (!llvm::isa<TensorType>(operand.getType()) || !definingOp ||
-          !llvm::isa<BarrierOp>(definingOp))
+      if (!definingOp || !llvm::isa<BarrierOp>(definingOp))
         continue;
 
       discoveredBarriers.insert(definingOp);
