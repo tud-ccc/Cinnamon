@@ -190,91 +190,6 @@ void ElementwiseOp::print(::mlir::OpAsmPrinter &out) {
   }
 }
 
-::mlir::ParseResult parseGemmOp(::mlir::OpAsmParser &parser,
-                                ::mlir::OperationState &result) {
-  OpAsmParser::UnresolvedOperand lhs, rhs, bias, out;
-  bool hasBias = false, hasOut = false;
-  Type lhsType, rhsType, outType;
-
-  if (parser.parseOperand(lhs) || parser.parseComma() ||
-      parser.parseOperand(rhs))
-    return failure();
-
-  if (parser.parseOptionalKeyword("plus").succeeded()) {
-    if (parser.parseOperand(bias))
-      return failure();
-    hasBias = true;
-  }
-
-  if (parser.parseOptionalKeyword("into").succeeded()) {
-    if (parser.parseOperand(out))
-      return failure();
-    hasOut = true;
-  }
-
-  if (parser.parseOptionalAttrDict(result.attributes).failed())
-    return failure();
-
-  if (parser.parseColon() || parser.parseType(lhsType) || parser.parseComma() ||
-      parser.parseType(rhsType))
-    return failure();
-
-  if (hasOut) {
-    if (parser.parseKeyword("into") || parser.parseType(outType))
-      return failure();
-  } else {
-    if (parser.parseArrow() || parser.parseType(outType))
-      return failure();
-  }
-
-  if (parser.resolveOperand(lhs, lhsType, result.operands).failed())
-    return failure();
-  if (parser.resolveOperand(rhs, rhsType, result.operands).failed())
-    return failure();
-  if (hasBias && parser.resolveOperand(bias, outType, result.operands).failed())
-    return failure();
-  if (hasOut && parser.resolveOperand(out, outType, result.operands).failed())
-    return failure();
-
-  if (dyn_cast<RankedTensorType>(outType)) {
-    result.addTypes(outType);
-  }
-
-  result.addAttribute(
-      "operandSegmentSizes",
-      parser.getBuilder().getDenseI32ArrayAttr(
-          {1, 1, static_cast<int32_t>(hasBias), static_cast<int32_t>(hasOut)}));
-
-  return success();
-}
-
-// ::mlir::ParseResult GemmOp::parse(::mlir::OpAsmParser &parser,
-//                                   ::mlir::OperationState &result) {
-//   return parseGemmOp(parser, result);
-// }
-
-template <typename Op> void printGemmLikeOp(OpAsmPrinter &out, Op op) {
-  out << " " << op.getLhs() << ", " << op.getRhs();
-  if (auto bias = op.getBias())
-    out << " plus " << bias;
-  Type outTy;
-  bool useIntoKw;
-  if (auto outBuf = op.getOut()) {
-    outTy = outBuf.getType();
-    out << " into " << outBuf;
-    useIntoKw = true;
-  } else {
-    outTy = op.getResult().getType();
-    useIntoKw = false;
-  }
-  out << " : " << op.getLhs().getType() << ", " << op.getRhs().getType();
-  if (useIntoKw) {
-    out << " into " << outTy;
-  } else {
-    out << " -> " << outTy;
-  }
-}
-
 void ElementwiseOp::build(OpBuilder &builder, OperationState &state,
                           ElementwiseKind kind, Value a, Value b, Value out) {
   state.addOperands(a);
@@ -308,21 +223,6 @@ void ActivateOp::build(OpBuilder &builder, OperationState &state,
   state.addAttribute(getKindAttrName(state.name),
                      builder.getAttr<ActivationKindAttr>(kind));
 }
-
-// void GemmOp::print(::mlir::OpAsmPrinter &prin
-
-// void GemmOp::print(::mlir::OpAsmPrinter &printer) {
-//   printGemmLikeOp<GemmOp>(printer, *this);
-// }
-
-// ::mlir::ParseResult GemvOp::parse(::mlir::OpAsmParser &parser,
-//                                   ::mlir::OperationState &result) {
-//   return parseGemmOp(parser, result);
-// }
-
-// void GemvOp::print(::mlir::OpAsmPrinter &printer) {
-//   printGemmLikeOp<GemvOp>(printer, *this);
-// }
 
 ::mlir::ParseResult parseUnaryOp(::mlir::OpAsmParser &parser,
                                  ::mlir::OperationState &result) {
