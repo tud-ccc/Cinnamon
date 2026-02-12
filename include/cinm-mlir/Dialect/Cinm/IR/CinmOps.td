@@ -308,7 +308,7 @@ def Cinm_PopCountOp : Cinm_Op<"op.popCount", [Pure]> {
 
 
 def Cinm_ComputeOp : Cinm_Base_Op<"compute", [
-  AffineScope, AutomaticAllocationScope
+  AffineScope, AutomaticAllocationScope, IsolatedFromAbove
 ]> {
   let summary = "TODO";
   let description = [{
@@ -321,10 +321,14 @@ def Cinm_ComputeOp : Cinm_Base_Op<"compute", [
   }];
 
   let arguments = (ins
+      Variadic<AnyType>:$operands,
+      // Variadic<AnyType>:$outputs,
+
       DefaultValuedAttr<DenseI64ArrayAttr, "{2, 32, 16}">:$workgroupShape,
       DefaultValuedAttr<DenseI64ArrayAttr, "{0, 65536, 0}">:$bufferSizesInBytes,
       OptionalAttr<DenseI64ArrayAttr>:$tileSizes
   );
+
   let results = (outs Variadic<AnyType>:$results);
   let regions = (region SizedRegion<1>:$body);
 
@@ -336,13 +340,21 @@ def Cinm_ComputeOp : Cinm_Base_Op<"compute", [
       auto wgShape = getWorkgroupShape();
       return std::reduce(wgShape.begin(), wgShape.end(), 1, std::multiplies<>());
     }
+    auto zipArgsWithOperands() {
+      return llvm::zip(getRegion().getArguments(), getOperands());
+    }
   }];
 
+  let skipDefaultBuilders = 1;
   let builders = [
     OpBuilder<(ins "TypeRange":$results), [{
+      build($_builder, $_state, ValueRange{}, results);
+    }]>,
+    OpBuilder<(ins "ValueRange":$operands, "TypeRange":$results), [{
       auto wg   = $_builder.getDenseI64ArrayAttr({2, 32, 16});
       auto bufs = $_builder.getDenseI64ArrayAttr({0, 65536, 0});
 
+      $_state.addOperands(operands);
       $_state.addTypes(results);
       $_state.addAttribute("workgroupShape", wg);
       $_state.addAttribute("bufferSizesInBytes", bufs);
@@ -353,8 +365,7 @@ def Cinm_ComputeOp : Cinm_Base_Op<"compute", [
     }]>
   ];
 
-//  let hasCustomAssemblyFormat = 1;
-  let assemblyFormat = "attr-dict-with-keyword (`->` type($results)^)? $body";
+ let hasCustomAssemblyFormat = 1;
 }
 
 //===----------------------------------------------------------------------===//

@@ -3,8 +3,8 @@
 
 
 // CHECK-LABEL: simple
-func.func @simple(%t0: tensor<6x6xi32>, %t1 : tensor<6xf32> , %m0: memref<6xf32>) {
-    %d = cinm.compute attributes { workgroupShape= array<i64: 2,4,4,2> } -> tensor<6x6xi32> {
+func.func @simple(%t00: tensor<6x6xi32>, %t10 : tensor<6xf32> , %m00: memref<6xf32>) {
+    %d = cinm.compute (%t0 = %t00: tensor<6x6xi32>, %t1 = %t10 : tensor<6xf32> , %m0 = %m00: memref<6xf32>) -> tensor<6x6xi32> attributes { workgroupShape= array<i64: 2,4,4,2> } {
         %x = cinm.op.elementwise add %t0, %t0: tensor<6x6xi32>
         %y = cinm.op.elementwise sub %t0, %t0: tensor<6x6xi32>
         %y2 = cinm.op.elementwise div %t0, %t0: tensor<6x6xi32>
@@ -45,14 +45,14 @@ func.func @simple(%t0: tensor<6x6xi32>, %t1 : tensor<6xf32> , %m0: memref<6xf32>
     }
 
     // different forms for compute
-    cinm.compute {
+    cinm.compute() {
         cinm.yield
     }
-    cinm.compute attributes { maxDpuBufferSize = 64 } {
+    cinm.compute() attributes { maxDpuBufferSize = 64 } {
         cinm.yield
     }
 
-    %a0, %b0 = cinm.compute attributes {} -> i64, i64 {
+    %a0, %b0 = cinm.compute() -> i64, i64 attributes {} {
         %cst = arith.constant 32: i64
         cinm.yield %cst, %cst: i64, i64
     }
