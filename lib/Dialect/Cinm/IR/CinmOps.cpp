@@ -13,8 +13,10 @@
 
 #include "cinm-mlir/Dialect/Cinm/IR/CinmDialect.h"
 #include <llvm/ADT/ArrayRef.h>
+#include <llvm/ADT/STLExtras.h>
 #include <llvm/ADT/SmallVector.h>
 #include <llvm/Support/Casting.h>
+#include <llvm/Support/LogicalResult.h>
 #include <mlir/Dialect/Affine/IR/AffineOps.h>
 #include <mlir/Dialect/Arith/IR/Arith.h>
 #include <mlir/Dialect/Bufferization/IR/Bufferization.h>
@@ -168,6 +170,60 @@ static bool dimsCompatible(int64_t a, int64_t b) {
           {1, static_cast<int32_t>(hasRhs), static_cast<int32_t>(hasOut)}));
 
   return success();
+}
+
+ParseResult ComputeOp::parse(::mlir::OpAsmParser &parser,
+                             ::mlir::OperationState &result) {
+  SmallVector<OpAsmParser::Argument> regionArgs;
+  if (parser.parseCommaSeparatedList(OpAsmParser::Delimiter::Paren, [&]() {
+        OpAsmParser::UnresolvedOperand op;
+        auto &arg = regionArgs.emplace_back();
+        if (parser.parseArgument(arg) || parser.parseEqual() ||
+            parser.parseOperand(op) || parser.parseColonType(arg.type) ||
+            parser.resolveOperand(op, arg.type, result.operands)) {
+          return failure();
+        }
+        return success();
+      })) {
+    return failure();
+  }
+
+  if (parser.parseOptionalArrow().succeeded()) {
+    if (parser.parseTypeList(result.types))
+      return failure();
+  }
+  if (parser.parseOptionalAttrDictWithKeyword(result.attributes))
+    return failure();
+
+  // if (parser.parseOptionalArrowTypeList(result.types))
+  //   return failure();
+  auto *region = result.addRegion();
+  if (parser.parseRegion(*region, regionArgs))
+    return failure();
+
+  return success();
+}
+
+void ComputeOp::print(OpAsmPrinter &out) {
+  out << " (";
+  llvm::interleaveComma(zipArgsWithOperands(), out, [&](auto pair) {
+    auto [arg, value] = pair;
+    out.printRegionArgument(arg, {}, true);
+    out << " = " << value << " : " << value.getType();
+  });
+  out << ")";
+  if (!getResults().empty()) {
+    out << " -> ";
+    llvm::interleaveComma(getResultTypes(), out);
+  }
+  out.increaseIndent();
+  out.increaseIndent();
+  out.printNewline();
+  out.printOptionalAttrDictWithKeyword((*this)->getAttrs());
+  out << ' ';
+  out.decreaseIndent();
+  out.decreaseIndent();
+  out.printRegion(getRegion(), false);
 }
 
 void ElementwiseOp::print(::mlir::OpAsmPrinter &out) {
