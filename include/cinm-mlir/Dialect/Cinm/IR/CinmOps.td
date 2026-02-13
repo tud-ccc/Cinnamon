@@ -343,6 +343,9 @@ def Cinm_ComputeOp : Cinm_Base_Op<"compute", [
     auto zipArgsWithOperands() {
       return llvm::zip(getRegion().getArguments(), getOperands());
     }
+    auto zipArgsWithOpOperands() {
+      return llvm::zip(getRegion().getArguments(), (*this)->getOpOperands());
+    }
   }];
 
   let skipDefaultBuilders = 1;

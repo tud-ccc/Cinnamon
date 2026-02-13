@@ -120,70 +120,54 @@ struct ComputeBufferizableInterface
   }
 
   LogicalResult bufferize(Operation *op, RewriterBase &rewriter,
-                          const bufferization::BufferizationOptions &,
-                          bufferization::BufferizationState &) const {
+                          const bufferization::BufferizationOptions &options,
+                          bufferization::BufferizationState &state) const {
     auto oldCompute = cast<cinm::ComputeOp>(op);
     Location loc = op->getLoc();
 
+    for (auto [arg, operand] : oldCompute.zipArgsWithOpOperands()) {
+      if (llvm::dyn_cast_or_null<TensorType>(operand.get().getType())) {
+        FailureOr<Value> buf =
+            bufferization::getBuffer(rewriter, operand.get(), options, state);
+        if (failed(buf))
+          return op->emitError(
+              "cinm.compute bufferize: operand failed bufferization");
+
+        auto tensorTy = arg.getType();
+        rewriter.setInsertionPointToStart(arg.getOwner());
+        auto totensor =
+            bufferization::ToTensorOp::create(rewriter, loc, tensorTy, arg);
+
+        arg.setType(buf->getType());
+        rewriter.replaceAllUsesExcept(arg, totensor, totensor);
+        operand.set(*buf);
+      }
+    }
     Operation *termOp = oldCompute.getBody().front().getTerminator();
     auto term = dyn_cast<cinm::YieldOp>(termOp);
     if (!term)
       return op->emitError("expected cinm.yield as terminator"), failure();
+    for (auto [i, yieldVal, res] :
+         llvm::enumerate(term->getOpOperands(), oldCompute->getOpResults())) {
+      Value v = yieldVal.get();
+      if (llvm::dyn_cast_or_null<TensorType>(v.getType())) {
+        FailureOr<Value> buf =
+            bufferization::getBuffer(rewriter, v, options, state);
+        if (failed(buf))
+          return op->emitError("cinm.compute bufferize: result #")
+                 << i << " failed bufferization";
+        yieldVal.set(*buf);
 
-    SmallVector<Value> newYieldVals;
-    SmallVector<Type> newResultTypes;
+        auto tensorTy = res.getType();
+        res.setType(buf->getType());
 
-    rewriter.setInsertionPoint(term);
-    for (Value v : term.getOperands()) {
-      if (auto mt = dyn_cast<MemRefType>(v.getType())) {
-        newYieldVals.push_back(v);
-        newResultTypes.push_back(mt);
-        continue;
+        rewriter.setInsertionPointAfter(oldCompute);
+        auto totensor =
+            bufferization::ToTensorOp::create(rewriter, loc, tensorTy, res);
+        rewriter.replaceAllUsesExcept(res, totensor, totensor);
       }
-      if (auto tt = dyn_cast<RankedTensorType>(v.getType())) {
-        if (auto toTensor = v.getDefiningOp<bufferization::ToTensorOp>()) {
-          Value mem = toTensor.getBuffer();
-          newYieldVals.push_back(mem);
-          newResultTypes.push_back(mem.getType());
-          continue;
-        }
-        BaseMemRefType mr =
-            bufferization::getMemRefTypeWithFullyDynamicLayout(tt);
-        Value mem =
-            bufferization::ToBufferOp::create(rewriter, loc, mr, v, false);
-        newYieldVals.push_back(mem);
-        newResultTypes.push_back(mem.getType());
-        continue;
-      }
-      return op->emitError("cinm.compute bufferize: result #")
-                 << newYieldVals.size() << " is not a tensor or memref",
-             failure();
     }
-    term->setOperands(newYieldVals);
-
-    OperationState st(loc, cinm::ComputeOp::getOperationName());
-    st.addTypes(newResultTypes);
-    st.addAttributes(oldCompute->getAttrDictionary().getValue());
-    (void)st.addRegion();
-
-    OpBuilder::InsertionGuard guard(rewriter);
-    rewriter.setInsertionPoint(oldCompute);
-    Operation *newOpGeneric = Operation::create(st);
-    rewriter.insert(newOpGeneric);
-    auto newComputeMR = cast<cinm::ComputeOp>(newOpGeneric);
-
-    newComputeMR.getBody().takeBody(oldCompute.getBody());
-
-    SmallVector<Value> replacement;
-    replacement.reserve(newComputeMR->getNumResults());
-    for (auto [idx, res] : llvm::enumerate(newComputeMR->getResults())) {
-      Type wantedTensorTy = oldCompute->getResult(idx).getType();
-      Value t = bufferization::ToTensorOp::create(rewriter, loc, wantedTensorTy,
-                                                  res, true, true);
-      replacement.push_back(t);
-    }
-
-    rewriter.replaceOp(oldCompute, replacement);
+    op->getParentOp()->dump();
     return success();
   }
 };
