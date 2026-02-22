@@ -55,8 +55,7 @@ namespace mlir::cinm {
 #include "cinm-mlir/Dialect/Cinm/Transforms/Passes.h.inc"
 
 namespace {
-struct RunCostModelPass
-: public impl::RunCostModelPassBase<RunCostModelPass> {
+struct RunCostModelPass : public impl::RunCostModelPassBase<RunCostModelPass> {
   using Base::Base;
 
   std::string convertTypeToCostModelType(mlir::Type type) {
@@ -80,62 +79,26 @@ struct RunCostModelPass
       return "<invalid_element_type>";
   }
 
-  void runOnOperation() final {
-    py::scoped_interpreter guard{};
-    py::module sys = py::module::import("sys");
-
-    std::string costModelModuleDir = ".";
-    std::string costModelModuleName = "cost_model_test";
-    if (!costModelPath.empty()) {
-      std::filesystem::path p = costModelPath.getValue();
-      costModelModuleName = p.stem().string();
-      costModelModuleDir = std::filesystem::absolute(p).parent_path().string();
-      sys.attr("path").attr("insert")(0, costModelModuleDir);
-    }
-
-    py::module cost_model;
-    try {
-      cost_model = py::module::import(costModelModuleName.c_str());
-    } catch (py::error_already_set &e) {
-      emitError(getOperation()->getLoc(), "failed to load cost-model (" +
-                                              costModelModuleDir + " / " +
-                                              costModelModuleName + ")");
-      emitError(getOperation()->getLoc(), e.what());
-      return;
-    }
-
-    std::string cost_model_name = cost_model.attr("name").cast<std::string>();
-    std::string cost_model_pipeline =
-        cost_model.attr("passes").cast<std::string>();
-    auto operation_names = cost_model.attr("operations");
-
+  void runCostModelOnOperation(Operation *op, py::module &cost_model,
+                               const std::string &cost_model_name) {
     IRRewriter rewriter(&getContext());
-    PassManager pm(&getContext());
-    if (llvm::failed(parsePassPipeline(StringRef(cost_model_pipeline),
-                                       *(OpPassManager *)&pm))) {
-      emitError(getOperation()->getLoc(), "invalid pass pipeline");
-      return;
-    }
 
-    std::vector<Operation *> operations;
-    getOperation()->walk([&](Operation *op) {
-      if (!operation_names.contains(op->getName().getStringRef().str())) {
+    py::object cost_model_pipeline_generator =
+        cost_model.attr("get_passes_for_next_run")();
+    // we run the cost-model as long as the get_passes_for_next_run() generator
+    // produces a new value
+    while (true) {
+      std::string cost_model_pipeline = "";
+      try {
+        cost_model_pipeline = cost_model_pipeline_generator.attr("__next__")()
+                                  .cast<std::string>();
+      } catch (const py::error_already_set &e) {
+        // python throws a StopIteration exception when the generator is
+        // exhausted, but we don't handle that explicitly and continue with
+        // the next operation no matter the exception type
         return;
       }
 
-      if (llvm::dyn_cast_or_null<cinm::SelectOp>(op->getParentOp())) {
-        cinm::YieldOp yield = llvm::dyn_cast<cinm::YieldOp>(op->getNextNode());
-        if (yield->hasAttr("cinm_cost_model_data")) {
-          return;
-        } else {
-          operations.push_back(op);
-        }
-      } else {
-        operations.push_back(op);
-      }
-    });
-
-    for (Operation *op : operations) {
       Region *dst_region = nullptr;
       if (cinm::SelectOp old_select =
               llvm::dyn_cast_or_null<cinm::SelectOp>(op->getParentOp())) {
@@ -172,8 +135,22 @@ struct RunCostModelPass
       cinm::YieldOp yield =
           rewriter.create<cinm::YieldOp>(op->getLoc(), copy->getResults());
 
-      if (cost_model_pipeline != "" &&
-          copy->hasTrait<OpTrait::IsIsolatedFromAbove>()) {
+      if (cost_model_pipeline != "") {
+        if (!copy->hasTrait<OpTrait::IsIsolatedFromAbove>()) {
+          emitError(getOperation()->getLoc(),
+                    "pass pipeline can only be run on operations with the "
+                    "IsIsolatedFromAbove trait");
+          return;
+        }
+
+        PassManager pm(&getContext());
+
+        if (llvm::failed(parsePassPipeline(StringRef(cost_model_pipeline),
+                                           *(OpPassManager *)&pm))) {
+          emitError(getOperation()->getLoc(), "invalid pass pipeline");
+          return;
+        }
+
         if (llvm::failed(runPipeline(pm, copy))) {
           return;
         }
@@ -202,6 +179,56 @@ struct RunCostModelPass
           CostModelDataAttr::get(
               &getContext(), StringAttr::get(&getContext(), cost_model_name),
               FloatAttr::get(Float32Type::get(&getContext()), cost)));
+    }
+  }
+
+  void runOnOperation() final {
+    py::scoped_interpreter guard{};
+    py::module sys = py::module::import("sys");
+
+    std::string costModelModuleDir = ".";
+    std::string costModelModuleName = "cost_model_test";
+    if (!costModelPath.empty()) {
+      std::filesystem::path p = costModelPath.getValue();
+      costModelModuleName = p.stem().string();
+      costModelModuleDir = std::filesystem::absolute(p).parent_path().string();
+      sys.attr("path").attr("insert")(0, costModelModuleDir);
+    }
+
+    py::module cost_model;
+    try {
+      cost_model = py::module::import(costModelModuleName.c_str());
+    } catch (py::error_already_set &e) {
+      emitError(getOperation()->getLoc(), "failed to load cost-model (" +
+                                              costModelModuleDir + " / " +
+                                              costModelModuleName + ")");
+      emitError(getOperation()->getLoc(), e.what());
+      return;
+    }
+
+    std::string cost_model_name = cost_model.attr("name").cast<std::string>();
+    auto operation_names = cost_model.attr("operations");
+
+    std::vector<Operation *> operations;
+    getOperation()->walk([&](Operation *op) {
+      if (!operation_names.contains(op->getName().getStringRef().str())) {
+        return;
+      }
+
+      if (llvm::dyn_cast_or_null<cinm::SelectOp>(op->getParentOp())) {
+        cinm::YieldOp yield = llvm::dyn_cast<cinm::YieldOp>(op->getNextNode());
+        if (yield->hasAttr("cinm_cost_model_data")) {
+          return;
+        } else {
+          operations.push_back(op);
+        }
+      } else {
+        operations.push_back(op);
+      }
+    });
+
+    for (Operation *op : operations) {
+      runCostModelOnOperation(op, cost_model, cost_model_name);
     }
   }
 };
