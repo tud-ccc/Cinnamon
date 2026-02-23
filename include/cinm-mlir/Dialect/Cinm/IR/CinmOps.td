@@ -346,13 +346,13 @@ def Cinm_ComputeOp : Cinm_Base_Op<"compute", [
     auto zipArgsWithOpOperands() {
       return llvm::zip(getRegion().getArguments(), (*this)->getOpOperands());
     }
+    auto getBodyArguments() {
+      return getRegion().getArguments();
+    }
   }];
 
   let skipDefaultBuilders = 1;
   let builders = [
-    OpBuilder<(ins "TypeRange":$results), [{
-      build($_builder, $_state, ValueRange{}, results);
-    }]>,
     OpBuilder<(ins "ValueRange":$operands, "TypeRange":$results), [{
       auto wg   = $_builder.getDenseI64ArrayAttr({2, 32, 16});
       auto bufs = $_builder.getDenseI64ArrayAttr({0, 65536, 0});
@@ -364,7 +364,9 @@ def Cinm_ComputeOp : Cinm_Base_Op<"compute", [
       // Do NOT set tileSizes here (absent means "use heuristic").
 
       ::mlir::Region *region = $_state.addRegion();
-      region->emplaceBlock(); // satisfy SizedRegion<1>
+      auto& block = region->emplaceBlock(); // satisfy SizedRegion<1>
+      for (auto opnd : operands)
+        block.addArgument(opnd.getType(), opnd.getLoc());
     }]>
   ];
 

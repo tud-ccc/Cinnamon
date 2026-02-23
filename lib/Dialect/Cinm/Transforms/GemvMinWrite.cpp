@@ -712,8 +712,9 @@ static LogicalResult rewriteCompute(cinm::ComputeOp compute,
 
   Location loc = compute.getLoc();
   rewriter.setInsertionPoint(compute);
-  auto newCompute =
-      rewriter.create<cinm::ComputeOp>(loc, compute.getResultTypes());
+  // todo why don't we modify this compute op in place?? this could be way simpler
+  auto newCompute = rewriter.create<cinm::ComputeOp>(
+      loc, compute->getOperands(), compute.getResultTypes());
   newCompute->setAttrs(compute->getAttrDictionary());
 
   Block &oldBody = compute.getBody().front();
@@ -723,6 +724,7 @@ static LogicalResult rewriteCompute(cinm::ComputeOp compute,
   for (auto [oldArg, newArg] :
        llvm::zip(oldBody.getArguments(), newBody.getArguments()))
     mapper.map(oldArg, newArg);
+
   rewriter.setInsertionPointToEnd(&newBody);
   for (Operation &op : oldBody) {
     if (&op == nest.outer.getOperation())
