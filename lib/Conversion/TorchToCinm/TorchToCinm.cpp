@@ -66,8 +66,9 @@ struct ConvertTorchTensorOpToCinm : OpConversionPattern<SourceOp> {
     auto resultType = cast<torch::Torch::ValueTensorType>(result.getType());
 
     rewriter.setInsertionPoint(op);
-    auto cinmComputeOp = rewriter.create<cinm::ComputeOp>(
-        op.getLoc(), resultType.toBuiltinTensor());
+    auto cinmComputeOp = cinm::ComputeOp::create(
+        rewriter, op.getLoc(), ValueRange{lhsConversionOp, rhsConversionOp},
+        resultType.toBuiltinTensor());
 
     auto resultConversionOp =
         rewriter.create<torch::TorchConversion::FromBuiltinTensorOp>(
@@ -77,8 +78,8 @@ struct ConvertTorchTensorOpToCinm : OpConversionPattern<SourceOp> {
     rewriter.setInsertionPointToStart(computeBody);
 
     auto targetOp =
-        TargetOp::create(rewriter, op.getLoc(), lhsConversionOp.getResult(),
-                         rhsConversionOp.getResult());
+        TargetOp::create(rewriter, op.getLoc(), computeBody->getArgument(0),
+                         computeBody->getArgument(1));
     assert(targetOp.getResult() && "Is a tensor gemmlike");
 
     rewriter.create<cinm::YieldOp>(op.getLoc(), targetOp.getResult());

@@ -250,7 +250,7 @@ struct BatchGemmToLoopedGemv final : OpRewritePattern<cinm::BatchGemmOp> {
       SmallVector<ReassociationIndices, 1> expandY{{0, 1, 2}};
       auto yExpandedTy = RankedTensorType::get({1, M, 1}, elemTy);
       SmallVector<int64_t, 3> staticSizesY{1, M, 1};
-      auto yVecTy = RankedTensorType::get({M}, elemTy);
+      // auto yVecTy = RankedTensorType::get({M}, elemTy);
 
       SmallVector<int64_t, 3> staticSizesBias{1, M, 1};
       auto biasColTy = RankedTensorType::get({1, M, 1}, elemTy);
@@ -326,7 +326,7 @@ struct BatchGemmToLoopedGemv final : OpRewritePattern<cinm::BatchGemmOp> {
       SmallVector<ReassociationIndices, 1> expandScalar{{0, 1, 2}};
       auto yExpandedTy = RankedTensorType::get({1, 1, 1}, elemTy);
       SmallVector<int64_t, 3> staticSizesY{1, 1, 1};
-      auto yScalarTy = RankedTensorType::get({1}, elemTy);
+      // auto yScalarTy = RankedTensorType::get({1}, elemTy);
 
       finals = createNestedAffineForLoops(
           rewriter, loc, ArrayRef<int64_t>{B, M, N}, ArrayRef<int64_t>{1, 1, 1},

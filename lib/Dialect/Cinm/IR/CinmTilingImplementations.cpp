@@ -23,6 +23,7 @@
 #include <mlir/IR/Diagnostics.h>
 #include <mlir/IR/ImplicitLocOpBuilder.h>
 #include <mlir/IR/ValueRange.h>
+#include <tuple>
 
 using namespace mlir;
 using namespace mlir::cinm;
@@ -105,13 +106,10 @@ static constexpr std::array<int64_t, 3> noStaticOffsets3{
 static constexpr std::array<int64_t, 3> unitStrides3{1, 1, 1};
 
 static FailureOr<std::tuple<int64_t, int64_t, int64_t>>
-getGemmTilesFromAttributes(const ShapedType &lhsType, const ShapedType &rhsType,
+getGemmTilesFromAttributes(const int64_t M, const int64_t N, const int64_t K,
+                           const Type eltType,
                            const mlir::cinm::TilingParameters &params,
                            Operation *errorLoc) {
-  Type eltType = lhsType.getElementType();
-  const int64_t M = lhsType.getDimSize(0);
-  const int64_t N = rhsType.getDimSize(1);
-  const int64_t K = rhsType.getDimSize(0);
 
   int64_t p0 = 0, p1 = 0;
   if (auto providedPar = params.getProvidedParallelTiles()) {
@@ -355,8 +353,8 @@ TilingResult2 GemmOp::convertToTiledOps(OpBuilder &builder,
   }
 
   int64_t p0, p1, r;
-  if (auto tiles =
-          getGemmTilesFromAttributes(lhsType, rhsType, params, getOperation());
+  if (auto tiles = getGemmTilesFromAttributes(M, N, K, lhsType.getElementType(),
+                                              params, getOperation());
       succeeded(tiles)) {
     std::tie(p0, p1, r) = *tiles;
   } else {
@@ -756,14 +754,14 @@ TilingResult2 GemvOp::convertToTiledOps(OpBuilder &builder,
 
   Type elt = aTy.getElementType();
 
-  int64_t pM = 0, rK = 0;
-  if (auto tiles = params.getTileSizes()) {
-    if (tiles->size() >= 1)
-      pM = (*tiles)[0];
-    if (tiles->size() >= 2)
-      rK = (*tiles)[1];
-  }
-  if (pM <= 0 || rK <= 0) {
+  int64_t pM, rK;
+  if (auto tiles = params.getTileSizes(); tiles && tiles->size() == 2) {
+    pM = (*tiles)[0];
+    rK = (*tiles)[1];
+  } else if (auto r = getGemmTilesFromAttributes(M, 1, K, elt, params, *this);
+             succeeded(r)) {
+    std::tie(pM, std::ignore, rK) = *r;
+  } else {
     getOperation()->emitError()
         << "requires tileSizes attribute with [M, K] entries";
     return failure();

@@ -8,6 +8,7 @@
 #include <mlir/IR/Builders.h>
 #include <mlir/IR/BuiltinOps.h>
 #include <mlir/IR/BuiltinTypes.h>
+#include <mlir/IR/IRMapping.h>
 #include <mlir/IR/PatternMatch.h>
 #include <mlir/Pass/Pass.h>
 #include <mlir/Support/LogicalResult.h>
@@ -70,17 +71,21 @@ wrapArbitraryCinmTensorOpInCompute(Operation *op, DenseI64ArrayAttr tileSizes,
   Location loc = op->getLoc();
 
   rewriter.setInsertionPoint(op);
-  auto compute = rewriter.create<ComputeOp>(loc, rty);
+  auto compute = rewriter.create<ComputeOp>(loc, op->getOperands(), rty);
   if (tileSizes)
     compute->setAttr("tileSizes", tileSizes);
 
-  Region &region = compute.getRegion();
-  if (region.empty())
-    region.emplaceBlock();
+  // remap original values to block argument
+  IRMapping mapping;
+  for (auto [arg, opnd] : compute.zipArgsWithOperands()) {
+    mapping.map(opnd, arg);
+  }
+
+  Region &region = compute.getBody();
   Block &entry = region.front();
 
   rewriter.setInsertionPointToStart(&entry);
-  Operation *inner = rewriter.clone(*op);
+  Operation *inner = rewriter.clone(*op, mapping);
   rewriter.create<YieldOp>(loc, inner->getResult(0));
 
   rewriter.setInsertionPointAfter(compute);
@@ -218,5 +223,5 @@ struct CinmAnnotateTileSizesPass
   }
 };
 
-}
-}
+} // namespace
+} // namespace mlir::cinm

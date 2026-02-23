@@ -24,6 +24,7 @@
 #include "llvm/ADT/TypeSwitch.h"
 #include "llvm/Support/Casting.h"
 #include "llvm/Support/raw_ostream.h"
+#include <mlir/IR/IRMapping.h>
 
 using namespace mlir;
 
@@ -1148,12 +1149,18 @@ struct ConvertLinalgOpToCinm : OpConversionPattern<SourceOp> {
   LogicalResult
   matchAndRewrite(SourceOp op, SourceOp::Adaptor,
                   ConversionPatternRewriter &rewriter) const override {
-    cinm::ComputeOp computeOp =
-        cinm::ComputeOp::create(rewriter, op.getLoc(), op.getResultTypes());
+    cinm::ComputeOp computeOp = cinm::ComputeOp::create(
+        rewriter, op.getLoc(), op.getOperands(), op.getResultTypes());
     Block *computeBody = &computeOp.getRegion().front();
+    // remap original values to block argument
+    IRMapping mapping;
+    for (auto [arg, opnd] : computeOp.zipArgsWithOperands()) {
+      mapping.map(opnd, arg);
+    }
 
     rewriter.setInsertionPointToStart(computeBody);
-    auto failureOrCinmOp = LinalgToCinmOpBuilder<SourceOp>::build(rewriter, op);
+    auto failureOrCinmOp =
+        LinalgToCinmOpBuilder<SourceOp>::build(rewriter, op, mapping);
     if (failed(failureOrCinmOp)) {
       return failure();
     }
@@ -1168,18 +1175,21 @@ struct ConvertLinalgOpToCinm : OpConversionPattern<SourceOp> {
 
 template <> struct LinalgToCinmOpBuilder<linalg::MatmulOp> {
   static FailureOr<cinm::GemmOp> build(ConversionPatternRewriter &rewriter,
-                                       linalg::MatmulOp sourceOp) {
+                                       linalg::MatmulOp sourceOp,
+                                       IRMapping &mapping) {
     return cinm::GemmOp::create(rewriter, sourceOp.getLoc(),
-                                sourceOp.getOperand(0), sourceOp.getOperand(1));
+                                mapping.lookup(sourceOp.getOperand(0)),
+                                mapping.lookup(sourceOp.getOperand(1)));
   }
 };
 
 template <> struct LinalgToCinmOpBuilder<linalg::MatvecOp> {
   static FailureOr<cinm::GemvOp> build(ConversionPatternRewriter &rewriter,
-                                       linalg::MatvecOp sourceOp) {
+                                       linalg::MatvecOp sourceOp,
+                                       IRMapping &mapping) {
     return cinm::GemvOp::create(rewriter, sourceOp.getLoc(),
-                                sourceOp.getOperand(0), sourceOp.getOperand(1),
-                                Value(), Value());
+                                mapping.lookup(sourceOp.getOperand(0)),
+                                mapping.lookup(sourceOp.getOperand(1)));
   }
 };
 
@@ -1243,7 +1253,8 @@ template <> struct LinalgToCinmOpBuilder<linalg::ReduceOp> {
   }
 
   static FailureOr<cinm::ReduceOp> build(ConversionPatternRewriter &rewriter,
-                                         linalg::ReduceOp sourceOp) {
+                                         linalg::ReduceOp sourceOp,
+                                         IRMapping mapping) {
     FailureOr<cinm::ReduceMethod> m = getReduceMethod(sourceOp);
     if (failed(m)) {
       return failure();
@@ -1259,13 +1270,14 @@ template <> struct LinalgToCinmOpBuilder<linalg::ReduceOp> {
 template <typename LinalgOp, cinm::ElementwiseKind Kind>
 struct ElementwiseOpBuilder {
   static FailureOr<cinm::ElementwiseOp>
-  build(ConversionPatternRewriter &rewriter, LinalgOp sourceOp) {
+  build(ConversionPatternRewriter &rewriter, LinalgOp sourceOp,
+        IRMapping &mapping) {
     ValueRange inputs = sourceOp.getInputs();
     ValueRange outputs = sourceOp.getOutputs();
     return cinm::ElementwiseOp::create(
-        rewriter, sourceOp.getLoc(), Kind, inputs[0],
-        inputs.size() > 1 ? inputs[1] : Value(),
-        outputs.size() >= 1 ? outputs[0] : Value());
+        rewriter, sourceOp.getLoc(), Kind, mapping.lookup(inputs[0]),
+        inputs.size() > 1 ? mapping.lookup(inputs[1]) : Value(),
+        outputs.size() >= 1 ? mapping.lookup(outputs[0]) : Value());
   }
 };
 
@@ -1429,13 +1441,16 @@ struct ConvertLinalgGenericOpToCinm : OpConversionPattern<linalg::GenericOp> {
 
     // create cinm op corresponding to the current operation
     cinm::ComputeOp computeOp = cinm::ComputeOp::create(
-        rewriter, op.getLoc(), mappedOperands[0].getType());
+        rewriter, op.getLoc(), mappedOperands, mappedOperands[0].getType());
     Block *computeBody = &computeOp.getBody().front();
+    SmallVector<Value, 3> innerOperands;
+    for (auto arg : computeOp.getBodyArguments())
+      innerOperands.push_back(arg);
 
     rewriter.setInsertionPointToStart(computeBody);
 
     auto failureOrCinmOp =
-        buildElementwiseOp(rewriter, &op, mappedOperands, op.getLoc());
+        buildElementwiseOp(rewriter, &op, innerOperands, op.getLoc());
     if (failed(failureOrCinmOp)) {
       return failure();
     }
@@ -1575,14 +1590,14 @@ struct ConvertLinalgGenericOpToCinm : OpConversionPattern<linalg::GenericOp> {
                                       ConversionPatternRewriter &rewriter) {
     // create cinm op corresponding to the current operation
     Value operand = mapper.lookupOrDefault(op.getOperand(1));
-    cinm::ComputeOp computeOp =
-        cinm::ComputeOp::create(rewriter, op.getLoc(), operand.getType());
+    cinm::ComputeOp computeOp = cinm::ComputeOp::create(
+        rewriter, op.getLoc(), operand, operand.getType());
     Block *computeBody = &computeOp.getRegion().front();
 
     rewriter.setInsertionPointToStart(computeBody);
 
-    auto failureOrCinmOp =
-        buildReductionOp(rewriter, &op, operand, op.getLoc());
+    auto failureOrCinmOp = buildReductionOp(
+        rewriter, &op, computeOp.getBodyArguments()[0], op.getLoc());
     if (failed(failureOrCinmOp)) {
       return failure();
     }
