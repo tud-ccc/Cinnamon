@@ -57,7 +57,7 @@ struct ConvertTorchTensorOpToCinm : OpConversionPattern<SourceOp> {
 
     auto rhs = op.getOperand(1);
     auto rhsType = cast<torch::Torch::ValueTensorType>(rhs.getType());
-    rewriter.setInsertionPointAfterValue(rhs);
+    // rewriter.setInsertionPointAfterValue(rhs);
     auto rhsConversionOp =
         rewriter.create<torch::TorchConversion::ToBuiltinTensorOp>(
             op.getLoc(), rhsType.toBuiltinTensor(), rhs);
