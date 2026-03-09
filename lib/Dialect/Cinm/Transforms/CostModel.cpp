@@ -2,6 +2,8 @@
 #include "cinm-mlir/Dialect/Cinm/IR/CinmBase.h"
 #include "cinm-mlir/Dialect/Cinm/IR/CinmOps.h"
 #include "cinm-mlir/Dialect/Cinm/Transforms/Passes.h"
+#include "dlib/global_optimization/find_max_global.h"
+#include "dlib/global_optimization/global_function_search.h"
 
 #include <llvm/ADT/SmallVector.h>
 #include <llvm/ADT/StringRef.h>
@@ -39,11 +41,15 @@
 
 #include <pybind11/embed.h> // everything needed for embedding
 #include <pybind11/pytypes.h>
+#include <pybind11/stl.h>
+
+#include <dlib/global_optimization.h>
 
 #include <cmath>
 #include <filesystem>
 #include <iostream>
 #include <string>
+#include <unordered_map>
 
 namespace py = pybind11;
 using namespace py::literals;
@@ -79,107 +85,147 @@ struct RunCostModelPass : public impl::RunCostModelPassBase<RunCostModelPass> {
       return "<invalid_element_type>";
   }
 
+  FailureOr<float> runCostModelOnOperationWithParameters(
+      Operation *op, IRRewriter &rewriter, py::module &cost_model,
+      const std::string &cost_model_name,
+      const std::vector<std::string> &parameter_names,
+      const dlib::matrix<double, 0, 1> &x) {
+    std::unordered_map<std::string, double> current_dse_parameters;
+    for (size_t i = 0; i < parameter_names.size(); i++) {
+      current_dse_parameters[parameter_names[i]] = x(i);
+    }
+
+    std::string cost_model_pipeline = "";
+    try {
+      cost_model_pipeline =
+          cost_model
+              .attr("get_passes_for_next_run")(py::cast(current_dse_parameters))
+              .cast<std::string>();
+    } catch (const py::error_already_set &e) {
+      // python throws a StopIteration exception when the generator is
+      // exhausted, but we don't handle that explicitly and continue with
+      // the next operation no matter the exception type
+      return failure();
+    }
+
+    Region *dst_region = nullptr;
+    if (cinm::SelectOp old_select =
+            llvm::dyn_cast_or_null<cinm::SelectOp>(op->getParentOp())) {
+      rewriter.setInsertionPointAfter(old_select);
+      cinm::SelectOp new_select = rewriter.create<cinm::SelectOp>(
+          op->getLoc(), old_select.getResultTypes(),
+          old_select->getNumRegions() + 1);
+
+      for (size_t i = 0; i < old_select->getNumRegions(); i++) {
+        rewriter.inlineRegionBefore(old_select->getRegion(i),
+                                    new_select->getRegion(i),
+                                    new_select->getRegion(i).begin());
+      }
+
+      rewriter.replaceOp(old_select, new_select);
+      dst_region = &new_select.getRegions().back();
+    } else {
+      rewriter.setInsertionPointAfter(op);
+      cinm::SelectOp new_select = rewriter.create<cinm::SelectOp>(
+          op->getLoc(), op->getResultTypes(), 2);
+      rewriter.replaceAllOpUsesWith(op, new_select);
+      rewriter.setInsertionPointToStart(
+          &new_select.getRegion(0).emplaceBlock());
+      cinm::YieldOp yield =
+          rewriter.create<cinm::YieldOp>(op->getLoc(), op->getResults());
+      rewriter.moveOpBefore(op, yield);
+      dst_region = &new_select.getRegion(1);
+    }
+
+    Block &block = dst_region->emplaceBlock();
+    rewriter.setInsertionPointToStart(&block);
+    IRMapping map;
+    Operation *copy = rewriter.clone(*op, map);
+    cinm::YieldOp yield =
+        rewriter.create<cinm::YieldOp>(op->getLoc(), copy->getResults());
+
+    if (cost_model_pipeline != "") {
+      if (!copy->hasTrait<OpTrait::IsIsolatedFromAbove>()) {
+        emitError(getOperation()->getLoc(),
+                  "pass pipeline can only be run on operations with the "
+                  "IsIsolatedFromAbove trait");
+        return failure();
+      }
+
+      PassManager pm(&getContext());
+
+      if (llvm::failed(parsePassPipeline(StringRef(cost_model_pipeline),
+                                         *(OpPassManager *)&pm))) {
+        emitError(getOperation()->getLoc(), "invalid pass pipeline");
+        return failure();
+      }
+
+      if (llvm::failed(runPipeline(pm, copy))) {
+        return failure();
+      }
+    }
+
+    std::string ir;
+    llvm::raw_string_ostream os(ir);
+    copy->print(os, OpPrintingFlags().printGenericOpForm());
+
+    std::string locStr;
+    llvm::raw_string_ostream locOs(locStr);
+    op->getLoc().print(locOs);
+
+    float cost = 0.0f;
+    try {
+      cost = cost_model
+                 .attr("run")(py::str(ir.c_str(), ir.size()),
+                              py::str(locStr.c_str(), locStr.size()))
+                 .cast<float>();
+    } catch (py::error_already_set &e) {
+      return failure();
+    }
+
+    yield->setAttr("cinm_cost_model_data",
+                   CostModelDataAttr::get(
+                       &getContext(),
+                       StringAttr::get(&getContext(), cost_model_name),
+                       FloatAttr::get(Float32Type::get(&getContext()), cost)));
+    return cost;
+  }
+
   void runCostModelOnOperation(Operation *op, py::module &cost_model,
-                               const std::string &cost_model_name) {
+                               const std::string &cost_model_name,
+                               const py::dict &dse_parameter_bounds,
+                               size_t max_function_calls) {
     IRRewriter rewriter(&getContext());
 
-    py::object cost_model_pipeline_generator =
-        cost_model.attr("get_passes_for_next_run")();
-    // we run the cost-model as long as the get_passes_for_next_run() generator
-    // produces a new value
-    while (true) {
-      std::string cost_model_pipeline = "";
-      try {
-        cost_model_pipeline = cost_model_pipeline_generator.attr("__next__")()
-                                  .cast<std::string>();
-      } catch (const py::error_already_set &e) {
-        // python throws a StopIteration exception when the generator is
-        // exhausted, but we don't handle that explicitly and continue with
-        // the next operation no matter the exception type
-        return;
-      }
+    std::vector<std::string> parameter_names;
+    dlib::matrix<double, 0, 1> parameter_bounds_min;
+    dlib::matrix<double, 0, 1> parameter_bounds_max;
+    std::vector<bool> parameter_is_integer_variable;
 
-      Region *dst_region = nullptr;
-      if (cinm::SelectOp old_select =
-              llvm::dyn_cast_or_null<cinm::SelectOp>(op->getParentOp())) {
-        rewriter.setInsertionPointAfter(old_select);
-        cinm::SelectOp new_select = rewriter.create<cinm::SelectOp>(
-            op->getLoc(), old_select.getResultTypes(),
-            old_select->getNumRegions() + 1);
-
-        for (size_t i = 0; i < old_select->getNumRegions(); i++) {
-          rewriter.inlineRegionBefore(old_select->getRegion(i),
-                                      new_select->getRegion(i),
-                                      new_select->getRegion(i).begin());
-        }
-
-        rewriter.replaceOp(old_select, new_select);
-        dst_region = &new_select.getRegions().back();
-      } else {
-        rewriter.setInsertionPointAfter(op);
-        cinm::SelectOp new_select = rewriter.create<cinm::SelectOp>(
-            op->getLoc(), op->getResultTypes(), 2);
-        rewriter.replaceAllOpUsesWith(op, new_select);
-        rewriter.setInsertionPointToStart(
-            &new_select.getRegion(0).emplaceBlock());
-        cinm::YieldOp yield =
-            rewriter.create<cinm::YieldOp>(op->getLoc(), op->getResults());
-        rewriter.moveOpBefore(op, yield);
-        dst_region = &new_select.getRegion(1);
-      }
-
-      Block &block = dst_region->emplaceBlock();
-      rewriter.setInsertionPointToStart(&block);
-      IRMapping map;
-      Operation *copy = rewriter.clone(*op, map);
-      cinm::YieldOp yield =
-          rewriter.create<cinm::YieldOp>(op->getLoc(), copy->getResults());
-
-      if (cost_model_pipeline != "") {
-        if (!copy->hasTrait<OpTrait::IsIsolatedFromAbove>()) {
-          emitError(getOperation()->getLoc(),
-                    "pass pipeline can only be run on operations with the "
-                    "IsIsolatedFromAbove trait");
-          return;
-        }
-
-        PassManager pm(&getContext());
-
-        if (llvm::failed(parsePassPipeline(StringRef(cost_model_pipeline),
-                                           *(OpPassManager *)&pm))) {
-          emitError(getOperation()->getLoc(), "invalid pass pipeline");
-          return;
-        }
-
-        if (llvm::failed(runPipeline(pm, copy))) {
-          return;
-        }
-      }
-
-      std::string ir;
-      llvm::raw_string_ostream os(ir);
-      copy->print(os, OpPrintingFlags().printGenericOpForm());
-
-      std::string locStr;
-      llvm::raw_string_ostream locOs(locStr);
-      op->getLoc().print(locOs);
-
-      float cost = 0.0f;
-      try {
-        cost = cost_model
-                   .attr("run")(py::str(ir.c_str(), ir.size()),
-                                py::str(locStr.c_str(), locStr.size()))
-                   .cast<float>();
-      } catch (py::error_already_set &e) {
-        return;
-      }
-
-      yield->setAttr(
-          "cinm_cost_model_data",
-          CostModelDataAttr::get(
-              &getContext(), StringAttr::get(&getContext(), cost_model_name),
-              FloatAttr::get(Float32Type::get(&getContext()), cost)));
+    std::unordered_map<std::string, std::tuple<double, double, bool>>
+        dse_parameter_bounds2 = dse_parameter_bounds.cast<std::unordered_map<
+            std::string, std::tuple<double, double, bool>>>();
+    parameter_bounds_min.set_size(dse_parameter_bounds2.size());
+    parameter_bounds_max.set_size(dse_parameter_bounds2.size());
+    size_t i = 0;
+    for (const auto &[key, value] : dse_parameter_bounds2) {
+      const auto [min, max, is_integer] = value;
+      parameter_names.push_back(key);
+      parameter_bounds_min(i) = min;
+      parameter_bounds_max(i) = max;
+      parameter_is_integer_variable.push_back(is_integer);
+      i++;
     }
+
+    dlib::find_min_global(
+        [&](const dlib::matrix<double, 0, 1> &x) -> double {
+          const FailureOr<float> result = runCostModelOnOperationWithParameters(
+              op, rewriter, cost_model, cost_model_name, parameter_names, x);
+          return result.value_or(INFINITY);
+        },
+        parameter_bounds_min, parameter_bounds_max,
+        parameter_is_integer_variable,
+        dlib::max_function_calls(max_function_calls));
   }
 
   void runOnOperation() final {
@@ -208,6 +254,9 @@ struct RunCostModelPass : public impl::RunCostModelPassBase<RunCostModelPass> {
 
     std::string cost_model_name = cost_model.attr("name").cast<std::string>();
     auto operation_names = cost_model.attr("operations");
+    auto dse_parameters = cost_model.attr("dse_parameters");
+    size_t max_function_calls =
+        cost_model.attr("dse_max_iterations").cast<size_t>();
 
     std::vector<Operation *> operations;
     getOperation()->walk([&](Operation *op) {
@@ -228,7 +277,8 @@ struct RunCostModelPass : public impl::RunCostModelPassBase<RunCostModelPass> {
     });
 
     for (Operation *op : operations) {
-      runCostModelOnOperation(op, cost_model, cost_model_name);
+      runCostModelOnOperation(op, cost_model, cost_model_name, dse_parameters,
+                              max_function_calls);
     }
   }
 };

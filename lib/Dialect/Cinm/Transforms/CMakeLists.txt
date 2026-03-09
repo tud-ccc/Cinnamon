@@ -18,12 +18,12 @@ DEPENDS
 
 LINK_LIBS PUBLIC
     MLIRIR
-    MLIRLLVMDialect
     MLIRAffineDialect
     MLIRLinalgDialect
+    MLIRLLVMCommonConversion
+    MLIRLLVMDialect
     MLIRTransformUtils
     CinmIR
-    MLIRLLVMCommonConversion
 )
 
-target_link_libraries(CinmTransforms PRIVATE pybind11::embed)
+target_link_libraries(CinmTransforms PRIVATE pybind11::embed dlib::dlib)
