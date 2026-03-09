@@ -5,14 +5,17 @@ from xdsl.parser import Parser
 
 name = "cost_model_test"
 operations = {
-    "cinm.compute"
+  "cinm.compute"
 }
+dse_parameters = {
+  "unroll-factor": (1, 16, True)
+}
+dse_max_iterations = 10
 
 ctx = Context(allow_unregistered=True)
 
-def get_passes_for_next_run():
-  for i in [1, 2, 4, 6, 8, 16]:
-    yield f"affine-loop-unroll{{unroll-factor={i} }}"
+def get_passes_for_next_run(dse_parameters: dict[str, float]):
+  return f"affine-loop-unroll{{unroll-factor={int(dse_parameters["unroll-factor"])} }}"
 
 def run(ir: str, location: str) -> float :
   parser = Parser(ctx, ir)
