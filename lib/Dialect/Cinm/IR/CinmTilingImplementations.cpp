@@ -16,6 +16,7 @@
 #include <llvm/ADT/ArrayRef.h>
 #include <llvm/ADT/SmallVector.h>
 #include <llvm/Support/Casting.h>
+#include <llvm/Support/LogicalResult.h>
 #include <mlir/IR/AffineExpr.h>
 #include <mlir/IR/Builders.h>
 #include <mlir/IR/BuiltinTypeInterfaces.h>
@@ -177,6 +178,50 @@ getBatchGemmTilesFromAttributes(const ShapedType &lhsType,
   return std::make_tuple(bTile, mTile, nTile, rTile);
 }
 
+static FailureOr<std::tuple<int64_t, int64_t>>
+getGemvTilesFromAttributes(const int64_t M, const int64_t K, const Type eltType,
+                           const mlir::cinm::TilingParameters &params,
+                           Operation *errorLoc) {
+
+  int64_t p = 0, k = 0;
+  if (auto provided = params.getTileSizes()) {
+    if (provided->size() == 2) {
+      p = (*provided)[0];
+      k = (*provided)[1];
+    } else {
+      return errorLoc->emitError("Need two tile sizes for GEMV, provided ")
+             << *provided;
+    }
+    if (p <= 0 || k <= 0) {
+      return errorLoc->emitError("Invalid tile sizes for GEMV <")
+             << M << "x" << K << "> : " << p << ", " << k;
+    }
+    if ((ShapedType::isStatic(M) && M % p) ||
+        (ShapedType::isStatic(K) && K % k)) {
+      return errorLoc->emitError("Invalid tile sizes for GEMV <")
+             << M << "x" << K << "> : " << p << ", " << k;
+    }
+    return std::make_tuple(p, k);
+  }
+  if (ShapedType::isDynamic(M) || ShapedType::isDynamic(K)) {
+    return errorLoc->emitError("CINM cannot determine tiling factors for dynamic dimensions, provide "
+                               "tileSizes attribute [tM,tK]");
+  }
+
+  auto parallelTileSize = params.parallelClusterSize(M, 1);
+  if (!parallelTileSize)
+    return errorLoc->emitError("Cannot determine tiling factors for M=")
+           << M << " and working group shape " << params.workgroupShape
+           << ", provide tileSizes attribute [tM,tK].";
+  std::tie(p, std::ignore) = *parallelTileSize;
+
+  // Size of the tile on the reduction dimension.
+  k = params.reduceClusterSize(2, K, eltType,
+                               /*extraElements=*/1);
+
+  return std::make_tuple(p, k);
+}
+
 static FailureOr<std::tuple<int64_t, int64_t, int64_t>>
 getBatchGemvTilesFromAttributes(const ShapedType &lhsType,
                                 const ShapedType &rhsType,
@@ -317,6 +362,21 @@ static Value extractSlice(OpBuilder &builder, Location loc,
   }
   assert(false && "type not handled");
 }
+
+namespace {
+
+  struct GemmLikeAdaptor {
+
+  };
+
+}
+
+static TilingResult2 convertGemmLikeToTiledOps(OpBuilder& op, GemmOp::Adaptor gemmlike, TilingParameters parms) {
+
+
+
+}
+
 
 TilingResult2 GemmOp::convertToTiledOps(OpBuilder &builder,
                                         TilingParameters params) {
@@ -749,23 +809,25 @@ TilingResult2 GemvOp::convertToTiledOps(OpBuilder &builder,
 
   const int64_t M = aTy.getDimSize(0);
   const int64_t K = aTy.getDimSize(1);
-  if (ShapedType::isDynamic(M) || ShapedType::isDynamic(K))
+
+  auto tileSizes = getGemvTilesFromAttributes(M, K, aTy.getElementType(),
+                                              params, getOperation());
+  if (llvm::failed(tileSizes)) {
     return failure();
+  }
+  // Those are block sizes
+  auto [pM, rK] = *tileSizes;
 
   Type elt = aTy.getElementType();
 
-  int64_t pM, rK;
-  if (auto tiles = params.getTileSizes(); tiles && tiles->size() == 2) {
-    pM = (*tiles)[0];
-    rK = (*tiles)[1];
-  } else if (auto r = getGemmTilesFromAttributes(M, 1, K, elt, params, *this);
-             succeeded(r)) {
-    std::tie(pM, std::ignore, rK) = *r;
-  } else {
-    getOperation()->emitError()
-        << "requires tileSizes attribute with [M, K] entries";
-    return failure();
-  }
+
+  SmallVector<Value> finals = createNestedAffineForLoops(
+      builder, getLoc(), resultType.getShape(), {p0, p1}, initArgs,
+      [&, p0, p1](OpBuilder &builder, Location loc, ValueRange indices,
+                  ValueRange iterArgs) -> SmallVector<Value> {
+
+                  });
+
 
   Value init = tensor::EmptyOp::create(builder, loc, yTy.getShape(), elt);
 

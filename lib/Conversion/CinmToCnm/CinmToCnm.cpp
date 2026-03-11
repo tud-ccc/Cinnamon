@@ -317,9 +317,8 @@ LogicalResult convertInputIntoAlloc(Value &inputBuf, Value workGroup,
     return failure();
 
   if (reshapeInto) {
-    inputBuf =
-        cinm::reshapeStatic(rewriter, rewriter.getLoc(), inputBuf,
-                            cast<ShapedType>(inputType), *reshapeInto);
+    inputBuf = cinm::reshapeStatic(rewriter, rewriter.getLoc(), inputBuf,
+                                   cast<ShapedType>(inputType), *reshapeInto);
   }
 
   // Allocate a cinm buffer
@@ -425,10 +424,10 @@ LogicalResult convertCinmToCnm(
     auto outBuf =
         tensor::EmptyOp::create(builder, reshaped.getType(), ValueRange{});
     auto res = cnm::GatherOp::create(builder, alloc, workgroup, map, outBuf);
-    auto shapedBack = cinm::reshapeStatic(
-        builder, builder.getLoc(),
-        cast<TypedValue<ShapedType>>(res.getOutput()),
-        cast<ShapedType>(result.getType()).getShape());
+    auto shapedBack =
+        cinm::reshapeStatic(builder, builder.getLoc(),
+                            cast<TypedValue<ShapedType>>(res.getOutput()),
+                            cast<ShapedType>(result.getType()).getShape());
 
     resultValues.push_back(shapedBack);
   }
@@ -730,7 +729,7 @@ struct ConvertCinmGemmToCnm : public OpConversionPattern<cinm::GemmOp> {
     SmallVector<int64_t, 2> perms{1, 0};
     Value output;
     bool tensorOutput;
-    if (llvm::isa<TensorType>(tensor.getType())) {
+    if (llvm::isa<TensorType>(inTy)) {
       output =
           tensor::EmptyOp::create(builder, newShape, inTy.getElementType());
       tensorOutput = true;
@@ -749,13 +748,12 @@ struct ConvertCinmGemmToCnm : public OpConversionPattern<cinm::GemmOp> {
   }
 
   LogicalResult
-  matchAndRewrite(cinm::GemmOp op, OpConversionPattern<cinm::GemmOp>::OpAdaptor,
+  matchAndRewrite(cinm::GemmOp op,
+                  OpConversionPattern<cinm::GemmOp>::OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
 
-    TypedValue<ShapedType> lhs =
-        llvm::cast<TypedValue<ShapedType>>(op.getLhs());
-    TypedValue<ShapedType> rhs =
-        llvm::cast<TypedValue<ShapedType>>(op.getRhs());
+    auto lhs = llvm::cast<TypedValue<ShapedType>>(adaptor.getLhs());
+    auto rhs = llvm::cast<TypedValue<ShapedType>>(adaptor.getRhs());
 
     ImplicitLocOpBuilder builder(op->getLoc(), rewriter);
     cinm::ComputeOp computeBlock = mlir::cinm::getEnclosingComputeBlock(op);
@@ -993,6 +991,9 @@ struct DeleteCinmCompute : public OpConversionPattern<cinm::ComputeOp> {
 
     rewriter.setInsertionPointAfter(op);
     IRMapping mapper;
+    for (auto [arg, opnd] : op.zipArgsWithOperands()) {
+      mapper.map(arg, opnd);
+    }
     for (auto &toCopy : adaptor.getBody().front().without_terminator()) {
       rewriter.clone(toCopy, mapper);
     }

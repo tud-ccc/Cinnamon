@@ -64,7 +64,8 @@ TilingParameters TilingParameters::fromComputeBlock(cinm::ComputeOp &op) {
 /// Return the size of tiles on a reduce dimension.
 /// Computes this by assuming the reduction operation needs (maybe several)
 /// buffers of the same size, same element type. The returned tile size
-/// divides the number of reduced elements.
+/// divides the number of reduced elements. 
+/// This cannot fail but may return 1, meaning no blocking possible.
 int64_t TilingParameters::reduceClusterSize(int64_t numBuffers,
                                             int64_t reducedElements,
                                             Type elementTy,
