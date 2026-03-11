@@ -1,4 +1,4 @@
-// RUN: cinm-opt --convert-cinm-to-cnm %s | cinm-opt | FileCheck %s
+// RUN: cinm-opt --split-input-file --convert-cinm-to-cnm %s | cinm-opt | FileCheck %s
 
 // CHECK-LABEL: mm_dimm8_nopt
     func.func @mm_dimm8_nopt(%A: tensor<8x1024xi32>, %B: tensor<1024x128xi32>) -> tensor<8x128xi32> {
@@ -20,13 +20,14 @@
 // CHECK: %[[emptyres:.*]] = tensor.empty() : tensor<8x128xi32>
 // CHECK: %{{.*}} = cnm.gather %[[bc]][#map2] of %[[wg]] into %[[emptyres]] : !cnm.buffer<i32 on 8x128x1, level 0> into tensor<8x128xi32>
 // CHECK: cnm.free_workgroup %[[wg]] : !cnm.workgroup<8x128x1>
-        %r0 = cinm.compute (%a = %A : tensor<8x1024xi32>, %b = %B: tensor<1024x128xi32>) -> tensor<8x128xi32> attributes {workgroupShape = array<i64: 8, 128, 1>, bufferSizesInBytes=array<i64: 0,0,512>}  {
+        %r0 = cinm.compute (%a = %A : tensor<8x1024xi32>, %b = %B: tensor<1024x128xi32>) -> tensor<8x128xi32> attributes {workgroupShape = array<i64: 8, 128, 1>, bufferSizesInBytes=array<i64: 0,0,8196>}  {
             %r = cinm.op.gemm %a, %b: tensor<8x1024xi32>, tensor<1024x128xi32> -> tensor<8x128xi32>
             cinm.yield %r : tensor<8x128xi32>
         }
         func.return %r0 : tensor<8x128xi32>
     }
 
+// -----
 
     func.func @gemv(%A: tensor<8x1024xi32>, %B: tensor<1024xi32>) -> tensor<8xi32> {
 
@@ -47,7 +48,7 @@
 // CHECK: %[[emptyres:.*]] = tensor.empty() : tensor<8x128xi32>
 // CHECK: %{{.*}} = cnm.gather %[[bc]][#map2] of %[[wg]] into %[[emptyres]] : !cnm.buffer<i32 on 8x128x1, level 0> into tensor<8x128xi32>
 // CHECK: cnm.free_workgroup %[[wg]] : !cnm.workgroup<8x128x1>
-        %r0 = cinm.compute (%a = %A : tensor<8x1024xi32>, %b = %B: tensor<1024xi32>) -> tensor<8xi32> attributes {workgroupShape = array<i64: 2, 4, 1>}  {
+        %r0 = cinm.compute (%a = %A : tensor<8x1024xi32>, %b = %B: tensor<1024xi32>) -> tensor<8xi32> attributes {workgroupShape = array<i64: 2, 4, 1>, bufferSizesInBytes=array<i64: 0,0,120000>}  {
             %r = cinm.op.gemv %a, %b : tensor<8x1024xi32>, tensor<1024xi32> -> tensor<8xi32>
             cinm.yield %r : tensor<8xi32>
         }
