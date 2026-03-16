@@ -117,11 +117,13 @@ static bool dimsCompatible(int64_t a, int64_t b) {
 ::mlir::ParseResult ElementwiseOp::parse(::mlir::OpAsmParser &parser,
                                          ::mlir::OperationState &result) {
   std::string kindKw;
+  auto loc = parser.getCurrentLocation();
   if (parser.parseKeywordOrString(&kindKw))
     return failure();
   auto kind = symbolizeElementwiseKind(kindKw);
   if (!kind)
-    return failure();
+    return parser.emitError(loc, "Unknown operator kind");
+
   result.addAttribute(getKindAttrName(result.name),
                       parser.getBuilder().getAttr<ElementwiseKindAttr>(*kind));
 
@@ -198,7 +200,7 @@ ParseResult ComputeOp::parse(::mlir::OpAsmParser &parser,
   // if (parser.parseOptionalArrowTypeList(result.types))
   //   return failure();
   auto *region = result.addRegion();
-  if (parser.parseRegion(*region, regionArgs))
+  if (parser.parseRegion(*region, regionArgs, true))
     return failure();
 
   return success();
@@ -212,6 +214,39 @@ void ComputeOp::print(OpAsmPrinter &out) {
     out << " = " << value << " : " << value.getType();
   });
   out << ")";
+  if (!getResults().empty()) {
+    out << " -> ";
+    llvm::interleaveComma(getResultTypes(), out);
+  }
+  out.increaseIndent();
+  out.increaseIndent();
+  out.printNewline();
+  out.printOptionalAttrDictWithKeyword((*this)->getAttrs());
+  out << ' ';
+  out.decreaseIndent();
+  out.decreaseIndent();
+  out.printRegion(getRegion(), false);
+}
+
+ParseResult FlexComputeOp::parse(::mlir::OpAsmParser &parser,
+                             ::mlir::OperationState &result) {
+  if (parser.parseOptionalArrow().succeeded()) {
+    if (parser.parseTypeList(result.types))
+      return failure();
+  }
+  if (parser.parseOptionalAttrDictWithKeyword(result.attributes))
+    return failure();
+
+  // if (parser.parseOptionalArrowTypeList(result.types))
+  //   return failure();
+  auto *region = result.addRegion();
+  if (parser.parseRegion(*region, {}))
+    return failure();
+
+  return success();
+}
+
+void FlexComputeOp::print(OpAsmPrinter &out) {
   if (!getResults().empty()) {
     out << " -> ";
     llvm::interleaveComma(getResultTypes(), out);
@@ -569,10 +604,11 @@ void DequantizeOp::print(::mlir::OpAsmPrinter &printer) {}
 LogicalResult cinm::YieldOp::verify() {
   Operation *parent = getOperation()->getParentOp();
   auto asCompute = dyn_cast_or_null<cinm::ComputeOp>(parent);
+  auto asFlexCompute = dyn_cast_or_null<cinm::FlexComputeOp>(parent);
   auto asSelect = dyn_cast_or_null<cinm::SelectOp>(parent);
 
-  if (!asCompute && !asSelect)
-    return emitOpError() << "must be inside 'cinm.compute' or 'cinm.select'";
+  if (!asCompute && !asSelect && !asFlexCompute)
+    return emitOpError() << "must be inside 'cinm.compute', 'cinm.compute_' or 'cinm.select'";
 
   TypeRange expected = TypeRange(parent->getResultTypes());
 

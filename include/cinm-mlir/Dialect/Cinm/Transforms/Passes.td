@@ -22,7 +22,15 @@ def CinmTilingPass: Pass<"cinm-tiling"> {
   ];
 }
 
-def SoftmaxToCinmPass: Pass<"softmax-to-cinm"> {
+def CinmIsolateComputePass: Pass<"cinm-isolate-compute-blocks"> {
+  let summary = "Turn compute_ ops into compute ops";
+  let description = [{}];
+
+  let dependentDialects = [
+  ];
+}
+
+def SoftmaxToCinmPass: Pass<"convert-linalg-softmax-to-cinm"> {
   let summary = "converts the linalg::softmax op to cinm";
   let description = [{}];
 

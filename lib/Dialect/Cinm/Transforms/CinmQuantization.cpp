@@ -74,7 +74,7 @@ static llvm::StringSet<> parseOpsList(StringRef s) {
   SmallVector<StringRef, 8> parts;
   s.split(parts, ',');
   for (StringRef p : parts) {
-    StringRef tok = p.trim().lower();
+    std::string tok = p.trim().lower();
     if (!tok.empty())
       (void)out.insert(tok);
   }
