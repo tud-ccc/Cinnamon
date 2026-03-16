@@ -631,3 +631,17 @@ LogicalResult cinm::YieldOp::verify() {
 } // namespace mlir
 
 // parsers/printers
+
+
+LogicalResult AcceleratorOp::verify() {
+  // verify that they are all at the start of a block
+  // auto *prevOp = (*this)->getPrevNode();
+  // if (prevOp && !llvm::isa<AcceleratorOp>(prevOp)) {
+  //   return emitOpError("should be declared at the start of a block");
+  // }
+  // if (!prevOp) {
+  //   if (!llvm::isa<TfSchedulableBlockOp>((*this)->getParentOp()))
+  //     return emitOpError("should be declared at the start of a block");
+  // }
+  return llvm::success();
+}

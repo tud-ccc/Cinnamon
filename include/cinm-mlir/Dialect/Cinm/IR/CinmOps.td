@@ -11,6 +11,7 @@
 include "cinm-mlir/Dialect/Cinm/IR/CinmBase.td"
 include "cinm-mlir/Dialect/Cinm/IR/CinmTypes.td"
 include "cinm-mlir/Dialect/Cinm/IR/CinmAttributes.td"
+include "cinm-mlir/Dialect/Cinm/IR/CinmPlatformAttrInterface.td"
 include "cinm-mlir/Dialect/Cinm/IR/TilingInterface.td"
 
 include "mlir/IR/EnumAttr.td"
@@ -306,6 +307,26 @@ def Cinm_PopCountOp : Cinm_Op<"op.popCount", [Pure]> {
 }
 
 
+def AcceleratorOp : Cinm_Op<"accelerator", [OpAsmOpInterface]> {
+  let description = [{
+    TileFirst accelerator declaration. This op must be declared at the top of
+    a block op.
+  }];
+
+  let arguments = (ins CinmAcceleratorAttrInterface:$accelerator);
+  let results = (outs AcceleratorRefType:$reference);
+
+  let assemblyFormat = "$accelerator attr-dict";
+  let hasVerifier = 1;
+
+  let extraClassDeclaration = [{
+    void getAsmResultNames(OpAsmSetValueNameFn setName) {
+      auto accName = getAccelerator().getPlatform().getName();
+      setName(getReference(), accName);
+    }
+  }];
+
+}
 
 def Cinm_FlexComputeOp : Cinm_Base_Op<"compute_", [
   AffineScope, AutomaticAllocationScope
@@ -365,14 +386,18 @@ def Cinm_FlexComputeOp : Cinm_Base_Op<"compute_", [
 def Cinm_ComputeOp : Cinm_Base_Op<"compute", [
   AffineScope, AutomaticAllocationScope, IsolatedFromAbove
 ]> {
-  let summary = "TODO";
+  let summary = "Delimits a region of code for offloading";
   let description = [{
+    Delimits a region of code for offloading. This is the canonical
+    version of the `cinm.compute_` op.
 
-    %rbuf = cinm.compute attributes { ... } -> tensor<...> {
+    ```
+    %rbuf = cinm.compute (%a = %v : tensor<...>) -> tensor<...>  attributes { ... } {
       %flt = arith.constant <"...">: tensor<...>
-      %conv = cinm.op.gemm %arg0, %flt: tensor<...>, tensor<...>
+      %conv = cinm.op.gemm %a, %flt: tensor<...>, tensor<...>
       cinm.yield %conv : tensor<...>
     }
+    ```
   }];
 
   let arguments = (ins
