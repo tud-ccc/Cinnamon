@@ -821,13 +821,7 @@ TilingResult2 GemvOp::convertToTiledOps(OpBuilder &builder,
   Type elt = aTy.getElementType();
 
 
-  SmallVector<Value> finals = createNestedAffineForLoops(
-      builder, getLoc(), resultType.getShape(), {p0, p1}, initArgs,
-      [&, p0, p1](OpBuilder &builder, Location loc, ValueRange indices,
-                  ValueRange iterArgs) -> SmallVector<Value> {
-
-                  });
-
+  // todo move to affine?
 
   Value init = tensor::EmptyOp::create(builder, loc, yTy.getShape(), elt);
 
