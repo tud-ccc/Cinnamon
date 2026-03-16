@@ -307,6 +307,61 @@ def Cinm_PopCountOp : Cinm_Op<"op.popCount", [Pure]> {
 
 
 
+def Cinm_FlexComputeOp : Cinm_Base_Op<"compute_", [
+  AffineScope, AutomaticAllocationScope
+]> {
+  let summary = "TODO";
+  let description = [{
+    This operation has no parameters, and is not IsolatedFromAbove.
+    Can be turned automatically into an IsolatedFromAbove compute op.
+
+
+    %rbuf = cinm.compute_ -> tensor<...> attributes { ... } {
+      %flt = arith.constant <"...">: tensor<...>
+      %conv = cinm.op.gemm %arg0, %flt: tensor<...>, tensor<...>
+      cinm.yield %conv : tensor<...>
+    }
+  }];
+
+  let arguments = (ins
+      DefaultValuedAttr<DenseI64ArrayAttr, "{2, 32, 16}">:$workgroupShape,
+      DefaultValuedAttr<DenseI64ArrayAttr, "{0, 65536, 0}">:$bufferSizesInBytes,
+      OptionalAttr<DenseI64ArrayAttr>:$tileSizes
+  );
+
+  let results = (outs Variadic<AnyType>:$results);
+  let regions = (region SizedRegion<1>:$body);
+
+  let extraClassDeclaration = [{
+    cnm::WorkgroupType getCnmWorkgroupType() {
+      return cnm::WorkgroupType::get(getContext(), getWorkgroupShape());
+    }
+    long getWorkgroupSize() {
+      auto wgShape = getWorkgroupShape();
+      return std::reduce(wgShape.begin(), wgShape.end(), 1, std::multiplies<>());
+    }
+  }];
+
+  let skipDefaultBuilders = 1;
+  let builders = [
+    OpBuilder<(ins "TypeRange":$results), [{
+      auto wg   = $_builder.getDenseI64ArrayAttr({2, 32, 16});
+      auto bufs = $_builder.getDenseI64ArrayAttr({0, 65536, 0});
+
+      $_state.addTypes(results);
+      $_state.addAttribute("workgroupShape", wg);
+      $_state.addAttribute("bufferSizesInBytes", bufs);
+      // Do NOT set tileSizes here (absent means "use heuristic").
+
+      ::mlir::Region *region = $_state.addRegion();
+      auto& block = region->emplaceBlock(); // satisfy SizedRegion<1>
+    }]>
+  ];
+
+ let hasCustomAssemblyFormat = 1;
+}
+
+
 def Cinm_ComputeOp : Cinm_Base_Op<"compute", [
   AffineScope, AutomaticAllocationScope, IsolatedFromAbove
 ]> {
