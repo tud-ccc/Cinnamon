@@ -191,44 +191,9 @@ struct RunCostModelPass : public impl::RunCostModelPassBase<RunCostModelPass> {
     return cost;
   }
 
-  void runCostModelOnOperation(Operation *op, py::module &cost_model,
-                               const std::string &cost_model_name,
-                               const py::dict &dse_parameter_bounds,
-                               size_t max_function_calls) {
+  void runOnOperation() final {
     IRRewriter rewriter(&getContext());
 
-    std::vector<std::string> parameter_names;
-    dlib::matrix<double, 0, 1> parameter_bounds_min;
-    dlib::matrix<double, 0, 1> parameter_bounds_max;
-    std::vector<bool> parameter_is_integer_variable;
-
-    std::unordered_map<std::string, std::tuple<double, double, bool>>
-        dse_parameter_bounds2 = dse_parameter_bounds.cast<std::unordered_map<
-            std::string, std::tuple<double, double, bool>>>();
-    parameter_bounds_min.set_size(dse_parameter_bounds2.size());
-    parameter_bounds_max.set_size(dse_parameter_bounds2.size());
-    size_t i = 0;
-    for (const auto &[key, value] : dse_parameter_bounds2) {
-      const auto [min, max, is_integer] = value;
-      parameter_names.push_back(key);
-      parameter_bounds_min(i) = min;
-      parameter_bounds_max(i) = max;
-      parameter_is_integer_variable.push_back(is_integer);
-      i++;
-    }
-
-    dlib::find_min_global(
-        [&](const dlib::matrix<double, 0, 1> &x) -> double {
-          const FailureOr<float> result = runCostModelOnOperationWithParameters(
-              op, rewriter, cost_model, cost_model_name, parameter_names, x);
-          return result.value_or(INFINITY);
-        },
-        parameter_bounds_min, parameter_bounds_max,
-        parameter_is_integer_variable,
-        dlib::max_function_calls(max_function_calls));
-  }
-
-  void runOnOperation() final {
     py::scoped_interpreter guard{};
     py::module sys = py::module::import("sys");
 
@@ -258,6 +223,26 @@ struct RunCostModelPass : public impl::RunCostModelPassBase<RunCostModelPass> {
     size_t max_function_calls =
         cost_model.attr("dse_max_iterations").cast<size_t>();
 
+    std::vector<std::string> parameter_names;
+    dlib::matrix<double, 0, 1> parameter_bounds_min;
+    dlib::matrix<double, 0, 1> parameter_bounds_max;
+    std::vector<bool> parameter_is_integer_variable;
+
+    std::unordered_map<std::string, std::tuple<double, double, bool>>
+        dse_parameter_bounds2 = dse_parameters.cast<std::unordered_map<
+            std::string, std::tuple<double, double, bool>>>();
+    parameter_bounds_min.set_size(dse_parameter_bounds2.size());
+    parameter_bounds_max.set_size(dse_parameter_bounds2.size());
+    size_t i = 0;
+    for (const auto &[key, value] : dse_parameter_bounds2) {
+      const auto [min, max, is_integer] = value;
+      parameter_names.push_back(key);
+      parameter_bounds_min(i) = min;
+      parameter_bounds_max(i) = max;
+      parameter_is_integer_variable.push_back(is_integer);
+      i++;
+    }
+
     std::vector<Operation *> operations;
     getOperation()->walk([&](Operation *op) {
       if (!operation_names.contains(op->getName().getStringRef().str())) {
@@ -277,8 +262,22 @@ struct RunCostModelPass : public impl::RunCostModelPassBase<RunCostModelPass> {
     });
 
     for (Operation *op : operations) {
-      runCostModelOnOperation(op, cost_model, cost_model_name, dse_parameters,
-                              max_function_calls);
+      if (parameter_names.empty() || max_function_calls == 1) {
+        (void)runCostModelOnOperationWithParameters(
+            op, rewriter, cost_model, cost_model_name, parameter_names, {});
+      } else {
+        dlib::find_min_global(
+            [&](const dlib::matrix<double, 0, 1> &x) -> double {
+              const FailureOr<float> result =
+                  runCostModelOnOperationWithParameters(
+                      op, rewriter, cost_model, cost_model_name,
+                      parameter_names, x);
+              return result.value_or(INFINITY);
+            },
+            parameter_bounds_min, parameter_bounds_max,
+            parameter_is_integer_variable,
+            dlib::max_function_calls(max_function_calls));
+      }
     }
   }
 };
