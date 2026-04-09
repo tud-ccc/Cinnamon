@@ -143,6 +143,8 @@ if (NOT pybind11_FOUND)
     message(STATUS "using third-party/pybind11")
 endif()
 
+add_subdirectory("third-party/dlib")
+
 execute_process(COMMAND python3 -m pybind11 --includes OUTPUT_VARIABLE PYBIND_INCLUDES OUTPUT_STRIP_TRAILING_WHITESPACE)
 message(STATUS "using python headers from ${PYBIND_INCLUDES}")
 separate_arguments(PYBIND_INCLUDES UNIX_COMMAND "${PYBIND_INCLUDES}")
