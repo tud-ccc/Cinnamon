@@ -287,21 +287,15 @@ TilingResult2 ElementwiseOp::convertToTiledOps(OpBuilder &builder0,
   tileSize = std::max<int64_t>(1, std::min<int64_t>(tileSize, numElements));
 
   Value resultInit = tensor::EmptyOp::create(builder, tensorTy, ValueRange{});
-  Value totalC = arith::ConstantIndexOp::create(builder, numElements);
-  Value tileC = arith::ConstantIndexOp::create(builder, tileSize);
 
-  SmallVector<Value> result = createNestedScfForLoops(
+  SmallVector<Value> result = createNestedAffineForLoops(
       builder, getLoc(), {numElements}, {tileSize}, ValueRange{resultInit},
       [&](OpBuilder &b, Location loc, ValueRange indices,
           ValueRange iterArgs) -> SmallVector<Value> {
         Value base = indices[0];
         SmallVector<OpFoldResult, 1> off{base};
 
-        Value rem = arith::SubIOp::create(b, loc, totalC, base);
-        Value useTile = arith::CmpIOp::create(b, loc, arith::CmpIPredicate::ugt,
-                                              rem, tileC);
-        Value thisTile = arith::SelectOp::create(b, loc, useTile, tileC, rem);
-        SmallVector<OpFoldResult, 1> siz{thisTile};
+        SmallVector<OpFoldResult, 1> siz{b.getIndexAttr(tileSize)};
         SmallVector<OpFoldResult, 1> str{b.getI64IntegerAttr(1)};
 
         Value lhsSlice =
@@ -821,7 +815,14 @@ TilingResult2 GemvOp::convertToTiledOps(OpBuilder &builder,
   Type elt = aTy.getElementType();
 
 
-  // todo move to affine?
+  // todo finish this
+  // SmallVector<Value> finals = createNestedAffineForLoops(
+  //     builder, getLoc(), resultType.getShape(), {p0, p1}, initArgs,
+  //     [&, p0, p1](OpBuilder &builder, Location loc, ValueRange indices,
+  //                 ValueRange iterArgs) -> SmallVector<Value> {
+
+  //                 });
+
 
   Value init = tensor::EmptyOp::create(builder, loc, yTy.getShape(), elt);
 
