@@ -4,26 +4,25 @@ from xdsl.context import Context
 from xdsl.parser import Parser
 
 name = "cost_model_test"
-passes = "cinm-tiling"
 operations = {
-    "cinm.compute"
+  "cinm.compute"
 }
+dse_parameters = {
+  "unroll-factor": (1, 16, True)
+}
+dse_max_iterations = 10
 
 ctx = Context(allow_unregistered=True)
 
-# def run(op: str, elementType: str, operand_dimensions: list[list[int]], location: str) -> float :
-#   print(op, elementType, operand_dimensions, location)
-#   return random.uniform(0.0, 10.0)
+def get_passes_for_next_run(dse_parameters: dict[str, float]):
+  return f"affine-loop-unroll{{unroll-factor={int(dse_parameters["unroll-factor"])} }}"
 
 def run(ir: str, location: str) -> float :
   parser = Parser(ctx, ir)
   compute_op = parser.parse_operation()
-  print(ir)
-
-  print(parser.forward_ssa_references)
 
   for op in compute_op.walk():
     op.name = op.get_attr_or_prop("op_name__").data
 
-  cinm_ops = [op for op in compute_op.walk()]
-  return len(cinm_ops) + random.uniform(0.0, 10.0)
+  cinm_ops = [op for op in compute_op.walk() if op.name.startswith("cinm.")]
+  return abs(len(cinm_ops) - 10)
