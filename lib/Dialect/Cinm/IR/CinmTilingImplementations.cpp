@@ -23,6 +23,7 @@
 #include <mlir/IR/BuiltinTypes.h>
 #include <mlir/IR/Diagnostics.h>
 #include <mlir/IR/ImplicitLocOpBuilder.h>
+#include <mlir/IR/OpDefinition.h>
 #include <mlir/IR/ValueRange.h>
 #include <tuple>
 
@@ -204,8 +205,9 @@ getGemvTilesFromAttributes(const int64_t M, const int64_t K, const Type eltType,
     return std::make_tuple(p, k);
   }
   if (ShapedType::isDynamic(M) || ShapedType::isDynamic(K)) {
-    return errorLoc->emitError("CINM cannot determine tiling factors for dynamic dimensions, provide "
-                               "tileSizes attribute [tM,tK]");
+    return errorLoc->emitError(
+        "CINM cannot determine tiling factors for dynamic dimensions, provide "
+        "tileSizes attribute [tM,tK]");
   }
 
   auto parallelTileSize = params.parallelClusterSize(M, 1);
@@ -326,51 +328,53 @@ TilingResult2 ElementwiseOp::convertToTiledOps(OpBuilder &builder0,
   return TilingResult2(result);
 }
 
-static constexpr std::array<int64_t, 2> noStaticOffsets{ShapedType::kDynamic,
-                                                        ShapedType::kDynamic};
+static Value extractSliceND(OpBuilder &builder, Location loc,
+                            TypedValue<ShapedType> tensorOrMemref,
+                            ArrayRef<int64_t> sizes, ValueRange offsets) {
+  assert(offsets.size() == sizes.size());
 
-static constexpr std::array<int64_t, 2> unitStrides{1, 1};
-static Value extractSlice(OpBuilder &builder, Location loc,
-                          TypedValue<ShapedType> tensorOrMemref, int64_t a,
-                          int64_t b, Value ia, Value ib) {
+  const ShapedType sliceTy = tensorOrMemref.getType().clone(sizes);
+  if (llvm::isa<RankedTensorType>(tensorOrMemref.getType())) {
+    llvm::SmallVector<int64_t> unitStrides(offsets.size(), 1);
+    llvm::SmallVector<int64_t> noStaticOffsets(offsets.size(),
+                                               ShapedType::kDynamic);
+    return tensor::ExtractSliceOp::create(
+        builder, loc, sliceTy, tensorOrMemref, offsets, ValueRange{},
+        ValueRange{}, noStaticOffsets, sliceTy.getShape(), unitStrides);
+  } else if (llvm::isa<MemRefType>(tensorOrMemref.getType())) {
+    llvm::SmallVector<OpFoldResult> offsetsFoldRes(offsets.begin(),
+                                                   offsets.end());
+    auto one = builder.getI64IntegerAttr(1);
+    llvm::SmallVector<OpFoldResult> stridesFoldRes(offsets.size(), one);
+    llvm::SmallVector<OpFoldResult> sizesFoldRes;
+    sizesFoldRes.reserve(offsets.size());
+    for (auto i : sizes) {
+      auto attr = builder.getI64IntegerAttr(i);
+      sizesFoldRes.push_back(attr);
+    }
 
-  const ShapedType sliceTy = tensorOrMemref.getType().clone({a, b});
-
-  if (auto lhsTy =
-          llvm::dyn_cast_or_null<RankedTensorType>(tensorOrMemref.getType())) {
-
-    return builder.create<tensor::ExtractSliceOp>(
-        loc, sliceTy, tensorOrMemref, ValueRange{ia, ib}, ValueRange{},
-        ValueRange{}, ArrayRef(noStaticOffsets), sliceTy.getShape(),
-        ArrayRef(unitStrides));
-  } else if (auto lhsTy =
-                 llvm::dyn_cast_or_null<MemRefType>(tensorOrMemref.getType())) {
-
-    return memref::SubViewOp::create(
-        builder, loc, tensorOrMemref, ArrayRef<OpFoldResult>{ia, ib},
-        ArrayRef<OpFoldResult>{
-            builder.getI64IntegerAttr(sliceTy.getShape()[0]),
-            builder.getI64IntegerAttr(sliceTy.getShape()[1])},
-        ArrayRef<OpFoldResult>{builder.getI64IntegerAttr(1),
-                               builder.getI64IntegerAttr(1)});
+    return memref::SubViewOp::create(builder, loc, tensorOrMemref,
+                                     offsetsFoldRes, sizesFoldRes,
+                                     stridesFoldRes);
   }
   assert(false && "type not handled");
 }
-
-namespace {
-
-  struct GemmLikeAdaptor {
-
-  };
-
+static Value extractSlice1D(OpBuilder &builder, Location loc,
+                            TypedValue<ShapedType> tensorOrMemref, int64_t size,
+                            Value offset) {
+  return extractSliceND(builder, loc, tensorOrMemref, {size}, {offset});
 }
 
-static TilingResult2 convertGemmLikeToTiledOps(OpBuilder& op, GemmOp::Adaptor gemmlike, TilingParameters parms) {
-
-
-
+static Value extractSlice(OpBuilder &builder, Location loc,
+                          TypedValue<ShapedType> tensorOrMemref, int64_t a,
+                          int64_t b, Value ia, Value ib) {
+  return extractSliceND(builder, loc, tensorOrMemref, {a, b}, {ia, ib});
 }
 
+static constexpr std::array<int64_t, 2> noStaticOffsets2D{ShapedType::kDynamic,
+                                                        ShapedType::kDynamic};
+
+static constexpr std::array<int64_t, 2> unitStrides2D{1, 1};
 
 TilingResult2 GemmOp::convertToTiledOps(OpBuilder &builder,
                                         TilingParameters params) {
@@ -496,8 +500,8 @@ TilingResult2 GemmOp::convertToTiledOps(OpBuilder &builder,
         } else {
           const Value result = builder.create<tensor::InsertSliceOp>(
               loc, reductionResult[0], iterArgs[0], resultDynamicOffsets,
-              ValueRange{}, ValueRange{}, ArrayRef(noStaticOffsets),
-              resultSizes, ArrayRef(unitStrides));
+              ValueRange{}, ValueRange{}, ArrayRef(noStaticOffsets2D),
+              resultSizes, ArrayRef(unitStrides2D));
           return {result};
         }
       });
@@ -800,107 +804,97 @@ TilingResult2 GemvOp::convertToTiledOps(OpBuilder &builder,
   if (aTy.getElementType() != xTy.getElementType() ||
       aTy.getElementType() != yTy.getElementType())
     return failure();
+  auto elTy = aTy.getElementType();
 
   const int64_t M = aTy.getDimSize(0);
   const int64_t K = aTy.getDimSize(1);
-
-  auto tileSizes = getGemvTilesFromAttributes(M, K, aTy.getElementType(),
-                                              params, getOperation());
-  if (llvm::failed(tileSizes)) {
+  if (ShapedType::isDynamic(M) || ShapedType::isDynamic(K))
     return failure();
-  }
-  // Those are block sizes
+
+  auto tileSizes =
+      getGemvTilesFromAttributes(M, K, elTy, params, getOperation());
+  if (llvm::failed(tileSizes))
+    return failure();
   auto [pM, rK] = *tileSizes;
 
-  Type elt = aTy.getElementType();
+  ValueRange initArgs{};
+  if (!getOut()) {
+    Value resultInit =
+        tensor::EmptyOp::create(builder, loc, yTy.getShape(), elTy);
+    initArgs = resultInit;
+  }
 
-
-  // todo finish this
-  // SmallVector<Value> finals = createNestedAffineForLoops(
-  //     builder, getLoc(), resultType.getShape(), {p0, p1}, initArgs,
-  //     [&, p0, p1](OpBuilder &builder, Location loc, ValueRange indices,
-  //                 ValueRange iterArgs) -> SmallVector<Value> {
-
-  //                 });
-
-
-  Value init = tensor::EmptyOp::create(builder, loc, yTy.getShape(), elt);
-
-  TypedAttr zeroAttr = builder.getZeroAttr(elt);
-
-  Value Mc = arith::ConstantIndexOp::create(builder, loc, M);
-  Value Kc = arith::ConstantIndexOp::create(builder, loc, K);
-  Value pMc = arith::ConstantIndexOp::create(builder, loc, pM);
-  Value rKc = arith::ConstantIndexOp::create(builder, loc, rK);
-
-  SmallVector<Value> results = createNestedScfForLoops(
-      builder, loc, ArrayRef<int64_t>{M}, ArrayRef<int64_t>{pM},
-      ValueRange{init},
+  SmallVector<Value> results = createNestedAffineForLoops(
+      builder, loc, ArrayRef<int64_t>{M}, ArrayRef<int64_t>{pM}, initArgs,
       [&](OpBuilder &b, Location loc2, ValueRange ivs,
           ValueRange iters) -> SmallVector<Value> {
-        Value iM = ivs[0];
+        Value i = ivs[0];
 
-        Value remM = arith::SubIOp::create(b, loc2, Mc, iM);
-        Value usePM = arith::CmpIOp::create(b, loc2, arith::CmpIPredicate::ugt,
-                                            remM, pMc);
-        Value pMTile = arith::SelectOp::create(b, loc2, usePM, pMc, remM);
+        ValueRange iterArgInit{};
+        Value biasSlice;
+        if (auto bias = getBias()) {
+          biasSlice = extractSlice1D(b, loc2, bias, pM, i);
+        }
+        Value outBuf;
+        if (auto outmemref = getOut()) {
+          outBuf = extractSlice1D(
+              b, loc2, cast<TypedValue<ShapedType>>(outmemref), pM, i);
+          if (biasSlice) {
+            linalg::AddOp::create(b, loc2, ValueRange{biasSlice, outBuf},
+                                  outBuf);
+          }
+        } else {
+          // only for tensor-mode
+          if (biasSlice) {
+            iterArgInit = biasSlice;
+          } else {
+            auto reductionAccTy = RankedTensorType::get({pM}, elTy);
+            DenseElementsAttr zeros;
+            if (auto floatType = dyn_cast<FloatType>(elTy)) {
+              zeros = DenseElementsAttr::get(
+                  reductionAccTy,
+                  {APFloat::getZero(floatType.getFloatSemantics())});
+            } else {
+              zeros = DenseElementsAttr::get(
+                  reductionAccTy,
+                  {APInt::getZero(reductionAccTy.getElementTypeBitWidth())});
+            }
 
-        Value zeroScalar = arith::ConstantOp::create(b, loc2, zeroAttr);
-        Value accEmpty = tensor::EmptyOp::create(
-            b, loc2, ArrayRef<int64_t>({ShapedType::kDynamic}), elt,
-            ValueRange{pMTile});
-        Value acc0 = linalg::FillOp::create(b, loc2, ValueRange{zeroScalar},
-                                            ValueRange{accEmpty})
-                         .getResult(0);
+            iterArgInit =
+                builder.create<arith::ConstantOp>(loc, zeros)->getResults();
+          }
+        }
 
-        SmallVector<Value> red = createNestedScfForLoops(
-            b, loc2, ArrayRef<int64_t>{K}, ArrayRef<int64_t>{rK},
-            ValueRange{acc0},
+        SmallVector<Value> red = createNestedAffineForLoops(
+            b, loc2, ArrayRef<int64_t>{K}, ArrayRef<int64_t>{rK}, iterArgInit,
             [&](OpBuilder &b2, Location loc3, ValueRange kIvs,
                 ValueRange accArgs) -> SmallVector<Value> {
               Value k = kIvs[0];
 
-              Value remK = arith::SubIOp::create(b2, loc3, Kc, k);
-              Value useR = arith::CmpIOp::create(
-                  b2, loc3, arith::CmpIPredicate::ugt, remK, rKc);
-              Value kTile = arith::SelectOp::create(b2, loc3, useR, rKc, remK);
+              Value aTile = extractSlice(
+                  b2, loc3, cast<TypedValue<ShapedType>>(A), pM, rK, i, k);
+              Value xTile = extractSlice1D(
+                  b2, loc3, cast<TypedValue<ShapedType>>(x), rK, k);
 
-              auto aTileTy = RankedTensorType::get(
-                  {ShapedType::kDynamic, ShapedType::kDynamic}, elt);
-              Value aTile = tensor::ExtractSliceOp::create(
-                  b2, loc3, aTileTy, A, ValueRange{iM, k},
-                  ValueRange{pMTile, kTile}, ValueRange{},
-
-                  ArrayRef<int64_t>(
-                      {ShapedType::kDynamic, ShapedType::kDynamic}),
-
-                  ArrayRef<int64_t>(
-                      {ShapedType::kDynamic, ShapedType::kDynamic}),
-                  ArrayRef<int64_t>({1, 1}));
-
-              auto xTileTy = RankedTensorType::get({ShapedType::kDynamic}, elt);
-              Value xTile = tensor::ExtractSliceOp::create(
-                  b2, loc3, xTileTy, x, ValueRange{k}, ValueRange{kTile},
-                  ValueRange{}, ArrayRef<int64_t>({ShapedType::kDynamic}),
-                  ArrayRef<int64_t>({ShapedType::kDynamic}),
-                  ArrayRef<int64_t>({1}));
-
-              auto yTileResTy =
-                  RankedTensorType::get({ShapedType::kDynamic}, elt);
+              Value bias;
+              if (!getOut()) {
+                // tensor mode
+                bias = accArgs[0];
+              }
               auto gemv =
-                  cinm::GemvOp::create(b2, loc3, aTile, xTile, accArgs[0]);
+                  cinm::GemvOp::create(b2, loc3, aTile, xTile, bias, outBuf);
               cinm::markOpAsNoTile(gemv);
-              auto mat = bufferization::MaterializeInDestinationOp::create(
-                  b2, loc3, gemv.getResult(), accArgs[0]);
-              Value updatedAcc = mat.getResult();
-              return SmallVector<Value>{updatedAcc};
+              if (getOut())
+                return {};
+              return SmallVector<Value>{gemv.getResult()};
             });
 
+        if (getOut())
+          return {};
         Value out = tensor::InsertSliceOp::create(
-            b, loc2, red[0], iters[0], ValueRange{iM}, ValueRange{pMTile},
-            ValueRange{}, ArrayRef<int64_t>({ShapedType::kDynamic}),
-            ArrayRef<int64_t>({ShapedType::kDynamic}), ArrayRef<int64_t>({1}));
-
+            b, loc2, red[0], iters[0], ValueRange{i}, ValueRange{},
+            ValueRange{}, noStaticOffsets1, ArrayRef<int64_t>({pM}),
+            unitStrides1);
         return SmallVector<Value>{out};
       });
 
