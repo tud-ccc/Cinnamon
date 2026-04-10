@@ -5,14 +5,10 @@ source "$script_dir/common.sh"
 
 if [[ $checkout_upmem -eq 1 ]]; then
   if [ ! -d "$upmem_path" ]; then
-    status "Downloading UpMem SDK"
-    upmem_archive="third-party/upmem.tar.gz"
-    curl http://sdk-releases.upmem.com/2025.1.0/ubuntu_22.04/upmem-2025.1.0-Linux-x86_64.tar.gz --output "$upmem_archive"
-    mkdir "$upmem_path"
-    tar xf "$upmem_archive" -C "$upmem_path" --strip-components=1
-    rm "$upmem_archive"
+    warning "Upmem SDK cannot be found. Unpack it at $upmem_path or set UPMEM_DIR in the cmake options to use another path."
+    warning "Keep in mind the SDK is not publicly available anymore, you need to have downloaded it before it went offline."
   fi
 elif [[ $checkout_upmem -eq 0 ]]; then
-  warning "Skipping UpMem checkout"
+  warning "Skipping Upmem checkout"
   warning "The following steps will need UPMEM_DIR to be set in their respective <STEP>_CMAKE_OPTIONS"
 fi

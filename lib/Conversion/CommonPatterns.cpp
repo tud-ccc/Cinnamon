@@ -10,11 +10,11 @@ namespace mlir {
 
 namespace {
 
-struct DeleteToMemref : public OpConversionPattern<bufferization::ToMemrefOp> {
+struct DeleteToMemref : public OpConversionPattern<bufferization::ToBufferOp> {
   using OpConversionPattern::OpConversionPattern;
 
   LogicalResult
-  matchAndRewrite(bufferization::ToMemrefOp op, OpAdaptor adaptor,
+  matchAndRewrite(bufferization::ToBufferOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter0) const override {
 
     auto toCast = createOrFoldUnrealizedConversionCast(
@@ -33,7 +33,7 @@ struct DeleteToTensor : public OpConversionPattern<bufferization::ToTensorOp> {
                   ConversionPatternRewriter &rewriter0) const override {
 
     auto toCast = createOrFoldUnrealizedConversionCast(
-        op->getLoc(), rewriter0, op.getResult().getType(), adaptor.getMemref());
+        op->getLoc(), rewriter0, op.getResult().getType(), adaptor.getBuffer());
 
     rewriter0.replaceAllUsesWith(op.getResult(), toCast);
     rewriter0.eraseOp(op);

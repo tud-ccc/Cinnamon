@@ -73,16 +73,17 @@ jobs:
           path: third-party/torch-mlir
           key: ${{ steps.torch-mlir-cache-restore.outputs.cache-primary-key }}
 
-      - name: Checkout upmem
-        run: |
-          source .venv/bin/activate
-          .github/workflows/build-upmem.sh -reconfigure -verbose
+      # Cannot checkout Upmem SDK anymore. We don't build this in CI anymore.
+      # - name: Checkout upmem
+      #   run: |
+      #     source .venv/bin/activate
+      #     .github/workflows/build-upmem.sh -reconfigure -verbose
 
       - name: Build CINM
         run: |
           source .venv/bin/activate
           export CINNAMON_CMAKE_OPTIONS='-DCMAKE_GENERATOR=Ninja'
-          .github/workflows/build-cinnamon.sh -reconfigure -verbose
+          .github/workflows/build-cinnamon.sh -reconfigure -verbose -no-upmem
 
       - name: Test CINM
         run: |

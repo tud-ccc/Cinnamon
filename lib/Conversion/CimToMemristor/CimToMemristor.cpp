@@ -50,7 +50,7 @@ struct ConvertCimOpToMemristor : OpConversionPattern<CimOp> {
 
     auto createBufferizeOp = [&](Value value) {
       auto shapedType = mlir::cast<ShapedType>(value.getType());
-      return rewriter.create<bufferization::ToMemrefOp>(
+      return rewriter.create<bufferization::ToBufferOp>(
           op.getLoc(),
           MemRefType::get(shapedType.getShape(), shapedType.getElementType()),
           value);

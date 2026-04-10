@@ -558,11 +558,19 @@ struct ConvertElementWiseUnaryToCnm
         newResults,
         [&](ImplicitLocOpBuilder &builder, ValueRange inputs,
             ValueRange outputs) {
-          builder.create<linalg::ElemwiseUnaryOp>(
-              TypeRange{}, ValueRange(inputs), ValueRange(outputs),
-              linalg::UnaryFnAttr::get(builder.getContext(), op.getMethod()),
-              linalg::TypeFnAttr::get(builder.getContext(),
-                                      linalg::TypeFn::cast_signed));
+          //              ElementwiseKindAttr kind, ArrayAttr indexingMaps,
+          //              ArrayRef<NamedAttribute> attributes)
+          SmallVector<AffineMap> indexMaps(inputs.size() + outputs.size());
+          for (auto buf : llvm::concat<Value>(inputs, outputs))
+            indexMaps.push_back(AffineMap::getMultiDimIdentityMap(
+                cast<ShapedType>(buf.getType()).getShape().size(),
+                builder.getContext()));
+
+          linalg::ElementwiseOp::create(
+              builder, ValueRange(inputs), ValueRange(outputs),
+              linalg::ElementwiseKindAttr::get(builder.getContext(),
+                                               op.getMethod()),
+              builder.getAffineMapArrayAttr(indexMaps));
         });
 
     if (conversionResult.failed()) {

@@ -3,19 +3,24 @@
 script_dir="$( cd -- "$(dirname "$0")" >/dev/null 2>&1 ; pwd -P )"
 source "$script_dir/common.sh"
 
-
 if [[ $checkout_and_build_torch_mlir -eq 1 ]]; then
   reconfigure_torch_mlir=0
   if [ ! -d "$torch_mlir_path" ]; then
     status "Checking out Torch-MLIR"
-    git_clone_revision  https://github.com/llvm/torch-mlir 389541fb9ddd33c3891650e47106f2c3b50b9322 "$torch_mlir_path"
+    git_clone_revision https://github.com/llvm/torch-mlir 327b6b793241a8aff8a3524e1f21c29cfd1f0457 "$torch_mlir_path"
     reconfigure_torch_mlir=1
   fi
 
-  pushd "$torch_mlir_path"
+  pushd "$torch_mlir_path" >/dev/null
 
-  if [ $reconfigure -eq 1 ] || [ $reconfigure_torch_mlir -eq 1 ]; then
-    status "Configuring Torch-MLIR"
+  if [ -f build/CMakeCache.txt ] && ! grep -q 'CMAKE_GENERATOR:INTERNAL=Ninja' build/CMakeCache.txt; then
+    status "Existing Torch-MLIR build dir is not Ninja → recreating build/"
+    rm -rf build
+    reconfigure_torch_mlir=1
+  fi
+
+  if [ ! -d build ] || [ ${reconfigure:-0} -eq 1 ] || [ $reconfigure_torch_mlir -eq 1 ]; then
+    status "Configuring Torch-MLIR (Ninja)"
     dependency_paths=""
 
     if [[ $setup_python_venv -eq 1 ]]; then
@@ -26,19 +31,32 @@ if [[ $checkout_and_build_torch_mlir -eq 1 ]]; then
       dependency_paths="$dependency_paths -DLLVM_DIR=$llvm_path/build/lib/cmake/llvm"
       dependency_paths="$dependency_paths -DMLIR_DIR=$llvm_path/build/lib/cmake/mlir"
     fi
-    
-    status "TORCH_MLIR_CMAKE_OPTIONS=$TORCH_MLIR_CMAKE_OPTIONS"
-    cmake -S . -B build \
+
+    LLVM_LIB_DIR="$llvm_path/build/lib"
+    [ -d "$LLVM_LIB_DIR" ] || LLVM_LIB_DIR="$llvm_path/install/lib"
+
+    case "$(uname -s)" in
+      Darwin) LINKER_FLAGS="-L${LLVM_LIB_DIR} -Wl,-rpath,${LLVM_LIB_DIR} -lMLIRParser" ;;
+      *)      LINKER_FLAGS="-Wl,--no-as-needed -L${LLVM_LIB_DIR} -Wl,-rpath,${LLVM_LIB_DIR} -lMLIRParser" ;;
+    esac
+
+    cmake -S . -B build -G Ninja \
       $dependency_paths \
       -Wno-dev \
       -DCMAKE_BUILD_TYPE=Release \
       -DTORCH_MLIR_OUT_OF_TREE_BUILD=ON \
       -DTORCH_MLIR_ENABLE_STABLEHLO=OFF \
+      -U CMAKE_EXE_LINKER_FLAGS -U CMAKE_SHARED_LINKER_FLAGS \
+      "-DCMAKE_EXE_LINKER_FLAGS:STRING=${LINKER_FLAGS}" \
+      "-DCMAKE_SHARED_LINKER_FLAGS:STRING=${LINKER_FLAGS}" \
+      "-DCMAKE_BUILD_RPATH:STRING=${LLVM_LIB_DIR}" \
+      "-DCMAKE_INSTALL_RPATH:STRING=${LLVM_LIB_DIR}" \
       $TORCH_MLIR_CMAKE_OPTIONS
   fi
 
-  status "Building Torch-MLIR"
+  status "Building Torch-MLIR (Ninja)"
   cmake --build build --target all TorchMLIRPythonModules
+
   verbose_cmd cmake --install build --prefix install
 
   if [[ $setup_python_venv -eq 1 ]]; then
@@ -53,9 +71,9 @@ if [[ $checkout_and_build_torch_mlir -eq 1 ]]; then
     warning "Make sure to have a correct Python environment set up"
   fi
 
+  popd >/dev/null
+
 elif [[ $checkout_and_build_torch_mlir -eq 0 ]]; then
   warning "Skipping Torch-MLIR checkout and build"
   warning "The following steps will need TORCH_MLIR_DIR to be set in their respective <STEP>_CMAKE_OPTIONS"
 fi
-
-popd

@@ -261,7 +261,7 @@ Value createVectorReduce(OpBuilder &builder, Location loc, Value inputTensor,
       // Reshape (collapse reduction dim) and return.
       // TODO: check simpler implementation that just drops shape[dim] since it's 1 anyway.
 
-      SmallVector<long> outShape(vectorType.getShape().size() - 1, 0);
+      SmallVector<int64_t> outShape(vectorType.getShape().size() - 1, 0);
       for (size_t i = 0; i < vectorType.getShape().size(); i++) {
         if (i < dim) {
           outShape[i] = vectorType.getShape()[i];

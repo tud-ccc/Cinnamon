@@ -84,8 +84,8 @@ func.func @forward(%token : index, %pos : index,
 			scf.yield %qr, %kr : tensor<288xf32>, tensor<288xf32>
 		}
 
-		%kmr = bufferization.to_memref %k2 : memref<288xf32>
-		%vmr = bufferization.to_memref %v : memref<288xf32>
+		%kmr = bufferization.to_buffer %k2 : tensor<288xf32> to memref<288xf32>
+		%vmr = bufferization.to_buffer %v : tensor<288xf32> to memref<288xf32>
 
 		%kcd = memref.subview %kc [%layer, %pos, 0] [1, 1, 288] [1, 1, 1] : memref<6x256x288xf32> to memref<288xf32, strided<[1], offset: ?>>
 		%vcd = memref.subview %vc [%layer, %pos, 0] [1, 1, 288] [1, 1, 1] : memref<6x256x288xf32> to memref<288xf32, strided<[1], offset: ?>>
@@ -95,9 +95,9 @@ func.func @forward(%token : index, %pos : index,
 
 		// multi head attention
 		%lkc = memref.subview %kc [%layer, 0, 0] [1, 256, 288] [1, 1, 1] : memref<6x256x288xf32> to memref<256x288xf32, strided<[288, 1], offset: ?>>
-		%lkc2 = bufferization.to_tensor %lkc : memref<256x288xf32, strided<[288, 1], offset: ?>>
+		%lkc2 = bufferization.to_tensor %lkc : memref<256x288xf32, strided<[288, 1], offset: ?>> to tensor<256x288xf32>
 		%lvc = memref.subview %vc [%layer, 0, 0] [1, 256, 288] [1, 1, 1] : memref<6x256x288xf32> to memref<256x288xf32, strided<[288, 1], offset: ?>>
-		%lvc2 = bufferization.to_tensor %lvc : memref<256x288xf32, strided<[288, 1], offset: ?>>
+		%lvc2 = bufferization.to_tensor %lvc : memref<256x288xf32, strided<[288, 1], offset: ?>> to tensor<256x288xf32>
 		%xb2 = func.call @mha(%q2, %lkc2, %lvc2, %pos) : (tensor<288xf32>, tensor<256x288xf32>, tensor<256x288xf32>, index) -> tensor<288xf32>
 
 		%wo_slice = tensor.extract_slice %wo [%layer, 0, 0] [1, 288, 288] [1, 1, 1] : tensor<6x288x288xf32> to tensor<288x288xf32>
@@ -204,7 +204,7 @@ func.func @mha(%q: tensor<288xf32>, %kc: tensor<256x288xf32>, %vc: tensor<256x28
 			%k = tensor.extract_slice %kc [%i, %hoff] [1, 48] [1, 1] : tensor<256x288xf32> to tensor<48xf32>
 			%score = cinm.compute attributes { workgroupShape = array<i64: 1,1,8> } -> f32 {
 				%0 = cinm.op.mul %qs, %k : tensor<48xf32>
-				%1 = cinm.op.reduce add (%0) : tensor<48xf32>
+				%1 = cinm.op.reduce add (%0) : tensor<48xf32> -> f32
 				%2 = arith.divf %1, %scale : f32
 				cinm.yield %2 : f32
 			}
@@ -244,7 +244,7 @@ func.func @rmsnorm(%v : tensor<288xf32>, %w : tensor<288xf32>) -> tensor<288xf32
 
 	%r = cinm.compute attributes { workgroupShape = array<i64: 1,1,16> } -> tensor<288xf32> {
 		%0 = cinm.op.mul %v, %v : tensor<288xf32>
-		%ss = cinm.op.reduce add (%0) : tensor<288xf32>
+		%ss = cinm.op.reduce add (%0) : tensor<288xf32> -> f32
 		%s0 = arith.divf %ss, %c288 : f32
 		%s1 = arith.addf %s0, %epsilon : f32
 		%s = math.rsqrt %s1 : f32
@@ -257,11 +257,11 @@ func.func @rmsnorm(%v : tensor<288xf32>, %w : tensor<288xf32>) -> tensor<288xf32
 
 func.func @softmax(%vec : tensor<256xf32>) -> tensor<256xf32> {
 	%r = cinm.compute attributes { workgroupShape = array<i64: 1,8,16> } -> tensor<256xf32> {
-		%max = cinm.op.reduce max (%vec) : tensor<256xf32>
+		%max = cinm.op.reduce max (%vec) : tensor<256xf32> -> f32
 		%t = cinm.op.subs %vec, %max : tensor<256xf32>
 		%shape = tensor.empty() : tensor<256xf32>
 		%e = linalg.exp ins(%t : tensor<256xf32>) outs(%shape : tensor<256xf32>) -> tensor<256xf32>
-		%s = cinm.op.reduce add (%e) : tensor<256xf32>
+		%s = cinm.op.reduce add (%e) : tensor<256xf32> -> f32
 		%r = cinm.op.divs %e, %s : tensor<256xf32>
 		cinm.yield %r : tensor<256xf32>
 	}
@@ -276,7 +276,7 @@ func.func @rmsnorm_1048576(%v : tensor<1048576xf32>, %w : tensor<1048576xf32>) -
 
 	%r = cinm.compute attributes { workgroupShape = array<i64: 4,64,16> } -> tensor<1048576xf32> {
 		%0 = cinm.op.mul %v, %v : tensor<1048576xf32>
-		%ss = cinm.op.reduce add (%0) : tensor<1048576xf32>
+		%ss = cinm.op.reduce add (%0) : tensor<1048576xf32> -> f32
 		%s0 = arith.divf %ss, %c1048576 : f32
 		%s1 = arith.addf %s0, %epsilon : f32
 		%s = math.rsqrt %s1 : f32
@@ -289,11 +289,11 @@ func.func @rmsnorm_1048576(%v : tensor<1048576xf32>, %w : tensor<1048576xf32>) -
 
 func.func @softmax_1048576(%vec : tensor<1048576xf32>) -> tensor<1048576xf32> {
 	%r = cinm.compute attributes { workgroupShape = array<i64: 4,64,16> } -> tensor<1048576xf32> {
-		%max = cinm.op.reduce max (%vec) : tensor<1048576xf32>
+		%max = cinm.op.reduce max (%vec) : tensor<1048576xf32> -> f32
 		%t = cinm.op.subs %vec, %max : tensor<1048576xf32>
 		%shape = tensor.empty() : tensor<1048576xf32>
 		%e = linalg.exp ins(%t : tensor<1048576xf32>) outs(%shape : tensor<1048576xf32>) -> tensor<1048576xf32>
-		%s = cinm.op.reduce add (%e) : tensor<1048576xf32>
+		%s = cinm.op.reduce add (%e) : tensor<1048576xf32> -> f32
 		%r = cinm.op.divs %e, %s : tensor<1048576xf32>
 		cinm.yield %r : tensor<1048576xf32>
 	}
@@ -317,7 +317,7 @@ func.func @rmsnorm_262144(%v : tensor<262144xf32>, %w : tensor<262144xf32>) -> t
 
 	%r = cinm.compute attributes { workgroupShape = array<i64: 4,64,16> } -> tensor<262144xf32> {
 		%0 = cinm.op.mul %v, %v : tensor<262144xf32>
-		%ss = cinm.op.reduce add (%0) : tensor<262144xf32>
+		%ss = cinm.op.reduce add (%0) : tensor<262144xf32> -> f32
 		%s0 = arith.divf %ss, %c262144 : f32
 		%s1 = arith.addf %s0, %epsilon : f32
 		%s = math.rsqrt %s1 : f32
@@ -330,11 +330,11 @@ func.func @rmsnorm_262144(%v : tensor<262144xf32>, %w : tensor<262144xf32>) -> t
 
 func.func @softmax_262144(%vec : tensor<262144xf32>) -> tensor<262144xf32> {
 	%r = cinm.compute attributes { workgroupShape = array<i64: 4,64,16> } -> tensor<262144xf32> {
-		%max = cinm.op.reduce max (%vec) : tensor<262144xf32>
+		%max = cinm.op.reduce max (%vec) : tensor<262144xf32> -> f32
 		%t = cinm.op.subs %vec, %max : tensor<262144xf32>
 		%shape = tensor.empty() : tensor<262144xf32>
 		%e = linalg.exp ins(%t : tensor<262144xf32>) outs(%shape : tensor<262144xf32>) -> tensor<262144xf32>
-		%s = cinm.op.reduce add (%e) : tensor<262144xf32>
+		%s = cinm.op.reduce add (%e) : tensor<262144xf32> -> f32
 		%r = cinm.op.divs %e, %s : tensor<262144xf32>
 		cinm.yield %r : tensor<262144xf32>
 	}
@@ -349,7 +349,7 @@ func.func @rmsnorm_262144_opt(%v : tensor<262144xf32>, %w : tensor<262144xf32>) 
 
 	%r = cinm.compute attributes { workgroupShape = array<i64: 4,64,16> } -> tensor<262144xf32> {
 		%0 = cinm.op.mul %v, %v : tensor<262144xf32>
-		%ss = cinm.op.reduce add (%0) : tensor<262144xf32>
+		%ss = cinm.op.reduce add (%0) : tensor<262144xf32> -> f32
 		%s0 = arith.divf %ss, %c262144 : f32
 		%s1 = arith.addf %s0, %epsilon : f32
 		%s = math.rsqrt %s1 : f32
@@ -362,11 +362,11 @@ func.func @rmsnorm_262144_opt(%v : tensor<262144xf32>, %w : tensor<262144xf32>) 
 
 func.func @softmax_262144_opt(%vec : tensor<262144xf32>) -> tensor<262144xf32> {
 	%r = cinm.compute attributes { workgroupShape = array<i64: 4,64,16> } -> tensor<262144xf32> {
-		%max = cinm.op.reduce max (%vec) : tensor<262144xf32>
+		%max = cinm.op.reduce max (%vec) : tensor<262144xf32> -> f32
 		%t = cinm.op.subs %vec, %max : tensor<262144xf32>
 		%shape = tensor.empty() : tensor<262144xf32>
 		%e = linalg.exp ins(%t : tensor<262144xf32>) outs(%shape : tensor<262144xf32>) -> tensor<262144xf32>
-		%s = cinm.op.reduce add (%e) : tensor<262144xf32>
+		%s = cinm.op.reduce add (%e) : tensor<262144xf32> -> f32
 		%r = cinm.op.divs %e, %s : tensor<262144xf32>
 		cinm.yield %r : tensor<262144xf32>
 	}
@@ -409,7 +409,7 @@ func.func @mha_big(%q: tensor<32768xf32>, %kc: tensor<1024x32768xf32>, %vc: tens
 			%k = tensor.extract_slice %kc [%i, %hoff] [1, 4096] [1, 1] : tensor<1024x32768xf32> to tensor<4096xf32>
 			%score = cinm.compute attributes { workgroupShape = array<i64: 1,16,16> } -> f32 {
 				%0 = cinm.op.mul %qs, %k : tensor<4096xf32>
-				%1 = cinm.op.reduce add (%0) : tensor<4096xf32>
+				%1 = cinm.op.reduce add (%0) : tensor<4096xf32> -> f32
 				%2 = arith.divf %1, %scale : f32
 				cinm.yield %2 : f32
 			}
@@ -418,11 +418,11 @@ func.func @mha_big(%q: tensor<32768xf32>, %kc: tensor<1024x32768xf32>, %vc: tens
 		}
 
 		%attn2 = cinm.compute attributes { workgroupShape = array<i64: 1,16,16> } -> tensor<1024xf32> {
-			%max = cinm.op.reduce max (%attn) : tensor<1024xf32>
+			%max = cinm.op.reduce max (%attn) : tensor<1024xf32> -> f32
 			%t = cinm.op.subs %attn, %max : tensor<1024xf32>
 			%shape = tensor.empty() : tensor<1024xf32>
 			%e = linalg.exp ins(%t : tensor<1024xf32>) outs(%shape : tensor<1024xf32>) -> tensor<1024xf32>
-			%s = cinm.op.reduce add (%e) : tensor<1024xf32>
+			%s = cinm.op.reduce add (%e) : tensor<1024xf32> -> f32
 			%r = cinm.op.divs %e, %s : tensor<1024xf32>
 			cinm.yield %r : tensor<1024xf32>
 		}

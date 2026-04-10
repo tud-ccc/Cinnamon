@@ -1,50 +1,45 @@
 #!/bin/bash
 
-if [ -z $PREAMBLE_LOADED ]; then
+if [[ -z "${PREAMBLE_LOADED:-}" ]]; then
 PREAMBLE_LOADED="1"
 
 set -e
 
-function status {
-  echo -e "\033[1m$1\033[0m"
+status() { echo -e "\033[1m$1\033[0m"; }
+info() { echo -e "\033[1;34m$1\033[0m"; }
+warning() { echo -e "\033[1;33m$1\033[0m"; }
+error() { echo -e "\033[1;31m$1\033[0m" >&2; }
+
+print_and_run() {
+  a="$(echo "$@")"
+  status "$a"
+  "$@"
 }
 
-function info {
-  echo -e "\033[1;34m$1\033[0m"
-}
-
-function warning {
-  echo -e "\033[1;33m$1\033[0m"
-}
-
-function verbose_cmd {
-  if [ $verbose -eq 1 ]; then
+verbose_cmd() {
+  if [[ "${verbose:-0}" -eq 1 ]]; then
     "$@"
   else
-    "$@" > /dev/null
+    "$@" >/dev/null
   fi
 }
 
-
-function git_clone_revision() {
-  repo_url=$1
-  revision=$2
-  path=$3
-  
+git_clone_revision() {
+  repo_url="$1"
+  revision="$2"
+  path="$3"
   if (echo a version 2.49.0; git --version) | sort -Vk3 | tail -1 | grep -q git; then
-    # Git 2.49.0 added the revision option
     git clone --revision "$revision" --depth 1 "$repo_url" "$path"
   else
     mkdir -p "$path"
-    pushd "$path"
+    pushd "$path" >/dev/null
     git init
     git remote add origin "$repo_url"
     git fetch origin "$revision"
     git checkout FETCH_HEAD
-    popd
+    popd >/dev/null
   fi
 }
-
 
 project_root="$( cd -- "$(dirname "$0")/../.." >/dev/null 2>&1 ; pwd -P )"
 status "Project root: $project_root"
@@ -55,7 +50,6 @@ cinnamon_path="$project_root"
 llvm_path="$project_root/third-party/llvm"
 torch_mlir_path="$project_root/third-party/torch-mlir"
 upmem_path="$project_root/third-party/upmem"
-
 
 verbose=0
 reconfigure=0
@@ -70,38 +64,26 @@ build_cinnamon_wheel=1
 enable_cuda=0
 enable_roc=0
 
-
-# Section for configuring based on legacy environment variables
-###############################################################
-
-
-if [ -n "$LLVM_BUILD_DIR" ]; then
-  checkout_and_build_llvm=external
-  TORCH_MLIR_CMAKE_OPTIONS="$TORCH_MLIR_CMAKE_OPTIONS -DLLVM_DIR=$LLVM_BUILD_DIR/lib/cmake/llvm -DMLIR_DIR=$LLVM_BUILD_DIR/lib/cmake/mlir"
-  CINNAMON_CMAKE_OPTIONS="$CINNAMON_CMAKE_OPTIONS -DLLVM_DIR=$LLVM_BUILD_DIR/lib/cmake/llvm -DMLIR_DIR=$LLVM_BUILD_DIR/lib/cmake/mlir"
-
+if [[ -n "${LLVM_BUILD_DIR:-}" ]]; then
+  checkout_and_build_llvm=0
+  TORCH_MLIR_CMAKE_OPTIONS="${TORCH_MLIR_CMAKE_OPTIONS:-} -DLLVM_DIR=$LLVM_BUILD_DIR/lib/cmake/llvm -DMLIR_DIR=$LLVM_BUILD_DIR/lib/cmake/mlir"
+  CINNAMON_CMAKE_OPTIONS="${CINNAMON_CMAKE_OPTIONS:-} -DLLVM_DIR=$LLVM_BUILD_DIR/lib/cmake/llvm -DMLIR_DIR=$LLVM_BUILD_DIR/lib/cmake/mlir"
   info "Using environment variable LLVM_BUILD_DIR for configuration"
   info "Dependent targets will use '$LLVM_BUILD_DIR'"
-
-  if [ ! -d "$LLVM_BUILD_DIR" ]; then
+  if [[ ! -d "$LLVM_BUILD_DIR" ]]; then
     warning "Directory '$LLVM_BUILD_DIR' does not exist"
   fi
 fi
 
-if [ -n "$UPMEM_HOME" ]; then
-  checkout_upmem=external
-  CINNAMON_CMAKE_OPTIONS="$CINNAMON_CMAKE_OPTIONS -DUPMEM_DIR=$UPMEM_HOME"
-
+if [[ -n "${UPMEM_HOME:-}" ]]; then
+  checkout_upmem=0
+  CINNAMON_CMAKE_OPTIONS="${CINNAMON_CMAKE_OPTIONS:-} -DUPMEM_DIR=$UPMEM_HOME"
   info "Using environment variable UPMEM_HOME for configuration"
   info "Dependent targets will use '$UPMEM_HOME'"
-
-  if [ ! -d "$UPMEM_HOME" ]; then
+  if [[ ! -d "$UPMEM_HOME" ]]; then
     warning "Directory '$UPMEM_HOME' does not exist"
   fi
 fi
-
-
-###############################################################
 
 if echo "$@" | grep -q -- "-verbose"; then
   verbose=1
@@ -134,7 +116,7 @@ if echo "$@" | grep -q -- "-no-cinnamon-wheel"; then
 fi
 
 if echo "$@" | grep -q -- "-enable-gpu"; then
-  CINNAMON_CMAKE_OPTIONS="$CINNAMON_CMAKE_OPTIONS -DCINM_BUILD_GPU_SUPPORT=ON"
+  CINNAMON_CMAKE_OPTIONS="${CINNAMON_CMAKE_OPTIONS:-} -DCINM_BUILD_GPU_SUPPORT=ON"
 fi
 
 if echo "$@" | grep -q -- "-enable-cuda"; then
@@ -145,17 +127,15 @@ if echo "$@" | grep -q -- "-enable-roc"; then
   enable_roc=1
 fi
 
-
-if [ -n "$TORCH_MLIR_INSTALL_DIR" ] && [ "$checkout_and_build_torch_mlir" -ne 0 ]; then
-  checkout_and_build_torch_mlir=external
-  CINNAMON_CMAKE_OPTIONS="$CINNAMON_CMAKE_OPTIONS -DTORCH_MLIR_DIR=$TORCH_MLIR_INSTALL_DIR"
-
+if [[ -n "${TORCH_MLIR_INSTALL_DIR:-}" ]] && [[ "${checkout_and_build_torch_mlir}" -ne 0 ]]; then
+  checkout_and_build_torch_mlir=0
+  CINNAMON_CMAKE_OPTIONS="${CINNAMON_CMAKE_OPTIONS:-} -DTORCH_MLIR_DIR=$TORCH_MLIR_INSTALL_DIR"
   info "Using environment variable TORCH_MLIR_INSTALL_DIR for configuration"
   info "Dependent targets will use '$TORCH_MLIR_INSTALL_DIR'"
-
-  if [ ! -d "$TORCH_MLIR_INSTALL_DIR" ]; then
+  if [[ ! -d "$TORCH_MLIR_INSTALL_DIR" ]]; then
     warning "Directory '$TORCH_MLIR_INSTALL_DIR' does not exist"
   fi
 fi
 
 fi
+
