@@ -119,13 +119,18 @@ def StaticAllocOp : Upmem_Op<"static_alloc", [Symbol,
 ]> {
   let summary = "static buffer allocation in wram or mram";
   let description = [{
-    The `upmemx.static_alloc` op declares a buffer in wram or mram.
+    The `upmem.static_alloc` op declares a buffer in wram or mram.
     The buffer is shared between all threads, and the allocation happens statically.
+    Statically allocated MRAM buffers can be named with a symbol.
+    In that case, they can be referred-to from the host program
+    in a scatter or gather operation.
+    These allocations need to happen within a dpu_program scope.
+
     Example 1:
 
     ```mlir
-    upmemx.static_alloc(wram) : memref<100x100xf32, "wram">
-    upmemx.static_alloc @bufname(mram) : memref<100x100xf32, "mram">
+    upmem.static_alloc(wram) : memref<100x100xf32, "wram">
+    upmem.static_alloc @bufname(mram) : memref<100x100xf32, "mram">
     ```
   }];
 
@@ -192,14 +197,14 @@ def MemcpyOp : Upmem_Op<"memcpy", []> {
 def LocalTransferOp : Upmem_Op<"local_transfer"> {
   let summary = "transfer between memory spaces (wram or mram)";
   let description = [{
-    The `upmemx.local_transfer` op copies a buffer into another buffer.
+    The `upmem.local_transfer` op copies a buffer into another buffer.
     Both buffers should have same shape and element type, but the memory
     spaces can differ (they must match the declared direction of the transfer).
     When transferring part of a buffer, a memref.subview should be used
     as the source or destination operand.
 
     ```mlir
-    upmemx.local_transfer (wram to mram) %source into %dest : memref<2048xf32, "wram"> to memref<2048xf32, "mram">
+    upmem.local_transfer (wram to mram) %source into %dest : memref<2048xf32, "wram"> to memref<2048xf32, "mram">
     ```
   }];
 
@@ -320,6 +325,12 @@ def DpuProgramOp : Upmem_Op<"dpu_program",
 def AllocDPUsOp: Upmem_Op <"alloc_dpus",  [ DeclareOpInterfaceMethods<SymbolUserOpInterface> ]> {
   let summary = "UPMEM alloc dpus";
   let description = [{
+    The upmem.alloc_dpus op calls initialization routine of the UPMEM SDK.
+    It loads the specified DPU program onto the DPUs. This is an expensive
+    operation that should be hoisted outside of loops. If we are going to
+    run the same program several times, the same allocation should be reused.
+    The DPU program still needs input buffers to be scattered before it can
+    be executed.
   }];
   let arguments = (ins SymbolRefAttr:$dpu_program_ref);
   let results = (outs DeviceHierarchyType:$wg);

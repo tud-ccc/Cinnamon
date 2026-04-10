@@ -163,6 +163,7 @@ LogicalResult upmem::GatherOp::verifySymbolUses(
       return emitOpError("requires ") << getDpuProgramRefAttr()
                                       << " to refer to an upmem.dpu_program op";
   }
+  // TODO verify that tasklet count of the dpu_program matches the last item of the hierarchy (result type)
   return success();
 }
 
