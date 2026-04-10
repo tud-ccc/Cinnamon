@@ -46,7 +46,7 @@ def UPMEM_Dialect : Dialect {
     // let useDefaultTypePrinterParser = 1;
 }
 
-class UPMEM_Op<string mnemonic, list<Trait> traits = []>
+class Upmem_Op<string mnemonic, list<Trait> traits = []>
         : Op<UPMEM_Dialect, mnemonic, traits>;
 
 //===----------------------------------------------------------------------===//

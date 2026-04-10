@@ -8,16 +8,19 @@
 
 #include <cstdint>
 #include <llvm/ADT/ArrayRef.h>
+#include <llvm/ADT/SmallString.h>
 #include <llvm/ADT/SmallVector.h>
 #include <llvm/ADT/StringRef.h>
 #include <llvm/ADT/Twine.h>
 #include <llvm/IR/Constants.h>
 #include <llvm/Support/Casting.h>
+#include <llvm/Support/Debug.h>
 #include <llvm/Support/LogicalResult.h>
 #include <mlir/Conversion/LLVMCommon/LoweringOptions.h>
 #include <mlir/Conversion/LLVMCommon/TypeConverter.h>
 #include <mlir/Dialect/Affine/IR/AffineOps.h>
 #include <mlir/Dialect/Affine/Utils.h>
+#include <mlir/Dialect/LLVMIR/LLVMAttrs.h>
 #include <mlir/Dialect/LLVMIR/LLVMDialect.h>
 #include <mlir/Dialect/LLVMIR/LLVMTypes.h>
 #include <mlir/Dialect/MemRef/IR/MemRef.h>
@@ -33,7 +36,6 @@
 #include <mlir/IR/Diagnostics.h>
 #include <mlir/IR/ImplicitLocOpBuilder.h>
 #include <mlir/IR/Location.h>
-#include <mlir/IR/SymbolTable.h>
 #include <mlir/IR/TypeRange.h>
 #include <mlir/IR/ValueRange.h>
 
@@ -46,6 +48,8 @@
 #include <mlir/Support/LogicalResult.h>
 #include <mlir/Transforms/DialectConversion.h>
 #include <optional>
+
+#define DEBUG_TYPE "upmem-to-llvm"
 
 namespace mlir {
 #define GEN_PASS_DEF_CONVERTUPMEMTOLLVMPASS
@@ -76,60 +80,50 @@ declareStringConstant(ModuleOp moduleOp, Location loc, StringRef value,
   if (zeroTerminated)
     str.push_back('\0'); // Null terminate for C
 
-  OpBuilder rewriter(moduleOp->getContext());
+  OpBuilder builder(moduleOp->getContext());
   auto globalType =
-      LLVM::LLVMArrayType::get(rewriter.getI8Type(), str.size_in_bytes());
+      LLVM::LLVMArrayType::get(builder.getI8Type(), str.size_in_bytes());
+  auto valueAttr = builder.getStringAttr(std::move(str));
+
+  // Try to find an existing identical constant
+  LLVM::GlobalOp found;
+  moduleOp->walk([&](LLVM::GlobalOp global) {
+    if (global.getConstant() &&
+        global.getLinkage() == LLVM::linkage::Linkage::Private &&
+        global.getValue() == valueAttr &&
+        global.getGlobalType() == globalType) {
+      found = global;
+      return WalkResult::interrupt();
+    }
+    return WalkResult::skip();
+  });
+  if (found) {
+    return found;
+  }
+  // Otherwise create one.
+
   auto twine = llvm::Twine("const", value).str();
-  StringRef globalName2 = globalName.value_or(twine);
-  SymbolTable table(moduleOp);
-  LLVM::GlobalOp global = rewriter.create<LLVM::GlobalOp>(
+  // str is reused to store the name
+  str = getUniqueFunctionName(moduleOp, globalName.value_or(twine));
+
+  builder.setInsertionPointToStart(&moduleOp.getBodyRegion().front());
+  return builder.create<LLVM::GlobalOp>(
       loc, globalType,
-      /*isConstant=*/true, LLVM::Linkage::Private, globalName2,
-      rewriter.getStringAttr(str),
-      /*allignment=*/0);
-  table.insert(global);
-  return global;
+      /*isConstant=*/true, LLVM::Linkage::Private,
+      builder.getStringAttr(std::move(str)), valueAttr);
 }
 
-// TODO these two functions are duplicated from CinmToCnm.cpp, share them
-
-// Turn an index in the index space of the given shape into a linear index.
-AffineExpr linearizeIndices(MLIRContext *ctx, ArrayRef<int64_t> shape) {
-
-  AffineExpr index = getAffineConstantExpr(0, ctx);
-  int64_t dimIndex = shape.size() - 1;
-  int64_t trailing = 1;
-  for (auto it = shape.rbegin(); it != shape.rend(); it++) {
-    auto dim = *it;
-    index = trailing * getAffineDimExpr(dimIndex, ctx) + index;
-    trailing *= dim;
-    dimIndex--;
-  }
-  return index;
+static Value reifyAsString(ImplicitLocOpBuilder &builder, ModuleOp container,
+                           StringRef value, StringRef nameHint) {
+  LLVM::GlobalOp global =
+      declareStringConstant(container, builder.getLoc(), value, true, nameHint);
+  return builder.create<LLVM::AddressOfOp>(global);
 }
 
-// inflate a linear index into the given shape
-void structureIndex(AffineExpr index, ArrayRef<int64_t> shape,
-                    SmallVectorImpl<AffineExpr> &map) {
-
-  int64_t sizeOfTrailing = computeProduct(shape) / shape[0];
-  map.push_back(index.floorDiv(sizeOfTrailing));
-
-  AffineExpr gatherExpr = index * sizeOfTrailing;
-  size_t i = 1;
-
-  for (auto dim : llvm::drop_begin(shape, 1)) {
-    index = index % sizeOfTrailing;
-    sizeOfTrailing /= dim;
-    map.push_back(index.floorDiv(sizeOfTrailing));
-    gatherExpr = gatherExpr +
-                 mlir::getAffineDimExpr(i, index.getContext()) * sizeOfTrailing;
-    i++;
-  }
-}
 /// Linearize the scatter map.
-/// The map is from WG -> tensor, both index spaces are multidimensional.
-/// The input shape is the WG shape, the output shape is the tensor shape.
+/// The map is from (rank, dpu) -> tensor, both index spaces are
+/// multidimensional. The input shape is the WG shape, the output shape is the
+/// tensor shape.
 ///
 static FailureOr<AffineMap> linearizeAffineMap(AffineMap map,
                                                ArrayRef<int64_t> inputShape,
@@ -137,17 +131,11 @@ static FailureOr<AffineMap> linearizeAffineMap(AffineMap map,
 
   auto ctx = map.getContext();
   SmallVector<AffineExpr> inflatedIndices;
-  structureIndex(getAffineDimExpr(0, ctx), inputShape, inflatedIndices);
+  cinm::structureIndex(getAffineDimExpr(0, ctx), inputShape, inflatedIndices);
   AffineMap inflateMap = AffineMap::get(1, 0, inflatedIndices, ctx);
 
   // complete map with zero dims
-  // todo do that in CNM->UPMEM
   auto outputShape = bufferTy.getShape();
-  auto zero = getAffineConstantExpr(0, ctx);
-  for (unsigned i = map.getNumResults(); i < outputShape.size(); i++) {
-    map = map.insertResult(zero, i);
-  }
-
   auto layoutMap = bufferTy.getLayout().getAffineMap();
   if (isa<StridedLayoutAttr>(bufferTy.getLayout())) {
     // Replace offsets with 0 to delete the symbols.
@@ -155,19 +143,31 @@ static FailureOr<AffineMap> linearizeAffineMap(AffineMap map,
     layoutMap = layoutMap.replaceDimsAndSymbols(
         {}, {getAffineConstantExpr(0, ctx)}, layoutMap.getNumDims(), 0);
   } else if (bufferTy.getLayout().isIdentity()) {
-    auto linearIndex = linearizeIndices(ctx, outputShape);
+    auto linearIndex = cinm::linearizeIndices(ctx, outputShape);
     layoutMap = AffineMap::get(outputShape.size(), 0, linearIndex);
   } else {
     return failure();
   }
+  LLVM_DEBUG(llvm::errs() << "linearize composition :\n");
+  LLVM_DEBUG(llvm::errs() << "- output type " << bufferTy << '\n');
+  LLVM_DEBUG(llvm::errs() << "- layout map " << layoutMap << '\n');
+  LLVM_DEBUG(llvm::errs() << "- map " << map << '\n');
+  LLVM_DEBUG(llvm::errs() << "- inflate map " << inflateMap << '\n');
 
   auto result = MutableAffineMap(layoutMap.compose(map).compose(inflateMap));
+  LLVM_DEBUG(llvm::errs() << "- before simplification " << result.getAffineMap()
+                          << '\n');
   result.simplify();
+  LLVM_DEBUG(llvm::errs() << "- after simplification " << result.getAffineMap()
+                          << '\n');
+
   assert(result.getNumResults() == 1 && result.getNumDims() == 1);
+
   // last step is making sure this map operates on bytes and not on elements
   auto resExpr = result.getResult(0);
   result.setResult(0, resExpr * (bufferTy.getElementTypeBitWidth() / 8));
   result.simplify();
+  LLVM_DEBUG(llvm::errs() << "- result " << result.getAffineMap() << '\n');
   return success(result.getAffineMap());
 }
 
@@ -175,7 +175,7 @@ static FailureOr<AffineMap> linearizeAffineMap(AffineMap map,
 size_t upmemrt_dpu_scatter(struct dpu_set_t *dpu_set, void *host_buffer,
                            size_t element_size, size_t num_elements,
                            size_t num_elements_per_tasklet, size_t copy_bytes,
-                           size_t offset_in_dpu_bytes,
+                           char* buffer_id,
                            size_t (*base_offset)(size_t));
 */
 static FailureOr<LLVM::LLVMFuncOp>
@@ -187,7 +187,7 @@ getScatterOrGatherFunc(OpBuilder &rewriter, ModuleOp moduleOp,
   auto funPtrTy = functionPtrTy(sizeTy, {sizeTy});
   return LLVM::lookupOrCreateFn(
       rewriter, moduleOp, name,
-      {ptrTy, ptrTy, sizeTy, sizeTy, sizeTy, sizeTy, sizeTy, funPtrTy},
+      {ptrTy, ptrTy, sizeTy, sizeTy, sizeTy, sizeTy, ptrTy, funPtrTy},
       LLVM::LLVMVoidType::get(ctx));
 }
 
@@ -235,22 +235,11 @@ public:
   FailureOr<Value>
   createConstantForDpuProgramName(ConversionPatternRewriter &rewriter,
                                   upmem::AllocDPUsOp op) const {
-
-    StringRef dpuProgramName;
-    for (auto user : op->getUsers()) {
-      if (auto launch = llvm::dyn_cast_or_null<upmem::LaunchFuncOp>(user)) {
-        if (!dpuProgramName.empty() && dpuProgramName != launch.getKernelName())
-          return op->emitError(
-              "has several upmem.launch_func op with a different kernel");
-        dpuProgramName = launch.getKernelName();
-      }
-    }
-    if (dpuProgramName.empty())
-      return op->emitError("has no upmem.launch_func op");
+    auto leafName = op.getDpuProgramRef().getLeafReference().getValue();
 
     LLVM::GlobalOp constant =
         declareStringConstant(op->getParentOfType<ModuleOp>(), op->getLoc(),
-                              dpuProgramName, true, "dpu_program");
+                              leafName, true, "dpu_program");
     Value result = rewriter.create<LLVM::AddressOfOp>(op->getLoc(), constant);
     return success(result);
   }
@@ -258,12 +247,12 @@ public:
   LogicalResult
   matchAndRewrite(upmem::AllocDPUsOp op, typename upmem::AllocDPUsOp::Adaptor,
                   ConversionPatternRewriter &rewriter) const override {
-    const ArrayRef<int64_t> hierarchyShape =
-        op.getResult().getType().getShape();
+    const DeviceHierarchyType hierarchyShape = op.getResult().getType();
     const Value rankCount = rewriter.create<LLVM::ConstantOp>(
-        op.getLoc(), rewriter.getI32IntegerAttr(hierarchyShape[0]));
+        op.getLoc(), rewriter.getI32IntegerAttr(hierarchyShape.getNumRanks()));
     const Value dpuCount = rewriter.create<LLVM::ConstantOp>(
-        op.getLoc(), rewriter.getI32IntegerAttr(hierarchyShape[1]));
+        op.getLoc(),
+        rewriter.getI32IntegerAttr(hierarchyShape.getNumDpusPerRank()));
 
     const auto maybeFailed = createConstantForDpuProgramName(rewriter, op);
     if (failed(maybeFailed))
@@ -298,7 +287,9 @@ outlineAffineMap(ImplicitLocOpBuilder &rewriter,
 
   auto sizeTy =
       tyConverter->convertType(IndexType::get(moduleOp->getContext()));
-  auto linearMap = linearizeAffineMap(map, hierarchyTy.getShape(), bufferTy);
+  auto shape = hierarchyTy.getWgShape();
+  auto linearMap =
+      linearizeAffineMap(map, ArrayRef<int64_t>(shape).drop_back(), bufferTy);
   if (failed(linearMap)) {
     emitError(rewriter.getLoc(), "Unsupported layout map for ") << bufferTy;
     return failure();
@@ -316,10 +307,10 @@ outlineAffineMap(ImplicitLocOpBuilder &rewriter,
   });
   if (existingOp)
     return existingOp;
-  SymbolTable symTable(moduleOp);
+  auto funName = getUniqueFunctionName(moduleOp, "scatter_map");
+  rewriter.setInsertionPointToStart(&moduleOp.getBodyRegion().front());
   auto affineMapFun = rewriter.create<LLVM::LLVMFuncOp>(
-      "scatter_map", affineFunTy, LLVM::Linkage::Private);
-  symTable.insert(affineMapFun);
+      rewriter.getStringAttr(funName), affineFunTy, LLVM::Linkage::Private);
 
   // to find it later
   affineMapFun->setAttr("upmem.generated_from", AffineMapAttr::get(*linearMap));
@@ -378,7 +369,8 @@ static LogicalResult lowerScatterOrGather(Op op, typename Op::Adaptor adaptor,
   if (llvm::failed(runtimeScatterFun))
     return failure();
   auto funPtrOp = rewriter0.create<LLVM::AddressOfOp>(loc, *affineMapFunOpt);
-  auto dpuMemOffset = reifyAsIndex(rewriter, tyConverter, op.getDpuMemOffset());
+  auto bufferId =
+      reifyAsString(rewriter, moduleOp, op.getDpuBufRef(), "buffer_name");
   auto numBytesCopied = op.getDpuBufferSizeInBytes();
 
   // Transfer count must be 8-byte aligned
@@ -406,8 +398,7 @@ static LogicalResult lowerScatterOrGather(Op op, typename Op::Adaptor adaptor,
 
   const size_t elementSize =
       op.getHostBuffer().getType().getElementTypeBitWidth() / 8;
-  const size_t numTasklets =
-      computeProduct(op.getHierarchy().getType().getShape());
+  const size_t numTasklets = op.getHierarchy().getType().getNumElements();
   const size_t numElements =
       computeProduct(op.getHostBuffer().getType().getShape());
   const size_t numElementsPerTasklet = numElements / numTasklets;
@@ -418,8 +409,8 @@ static LogicalResult lowerScatterOrGather(Op op, typename Op::Adaptor adaptor,
                  reifyAsIndex(rewriter, tyConverter, elementSize),
                  reifyAsIndex(rewriter, tyConverter, numElements),
                  reifyAsIndex(rewriter, tyConverter, numElementsPerTasklet),
-                 reifyAsIndex(rewriter, tyConverter, numBytesCopied),
-                 dpuMemOffset, funPtrOp.getRes()});
+                 reifyAsIndex(rewriter, tyConverter, numBytesCopied), bufferId,
+                 funPtrOp.getRes()});
 
   rewriter0.eraseOp(op);
   return success();
@@ -454,15 +445,13 @@ public:
   }
 };
 
-struct LaunchFuncOpToFuncCallLowering
-    : public ConvertOpToLLVMPattern<upmem::LaunchFuncOp> {
-public:
-  explicit LaunchFuncOpToFuncCallLowering(LLVMTypeConverter &lowering)
-      : ConvertOpToLLVMPattern<upmem::LaunchFuncOp>(lowering) {}
+struct WaitForOpToFuncCallLowering
+    : public ConvertOpToLLVMPattern<upmem::WaitForOp> {
+  using ConvertOpToLLVMPattern<upmem::WaitForOp>::ConvertOpToLLVMPattern;
 
   LogicalResult
-  matchAndRewrite(upmem::LaunchFuncOp op,
-                  typename upmem::LaunchFuncOp ::Adaptor adaptor,
+  matchAndRewrite(upmem::WaitForOp op,
+                  typename upmem::WaitForOp ::Adaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
 
     Type resultType = LLVM::LLVMVoidType::get(rewriter.getContext());
@@ -470,12 +459,11 @@ public:
     // void upmemrt_dpu_launch(struct dpu_set_t *void_dpu_set) {
     auto funcOp = appendOrGetFuncOp(
         rewriter, "upmemrt_dpu_launch", resultType,
-        {getTypeConverter()->convertType(op.getHierarchy().getType())}, op);
+        {getTypeConverter()->convertType(op.getDpuSet().getType())}, op);
 
     if (llvm::failed(funcOp))
       return failure();
-    rewriter.replaceOpWithNewOp<LLVM::CallOp>(op, *funcOp,
-                                              adaptor.getHierarchy());
+    rewriter.replaceOpWithNewOp<LLVM::CallOp>(op, *funcOp, adaptor.getDpuSet());
     return success();
   }
 };
@@ -494,51 +482,16 @@ public:
   }
 };
 
-struct EraseUPMEMModule : public OpConversionPattern<upmem::UPMEMModuleOp> {
-  using OpConversionPattern<upmem::UPMEMModuleOp>::OpConversionPattern;
+struct EraseDpuProgram : public ConvertOpToLLVMPattern<upmem::DpuProgramOp> {
+  using ConvertOpToLLVMPattern<upmem::DpuProgramOp>::ConvertOpToLLVMPattern;
 
   LogicalResult
-  matchAndRewrite(upmem::UPMEMModuleOp op, OpAdaptor,
+  matchAndRewrite(upmem::DpuProgramOp op, OpAdaptor,
                   ConversionPatternRewriter &rewriter) const override {
     rewriter.eraseOp(op);
     return success();
   }
 };
-
-// struct ConvertCnmGatherToUPMEM : public OpConversionPattern<cnm::GatherOp> {
-//   using OpConversionPattern<cnm::GatherOp>::OpConversionPattern;
-
-//   LogicalResult
-//   matchAndRewrite(cnm::GatherOp op, OpAdaptor,
-//                   ConversionPatternRewriter &rewriter) const override {
-
-//     // rewriter.replaceOp(op, results);
-//     return success();
-//   }
-// };
-
-// struct ConvertCnmLaunchToUPMEM : public OpConversionPattern<cnm::LaunchOp> {
-//   using OpConversionPattern<cnm::LaunchOp>::OpConversionPattern;
-
-//   LogicalResult
-//   matchAndRewrite(cnm::LaunchOp op, OpAdaptor,
-//                   ConversionPatternRewriter &rewriter) const override {
-
-//     return success();
-//   }
-// };
-
-// struct ConvertCnmTerminatorToUPMEM
-//     : public OpConversionPattern<cnm::TerminatorOp> {
-//   using OpConversionPattern<cnm::TerminatorOp>::OpConversionPattern;
-
-//   LogicalResult
-//   matchAndRewrite(cnm::TerminatorOp op, OpAdaptor,
-//                   ConversionPatternRewriter &rewriter) const override {
-//     rewriter.eraseOp(op); // gets generated by ConvertCnmLaunchToUPMEM
-//     return success();
-//   }
-// };
 
 } // namespace
 
@@ -559,10 +512,10 @@ void populateUPMEMToLLVMConversionPatterns(LLVMTypeConverter &typeConverter,
   patterns.add<AllocDPUOpToFuncCallLowering>(typeConverter);
   patterns.add<ScatterOpToFuncCallLowering>(typeConverter);
   patterns.add<GatherOpToFuncCallLowering>(typeConverter);
-  patterns.add<LaunchFuncOpToFuncCallLowering>(typeConverter);
+  patterns.add<WaitForOpToFuncCallLowering>(typeConverter);
   patterns.add<FreeDPUsOpToFuncCallLowering>(typeConverter);
+  patterns.add<EraseDpuProgram>(typeConverter);
   patterns.add<BaseDPUMemOffsetOpLowering>(&typeConverter.getContext());
-  patterns.add<EraseUPMEMModule>(&typeConverter.getContext());
 }
 
 struct ConvertUPMEMToLLVMPass

@@ -5,6 +5,7 @@
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
+#include "cinm-mlir/Dialect/UPMEM/IR/UPMEMAttributes.h"
 #include "cinm-mlir/Dialect/UPMEM/IR/UPMEMDialect.h"
 #include "cinm-mlir/Dialect/UPMEM/IR/UPMEMOps.h"
 #include "cinm-mlir/Target/UPMEMCpp/UPMEMCppEmitter.h"
@@ -28,17 +29,24 @@
 #include "llvm/ADT/TypeSwitch.h"
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/FormatVariadic.h"
+#include <cstddef>
 #include <llvm/ADT/SmallVector.h>
+#include <llvm/ADT/StringRef.h>
 #include <llvm/IR/Constant.h>
 #include <llvm/IR/Constants.h>
 #include <llvm/IR/Intrinsics.h>
 #include <llvm/Support/Casting.h>
+#include <llvm/Support/LogicalResult.h>
 #include <llvm/Support/raw_ostream.h>
+#include <mlir/IR/Builders.h>
 #include <mlir/IR/BuiltinAttributes.h>
+#include <mlir/IR/Location.h>
+#include <mlir/IR/OpDefinition.h>
 #include <mlir/IR/SymbolTable.h>
 #include <mlir/IR/Visitors.h>
 #include <mlir/Support/LLVM.h>
 #include <mlir/Support/LogicalResult.h>
+#include <ranges>
 #include <string>
 #include <utility>
 
@@ -140,6 +148,17 @@ struct CppEmitter {
   /// Return the existing or a new name for a Value.
   StringRef getOrCreateName(Value val);
 
+  void appendNameOrInt(OpFoldResult value, std::string &expr) {
+    if (auto val = llvm::dyn_cast_or_null<Value>(value)) {
+      expr.append(getOrCreateName(val));
+    } else {
+      auto attr = llvm::dyn_cast<IntegerAttr>(llvm::cast<Attribute>(value));
+      expr.append(std::to_string(attr.getValue().getSExtValue()));
+    }
+  }
+
+  LogicalResult recordStaticName(Value val, StringRef name);
+
   /// Return the existing or a new label of a Block.
   StringRef getOrCreateName(Block &block);
 
@@ -237,7 +256,7 @@ static LogicalResult printValueOrConstant(CppEmitter &emitter, Value value) {
 }
 
 static LogicalResult printOperation(CppEmitter &emitter,
-                                    upmem::TaskletIDOp idOp) {
+                                    upmem::TaskletDimOp idOp) {
   raw_ostream &os = emitter.ostream();
   if (failed(emitter.emitAssignPrefix(*idOp)))
     return failure();
@@ -257,7 +276,7 @@ static LogicalResult printOperation(CppEmitter &emitter,
 static LogicalResult printOperation(CppEmitter &emitter,
                                     upmem::PrivateWRAMAllocOp wramAllocOp) {
   raw_ostream &os = emitter.ostream();
-  MemRefType res_type = dyn_cast<MemRefType>(wramAllocOp.getResult().getType());
+  MemRefType res_type = wramAllocOp.getBuffer().getType();
   Type elementType = res_type.getElementType();
 
   os << "__dma_aligned ";
@@ -270,7 +289,8 @@ static LogicalResult printOperation(CppEmitter &emitter,
   if (size * elementSize < 8) {
     size = 8 / elementSize;
   }
-  os << " " << emitter.getOrCreateName(wramAllocOp) << "[" << size << "]";
+  os << " " << emitter.getOrCreateName(wramAllocOp.getBuffer()) << "[" << size
+     << "]";
 
   return success();
 }
@@ -315,103 +335,133 @@ static LogicalResult printOperation(CppEmitter &emitter,
   return success();
 }
 
-static LogicalResult printMRAMCopy(CppEmitter &emitter, Location loc,
-                                   upmem::MemcpyDirOp dir, Type elementType,
-                                   Value from, Value to, size_t staticSize,
-                                   Value dynamicSize, size_t offset) {
+static LogicalResult
+printMRAMCopyBytes(CppEmitter &emitter, upmem::TransferDirection dir,
+                   Value from, Value to, size_t staticSizeBytes,
+                   const std::string &fromOffsetExpr,
+                   const std::string &toOffsetExpr, size_t offsetBytes) {
   raw_ostream &os = emitter.ostream();
-  if (dir == upmem::MemcpyDirOp::MRAMToWRAM) {
-    os << "mram_read((const __mram_ptr ";
-  } else if (dir == upmem::MemcpyDirOp::WRAMToMRAM) {
-    os << "mram_write((const ";
+  if (dir == upmem::TransferDirection::MRAMToWRAM) {
+    os << "mram_read((const __mram_ptr char*) ";
+  } else if (dir == upmem::TransferDirection::WRAMToMRAM) {
+    os << "mram_write((const char*) ";
   }
 
-  if (emitter.emitType(loc, elementType).failed()) {
-    return failure();
+  os << "&" << emitter.getOrCreateName(from) << "[" << fromOffsetExpr << " + "
+     << offsetBytes << "], ";
+
+  if (dir == upmem::TransferDirection::MRAMToWRAM) {
+    os << "(char*) ";
+  } else if (dir == upmem::TransferDirection::WRAMToMRAM) {
+    os << "(__mram_ptr char*) ";
   }
 
-  os << "*)" << emitter.getOrCreateName(from);
-  if (offset > 0) {
-    os << " + " << offset;
-  }
-  os << ", ";
+  os << "&" << emitter.getOrCreateName(to) << "[" << toOffsetExpr << " + "
+     << offsetBytes << "], ";
 
-  if (dir == upmem::MemcpyDirOp::MRAMToWRAM) {
-    os << "(";
-  } else if (dir == upmem::MemcpyDirOp::WRAMToMRAM) {
-    os << "(__mram_ptr ";
-  }
+  // todo dyn size
+  os << staticSizeBytes;
 
-  if (emitter.emitType(loc, elementType).failed()) {
-    return failure();
-  }
-
-  os << "*)" << emitter.getOrCreateName(to);
-  if (offset > 0) {
-    os << " + " << offset;
-  }
-  os << ", ";
-
-  if (dynamicSize) {
-    if (printValueOrConstant(emitter, dynamicSize).failed()) {
-      return failure();
-    }
-  } else {
-    os << staticSize;
-  }
-
-  os << " * sizeof(";
-  if (emitter.emitType(loc, elementType).failed()) {
-    return failure();
-  }
-  os << "))";
-
+  os << ")";
   return success();
 }
 
-static LogicalResult printOperation(CppEmitter &emitter,
-                                    upmem::MemcpyOp memcpyOp) {
-  raw_ostream &os = emitter.ostream();
-  auto direction = memcpyOp.getDirection();
-  Value from, to;
-  if (direction == upmem::MemcpyDirOp::MRAMToWRAM) {
-    from = memcpyOp->getOperand(2);
-    to = memcpyOp->getOperand(0);
-  } else if (direction == upmem::MemcpyDirOp::WRAMToMRAM) {
-    from = memcpyOp->getOperand(0);
-    to = memcpyOp->getOperand(2);
+static bool isInMemspace(MemRefType ty, StringRef name) {
+  if (auto strAttr = llvm::dyn_cast_or_null<StringAttr>(ty.getMemorySpace())) {
+    return strAttr.getValue() == name;
   }
+  return false;
+}
 
-  Value size = memcpyOp->getOperand(1);
-  Type elementType =
-      dyn_cast<MemRefType>(memcpyOp.getOperand(0).getType()).getElementType();
-  size_t elementSize = elementType.getIntOrFloatBitWidth() / 8;
-  if (arith::ConstantOp staticSize =
-          dyn_cast<arith::ConstantOp>(size.getDefiningOp())) {
-    size_t remainingElements =
-        llvm::dyn_cast<IntegerAttr>(staticSize.getValueAttr()).getInt();
-    size_t offset = 0;
-    while (remainingElements > 0) {
-      size_t chunkSize = std::min(2048lu / elementSize, remainingElements);
-      if (printMRAMCopy(emitter, memcpyOp.getLoc(), direction, elementType,
-                        from, to, chunkSize, {}, offset)
-              .failed()) {
-        return failure();
-      }
-      offset += chunkSize;
-      remainingElements -= chunkSize;
-      if (remainingElements > 0) {
-        os << ";\n";
-      }
+static LogicalResult getBasePtrOfAlloc(Operation *op, Value &basePtr) {
+  if (auto pwramAlloc = llvm::dyn_cast_or_null<upmem::PrivateWRAMAllocOp>(op)) {
+    basePtr = pwramAlloc.getBuffer();
+    return success();
+  }
+  if (auto staticAlloc = llvm::dyn_cast_or_null<upmem::StaticAllocOp>(op)) {
+    basePtr = staticAlloc.getBuffer();
+    return success();
+  }
+  return op->emitOpError("Expected upmem allocation op");
+}
+
+static LogicalResult getBasePtrAndOffset(CppEmitter &emitter, Value v,
+                                         Value &basePtr,
+                                         std::string &offsetExpr) {
+  offsetExpr.resize(0);
+  offsetExpr.append("0");
+
+  if (auto view =
+          llvm::dyn_cast_or_null<memref::SubViewOp>(v.getDefiningOp())) {
+    if (failed(getBasePtrOfAlloc(view.getSource().getDefiningOp(), basePtr)))
+      return failure();
+    auto offsets = view.getMixedOffsets();
+    if (offsets.empty()) {
+      return success();
     }
+    auto sizes = view.getMixedSizes();
+    for (auto [off, size] : llvm::zip_equal(std::views::reverse(offsets),
+                                            std::views::reverse(sizes))) {
+      offsetExpr.append(" + (");
+      emitter.appendNameOrInt(off, offsetExpr);
+      offsetExpr.append(" * ");
+      emitter.appendNameOrInt(size, offsetExpr);
+      offsetExpr.append(")");
+    }
+
+    return success();
+  }
+  return getBasePtrOfAlloc(v.getDefiningOp(), basePtr);
+}
+
+static LogicalResult printLocalTransfer(CppEmitter &emitter,
+                                        upmem::LocalTransferOp memcpyOp) {
+  raw_ostream &os = emitter.ostream();
+  auto from = memcpyOp.getSource();
+  auto to = memcpyOp.getTarget();
+  upmem::TransferDirection direction;
+  if (isInMemspace(from.getType(), "mram") &&
+      isInMemspace(to.getType(), "wram")) {
+    direction = upmem::TransferDirection::MRAMToWRAM;
+  } else if (isInMemspace(from.getType(), "wram") &&
+             isInMemspace(to.getType(), "mram")) {
+    direction = upmem::TransferDirection::WRAMToMRAM;
   } else {
-    if (printMRAMCopy(emitter, memcpyOp.getLoc(), direction, elementType, from,
-                      to, 0, size, 0)
+    return memcpyOp->emitOpError(
+        "TODO only supports transfers from mram to wram or the reverse");
+  }
+  if (!from.getType().hasStaticShape() || !to.getType().hasStaticShape())
+    return memcpyOp->emitOpError("Unsupported: dynamic count transfer");
+
+  if (from.getType().getNumElements() != to.getType().getNumElements())
+    return memcpyOp->emitOpError(
+        "Copy source and target don't have same number of elements");
+
+  auto remainingBytes = from.getType().getNumElements() *
+                        from.getType().getElementTypeBitWidth() / 8;
+
+  Value fromBase, toBase;
+  std::string fromOffset, toOffset;
+  if (failed(getBasePtrAndOffset(emitter, from, fromBase, fromOffset)) ||
+      failed(getBasePtrAndOffset(emitter, to, toBase, toOffset)))
+    return failure();
+
+  size_t offsetBytes = 0;
+  while (remainingBytes > 0) {
+    size_t chunkSizeBytes = std::min(2048l, remainingBytes);
+    chunkSizeBytes = llvm::alignTo(chunkSizeBytes, 8);
+
+    if (printMRAMCopyBytes(emitter, direction, fromBase, toBase, chunkSizeBytes,
+                           fromOffset, toOffset, offsetBytes)
             .failed()) {
       return failure();
     }
+    offsetBytes += chunkSizeBytes;
+    remainingBytes -= chunkSizeBytes;
+    if (remainingBytes > 0) {
+      os << ";\n";
+    }
   }
-
   return success();
 }
 
@@ -919,43 +969,75 @@ static LogicalResult printOperation(CppEmitter &emitter,
   }
 }
 
-static LogicalResult printOperation(CppEmitter &emitter, ModuleOp moduleOp) {
-  CppEmitter::Scope scope(emitter);
+// static LogicalResult printOperation(CppEmitter &emitter, ModuleOp moduleOp) {
+//   CppEmitter::Scope scope(emitter);
 
-  for (Operation &op : moduleOp) {
-    if (failed(emitter.emitOperation(op, /*trailingSemicolon=*/false)))
-      return failure();
+//   for (Operation &op : moduleOp) {
+//     if (failed(emitter.emitOperation(op, /*trailingSemicolon=*/false)))
+//       return failure();
+//   }
+//   return success();
+// }
+
+static LogicalResult printBufferDecl(CppEmitter &emitter,
+                                     upmem::StaticAllocOp op) {
+  StringRef qualifier;
+  if (op.isWram()) {
+    qualifier = "__dma_aligned";
+  } else {
+    qualifier = op.getNoinit() ? "__mram_noinit" : "__mram";
   }
+  auto bufferType = op.getBuffer().getType();
+
+  if (failed(emitter.emitType(op->getLoc(), bufferType.getElementType())))
+    return failure();
+
+  auto &out = emitter.ostream();
+  out << " " << qualifier << " ";
+  if (auto name = op.getSymNameAttr()) {
+    if (failed(emitter.recordStaticName(op.getBuffer(), name.getValue())))
+      return failure();
+    out << name.getValue();
+  } else {
+    emitter.getOrCreateName(op.getBuffer());
+  }
+  for (auto dim : bufferType.getShape()) {
+    out << '[' << dim << ']';
+  }
+  out << ";\n";
   return success();
 }
 
 static LogicalResult printOperation(CppEmitter &emitter,
-                                    upmem::UPMEMFuncOp functionOp) {
+                                    upmem::DpuProgramOp functionOp) {
   // We need to declare variables at top if the function has multiple blocks.
   if (!emitter.shouldDeclareVariablesAtTop() &&
-      functionOp.getBlocks().size() > 1) {
+      functionOp.getBody().getBlocks().size() > 1) {
     return functionOp.emitOpError(
         "with multiple blocks needs variables declared at top");
   }
+
+  // walk and declare all static buffers
+  WalkResult result =
+      functionOp.walk<WalkOrder::PreOrder>([&](Operation *op) -> WalkResult {
+        LogicalResult result = LogicalResult::success();
+        if (auto alloc = llvm::dyn_cast_or_null<upmem::StaticAllocOp>(op)) {
+          result = printBufferDecl(emitter, alloc);
+        }
+        if (failed(result))
+          return WalkResult::interrupt();
+        return WalkResult::advance();
+      });
+  if (result.wasInterrupted())
+    return failure();
 
   CppEmitter::Scope scope(emitter);
   raw_indented_ostream &os = emitter.ostream();
   // if (failed(emitter.emitTypes(functionOp.getLoc(),
   //  functionOp.getFunctionType().getResults())))
   // return failure();
-  os << "void " << functionOp.getName();
+  os << "void " << functionOp.getName() << "(void) {\n";
 
-  os << "(";
-  if (failed(interleaveCommaWithError(
-          functionOp.getArguments(), os,
-          [&](BlockArgument arg) -> LogicalResult {
-            if (failed(emitter.emitType(functionOp.getLoc(), arg.getType())))
-              return failure();
-            os << " " << emitter.getOrCreateName(arg);
-            return success();
-          })))
-    return failure();
-  os << ") {\n";
   os.indent();
   if (emitter.shouldDeclareVariablesAtTop()) {
     // Declare all variables that hold op results including those from nested
@@ -975,7 +1057,7 @@ static LogicalResult printOperation(CppEmitter &emitter,
       return failure();
   }
 
-  Region::BlockListType &blocks = functionOp.getBlocks();
+  Region::BlockListType &blocks = functionOp.getBody().getBlocks();
   // Create label names for basic blocks.
   for (Block &block : blocks) {
     emitter.getOrCreateName(block);
@@ -1018,24 +1100,22 @@ static LogicalResult printOperation(CppEmitter &emitter,
   return success();
 }
 
-static LogicalResult printOperation(CppEmitter &emitter,
-                                    upmem::ReturnOp returnOp) {
+static LogicalResult printOperation(CppEmitter &emitter, upmem::ReturnOp) {
   emitter.ostream() << "return";
   return success();
 }
 
-static void printCompilationVar(upmem::UPMEMFuncOp &kernel, raw_ostream &os) {
+static void printCompilationVar(upmem::DpuProgramOp &kernel, raw_ostream &os) {
   os << "COMPILE_" << kernel.getSymName();
 }
 
-static LogicalResult printOperation(CppEmitter &emitter,
-                                    upmem::UPMEMModuleOp moduleOp) {
+static LogicalResult printOperation(CppEmitter &emitter, ModuleOp moduleOp) {
   CppEmitter::Scope scope(emitter);
 
-  llvm::SmallVector<upmem::UPMEMFuncOp> kernels;
+  llvm::SmallVector<upmem::DpuProgramOp> kernels;
   for (Operation &op : moduleOp) {
-    if (llvm::isa<upmem::UPMEMFuncOp>(op)) {
-      kernels.push_back(llvm::cast<upmem::UPMEMFuncOp>(op));
+    if (auto prog = llvm::dyn_cast_or_null<upmem::DpuProgramOp>(op)) {
+      kernels.push_back(prog);
     }
   }
 
@@ -1109,6 +1189,13 @@ StringRef CppEmitter::getOrCreateName(Value val) {
   if (!valueMapper.count(val))
     valueMapper.insert(val, formatv("v{0}", ++valueInScopeCount.top()));
   return *valueMapper.begin(val);
+}
+LogicalResult CppEmitter::recordStaticName(Value val, StringRef name) {
+  if (valueMapper.count(val) && valueMapper.lookup(val) != name)
+    return failure();
+  std::string str(name);
+  valueMapper.insert(val, std::move(str));
+  return success();
 }
 
 /// Return the existing or a new label for a Block.
@@ -1333,15 +1420,13 @@ LogicalResult CppEmitter::emitLabel(Block &block) {
 }
 
 LogicalResult CppEmitter::emitOperation(Operation &op, bool trailingSemicolon) {
-  if (dyn_cast<arith::ConstantOp>(op)) {
+  if (isa<arith::ConstantOp>(op) || isa<upmem::StaticAllocOp>(op)) {
     return success();
   }
 
   LogicalResult status =
       llvm::TypeSwitch<Operation *, LogicalResult>(&op)
           // Builtin ops.
-          .Case<upmem::UPMEMModuleOp>(
-              [&](auto op) { return printOperation(*this, op); })
           .Case<ModuleOp>([&](auto op) { return printOperation(*this, op); })
           // CF ops.
           .Case<cf::BranchOp, cf::CondBranchOp>(
@@ -1351,7 +1436,7 @@ LogicalResult CppEmitter::emitOperation(Operation &op, bool trailingSemicolon) {
               [&](auto op) { return printOperation(*this, op); })
           // Func ops.
           .Case<func::CallOp, func::ConstantOp, func::FuncOp,
-                upmem::UPMEMFuncOp, func::ReturnOp, upmem::ReturnOp>(
+                upmem::DpuProgramOp, func::ReturnOp, upmem::ReturnOp>(
               [&](auto op) { return printOperation(*this, op); })
           // SCF ops.
           .Case<scf::ForOp, scf::IfOp, scf::YieldOp>(
@@ -1456,18 +1541,26 @@ LogicalResult CppEmitter::emitOperation(Operation &op, bool trailingSemicolon) {
           .Case<arith::XOrIOp>(
               [&](auto op) { return printOperation(*this, op); })
           .Case<LLVM::ExpOp>([&](auto op) { return printOperation(*this, op); })
-          .Case<upmem::TaskletIDOp>(
+          .Case<upmem::TaskletDimOp>(
               [&](auto op) { return printOperation(*this, op); })
           .Case<upmem::BaseMRAMAddrOp>(
               [&](auto op) { return printOperation(*this, op); })
           .Case<upmem::PrivateWRAMAllocOp>(
               [&](auto op) { return printOperation(*this, op); })
-          .Case<upmem::MemcpyOp>(
-              [&](auto op) { return printOperation(*this, op); })
+          .Case<upmem::LocalTransferOp>(
+              [&](auto op) { return printLocalTransfer(*this, op); })
           .Case<memref::LoadOp>(
               [&](auto op) { return printOperation(*this, op); })
           .Case<memref::StoreOp>(
               [&](auto op) { return printOperation(*this, op); })
+          .Case<memref::SubViewOp>([&](memref::SubViewOp op) -> LogicalResult {
+            if (llvm::all_of(op.getResult().getUsers(), [](auto user) {
+                  return llvm::isa<upmem::LocalTransferOp>(user);
+                })) {
+              return success();
+            }
+            return op->emitOpError("cannot be printed");
+          })
           // [&](auto op) { skipSemicolon = true; return success(); })
           .Default([&](Operation *) {
             return op.emitOpError("unable to find printer for op");
@@ -1566,11 +1659,13 @@ LogicalResult upmem_emitc::UPMEMtranslateToCpp(Operation *op, raw_ostream &os,
   CppEmitter emitter(os, declareVariablesAtTop);
   LogicalResult res = success();
   op->walk<WalkOrder::PreOrder>([&](Operation *child) {
-    if (llvm::isa<upmem::UPMEMModuleOp>(child)) {
-      res = emitter.emitOperation(*child, /*trailingSemicolon=*/false);
-      return WalkResult::interrupt();
-    } else if (llvm::isa<ModuleOp>(child))
+    if (auto mod = llvm::dyn_cast_or_null<ModuleOp>(child)) {
+      if (mod.getSymName() == "dpu_kernels") {
+        res = emitter.emitOperation(*child, /*trailingSemicolon=*/false);
+        return WalkResult::interrupt();
+      }
       return WalkResult::advance();
+    }
     return WalkResult::skip();
   });
   return res;
