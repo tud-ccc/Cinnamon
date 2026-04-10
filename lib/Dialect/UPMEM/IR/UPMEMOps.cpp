@@ -114,6 +114,43 @@ LogicalResult upmem::ScatterOp::verify() {
   return success();
 }
 
+static LogicalResult verifyScatterGatherSymbolUses(
+    Operation *op, Value hierarchy, FlatSymbolRefAttr dpuBufRef,
+    SymbolTableCollection &symbolTable) {
+  auto allocOp = hierarchy.getDefiningOp<upmem::AllocDPUsOp>();
+  if (!allocOp)
+    return success(); // hierarchy is a block argument; can't verify statically
+
+  auto program = symbolTable.lookupNearestSymbolFrom<upmem::DpuProgramOp>(
+      op, allocOp.getDpuProgramRefAttr());
+  if (!program)
+    return op->emitOpError("cannot resolve dpu_program for the hierarchy");
+
+  Operation *bufOp = SymbolTable::lookupSymbolIn(program, dpuBufRef);
+  if (!bufOp)
+    return op->emitOpError("buffer reference ")
+           << dpuBufRef << " does not refer to any symbol in "
+           << allocOp.getDpuProgramRefAttr();
+
+  if (!isa<upmem::StaticAllocOp>(bufOp))
+    return op->emitOpError("buffer reference ")
+           << dpuBufRef << " must refer to a named upmem.static_alloc op";
+
+  return success();
+}
+
+LogicalResult upmem::ScatterOp::verifySymbolUses(
+    SymbolTableCollection &symbolTable) {
+  return verifyScatterGatherSymbolUses(*this, getHierarchy(),
+                                       getDpuBufRefAttr(), symbolTable);
+}
+
+LogicalResult upmem::GatherOp::verifySymbolUses(
+    SymbolTableCollection &symbolTable) {
+  return verifyScatterGatherSymbolUses(*this, getHierarchy(),
+                                       getDpuBufRefAttr(), symbolTable);
+}
+
 ::mlir::LogicalResult upmem::AllocDPUsOp::verifySymbolUses(
     ::mlir::SymbolTableCollection &symbolTable) {
 

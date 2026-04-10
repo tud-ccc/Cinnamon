@@ -239,7 +239,8 @@ def BaseDPUMemOffsetOp: Upmem_Op <"base_dpu_mem_offset", []> {
 
 
 class ScatterGatherLike<string mnemonic, string kw, MemoryEffect effect>
-  : Upmem_Op<mnemonic, [MemoryEffects<[MemWrite]>]> {
+  : Upmem_Op<mnemonic, [MemoryEffects<[MemWrite]>,
+                        DeclareOpInterfaceMethods<SymbolUserOpInterface>]> {
 
   let arguments = (ins Arg<AnyMemRef, "", [effect]>:$hostBuffer,
                   FlatSymbolRefAttr:$dpuBufRef,
