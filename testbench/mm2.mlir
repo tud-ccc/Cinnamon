@@ -2,8 +2,8 @@ module {
 
     func.func @mm_dimm4_nopt(%A: tensor<1x1024xi32>, %B: tensor<1024x128xi32>) -> tensor<1x128xi32> {
 
-        %r0 = cinm.compute attributes { workgroupShape=array<i64: 4, 128> } -> tensor<1x128xi32> {
-            %r = cinm.op.gemm %A, %B: (tensor<1x1024xi32>, tensor<1024x128xi32>) -> tensor<1x128xi32>
+        %r0 = cinm.compute_ -> tensor<1x128xi32> attributes { workgroupShape=array<i64: 4, 128> } {
+            %r = cinm.op.gemm %A, %B : tensor<1x1024xi32>, tensor<1024x128xi32> -> tensor<1x128xi32>
             cinm.yield %r : tensor<1x128xi32>
         }
         func.return %r0 : tensor<1x128xi32>
@@ -11,8 +11,8 @@ module {
 
     func.func @mm_dimm4_opt(%A: tensor<16x64xi32>, %B: tensor<64x128xi32>) -> tensor<16x128xi32> {
 
-        %r0 = cinm.compute attributes { workgroupShape=array<i64: 4, 128> } -> tensor<16x128xi32> {
-            %r = cinm.op.gemm %A, %B: (tensor<16x64xi32>, tensor<64x128xi32>) -> tensor<16x128xi32>
+        %r0 = cinm.compute_ -> tensor<16x128xi32> attributes { workgroupShape=array<i64: 4, 128> } {
+            %r = cinm.op.gemm %A, %B : tensor<16x64xi32>, tensor<64x128xi32> -> tensor<16x128xi32>
             cinm.yield %r : tensor<16x128xi32>
         }
         func.return %r0 : tensor<16x128xi32>
