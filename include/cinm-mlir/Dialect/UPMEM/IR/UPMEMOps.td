@@ -36,37 +36,40 @@ class IndexOp<string mnemonic, list<Trait> traits = []> :
 }
 
 def RankDimOp : IndexOp<"rank_dim"> {
+  let summary = "returns the rank index of the currently executing DPU";
   let description = [{
-    Returns the index of the running rank in the code.
-
-    Example:
+    Returns the zero-based index of the rank that the currently executing DPU
+    belongs to. In the UPMEM hardware model, DPUs are organized into ranks; this
+    op is the outermost of the three index dimensions (rank, dpu, tasklet).
 
     ```mlir
-    %dId = upmem.rank_id
+    %rankId = upmem.rank_dim()
     ```
   }];
 }
 
 
 def DPUDimOp : IndexOp<"dpu_dim"> {
+  let summary = "returns the DPU index within the current rank";
   let description = [{
-    Returns the index of the running dpu in the code.
-
-    Example:
+    Returns the zero-based index of the currently executing DPU within its rank.
+    This is the middle dimension of the three-level (rank, dpu, tasklet) hierarchy.
 
     ```mlir
-    %dId = upmem.dpu_dim
+    %dpuId = upmem.dpu_dim()
     ```
   }];
 }
 
 def TaskletDimOp : IndexOp<"tasklet_dim", [DeclareOpInterfaceMethods<InferIntRangeInterface, ["inferResultRanges"]>]> {
+  let summary = "returns the tasklet index within the current DPU";
   let description = [{
-    Returns the index of the running task in the code.
-    Example:
+    Returns the zero-based index of the currently executing tasklet within its DPU.
+    This is the innermost of the three (rank, dpu, tasklet) index dimensions.
+    The upper bound is the `numTasklets` attribute of the enclosing `upmem.dpu_program`.
 
     ```mlir
-    %tId = upmem.tasklet_dim x
+    %taskletId = upmem.tasklet_dim()
     ```
   }];
 }
@@ -76,20 +79,18 @@ def PrivateWRAMAllocOp : Upmem_Op<"pwram_alloc", [
         DeclareOpInterfaceMethods<OpAsmOpInterface, ["getAsmResultNames"]>
   ]> {
 
-  let summary = "UPMEM WRAM (fast scratchpad) memory allocation operation for a single tasklet.";
+  let summary = "allocate private WRAM scratch space for the current tasklet";
   let description = [{
-    The `upmem.pwram_alloc` operation allocates a wram region that is supposed to be only accessible
-    to a single tasklet. In reality, no constraints is placed on the memory itself, but this space
-    is allocated by an allocator that allocates WRAM for each tasklet seperately and the addresses
-    are assigned automatically. In the original C interface, it is possible to access the other
-    tasklet space, but the goal here is to make it more abstract, simpler, and to not reduce the power
-    as well.
-    Interface-wise, it is similar to the `memref.alloc` op.
+    Allocates a region of WRAM (fast on-chip scratchpad) for use by the current
+    tasklet. Each tasklet gets its own address range: the allocator partitions WRAM
+    across tasklets automatically. No hardware enforcement prevents cross-tasklet
+    access, but the intent is that each tasklet only uses its own allocation.
 
-    Example:
+    This op is the UPMEM analogue of `memref.alloc`, and produces a memref with
+    the `"wram"` memory space.
 
     ```mlir
-    %buffer, %bytes = upmem.pwram_alloc() : memref<64xf32>
+    %buf = upmem.pwram_alloc() : memref<64xf32, "wram">
     ```
   }];
 
@@ -168,15 +169,22 @@ def StaticAllocOp : Upmem_Op<"static_alloc", [Symbol,
 
 def MemcpyOp : Upmem_Op<"memcpy", []> {
 
-  let summary = "UPMEM memcpy operation";
+  let summary = "DMA transfer between WRAM and MRAM within a DPU";
 
   let description = [{
-    The `upmem.memcpy` operation copies the content of one memref to another in a blocking manner.
+    Transfers `size` elements between the DPU's WRAM and MRAM starting at
+    `offset` elements from the base of MRAM. The direction is specified by
+    the `direction` attribute (`mram_to_wram` or `wram_to_mram`).
+    The `buffer` operand is the WRAM buffer; the MRAM address is expressed
+    as an element offset into the DPU's flat MRAM address space.
 
-    Example:
+    This is a blocking operation: it completes before the next op executes.
 
     ```mlir
-    %token = upmem.memcpy [%dep] %dst, %src : memref<?xf32, 1>, memref<?xf32>
+    upmem.memcpy mram_to_wram %wram_buf, %size, %mram_offset
+        : memref<64xi32, "wram">, index, index
+    upmem.memcpy wram_to_mram %wram_buf, %size, %mram_offset
+        : memref<64xi32, "wram">, index, index
     ```
   }];
 
@@ -221,8 +229,15 @@ def LocalTransferOp : Upmem_Op<"local_transfer"> {
 
 
 def BaseMRAMAddrOp: Upmem_Op <"dpu_heap_base_addr", []> {
-  let summary = "Base offset of the MRAM in the DPUs for starting data copy";
+  let summary = "base address of the MRAM heap within the DPU address space";
   let description = [{
+    Returns the address of the first byte of the MRAM heap for the current DPU.
+    Scattered host data lands starting at this address. Use this value as the
+    base pointer when computing MRAM offsets for `upmem.memcpy` transfers.
+
+    ```mlir
+    %base = upmem.dpu_heap_base_addr : index
+    ```
   }];
   let results = (outs Index:$base_offset);
 
@@ -232,8 +247,15 @@ def BaseMRAMAddrOp: Upmem_Op <"dpu_heap_base_addr", []> {
 }
 
 def BaseDPUMemOffsetOp: Upmem_Op <"base_dpu_mem_offset", []> {
-  let summary = "Base offset of the MRAM in the DPUs for starting data copy";
+  let summary = "byte offset from the start of DPU memory to the MRAM region";
   let description = [{
+    Returns the byte offset from the beginning of the DPU memory address space
+    to the MRAM region. This is a compile-time constant that reflects the memory
+    map of the UPMEM hardware.
+
+    ```mlir
+    %offset = upmem.base_dpu_mem_offset : index
+    ```
   }];
   let results = (outs Index:$base_offset);
 
@@ -256,11 +278,17 @@ class ScatterGatherLike<string mnemonic, string kw, MemoryEffect effect>
   let results = (outs);
 
   let description = [{
-    Scatter or gather a host buffer onto a DPU array.
-    The buffer ref is the simple name of a buffer declared with upmem.static_alloc in
-    the body of the upmem.dpu_program of the workgroup.
-    
+    Transfers data between a host buffer and the MRAM buffers of a DPU array.
 
+    `dpuBufRef` is the symbol name of a `upmem.static_alloc` declared inside the
+    body of the `upmem.dpu_program` loaded by the `hierarchy`. The verifier checks
+    that the symbol exists and refers to a `upmem.static_alloc`.
+
+    `transferCount` is the number of elements (not bytes) to copy per DPU.
+
+    `scatterMap` is an affine map `(rank, dpu) -> (i, ...)` that computes the
+    starting index in `hostBuffer` for each DPU. It must have exactly two
+    dimensions (rank and dpu) and as many results as the rank of `hostBuffer`.
   }];
 
   let extraClassDeclaration = [{
@@ -281,16 +309,39 @@ class ScatterGatherLike<string mnemonic, string kw, MemoryEffect effect>
 }
 
 def ScatterOp: ScatterGatherLike<"scatter", "onto", MemRead> {
-  let summary = "scatter data to dpus";
+  let summary = "copy slices of a host buffer into the MRAM of each DPU";
   let description = [{
+    For each DPU in `hierarchy`, copies `transferCount` elements from `hostBuffer`
+    into the DPU's MRAM buffer named `dpuBufRef`. The slice of `hostBuffer`
+    assigned to a given DPU is determined by evaluating `scatterMap(rank, dpu)`,
+    which yields the starting multi-dimensional index into `hostBuffer`.
+
+    ```mlir
+    // scatter 1024 elements into @input_buf on each DPU;
+    // DPU (r, d) reads from hostBuf[d, 0]
+    upmem.scatter %hostBuf[1024, affine_map<(r, d) -> (d, 0)>] onto @input_buf of %dpus
+        : memref<128x1024xi32> onto !upmem.hierarchy<1x128x16>
+    ```
   }];
 
 }
 
 
 def GatherOp: ScatterGatherLike<"gather", "from", MemWrite> {
-  let summary = "Gather data from dpus into a buffer on the host";
+  let summary = "collect MRAM results from each DPU into a host buffer";
   let description = [{
+    For each DPU in `hierarchy`, copies `transferCount` elements from the DPU's
+    MRAM buffer named `dpuBufRef` into `hostBuffer`. The destination slice in
+    `hostBuffer` for a given DPU is determined by evaluating `scatterMap(rank, dpu)`.
+
+    This is the inverse of `upmem.scatter` and is typically used to retrieve
+    computation results after `upmem.wait_for` completes.
+
+    ```mlir
+    // gather 128 result elements per DPU back into hostBuf[d, 0]
+    upmem.gather %hostBuf[128, affine_map<(r, d) -> (d, 0)>] from @output_buf of %dpus
+        : memref<128x128xi32> from !upmem.hierarchy<1x128x16>
+    ```
   }];
 
 }
@@ -305,8 +356,30 @@ def DpuProgramOp : Upmem_Op<"dpu_program",
   AffineScope,
   OpAsmOpInterface
 ]> {
-  let summary = "Represents the final DPU program";
+  let summary = "the DPU-side kernel program";
   let description = [{
+    Defines the program that runs on each DPU. The body region contains the
+    computation and may use `upmem.static_alloc`, `upmem.pwram_alloc`,
+    `upmem.local_transfer`, and standard arithmetic/control-flow ops.
+
+    `numTasklets` specifies how many tasklets execute the program concurrently on
+    each DPU. Each tasklet can identify itself via `upmem.tasklet_dim()`.
+
+    `upmem.dpu_program` is a `SymbolTable`: named `upmem.static_alloc` ops inside
+    its body are registered as symbols and can be referenced by name from
+    `upmem.scatter` and `upmem.gather` ops on the host side.
+
+    The body must be terminated by `upmem.return`.
+
+    ```mlir
+    upmem.dpu_program @my_kernel() tasklets(16) {
+      %input  = static_alloc @input(mram)  : memref<1024xi32, "mram">
+      %output = static_alloc @output(mram) : memref<1xi32, "mram">
+      %tmp    = pwram_alloc() : memref<1024xi32, "wram">
+      // ... computation ...
+      return
+    }
+    ```
   }];
 
   let arguments = (ins SymbolNameAttr:$sym_name, I32Attr:$numTasklets);
@@ -343,8 +416,14 @@ def AllocDPUsOp: Upmem_Op <"alloc_dpus",  [ DeclareOpInterfaceMethods<SymbolUser
 
 
 def FreeDPUsOp: Upmem_Op <"free_dpus", []>{
-  let summary = "UPMEM free dpus";
+  let summary = "release a DPU allocation back to the runtime";
   let description = [{
+    Releases the DPU set acquired by the corresponding `upmem.alloc_dpus`.
+    After this point the hierarchy value must not be used.
+
+    ```mlir
+    upmem.free_dpus %dpus : !upmem.hierarchy<1x64x16>
+    ```
   }];
   let arguments = (ins DeviceHierarchyType:$hierarchy);
 
@@ -354,9 +433,15 @@ def FreeDPUsOp: Upmem_Op <"free_dpus", []>{
 }
 
 def WaitForOp : Upmem_Op<"wait_for", []> {
-  let summary = "Run a program on a dpu set synchronously";
+  let summary = "launch DPU execution and block until all DPUs complete";
   let description = [{
+    Triggers execution of the DPU program previously loaded by `upmem.alloc_dpus`
+    on all DPUs in the hierarchy. Blocks the host until every DPU finishes.
+    After this op, the results can be retrieved with `upmem.gather`.
 
+    ```mlir
+    upmem.wait_for %dpus : !upmem.hierarchy<1x64x16>
+    ```
   }];
 
   let arguments = (ins DeviceHierarchyType:$dpuSet);
@@ -368,8 +453,17 @@ def WaitForOp : Upmem_Op<"wait_for", []> {
 def ReturnOp : Upmem_Op<"return", [ParentOneOf<["DpuProgramOp"]>, Pure, Terminator]>,
     Arguments<(ins)>, Results<(outs)>
       {
-  let summary = "Terminator for UPMEM functions.";
+  let summary = "terminator for a upmem.dpu_program body";
   let description = [{
+    Terminates the body region of a `upmem.dpu_program`. Every control-flow
+    path through the program body must end with this op.
+
+    ```mlir
+    upmem.dpu_program @kernel() tasklets(1) {
+      // ...
+      return
+    }
+    ```
   }];
   let assemblyFormat = "attr-dict";
 }
