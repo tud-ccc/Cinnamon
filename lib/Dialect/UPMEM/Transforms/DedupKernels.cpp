@@ -6,10 +6,15 @@
 //
 //===----------------------------------------------------------------------===//
 
-#include "mlir/Dialect/Func/Transforms/Passes.h"
 #include <cinm-mlir/Dialect/UPMEM/IR/UPMEMOps.h>
+#include <cinm-mlir/Dialect/UPMEM/Transforms/Passes.h>
+#include <cinm-mlir/Dialect/UPMEM/Transforms/Utils.h>
+#include <llvm/ADT/ArrayRef.h>
 #include <llvm/ADT/SmallVector.h>
 #include <llvm/ADT/StringRef.h>
+#include <llvm/Support/Casting.h>
+#include <llvm/Support/LogicalResult.h>
+#include <mlir/IR/Attributes.h>
 #include <mlir/IR/Builders.h>
 #include <mlir/IR/BuiltinAttributes.h>
 #include <mlir/IR/SymbolTable.h>
@@ -22,16 +27,16 @@ namespace mlir {
 // Define a notion of function equivalence that allows for reuse. Ignore the
 // symbol name for this purpose.
 struct DuplicateUPMEMFuncOpEquivalenceInfo
-    : public llvm::DenseMapInfo<upmem::UPMEMFuncOp> {
+    : public llvm::DenseMapInfo<upmem::DpuProgramOp> {
 
-  static unsigned getHashValue(const upmem::UPMEMFuncOp cFunc) {
+  static unsigned getHashValue(const upmem::DpuProgramOp cFunc) {
     if (!cFunc) {
-      return DenseMapInfo<upmem::UPMEMFuncOp>::getHashValue(cFunc);
+      return DenseMapInfo<upmem::DpuProgramOp>::getHashValue(cFunc);
     }
 
     // Aggregate attributes, ignoring the symbol name.
     llvm::hash_code hash = {};
-    upmem::UPMEMFuncOp func = const_cast<upmem::UPMEMFuncOp &>(cFunc);
+    upmem::DpuProgramOp func = const_cast<upmem::DpuProgramOp &>(cFunc);
     StringAttr symNameAttrName = func.getSymNameAttrName();
     for (NamedAttribute namedAttr : cFunc->getAttrs()) {
       StringAttr attrName = namedAttr.getName();
@@ -52,7 +57,7 @@ struct DuplicateUPMEMFuncOpEquivalenceInfo
     return hash;
   }
 
-  static bool isEqual(upmem::UPMEMFuncOp lhs, upmem::UPMEMFuncOp rhs) {
+  static bool isEqual(upmem::DpuProgramOp lhs, upmem::DpuProgramOp rhs) {
     if (lhs == rhs)
       return true;
     if (lhs == getTombstoneKey() || lhs == getEmptyKey() ||
@@ -89,11 +94,11 @@ struct UPMEMDedupKernelsPass
     auto module = getOperation();
 
     // Find unique representant per equivalent func ops.
-    DenseSet<upmem::UPMEMFuncOp, DuplicateUPMEMFuncOpEquivalenceInfo>
+    DenseSet<upmem::DpuProgramOp, DuplicateUPMEMFuncOpEquivalenceInfo>
         uniqueUPMEMFuncOps;
-    DenseMap<StringAttr, upmem::UPMEMFuncOp> getRepresentant;
-    DenseSet<upmem::UPMEMFuncOp> toBeErased;
-    module.walk([&](upmem::UPMEMFuncOp f) {
+    DenseMap<StringAttr, upmem::DpuProgramOp> getRepresentant;
+    DenseSet<upmem::DpuProgramOp> toBeErased;
+    module.walk([&](upmem::DpuProgramOp f) {
       auto [repr, inserted] = uniqueUPMEMFuncOps.insert(f);
       getRepresentant[f.getSymNameAttr()] = *repr;
       if (!inserted) {
@@ -103,13 +108,20 @@ struct UPMEMDedupKernelsPass
 
     // Update call ops to call unique func op representants.
     llvm::SmallVector<StringRef, 2> flatRef;
-    module->getParentOp()->walk([&](upmem::LaunchFuncOp callOp) {
-      if (callOp.getKernelModuleName() != module.getSymName())
+    module->walk([&](upmem::AllocDPUsOp allocDpus) {
+      auto symtable = SymbolTable::getNearestSymbolTable(allocDpus);
+      auto prog =
+          SymbolTable(symtable).lookupNearestSymbolFrom<upmem::DpuProgramOp>(
+              allocDpus, allocDpus.getDpuProgramRef());
+      if (!prog)
         return;
-      upmem::UPMEMFuncOp callee = getRepresentant[callOp.getKernelName()];
-      auto leaf = SymbolRefAttr::get(callee);
-      callOp.setKernelAttr(
-          SymbolRefAttr::get(callOp.getKernelModuleName(), {leaf}));
+      upmem::DpuProgramOp callee = getRepresentant[prog.getSymNameAttr()];
+      if (!callee)
+        return;
+      auto ref = getSymbolPath(symtable, callee);
+      if (llvm::succeeded(ref)) {
+        allocDpus.setDpuProgramRefAttr(*ref);
+      }
     });
 
     // Erase redundant func ops.

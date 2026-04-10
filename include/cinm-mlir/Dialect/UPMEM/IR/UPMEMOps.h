@@ -4,7 +4,6 @@
 
 #pragma once
 
-#include "cinm-mlir/Dialect/UPMEM/IR/AsyncOpInterface.h"  
 #include "cinm-mlir/Dialect/UPMEM/IR/UPMEMBase.h"
 #include "cinm-mlir/Dialect/UPMEM/IR/UPMEMTypes.h"
 
@@ -24,20 +23,11 @@
 #include "mlir/Interfaces/SideEffectInterfaces.h"
 #include "llvm/ADT/STLExtras.h"
 
-namespace mlir {
-namespace upmem {
-
-struct KernelDim {
-  Value x;
-};
-
-// Adds a `upmem.async.token` to the front of the argument list.
-void addAsyncDependency(Operation *op, Value token);
-
-} // namespace upmem
-} // namespace mlir
-
 //===- Generated includes -------------------------------------------------===//
+
+namespace mlir::upmem::detail {
+  MemRefType flatMemRefType(Type structured);
+}
 
 #define GET_OP_CLASSES
 #include "cinm-mlir/Dialect/UPMEM/IR/UPMEMOps.h.inc"
