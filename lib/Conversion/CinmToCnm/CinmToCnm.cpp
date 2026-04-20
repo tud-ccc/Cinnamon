@@ -10,6 +10,7 @@
 #include "cinm-mlir/Dialect/Cnm/IR/CnmTypes.h"
 #include "cinm-mlir/Utils/CinmUtils.h"
 
+#include <cstdint>
 #include <llvm/ADT/ArrayRef.h>
 #include <llvm/ADT/STLExtras.h>
 #include <llvm/ADT/Sequence.h>
@@ -103,20 +104,19 @@ computeShapeOfTensors(Location loc, llvm::ArrayRef<int64_t> shape,
   }
 
   // Now we support 3 cases: either
-  // 0. scattering a single element
-  if (scatterScalar) {
-    const size_t numDims = wgShape.size() + reductionDims.size();
-    scatterMap = AffineMap::get(
-        numDims, 0,
-        SmallVector<AffineExpr>(1, getAffineConstantExpr(0, wgTy.getContext())),
-        wgTy.getContext());
+  // 0. scattering a single element, or broadcasting
+  if (scatterScalar || numReductionElts == numBufItems) {
+    scatterMap = AffineMap::get(wgShape.size(), 0, {}, // empty means broadcast
+                                // SmallVector<AffineExpr>(1,
+                                // getAffineConstantExpr(0, wgTy.getContext())),
+                                wgTy.getContext());
     return success();
   }
 
   // 1. tensor has shape of WG
   if (parallelDims == wgShape) {
-    scatterMap = AffineMap::getMultiDimIdentityMap(
-        wgShape.size() + reductionDims.size(), wgTy.getContext());
+    scatterMap =
+        AffineMap::getMultiDimIdentityMap(wgShape.size(), wgTy.getContext());
     return success();
   }
 
@@ -190,7 +190,7 @@ computeShapeOfTensors(Location loc, llvm::ArrayRef<int64_t> shape,
   //    where ki ranges from 0 to k
   //
 
-  int64_t k = numBufItems / numWgItems;
+  int64_t k = numParallelElts / numWgItems;
   if (k != 1) {
     if (k * numReductionElts <= maxBlockSize) {
       // In this branch we handle the case where there are no reduction
@@ -336,7 +336,7 @@ cnm::LaunchOp createLaunchOp(
 LogicalResult convertCinmToCnm(
     ImplicitLocOpBuilder builder, Operation *operation,
     TypedValue<cnm::WorkgroupType> workgroup, cinm::ComputeOp computeOp,
-    ArrayRef<int64_t> reductionDimensionsSorted, ValueRange operands,
+    ArrayRef<ArrayRef<int64_t>> reductionDimensionsSorted, ValueRange operands,
     ValueRange outputInitializers, ValueRange results,
     llvm::SmallVectorImpl<Value> &resultValues,
     function_ref<void(ImplicitLocOpBuilder &, ValueRange, ValueRange)>
@@ -354,10 +354,9 @@ LogicalResult convertCinmToCnm(
 
   builder.setInsertionPointAfter(operation);
 
-  for (auto input : operands) {
+  for (auto [input, redDims] : llvm::zip(operands, reductionDimensionsSorted)) {
     if (convertInputIntoAlloc(input, workgroup, wgTy, maxBlockSizeBytes,
-                              reductionDimensionsSorted,
-                              gatherMaps.emplace_back(),
+                              redDims, gatherMaps.emplace_back(),
                               launchInputs.emplace_back(), builder)
             .failed()) {
       return failure();
@@ -416,7 +415,7 @@ struct ConvertLinalgReduceIntoLaunch
 
     llvm::SmallVector<Value, 1> newResults;
     if (convertCinmToCnm(
-            builder, op, workgroup.getResult(), computeOp, op.getDimensions(),
+            builder, op, workgroup.getResult(), computeOp, {op.getDimensions()},
             adaptor.getInputs(), adaptor.getInits(), op->getResults(),
             newResults,
             [&](ImplicitLocOpBuilder &builder, ValueRange memrefInputs,
@@ -500,9 +499,12 @@ struct ConvertElementwiseOpToCnm : OpConversionPattern<cinm::ElementwiseOp> {
         dyn_cast_or_null<ShapedType>(op.getLhs().getType()).getElementType();
     bool isScalarOp = op.getRhs() && op.getRhs().getType() == elementType;
 
+    SmallVector<ArrayRef<int64_t>> reductionDims(adaptor.getOperands().size(),
+                                                 ArrayRef<int64_t>{});
+
     SmallVector<Value, 1> newResults;
     const auto conversionResult = convertCinmToCnm(
-        builder, op, workgroup.getResult(), computeBlock, {},
+        builder, op, workgroup.getResult(), computeBlock, reductionDims,
         adaptor.getOperands(), ValueRange{outputInit}, op->getResults(),
         newResults,
         [&](ImplicitLocOpBuilder &builder, ValueRange inputs,
@@ -844,13 +846,25 @@ struct ConvertCinmGemvToCnm : public OpConversionPattern<cinm::GemvOp> {
     }
 
     llvm::SmallVector<Value, 1> newResults;
-    if (convertCinmToCnm(builder, op, workgroup.getResult(), computeBlock, {1},
-                         adaptor.getOperands(), ValueRange{outputInit},
-                         op->getResults(), newResults,
-                         [&](ImplicitLocOpBuilder &builder, ValueRange inputs,
-                             ValueRange outputs) {
-                           linalg::MatvecOp::create(builder, inputs, outputs);
-                         })
+    if (convertCinmToCnm(
+            builder, op, workgroup.getResult(), computeBlock, {{1}, {0}},
+            adaptor.getOperands(), ValueRange{outputInit}, op->getResults(),
+            newResults,
+            [&](ImplicitLocOpBuilder &builder, ValueRange inputs,
+                ValueRange outputs) {
+              // k -> k
+              // k -> k
+              // k -> ()
+              auto id =
+                  AffineMap::getMinorIdentityMap(1, 1, builder.getContext());
+              auto indexingMaps = builder.getAffineMapArrayAttr({
+                  id,
+                  id,
+                  AffineMap::getMinorIdentityMap(1, 0, builder.getContext()),
+              });
+              linalg::ContractOp::create(builder, inputs, outputs,
+                                         indexingMaps);
+            })
             .failed()) {
       return failure();
     }
@@ -885,9 +899,9 @@ struct ConvertCinmReduceToCnm : public OpConversionPattern<cinm::ReduceOp> {
 
     llvm::SmallVector<Value, 1> newResults;
     if (convertCinmToCnm(
-            builder, op, workgroup.getResult(), computeBlock, {1},
-            adaptor.getOperands(), ValueRange{outputInit}, op->getResults(),
-            newResults,
+            builder, op, workgroup.getResult(), computeBlock,
+            {op.getDimensions()}, adaptor.getOperands(), ValueRange{outputInit},
+            op->getResults(), newResults,
             [&](ImplicitLocOpBuilder &builder, ValueRange inputs,
                 ValueRange outputs) {
               linalg::ReduceOp::create(
