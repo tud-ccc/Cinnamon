@@ -27,8 +27,8 @@ $(IR_PREFIX).2.cnm.mlir: $(IR_PREFIX).1.tiled.mlir
 #					--promote-buffers-to-stack --fold-memref-alias-ops --canonicalize --affine-loop-fusion --sroa --canonicalize --affine-scalrep --loop-invariant-code-motion --affine-loop-invariant-code-motion --sroa --affine-scalrep \
 
 $(IR_PREFIX).3.cnm.affine.mlir: $(IR_PREFIX).2.cnm.mlir
-	$(CINM_OPT) $< --lower-affine --one-shot-bufferize='bufferize-function-boundaries function-boundary-type-conversion=identity-layout-map'  \
-					--canonicalize --buffer-results-to-out-params=hoist-static-allocs \
+	$(CINM_OPT) $< --eliminate-empty-tensors --cse --one-shot-bufferize='bufferize-function-boundaries function-boundary-type-conversion=identity-layout-map'  \
+					--cse --canonicalize --buffer-results-to-out-params=hoist-static-allocs \
 				  --convert-linalg-to-affine-loops --buffer-loop-hoisting --buffer-hoisting --canonicalize --cse > $@
 
 $(IR_PREFIX).4.cnm.after_opts.mlir: $(IR_PREFIX).3.cnm.affine.mlir
