@@ -800,14 +800,18 @@ struct ConvertCinmGemmToCnm : public OpConversionPattern<cinm::GemmOp> {
         });
 
     Value outbuf;
-    if (op.getBias()) {
-      outbuf = op.getBias();
-    } else if (op.getResult()) {
+    if (op.getOut()) {
+      // memref version
+      outbuf = op.getOut();
+    } else {
+      // tensor version
+      assert(
+          op.getResult() &&
+          "cinm.gemm needs either an out buffer (memref) or a result (tensor)");
       outbuf = tensor::EmptyOp::create(builder, op.getResult().getType(),
                                        ValueRange{});
-    } else {
-      outbuf = op.getOut();
     }
+
     auto gather = cnm::GatherOp::create(builder, bufferC, workgroup,
                                         scatterGatherC, outbuf);
 
