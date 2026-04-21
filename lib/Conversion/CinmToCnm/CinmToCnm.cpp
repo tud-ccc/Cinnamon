@@ -106,10 +106,11 @@ computeShapeOfTensors(Location loc, llvm::ArrayRef<int64_t> shape,
   // Now we support 3 cases: either
   // 0. scattering a single element, or broadcasting
   if (scatterScalar || numReductionElts == numBufItems) {
-    scatterMap = AffineMap::get(wgShape.size(), 0, {}, // empty means broadcast
-                                // SmallVector<AffineExpr>(1,
-                                // getAffineConstantExpr(0, wgTy.getContext())),
-                                wgTy.getContext());
+    scatterMap = AffineMap::get(
+        wgShape.size(), 0, {}, // empty means broadcast
+                               // SmallVector<AffineExpr>(1,
+                               // getAffineConstantExpr(0, wgTy.getContext())),
+        wgTy.getContext());
     return success();
   }
 
