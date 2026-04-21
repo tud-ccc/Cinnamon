@@ -54,8 +54,13 @@ cinm-opt *ARGS: (doNinja "cinm-opt")
      {{source_directory()}}/{{build_dir}}/bin/cinm-opt {{ARGS}}
     fi
 
+buildLlvm:
+  #!/bin/sh
+  cd third-party/llvm
+  just build
+
 # run build --first build needs cmake though
-build: doNinja
+build: buildLlvm doNinja
 
 cleanBuild:
     rm -rf {{build_dir}}

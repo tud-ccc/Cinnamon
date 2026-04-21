@@ -17,6 +17,7 @@
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Bufferization/IR/AllocationOpInterface.h"
 #include "mlir/Dialect/Bufferization/IR/BufferizableOpInterface.h"
+#include "mlir/Dialect/Bufferization/IR/DstBufferizableOpInterfaceImpl.h"
 #include "mlir/Dialect/Bufferization/IR/Bufferization.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
@@ -73,21 +74,13 @@ struct ScatterOpInterface
 };
 
 struct GatherOpInterface
-    : public BufferizableOpInterface::ExternalModel<GatherOpInterface,
+    : public DstBufferizableOpInterfaceExternalModel<GatherOpInterface,
                                                     cnm::GatherOp> {
+
   bool bufferizesToMemoryRead(Operation *, OpOperand &,
                               const AnalysisState &) const {
+    // Outputs of gather is not read, just written to.
     return false;
-  }
-
-  bool bufferizesToMemoryWrite(Operation *, OpOperand &,
-                               const AnalysisState &) const {
-    return true;
-  }
-
-  AliasingValueList getAliasingValues(Operation *op, OpOperand &,
-                                      const AnalysisState &) const {
-    return {{op->getOpResult(0), BufferRelation::Equivalent}};
   }
 
   LogicalResult bufferize(Operation *op, RewriterBase &rewriter,
