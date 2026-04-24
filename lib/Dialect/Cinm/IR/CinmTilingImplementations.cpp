@@ -24,7 +24,9 @@
 #include <mlir/IR/Diagnostics.h>
 #include <mlir/IR/ImplicitLocOpBuilder.h>
 #include <mlir/IR/OpDefinition.h>
+#include <mlir/IR/Value.h>
 #include <mlir/IR/ValueRange.h>
+#include <mlir/Interfaces/TilingInterface.h>
 #include <tuple>
 
 using namespace mlir;
@@ -107,18 +109,78 @@ static constexpr std::array<int64_t, 3> noStaticOffsets3{
     ShapedType::kDynamic, ShapedType::kDynamic, ShapedType::kDynamic};
 static constexpr std::array<int64_t, 3> unitStrides3{1, 1, 1};
 
+static Value extractSliceND(OpBuilder &builder, Location loc,
+                            TypedValue<ShapedType> tensorOrMemref,
+                            ArrayRef<int64_t> sizes, ValueRange offsets) {
+  assert(offsets.size() == sizes.size());
+
+  const ShapedType sliceTy = tensorOrMemref.getType().clone(sizes);
+  if (llvm::isa<RankedTensorType>(tensorOrMemref.getType())) {
+    llvm::SmallVector<int64_t> unitStrides(offsets.size(), 1);
+    llvm::SmallVector<int64_t> noStaticOffsets(offsets.size(),
+                                               ShapedType::kDynamic);
+    return tensor::ExtractSliceOp::create(
+        builder, loc, sliceTy, tensorOrMemref, offsets, ValueRange{},
+        ValueRange{}, noStaticOffsets, sliceTy.getShape(), unitStrides);
+  } else if (llvm::isa<MemRefType>(tensorOrMemref.getType())) {
+    llvm::SmallVector<OpFoldResult> offsetsFoldRes(offsets.begin(),
+                                                   offsets.end());
+    auto one = builder.getI64IntegerAttr(1);
+    llvm::SmallVector<OpFoldResult> stridesFoldRes(offsets.size(), one);
+    llvm::SmallVector<OpFoldResult> sizesFoldRes;
+    sizesFoldRes.reserve(offsets.size());
+    for (auto i : sizes) {
+      auto attr = builder.getI64IntegerAttr(i);
+      sizesFoldRes.push_back(attr);
+    }
+
+    return memref::SubViewOp::create(builder, loc, tensorOrMemref,
+                                     offsetsFoldRes, sizesFoldRes,
+                                     stridesFoldRes);
+  }
+  assert(false && "type not handled");
+}
+static Value extractSlice1D(OpBuilder &builder, Location loc,
+                            TypedValue<ShapedType> tensorOrMemref, int64_t size,
+                            Value offset) {
+  return extractSliceND(builder, loc, tensorOrMemref, {size}, {offset});
+}
+
+static Value extractSlice(OpBuilder &builder, Location loc,
+                          TypedValue<ShapedType> tensorOrMemref, int64_t a,
+                          int64_t b, Value ia, Value ib) {
+  return extractSliceND(builder, loc, tensorOrMemref, {a, b}, {ia, ib});
+}
 static FailureOr<std::tuple<int64_t, int64_t, int64_t>>
 getGemmTilesFromAttributes(const int64_t M, const int64_t N, const int64_t K,
                            const Type eltType,
                            const mlir::cinm::TilingParameters &params,
                            Operation *errorLoc) {
 
-  int64_t p0 = 0, p1 = 0;
-  if (auto providedPar = params.getProvidedParallelTiles()) {
-    std::tie(p0, p1) = *providedPar;
+  int64_t p0 = 0, p1 = 0, r = 0;
+  if (auto provided = params.getTileSizes()) {
+    if (provided->size() > 3 || provided->size() < 2) {
+      return errorLoc->emitError("Provided M, N, K tile sizes (")
+             << *provided << ") are invalid";
+    }
+    p0 = (*provided)[0];
+    p1 = (*provided)[1];
     if (p0 <= 0 || p1 <= 0)
       return errorLoc->emitError("Provided M, N tile sizes (")
              << p0 << ", " << p1 << ") are invalid";
+    if (provided->size() == 3) {
+      r = (*provided)[2];
+      if (r <= 0 || r > K) {
+        return errorLoc->emitError("Provided K tile size (")
+               << r << ") incompatible with dim size K=" << K;
+      }
+      const int64_t maxElems = params.maxNumElementsOfType(eltType);
+      const int64_t maxSizePerBuffer = (maxElems - 1) / 2;
+      if (r > maxSizePerBuffer)
+        return errorLoc->emitError("Provided K tile size (")
+               << r << ") incompatible with max buffer size of "
+               << maxSizePerBuffer << " " << eltType;
+    }
   } else {
     auto parallelTileSizes = params.parallelClusterSize(M, N);
     if (!parallelTileSizes)
@@ -127,23 +189,7 @@ getGemmTilesFromAttributes(const int64_t M, const int64_t N, const int64_t K,
              << params.workgroupShape
              << ", provide tileSizes attribute [tM,tN,tK].";
     std::tie(p0, p1) = *parallelTileSizes;
-  }
 
-  int64_t r = 0;
-  if (auto providedR = params.getProvidedReductionTile()) {
-    r = *providedR;
-    if (r <= 0 || r > K) {
-      return errorLoc->emitError("Provided K tile size (")
-             << r << ") incompatible with dim size K=" << K;
-    }
-
-    const int64_t maxElems = params.maxNumElementsOfType(eltType);
-    const int64_t maxSizePerBuffer = (maxElems - 1) / 2;
-    if (r > maxSizePerBuffer)
-      return errorLoc->emitError("Provided K tile size (")
-             << r << ") incompatible with max buffer size of "
-             << maxSizePerBuffer << " " << eltType;
-  } else {
     // Size of the tile on the reduction dimension.
     r = params.reduceClusterSize(2, K, eltType,
                                  /*extraElements=*/1);
@@ -247,18 +293,41 @@ getBatchGemvTilesFromAttributes(const ShapedType &lhsType,
   return std::make_tuple(bTile, mTile, rTile);
 }
 
+static FailureOr<int64_t>
+getElementwiseTiles(ElementwiseOp op,
+                    const mlir::cinm::TilingParameters &params,
+                    Operation *errorLoc) {
+
+  if (auto provided = params.getTileSizes()) {
+    if (provided->size() != 1) {
+      return errorLoc->emitError("Need a single tiling factor, got [")
+             << *provided << "] for " << op;
+    }
+    auto numElts = op.getLhs().getType().getNumElements();
+    auto factor = (*provided)[0];
+    if (numElts % factor != 0)
+      return errorLoc->emitError("Imperfect tiling factor ")
+             << factor << " for (" << numElts << ") ";
+    return factor;
+  }
+  return errorLoc->emitError("TODO Determining tiling factors automatically is "
+                             "not supported yet for ")
+         << op;
+}
 TilingResult2 ElementwiseOp::convertToTiledOps(OpBuilder &builder0,
                                                TilingParameters params) {
   ImplicitLocOpBuilder builder(getLoc(), builder0);
-  const bool isUnaryOp = !getRhs();
 
   TypedValue<ShapedType> lhs = getLhs();
   TypedValue<ShapedType> rhs = getRhs();
+  const bool isUnaryOp = !rhs;
 
   ShapedType tensorTy = cast<ShapedType>(lhs.getType());
   auto shape = tensorTy.getShape();
   const ShapedType originalType = tensorTy;
   Value originalShapeValue;
+
+  TypedValue<ShapedType> memrefOut = llvm::dyn_cast_or_null<TypedValue<ShapedType>>(getOut());
   if (shape.size() > 1) {
     originalShapeValue = arith::ConstantOp::create(
         builder,
@@ -271,48 +340,59 @@ TilingResult2 ElementwiseOp::convertToTiledOps(OpBuilder &builder0,
       rhs = cinm::reshapeStatic(builder, builder.getLoc(), rhs,
                                 {tensorTy.getNumElements()});
     }
+    if (memrefOut) {
+      memrefOut = cinm::reshapeStatic(builder, builder.getLoc(), memrefOut,
+                                      {tensorTy.getNumElements()});
+    }
     tensorTy = lhs.getType();
   }
 
   int64_t tileSize = 0;
-  if (auto provided = params.getTileSizes()) {
-    if (!provided->empty())
-      tileSize = (*provided)[0];
-  }
-  if (tileSize <= 0) {
-    emitError() << "elementwise tiling requires a positive tile size in "
-                   "compute.tileSizes";
+  auto tileSizes = getElementwiseTiles(*this, params, *this);
+  if (llvm::failed(tileSizes)) {
     return failure();
   }
+  tileSize = *tileSizes;
 
   const int64_t numElements = tensorTy.getNumElements();
   tileSize = std::max<int64_t>(1, std::min<int64_t>(tileSize, numElements));
 
-  Value resultInit = tensor::EmptyOp::create(builder, tensorTy, ValueRange{});
+  ValueRange resultInit{};
+  if (getResult()) {
+    resultInit =
+        tensor::EmptyOp::create(builder, tensorTy, ValueRange{})->getResults();
+  } else {
+    assert(memrefOut);
+    // todo poison or reset values?
+  }
 
   SmallVector<Value> result = createNestedAffineForLoops(
-      builder, getLoc(), {numElements}, {tileSize}, ValueRange{resultInit},
+      builder, getLoc(), {numElements}, {tileSize}, resultInit,
       [&](OpBuilder &b, Location loc, ValueRange indices,
           ValueRange iterArgs) -> SmallVector<Value> {
         Value base = indices[0];
         SmallVector<OpFoldResult, 1> off{base};
 
-        SmallVector<OpFoldResult, 1> siz{b.getIndexAttr(tileSize)};
-        SmallVector<OpFoldResult, 1> str{b.getI64IntegerAttr(1)};
+        Value lhsSlice = extractSlice1D(b, loc, lhs, tileSize, base);
 
-        Value lhsSlice =
-            tensor::ExtractSliceOp::create(b, loc, lhs, off, siz, str);
-
-        Value rhsSlice = nullptr;
+        Value rhsSlice;
         if (!isUnaryOp) {
-          rhsSlice = tensor::ExtractSliceOp::create(b, loc, rhs, off, siz, str);
+          rhsSlice = extractSlice1D(b, loc, rhs, tileSize, base);
         }
 
+        Value sliceOut;
+        if (memrefOut) {
+          sliceOut = extractSlice1D(b, loc, memrefOut, tileSize, base);
+        }
+        // else the op result is the slice
+
         ElementwiseOp smaller = ElementwiseOp::create(
-            b, loc, getKind(), lhsSlice, rhsSlice, Value());
+            b, loc, getKind(), lhsSlice, rhsSlice, sliceOut);
         markOpAsNoTile(smaller);
 
         if (smaller.getResult()) {
+          SmallVector<OpFoldResult, 1> siz{b.getIndexAttr(tileSize)};
+          SmallVector<OpFoldResult, 1> str{b.getI64IntegerAttr(1)};
           Value subResult = tensor::InsertSliceOp::create(
               b, loc, smaller.getResult(), iterArgs[0], off, siz, str);
           return {subResult};
@@ -328,51 +408,8 @@ TilingResult2 ElementwiseOp::convertToTiledOps(OpBuilder &builder0,
   return TilingResult2(result);
 }
 
-static Value extractSliceND(OpBuilder &builder, Location loc,
-                            TypedValue<ShapedType> tensorOrMemref,
-                            ArrayRef<int64_t> sizes, ValueRange offsets) {
-  assert(offsets.size() == sizes.size());
-
-  const ShapedType sliceTy = tensorOrMemref.getType().clone(sizes);
-  if (llvm::isa<RankedTensorType>(tensorOrMemref.getType())) {
-    llvm::SmallVector<int64_t> unitStrides(offsets.size(), 1);
-    llvm::SmallVector<int64_t> noStaticOffsets(offsets.size(),
-                                               ShapedType::kDynamic);
-    return tensor::ExtractSliceOp::create(
-        builder, loc, sliceTy, tensorOrMemref, offsets, ValueRange{},
-        ValueRange{}, noStaticOffsets, sliceTy.getShape(), unitStrides);
-  } else if (llvm::isa<MemRefType>(tensorOrMemref.getType())) {
-    llvm::SmallVector<OpFoldResult> offsetsFoldRes(offsets.begin(),
-                                                   offsets.end());
-    auto one = builder.getI64IntegerAttr(1);
-    llvm::SmallVector<OpFoldResult> stridesFoldRes(offsets.size(), one);
-    llvm::SmallVector<OpFoldResult> sizesFoldRes;
-    sizesFoldRes.reserve(offsets.size());
-    for (auto i : sizes) {
-      auto attr = builder.getI64IntegerAttr(i);
-      sizesFoldRes.push_back(attr);
-    }
-
-    return memref::SubViewOp::create(builder, loc, tensorOrMemref,
-                                     offsetsFoldRes, sizesFoldRes,
-                                     stridesFoldRes);
-  }
-  assert(false && "type not handled");
-}
-static Value extractSlice1D(OpBuilder &builder, Location loc,
-                            TypedValue<ShapedType> tensorOrMemref, int64_t size,
-                            Value offset) {
-  return extractSliceND(builder, loc, tensorOrMemref, {size}, {offset});
-}
-
-static Value extractSlice(OpBuilder &builder, Location loc,
-                          TypedValue<ShapedType> tensorOrMemref, int64_t a,
-                          int64_t b, Value ia, Value ib) {
-  return extractSliceND(builder, loc, tensorOrMemref, {a, b}, {ia, ib});
-}
-
 static constexpr std::array<int64_t, 2> noStaticOffsets2D{ShapedType::kDynamic,
-                                                        ShapedType::kDynamic};
+                                                          ShapedType::kDynamic};
 
 static constexpr std::array<int64_t, 2> unitStrides2D{1, 1};
 

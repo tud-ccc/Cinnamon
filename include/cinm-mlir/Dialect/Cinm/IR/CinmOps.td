@@ -27,7 +27,7 @@ include "mlir/Dialect/Linalg/IR/LinalgEnums.td"
 
 def Cinm_ElementwiseOp
     : Cinm_Op<"op.elementwise", [
-        Pure,
+        DeclareOpInterfaceMethods<MemoryEffectsOpInterface>,
         DeclareOpInterfaceMethods<CinmTilingInterface>,
         AttrSizedOperandSegments
     ]> {
@@ -47,6 +47,9 @@ def Cinm_ElementwiseOp
     let results = (outs Optional<AnyRankedTensor>:$result);
 
     let extraClassDeclaration = [{
+      ArrayRef<int64_t> getShape() {
+        return getLhs().getType().getShape();
+      }
     }];
 
     let hasCustomAssemblyFormat = true;
@@ -63,8 +66,8 @@ def Cinm_ElementwiseOp
 
 class Cinm_GemmlikeOp<string name, string cppClassName> : Cinm_Op<name,
   [
-    Pure,
     InferTensorTypeAdaptor,
+    DeclareOpInterfaceMethods<MemoryEffectsOpInterface>,
     DeclareOpInterfaceMethods<CinmTilingInterface>,
     // OptionalTypesMatchWith<
     //   "bias should have compatible type", "result", "bias", "$_self">,
@@ -78,6 +81,7 @@ class Cinm_GemmlikeOp<string name, string cppClassName> : Cinm_Op<name,
       Optional<AnyMemRef>:$out
   );
 
+  // let hasVerifier = 1; // todo
   let results = (outs Optional<AnyRankedTensor>:$result);
   let assemblyFormat =
     "$lhs `,` $rhs (`plus` $bias^)? (`into` $out^)? attr-dict `:` type($lhs) `,` type($rhs) (`plus` type($bias)^)? (`into` type($out)^):(`->` type($result))?";

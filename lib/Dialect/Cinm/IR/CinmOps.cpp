@@ -38,8 +38,10 @@
 #include <mlir/IR/OperationSupport.h>
 #include <mlir/IR/PatternMatch.h>
 #include <mlir/IR/TypeUtilities.h>
+#include <mlir/IR/Value.h>
 #include <mlir/IR/ValueRange.h>
 #include <mlir/Interfaces/InferTypeOpInterface.h>
+#include <mlir/Interfaces/SideEffectInterfaces.h>
 #include <mlir/Support/LogicalResult.h>
 
 #define DEBUG_TYPE "cinm-ops"
@@ -229,7 +231,7 @@ void ComputeOp::print(OpAsmPrinter &out) {
 }
 
 ParseResult FlexComputeOp::parse(::mlir::OpAsmParser &parser,
-                             ::mlir::OperationState &result) {
+                                 ::mlir::OperationState &result) {
   if (parser.parseOptionalArrow().succeeded()) {
     if (parser.parseTypeList(result.types))
       return failure();
@@ -608,7 +610,8 @@ LogicalResult cinm::YieldOp::verify() {
   auto asSelect = dyn_cast_or_null<cinm::SelectOp>(parent);
 
   if (!asCompute && !asSelect && !asFlexCompute)
-    return emitOpError() << "must be inside 'cinm.compute', 'cinm.compute_' or 'cinm.select'";
+    return emitOpError()
+           << "must be inside 'cinm.compute', 'cinm.compute_' or 'cinm.select'";
 
   TypeRange expected = TypeRange(parent->getResultTypes());
 
@@ -632,7 +635,6 @@ LogicalResult cinm::YieldOp::verify() {
 
 // parsers/printers
 
-
 LogicalResult AcceleratorOp::verify() {
   // verify that they are all at the start of a block
   // auto *prevOp = (*this)->getPrevNode();
@@ -644,4 +646,69 @@ LogicalResult AcceleratorOp::verify() {
   //     return emitOpError("should be declared at the start of a block");
   // }
   return llvm::success();
+}
+
+template <class RW>
+static void addEffect(
+    OpOperand &operand,
+    ::llvm::SmallVectorImpl<
+        SideEffects::EffectInstance<::mlir::MemoryEffects::Effect>> &effects) {
+  effects.emplace_back(RW::get(), &operand, 0, true,
+                       SideEffects::DefaultResource::get());
+}
+
+template <class GemmLikeOp>
+static void getGemmLikeEffects(
+    GemmLikeOp op,
+    ::llvm::SmallVectorImpl<
+        SideEffects::EffectInstance<::mlir::MemoryEffects::Effect>> &effects) {
+
+  if (op.getResult()) {
+    // tensor variant, no effect at all
+    return;
+  }
+  for (auto &opoperand : op->getOpOperands()) {
+    // read all operands (even out buf)
+    addEffect<MemoryEffects::Read>(opoperand, effects);
+  }
+
+  // write out buf
+  auto &out = op.getOutMutable()[0];
+  addEffect<MemoryEffects::Write>(out, effects);
+}
+
+void GemmOp::getEffects(
+    llvm::SmallVectorImpl<SideEffects::EffectInstance<MemoryEffects::Effect>>
+        &effects) {
+  getGemmLikeEffects(*this, effects);
+}
+void GemvOp::getEffects(
+    llvm::SmallVectorImpl<SideEffects::EffectInstance<MemoryEffects::Effect>>
+        &effects) {
+  getGemmLikeEffects(*this, effects);
+}
+void BatchGemmOp::getEffects(
+    llvm::SmallVectorImpl<SideEffects::EffectInstance<MemoryEffects::Effect>>
+        &effects) {
+  getGemmLikeEffects(*this, effects);
+}
+void BatchGemvOp::getEffects(
+    llvm::SmallVectorImpl<SideEffects::EffectInstance<MemoryEffects::Effect>>
+        &effects) {
+  getGemmLikeEffects(*this, effects);
+}
+
+void ElementwiseOp::getEffects(
+    llvm::SmallVectorImpl<SideEffects::EffectInstance<MemoryEffects::Effect>>
+        &effects) {
+  if (getResult()) {
+    // tensor variant, no effects
+    return;
+  }
+  addEffect<MemoryEffects::Read>(getLhsMutable(), effects);
+  if (getRhs())
+    addEffect<MemoryEffects::Read>(getRhsMutable()[0], effects);
+
+  // todo is there a read effect?
+  addEffect<MemoryEffects::Write>(getOutMutable()[0], effects);
 }
