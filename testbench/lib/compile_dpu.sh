@@ -14,14 +14,15 @@ if [[ "$header" =~ $pat ]]; then
     rest="${BASH_REMATCH[1]}"
     # todo split, capture
     for word in $(echo $rest | tr ';' ' '); do
-    pat="(\w+)\:([0-9]+):(\w+).*"
+    pat="(\w+)\:([0-9]+):([0-9]+):(\w+).*"
     if [[ "$word" =~ $pat ]]; then
         var="${BASH_REMATCH[1]}"
         threads="${BASH_REMATCH[2]}"
-        bin_name="${BASH_REMATCH[3]}"
+        stack_size="${BASH_REMATCH[3]}"
+        bin_name="${BASH_REMATCH[4]}"
         bin_path=$(realpath "$OUTPATH/$bin_name")
 
-        command="'$dpuCompiler' -DNR_TASKLETS=$threads -D$var '$PROG' -o '$bin_path' '-I$curdir/dpu' -Wall -Wextra -Werror -Wno-unused-variable"
+        command="'$dpuCompiler' -DSTACK_SIZE_DEFAULT=$stack_size -DNR_TASKLETS=$threads -D$var '$PROG' -o '$bin_path' '-I$curdir/dpu' -Wall -Wextra -Werror -Wno-unused-variable"
         echo $command
         eval "$command"
     fi

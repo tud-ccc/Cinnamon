@@ -803,6 +803,11 @@ struct ConvertCinmGemmToCnm : public OpConversionPattern<cinm::GemmOp> {
     if (op.getOut()) {
       // memref version
       outbuf = op.getOut();
+    }else if (auto bias = op.getBias()){
+      // todo check whether the bias is suitable for use here.
+      //  this is a hacky fix because sometimes bufferization fails to reconcile
+      //  the loop initializer (bias) and the yield output (output of the gemm)
+      outbuf = bias;
     } else {
       // tensor version
       assert(

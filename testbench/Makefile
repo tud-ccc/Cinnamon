@@ -21,10 +21,22 @@ $(IR_PREFIX).1.tiled.mlir: $(BENCH_NAME).mlir
 	@mkdir -p $(@D)
 	$(CINM_OPT) $< --pass-pipeline="builtin.module(func.func(cinm-isolate-compute-blocks,cinm-tiling))" | $(CINM_OPT) --pass-pipeline="builtin.module(**cinm.compute(affine-loop-unroll{unroll-full unroll-full-threshold=1},canonicalize))" > $@
 
+$(IR_PREFIX).1a.cinm.buffered.mlir: $(IR_PREFIX).1.tiled.mlir
+	$(CINM_OPT) $< --eliminate-empty-tensors --cse --one-shot-bufferize='bufferize-function-boundaries function-boundary-type-conversion=identity-layout-map'  \
+					--cse --canonicalize --buffer-results-to-out-params=hoist-static-allocs > $@
+
+$(IR_PREFIX).1b.cnm.mlir: $(IR_PREFIX).1a.cinm.buffered.mlir
+	$(CINM_OPT) $< --convert-cinm-to-cnm --cnm-hoist-workgroups --canonicalize --cse > $@
+
 $(IR_PREFIX).2.cnm.mlir: $(IR_PREFIX).1.tiled.mlir
 	$(CINM_OPT) $< --convert-cinm-to-cnm --cnm-hoist-workgroups --canonicalize --cse > $@
 
 #					--promote-buffers-to-stack --fold-memref-alias-ops --canonicalize --affine-loop-fusion --sroa --canonicalize --affine-scalrep --loop-invariant-code-motion --affine-loop-invariant-code-motion --sroa --affine-scalrep \
+
+$(IR_PREFIX).1c.cnm.affine.mlir: $(IR_PREFIX).1b.cnm.mlir
+	$(CINM_OPT) $< --eliminate-empty-tensors  \
+					--cse --canonicalize --buffer-results-to-out-params=hoist-static-allocs \
+				  --convert-linalg-to-affine-loops --buffer-loop-hoisting --buffer-hoisting --canonicalize --cse > $@
 
 $(IR_PREFIX).3.cnm.affine.mlir: $(IR_PREFIX).2.cnm.mlir
 	$(CINM_OPT) $< --eliminate-empty-tensors --cse --one-shot-bufferize='bufferize-function-boundaries function-boundary-type-conversion=identity-layout-map'  \
@@ -53,10 +65,10 @@ $(IR_PREFIX).6a1.llvm.mlir: $(IR_PREFIX).6.upmem.mlir
 # --fold-memref-alias-ops \
 
 $(IR_PREFIX).6b.dpu.c: $(IR_PREFIX).6.upmem.mlir
-	../build/bin/cinm-translate --mlir-to-upmem-cpp $< > $@
+	../build/bin/cinm-translate --allow-unregistered-dialect --mlir-to-upmem-cpp $< > $@
 
 $(IR_PREFIX).6a2.host.ll: $(IR_PREFIX).6a1.llvm.mlir
-	../build/bin/cinm-translate --mlir-to-llvmir $< > $@
+	../build/bin/cinm-translate --allow-unregistered-dialect --mlir-to-llvmir $< > $@
 
 $(IR_PREFIX).6a3.host.opt.ll: $(IR_PREFIX).6a2.host.ll
 	$(CLANG_18_BASE)/opt -O3 -S $< > $@
@@ -72,17 +84,13 @@ $(BENCH_NAME)-kernel-compile: $(IR_PREFIX).6b.dpu.c
 	lib/compile_dpu.sh $< $(OUT_DIR)/bin
 
 # HOST executable
-$(OUT_DIR)/bin/host: $(IR_PREFIX).6a3b.host.o $(IR_PREFIX).6b.dpu.c
+$(OUT_DIR)/bin/host: $(IR_PREFIX).6a3b.host.o
 	@mkdir -p $(@D)
 	clang++ -g apps/$(BENCH_NAME).cpp $(IR_PREFIX).6a3b.host.o -lUpmemDialectRuntime -fPIE -ldpu -ldpuverbose -L${UPMEM_HOME}/lib -L../build/lib -I${UPMEM_HOME}/include/dpu -o $@
 
-$(OUT_DIR)/bin/host_dbg: $(IR_PREFIX).6a3a.host.dbg.o $(IR_PREFIX).6b.dpu.c
-	@mkdir -p $(@D)
-	clang++ -g apps/$(BENCH_NAME).cpp $(IR_PREFIX).6a3a.host.dbg.o -lUpmemDialectRuntime -fPIE -ldpu -ldpuverbose -L${UPMEM_HOME}/lib -L../build/lib -I${UPMEM_HOME}/include/dpu -o $@
-
 $(BENCH_NAME): $(IR_PREFIX).6a3.host.opt.ll $(IR_PREFIX).6b.dpu.c
 
-$(BENCH_NAME)-exe: $(OUT_DIR)/bin/host $(OUT_DIR)/bin/host_dbg $(BENCH_NAME)-kernel-compile
+$(BENCH_NAME)-exe: $(OUT_DIR)/bin/host $(BENCH_NAME)-kernel-compile
 
 clean:
-	rm -rf $(OUT_DIR)
+	rm -rf $(OUT_DIR)/irs/* $(OUT_DIR)/bin/*

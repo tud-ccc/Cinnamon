@@ -1,4 +1,4 @@
-#upmem = #upmem.platform<30x64>
+#upmem = #upmem.platform<type=v1A, dimensions=30x64>
 module {
 
     func.func @mm_dimm4_nopt(%A: tensor<8x1024xi32>, %B: tensor<1024x256xi32>,  %C: tensor<256x2048xi32>) -> tensor<8x2048xi32>

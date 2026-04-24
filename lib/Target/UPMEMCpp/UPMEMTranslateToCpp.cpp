@@ -37,6 +37,7 @@
 #include <llvm/IR/Intrinsics.h>
 #include <llvm/Support/Casting.h>
 #include <llvm/Support/LogicalResult.h>
+#include <llvm/Support/MathExtras.h>
 #include <llvm/Support/raw_ostream.h>
 #include <mlir/IR/Builders.h>
 #include <mlir/IR/BuiltinAttributes.h>
@@ -278,9 +279,6 @@ static LogicalResult printOperation(CppEmitter &emitter,
   size_t size = res_type.getNumElements();
   const size_t elementSize = elementType.getIntOrFloatBitWidth() / 8;
   size = llvm::alignTo(size, 8);
-  // if (size * elementSize < 8) {
-  //   size = 8 / elementSize;
-  // }
   os << " " << emitter.getOrCreateName(wramAllocOp.getBuffer()) << "[" << size
      << "]";
 
@@ -334,22 +332,21 @@ printMRAMCopyBytes(CppEmitter &emitter, upmem::TransferDirection dir,
                    const std::string &toOffsetExpr, size_t offsetBytes) {
   raw_ostream &os = emitter.ostream();
   if (dir == upmem::TransferDirection::MRAMToWRAM) {
-    os << "mram_read(";
+    os << "mram_read(&" << emitter.getOrCreateName(from);
   } else if (dir == upmem::TransferDirection::WRAMToMRAM) {
-    os << "mram_write((const char*) ";
+    os << "mram_write(&((const char*) " << emitter.getOrCreateName(from)
+       << ")";
   }
 
-  os << "&" << emitter.getOrCreateName(from) << "[" << fromOffsetExpr << " + "
-     << offsetBytes << "], ";
+  os << "[" << fromOffsetExpr << " + " << offsetBytes << "], ";
 
   if (dir == upmem::TransferDirection::MRAMToWRAM) {
-    os << "(char*) ";
+    os << "&((char*) " << emitter.getOrCreateName(to) << ")";
   } else if (dir == upmem::TransferDirection::WRAMToMRAM) {
-    os << "";
+    os << "&" << emitter.getOrCreateName(to);
   }
 
-  os << "&" << emitter.getOrCreateName(to) << "[" << toOffsetExpr << " + "
-     << offsetBytes << "], ";
+  os << "[" << toOffsetExpr << " + " << offsetBytes << "], ";
 
   // todo dyn size
   os << staticSizeBytes;
@@ -977,7 +974,8 @@ static LogicalResult printBufferDecl(CppEmitter &emitter,
   if (op.isWram()) {
     qualifier = "__dma_aligned";
   } else {
-    qualifier = op.getNoinit() ? "__mram_noinit __dma_aligned" : "__mram __dma_aligned";
+    qualifier =
+        op.getNoinit() ? "__mram_noinit __dma_aligned" : "__mram __dma_aligned";
   }
 
   // We emit static buffers as array of bytes to be able to pad them.
@@ -1105,8 +1103,27 @@ static LogicalResult printOperation(CppEmitter &emitter, upmem::ReturnOp) {
   return success();
 }
 
-static void printCompilationVar(upmem::DpuProgramOp &kernel, raw_ostream &os) {
+static void printCompilationVar(upmem::DpuProgramOp kernel, raw_ostream &os) {
   os << "COMPILE_" << kernel.getSymName();
+}
+
+/*
+  Upmem's default stack size is very small (2048 bytes),
+  but we allocate all private wram buffers on the stack.
+  Global wram allocations are not tasklet-private so we
+  have to allocate on the stack. We need to estimate how
+  much stack each tasklet will require though and write
+  that out as a compiler argument.
+*/
+static int getMinStackSize(upmem::DpuProgramOp kernel) {
+  int stackSize = 1024;
+  kernel->walk([&](upmem::PrivateWRAMAllocOp wramAlloc) {
+    auto bufType = wramAlloc.getBuffer().getType();
+    auto size = bufType.getNumElements() * bufType.getElementTypeBitWidth() / 8;
+    stackSize += size;
+  });
+
+  return llvm::alignTo(stackSize, 8);
 }
 
 static LogicalResult printOperation(CppEmitter &emitter, ModuleOp moduleOp) {
@@ -1126,8 +1143,17 @@ static LogicalResult printOperation(CppEmitter &emitter, ModuleOp moduleOp) {
 
   os << "// UPMEM-TRANSLATE: ";
   for (auto kernel : kernels) {
+    // The compilation var is used to compile only one of
+    // the kernels when many can be generated into the
+    // same C file, with different tasklet numbers and other
+    // parameters.
     printCompilationVar(kernel, os);
+    auto stackSize = getMinStackSize(kernel);
+    // if (stackSize * kernel.getNumTasklets() > wramSize)
+    // todo make the upmem platform attr accessible
+    // todo print error
     os << ":" << kernel.getNumTasklets();
+    os << ":" << stackSize;
     os << ":" << kernel.getSymName(); // name of the binary
     os << ";";
   }
