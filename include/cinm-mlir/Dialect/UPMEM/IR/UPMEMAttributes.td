@@ -38,6 +38,6 @@ def MemcpyDir : I32EnumAttr<"TransferDirection",
 def MemcpyDirAttr : EnumAttr<UPMEM_Dialect, MemcpyDir,
                                   "transfer_dir">;
 
-
+include "UPMEMTileFirstAttributes.td"
 
 #endif

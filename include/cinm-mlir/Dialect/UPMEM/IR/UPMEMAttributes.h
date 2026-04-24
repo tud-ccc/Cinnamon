@@ -5,6 +5,7 @@
 #pragma once
 
 #include "cinm-mlir/Dialect/UPMEM/IR/UPMEMBase.h"
+#include "cinm-mlir/Dialect/Cinm/IR/CinmAttributes.h"
 #include "mlir/IR/Attributes.h"
 
 //===- Generated includes -------------------------------------------------===//
