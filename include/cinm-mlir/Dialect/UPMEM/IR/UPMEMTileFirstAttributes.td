@@ -21,9 +21,10 @@ def UpmemPlatformAttr: UPMEM_Attr<"UpmemPlatform", [
   let hasCustomAssemblyFormat = 1;
   let parameters = (ins 
     "::mlir::cinm::CinmLevelArrayAttr":$levels,
+    "bool":$isV1a,
     "int":$maxNumRanks,
     "int":$maxNumDpusPerRank,
-    DefaultValuedParameter<"int", "32">:$maxNumTasklets
+    "int":$maxNumTasklets
   );
 
   let extraClassDeclaration = [{
