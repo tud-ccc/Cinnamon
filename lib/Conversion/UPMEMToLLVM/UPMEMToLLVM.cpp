@@ -371,13 +371,9 @@ static LogicalResult lowerScatterOrGather(Op op, typename Op::Adaptor adaptor,
   auto funPtrOp = rewriter0.create<LLVM::AddressOfOp>(loc, *affineMapFunOpt);
   auto bufferId =
       reifyAsString(rewriter, moduleOp, op.getDpuBufRef(), "buffer_name");
-  auto numBytesCopied = op.getDpuBufferSizeInBytes();
-
   // Transfer count must be 8-byte aligned
-  // TODO probably means we must pad the input
-  if (numBytesCopied % 8 != 0) {
-    numBytesCopied += 8 - (numBytesCopied % 8);
-  }
+  auto numBytesCopied = op.getDpuBufferSizeInBytes();
+  numBytesCopied = llvm::alignTo(numBytesCopied, 8);
 
   Value bareHostBuf = adaptor.getHostBuffer();
   if (isa<LLVM::LLVMStructType>(adaptor.getHostBuffer().getType())) {
@@ -396,11 +392,15 @@ static LogicalResult lowerScatterOrGather(Op op, typename Op::Adaptor adaptor,
            << adaptor.getHostBuffer().getType();
   }
 
+  // Size of elements in bytes
   const size_t elementSize =
       op.getHostBuffer().getType().getElementTypeBitWidth() / 8;
+  // Total number of concurrent tasklets in the array
   const size_t numTasklets = op.getHierarchy().getType().getNumElements();
+  // Total number of elements in the containing buffer, used for in-bounds check
   const size_t numElements =
       computeProduct(op.getHostBuffer().getType().getShape());
+  // Number of elements for each tasklet
   const size_t numElementsPerTasklet = numElements / numTasklets;
 
   rewriter0.create<LLVM::CallOp>(

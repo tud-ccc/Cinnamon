@@ -286,9 +286,10 @@ static LogicalResult printOperation(CppEmitter &emitter,
 
   size_t size = res_type.getNumElements();
   const size_t elementSize = elementType.getIntOrFloatBitWidth() / 8;
-  if (size * elementSize < 8) {
-    size = 8 / elementSize;
-  }
+  size = llvm::alignTo(size, 8);
+  // if (size * elementSize < 8) {
+  //   size = 8 / elementSize;
+  // }
   os << " " << emitter.getOrCreateName(wramAllocOp.getBuffer()) << "[" << size
      << "]";
 
@@ -342,7 +343,7 @@ printMRAMCopyBytes(CppEmitter &emitter, upmem::TransferDirection dir,
                    const std::string &toOffsetExpr, size_t offsetBytes) {
   raw_ostream &os = emitter.ostream();
   if (dir == upmem::TransferDirection::MRAMToWRAM) {
-    os << "mram_read((const __mram_ptr char*) ";
+    os << "mram_read(";
   } else if (dir == upmem::TransferDirection::WRAMToMRAM) {
     os << "mram_write((const char*) ";
   }
@@ -353,7 +354,7 @@ printMRAMCopyBytes(CppEmitter &emitter, upmem::TransferDirection dir,
   if (dir == upmem::TransferDirection::MRAMToWRAM) {
     os << "(char*) ";
   } else if (dir == upmem::TransferDirection::WRAMToMRAM) {
-    os << "(__mram_ptr char*) ";
+    os << "";
   }
 
   os << "&" << emitter.getOrCreateName(to) << "[" << toOffsetExpr << " + "
@@ -985,15 +986,12 @@ static LogicalResult printBufferDecl(CppEmitter &emitter,
   if (op.isWram()) {
     qualifier = "__dma_aligned";
   } else {
-    qualifier = op.getNoinit() ? "__mram_noinit" : "__mram";
+    qualifier = op.getNoinit() ? "__mram_noinit __dma_aligned" : "__mram __dma_aligned";
   }
-  auto bufferType = op.getBuffer().getType();
 
-  if (failed(emitter.emitType(op->getLoc(), bufferType.getElementType())))
-    return failure();
-
+  // We emit static buffers as array of bytes to be able to pad them.
   auto &out = emitter.ostream();
-  out << " " << qualifier << " ";
+  out << "char " << qualifier << " ";
   if (auto name = op.getSymNameAttr()) {
     if (failed(emitter.recordStaticName(op.getBuffer(), name.getValue())))
       return failure();
@@ -1001,10 +999,21 @@ static LogicalResult printBufferDecl(CppEmitter &emitter,
   } else {
     emitter.getOrCreateName(op.getBuffer());
   }
+
+  auto bufferType = op.getBuffer().getType();
+  auto eltWidthBytes = bufferType.getElementTypeBitWidth() / 8;
+  auto sizeInBytes = bufferType.getNumElements() * eltWidthBytes;
+  sizeInBytes = llvm::alignTo(sizeInBytes, 8);
+
+  out << "[" << sizeInBytes << "]; // ";
+  // add real type as comment
+  if (failed(emitter.emitType(op->getLoc(), bufferType.getElementType())))
+    return failure();
+
   for (auto dim : bufferType.getShape()) {
     out << '[' << dim << ']';
   }
-  out << ";\n";
+  out << "\n";
   return success();
 }
 
