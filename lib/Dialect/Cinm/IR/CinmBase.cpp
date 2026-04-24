@@ -4,11 +4,13 @@
 
 #include "cinm-mlir/Dialect/Cinm/IR/CinmBase.h"
 
+#include "cinm-mlir/Dialect/Cinm/IR/CinmAttributes.h"
 #include "cinm-mlir/Dialect/Cinm/IR/CinmDialect.h"
 #include <llvm/ADT/TypeSwitch.h>
 #include <llvm/Support/LogicalResult.h>
 #include <mlir/IR/Attributes.h>
 #include <mlir/IR/DialectImplementation.h>
+#include <mlir/Interfaces/FunctionInterfaces.h>
 #include <mlir/Support/LogicalResult.h>
 
 #define DEBUG_TYPE "cinm-base"
@@ -51,11 +53,30 @@ CinmDialect::verifyOperationAttribute(::mlir::Operation *op,
            << CinmDialect::NOTILE_NAME
            << " attribute can only be used on cinm dialect operations";
   }
+  if (attribute.getName() == CinmDialect::NOTILE_NAME) {
+    if (op->getDialect() == this) {
+      return success();
+    }
+    return op->emitOpError()
+           << CinmDialect::NOTILE_NAME
+           << " attribute can only be used on cinm dialect operations";
+  }
+  if (attribute.getName() == CinmDialect::AVAILABLE_PLATFORMS_NAME) {
+    if (op->hasTrait<FunctionOpInterface::Trait>()) {
+      return success();
+    }
+    return op->emitOpError("Attribute ")
+           << CinmDialect::AVAILABLE_PLATFORMS_NAME
+           << " must be specified on a function op";
+  }
   return op->emitOpError("unknown attribute ") << attribute.getName();
 }
 
 Attribute CinmDialect::parseAttribute(DialectAsmParser &parser,
                                       Type type) const {
+  if (parser.parseOptionalKeyword(CinmPlatformArrayAttr::getMnemonic())
+          .succeeded())
+    return CinmPlatformArrayAttr::parse(parser, type);
   if (parser.parseOptionalKeyword(HostPlatformAttr::getMnemonic()).succeeded())
     return HostPlatformAttr::parse(parser, type);
   if (parser.parseOptionalKeyword(CostModelDataAttr::getMnemonic()).succeeded())

@@ -11,6 +11,8 @@ def CinmPlatformAttrInterface : AttrInterface<"CinmPlatformAttrInterface", []> {
     Interface for attributes that can be used as a platform descriptor for Cinm scheduling.
     A platform description defines levels of the memory hierarchy, and design parameters
     that should be solved during scheduling.
+
+    Available platforms are expected to be defined on a function containing the code to schedule.
   }];
 
   let cppNamespace = "::mlir::cinm";
@@ -213,5 +215,10 @@ def CinmHostPlatformAttr: Cinm_Attr<"HostPlatform", [
   }];
 
 }
-#endif
 
+
+def CinmAvailablePlatformsAttr : ArrayOfAttr<Cinm_Dialect, "CinmPlatformArray", "platforms",
+                            CinmPlatformAttrInterface.storageType> {}
+
+
+#endif

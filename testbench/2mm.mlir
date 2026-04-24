@@ -1,9 +1,10 @@
 module {
 
-    func.func @mm_dimm4_nopt(%A: tensor<8x1024xi32>, %B: tensor<1024x256xi32>,  %C: tensor<256x2048xi32>) -> tensor<8x2048xi32> {
+    func.func @mm_dimm4_nopt(%A: tensor<8x1024xi32>, %B: tensor<1024x256xi32>,  %C: tensor<256x2048xi32>) -> tensor<8x2048xi32>
+    attributes { cinm.available_platforms = [#cinm.host_platform] } {
+
 
         %r = cinm.compute_ -> tensor<8x2048xi32> 
-        // attributes { workgroupShape=array<i64: 4, 128, 1> } {
         attributes { workgroupShape=array<i64: 2, 4, 16> } {
             %r = cinm.op.gemm %A, %B : tensor<8x1024xi32>, tensor<1024x256xi32> -> tensor<8x256xi32>
             %r2 = cinm.op.gemm %r, %C : tensor<8x256xi32>, tensor<256x2048xi32> -> tensor<8x2048xi32>

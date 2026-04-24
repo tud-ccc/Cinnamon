@@ -333,25 +333,28 @@ def AcceleratorOp : Cinm_Op<"accelerator", [OpAsmOpInterface]> {
 }
 
 def Cinm_FlexComputeOp : Cinm_Base_Op<"compute_", [
-  AffineScope, AutomaticAllocationScope
+  AffineScope, AutomaticAllocationScope, RecursiveMemoryEffects
 ]> {
-  let summary = "TODO";
+  let summary = "Convenience version of compute that doesn't require declaring parameters";
   let description = [{
     This operation has no parameters, and is not IsolatedFromAbove.
-    Can be turned automatically into an IsolatedFromAbove compute op.
+    Can be turned automatically into an IsolatedFromAbove compute op
+    with --cinm-isolate-compute-blocks. Just provided for convenience.
 
-
+    ```
     %rbuf = cinm.compute_ -> tensor<...> attributes { ... } {
       %flt = arith.constant <"...">: tensor<...>
       %conv = cinm.op.gemm %arg0, %flt: tensor<...>, tensor<...>
       cinm.yield %conv : tensor<...>
     }
+    ```
   }];
 
   let arguments = (ins
       DefaultValuedAttr<DenseI64ArrayAttr, "{2, 32, 16}">:$workgroupShape,
       DefaultValuedAttr<DenseI64ArrayAttr, "{0, 65536, 0}">:$bufferSizesInBytes,
-      OptionalAttr<DenseI64ArrayAttr>:$tileSizes
+      OptionalAttr<DenseI64ArrayAttr>:$tileSizes,
+      OptionalAttr<CinmPlatformAttrInterface>:$platform
   );
 
   let results = (outs Variadic<AnyType>:$results);
@@ -388,15 +391,22 @@ def Cinm_FlexComputeOp : Cinm_Base_Op<"compute_", [
 
 
 def Cinm_ComputeOp : Cinm_Base_Op<"compute", [
-  AffineScope, AutomaticAllocationScope, IsolatedFromAbove
+  AffineScope, AutomaticAllocationScope, IsolatedFromAbove, RecursiveMemoryEffects
 ]> {
   let summary = "Delimits a region of code for offloading";
   let description = [{
     Delimits a region of code for offloading. This is the canonical
-    version of the `cinm.compute_` op.
+    version of the `cinm.compute_` op. 
 
     ```
     %rbuf = cinm.compute (%a = %v : tensor<...>) -> tensor<...>  attributes { ... } {
+      %flt = arith.constant <"...">: tensor<...>
+      %conv = cinm.op.gemm %a, %flt: tensor<...>, tensor<...>
+      cinm.yield %conv : tensor<...>
+    }
+
+    %rbuf = cinm.compute on platform #upmem.array<4x64> (%a = %v : tensor<...>) -> tensor<...>
+                         attributes { ... } {
       %flt = arith.constant <"...">: tensor<...>
       %conv = cinm.op.gemm %a, %flt: tensor<...>, tensor<...>
       cinm.yield %conv : tensor<...>
@@ -410,7 +420,8 @@ def Cinm_ComputeOp : Cinm_Base_Op<"compute", [
 
       DefaultValuedAttr<DenseI64ArrayAttr, "{2, 32, 16}">:$workgroupShape,
       DefaultValuedAttr<DenseI64ArrayAttr, "{0, 65536, 0}">:$bufferSizesInBytes,
-      OptionalAttr<DenseI64ArrayAttr>:$tileSizes
+      OptionalAttr<DenseI64ArrayAttr>:$tileSizes,
+      OptionalAttr<CinmPlatformAttrInterface>:$platform
   );
 
   let results = (outs Variadic<AnyType>:$results);

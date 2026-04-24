@@ -178,6 +178,12 @@ static bool dimsCompatible(int64_t a, int64_t b) {
 
 ParseResult ComputeOp::parse(::mlir::OpAsmParser &parser,
                              ::mlir::OperationState &result) {
+  if (parser.parseOptionalKeyword("on").succeeded()) {
+    CinmPlatformAttrInterface platform;
+    if (parser.parseKeyword("platform") || parser.parseAttribute(platform))
+      return failure();
+    result.addAttribute(getPlatformAttrName(result.name), platform);
+  }
   SmallVector<OpAsmParser::Argument> regionArgs;
   if (parser.parseCommaSeparatedList(OpAsmParser::Delimiter::Paren, [&]() {
         OpAsmParser::UnresolvedOperand op;
@@ -209,6 +215,9 @@ ParseResult ComputeOp::parse(::mlir::OpAsmParser &parser,
 }
 
 void ComputeOp::print(OpAsmPrinter &out) {
+  if (auto platform = getPlatform()) {
+    out << " on platform " << platform; 
+  }
   out << " (";
   llvm::interleaveComma(zipArgsWithOperands(), out, [&](auto pair) {
     auto [arg, value] = pair;
@@ -223,7 +232,7 @@ void ComputeOp::print(OpAsmPrinter &out) {
   out.increaseIndent();
   out.increaseIndent();
   out.printNewline();
-  out.printOptionalAttrDictWithKeyword((*this)->getAttrs());
+  out.printOptionalAttrDictWithKeyword((*this)->getAttrs(), {getPlatformAttrName()});
   out << ' ';
   out.decreaseIndent();
   out.decreaseIndent();
@@ -232,6 +241,12 @@ void ComputeOp::print(OpAsmPrinter &out) {
 
 ParseResult FlexComputeOp::parse(::mlir::OpAsmParser &parser,
                                  ::mlir::OperationState &result) {
+  if (parser.parseOptionalKeyword("on").succeeded()) {
+    CinmPlatformAttrInterface platform;
+    if (parser.parseKeyword("platform") || parser.parseAttribute(platform))
+      return failure();
+    result.addAttribute(getPlatformAttrName(result.name), platform);
+  }
   if (parser.parseOptionalArrow().succeeded()) {
     if (parser.parseTypeList(result.types))
       return failure();
@@ -249,6 +264,9 @@ ParseResult FlexComputeOp::parse(::mlir::OpAsmParser &parser,
 }
 
 void FlexComputeOp::print(OpAsmPrinter &out) {
+  if (auto platform = getPlatform()) {
+    out << " on platform " << platform; 
+  }
   if (!getResults().empty()) {
     out << " -> ";
     llvm::interleaveComma(getResultTypes(), out);
@@ -256,7 +274,7 @@ void FlexComputeOp::print(OpAsmPrinter &out) {
   out.increaseIndent();
   out.increaseIndent();
   out.printNewline();
-  out.printOptionalAttrDictWithKeyword((*this)->getAttrs());
+  out.printOptionalAttrDictWithKeyword((*this)->getAttrs(), {getPlatformAttrName()});
   out << ' ';
   out.decreaseIndent();
   out.decreaseIndent();
