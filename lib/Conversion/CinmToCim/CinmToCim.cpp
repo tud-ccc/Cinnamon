@@ -388,9 +388,9 @@ struct LowerCinmAdd : public OpConversionPattern<cinm::ElementwiseOp> {
 
     Location loc = op.getLoc();
 
-    Value lhs = toMemrefLike(rewriter, loc, op.getLhs());
-    Value rhs = toMemrefLike(rewriter, loc, op.getRhs());
-    Value out = op.getOut();
+    Value lhs = toMemrefLike(rewriter, loc, adaptor.getLhs());
+    Value rhs = toMemrefLike(rewriter, loc, adaptor.getRhs());
+    Value out = adaptor.getOut();
 
     auto outTy = dyn_cast<MemRefType>(out.getType());
     if (!outTy)

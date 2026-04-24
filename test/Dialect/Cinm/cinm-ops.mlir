@@ -3,7 +3,8 @@
 
 
 // CHECK-LABEL: simple
-func.func @simple(%t00: tensor<6x6xi32>, %t10 : tensor<6xf32> , %m00: memref<6xf32>) {
+func.func @simple(%t00: tensor<6x6xi32>, %t10 : tensor<6xf32> , %m00: memref<6xf32>) attributes{cinm.available_platforms = [#cinm.host_platform]} {
+
     %d = cinm.compute (%t0 = %t00: tensor<6x6xi32>, %t1 = %t10 : tensor<6xf32> , %m0 = %m00: memref<6xf32>) -> tensor<6x6xi32> attributes { workgroupShape= array<i64: 2,4,4,2> } {
         %x = cinm.op.elementwise add %t0, %t0: tensor<6x6xi32>
         %y = cinm.op.elementwise sub %t0, %t0: tensor<6x6xi32>
@@ -45,7 +46,7 @@ func.func @simple(%t00: tensor<6x6xi32>, %t10 : tensor<6xf32> , %m00: memref<6xf
     }
 
     // different forms for compute
-    cinm.compute() {
+    cinm.compute on platform #cinm.host_platform () {
         cinm.yield
     }
     cinm.compute() attributes { maxDpuBufferSize = 64 } {

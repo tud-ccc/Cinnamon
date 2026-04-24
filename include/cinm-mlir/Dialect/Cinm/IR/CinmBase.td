@@ -31,6 +31,7 @@ def Cinm_Dialect : Dialect {
     Attribute parseAttribute(DialectAsmParser &parser, Type type) const override;
 
     constexpr static StringRef NOTILE_NAME = "cinm.notile";
+    constexpr static StringRef AVAILABLE_PLATFORMS_NAME = "cinm.available_platforms";
     private:
         void registerOps();
         void registerTypes();
