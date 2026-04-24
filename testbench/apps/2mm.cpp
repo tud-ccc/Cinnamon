@@ -39,9 +39,9 @@ int main(void) {
     */
 
   BENCH_MM(int32_t, 8, 1024, 256, 2048, mm_dimm4_nopt);
-  // BENCH_MM(int32_t, 16, 1024, 128, 2048, mm_dimm4_opt);
+  BENCH_MM(int32_t, 16, 1024, 128, 2048, mm_dimm4_opt);
 
-  // BENCH_MM(int32_t, 8, 1024, 128, 2048, mm_dimm8_nopt);
+  BENCH_MM(int32_t, 8, 1024, 128, 2048, mm_dimm8_nopt);
   // BENCH_MM(int32_t, 16, 1024, 64, mm_dimm8_opt);
 
   // BENCH_MM(int32_t, 8, 1024, 64, mm_dimm16_nopt);
