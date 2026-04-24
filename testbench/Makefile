@@ -43,7 +43,7 @@ $(IR_PREFIX).5.cnm.scf.mlir: $(IR_PREFIX).4.cnm.after_opts.mlir
 $(IR_PREFIX).6.upmem.mlir: $(IR_PREFIX).5.cnm.scf.mlir
 	$(CINM_OPT) $< --convert-cnm-to-upmem --cse --upmem-dedup-kernels --cse > $@
 
-$(IR_PREFIX).7a.llvm.mlir: $(IR_PREFIX).6.upmem.mlir
+$(IR_PREFIX).6a1.llvm.mlir: $(IR_PREFIX).6.upmem.mlir
 	$(CINM_OPT) $< --mlir-print-ir-after-failure --canonicalize \
 	--convert-upmem-to-llvm --convert-scf-to-cf \
 	--convert-func-to-llvm=use-bare-ptr-memref-call-conv=true \
@@ -52,30 +52,37 @@ $(IR_PREFIX).7a.llvm.mlir: $(IR_PREFIX).6.upmem.mlir
 	> $@
 # --fold-memref-alias-ops \
 
-$(IR_PREFIX).8a.dpu.c: $(IR_PREFIX).6.upmem.mlir
+$(IR_PREFIX).6b.dpu.c: $(IR_PREFIX).6.upmem.mlir
 	../build/bin/cinm-translate --mlir-to-upmem-cpp $< > $@
 
-$(IR_PREFIX).7b.host.ll: $(IR_PREFIX).7a.llvm.mlir
+$(IR_PREFIX).6a2.host.ll: $(IR_PREFIX).6a1.llvm.mlir
 	../build/bin/cinm-translate --mlir-to-llvmir $< > $@
 
-$(IR_PREFIX).7c.host.opt.ll: $(IR_PREFIX).7b.host.ll
+$(IR_PREFIX).6a3.host.opt.ll: $(IR_PREFIX).6a2.host.ll
 	$(CLANG_18_BASE)/opt -O3 -S $< > $@
 
-$(IR_PREFIX).7d.host.o: $(IR_PREFIX).7c.host.opt.ll
+$(IR_PREFIX).6a3a.host.dbg.o: $(IR_PREFIX).6a2.host.ll
+	$(CLANG_18_BASE)/llc $< -o $@ -filetype=obj -relocation-model=pic
+
+$(IR_PREFIX).6a3b.host.o: $(IR_PREFIX).6a3.host.opt.ll
 	$(CLANG_18_BASE)/llc -O3 $< -o $@ -filetype=obj -relocation-model=pic
 
 # Compile all DPU kernel executables
-$(BENCH_NAME)-kernel-compile: $(IR_PREFIX).8a.dpu.c
+$(BENCH_NAME)-kernel-compile: $(IR_PREFIX).6b.dpu.c
 	lib/compile_dpu.sh $< $(OUT_DIR)/bin
 
 # HOST executable
-$(OUT_DIR)/bin/host: $(IR_PREFIX).7d.host.o $(IR_PREFIX).8a.dpu.c
+$(OUT_DIR)/bin/host: $(IR_PREFIX).6a3b.host.o $(IR_PREFIX).6b.dpu.c
 	@mkdir -p $(@D)
-	clang++ -g apps/$(BENCH_NAME).cpp $(IR_PREFIX).7d.host.o -lUpmemDialectRuntime -fPIE -ldpu -ldpuverbose -L${UPMEM_HOME}/lib -L../build/lib -I${UPMEM_HOME}/include/dpu -o $@
+	clang++ -g apps/$(BENCH_NAME).cpp $(IR_PREFIX).6a3b.host.o -lUpmemDialectRuntime -fPIE -ldpu -ldpuverbose -L${UPMEM_HOME}/lib -L../build/lib -I${UPMEM_HOME}/include/dpu -o $@
 
-$(BENCH_NAME): $(IR_PREFIX).7c.host.opt.ll $(IR_PREFIX).8a.dpu.c
+$(OUT_DIR)/bin/host_dbg: $(IR_PREFIX).6a3a.host.dbg.o $(IR_PREFIX).6b.dpu.c
+	@mkdir -p $(@D)
+	clang++ -g apps/$(BENCH_NAME).cpp $(IR_PREFIX).6a3a.host.dbg.o -lUpmemDialectRuntime -fPIE -ldpu -ldpuverbose -L${UPMEM_HOME}/lib -L../build/lib -I${UPMEM_HOME}/include/dpu -o $@
 
-$(BENCH_NAME)-exe: $(OUT_DIR)/bin/host $(BENCH_NAME)-kernel-compile
+$(BENCH_NAME): $(IR_PREFIX).6a3.host.opt.ll $(IR_PREFIX).6b.dpu.c
+
+$(BENCH_NAME)-exe: $(OUT_DIR)/bin/host $(OUT_DIR)/bin/host_dbg $(BENCH_NAME)-kernel-compile
 
 clean:
 	rm -rf $(OUT_DIR)
