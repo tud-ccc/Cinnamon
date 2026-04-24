@@ -467,21 +467,6 @@ struct WaitForOpToFuncCallLowering
     return success();
   }
 };
-
-struct BaseDPUMemOffsetOpLowering
-    : public OpConversionPattern<upmem::BaseDPUMemOffsetOp> {
-public:
-  using OpConversionPattern<upmem::BaseDPUMemOffsetOp>::OpConversionPattern;
-
-  LogicalResult
-  matchAndRewrite(upmem::BaseDPUMemOffsetOp op, OpAdaptor,
-                  ConversionPatternRewriter &rewriter) const override {
-    rewriter.replaceOpWithNewOp<LLVM::ConstantOp>(
-        op, rewriter.getI32IntegerAttr(0));
-    return success();
-  }
-};
-
 struct EraseDpuProgram : public ConvertOpToLLVMPattern<upmem::DpuProgramOp> {
   using ConvertOpToLLVMPattern<upmem::DpuProgramOp>::ConvertOpToLLVMPattern;
 
@@ -515,7 +500,6 @@ void populateUPMEMToLLVMConversionPatterns(LLVMTypeConverter &typeConverter,
   patterns.add<WaitForOpToFuncCallLowering>(typeConverter);
   patterns.add<FreeDPUsOpToFuncCallLowering>(typeConverter);
   patterns.add<EraseDpuProgram>(typeConverter);
-  patterns.add<BaseDPUMemOffsetOpLowering>(&typeConverter.getContext());
 }
 
 struct ConvertUPMEMToLLVMPass
