@@ -265,15 +265,6 @@ static LogicalResult printOperation(CppEmitter &emitter,
 }
 
 static LogicalResult printOperation(CppEmitter &emitter,
-                                    upmem::BaseMRAMAddrOp heapOp) {
-  raw_ostream &os = emitter.ostream();
-  if (failed(emitter.emitAssignPrefix(*heapOp)))
-    return failure();
-  os << "(uint32_t) DPU_MRAM_HEAP_POINTER";
-  return success();
-}
-
-static LogicalResult printOperation(CppEmitter &emitter,
                                     upmem::PrivateWRAMAllocOp wramAllocOp) {
   raw_ostream &os = emitter.ostream();
   MemRefType res_type = wramAllocOp.getBuffer().getType();
@@ -1551,8 +1542,6 @@ LogicalResult CppEmitter::emitOperation(Operation &op, bool trailingSemicolon) {
               [&](auto op) { return printOperation(*this, op); })
           .Case<LLVM::ExpOp>([&](auto op) { return printOperation(*this, op); })
           .Case<upmem::TaskletDimOp>(
-              [&](auto op) { return printOperation(*this, op); })
-          .Case<upmem::BaseMRAMAddrOp>(
               [&](auto op) { return printOperation(*this, op); })
           .Case<upmem::PrivateWRAMAllocOp>(
               [&](auto op) { return printOperation(*this, op); })

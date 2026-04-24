@@ -167,41 +167,6 @@ def StaticAllocOp : Upmem_Op<"static_alloc", [Symbol,
 }
 
 
-def MemcpyOp : Upmem_Op<"memcpy", []> {
-
-  let summary = "DMA transfer between WRAM and MRAM within a DPU";
-
-  let description = [{
-    Transfers `size` elements between the DPU's WRAM and MRAM starting at
-    `offset` elements from the base of MRAM. The direction is specified by
-    the `direction` attribute (`mram_to_wram` or `wram_to_mram`).
-    The `buffer` operand is the WRAM buffer; the MRAM address is expressed
-    as an element offset into the DPU's flat MRAM address space.
-
-    This is a blocking operation: it completes before the next op executes.
-
-    ```mlir
-    upmem.memcpy mram_to_wram %wram_buf, %size, %mram_offset
-        : memref<64xi32, "wram">, index, index
-    upmem.memcpy wram_to_mram %wram_buf, %size, %mram_offset
-        : memref<64xi32, "wram">, index, index
-    ```
-  }];
-
-  let arguments = (ins MemcpyDirAttr:$direction,
-                   Arg<AnyMemRef, "", [MemWrite]>:$buffer,
-                   Index:$size, Index:$offset);
-
-  let assemblyFormat = [{
-    $direction $buffer`,` $size`,` $offset `:` type($buffer)`,` type($size)`,` type($offset) attr-dict
-  }];
-
-  // let hasFolder = 1;
-  // let hasVerifier = 1;
-  // let hasCanonicalizer = 1;
-}
-
-
 def LocalTransferOp : Upmem_Op<"local_transfer"> {
   let summary = "transfer between memory spaces (wram or mram)";
   let description = [{
@@ -225,43 +190,6 @@ def LocalTransferOp : Upmem_Op<"local_transfer"> {
     $source `into` $target attr-dict `:` type($source) `to` type($target)
   }];
 
-}
-
-
-def BaseMRAMAddrOp: Upmem_Op <"dpu_heap_base_addr", []> {
-  let summary = "base address of the MRAM heap within the DPU address space";
-  let description = [{
-    Returns the address of the first byte of the MRAM heap for the current DPU.
-    Scattered host data lands starting at this address. Use this value as the
-    base pointer when computing MRAM offsets for `upmem.memcpy` transfers.
-
-    ```mlir
-    %base = upmem.dpu_heap_base_addr : index
-    ```
-  }];
-  let results = (outs Index:$base_offset);
-
-  let assemblyFormat = [{
-     attr-dict `:` type($base_offset)
-  }];
-}
-
-def BaseDPUMemOffsetOp: Upmem_Op <"base_dpu_mem_offset", []> {
-  let summary = "byte offset from the start of DPU memory to the MRAM region";
-  let description = [{
-    Returns the byte offset from the beginning of the DPU memory address space
-    to the MRAM region. This is a compile-time constant that reflects the memory
-    map of the UPMEM hardware.
-
-    ```mlir
-    %offset = upmem.base_dpu_mem_offset : index
-    ```
-  }];
-  let results = (outs Index:$base_offset);
-
-  let assemblyFormat = [{
-     attr-dict `:` type($base_offset)
-  }];
 }
 
 
