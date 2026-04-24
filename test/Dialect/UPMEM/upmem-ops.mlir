@@ -1,6 +1,10 @@
 // RUN: cinm-opt %s | cinm-opt | FileCheck %s
 // RUN: cinm-opt %s --mlir-print-op-generic | cinm-opt | FileCheck %s
 
+#mram = #cinm.level<name = "mram", size_in_bytes = 458, alignment = 8, arity = 2>
+#wram = #cinm.level<name = "wram", size_in_bytes = 64, alignment = 8, arity = 2>
+#upmem = #upmem.platform<dimensions = 30x64x32>
+#upmem2 = #upmem.platform<dimensions = 30x64, levels = [#mram, #wram]>
 #map = affine_map<(d0, d1) -> (d1 mod 4, 0)>
 #map1 = affine_map<(d0, d1) -> (d1, 0)>
 #map2 = affine_map<(d0, d1) -> (d0, d1)>
@@ -9,7 +13,7 @@ module {
   memref.global "private" constant @__constant_8x128xi32 : memref<8x128xi32> = dense<0> {alignment = 64 : i64}
 
   // CHECK-LABEL: @mm_dimm8_nopt
-  func.func @mm_dimm8_nopt(%arg0: memref<8x1024xi32>, %arg1: memref<1024x128xi32>) -> memref<8x128xi32> {
+  func.func @mm_dimm8_nopt(%arg0: memref<8x1024xi32>, %arg1: memref<1024x128xi32>) -> memref<8x128xi32> attributes {cinm.available_platforms = [#upmem, #upmem2]} {
     %c1024 = arith.constant 1024 : index
     %c1 = arith.constant 1 : index
     %c128 = arith.constant 128 : index

@@ -21,9 +21,6 @@ using namespace mlir::upmem;
 #include "cinm-mlir/Dialect/UPMEM/IR/UPMEMBase.cpp.inc"
 #include "cinm-mlir/Dialect/UPMEM/IR/UPMEMEnums.cpp.inc"
 
-#define GET_ATTRDEF_CLASSES
-#include "cinm-mlir/Dialect/UPMEM/IR/UPMEMAttributes.cpp.inc"
-
 //===----------------------------------------------------------------------===//
 
 //===----------------------------------------------------------------------===//
@@ -34,7 +31,7 @@ void UPMEMDialect::initialize()
 {
     registerOps();
     registerTypes();
-    addAttributes<TransferDirectionAttr>();
+    registerAttributes();
 }
 
 

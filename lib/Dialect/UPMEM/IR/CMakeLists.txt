@@ -2,6 +2,7 @@ add_mlir_dialect_library(UPMEMIR
         UPMEMBase.cpp
         UPMEMOps.cpp
         UPMEMTypes.cpp
+        UPMEMAttributes.cpp
         InferIntRangeInterfaceImpls.cpp
         
     DEPENDS
@@ -19,4 +20,5 @@ add_mlir_dialect_library(UPMEMIR
         MLIRInferIntRangeInterface
         MLIRMemRefDialect
         MLIRSupport
+        CinmIR
 )

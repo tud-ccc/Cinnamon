@@ -31,17 +31,10 @@ def UPMEM_Dialect : Dialect {
     private:
         void registerOps();
         void registerTypes();
+        void registerAttributes();
     public:
-        static StringRef getContainerModuleAttrName() {
-            return "upmem.container_module";
-        }
-        static StringRef getKernelFuncAttrName() { return "upmem.kernel"; }
-        static bool isKernel(Operation *op);
-        static unsigned getNumWorkgroupDimensions() { return 1; }
-        // static AddressSpace getWorkgroupAddressSpace() { return AddressSpace::Workgroup; }
-        // static AddressSpace getPrivateAddressSpace() { return AddressSpace::Private; }
     }];
-    // let dependentDialects = ["arith::ArithDialect"];
+    let dependentDialects = ["cinm::CinmDialect"];
     let useDefaultAttributePrinterParser = 1;
     // let useDefaultTypePrinterParser = 1;
 }
