@@ -65,6 +65,8 @@ class UPMEM_I32EnumAttr<string mnemonic, UPMEM_I32Enum enumInfo> :
 
 
 
+class UPMEM_Attr<string name, list<Trait> traits = []>
+        : AttrDef<UPMEM_Dialect, name, traits>;
 
 class UPMEM_Type<string name, list<Trait> traits = []>
         : TypeDef<UPMEM_Dialect, name, traits>;
