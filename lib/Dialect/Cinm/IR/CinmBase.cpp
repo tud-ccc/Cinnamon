@@ -81,6 +81,13 @@ Attribute CinmDialect::parseAttribute(DialectAsmParser &parser,
     return HostPlatformAttr::parse(parser, type);
   if (parser.parseOptionalKeyword(CostModelDataAttr::getMnemonic()).succeeded())
     return CostModelDataAttr::parse(parser, type);
+
+  StringRef mnemonic;
+  Attribute result;
+  auto res = generatedAttributeParser(parser, &mnemonic, type, result);
+  if (res.has_value() && res.value().succeeded())
+    return result;
+  parser.emitError(parser.getNameLoc(), "Unknown attribute ") << mnemonic;
   return {};
 }
 

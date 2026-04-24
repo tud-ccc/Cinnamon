@@ -17,8 +17,8 @@ def UpmemPlatformAttr: UPMEM_Attr<"UpmemPlatform", [
   ]> {
   
   let summary = "Platform description for upmem";
-  let assemblyFormat = "`<` `levels` `=` $levels `,` `dimensions` `=` `(` $maxNumRanks `x` $maxNumDpusPerRank (`x` $maxNumTasklets^)? `)` `>`";
   let mnemonic = "platform";
+  let hasCustomAssemblyFormat = 1;
   let parameters = (ins 
     "::mlir::cinm::CinmLevelArrayAttr":$levels,
     "int":$maxNumRanks,

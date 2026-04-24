@@ -1,7 +1,8 @@
+#upmem = #upmem.platform<30x64>
 module {
 
     func.func @mm_dimm4_nopt(%A: tensor<8x1024xi32>, %B: tensor<1024x256xi32>,  %C: tensor<256x2048xi32>) -> tensor<8x2048xi32>
-    attributes { cinm.available_platforms = [#cinm.host_platform] } {
+    attributes { cinm.available_platforms = [#cinm.host_platform, #upmem] } {
 
 
         %r = cinm.compute_ -> tensor<8x2048xi32> 

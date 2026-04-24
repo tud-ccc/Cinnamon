@@ -60,15 +60,6 @@ MemRefType upmem::detail::flatMemRefType(Type ty) {
 LogicalResult
 upmem::UPMEMDialect::verifyOperationAttribute(Operation *op,
                                               NamedAttribute attr) {
-  if (!llvm::isa<UnitAttr>(attr.getValue()) ||
-      attr.getName() != getContainerModuleAttrName())
-    return success();
-
-  auto module = dyn_cast<ModuleOp>(op);
-  if (!module)
-    return op->emitError("expected '")
-           << getContainerModuleAttrName() << "' attribute to be attached to '"
-           << ModuleOp::getOperationName() << '\'';
   return success();
 }
 
