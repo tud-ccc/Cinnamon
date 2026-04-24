@@ -93,9 +93,39 @@ void UpmemAcceleratorAttr::print(::mlir::AsmPrinter &out) const {
   out << ">";
 }
 
+static cinm::CinmLevelArrayAttr upmemLevels(mlir::MLIRContext *ctx,
+                                            bool isV1A) {
+  int indices = 2;
+  int wramSize = isV1A ? 65536 : 63488;
+  Builder builder(ctx);
+  cinm::CinmLevelDefAttr mram =
+      builder.getAttr<cinm::CinmLevelDefAttr>(builder.getStringAttr("mram"),
+                                              /*size_in_bytes*/ 67108864,
+                                              /*alignment*/ 8, indices);
+  cinm::CinmLevelDefAttr wram =
+      builder.getAttr<cinm::CinmLevelDefAttr>(builder.getStringAttr("wram"),
+                                              /*size_in_bytes*/ wramSize,
+                                              /*alignment*/ 8, indices);
+  return cinm::CinmLevelArrayAttr::get(builder.getContext(), {mram, wram});
+}
+
 Attribute UpmemPlatformAttr::parse(::mlir::AsmParser &p, ::mlir::Type) {
   SmallVector<int64_t> dims;
-  if (p.parseLess() || p.parseKeyword("dimensions") || p.parseEqual() ||
+  if (p.parseLess() || p.parseKeyword("type") || p.parseEqual())
+    return {};
+  auto typeLoc = p.getCurrentLocation();
+  llvm::FailureOr<bool> type =
+      AsmParser::KeywordSwitch<llvm::FailureOr<bool>>(p)
+          .Case("v1A", true)
+          .Case("v1B", false)
+          .Default(llvm::failure());
+  if (llvm::failed(type)) {
+    p.emitError(typeLoc, "expected one of v1A, v1B");
+    return {};
+  }
+  bool isV1A = *type;
+
+  if (p.parseComma() || p.parseKeyword("dimensions") || p.parseEqual() ||
       p.parseDimensionList(dims, false, false))
     return {};
   cinm::CinmLevelArrayAttr levels;
@@ -104,7 +134,7 @@ Attribute UpmemPlatformAttr::parse(::mlir::AsmParser &p, ::mlir::Type) {
         p.parseCustomAttributeWithFallback(levels))
       return {};
   } else {
-    levels = UpmemPlatformAttr::getDefault(p.getContext()).getLevels();
+    levels = upmemLevels(p.getContext(), isV1A);
   }
   if (p.parseGreater())
     return {};
@@ -115,15 +145,16 @@ Attribute UpmemPlatformAttr::parse(::mlir::AsmParser &p, ::mlir::Type) {
     return {};
   }
 
-  int ranks = dims[0], dpus = dims[1], tasklets = 32;
+  int ranks = dims[0], dpus = dims[1], tasklets = isV1A ? 24 : 16;
   if (dims.size() == 3)
     tasklets = dims[2];
 
-  return UpmemPlatformAttr::get(p.getContext(), levels, ranks, dpus, tasklets);
+  return UpmemPlatformAttr::get(p.getContext(), levels, isV1A, ranks, dpus,
+                                tasklets);
 }
 
 void UpmemPlatformAttr::print(::mlir::AsmPrinter &out) const {
-  out << "<dimensions = ";
+  out << "<type = " << (getIsV1a() ? "v1A" : "v1B") << ", dimensions = ";
 
   out.printDimensionList(
       {getMaxNumRanks(), getMaxNumDpusPerRank(), getMaxNumTasklets()});
@@ -135,23 +166,7 @@ void UpmemPlatformAttr::print(::mlir::AsmPrinter &out) const {
 }
 
 UpmemPlatformAttr UpmemPlatformAttr::getDefault(MLIRContext *ctx) {
-  using namespace cinm;
-
-  Builder builder(ctx);
-  auto indices = 2;
-
-  cinm::CinmLevelDefAttr mram =
-      builder.getAttr<cinm::CinmLevelDefAttr>(builder.getStringAttr("mram"),
-                                              /*size_in_bytes*/ 67108864,
-                                              /*alignment*/ 8, indices);
-  cinm::CinmLevelDefAttr wram =
-      builder.getAttr<cinm::CinmLevelDefAttr>(builder.getStringAttr("wram"),
-                                              /*size_in_bytes*/ 65536,
-                                              /*alignment*/ 8, indices);
-
-  return UpmemPlatformAttr::get(
-      ctx, CinmLevelArrayAttr::get(builder.getContext(), {mram, wram}), 8, 64,
-      16);
+  return UpmemPlatformAttr::get(ctx, upmemLevels(ctx, true), true, 8, 64, 24);
 }
 
 Attribute
