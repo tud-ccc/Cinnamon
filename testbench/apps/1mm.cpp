@@ -2,21 +2,23 @@
 #include <cstdint>
 
 extern "C" {
-void *mm_dimm4_nopt(int32_t *, int32_t *);
-void *mm_dimm4_opt(int32_t *, int32_t *);
-void *mm_dimm8_nopt(int32_t *, int32_t *);
-void *mm_dimm8_opt(int32_t *, int32_t *);
-void *mm_dimm16_nopt(int32_t *, int32_t *);
-void *mm_dimm16_opt(int32_t *, int32_t *);
+void *mm_dimm4_nopt(int32_t *, int32_t *, int32_t *);
+void *mm_dimm4_opt(int32_t *, int32_t *, int32_t *);
+void *mm_dimm8_nopt(int32_t *, int32_t *, int32_t *);
+void *mm_dimm8_opt(int32_t *, int32_t *, int32_t *);
+void *mm_dimm16_nopt(int32_t *, int32_t *, int32_t *);
+void *mm_dimm16_opt(int32_t *, int32_t *, int32_t *);
 }
 
 #define BENCH_MM(ty, M, K, N, fun_name)                                        \
   do {                                                                         \
     ty *A = init_matrix<ty, M, K>();                                           \
     ty *B = init_matrix<ty, K, N>();                                           \
-    DO_BENCH(REPS, WARMUP, fun_name(A, B));                                    \
+    ty *OUT = init_matrix<ty, M, N>();                                         \
+    DO_BENCH(REPS, WARMUP, fun_name(A, B, OUT));                               \
     free(A);                                                                   \
     free(B);                                                                   \
+    free(OUT);                                                                 \
   } while (false)
 
 int main(void) {

@@ -381,18 +381,27 @@ LogicalResult convertCinmToCnm(
 
   // gather the results (only the out buffers)
 
-  for (auto [i, reshaped, result, alloc] :
-       llvm::enumerate(reshapedOutputs, results, launchOutputs)) {
+  // Gather tensor results
+  for (auto [i, reshaped, cnmAlloc] :
+       llvm::enumerate(reshapedOutputs, launchOutputs)) {
     auto map = gatherMaps[launchInputs.size() + i];
-    auto outBuf =
-        tensor::EmptyOp::create(builder, reshaped.getType(), ValueRange{});
-    auto res = cnm::GatherOp::create(builder, alloc, workgroup, map, outBuf);
-    auto shapedBack =
-        cinm::reshapeStatic(builder, builder.getLoc(),
-                            cast<TypedValue<ShapedType>>(res.getOutput()),
-                            cast<ShapedType>(result.getType()).getShape());
+    Value outBuf;
+    if (isa<TensorType>(reshaped.getType())) {
+      outBuf =
+          tensor::EmptyOp::create(builder, reshaped.getType(), ValueRange{});
+    } else {
+      outBuf = reshaped;
+    }
+    auto res = cnm::GatherOp::create(builder, cnmAlloc, workgroup, map, outBuf);
+    if (isa<TensorType>(reshaped.getType())) {
+      auto correspondingResult = results[i];
+      auto shapedBack = cinm::reshapeStatic(
+          builder, builder.getLoc(),
+          cast<TypedValue<ShapedType>>(res.getOutput()),
+          cast<ShapedType>(correspondingResult.getType()).getShape());
 
-    resultValues.push_back(shapedBack);
+      resultValues.push_back(shapedBack);
+    }
   }
 
   cnm::FreeWorkgroupOp::create(builder, workgroup);
@@ -803,7 +812,7 @@ struct ConvertCinmGemmToCnm : public OpConversionPattern<cinm::GemmOp> {
     if (op.getOut()) {
       // memref version
       outbuf = op.getOut();
-    }else if (auto bias = op.getBias()){
+    } else if (auto bias = op.getBias()) {
       // todo check whether the bias is suitable for use here.
       //  this is a hacky fix because sometimes bufferization fails to reconcile
       //  the loop initializer (bias) and the yield output (output of the gemm)
