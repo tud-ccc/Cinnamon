@@ -89,9 +89,10 @@ static AffineExpr simplifyAffineExprWithBounds(
     return expr;
   case AffineExprKind::DimId: {
     auto dimExpr = cast<AffineDimExpr>(expr);
-    auto bound = dimUpperBounds[dimExpr.getPosition()];
-    if (bound == 1)
-      return getAffineConstantExpr(0, expr.getContext());
+    auto ub = dimUpperBounds[dimExpr.getPosition()];
+    auto lb = dimLowerBounds[dimExpr.getPosition()];
+    if (ub == lb && ub.has_value() && lb.has_value())
+      return getAffineConstantExpr(lb.value(), expr.getContext());
     return dimExpr;
   }
   case AffineExprKind::Add:
@@ -151,7 +152,7 @@ AffineMap simplifyAffineMapWithBounds(AffineMap map,
   llvm::SmallVector<std::optional<int64_t>> lowerBounds;
   for (auto dim : dimSizes) {
     (void)dim;
-    upperBounds.push_back(std::make_optional(0));
+    lowerBounds.push_back(std::make_optional(0));
   }
 
   SmallVector<AffineExpr, 8> exprs;

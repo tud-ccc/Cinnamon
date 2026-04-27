@@ -1,9 +1,9 @@
 // RUN: cinm-opt --cinm-isolate-compute-blocks --convert-cinm-to-cnm %s | cinm-opt | FileCheck %s
 
 // Affine maps emitted for scatter/gather index computations.
-// CHECK-DAG: #[[MAP_ROW_MOD8:[^ ]*]] = affine_map<(d0, d1, d2) -> ((d1 + d2) mod 8)>
-// CHECK-DAG: #[[MAP_ROW_SUM:[^ ]*]] = affine_map<(d0, d1, d2) -> (d1 + d2)>
-// CHECK-DAG: #[[MAP_ROW_COL:[^ ]*]] = affine_map<(d0, d1, d2) -> (d0, d1 + d2)>
+// CHECK-DAG: #[[MAP_ROW_MOD8:[^ ]*]] = affine_map<(d0, d1, d2) -> (d1 mod 8)>
+// CHECK-DAG: #[[MAP_ROW_SUM:[^ ]*]] = affine_map<(d0, d1, d2) -> (d1)>
+// CHECK-DAG: #[[MAP_ROW_COL:[^ ]*]] = affine_map<(d0, d1, d2) -> (d0, d1)>
 // CHECK-DAG: #[[MAP_ID:[^ ]*]] = affine_map<(d0) -> (d0)>
 // CHECK-DAG: #[[MAP_SCALAR:[^ ]*]] = affine_map<(d0) -> ()>
 // CHECK-DAG: #[[MAP_FLAT:[^ ]*]] = affine_map<(d0, d1, d2) -> (d0 * 4 + d1 + d2)>
