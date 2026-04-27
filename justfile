@@ -72,6 +72,10 @@ alias b := build
 # run tests
 test: (doNinja "check-cinm-mlir")
 
+runTest PAT:
+  #!/bin/bash
+  find build/test -iname '*{{PAT}}*' -exec bash \{\} \; 
+
 [no-cd]
 cinm-translate *ARGS: (doNinja "cinm-opt")
     {{source_directory()}}/{{build_dir}}/bin/cinm-translate {{ARGS}}
