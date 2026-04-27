@@ -664,9 +664,9 @@ LogicalResult computeScatterMapForGemm(cnm::BufferType bufferTyAB,
     return failure();
 
   // couple of situations we know work
-  if (rowsA == 1 || colsB == 1 ||
-      wgShapeWithoutUnits == ArrayRef<int64_t>{rowsA, colsB} ||
-      wgShapeWithoutUnits == ArrayRef<int64_t>{colsB, rowsA}) {
+  if (wgShapeWithoutUnits == ArrayRef<int64_t>{rowsA, colsB} ||
+      wgShapeWithoutUnits == ArrayRef<int64_t>{colsB, rowsA} ||
+      wgElts == rowsA * colsB) {
 
     auto ctx = bufferTyAB.getContext();
     auto numInputs = bufferTyAB.getWorkgroupShape().size();
