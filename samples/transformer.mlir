@@ -12,8 +12,8 @@
 
 func.func @forward(%token : index, %pos : index,
 	// state
-	%kc : memref<6x256x288xf32>,
-	%vc : memref<6x256x288xf32>,
+	%kc : tensor<6x256x288xf32>,
+	%vc : tensor<6x256x288xf32>,
 	// weights
 	%embedding_table : tensor<32000x288xf32>,
 	%rms_att_weights : tensor<6x288xf32>,
@@ -42,7 +42,7 @@ func.func @forward(%token : index, %pos : index,
 
 	%content_row = tensor.extract_slice %embedding_table [%token, 0] [1, 288] [1, 1] : tensor<32000x288xf32> to tensor<288xf32>
 
-	%x = scf.for %layer = %c0 to %c6 step %c1 iter_args(%x = %content_row) -> (tensor<288xf32>) {
+	%x, %kc2, %vc2 = scf.for %layer = %c0 to %c6 step %c1 iter_args(%x = %content_row, %kc0 = %kc, %vc0 = %vc) -> (tensor<288xf32>, tensor<6x256x288xf32>, tensor<6x256x288xf32>) {
 		%rms_att_weight = tensor.extract_slice %rms_att_weights [%layer, 0] [1, 288] [1, 1] : tensor<6x288xf32> to tensor<288xf32>
 		%xb = func.call @rmsnorm(%x, %rms_att_weight) : (tensor<288xf32>, tensor<288xf32>) -> tensor<288xf32>
 
@@ -84,21 +84,13 @@ func.func @forward(%token : index, %pos : index,
 			scf.yield %qr, %kr : tensor<288xf32>, tensor<288xf32>
 		}
 
-		%kmr = bufferization.to_buffer %k2 : tensor<288xf32> to memref<288xf32>
-		%vmr = bufferization.to_buffer %v : tensor<288xf32> to memref<288xf32>
-
-		%kcd = memref.subview %kc [%layer, %pos, 0] [1, 1, 288] [1, 1, 1] : memref<6x256x288xf32> to memref<288xf32, strided<[1], offset: ?>>
-		%vcd = memref.subview %vc [%layer, %pos, 0] [1, 1, 288] [1, 1, 1] : memref<6x256x288xf32> to memref<288xf32, strided<[1], offset: ?>>
-
-		memref.copy %vmr, %vcd : memref<288xf32> to memref<288xf32, strided<[1], offset: ?>>
-		memref.copy %kmr, %kcd : memref<288xf32> to memref<288xf32, strided<[1], offset: ?>>
+		%kc1 = tensor.insert_slice %k2 into %kc0 [%layer, %pos, 0] [1, 1, 288] [1, 1, 1] : tensor<288xf32>  into tensor<6x256x288xf32>
+		%vc1 = tensor.insert_slice %v into %vc0 [%layer, %pos, 0] [1, 1, 288] [1, 1, 1] : tensor<288xf32>  into tensor<6x256x288xf32>
 
 		// multi head attention
-		%lkc = memref.subview %kc [%layer, 0, 0] [1, 256, 288] [1, 1, 1] : memref<6x256x288xf32> to memref<256x288xf32, strided<[288, 1], offset: ?>>
-		%lkc2 = bufferization.to_tensor %lkc : memref<256x288xf32, strided<[288, 1], offset: ?>> to tensor<256x288xf32>
-		%lvc = memref.subview %vc [%layer, 0, 0] [1, 256, 288] [1, 1, 1] : memref<6x256x288xf32> to memref<256x288xf32, strided<[288, 1], offset: ?>>
-		%lvc2 = bufferization.to_tensor %lvc : memref<256x288xf32, strided<[288, 1], offset: ?>> to tensor<256x288xf32>
-		%xb2 = func.call @mha(%q2, %lkc2, %lvc2, %pos) : (tensor<288xf32>, tensor<256x288xf32>, tensor<256x288xf32>, index) -> tensor<288xf32>
+    %lkc = tensor.extract_slice %kc1[%layer, 0, 0] [1, 256, 288] [1, 1, 1] : tensor<6x256x288xf32> to tensor<256x288xf32>
+    %lvc = tensor.extract_slice %vc1[%layer, 0, 0] [1, 256, 288] [1, 1, 1] : tensor<6x256x288xf32> to tensor<256x288xf32>
+		%xb2 = func.call @mha(%q2, %lkc, %lvc, %pos) : (tensor<288xf32>, tensor<256x288xf32>, tensor<256x288xf32>, index) -> tensor<288xf32>
 
 		%wo_slice = tensor.extract_slice %wo [%layer, 0, 0] [1, 288, 288] [1, 1, 1] : tensor<6x288x288xf32> to tensor<288x288xf32>
 		%xb4 = cinm.compute_ -> tensor<288xf32> attributes { workgroupShape = array<i64: 1,6,8> } {
@@ -146,7 +138,7 @@ func.func @forward(%token : index, %pos : index,
 			cinm.yield %xb7 : tensor<288xf32>
 		}
 
-		scf.yield %xb7 : tensor<288xf32>
+		scf.yield %xb7, %kc1, %vc1 : tensor<288xf32>, tensor<6x256x288xf32>, tensor<6x256x288xf32>
 	}
 
 	%x2 = func.call @rmsnorm(%x, %rms_final_weight) : (tensor<288xf32>, tensor<288xf32>) -> tensor<288xf32>
@@ -228,7 +220,11 @@ func.func @mha(%q: tensor<288xf32>, %kc: tensor<256x288xf32>, %vc: tensor<256x28
 				%1 = cinm.op.elementwise add %xb_slice_i, %0 : tensor<48xf32>
 				cinm.yield %1 : tensor<48xf32>
 			}
-			scf.yield %v : tensor<48xf32>
+      // todo not equivalent.
+      //  - Review bufferization implementations for compute.
+      //    Make sure equivalence is preserved between args/bbargs and yield/results.
+      //  - Review bufferization implementation for elementwise.
+			scf.yield %xb_slice : tensor<48xf32>
 		}
 
 		%xbr = tensor.insert_slice %xb_slice into %xbi [%hoff] [48] [1] : tensor<48xf32> into tensor<288xf32>
