@@ -1,6 +1,6 @@
 add_mlir_dialect_library(CinmTransforms
     AnnotateTileSizesPass.cpp
-    CinmBufferizableOpInterface.cpp
+    BufferizeCinm.cpp
     CinmIsolateComputeBlocks.cpp
     CinmMemoryCleanup.cpp
     CinmQuantization.cpp

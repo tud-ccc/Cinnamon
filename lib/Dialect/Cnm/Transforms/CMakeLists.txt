@@ -1,6 +1,6 @@
 add_mlir_dialect_library(CnmTransforms
     SPIRVAttachAttributes.cpp
-    Bufferize.cpp
+    BufferizeCnm.cpp
     HoistWorkgroups.cpp
 
 DEPENDS
