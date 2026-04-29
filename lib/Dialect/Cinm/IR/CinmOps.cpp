@@ -19,6 +19,7 @@
 #include <llvm/Support/LogicalResult.h>
 #include <mlir/Dialect/Affine/IR/AffineOps.h>
 #include <mlir/Dialect/Arith/IR/Arith.h>
+#include <mlir/Dialect/Bufferization/IR/BufferizableOpInterface.h>
 #include <mlir/Dialect/Bufferization/IR/Bufferization.h>
 #include <mlir/Dialect/LLVMIR/LLVMDialect.h>
 #include <mlir/Dialect/Linalg/IR/Linalg.h>
@@ -37,9 +38,11 @@
 #include <mlir/IR/OpImplementation.h>
 #include <mlir/IR/OperationSupport.h>
 #include <mlir/IR/PatternMatch.h>
+#include <mlir/IR/TypeRange.h>
 #include <mlir/IR/TypeUtilities.h>
 #include <mlir/IR/Value.h>
 #include <mlir/IR/ValueRange.h>
+#include <mlir/Interfaces/ControlFlowInterfaces.h>
 #include <mlir/Interfaces/InferTypeOpInterface.h>
 #include <mlir/Interfaces/SideEffectInterfaces.h>
 #include <mlir/Support/LogicalResult.h>
@@ -216,7 +219,7 @@ ParseResult ComputeOp::parse(::mlir::OpAsmParser &parser,
 
 void ComputeOp::print(OpAsmPrinter &out) {
   if (auto platform = getPlatform()) {
-    out << " on platform " << platform; 
+    out << " on platform " << platform;
   }
   out << " (";
   llvm::interleaveComma(zipArgsWithOperands(), out, [&](auto pair) {
@@ -232,7 +235,8 @@ void ComputeOp::print(OpAsmPrinter &out) {
   out.increaseIndent();
   out.increaseIndent();
   out.printNewline();
-  out.printOptionalAttrDictWithKeyword((*this)->getAttrs(), {getPlatformAttrName()});
+  out.printOptionalAttrDictWithKeyword((*this)->getAttrs(),
+                                       {getPlatformAttrName()});
   out << ' ';
   out.decreaseIndent();
   out.decreaseIndent();
@@ -265,7 +269,7 @@ ParseResult FlexComputeOp::parse(::mlir::OpAsmParser &parser,
 
 void FlexComputeOp::print(OpAsmPrinter &out) {
   if (auto platform = getPlatform()) {
-    out << " on platform " << platform; 
+    out << " on platform " << platform;
   }
   if (!getResults().empty()) {
     out << " -> ";
@@ -274,7 +278,8 @@ void FlexComputeOp::print(OpAsmPrinter &out) {
   out.increaseIndent();
   out.increaseIndent();
   out.printNewline();
-  out.printOptionalAttrDictWithKeyword((*this)->getAttrs(), {getPlatformAttrName()});
+  out.printOptionalAttrDictWithKeyword((*this)->getAttrs(),
+                                       {getPlatformAttrName()});
   out << ' ';
   out.decreaseIndent();
   out.decreaseIndent();
@@ -729,4 +734,165 @@ void ElementwiseOp::getEffects(
 
   // todo is there a read effect?
   addEffect<MemoryEffects::Write>(getOutMutable()[0], effects);
+}
+
+void ComputeOp::getRegionInvocationBounds(
+    ArrayRef<Attribute> _operands,
+    SmallVectorImpl<mlir::InvocationBounds> &result) {
+
+  result.push_back(::mlir::InvocationBounds(1, 1));
+}
+::mlir::OperandRange
+ComputeOp::getEntrySuccessorOperands(::mlir::RegionBranchPoint point) {
+  return getOperands();
+}
+void ComputeOp::getSuccessorRegions(RegionBranchPoint point,
+                                    SmallVectorImpl<RegionSuccessor> &regions) {
+  if (point == RegionBranchPoint::parent()) {
+    regions.emplace_back(&getBody(), getBodyArguments());
+  } else {
+    // region is body
+    regions.emplace_back(getResults());
+  }
+}
+
+void FlexComputeOp::getRegionInvocationBounds(
+    ArrayRef<Attribute> _operands,
+    SmallVectorImpl<mlir::InvocationBounds> &result) {
+
+  result.push_back(::mlir::InvocationBounds(1, 1));
+}
+
+void FlexComputeOp::getSuccessorRegions(
+    RegionBranchPoint point, SmallVectorImpl<RegionSuccessor> &regions) {
+  if (point == RegionBranchPoint::parent()) {
+    regions.emplace_back(&getBody(), getBody().getArguments());
+  } else {
+    // region is body
+    regions.emplace_back(getResults());
+  }
+}
+namespace {
+
+struct FlexComputeOpSimplifyYield : OpRewritePattern<cinm::FlexComputeOp> {
+  using OpRewritePattern<FlexComputeOp>::OpRewritePattern;
+  LogicalResult matchAndRewrite(cinm::FlexComputeOp op,
+                                PatternRewriter &rewriter) const override {
+
+    auto &block = op.getBody().front();
+    auto yield = cast<cinm::YieldOp>(block.getTerminator());
+    SmallVector<Value> oldResults;
+    SmallVector<Value> newYielded;
+    oldResults.reserve(yield->getNumOperands());
+    newYielded.reserve(yield->getNumOperands());
+    for (auto [yielded, result] :
+         llvm::zip(yield->getOperands(), op.getResults())) {
+      // if yielded value defined outside of the compute block, remove it
+      Operation *owner = yielded.getDefiningOp();
+      if (!owner)
+        owner = yielded.getParentBlock()->getParentOp();
+      if (block.findAncestorOpInBlock(*owner)) {
+        newYielded.push_back(yielded);
+        oldResults.push_back(result);
+      } else {
+        rewriter.replaceAllUsesWith(result, yielded);
+      }
+    }
+    if (newYielded.size() == yield->getNumOperands())
+      return failure();
+
+    rewriter.setInsertionPointAfter(op);
+    auto newOp = FlexComputeOp::create(
+        rewriter, op.getLoc(),
+        ValueTypeRange<ValueRange>(ValueRange(newYielded)));
+    yield->setOperands(newYielded);
+    newOp.getBody().takeBody(op.getBody());
+    for (auto [old, newer] : llvm::zip(oldResults, newOp.getResults())) {
+      rewriter.replaceAllUsesWith(old, newer);
+    }
+    rewriter.eraseOp(op);
+
+    return success();
+  }
+};
+
+struct ComputeOpSimplifyYield : OpRewritePattern<cinm::ComputeOp> {
+  using OpRewritePattern<ComputeOp>::OpRewritePattern;
+  LogicalResult matchAndRewrite(cinm::ComputeOp op,
+                                PatternRewriter &rewriter) const override {
+
+    auto &block = op.getBody().front();
+    auto yield = cast<cinm::YieldOp>(block.getTerminator());
+    SmallVector<Value> keptResults;
+    SmallVector<Value> keptYielded;
+    keptResults.reserve(yield->getNumOperands());
+    keptYielded.reserve(yield->getNumOperands());
+    for (auto [yielded, result] :
+         llvm::zip(yield->getOperands(), op.getResults())) {
+      // if yielded value defined outside of the compute block, remove it
+      Operation *owner = yielded.getDefiningOp();
+      if (!owner)
+        owner = yielded.getParentBlock()->getParentOp();
+      if (auto bbarg = llvm::dyn_cast_or_null<BlockArgument>(yielded);
+          bbarg && bbarg.getOwner()->getParentOp() == op) {
+        auto outer = op->getOperands()[bbarg.getArgNumber()];
+        rewriter.replaceAllUsesWith(result, outer);
+      } else {
+        keptYielded.push_back(yielded);
+        keptResults.push_back(result);
+      }
+    }
+    if (keptYielded.size() == yield->getNumOperands())
+      return failure();
+
+    rewriter.setInsertionPointAfter(op);
+    auto newOp =
+        ComputeOp::create(rewriter, op.getLoc(), op.getOperands(),
+                          ValueTypeRange<ValueRange>(ValueRange(keptYielded)));
+    yield->setOperands(keptYielded);
+    newOp.getBody().takeBody(op.getBody());
+    for (auto [old, newer] : llvm::zip(keptResults, newOp.getResults())) {
+      rewriter.replaceAllUsesWith(old, newer);
+    }
+    rewriter.eraseOp(op);
+
+    return success();
+  }
+};
+
+struct ComputeOpDeleteUnusedArgs : OpRewritePattern<cinm::ComputeOp> {
+  using OpRewritePattern<ComputeOp>::OpRewritePattern;
+  LogicalResult matchAndRewrite(cinm::ComputeOp op,
+                                PatternRewriter &rewriter) const override {
+
+    SmallVector<Value> keptOperands;
+    SmallVector<BlockArgument> keptBbargs;
+    keptOperands.reserve(op->getNumOperands());
+    for (auto [bbarg, opnd] : op.zipArgsWithOperands()) {
+      if (!bbarg.use_empty()) {
+        keptOperands.push_back(opnd);
+      }
+    }
+    if (keptOperands.size() == op->getNumOperands())
+      return failure();
+
+    rewriter.modifyOpInPlace(op, [&]() {
+      op->setOperands(std::move(keptOperands));
+      op.getBody().front().eraseArguments(
+          [](auto arg) { return arg.use_empty(); });
+    });
+
+    return success();
+  }
+};
+
+} // namespace
+
+void ComputeOp::getCanonicalizationPatterns(::mlir::RewritePatternSet &results,
+                                            ::mlir::MLIRContext *context) {
+  results.insert<ComputeOpSimplifyYield, ComputeOpDeleteUnusedArgs>(context);
+}
+void FlexComputeOp::getCanonicalizationPatterns(
+    ::mlir::RewritePatternSet &results, ::mlir::MLIRContext *context) {
+  results.insert<FlexComputeOpSimplifyYield>(context);
 }

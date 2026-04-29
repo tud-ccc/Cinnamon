@@ -131,11 +131,8 @@ func.func @forward(%token : index, %pos : index,
 		%w2_slice = tensor.extract_slice %w2 [%layer, 0, 0] [1, 288, 768] [1, 1, 1] : tensor<6x288x768xf32> to tensor<288x768xf32>
 		%xb7 = cinm.compute_  -> tensor<288xf32> attributes { workgroupShape = array<i64: 1,6,8> }{
 			// final matmul to get the output of the ffn
-			%xb6 = cinm.op.gemv %w2_slice, %hb3 : tensor<288x768xf32>, tensor<768xf32> -> tensor<288xf32>
-
-			// residual connection
-			%xb7 = cinm.op.elementwise add %x, %xb6 : tensor<288xf32>
-			cinm.yield %xb7 : tensor<288xf32>
+			%xb6 = cinm.op.gemv %w2_slice, %hb3 plus %x : tensor<288x768xf32>, tensor<768xf32> plus tensor<288xf32> -> tensor<288xf32>
+			cinm.yield %x : tensor<288xf32>
 		}
 
 		scf.yield %xb7, %kc1, %vc1 : tensor<288xf32>, tensor<6x256x288xf32>, tensor<6x256x288xf32>
@@ -206,29 +203,29 @@ func.func @mha(%q: tensor<288xf32>, %kc: tensor<256x288xf32>, %vc: tensor<256x28
 
 		%attn3 = func.call @softmax(%attn) : (tensor<256xf32>) -> tensor<256xf32>
 
-		%xb_slice_init = tensor.generate {
-		^bb0(%arg1: index):
-			tensor.yield %c0f : f32
-		} : tensor<48xf32>
+		%xb_slice_init =  tensor.extract_slice %xbi [%hoff] [48] [1] : tensor<288xf32> to tensor<48xf32>
+    %init_zeroed = linalg.fill ins(%c0f : f32) outs(%xb_slice_init: tensor<48xf32>) -> tensor<48xf32>
+		%xbi0 = tensor.insert_slice %init_zeroed into %xbi [%hoff] [48] [1] : tensor<48xf32> into tensor<288xf32>  
 
-		%xb_slice = scf.for %i = %c0 to %pos2 step %c1 iter_args(%xb_slice_i = %xb_slice_init) -> (tensor<48xf32>) {
+		%xb1 = scf.for %i = %c0 to %pos2 step %c1 iter_args(%xbi1 = %xbi0) -> (tensor<288xf32>) {
+      %xb_slice_i =  tensor.extract_slice %xbi1 [%hoff] [48] [1] : tensor<288xf32> to tensor<48xf32>
 			%v = tensor.extract_slice %vc [%i, %hoff] [1, 48] [1, 1] : tensor<256x288xf32> to tensor<48xf32>
 			%a = tensor.extract %attn3 [%i] : tensor<256xf32>
 			%xb_slice = cinm.compute_ -> tensor<48xf32> attributes { workgroupShape = array<i64: 1,1,8> } {
-        %av = tensor.splat %a : tensor<48xf32>
-				%0 = cinm.op.elementwise mul %v, %av : tensor<48xf32>
-				%1 = cinm.op.elementwise add %xb_slice_i, %0 : tensor<48xf32>
+        // %av = tensor.splat %a : tensor<48xf32>
+				// %0 = cinm.op.elementwise mul %v, %av : tensor<48xf32>
+				// %1 = cinm.op.elementwise add %xb_slice_i, %0 : tensor<48xf32>
+        %e = tensor.empty() : tensor<48xf32>
+        %av = linalg.fill ins(%a : f32) outs(%e : tensor<48xf32>) -> tensor<48xf32>
+				%0 = linalg.mul ins(%v, %av: tensor<48xf32>, tensor<48xf32>) outs (%xb_slice_i: tensor<48xf32>) -> tensor<48xf32>
+				%1 = linalg.add ins(%xb_slice_i, %0: tensor<48xf32>, tensor<48xf32>) outs (%xb_slice_i: tensor<48xf32>) -> tensor<48xf32>
 				cinm.yield %1 : tensor<48xf32>
 			}
-      // todo not equivalent.
-      //  - Review bufferization implementations for compute.
-      //    Make sure equivalence is preserved between args/bbargs and yield/results.
-      //  - Review bufferization implementation for elementwise.
-			scf.yield %xb_slice : tensor<48xf32>
+      %xbr = tensor.insert_slice %xb_slice into %xbi1 [%hoff] [48] [1] : tensor<48xf32> into tensor<288xf32>
+			scf.yield %xbr : tensor<288xf32>
 		}
 
-		%xbr = tensor.insert_slice %xb_slice into %xbi [%hoff] [48] [1] : tensor<48xf32> into tensor<288xf32>
-		scf.yield %xbr : tensor<288xf32>
+		scf.yield %xb1 : tensor<288xf32>
 	}
 
 	return %xb : tensor<288xf32>

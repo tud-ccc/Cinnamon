@@ -15,8 +15,11 @@
 #include "mlir/IR/DialectRegistry.h"
 #include "mlir/IR/Operation.h"
 #include "mlir/IR/PatternMatch.h"
-#include "mlir/Support/TypeID.h"
 #include "llvm/Support/Casting.h"
+#include <llvm/ADT/ArrayRef.h>
+#include <llvm/ADT/SmallVector.h>
+#include <llvm/Support/LogicalResult.h>
+#include <mlir/IR/Value.h>
 
 using namespace mlir;
 
@@ -36,9 +39,6 @@ static Value getReturnBuffer(OpBuilder &rewriter, Location loc,
   // }
   return memref::AllocOp::create(rewriter, loc, dstMR, ValueRange{});
 }
-
-} // namespace
-namespace mlir::cinm {
 
 static Value materializeZeroLikeTensor(RewriterBase &rewriter, Location loc,
                                        Type elemTy) {
@@ -70,53 +70,93 @@ materializeAsExactMemref(RewriterBase &rewriter, Location loc, Value v,
   return m;
 }
 
+static LogicalResult
+bufferizeComputeResults(Operation *op, RewriterBase &rewriter,
+                        const bufferization::BufferizationOptions &options,
+                        bufferization::BufferizationState &state) {
+  Location loc = op->getLoc();
+
+  Operation *termOp = op->getRegion(0).front().getTerminator();
+  auto term = dyn_cast<cinm::YieldOp>(termOp);
+  if (!term)
+    return op->emitError("expected cinm.yield as terminator"), failure();
+  for (auto [i, yieldVal, res] :
+       llvm::enumerate(term->getOpOperands(), op->getOpResults())) {
+    Value v = yieldVal.get();
+    if (llvm::dyn_cast_or_null<TensorType>(v.getType())) {
+      FailureOr<Value> buf =
+          bufferization::getBuffer(rewriter, v, options, state);
+      if (failed(buf))
+        return op->emitError("cinm.compute bufferize: result #")
+               << i << " failed bufferization";
+      yieldVal.set(*buf);
+
+      auto tensorTy = res.getType();
+      res.setType(buf->getType());
+
+      rewriter.setInsertionPointAfter(op);
+      auto totensor =
+          bufferization::ToTensorOp::create(rewriter, loc, tensorTy, res);
+      rewriter.replaceAllUsesExcept(res, totensor, totensor);
+    }
+  }
+  return success();
+}
+
+static void getComputeYieldAliasingOpOperands(
+    Operation *op, Value value, const bufferization::AnalysisState &,
+    llvm::SmallVectorImpl<bufferization::AliasingOpOperand> &result) {
+
+  if (auto res = llvm::dyn_cast_or_null<OpResult>(value);
+      value.getDefiningOp() == op) {
+    OpOperand &yielded =
+        cast<cinm::YieldOp>(op->getRegion(0).front().getTerminator())
+            ->getOpOperand(res.getResultNumber());
+    result.emplace_back(&yielded, bufferization::BufferRelation::Equivalent,
+                        true);
+  }
+}
+
 struct ComputeBufferizableInterface
     : public bufferization::BufferizableOpInterface::ExternalModel<
           ComputeBufferizableInterface, cinm::ComputeOp> {
 
-  bool bufferizesToMemoryRead(Operation *, OpOperand &,
-                              const bufferization::AnalysisState &) const {
-    return false;
+  bool bufferizesToMemoryRead(Operation *op, OpOperand &opnd,
+                              const bufferization::AnalysisState &state) const {
+    auto bbarg =
+        cast<cinm::ComputeOp>(op).getBodyArguments()[opnd.getOperandNumber()];
+    return state.isValueRead(bbarg);
   }
+
   bool bufferizesToMemoryWrite(Operation *, OpOperand &,
                                const bufferization::AnalysisState &) const {
     return false;
   }
 
   bufferization::AliasingValueList
-  getAliasingValues(Operation *, OpOperand &,
-                    const bufferization::AnalysisState &) const {
-    return {};
-  }
-  bufferization::AliasingValueList
-  getAliasingValues(Operation *, OpResult,
-                    const bufferization::AnalysisState &) const {
-    return {};
-  }
-
-  bool isWritable(Operation *, OpOperand &,
-                  const bufferization::AnalysisState &) const {
-    return false;
-  }
-  bool isWritable(Operation *, Value,
-                  const bufferization::AnalysisState &) const {
-    return false;
+  getAliasingValues(Operation *op, OpOperand &opnd,
+                    const bufferization::AnalysisState &state) const {
+    auto computeOp = cast<cinm::ComputeOp>(op);
+    auto bbarg = computeOp.getBodyArguments()[opnd.getOperandNumber()];
+    auto yield =
+        cast<cinm::YieldOp>(computeOp.getBody().front().getTerminator());
+    SmallVector<bufferization::AliasingValue> aliasing;
+    for (auto [yielded, result] :
+         llvm::zip(yield->getOperands(), computeOp->getOpResults())) {
+      if (state.areEquivalentBufferizedValues(yielded, bbarg)) {
+        aliasing.emplace_back(result, bufferization::BufferRelation::Equivalent,
+                              true);
+      }
+    }
+    return aliasing;
   }
 
-  FailureOr<BaseMemRefType>
-  getBufferType(Operation *, Value v,
-                const bufferization::BufferizationOptions &,
-                const bufferization::AnalysisState &) const {
-    if (auto rtt = dyn_cast<RankedTensorType>(v.getType()))
-      return MemRefType::get(rtt.getShape(), rtt.getElementType());
-    return failure();
-  }
-  FailureOr<BaseMemRefType> getBufferType(
-      Operation *, Value v, const bufferization::BufferizationOptions &,
-      const bufferization::BufferizationState &, SmallVector<Value> &) const {
-    if (auto rtt = dyn_cast<RankedTensorType>(v.getType()))
-      return MemRefType::get(rtt.getShape(), rtt.getElementType());
-    return failure();
+  bufferization::AliasingOpOperandList
+  getAliasingOpOperands(Operation *op, Value value,
+                        const bufferization::AnalysisState &state) const {
+    llvm::SmallVector<bufferization::AliasingOpOperand> result;
+    getComputeYieldAliasingOpOperands(op, value, state, result);
+    return std::move(result);
   }
 
   LogicalResult bufferize(Operation *op, RewriterBase &rewriter,
@@ -143,34 +183,45 @@ struct ComputeBufferizableInterface
         operand.set(*buf);
       }
     }
-    Operation *termOp = oldCompute.getBody().front().getTerminator();
-    auto term = dyn_cast<cinm::YieldOp>(termOp);
-    if (!term)
-      return op->emitError("expected cinm.yield as terminator"), failure();
-    for (auto [i, yieldVal, res] :
-         llvm::enumerate(term->getOpOperands(), oldCompute->getOpResults())) {
-      Value v = yieldVal.get();
-      if (llvm::dyn_cast_or_null<TensorType>(v.getType())) {
-        FailureOr<Value> buf =
-            bufferization::getBuffer(rewriter, v, options, state);
-        if (failed(buf))
-          return op->emitError("cinm.compute bufferize: result #")
-                 << i << " failed bufferization";
-        yieldVal.set(*buf);
-
-        auto tensorTy = res.getType();
-        res.setType(buf->getType());
-
-        rewriter.setInsertionPointAfter(oldCompute);
-        auto totensor =
-            bufferization::ToTensorOp::create(rewriter, loc, tensorTy, res);
-        rewriter.replaceAllUsesExcept(res, totensor, totensor);
-      }
-    }
-    op->getParentOp()->dump();
-    return success();
+    return bufferizeComputeResults(op, rewriter, options, state);
   }
 };
+
+struct FlexComputeBufferizableInterface
+    : public bufferization::BufferizableOpInterface::ExternalModel<
+          FlexComputeBufferizableInterface, cinm::FlexComputeOp> {
+
+  bufferization::AliasingValueList
+  getAliasingValues(Operation *, OpOperand &,
+                    const bufferization::AnalysisState &) const {
+    return {};
+  }
+  bufferization::AliasingOpOperandList
+  getAliasingOpOperands(Operation *op, Value value,
+                        const bufferization::AnalysisState &state) const {
+    llvm::SmallVector<bufferization::AliasingOpOperand> result;
+    getComputeYieldAliasingOpOperands(op, value, state, result);
+    return std::move(result);
+  }
+
+  LogicalResult bufferize(Operation *op, RewriterBase &rewriter,
+                          const bufferization::BufferizationOptions &options,
+                          bufferization::BufferizationState &state) const {
+    return bufferizeComputeResults(op, rewriter, options, state);
+  }
+};
+
+template <class Op>
+static bufferization::AliasingValueList aliasBiasWithResult(Operation *op,
+                                                            OpOperand &opnd) {
+
+  auto gemmlike = cast<Op>(op);
+  if (gemmlike.getBias() && opnd.get() == gemmlike.getBias())
+    return {bufferization::AliasingValue(
+        gemmlike->getOpResult(0), bufferization::BufferRelation::Equivalent,
+        false)};
+  return {};
+}
 
 struct GemmBufferizableInterface
     : public bufferization::BufferizableOpInterface::ExternalModel<
@@ -179,43 +230,16 @@ struct GemmBufferizableInterface
                               const bufferization::AnalysisState &) const {
     return true;
   }
+
   bool bufferizesToMemoryWrite(Operation *, OpOperand &,
                                const bufferization::AnalysisState &) const {
     return false;
   }
-  bufferization::AliasingValueList
-  getAliasingValues(Operation *, OpOperand &,
-                    const bufferization::AnalysisState &) const {
-    return {};
-  }
-  bufferization::AliasingValueList
-  getAliasingValues(Operation *, OpResult,
-                    const bufferization::AnalysisState &) const {
-    return {};
-  }
-  bool isWritable(Operation *, OpOperand &,
-                  const bufferization::AnalysisState &) const {
-    return false;
-  }
-  bool isWritable(Operation *, Value,
-                  const bufferization::AnalysisState &) const {
-    return false;
-  }
 
-  FailureOr<BaseMemRefType>
-  getBufferType(Operation *, Value v,
-                const bufferization::BufferizationOptions &,
-                const bufferization::AnalysisState &) const {
-    if (auto rtt = dyn_cast<RankedTensorType>(v.getType()))
-      return MemRefType::get(rtt.getShape(), rtt.getElementType());
-    return failure();
-  }
-  FailureOr<BaseMemRefType> getBufferType(
-      Operation *, Value v, const bufferization::BufferizationOptions &,
-      const bufferization::BufferizationState &, SmallVector<Value> &) const {
-    if (auto rtt = dyn_cast<RankedTensorType>(v.getType()))
-      return MemRefType::get(rtt.getShape(), rtt.getElementType());
-    return failure();
+  bufferization::AliasingValueList
+  getAliasingValues(Operation *op, OpOperand &opnd,
+                    const bufferization::AnalysisState &) const {
+    return aliasBiasWithResult<cinm::GemmOp>(op, opnd);
   }
 
   LogicalResult bufferize(Operation *op, RewriterBase &rewriter,
@@ -271,39 +295,11 @@ struct GemvBufferizableInterface
                                const bufferization::AnalysisState &) const {
     return false;
   }
-  bufferization::AliasingValueList
-  getAliasingValues(Operation *, OpOperand &,
-                    const bufferization::AnalysisState &) const {
-    return {};
-  }
-  bufferization::AliasingValueList
-  getAliasingValues(Operation *, OpResult,
-                    const bufferization::AnalysisState &) const {
-    return {};
-  }
-  bool isWritable(Operation *, OpOperand &,
-                  const bufferization::AnalysisState &) const {
-    return false;
-  }
-  bool isWritable(Operation *, Value,
-                  const bufferization::AnalysisState &) const {
-    return false;
-  }
 
-  FailureOr<BaseMemRefType>
-  getBufferType(Operation *, Value v,
-                const bufferization::BufferizationOptions &,
-                const bufferization::AnalysisState &) const {
-    if (auto rtt = dyn_cast<RankedTensorType>(v.getType()))
-      return MemRefType::get(rtt.getShape(), rtt.getElementType());
-    return failure();
-  }
-  FailureOr<BaseMemRefType> getBufferType(
-      Operation *, Value v, const bufferization::BufferizationOptions &,
-      const bufferization::BufferizationState &, SmallVector<Value> &) const {
-    if (auto rtt = dyn_cast<RankedTensorType>(v.getType()))
-      return MemRefType::get(rtt.getShape(), rtt.getElementType());
-    return failure();
+  bufferization::AliasingValueList
+  getAliasingValues(Operation *op, OpOperand &opnd,
+                    const bufferization::AnalysisState &) const {
+    return aliasBiasWithResult<cinm::GemvOp>(op, opnd);
   }
 
   LogicalResult bufferize(Operation *op, RewriterBase &rewriter,
@@ -350,47 +346,28 @@ struct GemvBufferizableInterface
 struct ElementwiseBufferizableInterface
     : public bufferization::BufferizableOpInterface::ExternalModel<
           ElementwiseBufferizableInterface, cinm::ElementwiseOp> {
-  bool bufferizesToMemoryRead(Operation *, OpOperand &,
-                              const bufferization::AnalysisState &) const {
+
+  bool bufferizesToElementwiseAccess(Operation *,
+                                     const bufferization::AnalysisState &,
+                                     ArrayRef<OpOperand *>) const {
     return true;
   }
-  bool bufferizesToMemoryWrite(Operation *, OpOperand &,
+  bool bufferizesToMemoryRead(Operation *op, OpOperand &opnd,
+                              const bufferization::AnalysisState &) const {
+    auto eltwise = cast<cinm::ElementwiseOp>(op);
+    return opnd.get() != eltwise.getOut();
+  }
+  bool bufferizesToMemoryWrite(Operation *op, OpOperand &opnd,
                                const bufferization::AnalysisState &) const {
-    return false;
+    auto eltwise = cast<cinm::ElementwiseOp>(op);
+    return opnd.get() == eltwise.getOut();
   }
   bufferization::AliasingValueList
-  getAliasingValues(Operation *, OpOperand &,
+  getAliasingValues(Operation *op, OpOperand &,
                     const bufferization::AnalysisState &) const {
-    return {};
-  }
-  bufferization::AliasingValueList
-  getAliasingValues(Operation *, OpResult,
-                    const bufferization::AnalysisState &) const {
-    return {};
-  }
-  bool isWritable(Operation *, OpOperand &,
-                  const bufferization::AnalysisState &) const {
-    return false;
-  }
-  bool isWritable(Operation *, Value,
-                  const bufferization::AnalysisState &) const {
-    return false;
-  }
-
-  FailureOr<BaseMemRefType>
-  getBufferType(Operation *, Value v,
-                const bufferization::BufferizationOptions &,
-                const bufferization::AnalysisState &) const {
-    if (auto rtt = dyn_cast<RankedTensorType>(v.getType()))
-      return MemRefType::get(rtt.getShape(), rtt.getElementType());
-    return failure();
-  }
-  FailureOr<BaseMemRefType> getBufferType(
-      Operation *, Value v, const bufferization::BufferizationOptions &,
-      const bufferization::BufferizationState &, SmallVector<Value> &) const {
-    if (auto rtt = dyn_cast<RankedTensorType>(v.getType()))
-      return MemRefType::get(rtt.getShape(), rtt.getElementType());
-    return failure();
+    auto result = op->getResult(0);
+    return {bufferization::AliasingValue(
+        result, bufferization::BufferRelation::Equivalent, false)};
   }
 
   LogicalResult bufferize(Operation *op, RewriterBase &rewriter,
@@ -432,6 +409,43 @@ struct ElementwiseBufferizableInterface
     return success();
   }
 };
+struct ReduceBufferizableInterface
+    : public bufferization::BufferizableOpInterface::ExternalModel<
+          ReduceBufferizableInterface, cinm::ReduceOp> {
+
+  bool bufferizesToElementwiseAccess(Operation *,
+                                     const bufferization::AnalysisState &,
+                                     ArrayRef<OpOperand *>) const {
+    return true;
+  }
+  bool bufferizesToMemoryRead(Operation *, OpOperand &,
+                              const bufferization::AnalysisState &) const {
+    return true;
+  }
+  bool bufferizesToMemoryWrite(Operation *, OpOperand &,
+                               const bufferization::AnalysisState &) const {
+    return false;
+  }
+  bufferization::AliasingValueList
+  getAliasingValues(Operation *, OpOperand &,
+                    const bufferization::AnalysisState &) const {
+    return {};
+  }
+
+  LogicalResult bufferize(Operation *op, RewriterBase &rewriter,
+                          const bufferization::BufferizationOptions &options,
+                          bufferization::BufferizationState &state) const {
+    auto dq = cast<cinm::ReduceOp>(op);
+
+    auto &input = dq.getInputMutable();
+    auto inputBuf =
+        bufferization::getBuffer(rewriter, input.get(), options, state);
+    if (llvm::failed(inputBuf))
+      return failure();
+    dq.getInputMutable().set(*inputBuf);
+    return success();
+  }
+};
 
 struct QuantizeBufferizableInterface
     : public bufferization::BufferizableOpInterface::ExternalModel<
@@ -449,35 +463,6 @@ struct QuantizeBufferizableInterface
   getAliasingValues(Operation *, OpOperand &,
                     const bufferization::AnalysisState &) const {
     return {};
-  }
-  bufferization::AliasingValueList
-  getAliasingValues(Operation *, OpResult,
-                    const bufferization::AnalysisState &) const {
-    return {};
-  }
-  bool isWritable(Operation *, OpOperand &,
-                  const bufferization::AnalysisState &) const {
-    return false;
-  }
-  bool isWritable(Operation *, Value,
-                  const bufferization::AnalysisState &) const {
-    return false;
-  }
-
-  FailureOr<BaseMemRefType>
-  getBufferType(Operation *, Value v,
-                const bufferization::BufferizationOptions &,
-                const bufferization::AnalysisState &) const {
-    if (auto rtt = dyn_cast<RankedTensorType>(v.getType()))
-      return MemRefType::get(rtt.getShape(), rtt.getElementType());
-    return failure();
-  }
-  FailureOr<BaseMemRefType> getBufferType(
-      Operation *, Value v, const bufferization::BufferizationOptions &,
-      const bufferization::BufferizationState &, SmallVector<Value> &) const {
-    if (auto rtt = dyn_cast<RankedTensorType>(v.getType()))
-      return MemRefType::get(rtt.getShape(), rtt.getElementType());
-    return failure();
   }
 
   LogicalResult bufferize(Operation *op, RewriterBase &rewriter,
@@ -537,35 +522,6 @@ struct DequantizeBufferizableInterface
                     const bufferization::AnalysisState &) const {
     return {};
   }
-  bufferization::AliasingValueList
-  getAliasingValues(Operation *, OpResult,
-                    const bufferization::AnalysisState &) const {
-    return {};
-  }
-  bool isWritable(Operation *, OpOperand &,
-                  const bufferization::AnalysisState &) const {
-    return false;
-  }
-  bool isWritable(Operation *, Value,
-                  const bufferization::AnalysisState &) const {
-    return false;
-  }
-
-  FailureOr<BaseMemRefType>
-  getBufferType(Operation *, Value v,
-                const bufferization::BufferizationOptions &,
-                const bufferization::AnalysisState &) const {
-    if (auto rtt = dyn_cast<RankedTensorType>(v.getType()))
-      return MemRefType::get(rtt.getShape(), rtt.getElementType());
-    return failure();
-  }
-  FailureOr<BaseMemRefType> getBufferType(
-      Operation *, Value v, const bufferization::BufferizationOptions &,
-      const bufferization::BufferizationState &, SmallVector<Value> &) const {
-    if (auto rtt = dyn_cast<RankedTensorType>(v.getType()))
-      return MemRefType::get(rtt.getShape(), rtt.getElementType());
-    return failure();
-  }
 
   LogicalResult bufferize(Operation *op, RewriterBase &rewriter,
                           const bufferization::BufferizationOptions &,
@@ -620,35 +576,6 @@ struct ActivateBufferizableInterface
   getAliasingValues(Operation *, OpOperand &,
                     const bufferization::AnalysisState &) const {
     return {};
-  }
-  bufferization::AliasingValueList
-  getAliasingValues(Operation *, OpResult,
-                    const bufferization::AnalysisState &) const {
-    return {};
-  }
-  bool isWritable(Operation *, OpOperand &,
-                  const bufferization::AnalysisState &) const {
-    return false;
-  }
-  bool isWritable(Operation *, Value,
-                  const bufferization::AnalysisState &) const {
-    return false;
-  }
-
-  FailureOr<BaseMemRefType>
-  getBufferType(Operation *, Value v,
-                const bufferization::BufferizationOptions &,
-                const bufferization::AnalysisState &) const {
-    if (auto rtt = dyn_cast<RankedTensorType>(v.getType()))
-      return MemRefType::get(rtt.getShape(), rtt.getElementType());
-    return failure();
-  }
-  FailureOr<BaseMemRefType> getBufferType(
-      Operation *, Value v, const bufferization::BufferizationOptions &,
-      const bufferization::BufferizationState &, SmallVector<Value> &) const {
-    if (auto rtt = dyn_cast<RankedTensorType>(v.getType()))
-      return MemRefType::get(rtt.getShape(), rtt.getElementType());
-    return failure();
   }
 
   LogicalResult bufferize(Operation *op, RewriterBase &rewriter,
@@ -851,31 +778,33 @@ struct ScfForBufferizableInterface
     return success();
   }
 };
+} // namespace
 
-void registerCinmBufferizableOpInterfaces(DialectRegistry &registry) {
-  registry.addExtension<::mlir::cinm::CinmDialect>(
-      +[](MLIRContext *ctx, ::mlir::cinm::CinmDialect *) {
-        ::mlir::cinm::ComputeOp::attachInterface<
-            ::mlir::cinm::ComputeBufferizableInterface>(*ctx);
-        ::mlir::cinm::GemmOp::attachInterface<
-            ::mlir::cinm::GemmBufferizableInterface>(*ctx);
-        ::mlir::cinm::GemvOp::attachInterface<
-            ::mlir::cinm::GemvBufferizableInterface>(*ctx);
-        ::mlir::cinm::ElementwiseOp::attachInterface<
-            ::mlir::cinm::ElementwiseBufferizableInterface>(*ctx);
-        ::mlir::cinm::QuantizeOp::attachInterface<
-            ::mlir::cinm::QuantizeBufferizableInterface>(*ctx);
-        ::mlir::cinm::DequantizeOp::attachInterface<
-            ::mlir::cinm::DequantizeBufferizableInterface>(*ctx);
-        ::mlir::cinm::ActivateOp::attachInterface<
-            ::mlir::cinm::ActivateBufferizableInterface>(*ctx);
-      });
+void mlir::cinm::registerCinmBufferizableOpInterfaces(
+    DialectRegistry &registry) {
+  registry.addExtension<::mlir::cinm::CinmDialect>(+[](MLIRContext *ctx,
+                                                       ::mlir::cinm::CinmDialect
+                                                           *) {
+    ::mlir::cinm::ComputeOp::attachInterface<ComputeBufferizableInterface>(
+        *ctx);
+    ::mlir::cinm::FlexComputeOp::attachInterface<
+        FlexComputeBufferizableInterface>(*ctx);
+    ::mlir::cinm::GemmOp::attachInterface<GemmBufferizableInterface>(*ctx);
+    ::mlir::cinm::GemvOp::attachInterface<GemvBufferizableInterface>(*ctx);
+    ::mlir::cinm::ReduceOp::attachInterface<ReduceBufferizableInterface>(*ctx);
+    ::mlir::cinm::ElementwiseOp::attachInterface<
+        ElementwiseBufferizableInterface>(*ctx);
+    ::mlir::cinm::QuantizeOp::attachInterface<QuantizeBufferizableInterface>(
+        *ctx);
+    ::mlir::cinm::DequantizeOp::attachInterface<
+        DequantizeBufferizableInterface>(*ctx);
+    ::mlir::cinm::ActivateOp::attachInterface<ActivateBufferizableInterface>(
+        *ctx);
+  });
 
-  registry.addExtension<::mlir::scf::SCFDialect>(
-      +[](MLIRContext *ctx, ::mlir::scf::SCFDialect *) {
-        ::mlir::scf::ForOp::attachInterface<
-            ::mlir::cinm::ScfForBufferizableInterface>(*ctx);
-      });
+  // registry.addExtension<::mlir::scf::SCFDialect>(
+  //     +[](MLIRContext *ctx, ::mlir::scf::SCFDialect *) {
+  //       ::mlir::scf::ForOp::attachInterface<
+  //           ::mlir::cinm::ScfForBufferizableInterface>(*ctx);
+  //     });
 }
-
-} // namespace mlir::cinm

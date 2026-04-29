@@ -333,7 +333,8 @@ def AcceleratorOp : Cinm_Op<"accelerator", [OpAsmOpInterface]> {
 }
 
 def Cinm_FlexComputeOp : Cinm_Base_Op<"compute_", [
-  AffineScope, AutomaticAllocationScope, RecursiveMemoryEffects
+  AffineScope, AutomaticAllocationScope, RecursiveMemoryEffects,
+  DeclareOpInterfaceMethods<RegionBranchOpInterface, ["getRegionInvocationBounds", "getSuccessorRegions"]>
 ]> {
   let summary = "Convenience version of compute that doesn't require declaring parameters";
   let description = [{
@@ -387,11 +388,13 @@ def Cinm_FlexComputeOp : Cinm_Base_Op<"compute_", [
   ];
 
  let hasCustomAssemblyFormat = 1;
+ let hasCanonicalizer = 1;
 }
 
 
 def Cinm_ComputeOp : Cinm_Base_Op<"compute", [
-  AffineScope, AutomaticAllocationScope, IsolatedFromAbove, RecursiveMemoryEffects
+  AffineScope, AutomaticAllocationScope, IsolatedFromAbove, RecursiveMemoryEffects,
+  DeclareOpInterfaceMethods<RegionBranchOpInterface, ["getRegionInvocationBounds", "getSuccessorRegions", "getEntrySuccessorOperands"]>
 ]> {
   let summary = "Delimits a region of code for offloading";
   let description = [{
@@ -466,6 +469,7 @@ def Cinm_ComputeOp : Cinm_Base_Op<"compute", [
   ];
 
  let hasCustomAssemblyFormat = 1;
+ let hasCanonicalizer = 1;
 }
 
 //===----------------------------------------------------------------------===//
