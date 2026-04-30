@@ -9,7 +9,7 @@ func.func @simple(%t00: tensor<6x6xi32>, %t10 : tensor<6xf32> , %m00: memref<6xf
         %x = cinm.op.elementwise add %t0, %t0: tensor<6x6xi32>
         %y = cinm.op.elementwise sub %t0, %t0: tensor<6x6xi32>
         %y2 = cinm.op.elementwise div %t0, %t0: tensor<6x6xi32>
-        %y8 = cinm.op.elementwise mul %t0, %t0: tensor<6x6xi32>
+        %y8 = cinm.op.elementwise mul %t0, %t0 into %t0: tensor<6x6xi32> into tensor<6x6xi32>
         cinm.op.elementwise mul %t1, %t1 into %m0: tensor<6xf32> into memref<6xf32>
 
         %000 = cinm.op.elementwise exp %t0: tensor<6x6xi32>
@@ -24,6 +24,7 @@ func.func @simple(%t00: tensor<6x6xi32>, %t10 : tensor<6xf32> , %m00: memref<6xf
         %z0 = cinm.op.reduce mul (%y): tensor<6x6xi32> -> tensor<6xi32>
         %z1 = cinm.op.reduce max (%t0): tensor<6x6xi32> -> tensor<6xi32>
         %q2 = cinm.op.reduce min (%t1): tensor<6xf32> -> f32
+
 
         %sqrts = cinm.op.elementwise sqrt %x: tensor<6x6xi32>
         %exps = cinm.op.elementwise exp %y: tensor<6x6xi32>

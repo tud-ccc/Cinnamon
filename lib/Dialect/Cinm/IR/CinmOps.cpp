@@ -167,7 +167,7 @@ static bool dimsCompatible(int64_t a, int64_t b) {
   if (hasOut && parser.resolveOperand(out, outType, result.operands))
     return failure();
 
-  if (!hasOut) {
+  if (!hasOut || isa<TensorType>(outType)) {
     result.addTypes(lhsAndRhsTy);
   }
 
@@ -317,6 +317,9 @@ void ElementwiseOp::build(OpBuilder &builder, OperationState &state,
   if (out) {
     state.addOperands(out);
     outInt = 1;
+    if (isa<TensorType>(out.getType())) {
+      state.addTypes(out.getType());
+    }
   } else {
     state.addTypes(a.getType());
   }

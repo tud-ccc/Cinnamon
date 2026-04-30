@@ -340,7 +340,8 @@ LogicalResult convertCinmToCnm(
     ImplicitLocOpBuilder builder, Operation *operation,
     TypedValue<cnm::WorkgroupType> workgroup, cinm::ComputeOp computeOp,
     ArrayRef<ArrayRef<int64_t>> reductionDimensionsSorted, ValueRange operands,
-    ValueRange outputInitializers, ValueRange results,
+    ValueRange outputInitializers,
+    ValueRange /*optional elements*/ gatherBuffers, ValueRange results,
     llvm::SmallVectorImpl<Value> &resultValues,
     function_ref<void(ImplicitLocOpBuilder &, ValueRange, ValueRange)>
         createCnmLaunchBlock) {
@@ -384,15 +385,18 @@ LogicalResult convertCinmToCnm(
   // gather the results (only the out buffers)
 
   // Gather tensor results
-  for (auto [i, reshaped, cnmAlloc] :
-       llvm::enumerate(reshapedOutputs, launchOutputs)) {
+  for (auto [i, reshaped, cnmAlloc, gatherBuf] :
+       llvm::enumerate(reshapedOutputs, launchOutputs, gatherBuffers)) {
     auto map = gatherMaps[launchInputs.size() + i];
-    Value outBuf;
-    if (isa<TensorType>(reshaped.getType())) {
-      outBuf =
-          tensor::EmptyOp::create(builder, reshaped.getType(), ValueRange{});
-    } else {
-      outBuf = reshaped;
+    Value outBuf = gatherBuf;
+    if (!outBuf) {
+      if (isa<TensorType>(reshaped.getType())) {
+        // if it is a tensor but
+        outBuf =
+            tensor::EmptyOp::create(builder, reshaped.getType(), ValueRange{});
+      } else {
+        outBuf = reshaped;
+      }
     }
     auto res = cnm::GatherOp::create(builder, cnmAlloc, workgroup, map, outBuf);
     if (isa<TensorType>(reshaped.getType())) {
@@ -428,8 +432,8 @@ struct ConvertLinalgReduceIntoLaunch
     llvm::SmallVector<Value, 1> newResults;
     if (convertCinmToCnm(
             builder, op, workgroup.getResult(), computeOp, {op.getDimensions()},
-            adaptor.getInputs(), adaptor.getInits(), op->getResults(),
-            newResults,
+            adaptor.getInputs(), adaptor.getInits(), adaptor.getInits(),
+            op->getResults(), newResults,
             [&](ImplicitLocOpBuilder &builder, ValueRange memrefInputs,
                 ValueRange memrefOutputs) {
               // Here we are copying the original reduce into the launch,
@@ -517,8 +521,8 @@ struct ConvertElementwiseOpToCnm : OpConversionPattern<cinm::ElementwiseOp> {
     SmallVector<Value, 1> newResults;
     const auto conversionResult = convertCinmToCnm(
         builder, op, workgroup.getResult(), computeBlock, reductionDims,
-        adaptor.getOperands(), ValueRange{outputInit}, op->getResults(),
-        newResults,
+        adaptor.getOperands(), ValueRange{outputInit}, ValueRange{op.getOut()},
+        op->getResults(), newResults,
         [&](ImplicitLocOpBuilder &builder, ValueRange inputs,
             ValueRange outputs) {
           SmallVector<AffineMap> affineMaps;
@@ -694,7 +698,41 @@ LogicalResult computeScatterMapForGemm(cnm::BufferType bufferTyAB,
 
   return failure();
 }
+template <class Op>
+static Value getOutputInitForGemmLike(Op op, ImplicitLocOpBuilder &builder) {
 
+  // Build the scatter init: bias (or zero) copied into the gather target so
+  // the kernel accumulates bias + A*x.  If bias == out the copy is a no-op
+  // and canonicalizes away.
+  Value outputInit = op.getOut();
+  if (outputInit) {
+    // if bias need to copy it into the output
+    if (op.getBias()) {
+      return linalg::CopyOp::create(builder, op.getBias(), outputInit)
+          .getResult(0);
+    }
+    // no bias: zero out the output
+    auto resultTy = cast<ShapedType>(outputInit.getType()).getElementType();
+    auto fillOp = linalg::FillOp::create(
+        builder,
+        arith::ConstantOp::create(builder, resultTy,
+                                  builder.getZeroAttr(resultTy))
+            .getResult(),
+        outputInit);
+    if (fillOp->getNumResults() > 0)
+      return fillOp.getResult(0);
+    return outputInit;
+  }
+  // without an output buffer, we need a tensor result, and the parameters are
+  // tensors too
+  assert(op.getResult() && "Need a tensor result");
+  if (op.getBias())
+    return op.getBias();
+  // return a zero tensor
+  return arith::ConstantOp::create(
+      builder, op.getResult().getType(),
+      builder.getZeroAttr(op.getResult().getType()));
+}
 struct ConvertCinmGemmToCnm : public OpConversionPattern<cinm::GemmOp> {
   using OpConversionPattern<cinm::GemmOp>::OpConversionPattern;
 
@@ -779,19 +817,9 @@ struct ConvertCinmGemmToCnm : public OpConversionPattern<cinm::GemmOp> {
     cnm::ScatterOp::create(builder, transposeRight, bufferB, workgroup,
                            std::move(scatterB));
 
-    // the bias is the initializer for the out buffer
-    // since it has same shape as output we can use same gather map
-    Value outputInit;
-    if (op.getBias()) {
-      outputInit = op.getBias();
-    } else if (op.getResult()) {
-      outputInit = arith::ConstantOp::create(
-          builder, op.getResult().getType(),
-          builder.getZeroAttr(op.getResult().getType()));
-    } else {
-      // memref op with initializer
-      outputInit = op.getOut();
-    }
+    // Scatter init: bias (if any) or zero.  The `out` operand is only the
+    // gather target; its contents are not read by the kernel.
+    Value outputInit = getOutputInitForGemmLike(op, builder);
     assert(outputInit);
     cnm::ScatterOp::create(builder, outputInit, bufferC, workgroup,
                            scatterGatherC);
@@ -810,20 +838,13 @@ struct ConvertCinmGemmToCnm : public OpConversionPattern<cinm::GemmOp> {
               builder.getAffineMapArrayAttr(indexingMaps));
         });
 
+    // Gather target: explicit `out` if provided, otherwise a fresh tensor.
     Value outbuf;
     if (op.getOut()) {
-      // memref version
       outbuf = op.getOut();
-    } else if (auto bias = op.getBias()) {
-      // todo check whether the bias is suitable for use here.
-      //  this is a hacky fix because sometimes bufferization fails to reconcile
-      //  the loop initializer (bias) and the yield output (output of the gemm)
-      outbuf = bias;
     } else {
-      // tensor version
-      assert(
-          op.getResult() &&
-          "cinm.gemm needs either an out buffer (memref) or a result (tensor)");
+      assert(op.getResult() &&
+             "cinm.gemm needs either an out buffer or a tensor result");
       outbuf = tensor::EmptyOp::create(builder, op.getResult().getType(),
                                        ValueRange{});
     }
@@ -857,20 +878,17 @@ struct ConvertCinmGemvToCnm : public OpConversionPattern<cinm::GemvOp> {
     cinm::ComputeOp computeBlock = mlir::cinm::getEnclosingComputeBlock(op);
     cnm::WorkgroupOp workgroup =
         cnm::WorkgroupOp::create(builder, computeBlock.getCnmWorkgroupType());
-    Value outputInit;
-    if (op.getResult()) {
-      outputInit = arith::ConstantOp::create(
-          builder, op.getResult().getType(),
-          builder.getZeroAttr(op.getResult().getType()));
-    } else {
-      outputInit = op.getOut();
-    }
+
+    // Build the scatter init: bias (or zero) copied into the gather target so
+    // the kernel accumulates bias + A*x.  If bias == out the copy is a no-op
+    // and canonicalizes away.
+    Value outputInit = getOutputInitForGemmLike(op, builder);
 
     llvm::SmallVector<Value, 1> newResults;
     if (convertCinmToCnm(
             builder, op, workgroup.getResult(), computeBlock, {{1}, {0}},
-            adaptor.getOperands(), ValueRange{outputInit}, op->getResults(),
-            newResults,
+            adaptor.getOperands(), ValueRange{outputInit},
+            ValueRange{op.getOut()}, op->getResults(), newResults,
             [&](ImplicitLocOpBuilder &builder, ValueRange inputs,
                 ValueRange outputs) {
               // k -> k
@@ -922,7 +940,7 @@ struct ConvertCinmReduceToCnm : public OpConversionPattern<cinm::ReduceOp> {
     if (convertCinmToCnm(
             builder, op, workgroup.getResult(), computeBlock,
             {op.getDimensions()}, adaptor.getOperands(), ValueRange{outputInit},
-            op->getResults(), newResults,
+            ValueRange{nullptr}, op->getResults(), newResults,
             [&](ImplicitLocOpBuilder &builder, ValueRange inputs,
                 ValueRange outputs) {
               linalg::ReduceOp::create(

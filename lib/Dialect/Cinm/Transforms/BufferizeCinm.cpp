@@ -19,6 +19,7 @@
 #include <llvm/ADT/ArrayRef.h>
 #include <llvm/ADT/SmallVector.h>
 #include <llvm/Support/LogicalResult.h>
+#include <mlir/Dialect/Bufferization/IR/BufferizationTypeInterfaces.h>
 #include <mlir/IR/Value.h>
 
 using namespace mlir;
@@ -49,25 +50,6 @@ static Value materializeZeroLikeTensor(RewriterBase &rewriter, Location loc,
     return arith::ConstantOp::create(rewriter, loc,
                                      rewriter.getIntegerAttr(it, 0));
   return {};
-}
-
-static FailureOr<Value>
-materializeAsExactMemref(RewriterBase &rewriter, Location loc, Value v,
-                         MemRefType expectedTy,
-                         const bufferization::BufferizationOptions &options,
-                         const bufferization::BufferizationState &state) {
-  Value m = v;
-  if (!isa<MemRefType>(m.getType())) {
-    FailureOr<Value> buf =
-        bufferization::getBuffer(rewriter, m, options, state);
-    if (failed(buf))
-      return failure();
-    m = *buf;
-  }
-  auto gotTy = cast<MemRefType>(m.getType());
-  if (gotTy != expectedTy)
-    m = memref::CastOp::create(rewriter, loc, expectedTy, m);
-  return m;
 }
 
 static LogicalResult
@@ -131,6 +113,19 @@ struct ComputeBufferizableInterface
   bool bufferizesToMemoryWrite(Operation *, OpOperand &,
                                const bufferization::AnalysisState &) const {
     return false;
+  }
+
+  FailureOr<bufferization::BufferLikeType>
+  getBufferType(Operation *op, Value value,
+                const bufferization::BufferizationOptions options,
+                const bufferization::BufferizationState &state,
+                llvm::SmallVector<Value> &invocationStack) const {
+    if (auto bbarg = dyn_cast_or_null<BlockArgument>(value)) {
+      return bufferization::getBufferType(op->getOperand(bbarg.getArgNumber()),
+                                          options, state);
+    }
+    return bufferization::detail::defaultGetBufferType(value, options, state,
+                                                       invocationStack);
   }
 
   bufferization::AliasingValueList
@@ -211,16 +206,37 @@ struct FlexComputeBufferizableInterface
   }
 };
 
-template <class Op>
-static bufferization::AliasingValueList aliasBiasWithResult(Operation *op,
-                                                            OpOperand &opnd) {
+// Returns the `out` operand if it is a tensor (DPS hint), null otherwise.
+template <class Op> static Value getTensorOut(Op op) {
+  Value out = op.getOut();
+  if (out && isa<RankedTensorType>(out.getType()))
+    return out;
+  return {};
+}
 
+template <class Op>
+static bufferization::AliasingValueList aliasOutWithResult(Operation *op,
+                                                           OpOperand &opnd) {
   auto gemmlike = cast<Op>(op);
-  if (gemmlike.getBias() && opnd.get() == gemmlike.getBias())
+  Value tensorOut = getTensorOut(gemmlike);
+  if (tensorOut && opnd.get() == tensorOut)
     return {bufferization::AliasingValue(
         gemmlike->getOpResult(0), bufferization::BufferRelation::Equivalent,
         false)};
   return {};
+}
+
+// Materialise `dst`: if a tensor `out` was provided use its buffer (so the
+// result aliases it), otherwise allocate a fresh buffer.
+template <class Op>
+static FailureOr<Value>
+resolveGemmDst(Op op, RewriterBase &rewriter, Location loc,
+               RankedTensorType resultTy,
+               const bufferization::BufferizationOptions &options,
+               bufferization::BufferizationState &state) {
+  if (Value tensorOut = getTensorOut(op))
+    return bufferization::getBuffer(rewriter, tensorOut, options, state);
+  return getReturnBuffer(rewriter, loc, resultTy);
 }
 
 struct GemmBufferizableInterface
@@ -239,7 +255,7 @@ struct GemmBufferizableInterface
   bufferization::AliasingValueList
   getAliasingValues(Operation *op, OpOperand &opnd,
                     const bufferization::AnalysisState &) const {
-    return aliasBiasWithResult<cinm::GemmOp>(op, opnd);
+    return aliasOutWithResult<cinm::GemmOp>(op, opnd);
   }
 
   LogicalResult bufferize(Operation *op, RewriterBase &rewriter,
@@ -258,26 +274,28 @@ struct GemmBufferizableInterface
     if (failed(aMem) || failed(bMem))
       return failure();
 
-    Value dst = getReturnBuffer(rewriter, loc, cRT);
+    auto dst = resolveGemmDst(gemm, rewriter, loc, cRT, options, state);
+    if (failed(dst))
+      return failure();
 
     if (Value biasT = gemm.getBias()) {
       auto biasMem = bufferization::getBuffer(rewriter, biasT, options, state);
       if (failed(biasMem))
         return failure();
-      memref::CopyOp::create(rewriter, loc, *biasMem, dst);
+      memref::CopyOp::create(rewriter, loc, *biasMem, *dst);
     } else {
       Value zero = materializeZeroLikeTensor(rewriter, loc, elemTy);
       if (!zero)
         return op->emitError("cinm.gemm bufferize: unsupported element type"),
                failure();
       (void)linalg::FillOp::create(rewriter, loc, ValueRange{zero},
-                                   ValueRange{dst});
+                                   ValueRange{*dst});
     }
 
-    cinm::GemmOp::create(rewriter, loc, *aMem, *bMem, Value(), dst);
+    cinm::GemmOp::create(rewriter, loc, *aMem, *bMem, Value(), *dst);
 
     Value t =
-        bufferization::ToTensorOp::create(rewriter, loc, cRT, dst, true, true);
+        bufferization::ToTensorOp::create(rewriter, loc, cRT, *dst, true, true);
     rewriter.replaceOp(op, t);
     return success();
   }
@@ -299,7 +317,7 @@ struct GemvBufferizableInterface
   bufferization::AliasingValueList
   getAliasingValues(Operation *op, OpOperand &opnd,
                     const bufferization::AnalysisState &) const {
-    return aliasBiasWithResult<cinm::GemvOp>(op, opnd);
+    return aliasOutWithResult<cinm::GemvOp>(op, opnd);
   }
 
   LogicalResult bufferize(Operation *op, RewriterBase &rewriter,
@@ -317,13 +335,15 @@ struct GemvBufferizableInterface
     if (failed(aMem) || failed(xMem))
       return failure();
 
-    Value dst = getReturnBuffer(rewriter, loc, yRT);
+    auto dst = resolveGemmDst(gemv, rewriter, loc, yRT, options, state);
+    if (failed(dst))
+      return failure();
 
     if (Value biasT = gemv.getBias()) {
       auto biasMem = bufferization::getBuffer(rewriter, biasT, options, state);
       if (failed(biasMem))
         return failure();
-      memref::CopyOp::create(rewriter, loc, *biasMem, dst);
+      memref::CopyOp::create(rewriter, loc, *biasMem, *dst);
     } else {
       Value zero =
           materializeZeroLikeTensor(rewriter, loc, yRT.getElementType());
@@ -331,13 +351,13 @@ struct GemvBufferizableInterface
         return op->emitError("cinm.gemv bufferize: unsupported element type"),
                failure();
       (void)linalg::FillOp::create(rewriter, loc, ValueRange{zero},
-                                   ValueRange{dst});
+                                   ValueRange{*dst});
     }
 
-    cinm::GemvOp::create(rewriter, loc, *aMem, *xMem, Value(), dst);
+    cinm::GemvOp::create(rewriter, loc, *aMem, *xMem, Value(), *dst);
 
     Value yT =
-        bufferization::ToTensorOp::create(rewriter, loc, yRT, dst, true, true);
+        bufferization::ToTensorOp::create(rewriter, loc, yRT, *dst, true, true);
     rewriter.replaceOp(op, yT);
     return success();
   }
@@ -363,11 +383,14 @@ struct ElementwiseBufferizableInterface
     return opnd.get() == eltwise.getOut();
   }
   bufferization::AliasingValueList
-  getAliasingValues(Operation *op, OpOperand &,
+  getAliasingValues(Operation *op, OpOperand &opnd,
                     const bufferization::AnalysisState &) const {
-    auto result = op->getResult(0);
-    return {bufferization::AliasingValue(
-        result, bufferization::BufferRelation::Equivalent, false)};
+    if (opnd.get() == cast<cinm::ElementwiseOp>(op).getOut() &&
+        op->getNumResults() > 0) {
+      return {bufferization::AliasingValue(
+          op->getResult(0), bufferization::BufferRelation::Equivalent, true)};
+    }
+    return {};
   }
 
   LogicalResult bufferize(Operation *op, RewriterBase &rewriter,
@@ -392,6 +415,12 @@ struct ElementwiseBufferizableInterface
     Value dst;
     if (add.getOut()) {
       dst = add.getOut();
+      if (isa<TensorType>(dst.getType())) {
+        auto dstBuf = bufferization::getBuffer(rewriter, dst, options, state);
+        if (failed(dstBuf))
+          return failure();
+        dst = *dstBuf;
+      }
     } else {
       dst = getReturnBuffer(rewriter, loc, add.getResult().getType());
     }
@@ -614,170 +643,6 @@ struct ActivateBufferizableInterface
   }
 };
 
-struct ScfForBufferizableInterface
-    : public bufferization::BufferizableOpInterface::ExternalModel<
-          ScfForBufferizableInterface, scf::ForOp> {
-
-  bool bufferizesToMemoryRead(Operation *, OpOperand &,
-                              const bufferization::AnalysisState &) const {
-    return false;
-  }
-  bool bufferizesToMemoryWrite(Operation *, OpOperand &,
-                               const bufferization::AnalysisState &) const {
-    return false;
-  }
-
-  bufferization::AliasingValueList
-  getAliasingValues(Operation *, OpOperand &,
-                    const bufferization::AnalysisState &) const {
-    return {};
-  }
-  bufferization::AliasingValueList
-  getAliasingValues(Operation *, OpResult,
-                    const bufferization::AnalysisState &) const {
-    return {};
-  }
-
-  bool isWritable(Operation *, OpOperand &,
-                  const bufferization::AnalysisState &) const {
-    return false;
-  }
-  bool isWritable(Operation *, Value,
-                  const bufferization::AnalysisState &) const {
-    return false;
-  }
-
-  FailureOr<BaseMemRefType>
-  getBufferType(Operation *, Value v,
-                const bufferization::BufferizationOptions &,
-                const bufferization::AnalysisState &) const {
-    if (auto rtt = dyn_cast<RankedTensorType>(v.getType()))
-      return bufferization::getMemRefTypeWithFullyDynamicLayout(rtt);
-    return failure();
-  }
-  FailureOr<BaseMemRefType> getBufferType(
-      Operation *, Value v, const bufferization::BufferizationOptions &,
-      const bufferization::BufferizationState &, SmallVector<Value> &) const {
-    if (auto rtt = dyn_cast<RankedTensorType>(v.getType()))
-      return bufferization::getMemRefTypeWithFullyDynamicLayout(rtt);
-    return failure();
-  }
-
-  LogicalResult bufferize(Operation *op, RewriterBase &rewriter,
-                          const bufferization::BufferizationOptions &options,
-                          bufferization::BufferizationState &state) const {
-    auto oldFor = cast<scf::ForOp>(op);
-    Location loc = oldFor.getLoc();
-
-    ValueRange oldInits = oldFor.getInitArgs();
-    if (oldInits.empty())
-      return success();
-
-    SmallVector<Value> memInitArgs;
-    memInitArgs.reserve(oldInits.size());
-    for (Value init : oldInits) {
-      if (isa<MemRefType>(init.getType())) {
-        memInitArgs.push_back(init);
-        continue;
-      }
-      if (!isa<RankedTensorType>(init.getType()))
-        return op->emitError("scf.for: unexpected non-tensor init arg"),
-               failure();
-
-      FailureOr<Value> buf =
-          bufferization::getBuffer(rewriter, init, options, state);
-      if (failed(buf))
-        return op->emitError("scf.for: failed to get buffer for init arg"),
-               failure();
-      memInitArgs.push_back(*buf);
-    }
-
-    OpBuilder::InsertionGuard outerGuard(rewriter);
-    rewriter.setInsertionPoint(oldFor);
-
-    auto newFor = scf::ForOp::create(rewriter, loc, oldFor.getLowerBound(),
-                                     oldFor.getUpperBound(), oldFor.getStep(),
-                                     memInitArgs);
-
-    Block *oldBody = oldFor.getBody();
-    Block *newBody = newFor.getBody();
-
-    IRMapping mapper;
-    mapper.map(oldBody->getArgument(0), newBody->getArgument(0));
-
-    {
-      OpBuilder::InsertionGuard bodyGuard(rewriter);
-      rewriter.setInsertionPointToStart(newBody);
-
-      for (unsigned i = 0, e = oldInits.size(); i < e; ++i) {
-        BlockArgument newMem = newBody->getArgument(1 + i);
-        BlockArgument oldArg = oldBody->getArgument(1 + i);
-
-        if (isa<MemRefType>(oldArg.getType())) {
-          mapper.map(oldArg, newMem);
-        } else {
-          auto tt = cast<RankedTensorType>(oldArg.getType());
-          Value tview = bufferization::ToTensorOp::create(rewriter, loc, tt,
-                                                          newMem, true, true);
-          mapper.map(oldArg, tview);
-        }
-      }
-
-      for (Operation &nested :
-           llvm::make_early_inc_range(oldBody->without_terminator()))
-        rewriter.clone(nested, mapper);
-
-      auto oldYield = cast<scf::YieldOp>(oldBody->getTerminator());
-      SmallVector<Value> newYields;
-      newYields.reserve(oldYield.getNumOperands());
-
-      for (unsigned i = 0, e = oldYield.getNumOperands(); i < e; ++i) {
-        Value mapped = mapper.lookup(oldYield.getOperand(i));
-
-        auto expectedTy =
-            cast<MemRefType>(newBody->getArgument(1 + i).getType());
-
-        FailureOr<Value> exact = materializeAsExactMemref(
-            rewriter, loc, mapped, expectedTy, options, state);
-        if (failed(exact))
-          return op->emitError(
-                     "scf.for: failed to materialize exact memref for "
-                     "yield #")
-                     << i,
-                 failure();
-
-        newYields.push_back(*exact);
-      }
-
-      Operation *maybeTerm = nullptr;
-      if (!newBody->empty()) {
-        Operation &last = newBody->back();
-        if (last.hasTrait<OpTrait::IsTerminator>())
-          maybeTerm = &last;
-      }
-
-      if (maybeTerm) {
-        rewriter.setInsertionPoint(maybeTerm);
-        rewriter.replaceOpWithNewOp<scf::YieldOp>(maybeTerm, newYields);
-      } else {
-        rewriter.setInsertionPointToEnd(newBody);
-        scf::YieldOp::create(rewriter, loc, newYields);
-      }
-    }
-
-    SmallVector<Value> replacements;
-    replacements.reserve(newFor->getNumResults());
-    rewriter.setInsertionPointAfter(newFor);
-    for (auto it : llvm::enumerate(newFor->getResults())) {
-      Type wantedT = oldFor->getResult(it.index()).getType();
-      Value t = bufferization::ToTensorOp::create(rewriter, loc, wantedT,
-                                                  it.value(), true, true);
-      replacements.push_back(t);
-    }
-    rewriter.replaceOp(oldFor, replacements);
-    return success();
-  }
-};
 } // namespace
 
 void mlir::cinm::registerCinmBufferizableOpInterfaces(
@@ -801,10 +666,4 @@ void mlir::cinm::registerCinmBufferizableOpInterfaces(
     ::mlir::cinm::ActivateOp::attachInterface<ActivateBufferizableInterface>(
         *ctx);
   });
-
-  // registry.addExtension<::mlir::scf::SCFDialect>(
-  //     +[](MLIRContext *ctx, ::mlir::scf::SCFDialect *) {
-  //       ::mlir::scf::ForOp::attachInterface<
-  //           ::mlir::cinm::ScfForBufferizableInterface>(*ctx);
-  //     });
 }

@@ -107,9 +107,14 @@ static Value emitReduceCombine(OpBuilder &b, Location loc, ReduceMethod method,
   llvm_unreachable("unknown ReduceMethod");
 }
 
-// Build a zero-filled tensor of the given type, or return bias directly.
-static Value buildGemmInit(OpBuilder &b, Location loc, Value bias,
+// Build the outs init for a gemm-like op, in priority order:
+//   1. tensor out (DPS hint — result aliases the out buffer)
+//   2. bias (accumulator init)
+//   3. zero-filled fresh tensor
+static Value buildGemmInit(OpBuilder &b, Location loc, Value out, Value bias,
                            RankedTensorType resultTy) {
+  if (out && isa<RankedTensorType>(out.getType()))
+    return out;
   if (bias)
     return bias;
   Value empty = b.create<tensor::EmptyOp>(loc, resultTy.getShape(),
@@ -121,9 +126,12 @@ static Value buildGemmInit(OpBuilder &b, Location loc, Value bias,
 }
 
 // Build a linalg.generic for an N-ary elementwise op.
-// bodyBuilder receives scalar args and must yield one Value.
+// If `tensorOut` is non-null it is used as the outs init (DPS hint); otherwise
+// a fresh empty tensor is allocated.  bodyBuilder receives the scalar input
+// args (without the output arg) and must return one Value.
 static Value buildElementwiseGeneric(
     OpBuilder &b, Location loc, RankedTensorType resultTy, ValueRange inputs,
+    Value tensorOut,
     function_ref<Value(OpBuilder &, Location, ValueRange)> bodyBuilder) {
   int64_t rank = resultTy.getRank();
   AffineMap id = b.getMultiDimIdentityMap(rank);
@@ -135,7 +143,7 @@ static Value buildElementwiseGeneric(
   auto iterAttr = b.getArrayAttr(iterAttrs);
   auto mapsAttr = b.getAffineMapArrayAttr(maps);
 
-  Value init = buildEmpty(b, loc, resultTy, inputs[0]);
+  Value init = tensorOut ? tensorOut : buildEmpty(b, loc, resultTy, inputs[0]);
   auto generic = b.create<linalg::GenericOp>(
       loc, TypeRange{resultTy}, inputs, ValueRange{init}, mapsAttr, iterAttr,
       StringAttr{}, StringAttr{},
@@ -304,13 +312,16 @@ struct ConvertElementwiseToLinalg
 
     Value lhs = adaptor.getLhs();
     Value rhs = adaptor.getRhs();
+    Value out = adaptor.getOut();
+    Value tensorOut =
+        (out && isa<RankedTensorType>(out.getType())) ? out : Value{};
 
     SmallVector<Value> inputs =
         rhs ? SmallVector<Value>{lhs, rhs} : SmallVector<Value>{lhs};
 
     bool failed = false;
     Value result = buildElementwiseGeneric(
-        rewriter, loc, resultTy, inputs,
+        rewriter, loc, resultTy, inputs, tensorOut,
         [&](OpBuilder &b, Location loc, ValueRange args) -> Value {
           auto out = emitElementwiseScalar(b, loc, kind, args[0],
                                            args.size() > 1 ? args[1] : Value{},
@@ -398,7 +409,7 @@ struct ConvertGemvToLinalg : public OpConversionPattern<cinm::GemvOp> {
 
     auto loc = op.getLoc();
     auto resultTy = cast<RankedTensorType>(op.getResult().getType());
-    Value init = buildGemmInit(rewriter, loc, adaptor.getBias(), resultTy);
+    Value init = buildGemmInit(rewriter, loc, adaptor.getOut(), adaptor.getBias(), resultTy);
 
     Value result = rewriter
                        .create<linalg::MatvecOp>(
@@ -426,7 +437,7 @@ struct ConvertGemmToLinalg : public OpConversionPattern<cinm::GemmOp> {
 
     auto loc = op.getLoc();
     auto resultTy = cast<RankedTensorType>(op.getResult().getType());
-    Value init = buildGemmInit(rewriter, loc, adaptor.getBias(), resultTy);
+    Value init = buildGemmInit(rewriter, loc, adaptor.getOut(), adaptor.getBias(), resultTy);
 
     Value result = rewriter
                        .create<linalg::MatmulOp>(
@@ -455,7 +466,7 @@ struct ConvertBatchGemmToLinalg
 
     auto loc = op.getLoc();
     auto resultTy = cast<RankedTensorType>(op.getResult().getType());
-    Value init = buildGemmInit(rewriter, loc, adaptor.getBias(), resultTy);
+    Value init = buildGemmInit(rewriter, loc, adaptor.getOut(), adaptor.getBias(), resultTy);
 
     Value result = rewriter
                        .create<linalg::BatchMatmulOp>(
@@ -502,7 +513,7 @@ struct ConvertBatchGemvToLinalg
         linalg::IteratorTypeAttr::get(ctx, utils::IteratorType::reduction),
     };
 
-    Value init = buildGemmInit(rewriter, loc, adaptor.getBias(), resultTy);
+    Value init = buildGemmInit(rewriter, loc, adaptor.getOut(), adaptor.getBias(), resultTy);
     auto generic = rewriter.create<linalg::GenericOp>(
         loc, TypeRange{resultTy},
         ValueRange{adaptor.getLhs(), adaptor.getRhs()}, ValueRange{init},
@@ -547,10 +558,14 @@ struct ConvertActivateToLinalg : public OpConversionPattern<cinm::ActivateOp> {
     if (!isa<FloatType>(elemTy))
       return op.emitError("cinm.op.activate requires a float element type");
 
+    Value out = adaptor.getOut();
+    Value tensorOut =
+        (out && isa<RankedTensorType>(out.getType())) ? out : Value{};
+
     bool failed = false;
     auto kind = op.getKind();
     Value result = buildElementwiseGeneric(
-        rewriter, loc, resultTy, ValueRange{adaptor.getInput()},
+        rewriter, loc, resultTy, ValueRange{adaptor.getInput()}, tensorOut,
         [&](OpBuilder &b, Location loc, ValueRange args) -> Value {
           Value v = args[0];
           switch (kind) {

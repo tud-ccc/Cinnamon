@@ -41,7 +41,7 @@ def Cinm_ElementwiseOp
         Cinm_ElementwiseKindAttr:$kind,
         AnyShaped:$lhs,
         Optional<AnyShaped>:$rhs,
-        Optional<AnyMemRef>:$out
+        Optional<AnyShaped>:$out
     );
 
     let results = (outs Optional<AnyRankedTensor>:$result);
@@ -78,13 +78,13 @@ class Cinm_GemmlikeOp<string name, string cppClassName> : Cinm_Op<name,
       AnyShaped:$lhs,
       AnyShaped:$rhs,
       Optional<AnyShaped>:$bias,
-      Optional<AnyMemRef>:$out
+      Optional<AnyShaped>:$out
   );
 
   // let hasVerifier = 1; // todo
   let results = (outs Optional<AnyRankedTensor>:$result);
   let assemblyFormat =
-    "$lhs `,` $rhs (`plus` $bias^)? (`into` $out^)? attr-dict `:` type($lhs) `,` type($rhs) (`plus` type($bias)^)? (`into` type($out)^):(`->` type($result))?";
+    "$lhs `,` $rhs (`plus` $bias^)? (`into` $out^)? attr-dict `:` type($lhs) `,` type($rhs) (`plus` type($bias)^)? (`into` type($out)^)? (`->` type($result)^)?";
 
   let skipDefaultBuilders = 1;
   let builders = [
@@ -521,7 +521,7 @@ def Cinm_ActivateOp : Cinm_Op<"op.activate", [
   let arguments = (ins
     Cinm_ActivationKindAttr:$kind,
     AnyShaped:$input,
-    Optional<AnyMemRef>:$out
+    Optional<AnyShaped>:$out
   );
   let results = (outs Optional<AnyRankedTensor>:$result);
 
@@ -558,7 +558,7 @@ def Cinm_QuantizeOp : Cinm_Op<"op.quantize", [Pure]> {
 
   let arguments = (ins
     AnyShaped:$src,
-    Optional<AnyMemRef>:$out,
+    Optional<AnyShaped>:$out,
     F32Attr:$scale,
     I64Attr:$zeroPoint,
     OptionalAttr<I64Attr>:$axis,
@@ -591,7 +591,7 @@ def Cinm_DequantizeOp : Cinm_Op<"op.dequantize", [Pure]> {
 
   let arguments = (ins
     AnyShaped:$src,
-    Optional<AnyMemRef>:$out,
+    Optional<AnyShaped>:$out,
     F32Attr:$scale,
     I64Attr:$zeroPoint,
     OptionalAttr<I64Attr>:$axis
