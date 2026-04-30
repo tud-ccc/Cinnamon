@@ -26,11 +26,13 @@
 #include "llvm/Support/raw_ostream.h"
 #include <mlir/IR/IRMapping.h>
 
-using namespace mlir;
 
-#define GEN_PASS_CLASSES
+namespace mlir::cinm {
+#define GEN_PASS_DEF_CONVERTLINALGTOCINM
 #include "cinm-mlir/Conversion/CinmPasses.h.inc"
+}
 
+using namespace mlir;
 namespace {
 
 static bool isTensor(Value v) { return isa<RankedTensorType>(v.getType()); }
@@ -1677,8 +1679,8 @@ struct ConvertLinalgGenericOpToCinm : OpConversionPattern<linalg::GenericOp> {
 };
 
 struct ConvertLinalgToCinmPass
-    : public ConvertLinalgToCinmBase<ConvertLinalgToCinmPass> {
-  using Base = ConvertLinalgToCinmBase<ConvertLinalgToCinmPass>;
+    : public cinm::impl::ConvertLinalgToCinmBase<ConvertLinalgToCinmPass> {
+  using Base = cinm::impl::ConvertLinalgToCinmBase<ConvertLinalgToCinmPass>;
   using Base::Base;
 
   void runOnOperation() override {

@@ -561,19 +561,18 @@ void DequantizeOp::print(::mlir::OpAsmPrinter &printer) {}
     ::llvm::SmallVectorImpl<::mlir::ShapedTypeComponents>
         &inferredReturnShapes) {
   ShapeAdaptor inputShape(adaptor.getInput1().getType());
-  ShapeAdaptor permsShape(adaptor.getPerms().getType());
+  auto perms = adaptor.getPermutation();
 
   // If input rank and permutation length is unknown, the output rank is
   // unknown.
-  if (!inputShape.hasRank() || !permsShape.hasRank() ||
-      permsShape.isDynamicDim(0)) {
+  if (!inputShape.hasRank()) {
     inferredReturnShapes.push_back(ShapedTypeComponents());
     return success();
   }
 
   // This would imply the number of permutations does not match the rank of
   // the input which is illegal.
-  if (permsShape.getDimSize(0) != inputShape.getRank()) {
+  if (perms.size() != inputShape.getRank()) {
     return failure();
   }
 
@@ -581,7 +580,7 @@ void DequantizeOp::print(::mlir::OpAsmPrinter &printer) {}
   // can determine the output rank.
   SmallVector<int64_t> outputShape;
   if (!inputShape.hasRank()) {
-    outputShape.resize(permsShape.getDimSize(0), ShapedType::kDynamic);
+    outputShape.resize(perms.size(), ShapedType::kDynamic);
     inferredReturnShapes.push_back(ShapedTypeComponents(outputShape));
     return success();
   }
@@ -609,17 +608,11 @@ void DequantizeOp::print(::mlir::OpAsmPrinter &printer) {}
     return success();
   }
 
-  outputShape.resize(inputShape.getRank(), ShapedType::kDynamic);
-  // If the permuations are a constant we can directly determine the output
+  // Since the permuations are a constant we can directly determine the output
   // shape.
-  DenseIntElementsAttr attr;
-  if (matchPattern(adaptor.getPerms(), m_Constant(&attr)) &&
-      attr.getType().getRank() == 1) {
-    ShapeAdaptor permShape = attr;
-    outputShape.reserve(inputShape.getRank());
-    for (int i = 0, s = inputShape.getRank(); i < s; i++) {
-      outputShape[i] = inputShape.getDimSize(permShape.getDimSize(i));
-    }
+  outputShape.reserve(inputShape.getRank());
+  for (int i = 0, s = inputShape.getRank(); i < s; i++) {
+    outputShape[i] = inputShape.getDimSize(perms[i]);
   }
 
   inferredReturnShapes.push_back(ShapedTypeComponents(outputShape));

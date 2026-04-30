@@ -1,4 +1,5 @@
 // transformer model for https://huggingface.co/karpathy/tinyllamas/resolve/main/stories15M.bin
+// Source here: https://github.com/karpathy/llama2.c/blob/350e04fe35433e6d2941dce5a1f53308f87058eb/run.c#L231-L362
 // dim: 288
 // hidden_dim: 768
 // kv_dim: 288
@@ -117,22 +118,22 @@ func.func @forward(%token : index, %pos : index,
 		}
 
 		// SwiGLU non-linearity
-		%hb3 = scf.for %i = %c0 to %c768 step %c1 iter_args(%hb = %hb1) -> (tensor<768xf32>) {
-			%0 = tensor.extract %hb [%i] : tensor<768xf32>
-			%1 = tensor.extract %hb2 [%i] : tensor<768xf32>
-			%2 = math.exp %0 : f32
-			%3 = arith.addf %c1f, %2 : f32
-			%4 = arith.divf %c1f, %3 : f32
-			%5 = arith.mulf %1, %4 : f32
-			%hbr = tensor.insert %5 into %hb [%i] : tensor<768xf32>
-			scf.yield %hbr : tensor<768xf32>
-		}
+    %hb3 = linalg.map ins(%hb1, %hb2 : tensor<768xf32>, tensor<768xf32>) outs(%hb1 : tensor<768xf32>)
+    (%hbi : f32, %hb2i : f32) {
+			%2 = arith.negf %hbi : f32
+			%3 = math.exp %2 : f32
+			%4 = arith.addf %c1f, %3 : f32
+			%5 = arith.divf %c1f, %4 : f32
+			%6 = arith.mulf %hbi, %5 : f32
+			%7 = arith.mulf %6, %hb2i : f32
+      linalg.yield %7 : f32
+    }
 
 		%w2_slice = tensor.extract_slice %w2 [%layer, 0, 0] [1, 288, 768] [1, 1, 1] : tensor<6x288x768xf32> to tensor<288x768xf32>
 		%xb7 = cinm.compute_  -> tensor<288xf32> attributes { workgroupShape = array<i64: 1,6,8> }{
 			// final matmul to get the output of the ffn
 			%xb6 = cinm.op.gemv %w2_slice, %hb3 plus %x : tensor<288x768xf32>, tensor<768xf32> plus tensor<288xf32> -> tensor<288xf32>
-			cinm.yield %x : tensor<288xf32>
+			cinm.yield %xb6 : tensor<288xf32>
 		}
 
 		scf.yield %xb7, %kc1, %vc1 : tensor<288xf32>, tensor<6x256x288xf32>, tensor<6x256x288xf32>
@@ -179,23 +180,29 @@ func.func @mha(%q: tensor<288xf32>, %kc: tensor<256x288xf32>, %vc: tensor<256x28
 
 	%pos2 = arith.addi %pos, %c1 : index
 
-	%attn_init = tensor.generate {
-	^bb0(%arg1: index):
-		tensor.yield %ninf : f32
-	} : tensor<256xf32>
-
 	%xb_init = tensor.empty() : tensor<288xf32>
 	%xb = scf.for %head = %c0 to %c6 step %c1 iter_args(%xbi = %xb_init) -> (tensor<288xf32>) {
 		%hoff = arith.muli %head, %c48 : index
 
-		%attn = scf.for %i = %c0 to %pos2 step %c1 iter_args(%attn_i = %attn_init) -> (tensor<256xf32>) {
+    %attn_init = tensor.empty() : tensor<256xf32> 
+    %attn_init_zeroed = linalg.fill ins(%ninf : f32) outs(%attn_init: tensor<256xf32>) -> tensor<256xf32>
+
+		%attn = scf.for %i = %c0 to %pos2 step %c1 iter_args(%attn_i = %attn_init_zeroed) -> (tensor<256xf32>) {
 			%qs = tensor.extract_slice %q [%hoff] [48] [1] : tensor<288xf32> to tensor<48xf32>
 			%k = tensor.extract_slice %kc [%i, %hoff] [1, 48] [1, 1] : tensor<256x288xf32> to tensor<48xf32>
 			%score = cinm.compute_ -> f32  attributes { workgroupShape = array<i64: 1,1,8> } {
-				%0 = cinm.op.elementwise mul %qs, %k : tensor<48xf32>
-				%1 = cinm.op.reduce add (%0) : tensor<48xf32> -> f32
-				%2 = arith.divf %1, %scale : f32
-				cinm.yield %2 : f32
+				// %0 = cinm.op.elementwise mul %qs, %k : tensor<48xf32>
+				// %1 = cinm.op.reduce add (%0) : tensor<48xf32> -> f32
+				// %2 = arith.divf %1, %scale : f32
+				// cinm.yield %2 : f32
+
+        %e = tensor.empty() : tensor<48xf32>
+        %o = tensor.empty() : tensor<f32>
+				%0 = linalg.mul ins(%qs, %k: tensor<48xf32>, tensor<48xf32>) outs (%e: tensor<48xf32>) -> tensor<48xf32>
+				%1 = linalg.reduce {arith.addf} ins(%0: tensor<48xf32>) outs (%o: tensor<f32>) dimensions = [0]
+        %2 = tensor.extract %1[] : tensor<f32>
+				%3 = arith.divf %2, %scale : f32
+				cinm.yield %3 : f32
 			}
 			%attn_i2 = tensor.insert %score into %attn_i [%i] : tensor<256xf32>
 			scf.yield %attn_i2 : tensor<256xf32>
