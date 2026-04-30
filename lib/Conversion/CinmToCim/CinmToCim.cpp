@@ -25,10 +25,12 @@
 #include <mlir/IR/PatternMatch.h>
 #include <mlir/Transforms/DialectConversion.h>
 
-using namespace mlir;
-
-#define GEN_PASS_CLASSES
+namespace mlir {
+#define GEN_PASS_DEF_CONVERTTILEDCINMTOCIM
 #include "cinm-mlir/Conversion/CinmPasses.h.inc"
+} // namespace mlir
+
+using namespace mlir;
 
 namespace {
 
@@ -423,7 +425,7 @@ struct InlineCinmCompute : public OpConversionPattern<cinm::ComputeOp> {
 };
 
 struct ConvertTiledCinmToCim
-    : public ConvertTiledCinmToCimBase<ConvertTiledCinmToCim> {
+    : public impl::ConvertTiledCinmToCimBase<ConvertTiledCinmToCim> {
 
   void runOnOperation() override {
     MLIRContext &ctx = getContext();

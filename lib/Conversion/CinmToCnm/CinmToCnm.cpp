@@ -47,9 +47,11 @@
 #include <mlir/Transforms/DialectConversion.h>
 #include <mlir/Transforms/InliningUtils.h>
 
-using namespace mlir;
-#define GEN_PASS_CLASSES
+namespace mlir {
+#define GEN_PASS_DEF_CONVERTTILEDCINMTOCNM
 #include <cinm-mlir/Conversion/CinmPasses.h.inc>
+} // namespace mlir
+using namespace mlir;
 
 namespace {
 
@@ -1016,7 +1018,7 @@ void populateCinmRewritePatterns(RewritePatternSet &patterns,
 }
 
 struct ConvertTiledCinmToCnm
-    : public ConvertTiledCinmToCnmBase<ConvertTiledCinmToCnm> {
+    : public impl::ConvertTiledCinmToCnmBase<ConvertTiledCinmToCnm> {
 
   void runOnOperation() override {
     RewritePatternSet patterns(&getContext());

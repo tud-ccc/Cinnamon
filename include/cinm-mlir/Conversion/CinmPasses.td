@@ -68,6 +68,24 @@ def ConvertLinalgToCinm
   ];
 }
 
+def ConvertCinmOpsToLinalg
+  : Pass<"convert-cinm-ops-to-linalg", "func::FuncOp"> {
+  let summary = "Lower cinm.op.* operations to linalg/arith/math";
+  let description = [{
+    Lowers all cinm.op.* named operations (elementwise, reduce, gemv, gemm,
+    batch_gemm, batch_gemv, activate, transpose) to equivalent linalg, arith,
+    and math ops. The cinm.compute / cinm.compute_ container ops and
+    cinm.yield are left untouched.
+  }];
+  let constructor = "mlir::cinm::createConvertCinmOpsToLinalgPass()";
+  let dependentDialects = [
+    "linalg::LinalgDialect",
+    "math::MathDialect",
+    "arith::ArithDialect",
+    "tensor::TensorDialect"
+  ];
+}
+
 def Im2ColToMatmul
   : Pass<"im2col-to-matmul", operation="func::FuncOp"> {
   let summary = "Turn supported linalg.conv ops into matmul shapes via im2col";

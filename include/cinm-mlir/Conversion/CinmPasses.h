@@ -3,6 +3,7 @@
 #pragma once
 
 #include <cinm-mlir/Conversion/CinmToCim/CinmToCim.h>
+#include <cinm-mlir/Conversion/CinmToLinalg/CinmToLinalg.h>
 #include <cinm-mlir/Conversion/CinmToCnm/CinmToCnm.h>
 #include <cinm-mlir/Conversion/LinalgToCinm/Im2ColToMatmul.h>
 #include <cinm-mlir/Conversion/LinalgToCinm/LinalgToCinm.h>

@@ -18,10 +18,12 @@
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 #include "llvm/ADT/STLExtras.h"
 
-using namespace mlir;
+namespace mlir {
 
-#define GEN_PASS_CLASSES
+#define GEN_PASS_DEF_IM2COLTOMATMUL
 #include "cinm-mlir/Conversion/CinmPasses.h.inc"
+} // namespace mlir
+using namespace mlir;
 
 namespace {
 
@@ -30,35 +32,40 @@ using ReassociationIndices = SmallVector<int64_t, 2>;
 static bool hasAllOneValues(DenseIntElementsAttr attr) {
   if (!attr)
     return false;
-  return llvm::all_of(attr.getValues<int64_t>(), [](int64_t v) { return v == 1; });
+  return llvm::all_of(attr.getValues<int64_t>(),
+                      [](int64_t v) { return v == 1; });
 }
 
-static Value transposeTensor(PatternRewriter &rewriter, Location loc, Value value,
-                             ArrayRef<int64_t> permutation) {
+static Value transposeTensor(PatternRewriter &rewriter, Location loc,
+                             Value value, ArrayRef<int64_t> permutation) {
   auto type = cast<RankedTensorType>(value.getType());
   SmallVector<int64_t> resultShape;
   resultShape.reserve(permutation.size());
   for (int64_t idx : permutation)
     resultShape.push_back(type.getShape()[idx]);
 
-  Value empty = rewriter.create<tensor::EmptyOp>(loc, resultShape, type.getElementType());
+  Value empty =
+      rewriter.create<tensor::EmptyOp>(loc, resultShape, type.getElementType());
 
   SmallVector<AffineExpr> exprs;
   exprs.reserve(permutation.size());
   for (int64_t idx : permutation)
     exprs.push_back(rewriter.getAffineDimExpr(idx));
 
-  auto inputMap = AffineMap::get(permutation.size(), 0, exprs, rewriter.getContext());
+  auto inputMap =
+      AffineMap::get(permutation.size(), 0, exprs, rewriter.getContext());
   SmallVector<AffineMap> maps = {
       inversePermutation(inputMap),
-      AffineMap::getMultiDimIdentityMap(permutation.size(), rewriter.getContext())};
+      AffineMap::getMultiDimIdentityMap(permutation.size(),
+                                        rewriter.getContext())};
 
   SmallVector<utils::IteratorType> iteratorTypes(permutation.size(),
                                                  utils::IteratorType::parallel);
 
   auto generic = rewriter.create<linalg::GenericOp>(
       loc, empty.getType(), ValueRange{value}, ValueRange{empty}, maps,
-      iteratorTypes, [&](OpBuilder &nestedBuilder, Location nestedLoc, ValueRange args) {
+      iteratorTypes,
+      [&](OpBuilder &nestedBuilder, Location nestedLoc, ValueRange args) {
         nestedBuilder.create<linalg::YieldOp>(nestedLoc, args[0]);
       });
 
@@ -85,13 +92,18 @@ struct ConvertDepthwiseConv2DNchwChw
 
     Location loc = op.getLoc();
 
-    Value inputNHWC = transposeTensor(rewriter, loc, op.getInputs()[0], {0, 2, 3, 1});
-    Value filterHWC = transposeTensor(rewriter, loc, op.getInputs()[1], {1, 2, 0});
+    Value inputNHWC =
+        transposeTensor(rewriter, loc, op.getInputs()[0], {0, 2, 3, 1});
+    Value filterHWC =
+        transposeTensor(rewriter, loc, op.getInputs()[1], {1, 2, 0});
 
     ArrayRef<int64_t> outShape = resultType.getShape();
-    SmallVector<int64_t> nhwcShape = {outShape[0], outShape[2], outShape[3], outShape[1]};
-    auto nhwcType = RankedTensorType::get(nhwcShape, resultType.getElementType());
-    Value init = rewriter.create<tensor::EmptyOp>(loc, nhwcShape, nhwcType.getElementType());
+    SmallVector<int64_t> nhwcShape = {outShape[0], outShape[2], outShape[3],
+                                      outShape[1]};
+    auto nhwcType =
+        RankedTensorType::get(nhwcShape, resultType.getElementType());
+    Value init = rewriter.create<tensor::EmptyOp>(loc, nhwcShape,
+                                                  nhwcType.getElementType());
 
     auto conv = rewriter.create<linalg::DepthwiseConv2DNhwcHwcOp>(
         loc, nhwcType, ValueRange{inputNHWC, filterHWC}, ValueRange{init},
@@ -109,7 +121,8 @@ struct GenericIm2ColMatmulToBatchMatmul
     : public OpRewritePattern<linalg::GenericOp> {
   using OpRewritePattern::OpRewritePattern;
 
-  LogicalResult matchAndRewrite(linalg::GenericOp op, PatternRewriter &rewriter) const override {
+  LogicalResult matchAndRewrite(linalg::GenericOp op,
+                                PatternRewriter &rewriter) const override {
     if (op.getNumDpsInputs() != 2 || op.getNumDpsInits() != 1)
       return failure();
     if (op.getNumLoops() != 4)
@@ -175,8 +188,10 @@ struct GenericIm2ColMatmulToBatchMatmul
       auto mulf = mulResult.getDefiningOp<arith::MulFOp>();
       if (!mulf)
         return failure();
-      if (!((mulf.getLhs() == body.getArgument(0) && mulf.getRhs() == body.getArgument(1)) ||
-            (mulf.getLhs() == body.getArgument(1) && mulf.getRhs() == body.getArgument(0))))
+      if (!((mulf.getLhs() == body.getArgument(0) &&
+             mulf.getRhs() == body.getArgument(1)) ||
+            (mulf.getLhs() == body.getArgument(1) &&
+             mulf.getRhs() == body.getArgument(0))))
         return failure();
     } else if (auto addi = yield.getOperand(0).getDefiningOp<arith::AddIOp>()) {
       if (!addi)
@@ -191,8 +206,10 @@ struct GenericIm2ColMatmulToBatchMatmul
       auto muli = mulResult.getDefiningOp<arith::MulIOp>();
       if (!muli)
         return failure();
-      if (!((muli.getLhs() == body.getArgument(0) && muli.getRhs() == body.getArgument(1)) ||
-            (muli.getLhs() == body.getArgument(1) && muli.getRhs() == body.getArgument(0))))
+      if (!((muli.getLhs() == body.getArgument(0) &&
+             muli.getRhs() == body.getArgument(1)) ||
+            (muli.getLhs() == body.getArgument(1) &&
+             muli.getRhs() == body.getArgument(0))))
         return failure();
     } else {
       return failure();
@@ -237,7 +254,8 @@ struct GenericIm2ColMatmulToBatchMatmul
       return failure();
 
     auto elemType = lhsType.getElementType();
-    if (rhsType.getElementType() != elemType || initType.getElementType() != elemType)
+    if (rhsType.getElementType() != elemType ||
+        initType.getElementType() != elemType)
       return failure();
 
     Value lhsExpanded = lhs;
@@ -250,8 +268,8 @@ struct GenericIm2ColMatmulToBatchMatmul
       SmallVector<ReassociationIndices, 2> reassoc;
       reassoc.push_back(ReassociationIndices{0, 1});
       reassoc.push_back(ReassociationIndices{2});
-      lhsExpanded = rewriter.create<tensor::ExpandShapeOp>(loc, expandedType, lhs,
-                                                           reassoc);
+      lhsExpanded = rewriter.create<tensor::ExpandShapeOp>(loc, expandedType,
+                                                           lhs, reassoc);
     } else if (lhsType.getRank() != 3) {
       return failure();
     }
@@ -265,7 +283,7 @@ struct GenericIm2ColMatmulToBatchMatmul
 };
 
 struct Im2ColToMatmulPass
-    : public Im2ColToMatmulBase<Im2ColToMatmulPass> {
+    : public impl::Im2ColToMatmulBase<Im2ColToMatmulPass> {
   using Base = Im2ColToMatmulBase<Im2ColToMatmulPass>;
   using Base::Base;
 

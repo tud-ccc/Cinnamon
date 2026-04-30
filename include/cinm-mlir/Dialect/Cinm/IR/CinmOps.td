@@ -129,7 +129,7 @@ def Cinm_TransposeOp : Cinm_Op<"op.transpose", [InferShapedTypeOpAdaptor, Pure]>
 
   let arguments = (ins
     AnyShaped:$input1,
-    AnyShaped:$perms // TODO
+    DenseI64ArrayAttr:$permutation
   );
 
   let results = (
@@ -137,7 +137,6 @@ def Cinm_TransposeOp : Cinm_Op<"op.transpose", [InferShapedTypeOpAdaptor, Pure]>
   );
 
   let extraClassDeclaration = [{
-    LogicalResult getConstantPerms(llvm::SmallVector<int64_t> &perms);
   }];
 }
 
