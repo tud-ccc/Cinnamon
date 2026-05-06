@@ -4,7 +4,7 @@ NAME=llama2_110M
 # NAME=mha
 
 $(NAME)_linalg.mlir: $(NAME).mlir
-	cinm-opt $< --inline \
+	cinm-opt $< --transform-interpreter --inline \
 	 --convert-cinm-ops-to-linalg --convert-tensor-to-linalg --linalg-generalize-named-ops --linalg-fuse-elementwise-ops --linalg-inline-scalar-operands --cse   \
 	 --eliminate-empty-tensors --cse \
    > $@

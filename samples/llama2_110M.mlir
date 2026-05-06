@@ -295,3 +295,25 @@ func.func @softmax(%vec : tensor<1024xf32>{bufferization.writable=true}) -> tens
 
 	return %r : tensor<1024xf32>
 }
+
+module attributes {transform.with_named_sequence} {
+  transform.named_sequence @__transform_main(%root: !transform.any_op {transform.readonly}) {
+    %func = transform.structured.match ops{["func.func"]}
+                attributes{sym_name = "forward"} in %root
+        : (!transform.any_op) -> !transform.any_op
+
+    // Returns all 6 scf.for ops in pre-order; the layer loop is first
+    %loops = transform.structured.match ops{["scf.for"]} in %func
+        : (!transform.any_op) -> !transform.any_op
+
+    %a_loop, %layer_loop  =
+        transform.split_handle %loops {overflow_result = 1}
+        : (!transform.any_op) -> (!transform.any_op, !transform.any_op)
+
+    // transform.print %rest_loops: !transform.any_op
+
+    // Full unroll: trip count is 6 (0 to 6 step 1)
+    transform.loop.unroll %layer_loop { factor = 6 } : !transform.any_op
+    transform.yield
+  }
+}
