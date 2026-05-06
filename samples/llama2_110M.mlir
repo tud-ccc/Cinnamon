@@ -13,21 +13,21 @@
 
 func.func @forward(%token : index, %pos : index,
 	// state
-	%kc : tensor<6x1024x768xf32> {bufferization.writable = true},
-	%vc : tensor<6x1024x768xf32> {bufferization.writable = true},
+	%kc : tensor<6x1024x768xf32> {bufferization.writable = true, bufferization.buffer_layout = affine_map<(i,j,k) -> (i,j,k)>},
+	%vc : tensor<6x1024x768xf32> {bufferization.writable = true, bufferization.buffer_layout = affine_map<(i,j,k) -> (i,j,k)>},
 	// weights
-	%embedding_table : tensor<32000x768xf32>,
-	%rms_att_weights : tensor<6x768xf32>,
-	%wq : tensor<6x768x768xf32>,
-	%wk : tensor<6x768x768xf32>,
-	%wv : tensor<6x768x768xf32>,
-	%wo : tensor<6x768x768xf32>,
-	%w1 : tensor<6x2048x768xf32>,
-	%w2 : tensor<6x768x2048xf32>,
-	%w3 : tensor<6x2048x768xf32>,
-	%rms_ffn_weights : tensor<6x768xf32>,
-	%rms_final_weight : tensor<768xf32>,
-	%wcls : tensor<32000x768xf32>
+	%embedding_table : tensor<32000x768xf32> {bufferization.buffer_layout = affine_map<(i,j) -> (i,j)>},
+	%rms_att_weights : tensor<6x768xf32>{bufferization.buffer_layout = affine_map<(i,j) -> (i,j)>},
+	%wq : tensor<6x768x768xf32>{bufferization.buffer_layout = affine_map<(i,j,k) -> (i,j,k)>},
+	%wk : tensor<6x768x768xf32>{bufferization.buffer_layout = affine_map<(i,j,k) -> (i,j,k)>},
+	%wv : tensor<6x768x768xf32>{bufferization.buffer_layout = affine_map<(i,j,k) -> (i,j,k)>},
+	%wo : tensor<6x768x768xf32>{bufferization.buffer_layout = affine_map<(i,j,k) -> (i,j,k)>},
+	%w1 : tensor<6x2048x768xf32>{bufferization.buffer_layout = affine_map<(i,j,k) -> (i,j,k)>},
+	%w2 : tensor<6x768x2048xf32>{bufferization.buffer_layout = affine_map<(i,j,k) -> (i,j,k)>},
+	%w3 : tensor<6x2048x768xf32>{bufferization.buffer_layout = affine_map<(i,j,k) -> (i,j,k)>},
+	%rms_ffn_weights : tensor<6x768xf32>{bufferization.buffer_layout = affine_map<(i,j) -> (i,j)>},
+	%rms_final_weight : tensor<768xf32>{bufferization.buffer_layout = affine_map<(i) -> (i)>},
+	%wcls : tensor<32000x768xf32>{bufferization.buffer_layout = affine_map<(i,j) -> (i,j)>}
 ) -> tensor<32000xf32> {
 	%c0 = arith.constant 0 : index
 	%c1 = arith.constant 1 : index
@@ -51,16 +51,29 @@ func.func @forward(%token : index, %pos : index,
 		%wqs = tensor.extract_slice %wq [%layer, 0, 0] [1, 768, 768] [1, 1, 1] : tensor<6x768x768xf32> to tensor<768x768xf32>
 		%wks = tensor.extract_slice %wk [%layer, 0, 0] [1, 768, 768] [1, 1, 1] : tensor<6x768x768xf32> to tensor<768x768xf32>
 		%wvs = tensor.extract_slice %wv [%layer, 0, 0] [1, 768, 768] [1, 1, 1] : tensor<6x768x768xf32> to tensor<768x768xf32>
-		%q, %k, %v = cinm.compute_ -> tensor<768xf32>, tensor<768xf32>, tensor<768xf32>  attributes { workgroupShape = array<i64: 1,6,8> } {
+
+		%kdest = tensor.extract_slice %kc0 [%layer, %pos, 0] [1, 1, 768] [1, 1, 1] :   tensor<6x1024x768xf32> to tensor<768xf32>
+		%vdest = tensor.extract_slice %vc0 [%layer, %pos, 0] [1, 1, 768] [1, 1, 1] :   tensor<6x1024x768xf32> to tensor<768xf32>
+
+		%q, %kc1, %vc1 = cinm.compute_ -> tensor<768xf32>, tensor<6x1024x768xf32>, tensor<6x1024x768xf32> {
+			%q = cinm.op.gemv %wqs, %xb : tensor<768x768xf32>, tensor<768xf32> -> tensor<768xf32>
 			%k = cinm.op.gemv %wks, %xb : tensor<768x768xf32>, tensor<768xf32> -> tensor<768xf32>
 			%v = cinm.op.gemv %wvs, %xb : tensor<768x768xf32>, tensor<768xf32> -> tensor<768xf32>
-			%q = cinm.op.gemv %wqs, %xb into %xb : tensor<768x768xf32>, tensor<768xf32> into tensor<768xf32> -> tensor<768xf32>
-			cinm.yield %q, %k, %v : tensor<768xf32>, tensor<768xf32>, tensor<768xf32>
+      %k0 = tensor.insert_slice %k into %kc0[%layer, %pos, 0] [1, 1, 768] [1, 1, 1] :  tensor<768xf32> into tensor<6x1024x768xf32> 
+      //%k0 = bufferization.materialize_in_destination %k in %kdest : (tensor<768xf32>, tensor<768xf32>) -> tensor<768xf32>
+      %v0 = tensor.insert_slice %v into %vc0[%layer, %pos, 0] [1, 1, 768] [1, 1, 1] :  tensor<768xf32> into tensor<6x1024x768xf32> 
+      // %v0 = bufferization.materialize_in_destination %v in %vdest: (tensor<768xf32>, tensor<768xf32>) -> tensor<768xf32>
+			cinm.yield %q, %k0, %v0 : tensor<768xf32>, tensor<6x1024x768xf32>, tensor<6x1024x768xf32>
 		}
 
 		// RoPE relative positional encoding: complex-valued rotate q and k in each head
 		%posi = arith.index_cast %pos : index to i64
 		%posf = arith.uitofp %posi : i64 to f32
+
+		%k = tensor.extract_slice %kc1 [%layer, %pos, 0] [1, 1, 768] [1, 1, 1] : tensor<6x1024x768xf32> to tensor<768xf32>
+		%v = tensor.extract_slice %vc1 [%layer, %pos, 0] [1, 1, 768] [1, 1, 1] : tensor<6x1024x768xf32> to tensor<768xf32>
+
+
 		%q2, %k2 = scf.for %i = %c0 to %c768 step %c2 iter_args(%qi = %q, %ki = %k) -> (tensor<768xf32>, tensor<768xf32>) {
 			%head_dim = arith.remui %i, %c48 : index
 			%head_dimi = arith.index_cast %head_dim : index to i64
@@ -85,13 +98,13 @@ func.func @forward(%token : index, %pos : index,
 			scf.yield %qr, %kr : tensor<768xf32>, tensor<768xf32>
 		}
 
-		%kc1 = tensor.insert_slice %k2 into %kc0 [%layer, %pos, 0] [1, 1, 768] [1, 1, 1] : tensor<768xf32>  into tensor<6x1024x768xf32>
-		%vc1 = tensor.insert_slice %v into %vc0 [%layer, %pos, 0] [1, 1, 768] [1, 1, 1] : tensor<768xf32>  into tensor<6x1024x768xf32>
+		%kc2 = tensor.insert_slice %k2 into %kc1 [%layer, %pos, 0] [1, 1, 768] [1, 1, 1] : tensor<768xf32>  into tensor<6x1024x768xf32>
 
 		// multi head attention
-    %lkc = tensor.extract_slice %kc1[%layer, 0, 0] [1, 1024, 768] [1, 1, 1] : tensor<6x1024x768xf32> to tensor<1024x768xf32>
+    %lkc = tensor.extract_slice %kc2[%layer, 0, 0] [1, 1024, 768] [1, 1, 1] : tensor<6x1024x768xf32> to tensor<1024x768xf32>
     %lvc = tensor.extract_slice %vc1[%layer, 0, 0] [1, 1024, 768] [1, 1, 1] : tensor<6x1024x768xf32> to tensor<1024x768xf32>
-		%xb2 = func.call @mha(%q2, %lkc, %lvc, %pos) : (tensor<768xf32>, tensor<1024x768xf32>, tensor<1024x768xf32>, index) -> tensor<768xf32>
+		%xb20 = func.call @mha(%q2, %lkc, %lvc, %pos) : (tensor<768xf32>, tensor<1024x768xf32>, tensor<1024x768xf32>, index) -> tensor<768xf32>
+    %xb2 = bufferization.materialize_in_destination %xb20 in %q2 : (tensor<768xf32>, tensor<768xf32>) -> tensor<768xf32>
 
 		%wo_slice = tensor.extract_slice %wo [%layer, 0, 0] [1, 768, 768] [1, 1, 1] : tensor<6x768x768xf32> to tensor<768x768xf32>
 		%xb4 = cinm.compute_ -> tensor<768xf32> attributes { workgroupShape = array<i64: 1,6,8> } {
@@ -136,8 +149,9 @@ func.func @forward(%token : index, %pos : index,
 			%xb6 = cinm.op.gemv %w2_slice, %hb11 plus %xb5 into %xb5 : tensor<768x2048xf32>, tensor<2048xf32> plus tensor<768xf32> into tensor<768xf32> -> tensor<768xf32> 
 			cinm.yield %xb6 : tensor<768xf32>
 		}
+    // bufferization.materialize_in_destination %xb7 in %
 
-		scf.yield %xb7, %kc1, %vc1 : tensor<768xf32>, tensor<6x1024x768xf32>, tensor<6x1024x768xf32>
+		scf.yield %xb7, %kc2, %vc1 : tensor<768xf32>, tensor<6x1024x768xf32>, tensor<6x1024x768xf32>
 	}
 
 	%x2 = func.call @rmsnorm(%x, %rms_final_weight) : (tensor<768xf32>, tensor<768xf32>) -> tensor<768xf32>
@@ -167,7 +181,8 @@ func.func @rot(%v: tensor<768xf32> {bufferization.writable = true}, %i: index, %
 	%4 = arith.mulf %v1, %fcr : f32
 	%5 = arith.addf %3, %4 : f32
 	%r1 = tensor.insert %5 into %r0[%i2] : tensor<768xf32>
-	return %r1 : tensor<768xf32>
+  %r2 = bufferization.materialize_in_destination %r1 in %v : (tensor<768xf32>, tensor<768xf32>) -> tensor<768xf32>
+	return %r2 : tensor<768xf32>
 }
 
 func.func @mha(%q: tensor<768xf32>, %kc: tensor<1024x768xf32>, %vc: tensor<1024x768xf32>, %pos: index) -> tensor<768xf32> {
@@ -175,6 +190,7 @@ func.func @mha(%q: tensor<768xf32>, %kc: tensor<1024x768xf32>, %vc: tensor<1024x
 	%c1 = arith.constant 1 : index
 	%c6 = arith.constant 6 : index
 	%c48 = arith.constant 48 : index
+	%c1024 = arith.constant 1024 : index
 	%c0f = arith.constant 0.0 : f32
 	%scale = arith.constant 6.92820323028 : f32 // sqrt(head_size)
 	%ninf = arith.constant 0xFF800000 : f32
@@ -186,9 +202,9 @@ func.func @mha(%q: tensor<768xf32>, %kc: tensor<1024x768xf32>, %vc: tensor<1024x
 		%hoff = arith.muli %head, %c48 : index
 
     %attn_init = tensor.empty() : tensor<1024xf32> 
-    %attn_init_zeroed = linalg.fill ins(%ninf : f32) outs(%attn_init: tensor<1024xf32>) -> tensor<1024xf32>
+    // %attn_init_zeroed = linalg.fill ins(%ninf : f32) outs(%attn_init: tensor<1024xf32>) -> tensor<1024xf32>
 
-		%attn = scf.for %i = %c0 to %pos2 step %c1 iter_args(%attn_i = %attn_init_zeroed) -> (tensor<1024xf32>) {
+		%attn0 = scf.for %i = %c0 to %pos2 step %c1 iter_args(%attn_i = %attn_init) -> (tensor<1024xf32>) {
 			%qs = tensor.extract_slice %q [%hoff] [48] [1] : tensor<768xf32> to tensor<48xf32>
 			%k = tensor.extract_slice %kc [%i, %hoff] [1, 48] [1, 1] : tensor<1024x768xf32> to tensor<48xf32>
 			%score = cinm.compute_ -> f32  attributes { workgroupShape = array<i64: 1,1,8> } {
@@ -206,6 +222,12 @@ func.func @mha(%q: tensor<768xf32>, %kc: tensor<1024x768xf32>, %vc: tensor<1024x
 				// cinm.yield %3 : f32
 			}
 			%attn_i2 = tensor.insert %score into %attn_i [%i] : tensor<1024xf32>
+			scf.yield %attn_i2 : tensor<1024xf32>
+		}
+
+    // fill the rest with ninf
+		%attn = scf.for %i = %pos2 to %c1024 step %c1 iter_args(%attn_i = %attn0) -> (tensor<1024xf32>) {
+			%attn_i2 = tensor.insert %ninf into %attn_i [%i] : tensor<1024xf32>
 			scf.yield %attn_i2 : tensor<1024xf32>
 		}
 
@@ -239,13 +261,13 @@ func.func @mha(%q: tensor<768xf32>, %kc: tensor<1024x768xf32>, %vc: tensor<1024x
 	return %xb : tensor<768xf32>
 }
 
-func.func @rmsnorm(%v : tensor<768xf32> {bufferization.writable = true}, %w : tensor<768xf32>) -> tensor<768xf32> {
+func.func @rmsnorm(%v : tensor<768xf32>, %w : tensor<768xf32>) -> tensor<768xf32> {
 	%epsilon = arith.constant 1.0e-5 : f32
 	%c1 = arith.constant 1.0 : f32
 	%c768 = arith.constant 768.0 : f32
 
 	%r = cinm.compute_ -> tensor<768xf32> {
-		%0 = cinm.op.elementwise mul %v, %v : tensor<768xf32>
+		%0 = cinm.op.elementwise mul %v, %v :tensor<768xf32>
 		%ss = cinm.op.reduce add (%0) : tensor<768xf32> -> f32
 		%s0 = arith.divf %ss, %c768 : f32
 		%s1 = arith.addf %s0, %epsilon : f32
@@ -253,6 +275,7 @@ func.func @rmsnorm(%v : tensor<768xf32> {bufferization.writable = true}, %w : te
     %sv = tensor.splat %s : tensor<768xf32>
 		%x = cinm.op.elementwise mul %v, %sv : tensor<768xf32>
 		%r = cinm.op.elementwise mul %x, %w : tensor<768xf32>
+    // %r2 = bufferization.materialize_in_destination %r in %v : (tensor<768xf32>, tensor<768xf32>) -> tensor<768xf32>
 		cinm.yield %r : tensor<768xf32>
 	}
 	return %r : tensor<768xf32>
