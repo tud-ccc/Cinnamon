@@ -46,20 +46,6 @@ void markOpAsNoTile(Operation *op) {
   op->setAttr(CinmDialect::NOTILE_NAME, UnitAttr::get(op->getContext()));
 }
 
-TilingParameters TilingParameters::fromComputeBlock(cinm::ComputeOp &op) {
-  TilingParameters params(op.getBufferSizesInBytes(), op.getWorkgroupShape());
-
-  // NEW: plumb through opaque tile sizes if present on the compute block.
-  if (auto ts = op.getTileSizesAttr()) {
-    SmallVector<int64_t, 8> v;
-    v.reserve(ts.size());
-    for (int64_t x : ts.asArrayRef())
-      v.push_back(x);
-    params.tileSizes = std::move(v);
-  }
-
-  return params;
-}
 
 /// Return the size of tiles on a reduce dimension.
 /// Computes this by assuming the reduction operation needs (maybe several)

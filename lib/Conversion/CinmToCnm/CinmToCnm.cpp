@@ -6,6 +6,7 @@
 #include "cinm-mlir/Dialect/Cinm/IR/CinmUtils.h"
 #include "cinm-mlir/Dialect/Cinm/IR/TilingInterface.h"
 #include "cinm-mlir/Dialect/Cnm/IR/CnmBase.h"
+#include "cinm-mlir/Dialect/Cnm/IR/CnmInterfaces.h"
 #include "cinm-mlir/Dialect/Cnm/IR/CnmOps.h"
 #include "cinm-mlir/Dialect/Cnm/IR/CnmTypes.h"
 #include "cinm-mlir/Utils/CinmUtils.h"
@@ -289,7 +290,7 @@ LogicalResult convertInputIntoAlloc(Value &inputBuf, Value workGroup,
 
   // Allocate a cinm buffer
   cnm::BufferType bufTy = cnm::BufferType::get(
-      shapeOfBuffer, inputType.getElementType(), wgTy.getShape(),
+      shapeOfBuffer, inputType.getElementType(), wgTy.getAccelerator(),
       0); // todo level is hardcoded
 
   Value alloc = rewriter.create<cnm::AllocOp>(bufTy, workGroup);
@@ -338,7 +339,7 @@ cnm::LaunchOp createLaunchOp(
 
 LogicalResult convertCinmToCnm(
     ImplicitLocOpBuilder builder, Operation *operation,
-    TypedValue<cnm::WorkgroupType> workgroup, cinm::ComputeOp computeOp,
+    TypedValue<cnm::WorkgroupType> workgroup,
     ArrayRef<ArrayRef<int64_t>> reductionDimensionsSorted, ValueRange operands,
     ValueRange outputInitializers,
     ValueRange /*optional elements*/ gatherBuffers, ValueRange results,
@@ -353,8 +354,44 @@ LogicalResult convertCinmToCnm(
   llvm::SmallVector<AffineMap, 3> gatherMaps;
   llvm::SmallVector<Type, 3> mappedArgTypes;
 
-  auto tilingParms = cinm::TilingParameters::fromComputeBlock(computeOp);
-  int maxBlockSizeBytes = tilingParms.bufferSizeOfLeaf() / operands.size();
+  auto cnmAccelerator = workgroup.getType().getAccelerator();
+  // Is there a way to generically know and where to place a buffer in
+  // accelerator memory?
+  // TODO for now we assume all levels of the accelerator memory are used.
+  //  In fact for upmem, using WRAM should be a conscious decision.
+  //  It should be possible to express scattering from host memory to MRAM, then
+  //  do another scatter for MRAM to WRAM. It sounds like we should split the
+  //  CINM->CNM transformation into more steps, that would each be configurable.
+  //  For instance, the current strategy is to use WRAM size to determine buffer
+  //  sizes. Then when lowering from CNM to upmem another layer is added. In the
+  //  future what we should be doing is let the target platform choose its own
+  //  lowering strategy. That means there probably wouldn't be a simple CINM ->
+  //  CNM pass. We could add some methods to the CnmAcceleratorAttrInterface to
+  //  support our current flow though. It seems what we need is:
+  //  - How much memory can each leaf element use?
+  //  - In what memory space? (string identifier)
+  //  Using this data it is already possible to
+  //  - Infer a mapping between parallel dimensions and leaf elements (scatter
+  //  maps)
+  //  - Produce a scatter/launch/gather program that targets the leaves
+  //  There is not much
+
+  // Could we have something like
+  // scatter memref (host) onto MRAM
+  // cnm.launch (%A, %B, %C) { // host
+  // ^bb0(%a, %b, %c): // MRAM buffers
+  //    Here we have another "accelerator" that allows scattering on
+  //    %2 = cnm.workgroup #upmem.on_dpu<8 tasklets>
+  //    %awram = cnm.alloc() for %2: !cnm.buffer<128xi32 on 8, "wram">
+  //    %bwram = cnm.alloc() for %2: !cnm.buffer<128xi32 on 8, "wram">
+  //    cnm.scatter %a into %awram[(tid) -> (tid)] of %2 :  // each tasklet gets
+  //    its own buffer cnm.scatter %b into %bwram[(tid) -> ()] of %2 :     //
+  //    all tasklets share the same buffer cnm.launch (%awram, %bwram) {
+  //      .. kernel on wram
+  //    }
+  // }
+
+  int maxBlockSizeBytes = cnmAccelerator.bufferSizeOfLeaf() / operands.size();
 
   builder.setInsertionPointAfter(operation);
 
@@ -424,14 +461,19 @@ struct ConvertLinalgReduceIntoLaunch
                   ConversionPatternRewriter &rewriter) const override {
 
     ImplicitLocOpBuilder builder(op->getLoc(), rewriter);
-    auto computeOp = mlir::cinm::getEnclosingComputeBlock(op);
+    auto cnmAccelerator =
+        mlir::cinm::getEnclosingAcceleratorAs<cnm::CnmAcceleratorAttrInterface>(
+            op);
+
+    if (!cnmAccelerator)
+      return failure();
 
     cnm::WorkgroupOp workgroup =
-        cnm::WorkgroupOp::create(builder, computeOp.getCnmWorkgroupType());
+        cnm::WorkgroupOp::create(builder, cnmAccelerator.getWorkgroupType());
 
     llvm::SmallVector<Value, 1> newResults;
     if (convertCinmToCnm(
-            builder, op, workgroup.getResult(), computeOp, {op.getDimensions()},
+            builder, op, workgroup.getResult(), {op.getDimensions()},
             adaptor.getInputs(), adaptor.getInits(), adaptor.getInits(),
             op->getResults(), newResults,
             [&](ImplicitLocOpBuilder &builder, ValueRange memrefInputs,
@@ -504,9 +546,14 @@ struct ConvertElementwiseOpToCnm : OpConversionPattern<cinm::ElementwiseOp> {
                   ConversionPatternRewriter &rewriter) const override {
 
     ImplicitLocOpBuilder builder(op->getLoc(), rewriter);
-    cinm::ComputeOp computeBlock = getEnclosingComputeBlock(op);
-    auto workgroup =
-        cnm::WorkgroupOp::create(builder, computeBlock.getCnmWorkgroupType());
+    auto cnmAccelerator =
+        mlir::cinm::getEnclosingAcceleratorAs<cnm::CnmAcceleratorAttrInterface>(
+            op);
+    if (!cnmAccelerator)
+      return failure();
+
+    cnm::WorkgroupOp workgroup =
+        cnm::WorkgroupOp::create(builder, cnmAccelerator.getWorkgroupType());
 
     // Initialize output for linalg.generic
     auto outputInit = tensor::EmptyOp::create(builder, op.getResult().getType(),
@@ -520,7 +567,7 @@ struct ConvertElementwiseOpToCnm : OpConversionPattern<cinm::ElementwiseOp> {
 
     SmallVector<Value, 1> newResults;
     const auto conversionResult = convertCinmToCnm(
-        builder, op, workgroup.getResult(), computeBlock, reductionDims,
+        builder, op, workgroup.getResult(), reductionDims,
         adaptor.getOperands(), ValueRange{outputInit}, ValueRange{op.getOut()},
         op->getResults(), newResults,
         [&](ImplicitLocOpBuilder &builder, ValueRange inputs,
@@ -771,32 +818,36 @@ struct ConvertCinmGemmToCnm : public OpConversionPattern<cinm::GemmOp> {
     auto rhs = llvm::cast<TypedValue<ShapedType>>(adaptor.getRhs());
 
     ImplicitLocOpBuilder builder(op->getLoc(), rewriter);
-    cinm::ComputeOp computeBlock = mlir::cinm::getEnclosingComputeBlock(op);
+    auto cnmAccelerator =
+        mlir::cinm::getEnclosingAcceleratorAs<cnm::CnmAcceleratorAttrInterface>(
+            op);
+    if (!cnmAccelerator || !cnmAccelerator.bufferSizeOfLeaf())
+      return failure();
+
     cnm::WorkgroupOp workgroup =
-        cnm::WorkgroupOp::create(builder, computeBlock.getCnmWorkgroupType());
-    auto wgShape = computeBlock.getWorkgroupShape();
+        cnm::WorkgroupOp::create(builder, cnmAccelerator.getWorkgroupType());
+    auto wgShape = cnmAccelerator.getWorkgroupShape();
 
     auto transposeRight = transpose(builder, rhs);
 
-    auto tilingParms = cinm::TilingParameters::fromComputeBlock(computeBlock);
     auto elTyBytes = lhs.getType().getElementTypeBitWidth() / 8;
 
     // Check that the tiling pass chose a fitting reduction size.
     auto reductionSize = lhs.getType().getDimSize(1);
     if (reductionSize * 2 * elTyBytes >
-        tilingParms.bufferSizeOfLeaf() - elTyBytes) {
+        cnmAccelerator.bufferSizeOfLeaf() - elTyBytes) {
       return op->emitOpError(
           "cannot be converted to CINM, reduction size is too large");
     }
     auto eltTy = lhs.getType().getElementType();
     // buffer type for A and B
     cnm::BufferType bufferType =
-        cnm::BufferType::get({reductionSize}, eltTy, wgShape);
+        cnm::BufferType::get({reductionSize}, eltTy, cnmAccelerator);
     Value bufferA = cnm::AllocOp::create(builder, bufferType, workgroup);
     Value bufferB = cnm::AllocOp::create(builder, bufferType, workgroup);
 
     // C has a single element and no dimensions
-    cnm::BufferType bufferCType = cnm::BufferType::get({}, eltTy, wgShape);
+    cnm::BufferType bufferCType = cnm::BufferType::get({}, eltTy, cnmAccelerator);
     Value bufferC = cnm::AllocOp::create(builder, bufferCType, workgroup);
 
     //::mlir::Value input, ::mlir::Value buffer, ::mlir::Value wg,
@@ -875,9 +926,14 @@ struct ConvertCinmGemvToCnm : public OpConversionPattern<cinm::GemvOp> {
                   ConversionPatternRewriter &rewriter) const override {
 
     ImplicitLocOpBuilder builder(op->getLoc(), rewriter);
-    cinm::ComputeOp computeBlock = mlir::cinm::getEnclosingComputeBlock(op);
+    auto cnmAccelerator =
+        mlir::cinm::getEnclosingAcceleratorAs<cnm::CnmAcceleratorAttrInterface>(
+            op);
+    if (!cnmAccelerator)
+      return failure();
+
     cnm::WorkgroupOp workgroup =
-        cnm::WorkgroupOp::create(builder, computeBlock.getCnmWorkgroupType());
+        cnm::WorkgroupOp::create(builder, cnmAccelerator.getWorkgroupType());
 
     // Build the scatter init: bias (or zero) copied into the gather target so
     // the kernel accumulates bias + A*x.  If bias == out the copy is a no-op
@@ -886,7 +942,7 @@ struct ConvertCinmGemvToCnm : public OpConversionPattern<cinm::GemvOp> {
 
     llvm::SmallVector<Value, 1> newResults;
     if (convertCinmToCnm(
-            builder, op, workgroup.getResult(), computeBlock, {{1}, {0}},
+            builder, op, workgroup.getResult(), {{1}, {0}},
             adaptor.getOperands(), ValueRange{outputInit},
             ValueRange{op.getOut()}, op->getResults(), newResults,
             [&](ImplicitLocOpBuilder &builder, ValueRange inputs,
@@ -926,9 +982,14 @@ struct ConvertCinmReduceToCnm : public OpConversionPattern<cinm::ReduceOp> {
                   ConversionPatternRewriter &rewriter) const override {
 
     ImplicitLocOpBuilder builder(op->getLoc(), rewriter);
-    cinm::ComputeOp computeBlock = mlir::cinm::getEnclosingComputeBlock(op);
+    auto cnmAccelerator =
+        mlir::cinm::getEnclosingAcceleratorAs<cnm::CnmAcceleratorAttrInterface>(
+            op);
+    if (!cnmAccelerator)
+      return failure();
+
     cnm::WorkgroupOp workgroup =
-        cnm::WorkgroupOp::create(builder, computeBlock.getCnmWorkgroupType());
+        cnm::WorkgroupOp::create(builder, cnmAccelerator.getWorkgroupType());
     auto outputInit = arith::ConstantOp::create(
         builder, op.getResult().getType(),
         builder.getZeroAttr(op.getResult().getType()));
@@ -938,9 +999,9 @@ struct ConvertCinmReduceToCnm : public OpConversionPattern<cinm::ReduceOp> {
 
     llvm::SmallVector<Value, 1> newResults;
     if (convertCinmToCnm(
-            builder, op, workgroup.getResult(), computeBlock,
-            {op.getDimensions()}, adaptor.getOperands(), ValueRange{outputInit},
-            ValueRange{nullptr}, op->getResults(), newResults,
+            builder, op, workgroup.getResult(), {op.getDimensions()},
+            adaptor.getOperands(), ValueRange{outputInit}, ValueRange{nullptr},
+            op->getResults(), newResults,
             [&](ImplicitLocOpBuilder &builder, ValueRange inputs,
                 ValueRange outputs) {
               linalg::ReduceOp::create(
@@ -998,31 +1059,6 @@ struct ConvertCinmReduceToCnm : public OpConversionPattern<cinm::ReduceOp> {
   }
 };
 
-struct DeleteCinmCompute : public OpConversionPattern<cinm::ComputeOp> {
-  using OpConversionPattern::OpConversionPattern;
-
-  LogicalResult
-  matchAndRewrite(cinm::ComputeOp op, OpAdaptor adaptor,
-                  ConversionPatternRewriter &rewriter) const override {
-
-    rewriter.setInsertionPointAfter(op);
-    IRMapping mapper;
-    for (auto [arg, opnd] : op.zipArgsWithOperands()) {
-      mapper.map(arg, opnd);
-    }
-    for (auto &toCopy : adaptor.getBody().front().without_terminator()) {
-      rewriter.clone(toCopy, mapper);
-    }
-    auto term = op.getBody().front().getTerminator();
-    for (auto [result, termOperand] :
-         llvm::zip(op->getResults(), term->getOperands())) {
-      rewriter.replaceAllUsesWith(result, mapper.lookup(termOperand));
-    }
-    rewriter.eraseOp(op);
-    return success();
-  }
-};
-
 void populateCinmRewritePatterns(RewritePatternSet &patterns,
                                  MLIRContext *ctx) {
   patterns.insert<ConvertLinalgReduceIntoLaunch>(ctx);
@@ -1058,16 +1094,6 @@ struct ConvertTiledCinmToCnm
     target.markOpRecursivelyLegal<cnm::LaunchOp>();
 
     if (applyPartialConversion(getOperation(), target, std::move(patterns))
-            .failed())
-      signalPassFailure();
-
-    // in a second phase we remove cinm compute blocks
-
-    target.addIllegalOp<cinm::ComputeOp>();
-    target.addIllegalOp<cinm::YieldOp>();
-    RewritePatternSet patterns2 = RewritePatternSet(&getContext());
-    patterns2.insert<DeleteCinmCompute>(&getContext());
-    if (applyFullConversion(getOperation(), target, std::move(patterns2))
             .failed())
       signalPassFailure();
   }

@@ -15,6 +15,7 @@
 #include <llvm/ADT/ArrayRef.h>
 #include <llvm/ADT/STLExtras.h>
 #include <llvm/ADT/SmallVector.h>
+#include <llvm/ADT/StringRef.h>
 #include <llvm/Support/Casting.h>
 #include <llvm/Support/LogicalResult.h>
 #include <mlir/Dialect/Affine/IR/AffineOps.h>
@@ -112,7 +113,24 @@ cinm::ComputeOp getEnclosingComputeBlock(Operation *op) {
       return parentCompute;
   }
 
-  assert(false && "CINM operator is not inside a cinm.compute block");
+  return {};
+}
+
+cinm::CinmAcceleratorAttrInterface getEnclosingAccelerator(Operation *op) {
+  Operation *parent = op;
+  std::optional<cinm::CinmAcceleratorAttrInterface> found;
+  while ((parent = parent->getParentOp())) {
+    if (auto parentCompute = dyn_cast<cinm::ComputeOp>(parent)) {
+      found = parentCompute.getAccelerator();
+      break;
+    } else if (auto parentCompute = dyn_cast<cinm::FlexComputeOp>(parent)) {
+      found = parentCompute.getAccelerator();
+      break;
+    }
+  }
+  if (found)
+    return *found;
+  return {};
 }
 
 static bool dimsCompatible(int64_t a, int64_t b) {
@@ -179,14 +197,38 @@ static bool dimsCompatible(int64_t a, int64_t b) {
   return success();
 }
 
+static ParseResult parsePlatformOrAccelerator(OpAsmParser &parser,
+                                              OperationState &result,
+                                              StringRef platformAttrName,
+                                              StringRef acceleratorAttrName) {
+  if (parser.parseOptionalKeyword("on").succeeded()) {
+    auto loc = parser.getCurrentLocation();
+    if (parser.parseOptionalKeyword("platform").succeeded()) {
+      CinmPlatformAttrInterface platform;
+      if (parser.parseAttribute(platform))
+        return failure();
+      result.addAttribute(platformAttrName, platform);
+      return success();
+    } else if (parser.parseOptionalKeyword("accelerator").succeeded()) {
+      CinmAcceleratorAttrInterface accelerator;
+      if (parser.parseAttribute(accelerator))
+        return failure();
+      result.addAttribute(acceleratorAttrName, accelerator);
+      return success();
+    }
+    return parser.emitError(loc,
+                            "Expected `platform` or `accelerator` keyword");
+  }
+  return success();
+}
+
 ParseResult ComputeOp::parse(::mlir::OpAsmParser &parser,
                              ::mlir::OperationState &result) {
-  if (parser.parseOptionalKeyword("on").succeeded()) {
-    CinmPlatformAttrInterface platform;
-    if (parser.parseKeyword("platform") || parser.parseAttribute(platform))
-      return failure();
-    result.addAttribute(getPlatformAttrName(result.name), platform);
-  }
+  if (parsePlatformOrAccelerator(parser, result,
+                                 getPlatformAttrName(result.name),
+                                 getAcceleratorAttrName(result.name)))
+    return failure();
+
   SmallVector<OpAsmParser::Argument> regionArgs;
   if (parser.parseCommaSeparatedList(OpAsmParser::Delimiter::Paren, [&]() {
         OpAsmParser::UnresolvedOperand op;
@@ -220,6 +262,8 @@ ParseResult ComputeOp::parse(::mlir::OpAsmParser &parser,
 void ComputeOp::print(OpAsmPrinter &out) {
   if (auto platform = getPlatform()) {
     out << " on platform " << platform;
+  } else if (auto accelerator = getAccelerator()) {
+    out << " on accelerator " << accelerator;
   }
   out << " (";
   llvm::interleaveComma(zipArgsWithOperands(), out, [&](auto pair) {
@@ -245,12 +289,11 @@ void ComputeOp::print(OpAsmPrinter &out) {
 
 ParseResult FlexComputeOp::parse(::mlir::OpAsmParser &parser,
                                  ::mlir::OperationState &result) {
-  if (parser.parseOptionalKeyword("on").succeeded()) {
-    CinmPlatformAttrInterface platform;
-    if (parser.parseKeyword("platform") || parser.parseAttribute(platform))
-      return failure();
-    result.addAttribute(getPlatformAttrName(result.name), platform);
-  }
+  if (parsePlatformOrAccelerator(parser, result,
+                                 getPlatformAttrName(result.name),
+                                 getAcceleratorAttrName(result.name)))
+    return failure();
+
   if (parser.parseOptionalArrow().succeeded()) {
     if (parser.parseTypeList(result.types))
       return failure();
@@ -270,6 +313,8 @@ ParseResult FlexComputeOp::parse(::mlir::OpAsmParser &parser,
 void FlexComputeOp::print(OpAsmPrinter &out) {
   if (auto platform = getPlatform()) {
     out << " on platform " << platform;
+  } else if (auto accelerator = getAccelerator()) {
+    out << " on accelerator " << accelerator;
   }
   if (!getResults().empty()) {
     out << " -> ";
@@ -284,6 +329,17 @@ void FlexComputeOp::print(OpAsmPrinter &out) {
   out.decreaseIndent();
   out.decreaseIndent();
   out.printRegion(getRegion(), false);
+}
+
+LogicalResult FlexComputeOp::verify() {
+  if (getPlatform() && getAccelerator())
+    return emitOpError("Cannot specify both platform and accelerator");
+  return success();
+}
+LogicalResult ComputeOp::verify() {
+  if (getPlatform() && getAccelerator())
+    return emitOpError("Cannot specify both platform and accelerator");
+  return success();
 }
 
 void ElementwiseOp::print(::mlir::OpAsmPrinter &out) {

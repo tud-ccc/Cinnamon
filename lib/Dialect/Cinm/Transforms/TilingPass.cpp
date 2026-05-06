@@ -15,6 +15,7 @@
 #include <mlir/IR/AffineExpr.h>
 #include <mlir/IR/AffineMap.h>
 #include <mlir/IR/Builders.h>
+#include <mlir/IR/BuiltinAttributes.h>
 #include <mlir/IR/BuiltinTypes.h>
 #include <mlir/IR/Location.h>
 #include <mlir/IR/MLIRContext.h>
@@ -27,10 +28,8 @@
 
 namespace mlir::cinm {
 
-
 #define GEN_PASS_DEF_CINMTILINGPASS
 #include "cinm-mlir/Dialect/Cinm/Transforms/Passes.h.inc"
-
 
 struct CinmApplyTilingInterfacePattern
     : public OpInterfaceConversionPattern<cinm::CinmTilingInterface> {
@@ -43,15 +42,13 @@ struct CinmApplyTilingInterfacePattern
   LogicalResult
   matchAndRewrite(cinm::CinmTilingInterface op, ArrayRef<Value>,
                   ConversionPatternRewriter &rewriter) const override {
-    auto computeBlock = op->getParentOfType<cinm::ComputeOp>();
-    if (!computeBlock) {
+    auto accelerator = cinm::getEnclosingAccelerator(op);
+    if (!accelerator) {
       markOpAsNoTile(op);
       return failure();
     }
-    auto params = cinm::TilingParameters::fromComputeBlock(computeBlock);
-
-    const bool hasExplicitTiles =
-        static_cast<bool>(computeBlock.getTileSizesAttr());
+    auto explicitParams = op->getAttrOfType<DenseIntElementsAttr>(CinmDialect::TILING_FACTORS_NAME);
+    auto params = accelerator.getTilingParameters(explicitParams);
 
     auto result = op.convertToTiledOps(rewriter, params);
     if (succeeded(result)) {
@@ -60,7 +57,7 @@ struct CinmApplyTilingInterfacePattern
       return success();
     }
 
-    if (hasExplicitTiles) {
+    if (explicitParams) {
       return failure();
     }
 
@@ -92,4 +89,4 @@ struct CinmTilingPass : public impl::CinmTilingPassBase<CinmTilingPass> {
   }
 };
 
-}
+} // namespace mlir::cinm

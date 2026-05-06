@@ -26,3 +26,4 @@ void CnmDialect::initialize()
     registerOps();
     registerTypes();
 }
+

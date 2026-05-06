@@ -4,6 +4,7 @@
 
 #include "cinm-mlir/Dialect/Cnm/IR/CnmTypes.h"
 
+#include "cinm-mlir/Dialect/Cnm/IR/CnmInterfaces.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/DialectImplementation.h"
 #include "mlir/IR/OpImplementation.h"
@@ -36,29 +37,30 @@ void CnmDialect::registerTypes() {
 // parsers/printers
 
 Type mlir::cnm::WorkgroupType::parse(mlir::AsmParser &parser) {
-  SmallVector<int64_t, 2> shape;
-  if (parser.parseLess() || parser.parseDimensionList(shape, false, false) ||
+  CnmAcceleratorAttrInterface ax;
+  if (parser.parseLess() || parser.parseCustomAttributeWithFallback(ax) ||
       parser.parseGreater()) {
     return Type();
   }
 
-  return cnm::WorkgroupType::get(parser.getContext(), shape);
+  return cnm::WorkgroupType::get(parser.getContext(), ax);
 }
 
 void mlir::cnm::WorkgroupType::print(mlir::AsmPrinter &printer) const {
   printer << "<";
-  printer.printDimensionList(getShape());
+  printer.printAttribute(getAccelerator());
   printer << ">";
 }
 
 Type mlir::cnm::BufferType::parse(mlir::AsmParser &parser) {
-  SmallVector<int64_t> shape, workgroupShape;
+  SmallVector<int64_t> shape;
   Type elementType;
+  CnmAcceleratorAttrInterface ax;
   Attribute level;
 
   if (parser.parseLess() || parser.parseDimensionList(shape, false, true) ||
       parser.parseType(elementType) || parser.parseKeyword("on") ||
-      parser.parseDimensionList(workgroupShape, false, false))
+      parser.parseCustomAttributeWithFallback(ax))
     return Type();
 
   if (parser.parseOptionalComma().succeeded()) {
@@ -69,8 +71,8 @@ Type mlir::cnm::BufferType::parse(mlir::AsmParser &parser) {
     return Type();
   }
 
-  return cnm::BufferType::get(parser.getContext(), shape, elementType,
-                              workgroupShape, level);
+  return cnm::BufferType::get(parser.getContext(), shape, elementType, ax,
+                              level);
 }
 
 void mlir::cnm::BufferType::print(mlir::AsmPrinter &printer) const {
@@ -81,7 +83,7 @@ void mlir::cnm::BufferType::print(mlir::AsmPrinter &printer) const {
   }
   printer << getElementType();
   printer << " on ";
-  printer.printDimensionList(getWorkgroupShape());
+  printer.printAttribute(getAccelerator());
   if (getLevel())
     printer << ", level " << getLevel();
   printer << ">";
