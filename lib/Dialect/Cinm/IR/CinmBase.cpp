@@ -12,6 +12,7 @@
 #include <mlir/IR/DialectImplementation.h>
 #include <mlir/Interfaces/FunctionInterfaces.h>
 #include <mlir/Support/LogicalResult.h>
+#include <mlir/Transforms/InliningUtils.h>
 
 #define DEBUG_TYPE "cinm-base"
 
@@ -31,6 +32,17 @@ using namespace mlir::cinm;
 //===----------------------------------------------------------------------===//
 // CinmDialect
 //===----------------------------------------------------------------------===//
+struct CinmInlinerInterface : DialectInlinerInterface {
+  using DialectInlinerInterface::DialectInlinerInterface;
+
+  bool isLegalToInline(Operation *, Region *, bool,
+                       IRMapping &) const override {
+    // register that it is legal to inline an operation (eg func.func)
+    // containing a cinm.compute op. This may duplicate the compute block
+    // though.
+    return true;
+  }
+};
 
 void CinmDialect::initialize() {
   registerOps();
@@ -39,6 +51,7 @@ void CinmDialect::initialize() {
 #define GET_ATTRDEF_LIST
 #include "cinm-mlir/Dialect/Cinm/IR/CinmAttributes.cpp.inc"
       >();
+  this->addInterfaces<CinmInlinerInterface>();
 }
 
 ::mlir::LogicalResult
