@@ -351,25 +351,24 @@ def Cinm_FlexComputeOp : Cinm_Base_Op<"compute_", [
   }];
 
   let arguments = (ins
-      DefaultValuedAttr<DenseI64ArrayAttr, "{2, 32, 16}">:$workgroupShape,
-      DefaultValuedAttr<DenseI64ArrayAttr, "{0, 65536, 0}">:$bufferSizesInBytes,
-      OptionalAttr<DenseI64ArrayAttr>:$tileSizes,
-      OptionalAttr<CinmPlatformAttrInterface>:$platform
+      OptionalAttr<CinmPlatformAttrInterface>:$platform,
+      OptionalAttr<CinmAcceleratorAttrInterface>:$accelerator
   );
 
   let results = (outs Variadic<AnyType>:$results);
   let regions = (region SizedRegion<1>:$body);
 
   let extraClassDeclaration = [{
-    cnm::WorkgroupType getCnmWorkgroupType() {
-      return cnm::WorkgroupType::get(getContext(), getWorkgroupShape());
-    }
-    long getWorkgroupSize() {
-      auto wgShape = getWorkgroupShape();
-      return std::reduce(wgShape.begin(), wgShape.end(), 1, std::multiplies<>());
+    template<class T>
+    std::optional<T> getAcceleratorAs() {
+      auto ax = getAccelerator();
+      T res;
+      if (!ax || !(res = llvm::dyn_cast_or_null<T>(*ax))) return std::nullopt;
+      return res;
     }
   }];
 
+  let hasVerifier = 1;
   let skipDefaultBuilders = 1;
   let builders = [
     OpBuilder<(ins "TypeRange":$results), [{
@@ -388,6 +387,7 @@ def Cinm_FlexComputeOp : Cinm_Base_Op<"compute_", [
 
  let hasCustomAssemblyFormat = 1;
  let hasCanonicalizer = 1;
+ let hasVerifier = 1;
 }
 
 
@@ -418,25 +418,14 @@ def Cinm_ComputeOp : Cinm_Base_Op<"compute", [
 
   let arguments = (ins
       Variadic<AnyType>:$operands,
-      // Variadic<AnyType>:$outputs,
-
-      DefaultValuedAttr<DenseI64ArrayAttr, "{2, 32, 16}">:$workgroupShape,
-      DefaultValuedAttr<DenseI64ArrayAttr, "{0, 65536, 0}">:$bufferSizesInBytes,
-      OptionalAttr<DenseI64ArrayAttr>:$tileSizes,
-      OptionalAttr<CinmPlatformAttrInterface>:$platform
+      OptionalAttr<CinmPlatformAttrInterface>:$platform,
+      OptionalAttr<CinmAcceleratorAttrInterface>:$accelerator
   );
 
   let results = (outs Variadic<AnyType>:$results);
   let regions = (region SizedRegion<1>:$body);
 
   let extraClassDeclaration = [{
-    cnm::WorkgroupType getCnmWorkgroupType() {
-      return cnm::WorkgroupType::get(getContext(), getWorkgroupShape());
-    }
-    long getWorkgroupSize() {
-      auto wgShape = getWorkgroupShape();
-      return std::reduce(wgShape.begin(), wgShape.end(), 1, std::multiplies<>());
-    }
     auto zipArgsWithOperands() {
       return llvm::zip(getRegion().getArguments(), getOperands());
     }
@@ -445,6 +434,14 @@ def Cinm_ComputeOp : Cinm_Base_Op<"compute", [
     }
     auto getBodyArguments() {
       return getRegion().getArguments();
+    }
+
+    template<class T>
+    std::optional<T> getAcceleratorAs() {
+      auto ax = getAccelerator();
+      T res;
+      if (!ax || !(res = llvm::dyn_cast_or_null<T>(*ax))) return std::nullopt;
+      return res;
     }
   }];
 
@@ -468,6 +465,7 @@ def Cinm_ComputeOp : Cinm_Base_Op<"compute", [
   ];
 
  let hasCustomAssemblyFormat = 1;
+ let hasVerifier = 1;
  let hasCanonicalizer = 1;
 }
 

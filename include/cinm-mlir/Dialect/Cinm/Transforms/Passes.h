@@ -21,7 +21,6 @@ namespace mlir::cinm {
 #define GEN_PASS_REGISTRATION
 #include "cinm-mlir/Dialect/Cinm/Transforms/Passes.h.inc"
 
-cinm::ComputeOp isolateComputeBlock(cinm::FlexComputeOp, RewriterBase &);
 
 //===----------------------------------------------------------------------===//
 

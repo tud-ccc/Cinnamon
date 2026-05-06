@@ -1,5 +1,6 @@
 
 
+#include "cinm-mlir/Dialect/Cinm/IR/TilingParameters.h"
 #include <cinm-mlir/Dialect/Cinm/IR/CinmAttributes.h>
 #include <cstdint>
 #include <llvm/ADT/ArrayRef.h>
@@ -51,17 +52,17 @@ void UPMEMDialect::registerAttributes() {
 // custom<PopulateUpmemLevels>($wramLevel, $mramLevel, ref($num_ranks),
 // ref($num_dpus_per_rank)) `>`";
 static ParseResult parseNamedVar(AsmParser &p, llvm::StringLiteral name,
-                                 cinm::CinmVarDefAttr &result) {
-  if (p.parseKeyword(name) || p.parseLParen() ||
-      p.parseCustomAttributeWithFallback(result) || p.parseRParen())
+                                 int64_t &result) {
+  if (p.parseKeyword(name) || p.parseLParen() || p.parseInteger(result) ||
+      p.parseRParen())
     return failure();
   return success();
 }
 
 Attribute UpmemAcceleratorAttr::parse(::mlir::AsmParser &p, ::mlir::Type) {
-  cinm::CinmVarDefAttr ranks;
-  cinm::CinmVarDefAttr dpus;
-  cinm::CinmVarDefAttr tasklets;
+  int64_t ranks;
+  int64_t dpus;
+  int64_t tasklets;
   if (p.parseLess() || parseNamedVar(p, "ranks", ranks) || p.parseComma() ||
       parseNamedVar(p, "dpus", dpus) || p.parseComma() ||
       parseNamedVar(p, "tasklets", tasklets))
@@ -77,9 +78,10 @@ Attribute UpmemAcceleratorAttr::parse(::mlir::AsmParser &p, ::mlir::Type) {
 }
 
 static void printNamedVar(AsmPrinter &out, llvm::StringLiteral name,
-                          cinm::CinmVarDefAttr var) {
+                          int64_t var) {
   out << name << "(";
-  out.printStrippedAttrOrType(var);
+  // out.printStrippedAttrOrType(var);
+  out << var;
   out << ")";
 }
 
@@ -176,10 +178,39 @@ UpmemPlatformAttr::getMemrefMemspace(cinm::CinmLevelDefAttr level) const {
 
 cinm::CinmAcceleratorAttrInterface
 UpmemAcceleratorAttr::instantiateDesignParams(
-    const llvm::MapVector<StringRef, long> &instantiations) const {
+    const llvm::MapVector<StringRef, long> &) const {
+  return *this;
 
-  return UpmemAcceleratorAttr::get(
-      getContext(), getImpl()->platform,
-      cinm::detail::instantiateDesignParams(getImpl()->designParams,
-                                            instantiations));
+  // return UpmemAcceleratorAttr::get(
+  //     getContext(), getImpl()->platform,
+  //     cinm::detail::instantiateDesignParams(getImpl()->designParams,
+  //                                           instantiations));
+}
+cinm::TilingParameters UpmemAcceleratorAttr::getTilingParameters(
+    DenseIntElementsAttr explicitFactors) const {
+  SmallVector<int64_t, 3> bufferSizeBytes = {0, getWramLevel().getSizeInBytes(),
+                                             0};
+  cinm::TilingParameters parms(bufferSizeBytes, getWorkgroupShape());
+  if (explicitFactors) {
+    SmallVector<int64_t, 8> factors(explicitFactors.getValues<int64_t>());
+    parms.tileSizes = std::move(factors);
+  }
+  return parms;
+}
+
+::llvm::SmallVector<::mlir::cinm::CinmLevelArrayAttr>
+UpmemAcceleratorAttr::getWorkgroupMemoryLevels() const {
+  auto empty = cinm::CinmLevelArrayAttr::get(getContext(), {});
+  return {empty,
+          cinm::CinmLevelArrayAttr::get(getContext(),
+                                        {getMramLevel(), getWramLevel()}),
+          empty};
+}
+
+ArrayRef<cinm::CinmVarDefAttr> UpmemAcceleratorAttr::getDesignParams() const {
+  return {};
+}
+
+int64_t UpmemAcceleratorAttr::bufferSizeOfLeaf() const {
+  return getWramLevel().getSizeInBytes() / getNumTaskletsPerDpu();
 }

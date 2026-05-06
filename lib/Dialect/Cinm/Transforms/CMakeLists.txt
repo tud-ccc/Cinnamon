@@ -1,10 +1,10 @@
 add_mlir_dialect_library(CinmTransforms
     AnnotateTileSizesPass.cpp
     BufferizeCinm.cpp
-    CinmIsolateComputeBlocks.cpp
     CinmMemoryCleanup.cpp
     CinmQuantization.cpp
     CleanupLinalgPass.cpp
+    ComputeTransforms.cpp
     CostModel.cpp
     DecomposeAccumulations.cpp
     DecomposeGemmToGemv.cpp

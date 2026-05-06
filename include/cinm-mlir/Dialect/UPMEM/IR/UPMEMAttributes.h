@@ -4,9 +4,10 @@
 
 #pragma once
 
-#include "cinm-mlir/Dialect/UPMEM/IR/UPMEMBase.h"
-#include "cinm-mlir/Dialect/Cinm/IR/CinmAttributes.h"
-#include "mlir/IR/Attributes.h"
+#include <cinm-mlir/Dialect/UPMEM/IR/UPMEMBase.h>
+#include <cinm-mlir/Dialect/Cinm/IR/CinmAttributes.h>
+#include <cinm-mlir/Dialect/Cnm/IR/CnmInterfaces.h>
+#include <mlir/IR/Attributes.h>
 
 //===- Generated includes -------------------------------------------------===//
 

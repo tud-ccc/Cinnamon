@@ -7,6 +7,7 @@
 #include <cinm-mlir/Dialect/Cinm/IR/CinmBase.h>
 #include <mlir/Dialect/Linalg/IR/Linalg.h>
 #include <mlir/IR/Attributes.h>
+#include "TilingParameters.h"
 
 //===- Generated includes -------------------------------------------------===//
 

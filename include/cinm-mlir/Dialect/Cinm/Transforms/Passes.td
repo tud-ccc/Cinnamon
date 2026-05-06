@@ -23,12 +23,30 @@ def CinmTilingPass: Pass<"cinm-tiling"> {
 }
 
 def CinmIsolateComputePass: Pass<"cinm-isolate-compute-blocks"> {
-  let summary = "Turn compute_ ops into compute ops";
+  let summary = "Turn compute_ ops into compute ops (isolated from above)";
   let description = [{}];
 
   let dependentDialects = [
   ];
 }
+
+def CinmDeisolateComputeBlocks: Pass<"cinm-deisolate-compute-blocks"> {
+  let summary = "Turn compute ops into compute_ ops (not isolated from above)";
+  let description = [{}];
+
+  let dependentDialects = [
+  ];
+}
+
+
+def CinmUnwrapComputeBlocksPass: Pass<"cinm-unwrap-compute-blocks"> {
+  let summary = "Unwrap all compute and compute_ ops";
+  let description = [{}];
+
+  let dependentDialects = [
+  ];
+}
+
 
 def SoftmaxToCinmPass: Pass<"convert-linalg-softmax-to-cinm"> {
   let summary = "converts the linalg::softmax op to cinm";

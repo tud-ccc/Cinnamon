@@ -47,7 +47,7 @@ def FreeWorkgroupOp : Cnm_Op<"free_workgroup", []> {
 
 class InferWorkgroupTypeFromBuffer<string buffer, string wg>
 : TypesMatchWith<"workgroup shape matches buffer shape", buffer, wg,
-                               "cnm::WorkgroupType::get($_self.getContext(), ::llvm::cast<cnm::BufferType>($_self).getWorkgroupShape())">;
+                               "cnm::WorkgroupType::get($_self.getContext(), ::llvm::cast<cnm::BufferType>($_self).getAccelerator())">;
 
 def AllocOp : Cnm_Op<"alloc", [InferWorkgroupTypeFromBuffer<"result", "wg">]> {
     let summary = "Allocate a buffer for a given workgroup.";

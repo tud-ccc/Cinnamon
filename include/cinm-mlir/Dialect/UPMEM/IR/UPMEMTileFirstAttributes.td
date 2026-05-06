@@ -7,7 +7,7 @@
 #ifndef UPMEMX_PLATFORM
 #define UPMEMX_PLATFORM
 
-include "cinm-mlir/Dialect/Cinm/IR/CinmPlatformAttrInterface.td"
+include "cinm-mlir/Dialect/Cnm/IR/CnmInterfaces.td"
 // include "cinm-mlir/Dialect/Btfl/IR/BtflAttributes.td"
 
 include "UPMEMBase.td"
@@ -57,7 +57,8 @@ def UpmemPlatformAttr: UPMEM_Attr<"UpmemPlatform", [
 
 
 def UpmemAcceleratorAttr: UPMEM_Attr<"UpmemAccelerator", [
-          DeclareAttrInterfaceMethods<CinmAcceleratorAttrInterface, ["getThreadCountVarDef"]>,
+          DeclareAttrInterfaceMethods<CnmAcceleratorAttrInterface, [ "getWorkgroupMemoryLevels", "getWorkgroupShape", "bufferSizeOfLeaf"]>,
+          DeclareAttrInterfaceMethods<CinmAcceleratorAttrInterface, ["getTilingParameters", "getDesignParams", "instantiateDesignParams"]>,
           // DeclareAttrInterfaceMethods<BtflAcceleratorAttrInterfaceExtension, ["lowerAcceleratorOp", "lowerOpTopDown"]>
     ]> {
   let summary = "Accelerator description for upmem";
@@ -67,26 +68,26 @@ def UpmemAcceleratorAttr: UPMEM_Attr<"UpmemAccelerator", [
   // let skipDefaultBuilders = 1;
   let parameters = (ins 
     "UpmemPlatformAttr":$platform,
-    "::mlir::cinm::CinmVarDefArrayAttr":$designParams
+    ArrayRefParameter<"int64_t">:$workgroupShape
+    // "::mlir::cinm::CinmVarDefArrayAttr":$designParams,
   );
   let builders=[
-    AttrBuilderWithInferredContext<(ins
-      "::mlir::cinm::CinmVarDefAttr":$ranks,
-      "::mlir::cinm::CinmVarDefAttr":$dpus,
-      "::mlir::cinm::CinmVarDefAttr":$tasklets
+    AttrBuilder<(ins
+      "int64_t":$ranks,
+      "int64_t":$dpus,
+      "int64_t":$tasklets
     ), [{
-      auto platformDef = UpmemPlatformAttr::getDefault(ranks.getContext());
+      auto platformDef = UpmemPlatformAttr::getDefault($_ctxt);
       return get(std::move(platformDef), ranks, dpus, tasklets);
     }]>,
 
     AttrBuilderWithInferredContext<(ins
       "UpmemPlatformAttr":$platform,
-      "::mlir::cinm::CinmVarDefAttr":$ranks,
-      "::mlir::cinm::CinmVarDefAttr":$dpus,
-      "::mlir::cinm::CinmVarDefAttr":$tasklets
+      "int64_t":$ranks,
+      "int64_t":$dpus,
+      "int64_t":$tasklets
     ), [{
-      auto designParms = mlir::cinm::CinmVarDefArrayAttr::get(platform.getContext(), {ranks, dpus, tasklets});
-      return Base::get(platform.getContext(), platform, std::move(designParms));
+      return get(platform.getContext(), platform, {ranks, dpus, tasklets});
     }]>
   ];
 
@@ -99,14 +100,14 @@ def UpmemAcceleratorAttr: UPMEM_Attr<"UpmemAccelerator", [
       return getPlatform().getWramLevel();
     }
 
-    ::mlir::cinm::CinmVarDefAttr getNumRanks() const {
-      return getDesignParams().getValue()[0];
+    int64_t getNumRanks() const {
+      return getWorkgroupShape()[0];
     }
-    ::mlir::cinm::CinmVarDefAttr getNumDpusPerRank() const {
-      return getDesignParams().getValue()[1];
+    int64_t getNumDpusPerRank() const {
+      return getWorkgroupShape()[1];
     }
-    ::mlir::cinm::CinmVarDefAttr getNumTaskletsPerDpu() const {
-      return getDesignParams().getValue()[2];
+    int64_t getNumTaskletsPerDpu() const {
+      return getWorkgroupShape()[2];
     }
   }];
 

@@ -126,6 +126,13 @@ def CinmAcceleratorAttrInterface : AttrInterface<"CinmAcceleratorAttrInterface",
       /*args=*/(ins "const llvm::MapVector<StringRef, long>&":$instantiations)
     >,
 
+    InterfaceMethod<
+      /*desc=*/"Return a tiling factor struct to help cinm do the tiling",
+      /*retTy=*/"::mlir::cinm::TilingParameters",
+      /*methodName=*/"getTilingParameters",
+      /*args=*/(ins "::mlir::DenseIntElementsAttr":$explicitFactors)
+    >,
+
     // InterfaceMethod<
     //   // fixme this is lazy. The meaning of individual variables should be left to the implementation.
     //   /*desc=*/"Return the thread variable for scopes of this accelerator, if any",
@@ -193,32 +200,6 @@ def CinmAcceleratorAttrInterface : AttrInterface<"CinmAcceleratorAttrInterface",
     // }
   }];
 }
-
-
-def CinmHostPlatformAttr: Cinm_Attr<"HostPlatform", [
-    CinmPlatformAttrInterface
-  ]> {
-  let summary = "Host platform description";
-  let hasCustomAssemblyFormat = 1;
-  let mnemonic = "host_platform";
-  let description = [{
-    Host platform.
-  }];
-
-  let extraClassDeclaration = [{
-    llvm::StringRef getName() const {
-      return "host";
-    }
-    llvm::ArrayRef<cinm::CinmLevelDefAttr> getLevels() const {
-      return {};
-    }
-  }];
-
-}
-
-
-def CinmAvailablePlatformsAttr : ArrayOfAttr<Cinm_Dialect, "CinmPlatformArray", "platforms",
-                            CinmPlatformAttrInterface.storageType> {}
 
 
 #endif

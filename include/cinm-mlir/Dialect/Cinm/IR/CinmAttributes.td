@@ -10,5 +10,6 @@
 include "cinm-mlir/Dialect/Cinm/IR/CinmAttributesBase.td"
 include "cinm-mlir/Dialect/Cinm/IR/CinmAttributesForOps.td"
 include "cinm-mlir/Dialect/Cinm/IR/CinmPlatformAttrInterface.td"
+include "cinm-mlir/Dialect/Cinm/IR/CinmPlatformAttrs.td"
 
 #endif

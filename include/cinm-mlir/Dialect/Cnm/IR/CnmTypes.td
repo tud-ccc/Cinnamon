@@ -14,11 +14,15 @@ def WorkgroupType : Cnm_Type<"Workgroup"> {
   let mnemonic = "workgroup";
   let summary = "";
 
-  let parameters = (ins ArrayRefParameter<"int64_t">:$shape);
+  // let parameters = (ins ArrayRefParameter<"int64_t">:$shape);
+  let parameters = (ins "::mlir::cnm::CnmAcceleratorAttrInterface":$accelerator);
 
   let hasCustomAssemblyFormat = 1;
   let extraClassDeclaration = [{
-    int64_t getNumElements() {
+    ArrayRef<int64_t> getShape() const {
+      return getAccelerator().getWorkgroupShape();
+    }
+    int64_t getNumElements() const {
       auto wgShape = getShape();
       return std::reduce(wgShape.begin(), wgShape.end(), 1, std::multiplies<>());
     }
@@ -32,7 +36,7 @@ def BufferType : Cnm_Type<"Buffer", [ShapedTypeInterface]> {
   let parameters = (
     ins ArrayRefParameter<"int64_t">:$shape,
     "Type":$elementType,
-    ArrayRefParameter<"int64_t">:$workgroupShape,
+    "::mlir::cnm::CnmAcceleratorAttrInterface":$accelerator,
     "Attribute":$level
   );
 
@@ -42,25 +46,28 @@ def BufferType : Cnm_Type<"Buffer", [ShapedTypeInterface]> {
     TypeBuilderWithInferredContext<(ins   
     "ArrayRef<int64_t>":$shape, 
     "Type": $elementType,
-    "ArrayRef<int64_t>":$workgroupShape,
+    "::mlir::cnm::CnmAcceleratorAttrInterface":$accelerator,
     CArg<"Attribute", "{}">:$level
     ), [{
-      return $_get(elementType.getContext(), shape, elementType, workgroupShape, level);
+      return $_get(elementType.getContext(), shape, elementType, accelerator, level);
     }]>
   ];
 
   let extraClassDeclaration = [{
-    bool hasRank() { return true; }
-    ShapedType cloneWith(::std::optional<::llvm::ArrayRef<int64_t>> newShape, ::mlir::Type elementType) {
+    bool hasRank() const { return true; }
+    ShapedType cloneWith(::std::optional<::llvm::ArrayRef<int64_t>> newShape, ::mlir::Type elementType) const {
       auto shape = newShape.value_or(getShape());
-      return BufferType::get(getContext(), shape, elementType, getWorkgroupShape(), getLevel());
+      return BufferType::get(getContext(), shape, elementType, getAccelerator(), getLevel());
     }
-    int64_t getItemCount() {
+    ArrayRef<int64_t> getWorkgroupShape() const {
+      return getAccelerator().getWorkgroupShape();
+    }
+    int64_t getItemCount() const {
       auto bufShape = getShape();
       return bufShape.empty() ? 1 : mlir::computeProduct(bufShape);
     }
 
-    int64_t getSizeInBytes() {
+    int64_t getSizeInBytes() const {
       return getItemCount() * getElementTypeBitWidth() / 8;
     }
   }];
