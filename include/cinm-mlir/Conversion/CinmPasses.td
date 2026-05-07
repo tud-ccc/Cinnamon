@@ -11,7 +11,7 @@ def ConvertTiledCinmToCnm : Pass<"convert-cinm-to-cnm", operation="func::FuncOp"
     let summary = "Convert CINM dialect to CNM dialect (may require --cinm-tiling before)";
     let constructor = "mlir::cinm::createConvertTiledCinmToCnmPass()";
     let dependentDialects = ["cnm::CnmDialect", "func::FuncDialect", 
-        "arith::ArithDialect", "tensor::TensorDialect"];
+        "arith::ArithDialect", "tensor::TensorDialect", "bufferization::BufferizationDialect"];
 }
 
 def ConvertTiledCinmToCim : Pass<"convert-cinm-to-cim", operation="func::FuncOp"> {

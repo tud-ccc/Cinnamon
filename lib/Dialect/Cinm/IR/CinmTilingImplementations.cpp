@@ -352,6 +352,10 @@ GemmOp::convertToTiledOps(RewriterBase &rewriter, ArrayRef<int64_t> tilingFactor
               Value bias;
               if (!getOut())
                 bias = iterArgs[0];
+              // todo accumulate the inner gemm into a slice of the actual output
+              //  Placing the extract/insert slice close to the code in the inner
+              //  loop makes bufferization result better and should eliminate the
+              //  extra accumulation buffer. 
 
               auto tmpReduce = builder.create<cinm::GemmOp>(
                   loc, lhsSlice, rhsSlice, bias, outBuf);
