@@ -18,6 +18,7 @@ add_mlir_conversion_library(MLIRCinmToCnm
     MLIRFuncDialect
     MLIRLinalgDialect
     MLIRTensorDialect
+    MLIRBufferizationDialect
     MLIRTransformUtils
     MLIRReconcileUnrealizedCasts
 )

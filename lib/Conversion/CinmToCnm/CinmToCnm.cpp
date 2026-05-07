@@ -20,6 +20,7 @@
 
 #include <llvm/Support/Casting.h>
 #include <mlir/Dialect/Arith/IR/Arith.h>
+#include <mlir/Dialect/Bufferization/IR/Bufferization.h>
 #include <mlir/Dialect/Func/IR/FuncOps.h>
 #include <mlir/Dialect/Linalg/IR/Linalg.h>
 #include <mlir/Dialect/MemRef/IR/MemRef.h>
@@ -904,11 +905,18 @@ struct ConvertCinmGemmToCnm : public OpConversionPattern<cinm::GemmOp> {
                                         scatterGatherC, outbuf);
 
     if (op.getResult()) {
-      rewriter.replaceOp(op, ValueRange{gather.getOutput()});
+      // Add a materialization guard to relate the output of the gather with the input
+      // of the scatter, in case they're a loop accumulator and we need them to bufferize
+      // to the same buffer.
+      auto bufferizationGuard = bufferization::MaterializeInDestinationOp::create(builder, gather.getOutput(), outputInit);
+      rewriter.replaceOp(op, ValueRange{bufferizationGuard.getResult()});
     } else {
       rewriter.eraseOp(op);
     }
-    cnm::FreeWorkgroupOp::create(builder, workgroup);
+    
+
+    // todo workgroup sharing.
+    cnm::FreeWorkgroupOp::create(builder, workgroup); 
     return success();
   }
 };

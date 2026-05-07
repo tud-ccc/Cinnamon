@@ -19,7 +19,7 @@ CINM_OPT=../build/bin/cinm-opt
 
 $(IR_PREFIX).1.tiled.mlir: $(BENCH_NAME).mlir
 	@mkdir -p $(@D)
-	$(CINM_OPT) $< --pass-pipeline="builtin.module(func.func(cinm-isolate-compute-blocks,cinm-tiling))" | $(CINM_OPT) --pass-pipeline="builtin.module(**cinm.compute(affine-loop-unroll{unroll-full unroll-full-threshold=1},canonicalize))" > $@
+	$(CINM_OPT) $< --pass-pipeline="builtin.module(func.func(cinm-infer-tile-sizes,cinm-tiling))" | $(CINM_OPT) --pass-pipeline="builtin.module(**cinm.compute(affine-loop-unroll{unroll-full unroll-full-threshold=1},canonicalize))" > $@
 
 $(IR_PREFIX).1a.cinm.buffered.mlir: $(IR_PREFIX).1.tiled.mlir
 	$(CINM_OPT) $< --eliminate-empty-tensors --cse --one-shot-bufferize='bufferize-function-boundaries function-boundary-type-conversion=identity-layout-map'  \
@@ -56,7 +56,7 @@ $(IR_PREFIX).6.upmem.mlir: $(IR_PREFIX).5.cnm.scf.mlir
 	$(CINM_OPT) $< --convert-cnm-to-upmem --cse --upmem-dedup-kernels --cse > $@
 
 $(IR_PREFIX).6a1.llvm.mlir: $(IR_PREFIX).6.upmem.mlir
-	$(CINM_OPT) $< --mlir-print-ir-after-failure --canonicalize \
+	$(CINM_OPT) $< --mlir-print-ir-after-failure --canonicalize --cinm-unwrap-compute-blocks \
 	--convert-upmem-to-llvm --convert-scf-to-cf \
 	--convert-func-to-llvm=use-bare-ptr-memref-call-conv=true \
   --expand-strided-metadata --memref-expand --lower-affine --convert-to-llvm \
