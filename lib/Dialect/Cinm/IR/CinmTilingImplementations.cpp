@@ -16,7 +16,6 @@
 #include <llvm/ADT/ArrayRef.h>
 #include <llvm/ADT/SmallVector.h>
 #include <llvm/Support/Casting.h>
-#include <llvm/Support/LogicalResult.h>
 #include <mlir/IR/AffineExpr.h>
 #include <mlir/IR/Builders.h>
 #include <mlir/IR/BuiltinTypeInterfaces.h>
@@ -27,12 +26,13 @@
 #include <mlir/IR/Value.h>
 #include <mlir/IR/ValueRange.h>
 #include <mlir/Interfaces/TilingInterface.h>
-#include <tuple>
 
 using namespace mlir;
 using namespace mlir::cinm;
 
-using TilingResult2 = FailureOr<SmallVector<Value>>;
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
 
 static SmallVector<Value> createNestedScfForLoops(
     OpBuilder &builder, Location loc, ArrayRef<int64_t> tripCounts,
@@ -70,34 +70,6 @@ static SmallVector<Value> createNestedScfForLoops(
   };
 
   return build(0, iterArgs);
-}
-
-TilingResult2 ReduceOp::convertToTiledOps(OpBuilder &builder,
-                                          TilingParameters params) {
-  auto ty = getInput().getType();
-  auto reduceClusterSize =
-      params.reduceClusterSize(1, ty.getNumElements(), ty.getElementType());
-
-  auto method = getMethod();
-  if (method == ReduceMethod::ADD) {
-    return TilingResult2(
-        {createVectorReduceAdd(builder, getLoc(), getOperand(),
-                               getDimensionsAttr(), reduceClusterSize)});
-  } else if (method == ReduceMethod::MUL) {
-    return TilingResult2(
-        {createVectorReduceMul(builder, getLoc(), getOperand(),
-                               getDimensionsAttr(), reduceClusterSize)});
-  } else if (method == ReduceMethod::MAX) {
-    return TilingResult2(
-        {createVectorReduceMax(builder, getLoc(), getOperand(),
-                               getDimensionsAttr(), reduceClusterSize)});
-  } else if (method == ReduceMethod::MIN) {
-    return TilingResult2(
-        {createVectorReduceMin(builder, getLoc(), getOperand(),
-                               getDimensionsAttr(), reduceClusterSize)});
-  } else {
-    abort();
-  }
 }
 
 static constexpr std::array<int64_t, 2> noStaticOffsets2{ShapedType::kDynamic,
@@ -151,172 +123,55 @@ static Value extractSlice(OpBuilder &builder, Location loc,
                           int64_t b, Value ia, Value ib) {
   return extractSliceND(builder, loc, tensorOrMemref, {a, b}, {ia, ib});
 }
-static FailureOr<std::tuple<int64_t, int64_t, int64_t>>
-getGemmTilesFromAttributes(const int64_t M, const int64_t N, const int64_t K,
-                           const Type eltType,
-                           const mlir::cinm::TilingParameters &params,
-                           Operation *errorLoc) {
 
-  int64_t p0 = 0, p1 = 0, r = 0;
-  if (auto provided = params.getTileSizes()) {
-    if (provided->size() > 3 || provided->size() < 2) {
-      return errorLoc->emitError("Provided M, N, K tile sizes (")
-             << *provided << ") are invalid";
-    }
-    p0 = (*provided)[0];
-    p1 = (*provided)[1];
-    if (p0 <= 0 || p1 <= 0)
-      return errorLoc->emitError("Provided M, N tile sizes (")
-             << p0 << ", " << p1 << ") are invalid";
-    if (provided->size() == 3) {
-      r = (*provided)[2];
-      if (r <= 0 || r > K) {
-        return errorLoc->emitError("Provided K tile size (")
-               << r << ") incompatible with dim size K=" << K;
-      }
-      const int64_t maxElems = params.maxNumElementsOfType(eltType);
-      const int64_t maxSizePerBuffer = (maxElems - 1) / 2;
-      if (r > maxSizePerBuffer)
-        return errorLoc->emitError("Provided K tile size (")
-               << r << ") incompatible with max buffer size of "
-               << maxSizePerBuffer << " " << eltType;
-    }
+static constexpr std::array<int64_t, 2> noStaticOffsets2D{ShapedType::kDynamic,
+                                                          ShapedType::kDynamic};
+static constexpr std::array<int64_t, 2> unitStrides2D{1, 1};
+
+// ---------------------------------------------------------------------------
+// convertToTiledOps implementations
+// ---------------------------------------------------------------------------
+
+DiagnosedSilenceableFailure
+ReduceOp::convertToTiledOps(RewriterBase &rewriter,
+                             ArrayRef<int64_t> tilingFactors,
+                             SmallVectorImpl<Value> &results) {
+  if (tilingFactors.size() != 1)
+    return emitSilenceableFailure(getLoc())
+           << "expected 1 tiling factor for reduce, got "
+           << tilingFactors.size();
+
+  const int64_t clusterSize = tilingFactors[0];
+  auto method = getMethod();
+  OpBuilder &builder = rewriter;
+  if (method == ReduceMethod::ADD) {
+    results.push_back(createVectorReduceAdd(builder, getLoc(), getOperand(),
+                                            getDimensionsAttr(), clusterSize));
+  } else if (method == ReduceMethod::MUL) {
+    results.push_back(createVectorReduceMul(builder, getLoc(), getOperand(),
+                                            getDimensionsAttr(), clusterSize));
+  } else if (method == ReduceMethod::MAX) {
+    results.push_back(createVectorReduceMax(builder, getLoc(), getOperand(),
+                                            getDimensionsAttr(), clusterSize));
+  } else if (method == ReduceMethod::MIN) {
+    results.push_back(createVectorReduceMin(builder, getLoc(), getOperand(),
+                                            getDimensionsAttr(), clusterSize));
   } else {
-    auto parallelTileSizes = params.parallelClusterSize(M, N);
-    if (!parallelTileSizes)
-      return errorLoc->emitError("Cannot determine tiling factors for M=")
-             << M << ", N=" << N << " and working group shape "
-             << params.workgroupShape
-             << ", provide tileSizes attribute [tM,tN,tK].";
-    std::tie(p0, p1) = *parallelTileSizes;
-
-    // Size of the tile on the reduction dimension.
-    r = params.reduceClusterSize(2, K, eltType,
-                                 /*extraElements=*/1);
+    return emitSilenceableFailure(getLoc()) << "unhandled reduce method";
   }
-
-  return std::make_tuple(p0, p1, r);
+  return DiagnosedSilenceableFailure::success();
 }
 
-static FailureOr<std::tuple<int64_t, int64_t, int64_t, int64_t>>
-getBatchGemmTilesFromAttributes(const ShapedType &lhsType,
-                                const ShapedType &rhsType,
-                                const mlir::cinm::TilingParameters &params) {
-  auto tiles = params.getTileSizes();
-  if (!tiles || tiles->size() < 4)
-    return failure();
-  int64_t bTile = (*tiles)[0];
-  int64_t mTile = (*tiles)[1];
-  int64_t nTile = (*tiles)[2];
-  int64_t rTile = (*tiles)[3];
-  if (bTile <= 0 || mTile <= 0 || nTile <= 0 || rTile <= 0)
-    return failure();
+DiagnosedSilenceableFailure
+ElementwiseOp::convertToTiledOps(RewriterBase &rewriter,
+                                  ArrayRef<int64_t> tilingFactors,
+                                  SmallVectorImpl<Value> &results) {
+  if (tilingFactors.size() != 1)
+    return emitSilenceableFailure(getLoc())
+           << "expected 1 tiling factor for elementwise, got "
+           << tilingFactors.size();
 
-  const int64_t K = lhsType.getDimSize(2);
-  if (!ShapedType::isDynamic(K) && rTile > K)
-    return failure();
-
-  const int64_t maxElems =
-      params.maxNumElementsOfType(lhsType.getElementType());
-  const int64_t maxPerBuffer = (maxElems - 1) / 2;
-  if (rTile > maxPerBuffer)
-    return failure();
-
-  return std::make_tuple(bTile, mTile, nTile, rTile);
-}
-
-static FailureOr<std::tuple<int64_t, int64_t>>
-getGemvTilesFromAttributes(const int64_t M, const int64_t K, const Type eltType,
-                           const mlir::cinm::TilingParameters &params,
-                           Operation *errorLoc) {
-
-  int64_t p = 0, k = 0;
-  if (auto provided = params.getTileSizes()) {
-    if (provided->size() == 2) {
-      p = (*provided)[0];
-      k = (*provided)[1];
-    } else {
-      return errorLoc->emitError("Need two tile sizes for GEMV, provided ")
-             << *provided;
-    }
-    if (p <= 0 || k <= 0) {
-      return errorLoc->emitError("Invalid tile sizes for GEMV <")
-             << M << "x" << K << "> : " << p << ", " << k;
-    }
-    if ((ShapedType::isStatic(M) && M % p) ||
-        (ShapedType::isStatic(K) && K % k)) {
-      return errorLoc->emitError("Invalid tile sizes for GEMV <")
-             << M << "x" << K << "> : " << p << ", " << k;
-    }
-    return std::make_tuple(p, k);
-  }
-  if (ShapedType::isDynamic(M) || ShapedType::isDynamic(K)) {
-    return errorLoc->emitError(
-        "CINM cannot determine tiling factors for dynamic dimensions, provide "
-        "tileSizes attribute [tM,tK]");
-  }
-
-  auto parallelTileSize = params.parallelClusterSize(M, 1);
-  if (!parallelTileSize)
-    return errorLoc->emitError("Cannot determine tiling factors for M=")
-           << M << " and working group shape " << params.workgroupShape
-           << ", provide tileSizes attribute [tM,tK].";
-  std::tie(p, std::ignore) = *parallelTileSize;
-
-  // Size of the tile on the reduction dimension.
-  k = params.reduceClusterSize(2, K, eltType,
-                               /*extraElements=*/1);
-
-  return std::make_tuple(p, k);
-}
-
-static FailureOr<std::tuple<int64_t, int64_t, int64_t>>
-getBatchGemvTilesFromAttributes(const ShapedType &lhsType,
-                                const ShapedType &rhsType,
-                                const mlir::cinm::TilingParameters &params) {
-  auto tiles = params.getTileSizes();
-  if (!tiles || tiles->size() < 3)
-    return failure();
-  int64_t bTile = (*tiles)[0];
-  int64_t mTile = (*tiles)[1];
-  int64_t rTile = (*tiles)[2];
-  if (bTile <= 0 || mTile <= 0 || rTile <= 0)
-    return failure();
-  const int64_t K = lhsType.getDimSize(2);
-  if (!ShapedType::isDynamic(K) && rTile > K)
-    return failure();
-  const int64_t maxElems =
-      params.maxNumElementsOfType(lhsType.getElementType());
-  const int64_t maxPerBuffer = (maxElems - 1) / 2;
-  if (rTile > maxPerBuffer)
-    return failure();
-  return std::make_tuple(bTile, mTile, rTile);
-}
-
-static FailureOr<int64_t>
-getElementwiseTiles(ElementwiseOp op,
-                    const mlir::cinm::TilingParameters &params,
-                    Operation *errorLoc) {
-
-  if (auto provided = params.getTileSizes()) {
-    if (provided->size() != 1) {
-      return errorLoc->emitError("Need a single tiling factor, got [")
-             << *provided << "] for " << op;
-    }
-    auto numElts = op.getLhs().getType().getNumElements();
-    auto factor = (*provided)[0];
-    if (numElts % factor != 0)
-      return errorLoc->emitError("Imperfect tiling factor ")
-             << factor << " for (" << numElts << ") ";
-    return factor;
-  }
-  return errorLoc->emitError("TODO Determining tiling factors automatically is "
-                             "not supported yet for ")
-         << op;
-}
-TilingResult2 ElementwiseOp::convertToTiledOps(OpBuilder &builder0,
-                                               TilingParameters params) {
-  ImplicitLocOpBuilder builder(getLoc(), builder0);
+  ImplicitLocOpBuilder builder(getLoc(), rewriter);
 
   TypedValue<ShapedType> lhs = getLhs();
   TypedValue<ShapedType> rhs = getRhs();
@@ -327,7 +182,8 @@ TilingResult2 ElementwiseOp::convertToTiledOps(OpBuilder &builder0,
   const ShapedType originalType = tensorTy;
   Value originalShapeValue;
 
-  TypedValue<ShapedType> memrefOut = llvm::dyn_cast_or_null<TypedValue<ShapedType>>(getOut());
+  TypedValue<ShapedType> memrefOut =
+      llvm::dyn_cast_or_null<TypedValue<ShapedType>>(getOut());
   if (shape.size() > 1) {
     originalShapeValue = arith::ConstantOp::create(
         builder,
@@ -347,15 +203,9 @@ TilingResult2 ElementwiseOp::convertToTiledOps(OpBuilder &builder0,
     tensorTy = lhs.getType();
   }
 
-  int64_t tileSize = 0;
-  auto tileSizes = getElementwiseTiles(*this, params, *this);
-  if (llvm::failed(tileSizes)) {
-    return failure();
-  }
-  tileSize = *tileSizes;
-
   const int64_t numElements = tensorTy.getNumElements();
-  tileSize = std::max<int64_t>(1, std::min<int64_t>(tileSize, numElements));
+  int64_t tileSize =
+      std::max<int64_t>(1, std::min<int64_t>(tilingFactors[0], numElements));
 
   ValueRange resultInit{};
   if (getResult()) {
@@ -363,10 +213,9 @@ TilingResult2 ElementwiseOp::convertToTiledOps(OpBuilder &builder0,
         tensor::EmptyOp::create(builder, tensorTy, ValueRange{})->getResults();
   } else {
     assert(memrefOut);
-    // todo poison or reset values?
   }
 
-  SmallVector<Value> result = createNestedAffineForLoops(
+  SmallVector<Value> loopResult = createNestedAffineForLoops(
       builder, getLoc(), {numElements}, {tileSize}, resultInit,
       [&](OpBuilder &b, Location loc, ValueRange indices,
           ValueRange iterArgs) -> SmallVector<Value> {
@@ -376,19 +225,15 @@ TilingResult2 ElementwiseOp::convertToTiledOps(OpBuilder &builder0,
         Value lhsSlice = extractSlice1D(b, loc, lhs, tileSize, base);
 
         Value rhsSlice;
-        if (!isUnaryOp) {
+        if (!isUnaryOp)
           rhsSlice = extractSlice1D(b, loc, rhs, tileSize, base);
-        }
 
         Value sliceOut;
-        if (memrefOut) {
+        if (memrefOut)
           sliceOut = extractSlice1D(b, loc, memrefOut, tileSize, base);
-        }
-        // else the op result is the slice
 
-        ElementwiseOp smaller = ElementwiseOp::create(
-            b, loc, getKind(), lhsSlice, rhsSlice, sliceOut);
-        markOpAsNoTile(smaller);
+        ElementwiseOp smaller =
+            ElementwiseOp::create(b, loc, getKind(), lhsSlice, rhsSlice, sliceOut);
 
         if (smaller.getResult()) {
           SmallVector<OpFoldResult, 1> siz{b.getIndexAttr(tileSize)};
@@ -396,26 +241,28 @@ TilingResult2 ElementwiseOp::convertToTiledOps(OpBuilder &builder0,
           Value subResult = tensor::InsertSliceOp::create(
               b, loc, smaller.getResult(), iterArgs[0], off, siz, str);
           return {subResult};
-        } else {
-          return {};
         }
+        return {};
       });
 
   if (originalType.getRank() > 1) {
-    result[0] = tensor::ReshapeOp::create(builder, originalType, result[0],
-                                          originalShapeValue);
+    loopResult[0] = tensor::ReshapeOp::create(builder, originalType,
+                                              loopResult[0], originalShapeValue);
   }
-  return TilingResult2(result);
+  results.append(loopResult.begin(), loopResult.end());
+  return DiagnosedSilenceableFailure::success();
 }
 
-static constexpr std::array<int64_t, 2> noStaticOffsets2D{ShapedType::kDynamic,
-                                                          ShapedType::kDynamic};
+DiagnosedSilenceableFailure
+GemmOp::convertToTiledOps(RewriterBase &rewriter, ArrayRef<int64_t> tilingFactors,
+                           SmallVectorImpl<Value> &results) {
+  if (tilingFactors.size() != 3)
+    return emitSilenceableFailure(getLoc())
+           << "expected 3 tiling factors [tM,tN,tK] for gemm, got "
+           << tilingFactors.size();
 
-static constexpr std::array<int64_t, 2> unitStrides2D{1, 1};
-
-TilingResult2 GemmOp::convertToTiledOps(OpBuilder &builder,
-                                        TilingParameters params) {
   Location loc = getLoc();
+  OpBuilder &builder = rewriter;
 
   TypedValue<ShapedType> lhs = getLhs();
   TypedValue<ShapedType> rhs = getRhs();
@@ -423,37 +270,31 @@ TilingResult2 GemmOp::convertToTiledOps(OpBuilder &builder,
   auto lhsType = lhs.getType();
   auto rhsType = rhs.getType();
   ShapedType resultType;
-  if (getResult()) {
+  if (getResult())
     resultType = getResult().getType();
-  } else {
+  else
     resultType = getOut().getType();
-  }
 
   if (lhsType.getRank() != 2 || rhsType.getRank() != 2 ||
       resultType.getRank() != 2)
-    return failure();
+    return DiagnosedSilenceableFailure::definiteFailure();
 
   const int64_t M = lhsType.getDimSize(0);
   const int64_t K = lhsType.getDimSize(1);
   const int64_t N = rhsType.getDimSize(1);
   if (ShapedType::isDynamic(M) || ShapedType::isDynamic(K) ||
       ShapedType::isDynamic(N))
-    return failure();
+    return DiagnosedSilenceableFailure::definiteFailure();
+
+  const int64_t p0 = tilingFactors[0];
+  const int64_t p1 = tilingFactors[1];
+  const int64_t r  = tilingFactors[2];
 
   ValueRange initArgs{};
   if (!getOut()) {
     Value resultInit = tensor::EmptyOp::create(
         builder, loc, resultType.getShape(), resultType.getElementType());
     initArgs = resultInit;
-  }
-
-  int64_t p0, p1, r;
-  if (auto tiles = getGemmTilesFromAttributes(M, N, K, lhsType.getElementType(),
-                                              params, getOperation());
-      succeeded(tiles)) {
-    std::tie(p0, p1, r) = *tiles;
-  } else {
-    return failure();
   }
 
   Type eltTy = resultType.getElementType();
@@ -468,43 +309,36 @@ TilingResult2 GemmOp::convertToTiledOps(OpBuilder &builder,
 
         ValueRange iterArgInit{};
         Value biasSlice;
-        if (auto bias = getBias()) {
+        if (auto bias = getBias())
           biasSlice = extractSlice(builder, loc, bias, p0, p1, parIndices[0],
                                    parIndices[1]);
-        }
         Value outBuf;
         if (auto outmemref = getOut()) {
           outBuf = extractSlice(builder, loc,
                                 cast<TypedValue<ShapedType>>(outmemref), p0, p1,
                                 parIndices[0], parIndices[1]);
-          if (biasSlice) {
+          if (biasSlice)
             linalg::AddOp::create(builder, loc, ValueRange{biasSlice, outBuf},
                                   outBuf);
-          }
         } else {
-          // only for tensor-mode
           if (biasSlice) {
             iterArgInit = biasSlice;
           } else {
             auto reductionAccTy = RankedTensorType::get({p0, p1}, eltTy);
             DenseElementsAttr zeros;
-            if (auto floatType =
-                    dyn_cast<FloatType>(reductionAccTy.getElementType())) {
+            if (auto floatType = dyn_cast<FloatType>(eltTy))
               zeros = DenseElementsAttr::get(
                   reductionAccTy,
                   {APFloat::getZero(floatType.getFloatSemantics())});
-            } else {
+            else
               zeros = DenseElementsAttr::get(
                   reductionAccTy,
                   {APInt::getZero(reductionAccTy.getElementTypeBitWidth())});
-            }
-
             iterArgInit =
                 builder.create<arith::ConstantOp>(loc, zeros)->getResults();
           }
         }
 
-        // this is the reduction loop
         SmallVector<Value, 1> reductionResult = createNestedAffineForLoops(
             builder, loc, {K}, {r}, iterArgInit,
             [&, p0, p1](OpBuilder &builder, Location loc, ValueRange indices,
@@ -513,58 +347,59 @@ TilingResult2 GemmOp::convertToTiledOps(OpBuilder &builder,
 
               Value lhsSlice = extractSlice(builder, loc, lhs, p0, r,
                                             parIndices[0], indexInRedDim);
-
               Value rhsSlice = extractSlice(builder, loc, rhs, r, p1,
                                             indexInRedDim, parIndices[1]);
               Value bias;
-              if (!getOut()) {
-                // tensor mode
+              if (!getOut())
                 bias = iterArgs[0];
-              }
 
               auto tmpReduce = builder.create<cinm::GemmOp>(
                   loc, lhsSlice, rhsSlice, bias, outBuf);
-              cinm::markOpAsNoTile(tmpReduce);
-              if (outBuf) {
+              if (outBuf)
                 return {};
-              } else {
-                return {tmpReduce.getResult()};
-              }
+              return {tmpReduce.getResult()};
             });
 
-        if (getOut()) {
+        if (getOut())
           return {};
-        } else {
-          const Value result = builder.create<tensor::InsertSliceOp>(
-              loc, reductionResult[0], iterArgs[0], resultDynamicOffsets,
-              ValueRange{}, ValueRange{}, ArrayRef(noStaticOffsets2D),
-              resultSizes, ArrayRef(unitStrides2D));
-          return {result};
-        }
+        const Value result = builder.create<tensor::InsertSliceOp>(
+            loc, reductionResult[0], iterArgs[0], resultDynamicOffsets,
+            ValueRange{}, ValueRange{}, ArrayRef(noStaticOffsets2D),
+            resultSizes, ArrayRef(unitStrides2D));
+        return {result};
       });
 
-  return TilingResult2(finals);
+  results.append(finals.begin(), finals.end());
+  return DiagnosedSilenceableFailure::success();
 }
 
-TilingResult2 BatchGemmOp::convertToTiledOps(OpBuilder &builder,
-                                             TilingParameters params) {
+DiagnosedSilenceableFailure
+BatchGemmOp::convertToTiledOps(RewriterBase &rewriter,
+                                ArrayRef<int64_t> tilingFactors,
+                                SmallVectorImpl<Value> &results) {
+  if (tilingFactors.size() != 4)
+    return emitSilenceableFailure(getLoc())
+           << "expected 4 tiling factors [batch,tM,tN,tK] for batch_gemm, got "
+           << tilingFactors.size();
+
   Location loc = getLoc();
+  OpBuilder &builder = rewriter;
 
   Value lhs = getLhs();
   Value rhs = getRhs();
   auto lhsType = dyn_cast<ShapedType>(lhs.getType());
   auto rhsType = dyn_cast<ShapedType>(rhs.getType());
   ShapedType resultType;
-  if (getResult()) {
+  if (getResult())
     resultType = getResult().getType();
-  } else {
+  else
     resultType = getOut().getType();
-  }
+
   if (!lhsType || !rhsType || !resultType)
-    return failure();
+    return DiagnosedSilenceableFailure::definiteFailure();
   if (lhsType.getRank() != 3 || rhsType.getRank() != 3 ||
       resultType.getRank() != 3)
-    return failure();
+    return DiagnosedSilenceableFailure::definiteFailure();
 
   const int64_t B = lhsType.getDimSize(0);
   const int64_t M = lhsType.getDimSize(1);
@@ -572,23 +407,17 @@ TilingResult2 BatchGemmOp::convertToTiledOps(OpBuilder &builder,
   const int64_t N = rhsType.getDimSize(2);
   if (ShapedType::isDynamic(B) || ShapedType::isDynamic(M) ||
       ShapedType::isDynamic(K) || ShapedType::isDynamic(N))
-    return failure();
+    return DiagnosedSilenceableFailure::definiteFailure();
+
+  const int64_t bTile = tilingFactors[0];
+  const int64_t mTile = tilingFactors[1];
+  const int64_t nTile = tilingFactors[2];
+  const int64_t rTile = tilingFactors[3];
 
   Type elementTy = lhsType.getElementType();
 
-  int64_t bTile = 0, mTile = 0, nTile = 0, rTile = 0;
-  if (auto provided = getBatchGemmTilesFromAttributes(lhsType, rhsType, params);
-      succeeded(provided)) {
-    std::tie(bTile, mTile, nTile, rTile) = *provided;
-  } else {
-    getOperation()->emitError()
-        << "requires tileSizes attribute with [batch, M, N, K] entries";
-    return failure();
-  }
-
   Value resultInit =
       tensor::EmptyOp::create(builder, loc, resultType.getShape(), elementTy);
-
   TypedAttr zeroAttr = builder.getZeroAttr(elementTy);
 
   Value Bc = arith::ConstantIndexOp::create(builder, loc, B);
@@ -668,11 +497,9 @@ TilingResult2 BatchGemmOp::convertToTiledOps(OpBuilder &builder,
 
               auto tileGemm = cinm::BatchGemmOp::create(b2, loc3, lhsSlice,
                                                         rhsSlice, accArgs[0]);
-              cinm::markOpAsNoTile(tileGemm);
               auto mat = bufferization::MaterializeInDestinationOp::create(
                   b2, loc3, tileGemm.getResult(), accArgs[0]);
-              Value updatedAcc = mat.getResult();
-              return SmallVector<Value>{updatedAcc};
+              return SmallVector<Value>{mat.getResult()};
             });
 
         Value out = tensor::InsertSliceOp::create(
@@ -686,51 +513,53 @@ TilingResult2 BatchGemmOp::convertToTiledOps(OpBuilder &builder,
         return SmallVector<Value>{out};
       });
 
-  return TilingResult2(finals);
+  results.append(finals.begin(), finals.end());
+  return DiagnosedSilenceableFailure::success();
 }
 
-TilingResult2 BatchGemvOp::convertToTiledOps(OpBuilder &builder,
-                                             TilingParameters params) {
+DiagnosedSilenceableFailure
+BatchGemvOp::convertToTiledOps(RewriterBase &rewriter,
+                                ArrayRef<int64_t> tilingFactors,
+                                SmallVectorImpl<Value> &results) {
+  if (tilingFactors.size() != 3)
+    return emitSilenceableFailure(getLoc())
+           << "expected 3 tiling factors [batch,tM,tK] for batch_gemv, got "
+           << tilingFactors.size();
+
   Location loc = getLoc();
+  OpBuilder &builder = rewriter;
 
   Value lhs = getLhs();
   Value rhs = getRhs();
   auto lhsType = dyn_cast<ShapedType>(lhs.getType());
   auto rhsType = dyn_cast<ShapedType>(rhs.getType());
   ShapedType resultType;
-  if (getResult()) {
+  if (getResult())
     resultType = getResult().getType();
-  } else {
+  else
     resultType = getOut().getType();
-  }
+
   if (!lhsType || !rhsType || !resultType)
-    return failure();
+    return DiagnosedSilenceableFailure::definiteFailure();
   if (lhsType.getRank() != 3 || rhsType.getRank() != 2 ||
       resultType.getRank() != 2)
-    return failure();
+    return DiagnosedSilenceableFailure::definiteFailure();
 
   const int64_t B = lhsType.getDimSize(0);
   const int64_t M = lhsType.getDimSize(1);
   const int64_t K = lhsType.getDimSize(2);
   if (ShapedType::isDynamic(B) || ShapedType::isDynamic(M) ||
       ShapedType::isDynamic(K))
-    return failure();
+    return DiagnosedSilenceableFailure::definiteFailure();
+
+  const int64_t bTile = tilingFactors[0];
+  const int64_t mTile = tilingFactors[1];
+  const int64_t rTile = tilingFactors[2];
 
   Type elementTy = lhsType.getElementType();
 
-  int64_t bTile = 0, mTile = 0, rTile = 0;
-  if (auto provided = getBatchGemvTilesFromAttributes(lhsType, rhsType, params);
-      succeeded(provided)) {
-    std::tie(bTile, mTile, rTile) = *provided;
-  } else {
-    getOperation()->emitError()
-        << "requires tileSizes attribute with [batch, M, K] entries";
-    return failure();
-  }
-
   Value resultInit =
       tensor::EmptyOp::create(builder, loc, resultType.getShape(), elementTy);
-
   TypedAttr zeroAttr = builder.getZeroAttr(elementTy);
 
   Value Bc = arith::ConstantIndexOp::create(builder, loc, B);
@@ -802,11 +631,9 @@ TilingResult2 BatchGemvOp::convertToTiledOps(OpBuilder &builder,
 
               auto tileGemv = cinm::BatchGemvOp::create(b2, loc3, lhsSlice,
                                                         rhsSlice, accArgs[0]);
-              cinm::markOpAsNoTile(tileGemv);
               auto mat = bufferization::MaterializeInDestinationOp::create(
                   b2, loc3, tileGemv.getResult(), accArgs[0]);
-              Value updatedAcc = mat.getResult();
-              return SmallVector<Value>{updatedAcc};
+              return SmallVector<Value>{mat.getResult()};
             });
 
         Value out = tensor::InsertSliceOp::create(
@@ -818,12 +645,20 @@ TilingResult2 BatchGemvOp::convertToTiledOps(OpBuilder &builder,
         return SmallVector<Value>{out};
       });
 
-  return TilingResult2(finals);
+  results.append(finals.begin(), finals.end());
+  return DiagnosedSilenceableFailure::success();
 }
 
-TilingResult2 GemvOp::convertToTiledOps(OpBuilder &builder,
-                                        TilingParameters params) {
+DiagnosedSilenceableFailure
+GemvOp::convertToTiledOps(RewriterBase &rewriter, ArrayRef<int64_t> tilingFactors,
+                           SmallVectorImpl<Value> &results) {
+  if (tilingFactors.size() != 2)
+    return emitSilenceableFailure(getLoc())
+           << "expected 2 tiling factors [tM,tK] for gemv, got "
+           << tilingFactors.size();
+
   Location loc = getLoc();
+  OpBuilder &builder = rewriter;
 
   Value A = getLhs();
   Value x = getRhs();
@@ -831,28 +666,25 @@ TilingResult2 GemvOp::convertToTiledOps(OpBuilder &builder,
   auto aTy = cast<ShapedType>(A.getType());
   auto xTy = cast<ShapedType>(x.getType());
   ShapedType yTy;
-  if (getResult()) {
+  if (getResult())
     yTy = getResult().getType();
-  } else {
+  else
     yTy = getOut().getType();
-  }
+
   if (aTy.getRank() != 2 || xTy.getRank() != 1 || yTy.getRank() != 1)
-    return failure();
+    return DiagnosedSilenceableFailure::definiteFailure();
   if (aTy.getElementType() != xTy.getElementType() ||
       aTy.getElementType() != yTy.getElementType())
-    return failure();
+    return DiagnosedSilenceableFailure::definiteFailure();
   auto elTy = aTy.getElementType();
 
   const int64_t M = aTy.getDimSize(0);
   const int64_t K = aTy.getDimSize(1);
   if (ShapedType::isDynamic(M) || ShapedType::isDynamic(K))
-    return failure();
+    return DiagnosedSilenceableFailure::definiteFailure();
 
-  auto tileSizes =
-      getGemvTilesFromAttributes(M, K, elTy, params, getOperation());
-  if (llvm::failed(tileSizes))
-    return failure();
-  auto [pM, rK] = *tileSizes;
+  const int64_t pM = tilingFactors[0];
+  const int64_t rK = tilingFactors[1];
 
   ValueRange initArgs{};
   if (!getOut()) {
@@ -861,7 +693,7 @@ TilingResult2 GemvOp::convertToTiledOps(OpBuilder &builder,
     initArgs = resultInit;
   }
 
-  SmallVector<Value> results = createNestedAffineForLoops(
+  SmallVector<Value> loopResults = createNestedAffineForLoops(
       builder, loc, ArrayRef<int64_t>{M}, ArrayRef<int64_t>{pM}, initArgs,
       [&](OpBuilder &b, Location loc2, ValueRange ivs,
           ValueRange iters) -> SmallVector<Value> {
@@ -869,34 +701,29 @@ TilingResult2 GemvOp::convertToTiledOps(OpBuilder &builder,
 
         ValueRange iterArgInit{};
         Value biasSlice;
-        if (auto bias = getBias()) {
+        if (auto bias = getBias())
           biasSlice = extractSlice1D(b, loc2, bias, pM, i);
-        }
         Value outBuf;
         if (auto outmemref = getOut()) {
           outBuf = extractSlice1D(
               b, loc2, cast<TypedValue<ShapedType>>(outmemref), pM, i);
-          if (biasSlice) {
+          if (biasSlice)
             linalg::AddOp::create(b, loc2, ValueRange{biasSlice, outBuf},
                                   outBuf);
-          }
         } else {
-          // only for tensor-mode
           if (biasSlice) {
             iterArgInit = biasSlice;
           } else {
             auto reductionAccTy = RankedTensorType::get({pM}, elTy);
             DenseElementsAttr zeros;
-            if (auto floatType = dyn_cast<FloatType>(elTy)) {
+            if (auto floatType = dyn_cast<FloatType>(elTy))
               zeros = DenseElementsAttr::get(
                   reductionAccTy,
                   {APFloat::getZero(floatType.getFloatSemantics())});
-            } else {
+            else
               zeros = DenseElementsAttr::get(
                   reductionAccTy,
                   {APInt::getZero(reductionAccTy.getElementTypeBitWidth())});
-            }
-
             iterArgInit =
                 builder.create<arith::ConstantOp>(loc, zeros)->getResults();
           }
@@ -914,13 +741,10 @@ TilingResult2 GemvOp::convertToTiledOps(OpBuilder &builder,
                   b2, loc3, cast<TypedValue<ShapedType>>(x), rK, k);
 
               Value bias;
-              if (!getOut()) {
-                // tensor mode
+              if (!getOut())
                 bias = accArgs[0];
-              }
               auto gemv =
                   cinm::GemvOp::create(b2, loc3, aTile, xTile, bias, outBuf);
-              cinm::markOpAsNoTile(gemv);
               if (getOut())
                 return {};
               return SmallVector<Value>{gemv.getResult()};
@@ -935,15 +759,22 @@ TilingResult2 GemvOp::convertToTiledOps(OpBuilder &builder,
         return SmallVector<Value>{out};
       });
 
-  return TilingResult2(results);
+  results.append(loopResults.begin(), loopResults.end());
+  return DiagnosedSilenceableFailure::success();
 }
 
-TilingResult2 ActivateOp::convertToTiledOps(OpBuilder &builder0,
-                                            TilingParameters params) {
-  ImplicitLocOpBuilder builder(getLoc(), builder0);
+DiagnosedSilenceableFailure
+ActivateOp::convertToTiledOps(RewriterBase &rewriter,
+                               ArrayRef<int64_t> tilingFactors,
+                               SmallVectorImpl<Value> &results) {
+  if (tilingFactors.size() != 1)
+    return emitSilenceableFailure(getLoc())
+           << "expected 1 tiling factor for activate, got "
+           << tilingFactors.size();
+
+  ImplicitLocOpBuilder builder(getLoc(), rewriter);
   auto inputT = getInput();
   auto inTy = inputT.getType();
-
   Type elt = inTy.getElementType();
 
   const ShapedType originalTy = inTy;
@@ -958,15 +789,9 @@ TilingResult2 ActivateOp::convertToTiledOps(OpBuilder &builder0,
   }
 
   const int64_t total = inTy.getNumElements();
-  int64_t p = 0;
-  if (auto par = params.parallelClusterSize(total, 1))
-    p = std::max<int64_t>(1, par->first);
-  if (p <= 0)
-    p = std::max<int64_t>(1, params.workingGroupSize());
-  p = std::min<int64_t>(p, total);
+  const int64_t p = tilingFactors[0];
 
   Value init = tensor::EmptyOp::create(builder, inTy.getShape(), elt);
-
   Value totalC = arith::ConstantIndexOp::create(builder, total);
   Value pC = arith::ConstantIndexOp::create(builder, p);
 
@@ -988,10 +813,8 @@ TilingResult2 ActivateOp::convertToTiledOps(OpBuilder &builder0,
 
         auto inSlice =
             tensor::ExtractSliceOp::create(b, loc, inputT, off, siz, str);
-
         auto tile =
             cinm::ActivateOp::create(b, loc, getKind(), inSlice, Value());
-        cinm::markOpAsNoTile(tile);
 
         Value out = tensor::InsertSliceOp::create(b, loc, tile.getResult(),
                                                   iters[0], off, siz, str);
@@ -1002,5 +825,6 @@ TilingResult2 ActivateOp::convertToTiledOps(OpBuilder &builder0,
     finals[0] = tensor::ReshapeOp::create(builder, originalTy, finals[0],
                                           originalShapeValue);
   }
-  return TilingResult2(finals);
+  results.append(finals.begin(), finals.end());
+  return DiagnosedSilenceableFailure::success();
 }

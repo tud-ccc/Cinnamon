@@ -58,7 +58,7 @@ def UpmemPlatformAttr: UPMEM_Attr<"UpmemPlatform", [
 
 def UpmemAcceleratorAttr: UPMEM_Attr<"UpmemAccelerator", [
           DeclareAttrInterfaceMethods<CnmAcceleratorAttrInterface, [ "getWorkgroupMemoryLevels", "getWorkgroupShape", "bufferSizeOfLeaf"]>,
-          DeclareAttrInterfaceMethods<CinmAcceleratorAttrInterface, ["getTilingParameters", "getDesignParams", "instantiateDesignParams"]>,
+          DeclareAttrInterfaceMethods<CinmAcceleratorAttrInterface, ["computeTilingFactors", "getDesignParams", "instantiateDesignParams"]>,
           // DeclareAttrInterfaceMethods<BtflAcceleratorAttrInterfaceExtension, ["lowerAcceleratorOp", "lowerOpTopDown"]>
     ]> {
   let summary = "Accelerator description for upmem";

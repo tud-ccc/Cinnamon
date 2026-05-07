@@ -1,6 +1,5 @@
 
 
-#include "cinm-mlir/Dialect/Cinm/IR/TilingParameters.h"
 #include <cinm-mlir/Dialect/Cinm/IR/CinmAttributes.h>
 #include <cstdint>
 #include <llvm/ADT/ArrayRef.h>
@@ -35,6 +34,8 @@
 
 #define GET_ATTRDEF_CLASSES
 #include "cinm-mlir/Dialect/UPMEM/IR/UPMEMAttributes.cpp.inc"
+
+#include "cinm-mlir/Dialect/Cinm/IR/CinmTilingFactors.h"
 
 using namespace mlir;
 // using namespace mlir::tilefirst;
@@ -186,16 +187,10 @@ UpmemAcceleratorAttr::instantiateDesignParams(
   //     cinm::detail::instantiateDesignParams(getImpl()->designParams,
   //                                           instantiations));
 }
-cinm::TilingParameters UpmemAcceleratorAttr::getTilingParameters(
-    DenseIntElementsAttr explicitFactors) const {
-  SmallVector<int64_t, 3> bufferSizeBytes = {0, getWramLevel().getSizeInBytes(),
-                                             0};
-  cinm::TilingParameters parms(bufferSizeBytes, getWorkgroupShape());
-  if (explicitFactors) {
-    SmallVector<int64_t, 8> factors(explicitFactors.getValues<int64_t>());
-    parms.tileSizes = std::move(factors);
-  }
-  return parms;
+DiagnosedSilenceableFailure UpmemAcceleratorAttr::computeTilingFactors(
+    Operation *op, SmallVectorImpl<int64_t> &tilingFactors) const {
+  return cinm::computeTilingFactorsForOp(bufferSizeOfLeaf(), getWorkgroupShape(),
+                                         op, tilingFactors);
 }
 
 ::llvm::SmallVector<::mlir::cinm::CinmLevelArrayAttr>

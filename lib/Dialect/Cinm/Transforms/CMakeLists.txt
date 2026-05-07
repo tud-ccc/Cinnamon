@@ -1,5 +1,6 @@
 add_mlir_dialect_library(CinmTransforms
     AnnotateTileSizesPass.cpp
+    InferTileSizesPass.cpp
     BufferizeCinm.cpp
     CinmMemoryCleanup.cpp
     CinmQuantization.cpp
@@ -23,7 +24,7 @@ LINK_LIBS PUBLIC
     MLIRLinalgDialect
     MLIRLLVMCommonConversion
     MLIRLLVMDialect
-    MLIRTransformUtils
+    MLIRTransformDialectUtils
     CinmIR
 )
 

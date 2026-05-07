@@ -1,4 +1,5 @@
 #include "cinm-mlir/Dialect/Cinm/IR/TilingInterface.h"
+#include "cinm-mlir/Dialect/Cinm/IR/TilingParameters.h"
 #include "cinm-mlir/Dialect/Cinm/IR/CinmBase.h"
 #include "cinm-mlir/Dialect/Cinm/IR/CinmOps.h"
 

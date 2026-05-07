@@ -262,6 +262,17 @@ def CinmMemoryCleanupPass
   ];
 }
 
+def CinmInferTileSizesPass : Pass<"cinm-infer-tile-sizes"> {
+  let summary = "Infer and annotate cinm.tile_sizes on tileable ops using the enclosing accelerator";
+  let description = [{
+    For each cinm op that implements CinmTilingInterface and does not already
+    have a cinm.tile_sizes attribute, queries the enclosing accelerator via
+    CinmAcceleratorAttrInterface::computeTilingFactors and writes the result
+    as cinm.tile_sizes on the op. Ops without an enclosing accelerator or for
+    which the accelerator cannot determine tile sizes are left unchanged.
+  }];
+}
+
 def RunCostModelPass: Pass<"run-cost-model"> {
   let summary = "";
   let description = [{}];

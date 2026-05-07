@@ -127,10 +127,10 @@ def CinmAcceleratorAttrInterface : AttrInterface<"CinmAcceleratorAttrInterface",
     >,
 
     InterfaceMethod<
-      /*desc=*/"Return a tiling factor struct to help cinm do the tiling",
-      /*retTy=*/"::mlir::cinm::TilingParameters",
-      /*methodName=*/"getTilingParameters",
-      /*args=*/(ins "::mlir::DenseIntElementsAttr":$explicitFactors)
+      /*desc=*/"Compute tiling factors for the given op based on this accelerator's hardware parameters. Factors are appended to tilingFactors. Returns silenceableFailure if sizes cannot be determined automatically.",
+      /*retTy=*/"::mlir::DiagnosedSilenceableFailure",
+      /*methodName=*/"computeTilingFactors",
+      /*args=*/(ins "::mlir::Operation*":$op, "::llvm::SmallVectorImpl<int64_t>&":$tilingFactors)
     >,
 
     // InterfaceMethod<
