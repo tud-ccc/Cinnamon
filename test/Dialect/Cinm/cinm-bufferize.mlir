@@ -14,7 +14,7 @@
         //     %r = cinm.op.gemm %A, %B: tensor<8x1024xi32>, tensor<1024x128xi32> -> tensor<8x128xi32>
         //     cinm.yield %r : tensor<8x128xi32>
         // }
-        %r0 = cinm.compute (%a = %A : tensor<8x1024xi32>, %b = %B : tensor<1024x128xi32>) -> tensor<8x128xi32> attributes { workgroupShape=array<i64: 8, 128, 1> } {
+        %r0 = cinm.compute (%a = %A : tensor<8x1024xi32>, %b = %B : tensor<1024x128xi32>) -> tensor<8x128xi32> {
             %r = cinm.op.gemm %a, %b: tensor<8x1024xi32>, tensor<1024x128xi32> -> tensor<8x128xi32>
             cinm.yield %r : tensor<8x128xi32>
         }

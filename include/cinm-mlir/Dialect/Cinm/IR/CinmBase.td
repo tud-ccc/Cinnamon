@@ -30,7 +30,7 @@ def Cinm_Dialect : Dialect {
     void printAttribute(Attribute attr, DialectAsmPrinter &printer) const override;
     Attribute parseAttribute(DialectAsmParser &parser, Type type) const override;
 
-    constexpr static StringRef TILING_FACTORS_NAME = "cinm.tiling_factors";
+    constexpr static StringRef TILING_FACTORS_NAME = "cinm.tile_sizes";
     constexpr static StringRef NOTILE_NAME = "cinm.notile";
     constexpr static StringRef AVAILABLE_PLATFORMS_NAME = "cinm.available_platforms";
     private:
