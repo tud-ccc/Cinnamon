@@ -18,10 +18,11 @@ def CinmTilingInterface : OpInterface<"CinmTilingInterface"> {
     let methods = [
         InterfaceMethod<
             /*desc=*/ [{
+              Tile this operation using the given tiling factors.  
             }],
-            /*retTy=*/ "FailureOr<SmallVector<Value>>",
+            /*retTy=*/ "::mlir::DiagnosedSilenceableFailure",
             /*methodName=*/ "convertToTiledOps",
-            /*args=*/ (ins "OpBuilder&":$builder, "TilingParameters":$params),
+            /*args=*/ (ins "RewriterBase&":$rewriter, "ArrayRef<int64_t>":$tilingFactors, "SmallVectorImpl<Value>&":$results),
             /*methodBody=*/ "",
             /*defaultImplementation=*/ "">];
 }

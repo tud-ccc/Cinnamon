@@ -2,16 +2,17 @@
 
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/OpDefinition.h"
+#include "mlir/IR/PatternMatch.h"
 
 #include <cstdint>
 #include <llvm/ADT/ArrayRef.h>
 #include <mlir/Dialect/Arith/IR/Arith.h>
 #include <mlir/IR/BuiltinTypeInterfaces.h>
+#include <mlir/Dialect/Transform/Utils/DiagnosedSilenceableFailure.h>
 #include <mlir/IR/BuiltinTypes.h>
 #include <mlir/IR/Location.h>
 #include <mlir/IR/Value.h>
 #include <mlir/Support/LLVM.h>
-#include "TilingParameters.h"
 
 namespace mlir::cinm {
 struct ComputeOp;

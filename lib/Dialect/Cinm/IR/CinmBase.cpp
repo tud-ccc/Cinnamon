@@ -6,9 +6,14 @@
 
 #include "cinm-mlir/Dialect/Cinm/IR/CinmAttributes.h"
 #include "cinm-mlir/Dialect/Cinm/IR/CinmDialect.h"
+#include "cinm-mlir/Dialect/Cinm/IR/TilingInterface.h"
+#include <cstdint>
+#include <llvm/ADT/SmallVector.h>
 #include <llvm/ADT/TypeSwitch.h>
+#include <llvm/Support/Casting.h>
 #include <llvm/Support/LogicalResult.h>
 #include <mlir/IR/Attributes.h>
+#include <mlir/IR/BuiltinAttributes.h>
 #include <mlir/IR/DialectImplementation.h>
 #include <mlir/Interfaces/FunctionInterfaces.h>
 #include <mlir/Support/LogicalResult.h>
@@ -58,14 +63,16 @@ void CinmDialect::initialize() {
 CinmDialect::verifyOperationAttribute(::mlir::Operation *op,
                                       ::mlir::NamedAttribute attribute) {
 
-  if (attribute.getName() == CinmDialect::NOTILE_NAME ||
-      attribute.getName() == CinmDialect::TILING_FACTORS_NAME) {
-    if (op->getDialect() == this) {
-      return success();
+  if (attribute.getName() == CinmDialect::TILING_FACTORS_NAME) {
+    if (!op->hasTrait<CinmTilingInterface::Trait>()) {
+      return op->emitOpError() << attribute.getName()
+                               << " attribute can only be used ops "
+                                  "implementing the CinmTilingInterface";
     }
-    return op->emitOpError()
-           << attribute.getName()
-           << " attribute can only be used on cinm dialect operations";
+    if (!llvm::isa<DenseI64ArrayAttr>(attribute.getValue()))
+      return op->emitOpError() << attribute.getName()
+                               << " attribute should be a dense i64 array attr";
+    return success();
   }
   if (attribute.getName() == CinmDialect::AVAILABLE_PLATFORMS_NAME) {
     if (op->hasTrait<FunctionOpInterface::Trait>()) {
