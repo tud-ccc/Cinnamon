@@ -58,20 +58,13 @@ void CinmDialect::initialize() {
 CinmDialect::verifyOperationAttribute(::mlir::Operation *op,
                                       ::mlir::NamedAttribute attribute) {
 
-  if (attribute.getName() == CinmDialect::NOTILE_NAME) {
+  if (attribute.getName() == CinmDialect::NOTILE_NAME ||
+      attribute.getName() == CinmDialect::TILING_FACTORS_NAME) {
     if (op->getDialect() == this) {
       return success();
     }
     return op->emitOpError()
-           << CinmDialect::NOTILE_NAME
-           << " attribute can only be used on cinm dialect operations";
-  }
-  if (attribute.getName() == CinmDialect::NOTILE_NAME) {
-    if (op->getDialect() == this) {
-      return success();
-    }
-    return op->emitOpError()
-           << CinmDialect::NOTILE_NAME
+           << attribute.getName()
            << " attribute can only be used on cinm dialect operations";
   }
   if (attribute.getName() == CinmDialect::AVAILABLE_PLATFORMS_NAME) {

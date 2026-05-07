@@ -279,8 +279,8 @@ void ComputeOp::print(OpAsmPrinter &out) {
   out.increaseIndent();
   out.increaseIndent();
   out.printNewline();
-  out.printOptionalAttrDictWithKeyword((*this)->getAttrs(),
-                                       {getPlatformAttrName()});
+  out.printOptionalAttrDictWithKeyword(
+      (*this)->getAttrs(), {getPlatformAttrName(), getAcceleratorAttrName()});
   out << ' ';
   out.decreaseIndent();
   out.decreaseIndent();
@@ -323,8 +323,8 @@ void FlexComputeOp::print(OpAsmPrinter &out) {
   out.increaseIndent();
   out.increaseIndent();
   out.printNewline();
-  out.printOptionalAttrDictWithKeyword((*this)->getAttrs(),
-                                       {getPlatformAttrName()});
+  out.printOptionalAttrDictWithKeyword(
+      (*this)->getAttrs(), {getPlatformAttrName(), getAcceleratorAttrName()});
   out << ' ';
   out.decreaseIndent();
   out.decreaseIndent();
