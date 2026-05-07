@@ -1,5 +1,4 @@
 // RUN: cinm-opt %s --cinm-tiling -split-input-file | FileCheck %s
-#upmem = #upmem.array<ranks(8), dpus(1), tasklets(1)>
 
 // CHECK-LABEL: @gemv_memref
 // CHECK-SAME: (%[[A:.*]]: memref<{{.*}}>, %[[x:.*]]: memref<{{.*}}>) ->
@@ -42,15 +41,16 @@ func.func @gemv_memref_bias(%arg0: memref<64x256xi32>, %arg1: memref<256xi32>, %
 // -----
 // CHECK-LABEL: @gemv_tensor
 // CHECK-SAME: (%[[A:.*]]: tensor<{{.*}}>, %[[x:.*]]: tensor<{{.*}}>) ->
-// CHECK: affine.for %[[i:.*]] = 0 to 64 step 8 iter_args(%
-// CHECK: %[[acc0:.*]] = arith.constant dense<0> : tensor<8xi32>
-// CHECK: %[[red:.*]] = affine.for %[[k:.*]] = 0 to 256 step 32 iter_args(%[[acc:.*]] = %[[acc0]])
-// CHECK: %[[aTile:.*]] = tensor.extract_slice %[[A]][%[[i]], %[[k]]] [8, 32] [1, 1] :
-// CHECK: %[[xTile:.*]] = tensor.extract_slice %[[x]][%[[k]]] [32] [1] :
-// CHECK: %[[r:.*]] = cinm.op.gemv %[[aTile]], %[[xTile]] plus %[[acc]] :
-// CHECK: affine.yield %[[r]]
-// CHECK: tensor.insert_slice %[[red]] into %{{.*}}[%[[i]]] [8] [1] :
 func.func @gemv_tensor(%A: tensor<64x256xi32>, %x: tensor<256xi32>) -> tensor<64xi32> {
+  // CHECK: affine.for %[[i:.*]] = 0 to 64 step 8 iter_args(%[[acc0:.*]] =
+  // CHECK: %[[cst:.*]] = arith.constant dense<0> : tensor<8xi32>
+  // CHECK: %[[init:.*]] = tensor.insert_slice %[[cst]] into %[[acc0]][%[[i]]] [8] [1] :
+  // CHECK: affine.for %[[k:.*]] = 0 to 256 step 32 iter_args(%[[acc1:.*]] = %[[init]])
+  // CHECK: %[[aTile:.*]] = tensor.extract_slice %[[A]][%[[i]], %[[k]]] [8, 32] [1, 1] :
+  // CHECK: %[[xTile:.*]] = tensor.extract_slice %[[x]][%[[k]]] [32] [1] :
+  // CHECK: %[[sliceAcc:.*]] = tensor.extract_slice %[[acc1]][%[[i]]] [8] [1] :
+  // CHECK: %[[r:.*]] = cinm.op.gemv %[[aTile]], %[[xTile]] plus %[[sliceAcc]] :
+  // CHECK: tensor.insert_slice %[[r]] into %[[acc1]][%[[i]]] [8] [1] :
   %0 = cinm.op.gemv %A, %x {cinm.tile_sizes = array<i64: 8, 32>}: tensor<64x256xi32>, tensor<256xi32> -> tensor<64xi32>
   func.return %0 : tensor<64xi32>
 }
@@ -58,15 +58,16 @@ func.func @gemv_tensor(%A: tensor<64x256xi32>, %x: tensor<256xi32>) -> tensor<64
 // -----
 // CHECK-LABEL: @gemv_tensor_bias
 // CHECK-SAME: (%[[A:.*]]: tensor<{{.*}}>, %[[x:.*]]: tensor<{{.*}}>, %[[bias:.*]]: tensor<{{.*}}>) ->
-// CHECK: affine.for %[[i:.*]] = 0 to 64 step 8 iter_args(%
-// CHECK: %[[biasSlice:.*]] = tensor.extract_slice %[[bias]][%[[i]]] [8] [1] :
-// CHECK: %[[red:.*]] = affine.for %[[k:.*]] = 0 to 256 step 32 iter_args(%[[acc:.*]] = %[[biasSlice]])
-// CHECK: %[[aTile:.*]] = tensor.extract_slice %[[A]][%[[i]], %[[k]]] [8, 32] [1, 1] :
-// CHECK: %[[xTile:.*]] = tensor.extract_slice %[[x]][%[[k]]] [32] [1] :
-// CHECK: %[[r:.*]] = cinm.op.gemv %[[aTile]], %[[xTile]] plus %[[acc]] :
-// CHECK: affine.yield %[[r]]
-// CHECK: tensor.insert_slice %[[red]] into %{{.*}}[%[[i]]] [8] [1] :
 func.func @gemv_tensor_bias(%A: tensor<64x256xi32>, %x: tensor<256xi32>, %bias: tensor<64xi32>) -> tensor<64xi32> {
+  // CHECK: affine.for %[[i:.*]] = 0 to 64 step 8 iter_args(%[[acc0:.*]] =
+  // CHECK: %[[biasSlice:.*]] = tensor.extract_slice %[[bias]][%[[i]]] [8] [1] :
+  // CHECK: %[[init:.*]] = tensor.insert_slice %[[biasSlice]] into %[[acc0]][%[[i]]] [8] [1] :
+  // CHECK: affine.for %[[k:.*]] = 0 to 256 step 32 iter_args(%[[acc1:.*]] = %[[init]])
+  // CHECK: %[[aTile:.*]] = tensor.extract_slice %[[A]][%[[i]], %[[k]]] [8, 32] [1, 1] :
+  // CHECK: %[[xTile:.*]] = tensor.extract_slice %[[x]][%[[k]]] [32] [1] :
+  // CHECK: %[[sliceAcc:.*]] = tensor.extract_slice %[[acc1]][%[[i]]] [8] [1] :
+  // CHECK: %[[r:.*]] = cinm.op.gemv %[[aTile]], %[[xTile]] plus %[[sliceAcc]] :
+  // CHECK: tensor.insert_slice %[[r]] into %[[acc1]][%[[i]]] [8] [1] :
   %0 = cinm.op.gemv %A, %x plus %bias {cinm.tile_sizes = array<i64: 8, 32>}: tensor<64x256xi32>, tensor<256xi32> plus tensor<64xi32> -> tensor<64xi32>
   func.return %0 : tensor<64xi32>
 }
