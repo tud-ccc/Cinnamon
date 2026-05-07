@@ -59,6 +59,7 @@ def UpmemPlatformAttr: UPMEM_Attr<"UpmemPlatform", [
 def UpmemAcceleratorAttr: UPMEM_Attr<"UpmemAccelerator", [
           DeclareAttrInterfaceMethods<CnmAcceleratorAttrInterface, [ "getWorkgroupMemoryLevels", "getWorkgroupShape", "bufferSizeOfLeaf"]>,
           DeclareAttrInterfaceMethods<CinmAcceleratorAttrInterface, ["computeTilingFactors", "getDesignParams", "instantiateDesignParams"]>,
+          OpAsmAttrInterface
           // DeclareAttrInterfaceMethods<BtflAcceleratorAttrInterfaceExtension, ["lowerAcceleratorOp", "lowerOpTopDown"]>
     ]> {
   let summary = "Accelerator description for upmem";
@@ -108,6 +109,10 @@ def UpmemAcceleratorAttr: UPMEM_Attr<"UpmemAccelerator", [
     }
     int64_t getNumTaskletsPerDpu() const {
       return getWorkgroupShape()[2];
+    }
+    ::mlir::OpAsmAliasResult getAlias(::llvm::raw_ostream &os) const {
+      os << "upmem_" << getNumRanks() << "_" << getNumDpusPerRank() << "_" << getNumTaskletsPerDpu();
+      return ::mlir::OpAsmAliasResult::OverridableAlias;
     }
   }];
 

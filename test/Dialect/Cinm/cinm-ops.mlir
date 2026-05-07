@@ -42,7 +42,7 @@ func.func @simple(%t00: tensor<6x6xi32>, %t10 : tensor<6xf32> , %m00: memref<6xf
         %a01 = tensor.empty (): tensor<4x22xi32>
         %a02 = tensor.empty (): tensor<6x22xi32>
         %d4 = cinm.op.gemm %a00, %a01 : tensor<6x4xi32>, tensor<4x22xi32> -> tensor<6x22xi32>
-        %d3 = cinm.op.gemm %a00, %a01 plus %a02 {cinm.notile}: tensor<6x4xi32>, tensor<4x22xi32> plus tensor<6x22xi32> -> tensor<6x22xi32>
+        %d3 = cinm.op.gemm %a00, %a01 plus %a02 {cinm.tile_sizes = array<i64: 2, 2, 11>}: tensor<6x4xi32>, tensor<4x22xi32> plus tensor<6x22xi32> -> tensor<6x22xi32>
         cinm.yield %d2: tensor<6x6xi32>
     }
 

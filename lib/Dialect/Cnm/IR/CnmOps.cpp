@@ -6,7 +6,12 @@
 
 #include <cinm-mlir/Dialect/Cnm/IR/CnmTypes.h>
 #include <cinm-mlir/Utils/CinmUtils.h>
+#include <llvm/ADT/SmallVector.h>
+#include <llvm/ADT/StringRef.h>
+#include <llvm/Support/LogicalResult.h>
+#include <mlir/IR/AffineMap.h>
 #include <mlir/IR/Builders.h>
+#include <mlir/IR/BuiltinAttributeInterfaces.h>
 #include <mlir/IR/OpImplementation.h>
 
 #include <cstdint>
@@ -61,6 +66,161 @@ void CnmDialect::registerOps() {
   return failure();
 }
 
+static void printShorthandBufferType(OpAsmPrinter &p, cnm::BufferType bufTy) {
+  p << "<";
+  for (auto dim : bufTy.getShape())
+    p << dim << "x";
+  p << bufTy.getElementType() << ">";
+}
+
+void LaunchOp::print(OpAsmPrinter &p) {
+  p << " " << getWg();
+
+  auto bodyArgs = getBody().getArguments();
+  auto printArgsList = [&](StringRef kw, ValueRange operands,
+                           unsigned argOffset) {
+    if (operands.empty())
+      return;
+    p << " " << kw << "(";
+    llvm::interleaveComma(llvm::enumerate(operands), p, [&](auto indexed) {
+      auto [i, operand] = indexed;
+      p << bodyArgs[argOffset + i] << " = " << operand << " : ";
+      printShorthandBufferType(p, cast<cnm::BufferType>(operand.getType()));
+    });
+    p << ")";
+  };
+
+  printArgsList("ins", getInputs(), 0);
+  printArgsList("outs", getOutBuffers(), getInputs().size());
+
+  p << " ";
+  p.printOptionalAttrDictWithKeyword((*this)->getAttrs(),
+                                     {"operandSegmentSizes"});
+
+  p << "on ";
+  p.printType(getWg().getType());
+  p << " ";
+  p.printRegion(getBody(), /*printEntryBlockArgs=*/false, false);
+}
+
+namespace {
+struct PartialBufferType {
+  SmallVector<int64_t> dims;
+  Type elementType;
+  Attribute level;
+};
+
+} // namespace
+
+static ParseResult parseShorthandBufferType(OpAsmParser &parser,
+                                            PartialBufferType &result) {
+  if (parser.parseLess() ||
+      parser.parseDimensionList(result.dims, false, true) ||
+      parser.parseType(result.elementType))
+    return failure();
+  if (parser.parseOptionalComma().succeeded())
+    if (parser.parseAttribute(result.level))
+      return failure();
+
+  if (parser.parseGreater())
+    return failure();
+  return success();
+}
+
+static void
+inflatePartialBufferTypes(WorkgroupType wgTy,
+
+                          SmallVectorImpl<PartialBufferType> &partiaTypes,
+                          SmallVectorImpl<Type> &result) {
+  for (auto partial : partiaTypes) {
+    result.push_back(cnm::BufferType::get(partial.dims, partial.elementType,
+                                          wgTy.getAccelerator(),
+                                          partial.level));
+  }
+}
+
+static ParseResult
+parseLaunchArgsList(OpAsmParser &parser, llvm::StringLiteral kw,
+                    SmallVectorImpl<OpAsmParser::UnresolvedOperand> &operands,
+                    SmallVectorImpl<OpAsmParser::Argument> &regionArgs,
+                    SmallVectorImpl<PartialBufferType> &types) {
+
+  if (parser.parseOptionalKeyword(kw).succeeded()) {
+    if (parser.parseLParen() || parser.parseCommaSeparatedList([&]() {
+          auto &arg = regionArgs.emplace_back();
+          auto &partialTy = types.emplace_back();
+          if (parser.parseArgument(arg) || parser.parseEqual() ||
+              parser.parseOperand(operands.emplace_back()) ||
+              parser.parseColon() ||
+              parseShorthandBufferType(parser, partialTy))
+            return failure();
+
+          arg.type = MemRefType::get(partialTy.dims, partialTy.elementType,
+                                     nullptr, partialTy.level);
+          return success();
+        }) ||
+        parser.parseRParen())
+      return failure();
+  }
+  return success();
+}
+
+ParseResult LaunchOp::parse(OpAsmParser &parser, OperationState &result) {
+  // Parse workgroup operand
+  OpAsmParser::UnresolvedOperand wg;
+  if (parser.parseOperand(wg))
+    return failure();
+
+  SmallVector<OpAsmParser::Argument> regionArgs;
+
+  SmallVector<OpAsmParser::UnresolvedOperand> inputs;
+  SmallVector<PartialBufferType> inputTypesPartial;
+  if (parseLaunchArgsList(parser, "ins", inputs, regionArgs, inputTypesPartial))
+    return failure();
+
+  SmallVector<OpAsmParser::UnresolvedOperand> outBuffers;
+  SmallVector<PartialBufferType> outputTypesPartial;
+  if (parseLaunchArgsList(parser, "outs", outBuffers, regionArgs,
+                          outputTypesPartial))
+    return failure();
+
+  // Parse optional attr-dict
+  if (parser.parseOptionalAttrDictWithKeyword(result.attributes))
+    return failure();
+
+  // Parse `on WorkgroupType`
+  cnm::WorkgroupType wgType;
+  if (parser.parseKeyword("on") || parser.parseType(wgType))
+    return failure();
+
+  SmallVector<Type> inputTypes;
+  SmallVector<Type> outputTypes;
+  inflatePartialBufferTypes(wgType, inputTypesPartial, inputTypes);
+  inflatePartialBufferTypes(wgType, outputTypesPartial, outputTypes);
+
+  // Resolve operands
+  if (parser.resolveOperand(wg, wgType, result.operands) ||
+      parser.resolveOperands(inputs, inputTypes, parser.getNameLoc(),
+                             result.operands) ||
+      parser.resolveOperands(outBuffers, outputTypes, parser.getNameLoc(),
+                             result.operands))
+    return failure();
+
+  // Required by AttrSizedOperandSegments
+  result.addAttribute("operandSegmentSizes",
+                      parser.getBuilder().getDenseI32ArrayAttr(
+                          {1, static_cast<int32_t>(inputs.size()),
+                           static_cast<int32_t>(outBuffers.size())}));
+
+  // Parse body region
+  auto *body = result.addRegion();
+  if (parser.parseRegion(*body, regionArgs, true))
+    return failure();
+  LaunchOp::ensureTerminator(*body, parser.getBuilder(), result.location);
+
+  return success();
+}
+
 LogicalResult LaunchOp::verify() {
   auto bodyArgs = getBody().getArguments();
   auto operands = getParams();
@@ -70,7 +230,7 @@ LogicalResult LaunchOp::verify() {
 
   for (auto [arg, operand] : llvm::zip(bodyArgs, operands)) {
     if (auto bufTy = dyn_cast<cnm::BufferType>(operand.getType())) {
-      auto memrefTy = MemRefType::get(bufTy.getShape(), bufTy.getElementType());
+      auto memrefTy = MemRefType::get(bufTy.getShape(), bufTy.getElementType(), nullptr, bufTy.getLevel());
       if (arg.getType() != memrefTy)
         return emitError("Mismatched type for launch argument, expected ")
                << memrefTy << ", got " << arg.getType();

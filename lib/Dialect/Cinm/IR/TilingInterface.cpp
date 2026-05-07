@@ -43,10 +43,6 @@ using namespace mlir::cinm;
 
 namespace mlir::cinm {
 
-void markOpAsNoTile(Operation *op) {
-  op->setAttr(CinmDialect::NOTILE_NAME, UnitAttr::get(op->getContext()));
-}
-
 
 /// Return the size of tiles on a reduce dimension.
 /// Computes this by assuming the reduction operation needs (maybe several)

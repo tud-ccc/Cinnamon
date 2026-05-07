@@ -23,9 +23,6 @@ enum class ReductionDimMode : uint8_t {
   Heuristic = 2
 };
 
-/// Exclude a cinm op from the --cinm-tiling pass
-void markOpAsNoTile(Operation *);
-
 /// Create a tensor.reshape for a fully static tensor shape
 TypedValue<ShapedType> reshapeStatic(OpBuilder &, Location loc, Value value,
                                      ShapedType type,

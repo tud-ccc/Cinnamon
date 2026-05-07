@@ -61,38 +61,54 @@ static ParseResult parseNamedVar(AsmParser &p, llvm::StringLiteral name,
 }
 
 Attribute UpmemAcceleratorAttr::parse(::mlir::AsmParser &p, ::mlir::Type) {
-  int64_t ranks;
-  int64_t dpus;
-  int64_t tasklets;
-  if (p.parseLess() || parseNamedVar(p, "ranks", ranks) || p.parseComma() ||
-      parseNamedVar(p, "dpus", dpus) || p.parseComma() ||
-      parseNamedVar(p, "tasklets", tasklets))
+  if (p.parseLess())
     return {};
+  SmallVector<int64_t> dims;
+  if (p.parseDimensionList(dims, false, false) || dims.size() != 3) {
+    return {};
+  }
+
+  // int64_t ranks;
+  // int64_t dpus;
+  // int64_t tasklets;
+  // if (parseNamedVar(p, "ranks", ranks) || p.parseComma() ||
+  //     parseNamedVar(p, "dpus", dpus) || p.parseComma() ||
+  //     parseNamedVar(p, "tasklets", tasklets))
+  //   return {};
 
   UpmemPlatformAttr platform = UpmemPlatformAttr::getDefault(p.getContext());
   if (p.parseOptionalComma().succeeded()) {
     if (p.parseCustomAttributeWithFallback(platform))
       return {};
   }
+  if (p.parseGreater())
+    return {};
 
-  return UpmemAcceleratorAttr::get(platform, ranks, dpus, tasklets);
+  return UpmemAcceleratorAttr::get(platform, dims[0], dims[1], dims[2]);
 }
 
-static void printNamedVar(AsmPrinter &out, llvm::StringLiteral name,
-                          int64_t var) {
-  out << name << "(";
-  // out.printStrippedAttrOrType(var);
-  out << var;
-  out << ")";
-}
+// static void printNamedVar(AsmPrinter &out, llvm::StringLiteral name,
+//                           int64_t var) {
+//   out << name << "(";
+//   // out.printStrippedAttrOrType(var);
+//   out << var;
+//   out << ")";
+// }
 
 void UpmemAcceleratorAttr::print(::mlir::AsmPrinter &out) const {
   out << "<";
-  printNamedVar(out, "ranks", getNumRanks());
-  out << ", ";
-  printNamedVar(out, "dpus", getNumDpusPerRank());
-  out << ", ";
-  printNamedVar(out, "tasklets", getNumTaskletsPerDpu());
+  out.printDimensionList(
+      {getNumRanks(), getNumDpusPerRank(), getNumTaskletsPerDpu()});
+  // printNamedVar(out, "ranks", getNumRanks());
+  // out << ", ";
+  // printNamedVar(out, "dpus", getNumDpusPerRank());
+  // out << ", ";
+  // printNamedVar(out, "tasklets", getNumTaskletsPerDpu());
+  if (getPlatform() != UpmemPlatformAttr::getDefault(getContext())) {
+    out << ", ";
+    if (failed(out.printAlias(getPlatform())))
+      out.printStrippedAttrOrType(getPlatform());
+  }
   out << ">";
 }
 
@@ -189,8 +205,8 @@ UpmemAcceleratorAttr::instantiateDesignParams(
 }
 DiagnosedSilenceableFailure UpmemAcceleratorAttr::computeTilingFactors(
     Operation *op, SmallVectorImpl<int64_t> &tilingFactors) const {
-  return cinm::computeTilingFactorsForOp(bufferSizeOfLeaf(), getWorkgroupShape(),
-                                         op, tilingFactors);
+  return cinm::computeTilingFactorsForOp(
+      bufferSizeOfLeaf(), getWorkgroupShape(), op, tilingFactors);
 }
 
 ::llvm::SmallVector<::mlir::cinm::CinmLevelArrayAttr>
