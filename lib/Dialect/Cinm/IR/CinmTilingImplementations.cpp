@@ -307,7 +307,6 @@ GemmOp::convertToTiledOps(RewriterBase &rewriter, ArrayRef<int64_t> tilingFactor
         const SmallVector<int64_t, 2> resultSizes{p0, p1};
         const ValueRange resultDynamicOffsets = parIndices;
 
-        ValueRange iterArgInit{};
         Value biasSlice;
         if (auto bias = getBias())
           biasSlice = extractSlice(builder, loc, bias, p0, p1, parIndices[0],
@@ -320,9 +319,17 @@ GemmOp::convertToTiledOps(RewriterBase &rewriter, ArrayRef<int64_t> tilingFactor
           if (biasSlice)
             linalg::AddOp::create(builder, loc, ValueRange{biasSlice, outBuf},
                                   outBuf);
-        } else {
+        }
+
+        // For the tensor case: seed the [i,j] slice of the output tensor with
+        // biasSlice or zeros before the reduction, then carry the full tensor
+        // through the inner loop. The extract/insert pair lives next to the
+        // GemmOp, which lets bufferization eliminate the intermediate buffer.
+        ValueRange innerIterArgInit{};
+        if (!outBuf) {
+          Value initSlice;
           if (biasSlice) {
-            iterArgInit = biasSlice;
+            initSlice = biasSlice;
           } else {
             auto reductionAccTy = RankedTensorType::get({p0, p1}, eltTy);
             DenseElementsAttr zeros;
@@ -334,43 +341,48 @@ GemmOp::convertToTiledOps(RewriterBase &rewriter, ArrayRef<int64_t> tilingFactor
               zeros = DenseElementsAttr::get(
                   reductionAccTy,
                   {APInt::getZero(reductionAccTy.getElementTypeBitWidth())});
-            iterArgInit =
-                builder.create<arith::ConstantOp>(loc, zeros)->getResults();
+            initSlice =
+                arith::ConstantOp::create(builder, loc, zeros).getResult();
           }
+          innerIterArgInit = tensor::InsertSliceOp::create(
+              builder, loc, initSlice, iterArgs[0], resultDynamicOffsets,
+              ValueRange{}, ValueRange{}, ArrayRef(noStaticOffsets2D),
+              resultSizes, ArrayRef(unitStrides2D)).getResult();
         }
 
         SmallVector<Value, 1> reductionResult = createNestedAffineForLoops(
-            builder, loc, {K}, {r}, iterArgInit,
+            builder, loc, {K}, {r}, innerIterArgInit,
             [&, p0, p1](OpBuilder &builder, Location loc, ValueRange indices,
-                        ValueRange iterArgs) -> SmallVector<Value> {
+                        ValueRange innerIterArgs) -> SmallVector<Value> {
               const auto indexInRedDim = indices[0];
 
               Value lhsSlice = extractSlice(builder, loc, lhs, p0, r,
                                             parIndices[0], indexInRedDim);
               Value rhsSlice = extractSlice(builder, loc, rhs, r, p1,
                                             indexInRedDim, parIndices[1]);
-              Value bias;
-              if (!getOut())
-                bias = iterArgs[0];
-              // todo accumulate the inner gemm into a slice of the actual output
-              //  Placing the extract/insert slice close to the code in the inner
-              //  loop makes bufferization result better and should eliminate the
-              //  extra accumulation buffer. 
-
-              auto tmpReduce = builder.create<cinm::GemmOp>(
-                  loc, lhsSlice, rhsSlice, bias, outBuf);
-              if (outBuf)
+              if (outBuf) {
+                cinm::GemmOp::create(builder, loc, lhsSlice, rhsSlice,
+                                     Value{}, outBuf);
                 return {};
-              return {tmpReduce.getResult()};
+              }
+              Value accSlice = extractSlice(
+                  builder, loc,
+                  cast<TypedValue<ShapedType>>(innerIterArgs[0]),
+                  p0, p1, parIndices[0], parIndices[1]);
+              Value tileResult =
+                  cinm::GemmOp::create(builder, loc, lhsSlice, rhsSlice,
+                                       accSlice, Value{}).getResult();
+              Value updatedTensor = tensor::InsertSliceOp::create(
+                  builder, loc, tileResult, innerIterArgs[0],
+                  resultDynamicOffsets, ValueRange{}, ValueRange{},
+                  ArrayRef(noStaticOffsets2D), resultSizes,
+                  ArrayRef(unitStrides2D));
+              return {updatedTensor};
             });
 
         if (getOut())
           return {};
-        const Value result = builder.create<tensor::InsertSliceOp>(
-            loc, reductionResult[0], iterArgs[0], resultDynamicOffsets,
-            ValueRange{}, ValueRange{}, ArrayRef(noStaticOffsets2D),
-            resultSizes, ArrayRef(unitStrides2D));
-        return {result};
+        return {reductionResult[0]};
       });
 
   results.append(finals.begin(), finals.end());
@@ -703,7 +715,6 @@ GemvOp::convertToTiledOps(RewriterBase &rewriter, ArrayRef<int64_t> tilingFactor
           ValueRange iters) -> SmallVector<Value> {
         Value i = ivs[0];
 
-        ValueRange iterArgInit{};
         Value biasSlice;
         if (auto bias = getBias())
           biasSlice = extractSlice1D(b, loc2, bias, pM, i);
@@ -714,9 +725,13 @@ GemvOp::convertToTiledOps(RewriterBase &rewriter, ArrayRef<int64_t> tilingFactor
           if (biasSlice)
             linalg::AddOp::create(b, loc2, ValueRange{biasSlice, outBuf},
                                   outBuf);
-        } else {
+        }
+
+        ValueRange innerIterArgInit{};
+        if (!outBuf) {
+          Value initSlice;
           if (biasSlice) {
-            iterArgInit = biasSlice;
+            initSlice = biasSlice;
           } else {
             auto reductionAccTy = RankedTensorType::get({pM}, elTy);
             DenseElementsAttr zeros;
@@ -728,15 +743,20 @@ GemvOp::convertToTiledOps(RewriterBase &rewriter, ArrayRef<int64_t> tilingFactor
               zeros = DenseElementsAttr::get(
                   reductionAccTy,
                   {APInt::getZero(reductionAccTy.getElementTypeBitWidth())});
-            iterArgInit =
-                builder.create<arith::ConstantOp>(loc, zeros)->getResults();
+            initSlice =
+                arith::ConstantOp::create(b, loc2, zeros).getResult();
           }
+          innerIterArgInit = tensor::InsertSliceOp::create(
+              b, loc2, initSlice, iters[0], ValueRange{i}, ValueRange{},
+              ValueRange{}, noStaticOffsets1, ArrayRef<int64_t>({pM}),
+              unitStrides1).getResult();
         }
 
         SmallVector<Value> red = createNestedAffineForLoops(
-            b, loc2, ArrayRef<int64_t>{K}, ArrayRef<int64_t>{rK}, iterArgInit,
+            b, loc2, ArrayRef<int64_t>{K}, ArrayRef<int64_t>{rK},
+            innerIterArgInit,
             [&](OpBuilder &b2, Location loc3, ValueRange kIvs,
-                ValueRange accArgs) -> SmallVector<Value> {
+                ValueRange innerAccArgs) -> SmallVector<Value> {
               Value k = kIvs[0];
 
               Value aTile = extractSlice(
@@ -744,23 +764,26 @@ GemvOp::convertToTiledOps(RewriterBase &rewriter, ArrayRef<int64_t> tilingFactor
               Value xTile = extractSlice1D(
                   b2, loc3, cast<TypedValue<ShapedType>>(x), rK, k);
 
-              Value bias;
-              if (!getOut())
-                bias = accArgs[0];
-              auto gemv =
-                  cinm::GemvOp::create(b2, loc3, aTile, xTile, bias, outBuf);
-              if (getOut())
+              if (outBuf) {
+                cinm::GemvOp::create(b2, loc3, aTile, xTile, Value{}, outBuf);
                 return {};
-              return SmallVector<Value>{gemv.getResult()};
+              }
+              Value accSlice = extractSlice1D(
+                  b2, loc3, cast<TypedValue<ShapedType>>(innerAccArgs[0]),
+                  pM, i);
+              Value tileResult =
+                  cinm::GemvOp::create(b2, loc3, aTile, xTile, accSlice,
+                                       Value{}).getResult();
+              Value updatedTensor = tensor::InsertSliceOp::create(
+                  b2, loc3, tileResult, innerAccArgs[0], ValueRange{i},
+                  ValueRange{}, ValueRange{}, noStaticOffsets1,
+                  ArrayRef<int64_t>({pM}), unitStrides1).getResult();
+              return SmallVector<Value>{updatedTensor};
             });
 
         if (getOut())
           return {};
-        Value out = tensor::InsertSliceOp::create(
-            b, loc2, red[0], iters[0], ValueRange{i}, ValueRange{},
-            ValueRange{}, noStaticOffsets1, ArrayRef<int64_t>({pM}),
-            unitStrides1);
-        return SmallVector<Value>{out};
+        return SmallVector<Value>{red[0]};
       });
 
   results.append(loopResults.begin(), loopResults.end());
