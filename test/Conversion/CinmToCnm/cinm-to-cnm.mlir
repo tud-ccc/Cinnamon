@@ -1,27 +1,28 @@
 // RUN: cinm-opt --split-input-file --convert-cinm-to-cnm --canonicalize %s | FileCheck %s
 
+#upmem_platform = #upmem.platform<type=v1A, dimensions = 4x16>
+#upmem = #upmem.array<8x128x1, #upmem_platform>
+
 // CHECK-LABEL: mm_dimm8_nopt
-    func.func @mm_dimm8_nopt(%A: tensor<8x1024xi32>, %B: tensor<1024x128xi32>) -> tensor<8x128xi32> {
+    func.func @mm_dimm8_nopt(%arg0: tensor<8x1024xi32>, %arg1: tensor<1024x128xi32>) -> tensor<8x128xi32> {
 
 // CHECK: %[[cst0:.*]] = arith.constant dense<0> : tensor<8x128xi32>
-// CHECK: %[[wg:.*]] = cnm.workgroup : !cnm.workgroup<8x128x1>
+// CHECK: %[[wg:.*]] = cnm.workgroup : !cnm.workgroup<{{.*}}>
 // CHECK: %[[empty:.*]] = tensor.empty() : tensor<128x1024xi32>
-// CHECK: %[[transposed:.*]] = linalg.transpose ins(%arg1 : tensor<1024x128xi32>) outs(%[[empty]] : tensor<128x1024xi32>) permutation = [1, 0] 
-// CHECK: %[[ba:.*]] = cnm.alloc() for %[[wg]] : !cnm.buffer<1024xi32 on 8x128x1>
-// CHECK: %[[bb:.*]] = cnm.alloc() for %[[wg]] : !cnm.buffer<1024xi32 on 8x128x1>
-// CHECK: %[[bc:.*]] = cnm.alloc() for %[[wg]] : !cnm.buffer<i32 on 8x128x1>
-// CHECK: cnm.scatter %arg0 into %[[ba]][#map] of %[[wg]] : tensor<8x1024xi32> into !cnm.buffer<1024xi32 on 8x128x1>
-// CHECK: cnm.scatter %[[transposed]] into %[[bb]][#map1] of %[[wg]] : tensor<128x1024xi32> into !cnm.buffer<1024xi32 on 8x128x1>
-// CHECK: cnm.scatter %[[cst0]] into %[[bc]][#map2] of %[[wg]] : tensor<8x128xi32> into !cnm.buffer<i32 on 8x128x1>
-// CHECK: cnm.launch %[[wg]] in(%[[ba]], %[[bb]] : !cnm.buffer<1024xi32 on 8x128x1>, !cnm.buffer<1024xi32 on 8x128x1>) out(%[[bc]] : !cnm.buffer<i32 on 8x128x1>) on !cnm.workgroup<8x128x1> {
-// CHECK: ^bb0(%[[arg2:.*]]: memref<1024xi32>, %[[arg3:.*]]: memref<1024xi32>, %[[arg4:.*]]: memref<i32>):
+// CHECK: %[[transposed:.*]] = linalg.transpose ins(%arg1 : tensor<1024x128xi32>) outs(%[[empty]] : tensor<128x1024xi32>) permutation = [1, 0]
+// CHECK: %[[ba:.*]] = cnm.alloc() for %[[wg]] : !cnm.buffer<1024xi32 on {{.*}}>
+// CHECK: %[[bb:.*]] = cnm.alloc() for %[[wg]] : !cnm.buffer<1024xi32 on {{.*}}>
+// CHECK: %[[bc:.*]] = cnm.alloc() for %[[wg]] : !cnm.buffer<i32 on {{.*}}>
+// CHECK: cnm.scatter %arg0 into %[[ba]][{{.*}}] of %[[wg]] : tensor<8x1024xi32> into !cnm.buffer<1024xi32 on {{.*}}>
+// CHECK: cnm.scatter %[[transposed]] into %[[bb]][{{.*}}] of %[[wg]] : tensor<128x1024xi32> into !cnm.buffer<1024xi32 on {{.*}}>
+// CHECK: cnm.scatter %[[cst0]] into %[[bc]][{{.*}}] of %[[wg]] : tensor<8x128xi32> into !cnm.buffer<i32 on {{.*}}>
+// CHECK: cnm.launch %[[wg]] ins(%{{.*}} = %[[ba]] : <1024xi32>, %{{.*}} = %[[bb]] : <1024xi32>) outs(%{{.*}} = %[[bc]] : <i32>) on {{.*}} {
 // CHECK:    linalg.contract
-// CHECK: }
 // CHECK: %[[emptyres:.*]] = tensor.empty() : tensor<8x128xi32>
-// CHECK: %{{.*}} = cnm.gather %[[bc]][#map2] of %[[wg]] into %[[emptyres]] : !cnm.buffer<i32 on 8x128x1> into tensor<8x128xi32>
-// CHECK: cnm.free_workgroup %[[wg]] : !cnm.workgroup<8x128x1>
-        %r0 = cinm.compute (%a = %A : tensor<8x1024xi32>, %b = %B: tensor<1024x128xi32>) -> tensor<8x128xi32> attributes {workgroupShape = array<i64: 8, 128, 1>, bufferSizesInBytes=array<i64: 0,0,8196>}  {
-            %r = cinm.op.gemm %a, %b: tensor<8x1024xi32>, tensor<1024x128xi32> -> tensor<8x128xi32>
+// CHECK: %{{.*}} = cnm.gather %[[bc]][{{.*}}] of %[[wg]] into %[[emptyres]] : !cnm.buffer<i32 on {{.*}}> into tensor<8x128xi32>
+// CHECK: cnm.free_workgroup %[[wg]] : !cnm.workgroup<{{.*}}>
+        %r0 = cinm.compute_ on accelerator #upmem -> tensor<8x128xi32> {
+            %r = cinm.op.gemm %arg0, %arg1: tensor<8x1024xi32>, tensor<1024x128xi32> -> tensor<8x128xi32>
             cinm.yield %r : tensor<8x128xi32>
         }
         func.return %r0 : tensor<8x128xi32>
@@ -29,26 +30,26 @@
 
 // -----
 // CHECK-LABEL: @gemv
+#upmem_platform = #upmem.platform<type=v1A, dimensions = 4x16>
+#upmem = #upmem.array<2x4x1, #upmem_platform>
 
-    func.func @gemv(%A: tensor<8x1024xi32>, %B: tensor<1024xi32>) -> tensor<8xi32> {
+    func.func @gemv(%arg0: tensor<8x1024xi32>, %arg1: tensor<1024xi32>) -> tensor<8xi32> {
 
 // CHECK: %[[cst0:.*]] = arith.constant dense<0> : tensor<8xi32>
-// CHECK: %[[wg:.*]] = cnm.workgroup : !cnm.workgroup<2x4x1>
-// CHECK: %[[ba:.*]] = cnm.alloc() for %[[wg]] : !cnm.buffer<1024xi32 on 2x4x1>
-// CHECK: cnm.scatter %arg0 into %[[ba]][#map] of %[[wg]] : tensor<8x1024xi32> into !cnm.buffer<1024xi32 on 2x4x1>
-// CHECK: %[[bb:.*]] = cnm.alloc() for %[[wg]] : !cnm.buffer<1024xi32 on 2x4x1>
-// CHECK: cnm.scatter %arg1 into %[[bb]][#map1] of %[[wg]] : tensor<1024xi32> into !cnm.buffer<1024xi32 on 2x4x1>
-// CHECK: %[[bc:.*]] = cnm.alloc() for %[[wg]] : !cnm.buffer<i32 on 2x4x1>
-// CHECK: cnm.scatter %[[cst0]] into %[[bc]][#map] of %[[wg]] : tensor<8xi32> into !cnm.buffer<i32 on 2x4x1>
-// CHECK: cnm.launch %[[wg]] in(%[[ba]], %[[bb]] : !cnm.buffer<1024xi32 on 2x4x1>, !cnm.buffer<1024xi32 on 2x4x1>) out(%[[bc]] : !cnm.buffer<i32 on 2x4x1>) on !cnm.workgroup<2x4x1> {
-// CHECK: ^bb0(%[[arg2:.*]]: memref<1024xi32>, %[[arg3:.*]]: memref<1024xi32>, %[[arg4:.*]]: memref<i32>):
+// CHECK: %[[wg:.*]] = cnm.workgroup : !cnm.workgroup<{{.*}}>
+// CHECK: %[[ba:.*]] = cnm.alloc() for %[[wg]] : !cnm.buffer<1024xi32 on {{.*}}>
+// CHECK: cnm.scatter %arg0 into %[[ba]][{{.*}}] of %[[wg]] : tensor<8x1024xi32> into !cnm.buffer<1024xi32 on {{.*}}>
+// CHECK: %[[bb:.*]] = cnm.alloc() for %[[wg]] : !cnm.buffer<1024xi32 on {{.*}}>
+// CHECK: cnm.scatter %arg1 into %[[bb]][{{.*}}] of %[[wg]] : tensor<1024xi32> into !cnm.buffer<1024xi32 on {{.*}}>
+// CHECK: %[[bc:.*]] = cnm.alloc() for %[[wg]] : !cnm.buffer<i32 on {{.*}}>
+// CHECK: cnm.scatter %[[cst0]] into %[[bc]][{{.*}}] of %[[wg]] : tensor<8xi32> into !cnm.buffer<i32 on {{.*}}>
+// CHECK: cnm.launch %[[wg]] ins(%{{.*}} = %[[ba]] : <1024xi32>, %{{.*}} = %[[bb]] : <1024xi32>) outs(%{{.*}} = %[[bc]] : <i32>) on {{.*}} {
 // CHECK:    linalg.contract
-// CHECK: }
 // CHECK: %[[emptyres:.*]] = tensor.empty() : tensor<8xi32>
-// CHECK: %{{.*}} = cnm.gather %[[bc]][#map] of %[[wg]] into %[[emptyres]] : !cnm.buffer<i32 on 2x4x1> into tensor<8xi32>
-// CHECK: cnm.free_workgroup %[[wg]] : !cnm.workgroup<2x4x1>
-        %r0 = cinm.compute (%a = %A : tensor<8x1024xi32>, %b = %B: tensor<1024xi32>) -> tensor<8xi32> attributes {workgroupShape = array<i64: 2, 4, 1>, bufferSizesInBytes=array<i64: 0,0,120000>}  {
-            %r = cinm.op.gemv %a, %b : tensor<8x1024xi32>, tensor<1024xi32> -> tensor<8xi32>
+// CHECK: %{{.*}} = cnm.gather %[[bc]][{{.*}}] of %[[wg]] into %[[emptyres]] : !cnm.buffer<i32 on {{.*}}> into tensor<8xi32>
+// CHECK: cnm.free_workgroup %[[wg]] : !cnm.workgroup<{{.*}}>
+        %r0 = cinm.compute_ on accelerator #upmem -> tensor<8xi32>  {
+            %r = cinm.op.gemv %arg0, %arg1 : tensor<8x1024xi32>, tensor<1024xi32> -> tensor<8xi32>
             cinm.yield %r : tensor<8xi32>
         }
         func.return %r0 : tensor<8xi32>

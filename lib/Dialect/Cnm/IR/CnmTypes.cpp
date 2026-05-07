@@ -64,7 +64,7 @@ Type mlir::cnm::BufferType::parse(mlir::AsmParser &parser) {
     return Type();
 
   if (parser.parseOptionalComma().succeeded()) {
-    if (parser.parseKeyword("level") || parser.parseAttribute(level))
+    if (parser.parseAttribute(level))
       return Type();
   }
   if (parser.parseGreater()) {
@@ -83,8 +83,9 @@ void mlir::cnm::BufferType::print(mlir::AsmPrinter &printer) const {
   }
   printer << getElementType();
   printer << " on ";
-  printer.printAttribute(getAccelerator());
+  if (failed(printer.printAlias(getAccelerator())))
+    printer.printAttribute(getAccelerator());
   if (getLevel())
-    printer << ", level " << getLevel();
+    printer << ", " << getLevel();
   printer << ">";
 }

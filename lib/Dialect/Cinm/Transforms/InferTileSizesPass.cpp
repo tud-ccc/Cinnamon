@@ -24,8 +24,6 @@ struct CinmInferTileSizesPass
       // Skip ops already annotated or explicitly excluded from tiling.
       if (op->hasAttr(CinmDialect::TILING_FACTORS_NAME))
         return;
-      if (op->hasAttr(CinmDialect::NOTILE_NAME))
-        return;
 
       auto accelerator = cinm::getEnclosingAccelerator(op);
       if (!accelerator)
