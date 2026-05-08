@@ -276,14 +276,9 @@ void ComputeOp::print(OpAsmPrinter &out) {
     out << " -> ";
     llvm::interleaveComma(getResultTypes(), out);
   }
-  out.increaseIndent();
-  out.increaseIndent();
-  out.printNewline();
   out.printOptionalAttrDictWithKeyword(
       (*this)->getAttrs(), {getPlatformAttrName(), getAcceleratorAttrName()});
   out << ' ';
-  out.decreaseIndent();
-  out.decreaseIndent();
   out.printRegion(getRegion(), false);
 }
 
@@ -320,14 +315,9 @@ void FlexComputeOp::print(OpAsmPrinter &out) {
     out << " -> ";
     llvm::interleaveComma(getResultTypes(), out);
   }
-  out.increaseIndent();
-  out.increaseIndent();
-  out.printNewline();
   out.printOptionalAttrDictWithKeyword(
       (*this)->getAttrs(), {getPlatformAttrName(), getAcceleratorAttrName()});
   out << ' ';
-  out.decreaseIndent();
-  out.decreaseIndent();
   out.printRegion(getRegion(), false);
 }
 
@@ -631,7 +621,7 @@ void DequantizeOp::print(::mlir::OpAsmPrinter &printer) {}
 
   // This would imply the number of permutations does not match the rank of
   // the input which is illegal.
-  if (perms.size() != inputShape.getRank()) {
+  if (static_cast<int64_t>(perms.size()) != inputShape.getRank()) {
     return failure();
   }
 
@@ -784,20 +774,20 @@ void ElementwiseOp::getEffects(
   if (getRhs())
     addEffect<MemoryEffects::Read>(getRhsMutable()[0], effects);
 
-  // todo is there a read effect?
   addEffect<MemoryEffects::Write>(getOutMutable()[0], effects);
 }
 
 void ComputeOp::getRegionInvocationBounds(
-    ArrayRef<Attribute> _operands,
-    SmallVectorImpl<mlir::InvocationBounds> &result) {
+    ArrayRef<Attribute>, SmallVectorImpl<mlir::InvocationBounds> &result) {
 
   result.push_back(::mlir::InvocationBounds(1, 1));
 }
+
 ::mlir::OperandRange
-ComputeOp::getEntrySuccessorOperands(::mlir::RegionBranchPoint point) {
+ComputeOp::getEntrySuccessorOperands(::mlir::RegionBranchPoint) {
   return getOperands();
 }
+
 void ComputeOp::getSuccessorRegions(RegionBranchPoint point,
                                     SmallVectorImpl<RegionSuccessor> &regions) {
   if (point == RegionBranchPoint::parent()) {
@@ -809,8 +799,7 @@ void ComputeOp::getSuccessorRegions(RegionBranchPoint point,
 }
 
 void FlexComputeOp::getRegionInvocationBounds(
-    ArrayRef<Attribute> _operands,
-    SmallVectorImpl<mlir::InvocationBounds> &result) {
+    ArrayRef<Attribute>, SmallVectorImpl<mlir::InvocationBounds> &result) {
 
   result.push_back(::mlir::InvocationBounds(1, 1));
 }
