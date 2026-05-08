@@ -1,4 +1,5 @@
 add_mlir_dialect_library(CinmTransforms
+    AssignPlatformsPass.cpp
     AnnotateTileSizesPass.cpp
     InferTileSizesPass.cpp
     BufferizeCinm.cpp

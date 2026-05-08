@@ -12,7 +12,7 @@
 using namespace mlir;
 
 cinm::ComputeBlockOp cinm::isolateComputeBlock(cinm::ComputeOp op,
-                                          RewriterBase &rewriter) {
+                                               RewriterBase &rewriter) {
 
   Region &sourceRegion = op->getRegion(0);
 
@@ -21,8 +21,8 @@ cinm::ComputeBlockOp cinm::isolateComputeBlock(cinm::ComputeOp op,
       [](Operation *op2) { return m_Constant().match(op2); });
 
   rewriter.setInsertionPoint(op);
-  auto newCompute = cinm::ComputeBlockOp::create(rewriter, op->getLoc(), captured,
-                                            op->getResultTypes());
+  auto newCompute = cinm::ComputeBlockOp::create(
+      rewriter, op->getLoc(), captured, op->getResultTypes());
   newCompute->setAttrs(op->getAttrs());
 
   newCompute->getRegion(0).takeBody(sourceRegion);
@@ -32,7 +32,7 @@ cinm::ComputeBlockOp cinm::isolateComputeBlock(cinm::ComputeOp op,
 }
 
 cinm::ComputeOp cinm::deisolateComputeBlock(cinm::ComputeBlockOp op,
-                                                RewriterBase &rewriter) {
+                                            RewriterBase &rewriter) {
 
   Region &sourceRegion = op->getRegion(0);
 
@@ -65,7 +65,8 @@ void cinm::unwrapComputeBlockOp(cinm::ComputeOp op, RewriterBase &rewriter) {
   rewriter.eraseOp(op);
 }
 
-void cinm::unwrapComputeBlockOp(cinm::ComputeBlockOp op, RewriterBase &rewriter) {
+void cinm::unwrapComputeBlockOp(cinm::ComputeBlockOp op,
+                                RewriterBase &rewriter) {
   rewriter.setInsertionPointAfter(op);
   IRMapping mapper;
   for (auto [arg, opnd] : op.zipArgsWithOperands()) {
@@ -80,6 +81,24 @@ void cinm::unwrapComputeBlockOp(cinm::ComputeBlockOp op, RewriterBase &rewriter)
     rewriter.replaceAllUsesWith(result, mapper.lookup(termOperand));
   }
   rewriter.eraseOp(op);
+}
+
+cinm::ComputeOp cinm::wrapOperationInCompute(Operation *op,
+                                             RewriterBase &rewriter) {
+
+  if (auto parent = op->getParentOfType<ComputeOp>()) {
+    return parent;
+  }
+  rewriter.setInsertionPoint(op);
+  auto compute =
+      cinm::ComputeOp::create(rewriter, op->getLoc(), op->getResultTypes());
+  auto &block = compute.getBody().front();
+  rewriter.replaceAllUsesWith(op->getResults(), compute->getResults());
+  rewriter.setInsertionPointToStart(&block);
+  op->remove();
+  rewriter.insert(op);
+  cinm::YieldOp::create(rewriter, op->getLoc(), op->getResults());
+  return compute;
 }
 
 using namespace mlir;
@@ -143,8 +162,7 @@ struct UnwrapComputeBlocks
     getOperation()->walk([&](Operation *op) {
       if (auto compute = llvm::dyn_cast_or_null<cinm::ComputeBlockOp>(op)) {
         cinm::unwrapComputeBlockOp(compute, rewriter);
-      } else if (auto compute =
-                     llvm::dyn_cast_or_null<cinm::ComputeOp>(op)) {
+      } else if (auto compute = llvm::dyn_cast_or_null<cinm::ComputeOp>(op)) {
         cinm::unwrapComputeBlockOp(compute, rewriter);
       }
     });

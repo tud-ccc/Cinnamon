@@ -1,6 +1,6 @@
 
 
-NAME=llama2_110M
+NAME ?= llama2_110M
 # NAME=mha
 
 $(NAME)_linalg.mlir: $(NAME).mlir

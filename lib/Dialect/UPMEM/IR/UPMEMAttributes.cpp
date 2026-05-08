@@ -1,6 +1,7 @@
 
 
 #include <cinm-mlir/Dialect/Cinm/IR/CinmAttributes.h>
+#include <cinm-mlir/Dialect/Cinm/IR/CinmOps.h>
 #include <cstdint>
 #include <llvm/ADT/ArrayRef.h>
 #include <llvm/ADT/MapVector.h>
@@ -59,6 +60,8 @@ static ParseResult parseNamedVar(AsmParser &p, llvm::StringLiteral name,
     return failure();
   return success();
 }
+
+::llvm::StringRef UpmemPlatformAttr::getName() const { return "upmem"; }
 
 Attribute UpmemAcceleratorAttr::parse(::mlir::AsmParser &p, ::mlir::Type) {
   if (p.parseLess())
@@ -224,4 +227,8 @@ ArrayRef<cinm::CinmVarDefAttr> UpmemAcceleratorAttr::getDesignParams() const {
 
 int64_t UpmemAcceleratorAttr::bufferSizeOfLeaf() const {
   return getWramLevel().getSizeInBytes() / getNumTaskletsPerDpu();
+}
+
+bool UpmemPlatformAttr::wantsToHandle(Operation *op) const {
+  return isa<cinm::GemmOp, cinm::GemvOp>(op);
 }

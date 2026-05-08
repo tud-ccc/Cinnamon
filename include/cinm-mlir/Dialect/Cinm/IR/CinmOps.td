@@ -391,14 +391,7 @@ def Cinm_ComputeOp : Cinm_Base_Op<"compute", [
   let skipDefaultBuilders = 1;
   let builders = [
     OpBuilder<(ins "TypeRange":$results), [{
-      auto wg   = $_builder.getDenseI64ArrayAttr({2, 32, 16});
-      auto bufs = $_builder.getDenseI64ArrayAttr({0, 65536, 0});
-
       $_state.addTypes(results);
-      $_state.addAttribute("workgroupShape", wg);
-      $_state.addAttribute("bufferSizesInBytes", bufs);
-      // Do NOT set tileSizes here (absent means "use heuristic").
-
       ::mlir::Region *region = $_state.addRegion();
       auto& block = region->emplaceBlock(); // satisfy SizedRegion<1>
     }]>
@@ -467,15 +460,9 @@ def Cinm_ComputeBlockOp : Cinm_Base_Op<"compute_block", [
   let skipDefaultBuilders = 1;
   let builders = [
     OpBuilder<(ins "ValueRange":$operands, "TypeRange":$results), [{
-      auto wg   = $_builder.getDenseI64ArrayAttr({2, 32, 16});
-      auto bufs = $_builder.getDenseI64ArrayAttr({0, 65536, 0});
 
       $_state.addOperands(operands);
       $_state.addTypes(results);
-      $_state.addAttribute("workgroupShape", wg);
-      $_state.addAttribute("bufferSizesInBytes", bufs);
-      // Do NOT set tileSizes here (absent means "use heuristic").
-
       ::mlir::Region *region = $_state.addRegion();
       auto& block = region->emplaceBlock(); // satisfy SizedRegion<1>
       for (auto opnd : operands)
