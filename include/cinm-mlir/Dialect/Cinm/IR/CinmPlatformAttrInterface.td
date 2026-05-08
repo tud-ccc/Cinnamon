@@ -130,7 +130,10 @@ def CinmAcceleratorAttrInterface : AttrInterface<"CinmAcceleratorAttrInterface",
       /*desc=*/"Compute tiling factors for the given op based on this accelerator's hardware parameters. Factors are appended to tilingFactors. Returns silenceableFailure if sizes cannot be determined automatically.",
       /*retTy=*/"::mlir::DiagnosedSilenceableFailure",
       /*methodName=*/"computeTilingFactors",
-      /*args=*/(ins "::mlir::Operation*":$op, "::llvm::SmallVectorImpl<int64_t>&":$tilingFactors)
+      /*args=*/(ins "::mlir::Operation*":$op, "::llvm::SmallVectorImpl<int64_t>&":$tilingFactors),
+      [{
+        return emitSilenceableFailure(op->getLoc()) << "unimplemented";
+      }]
     >,
 
     // InterfaceMethod<
