@@ -45,8 +45,8 @@ static Value toMemrefLike(ConversionPatternRewriter &rewriter, Location loc,
   return rewriter.create<bufferization::ToBufferOp>(loc, memTy, v);
 }
 
-static Value getCrossbarIdFromCompute(cinm::ComputeOp computeOp) {
-  for (Operation &nested : computeOp.getBody().getOps())
+static Value getCrossbarIdFromCompute(cinm::ComputeBlockOp ComputeBlockOp) {
+  for (Operation &nested : ComputeBlockOp.getBody().getOps())
     if (auto acq = dyn_cast<cim::AcquireCrossbarOp>(&nested))
       return acq.getResult();
   return {};
@@ -76,15 +76,15 @@ static inline cim::ActivationKind toCimActivation(cinm::ActivationKind k) {
   llvm_unreachable("unsupported cinm::ActivationKind");
 }
 
-struct ConvertCinmComputeToCim : public OpConversionPattern<cinm::ComputeOp> {
+struct ConvertCinmComputeToCim : public OpConversionPattern<cinm::ComputeBlockOp> {
   using OpConversionPattern::OpConversionPattern;
 
-  static bool preparedCinmComputeOp(Operation *op) {
-    if (isa<cinm::ComputeOp>(op)) {
-      auto computeOp = cast<cinm::ComputeOp>(op);
-      return !computeOp.getBody().empty() &&
-             !computeOp.getBody().front().empty() &&
-             isa<cim::AcquireDeviceOp>(computeOp.getBody().front().front());
+  static bool preparedCinmComputeBlockOp(Operation *op) {
+    if (isa<cinm::ComputeBlockOp>(op)) {
+      auto ComputeBlockOp = cast<cinm::ComputeBlockOp>(op);
+      return !ComputeBlockOp.getBody().empty() &&
+             !ComputeBlockOp.getBody().front().empty() &&
+             isa<cim::AcquireDeviceOp>(ComputeBlockOp.getBody().front().front());
     }
     if (!isa<cinm::CinmDialect>(op->getDialect()))
       return true;
@@ -92,7 +92,7 @@ struct ConvertCinmComputeToCim : public OpConversionPattern<cinm::ComputeOp> {
   }
 
   LogicalResult
-  matchAndRewrite(cinm::ComputeOp op, OpAdaptor,
+  matchAndRewrite(cinm::ComputeBlockOp op, OpAdaptor,
                   ConversionPatternRewriter &rewriter) const override {
     rewriter.startOpModification(op);
 
@@ -129,7 +129,7 @@ struct ConvertCinmYieldInMemRefCompute
   LogicalResult
   matchAndRewrite(cinm::YieldOp op, OpAdaptor,
                   ConversionPatternRewriter &rewriter) const override {
-    auto compute = op->getParentOfType<cinm::ComputeOp>();
+    auto compute = op->getParentOfType<cinm::ComputeBlockOp>();
     if (!compute)
       return op.emitOpError("must be nested in cinm.compute_memref");
 
@@ -176,7 +176,7 @@ struct LowerCinmActivate : public OpConversionPattern<cinm::ActivateOp> {
   LogicalResult
   matchAndRewrite(cinm::ActivateOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
-    auto compute = op->getParentOfType<cinm::ComputeOp>();
+    auto compute = op->getParentOfType<cinm::ComputeBlockOp>();
     if (!compute)
       return op.emitOpError("must be nested in cinm.compute_memref");
 
@@ -219,7 +219,7 @@ struct LowerCinmQuantize : public OpConversionPattern<cinm::QuantizeOp> {
   LogicalResult
   matchAndRewrite(cinm::QuantizeOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
-    auto compute = op->getParentOfType<cinm::ComputeOp>();
+    auto compute = op->getParentOfType<cinm::ComputeBlockOp>();
     if (!compute)
       return op.emitOpError("must be nested in cinm.compute_memref");
     Value xb = getCrossbarIdFromCompute(compute);
@@ -265,7 +265,7 @@ struct LowerCinmDequantize : public OpConversionPattern<cinm::DequantizeOp> {
   LogicalResult
   matchAndRewrite(cinm::DequantizeOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
-    auto compute = op->getParentOfType<cinm::ComputeOp>();
+    auto compute = op->getParentOfType<cinm::ComputeBlockOp>();
     if (!compute)
       return op.emitOpError("must be nested in cinm.compute_memref");
     Value xb = getCrossbarIdFromCompute(compute);
@@ -307,7 +307,7 @@ struct LowerCinmGemm : public OpConversionPattern<cinm::GemmOp> {
   LogicalResult
   matchAndRewrite(cinm::GemmOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
-    auto compute = op->getParentOfType<cinm::ComputeOp>();
+    auto compute = op->getParentOfType<cinm::ComputeBlockOp>();
     if (!compute)
       return op.emitOpError("must be nested in cinm.compute_memref");
 
@@ -342,7 +342,7 @@ struct LowerCinmGemv : public OpConversionPattern<cinm::GemvOp> {
   LogicalResult
   matchAndRewrite(cinm::GemvOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
-    auto compute = op->getParentOfType<cinm::ComputeOp>();
+    auto compute = op->getParentOfType<cinm::ComputeBlockOp>();
     if (!compute)
       return op.emitOpError("must be nested in cinm.compute_memref");
 
@@ -380,7 +380,7 @@ struct LowerCinmAdd : public OpConversionPattern<cinm::ElementwiseOp> {
     if (op.getKind() != cinm::ElementwiseKind::Add)
       return failure();
 
-    auto compute = op->getParentOfType<cinm::ComputeOp>();
+    auto compute = op->getParentOfType<cinm::ComputeBlockOp>();
     if (!compute)
       return op.emitOpError("must be nested in cinm.compute_memref");
 
@@ -409,11 +409,11 @@ struct LowerCinmAdd : public OpConversionPattern<cinm::ElementwiseOp> {
   }
 };
 
-struct InlineCinmCompute : public OpConversionPattern<cinm::ComputeOp> {
+struct InlineCinmCompute : public OpConversionPattern<cinm::ComputeBlockOp> {
   using OpConversionPattern::OpConversionPattern;
 
   LogicalResult
-  matchAndRewrite(cinm::ComputeOp op, OpAdaptor,
+  matchAndRewrite(cinm::ComputeBlockOp op, OpAdaptor,
                   ConversionPatternRewriter &rewriter) const override {
     Block *parentBlock = op->getBlock();
     auto insertionPoint = rewriter.getInsertionPoint();
@@ -440,7 +440,7 @@ struct ConvertTiledCinmToCim
       target.addLegalDialect<tensor::TensorDialect>();
 
       target.markUnknownOpDynamicallyLegal(
-          ConvertCinmComputeToCim::preparedCinmComputeOp);
+          ConvertCinmComputeToCim::preparedCinmComputeBlockOp);
 
       RewritePatternSet patterns(&ctx);
       patterns.insert<ConvertCinmComputeToCim, ConvertCinmYieldInMemRefCompute,

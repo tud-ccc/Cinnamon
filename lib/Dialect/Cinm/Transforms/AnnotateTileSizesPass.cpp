@@ -49,13 +49,13 @@ static LogicalResult parseTileSizesString(StringRef s,
   return success();
 }
 
-static cinm::ComputeOp
+static cinm::ComputeBlockOp
 wrapArbitraryCinmTensorOpInCompute(Operation *op, DenseI64ArrayAttr tileSizes,
                                    IRRewriter &rewriter) {
-  using cinm::ComputeOp;
+  using cinm::ComputeBlockOp;
   using cinm::YieldOp;
 
-  if (auto parent = op->getParentOfType<ComputeOp>()) {
+  if (auto parent = op->getParentOfType<ComputeBlockOp>()) {
     if (tileSizes)
       parent->setAttr("tileSizes", tileSizes);
     return parent;
@@ -71,7 +71,7 @@ wrapArbitraryCinmTensorOpInCompute(Operation *op, DenseI64ArrayAttr tileSizes,
   Location loc = op->getLoc();
 
   rewriter.setInsertionPoint(op);
-  auto compute = rewriter.create<ComputeOp>(loc, op->getOperands(), rty);
+  auto compute = rewriter.create<ComputeBlockOp>(loc, op->getOperands(), rty);
   if (tileSizes)
     compute->setAttr("tileSizes", tileSizes);
 
@@ -163,7 +163,7 @@ struct CinmAnnotateTileSizesPass
     }
 
     if (wantCompute) {
-      root->walk([&](cinm::ComputeOp compute) {
+      root->walk([&](cinm::ComputeBlockOp compute) {
         compute->setAttr("tileSizes", tileSizesAttr);
       });
     }
@@ -174,12 +174,12 @@ struct CinmAnnotateTileSizesPass
         if (!o->getDialect() || o->getDialect()->getNamespace() !=
                                     cinm::CinmDialect::getDialectNamespace())
           return;
-        if (isa<cinm::ComputeOp, cinm::YieldOp>(o))
+        if (isa<cinm::ComputeBlockOp, cinm::YieldOp>(o))
           return;
         if (o->getNumResults() != 1 ||
             !isa<RankedTensorType>(o->getResult(0).getType()))
           return;
-        if (o->getParentOfType<cinm::ComputeOp>())
+        if (o->getParentOfType<cinm::ComputeBlockOp>())
           return;
 
         if ((wantGemm && isa<cinm::GemmOp>(o)) ||
@@ -191,7 +191,7 @@ struct CinmAnnotateTileSizesPass
       for (Operation *o : toWrap)
         (void)wrapArbitraryCinmTensorOpInCompute(o, tileSizesAttr, rewriter);
 
-      root->walk([&](cinm::ComputeOp compute) {
+      root->walk([&](cinm::ComputeBlockOp compute) {
         bool match = false;
         if (wantGemm)
           match |= regionContainsOp<cinm::GemmOp>(compute.getRegion());
@@ -209,13 +209,13 @@ struct CinmAnnotateTileSizesPass
     if (wantActivate) {
       SmallVector<Operation *, 16> toWrap;
       root->walk([&](cinm::ActivateOp act) {
-        if (!act->getParentOfType<cinm::ComputeOp>())
+        if (!act->getParentOfType<cinm::ComputeBlockOp>())
           toWrap.push_back(act.getOperation());
       });
       for (Operation *o : toWrap)
         (void)wrapArbitraryCinmTensorOpInCompute(o, tileSizesAttr, rewriter);
 
-      root->walk([&](cinm::ComputeOp compute) {
+      root->walk([&](cinm::ComputeBlockOp compute) {
         if (regionContainsOp<cinm::ActivateOp>(compute.getRegion()))
           compute->setAttr("tileSizes", tileSizesAttr);
       });

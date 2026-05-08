@@ -174,7 +174,7 @@ def Cinm_ReduceOp : Cinm_Op<"op.reduce",
     is -1 (last dim). 0-ranked result gets converted to scalar value. Example:
 
     ```
-    %r = cinm.compute attributes { workgroupShape = array<i64: 1,8,16> } -> tensor<288xf32> {
+    %r = cinm.compute -> tensor<288xf32> {
         // Simple vector to scalar: tensor<100xf32> -> f32
         %reduced_vec = cinm.op.reduce min (%vec) : tensor<100xf32> -> f32
         // Default: reduction dimension = -1 -> last dim -> on a 2D tensor, dim = 1
@@ -331,18 +331,27 @@ def AcceleratorOp : Cinm_Op<"accelerator", [OpAsmOpInterface]> {
 
 }
 
-def Cinm_FlexComputeOp : Cinm_Base_Op<"compute_", [
+def Cinm_ComputeOp : Cinm_Base_Op<"compute", [
   AffineScope, AutomaticAllocationScope, RecursiveMemoryEffects,
   DeclareOpInterfaceMethods<RegionBranchOpInterface, ["getRegionInvocationBounds", "getSuccessorRegions"]>
 ]> {
-  let summary = "Convenience version of compute that doesn't require declaring parameters";
+  let summary = "Delimits a block of IR that is to be offloaded";
   let description = [{
+    This operation declares either a platform or an accelerator on
+    which the computation is to be done. If none of those are provided,
+    CINM's DSE will first assign a platform. The full lowering flow
+    requires concretizing a platform into a compatible accelerator,
+    which can be used for further lowerings.  
+
+    An accelerator is required for instance to run --cinm-infer-tile-sizes
+    or --convert-cinm-to-cnm.
+
     This operation has no parameters, and is not IsolatedFromAbove.
     Can be turned automatically into an IsolatedFromAbove compute op
-    with --cinm-isolate-compute-blocks. Just provided for convenience.
+    with --cinm-isolate-compute-blocks.
 
     ```
-    %rbuf = cinm.compute_ -> tensor<...> attributes { ... } {
+    %rbuf = cinm.compute -> tensor<...> attributes { ... } {
       %flt = arith.constant <"...">: tensor<...>
       %conv = cinm.op.gemm %arg0, %flt: tensor<...>, tensor<...>
       cinm.yield %conv : tensor<...>
@@ -391,24 +400,24 @@ def Cinm_FlexComputeOp : Cinm_Base_Op<"compute_", [
 }
 
 
-def Cinm_ComputeOp : Cinm_Base_Op<"compute", [
+def Cinm_ComputeBlockOp : Cinm_Base_Op<"compute_block", [
   AffineScope, AutomaticAllocationScope, IsolatedFromAbove, RecursiveMemoryEffects,
   DeclareOpInterfaceMethods<RegionBranchOpInterface, ["getRegionInvocationBounds", "getSuccessorRegions", "getEntrySuccessorOperands"]>
 ]> {
-  let summary = "Delimits a region of code for offloading";
+  let summary = "Delimits a region of code for offloading - IsolatedFromAbove";
   let description = [{
-    Delimits a region of code for offloading. This is the canonical
-    version of the `cinm.compute_` op. 
+    Delimits a region of code for offloading. See `cinm.compute` as well. This
+    version is isolated from above to parallelize passes that operate 
+    only on the nested IR. 
 
     ```
-    %rbuf = cinm.compute (%a = %v : tensor<...>) -> tensor<...>  attributes { ... } {
+    %rbuf = cinm.compute_block (%a = %v : tensor<...>) -> tensor<...>  attributes { ... } {
       %flt = arith.constant <"...">: tensor<...>
       %conv = cinm.op.gemm %a, %flt: tensor<...>, tensor<...>
       cinm.yield %conv : tensor<...>
     }
 
-    %rbuf = cinm.compute on platform #upmem.array<4x64> (%a = %v : tensor<...>) -> tensor<...>
-                         attributes { ... } {
+    %rbuf = cinm.compute_block on platform #upmem.array<4x64> (%a = %v : tensor<...>) -> tensor<...> {
       %flt = arith.constant <"...">: tensor<...>
       %conv = cinm.op.gemm %a, %flt: tensor<...>, tensor<...>
       cinm.yield %conv : tensor<...>
@@ -486,9 +495,9 @@ def Cinm_SelectOp : Cinm_Op<"select", [Pure]> {
 // YieldOp
 //===----------------------------------------------------------------------===//
 def Cinm_YieldOp : Cinm_Op<"yield", [Pure, ReturnLike, Terminator]> {
-  let summary = "Yield the result of a cinm.compute / cinm.select.";
+  let summary = "Yield the result of a cinm.compute_block / cinm.select.";
   let description = [{
-    Terminator for both `cinm.compute` and `cinm.select`.
+    Terminator for both `cinm.compute_block` and `cinm.select`.
     The operand types must match the parent op's result types exactly.
   }];
 

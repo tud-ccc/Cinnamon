@@ -1097,8 +1097,8 @@ struct ConvertTiledCinmToCnm
     target.addIllegalDialect<cinm::CinmDialect>();
     target.addLegalDialect<cnm::CnmDialect>();
     target.addLegalOp<cnm::LaunchOp>();
+    target.addLegalOp<cinm::ComputeBlockOp>();
     target.addLegalOp<cinm::ComputeOp>();
-    target.addLegalOp<cinm::FlexComputeOp>();
     target.addLegalOp<cinm::YieldOp>();
     target.markOpRecursivelyLegal<cnm::LaunchOp>();
 

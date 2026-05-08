@@ -31,11 +31,11 @@ struct SoftmaxToCinmPattern : OpConversionPattern<linalg::SoftmaxOp> {
     const auto loc = op.getLoc();
     const ShapedType inputType = op.getInput().getType();
 
-    auto computeOp =
-        rewriter.replaceOpWithNewOp<ComputeOp>(op, adaptor.getOperands(), op.getResultTypes());
-    Value innerInput = computeOp.getBodyArguments()[0];
+    auto compute =
+        rewriter.replaceOpWithNewOp<ComputeBlockOp>(op, adaptor.getOperands(), op.getResultTypes());
+    Value innerInput = compute.getBodyArguments()[0];
 
-    rewriter.setInsertionPointToEnd(&computeOp.getBody().emplaceBlock());
+    rewriter.setInsertionPointToEnd(&compute.getBody().emplaceBlock());
     const Value max = rewriter.create<cinm::ReduceOp>(loc, inputType.getElementType(),
                                                 ReduceMethod::MAX, innerInput, 0);
     const Value t =

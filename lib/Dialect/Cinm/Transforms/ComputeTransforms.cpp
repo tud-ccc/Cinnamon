@@ -11,7 +11,7 @@
 
 using namespace mlir;
 
-cinm::ComputeOp cinm::isolateComputeBlock(cinm::FlexComputeOp op,
+cinm::ComputeBlockOp cinm::isolateComputeBlock(cinm::ComputeOp op,
                                           RewriterBase &rewriter) {
 
   Region &sourceRegion = op->getRegion(0);
@@ -21,7 +21,7 @@ cinm::ComputeOp cinm::isolateComputeBlock(cinm::FlexComputeOp op,
       [](Operation *op2) { return m_Constant().match(op2); });
 
   rewriter.setInsertionPoint(op);
-  auto newCompute = cinm::ComputeOp::create(rewriter, op->getLoc(), captured,
+  auto newCompute = cinm::ComputeBlockOp::create(rewriter, op->getLoc(), captured,
                                             op->getResultTypes());
   newCompute->setAttrs(op->getAttrs());
 
@@ -31,7 +31,7 @@ cinm::ComputeOp cinm::isolateComputeBlock(cinm::FlexComputeOp op,
   return newCompute;
 }
 
-cinm::FlexComputeOp cinm::deisolateComputeBlock(cinm::ComputeOp op,
+cinm::ComputeOp cinm::deisolateComputeBlock(cinm::ComputeBlockOp op,
                                                 RewriterBase &rewriter) {
 
   Region &sourceRegion = op->getRegion(0);
@@ -42,7 +42,7 @@ cinm::FlexComputeOp cinm::deisolateComputeBlock(cinm::ComputeOp op,
 
   rewriter.setInsertionPoint(op);
   auto newCompute =
-      cinm::FlexComputeOp::create(rewriter, op->getLoc(), op->getResultTypes());
+      cinm::ComputeOp::create(rewriter, op->getLoc(), op->getResultTypes());
   newCompute->setAttrs(op->getAttrs());
 
   newCompute->getRegion(0).takeBody(sourceRegion);
@@ -51,7 +51,7 @@ cinm::FlexComputeOp cinm::deisolateComputeBlock(cinm::ComputeOp op,
   return newCompute;
 }
 
-void cinm::unwrapComputeOp(cinm::FlexComputeOp op, RewriterBase &rewriter) {
+void cinm::unwrapComputeBlockOp(cinm::ComputeOp op, RewriterBase &rewriter) {
   rewriter.setInsertionPointAfter(op);
   IRMapping mapper;
   for (auto &toCopy : op.getBody().front().without_terminator()) {
@@ -65,7 +65,7 @@ void cinm::unwrapComputeOp(cinm::FlexComputeOp op, RewriterBase &rewriter) {
   rewriter.eraseOp(op);
 }
 
-void cinm::unwrapComputeOp(cinm::ComputeOp op, RewriterBase &rewriter) {
+void cinm::unwrapComputeBlockOp(cinm::ComputeBlockOp op, RewriterBase &rewriter) {
   rewriter.setInsertionPointAfter(op);
   IRMapping mapper;
   for (auto [arg, opnd] : op.zipArgsWithOperands()) {
@@ -93,9 +93,9 @@ namespace mlir::cinm {
 
 namespace {
 
-struct IsolateFlexComputePattern : OpRewritePattern<cinm::FlexComputeOp> {
+struct IsolateFlexComputePattern : OpRewritePattern<cinm::ComputeOp> {
   using OpRewritePattern::OpRewritePattern;
-  LogicalResult matchAndRewrite(cinm::FlexComputeOp op,
+  LogicalResult matchAndRewrite(cinm::ComputeOp op,
                                 PatternRewriter &rewriter) const override {
     cinm::isolateComputeBlock(op, rewriter);
     return llvm::success();
@@ -114,9 +114,9 @@ struct IsolateComputePass
   }
 };
 
-struct DeisolateComputePattern : OpRewritePattern<cinm::ComputeOp> {
+struct DeisolateComputePattern : OpRewritePattern<cinm::ComputeBlockOp> {
   using OpRewritePattern::OpRewritePattern;
-  LogicalResult matchAndRewrite(cinm::ComputeOp op,
+  LogicalResult matchAndRewrite(cinm::ComputeBlockOp op,
                                 PatternRewriter &rewriter) const override {
     cinm::deisolateComputeBlock(op, rewriter);
     return llvm::success();
@@ -141,11 +141,11 @@ struct UnwrapComputeBlocks
   void runOnOperation() override {
     IRRewriter rewriter(&getContext());
     getOperation()->walk([&](Operation *op) {
-      if (auto compute = llvm::dyn_cast_or_null<cinm::ComputeOp>(op)) {
-        cinm::unwrapComputeOp(compute, rewriter);
+      if (auto compute = llvm::dyn_cast_or_null<cinm::ComputeBlockOp>(op)) {
+        cinm::unwrapComputeBlockOp(compute, rewriter);
       } else if (auto compute =
-                     llvm::dyn_cast_or_null<cinm::FlexComputeOp>(op)) {
-        cinm::unwrapComputeOp(compute, rewriter);
+                     llvm::dyn_cast_or_null<cinm::ComputeOp>(op)) {
+        cinm::unwrapComputeBlockOp(compute, rewriter);
       }
     });
   }

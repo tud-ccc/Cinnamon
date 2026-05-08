@@ -23,7 +23,7 @@ module {
     %cst_6 = arith.constant 1.000000e+04 : f32
     %extracted_slice = tensor.extract_slice %arg4[%arg0, 0] [1, 768] [1, 1] : tensor<32000x768xf32> to tensor<768xf32>
     %extracted_slice_7 = tensor.extract_slice %arg5[0, 0] [1, 768] [1, 1] : tensor<6x768xf32> to tensor<768xf32>
-    %0 = cinm.compute_ -> tensor<768xf32> {
+    %0 = cinm.compute -> tensor<768xf32> {
       %60 = tensor.empty() : tensor<f32>
       %61 = linalg.generic {indexing_maps = [#map], iterator_types = []} outs(%60 : tensor<f32>) {
       ^bb0(%out: f32):
@@ -51,7 +51,7 @@ module {
     %extracted_slice_8 = tensor.extract_slice %arg6[0, 0, 0] [1, 768, 768] [1, 1, 1] : tensor<6x768x768xf32> to tensor<768x768xf32>
     %extracted_slice_9 = tensor.extract_slice %arg7[0, 0, 0] [1, 768, 768] [1, 1, 1] : tensor<6x768x768xf32> to tensor<768x768xf32>
     %extracted_slice_10 = tensor.extract_slice %arg8[0, 0, 0] [1, 768, 768] [1, 1, 1] : tensor<6x768x768xf32> to tensor<768x768xf32>
-    %1:3 = cinm.compute_ -> tensor<768xf32>, tensor<6x1024x768xf32>, tensor<6x1024x768xf32> {
+    %1:3 = cinm.compute -> tensor<768xf32>, tensor<6x1024x768xf32>, tensor<6x1024x768xf32> {
       %extracted_slice_94 = tensor.extract_slice %arg2[0, %arg1, 0] [1, 1, 768] [1, 1, 1] : tensor<6x1024x768xf32> to tensor<768xf32>
       %60 = linalg.generic {indexing_maps = [#map1], iterator_types = ["parallel"]} outs(%extracted_slice_94 : tensor<768xf32>) {
       ^bb0(%out: f32):
@@ -135,7 +135,7 @@ module {
       %62 = scf.for %arg18 = %c0 to %5 step %c1 iter_args(%arg19 = %61) -> (tensor<1024xf32>) {
         %extracted_slice_96 = tensor.extract_slice %4#0[%60] [48] [1] : tensor<768xf32> to tensor<48xf32>
         %extracted_slice_97 = tensor.extract_slice %extracted_slice_12[%arg18, %60] [1, 48] [1, 1] : tensor<1024x768xf32> to tensor<48xf32>
-        %67 = cinm.compute_ -> f32 attributes {workgroupShape = array<i64: 1, 1, 8>} {
+        %67 = cinm.compute -> f32 attributes {workgroupShape = array<i64: 1, 1, 8>} {
           %68 = tensor.empty() : tensor<f32>
           %69 = linalg.generic {indexing_maps = [#map], iterator_types = []} outs(%68 : tensor<f32>) {
           ^bb0(%out: f32):
@@ -158,7 +158,7 @@ module {
         %inserted = tensor.insert %cst_0 into %arg19[%arg18] : tensor<1024xf32>
         scf.yield %inserted : tensor<1024xf32>
       }
-      %64 = cinm.compute_ -> tensor<1024xf32> {
+      %64 = cinm.compute -> tensor<1024xf32> {
         %67 = tensor.empty() : tensor<f32>
         %68 = linalg.generic {indexing_maps = [#map], iterator_types = []} outs(%67 : tensor<f32>) {
         ^bb0(%out: f32):
@@ -203,7 +203,7 @@ module {
         %extracted_slice_96 = tensor.extract_slice %arg19[%60] [48] [1] : tensor<768xf32> to tensor<48xf32>
         %extracted_slice_97 = tensor.extract_slice %extracted_slice_13[%arg18, %60] [1, 48] [1, 1] : tensor<1024x768xf32> to tensor<48xf32>
         %extracted = tensor.extract %64[%arg18] : tensor<1024xf32>
-        %67 = cinm.compute_ -> tensor<48xf32> attributes {workgroupShape = array<i64: 1, 1, 8>} {
+        %67 = cinm.compute -> tensor<48xf32> attributes {workgroupShape = array<i64: 1, 1, 8>} {
           %68 = linalg.generic {indexing_maps = [#map1, #map1, #map1], iterator_types = ["parallel"]} ins(%extracted_slice_96, %extracted_slice_97 : tensor<48xf32>, tensor<48xf32>) outs(%extracted_slice_96 : tensor<48xf32>) {
           ^bb0(%in: f32, %in_99: f32, %out: f32):
             %69 = arith.mulf %in_99, %extracted : f32
@@ -219,7 +219,7 @@ module {
     }
     %8 = bufferization.materialize_in_destination %7 in %4#0 : (tensor<768xf32>, tensor<768xf32>) -> tensor<768xf32>
     %extracted_slice_15 = tensor.extract_slice %arg9[0, 0, 0] [1, 768, 768] [1, 1, 1] : tensor<6x768x768xf32> to tensor<768x768xf32>
-    %9 = cinm.compute_ -> tensor<768xf32> attributes {workgroupShape = array<i64: 1, 6, 8>} {
+    %9 = cinm.compute -> tensor<768xf32> attributes {workgroupShape = array<i64: 1, 6, 8>} {
       %60 = linalg.generic {indexing_maps = [#map3, #map4, #map5], iterator_types = ["parallel", "reduction"]} ins(%extracted_slice_15, %8 : tensor<768x768xf32>, tensor<768xf32>) outs(%8 : tensor<768xf32>) {
       ^bb0(%in: f32, %in_94: f32, %out: f32):
         %62 = arith.mulf %in, %in_94 : f32
@@ -234,7 +234,7 @@ module {
       cinm.yield %61 : tensor<768xf32>
     }
     %extracted_slice_16 = tensor.extract_slice %arg13[0, 0] [1, 768] [1, 1] : tensor<6x768xf32> to tensor<768xf32>
-    %10 = cinm.compute_ -> tensor<768xf32> {
+    %10 = cinm.compute -> tensor<768xf32> {
       %60 = tensor.empty() : tensor<f32>
       %61 = linalg.generic {indexing_maps = [#map], iterator_types = []} outs(%60 : tensor<f32>) {
       ^bb0(%out: f32):
@@ -260,7 +260,7 @@ module {
     }
     %extracted_slice_17 = tensor.extract_slice %arg10[0, 0, 0] [1, 2048, 768] [1, 1, 1] : tensor<6x2048x768xf32> to tensor<2048x768xf32>
     %extracted_slice_18 = tensor.extract_slice %arg12[0, 0, 0] [1, 2048, 768] [1, 1, 1] : tensor<6x2048x768xf32> to tensor<2048x768xf32>
-    %11:2 = cinm.compute_ -> tensor<2048xf32>, tensor<2048xf32> attributes {workgroupShape = array<i64: 1, 6, 8>} {
+    %11:2 = cinm.compute -> tensor<2048xf32>, tensor<2048xf32> attributes {workgroupShape = array<i64: 1, 6, 8>} {
       %60 = tensor.empty() : tensor<2048xf32>
       %61 = linalg.generic {indexing_maps = [#map1], iterator_types = ["parallel"]} outs(%60 : tensor<2048xf32>) {
       ^bb0(%out: f32):
@@ -291,7 +291,7 @@ module {
         linalg.yield %65 : f32
       }
     %extracted_slice_19 = tensor.extract_slice %arg11[0, 0, 0] [1, 768, 2048] [1, 1, 1] : tensor<6x768x2048xf32> to tensor<768x2048xf32>
-    %12 = cinm.compute_ -> tensor<768xf32> attributes {workgroupShape = array<i64: 1, 6, 8>} {
+    %12 = cinm.compute -> tensor<768xf32> attributes {workgroupShape = array<i64: 1, 6, 8>} {
       %60 = linalg.generic {indexing_maps = [#map3, #map4, #map5], iterator_types = ["parallel", "reduction"]} ins(%extracted_slice_19, %mapped : tensor<768x2048xf32>, tensor<2048xf32>) outs(%10 : tensor<768xf32>) {
       ^bb0(%in: f32, %in_94: f32, %out: f32):
         %61 = arith.mulf %in, %in_94 : f32
@@ -301,7 +301,7 @@ module {
       cinm.yield %60 : tensor<768xf32>
     }
     %extracted_slice_20 = tensor.extract_slice %arg5[1, 0] [1, 768] [1, 1] : tensor<6x768xf32> to tensor<768xf32>
-    %13 = cinm.compute_ -> tensor<768xf32> {
+    %13 = cinm.compute -> tensor<768xf32> {
       %60 = tensor.empty() : tensor<f32>
       %61 = linalg.generic {indexing_maps = [#map], iterator_types = []} outs(%60 : tensor<f32>) {
       ^bb0(%out: f32):
@@ -328,7 +328,7 @@ module {
     %extracted_slice_21 = tensor.extract_slice %arg6[1, 0, 0] [1, 768, 768] [1, 1, 1] : tensor<6x768x768xf32> to tensor<768x768xf32>
     %extracted_slice_22 = tensor.extract_slice %arg7[1, 0, 0] [1, 768, 768] [1, 1, 1] : tensor<6x768x768xf32> to tensor<768x768xf32>
     %extracted_slice_23 = tensor.extract_slice %arg8[1, 0, 0] [1, 768, 768] [1, 1, 1] : tensor<6x768x768xf32> to tensor<768x768xf32>
-    %14:3 = cinm.compute_ -> tensor<768xf32>, tensor<6x1024x768xf32>, tensor<6x1024x768xf32> {
+    %14:3 = cinm.compute -> tensor<768xf32>, tensor<6x1024x768xf32>, tensor<6x1024x768xf32> {
       %60 = linalg.generic {indexing_maps = [#map1], iterator_types = ["parallel"]} outs(%extracted_slice_14 : tensor<768xf32>) {
       ^bb0(%out: f32):
         linalg.yield %cst : f32
@@ -407,7 +407,7 @@ module {
       %62 = scf.for %arg18 = %c0 to %5 step %c1 iter_args(%arg19 = %61) -> (tensor<1024xf32>) {
         %extracted_slice_96 = tensor.extract_slice %15#0[%60] [48] [1] : tensor<768xf32> to tensor<48xf32>
         %extracted_slice_97 = tensor.extract_slice %extracted_slice_27[%arg18, %60] [1, 48] [1, 1] : tensor<1024x768xf32> to tensor<48xf32>
-        %67 = cinm.compute_ -> f32 attributes {workgroupShape = array<i64: 1, 1, 8>} {
+        %67 = cinm.compute -> f32 attributes {workgroupShape = array<i64: 1, 1, 8>} {
           %68 = tensor.empty() : tensor<f32>
           %69 = linalg.generic {indexing_maps = [#map], iterator_types = []} outs(%68 : tensor<f32>) {
           ^bb0(%out: f32):
@@ -430,7 +430,7 @@ module {
         %inserted = tensor.insert %cst_0 into %arg19[%arg18] : tensor<1024xf32>
         scf.yield %inserted : tensor<1024xf32>
       }
-      %64 = cinm.compute_ -> tensor<1024xf32> {
+      %64 = cinm.compute -> tensor<1024xf32> {
         %67 = tensor.empty() : tensor<f32>
         %68 = linalg.generic {indexing_maps = [#map], iterator_types = []} outs(%67 : tensor<f32>) {
         ^bb0(%out: f32):
@@ -475,7 +475,7 @@ module {
         %extracted_slice_96 = tensor.extract_slice %arg19[%60] [48] [1] : tensor<768xf32> to tensor<48xf32>
         %extracted_slice_97 = tensor.extract_slice %extracted_slice_28[%arg18, %60] [1, 48] [1, 1] : tensor<1024x768xf32> to tensor<48xf32>
         %extracted = tensor.extract %64[%arg18] : tensor<1024xf32>
-        %67 = cinm.compute_ -> tensor<48xf32> attributes {workgroupShape = array<i64: 1, 1, 8>} {
+        %67 = cinm.compute -> tensor<48xf32> attributes {workgroupShape = array<i64: 1, 1, 8>} {
           %68 = linalg.generic {indexing_maps = [#map1, #map1, #map1], iterator_types = ["parallel"]} ins(%extracted_slice_96, %extracted_slice_97 : tensor<48xf32>, tensor<48xf32>) outs(%extracted_slice_96 : tensor<48xf32>) {
           ^bb0(%in: f32, %in_99: f32, %out: f32):
             %69 = arith.mulf %in_99, %extracted : f32
@@ -491,7 +491,7 @@ module {
     }
     %17 = bufferization.materialize_in_destination %16 in %15#0 : (tensor<768xf32>, tensor<768xf32>) -> tensor<768xf32>
     %extracted_slice_29 = tensor.extract_slice %arg9[1, 0, 0] [1, 768, 768] [1, 1, 1] : tensor<6x768x768xf32> to tensor<768x768xf32>
-    %18 = cinm.compute_ -> tensor<768xf32> attributes {workgroupShape = array<i64: 1, 6, 8>} {
+    %18 = cinm.compute -> tensor<768xf32> attributes {workgroupShape = array<i64: 1, 6, 8>} {
       %60 = linalg.generic {indexing_maps = [#map3, #map4, #map5], iterator_types = ["parallel", "reduction"]} ins(%extracted_slice_29, %17 : tensor<768x768xf32>, tensor<768xf32>) outs(%17 : tensor<768xf32>) {
       ^bb0(%in: f32, %in_94: f32, %out: f32):
         %62 = arith.mulf %in, %in_94 : f32
@@ -506,7 +506,7 @@ module {
       cinm.yield %61 : tensor<768xf32>
     }
     %extracted_slice_30 = tensor.extract_slice %arg13[1, 0] [1, 768] [1, 1] : tensor<6x768xf32> to tensor<768xf32>
-    %19 = cinm.compute_ -> tensor<768xf32> {
+    %19 = cinm.compute -> tensor<768xf32> {
       %60 = tensor.empty() : tensor<f32>
       %61 = linalg.generic {indexing_maps = [#map], iterator_types = []} outs(%60 : tensor<f32>) {
       ^bb0(%out: f32):
@@ -532,7 +532,7 @@ module {
     }
     %extracted_slice_31 = tensor.extract_slice %arg10[1, 0, 0] [1, 2048, 768] [1, 1, 1] : tensor<6x2048x768xf32> to tensor<2048x768xf32>
     %extracted_slice_32 = tensor.extract_slice %arg12[1, 0, 0] [1, 2048, 768] [1, 1, 1] : tensor<6x2048x768xf32> to tensor<2048x768xf32>
-    %20:2 = cinm.compute_ -> tensor<2048xf32>, tensor<2048xf32> attributes {workgroupShape = array<i64: 1, 6, 8>} {
+    %20:2 = cinm.compute -> tensor<2048xf32>, tensor<2048xf32> attributes {workgroupShape = array<i64: 1, 6, 8>} {
       %60 = tensor.empty() : tensor<2048xf32>
       %61 = linalg.generic {indexing_maps = [#map1], iterator_types = ["parallel"]} outs(%60 : tensor<2048xf32>) {
       ^bb0(%out: f32):
@@ -563,7 +563,7 @@ module {
         linalg.yield %65 : f32
       }
     %extracted_slice_34 = tensor.extract_slice %arg11[1, 0, 0] [1, 768, 2048] [1, 1, 1] : tensor<6x768x2048xf32> to tensor<768x2048xf32>
-    %21 = cinm.compute_ -> tensor<768xf32> attributes {workgroupShape = array<i64: 1, 6, 8>} {
+    %21 = cinm.compute -> tensor<768xf32> attributes {workgroupShape = array<i64: 1, 6, 8>} {
       %60 = linalg.generic {indexing_maps = [#map3, #map4, #map5], iterator_types = ["parallel", "reduction"]} ins(%extracted_slice_34, %mapped_33 : tensor<768x2048xf32>, tensor<2048xf32>) outs(%19 : tensor<768xf32>) {
       ^bb0(%in: f32, %in_94: f32, %out: f32):
         %61 = arith.mulf %in, %in_94 : f32
@@ -573,7 +573,7 @@ module {
       cinm.yield %60 : tensor<768xf32>
     }
     %extracted_slice_35 = tensor.extract_slice %arg5[2, 0] [1, 768] [1, 1] : tensor<6x768xf32> to tensor<768xf32>
-    %22 = cinm.compute_ -> tensor<768xf32> {
+    %22 = cinm.compute -> tensor<768xf32> {
       %60 = tensor.empty() : tensor<f32>
       %61 = linalg.generic {indexing_maps = [#map], iterator_types = []} outs(%60 : tensor<f32>) {
       ^bb0(%out: f32):
@@ -600,7 +600,7 @@ module {
     %extracted_slice_36 = tensor.extract_slice %arg6[2, 0, 0] [1, 768, 768] [1, 1, 1] : tensor<6x768x768xf32> to tensor<768x768xf32>
     %extracted_slice_37 = tensor.extract_slice %arg7[2, 0, 0] [1, 768, 768] [1, 1, 1] : tensor<6x768x768xf32> to tensor<768x768xf32>
     %extracted_slice_38 = tensor.extract_slice %arg8[2, 0, 0] [1, 768, 768] [1, 1, 1] : tensor<6x768x768xf32> to tensor<768x768xf32>
-    %23:3 = cinm.compute_ -> tensor<768xf32>, tensor<6x1024x768xf32>, tensor<6x1024x768xf32> {
+    %23:3 = cinm.compute -> tensor<768xf32>, tensor<6x1024x768xf32>, tensor<6x1024x768xf32> {
       %60 = linalg.generic {indexing_maps = [#map1], iterator_types = ["parallel"]} outs(%extracted_slice_26 : tensor<768xf32>) {
       ^bb0(%out: f32):
         linalg.yield %cst : f32
@@ -679,7 +679,7 @@ module {
       %62 = scf.for %arg18 = %c0 to %5 step %c1 iter_args(%arg19 = %61) -> (tensor<1024xf32>) {
         %extracted_slice_96 = tensor.extract_slice %24#0[%60] [48] [1] : tensor<768xf32> to tensor<48xf32>
         %extracted_slice_97 = tensor.extract_slice %extracted_slice_42[%arg18, %60] [1, 48] [1, 1] : tensor<1024x768xf32> to tensor<48xf32>
-        %67 = cinm.compute_ -> f32 attributes {workgroupShape = array<i64: 1, 1, 8>} {
+        %67 = cinm.compute -> f32 attributes {workgroupShape = array<i64: 1, 1, 8>} {
           %68 = tensor.empty() : tensor<f32>
           %69 = linalg.generic {indexing_maps = [#map], iterator_types = []} outs(%68 : tensor<f32>) {
           ^bb0(%out: f32):
@@ -702,7 +702,7 @@ module {
         %inserted = tensor.insert %cst_0 into %arg19[%arg18] : tensor<1024xf32>
         scf.yield %inserted : tensor<1024xf32>
       }
-      %64 = cinm.compute_ -> tensor<1024xf32> {
+      %64 = cinm.compute -> tensor<1024xf32> {
         %67 = tensor.empty() : tensor<f32>
         %68 = linalg.generic {indexing_maps = [#map], iterator_types = []} outs(%67 : tensor<f32>) {
         ^bb0(%out: f32):
@@ -747,7 +747,7 @@ module {
         %extracted_slice_96 = tensor.extract_slice %arg19[%60] [48] [1] : tensor<768xf32> to tensor<48xf32>
         %extracted_slice_97 = tensor.extract_slice %extracted_slice_43[%arg18, %60] [1, 48] [1, 1] : tensor<1024x768xf32> to tensor<48xf32>
         %extracted = tensor.extract %64[%arg18] : tensor<1024xf32>
-        %67 = cinm.compute_ -> tensor<48xf32> attributes {workgroupShape = array<i64: 1, 1, 8>} {
+        %67 = cinm.compute -> tensor<48xf32> attributes {workgroupShape = array<i64: 1, 1, 8>} {
           %68 = linalg.generic {indexing_maps = [#map1, #map1, #map1], iterator_types = ["parallel"]} ins(%extracted_slice_96, %extracted_slice_97 : tensor<48xf32>, tensor<48xf32>) outs(%extracted_slice_96 : tensor<48xf32>) {
           ^bb0(%in: f32, %in_99: f32, %out: f32):
             %69 = arith.mulf %in_99, %extracted : f32
@@ -763,7 +763,7 @@ module {
     }
     %26 = bufferization.materialize_in_destination %25 in %24#0 : (tensor<768xf32>, tensor<768xf32>) -> tensor<768xf32>
     %extracted_slice_44 = tensor.extract_slice %arg9[2, 0, 0] [1, 768, 768] [1, 1, 1] : tensor<6x768x768xf32> to tensor<768x768xf32>
-    %27 = cinm.compute_ -> tensor<768xf32> attributes {workgroupShape = array<i64: 1, 6, 8>} {
+    %27 = cinm.compute -> tensor<768xf32> attributes {workgroupShape = array<i64: 1, 6, 8>} {
       %60 = linalg.generic {indexing_maps = [#map3, #map4, #map5], iterator_types = ["parallel", "reduction"]} ins(%extracted_slice_44, %26 : tensor<768x768xf32>, tensor<768xf32>) outs(%26 : tensor<768xf32>) {
       ^bb0(%in: f32, %in_94: f32, %out: f32):
         %62 = arith.mulf %in, %in_94 : f32
@@ -778,7 +778,7 @@ module {
       cinm.yield %61 : tensor<768xf32>
     }
     %extracted_slice_45 = tensor.extract_slice %arg13[2, 0] [1, 768] [1, 1] : tensor<6x768xf32> to tensor<768xf32>
-    %28 = cinm.compute_ -> tensor<768xf32> {
+    %28 = cinm.compute -> tensor<768xf32> {
       %60 = tensor.empty() : tensor<f32>
       %61 = linalg.generic {indexing_maps = [#map], iterator_types = []} outs(%60 : tensor<f32>) {
       ^bb0(%out: f32):
@@ -804,7 +804,7 @@ module {
     }
     %extracted_slice_46 = tensor.extract_slice %arg10[2, 0, 0] [1, 2048, 768] [1, 1, 1] : tensor<6x2048x768xf32> to tensor<2048x768xf32>
     %extracted_slice_47 = tensor.extract_slice %arg12[2, 0, 0] [1, 2048, 768] [1, 1, 1] : tensor<6x2048x768xf32> to tensor<2048x768xf32>
-    %29:2 = cinm.compute_ -> tensor<2048xf32>, tensor<2048xf32> attributes {workgroupShape = array<i64: 1, 6, 8>} {
+    %29:2 = cinm.compute -> tensor<2048xf32>, tensor<2048xf32> attributes {workgroupShape = array<i64: 1, 6, 8>} {
       %60 = tensor.empty() : tensor<2048xf32>
       %61 = linalg.generic {indexing_maps = [#map1], iterator_types = ["parallel"]} outs(%60 : tensor<2048xf32>) {
       ^bb0(%out: f32):
@@ -835,7 +835,7 @@ module {
         linalg.yield %65 : f32
       }
     %extracted_slice_49 = tensor.extract_slice %arg11[2, 0, 0] [1, 768, 2048] [1, 1, 1] : tensor<6x768x2048xf32> to tensor<768x2048xf32>
-    %30 = cinm.compute_ -> tensor<768xf32> attributes {workgroupShape = array<i64: 1, 6, 8>} {
+    %30 = cinm.compute -> tensor<768xf32> attributes {workgroupShape = array<i64: 1, 6, 8>} {
       %60 = linalg.generic {indexing_maps = [#map3, #map4, #map5], iterator_types = ["parallel", "reduction"]} ins(%extracted_slice_49, %mapped_48 : tensor<768x2048xf32>, tensor<2048xf32>) outs(%28 : tensor<768xf32>) {
       ^bb0(%in: f32, %in_94: f32, %out: f32):
         %61 = arith.mulf %in, %in_94 : f32
@@ -845,7 +845,7 @@ module {
       cinm.yield %60 : tensor<768xf32>
     }
     %extracted_slice_50 = tensor.extract_slice %arg5[3, 0] [1, 768] [1, 1] : tensor<6x768xf32> to tensor<768xf32>
-    %31 = cinm.compute_ -> tensor<768xf32> {
+    %31 = cinm.compute -> tensor<768xf32> {
       %60 = tensor.empty() : tensor<f32>
       %61 = linalg.generic {indexing_maps = [#map], iterator_types = []} outs(%60 : tensor<f32>) {
       ^bb0(%out: f32):
@@ -872,7 +872,7 @@ module {
     %extracted_slice_51 = tensor.extract_slice %arg6[3, 0, 0] [1, 768, 768] [1, 1, 1] : tensor<6x768x768xf32> to tensor<768x768xf32>
     %extracted_slice_52 = tensor.extract_slice %arg7[3, 0, 0] [1, 768, 768] [1, 1, 1] : tensor<6x768x768xf32> to tensor<768x768xf32>
     %extracted_slice_53 = tensor.extract_slice %arg8[3, 0, 0] [1, 768, 768] [1, 1, 1] : tensor<6x768x768xf32> to tensor<768x768xf32>
-    %32:3 = cinm.compute_ -> tensor<768xf32>, tensor<6x1024x768xf32>, tensor<6x1024x768xf32> {
+    %32:3 = cinm.compute -> tensor<768xf32>, tensor<6x1024x768xf32>, tensor<6x1024x768xf32> {
       %60 = linalg.generic {indexing_maps = [#map1], iterator_types = ["parallel"]} outs(%extracted_slice_41 : tensor<768xf32>) {
       ^bb0(%out: f32):
         linalg.yield %cst : f32
@@ -951,7 +951,7 @@ module {
       %62 = scf.for %arg18 = %c0 to %5 step %c1 iter_args(%arg19 = %61) -> (tensor<1024xf32>) {
         %extracted_slice_96 = tensor.extract_slice %33#0[%60] [48] [1] : tensor<768xf32> to tensor<48xf32>
         %extracted_slice_97 = tensor.extract_slice %extracted_slice_57[%arg18, %60] [1, 48] [1, 1] : tensor<1024x768xf32> to tensor<48xf32>
-        %67 = cinm.compute_ -> f32 attributes {workgroupShape = array<i64: 1, 1, 8>} {
+        %67 = cinm.compute -> f32 attributes {workgroupShape = array<i64: 1, 1, 8>} {
           %68 = tensor.empty() : tensor<f32>
           %69 = linalg.generic {indexing_maps = [#map], iterator_types = []} outs(%68 : tensor<f32>) {
           ^bb0(%out: f32):
@@ -974,7 +974,7 @@ module {
         %inserted = tensor.insert %cst_0 into %arg19[%arg18] : tensor<1024xf32>
         scf.yield %inserted : tensor<1024xf32>
       }
-      %64 = cinm.compute_ -> tensor<1024xf32> {
+      %64 = cinm.compute -> tensor<1024xf32> {
         %67 = tensor.empty() : tensor<f32>
         %68 = linalg.generic {indexing_maps = [#map], iterator_types = []} outs(%67 : tensor<f32>) {
         ^bb0(%out: f32):
@@ -1019,7 +1019,7 @@ module {
         %extracted_slice_96 = tensor.extract_slice %arg19[%60] [48] [1] : tensor<768xf32> to tensor<48xf32>
         %extracted_slice_97 = tensor.extract_slice %extracted_slice_58[%arg18, %60] [1, 48] [1, 1] : tensor<1024x768xf32> to tensor<48xf32>
         %extracted = tensor.extract %64[%arg18] : tensor<1024xf32>
-        %67 = cinm.compute_ -> tensor<48xf32> attributes {workgroupShape = array<i64: 1, 1, 8>} {
+        %67 = cinm.compute -> tensor<48xf32> attributes {workgroupShape = array<i64: 1, 1, 8>} {
           %68 = linalg.generic {indexing_maps = [#map1, #map1, #map1], iterator_types = ["parallel"]} ins(%extracted_slice_96, %extracted_slice_97 : tensor<48xf32>, tensor<48xf32>) outs(%extracted_slice_96 : tensor<48xf32>) {
           ^bb0(%in: f32, %in_99: f32, %out: f32):
             %69 = arith.mulf %in_99, %extracted : f32
@@ -1035,7 +1035,7 @@ module {
     }
     %35 = bufferization.materialize_in_destination %34 in %33#0 : (tensor<768xf32>, tensor<768xf32>) -> tensor<768xf32>
     %extracted_slice_59 = tensor.extract_slice %arg9[3, 0, 0] [1, 768, 768] [1, 1, 1] : tensor<6x768x768xf32> to tensor<768x768xf32>
-    %36 = cinm.compute_ -> tensor<768xf32> attributes {workgroupShape = array<i64: 1, 6, 8>} {
+    %36 = cinm.compute -> tensor<768xf32> attributes {workgroupShape = array<i64: 1, 6, 8>} {
       %60 = linalg.generic {indexing_maps = [#map3, #map4, #map5], iterator_types = ["parallel", "reduction"]} ins(%extracted_slice_59, %35 : tensor<768x768xf32>, tensor<768xf32>) outs(%35 : tensor<768xf32>) {
       ^bb0(%in: f32, %in_94: f32, %out: f32):
         %62 = arith.mulf %in, %in_94 : f32
@@ -1050,7 +1050,7 @@ module {
       cinm.yield %61 : tensor<768xf32>
     }
     %extracted_slice_60 = tensor.extract_slice %arg13[3, 0] [1, 768] [1, 1] : tensor<6x768xf32> to tensor<768xf32>
-    %37 = cinm.compute_ -> tensor<768xf32> {
+    %37 = cinm.compute -> tensor<768xf32> {
       %60 = tensor.empty() : tensor<f32>
       %61 = linalg.generic {indexing_maps = [#map], iterator_types = []} outs(%60 : tensor<f32>) {
       ^bb0(%out: f32):
@@ -1076,7 +1076,7 @@ module {
     }
     %extracted_slice_61 = tensor.extract_slice %arg10[3, 0, 0] [1, 2048, 768] [1, 1, 1] : tensor<6x2048x768xf32> to tensor<2048x768xf32>
     %extracted_slice_62 = tensor.extract_slice %arg12[3, 0, 0] [1, 2048, 768] [1, 1, 1] : tensor<6x2048x768xf32> to tensor<2048x768xf32>
-    %38:2 = cinm.compute_ -> tensor<2048xf32>, tensor<2048xf32> attributes {workgroupShape = array<i64: 1, 6, 8>} {
+    %38:2 = cinm.compute -> tensor<2048xf32>, tensor<2048xf32> attributes {workgroupShape = array<i64: 1, 6, 8>} {
       %60 = tensor.empty() : tensor<2048xf32>
       %61 = linalg.generic {indexing_maps = [#map1], iterator_types = ["parallel"]} outs(%60 : tensor<2048xf32>) {
       ^bb0(%out: f32):
@@ -1107,7 +1107,7 @@ module {
         linalg.yield %65 : f32
       }
     %extracted_slice_64 = tensor.extract_slice %arg11[3, 0, 0] [1, 768, 2048] [1, 1, 1] : tensor<6x768x2048xf32> to tensor<768x2048xf32>
-    %39 = cinm.compute_ -> tensor<768xf32> attributes {workgroupShape = array<i64: 1, 6, 8>} {
+    %39 = cinm.compute -> tensor<768xf32> attributes {workgroupShape = array<i64: 1, 6, 8>} {
       %60 = linalg.generic {indexing_maps = [#map3, #map4, #map5], iterator_types = ["parallel", "reduction"]} ins(%extracted_slice_64, %mapped_63 : tensor<768x2048xf32>, tensor<2048xf32>) outs(%37 : tensor<768xf32>) {
       ^bb0(%in: f32, %in_94: f32, %out: f32):
         %61 = arith.mulf %in, %in_94 : f32
@@ -1117,7 +1117,7 @@ module {
       cinm.yield %60 : tensor<768xf32>
     }
     %extracted_slice_65 = tensor.extract_slice %arg5[4, 0] [1, 768] [1, 1] : tensor<6x768xf32> to tensor<768xf32>
-    %40 = cinm.compute_ -> tensor<768xf32> {
+    %40 = cinm.compute -> tensor<768xf32> {
       %60 = tensor.empty() : tensor<f32>
       %61 = linalg.generic {indexing_maps = [#map], iterator_types = []} outs(%60 : tensor<f32>) {
       ^bb0(%out: f32):
@@ -1144,7 +1144,7 @@ module {
     %extracted_slice_66 = tensor.extract_slice %arg6[4, 0, 0] [1, 768, 768] [1, 1, 1] : tensor<6x768x768xf32> to tensor<768x768xf32>
     %extracted_slice_67 = tensor.extract_slice %arg7[4, 0, 0] [1, 768, 768] [1, 1, 1] : tensor<6x768x768xf32> to tensor<768x768xf32>
     %extracted_slice_68 = tensor.extract_slice %arg8[4, 0, 0] [1, 768, 768] [1, 1, 1] : tensor<6x768x768xf32> to tensor<768x768xf32>
-    %41:3 = cinm.compute_ -> tensor<768xf32>, tensor<6x1024x768xf32>, tensor<6x1024x768xf32> {
+    %41:3 = cinm.compute -> tensor<768xf32>, tensor<6x1024x768xf32>, tensor<6x1024x768xf32> {
       %60 = linalg.generic {indexing_maps = [#map1], iterator_types = ["parallel"]} outs(%extracted_slice_56 : tensor<768xf32>) {
       ^bb0(%out: f32):
         linalg.yield %cst : f32
@@ -1223,7 +1223,7 @@ module {
       %62 = scf.for %arg18 = %c0 to %5 step %c1 iter_args(%arg19 = %61) -> (tensor<1024xf32>) {
         %extracted_slice_96 = tensor.extract_slice %42#0[%60] [48] [1] : tensor<768xf32> to tensor<48xf32>
         %extracted_slice_97 = tensor.extract_slice %extracted_slice_72[%arg18, %60] [1, 48] [1, 1] : tensor<1024x768xf32> to tensor<48xf32>
-        %67 = cinm.compute_ -> f32 attributes {workgroupShape = array<i64: 1, 1, 8>} {
+        %67 = cinm.compute -> f32 attributes {workgroupShape = array<i64: 1, 1, 8>} {
           %68 = tensor.empty() : tensor<f32>
           %69 = linalg.generic {indexing_maps = [#map], iterator_types = []} outs(%68 : tensor<f32>) {
           ^bb0(%out: f32):
@@ -1246,7 +1246,7 @@ module {
         %inserted = tensor.insert %cst_0 into %arg19[%arg18] : tensor<1024xf32>
         scf.yield %inserted : tensor<1024xf32>
       }
-      %64 = cinm.compute_ -> tensor<1024xf32> {
+      %64 = cinm.compute -> tensor<1024xf32> {
         %67 = tensor.empty() : tensor<f32>
         %68 = linalg.generic {indexing_maps = [#map], iterator_types = []} outs(%67 : tensor<f32>) {
         ^bb0(%out: f32):
@@ -1291,7 +1291,7 @@ module {
         %extracted_slice_96 = tensor.extract_slice %arg19[%60] [48] [1] : tensor<768xf32> to tensor<48xf32>
         %extracted_slice_97 = tensor.extract_slice %extracted_slice_73[%arg18, %60] [1, 48] [1, 1] : tensor<1024x768xf32> to tensor<48xf32>
         %extracted = tensor.extract %64[%arg18] : tensor<1024xf32>
-        %67 = cinm.compute_ -> tensor<48xf32> attributes {workgroupShape = array<i64: 1, 1, 8>} {
+        %67 = cinm.compute -> tensor<48xf32> attributes {workgroupShape = array<i64: 1, 1, 8>} {
           %68 = linalg.generic {indexing_maps = [#map1, #map1, #map1], iterator_types = ["parallel"]} ins(%extracted_slice_96, %extracted_slice_97 : tensor<48xf32>, tensor<48xf32>) outs(%extracted_slice_96 : tensor<48xf32>) {
           ^bb0(%in: f32, %in_99: f32, %out: f32):
             %69 = arith.mulf %in_99, %extracted : f32
@@ -1307,7 +1307,7 @@ module {
     }
     %44 = bufferization.materialize_in_destination %43 in %42#0 : (tensor<768xf32>, tensor<768xf32>) -> tensor<768xf32>
     %extracted_slice_74 = tensor.extract_slice %arg9[4, 0, 0] [1, 768, 768] [1, 1, 1] : tensor<6x768x768xf32> to tensor<768x768xf32>
-    %45 = cinm.compute_ -> tensor<768xf32> attributes {workgroupShape = array<i64: 1, 6, 8>} {
+    %45 = cinm.compute -> tensor<768xf32> attributes {workgroupShape = array<i64: 1, 6, 8>} {
       %60 = linalg.generic {indexing_maps = [#map3, #map4, #map5], iterator_types = ["parallel", "reduction"]} ins(%extracted_slice_74, %44 : tensor<768x768xf32>, tensor<768xf32>) outs(%44 : tensor<768xf32>) {
       ^bb0(%in: f32, %in_94: f32, %out: f32):
         %62 = arith.mulf %in, %in_94 : f32
@@ -1322,7 +1322,7 @@ module {
       cinm.yield %61 : tensor<768xf32>
     }
     %extracted_slice_75 = tensor.extract_slice %arg13[4, 0] [1, 768] [1, 1] : tensor<6x768xf32> to tensor<768xf32>
-    %46 = cinm.compute_ -> tensor<768xf32> {
+    %46 = cinm.compute -> tensor<768xf32> {
       %60 = tensor.empty() : tensor<f32>
       %61 = linalg.generic {indexing_maps = [#map], iterator_types = []} outs(%60 : tensor<f32>) {
       ^bb0(%out: f32):
@@ -1348,7 +1348,7 @@ module {
     }
     %extracted_slice_76 = tensor.extract_slice %arg10[4, 0, 0] [1, 2048, 768] [1, 1, 1] : tensor<6x2048x768xf32> to tensor<2048x768xf32>
     %extracted_slice_77 = tensor.extract_slice %arg12[4, 0, 0] [1, 2048, 768] [1, 1, 1] : tensor<6x2048x768xf32> to tensor<2048x768xf32>
-    %47:2 = cinm.compute_ -> tensor<2048xf32>, tensor<2048xf32> attributes {workgroupShape = array<i64: 1, 6, 8>} {
+    %47:2 = cinm.compute -> tensor<2048xf32>, tensor<2048xf32> attributes {workgroupShape = array<i64: 1, 6, 8>} {
       %60 = tensor.empty() : tensor<2048xf32>
       %61 = linalg.generic {indexing_maps = [#map1], iterator_types = ["parallel"]} outs(%60 : tensor<2048xf32>) {
       ^bb0(%out: f32):
@@ -1379,7 +1379,7 @@ module {
         linalg.yield %65 : f32
       }
     %extracted_slice_79 = tensor.extract_slice %arg11[4, 0, 0] [1, 768, 2048] [1, 1, 1] : tensor<6x768x2048xf32> to tensor<768x2048xf32>
-    %48 = cinm.compute_ -> tensor<768xf32> attributes {workgroupShape = array<i64: 1, 6, 8>} {
+    %48 = cinm.compute -> tensor<768xf32> attributes {workgroupShape = array<i64: 1, 6, 8>} {
       %60 = linalg.generic {indexing_maps = [#map3, #map4, #map5], iterator_types = ["parallel", "reduction"]} ins(%extracted_slice_79, %mapped_78 : tensor<768x2048xf32>, tensor<2048xf32>) outs(%46 : tensor<768xf32>) {
       ^bb0(%in: f32, %in_94: f32, %out: f32):
         %61 = arith.mulf %in, %in_94 : f32
@@ -1389,7 +1389,7 @@ module {
       cinm.yield %60 : tensor<768xf32>
     }
     %extracted_slice_80 = tensor.extract_slice %arg5[5, 0] [1, 768] [1, 1] : tensor<6x768xf32> to tensor<768xf32>
-    %49 = cinm.compute_ -> tensor<768xf32> {
+    %49 = cinm.compute -> tensor<768xf32> {
       %60 = tensor.empty() : tensor<f32>
       %61 = linalg.generic {indexing_maps = [#map], iterator_types = []} outs(%60 : tensor<f32>) {
       ^bb0(%out: f32):
@@ -1416,7 +1416,7 @@ module {
     %extracted_slice_81 = tensor.extract_slice %arg6[5, 0, 0] [1, 768, 768] [1, 1, 1] : tensor<6x768x768xf32> to tensor<768x768xf32>
     %extracted_slice_82 = tensor.extract_slice %arg7[5, 0, 0] [1, 768, 768] [1, 1, 1] : tensor<6x768x768xf32> to tensor<768x768xf32>
     %extracted_slice_83 = tensor.extract_slice %arg8[5, 0, 0] [1, 768, 768] [1, 1, 1] : tensor<6x768x768xf32> to tensor<768x768xf32>
-    %50:3 = cinm.compute_ -> tensor<768xf32>, tensor<6x1024x768xf32>, tensor<6x1024x768xf32> {
+    %50:3 = cinm.compute -> tensor<768xf32>, tensor<6x1024x768xf32>, tensor<6x1024x768xf32> {
       %60 = linalg.generic {indexing_maps = [#map1], iterator_types = ["parallel"]} outs(%extracted_slice_71 : tensor<768xf32>) {
       ^bb0(%out: f32):
         linalg.yield %cst : f32
@@ -1494,7 +1494,7 @@ module {
       %62 = scf.for %arg18 = %c0 to %5 step %c1 iter_args(%arg19 = %61) -> (tensor<1024xf32>) {
         %extracted_slice_96 = tensor.extract_slice %51#0[%60] [48] [1] : tensor<768xf32> to tensor<48xf32>
         %extracted_slice_97 = tensor.extract_slice %extracted_slice_86[%arg18, %60] [1, 48] [1, 1] : tensor<1024x768xf32> to tensor<48xf32>
-        %67 = cinm.compute_ -> f32 attributes {workgroupShape = array<i64: 1, 1, 8>} {
+        %67 = cinm.compute -> f32 attributes {workgroupShape = array<i64: 1, 1, 8>} {
           %68 = tensor.empty() : tensor<f32>
           %69 = linalg.generic {indexing_maps = [#map], iterator_types = []} outs(%68 : tensor<f32>) {
           ^bb0(%out: f32):
@@ -1517,7 +1517,7 @@ module {
         %inserted = tensor.insert %cst_0 into %arg19[%arg18] : tensor<1024xf32>
         scf.yield %inserted : tensor<1024xf32>
       }
-      %64 = cinm.compute_ -> tensor<1024xf32> {
+      %64 = cinm.compute -> tensor<1024xf32> {
         %67 = tensor.empty() : tensor<f32>
         %68 = linalg.generic {indexing_maps = [#map], iterator_types = []} outs(%67 : tensor<f32>) {
         ^bb0(%out: f32):
@@ -1562,7 +1562,7 @@ module {
         %extracted_slice_96 = tensor.extract_slice %arg19[%60] [48] [1] : tensor<768xf32> to tensor<48xf32>
         %extracted_slice_97 = tensor.extract_slice %extracted_slice_87[%arg18, %60] [1, 48] [1, 1] : tensor<1024x768xf32> to tensor<48xf32>
         %extracted = tensor.extract %64[%arg18] : tensor<1024xf32>
-        %67 = cinm.compute_ -> tensor<48xf32> attributes {workgroupShape = array<i64: 1, 1, 8>} {
+        %67 = cinm.compute -> tensor<48xf32> attributes {workgroupShape = array<i64: 1, 1, 8>} {
           %68 = linalg.generic {indexing_maps = [#map1, #map1, #map1], iterator_types = ["parallel"]} ins(%extracted_slice_96, %extracted_slice_97 : tensor<48xf32>, tensor<48xf32>) outs(%extracted_slice_96 : tensor<48xf32>) {
           ^bb0(%in: f32, %in_99: f32, %out: f32):
             %69 = arith.mulf %in_99, %extracted : f32
@@ -1578,7 +1578,7 @@ module {
     }
     %53 = bufferization.materialize_in_destination %52 in %51#0 : (tensor<768xf32>, tensor<768xf32>) -> tensor<768xf32>
     %extracted_slice_88 = tensor.extract_slice %arg9[5, 0, 0] [1, 768, 768] [1, 1, 1] : tensor<6x768x768xf32> to tensor<768x768xf32>
-    %54 = cinm.compute_ -> tensor<768xf32> attributes {workgroupShape = array<i64: 1, 6, 8>} {
+    %54 = cinm.compute -> tensor<768xf32> attributes {workgroupShape = array<i64: 1, 6, 8>} {
       %60 = linalg.generic {indexing_maps = [#map3, #map4, #map5], iterator_types = ["parallel", "reduction"]} ins(%extracted_slice_88, %53 : tensor<768x768xf32>, tensor<768xf32>) outs(%53 : tensor<768xf32>) {
       ^bb0(%in: f32, %in_94: f32, %out: f32):
         %62 = arith.mulf %in, %in_94 : f32
@@ -1593,7 +1593,7 @@ module {
       cinm.yield %61 : tensor<768xf32>
     }
     %extracted_slice_89 = tensor.extract_slice %arg13[5, 0] [1, 768] [1, 1] : tensor<6x768xf32> to tensor<768xf32>
-    %55 = cinm.compute_ -> tensor<768xf32> {
+    %55 = cinm.compute -> tensor<768xf32> {
       %60 = tensor.empty() : tensor<f32>
       %61 = linalg.generic {indexing_maps = [#map], iterator_types = []} outs(%60 : tensor<f32>) {
       ^bb0(%out: f32):
@@ -1619,7 +1619,7 @@ module {
     }
     %extracted_slice_90 = tensor.extract_slice %arg10[5, 0, 0] [1, 2048, 768] [1, 1, 1] : tensor<6x2048x768xf32> to tensor<2048x768xf32>
     %extracted_slice_91 = tensor.extract_slice %arg12[5, 0, 0] [1, 2048, 768] [1, 1, 1] : tensor<6x2048x768xf32> to tensor<2048x768xf32>
-    %56:2 = cinm.compute_ -> tensor<2048xf32>, tensor<2048xf32> attributes {workgroupShape = array<i64: 1, 6, 8>} {
+    %56:2 = cinm.compute -> tensor<2048xf32>, tensor<2048xf32> attributes {workgroupShape = array<i64: 1, 6, 8>} {
       %60 = tensor.empty() : tensor<2048xf32>
       %61 = linalg.generic {indexing_maps = [#map1], iterator_types = ["parallel"]} outs(%60 : tensor<2048xf32>) {
       ^bb0(%out: f32):
@@ -1650,7 +1650,7 @@ module {
         linalg.yield %65 : f32
       }
     %extracted_slice_93 = tensor.extract_slice %arg11[5, 0, 0] [1, 768, 2048] [1, 1, 1] : tensor<6x768x2048xf32> to tensor<768x2048xf32>
-    %57 = cinm.compute_ -> tensor<768xf32> attributes {workgroupShape = array<i64: 1, 6, 8>} {
+    %57 = cinm.compute -> tensor<768xf32> attributes {workgroupShape = array<i64: 1, 6, 8>} {
       %60 = linalg.generic {indexing_maps = [#map3, #map4, #map5], iterator_types = ["parallel", "reduction"]} ins(%extracted_slice_93, %mapped_92 : tensor<768x2048xf32>, tensor<2048xf32>) outs(%55 : tensor<768xf32>) {
       ^bb0(%in: f32, %in_94: f32, %out: f32):
         %61 = arith.mulf %in, %in_94 : f32
@@ -1659,7 +1659,7 @@ module {
       } -> tensor<768xf32>
       cinm.yield %60 : tensor<768xf32>
     }
-    %58 = cinm.compute_ -> tensor<768xf32> {
+    %58 = cinm.compute -> tensor<768xf32> {
       %60 = tensor.empty() : tensor<f32>
       %61 = linalg.generic {indexing_maps = [#map], iterator_types = []} outs(%60 : tensor<f32>) {
       ^bb0(%out: f32):
@@ -1683,7 +1683,7 @@ module {
       } -> tensor<768xf32>
       cinm.yield %66 : tensor<768xf32>
     }
-    %59 = cinm.compute_ -> tensor<32000xf32> attributes {workgroupShape = array<i64: 2, 8, 16>} {
+    %59 = cinm.compute -> tensor<32000xf32> attributes {workgroupShape = array<i64: 2, 8, 16>} {
       %60 = tensor.empty() : tensor<34048x768xf32>
       %61 = linalg.generic {indexing_maps = [#map3], iterator_types = ["parallel", "parallel"]} outs(%60 : tensor<34048x768xf32>) {
       ^bb0(%out: f32):
@@ -1739,7 +1739,7 @@ module {
       %5 = scf.for %arg6 = %c0 to %0 step %c1 iter_args(%arg7 = %4) -> (tensor<1024xf32>) {
         %extracted_slice_2 = tensor.extract_slice %arg0[%3] [48] [1] : tensor<768xf32> to tensor<48xf32>
         %extracted_slice_3 = tensor.extract_slice %arg1[%arg6, %3] [1, 48] [1, 1] : tensor<1024x768xf32> to tensor<48xf32>
-        %10 = cinm.compute_ -> f32 attributes {workgroupShape = array<i64: 1, 1, 8>} {
+        %10 = cinm.compute -> f32 attributes {workgroupShape = array<i64: 1, 1, 8>} {
           %11 = tensor.empty() : tensor<f32>
           %12 = linalg.generic {indexing_maps = [#map], iterator_types = []} outs(%11 : tensor<f32>) {
           ^bb0(%out: f32):
@@ -1762,7 +1762,7 @@ module {
         %inserted = tensor.insert %cst_1 into %arg7[%arg6] : tensor<1024xf32>
         scf.yield %inserted : tensor<1024xf32>
       }
-      %7 = cinm.compute_ -> tensor<1024xf32> {
+      %7 = cinm.compute -> tensor<1024xf32> {
         %10 = tensor.empty() : tensor<f32>
         %11 = linalg.generic {indexing_maps = [#map], iterator_types = []} outs(%10 : tensor<f32>) {
         ^bb0(%out: f32):
@@ -1807,7 +1807,7 @@ module {
         %extracted_slice_2 = tensor.extract_slice %arg7[%3] [48] [1] : tensor<768xf32> to tensor<48xf32>
         %extracted_slice_3 = tensor.extract_slice %arg2[%arg6, %3] [1, 48] [1, 1] : tensor<1024x768xf32> to tensor<48xf32>
         %extracted = tensor.extract %7[%arg6] : tensor<1024xf32>
-        %10 = cinm.compute_ -> tensor<48xf32> attributes {workgroupShape = array<i64: 1, 1, 8>} {
+        %10 = cinm.compute -> tensor<48xf32> attributes {workgroupShape = array<i64: 1, 1, 8>} {
           %11 = linalg.generic {indexing_maps = [#map1, #map1, #map1], iterator_types = ["parallel"]} ins(%extracted_slice_2, %extracted_slice_3 : tensor<48xf32>, tensor<48xf32>) outs(%extracted_slice_2 : tensor<48xf32>) {
           ^bb0(%in: f32, %in_5: f32, %out: f32):
             %12 = arith.mulf %in_5, %extracted : f32
@@ -1827,7 +1827,7 @@ module {
     %cst = arith.constant 0.000000e+00 : f32
     %cst_0 = arith.constant 9.99999974E-6 : f32
     %cst_1 = arith.constant 7.680000e+02 : f32
-    %0 = cinm.compute_ -> tensor<768xf32> {
+    %0 = cinm.compute -> tensor<768xf32> {
       %1 = tensor.empty() : tensor<f32>
       %2 = linalg.generic {indexing_maps = [#map], iterator_types = []} outs(%1 : tensor<f32>) {
       ^bb0(%out: f32):
@@ -1857,7 +1857,7 @@ module {
   func.func @softmax(%arg0: tensor<1024xf32> {bufferization.writable = true}) -> tensor<1024xf32> {
     %cst = arith.constant 0.000000e+00 : f32
     %cst_0 = arith.constant 0xFF800000 : f32
-    %0 = cinm.compute_ -> tensor<1024xf32> {
+    %0 = cinm.compute -> tensor<1024xf32> {
       %1 = tensor.empty() : tensor<f32>
       %2 = linalg.generic {indexing_maps = [#map], iterator_types = []} outs(%1 : tensor<f32>) {
       ^bb0(%out: f32):

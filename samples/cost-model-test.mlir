@@ -1,5 +1,5 @@
 func.func @simple() {
-    cinm.compute () attributes {workgroupShape = array<i64: 8, 128, 1>, bufferSizesInBytes=array<i64: 0,0,512>} {
+    cinm.compute_block () attributes {workgroupShape = array<i64: 8, 128, 1>, bufferSizesInBytes=array<i64: 0,0,512>} {
         %a00 = tensor.empty (): tensor<1024x1024xi32>
         %a01 = tensor.empty (): tensor<1024x1024xi32>
         %a02 = tensor.empty (): tensor<1024x1024xi32>

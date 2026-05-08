@@ -69,7 +69,7 @@ bufferizeComputeResults(Operation *op, RewriterBase &rewriter,
       FailureOr<Value> buf =
           bufferization::getBuffer(rewriter, v, options, state);
       if (failed(buf))
-        return op->emitError("cinm.compute bufferize: result #")
+        return op->emitError(" bufferize: result #")
                << i << " failed bufferization";
       yieldVal.set(*buf);
 
@@ -101,12 +101,12 @@ static void getComputeYieldAliasingOpOperands(
 
 struct ComputeBufferizableInterface
     : public bufferization::BufferizableOpInterface::ExternalModel<
-          ComputeBufferizableInterface, cinm::ComputeOp> {
+          ComputeBufferizableInterface, cinm::ComputeBlockOp> {
 
   bool bufferizesToMemoryRead(Operation *op, OpOperand &opnd,
                               const bufferization::AnalysisState &state) const {
     auto bbarg =
-        cast<cinm::ComputeOp>(op).getBodyArguments()[opnd.getOperandNumber()];
+        cast<cinm::ComputeBlockOp>(op).getBodyArguments()[opnd.getOperandNumber()];
     return state.isValueRead(bbarg);
   }
 
@@ -131,13 +131,13 @@ struct ComputeBufferizableInterface
   bufferization::AliasingValueList
   getAliasingValues(Operation *op, OpOperand &opnd,
                     const bufferization::AnalysisState &state) const {
-    auto computeOp = cast<cinm::ComputeOp>(op);
-    auto bbarg = computeOp.getBodyArguments()[opnd.getOperandNumber()];
+    auto ComputeBlockOp = cast<cinm::ComputeBlockOp>(op);
+    auto bbarg = ComputeBlockOp.getBodyArguments()[opnd.getOperandNumber()];
     auto yield =
-        cast<cinm::YieldOp>(computeOp.getBody().front().getTerminator());
+        cast<cinm::YieldOp>(ComputeBlockOp.getBody().front().getTerminator());
     SmallVector<bufferization::AliasingValue> aliasing;
     for (auto [yielded, result] :
-         llvm::zip(yield->getOperands(), computeOp->getOpResults())) {
+         llvm::zip(yield->getOperands(), ComputeBlockOp->getOpResults())) {
       if (state.areEquivalentBufferizedValues(yielded, bbarg)) {
         aliasing.emplace_back(result, bufferization::BufferRelation::Equivalent,
                               true);
@@ -157,7 +157,7 @@ struct ComputeBufferizableInterface
   LogicalResult bufferize(Operation *op, RewriterBase &rewriter,
                           const bufferization::BufferizationOptions &options,
                           bufferization::BufferizationState &state) const {
-    auto oldCompute = cast<cinm::ComputeOp>(op);
+    auto oldCompute = cast<cinm::ComputeBlockOp>(op);
     Location loc = op->getLoc();
 
     for (auto [arg, operand] : oldCompute.zipArgsWithOpOperands()) {
@@ -166,7 +166,7 @@ struct ComputeBufferizableInterface
             bufferization::getBuffer(rewriter, operand.get(), options, state);
         if (failed(buf))
           return op->emitError(
-              "cinm.compute bufferize: operand failed bufferization");
+              "cinm.compute_block bufferize: operand failed bufferization");
 
         auto tensorTy = arg.getType();
         rewriter.setInsertionPointToStart(arg.getOwner());
@@ -184,7 +184,7 @@ struct ComputeBufferizableInterface
 
 struct FlexComputeBufferizableInterface
     : public bufferization::BufferizableOpInterface::ExternalModel<
-          FlexComputeBufferizableInterface, cinm::FlexComputeOp> {
+          FlexComputeBufferizableInterface, cinm::ComputeOp> {
 
   bufferization::AliasingValueList
   getAliasingValues(Operation *, OpOperand &,
@@ -650,9 +650,9 @@ void mlir::cinm::registerCinmBufferizableOpInterfaces(
   registry.addExtension<::mlir::cinm::CinmDialect>(+[](MLIRContext *ctx,
                                                        ::mlir::cinm::CinmDialect
                                                            *) {
-    ::mlir::cinm::ComputeOp::attachInterface<ComputeBufferizableInterface>(
+    ::mlir::cinm::ComputeBlockOp::attachInterface<ComputeBufferizableInterface>(
         *ctx);
-    ::mlir::cinm::FlexComputeOp::attachInterface<
+    ::mlir::cinm::ComputeOp::attachInterface<
         FlexComputeBufferizableInterface>(*ctx);
     ::mlir::cinm::GemmOp::attachInterface<GemmBufferizableInterface>(*ctx);
     ::mlir::cinm::GemvOp::attachInterface<GemvBufferizableInterface>(*ctx);

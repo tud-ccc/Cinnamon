@@ -74,7 +74,7 @@ def ConvertCinmOpsToLinalg
   let description = [{
     Lowers all cinm.op.* named operations (elementwise, reduce, gemv, gemm,
     batch_gemm, batch_gemv, activate, transpose) to equivalent linalg, arith,
-    and math ops. The cinm.compute / cinm.compute_ container ops and
+    and math ops. The cinm.compute_block / cinm.compute container ops and
     cinm.yield are left untouched.
   }];
   let constructor = "mlir::cinm::createConvertCinmOpsToLinalgPass()";

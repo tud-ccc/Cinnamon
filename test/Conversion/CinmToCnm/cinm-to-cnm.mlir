@@ -21,7 +21,7 @@
 // CHECK: %[[emptyres:.*]] = tensor.empty() : tensor<8x128xi32>
 // CHECK: %{{.*}} = cnm.gather %[[bc]][{{.*}}] of %[[wg]] into %[[emptyres]] : !cnm.buffer<i32 on {{.*}}> into tensor<8x128xi32>
 // CHECK: cnm.free_workgroup %[[wg]] : !cnm.workgroup<{{.*}}>
-        %r0 = cinm.compute_ on accelerator #upmem -> tensor<8x128xi32> {
+        %r0 = cinm.compute on accelerator #upmem -> tensor<8x128xi32> {
             %r = cinm.op.gemm %arg0, %arg1: tensor<8x1024xi32>, tensor<1024x128xi32> -> tensor<8x128xi32>
             cinm.yield %r : tensor<8x128xi32>
         }
@@ -48,7 +48,7 @@
 // CHECK: %[[emptyres:.*]] = tensor.empty() : tensor<8xi32>
 // CHECK: %{{.*}} = cnm.gather %[[bc]][{{.*}}] of %[[wg]] into %[[emptyres]] : !cnm.buffer<i32 on {{.*}}> into tensor<8xi32>
 // CHECK: cnm.free_workgroup %[[wg]] : !cnm.workgroup<{{.*}}>
-        %r0 = cinm.compute_ on accelerator #upmem -> tensor<8xi32>  {
+        %r0 = cinm.compute on accelerator #upmem -> tensor<8xi32>  {
             %r = cinm.op.gemv %arg0, %arg1 : tensor<8x1024xi32>, tensor<1024xi32> -> tensor<8xi32>
             cinm.yield %r : tensor<8xi32>
         }

@@ -43,7 +43,7 @@ struct CinmInlinerInterface : DialectInlinerInterface {
   bool isLegalToInline(Operation *, Region *, bool,
                        IRMapping &) const override {
     // register that it is legal to inline an operation (eg func.func)
-    // containing a cinm.compute op. This may duplicate the compute block
+    // containing a cinm.compute_block op. This may duplicate the compute block
     // though.
     return true;
   }
