@@ -359,7 +359,7 @@ struct ConvertReduceToLinalg : public OpConversionPattern<cinm::ReduceOp> {
 
     // Normalize negative dimension indices.
     SmallVector<int64_t> dims;
-    for (int64_t d : op.getDimensions())
+    for (int64_t d : {op.getDimension()})
       dims.push_back(d < 0 ? rank + d : d);
 
     // Output shape: input shape with reduced dims removed.

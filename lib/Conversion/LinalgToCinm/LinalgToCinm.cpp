@@ -26,11 +26,10 @@
 #include "llvm/Support/raw_ostream.h"
 #include <mlir/IR/IRMapping.h>
 
-
 namespace mlir::cinm {
 #define GEN_PASS_DEF_CONVERTLINALGTOCINM
 #include "cinm-mlir/Conversion/CinmPasses.h.inc"
-}
+} // namespace mlir::cinm
 
 using namespace mlir;
 namespace {
@@ -1255,15 +1254,14 @@ template <> struct LinalgToCinmOpBuilder<linalg::ReduceOp> {
   }
 
   static FailureOr<cinm::ReduceOp> build(ConversionPatternRewriter &rewriter,
-                                         linalg::ReduceOp sourceOp,
-                                         IRMapping mapping) {
+                                         linalg::ReduceOp sourceOp, IRMapping) {
     FailureOr<cinm::ReduceMethod> m = getReduceMethod(sourceOp);
-    if (failed(m)) {
+    if (failed(m) || sourceOp.getDimensions().size() != 1) {
       return failure();
     }
-    return cinm::ReduceOp::create(rewriter, sourceOp.getLoc(),
-                                  sourceOp.getResultTypes()[0], *m,
-                                  sourceOp.getOperand(0));
+    return cinm::ReduceOp::create(
+        rewriter, sourceOp.getLoc(), sourceOp.getResultTypes()[0], *m,
+        sourceOp.getOperand(0), sourceOp.getDimensions()[0]);
   }
 };
 

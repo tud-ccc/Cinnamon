@@ -1,4 +1,5 @@
 #include "cinm-mlir/Dialect/Cinm/IR/CinmAttributes.h"
+#include "cinm-mlir/Dialect/Cinm/IR/CinmBase.h"
 #include "cinm-mlir/Dialect/Cinm/IR/CinmOps.h"
 #include "cinm-mlir/Dialect/Cinm/IR/CinmUtils.h"
 #include "cinm-mlir/Dialect/Cinm/IR/TilingInterface.h"
@@ -16,8 +17,10 @@
 #include <llvm/ADT/ArrayRef.h>
 #include <llvm/ADT/SmallVector.h>
 #include <llvm/Support/Casting.h>
+#include <mlir/Dialect/Utils/StructuredOpsUtils.h>
 #include <mlir/IR/AffineExpr.h>
 #include <mlir/IR/Builders.h>
+#include <mlir/IR/BuiltinAttributes.h>
 #include <mlir/IR/BuiltinTypeInterfaces.h>
 #include <mlir/IR/BuiltinTypes.h>
 #include <mlir/IR/Diagnostics.h>
@@ -124,6 +127,27 @@ static Value extractSlice(OpBuilder &builder, Location loc,
   return extractSliceND(builder, loc, tensorOrMemref, {a, b}, {ia, ib});
 }
 
+static Value insertSliceND(OpBuilder &builder, Location loc, Value slice,
+                           TypedValue<ShapedType> tensorOrMemref,
+                           ArrayRef<int64_t> sizes, ValueRange offsets) {
+  assert(offsets.size() == sizes.size());
+
+  const ShapedType sliceTy = tensorOrMemref.getType().clone(sizes);
+  if (llvm::isa<RankedTensorType>(tensorOrMemref.getType())) {
+    llvm::SmallVector<int64_t> unitStrides(offsets.size(), 1);
+    llvm::SmallVector<int64_t> noStaticOffsets(offsets.size(),
+                                               ShapedType::kDynamic);
+    return tensor::InsertSliceOp::create(
+        builder, loc, slice, tensorOrMemref, offsets, ValueRange{},
+        ValueRange{}, noStaticOffsets, sliceTy.getShape(), unitStrides);
+  } else if (llvm::isa<MemRefType>(tensorOrMemref.getType())) {
+    auto dest = extractSliceND(builder, loc, tensorOrMemref, sizes, offsets);
+    memref::CopyOp::create(builder, loc, slice, dest);
+    return {};
+  }
+  assert(false && "type not handled");
+}
+
 static constexpr std::array<int64_t, 2> noStaticOffsets2D{ShapedType::kDynamic,
                                                           ShapedType::kDynamic};
 static constexpr std::array<int64_t, 2> unitStrides2D{1, 1};
@@ -134,10 +158,8 @@ static constexpr std::array<int64_t, 2> unitStrides2D{1, 1};
 
 void ReduceOp::getTilableDimSizes(SmallVectorImpl<int64_t> &dimSizes) {
   auto inputType = cast<ShapedType>(getOperand().getType());
-  int64_t dim = getDimensionsAttr().asArrayRef()[0];
-  if (dim < 0)
-    dim += inputType.getRank();
-  dimSizes.push_back(inputType.getDimSize(dim));
+  auto shape = inputType.getShape();
+  dimSizes.append(shape.begin(), shape.end());
 }
 
 void ElementwiseOp::getTilableDimSizes(SmallVectorImpl<int64_t> &dimSizes) {
@@ -182,33 +204,132 @@ void ActivateOp::getTilableDimSizes(SmallVectorImpl<int64_t> &dimSizes) {
 // convertToTiledOps implementations
 // ---------------------------------------------------------------------------
 
-DiagnosedSilenceableFailure
-ReduceOp::convertToTiledOps(RewriterBase &rewriter,
-                            ArrayRef<int64_t> tilingFactors,
-                            SmallVectorImpl<Value> &results) {
-  if (tilingFactors.size() != 1)
-    return emitSilenceableFailure(getLoc())
-           << "expected 1 tiling factor for reduce, got "
-           << tilingFactors.size();
-
-  const int64_t clusterSize = tilingFactors[0];
-  auto method = getMethod();
-  OpBuilder &builder = rewriter;
-  if (method == ReduceMethod::ADD) {
-    results.push_back(createVectorReduceAdd(builder, getLoc(), getOperand(),
-                                            getDimensionsAttr(), clusterSize));
-  } else if (method == ReduceMethod::MUL) {
-    results.push_back(createVectorReduceMul(builder, getLoc(), getOperand(),
-                                            getDimensionsAttr(), clusterSize));
-  } else if (method == ReduceMethod::MAX) {
-    results.push_back(createVectorReduceMax(builder, getLoc(), getOperand(),
-                                            getDimensionsAttr(), clusterSize));
-  } else if (method == ReduceMethod::MIN) {
-    results.push_back(createVectorReduceMin(builder, getLoc(), getOperand(),
-                                            getDimensionsAttr(), clusterSize));
-  } else {
-    return emitSilenceableFailure(getLoc()) << "unhandled reduce method";
+static arith::AtomicRMWKind getArithConstant(ReduceMethod r, Type ty) {
+  switch (r) {
+  case mlir::cinm::ReduceMethod::ADD:
+    if (ty.isFloat()) {
+      return mlir::arith::AtomicRMWKind::addf;
+    } else {
+      return mlir::arith::AtomicRMWKind::addi;
+    }
+  case mlir::cinm::ReduceMethod::MUL:
+    if (ty.isFloat()) {
+      return mlir::arith::AtomicRMWKind::mulf;
+    } else {
+      return mlir::arith::AtomicRMWKind::muli;
+    }
+  case mlir::cinm::ReduceMethod::MAX:
+    if (ty.isFloat()) {
+      return mlir::arith::AtomicRMWKind::maximumf;
+    } else {
+      return mlir::arith::AtomicRMWKind::maxu;
+    }
+  case mlir::cinm::ReduceMethod::MIN:
+    if (ty.isFloat()) {
+      return mlir::arith::AtomicRMWKind::minimumf;
+    } else {
+      return mlir::arith::AtomicRMWKind::minu;
+    }
   }
+}
+
+static TypedAttr getNeutralElement(ReduceMethod r, Type ty, OpBuilder &builder,
+                                   Location loc) {
+  return arith::getIdentityValueAttr(getArithConstant(r, ty), ty, builder, loc);
+}
+
+static Value materializeReduction(OpBuilder &builder, Location loc,
+                                  ReduceMethod method, Value lhs, Value rhs) {
+  assert(lhs.getType() == rhs.getType());
+  return arith::getReductionOp(getArithConstant(method, lhs.getType()), builder,
+                               loc, lhs, rhs);
+}
+
+DiagnosedSilenceableFailure
+ReduceOp::convertToTiledOps(RewriterBase &builder, ArrayRef<int64_t> tileSizes,
+                            SmallVectorImpl<Value> &results) {
+  auto inputType = getInput().getType();
+  if (static_cast<int64_t>(tileSizes.size()) != inputType.getRank())
+    return emitSilenceableFailure(getLoc())
+           << "expected " << inputType.getRank()
+           << " tiling factors for reduce, got " << tileSizes.size();
+
+  auto method = getMethod();
+
+  // To tile the reduction two different templates may be used:
+  //   tensor<NxM> -> tensor<N>
+  // - tile the parallel part (N) and concatenate the results
+  // - tile the reduction part (M) and add the partial results
+
+  // Assume you have been given tile sizes for both (for all dimensions
+  // basically). Then:
+
+  int64_t reductionDim = getDimensionAttr().getInt();
+  if (reductionDim < 0)
+    reductionDim += inputType.getRank();
+  // auto reductionExtent = inputType.getDimSize(dim);
+
+  auto neutral =
+      getNeutralElement(method, inputType.getElementType(), builder, getLoc());
+
+  auto resultType = getResult().getType();
+
+  Value result;
+  if (isa<TensorType>(resultType))
+    result = tensor::EmptyOp::create(builder, getLoc(), resultType, {});
+  else if (resultType.isIntOrFloat())
+    result = arith::ConstantOp::create(builder, getLoc(), neutral);
+  else
+    // memref not supported
+    return emitSilenceableFailure(getLoc(), "Cannot tile reduction on type ")
+           << resultType;
+
+  SmallVector<Value> loopResult = createNestedAffineForLoops(
+      builder, getLoc(), inputType.getShape(), tileSizes, {result},
+      [&](OpBuilder &b, Location loc, ValueRange tileIndex,
+          ValueRange iterArgs) -> SmallVector<Value> {
+        auto acc = iterArgs[0];
+        Value sliceIn =
+            extractSliceND(b, loc, getInput(), tileSizes, tileIndex);
+
+        SmallVector<int64_t> resultTileSize(tileSizes);
+        resultTileSize.erase(resultTileSize.begin() + reductionDim);
+        SmallVector<Value> resultTileIndex(tileIndex);
+        resultTileIndex.erase(resultTileIndex.begin() + reductionDim);
+
+        Type resultTy = resultTileSize.size() == 0
+                            ? inputType.getElementType()
+                            : inputType.cloneWith(resultTileSize,
+                                                  inputType.getElementType());
+
+        auto smaller =
+            ReduceOp::create(b, loc, resultTy, method, sliceIn, reductionDim);
+
+        auto shapedResultTile =
+            llvm::dyn_cast_or_null<TypedValue<ShapedType>>(smaller.getResult());
+        auto shapedResult = llvm::dyn_cast_or_null<TypedValue<ShapedType>>(acc);
+
+        if (shapedResult && shapedResultTile) {
+          return {insertSliceND(b, loc, shapedResultTile, shapedResult,
+                                resultTileSize, resultTileIndex)};
+        } else if (smaller.getResult().getType().isIntOrFloat()) {
+          if (isa<TensorType>(acc.getType())) {
+            auto accElt =
+                tensor::ExtractOp::create(b, loc, acc, resultTileIndex);
+            auto red = materializeReduction(b, loc, method, accElt,
+                                            smaller.getResult());
+            return {
+                tensor::InsertOp::create(b, loc, red, acc, resultTileIndex)};
+          } else if (acc.getType().isIntOrFloat()) {
+            // both are scalars
+            return {
+                materializeReduction(b, loc, method, acc, smaller.getResult())};
+          }
+        }
+        assert(false && "unhandled type");
+      });
+
+  results.append(loopResult.begin(), loopResult.end());
   return DiagnosedSilenceableFailure::success();
 }
 
