@@ -10,6 +10,7 @@
 // head_size: 48
 // vocab_size: 32000
 // seq_len: 1024
+#upmem = #upmem.platform<type=v1A, dimensions = 40x64>
 
 func.func @forward(%token : index, %pos : index,
 	// state
@@ -28,7 +29,7 @@ func.func @forward(%token : index, %pos : index,
 	%rms_ffn_weights : tensor<6x768xf32>{bufferization.buffer_layout = affine_map<(i,j) -> (i,j)>},
 	%rms_final_weight : tensor<768xf32>{bufferization.buffer_layout = affine_map<(i) -> (i)>},
 	%wcls : tensor<32000x768xf32>{bufferization.buffer_layout = affine_map<(i,j) -> (i,j)>}
-) -> tensor<32000xf32> {
+) -> tensor<32000xf32> attributes {cinm.available_platforms = [#upmem]}{
 	%c0 = arith.constant 0 : index
 	%c1 = arith.constant 1 : index
 	%c2 = arith.constant 2 : index

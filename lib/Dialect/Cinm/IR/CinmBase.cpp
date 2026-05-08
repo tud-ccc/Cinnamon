@@ -6,6 +6,7 @@
 
 #include "cinm-mlir/Dialect/Cinm/IR/CinmAttributes.h"
 #include "cinm-mlir/Dialect/Cinm/IR/CinmDialect.h"
+#include "cinm-mlir/Dialect/Cinm/IR/CinmOps.h"
 #include "cinm-mlir/Dialect/Cinm/IR/TilingInterface.h"
 #include <cstdint>
 #include <llvm/ADT/SmallVector.h>
@@ -100,12 +101,24 @@ CinmDialect::verifyOperationAttribute(::mlir::Operation *op,
     return success();
   }
   if (attribute.getName() == CinmDialect::AVAILABLE_PLATFORMS_NAME) {
-    if (op->hasTrait<FunctionOpInterface::Trait>()) {
-      return success();
+    bool validHost = op->hasTrait<FunctionOpInterface::Trait>() ||
+                     isa<cinm::ComputeOp, cinm::ComputeBlockOp>(op);
+    if (!validHost)
+      return op->emitOpError("Attribute ")
+             << CinmDialect::AVAILABLE_PLATFORMS_NAME
+             << " must be specified on a function op or cinm.compute op";
+    auto arr = llvm::dyn_cast<ArrayAttr>(attribute.getValue());
+    if (!arr)
+      return op->emitOpError("Attribute ")
+             << CinmDialect::AVAILABLE_PLATFORMS_NAME
+             << " must be an array attribute";
+    for (auto elem : arr) {
+      if (!llvm::isa<CinmPlatformAttrInterface>(elem))
+        return op->emitOpError("Attribute ")
+               << CinmDialect::AVAILABLE_PLATFORMS_NAME
+               << " elements must implement CinmPlatformAttrInterface";
     }
-    return op->emitOpError("Attribute ")
-           << CinmDialect::AVAILABLE_PLATFORMS_NAME
-           << " must be specified on a function op";
+    return success();
   }
   return op->emitOpError("unknown attribute ") << attribute.getName();
 }

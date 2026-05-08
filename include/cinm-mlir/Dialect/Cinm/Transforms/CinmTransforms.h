@@ -11,5 +11,6 @@ cinm::ComputeOp deisolateComputeBlock(cinm::ComputeBlockOp, RewriterBase &);
 void unwrapComputeBlockOp(cinm::ComputeBlockOp, RewriterBase &rewriter);
 
 void unwrapComputeBlockOp(cinm::ComputeOp, RewriterBase &rewriter);
+cinm::ComputeOp wrapOperationInCompute(Operation *op, RewriterBase &rewriter);
 
 } // namespace mlir::cinm

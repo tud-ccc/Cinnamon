@@ -262,6 +262,21 @@ def CinmMemoryCleanupPass
   ];
 }
 
+def CinmAssignPlatformsPass : Pass<"cinm-assign-platforms", "mlir::func::FuncOp"> {
+  let summary = "Wrap cinm.op.* operations in cinm.compute based on platform interest";
+  let description = [{
+    Walks a func.func that carries cinm.available_platforms and, for each
+    cinm.op.* operation, queries every listed platform via wantsToHandle.
+    If at least one platform is interested, the operation is wrapped in a
+    cinm.compute op annotated with the interested platforms.
+  }];
+
+  let dependentDialects = [
+    "mlir::cinm::CinmDialect",
+    "mlir::func::FuncDialect"
+  ];
+}
+
 def CinmInferTileSizesPass : Pass<"cinm-infer-tile-sizes"> {
   let summary = "Infer and annotate cinm.tile_sizes on tileable ops using the enclosing accelerator";
   let description = [{

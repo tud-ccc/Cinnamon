@@ -13,7 +13,8 @@ include "cinm-mlir/Dialect/Cnm/IR/CnmInterfaces.td"
 include "UPMEMBase.td"
 
 def UpmemPlatformAttr: UPMEM_Attr<"UpmemPlatform", [
-    OpAsmAttrInterface,CinmPlatformAttrInterface
+    OpAsmAttrInterface,
+    DeclareAttrInterfaceMethods<CinmPlatformAttrInterface, ["wantsToHandle"]>
   ]> {
   
   let summary = "Platform description for upmem";
@@ -35,9 +36,6 @@ def UpmemPlatformAttr: UPMEM_Attr<"UpmemPlatform", [
 
     Attribute getMemrefMemspace(mlir::cinm::CinmLevelDefAttr level) const;
 
-    ::llvm::StringRef getName() const {
-      return "upmem";
-    }
    
     ::mlir::cinm::CinmLevelDefAttr getMramLevel() const {
       return getLevels()[0];
@@ -60,7 +58,6 @@ def UpmemAcceleratorAttr: UPMEM_Attr<"UpmemAccelerator", [
           DeclareAttrInterfaceMethods<CnmAcceleratorAttrInterface, [ "getWorkgroupMemoryLevels", "getWorkgroupShape", "bufferSizeOfLeaf"]>,
           DeclareAttrInterfaceMethods<CinmAcceleratorAttrInterface, ["computeTilingFactors", "getDesignParams", "instantiateDesignParams"]>,
           OpAsmAttrInterface
-          // DeclareAttrInterfaceMethods<BtflAcceleratorAttrInterfaceExtension, ["lowerAcceleratorOp", "lowerOpTopDown"]>
     ]> {
   let summary = "Accelerator description for upmem";
   let hasCustomAssemblyFormat = 1;

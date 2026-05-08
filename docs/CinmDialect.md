@@ -38,6 +38,34 @@ The `--cinm-tiling` pass is used to apply tiling factors and tile down all CINM 
 
 Tiling factors can be manually annotated, or inferred by the `--cinm-infer-tile-sizes` pass. This pass calls back to the CinmAcceleratorAttrInterface for the accelerator to infer tile sizes most suitable to its hardware. This is an optional method of the interface.
 
+#### Platform assignment
+
+The `--cinm-assign-platforms` pass automates the wrapping of `cinm.op.*` operations into `cinm.compute` regions based on which platforms want to handle them. It operates on `func.func` ops that carry the `cinm.available_platforms` attribute (a list of platform attrs).
+
+For each `cinm.op.*` op in the function, the pass queries every listed platform via the `CinmPlatformAttrInterface::wantsToHandle` method. If at least one platform is interested, the op is wrapped in a new `cinm.compute` op whose own `cinm.available_platforms` attribute is set to the interested subset. Ops for which no platform returns true are left as-is.
+
+Example: given a UPMEM platform (which handles `cinm.op.gemm` and `cinm.op.gemv`):
+```mlir
+// Input
+func.func @f(%A: tensor<8x1024xi32>, %B: tensor<1024x128xi32>) -> tensor<8x128xi32>
+    attributes {cinm.available_platforms = [#upmem]} {
+  %r = cinm.op.gemm %A, %B : tensor<8x1024xi32>, tensor<1024x128xi32> -> tensor<8x128xi32>
+  return %r : tensor<8x128xi32>
+}
+
+// Output
+func.func @f(%A: tensor<8x1024xi32>, %B: tensor<1024x128xi32>) -> tensor<8x128xi32>
+    attributes {cinm.available_platforms = [#upmem]} {
+  %r = cinm.compute -> tensor<8x128xi32> attributes {cinm.available_platforms = [#upmem]} {
+    %0 = cinm.op.gemm %A, %B : tensor<8x1024xi32>, tensor<1024x128xi32> -> tensor<8x128xi32>
+    cinm.yield %0 : tensor<8x128xi32>
+  }
+  return %r : tensor<8x128xi32>
+}
+```
+
+To add support for new ops in a backend platform, implement `wantsToHandle` on its `CinmPlatformAttrInterface` attribute. The default returns `false`.
+
 #### Other CINM passes
 
 - `--cinm-unwrap-compute-blocks` removes the `cinm.compute` and `cinm.compute_block` operations by inlining their content region.

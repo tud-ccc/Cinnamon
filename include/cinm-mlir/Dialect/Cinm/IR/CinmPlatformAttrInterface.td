@@ -51,6 +51,15 @@ def CinmPlatformAttrInterface : AttrInterface<"CinmPlatformAttrInterface", []> {
       /*default=*/"return {};"
     >,
 
+    InterfaceMethod<
+      /*desc=*/"Return true if this platform wants to handle the given op. This is a hook for the --cinm-assign-platforms pass.",
+      /*retTy=*/"bool",
+      /*methodName=*/"wantsToHandle",
+      /*args=*/(ins "::mlir::Operation*":$op),
+      "",
+      /*default=*/"return false;"
+    >
+
   ];
   let extraClassDeclaration = [{
 
@@ -99,6 +108,7 @@ def CinmAcceleratorAttrInterface : AttrInterface<"CinmAcceleratorAttrInterface",
       /*retTy=*/"::mlir::DiagnosedSilenceableFailure",
       /*methodName=*/"computeTilingFactors",
       /*args=*/(ins "::mlir::Operation*":$op, "::llvm::SmallVectorImpl<int64_t>&":$tilingFactors),
+      "",
       [{
         return emitSilenceableFailure(op->getLoc()) << "unimplemented";
       }]
