@@ -15,7 +15,7 @@
 #include <mlir/Support/LLVM.h>
 
 namespace mlir::cinm {
-struct ComputeOp;
+struct ComputeBlockOp;
 
 enum class ReductionDimMode : uint8_t {
   Unspecified = 0,

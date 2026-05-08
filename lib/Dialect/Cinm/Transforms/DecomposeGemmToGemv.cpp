@@ -30,7 +30,7 @@ struct GemmToLoopedGemv final : OpRewritePattern<cinm::GemmOp> {
                                 PatternRewriter &rewriter) const override {
     Location loc = op.getLoc();
 
-    cinm::ComputeOp parentCompute = op->getParentOfType<cinm::ComputeOp>();
+    cinm::ComputeBlockOp parentCompute = op->getParentOfType<cinm::ComputeBlockOp>();
 
     auto aTy = dyn_cast<RankedTensorType>(op.getLhs().getType());
     auto bTy = dyn_cast<RankedTensorType>(op.getRhs().getType());
@@ -211,7 +211,7 @@ struct BatchGemmToLoopedGemv final : OpRewritePattern<cinm::BatchGemmOp> {
     if (elemTy != bTy.getElementType() || elemTy != yTy.getElementType())
       return rewriter.notifyMatchFailure(op, "element types must match");
 
-    auto parentCompute = op->getParentOfType<cinm::ComputeOp>();
+    auto parentCompute = op->getParentOfType<cinm::ComputeBlockOp>();
 
     Value bias = op.getBias();
     RankedTensorType biasTy;
@@ -424,9 +424,9 @@ struct BatchGemvToLoopedGemv final : OpRewritePattern<cinm::BatchGemvOp> {
       return rewriter.notifyMatchFailure(op,
                                          "expected ranked tensors (3D,2D,2D)");
 
-    auto parentCompute = op->getParentOfType<cinm::ComputeOp>();
+    auto parentCompute = op->getParentOfType<cinm::ComputeBlockOp>();
     if (!parentCompute)
-      return rewriter.notifyMatchFailure(op, "requires enclosing cinm.compute");
+      return rewriter.notifyMatchFailure(op, "requires enclosing cinm.compute_block");
 
     const int64_t B = aTy.getDimSize(0);
     const int64_t M = aTy.getDimSize(1);

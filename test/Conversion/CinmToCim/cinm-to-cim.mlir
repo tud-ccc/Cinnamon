@@ -5,7 +5,7 @@ func.func @simple(%t0: tensor<6x6xi32>, %t1: tensor<6x6xi32>, %t2 : tensor<6xi32
 
 // CHECK %0 = cim.acquire_device -> !cim.deviceId
 // CHECK %1 = cim.acquire_crossbar %0 : !cim.deviceId -> !cim.crossbarId
-    %result = cinm.compute_ -> tensor<6xi32> {
+    %result = cinm.compute -> tensor<6xi32> {
 // CHECK %2 = cim.op.gemm %arg0, %arg1 : memref<6x6xi32>, memref<6x6xi32> -> !cim.future<6x6xi32>
       %r0 = cinm.op.gemm %t0, %t1 : tensor<6x6xi32>, tensor<6x6xi32> -> tensor<6x6xi32>
 // CHECK %3 = cim.op.gemv %2, %arg2 : !cim.future<6x6xi32>, memref<6xi32> -> !cim.future<6xi32>

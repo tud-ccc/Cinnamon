@@ -28,7 +28,7 @@
 // CHECK: cnm.free_workgroup %[[WG]] : !cnm.workgroup<{{.*}}>
 
 func.func @mm_dimm8_nopt(%arg0: memref<8x1024xi32>, %arg1: memref<1024x128xi32>) -> memref<8x128xi32> {
-  %0 = cinm.compute_ on accelerator #upmem -> memref<8x128xi32> attributes {workgroupShape = array<i64: 8, 128, 1>} {
+  %0 = cinm.compute on accelerator #upmem -> memref<8x128xi32> attributes {workgroupShape = array<i64: 8, 128, 1>} {
     %alloc = memref.alloc() : memref<8x128xi32>
     %c0_i32 = arith.constant 0 : i32
     linalg.fill ins(%c0_i32 : i32) outs(%alloc : memref<8x128xi32>)
@@ -60,7 +60,7 @@ func.func @mm_dimm8_nopt(%arg0: memref<8x1024xi32>, %arg1: memref<1024x128xi32>)
 // CHECK: cnm.free_workgroup %[[WG]] : !cnm.workgroup<{{.*}}>
 
 func.func @gemv(%arg0: memref<8x1024xi32>, %arg1: memref<1024xi32>) -> memref<8xi32> {
-  %0 = cinm.compute_ on accelerator #upmem -> memref<8xi32> attributes {tileSizes = array<i64: 1, 8>, workgroupShape = array<i64: 2, 4, 1>} {
+  %0 = cinm.compute on accelerator #upmem -> memref<8xi32> attributes {tileSizes = array<i64: 1, 8>, workgroupShape = array<i64: 2, 4, 1>} {
     %alloc = memref.alloc() : memref<8xi32>
     %c0_i32 = arith.constant 0 : i32
     linalg.fill ins(%c0_i32 : i32) outs(%alloc : memref<8xi32>)

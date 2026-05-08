@@ -49,7 +49,7 @@ module {
     %alloc_31 = memref.alloc() {alignment = 64 : i64} : memref<768xf32>
     %subview = memref.subview %arg4[%arg0, 0] [1, 768] [1, 1] : memref<32000x768xf32> to memref<768xf32, strided<[1], offset: ?>>
     %subview_32 = memref.subview %arg5[0, 0] [1, 768] [1, 1] : memref<6x768xf32> to memref<768xf32, strided<[1]>>
-    cinm.compute_ attributes {bufferSizesInBytes = array<i64: 0, 65536, 0>, workgroupShape = array<i64: 2, 32, 16>} {
+    cinm.compute attributes {bufferSizesInBytes = array<i64: 0, 65536, 0>, workgroupShape = array<i64: 2, 32, 16>} {
       %alloc_116 = memref.alloc() {alignment = 64 : i64} : memref<f32>
       linalg.generic {indexing_maps = [#map], iterator_types = []} outs(%alloc_116 : memref<f32>) {
       ^bb0(%out: f32):
@@ -76,7 +76,7 @@ module {
     %subview_33 = memref.subview %arg6[0, 0, 0] [1, 768, 768] [1, 1, 1] : memref<6x768x768xf32> to memref<768x768xf32, strided<[768, 1]>>
     %subview_34 = memref.subview %arg7[0, 0, 0] [1, 768, 768] [1, 1, 1] : memref<6x768x768xf32> to memref<768x768xf32, strided<[768, 1]>>
     %subview_35 = memref.subview %arg8[0, 0, 0] [1, 768, 768] [1, 1, 1] : memref<6x768x768xf32> to memref<768x768xf32, strided<[768, 1]>>
-    cinm.compute_ attributes {bufferSizesInBytes = array<i64: 0, 65536, 0>, workgroupShape = array<i64: 2, 32, 16>} {
+    cinm.compute attributes {bufferSizesInBytes = array<i64: 0, 65536, 0>, workgroupShape = array<i64: 2, 32, 16>} {
       %alloc_116 = memref.alloc() {alignment = 64 : i64} : memref<768xf32>
       linalg.generic {indexing_maps = [#map1], iterator_types = ["parallel"]} outs(%alloc_116 : memref<768xf32>) {
       ^bb0(%out: f32):
@@ -160,7 +160,7 @@ module {
       scf.for %arg18 = %c0 to %2 step %c1 {
         %subview_118 = memref.subview %alloc_30[%4] [48] [1] : memref<768xf32> to memref<48xf32, strided<[1], offset: ?>>
         %subview_119 = memref.subview %subview_37[%arg18, %4] [1, 48] [1, 1] : memref<1024x768xf32, strided<[768, 1]>> to memref<48xf32, strided<[1], offset: ?>>
-        %5 = cinm.compute_ -> f32 attributes {workgroupShape = array<i64: 1, 1, 8>} {
+        %5 = cinm.compute -> f32 attributes {workgroupShape = array<i64: 1, 1, 8>} {
           %alloc_120 = memref.alloc() {alignment = 64 : i64} : memref<f32>
           linalg.generic {indexing_maps = [#map], iterator_types = []} outs(%alloc_120 : memref<f32>) {
           ^bb0(%out: f32):
@@ -181,7 +181,7 @@ module {
       scf.for %arg18 = %2 to %c1024 step %c1 {
         memref.store %cst_5, %alloc_116[%arg18] : memref<1024xf32>
       }
-      cinm.compute_ attributes {bufferSizesInBytes = array<i64: 0, 65536, 0>, workgroupShape = array<i64: 2, 32, 16>} {
+      cinm.compute attributes {bufferSizesInBytes = array<i64: 0, 65536, 0>, workgroupShape = array<i64: 2, 32, 16>} {
         %alloc_118 = memref.alloc() {alignment = 64 : i64} : memref<f32>
         linalg.generic {indexing_maps = [#map], iterator_types = []} outs(%alloc_118 : memref<f32>) {
         ^bb0(%out: f32):
@@ -224,7 +224,7 @@ module {
       scf.for %arg18 = %c0 to %2 step %c1 {
         %subview_118 = memref.subview %subview_38[%arg18, %4] [1, 48] [1, 1] : memref<1024x768xf32, strided<[768, 1]>> to memref<48xf32, strided<[1], offset: ?>>
         %5 = memref.load %alloc_116[%arg18] : memref<1024xf32>
-        cinm.compute_ attributes {bufferSizesInBytes = array<i64: 0, 65536, 0>, workgroupShape = array<i64: 2, 32, 16>} {
+        cinm.compute attributes {bufferSizesInBytes = array<i64: 0, 65536, 0>, workgroupShape = array<i64: 2, 32, 16>} {
           linalg.generic {indexing_maps = [#map1, #map1, #map1], iterator_types = ["parallel"]} ins(%subview_117, %subview_118 : memref<48xf32, strided<[1], offset: ?>>, memref<48xf32, strided<[1], offset: ?>>) outs(%subview_117 : memref<48xf32, strided<[1], offset: ?>>) {
           ^bb0(%in: f32, %in_119: f32, %out: f32):
             %6 = arith.mulf %in_119, %5 : f32
@@ -237,7 +237,7 @@ module {
     }
     memref.copy %alloc_41, %alloc_30 : memref<768xf32> to memref<768xf32>
     %subview_42 = memref.subview %arg9[0, 0, 0] [1, 768, 768] [1, 1, 1] : memref<6x768x768xf32> to memref<768x768xf32, strided<[768, 1]>>
-    cinm.compute_ attributes {bufferSizesInBytes = array<i64: 0, 65536, 0>, workgroupShape = array<i64: 2, 32, 16>} {
+    cinm.compute attributes {bufferSizesInBytes = array<i64: 0, 65536, 0>, workgroupShape = array<i64: 2, 32, 16>} {
       memref.copy %alloc_30, %alloc_29 : memref<768xf32> to memref<768xf32>
       linalg.generic {indexing_maps = [#map3, #map4, #map5], iterator_types = ["parallel", "reduction"]} ins(%subview_42, %alloc_30 : memref<768x768xf32, strided<[768, 1]>>, memref<768xf32>) outs(%alloc_29 : memref<768xf32>) {
       ^bb0(%in: f32, %in_116: f32, %out: f32):
@@ -253,7 +253,7 @@ module {
       cinm.yield
     }
     %subview_43 = memref.subview %arg13[0, 0] [1, 768] [1, 1] : memref<6x768xf32> to memref<768xf32, strided<[1]>>
-    cinm.compute_ attributes {bufferSizesInBytes = array<i64: 0, 65536, 0>, workgroupShape = array<i64: 2, 32, 16>} {
+    cinm.compute attributes {bufferSizesInBytes = array<i64: 0, 65536, 0>, workgroupShape = array<i64: 2, 32, 16>} {
       %alloc_116 = memref.alloc() {alignment = 64 : i64} : memref<f32>
       linalg.generic {indexing_maps = [#map], iterator_types = []} outs(%alloc_116 : memref<f32>) {
       ^bb0(%out: f32):
@@ -279,7 +279,7 @@ module {
     }
     %subview_44 = memref.subview %arg10[0, 0, 0] [1, 2048, 768] [1, 1, 1] : memref<6x2048x768xf32> to memref<2048x768xf32, strided<[768, 1]>>
     %subview_45 = memref.subview %arg12[0, 0, 0] [1, 2048, 768] [1, 1, 1] : memref<6x2048x768xf32> to memref<2048x768xf32, strided<[768, 1]>>
-    cinm.compute_ attributes {bufferSizesInBytes = array<i64: 0, 65536, 0>, workgroupShape = array<i64: 2, 32, 16>} {
+    cinm.compute attributes {bufferSizesInBytes = array<i64: 0, 65536, 0>, workgroupShape = array<i64: 2, 32, 16>} {
       linalg.generic {indexing_maps = [#map1], iterator_types = ["parallel"]} outs(%alloc_28 : memref<2048xf32>) {
       ^bb0(%out: f32):
         linalg.yield %cst_6 : f32
@@ -310,7 +310,7 @@ module {
         linalg.yield %9 : f32
       }
     %subview_46 = memref.subview %arg11[0, 0, 0] [1, 768, 2048] [1, 1, 1] : memref<6x768x2048xf32> to memref<768x2048xf32, strided<[2048, 1]>>
-    cinm.compute_ attributes {bufferSizesInBytes = array<i64: 0, 65536, 0>, workgroupShape = array<i64: 2, 32, 16>} {
+    cinm.compute attributes {bufferSizesInBytes = array<i64: 0, 65536, 0>, workgroupShape = array<i64: 2, 32, 16>} {
       linalg.generic {indexing_maps = [#map3, #map4, #map5], iterator_types = ["parallel", "reduction"]} ins(%subview_46, %alloc_27 : memref<768x2048xf32, strided<[2048, 1]>>, memref<2048xf32>) outs(%alloc_40 : memref<768xf32>) {
       ^bb0(%in: f32, %in_116: f32, %out: f32):
         %4 = arith.mulf %in, %in_116 : f32
@@ -320,7 +320,7 @@ module {
       cinm.yield
     }
     %subview_47 = memref.subview %arg5[1, 0] [1, 768] [1, 1] : memref<6x768xf32> to memref<768xf32, strided<[1], offset: 768>>
-    cinm.compute_ attributes {bufferSizesInBytes = array<i64: 0, 65536, 0>, workgroupShape = array<i64: 2, 32, 16>} {
+    cinm.compute attributes {bufferSizesInBytes = array<i64: 0, 65536, 0>, workgroupShape = array<i64: 2, 32, 16>} {
       %alloc_116 = memref.alloc() {alignment = 64 : i64} : memref<f32>
       linalg.generic {indexing_maps = [#map], iterator_types = []} outs(%alloc_116 : memref<f32>) {
       ^bb0(%out: f32):
@@ -347,7 +347,7 @@ module {
     %subview_48 = memref.subview %arg6[1, 0, 0] [1, 768, 768] [1, 1, 1] : memref<6x768x768xf32> to memref<768x768xf32, strided<[768, 1], offset: 589824>>
     %subview_49 = memref.subview %arg7[1, 0, 0] [1, 768, 768] [1, 1, 1] : memref<6x768x768xf32> to memref<768x768xf32, strided<[768, 1], offset: 589824>>
     %subview_50 = memref.subview %arg8[1, 0, 0] [1, 768, 768] [1, 1, 1] : memref<6x768x768xf32> to memref<768x768xf32, strided<[768, 1], offset: 589824>>
-    cinm.compute_ attributes {bufferSizesInBytes = array<i64: 0, 65536, 0>, workgroupShape = array<i64: 2, 32, 16>} {
+    cinm.compute attributes {bufferSizesInBytes = array<i64: 0, 65536, 0>, workgroupShape = array<i64: 2, 32, 16>} {
       linalg.generic {indexing_maps = [#map1], iterator_types = ["parallel"]} outs(%alloc_39 : memref<768xf32>) {
       ^bb0(%out: f32):
         linalg.yield %cst_6 : f32
@@ -426,7 +426,7 @@ module {
       scf.for %arg18 = %c0 to %2 step %c1 {
         %subview_118 = memref.subview %alloc_26[%4] [48] [1] : memref<768xf32> to memref<48xf32, strided<[1], offset: ?>>
         %subview_119 = memref.subview %subview_53[%arg18, %4] [1, 48] [1, 1] : memref<1024x768xf32, strided<[768, 1], offset: 786432>> to memref<48xf32, strided<[1], offset: ?>>
-        %5 = cinm.compute_ -> f32 attributes {workgroupShape = array<i64: 1, 1, 8>} {
+        %5 = cinm.compute -> f32 attributes {workgroupShape = array<i64: 1, 1, 8>} {
           %alloc_120 = memref.alloc() {alignment = 64 : i64} : memref<f32>
           linalg.generic {indexing_maps = [#map], iterator_types = []} outs(%alloc_120 : memref<f32>) {
           ^bb0(%out: f32):
@@ -447,7 +447,7 @@ module {
       scf.for %arg18 = %2 to %c1024 step %c1 {
         memref.store %cst_5, %alloc_116[%arg18] : memref<1024xf32>
       }
-      cinm.compute_ attributes {bufferSizesInBytes = array<i64: 0, 65536, 0>, workgroupShape = array<i64: 2, 32, 16>} {
+      cinm.compute attributes {bufferSizesInBytes = array<i64: 0, 65536, 0>, workgroupShape = array<i64: 2, 32, 16>} {
         %alloc_118 = memref.alloc() {alignment = 64 : i64} : memref<f32>
         linalg.generic {indexing_maps = [#map], iterator_types = []} outs(%alloc_118 : memref<f32>) {
         ^bb0(%out: f32):
@@ -490,7 +490,7 @@ module {
       scf.for %arg18 = %c0 to %2 step %c1 {
         %subview_118 = memref.subview %subview_54[%arg18, %4] [1, 48] [1, 1] : memref<1024x768xf32, strided<[768, 1], offset: 786432>> to memref<48xf32, strided<[1], offset: ?>>
         %5 = memref.load %alloc_116[%arg18] : memref<1024xf32>
-        cinm.compute_ attributes {bufferSizesInBytes = array<i64: 0, 65536, 0>, workgroupShape = array<i64: 2, 32, 16>} {
+        cinm.compute attributes {bufferSizesInBytes = array<i64: 0, 65536, 0>, workgroupShape = array<i64: 2, 32, 16>} {
           linalg.generic {indexing_maps = [#map1, #map1, #map1], iterator_types = ["parallel"]} ins(%subview_117, %subview_118 : memref<48xf32, strided<[1], offset: ?>>, memref<48xf32, strided<[1], offset: ?>>) outs(%subview_117 : memref<48xf32, strided<[1], offset: ?>>) {
           ^bb0(%in: f32, %in_119: f32, %out: f32):
             %6 = arith.mulf %in_119, %5 : f32
@@ -503,7 +503,7 @@ module {
     }
     memref.copy %alloc_55, %alloc_26 : memref<768xf32> to memref<768xf32>
     %subview_56 = memref.subview %arg9[1, 0, 0] [1, 768, 768] [1, 1, 1] : memref<6x768x768xf32> to memref<768x768xf32, strided<[768, 1], offset: 589824>>
-    cinm.compute_ attributes {bufferSizesInBytes = array<i64: 0, 65536, 0>, workgroupShape = array<i64: 2, 32, 16>} {
+    cinm.compute attributes {bufferSizesInBytes = array<i64: 0, 65536, 0>, workgroupShape = array<i64: 2, 32, 16>} {
       memref.copy %alloc_26, %alloc_25 : memref<768xf32> to memref<768xf32>
       linalg.generic {indexing_maps = [#map3, #map4, #map5], iterator_types = ["parallel", "reduction"]} ins(%subview_56, %alloc_26 : memref<768x768xf32, strided<[768, 1], offset: 589824>>, memref<768xf32>) outs(%alloc_25 : memref<768xf32>) {
       ^bb0(%in: f32, %in_116: f32, %out: f32):
@@ -519,7 +519,7 @@ module {
       cinm.yield
     }
     %subview_57 = memref.subview %arg13[1, 0] [1, 768] [1, 1] : memref<6x768xf32> to memref<768xf32, strided<[1], offset: 768>>
-    cinm.compute_ attributes {bufferSizesInBytes = array<i64: 0, 65536, 0>, workgroupShape = array<i64: 2, 32, 16>} {
+    cinm.compute attributes {bufferSizesInBytes = array<i64: 0, 65536, 0>, workgroupShape = array<i64: 2, 32, 16>} {
       %alloc_116 = memref.alloc() {alignment = 64 : i64} : memref<f32>
       linalg.generic {indexing_maps = [#map], iterator_types = []} outs(%alloc_116 : memref<f32>) {
       ^bb0(%out: f32):
@@ -545,7 +545,7 @@ module {
     }
     %subview_58 = memref.subview %arg10[1, 0, 0] [1, 2048, 768] [1, 1, 1] : memref<6x2048x768xf32> to memref<2048x768xf32, strided<[768, 1], offset: 1572864>>
     %subview_59 = memref.subview %arg12[1, 0, 0] [1, 2048, 768] [1, 1, 1] : memref<6x2048x768xf32> to memref<2048x768xf32, strided<[768, 1], offset: 1572864>>
-    cinm.compute_ attributes {bufferSizesInBytes = array<i64: 0, 65536, 0>, workgroupShape = array<i64: 2, 32, 16>} {
+    cinm.compute attributes {bufferSizesInBytes = array<i64: 0, 65536, 0>, workgroupShape = array<i64: 2, 32, 16>} {
       linalg.generic {indexing_maps = [#map1], iterator_types = ["parallel"]} outs(%alloc_24 : memref<2048xf32>) {
       ^bb0(%out: f32):
         linalg.yield %cst_6 : f32
@@ -576,7 +576,7 @@ module {
         linalg.yield %9 : f32
       }
     %subview_60 = memref.subview %arg11[1, 0, 0] [1, 768, 2048] [1, 1, 1] : memref<6x768x2048xf32> to memref<768x2048xf32, strided<[2048, 1], offset: 1572864>>
-    cinm.compute_ attributes {bufferSizesInBytes = array<i64: 0, 65536, 0>, workgroupShape = array<i64: 2, 32, 16>} {
+    cinm.compute attributes {bufferSizesInBytes = array<i64: 0, 65536, 0>, workgroupShape = array<i64: 2, 32, 16>} {
       linalg.generic {indexing_maps = [#map3, #map4, #map5], iterator_types = ["parallel", "reduction"]} ins(%subview_60, %alloc_23 : memref<768x2048xf32, strided<[2048, 1], offset: 1572864>>, memref<2048xf32>) outs(%alloc_40 : memref<768xf32>) {
       ^bb0(%in: f32, %in_116: f32, %out: f32):
         %4 = arith.mulf %in, %in_116 : f32
@@ -586,7 +586,7 @@ module {
       cinm.yield
     }
     %subview_61 = memref.subview %arg5[2, 0] [1, 768] [1, 1] : memref<6x768xf32> to memref<768xf32, strided<[1], offset: 1536>>
-    cinm.compute_ attributes {bufferSizesInBytes = array<i64: 0, 65536, 0>, workgroupShape = array<i64: 2, 32, 16>} {
+    cinm.compute attributes {bufferSizesInBytes = array<i64: 0, 65536, 0>, workgroupShape = array<i64: 2, 32, 16>} {
       %alloc_116 = memref.alloc() {alignment = 64 : i64} : memref<f32>
       linalg.generic {indexing_maps = [#map], iterator_types = []} outs(%alloc_116 : memref<f32>) {
       ^bb0(%out: f32):
@@ -613,7 +613,7 @@ module {
     %subview_62 = memref.subview %arg6[2, 0, 0] [1, 768, 768] [1, 1, 1] : memref<6x768x768xf32> to memref<768x768xf32, strided<[768, 1], offset: 1179648>>
     %subview_63 = memref.subview %arg7[2, 0, 0] [1, 768, 768] [1, 1, 1] : memref<6x768x768xf32> to memref<768x768xf32, strided<[768, 1], offset: 1179648>>
     %subview_64 = memref.subview %arg8[2, 0, 0] [1, 768, 768] [1, 1, 1] : memref<6x768x768xf32> to memref<768x768xf32, strided<[768, 1], offset: 1179648>>
-    cinm.compute_ attributes {bufferSizesInBytes = array<i64: 0, 65536, 0>, workgroupShape = array<i64: 2, 32, 16>} {
+    cinm.compute attributes {bufferSizesInBytes = array<i64: 0, 65536, 0>, workgroupShape = array<i64: 2, 32, 16>} {
       linalg.generic {indexing_maps = [#map1], iterator_types = ["parallel"]} outs(%alloc_52 : memref<768xf32>) {
       ^bb0(%out: f32):
         linalg.yield %cst_6 : f32
@@ -692,7 +692,7 @@ module {
       scf.for %arg18 = %c0 to %2 step %c1 {
         %subview_118 = memref.subview %alloc_22[%4] [48] [1] : memref<768xf32> to memref<48xf32, strided<[1], offset: ?>>
         %subview_119 = memref.subview %subview_67[%arg18, %4] [1, 48] [1, 1] : memref<1024x768xf32, strided<[768, 1], offset: 1572864>> to memref<48xf32, strided<[1], offset: ?>>
-        %5 = cinm.compute_ -> f32 attributes {workgroupShape = array<i64: 1, 1, 8>} {
+        %5 = cinm.compute -> f32 attributes {workgroupShape = array<i64: 1, 1, 8>} {
           %alloc_120 = memref.alloc() {alignment = 64 : i64} : memref<f32>
           linalg.generic {indexing_maps = [#map], iterator_types = []} outs(%alloc_120 : memref<f32>) {
           ^bb0(%out: f32):
@@ -713,7 +713,7 @@ module {
       scf.for %arg18 = %2 to %c1024 step %c1 {
         memref.store %cst_5, %alloc_116[%arg18] : memref<1024xf32>
       }
-      cinm.compute_ attributes {bufferSizesInBytes = array<i64: 0, 65536, 0>, workgroupShape = array<i64: 2, 32, 16>} {
+      cinm.compute attributes {bufferSizesInBytes = array<i64: 0, 65536, 0>, workgroupShape = array<i64: 2, 32, 16>} {
         %alloc_118 = memref.alloc() {alignment = 64 : i64} : memref<f32>
         linalg.generic {indexing_maps = [#map], iterator_types = []} outs(%alloc_118 : memref<f32>) {
         ^bb0(%out: f32):
@@ -756,7 +756,7 @@ module {
       scf.for %arg18 = %c0 to %2 step %c1 {
         %subview_118 = memref.subview %subview_68[%arg18, %4] [1, 48] [1, 1] : memref<1024x768xf32, strided<[768, 1], offset: 1572864>> to memref<48xf32, strided<[1], offset: ?>>
         %5 = memref.load %alloc_116[%arg18] : memref<1024xf32>
-        cinm.compute_ attributes {bufferSizesInBytes = array<i64: 0, 65536, 0>, workgroupShape = array<i64: 2, 32, 16>} {
+        cinm.compute attributes {bufferSizesInBytes = array<i64: 0, 65536, 0>, workgroupShape = array<i64: 2, 32, 16>} {
           linalg.generic {indexing_maps = [#map1, #map1, #map1], iterator_types = ["parallel"]} ins(%subview_117, %subview_118 : memref<48xf32, strided<[1], offset: ?>>, memref<48xf32, strided<[1], offset: ?>>) outs(%subview_117 : memref<48xf32, strided<[1], offset: ?>>) {
           ^bb0(%in: f32, %in_119: f32, %out: f32):
             %6 = arith.mulf %in_119, %5 : f32
@@ -769,7 +769,7 @@ module {
     }
     memref.copy %alloc_69, %alloc_22 : memref<768xf32> to memref<768xf32>
     %subview_70 = memref.subview %arg9[2, 0, 0] [1, 768, 768] [1, 1, 1] : memref<6x768x768xf32> to memref<768x768xf32, strided<[768, 1], offset: 1179648>>
-    cinm.compute_ attributes {bufferSizesInBytes = array<i64: 0, 65536, 0>, workgroupShape = array<i64: 2, 32, 16>} {
+    cinm.compute attributes {bufferSizesInBytes = array<i64: 0, 65536, 0>, workgroupShape = array<i64: 2, 32, 16>} {
       memref.copy %alloc_22, %alloc_21 : memref<768xf32> to memref<768xf32>
       linalg.generic {indexing_maps = [#map3, #map4, #map5], iterator_types = ["parallel", "reduction"]} ins(%subview_70, %alloc_22 : memref<768x768xf32, strided<[768, 1], offset: 1179648>>, memref<768xf32>) outs(%alloc_21 : memref<768xf32>) {
       ^bb0(%in: f32, %in_116: f32, %out: f32):
@@ -785,7 +785,7 @@ module {
       cinm.yield
     }
     %subview_71 = memref.subview %arg13[2, 0] [1, 768] [1, 1] : memref<6x768xf32> to memref<768xf32, strided<[1], offset: 1536>>
-    cinm.compute_ attributes {bufferSizesInBytes = array<i64: 0, 65536, 0>, workgroupShape = array<i64: 2, 32, 16>} {
+    cinm.compute attributes {bufferSizesInBytes = array<i64: 0, 65536, 0>, workgroupShape = array<i64: 2, 32, 16>} {
       %alloc_116 = memref.alloc() {alignment = 64 : i64} : memref<f32>
       linalg.generic {indexing_maps = [#map], iterator_types = []} outs(%alloc_116 : memref<f32>) {
       ^bb0(%out: f32):
@@ -811,7 +811,7 @@ module {
     }
     %subview_72 = memref.subview %arg10[2, 0, 0] [1, 2048, 768] [1, 1, 1] : memref<6x2048x768xf32> to memref<2048x768xf32, strided<[768, 1], offset: 3145728>>
     %subview_73 = memref.subview %arg12[2, 0, 0] [1, 2048, 768] [1, 1, 1] : memref<6x2048x768xf32> to memref<2048x768xf32, strided<[768, 1], offset: 3145728>>
-    cinm.compute_ attributes {bufferSizesInBytes = array<i64: 0, 65536, 0>, workgroupShape = array<i64: 2, 32, 16>} {
+    cinm.compute attributes {bufferSizesInBytes = array<i64: 0, 65536, 0>, workgroupShape = array<i64: 2, 32, 16>} {
       linalg.generic {indexing_maps = [#map1], iterator_types = ["parallel"]} outs(%alloc_20 : memref<2048xf32>) {
       ^bb0(%out: f32):
         linalg.yield %cst_6 : f32
@@ -842,7 +842,7 @@ module {
         linalg.yield %9 : f32
       }
     %subview_74 = memref.subview %arg11[2, 0, 0] [1, 768, 2048] [1, 1, 1] : memref<6x768x2048xf32> to memref<768x2048xf32, strided<[2048, 1], offset: 3145728>>
-    cinm.compute_ attributes {bufferSizesInBytes = array<i64: 0, 65536, 0>, workgroupShape = array<i64: 2, 32, 16>} {
+    cinm.compute attributes {bufferSizesInBytes = array<i64: 0, 65536, 0>, workgroupShape = array<i64: 2, 32, 16>} {
       linalg.generic {indexing_maps = [#map3, #map4, #map5], iterator_types = ["parallel", "reduction"]} ins(%subview_74, %alloc_19 : memref<768x2048xf32, strided<[2048, 1], offset: 3145728>>, memref<2048xf32>) outs(%alloc_40 : memref<768xf32>) {
       ^bb0(%in: f32, %in_116: f32, %out: f32):
         %4 = arith.mulf %in, %in_116 : f32
@@ -852,7 +852,7 @@ module {
       cinm.yield
     }
     %subview_75 = memref.subview %arg5[3, 0] [1, 768] [1, 1] : memref<6x768xf32> to memref<768xf32, strided<[1], offset: 2304>>
-    cinm.compute_ attributes {bufferSizesInBytes = array<i64: 0, 65536, 0>, workgroupShape = array<i64: 2, 32, 16>} {
+    cinm.compute attributes {bufferSizesInBytes = array<i64: 0, 65536, 0>, workgroupShape = array<i64: 2, 32, 16>} {
       %alloc_116 = memref.alloc() {alignment = 64 : i64} : memref<f32>
       linalg.generic {indexing_maps = [#map], iterator_types = []} outs(%alloc_116 : memref<f32>) {
       ^bb0(%out: f32):
@@ -879,7 +879,7 @@ module {
     %subview_76 = memref.subview %arg6[3, 0, 0] [1, 768, 768] [1, 1, 1] : memref<6x768x768xf32> to memref<768x768xf32, strided<[768, 1], offset: 1769472>>
     %subview_77 = memref.subview %arg7[3, 0, 0] [1, 768, 768] [1, 1, 1] : memref<6x768x768xf32> to memref<768x768xf32, strided<[768, 1], offset: 1769472>>
     %subview_78 = memref.subview %arg8[3, 0, 0] [1, 768, 768] [1, 1, 1] : memref<6x768x768xf32> to memref<768x768xf32, strided<[768, 1], offset: 1769472>>
-    cinm.compute_ attributes {bufferSizesInBytes = array<i64: 0, 65536, 0>, workgroupShape = array<i64: 2, 32, 16>} {
+    cinm.compute attributes {bufferSizesInBytes = array<i64: 0, 65536, 0>, workgroupShape = array<i64: 2, 32, 16>} {
       linalg.generic {indexing_maps = [#map1], iterator_types = ["parallel"]} outs(%alloc_66 : memref<768xf32>) {
       ^bb0(%out: f32):
         linalg.yield %cst_6 : f32
@@ -958,7 +958,7 @@ module {
       scf.for %arg18 = %c0 to %2 step %c1 {
         %subview_118 = memref.subview %alloc_18[%4] [48] [1] : memref<768xf32> to memref<48xf32, strided<[1], offset: ?>>
         %subview_119 = memref.subview %subview_81[%arg18, %4] [1, 48] [1, 1] : memref<1024x768xf32, strided<[768, 1], offset: 2359296>> to memref<48xf32, strided<[1], offset: ?>>
-        %5 = cinm.compute_ -> f32 attributes {workgroupShape = array<i64: 1, 1, 8>} {
+        %5 = cinm.compute -> f32 attributes {workgroupShape = array<i64: 1, 1, 8>} {
           %alloc_120 = memref.alloc() {alignment = 64 : i64} : memref<f32>
           linalg.generic {indexing_maps = [#map], iterator_types = []} outs(%alloc_120 : memref<f32>) {
           ^bb0(%out: f32):
@@ -979,7 +979,7 @@ module {
       scf.for %arg18 = %2 to %c1024 step %c1 {
         memref.store %cst_5, %alloc_116[%arg18] : memref<1024xf32>
       }
-      cinm.compute_ attributes {bufferSizesInBytes = array<i64: 0, 65536, 0>, workgroupShape = array<i64: 2, 32, 16>} {
+      cinm.compute attributes {bufferSizesInBytes = array<i64: 0, 65536, 0>, workgroupShape = array<i64: 2, 32, 16>} {
         %alloc_118 = memref.alloc() {alignment = 64 : i64} : memref<f32>
         linalg.generic {indexing_maps = [#map], iterator_types = []} outs(%alloc_118 : memref<f32>) {
         ^bb0(%out: f32):
@@ -1022,7 +1022,7 @@ module {
       scf.for %arg18 = %c0 to %2 step %c1 {
         %subview_118 = memref.subview %subview_82[%arg18, %4] [1, 48] [1, 1] : memref<1024x768xf32, strided<[768, 1], offset: 2359296>> to memref<48xf32, strided<[1], offset: ?>>
         %5 = memref.load %alloc_116[%arg18] : memref<1024xf32>
-        cinm.compute_ attributes {bufferSizesInBytes = array<i64: 0, 65536, 0>, workgroupShape = array<i64: 2, 32, 16>} {
+        cinm.compute attributes {bufferSizesInBytes = array<i64: 0, 65536, 0>, workgroupShape = array<i64: 2, 32, 16>} {
           linalg.generic {indexing_maps = [#map1, #map1, #map1], iterator_types = ["parallel"]} ins(%subview_117, %subview_118 : memref<48xf32, strided<[1], offset: ?>>, memref<48xf32, strided<[1], offset: ?>>) outs(%subview_117 : memref<48xf32, strided<[1], offset: ?>>) {
           ^bb0(%in: f32, %in_119: f32, %out: f32):
             %6 = arith.mulf %in_119, %5 : f32
@@ -1035,7 +1035,7 @@ module {
     }
     memref.copy %alloc_83, %alloc_18 : memref<768xf32> to memref<768xf32>
     %subview_84 = memref.subview %arg9[3, 0, 0] [1, 768, 768] [1, 1, 1] : memref<6x768x768xf32> to memref<768x768xf32, strided<[768, 1], offset: 1769472>>
-    cinm.compute_ attributes {bufferSizesInBytes = array<i64: 0, 65536, 0>, workgroupShape = array<i64: 2, 32, 16>} {
+    cinm.compute attributes {bufferSizesInBytes = array<i64: 0, 65536, 0>, workgroupShape = array<i64: 2, 32, 16>} {
       memref.copy %alloc_18, %alloc_17 : memref<768xf32> to memref<768xf32>
       linalg.generic {indexing_maps = [#map3, #map4, #map5], iterator_types = ["parallel", "reduction"]} ins(%subview_84, %alloc_18 : memref<768x768xf32, strided<[768, 1], offset: 1769472>>, memref<768xf32>) outs(%alloc_17 : memref<768xf32>) {
       ^bb0(%in: f32, %in_116: f32, %out: f32):
@@ -1051,7 +1051,7 @@ module {
       cinm.yield
     }
     %subview_85 = memref.subview %arg13[3, 0] [1, 768] [1, 1] : memref<6x768xf32> to memref<768xf32, strided<[1], offset: 2304>>
-    cinm.compute_ attributes {bufferSizesInBytes = array<i64: 0, 65536, 0>, workgroupShape = array<i64: 2, 32, 16>} {
+    cinm.compute attributes {bufferSizesInBytes = array<i64: 0, 65536, 0>, workgroupShape = array<i64: 2, 32, 16>} {
       %alloc_116 = memref.alloc() {alignment = 64 : i64} : memref<f32>
       linalg.generic {indexing_maps = [#map], iterator_types = []} outs(%alloc_116 : memref<f32>) {
       ^bb0(%out: f32):
@@ -1077,7 +1077,7 @@ module {
     }
     %subview_86 = memref.subview %arg10[3, 0, 0] [1, 2048, 768] [1, 1, 1] : memref<6x2048x768xf32> to memref<2048x768xf32, strided<[768, 1], offset: 4718592>>
     %subview_87 = memref.subview %arg12[3, 0, 0] [1, 2048, 768] [1, 1, 1] : memref<6x2048x768xf32> to memref<2048x768xf32, strided<[768, 1], offset: 4718592>>
-    cinm.compute_ attributes {bufferSizesInBytes = array<i64: 0, 65536, 0>, workgroupShape = array<i64: 2, 32, 16>} {
+    cinm.compute attributes {bufferSizesInBytes = array<i64: 0, 65536, 0>, workgroupShape = array<i64: 2, 32, 16>} {
       linalg.generic {indexing_maps = [#map1], iterator_types = ["parallel"]} outs(%alloc_16 : memref<2048xf32>) {
       ^bb0(%out: f32):
         linalg.yield %cst_6 : f32
@@ -1108,7 +1108,7 @@ module {
         linalg.yield %9 : f32
       }
     %subview_88 = memref.subview %arg11[3, 0, 0] [1, 768, 2048] [1, 1, 1] : memref<6x768x2048xf32> to memref<768x2048xf32, strided<[2048, 1], offset: 4718592>>
-    cinm.compute_ attributes {bufferSizesInBytes = array<i64: 0, 65536, 0>, workgroupShape = array<i64: 2, 32, 16>} {
+    cinm.compute attributes {bufferSizesInBytes = array<i64: 0, 65536, 0>, workgroupShape = array<i64: 2, 32, 16>} {
       linalg.generic {indexing_maps = [#map3, #map4, #map5], iterator_types = ["parallel", "reduction"]} ins(%subview_88, %alloc_15 : memref<768x2048xf32, strided<[2048, 1], offset: 4718592>>, memref<2048xf32>) outs(%alloc_40 : memref<768xf32>) {
       ^bb0(%in: f32, %in_116: f32, %out: f32):
         %4 = arith.mulf %in, %in_116 : f32
@@ -1118,7 +1118,7 @@ module {
       cinm.yield
     }
     %subview_89 = memref.subview %arg5[4, 0] [1, 768] [1, 1] : memref<6x768xf32> to memref<768xf32, strided<[1], offset: 3072>>
-    cinm.compute_ attributes {bufferSizesInBytes = array<i64: 0, 65536, 0>, workgroupShape = array<i64: 2, 32, 16>} {
+    cinm.compute attributes {bufferSizesInBytes = array<i64: 0, 65536, 0>, workgroupShape = array<i64: 2, 32, 16>} {
       %alloc_116 = memref.alloc() {alignment = 64 : i64} : memref<f32>
       linalg.generic {indexing_maps = [#map], iterator_types = []} outs(%alloc_116 : memref<f32>) {
       ^bb0(%out: f32):
@@ -1145,7 +1145,7 @@ module {
     %subview_90 = memref.subview %arg6[4, 0, 0] [1, 768, 768] [1, 1, 1] : memref<6x768x768xf32> to memref<768x768xf32, strided<[768, 1], offset: 2359296>>
     %subview_91 = memref.subview %arg7[4, 0, 0] [1, 768, 768] [1, 1, 1] : memref<6x768x768xf32> to memref<768x768xf32, strided<[768, 1], offset: 2359296>>
     %subview_92 = memref.subview %arg8[4, 0, 0] [1, 768, 768] [1, 1, 1] : memref<6x768x768xf32> to memref<768x768xf32, strided<[768, 1], offset: 2359296>>
-    cinm.compute_ attributes {bufferSizesInBytes = array<i64: 0, 65536, 0>, workgroupShape = array<i64: 2, 32, 16>} {
+    cinm.compute attributes {bufferSizesInBytes = array<i64: 0, 65536, 0>, workgroupShape = array<i64: 2, 32, 16>} {
       linalg.generic {indexing_maps = [#map1], iterator_types = ["parallel"]} outs(%alloc_80 : memref<768xf32>) {
       ^bb0(%out: f32):
         linalg.yield %cst_6 : f32
@@ -1224,7 +1224,7 @@ module {
       scf.for %arg18 = %c0 to %2 step %c1 {
         %subview_118 = memref.subview %alloc_14[%4] [48] [1] : memref<768xf32> to memref<48xf32, strided<[1], offset: ?>>
         %subview_119 = memref.subview %subview_95[%arg18, %4] [1, 48] [1, 1] : memref<1024x768xf32, strided<[768, 1], offset: 3145728>> to memref<48xf32, strided<[1], offset: ?>>
-        %5 = cinm.compute_ -> f32 attributes {workgroupShape = array<i64: 1, 1, 8>} {
+        %5 = cinm.compute -> f32 attributes {workgroupShape = array<i64: 1, 1, 8>} {
           %alloc_120 = memref.alloc() {alignment = 64 : i64} : memref<f32>
           linalg.generic {indexing_maps = [#map], iterator_types = []} outs(%alloc_120 : memref<f32>) {
           ^bb0(%out: f32):
@@ -1245,7 +1245,7 @@ module {
       scf.for %arg18 = %2 to %c1024 step %c1 {
         memref.store %cst_5, %alloc_116[%arg18] : memref<1024xf32>
       }
-      cinm.compute_ attributes {bufferSizesInBytes = array<i64: 0, 65536, 0>, workgroupShape = array<i64: 2, 32, 16>} {
+      cinm.compute attributes {bufferSizesInBytes = array<i64: 0, 65536, 0>, workgroupShape = array<i64: 2, 32, 16>} {
         %alloc_118 = memref.alloc() {alignment = 64 : i64} : memref<f32>
         linalg.generic {indexing_maps = [#map], iterator_types = []} outs(%alloc_118 : memref<f32>) {
         ^bb0(%out: f32):
@@ -1288,7 +1288,7 @@ module {
       scf.for %arg18 = %c0 to %2 step %c1 {
         %subview_118 = memref.subview %subview_96[%arg18, %4] [1, 48] [1, 1] : memref<1024x768xf32, strided<[768, 1], offset: 3145728>> to memref<48xf32, strided<[1], offset: ?>>
         %5 = memref.load %alloc_116[%arg18] : memref<1024xf32>
-        cinm.compute_ attributes {bufferSizesInBytes = array<i64: 0, 65536, 0>, workgroupShape = array<i64: 2, 32, 16>} {
+        cinm.compute attributes {bufferSizesInBytes = array<i64: 0, 65536, 0>, workgroupShape = array<i64: 2, 32, 16>} {
           linalg.generic {indexing_maps = [#map1, #map1, #map1], iterator_types = ["parallel"]} ins(%subview_117, %subview_118 : memref<48xf32, strided<[1], offset: ?>>, memref<48xf32, strided<[1], offset: ?>>) outs(%subview_117 : memref<48xf32, strided<[1], offset: ?>>) {
           ^bb0(%in: f32, %in_119: f32, %out: f32):
             %6 = arith.mulf %in_119, %5 : f32
@@ -1301,7 +1301,7 @@ module {
     }
     memref.copy %alloc_97, %alloc_14 : memref<768xf32> to memref<768xf32>
     %subview_98 = memref.subview %arg9[4, 0, 0] [1, 768, 768] [1, 1, 1] : memref<6x768x768xf32> to memref<768x768xf32, strided<[768, 1], offset: 2359296>>
-    cinm.compute_ attributes {bufferSizesInBytes = array<i64: 0, 65536, 0>, workgroupShape = array<i64: 2, 32, 16>} {
+    cinm.compute attributes {bufferSizesInBytes = array<i64: 0, 65536, 0>, workgroupShape = array<i64: 2, 32, 16>} {
       memref.copy %alloc_14, %alloc_13 : memref<768xf32> to memref<768xf32>
       linalg.generic {indexing_maps = [#map3, #map4, #map5], iterator_types = ["parallel", "reduction"]} ins(%subview_98, %alloc_14 : memref<768x768xf32, strided<[768, 1], offset: 2359296>>, memref<768xf32>) outs(%alloc_13 : memref<768xf32>) {
       ^bb0(%in: f32, %in_116: f32, %out: f32):
@@ -1317,7 +1317,7 @@ module {
       cinm.yield
     }
     %subview_99 = memref.subview %arg13[4, 0] [1, 768] [1, 1] : memref<6x768xf32> to memref<768xf32, strided<[1], offset: 3072>>
-    cinm.compute_ attributes {bufferSizesInBytes = array<i64: 0, 65536, 0>, workgroupShape = array<i64: 2, 32, 16>} {
+    cinm.compute attributes {bufferSizesInBytes = array<i64: 0, 65536, 0>, workgroupShape = array<i64: 2, 32, 16>} {
       %alloc_116 = memref.alloc() {alignment = 64 : i64} : memref<f32>
       linalg.generic {indexing_maps = [#map], iterator_types = []} outs(%alloc_116 : memref<f32>) {
       ^bb0(%out: f32):
@@ -1343,7 +1343,7 @@ module {
     }
     %subview_100 = memref.subview %arg10[4, 0, 0] [1, 2048, 768] [1, 1, 1] : memref<6x2048x768xf32> to memref<2048x768xf32, strided<[768, 1], offset: 6291456>>
     %subview_101 = memref.subview %arg12[4, 0, 0] [1, 2048, 768] [1, 1, 1] : memref<6x2048x768xf32> to memref<2048x768xf32, strided<[768, 1], offset: 6291456>>
-    cinm.compute_ attributes {bufferSizesInBytes = array<i64: 0, 65536, 0>, workgroupShape = array<i64: 2, 32, 16>} {
+    cinm.compute attributes {bufferSizesInBytes = array<i64: 0, 65536, 0>, workgroupShape = array<i64: 2, 32, 16>} {
       linalg.generic {indexing_maps = [#map1], iterator_types = ["parallel"]} outs(%alloc_12 : memref<2048xf32>) {
       ^bb0(%out: f32):
         linalg.yield %cst_6 : f32
@@ -1374,7 +1374,7 @@ module {
         linalg.yield %9 : f32
       }
     %subview_102 = memref.subview %arg11[4, 0, 0] [1, 768, 2048] [1, 1, 1] : memref<6x768x2048xf32> to memref<768x2048xf32, strided<[2048, 1], offset: 6291456>>
-    cinm.compute_ attributes {bufferSizesInBytes = array<i64: 0, 65536, 0>, workgroupShape = array<i64: 2, 32, 16>} {
+    cinm.compute attributes {bufferSizesInBytes = array<i64: 0, 65536, 0>, workgroupShape = array<i64: 2, 32, 16>} {
       linalg.generic {indexing_maps = [#map3, #map4, #map5], iterator_types = ["parallel", "reduction"]} ins(%subview_102, %alloc_11 : memref<768x2048xf32, strided<[2048, 1], offset: 6291456>>, memref<2048xf32>) outs(%alloc_40 : memref<768xf32>) {
       ^bb0(%in: f32, %in_116: f32, %out: f32):
         %4 = arith.mulf %in, %in_116 : f32
@@ -1384,7 +1384,7 @@ module {
       cinm.yield
     }
     %subview_103 = memref.subview %arg5[5, 0] [1, 768] [1, 1] : memref<6x768xf32> to memref<768xf32, strided<[1], offset: 3840>>
-    cinm.compute_ attributes {bufferSizesInBytes = array<i64: 0, 65536, 0>, workgroupShape = array<i64: 2, 32, 16>} {
+    cinm.compute attributes {bufferSizesInBytes = array<i64: 0, 65536, 0>, workgroupShape = array<i64: 2, 32, 16>} {
       %alloc_116 = memref.alloc() {alignment = 64 : i64} : memref<f32>
       linalg.generic {indexing_maps = [#map], iterator_types = []} outs(%alloc_116 : memref<f32>) {
       ^bb0(%out: f32):
@@ -1411,7 +1411,7 @@ module {
     %subview_104 = memref.subview %arg6[5, 0, 0] [1, 768, 768] [1, 1, 1] : memref<6x768x768xf32> to memref<768x768xf32, strided<[768, 1], offset: 2949120>>
     %subview_105 = memref.subview %arg7[5, 0, 0] [1, 768, 768] [1, 1, 1] : memref<6x768x768xf32> to memref<768x768xf32, strided<[768, 1], offset: 2949120>>
     %subview_106 = memref.subview %arg8[5, 0, 0] [1, 768, 768] [1, 1, 1] : memref<6x768x768xf32> to memref<768x768xf32, strided<[768, 1], offset: 2949120>>
-    cinm.compute_ attributes {bufferSizesInBytes = array<i64: 0, 65536, 0>, workgroupShape = array<i64: 2, 32, 16>} {
+    cinm.compute attributes {bufferSizesInBytes = array<i64: 0, 65536, 0>, workgroupShape = array<i64: 2, 32, 16>} {
       linalg.generic {indexing_maps = [#map1], iterator_types = ["parallel"]} outs(%alloc_94 : memref<768xf32>) {
       ^bb0(%out: f32):
         linalg.yield %cst_6 : f32
@@ -1489,7 +1489,7 @@ module {
       scf.for %arg18 = %c0 to %2 step %c1 {
         %subview_118 = memref.subview %alloc_10[%4] [48] [1] : memref<768xf32> to memref<48xf32, strided<[1], offset: ?>>
         %subview_119 = memref.subview %subview_108[%arg18, %4] [1, 48] [1, 1] : memref<1024x768xf32, strided<[768, 1], offset: 3932160>> to memref<48xf32, strided<[1], offset: ?>>
-        %5 = cinm.compute_ -> f32 attributes {workgroupShape = array<i64: 1, 1, 8>} {
+        %5 = cinm.compute -> f32 attributes {workgroupShape = array<i64: 1, 1, 8>} {
           %alloc_120 = memref.alloc() {alignment = 64 : i64} : memref<f32>
           linalg.generic {indexing_maps = [#map], iterator_types = []} outs(%alloc_120 : memref<f32>) {
           ^bb0(%out: f32):
@@ -1510,7 +1510,7 @@ module {
       scf.for %arg18 = %2 to %c1024 step %c1 {
         memref.store %cst_5, %alloc_116[%arg18] : memref<1024xf32>
       }
-      cinm.compute_ attributes {bufferSizesInBytes = array<i64: 0, 65536, 0>, workgroupShape = array<i64: 2, 32, 16>} {
+      cinm.compute attributes {bufferSizesInBytes = array<i64: 0, 65536, 0>, workgroupShape = array<i64: 2, 32, 16>} {
         %alloc_118 = memref.alloc() {alignment = 64 : i64} : memref<f32>
         linalg.generic {indexing_maps = [#map], iterator_types = []} outs(%alloc_118 : memref<f32>) {
         ^bb0(%out: f32):
@@ -1553,7 +1553,7 @@ module {
       scf.for %arg18 = %c0 to %2 step %c1 {
         %subview_118 = memref.subview %subview_109[%arg18, %4] [1, 48] [1, 1] : memref<1024x768xf32, strided<[768, 1], offset: 3932160>> to memref<48xf32, strided<[1], offset: ?>>
         %5 = memref.load %alloc_116[%arg18] : memref<1024xf32>
-        cinm.compute_ attributes {bufferSizesInBytes = array<i64: 0, 65536, 0>, workgroupShape = array<i64: 2, 32, 16>} {
+        cinm.compute attributes {bufferSizesInBytes = array<i64: 0, 65536, 0>, workgroupShape = array<i64: 2, 32, 16>} {
           linalg.generic {indexing_maps = [#map1, #map1, #map1], iterator_types = ["parallel"]} ins(%subview_117, %subview_118 : memref<48xf32, strided<[1], offset: ?>>, memref<48xf32, strided<[1], offset: ?>>) outs(%subview_117 : memref<48xf32, strided<[1], offset: ?>>) {
           ^bb0(%in: f32, %in_119: f32, %out: f32):
             %6 = arith.mulf %in_119, %5 : f32
@@ -1566,7 +1566,7 @@ module {
     }
     memref.copy %alloc_110, %alloc_10 : memref<768xf32> to memref<768xf32>
     %subview_111 = memref.subview %arg9[5, 0, 0] [1, 768, 768] [1, 1, 1] : memref<6x768x768xf32> to memref<768x768xf32, strided<[768, 1], offset: 2949120>>
-    cinm.compute_ attributes {bufferSizesInBytes = array<i64: 0, 65536, 0>, workgroupShape = array<i64: 2, 32, 16>} {
+    cinm.compute attributes {bufferSizesInBytes = array<i64: 0, 65536, 0>, workgroupShape = array<i64: 2, 32, 16>} {
       memref.copy %alloc_10, %alloc_9 : memref<768xf32> to memref<768xf32>
       linalg.generic {indexing_maps = [#map3, #map4, #map5], iterator_types = ["parallel", "reduction"]} ins(%subview_111, %alloc_10 : memref<768x768xf32, strided<[768, 1], offset: 2949120>>, memref<768xf32>) outs(%alloc_9 : memref<768xf32>) {
       ^bb0(%in: f32, %in_116: f32, %out: f32):
@@ -1582,7 +1582,7 @@ module {
       cinm.yield
     }
     %subview_112 = memref.subview %arg13[5, 0] [1, 768] [1, 1] : memref<6x768xf32> to memref<768xf32, strided<[1], offset: 3840>>
-    cinm.compute_ attributes {bufferSizesInBytes = array<i64: 0, 65536, 0>, workgroupShape = array<i64: 2, 32, 16>} {
+    cinm.compute attributes {bufferSizesInBytes = array<i64: 0, 65536, 0>, workgroupShape = array<i64: 2, 32, 16>} {
       %alloc_116 = memref.alloc() {alignment = 64 : i64} : memref<f32>
       linalg.generic {indexing_maps = [#map], iterator_types = []} outs(%alloc_116 : memref<f32>) {
       ^bb0(%out: f32):
@@ -1608,7 +1608,7 @@ module {
     }
     %subview_113 = memref.subview %arg10[5, 0, 0] [1, 2048, 768] [1, 1, 1] : memref<6x2048x768xf32> to memref<2048x768xf32, strided<[768, 1], offset: 7864320>>
     %subview_114 = memref.subview %arg12[5, 0, 0] [1, 2048, 768] [1, 1, 1] : memref<6x2048x768xf32> to memref<2048x768xf32, strided<[768, 1], offset: 7864320>>
-    cinm.compute_ attributes {bufferSizesInBytes = array<i64: 0, 65536, 0>, workgroupShape = array<i64: 2, 32, 16>} {
+    cinm.compute attributes {bufferSizesInBytes = array<i64: 0, 65536, 0>, workgroupShape = array<i64: 2, 32, 16>} {
       linalg.generic {indexing_maps = [#map1], iterator_types = ["parallel"]} outs(%alloc_8 : memref<2048xf32>) {
       ^bb0(%out: f32):
         linalg.yield %cst_6 : f32
@@ -1639,7 +1639,7 @@ module {
         linalg.yield %9 : f32
       }
     %subview_115 = memref.subview %arg11[5, 0, 0] [1, 768, 2048] [1, 1, 1] : memref<6x768x2048xf32> to memref<768x2048xf32, strided<[2048, 1], offset: 7864320>>
-    cinm.compute_ attributes {bufferSizesInBytes = array<i64: 0, 65536, 0>, workgroupShape = array<i64: 2, 32, 16>} {
+    cinm.compute attributes {bufferSizesInBytes = array<i64: 0, 65536, 0>, workgroupShape = array<i64: 2, 32, 16>} {
       linalg.generic {indexing_maps = [#map3, #map4, #map5], iterator_types = ["parallel", "reduction"]} ins(%subview_115, %alloc_7 : memref<768x2048xf32, strided<[2048, 1], offset: 7864320>>, memref<2048xf32>) outs(%alloc_40 : memref<768xf32>) {
       ^bb0(%in: f32, %in_116: f32, %out: f32):
         %4 = arith.mulf %in, %in_116 : f32
@@ -1648,7 +1648,7 @@ module {
       }
       cinm.yield
     }
-    cinm.compute_ attributes {bufferSizesInBytes = array<i64: 0, 65536, 0>, workgroupShape = array<i64: 2, 32, 16>} {
+    cinm.compute attributes {bufferSizesInBytes = array<i64: 0, 65536, 0>, workgroupShape = array<i64: 2, 32, 16>} {
       %alloc_116 = memref.alloc() {alignment = 64 : i64} : memref<f32>
       linalg.generic {indexing_maps = [#map], iterator_types = []} outs(%alloc_116 : memref<f32>) {
       ^bb0(%out: f32):
@@ -1672,7 +1672,7 @@ module {
       }
       cinm.yield
     }
-    %3 = cinm.compute_ -> memref<32000xf32, strided<[1]>> attributes {workgroupShape = array<i64: 2, 8, 16>} {
+    %3 = cinm.compute -> memref<32000xf32, strided<[1]>> attributes {workgroupShape = array<i64: 2, 8, 16>} {
       %alloc_116 = memref.alloc() {alignment = 64 : i64} : memref<34048x768xf32>
       linalg.generic {indexing_maps = [#map3], iterator_types = ["parallel", "parallel"]} outs(%alloc_116 : memref<34048x768xf32>) {
       ^bb0(%out: f32):
@@ -1728,7 +1728,7 @@ module {
       scf.for %arg6 = %c0 to %0 step %c1 {
         %subview_2 = memref.subview %arg0[%1] [48] [1] : memref<768xf32, strided<[?], offset: ?>> to memref<48xf32, strided<[?], offset: ?>>
         %subview_3 = memref.subview %arg1[%arg6, %1] [1, 48] [1, 1] : memref<1024x768xf32, strided<[?, ?], offset: ?>> to memref<48xf32, strided<[?], offset: ?>>
-        %2 = cinm.compute_ -> f32 attributes {workgroupShape = array<i64: 1, 1, 8>} {
+        %2 = cinm.compute -> f32 attributes {workgroupShape = array<i64: 1, 1, 8>} {
           %alloc_4 = memref.alloc() {alignment = 64 : i64} : memref<f32>
           linalg.generic {indexing_maps = [#map], iterator_types = []} outs(%alloc_4 : memref<f32>) {
           ^bb0(%out: f32):
@@ -1749,7 +1749,7 @@ module {
       scf.for %arg6 = %0 to %c1024 step %c1 {
         memref.store %cst_1, %alloc[%arg6] : memref<1024xf32>
       }
-      cinm.compute_ attributes {bufferSizesInBytes = array<i64: 0, 65536, 0>, workgroupShape = array<i64: 2, 32, 16>} {
+      cinm.compute attributes {bufferSizesInBytes = array<i64: 0, 65536, 0>, workgroupShape = array<i64: 2, 32, 16>} {
         %alloc_2 = memref.alloc() {alignment = 64 : i64} : memref<f32>
         linalg.generic {indexing_maps = [#map], iterator_types = []} outs(%alloc_2 : memref<f32>) {
         ^bb0(%out: f32):
@@ -1792,7 +1792,7 @@ module {
       scf.for %arg6 = %c0 to %0 step %c1 {
         %subview_2 = memref.subview %arg2[%arg6, %1] [1, 48] [1, 1] : memref<1024x768xf32, strided<[?, ?], offset: ?>> to memref<48xf32, strided<[?], offset: ?>>
         %2 = memref.load %alloc[%arg6] : memref<1024xf32>
-        cinm.compute_ attributes {bufferSizesInBytes = array<i64: 0, 65536, 0>, workgroupShape = array<i64: 2, 32, 16>} {
+        cinm.compute attributes {bufferSizesInBytes = array<i64: 0, 65536, 0>, workgroupShape = array<i64: 2, 32, 16>} {
           linalg.generic {indexing_maps = [#map1, #map1, #map1], iterator_types = ["parallel"]} ins(%subview, %subview_2 : memref<48xf32, strided<[1], offset: ?>>, memref<48xf32, strided<[?], offset: ?>>) outs(%subview : memref<48xf32, strided<[1], offset: ?>>) {
           ^bb0(%in: f32, %in_3: f32, %out: f32):
             %3 = arith.mulf %in_3, %2 : f32
@@ -1809,7 +1809,7 @@ module {
     %cst = arith.constant 7.680000e+02 : f32
     %cst_0 = arith.constant 9.99999974E-6 : f32
     %cst_1 = arith.constant 0.000000e+00 : f32
-    cinm.compute_ attributes {bufferSizesInBytes = array<i64: 0, 65536, 0>, workgroupShape = array<i64: 2, 32, 16>} {
+    cinm.compute attributes {bufferSizesInBytes = array<i64: 0, 65536, 0>, workgroupShape = array<i64: 2, 32, 16>} {
       %alloc = memref.alloc() {alignment = 64 : i64} : memref<f32>
       linalg.generic {indexing_maps = [#map], iterator_types = []} outs(%alloc : memref<f32>) {
       ^bb0(%out: f32):
@@ -1838,7 +1838,7 @@ module {
   func.func @softmax(%arg0: memref<1024xf32, strided<[?], offset: ?>>, %arg1: memref<1024xf32, strided<[?], offset: ?>>) {
     %cst = arith.constant 0.000000e+00 : f32
     %cst_0 = arith.constant 0xFF800000 : f32
-    cinm.compute_ attributes {bufferSizesInBytes = array<i64: 0, 65536, 0>, workgroupShape = array<i64: 2, 32, 16>} {
+    cinm.compute attributes {bufferSizesInBytes = array<i64: 0, 65536, 0>, workgroupShape = array<i64: 2, 32, 16>} {
       %alloc = memref.alloc() {alignment = 64 : i64} : memref<f32>
       linalg.generic {indexing_maps = [#map], iterator_types = []} outs(%alloc : memref<f32>) {
       ^bb0(%out: f32):

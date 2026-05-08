@@ -48,7 +48,7 @@ class Cinm_Base_Op<string mnemonic, list<Trait> traits = []>
 class Cinm_Op<string mnemonic, list<Trait> traits = []>
         : Cinm_Base_Op<mnemonic, !listconcat(traits, [
             // we want an ancestor not a parent
-            // HasParent<"ComputeOp">
+            // HasParent<"ComputeBlockOp">
         ])>;
 // Template for types.
 class Cinm_Type<string name, list<Trait> traits = []>

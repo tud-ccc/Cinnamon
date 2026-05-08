@@ -5,11 +5,11 @@
 
 namespace mlir::cinm {
 
-cinm::ComputeOp isolateComputeBlock(cinm::FlexComputeOp, RewriterBase &);
-cinm::FlexComputeOp deisolateComputeBlock(cinm::ComputeOp, RewriterBase &);
+cinm::ComputeBlockOp isolateComputeBlock(cinm::ComputeOp, RewriterBase &);
+cinm::ComputeOp deisolateComputeBlock(cinm::ComputeBlockOp, RewriterBase &);
 
-void unwrapComputeOp(cinm::ComputeOp, RewriterBase &rewriter);
+void unwrapComputeBlockOp(cinm::ComputeBlockOp, RewriterBase &rewriter);
 
-void unwrapComputeOp(cinm::FlexComputeOp, RewriterBase &rewriter);
+void unwrapComputeBlockOp(cinm::ComputeOp, RewriterBase &rewriter);
 
 } // namespace mlir::cinm

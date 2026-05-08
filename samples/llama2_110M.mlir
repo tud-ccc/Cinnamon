@@ -55,7 +55,7 @@ func.func @forward(%token : index, %pos : index,
 		%kdest = tensor.extract_slice %kc0 [%layer, %pos, 0] [1, 1, 768] [1, 1, 1] :   tensor<6x1024x768xf32> to tensor<768xf32>
 		%vdest = tensor.extract_slice %vc0 [%layer, %pos, 0] [1, 1, 768] [1, 1, 1] :   tensor<6x1024x768xf32> to tensor<768xf32>
 
-		%q, %kc1, %vc1 = cinm.compute_ -> tensor<768xf32>, tensor<6x1024x768xf32>, tensor<6x1024x768xf32> {
+		%q, %kc1, %vc1 = cinm.compute -> tensor<768xf32>, tensor<6x1024x768xf32>, tensor<6x1024x768xf32> {
 			%q = cinm.op.gemv %wqs, %xb : tensor<768x768xf32>, tensor<768xf32> -> tensor<768xf32>
 			%k = cinm.op.gemv %wks, %xb : tensor<768x768xf32>, tensor<768xf32> -> tensor<768xf32>
 			%v = cinm.op.gemv %wvs, %xb : tensor<768x768xf32>, tensor<768xf32> -> tensor<768xf32>
@@ -107,7 +107,7 @@ func.func @forward(%token : index, %pos : index,
     %xb2 = bufferization.materialize_in_destination %xb20 in %q2 : (tensor<768xf32>, tensor<768xf32>) -> tensor<768xf32>
 
 		%wo_slice = tensor.extract_slice %wo [%layer, 0, 0] [1, 768, 768] [1, 1, 1] : tensor<6x768x768xf32> to tensor<768x768xf32>
-		%xb4 = cinm.compute_ -> tensor<768xf32> attributes { workgroupShape = array<i64: 1,6,8> } {
+		%xb4 = cinm.compute -> tensor<768xf32> attributes { workgroupShape = array<i64: 1,6,8> } {
 			// final matmul to get the output of the attention
 			%xb3 = cinm.op.gemv %wo_slice, %xb2 into %xb2 : tensor<768x768xf32>, tensor<768xf32> into tensor<768xf32>-> tensor<768xf32>
 
@@ -124,7 +124,7 @@ func.func @forward(%token : index, %pos : index,
 		// first calculate self.w1(x) and self.w3(x)
 		%w1_slice = tensor.extract_slice %w1 [%layer, 0, 0] [1, 2048, 768] [1, 1, 1] : tensor<6x2048x768xf32> to tensor<2048x768xf32>
 		%w3_slice = tensor.extract_slice %w3 [%layer, 0, 0] [1, 2048, 768] [1, 1, 1] : tensor<6x2048x768xf32> to tensor<2048x768xf32>
-		%hb10, %hb20 = cinm.compute_  -> tensor<2048xf32>, tensor<2048xf32> attributes { workgroupShape = array<i64: 1,6,8> } {
+		%hb10, %hb20 = cinm.compute  -> tensor<2048xf32>, tensor<2048xf32> attributes { workgroupShape = array<i64: 1,6,8> } {
 			%hb1 = cinm.op.gemv %w1_slice, %xb5 : tensor<2048x768xf32>, tensor<768xf32> -> tensor<2048xf32>
 			%hb2 = cinm.op.gemv %w3_slice, %xb5 : tensor<2048x768xf32>, tensor<768xf32> -> tensor<2048xf32>
 			cinm.yield %hb1, %hb2 : tensor<2048xf32>, tensor<2048xf32>
@@ -144,7 +144,7 @@ func.func @forward(%token : index, %pos : index,
     }
 
 		%w2_slice = tensor.extract_slice %w2 [%layer, 0, 0] [1, 768, 2048] [1, 1, 1] : tensor<6x768x2048xf32> to tensor<768x2048xf32>
-		%xb7 = cinm.compute_  -> tensor<768xf32> attributes { workgroupShape = array<i64: 1,6,8> }{
+		%xb7 = cinm.compute  -> tensor<768xf32> attributes { workgroupShape = array<i64: 1,6,8> }{
 			// final matmul to get the output of the ffn
 			%xb6 = cinm.op.gemv %w2_slice, %hb11 plus %xb5 into %xb5 : tensor<768x2048xf32>, tensor<2048xf32> plus tensor<768xf32> into tensor<768xf32> -> tensor<768xf32> 
 			cinm.yield %xb6 : tensor<768xf32>
@@ -155,7 +155,7 @@ func.func @forward(%token : index, %pos : index,
 	}
 
 	%x2 = func.call @rmsnorm(%x, %rms_final_weight) : (tensor<768xf32>, tensor<768xf32>) -> tensor<768xf32>
-	%logits = cinm.compute_ -> tensor<32000xf32> attributes { workgroupShape = array<i64: 2,8,16> }  {
+	%logits = cinm.compute -> tensor<32000xf32> attributes { workgroupShape = array<i64: 2,8,16> }  {
 		%wcls2 = tensor.pad %wcls low[0,0] high[2048,0] {
 		^bb0(%arg1: index, %arg2: index):
 			tensor.yield %c0f : f32
@@ -207,7 +207,7 @@ func.func @mha(%q: tensor<768xf32>, %kc: tensor<1024x768xf32>, %vc: tensor<1024x
 		%attn0 = scf.for %i = %c0 to %pos2 step %c1 iter_args(%attn_i = %attn_init) -> (tensor<1024xf32>) {
 			%qs = tensor.extract_slice %q [%hoff] [48] [1] : tensor<768xf32> to tensor<48xf32>
 			%k = tensor.extract_slice %kc [%i, %hoff] [1, 48] [1, 1] : tensor<1024x768xf32> to tensor<48xf32>
-			%score = cinm.compute_ -> f32  attributes { workgroupShape = array<i64: 1,1,8> } {
+			%score = cinm.compute -> f32  attributes { workgroupShape = array<i64: 1,1,8> } {
 				%0 = cinm.op.elementwise mul %qs, %k : tensor<48xf32>
 				%1 = cinm.op.reduce add (%0) : tensor<48xf32> -> f32
 				%2 = arith.divf %1, %scale : f32
@@ -241,7 +241,7 @@ func.func @mha(%q: tensor<768xf32>, %kc: tensor<1024x768xf32>, %vc: tensor<1024x
       %xb_slice_i =  tensor.extract_slice %xbi1 [%hoff] [48] [1] : tensor<768xf32> to tensor<48xf32>
 			%v = tensor.extract_slice %vc [%i, %hoff] [1, 48] [1, 1] : tensor<1024x768xf32> to tensor<48xf32>
 			%a = tensor.extract %attn3 [%i] : tensor<1024xf32>
-			%xb_slice = cinm.compute_ -> tensor<48xf32> attributes { workgroupShape = array<i64: 1,1,8> } {
+			%xb_slice = cinm.compute -> tensor<48xf32> attributes { workgroupShape = array<i64: 1,1,8> } {
         %av = tensor.splat %a : tensor<48xf32>
 				%0 = cinm.op.elementwise mul %v, %av : tensor<48xf32>
 				%1 = cinm.op.elementwise add %xb_slice_i, %0 into %xb_slice_i: tensor<48xf32> into tensor<48xf32>
@@ -266,7 +266,7 @@ func.func @rmsnorm(%v : tensor<768xf32>, %w : tensor<768xf32>) -> tensor<768xf32
 	%c1 = arith.constant 1.0 : f32
 	%c768 = arith.constant 768.0 : f32
 
-	%r = cinm.compute_ -> tensor<768xf32> {
+	%r = cinm.compute -> tensor<768xf32> {
 		%0 = cinm.op.elementwise mul %v, %v :tensor<768xf32>
 		%ss = cinm.op.reduce add (%0) : tensor<768xf32> -> f32
 		%s0 = arith.divf %ss, %c768 : f32
@@ -282,7 +282,7 @@ func.func @rmsnorm(%v : tensor<768xf32>, %w : tensor<768xf32>) -> tensor<768xf32
 }
 
 func.func @softmax(%vec : tensor<1024xf32>{bufferization.writable=true}) -> tensor<1024xf32> {
-	%r = cinm.compute_ -> tensor<1024xf32> {
+	%r = cinm.compute -> tensor<1024xf32> {
 		%max = cinm.op.reduce max (%vec) : tensor<1024xf32> -> f32
     %maxv = tensor.splat %max : tensor<1024xf32>
 		%t = cinm.op.elementwise sub %vec, %maxv  into %vec: tensor<1024xf32> into tensor<1024xf32>

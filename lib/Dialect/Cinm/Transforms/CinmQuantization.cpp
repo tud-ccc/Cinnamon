@@ -305,7 +305,7 @@ struct InsertCinmQuantization
 
     SmallVector<Operation *, 32> wl;
     func.walk([&](Operation *op) {
-      auto compute = op->getParentOfType<cinm::ComputeOp>();
+      auto compute = op->getParentOfType<cinm::ComputeBlockOp>();
       if (!compute)
         return;
       if (doGemm && isa<cinm::GemmOp>(op))

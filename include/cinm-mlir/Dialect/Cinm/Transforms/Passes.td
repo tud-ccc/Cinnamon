@@ -23,7 +23,7 @@ def CinmTilingPass: Pass<"cinm-tiling"> {
 }
 
 def CinmIsolateComputePass: Pass<"cinm-isolate-compute-blocks"> {
-  let summary = "Turn compute_ ops into compute ops (isolated from above)";
+  let summary = "Turn compute ops into compute ops (isolated from above)";
   let description = [{}];
 
   let dependentDialects = [
@@ -31,7 +31,7 @@ def CinmIsolateComputePass: Pass<"cinm-isolate-compute-blocks"> {
 }
 
 def CinmDeisolateComputeBlocks: Pass<"cinm-deisolate-compute-blocks"> {
-  let summary = "Turn compute ops into compute_ ops (not isolated from above)";
+  let summary = "Turn compute ops into compute ops (not isolated from above)";
   let description = [{}];
 
   let dependentDialects = [
@@ -40,7 +40,7 @@ def CinmDeisolateComputeBlocks: Pass<"cinm-deisolate-compute-blocks"> {
 
 
 def CinmUnwrapComputeBlocksPass: Pass<"cinm-unwrap-compute-blocks"> {
-  let summary = "Unwrap all compute and compute_ ops";
+  let summary = "Unwrap all compute and compute ops";
   let description = [{}];
 
   let dependentDialects = [
@@ -137,7 +137,7 @@ def CinmRelowerPass : Pass<"cinm-relower", "mlir::func::FuncOp"> {
   let summary = "Lower CINM tensor ops outside compute blocks back to linalg";
   let description = [{
     Finds CINM tensor ops (currently cinm.op.add / cinm.op.sub) that are not
-    nested inside a `cinm.compute` and rewrites them to equivalent
+    nested inside a `cinm.compute_block` and rewrites them to equivalent
     `linalg.generic` elementwise operations. This is useful for bufferization
     pipelines that expect raw linalg.
   }];
@@ -170,7 +170,7 @@ def CinmGemmToLoopedGemvPass : Pass<"cinm-gemm-to-gemv"> {
 
     Choosing the reduction dimension k is invalid and rejected.
 
-    If an enclosing `cinm.compute` carries GEMM tileSizes [M,N,K], the pass
+    If an enclosing `cinm.compute_block` carries GEMM tileSizes [M,N,K], the pass
     retargets them to GEMV-style sizes matching the split:
       - split-dim=1 → [N, K]
       - split-dim=2 → [M, K]

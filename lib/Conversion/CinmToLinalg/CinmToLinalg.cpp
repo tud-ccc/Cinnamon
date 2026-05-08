@@ -678,7 +678,7 @@ struct ConvertCinmOpsToLinalg
                         cinm::ActivateOp, cinm::TransposeOp>();
 
     // The container ops and yield are left untouched.
-    target.addLegalOp<cinm::ComputeOp, cinm::FlexComputeOp, cinm::YieldOp>();
+    target.addLegalOp<cinm::ComputeBlockOp, cinm::ComputeOp, cinm::YieldOp>();
 
     if (applyPartialConversion(getOperation(), target, std::move(patterns))
             .failed())

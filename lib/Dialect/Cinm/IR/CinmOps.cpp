@@ -106,10 +106,10 @@ void CinmDialect::registerOps() {
 namespace mlir {
 namespace cinm {
 
-cinm::ComputeOp getEnclosingComputeBlock(Operation *op) {
+cinm::ComputeBlockOp getEnclosingComputeBlock(Operation *op) {
   Operation *parent = op;
   while ((parent = parent->getParentOp())) {
-    if (auto parentCompute = dyn_cast<cinm::ComputeOp>(parent))
+    if (auto parentCompute = dyn_cast<cinm::ComputeBlockOp>(parent))
       return parentCompute;
   }
 
@@ -120,10 +120,10 @@ cinm::CinmAcceleratorAttrInterface getEnclosingAccelerator(Operation *op) {
   Operation *parent = op;
   std::optional<cinm::CinmAcceleratorAttrInterface> found;
   while ((parent = parent->getParentOp())) {
-    if (auto parentCompute = dyn_cast<cinm::ComputeOp>(parent)) {
+    if (auto parentCompute = dyn_cast<cinm::ComputeBlockOp>(parent)) {
       found = parentCompute.getAccelerator();
       break;
-    } else if (auto parentCompute = dyn_cast<cinm::FlexComputeOp>(parent)) {
+    } else if (auto parentCompute = dyn_cast<cinm::ComputeOp>(parent)) {
       found = parentCompute.getAccelerator();
       break;
     }
@@ -222,7 +222,7 @@ static ParseResult parsePlatformOrAccelerator(OpAsmParser &parser,
   return success();
 }
 
-ParseResult ComputeOp::parse(::mlir::OpAsmParser &parser,
+ParseResult ComputeBlockOp::parse(::mlir::OpAsmParser &parser,
                              ::mlir::OperationState &result) {
   if (parsePlatformOrAccelerator(parser, result,
                                  getPlatformAttrName(result.name),
@@ -259,7 +259,7 @@ ParseResult ComputeOp::parse(::mlir::OpAsmParser &parser,
   return success();
 }
 
-void ComputeOp::print(OpAsmPrinter &out) {
+void ComputeBlockOp::print(OpAsmPrinter &out) {
   if (auto platform = getPlatform()) {
     out << " on platform " << platform;
   } else if (auto accelerator = getAccelerator()) {
@@ -282,7 +282,7 @@ void ComputeOp::print(OpAsmPrinter &out) {
   out.printRegion(getRegion(), false);
 }
 
-ParseResult FlexComputeOp::parse(::mlir::OpAsmParser &parser,
+ParseResult ComputeOp::parse(::mlir::OpAsmParser &parser,
                                  ::mlir::OperationState &result) {
   if (parsePlatformOrAccelerator(parser, result,
                                  getPlatformAttrName(result.name),
@@ -305,7 +305,7 @@ ParseResult FlexComputeOp::parse(::mlir::OpAsmParser &parser,
   return success();
 }
 
-void FlexComputeOp::print(OpAsmPrinter &out) {
+void ComputeOp::print(OpAsmPrinter &out) {
   if (auto platform = getPlatform()) {
     out << " on platform " << platform;
   } else if (auto accelerator = getAccelerator()) {
@@ -321,12 +321,12 @@ void FlexComputeOp::print(OpAsmPrinter &out) {
   out.printRegion(getRegion(), false);
 }
 
-LogicalResult FlexComputeOp::verify() {
+LogicalResult ComputeOp::verify() {
   if (getPlatform() && getAccelerator())
     return emitOpError("Cannot specify both platform and accelerator");
   return success();
 }
-LogicalResult ComputeOp::verify() {
+LogicalResult ComputeBlockOp::verify() {
   if (getPlatform() && getAccelerator())
     return emitOpError("Cannot specify both platform and accelerator");
   return success();
@@ -670,13 +670,13 @@ void DequantizeOp::print(::mlir::OpAsmPrinter &printer) {}
 
 LogicalResult cinm::YieldOp::verify() {
   Operation *parent = getOperation()->getParentOp();
-  auto asCompute = dyn_cast_or_null<cinm::ComputeOp>(parent);
-  auto asFlexCompute = dyn_cast_or_null<cinm::FlexComputeOp>(parent);
+  auto asCompute = dyn_cast_or_null<cinm::ComputeBlockOp>(parent);
+  auto asFlexCompute = dyn_cast_or_null<cinm::ComputeOp>(parent);
   auto asSelect = dyn_cast_or_null<cinm::SelectOp>(parent);
 
   if (!asCompute && !asSelect && !asFlexCompute)
     return emitOpError()
-           << "must be inside 'cinm.compute', 'cinm.compute_' or 'cinm.select'";
+           << "must be inside 'cinm.compute_block', 'cinm.compute' or 'cinm.select'";
 
   TypeRange expected = TypeRange(parent->getResultTypes());
 
@@ -777,18 +777,18 @@ void ElementwiseOp::getEffects(
   addEffect<MemoryEffects::Write>(getOutMutable()[0], effects);
 }
 
-void ComputeOp::getRegionInvocationBounds(
+void ComputeBlockOp::getRegionInvocationBounds(
     ArrayRef<Attribute>, SmallVectorImpl<mlir::InvocationBounds> &result) {
 
   result.push_back(::mlir::InvocationBounds(1, 1));
 }
 
 ::mlir::OperandRange
-ComputeOp::getEntrySuccessorOperands(::mlir::RegionBranchPoint) {
+ComputeBlockOp::getEntrySuccessorOperands(::mlir::RegionBranchPoint) {
   return getOperands();
 }
 
-void ComputeOp::getSuccessorRegions(RegionBranchPoint point,
+void ComputeBlockOp::getSuccessorRegions(RegionBranchPoint point,
                                     SmallVectorImpl<RegionSuccessor> &regions) {
   if (point == RegionBranchPoint::parent()) {
     regions.emplace_back(&getBody(), getBodyArguments());
@@ -798,13 +798,13 @@ void ComputeOp::getSuccessorRegions(RegionBranchPoint point,
   }
 }
 
-void FlexComputeOp::getRegionInvocationBounds(
+void ComputeOp::getRegionInvocationBounds(
     ArrayRef<Attribute>, SmallVectorImpl<mlir::InvocationBounds> &result) {
 
   result.push_back(::mlir::InvocationBounds(1, 1));
 }
 
-void FlexComputeOp::getSuccessorRegions(
+void ComputeOp::getSuccessorRegions(
     RegionBranchPoint point, SmallVectorImpl<RegionSuccessor> &regions) {
   if (point == RegionBranchPoint::parent()) {
     regions.emplace_back(&getBody(), getBody().getArguments());
@@ -815,9 +815,9 @@ void FlexComputeOp::getSuccessorRegions(
 }
 namespace {
 
-struct FlexComputeOpSimplifyYield : OpRewritePattern<cinm::FlexComputeOp> {
-  using OpRewritePattern<FlexComputeOp>::OpRewritePattern;
-  LogicalResult matchAndRewrite(cinm::FlexComputeOp op,
+struct ComputeOpSimplifyYield : OpRewritePattern<cinm::ComputeOp> {
+  using OpRewritePattern<ComputeOp>::OpRewritePattern;
+  LogicalResult matchAndRewrite(cinm::ComputeOp op,
                                 PatternRewriter &rewriter) const override {
 
     auto &block = op.getBody().front();
@@ -843,7 +843,7 @@ struct FlexComputeOpSimplifyYield : OpRewritePattern<cinm::FlexComputeOp> {
       return failure();
 
     rewriter.setInsertionPointAfter(op);
-    auto newOp = FlexComputeOp::create(
+    auto newOp = ComputeOp::create(
         rewriter, op.getLoc(),
         ValueTypeRange<ValueRange>(ValueRange(newYielded)));
     yield->setOperands(newYielded);
@@ -857,9 +857,9 @@ struct FlexComputeOpSimplifyYield : OpRewritePattern<cinm::FlexComputeOp> {
   }
 };
 
-struct ComputeOpSimplifyYield : OpRewritePattern<cinm::ComputeOp> {
-  using OpRewritePattern<ComputeOp>::OpRewritePattern;
-  LogicalResult matchAndRewrite(cinm::ComputeOp op,
+struct ComputeBlockOpSimplifyYield : OpRewritePattern<cinm::ComputeBlockOp> {
+  using OpRewritePattern<ComputeBlockOp>::OpRewritePattern;
+  LogicalResult matchAndRewrite(cinm::ComputeBlockOp op,
                                 PatternRewriter &rewriter) const override {
 
     auto &block = op.getBody().front();
@@ -888,7 +888,7 @@ struct ComputeOpSimplifyYield : OpRewritePattern<cinm::ComputeOp> {
 
     rewriter.setInsertionPointAfter(op);
     auto newOp =
-        ComputeOp::create(rewriter, op.getLoc(), op.getOperands(),
+        ComputeBlockOp::create(rewriter, op.getLoc(), op.getOperands(),
                           ValueTypeRange<ValueRange>(ValueRange(keptYielded)));
     yield->setOperands(keptYielded);
     newOp.getBody().takeBody(op.getBody());
@@ -901,9 +901,9 @@ struct ComputeOpSimplifyYield : OpRewritePattern<cinm::ComputeOp> {
   }
 };
 
-struct ComputeOpDeleteUnusedArgs : OpRewritePattern<cinm::ComputeOp> {
-  using OpRewritePattern<ComputeOp>::OpRewritePattern;
-  LogicalResult matchAndRewrite(cinm::ComputeOp op,
+struct ComputeBlockOpDeleteUnusedArgs : OpRewritePattern<cinm::ComputeBlockOp> {
+  using OpRewritePattern<ComputeBlockOp>::OpRewritePattern;
+  LogicalResult matchAndRewrite(cinm::ComputeBlockOp op,
                                 PatternRewriter &rewriter) const override {
 
     SmallVector<Value> keptOperands;
@@ -929,11 +929,11 @@ struct ComputeOpDeleteUnusedArgs : OpRewritePattern<cinm::ComputeOp> {
 
 } // namespace
 
-void ComputeOp::getCanonicalizationPatterns(::mlir::RewritePatternSet &results,
+void ComputeBlockOp::getCanonicalizationPatterns(::mlir::RewritePatternSet &results,
                                             ::mlir::MLIRContext *context) {
-  results.insert<ComputeOpSimplifyYield, ComputeOpDeleteUnusedArgs>(context);
+  results.insert<ComputeBlockOpSimplifyYield, ComputeBlockOpDeleteUnusedArgs>(context);
 }
-void FlexComputeOp::getCanonicalizationPatterns(
+void ComputeOp::getCanonicalizationPatterns(
     ::mlir::RewritePatternSet &results, ::mlir::MLIRContext *context) {
-  results.insert<FlexComputeOpSimplifyYield>(context);
+  results.insert<ComputeOpSimplifyYield>(context);
 }

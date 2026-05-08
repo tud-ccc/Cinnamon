@@ -364,7 +364,7 @@ static scf::ForOp getSoleNestedFor(Block *body) {
   return found;
 }
 
-static FailureOr<GemvNest> matchTripleNestUnderCompute(ComputeOp compute) {
+static FailureOr<GemvNest> matchTripleNestUnderCompute(ComputeBlockOp compute) {
   Block &entry = compute.getBody().front();
 
   for (Operation &candidate : entry) {
@@ -418,7 +418,7 @@ static FailureOr<GemvNest> matchTripleNestUnderCompute(ComputeOp compute) {
 
 static FailureOr<Value> buildRowCentric(GemvNest &nest, IRMapping &mapper,
                                         OpBuilder &rewriter, Block *destBlock,
-                                        ComputeOp compute) {
+                                        ComputeBlockOp compute) {
   Location loc = compute.getLoc();
   auto resTy = dyn_cast<RankedTensorType>(nest.outer.getResult(0).getType());
   if (!resTy || resTy.getRank() != 2)
@@ -697,7 +697,7 @@ static FailureOr<Value> buildRowCentric(GemvNest &nest, IRMapping &mapper,
 // Pass plumbing
 //===----------------------------------------------------------------------===//
 
-static LogicalResult rewriteCompute(cinm::ComputeOp compute,
+static LogicalResult rewriteCompute(cinm::ComputeBlockOp compute,
                                     OpBuilder &rewriter) {
   if (compute.getNumResults() == 0)
     return failure();
@@ -713,7 +713,7 @@ static LogicalResult rewriteCompute(cinm::ComputeOp compute,
   Location loc = compute.getLoc();
   rewriter.setInsertionPoint(compute);
   // todo why don't we modify this compute op in place?? this could be way simpler
-  auto newCompute = rewriter.create<cinm::ComputeOp>(
+  auto newCompute = rewriter.create<cinm::ComputeBlockOp>(
       loc, compute->getOperands(), compute.getResultTypes());
   newCompute->setAttrs(compute->getAttrDictionary());
 
@@ -759,11 +759,11 @@ struct CinmGemvMinWritePass
 
   void runOnOperation() override {
     OpBuilder rewriter(&getContext());
-    SmallVector<cinm::ComputeOp, 4> computes;
+    SmallVector<cinm::ComputeBlockOp, 4> computes;
     getOperation()->walk(
-        [&](cinm::ComputeOp compute) { computes.push_back(compute); });
+        [&](cinm::ComputeBlockOp compute) { computes.push_back(compute); });
 
-    for (cinm::ComputeOp compute : computes)
+    for (cinm::ComputeBlockOp compute : computes)
       (void)rewriteCompute(compute, rewriter);
   }
 };

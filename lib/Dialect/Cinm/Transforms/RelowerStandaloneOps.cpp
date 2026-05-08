@@ -125,7 +125,7 @@ struct CinmRelowerPass
 
     func.walk([&](Operation *op) {
       if (auto elementwiseOp = dyn_cast<cinm::ElementwiseOp>(op)) {
-        if (!elementwiseOp->getParentOfType<cinm::ComputeOp>()) {
+        if (!elementwiseOp->getParentOfType<cinm::ComputeBlockOp>()) {
           if (elementwiseOp.getKind() == cinm::ElementwiseKind::Add) {
             adds.push_back(elementwiseOp);
           } else if (elementwiseOp.getKind() == cinm::ElementwiseKind::Sub) {

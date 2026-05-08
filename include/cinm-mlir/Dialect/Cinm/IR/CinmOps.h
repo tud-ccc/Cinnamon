@@ -30,7 +30,7 @@ namespace mlir::cinm {
 
 Type inferGemmReturnType(Type lhsType, Type rhsType);
 
-cinm::ComputeOp getEnclosingComputeBlock(Operation *op);
+cinm::ComputeBlockOp getEnclosingComputeBlock(Operation *op);
 cinm::CinmAcceleratorAttrInterface getEnclosingAccelerator(Operation *op);
 template <class T> T getEnclosingAcceleratorAs(Operation *op) {
   auto ax = getEnclosingAccelerator(op);
