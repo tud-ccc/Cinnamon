@@ -848,7 +848,8 @@ struct ConvertCinmGemmToCnm : public OpConversionPattern<cinm::GemmOp> {
     Value bufferB = cnm::AllocOp::create(builder, bufferType, workgroup);
 
     // C has a single element and no dimensions
-    cnm::BufferType bufferCType = cnm::BufferType::get({}, eltTy, cnmAccelerator);
+    cnm::BufferType bufferCType =
+        cnm::BufferType::get({}, eltTy, cnmAccelerator);
     Value bufferC = cnm::AllocOp::create(builder, bufferCType, workgroup);
 
     //::mlir::Value input, ::mlir::Value buffer, ::mlir::Value wg,
@@ -905,18 +906,19 @@ struct ConvertCinmGemmToCnm : public OpConversionPattern<cinm::GemmOp> {
                                         scatterGatherC, outbuf);
 
     if (op.getResult()) {
-      // Add a materialization guard to relate the output of the gather with the input
-      // of the scatter, in case they're a loop accumulator and we need them to bufferize
-      // to the same buffer.
-      auto bufferizationGuard = bufferization::MaterializeInDestinationOp::create(builder, gather.getOutput(), outputInit);
+      // Add a materialization guard to relate the output of the gather with the
+      // input of the scatter, in case they're a loop accumulator and we need
+      // them to bufferize to the same buffer.
+      auto bufferizationGuard =
+          bufferization::MaterializeInDestinationOp::create(
+              builder, gather.getOutput(), outputInit);
       rewriter.replaceOp(op, ValueRange{bufferizationGuard.getResult()});
     } else {
       rewriter.eraseOp(op);
     }
-    
 
     // todo workgroup sharing.
-    cnm::FreeWorkgroupOp::create(builder, workgroup); 
+    cnm::FreeWorkgroupOp::create(builder, workgroup);
     return success();
   }
 };
@@ -1004,12 +1006,13 @@ struct ConvertCinmReduceToCnm : public OpConversionPattern<cinm::ReduceOp> {
 
     const bool isFloatOp =
         isa<FloatType>(cast<ShapedType>(op.getType()).getElementType());
+    SmallVector<int64_t> redDim = {static_cast<int64_t>(op.getDimension())};
 
     llvm::SmallVector<Value, 1> newResults;
     if (convertCinmToCnm(
-            builder, op, workgroup.getResult(), {op.getDimensions()},
-            adaptor.getOperands(), ValueRange{outputInit}, ValueRange{nullptr},
-            op->getResults(), newResults,
+            builder, op, workgroup.getResult(), {redDim}, adaptor.getOperands(),
+            ValueRange{outputInit}, ValueRange{nullptr}, op->getResults(),
+            newResults,
             [&](ImplicitLocOpBuilder &builder, ValueRange inputs,
                 ValueRange outputs) {
               linalg::ReduceOp::create(

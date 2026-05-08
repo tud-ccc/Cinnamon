@@ -165,7 +165,7 @@ def Cinm_ScanOp : Cinm_Op<"op.scan", [SameOperandsAndResultType, Pure]> {
 }
 
 def Cinm_ReduceOp : Cinm_Op<"op.reduce",
-    [Pure, DeclareOpInterfaceMethods<CinmTilingInterface>]> {
+    [Pure, DeclareOpInterfaceMethods<InferTypeOpInterface, ["inferReturnTypes"]>, DeclareOpInterfaceMethods<CinmTilingInterface>]> {
   let summary = "Reduce the tensor according to a given binary operator.";
 
   let description = [{
@@ -180,9 +180,9 @@ def Cinm_ReduceOp : Cinm_Op<"op.reduce",
         // Default: reduction dimension = -1 -> last dim -> on a 2D tensor, dim = 1
         %max_along_dim1_a = cinm.op.reduce max (%x) : tensor<288x512xf32> -> tensor<288xf32>
         // Equivalent
-        %max_along_dim1_b = cinm.op.reduce max (%x) { dimensions = array<i64: 1> } : tensor<288x512xf32> -> tensor<288xf32>
+        %max_along_dim1_b = cinm.op.reduce max (%x) { dimension = 1 } : tensor<288x512xf32> -> tensor<288xf32>
         // Different dimension yields different result type tensor<512xf32>
-        %add_along_dim0 = cinm.op.reduce add (%x) { dimensions = array<i64: 0> } : tensor<288x512xf32> -> tensor<512xf32>
+        %add_along_dim0 = cinm.op.reduce add (%x) { dimension = 0 } : tensor<288x512xf32> -> tensor<512xf32>
         cinm.yield %max_along_dim1_a : tensor<288xf32>
     }
     ```
@@ -191,14 +191,24 @@ def Cinm_ReduceOp : Cinm_Op<"op.reduce",
   let arguments = (ins
     Cinm_ReduceMethodAttr:$method,
     AnyShaped:$input,
-    DefaultValuedAttr<DenseI64ArrayAttr, "{-1}">:$dimensions
+    // This attribute is internal and to pass information
+    // to the result type inference, in case the result should
+    // not be implicitly rank-reduced (scalarized).
+    DefaultValuedAttr<BoolAttr, "{true}">:$rankReduce,
+    DefaultValuedAttr<I64Attr, "{-1}">:$dimension
   );
+
+  let skipDefaultBuilders = 1;
+  let builders = [
+    OpBuilder<(ins "Type":$resultTy, "cinm::ReduceMethod":$method,  "Value":$input, CArg<"int64_t", "-1">:$dimension)>
+    ];
 
   let results = (
     outs
     AnyType:$result
   );
 
+  let hasCanonicalizer = 1;
   let extraClassDeclaration = [{
   }];
 

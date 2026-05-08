@@ -29,6 +29,7 @@
 #include <mlir/IR/Attributes.h>
 #include <mlir/IR/Builders.h>
 #include <mlir/IR/BuiltinAttributeInterfaces.h>
+#include <mlir/IR/BuiltinAttributes.h>
 #include <mlir/IR/BuiltinOps.h>
 #include <mlir/IR/BuiltinTypeInterfaces.h>
 #include <mlir/IR/BuiltinTypes.h>
@@ -223,7 +224,7 @@ static ParseResult parsePlatformOrAccelerator(OpAsmParser &parser,
 }
 
 ParseResult ComputeBlockOp::parse(::mlir::OpAsmParser &parser,
-                             ::mlir::OperationState &result) {
+                                  ::mlir::OperationState &result) {
   if (parsePlatformOrAccelerator(parser, result,
                                  getPlatformAttrName(result.name),
                                  getAcceleratorAttrName(result.name)))
@@ -283,7 +284,7 @@ void ComputeBlockOp::print(OpAsmPrinter &out) {
 }
 
 ParseResult ComputeOp::parse(::mlir::OpAsmParser &parser,
-                                 ::mlir::OperationState &result) {
+                             ::mlir::OperationState &result) {
   if (parsePlatformOrAccelerator(parser, result,
                                  getPlatformAttrName(result.name),
                                  getAcceleratorAttrName(result.name)))
@@ -329,6 +330,52 @@ LogicalResult ComputeOp::verify() {
 LogicalResult ComputeBlockOp::verify() {
   if (getPlatform() && getAccelerator())
     return emitOpError("Cannot specify both platform and accelerator");
+  return success();
+}
+
+void ReduceOp::build(OpBuilder &builder, OperationState &state, Type resultTy,
+                     ReduceMethod kind, Value input, int64_t dimension) {
+  state.addTypes(resultTy);
+  state.addOperands(input);
+  state.addAttribute(getMethodAttrName(state.name),
+                     builder.getAttr<ReduceMethodAttr>(kind));
+  bool rankReduce = true;
+  if (auto shaped = llvm::dyn_cast_or_null<ShapedType>(input.getType());
+      dimension < 0) {
+    auto newDim = dimension + shaped.getRank();
+    if (newDim >= 0 && newDim < shaped.getRank())
+      dimension = newDim;
+    if (shaped.getRank() == 1 && isa<ShapedType>(resultTy))
+      rankReduce = false;
+  }
+
+  state.addAttribute(getRankReduceAttrName(state.name),
+                     builder.getBoolAttr(rankReduce));
+  state.addAttribute(getDimensionAttrName(state.name),
+                     builder.getI64IntegerAttr(dimension));
+}
+
+::llvm::LogicalResult ReduceOp::inferReturnTypes(
+    ::mlir::MLIRContext *, ::std::optional<::mlir::Location>,
+    ::mlir::ValueRange operands, ::mlir::DictionaryAttr attributes,
+    ::mlir::OpaqueProperties, ::mlir::RegionRange,
+    ::llvm::SmallVectorImpl<::mlir::Type> &inferredReturnTypes) {
+
+  auto inputTy = cast<ShapedType>(operands[0].getType());
+  auto dimension = attributes.getAs<IntegerAttr>("dimension").getInt();
+  if (dimension < 0)
+    dimension += inputTy.getRank();
+  if (dimension < 0 || dimension >= inputTy.getRank())
+    return failure();
+
+  SmallVector<int64_t> resultShape(inputTy.getShape());
+  resultShape.erase(resultShape.begin() + dimension);
+  if (resultShape.size() > 0 ||
+      !attributes.getAs<BoolAttr>("rankReduce").getValue())
+    inferredReturnTypes.push_back(
+        inputTy.cloneWith(resultShape, inputTy.getElementType()));
+  else
+    inferredReturnTypes.push_back(inputTy.getElementType());
   return success();
 }
 
@@ -675,8 +722,8 @@ LogicalResult cinm::YieldOp::verify() {
   auto asSelect = dyn_cast_or_null<cinm::SelectOp>(parent);
 
   if (!asCompute && !asSelect && !asFlexCompute)
-    return emitOpError()
-           << "must be inside 'cinm.compute_block', 'cinm.compute' or 'cinm.select'";
+    return emitOpError() << "must be inside 'cinm.compute_block', "
+                            "'cinm.compute' or 'cinm.select'";
 
   TypeRange expected = TypeRange(parent->getResultTypes());
 
@@ -788,8 +835,8 @@ ComputeBlockOp::getEntrySuccessorOperands(::mlir::RegionBranchPoint) {
   return getOperands();
 }
 
-void ComputeBlockOp::getSuccessorRegions(RegionBranchPoint point,
-                                    SmallVectorImpl<RegionSuccessor> &regions) {
+void ComputeBlockOp::getSuccessorRegions(
+    RegionBranchPoint point, SmallVectorImpl<RegionSuccessor> &regions) {
   if (point == RegionBranchPoint::parent()) {
     regions.emplace_back(&getBody(), getBodyArguments());
   } else {
@@ -804,8 +851,8 @@ void ComputeOp::getRegionInvocationBounds(
   result.push_back(::mlir::InvocationBounds(1, 1));
 }
 
-void ComputeOp::getSuccessorRegions(
-    RegionBranchPoint point, SmallVectorImpl<RegionSuccessor> &regions) {
+void ComputeOp::getSuccessorRegions(RegionBranchPoint point,
+                                    SmallVectorImpl<RegionSuccessor> &regions) {
   if (point == RegionBranchPoint::parent()) {
     regions.emplace_back(&getBody(), getBody().getArguments());
   } else {
@@ -843,9 +890,9 @@ struct ComputeOpSimplifyYield : OpRewritePattern<cinm::ComputeOp> {
       return failure();
 
     rewriter.setInsertionPointAfter(op);
-    auto newOp = ComputeOp::create(
-        rewriter, op.getLoc(),
-        ValueTypeRange<ValueRange>(ValueRange(newYielded)));
+    auto newOp =
+        ComputeOp::create(rewriter, op.getLoc(),
+                          ValueTypeRange<ValueRange>(ValueRange(newYielded)));
     yield->setOperands(newYielded);
     newOp.getBody().takeBody(op.getBody());
     for (auto [old, newer] : llvm::zip(oldResults, newOp.getResults())) {
@@ -887,9 +934,9 @@ struct ComputeBlockOpSimplifyYield : OpRewritePattern<cinm::ComputeBlockOp> {
       return failure();
 
     rewriter.setInsertionPointAfter(op);
-    auto newOp =
-        ComputeBlockOp::create(rewriter, op.getLoc(), op.getOperands(),
-                          ValueTypeRange<ValueRange>(ValueRange(keptYielded)));
+    auto newOp = ComputeBlockOp::create(
+        rewriter, op.getLoc(), op.getOperands(),
+        ValueTypeRange<ValueRange>(ValueRange(keptYielded)));
     yield->setOperands(keptYielded);
     newOp.getBody().takeBody(op.getBody());
     for (auto [old, newer] : llvm::zip(keptResults, newOp.getResults())) {
@@ -901,6 +948,18 @@ struct ComputeBlockOpSimplifyYield : OpRewritePattern<cinm::ComputeBlockOp> {
   }
 };
 
+struct ReduceOpNormalizeDim : OpRewritePattern<cinm::ReduceOp> {
+  using OpRewritePattern<cinm::ReduceOp>::OpRewritePattern;
+  LogicalResult matchAndRewrite(cinm::ReduceOp op,
+                                PatternRewriter &rewriter) const override {
+
+    if (op.getDimension() >= 0)
+      return failure();
+    op.setDimension(op.getDimension() + op.getInput().getType().getRank());
+
+    return success();
+  }
+};
 struct ComputeBlockOpDeleteUnusedArgs : OpRewritePattern<cinm::ComputeBlockOp> {
   using OpRewritePattern<ComputeBlockOp>::OpRewritePattern;
   LogicalResult matchAndRewrite(cinm::ComputeBlockOp op,
@@ -929,11 +988,17 @@ struct ComputeBlockOpDeleteUnusedArgs : OpRewritePattern<cinm::ComputeBlockOp> {
 
 } // namespace
 
-void ComputeBlockOp::getCanonicalizationPatterns(::mlir::RewritePatternSet &results,
-                                            ::mlir::MLIRContext *context) {
-  results.insert<ComputeBlockOpSimplifyYield, ComputeBlockOpDeleteUnusedArgs>(context);
-}
-void ComputeOp::getCanonicalizationPatterns(
+void ComputeBlockOp::getCanonicalizationPatterns(
     ::mlir::RewritePatternSet &results, ::mlir::MLIRContext *context) {
+  results.insert<ComputeBlockOpSimplifyYield, ComputeBlockOpDeleteUnusedArgs>(
+      context);
+}
+void ComputeOp::getCanonicalizationPatterns(::mlir::RewritePatternSet &results,
+                                            ::mlir::MLIRContext *context) {
   results.insert<ComputeOpSimplifyYield>(context);
+}
+
+void ReduceOp::getCanonicalizationPatterns(::mlir::RewritePatternSet &results,
+                                           ::mlir::MLIRContext *context) {
+  results.insert<ReduceOpNormalizeDim>(context);
 }
