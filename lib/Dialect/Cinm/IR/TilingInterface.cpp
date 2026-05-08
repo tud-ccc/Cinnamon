@@ -1,5 +1,4 @@
 #include "cinm-mlir/Dialect/Cinm/IR/TilingInterface.h"
-#include "cinm-mlir/Dialect/Cinm/IR/TilingParameters.h"
 #include "cinm-mlir/Dialect/Cinm/IR/CinmBase.h"
 #include "cinm-mlir/Dialect/Cinm/IR/CinmOps.h"
 
@@ -43,92 +42,6 @@ using namespace mlir::cinm;
 
 namespace mlir::cinm {
 
-
-/// Return the size of tiles on a reduce dimension.
-/// Computes this by assuming the reduction operation needs (maybe several)
-/// buffers of the same size, same element type. The returned tile size
-/// divides the number of reduced elements. 
-/// This cannot fail but may return 1, meaning no blocking possible.
-int64_t TilingParameters::reduceClusterSize(int64_t numBuffers,
-                                            int64_t reducedElements,
-                                            Type elementTy,
-                                            int64_t extraElements) const {
-  // in number of elements
-  auto maxSizePerBuffer =
-      (maxNumElementsOfType(elementTy) - extraElements) / numBuffers;
-  // Now we need to find the largest divisor of `reducedElements` that is
-  // smaller than maxSizePerBuffer
-  for (int i = maxSizePerBuffer; i > 0; i--) {
-    if (reducedElements % i == 0)
-      return i;
-  }
-  return 1;
-}
-
-using OptionalTileSizes = std::optional<std::pair<int64_t, int64_t>>;
-
-/// Determine tiling factors for dimensions n and m.
-OptionalTileSizes TilingParameters::parallelClusterSize(int64_t n,
-                                                        int64_t m) const {
-  /// need to find a number that divides parallelElements and the working
-  /// group size
-  SmallVector<int64_t, 4> wgShape(workgroupShape);
-  auto it = std::remove(wgShape.begin(), wgShape.end(), 1);
-  if (it != wgShape.end())
-    wgShape.erase(it);
-
-  if (wgShape.size() == 2) {
-    // try to fit perfectly
-    if (n % wgShape[0] == 0 && m % wgShape[1] == 0)
-      return OptionalTileSizes({wgShape[0], wgShape[1]});
-    else if (n % wgShape[1] == 0 && m % wgShape[0] == 0)
-      return OptionalTileSizes({wgShape[1], wgShape[0]});
-  }
-
-  auto wg = workingGroupSize();
-  if (wg > m * n)
-    return std::nullopt;
-  auto a = std::gcd(n, wg);
-  auto b = std::gcd(m, wg);
-
-  if (a * b == wg)
-    return OptionalTileSizes({a, b});
-  else if (a > b)
-    return OptionalTileSizes({a, wg / a});
-  else if (b != 1)
-    return OptionalTileSizes({wg / b, b});
-  else
-    return std::nullopt;
-}
-
-/// Number of parallel elements in the working group.
-int64_t TilingParameters::workingGroupSize() const {
-  return std::reduce(workgroupShape.begin(), workgroupShape.end(), int64_t{1},
-                     std::multiplies<>());
-}
-
-int64_t TilingParameters::bufferSizeOfLeaf() const {
-  // Buffers at one level are shared with later levels.
-  // For a workgroup {A,B,C} and buffer sizes {M,N,P},
-  // per-leaf space is P + N/C + M/B/C.
-  int64_t numLeafsInDim = 1;
-  int64_t bufSize = 0;
-  int i = 0;
-  do {
-    size_t lastIdx = bufferSizesInBytes.size() - 1 - i;
-    bufSize += bufferSizesInBytes[lastIdx] / numLeafsInDim;
-    numLeafsInDim *=
-        lastIdx < workgroupShape.size() ? workgroupShape[lastIdx] : 1;
-    i++;
-  } while (i < static_cast<int64_t>(bufferSizesInBytes.size()));
-  return bufSize;
-}
-
-int64_t TilingParameters::maxNumElementsOfType(Type ty) const {
-  int64_t bw =
-      std::max<int64_t>(8, static_cast<int64_t>(ty.getIntOrFloatBitWidth()));
-  return bufferSizeOfLeaf() / (bw / 8);
-}
 
 TypedValue<ShapedType> reshapeStatic(OpBuilder &b, Location loc,
                                      TypedValue<ShapedType> value,
