@@ -51,38 +51,6 @@ def CinmPlatformAttrInterface : AttrInterface<"CinmPlatformAttrInterface", []> {
       /*default=*/"return {};"
     >,
 
-    // Scheduling methods
-
-    // // todo move this one to accelerator
-    // InterfaceMethod<
-    //   /*desc=*/"Build the memspace that corresponds to the given level. Return null if transfer is not possible between the given levels.",
-    //   /*retTy=*/"::mlir::cinm::CinmMemSpaceAttr",
-    //   /*methodName=*/"getTransferMemSpace",
-    //   /*args=*/(ins "::mlir::cinm::CinmLevelDefAttr":$level,
-    //                 "::mlir::cinm::CinmMemSpaceAttr":$memSpace),
-    //   "",
-    //   [{
-    //     if (level.getArity() == 0)
-    //       return ::mlir::cinm::CinmMemSpaceAttr::get(level.getName(), getShapeTupleExpr({}, level.getContext()));
-
-    //     // note, this is the default, it may not be valid.
-    //     return ::mlir::cinm::CinmMemSpaceAttr::get(level.getName(), memSpace.getIndices());
-    //   }]
-    // >
-    // ,InterfaceMethod<
-    //   /*desc=*/[{
-    //     Collect alternatives to start scheduling. This may create several clones of a block with different starting points.
-    //     The starting points can be edited before committing them. Usually this is to add an accelerator declaration, and 
-    //     prepare scheduling using this accelerator.
-    //   }],
-    //   /*retTy=*/"void",
-    //   /*methodName=*/"collectSchedulingStartingPoints",
-    //   /*args=*/(ins "::mlir::cinm::CinmSchedulingStarter&":$driver),
-    //   "",
-    //   [{
-    //     ::mlir::cinm::detail::recordCurrentBlockAsScheduleAlternative(driver);
-    //   }]
-    // >
   ];
   let extraClassDeclaration = [{
 
@@ -136,28 +104,6 @@ def CinmAcceleratorAttrInterface : AttrInterface<"CinmAcceleratorAttrInterface",
       }]
     >,
 
-    // InterfaceMethod<
-    //   // fixme this is lazy. The meaning of individual variables should be left to the implementation.
-    //   /*desc=*/"Return the thread variable for scopes of this accelerator, if any",
-    //   /*retTy=*/"std::optional<::mlir::cinm::CinmVarDefAttr>",
-    //   /*methodName=*/"getThreadCountVarDef",
-    //   /*args=*/(ins),
-    //   "",
-    //   "return std::nullopt;"
-    // >,
-
-    // InterfaceMethod<
-    //   /*desc=*/"Make progress on scheduling in the given block.",
-    //   /*retTy=*/"::mlir::DiagnosedSilenceableFailure",
-    //   /*methodName=*/"makeSchedulingProgress",
-    //   /*args=*/(ins "::mlir::cinm::CinmAcceleratorScheduler&":$api)
-    // >,
-    // InterfaceMethod<
-    //   /*desc=*/"Return a parameterized memory space attr for the given level",
-    //   /*retTy=*/"::mlir::cinm::CinmMemSpaceAttr",
-    //   /*methodName=*/"getGenericMemSpace",
-    //   /*args=*/(ins "::mlir::cinm::CinmLevelDefAttr":$level)
-    // >
   ];
 
   let extraClassDeclaration = [{
