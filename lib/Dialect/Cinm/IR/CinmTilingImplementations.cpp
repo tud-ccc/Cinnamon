@@ -204,35 +204,6 @@ void ActivateOp::getTilableDimSizes(SmallVectorImpl<int64_t> &dimSizes) {
 // convertToTiledOps implementations
 // ---------------------------------------------------------------------------
 
-static arith::AtomicRMWKind getArithConstant(ReduceMethod r, Type ty) {
-  switch (r) {
-  case mlir::cinm::ReduceMethod::ADD:
-    if (ty.isFloat()) {
-      return mlir::arith::AtomicRMWKind::addf;
-    } else {
-      return mlir::arith::AtomicRMWKind::addi;
-    }
-  case mlir::cinm::ReduceMethod::MUL:
-    if (ty.isFloat()) {
-      return mlir::arith::AtomicRMWKind::mulf;
-    } else {
-      return mlir::arith::AtomicRMWKind::muli;
-    }
-  case mlir::cinm::ReduceMethod::MAX:
-    if (ty.isFloat()) {
-      return mlir::arith::AtomicRMWKind::maximumf;
-    } else {
-      return mlir::arith::AtomicRMWKind::maxu;
-    }
-  case mlir::cinm::ReduceMethod::MIN:
-    if (ty.isFloat()) {
-      return mlir::arith::AtomicRMWKind::minimumf;
-    } else {
-      return mlir::arith::AtomicRMWKind::minu;
-    }
-  }
-}
-
 static TypedAttr getNeutralElement(ReduceMethod r, Type ty, OpBuilder &builder,
                                    Location loc) {
   return arith::getIdentityValueAttr(getArithConstant(r, ty), ty, builder, loc);

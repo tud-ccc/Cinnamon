@@ -15,15 +15,16 @@ func.func @simple(%t00: tensor<6x6xi32>, %t10 : tensor<6xf32> , %m00: memref<6xf
         %000 = cinm.op.elementwise exp %t0: tensor<6x6xi32>
         cinm.op.elementwise exp %t0 into %m0: tensor<6x6xi32> into memref<6xf32>
 
-        %z = cinm.op.reduce mul (%y) { dimensions = array<i64: 0, 1> } : tensor<6x6xi32> -> i32
+        %zx = cinm.op.reduce mul (%y) : tensor<6x6xi32> -> tensor<6xi32>
+        %z = cinm.op.reduce mul (%zx) : tensor<6xi32> -> i32
         %i = arith.addi %z, %z : i32
         %k = arith.constant 62: i64
         %t, %s = cinm.op.topK %k (%y): tensor<6x6xi32> -> tensor<?xi32>, tensor<?xindex>
 
         %z4 = cinm.op.reduce add (%y): tensor<6x6xi32> -> tensor<6xi32>
         %z0 = cinm.op.reduce mul (%y): tensor<6x6xi32> -> tensor<6xi32>
-        %z1 = cinm.op.reduce max (%t0): tensor<6x6xi32> -> tensor<6xi32>
-        %q2 = cinm.op.reduce min (%t1): tensor<6xf32> -> f32
+        %z1 = cinm.op.reduce maxsi (%t0): tensor<6x6xi32> -> tensor<6xi32>
+        %q2 = cinm.op.reduce minimumf (%t1): tensor<6xf32> -> f32
 
 
         %sqrts = cinm.op.elementwise sqrt %x: tensor<6x6xi32>
