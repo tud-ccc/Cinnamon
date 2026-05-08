@@ -30,6 +30,7 @@ namespace mlir::cinm {
 
 Type inferGemmReturnType(Type lhsType, Type rhsType);
 
+arith::AtomicRMWKind getArithConstant(ReduceMethod r, Type ty);
 cinm::ComputeBlockOp getEnclosingComputeBlock(Operation *op);
 cinm::CinmAcceleratorAttrInterface getEnclosingAccelerator(Operation *op);
 template <class T> T getEnclosingAcceleratorAs(Operation *op) {

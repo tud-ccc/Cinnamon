@@ -30,25 +30,28 @@ struct SoftmaxToCinmPattern : OpConversionPattern<linalg::SoftmaxOp> {
                   ConversionPatternRewriter &rewriter) const override {
     const auto loc = op.getLoc();
     const ShapedType inputType = op.getInput().getType();
+    bool isFloat = inputType.getElementType().isFloat();
 
-    auto compute =
-        rewriter.replaceOpWithNewOp<ComputeBlockOp>(op, adaptor.getOperands(), op.getResultTypes());
+    auto compute = rewriter.replaceOpWithNewOp<ComputeBlockOp>(
+        op, adaptor.getOperands(), op.getResultTypes());
     Value innerInput = compute.getBodyArguments()[0];
 
     rewriter.setInsertionPointToEnd(&compute.getBody().emplaceBlock());
-    const Value max = rewriter.create<cinm::ReduceOp>(loc, inputType.getElementType(),
-                                                ReduceMethod::MAX, innerInput, 0);
-    const Value t =
-        rewriter
-            .create<cinm::ElementwiseOp>(loc, ElementwiseKind::Sub, innerInput, max)
-            .getResult();
+    const Value max = rewriter.create<cinm::ReduceOp>(
+        loc, inputType.getElementType(),
+        isFloat ? ReduceMethod::MAXNUMF : ReduceMethod::MAXSI, innerInput, 0);
+    const Value t = rewriter
+                        .create<cinm::ElementwiseOp>(loc, ElementwiseKind::Sub,
+                                                     innerInput, max)
+                        .getResult();
     const SmallVector<Type, 1> types{RankedTensorType::get(
         inputType.getShape(), inputType.getElementType())};
 
     const Value e =
-            cinm::ElementwiseOp::create(rewriter, loc, ElementwiseKind::Exp, t).getResult();
-    const Value s = rewriter.create<cinm::ReduceOp>(loc, inputType.getElementType(),
-                                              ReduceMethod::ADD, e, 0);
+        cinm::ElementwiseOp::create(rewriter, loc, ElementwiseKind::Exp, t)
+            .getResult();
+    const Value s = rewriter.create<cinm::ReduceOp>(
+        loc, inputType.getElementType(), ReduceMethod::ADD, e, 0);
     const Value result =
         rewriter.create<cinm::ElementwiseOp>(loc, ElementwiseKind::Div, e, s)
             .getResult();

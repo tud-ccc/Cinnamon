@@ -1229,28 +1229,21 @@ template <> struct LinalgToCinmOpBuilder<linalg::ReduceOp> {
       }
     }
 
-    if (llvm::dyn_cast<arith::AddFOp>(reductionOp) ||
-        llvm::dyn_cast<arith::AddIOp>(reductionOp)) {
-      return cinm::ReduceMethod::ADD;
-    }
-
-    if (llvm::dyn_cast<arith::MulFOp>(reductionOp) ||
-        llvm::dyn_cast<arith::MulIOp>(reductionOp)) {
-      return cinm::ReduceMethod::MUL;
-    }
-
-    if (llvm::dyn_cast<arith::MinimumFOp>(reductionOp) ||
-        llvm::dyn_cast<arith::MinSIOp>(reductionOp)) {
-      return cinm::ReduceMethod::MIN;
-    }
-
-    if (llvm::dyn_cast<arith::MaximumFOp>(reductionOp) ||
-        llvm::dyn_cast<arith::MaxSIOp>(reductionOp)) {
-      return cinm::ReduceMethod::MAX;
-    }
-
-    // unsupported reduction method
-    return failure();
+    return llvm::TypeSwitch<Operation *, FailureOr<cinm::ReduceMethod>>(
+               reductionOp)
+        .Case([](arith::AddFOp) { return cinm::ReduceMethod::ADD; })
+        .Case([](arith::AddIOp) { return cinm::ReduceMethod::ADD; })
+        .Case([](arith::MulFOp) { return cinm::ReduceMethod::MUL; })
+        .Case([](arith::MulIOp) { return cinm::ReduceMethod::MUL; })
+        .Case([](arith::MaxSIOp) { return cinm::ReduceMethod::MAXSI; })
+        .Case([](arith::MaxUIOp) { return cinm::ReduceMethod::MAXUI; })
+        .Case([](arith::MaxNumFOp) { return cinm::ReduceMethod::MAXNUMF; })
+        .Case([](arith::MaximumFOp) { return cinm::ReduceMethod::MAXIMUMF; })
+        .Case([](arith::MinSIOp) { return cinm::ReduceMethod::MINSI; })
+        .Case([](arith::MinUIOp) { return cinm::ReduceMethod::MINUI; })
+        .Case([](arith::MinNumFOp) { return cinm::ReduceMethod::MINNUMF; })
+        .Case([](arith::MinimumFOp) { return cinm::ReduceMethod::MINIMUMF; })
+        .Default([](Operation *) { return failure(); });
   }
 
   static FailureOr<cinm::ReduceOp> build(ConversionPatternRewriter &rewriter,
@@ -1557,25 +1550,45 @@ struct ConvertLinalgGenericOpToCinm : OpConversionPattern<linalg::GenericOp> {
                                         srcOp->getResultTypes()[0],
                                         cinm::ReduceMethod::MUL, operand);
         })
+        .Case<arith::MinUIOp>([&](arith::MinUIOp) {
+          return cinm::ReduceOp::create(rewriter, loc,
+                                        srcOp->getResultTypes()[0],
+                                        cinm::ReduceMethod::MINUI, operand);
+        })
         .Case<arith::MinSIOp>([&](arith::MinSIOp) {
           return cinm::ReduceOp::create(rewriter, loc,
                                         srcOp->getResultTypes()[0],
-                                        cinm::ReduceMethod::MIN, operand);
+                                        cinm::ReduceMethod::MINSI, operand);
         })
         .Case<arith::MinimumFOp>([&](arith::MinimumFOp) {
           return cinm::ReduceOp::create(rewriter, loc,
                                         srcOp->getResultTypes()[0],
-                                        cinm::ReduceMethod::MIN, operand);
+                                        cinm::ReduceMethod::MINIMUMF, operand);
+        })
+        .Case<arith::MinNumFOp>([&](arith::MinNumFOp) {
+          return cinm::ReduceOp::create(rewriter, loc,
+                                        srcOp->getResultTypes()[0],
+                                        cinm::ReduceMethod::MINNUMF, operand);
         })
         .Case<arith::MaxSIOp>([&](arith::MaxSIOp) {
           return cinm::ReduceOp::create(rewriter, loc,
                                         srcOp->getResultTypes()[0],
-                                        cinm::ReduceMethod::MAX, operand);
+                                        cinm::ReduceMethod::MAXSI, operand);
+        })
+        .Case<arith::MaxUIOp>([&](arith::MaxUIOp) {
+          return cinm::ReduceOp::create(rewriter, loc,
+                                        srcOp->getResultTypes()[0],
+                                        cinm::ReduceMethod::MAXUI, operand);
         })
         .Case<arith::MaximumFOp>([&](arith::MaximumFOp) {
           return cinm::ReduceOp::create(rewriter, loc,
                                         srcOp->getResultTypes()[0],
-                                        cinm::ReduceMethod::MAX, operand);
+                                        cinm::ReduceMethod::MAXIMUMF, operand);
+        })
+        .Case<arith::MaxNumFOp>([&](arith::MaxNumFOp) {
+          return cinm::ReduceOp::create(rewriter, loc,
+                                        srcOp->getResultTypes()[0],
+                                        cinm::ReduceMethod::MAXNUMF, operand);
         })
         .Default([&](Operation *) {
           // unsupported elementwise operation

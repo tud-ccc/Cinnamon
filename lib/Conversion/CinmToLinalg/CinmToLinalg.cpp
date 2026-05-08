@@ -52,59 +52,14 @@ static Value buildZero(OpBuilder &b, Location loc, Type elemType) {
 
 static Value buildReduceIdentity(OpBuilder &b, Location loc,
                                  ReduceMethod method, Type elemType) {
-  if (isa<FloatType>(elemType)) {
-    const auto &sem = cast<FloatType>(elemType).getFloatSemantics();
-    switch (method) {
-    case ReduceMethod::ADD:
-      return b.create<arith::ConstantOp>(
-          loc, FloatAttr::get(elemType, APFloat::getZero(sem)));
-    case ReduceMethod::MUL:
-      return b.create<arith::ConstantOp>(
-          loc, FloatAttr::get(elemType, APFloat(sem, 1)));
-    case ReduceMethod::MAX:
-      return b.create<arith::ConstantOp>(
-          loc,
-          FloatAttr::get(elemType, APFloat::getInf(sem, /*negative=*/true)));
-    case ReduceMethod::MIN:
-      return b.create<arith::ConstantOp>(
-          loc,
-          FloatAttr::get(elemType, APFloat::getInf(sem, /*negative=*/false)));
-    }
-  }
-  unsigned width = cast<IntegerType>(elemType).getWidth();
-  switch (method) {
-  case ReduceMethod::ADD:
-    return b.create<arith::ConstantIntOp>(loc, elemType, 0);
-  case ReduceMethod::MUL:
-    return b.create<arith::ConstantIntOp>(loc, elemType, 1);
-  case ReduceMethod::MAX:
-    return b.create<arith::ConstantOp>(
-        loc, IntegerAttr::get(elemType, APInt::getSignedMinValue(width)));
-  case ReduceMethod::MIN:
-    return b.create<arith::ConstantOp>(
-        loc, IntegerAttr::get(elemType, APInt::getSignedMaxValue(width)));
-  }
-  llvm_unreachable("unknown ReduceMethod");
+  auto arithConst = cinm::getArithConstant(method, elemType);
+  return arith::getIdentityValue(arithConst, elemType, b, loc);
 }
 
 static Value emitReduceCombine(OpBuilder &b, Location loc, ReduceMethod method,
                                Value elem, Value acc, Type elemType) {
-  bool isFloat = isa<FloatType>(elemType);
-  switch (method) {
-  case ReduceMethod::ADD:
-    return isFloat ? b.create<arith::AddFOp>(loc, elem, acc).getResult()
-                   : b.create<arith::AddIOp>(loc, elem, acc).getResult();
-  case ReduceMethod::MUL:
-    return isFloat ? b.create<arith::MulFOp>(loc, elem, acc).getResult()
-                   : b.create<arith::MulIOp>(loc, elem, acc).getResult();
-  case ReduceMethod::MAX:
-    return isFloat ? b.create<arith::MaxNumFOp>(loc, elem, acc).getResult()
-                   : b.create<arith::MaxSIOp>(loc, elem, acc).getResult();
-  case ReduceMethod::MIN:
-    return isFloat ? b.create<arith::MinNumFOp>(loc, elem, acc).getResult()
-                   : b.create<arith::MinSIOp>(loc, elem, acc).getResult();
-  }
-  llvm_unreachable("unknown ReduceMethod");
+  auto arithConst = cinm::getArithConstant(method, elemType);
+  return arith::getReductionOp(arithConst, b, loc, elem, acc);
 }
 
 // Build the outs init for a gemm-like op, in priority order:
@@ -409,7 +364,8 @@ struct ConvertGemvToLinalg : public OpConversionPattern<cinm::GemvOp> {
 
     auto loc = op.getLoc();
     auto resultTy = cast<RankedTensorType>(op.getResult().getType());
-    Value init = buildGemmInit(rewriter, loc, adaptor.getOut(), adaptor.getBias(), resultTy);
+    Value init = buildGemmInit(rewriter, loc, adaptor.getOut(),
+                               adaptor.getBias(), resultTy);
 
     Value result = rewriter
                        .create<linalg::MatvecOp>(
@@ -437,7 +393,8 @@ struct ConvertGemmToLinalg : public OpConversionPattern<cinm::GemmOp> {
 
     auto loc = op.getLoc();
     auto resultTy = cast<RankedTensorType>(op.getResult().getType());
-    Value init = buildGemmInit(rewriter, loc, adaptor.getOut(), adaptor.getBias(), resultTy);
+    Value init = buildGemmInit(rewriter, loc, adaptor.getOut(),
+                               adaptor.getBias(), resultTy);
 
     Value result = rewriter
                        .create<linalg::MatmulOp>(
@@ -466,7 +423,8 @@ struct ConvertBatchGemmToLinalg
 
     auto loc = op.getLoc();
     auto resultTy = cast<RankedTensorType>(op.getResult().getType());
-    Value init = buildGemmInit(rewriter, loc, adaptor.getOut(), adaptor.getBias(), resultTy);
+    Value init = buildGemmInit(rewriter, loc, adaptor.getOut(),
+                               adaptor.getBias(), resultTy);
 
     Value result = rewriter
                        .create<linalg::BatchMatmulOp>(
@@ -513,7 +471,8 @@ struct ConvertBatchGemvToLinalg
         linalg::IteratorTypeAttr::get(ctx, utils::IteratorType::reduction),
     };
 
-    Value init = buildGemmInit(rewriter, loc, adaptor.getOut(), adaptor.getBias(), resultTy);
+    Value init = buildGemmInit(rewriter, loc, adaptor.getOut(),
+                               adaptor.getBias(), resultTy);
     auto generic = rewriter.create<linalg::GenericOp>(
         loc, TypeRange{resultTy},
         ValueRange{adaptor.getLhs(), adaptor.getRhs()}, ValueRange{init},

@@ -26,8 +26,16 @@ def Cinm_ReduceMethodAttr : I64EnumAttr<
     [
       I64EnumAttrCase<"ADD", 0, "add">,
       I64EnumAttrCase<"MUL", 1, "mul">,
-      I64EnumAttrCase<"MAX", 2, "max">,
-      I64EnumAttrCase<"MIN", 3, "min">,
+
+      I64EnumAttrCase<"MAXSI", 2, "maxsi">,
+      I64EnumAttrCase<"MAXUI", 3, "maxui">,
+      I64EnumAttrCase<"MAXIMUMF", 4, "maximumf">,
+      I64EnumAttrCase<"MAXNUMF", 5, "maxnumf">,
+
+      I64EnumAttrCase<"MINSI", 6, "minsi">,
+      I64EnumAttrCase<"MINUI", 7, "minui">,
+      I64EnumAttrCase<"MINIMUMF", 8, "minimumf">,
+      I64EnumAttrCase<"MINNUMF", 9, "minnumf">,
     ]> {
   let cppNamespace = "::mlir::cinm";
 }

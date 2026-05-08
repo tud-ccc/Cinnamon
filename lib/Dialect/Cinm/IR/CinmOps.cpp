@@ -1002,3 +1002,37 @@ void ReduceOp::getCanonicalizationPatterns(::mlir::RewritePatternSet &results,
                                            ::mlir::MLIRContext *context) {
   results.insert<ReduceOpNormalizeDim>(context);
 }
+
+arith::AtomicRMWKind cinm::getArithConstant(ReduceMethod r, Type ty) {
+  switch (r) {
+  case mlir::cinm::ReduceMethod::ADD:
+    if (ty.isFloat()) {
+      return mlir::arith::AtomicRMWKind::addf;
+    } else {
+      return mlir::arith::AtomicRMWKind::addi;
+    }
+  case mlir::cinm::ReduceMethod::MUL:
+    if (ty.isFloat()) {
+      return mlir::arith::AtomicRMWKind::mulf;
+    } else {
+      return mlir::arith::AtomicRMWKind::muli;
+    }
+  case mlir::cinm::ReduceMethod::MAXSI:
+    return mlir::arith::AtomicRMWKind::maxs;
+  case mlir::cinm::ReduceMethod::MAXUI:
+    return mlir::arith::AtomicRMWKind::maxu;
+  case mlir::cinm::ReduceMethod::MAXIMUMF:
+    return mlir::arith::AtomicRMWKind::maximumf;
+  case mlir::cinm::ReduceMethod::MAXNUMF:
+    return mlir::arith::AtomicRMWKind::maxnumf;
+
+  case mlir::cinm::ReduceMethod::MINSI:
+    return mlir::arith::AtomicRMWKind::mins;
+  case mlir::cinm::ReduceMethod::MINUI:
+    return mlir::arith::AtomicRMWKind::minu;
+  case mlir::cinm::ReduceMethod::MINIMUMF:
+    return mlir::arith::AtomicRMWKind::minimumf;
+  case mlir::cinm::ReduceMethod::MINNUMF:
+    return mlir::arith::AtomicRMWKind::minnumf;
+  }
+}
