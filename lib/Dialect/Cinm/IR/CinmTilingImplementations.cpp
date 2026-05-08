@@ -129,13 +129,63 @@ static constexpr std::array<int64_t, 2> noStaticOffsets2D{ShapedType::kDynamic,
 static constexpr std::array<int64_t, 2> unitStrides2D{1, 1};
 
 // ---------------------------------------------------------------------------
+// getTilableDimSizes implementations
+// ---------------------------------------------------------------------------
+
+void ReduceOp::getTilableDimSizes(SmallVectorImpl<int64_t> &dimSizes) {
+  auto inputType = cast<ShapedType>(getOperand().getType());
+  int64_t dim = getDimensionsAttr().asArrayRef()[0];
+  if (dim < 0)
+    dim += inputType.getRank();
+  dimSizes.push_back(inputType.getDimSize(dim));
+}
+
+void ElementwiseOp::getTilableDimSizes(SmallVectorImpl<int64_t> &dimSizes) {
+  dimSizes.push_back(cast<ShapedType>(getLhs().getType()).getNumElements());
+}
+
+void GemmOp::getTilableDimSizes(SmallVectorImpl<int64_t> &dimSizes) {
+  auto lhsType = cast<ShapedType>(getLhs().getType());
+  auto rhsType = cast<ShapedType>(getRhs().getType());
+  dimSizes.push_back(lhsType.getDimSize(0)); // M
+  dimSizes.push_back(rhsType.getDimSize(1)); // N
+  dimSizes.push_back(lhsType.getDimSize(1)); // K
+}
+
+void BatchGemmOp::getTilableDimSizes(SmallVectorImpl<int64_t> &dimSizes) {
+  auto lhsType = cast<ShapedType>(getLhs().getType());
+  auto rhsType = cast<ShapedType>(getRhs().getType());
+  dimSizes.push_back(lhsType.getDimSize(0)); // B
+  dimSizes.push_back(lhsType.getDimSize(1)); // M
+  dimSizes.push_back(rhsType.getDimSize(2)); // N
+  dimSizes.push_back(lhsType.getDimSize(2)); // K
+}
+
+void BatchGemvOp::getTilableDimSizes(SmallVectorImpl<int64_t> &dimSizes) {
+  auto lhsType = cast<ShapedType>(getLhs().getType());
+  dimSizes.push_back(lhsType.getDimSize(0)); // B
+  dimSizes.push_back(lhsType.getDimSize(1)); // M
+  dimSizes.push_back(lhsType.getDimSize(2)); // K
+}
+
+void GemvOp::getTilableDimSizes(SmallVectorImpl<int64_t> &dimSizes) {
+  auto lhsType = cast<ShapedType>(getLhs().getType());
+  dimSizes.push_back(lhsType.getDimSize(0)); // M
+  dimSizes.push_back(lhsType.getDimSize(1)); // K
+}
+
+void ActivateOp::getTilableDimSizes(SmallVectorImpl<int64_t> &dimSizes) {
+  dimSizes.push_back(cast<ShapedType>(getInput().getType()).getNumElements());
+}
+
+// ---------------------------------------------------------------------------
 // convertToTiledOps implementations
 // ---------------------------------------------------------------------------
 
 DiagnosedSilenceableFailure
 ReduceOp::convertToTiledOps(RewriterBase &rewriter,
-                             ArrayRef<int64_t> tilingFactors,
-                             SmallVectorImpl<Value> &results) {
+                            ArrayRef<int64_t> tilingFactors,
+                            SmallVectorImpl<Value> &results) {
   if (tilingFactors.size() != 1)
     return emitSilenceableFailure(getLoc())
            << "expected 1 tiling factor for reduce, got "
@@ -164,8 +214,8 @@ ReduceOp::convertToTiledOps(RewriterBase &rewriter,
 
 DiagnosedSilenceableFailure
 ElementwiseOp::convertToTiledOps(RewriterBase &rewriter,
-                                  ArrayRef<int64_t> tilingFactors,
-                                  SmallVectorImpl<Value> &results) {
+                                 ArrayRef<int64_t> tilingFactors,
+                                 SmallVectorImpl<Value> &results) {
   if (tilingFactors.size() != 1)
     return emitSilenceableFailure(getLoc())
            << "expected 1 tiling factor for elementwise, got "
@@ -232,8 +282,8 @@ ElementwiseOp::convertToTiledOps(RewriterBase &rewriter,
         if (memrefOut)
           sliceOut = extractSlice1D(b, loc, memrefOut, tileSize, base);
 
-        ElementwiseOp smaller =
-            ElementwiseOp::create(b, loc, getKind(), lhsSlice, rhsSlice, sliceOut);
+        ElementwiseOp smaller = ElementwiseOp::create(
+            b, loc, getKind(), lhsSlice, rhsSlice, sliceOut);
 
         if (smaller.getResult()) {
           SmallVector<OpFoldResult, 1> siz{b.getIndexAttr(tileSize)};
@@ -246,16 +296,17 @@ ElementwiseOp::convertToTiledOps(RewriterBase &rewriter,
       });
 
   if (originalType.getRank() > 1) {
-    loopResult[0] = tensor::ReshapeOp::create(builder, originalType,
-                                              loopResult[0], originalShapeValue);
+    loopResult[0] = tensor::ReshapeOp::create(
+        builder, originalType, loopResult[0], originalShapeValue);
   }
   results.append(loopResult.begin(), loopResult.end());
   return DiagnosedSilenceableFailure::success();
 }
 
 DiagnosedSilenceableFailure
-GemmOp::convertToTiledOps(RewriterBase &rewriter, ArrayRef<int64_t> tilingFactors,
-                           SmallVectorImpl<Value> &results) {
+GemmOp::convertToTiledOps(RewriterBase &rewriter,
+                          ArrayRef<int64_t> tilingFactors,
+                          SmallVectorImpl<Value> &results) {
   if (tilingFactors.size() != 3)
     return emitSilenceableFailure(getLoc())
            << "expected 3 tiling factors [tM,tN,tK] for gemm, got "
@@ -284,11 +335,12 @@ GemmOp::convertToTiledOps(RewriterBase &rewriter, ArrayRef<int64_t> tilingFactor
   const int64_t N = rhsType.getDimSize(1);
   if (ShapedType::isDynamic(M) || ShapedType::isDynamic(K) ||
       ShapedType::isDynamic(N))
-    return DiagnosedSilenceableFailure::definiteFailure();
+    return emitSilenceableFailure(getLoc())
+           << "Unsupported: tiling on dynamic dimensions";
 
   const int64_t p0 = tilingFactors[0];
   const int64_t p1 = tilingFactors[1];
-  const int64_t r  = tilingFactors[2];
+  const int64_t r = tilingFactors[2];
 
   ValueRange initArgs{};
   if (!getOut()) {
@@ -344,10 +396,12 @@ GemmOp::convertToTiledOps(RewriterBase &rewriter, ArrayRef<int64_t> tilingFactor
             initSlice =
                 arith::ConstantOp::create(builder, loc, zeros).getResult();
           }
-          innerIterArgInit = tensor::InsertSliceOp::create(
-              builder, loc, initSlice, iterArgs[0], resultDynamicOffsets,
-              ValueRange{}, ValueRange{}, ArrayRef(noStaticOffsets2D),
-              resultSizes, ArrayRef(unitStrides2D)).getResult();
+          innerIterArgInit =
+              tensor::InsertSliceOp::create(
+                  builder, loc, initSlice, iterArgs[0], resultDynamicOffsets,
+                  ValueRange{}, ValueRange{}, ArrayRef(noStaticOffsets2D),
+                  resultSizes, ArrayRef(unitStrides2D))
+                  .getResult();
         }
 
         SmallVector<Value, 1> reductionResult = createNestedAffineForLoops(
@@ -361,17 +415,17 @@ GemmOp::convertToTiledOps(RewriterBase &rewriter, ArrayRef<int64_t> tilingFactor
               Value rhsSlice = extractSlice(builder, loc, rhs, r, p1,
                                             indexInRedDim, parIndices[1]);
               if (outBuf) {
-                cinm::GemmOp::create(builder, loc, lhsSlice, rhsSlice,
-                                     Value{}, outBuf);
+                cinm::GemmOp::create(builder, loc, lhsSlice, rhsSlice, Value{},
+                                     outBuf);
                 return {};
               }
               Value accSlice = extractSlice(
-                  builder, loc,
-                  cast<TypedValue<ShapedType>>(innerIterArgs[0]),
+                  builder, loc, cast<TypedValue<ShapedType>>(innerIterArgs[0]),
                   p0, p1, parIndices[0], parIndices[1]);
               Value tileResult =
                   cinm::GemmOp::create(builder, loc, lhsSlice, rhsSlice,
-                                       accSlice, Value{}).getResult();
+                                       accSlice, Value{})
+                      .getResult();
               Value updatedTensor = tensor::InsertSliceOp::create(
                   builder, loc, tileResult, innerIterArgs[0],
                   resultDynamicOffsets, ValueRange{}, ValueRange{},
@@ -391,8 +445,8 @@ GemmOp::convertToTiledOps(RewriterBase &rewriter, ArrayRef<int64_t> tilingFactor
 
 DiagnosedSilenceableFailure
 BatchGemmOp::convertToTiledOps(RewriterBase &rewriter,
-                                ArrayRef<int64_t> tilingFactors,
-                                SmallVectorImpl<Value> &results) {
+                               ArrayRef<int64_t> tilingFactors,
+                               SmallVectorImpl<Value> &results) {
   if (tilingFactors.size() != 4)
     return emitSilenceableFailure(getLoc())
            << "expected 4 tiling factors [batch,tM,tN,tK] for batch_gemm, got "
@@ -423,7 +477,8 @@ BatchGemmOp::convertToTiledOps(RewriterBase &rewriter,
   const int64_t N = rhsType.getDimSize(2);
   if (ShapedType::isDynamic(B) || ShapedType::isDynamic(M) ||
       ShapedType::isDynamic(K) || ShapedType::isDynamic(N))
-    return DiagnosedSilenceableFailure::definiteFailure();
+    return emitSilenceableFailure(getLoc())
+           << "Unsupported: tiling on dynamic dimensions";
 
   const int64_t bTile = tilingFactors[0];
   const int64_t mTile = tilingFactors[1];
@@ -535,8 +590,8 @@ BatchGemmOp::convertToTiledOps(RewriterBase &rewriter,
 
 DiagnosedSilenceableFailure
 BatchGemvOp::convertToTiledOps(RewriterBase &rewriter,
-                                ArrayRef<int64_t> tilingFactors,
-                                SmallVectorImpl<Value> &results) {
+                               ArrayRef<int64_t> tilingFactors,
+                               SmallVectorImpl<Value> &results) {
   if (tilingFactors.size() != 3)
     return emitSilenceableFailure(getLoc())
            << "expected 3 tiling factors [batch,tM,tK] for batch_gemv, got "
@@ -666,8 +721,9 @@ BatchGemvOp::convertToTiledOps(RewriterBase &rewriter,
 }
 
 DiagnosedSilenceableFailure
-GemvOp::convertToTiledOps(RewriterBase &rewriter, ArrayRef<int64_t> tilingFactors,
-                           SmallVectorImpl<Value> &results) {
+GemvOp::convertToTiledOps(RewriterBase &rewriter,
+                          ArrayRef<int64_t> tilingFactors,
+                          SmallVectorImpl<Value> &results) {
   if (tilingFactors.size() != 2)
     return emitSilenceableFailure(getLoc())
            << "expected 2 tiling factors [tM,tK] for gemv, got "
@@ -697,7 +753,8 @@ GemvOp::convertToTiledOps(RewriterBase &rewriter, ArrayRef<int64_t> tilingFactor
   const int64_t M = aTy.getDimSize(0);
   const int64_t K = aTy.getDimSize(1);
   if (ShapedType::isDynamic(M) || ShapedType::isDynamic(K))
-    return DiagnosedSilenceableFailure::definiteFailure();
+    return emitSilenceableFailure(getLoc())
+           << "Unsupported: tiling on dynamic dimensions";
 
   const int64_t pM = tilingFactors[0];
   const int64_t rK = tilingFactors[1];
@@ -743,13 +800,13 @@ GemvOp::convertToTiledOps(RewriterBase &rewriter, ArrayRef<int64_t> tilingFactor
               zeros = DenseElementsAttr::get(
                   reductionAccTy,
                   {APInt::getZero(reductionAccTy.getElementTypeBitWidth())});
-            initSlice =
-                arith::ConstantOp::create(b, loc2, zeros).getResult();
+            initSlice = arith::ConstantOp::create(b, loc2, zeros).getResult();
           }
           innerIterArgInit = tensor::InsertSliceOp::create(
-              b, loc2, initSlice, iters[0], ValueRange{i}, ValueRange{},
-              ValueRange{}, noStaticOffsets1, ArrayRef<int64_t>({pM}),
-              unitStrides1).getResult();
+                                 b, loc2, initSlice, iters[0], ValueRange{i},
+                                 ValueRange{}, ValueRange{}, noStaticOffsets1,
+                                 ArrayRef<int64_t>({pM}), unitStrides1)
+                                 .getResult();
         }
 
         SmallVector<Value> red = createNestedAffineForLoops(
@@ -769,15 +826,17 @@ GemvOp::convertToTiledOps(RewriterBase &rewriter, ArrayRef<int64_t> tilingFactor
                 return {};
               }
               Value accSlice = extractSlice1D(
-                  b2, loc3, cast<TypedValue<ShapedType>>(innerAccArgs[0]),
-                  pM, i);
-              Value tileResult =
-                  cinm::GemvOp::create(b2, loc3, aTile, xTile, accSlice,
-                                       Value{}).getResult();
-              Value updatedTensor = tensor::InsertSliceOp::create(
-                  b2, loc3, tileResult, innerAccArgs[0], ValueRange{i},
-                  ValueRange{}, ValueRange{}, noStaticOffsets1,
-                  ArrayRef<int64_t>({pM}), unitStrides1).getResult();
+                  b2, loc3, cast<TypedValue<ShapedType>>(innerAccArgs[0]), pM,
+                  i);
+              Value tileResult = cinm::GemvOp::create(b2, loc3, aTile, xTile,
+                                                      accSlice, Value{})
+                                     .getResult();
+              Value updatedTensor =
+                  tensor::InsertSliceOp::create(
+                      b2, loc3, tileResult, innerAccArgs[0], ValueRange{i},
+                      ValueRange{}, ValueRange{}, noStaticOffsets1,
+                      ArrayRef<int64_t>({pM}), unitStrides1)
+                      .getResult();
               return SmallVector<Value>{updatedTensor};
             });
 
@@ -792,8 +851,8 @@ GemvOp::convertToTiledOps(RewriterBase &rewriter, ArrayRef<int64_t> tilingFactor
 
 DiagnosedSilenceableFailure
 ActivateOp::convertToTiledOps(RewriterBase &rewriter,
-                               ArrayRef<int64_t> tilingFactors,
-                               SmallVectorImpl<Value> &results) {
+                              ArrayRef<int64_t> tilingFactors,
+                              SmallVectorImpl<Value> &results) {
   if (tilingFactors.size() != 1)
     return emitSilenceableFailure(getLoc())
            << "expected 1 tiling factor for activate, got "
