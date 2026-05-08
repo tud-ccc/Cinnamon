@@ -6,6 +6,7 @@
 
 #include <cstdint>
 #include <llvm/ADT/ArrayRef.h>
+#include <llvm/ADT/SmallVector.h>
 #include <mlir/Dialect/Arith/IR/Arith.h>
 #include <mlir/IR/BuiltinTypeInterfaces.h>
 #include <mlir/Dialect/Transform/Utils/DiagnosedSilenceableFailure.h>

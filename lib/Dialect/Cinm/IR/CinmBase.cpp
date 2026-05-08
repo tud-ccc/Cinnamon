@@ -72,6 +72,31 @@ CinmDialect::verifyOperationAttribute(::mlir::Operation *op,
     if (!llvm::isa<DenseI64ArrayAttr>(attribute.getValue()))
       return op->emitOpError() << attribute.getName()
                                << " attribute should be a dense i64 array attr";
+
+    auto tileSizes =
+        llvm::cast<DenseI64ArrayAttr>(attribute.getValue()).asArrayRef();
+    auto tilingIface = llvm::cast<CinmTilingInterface>(op);
+    SmallVector<int64_t> dimSizes;
+    tilingIface.getTilableDimSizes(dimSizes);
+
+    if (tileSizes.size() != dimSizes.size())
+      return op->emitError()
+             << "Attribute " << attribute.getName().strref() << " has "
+             << tileSizes.size() << " tiling factor(s) but op has "
+             << dimSizes.size() << " tileable dimension(s)";
+
+    for (auto [i, dim, tile] : llvm::enumerate(dimSizes, tileSizes)) {
+      if (ShapedType::isDynamic(dim))
+        continue;
+      if (tile <= 0)
+        return op->emitError()
+               << "Attribute " << attribute.getName().strref()
+               << " tiling factor #" << i << " must be positive";
+      if (dim % tile != 0)
+        return op->emitError() << "Attribute " << attribute.getName().strref()
+                               << " tiling factor #" << i << " (" << tile
+                               << ") does not divide dimension size " << dim;
+    }
     return success();
   }
   if (attribute.getName() == CinmDialect::AVAILABLE_PLATFORMS_NAME) {
