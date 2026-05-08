@@ -40,8 +40,8 @@ $(IR_PREFIX).1c.cnm.affine.mlir: $(IR_PREFIX).1b.cnm.mlir
 
 $(IR_PREFIX).3.cnm.affine.mlir: $(IR_PREFIX).2.cnm.mlir
 	$(CINM_OPT) $< --eliminate-empty-tensors --cse --one-shot-bufferize='bufferize-function-boundaries function-boundary-type-conversion=identity-layout-map'  \
-					--cse --canonicalize --buffer-results-to-out-params=hoist-static-allocs \
-				  --convert-linalg-to-affine-loops --buffer-loop-hoisting --buffer-hoisting --canonicalize --cse > $@
+					--cse --canonicalize --convert-linalg-to-affine-loops --buffer-loop-hoisting --buffer-hoisting --canonicalize --cse --buffer-results-to-out-params=hoist-static-allocs \
+				   --canonicalize --cse > $@
 
 $(IR_PREFIX).4.cnm.after_opts.mlir: $(IR_PREFIX).3.cnm.affine.mlir
 	$(CINM_OPT) $< \
