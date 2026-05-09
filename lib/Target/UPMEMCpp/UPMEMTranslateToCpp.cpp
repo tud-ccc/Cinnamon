@@ -501,25 +501,91 @@ static LogicalResult printOperation(CppEmitter &emitter, arith::AndIOp op) {
 }
 
 static LogicalResult printOperation(CppEmitter &emitter, arith::BitcastOp op) {
-  assert(false && "todo: implement op printer");
+  // memcpy-based bitcast: (dst_type)(*(src_type*)&operand)
+  raw_ostream &os = emitter.ostream();
+  if (failed(emitter.emitAssignPrefix(*op.getOperation())))
+    return failure();
+  os << "*(";
+  if (failed(emitter.emitType(op.getLoc(), op.getOut().getType())))
+    return failure();
+  os << "*)&" << emitter.getOrCreateName(op.getIn());
+  return success();
 }
 
 static LogicalResult printOperation(CppEmitter &emitter,
                                     arith::CeilDivSIOp op) {
-  assert(false && "todo: implement op printer");
+  // (a / b) + (((a % b) != 0) & ((a ^ b) >= 0))
+  raw_ostream &os = emitter.ostream();
+  if (failed(emitter.emitAssignPrefix(*op.getOperation())))
+    return failure();
+  StringRef a = emitter.getOrCreateName(op.getLhs());
+  StringRef b = emitter.getOrCreateName(op.getRhs());
+  os << "(" << a << " / " << b << ") + (((" << a << " % " << b
+     << ") != 0) & ((" << a << " ^ " << b << ") >= 0))";
+  return success();
 }
 
 static LogicalResult printOperation(CppEmitter &emitter,
                                     arith::CeilDivUIOp op) {
-  assert(false && "todo: implement op printer");
+  // (a + b - 1) / b  (unsigned, no overflow risk when a>0)
+  raw_ostream &os = emitter.ostream();
+  if (failed(emitter.emitAssignPrefix(*op.getOperation())))
+    return failure();
+  StringRef a = emitter.getOrCreateName(op.getLhs());
+  StringRef b = emitter.getOrCreateName(op.getRhs());
+  os << "(" << a << " + " << b << " - 1) / " << b;
+  return success();
+}
+
+static LogicalResult printCmpOp(CppEmitter &emitter, Operation *op,
+                                StringRef cmpOp) {
+  raw_ostream &os = emitter.ostream();
+  if (failed(emitter.emitAssignPrefix(*op)))
+    return failure();
+  if (failed(printValueOrConstant(emitter, op->getOperand(0))))
+    return failure();
+  os << " " << cmpOp << " ";
+  return printValueOrConstant(emitter, op->getOperand(1));
 }
 
 static LogicalResult printOperation(CppEmitter &emitter, arith::CmpFOp op) {
-  assert(false && "todo: implement op printer");
+  StringRef cmpOp;
+  switch (op.getPredicate()) {
+  // Ordered comparisons (false if either is NaN)
+  case arith::CmpFPredicate::OEQ: cmpOp = "=="; break;
+  case arith::CmpFPredicate::OGT: cmpOp = ">"; break;
+  case arith::CmpFPredicate::OGE: cmpOp = ">="; break;
+  case arith::CmpFPredicate::OLT: cmpOp = "<"; break;
+  case arith::CmpFPredicate::OLE: cmpOp = "<="; break;
+  case arith::CmpFPredicate::ONE: cmpOp = "!="; break;
+  // Unordered: map to same C ops (NaN handling not preserved)
+  case arith::CmpFPredicate::UEQ: cmpOp = "=="; break;
+  case arith::CmpFPredicate::UGT: cmpOp = ">"; break;
+  case arith::CmpFPredicate::UGE: cmpOp = ">="; break;
+  case arith::CmpFPredicate::ULT: cmpOp = "<"; break;
+  case arith::CmpFPredicate::ULE: cmpOp = "<="; break;
+  case arith::CmpFPredicate::UNE: cmpOp = "!="; break;
+  default:
+    return op->emitOpError("unsupported CmpF predicate");
+  }
+  return printCmpOp(emitter, op.getOperation(), cmpOp);
 }
 
 static LogicalResult printOperation(CppEmitter &emitter, arith::CmpIOp op) {
-  assert(false && "todo: implement op printer");
+  StringRef cmpOp;
+  switch (op.getPredicate()) {
+  case arith::CmpIPredicate::eq:  cmpOp = "=="; break;
+  case arith::CmpIPredicate::ne:  cmpOp = "!="; break;
+  case arith::CmpIPredicate::slt: cmpOp = "<";  break;
+  case arith::CmpIPredicate::sle: cmpOp = "<="; break;
+  case arith::CmpIPredicate::sgt: cmpOp = ">";  break;
+  case arith::CmpIPredicate::sge: cmpOp = ">="; break;
+  case arith::CmpIPredicate::ult: cmpOp = "<";  break;
+  case arith::CmpIPredicate::ule: cmpOp = "<="; break;
+  case arith::CmpIPredicate::ugt: cmpOp = ">";  break;
+  case arith::CmpIPredicate::uge: cmpOp = ">="; break;
+  }
+  return printCmpOp(emitter, op.getOperation(), cmpOp);
 }
 
 static LogicalResult printOperation(CppEmitter &emitter, arith::ConstantOp op) {
@@ -538,71 +604,103 @@ static LogicalResult printOperation(CppEmitter &emitter, arith::DivUIOp op) {
   return printBinaryOperation(emitter, op.getOperation(), "/");
 }
 
+// Helper for any C-cast expression: (result_type)operand
+static LogicalResult printCastOp(CppEmitter &emitter, Operation *op) {
+  raw_ostream &os = emitter.ostream();
+  if (failed(emitter.emitAssignPrefix(*op)))
+    return failure();
+  os << "(";
+  if (failed(emitter.emitType(op->getLoc(), op->getResult(0).getType())))
+    return failure();
+  os << ")";
+  return printValueOrConstant(emitter, op->getOperand(0));
+}
+
 static LogicalResult printOperation(CppEmitter &emitter, arith::ExtFOp op) {
-  assert(false && "todo: implement op printer");
+  return printCastOp(emitter, op.getOperation());
 }
 
 static LogicalResult printOperation(CppEmitter &emitter, arith::ExtSIOp op) {
-  assert(false && "todo: implement op printer");
+  return printCastOp(emitter, op.getOperation());
 }
 
 static LogicalResult printOperation(CppEmitter &emitter, arith::ExtUIOp op) {
-  assert(false && "todo: implement op printer");
+  return printCastOp(emitter, op.getOperation());
 }
 
 static LogicalResult printOperation(CppEmitter &emitter,
                                     arith::FloorDivSIOp op) {
-  assert(false && "todo: implement op printer");
+  // Signed floor div: (a - (((a % b) != 0) & ((a ^ b) < 0))) / b
+  raw_ostream &os = emitter.ostream();
+  if (failed(emitter.emitAssignPrefix(*op.getOperation())))
+    return failure();
+  StringRef a = emitter.getOrCreateName(op.getLhs());
+  StringRef b = emitter.getOrCreateName(op.getRhs());
+  os << "(" << a << " - (((" << a << " % " << b << ") != 0) & ((" << a
+     << " ^ " << b << ") < 0))) / " << b;
+  return success();
 }
 
 static LogicalResult printOperation(CppEmitter &emitter, arith::FPToSIOp op) {
-  assert(false && "todo: implement op printer");
+  return printCastOp(emitter, op.getOperation());
 }
 
 static LogicalResult printOperation(CppEmitter &emitter, arith::FPToUIOp op) {
-  assert(false && "todo: implement op printer");
+  return printCastOp(emitter, op.getOperation());
 }
 
 static LogicalResult printOperation(CppEmitter &emitter,
                                     arith::IndexCastOp op) {
-  assert(false && "todo: implement op printer");
+  return printCastOp(emitter, op.getOperation());
 }
 
 static LogicalResult printOperation(CppEmitter &emitter,
                                     arith::IndexCastUIOp op) {
-  assert(false && "todo: implement op printer");
+  return printCastOp(emitter, op.getOperation());
+}
+
+// Helper for integer min/max via ternary: (a OP b) ? a : b
+static LogicalResult printMinMaxOp(CppEmitter &emitter, Operation *op,
+                                   StringRef cmpOp) {
+  raw_ostream &os = emitter.ostream();
+  if (failed(emitter.emitAssignPrefix(*op)))
+    return failure();
+  StringRef a = emitter.getOrCreateName(op->getOperand(0));
+  StringRef b = emitter.getOrCreateName(op->getOperand(1));
+  os << "(" << a << " " << cmpOp << " " << b << ") ? " << a << " : " << b;
+  return success();
 }
 
 static LogicalResult printOperation(CppEmitter &emitter, arith::MaximumFOp op) {
-  assert(false && "todo: implement op printer");
+  return printMinMaxOp(emitter, op.getOperation(), ">=");
 }
 
 static LogicalResult printOperation(CppEmitter &emitter, arith::MaxNumFOp op) {
-  assert(false && "todo: implement op printer");
+  return printMinMaxOp(emitter, op.getOperation(), ">=");
 }
 
 static LogicalResult printOperation(CppEmitter &emitter, arith::MaxSIOp op) {
-  assert(false && "todo: implement op printer");
+  return printMinMaxOp(emitter, op.getOperation(), ">=");
 }
 
 static LogicalResult printOperation(CppEmitter &emitter, arith::MaxUIOp op) {
-  assert(false && "todo: implement op printer");
+  return printMinMaxOp(emitter, op.getOperation(), ">=");
 }
 
 static LogicalResult printOperation(CppEmitter &emitter, arith::MinimumFOp op) {
-  assert(false && "todo: implement op printer");
+  return printMinMaxOp(emitter, op.getOperation(), "<=");
 }
 
 static LogicalResult printOperation(CppEmitter &emitter, arith::MinNumFOp op) {
-  assert(false && "todo: implement op printer");
+  return printMinMaxOp(emitter, op.getOperation(), "<=");
 }
 
 static LogicalResult printOperation(CppEmitter &emitter, arith::MinSIOp op) {
-  assert(false && "todo: implement op printer");
+  return printMinMaxOp(emitter, op.getOperation(), "<=");
 }
 
 static LogicalResult printOperation(CppEmitter &emitter, arith::MinUIOp op) {
-  assert(false && "todo: implement op printer");
+  return printMinMaxOp(emitter, op.getOperation(), "<=");
 }
 
 static LogicalResult printOperation(CppEmitter &emitter, arith::MulFOp op) {
@@ -624,7 +722,11 @@ static LogicalResult printOperation(CppEmitter &emitter,
 }
 
 static LogicalResult printOperation(CppEmitter &emitter, arith::NegFOp op) {
-  assert(false && "todo: implement op printer");
+  raw_ostream &os = emitter.ostream();
+  if (failed(emitter.emitAssignPrefix(*op.getOperation())))
+    return failure();
+  os << "-" << emitter.getOrCreateName(op.getOperand());
+  return success();
 }
 
 static LogicalResult printOperation(CppEmitter &emitter, arith::OrIOp op) {
@@ -632,7 +734,12 @@ static LogicalResult printOperation(CppEmitter &emitter, arith::OrIOp op) {
 }
 
 static LogicalResult printOperation(CppEmitter &emitter, arith::RemFOp op) {
-  assert(false && "todo: implement op printer");
+  raw_ostream &os = emitter.ostream();
+  if (failed(emitter.emitAssignPrefix(*op.getOperation())))
+    return failure();
+  os << "fmodf(" << emitter.getOrCreateName(op.getLhs()) << ", "
+     << emitter.getOrCreateName(op.getRhs()) << ")";
+  return success();
 }
 
 static LogicalResult printOperation(CppEmitter &emitter, arith::RemSIOp op) {
@@ -644,7 +751,13 @@ static LogicalResult printOperation(CppEmitter &emitter, arith::RemUIOp op) {
 }
 
 static LogicalResult printOperation(CppEmitter &emitter, arith::SelectOp op) {
-  assert(false && "todo: implement op printer");
+  raw_ostream &os = emitter.ostream();
+  if (failed(emitter.emitAssignPrefix(*op.getOperation())))
+    return failure();
+  os << emitter.getOrCreateName(op.getCondition()) << " ? "
+     << emitter.getOrCreateName(op.getTrueValue()) << " : "
+     << emitter.getOrCreateName(op.getFalseValue());
+  return success();
 }
 
 static LogicalResult printOperation(CppEmitter &emitter, arith::ShLIOp op) {
@@ -660,7 +773,7 @@ static LogicalResult printOperation(CppEmitter &emitter, arith::ShRUIOp op) {
 }
 
 static LogicalResult printOperation(CppEmitter &emitter, arith::SIToFPOp op) {
-  assert(false && "todo: implement op printer");
+  return printCastOp(emitter, op.getOperation());
 }
 
 static LogicalResult printOperation(CppEmitter &emitter, arith::SubFOp op) {
