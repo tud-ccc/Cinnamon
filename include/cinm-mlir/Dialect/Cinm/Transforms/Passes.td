@@ -58,28 +58,6 @@ def SoftmaxToCinmPass: Pass<"convert-linalg-softmax-to-cinm"> {
   ];
 }
 
-
-
-def CinmAnnotateTileSizesPass : Pass<"cinm-annotate-tiles"> {
-  let summary = "Attach tileSizes selectively";
-  let description = [{
-    Attach tiling metadata only to selected ops (compute, gemm, gemv, activate).
-    Use --ops=... to choose, and --tile-sizes to provide sizes:
-      - activate: single size (e.g. 256)
-      - gemv: MxK
-      - gemm: MxNxK
-      - compute: forwarded as-is
-    Separators may be 'x', 'X', or ','.
-  }];
-
-  let options = [
-    Option<"tileSizesOpt", "tile-sizes", "std::string", "",
-           "Tile sizes (activate: S | gemv: MxK | gemm: MxNxK; commas also ok)">,
-    Option<"opsOpt", "ops", "std::string", "",
-           "Comma-separated list of kinds to annotate: compute,gemm,gemv,activate.">
-  ];
-}
-
 def CinmGemvMinWritePass : Pass<"cinm-gemv-min-write"> {
   let summary = "Reschedule cinm GEMV tiles to minimize writes back to the first operand";
   let description = [{}];
