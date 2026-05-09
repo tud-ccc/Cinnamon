@@ -1,31 +1,30 @@
 
-# Concepts
+## CINM dialect
 
-- Platform (static description) vs accelerator (instance of the platform)
-  - Several accelerators for the same platform can coexist
-  - Accelerators have a lifecycle (initialization, destruction)
+The CINM dialect is the IR dialect used as the entry point into the CINM compiler. It contains high-level operations commonly offloaded to CIM or CNM accelerators. Those operations are currently:
+- `cinm.op.gemm` — matrix-matrix multiplication (also batched: `cinm.op.batch_gemm`)
+- `cinm.op.gemv` — matrix-vector multiplication (also batched: `cinm.op.batch_gemv`)
+- `cinm.op.elementwise` — unary or binary element-wise operation; also covers complex activation functions (ReLU, sigmoid, tanh)
+- `cinm.op.reduce` — reduction along one dimension using a given binary operator (add, min, max, …)
+- `cinm.op.scan` — prefix scan over a tensor, returning a tensor of the same shape
+- `cinm.op.transpose` — permutes tensor dimensions according to a given permutation
+- `cinm.op.topK` — returns the top-K values (and their indices) of a tensor
+- `cinm.op.simSearch` — similarity search between two tensors (cosine or dot-product metric)
 
-Platform and accelerator are attribute interfaces.
-The implementations are provided by the backend dialects. 
-Eg upmem can have the following platform description:
+Additionally, the CINM dialect provides container ops (`cinm.compute` and `compute_block`) to delimit sections of code that are to be offloaded, along with an abstract interface for platform and accelerator descriptions. Those interfaces allow the backend dialects to surface low-level architectural information to higher level transformations in a cross-cutting, device agnostic way. They are described in the next subsection.
+
+
+#### Platform and accelerator
+
+A **platform** is a static description of the hardware (topology, memory hierarchy, hardware parameters). An **accelerator** is a concrete instance of a platform — a specific subset of resources to use. Several accelerators for the same platform can coexist, and accelerators have a lifecycle (initialization, destruction).
+
+Both are MLIR attribute interfaces (`CinmPlatformAttrInterface`, `CinmAcceleratorAttrInterface`) implemented by one or more attributes in each backend dialect. For example, the UPMEM dialect provides:
 ```mlir
-#upmem = #upmem.platform<type=v1A, dimensions=8x64>
+#upmem = #upmem.platform<type=v1A, dimensions=8x64>       // platform: 8 ranks × 64 DPUs, v1A hardware params
+#upmem_4_64_16 = #upmem.array<4x32x16, #upmem>           // accelerator: 4 ranks × 32 DPUs × 16 tasklets
 ```
-and accelerator:
-```mlir
-#upmem_4_64_16 = #upmem.array<4x32x16, #upmem>
-```
-The syntax is entirely up to the given dialect, but here the platform definition means that we have 8 ranks with 64 DPUs each in the system. The v1A type is used to inform hardware parameters (like max number of threads, max DPU memory).
+An accelerator attribute must carry a reference to its parent platform. For CNM-based systems, the accelerator can additionally implement `CnmAcceleratorAttrInterface`.
 
-The accelerator declaration specifies that it uses 4 ranks of 32 DPUs, each running 16 concurrent tasklets. The accelerator must have a reference to the platform it derives from.
-
-The accelerator attribute must implement CinmAcceleratorAttrInterface.
-
-If it's a CNM system, it can also implement CnmAcceleratorAttrInterface.
-
-### CINM dialect
-
-#### Operations
 
 #### Tiling
 
@@ -40,44 +39,21 @@ Tiling factors can be manually annotated, or inferred by the `--cinm-infer-tile-
 
 #### Platform assignment
 
-The `--cinm-assign-platforms` pass automates the wrapping of `cinm.op.*` operations into `cinm.compute` regions based on which platforms want to handle them. It operates on `func.func` ops that carry the `cinm.available_platforms` attribute (a list of platform attrs).
-
-For each `cinm.op.*` op in the function, the pass queries every listed platform via the `CinmPlatformAttrInterface::isOffloadingTarget` method. If at least one platform is interested, the op is wrapped in a new `cinm.compute` op whose own `cinm.available_platforms` attribute is set to the interested subset. Ops for which no platform returns true are left as-is.
-
-Example: given a UPMEM platform (which handles `cinm.op.gemm` and `cinm.op.gemv`):
-```mlir
-// Input
-func.func @f(%A: tensor<8x1024xi32>, %B: tensor<1024x128xi32>) -> tensor<8x128xi32>
-    attributes {cinm.available_platforms = [#upmem]} {
-  %r = cinm.op.gemm %A, %B : tensor<8x1024xi32>, tensor<1024x128xi32> -> tensor<8x128xi32>
-  return %r : tensor<8x128xi32>
-}
-
-// Output
-func.func @f(%A: tensor<8x1024xi32>, %B: tensor<1024x128xi32>) -> tensor<8x128xi32>
-    attributes {cinm.available_platforms = [#upmem]} {
-  %r = cinm.compute -> tensor<8x128xi32> attributes {cinm.available_platforms = [#upmem]} {
-    %0 = cinm.op.gemm %A, %B : tensor<8x1024xi32>, tensor<1024x128xi32> -> tensor<8x128xi32>
-    cinm.yield %0 : tensor<8x128xi32>
-  }
-  return %r : tensor<8x128xi32>
-}
-```
-
-To add support for new ops in a backend platform, implement `isOffloadingTarget` on its `CinmPlatformAttrInterface` attribute. The default returns `false`.
+The `--cinm-assign-platforms` pass automates the wrapping of `cinm.op.*` operations into `cinm.compute` regions based on which platforms want to handle them. It operates on `func.func` ops that carry the `cinm.available_platforms` attribute. Which ops each platform claims is determined via the `CinmPlatformAttrInterface::isOffloadingTarget` hook (default: `false`).
 
 #### Other CINM passes
 
 - `--cinm-unwrap-compute-blocks` removes the `cinm.compute` and `cinm.compute_block` operations by inlining their content region.
 - `--cinm-isolate-compute-blocks` and `--cinm-deisolate-compute-blocks` turn `cinm.compute` into `cinm.compute_block` and back
 
+TODO Georg: document bufferization cleanups and such.
 
-### CNM dialect
+## CNM dialect
 
 CNM is a 
 
 
-### UPMEM dialect
+## UPMEM dialect
 
 
 
