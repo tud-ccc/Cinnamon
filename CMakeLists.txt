@@ -144,6 +144,9 @@ if (NOT pybind11_FOUND)
 endif()
 
 add_subdirectory("third-party/dlib")
+if(TARGET dlib)
+    target_compile_options(dlib PRIVATE -w)
+endif()
 
 execute_process(COMMAND python3 -m pybind11 --includes OUTPUT_VARIABLE PYBIND_INCLUDES OUTPUT_STRIP_TRAILING_WHITESPACE)
 message(STATUS "using python headers from ${PYBIND_INCLUDES}")

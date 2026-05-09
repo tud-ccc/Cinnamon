@@ -29,4 +29,5 @@ LINK_LIBS PUBLIC
     CinmIR
 )
 
-target_link_libraries(CinmTransforms PRIVATE pybind11::embed dlib::dlib)
+target_link_libraries(CinmTransforms PRIVATE pybind11::embed dlib)
+include_directories(SYSTEM ${CMAKE_SOURCE_DIR}/third-party/dlib)
