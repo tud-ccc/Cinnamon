@@ -569,6 +569,11 @@ void DequantizeOp::print(::mlir::OpAsmPrinter &printer) {}
   if (rhsShape.getElementType() != elementType)
     return failure();
 
+  if (adaptor.getOut() && llvm::isa<MemRefType>(adaptor.getOut().getType())) {
+    // This is the out buffer. Don't add any results.
+    return success();
+  }
+
   SmallVector<int64_t, 3> outShape = {
       lhsShape.getDimSize(0), lhsShape.getDimSize(1), rhsShape.getDimSize(2)};
 
@@ -604,6 +609,11 @@ void DequantizeOp::print(::mlir::OpAsmPrinter &printer) {}
   auto elementType = lhsShape.getElementType();
   if (rhsShape.getElementType() != elementType)
     return failure();
+
+  if (adaptor.getOut() && llvm::isa<MemRefType>(adaptor.getOut().getType())) {
+    // This is the out buffer. Don't add any results.
+    return success();
+  }
 
   SmallVector<int64_t, 2> outShape = {lhsShape.getDimSize(0),
                                       lhsShape.getDimSize(1)};
