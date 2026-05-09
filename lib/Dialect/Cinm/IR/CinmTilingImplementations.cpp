@@ -136,6 +136,19 @@ static Value insertSliceND(OpBuilder &builder, Location loc, Value slice,
   assert(false && "type not handled");
 }
 
+// Return the size of dimension dimIdx as an OpFoldResult: a static IntegerAttr
+// when the dimension is known at compile time, or a DimOp result otherwise.
+static OpFoldResult getDimOfr(OpBuilder &b, Location loc,
+                               TypedValue<ShapedType> shaped, int64_t dimIdx) {
+  const int64_t size = shaped.getType().getDimSize(dimIdx);
+  if (!ShapedType::isDynamic(size))
+    return b.getIndexAttr(size);
+  Value idx = arith::ConstantIndexOp::create(b, loc, dimIdx);
+  if (isa<RankedTensorType>(shaped.getType()))
+    return tensor::DimOp::create(b, loc, shaped, idx).getResult();
+  return memref::DimOp::create(b, loc, shaped, idx).getResult();
+}
+
 // Shared tiling kernel for GemmOp, GemvOp, BatchGemmOp, BatchGemvOp.
 //
 // All four ops share the layout pattern:
@@ -178,30 +191,33 @@ static DiagnosedSilenceableFailure convertGemmlikeToTiledOps(
            << "gemm-like op: expected " << nPar + 1 << " tiling factors, got "
            << tilingFactors.size();
 
-  for (int64_t i = 0; i < lhsRank; ++i)
-    if (ShapedType::isDynamic(lhs.getType().getDimSize(i)))
-      return emitSilenceableFailure(loc)
-             << "Unsupported: tiling on dynamic dimensions";
-  for (int64_t i = 0; i < rhs.getType().getRank(); ++i)
-    if (ShapedType::isDynamic(rhs.getType().getDimSize(i)))
-      return emitSilenceableFailure(loc)
-             << "Unsupported: tiling on dynamic dimensions";
-
   const int64_t nBatch = lhsRank - 2;
-  const int64_t K = lhs.getType().getDimSize(nBatch + 1);
   const int64_t r = tilingFactors.back();
   const SmallVector<int64_t> parTiles(tilingFactors.drop_back(1));
   const Type eltTy = resultType.getElementType();
 
+  // Build per-dimension loop bounds as OpFoldResult (static attr or DimOp
+  // result). batch + M dims come from lhs; N dims from rhs after the K index.
+  SmallVector<OpFoldResult> parBounds;
+  for (int64_t i = 0; i <= nBatch; ++i)
+    parBounds.push_back(getDimOfr(rewriter, loc, lhs, i));
+  for (int64_t i = nBatch + 1; i < rhs.getType().getRank(); ++i)
+    parBounds.push_back(getDimOfr(rewriter, loc, rhs, i));
+  const OpFoldResult kBound = getDimOfr(rewriter, loc, lhs, nBatch + 1);
+
   ValueRange initArgs{};
   if (!out) {
-    Value resultInit =
-        tensor::EmptyOp::create(rewriter, loc, resultType.getShape(), eltTy);
+    SmallVector<Value> dynamicDims;
+    for (auto ofr : parBounds)
+      if (auto v = ofr.dyn_cast<Value>())
+        dynamicDims.push_back(v);
+    Value resultInit = tensor::EmptyOp::create(
+        rewriter, loc, cast<RankedTensorType>(resultType), dynamicDims);
     initArgs = resultInit;
   }
 
   SmallVector<Value> finals = createNestedAffineForLoops(
-      rewriter, loc, resultType.getShape(), parTiles, initArgs,
+      rewriter, loc, ArrayRef<OpFoldResult>(parBounds), parTiles, initArgs,
       [&, nBatch, nPar](OpBuilder &b, Location loc, ValueRange indices,
                         ValueRange iterArgs) -> SmallVector<Value> {
         const ValueRange parIndices = indices;
@@ -239,7 +255,8 @@ static DiagnosedSilenceableFailure convertGemmlikeToTiledOps(
         }
 
         SmallVector<Value, 1> reductionResult = createNestedAffineForLoops(
-            b, loc, {K}, {r}, innerIterArgInit,
+            b, loc, ArrayRef<OpFoldResult>{kBound}, ArrayRef<int64_t>{r},
+            innerIterArgInit,
             [&, nBatch, nPar](OpBuilder &b, Location loc, ValueRange indices,
                               ValueRange innerIterArgs) -> SmallVector<Value> {
               const Value k = indices[0];
