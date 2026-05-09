@@ -33,11 +33,7 @@ namespace {
 using namespace mlir;
 
 static Value makeZeroLike(OpBuilder &b, Location loc, Type elementType) {
-  if (auto ft = dyn_cast<FloatType>(elementType))
-    return b.create<arith::ConstantOp>(loc, b.getFloatAttr(ft, 0.0));
-  if (auto it = dyn_cast<IntegerType>(elementType))
-    return b.create<arith::ConstantOp>(loc, b.getIntegerAttr(it, 0));
-  return {};
+  return b.create<arith::ConstantOp>(loc, b.getZeroAttr(elementType));
 }
 
 //===----------------------------------------------------------------------===//
@@ -712,7 +708,8 @@ static LogicalResult rewriteCompute(cinm::ComputeBlockOp compute,
 
   Location loc = compute.getLoc();
   rewriter.setInsertionPoint(compute);
-  // todo why don't we modify this compute op in place?? this could be way simpler
+  // todo why don't we modify this compute op in place?? this could be way
+  // simpler
   auto newCompute = rewriter.create<cinm::ComputeBlockOp>(
       loc, compute->getOperands(), compute.getResultTypes());
   newCompute->setAttrs(compute->getAttrDictionary());

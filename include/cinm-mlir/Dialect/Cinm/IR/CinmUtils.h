@@ -18,12 +18,18 @@ namespace mlir::cinm {
 using BodyBuilderCallback = function_ref<SmallVector<Value>(
     OpBuilder &, Location, ValueRange, ValueRange)>;
 
+// Overload for fully static loop sizes.
 SmallVector<Value> createNestedAffineForLoops(OpBuilder &builder, Location loc,
                                               ArrayRef<int64_t> loopSizes,
                                               ArrayRef<int64_t> loopSteps,
                                               ValueRange iterArgInit,
                                               BodyBuilderCallback bodyBuilder);
-AffineExpr linearizeIndices(MLIRContext *ctx, ArrayRef<int64_t> shape);
-void structureIndex(AffineExpr index, ArrayRef<int64_t> shape,
-                    SmallVectorImpl<AffineExpr> &map);
+
+// Overload for mixed static/dynamic loop sizes. Static sizes are represented
+// as IntegerAttr, dynamic sizes as Values. Loop steps remain static.
+SmallVector<Value> createNestedAffineForLoops(OpBuilder &builder, Location loc,
+                                              ArrayRef<OpFoldResult> loopSizes,
+                                              ArrayRef<int64_t> loopSteps,
+                                              ValueRange iterArgInit,
+                                              BodyBuilderCallback bodyBuilder);
 } // namespace mlir::cinm

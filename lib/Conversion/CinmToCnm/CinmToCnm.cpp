@@ -244,11 +244,11 @@ computeShapeOfTensors(Location loc, llvm::ArrayRef<int64_t> shape,
     }
   }
 
-  AffineExpr index = cinm::linearizeIndices(wgTy.getContext(), wgShape);
+  AffineExpr index = mlir::linearizeIndices(wgTy.getContext(), wgShape);
 
   llvm::SmallVector<AffineExpr> scatterResults;
   scatterResults.reserve(parallelDims.size());
-  cinm::structureIndex(index, parallelDims, scatterResults);
+  mlir::structureIndex(index, parallelDims, scatterResults);
 
   scatterMap =
       AffineMap::get(wgShape.size(), 0, scatterResults, wgTy.getContext());
@@ -285,7 +285,7 @@ LogicalResult convertInputIntoAlloc(Value &inputBuf, Value workGroup,
     return failure();
 
   if (reshapeInto) {
-    inputBuf = cinm::reshapeStatic(rewriter, rewriter.getLoc(), inputBuf,
+    inputBuf = mlir::reshapeStatic(rewriter, rewriter.getLoc(), inputBuf,
                                    cast<ShapedType>(inputType), *reshapeInto);
   }
 
@@ -439,7 +439,7 @@ LogicalResult convertCinmToCnm(
     auto res = cnm::GatherOp::create(builder, cnmAlloc, workgroup, map, outBuf);
     if (isa<TensorType>(reshaped.getType())) {
       auto correspondingResult = results[i];
-      auto shapedBack = cinm::reshapeStatic(
+      auto shapedBack = mlir::reshapeStatic(
           builder, builder.getLoc(),
           cast<TypedValue<ShapedType>>(res.getOutput()),
           cast<ShapedType>(correspondingResult.getType()).getShape());
@@ -725,7 +725,7 @@ LogicalResult computeScatterMapForGemm(cnm::BufferType bufferTyAB,
     auto ctx = bufferTyAB.getContext();
     auto numInputs = bufferTyAB.getWorkgroupShape().size();
     const auto linearInput =
-        cinm::linearizeIndices(ctx, bufferTyAB.getWorkgroupShape());
+        mlir::linearizeIndices(ctx, bufferTyAB.getWorkgroupShape());
 
     scatterA = mlir::simplifyAffineMapWithBounds(
         AffineMap::get(numInputs, 0, linearInput % rowsA),
@@ -736,7 +736,7 @@ LogicalResult computeScatterMapForGemm(cnm::BufferType bufferTyAB,
         bufferTyAB.getWorkgroupShape());
 
     SmallVector<AffineExpr> results;
-    cinm::structureIndex(linearInput, {rowsA, colsB}, results);
+    mlir::structureIndex(linearInput, {rowsA, colsB}, results);
     scatterGatherC = mlir::simplifyAffineMapWithBounds(
         AffineMap::get(numInputs, 0, std::move(results), ctx),
         bufferTyAB.getWorkgroupShape());

@@ -4,7 +4,10 @@
 
 #include <mlir/Dialect/Affine/IR/AffineOps.h>
 #include <mlir/Dialect/MemRef/IR/MemRef.h>
-#include <mlir/Dialect/Utils/IndexingUtils.h>
+#include <mlir/Dialect/Utils/StaticValueUtils.h>
+#include <mlir/IR/AffineExpr.h>
+#include <mlir/IR/AffineMap.h>
+#include <mlir/IR/OpDefinition.h>
 #include <mlir/Transforms/DialectConversion.h>
 
 namespace mlir::cinm {
@@ -41,38 +44,50 @@ SmallVector<Value> createNestedAffineForLoops(OpBuilder &builder, Location loc,
   return loops.front().getResults();
 }
 
-// Turn an index in the index space of the given shape into a linear index.
-AffineExpr linearizeIndices(MLIRContext *ctx, ArrayRef<int64_t> shape) {
+SmallVector<Value> createNestedAffineForLoops(OpBuilder &builder, Location loc,
+                                              ArrayRef<OpFoldResult> loopSizes,
+                                              ArrayRef<int64_t> loopSteps,
+                                              ValueRange iterArgsInit,
+                                              BodyBuilderCallback bodyBuilder) {
+  assert(loopSizes.size() == loopSteps.size());
 
-  AffineExpr index = getAffineConstantExpr(0, ctx);
-  int64_t dimIndex = shape.size() - 1;
-  int64_t trailing = 1;
-  for (auto it = shape.rbegin(); it != shape.rend(); it++) {
-    auto dim = *it;
-    index = trailing * getAffineDimExpr(dimIndex, ctx) + index;
-    trailing *= dim;
-    dimIndex--;
+  MLIRContext *ctx = builder.getContext();
+  // Lower bound is always 0.
+  AffineMap zeroMap = AffineMap::getConstantMap(0, ctx);
+  // Dynamic upper bound: identity map on one dim operand.
+  AffineMap dynUbMap = AffineMap::get(1, 0, getAffineDimExpr(0, ctx));
+
+  SmallVector<affine::AffineForOp> loops;
+  SmallVector<Value> indices;
+  ValueRange iterArgs = iterArgsInit;
+
+  for (auto [sizeOfr, step] : llvm::zip(loopSizes, loopSteps)) {
+    affine::AffineForOp current;
+    if (auto staticSize = mlir::getConstantIntValue(sizeOfr)) {
+      current = builder.create<affine::AffineForOp>(loc, 0, *staticSize, step,
+                                                    iterArgs);
+    } else {
+      Value dynSize = cast<Value>(sizeOfr);
+      current = builder.create<affine::AffineForOp>(
+          loc, ValueRange{}, zeroMap, ValueRange{dynSize}, dynUbMap, step,
+          iterArgs);
+    }
+    if (!loops.empty() && !iterArgs.empty()) {
+      builder.create<affine::AffineYieldOp>(loc, current.getResults());
+    }
+    loops.push_back(current);
+    indices.push_back(current.getRegion().front().getArguments().front());
+    iterArgs = current.getRegion().front().getArguments().drop_front();
+    builder.setInsertionPointToStart(&current.getRegion().front());
   }
-  return index;
+
+  SmallVector<Value> result = bodyBuilder(builder, loc, indices, iterArgs);
+  if (!iterArgs.empty()) {
+    builder.create<affine::AffineYieldOp>(loc, result);
+  }
+
+  builder.setInsertionPointAfter(loops.front());
+  return loops.front().getResults();
 }
 
-// inflate a linear index into the given shape
-void structureIndex(AffineExpr index, ArrayRef<int64_t> shape,
-                    SmallVectorImpl<AffineExpr> &map) {
-
-  int64_t sizeOfTrailing = computeProduct(shape) / shape[0];
-  map.push_back(index.floorDiv(sizeOfTrailing));
-
-  AffineExpr gatherExpr = index * sizeOfTrailing;
-  size_t i = 1;
-
-  for (auto dim : llvm::drop_begin(shape, 1)) {
-    index = index % sizeOfTrailing;
-    sizeOfTrailing /= dim;
-    map.push_back(index.floorDiv(sizeOfTrailing));
-    gatherExpr = gatherExpr +
-                 mlir::getAffineDimExpr(i, index.getContext()) * sizeOfTrailing;
-    i++;
-  }
-}
 } // namespace mlir::cinm

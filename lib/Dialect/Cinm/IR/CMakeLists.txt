@@ -4,7 +4,6 @@ add_mlir_dialect_library(CinmIR
         CinmTypes.cpp
         CinmTilingFactors.cpp
         CinmTilingImplementations.cpp
-        TilingInterface.cpp
         CinmUtils.cpp
 
     DEPENDS
@@ -19,4 +18,5 @@ add_mlir_dialect_library(CinmIR
         MLIRAffineDialect
         MLIRTensorDialect
         MLIRLinalgUtils
+        CinmUtils
 )
