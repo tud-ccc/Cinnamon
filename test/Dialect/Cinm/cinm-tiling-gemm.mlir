@@ -55,7 +55,7 @@ func.func @gemm_tensor(%A: tensor<8x1024xi32>, %B: tensor<1024x128xi32>) -> tens
   // CHECK: %[[sliceA:.*]] = tensor.extract_slice %[[A]][%[[i]], %[[k]]] [8, 128] [1, 1] :
   // CHECK: %[[sliceB:.*]] = tensor.extract_slice %[[B]][%[[k]], %[[j]]] [128, 32] [1, 1] :
   // CHECK: %[[sliceAcc:.*]] = tensor.extract_slice %[[acc2]][%[[i]], %[[j]]] [8, 32] [1, 1] :
-  // CHECK: %[[r:.*]] = cinm.op.gemm %[[sliceA]], %[[sliceB]] plus %[[sliceAcc]] :
+  // CHECK: %[[r:.*]] = cinm.op.gemm %[[sliceA]], %[[sliceB]] plus %[[sliceAcc]] into %[[sliceAcc]] :
   // CHECK: tensor.insert_slice %[[r]] into %[[acc2]][%[[i]], %[[j]]] [8, 32] [1, 1] :
   %r = cinm.op.gemm %A, %B {cinm.tile_sizes = array<i64: 8, 32, 128>}
       : tensor<8x1024xi32>, tensor<1024x128xi32> -> tensor<8x128xi32>
@@ -74,7 +74,7 @@ func.func @gemm_tensor_bias(%A: tensor<8x1024xi32>, %B: tensor<1024x128xi32>, %b
   // CHECK: %[[sliceA:.*]] = tensor.extract_slice %[[A]][%[[i]], %[[k]]] [8, 128] [1, 1] :
   // CHECK: %[[sliceB:.*]] = tensor.extract_slice %[[B]][%[[k]], %[[j]]] [128, 32] [1, 1] :
   // CHECK: %[[sliceAcc:.*]] = tensor.extract_slice %[[acc2]][%[[i]], %[[j]]] [8, 32] [1, 1] :
-  // CHECK: %[[r:.*]] = cinm.op.gemm %[[sliceA]], %[[sliceB]] plus %[[sliceAcc]] :
+  // CHECK: %[[r:.*]] = cinm.op.gemm %[[sliceA]], %[[sliceB]] plus %[[sliceAcc]] into %[[sliceAcc]] :
   // CHECK: tensor.insert_slice %[[r]] into %[[acc2]][%[[i]], %[[j]]] [8, 32] [1, 1] :
   %r = cinm.op.gemm %A, %B plus %bias {cinm.tile_sizes = array<i64: 8, 32, 128>}
       : tensor<8x1024xi32>, tensor<1024x128xi32> plus tensor<8x128xi32> -> tensor<8x128xi32>
