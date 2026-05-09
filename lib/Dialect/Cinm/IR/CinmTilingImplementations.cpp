@@ -455,8 +455,10 @@ GemmOp::convertToTiledOps(RewriterBase &rewriter,
         if (auto bias = getBias())
           biasSlice = extractSlice(builder, loc, bias, p0, p1, parIndices[0],
                                    parIndices[1]);
+
+        // If the output is a memref, then slice it and possibly accumulate the bias into it before the inner loop.
         Value outBuf;
-        if (auto outmemref = getOut()) {
+        if (auto outmemref = getOut(); outmemref && isa<MemRefType>(outmemref.getType())) {
           outBuf = extractSlice(builder, loc,
                                 cast<TypedValue<ShapedType>>(outmemref), p0, p1,
                                 parIndices[0], parIndices[1]);
@@ -465,35 +467,24 @@ GemmOp::convertToTiledOps(RewriterBase &rewriter,
                                   outBuf);
         }
 
-        // For the tensor case: seed the [i,j] slice of the output tensor with
-        // biasSlice or zeros before the reduction, then carry the full tensor
-        // through the inner loop. The extract/insert pair lives next to the
-        // GemmOp, which lets bufferization eliminate the intermediate buffer.
+        // Tensor case: seed the [i,j] tile with bias or zeros, then carry the
+        // full result tensor through the reduction loop. This is on purpose as
+        // having the extract/insert slice inside the inner loop improves bufferization
+        // results. 
         ValueRange innerIterArgInit{};
         if (!outBuf) {
-          Value initSlice;
-          if (biasSlice) {
-            initSlice = biasSlice;
-          } else {
-            auto reductionAccTy = RankedTensorType::get({p0, p1}, eltTy);
-            DenseElementsAttr zeros;
-            if (auto floatType = dyn_cast<FloatType>(eltTy))
-              zeros = DenseElementsAttr::get(
-                  reductionAccTy,
-                  {APFloat::getZero(floatType.getFloatSemantics())});
-            else
-              zeros = DenseElementsAttr::get(
-                  reductionAccTy,
-                  {APInt::getZero(reductionAccTy.getElementTypeBitWidth())});
-            initSlice =
-                arith::ConstantOp::create(builder, loc, zeros).getResult();
+          Value initTile = biasSlice;
+          if (!initTile) {
+            auto tileTy = RankedTensorType::get({p0, p1}, eltTy);
+            initTile =
+                arith::ConstantOp::create(
+                    builder, loc,
+                    DenseElementsAttr::get(tileTy, builder.getZeroAttr(eltTy)))
+                    .getResult();
           }
-          innerIterArgInit =
-              tensor::InsertSliceOp::create(
-                  builder, loc, initSlice, iterArgs[0], resultDynamicOffsets,
-                  ValueRange{}, ValueRange{}, ArrayRef(noStaticOffsets2D),
-                  resultSizes, ArrayRef(unitStrides2D))
-                  .getResult();
+          innerIterArgInit = insertSliceND(
+              builder, loc, initTile, cast<TypedValue<ShapedType>>(iterArgs[0]),
+              {p0, p1}, parIndices);
         }
 
         SmallVector<Value, 1> reductionResult = createNestedAffineForLoops(
@@ -506,17 +497,22 @@ GemmOp::convertToTiledOps(RewriterBase &rewriter,
                                             parIndices[0], indexInRedDim);
               Value rhsSlice = extractSlice(builder, loc, rhs, r, p1,
                                             indexInRedDim, parIndices[1]);
-              if (outBuf) {
+              if (innerIterArgs.empty()) {
+                // memref - create in place
                 cinm::GemmOp::create(builder, loc, lhsSlice, rhsSlice, Value{},
                                      outBuf);
                 return {};
               }
+              // Then tensor version.
+
               Value accSlice = extractSlice(
                   builder, loc, cast<TypedValue<ShapedType>>(innerIterArgs[0]),
                   p0, p1, parIndices[0], parIndices[1]);
+              // note we set the out buf to the acc slice for better
+              // bufferization result.
               Value tileResult =
                   cinm::GemmOp::create(builder, loc, lhsSlice, rhsSlice,
-                                       accSlice, Value{})
+                                       accSlice, accSlice)
                       .getResult();
               Value updatedTensor = tensor::InsertSliceOp::create(
                   builder, loc, tileResult, innerIterArgs[0],
@@ -867,8 +863,10 @@ GemvOp::convertToTiledOps(RewriterBase &rewriter,
         Value biasSlice;
         if (auto bias = getBias())
           biasSlice = extractSlice1D(b, loc2, bias, pM, i);
+
+        // If the output is a memref, then slice it and possibly accumulate the bias into it before the inner loop.
         Value outBuf;
-        if (auto outmemref = getOut()) {
+        if (auto outmemref = getOut(); outmemref && isa<MemRefType>(outmemref.getType())) {
           outBuf = extractSlice1D(
               b, loc2, cast<TypedValue<ShapedType>>(outmemref), pM, i);
           if (biasSlice)
@@ -876,29 +874,24 @@ GemvOp::convertToTiledOps(RewriterBase &rewriter,
                                   outBuf);
         }
 
+        // Tensor case: seed the [i] tile with bias or zeros, then carry the
+        // full result tensor through the reduction loop. This is on purpose as
+        // having the extract/insert slice inside the inner loop improves bufferization
+        // results.
         ValueRange innerIterArgInit{};
         if (!outBuf) {
-          Value initSlice;
-          if (biasSlice) {
-            initSlice = biasSlice;
-          } else {
-            auto reductionAccTy = RankedTensorType::get({pM}, elTy);
-            DenseElementsAttr zeros;
-            if (auto floatType = dyn_cast<FloatType>(elTy))
-              zeros = DenseElementsAttr::get(
-                  reductionAccTy,
-                  {APFloat::getZero(floatType.getFloatSemantics())});
-            else
-              zeros = DenseElementsAttr::get(
-                  reductionAccTy,
-                  {APInt::getZero(reductionAccTy.getElementTypeBitWidth())});
-            initSlice = arith::ConstantOp::create(b, loc2, zeros).getResult();
+          Value initTile = biasSlice;
+          if (!initTile) {
+            auto tileTy = RankedTensorType::get({pM}, elTy);
+            initTile =
+                arith::ConstantOp::create(
+                    b, loc2,
+                    DenseElementsAttr::get(tileTy, b.getZeroAttr(elTy)))
+                    .getResult();
           }
-          innerIterArgInit = tensor::InsertSliceOp::create(
-                                 b, loc2, initSlice, iters[0], ValueRange{i},
-                                 ValueRange{}, ValueRange{}, noStaticOffsets1,
-                                 ArrayRef<int64_t>({pM}), unitStrides1)
-                                 .getResult();
+          innerIterArgInit = insertSliceND(b, loc2, initTile,
+                                           cast<TypedValue<ShapedType>>(iters[0]),
+                                           {pM}, ValueRange{i});
         }
 
         SmallVector<Value> red = createNestedAffineForLoops(
@@ -913,15 +906,16 @@ GemvOp::convertToTiledOps(RewriterBase &rewriter,
               Value xTile = extractSlice1D(
                   b2, loc3, cast<TypedValue<ShapedType>>(x), rK, k);
 
-              if (outBuf) {
+              if (innerAccArgs.empty()) {
                 cinm::GemvOp::create(b2, loc3, aTile, xTile, Value{}, outBuf);
                 return {};
               }
               Value accSlice = extractSlice1D(
                   b2, loc3, cast<TypedValue<ShapedType>>(innerAccArgs[0]), pM,
                   i);
+              // Note we set the out buf for better bufferization result.
               Value tileResult = cinm::GemvOp::create(b2, loc3, aTile, xTile,
-                                                      accSlice, Value{})
+                                                      accSlice, accSlice)
                                      .getResult();
               Value updatedTensor =
                   tensor::InsertSliceOp::create(

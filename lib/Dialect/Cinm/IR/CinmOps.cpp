@@ -75,7 +75,7 @@ static void buildGemmLikeOp(OpBuilder &builder, OperationState &result,
 
   result.addAttribute("operandSegmentSizes",
                       builder.getDenseI32ArrayAttr({1, 1, biasInt, outInt}));
-  if (!out) {
+  if (!out || isa<RankedTensorType>(out.getType())) {
     ::llvm::SmallVector<::mlir::Type, 2> inferredReturnTypes;
     if (::mlir::succeeded(Self::inferReturnTypes(
             result.getContext(), result.location, result.operands,

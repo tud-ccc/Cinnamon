@@ -1,4 +1,4 @@
-// RUN: cinm-opt '--one-shot-bufferize=bufferize-function-boundaries function-boundary-type-conversion=identity-layout-map' %s | cinm-opt | FileCheck %s
+// RUN: cinm-opt '--one-shot-bufferize=bufferize-function-boundaries function-boundary-type-conversion=identity-layout-map' %s --split-input-file | cinm-opt | FileCheck %s
 
 // CHECK-LABEL: gemm
     func.func @gemm(%A: tensor<8x1024xi32>, %B: tensor<1024x128xi32>) -> tensor<8x128xi32> {

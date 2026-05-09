@@ -74,6 +74,32 @@ class Cinm_GemmlikeOp<string name, string cppClassName> : Cinm_Op<name,
     AttrSizedOperandSegments
   ]> {
 
+  let description = [{
+    CINM GEMM-like ops (batch/non-batch gemm/gemv) semantics depend on whether they operate
+    on memrefs or tensors.
+    
+    If the operands are tensors:
+    ```mlir
+        %C = cinm.op.gemm %A, %B                      // %C = %A * %B
+        %C = cinm.op.gemm %A, %B plus %bias           // %C = %A * %B + %bias
+    ```
+    A tensor out buffer is only used as a bufferization hint (is states that %C may be equivalent to %out):
+    ```mlir
+        %C = cinm.op.gemm %A, %B into %out            // %C = %A * %B
+        %C = cinm.op.gemm %A, %B plus %bias into %out // %C = %A * %B + %bias
+    ```
+    If the operands are memrefs:
+    ```mlir
+        cinm.op.gemm %A, %B into %out                 // %out += %A * %B
+        cinm.op.gemm %A, %B plus %bias into %out      // %out += %A * %B + %bias
+    ```
+    The main difference is that the memref variant reads from the out buffer and accumulates into it, while the tensor variant does not. When bufferizing, the output buffer is first initialized
+    with the bias (or zeroed out if there is no bias) to preserve the tensor semantics.
+
+    Note that this difference can lead to slightly different bufferized IRs depending on whether you bufferize or tile first.
+
+  }];
+
   let arguments = (ins
       AnyShaped:$lhs,
       AnyShaped:$rhs,
@@ -98,9 +124,7 @@ class Cinm_GemmlikeOp<string name, string cppClassName> : Cinm_Op<name,
 }
 
 def Cinm_GemmOp : Cinm_GemmlikeOp<"op.gemm", "GemmOp"> {
-
   let summary = "Generalized Matrix Matrix Multiplication operation";
-
 }
 
 def Cinm_GemvOp : Cinm_GemmlikeOp<"op.gemv", "GemvOp"> {
@@ -109,12 +133,10 @@ def Cinm_GemvOp : Cinm_GemmlikeOp<"op.gemv", "GemvOp"> {
 
 def Cinm_BatchGemmOp : Cinm_GemmlikeOp<"op.batch_gemm", "BatchGemmOp"> {
   let summary = "Batched matrix multiplication";
-  let description = [{}];
 }
 
 def Cinm_BatchGemvOp : Cinm_GemmlikeOp<"op.batch_gemv", "BatchGemvOp"> {
   let summary = "Batched matrix vector multiplication";
-  let description = [{}];
 }
 
 
