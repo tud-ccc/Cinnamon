@@ -39,44 +39,6 @@ using namespace mlir::cinm;
 // Helpers
 // ---------------------------------------------------------------------------
 
-static SmallVector<Value> createNestedScfForLoops(
-    OpBuilder &builder, Location loc, ArrayRef<int64_t> tripCounts,
-    ArrayRef<int64_t> steps, ValueRange iterArgs,
-    std::function<SmallVector<Value>(OpBuilder &, Location, ValueRange,
-                                     ValueRange)>
-        bodyBuilder) {
-  assert(tripCounts.size() == steps.size());
-  const unsigned rank = tripCounts.size();
-
-  SmallVector<Value> lbs(rank), ubs(rank), stepVals(rank);
-  for (unsigned d = 0; d < rank; ++d) {
-    lbs[d] = arith::ConstantIndexOp::create(builder, loc, 0);
-    ubs[d] = arith::ConstantIndexOp::create(builder, loc, tripCounts[d]);
-    stepVals[d] = arith::ConstantIndexOp::create(builder, loc, steps[d]);
-  }
-
-  SmallVector<Value> ivs;
-  ivs.reserve(rank);
-  std::function<SmallVector<Value>(unsigned, ValueRange)> build;
-  build = [&](unsigned depth, ValueRange carried) -> SmallVector<Value> {
-    if (depth == rank) {
-      return bodyBuilder(builder, loc, ivs, carried);
-    }
-    auto loop = scf::ForOp::create(builder, loc, lbs[depth], ubs[depth],
-                                   stepVals[depth], carried);
-    builder.setInsertionPointToStart(loop.getBody());
-    ivs.push_back(loop.getInductionVar());
-    SmallVector<Value> yielded = build(depth + 1, loop.getRegionIterArgs());
-    scf::YieldOp::create(builder, loc, yielded);
-    ivs.pop_back();
-    builder.setInsertionPointAfter(loop);
-    return SmallVector<Value>(loop.getResults().begin(),
-                              loop.getResults().end());
-  };
-
-  return build(0, iterArgs);
-}
-
 static Value extractSliceND(OpBuilder &builder, Location loc,
                             TypedValue<ShapedType> tensorOrMemref,
                             ArrayRef<int64_t> sizes, ValueRange offsets) {
