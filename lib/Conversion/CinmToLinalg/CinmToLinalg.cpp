@@ -243,6 +243,50 @@ static FailureOr<Value> emitElementwiseScalar(OpBuilder &b, Location loc,
       return b.create<arith::XOrIOp>(loc, lhs, allOnes).getResult();
     }
     break;
+  case ElementwiseKind::Relu: {
+    if (isFloat) {
+      Value zero =
+          b.create<arith::ConstantOp>(loc, FloatAttr::get(elemTy, 0.0));
+      return b.create<arith::MaxNumFOp>(loc, lhs, zero).getResult();
+    }
+    break;
+  }
+  case ElementwiseKind::Sigmoid: {
+    if (isFloat) {
+      // 1 / (1 + exp(-x))
+      Value neg = b.create<arith::NegFOp>(loc, lhs);
+      Value e = b.create<math::ExpOp>(loc, neg);
+      Value one = b.create<arith::ConstantOp>(loc, FloatAttr::get(elemTy, 1.0));
+      Value denom = b.create<arith::AddFOp>(loc, one, e);
+      return b.create<arith::DivFOp>(loc, one, denom).getResult();
+    }
+    break;
+  }
+  case ElementwiseKind::Gelu: {
+    if (isFloat) {
+      // GELU(x) ≈ 0.5 * x * (1 + tanh(sqrt(2/π) * (x + 0.044715*x³)))
+      Value half =
+          b.create<arith::ConstantOp>(loc, FloatAttr::get(elemTy, 0.5));
+      Value c =
+          b.create<arith::ConstantOp>(loc, FloatAttr::get(elemTy, 0.044715));
+      Value s2pi = b.create<arith::ConstantOp>(
+          loc, FloatAttr::get(elemTy, 0.7978845608));
+      Value one = b.create<arith::ConstantOp>(loc, FloatAttr::get(elemTy, 1.0));
+      Value v2 = b.create<arith::MulFOp>(loc, lhs, lhs);
+      Value v3 = b.create<arith::MulFOp>(loc, v2, lhs);
+      Value inner = b.create<arith::AddFOp>(
+          loc, lhs, b.create<arith::MulFOp>(loc, c, v3));
+      Value t = b.create<math::TanhOp>(
+          loc, b.create<arith::MulFOp>(loc, s2pi, inner));
+      return b
+          .create<arith::MulFOp>(
+              loc, half,
+              b.create<arith::MulFOp>(loc, lhs,
+                                      b.create<arith::AddFOp>(loc, one, t)))
+          .getResult();
+    }
+    break;
+  }
   default:
     break;
   }
@@ -498,87 +542,6 @@ struct ConvertBatchGemvToLinalg
 };
 
 //===----------------------------------------------------------------------===//
-// cinm.op.activate
-//===----------------------------------------------------------------------===//
-
-struct ConvertActivateToLinalg : public OpConversionPattern<cinm::ActivateOp> {
-  using OpConversionPattern::OpConversionPattern;
-
-  LogicalResult
-  matchAndRewrite(cinm::ActivateOp op, OpAdaptor adaptor,
-                  ConversionPatternRewriter &rewriter) const override {
-    if (!op.getResult())
-      return failure();
-
-    auto loc = op.getLoc();
-    auto resultTy = cast<RankedTensorType>(op.getResult().getType());
-    Type elemTy = resultTy.getElementType();
-
-    if (!isa<FloatType>(elemTy))
-      return op.emitError("cinm.op.activate requires a float element type");
-
-    Value out = adaptor.getOut();
-    Value tensorOut =
-        (out && isa<RankedTensorType>(out.getType())) ? out : Value{};
-
-    bool failed = false;
-    auto kind = op.getKind();
-    Value result = buildElementwiseGeneric(
-        rewriter, loc, resultTy, ValueRange{adaptor.getInput()}, tensorOut,
-        [&](OpBuilder &b, Location loc, ValueRange args) -> Value {
-          Value v = args[0];
-          switch (kind) {
-          case ActivationKind::RELU: {
-            Value zero =
-                b.create<arith::ConstantOp>(loc, FloatAttr::get(elemTy, 0.0));
-            return b.create<arith::MaxNumFOp>(loc, v, zero);
-          }
-          case ActivationKind::SIGMOID: {
-            // 1 / (1 + exp(-x))
-            Value neg = b.create<arith::NegFOp>(loc, v);
-            Value e = b.create<math::ExpOp>(loc, neg);
-            Value one =
-                b.create<arith::ConstantOp>(loc, FloatAttr::get(elemTy, 1.0));
-            Value denom = b.create<arith::AddFOp>(loc, one, e);
-            return b.create<arith::DivFOp>(loc, one, denom);
-          }
-          case ActivationKind::TANH:
-            return b.create<math::TanhOp>(loc, v);
-          case ActivationKind::GELU: {
-            // GELU(x) ≈ 0.5 * x * (1 + tanh(sqrt(2/π) * (x + 0.044715*x³)))
-            Value half =
-                b.create<arith::ConstantOp>(loc, FloatAttr::get(elemTy, 0.5));
-            Value c = b.create<arith::ConstantOp>(
-                loc, FloatAttr::get(elemTy, 0.044715));
-            Value s2pi = b.create<arith::ConstantOp>(
-                loc, FloatAttr::get(elemTy, 0.7978845608));
-            Value one =
-                b.create<arith::ConstantOp>(loc, FloatAttr::get(elemTy, 1.0));
-            Value v2 = b.create<arith::MulFOp>(loc, v, v);
-            Value v3 = b.create<arith::MulFOp>(loc, v2, v);
-            Value inner = b.create<arith::AddFOp>(
-                loc, v, b.create<arith::MulFOp>(loc, c, v3));
-            Value t = b.create<math::TanhOp>(
-                loc, b.create<arith::MulFOp>(loc, s2pi, inner));
-            return b.create<arith::MulFOp>(
-                loc, half,
-                b.create<arith::MulFOp>(loc, v,
-                                        b.create<arith::AddFOp>(loc, one, t)));
-          }
-          }
-          failed = true;
-          return v;
-        });
-
-    if (failed)
-      return op.emitError("unsupported activation kind");
-
-    rewriter.replaceOp(op, result);
-    return success();
-  }
-};
-
-//===----------------------------------------------------------------------===//
 // cinm.op.transpose
 //===----------------------------------------------------------------------===//
 
@@ -634,7 +597,7 @@ struct ConvertCinmOpsToLinalg
     // All cinm.op.* ops must be lowered.
     target.addIllegalOp<cinm::ElementwiseOp, cinm::ReduceOp, cinm::GemvOp,
                         cinm::GemmOp, cinm::BatchGemmOp, cinm::BatchGemvOp,
-                        cinm::ActivateOp, cinm::TransposeOp>();
+                        cinm::TransposeOp>();
 
     // The container ops and yield are left untouched.
     target.addLegalOp<cinm::ComputeBlockOp, cinm::ComputeOp, cinm::YieldOp>();
@@ -652,7 +615,7 @@ void mlir::cinm::populateCinmOpsToLinalgPatterns(RewritePatternSet &patterns,
   patterns.insert<ConvertElementwiseToLinalg, ConvertReduceToLinalg,
                   ConvertGemvToLinalg, ConvertGemmToLinalg,
                   ConvertBatchGemmToLinalg, ConvertBatchGemvToLinalg,
-                  ConvertActivateToLinalg, ConvertTransposeToLinalg>(ctx);
+                  ConvertTransposeToLinalg>(ctx);
 }
 
 std::unique_ptr<mlir::Pass> mlir::cinm::createConvertCinmOpsToLinalgPass() {

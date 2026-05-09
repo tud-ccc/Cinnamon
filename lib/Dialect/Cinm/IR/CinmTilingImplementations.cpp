@@ -357,10 +357,6 @@ void GemvOp::getTilableDimSizes(SmallVectorImpl<int64_t> &dimSizes) {
   dimSizes.push_back(lhsType.getDimSize(1)); // K
 }
 
-void ActivateOp::getTilableDimSizes(SmallVectorImpl<int64_t> &dimSizes) {
-  dimSizes.push_back(cast<ShapedType>(getInput().getType()).getNumElements());
-}
-
 // ---------------------------------------------------------------------------
 // convertToTiledOps implementations
 // ---------------------------------------------------------------------------
@@ -616,70 +612,4 @@ GemvOp::convertToTiledOps(RewriterBase &rewriter,
          Value out) -> Value {
         return cinm::GemvOp::create(b, loc, lhs, rhs, acc, out).getResult();
       });
-}
-
-DiagnosedSilenceableFailure
-ActivateOp::convertToTiledOps(RewriterBase &rewriter,
-                              ArrayRef<int64_t> tilingFactors,
-                              SmallVectorImpl<Value> &results) {
-  if (tilingFactors.size() != 1)
-    return emitSilenceableFailure(getLoc())
-           << "expected 1 tiling factor for activate, got "
-           << tilingFactors.size();
-
-  ImplicitLocOpBuilder builder(getLoc(), rewriter);
-  auto inputT = getInput();
-  auto inTy = inputT.getType();
-  Type elt = inTy.getElementType();
-
-  const ShapedType originalTy = inTy;
-  Value originalShapeValue;
-  if (inTy.getRank() > 1) {
-    originalShapeValue = arith::ConstantOp::create(
-        builder, RankedTensorType::get({inTy.getRank()}, builder.getI64Type()),
-        builder.getI64TensorAttr(inTy.getShape()));
-    inputT = mlir::reshapeStatic(builder, builder.getLoc(), inputT,
-                                 ArrayRef<int64_t>{inTy.getNumElements()});
-    inTy = inputT.getType();
-  }
-
-  const int64_t total = inTy.getNumElements();
-  const int64_t p = tilingFactors[0];
-
-  Value init = tensor::EmptyOp::create(builder, inTy.getShape(), elt);
-  Value totalC = arith::ConstantIndexOp::create(builder, total);
-  Value pC = arith::ConstantIndexOp::create(builder, p);
-
-  SmallVector<Value> finals = createNestedScfForLoops(
-      builder, getLoc(), ArrayRef<int64_t>{total}, ArrayRef<int64_t>{p},
-      ValueRange{init},
-      [&](OpBuilder &b, Location loc, ValueRange ivs,
-          ValueRange iters) -> SmallVector<Value> {
-        Value i = ivs[0];
-
-        Value rem = arith::SubIOp::create(b, loc, totalC, i);
-        Value useP =
-            arith::CmpIOp::create(b, loc, arith::CmpIPredicate::ugt, rem, pC);
-        Value thisTile = arith::SelectOp::create(b, loc, useP, pC, rem);
-
-        SmallVector<OpFoldResult> off{i};
-        SmallVector<OpFoldResult> siz{thisTile};
-        SmallVector<OpFoldResult> str{b.getI64IntegerAttr(1)};
-
-        auto inSlice =
-            tensor::ExtractSliceOp::create(b, loc, inputT, off, siz, str);
-        auto tile =
-            cinm::ActivateOp::create(b, loc, getKind(), inSlice, Value());
-
-        Value out = tensor::InsertSliceOp::create(b, loc, tile.getResult(),
-                                                  iters[0], off, siz, str);
-        return {out};
-      });
-
-  if (originalTy.getRank() > 1) {
-    finals[0] = tensor::ReshapeOp::create(builder, originalTy, finals[0],
-                                          originalShapeValue);
-  }
-  results.append(finals.begin(), finals.end());
-  return DiagnosedSilenceableFailure::success();
 }

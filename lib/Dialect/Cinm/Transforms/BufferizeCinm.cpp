@@ -590,59 +590,6 @@ struct DequantizeBufferizableInterface
   }
 };
 
-struct ActivateBufferizableInterface
-    : public bufferization::BufferizableOpInterface::ExternalModel<
-          ActivateBufferizableInterface, cinm::ActivateOp> {
-  bool bufferizesToMemoryRead(Operation *, OpOperand &,
-                              const bufferization::AnalysisState &) const {
-    return true;
-  }
-  bool bufferizesToMemoryWrite(Operation *, OpOperand &,
-                               const bufferization::AnalysisState &) const {
-    return false;
-  }
-  bufferization::AliasingValueList
-  getAliasingValues(Operation *, OpOperand &,
-                    const bufferization::AnalysisState &) const {
-    return {};
-  }
-
-  LogicalResult bufferize(Operation *op, RewriterBase &rewriter,
-                          const bufferization::BufferizationOptions &,
-                          bufferization::BufferizationState &) const {
-    auto act = cast<cinm::ActivateOp>(op);
-    Location loc = act.getLoc();
-
-    Value inT = act->getOperand(0);
-    auto inRT = cast<RankedTensorType>(inT.getType());
-    auto outRT = cast<RankedTensorType>(act->getResult(0).getType());
-
-    auto inMR = bufferization::getMemRefTypeWithFullyDynamicLayout(inRT);
-    Value inMem =
-        bufferization::ToBufferOp::create(rewriter, loc, inMR, inT, true);
-
-    auto outMR = cast<MemRefType>(
-        bufferization::getMemRefTypeWithStaticIdentityLayout(outRT));
-
-    SmallVector<Value> dynDims;
-    for (int64_t d = 0, e = outRT.getRank(); d < e; ++d)
-      if (outRT.isDynamicDim(d)) {
-        Value cd = arith::ConstantIndexOp::create(rewriter, loc, d);
-        dynDims.push_back(tensor::DimOp::create(rewriter, loc, inT, cd));
-      }
-    Value outMem = memref::AllocOp::create(rewriter, loc, outMR, dynDims);
-
-    cinm::ActivationKind kind = act.getKind();
-
-    cinm::ActivateOp::create(rewriter, loc, kind, inMem, outMem);
-
-    Value outT = bufferization::ToTensorOp::create(rewriter, loc, outRT, outMem,
-                                                   true, true);
-    rewriter.replaceOp(op, outT);
-    return success();
-  }
-};
-
 } // namespace
 
 void mlir::cinm::registerCinmBufferizableOpInterfaces(
@@ -663,7 +610,5 @@ void mlir::cinm::registerCinmBufferizableOpInterfaces(
         *ctx);
     ::mlir::cinm::DequantizeOp::attachInterface<
         DequantizeBufferizableInterface>(*ctx);
-    ::mlir::cinm::ActivateOp::attachInterface<ActivateBufferizableInterface>(
-        *ctx);
   });
 }

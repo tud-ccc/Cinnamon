@@ -513,40 +513,6 @@ def Cinm_YieldOp : Cinm_Op<"yield", [Pure, ReturnLike, Terminator]> {
   let assemblyFormat = "attr-dict ($operands^ `:` type($operands))?";
 }
 
-def Cinm_ActivateOp : Cinm_Op<"op.activate", [
-    Pure,
-    SameOperandsAndResultType,
-    DeclareOpInterfaceMethods<CinmTilingInterface>
-  ]> {
-
-  let summary = "Elementwise activation (ReLU/Sigmoid/Tanh/GELU)";
-  let description = [{
-    Applies the chosen activation function elementwise to the input tensor.
-
-    Examples:
-    ```
-    %y = cinm.op.activate relu (%x) : tensor<1x64x56x56xf32>
-    %z = cinm.op.activate sigmoid (%y) : tensor<1x64x56x56xf32>
-    ```
-  }];
-
-  let arguments = (ins
-    Cinm_ActivationKindAttr:$kind,
-    AnyShaped:$input,
-    Optional<AnyShaped>:$out
-  );
-  let results = (outs Optional<AnyRankedTensor>:$result);
-
-  let skipDefaultBuilders = 1;
-  let builders=[
-    OpBuilder<(ins "ActivationKind":$kind, "Value":$input, "Value":$output)>,
-    OpBuilder<(ins "ActivationKind":$kind, "Value":$input),
-        "build($_builder, $_state, kind, input, Value{});">,
-  ];
-
-  let hasCustomAssemblyFormat = true;
-}
-
 def Cinm_QuantizeOp : Cinm_Op<"op.quantize", [Pure]> {
   let summary = "Quantize tensor (float -> integer) with per-tensor params";
   let description = [{
@@ -580,7 +546,7 @@ def Cinm_QuantizeOp : Cinm_Op<"op.quantize", [Pure]> {
 
   let results = (outs Optional<AnyRankedTensor>:$result);
 
-  let hasCustomAssemblyFormat = true;
+  // let hasCustomAssemblyFormat = true;
 }
 
 def Cinm_DequantizeOp : Cinm_Op<"op.dequantize", [Pure]> {
@@ -611,7 +577,7 @@ def Cinm_DequantizeOp : Cinm_Op<"op.dequantize", [Pure]> {
 
   let results = (outs Optional<AnyRankedTensor>:$result);
 
-  let hasCustomAssemblyFormat = true;
+  // let hasCustomAssemblyFormat = true;
 }
 
 #endif
