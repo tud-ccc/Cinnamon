@@ -30,8 +30,13 @@ namespace mlir::cinm {
 
 Type inferGemmReturnType(Type lhsType, Type rhsType);
 
+/// Map the CINM reduce method to the arith AtomicRMWKind, which allows
+/// using some utility functions in arith (eg to generate the corresponding reduction op).
 arith::AtomicRMWKind getArithConstant(ReduceMethod r, Type ty);
+
+/// TODO we need a new interface in cinm for compute and compute block. 
 cinm::ComputeBlockOp getEnclosingComputeBlock(Operation *op);
+
 cinm::CinmAcceleratorAttrInterface getEnclosingAccelerator(Operation *op);
 template <class T> T getEnclosingAcceleratorAs(Operation *op) {
   auto ax = getEnclosingAccelerator(op);
