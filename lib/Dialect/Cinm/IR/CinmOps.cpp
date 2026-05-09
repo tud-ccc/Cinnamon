@@ -107,10 +107,10 @@ void CinmDialect::registerOps() {
 namespace mlir {
 namespace cinm {
 
-cinm::ComputeBlockOp getEnclosingComputeBlock(Operation *op) {
+cinm::ComputeOpInterface getEnclosingComputeBlock(Operation *op) {
   Operation *parent = op;
   while ((parent = parent->getParentOp())) {
-    if (auto parentCompute = dyn_cast<cinm::ComputeBlockOp>(parent))
+    if (auto parentCompute = dyn_cast<cinm::ComputeOpInterface>(parent))
       return parentCompute;
   }
 
@@ -118,19 +118,10 @@ cinm::ComputeBlockOp getEnclosingComputeBlock(Operation *op) {
 }
 
 cinm::CinmAcceleratorAttrInterface getEnclosingAccelerator(Operation *op) {
-  Operation *parent = op;
-  std::optional<cinm::CinmAcceleratorAttrInterface> found;
-  while ((parent = parent->getParentOp())) {
-    if (auto parentCompute = dyn_cast<cinm::ComputeBlockOp>(parent)) {
-      found = parentCompute.getAccelerator();
-      break;
-    } else if (auto parentCompute = dyn_cast<cinm::ComputeOp>(parent)) {
-      found = parentCompute.getAccelerator();
-      break;
-    }
+  if (auto compute = getEnclosingComputeBlock(op)) {
+    if (compute.getAccelerator())
+      return *compute.getAccelerator();
   }
-  if (found)
-    return *found;
   return {};
 }
 

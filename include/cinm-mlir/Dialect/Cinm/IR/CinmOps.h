@@ -5,6 +5,7 @@
 #pragma once
 
 #include "cinm-mlir/Dialect/Cinm/IR/CinmAttributes.h"
+#include "cinm-mlir/Dialect/Cinm/IR/CinmComputeOpInterface.h"
 #include "cinm-mlir/Dialect/Cinm/IR/CinmTypes.h"
 #include "cinm-mlir/Dialect/Cinm/IR/TilingInterface.h"
 #include "cinm-mlir/Dialect/Cnm/IR/CnmTypes.h"
@@ -34,8 +35,7 @@ Type inferGemmReturnType(Type lhsType, Type rhsType);
 /// using some utility functions in arith (eg to generate the corresponding reduction op).
 arith::AtomicRMWKind getArithConstant(ReduceMethod r, Type ty);
 
-/// TODO we need a new interface in cinm for compute and compute block. 
-cinm::ComputeBlockOp getEnclosingComputeBlock(Operation *op);
+cinm::ComputeOpInterface getEnclosingComputeBlock(Operation *op);
 
 cinm::CinmAcceleratorAttrInterface getEnclosingAccelerator(Operation *op);
 template <class T> T getEnclosingAcceleratorAs(Operation *op) {
