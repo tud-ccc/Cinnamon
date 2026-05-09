@@ -54,7 +54,7 @@ def CinmPlatformAttrInterface : AttrInterface<"CinmPlatformAttrInterface", []> {
     InterfaceMethod<
       /*desc=*/"Return true if this platform wants to handle the given op. This is a hook for the --cinm-assign-platforms pass.",
       /*retTy=*/"bool",
-      /*methodName=*/"wantsToHandle",
+      /*methodName=*/"isOffloadingTarget",
       /*args=*/(ins "::mlir::Operation*":$op),
       "",
       /*default=*/"return false;"

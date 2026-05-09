@@ -42,7 +42,7 @@ Tiling factors can be manually annotated, or inferred by the `--cinm-infer-tile-
 
 The `--cinm-assign-platforms` pass automates the wrapping of `cinm.op.*` operations into `cinm.compute` regions based on which platforms want to handle them. It operates on `func.func` ops that carry the `cinm.available_platforms` attribute (a list of platform attrs).
 
-For each `cinm.op.*` op in the function, the pass queries every listed platform via the `CinmPlatformAttrInterface::wantsToHandle` method. If at least one platform is interested, the op is wrapped in a new `cinm.compute` op whose own `cinm.available_platforms` attribute is set to the interested subset. Ops for which no platform returns true are left as-is.
+For each `cinm.op.*` op in the function, the pass queries every listed platform via the `CinmPlatformAttrInterface::isOffloadingTarget` method. If at least one platform is interested, the op is wrapped in a new `cinm.compute` op whose own `cinm.available_platforms` attribute is set to the interested subset. Ops for which no platform returns true are left as-is.
 
 Example: given a UPMEM platform (which handles `cinm.op.gemm` and `cinm.op.gemv`):
 ```mlir
@@ -64,7 +64,7 @@ func.func @f(%A: tensor<8x1024xi32>, %B: tensor<1024x128xi32>) -> tensor<8x128xi
 }
 ```
 
-To add support for new ops in a backend platform, implement `wantsToHandle` on its `CinmPlatformAttrInterface` attribute. The default returns `false`.
+To add support for new ops in a backend platform, implement `isOffloadingTarget` on its `CinmPlatformAttrInterface` attribute. The default returns `false`.
 
 #### Other CINM passes
 

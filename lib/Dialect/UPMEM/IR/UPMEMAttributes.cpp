@@ -229,6 +229,6 @@ int64_t UpmemAcceleratorAttr::bufferSizeOfLeaf() const {
   return getWramLevel().getSizeInBytes() / getNumTaskletsPerDpu();
 }
 
-bool UpmemPlatformAttr::wantsToHandle(Operation *op) const {
+bool UpmemPlatformAttr::isOffloadingTarget(Operation *op) const {
   return isa<cinm::GemmOp, cinm::GemvOp>(op);
 }

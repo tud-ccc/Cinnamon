@@ -49,7 +49,7 @@ struct CinmAssignPlatformsPass
     for (Operation *op : opsToWrap) {
       SmallVector<Attribute> interested;
       for (auto platform : platforms) {
-        if (platform.wantsToHandle(op))
+        if (platform.isOffloadingTarget(op))
           interested.push_back(platform);
       }
       if (interested.empty())
