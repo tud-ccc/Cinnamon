@@ -10,6 +10,10 @@
 #include <mlir/IR/AffineMap.h>
 #include <mlir/IR/BuiltinOps.h>
 #include <mlir/IR/BuiltinTypeInterfaces.h>
+#include <mlir/Dialect/Utils/IndexingUtils.h>
+#include <mlir/Dialect/Arith/IR/Arith.h>
+#include <mlir/Dialect/Tensor/IR/Tensor.h>
+#include <mlir/Dialect/MemRef/IR/MemRef.h>
 #include <optional>
 
 namespace mlir {
@@ -165,6 +169,64 @@ AffineMap simplifyAffineMapWithBounds(AffineMap map,
   }
   return AffineMap::get(map.getNumDims(), map.getNumSymbols(), exprs,
                         map.getContext());
+}
+
+AffineExpr linearizeIndices(MLIRContext *ctx, ArrayRef<int64_t> shape) {
+
+  AffineExpr index = getAffineConstantExpr(0, ctx);
+  int64_t dimIndex = shape.size() - 1;
+  int64_t trailing = 1;
+  for (auto it = shape.rbegin(); it != shape.rend(); it++) {
+    auto dim = *it;
+    index = trailing * getAffineDimExpr(dimIndex, ctx) + index;
+    trailing *= dim;
+    dimIndex--;
+  }
+  return index;
+}
+
+void structureIndex(AffineExpr index, ArrayRef<int64_t> shape,
+                    SmallVectorImpl<AffineExpr> &map) {
+
+  int64_t sizeOfTrailing = computeProduct(shape) / shape[0];
+  map.push_back(index.floorDiv(sizeOfTrailing));
+
+  AffineExpr gatherExpr = index * sizeOfTrailing;
+  size_t i = 1;
+
+  for (auto dim : llvm::drop_begin(shape, 1)) {
+    index = index % sizeOfTrailing;
+    sizeOfTrailing /= dim;
+    map.push_back(index.floorDiv(sizeOfTrailing));
+    gatherExpr = gatherExpr +
+                 mlir::getAffineDimExpr(i, index.getContext()) * sizeOfTrailing;
+    i++;
+  }
+}
+TypedValue<ShapedType> reshapeStatic(OpBuilder &b, Location loc,
+                                     TypedValue<ShapedType> value,
+                                     llvm::ArrayRef<int64_t> newShape) {
+  return reshapeStatic(b, loc, value, value.getType(), newShape);
+}
+
+TypedValue<ShapedType> reshapeStatic(OpBuilder &builder, Location loc,
+                                     Value value, ShapedType type,
+                                     llvm::ArrayRef<int64_t> newShape) {
+  auto newTy = type.cloneWith(newShape, type.getElementType());
+  auto reifiedShape = builder.create<arith::ConstantOp>(
+      loc, RankedTensorType::get({newTy.getRank()}, builder.getI64Type()),
+      builder.getI64TensorAttr(newShape));
+
+  if (isa<RankedTensorType>(newTy)) {
+    return dyn_cast<TypedValue<ShapedType>>(
+        builder.create<tensor::ReshapeOp>(loc, newTy, value, reifiedShape)
+            .getResult());
+  } else if (isa<MemRefType>(newTy)) {
+    return dyn_cast<TypedValue<ShapedType>>(
+        builder.create<memref::ReshapeOp>(loc, newTy, value, reifiedShape)
+            .getResult());
+  }
+  assert(false && "must be memref or tensor");
 }
 
 } // namespace mlir

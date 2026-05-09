@@ -17,4 +17,22 @@ bool scatteredMemrefIsContiguous(TypedValue<ShapedType> value,
 /// simpler, and gives more opportunities for broadcasting.
 AffineMap simplifyAffineMapWithBounds(AffineMap map,
                                       llvm::ArrayRef<int64_t> dimSizes);
+
+// Turn an index in the index space of the given shape into a linear index.
+AffineExpr linearizeIndices(MLIRContext *ctx, ArrayRef<int64_t> shape);
+
+// inflate a linear index into the given shape
+void structureIndex(AffineExpr index, ArrayRef<int64_t> shape,
+                    SmallVectorImpl<AffineExpr> &map);
+
+/// Create a tensor.reshape for a fully static tensor shape
+TypedValue<ShapedType> reshapeStatic(OpBuilder &, Location loc, Value value,
+                                     ShapedType type,
+                                     llvm::ArrayRef<int64_t> newShape);
+
+/// Create a tensor.reshape for a fully static tensor shape
+TypedValue<ShapedType> reshapeStatic(OpBuilder &b, Location loc,
+                                     TypedValue<ShapedType> value,
+                                     llvm::ArrayRef<int64_t> newShape);
+
 } // namespace mlir

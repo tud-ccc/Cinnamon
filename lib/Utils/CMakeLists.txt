@@ -4,4 +4,7 @@ add_mlir_dialect_library(CinmUtils
     
     LINK_LIBS PUBLIC
         MLIRIR
+        MLIRDialectUtils
+        MLIRTensorDialect
+        MLIRMemRefDialect
 )

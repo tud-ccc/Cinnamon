@@ -1,20 +1,22 @@
-#include "cinm-mlir/Dialect/Cinm/IR/CinmAttributes.h"
-#include "cinm-mlir/Dialect/Cinm/IR/CinmBase.h"
-#include "cinm-mlir/Dialect/Cinm/IR/CinmOps.h"
-#include "cinm-mlir/Dialect/Cinm/IR/CinmUtils.h"
-#include "cinm-mlir/Dialect/Cinm/IR/TilingInterface.h"
-
-#include "mlir/Dialect/Affine/IR/AffineOps.h"
-#include "mlir/Dialect/Arith/IR/Arith.h"
-#include "mlir/Dialect/Linalg/IR/Linalg.h"
-#include "mlir/Dialect/MemRef/IR/MemRef.h"
-#include "mlir/Dialect/SCF/IR/SCF.h"
-#include "mlir/Dialect/Tensor/IR/Tensor.h"
+#include <cinm-mlir/Dialect/Cinm/IR/CinmAttributes.h>
+#include <cinm-mlir/Dialect/Cinm/IR/CinmBase.h>
+#include <cinm-mlir/Dialect/Cinm/IR/CinmOps.h>
+#include <cinm-mlir/Dialect/Cinm/IR/CinmUtils.h>
+#include <cinm-mlir/Dialect/Cinm/IR/TilingInterface.h>
+#include <cinm-mlir/Utils/CinmUtils.h>
 
 #include <cstdint>
+
 #include <llvm/ADT/ArrayRef.h>
 #include <llvm/ADT/SmallVector.h>
 #include <llvm/Support/Casting.h>
+
+#include <mlir/Dialect/Affine/IR/AffineOps.h>
+#include <mlir/Dialect/Arith/IR/Arith.h>
+#include <mlir/Dialect/Linalg/IR/Linalg.h>
+#include <mlir/Dialect/MemRef/IR/MemRef.h>
+#include <mlir/Dialect/SCF/IR/SCF.h>
+#include <mlir/Dialect/Tensor/IR/Tensor.h>
 #include <mlir/Dialect/Utils/StructuredOpsUtils.h>
 #include <mlir/IR/AffineExpr.h>
 #include <mlir/IR/Builders.h>
@@ -30,6 +32,8 @@
 
 using namespace mlir;
 using namespace mlir::cinm;
+
+#include <cinm-mlir/Dialect/Cinm/IR/TilingInterface.cpp.inc>
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -171,8 +175,8 @@ static DiagnosedSilenceableFailure convertGemmlikeToTiledOps(
 
   if (static_cast<int64_t>(tilingFactors.size()) != nPar + 1)
     return emitSilenceableFailure(loc)
-           << "gemm-like op: expected " << nPar + 1
-           << " tiling factors, got " << tilingFactors.size();
+           << "gemm-like op: expected " << nPar + 1 << " tiling factors, got "
+           << tilingFactors.size();
 
   for (int64_t i = 0; i < lhsRank; ++i)
     if (ShapedType::isDynamic(lhs.getType().getDimSize(i)))
@@ -472,14 +476,14 @@ ElementwiseOp::convertToTiledOps(RewriterBase &rewriter,
         RankedTensorType::get({static_cast<int64_t>(shape.size())},
                               builder.getI64Type()),
         builder.getI64TensorAttr(shape));
-    lhs = cinm::reshapeStatic(builder, builder.getLoc(), lhs,
+    lhs = mlir::reshapeStatic(builder, builder.getLoc(), lhs,
                               {tensorTy.getNumElements()});
     if (!isUnaryOp) {
-      rhs = cinm::reshapeStatic(builder, builder.getLoc(), rhs,
+      rhs = mlir::reshapeStatic(builder, builder.getLoc(), rhs,
                                 {tensorTy.getNumElements()});
     }
     if (memrefOut) {
-      memrefOut = cinm::reshapeStatic(builder, builder.getLoc(), memrefOut,
+      memrefOut = mlir::reshapeStatic(builder, builder.getLoc(), memrefOut,
                                       {tensorTy.getNumElements()});
     }
     tensorTy = lhs.getType();
@@ -617,8 +621,8 @@ ActivateOp::convertToTiledOps(RewriterBase &rewriter,
     originalShapeValue = arith::ConstantOp::create(
         builder, RankedTensorType::get({inTy.getRank()}, builder.getI64Type()),
         builder.getI64TensorAttr(inTy.getShape()));
-    inputT = reshapeStatic(builder, builder.getLoc(), inputT,
-                           ArrayRef<int64_t>{inTy.getNumElements()});
+    inputT = mlir::reshapeStatic(builder, builder.getLoc(), inputT,
+                                 ArrayRef<int64_t>{inTy.getNumElements()});
     inTy = inputT.getType();
   }
 

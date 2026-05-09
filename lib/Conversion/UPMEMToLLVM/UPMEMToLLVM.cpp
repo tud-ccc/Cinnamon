@@ -131,7 +131,7 @@ static FailureOr<AffineMap> linearizeAffineMap(AffineMap map,
 
   auto ctx = map.getContext();
   SmallVector<AffineExpr> inflatedIndices;
-  cinm::structureIndex(getAffineDimExpr(0, ctx), inputShape, inflatedIndices);
+  mlir::structureIndex(getAffineDimExpr(0, ctx), inputShape, inflatedIndices);
   AffineMap inflateMap = AffineMap::get(1, 0, inflatedIndices, ctx);
 
   // complete map with zero dims
@@ -143,7 +143,7 @@ static FailureOr<AffineMap> linearizeAffineMap(AffineMap map,
     layoutMap = layoutMap.replaceDimsAndSymbols(
         {}, {getAffineConstantExpr(0, ctx)}, layoutMap.getNumDims(), 0);
   } else if (bufferTy.getLayout().isIdentity()) {
-    auto linearIndex = cinm::linearizeIndices(ctx, outputShape);
+    auto linearIndex = mlir::linearizeIndices(ctx, outputShape);
     layoutMap = AffineMap::get(outputShape.size(), 0, linearIndex);
   } else {
     return failure();

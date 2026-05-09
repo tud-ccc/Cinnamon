@@ -2,6 +2,7 @@ add_mlir_dialect_library(CinmTransforms
     AssignPlatformsPass.cpp
     InferTileSizesPass.cpp
     BufferizeCinm.cpp
+    CinmTransformsUtils.cpp
     CinmMemoryCleanup.cpp
     CinmQuantization.cpp
     CleanupLinalgPass.cpp
