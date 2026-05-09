@@ -31,6 +31,7 @@ using namespace mlir::cinm;
 #define GET_ATTRDEF_CLASSES
 #include "cinm-mlir/Dialect/Cinm/IR/CinmAttributes.cpp.inc"
 #include "cinm-mlir/Dialect/Cinm/IR/CinmPlatformAttrInterface.cpp.inc"
+#include "cinm-mlir/Dialect/Cinm/IR/CinmComputeOpInterface.cpp.inc"
 // #define GET_ATTRDEF_CLASSES
 
 //===----------------------------------------------------------------------===//

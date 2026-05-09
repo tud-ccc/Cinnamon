@@ -13,6 +13,7 @@ include "cinm-mlir/Dialect/Cinm/IR/CinmTypes.td"
 include "cinm-mlir/Dialect/Cinm/IR/CinmAttributes.td"
 include "cinm-mlir/Dialect/Cinm/IR/CinmPlatformAttrInterface.td"
 include "cinm-mlir/Dialect/Cinm/IR/TilingInterface.td"
+include "cinm-mlir/Dialect/Cinm/IR/CinmComputeOpInterface.td"
 
 include "mlir/IR/EnumAttr.td"
 include "mlir/IR/BuiltinAttributes.td"
@@ -365,7 +366,8 @@ def AcceleratorOp : Cinm_Op<"accelerator", [OpAsmOpInterface]> {
 
 def Cinm_ComputeOp : Cinm_Base_Op<"compute", [
   AffineScope, AutomaticAllocationScope, RecursiveMemoryEffects,
-  DeclareOpInterfaceMethods<RegionBranchOpInterface, ["getRegionInvocationBounds", "getSuccessorRegions"]>
+  DeclareOpInterfaceMethods<RegionBranchOpInterface, ["getRegionInvocationBounds", "getSuccessorRegions"]>,
+  CinmComputeOpInterface
 ]> {
   let summary = "Delimits a block of IR that is to be offloaded";
   let description = [{
@@ -399,16 +401,6 @@ def Cinm_ComputeOp : Cinm_Base_Op<"compute", [
   let results = (outs Variadic<AnyType>:$results);
   let regions = (region SizedRegion<1>:$body);
 
-  let extraClassDeclaration = [{
-    template<class T>
-    std::optional<T> getAcceleratorAs() {
-      auto ax = getAccelerator();
-      T res;
-      if (!ax || !(res = llvm::dyn_cast_or_null<T>(*ax))) return std::nullopt;
-      return res;
-    }
-  }];
-
   let hasVerifier = 1;
   let skipDefaultBuilders = 1;
   let builders = [
@@ -427,7 +419,8 @@ def Cinm_ComputeOp : Cinm_Base_Op<"compute", [
 
 def Cinm_ComputeBlockOp : Cinm_Base_Op<"compute_block", [
   AffineScope, AutomaticAllocationScope, IsolatedFromAbove, RecursiveMemoryEffects,
-  DeclareOpInterfaceMethods<RegionBranchOpInterface, ["getRegionInvocationBounds", "getSuccessorRegions", "getEntrySuccessorOperands"]>
+  DeclareOpInterfaceMethods<RegionBranchOpInterface, ["getRegionInvocationBounds", "getSuccessorRegions", "getEntrySuccessorOperands"]>,
+  CinmComputeOpInterface
 ]> {
   let summary = "Delimits a region of code for offloading - IsolatedFromAbove";
   let description = [{
@@ -470,13 +463,6 @@ def Cinm_ComputeBlockOp : Cinm_Base_Op<"compute_block", [
       return getRegion().getArguments();
     }
 
-    template<class T>
-    std::optional<T> getAcceleratorAs() {
-      auto ax = getAccelerator();
-      T res;
-      if (!ax || !(res = llvm::dyn_cast_or_null<T>(*ax))) return std::nullopt;
-      return res;
-    }
   }];
 
   let skipDefaultBuilders = 1;

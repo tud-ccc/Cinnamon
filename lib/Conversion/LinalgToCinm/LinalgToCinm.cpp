@@ -1150,26 +1150,14 @@ struct ConvertLinalgOpToCinm : OpConversionPattern<SourceOp> {
   LogicalResult
   matchAndRewrite(SourceOp op, SourceOp::Adaptor,
                   ConversionPatternRewriter &rewriter) const override {
-    cinm::ComputeBlockOp ComputeBlockOp = cinm::ComputeBlockOp::create(
-        rewriter, op.getLoc(), op.getOperands(), op.getResultTypes());
-    Block *computeBody = &ComputeBlockOp.getRegion().front();
-    // remap original values to block argument
+    rewriter.setInsertionPoint(op);
     IRMapping mapping;
-    for (auto [arg, opnd] : ComputeBlockOp.zipArgsWithOperands()) {
-      mapping.map(opnd, arg);
-    }
-
-    rewriter.setInsertionPointToStart(computeBody);
     auto failureOrCinmOp =
         LinalgToCinmOpBuilder<SourceOp>::build(rewriter, op, mapping);
     if (failed(failureOrCinmOp)) {
       return failure();
     }
-    auto cinmOp = *failureOrCinmOp;
-    cinm::YieldOp::create(rewriter, op.getLoc(), cinmOp->getResults());
-
-    rewriter.replaceOpWithMultiple(op, ComputeBlockOp.getResults());
-    ComputeBlockOp.dump();
+    rewriter.replaceOp(op, *failureOrCinmOp);
     return success();
   }
 };
@@ -1432,30 +1420,20 @@ struct ConvertLinalgGenericOpToCinm : OpConversionPattern<linalg::GenericOp> {
       mappedOperands.push_back(mapper.lookupOrDefault(operand.get()));
     }
 
-    // create cinm op corresponding to the current operation
-    cinm::ComputeBlockOp ComputeBlockOp = cinm::ComputeBlockOp::create(
-        rewriter, op.getLoc(), mappedOperands, mappedOperands[0].getType());
-    Block *computeBody = &ComputeBlockOp.getBody().front();
-    SmallVector<Value, 3> innerOperands;
-    for (auto arg : ComputeBlockOp.getBodyArguments())
-      innerOperands.push_back(arg);
-
-    rewriter.setInsertionPointToStart(computeBody);
 
     auto failureOrCinmOp =
-        buildElementwiseOp(rewriter, &op, innerOperands, op.getLoc());
+        buildElementwiseOp(rewriter, &op, mappedOperands, op.getLoc());
     if (failed(failureOrCinmOp)) {
       return failure();
     }
 
     auto cinmOp = *failureOrCinmOp;
-    cinm::YieldOp::create(rewriter, op.getLoc(), cinmOp->getResults());
 
     for (size_t i = 0; i < op.getNumResults(); i++) {
-      mapper.map(op.getResult(i), ComputeBlockOp.getResult(i));
+      mapper.map(op.getResult(i), cinmOp->getResult(i));
     }
 
-    rewriter.setInsertionPointAfter(ComputeBlockOp);
+    rewriter.setInsertionPointAfter(cinmOp);
     return success();
   }
 
@@ -1601,28 +1579,21 @@ struct ConvertLinalgGenericOpToCinm : OpConversionPattern<linalg::GenericOp> {
   static LogicalResult
   convertReductionGenericBodyOpToCinm(Operation &op, IRMapping &mapper,
                                       ConversionPatternRewriter &rewriter) {
-    // create cinm op corresponding to the current operation
-    Value operand = mapper.lookupOrDefault(op.getOperand(1));
-    cinm::ComputeBlockOp ComputeBlockOp = cinm::ComputeBlockOp::create(
-        rewriter, op.getLoc(), operand, operand.getType());
-    Block *computeBody = &ComputeBlockOp.getRegion().front();
-
-    rewriter.setInsertionPointToStart(computeBody);
+    rewriter.setInsertionPoint(&op);
 
     auto failureOrCinmOp = buildReductionOp(
-        rewriter, &op, ComputeBlockOp.getBodyArguments()[0], op.getLoc());
+        rewriter, &op, op.getOperand(0), op.getLoc());
     if (failed(failureOrCinmOp)) {
       return failure();
     }
 
     auto cinmOp = *failureOrCinmOp;
-    cinm::YieldOp::create(rewriter, op.getLoc(), cinmOp->getResults());
 
     for (size_t i = 0; i < op.getNumResults(); i++) {
-      mapper.map(op.getResult(i), ComputeBlockOp.getResult(i));
+      mapper.map(op.getResult(i), cinmOp->getResult(i));
     }
 
-    rewriter.setInsertionPointAfter(ComputeBlockOp);
+    rewriter.setInsertionPointAfter(cinmOp);
     return success();
   }
 

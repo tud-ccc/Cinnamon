@@ -37,3 +37,4 @@ add_public_tablegen_target(${prefix}IRIncGen)
 add_dependencies(${prefix}IncGen ${prefix}IRIncGen)
 
 mlir_gen_iface(Cinm TilingInterface op)
+mlir_gen_iface(Cinm CinmComputeOpInterface op)
