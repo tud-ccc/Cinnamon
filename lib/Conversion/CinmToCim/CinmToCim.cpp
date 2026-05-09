@@ -62,21 +62,24 @@ static inline cim::RoundingMode mapRounding(cinm::RoundingMode r) {
   llvm_unreachable("unknown cinm::RoundingMode");
 }
 
-static inline cim::ActivationKind toCimActivation(cinm::ActivationKind k) {
+static inline FailureOr<cim::ActivationKind>
+toCimActivation(cinm::ElementwiseKind k) {
   switch (k) {
-  case cinm::ActivationKind::RELU:
+  case cinm::ElementwiseKind::Relu:
     return cim::ActivationKind::RELU;
-  case cinm::ActivationKind::SIGMOID:
+  case cinm::ElementwiseKind::Sigmoid:
     return cim::ActivationKind::SIGMOID;
-  case cinm::ActivationKind::TANH:
+  case cinm::ElementwiseKind::Tanh:
     return cim::ActivationKind::TANH;
-  case cinm::ActivationKind::GELU:
+  case cinm::ElementwiseKind::Gelu:
     return cim::ActivationKind::GELU;
+  default:
+    return failure();
   }
-  llvm_unreachable("unsupported cinm::ActivationKind");
 }
 
-struct ConvertCinmComputeToCim : public OpConversionPattern<cinm::ComputeBlockOp> {
+struct ConvertCinmComputeToCim
+    : public OpConversionPattern<cinm::ComputeBlockOp> {
   using OpConversionPattern::OpConversionPattern;
 
   static bool preparedCinmComputeBlockOp(Operation *op) {
@@ -84,7 +87,8 @@ struct ConvertCinmComputeToCim : public OpConversionPattern<cinm::ComputeBlockOp
       auto ComputeBlockOp = cast<cinm::ComputeBlockOp>(op);
       return !ComputeBlockOp.getBody().empty() &&
              !ComputeBlockOp.getBody().front().empty() &&
-             isa<cim::AcquireDeviceOp>(ComputeBlockOp.getBody().front().front());
+             isa<cim::AcquireDeviceOp>(
+                 ComputeBlockOp.getBody().front().front());
     }
     if (!isa<cinm::CinmDialect>(op->getDialect()))
       return true;
@@ -170,15 +174,16 @@ struct ConvertCinmYieldInMemRefCompute
   }
 };
 
-struct LowerCinmActivate : public OpConversionPattern<cinm::ActivateOp> {
+struct LowerCinmActivate : public OpConversionPattern<cinm::ElementwiseOp> {
   using OpConversionPattern::OpConversionPattern;
 
   LogicalResult
-  matchAndRewrite(cinm::ActivateOp op, OpAdaptor adaptor,
+  matchAndRewrite(cinm::ElementwiseOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
-    auto compute = op->getParentOfType<cinm::ComputeBlockOp>();
-    if (!compute)
-      return op.emitOpError("must be nested in cinm.compute_memref");
+    auto kind = op.getKind();
+    auto cimKind = toCimActivation(kind);
+    if (failed(cimKind))
+      return failure();
 
     Location loc = op.getLoc();
 
@@ -200,8 +205,7 @@ struct LowerCinmActivate : public OpConversionPattern<cinm::ActivateOp> {
     st.addTypes(futTy);
     st.addOperands(src);
     st.addAttribute(
-        "kind", cim::ActivationKindAttr::get(rewriter.getContext(),
-                                             toCimActivation(op.getKind())));
+        "kind", cim::ActivationKindAttr::get(rewriter.getContext(), *cimKind));
     Operation *act = rewriter.create(st);
     Value fut = act->getResult(0);
 

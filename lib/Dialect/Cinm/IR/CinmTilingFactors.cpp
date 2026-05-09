@@ -198,21 +198,6 @@ getGemvTiles(const int64_t M, const int64_t K, const Type eltType,
   return std::make_tuple(p, k);
 }
 
-static FailureOr<int64_t> getActivateTiles(ActivateOp op,
-                                           const TilingParameters &params) {
-  auto inTy = op.getInput().getType();
-  const int64_t total = inTy.getNumElements();
-  int64_t p = 0;
-  if (auto par = params.parallelClusterSize(total, 1))
-    p = std::max<int64_t>(1, par->first);
-  if (p <= 0)
-    p = std::max<int64_t>(1, params.workingGroupSize());
-  p = std::min<int64_t>(p, total);
-  if (p <= 0)
-    return op->emitError("cannot determine tiling factor for activate op");
-  return p;
-}
-
 // ---------------------------------------------------------------------------
 // Public dispatcher
 // ---------------------------------------------------------------------------
@@ -270,14 +255,6 @@ DiagnosedSilenceableFailure mlir::cinm::computeTilingFactorsForOp(
       return DiagnosedSilenceableFailure::definiteFailure();
     auto [pM, rK] = *tiles;
     tilingFactors.append({pM, rK});
-    return DiagnosedSilenceableFailure::success();
-  }
-
-  if (auto activateOp = dyn_cast<ActivateOp>(op)) {
-    auto factor = getActivateTiles(activateOp, params);
-    if (failed(factor))
-      return DiagnosedSilenceableFailure::definiteFailure();
-    tilingFactors.push_back(*factor);
     return DiagnosedSilenceableFailure::success();
   }
 

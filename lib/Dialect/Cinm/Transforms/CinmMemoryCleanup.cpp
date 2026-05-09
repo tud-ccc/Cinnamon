@@ -1047,7 +1047,7 @@ struct FuseActivateTmpCopyPattern final : OpRewritePattern<memref::CopyOp> {
     Value tmp = copy.getSource();
     Value dst = copy.getTarget();
 
-    auto act = tmp.getDefiningOp<cinm::ActivateOp>();
+    auto act = tmp.getDefiningOp<cinm::ElementwiseOp>();
     if (!act)
       return failure();
 
@@ -1078,11 +1078,7 @@ struct FuseActivateTmpCopyPattern final : OpRewritePattern<memref::CopyOp> {
     Location loc = act.getLoc();
     Value src = act->getOperand(0);
 
-    OperationState st(loc, cinm::ActivateOp::getOperationName());
-    st.addOperands({src, dst});
-    st.addAttribute("kind", cinm::ActivationKindAttr::get(rewriter.getContext(),
-                                                          act.getKind()));
-    (void)rewriter.create(st);
+    rewriter.create<cinm::ElementwiseOp>(loc, act.getKind(), src, dst);
 
     rewriter.eraseOp(copy);
     rewriter.eraseOp(act);

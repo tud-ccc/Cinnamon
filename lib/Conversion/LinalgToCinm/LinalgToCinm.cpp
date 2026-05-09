@@ -261,6 +261,17 @@ matchUnaryAddSubWithScalar(Value yielded, Value operand) {
   return std::nullopt;
 }
 
+static std::optional<cinm::ElementwiseKind> matchActivationKind(Value yScalar,
+                                                                Value xScalar) {
+  if (matchRelu(yScalar, xScalar))
+    return cinm::ElementwiseKind::Relu;
+  if (matchSigmoid(yScalar, xScalar))
+    return cinm::ElementwiseKind::Sigmoid;
+  if (matchTanh(yScalar, xScalar))
+    return cinm::ElementwiseKind::Tanh;
+  return std::nullopt;
+}
+
 static LogicalResult rewriteActivationGeneric(linalg::GenericOp op,
                                               IRRewriter &rewriter) {
   if (!linalg::isElementwise(op) || op.getNumDpsInputs() != 1 ||
@@ -271,14 +282,8 @@ static LogicalResult rewriteActivationGeneric(linalg::GenericOp op,
   Value xScalar = body.getArgument(0);
   Value yScalar = yield.getOperand(0);
 
-  std::optional<cinm::ActivationKind> kind;
-  if (matchRelu(yScalar, xScalar))
-    kind = cinm::ActivationKind::RELU;
-  else if (matchSigmoid(yScalar, xScalar))
-    kind = cinm::ActivationKind::SIGMOID;
-  else if (matchTanh(yScalar, xScalar))
-    kind = cinm::ActivationKind::TANH;
-  else
+  auto kind = matchActivationKind(yScalar, xScalar);
+  if (!kind)
     return failure();
 
   Value inputVal = op.getDpsInputs()[0];
@@ -288,14 +293,16 @@ static LogicalResult rewriteActivationGeneric(linalg::GenericOp op,
   if (!op->getResults().empty()) {
     if (!isTensor(inputVal) || !isTensor(op->getResult(0)))
       return failure();
-    auto act = cinm::ActivateOp::create(rewriter, op.getLoc(), *kind, inputVal);
+    auto act =
+        cinm::ElementwiseOp::create(rewriter, op.getLoc(), *kind, inputVal);
     rewriter.replaceOp(op, act.getResult());
     return success();
   }
 
   if (!isMemRef(inputVal) || !isMemRef(outputVal))
     return failure();
-  rewriter.replaceOpWithNewOp<cinm::ActivateOp>(op, *kind, inputVal, outputVal);
+  rewriter.replaceOpWithNewOp<cinm::ElementwiseOp>(op, *kind, inputVal,
+                                                   outputVal);
   return success();
 }
 
@@ -308,14 +315,8 @@ static LogicalResult rewriteActivationMap(linalg::MapOp op,
   Value xScalar = body.getArgument(0);
   Value yScalar = yield.getOperand(0);
 
-  std::optional<cinm::ActivationKind> kind;
-  if (matchRelu(yScalar, xScalar))
-    kind = cinm::ActivationKind::RELU;
-  else if (matchSigmoid(yScalar, xScalar))
-    kind = cinm::ActivationKind::SIGMOID;
-  else if (matchTanh(yScalar, xScalar))
-    kind = cinm::ActivationKind::TANH;
-  else
+  auto kind = matchActivationKind(yScalar, xScalar);
+  if (!kind)
     return failure();
 
   Value inputVal = op.getInputs()[0];
@@ -325,13 +326,15 @@ static LogicalResult rewriteActivationMap(linalg::MapOp op,
   if (op->getResults().empty()) {
     if (!isMemRef(inputVal) || !isMemRef(initVal))
       return failure();
-    rewriter.replaceOpWithNewOp<cinm::ActivateOp>(op, *kind, inputVal, initVal);
+    rewriter.replaceOpWithNewOp<cinm::ElementwiseOp>(op, *kind, inputVal,
+                                                     initVal);
     return success();
   }
 
   if (!isTensor(inputVal) || !isTensor(op->getResult(0)))
     return failure();
-  auto act = cinm::ActivateOp::create(rewriter, op.getLoc(), *kind, inputVal);
+  auto act =
+      cinm::ElementwiseOp::create(rewriter, op.getLoc(), *kind, inputVal);
   rewriter.replaceOp(op, act.getResult());
   return success();
 }
@@ -659,14 +662,7 @@ struct GenericActivationToCinm : public OpConversionPattern<linalg::GenericOp> {
     Value xScalar = body.getArgument(0);
     Value yScalar = yld.getOperand(0);
 
-    std::optional<cinm::ActivationKind> kind;
-    if (matchRelu(yScalar, xScalar))
-      kind = cinm::ActivationKind::RELU;
-    else if (matchSigmoid(yScalar, xScalar))
-      kind = cinm::ActivationKind::SIGMOID;
-    else if (matchTanh(yScalar, xScalar))
-      kind = cinm::ActivationKind::TANH;
-
+    auto kind = matchActivationKind(yScalar, xScalar);
     if (!kind)
       return rewriter.notifyMatchFailure(op, "not a recognized activation");
 
@@ -677,16 +673,16 @@ struct GenericActivationToCinm : public OpConversionPattern<linalg::GenericOp> {
       if (!isTensor(inputVal) || !isTensor(op->getResult(0)))
         return rewriter.notifyMatchFailure(op,
                                            "requires tensor operands/results");
-      auto act = cinm::ActivateOp::create(rewriter, op.getLoc(), *kind,
-                                          inputVal, Value());
+      auto act = cinm::ElementwiseOp::create(rewriter, op.getLoc(), *kind,
+                                             inputVal, Value());
       rewriter.replaceOp(op, act.getResult());
       return success();
     }
 
     if (!isMemRef(inputVal) || !isMemRef(outputVal))
       return rewriter.notifyMatchFailure(op, "requires memref input/out");
-    rewriter.replaceOpWithNewOp<cinm::ActivateOp>(op, *kind, inputVal,
-                                                  outputVal);
+    rewriter.replaceOpWithNewOp<cinm::ElementwiseOp>(op, *kind, inputVal,
+                                                     outputVal);
     return success();
   }
 };
@@ -710,13 +706,7 @@ struct MapActivationToCinm : public OpConversionPattern<linalg::MapOp> {
     Value xScalar = body.getArgument(0);
     Value yScalar = yield.getOperand(0);
 
-    std::optional<cinm::ActivationKind> kind;
-    if (matchRelu(yScalar, xScalar))
-      kind = cinm::ActivationKind::RELU;
-    else if (matchSigmoid(yScalar, xScalar))
-      kind = cinm::ActivationKind::SIGMOID;
-    else if (matchTanh(yScalar, xScalar))
-      kind = cinm::ActivationKind::TANH;
+    auto kind = matchActivationKind(yScalar, xScalar);
 
     if (!kind)
       return rewriter.notifyMatchFailure(op, "not a recognized activation");
@@ -727,8 +717,8 @@ struct MapActivationToCinm : public OpConversionPattern<linalg::MapOp> {
     if (op->getResults().empty()) {
       if (!isMemRef(inputVal) || !isMemRef(initVal))
         return rewriter.notifyMatchFailure(op, "requires memref input/out");
-      rewriter.replaceOpWithNewOp<cinm::ActivateOp>(op, *kind, inputVal,
-                                                    initVal);
+      rewriter.replaceOpWithNewOp<cinm::ElementwiseOp>(op, *kind, inputVal,
+                                                       initVal);
       return success();
     }
 
@@ -736,7 +726,8 @@ struct MapActivationToCinm : public OpConversionPattern<linalg::MapOp> {
       return rewriter.notifyMatchFailure(op,
                                          "requires tensor operands/results");
 
-    auto act = cinm::ActivateOp::create(rewriter, op.getLoc(), *kind, inputVal);
+    auto act =
+        cinm::ElementwiseOp::create(rewriter, op.getLoc(), *kind, inputVal);
     rewriter.replaceOp(op, act.getResult());
     return success();
   }
@@ -1420,7 +1411,6 @@ struct ConvertLinalgGenericOpToCinm : OpConversionPattern<linalg::GenericOp> {
       mappedOperands.push_back(mapper.lookupOrDefault(operand.get()));
     }
 
-
     auto failureOrCinmOp =
         buildElementwiseOp(rewriter, &op, mappedOperands, op.getLoc());
     if (failed(failureOrCinmOp)) {
@@ -1581,8 +1571,8 @@ struct ConvertLinalgGenericOpToCinm : OpConversionPattern<linalg::GenericOp> {
                                       ConversionPatternRewriter &rewriter) {
     rewriter.setInsertionPoint(&op);
 
-    auto failureOrCinmOp = buildReductionOp(
-        rewriter, &op, op.getOperand(0), op.getLoc());
+    auto failureOrCinmOp =
+        buildReductionOp(rewriter, &op, op.getOperand(0), op.getLoc());
     if (failed(failureOrCinmOp)) {
       return failure();
     }

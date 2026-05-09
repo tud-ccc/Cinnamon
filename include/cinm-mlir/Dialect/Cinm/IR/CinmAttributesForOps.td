@@ -68,7 +68,12 @@ def Cinm_ElementwiseKindAttr : I64EnumAttr<
       I64EnumAttrCase<"And", 18, "and">,
       I64EnumAttrCase<"Or", 19, "or">,
       I64EnumAttrCase<"Xor", 20, "xor">,
-      I64EnumAttrCase<"Not", 21, "not">
+      I64EnumAttrCase<"Not", 21, "not">,
+
+      // Activations
+      I64EnumAttrCase<"Relu",    22, "relu">,
+      I64EnumAttrCase<"Sigmoid", 23, "sigmoid">,
+      I64EnumAttrCase<"Gelu",    25, "gelu">
     ]> {
   let cppNamespace = "::mlir::cinm";
 }
@@ -88,17 +93,6 @@ def Cinm_SimilarityMetricAttr : I64EnumAttr<
 //def Cinm_SimilarityMetricAttr : EnumAttr<Cinm_Dialect, Cinm_SimilarityMetric, "metric">;
 //def Cinm_ReduceMethodAttr : EnumAttr<Cinm_Dialect, Cinm_ReduceMethod, "method">;
 //def Cinm_ScanMethodAttr : EnumAttr<Cinm_Dialect, Cinm_ScanMethod, "method">;
-
-def Cinm_ActivationKindAttr : I64EnumAttr<
-    "ActivationKind", "",
-    [
-      I64EnumAttrCase<"RELU",    0, "relu">,
-      I64EnumAttrCase<"SIGMOID", 1, "sigmoid">,
-      I64EnumAttrCase<"TANH",    2, "tanh">,
-      I64EnumAttrCase<"GELU",    3, "gelu">
-    ]> {
-  let cppNamespace = "::mlir::cinm";
-}
 
 //===----------------------------------------------------------------------===//
 // Quantization

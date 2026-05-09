@@ -414,19 +414,6 @@ void ElementwiseOp::build(OpBuilder &builder, OperationState &state,
                      builder.getDenseI32ArrayAttr({1, bInt, outInt}));
 }
 
-void ActivateOp::build(OpBuilder &builder, OperationState &state,
-                       ActivationKind kind, Value a, Value out) {
-  state.addOperands(a);
-  if (out) {
-    state.addOperands(out);
-  } else {
-    state.addTypes(a.getType());
-  }
-
-  state.addAttribute(getKindAttrName(state.name),
-                     builder.getAttr<ActivationKindAttr>(kind));
-}
-
 ::mlir::ParseResult parseUnaryOp(::mlir::OpAsmParser &parser,
                                  ::mlir::OperationState &result) {
   OpAsmParser::UnresolvedOperand input, output;
@@ -462,29 +449,6 @@ void ActivateOp::build(OpBuilder &builder, OperationState &state,
   return success();
 }
 
-::mlir::ParseResult ActivateOp::parse(::mlir::OpAsmParser &parser,
-                                      ::mlir::OperationState &result) {
-  ActivationKindAttr kind;
-  if (parser.parseAttribute(kind, "kind", result.attributes).failed())
-    return failure();
-  return parseUnaryOp(parser, result);
-}
-
-void ActivateOp::print(::mlir::OpAsmPrinter &printer) {}
-
-::mlir::ParseResult QuantizeOp::parse(::mlir::OpAsmParser &parser,
-                                      ::mlir::OperationState &result) {
-  return parseUnaryOp(parser, result);
-}
-
-void QuantizeOp::print(::mlir::OpAsmPrinter &printer) {}
-
-::mlir::ParseResult DequantizeOp::parse(::mlir::OpAsmParser &parser,
-                                        ::mlir::OperationState &result) {
-  return parseUnaryOp(parser, result);
-}
-
-void DequantizeOp::print(::mlir::OpAsmPrinter &printer) {}
 
 ::mlir::LogicalResult GemmOp::inferReturnTypeComponents(
     ::mlir::MLIRContext *context, ::std::optional<::mlir::Location> loc,

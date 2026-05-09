@@ -13,6 +13,7 @@ func.func @simple(%t00: tensor<6x6xi32>, %t10 : tensor<6xf32> , %m00: memref<6xf
         cinm.op.elementwise mul %t1, %t1 into %m0: tensor<6xf32> into memref<6xf32>
 
         %000 = cinm.op.elementwise exp %t0: tensor<6x6xi32>
+        %0002 = cinm.op.elementwise sigmoid %t0: tensor<6x6xi32>
         cinm.op.elementwise exp %t0 into %m0: tensor<6x6xi32> into memref<6xf32>
 
         %zx = cinm.op.reduce mul (%y) : tensor<6x6xi32> -> tensor<6xi32>
