@@ -11,7 +11,6 @@
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
 
-#include <array>
 #include <cstdint>
 #include <llvm/ADT/ArrayRef.h>
 #include <llvm/ADT/SmallVector.h>
@@ -74,9 +73,6 @@ static SmallVector<Value> createNestedScfForLoops(
   return build(0, iterArgs);
 }
 
-static constexpr std::array<int64_t, 1> noStaticOffsets1{ShapedType::kDynamic};
-static constexpr std::array<int64_t, 1> unitStrides1{1};
-
 static Value extractSliceND(OpBuilder &builder, Location loc,
                             TypedValue<ShapedType> tensorOrMemref,
                             ArrayRef<int64_t> sizes, ValueRange offsets) {
@@ -108,16 +104,11 @@ static Value extractSliceND(OpBuilder &builder, Location loc,
   }
   assert(false && "type not handled");
 }
+
 static Value extractSlice1D(OpBuilder &builder, Location loc,
                             TypedValue<ShapedType> tensorOrMemref, int64_t size,
                             Value offset) {
   return extractSliceND(builder, loc, tensorOrMemref, {size}, {offset});
-}
-
-static Value extractSlice(OpBuilder &builder, Location loc,
-                          TypedValue<ShapedType> tensorOrMemref, int64_t a,
-                          int64_t b, Value ia, Value ib) {
-  return extractSliceND(builder, loc, tensorOrMemref, {a, b}, {ia, ib});
 }
 
 static Value insertSliceND(OpBuilder &builder, Location loc, Value slice,
@@ -141,9 +132,165 @@ static Value insertSliceND(OpBuilder &builder, Location loc, Value slice,
   assert(false && "type not handled");
 }
 
-static constexpr std::array<int64_t, 2> noStaticOffsets2D{ShapedType::kDynamic,
-                                                          ShapedType::kDynamic};
-static constexpr std::array<int64_t, 2> unitStrides2D{1, 1};
+// Shared tiling kernel for GemmOp, GemvOp, BatchGemmOp, BatchGemvOp.
+//
+// All four ops share the layout pattern:
+//   lhs:    [...batch, M, K]
+//   rhs:    [...batch, K, ...N]   (N dims follow the reduction dim)
+//   result: [...batch, M, ...N]
+//
+// nBatch and nN are derived from the ranks:
+//   nBatch = lhs.rank - 2,   nN = result.rank - (nBatch + 1)
+//
+// tilingFactors = [batch_tiles..., mTile, nTiles..., rTile]
+//                 ↑ nPar = tilingFactors.size() - 1 parallel factors ↑
+//
+// buildTileOp(b, loc, lhsSlice, rhsSlice, acc, out) creates the inner tile op
+// and returns its tensor result (or a null Value for the memref path).
+static DiagnosedSilenceableFailure convertGemmlikeToTiledOps(
+    RewriterBase &rewriter, Location loc, TypedValue<ShapedType> lhs,
+    TypedValue<ShapedType> rhs, TypedValue<ShapedType> bias,
+    TypedValue<ShapedType> out, ShapedType resultType,
+    ArrayRef<int64_t> tilingFactors, SmallVectorImpl<Value> &results,
+    std::function<Value(OpBuilder &, Location, Value, Value, Value, Value)>
+        buildTileOp) {
+  // Rank consistency:
+  //   lhs    [...batch, M, K]       → rank = nBatch + 2
+  //   rhs    [...batch, K, ...N]    → rank = nBatch + 1 + nN = result.rank
+  //   result [...batch, M, ...N]    → rank = nBatch + 1 + nN
+  const int64_t lhsRank = lhs.getType().getRank();
+  const int64_t nPar = resultType.getRank();
+  if (lhsRank < 2)
+    return emitDefiniteFailure(loc)
+           << "gemm-like op: lhs rank must be >= 2, got " << lhsRank;
+  if (resultType.getRank() < lhsRank - 1)
+    return emitDefiniteFailure(loc)
+           << "gemm-like op: result rank too small for lhs rank " << lhsRank;
+  if (rhs.getType().getRank() != resultType.getRank())
+    return DiagnosedSilenceableFailure::definiteFailure();
+
+  if (static_cast<int64_t>(tilingFactors.size()) != nPar + 1)
+    return emitSilenceableFailure(loc)
+           << "gemm-like op: expected " << nPar + 1
+           << " tiling factors, got " << tilingFactors.size();
+
+  for (int64_t i = 0; i < lhsRank; ++i)
+    if (ShapedType::isDynamic(lhs.getType().getDimSize(i)))
+      return emitSilenceableFailure(loc)
+             << "Unsupported: tiling on dynamic dimensions";
+  for (int64_t i = 0; i < rhs.getType().getRank(); ++i)
+    if (ShapedType::isDynamic(rhs.getType().getDimSize(i)))
+      return emitSilenceableFailure(loc)
+             << "Unsupported: tiling on dynamic dimensions";
+
+  const int64_t nBatch = lhsRank - 2;
+  const int64_t K = lhs.getType().getDimSize(nBatch + 1);
+  const int64_t r = tilingFactors.back();
+  const SmallVector<int64_t> parTiles(tilingFactors.drop_back(1));
+  const Type eltTy = resultType.getElementType();
+
+  ValueRange initArgs{};
+  if (!out) {
+    Value resultInit =
+        tensor::EmptyOp::create(rewriter, loc, resultType.getShape(), eltTy);
+    initArgs = resultInit;
+  }
+
+  SmallVector<Value> finals = createNestedAffineForLoops(
+      rewriter, loc, resultType.getShape(), parTiles, initArgs,
+      [&, nBatch, nPar](OpBuilder &b, Location loc, ValueRange indices,
+                        ValueRange iterArgs) -> SmallVector<Value> {
+        const ValueRange parIndices = indices;
+
+        Value biasSlice;
+        if (bias)
+          biasSlice = extractSliceND(b, loc, bias, parTiles, parIndices);
+
+        // If the output is a memref, slice it and accumulate bias before the
+        // inner loop.
+        Value outBuf;
+        if (out && isa<MemRefType>(out.getType())) {
+          outBuf = extractSliceND(b, loc, out, parTiles, parIndices);
+          if (biasSlice)
+            linalg::AddOp::create(b, loc, ValueRange{biasSlice, outBuf},
+                                  outBuf);
+        }
+
+        // Tensor case: seed the tile with bias or zeros, then carry the full
+        // result tensor through the reduction loop. Keeping extract/insert
+        // slice outside the inner loop improves bufferization results.
+        ValueRange innerIterArgInit{};
+        if (!outBuf) {
+          Value initTile = biasSlice;
+          if (!initTile) {
+            auto tileTy = RankedTensorType::get(parTiles, eltTy);
+            initTile = arith::ConstantOp::create(
+                           b, loc,
+                           DenseElementsAttr::get(tileTy, b.getZeroAttr(eltTy)))
+                           .getResult();
+          }
+          innerIterArgInit = insertSliceND(
+              b, loc, initTile, cast<TypedValue<ShapedType>>(iterArgs[0]),
+              parTiles, parIndices);
+        }
+
+        SmallVector<Value, 1> reductionResult = createNestedAffineForLoops(
+            b, loc, {K}, {r}, innerIterArgInit,
+            [&, nBatch, nPar](OpBuilder &b, Location loc, ValueRange indices,
+                              ValueRange innerIterArgs) -> SmallVector<Value> {
+              const Value k = indices[0];
+
+              // lhs: [...batch, M, K] → [...batch_idx, M_idx, k]
+              SmallVector<Value> lhsOffsets(parIndices.begin(),
+                                            parIndices.begin() + nBatch + 1);
+              lhsOffsets.push_back(k);
+              SmallVector<int64_t> lhsSizes(parTiles.begin(),
+                                            parTiles.begin() + nBatch + 1);
+              lhsSizes.push_back(r);
+
+              // rhs: [...batch, K, ...N] → [...batch_idx, k, ...N_idx]
+              SmallVector<Value> rhsOffsets(parIndices.begin(),
+                                            parIndices.begin() + nBatch);
+              rhsOffsets.push_back(k);
+              SmallVector<int64_t> rhsSizes(parTiles.begin(),
+                                            parTiles.begin() + nBatch);
+              rhsSizes.push_back(r);
+              for (int64_t i = nBatch + 1; i < nPar; ++i) {
+                rhsOffsets.push_back(parIndices[i]);
+                rhsSizes.push_back(parTiles[i]);
+              }
+
+              Value lhsSlice =
+                  extractSliceND(b, loc, lhs, lhsSizes, lhsOffsets);
+              Value rhsSlice =
+                  extractSliceND(b, loc, rhs, rhsSizes, rhsOffsets);
+
+              if (innerIterArgs.empty()) {
+                // Memref path: accumulate in place.
+                buildTileOp(b, loc, lhsSlice, rhsSlice, Value{}, outBuf);
+                return {};
+              }
+              // Tensor path.
+              Value accSlice = extractSliceND(
+                  b, loc, cast<TypedValue<ShapedType>>(innerIterArgs[0]),
+                  parTiles, parIndices);
+              Value tileResult =
+                  buildTileOp(b, loc, lhsSlice, rhsSlice, accSlice, accSlice);
+              Value updatedTensor =
+                  insertSliceND(b, loc, tileResult,
+                                cast<TypedValue<ShapedType>>(innerIterArgs[0]),
+                                parTiles, parIndices);
+              return {updatedTensor};
+            });
+
+        if (out)
+          return {};
+        return {reductionResult[0]};
+      });
+
+  results.append(finals.begin(), finals.end());
+  return DiagnosedSilenceableFailure::success();
+}
 
 // ---------------------------------------------------------------------------
 // getTilableDimSizes implementations
@@ -392,531 +539,62 @@ DiagnosedSilenceableFailure
 GemmOp::convertToTiledOps(RewriterBase &rewriter,
                           ArrayRef<int64_t> tilingFactors,
                           SmallVectorImpl<Value> &results) {
-  if (tilingFactors.size() != 3)
-    return emitSilenceableFailure(getLoc())
-           << "expected 3 tiling factors [tM,tN,tK] for gemm, got "
-           << tilingFactors.size();
-
-  Location loc = getLoc();
-  OpBuilder &builder = rewriter;
-
-  TypedValue<ShapedType> lhs = getLhs();
-  TypedValue<ShapedType> rhs = getRhs();
-
-  auto lhsType = lhs.getType();
-  auto rhsType = rhs.getType();
-  ShapedType resultType;
-  if (getResult())
-    resultType = getResult().getType();
-  else
-    resultType = getOut().getType();
-
-  if (lhsType.getRank() != 2 || rhsType.getRank() != 2 ||
-      resultType.getRank() != 2)
-    return DiagnosedSilenceableFailure::definiteFailure();
-
-  const int64_t M = lhsType.getDimSize(0);
-  const int64_t K = lhsType.getDimSize(1);
-  const int64_t N = rhsType.getDimSize(1);
-  if (ShapedType::isDynamic(M) || ShapedType::isDynamic(K) ||
-      ShapedType::isDynamic(N))
-    return emitSilenceableFailure(getLoc())
-           << "Unsupported: tiling on dynamic dimensions";
-
-  const int64_t p0 = tilingFactors[0];
-  const int64_t p1 = tilingFactors[1];
-  const int64_t r = tilingFactors[2];
-
-  ValueRange initArgs{};
-  if (!getOut()) {
-    Value resultInit = tensor::EmptyOp::create(
-        builder, loc, resultType.getShape(), resultType.getElementType());
-    initArgs = resultInit;
-  }
-
-  Type eltTy = resultType.getElementType();
-
-  SmallVector<Value> finals = createNestedAffineForLoops(
-      builder, getLoc(), resultType.getShape(), {p0, p1}, initArgs,
-      [&, p0, p1](OpBuilder &builder, Location loc, ValueRange indices,
-                  ValueRange iterArgs) -> SmallVector<Value> {
-        const auto parIndices = indices;
-        const SmallVector<int64_t, 2> resultSizes{p0, p1};
-        const ValueRange resultDynamicOffsets = parIndices;
-
-        Value biasSlice;
-        if (auto bias = getBias())
-          biasSlice = extractSlice(builder, loc, bias, p0, p1, parIndices[0],
-                                   parIndices[1]);
-
-        // If the output is a memref, then slice it and possibly accumulate the bias into it before the inner loop.
-        Value outBuf;
-        if (auto outmemref = getOut(); outmemref && isa<MemRefType>(outmemref.getType())) {
-          outBuf = extractSlice(builder, loc,
-                                cast<TypedValue<ShapedType>>(outmemref), p0, p1,
-                                parIndices[0], parIndices[1]);
-          if (biasSlice)
-            linalg::AddOp::create(builder, loc, ValueRange{biasSlice, outBuf},
-                                  outBuf);
-        }
-
-        // Tensor case: seed the [i,j] tile with bias or zeros, then carry the
-        // full result tensor through the reduction loop. This is on purpose as
-        // having the extract/insert slice inside the inner loop improves bufferization
-        // results. 
-        ValueRange innerIterArgInit{};
-        if (!outBuf) {
-          Value initTile = biasSlice;
-          if (!initTile) {
-            auto tileTy = RankedTensorType::get({p0, p1}, eltTy);
-            initTile =
-                arith::ConstantOp::create(
-                    builder, loc,
-                    DenseElementsAttr::get(tileTy, builder.getZeroAttr(eltTy)))
-                    .getResult();
-          }
-          innerIterArgInit = insertSliceND(
-              builder, loc, initTile, cast<TypedValue<ShapedType>>(iterArgs[0]),
-              {p0, p1}, parIndices);
-        }
-
-        SmallVector<Value, 1> reductionResult = createNestedAffineForLoops(
-            builder, loc, {K}, {r}, innerIterArgInit,
-            [&, p0, p1](OpBuilder &builder, Location loc, ValueRange indices,
-                        ValueRange innerIterArgs) -> SmallVector<Value> {
-              const auto indexInRedDim = indices[0];
-
-              Value lhsSlice = extractSlice(builder, loc, lhs, p0, r,
-                                            parIndices[0], indexInRedDim);
-              Value rhsSlice = extractSlice(builder, loc, rhs, r, p1,
-                                            indexInRedDim, parIndices[1]);
-              if (innerIterArgs.empty()) {
-                // memref - create in place
-                cinm::GemmOp::create(builder, loc, lhsSlice, rhsSlice, Value{},
-                                     outBuf);
-                return {};
-              }
-              // Then tensor version.
-
-              Value accSlice = extractSlice(
-                  builder, loc, cast<TypedValue<ShapedType>>(innerIterArgs[0]),
-                  p0, p1, parIndices[0], parIndices[1]);
-              // note we set the out buf to the acc slice for better
-              // bufferization result.
-              Value tileResult =
-                  cinm::GemmOp::create(builder, loc, lhsSlice, rhsSlice,
-                                       accSlice, accSlice)
-                      .getResult();
-              Value updatedTensor = tensor::InsertSliceOp::create(
-                  builder, loc, tileResult, innerIterArgs[0],
-                  resultDynamicOffsets, ValueRange{}, ValueRange{},
-                  ArrayRef(noStaticOffsets2D), resultSizes,
-                  ArrayRef(unitStrides2D));
-              return {updatedTensor};
-            });
-
-        if (getOut())
-          return {};
-        return {reductionResult[0]};
+  ShapedType resultType = getResult() ? getResult().getType()
+                                      : cast<ShapedType>(getOut().getType());
+  return convertGemmlikeToTiledOps(
+      rewriter, getLoc(), getLhs(), getRhs(), getBias(), getOut(), resultType,
+      tilingFactors, results,
+      [](OpBuilder &b, Location loc, Value lhs, Value rhs, Value acc,
+         Value out) -> Value {
+        return cinm::GemmOp::create(b, loc, lhs, rhs, acc, out).getResult();
       });
-
-  results.append(finals.begin(), finals.end());
-  return DiagnosedSilenceableFailure::success();
 }
 
 DiagnosedSilenceableFailure
 BatchGemmOp::convertToTiledOps(RewriterBase &rewriter,
                                ArrayRef<int64_t> tilingFactors,
                                SmallVectorImpl<Value> &results) {
-  if (tilingFactors.size() != 4)
-    return emitSilenceableFailure(getLoc())
-           << "expected 4 tiling factors [batch,tM,tN,tK] for batch_gemm, got "
-           << tilingFactors.size();
-
-  Location loc = getLoc();
-  OpBuilder &builder = rewriter;
-
-  TypedValue<ShapedType> lhs = getLhs();
-  TypedValue<ShapedType> rhs = getRhs();
-
-  auto lhsType = lhs.getType();
-  auto rhsType = rhs.getType();
-  ShapedType resultType;
-  if (getResult())
-    resultType = getResult().getType();
-  else
-    resultType = getOut().getType();
-
-  if (lhsType.getRank() != 3 || rhsType.getRank() != 3 ||
-      resultType.getRank() != 3)
-    return DiagnosedSilenceableFailure::definiteFailure();
-
-  const int64_t B = lhsType.getDimSize(0);
-  const int64_t M = lhsType.getDimSize(1);
-  const int64_t K = lhsType.getDimSize(2);
-  const int64_t N = rhsType.getDimSize(2);
-  if (ShapedType::isDynamic(B) || ShapedType::isDynamic(M) ||
-      ShapedType::isDynamic(K) || ShapedType::isDynamic(N))
-    return emitSilenceableFailure(getLoc())
-           << "Unsupported: tiling on dynamic dimensions";
-
-  const int64_t pB = tilingFactors[0];
-  const int64_t pM = tilingFactors[1];
-  const int64_t pN = tilingFactors[2];
-  const int64_t r = tilingFactors[3];
-
-  ValueRange initArgs{};
-  if (!getOut()) {
-    Value resultInit = tensor::EmptyOp::create(
-        builder, loc, resultType.getShape(), resultType.getElementType());
-    initArgs = resultInit;
-  }
-
-  Type eltTy = resultType.getElementType();
-
-  SmallVector<Value> finals = createNestedAffineForLoops(
-      builder, getLoc(), resultType.getShape(), {pB, pM, pN}, initArgs,
-      [&, pB, pM, pN](OpBuilder &builder, Location loc, ValueRange indices,
-                      ValueRange iterArgs) -> SmallVector<Value> {
-        const auto parIndices = indices;
-
-        Value biasSlice;
-        if (auto bias = getBias())
-          biasSlice = extractSliceND(builder, loc,
-                                     cast<TypedValue<ShapedType>>(bias),
-                                     {pB, pM, pN}, parIndices);
-
-        // If the output is a memref, then slice it and possibly accumulate the bias into it before the inner loop.
-        Value outBuf;
-        if (auto outmemref = getOut(); outmemref && isa<MemRefType>(outmemref.getType())) {
-          outBuf = extractSliceND(builder, loc,
-                                  cast<TypedValue<ShapedType>>(outmemref),
-                                  {pB, pM, pN}, parIndices);
-          if (biasSlice)
-            linalg::AddOp::create(builder, loc, ValueRange{biasSlice, outBuf},
-                                  outBuf);
-        }
-
-        // Tensor case: seed the [b,i,j] tile with bias or zeros, then carry the
-        // full result tensor through the reduction loop. This is on purpose as
-        // having the extract/insert slice inside the inner loop improves bufferization
-        // results.
-        ValueRange innerIterArgInit{};
-        if (!outBuf) {
-          Value initTile = biasSlice;
-          if (!initTile) {
-            auto tileTy = RankedTensorType::get({pB, pM, pN}, eltTy);
-            initTile =
-                arith::ConstantOp::create(
-                    builder, loc,
-                    DenseElementsAttr::get(tileTy, builder.getZeroAttr(eltTy)))
-                    .getResult();
-          }
-          innerIterArgInit = insertSliceND(
-              builder, loc, initTile, cast<TypedValue<ShapedType>>(iterArgs[0]),
-              {pB, pM, pN}, parIndices);
-        }
-
-        SmallVector<Value, 1> reductionResult = createNestedAffineForLoops(
-            builder, loc, {K}, {r}, innerIterArgInit,
-            [&, pB, pM, pN](OpBuilder &builder, Location loc, ValueRange indices,
-                             ValueRange innerIterArgs) -> SmallVector<Value> {
-              const auto k = indices[0];
-
-              SmallVector<Value> lhsOffsets{parIndices[0], parIndices[1], k};
-              SmallVector<Value> rhsOffsets{parIndices[0], k, parIndices[2]};
-              Value lhsSlice =
-                  extractSliceND(builder, loc, lhs, {pB, pM, r}, lhsOffsets);
-              Value rhsSlice =
-                  extractSliceND(builder, loc, rhs, {pB, r, pN}, rhsOffsets);
-              if (innerIterArgs.empty()) {
-                // memref - create in place
-                cinm::BatchGemmOp::create(builder, loc, lhsSlice, rhsSlice,
-                                          Value{}, outBuf);
-                return {};
-              }
-              // Then tensor version.
-              Value accSlice = extractSliceND(
-                  builder, loc, cast<TypedValue<ShapedType>>(innerIterArgs[0]),
-                  {pB, pM, pN}, parIndices);
-              Value tileResult =
-                  cinm::BatchGemmOp::create(builder, loc, lhsSlice, rhsSlice,
-                                            accSlice, accSlice)
-                      .getResult();
-              Value updatedTensor = insertSliceND(
-                  builder, loc, tileResult,
-                  cast<TypedValue<ShapedType>>(innerIterArgs[0]),
-                  {pB, pM, pN}, parIndices);
-              return {updatedTensor};
-            });
-
-        if (getOut())
-          return {};
-        return {reductionResult[0]};
+  ShapedType resultType = getResult() ? getResult().getType()
+                                      : cast<ShapedType>(getOut().getType());
+  return convertGemmlikeToTiledOps(
+      rewriter, getLoc(), getLhs(), getRhs(), getBias(), getOut(), resultType,
+      tilingFactors, results,
+      [](OpBuilder &b, Location loc, Value lhs, Value rhs, Value acc,
+         Value out) -> Value {
+        return cinm::BatchGemmOp::create(b, loc, lhs, rhs, acc, out)
+            .getResult();
       });
-
-  results.append(finals.begin(), finals.end());
-  return DiagnosedSilenceableFailure::success();
 }
 
 DiagnosedSilenceableFailure
 BatchGemvOp::convertToTiledOps(RewriterBase &rewriter,
                                ArrayRef<int64_t> tilingFactors,
                                SmallVectorImpl<Value> &results) {
-  if (tilingFactors.size() != 3)
-    return emitSilenceableFailure(getLoc())
-           << "expected 3 tiling factors [batch,tM,tK] for batch_gemv, got "
-           << tilingFactors.size();
-
-  Location loc = getLoc();
-  OpBuilder &builder = rewriter;
-
-  TypedValue<ShapedType> lhs = getLhs();
-  TypedValue<ShapedType> rhs = getRhs();
-
-  auto lhsType = lhs.getType();
-  auto rhsType = rhs.getType();
-  ShapedType resultType;
-  if (getResult())
-    resultType = getResult().getType();
-  else
-    resultType = getOut().getType();
-
-  if (lhsType.getRank() != 3 || rhsType.getRank() != 2 ||
-      resultType.getRank() != 2)
-    return DiagnosedSilenceableFailure::definiteFailure();
-
-  const int64_t B = lhsType.getDimSize(0);
-  const int64_t M = lhsType.getDimSize(1);
-  const int64_t K = lhsType.getDimSize(2);
-  if (ShapedType::isDynamic(B) || ShapedType::isDynamic(M) ||
-      ShapedType::isDynamic(K))
-    return emitSilenceableFailure(getLoc())
-           << "Unsupported: tiling on dynamic dimensions";
-
-  const int64_t pB = tilingFactors[0];
-  const int64_t pM = tilingFactors[1];
-  const int64_t rK = tilingFactors[2];
-
-  ValueRange initArgs{};
-  if (!getOut()) {
-    Value resultInit = tensor::EmptyOp::create(
-        builder, loc, resultType.getShape(), resultType.getElementType());
-    initArgs = resultInit;
-  }
-
-  Type eltTy = resultType.getElementType();
-
-  SmallVector<Value> finals = createNestedAffineForLoops(
-      builder, getLoc(), resultType.getShape(), {pB, pM}, initArgs,
-      [&, pB, pM](OpBuilder &builder, Location loc, ValueRange indices,
-                  ValueRange iterArgs) -> SmallVector<Value> {
-        const auto parIndices = indices;
-
-        Value biasSlice;
-        if (auto bias = getBias())
-          biasSlice = extractSliceND(builder, loc,
-                                     cast<TypedValue<ShapedType>>(bias),
-                                     {pB, pM}, parIndices);
-
-        // If the output is a memref, then slice it and possibly accumulate the bias into it before the inner loop.
-        Value outBuf;
-        if (auto outmemref = getOut(); outmemref && isa<MemRefType>(outmemref.getType())) {
-          outBuf = extractSliceND(builder, loc,
-                                  cast<TypedValue<ShapedType>>(outmemref),
-                                  {pB, pM}, parIndices);
-          if (biasSlice)
-            linalg::AddOp::create(builder, loc, ValueRange{biasSlice, outBuf},
-                                  outBuf);
-        }
-
-        // Tensor case: seed the [b,i] tile with bias or zeros, then carry the
-        // full result tensor through the reduction loop. This is on purpose as
-        // having the extract/insert slice inside the inner loop improves bufferization
-        // results.
-        ValueRange innerIterArgInit{};
-        if (!outBuf) {
-          Value initTile = biasSlice;
-          if (!initTile) {
-            auto tileTy = RankedTensorType::get({pB, pM}, eltTy);
-            initTile =
-                arith::ConstantOp::create(
-                    builder, loc,
-                    DenseElementsAttr::get(tileTy, builder.getZeroAttr(eltTy)))
-                    .getResult();
-          }
-          innerIterArgInit = insertSliceND(
-              builder, loc, initTile, cast<TypedValue<ShapedType>>(iterArgs[0]),
-              {pB, pM}, parIndices);
-        }
-
-        SmallVector<Value, 1> reductionResult = createNestedAffineForLoops(
-            builder, loc, {K}, {rK}, innerIterArgInit,
-            [&, pB, pM](OpBuilder &builder, Location loc, ValueRange indices,
-                         ValueRange innerIterArgs) -> SmallVector<Value> {
-              const auto k = indices[0];
-
-              SmallVector<Value> lhsOffsets{parIndices[0], parIndices[1], k};
-              SmallVector<Value> rhsOffsets{parIndices[0], k};
-              Value lhsSlice =
-                  extractSliceND(builder, loc, lhs, {pB, pM, rK}, lhsOffsets);
-              Value rhsSlice =
-                  extractSliceND(builder, loc, rhs, {pB, rK}, rhsOffsets);
-              if (innerIterArgs.empty()) {
-                // memref - create in place
-                cinm::BatchGemvOp::create(builder, loc, lhsSlice, rhsSlice,
-                                          Value{}, outBuf);
-                return {};
-              }
-              // Then tensor version.
-              Value accSlice = extractSliceND(
-                  builder, loc, cast<TypedValue<ShapedType>>(innerIterArgs[0]),
-                  {pB, pM}, parIndices);
-              Value tileResult =
-                  cinm::BatchGemvOp::create(builder, loc, lhsSlice, rhsSlice,
-                                            accSlice, accSlice)
-                      .getResult();
-              Value updatedTensor = insertSliceND(
-                  builder, loc, tileResult,
-                  cast<TypedValue<ShapedType>>(innerIterArgs[0]),
-                  {pB, pM}, parIndices);
-              return {updatedTensor};
-            });
-
-        if (getOut())
-          return {};
-        return {reductionResult[0]};
+  ShapedType resultType = getResult() ? getResult().getType()
+                                      : cast<ShapedType>(getOut().getType());
+  return convertGemmlikeToTiledOps(
+      rewriter, getLoc(), getLhs(), getRhs(), getBias(), getOut(), resultType,
+      tilingFactors, results,
+      [](OpBuilder &b, Location loc, Value lhs, Value rhs, Value acc,
+         Value out) -> Value {
+        return cinm::BatchGemvOp::create(b, loc, lhs, rhs, acc, out)
+            .getResult();
       });
-
-  results.append(finals.begin(), finals.end());
-  return DiagnosedSilenceableFailure::success();
 }
 
 DiagnosedSilenceableFailure
 GemvOp::convertToTiledOps(RewriterBase &rewriter,
                           ArrayRef<int64_t> tilingFactors,
                           SmallVectorImpl<Value> &results) {
-  if (tilingFactors.size() != 2)
-    return emitSilenceableFailure(getLoc())
-           << "expected 2 tiling factors [tM,tK] for gemv, got "
-           << tilingFactors.size();
-
-  Location loc = getLoc();
-  OpBuilder &builder = rewriter;
-
-  Value A = getLhs();
-  Value x = getRhs();
-
-  auto aTy = cast<ShapedType>(A.getType());
-  auto xTy = cast<ShapedType>(x.getType());
-  ShapedType yTy;
-  if (getResult())
-    yTy = getResult().getType();
-  else
-    yTy = getOut().getType();
-
-  if (aTy.getRank() != 2 || xTy.getRank() != 1 || yTy.getRank() != 1)
-    return DiagnosedSilenceableFailure::definiteFailure();
-  if (aTy.getElementType() != xTy.getElementType() ||
-      aTy.getElementType() != yTy.getElementType())
-    return DiagnosedSilenceableFailure::definiteFailure();
-  auto elTy = aTy.getElementType();
-
-  const int64_t M = aTy.getDimSize(0);
-  const int64_t K = aTy.getDimSize(1);
-  if (ShapedType::isDynamic(M) || ShapedType::isDynamic(K))
-    return emitSilenceableFailure(getLoc())
-           << "Unsupported: tiling on dynamic dimensions";
-
-  const int64_t pM = tilingFactors[0];
-  const int64_t rK = tilingFactors[1];
-
-  ValueRange initArgs{};
-  if (!getOut()) {
-    Value resultInit =
-        tensor::EmptyOp::create(builder, loc, yTy.getShape(), elTy);
-    initArgs = resultInit;
-  }
-
-  SmallVector<Value> loopResults = createNestedAffineForLoops(
-      builder, loc, ArrayRef<int64_t>{M}, ArrayRef<int64_t>{pM}, initArgs,
-      [&](OpBuilder &b, Location loc2, ValueRange ivs,
-          ValueRange iters) -> SmallVector<Value> {
-        Value i = ivs[0];
-
-        Value biasSlice;
-        if (auto bias = getBias())
-          biasSlice = extractSlice1D(b, loc2, bias, pM, i);
-
-        // If the output is a memref, then slice it and possibly accumulate the bias into it before the inner loop.
-        Value outBuf;
-        if (auto outmemref = getOut(); outmemref && isa<MemRefType>(outmemref.getType())) {
-          outBuf = extractSlice1D(
-              b, loc2, cast<TypedValue<ShapedType>>(outmemref), pM, i);
-          if (biasSlice)
-            linalg::AddOp::create(b, loc2, ValueRange{biasSlice, outBuf},
-                                  outBuf);
-        }
-
-        // Tensor case: seed the [i] tile with bias or zeros, then carry the
-        // full result tensor through the reduction loop. This is on purpose as
-        // having the extract/insert slice inside the inner loop improves bufferization
-        // results.
-        ValueRange innerIterArgInit{};
-        if (!outBuf) {
-          Value initTile = biasSlice;
-          if (!initTile) {
-            auto tileTy = RankedTensorType::get({pM}, elTy);
-            initTile =
-                arith::ConstantOp::create(
-                    b, loc2,
-                    DenseElementsAttr::get(tileTy, b.getZeroAttr(elTy)))
-                    .getResult();
-          }
-          innerIterArgInit = insertSliceND(b, loc2, initTile,
-                                           cast<TypedValue<ShapedType>>(iters[0]),
-                                           {pM}, ValueRange{i});
-        }
-
-        SmallVector<Value> red = createNestedAffineForLoops(
-            b, loc2, ArrayRef<int64_t>{K}, ArrayRef<int64_t>{rK},
-            innerIterArgInit,
-            [&](OpBuilder &b2, Location loc3, ValueRange kIvs,
-                ValueRange innerAccArgs) -> SmallVector<Value> {
-              Value k = kIvs[0];
-
-              Value aTile = extractSlice(
-                  b2, loc3, cast<TypedValue<ShapedType>>(A), pM, rK, i, k);
-              Value xTile = extractSlice1D(
-                  b2, loc3, cast<TypedValue<ShapedType>>(x), rK, k);
-
-              if (innerAccArgs.empty()) {
-                cinm::GemvOp::create(b2, loc3, aTile, xTile, Value{}, outBuf);
-                return {};
-              }
-              Value accSlice = extractSlice1D(
-                  b2, loc3, cast<TypedValue<ShapedType>>(innerAccArgs[0]), pM,
-                  i);
-              // Note we set the out buf for better bufferization result.
-              Value tileResult = cinm::GemvOp::create(b2, loc3, aTile, xTile,
-                                                      accSlice, accSlice)
-                                     .getResult();
-              Value updatedTensor =
-                  tensor::InsertSliceOp::create(
-                      b2, loc3, tileResult, innerAccArgs[0], ValueRange{i},
-                      ValueRange{}, ValueRange{}, noStaticOffsets1,
-                      ArrayRef<int64_t>({pM}), unitStrides1)
-                      .getResult();
-              return SmallVector<Value>{updatedTensor};
-            });
-
-        if (getOut())
-          return {};
-        return SmallVector<Value>{red[0]};
+  ShapedType resultType = getResult() ? getResult().getType()
+                                      : cast<ShapedType>(getOut().getType());
+  return convertGemmlikeToTiledOps(
+      rewriter, getLoc(), getLhs(), getRhs(), getBias(), getOut(), resultType,
+      tilingFactors, results,
+      [](OpBuilder &b, Location loc, Value lhs, Value rhs, Value acc,
+         Value out) -> Value {
+        return cinm::GemvOp::create(b, loc, lhs, rhs, acc, out).getResult();
       });
-
-  results.append(loopResults.begin(), loopResults.end());
-  return DiagnosedSilenceableFailure::success();
 }
 
 DiagnosedSilenceableFailure
