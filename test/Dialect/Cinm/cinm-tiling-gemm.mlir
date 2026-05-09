@@ -80,3 +80,45 @@ func.func @gemm_tensor_bias(%A: tensor<8x1024xi32>, %B: tensor<1024x128xi32>, %b
       : tensor<8x1024xi32>, tensor<1024x128xi32> plus tensor<8x128xi32> -> tensor<8x128xi32>
   func.return %r : tensor<8x128xi32>
 }
+
+// -----
+// CHECK: #[[map:.*]] = affine_map<(d0) -> (d0)>
+// CHECK-LABEL: @gemm_tensor_dynamic_m
+// CHECK-SAME: (%[[A:.*]]: tensor<{{.*}}>, %[[B:.*]]: tensor<{{.*}}>) ->
+func.func @gemm_tensor_dynamic_m(%A: tensor<?x1024xi32>, %B: tensor<1024x128xi32>) -> tensor<?x128xi32> {
+  // M is dynamic, N and K are static.
+  // CHECK: %[[M:.*]] = tensor.dim %[[A]], {{.*}}
+  // CHECK: %[[init:.*]] = tensor.empty(%[[M]]) : tensor<?x128xi32>
+  // CHECK: affine.for %[[i:.*]] = 0 to #[[map]](%[[M]]) step 8 iter_args(%[[acc0:.*]] = %[[init]])
+  // CHECK: affine.for %[[j:.*]] = 0 to 128 step 32 iter_args(
+  // CHECK: %[[cst:.*]] = arith.constant dense<0> : tensor<8x32xi32>
+  // CHECK: %[[initTile:.*]] = tensor.insert_slice %[[cst]] into {{.*}}[%[[i]], %[[j]]] [8, 32] [1, 1] :
+  // CHECK: affine.for %[[k:.*]] = 0 to 1024 step 128 iter_args(
+  // CHECK: tensor.extract_slice %[[A]][%[[i]], %[[k]]] [8, 128] [1, 1] :
+  // CHECK: tensor.extract_slice %[[B]][%[[k]], %[[j]]] [128, 32] [1, 1] :
+  // CHECK: cinm.op.gemm
+  %r = cinm.op.gemm %A, %B {cinm.tile_sizes = array<i64: 8, 32, 128>}
+      : tensor<?x1024xi32>, tensor<1024x128xi32> -> tensor<?x128xi32>
+  func.return %r : tensor<?x128xi32>
+}
+
+// -----
+// CHECK: #[[map:.*]] = affine_map<(d0) -> (d0)>
+// CHECK-LABEL: @gemm_tensor_dynamic_mn
+// CHECK-SAME: (%[[A:.*]]: tensor<{{.*}}>, %[[B:.*]]: tensor<{{.*}}>) ->
+func.func @gemm_tensor_dynamic_mn(%A: tensor<?x1024xi32>, %B: tensor<1024x?xi32>) -> tensor<?x?xi32> {
+  // M and N are dynamic, K is static.
+  // CHECK: %[[M:.*]] = tensor.dim %[[A]], {{.*}}
+  // CHECK: %[[N:.*]] = tensor.dim %[[B]], {{.*}}
+  // CHECK: %[[init:.*]] = tensor.empty(%[[M]], %[[N]]) : tensor<?x?xi32>
+  // CHECK: affine.for %[[i:.*]] = 0 to #[[map]](%[[M]]) step 8 iter_args(%[[acc0:.*]] = %[[init]])
+  // CHECK: affine.for %[[j:.*]] = 0 to #[[map]](%[[N]]) step 32 iter_args(
+  // CHECK: %[[cst:.*]] = arith.constant dense<0> : tensor<8x32xi32>
+  // CHECK: affine.for %[[k:.*]] = 0 to 1024 step 128 iter_args(
+  // CHECK: tensor.extract_slice %[[A]][%[[i]], %[[k]]] [8, 128] [1, 1] :
+  // CHECK: tensor.extract_slice %[[B]][%[[k]], %[[j]]] [128, 32] [1, 1] :
+  // CHECK: cinm.op.gemm
+  %r = cinm.op.gemm %A, %B {cinm.tile_sizes = array<i64: 8, 32, 128>}
+      : tensor<?x1024xi32>, tensor<1024x?xi32> -> tensor<?x?xi32>
+  func.return %r : tensor<?x?xi32>
+}

@@ -71,3 +71,23 @@ func.func @gemv_tensor_bias(%A: tensor<64x256xi32>, %x: tensor<256xi32>, %bias: 
   %0 = cinm.op.gemv %A, %x plus %bias {cinm.tile_sizes = array<i64: 8, 32>}: tensor<64x256xi32>, tensor<256xi32> plus tensor<64xi32> -> tensor<64xi32>
   func.return %0 : tensor<64xi32>
 }
+
+// -----
+// CHECK: #[[map:.*]] = affine_map<(d0) -> (d0)>
+// CHECK-LABEL: @gemv_tensor_dynamic_m
+// CHECK-SAME: (%[[A:.*]]: tensor<{{.*}}>, %[[x:.*]]: tensor<{{.*}}>) ->
+func.func @gemv_tensor_dynamic_m(%A: tensor<?x256xi32>, %x: tensor<256xi32>) -> tensor<?xi32> {
+  // M is dynamic, K is static.
+  // CHECK: %[[M:.*]] = tensor.dim %[[A]], {{.*}}
+  // CHECK: %[[init:.*]] = tensor.empty(%[[M]]) : tensor<?xi32>
+  // CHECK: affine.for %[[i:.*]] = 0 to #[[map]](%[[M]]) step 8 iter_args(%[[acc0:.*]] = %[[init]])
+  // CHECK: %[[cst:.*]] = arith.constant dense<0> : tensor<8xi32>
+  // CHECK: %[[initTile:.*]] = tensor.insert_slice %[[cst]] into {{.*}}[%[[i]]] [8] [1] :
+  // CHECK: affine.for %[[k:.*]] = 0 to 256 step 32 iter_args(
+  // CHECK: tensor.extract_slice %[[A]][%[[i]], %[[k]]] [8, 32] [1, 1] :
+  // CHECK: tensor.extract_slice %[[x]][%[[k]]] [32] [1] :
+  // CHECK: cinm.op.gemv
+  %0 = cinm.op.gemv %A, %x {cinm.tile_sizes = array<i64: 8, 32>}
+      : tensor<?x256xi32>, tensor<256xi32> -> tensor<?xi32>
+  func.return %0 : tensor<?xi32>
+}
