@@ -8,17 +8,10 @@
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/Pass/Pass.h"
 
-namespace mlir {
-
-//===- Generated passes ---------------------------------------------------===//
-namespace upmem {
-
-} // namespace upmem
+namespace mlir::upmem {
 
 #define GEN_PASS_DECL
 #define GEN_PASS_REGISTRATION
 #include "cinm-mlir/Dialect/UPMEM/Transforms/Passes.h.inc"
 
-//===----------------------------------------------------------------------===//
-
-} // namespace mlir
+} // namespace mlir::upmem

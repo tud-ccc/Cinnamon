@@ -18,4 +18,24 @@ def UPMEMDedupKernelsPass: Pass<"upmem-dedup-kernels", "ModuleOp"> {
   ];
 }
 
+def UpmemInferAcceleratorPass : Pass<"upmem-infer-accelerator", "ModuleOp"> {
+  let summary = "Infer UPMEM accelerator parameters for cinm.compute ops";
+  let description = [{
+    For each cinm.compute op that declares a UPMEM platform via
+    cinm.available_platforms, runs Bayesian optimization to find the best
+    combination of ranks, dpus_per_rank, tasklets_per_dpu, and tiling factors.
+    Annotates the op with the resulting accelerator attribute and sets
+    cinm.tile_sizes on each tileable op in the compute body.
+  }];
+  let dependentDialects = [
+    "::mlir::cinm::CinmDialect",
+    "::mlir::upmem::UPMEMDialect",
+    "::mlir::func::FuncDialect"
+  ];
+  let options = [
+    Option<"maxEvals", "max-evals", "int", "50",
+           "Maximum number of Bayesian optimization evaluations">
+  ];
+}
+
 #endif // UPMEM_TRANSFORM_PASSES
