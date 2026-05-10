@@ -19,7 +19,7 @@
 #include <mlir/IR/BuiltinAttributes.h>
 #include <mlir/IR/SymbolTable.h>
 
-namespace mlir {
+namespace mlir::upmem {
 
 #define GEN_PASS_DEF_UPMEMDEDUPKERNELSPASS
 #include <cinm-mlir/Dialect/UPMEM/Transforms/Passes.h.inc>

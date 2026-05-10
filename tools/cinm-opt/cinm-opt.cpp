@@ -88,7 +88,7 @@ int main(int argc, char *argv[]) {
   alpine::registerAlpineConversionPasses();
   upmem::registerConvertUpmemToLLvmInterface(registry);
 
-  registerUPMEMTransformsPasses();
+  upmem::registerUPMEMTransformsPasses();
   registerUPMEMConversionPasses();
 
   bufferization::registerBufferizationPasses();
