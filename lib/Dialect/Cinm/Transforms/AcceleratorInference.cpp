@@ -109,37 +109,32 @@ int64_t ConfigSpace::get(const Configuration &config,
 // Core framework
 // ===----------------------------------------------------------------------===//
 
-// Clone the compute op into a fresh module by cloning its nearest top-level
-// ancestor (the direct child of the enclosing ModuleOp). Returns the new
-// module (kept alive by the caller) and the corresponding cloned compute op.
+// Clone the full parent ModuleOp into a sandbox. Returns the sandbox (kept
+// alive by the caller) and the corresponding cloned compute op inside it.
 static std::pair<mlir::OwningOpRef<mlir::ModuleOp>, cinm::ComputeBlockOp>
-cloneComputeOpToFreshModule(cinm::ComputeBlockOp computeOp) {
-  // Walk up to find the direct child of the enclosing ModuleOp.
-  mlir::Operation *topLevel = computeOp.getOperation();
-  while (topLevel->getParentOp() &&
-         !llvm::isa<mlir::ModuleOp>(topLevel->getParentOp()))
-    topLevel = topLevel->getParentOp();
+cloneModuleToSandbox(cinm::ComputeBlockOp computeOp) {
+  auto parentModule = computeOp->getParentOfType<mlir::ModuleOp>();
+  if (!parentModule)
+    return {nullptr, nullptr};
 
-  mlir::OwningOpRef<mlir::ModuleOp> newModule =
-      mlir::ModuleOp::create(computeOp->getLoc());
-  mlir::OpBuilder b(newModule->getBody(), newModule->getBody()->end());
   mlir::IRMapping mapping;
-  auto *clonedTop = b.clone(*topLevel, mapping);
+  mlir::OwningOpRef<mlir::ModuleOp> sandbox(
+      llvm::cast<mlir::ModuleOp>(parentModule->clone(mapping)));
 
   // Locate the cloned compute op by parallel walk — IRMapping tracks values
   // and blocks but not operations, so walk order is our index.
   llvm::SmallVector<cinm::ComputeBlockOp> origOps, clonedOps;
-  topLevel->walk([&](cinm::ComputeBlockOp op) { origOps.push_back(op); });
-  clonedTop->walk([&](cinm::ComputeBlockOp op) { clonedOps.push_back(op); });
+  parentModule->walk([&](cinm::ComputeBlockOp op) { origOps.push_back(op); });
+  sandbox->walk([&](cinm::ComputeBlockOp op) { clonedOps.push_back(op); });
 
-  cinm::ComputeBlockOp clonedComputeOp;
+  cinm::ComputeBlockOp refClone;
   for (size_t i = 0; i < origOps.size() && i < clonedOps.size(); ++i) {
     if (origOps[i] == computeOp) {
-      clonedComputeOp = clonedOps[i];
+      refClone = clonedOps[i];
       break;
     }
   }
-  return {std::move(newModule), clonedComputeOp};
+  return {std::move(sandbox), refClone};
 }
 
 ConfigSpace buildConfigSpace(cinm::ComputeBlockOp refClone,
@@ -156,12 +151,27 @@ ConfigSpace buildConfigSpace(cinm::ComputeBlockOp refClone,
   return space;
 }
 
-Maybe<Configuration> runInference(cinm::ComputeBlockOp computeOp,
-                                  InferencePlugin &plugin,
-                                  const ConfigSpace &space,
-                                  const InferenceOptions &opts) {
-  if (space.size() == 0)
-    return Configuration{};
+Maybe<cinm::ComputeBlockOp> runInference(cinm::ComputeBlockOp refClone,
+                                         InferencePlugin &plugin,
+                                         const ConfigSpace &space,
+                                         const InferenceOptions &opts) {
+  // Helper: clone refClone and insert the candidate right after it.
+  auto makeCandidate = [&]() {
+    mlir::OpBuilder builder(refClone->getContext());
+    builder.setInsertionPointAfter(refClone.getOperation());
+    return llvm::cast<cinm::ComputeBlockOp>(
+        builder.clone(*refClone.getOperation()));
+  };
+
+  if (space.size() == 0) {
+    auto candidate = makeCandidate();
+    auto cost = plugin.evaluate(candidate, space, {});
+    if (std::holds_alternative<DiagnosedSilenceableFailure>(cost)) {
+      plugin.disposeCandidate(candidate);
+      return std::move(std::get<DiagnosedSilenceableFailure>(cost));
+    }
+    return candidate;
+  }
 
   const size_t n = space.size();
   dlib::matrix<double, 0, 1> lo, hi;
@@ -173,12 +183,14 @@ Maybe<Configuration> runInference(cinm::ComputeBlockOp computeOp,
   }
 
   bool anySuccess = false;
+  cinm::ComputeBlockOp bestCandidate;
+  double bestCost = std::numeric_limits<double>::max();
 
   DiagnosedSilenceableFailure err = mlir::emitSilenceableFailure(
-      computeOp.getLoc(), "No candidates were evaluated");
+      refClone.getLoc(), "No candidates were evaluated");
 
   unsigned trialIdx = 0;
-  auto result = dlib::find_min_global(
+  (void)dlib::find_min_global(
       [&](const dlib::matrix<double, 0, 1> &x) -> double {
         Configuration config(n);
         for (size_t i = 0; i < n; ++i)
@@ -192,19 +204,26 @@ Maybe<Configuration> runInference(cinm::ComputeBlockOp computeOp,
           llvm::dbgs() << "}\n";
         });
 
-        auto [freshModule, clonedOp] = cloneComputeOpToFreshModule(computeOp);
-        if (!clonedOp)
-          return std::numeric_limits<double>::max();
-        auto cost = plugin.evaluate(clonedOp, space, config);
+        auto candidate = makeCandidate();
+        auto cost = plugin.evaluate(candidate, space, config);
         if (std::holds_alternative<DiagnosedSilenceableFailure>(cost)) {
           err = std::move(std::get<DiagnosedSilenceableFailure>(cost));
           LLVM_DEBUG(llvm::dbgs() << "[cinm-inference]   -> failed\n");
+          plugin.disposeCandidate(candidate);
           return std::numeric_limits<double>::max();
         }
         double costVal = std::get<0>(cost);
         LLVM_DEBUG(llvm::dbgs() << "[cinm-inference]   -> cost = " << costVal
                                  << "\n");
         anySuccess = true;
+        if (costVal < bestCost) {
+          if (bestCandidate)
+            plugin.disposeCandidate(bestCandidate);
+          bestCandidate = candidate;
+          bestCost = costVal;
+        } else {
+          plugin.disposeCandidate(candidate);
+        }
         return costVal;
       },
       lo, hi, dlib::max_function_calls(opts.maxEvals));
@@ -212,29 +231,22 @@ Maybe<Configuration> runInference(cinm::ComputeBlockOp computeOp,
   if (!anySuccess)
     return err;
 
-  Configuration best(n);
-  for (size_t i = 0; i < n; ++i)
-    best[i] = space[i].discretize(result.x(i));
-  LLVM_DEBUG({
-    llvm::dbgs() << "[cinm-inference] Best config (cost=" << result.y << "): {";
-    for (size_t i = 0; i < n; ++i)
-      llvm::dbgs() << space[i].name << "=" << best[i]
-                   << (i + 1 < n ? ", " : "");
-    llvm::dbgs() << "}\n";
-  });
-  return best;
+  LLVM_DEBUG(llvm::dbgs() << "[cinm-inference] Best candidate (cost="
+                           << bestCost << ")\n");
+  return bestCandidate;
 }
 
 DiagnosedSilenceableFailure
 inferAcceleratorConfig(cinm::ComputeBlockOp computeOp, InferencePlugin &plugin,
                        const InferenceOptions &opts) {
-  // Make one reference clone. The plugin may annotate it during
-  // buildConfigSpace; those annotations will be inherited by every
-  // per-evaluation clone created inside runInference.
   LLVM_DEBUG(llvm::dbgs() << "[cinm-inference] Starting inference for "
                            << computeOp.getLoc() << " (maxEvals="
                            << opts.maxEvals << ")\n");
-  auto [refModule, refClone] = cloneComputeOpToFreshModule(computeOp);
+
+  // Clone the full parent module into a sandbox. The plugin may annotate
+  // refClone during buildConfigSpace; those annotations propagate to every
+  // per-trial candidate cloned from it.
+  auto [sandbox, refClone] = cloneModuleToSandbox(computeOp);
   if (!refClone)
     return emitDefiniteFailure(computeOp->getLoc(),
                                "Could not clone compute op");
@@ -242,10 +254,12 @@ inferAcceleratorConfig(cinm::ComputeBlockOp computeOp, InferencePlugin &plugin,
   ConfigSpace space = buildConfigSpace(refClone, plugin);
   LLVM_DEBUG(llvm::dbgs() << "[cinm-inference] Reference clone:\n";
              refClone->print(llvm::dbgs()); llvm::dbgs() << "\n");
-  auto config = TRY_GET(runInference(refClone, plugin, space, opts));
 
-  LLVM_DEBUG(llvm::dbgs() << "[cinm-inference] Applying best config\n");
-  return plugin.applyBestConfig(computeOp, space, config);
+  auto bestCandidate = TRY_GET(runInference(refClone, plugin, space, opts));
+
+  LLVM_DEBUG(llvm::dbgs() << "[cinm-inference] Committing best candidate\n");
+  return plugin.commitBestCandidate(computeOp, bestCandidate);
+  // sandbox goes out of scope here, destroying remaining sandbox contents.
 }
 
 } // namespace mlir::cinm

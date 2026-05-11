@@ -81,18 +81,27 @@ struct InferencePlugin {
                                ConfigSpace &space) = 0;
 
   /// Evaluate a configuration. Lower cost is better.
-  /// Receives a clone of the reference clone (which already carries any
-  /// annotations attached during populateOpParams). The plugin may freely
-  /// annotate, transform, or lower it — changes do not affect other trials.
-  virtual utils::Maybe<double> evaluate(cinm::ComputeBlockOp clonedComputeOp,
+  /// Receives a fresh clone inserted right after the reference clone in the
+  /// sandbox module. The plugin may freely annotate, transform, or lower it —
+  /// changes do not affect the reference clone or other trials.
+  virtual utils::Maybe<double> evaluate(cinm::ComputeBlockOp candidate,
                                         const ConfigSpace &space,
                                         const Configuration &config) = 0;
 
-  /// Annotate the original compute op with the best configuration found.
-  /// Called once after optimization completes.
+  /// Discard a losing candidate. Override to also clean up any side resources
+  /// (e.g. kernel submodules) created during evaluate().
+  /// Default implementation simply erases the op.
+  virtual void disposeCandidate(cinm::ComputeBlockOp candidate) {
+    candidate->erase();
+  }
+
+  /// Called once with the winning candidate (inside the sandbox module).
+  /// The plugin must transfer the lowered IR and any side resources
+  /// (e.g. kernel submodules) from the candidate into the original module,
+  /// then erase the candidate. The sandbox is destroyed after this returns.
   virtual DiagnosedSilenceableFailure
-  applyBestConfig(cinm::ComputeBlockOp computeOp, const ConfigSpace &space,
-                  const Configuration &config) = 0;
+  commitBestCandidate(cinm::ComputeBlockOp original,
+                      cinm::ComputeBlockOp bestCandidate) = 0;
 };
 
 // ===----------------------------------------------------------------------===//
@@ -107,15 +116,17 @@ struct InferenceOptions {
   int maxEvals = 50;
 };
 
-/// Run Bayesian optimization over the config space. Does not modify computeOp.
-utils::Maybe<Configuration> runInference(cinm::ComputeBlockOp computeOp,
-                                         InferencePlugin &plugin,
-                                         const ConfigSpace &space,
-                                         const InferenceOptions &opts = {});
+/// Run Bayesian optimization over the config space.
+/// Returns the winning candidate op (still inside the sandbox module).
+/// The caller is responsible for committing or disposing it.
+utils::Maybe<cinm::ComputeBlockOp> runInference(cinm::ComputeBlockOp refClone,
+                                                InferencePlugin &plugin,
+                                                const ConfigSpace &space,
+                                                const InferenceOptions &opts = {});
 
-/// Full pipeline: clone original → buildConfigSpace → runInference →
-/// applyBestConfig on the original. The original is never modified until
-/// applyBestConfig is called with the winning configuration.
+/// Full pipeline: clone the parent module into a sandbox → buildConfigSpace →
+/// runInference → commitBestCandidate on the original.
+/// The original is only modified by commitBestCandidate at the very end.
 DiagnosedSilenceableFailure
 inferAcceleratorConfig(cinm::ComputeBlockOp computeOp, InferencePlugin &plugin,
                        const InferenceOptions &opts = {});

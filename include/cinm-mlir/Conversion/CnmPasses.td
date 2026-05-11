@@ -25,9 +25,14 @@ def ConvertCnmToGPUPass : Pass<"convert-cnm-to-gpu"> {
 }
 #endif
 
-def ConvertCnmToUPMEMPass : Pass<"convert-cnm-to-upmem", "mlir::ModuleOp"> {
+def ConvertCnmToUPMEMPass : Pass<"convert-cnm-to-upmem"> {
     let summary = "";
     let constructor = "mlir::cnm::createConvertCnmToUPMEMPass()";
+    let options = [
+      Option<"kernelModuleName", "kernel-module-name", "std::string",
+             [{"dpu_kernels"}],
+             "Name of the submodule to create DPU kernels in">
+    ];
     let dependentDialects = [
         "mlir::affine::AffineDialect",
         "mlir::arith::ArithDialect",
