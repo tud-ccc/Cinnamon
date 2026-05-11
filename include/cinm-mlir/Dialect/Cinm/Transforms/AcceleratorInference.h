@@ -75,7 +75,7 @@ struct InferencePlugin {
   /// The plugin decides what to add and how to explore the IR — it may walk
   /// the compute body, inspect op shapes, attach attributes to nodes, etc.
   /// Annotations left on the clone are inherited by every per-evaluation clone.
-  virtual void populate(cinm::ComputeOp refClone, ConfigSpace &space) = 0;
+  virtual void initializeSpace(cinm::ComputeOp refClone, ConfigSpace &space) = 0;
 
   /// Evaluate a configuration. Lower cost is better.
   /// Receives a clone of the reference clone (which already carries any
@@ -96,7 +96,7 @@ struct InferencePlugin {
 // Core framework API
 // ===----------------------------------------------------------------------===//
 
-/// Build the configuration space by calling plugin.populate on the reference clone.
+/// Build the configuration space by calling plugin.initializeSpace on the reference clone.
 ConfigSpace buildConfigSpace(cinm::ComputeOp refClone, InferencePlugin &plugin);
 
 struct InferenceOptions {
