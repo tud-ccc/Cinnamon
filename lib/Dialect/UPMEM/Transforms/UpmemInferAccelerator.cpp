@@ -1,24 +1,28 @@
+#include "cinm-mlir/Conversion/CinmPasses.h"
+#include "cinm-mlir/Conversion/CnmToUPMEM/CnmToUPMEM.h"
 #include "cinm-mlir/Dialect/Cinm/IR/CinmAttributes.h"
 #include "cinm-mlir/Dialect/Cinm/IR/CinmBase.h"
 #include "cinm-mlir/Dialect/Cinm/IR/CinmOps.h"
 #include "cinm-mlir/Dialect/Cinm/Transforms/AcceleratorInference.h"
 #include "cinm-mlir/Dialect/Cinm/Transforms/CinmTransforms.h"
+#include "cinm-mlir/Dialect/Cinm/Transforms/Passes.h"
+#include "cinm-mlir/Dialect/Cnm/Transforms/Passes.h"
 #include "cinm-mlir/Dialect/UPMEM/IR/UPMEMAttributes.h"
 #include "cinm-mlir/Dialect/UPMEM/Transforms/Passes.h"
 #include "cinm-mlir/Dialect/UPMEM/Transforms/UpmemSimulator.h"
 #include "cinm-mlir/Utils/Scheduling/SchedulingSupport.h"
 
-#include <mlir/Dialect/Func/IR/FuncOps.h>
 #include <mlir/Dialect/Affine/IR/AffineOps.h>
 #include <mlir/Dialect/Bufferization/IR/Bufferization.h>
+#include <mlir/Dialect/Func/IR/FuncOps.h>
 #include <mlir/Dialect/LLVMIR/LLVMDialect.h>
 
 #include <mlir/IR/Builders.h>
-#include <mlir/IR/PatternMatch.h>
 #include <mlir/IR/BuiltinAttributes.h>
 #include <mlir/IR/BuiltinOps.h>
 #include <mlir/IR/IRMapping.h>
 #include <mlir/IR/OwningOpRef.h>
+#include <mlir/IR/PatternMatch.h>
 #include <mlir/Pass/PassManager.h>
 #include <mlir/Support/LogicalResult.h>
 
@@ -26,6 +30,7 @@
 #include <llvm/Support/Debug.h>
 #include <llvm/Support/raw_ostream.h>
 #include <mlir/Support/WalkResult.h>
+#include <mlir/Transforms/Passes.h>
 
 #define DEBUG_TYPE "cinm-inference"
 
@@ -99,33 +104,35 @@ struct UpmemInferencePlugin : cinm::InferencePlugin {
     int64_t ranks = space.get(config, "ranks");
     int64_t dpus = space.get(config, "dpus");
     int64_t tasklets = space.get(config, "tasklets");
-    LLVM_DEBUG(llvm::dbgs() << "[cinm-inference] evaluate: ranks=" << ranks
-                             << " dpus=" << dpus << " tasklets=" << tasklets
-                             << "\n");
+    LLVM_DEBUG(llvm::dbgs()
+               << "[cinm-inference] evaluate: ranks=" << ranks
+               << " dpus=" << dpus << " tasklets=" << tasklets << "\n");
     auto accelerator =
         upmem::UpmemAcceleratorAttr::get(platform, ranks, dpus, tasklets);
-    clonedComputeOp->setAttr("accelerator", accelerator);
+    clonedComputeOp.setAcceleratorAttr(accelerator);
     applyTileSizes(clonedComputeOp, space, config, ctx);
 
     // Run the lowering pipeline to UPMEM dialect.
-    auto newModule = clonedComputeOp->getParentOfType<ModuleOp>();
     PassManager pm(ctx);
-    llvm::StringRef pipeline =
-        "builtin.module(func.func(cinm-tiling),"
-        "convert-cinm-to-cnm,cnm-hoist-workgroups,canonicalize,cse,"
-        "convert-cnm-to-upmem,cse,upmem-dedup-kernels)";
-    if (mlir::failed(
-            mlir::parsePassPipeline(pipeline, *(mlir::OpPassManager *)&pm)))
-      return emitDefiniteFailure(clonedComputeOp->getLoc(),
-                                 "Could not parse pass pipeline");
-    LLVM_DEBUG(llvm::dbgs() << "[cinm-inference]   running lowering pipeline\n");
-    if (mlir::failed(pm.run(newModule))) {
+    pm.addPass(cinm::createCinmTilingPass());
+    pm.addPass(cinm::createConvertTiledCinmToCnmPass());
+    pm.addPass(cnm::createCnmHoistWorkgroupsPass());
+    pm.addPass(createCanonicalizerPass());
+    pm.addPass(createCSEPass());
+    pm.addPass(cnm::createConvertCnmToUPMEMPass());
+    pm.addPass(createCanonicalizerPass());
+    pm.addPass(createCSEPass());
+    pm.addPass(createUPMEMDedupKernelsPass());
+
+    LLVM_DEBUG(llvm::dbgs()
+               << "[cinm-inference]   running lowering pipeline\n");
+    if (mlir::failed(pm.run(clonedComputeOp))) {
       LLVM_DEBUG(llvm::dbgs() << "[cinm-inference]   pipeline failed\n");
       return emitSilenceableFailure(clonedComputeOp->getLoc(),
                                     "Pass manager failed");
     }
 
-    auto cost = simulator->simulate(newModule);
+    auto cost = simulator->simulate(clonedComputeOp.getBody());
     LLVM_DEBUG({
       if (auto *val = std::get_if<double>(&cost))
         llvm::dbgs() << "[cinm-inference]   simulated cost = " << *val << "\n";
@@ -136,7 +143,8 @@ struct UpmemInferencePlugin : cinm::InferencePlugin {
   }
 
   mlir::DiagnosedSilenceableFailure
-  applyBestConfig(cinm::ComputeBlockOp computeOp, const cinm::ConfigSpace &space,
+  applyBestConfig(cinm::ComputeBlockOp computeOp,
+                  const cinm::ConfigSpace &space,
                   const cinm::Configuration &config) override {
     int64_t ranks = space.get(config, "ranks");
     int64_t dpus = space.get(config, "dpus");
@@ -149,7 +157,8 @@ struct UpmemInferencePlugin : cinm::InferencePlugin {
   }
 
 private:
-  void applyTileSizes(cinm::ComputeBlockOp computeOp, const cinm::ConfigSpace &space,
+  void applyTileSizes(cinm::ComputeBlockOp computeOp,
+                      const cinm::ConfigSpace &space,
                       const cinm::Configuration &config,
                       MLIRContext *ctx) const {
     computeOp.getBody().walk([&](mlir::Operation *op) {
@@ -162,9 +171,9 @@ private:
         tileSizes.push_back(
             space.get(config, llvm::cast<StringAttr>(nameAttr)));
 
-      LLVM_DEBUG(llvm::dbgs() << "[cinm-inference]   tiling " << op->getName()
-                               << " with " << DenseI64ArrayAttr::get(ctx, tileSizes)
-                               << "\n");
+      LLVM_DEBUG(llvm::dbgs()
+                 << "[cinm-inference]   tiling " << op->getName() << " with "
+                 << DenseI64ArrayAttr::get(ctx, tileSizes) << "\n");
       op->setAttr(cinm::CinmDialect::TILING_FACTORS_NAME,
                   DenseI64ArrayAttr::get(ctx, tileSizes));
     });
@@ -183,7 +192,8 @@ struct UpmemInferAcceleratorPass
     ModuleOp module = getOperation();
     DiagnosedSilenceableFailure failed = DiagnosedSilenceableFailure::success();
 
-    module.walk([&](cinm::ComputeBlockOp computeOp) -> WalkResult {
+    IRRewriter rewriter(module->getContext());
+    module.walk([&](cinm::ComputeOp computeOp) -> WalkResult {
       // Look for a UpmemPlatformAttr in cinm.available_platforms on the
       // compute op or its enclosing function.
       upmem::UpmemPlatformAttr platform;
@@ -204,11 +214,12 @@ struct UpmemInferAcceleratorPass
       if (!platform)
         return WalkResult::skip(); // not a UPMEM target
 
+      cinm::ComputeBlockOp blockOp =
+          cinm::isolateComputeBlock(computeOp, rewriter);
       UpmemInferencePlugin plugin(platform, createOpCountSimulator());
       cinm::InferenceOptions opts;
       opts.maxEvals = maxEvals;
-      TRY_IN_WALK(failed,
-                  cinm::inferAcceleratorConfig(computeOp, plugin, opts));
+      TRY_IN_WALK(failed, cinm::inferAcceleratorConfig(blockOp, plugin, opts));
       return WalkResult::skip();
     });
 

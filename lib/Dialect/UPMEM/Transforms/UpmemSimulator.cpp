@@ -9,7 +9,7 @@ namespace mlir::upmem {
 namespace {
 
 struct OpCountSimulator : UpmemSimulator {
-  mlir::cinm::utils::Maybe<double> simulate(mlir::ModuleOp module) override {
+  mlir::cinm::utils::Maybe<double> simulate(Region& module) override {
     double cost = 0.0;
     module.walk([&](mlir::Operation *op) {
       llvm::StringRef name = op->getName().getStringRef();

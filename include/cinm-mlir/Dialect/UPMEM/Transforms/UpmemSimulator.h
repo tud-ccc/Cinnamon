@@ -12,7 +12,7 @@ namespace mlir::upmem {
 /// Implementations may range from simple op counts to full simulation.
 struct UpmemSimulator {
   virtual ~UpmemSimulator() = default;
-  virtual cinm::utils::Maybe<double> simulate(mlir::ModuleOp module) = 0;
+  virtual cinm::utils::Maybe<double> simulate(mlir::Region& region) = 0;
 };
 
 /// Simple baseline: weighted op count over the UPMEM dialect IR.
