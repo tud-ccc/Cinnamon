@@ -14,6 +14,8 @@ LINK_LIBS PUBLIC
     UPMEMIR
     CinmIR
     CinmTransforms
+    CnmIR
+    CnmTransforms
     MLIRFuncDialect
 )
 

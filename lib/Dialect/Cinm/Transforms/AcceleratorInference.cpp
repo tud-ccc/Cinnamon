@@ -5,6 +5,7 @@
 #include <dlib/global_optimization.h>
 
 #include <llvm/ADT/StringRef.h>
+#include <llvm/Support/Debug.h>
 #include <llvm/Support/LogicalResult.h>
 #include <mlir/IR/Builders.h>
 #include <mlir/IR/BuiltinOps.h>
@@ -15,6 +16,8 @@
 #include <algorithm>
 #include <cmath>
 #include <limits>
+
+#define DEBUG_TYPE "cinm-inference"
 
 using mlir::cinm::utils::Maybe;
 
@@ -143,6 +146,13 @@ ConfigSpace buildConfigSpace(cinm::ComputeOp refClone,
                              InferencePlugin &plugin) {
   ConfigSpace space;
   plugin.initializeSpace(refClone, space);
+  LLVM_DEBUG({
+    llvm::dbgs() << "[cinm-inference] Config space (" << space.size()
+                 << " params):\n";
+    for (auto &p : space.params)
+      llvm::dbgs() << "  " << p.name << " in [" << p.dlo() << ", " << p.dhi()
+                   << "]\n";
+  });
   return space;
 }
 
@@ -167,11 +177,20 @@ Maybe<Configuration> runInference(cinm::ComputeOp computeOp,
   DiagnosedSilenceableFailure err = mlir::emitSilenceableFailure(
       computeOp.getLoc(), "No candidates were evaluated");
 
+  unsigned trialIdx = 0;
   auto result = dlib::find_min_global(
       [&](const dlib::matrix<double, 0, 1> &x) -> double {
         Configuration config(n);
         for (size_t i = 0; i < n; ++i)
           config[i] = space[i].discretize(x(i));
+
+        LLVM_DEBUG({
+          llvm::dbgs() << "[cinm-inference] Trial #" << trialIdx++ << ": {";
+          for (size_t i = 0; i < n; ++i)
+            llvm::dbgs() << space[i].name << "=" << config[i]
+                         << (i + 1 < n ? ", " : "");
+          llvm::dbgs() << "}\n";
+        });
 
         auto [freshModule, clonedOp] = cloneComputeOpToFreshModule(computeOp);
         if (!clonedOp)
@@ -179,10 +198,14 @@ Maybe<Configuration> runInference(cinm::ComputeOp computeOp,
         auto cost = plugin.evaluate(clonedOp, space, config);
         if (std::holds_alternative<DiagnosedSilenceableFailure>(cost)) {
           err = std::move(std::get<DiagnosedSilenceableFailure>(cost));
+          LLVM_DEBUG(llvm::dbgs() << "[cinm-inference]   -> failed\n");
           return std::numeric_limits<double>::max();
         }
+        double costVal = std::get<0>(cost);
+        LLVM_DEBUG(llvm::dbgs() << "[cinm-inference]   -> cost = " << costVal
+                                 << "\n");
         anySuccess = true;
-        return std::get<0>(cost);
+        return costVal;
       },
       lo, hi, dlib::max_function_calls(opts.maxEvals));
 
@@ -192,6 +215,13 @@ Maybe<Configuration> runInference(cinm::ComputeOp computeOp,
   Configuration best(n);
   for (size_t i = 0; i < n; ++i)
     best[i] = space[i].discretize(result.x(i));
+  LLVM_DEBUG({
+    llvm::dbgs() << "[cinm-inference] Best config (cost=" << result.y << "): {";
+    for (size_t i = 0; i < n; ++i)
+      llvm::dbgs() << space[i].name << "=" << best[i]
+                   << (i + 1 < n ? ", " : "");
+    llvm::dbgs() << "}\n";
+  });
   return best;
 }
 
@@ -201,15 +231,20 @@ inferAcceleratorConfig(cinm::ComputeOp computeOp, InferencePlugin &plugin,
   // Make one reference clone. The plugin may annotate it during
   // buildConfigSpace; those annotations will be inherited by every
   // per-evaluation clone created inside runInference.
+  LLVM_DEBUG(llvm::dbgs() << "[cinm-inference] Starting inference for "
+                           << computeOp.getLoc() << " (maxEvals="
+                           << opts.maxEvals << ")\n");
   auto [refModule, refClone] = cloneComputeOpToFreshModule(computeOp);
   if (!refClone)
     return emitDefiniteFailure(computeOp->getLoc(),
                                "Could not clone compute op");
 
   ConfigSpace space = buildConfigSpace(refClone, plugin);
+  LLVM_DEBUG(llvm::dbgs() << "[cinm-inference] Reference clone:\n";
+             refClone->print(llvm::dbgs()); llvm::dbgs() << "\n");
   auto config = TRY_GET(runInference(refClone, plugin, space, opts));
 
-  // Apply the best config to the original (unmodified) op.
+  LLVM_DEBUG(llvm::dbgs() << "[cinm-inference] Applying best config\n");
   return plugin.applyBestConfig(computeOp, space, config);
 }
 

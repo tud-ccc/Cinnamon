@@ -9,7 +9,7 @@
 
 include "mlir/Pass/PassBase.td"
 
-def CnmSPIRVAttachTargetAttributePass: Pass<"cnm-spirv-attach-target-attribute", ""> {
+def CnmSPIRVAttachTargetAttributePass: Pass<"cnm-spirv-attach-target-attribute"> {
   let summary = "Attaches an SPIR-V target attribute to a GPU Module.";
   let description = [{
     This pass searches for all GPU Modules and attaches an SPIR-V target attribute.
@@ -41,7 +41,7 @@ def CnmSPIRVAttachTargetAttributePass: Pass<"cnm-spirv-attach-target-attribute",
   ];
 }
 
-def CnmSPIRVAttachKernelEntryPointAttributePass: Pass<"cnm-spirv-attach-kernel-entry-point-attribute", ""> {
+def CnmSPIRVAttachKernelEntryPointAttributePass: Pass<"cnm-spirv-attach-kernel-entry-point-attribute"> {
   let summary = "Attaches an SPIR-V entry point attribute to a GPU kernel.";
   let description = [{
     This pass searches for all GPU Kernels and attaches an SPIR-V entry_point_abi attribute.
@@ -54,7 +54,7 @@ def CnmSPIRVAttachKernelEntryPointAttributePass: Pass<"cnm-spirv-attach-kernel-e
   ];
 }
 
-def CnmHoistWorkgroupsPass : Pass<"cnm-hoist-workgroups", "func::FuncOp"> {
+def CnmHoistWorkgroupsPass : Pass<"cnm-hoist-workgroups"> {
   let summary = "Hoist worgroup creation outside of loops";
   let description = [{
 

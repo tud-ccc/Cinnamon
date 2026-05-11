@@ -288,9 +288,9 @@ struct Im2ColToMatmulPass
   using Base::Base;
 
   void runOnOperation() override {
-    func::FuncOp func = getOperation();
-    RewritePatternSet patterns(func.getContext());
-    cinm::populateIm2ColToMatmulPatterns(patterns, func.getContext());
+    Operation* func = getOperation();
+    RewritePatternSet patterns(func->getContext());
+    cinm::populateIm2ColToMatmulPatterns(patterns, func->getContext());
     if (failed(applyPatternsGreedily(func, std::move(patterns))))
       signalPassFailure();
   }
