@@ -1,4 +1,5 @@
 #include "cinm-mlir/Dialect/UPMEM/Transforms/UpmemSimulator.h"
+#include "cinm-mlir/Utils/Scheduling/SchedulingSupport.h"
 
 #include <mlir/IR/BuiltinOps.h>
 #include <mlir/IR/Operation.h>
@@ -8,7 +9,7 @@ namespace mlir::upmem {
 namespace {
 
 struct OpCountSimulator : UpmemSimulator {
-  mlir::FailureOr<double> simulate(mlir::ModuleOp module) override {
+  mlir::cinm::utils::Maybe<double> simulate(mlir::ModuleOp module) override {
     double cost = 0.0;
     module.walk([&](mlir::Operation *op) {
       llvm::StringRef name = op->getName().getStringRef();

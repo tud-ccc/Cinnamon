@@ -2,6 +2,7 @@
 
 #include <mlir/IR/BuiltinOps.h>
 #include <mlir/Support/LogicalResult.h>
+#include <cinm-mlir/Utils/Scheduling/SchedulingSupport.h>
 #include <memory>
 
 namespace mlir::upmem {
@@ -11,7 +12,7 @@ namespace mlir::upmem {
 /// Implementations may range from simple op counts to full simulation.
 struct UpmemSimulator {
   virtual ~UpmemSimulator() = default;
-  virtual mlir::FailureOr<double> simulate(mlir::ModuleOp module) = 0;
+  virtual cinm::utils::Maybe<double> simulate(mlir::ModuleOp module) = 0;
 };
 
 /// Simple baseline: weighted op count over the UPMEM dialect IR.

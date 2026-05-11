@@ -1,9 +1,11 @@
+#include "cinm-mlir/Dialect/Cinm/IR/CinmAttributes.h"
 #include "cinm-mlir/Dialect/Cinm/IR/CinmBase.h"
 #include "cinm-mlir/Dialect/Cinm/IR/CinmOps.h"
 #include "cinm-mlir/Dialect/Cinm/Transforms/AcceleratorInference.h"
 #include "cinm-mlir/Dialect/UPMEM/IR/UPMEMAttributes.h"
 #include "cinm-mlir/Dialect/UPMEM/Transforms/Passes.h"
 #include "cinm-mlir/Dialect/UPMEM/Transforms/UpmemSimulator.h"
+#include "cinm-mlir/Utils/Scheduling/SchedulingSupport.h"
 
 #include <mlir/Dialect/Func/IR/FuncOps.h>
 #include <mlir/IR/Builders.h>
@@ -16,6 +18,7 @@
 
 #include <llvm/ADT/SmallVector.h>
 #include <llvm/Support/raw_ostream.h>
+#include <mlir/Support/WalkResult.h>
 
 namespace mlir::upmem {
 
@@ -23,16 +26,7 @@ namespace mlir::upmem {
 #include "cinm-mlir/Dialect/UPMEM/Transforms/Passes.h.inc"
 
 namespace {
-
-// ===----------------------------------------------------------------------===//
-// TilingParamEntry — maps config-space param names back to op positions
-// ===----------------------------------------------------------------------===//
-
-struct TilingParamEntry {
-  unsigned tileableOpIdx; // index within the pre-order walk of tileable ops
-  unsigned dimIdx;
-  std::string paramName;
-};
+using mlir::cinm::utils::Maybe;
 
 // ===----------------------------------------------------------------------===//
 // UpmemInferencePlugin
@@ -41,8 +35,9 @@ struct TilingParamEntry {
 struct UpmemInferencePlugin : cinm::InferencePlugin {
   upmem::UpmemPlatformAttr platform;
   std::unique_ptr<UpmemSimulator> simulator;
-  llvm::SmallVector<TilingParamEntry> tilingEntries;
-  unsigned tileableOpCounter = 0;
+
+  static constexpr llvm::StringLiteral kTileParamNamesAttr =
+      "upmem.tile_param_names";
 
   UpmemInferencePlugin(upmem::UpmemPlatformAttr platform,
                        std::unique_ptr<UpmemSimulator> sim)
@@ -50,24 +45,27 @@ struct UpmemInferencePlugin : cinm::InferencePlugin {
 
   // --- InferencePlugin interface ---
 
-  void initializeSpace(cinm::ComputeOp refClone, cinm::ConfigSpace &space) override {
+  void initializeSpace(cinm::ComputeOp refClone,
+                       cinm::ConfigSpace &space) override {
     space.addRange("ranks", 1, platform.getMaxNumRanks());
     space.addRange("dpus", 1, platform.getMaxNumDpusPerRank());
     space.addRange("tasklets", 1, platform.getMaxNumTasklets());
+
+    auto nameInventor = cinm::utils::NameInventor::getNameInventor(
+        refClone.getOperation(), "tile_");
+    MLIRContext *ctx = refClone->getContext();
 
     refClone.getBody().walk([&](mlir::Operation *op) {
       auto tileable = llvm::dyn_cast<cinm::CinmTilingInterface>(op);
       if (!tileable)
         return;
 
-      
-      unsigned opIdx = tileableOpCounter++;
       llvm::SmallVector<int64_t> dimSizes;
       tileable.getTilableDimSizes(dimSizes);
 
+      llvm::SmallVector<Attribute> paramNames;
       for (unsigned d = 0; d < dimSizes.size(); ++d) {
-        std::string paramName =
-            "tile_" + std::to_string(opIdx) + "_dim" + std::to_string(d);
+        StringAttr paramName = nameInventor.getUniqueName();
 
         int64_t maxFactor =
             dimSizes[d] == mlir::ShapedType::kDynamic ? 1024 : dimSizes[d];
@@ -76,15 +74,17 @@ struct UpmemInferencePlugin : cinm::InferencePlugin {
         while ((int64_t(1) << (hiExp + 1)) <= maxFactor)
           ++hiExp;
 
-        space.addPow2Range(paramName, 0, hiExp);
-        tilingEntries.push_back({opIdx, d, std::move(paramName)});
+        space.addPow2Range(paramName.str(), 0, hiExp);
+        paramNames.push_back(paramName);
       }
+
+      op->setAttr(kTileParamNamesAttr, ArrayAttr::get(ctx, paramNames));
     });
   }
 
-  mlir::FailureOr<double> evaluate(cinm::ComputeOp clonedComputeOp,
-                                   const cinm::ConfigSpace &space,
-                                   const cinm::Configuration &config) override {
+  Maybe<double> evaluate(cinm::ComputeOp clonedComputeOp,
+                         const cinm::ConfigSpace &space,
+                         const cinm::Configuration &config) override {
     MLIRContext *ctx = clonedComputeOp->getContext();
 
     int64_t ranks = space.get(config, "ranks");
@@ -104,14 +104,16 @@ struct UpmemInferencePlugin : cinm::InferencePlugin {
         "convert-cnm-to-upmem,cse,upmem-dedup-kernels)";
     if (mlir::failed(
             mlir::parsePassPipeline(pipeline, *(mlir::OpPassManager *)&pm)))
-      return mlir::failure();
+      return emitDefiniteFailure(clonedComputeOp->getLoc(),
+                                 "Could not parse pass pipeline");
     if (mlir::failed(pm.run(newModule)))
-      return mlir::failure();
+      return emitSilenceableFailure(clonedComputeOp->getLoc(),
+                                    "Pass manager failed");
 
     return simulator->simulate(newModule);
   }
 
-  mlir::LogicalResult
+  mlir::DiagnosedSilenceableFailure
   applyBestConfig(cinm::ComputeOp computeOp, const cinm::ConfigSpace &space,
                   const cinm::Configuration &config) override {
     int64_t ranks = space.get(config, "ranks");
@@ -121,30 +123,22 @@ struct UpmemInferencePlugin : cinm::InferencePlugin {
         upmem::UpmemAcceleratorAttr::get(platform, ranks, dpus, tasklets);
     computeOp->setAttr("accelerator", accelerator);
     applyTileSizes(computeOp, space, config, computeOp->getContext());
-    return mlir::success();
+    return DiagnosedSilenceableFailure::success();
   }
 
 private:
-  // Set cinm.tile_sizes on every tileable op in the compute body, using the
-  // tileableOpIdx counter to match params recorded during populate.
   void applyTileSizes(cinm::ComputeOp computeOp, const cinm::ConfigSpace &space,
                       const cinm::Configuration &config,
                       MLIRContext *ctx) const {
-    unsigned tileableOpIdx = 0;
     computeOp.getBody().walk([&](mlir::Operation *op) {
-      if (!llvm::isa<cinm::CinmTilingInterface>(op))
+      auto paramNamesAttr = op->getAttrOfType<ArrayAttr>(kTileParamNamesAttr);
+      if (!paramNamesAttr)
         return;
-      unsigned myIdx = tileableOpIdx++;
 
-      auto tileable = llvm::cast<cinm::CinmTilingInterface>(op);
-      llvm::SmallVector<int64_t> dimSizes;
-      tileable.getTilableDimSizes(dimSizes);
-      llvm::SmallVector<int64_t> tileSizes(dimSizes.size(), 1);
-
-      for (const auto &entry : tilingEntries) {
-        if (entry.tileableOpIdx == myIdx)
-          tileSizes[entry.dimIdx] = space.get(config, entry.paramName);
-      }
+      llvm::SmallVector<int64_t> tileSizes;
+      for (auto nameAttr : paramNamesAttr)
+        tileSizes.push_back(
+            space.get(config, llvm::cast<StringAttr>(nameAttr)));
 
       op->setAttr(cinm::CinmDialect::TILING_FACTORS_NAME,
                   DenseI64ArrayAttr::get(ctx, tileSizes));
@@ -162,12 +156,9 @@ struct UpmemInferAcceleratorPass
 
   void runOnOperation() override {
     ModuleOp module = getOperation();
-    bool failed = false;
+    DiagnosedSilenceableFailure failed = DiagnosedSilenceableFailure::success();
 
-    module.walk([&](cinm::ComputeOp computeOp) {
-      if (failed)
-        return;
-
+    module.walk([&](cinm::ComputeOp computeOp) -> WalkResult {
       // Look for a UpmemPlatformAttr in cinm.available_platforms on the
       // compute op or its enclosing function.
       upmem::UpmemPlatformAttr platform;
@@ -186,17 +177,20 @@ struct UpmemInferAcceleratorPass
         if (auto func = computeOp->getParentOfType<func::FuncOp>())
           tryExtract(func.getOperation());
       if (!platform)
-        return; // not a UPMEM target
+        return WalkResult::skip(); // not a UPMEM target
 
       UpmemInferencePlugin plugin(platform, createOpCountSimulator());
       cinm::InferenceOptions opts;
       opts.maxEvals = maxEvals;
-      if (mlir::failed(cinm::inferAcceleratorConfig(computeOp, plugin, opts)))
-        failed = true;
+      TRY_IN_WALK(failed,
+                  cinm::inferAcceleratorConfig(computeOp, plugin, opts));
+      return WalkResult::skip();
     });
 
-    if (failed)
+    if (!failed.succeeded()) {
+      (void)failed.checkAndReport();
       signalPassFailure();
+    }
   }
 };
 
