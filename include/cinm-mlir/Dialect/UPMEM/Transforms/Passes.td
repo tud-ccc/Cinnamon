@@ -29,8 +29,14 @@ def UpmemInferAcceleratorPass : Pass<"upmem-infer-accelerator", "ModuleOp"> {
   }];
   let dependentDialects = [
     "::mlir::cinm::CinmDialect",
+    "::mlir::cnm::CnmDialect",
     "::mlir::upmem::UPMEMDialect",
-    "::mlir::func::FuncDialect"
+    "::mlir::func::FuncDialect",
+    "mlir::LLVM::LLVMDialect",
+    "mlir::affine::AffineDialect",
+    "mlir::bufferization::BufferizationDialect",
+    "mlir::linalg::LinalgDialect",
+    "mlir::tensor::TensorDialect"
   ];
   let options = [
     Option<"maxEvals", "max-evals", "int", "50",

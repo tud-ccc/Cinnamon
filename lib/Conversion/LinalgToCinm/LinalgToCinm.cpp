@@ -1658,13 +1658,11 @@ struct ConvertLinalgToCinmPass
   void runOnOperation() override {
     MLIRContext &ctx = getContext();
 
-    func::FuncOp func = getOperation();
+    Operation* func = getOperation();
     IRRewriter rewriter(&ctx);
-    llvm::errs() << "ConvertLinalgToCinm on function " << func.getName()
-                 << "\n";
 
     SmallVector<linalg::GenericOp> genericOps;
-    func.walk([&](linalg::GenericOp op) { genericOps.push_back(op); });
+    func->walk([&](linalg::GenericOp op) { genericOps.push_back(op); });
     for (auto op : llvm::reverse(genericOps)) {
       if (succeeded(rewriteActivationGeneric(op, rewriter)))
         continue;
@@ -1673,7 +1671,7 @@ struct ConvertLinalgToCinmPass
     }
 
     SmallVector<linalg::MapOp> mapOps;
-    func.walk([&](linalg::MapOp op) { mapOps.push_back(op); });
+    func->walk([&](linalg::MapOp op) { mapOps.push_back(op); });
     for (auto op : llvm::reverse(mapOps)) {
       if (succeeded(rewriteActivationMap(op, rewriter)))
         continue;

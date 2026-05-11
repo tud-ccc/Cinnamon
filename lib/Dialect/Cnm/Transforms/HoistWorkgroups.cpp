@@ -21,16 +21,14 @@ namespace {}
 struct CnmHoistWorkgroupsPass
     : public cnm::impl::CnmHoistWorkgroupsPassBase<CnmHoistWorkgroupsPass> {
   void runOnOperation() override {
-    // todo
-    auto fun = getOperation();
-    if (fun.isDeclaration())
-      return;
+    auto* fun = getOperation();
+    if (fun->getNumRegions() == 0) return;
 
     llvm::SmallVector<cnm::WorkgroupOp> allocs;
     fun->walk([&](cnm::WorkgroupOp op) { allocs.push_back(op); });
 
     OpBuilder rewriter(&getContext());
-    rewriter.setInsertionPointToStart(&fun.getBody().front());
+    rewriter.setInsertionPointToStart(&fun->getRegion(0).front());
     IRMapping mapper;
     for (auto alloc : allocs) {
       Operation *parent = alloc;

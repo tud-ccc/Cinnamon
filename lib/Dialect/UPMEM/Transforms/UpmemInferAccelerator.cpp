@@ -8,6 +8,10 @@
 #include "cinm-mlir/Utils/Scheduling/SchedulingSupport.h"
 
 #include <mlir/Dialect/Func/IR/FuncOps.h>
+#include <mlir/Dialect/Affine/IR/AffineOps.h>
+#include <mlir/Dialect/Bufferization/IR/Bufferization.h>
+#include <mlir/Dialect/LLVMIR/LLVMDialect.h>
+
 #include <mlir/IR/Builders.h>
 #include <mlir/IR/BuiltinAttributes.h>
 #include <mlir/IR/BuiltinOps.h>
@@ -17,8 +21,11 @@
 #include <mlir/Support/LogicalResult.h>
 
 #include <llvm/ADT/SmallVector.h>
+#include <llvm/Support/Debug.h>
 #include <llvm/Support/raw_ostream.h>
 #include <mlir/Support/WalkResult.h>
+
+#define DEBUG_TYPE "cinm-inference"
 
 namespace mlir::upmem {
 
@@ -90,6 +97,9 @@ struct UpmemInferencePlugin : cinm::InferencePlugin {
     int64_t ranks = space.get(config, "ranks");
     int64_t dpus = space.get(config, "dpus");
     int64_t tasklets = space.get(config, "tasklets");
+    LLVM_DEBUG(llvm::dbgs() << "[cinm-inference] evaluate: ranks=" << ranks
+                             << " dpus=" << dpus << " tasklets=" << tasklets
+                             << "\n");
     auto accelerator =
         upmem::UpmemAcceleratorAttr::get(platform, ranks, dpus, tasklets);
     clonedComputeOp->setAttr("accelerator", accelerator);
@@ -106,11 +116,21 @@ struct UpmemInferencePlugin : cinm::InferencePlugin {
             mlir::parsePassPipeline(pipeline, *(mlir::OpPassManager *)&pm)))
       return emitDefiniteFailure(clonedComputeOp->getLoc(),
                                  "Could not parse pass pipeline");
-    if (mlir::failed(pm.run(newModule)))
+    LLVM_DEBUG(llvm::dbgs() << "[cinm-inference]   running lowering pipeline\n");
+    if (mlir::failed(pm.run(newModule))) {
+      LLVM_DEBUG(llvm::dbgs() << "[cinm-inference]   pipeline failed\n");
       return emitSilenceableFailure(clonedComputeOp->getLoc(),
                                     "Pass manager failed");
+    }
 
-    return simulator->simulate(newModule);
+    auto cost = simulator->simulate(newModule);
+    LLVM_DEBUG({
+      if (auto *val = std::get_if<double>(&cost))
+        llvm::dbgs() << "[cinm-inference]   simulated cost = " << *val << "\n";
+      else
+        llvm::dbgs() << "[cinm-inference]   simulation failed\n";
+    });
+    return cost;
   }
 
   mlir::DiagnosedSilenceableFailure
@@ -140,6 +160,9 @@ private:
         tileSizes.push_back(
             space.get(config, llvm::cast<StringAttr>(nameAttr)));
 
+      LLVM_DEBUG(llvm::dbgs() << "[cinm-inference]   tiling " << op->getName()
+                               << " with " << DenseI64ArrayAttr::get(ctx, tileSizes)
+                               << "\n");
       op->setAttr(cinm::CinmDialect::TILING_FACTORS_NAME,
                   DenseI64ArrayAttr::get(ctx, tileSizes));
     });
