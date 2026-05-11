@@ -17,6 +17,8 @@ LINK_LIBS PUBLIC
     CnmIR
     CnmTransforms
     MLIRFuncDialect
+    MLIRCinmToCnm
+    MLIRCnmToUPMEM
 )
 
 target_link_libraries(UPMEMTransforms PRIVATE dlib)
