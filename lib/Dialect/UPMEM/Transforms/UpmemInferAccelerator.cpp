@@ -2,6 +2,7 @@
 #include "cinm-mlir/Dialect/Cinm/IR/CinmBase.h"
 #include "cinm-mlir/Dialect/Cinm/IR/CinmOps.h"
 #include "cinm-mlir/Dialect/Cinm/Transforms/AcceleratorInference.h"
+#include "cinm-mlir/Dialect/Cinm/Transforms/CinmTransforms.h"
 #include "cinm-mlir/Dialect/UPMEM/IR/UPMEMAttributes.h"
 #include "cinm-mlir/Dialect/UPMEM/Transforms/Passes.h"
 #include "cinm-mlir/Dialect/UPMEM/Transforms/UpmemSimulator.h"
@@ -13,6 +14,7 @@
 #include <mlir/Dialect/LLVMIR/LLVMDialect.h>
 
 #include <mlir/IR/Builders.h>
+#include <mlir/IR/PatternMatch.h>
 #include <mlir/IR/BuiltinAttributes.h>
 #include <mlir/IR/BuiltinOps.h>
 #include <mlir/IR/IRMapping.h>
@@ -52,7 +54,7 @@ struct UpmemInferencePlugin : cinm::InferencePlugin {
 
   // --- InferencePlugin interface ---
 
-  void initializeSpace(cinm::ComputeOp refClone,
+  void initializeSpace(cinm::ComputeBlockOp refClone,
                        cinm::ConfigSpace &space) override {
     space.addRange("ranks", 1, platform.getMaxNumRanks());
     space.addRange("dpus", 1, platform.getMaxNumDpusPerRank());
@@ -89,7 +91,7 @@ struct UpmemInferencePlugin : cinm::InferencePlugin {
     });
   }
 
-  Maybe<double> evaluate(cinm::ComputeOp clonedComputeOp,
+  Maybe<double> evaluate(cinm::ComputeBlockOp clonedComputeOp,
                          const cinm::ConfigSpace &space,
                          const cinm::Configuration &config) override {
     MLIRContext *ctx = clonedComputeOp->getContext();
@@ -134,7 +136,7 @@ struct UpmemInferencePlugin : cinm::InferencePlugin {
   }
 
   mlir::DiagnosedSilenceableFailure
-  applyBestConfig(cinm::ComputeOp computeOp, const cinm::ConfigSpace &space,
+  applyBestConfig(cinm::ComputeBlockOp computeOp, const cinm::ConfigSpace &space,
                   const cinm::Configuration &config) override {
     int64_t ranks = space.get(config, "ranks");
     int64_t dpus = space.get(config, "dpus");
@@ -147,7 +149,7 @@ struct UpmemInferencePlugin : cinm::InferencePlugin {
   }
 
 private:
-  void applyTileSizes(cinm::ComputeOp computeOp, const cinm::ConfigSpace &space,
+  void applyTileSizes(cinm::ComputeBlockOp computeOp, const cinm::ConfigSpace &space,
                       const cinm::Configuration &config,
                       MLIRContext *ctx) const {
     computeOp.getBody().walk([&](mlir::Operation *op) {
@@ -181,7 +183,7 @@ struct UpmemInferAcceleratorPass
     ModuleOp module = getOperation();
     DiagnosedSilenceableFailure failed = DiagnosedSilenceableFailure::success();
 
-    module.walk([&](cinm::ComputeOp computeOp) -> WalkResult {
+    module.walk([&](cinm::ComputeBlockOp computeOp) -> WalkResult {
       // Look for a UpmemPlatformAttr in cinm.available_platforms on the
       // compute op or its enclosing function.
       upmem::UpmemPlatformAttr platform;
