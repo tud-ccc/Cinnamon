@@ -139,7 +139,7 @@ cloneComputeOpToFreshModule(cinm::ComputeOp computeOp) {
 ConfigSpace buildConfigSpace(cinm::ComputeOp refClone,
                              InferencePlugin &plugin) {
   ConfigSpace space;
-  plugin.populate(refClone, space);
+  plugin.initializeSpace(refClone, space);
   return space;
 }
 

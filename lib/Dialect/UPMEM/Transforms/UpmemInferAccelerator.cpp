@@ -50,7 +50,7 @@ struct UpmemInferencePlugin : cinm::InferencePlugin {
 
   // --- InferencePlugin interface ---
 
-  void populate(cinm::ComputeOp refClone, cinm::ConfigSpace &space) override {
+  void initializeSpace(cinm::ComputeOp refClone, cinm::ConfigSpace &space) override {
     space.addRange("ranks", 1, platform.getMaxNumRanks());
     space.addRange("dpus", 1, platform.getMaxNumDpusPerRank());
     space.addRange("tasklets", 1, platform.getMaxNumTasklets());
@@ -60,6 +60,7 @@ struct UpmemInferencePlugin : cinm::InferencePlugin {
       if (!tileable)
         return;
 
+      
       unsigned opIdx = tileableOpCounter++;
       llvm::SmallVector<int64_t> dimSizes;
       tileable.getTilableDimSizes(dimSizes);
