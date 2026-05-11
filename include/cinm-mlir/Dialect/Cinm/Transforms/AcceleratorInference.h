@@ -1,6 +1,8 @@
 #pragma once
 
+#include "cinm-mlir/Dialect/Cinm/IR/CinmAttributes.h"
 #include "cinm-mlir/Dialect/Cinm/IR/CinmOps.h"
+#include <cinm-mlir/Utils/Scheduling/SchedulingSupport.h>
 #include <llvm/ADT/SmallVector.h>
 #include <llvm/ADT/StringRef.h>
 #include <mlir/Support/LogicalResult.h>
@@ -75,28 +77,30 @@ struct InferencePlugin {
   /// The plugin decides what to add and how to explore the IR — it may walk
   /// the compute body, inspect op shapes, attach attributes to nodes, etc.
   /// Annotations left on the clone are inherited by every per-evaluation clone.
-  virtual void initializeSpace(cinm::ComputeOp refClone, ConfigSpace &space) = 0;
+  virtual void initializeSpace(cinm::ComputeOp refClone,
+                               ConfigSpace &space) = 0;
 
   /// Evaluate a configuration. Lower cost is better.
   /// Receives a clone of the reference clone (which already carries any
   /// annotations attached during populateOpParams). The plugin may freely
   /// annotate, transform, or lower it — changes do not affect other trials.
-  virtual mlir::FailureOr<double> evaluate(cinm::ComputeOp clonedComputeOp,
-                                           const ConfigSpace &space,
-                                           const Configuration &config) = 0;
+  virtual utils::Maybe<double> evaluate(cinm::ComputeOp clonedComputeOp,
+                                        const ConfigSpace &space,
+                                        const Configuration &config) = 0;
 
   /// Annotate the original compute op with the best configuration found.
   /// Called once after optimization completes.
-  virtual mlir::LogicalResult applyBestConfig(cinm::ComputeOp computeOp,
-                                              const ConfigSpace &space,
-                                              const Configuration &config) = 0;
+  virtual DiagnosedSilenceableFailure
+  applyBestConfig(cinm::ComputeOp computeOp, const ConfigSpace &space,
+                  const Configuration &config) = 0;
 };
 
 // ===----------------------------------------------------------------------===//
 // Core framework API
 // ===----------------------------------------------------------------------===//
 
-/// Build the configuration space by calling plugin.initializeSpace on the reference clone.
+/// Build the configuration space by calling plugin.initializeSpace on the
+/// reference clone.
 ConfigSpace buildConfigSpace(cinm::ComputeOp refClone, InferencePlugin &plugin);
 
 struct InferenceOptions {
@@ -104,16 +108,16 @@ struct InferenceOptions {
 };
 
 /// Run Bayesian optimization over the config space. Does not modify computeOp.
-mlir::FailureOr<Configuration> runInference(cinm::ComputeOp computeOp,
-                                            InferencePlugin &plugin,
-                                            const ConfigSpace &space,
-                                            const InferenceOptions &opts = {});
+utils::Maybe<Configuration> runInference(cinm::ComputeOp computeOp,
+                                         InferencePlugin &plugin,
+                                         const ConfigSpace &space,
+                                         const InferenceOptions &opts = {});
 
 /// Full pipeline: clone original → buildConfigSpace → runInference →
 /// applyBestConfig on the original. The original is never modified until
 /// applyBestConfig is called with the winning configuration.
-mlir::LogicalResult inferAcceleratorConfig(cinm::ComputeOp computeOp,
-                                           InferencePlugin &plugin,
-                                           const InferenceOptions &opts = {});
+DiagnosedSilenceableFailure
+inferAcceleratorConfig(cinm::ComputeOp computeOp, InferencePlugin &plugin,
+                       const InferenceOptions &opts = {});
 
 } // namespace mlir::cinm

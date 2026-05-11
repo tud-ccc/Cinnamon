@@ -1,9 +1,11 @@
 #include "cinm-mlir/Dialect/Cinm/Transforms/AcceleratorInference.h"
+#include "cinm-mlir/Dialect/Cinm/IR/CinmAttributes.h"
 #include "cinm-mlir/Dialect/Cinm/IR/CinmOps.h"
 
 #include <dlib/global_optimization.h>
 
 #include <llvm/ADT/StringRef.h>
+#include <llvm/Support/LogicalResult.h>
 #include <mlir/IR/Builders.h>
 #include <mlir/IR/BuiltinOps.h>
 #include <mlir/IR/IRMapping.h>
@@ -13,6 +15,8 @@
 #include <algorithm>
 #include <cmath>
 #include <limits>
+
+using mlir::cinm::utils::Maybe;
 
 namespace mlir::cinm {
 
@@ -71,8 +75,7 @@ void ConfigSpace::addRange(std::string name, int64_t lo, int64_t hi,
   params.push_back({std::move(name), IntRange{lo, hi, step}});
 }
 
-void ConfigSpace::addPow2Range(std::string name, int64_t loExp,
-                               int64_t hiExp) {
+void ConfigSpace::addPow2Range(std::string name, int64_t loExp, int64_t hiExp) {
   llvm::SmallVector<int64_t> vals;
   for (int64_t e = loExp; e <= hiExp; ++e)
     vals.push_back(int64_t(1) << e);
@@ -143,10 +146,10 @@ ConfigSpace buildConfigSpace(cinm::ComputeOp refClone,
   return space;
 }
 
-mlir::FailureOr<Configuration> runInference(cinm::ComputeOp computeOp,
-                                            InferencePlugin &plugin,
-                                            const ConfigSpace &space,
-                                            const InferenceOptions &opts) {
+Maybe<Configuration> runInference(cinm::ComputeOp computeOp,
+                                  InferencePlugin &plugin,
+                                  const ConfigSpace &space,
+                                  const InferenceOptions &opts) {
   if (space.size() == 0)
     return Configuration{};
 
@@ -161,6 +164,9 @@ mlir::FailureOr<Configuration> runInference(cinm::ComputeOp computeOp,
 
   bool anySuccess = false;
 
+  DiagnosedSilenceableFailure err = mlir::emitSilenceableFailure(
+      computeOp.getLoc(), "No candidates were evaluated");
+
   auto result = dlib::find_min_global(
       [&](const dlib::matrix<double, 0, 1> &x) -> double {
         Configuration config(n);
@@ -171,15 +177,17 @@ mlir::FailureOr<Configuration> runInference(cinm::ComputeOp computeOp,
         if (!clonedOp)
           return std::numeric_limits<double>::max();
         auto cost = plugin.evaluate(clonedOp, space, config);
-        if (mlir::failed(cost))
+        if (std::holds_alternative<DiagnosedSilenceableFailure>(cost)) {
+          err = std::move(std::get<DiagnosedSilenceableFailure>(cost));
           return std::numeric_limits<double>::max();
+        }
         anySuccess = true;
-        return *cost;
+        return std::get<0>(cost);
       },
       lo, hi, dlib::max_function_calls(opts.maxEvals));
 
   if (!anySuccess)
-    return mlir::failure();
+    return err;
 
   Configuration best(n);
   for (size_t i = 0; i < n; ++i)
@@ -187,23 +195,22 @@ mlir::FailureOr<Configuration> runInference(cinm::ComputeOp computeOp,
   return best;
 }
 
-mlir::LogicalResult inferAcceleratorConfig(cinm::ComputeOp computeOp,
-                                           InferencePlugin &plugin,
-                                           const InferenceOptions &opts) {
+DiagnosedSilenceableFailure
+inferAcceleratorConfig(cinm::ComputeOp computeOp, InferencePlugin &plugin,
+                       const InferenceOptions &opts) {
   // Make one reference clone. The plugin may annotate it during
   // buildConfigSpace; those annotations will be inherited by every
   // per-evaluation clone created inside runInference.
   auto [refModule, refClone] = cloneComputeOpToFreshModule(computeOp);
   if (!refClone)
-    return mlir::failure();
+    return emitDefiniteFailure(computeOp->getLoc(),
+                               "Could not clone compute op");
 
   ConfigSpace space = buildConfigSpace(refClone, plugin);
-  auto config = runInference(refClone, plugin, space, opts);
-  if (mlir::failed(config))
-    return mlir::failure();
+  auto config = TRY_GET(runInference(refClone, plugin, space, opts));
 
   // Apply the best config to the original (unmodified) op.
-  return plugin.applyBestConfig(computeOp, space, *config);
+  return plugin.applyBestConfig(computeOp, space, config);
 }
 
 } // namespace mlir::cinm
