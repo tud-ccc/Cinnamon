@@ -39,10 +39,12 @@
 #include <mlir/Support/LLVM.h>
 #include <mlir/Transforms/DialectConversion.h>
 
+
+namespace mlir::cnm {
+
 #define GEN_PASS_DEF_CONVERTCNMTOUPMEMPASS
 #include "cinm-mlir/Conversion/CnmPasses.h.inc"
 
-namespace mlir::cnm {
 namespace {
 
 template <typename T> T reduceMul(ArrayRef<T> arr) {
@@ -356,11 +358,28 @@ struct ConvertCnmTerminatorToUPMEM
 } // namespace
 
 struct ConvertCnmToUPMEMPass
-    : public ::impl::ConvertCnmToUPMEMPassBase<ConvertCnmToUPMEMPass> {
-  void runOnOperation() final {
+    : public impl::ConvertCnmToUPMEMPassBase<ConvertCnmToUPMEMPass> {
+  using Base::Base;
 
-    auto rootModule = getOperation();
-    auto sym = SymbolTable::lookupSymbolIn(rootModule, "dpu_kernels");
+  void runOnOperation() final {
+    Operation *rootOp = getOperation();
+
+    // Determine kernel module name: prefer per-op annotation, else option.
+    std::string kmName = kernelModuleName;
+    if (auto attr = rootOp->getAttrOfType<StringAttr>("upmem.kernel_module"))
+      kmName = attr.getValue().str();
+
+    // Find the enclosing ModuleOp (or use rootOp itself if it is one).
+    ModuleOp parentModule = llvm::dyn_cast<ModuleOp>(rootOp);
+    if (!parentModule)
+      parentModule = rootOp->getParentOfType<ModuleOp>();
+    if (!parentModule) {
+      mlir::emitError(rootOp->getLoc(), "No parent ModuleOp found");
+      signalPassFailure();
+      return;
+    }
+
+    auto sym = SymbolTable::lookupSymbolIn(parentModule, kmName);
     ModuleOp dpuKernelModule = llvm::dyn_cast_or_null<ModuleOp>(sym);
     if (!dpuKernelModule && sym) {
       mlir::emitError(sym->getLoc(), "Should be a module");
@@ -369,16 +388,15 @@ struct ConvertCnmToUPMEMPass
     }
     if (!dpuKernelModule) {
       OpBuilder builder(&getContext());
-      builder.setInsertionPointToEnd(&rootModule.getBodyRegion().front());
+      builder.setInsertionPointToEnd(&parentModule.getBodyRegion().front());
       dpuKernelModule =
-          builder.create<ModuleOp>(rootModule->getLoc(), "dpu_kernels");
+          builder.create<ModuleOp>(parentModule->getLoc(), kmName);
     }
 
     SmallVector<LaunchOp> launchOps;
-    rootModule->walk(
-        [&](cnm::LaunchOp launch) { launchOps.push_back(launch); });
+    rootOp->walk([&](cnm::LaunchOp launch) { launchOps.push_back(launch); });
 
-    SymbolTable rootSymTable(rootModule);
+    SymbolTable rootSymTable(parentModule);
 
     IRRewriter rewriter(&getContext());
     for (auto launch : launchOps) {
@@ -394,5 +412,9 @@ struct ConvertCnmToUPMEMPass
 std::unique_ptr<Pass> createConvertCnmToUPMEMPass() {
   return std::make_unique<ConvertCnmToUPMEMPass>();
 }
+std::unique_ptr<Pass> createConvertCnmToUPMEMPass(ConvertCnmToUPMEMPassOptions options) {
+  return std::make_unique<ConvertCnmToUPMEMPass>(std::move(options));
+}
+
 
 } // namespace mlir::cnm

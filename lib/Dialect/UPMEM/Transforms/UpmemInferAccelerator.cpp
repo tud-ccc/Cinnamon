@@ -23,10 +23,12 @@
 #include <mlir/IR/IRMapping.h>
 #include <mlir/IR/OwningOpRef.h>
 #include <mlir/IR/PatternMatch.h>
+#include <mlir/IR/SymbolTable.h>
 #include <mlir/Pass/PassManager.h>
 #include <mlir/Support/LogicalResult.h>
 
 #include <llvm/ADT/SmallVector.h>
+#include <llvm/ADT/Twine.h>
 #include <llvm/Support/Debug.h>
 #include <llvm/Support/raw_ostream.h>
 #include <mlir/Support/WalkResult.h>
@@ -49,9 +51,12 @@ using mlir::cinm::utils::Maybe;
 struct UpmemInferencePlugin : cinm::InferencePlugin {
   upmem::UpmemPlatformAttr platform;
   std::unique_ptr<UpmemSimulator> simulator;
+  unsigned trialCount = 0;
 
   static constexpr llvm::StringLiteral kTileParamNamesAttr =
       "upmem.tile_param_names";
+  static constexpr llvm::StringLiteral kKernelModuleAttr =
+      "upmem.kernel_module";
 
   UpmemInferencePlugin(upmem::UpmemPlatformAttr platform,
                        std::unique_ptr<UpmemSimulator> sim)
@@ -96,10 +101,10 @@ struct UpmemInferencePlugin : cinm::InferencePlugin {
     });
   }
 
-  Maybe<double> evaluate(cinm::ComputeBlockOp clonedComputeOp,
+  Maybe<double> evaluate(cinm::ComputeBlockOp candidate,
                          const cinm::ConfigSpace &space,
                          const cinm::Configuration &config) override {
-    MLIRContext *ctx = clonedComputeOp->getContext();
+    MLIRContext *ctx = candidate->getContext();
 
     int64_t ranks = space.get(config, "ranks");
     int64_t dpus = space.get(config, "dpus");
@@ -109,30 +114,35 @@ struct UpmemInferencePlugin : cinm::InferencePlugin {
                << " dpus=" << dpus << " tasklets=" << tasklets << "\n");
     auto accelerator =
         upmem::UpmemAcceleratorAttr::get(platform, ranks, dpus, tasklets);
-    clonedComputeOp.setAcceleratorAttr(accelerator);
-    applyTileSizes(clonedComputeOp, space, config, ctx);
+    candidate.setAcceleratorAttr(accelerator);
+    applyTileSizes(candidate, space, config, ctx);
+
+    // Create a fresh trial submodule for DPU kernels in the sandbox module,
+    // and tell the cnm-to-upmem pass to use it via annotation.
+    std::string trialName = ("trial_" + llvm::Twine(trialCount++)).str();
 
     // Run the lowering pipeline to UPMEM dialect.
     PassManager pm(ctx);
+    ctx->disableMultithreading(true);
+    pm.enableIRPrinting();
     pm.addPass(cinm::createCinmTilingPass());
     pm.addPass(cinm::createConvertTiledCinmToCnmPass());
     pm.addPass(cnm::createCnmHoistWorkgroupsPass());
     pm.addPass(createCanonicalizerPass());
     pm.addPass(createCSEPass());
-    pm.addPass(cnm::createConvertCnmToUPMEMPass());
+    pm.addPass(cnm::createConvertCnmToUPMEMPass({.kernelModuleName=std::move(trialName)}));
     pm.addPass(createCanonicalizerPass());
     pm.addPass(createCSEPass());
     pm.addPass(createUPMEMDedupKernelsPass());
 
     LLVM_DEBUG(llvm::dbgs()
                << "[cinm-inference]   running lowering pipeline\n");
-    if (mlir::failed(pm.run(clonedComputeOp))) {
+    if (mlir::failed(pm.run(candidate))) {
       LLVM_DEBUG(llvm::dbgs() << "[cinm-inference]   pipeline failed\n");
-      return emitSilenceableFailure(clonedComputeOp->getLoc(),
-                                    "Pass manager failed");
+      return emitSilenceableFailure(candidate->getLoc(), "Pass manager failed");
     }
 
-    auto cost = simulator->simulate(clonedComputeOp.getBody());
+    auto cost = simulator->simulate(candidate.getBody());
     LLVM_DEBUG({
       if (auto *val = std::get_if<double>(&cost))
         llvm::dbgs() << "[cinm-inference]   simulated cost = " << *val << "\n";
@@ -142,17 +152,44 @@ struct UpmemInferencePlugin : cinm::InferencePlugin {
     return cost;
   }
 
+  void disposeCandidate(cinm::ComputeBlockOp candidate) override {
+    if (auto attr = candidate->getAttrOfType<StringAttr>(kKernelModuleAttr)) {
+      auto sandboxModule = candidate->getParentOfType<ModuleOp>();
+      if (sandboxModule) {
+        auto *sym = SymbolTable::lookupSymbolIn(sandboxModule, attr.getValue());
+        if (sym)
+          sym->erase();
+      }
+    }
+    candidate->erase();
+  }
+
   mlir::DiagnosedSilenceableFailure
-  applyBestConfig(cinm::ComputeBlockOp computeOp,
-                  const cinm::ConfigSpace &space,
-                  const cinm::Configuration &config) override {
-    int64_t ranks = space.get(config, "ranks");
-    int64_t dpus = space.get(config, "dpus");
-    int64_t tasklets = space.get(config, "tasklets");
-    auto accelerator =
-        upmem::UpmemAcceleratorAttr::get(platform, ranks, dpus, tasklets);
-    computeOp->setAttr("accelerator", accelerator);
-    applyTileSizes(computeOp, space, config, computeOp->getContext());
+  commitBestCandidate(cinm::ComputeBlockOp original,
+                      cinm::ComputeBlockOp bestCandidate) override {
+    auto sandboxModule = bestCandidate->getParentOfType<ModuleOp>();
+    auto originalModule = original->getParentOfType<ModuleOp>();
+
+    // Move the trial kernel submodule from the sandbox into the original module.
+    if (auto attr =
+            bestCandidate->getAttrOfType<StringAttr>(kKernelModuleAttr)) {
+      auto *sym = SymbolTable::lookupSymbolIn(sandboxModule, attr.getValue());
+      if (auto kernelModule = llvm::dyn_cast_or_null<ModuleOp>(sym)) {
+        kernelModule.getOperation()->moveBefore(
+            &originalModule.getBodyRegion().front(),
+            originalModule.getBodyRegion().front().end());
+      }
+      original->setAttr(kKernelModuleAttr, attr);
+    }
+
+    // Replace the original's body with the lowered body from the best candidate.
+    original.getBody().takeBody(bestCandidate.getBody());
+
+    // Copy the accelerator attribute.
+    if (auto acc = bestCandidate->getAttr("accelerator"))
+      original->setAttr("accelerator", acc);
+
+    bestCandidate->erase();
     return DiagnosedSilenceableFailure::success();
   }
 
@@ -193,7 +230,7 @@ struct UpmemInferAcceleratorPass
     DiagnosedSilenceableFailure failed = DiagnosedSilenceableFailure::success();
 
     IRRewriter rewriter(module->getContext());
-    module.walk([&](cinm::ComputeOp computeOp) -> WalkResult {
+    module.walk([&](cinm::ComputeBlockOp computeOp) -> WalkResult {
       // Look for a UpmemPlatformAttr in cinm.available_platforms on the
       // compute op or its enclosing function.
       upmem::UpmemPlatformAttr platform;
@@ -214,12 +251,10 @@ struct UpmemInferAcceleratorPass
       if (!platform)
         return WalkResult::skip(); // not a UPMEM target
 
-      cinm::ComputeBlockOp blockOp =
-          cinm::isolateComputeBlock(computeOp, rewriter);
       UpmemInferencePlugin plugin(platform, createOpCountSimulator());
       cinm::InferenceOptions opts;
       opts.maxEvals = maxEvals;
-      TRY_IN_WALK(failed, cinm::inferAcceleratorConfig(blockOp, plugin, opts));
+      TRY_IN_WALK(failed, cinm::inferAcceleratorConfig(computeOp, plugin, opts));
       return WalkResult::skip();
     });
 
