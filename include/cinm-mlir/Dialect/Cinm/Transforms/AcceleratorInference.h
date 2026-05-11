@@ -77,21 +77,21 @@ struct InferencePlugin {
   /// The plugin decides what to add and how to explore the IR — it may walk
   /// the compute body, inspect op shapes, attach attributes to nodes, etc.
   /// Annotations left on the clone are inherited by every per-evaluation clone.
-  virtual void initializeSpace(cinm::ComputeOp refClone,
+  virtual void initializeSpace(cinm::ComputeBlockOp refClone,
                                ConfigSpace &space) = 0;
 
   /// Evaluate a configuration. Lower cost is better.
   /// Receives a clone of the reference clone (which already carries any
   /// annotations attached during populateOpParams). The plugin may freely
   /// annotate, transform, or lower it — changes do not affect other trials.
-  virtual utils::Maybe<double> evaluate(cinm::ComputeOp clonedComputeOp,
+  virtual utils::Maybe<double> evaluate(cinm::ComputeBlockOp clonedComputeOp,
                                         const ConfigSpace &space,
                                         const Configuration &config) = 0;
 
   /// Annotate the original compute op with the best configuration found.
   /// Called once after optimization completes.
   virtual DiagnosedSilenceableFailure
-  applyBestConfig(cinm::ComputeOp computeOp, const ConfigSpace &space,
+  applyBestConfig(cinm::ComputeBlockOp computeOp, const ConfigSpace &space,
                   const Configuration &config) = 0;
 };
 
@@ -101,14 +101,14 @@ struct InferencePlugin {
 
 /// Build the configuration space by calling plugin.initializeSpace on the
 /// reference clone.
-ConfigSpace buildConfigSpace(cinm::ComputeOp refClone, InferencePlugin &plugin);
+ConfigSpace buildConfigSpace(cinm::ComputeBlockOp refClone, InferencePlugin &plugin);
 
 struct InferenceOptions {
   int maxEvals = 50;
 };
 
 /// Run Bayesian optimization over the config space. Does not modify computeOp.
-utils::Maybe<Configuration> runInference(cinm::ComputeOp computeOp,
+utils::Maybe<Configuration> runInference(cinm::ComputeBlockOp computeOp,
                                          InferencePlugin &plugin,
                                          const ConfigSpace &space,
                                          const InferenceOptions &opts = {});
@@ -117,7 +117,7 @@ utils::Maybe<Configuration> runInference(cinm::ComputeOp computeOp,
 /// applyBestConfig on the original. The original is never modified until
 /// applyBestConfig is called with the winning configuration.
 DiagnosedSilenceableFailure
-inferAcceleratorConfig(cinm::ComputeOp computeOp, InferencePlugin &plugin,
+inferAcceleratorConfig(cinm::ComputeBlockOp computeOp, InferencePlugin &plugin,
                        const InferenceOptions &opts = {});
 
 } // namespace mlir::cinm

@@ -112,8 +112,8 @@ int64_t ConfigSpace::get(const Configuration &config,
 // Clone the compute op into a fresh module by cloning its nearest top-level
 // ancestor (the direct child of the enclosing ModuleOp). Returns the new
 // module (kept alive by the caller) and the corresponding cloned compute op.
-static std::pair<mlir::OwningOpRef<mlir::ModuleOp>, cinm::ComputeOp>
-cloneComputeOpToFreshModule(cinm::ComputeOp computeOp) {
+static std::pair<mlir::OwningOpRef<mlir::ModuleOp>, cinm::ComputeBlockOp>
+cloneComputeOpToFreshModule(cinm::ComputeBlockOp computeOp) {
   // Walk up to find the direct child of the enclosing ModuleOp.
   mlir::Operation *topLevel = computeOp.getOperation();
   while (topLevel->getParentOp() &&
@@ -128,11 +128,11 @@ cloneComputeOpToFreshModule(cinm::ComputeOp computeOp) {
 
   // Locate the cloned compute op by parallel walk — IRMapping tracks values
   // and blocks but not operations, so walk order is our index.
-  llvm::SmallVector<cinm::ComputeOp> origOps, clonedOps;
-  topLevel->walk([&](cinm::ComputeOp op) { origOps.push_back(op); });
-  clonedTop->walk([&](cinm::ComputeOp op) { clonedOps.push_back(op); });
+  llvm::SmallVector<cinm::ComputeBlockOp> origOps, clonedOps;
+  topLevel->walk([&](cinm::ComputeBlockOp op) { origOps.push_back(op); });
+  clonedTop->walk([&](cinm::ComputeBlockOp op) { clonedOps.push_back(op); });
 
-  cinm::ComputeOp clonedComputeOp;
+  cinm::ComputeBlockOp clonedComputeOp;
   for (size_t i = 0; i < origOps.size() && i < clonedOps.size(); ++i) {
     if (origOps[i] == computeOp) {
       clonedComputeOp = clonedOps[i];
@@ -142,7 +142,7 @@ cloneComputeOpToFreshModule(cinm::ComputeOp computeOp) {
   return {std::move(newModule), clonedComputeOp};
 }
 
-ConfigSpace buildConfigSpace(cinm::ComputeOp refClone,
+ConfigSpace buildConfigSpace(cinm::ComputeBlockOp refClone,
                              InferencePlugin &plugin) {
   ConfigSpace space;
   plugin.initializeSpace(refClone, space);
@@ -156,7 +156,7 @@ ConfigSpace buildConfigSpace(cinm::ComputeOp refClone,
   return space;
 }
 
-Maybe<Configuration> runInference(cinm::ComputeOp computeOp,
+Maybe<Configuration> runInference(cinm::ComputeBlockOp computeOp,
                                   InferencePlugin &plugin,
                                   const ConfigSpace &space,
                                   const InferenceOptions &opts) {
@@ -226,7 +226,7 @@ Maybe<Configuration> runInference(cinm::ComputeOp computeOp,
 }
 
 DiagnosedSilenceableFailure
-inferAcceleratorConfig(cinm::ComputeOp computeOp, InferencePlugin &plugin,
+inferAcceleratorConfig(cinm::ComputeBlockOp computeOp, InferencePlugin &plugin,
                        const InferenceOptions &opts) {
   // Make one reference clone. The plugin may annotate it during
   // buildConfigSpace; those annotations will be inherited by every
