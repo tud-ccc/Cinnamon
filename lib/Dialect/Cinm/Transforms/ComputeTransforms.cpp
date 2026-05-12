@@ -47,6 +47,11 @@ cinm::ComputeOp cinm::deisolateComputeBlock(cinm::ComputeBlockOp op,
 
   newCompute->getRegion(0).takeBody(sourceRegion);
 
+  // The entry block still carries the old block arguments from compute_block.
+  // All uses were already replaced above, so they are unused — erase them.
+  Block &entry = newCompute->getRegion(0).front();
+  entry.eraseArguments(0, entry.getNumArguments());
+
   rewriter.replaceOp(op, newCompute);
   return newCompute;
 }
