@@ -123,8 +123,6 @@ struct UpmemInferencePlugin : cinm::InferencePlugin {
 
     // Run the lowering pipeline to UPMEM dialect.
     PassManager pm(ctx);
-    ctx->disableMultithreading(true);
-    pm.enableIRPrinting();
     pm.addPass(cinm::createCinmTilingPass());
     pm.addPass(cinm::createConvertTiledCinmToCnmPass());
     pm.addPass(cnm::createCnmHoistWorkgroupsPass());

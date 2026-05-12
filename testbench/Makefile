@@ -19,17 +19,17 @@ CINM_OPT=../build/bin/cinm-opt
 
 $(IR_PREFIX).1.tiled.mlir: $(BENCH_NAME).mlir
 	@mkdir -p $(@D)
-	$(CINM_OPT) $< --pass-pipeline="builtin.module(func.func(cinm-infer-tile-sizes,cinm-tiling))" | $(CINM_OPT) --pass-pipeline="builtin.module(**cinm.compute(affine-loop-unroll{unroll-full unroll-full-threshold=1},canonicalize))" > $@
+	$(CINM_OPT) $< --pass-pipeline="builtin.module(func.func(cinm-infer-tile-sizes,cinm-tiling,cinm-isolate-compute-blocks))" | $(CINM_OPT) --pass-pipeline="builtin.module(**cinm.compute_block(affine-loop-unroll{unroll-full unroll-full-threshold=1},canonicalize))" > $@
 
 $(IR_PREFIX).1a.cinm.buffered.mlir: $(IR_PREFIX).1.tiled.mlir
-	$(CINM_OPT) $< --eliminate-empty-tensors --cse --one-shot-bufferize='bufferize-function-boundaries function-boundary-type-conversion=identity-layout-map'  \
+	$(CINM_OPT) $< --cinm-deisolate-compute-blocks --eliminate-empty-tensors --canonicalize --cse --one-shot-bufferize='bufferize-function-boundaries function-boundary-type-conversion=identity-layout-map'  \
 					--cse --canonicalize --buffer-results-to-out-params=hoist-static-allocs > $@
 
 $(IR_PREFIX).1b.cnm.mlir: $(IR_PREFIX).1a.cinm.buffered.mlir
-	$(CINM_OPT) $< --convert-cinm-to-cnm --cnm-hoist-workgroups --canonicalize --cse > $@
+	$(CINM_OPT) $< --cinm-deisolate-compute-blocks --convert-cinm-to-cnm --canonicalize --cnm-hoist-workgroups --canonicalize --cse > $@
 
 $(IR_PREFIX).2.cnm.mlir: $(IR_PREFIX).1.tiled.mlir
-	$(CINM_OPT) $< --convert-cinm-to-cnm --cnm-hoist-workgroups --canonicalize --cse > $@
+	$(CINM_OPT) $< --cinm-deisolate-compute-blocks --convert-cinm-to-cnm --canonicalize --cnm-hoist-workgroups --canonicalize --cse > $@
 
 #					--promote-buffers-to-stack --fold-memref-alias-ops --canonicalize --affine-loop-fusion --sroa --canonicalize --affine-scalrep --loop-invariant-code-motion --affine-loop-invariant-code-motion --sroa --affine-scalrep \
 
