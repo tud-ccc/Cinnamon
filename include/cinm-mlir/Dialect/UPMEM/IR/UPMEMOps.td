@@ -66,6 +66,7 @@ def BarrierOp : Upmem_Op<"barrier", []> {
   let summary = "add a barrier that will wait for all threads to reach this point before releasing";
   let results = (outs);
   let arguments = (ins);
+  let assemblyFormat = "`(` `)` attr-dict";
   let description = [{
 
     ```mlir
