@@ -8,6 +8,7 @@ add_mlir_dialect_library(CinmTransforms
     CinmQuantization.cpp
     CleanupLinalgPass.cpp
     ComputeTransforms.cpp
+    CinmTilingImplementations.cpp
     CostModel.cpp
     DecomposeAccumulations.cpp
     DecomposeGemmToGemv.cpp
@@ -24,6 +25,8 @@ LINK_LIBS PUBLIC
     MLIRIR
     MLIRAffineDialect
     MLIRLinalgDialect
+    MLIRLinalgUtils
+    MLIRTensorDialect
     MLIRLLVMCommonConversion
     MLIRLLVMDialect
     MLIRTransformDialectUtils

@@ -37,7 +37,14 @@ arith::AtomicRMWKind getArithConstant(ReduceMethod r, Type ty);
 
 cinm::ComputeOpInterface getEnclosingComputeBlock(Operation *op);
 
-cinm::CinmAcceleratorAttrInterface getEnclosingAccelerator(Operation *op);
+inline cinm::CinmAcceleratorAttrInterface getEnclosingAccelerator(Operation *op) {
+  if (auto compute = getEnclosingComputeBlock(op)) {
+    if (compute.getAccelerator())
+      return *compute.getAccelerator();
+  }
+  return {};
+}
+
 template <class T> T getEnclosingAcceleratorAs(Operation *op) {
   auto ax = getEnclosingAccelerator(op);
   if (ax) {

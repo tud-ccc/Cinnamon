@@ -2,6 +2,8 @@
 ///
 /// @file
 
+#include "cinm-mlir/Dialect/Cinm/IR/CinmOps.h"
+#include "cinm-mlir/Dialect/Cnm/IR/CnmInterfaces.h"
 #include <cinm-mlir/Dialect/Cnm/IR/CnmOps.h>
 
 #include <cinm-mlir/Dialect/Cnm/IR/CnmTypes.h>
@@ -230,7 +232,8 @@ LogicalResult LaunchOp::verify() {
 
   for (auto [arg, operand] : llvm::zip(bodyArgs, operands)) {
     if (auto bufTy = dyn_cast<cnm::BufferType>(operand.getType())) {
-      auto memrefTy = MemRefType::get(bufTy.getShape(), bufTy.getElementType(), nullptr, bufTy.getLevel());
+      auto memrefTy = MemRefType::get(bufTy.getShape(), bufTy.getElementType(),
+                                      nullptr, bufTy.getLevel());
       if (arg.getType() != memrefTy)
         return emitError("Mismatched type for launch argument, expected ")
                << memrefTy << ", got " << arg.getType();
@@ -277,6 +280,16 @@ LogicalResult ScatterOp::verify() {
 
   if (!mlir::scatteredMemrefIsContiguous(getInput(), bufferTy.getShape())) {
     return emitOpError("should scatter a contiguous memref");
+  }
+
+  if (auto accelerator =
+          cinm::getEnclosingAcceleratorAs<CnmAcceleratorAttrInterface>(
+              *this)) {
+    // todo if there is an accelerator, we could give it an opportunity to
+    //  verify the scattering. For instance for upmem it is illegal to use
+    //  the thread ID to scattering from host to mram. 
+
+
   }
 
   return success();
