@@ -58,6 +58,7 @@ using linalg::UnaryFn;
 //===- Generated implementation -------------------------------------------===//
 
 #include "cinm-mlir/Dialect/Cinm/IR/CinmEnums.cpp.inc"
+#include "cinm-mlir/Dialect/Cinm/IR/TilingInterface.cpp.inc"
 
 template <typename Self>
 static void buildGemmLikeOp(OpBuilder &builder, OperationState &result,
@@ -114,14 +115,6 @@ cinm::ComputeOpInterface getEnclosingComputeBlock(Operation *op) {
       return parentCompute;
   }
 
-  return {};
-}
-
-cinm::CinmAcceleratorAttrInterface getEnclosingAccelerator(Operation *op) {
-  if (auto compute = getEnclosingComputeBlock(op)) {
-    if (compute.getAccelerator())
-      return *compute.getAccelerator();
-  }
   return {};
 }
 

@@ -30,8 +30,8 @@ using namespace mlir::cinm;
 #include "cinm-mlir/Dialect/Cinm/IR/CinmBase.cpp.inc"
 #define GET_ATTRDEF_CLASSES
 #include "cinm-mlir/Dialect/Cinm/IR/CinmAttributes.cpp.inc"
-#include "cinm-mlir/Dialect/Cinm/IR/CinmPlatformAttrInterface.cpp.inc"
 #include "cinm-mlir/Dialect/Cinm/IR/CinmComputeOpInterface.cpp.inc"
+#include "cinm-mlir/Dialect/Cinm/IR/CinmPlatformAttrInterface.cpp.inc"
 // #define GET_ATTRDEF_CLASSES
 
 //===----------------------------------------------------------------------===//
@@ -59,6 +59,9 @@ void CinmDialect::initialize() {
 #include "cinm-mlir/Dialect/Cinm/IR/CinmAttributes.cpp.inc"
       >();
   this->addInterfaces<CinmInlinerInterface>();
+  this->declarePromisedInterfaces<CinmTilingInterface, GemmOp, GemvOp,
+                                  BatchGemmOp, BatchGemvOp, ReduceOp,
+                                  ElementwiseOp>();
 }
 
 ::mlir::LogicalResult
@@ -66,7 +69,7 @@ CinmDialect::verifyOperationAttribute(::mlir::Operation *op,
                                       ::mlir::NamedAttribute attribute) {
 
   if (attribute.getName() == CinmDialect::TILING_FACTORS_NAME) {
-    if (!op->hasTrait<CinmTilingInterface::Trait>()) {
+    if (!op->hasPromiseOrImplementsInterface<CinmTilingInterface>()) {
       return op->emitOpError() << attribute.getName()
                                << " attribute can only be used ops "
                                   "implementing the CinmTilingInterface";

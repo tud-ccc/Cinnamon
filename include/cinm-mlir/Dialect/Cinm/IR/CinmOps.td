@@ -29,7 +29,6 @@ include "mlir/Dialect/Linalg/IR/LinalgEnums.td"
 def Cinm_ElementwiseOp
     : Cinm_Op<"op.elementwise", [
         DeclareOpInterfaceMethods<MemoryEffectsOpInterface>,
-        DeclareOpInterfaceMethods<CinmTilingInterface>,
         AttrSizedOperandSegments
     ]> {
 
@@ -69,7 +68,6 @@ class Cinm_GemmlikeOp<string name, string cppClassName> : Cinm_Op<name,
   [
     InferTensorTypeAdaptor,
     DeclareOpInterfaceMethods<MemoryEffectsOpInterface>,
-    DeclareOpInterfaceMethods<CinmTilingInterface>,
     // OptionalTypesMatchWith<
     //   "bias should have compatible type", "result", "bias", "$_self">,
     AttrSizedOperandSegments
@@ -188,7 +186,7 @@ def Cinm_ScanOp : Cinm_Op<"op.scan", [SameOperandsAndResultType, Pure]> {
 }
 
 def Cinm_ReduceOp : Cinm_Op<"op.reduce",
-    [Pure, DeclareOpInterfaceMethods<InferTypeOpInterface, ["inferReturnTypes"]>, DeclareOpInterfaceMethods<CinmTilingInterface>]> {
+    [Pure, DeclareOpInterfaceMethods<InferTypeOpInterface, ["inferReturnTypes"]>]> {
   let summary = "Reduce the tensor according to a given binary operator.";
 
   let description = [{

@@ -13,6 +13,7 @@ add_mlir_dialect_library(CnmIR
         MLIRParser
         MLIRSideEffectInterfaces
         MLIRInferTypeOpInterface
-        CinmUtils
         MLIRDestinationStyleOpInterface
+        CinmUtils
+        CinmIR
 )

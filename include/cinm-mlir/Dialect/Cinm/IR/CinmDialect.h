@@ -7,4 +7,5 @@
 
 namespace mlir::cinm {
 void registerCinmBufferizableOpInterfaces(mlir::DialectRegistry &);
+void registerCinmTilingExternalModels(mlir::DialectRegistry &);
 } // namespace mlir::cinm

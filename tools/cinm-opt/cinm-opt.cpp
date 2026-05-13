@@ -78,6 +78,7 @@ int main(int argc, char *argv[]) {
   registerCnmConversionPasses();
   registerMemristorConversionPasses();
   cinm::registerCinmBufferizableOpInterfaces(registry);
+  cinm::registerCinmTilingExternalModels(registry);
   cim::registerCimTransformsPasses();
   cnm::registerCnmBufferizationExternalModels(registry);
   cnm::registerCnmTransformsPasses();
