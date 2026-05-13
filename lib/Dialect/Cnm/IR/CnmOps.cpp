@@ -50,6 +50,10 @@ void CnmDialect::registerOps() {
       >();
 }
 
+void AllocOp::getAsmResultNames(::mlir::OpAsmSetValueNameFn setNameFn) {
+  setNameFn(getResult(), "cnm_buf");
+}
+
 ::mlir::LogicalResult GatherOp::inferReturnTypeComponents(
     ::mlir::MLIRContext *, ::std::optional<::mlir::Location>,
     GatherOp::Adaptor adaptor,
