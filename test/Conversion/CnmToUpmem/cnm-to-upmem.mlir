@@ -23,27 +23,27 @@
 // CHECK: upmem.free_dpus %[[DPU]] : !upmem.hierarchy<1x16x1>
 // CHECK: module @dpu_kernels
 // CHECK: upmem.dpu_program @program() tasklets(1) {
-// CHECK: %[[WRAM_C:.*]] = pwram_alloc() : memref<i32, "wram">
-// CHECK: %[[MRAM_C:.*]] = static_alloc @buf(mram) : memref<1xi32, "mram">
-// CHECK: %[[WRAM_B:.*]] = pwram_alloc() : memref<64xi32, "wram">
-// CHECK: %[[MRAM_B:.*]] = static_alloc @buf_0(mram) : memref<1x64xi32, "mram">
-// CHECK: %[[WRAM_A:.*]] = pwram_alloc() : memref<64xi32, "wram">
-// CHECK: %[[MRAM_A:.*]] = static_alloc @buf_1(mram) : memref<1x64xi32, "mram">
+// CHECK: %[[WRAM_C:.*]] = pwram_alloc() : memref<i32, #upmem.wram>
+// CHECK: %[[MRAM_C:.*]] = static_alloc @buf(mram) : memref<1xi32, #upmem.mram>
+// CHECK: %[[WRAM_B:.*]] = pwram_alloc() : memref<64xi32, #upmem.wram>
+// CHECK: %[[MRAM_B:.*]] = static_alloc @buf_0(mram) : memref<1x64xi32, #upmem.mram>
+// CHECK: %[[WRAM_A:.*]] = pwram_alloc() : memref<64xi32, #upmem.wram>
+// CHECK: %[[MRAM_A:.*]] = static_alloc @buf_1(mram) : memref<1x64xi32, #upmem.mram>
 // CHECK: %[[T0:.*]] = tasklet_dim()
-// CHECK: %[[SV0:.*]] = memref.subview %[[MRAM_C]][%[[T0]]] [1] [1] : memref<1xi32, "mram"> to memref<i32, {{.*}}, "mram">
-// CHECK: local_transfer %[[SV0]] into %[[WRAM_C]] : memref<i32, {{.*}}, "mram"> to memref<i32, "wram">
+// CHECK: %[[SV0:.*]] = memref.subview %[[MRAM_C]][%[[T0]]] [1] [1] : memref<1xi32, #upmem.mram> to memref<i32, {{.*}}, #upmem.mram>
+// CHECK: local_transfer %[[SV0]] into %[[WRAM_C]] : memref<i32, {{.*}}, #upmem.mram> to memref<i32, #upmem.wram>
 // CHECK: %[[T1:.*]] = tasklet_dim()
-// CHECK: %[[SV1:.*]] = memref.subview %[[MRAM_B]][%[[T1]], 0] [1, 64] [1, 1] : memref<1x64xi32, "mram"> to memref<64xi32, {{.*}}, "mram">
-// CHECK: local_transfer %[[SV1]] into %[[WRAM_B]] : memref<64xi32, {{.*}}, "mram"> to memref<64xi32, "wram">
+// CHECK: %[[SV1:.*]] = memref.subview %[[MRAM_B]][%[[T1]], 0] [1, 64] [1, 1] : memref<1x64xi32, #upmem.mram> to memref<64xi32, {{.*}}, #upmem.mram>
+// CHECK: local_transfer %[[SV1]] into %[[WRAM_B]] : memref<64xi32, {{.*}}, #upmem.mram> to memref<64xi32, #upmem.wram>
 // CHECK: %[[T2:.*]] = tasklet_dim()
-// CHECK: %[[SV2:.*]] = memref.subview %[[MRAM_A]][%[[T2]], 0] [1, 64] [1, 1] : memref<1x64xi32, "mram"> to memref<64xi32, {{.*}}, "mram">
-// CHECK: local_transfer %[[SV2]] into %[[WRAM_A]] : memref<64xi32, {{.*}}, "mram"> to memref<64xi32, "wram">
-// CHECK: linalg.reduce ins(%[[WRAM_A]], %[[WRAM_B]] : memref<64xi32, "wram">, memref<64xi32, "wram">) outs(%[[WRAM_C]] : memref<i32, "wram">) dimensions = [0]
+// CHECK: %[[SV2:.*]] = memref.subview %[[MRAM_A]][%[[T2]], 0] [1, 64] [1, 1] : memref<1x64xi32, #upmem.mram> to memref<64xi32, {{.*}}, #upmem.mram>
+// CHECK: local_transfer %[[SV2]] into %[[WRAM_A]] : memref<64xi32, {{.*}}, #upmem.mram> to memref<64xi32, #upmem.wram>
+// CHECK: linalg.reduce ins(%[[WRAM_A]], %[[WRAM_B]] : memref<64xi32, #upmem.wram>, memref<64xi32, #upmem.wram>) outs(%[[WRAM_C]] : memref<i32, #upmem.wram>) dimensions = [0]
 // CHECK: arith.muli
 // CHECK: arith.addi
 // CHECK: %[[T3:.*]] = tasklet_dim()
-// CHECK: %[[SV3:.*]] = memref.subview %[[MRAM_C]][%[[T3]]] [1] [1] : memref<1xi32, "mram"> to memref<i32, {{.*}}, "mram">
-// CHECK: local_transfer %[[WRAM_C]] into %[[SV3]] : memref<i32, "wram"> to memref<i32, {{.*}}, "mram">
+// CHECK: %[[SV3:.*]] = memref.subview %[[MRAM_C]][%[[T3]]] [1] [1] : memref<1xi32, #upmem.mram> to memref<i32, {{.*}}, #upmem.mram>
+// CHECK: local_transfer %[[WRAM_C]] into %[[SV3]] : memref<i32, #upmem.wram> to memref<i32, {{.*}}, #upmem.mram>
 
 #map = affine_map<(d0, d1, d2) -> (d1)>
 #map1 = affine_map<(d0, d1, d2) -> (0)>
@@ -64,14 +64,14 @@ module {
         %extracted_slice_0 = tensor.extract_slice %0[0, %arg2] [64, 1] [1, 1] : tensor<64x64xi32> to tensor<64x1xi32>
         %4 = tensor.empty() : tensor<1x64xi32>
         %transposed = linalg.transpose ins(%extracted_slice_0 : tensor<64x1xi32>) outs(%4 : tensor<1x64xi32>) permutation = [1, 0]
-        %5 = cnm.alloc() for %1 : !cnm.buffer<64xi32 on #upmem_1_16_1, "wram">
-        %6 = cnm.alloc() for %1 : !cnm.buffer<64xi32 on #upmem_1_16_1, "wram">
-        %7 = cnm.alloc() for %1 : !cnm.buffer<i32 on #upmem_1_16_1, "wram">
-        cnm.scatter %extracted_slice into %5[#map] of %1 : tensor<16x64xi32> into !cnm.buffer<64xi32 on #upmem_1_16_1, "wram">
-        cnm.scatter %transposed into %6[#map1] of %1 : tensor<1x64xi32> into !cnm.buffer<64xi32 on #upmem_1_16_1, "wram">
-        cnm.scatter %cst into %7[#map2] of %1 : tensor<16x1xi32> into !cnm.buffer<i32 on #upmem_1_16_1, "wram">
-        cnm.launch %1 ins(%arg4 = %5 : <64xi32, "wram">, %arg5 = %6 : <64xi32, "wram">) outs(%arg6 = %7 : <i32, "wram">) on !cnm.workgroup<#upmem_1_16_1> {
-          linalg.reduce ins(%arg4, %arg5 : memref<64xi32, "wram">, memref<64xi32, "wram">) outs(%arg6 : memref<i32, "wram">) dimensions = [0]
+        %5 = cnm.alloc() for %1 : !cnm.buffer<64xi32 on #upmem_1_16_1, #upmem.wram>
+        %6 = cnm.alloc() for %1 : !cnm.buffer<64xi32 on #upmem_1_16_1, #upmem.wram>
+        %7 = cnm.alloc() for %1 : !cnm.buffer<i32 on #upmem_1_16_1, #upmem.wram>
+        cnm.scatter %extracted_slice into %5[#map] of %1 : tensor<16x64xi32> into !cnm.buffer<64xi32 on #upmem_1_16_1, #upmem.wram>
+        cnm.scatter %transposed into %6[#map1] of %1 : tensor<1x64xi32> into !cnm.buffer<64xi32 on #upmem_1_16_1, #upmem.wram>
+        cnm.scatter %cst into %7[#map2] of %1 : tensor<16x1xi32> into !cnm.buffer<i32 on #upmem_1_16_1, #upmem.wram>
+        cnm.launch %1 ins(%arg4 = %5 : <64xi32, #upmem.wram>, %arg5 = %6 : <64xi32, #upmem.wram>) outs(%arg6 = %7 : <i32, #upmem.wram>) on !cnm.workgroup<#upmem_1_16_1> {
+          linalg.reduce ins(%arg4, %arg5 : memref<64xi32, #upmem.wram>, memref<64xi32, #upmem.wram>) outs(%arg6 : memref<i32, #upmem.wram>) dimensions = [0]
             (%in: i32, %in_1: i32, %init: i32) {
               %9 = arith.muli %in, %in_1 : i32
               %10 = arith.addi %9, %init : i32
@@ -79,7 +79,7 @@ module {
             }
         }
         %out = tensor.empty(): tensor<16x1xi32>
-        %8 = cnm.gather %7[#map2] of %1 into %out : !cnm.buffer<i32 on #upmem_1_16_1, "wram"> into tensor<16x1xi32>
+        %8 = cnm.gather %7[#map2] of %1 into %out : !cnm.buffer<i32 on #upmem_1_16_1, #upmem.wram> into tensor<16x1xi32>
         %inserted_slice = tensor.insert_slice %8 into %arg3[%arg0, %arg2] [16, 1] [1, 1] : tensor<16x1xi32> into tensor<64x64xi32>
         affine.yield %inserted_slice : tensor<64x64xi32>
       }

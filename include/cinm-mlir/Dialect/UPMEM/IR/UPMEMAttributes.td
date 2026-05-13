@@ -23,20 +23,20 @@ include "cinm-mlir/Dialect/UPMEM/IR/UPMEMBase.td"
 //   UPMEM_I32EnumAttr<"address_space", UPMEM_AddressSpaceEnum>;
 
 
-def UPMEM_MemcpyOpMRAMToWRAM: I32EnumAttrCase<"MRAMToWRAM", 0, "mram_to_wram">;
-def UPMEM_MemcpyOpWRAMToMRAM: I32EnumAttrCase<"WRAMToMRAM", 1, "wram_to_mram">;
-
-def MemcpyDir : I32EnumAttr<"TransferDirection",
-  "copy direction between wram and mram", [
-    UPMEM_MemcpyOpMRAMToWRAM,
-    UPMEM_MemcpyOpWRAMToMRAM
-  ]> {
-  let genSpecializedAttr = 0;
+def DpuMemSpace : I64EnumAttr<
+    "DpuMemSpace", "",
+    [
+      I64EnumAttrCase<"MRAM", 0, "mram">,
+      I64EnumAttrCase<"WRAM", 1, "wram">
+    ]> {
   let cppNamespace = "::mlir::upmem";
+  let genSpecializedAttr = 0;
 }
 
-def MemcpyDirAttr : EnumAttr<UPMEM_Dialect, MemcpyDir,
-                                  "transfer_dir">;
+def UPMEM_DpuMemSpaceAttr : EnumAttr<UPMEM_Dialect, DpuMemSpace, ""> {
+  let assemblyFormat = ?;
+  let hasCustomAssemblyFormat = 1;
+}
 
 include "UPMEMTileFirstAttributes.td"
 

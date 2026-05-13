@@ -326,23 +326,22 @@ static LogicalResult printOperation(CppEmitter &emitter,
 }
 
 static LogicalResult
-printMRAMCopyBytes(CppEmitter &emitter, upmem::TransferDirection dir,
+printMRAMCopyBytes(CppEmitter &emitter, upmem::DpuMemSpace fromSpace,
                    Value from, Value to, size_t staticSizeBytes,
                    const std::string &fromOffsetExpr,
                    const std::string &toOffsetExpr, size_t offsetBytes) {
   raw_ostream &os = emitter.ostream();
-  if (dir == upmem::TransferDirection::MRAMToWRAM) {
+  if (fromSpace == mlir::upmem::DpuMemSpace::MRAM) {
     os << "mram_read(&" << emitter.getOrCreateName(from);
-  } else if (dir == upmem::TransferDirection::WRAMToMRAM) {
-    os << "mram_write(&((const char*) " << emitter.getOrCreateName(from)
-       << ")";
+  } else {
+    os << "mram_write(&((const char*) " << emitter.getOrCreateName(from) << ")";
   }
 
   os << "[" << fromOffsetExpr << " + " << offsetBytes << "], ";
 
-  if (dir == upmem::TransferDirection::MRAMToWRAM) {
+  if (fromSpace == mlir::upmem::DpuMemSpace::MRAM) {
     os << "&((char*) " << emitter.getOrCreateName(to) << ")";
-  } else if (dir == upmem::TransferDirection::WRAMToMRAM) {
+  } else {
     os << "&" << emitter.getOrCreateName(to);
   }
 
@@ -355,9 +354,10 @@ printMRAMCopyBytes(CppEmitter &emitter, upmem::TransferDirection dir,
   return success();
 }
 
-static bool isInMemspace(MemRefType ty, StringRef name) {
-  if (auto strAttr = llvm::dyn_cast_or_null<StringAttr>(ty.getMemorySpace())) {
-    return strAttr.getValue() == name;
+static bool isInMemspace(MemRefType ty, upmem::DpuMemSpace space) {
+  if (auto attr =
+          llvm::dyn_cast_or_null<upmem::DpuMemSpaceAttr>(ty.getMemorySpace())) {
+    return attr.getValue() == space;
   }
   return false;
 }
@@ -405,16 +405,17 @@ static LogicalResult getBasePtrAndOffset(CppEmitter &emitter, Value v,
 
 static LogicalResult printLocalTransfer(CppEmitter &emitter,
                                         upmem::LocalTransferOp memcpyOp) {
+  using upmem::DpuMemSpace::MRAM;
+  using upmem::DpuMemSpace::WRAM;
   raw_ostream &os = emitter.ostream();
   auto from = memcpyOp.getSource();
   auto to = memcpyOp.getTarget();
-  upmem::TransferDirection direction;
-  if (isInMemspace(from.getType(), "mram") &&
-      isInMemspace(to.getType(), "wram")) {
-    direction = upmem::TransferDirection::MRAMToWRAM;
-  } else if (isInMemspace(from.getType(), "wram") &&
-             isInMemspace(to.getType(), "mram")) {
-    direction = upmem::TransferDirection::WRAMToMRAM;
+  upmem::DpuMemSpace fromSpace;
+  if (isInMemspace(from.getType(), MRAM) && isInMemspace(to.getType(), WRAM)) {
+    fromSpace = MRAM;
+  } else if (isInMemspace(from.getType(), WRAM) &&
+             isInMemspace(to.getType(), MRAM)) {
+    fromSpace = WRAM;
   } else {
     return memcpyOp->emitOpError(
         "TODO only supports transfers from mram to wram or the reverse");
@@ -440,7 +441,7 @@ static LogicalResult printLocalTransfer(CppEmitter &emitter,
     size_t chunkSizeBytes = std::min(2048l, remainingBytes);
     chunkSizeBytes = llvm::alignTo(chunkSizeBytes, 8);
 
-    if (printMRAMCopyBytes(emitter, direction, fromBase, toBase, chunkSizeBytes,
+    if (printMRAMCopyBytes(emitter, fromSpace, fromBase, toBase, chunkSizeBytes,
                            fromOffset, toOffset, offsetBytes)
             .failed()) {
       return failure();
@@ -520,8 +521,8 @@ static LogicalResult printOperation(CppEmitter &emitter,
     return failure();
   StringRef a = emitter.getOrCreateName(op.getLhs());
   StringRef b = emitter.getOrCreateName(op.getRhs());
-  os << "(" << a << " / " << b << ") + (((" << a << " % " << b
-     << ") != 0) & ((" << a << " ^ " << b << ") >= 0))";
+  os << "(" << a << " / " << b << ") + (((" << a << " % " << b << ") != 0) & (("
+     << a << " ^ " << b << ") >= 0))";
   return success();
 }
 
@@ -552,19 +553,43 @@ static LogicalResult printOperation(CppEmitter &emitter, arith::CmpFOp op) {
   StringRef cmpOp;
   switch (op.getPredicate()) {
   // Ordered comparisons (false if either is NaN)
-  case arith::CmpFPredicate::OEQ: cmpOp = "=="; break;
-  case arith::CmpFPredicate::OGT: cmpOp = ">"; break;
-  case arith::CmpFPredicate::OGE: cmpOp = ">="; break;
-  case arith::CmpFPredicate::OLT: cmpOp = "<"; break;
-  case arith::CmpFPredicate::OLE: cmpOp = "<="; break;
-  case arith::CmpFPredicate::ONE: cmpOp = "!="; break;
+  case arith::CmpFPredicate::OEQ:
+    cmpOp = "==";
+    break;
+  case arith::CmpFPredicate::OGT:
+    cmpOp = ">";
+    break;
+  case arith::CmpFPredicate::OGE:
+    cmpOp = ">=";
+    break;
+  case arith::CmpFPredicate::OLT:
+    cmpOp = "<";
+    break;
+  case arith::CmpFPredicate::OLE:
+    cmpOp = "<=";
+    break;
+  case arith::CmpFPredicate::ONE:
+    cmpOp = "!=";
+    break;
   // Unordered: map to same C ops (NaN handling not preserved)
-  case arith::CmpFPredicate::UEQ: cmpOp = "=="; break;
-  case arith::CmpFPredicate::UGT: cmpOp = ">"; break;
-  case arith::CmpFPredicate::UGE: cmpOp = ">="; break;
-  case arith::CmpFPredicate::ULT: cmpOp = "<"; break;
-  case arith::CmpFPredicate::ULE: cmpOp = "<="; break;
-  case arith::CmpFPredicate::UNE: cmpOp = "!="; break;
+  case arith::CmpFPredicate::UEQ:
+    cmpOp = "==";
+    break;
+  case arith::CmpFPredicate::UGT:
+    cmpOp = ">";
+    break;
+  case arith::CmpFPredicate::UGE:
+    cmpOp = ">=";
+    break;
+  case arith::CmpFPredicate::ULT:
+    cmpOp = "<";
+    break;
+  case arith::CmpFPredicate::ULE:
+    cmpOp = "<=";
+    break;
+  case arith::CmpFPredicate::UNE:
+    cmpOp = "!=";
+    break;
   default:
     return op->emitOpError("unsupported CmpF predicate");
   }
@@ -574,16 +599,36 @@ static LogicalResult printOperation(CppEmitter &emitter, arith::CmpFOp op) {
 static LogicalResult printOperation(CppEmitter &emitter, arith::CmpIOp op) {
   StringRef cmpOp;
   switch (op.getPredicate()) {
-  case arith::CmpIPredicate::eq:  cmpOp = "=="; break;
-  case arith::CmpIPredicate::ne:  cmpOp = "!="; break;
-  case arith::CmpIPredicate::slt: cmpOp = "<";  break;
-  case arith::CmpIPredicate::sle: cmpOp = "<="; break;
-  case arith::CmpIPredicate::sgt: cmpOp = ">";  break;
-  case arith::CmpIPredicate::sge: cmpOp = ">="; break;
-  case arith::CmpIPredicate::ult: cmpOp = "<";  break;
-  case arith::CmpIPredicate::ule: cmpOp = "<="; break;
-  case arith::CmpIPredicate::ugt: cmpOp = ">";  break;
-  case arith::CmpIPredicate::uge: cmpOp = ">="; break;
+  case arith::CmpIPredicate::eq:
+    cmpOp = "==";
+    break;
+  case arith::CmpIPredicate::ne:
+    cmpOp = "!=";
+    break;
+  case arith::CmpIPredicate::slt:
+    cmpOp = "<";
+    break;
+  case arith::CmpIPredicate::sle:
+    cmpOp = "<=";
+    break;
+  case arith::CmpIPredicate::sgt:
+    cmpOp = ">";
+    break;
+  case arith::CmpIPredicate::sge:
+    cmpOp = ">=";
+    break;
+  case arith::CmpIPredicate::ult:
+    cmpOp = "<";
+    break;
+  case arith::CmpIPredicate::ule:
+    cmpOp = "<=";
+    break;
+  case arith::CmpIPredicate::ugt:
+    cmpOp = ">";
+    break;
+  case arith::CmpIPredicate::uge:
+    cmpOp = ">=";
+    break;
   }
   return printCmpOp(emitter, op.getOperation(), cmpOp);
 }
@@ -636,8 +681,8 @@ static LogicalResult printOperation(CppEmitter &emitter,
     return failure();
   StringRef a = emitter.getOrCreateName(op.getLhs());
   StringRef b = emitter.getOrCreateName(op.getRhs());
-  os << "(" << a << " - (((" << a << " % " << b << ") != 0) & ((" << a
-     << " ^ " << b << ") < 0))) / " << b;
+  os << "(" << a << " - (((" << a << " % " << b << ") != 0) & ((" << a << " ^ "
+     << b << ") < 0))) / " << b;
   return success();
 }
 
