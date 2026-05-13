@@ -449,9 +449,8 @@ void ElementwiseOp::build(OpBuilder &builder, OperationState &state,
   return success();
 }
 
-
 ::mlir::LogicalResult GemmOp::inferReturnTypeComponents(
-    ::mlir::MLIRContext *context, ::std::optional<::mlir::Location> loc,
+    ::mlir::MLIRContext *, ::std::optional<::mlir::Location> loc,
     GemmOp::Adaptor adaptor,
     ::llvm::SmallVectorImpl<::mlir::ShapedTypeComponents>
         &inferredReturnShapes) {
@@ -858,6 +857,7 @@ struct ComputeOpSimplifyYield : OpRewritePattern<cinm::ComputeOp> {
     auto newOp =
         ComputeOp::create(rewriter, op.getLoc(),
                           ValueTypeRange<ValueRange>(ValueRange(newYielded)));
+    newOp->setAttrs(op->getAttrs());
     yield->setOperands(newYielded);
     newOp.getBody().takeBody(op.getBody());
     for (auto [old, newer] : llvm::zip(oldResults, newOp.getResults())) {
@@ -902,6 +902,7 @@ struct ComputeBlockOpSimplifyYield : OpRewritePattern<cinm::ComputeBlockOp> {
     auto newOp = ComputeBlockOp::create(
         rewriter, op.getLoc(), op.getOperands(),
         ValueTypeRange<ValueRange>(ValueRange(keptYielded)));
+    newOp->setAttrs(op->getAttrs());
     yield->setOperands(keptYielded);
     newOp.getBody().takeBody(op.getBody());
     for (auto [old, newer] : llvm::zip(keptResults, newOp.getResults())) {
@@ -920,7 +921,9 @@ struct ReduceOpNormalizeDim : OpRewritePattern<cinm::ReduceOp> {
 
     if (op.getDimension() >= 0)
       return failure();
-    op.setDimension(op.getDimension() + op.getInput().getType().getRank());
+    rewriter.modifyOpInPlace(op, [&]() {
+      op.setDimension(op.getDimension() + op.getInput().getType().getRank());
+    });
 
     return success();
   }
