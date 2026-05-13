@@ -4,6 +4,7 @@
 
 #include "cinm-mlir/Dialect/UPMEM/IR/UPMEMOps.h"
 
+#include "cinm-mlir/Dialect/UPMEM/IR/UPMEMAttributes.h"
 #include "mlir/IR/Builders.h"
 
 #include "mlir/IR/Attributes.h"
@@ -57,17 +58,16 @@ MemRefType upmem::detail::flatMemRefType(Type ty) {
 }
 // parsers/printers
 
-LogicalResult
-upmem::UPMEMDialect::verifyOperationAttribute(Operation *op,
-                                              NamedAttribute attr) {
+LogicalResult upmem::UPMEMDialect::verifyOperationAttribute(Operation *,
+                                                            NamedAttribute) {
   return success();
 }
 
 void upmem::StaticAllocOp::build(OpBuilder &builder, OperationState &result,
-                                 MemRefType ty, bool isWram, StringRef name,
-                                 bool noinit) {
-  if (isWram)
-    result.addAttribute(getIsWramAttrName(result.name), builder.getUnitAttr());
+                                 MemRefType ty, DpuMemSpace memSpace,
+                                 StringRef name, bool noinit) {
+  result.addAttribute(getMemSpaceAttrName(result.name),
+                      builder.getAttr<DpuMemSpaceAttr>(memSpace));
   if (noinit)
     result.addAttribute(getNoinitAttrName(result.name), builder.getUnitAttr());
 
@@ -105,9 +105,10 @@ LogicalResult upmem::ScatterOp::verify() {
   return success();
 }
 
-static LogicalResult verifyScatterGatherSymbolUses(
-    Operation *op, Value hierarchy, FlatSymbolRefAttr dpuBufRef,
-    SymbolTableCollection &symbolTable) {
+static LogicalResult
+verifyScatterGatherSymbolUses(Operation *op, Value hierarchy,
+                              FlatSymbolRefAttr dpuBufRef,
+                              SymbolTableCollection &symbolTable) {
   auto allocOp = hierarchy.getDefiningOp<upmem::AllocDPUsOp>();
   if (!allocOp)
     return success(); // hierarchy is a block argument; can't verify statically
@@ -130,14 +131,14 @@ static LogicalResult verifyScatterGatherSymbolUses(
   return success();
 }
 
-LogicalResult upmem::ScatterOp::verifySymbolUses(
-    SymbolTableCollection &symbolTable) {
+LogicalResult
+upmem::ScatterOp::verifySymbolUses(SymbolTableCollection &symbolTable) {
   return verifyScatterGatherSymbolUses(*this, getHierarchy(),
                                        getDpuBufRefAttr(), symbolTable);
 }
 
-LogicalResult upmem::GatherOp::verifySymbolUses(
-    SymbolTableCollection &symbolTable) {
+LogicalResult
+upmem::GatherOp::verifySymbolUses(SymbolTableCollection &symbolTable) {
   return verifyScatterGatherSymbolUses(*this, getHierarchy(),
                                        getDpuBufRefAttr(), symbolTable);
 }
@@ -154,7 +155,8 @@ LogicalResult upmem::GatherOp::verifySymbolUses(
       return emitOpError("requires ") << getDpuProgramRefAttr()
                                       << " to refer to an upmem.dpu_program op";
   }
-  // TODO verify that tasklet count of the dpu_program matches the last item of the hierarchy (result type)
+  // TODO verify that tasklet count of the dpu_program matches the last item of
+  // the hierarchy (result type)
   return success();
 }
 
@@ -164,5 +166,5 @@ void upmem::PrivateWRAMAllocOp::getAsmResultNames(
 }
 
 void upmem::StaticAllocOp::getAsmResultNames(::mlir::OpAsmSetValueNameFn fn) {
-  fn(getBuffer(), getIsWram() ? "wram_buf" : "mram_buf");
+  fn(getBuffer(), isWram() ? "wram_buf" : "mram_buf");
 }

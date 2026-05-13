@@ -39,7 +39,6 @@
 #include <mlir/Support/LLVM.h>
 #include <mlir/Transforms/DialectConversion.h>
 
-
 namespace mlir::cnm {
 
 #define GEN_PASS_DEF_CONVERTCNMTOUPMEMPASS
@@ -136,10 +135,10 @@ static LogicalResult convertCnmScatterToUpmem(RewriterBase &rewriter,
   return success();
 }
 
-static MemRefType withMemrefMemspace(MemRefType fromTy, Attribute memspace) {
-  return MemRefType::get(fromTy.getShape(), fromTy.getElementType(),
-                         fromTy.getLayout(), memspace);
-}
+// static MemRefType withMemrefMemspace(MemRefType fromTy, Attribute memspace) {
+//   return MemRefType::get(fromTy.getShape(), fromTy.getElementType(),
+//                          fromTy.getLayout(), memspace);
+// }
 
 static void createTransfer(RewriterBase &rewriter, bool toWram, Location loc,
                            upmem::StaticAllocOp mramBuf,
@@ -223,8 +222,10 @@ static LogicalResult convertCnmLaunchToUpmem(cnm::LaunchOp launch,
   SmallVector<AllocOp> allocsToDelete;
 
   SymbolTable dpuProgramSymTable(dpuProgram);
-  auto mramMemspaceAttr = rewriter.getStringAttr("mram");
-  auto wramMemspaceAttr = rewriter.getStringAttr("wram");
+  auto mramMemspaceAttr =
+      rewriter.getAttr<upmem::DpuMemSpaceAttr>(upmem::DpuMemSpace::MRAM);
+  auto wramMemspaceAttr =
+      rewriter.getAttr<upmem::DpuMemSpaceAttr>(upmem::DpuMemSpace::WRAM);
 
   for (auto user : launch.getWg().getUsers()) {
     if (auto alloc = llvm::dyn_cast_or_null<cnm::AllocOp>(user)) {
@@ -243,14 +244,15 @@ static LogicalResult convertCnmLaunchToUpmem(cnm::LaunchOp launch,
 
       buffersToPwramBuf[alloc.getResult()] = pwramBuf;
 
-      // the mram buffer type has tasklet dimension prepended.
+      // the mram buffer type has tasklet dimension prepended - unless the
+      // buffer is broadcasted.
       bufShape.insert(bufShape.begin(), upmemTy.getNumTaskletsPerDpu());
 
       memrefTy = MemRefType::get(bufShape, bufferType.getElementType(),
                                  MemRefLayoutAttrInterface{}, mramMemspaceAttr);
 
       auto mrambuf = rewriter.create<upmem::StaticAllocOp>(
-          alloc->getLoc(), memrefTy, false, "buf", false);
+          alloc->getLoc(), memrefTy, upmem::DpuMemSpace::MRAM, "buf", false);
       dpuProgramSymTable.insert(mrambuf); // this renames it to a unique name
       buffersToMramBuf[alloc.getResult()] = mrambuf;
     }
@@ -412,9 +414,9 @@ struct ConvertCnmToUPMEMPass
 std::unique_ptr<Pass> createConvertCnmToUPMEMPass() {
   return std::make_unique<ConvertCnmToUPMEMPass>();
 }
-std::unique_ptr<Pass> createConvertCnmToUPMEMPass(ConvertCnmToUPMEMPassOptions options) {
+std::unique_ptr<Pass>
+createConvertCnmToUPMEMPass(ConvertCnmToUPMEMPassOptions options) {
   return std::make_unique<ConvertCnmToUPMEMPass>(std::move(options));
 }
-
 
 } // namespace mlir::cnm

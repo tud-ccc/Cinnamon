@@ -61,6 +61,19 @@ def DPUDimOp : IndexOp<"dpu_dim"> {
   }];
 }
 
+
+def BarrierOp : Upmem_Op<"barrier", []> {
+  let summary = "add a barrier that will wait for all threads to reach this point before releasing";
+  let results = (outs);
+  let arguments = (ins);
+  let description = [{
+
+    ```mlir
+    upmem.barrier()
+    ```
+  }];
+}
+
 def TaskletDimOp : IndexOp<"tasklet_dim", [DeclareOpInterfaceMethods<InferIntRangeInterface, ["inferResultRanges"]>]> {
   let summary = "returns the tasklet index within the current DPU";
   let description = [{
@@ -135,7 +148,11 @@ def StaticAllocOp : Upmem_Op<"static_alloc", [Symbol,
     ```
   }];
 
-  let arguments = (ins UnitAttr:$isWram, DefaultValuedAttr<UnitAttr, "false">:$noinit, OptionalAttr<SymbolNameAttr>:$sym_name);
+  let arguments = (ins
+        UPMEM_DpuMemSpaceAttr:$memSpace, 
+        DefaultValuedAttr<UnitAttr, "false">:$noinit,
+        OptionalAttr<SymbolNameAttr>:$sym_name);
+
   let results = (outs Res<AnyMemRef, "structured view of the source buffer",
                           [MemAlloc<DefaultResource, 0, FullEffect>]>:$buffer);
 
@@ -143,23 +160,23 @@ def StaticAllocOp : Upmem_Op<"static_alloc", [Symbol,
   let builders = [
     OpBuilder<(ins
       "MemRefType":$structuredType,
-      "bool":$isWram,
+      "upmem::DpuMemSpace":$memSpace,
       CArg<"StringRef", "{}">:$sym_name,
       CArg<"bool", "false">:$noinit
     )>
   ];
-  let assemblyFormat = "($sym_name^)? `(` (`wram` $isWram^):(`mram`)? `)` (`noinit` $noinit^)? attr-dict `:` type($buffer)";
+  let assemblyFormat = "($sym_name^)? `(` $memSpace `)` (`noinit` $noinit^)? attr-dict `:` type($buffer)";
 
   let extraClassDeclaration = [{
 
     bool isOptionalSymbol() { return true; }
   
     bool isMram() {
-      return !getIsWram();
+      return getMemSpace() == DpuMemSpace::MRAM;
     }
 
     bool isWram() {
-      return getIsWram();
+      return getMemSpace() == DpuMemSpace::WRAM;
     }
 
   }];

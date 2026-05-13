@@ -49,16 +49,43 @@ void UPMEMDialect::registerAttributes() {
       >();
 }
 
-// let assemblyFormat = "`<` `ranks` `(` $num_ranks `)` `,` `dpus` `(`
-// $num_dpus_per_rank `)` `,` `tasklets` `(` $num_tasklets_per_dpu `)`
-// custom<PopulateUpmemLevels>($wramLevel, $mramLevel, ref($num_ranks),
-// ref($num_dpus_per_rank)) `>`";
-static ParseResult parseNamedVar(AsmParser &p, llvm::StringLiteral name,
-                                 int64_t &result) {
-  if (p.parseKeyword(name) || p.parseLParen() || p.parseInteger(result) ||
-      p.parseRParen())
-    return failure();
-  return success();
+Attribute UPMEMDialect::parseAttribute(DialectAsmParser &parser,
+                                       Type type) const {
+  if (parser.parseOptionalKeyword("wram").succeeded())
+    return parser.getBuilder().getAttr<DpuMemSpaceAttr>(DpuMemSpace::WRAM);
+  if (parser.parseOptionalKeyword("mram").succeeded())
+    return parser.getBuilder().getAttr<DpuMemSpaceAttr>(DpuMemSpace::MRAM);
+
+  StringRef mnemonic;
+  Attribute result;
+  auto res = generatedAttributeParser(parser, &mnemonic, type, result);
+  if (res.has_value() && res.value().succeeded())
+    return result;
+  parser.emitError(parser.getNameLoc(), "Unknown attribute ") << mnemonic;
+  return {};
+}
+
+void UPMEMDialect::printAttribute(Attribute attr,
+                                  DialectAsmPrinter &out) const {
+  if (auto a = llvm::dyn_cast_or_null<DpuMemSpaceAttr>(attr)) {
+    out << stringifyDpuMemSpace(a.getValue());
+    return;
+  }
+  (void)generatedAttributePrinter(attr, out);
+}
+
+void DpuMemSpaceAttr::print(AsmPrinter &out) const {
+  out << stringifyEnum(getValue());
+}
+
+Attribute DpuMemSpaceAttr::parse(AsmParser &parser, Type) {
+  auto loc = parser.getCurrentLocation();
+  if (parser.parseOptionalKeyword("wram").succeeded())
+    return parser.getBuilder().getAttr<DpuMemSpaceAttr>(DpuMemSpace::WRAM);
+  if (parser.parseOptionalKeyword("mram").succeeded())
+    return parser.getBuilder().getAttr<DpuMemSpaceAttr>(DpuMemSpace::MRAM);
+  parser.emitError(loc, "Expected one of 'wram' or 'mram'");
+  return {};
 }
 
 ::llvm::StringRef UpmemPlatformAttr::getName() const { return "upmem"; }

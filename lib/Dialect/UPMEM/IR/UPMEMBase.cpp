@@ -4,12 +4,12 @@
 
 #include "cinm-mlir/Dialect/UPMEM/IR/UPMEMBase.h"
 
+#include "cinm-mlir/Dialect/UPMEM/IR/UPMEMAttributes.h"
 #include "cinm-mlir/Dialect/UPMEM/IR/UPMEMDialect.h"
-#include "mlir/IR/DialectImplementation.h"
-#include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/Attributes.h"
+#include "mlir/IR/BuiltinAttributes.h"
+#include "mlir/IR/DialectImplementation.h"
 #include "llvm/ADT/TypeSwitch.h"
-
 
 #define DEBUG_TYPE "upmem-base"
 
@@ -27,11 +27,8 @@ using namespace mlir::upmem;
 // UPMEMDialect
 //===----------------------------------------------------------------------===//
 
-void UPMEMDialect::initialize()
-{
-    registerOps();
-    registerTypes();
-    registerAttributes();
+void UPMEMDialect::initialize() {
+  registerOps();
+  registerTypes();
+  registerAttributes();
 }
-
-

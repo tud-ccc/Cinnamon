@@ -23,11 +23,15 @@ def UPMEM_Dialect : Dialect {
     }];
 
     let useDefaultTypePrinterParser = 1;
+    let useDefaultAttributePrinterParser = 0;
     let hasOperationAttrVerify = 1;
     // let useFoldAPI = kEmitFoldAdaptorFolder;
 
 
     code extraClassDeclaration = [{
+      void printAttribute(Attribute attr, DialectAsmPrinter &printer) const override;
+      Attribute parseAttribute(DialectAsmParser &parser, Type type) const override;
+
     private:
         void registerOps();
         void registerTypes();
@@ -35,8 +39,6 @@ def UPMEM_Dialect : Dialect {
     public:
     }];
     let dependentDialects = ["cinm::CinmDialect"];
-    let useDefaultAttributePrinterParser = 1;
-    // let useDefaultTypePrinterParser = 1;
 }
 
 class Upmem_Op<string mnemonic, list<Trait> traits = []>
