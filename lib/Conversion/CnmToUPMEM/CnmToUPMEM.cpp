@@ -64,6 +64,13 @@ MemRefType convertTensorToMemref(ShapedType ty) {
 // In CNM the affine map has 1 dim for rank, 1 for dpu, 1 for tasklet.
 // In upmem it has only one dim for rank and another for dpu. Dimensions
 // of the buffer shape are zero (they are the offset of the buffer start).
+//
+// TODO: whether zeroing out the last dimension is valid should be checked by
+// the verifier before we reach this point.
+//  That works only if the input affine map either:
+//  - does not use t (broadcast), or
+//  - uses t at the smallest varying dim, ie t is only used in the last result
+//  and as `+ t` (not eg + 6 * t).
 static AffineMap adaptAffineMapCnmToUpmem(AffineMap map,
                                           cnm::BufferType bufTy) {
   assert(map.getNumDims() == 3);
@@ -184,6 +191,25 @@ static void createTransfer(RewriterBase &rewriter, bool toWram, Location loc,
                                             tileMramView);
 }
 
+static bool isScatterBroadcastOverThreads(cnm::AllocOp alloc) {
+  for (auto user : alloc->getUsers()) {
+    if (llvm::isa<cnm::GatherOp>(user))
+      return false;
+    if (auto scatter = llvm::dyn_cast_or_null<cnm::ScatterOp>(user)) {
+      auto map = scatter.getScatterMap();
+      if (map.getNumDims() != 3)
+        return false;
+      auto unusedDims = getUnusedDimsBitVector({map});
+      if (!unusedDims[2]) {
+        // threads dim is used so all threads see the same buffer
+        return false;
+      }
+    }
+  }
+
+  return true;
+}
+
 static LogicalResult convertCnmLaunchToUpmem(cnm::LaunchOp launch,
                                              RewriterBase &rewriter,
                                              SymbolTable rootModule,
@@ -213,6 +239,7 @@ static LogicalResult convertCnmLaunchToUpmem(cnm::LaunchOp launch,
       wgAlloc->getLoc(), upmemTy, *programPath);
 
   llvm::MapVector<Value, upmem::StaticAllocOp> buffersToMramBuf;
+  llvm::MapVector<Value, upmem::StaticAllocOp> buffersToSharedWramBuf;
   llvm::MapVector<Value, upmem::PrivateWRAMAllocOp> buffersToPwramBuf;
 
   rewriter.setInsertionPointToStart(&dpuProgram.getBody().front());
@@ -239,6 +266,17 @@ static LogicalResult convertCnmLaunchToUpmem(cnm::LaunchOp launch,
       MemRefType memrefTy =
           MemRefType::get(bufShape, bufferType.getElementType(),
                           MemRefLayoutAttrInterface{}, wramMemspaceAttr);
+
+      if (isScatterBroadcastOverThreads(alloc)) {
+        // If all threads see the same buffer (broadcast), then we only
+        // create one static buffer in WRAM.
+        auto wrambuf = rewriter.create<upmem::StaticAllocOp>(
+            alloc->getLoc(), memrefTy, upmem::DpuMemSpace::WRAM, "buf", true);
+        dpuProgramSymTable.insert(wrambuf); // this renames it to a unique name
+        buffersToSharedWramBuf[alloc.getResult()] = wrambuf;
+        continue;
+      }
+
       auto pwramBuf =
           rewriter.create<upmem::PrivateWRAMAllocOp>(alloc.getLoc(), memrefTy);
 
@@ -263,7 +301,14 @@ static LogicalResult convertCnmLaunchToUpmem(cnm::LaunchOp launch,
   for (auto user : launch.getWg().getUsers()) {
 
     if (auto scatter = llvm::dyn_cast_or_null<cnm::ScatterOp>(user)) {
-      auto alloc = buffersToMramBuf[scatter.getBuffer()];
+      // If there is a shared wram buffer, this takes priority.
+      upmem::StaticAllocOp alloc = buffersToMramBuf.lookup(scatter.getBuffer());
+      if (!alloc) {
+        // if there is no mram buffer then that means we are scattering directly
+        // to wram
+        alloc = buffersToSharedWramBuf.lookup(scatter.getBuffer());
+      }
+
       if (!alloc ||
           failed(convertCnmScatterToUpmem(rewriter, scatter, upmemWgAlloc,
                                           alloc.getSymNameAttr()))) {
@@ -271,7 +316,7 @@ static LogicalResult convertCnmLaunchToUpmem(cnm::LaunchOp launch,
       }
     }
     if (auto gather = llvm::dyn_cast_or_null<cnm::GatherOp>(user)) {
-      auto alloc = buffersToMramBuf[gather.getBuffer()];
+      auto alloc = buffersToMramBuf.lookup(gather.getBuffer());
       if (!alloc ||
           failed(convertCnmGatherToUpmem(rewriter, gather, upmemWgAlloc,
                                          alloc.getSymNameAttr()))) {
@@ -291,7 +336,15 @@ static LogicalResult convertCnmLaunchToUpmem(cnm::LaunchOp launch,
            llvm::concat<Value>(launch.getInputs(), launch.getOutBuffers()),
            launch.getBody().getArguments())) {
 
-    mapping.map(memref, buffersToPwramBuf[cnmBuf].getBuffer());
+    auto pwrambuf = buffersToPwramBuf.lookup(cnmBuf);
+    if (pwrambuf) {
+      mapping.map(memref, pwrambuf.getBuffer());
+      continue;
+    }
+    auto wrambuf = buffersToSharedWramBuf.lookup(cnmBuf);
+    if (wrambuf) {
+      mapping.map(memref, wrambuf.getBuffer());
+    }
   }
 
   // todo support moving tiles of the mram buffer into pwram
