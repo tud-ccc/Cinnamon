@@ -285,6 +285,10 @@ LogicalResult convertInputIntoAlloc(Value &inputBuf, Value workGroup,
           .failed())
     return failure();
 
+  // If the tensor was just allocated it is assumed empty, therefore we don't
+  // need to scatter as its contents are undefined.
+  const bool needScatter = !isa<tensor::EmptyOp>(inputBuf.getDefiningOp()) &&
+                           !isa<memref::AllocOp>(inputBuf.getDefiningOp());
   if (reshapeInto) {
     inputBuf = mlir::reshapeStatic(rewriter, rewriter.getLoc(), inputBuf,
                                    cast<ShapedType>(inputType), *reshapeInto);
@@ -297,8 +301,10 @@ LogicalResult convertInputIntoAlloc(Value &inputBuf, Value workGroup,
 
   Value alloc = rewriter.create<cnm::AllocOp>(bufTy, workGroup);
 
-  // Scatter into buffer
-  rewriter.create<cnm::ScatterOp>(inputBuf, alloc, workGroup, scatterMap);
+  if (needScatter) {
+    // Scatter into buffer
+    rewriter.create<cnm::ScatterOp>(inputBuf, alloc, workGroup, scatterMap);
+  }
   result = alloc;
 
   return success();

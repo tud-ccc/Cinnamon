@@ -388,7 +388,9 @@ struct ElementwiseTilingModel
 
     TypedValue<ShapedType> memrefOut =
         llvm::dyn_cast_or_null<TypedValue<ShapedType>>(ew.getOut());
+
     if (shape.size() > 1) {
+
       originalShapeValue = arith::ConstantOp::create(
           builder,
           RankedTensorType::get({static_cast<int64_t>(shape.size())},
@@ -400,6 +402,7 @@ struct ElementwiseTilingModel
         rhs = mlir::reshapeStatic(builder, builder.getLoc(), rhs,
                                   {tensorTy.getNumElements()});
       }
+
       if (memrefOut) {
         memrefOut = mlir::reshapeStatic(builder, builder.getLoc(), memrefOut,
                                         {tensorTy.getNumElements()});
@@ -411,9 +414,12 @@ struct ElementwiseTilingModel
     int64_t tileSize =
         std::max<int64_t>(1, std::min<int64_t>(tilingFactors[0], numElements));
 
+    // Accumulator keeps the original ND type — no post-loop reshape needed.
+    // For rank>1 the insert is wrapped by collapse_shape/expand_shape inside
+    // the loop body, which is the pattern eliminate-empty-tensors can elide.
     ValueRange resultInit{};
     if (ew.getResult()) {
-      resultInit = tensor::EmptyOp::create(builder, tensorTy, ValueRange{})
+      resultInit = tensor::EmptyOp::create(builder, originalType, ValueRange{})
                        ->getResults();
     } else {
       assert(memrefOut);
@@ -424,6 +430,9 @@ struct ElementwiseTilingModel
         [&](OpBuilder &b, Location loc, ValueRange indices,
             ValueRange iterArgs) -> SmallVector<Value> {
           Value base = indices[0];
+
+          Value flatAcc =
+              reshapeStatic(b, loc, iterArgs[0], originalType, {numElements});
 
           Value lhsSlice = extractSlice1D(b, loc, lhs, tileSize, base);
 
@@ -442,17 +451,18 @@ struct ElementwiseTilingModel
             SmallVector<OpFoldResult, 1> siz{b.getIndexAttr(tileSize)};
             SmallVector<OpFoldResult, 1> str{b.getI64IntegerAttr(1)};
             SmallVector<OpFoldResult, 1> off{base};
-            Value subResult = tensor::InsertSliceOp::create(
-                b, loc, smaller.getResult(), iterArgs[0], off, siz, str);
-            return {subResult};
+            // Collapse the ND accumulator to flat, insert the tile, then
+            // expand back. collapse(expand(x, R), R) folds to x once
+            // eliminate-empty-tensors removes the empty init.
+            Value updatedFlat = tensor::InsertSliceOp::create(
+                b, loc, smaller.getResult(), flatAcc, off, siz, str);
+            Value updatedND = tensor::ReshapeOp::create(
+                b, loc, originalType, updatedFlat, originalShapeValue);
+            return {updatedND};
           }
           return {};
         });
 
-    if (originalType.getRank() > 1) {
-      loopResult[0] = tensor::ReshapeOp::create(
-          builder, originalType, loopResult[0], originalShapeValue);
-    }
     results.append(loopResult.begin(), loopResult.end());
     return DiagnosedSilenceableFailure::success();
   }
