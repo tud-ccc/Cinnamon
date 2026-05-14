@@ -58,8 +58,8 @@ using linalg::UnaryFn;
 //===- Generated implementation -------------------------------------------===//
 
 #include "cinm-mlir/Dialect/Cinm/IR/CinmEnums.cpp.inc"
-#include "cinm-mlir/Dialect/Cinm/IR/TilingInterface.cpp.inc"
 #include "cinm-mlir/Dialect/Cinm/IR/CinmGemmlikeOpInterface.cpp.inc"
+#include "cinm-mlir/Dialect/Cinm/IR/TilingInterface.cpp.inc"
 
 template <typename Self>
 static void buildGemmLikeOp(OpBuilder &builder, OperationState &result,
@@ -948,6 +948,33 @@ struct ComputeBlockOpDeleteUnusedArgs : OpRewritePattern<cinm::ComputeBlockOp> {
   }
 };
 
+template <typename OpTy>
+struct GemmlikeRemoveZeroBias : OpRewritePattern<OpTy> {
+  using OpRewritePattern<OpTy>::OpRewritePattern;
+  LogicalResult matchAndRewrite(OpTy op,
+                                PatternRewriter &rewriter) const override {
+    Value bias = op.getBias();
+    if (!bias)
+      return failure();
+
+    DenseElementsAttr biasAttr;
+    if (!matchPattern(bias, m_Constant(&biasAttr)) || !biasAttr.isSplat())
+      return failure();
+
+    auto splatVal = biasAttr.getSplatValue<Attribute>();
+    bool isZero = false;
+    if (auto intAttr = dyn_cast<IntegerAttr>(splatVal))
+      isZero = intAttr.getValue().isZero();
+    else if (auto floatAttr = dyn_cast<FloatAttr>(splatVal))
+      isZero = floatAttr.getValue().isZero();
+    if (!isZero)
+      return failure();
+
+    rewriter.modifyOpInPlace(op, [&]() { op.getBiasMutable().clear(); });
+    return success();
+  }
+};
+
 } // namespace
 
 void ComputeBlockOp::getCanonicalizationPatterns(
@@ -963,6 +990,23 @@ void ComputeOp::getCanonicalizationPatterns(::mlir::RewritePatternSet &results,
 void ReduceOp::getCanonicalizationPatterns(::mlir::RewritePatternSet &results,
                                            ::mlir::MLIRContext *context) {
   results.insert<ReduceOpNormalizeDim>(context);
+}
+
+void GemmOp::getCanonicalizationPatterns(::mlir::RewritePatternSet &results,
+                                         ::mlir::MLIRContext *context) {
+  results.insert<GemmlikeRemoveZeroBias<GemmOp>>(context);
+}
+void GemvOp::getCanonicalizationPatterns(::mlir::RewritePatternSet &results,
+                                         ::mlir::MLIRContext *context) {
+  results.insert<GemmlikeRemoveZeroBias<GemvOp>>(context);
+}
+void BatchGemmOp::getCanonicalizationPatterns(
+    ::mlir::RewritePatternSet &results, ::mlir::MLIRContext *context) {
+  results.insert<GemmlikeRemoveZeroBias<BatchGemmOp>>(context);
+}
+void BatchGemvOp::getCanonicalizationPatterns(
+    ::mlir::RewritePatternSet &results, ::mlir::MLIRContext *context) {
+  results.insert<GemmlikeRemoveZeroBias<BatchGemvOp>>(context);
 }
 
 arith::AtomicRMWKind cinm::getArithConstant(ReduceMethod r, Type ty) {
