@@ -145,7 +145,7 @@ void UpmemAcceleratorAttr::print(::mlir::AsmPrinter &out) const {
 static cinm::CinmLevelArrayAttr upmemLevels(mlir::MLIRContext *ctx,
                                             bool isV1A) {
   int indices = 2;
-  int wramSize = isV1A ? 65536 : 63488;
+  int wramSize = isV1A ? 48000 : 63488;
   Builder builder(ctx);
   cinm::CinmLevelDefAttr mram =
       builder.getAttr<cinm::CinmLevelDefAttr>(builder.getStringAttr("mram"),
