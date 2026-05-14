@@ -59,6 +59,7 @@ using linalg::UnaryFn;
 
 #include "cinm-mlir/Dialect/Cinm/IR/CinmEnums.cpp.inc"
 #include "cinm-mlir/Dialect/Cinm/IR/TilingInterface.cpp.inc"
+#include "cinm-mlir/Dialect/Cinm/IR/CinmGemmlikeOpInterface.cpp.inc"
 
 template <typename Self>
 static void buildGemmLikeOp(OpBuilder &builder, OperationState &result,
