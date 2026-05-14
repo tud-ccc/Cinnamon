@@ -109,7 +109,7 @@ class Cinm_GemmlikeOp<string name, string cppClassName> : Cinm_Op<name,
   );
 
   // let hasVerifier = 1; // todo
-  let hasCanonicalizer = 1;
+  let hasFolder = 1;
   let results = (outs Optional<AnyRankedTensor>:$result);
   let assemblyFormat =
     "$lhs `,` $rhs (`plus` $bias^)? (`into` $out^)? attr-dict `:` type($lhs) `,` type($rhs) (`plus` type($bias)^)? (`into` type($out)^)? (`->` type($result)^)?";

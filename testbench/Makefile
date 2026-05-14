@@ -19,9 +19,7 @@ CINM_OPT=../build/bin/cinm-opt
 
 $(IR_PREFIX).1.tiled.mlir: $(BENCH_NAME).mlir
 	@mkdir -p $(@D)
-	$(CINM_OPT) $< --pass-pipeline="builtin.module(func.func(cinm-infer-tile-sizes,cinm-tiling,cinm-isolate-compute-blocks))" > $@
-	
-#| $(CINM_OPT) --pass-pipeline="builtin.module(**cinm.compute_block(affine-loop-unroll{unroll-full unroll-full-threshold=1},canonicalize))" > $@
+	$(CINM_OPT) $< --pass-pipeline="builtin.module(func.func(cinm-infer-tile-sizes,cinm-tiling,cinm-isolate-compute-blocks))" | $(CINM_OPT) --pass-pipeline="builtin.module(**cinm.compute_block(affine-loop-unroll{unroll-full unroll-full-threshold=1},canonicalize))" > $@
 
 $(IR_PREFIX).1a.cinm.buffered.mlir: $(IR_PREFIX).1.tiled.mlir
 	$(CINM_OPT) $< --cinm-deisolate-compute-blocks --eliminate-empty-tensors --canonicalize --cse --one-shot-bufferize='bufferize-function-boundaries function-boundary-type-conversion=identity-layout-map'  \
