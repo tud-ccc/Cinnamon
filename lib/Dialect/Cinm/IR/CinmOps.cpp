@@ -948,32 +948,32 @@ struct ComputeBlockOpDeleteUnusedArgs : OpRewritePattern<cinm::ComputeBlockOp> {
   }
 };
 
-template <typename OpTy>
-struct GemmlikeRemoveZeroBias : OpRewritePattern<OpTy> {
-  using OpRewritePattern<OpTy>::OpRewritePattern;
-  LogicalResult matchAndRewrite(OpTy op,
-                                PatternRewriter &rewriter) const override {
-    Value bias = op.getBias();
-    if (!bias)
-      return failure();
+static bool isZeroSplatAttr(Attribute attr) {
+  auto dense = dyn_cast_or_null<DenseElementsAttr>(attr);
+  if (!dense || !dense.isSplat())
+    return false;
+  auto val = dense.getSplatValue<Attribute>();
+  if (auto ia = dyn_cast<IntegerAttr>(val))
+    return ia.getValue().isZero();
+  if (auto fa = dyn_cast<FloatAttr>(val))
+    return fa.getValue().isZero();
+  return false;
+}
 
-    DenseElementsAttr biasAttr;
-    if (!matchPattern(bias, m_Constant(&biasAttr)) || !biasAttr.isSplat())
-      return failure();
-
-    auto splatVal = biasAttr.getSplatValue<Attribute>();
-    bool isZero = false;
-    if (auto intAttr = dyn_cast<IntegerAttr>(splatVal))
-      isZero = intAttr.getValue().isZero();
-    else if (auto floatAttr = dyn_cast<FloatAttr>(splatVal))
-      isZero = floatAttr.getValue().isZero();
-    if (!isZero)
-      return failure();
-
-    rewriter.modifyOpInPlace(op, [&]() { op.getBiasMutable().clear(); });
-    return success();
+template <typename Op, typename Adaptor>
+static LogicalResult foldGemmlike(Op op, Adaptor adaptor,
+                                   SmallVectorImpl<OpFoldResult> &) {
+  bool changed = false;
+  if (op.getBias() && isZeroSplatAttr(adaptor.getBias())) {
+    op.getBiasMutable().clear();
+    changed = true;
   }
-};
+  if (op.getOut() && isZeroSplatAttr(adaptor.getOut())) {
+    op.getOutMutable().clear();
+    changed = true;
+  }
+  return changed ? success() : failure();
+}
 
 } // namespace
 
@@ -992,21 +992,21 @@ void ReduceOp::getCanonicalizationPatterns(::mlir::RewritePatternSet &results,
   results.insert<ReduceOpNormalizeDim>(context);
 }
 
-void GemmOp::getCanonicalizationPatterns(::mlir::RewritePatternSet &results,
-                                         ::mlir::MLIRContext *context) {
-  results.insert<GemmlikeRemoveZeroBias<GemmOp>>(context);
+LogicalResult GemmOp::fold(FoldAdaptor adaptor,
+                           SmallVectorImpl<OpFoldResult> &results) {
+  return foldGemmlike(*this, adaptor, results);
 }
-void GemvOp::getCanonicalizationPatterns(::mlir::RewritePatternSet &results,
-                                         ::mlir::MLIRContext *context) {
-  results.insert<GemmlikeRemoveZeroBias<GemvOp>>(context);
+LogicalResult GemvOp::fold(FoldAdaptor adaptor,
+                           SmallVectorImpl<OpFoldResult> &results) {
+  return foldGemmlike(*this, adaptor, results);
 }
-void BatchGemmOp::getCanonicalizationPatterns(
-    ::mlir::RewritePatternSet &results, ::mlir::MLIRContext *context) {
-  results.insert<GemmlikeRemoveZeroBias<BatchGemmOp>>(context);
+LogicalResult BatchGemmOp::fold(FoldAdaptor adaptor,
+                                SmallVectorImpl<OpFoldResult> &results) {
+  return foldGemmlike(*this, adaptor, results);
 }
-void BatchGemvOp::getCanonicalizationPatterns(
-    ::mlir::RewritePatternSet &results, ::mlir::MLIRContext *context) {
-  results.insert<GemmlikeRemoveZeroBias<BatchGemvOp>>(context);
+LogicalResult BatchGemvOp::fold(FoldAdaptor adaptor,
+                                SmallVectorImpl<OpFoldResult> &results) {
+  return foldGemmlike(*this, adaptor, results);
 }
 
 arith::AtomicRMWKind cinm::getArithConstant(ReduceMethod r, Type ty) {

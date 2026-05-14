@@ -39,6 +39,7 @@
 #include <mlir/IR/ImplicitLocOpBuilder.h>
 #include <mlir/IR/Location.h>
 #include <mlir/IR/MLIRContext.h>
+#include <mlir/IR/Matchers.h>
 #include <mlir/IR/PatternMatch.h>
 #include <mlir/IR/TypeRange.h>
 #include <mlir/IR/Value.h>
@@ -759,7 +760,10 @@ static Value getOutputInitForGemmLike(Op op, ImplicitLocOpBuilder &builder) {
       return linalg::CopyOp::create(builder, op.getBias(), outputInit)
           .getResult(0);
     }
-    // no bias: zero out the output
+    // no bias: zero out the output, unless it already folds to a zero splat.
+    if (isZeroSplatFoldable(outputInit))
+      return outputInit;
+    // not a zero: fill output with zero.
     auto resultTy = cast<ShapedType>(outputInit.getType()).getElementType();
     auto fillOp = linalg::FillOp::create(
         builder,
@@ -906,13 +910,20 @@ struct ConvertCinmGemmToCnm : public OpConversionPattern<cinm::GemmOp> {
                                         scatterGatherC, outbuf);
 
     if (op.getResult()) {
-      // Add a materialization guard to relate the output of the gather with the
-      // input of the scatter, in case they're a loop accumulator and we need
-      // them to bufferize to the same buffer.
-      auto bufferizationGuard =
-          bufferization::MaterializeInDestinationOp::create(
-              builder, gather.getOutput(), outputInit);
-      rewriter.replaceOp(op, ValueRange{bufferizationGuard.getResult()});
+      Value result = gather.getOutput();
+      if (!matchPattern(outputInit, m_Constant())) {
+        // Add a materialization guard to relate the output of the gather with
+        // the input of the scatter, in case they're a loop accumulator and we
+        // need them to bufferize to the same buffer.
+
+        // If it is a constant then we don't do that as that would create a copy
+        // from the constant to the actual output buffer.
+        result = bufferization::MaterializeInDestinationOp::create(
+                     builder, result, outputInit)
+                     .getResult();
+      }
+
+      rewriter.replaceOp(op, result);
     } else {
       rewriter.eraseOp(op);
     }
