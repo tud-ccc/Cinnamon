@@ -6,7 +6,6 @@
 #include "cinm-mlir/Dialect/UPMEM/IR/UPMEMOps.h"
 #include "cinm-mlir/Dialect/UPMEM/IR/UPMEMTypes.h"
 
-#include <algorithm>
 #include <cinm-mlir/Dialect/UPMEM/Transforms/Utils.h>
 #include <cstdint>
 #include <llvm/ADT/MapVector.h>
@@ -382,15 +381,6 @@ static LogicalResult convertCnmLaunchToUpmem(cnm::LaunchOp launch,
   // todo support moving tiles of the mram buffer into pwram
   rewriter.setInsertionPointToEnd(&dpuProgram.getBody().front());
   for (auto [buf, mramBuf] : buffersToMramBuf) {
-    if (std::none_of(buf.getUsers().begin(), buf.getUsers().end(),
-                     [](auto op) { return llvm::isa<cnm::ScatterOp>(op); })) {
-      // If there is no scatter we also don't need to load any data from mram to
-      // wram. It's likely a pure output buffer.
-      // TODO i think when we push eg constants values into the DPU program this
-      //  will not hold anymore. The condition is more, if the kernel doesn't
-      //  read the buffer.
-      continue;
-    }
     auto wramBuf = buffersToWramBufValue[buf];
     createTransfer(rewriter, true, buf.getLoc(), mramBuf, wramBuf);
     rewriter.setInsertionPointToEnd(&dpuProgram.getBody().front());
