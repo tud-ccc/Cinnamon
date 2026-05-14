@@ -38,6 +38,7 @@ int main(int argc, char *argv[]) {
   registry.insert<torch::TorchConversion::TorchConversionDialect>();
 #endif
   registerAllExtensions(registry);
+  cinm::registerCinmTilingExternalModels(registry);
 
   return asMainReturnCode(MlirLspServerMain(argc, argv, registry));
 }
