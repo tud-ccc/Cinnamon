@@ -37,16 +37,16 @@ module {
         }
         func.return %r0 : tensor<8x2048xi32>
     }
-	
-    // func.func @mm_dimm8_opt(%A: tensor<16x1024xi32>, %B: tensor<1024x64xi32>) -> tensor<16x64xi32> {
 
-    //     %r0 = cinm.compute -> tensor<16x64xi32> attributes { workgroupShape=array<i64: 8, 128, 1> } {
-    //         %r = cinm.op.gemm %A, %B : tensor<16x1024xi32>, tensor<1024x64xi32> -> tensor<16x64xi32>
-    //         %r2 = cinm.op.gemm %A, %B : tensor<16x1024xi32>, tensor<1024x64xi32> -> tensor<16x64xi32>
-    //         cinm.yield %r : tensor<16x64xi32>
-    //     }
-    //     func.return %r0 : tensor<16x64xi32>
-    // }
+    func.func @mm_dimm8_opt(%A: tensor<8x1024xi32>, %B: tensor<1024x128xi32>, %C: tensor<128x2048xi32>) -> tensor<8x2048xi32> {
+
+        %r0 = cinm.compute on accelerator #upmem.array<8x16x8, #upmem> -> tensor<8x2048xi32> {
+            %r = cinm.op.gemm %A, %B {cinm.tile_sizes = array<i64: 8, 128, 256>} : tensor<8x1024xi32>, tensor<1024x128xi32> -> tensor<8x128xi32>
+            %r2 = cinm.op.gemm %r, %C {cinm.tile_sizes = array<i64: 8, 128, 128>} : tensor<8x128xi32>, tensor<128x2048xi32> -> tensor<8x2048xi32>
+            cinm.yield %r2 : tensor<8x2048xi32>
+        }
+        func.return %r0 : tensor<8x2048xi32>
+    }
 	
     // func.func @mm_dimm16_nopt(%A: tensor<8x1024xi32>, %B: tensor<1024x64xi32>) -> tensor<8x64xi32> {
 
