@@ -14,6 +14,7 @@ include "cinm-mlir/Dialect/Cinm/IR/CinmAttributes.td"
 include "cinm-mlir/Dialect/Cinm/IR/CinmPlatformAttrInterface.td"
 include "cinm-mlir/Dialect/Cinm/IR/TilingInterface.td"
 include "cinm-mlir/Dialect/Cinm/IR/CinmComputeOpInterface.td"
+include "cinm-mlir/Dialect/Cinm/IR/CinmGemmlikeOpInterface.td"
 
 include "mlir/IR/EnumAttr.td"
 include "mlir/IR/BuiltinAttributes.td"
@@ -70,7 +71,8 @@ class Cinm_GemmlikeOp<string name, string cppClassName> : Cinm_Op<name,
     DeclareOpInterfaceMethods<MemoryEffectsOpInterface>,
     // OptionalTypesMatchWith<
     //   "bias should have compatible type", "result", "bias", "$_self">,
-    AttrSizedOperandSegments
+    AttrSizedOperandSegments,
+    CinmGemmlikeOpInterface
   ]> {
 
   let description = [{
