@@ -6,7 +6,6 @@
 #include "cinm-mlir/Dialect/UPMEM/IR/UPMEMOps.h"
 #include "cinm-mlir/Dialect/UPMEM/IR/UPMEMTypes.h"
 
-#include <algorithm>
 #include <cinm-mlir/Dialect/UPMEM/Transforms/Utils.h>
 #include <cstdint>
 #include <llvm/ADT/MapVector.h>
