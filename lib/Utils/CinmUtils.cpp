@@ -14,9 +14,49 @@
 #include <mlir/Dialect/Arith/IR/Arith.h>
 #include <mlir/Dialect/Tensor/IR/Tensor.h>
 #include <mlir/Dialect/MemRef/IR/MemRef.h>
+#include <mlir/IR/Matchers.h>
 #include <optional>
 
 namespace mlir {
+
+static bool isSplatZeroAttr(DenseElementsAttr attr) {
+  if (!attr.isSplat())
+    return false;
+  Attribute splatVal = attr.getSplatValue<Attribute>();
+  if (auto intAttr = dyn_cast<IntegerAttr>(splatVal))
+    return intAttr.getValue().isZero();
+  if (auto floatAttr = dyn_cast<FloatAttr>(splatVal))
+    return floatAttr.getValue().isZero();
+  return false;
+}
+
+bool isZeroSplatFoldable(Value v) {
+  // Fast path: direct constant.
+  DenseElementsAttr attr;
+  if (matchPattern(v, m_Constant(&attr)))
+    return isSplatZeroAttr(attr);
+
+  // Slow path: try folding the defining op with whatever constant operands
+  // are available (non-constant operands are passed as null Attributes).
+  Operation *defOp = v.getDefiningOp();
+  if (!defOp || defOp->getNumResults() != 1)
+    return false;
+
+  SmallVector<Attribute> foldOperands(defOp->getNumOperands());
+  for (auto [i, operand] : llvm::enumerate(defOp->getOperands())) {
+    Attribute opAttr;
+    if (matchPattern(operand, m_Constant(&opAttr)))
+      foldOperands[i] = opAttr;
+  }
+
+  SmallVector<OpFoldResult> foldResults;
+  if (failed(defOp->fold(foldOperands, foldResults)) || foldResults.size() != 1)
+    return false;
+
+  auto foldedAttr =
+      dyn_cast_or_null<DenseElementsAttr>(foldResults[0].dyn_cast<Attribute>());
+  return foldedAttr && isSplatZeroAttr(foldedAttr);
+}
 
 SmallString<20> getUniqueFunctionName(ModuleOp &moduleOp, StringRef prefix) {
   // Note: here we don't use SymbolTable as we run into a bug in the LLVM

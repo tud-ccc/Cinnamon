@@ -6,6 +6,7 @@
 
 #include "cinm-mlir/Dialect/Cinm/IR/CinmAttributes.h"
 #include "cinm-mlir/Dialect/Cinm/IR/CinmComputeOpInterface.h"
+#include "cinm-mlir/Dialect/Cinm/IR/CinmGemmlikeOpInterface.h"
 #include "cinm-mlir/Dialect/Cinm/IR/CinmTypes.h"
 #include "cinm-mlir/Dialect/Cinm/IR/TilingInterface.h"
 #include "cinm-mlir/Dialect/Cnm/IR/CnmTypes.h"

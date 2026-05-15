@@ -19,19 +19,17 @@ CINM_OPT=../build/bin/cinm-opt
 
 $(IR_PREFIX).1.tiled.mlir: $(BENCH_NAME).mlir
 	@mkdir -p $(@D)
-	$(CINM_OPT) $< --pass-pipeline="builtin.module(func.func(cinm-infer-tile-sizes,cinm-tiling,cinm-isolate-compute-blocks))" > $@
-	
-#| $(CINM_OPT) --pass-pipeline="builtin.module(**cinm.compute_block(affine-loop-unroll{unroll-full unroll-full-threshold=1},canonicalize))" > $@
+	$(CINM_OPT) $< --pass-pipeline="builtin.module(func.func(cinm-infer-tile-sizes,cinm-tiling,cinm-isolate-compute-blocks))" | $(CINM_OPT) --pass-pipeline="builtin.module(**cinm.compute_block(affine-loop-unroll{unroll-full unroll-full-threshold=1},canonicalize),cinm-deisolate-compute-blocks)" > $@
 
 $(IR_PREFIX).1a.cinm.buffered.mlir: $(IR_PREFIX).1.tiled.mlir
-	$(CINM_OPT) $< --cinm-deisolate-compute-blocks --eliminate-empty-tensors --canonicalize --cse --one-shot-bufferize='bufferize-function-boundaries function-boundary-type-conversion=identity-layout-map'  \
+	$(CINM_OPT) $< --eliminate-empty-tensors --canonicalize --cse --one-shot-bufferize='bufferize-function-boundaries function-boundary-type-conversion=identity-layout-map'  \
 					--cse --canonicalize --buffer-results-to-out-params=hoist-static-allocs > $@
 
 $(IR_PREFIX).1b.cnm.mlir: $(IR_PREFIX).1a.cinm.buffered.mlir
-	$(CINM_OPT) $< --cinm-deisolate-compute-blocks --convert-cinm-to-cnm --canonicalize --cnm-hoist-workgroups --canonicalize --cse > $@
+	$(CINM_OPT) $< --convert-cinm-to-cnm --canonicalize --cnm-hoist-workgroups --canonicalize --cse > $@
 
 $(IR_PREFIX).2.cnm.mlir: $(IR_PREFIX).1.tiled.mlir
-	$(CINM_OPT) $< --cinm-deisolate-compute-blocks --convert-cinm-to-cnm --canonicalize --cnm-hoist-workgroups --canonicalize --cse > $@
+	$(CINM_OPT) $< --convert-cinm-to-cnm --canonicalize --cnm-hoist-workgroups --canonicalize --cse > $@
 
 #					--promote-buffers-to-stack --fold-memref-alias-ops --canonicalize --affine-loop-fusion --sroa --canonicalize --affine-scalrep --loop-invariant-code-motion --affine-loop-invariant-code-motion --sroa --affine-scalrep \
 
@@ -52,11 +50,11 @@ $(IR_PREFIX).4.cnm.after_opts.mlir: $(IR_PREFIX).3.cnm.affine.mlir
 				   --canonicalize --cse > $@
 
 $(IR_PREFIX).5.cnm.scf.mlir: $(IR_PREFIX).4.cnm.after_opts.mlir
-	$(CINM_OPT) $< --lower-affine --buffer-loop-hoisting --buffer-hoisting \
+	$(CINM_OPT) $< --affine-loop-unroll=unroll-factor=4 --lower-affine --buffer-loop-hoisting --buffer-hoisting \
 				   --canonicalize --cse > $@
 
 $(IR_PREFIX).6.upmem.mlir: $(IR_PREFIX).5.cnm.scf.mlir
-	$(CINM_OPT) $< --convert-cnm-to-upmem --cse --upmem-dedup-kernels --cse > $@
+	$(CINM_OPT) $< --convert-cnm-to-upmem --cse --upmem-dedup-kernels --cse  > $@
 
 $(IR_PREFIX).6a1.llvm.mlir: $(IR_PREFIX).6.upmem.mlir
 	$(CINM_OPT) $< --mlir-print-ir-after-failure --canonicalize --cinm-unwrap-compute-blocks \
@@ -87,9 +85,9 @@ $(BENCH_NAME)-kernel-compile: $(IR_PREFIX).6b.dpu.c
 	lib/compile_dpu.sh $< $(OUT_DIR)/bin
 
 # HOST executable
-$(OUT_DIR)/bin/host: $(IR_PREFIX).6a3b.host.o
+$(OUT_DIR)/bin/host: $(IR_PREFIX).6a3b.host.o apps/$(BENCH_NAME).cpp
 	@mkdir -p $(@D)
-	clang++ -g apps/$(BENCH_NAME).cpp $(IR_PREFIX).6a3b.host.o -lUpmemDialectRuntime -fPIE -ldpu -ldpuverbose -L${UPMEM_HOME}/lib -L../build/lib -I${UPMEM_HOME}/include/dpu -o $@
+	clang++ -g $^ -lUpmemDialectRuntime -fPIE -ldpu -ldpuverbose -L${UPMEM_HOME}/lib -L../build/lib -I${UPMEM_HOME}/include/dpu -o $@
 
 $(BENCH_NAME): $(IR_PREFIX).6a3.host.opt.ll $(IR_PREFIX).6b.dpu.c
 

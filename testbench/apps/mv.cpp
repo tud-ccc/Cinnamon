@@ -3,20 +3,22 @@
 
 extern "C" {
 // int32_t *mv_dimm4_nopt(int32_t *, int32_t *);
-int32_t *mv_dimm4_opt(int32_t *, int32_t *);
-int32_t *mv_dimm8_nopt(int32_t *, int32_t *);
+int32_t *mv_dimm4_opt(int32_t *, int32_t *, int32_t *);
+int32_t *mv_dimm8_nopt(int32_t *, int32_t *, int32_t *);
 // int32_t* mv_dimm8_opt(int32_t *, int32_t *);
 // int32_t* mv_dimm16_nopt(int32_t *, int32_t *);
-int32_t *mv_dimm16_opt(int32_t *, int32_t *);
+int32_t *mv_dimm16_opt(int32_t *, int32_t *, int32_t *);
 }
 
 #define BENCH_MV(ty, M, N, fun_name)                                           \
   do {                                                                         \
     ty *A = init_matrix<ty, M, N>();                                           \
     ty *B = init_matrix<ty, N>();                                              \
-    DO_BENCH(REPS, WARMUP, fun_name(A, B));                                    \
+    ty *OUT = init_matrix<ty, M>();                                            \
+    DO_BENCH(REPS, WARMUP, fun_name(A, B, OUT));                               \
     free(A);                                                                   \
     free(B);                                                                   \
+    free(OUT);                                                                 \
   } while (false)
 
 int main(void) {

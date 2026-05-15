@@ -58,6 +58,7 @@ using linalg::UnaryFn;
 //===- Generated implementation -------------------------------------------===//
 
 #include "cinm-mlir/Dialect/Cinm/IR/CinmEnums.cpp.inc"
+#include "cinm-mlir/Dialect/Cinm/IR/CinmGemmlikeOpInterface.cpp.inc"
 #include "cinm-mlir/Dialect/Cinm/IR/TilingInterface.cpp.inc"
 
 template <typename Self>
@@ -973,6 +974,33 @@ struct ComputeBlockOpDeleteUnusedArgs : OpRewritePattern<cinm::ComputeBlockOp> {
   }
 };
 
+static bool isZeroSplatAttr(Attribute attr) {
+  auto dense = dyn_cast_or_null<DenseElementsAttr>(attr);
+  if (!dense || !dense.isSplat())
+    return false;
+  auto val = dense.getSplatValue<Attribute>();
+  if (auto ia = dyn_cast<IntegerAttr>(val))
+    return ia.getValue().isZero();
+  if (auto fa = dyn_cast<FloatAttr>(val))
+    return fa.getValue().isZero();
+  return false;
+}
+
+template <typename Op, typename Adaptor>
+static LogicalResult foldGemmlike(Op op, Adaptor adaptor,
+                                   SmallVectorImpl<OpFoldResult> &) {
+  bool changed = false;
+  if (op.getBias() && isZeroSplatAttr(adaptor.getBias())) {
+    op.getBiasMutable().clear();
+    changed = true;
+  }
+  if (op.getOut() && isZeroSplatAttr(adaptor.getOut())) {
+    op.getOutMutable().clear();
+    changed = true;
+  }
+  return changed ? success() : failure();
+}
+
 } // namespace
 
 void ComputeBlockOp::getCanonicalizationPatterns(
@@ -988,6 +1016,23 @@ void ComputeOp::getCanonicalizationPatterns(::mlir::RewritePatternSet &results,
 void ReduceOp::getCanonicalizationPatterns(::mlir::RewritePatternSet &results,
                                            ::mlir::MLIRContext *context) {
   results.insert<ReduceOpNormalizeDim>(context);
+}
+
+LogicalResult GemmOp::fold(FoldAdaptor adaptor,
+                           SmallVectorImpl<OpFoldResult> &results) {
+  return foldGemmlike(*this, adaptor, results);
+}
+LogicalResult GemvOp::fold(FoldAdaptor adaptor,
+                           SmallVectorImpl<OpFoldResult> &results) {
+  return foldGemmlike(*this, adaptor, results);
+}
+LogicalResult BatchGemmOp::fold(FoldAdaptor adaptor,
+                                SmallVectorImpl<OpFoldResult> &results) {
+  return foldGemmlike(*this, adaptor, results);
+}
+LogicalResult BatchGemvOp::fold(FoldAdaptor adaptor,
+                                SmallVectorImpl<OpFoldResult> &results) {
+  return foldGemmlike(*this, adaptor, results);
 }
 
 arith::AtomicRMWKind cinm::getArithConstant(ReduceMethod r, Type ty) {
