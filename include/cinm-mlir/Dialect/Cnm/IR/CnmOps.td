@@ -49,7 +49,7 @@ class InferWorkgroupTypeFromBuffer<string buffer, string wg>
 : TypesMatchWith<"workgroup shape matches buffer shape", buffer, wg,
                                "cnm::WorkgroupType::get($_self.getContext(), ::llvm::cast<cnm::BufferType>($_self).getAccelerator())">;
 
-def AllocOp : Cnm_Op<"alloc", [InferWorkgroupTypeFromBuffer<"result", "wg">]> {
+def AllocOp : Cnm_Op<"alloc", [InferWorkgroupTypeFromBuffer<"result", "wg">, DeclareOpInterfaceMethods<OpAsmOpInterface, ["getAsmResultNames"]>]> {
     let summary = "Allocate a buffer for a given workgroup.";
     let description = [{}];
 
@@ -115,7 +115,7 @@ def GatherOp: Cnm_Op<"gather", [InferWorkgroupTypeFromBuffer<"buffer", "wg">, In
     let assemblyFormat = "$buffer `[` $gatherMap `]` `of` $wg attr-dict `into` $outputBuf `:` qualified(type($buffer)) `into` type($outputBuf)";
 }
 
-def LaunchOp: Cnm_Op<"launch", [AttrSizedOperandSegments, IsolatedFromAbove, SingleBlockImplicitTerminator<"TerminatorOp">]> {
+def LaunchOp: Cnm_Op<"launch", [AffineScope, AttrSizedOperandSegments, IsolatedFromAbove, SingleBlockImplicitTerminator<"TerminatorOp">]> {
     let summary = "Launch a code kernel on a given workgroup. Input buffers should have been scattered beforehand.";
     let description = [{}];
 

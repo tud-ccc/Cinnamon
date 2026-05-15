@@ -6,6 +6,7 @@
 #include "cinm-mlir/Dialect/UPMEM/IR/UPMEMOps.h"
 #include "cinm-mlir/Dialect/UPMEM/IR/UPMEMTypes.h"
 
+#include <algorithm>
 #include <cinm-mlir/Dialect/UPMEM/Transforms/Utils.h>
 #include <cstdint>
 #include <llvm/ADT/MapVector.h>
@@ -18,6 +19,7 @@
 #include <mlir/Dialect/Arith/IR/Arith.h>
 #include <mlir/Dialect/Bufferization/IR/Bufferization.h>
 #include <mlir/Dialect/MemRef/IR/MemRef.h>
+#include <mlir/Dialect/SCF/IR/SCF.h>
 #include <mlir/Dialect/Tensor/IR/Tensor.h>
 #include <mlir/Dialect/Utils/IndexingUtils.h>
 #include <mlir/IR/AffineExpr.h>
@@ -120,6 +122,7 @@ static LogicalResult convertCnmGatherToUpmem(RewriterBase &rewriter,
 
 static LogicalResult convertCnmScatterToUpmem(RewriterBase &rewriter,
                                               cnm::ScatterOp op,
+                                              bool isBroadcast,
                                               upmem::AllocDPUsOp upmemWgAlloc,
                                               StringAttr refToBuffer) {
 
@@ -131,7 +134,9 @@ static LogicalResult convertCnmScatterToUpmem(RewriterBase &rewriter,
       op.getLoc(), rewriter, convertTensorToMemref(inputTy), tensor);
 
   const size_t numTasklets = upmemWgAlloc.getType().getNumTaskletsPerDpu();
-  const int64_t transferCount = op.getTransferCountInItems() * numTasklets;
+  const int64_t transferCount =
+      isBroadcast ? op.getTransferCountInItems()
+                  : op.getTransferCountInItems() * numTasklets;
 
   upmem::ScatterOp::create(rewriter, 
       op->getLoc(), inputAsMemref, refToBuffer, transferCount,
@@ -149,46 +154,102 @@ static LogicalResult convertCnmScatterToUpmem(RewriterBase &rewriter,
 
 static void createTransfer(RewriterBase &rewriter, bool toWram, Location loc,
                            upmem::StaticAllocOp mramBuf,
-                           upmem::PrivateWRAMAllocOp pwramBuf) {
+                           TypedValue<MemRefType> wramBuffer) {
 
   auto mramBufTy = mramBuf.getBuffer().getType();
-  auto wramBufTy = pwramBuf.getBuffer().getType();
-  assert(mramBufTy.getRank() == wramBufTy.getRank() + 1);
+  auto wramBufTy = wramBuffer.getType();
+  bool isBroadcast = mramBufTy.getShape() == wramBufTy.getShape();
+  Value mramBufToScatter;
 
   auto taskletId = upmem::TaskletDimOp::create(rewriter, loc);
 
-  SmallVector<OpFoldResult, 4> offsets(mramBufTy.getRank(),
-                                       rewriter.getIndexAttr(0));
-  offsets[0] = taskletId.getResult();
+  Operation *insertionPointReset;
+  if (!isBroadcast) {
+    // scatter over tasklets
+    assert(mramBufTy.getRank() == wramBufTy.getRank() + 1);
 
-  SmallVector<OpFoldResult, 4> sizes;
-  sizes.push_back(rewriter.getIndexAttr(1));
-  for (auto size : wramBufTy.getShape()) {
-    sizes.push_back(rewriter.getIndexAttr(size));
+    SmallVector<OpFoldResult, 4> offsets(mramBufTy.getRank(),
+                                         rewriter.getIndexAttr(0));
+    offsets[0] = taskletId.getResult();
+
+    SmallVector<OpFoldResult, 4> sizes;
+    sizes.push_back(rewriter.getIndexAttr(1));
+    for (auto size : wramBufTy.getShape()) {
+      sizes.push_back(rewriter.getIndexAttr(size));
+    }
+
+    llvm::SmallVector<OpFoldResult, 4> strides(mramBufTy.getRank(),
+                                               rewriter.getIndexAttr(1));
+
+    auto [baseStrides, baseOffset] = mramBufTy.getStridesAndOffset();
+
+    // this is the type of the tile. We cannot let it be inferred as it may be
+    // rank-reduced.
+    MemRefType viewType = MemRefType::get(
+        wramBufTy.getShape(), wramBufTy.getElementType(),
+        rewriter.getAttr<StridedLayoutAttr>(
+            ShapedType::kDynamic, ArrayRef<long>(baseStrides).drop_front()),
+        mramBufTy.getMemorySpace());
+
+    mramBufToScatter = rewriter.create<memref::SubViewOp>(
+        loc, viewType, mramBuf.getBuffer(), offsets, sizes, strides);
+  } else {
+    // MRAM buffer corresponds exactly to WRAM buffer
+    // This corresponds to a broadcast.
+    mramBufToScatter = mramBuf.getBuffer();
+
+    // In that case we need to make only thread 0 call
+    // for the transfer
+    auto cst0 = rewriter.create<arith::ConstantOp>(
+        loc, rewriter.getZeroAttr(taskletId.getResult().getType()));
+    auto isTaskletZero = rewriter.create<arith::CmpIOp>(
+        loc, arith::CmpIPredicate::eq, taskletId, cst0);
+    auto scfIf = scf::IfOp::create(rewriter, loc, isTaskletZero, false);
+    // Create a barrier so that all threads wait for the transfer to finish.
+    // This is only ok if the transfer is from MRAM to WRAM, then threads are
+    // waiting for their inputs to be loaded into WRAM.
+    auto barrier = upmem::BarrierOp::create(rewriter, loc);
+    // If we are transferring back to MRAM, then the barrier needs to be instead
+    // _before_ the transfer, that way we make sure all threads are done before
+    // writing back.
+    if (!toWram) {
+      barrier->remove();
+      rewriter.setInsertionPoint(scfIf);
+      rewriter.insert(barrier);
+    }
+
+    // Position the rewriter so that the transfer is written inside the
+    // conditional block
+    rewriter.setInsertionPointToStart(&scfIf.getThenRegion().front());
+    insertionPointReset = scfIf;
   }
 
-  llvm::SmallVector<OpFoldResult, 4> strides(mramBufTy.getRank(),
-                                             rewriter.getIndexAttr(1));
-
-  auto [baseStrides, baseOffset] = mramBufTy.getStridesAndOffset();
-
-  // this is the type of the tile. We cannot let it be inferred as it may be
-  // rank-reduced.
-  MemRefType viewType = MemRefType::get(
-      wramBufTy.getShape(), wramBufTy.getElementType(),
-      rewriter.getAttr<StridedLayoutAttr>(
-          ShapedType::kDynamic, ArrayRef<long>(baseStrides).drop_front()),
-      mramBufTy.getMemorySpace());
-
-  Value tileMramView = memref::SubViewOp::create(rewriter, 
-      loc, viewType, mramBuf.getBuffer(), offsets, sizes, strides);
-
   if (toWram)
-    upmem::LocalTransferOp::create(rewriter, loc, tileMramView,
-                                            pwramBuf.getBuffer());
+    upmem::LocalTransferOp::create(rewriter, loc, mramBufToScatter, wramBuffer);
   else
-    upmem::LocalTransferOp::create(rewriter, loc, pwramBuf.getBuffer(),
-                                            tileMramView);
+    upmem::LocalTransferOp::create(rewriter, loc, wramBuffer, mramBufToScatter);
+
+  if (insertionPointReset)
+    rewriter.setInsertionPointAfter(insertionPointReset);
+}
+
+static bool isScatterBroadcastOverThreads(cnm::AllocOp alloc) {
+  for (auto user : alloc->getUsers()) {
+    if (llvm::isa<cnm::GatherOp>(user))
+      return false;
+    if (auto scatter = llvm::dyn_cast_or_null<cnm::ScatterOp>(user)) {
+      auto map = scatter.getScatterMap();
+      if (map.getNumDims() != 3)
+        return false;
+      auto unusedDims = getUnusedDimsBitVector({map});
+      if (!unusedDims[2]) {
+        // threads dim is used so all threads see the same buffer
+        return false;
+      }
+    }
+  }
+
+  return true;
 }
 
 static bool isScatterBroadcastOverThreads(cnm::AllocOp alloc) {
@@ -239,8 +300,8 @@ static LogicalResult convertCnmLaunchToUpmem(cnm::LaunchOp launch,
       wgAlloc->getLoc(), upmemTy, *programPath);
 
   llvm::MapVector<Value, upmem::StaticAllocOp> buffersToMramBuf;
-  llvm::MapVector<Value, upmem::StaticAllocOp> buffersToSharedWramBuf;
-  llvm::MapVector<Value, upmem::PrivateWRAMAllocOp> buffersToPwramBuf;
+  // llvm::MapVector<Value, upmem::StaticAllocOp> buffersToSharedWramBuf;
+  llvm::MapVector<Value, TypedValue<MemRefType>> buffersToWramBufValue;
 
   rewriter.setInsertionPointToStart(&dpuProgram.getBody().front());
 
@@ -270,21 +331,21 @@ static LogicalResult convertCnmLaunchToUpmem(cnm::LaunchOp launch,
       if (isScatterBroadcastOverThreads(alloc)) {
         // If all threads see the same buffer (broadcast), then we only
         // create one static buffer in WRAM.
-        auto wrambuf = upmem::StaticAllocOp::create(rewriter, 
+        auto wrambuf = rewriter.create<upmem::StaticAllocOp>(
             alloc->getLoc(), memrefTy, upmem::DpuMemSpace::WRAM, "buf", true);
         dpuProgramSymTable.insert(wrambuf); // this renames it to a unique name
-        buffersToSharedWramBuf[alloc.getResult()] = wrambuf;
-        continue;
+        buffersToWramBufValue[alloc.getResult()] = wrambuf.getBuffer();
+      } else {
+        // not a broadcast - each tasklet gets its own buffer
+        auto pwramBuf = rewriter.create<upmem::PrivateWRAMAllocOp>(
+            alloc.getLoc(), memrefTy);
+
+        buffersToWramBufValue[alloc.getResult()] = pwramBuf.getBuffer();
+
+        // the mram buffer type has tasklet dimension prepended - unless the
+        // buffer is broadcasted.
+        bufShape.insert(bufShape.begin(), upmemTy.getNumTaskletsPerDpu());
       }
-
-      auto pwramBuf =
-          upmem::PrivateWRAMAllocOp::create(rewriter, alloc.getLoc(), memrefTy);
-
-      buffersToPwramBuf[alloc.getResult()] = pwramBuf;
-
-      // the mram buffer type has tasklet dimension prepended - unless the
-      // buffer is broadcasted.
-      bufShape.insert(bufShape.begin(), upmemTy.getNumTaskletsPerDpu());
 
       memrefTy = MemRefType::get(bufShape, bufferType.getElementType(),
                                  MemRefLayoutAttrInterface{}, mramMemspaceAttr);
@@ -303,15 +364,12 @@ static LogicalResult convertCnmLaunchToUpmem(cnm::LaunchOp launch,
     if (auto scatter = llvm::dyn_cast_or_null<cnm::ScatterOp>(user)) {
       // If there is a shared wram buffer, this takes priority.
       upmem::StaticAllocOp alloc = buffersToMramBuf.lookup(scatter.getBuffer());
-      if (!alloc) {
-        // if there is no mram buffer then that means we are scattering directly
-        // to wram
-        alloc = buffersToSharedWramBuf.lookup(scatter.getBuffer());
-      }
+      bool isBroadcast = isa<upmem::StaticAllocOp>(
+          buffersToWramBufValue[scatter.getBuffer()].getDefiningOp());
 
-      if (!alloc ||
-          failed(convertCnmScatterToUpmem(rewriter, scatter, upmemWgAlloc,
-                                          alloc.getSymNameAttr()))) {
+      if (!alloc || failed(convertCnmScatterToUpmem(rewriter, scatter,
+                                                    isBroadcast, upmemWgAlloc,
+                                                    alloc.getSymNameAttr()))) {
         return failure();
       }
     }
@@ -336,23 +394,25 @@ static LogicalResult convertCnmLaunchToUpmem(cnm::LaunchOp launch,
            llvm::concat<Value>(launch.getInputs(), launch.getOutBuffers()),
            launch.getBody().getArguments())) {
 
-    auto pwrambuf = buffersToPwramBuf.lookup(cnmBuf);
-    if (pwrambuf) {
-      mapping.map(memref, pwrambuf.getBuffer());
-      continue;
-    }
-    auto wrambuf = buffersToSharedWramBuf.lookup(cnmBuf);
-    if (wrambuf) {
-      mapping.map(memref, wrambuf.getBuffer());
-    }
+    auto wrambuf = buffersToWramBufValue.lookup(cnmBuf);
+    mapping.map(memref, wrambuf);
   }
 
   // todo support moving tiles of the mram buffer into pwram
   rewriter.setInsertionPointToEnd(&dpuProgram.getBody().front());
   for (auto [buf, mramBuf] : buffersToMramBuf) {
-    auto pwramBuf = buffersToPwramBuf[buf];
-
-    createTransfer(rewriter, true, buf.getLoc(), mramBuf, pwramBuf);
+    if (std::none_of(buf.getUsers().begin(), buf.getUsers().end(),
+                     [](auto op) { return llvm::isa<cnm::ScatterOp>(op); })) {
+      // If there is no scatter we also don't need to load any data from mram to
+      // wram. It's likely a pure output buffer.
+      // TODO i think when we push eg constants values into the DPU program this
+      //  will not hold anymore. The condition is more, if the kernel doesn't
+      //  read the buffer.
+      continue;
+    }
+    auto wramBuf = buffersToWramBufValue[buf];
+    createTransfer(rewriter, true, buf.getLoc(), mramBuf, wramBuf);
+    rewriter.setInsertionPointToEnd(&dpuProgram.getBody().front());
   }
 
   // copy the old ops
@@ -362,10 +422,11 @@ static LogicalResult convertCnmLaunchToUpmem(cnm::LaunchOp launch,
 
   // transfer buffers back to mram
   for (auto buf : launch.getOutBuffers()) {
-    auto pwramBuf = buffersToPwramBuf[buf];
+    auto wramBuf = buffersToWramBufValue[buf];
     auto mramBuf = buffersToMramBuf[buf];
 
-    createTransfer(rewriter, false, buf.getLoc(), mramBuf, pwramBuf);
+    createTransfer(rewriter, false, buf.getLoc(), mramBuf, wramBuf);
+    rewriter.setInsertionPointToEnd(&dpuProgram.getBody().front());
   }
 
   upmem::ReturnOp::create(rewriter, launch->getLoc());

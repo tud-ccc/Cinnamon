@@ -25,6 +25,12 @@ AffineExpr linearizeIndices(MLIRContext *ctx, ArrayRef<int64_t> shape);
 void structureIndex(AffineExpr index, ArrayRef<int64_t> shape,
                     SmallVectorImpl<AffineExpr> &map);
 
+/// Returns true if \p v folds to a splat-zero tensor or memref constant.
+/// Beyond matching a direct `arith.constant dense<0>`, this also tries to fold
+/// the defining op with whatever constant operands are available, so it catches
+/// patterns like `linalg.fill(0, tensor.empty())`.
+bool isZeroSplatFoldable(Value v);
+
 /// Create a tensor.reshape for a fully static tensor shape
 TypedValue<ShapedType> reshapeStatic(OpBuilder &, Location loc, Value value,
                                      ShapedType type,

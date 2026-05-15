@@ -14,6 +14,7 @@ include "cinm-mlir/Dialect/Cinm/IR/CinmAttributes.td"
 include "cinm-mlir/Dialect/Cinm/IR/CinmPlatformAttrInterface.td"
 include "cinm-mlir/Dialect/Cinm/IR/TilingInterface.td"
 include "cinm-mlir/Dialect/Cinm/IR/CinmComputeOpInterface.td"
+include "cinm-mlir/Dialect/Cinm/IR/CinmGemmlikeOpInterface.td"
 
 include "mlir/IR/EnumAttr.td"
 include "mlir/IR/BuiltinAttributes.td"
@@ -70,7 +71,8 @@ class Cinm_GemmlikeOp<string name, string cppClassName> : Cinm_Op<name,
     DeclareOpInterfaceMethods<MemoryEffectsOpInterface>,
     // OptionalTypesMatchWith<
     //   "bias should have compatible type", "result", "bias", "$_self">,
-    AttrSizedOperandSegments
+    AttrSizedOperandSegments,
+    CinmGemmlikeOpInterface
   ]> {
 
   let description = [{
@@ -107,6 +109,7 @@ class Cinm_GemmlikeOp<string name, string cppClassName> : Cinm_Op<name,
   );
 
   // let hasVerifier = 1; // todo
+  let hasFolder = 1;
   let results = (outs Optional<AnyRankedTensor>:$result);
   let assemblyFormat =
     "$lhs `,` $rhs (`plus` $bias^)? (`into` $out^)? attr-dict `:` type($lhs) `,` type($rhs) (`plus` type($bias)^)? (`into` type($out)^)? (`->` type($result)^)?";

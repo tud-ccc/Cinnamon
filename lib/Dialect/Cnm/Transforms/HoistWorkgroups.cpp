@@ -53,5 +53,25 @@ struct CnmHoistWorkgroupsPass
         }
       }
     }
+
+    // Hoist buffer alloc ops after their respective workgroup op.
+    llvm::SmallVector<cnm::AllocOp> bufAllocs;
+    fun->walk([&](cnm::AllocOp op) { bufAllocs.push_back(op); });
+
+    for (auto bufAlloc : bufAllocs) {
+      Operation *parent = bufAlloc;
+      while (parent->getParentOp() && parent->getParentOp() != fun &&
+             !parent->getParentOp()->hasTrait<OpTrait::IsIsolatedFromAbove>()) {
+        parent = parent->getParentOp();
+      }
+      if (parent == bufAlloc)
+        continue;
+      Operation *wgDef = bufAlloc.getWg().getDefiningOp();
+      if (!wgDef)
+        continue;
+      bufAlloc->remove();
+      rewriter.setInsertionPointAfter(wgDef);
+      rewriter.insert(bufAlloc);
+    }
   }
 };

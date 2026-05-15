@@ -38,3 +38,4 @@ add_dependencies(${prefix}IncGen ${prefix}IRIncGen)
 
 mlir_gen_iface(Cinm TilingInterface op)
 mlir_gen_iface(Cinm CinmComputeOpInterface op)
+mlir_gen_iface(Cinm CinmGemmlikeOpInterface op)

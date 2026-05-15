@@ -18,5 +18,7 @@ add_mlir_conversion_library(MLIRCnmToUPMEM
     MLIRDialectUtils
     MLIRFuncDialect
     MLIRTransformUtils
+    MLIRArithDialect
+    MLIRSCFDialect
     MLIRReconcileUnrealizedCasts
 )

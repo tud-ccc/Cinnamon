@@ -1256,6 +1256,11 @@ static LogicalResult printOperation(CppEmitter &emitter,
   return success();
 }
 
+static LogicalResult printOperation(CppEmitter &emitter, upmem::BarrierOp) {
+  emitter.ostream() << "barrier_wait(&my_barrier)";
+  return success();
+}
+
 static LogicalResult printOperation(CppEmitter &emitter, upmem::ReturnOp) {
   emitter.ostream() << "return";
   return success();
@@ -1327,7 +1332,9 @@ static LogicalResult printOperation(CppEmitter &emitter, ModuleOp moduleOp) {
         "#include <stdio.h>\n"
         "#include <stdlib.h>\n\n"
         "#include \"expf.c\"\n"
-        "\n";
+        "\n\n";
+
+  os << "BARRIER_INIT(my_barrier, NR_TASKLETS);\n\n";
 
   for (auto kernel : kernels) {
     os << "#ifdef ";
@@ -1338,7 +1345,6 @@ static LogicalResult printOperation(CppEmitter &emitter, ModuleOp moduleOp) {
     os << "#endif\n\n";
   }
 
-  os << "BARRIER_INIT(my_barrier, NR_TASKLETS);\n\n";
 
   os << "int main(void) {\n";
   os << "  barrier_wait(&my_barrier);\n";
@@ -1734,6 +1740,8 @@ LogicalResult CppEmitter::emitOperation(Operation &op, bool trailingSemicolon) {
           .Case<memref::LoadOp>(
               [&](auto op) { return printOperation(*this, op); })
           .Case<memref::StoreOp>(
+              [&](auto op) { return printOperation(*this, op); })
+          .Case<upmem::BarrierOp>(
               [&](auto op) { return printOperation(*this, op); })
           .Case<memref::SubViewOp>([&](memref::SubViewOp op) -> LogicalResult {
             if (llvm::all_of(op.getResult().getUsers(), [](auto user) {

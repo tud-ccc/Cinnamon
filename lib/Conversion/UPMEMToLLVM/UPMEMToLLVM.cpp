@@ -357,11 +357,6 @@ static LogicalResult lowerScatterOrGather(Op op, typename Op::Adaptor adaptor,
     return emitError(op->getLoc(), "Cannot emit affine map");
   }
 
-  /*
-  void upmemrt_scatter_dpu(struct dpu_set_t *dpu_set, void *A, size_t
-  input_size, size_t copy_bytes, size_t offset_in_dpu, size_t
-  (*base_offset)(size_t));
-  */
   auto runtimeScatterFun = getScatterOrGatherFunc(
       rewriter, moduleOp, tyConverter,
       isGather ? "upmemrt_dpu_gather" : "upmemrt_dpu_scatter");
@@ -403,6 +398,16 @@ static LogicalResult lowerScatterOrGather(Op op, typename Op::Adaptor adaptor,
   // Number of elements for each tasklet
   const size_t numElementsPerTasklet = numElements / numTasklets;
 
+  /*
+  void upmemrt_dpu_scatter( struct dpu_set_t *dpu_set, 
+                            void *hostBuffer,
+                            size_t element_size,
+                            size_t num_elements,
+                            size_t num_elements_per_tasklet,
+                            size_t copy_bytes,
+                            const char *bufId,
+                            size_t (*base_offset)(size_t))
+  */
   rewriter0.create<LLVM::CallOp>(
       loc, *runtimeScatterFun,
       ValueRange{adaptor.getHierarchy(), bareHostBuf,

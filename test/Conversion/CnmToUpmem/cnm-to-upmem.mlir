@@ -14,8 +14,8 @@
 // CHECK: %[[SV_B:.*]] = memref.subview %[[ALLOC]][0, %[[J]]] [64, 1] [1, 1] : memref<64x64xi32> to memref<64x1xi32, {{.*}}>
 // CHECK: %[[ALLOC_T:.*]] = memref.alloc() {{.*}} : memref<1x64xi32>
 // CHECK: linalg.transpose ins(%[[SV_B]] : memref<64x1xi32, {{.*}}>) outs(%[[ALLOC_T]] : memref<1x64xi32>) permutation = [1, 0]
-// CHECK: upmem.scatter %[[SV_A]][64, #[[MAP]]] onto @buf_1 of %[[DPU]] : memref<16x64xi32, {{.*}}> onto !upmem.hierarchy<1x16x1>
-// CHECK: upmem.scatter %[[ALLOC_T]][64, #[[MAP1]]] onto @buf_0 of %[[DPU]] : memref<1x64xi32> onto !upmem.hierarchy<1x16x1>
+// CHECK: upmem.scatter %[[SV_A]][64, #[[MAP]]] onto @buf_3 of %[[DPU]] : memref<16x64xi32, {{.*}}> onto !upmem.hierarchy<1x16x1>
+// CHECK: upmem.scatter %[[ALLOC_T]][64, #[[MAP1]]] onto @buf_1 of %[[DPU]] : memref<1x64xi32> onto !upmem.hierarchy<1x16x1>
 // CHECK: upmem.scatter %[[CST]][1, #[[MAP]]] onto @buf of %[[DPU]] : memref<16x1xi32> onto !upmem.hierarchy<1x16x1>
 // CHECK: upmem.wait_for %[[DPU]] : !upmem.hierarchy<1x16x1>
 // CHECK: %[[SV_OUT:.*]] = memref.subview %[[ALLOC]][%[[I]], %[[J]]] [16, 1] [1, 1] : memref<64x64xi32> to memref<16x1xi32, {{.*}}>
@@ -25,19 +25,23 @@
 // CHECK: upmem.dpu_program @program() tasklets(1) {
 // CHECK: %[[WRAM_C:.*]] = pwram_alloc() : memref<i32, #upmem.wram>
 // CHECK: %[[MRAM_C:.*]] = static_alloc @buf(mram) : memref<1xi32, #upmem.mram>
-// CHECK: %[[WRAM_B:.*]] = pwram_alloc() : memref<64xi32, #upmem.wram>
-// CHECK: %[[MRAM_B:.*]] = static_alloc @buf_0(mram) : memref<1x64xi32, #upmem.mram>
-// CHECK: %[[WRAM_A:.*]] = pwram_alloc() : memref<64xi32, #upmem.wram>
-// CHECK: %[[MRAM_A:.*]] = static_alloc @buf_1(mram) : memref<1x64xi32, #upmem.mram>
+// CHECK: %[[WRAM_B:.*]] = static_alloc @buf_0(wram) noinit : memref<64xi32, #upmem.wram>
+// CHECK: %[[MRAM_B:.*]] = static_alloc @buf_1(mram) : memref<64xi32, #upmem.mram>
+// CHECK: %[[WRAM_A:.*]] = static_alloc @buf_2(wram) noinit : memref<64xi32, #upmem.wram>
+// CHECK: %[[MRAM_A:.*]] = static_alloc @buf_3(mram) : memref<64xi32, #upmem.mram>
 // CHECK: %[[T0:.*]] = tasklet_dim()
 // CHECK: %[[SV0:.*]] = memref.subview %[[MRAM_C]][%[[T0]]] [1] [1] : memref<1xi32, #upmem.mram> to memref<i32, {{.*}}, #upmem.mram>
 // CHECK: local_transfer %[[SV0]] into %[[WRAM_C]] : memref<i32, {{.*}}, #upmem.mram> to memref<i32, #upmem.wram>
 // CHECK: %[[T1:.*]] = tasklet_dim()
-// CHECK: %[[SV1:.*]] = memref.subview %[[MRAM_B]][%[[T1]], 0] [1, 64] [1, 1] : memref<1x64xi32, #upmem.mram> to memref<64xi32, {{.*}}, #upmem.mram>
-// CHECK: local_transfer %[[SV1]] into %[[WRAM_B]] : memref<64xi32, {{.*}}, #upmem.mram> to memref<64xi32, #upmem.wram>
+// CHECK: arith.cmpi eq, %[[T1]],
+// CHECK: scf.if
+// CHECK: upmem.local_transfer %[[MRAM_B]] into %[[WRAM_B]] : memref<64xi32, #upmem.mram> to memref<64xi32, #upmem.wram>
+// CHECK: barrier()
 // CHECK: %[[T2:.*]] = tasklet_dim()
-// CHECK: %[[SV2:.*]] = memref.subview %[[MRAM_A]][%[[T2]], 0] [1, 64] [1, 1] : memref<1x64xi32, #upmem.mram> to memref<64xi32, {{.*}}, #upmem.mram>
-// CHECK: local_transfer %[[SV2]] into %[[WRAM_A]] : memref<64xi32, {{.*}}, #upmem.mram> to memref<64xi32, #upmem.wram>
+// CHECK: arith.cmpi eq, %[[T2]],
+// CHECK: scf.if
+// CHECK: upmem.local_transfer %[[MRAM_A]] into %[[WRAM_A]] : memref<64xi32, #upmem.mram> to memref<64xi32, #upmem.wram>
+// CHECK: barrier()
 // CHECK: linalg.reduce ins(%[[WRAM_A]], %[[WRAM_B]] : memref<64xi32, #upmem.wram>, memref<64xi32, #upmem.wram>) outs(%[[WRAM_C]] : memref<i32, #upmem.wram>) dimensions = [0]
 // CHECK: arith.muli
 // CHECK: arith.addi

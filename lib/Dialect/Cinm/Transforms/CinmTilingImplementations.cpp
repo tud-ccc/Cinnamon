@@ -99,7 +99,7 @@ static Value insertSliceND(OpBuilder &builder, Location loc, Value slice,
 }
 
 static OpFoldResult getDimOfr(OpBuilder &b, Location loc,
-                               TypedValue<ShapedType> shaped, int64_t dimIdx) {
+                              TypedValue<ShapedType> shaped, int64_t dimIdx) {
   const int64_t size = shaped.getType().getDimSize(dimIdx);
   if (!ShapedType::isDynamic(size))
     return b.getIndexAttr(size);
@@ -109,13 +109,23 @@ static OpFoldResult getDimOfr(OpBuilder &b, Location loc,
   return memref::DimOp::create(b, loc, shaped, idx).getResult();
 }
 
-static DiagnosedSilenceableFailure convertGemmlikeToTiledOps(
-    RewriterBase &rewriter, Location loc, TypedValue<ShapedType> lhs,
-    TypedValue<ShapedType> rhs, TypedValue<ShapedType> bias,
-    TypedValue<ShapedType> out, ShapedType resultType,
+namespace {
+DiagnosedSilenceableFailure convertGemmlikeToTiledOps(
+    RewriterBase &rewriter, cinm::GemmlikeOpInterface op,
     ArrayRef<int64_t> tilingFactors, SmallVectorImpl<Value> &results,
     std::function<Value(OpBuilder &, Location, Value, Value, Value, Value)>
         buildTileOp) {
+  Location loc = op->getLoc();
+  auto lhs = cast<TypedValue<ShapedType>>(op.getLhs());
+  auto rhs = cast<TypedValue<ShapedType>>(op.getRhs());
+  TypedValue<ShapedType> bias, out;
+  if (Value v = op.getBias())
+    bias = cast<TypedValue<ShapedType>>(v);
+  if (Value v = op.getOut())
+    out = cast<TypedValue<ShapedType>>(v);
+  ShapedType resultType = op.isTensorVariant()
+                              ? cast<ShapedType>(op.getGemmResult().getType())
+                              : cast<ShapedType>(op.getOut().getType());
   const int64_t lhsRank = lhs.getType().getRank();
   const int64_t nPar = resultType.getRank();
   if (lhsRank < 2)
@@ -247,8 +257,6 @@ static DiagnosedSilenceableFailure convertGemmlikeToTiledOps(
 // External model structs
 // ---------------------------------------------------------------------------
 
-namespace {
-
 struct ReduceTilingModel
     : public CinmTilingInterface::ExternalModel<ReduceTilingModel,
                                                 cinm::ReduceOp> {
@@ -278,14 +286,15 @@ struct ReduceTilingModel
       reductionDim += inputType.getRank();
 
     auto neutral = arith::getIdentityValueAttr(
-        getArithConstant(method, inputType.getElementType()), inputType.getElementType(),
-        builder, reduce.getLoc());
+        getArithConstant(method, inputType.getElementType()),
+        inputType.getElementType(), builder, reduce.getLoc());
 
     auto resultType = reduce.getResult().getType();
 
     Value result;
     if (isa<TensorType>(resultType))
-      result = tensor::EmptyOp::create(builder, reduce.getLoc(), resultType, {});
+      result =
+          tensor::EmptyOp::create(builder, reduce.getLoc(), resultType, {});
     else if (resultType.isIntOrFloat())
       result = arith::ConstantOp::create(builder, reduce.getLoc(), neutral);
     else
@@ -306,14 +315,13 @@ struct ReduceTilingModel
           SmallVector<Value> resultTileIndex(tileIndex);
           resultTileIndex.erase(resultTileIndex.begin() + reductionDim);
 
-          Type resultTy =
-              resultTileSize.size() == 0
-                  ? inputType.getElementType()
-                  : inputType.cloneWith(resultTileSize,
-                                        inputType.getElementType());
+          Type resultTy = resultTileSize.size() == 0
+                              ? inputType.getElementType()
+                              : inputType.cloneWith(resultTileSize,
+                                                    inputType.getElementType());
 
-          auto smaller = ReduceOp::create(b, loc, resultTy, method, sliceIn,
-                                          reductionDim);
+          auto smaller =
+              ReduceOp::create(b, loc, resultTy, method, sliceIn, reductionDim);
 
           auto shapedResultTile =
               llvm::dyn_cast_or_null<TypedValue<ShapedType>>(
@@ -334,9 +342,9 @@ struct ReduceTilingModel
               return {
                   tensor::InsertOp::create(b, loc, red, acc, resultTileIndex)};
             } else if (acc.getType().isIntOrFloat()) {
-              return {arith::getReductionOp(
-                  getArithConstant(method, acc.getType()), b, loc, acc,
-                  smaller.getResult())};
+              return {
+                  arith::getReductionOp(getArithConstant(method, acc.getType()),
+                                        b, loc, acc, smaller.getResult())};
             }
           }
           assert(false && "unhandled type");
@@ -353,7 +361,8 @@ struct ElementwiseTilingModel
   void getTilableDimSizes(Operation *op,
                           SmallVectorImpl<int64_t> &dimSizes) const {
     auto ew = cast<cinm::ElementwiseOp>(op);
-    dimSizes.push_back(cast<ShapedType>(ew.getLhs().getType()).getNumElements());
+    dimSizes.push_back(
+        cast<ShapedType>(ew.getLhs().getType()).getNumElements());
   }
 
   DiagnosedSilenceableFailure
@@ -379,7 +388,9 @@ struct ElementwiseTilingModel
 
     TypedValue<ShapedType> memrefOut =
         llvm::dyn_cast_or_null<TypedValue<ShapedType>>(ew.getOut());
+
     if (shape.size() > 1) {
+
       originalShapeValue = arith::ConstantOp::create(
           builder,
           RankedTensorType::get({static_cast<int64_t>(shape.size())},
@@ -391,6 +402,7 @@ struct ElementwiseTilingModel
         rhs = mlir::reshapeStatic(builder, builder.getLoc(), rhs,
                                   {tensorTy.getNumElements()});
       }
+
       if (memrefOut) {
         memrefOut = mlir::reshapeStatic(builder, builder.getLoc(), memrefOut,
                                         {tensorTy.getNumElements()});
@@ -402,10 +414,13 @@ struct ElementwiseTilingModel
     int64_t tileSize =
         std::max<int64_t>(1, std::min<int64_t>(tilingFactors[0], numElements));
 
+    // Accumulator keeps the original ND type — no post-loop reshape needed.
+    // For rank>1 the insert is wrapped by collapse_shape/expand_shape inside
+    // the loop body, which is the pattern eliminate-empty-tensors can elide.
     ValueRange resultInit{};
     if (ew.getResult()) {
-      resultInit =
-          tensor::EmptyOp::create(builder, tensorTy, ValueRange{})->getResults();
+      resultInit = tensor::EmptyOp::create(builder, originalType, ValueRange{})
+                       ->getResults();
     } else {
       assert(memrefOut);
     }
@@ -415,6 +430,9 @@ struct ElementwiseTilingModel
         [&](OpBuilder &b, Location loc, ValueRange indices,
             ValueRange iterArgs) -> SmallVector<Value> {
           Value base = indices[0];
+
+          Value flatAcc =
+              reshapeStatic(b, loc, iterArgs[0], originalType, {numElements});
 
           Value lhsSlice = extractSlice1D(b, loc, lhs, tileSize, base);
 
@@ -433,25 +451,41 @@ struct ElementwiseTilingModel
             SmallVector<OpFoldResult, 1> siz{b.getIndexAttr(tileSize)};
             SmallVector<OpFoldResult, 1> str{b.getI64IntegerAttr(1)};
             SmallVector<OpFoldResult, 1> off{base};
-            Value subResult = tensor::InsertSliceOp::create(
-                b, loc, smaller.getResult(), iterArgs[0], off, siz, str);
-            return {subResult};
+            // Collapse the ND accumulator to flat, insert the tile, then
+            // expand back. collapse(expand(x, R), R) folds to x once
+            // eliminate-empty-tensors removes the empty init.
+            Value updatedFlat = tensor::InsertSliceOp::create(
+                b, loc, smaller.getResult(), flatAcc, off, siz, str);
+            Value updatedND = tensor::ReshapeOp::create(
+                b, loc, originalType, updatedFlat, originalShapeValue);
+            return {updatedND};
           }
           return {};
         });
 
-    if (originalType.getRank() > 1) {
-      loopResult[0] = tensor::ReshapeOp::create(
-          builder, originalType, loopResult[0], originalShapeValue);
-    }
     results.append(loopResult.begin(), loopResult.end());
     return DiagnosedSilenceableFailure::success();
   }
 };
 
+template <class Self, class Op>
+struct GemmLikeTilingModel
+    : public CinmTilingInterface::ExternalModel<Self, Op> {
+  DiagnosedSilenceableFailure
+  convertToTiledOps(Operation *op, RewriterBase &rewriter,
+                    ArrayRef<int64_t> tilingFactors,
+                    SmallVectorImpl<Value> &results) const {
+    return convertGemmlikeToTiledOps(
+        rewriter, cast<Op>(op), tilingFactors, results,
+        [](OpBuilder &b, Location loc, Value lhs, Value rhs, Value acc,
+           Value out) -> Value {
+          return Op::create(b, loc, lhs, rhs, acc, out).getResult();
+        });
+  }
+};
+
 struct GemmTilingModel
-    : public CinmTilingInterface::ExternalModel<GemmTilingModel,
-                                                cinm::GemmOp> {
+    : public GemmLikeTilingModel<GemmTilingModel, cinm::GemmOp> {
   void getTilableDimSizes(Operation *op,
                           SmallVectorImpl<int64_t> &dimSizes) const {
     auto gemm = cast<cinm::GemmOp>(op);
@@ -461,57 +495,20 @@ struct GemmTilingModel
     dimSizes.push_back(rhsType.getDimSize(1)); // N
     dimSizes.push_back(lhsType.getDimSize(1)); // K
   }
-
-  DiagnosedSilenceableFailure
-  convertToTiledOps(Operation *op, RewriterBase &rewriter,
-                    ArrayRef<int64_t> tilingFactors,
-                    SmallVectorImpl<Value> &results) const {
-    auto gemm = cast<cinm::GemmOp>(op);
-    ShapedType resultType = gemm.getResult()
-                                ? gemm.getResult().getType()
-                                : cast<ShapedType>(gemm.getOut().getType());
-    return convertGemmlikeToTiledOps(
-        rewriter, gemm.getLoc(), gemm.getLhs(), gemm.getRhs(), gemm.getBias(),
-        gemm.getOut(), resultType, tilingFactors, results,
-        [](OpBuilder &b, Location loc, Value lhs, Value rhs, Value acc,
-           Value out) -> Value {
-          return cinm::GemmOp::create(b, loc, lhs, rhs, acc, out).getResult();
-        });
-  }
 };
 
 struct GemvTilingModel
-    : public CinmTilingInterface::ExternalModel<GemvTilingModel,
-                                                cinm::GemvOp> {
+    : public GemmLikeTilingModel<GemvTilingModel, cinm::GemvOp> {
   void getTilableDimSizes(Operation *op,
                           SmallVectorImpl<int64_t> &dimSizes) const {
-    auto gemv = cast<cinm::GemvOp>(op);
-    auto lhsType = cast<ShapedType>(gemv.getLhs().getType());
+    auto lhsType = cast<ShapedType>(cast<cinm::GemvOp>(op).getLhs().getType());
     dimSizes.push_back(lhsType.getDimSize(0)); // M
     dimSizes.push_back(lhsType.getDimSize(1)); // K
-  }
-
-  DiagnosedSilenceableFailure
-  convertToTiledOps(Operation *op, RewriterBase &rewriter,
-                    ArrayRef<int64_t> tilingFactors,
-                    SmallVectorImpl<Value> &results) const {
-    auto gemv = cast<cinm::GemvOp>(op);
-    ShapedType resultType = gemv.getResult()
-                                ? gemv.getResult().getType()
-                                : cast<ShapedType>(gemv.getOut().getType());
-    return convertGemmlikeToTiledOps(
-        rewriter, gemv.getLoc(), gemv.getLhs(), gemv.getRhs(), gemv.getBias(),
-        gemv.getOut(), resultType, tilingFactors, results,
-        [](OpBuilder &b, Location loc, Value lhs, Value rhs, Value acc,
-           Value out) -> Value {
-          return cinm::GemvOp::create(b, loc, lhs, rhs, acc, out).getResult();
-        });
   }
 };
 
 struct BatchGemmTilingModel
-    : public CinmTilingInterface::ExternalModel<BatchGemmTilingModel,
-                                                cinm::BatchGemmOp> {
+    : public GemmLikeTilingModel<BatchGemmTilingModel, cinm::BatchGemmOp> {
   void getTilableDimSizes(Operation *op,
                           SmallVectorImpl<int64_t> &dimSizes) const {
     auto gemm = cast<cinm::BatchGemmOp>(op);
@@ -522,54 +519,17 @@ struct BatchGemmTilingModel
     dimSizes.push_back(rhsType.getDimSize(2)); // N
     dimSizes.push_back(lhsType.getDimSize(2)); // K
   }
-
-  DiagnosedSilenceableFailure
-  convertToTiledOps(Operation *op, RewriterBase &rewriter,
-                    ArrayRef<int64_t> tilingFactors,
-                    SmallVectorImpl<Value> &results) const {
-    auto gemm = cast<cinm::BatchGemmOp>(op);
-    ShapedType resultType = gemm.getResult()
-                                ? gemm.getResult().getType()
-                                : cast<ShapedType>(gemm.getOut().getType());
-    return convertGemmlikeToTiledOps(
-        rewriter, gemm.getLoc(), gemm.getLhs(), gemm.getRhs(), gemm.getBias(),
-        gemm.getOut(), resultType, tilingFactors, results,
-        [](OpBuilder &b, Location loc, Value lhs, Value rhs, Value acc,
-           Value out) -> Value {
-          return cinm::BatchGemmOp::create(b, loc, lhs, rhs, acc, out)
-              .getResult();
-        });
-  }
 };
 
 struct BatchGemvTilingModel
-    : public CinmTilingInterface::ExternalModel<BatchGemvTilingModel,
-                                                cinm::BatchGemvOp> {
+    : public GemmLikeTilingModel<BatchGemvTilingModel, cinm::BatchGemvOp> {
   void getTilableDimSizes(Operation *op,
                           SmallVectorImpl<int64_t> &dimSizes) const {
-    auto gemv = cast<cinm::BatchGemvOp>(op);
-    auto lhsType = cast<ShapedType>(gemv.getLhs().getType());
+    auto lhsType =
+        cast<ShapedType>(cast<cinm::BatchGemvOp>(op).getLhs().getType());
     dimSizes.push_back(lhsType.getDimSize(0)); // B
     dimSizes.push_back(lhsType.getDimSize(1)); // M
     dimSizes.push_back(lhsType.getDimSize(2)); // K
-  }
-
-  DiagnosedSilenceableFailure
-  convertToTiledOps(Operation *op, RewriterBase &rewriter,
-                    ArrayRef<int64_t> tilingFactors,
-                    SmallVectorImpl<Value> &results) const {
-    auto gemv = cast<cinm::BatchGemvOp>(op);
-    ShapedType resultType = gemv.getResult()
-                                ? gemv.getResult().getType()
-                                : cast<ShapedType>(gemv.getOut().getType());
-    return convertGemmlikeToTiledOps(
-        rewriter, gemv.getLoc(), gemv.getLhs(), gemv.getRhs(), gemv.getBias(),
-        gemv.getOut(), resultType, tilingFactors, results,
-        [](OpBuilder &b, Location loc, Value lhs, Value rhs, Value acc,
-           Value out) -> Value {
-          return cinm::BatchGemvOp::create(b, loc, lhs, rhs, acc, out)
-              .getResult();
-        });
   }
 };
 
