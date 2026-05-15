@@ -389,26 +389,28 @@ struct ElementwiseTilingModel
     TypedValue<ShapedType> memrefOut =
         llvm::dyn_cast_or_null<TypedValue<ShapedType>>(ew.getOut());
 
-    if (shape.size() > 1) {
-
+    if (ew.getResult()) {
       originalShapeValue = arith::ConstantOp::create(
           builder,
           RankedTensorType::get({static_cast<int64_t>(shape.size())},
                                 builder.getI64Type()),
           builder.getI64TensorAttr(shape));
+    }
+    if (shape.size() > 1) {
+
       lhs = mlir::reshapeStatic(builder, builder.getLoc(), lhs,
                                 {tensorTy.getNumElements()});
       if (!isUnaryOp) {
         rhs = mlir::reshapeStatic(builder, builder.getLoc(), rhs,
                                   {tensorTy.getNumElements()});
       }
-
       if (memrefOut) {
         memrefOut = mlir::reshapeStatic(builder, builder.getLoc(), memrefOut,
                                         {tensorTy.getNumElements()});
       }
-      tensorTy = lhs.getType();
     }
+
+    tensorTy = lhs.getType();
 
     const int64_t numElements = tensorTy.getNumElements();
     int64_t tileSize =
@@ -431,8 +433,12 @@ struct ElementwiseTilingModel
             ValueRange iterArgs) -> SmallVector<Value> {
           Value base = indices[0];
 
-          Value flatAcc =
-              reshapeStatic(b, loc, iterArgs[0], originalType, {numElements});
+          Value flatAcc;
+          if (iterArgs.size()) {
+            // tensor variant
+            flatAcc =
+                reshapeStatic(b, loc, iterArgs[0], originalType, {numElements});
+          }
 
           Value lhsSlice = extractSlice1D(b, loc, lhs, tileSize, base);
 
