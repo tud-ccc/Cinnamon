@@ -42,7 +42,7 @@ static Value toMemrefLike(ConversionPatternRewriter &rewriter, Location loc,
   auto t = dyn_cast<RankedTensorType>(ty);
   assert(t && "expected memref or ranked tensor");
   auto memTy = MemRefType::get(t.getShape(), t.getElementType());
-  return rewriter.create<bufferization::ToBufferOp>(loc, memTy, v);
+  return bufferization::ToBufferOp::create(rewriter, loc, memTy, v);
 }
 
 static Value getCrossbarIdFromCompute(cinm::ComputeBlockOp ComputeBlockOp) {
@@ -102,7 +102,7 @@ struct ConvertCinmComputeToCim
 
     auto &entryBlock = op.getBody().front();
     rewriter.setInsertionPoint(&entryBlock.front());
-    auto acquireDev = rewriter.create<cim::AcquireDeviceOp>(op.getLoc());
+    auto acquireDev = cim::AcquireDeviceOp::create(rewriter, op.getLoc());
     SmallVector<NamedAttribute> xbAttrs;
     if (auto tiles = op->getAttrOfType<DenseI64ArrayAttr>("tileSizes")) {
       auto vals = tiles.asArrayRef();
@@ -113,13 +113,13 @@ struct ConvertCinmComputeToCim
                              rewriter.getI64IntegerAttr(vals[1]));
       }
     }
-    auto acquireXB = rewriter.create<cim::AcquireCrossbarOp>(
+    auto acquireXB = cim::AcquireCrossbarOp::create(rewriter, 
         op.getLoc(), acquireDev.getResult(), xbAttrs);
 
     Operation &lastOp = op.getBody().back().back();
     rewriter.setInsertionPointAfter(&lastOp);
-    rewriter.create<cim::ReleaseCrossbarOp>(op.getLoc(), acquireXB.getResult());
-    rewriter.create<cim::ReleaseDeviceOp>(op.getLoc(), acquireDev.getResult());
+    cim::ReleaseCrossbarOp::create(rewriter, op.getLoc(), acquireXB.getResult());
+    cim::ReleaseDeviceOp::create(rewriter, op.getLoc(), acquireDev.getResult());
 
     rewriter.finalizeOpModification(op);
     return success();
@@ -149,7 +149,7 @@ struct ConvertCinmYieldInMemRefCompute
         if (!resTy)
           return op.emitOpError() << "compute_memref result #" << i
                                   << " must be a memref when yielding a future";
-        auto barrier = rewriter.create<cim::BarrierOp>(loc, resTy, operand);
+        auto barrier = cim::BarrierOp::create(rewriter, loc, resTy, operand);
         result.replaceAllUsesWith(barrier.getResult());
         continue;
       }
@@ -209,8 +209,8 @@ struct LowerCinmActivate : public OpConversionPattern<cinm::ElementwiseOp> {
     Operation *act = rewriter.create(st);
     Value fut = act->getResult(0);
 
-    Value y = rewriter.create<cim::BarrierOp>(loc, outTy, fut).getResult();
-    rewriter.create<memref::CopyOp>(loc, y, out);
+    Value y = cim::BarrierOp::create(rewriter, loc, outTy, fut).getResult();
+    memref::CopyOp::create(rewriter, loc, y, out);
 
     rewriter.eraseOp(op);
     return success();
@@ -255,8 +255,8 @@ struct LowerCinmQuantize : public OpConversionPattern<cinm::QuantizeOp> {
     auto *qOp = rewriter.create(st);
     Value fut = qOp->getResult(0);
 
-    Value y = rewriter.create<cim::BarrierOp>(loc, outTy, fut).getResult();
-    rewriter.create<memref::CopyOp>(loc, y, out);
+    Value y = cim::BarrierOp::create(rewriter, loc, outTy, fut).getResult();
+    memref::CopyOp::create(rewriter, loc, y, out);
 
     rewriter.eraseOp(op);
     return success();
@@ -297,8 +297,8 @@ struct LowerCinmDequantize : public OpConversionPattern<cinm::DequantizeOp> {
     auto *dqOp = rewriter.create(st);
     Value fut = dqOp->getResult(0);
 
-    Value y = rewriter.create<cim::BarrierOp>(loc, outTy, fut).getResult();
-    rewriter.create<memref::CopyOp>(loc, y, out);
+    Value y = cim::BarrierOp::create(rewriter, loc, outTy, fut).getResult();
+    memref::CopyOp::create(rewriter, loc, y, out);
 
     rewriter.eraseOp(op);
     return success();
@@ -331,9 +331,9 @@ struct LowerCinmGemm : public OpConversionPattern<cinm::GemmOp> {
 
     auto futTy = cim::FutureType::get(CTy.getShape(), CTy.getElementType());
 
-    auto f = rewriter.create<cim::GemmOp>(loc, futTy, ValueRange{xb, A, B});
-    auto y = rewriter.create<cim::BarrierOp>(loc, CTy, f.getResult());
-    rewriter.create<memref::CopyOp>(loc, y.getResult(), C);
+    auto f = cim::GemmOp::create(rewriter, loc, futTy, ValueRange{xb, A, B});
+    auto y = cim::BarrierOp::create(rewriter, loc, CTy, f.getResult());
+    memref::CopyOp::create(rewriter, loc, y.getResult(), C);
 
     rewriter.eraseOp(op);
     return success();
@@ -366,9 +366,9 @@ struct LowerCinmGemv : public OpConversionPattern<cinm::GemvOp> {
 
     auto futTy = cim::FutureType::get(yTy.getShape(), yTy.getElementType());
 
-    auto f = rewriter.create<cim::GemvOp>(loc, futTy, ValueRange{xb, A, x});
-    auto y = rewriter.create<cim::BarrierOp>(loc, yTy, f.getResult());
-    rewriter.create<memref::CopyOp>(loc, y.getResult(), yOut);
+    auto f = cim::GemvOp::create(rewriter, loc, futTy, ValueRange{xb, A, x});
+    auto y = cim::BarrierOp::create(rewriter, loc, yTy, f.getResult());
+    memref::CopyOp::create(rewriter, loc, y.getResult(), yOut);
 
     rewriter.eraseOp(op);
     return success();
@@ -404,9 +404,9 @@ struct LowerCinmAdd : public OpConversionPattern<cinm::ElementwiseOp> {
 
     auto futTy = cim::FutureType::get(outTy.getShape(), outTy.getElementType());
 
-    auto f = rewriter.create<cim::AddOp>(loc, futTy, ValueRange{xb, lhs, rhs});
-    auto y = rewriter.create<cim::BarrierOp>(loc, outTy, f.getResult());
-    rewriter.create<memref::CopyOp>(loc, y.getResult(), out);
+    auto f = cim::AddOp::create(rewriter, loc, futTy, ValueRange{xb, lhs, rhs});
+    auto y = cim::BarrierOp::create(rewriter, loc, outTy, f.getResult());
+    memref::CopyOp::create(rewriter, loc, y.getResult(), out);
 
     rewriter.eraseOp(op);
     return success();

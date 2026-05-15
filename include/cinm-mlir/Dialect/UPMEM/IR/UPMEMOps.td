@@ -128,7 +128,7 @@ def PrivateWRAMAllocOp : Upmem_Op<"pwram_alloc", [
 }
 
 
-def StaticAllocOp : Upmem_Op<"static_alloc", [Symbol,
+def StaticAllocOp : Upmem_Op<"static_alloc", [//Symbol,
         DeclareOpInterfaceMethods<OpAsmOpInterface, ["getAsmResultNames"]>
 ]> {
   let summary = "static buffer allocation in wram or mram";

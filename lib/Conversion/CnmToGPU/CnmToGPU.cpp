@@ -189,10 +189,10 @@ struct ConvertCnmLaunchToGPU : public OpConversionPattern<cnm::LaunchOp> {
     const WorkgroupType workgroupType = op.getWg().getType();
     const ArrayRef<int64_t> workgroupShape = workgroupType.getShape();
 
-    const Value one = rewriter.create<arith::ConstantIndexOp>(op.getLoc(), 1);
+    const Value one = arith::ConstantIndexOp::create(rewriter, op.getLoc(), 1);
     SmallVector<Value, 6> launchDimensions(6, one);
     for (size_t i = 0; i < workgroupShape.size(); i++) {
-      launchDimensions[i] = rewriter.create<arith::ConstantIndexOp>(
+      launchDimensions[i] = arith::ConstantIndexOp::create(rewriter, 
           op.getLoc(), workgroupShape[i]);
     }
 
@@ -202,7 +202,7 @@ struct ConvertCnmLaunchToGPU : public OpConversionPattern<cnm::LaunchOp> {
     const TypeRange workgroupAttributions;
     const TypeRange privateAttributions;
 
-    gpu::LaunchOp launchOp = rewriter.create<gpu::LaunchOp>(
+    gpu::LaunchOp launchOp = gpu::LaunchOp::create(rewriter, 
         op.getLoc(), launchDimensions[0], launchDimensions[1],
         launchDimensions[2], launchDimensions[3], launchDimensions[4],
         launchDimensions[5], dynamicSharedMemorySize, asyncTokenType,
@@ -274,7 +274,7 @@ struct ConvertCnmToGPUPass
     populateCnmToGPUFinalTypeConversions(converter);
     const auto addUnrealizedCast = [](OpBuilder &builder, Type type,
                                       ValueRange inputs, Location loc) {
-      return builder.create<UnrealizedConversionCastOp>(loc, type, inputs)
+      return UnrealizedConversionCastOp::create(builder, loc, type, inputs)
           .getResult(0);
     };
     converter.addSourceMaterialization(addUnrealizedCast);

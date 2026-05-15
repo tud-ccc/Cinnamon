@@ -71,9 +71,9 @@ LogicalResult ConvertCnmSetZeroToAffine::matchAndRewrite(
       rewriter, op.getLoc(), loopSizes, loopSteps, ValueRange{},
       [&](OpBuilder &builder, Location loc, ValueRange indices,
           ValueRange) -> SmallVector<Value> {
-        const Value zero = builder.create<arith::ConstantOp>(
+        const Value zero = arith::ConstantOp::create(builder, 
             loc, builder.getZeroAttr(op.getType().getElementType()));
-        rewriter.create<memref::StoreOp>(loc, zero, dst, indices);
+        memref::StoreOp::create(rewriter, loc, zero, dst, indices);
         return {};
       });
 
@@ -86,7 +86,7 @@ SmallVector<Value> createAffineApply(OpBuilder &builder, Location loc,
   SmallVector<Value> result;
   for (unsigned i = 0; i < map.getNumResults(); i++) {
     result.push_back(
-        builder.create<affine::AffineApplyOp>(loc, map.getSubMap({i}), values));
+        affine::AffineApplyOp::create(builder, loc, map.getSubMap({i}), values));
   }
   return result;
 }
@@ -116,14 +116,14 @@ void createMemrefSubviewCopy(OpBuilder &builder, Location loc, Value src,
   const Type sliceType = memref::SubViewOp::inferRankReducedResultType(
       sliceShape, dstType, dstStaticOffsets, dstStaticSizes, dstStaticStrides);
 
-  const Value src_slice = builder.create<memref::SubViewOp>(
+  const Value src_slice = memref::SubViewOp::create(builder, 
       loc, sliceType, src, srcOffsets, ValueRange{}, ValueRange{},
       srcStaticOffsets, srcStaticSizes, srcStaticStrides);
-  const Value dst_slice = builder.create<memref::SubViewOp>(
+  const Value dst_slice = memref::SubViewOp::create(builder, 
       loc, sliceType, dst, dstOffsets, ValueRange{}, ValueRange{},
       dstStaticOffsets, dstStaticSizes, dstStaticStrides);
 
-  builder.create<memref::CopyOp>(loc, src_slice, dst_slice);
+  memref::CopyOp::create(builder, loc, src_slice, dst_slice);
 }
 
 } // namespace mlir

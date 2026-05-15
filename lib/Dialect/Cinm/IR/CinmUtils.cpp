@@ -25,9 +25,9 @@ SmallVector<Value> createNestedAffineForLoops(OpBuilder &builder, Location loc,
 
   for (auto [size, step] : llvm::zip(loopSizes, loopSteps)) {
     affine::AffineForOp current =
-        builder.create<affine::AffineForOp>(loc, 0, size, step, iterArgs);
+        affine::AffineForOp::create(builder, loc, 0, size, step, iterArgs);
     if (!loops.empty() && !iterArgs.empty()) {
-      builder.create<affine::AffineYieldOp>(loc, current.getResults());
+      affine::AffineYieldOp::create(builder, loc, current.getResults());
     }
     loops.push_back(current);
     indices.push_back(current.getRegion().front().getArguments().front());
@@ -37,7 +37,7 @@ SmallVector<Value> createNestedAffineForLoops(OpBuilder &builder, Location loc,
 
   SmallVector<Value> result = bodyBuilder(builder, loc, indices, iterArgs);
   if (!iterArgs.empty()) {
-    builder.create<affine::AffineYieldOp>(loc, result);
+    affine::AffineYieldOp::create(builder, loc, result);
   }
 
   builder.setInsertionPointAfter(loops.front());
@@ -64,16 +64,16 @@ SmallVector<Value> createNestedAffineForLoops(OpBuilder &builder, Location loc,
   for (auto [sizeOfr, step] : llvm::zip(loopSizes, loopSteps)) {
     affine::AffineForOp current;
     if (auto staticSize = mlir::getConstantIntValue(sizeOfr)) {
-      current = builder.create<affine::AffineForOp>(loc, 0, *staticSize, step,
+      current = affine::AffineForOp::create(builder, loc, 0, *staticSize, step,
                                                     iterArgs);
     } else {
       Value dynSize = cast<Value>(sizeOfr);
-      current = builder.create<affine::AffineForOp>(
+      current = affine::AffineForOp::create(builder, 
           loc, ValueRange{}, zeroMap, ValueRange{dynSize}, dynUbMap, step,
           iterArgs);
     }
     if (!loops.empty() && !iterArgs.empty()) {
-      builder.create<affine::AffineYieldOp>(loc, current.getResults());
+      affine::AffineYieldOp::create(builder, loc, current.getResults());
     }
     loops.push_back(current);
     indices.push_back(current.getRegion().front().getArguments().front());
@@ -83,7 +83,7 @@ SmallVector<Value> createNestedAffineForLoops(OpBuilder &builder, Location loc,
 
   SmallVector<Value> result = bodyBuilder(builder, loc, indices, iterArgs);
   if (!iterArgs.empty()) {
-    builder.create<affine::AffineYieldOp>(loc, result);
+    affine::AffineYieldOp::create(builder, loc, result);
   }
 
   builder.setInsertionPointAfter(loops.front());

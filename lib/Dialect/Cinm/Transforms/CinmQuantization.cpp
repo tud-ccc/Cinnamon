@@ -101,7 +101,7 @@ static Value buildQuantize(IRRewriter &rewriter, Location loc, Value src,
   auto rAttr = cinm::RoundingModeAttr::get(rewriter.getContext(), rounding);
   auto nAttr = rewriter.getBoolAttr(narrow);
 
-  auto q = rewriter.create<cinm::QuantizeOp>(loc, qTy, src, Value(), fScale,
+  auto q = cinm::QuantizeOp::create(rewriter, loc, qTy, src, Value(), fScale,
                                              iZp, IntegerAttr{}, rAttr, nAttr);
   return q.getResult();
 }
@@ -113,7 +113,7 @@ static Value buildDequantize(IRRewriter &rewriter, Location loc, Value srcQ,
   auto fScale = rewriter.getF32FloatAttr(scale);
   auto iZp = rewriter.getI64IntegerAttr(zp);
 
-  auto dq = rewriter.create<cinm::DequantizeOp>(loc, outTy, srcQ, Value(),
+  auto dq = cinm::DequantizeOp::create(rewriter, loc, outTy, srcQ, Value(),
                                                 fScale, iZp, IntegerAttr{});
   return dq.getResult();
 }
@@ -141,7 +141,7 @@ static LogicalResult rewriteGemmTensor(GemmOp op, Type qElem, float scale,
       buildQuantize(rewriter, loc, B, qElem, scale, zp, rounding, narrow);
 
   auto qGemm =
-      rewriter.create<cinm::GemmOp>(loc, Aq, Bq, Value(), Value());
+      cinm::GemmOp::create(rewriter, loc, Aq, Bq, Value(), Value());
   Value dq = buildDequantize(rewriter, loc, qGemm.getResult(),
                              outTy.getElementType(), scale, zp);
 
@@ -172,7 +172,7 @@ static LogicalResult rewriteGemvTensor(GemvOp op, Type qElem, float scale,
       buildQuantize(rewriter, loc, x, qElem, scale, zp, rounding, narrow);
 
   auto qGemv =
-      rewriter.create<cinm::GemvOp>(loc, Aq, xq, Value(), Value());
+      cinm::GemvOp::create(rewriter, loc, Aq, xq, Value(), Value());
   Value dq = buildDequantize(rewriter, loc, qGemv.getResult(),
                              outTy.getElementType(), scale, zp);
 
@@ -188,8 +188,8 @@ static Value allocLikeWithElem(IRRewriter &rewriter, Location loc, Value like,
   SmallVector<Value, 4> dynSizes;
   for (int64_t i = 0; i < newTy.getRank(); ++i)
     if (newTy.isDynamicDim(i))
-      dynSizes.push_back(rewriter.create<memref::DimOp>(loc, like, i));
-  return rewriter.create<memref::AllocOp>(loc, newTy, dynSizes).getResult();
+      dynSizes.push_back(memref::DimOp::create(rewriter, loc, like, i));
+  return memref::AllocOp::create(rewriter, loc, newTy, dynSizes).getResult();
 }
 
 static void emitQuantizeMemRef(IRRewriter &rewriter, Location loc, Value src,
@@ -199,7 +199,7 @@ static void emitQuantizeMemRef(IRRewriter &rewriter, Location loc, Value src,
   auto iZp = rewriter.getI64IntegerAttr(zp);
   auto rAttr = cinm::RoundingModeAttr::get(rewriter.getContext(), rounding);
   auto nAttr = rewriter.getBoolAttr(narrow);
-  rewriter.create<cinm::QuantizeOp>(loc, Type(), src, dst, fScale, iZp,
+  cinm::QuantizeOp::create(rewriter, loc, Type(), src, dst, fScale, iZp,
                                     IntegerAttr{}, rAttr, nAttr);
 }
 
@@ -207,7 +207,7 @@ static void emitDequantizeMemRef(IRRewriter &rewriter, Location loc, Value src,
                                  Value dst, float scale, int64_t zp) {
   auto fScale = rewriter.getF32FloatAttr(scale);
   auto iZp = rewriter.getI64IntegerAttr(zp);
-  rewriter.create<cinm::DequantizeOp>(loc, Type(), src, dst, fScale, iZp,
+  cinm::DequantizeOp::create(rewriter, loc, Type(), src, dst, fScale, iZp,
                                       IntegerAttr{});
 }
 
@@ -230,12 +230,12 @@ static LogicalResult rewriteGemmMemRef(GemmOp op, Type qElem, float scale,
   emitQuantizeMemRef(rewriter, loc, A, qA, scale, zp, rounding, narrow);
   emitQuantizeMemRef(rewriter, loc, B, qB, scale, zp, rounding, narrow);
 
-  rewriter.create<cinm::GemmOp>(loc, qA, qB, Value(), qC);
+  cinm::GemmOp::create(rewriter, loc, qA, qB, Value(), qC);
   emitDequantizeMemRef(rewriter, loc, qC, C, scale, zp);
 
-  rewriter.create<memref::DeallocOp>(loc, qA);
-  rewriter.create<memref::DeallocOp>(loc, qB);
-  rewriter.create<memref::DeallocOp>(loc, qC);
+  memref::DeallocOp::create(rewriter, loc, qA);
+  memref::DeallocOp::create(rewriter, loc, qB);
+  memref::DeallocOp::create(rewriter, loc, qC);
   rewriter.eraseOp(op);
   return success();
 }
@@ -259,12 +259,12 @@ static LogicalResult rewriteGemvMemRef(GemvOp op, Type qElem, float scale,
   emitQuantizeMemRef(rewriter, loc, A, qA, scale, zp, rounding, narrow);
   emitQuantizeMemRef(rewriter, loc, x, qx, scale, zp, rounding, narrow);
 
-  rewriter.create<cinm::GemvOp>(loc, qA, qx, Value(), qy);
+  cinm::GemvOp::create(rewriter, loc, qA, qx, Value(), qy);
   emitDequantizeMemRef(rewriter, loc, qy, y, scale, zp);
 
-  rewriter.create<memref::DeallocOp>(loc, qA);
-  rewriter.create<memref::DeallocOp>(loc, qx);
-  rewriter.create<memref::DeallocOp>(loc, qy);
+  memref::DeallocOp::create(rewriter, loc, qA);
+  memref::DeallocOp::create(rewriter, loc, qx);
+  memref::DeallocOp::create(rewriter, loc, qy);
   rewriter.eraseOp(op);
   return success();
 }

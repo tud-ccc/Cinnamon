@@ -20,7 +20,6 @@ def Alpine_Dialect : Dialect {
     private:
         void registerOps();
     }];
-    let usePropertiesForAttributes = 0;
 
 }
 

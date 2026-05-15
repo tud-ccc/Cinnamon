@@ -1,5 +1,6 @@
 
 #include "cinm-mlir/Conversion/CinmFrontendPasses.h"
+
 #include "cinm-mlir/Dialect/Cinm/IR/CinmAttributes.h"
 #include "cinm-mlir/Dialect/Cinm/IR/CinmBase.h"
 #include "cinm-mlir/Dialect/Cinm/IR/CinmOps.h"
@@ -35,8 +36,10 @@
 #include <torch-mlir/Dialect/TorchConversion/IR/TorchConversionOps.h>
 
 using namespace mlir;
-#define GEN_PASS_CLASSES
+namespace mlir {
+#define GEN_PASS_DEF_CONVERTTORCHTOCINM
 #include <cinm-mlir/Conversion/CinmFrontendPasses.h.inc>
+} // namespace mlir
 
 namespace {
 
@@ -51,16 +54,14 @@ struct ConvertTorchTensorOpToCinm : OpConversionPattern<SourceOp> {
     auto lhs = op.getOperand(0);
     auto lhsType = cast<torch::Torch::ValueTensorType>(lhs.getType());
     rewriter.setInsertionPointAfterValue(lhs);
-    auto lhsConversionOp =
-        rewriter.create<torch::TorchConversion::ToBuiltinTensorOp>(
-            op.getLoc(), lhsType.toBuiltinTensor(), lhs);
+    auto lhsConversionOp = torch::TorchConversion::ToBuiltinTensorOp::create(
+        rewriter, op.getLoc(), lhsType.toBuiltinTensor(), lhs);
 
     auto rhs = op.getOperand(1);
     auto rhsType = cast<torch::Torch::ValueTensorType>(rhs.getType());
     // rewriter.setInsertionPointAfterValue(rhs);
-    auto rhsConversionOp =
-        rewriter.create<torch::TorchConversion::ToBuiltinTensorOp>(
-            op.getLoc(), rhsType.toBuiltinTensor(), rhs);
+    auto rhsConversionOp = torch::TorchConversion::ToBuiltinTensorOp::create(
+        rewriter, op.getLoc(), rhsType.toBuiltinTensor(), rhs);
 
     auto result = op.getResult();
     auto resultType = cast<torch::Torch::ValueTensorType>(result.getType());
@@ -71,8 +72,8 @@ struct ConvertTorchTensorOpToCinm : OpConversionPattern<SourceOp> {
         resultType.toBuiltinTensor());
 
     auto resultConversionOp =
-        rewriter.create<torch::TorchConversion::FromBuiltinTensorOp>(
-            op.getLoc(), resultType, cinmComputeBlockOp.getResult(0));
+        torch::TorchConversion::FromBuiltinTensorOp::create(
+            rewriter, op.getLoc(), resultType, cinmComputeBlockOp.getResult(0));
 
     Block *computeBody = &cinmComputeBlockOp.getRegion().front();
     rewriter.setInsertionPointToStart(computeBody);
@@ -82,7 +83,7 @@ struct ConvertTorchTensorOpToCinm : OpConversionPattern<SourceOp> {
                          computeBody->getArgument(1));
     assert(targetOp.getResult() && "Is a tensor gemmlike");
 
-    rewriter.create<cinm::YieldOp>(op.getLoc(), targetOp.getResult());
+    cinm::YieldOp::create(rewriter, op.getLoc(), targetOp.getResult());
 
     result.replaceAllUsesWith(resultConversionOp.getResult());
     rewriter.eraseOp(op);
@@ -91,7 +92,7 @@ struct ConvertTorchTensorOpToCinm : OpConversionPattern<SourceOp> {
   }
 };
 
-struct ConvertTorchToCinm : public ConvertTorchToCinmBase<ConvertTorchToCinm> {
+struct ConvertTorchToCinm : public mlir::impl::ConvertTorchToCinmBase<ConvertTorchToCinm> {
 
   void runOnOperation() override {
     auto &ctx = getContext();

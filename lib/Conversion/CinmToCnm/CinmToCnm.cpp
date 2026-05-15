@@ -267,7 +267,7 @@ LogicalResult convertInputIntoAlloc(Value &inputBuf, Value workGroup,
   bool scatterScalar = false;
   if (!llvm::isa<ShapedType>(inputBuf.getType())) {
     scatterScalar = true;
-    inputBuf = rewriter.create<tensor::FromElementsOp>(
+    inputBuf = tensor::FromElementsOp::create(rewriter, 
         RankedTensorType::get({wgTy.getShape()[2]}, inputBuf.getType()),
         SmallVector<Value>(wgTy.getShape()[2], inputBuf));
   }
@@ -294,10 +294,10 @@ LogicalResult convertInputIntoAlloc(Value &inputBuf, Value workGroup,
       shapeOfBuffer, inputType.getElementType(), wgTy.getAccelerator(),
       0); // todo level is hardcoded
 
-  Value alloc = rewriter.create<cnm::AllocOp>(bufTy, workGroup);
+  Value alloc = cnm::AllocOp::create(rewriter, bufTy, workGroup);
 
   // Scatter into buffer
-  rewriter.create<cnm::ScatterOp>(inputBuf, alloc, workGroup, scatterMap);
+  cnm::ScatterOp::create(rewriter, inputBuf, alloc, workGroup, scatterMap);
   result = alloc;
 
   return success();

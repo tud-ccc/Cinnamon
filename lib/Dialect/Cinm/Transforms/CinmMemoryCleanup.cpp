@@ -20,8 +20,10 @@
 
 using namespace mlir;
 
-#define GEN_PASS_CLASSES
+namespace mlir::cinm {
+#define GEN_PASS_DEF_CINMMEMORYCLEANUPPASS
 #include "cinm-mlir/Dialect/Cinm/Transforms/Passes.h.inc"
+} // namespace mlir::cinm
 
 namespace {
 
@@ -57,16 +59,16 @@ struct RewriteScfTensorIterArgsToMemref final : OpRewritePattern<scf::ForOp> {
       BaseMemRefType mr =
           bufferization::getMemRefTypeWithFullyDynamicLayout(tt);
       Value mem =
-          rewriter.create<bufferization::ToBufferOp>(loc, mr, init, false);
+          bufferization::ToBufferOp::create(rewriter, loc, mr, init, false);
       memInitArgs.push_back(mem);
       memIterTypes.push_back(mem.getType());
     }
 
     OpBuilder::InsertionGuard g(rewriter);
     rewriter.setInsertionPoint(oldFor);
-    scf::ForOp newFor = rewriter.create<scf::ForOp>(
-        loc, oldFor.getLowerBound(), oldFor.getUpperBound(), oldFor.getStep(),
-        memInitArgs);
+    scf::ForOp newFor = scf::ForOp::create(
+        rewriter, loc, oldFor.getLowerBound(), oldFor.getUpperBound(),
+        oldFor.getStep(), memInitArgs);
 
     Block *oldBody = oldFor.getBody();
     Block *newBody = newFor.getBody();
@@ -84,8 +86,8 @@ struct RewriteScfTensorIterArgsToMemref final : OpRewritePattern<scf::ForOp> {
           mapper.map(oldArg, newMem);
         } else {
           auto tt = cast<RankedTensorType>(oldArg.getType());
-          Value tview = rewriter.create<bufferization::ToTensorOp>(
-              loc, tt, newMem, true, true);
+          Value tview = bufferization::ToTensorOp::create(rewriter, loc, tt,
+                                                          newMem, true, true);
           mapper.map(oldArg, tview);
         }
       }
@@ -102,10 +104,10 @@ struct RewriteScfTensorIterArgsToMemref final : OpRewritePattern<scf::ForOp> {
         auto expectTy = cast<MemRefType>(newBody->getArgument(1 + i).getType());
         Value y = mapped;
         if (!isa<MemRefType>(y.getType())) {
-          y = rewriter.create<bufferization::ToBufferOp>(loc, expectTy, y,
-                                                         false);
+          y = bufferization::ToBufferOp::create(rewriter, loc, expectTy, y,
+                                                false);
         } else if (y.getType() != Type(expectTy)) {
-          y = rewriter.create<memref::CastOp>(loc, expectTy, y);
+          y = memref::CastOp::create(rewriter, loc, expectTy, y);
         }
         newYields.push_back(y);
       }
@@ -121,7 +123,7 @@ struct RewriteScfTensorIterArgsToMemref final : OpRewritePattern<scf::ForOp> {
         rewriter.replaceOpWithNewOp<scf::YieldOp>(maybeTerm, newYields);
       } else {
         rewriter.setInsertionPointToEnd(newBody);
-        rewriter.create<scf::YieldOp>(loc, newYields);
+        scf::YieldOp::create(rewriter, loc, newYields);
       }
     }
 
@@ -132,8 +134,8 @@ struct RewriteScfTensorIterArgsToMemref final : OpRewritePattern<scf::ForOp> {
       Value res = it.value();
       Type oldTy = oldFor.getResult(it.index()).getType();
       if (isa<RankedTensorType>(oldTy)) {
-        Value t = rewriter.create<bufferization::ToTensorOp>(loc, oldTy, res,
-                                                             true, true);
+        Value t = bufferization::ToTensorOp::create(rewriter, loc, oldTy, res,
+                                                    true, true);
         repls.push_back(t);
       } else {
         repls.push_back(res);
@@ -169,13 +171,13 @@ struct LowerDynamicShapeCopyAnyRank final : OpRewritePattern<memref::CopyOp> {
     for (int64_t d = 0; d < rank; ++d) {
       if (!srcTy.isDynamicDim(d)) {
         extents.push_back(
-            rewriter.create<arith::ConstantIndexOp>(loc, srcTy.getDimSize(d)));
+            arith::ConstantIndexOp::create(rewriter, loc, srcTy.getDimSize(d)));
       } else if (!dstTy.isDynamicDim(d)) {
         extents.push_back(
-            rewriter.create<arith::ConstantIndexOp>(loc, dstTy.getDimSize(d)));
+            arith::ConstantIndexOp::create(rewriter, loc, dstTy.getDimSize(d)));
       } else {
         extents.push_back(
-            rewriter.create<memref::DimOp>(loc, op.getSource(), d));
+            memref::DimOp::create(rewriter, loc, op.getSource(), d));
       }
     }
 
@@ -184,13 +186,13 @@ struct LowerDynamicShapeCopyAnyRank final : OpRewritePattern<memref::CopyOp> {
 
     std::function<void(int64_t)> buildLoop = [&](int64_t depth) {
       if (depth == rank) {
-        Value v = rewriter.create<memref::LoadOp>(loc, op.getSource(), ivs);
-        rewriter.create<memref::StoreOp>(loc, v, op.getTarget(), ivs);
+        Value v = memref::LoadOp::create(rewriter, loc, op.getSource(), ivs);
+        memref::StoreOp::create(rewriter, loc, v, op.getTarget(), ivs);
         return;
       }
-      Value c0 = rewriter.create<arith::ConstantIndexOp>(loc, 0);
-      Value c1 = rewriter.create<arith::ConstantIndexOp>(loc, 1);
-      auto loop = rewriter.create<scf::ForOp>(loc, c0, extents[depth], c1);
+      Value c0 = arith::ConstantIndexOp::create(rewriter, loc, 0);
+      Value c1 = arith::ConstantIndexOp::create(rewriter, loc, 1);
+      auto loop = scf::ForOp::create(rewriter, loc, c0, extents[depth], c1);
 
       rewriter.setInsertionPointToStart(loop.getBody());
       ivs.push_back(loop.getInductionVar());
@@ -243,21 +245,21 @@ struct LowerRank1ContiguousCopy final : OpRewritePattern<memref::CopyOp> {
     Value extent;
     if (!srcTy.isDynamicDim(0)) {
       extent =
-          rewriter.create<arith::ConstantIndexOp>(loc, srcTy.getDimSize(0));
+          arith::ConstantIndexOp::create(rewriter, loc, srcTy.getDimSize(0));
     } else if (!dstTy.isDynamicDim(0)) {
       extent =
-          rewriter.create<arith::ConstantIndexOp>(loc, dstTy.getDimSize(0));
+          arith::ConstantIndexOp::create(rewriter, loc, dstTy.getDimSize(0));
     } else {
-      extent = rewriter.create<memref::DimOp>(loc, op.getSource(), 0);
+      extent = memref::DimOp::create(rewriter, loc, op.getSource(), 0);
     }
 
-    Value c0 = rewriter.create<arith::ConstantIndexOp>(loc, 0);
-    Value c1 = rewriter.create<arith::ConstantIndexOp>(loc, 1);
-    auto loop = rewriter.create<scf::ForOp>(loc, c0, extent, c1);
+    Value c0 = arith::ConstantIndexOp::create(rewriter, loc, 0);
+    Value c1 = arith::ConstantIndexOp::create(rewriter, loc, 1);
+    auto loop = scf::ForOp::create(rewriter, loc, c0, extent, c1);
     rewriter.setInsertionPointToStart(loop.getBody());
     Value i = loop.getInductionVar();
-    Value v = rewriter.create<memref::LoadOp>(loc, op.getSource(), i);
-    rewriter.create<memref::StoreOp>(loc, v, op.getTarget(), i);
+    Value v = memref::LoadOp::create(rewriter, loc, op.getSource(), i);
+    memref::StoreOp::create(rewriter, loc, v, op.getTarget(), i);
     rewriter.setInsertionPointAfter(loop);
     rewriter.eraseOp(op);
     return success();
@@ -320,8 +322,8 @@ struct ReplaceRank1CopyLoopWithMemRefCopy final : OpRewritePattern<scf::ForOp> {
     (void)ubMatches;
 
     rewriter.setInsertionPoint(forOp);
-    rewriter.create<memref::CopyOp>(forOp.getLoc(), load.getMemref(),
-                                    store.getMemref());
+    memref::CopyOp::create(rewriter, forOp.getLoc(), load.getMemref(),
+                           store.getMemref());
     rewriter.eraseOp(forOp);
     return success();
   }
@@ -406,8 +408,8 @@ struct ReplacePerfectCopyNestWithMemRefCopy final
       return failure();
 
     rewriter.setInsertionPoint(forOp);
-    rewriter.create<memref::CopyOp>(forOp.getLoc(), load.getMemref(),
-                                    store.getMemref());
+    memref::CopyOp::create(rewriter, forOp.getLoc(), load.getMemref(),
+                           store.getMemref());
     rewriter.eraseOp(forOp);
     return success();
   }
@@ -492,8 +494,8 @@ struct ReplacePerfectAffineCopyNestWithMemRefCopy final
       return failure();
 
     rewriter.setInsertionPoint(forOp);
-    rewriter.create<memref::CopyOp>(forOp.getLoc(), load.getMemref(),
-                                    store.getMemref());
+    memref::CopyOp::create(rewriter, forOp.getLoc(), load.getMemref(),
+                           store.getMemref());
     rewriter.eraseOp(forOp);
     return success();
   }
@@ -542,10 +544,10 @@ struct ReplaceSimpleAffineForToScf final
     }
 
     Location loc = forOp.getLoc();
-    Value c0 = rewriter.create<arith::ConstantIndexOp>(loc, 0);
+    Value c0 = arith::ConstantIndexOp::create(rewriter, loc, 0);
     Value ub = forOp.getUpperBoundOperands().front();
-    Value c1 = rewriter.create<arith::ConstantIndexOp>(loc, 1);
-    auto loop = rewriter.create<scf::ForOp>(loc, c0, ub, c1);
+    Value c1 = arith::ConstantIndexOp::create(rewriter, loc, 1);
+    auto loop = scf::ForOp::create(rewriter, loc, c0, ub, c1);
     rewriter.setInsertionPointToStart(loop.getBody());
     Value iv = loop.getInductionVar();
 
@@ -553,8 +555,8 @@ struct ReplaceSimpleAffineForToScf final
       if (isa<affine::AffineYieldOp>(op))
         continue;
       if (auto st = dyn_cast<affine::AffineStoreOp>(op)) {
-        rewriter.create<memref::StoreOp>(loc, st.getValue(), st.getMemRef(),
-                                         iv);
+        memref::StoreOp::create(rewriter, loc, st.getValue(), st.getMemRef(),
+                                iv);
         continue;
       }
     }
@@ -752,15 +754,15 @@ struct ReplaceLinalgGenericIndexRange1DWithLoop
 
     Location loc = op.getLoc();
     Value out = op.getOutputs()[0];
-    Value c0 = rewriter.create<arith::ConstantIndexOp>(loc, 0);
-    Value c1 = rewriter.create<arith::ConstantIndexOp>(loc, 1);
-    Value ub = rewriter.create<memref::DimOp>(loc, out, 0);
-    auto loop = rewriter.create<scf::ForOp>(loc, c0, ub, c1);
+    Value c0 = arith::ConstantIndexOp::create(rewriter, loc, 0);
+    Value c1 = arith::ConstantIndexOp::create(rewriter, loc, 1);
+    Value ub = memref::DimOp::create(rewriter, loc, out, 0);
+    auto loop = scf::ForOp::create(rewriter, loc, c0, ub, c1);
     rewriter.setInsertionPointToStart(loop.getBody());
     Value iv = loop.getInductionVar();
     Value iv64 =
-        rewriter.create<arith::IndexCastOp>(loc, rewriter.getI64Type(), iv);
-    rewriter.create<memref::StoreOp>(loc, iv64, out, iv);
+        arith::IndexCastOp::create(rewriter, loc, rewriter.getI64Type(), iv);
+    memref::StoreOp::create(rewriter, loc, iv64, out, iv);
     rewriter.setInsertionPointAfter(loop);
     rewriter.eraseOp(op);
     return success();
@@ -812,11 +814,11 @@ struct ReplaceLinalgGenericIndexRangeNDWithLoops
     Location loc = op.getLoc();
     Value out = op.getOutputs()[0];
     SmallVector<Value> lbs(rank), ubs(rank), steps(rank);
-    Value c0 = rewriter.create<arith::ConstantIndexOp>(loc, 0);
-    Value c1 = rewriter.create<arith::ConstantIndexOp>(loc, 1);
+    Value c0 = arith::ConstantIndexOp::create(rewriter, loc, 0);
+    Value c1 = arith::ConstantIndexOp::create(rewriter, loc, 1);
     for (unsigned d = 0; d < rank; ++d) {
       lbs[d] = c0;
-      ubs[d] = rewriter.create<memref::DimOp>(loc, out, d);
+      ubs[d] = memref::DimOp::create(rewriter, loc, out, d);
       steps[d] = c1;
     }
 
@@ -824,12 +826,12 @@ struct ReplaceLinalgGenericIndexRangeNDWithLoops
                           SmallVector<Value> &ivs) -> void {
       if (d == rank) {
         Value which = ivs[dimK];
-        Value as64 = rewriter.create<arith::IndexCastOp>(
-            loc, rewriter.getI64Type(), which);
-        rewriter.create<memref::StoreOp>(loc, as64, out, ivs);
+        Value as64 = arith::IndexCastOp::create(rewriter, loc,
+                                                rewriter.getI64Type(), which);
+        memref::StoreOp::create(rewriter, loc, as64, out, ivs);
         return;
       }
-      auto loop = rewriter.create<scf::ForOp>(loc, lbs[d], ubs[d], steps[d]);
+      auto loop = scf::ForOp::create(rewriter, loc, lbs[d], ubs[d], steps[d]);
       rewriter.setInsertionPointToStart(loop.getBody());
       ivs.push_back(loop.getInductionVar());
       self(self, d + 1, ivs);
@@ -924,11 +926,11 @@ struct ReplaceLinalgGenericForwardToLoops
     Location loc = op.getLoc();
     unsigned rank = outTy.getRank();
     SmallVector<Value> lbs(rank), ubs(rank), steps(rank);
-    Value c0 = rewriter.create<arith::ConstantIndexOp>(loc, 0);
-    Value c1 = rewriter.create<arith::ConstantIndexOp>(loc, 1);
+    Value c0 = arith::ConstantIndexOp::create(rewriter, loc, 0);
+    Value c1 = arith::ConstantIndexOp::create(rewriter, loc, 1);
     for (unsigned d = 0; d < rank; ++d) {
       lbs[d] = c0;
-      ubs[d] = rewriter.create<memref::DimOp>(loc, outView, d);
+      ubs[d] = memref::DimOp::create(rewriter, loc, outView, d);
       steps[d] = c1;
     }
 
@@ -942,11 +944,11 @@ struct ReplaceLinalgGenericForwardToLoops
             return;
           inIdx.push_back(ivs[p]);
         }
-        Value val = rewriter.create<memref::LoadOp>(loc, inView, inIdx);
-        rewriter.create<memref::StoreOp>(loc, val, outView, ivs);
+        Value val = memref::LoadOp::create(rewriter, loc, inView, inIdx);
+        memref::StoreOp::create(rewriter, loc, val, outView, ivs);
         return;
       }
-      auto loop = rewriter.create<scf::ForOp>(loc, lbs[d], ubs[d], steps[d]);
+      auto loop = scf::ForOp::create(rewriter, loc, lbs[d], ubs[d], steps[d]);
       rewriter.setInsertionPointToStart(loop.getBody());
       ivs.push_back(loop.getInductionVar());
       self(self, d + 1, ivs);
@@ -1007,11 +1009,11 @@ struct ReplaceLinalgGenericIndexYieldWithLoops
     Location loc = op.getLoc();
     Value out = op.getOutputs()[0];
     SmallVector<Value> lbs(rank), ubs(rank), steps(rank);
-    Value c0 = rewriter.create<arith::ConstantIndexOp>(loc, 0);
-    Value c1 = rewriter.create<arith::ConstantIndexOp>(loc, 1);
+    Value c0 = arith::ConstantIndexOp::create(rewriter, loc, 0);
+    Value c1 = arith::ConstantIndexOp::create(rewriter, loc, 1);
     for (unsigned d = 0; d < rank; ++d) {
       lbs[d] = c0;
-      ubs[d] = rewriter.create<memref::DimOp>(loc, out, d);
+      ubs[d] = memref::DimOp::create(rewriter, loc, out, d);
       steps[d] = c1;
     }
 
@@ -1019,12 +1021,12 @@ struct ReplaceLinalgGenericIndexYieldWithLoops
                           SmallVector<Value> &ivs) -> void {
       if (d == rank) {
         Value which = ivs[dimK];
-        Value as64 = rewriter.create<arith::IndexCastOp>(
-            loc, rewriter.getI64Type(), which);
-        rewriter.create<memref::StoreOp>(loc, as64, out, ivs);
+        Value as64 = arith::IndexCastOp::create(rewriter, loc,
+                                                rewriter.getI64Type(), which);
+        memref::StoreOp::create(rewriter, loc, as64, out, ivs);
         return;
       }
-      auto loop = rewriter.create<scf::ForOp>(loc, lbs[d], ubs[d], steps[d]);
+      auto loop = scf::ForOp::create(rewriter, loc, lbs[d], ubs[d], steps[d]);
       rewriter.setInsertionPointToStart(loop.getBody());
       ivs.push_back(loop.getInductionVar());
       self(self, d + 1, ivs);
@@ -1078,7 +1080,7 @@ struct FuseActivateTmpCopyPattern final : OpRewritePattern<memref::CopyOp> {
     Location loc = act.getLoc();
     Value src = act->getOperand(0);
 
-    rewriter.create<cinm::ElementwiseOp>(loc, act.getKind(), src, dst);
+    cinm::ElementwiseOp::create(rewriter, loc, act.getKind(), src, dst);
 
     rewriter.eraseOp(copy);
     rewriter.eraseOp(act);
@@ -1173,7 +1175,10 @@ struct EraseDynamicStridedCast final : OpRewritePattern<memref::CastOp> {
   }
 };
 struct CinmMemoryCleanupPass
-    : public CinmMemoryCleanupPassBase<CinmMemoryCleanupPass> {
+    : public mlir::cinm::impl::CinmMemoryCleanupPassBase<
+          CinmMemoryCleanupPass> {
+  using Base::Base;
+
   void runOnOperation() override {
     MLIRContext &ctx = getContext();
     RewritePatternSet patterns(&ctx);
@@ -1212,9 +1217,3 @@ struct CinmMemoryCleanupPass
 };
 
 } // namespace
-
-namespace mlir::cinm {
-std::unique_ptr<Pass> createCinmMemoryCleanupPass() {
-  return std::make_unique<CinmMemoryCleanupPass>();
-}
-} // namespace mlir::cinm

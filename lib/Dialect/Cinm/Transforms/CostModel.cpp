@@ -112,7 +112,7 @@ struct RunCostModelPass : public impl::RunCostModelPassBase<RunCostModelPass> {
     if (cinm::SelectOp old_select =
             llvm::dyn_cast_or_null<cinm::SelectOp>(op->getParentOp())) {
       rewriter.setInsertionPointAfter(old_select);
-      cinm::SelectOp new_select = rewriter.create<cinm::SelectOp>(
+      cinm::SelectOp new_select = cinm::SelectOp::create(rewriter, 
           op->getLoc(), old_select.getResultTypes(),
           old_select->getNumRegions() + 1);
 
@@ -126,13 +126,13 @@ struct RunCostModelPass : public impl::RunCostModelPassBase<RunCostModelPass> {
       dst_region = &new_select.getRegions().back();
     } else {
       rewriter.setInsertionPointAfter(op);
-      cinm::SelectOp new_select = rewriter.create<cinm::SelectOp>(
+      cinm::SelectOp new_select = cinm::SelectOp::create(rewriter, 
           op->getLoc(), op->getResultTypes(), 2);
       rewriter.replaceAllOpUsesWith(op, new_select);
       rewriter.setInsertionPointToStart(
           &new_select.getRegion(0).emplaceBlock());
       cinm::YieldOp yield =
-          rewriter.create<cinm::YieldOp>(op->getLoc(), op->getResults());
+          cinm::YieldOp::create(rewriter, op->getLoc(), op->getResults());
       rewriter.moveOpBefore(op, yield);
       dst_region = &new_select.getRegion(1);
     }
@@ -142,7 +142,7 @@ struct RunCostModelPass : public impl::RunCostModelPassBase<RunCostModelPass> {
     IRMapping map;
     Operation *copy = rewriter.clone(*op, map);
     cinm::YieldOp yield =
-        rewriter.create<cinm::YieldOp>(op->getLoc(), copy->getResults());
+        cinm::YieldOp::create(rewriter, op->getLoc(), copy->getResults());
 
     if (cost_model_pipeline != "") {
       if (!copy->hasTrait<OpTrait::IsIsolatedFromAbove>()) {

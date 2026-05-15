@@ -36,18 +36,18 @@ static Value buildEmpty(OpBuilder &b, Location loc, RankedTensorType type,
   SmallVector<Value> dynDims;
   for (int64_t i = 0, e = type.getRank(); i < e; ++i)
     if (type.isDynamicDim(i))
-      dynDims.push_back(b.create<tensor::DimOp>(loc, exemplar, i));
-  return b.create<tensor::EmptyOp>(loc, type.getShape(), type.getElementType(),
+      dynDims.push_back(tensor::DimOp::create(b, loc, exemplar, i));
+  return tensor::EmptyOp::create(b, loc, type.getShape(), type.getElementType(),
                                    dynDims);
 }
 
 static Value buildZero(OpBuilder &b, Location loc, Type elemType) {
   if (isa<FloatType>(elemType))
-    return b.create<arith::ConstantOp>(
+    return arith::ConstantOp::create(b, 
         loc, FloatAttr::get(
                  elemType, APFloat::getZero(
                                cast<FloatType>(elemType).getFloatSemantics())));
-  return b.create<arith::ConstantIntOp>(loc, elemType, 0);
+  return arith::ConstantIntOp::create(b, loc, elemType, 0);
 }
 
 static Value buildReduceIdentity(OpBuilder &b, Location loc,
@@ -72,7 +72,7 @@ static Value buildGemmInit(OpBuilder &b, Location loc, Value out, Value bias,
     return out;
   if (bias)
     return bias;
-  Value empty = b.create<tensor::EmptyOp>(loc, resultTy.getShape(),
+  Value empty = tensor::EmptyOp::create(b, loc, resultTy.getShape(),
                                           resultTy.getElementType());
   return b
       .create<linalg::FillOp>(loc, buildZero(b, loc, resultTy.getElementType()),
@@ -99,12 +99,12 @@ static Value buildElementwiseGeneric(
   auto mapsAttr = b.getAffineMapArrayAttr(maps);
 
   Value init = tensorOut ? tensorOut : buildEmpty(b, loc, resultTy, inputs[0]);
-  auto generic = b.create<linalg::GenericOp>(
+  auto generic = linalg::GenericOp::create(b, 
       loc, TypeRange{resultTy}, inputs, ValueRange{init}, mapsAttr, iterAttr,
       StringAttr{}, StringAttr{},
       [&](OpBuilder &nb, Location nloc, ValueRange args) {
         Value out = bodyBuilder(nb, nloc, args.drop_back());
-        nb.create<linalg::YieldOp>(nloc, out);
+        linalg::YieldOp::create(nb, nloc, out);
       },
       ArrayRef<NamedAttribute>{});
   return generic.getResult(0);
@@ -126,45 +126,45 @@ static FailureOr<Value> emitElementwiseScalar(OpBuilder &b, Location loc,
     switch (kind) {
     case ElementwiseKind::Add:
       if (isFloat)
-        return b.create<arith::AddFOp>(loc, lhs, rhs).getResult();
+        return arith::AddFOp::create(b, loc, lhs, rhs).getResult();
       if (isInt)
-        return b.create<arith::AddIOp>(loc, lhs, rhs).getResult();
+        return arith::AddIOp::create(b, loc, lhs, rhs).getResult();
       break;
     case ElementwiseKind::Sub:
       if (isFloat)
-        return b.create<arith::SubFOp>(loc, lhs, rhs).getResult();
+        return arith::SubFOp::create(b, loc, lhs, rhs).getResult();
       if (isInt)
-        return b.create<arith::SubIOp>(loc, lhs, rhs).getResult();
+        return arith::SubIOp::create(b, loc, lhs, rhs).getResult();
       break;
     case ElementwiseKind::Mul:
       if (isFloat)
-        return b.create<arith::MulFOp>(loc, lhs, rhs).getResult();
+        return arith::MulFOp::create(b, loc, lhs, rhs).getResult();
       if (isInt)
-        return b.create<arith::MulIOp>(loc, lhs, rhs).getResult();
+        return arith::MulIOp::create(b, loc, lhs, rhs).getResult();
       break;
     case ElementwiseKind::Div:
       if (isFloat)
-        return b.create<arith::DivFOp>(loc, lhs, rhs).getResult();
+        return arith::DivFOp::create(b, loc, lhs, rhs).getResult();
       if (isInt)
-        return b.create<arith::DivSIOp>(loc, lhs, rhs).getResult();
+        return arith::DivSIOp::create(b, loc, lhs, rhs).getResult();
       break;
     case ElementwiseKind::Mod:
       if (isFloat)
-        return b.create<arith::RemFOp>(loc, lhs, rhs).getResult();
+        return arith::RemFOp::create(b, loc, lhs, rhs).getResult();
       if (isInt)
-        return b.create<arith::RemSIOp>(loc, lhs, rhs).getResult();
+        return arith::RemSIOp::create(b, loc, lhs, rhs).getResult();
       break;
     case ElementwiseKind::And:
       if (isInt)
-        return b.create<arith::AndIOp>(loc, lhs, rhs).getResult();
+        return arith::AndIOp::create(b, loc, lhs, rhs).getResult();
       break;
     case ElementwiseKind::Or:
       if (isInt)
-        return b.create<arith::OrIOp>(loc, lhs, rhs).getResult();
+        return arith::OrIOp::create(b, loc, lhs, rhs).getResult();
       break;
     case ElementwiseKind::Xor:
       if (isInt)
-        return b.create<arith::XOrIOp>(loc, lhs, rhs).getResult();
+        return arith::XOrIOp::create(b, loc, lhs, rhs).getResult();
       break;
     default:
       break;
@@ -176,89 +176,89 @@ static FailureOr<Value> emitElementwiseScalar(OpBuilder &b, Location loc,
   switch (kind) {
   case ElementwiseKind::Neg:
     if (isFloat)
-      return b.create<arith::NegFOp>(loc, lhs).getResult();
+      return arith::NegFOp::create(b, loc, lhs).getResult();
     if (isInt) {
-      Value zero = b.create<arith::ConstantIntOp>(loc, elemTy, 0);
-      return b.create<arith::SubIOp>(loc, zero, lhs).getResult();
+      Value zero = arith::ConstantIntOp::create(b, loc, elemTy, 0);
+      return arith::SubIOp::create(b, loc, zero, lhs).getResult();
     }
     break;
   case ElementwiseKind::Abs:
     if (isFloat)
-      return b.create<math::AbsFOp>(loc, lhs).getResult();
+      return math::AbsFOp::create(b, loc, lhs).getResult();
     if (isInt)
-      return b.create<math::AbsIOp>(loc, lhs).getResult();
+      return math::AbsIOp::create(b, loc, lhs).getResult();
     break;
   case ElementwiseKind::Ceil:
     if (isFloat)
-      return b.create<math::CeilOp>(loc, lhs).getResult();
+      return math::CeilOp::create(b, loc, lhs).getResult();
     break;
   case ElementwiseKind::Erf:
     if (isFloat)
-      return b.create<math::ErfOp>(loc, lhs).getResult();
+      return math::ErfOp::create(b, loc, lhs).getResult();
     break;
   case ElementwiseKind::Exp:
     if (isFloat)
-      return b.create<math::ExpOp>(loc, lhs).getResult();
+      return math::ExpOp::create(b, loc, lhs).getResult();
     break;
   case ElementwiseKind::Floor:
     if (isFloat)
-      return b.create<math::FloorOp>(loc, lhs).getResult();
+      return math::FloorOp::create(b, loc, lhs).getResult();
     break;
   case ElementwiseKind::Log:
     if (isFloat)
-      return b.create<math::LogOp>(loc, lhs).getResult();
+      return math::LogOp::create(b, loc, lhs).getResult();
     break;
   case ElementwiseKind::Reciprocal: {
     if (isFloat) {
-      Value one = b.create<arith::ConstantOp>(loc, FloatAttr::get(elemTy, 1.0));
-      return b.create<arith::DivFOp>(loc, one, lhs).getResult();
+      Value one = arith::ConstantOp::create(b, loc, FloatAttr::get(elemTy, 1.0));
+      return arith::DivFOp::create(b, loc, one, lhs).getResult();
     }
     break;
   }
   case ElementwiseKind::Round:
     if (isFloat)
-      return b.create<math::RoundOp>(loc, lhs).getResult();
+      return math::RoundOp::create(b, loc, lhs).getResult();
     break;
   case ElementwiseKind::Rsqrt:
     if (isFloat)
-      return b.create<math::RsqrtOp>(loc, lhs).getResult();
+      return math::RsqrtOp::create(b, loc, lhs).getResult();
     break;
   case ElementwiseKind::Sqrt:
     if (isFloat)
-      return b.create<math::SqrtOp>(loc, lhs).getResult();
+      return math::SqrtOp::create(b, loc, lhs).getResult();
     break;
   case ElementwiseKind::Square:
     if (isFloat)
-      return b.create<arith::MulFOp>(loc, lhs, lhs).getResult();
+      return arith::MulFOp::create(b, loc, lhs, lhs).getResult();
     if (isInt)
-      return b.create<arith::MulIOp>(loc, lhs, lhs).getResult();
+      return arith::MulIOp::create(b, loc, lhs, lhs).getResult();
     break;
   case ElementwiseKind::Tanh:
     if (isFloat)
-      return b.create<math::TanhOp>(loc, lhs).getResult();
+      return math::TanhOp::create(b, loc, lhs).getResult();
     break;
   case ElementwiseKind::Not:
     if (isInt) {
-      Value allOnes = b.create<arith::ConstantIntOp>(loc, elemTy, -1);
-      return b.create<arith::XOrIOp>(loc, lhs, allOnes).getResult();
+      Value allOnes = arith::ConstantIntOp::create(b, loc, elemTy, -1);
+      return arith::XOrIOp::create(b, loc, lhs, allOnes).getResult();
     }
     break;
   case ElementwiseKind::Relu: {
     if (isFloat) {
       Value zero =
-          b.create<arith::ConstantOp>(loc, FloatAttr::get(elemTy, 0.0));
-      return b.create<arith::MaxNumFOp>(loc, lhs, zero).getResult();
+          arith::ConstantOp::create(b, loc, FloatAttr::get(elemTy, 0.0));
+      return arith::MaxNumFOp::create(b, loc, lhs, zero).getResult();
     }
     break;
   }
   case ElementwiseKind::Sigmoid: {
     if (isFloat) {
       // 1 / (1 + exp(-x))
-      Value neg = b.create<arith::NegFOp>(loc, lhs);
-      Value e = b.create<math::ExpOp>(loc, neg);
-      Value one = b.create<arith::ConstantOp>(loc, FloatAttr::get(elemTy, 1.0));
-      Value denom = b.create<arith::AddFOp>(loc, one, e);
-      return b.create<arith::DivFOp>(loc, one, denom).getResult();
+      Value neg = arith::NegFOp::create(b, loc, lhs);
+      Value e = math::ExpOp::create(b, loc, neg);
+      Value one = arith::ConstantOp::create(b, loc, FloatAttr::get(elemTy, 1.0));
+      Value denom = arith::AddFOp::create(b, loc, one, e);
+      return arith::DivFOp::create(b, loc, one, denom).getResult();
     }
     break;
   }
@@ -266,23 +266,23 @@ static FailureOr<Value> emitElementwiseScalar(OpBuilder &b, Location loc,
     if (isFloat) {
       // GELU(x) ≈ 0.5 * x * (1 + tanh(sqrt(2/π) * (x + 0.044715*x³)))
       Value half =
-          b.create<arith::ConstantOp>(loc, FloatAttr::get(elemTy, 0.5));
+          arith::ConstantOp::create(b, loc, FloatAttr::get(elemTy, 0.5));
       Value c =
-          b.create<arith::ConstantOp>(loc, FloatAttr::get(elemTy, 0.044715));
-      Value s2pi = b.create<arith::ConstantOp>(
+          arith::ConstantOp::create(b, loc, FloatAttr::get(elemTy, 0.044715));
+      Value s2pi = arith::ConstantOp::create(b, 
           loc, FloatAttr::get(elemTy, 0.7978845608));
-      Value one = b.create<arith::ConstantOp>(loc, FloatAttr::get(elemTy, 1.0));
-      Value v2 = b.create<arith::MulFOp>(loc, lhs, lhs);
-      Value v3 = b.create<arith::MulFOp>(loc, v2, lhs);
-      Value inner = b.create<arith::AddFOp>(
-          loc, lhs, b.create<arith::MulFOp>(loc, c, v3));
-      Value t = b.create<math::TanhOp>(
-          loc, b.create<arith::MulFOp>(loc, s2pi, inner));
+      Value one = arith::ConstantOp::create(b, loc, FloatAttr::get(elemTy, 1.0));
+      Value v2 = arith::MulFOp::create(b, loc, lhs, lhs);
+      Value v3 = arith::MulFOp::create(b, loc, v2, lhs);
+      Value inner = arith::AddFOp::create(b, 
+          loc, lhs, arith::MulFOp::create(b, loc, c, v3));
+      Value t = math::TanhOp::create(b, 
+          loc, arith::MulFOp::create(b, loc, s2pi, inner));
       return b
           .create<arith::MulFOp>(
               loc, half,
-              b.create<arith::MulFOp>(loc, lhs,
-                                      b.create<arith::AddFOp>(loc, one, t)))
+              arith::MulFOp::create(b, loc, lhs,
+                                      arith::AddFOp::create(b, loc, one, t)))
           .getResult();
     }
     break;
@@ -371,22 +371,22 @@ struct ConvertReduceToLinalg : public OpConversionPattern<cinm::ReduceOp> {
 
     Value identity = buildReduceIdentity(rewriter, loc, op.getMethod(), elemTy);
     Value initTensor =
-        rewriter.create<tensor::EmptyOp>(loc, outputShape, elemTy);
+        tensor::EmptyOp::create(rewriter, loc, outputShape, elemTy);
     Value filledInit =
-        rewriter.create<linalg::FillOp>(loc, identity, initTensor).getResult(0);
+        linalg::FillOp::create(rewriter, loc, identity, initTensor).getResult(0);
 
-    auto reduceOp = rewriter.create<linalg::ReduceOp>(
+    auto reduceOp = linalg::ReduceOp::create(rewriter, 
         loc, ValueRange{adaptor.getInput()}, ValueRange{filledInit}, dims,
         [&](OpBuilder &b, Location loc, ValueRange args) {
           // args[0] = element, args[1] = accumulator
           Value combined = emitReduceCombine(b, loc, op.getMethod(), args[0],
                                              args[1], elemTy);
-          b.create<linalg::YieldOp>(loc, combined);
+          linalg::YieldOp::create(b, loc, combined);
         });
 
     Value result = reduceOp.getResult(0);
     if (isScalarResult)
-      result = rewriter.create<tensor::ExtractOp>(loc, result, ValueRange{});
+      result = tensor::ExtractOp::create(rewriter, loc, result, ValueRange{});
 
     rewriter.replaceOp(op, result);
     return success();
@@ -517,7 +517,7 @@ struct ConvertBatchGemvToLinalg
 
     Value init = buildGemmInit(rewriter, loc, adaptor.getOut(),
                                adaptor.getBias(), resultTy);
-    auto generic = rewriter.create<linalg::GenericOp>(
+    auto generic = linalg::GenericOp::create(rewriter, 
         loc, TypeRange{resultTy},
         ValueRange{adaptor.getLhs(), adaptor.getRhs()}, ValueRange{init},
         rewriter.getAffineMapArrayAttr(maps), rewriter.getArrayAttr(iterAttrs),
@@ -525,14 +525,14 @@ struct ConvertBatchGemvToLinalg
         [&](OpBuilder &nb, Location nloc, ValueRange args) {
           Value mul =
               isFloat
-                  ? nb.create<arith::MulFOp>(nloc, args[0], args[1]).getResult()
-                  : nb.create<arith::MulIOp>(nloc, args[0], args[1])
+                  ? arith::MulFOp::create(nb, nloc, args[0], args[1]).getResult()
+                  : arith::MulIOp::create(nb, nloc, args[0], args[1])
                         .getResult();
           Value acc =
               isFloat
-                  ? nb.create<arith::AddFOp>(nloc, mul, args[2]).getResult()
-                  : nb.create<arith::AddIOp>(nloc, mul, args[2]).getResult();
-          nb.create<linalg::YieldOp>(nloc, acc);
+                  ? arith::AddFOp::create(nb, nloc, mul, args[2]).getResult()
+                  : arith::AddIOp::create(nb, nloc, mul, args[2]).getResult();
+          linalg::YieldOp::create(nb, nloc, acc);
         },
         ArrayRef<NamedAttribute>{});
 
@@ -560,7 +560,7 @@ struct ConvertTransposeToLinalg
     for (int64_t p : perms)
       outputShape.push_back(inputTy.getDimSize(p));
 
-    Value init = rewriter.create<tensor::EmptyOp>(loc, outputShape,
+    Value init = tensor::EmptyOp::create(rewriter, loc, outputShape,
                                                   inputTy.getElementType());
     Value result =
         rewriter

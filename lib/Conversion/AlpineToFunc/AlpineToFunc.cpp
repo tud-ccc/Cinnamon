@@ -20,8 +20,11 @@ using namespace mlir;
 using namespace mlir::func;
 using namespace mlir::alpine;
 
-#define GEN_PASS_CLASSES
+namespace mlir::alpine {
+
+#define GEN_PASS_DEF_CONVERTALPINETOFUNC
 #include "cinm-mlir/Conversion/AlpinePasses.h.inc"
+} // namespace mlir::alpine
 
 namespace {
 
@@ -42,10 +45,9 @@ static Value castToFullyDynamicMemRef(Value v, PatternRewriter &rewriter) {
   MemRefLayoutAttrInterface dynLayout =
       StridedLayoutAttr::get(ctx, dynOffset, dynStrides);
 
-  auto dynMr =
-      MemRefType::get(dynShape, mr.getElementType(), dynLayout,
-                      mr.getMemorySpace());
-  return rewriter.create<memref::CastOp>(v.getLoc(), dynMr, v);
+  auto dynMr = MemRefType::get(dynShape, mr.getElementType(), dynLayout,
+                               mr.getMemorySpace());
+  return memref::CastOp::create(rewriter, v.getLoc(), dynMr, v);
 }
 
 static void ensureCallee(StringRef fnName, ArrayRef<Type> paramTypes,
@@ -59,7 +61,7 @@ static void ensureCallee(StringRef fnName, ArrayRef<Type> paramTypes,
   rewriter.setInsertionPoint(end);
 
   auto fTy = FunctionType::get(rewriter.getContext(), paramTypes, resultTypes);
-  auto func = rewriter.create<func::FuncOp>(loc, fnName, fTy);
+  auto func = func::FuncOp::create(rewriter, loc, fnName, fTy);
   func.setVisibility(func::FuncOp::Visibility::Nested);
 }
 
@@ -92,8 +94,8 @@ static LogicalResult createPlainLibraryCall(Operation *op,
   ensureCallee(calleeAttr.getValue(), argTys, resTys, rewriter, module,
                op->getLoc());
 
-  auto call = rewriter.create<func::CallOp>(op->getLoc(), calleeAttr.getValue(),
-                                            resTys, args);
+  auto call = func::CallOp::create(rewriter, op->getLoc(),
+                                   calleeAttr.getValue(), resTys, args);
 
   if (resTys.empty()) {
     rewriter.eraseOp(op);
@@ -138,9 +140,9 @@ struct AllocTileOpConversion : OpRewritePattern<alpine::AllocTileOp> {
       w = warr.getInt();
 
     Value hConst =
-        rewriter.create<arith::ConstantOp>(loc, rewriter.getI64IntegerAttr(h));
+        arith::ConstantOp::create(rewriter, loc, rewriter.getI64IntegerAttr(h));
     Value wConst =
-        rewriter.create<arith::ConstantOp>(loc, rewriter.getI64IntegerAttr(w));
+        arith::ConstantOp::create(rewriter, loc, rewriter.getI64IntegerAttr(w));
 
     SmallVector<Value> args{hConst, wConst};
     SmallVector<Type> argTys{hConst.getType(), wConst.getType()};
@@ -148,8 +150,8 @@ struct AllocTileOpConversion : OpRewritePattern<alpine::AllocTileOp> {
 
     ensureCallee(calleeAttr.getValue(), argTys, resTys, rewriter, module, loc);
 
-    auto call =
-        rewriter.create<func::CallOp>(loc, calleeAttr.getValue(), resTys, args);
+    auto call = func::CallOp::create(rewriter, loc, calleeAttr.getValue(),
+                                     resTys, args);
     rewriter.replaceOp(op, call.getResults());
     return success();
   }
@@ -194,10 +196,10 @@ struct QuantizeOpConversion : OpRewritePattern<alpine::QuantizeOp> {
     }
 
     Location loc = op.getLoc();
-    Value scaleC = rewriter.create<arith::ConstantOp>(
-        loc, rewriter.getF32Type(), op.getScaleAttr());
-    Value zeroC = rewriter.create<arith::ConstantOp>(loc, rewriter.getI32Type(),
-                                                     op.getZeroAttr());
+    Value scaleC = arith::ConstantOp::create(
+        rewriter, loc, rewriter.getF32Type(), op.getScaleAttr());
+    Value zeroC = arith::ConstantOp::create(
+        rewriter, loc, rewriter.getI32Type(), op.getZeroAttr());
 
     args.push_back(scaleC);
     argTys.push_back(scaleC.getType());
@@ -238,10 +240,10 @@ struct DequantizeOpConversion : OpRewritePattern<alpine::DequantizeOp> {
     }
 
     Location loc = op.getLoc();
-    Value scaleC = rewriter.create<arith::ConstantOp>(
-        loc, rewriter.getF32Type(), op.getScaleAttr());
-    Value zeroC = rewriter.create<arith::ConstantOp>(loc, rewriter.getI32Type(),
-                                                     op.getZeroAttr());
+    Value scaleC = arith::ConstantOp::create(
+        rewriter, loc, rewriter.getF32Type(), op.getScaleAttr());
+    Value zeroC = arith::ConstantOp::create(
+        rewriter, loc, rewriter.getI32Type(), op.getZeroAttr());
 
     args.push_back(scaleC);
     argTys.push_back(scaleC.getType());
@@ -259,7 +261,7 @@ struct DequantizeOpConversion : OpRewritePattern<alpine::DequantizeOp> {
 static void extract1D(Value mr, PatternRewriter &rewriter, Value &base,
                       Value &offset, Value &len, Value &stride) {
   Location loc = mr.getLoc();
-  auto em = rewriter.create<memref::ExtractStridedMetadataOp>(loc, mr);
+  auto em = memref::ExtractStridedMetadataOp::create(rewriter, loc, mr);
   base = em.getBaseBuffer();
   offset = em.getOffset();
   auto sizes = em.getSizes();
@@ -272,7 +274,7 @@ static void extract2D(Value mr, PatternRewriter &rewriter, Value &base,
                       Value &offset, Value &rows, Value &cols, Value &rowStride,
                       Value &colStride) {
   Location loc = mr.getLoc();
-  auto em = rewriter.create<memref::ExtractStridedMetadataOp>(loc, mr);
+  auto em = memref::ExtractStridedMetadataOp::create(rewriter, loc, mr);
   base = em.getBaseBuffer();
   offset = em.getOffset();
   auto sizes = em.getSizes();
@@ -284,7 +286,7 @@ static void extract2D(Value mr, PatternRewriter &rewriter, Value &base,
 }
 
 static Value i64C(PatternRewriter &rw, Location loc, int64_t v) {
-  return rw.create<arith::ConstantOp>(loc, rw.getI64IntegerAttr(v));
+  return arith::ConstantOp::create(rw, loc, rw.getI64IntegerAttr(v));
 }
 
 struct WriteWeightsOpConversion : OpRewritePattern<alpine::WriteWeightsOp> {
@@ -302,7 +304,7 @@ struct WriteWeightsOpConversion : OpRewritePattern<alpine::WriteWeightsOp> {
     Location loc = op.getLoc();
     Value tile = op.getOperand(0);
     if (!tile.getType().isInteger(64))
-      tile = rewriter.create<arith::ExtUIOp>(loc, rewriter.getI64Type(), tile);
+      tile = arith::ExtUIOp::create(rewriter, loc, rewriter.getI64Type(), tile);
 
     Value base, offset, rows, cols, rs, cs;
     extract2D(op.getOperand(1), rewriter, base, offset, rows, cols, rs, cs);
@@ -341,7 +343,7 @@ struct EnqueueVecOpConversion : OpRewritePattern<alpine::EnqueueVecOp> {
 
     Value tile = op.getOperand(0);
     if (!tile.getType().isInteger(64))
-      tile = rewriter.create<arith::ExtUIOp>(loc, rewriter.getI64Type(), tile);
+      tile = arith::ExtUIOp::create(rewriter, loc, rewriter.getI64Type(), tile);
 
     Value base, offset, len, stride;
     extract1D(op.getOperand(1), rewriter, base, offset, len, stride);
@@ -373,7 +375,7 @@ struct DequeueVecOpConversion : OpRewritePattern<alpine::DequeueVecOp> {
 
     Value tile = op.getOperand(0);
     if (!tile.getType().isInteger(64))
-      tile = rewriter.create<arith::ExtUIOp>(loc, rewriter.getI64Type(), tile);
+      tile = arith::ExtUIOp::create(rewriter, loc, rewriter.getI64Type(), tile);
 
     Value base, offset, len, stride;
     extract1D(op.getOperand(1), rewriter, base, offset, len, stride);
@@ -405,7 +407,7 @@ struct MVMOpConversion : OpRewritePattern<alpine::MVMOp> {
 
     Value tile = op.getOperand(0);
     if (!tile.getType().isInteger(64))
-      tile = rewriter.create<arith::ExtUIOp>(loc, rewriter.getI64Type(), tile);
+      tile = arith::ExtUIOp::create(rewriter, loc, rewriter.getI64Type(), tile);
 
     Value inBase, inOff, inLen, inStride;
     extract1D(op.getOperand(1), rewriter, inBase, inOff, inLen, inStride);
@@ -442,8 +444,12 @@ struct ProcessOpConversion : OpRewritePattern<alpine::ProcessOp> {
 // Pass driver
 //------------------------------------------------------------------------------
 
+} // namespace
+
+namespace mlir::alpine {
+
 struct ConvertAlpineToFunc
-    : public ConvertAlpineToFuncBase<ConvertAlpineToFunc> {
+    : public mlir::alpine::impl::ConvertAlpineToFuncBase<ConvertAlpineToFunc> {
   void runOnOperation() final {
     MLIRContext &ctx = getContext();
 
@@ -465,8 +471,7 @@ struct ConvertAlpineToFunc
       signalPassFailure();
   }
 };
-
-} // namespace
+} // namespace mlir::alpine
 
 //------------------------------------------------------------------------------
 // Pattern population

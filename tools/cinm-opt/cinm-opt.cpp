@@ -72,7 +72,7 @@ int main(int argc, char *argv[]) {
 #ifdef CINM_TORCH_MLIR_ENABLED
   registerCinmFrontendConversionPasses();
 #endif
-  registerAlpineConversionPasses();
+  alpine::registerAlpineConversionPasses();
   registerCinmConversionPasses();
   registerCimConversionPasses();
   registerCnmConversionPasses();

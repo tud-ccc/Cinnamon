@@ -20,7 +20,6 @@ def Cinm_Dialect : Dialect {
         TODO
     }];
 
-    let usePropertiesForAttributes = 0;
     let useDefaultAttributePrinterParser = 0;
 //    let useDefaultTypePrinterParser = 1;
     let hasOperationAttrVerify = 1;

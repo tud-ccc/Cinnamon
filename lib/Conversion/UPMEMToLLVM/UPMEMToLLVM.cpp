@@ -69,7 +69,7 @@ static LLVM::LLVMPointerType functionPtrTy(Type resultTy, ArrayRef<Type>) {
 
 static Value reifyAsIndex(ImplicitLocOpBuilder &builder,
                           LLVMTypeConverter const *converter, int64_t value) {
-  return builder.create<LLVM::ConstantOp>(converter->getIndexType(), value);
+  return LLVM::ConstantOp::create(builder, converter->getIndexType(), value);
 }
 
 static LLVM::GlobalOp
@@ -107,7 +107,7 @@ declareStringConstant(ModuleOp moduleOp, Location loc, StringRef value,
   str = getUniqueFunctionName(moduleOp, globalName.value_or(twine));
 
   builder.setInsertionPointToStart(&moduleOp.getBodyRegion().front());
-  return builder.create<LLVM::GlobalOp>(
+  return LLVM::GlobalOp::create(builder, 
       loc, globalType,
       /*isConstant=*/true, LLVM::Linkage::Private,
       builder.getStringAttr(std::move(str)), valueAttr);
@@ -117,7 +117,7 @@ static Value reifyAsString(ImplicitLocOpBuilder &builder, ModuleOp container,
                            StringRef value, StringRef nameHint) {
   LLVM::GlobalOp global =
       declareStringConstant(container, builder.getLoc(), value, true, nameHint);
-  return builder.create<LLVM::AddressOfOp>(global);
+  return LLVM::AddressOfOp::create(builder, global);
 }
 
 /// Linearize the scatter map.
@@ -240,7 +240,7 @@ public:
     LLVM::GlobalOp constant =
         declareStringConstant(op->getParentOfType<ModuleOp>(), op->getLoc(),
                               leafName, true, "dpu_program");
-    Value result = rewriter.create<LLVM::AddressOfOp>(op->getLoc(), constant);
+    Value result = LLVM::AddressOfOp::create(rewriter, op->getLoc(), constant);
     return success(result);
   }
 
@@ -248,9 +248,9 @@ public:
   matchAndRewrite(upmem::AllocDPUsOp op, typename upmem::AllocDPUsOp::Adaptor,
                   ConversionPatternRewriter &rewriter) const override {
     const DeviceHierarchyType hierarchyShape = op.getResult().getType();
-    const Value rankCount = rewriter.create<LLVM::ConstantOp>(
+    const Value rankCount = LLVM::ConstantOp::create(rewriter, 
         op.getLoc(), rewriter.getI32IntegerAttr(hierarchyShape.getNumRanks()));
-    const Value dpuCount = rewriter.create<LLVM::ConstantOp>(
+    const Value dpuCount = LLVM::ConstantOp::create(rewriter, 
         op.getLoc(),
         rewriter.getI32IntegerAttr(hierarchyShape.getNumDpusPerRank()));
 
@@ -309,7 +309,7 @@ outlineAffineMap(ImplicitLocOpBuilder &rewriter,
     return existingOp;
   auto funName = getUniqueFunctionName(moduleOp, "scatter_map");
   rewriter.setInsertionPointToStart(&moduleOp.getBodyRegion().front());
-  auto affineMapFun = rewriter.create<LLVM::LLVMFuncOp>(
+  auto affineMapFun = LLVM::LLVMFuncOp::create(rewriter, 
       rewriter.getStringAttr(funName), affineFunTy, LLVM::Linkage::Private);
 
   // to find it later
@@ -327,7 +327,7 @@ outlineAffineMap(ImplicitLocOpBuilder &rewriter,
     auto result = (*resOpt)[0];
     result = createOrFoldUnrealizedConversionCast(rewriter.getLoc(), rewriter,
                                                   sizeTy, result);
-    rewriter.create<LLVM::ReturnOp>(ValueRange{result});
+    LLVM::ReturnOp::create(rewriter, ValueRange{result});
     return affineMapFun;
   }
   return failure();
@@ -516,10 +516,10 @@ struct ConvertUPMEMToLLVMPass
                                       Location loc) -> Value {
       // if (isa<BaseMemRefType>(type) && inputs.size() == 1 &&
       //     isa<RankedTensorType>(inputs[0].getType())) {
-      //   return builder.create<bufferization::ToMemrefOp>(loc, type, inputs)
+      //   return bufferization::ToMemrefOp::create(builder, loc, type, inputs)
       //       .getResult();
       // }
-      return builder.create<UnrealizedConversionCastOp>(loc, type, inputs)
+      return UnrealizedConversionCastOp::create(builder, loc, type, inputs)
           .getResult(0);
     };
     converter.addSourceMaterialization(addUnrealizedCast);
