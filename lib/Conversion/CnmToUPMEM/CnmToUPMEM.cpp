@@ -98,15 +98,16 @@ static LogicalResult convertCnmGatherToUpmem(RewriterBase &rewriter,
   Value outputBuf = op.getOutputBuf();
   bool isBufferized = isa<BaseMemRefType>(op.getOutputBuf().getType());
   if (!isBufferized) {
-    outputBuf = memref::AllocOp::create(rewriter, 
-        op->getLoc(), convertTensorToMemref(op.getOutputBuf().getType()));
+    outputBuf = memref::AllocOp::create(
+        rewriter, op->getLoc(),
+        convertTensorToMemref(op.getOutputBuf().getType()));
   }
 
   const size_t numTasklets = upmemWgAlloc.getType().getNumTaskletsPerDpu();
   const int64_t transferCount = op.getTransferCountInItems() * numTasklets;
 
-  upmem::GatherOp::create(rewriter, 
-      op->getLoc(), outputBuf, refToBuffer, transferCount,
+  upmem::GatherOp::create(
+      rewriter, op->getLoc(), outputBuf, refToBuffer, transferCount,
       adaptAffineMapCnmToUpmem(op.getGatherMap(), op.getBuffer().getType()),
       upmemWgAlloc.getResult());
 
@@ -138,8 +139,8 @@ static LogicalResult convertCnmScatterToUpmem(RewriterBase &rewriter,
       isBroadcast ? op.getTransferCountInItems()
                   : op.getTransferCountInItems() * numTasklets;
 
-  upmem::ScatterOp::create(rewriter, 
-      op->getLoc(), inputAsMemref, refToBuffer, transferCount,
+  upmem::ScatterOp::create(
+      rewriter, op->getLoc(), inputAsMemref, refToBuffer, transferCount,
       adaptAffineMapCnmToUpmem(op.getScatterMap(), op.getBuffer().getType()),
       upmemWgAlloc.getResult());
 
@@ -191,8 +192,8 @@ static void createTransfer(RewriterBase &rewriter, bool toWram, Location loc,
             ShapedType::kDynamic, ArrayRef<long>(baseStrides).drop_front()),
         mramBufTy.getMemorySpace());
 
-    mramBufToScatter = rewriter.create<memref::SubViewOp>(
-        loc, viewType, mramBuf.getBuffer(), offsets, sizes, strides);
+    mramBufToScatter = memref::SubViewOp::create(
+        rewriter, loc, viewType, mramBuf.getBuffer(), offsets, sizes, strides);
   } else {
     // MRAM buffer corresponds exactly to WRAM buffer
     // This corresponds to a broadcast.
@@ -200,10 +201,10 @@ static void createTransfer(RewriterBase &rewriter, bool toWram, Location loc,
 
     // In that case we need to make only thread 0 call
     // for the transfer
-    auto cst0 = rewriter.create<arith::ConstantOp>(
-        loc, rewriter.getZeroAttr(taskletId.getResult().getType()));
-    auto isTaskletZero = rewriter.create<arith::CmpIOp>(
-        loc, arith::CmpIPredicate::eq, taskletId, cst0);
+    auto cst0 = arith::ConstantOp::create(
+        rewriter, loc, rewriter.getZeroAttr(taskletId.getResult().getType()));
+    auto isTaskletZero = arith::CmpIOp::create(
+        rewriter, loc, arith::CmpIPredicate::eq, taskletId, cst0);
     auto scfIf = scf::IfOp::create(rewriter, loc, isTaskletZero, false);
     // Create a barrier so that all threads wait for the transfer to finish.
     // This is only ok if the transfer is from MRAM to WRAM, then threads are
@@ -252,25 +253,6 @@ static bool isScatterBroadcastOverThreads(cnm::AllocOp alloc) {
   return true;
 }
 
-static bool isScatterBroadcastOverThreads(cnm::AllocOp alloc) {
-  for (auto user : alloc->getUsers()) {
-    if (llvm::isa<cnm::GatherOp>(user))
-      return false;
-    if (auto scatter = llvm::dyn_cast_or_null<cnm::ScatterOp>(user)) {
-      auto map = scatter.getScatterMap();
-      if (map.getNumDims() != 3)
-        return false;
-      auto unusedDims = getUnusedDimsBitVector({map});
-      if (!unusedDims[2]) {
-        // threads dim is used so all threads see the same buffer
-        return false;
-      }
-    }
-  }
-
-  return true;
-}
-
 static LogicalResult convertCnmLaunchToUpmem(cnm::LaunchOp launch,
                                              RewriterBase &rewriter,
                                              SymbolTable rootModule,
@@ -285,8 +267,8 @@ static LogicalResult convertCnmLaunchToUpmem(cnm::LaunchOp launch,
   const auto upmemTy =
       rewriter.getType<upmem::DeviceHierarchyType>(wg[0], wg[1], wg[2]);
 
-  auto dpuProgram = upmem::DpuProgramOp::create(rewriter, 
-      launch->getLoc(), "program", upmemTy.getNumTaskletsPerDpu());
+  auto dpuProgram = upmem::DpuProgramOp::create(
+      rewriter, launch->getLoc(), "program", upmemTy.getNumTaskletsPerDpu());
   dpuProgram.getBody().emplaceBlock();
   SymbolTable symTable(dpuKernelModule);
   symTable.insert(dpuProgram);
@@ -296,8 +278,8 @@ static LogicalResult convertCnmLaunchToUpmem(cnm::LaunchOp launch,
 
   auto wgAlloc = cast<cnm::WorkgroupOp>(launch.getWg().getDefiningOp());
   rewriter.setInsertionPoint(wgAlloc);
-  auto upmemWgAlloc = upmem::AllocDPUsOp::create(rewriter, 
-      wgAlloc->getLoc(), upmemTy, *programPath);
+  auto upmemWgAlloc = upmem::AllocDPUsOp::create(rewriter, wgAlloc->getLoc(),
+                                                 upmemTy, *programPath);
 
   llvm::MapVector<Value, upmem::StaticAllocOp> buffersToMramBuf;
   // llvm::MapVector<Value, upmem::StaticAllocOp> buffersToSharedWramBuf;
@@ -331,14 +313,15 @@ static LogicalResult convertCnmLaunchToUpmem(cnm::LaunchOp launch,
       if (isScatterBroadcastOverThreads(alloc)) {
         // If all threads see the same buffer (broadcast), then we only
         // create one static buffer in WRAM.
-        auto wrambuf = rewriter.create<upmem::StaticAllocOp>(
-            alloc->getLoc(), memrefTy, upmem::DpuMemSpace::WRAM, "buf", true);
+        auto wrambuf =
+            upmem::StaticAllocOp::create(rewriter, alloc->getLoc(), memrefTy,
+                                         upmem::DpuMemSpace::WRAM, "buf", true);
         dpuProgramSymTable.insert(wrambuf); // this renames it to a unique name
         buffersToWramBufValue[alloc.getResult()] = wrambuf.getBuffer();
       } else {
         // not a broadcast - each tasklet gets its own buffer
-        auto pwramBuf = rewriter.create<upmem::PrivateWRAMAllocOp>(
-            alloc.getLoc(), memrefTy);
+        auto pwramBuf = upmem::PrivateWRAMAllocOp::create(
+            rewriter, alloc.getLoc(), memrefTy);
 
         buffersToWramBufValue[alloc.getResult()] = pwramBuf.getBuffer();
 
@@ -350,8 +333,9 @@ static LogicalResult convertCnmLaunchToUpmem(cnm::LaunchOp launch,
       memrefTy = MemRefType::get(bufShape, bufferType.getElementType(),
                                  MemRefLayoutAttrInterface{}, mramMemspaceAttr);
 
-      auto mrambuf = upmem::StaticAllocOp::create(rewriter, 
-          alloc->getLoc(), memrefTy, upmem::DpuMemSpace::MRAM, "buf", false);
+      auto mrambuf =
+          upmem::StaticAllocOp::create(rewriter, alloc->getLoc(), memrefTy,
+                                       upmem::DpuMemSpace::MRAM, "buf", false);
       dpuProgramSymTable.insert(mrambuf); // this renames it to a unique name
       buffersToMramBuf[alloc.getResult()] = mrambuf;
     }
@@ -401,15 +385,6 @@ static LogicalResult convertCnmLaunchToUpmem(cnm::LaunchOp launch,
   // todo support moving tiles of the mram buffer into pwram
   rewriter.setInsertionPointToEnd(&dpuProgram.getBody().front());
   for (auto [buf, mramBuf] : buffersToMramBuf) {
-    if (std::none_of(buf.getUsers().begin(), buf.getUsers().end(),
-                     [](auto op) { return llvm::isa<cnm::ScatterOp>(op); })) {
-      // If there is no scatter we also don't need to load any data from mram to
-      // wram. It's likely a pure output buffer.
-      // TODO i think when we push eg constants values into the DPU program this
-      //  will not hold anymore. The condition is more, if the kernel doesn't
-      //  read the buffer.
-      continue;
-    }
     auto wramBuf = buffersToWramBufValue[buf];
     createTransfer(rewriter, true, buf.getLoc(), mramBuf, wramBuf);
     rewriter.setInsertionPointToEnd(&dpuProgram.getBody().front());
@@ -432,7 +407,8 @@ static LogicalResult convertCnmLaunchToUpmem(cnm::LaunchOp launch,
   upmem::ReturnOp::create(rewriter, launch->getLoc());
 
   rewriter.setInsertionPoint(launch);
-  upmem::WaitForOp::create(rewriter, launch->getLoc(), upmemWgAlloc.getResult());
+  upmem::WaitForOp::create(rewriter, launch->getLoc(),
+                           upmemWgAlloc.getResult());
 
   // cleanup
 
@@ -445,7 +421,7 @@ static LogicalResult convertCnmLaunchToUpmem(cnm::LaunchOp launch,
     if (auto free = llvm::dyn_cast_or_null<cnm::FreeWorkgroupOp>(user)) {
       rewriter.setInsertionPoint(free);
       upmem::FreeDPUsOp::create(rewriter, free->getLoc(),
-                                         upmemWgAlloc.getResult());
+                                upmemWgAlloc.getResult());
       rewriter.eraseOp(free);
     }
   }
