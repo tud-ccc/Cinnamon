@@ -37,7 +37,7 @@ struct SoftmaxToCinmPattern : OpConversionPattern<linalg::SoftmaxOp> {
     Value innerInput = compute.getBodyArguments()[0];
 
     rewriter.setInsertionPointToEnd(&compute.getBody().emplaceBlock());
-    const Value max = rewriter.create<cinm::ReduceOp>(
+    const Value max = cinm::ReduceOp::create(rewriter, 
         loc, inputType.getElementType(),
         isFloat ? ReduceMethod::MAXNUMF : ReduceMethod::MAXSI, innerInput, 0);
     const Value t = rewriter
@@ -50,12 +50,12 @@ struct SoftmaxToCinmPattern : OpConversionPattern<linalg::SoftmaxOp> {
     const Value e =
         cinm::ElementwiseOp::create(rewriter, loc, ElementwiseKind::Exp, t)
             .getResult();
-    const Value s = rewriter.create<cinm::ReduceOp>(
+    const Value s = cinm::ReduceOp::create(rewriter, 
         loc, inputType.getElementType(), ReduceMethod::ADD, e, 0);
     const Value result =
-        rewriter.create<cinm::ElementwiseOp>(loc, ElementwiseKind::Div, e, s)
+        cinm::ElementwiseOp::create(rewriter, loc, ElementwiseKind::Div, e, s)
             .getResult();
-    rewriter.create<YieldOp>(loc, ValueRange{result});
+    YieldOp::create(rewriter, loc, ValueRange{result});
     return success();
   }
 };

@@ -40,7 +40,7 @@ static void preAllocateTiles(Operation *root, XbarToTileMap &map) {
       attrs.emplace_back(b.getStringAttr("height"), h);
     if (auto w = acq->getAttr("width"))
       attrs.emplace_back(b.getStringAttr("width"), w);
-    Value tile = b.create<alpine::AllocTileOp>(
+    Value tile = alpine::AllocTileOp::create(b, 
         acq.getLoc(),  b.getI32Type(),  ValueRange{},
          attrs);
     map.try_emplace(xb, tile);
@@ -88,7 +88,7 @@ struct LowerCimQuantizeToAlpine : OpRewritePattern<memref::CopyOp> {
     if (auto altSrcTy = dyn_cast<MemRefType>(copy.getSource().getType())) {
       if (altSrcTy.getRank() == srcTy.getRank() && altSrcTy != srcTy &&
           memref::CastOp::areCastCompatible(srcTy, altSrcTy)) {
-        srcForOp = rewriter.create<memref::CastOp>(loc, altSrcTy, srcForOp);
+        srcForOp = memref::CastOp::create(rewriter, loc, altSrcTy, srcForOp);
         srcTy = altSrcTy;
       }
     }
@@ -101,12 +101,12 @@ struct LowerCimQuantizeToAlpine : OpRewritePattern<memref::CopyOp> {
                           dstMR.getMemorySpace());
       if (expectedDstTy != dstMR &&
           memref::CastOp::areCastCompatible(dstMR, expectedDstTy)) {
-        dstForOp = rewriter.create<memref::CastOp>(loc, expectedDstTy, dst);
+        dstForOp = memref::CastOp::create(rewriter, loc, expectedDstTy, dst);
       }
     }
 
     rewriter.setInsertionPoint(copy);
-    rewriter.create<alpine::QuantizeOp>(
+    alpine::QuantizeOp::create(rewriter, 
         loc, srcForOp, dstForOp, q.getScaleAttr(),
         rewriter.getI32IntegerAttr((int32_t)z64));
 
@@ -161,7 +161,7 @@ struct LowerCimDequantizeToAlpine : OpRewritePattern<memref::CopyOp> {
     if (auto altSrcTy = dyn_cast<MemRefType>(copy.getSource().getType())) {
       if (altSrcTy.getRank() == srcTy.getRank() && altSrcTy != srcTy &&
           memref::CastOp::areCastCompatible(srcTy, altSrcTy)) {
-        srcForOp = rewriter.create<memref::CastOp>(loc, altSrcTy, srcForOp);
+        srcForOp = memref::CastOp::create(rewriter, loc, altSrcTy, srcForOp);
         srcTy = altSrcTy;
       }
     }
@@ -174,12 +174,12 @@ struct LowerCimDequantizeToAlpine : OpRewritePattern<memref::CopyOp> {
                           dstMR.getMemorySpace());
       if (expectedDstTy != dstMR &&
           memref::CastOp::areCastCompatible(dstMR, expectedDstTy)) {
-        dstForOp = rewriter.create<memref::CastOp>(loc, expectedDstTy, dst);
+        dstForOp = memref::CastOp::create(rewriter, loc, expectedDstTy, dst);
       }
     }
 
     rewriter.setInsertionPoint(copy);
-    rewriter.create<alpine::DequantizeOp>(
+    alpine::DequantizeOp::create(rewriter, 
         loc, srcForOp, dstForOp, dq.getScaleAttr(),
         rewriter.getI32IntegerAttr((int32_t)z64));
 
@@ -235,18 +235,18 @@ struct LowerCimGemvChainToAlpine : OpRewritePattern<memref::CopyOp> {
 
     rewriter.setInsertionPoint(copy);
 
-    rewriter.create<alpine::WriteWeightsOp>(loc, tile, mat);
+    alpine::WriteWeightsOp::create(rewriter, loc, tile, mat);
 
-    rewriter.create<alpine::EnqueueVecOp>(loc, tile, vec);
+    alpine::EnqueueVecOp::create(rewriter, loc, tile, vec);
 
-    (void)rewriter.create<alpine::ProcessOp>(
+    (void)alpine::ProcessOp::create(rewriter, 
         loc,
         tile,
         StringAttr(),
         rewriter.getBoolAttr(false),
         rewriter.getI64IntegerAttr(1));
 
-    rewriter.create<alpine::DequeueVecOp>(loc, tile, dst);
+    alpine::DequeueVecOp::create(rewriter, loc, tile, dst);
 
     rewriter.eraseOp(copy);
 
@@ -299,12 +299,12 @@ struct LowerCimReluToAlpine : OpRewritePattern<memref::CopyOp> {
                                            dstMR.getMemorySpace());
       if (expectedDstTy != dstMR &&
           memref::CastOp::areCastCompatible(dstMR, expectedDstTy))
-        dstForOp = rewriter.create<memref::CastOp>(copy.getLoc(), expectedDstTy,
+        dstForOp = memref::CastOp::create(rewriter, copy.getLoc(), expectedDstTy,
                                                    dst);
     }
 
     rewriter.setInsertionPoint(copy);
-    rewriter.create<alpine::ReluOp>(copy.getLoc(), srcForOp, dstForOp);
+    alpine::ReluOp::create(rewriter, copy.getLoc(), srcForOp, dstForOp);
 
     rewriter.eraseOp(copy);
     if (bar->use_empty())

@@ -96,14 +96,14 @@ static LogicalResult convertCnmGatherToUpmem(RewriterBase &rewriter,
   Value outputBuf = op.getOutputBuf();
   bool isBufferized = isa<BaseMemRefType>(op.getOutputBuf().getType());
   if (!isBufferized) {
-    outputBuf = rewriter.create<memref::AllocOp>(
+    outputBuf = memref::AllocOp::create(rewriter, 
         op->getLoc(), convertTensorToMemref(op.getOutputBuf().getType()));
   }
 
   const size_t numTasklets = upmemWgAlloc.getType().getNumTaskletsPerDpu();
   const int64_t transferCount = op.getTransferCountInItems() * numTasklets;
 
-  rewriter.create<upmem::GatherOp>(
+  upmem::GatherOp::create(rewriter, 
       op->getLoc(), outputBuf, refToBuffer, transferCount,
       adaptAffineMapCnmToUpmem(op.getGatherMap(), op.getBuffer().getType()),
       upmemWgAlloc.getResult());
@@ -133,7 +133,7 @@ static LogicalResult convertCnmScatterToUpmem(RewriterBase &rewriter,
   const size_t numTasklets = upmemWgAlloc.getType().getNumTaskletsPerDpu();
   const int64_t transferCount = op.getTransferCountInItems() * numTasklets;
 
-  rewriter.create<upmem::ScatterOp>(
+  upmem::ScatterOp::create(rewriter, 
       op->getLoc(), inputAsMemref, refToBuffer, transferCount,
       adaptAffineMapCnmToUpmem(op.getScatterMap(), op.getBuffer().getType()),
       upmemWgAlloc.getResult());
@@ -155,7 +155,7 @@ static void createTransfer(RewriterBase &rewriter, bool toWram, Location loc,
   auto wramBufTy = pwramBuf.getBuffer().getType();
   assert(mramBufTy.getRank() == wramBufTy.getRank() + 1);
 
-  auto taskletId = rewriter.create<upmem::TaskletDimOp>(loc);
+  auto taskletId = upmem::TaskletDimOp::create(rewriter, loc);
 
   SmallVector<OpFoldResult, 4> offsets(mramBufTy.getRank(),
                                        rewriter.getIndexAttr(0));
@@ -180,14 +180,14 @@ static void createTransfer(RewriterBase &rewriter, bool toWram, Location loc,
           ShapedType::kDynamic, ArrayRef<long>(baseStrides).drop_front()),
       mramBufTy.getMemorySpace());
 
-  Value tileMramView = rewriter.create<memref::SubViewOp>(
+  Value tileMramView = memref::SubViewOp::create(rewriter, 
       loc, viewType, mramBuf.getBuffer(), offsets, sizes, strides);
 
   if (toWram)
-    rewriter.create<upmem::LocalTransferOp>(loc, tileMramView,
+    upmem::LocalTransferOp::create(rewriter, loc, tileMramView,
                                             pwramBuf.getBuffer());
   else
-    rewriter.create<upmem::LocalTransferOp>(loc, pwramBuf.getBuffer(),
+    upmem::LocalTransferOp::create(rewriter, loc, pwramBuf.getBuffer(),
                                             tileMramView);
 }
 
@@ -224,7 +224,7 @@ static LogicalResult convertCnmLaunchToUpmem(cnm::LaunchOp launch,
   const auto upmemTy =
       rewriter.getType<upmem::DeviceHierarchyType>(wg[0], wg[1], wg[2]);
 
-  auto dpuProgram = rewriter.create<upmem::DpuProgramOp>(
+  auto dpuProgram = upmem::DpuProgramOp::create(rewriter, 
       launch->getLoc(), "program", upmemTy.getNumTaskletsPerDpu());
   dpuProgram.getBody().emplaceBlock();
   SymbolTable symTable(dpuKernelModule);
@@ -235,7 +235,7 @@ static LogicalResult convertCnmLaunchToUpmem(cnm::LaunchOp launch,
 
   auto wgAlloc = cast<cnm::WorkgroupOp>(launch.getWg().getDefiningOp());
   rewriter.setInsertionPoint(wgAlloc);
-  auto upmemWgAlloc = rewriter.create<upmem::AllocDPUsOp>(
+  auto upmemWgAlloc = upmem::AllocDPUsOp::create(rewriter, 
       wgAlloc->getLoc(), upmemTy, *programPath);
 
   llvm::MapVector<Value, upmem::StaticAllocOp> buffersToMramBuf;
@@ -270,7 +270,7 @@ static LogicalResult convertCnmLaunchToUpmem(cnm::LaunchOp launch,
       if (isScatterBroadcastOverThreads(alloc)) {
         // If all threads see the same buffer (broadcast), then we only
         // create one static buffer in WRAM.
-        auto wrambuf = rewriter.create<upmem::StaticAllocOp>(
+        auto wrambuf = upmem::StaticAllocOp::create(rewriter, 
             alloc->getLoc(), memrefTy, upmem::DpuMemSpace::WRAM, "buf", true);
         dpuProgramSymTable.insert(wrambuf); // this renames it to a unique name
         buffersToSharedWramBuf[alloc.getResult()] = wrambuf;
@@ -278,7 +278,7 @@ static LogicalResult convertCnmLaunchToUpmem(cnm::LaunchOp launch,
       }
 
       auto pwramBuf =
-          rewriter.create<upmem::PrivateWRAMAllocOp>(alloc.getLoc(), memrefTy);
+          upmem::PrivateWRAMAllocOp::create(rewriter, alloc.getLoc(), memrefTy);
 
       buffersToPwramBuf[alloc.getResult()] = pwramBuf;
 
@@ -289,7 +289,7 @@ static LogicalResult convertCnmLaunchToUpmem(cnm::LaunchOp launch,
       memrefTy = MemRefType::get(bufShape, bufferType.getElementType(),
                                  MemRefLayoutAttrInterface{}, mramMemspaceAttr);
 
-      auto mrambuf = rewriter.create<upmem::StaticAllocOp>(
+      auto mrambuf = upmem::StaticAllocOp::create(rewriter, 
           alloc->getLoc(), memrefTy, upmem::DpuMemSpace::MRAM, "buf", false);
       dpuProgramSymTable.insert(mrambuf); // this renames it to a unique name
       buffersToMramBuf[alloc.getResult()] = mrambuf;
@@ -368,10 +368,10 @@ static LogicalResult convertCnmLaunchToUpmem(cnm::LaunchOp launch,
     createTransfer(rewriter, false, buf.getLoc(), mramBuf, pwramBuf);
   }
 
-  rewriter.create<upmem::ReturnOp>(launch->getLoc());
+  upmem::ReturnOp::create(rewriter, launch->getLoc());
 
   rewriter.setInsertionPoint(launch);
-  rewriter.create<upmem::WaitForOp>(launch->getLoc(), upmemWgAlloc.getResult());
+  upmem::WaitForOp::create(rewriter, launch->getLoc(), upmemWgAlloc.getResult());
 
   // cleanup
 
@@ -383,7 +383,7 @@ static LogicalResult convertCnmLaunchToUpmem(cnm::LaunchOp launch,
   for (auto user : wgAlloc.getResult().getUsers()) {
     if (auto free = llvm::dyn_cast_or_null<cnm::FreeWorkgroupOp>(user)) {
       rewriter.setInsertionPoint(free);
-      rewriter.create<upmem::FreeDPUsOp>(free->getLoc(),
+      upmem::FreeDPUsOp::create(rewriter, free->getLoc(),
                                          upmemWgAlloc.getResult());
       rewriter.eraseOp(free);
     }
@@ -445,7 +445,7 @@ struct ConvertCnmToUPMEMPass
       OpBuilder builder(&getContext());
       builder.setInsertionPointToEnd(&parentModule.getBodyRegion().front());
       dpuKernelModule =
-          builder.create<ModuleOp>(parentModule->getLoc(), kmName);
+          ModuleOp::create(builder, parentModule->getLoc(), kmName);
     }
 
     SmallVector<LaunchOp> launchOps;

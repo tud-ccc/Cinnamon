@@ -6,7 +6,9 @@
 namespace mlir::upmem {
 
 struct UpmemToLlvmDialectInterface : public ConvertToLLVMPatternInterface {
-  using ConvertToLLVMPatternInterface::ConvertToLLVMPatternInterface;
+public:
+  explicit UpmemToLlvmDialectInterface(Dialect *dialect)
+      : ConvertToLLVMPatternInterface(dialect) {}
 
   /// Hook for derived dialect interface to load the dialects they
   /// target. The LLVMDialect is implicitly already loaded, but this

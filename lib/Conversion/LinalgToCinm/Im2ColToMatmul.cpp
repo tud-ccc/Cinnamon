@@ -45,7 +45,7 @@ static Value transposeTensor(PatternRewriter &rewriter, Location loc,
     resultShape.push_back(type.getShape()[idx]);
 
   Value empty =
-      rewriter.create<tensor::EmptyOp>(loc, resultShape, type.getElementType());
+      tensor::EmptyOp::create(rewriter, loc, resultShape, type.getElementType());
 
   SmallVector<AffineExpr> exprs;
   exprs.reserve(permutation.size());
@@ -62,11 +62,11 @@ static Value transposeTensor(PatternRewriter &rewriter, Location loc,
   SmallVector<utils::IteratorType> iteratorTypes(permutation.size(),
                                                  utils::IteratorType::parallel);
 
-  auto generic = rewriter.create<linalg::GenericOp>(
+  auto generic = linalg::GenericOp::create(rewriter, 
       loc, empty.getType(), ValueRange{value}, ValueRange{empty}, maps,
       iteratorTypes,
       [&](OpBuilder &nestedBuilder, Location nestedLoc, ValueRange args) {
-        nestedBuilder.create<linalg::YieldOp>(nestedLoc, args[0]);
+        linalg::YieldOp::create(nestedBuilder, nestedLoc, args[0]);
       });
 
   return generic.getResult(0);
@@ -102,10 +102,10 @@ struct ConvertDepthwiseConv2DNchwChw
                                       outShape[1]};
     auto nhwcType =
         RankedTensorType::get(nhwcShape, resultType.getElementType());
-    Value init = rewriter.create<tensor::EmptyOp>(loc, nhwcShape,
+    Value init = tensor::EmptyOp::create(rewriter, loc, nhwcShape,
                                                   nhwcType.getElementType());
 
-    auto conv = rewriter.create<linalg::DepthwiseConv2DNhwcHwcOp>(
+    auto conv = linalg::DepthwiseConv2DNhwcHwcOp::create(rewriter, 
         loc, nhwcType, ValueRange{inputNHWC, filterHWC}, ValueRange{init},
         op.getStridesAttr(), op.getDilationsAttr());
 
@@ -268,13 +268,13 @@ struct GenericIm2ColMatmulToBatchMatmul
       SmallVector<ReassociationIndices, 2> reassoc;
       reassoc.push_back(ReassociationIndices{0, 1});
       reassoc.push_back(ReassociationIndices{2});
-      lhsExpanded = rewriter.create<tensor::ExpandShapeOp>(loc, expandedType,
+      lhsExpanded = tensor::ExpandShapeOp::create(rewriter, loc, expandedType,
                                                            lhs, reassoc);
     } else if (lhsType.getRank() != 3) {
       return failure();
     }
 
-    auto batchMatmul = rewriter.create<linalg::BatchMatmulOp>(
+    auto batchMatmul = linalg::BatchMatmulOp::create(rewriter, 
         loc, ValueRange{lhsExpanded, rhs}, ValueRange{init});
 
     rewriter.replaceOp(op, batchMatmul->getResults());

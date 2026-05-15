@@ -364,7 +364,7 @@ def AcceleratorOp : Cinm_Op<"accelerator", [OpAsmOpInterface]> {
 
 def Cinm_ComputeOp : Cinm_Base_Op<"compute", [
   AffineScope, AutomaticAllocationScope, RecursiveMemoryEffects,
-  DeclareOpInterfaceMethods<RegionBranchOpInterface, ["getRegionInvocationBounds", "getSuccessorRegions"]>,
+  DeclareOpInterfaceMethods<RegionBranchOpInterface, ["getRegionInvocationBounds", "getSuccessorRegions", "getSuccessorInputs"]>,
   CinmComputeOpInterface
 ]> {
   let summary = "Delimits a block of IR that is to be offloaded";
@@ -417,7 +417,7 @@ def Cinm_ComputeOp : Cinm_Base_Op<"compute", [
 
 def Cinm_ComputeBlockOp : Cinm_Base_Op<"compute_block", [
   AffineScope, AutomaticAllocationScope, IsolatedFromAbove, RecursiveMemoryEffects,
-  DeclareOpInterfaceMethods<RegionBranchOpInterface, ["getRegionInvocationBounds", "getSuccessorRegions", "getEntrySuccessorOperands"]>,
+  DeclareOpInterfaceMethods<RegionBranchOpInterface, ["getRegionInvocationBounds", "getSuccessorRegions", "getEntrySuccessorOperands", "getSuccessorInputs"]>,
   CinmComputeOpInterface
 ]> {
   let summary = "Delimits a region of code for offloading - IsolatedFromAbove";

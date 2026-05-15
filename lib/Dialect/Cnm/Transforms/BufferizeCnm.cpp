@@ -92,7 +92,7 @@ struct GatherOpInterface
     if (failed(v))
       return failure();
 
-    rewriter.create<cnm::GatherOp>(op->getLoc(), gather.getBuffer(),
+    cnm::GatherOp::create(rewriter, op->getLoc(), gather.getBuffer(),
                                    gather.getWg(), gather.getGatherMap(), *v);
     replaceOpWithBufferizedValues(rewriter, op, ValueRange{*v});
     return success();

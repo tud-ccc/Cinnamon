@@ -61,8 +61,8 @@ using linalg::UnaryFn;
 #include "cinm-mlir/Dialect/Cinm/IR/TilingInterface.cpp.inc"
 
 template <typename Self>
-static void buildGemmLikeOp(OpBuilder &builder, OperationState &result,
-                            Value lhs, Value rhs, Value bias, Value out) {
+static void buildGemmLikeOp(OpBuilder &, OperationState &result, Value lhs,
+                            Value rhs, Value bias, Value out) {
   result.addOperands({lhs, rhs});
   int biasInt = 0, outInt = 0;
   if (bias) {
@@ -74,8 +74,10 @@ static void buildGemmLikeOp(OpBuilder &builder, OperationState &result,
     outInt = 1;
   }
 
-  result.addAttribute("operandSegmentSizes",
-                      builder.getDenseI32ArrayAttr({1, 1, biasInt, outInt}));
+  typename Self::Properties &properties =
+      result.getOrAddProperties<typename Self::Properties>();
+  properties.setOperandSegmentSizes({1, 1, biasInt, outInt});
+
   if (!out || isa<RankedTensorType>(out.getType())) {
     ::llvm::SmallVector<::mlir::Type, 2> inferredReturnTypes;
     if (::mlir::succeeded(Self::inferReturnTypes(
@@ -341,12 +343,13 @@ void ReduceOp::build(OpBuilder &builder, OperationState &state, Type resultTy,
 
 ::llvm::LogicalResult ReduceOp::inferReturnTypes(
     ::mlir::MLIRContext *, ::std::optional<::mlir::Location>,
-    ::mlir::ValueRange operands, ::mlir::DictionaryAttr attributes,
-    ::mlir::OpaqueProperties, ::mlir::RegionRange,
+    ::mlir::ValueRange operands, ::mlir::DictionaryAttr,
+    ::mlir::PropertyRef properties, ::mlir::RegionRange,
     ::llvm::SmallVectorImpl<::mlir::Type> &inferredReturnTypes) {
 
   auto inputTy = cast<ShapedType>(operands[0].getType());
-  auto dimension = attributes.getAs<IntegerAttr>("dimension").getInt();
+  const Properties *props = properties.as<Properties *>();
+  auto dimension = props->dimension.getInt();
   if (dimension < 0)
     dimension += inputTy.getRank();
   if (dimension < 0 || dimension >= inputTy.getRank())
@@ -354,8 +357,7 @@ void ReduceOp::build(OpBuilder &builder, OperationState &state, Type resultTy,
 
   SmallVector<int64_t> resultShape(inputTy.getShape());
   resultShape.erase(resultShape.begin() + dimension);
-  if (resultShape.size() > 0 ||
-      !attributes.getAs<BoolAttr>("rankReduce").getValue())
+  if (resultShape.size() > 0 || !props->rankReduce)
     inferredReturnTypes.push_back(
         inputTy.cloneWith(resultShape, inputTy.getElementType()));
   else
@@ -788,18 +790,36 @@ void ComputeBlockOp::getRegionInvocationBounds(
 }
 
 ::mlir::OperandRange
-ComputeBlockOp::getEntrySuccessorOperands(::mlir::RegionBranchPoint) {
+ComputeBlockOp::getEntrySuccessorOperands(::mlir::RegionSuccessor) {
   return getOperands();
 }
 
 void ComputeBlockOp::getSuccessorRegions(
     RegionBranchPoint point, SmallVectorImpl<RegionSuccessor> &regions) {
-  if (point == RegionBranchPoint::parent()) {
-    regions.emplace_back(&getBody(), getBodyArguments());
+  if (point.isParent()) {
+    regions.emplace_back(&getBody());
   } else {
     // region is body
-    regions.emplace_back(getResults());
+    regions.push_back(RegionSuccessor::parent());
   }
+}
+void ComputeBlockOp::getSuccessorRegions(
+    ::mlir::Region &,
+    ::llvm::SmallVectorImpl<::mlir::RegionSuccessor> &regions) {
+  regions.push_back(RegionSuccessor::parent());
+}
+
+ValueRange ComputeOp::getSuccessorInputs(::mlir::RegionSuccessor succ) {
+  if (succ.isParent()) {
+    return getResults();
+  }
+  return {};
+}
+ValueRange ComputeBlockOp::getSuccessorInputs(::mlir::RegionSuccessor succ) {
+  if (succ.isParent()) {
+    return getResults();
+  }
+  return getBodyArguments();
 }
 
 void ComputeOp::getRegionInvocationBounds(
@@ -811,12 +831,18 @@ void ComputeOp::getRegionInvocationBounds(
 void ComputeOp::getSuccessorRegions(RegionBranchPoint point,
                                     SmallVectorImpl<RegionSuccessor> &regions) {
   if (point == RegionBranchPoint::parent()) {
-    regions.emplace_back(&getBody(), getBody().getArguments());
+    regions.emplace_back(&getBody());
   } else {
     // region is body
-    regions.emplace_back(getResults());
+    regions.push_back(RegionSuccessor::parent());
   }
 }
+void ComputeOp::getSuccessorRegions(
+    ::mlir::Region &,
+    ::llvm::SmallVectorImpl<::mlir::RegionSuccessor> &regions) {
+  regions.push_back(RegionSuccessor::parent());
+}
+
 namespace {
 
 struct ComputeOpSimplifyYield : OpRewritePattern<cinm::ComputeOp> {

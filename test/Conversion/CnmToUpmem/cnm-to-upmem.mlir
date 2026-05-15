@@ -49,6 +49,9 @@
 #map1 = affine_map<(d0, d1, d2) -> (0)>
 #map2 = affine_map<(d0, d1, d2) -> (d1, 0)>
 
+#map31 = affine_map<(d0) -> (d0)>
+#map41 = affine_map<(d0) -> ()>
+
 #upmem_platform = #upmem.platform<type=v1A, dimensions = 4x16>
 #upmem_1_16_1 = #upmem.array<1x16x1, #upmem_platform>
 
@@ -71,12 +74,7 @@ module {
         cnm.scatter %transposed into %6[#map1] of %1 : tensor<1x64xi32> into !cnm.buffer<64xi32 on #upmem_1_16_1, #upmem.wram>
         cnm.scatter %cst into %7[#map2] of %1 : tensor<16x1xi32> into !cnm.buffer<i32 on #upmem_1_16_1, #upmem.wram>
         cnm.launch %1 ins(%arg4 = %5 : <64xi32, #upmem.wram>, %arg5 = %6 : <64xi32, #upmem.wram>) outs(%arg6 = %7 : <i32, #upmem.wram>) on !cnm.workgroup<#upmem_1_16_1> {
-          linalg.reduce ins(%arg4, %arg5 : memref<64xi32, #upmem.wram>, memref<64xi32, #upmem.wram>) outs(%arg6 : memref<i32, #upmem.wram>) dimensions = [0]
-            (%in: i32, %in_1: i32, %init: i32) {
-              %9 = arith.muli %in, %in_1 : i32
-              %10 = arith.addi %9, %init : i32
-              linalg.yield %10 : i32
-            }
+          linalg.contract indexing_maps = [#map31, #map31, #map41] ins(%arg4, %arg5 : memref<64xi32, #upmem.wram>, memref<64xi32, #upmem.wram>) outs(%arg6 : memref<i32, #upmem.wram>)
         }
         %out = tensor.empty(): tensor<16x1xi32>
         %8 = cnm.gather %7[#map2] of %1 into %out : !cnm.buffer<i32 on #upmem_1_16_1, #upmem.wram> into tensor<16x1xi32>

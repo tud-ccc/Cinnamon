@@ -213,17 +213,17 @@ TypedValue<ShapedType> reshapeStatic(OpBuilder &builder, Location loc,
                                      Value value, ShapedType type,
                                      llvm::ArrayRef<int64_t> newShape) {
   auto newTy = type.cloneWith(newShape, type.getElementType());
-  auto reifiedShape = builder.create<arith::ConstantOp>(
+  auto reifiedShape = arith::ConstantOp::create(builder, 
       loc, RankedTensorType::get({newTy.getRank()}, builder.getI64Type()),
       builder.getI64TensorAttr(newShape));
 
   if (isa<RankedTensorType>(newTy)) {
     return dyn_cast<TypedValue<ShapedType>>(
-        builder.create<tensor::ReshapeOp>(loc, newTy, value, reifiedShape)
+        tensor::ReshapeOp::create(builder, loc, newTy, value, reifiedShape)
             .getResult());
   } else if (isa<MemRefType>(newTy)) {
     return dyn_cast<TypedValue<ShapedType>>(
-        builder.create<memref::ReshapeOp>(loc, newTy, value, reifiedShape)
+        memref::ReshapeOp::create(builder, loc, newTy, value, reifiedShape)
             .getResult());
   }
   assert(false && "must be memref or tensor");

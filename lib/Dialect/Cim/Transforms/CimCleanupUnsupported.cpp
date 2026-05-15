@@ -56,7 +56,7 @@ struct LowerCimAddBarrierCopyToLinalgAdd : OpRewritePattern<memref::CopyOp> {
 
     Location loc = copy.getLoc();
     rewriter.setInsertionPoint(copy);
-    (void)rewriter.create<linalg::AddOp>(
+    (void)linalg::AddOp::create(rewriter, 
         loc, ValueRange{lhs, rhs},
         ValueRange{copy.getTarget()});
 

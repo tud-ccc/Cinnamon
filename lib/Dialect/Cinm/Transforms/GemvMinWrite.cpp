@@ -33,7 +33,7 @@ namespace {
 using namespace mlir;
 
 static Value makeZeroLike(OpBuilder &b, Location loc, Type elementType) {
-  return b.create<arith::ConstantOp>(loc, b.getZeroAttr(elementType));
+  return arith::ConstantOp::create(b, loc, b.getZeroAttr(elementType));
 }
 
 //===----------------------------------------------------------------------===//
@@ -275,13 +275,13 @@ rebuildSliceChain(Value root, Value oldRow, Value newRow, Value oldRed,
       if (failed(strides))
         return failure();
 
-      rebuilt = rewriter.create<tensor::ExtractSliceOp>(loc, rebuilt, *offsets,
+      rebuilt = tensor::ExtractSliceOp::create(rewriter, loc, rebuilt, *offsets,
                                                         *sizes, *strides);
       continue;
     }
 
     if (auto collapse = dyn_cast<tensor::CollapseShapeOp>(op)) {
-      rebuilt = rewriter.create<tensor::CollapseShapeOp>(
+      rebuilt = tensor::CollapseShapeOp::create(rewriter, 
           loc, collapse.getResultType(), rebuilt, collapse.getReassociation());
       continue;
     }
@@ -300,11 +300,11 @@ rebuildSliceChain(Value root, Value oldRow, Value newRow, Value oldRed,
             mappedShape.push_back(v);
           }
         }
-        rebuilt = rewriter.create<tensor::ExpandShapeOp>(
+        rebuilt = tensor::ExpandShapeOp::create(rewriter, 
             loc, expand.getResultType(), rebuilt, expand.getReassociationAttr(),
             mappedShape, expand.getStaticOutputShapeAttr());
       } else {
-        rebuilt = rewriter.create<tensor::ExpandShapeOp>(
+        rebuilt = tensor::ExpandShapeOp::create(rewriter, 
             loc, expand.getResultType(), rebuilt,
             expand.getReassociationIndices());
       }
@@ -323,12 +323,12 @@ rebuildSliceChain(Value root, Value oldRow, Value newRow, Value oldRed,
             mappedShape = remapped;
         }
       }
-      rebuilt = rewriter.create<tensor::ReshapeOp>(loc, reshape.getResultType(),
+      rebuilt = tensor::ReshapeOp::create(rewriter, loc, reshape.getResultType(),
                                                    rebuilt, mappedShape);
       continue;
     }
     if (auto cast = dyn_cast<tensor::CastOp>(op)) {
-      rebuilt = rewriter.create<tensor::CastOp>(loc, cast.getType(), rebuilt);
+      rebuilt = tensor::CastOp::create(rewriter, loc, cast.getType(), rebuilt);
       continue;
     }
     // Drop materialize_in_destination, we only need its source.
@@ -448,10 +448,10 @@ static FailureOr<Value> buildRowCentric(GemvNest &nest, IRMapping &mapper,
   };
 
   auto clampToStep = [&](Value upper, Value iv, Value step) -> Value {
-    Value remaining = rewriter.create<arith::SubIOp>(loc, upper, iv);
-    Value cmp = rewriter.create<arith::CmpIOp>(loc, arith::CmpIPredicate::ugt,
+    Value remaining = arith::SubIOp::create(rewriter, loc, upper, iv);
+    Value cmp = arith::CmpIOp::create(rewriter, loc, arith::CmpIPredicate::ugt,
                                                remaining, step);
-    return rewriter.create<arith::SelectOp>(loc, cmp, step, remaining);
+    return arith::SelectOp::create(rewriter, loc, cmp, step, remaining);
   };
 
   OpBuilder::InsertionGuard guard(rewriter);
@@ -484,12 +484,12 @@ static FailureOr<Value> buildRowCentric(GemvNest &nest, IRMapping &mapper,
     OpBuilder::InsertionGuard bodyGuard(rewriter);
     rewriter.setInsertionPointToEnd(body);
     if (loop.getNumResults() == 0)
-      rewriter.create<scf::YieldOp>(loc);
+      scf::YieldOp::create(rewriter, loc);
     else
-      rewriter.create<scf::YieldOp>(loc, body->getArgument(1));
+      scf::YieldOp::create(rewriter, loc, body->getArgument(1));
   };
 
-  scf::ForOp newRow = rewriter.create<scf::ForOp>(loc, rowLB, rowUB, rowSt,
+  scf::ForOp newRow = scf::ForOp::create(rewriter, loc, rowLB, rowUB, rowSt,
                                                   ValueRange{initRes});
   ensureYield(newRow);
 
@@ -504,8 +504,8 @@ static FailureOr<Value> buildRowCentric(GemvNest &nest, IRMapping &mapper,
 
   auto getDimValue = [&](int64_t dim) -> Value {
     if (resTy.isDynamicDim(dim))
-      return rewriter.create<tensor::DimOp>(loc, resIn, dim);
-    return rewriter.create<arith::ConstantIndexOp>(loc, resTy.getDimSize(dim));
+      return tensor::DimOp::create(rewriter, loc, resIn, dim);
+    return arith::ConstantIndexOp::create(rewriter, loc, resTy.getDimSize(dim));
   };
 
   Value fullColsVal;
@@ -528,9 +528,9 @@ static FailureOr<Value> buildRowCentric(GemvNest &nest, IRMapping &mapper,
            failure();
 
   SmallVector<OpFoldResult, 2> tileShape{OpFoldResult(rowSize), fullCols};
-  Value tileEmpty = rewriter.create<tensor::EmptyOp>(loc, tileShape, elemTy);
+  Value tileEmpty = tensor::EmptyOp::create(rewriter, loc, tileShape, elemTy);
   Value tileZero =
-      rewriter.create<linalg::FillOp>(loc, zeroVal, tileEmpty).getResult(0);
+      linalg::FillOp::create(rewriter, loc, zeroVal, tileEmpty).getResult(0);
 
   FailureOr<Value> redLBOr = mapVal(nest.red.getLowerBound());
   if (failed(redLBOr))
@@ -547,7 +547,7 @@ static FailureOr<Value> buildRowCentric(GemvNest &nest, IRMapping &mapper,
     return failure();
   Value redSt = *redStOr;
 
-  scf::ForOp newRed = rewriter.create<scf::ForOp>(loc, redLB, redUB, redSt,
+  scf::ForOp newRed = scf::ForOp::create(rewriter, loc, redLB, redUB, redSt,
                                                   ValueRange{tileZero});
   ensureYield(newRed);
   Block *redBody = newRed.getBody();
@@ -588,7 +588,7 @@ static FailureOr<Value> buildRowCentric(GemvNest &nest, IRMapping &mapper,
   Value colSt = *colStOr;
 
   scf::ForOp newCol =
-      rewriter.create<scf::ForOp>(loc, colLB, colUB, colSt, ValueRange{accIn});
+      scf::ForOp::create(rewriter, loc, colLB, colUB, colSt, ValueRange{accIn});
   ensureYield(newCol);
   Block *colBody = newCol.getBody();
   rewriter.setInsertionPointToStart(colBody);
@@ -636,10 +636,10 @@ static FailureOr<Value> buildRowCentric(GemvNest &nest, IRMapping &mapper,
   SmallVector<OpFoldResult, 2> accSz{OpFoldResult(rowSize),
                                      OpFoldResult(colSize)};
   SmallVector<OpFoldResult, 2> accStr{oneAttr, oneAttr};
-  Value accChunk2D = rewriter.create<tensor::ExtractSliceOp>(
+  Value accChunk2D = tensor::ExtractSliceOp::create(rewriter, 
       loc, accCol, accOff, accSz, accStr);
   SmallVector<ReassociationIndices, 1> collapse{{0, 1}};
-  Value accChunk = rewriter.create<tensor::CollapseShapeOp>(
+  Value accChunk = tensor::CollapseShapeOp::create(rewriter, 
       loc, nest.gemv.getResult().getType(), accChunk2D, collapse);
 
   Value biasForGemv = accChunk;
@@ -650,40 +650,40 @@ static FailureOr<Value> buildRowCentric(GemvNest &nest, IRMapping &mapper,
                       .getResult();
 
   auto newGemv =
-      rewriter.create<cinm::GemvOp>(loc, *aHoisted, *bRebuilt, biasForGemv);
+      cinm::GemvOp::create(rewriter, loc, *aHoisted, *bRebuilt, biasForGemv);
   newGemv->setAttrs(nest.gemv->getAttrDictionary());
   Value gemvResult = newGemv.getResult();
 
   RankedTensorType expandedType = RankedTensorType::get(
       {ShapedType::kDynamic, ShapedType::kDynamic}, elemTy);
-  Value reshapeShape = rewriter.create<tensor::FromElementsOp>(
+  Value reshapeShape = tensor::FromElementsOp::create(rewriter, 
       loc, ValueRange{rowSize, colSize});
-  Value expanded = rewriter.create<tensor::ReshapeOp>(loc, expandedType,
+  Value expanded = tensor::ReshapeOp::create(rewriter, loc, expandedType,
                                                       gemvResult, reshapeShape);
 
-  Value accUpd = rewriter.create<tensor::InsertSliceOp>(loc, expanded, accCol,
+  Value accUpd = tensor::InsertSliceOp::create(rewriter, loc, expanded, accCol,
                                                         accOff, accSz, accStr);
 
   auto colYield = cast<scf::YieldOp>(colBody->getTerminator());
   rewriter.setInsertionPoint(colYield);
-  rewriter.create<scf::YieldOp>(loc, accUpd);
+  scf::YieldOp::create(rewriter, loc, accUpd);
   colYield.erase();
 
   auto redYield = cast<scf::YieldOp>(redBody->getTerminator());
   rewriter.setInsertionPoint(redYield);
-  rewriter.create<scf::YieldOp>(loc, newCol.getResult(0));
+  scf::YieldOp::create(rewriter, loc, newCol.getResult(0));
   redYield.erase();
 
   rewriter.setInsertionPointAfter(newRed);
   SmallVector<OpFoldResult, 2> finalOff{OpFoldResult(ivRow), zeroAttr};
   SmallVector<OpFoldResult, 2> finalSz{OpFoldResult(rowSize), fullCols};
   SmallVector<OpFoldResult, 2> finalStr{oneAttr, oneAttr};
-  Value resOut = rewriter.create<tensor::InsertSliceOp>(
+  Value resOut = tensor::InsertSliceOp::create(rewriter, 
       loc, newRed.getResult(0), resIn, finalOff, finalSz, finalStr);
 
   auto rowYield = cast<scf::YieldOp>(rowBody->getTerminator());
   rewriter.setInsertionPoint(rowYield);
-  rewriter.create<scf::YieldOp>(loc, resOut);
+  scf::YieldOp::create(rewriter, loc, resOut);
   rowYield.erase();
 
   return newRow.getResult(0);
@@ -710,7 +710,7 @@ static LogicalResult rewriteCompute(cinm::ComputeBlockOp compute,
   rewriter.setInsertionPoint(compute);
   // todo why don't we modify this compute op in place?? this could be way
   // simpler
-  auto newCompute = rewriter.create<cinm::ComputeBlockOp>(
+  auto newCompute = cinm::ComputeBlockOp::create(rewriter, 
       loc, compute->getOperands(), compute.getResultTypes());
   newCompute->setAttrs(compute->getAttrDictionary());
 
@@ -739,7 +739,7 @@ static LogicalResult rewriteCompute(cinm::ComputeBlockOp compute,
   }
 
   rewriter.setInsertionPointToEnd(&newBody);
-  rewriter.create<cinm::YieldOp>(loc, ValueRange{*newResult});
+  cinm::YieldOp::create(rewriter, loc, ValueRange{*newResult});
 
   compute.replaceAllUsesWith(newCompute.getResults());
   compute.erase();
