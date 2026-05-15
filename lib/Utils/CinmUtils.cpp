@@ -2,18 +2,19 @@
 #include <cinm-mlir/Utils/CinmUtils.h>
 #include <cstdint>
 #include <llvm/ADT/ArrayRef.h>
+#include <llvm/ADT/STLExtras.h>
 #include <llvm/ADT/SmallString.h>
 #include <llvm/ADT/SmallVector.h>
 #include <llvm/Support/Casting.h>
+#include <mlir/Dialect/Arith/IR/Arith.h>
+#include <mlir/Dialect/MemRef/IR/MemRef.h>
+#include <mlir/Dialect/Tensor/IR/Tensor.h>
+#include <mlir/Dialect/Utils/IndexingUtils.h>
 #include <mlir/IR/AffineExpr.h>
 #include <mlir/IR/AffineExprVisitor.h>
 #include <mlir/IR/AffineMap.h>
 #include <mlir/IR/BuiltinOps.h>
 #include <mlir/IR/BuiltinTypeInterfaces.h>
-#include <mlir/Dialect/Utils/IndexingUtils.h>
-#include <mlir/Dialect/Arith/IR/Arith.h>
-#include <mlir/Dialect/Tensor/IR/Tensor.h>
-#include <mlir/Dialect/MemRef/IR/MemRef.h>
 #include <mlir/IR/Matchers.h>
 #include <optional>
 
@@ -61,8 +62,8 @@ bool isZeroSplatFoldable(Value v) {
 SmallString<20> getUniqueFunctionName(ModuleOp &moduleOp, StringRef prefix) {
   // Note: here we don't use SymbolTable as we run into a bug in the LLVM
   // conversion. Old memref.globals are not cleaned up in time, and for a while
-  // the memref.global and llvm.mlir.global exist in the module with the same name.
-  // Then SymbolTable cannot be created because names are not unique.
+  // the memref.global and llvm.mlir.global exist in the module with the same
+  // name. Then SymbolTable cannot be created because names are not unique.
   std::set<StringRef> usedNames;
   for (auto &block : moduleOp.getBodyRegion()) {
     for (auto &op : block) {
@@ -253,17 +254,27 @@ TypedValue<ShapedType> reshapeStatic(OpBuilder &builder, Location loc,
                                      Value value, ShapedType type,
                                      llvm::ArrayRef<int64_t> newShape) {
   auto newTy = type.cloneWith(newShape, type.getElementType());
-  auto reifiedShape = arith::ConstantOp::create(builder, 
-      loc, RankedTensorType::get({newTy.getRank()}, builder.getI64Type()),
-      builder.getI64TensorAttr(newShape));
 
   if (isa<RankedTensorType>(newTy)) {
+    auto reifiedShape = arith::ConstantOp::create(
+        builder, loc,
+        RankedTensorType::get({newTy.getRank()}, builder.getI64Type()),
+        builder.getI64TensorAttr(newShape));
     return dyn_cast<TypedValue<ShapedType>>(
         tensor::ReshapeOp::create(builder, loc, newTy, value, reifiedShape)
             .getResult());
   } else if (isa<MemRefType>(newTy)) {
+    auto shapeBuf = memref::AllocaOp::create(
+        builder, loc, MemRefType::get({newTy.getRank()}, builder.getI64Type()));
+    for (auto [i, dim] : llvm::enumerate(newShape)) {
+      auto idx = arith::ConstantIndexOp::create(builder, loc, i);
+      auto dimSize = arith::ConstantOp::create(builder, loc,
+                                               builder.getI64IntegerAttr(dim));
+      memref::StoreOp::create(builder, loc, dimSize, shapeBuf, ValueRange{idx});
+    }
+
     return dyn_cast<TypedValue<ShapedType>>(
-        memref::ReshapeOp::create(builder, loc, newTy, value, reifiedShape)
+        memref::ReshapeOp::create(builder, loc, newTy, value, shapeBuf)
             .getResult());
   }
   assert(false && "must be memref or tensor");
