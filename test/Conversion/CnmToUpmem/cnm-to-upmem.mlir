@@ -42,9 +42,7 @@
 // CHECK: scf.if
 // CHECK: upmem.local_transfer %[[MRAM_A]] into %[[WRAM_A]] : memref<64xi32, #upmem.mram> to memref<64xi32, #upmem.wram>
 // CHECK: barrier()
-// CHECK: linalg.reduce ins(%[[WRAM_A]], %[[WRAM_B]] : memref<64xi32, #upmem.wram>, memref<64xi32, #upmem.wram>) outs(%[[WRAM_C]] : memref<i32, #upmem.wram>) dimensions = [0]
-// CHECK: arith.muli
-// CHECK: arith.addi
+// CHECK: linalg.contract indexing_maps = [{{.*}}] ins(%[[WRAM_A]], %[[WRAM_B]] : memref<64xi32, #upmem.wram>, memref<64xi32, #upmem.wram>) outs(%[[WRAM_C]] : memref<i32, #upmem.wram>)
 // CHECK: %[[T3:.*]] = tasklet_dim()
 // CHECK: %[[SV3:.*]] = memref.subview %[[MRAM_C]][%[[T3]]] [1] [1] : memref<1xi32, #upmem.mram> to memref<i32, {{.*}}, #upmem.mram>
 // CHECK: local_transfer %[[WRAM_C]] into %[[SV3]] : memref<i32, #upmem.wram> to memref<i32, {{.*}}, #upmem.mram>
