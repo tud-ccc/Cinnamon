@@ -288,8 +288,9 @@ LogicalResult convertInputIntoAlloc(Value &inputBuf, Value workGroup,
 
   // If the tensor was just allocated it is assumed empty, therefore we don't
   // need to scatter as its contents are undefined.
-  const bool needScatter = !isa<tensor::EmptyOp>(inputBuf.getDefiningOp()) &&
-                           !isa<memref::AllocOp>(inputBuf.getDefiningOp());
+  const bool needScatter = !inputBuf.getDefiningOp() ||
+                           (!isa<tensor::EmptyOp>(inputBuf.getDefiningOp()) &&
+                            !isa<memref::AllocOp>(inputBuf.getDefiningOp()));
   if (reshapeInto) {
     inputBuf = mlir::reshapeStatic(rewriter, rewriter.getLoc(), inputBuf,
                                    cast<ShapedType>(inputType), *reshapeInto);
