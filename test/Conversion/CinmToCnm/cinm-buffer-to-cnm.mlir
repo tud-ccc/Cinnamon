@@ -53,7 +53,7 @@ func.func @mm_dimm8_nopt(%arg0: memref<8x1024xi32>, %arg1: memref<1024x128xi32>)
 // CHECK: %[[BUF_B:.*]] = cnm.alloc() for %[[WG]] : !cnm.buffer<1024xi32 on {{.*}}>
 // CHECK: cnm.scatter %arg1 into %[[BUF_B]][{{.*}}] of %[[WG]] : memref<1024xi32> into !cnm.buffer<1024xi32 on {{.*}}>
 // CHECK: %[[BUF_C:.*]] = cnm.alloc() for %[[WG]] : !cnm.buffer<i32 on {{.*}}>
-// CHECK: cnm.scatter %[[ALLOC]] into %[[BUF_C]][{{.*}}] of %[[WG]] : memref<8xi32> into !cnm.buffer<i32 on {{.*}}>
+// CHECK-NOT: cnm.scatter %[[ALLOC]] into %[[BUF_C]]
 // CHECK: cnm.launch %[[WG]] ins(%[[K_A:[^ ]*]] = %[[BUF_A]] : <1024xi32>, %[[K_B:[^ ]*]] = %[[BUF_B]] : <1024xi32>) outs(%[[K_C:[^ ]*]] = %[[BUF_C]] : <i32>) on {{.*}} {
 // CHECK: linalg.contract {{.*}} ins(%[[K_A]], %[[K_B]] : memref<1024xi32>, memref<1024xi32>) outs(%[[K_C]] : memref<i32>)
 // CHECK: cnm.gather %[[BUF_C]][{{.*}}] of %[[WG]] into %[[ALLOC]] : !cnm.buffer<i32 on {{.*}}> into memref<8xi32>
