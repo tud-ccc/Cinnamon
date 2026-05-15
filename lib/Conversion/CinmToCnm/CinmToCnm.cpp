@@ -679,14 +679,12 @@ struct ConvertElementwiseOpToCnm : OpConversionPattern<cinm::ElementwiseOp> {
                                  .getResult();
                     break;
                   case cinm::ElementwiseKind::Not: // ~a = a xor 0b111111111
-                    result =
-                        builder
-                            .create<arith::XOrIOp>(
-                                loc, lhs,
-                                arith::ConstantOp::create(
-                                    builder, loc, lhs.getType(),
-                                    builder.getIntegerAttr(lhs.getType(), -1)))
-                            .getResult();
+                    result = arith::XOrIOp::create(
+                                 builder, loc, lhs,
+                                 arith::ConstantOp::create(
+                                     builder, loc, lhs.getType(),
+                                     builder.getIntegerAttr(lhs.getType(), -1)))
+                                 .getResult();
                     break;
                   default:
                     break;
