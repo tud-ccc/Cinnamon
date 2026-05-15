@@ -7,7 +7,7 @@ module {
     func.func @va_8(%A: tensor<8x2097152xi32>, %B: tensor<8x2097152xi32>) -> tensor<8x2097152xi32> {
         
         %res = cinm.compute on accelerator #upmem_16_64_16 -> tensor<8x2097152xi32> {
-            %r = cinm.op.elementwise add %A, %B {cinm.tile_sizes=array<i64: 65536>}: tensor<8x2097152xi32>
+            %r = cinm.op.elementwise add %A, %B : tensor<8x2097152xi32>
             cinm.yield %r: tensor<8x2097152xi32>
         }
 

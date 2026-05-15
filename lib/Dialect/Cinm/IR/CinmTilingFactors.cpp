@@ -159,11 +159,16 @@ static FailureOr<int64_t> getReduceTiles(ReduceOp op,
 
 static FailureOr<int64_t> getElementwiseTiles(ElementwiseOp op,
                                               const TilingParameters &params) {
-  // No automatic heuristic for elementwise ops yet — require explicit sizes.
-  (void)params;
-  return op->emitError(
-      "cannot determine tiling factors automatically for elementwise op; "
-      "set cinm.tile_sizes explicitly");
+  auto ty = op.getLhs().getType();
+  int bufCount = op.getRhs() ? 3 : 2;
+  auto numElements = ty.getNumElements();
+  auto bufSize =
+      params.reduceClusterSize(bufCount, numElements, ty.getElementType());
+
+  if (bufSize * params.workingGroupSize() > numElements) {
+    return {numElements}; // no tiling needed
+  }
+  return bufSize * params.workingGroupSize();
 }
 
 static FailureOr<std::tuple<int64_t, int64_t, int64_t>>
