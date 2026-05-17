@@ -18,6 +18,7 @@ LINK_LIBS PUBLIC
     CnmIR
     CnmTransforms
     MLIRFuncDialect
+    MLIRAffineDialect
     MLIRCinmToCnm
     MLIRCnmToUPMEM
 )
