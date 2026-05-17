@@ -54,3 +54,30 @@
         }
         func.return %r0 : tensor<8xi32>
     }
+
+
+// -----
+#upmem = #upmem.platform<type = v1A, dimensions = 40x64x24>
+
+module {
+  func.func @simplify_iter_args(%arg0: tensor<768x768xf32>, %arg1: tensor<768xf32>) -> tensor<768xf32> {
+    %0 = cinm.compute on accelerator #upmem.array<1x16x8, <type = v1A, dimensions = 40x64x24>> -> tensor<768xf32> attributes {cinm.available_platforms = [#upmem]} {
+      %1 = tensor.empty() : tensor<768xf32>
+      %2 = affine.for %i = 0 to 768 step 256 iter_args(%acc = %1) -> (tensor<768xf32>) {
+        %cst = arith.constant dense<0.000000e+00> : tensor<256xf32>
+        %inserted_slice = tensor.insert_slice %cst into %acc[%i] [256] [1] : tensor<256xf32> into tensor<768xf32>
+        %3 = affine.for %i_0 = 0 to 768 step 16 iter_args(%acc_1 = %inserted_slice) -> (tensor<768xf32>) {
+          %extracted_slice = tensor.extract_slice %arg0[%i, %i_0] [256, 16] [1, 1] : tensor<768x768xf32> to tensor<256x16xf32>
+          %extracted_slice_2 = tensor.extract_slice %arg1[%i_0] [16] [1] : tensor<768xf32> to tensor<16xf32>
+          %extracted_slice_3 = tensor.extract_slice %acc_1[%i] [256] [1] : tensor<768xf32> to tensor<256xf32>
+          %4 = cinm.op.gemv %extracted_slice, %extracted_slice_2 plus %extracted_slice_3 into %extracted_slice_3 : tensor<256x16xf32>, tensor<16xf32> plus tensor<256xf32> into tensor<256xf32> -> tensor<256xf32>
+          %inserted_slice_4 = tensor.insert_slice %4 into %acc_1[%i] [256] [1] : tensor<256xf32> into tensor<768xf32>
+          affine.yield %inserted_slice_4 : tensor<768xf32>
+        }
+        affine.yield %3 : tensor<768xf32>
+      }
+      cinm.yield %2 : tensor<768xf32>
+    }
+    return %0 : tensor<768xf32>
+  }
+}

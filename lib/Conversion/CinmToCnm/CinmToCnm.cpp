@@ -202,7 +202,7 @@ computeShapeOfTensors(Location loc, llvm::ArrayRef<int64_t> shape,
       // In this branch we handle the case where there are no reduction
       // dimensions, in that case we do some parallel work on the DPU, and
       // therefore push these extra parallel elts into the buffer.
-      shapeOfBuffer.push_back(k);
+      shapeOfBuffer.insert(shapeOfBuffer.begin(), k);
 
       // expand dimension
       int trailing = 1;
@@ -229,7 +229,7 @@ computeShapeOfTensors(Location loc, llvm::ArrayRef<int64_t> shape,
       parallelDims.pop_back();
 
       for (auto dim : reductionDims)
-        newShape.push_back(dim);
+        newShape.push_back(shape[dim]);
 
       reshapeInputTo = std::make_optional(std::move(newShape));
 
@@ -435,24 +435,31 @@ LogicalResult convertCinmToCnm(
   for (auto [i, reshaped, cnmAlloc, gatherBuf] :
        llvm::enumerate(reshapedOutputs, launchOutputs, gatherBuffers)) {
     auto map = gatherMaps[launchInputs.size() + i];
-    Value outBuf = gatherBuf;
-    if (!outBuf) {
-      if (isa<TensorType>(reshaped.getType())) {
-        // if it is a tensor but
-        outBuf =
-            tensor::EmptyOp::create(builder, reshaped.getType(), ValueRange{});
-      } else {
-        outBuf = reshaped;
-      }
+    Value outBuf;
+    if (isa<TensorType>(reshaped.getType())) {
+      // The gather output must have the reshaped (post-convertInputIntoAlloc)
+      // type so that buffer dims match what the scatter used.  gatherBuf may
+      // carry the original un-reshaped shape and would fail verification.
+      outBuf =
+          tensor::EmptyOp::create(builder, reshaped.getType(), ValueRange{});
+    } else if (gatherBuf) {
+      outBuf = gatherBuf;
+    } else {
+      outBuf = reshaped;
     }
     auto res = cnm::GatherOp::create(builder, cnmAlloc, workgroup, map, outBuf);
     if (isa<TensorType>(reshaped.getType())) {
       auto correspondingResult = results[i];
-      auto shapedBack = mlir::reshapeStatic(
+      Value shapedBack = mlir::reshapeStatic(
           builder, builder.getLoc(),
           cast<TypedValue<ShapedType>>(res.getOutput()),
           cast<ShapedType>(correspondingResult.getType()).getShape());
-
+      // If an explicit destination was provided, tell the bufferizer that the
+      // result should alias it so the copy can be folded away.
+      if (gatherBuf && !matchPattern(gatherBuf, m_Constant()))
+        shapedBack = bufferization::MaterializeInDestinationOp::create(
+                         builder, shapedBack, gatherBuf)
+                         .getResult();
       resultValues.push_back(shapedBack);
     }
   }
@@ -974,15 +981,26 @@ struct ConvertCinmGemvToCnm : public OpConversionPattern<cinm::GemvOp> {
             ValueRange{op.getOut()}, op->getResults(), newResults,
             [&](ImplicitLocOpBuilder &builder, ValueRange inputs,
                 ValueRange outputs) {
-              // k -> k
-              // k -> k
-              // k -> ()
-              auto id =
-                  AffineMap::getMinorIdentityMap(1, 1, builder.getContext());
+              int outputRank =
+                  dyn_cast<ShapedType>(outputs[0].getType()).getRank();
+              auto ctx = builder.getContext();
+              int numLoops = 1 + outputRank;
+
+              // (m, k) -> (m, k)
+              auto aMap = AffineMap::getMinorIdentityMap(numLoops, numLoops,
+                                                         builder.getContext());
+
+              // (m, k) -> (k)
+              auto vMap =
+                  AffineMap::getMinorIdentityMap(numLoops, 1, ctx);
+
+              // (m, k) -> (m)
+              auto resMap = aMap.dropResult(numLoops - 1);
+
               auto indexingMaps = builder.getAffineMapArrayAttr({
-                  id,
-                  id,
-                  AffineMap::getMinorIdentityMap(1, 0, builder.getContext()),
+                  aMap,
+                  vMap,
+                  resMap,
               });
               linalg::ContractOp::create(builder, inputs, outputs,
                                          indexingMaps);
