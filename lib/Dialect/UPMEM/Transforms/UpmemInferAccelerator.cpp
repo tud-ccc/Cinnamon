@@ -270,7 +270,6 @@ struct UpmemInferencePlugin : cinm::InferencePlugin {
     {
       // This handler suppresses errors caused during trials, as they are
       // normal.
-      // TODO option to enable it.
       ScopedDiagnosticHandler scopedHandler(ctx, [](Diagnostic &diag) {
         LLVM_DEBUG(llvm::dbgs()
                        << "[cinm-inference]   pipeline failed:\n      ";
