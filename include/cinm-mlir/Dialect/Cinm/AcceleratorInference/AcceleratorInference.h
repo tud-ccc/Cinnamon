@@ -43,7 +43,16 @@ struct SearchParam {
   int64_t cardinality() const;
   /// Map a continuous sample in [dlo, dhi] to the nearest valid discrete value.
   int64_t discretize(double v) const;
+  /// Retain only values that evenly divide n; converts a range to a ValueList.
+  SearchParam &keepDivisorsOf(int64_t n);
 };
+
+/// Factory functions — build a SearchParam without adding it to a space yet.
+/// Use ConfigSpace::addDim to register the result.
+SearchParam makeRange(std::string name, int64_t lo, int64_t hi,
+                      int64_t step = 1);
+SearchParam makePow2Range(std::string name, int64_t loExp, int64_t hiExp);
+SearchParam makeValues(std::string name, llvm::SmallVector<int64_t> values);
 
 /// A concrete assignment — one int64_t per SearchParam, in ConfigSpace order.
 using Configuration = llvm::SmallVector<int64_t>;
@@ -59,18 +68,20 @@ struct ConfigSpace {
   llvm::SmallVector<SearchParam> params;
   llvm::SmallVector<Constraint> constraints;
 
-  void addRange(std::string name, int64_t lo, int64_t hi, int64_t step = 1);
+  /// Add a fully-constructed SearchParam; returns its index in the space.
+  int64_t addDim(SearchParam &&param) {
+    int64_t idx = params.size();
+    params.emplace_back(std::move(param));
+    return idx;
+  }
+  /// Convenience wrappers — construct and add in one call.
+  int64_t addRange(std::string name, int64_t lo, int64_t hi, int64_t step = 1);
   /// Add a ValueList of consecutive powers of 2: {2^loExp, ..., 2^hiExp}.
-  void addPow2Range(std::string name, int64_t loExp, int64_t hiExp);
-  void addValues(std::string name, llvm::SmallVector<int64_t> values);
+  int64_t addPow2Range(std::string name, int64_t loExp, int64_t hiExp);
+  int64_t addValues(std::string name, llvm::SmallVector<int64_t> values);
   /// Register a predicate; configurations for which any constraint returns
   /// false are skipped and never passed to the plugin for evaluation.
   void addConstraint(Constraint constraint);
-  void addConstraint(std::optional<Constraint> constraint) {
-    if (auto aConstraint = constraint) {
-      addConstraint(*aConstraint);
-    }
-  }
 
   size_t size() const { return params.size(); }
   const SearchParam &operator[](size_t i) const { return params[i]; }
@@ -93,6 +104,7 @@ struct ConfWrapper {
 
   /// Get the value of a variable
   int64_t operator[](StringRef name) const { return space.get(conf, name); }
+  int64_t operator[](int64_t ix) const { return conf[ix]; }
 };
 
 // ===----------------------------------------------------------------------===//
