@@ -3,6 +3,8 @@
 #include "cinm-mlir/Dialect/Cinm/IR/CinmAttributes.h"
 #include "cinm-mlir/Dialect/Cinm/IR/CinmOps.h"
 #include <cinm-mlir/Utils/Scheduling/SchedulingSupport.h>
+#include <cstdint>
+#include <functional>
 #include <llvm/ADT/SmallVector.h>
 #include <llvm/ADT/StringRef.h>
 #include <mlir/Support/LogicalResult.h>
@@ -37,6 +39,8 @@ struct SearchParam {
 
   double dlo() const;
   double dhi() const;
+  /// Number of distinct values this parameter can take.
+  int64_t cardinality() const;
   /// Map a continuous sample in [dlo, dhi] to the nearest valid discrete value.
   int64_t discretize(double v) const;
 };
@@ -44,14 +48,29 @@ struct SearchParam {
 /// A concrete assignment — one int64_t per SearchParam, in ConfigSpace order.
 using Configuration = llvm::SmallVector<int64_t>;
 
+struct ConfigSpace;
+struct ConfWrapper;
+
+/// Predicate over a configuration; returns true if the configuration is valid.
+using Constraint = std::function<bool(const ConfWrapper &)>;
+
 /// Ordered collection of SearchParams that defines the search space.
 struct ConfigSpace {
   llvm::SmallVector<SearchParam> params;
+  llvm::SmallVector<Constraint> constraints;
 
   void addRange(std::string name, int64_t lo, int64_t hi, int64_t step = 1);
   /// Add a ValueList of consecutive powers of 2: {2^loExp, ..., 2^hiExp}.
   void addPow2Range(std::string name, int64_t loExp, int64_t hiExp);
   void addValues(std::string name, llvm::SmallVector<int64_t> values);
+  /// Register a predicate; configurations for which any constraint returns
+  /// false are skipped and never passed to the plugin for evaluation.
+  void addConstraint(Constraint constraint);
+  void addConstraint(std::optional<Constraint> constraint) {
+    if (auto aConstraint = constraint) {
+      addConstraint(*aConstraint);
+    }
+  }
 
   size_t size() const { return params.size(); }
   const SearchParam &operator[](size_t i) const { return params[i]; }
@@ -61,6 +80,19 @@ struct ConfigSpace {
   int findIndex(llvm::StringRef name) const;
   /// Value of the named param in a configuration, or 0 if not found.
   int64_t get(const Configuration &config, llvm::StringRef name) const;
+  /// Return true iff all registered constraints accept this configuration.
+  bool isValid(const Configuration &config) const;
+};
+
+/// Wrap a space and config for nicer interface.
+struct ConfWrapper {
+  const ConfigSpace &space;
+  const Configuration &conf;
+  ConfWrapper(const ConfigSpace &space, const Configuration &conf)
+      : space(space), conf(conf) {}
+
+  /// Get the value of a variable
+  int64_t operator[](StringRef name) const { return space.get(conf, name); }
 };
 
 // ===----------------------------------------------------------------------===//
@@ -110,7 +142,8 @@ struct InferencePlugin {
 
 /// Build the configuration space by calling plugin.initializeSpace on the
 /// reference clone.
-ConfigSpace buildConfigSpace(cinm::ComputeBlockOp refClone, InferencePlugin &plugin);
+ConfigSpace buildConfigSpace(cinm::ComputeBlockOp refClone,
+                             InferencePlugin &plugin);
 
 struct InferenceOptions {
   int maxEvals = 50;
@@ -119,10 +152,9 @@ struct InferenceOptions {
 /// Run Bayesian optimization over the config space.
 /// Returns the winning candidate op (still inside the sandbox module).
 /// The caller is responsible for committing or disposing it.
-utils::Maybe<cinm::ComputeBlockOp> runInference(cinm::ComputeBlockOp refClone,
-                                                InferencePlugin &plugin,
-                                                const ConfigSpace &space,
-                                                const InferenceOptions &opts = {});
+utils::Maybe<cinm::ComputeBlockOp>
+runInference(cinm::ComputeBlockOp refClone, InferencePlugin &plugin,
+             const ConfigSpace &space, const InferenceOptions &opts = {});
 
 /// Full pipeline: clone the parent module into a sandbox → buildConfigSpace →
 /// runInference → commitBestCandidate on the original.

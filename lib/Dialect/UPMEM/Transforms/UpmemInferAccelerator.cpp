@@ -12,6 +12,10 @@
 #include "cinm-mlir/Dialect/UPMEM/Transforms/UpmemSimulator.h"
 #include "cinm-mlir/Utils/Scheduling/SchedulingSupport.h"
 
+#include <cstdint>
+#include <functional>
+#include <llvm/ADT/StringRef.h>
+#include <llvm/Support/Casting.h>
 #include <mlir/Dialect/Affine/IR/AffineOps.h>
 #include <mlir/Dialect/Bufferization/IR/Bufferization.h>
 #include <mlir/Dialect/Func/IR/FuncOps.h>
@@ -33,6 +37,7 @@
 #include <llvm/Support/raw_ostream.h>
 #include <mlir/Support/WalkResult.h>
 #include <mlir/Transforms/Passes.h>
+#include <optional>
 
 #define DEBUG_TYPE "cinm-inference"
 
@@ -64,6 +69,14 @@ struct UpmemInferencePlugin : cinm::InferencePlugin {
 
   // --- InferencePlugin interface ---
 
+  cinm::Constraint configurationValid(
+      std::function<bool(UpmemAcceleratorAttr, const cinm::ConfWrapper &)>
+          constraint) const;
+
+  std::optional<cinm::Constraint>
+  tilingConstraint(cinm::CinmTilingInterface op,
+                   llvm::SmallVectorImpl<StringRef> &tilingFactorNames) const;
+
   void initializeSpace(cinm::ComputeBlockOp refClone,
                        cinm::ConfigSpace &space) override {
     space.addRange("ranks", 1, platform.getMaxNumRanks());
@@ -82,9 +95,9 @@ struct UpmemInferencePlugin : cinm::InferencePlugin {
       llvm::SmallVector<int64_t> dimSizes;
       tileable.getTilableDimSizes(dimSizes);
 
-      llvm::SmallVector<Attribute> paramNames;
+      llvm::SmallVector<StringRef> paramNames;
       for (unsigned d = 0; d < dimSizes.size(); ++d) {
-        StringAttr paramName = nameInventor.getUniqueName();
+        StringRef paramName = nameInventor.getUniqueName();
 
         int64_t maxFactor =
             dimSizes[d] == mlir::ShapedType::kDynamic ? 1024 : dimSizes[d];
@@ -96,8 +109,10 @@ struct UpmemInferencePlugin : cinm::InferencePlugin {
         space.addPow2Range(paramName.str(), 0, hiExp);
         paramNames.push_back(paramName);
       }
+      space.addConstraint(tilingConstraint(tileable, paramNames));
 
-      op->setAttr(kTileParamNamesAttr, ArrayAttr::get(ctx, paramNames));
+      op->setAttr(kTileParamNamesAttr,
+                  OpBuilder(ctx).getStrArrayAttr(paramNames));
     });
   }
 
@@ -128,7 +143,8 @@ struct UpmemInferencePlugin : cinm::InferencePlugin {
     pm.addPass(cnm::createCnmHoistWorkgroupsPass());
     pm.addPass(createCanonicalizerPass());
     pm.addPass(createCSEPass());
-    pm.addPass(cnm::createConvertCnmToUPMEMPass({.kernelModuleName=std::move(trialName)}));
+    pm.addPass(cnm::createConvertCnmToUPMEMPass(
+        {.kernelModuleName = std::move(trialName)}));
     pm.addPass(createCanonicalizerPass());
     pm.addPass(createCSEPass());
     pm.addPass(createUPMEMDedupKernelsPass());
@@ -168,7 +184,8 @@ struct UpmemInferencePlugin : cinm::InferencePlugin {
     auto sandboxModule = bestCandidate->getParentOfType<ModuleOp>();
     auto originalModule = original->getParentOfType<ModuleOp>();
 
-    // Move the trial kernel submodule from the sandbox into the original module.
+    // Move the trial kernel submodule from the sandbox into the original
+    // module.
     if (auto attr =
             bestCandidate->getAttrOfType<StringAttr>(kKernelModuleAttr)) {
       auto *sym = SymbolTable::lookupSymbolIn(sandboxModule, attr.getValue());
@@ -180,7 +197,8 @@ struct UpmemInferencePlugin : cinm::InferencePlugin {
       original->setAttr(kKernelModuleAttr, attr);
     }
 
-    // Replace the original's body with the lowered body from the best candidate.
+    // Replace the original's body with the lowered body from the best
+    // candidate.
     original.getBody().takeBody(bestCandidate.getBody());
 
     // Copy the accelerator attribute.
@@ -215,6 +233,43 @@ private:
   }
 };
 
+using UpmemTilingConstraint = std::function<bool(
+    UpmemAcceleratorAttr, const llvm::SmallVectorImpl<int64_t> &)>;
+
+std::optional<cinm::Constraint> UpmemInferencePlugin::tilingConstraint(
+    cinm::CinmTilingInterface op,
+    llvm::SmallVectorImpl<StringRef> &tilingFactorNames) const {
+
+  if (auto gemv = llvm::dyn_cast_or_null<cinm::GemvOp>(op.getOperation())) {
+    auto m = tilingFactorNames[0], k = tilingFactorNames[1];
+    auto eltTy = gemv.getLhs().getType().getElementType();
+
+    return configurationValid([m, k, eltTy](UpmemAcceleratorAttr accelerator,
+                                            const cinm::ConfWrapper &conf) {
+      auto mv = conf[m], kv = conf[k];
+      auto r = accelerator.getNumRanks(), d = accelerator.getNumDpusPerRank(),
+           t = accelerator.getNumTaskletsPerDpu();
+      if (mv % (r * d * t) != 0 || kv % (r * d) != 0)
+        return false;
+      auto wm = mv / (r * d * t);
+      auto wk = kv / (r * d);
+      return wk * (wm + 2) <=
+             accelerator.getWramLevel().getSizeInElements(eltTy);
+    });
+  }
+  return std::nullopt;
+}
+
+cinm::Constraint UpmemInferencePlugin::configurationValid(
+    std::function<bool(UpmemAcceleratorAttr, const cinm::ConfWrapper &)>
+        constraint) const {
+  auto platform = this->platform;
+  return [platform, constraint](const cinm::ConfWrapper &conf) {
+    auto acc = upmem::UpmemAcceleratorAttr::get(platform, conf["ranks"],
+                                                conf["dpus"], conf["tasklets"]);
+    return constraint(acc, conf);
+  };
+}
 // ===----------------------------------------------------------------------===//
 // Pass
 // ===----------------------------------------------------------------------===//
@@ -252,7 +307,8 @@ struct UpmemInferAcceleratorPass
       UpmemInferencePlugin plugin(platform, createOpCountSimulator());
       cinm::InferenceOptions opts;
       opts.maxEvals = maxEvals;
-      TRY_IN_WALK(failed, cinm::inferAcceleratorConfig(computeOp, plugin, opts));
+      TRY_IN_WALK(failed,
+                  cinm::inferAcceleratorConfig(computeOp, plugin, opts));
       return WalkResult::skip();
     });
 
