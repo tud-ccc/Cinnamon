@@ -2,8 +2,10 @@
 #include "cinm-mlir/Dialect/Cinm/IR/CinmAttributes.h"
 #include "cinm-mlir/Dialect/Cinm/IR/CinmOps.h"
 
+#include <cstdint>
 #include <dlib/global_optimization.h>
 
+#include <llvm/ADT/SmallVector.h>
 #include <llvm/ADT/StringRef.h>
 #include <llvm/Support/Debug.h>
 #include <llvm/Support/LogicalResult.h>
@@ -81,25 +83,59 @@ int64_t SearchParam::discretize(double v) const {
       domain);
 }
 
+SearchParam &SearchParam::keepDivisorsOf(int64_t n) {
+  if (auto *range = std::get_if<IntRange>(&domain)) {
+    llvm::SmallVector<int64_t> kept;
+    for (int64_t v = range->lo; v <= range->hi; v += range->step)
+      if (v > 0 && n % v == 0)
+        kept.push_back(v);
+    domain = ValueList{std::move(kept)};
+  } else {
+    auto &vals = std::get<ValueList>(domain).values;
+    vals.erase(std::remove_if(vals.begin(), vals.end(),
+                              [n](int64_t v) { return v <= 0 || n % v != 0; }),
+               vals.end());
+  }
+  return *this;
+}
+
+// ===----------------------------------------------------------------------===//
+// SearchParam factories
+// ===----------------------------------------------------------------------===//
+
+SearchParam makeRange(std::string name, int64_t lo, int64_t hi, int64_t step) {
+  return {std::move(name), IntRange{lo, hi, step}};
+}
+
+SearchParam makePow2Range(std::string name, int64_t loExp, int64_t hiExp) {
+  llvm::SmallVector<int64_t> vals;
+  for (int64_t e = loExp; e <= hiExp; ++e)
+    vals.push_back(int64_t(1) << e);
+  return {std::move(name), ValueList{std::move(vals)}};
+}
+
+SearchParam makeValues(std::string name, llvm::SmallVector<int64_t> values) {
+  return {std::move(name), ValueList{std::move(values)}};
+}
+
 // ===----------------------------------------------------------------------===//
 // ConfigSpace
 // ===----------------------------------------------------------------------===//
 
-void ConfigSpace::addRange(std::string name, int64_t lo, int64_t hi,
-                           int64_t step) {
-  params.push_back({std::move(name), IntRange{lo, hi, step}});
+
+int64_t ConfigSpace::addRange(std::string name, int64_t lo, int64_t hi,
+                              int64_t step) {
+  return addDim(makeRange(std::move(name), lo, hi, step));
 }
 
-void ConfigSpace::addPow2Range(std::string name, int64_t loExp, int64_t hiExp) {
-  llvm::SmallVector<int64_t> vals;
-  for (int64_t e = loExp; e <= hiExp; ++e)
-    vals.push_back(int64_t(1) << e);
-  params.push_back({std::move(name), ValueList{std::move(vals)}});
+int64_t ConfigSpace::addPow2Range(std::string name, int64_t loExp,
+                                  int64_t hiExp) {
+  return addDim(makePow2Range(std::move(name), loExp, hiExp));
 }
 
-void ConfigSpace::addValues(std::string name,
-                            llvm::SmallVector<int64_t> values) {
-  params.push_back({std::move(name), ValueList{std::move(values)}});
+int64_t ConfigSpace::addValues(std::string name,
+                               llvm::SmallVector<int64_t> values) {
+  return addDim(makeValues(std::move(name), std::move(values)));
 }
 
 int ConfigSpace::findIndex(llvm::StringRef name) const {
@@ -242,7 +278,8 @@ Maybe<cinm::ComputeBlockOp> runInference(cinm::ComputeBlockOp refClone,
     });
 
     if (!space.isValid(config)) {
-      LLVM_DEBUG(llvm::dbgs() << "[cinm-inference]   -> skipped (constraint violated)\n");
+      LLVM_DEBUG(llvm::dbgs()
+                 << "[cinm-inference]   -> skipped (constraint violated)\n");
       req.set(std::numeric_limits<double>::max());
       continue;
     }
@@ -258,7 +295,8 @@ Maybe<cinm::ComputeBlockOp> runInference(cinm::ComputeBlockOp refClone,
       continue;
     }
     double costVal = std::get<0>(cost);
-    LLVM_DEBUG(llvm::dbgs() << "[cinm-inference]   -> cost = " << costVal << "\n");
+    LLVM_DEBUG(llvm::dbgs()
+               << "[cinm-inference]   -> cost = " << costVal << "\n");
     anySuccess = true;
     req.set(costVal);
     if (costVal < bestCost) {
@@ -275,7 +313,7 @@ Maybe<cinm::ComputeBlockOp> runInference(cinm::ComputeBlockOp refClone,
     return err;
 
   LLVM_DEBUG(llvm::dbgs() << "[cinm-inference] Best candidate (cost="
-                           << bestCost << ")\n");
+                          << bestCost << ")\n");
   return bestCandidate;
 }
 
@@ -283,8 +321,8 @@ DiagnosedSilenceableFailure
 inferAcceleratorConfig(cinm::ComputeBlockOp computeOp, InferencePlugin &plugin,
                        const InferenceOptions &opts) {
   LLVM_DEBUG(llvm::dbgs() << "[cinm-inference] Starting inference for "
-                           << computeOp.getLoc() << " (maxEvals="
-                           << opts.maxEvals << ")\n");
+                          << computeOp.getLoc()
+                          << " (maxEvals=" << opts.maxEvals << ")\n");
 
   // Clone the full parent module into a sandbox. The plugin may annotate
   // refClone during buildConfigSpace; those annotations propagate to every
