@@ -7,6 +7,7 @@ add_mlir_dialect_library(CinmTransforms
     CinmQuantization.cpp
     CleanupLinalgPass.cpp
     ComputeTransforms.cpp
+    CostModel.cpp
     CinmTilingImplementations.cpp
     DecomposeAccumulations.cpp
     DecomposeGemmToGemv.cpp
@@ -30,3 +31,6 @@ LINK_LIBS PUBLIC
     MLIRTransformDialectUtils
     CinmIR
 )
+
+target_link_libraries(CinmTransforms PRIVATE pybind11::embed dlib)
+include_directories(SYSTEM ${CMAKE_SOURCE_DIR}/third-party/dlib)
