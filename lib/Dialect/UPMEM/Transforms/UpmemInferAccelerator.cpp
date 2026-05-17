@@ -197,7 +197,7 @@ struct UpmemInferencePlugin : cinm::InferencePlugin {
     pm.addPass(createCanonicalizerPass());
     pm.addPass(createCSEPass());
     pm.addPass(cnm::createConvertCnmToUPMEMPass(
-        {.kernelModuleName = std::move(trialName)}));
+        {.kernelModuleName = trialName}));
     pm.addPass(createCanonicalizerPass());
     pm.addPass(createCSEPass());
     // pm.addPass(createUPMEMDedupKernelsPass());
@@ -208,6 +208,11 @@ struct UpmemInferencePlugin : cinm::InferencePlugin {
       LLVM_DEBUG(llvm::dbgs() << "[cinm-inference]   pipeline failed\n");
       return emitSilenceableFailure(candidate->getLoc(), "Pass manager failed");
     }
+
+    // Record the kernel module name so disposeCandidate / commitBestCandidate
+    // can find and transfer (or erase) it from the sandbox module.
+    candidate->setAttr(kKernelModuleAttr,
+                       StringAttr::get(ctx, trialName));
 
     auto cost = simulator->simulate(candidate.getBody());
     LLVM_DEBUG({
