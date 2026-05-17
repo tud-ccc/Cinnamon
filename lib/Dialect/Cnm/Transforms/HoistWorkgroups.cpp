@@ -22,29 +22,46 @@ namespace {}
 struct CnmHoistWorkgroupsPass
     : public cnm::impl::CnmHoistWorkgroupsPassBase<CnmHoistWorkgroupsPass> {
   void runOnOperation() override {
-    auto* fun = getOperation();
-    if (fun->getNumRegions() == 0) return;
+    auto* root = getOperation();
+    if (root->getNumRegions() == 0) return;
 
-    llvm::SmallVector<cnm::WorkgroupOp> allocs;
-    fun->walk([&](cnm::WorkgroupOp op) { allocs.push_back(op); });
+    // Find the nearest IsolatedFromAbove ancestor of `op` that is still
+    // a descendant of (or equal to) `root`. Returns nullptr if none found.
+    auto findScope = [&](Operation *op) -> Operation * {
+      Operation *scope = op->getParentOp();
+      while (scope && scope != root) {
+        if (scope->hasTrait<OpTrait::IsIsolatedFromAbove>())
+          return scope;
+        scope = scope->getParentOp();
+      }
+      // No isolated ancestor found below root — hoist to root itself.
+      return root;
+    };
+
+    // Find the direct child of `scope` that is an ancestor of `op`.
+    auto childOfScope = [](Operation *op, Operation *scope) -> Operation * {
+      Operation *child = op;
+      while (child->getParentOp() && child->getParentOp() != scope)
+        child = child->getParentOp();
+      return child;
+    };
 
     OpBuilder rewriter(&getContext());
-    rewriter.setInsertionPointToStart(&fun->getRegion(0).front());
-    IRMapping mapper;
-    for (auto alloc : allocs) {
-      Operation *parent = alloc;
-      while (parent->getParentOp() && parent->getParentOp() != fun && !parent->getParentOp()->hasTrait<OpTrait::IsIsolatedFromAbove>()) {
-        parent = parent->getParentOp();
-      }
-      if (parent == alloc) {
-        // nothing to hoist
-        continue;
-      }
-      alloc->remove();
-      rewriter.setInsertionPoint(parent);
-      rewriter.insert(alloc);
 
-      for (auto user : alloc->getUsers()) {
+    llvm::SmallVector<cnm::WorkgroupOp> wgOps;
+    root->walk([&](cnm::WorkgroupOp op) { wgOps.push_back(op); });
+
+    for (auto wgOp : wgOps) {
+      Operation *scope = findScope(wgOp);
+      Operation *parent = childOfScope(wgOp, scope);
+      if (parent == wgOp)
+        continue; // already at scope level
+
+      wgOp->remove();
+      rewriter.setInsertionPoint(parent);
+      rewriter.insert(wgOp);
+
+      for (auto *user : wgOp->getUsers()) {
         if (llvm::isa<cnm::FreeWorkgroupOp>(user)) {
           user->remove();
           rewriter.setInsertionPointAfter(parent);
@@ -54,16 +71,12 @@ struct CnmHoistWorkgroupsPass
       }
     }
 
-    // Hoist buffer alloc ops after their respective workgroup op.
     llvm::SmallVector<cnm::AllocOp> bufAllocs;
-    fun->walk([&](cnm::AllocOp op) { bufAllocs.push_back(op); });
+    root->walk([&](cnm::AllocOp op) { bufAllocs.push_back(op); });
 
     for (auto bufAlloc : bufAllocs) {
-      Operation *parent = bufAlloc;
-      while (parent->getParentOp() && parent->getParentOp() != fun &&
-             !parent->getParentOp()->hasTrait<OpTrait::IsIsolatedFromAbove>()) {
-        parent = parent->getParentOp();
-      }
+      Operation *scope = findScope(bufAlloc);
+      Operation *parent = childOfScope(bufAlloc, scope);
       if (parent == bufAlloc)
         continue;
       Operation *wgDef = bufAlloc.getWg().getDefiningOp();
