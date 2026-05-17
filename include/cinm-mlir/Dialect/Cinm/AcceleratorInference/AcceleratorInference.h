@@ -158,7 +158,11 @@ ConfigSpace buildConfigSpace(cinm::ComputeBlockOp refClone,
                              InferencePlugin &plugin);
 
 struct InferenceOptions {
+  /// Total number of valid evaluations (LHS init + surrogate-guided).
   int maxEvals = 50;
+  /// Number of configurations evaluated in the LHS initialisation phase
+  /// before the surrogate model takes over.  Must be ≤ maxEvals.
+  int nInit = 10;
 };
 
 /// Run Bayesian optimization over the config space.
