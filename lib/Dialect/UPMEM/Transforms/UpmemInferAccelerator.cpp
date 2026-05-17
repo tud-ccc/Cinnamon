@@ -63,6 +63,7 @@ struct UpmemInferencePlugin : cinm::InferencePlugin {
   int64_t rankIx = -1;
   int64_t dpuIx = -1;
   int64_t taskletIx = -1;
+  std::unique_ptr<PassManager> loweringPipeline;
 
   static constexpr llvm::StringLiteral kTileParamNamesAttr =
       "upmem.tile_param_names";
@@ -72,6 +73,19 @@ struct UpmemInferencePlugin : cinm::InferencePlugin {
   UpmemInferencePlugin(upmem::UpmemPlatformAttr platform,
                        std::unique_ptr<UpmemSimulator> sim)
       : platform(platform), simulator(std::move(sim)) {}
+
+  static std::unique_ptr<PassManager> buildLoweringPipeline(MLIRContext *ctx) {
+    auto pm = std::make_unique<PassManager>(ctx);
+    pm->addPass(cinm::createCinmTilingPass());
+    pm->addPass(cinm::createConvertTiledCinmToCnmPass());
+    pm->addPass(cnm::createCnmHoistWorkgroupsPass());
+    pm->addPass(createCanonicalizerPass());
+    pm->addPass(createCSEPass());
+    pm->addPass(cnm::createConvertCnmToUPMEMPass({}));
+    pm->addPass(createCanonicalizerPass());
+    pm->addPass(createCSEPass());
+    return pm;
+  }
 
   // --- InferencePlugin interface ---
 
@@ -185,34 +199,20 @@ struct UpmemInferencePlugin : cinm::InferencePlugin {
     candidate.setAcceleratorAttr(accelerator);
     applyTileSizes(candidate, space, config, ctx);
 
-    // Create a fresh trial submodule for DPU kernels in the sandbox module,
-    // and tell the cnm-to-upmem pass to use it via annotation.
+    // Set the kernel module name attribute before running the pipeline so the
+    // cnm-to-upmem pass can read it from the op instead of needing a pass opt.
     std::string trialName = ("trial_" + llvm::Twine(trialCount++)).str();
+    candidate->setAttr(kKernelModuleAttr, StringAttr::get(ctx, trialName));
 
-    // Run the lowering pipeline to UPMEM dialect.
-    PassManager pm(ctx);
-    pm.addPass(cinm::createCinmTilingPass());
-    pm.addPass(cinm::createConvertTiledCinmToCnmPass());
-    pm.addPass(cnm::createCnmHoistWorkgroupsPass());
-    pm.addPass(createCanonicalizerPass());
-    pm.addPass(createCSEPass());
-    pm.addPass(cnm::createConvertCnmToUPMEMPass(
-        {.kernelModuleName = trialName}));
-    pm.addPass(createCanonicalizerPass());
-    pm.addPass(createCSEPass());
-    // pm.addPass(createUPMEMDedupKernelsPass());
+    if (!loweringPipeline)
+      loweringPipeline = buildLoweringPipeline(ctx);
 
     LLVM_DEBUG(llvm::dbgs()
                << "[cinm-inference]   running lowering pipeline\n");
-    if (mlir::failed(pm.run(candidate))) {
+    if (mlir::failed(loweringPipeline->run(candidate))) {
       LLVM_DEBUG(llvm::dbgs() << "[cinm-inference]   pipeline failed\n");
       return emitSilenceableFailure(candidate->getLoc(), "Pass manager failed");
     }
-
-    // Record the kernel module name so disposeCandidate / commitBestCandidate
-    // can find and transfer (or erase) it from the sandbox module.
-    candidate->setAttr(kKernelModuleAttr,
-                       StringAttr::get(ctx, trialName));
 
     auto cost = simulator->simulate(candidate.getBody());
     LLVM_DEBUG({
