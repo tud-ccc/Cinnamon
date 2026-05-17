@@ -8,6 +8,7 @@
 #include <llvm/ADT/SmallVector.h>
 #include <llvm/ADT/StringRef.h>
 #include <mlir/IR/BuiltinOps.h>
+#include <mlir/IR/OwningOpRef.h>
 #include <mlir/Support/LogicalResult.h>
 #include <string>
 #include <variant>
@@ -108,6 +109,18 @@ struct ConfWrapper {
   int64_t operator[](int64_t ix) const { return conf[ix]; }
 };
 
+/// Per-trial context owned by the framework and passed to plugin callbacks.
+/// Before evaluate() runs the pipeline, computeBlock is a live clone inside
+/// module; after the pipeline lowers it away, computeBlock is invalid.
+struct TrialInfo {
+  mlir::OwningOpRef<mlir::ModuleOp> module;
+  cinm::ComputeBlockOp computeBlock;
+  Configuration config;
+  const ConfigSpace *space = nullptr;
+
+  ConfWrapper conf() const { return ConfWrapper(*space, config); }
+};
+
 // ===----------------------------------------------------------------------===//
 // Plugin interface
 // ===----------------------------------------------------------------------===//
@@ -126,23 +139,22 @@ struct InferencePlugin {
                                ConfigSpace &space) = 0;
 
   /// Evaluate a configuration. Lower cost is better.
-  /// Receives a fresh clone of the reference compute block. The clone lives
-  /// inside a dedicated trial module (`module { func @host(...) { clone } }`),
-  /// so the plugin may run module-scoped passes by calling
-  ///   `candidate->getParentOfType<ModuleOp>()`
-  /// The trial module is owned and destroyed by the framework after evaluate()
-  /// returns; the plugin must not hold references into it.
-  virtual utils::Maybe<double> evaluate(cinm::ComputeBlockOp candidate,
-                                        const ConfigSpace &space,
-                                        const Configuration &config) = 0;
+  /// `trial.computeBlock` is a fresh clone inside a minimal trial module
+  /// (`module { func @host { clone } }`). The plugin annotates computeBlock,
+  /// runs passes on `trial.module`, then returns a cost. The framework owns
+  /// `trial`; the plugin must not retain references after returning.
+  virtual utils::Maybe<double> evaluate(TrialInfo &trial) = 0;
 
   /// Called once after the best configuration has been found.
-  /// The plugin should apply the winning accelerator settings and tile-size
-  /// attributes to `original` so that downstream compilation passes pick them
-  /// up. No IR from a trial module is available at this point.
+  /// `bestTrial.module` is the fully-lowered module from the winning evaluation
+  /// (computeBlock is gone by this point). The plugin should splice the lowered
+  /// code into the original module and replace `original` with it.
   virtual DiagnosedSilenceableFailure
-  commitBestCandidate(cinm::ComputeBlockOp original, const ConfigSpace &space,
-                      const Configuration &bestConfig) = 0;
+  commitBestCandidate(cinm::ComputeBlockOp original, TrialInfo bestTrial) {
+    original.getBody().takeBody(bestTrial.computeBlock.getBody());
+    original.setAcceleratorAttr(bestTrial.computeBlock.getAcceleratorAttr());
+    return DiagnosedSilenceableFailure::success();
+  }
 };
 
 // ===----------------------------------------------------------------------===//
@@ -163,13 +175,13 @@ struct InferenceOptions {
 };
 
 /// Run Bayesian optimization over the config space.
-/// Returns the winning Configuration (values for each SearchParam in space).
-/// Each trial is evaluated inside an isolated trial module; the framework
-/// manages trial module lifetimes.
-utils::Maybe<Configuration>
-runInference(mlir::ModuleOp refModule, cinm::ComputeBlockOp refClone,
-             InferencePlugin &plugin, const ConfigSpace &space,
-             const InferenceOptions &opts = {});
+/// Returns the TrialInfo from the winning evaluation — its module is
+/// fully lowered and ready for commitBestCandidate.
+utils::Maybe<TrialInfo> runInference(mlir::ModuleOp refModule,
+                                     cinm::ComputeBlockOp refClone,
+                                     InferencePlugin &plugin,
+                                     const ConfigSpace &space,
+                                     const InferenceOptions &opts = {});
 
 /// Full pipeline: clone the parent module into a sandbox → buildConfigSpace →
 /// runInference → commitBestCandidate on the original.

@@ -1,5 +1,5 @@
-#include "BananasSearch.h"
 #include "cinm-mlir/Dialect/Cinm/AcceleratorInference/AcceleratorInference.h"
+#include "BananasSearch.h"
 #include "cinm-mlir/Dialect/Cinm/IR/CinmAttributes.h"
 #include "cinm-mlir/Dialect/Cinm/IR/CinmOps.h"
 
@@ -125,7 +125,6 @@ SearchParam makeValues(std::string name, llvm::SmallVector<int64_t> values) {
 // ConfigSpace
 // ===----------------------------------------------------------------------===//
 
-
 int64_t ConfigSpace::addRange(std::string name, int64_t lo, int64_t hi,
                               int64_t step) {
   return addDim(makeRange(std::move(name), lo, hi, step));
@@ -172,7 +171,8 @@ bool ConfigSpace::isValid(const Configuration &config) const {
 // Core framework
 // ===----------------------------------------------------------------------===//
 
-// Build a minimal trial module: module { func @host(arg0, arg1, ...) -> (r0, r1, ...) {
+// Build a minimal trial module: module { func @host(arg0, arg1, ...) -> (r0,
+// r1, ...) {
 //   %r = cinm.compute_block(arg0, arg1, ...) { <clone of computeOp body> }
 //   return %r
 // } }
@@ -187,8 +187,7 @@ buildRefModule(cinm::ComputeBlockOp computeOp) {
   auto hostFunc = mlir::func::FuncOp::create(
       loc, "host",
       mlir::FunctionType::get(
-          ctx,
-          llvm::SmallVector<mlir::Type>(computeOp->getOperandTypes()),
+          ctx, llvm::SmallVector<mlir::Type>(computeOp->getOperandTypes()),
           llvm::SmallVector<mlir::Type>(computeOp->getResultTypes())));
   module->getBody()->push_back(hostFunc);
   mlir::Block *entry = hostFunc.addEntryBlock();
@@ -261,47 +260,44 @@ sampleCandidatePool(const ConfigSpace &space, size_t maxPool,
 // runInference
 // ===----------------------------------------------------------------------===//
 
-Maybe<Configuration> runInference(mlir::ModuleOp refModule,
-                                   cinm::ComputeBlockOp refClone,
-                                   InferencePlugin &plugin,
-                                   const ConfigSpace &space,
-                                   const InferenceOptions &opts) {
-  // Clone the refModule to produce a fresh isolated trial module with one
-  // candidate compute block inside it. The candidate lives in a proper module
-  // context so the plugin can run module-scoped passes.
-  auto makeCandidate =
-      [&]() -> std::pair<mlir::OwningOpRef<mlir::ModuleOp>,
-                         cinm::ComputeBlockOp> {
+Maybe<TrialInfo> runInference(mlir::ModuleOp refModule,
+                              cinm::ComputeBlockOp refClone,
+                              InferencePlugin &plugin, const ConfigSpace &space,
+                              const InferenceOptions &opts) {
+  // Clone refModule to produce a fresh isolated trial module per evaluation.
+  auto makeTrialInfo = [&](Configuration config) -> TrialInfo {
     mlir::IRMapping mapping;
     mlir::OwningOpRef<mlir::ModuleOp> trialModule(
         llvm::cast<mlir::ModuleOp>(refModule->clone(mapping)));
     cinm::ComputeBlockOp candidate;
     trialModule->walk([&](cinm::ComputeBlockOp op) { candidate = op; });
-    return {std::move(trialModule), candidate};
+    return TrialInfo{std::move(trialModule), candidate, std::move(config),
+                     &space};
   };
 
   // Trivial: zero-dimensional space → evaluate the only possible config.
   if (space.size() == 0) {
-    auto [trialModule, candidate] = makeCandidate();
-    auto cost = plugin.evaluate(candidate, space, {});
+    TrialInfo trial = makeTrialInfo({});
+    auto cost = plugin.evaluate(trial);
     if (std::holds_alternative<DiagnosedSilenceableFailure>(cost))
       return std::move(std::get<DiagnosedSilenceableFailure>(cost));
-    return Configuration{};
+    return std::move(trial);
   }
 
   const size_t nDims = space.size();
 
   // Build pool of valid candidates.
   std::mt19937 rng(42);
-  const size_t maxPool = std::max<size_t>(500, static_cast<size_t>(opts.maxEvals) * 10);
+  const size_t maxPool =
+      std::max<size_t>(500, static_cast<size_t>(opts.maxEvals) * 10);
   auto pool = sampleCandidatePool(space, maxPool, rng);
 
   LLVM_DEBUG(llvm::dbgs() << "[cinm-inference] Pool: " << pool.size()
                           << " valid configs (max " << maxPool << ")\n");
 
   if (pool.empty())
-    return emitSilenceableFailure(refClone.getLoc(),
-                                  "No valid configurations found in search space");
+    return emitSilenceableFailure(
+        refClone.getLoc(), "No valid configurations found in search space");
 
   // Encode pool into a row-major float matrix (pool.size() × nDims).
   std::vector<float> encodedPool(pool.size() * nDims);
@@ -313,20 +309,19 @@ Maybe<Configuration> runInference(mlir::ModuleOp refModule,
 
   // Evaluation state.
   std::vector<bool> evaluated(pool.size(), false);
-  std::vector<size_t> obsIdx;   // pool indices that were successfully evaluated
-  std::vector<float> obsCosts;  // cost parallel to obsIdx
+  std::vector<size_t> obsIdx;  // pool indices that were successfully evaluated
+  std::vector<float> obsCosts; // cost parallel to obsIdx
 
   bool anySuccess = false;
-  Configuration bestConfig;
+  TrialInfo bestTrial;
   double bestCost = std::numeric_limits<double>::max();
-  DiagnosedSilenceableFailure err =
-      mlir::emitSilenceableFailure(refClone.getLoc(),
-                                   "No candidates were evaluated");
+  DiagnosedSilenceableFailure err = mlir::emitSilenceableFailure(
+      refClone.getLoc(), "No candidates were evaluated");
 
   auto tryEval = [&](size_t poolIdx) {
     evaluated[poolIdx] = true;
-    const auto &config = pool[poolIdx];
     LLVM_DEBUG({
+      const auto &config = pool[poolIdx];
       llvm::dbgs() << "[cinm-inference] Trial {";
       for (size_t i = 0; i < nDims; ++i)
         llvm::dbgs() << space[i].name << "=" << config[i]
@@ -334,10 +329,8 @@ Maybe<Configuration> runInference(mlir::ModuleOp refModule,
       llvm::dbgs() << "}\n";
     });
 
-    // Each trial gets its own module; the framework owns it via RAII.
-    auto [trialModule, candidate] = makeCandidate();
-    auto cost = plugin.evaluate(candidate, space, config);
-    // trialModule goes out of scope here, destroying the trial IR.
+    TrialInfo trial = makeTrialInfo(pool[poolIdx]);
+    auto cost = plugin.evaluate(trial);
 
     if (std::holds_alternative<DiagnosedSilenceableFailure>(cost)) {
       err = std::move(std::get<DiagnosedSilenceableFailure>(cost));
@@ -345,15 +338,16 @@ Maybe<Configuration> runInference(mlir::ModuleOp refModule,
       return;
     }
     float costVal = static_cast<float>(std::get<double>(cost));
-    LLVM_DEBUG(llvm::dbgs() << "[cinm-inference]   -> cost = " << costVal
-                            << "\n");
+    LLVM_DEBUG(llvm::dbgs()
+               << "[cinm-inference]   -> cost = " << costVal << "\n");
     obsIdx.push_back(poolIdx);
     obsCosts.push_back(costVal);
     anySuccess = true;
     if (costVal < bestCost) {
-      bestConfig = config;
       bestCost = costVal;
+      bestTrial = std::move(trial);
     }
+    // trial (now empty after move, or non-best) is destroyed here.
   };
 
   // Phase 1: LHS initialisation.
@@ -396,8 +390,8 @@ Maybe<Configuration> runInference(mlir::ModuleOp refModule,
       X_obs.insert(X_obs.end(), encodedPool.begin() + oi * nDims,
                    encodedPool.begin() + (oi + 1) * nDims);
 
-    auto nextIdx = nextCandidateIndices(X_obs, obsIdx.size(), obsCosts,
-                                        X_pool, unvisited.size(), nDims);
+    auto nextIdx = nextCandidateIndices(X_obs, obsIdx.size(), obsCosts, X_pool,
+                                        unvisited.size(), nDims);
     if (nextIdx.empty())
       break;
 
@@ -408,9 +402,9 @@ Maybe<Configuration> runInference(mlir::ModuleOp refModule,
   if (!anySuccess)
     return err;
 
-  LLVM_DEBUG(llvm::dbgs() << "[cinm-inference] Best config (cost="
-                          << bestCost << ")\n");
-  return bestConfig;
+  LLVM_DEBUG(llvm::dbgs() << "[cinm-inference] Best config (cost=" << bestCost
+                          << ")\n");
+  return std::move(bestTrial);
 }
 
 // ===----------------------------------------------------------------------===//
@@ -434,10 +428,17 @@ inferAcceleratorConfig(cinm::ComputeBlockOp computeOp, InferencePlugin &plugin,
   LLVM_DEBUG(llvm::dbgs() << "[cinm-inference] Reference clone:\n";
              refClone->print(llvm::dbgs()); llvm::dbgs() << "\n");
 
-  auto bestConfig = TRY_GET(runInference(refModule.get(), refClone, plugin, space, opts));
+  auto bestResult =
+      runInference(refModule.get(), refClone, plugin, space, opts);
+  if (std::holds_alternative<DiagnosedSilenceableFailure>(bestResult))
+    return std::move(std::get<DiagnosedSilenceableFailure>(bestResult));
 
-  LLVM_DEBUG(llvm::dbgs() << "[cinm-inference] Committing best config\n");
-  return plugin.commitBestCandidate(computeOp, space, bestConfig);
+  auto bestTrial = std::move(std::get<TrialInfo>(bestResult));
+  LLVM_DEBUG(llvm::dbgs() << "[cinm-inference] Committing best config:\n";
+             bestTrial.computeBlock->print(llvm::dbgs());
+             llvm::dbgs() << "======================\n";);
+
+  return plugin.commitBestCandidate(computeOp, std::move(bestTrial));
 }
 
 } // namespace mlir::cinm
