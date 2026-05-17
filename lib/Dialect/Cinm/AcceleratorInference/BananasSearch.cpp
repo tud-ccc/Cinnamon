@@ -35,7 +35,7 @@ std::vector<float> encodeConfig(const ConfigSpace &space,
 }
 
 // ===----------------------------------------------------------------------===//
-// LHS sampling
+// Latin Hypercube Sampling
 // ===----------------------------------------------------------------------===//
 
 llvm::SmallVector<size_t> lhsIndices(const std::vector<float> &encodedFlat,

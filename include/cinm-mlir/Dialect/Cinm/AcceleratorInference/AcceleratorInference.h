@@ -7,6 +7,7 @@
 #include <functional>
 #include <llvm/ADT/SmallVector.h>
 #include <llvm/ADT/StringRef.h>
+#include <mlir/IR/BuiltinOps.h>
 #include <mlir/Support/LogicalResult.h>
 #include <string>
 #include <variant>
@@ -125,27 +126,23 @@ struct InferencePlugin {
                                ConfigSpace &space) = 0;
 
   /// Evaluate a configuration. Lower cost is better.
-  /// Receives a fresh clone inserted right after the reference clone in the
-  /// sandbox module. The plugin may freely annotate, transform, or lower it —
-  /// changes do not affect the reference clone or other trials.
+  /// Receives a fresh clone of the reference compute block. The clone lives
+  /// inside a dedicated trial module (`module { func @host(...) { clone } }`),
+  /// so the plugin may run module-scoped passes by calling
+  ///   `candidate->getParentOfType<ModuleOp>()`
+  /// The trial module is owned and destroyed by the framework after evaluate()
+  /// returns; the plugin must not hold references into it.
   virtual utils::Maybe<double> evaluate(cinm::ComputeBlockOp candidate,
                                         const ConfigSpace &space,
                                         const Configuration &config) = 0;
 
-  /// Discard a losing candidate. Override to also clean up any side resources
-  /// (e.g. kernel submodules) created during evaluate().
-  /// Default implementation simply erases the op.
-  virtual void disposeCandidate(cinm::ComputeBlockOp candidate) {
-    candidate->erase();
-  }
-
-  /// Called once with the winning candidate (inside the sandbox module).
-  /// The plugin must transfer the lowered IR and any side resources
-  /// (e.g. kernel submodules) from the candidate into the original module,
-  /// then erase the candidate. The sandbox is destroyed after this returns.
+  /// Called once after the best configuration has been found.
+  /// The plugin should apply the winning accelerator settings and tile-size
+  /// attributes to `original` so that downstream compilation passes pick them
+  /// up. No IR from a trial module is available at this point.
   virtual DiagnosedSilenceableFailure
-  commitBestCandidate(cinm::ComputeBlockOp original,
-                      cinm::ComputeBlockOp bestCandidate) = 0;
+  commitBestCandidate(cinm::ComputeBlockOp original, const ConfigSpace &space,
+                      const Configuration &bestConfig) = 0;
 };
 
 // ===----------------------------------------------------------------------===//
@@ -166,11 +163,13 @@ struct InferenceOptions {
 };
 
 /// Run Bayesian optimization over the config space.
-/// Returns the winning candidate op (still inside the sandbox module).
-/// The caller is responsible for committing or disposing it.
-utils::Maybe<cinm::ComputeBlockOp>
-runInference(cinm::ComputeBlockOp refClone, InferencePlugin &plugin,
-             const ConfigSpace &space, const InferenceOptions &opts = {});
+/// Returns the winning Configuration (values for each SearchParam in space).
+/// Each trial is evaluated inside an isolated trial module; the framework
+/// manages trial module lifetimes.
+utils::Maybe<Configuration>
+runInference(mlir::ModuleOp refModule, cinm::ComputeBlockOp refClone,
+             InferencePlugin &plugin, const ConfigSpace &space,
+             const InferenceOptions &opts = {});
 
 /// Full pipeline: clone the parent module into a sandbox → buildConfigSpace →
 /// runInference → commitBestCandidate on the original.

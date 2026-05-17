@@ -9,6 +9,7 @@
 #include <llvm/ADT/StringRef.h>
 #include <llvm/Support/Debug.h>
 #include <llvm/Support/LogicalResult.h>
+#include <mlir/Dialect/Func/IR/FuncOps.h>
 #include <mlir/IR/Builders.h>
 #include <mlir/IR/BuiltinOps.h>
 #include <mlir/IR/IRMapping.h>
@@ -171,28 +172,37 @@ bool ConfigSpace::isValid(const Configuration &config) const {
 // Core framework
 // ===----------------------------------------------------------------------===//
 
+// Build a minimal trial module: module { func @host(arg0, arg1, ...) -> (r0, r1, ...) {
+//   %r = cinm.compute_block(arg0, arg1, ...) { <clone of computeOp body> }
+//   return %r
+// } }
+// Returns the module and the cloned compute block (the refClone).
 static std::pair<mlir::OwningOpRef<mlir::ModuleOp>, cinm::ComputeBlockOp>
-cloneModuleToSandbox(cinm::ComputeBlockOp computeOp) {
-  auto parentModule = computeOp->getParentOfType<mlir::ModuleOp>();
-  if (!parentModule)
-    return {nullptr, nullptr};
+buildRefModule(cinm::ComputeBlockOp computeOp) {
+  mlir::MLIRContext *ctx = computeOp->getContext();
+  mlir::Location loc = computeOp->getLoc();
+  mlir::OpBuilder b(ctx);
+
+  mlir::OwningOpRef<mlir::ModuleOp> module(mlir::ModuleOp::create(loc));
+  auto hostFunc = mlir::func::FuncOp::create(
+      loc, "host",
+      mlir::FunctionType::get(
+          ctx,
+          llvm::SmallVector<mlir::Type>(computeOp->getOperandTypes()),
+          llvm::SmallVector<mlir::Type>(computeOp->getResultTypes())));
+  module->getBody()->push_back(hostFunc);
+  mlir::Block *entry = hostFunc.addEntryBlock();
+  b.setInsertionPointToStart(entry);
 
   mlir::IRMapping mapping;
-  mlir::OwningOpRef<mlir::ModuleOp> sandbox(
-      llvm::cast<mlir::ModuleOp>(parentModule->clone(mapping)));
+  for (auto [operand, arg] :
+       llvm::zip(computeOp->getOperands(), entry->getArguments()))
+    mapping.map(operand, arg);
 
-  llvm::SmallVector<cinm::ComputeBlockOp> origOps, clonedOps;
-  parentModule->walk([&](cinm::ComputeBlockOp op) { origOps.push_back(op); });
-  sandbox->walk([&](cinm::ComputeBlockOp op) { clonedOps.push_back(op); });
+  auto *cloned = b.clone(*computeOp, mapping);
+  mlir::func::ReturnOp::create(b, loc, cloned->getResults());
 
-  cinm::ComputeBlockOp refClone;
-  for (size_t i = 0; i < origOps.size() && i < clonedOps.size(); ++i) {
-    if (origOps[i] == computeOp) {
-      refClone = clonedOps[i];
-      break;
-    }
-  }
-  return {std::move(sandbox), refClone};
+  return {std::move(module), llvm::cast<cinm::ComputeBlockOp>(cloned)};
 }
 
 ConfigSpace buildConfigSpace(cinm::ComputeBlockOp refClone,
@@ -251,26 +261,32 @@ sampleCandidatePool(const ConfigSpace &space, size_t maxPool,
 // runInference
 // ===----------------------------------------------------------------------===//
 
-Maybe<cinm::ComputeBlockOp> runInference(cinm::ComputeBlockOp refClone,
-                                         InferencePlugin &plugin,
-                                         const ConfigSpace &space,
-                                         const InferenceOptions &opts) {
-  auto makeCandidate = [&]() {
-    mlir::OpBuilder builder(refClone->getContext());
-    builder.setInsertionPointAfter(refClone.getOperation());
-    return llvm::cast<cinm::ComputeBlockOp>(
-        builder.clone(*refClone.getOperation()));
+Maybe<Configuration> runInference(mlir::ModuleOp refModule,
+                                   cinm::ComputeBlockOp refClone,
+                                   InferencePlugin &plugin,
+                                   const ConfigSpace &space,
+                                   const InferenceOptions &opts) {
+  // Clone the refModule to produce a fresh isolated trial module with one
+  // candidate compute block inside it. The candidate lives in a proper module
+  // context so the plugin can run module-scoped passes.
+  auto makeCandidate =
+      [&]() -> std::pair<mlir::OwningOpRef<mlir::ModuleOp>,
+                         cinm::ComputeBlockOp> {
+    mlir::IRMapping mapping;
+    mlir::OwningOpRef<mlir::ModuleOp> trialModule(
+        llvm::cast<mlir::ModuleOp>(refModule->clone(mapping)));
+    cinm::ComputeBlockOp candidate;
+    trialModule->walk([&](cinm::ComputeBlockOp op) { candidate = op; });
+    return {std::move(trialModule), candidate};
   };
 
   // Trivial: zero-dimensional space → evaluate the only possible config.
   if (space.size() == 0) {
-    auto candidate = makeCandidate();
+    auto [trialModule, candidate] = makeCandidate();
     auto cost = plugin.evaluate(candidate, space, {});
-    if (std::holds_alternative<DiagnosedSilenceableFailure>(cost)) {
-      plugin.disposeCandidate(candidate);
+    if (std::holds_alternative<DiagnosedSilenceableFailure>(cost))
       return std::move(std::get<DiagnosedSilenceableFailure>(cost));
-    }
-    return candidate;
+    return Configuration{};
   }
 
   const size_t nDims = space.size();
@@ -301,7 +317,7 @@ Maybe<cinm::ComputeBlockOp> runInference(cinm::ComputeBlockOp refClone,
   std::vector<float> obsCosts;  // cost parallel to obsIdx
 
   bool anySuccess = false;
-  cinm::ComputeBlockOp bestCandidate;
+  Configuration bestConfig;
   double bestCost = std::numeric_limits<double>::max();
   DiagnosedSilenceableFailure err =
       mlir::emitSilenceableFailure(refClone.getLoc(),
@@ -318,11 +334,13 @@ Maybe<cinm::ComputeBlockOp> runInference(cinm::ComputeBlockOp refClone,
       llvm::dbgs() << "}\n";
     });
 
-    auto candidate = makeCandidate();
+    // Each trial gets its own module; the framework owns it via RAII.
+    auto [trialModule, candidate] = makeCandidate();
     auto cost = plugin.evaluate(candidate, space, config);
+    // trialModule goes out of scope here, destroying the trial IR.
+
     if (std::holds_alternative<DiagnosedSilenceableFailure>(cost)) {
       err = std::move(std::get<DiagnosedSilenceableFailure>(cost));
-      plugin.disposeCandidate(candidate);
       LLVM_DEBUG(llvm::dbgs() << "[cinm-inference]   -> failed\n");
       return;
     }
@@ -333,12 +351,8 @@ Maybe<cinm::ComputeBlockOp> runInference(cinm::ComputeBlockOp refClone,
     obsCosts.push_back(costVal);
     anySuccess = true;
     if (costVal < bestCost) {
-      if (bestCandidate)
-        plugin.disposeCandidate(bestCandidate);
-      bestCandidate = candidate;
+      bestConfig = config;
       bestCost = costVal;
-    } else {
-      plugin.disposeCandidate(candidate);
     }
   };
 
@@ -394,9 +408,9 @@ Maybe<cinm::ComputeBlockOp> runInference(cinm::ComputeBlockOp refClone,
   if (!anySuccess)
     return err;
 
-  LLVM_DEBUG(llvm::dbgs() << "[cinm-inference] Best candidate (cost="
+  LLVM_DEBUG(llvm::dbgs() << "[cinm-inference] Best config (cost="
                           << bestCost << ")\n");
-  return bestCandidate;
+  return bestConfig;
 }
 
 // ===----------------------------------------------------------------------===//
@@ -411,19 +425,19 @@ inferAcceleratorConfig(cinm::ComputeBlockOp computeOp, InferencePlugin &plugin,
                           << " (maxEvals=" << opts.maxEvals
                           << ", nInit=" << opts.nInit << ")\n");
 
-  auto [sandbox, refClone] = cloneModuleToSandbox(computeOp);
+  auto [refModule, refClone] = buildRefModule(computeOp);
   if (!refClone)
     return emitDefiniteFailure(computeOp->getLoc(),
-                               "Could not clone compute op");
+                               "Could not build reference module");
 
   ConfigSpace space = buildConfigSpace(refClone, plugin);
   LLVM_DEBUG(llvm::dbgs() << "[cinm-inference] Reference clone:\n";
              refClone->print(llvm::dbgs()); llvm::dbgs() << "\n");
 
-  auto bestCandidate = TRY_GET(runInference(refClone, plugin, space, opts));
+  auto bestConfig = TRY_GET(runInference(refModule.get(), refClone, plugin, space, opts));
 
-  LLVM_DEBUG(llvm::dbgs() << "[cinm-inference] Committing best candidate\n");
-  return plugin.commitBestCandidate(computeOp, bestCandidate);
+  LLVM_DEBUG(llvm::dbgs() << "[cinm-inference] Committing best config\n");
+  return plugin.commitBestCandidate(computeOp, space, bestConfig);
 }
 
 } // namespace mlir::cinm

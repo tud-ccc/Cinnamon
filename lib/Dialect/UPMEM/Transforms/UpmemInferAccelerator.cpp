@@ -16,8 +16,8 @@
 #include <functional>
 #include <llvm/ADT/StringRef.h>
 #include <llvm/Support/Casting.h>
-#include <mlir/Dialect/Affine/IR/AffineOps.h>
 #include <mlir/Conversion/AffineToStandard/AffineToStandard.h>
+#include <mlir/Dialect/Affine/IR/AffineOps.h>
 #include <mlir/Dialect/Affine/Transforms/Passes.h>
 #include <mlir/Dialect/Bufferization/IR/Bufferization.h>
 #include <mlir/Dialect/Bufferization/Transforms/OneShotAnalysis.h>
@@ -31,15 +31,11 @@
 #include <mlir/IR/BuiltinAttributes.h>
 #include <mlir/IR/BuiltinOps.h>
 #include <mlir/IR/BuiltinTypeInterfaces.h>
-#include <mlir/IR/IRMapping.h>
-#include <mlir/IR/OwningOpRef.h>
 #include <mlir/IR/PatternMatch.h>
-#include <mlir/IR/SymbolTable.h>
 #include <mlir/Pass/PassManager.h>
 #include <mlir/Support/LogicalResult.h>
 
 #include <llvm/ADT/SmallVector.h>
-#include <llvm/ADT/Twine.h>
 #include <llvm/Support/Debug.h>
 #include <llvm/Support/raw_ostream.h>
 #include <mlir/Support/WalkResult.h>
@@ -64,30 +60,29 @@ using mlir::cinm::utils::Maybe;
 struct UpmemInferencePlugin : cinm::InferencePlugin {
   upmem::UpmemPlatformAttr platform;
   std::unique_ptr<UpmemSimulator> simulator;
-  unsigned trialCount = 0;
 
   int64_t rankIx = -1;
   int64_t dpuIx = -1;
   int64_t taskletIx = -1;
-  std::unique_ptr<PassManager> loweringPipeline;
+  std::unique_ptr<PassManager> pipeline;
 
   static constexpr llvm::StringLiteral kTileParamNamesAttr =
       "upmem.tile_param_names";
-  static constexpr llvm::StringLiteral kKernelModuleAttr =
-      "upmem.kernel_module";
 
   UpmemInferencePlugin(upmem::UpmemPlatformAttr platform,
                        std::unique_ptr<UpmemSimulator> sim)
       : platform(platform), simulator(std::move(sim)) {}
 
-  static std::unique_ptr<PassManager> buildLoweringPipeline(MLIRContext *ctx) {
+  // Full lowering pipeline (steps 1-6): cinm → cnm → bufferize → upmem.
+  static std::unique_ptr<PassManager> buildPipeline(MLIRContext *ctx) {
     auto pm = std::make_unique<PassManager>(ctx);
 
     // Step 1: tiling
     pm->addPass(cinm::createCinmTilingPass());
     pm->addPass(cinm::createCinmIsolateComputePass());
     // Fully unroll single-iteration loops produced by tiling.
-    pm->addPass(affine::createLoopUnrollPass(1, /*unrollUpToFactor=*/true));
+    pm->addNestedPass<func::FuncOp>(
+        affine::createLoopUnrollPass(1, /*unrollUpToFactor=*/true));
     pm->addPass(createCanonicalizerPass());
     pm->addPass(cinm::createCinmDeisolateComputeBlocks());
 
@@ -124,22 +119,24 @@ struct UpmemInferencePlugin : cinm::InferencePlugin {
     pm->addPass(createCSEPass());
 
     // Step 4: affine opts
-    pm->addPass(bufferization::createPromoteBuffersToStackPass());
-    pm->addPass(memref::createFoldMemRefAliasOpsPass());
-    pm->addPass(createCanonicalizerPass());
-    pm->addPass(affine::createLoopFusionPass());
-    pm->addPass(createSROA());
-    pm->addPass(createCanonicalizerPass());
-    pm->addPass(affine::createAffineScalarReplacementPass());
-    pm->addPass(createLoopInvariantCodeMotionPass());
-    pm->addPass(affine::createAffineLoopInvariantCodeMotionPass());
-    pm->addPass(createSROA());
-    pm->addPass(affine::createAffineScalarReplacementPass());
-    pm->addPass(createCanonicalizerPass());
-    pm->addPass(createCSEPass());
-
+    {
+      auto &funcs = pm->nest<func::FuncOp>();
+      funcs.addPass(bufferization::createPromoteBuffersToStackPass());
+      funcs.addPass(memref::createFoldMemRefAliasOpsPass());
+      funcs.addPass(createCanonicalizerPass());
+      funcs.addPass(affine::createLoopFusionPass());
+      funcs.addPass(createSROA());
+      funcs.addPass(createCanonicalizerPass());
+      funcs.addPass(affine::createAffineScalarReplacementPass());
+      funcs.addPass(createLoopInvariantCodeMotionPass());
+      funcs.addPass(affine::createAffineLoopInvariantCodeMotionPass());
+      funcs.addPass(createSROA());
+      funcs.addPass(affine::createAffineScalarReplacementPass());
+      funcs.addPass(createCanonicalizerPass());
+      funcs.addPass(createCSEPass());
+      funcs.addPass(affine::createLoopUnrollPass(4));
+    }
     // Step 5: lower affine to SCF
-    pm->addPass(affine::createLoopUnrollPass(4));
     pm->addPass(createLowerAffinePass());
     pm->addPass(bufferization::createBufferLoopHoistingPass());
     pm->addPass(bufferization::createBufferHoistingPass());
@@ -262,27 +259,25 @@ struct UpmemInferencePlugin : cinm::InferencePlugin {
     LLVM_DEBUG(llvm::dbgs()
                << "[cinm-inference] evaluate: ranks=" << ranks
                << " dpus=" << dpus << " tasklets=" << tasklets << "\n");
-    auto accelerator =
-        upmem::UpmemAcceleratorAttr::get(platform, ranks, dpus, tasklets);
-    candidate.setAcceleratorAttr(accelerator);
+    candidate.setAcceleratorAttr(
+        upmem::UpmemAcceleratorAttr::get(platform, ranks, dpus, tasklets));
     applyTileSizes(candidate, space, config, ctx);
 
-    // Set the kernel module name attribute before running the pipeline so the
-    // cnm-to-upmem pass can read it from the op instead of needing a pass opt.
-    std::string trialName = ("trial_" + llvm::Twine(trialCount++)).str();
-    candidate->setAttr(kKernelModuleAttr, StringAttr::get(ctx, trialName));
+    // The candidate lives in a trial module built by the framework; run the
+    // full lowering pipeline on that module so module-level passes work.
+    auto trialModule = candidate->getParentOfType<ModuleOp>();
 
-    if (!loweringPipeline)
-      loweringPipeline = buildLoweringPipeline(ctx);
+    if (!pipeline)
+      pipeline = buildPipeline(ctx);
 
-    LLVM_DEBUG(llvm::dbgs()
-               << "[cinm-inference]   running lowering pipeline\n");
-    if (mlir::failed(loweringPipeline->run(candidate))) {
+    LLVM_DEBUG(llvm::dbgs() << "[cinm-inference]   running pipeline\n");
+    if (mlir::failed(pipeline->run(trialModule))) {
       LLVM_DEBUG(llvm::dbgs() << "[cinm-inference]   pipeline failed\n");
-      return emitSilenceableFailure(candidate->getLoc(), "Pass manager failed");
+      return emitSilenceableFailure(candidate->getLoc(), "Pipeline failed");
     }
 
-    auto cost = simulator->simulate(candidate.getBody());
+    // Simulate the lowered module body (candidate op is gone after pipeline).
+    auto cost = simulator->simulate(trialModule.getBodyRegion());
     LLVM_DEBUG({
       if (auto *val = std::get_if<double>(&cost))
         llvm::dbgs() << "[cinm-inference]   simulated cost = " << *val << "\n";
@@ -292,46 +287,36 @@ struct UpmemInferencePlugin : cinm::InferencePlugin {
     return cost;
   }
 
-  void disposeCandidate(cinm::ComputeBlockOp candidate) override {
-    if (auto attr = candidate->getAttrOfType<StringAttr>(kKernelModuleAttr)) {
-      auto sandboxModule = candidate->getParentOfType<ModuleOp>();
-      if (sandboxModule) {
-        auto *sym = SymbolTable::lookupSymbolIn(sandboxModule, attr.getValue());
-        if (sym)
-          sym->erase();
-      }
-    }
-    candidate->erase();
-  }
-
   mlir::DiagnosedSilenceableFailure
   commitBestCandidate(cinm::ComputeBlockOp original,
-                      cinm::ComputeBlockOp bestCandidate) override {
-    auto sandboxModule = bestCandidate->getParentOfType<ModuleOp>();
-    auto originalModule = original->getParentOfType<ModuleOp>();
+                      const cinm::ConfigSpace &space,
+                      const cinm::Configuration &config) override {
+    MLIRContext *ctx = original->getContext();
 
-    // Move the trial kernel submodule from the sandbox into the original
-    // module.
-    if (auto attr =
-            bestCandidate->getAttrOfType<StringAttr>(kKernelModuleAttr)) {
-      auto *sym = SymbolTable::lookupSymbolIn(sandboxModule, attr.getValue());
-      if (auto kernelModule = llvm::dyn_cast_or_null<ModuleOp>(sym)) {
-        kernelModule.getOperation()->moveBefore(
-            &originalModule.getBodyRegion().front(),
-            originalModule.getBodyRegion().front().end());
+    // Apply the winning accelerator configuration.
+    original.setAcceleratorAttr(upmem::UpmemAcceleratorAttr::get(
+        platform, space.get(config, "ranks"), space.get(config, "dpus"),
+        space.get(config, "tasklets")));
+
+    // Re-derive tile-size parameter names using the same NameInventor logic as
+    // initializeSpace, then apply them to the original's interior ops.
+    auto nameInventor = cinm::utils::NameInventor::getNameInventor(
+        original.getOperation(), "tile_");
+    original.getBody().walk([&](mlir::Operation *op) {
+      auto tileable = llvm::dyn_cast<cinm::CinmTilingInterface>(op);
+      if (!tileable)
+        return;
+      llvm::SmallVector<int64_t> dimSizes;
+      tileable.getTilableDimSizes(dimSizes);
+      llvm::SmallVector<int64_t> tileSizes;
+      for (unsigned d = 0; d < dimSizes.size(); ++d) {
+        StringRef paramName = nameInventor.getUniqueName();
+        tileSizes.push_back(space.get(config, paramName));
       }
-      original->setAttr(kKernelModuleAttr, attr);
-    }
+      op->setAttr(cinm::CinmDialect::TILING_FACTORS_NAME,
+                  DenseI64ArrayAttr::get(ctx, tileSizes));
+    });
 
-    // Replace the original's body with the lowered body from the best
-    // candidate.
-    original.getBody().takeBody(bestCandidate.getBody());
-
-    // Copy the accelerator attribute.
-    if (auto acc = bestCandidate->getAttr("accelerator"))
-      original->setAttr("accelerator", acc);
-
-    bestCandidate->erase();
     return DiagnosedSilenceableFailure::success();
   }
 
