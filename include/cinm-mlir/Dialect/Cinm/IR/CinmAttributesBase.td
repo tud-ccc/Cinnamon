@@ -98,6 +98,10 @@ def Cinm_LevelDefAttr: Cinm_Attr<"CinmLevelDef", [OpAsmAttrInterface]> {
   );
   let extraClassDeclaration = [{
 
+    int64_t getSizeInElements(Type t) const {
+      return getSizeInBytes() * 8 / t.getIntOrFloatBitWidth();
+    }
+
     // tilefirst::CinmMemSpaceAttr toMemSpace(ArrayRef<SymExpr> indices = {}) const {
     //   return tilefirst::CinmMemSpaceAttr::get(
     //       getName(),
