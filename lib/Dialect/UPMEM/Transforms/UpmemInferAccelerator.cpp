@@ -17,9 +17,15 @@
 #include <llvm/ADT/StringRef.h>
 #include <llvm/Support/Casting.h>
 #include <mlir/Dialect/Affine/IR/AffineOps.h>
+#include <mlir/Conversion/AffineToStandard/AffineToStandard.h>
+#include <mlir/Dialect/Affine/Transforms/Passes.h>
 #include <mlir/Dialect/Bufferization/IR/Bufferization.h>
+#include <mlir/Dialect/Bufferization/Transforms/OneShotAnalysis.h>
+#include <mlir/Dialect/Bufferization/Transforms/Passes.h>
 #include <mlir/Dialect/Func/IR/FuncOps.h>
 #include <mlir/Dialect/LLVMIR/LLVMDialect.h>
+#include <mlir/Dialect/Linalg/Passes.h>
+#include <mlir/Dialect/MemRef/Transforms/Passes.h>
 
 #include <mlir/IR/Builders.h>
 #include <mlir/IR/BuiltinAttributes.h>
@@ -76,14 +82,76 @@ struct UpmemInferencePlugin : cinm::InferencePlugin {
 
   static std::unique_ptr<PassManager> buildLoweringPipeline(MLIRContext *ctx) {
     auto pm = std::make_unique<PassManager>(ctx);
+
+    // Step 1: tiling
     pm->addPass(cinm::createCinmTilingPass());
+    pm->addPass(cinm::createCinmIsolateComputePass());
+    // Fully unroll single-iteration loops produced by tiling.
+    pm->addPass(affine::createLoopUnrollPass(1, /*unrollUpToFactor=*/true));
+    pm->addPass(createCanonicalizerPass());
+    pm->addPass(cinm::createCinmDeisolateComputeBlocks());
+
+    // Step 2: cinm → cnm
     pm->addPass(cinm::createConvertTiledCinmToCnmPass());
+    pm->addPass(createCanonicalizerPass());
     pm->addPass(cnm::createCnmHoistWorkgroupsPass());
     pm->addPass(createCanonicalizerPass());
     pm->addPass(createCSEPass());
-    pm->addPass(cnm::createConvertCnmToUPMEMPass({}));
+
+    // Step 3: bufferize
+    pm->addPass(bufferization::createEmptyTensorEliminationPass());
+    pm->addPass(createCSEPass());
+    {
+      bufferization::OneShotBufferizePassOptions opts;
+      opts.bufferizeFunctionBoundaries = true;
+      opts.functionBoundaryTypeConversion =
+          bufferization::LayoutMapOption::IdentityLayoutMap;
+      pm->addPass(bufferization::createOneShotBufferizePass(opts));
+    }
+    pm->addPass(createCSEPass());
+    pm->addPass(createCanonicalizerPass());
+    pm->addPass(createConvertLinalgToAffineLoopsPass());
+    pm->addPass(bufferization::createBufferLoopHoistingPass());
+    pm->addPass(bufferization::createBufferHoistingPass());
     pm->addPass(createCanonicalizerPass());
     pm->addPass(createCSEPass());
+    {
+      bufferization::BufferResultsToOutParamsPassOptions outOpts;
+      outOpts.hoistStaticAllocs = true;
+      pm->addPass(bufferization::createBufferResultsToOutParamsPass(outOpts));
+    }
+    pm->addPass(createCanonicalizerPass());
+    pm->addPass(createCSEPass());
+
+    // Step 4: affine opts
+    pm->addPass(bufferization::createPromoteBuffersToStackPass());
+    pm->addPass(memref::createFoldMemRefAliasOpsPass());
+    pm->addPass(createCanonicalizerPass());
+    pm->addPass(affine::createLoopFusionPass());
+    pm->addPass(createSROA());
+    pm->addPass(createCanonicalizerPass());
+    pm->addPass(affine::createAffineScalarReplacementPass());
+    pm->addPass(createLoopInvariantCodeMotionPass());
+    pm->addPass(affine::createAffineLoopInvariantCodeMotionPass());
+    pm->addPass(createSROA());
+    pm->addPass(affine::createAffineScalarReplacementPass());
+    pm->addPass(createCanonicalizerPass());
+    pm->addPass(createCSEPass());
+
+    // Step 5: lower affine to SCF
+    pm->addPass(affine::createLoopUnrollPass(4));
+    pm->addPass(createLowerAffinePass());
+    pm->addPass(bufferization::createBufferLoopHoistingPass());
+    pm->addPass(bufferization::createBufferHoistingPass());
+    pm->addPass(createCanonicalizerPass());
+    pm->addPass(createCSEPass());
+
+    // Step 6: cnm → upmem
+    pm->addPass(cnm::createConvertCnmToUPMEMPass({}));
+    pm->addPass(createCSEPass());
+    pm->addPass(createUPMEMDedupKernelsPass());
+    pm->addPass(createCSEPass());
+
     return pm;
   }
 
