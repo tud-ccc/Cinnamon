@@ -39,8 +39,10 @@ $(IR_PREFIX).2.cnm.mlir: $(IR_PREFIX).1.tiled.mlir
 # 				  --convert-linalg-to-affine-loops --buffer-loop-hoisting --buffer-hoisting --canonicalize --cse > $@
 
 # $(IR_PREFIX).3.cnm.affine.mlir: $(IR_PREFIX).1c.cnm.affine.mlir
+## --one-shot-bufferize='bufferize-function-boundaries function-boundary-type-conversion=identity-layout-map' 
+
 $(IR_PREFIX).3.cnm.affine.mlir: $(IR_PREFIX).2.cnm.mlir
-	$(CINM_OPT) $< --eliminate-empty-tensors --cse --one-shot-bufferize='bufferize-function-boundaries function-boundary-type-conversion=identity-layout-map'  \
+	$(CINM_OPT) $< --eliminate-empty-tensors --cse \
 					--cse --canonicalize --convert-linalg-to-affine-loops --buffer-loop-hoisting --buffer-hoisting --canonicalize --cse --buffer-results-to-out-params=hoist-static-allocs \
 				   --canonicalize --cse > $@
 
