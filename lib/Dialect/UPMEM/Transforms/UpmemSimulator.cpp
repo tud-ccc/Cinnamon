@@ -5,9 +5,11 @@
 #include "cinm-mlir/Dialect/Cnm/IR/CnmOps.h"
 #include "cinm-mlir/Dialect/Cnm/IR/CnmTypes.h"
 
+#include <llvm/Support/Casting.h>
 #include <mlir/Dialect/Affine/IR/AffineOps.h>
 #include <mlir/IR/BuiltinOps.h>
 #include <mlir/IR/BuiltinTypeInterfaces.h>
+#include <mlir/IR/BuiltinTypes.h>
 #include <mlir/IR/Operation.h>
 
 namespace mlir::upmem {
@@ -16,7 +18,7 @@ namespace {
 
 // Return the UPMEM accelerator attribute from a cnm buffer type, if present.
 static std::optional<UpmemAcceleratorAttr>
-upmemAccelOf(cnm::BufferType buf) {
+upmemAccelOf(cnm::WorkgroupType buf) {
   return llvm::dyn_cast_or_null<UpmemAcceleratorAttr>(buf.getAccelerator());
 }
 
@@ -33,6 +35,10 @@ static double elementBytes(Type elemTy) {
   if (elemTy.isIntOrFloat())
     return static_cast<double>(elemTy.getIntOrFloatBitWidth()) / 8.0;
   return 4.0; // conservative fallback
+}
+
+static double transferCost(double numBytes, int numRanks) {
+  return numBytes / 1024 / numRanks;
 }
 
 // Forward declaration.
@@ -59,22 +65,21 @@ static double costOfOp(Operation &op) {
     auto inputTy = scatterOp.getInput().getType();
     double bytes = static_cast<double>(staticElementCount(inputTy)) *
                    elementBytes(inputTy.getElementType());
-    double numRanks = 1.0;
-    if (auto accel = upmemAccelOf(scatterOp.getBuffer().getType()))
-      numRanks = static_cast<double>(accel->getNumRanks());
-    return bytes / numRanks;
+    int numRanks = 1;
+    if (auto accel = upmemAccelOf(scatterOp.getWg().getType()))
+      numRanks = accel->getNumRanks();
+    return transferCost(bytes, numRanks);
   }
 
   // ── cnm.gather ─────────────────────────────────────────────────────────────
   if (auto gatherOp = dyn_cast<cnm::GatherOp>(&op)) {
-    auto outputTy =
-        llvm::cast<ShapedType>(gatherOp.getOutputBuf().getType());
+    auto outputTy = llvm::cast<ShapedType>(gatherOp.getOutputBuf().getType());
     double bytes = static_cast<double>(staticElementCount(outputTy)) *
                    elementBytes(outputTy.getElementType());
-    double numRanks = 1.0;
-    if (auto accel = upmemAccelOf(gatherOp.getBuffer().getType()))
-      numRanks = static_cast<double>(accel->getNumRanks());
-    return bytes / numRanks;
+    int numRanks = 1;
+    if (auto accel = upmemAccelOf(gatherOp.getWg().getType()))
+      numRanks = accel->getNumRanks();
+    return transferCost(bytes, numRanks);
   }
 
   // ── cnm.launch ─────────────────────────────────────────────────────────────
@@ -82,16 +87,15 @@ static double costOfOp(Operation &op) {
   // Approximate the kernel cost as a fixed constant divided by the number of
   // tasklets (more tasklets → faster per-DPU execution).
   if (auto launchOp = dyn_cast<cnm::LaunchOp>(&op)) {
-    double tasklets = 1.0;
-    // Infer the accelerator from the first buffer input, if any.
-    for (auto input : launchOp.getInputs()) {
-      if (auto bufTy = dyn_cast<cnm::BufferType>(input.getType())) {
-        if (auto accel = upmemAccelOf(bufTy))
-          tasklets = static_cast<double>(accel->getNumTaskletsPerDpu());
-        break;
+    if (auto acc = upmemAccelOf(launchOp.getWg().getType())) {
+      double cost = 1;
+      for (auto buf : launchOp.getBody().getArguments()) {
+        if (auto mr = llvm::dyn_cast_or_null<MemRefType>(buf.getType())) {
+          cost *= mr.getNumElements();
+        }
       }
+      return cost / static_cast<double>(acc->getNumTaskletsPerDpu());
     }
-    return 1000.0 / tasklets;
   }
 
   // ── default: recurse into sub-regions and charge 1 per leaf op ─────────────
