@@ -36,7 +36,8 @@ def UpmemInferAcceleratorPass : Pass<"upmem-infer-accelerator", "ModuleOp"> {
     "mlir::affine::AffineDialect",
     "mlir::bufferization::BufferizationDialect",
     "mlir::linalg::LinalgDialect",
-    "mlir::tensor::TensorDialect"
+    "mlir::tensor::TensorDialect",
+    "mlir::vector::VectorDialect"
   ];
   let options = [
     Option<"maxEvals", "max-evals", "int", "50",

@@ -21,6 +21,11 @@ LINK_LIBS PUBLIC
     MLIRAffineDialect
     MLIRCinmToCnm
     MLIRCnmToUPMEM
+    MLIRBufferizationTransforms
+    MLIRAffineTransforms
+    MLIRMemRefTransforms
+    MLIRAffineToStandard
+    MLIRLinalgToStandard
 )
 
 target_link_libraries(UPMEMTransforms PRIVATE dlib)
