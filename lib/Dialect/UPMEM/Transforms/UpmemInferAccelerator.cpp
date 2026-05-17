@@ -195,17 +195,13 @@ struct UpmemInferencePlugin : cinm::InferencePlugin {
       for (unsigned d = 0; d < dimSizes.size(); ++d) {
         StringRef paramName = nameInventor.getUniqueName();
 
-        int64_t maxFactor =
-            dimSizes[d] == mlir::ShapedType::kDynamic ? 1024 : dimSizes[d];
-
-        int64_t hiExp = 0;
-        while ((int64_t(1) << (hiExp + 1)) <= maxFactor)
-          ++hiExp;
-
-        auto searchParm = cinm::makePow2Range(paramName.str(), 0, hiExp);
-        if (!ShapedType::isDynamic(dimSizes[d]))
+        cinm::SearchParam searchParm;
+        if (ShapedType::isDynamic(dimSizes[d])) {
+          searchParm = cinm::makePow2Range(paramName, 0, 10);
+        } else {
+          searchParm = cinm::makeRange(paramName, 1, dimSizes[d]);
           searchParm.keepDivisorsOf(dimSizes[d]);
-
+        }
         tilingFactors.emplace_back(std::move(searchParm));
         paramNames.push_back(paramName);
       }
@@ -232,7 +228,7 @@ struct UpmemInferencePlugin : cinm::InferencePlugin {
               if (mv % (r * d * t) != 0 || kv % (r * d) != 0)
                 return false;
               auto wm = mv / (r * d * t);
-              auto wk = kv / (r * d);
+              auto wk = kv / (r * d * t);
               LLVM_DEBUG(llvm::dbgs() << "[cinm-inference]   - constraint: WM="
                                       << wm << ", WK=" << wk << "\n");
               return wk * (wm + 2) <= wramLevel.getSizeInElements(eltTy);
