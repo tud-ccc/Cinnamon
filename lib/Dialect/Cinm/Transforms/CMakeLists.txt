@@ -1,5 +1,3 @@
-add_subdirectory(AcceleratorInference)
-
 add_mlir_dialect_library(CinmTransforms
     AssignPlatformsPass.cpp
     InferTileSizesPass.cpp
@@ -10,7 +8,6 @@ add_mlir_dialect_library(CinmTransforms
     CleanupLinalgPass.cpp
     ComputeTransforms.cpp
     CinmTilingImplementations.cpp
-    CostModel.cpp
     DecomposeAccumulations.cpp
     DecomposeGemmToGemv.cpp
     GemvMinWrite.cpp
@@ -33,6 +30,3 @@ LINK_LIBS PUBLIC
     MLIRTransformDialectUtils
     CinmIR
 )
-
-target_link_libraries(CinmTransforms PRIVATE pybind11::embed dlib)
-include_directories(SYSTEM ${CMAKE_SOURCE_DIR}/third-party/dlib)

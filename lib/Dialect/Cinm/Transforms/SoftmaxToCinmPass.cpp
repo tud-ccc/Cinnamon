@@ -37,12 +37,11 @@ struct SoftmaxToCinmPattern : OpConversionPattern<linalg::SoftmaxOp> {
     Value innerInput = compute.getBodyArguments()[0];
 
     rewriter.setInsertionPointToEnd(&compute.getBody().emplaceBlock());
-    const Value max = cinm::ReduceOp::create(rewriter, 
-        loc, inputType.getElementType(),
+    const Value max = cinm::ReduceOp::create(
+        rewriter, loc, inputType.getElementType(),
         isFloat ? ReduceMethod::MAXNUMF : ReduceMethod::MAXSI, innerInput, 0);
-    const Value t = rewriter
-                        .create<cinm::ElementwiseOp>(loc, ElementwiseKind::Sub,
-                                                     innerInput, max)
+    const Value t = cinm::ElementwiseOp::create(
+                        rewriter, loc, ElementwiseKind::Sub, innerInput, max)
                         .getResult();
     const SmallVector<Type, 1> types{RankedTensorType::get(
         inputType.getShape(), inputType.getElementType())};
@@ -50,8 +49,8 @@ struct SoftmaxToCinmPattern : OpConversionPattern<linalg::SoftmaxOp> {
     const Value e =
         cinm::ElementwiseOp::create(rewriter, loc, ElementwiseKind::Exp, t)
             .getResult();
-    const Value s = cinm::ReduceOp::create(rewriter, 
-        loc, inputType.getElementType(), ReduceMethod::ADD, e, 0);
+    const Value s = cinm::ReduceOp::create(
+        rewriter, loc, inputType.getElementType(), ReduceMethod::ADD, e, 0);
     const Value result =
         cinm::ElementwiseOp::create(rewriter, loc, ElementwiseKind::Div, e, s)
             .getResult();

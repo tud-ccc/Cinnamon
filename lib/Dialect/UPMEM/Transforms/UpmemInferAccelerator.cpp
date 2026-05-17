@@ -3,7 +3,7 @@
 #include "cinm-mlir/Dialect/Cinm/IR/CinmAttributes.h"
 #include "cinm-mlir/Dialect/Cinm/IR/CinmBase.h"
 #include "cinm-mlir/Dialect/Cinm/IR/CinmOps.h"
-#include "cinm-mlir/Dialect/Cinm/Transforms/AcceleratorInference.h"
+#include "cinm-mlir/Dialect/Cinm/AcceleratorInference/AcceleratorInference.h"
 #include "cinm-mlir/Dialect/Cinm/Transforms/CinmTransforms.h"
 #include "cinm-mlir/Dialect/Cinm/Transforms/Passes.h"
 #include "cinm-mlir/Dialect/Cnm/Transforms/Passes.h"
