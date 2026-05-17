@@ -1,3 +1,6 @@
+find_package(PkgConfig REQUIRED)
+pkg_check_modules(mlpack REQUIRED IMPORTED_TARGET mlpack)
+
 add_mlir_dialect_library(CinmAcceleratorInference
     AcceleratorInference.cpp
     BananasSearch.cpp
@@ -18,6 +21,4 @@ LINK_LIBS PUBLIC
     CinmUtils
 )
 
-target_link_libraries(CinmAcceleratorInference PRIVATE pybind11::embed)
-target_compile_definitions(CinmAcceleratorInference PRIVATE
-    BANANAS_BRIDGE_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(CinmAcceleratorInference PRIVATE PkgConfig::mlpack)
