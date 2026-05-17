@@ -34,6 +34,7 @@
 #include <mlir/IR/BuiltinAttributes.h>
 #include <mlir/IR/BuiltinOps.h>
 #include <mlir/IR/BuiltinTypeInterfaces.h>
+#include <mlir/IR/Diagnostics.h>
 #include <mlir/IR/OpImplementation.h>
 #include <mlir/IR/PatternMatch.h>
 #include <mlir/IR/SymbolTable.h>
@@ -266,13 +267,24 @@ struct UpmemInferencePlugin : cinm::InferencePlugin {
     if (!pipeline)
       pipeline = buildPipeline(ctx);
 
-    LLVM_DEBUG(llvm::dbgs() << "[cinm-inference]   running pipeline\n");
-    if (mlir::failed(pipeline->run(trial.module.get()))) {
-      LLVM_DEBUG(llvm::dbgs() << "[cinm-inference]   pipeline failed\n";
-                 trial.module->print(llvm::dbgs());
-                 llvm::dbgs() << "\n========\n";);
+    {
+      // This handler suppresses errors caused during trials, as they are
+      // normal.
+      // TODO option to enable it.
+      ScopedDiagnosticHandler scopedHandler(ctx, [](Diagnostic &diag) {
+        LLVM_DEBUG(llvm::dbgs()
+                       << "[cinm-inference]   pipeline failed:\n      ";
+                   diag.print(llvm::dbgs()); llvm::dbgs() << "\n";);
 
-      return emitSilenceableFailure(loc, "Pipeline failed");
+        return success();
+      });
+      LLVM_DEBUG(llvm::dbgs() << "[cinm-inference]   running pipeline\n");
+      if (mlir::failed(pipeline->run(trial.module.get()))) {
+        LLVM_DEBUG(trial.module->print(llvm::dbgs());
+                   llvm::dbgs() << "\n========\n";);
+
+        return emitSilenceableFailure(loc, "Pipeline failed");
+      }
     }
 
     // computeBlock is gone after the pipeline; simulate the lowered module.
