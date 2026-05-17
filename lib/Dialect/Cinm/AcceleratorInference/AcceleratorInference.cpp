@@ -1,4 +1,4 @@
-#include "cinm-mlir/Dialect/Cinm/Transforms/AcceleratorInference.h"
+#include "cinm-mlir/Dialect/Cinm/AcceleratorInference/AcceleratorInference.h"
 #include "cinm-mlir/Dialect/Cinm/IR/CinmAttributes.h"
 #include "cinm-mlir/Dialect/Cinm/IR/CinmOps.h"
 
