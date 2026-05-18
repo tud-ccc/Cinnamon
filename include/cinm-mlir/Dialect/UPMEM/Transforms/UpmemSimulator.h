@@ -17,6 +17,8 @@ struct UpmemSimulator {
 
 /// Simple baseline: weighted op count over the UPMEM dialect IR.
 /// Assigns higher weight to data-transfer ops and kernel launches.
-std::unique_ptr<UpmemSimulator> createOpCountSimulator();
+/// When annotateOpCosts is true, each visited op is tagged with a
+/// 'upmem.sim_cost' FloatAttr containing its individual simulated cost.
+std::unique_ptr<UpmemSimulator> createOpCountSimulator(bool annotateOpCosts = false);
 
 } // namespace mlir::upmem

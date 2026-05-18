@@ -56,7 +56,11 @@ def UpmemInferAcceleratorPass : Pass<"upmem-infer-accelerator", "ModuleOp"> {
     Option<"hidden", "hidden", "int", "64",
            "Hidden layer width of each ensemble MLP">,
     Option<"depth", "depth", "int", "2",
-           "Number of hidden layers in each ensemble MLP">
+           "Number of hidden layers in each ensemble MLP">,
+    // UPMEM-specific options
+    Option<"annotateOpCosts", "annotate-op-costs", "bool", "false",
+           "Annotate each op in the committed region with its simulated cost "
+           "via the 'upmem.sim_cost' attribute">
   ];
 }
 

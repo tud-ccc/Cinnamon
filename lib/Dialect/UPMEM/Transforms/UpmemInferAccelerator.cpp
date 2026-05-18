@@ -145,17 +145,17 @@ struct UpmemInferencePlugin : cinm::InferencePlugin {
     pm->addPass(bufferization::createEmptyTensorEliminationPass());
     pm->addPass(createCSEPass());
     pm->addPass(createCanonicalizerPass());
-    // {
-    //   bufferization::OneShotBufferizePassOptions opts;
-    //   opts.unknownTypeConversion =
-    //   bufferization::LayoutMapOption::IdentityLayoutMap;
-    //   // opts.bufferizeFunctionBoundaries = true;
-    //   // opts.functionBoundaryTypeConversion =
-    //   //     bufferization::LayoutMapOption::IdentityLayoutMap;
-    //   pm->addPass(bufferization::createOneShotBufferizePass(opts));
-    // }
-    // pm->addPass(createCSEPass());
-    // pm->addPass(createCanonicalizerPass());
+    {
+      bufferization::OneShotBufferizePassOptions opts;
+      opts.unknownTypeConversion =
+      bufferization::LayoutMapOption::IdentityLayoutMap;
+      // opts.bufferizeFunctionBoundaries = true;
+      // opts.functionBoundaryTypeConversion =
+      //     bufferization::LayoutMapOption::IdentityLayoutMap;
+      pm->addPass(bufferization::createOneShotBufferizePass(opts));
+    }
+    pm->addPass(createCSEPass());
+    pm->addPass(createCanonicalizerPass());
     // pm->addPass(createConvertLinalgToAffineLoopsPass());
     // pm->addPass(bufferization::createBufferLoopHoistingPass());
     // pm->addPass(bufferization::createBufferHoistingPass());
@@ -390,6 +390,7 @@ void ConstraintEditor::addDynamicConstraint(
 /// provides a place to add UPMEM-specific knobs in the future.
 struct UpmemInferenceOptions {
   cinm::InferenceOptions inference;
+  bool annotateOpCosts = false;
 };
 
 struct UpmemInferAcceleratorPass
@@ -407,6 +408,7 @@ struct UpmemInferAcceleratorPass
     o.nEnsemble = nEnsemble;
     o.hidden = hidden;
     o.depth = depth;
+    upmemOpts.annotateOpCosts = annotateOpCosts;
     return upmemOpts;
   }
 
