@@ -5,13 +5,16 @@
 #include <cinm-mlir/Utils/Scheduling/SchedulingSupport.h>
 #include <cstdint>
 #include <functional>
+#include <initializer_list>
 #include <llvm/ADT/SmallVector.h>
 #include <llvm/ADT/StringRef.h>
+#include <llvm/Support/raw_ostream.h>
 #include <mlir/IR/BuiltinOps.h>
 #include <mlir/IR/OwningOpRef.h>
 #include <mlir/Support/LogicalResult.h>
 #include <string>
 #include <variant>
+#include <vector>
 
 namespace mlir {
 class Operation;
@@ -31,7 +34,7 @@ struct IntRange {
 
 /// Explicit discrete value set.
 struct ValueList {
-  llvm::SmallVector<int64_t> values;
+  std::vector<int64_t> values;
 };
 
 /// One dimension of the search space.
@@ -53,10 +56,10 @@ struct SearchParam {
 /// Use ConfigSpace::addDim to register the result.
 SearchParam makeRange(StringRef name, int64_t lo, int64_t hi, int64_t step = 1);
 SearchParam makePow2Range(StringRef name, int64_t loExp, int64_t hiExp);
-SearchParam makeValues(StringRef name, llvm::SmallVector<int64_t> values);
+SearchParam makeValues(StringRef name, std::vector<int64_t> values);
 
 /// A concrete assignment — one int64_t per SearchParam, in ConfigSpace order.
-using Configuration = llvm::SmallVector<int64_t>;
+using Configuration = std::vector<int64_t>;
 
 struct ConfigSpace;
 struct ConfWrapper;
@@ -66,20 +69,16 @@ using Constraint = std::function<bool(const ConfWrapper &)>;
 
 /// Ordered collection of SearchParams that defines the search space.
 struct ConfigSpace {
-  llvm::SmallVector<SearchParam> params;
-  llvm::SmallVector<Constraint> constraints;
+  std::vector<SearchParam> params;
+  std::vector<Constraint> constraints;
 
   /// Add a fully-constructed SearchParam; returns its index in the space.
   int64_t addDim(SearchParam &&param) {
     int64_t idx = params.size();
-    params.emplace_back(std::move(param));
+    params.push_back(std::move(param));
     return idx;
   }
-  /// Convenience wrappers — construct and add in one call.
-  int64_t addRange(std::string name, int64_t lo, int64_t hi, int64_t step = 1);
-  /// Add a ValueList of consecutive powers of 2: {2^loExp, ..., 2^hiExp}.
-  int64_t addPow2Range(std::string name, int64_t loExp, int64_t hiExp);
-  int64_t addValues(std::string name, llvm::SmallVector<int64_t> values);
+
   /// Register a predicate; configurations for which any constraint returns
   /// false are skipped and never passed to the plugin for evaluation.
   void addConstraint(Constraint constraint);
@@ -94,6 +93,8 @@ struct ConfigSpace {
   int64_t get(const Configuration &config, llvm::StringRef name) const;
   /// Return true iff all registered constraints accept this configuration.
   bool isValid(const Configuration &config) const;
+
+  void dump(llvm::raw_ostream &, const Configuration &) const;
 };
 
 /// Wrap a space and config for nicer interface.
@@ -107,6 +108,11 @@ struct ConfWrapper {
   int64_t operator[](StringRef name) const { return space.get(conf, name); }
   int64_t operator[](int64_t ix) const { return conf[ix]; }
 };
+
+inline raw_ostream &operator<<(raw_ostream &os, const ConfWrapper &se) {
+  se.space.dump(os, se.conf);
+  return os;
+}
 
 /// Per-trial context owned by the framework and passed to plugin callbacks.
 /// Before evaluate() runs the pipeline, computeBlock is a live clone inside
@@ -160,31 +166,17 @@ struct InferencePlugin {
 // Core framework API
 // ===----------------------------------------------------------------------===//
 
-/// Build the configuration space by calling plugin.initializeSpace on the
-/// reference clone.
-ConfigSpace buildConfigSpace(cinm::ComputeBlockOp refClone,
-                             InferencePlugin &plugin);
-
 struct InferenceOptions {
   /// Total number of valid evaluations (LHS init + surrogate-guided).
   int maxEvals = 50;
   /// Number of configurations evaluated in the LHS initialisation phase
   /// before the surrogate model takes over.  Must be ≤ maxEvals.
   int nInit = 10;
+
+  int rngSeed = 42;
 };
 
-/// Run Bayesian optimization over the config space.
-/// Returns the TrialInfo from the winning evaluation — its module is
-/// fully lowered and ready for commitBestCandidate.
-utils::Maybe<TrialInfo> runInference(mlir::ModuleOp refModule,
-                                     cinm::ComputeBlockOp refClone,
-                                     InferencePlugin &plugin,
-                                     const ConfigSpace &space,
-                                     const InferenceOptions &opts = {});
-
-/// Full pipeline: clone the parent module into a sandbox → buildConfigSpace →
-/// runInference → commitBestCandidate on the original.
-/// The original is only modified by commitBestCandidate at the very end.
+/// Entry point for Bayesian inference.
 DiagnosedSilenceableFailure
 inferAcceleratorConfig(cinm::ComputeBlockOp computeOp, InferencePlugin &plugin,
                        const InferenceOptions &opts = {});
