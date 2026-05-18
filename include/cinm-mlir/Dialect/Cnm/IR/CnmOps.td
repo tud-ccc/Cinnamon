@@ -86,6 +86,9 @@ def ScatterOp: Cnm_Op<"scatter", [InferWorkgroupTypeFromBuffer<"buffer", "wg">]>
             auto bufShape = getBuffer().getType().getShape();
             return bufShape.empty() ? 1 : mlir::computeProduct(bufShape);
         }
+        ShapedType getHostType() {
+          return getInput().getType();
+        }
     }];
 
     let hasVerifier = 1;
@@ -108,6 +111,11 @@ def GatherOp: Cnm_Op<"gather", [InferWorkgroupTypeFromBuffer<"buffer", "wg">, In
         int64_t getTransferCountInItems() {
             auto bufShape = getBuffer().getType().getShape();
             return bufShape.empty() ? 1 : mlir::computeProduct(bufShape);
+        }
+        ShapedType getHostType() {
+          if (getOutput())
+            return getOutput().getType();
+          return getOutputBuf().getType();
         }
     }];
 

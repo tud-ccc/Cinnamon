@@ -1,17 +1,25 @@
 #include "cinm-mlir/Dialect/UPMEM/Transforms/UpmemSimulator.h"
+#include "cinm-mlir/Dialect/Cinm/IR/CinmOps.h"
 #include "cinm-mlir/Dialect/UPMEM/IR/UPMEMAttributes.h"
+#include "cinm-mlir/Dialect/UPMEM/IR/UPMEMOps.h"
 #include "cinm-mlir/Utils/Scheduling/SchedulingSupport.h"
 
 #include "cinm-mlir/Dialect/Cnm/IR/CnmOps.h"
 #include "cinm-mlir/Dialect/Cnm/IR/CnmTypes.h"
 
+#include <algorithm>
+#include <llvm/ADT/APInt.h>
+#include <llvm/ADT/TypeSwitch.h>
 #include <llvm/Support/Casting.h>
 #include <mlir/Dialect/Affine/IR/AffineOps.h>
+#include <mlir/Dialect/Arith/IR/Arith.h>
+#include <mlir/Dialect/MemRef/IR/MemRef.h>
 #include <mlir/IR/BuiltinAttributes.h>
 #include <mlir/IR/BuiltinOps.h>
 #include <mlir/IR/BuiltinTypeInterfaces.h>
 #include <mlir/IR/BuiltinTypes.h>
 #include <mlir/IR/Operation.h>
+#include <mlir/Interfaces/LoopLikeInterface.h>
 
 namespace mlir::upmem {
 
@@ -48,70 +56,82 @@ static constexpr llvm::StringLiteral kSimCostAttr = "upmem.sim_cost";
 static double costOfRegion(Region &region, bool annotate);
 
 static double costOfOp(Operation &op, bool annotate) {
-  double cost;
-
-  // ── affine.for ─────────────────────────────────────────────────────────────
-  if (auto forOp = dyn_cast<affine::AffineForOp>(&op)) {
-    int64_t tripCount = 1;
-    if (forOp.hasConstantBounds()) {
-      int64_t lb = forOp.getConstantLowerBound();
-      int64_t ub = forOp.getConstantUpperBound();
-      int64_t step = forOp.getStepAsInt();
-      if (step > 0 && ub > lb)
-        tripCount = (ub - lb + step - 1) / step;
-    }
-    cost = costOfRegion(forOp->getRegion(0), annotate) *
-           static_cast<double>(tripCount);
-  }
-
-  // ── cnm.scatter ────────────────────────────────────────────────────────────
-  // Cost proportional to total bytes transferred divided by the number of
-  // ranks that transfer data in parallel.
-  else if (auto scatterOp = dyn_cast<cnm::ScatterOp>(&op)) {
-    auto inputTy = scatterOp.getInput().getType();
-    double bytes = static_cast<double>(staticElementCount(inputTy)) *
-                   elementBytes(inputTy.getElementType());
-    int numRanks = 1;
-    if (auto accel = upmemAccelOf(scatterOp.getWg().getType()))
-      numRanks = accel->getNumRanks();
-    cost = transferCost(bytes, numRanks);
-  }
-
-  // ── cnm.gather ─────────────────────────────────────────────────────────────
-  else if (auto gatherOp = dyn_cast<cnm::GatherOp>(&op)) {
-    auto outputTy = llvm::cast<ShapedType>(gatherOp.getOutputBuf().getType());
-    double bytes = static_cast<double>(staticElementCount(outputTy)) *
-                   elementBytes(outputTy.getElementType());
-    int numRanks = 1;
-    if (auto accel = upmemAccelOf(gatherOp.getWg().getType()))
-      numRanks = accel->getNumRanks();
-    cost = transferCost(bytes, numRanks);
-  }
-
-  // ── cnm.launch ─────────────────────────────────────────────────────────────
-  // All DPUs execute in parallel; within each DPU tasklets share execution.
-  // Approximate the kernel cost as a fixed constant divided by the number of
-  // tasklets (more tasklets → faster per-DPU execution).
-  else if (auto launchOp = dyn_cast<cnm::LaunchOp>(&op)) {
-    if (auto acc = upmemAccelOf(launchOp.getWg().getType())) {
-      double c = 1;
-      for (auto buf : launchOp.getBody().getArguments()) {
-        if (auto mr = llvm::dyn_cast_or_null<MemRefType>(buf.getType())) {
-          c *= mr.getNumElements();
-        }
-      }
-      cost = c / static_cast<double>(acc->getNumTaskletsPerDpu());
-    } else {
-      cost = 1.0;
-    }
-  }
-
-  // ── default: recurse into sub-regions and charge 1 per leaf op ─────────────
-  else {
-    cost = op.getNumRegions() > 0 ? 0.0 : 1.0;
-    for (auto &region : op.getRegions())
-      cost += costOfRegion(region, annotate);
-  }
+  double cost =
+      llvm::TypeSwitch<Operation *, double>(&op)
+          // ── loops
+          // ───────────────────────────────────────────────────────────
+          .Case([&](LoopLikeOpInterface forOp) {
+            int64_t tripCount = 8;
+            if (auto tc = forOp.getStaticTripCount())
+              tripCount = tc->getZExtValue();
+            return costOfRegion(*forOp.getLoopRegions()[0], annotate) *
+                   static_cast<double>(tripCount);
+          })
+          // ── cnm.scatter / cnm.gather ─────────────────────────────────────
+          .Case<cnm::ScatterOp, cnm::GatherOp>([](auto scatterOp) {
+            auto hostTy = scatterOp.getHostType();
+            double bytes = static_cast<double>(staticElementCount(hostTy)) *
+                           elementBytes(hostTy.getElementType());
+            int numRanks = 1;
+            if (auto accel = upmemAccelOf(scatterOp.getWg().getType()))
+              numRanks = accel->getNumRanks();
+            return transferCost(bytes, numRanks);
+          })
+          // ── upmem.scatter / upmem.gather
+          // ───────────────────────────────────── Same transfer-cost formula as
+          // cnm equivalents: total bytes moved across the bus divided by the
+          // rank-level parallelism.
+          .Case<ScatterOp, GatherOp>([](auto xferOp) {
+            auto hier = llvm::cast<DeviceHierarchyType>(
+                xferOp.getHierarchy().getType());
+            double totalBytes =
+                static_cast<double>(xferOp.getDpuBufferSizeInBytes()) *
+                hier.getNumRanks() * hier.getNumDpusPerRank();
+            return transferCost(totalBytes, hier.getNumRanks());
+          })
+          // ── upmem.local_transfer
+          // ───────────────────────────────────────────── Models the DMA
+          // latency for WRAM↔MRAM copies: ~36 cycles per 2 KiB chunk, with a
+          // minimum of one chunk for small transfers.
+          .Case<LocalTransferOp>([](auto xferOp) {
+            auto srcTy = llvm::cast<MemRefType>(xferOp.getSource().getType());
+            double bytes = static_cast<double>(staticElementCount(srcTy)) *
+                           elementBytes(srcTy.getElementType());
+            return 36.0 * std::max(1.0, bytes / 2048.0);
+          })
+          // ── upmem.wait_for
+          // ──────────────────────────────────────────────────── Estimates
+          // kernel execution cost by recursing into the DPU program body, then
+          // dividing by the number of tasklets (intra-DPU parallelism).
+          .Case<WaitForOp>([&](auto waitForOp) -> double {
+            auto dpuProgram = waitForOp.getDpuProgram();
+            if (!dpuProgram)
+              return 1.0;
+            auto hier = llvm::cast<DeviceHierarchyType>(
+                waitForOp.getDpuSet().getType());
+            return costOfRegion(dpuProgram.getBody(), annotate) /
+                   hier.getNumTaskletsPerDpu();
+          })
+          .Case<cnm::LaunchOp>([](auto launchOp) -> double {
+            if (auto acc = upmemAccelOf(launchOp.getWg().getType())) {
+              double c = 1;
+              for (auto buf : launchOp.getBody().getArguments())
+                if (auto mr = llvm::dyn_cast_or_null<MemRefType>(buf.getType()))
+                  c *= mr.getNumElements();
+              return c / acc->getNumTaskletsPerDpu();
+            }
+            return 1.0;
+          })
+          .Case<arith::ConstantOp, upmem::StaticAllocOp, cinm::YieldOp,
+                memref::SubViewOp>([](auto) { return 0.0; })
+          // ── default: recurse into sub-regions and charge 1 per leaf op
+          // ───────────
+          .Default([&](Operation *o) {
+            double c = o->getNumRegions() > 0 ? 0.0 : 1.0;
+            for (auto &region : o->getRegions())
+              c += costOfRegion(region, annotate);
+            return c;
+          });
 
   if (annotate)
     op.setAttr(kSimCostAttr,
