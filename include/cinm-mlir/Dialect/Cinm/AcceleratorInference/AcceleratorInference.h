@@ -42,6 +42,14 @@ struct SearchParam {
   std::string name;
   std::variant<IntRange, ValueList> domain;
 
+  SearchParam(const SearchParam &) = delete;
+  SearchParam(SearchParam &&) = default;
+  SearchParam(StringRef name, IntRange &&range)
+      : name(name.str()), domain(std::move(range)) {}
+  SearchParam(StringRef name, ValueList &&list)
+      : name(name.str()), domain(std::move(list)) {}
+  SearchParam &operator=(SearchParam &&o) = default;
+
   double dlo() const;
   double dhi() const;
   /// Number of distinct values this parameter can take.

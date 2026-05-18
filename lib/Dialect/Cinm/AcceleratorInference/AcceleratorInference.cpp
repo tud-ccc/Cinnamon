@@ -112,18 +112,18 @@ SearchParam &SearchParam::keepDivisorsOf(int64_t n) {
 
 SearchParam makeRange(llvm::StringRef name, int64_t lo, int64_t hi,
                       int64_t step) {
-  return {name.str(), IntRange{lo, hi, step}};
+  return SearchParam(name, IntRange{lo, hi, step});
 }
 
 SearchParam makePow2Range(llvm::StringRef name, int64_t loExp, int64_t hiExp) {
   std::vector<int64_t> vals;
   for (int64_t e = loExp; e <= hiExp; ++e)
     vals.push_back(int64_t(1) << e);
-  return {name.str(), ValueList{std::move(vals)}};
+  return SearchParam(name, ValueList{std::move(vals)});
 }
 
 SearchParam makeValues(llvm::StringRef name, std::vector<int64_t> values) {
-  return {name.str(), ValueList{std::move(values)}};
+  return SearchParam(name, ValueList{std::move(values)});
 }
 
 // ===----------------------------------------------------------------------===//

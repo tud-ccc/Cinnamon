@@ -39,6 +39,7 @@
 #include <mlir/IR/OpImplementation.h>
 #include <mlir/IR/PatternMatch.h>
 #include <mlir/IR/SymbolTable.h>
+#include <mlir/IR/ValueRange.h>
 #include <mlir/Interfaces/TilingInterface.h>
 #include <mlir/Pass/PassManager.h>
 #include <mlir/Support/LLVM.h>
@@ -86,7 +87,7 @@ public:
   ConstraintEditor(cinm::ConfigSpace &space, UpmemInferencePlugin *plugin,
                    cinm::SearchParam &r, cinm::SearchParam &d,
                    cinm::SearchParam &t,
-                   ArrayRef<cinm::SearchParam> &&tilingFactors,
+                   SmallVector<cinm::SearchParam> &&tilingFactors,
                    ArrayRef<int64_t> tiledDims, unsigned tfStart)
       : space(space), plugin(plugin), r(r), d(d), t(t),
         tilingFactors(std::move(tilingFactors)), tiledDimensions(tiledDims),
@@ -230,14 +231,12 @@ struct UpmemInferencePlugin : cinm::InferencePlugin {
       for (unsigned d = 0; d < dimSizes.size(); ++d) {
         StringRef paramName = nameInventor.getUniqueName();
 
-        cinm::SearchParam searchParm;
         if (ShapedType::isDynamic(dimSizes[d])) {
-          searchParm = cinm::makePow2Range(paramName, 0, 10);
+          tilingFactors.emplace_back(cinm::makePow2Range(paramName, 0, 10));
         } else {
-          searchParm = cinm::makeRange(paramName, 1, dimSizes[d]);
-          searchParm.keepDivisorsOf(dimSizes[d]);
+          tilingFactors.emplace_back(paramName, cinm::IntRange{1, dimSizes[d]})
+              .keepDivisorsOf(dimSizes[d]);
         }
-        tilingFactors.emplace_back(std::move(searchParm));
         paramNames.push_back(paramName);
       }
       auto firstDim = space.params.size();
