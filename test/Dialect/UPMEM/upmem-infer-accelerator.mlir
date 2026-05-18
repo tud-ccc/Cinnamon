@@ -1,4 +1,4 @@
-#upmem = #upmem.platform<type = v1A, dimensions = 1x1x24>
+#upmem = #upmem.platform<type = v1A, dimensions = 1x32x24>
 
 
 // func.func @gemv(%A: tensor<?x?xf32>, %x: tensor<?xf32>) -> tensor<?xf32> {
