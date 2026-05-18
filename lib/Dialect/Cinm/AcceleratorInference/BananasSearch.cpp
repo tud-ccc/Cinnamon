@@ -154,10 +154,15 @@ struct BananasEnsemble {
   }
 
   void fit(const arma::mat &X, const arma::mat &y, int epochs) {
-    yMean = arma::mean(arma::vectorise(y));
-    double s = arma::stddev(arma::vectorise(y));
+    // Train in log10 space: compresses wide cost ranges (e.g. 1e2–1e5) into
+    // ~3 units, making the landscape far smoother for the MLP to learn.
+    // log10 is monotone so the argmin is preserved — the surrogate still
+    // selects the lowest-cost candidate.
+    arma::mat yLog = arma::log10(y);
+    yMean = arma::mean(arma::vectorise(yLog));
+    double s = arma::stddev(arma::vectorise(yLog));
     yStd = (s > 1e-8) ? s : 1.0;
-    arma::mat yNorm = (y - yMean) / yStd;
+    arma::mat yNorm = (yLog - yMean) / yStd;
 
     size_t n = X.n_cols;
     for (size_t mi = 0; mi < models.size(); ++mi) {
@@ -187,6 +192,10 @@ struct BananasEnsemble {
       models[mi]->Predict(Xp, out);
       preds.row(mi) = out.row(0);
     }
+    // De-standardise back to log10 space. We intentionally do NOT exponentiate
+    // here: the acquisition function only needs correct ordering, which log10
+    // preserves, and exponentiating a mildly-off log prediction blows up errors
+    // by orders of magnitude in the original scale.
     arma::rowvec mu = arma::mean(preds, 0) * yStd + yMean;
     arma::rowvec sigma = arma::stddev(preds, 0, 0) * yStd;
     return {mu, sigma};
