@@ -79,6 +79,14 @@ struct ConfigSpace {
     return idx;
   }
 
+  std::pair<int64_t, int64_t> addDims(SmallVector<SearchParam> &&dims) {
+    int64_t start = params.size();
+    for (auto &dim : dims) {
+      params.push_back(std::move(dim));
+    }
+    return {start, params.size()};
+  }
+
   /// Register a predicate; configurations for which any constraint returns
   /// false are skipped and never passed to the plugin for evaluation.
   void addConstraint(Constraint constraint);
@@ -176,11 +184,11 @@ struct InferenceOptions {
   int rngSeed = 42;
 
   // Surrogate model (BANANAS) hyperparameters.
-  double kappa = 2.0;  ///< UCB exploration weight
-  int epochs = 200;    ///< Training epochs per ensemble member
-  int nEnsemble = 5;   ///< Number of MLP ensemble members
-  int hidden = 64;     ///< Hidden layer width
-  int depth = 2;       ///< Number of hidden layers
+  double kappa = 2.0; ///< UCB exploration weight
+  int epochs = 200;   ///< Training epochs per ensemble member
+  int nEnsemble = 5;  ///< Number of MLP ensemble members
+  int hidden = 64;    ///< Hidden layer width
+  int depth = 2;      ///< Number of hidden layers
 };
 
 /// Entry point for Bayesian inference.
