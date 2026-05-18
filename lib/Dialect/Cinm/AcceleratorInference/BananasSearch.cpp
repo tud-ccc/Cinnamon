@@ -12,6 +12,7 @@
 #include <numeric>
 #include <random>
 #include <unordered_set>
+#include <variant>
 
 #define DEBUG_TYPE "cinm-inference"
 
@@ -54,9 +55,8 @@ CandidatePool CandidatePool::sample(const ConfigSpace &space, size_t maxPool,
   arma::mat encoded(D, N);
   for (size_t i = 0; i < N; ++i) {
     for (size_t d = 0; d < D; ++d) {
-      double lo = space[d].dlo(), hi = space[d].dhi();
-      double val = static_cast<double>(configs[i][d]);
-      encoded(d, i) = (hi > lo) ? (val - lo) / (hi - lo) : 0.0;
+      auto &dim = space[d];
+      encoded(d, i) = dim.featurize(configs[i][d]);
     }
   }
 
@@ -167,8 +167,14 @@ struct BananasEnsemble {
           n, arma::distr_param(0, static_cast<int>(n) - 1));
       arma::mat Xb = X.cols(idx);
       arma::mat yb = yNorm.cols(idx);
-      size_t maxIter = static_cast<size_t>(epochs) * n;
-      ens::Adam opt(3e-3, 32, 0.9, 0.999, 1e-8, maxIter, 1e-7, true);
+      // ensmallen's maxIterations counts gradient updates, not epochs.
+      // Compute steps-per-epoch so the training budget scales with the dataset
+      // size, not with raw sample count (which caused ~100x overtraining
+      // before). Cap batchSize at n to avoid undefined behaviour when n < 32.
+      int batchSize = std::min<size_t>(32, n);
+      size_t stepsPerEpoch = (n + batchSize - 1) / batchSize;
+      size_t maxIter = static_cast<size_t>(epochs) * stepsPerEpoch;
+      ens::Adam opt(3e-3, batchSize, 0.9, 0.999, 1e-8, maxIter, 1e-7, true);
       models[mi]->Train(Xb, yb, opt);
     }
   }

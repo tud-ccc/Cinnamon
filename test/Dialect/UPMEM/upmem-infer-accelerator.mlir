@@ -1,4 +1,4 @@
-#upmem = #upmem.platform<type = v1A, dimensions = 40x64x24>
+#upmem = #upmem.platform<type = v1A, dimensions = 1x1x24>
 
 
 

@@ -185,7 +185,6 @@ struct UpmemInferencePlugin : cinm::InferencePlugin {
       funcs.addPass(affine::createAffineScalarReplacementPass());
       funcs.addPass(createCanonicalizerPass());
       funcs.addPass(createCSEPass());
-      funcs.addPass(affine::createLoopUnrollPass(4));
     }
     // Step 5: lower affine to SCF
     pm->addPass(createLowerAffinePass());
@@ -199,7 +198,11 @@ struct UpmemInferencePlugin : cinm::InferencePlugin {
     pm->addPass(createCSEPass());
     pm->addPass(createUPMEMDedupKernelsPass());
     pm->addPass(createCSEPass());
-
+    {
+      // This needs to apply after cnm->upmem bc of some assumptions we make there.
+      auto &funcs = pm->nest<func::FuncOp>();
+      funcs.addPass(affine::createLoopUnrollPass(4));
+    }
     return pm;
   }
 

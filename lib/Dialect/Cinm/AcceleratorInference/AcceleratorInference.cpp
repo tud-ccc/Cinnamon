@@ -6,6 +6,7 @@
 #include <cstddef>
 #include <cstdint>
 
+#include <iterator>
 #include <llvm/ADT/STLExtras.h>
 #include <llvm/ADT/SmallVector.h>
 #include <llvm/ADT/StringRef.h>
@@ -89,6 +90,21 @@ int64_t SearchParam::discretize(double v) const {
               std::clamp(static_cast<int64_t>(std::round(v)), int64_t(0),
                          static_cast<int64_t>(d.values.size() - 1)));
           return d.values[idx];
+        }
+      },
+      domain);
+}
+
+double SearchParam::featurize(int64_t v) const {
+  return std::visit(
+      [v](auto &&d) -> double {
+        using T = std::decay_t<decltype(d)>;
+        if constexpr (std::is_same_v<T, IntRange>) {
+          return v;
+        } else {
+          auto idx = std::find(d.values.begin(), d.values.end(), v);
+          assert(idx != d.values.end());
+          return std::distance(d.values.begin(), idx);
         }
       },
       domain);
