@@ -41,6 +41,20 @@ Tiling factors can be manually annotated, or inferred by the `--cinm-infer-tile-
 
 The `--cinm-assign-platforms` pass automates the wrapping of `cinm.op.*` operations into `cinm.compute` regions based on which platforms want to handle them. It operates on `func.func` ops that carry the `cinm.available_platforms` attribute. Which ops each platform claims is determined via the `CinmPlatformAttrInterface::isOffloadingTarget` hook (default: `false`).
 
+
+#### Accelerator inference
+
+Once you have a platform assigned, you want to turn that into an accelerator.
+This entails inferring accelerator parameters and other program parameters, such as tiling factors for a tiled program. CINM provides a framework to 
+perform this inference using Bayesian optimization.
+
+The implementation is split into two:
+- A framework component in CINM sources (Dialect/Cinm/AcceleratorInference),
+which handles the core exploration logic
+- A number of plugins implemented by individual backend dialects. Plugins must implement hooks to describe the configuration space and evaluate individual configurations. See interface InferencePlugin. 
+
+For now, inference is only implemented for UPMEM. You can call it with --upmem-infer-accelerator. 
+
 #### Other CINM passes
 
 - `--cinm-unwrap-compute-blocks` removes the `cinm.compute` and `cinm.compute_block` operations by inlining their content region.
