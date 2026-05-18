@@ -14,7 +14,6 @@
 #include "cinm-mlir/Utils/Scheduling/SchedulingSupport.h"
 
 #include <cstdint>
-#include <functional>
 #include <llvm/ADT/StringRef.h>
 #include <llvm/Support/Casting.h>
 #include <mlir/Conversion/AffineToStandard/AffineToStandard.h>
@@ -102,6 +101,7 @@ struct UpmemInferencePlugin : cinm::InferencePlugin {
     // Step 3: bufferize
     pm->addPass(bufferization::createEmptyTensorEliminationPass());
     pm->addPass(createCSEPass());
+    pm->addPass(createCanonicalizerPass());
     // {
     //   bufferization::OneShotBufferizePassOptions opts;
     //   opts.unknownTypeConversion =
@@ -252,10 +252,6 @@ struct UpmemInferencePlugin : cinm::InferencePlugin {
     auto conf = trial.conf();
     int64_t ranks = conf["ranks"], dpus = conf["dpus"],
             tasklets = conf["tasklets"];
-
-    LLVM_DEBUG(llvm::dbgs()
-               << "[cinm-inference] evaluate: ranks=" << ranks
-               << " dpus=" << dpus << " tasklets=" << tasklets << "\n");
 
     MLIRContext *ctx = trial.computeBlock->getContext();
     mlir::Location loc = trial.computeBlock->getLoc();

@@ -8,7 +8,7 @@
 namespace mlir::cinm {
 
 struct ConfigSpace;
-using Configuration = llvm::SmallVector<int64_t>;
+using Configuration = std::vector<int64_t>;
 
 /// Encode a configuration as a float feature vector.
 /// Each parameter is normalised to [0, 1] using the parameter's domain bounds.

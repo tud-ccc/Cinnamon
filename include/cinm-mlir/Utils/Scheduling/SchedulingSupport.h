@@ -56,7 +56,7 @@ using Maybe = std::variant<T, DiagnosedSilenceableFailure>;
     if (std::holds_alternative<mlir::DiagnosedSilenceableFailure>(_result)) { \
       return std::move(std::get<1>(_result));                                  \
     }                                                                          \
-    std::get<0>(_result);                                                      \
+    std::get<0>(std::move(_result));                                                      \
   })
 
 /// Check a DiagnosedSilenceableFailure result and return early if failed.
