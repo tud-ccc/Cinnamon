@@ -18,6 +18,7 @@
 #include <mlir/IR/IRMapping.h>
 #include <mlir/IR/MLIRContext.h>
 #include <mlir/IR/OwningOpRef.h>
+#include <mlir/IR/SymbolTable.h>
 #include <mlir/Support/LogicalResult.h>
 
 #include <algorithm>
@@ -387,4 +388,43 @@ inferAcceleratorConfig(cinm::ComputeBlockOp computeOp, InferencePlugin &plugin,
   return plugin.commitBestCandidate(computeOp, std::move(bestResult));
 }
 
+DiagnosedSilenceableFailure
+InferencePlugin::commitBestCandidate(cinm::ComputeBlockOp original,
+                                     TrialInfo bestTrial) {
+  // Default implementation, copies the trial body into the original body.
+  // If there are type mismatches, introduces unrealized_conversion_casts.
+  // This may have been caused by bufferization.
+  
+  // todo move all the SymbolOp defined in bestTrial.module 
+  //  into the original module (except the func that contains the computeOp).
+
+  original.getBody().takeBody(bestTrial.computeBlock.getBody());
+  original.setAcceleratorAttr(bestTrial.computeBlock.getAcceleratorAttr());
+  OpBuilder builder(original->getContext());
+  for (auto [arg, opnd] : original.zipArgsWithOperands()) {
+    if (arg.getType() != opnd.getType()) {
+      auto innerTy = arg.getType();
+      arg.setType(opnd.getType());
+      builder.setInsertionPointAfterValue(arg);
+      auto cast = mlir::UnrealizedConversionCastOp::create(
+          builder, arg.getLoc(), innerTy, arg);
+      arg.replaceAllUsesExcept(cast->getResult(0), cast);
+    }
+  }
+  for (auto [res, yieldOpnd] : original.zipResultsWithYieldOperands()) {
+    if (res.getType() != yieldOpnd.get().getType()) {
+      builder.setInsertionPointAfterValue(yieldOpnd.get());
+      auto cast = mlir::UnrealizedConversionCastOp::create(
+          builder, res.getLoc(), res.getType(), yieldOpnd.get());
+      yieldOpnd.set(cast->getResult(0));
+    }
+  }
+
+  // Need to move used symbols as well
+
+
+
+
+  return DiagnosedSilenceableFailure::success();
+}
 } // namespace mlir::cinm

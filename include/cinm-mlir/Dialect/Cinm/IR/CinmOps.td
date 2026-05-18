@@ -460,6 +460,10 @@ def Cinm_ComputeBlockOp : Cinm_Base_Op<"compute_block", [
     auto zipArgsWithOpOperands() {
       return llvm::zip(getRegion().getArguments(), (*this)->getOpOperands());
     }
+    auto zipResultsWithYieldOperands() {
+      auto term = getBody().front().getTerminator();
+      return llvm::zip(getResults(), term->getOpOperands());
+    }
     auto getBodyArguments() {
       return getRegion().getArguments();
     }
