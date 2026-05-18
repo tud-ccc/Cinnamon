@@ -6,6 +6,7 @@
 
 #include <llvm/ADT/BitVector.h>
 #include <llvm/ADT/SmallVector.h>
+#include <llvm/ADT/StringRef.h>
 
 // Suppress mlpack's own info/warning streams — we only want LLVM diagnostics.
 #ifndef MLPACK_NO_STD_COUT_PRINT
@@ -34,12 +35,17 @@ struct CandidatePool {
   arma::mat yo; // 1 × N
   size_t nObs = 0;
 
+  // Per-pool-index observed cost; NaN for unvisited or failed evaluations.
+  arma::rowvec costByIdx;
+
   CandidatePool(std::vector<Configuration> configs, arma::mat encoded)
       : configs(std::move(configs)),
         encoded(std::move(encoded)),
         visited(static_cast<unsigned>(this->encoded.n_cols)),
         Xo(this->encoded.n_rows, this->encoded.n_cols),
-        yo(1, this->encoded.n_cols) {}
+        yo(1, this->encoded.n_cols),
+        costByIdx(arma::rowvec(this->encoded.n_cols).fill(arma::datum::nan)) {
+  }
 
   size_t size() const { return configs.size(); }
   size_t nDims() const { return encoded.n_rows; }
@@ -55,6 +61,7 @@ struct CandidatePool {
   void recordObservation(size_t idx, double cost) {
     Xo.col(nObs) = encoded.col(idx);
     yo(0, nObs) = cost;
+    costByIdx(idx) = cost;
     ++nObs;
   }
 
@@ -72,6 +79,13 @@ struct CandidatePool {
   /// come from the incrementally maintained Xo/yo matrices (zero-copy view).
   llvm::SmallVector<size_t>
   nextCandidateIndices(const InferenceOptions &opts, size_t k = 1) const;
+
+  /// Dump the full candidate pool to a CSV file at `path`.
+  /// Columns: one per search param, then "cost" (empty if not evaluated),
+  /// then "mu", "sigma", "acq" from a final ensemble fit (columns omitted
+  /// when fewer than 2 observations are available).
+  void dumpToCSV(const ConfigSpace &space, const InferenceOptions &opts,
+                 llvm::StringRef path) const;
 };
 
 } // namespace mlir::cinm

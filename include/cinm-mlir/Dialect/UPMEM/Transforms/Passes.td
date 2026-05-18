@@ -60,7 +60,11 @@ def UpmemInferAcceleratorPass : Pass<"upmem-infer-accelerator", "ModuleOp"> {
     // UPMEM-specific options
     Option<"annotateOpCosts", "annotate-op-costs", "bool", "false",
            "Annotate each op in the committed region with its simulated cost "
-           "via the 'upmem.sim_cost' attribute">
+           "via the 'upmem.sim_cost' attribute">,
+    Option<"dumpDir", "dump-dir", "std::string", "\"\"",
+           "If non-empty, write a pool.csv file to this directory containing "
+           "all candidate configurations, their observed costs, and "
+           "surrogate model statistics (mu, sigma, acq) after inference">
   ];
 }
 

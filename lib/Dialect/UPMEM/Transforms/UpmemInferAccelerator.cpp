@@ -409,6 +409,7 @@ struct UpmemInferAcceleratorPass
     o.hidden = hidden;
     o.depth = depth;
     upmemOpts.annotateOpCosts = annotateOpCosts;
+    o.dumpDir = dumpDir;
     return upmemOpts;
   }
 

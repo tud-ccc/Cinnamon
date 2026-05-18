@@ -189,10 +189,16 @@ struct InferenceOptions {
 
   // Surrogate model (BANANAS) hyperparameters.
   double kappa = 2.0; ///< UCB exploration weight
-  int epochs = 200;   ///< Training epochs per ensemble member
+  int epochs = 400;   ///< Training epochs per ensemble member
   int nEnsemble = 5;  ///< Number of MLP ensemble members
   int hidden = 64;    ///< Hidden layer width
-  int depth = 2;      ///< Number of hidden layers
+  int depth = 3;      ///< Number of hidden layers
+
+  /// If non-empty, dump the full candidate pool to a CSV file in this
+  /// directory at the end of inference. Columns: one per search param,
+  /// then observed cost (empty if not evaluated), then mu / sigma / acq
+  /// from a final ensemble fit (omitted when fewer than 2 observations).
+  std::string dumpDir;
 };
 
 /// Entry point for Bayesian inference.
