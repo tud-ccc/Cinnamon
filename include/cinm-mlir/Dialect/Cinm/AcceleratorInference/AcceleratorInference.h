@@ -56,6 +56,9 @@ struct SearchParam {
   int64_t cardinality() const;
   /// Map a continuous sample in [dlo, dhi] to the nearest valid discrete value.
   int64_t discretize(double v) const;
+  /// Map a value to its feature
+  double featurize(int64_t n) const;
+
   /// Retain only values that evenly divide n; converts a range to a ValueList.
   SearchParam &keepDivisorsOf(int64_t n);
 };
@@ -190,9 +193,9 @@ struct InferenceOptions {
   // Surrogate model (BANANAS) hyperparameters.
   double kappa = 2.0; ///< UCB exploration weight
   int epochs = 400;   ///< Training epochs per ensemble member
-  int nEnsemble = 5;  ///< Number of MLP ensemble members
-  int hidden = 64;    ///< Hidden layer width
-  int depth = 3;      ///< Number of hidden layers
+  int nEnsemble = 2;  ///< Number of MLP ensemble members
+  int hidden = 32;    ///< Hidden layer width
+  int depth = 2;      ///< Number of hidden layers
 
   /// If non-empty, dump the full candidate pool to a CSV file in this
   /// directory at the end of inference. Columns: one per search param,

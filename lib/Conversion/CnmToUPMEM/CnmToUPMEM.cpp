@@ -413,7 +413,12 @@ static LogicalResult convertCnmLaunchToUpmem(cnm::LaunchOp launch,
 
   rewriter.eraseOp(launch);
   for (auto op : allocsToDelete) {
-    rewriter.eraseOp(op);
+    if (op->getResults().use_empty()) {
+      rewriter.eraseOp(op);
+    } else {
+      op->emitOpError("should have no uses");
+      return failure();
+    }
   }
 
   for (auto user : wgAlloc.getResult().getUsers()) {
