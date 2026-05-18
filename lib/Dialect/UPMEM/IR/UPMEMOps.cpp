@@ -47,6 +47,36 @@ void upmem::UPMEMDialect::registerOps() {
       >();
 }
 
+// ===----------------------------------------------------------------------===//
+// getDpuProgram helpers
+// ===----------------------------------------------------------------------===//
+
+// AllocDPUsOp owns the symbol reference, so it does the real lookup.
+upmem::DpuProgramOp upmem::AllocDPUsOp::getDpuProgram() {
+  auto *sym =
+      SymbolTable::lookupNearestSymbolFrom(getOperation(), getDpuProgramRef());
+  return dyn_cast_or_null<upmem::DpuProgramOp>(sym);
+}
+
+// ScatterOp/GatherOp both carry the hierarchy value produced by AllocDPUsOp.
+upmem::DpuProgramOp upmem::ScatterOp::getDpuProgram() {
+  auto alloc =
+      dyn_cast_or_null<upmem::AllocDPUsOp>(getHierarchy().getDefiningOp());
+  return alloc ? alloc.getDpuProgram() : upmem::DpuProgramOp{};
+}
+
+upmem::DpuProgramOp upmem::GatherOp::getDpuProgram() {
+  auto alloc =
+      dyn_cast_or_null<upmem::AllocDPUsOp>(getHierarchy().getDefiningOp());
+  return alloc ? alloc.getDpuProgram() : upmem::DpuProgramOp{};
+}
+
+upmem::DpuProgramOp upmem::WaitForOp::getDpuProgram() {
+  auto alloc =
+      dyn_cast_or_null<upmem::AllocDPUsOp>(getDpuSet().getDefiningOp());
+  return alloc ? alloc.getDpuProgram() : upmem::DpuProgramOp{};
+}
+
 MemRefType upmem::detail::flatMemRefType(Type ty) {
   MemRefType structured = llvm::cast<MemRefType>(ty);
 

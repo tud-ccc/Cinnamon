@@ -246,6 +246,8 @@ class ScatterGatherLike<string mnemonic, string kw, MemoryEffect effect>
       return getDpuBufferSizeInBits() / 8;
     }
 
+    /// Return the DpuProgramOp loaded on this hierarchy, or null.
+    DpuProgramOp getDpuProgram();
   }];
 
   let hasVerifier = 1;
@@ -357,6 +359,11 @@ def AllocDPUsOp: Upmem_Op <"alloc_dpus",  [ DeclareOpInterfaceMethods<SymbolUser
   let assemblyFormat = [{
      `with` `program` $dpu_program_ref attr-dict `:` qualified(type($wg))
   }];
+
+  let extraClassDeclaration = [{
+    /// Look up and return the DpuProgramOp referenced by this op, or null.
+    DpuProgramOp getDpuProgram();
+  }];
 }
 
 
@@ -394,6 +401,10 @@ def WaitForOp : Upmem_Op<"wait_for", []> {
 
   let assemblyFormat = " $dpuSet attr-dict `:` qualified(type($dpuSet))";
 
+  let extraClassDeclaration = [{
+    /// Return the DpuProgramOp running on this hierarchy, or null.
+    DpuProgramOp getDpuProgram();
+  }];
 }
 
 def ReturnOp : Upmem_Op<"return", [ParentOneOf<["DpuProgramOp"]>, Pure, Terminator]>,
