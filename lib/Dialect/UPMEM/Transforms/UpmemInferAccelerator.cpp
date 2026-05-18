@@ -188,11 +188,11 @@ struct UpmemInferencePlugin : cinm::InferencePlugin {
       funcs.addPass(affine::createLoopUnrollPass(4));
     }
     // Step 5: lower affine to SCF
-    // pm->addPass(createLowerAffinePass());
+    pm->addPass(createLowerAffinePass());
     // pm->addPass(bufferization::createBufferLoopHoistingPass());
     // pm->addPass(bufferization::createBufferHoistingPass());
-    // pm->addPass(createCanonicalizerPass());
-    // pm->addPass(createCSEPass());
+    pm->addPass(createCanonicalizerPass());
+    pm->addPass(createCSEPass());
 
     // Step 6: cnm → upmem
     pm->addPass(cnm::createConvertCnmToUPMEMPass({}));
