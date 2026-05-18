@@ -29,7 +29,7 @@ os.makedirs(out_dir, exist_ok=True)
 df = pd.read_csv(csv_path)
 
 # Aggregate over any extra dims (ranks, dpus, …) that are not the 3 we plot.
-group_cols = ["tile_", "tile_1", "tasklets"]
+group_cols = ["tile_", "tile_1", "tasklets", "dpus"]
 agg = df.groupby(group_cols, as_index=False).agg(
     visited=("visited", "max"),
     cost=("cost", "min"),   # best observed cost across hardware configs
@@ -37,6 +37,8 @@ agg = df.groupby(group_cols, as_index=False).agg(
     sigma=("sigma", "mean"),
     acq=("acq", "min"),     # lowest (most promising) acquisition value
 )
+DPU_PROJECTION = 32
+agg = agg[agg['dpus'] == DPU_PROJECTION]
 
 tile0_vals   = sorted(agg["tile_"].unique())
 tile1_vals   = sorted(agg["tile_1"].unique())
@@ -73,14 +75,16 @@ def build_rgba(subset, val_col, norm, cmap, *, white_unvisited=True):
 # Returns True for invalid cells (should be greyed out).
 # m = tile_, k = tile_1, T = tasklets.  Edit this formula as needed.
 WRAM_LIMIT = 65536 / 4
-constraint_violated = lambda m, k, T: T * k * m + k + T * m > WRAM_LIMIT
+constraint_violated = lambda m, k, T: T * k * m / DPU_PROJECTION + k + T * m / DPU_PROJECTION > WRAM_LIMIT
+
+_EXTENT = [0.5, len(tile1_vals) + 0.5, 0.5, len(tile0_vals) + 0.5]
 
 def draw_constraint(ax, T):
     m_grid, k_grid = np.meshgrid(tile0_vals, tile1_vals, indexing="ij")
     mask = constraint_violated(m_grid, k_grid, T)
     overlay = np.zeros((*mask.shape, 4), dtype=float)
     overlay[mask] = [0.75, 0.75, 0.75, 0.6]
-    ax.imshow(overlay, origin="lower", aspect="auto", zorder=3)
+    ax.imshow(overlay, origin="lower", aspect="auto", extent=_EXTENT, zorder=3)
 
 
 # ── Figure factory ─────────────────────────────────────────────────────────────
@@ -100,19 +104,20 @@ def make_figure(metric, title, label, norm, cmap, *, white_unvisited=True):
         img = build_rgba(subset, metric, norm, cmap,
                          white_unvisited=white_unvisited)
 
-        ax.imshow(img, origin="lower", aspect="auto")
+        ax.imshow(img, origin="lower", aspect="auto", extent=_EXTENT)
         draw_constraint(ax, T)
-        ax.set_xticks(range(len(tile1_vals)))
-        ax.set_yticks(range(len(tile0_vals)))
 
         in_first_col = (idx % ncols == 0)
         in_bottom    = (idx >= (nrows - 1) * ncols)
 
+        xtick_pos = range(1, len(tile1_vals) + 1)
+        ytick_pos = range(1, len(tile0_vals) + 1)
+        ax.set_xticks(xtick_pos)
+        ax.set_yticks(ytick_pos)
+        ax.set_xticklabels(tile1_vals if in_bottom else [], rotation=45, ha="right", fontsize=7)
         ax.set_yticklabels(tile0_vals if in_first_col else [], fontsize=7)
-        ax.set_xticklabels(
-            tile1_vals if in_bottom else [],
-            rotation=45, ha="right", fontsize=7,
-        )
+        ax.set_xlim(0, len(tile1_vals) + 0.5)
+        ax.set_ylim(0, len(tile0_vals) + 0.5)
         if in_first_col:
             ax.set_ylabel("tile_")
         if in_bottom:
