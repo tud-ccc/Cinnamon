@@ -148,7 +148,7 @@ struct UpmemInferencePlugin : cinm::InferencePlugin {
     {
       bufferization::OneShotBufferizePassOptions opts;
       opts.unknownTypeConversion =
-      bufferization::LayoutMapOption::IdentityLayoutMap;
+          bufferization::LayoutMapOption::IdentityLayoutMap;
       // opts.bufferizeFunctionBoundaries = true;
       // opts.functionBoundaryTypeConversion =
       //     bufferization::LayoutMapOption::IdentityLayoutMap;
@@ -338,19 +338,16 @@ void UpmemInferencePlugin::handleOpConstraints(cinm::CinmTilingInterface op,
         });
     auto wramLevel = platform.getWramLevel();
     auto eltTy = gemv.getLhs().getType().getElementType();
-    editor.addDynamicConstraint([wramLevel, eltTy](auto r, auto d, auto t,
-                                                   auto tiles) {
-      auto mv = tiles[0];
-      auto kv = tiles[1];
+    editor.addDynamicConstraint(
+        [wramLevel, eltTy](auto r, auto d, auto t, auto tiles) {
+          auto mv = tiles[0];
+          auto kv = tiles[1];
 
-      if (mv % (r * d * t) != 0 || kv % (r * d) != 0)
-        return false;
-      auto wm = mv / (r * d * t);
-      auto wk = kv / (r * d * t);
-      LLVM_DEBUG(llvm::dbgs() << "[cinm-inference]   - constraint: WM=" << wm
-                              << ", WK=" << wk << "\n");
-      return wk * (wm + 2) <= wramLevel.getSizeInElements(eltTy);
-    });
+          if (mv % (r * d * t) != 0)
+            return false;
+          auto wm = mv / (r * d);
+          return kv * wm + kv + wm <= wramLevel.getSizeInElements(eltTy);
+        });
   }
 }
 void ConstraintEditor::addStaticConstraint(
