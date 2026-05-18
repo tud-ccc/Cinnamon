@@ -14,6 +14,8 @@
 #include "cinm-mlir/Utils/Scheduling/SchedulingSupport.h"
 
 #include <cstdint>
+#include <functional>
+#include <llvm/ADT/ArrayRef.h>
 #include <llvm/ADT/StringRef.h>
 #include <llvm/Support/Casting.h>
 #include <mlir/Conversion/AffineToStandard/AffineToStandard.h>
@@ -37,7 +39,9 @@
 #include <mlir/IR/OpImplementation.h>
 #include <mlir/IR/PatternMatch.h>
 #include <mlir/IR/SymbolTable.h>
+#include <mlir/Interfaces/TilingInterface.h>
 #include <mlir/Pass/PassManager.h>
+#include <mlir/Support/LLVM.h>
 #include <mlir/Support/LogicalResult.h>
 
 #include <llvm/ADT/SmallVector.h>
@@ -61,6 +65,44 @@ using mlir::cinm::utils::Maybe;
 // ===----------------------------------------------------------------------===//
 // UpmemInferencePlugin
 // ===----------------------------------------------------------------------===//
+
+struct UpmemInferencePlugin;
+
+// helper struct to add dynamic/static constraints on variables of the design
+// space without manipulating bare arrays.
+class ConstraintEditor {
+  friend struct UpmemInferencePlugin;
+
+  cinm::ConfigSpace &space;
+  UpmemInferencePlugin *plugin;
+  cinm::SearchParam &r;
+  cinm::SearchParam &d;
+  cinm::SearchParam &t;
+  SmallVector<cinm::SearchParam> tilingFactors;
+  ArrayRef<int64_t> tiledDimensions;
+  unsigned tfStart;
+
+public:
+  ConstraintEditor(cinm::ConfigSpace &space, UpmemInferencePlugin *plugin,
+                   cinm::SearchParam &r, cinm::SearchParam &d,
+                   cinm::SearchParam &t,
+                   ArrayRef<cinm::SearchParam> &&tilingFactors,
+                   ArrayRef<int64_t> tiledDims, unsigned tfStart)
+      : space(space), plugin(plugin), r(r), d(d), t(t),
+        tilingFactors(std::move(tilingFactors)), tiledDimensions(tiledDims),
+        tfStart(tfStart) {}
+
+  void addStaticConstraint(
+      function_ref<void(cinm::SearchParam &r, cinm::SearchParam &d,
+                        cinm::SearchParam &t,
+                        llvm::SmallVectorImpl<cinm::SearchParam> &tilingFactors,
+                        ArrayRef<int64_t> tiledDims)>
+          callback);
+
+  void addDynamicConstraint(std::function<bool(int64_t r, int64_t d, int64_t t,
+                                               ArrayRef<int64_t> tilingFactors)>
+                                callback);
+};
 
 struct UpmemInferencePlugin : cinm::InferencePlugin {
   upmem::UpmemPlatformAttr platform;
@@ -161,16 +203,8 @@ struct UpmemInferencePlugin : cinm::InferencePlugin {
   }
 
   // --- InferencePlugin interface ---
-
-  std::optional<cinm::Constraint>
-  tilingConstraint(cinm::CinmTilingInterface op,
-                   llvm::SmallVectorImpl<int64_t> &tilingFactorsIx) const;
-
-  void handleOpConstraints(cinm::ConfigSpace &space,
-                           cinm::CinmTilingInterface op,
-                           llvm::SmallVectorImpl<int64_t> &tilingFactorsIx,
-                           cinm::SearchParam &ranks, cinm::SearchParam &dpus,
-                           cinm::SearchParam &tasklets) const;
+  void handleOpConstraints(cinm::CinmTilingInterface op,
+                           ConstraintEditor &editor);
 
   void initializeSpace(cinm::ComputeBlockOp refClone,
                        cinm::ConfigSpace &space) override {
@@ -206,36 +240,13 @@ struct UpmemInferencePlugin : cinm::InferencePlugin {
         tilingFactors.emplace_back(std::move(searchParm));
         paramNames.push_back(paramName);
       }
+      auto firstDim = space.params.size();
+      ConstraintEditor editor(space, this, rankParam, dpuParam, taskletParam,
+                              std::move(tilingFactors), dimSizes, firstDim);
 
-      if (auto gemv = llvm::dyn_cast_or_null<cinm::GemvOp>(op)) {
-        if (!ShapedType::isDynamic(dimSizes[0])) {
-          rankParam.keepDivisorsOf(dimSizes[0]);
-          dpuParam.keepDivisorsOf(dimSizes[0]);
-          taskletParam.keepDivisorsOf(dimSizes[0]);
-        }
-        if (!ShapedType::isDynamic(dimSizes[1])) {
-          rankParam.keepDivisorsOf(dimSizes[1]);
-          dpuParam.keepDivisorsOf(dimSizes[1]);
-          // tasklets are broadcast
-          // taskletParam.keepDivisorsOf(dimSizes[0]);
-        }
-        auto &mname = tilingFactors[0].name, &kname = tilingFactors[1].name;
-        auto eltTy = gemv.getLhs().getType().getElementType();
-        auto wramLevel = platform.getWramLevel();
-        space.addConstraint(
-            [this, wramLevel, eltTy, mname, kname](auto &conf) -> bool {
-              auto r = conf[rankIx], d = conf[dpuIx], t = conf[taskletIx];
-              auto mv = conf[mname], kv = conf[kname];
-              if (mv % (r * d * t) != 0 || kv % (r * d) != 0)
-                return false;
-              auto wm = mv / (r * d * t);
-              auto wk = kv / (r * d * t);
-              LLVM_DEBUG(llvm::dbgs() << "[cinm-inference]   - constraint: WM="
-                                      << wm << ", WK=" << wk << "\n");
-              return wk * (wm + 2) <= wramLevel.getSizeInElements(eltTy);
-            });
-      }
-      for (auto &parm : tilingFactors) {
+      handleOpConstraints(tileable, editor);
+
+      for (auto &parm : std::move(editor.tilingFactors)) {
         space.addDim(std::move(parm));
       }
 
@@ -305,6 +316,71 @@ private:
     });
   }
 };
+
+void UpmemInferencePlugin::handleOpConstraints(cinm::CinmTilingInterface op,
+                                               ConstraintEditor &editor) {
+
+  if (auto gemv = llvm::dyn_cast_or_null<cinm::GemvOp>(op.getOperation())) {
+    editor.addStaticConstraint(
+        [](auto &r, auto &d, auto &t, auto &, auto dims) {
+          auto m = dims[0];
+          if (!ShapedType::isDynamic(m)) {
+            r.keepDivisorsOf(m);
+            d.keepDivisorsOf(m);
+            t.keepDivisorsOf(m);
+          }
+          auto k = dims[1];
+          if (!ShapedType::isDynamic(k)) {
+            r.keepDivisorsOf(k);
+            d.keepDivisorsOf(k);
+            // tasklets are broadcast
+            // t.keepDivisorsOf(k);
+          }
+        });
+    auto wramLevel = platform.getWramLevel();
+    auto eltTy = gemv.getLhs().getType().getElementType();
+    editor.addDynamicConstraint([wramLevel, eltTy](auto r, auto d, auto t,
+                                                   auto tiles) {
+      auto mv = tiles[0];
+      auto kv = tiles[1];
+
+      if (mv % (r * d * t) != 0 || kv % (r * d) != 0)
+        return false;
+      auto wm = mv / (r * d * t);
+      auto wk = kv / (r * d * t);
+      LLVM_DEBUG(llvm::dbgs() << "[cinm-inference]   - constraint: WM=" << wm
+                              << ", WK=" << wk << "\n");
+      return wk * (wm + 2) <= wramLevel.getSizeInElements(eltTy);
+    });
+  }
+}
+void ConstraintEditor::addStaticConstraint(
+    function_ref<void(cinm::SearchParam &r, cinm::SearchParam &d,
+                      cinm::SearchParam &t,
+                      SmallVectorImpl<cinm::SearchParam> &tilingFactors,
+                      ArrayRef<int64_t> tiledDims)>
+        callback) {
+
+  callback(r, d, t, tilingFactors, tiledDimensions);
+}
+
+void ConstraintEditor::addDynamicConstraint(
+    std::function<bool(int64_t r, int64_t d, int64_t t,
+                       ArrayRef<int64_t> tilingFactors)>
+        callback) {
+  // It is tricky to get the lifetimes right with dynamic constraints
+  // so that's why we use this wrapper here.
+
+  auto tfStart = this->tfStart;
+  auto tfEnd = tfStart + tilingFactors.size();
+  auto plugin = this->plugin;
+  space.addConstraint([=](cinm::ConfWrapper conf) {
+    auto r = conf[plugin->rankIx], d = conf[plugin->dpuIx],
+         t = conf[plugin->taskletIx];
+    ArrayRef<int64_t> range(&conf.conf[tfStart], &conf.conf[tfEnd]);
+    return callback(r, d, t, range);
+  });
+}
 
 // ===----------------------------------------------------------------------===//
 // Pass
