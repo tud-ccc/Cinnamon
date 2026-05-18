@@ -40,8 +40,23 @@ def UpmemInferAcceleratorPass : Pass<"upmem-infer-accelerator", "ModuleOp"> {
     "mlir::vector::VectorDialect"
   ];
   let options = [
+    // InferenceOptions fields
     Option<"maxEvals", "max-evals", "int", "50",
-           "Maximum number of Bayesian optimization evaluations">
+           "Total number of valid BO evaluations (LHS init + surrogate-guided)">,
+    Option<"nInit", "n-init", "int", "10",
+           "Number of LHS evaluations before the surrogate model takes over">,
+    Option<"rngSeed", "rng-seed", "int", "42",
+           "RNG seed for reproducibility">,
+    Option<"kappa", "kappa", "double", "2.0",
+           "UCB exploration weight for the BANANAS surrogate">,
+    Option<"epochs", "epochs", "int", "200",
+           "Training epochs per MLP ensemble member">,
+    Option<"nEnsemble", "n-ensemble", "int", "5",
+           "Number of MLP ensemble members">,
+    Option<"hidden", "hidden", "int", "64",
+           "Hidden layer width of each ensemble MLP">,
+    Option<"depth", "depth", "int", "2",
+           "Number of hidden layers in each ensemble MLP">
   ];
 }
 

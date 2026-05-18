@@ -385,13 +385,36 @@ void ConstraintEditor::addDynamicConstraint(
 // Pass
 // ===----------------------------------------------------------------------===//
 } // namespace
+
+/// UPMEM-specific inference options. Wraps the generic InferenceOptions and
+/// provides a place to add UPMEM-specific knobs in the future.
+struct UpmemInferenceOptions {
+  cinm::InferenceOptions inference;
+};
+
 struct UpmemInferAcceleratorPass
     : impl::UpmemInferAcceleratorPassBase<UpmemInferAcceleratorPass> {
   using Base::Base;
 
+  UpmemInferenceOptions buildOptions() const {
+    UpmemInferenceOptions upmemOpts;
+    auto &o = upmemOpts.inference;
+    o.maxEvals = maxEvals;
+    o.nInit = nInit;
+    o.rngSeed = rngSeed;
+    o.kappa = kappa;
+    o.epochs = epochs;
+    o.nEnsemble = nEnsemble;
+    o.hidden = hidden;
+    o.depth = depth;
+    return upmemOpts;
+  }
+
   void runOnOperation() override {
     ModuleOp module = getOperation();
     DiagnosedSilenceableFailure failed = DiagnosedSilenceableFailure::success();
+
+    const UpmemInferenceOptions upmemOpts = buildOptions();
 
     IRRewriter rewriter(module->getContext());
     module.walk([&](cinm::ComputeBlockOp computeOp) -> WalkResult {
@@ -416,10 +439,8 @@ struct UpmemInferAcceleratorPass
         return WalkResult::skip(); // not a UPMEM target
 
       UpmemInferencePlugin plugin(platform, createOpCountSimulator());
-      cinm::InferenceOptions opts;
-      opts.maxEvals = maxEvals;
-      TRY_IN_WALK(failed,
-                  cinm::inferAcceleratorConfig(computeOp, plugin, opts));
+      TRY_IN_WALK(failed, cinm::inferAcceleratorConfig(computeOp, plugin,
+                                                       upmemOpts.inference));
       return WalkResult::skip();
     });
 
