@@ -156,49 +156,49 @@ struct UpmemInferencePlugin : cinm::InferencePlugin {
     }
     pm->addPass(createCSEPass());
     pm->addPass(createCanonicalizerPass());
-    // pm->addPass(createConvertLinalgToAffineLoopsPass());
+    pm->addPass(createConvertLinalgToAffineLoopsPass());
     // pm->addPass(bufferization::createBufferLoopHoistingPass());
     // pm->addPass(bufferization::createBufferHoistingPass());
-    // pm->addPass(createCanonicalizerPass());
-    // pm->addPass(createCSEPass());
-    // {
-    //   bufferization::BufferResultsToOutParamsPassOptions outOpts;
-    //   outOpts.hoistStaticAllocs = true;
-    //   pm->addPass(bufferization::createBufferResultsToOutParamsPass(outOpts));
-    // }
-    // pm->addPass(createCanonicalizerPass());
-    // pm->addPass(createCSEPass());
+    pm->addPass(createCanonicalizerPass());
+    pm->addPass(createCSEPass());
+    {
+      bufferization::BufferResultsToOutParamsPassOptions outOpts;
+      outOpts.hoistStaticAllocs = true;
+      pm->addPass(bufferization::createBufferResultsToOutParamsPass(outOpts));
+    }
+    pm->addPass(createCanonicalizerPass());
+    pm->addPass(createCSEPass());
 
-    // // Step 4: affine opts
-    // {
-    //   auto &funcs = pm->nest<func::FuncOp>();
-    //   funcs.addPass(bufferization::createPromoteBuffersToStackPass());
-    //   funcs.addPass(memref::createFoldMemRefAliasOpsPass());
-    //   funcs.addPass(createCanonicalizerPass());
-    //   funcs.addPass(affine::createLoopFusionPass());
-    //   funcs.addPass(createSROA());
-    //   funcs.addPass(createCanonicalizerPass());
-    //   funcs.addPass(affine::createAffineScalarReplacementPass());
-    //   funcs.addPass(createLoopInvariantCodeMotionPass());
-    //   funcs.addPass(affine::createAffineLoopInvariantCodeMotionPass());
-    //   funcs.addPass(createSROA());
-    //   funcs.addPass(affine::createAffineScalarReplacementPass());
-    //   funcs.addPass(createCanonicalizerPass());
-    //   funcs.addPass(createCSEPass());
-    //   funcs.addPass(affine::createLoopUnrollPass(4));
-    // }
-    // // Step 5: lower affine to SCF
+    // Step 4: affine opts
+    {
+      auto &funcs = pm->nest<func::FuncOp>();
+      funcs.addPass(bufferization::createPromoteBuffersToStackPass());
+      funcs.addPass(memref::createFoldMemRefAliasOpsPass());
+      funcs.addPass(createCanonicalizerPass());
+      funcs.addPass(affine::createLoopFusionPass());
+      funcs.addPass(createSROA());
+      funcs.addPass(createCanonicalizerPass());
+      funcs.addPass(affine::createAffineScalarReplacementPass());
+      funcs.addPass(createLoopInvariantCodeMotionPass());
+      funcs.addPass(affine::createAffineLoopInvariantCodeMotionPass());
+      funcs.addPass(createSROA());
+      funcs.addPass(affine::createAffineScalarReplacementPass());
+      funcs.addPass(createCanonicalizerPass());
+      funcs.addPass(createCSEPass());
+      funcs.addPass(affine::createLoopUnrollPass(4));
+    }
+    // Step 5: lower affine to SCF
     // pm->addPass(createLowerAffinePass());
     // pm->addPass(bufferization::createBufferLoopHoistingPass());
     // pm->addPass(bufferization::createBufferHoistingPass());
     // pm->addPass(createCanonicalizerPass());
     // pm->addPass(createCSEPass());
 
-    // // Step 6: cnm → upmem
-    // pm->addPass(cnm::createConvertCnmToUPMEMPass({}));
-    // pm->addPass(createCSEPass());
-    // pm->addPass(createUPMEMDedupKernelsPass());
-    // pm->addPass(createCSEPass());
+    // Step 6: cnm → upmem
+    pm->addPass(cnm::createConvertCnmToUPMEMPass({}));
+    pm->addPass(createCSEPass());
+    pm->addPass(createUPMEMDedupKernelsPass());
+    pm->addPass(createCSEPass());
 
     return pm;
   }
