@@ -3,9 +3,9 @@
 #include "cinm-mlir/Dialect/Cinm/IR/CinmAttributes.h"
 #include "cinm-mlir/Dialect/Cinm/IR/CinmOps.h"
 
+#include <cstddef>
 #include <cstdint>
 
-#include <functional>
 #include <llvm/ADT/STLExtras.h>
 #include <llvm/ADT/SmallVector.h>
 #include <llvm/ADT/StringRef.h>
@@ -24,7 +24,7 @@
 #include <cmath>
 #include <limits>
 #include <random>
-#include <unordered_set>
+#include <vector>
 
 #define DEBUG_TYPE "cinm-inference"
 
@@ -217,40 +217,24 @@ void buildConfigSpace(cinm::ComputeBlockOp refClone, InferencePlugin &plugin,
   });
 }
 
-// ===----------------------------------------------------------------------===//
-// Candidate pool generation
-// ===----------------------------------------------------------------------===//
+struct InferenceTask; // forward declaration for InferenceState::tryEval
 
-struct ConfigHash {
-  size_t operator()(const Configuration &c) const {
-    size_t h = c.size();
-    for (int64_t v : c)
-      h ^= static_cast<size_t>(v) + 0x9e3779b9u + (h << 6) + (h >> 2);
-    return h;
-  }
+struct InferenceState {
+  bool anySuccess = false;
+  TrialInfo bestTrial;
+  double bestCost = std::numeric_limits<double>::max();
+  DiagnosedSilenceableFailure err;
+  int trialCount = 1;
+  int budget;
+
+  InferenceState(int maxEvals, mlir::Location loc)
+      : err(mlir::emitSilenceableFailure(loc, "No candidates were evaluated")),
+        budget(maxEvals) {}
+
+  bool hasBudget() const { return budget > 0; }
+
+  void tryEval(size_t poolIdx, InferenceTask &task, CandidatePool &pool);
 };
-
-/// Rejection-sample up to *maxPool* distinct valid configurations from *space*.
-static std::vector<Configuration> sampleCandidatePool(const ConfigSpace &space,
-                                                      size_t maxPool,
-                                                      std::mt19937 &rng) {
-  std::vector<Configuration> pool;
-  std::unordered_set<Configuration, ConfigHash> seen;
-  const size_t n = space.size();
-
-  for (size_t tries = 0, limit = maxPool * 50;
-       tries < limit && pool.size() < maxPool; ++tries) {
-    Configuration config(n);
-    for (size_t i = 0; i < n; ++i) {
-      std::uniform_real_distribution<double> dist(space[i].dlo(),
-                                                  space[i].dhi());
-      config[i] = space[i].discretize(dist(rng));
-    }
-    if (space.isValid(config) && seen.insert(config).second)
-      pool.push_back(config);
-  }
-  return pool;
-}
 
 struct InferenceTask {
   const InferenceOptions &options;
@@ -292,7 +276,6 @@ struct InferenceTask {
   /// Returns the TrialInfo from the winning evaluation — its module is
   /// fully lowered and ready for commitBestCandidate.
   Maybe<TrialInfo> runInference() {
-    int trialCount = 1;
     // Trivial: zero-dimensional space → evaluate the only possible config.
     if (space.size() == 0) {
       TrialInfo trial = makeTrialInfo({});
@@ -302,12 +285,9 @@ struct InferenceTask {
       return std::move(trial);
     }
 
-    const size_t nDims = space.size();
-
-    // Build pool of valid candidates.
     const size_t maxPool =
         std::max<size_t>(500, static_cast<size_t>(options.maxEvals) * 10);
-    auto pool = sampleCandidatePool(space, maxPool, rng);
+    auto pool = CandidatePool::sample(space, maxPool, rng);
 
     LLVM_DEBUG(llvm::dbgs() << "[cinm-inference] Pool: " << pool.size()
                             << " valid configs (max " << maxPool << ")\n");
@@ -316,108 +296,71 @@ struct InferenceTask {
       return emitSilenceableFailure(
           refClone.getLoc(), "No valid configurations found in search space");
 
-    // Encode pool into a row-major float matrix (pool.size() × nDims).
-    std::vector<float> encodedPool(pool.size() * nDims);
-    for (size_t i = 0; i < pool.size(); ++i) {
-      auto enc = encodeConfig(space, pool[i]);
-      for (size_t d = 0; d < nDims; ++d)
-        encodedPool[i * nDims + d] = enc[d];
-    }
-
-    // Evaluation state.
-    std::vector<bool> evaluated(pool.size(), false);
-    std::vector<size_t> obsIdx; // pool indices that were successfully evaluated
-    std::vector<float> obsCosts; // cost parallel to obsIdx
-
-    bool anySuccess = false;
-    TrialInfo bestTrial;
-    double bestCost = std::numeric_limits<double>::max();
-    DiagnosedSilenceableFailure err = mlir::emitSilenceableFailure(
-        refClone.getLoc(), "No candidates were evaluated");
-
-    auto tryEval = [&](size_t poolIdx) {
-      evaluated[poolIdx] = true;
-      LLVM_DEBUG(llvm::dbgs() << "[cinm-inference] Trial #" << trialCount++
-                              << " " << wrap(pool[poolIdx]) << "\n");
-
-      TrialInfo trial = makeTrialInfo(pool[poolIdx]);
-      auto cost = plugin.evaluate(trial);
-
-      if (std::holds_alternative<DiagnosedSilenceableFailure>(cost)) {
-        err = std::move(std::get<DiagnosedSilenceableFailure>(cost));
-        LLVM_DEBUG(llvm::dbgs() << "[cinm-inference]   -> failed\n");
-        return;
-      }
-      float costVal = static_cast<float>(std::get<double>(cost));
-      LLVM_DEBUG(llvm::dbgs()
-                 << "[cinm-inference]   -> cost = " << costVal << "\n");
-      obsIdx.push_back(poolIdx);
-      obsCosts.push_back(costVal);
-      anySuccess = true;
-      if (costVal < bestCost) {
-        bestCost = costVal;
-        bestTrial = std::move(trial);
-      }
-      // trial (now empty after move, or non-best) is destroyed here.
-    };
+    InferenceState state(options.maxEvals, refClone.getLoc());
 
     // Phase 1: LHS initialisation.
     int nInit = std::min(options.nInit, static_cast<int>(pool.size()));
     LLVM_DEBUG(llvm::dbgs()
                << "[cinm-inference] Phase 1 (LHS): " << nInit << " configs\n");
-    auto initIdx = lhsIndices(encodedPool, pool.size(), nDims, nInit);
-    for (size_t idx : initIdx)
-      tryEval(idx);
+    for (size_t idx : pool.lhsIndices(nInit))
+      state.tryEval(idx, *this, pool);
 
     // Phase 2: surrogate-guided.
-    int budget = options.maxEvals - static_cast<int>(obsIdx.size());
     LLVM_DEBUG(llvm::dbgs() << "[cinm-inference] Phase 2 (surrogate): budget="
-                            << budget << "\n");
-    while (budget > 0) {
-      // Gather unvisited pool entries.
-      std::vector<size_t> unvisited;
-      std::vector<float> X_pool;
-      for (size_t i = 0; i < pool.size(); ++i) {
-        if (!evaluated[i]) {
-          unvisited.push_back(i);
-          X_pool.insert(X_pool.end(), encodedPool.begin() + i * nDims,
-                        encodedPool.begin() + (i + 1) * nDims);
-        }
-      }
-      if (unvisited.empty())
+                            << state.budget << "\n");
+    while (state.hasBudget()) {
+      if (pool.numVisited() >= pool.size())
         break;
 
-      if (obsIdx.size() < 2) {
-        // Not enough observations to fit a surrogate — pick randomly.
-        tryEval(unvisited[0]);
-        --budget;
+      if (pool.nObs < 2) {
+        // Not enough observations to fit a surrogate — pick first unvisited.
+        if (size_t idx = pool.firstUnvisited(); idx >= 0)
+          state.tryEval(idx, *this, pool);
         continue;
       }
 
-      // Build observation arrays.
-      std::vector<float> X_obs;
-      X_obs.reserve(obsIdx.size() * nDims);
-      for (size_t oi : obsIdx)
-        X_obs.insert(X_obs.end(), encodedPool.begin() + oi * nDims,
-                     encodedPool.begin() + (oi + 1) * nDims);
-
-      auto nextIdx = nextCandidateIndices(X_obs, obsIdx.size(), obsCosts,
-                                          X_pool, unvisited.size(), nDims);
+      auto nextIdx = pool.nextCandidateIndices(options);
       if (nextIdx.empty())
         break;
 
-      tryEval(unvisited[nextIdx[0]]);
-      --budget;
+      state.tryEval(nextIdx[0], *this, pool);
     }
 
-    if (!anySuccess)
-      return err;
+    if (!state.anySuccess)
+      return std::move(state.err);
 
-    LLVM_DEBUG(llvm::dbgs() << "[cinm-inference] Best config (cost=" << bestCost
-                            << ")" << bestTrial.conf() << "\n");
-    return std::move(bestTrial);
+    LLVM_DEBUG(llvm::dbgs()
+               << "[cinm-inference] Best config (cost=" << state.bestCost << ")"
+               << state.bestTrial.conf() << "\n");
+    return std::move(state.bestTrial);
   }
 };
+
+void InferenceState::tryEval(size_t poolIdx, InferenceTask &task,
+                             CandidatePool &pool) {
+  --budget;
+  pool.markVisited(poolIdx);
+  LLVM_DEBUG(llvm::dbgs() << "[cinm-inference] Trial #" << trialCount++ << " "
+                          << task.wrap(pool[poolIdx]) << "\n");
+
+  TrialInfo trial = task.makeTrialInfo(pool[poolIdx]);
+  auto cost = task.plugin.evaluate(trial);
+
+  if (std::holds_alternative<DiagnosedSilenceableFailure>(cost)) {
+    err = std::move(std::get<DiagnosedSilenceableFailure>(cost));
+    LLVM_DEBUG(llvm::dbgs() << "[cinm-inference]   -> failed\n");
+    return;
+  }
+  double costVal = std::get<double>(cost);
+  LLVM_DEBUG(llvm::dbgs() << "[cinm-inference]   -> cost = " << costVal
+                          << "\n");
+  pool.recordObservation(poolIdx, costVal);
+  anySuccess = true;
+  if (costVal < bestCost) {
+    bestCost = costVal;
+    bestTrial = std::move(trial);
+  }
+}
 
 // ===----------------------------------------------------------------------===//
 // inferAcceleratorConfig
@@ -436,11 +379,10 @@ inferAcceleratorConfig(cinm::ComputeBlockOp computeOp, InferencePlugin &plugin,
   LLVM_DEBUG(llvm::dbgs() << "[cinm-inference] Reference clone:\n";
              task.refClone->print(llvm::dbgs()); llvm::dbgs() << "\n");
 
-  TrialInfo bestResult = TRY_GET(task.runInference());
+  auto bestResult = TRY_GET(task.runInference());
 
-  LLVM_DEBUG(llvm::dbgs() << "[cinm-inference] Committing best config:\n";
-             bestResult.computeBlock->print(llvm::dbgs());
-             llvm::dbgs() << "======================\n";);
+  LLVM_DEBUG(llvm::dbgs() << "[cinm-inference] Committing best config"
+                          << bestResult.conf() << "\n");
 
   return plugin.commitBestCandidate(computeOp, std::move(bestResult));
 }

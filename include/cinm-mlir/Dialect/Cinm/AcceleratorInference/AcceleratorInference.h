@@ -174,6 +174,13 @@ struct InferenceOptions {
   int nInit = 10;
 
   int rngSeed = 42;
+
+  // Surrogate model (BANANAS) hyperparameters.
+  double kappa = 2.0;  ///< UCB exploration weight
+  int epochs = 200;    ///< Training epochs per ensemble member
+  int nEnsemble = 5;   ///< Number of MLP ensemble members
+  int hidden = 64;     ///< Hidden layer width
+  int depth = 2;       ///< Number of hidden layers
 };
 
 /// Entry point for Bayesian inference.
