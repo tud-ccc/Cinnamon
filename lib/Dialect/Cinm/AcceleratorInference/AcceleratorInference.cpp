@@ -330,6 +330,9 @@ struct InferenceTask {
       state.tryEval(nextIdx[0], *this, pool);
     }
 
+    if (!options.dumpDir.empty())
+      pool.dumpToCSV(space, options, options.dumpDir + "/pool.csv");
+
     if (!state.anySuccess)
       return std::move(state.err);
 

@@ -4,11 +4,16 @@
 #include <algorithm>
 #include <cmath>
 #include <cstddef>
+#include <filesystem>
+#include <fstream>
 #include <limits>
+#include <llvm/Support/Debug.h>
 #include <memory>
 #include <numeric>
 #include <random>
 #include <unordered_set>
+
+#define DEBUG_TYPE "cinm-inference"
 
 namespace mlir::cinm {
 
@@ -217,6 +222,61 @@ CandidatePool::nextCandidateIndices(const InferenceOptions &opts,
       result.push_back(idx);
   }
   return result;
+}
+
+// ===----------------------------------------------------------------------===//
+// CSV dump
+// ===----------------------------------------------------------------------===//
+
+void CandidatePool::dumpToCSV(const ConfigSpace &space,
+                              const InferenceOptions &opts,
+                              llvm::StringRef path) const {
+  std::filesystem::create_directories(
+      std::filesystem::path(path.str()).parent_path());
+  std::ofstream out(path.str());
+  if (!out)
+    return;
+
+  LLVM_DEBUG(llvm::dbgs() << "Finished inference\n"
+                          << "- " << nObs << " / " << visited.count()
+                          << " successful trials\n");
+
+  // Refit the ensemble on all observations to get per-candidate statistics.
+  // Skipped when we have too few points to train on.
+  const bool hasModel = nObs >= 2;
+  arma::rowvec mu, sigma, acq;
+  if (hasModel) {
+    arma::mat Xo_obs(const_cast<double *>(Xo.memptr()), nDims(), nObs,
+                     /*copy=*/false, /*strict=*/true);
+    arma::mat yo_obs(const_cast<double *>(yo.memptr()), 1, nObs,
+                     /*copy=*/false, /*strict=*/true);
+    BananasEnsemble ensemble(opts.nEnsemble, opts.hidden, opts.depth);
+    ensemble.fit(Xo_obs, yo_obs, opts.epochs);
+    auto [m, s] = ensemble.predict(encoded);
+    mu = m;
+    sigma = s;
+    acq = mu - opts.kappa * sigma;
+  }
+
+  // Header
+  for (const auto &p : space.params)
+    out << p.name << ",";
+  out << "cost";
+  if (hasModel)
+    out << ",mu,sigma,acq";
+  out << "\n";
+
+  // One row per pool member
+  for (size_t i = 0; i < configs.size(); ++i) {
+    for (int64_t v : configs[i])
+      out << v << ",";
+    double c = costByIdx(i);
+    if (!std::isnan(c))
+      out << c;
+    if (hasModel)
+      out << "," << mu(i) << "," << sigma(i) << "," << acq(i);
+    out << "\n";
+  }
 }
 
 } // namespace mlir::cinm
