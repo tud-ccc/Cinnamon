@@ -76,7 +76,7 @@ struct ConfigSpace;
 struct ConfWrapper;
 
 /// Predicate over a configuration; returns true if the configuration is valid.
-using Constraint = std::function<bool(const ConfWrapper &)>;
+using Constraint = std::function<bool(const ConfWrapper)>;
 
 /// Ordered collection of SearchParams that defines the search space.
 struct ConfigSpace {
@@ -100,7 +100,9 @@ struct ConfigSpace {
 
   /// Register a predicate; configurations for which any constraint returns
   /// false are skipped and never passed to the plugin for evaluation.
-  void addConstraint(Constraint constraint);
+  void addConstraint(Constraint &&constraint) {
+    constraints.push_back(std::move(constraint));
+  }
 
   size_t size() const { return params.size(); }
   const SearchParam &operator[](size_t i) const { return params[i]; }
@@ -174,7 +176,7 @@ struct InferencePlugin {
   /// (computeBlock is gone by this point). The plugin should splice the lowered
   /// code into the original module and replace `original` with it.
   virtual DiagnosedSilenceableFailure
-  commitBestCandidate(cinm::ComputeBlockOp original, TrialInfo bestTrial); 
+  commitBestCandidate(cinm::ComputeBlockOp original, TrialInfo bestTrial);
 };
 
 // ===----------------------------------------------------------------------===//
@@ -193,8 +195,8 @@ struct InferenceOptions {
   // Surrogate model (BANANAS) hyperparameters.
   double kappa = 2.0; ///< UCB exploration weight
   int epochs = 400;   ///< Training epochs per ensemble member
-  int nEnsemble = 2;  ///< Number of MLP ensemble members
-  int hidden = 32;    ///< Hidden layer width
+  int nEnsemble = 7;  ///< Number of MLP ensemble members
+  int hidden = 64;    ///< Hidden layer width
   int depth = 2;      ///< Number of hidden layers
 
   /// If non-empty, dump the full candidate pool to a CSV file in this

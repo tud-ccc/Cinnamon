@@ -102,9 +102,10 @@ double SearchParam::featurize(int64_t v) const {
         if constexpr (std::is_same_v<T, IntRange>) {
           return v;
         } else {
-          auto idx = std::find(d.values.begin(), d.values.end(), v);
-          assert(idx != d.values.end());
-          return std::distance(d.values.begin(), idx);
+          return log2(v);
+          // auto idx = std::find(d.values.begin(), d.values.end(), v);
+          // assert(idx != d.values.end());
+          // return std::distance(d.values.begin(), idx);
         }
       },
       domain);
@@ -162,10 +163,6 @@ int64_t ConfigSpace::get(const Configuration &config,
   if (idx < 0 || idx >= static_cast<int>(config.size()))
     return 0;
   return config[idx];
-}
-
-void ConfigSpace::addConstraint(Constraint constraint) {
-  constraints.push_back(std::move(constraint));
 }
 
 bool ConfigSpace::isValid(const Configuration &config) const {

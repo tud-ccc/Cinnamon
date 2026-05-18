@@ -199,7 +199,8 @@ struct UpmemInferencePlugin : cinm::InferencePlugin {
     pm->addPass(createUPMEMDedupKernelsPass());
     pm->addPass(createCSEPass());
     {
-      // This needs to apply after cnm->upmem bc of some assumptions we make there.
+      // This needs to apply after cnm->upmem bc of some assumptions we make
+      // there.
       auto &funcs = pm->nest<func::FuncOp>();
       funcs.addPass(affine::createLoopUnrollPass(4));
     }
@@ -348,8 +349,10 @@ void UpmemInferencePlugin::handleOpConstraints(cinm::CinmTilingInterface op,
 
           if (mv % (r * d * t) != 0)
             return false;
-          auto wm = mv / (r * d);
-          return kv * wm + kv + wm <= wramLevel.getSizeInElements(eltTy);
+          auto wm = t * mv / (r * d);
+          auto usage = kv * wm + kv + wm;
+          // LLVM_DEBUG(llvm::dbgs() << "total wram usage=" << usage << "\n");
+          return usage <= wramLevel.getSizeInElements(eltTy);
         });
   }
 }
@@ -373,7 +376,7 @@ void ConstraintEditor::addDynamicConstraint(
   auto tfStart = this->tfStart;
   auto tfEnd = tfStart + tilingFactors.size();
   auto plugin = this->plugin;
-  space.addConstraint([=](cinm::ConfWrapper conf) {
+  space.addConstraint([=](const cinm::ConfWrapper conf) {
     auto r = conf[plugin->rankIx], d = conf[plugin->dpuIx],
          t = conf[plugin->taskletIx];
     ArrayRef<int64_t> range(&conf.conf[tfStart], &conf.conf[tfEnd]);
