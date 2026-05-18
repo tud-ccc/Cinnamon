@@ -12,10 +12,13 @@
 #include <llvm/Support/Debug.h>
 #include <llvm/Support/LogicalResult.h>
 #include <llvm/Support/raw_ostream.h>
+#include <mlir/Dialect/Bufferization/IR/Bufferization.h>
 #include <mlir/Dialect/Func/IR/FuncOps.h>
 #include <mlir/IR/Builders.h>
 #include <mlir/IR/BuiltinOps.h>
+#include <mlir/IR/BuiltinTypes.h>
 #include <mlir/IR/IRMapping.h>
+#include <mlir/IR/Location.h>
 #include <mlir/IR/MLIRContext.h>
 #include <mlir/IR/OwningOpRef.h>
 #include <mlir/IR/SymbolTable.h>
@@ -388,42 +391,62 @@ inferAcceleratorConfig(cinm::ComputeBlockOp computeOp, InferencePlugin &plugin,
   return plugin.commitBestCandidate(computeOp, std::move(bestResult));
 }
 
+static Operation *createCast(OpBuilder &builder, Location loc, Type toType,
+                             Value operand) {
+  if (isa<TensorType>(operand.getType()) && isa<MemRefType>(toType)) {
+    return bufferization::ToBufferOp::create(builder, loc, toType, operand);
+  } else if (isa<MemRefType>(operand.getType()) && isa<TensorType>(toType)) {
+    return bufferization::ToTensorOp::create(builder, loc, toType, operand);
+  }
+  return mlir::UnrealizedConversionCastOp::create(builder, loc, toType,
+                                                  operand);
+}
+
 DiagnosedSilenceableFailure
 InferencePlugin::commitBestCandidate(cinm::ComputeBlockOp original,
                                      TrialInfo bestTrial) {
-  // Default implementation, copies the trial body into the original body.
-  // If there are type mismatches, introduces unrealized_conversion_casts.
-  // This may have been caused by bufferization.
-  
-  // todo move all the SymbolOp defined in bestTrial.module 
-  //  into the original module (except the func that contains the computeOp).
+  // Capture the host func before we disturb the trial module. The pipeline
+  // may have introduced auxiliary top-level ops (globals, kernel functions)
+  // that are referenced from inside the compute block body; those need to be
+  // moved into the original module alongside the body.
+  auto hostFunc = bestTrial.computeBlock->getParentOfType<func::FuncOp>();
 
   original.getBody().takeBody(bestTrial.computeBlock.getBody());
   original.setAcceleratorAttr(bestTrial.computeBlock.getAcceleratorAttr());
+
+  // Fix up any type mismatches introduced by bufferization.
   OpBuilder builder(original->getContext());
   for (auto [arg, opnd] : original.zipArgsWithOperands()) {
     if (arg.getType() != opnd.getType()) {
       auto innerTy = arg.getType();
       arg.setType(opnd.getType());
       builder.setInsertionPointAfterValue(arg);
-      auto cast = mlir::UnrealizedConversionCastOp::create(
-          builder, arg.getLoc(), innerTy, arg);
+      auto cast = createCast(builder, arg.getLoc(), innerTy, arg);
       arg.replaceAllUsesExcept(cast->getResult(0), cast);
     }
   }
   for (auto [res, yieldOpnd] : original.zipResultsWithYieldOperands()) {
     if (res.getType() != yieldOpnd.get().getType()) {
       builder.setInsertionPointAfterValue(yieldOpnd.get());
-      auto cast = mlir::UnrealizedConversionCastOp::create(
-          builder, res.getLoc(), res.getType(), yieldOpnd.get());
+      auto cast =
+          createCast(builder, res.getLoc(), res.getType(), yieldOpnd.get());
       yieldOpnd.set(cast->getResult(0));
     }
   }
 
-  // Need to move used symbols as well
+  // Move all top-level ops that the pipeline introduced into the trial module
+  // (e.g. kernel functions, globals) into the original module. We skip the
+  // host func wrapper — its compute block body was already taken above.
+  ModuleOp originalModule = original->getParentOfType<ModuleOp>();
+  Block *moduleBody = &originalModule.getBodyRegion().front();
 
+  SmallVector<Operation *> extraOps;
+  for (Operation &op : *bestTrial.module.get().getBody())
+    if (&op != hostFunc.getOperation())
+      extraOps.push_back(&op);
 
-
+  for (Operation *op : extraOps)
+    op->moveBefore(moduleBody, moduleBody->end());
 
   return DiagnosedSilenceableFailure::success();
 }
