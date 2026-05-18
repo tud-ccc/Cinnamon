@@ -171,11 +171,7 @@ struct InferencePlugin {
   /// (computeBlock is gone by this point). The plugin should splice the lowered
   /// code into the original module and replace `original` with it.
   virtual DiagnosedSilenceableFailure
-  commitBestCandidate(cinm::ComputeBlockOp original, TrialInfo bestTrial) {
-    original.getBody().takeBody(bestTrial.computeBlock.getBody());
-    original.setAcceleratorAttr(bestTrial.computeBlock.getAcceleratorAttr());
-    return DiagnosedSilenceableFailure::success();
-  }
+  commitBestCandidate(cinm::ComputeBlockOp original, TrialInfo bestTrial); 
 };
 
 // ===----------------------------------------------------------------------===//
