@@ -228,6 +228,33 @@ struct BananasEnsemble {
 };
 
 // ===----------------------------------------------------------------------===//
+// Acquisition function
+// ===----------------------------------------------------------------------===//
+
+// LCB acquisition with z-scored components.
+//
+// Raw LCB (mu - kappa*sigma) breaks when mu and sigma live at very different
+// scales: if the sigma range (×kappa) exceeds the mu range, the acquisition
+// degenerates to pure exploration and mu is ignored entirely.  This happens
+// with MLP ensembles because sigma reflects cross-member disagreement, which
+// can be as large as the full objective range in unvisited regions.
+//
+// Fixing by z-scoring each component separately:
+//   acq = z(mu) - kappa * z(sigma)
+// Now kappa means "one std of sigma exploration bonus is worth kappa std of
+// mu exploitation gain" — a scale-independent, calibration-independent
+// trade-off that remains valid regardless of ensemble quality.
+static arma::rowvec computeAcq(const arma::rowvec &mu,
+                                const arma::rowvec &sigma, double kappa) {
+  auto zs = [](const arma::rowvec &v) -> arma::rowvec {
+    double m = arma::mean(arma::vectorise(v));
+    double s = arma::stddev(arma::vectorise(v));
+    return (v - m) / ((s > 1e-8) ? s : 1.0);
+  };
+  return zs(mu) - kappa * zs(sigma);
+}
+
+// ===----------------------------------------------------------------------===//
 // Next-candidate selection
 // ===----------------------------------------------------------------------===//
 
@@ -249,7 +276,7 @@ bool CandidatePool::nextCandidateIndices(
   ensemble.fit(Xo_obs, yo_obs, epochs);
   auto [mu, sigma] = ensemble.predict(encoded);
 
-  arma::rowvec scores = mu - kappa * sigma;
+  arma::rowvec scores = computeAcq(mu, sigma, kappa);
   arma::uvec order = arma::sort_index(scores, "ascend");
 
   for (size_t i = 0; i < order.n_elem; ++i) {
@@ -291,7 +318,7 @@ void CandidatePool::dumpToCSV(const ConfigSpace &space,
     auto [m, s] = ensemble.predict(encoded);
     mu = m;
     sigma = s;
-    acq = mu - opts.kappa * sigma;
+    acq = computeAcq(mu, sigma, opts.kappa);
   }
 
   // Header
