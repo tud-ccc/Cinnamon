@@ -199,6 +199,7 @@ struct InferenceOptions {
   int hidden = 64;    ///< Hidden layer width
   int depth = 2;      ///< Number of hidden layers
 
+  bool sampleOnlyValid = true;
   /// If non-empty, dump the full candidate pool to a CSV file in this
   /// directory at the end of inference. Columns: one per search param,
   /// then observed cost (empty if not evaluated), then mu / sigma / acq

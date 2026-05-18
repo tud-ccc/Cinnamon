@@ -1,5 +1,6 @@
 #pragma once
 
+#include <concepts>
 #include <cstddef>
 #include <random>
 #include <vector>
@@ -39,13 +40,11 @@ struct CandidatePool {
   arma::rowvec costByIdx;
 
   CandidatePool(std::vector<Configuration> configs, arma::mat encoded)
-      : configs(std::move(configs)),
-        encoded(std::move(encoded)),
+      : configs(std::move(configs)), encoded(std::move(encoded)),
         visited(static_cast<unsigned>(this->encoded.n_cols)),
         Xo(this->encoded.n_rows, this->encoded.n_cols),
         yo(1, this->encoded.n_cols),
-        costByIdx(arma::rowvec(this->encoded.n_cols).fill(arma::datum::nan)) {
-  }
+        costByIdx(arma::rowvec(this->encoded.n_cols).fill(arma::datum::nan)) {}
 
   size_t size() const { return configs.size(); }
   size_t nDims() const { return encoded.n_rows; }
@@ -71,14 +70,15 @@ struct CandidatePool {
                               std::mt19937 &rng);
 
   /// Select n row-indices from the pool using Latin Hypercube Sampling.
-  llvm::SmallVector<size_t> lhsIndices(size_t n, unsigned seed = 42) const;
+  void sampleInitialSet(size_t n_samples, std::mt19937 &rng,
+                        std::function<bool(size_t)> accept) const;
 
   /// Fit a BANANAS MLP ensemble on the observed subset (Xo/yo) and return
   /// the k unvisited pool indices with the lowest UCB acquisition score.
   /// Unvisited entries are derived from the visited bitvector; observations
   /// come from the incrementally maintained Xo/yo matrices (zero-copy view).
-  llvm::SmallVector<size_t>
-  nextCandidateIndices(const InferenceOptions &opts, size_t k = 1) const;
+  bool nextCandidateIndices(const InferenceOptions &opts,
+                            std::function<bool(size_t)> accept) const;
 
   /// Dump the full candidate pool to a CSV file at `path`.
   /// Columns: one per search param, then "cost" (empty if not evaluated),
