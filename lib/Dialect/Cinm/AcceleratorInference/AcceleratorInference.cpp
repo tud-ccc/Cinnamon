@@ -102,6 +102,7 @@ double SearchParam::featurize(int64_t v) const {
         if constexpr (std::is_same_v<T, IntRange>) {
           return v;
         } else {
+          // return v;
           return log2(v);
           // auto idx = std::find(d.values.begin(), d.values.end(), v);
           // assert(idx != d.values.end());
@@ -250,7 +251,7 @@ struct InferenceState {
 
   bool hasBudget() const { return budget > 0; }
 
-  void tryEval(size_t poolIdx, InferenceTask &task, CandidatePool &pool);
+  bool tryEval(size_t poolIdx, InferenceTask &task, CandidatePool &pool);
 };
 
 struct InferenceTask {
@@ -315,12 +316,18 @@ struct InferenceTask {
 
     InferenceState state(options.maxEvals, refClone.getLoc());
 
+    auto evalConf = [&](size_t idx) -> bool {
+      bool success = state.tryEval(idx, *this, pool);
+      return success || !options.sampleOnlyValid;
+    };
+
     // Phase 1: LHS initialisation.
     int nInit = std::min(options.nInit, static_cast<int>(pool.size()));
     LLVM_DEBUG(llvm::dbgs()
-               << "[cinm-inference] Phase 1 (LHS): " << nInit << " configs\n");
-    for (size_t idx : pool.lhsIndices(nInit))
-      state.tryEval(idx, *this, pool);
+               << "[cinm-inference] Phase 1 (Generate initial population): "
+               << nInit << " configs\n");
+
+    pool.sampleInitialSet(nInit, rng, evalConf);
 
     // Phase 2: surrogate-guided.
     LLVM_DEBUG(llvm::dbgs() << "[cinm-inference] Phase 2 (surrogate): budget="
@@ -336,11 +343,10 @@ struct InferenceTask {
         continue;
       }
 
-      auto nextIdx = pool.nextCandidateIndices(options);
-      if (nextIdx.empty())
-        break;
+      auto succeeded = pool.nextCandidateIndices(options, evalConf);
 
-      state.tryEval(nextIdx[0], *this, pool);
+      if (!succeeded)
+        break;
     }
 
     if (!options.dumpDir.empty())
@@ -356,7 +362,7 @@ struct InferenceTask {
   }
 };
 
-void InferenceState::tryEval(size_t poolIdx, InferenceTask &task,
+bool InferenceState::tryEval(size_t poolIdx, InferenceTask &task,
                              CandidatePool &pool) {
   --budget;
   pool.markVisited(poolIdx);
@@ -369,7 +375,7 @@ void InferenceState::tryEval(size_t poolIdx, InferenceTask &task,
   if (std::holds_alternative<DiagnosedSilenceableFailure>(cost)) {
     err = std::move(std::get<DiagnosedSilenceableFailure>(cost));
     LLVM_DEBUG(llvm::dbgs() << "[cinm-inference]   -> failed\n");
-    return;
+    return false;
   }
   double costVal = std::get<double>(cost);
   LLVM_DEBUG(llvm::dbgs() << "[cinm-inference]   -> cost = " << costVal
@@ -380,6 +386,7 @@ void InferenceState::tryEval(size_t poolIdx, InferenceTask &task,
     bestCost = costVal;
     bestTrial = std::move(trial);
   }
+  return true;
 }
 
 // ===----------------------------------------------------------------------===//

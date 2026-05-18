@@ -67,14 +67,13 @@ CandidatePool CandidatePool::sample(const ConfigSpace &space, size_t maxPool,
 // Latin Hypercube Sampling
 // ===----------------------------------------------------------------------===//
 
-llvm::SmallVector<size_t> CandidatePool::lhsIndices(size_t n,
-                                                    unsigned seed) const {
+void CandidatePool::sampleInitialSet(size_t n, std::mt19937 &rng,
+                                     std::function<bool(size_t)> accept) const {
   const size_t N = size();
   const size_t D = nDims();
-  std::mt19937 rng(seed);
   n = std::min(n, N);
   if (n == 0)
-    return {};
+    return;
 
   // Per-dimension [0,1] normalisation of the already-encoded pool.
   arma::mat normed(D, N);
@@ -85,42 +84,59 @@ llvm::SmallVector<size_t> CandidatePool::lhsIndices(size_t n,
     normed.row(d) = (encoded.row(d) - lo) / range;
   }
 
-  // Generate n LHS target points — one stratum per dimension.
   std::uniform_real_distribution<double> u01(0.0, 1.0);
-  std::vector<std::vector<double>> targets(n, std::vector<double>(D));
-  for (size_t d = 0; d < D; ++d) {
-    std::vector<size_t> perm(n);
-    std::iota(perm.begin(), perm.end(), 0);
-    std::shuffle(perm.begin(), perm.end(), rng);
-    for (size_t i = 0; i < n; ++i)
-      targets[i][d] =
-          (static_cast<double>(perm[i]) + u01(rng)) / static_cast<double>(n);
-  }
-
-  // Greedy nearest-neighbour: each target → closest unused candidate.
   std::vector<bool> used(N, false);
-  llvm::SmallVector<size_t> selected;
-  selected.reserve(n);
-  for (size_t t = 0; t < n; ++t) {
-    double bestDist = std::numeric_limits<double>::max();
-    size_t bestIdx = 0;
-    for (size_t i = 0; i < N; ++i) {
-      if (used[i])
-        continue;
-      double dist = 0;
-      for (size_t d = 0; d < D; ++d) {
-        double diff = normed(d, i) - targets[t][d];
-        dist += diff * diff;
-      }
-      if (dist < bestDist) {
-        bestDist = dist;
-        bestIdx = i;
-      }
+  size_t accepted = 0;
+
+  // Each iteration generates a fresh LHS batch of `want` targets and greedily
+  // matches them to unused pool candidates, calling accept() on each match.
+  // When onlyValid is false one pass suffices; when true we keep looping until
+  // n calls to accept() return true (or the pool runs dry).
+  while (accepted < n) {
+    size_t want = n - accepted;
+
+    size_t nUnused = 0;
+    for (size_t i = 0; i < N; ++i)
+      nUnused += !used[i];
+    if (nUnused == 0)
+      break;
+    want = std::min(want, nUnused);
+
+    // LHS targets for this batch.
+    std::vector<std::vector<double>> batchTargets(want, std::vector<double>(D));
+    for (size_t d = 0; d < D; ++d) {
+      std::vector<size_t> perm(want);
+      std::iota(perm.begin(), perm.end(), 0);
+      std::shuffle(perm.begin(), perm.end(), rng);
+      for (size_t i = 0; i < want; ++i)
+        batchTargets[i][d] = (static_cast<double>(perm[i]) + u01(rng)) /
+                             static_cast<double>(want);
     }
-    used[bestIdx] = true;
-    selected.push_back(bestIdx);
+
+    // Greedy nearest-neighbour: each target → closest unused candidate.
+    for (size_t t = 0; t < want && accepted < n; ++t) {
+      double bestDist = std::numeric_limits<double>::max();
+      size_t bestIdx = N; // sentinel
+      for (size_t i = 0; i < N; ++i) {
+        if (used[i])
+          continue;
+        double dist = 0;
+        for (size_t d = 0; d < D; ++d) {
+          double diff = normed(d, i) - batchTargets[t][d];
+          dist += diff * diff;
+        }
+        if (dist < bestDist) {
+          bestDist = dist;
+          bestIdx = i;
+        }
+      }
+      if (bestIdx == N)
+        break;
+      used[bestIdx] = true;
+      if (accept(bestIdx))
+        ++accepted;
+    }
   }
-  return selected;
 }
 
 // ===----------------------------------------------------------------------===//
@@ -154,12 +170,14 @@ struct BananasEnsemble {
   }
 
   void fit(const arma::mat &X, const arma::mat &y, int epochs) {
-    // Train in log10 space: compresses wide cost ranges (e.g. 1e2–1e5) into
-    // ~3 units, making the landscape far smoother for the MLP to learn.
-    // log10 is monotone so the argmin is preserved — the surrogate still
-    // selects the lowest-cost candidate.
+    // Normalise in log10 space — compresses wide cost ranges into ~3 units.
+    // IMPORTANT: anchor the scale to the best (minimum) observed cost rather
+    // than the mean.  Using mean/std causes the worst-ever observation to shift
+    // yMean upward on each bad eval, which paradoxically lowers the predicted
+    // mu for the bad region after de-normalisation (the goalposts move).
     arma::mat yLog = arma::log10(y);
-    yMean = arma::mean(arma::vectorise(yLog));
+    yMean =
+        arma::min(arma::vectorise(yLog)); // anchor = best observed log10 cost
     double s = arma::stddev(arma::vectorise(yLog));
     yStd = (s > 1e-8) ? s : 1.0;
     arma::mat yNorm = (yLog - yMean) / yStd;
@@ -168,8 +186,15 @@ struct BananasEnsemble {
     for (size_t mi = 0; mi < models.size(); ++mi) {
       arma::arma_rng::set_seed(
           static_cast<arma::arma_rng::seed_type>(mi * 1000003 + 7));
-      arma::uvec idx = arma::randi<arma::uvec>(
+      // Augmented bootstrap: every observation is included once (mandatory),
+      // then n additional samples are drawn with replacement for diversity.
+      // Pure bootstrap omits any observation ~37% of the time; with small n
+      // that means 2-3 members never see the worst-ever point and keep
+      // predicting good cost there, holding mu down after the bad eval.
+      arma::uvec mandatory = arma::regspace<arma::uvec>(0, n - 1);
+      arma::uvec extra = arma::randi<arma::uvec>(
           n, arma::distr_param(0, static_cast<int>(n) - 1));
+      arma::uvec idx = arma::join_cols(mandatory, extra);
       arma::mat Xb = X.cols(idx);
       arma::mat yb = yNorm.cols(idx);
       // ensmallen's maxIterations counts gradient updates, not epochs.
@@ -177,7 +202,7 @@ struct BananasEnsemble {
       // size, not with raw sample count (which caused ~100x overtraining
       // before). Cap batchSize at n to avoid undefined behaviour when n < 32.
       int batchSize = std::min<size_t>(32, n);
-      size_t stepsPerEpoch = (n + batchSize - 1) / batchSize;
+      size_t stepsPerEpoch = (2 * n + batchSize - 1) / batchSize;
       size_t maxIter = static_cast<size_t>(epochs) * stepsPerEpoch;
       ens::Adam opt(3e-3, batchSize, 0.9, 0.999, 1e-8, maxIter, 1e-7, true);
       models[mi]->Train(Xb, yb, opt);
@@ -206,9 +231,8 @@ struct BananasEnsemble {
 // Next-candidate selection
 // ===----------------------------------------------------------------------===//
 
-llvm::SmallVector<size_t>
-CandidatePool::nextCandidateIndices(const InferenceOptions &opts,
-                                    size_t k) const {
+bool CandidatePool::nextCandidateIndices(
+    const InferenceOptions &opts, std::function<bool(size_t)> accept) const {
   const double kappa = opts.kappa;
   const int epochs = opts.epochs;
   const int nEnsemble = opts.nEnsemble;
@@ -228,15 +252,12 @@ CandidatePool::nextCandidateIndices(const InferenceOptions &opts,
   arma::rowvec scores = mu - kappa * sigma;
   arma::uvec order = arma::sort_index(scores, "ascend");
 
-  // Walk in score order and collect the first k unvisited pool indices.
-  llvm::SmallVector<size_t> result;
-  result.reserve(k);
-  for (size_t i = 0; i < order.n_elem && result.size() < k; ++i) {
+  for (size_t i = 0; i < order.n_elem; ++i) {
     size_t idx = order(i);
-    if (!visited.test(idx))
-      result.push_back(idx);
+    if (!visited.test(idx) && accept(idx))
+      return true;
   }
-  return result;
+  return false;
 }
 
 // ===----------------------------------------------------------------------===//
