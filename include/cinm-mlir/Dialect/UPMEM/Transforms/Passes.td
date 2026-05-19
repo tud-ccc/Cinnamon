@@ -57,6 +57,12 @@ def UpmemInferAcceleratorPass : Pass<"upmem-infer-accelerator", "ModuleOp"> {
            "Hidden layer width of each ensemble MLP">,
     Option<"depth", "depth", "int", "2",
            "Number of hidden layers in each ensemble MLP">,
+    Option<"neighborDepth", "neighbor-depth", "unsigned", "1",
+           "Number of discrete steps away from observed points to include as "
+           "candidates (1 = immediate neighbors only)">,
+    Option<"neighborFrontierOnly", "neighbor-frontier-only", "bool", "false",
+           "When true, only add candidates at exactly neighbor-depth steps away; "
+           "otherwise add all points within that distance">,
     // UPMEM-specific options
     Option<"annotateOpCosts", "annotate-op-costs", "bool", "false",
            "Annotate each op in the committed region with its simulated cost "
