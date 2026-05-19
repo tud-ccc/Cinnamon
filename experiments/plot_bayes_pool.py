@@ -11,6 +11,7 @@ Defaults: pool.csv in cwd, output next to the CSV.
 """
 import sys
 import os
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
@@ -19,35 +20,14 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import matplotlib.colors as mcolors
 from matplotlib.cm import ScalarMappable
+from concurrent.futures import ProcessPoolExecutor, as_completed
+from tqdm import tqdm
 
-# ── Args ──────────────────────────────────────────────────────────────────────
-csv_path = sys.argv[1] if len(sys.argv) > 1 else "pool.csv"
-out_dir  = sys.argv[2] if len(sys.argv) > 2 else os.path.dirname(os.path.abspath(csv_path))
-os.makedirs(out_dir, exist_ok=True)
-
-# ── Load ──────────────────────────────────────────────────────────────────────
-df = pd.read_csv(csv_path)
 DPU = 1
 RANK = 1
-df = df[df['dpus'] == DPU]
-# df = df[df['ranks'] == RANK]
-
-# Aggregate over any extra dims (ranks, dpus, …) that are not the 3 we plot.
-group_cols = ["tile_", "tile_1", "tasklets", "dpus"]
-agg = df.groupby(group_cols, as_index=False).agg(
-    visited=("visited", "max"),
-    cost=("cost", "min"),   # best observed cost across hardware configs
-    mu=("mu", "mean"),
-    sigma=("sigma", "mean"),
-    acq=("acq", "min"),     # lowest (most promising) acquisition value
-)
-
-tile0_vals   = sorted(agg["tile_"].unique())
-tile1_vals   = sorted(agg["tile_1"].unique())
-tasklet_vals = sorted(agg["tasklets"].unique())
 
 # ── Image builder ─────────────────────────────────────────────────────────────
-def build_rgba(subset, val_col, norm, cmap, *, white_unvisited=True):
+def build_rgba(subset, tile0_vals, tile1_vals, val_col, norm, cmap, *, white_unvisited=True):
     """Return an RGBA image (H=tile_, W=tile_1) for one tasklets slice."""
     piv_val  = subset.pivot_table(index="tile_",  columns="tile_1", values=val_col,   aggfunc="mean")
     piv_vis  = subset.pivot_table(index="tile_",  columns="tile_1", values="visited", aggfunc="max")
@@ -77,20 +57,23 @@ def build_rgba(subset, val_col, norm, cmap, *, white_unvisited=True):
 # Returns True for invalid cells (should be greyed out).
 # m = tile_, k = tile_1, T = tasklets.  Edit this formula as needed.
 WRAM_LIMIT = 65536 / 4
-constraint_violated = lambda m, k, T: T * k * m / (RANK * DPU) + k + T * m / (RANK * DPU) > WRAM_LIMIT
 
-_EXTENT = [0.5, len(tile1_vals) + 0.5, 0.5, len(tile0_vals) + 0.5]
+def constraint_violated(m, k, T):
+    return T * k * m / (RANK * DPU) + k + T * m / (RANK * DPU) > WRAM_LIMIT
 
-def draw_constraint(ax, T):
+def draw_constraint(ax, T, tile0_vals, tile1_vals):
+    extent = [0.5, len(tile1_vals) + 0.5, 0.5, len(tile0_vals) + 0.5]
     m_grid, k_grid = np.meshgrid(tile0_vals, tile1_vals, indexing="ij")
     mask = constraint_violated(m_grid, k_grid, T)
     overlay = np.zeros((*mask.shape, 4), dtype=float)
     overlay[mask] = [0.75, 0.75, 0.75, 0.6]
-    ax.imshow(overlay, origin="lower", aspect="auto", extent=_EXTENT, zorder=3)
+    ax.imshow(overlay, origin="lower", aspect="auto", extent=extent, zorder=3)
 
 
 # ── Figure factory ─────────────────────────────────────────────────────────────
-def make_figure(metric, title, label, norm, cmap, *, white_unvisited=True):
+def make_figure(agg, tile0_vals, tile1_vals, tasklet_vals, out_dir,
+                metric, title, label, norm, cmap, *, white_unvisited=True):
+    extent = [0.5, len(tile1_vals) + 0.5, 0.5, len(tile0_vals) + 0.5]
     ncols = 2
     nrows = int(np.ceil(len(tasklet_vals) / ncols))
     fig, axes = plt.subplots(nrows, ncols,
@@ -103,11 +86,11 @@ def make_figure(metric, title, label, norm, cmap, *, white_unvisited=True):
 
     for idx, (ax, T) in enumerate(zip(flat, tasklet_vals)):
         subset = agg[agg["tasklets"] == T]
-        img = build_rgba(subset, metric, norm, cmap,
+        img = build_rgba(subset, tile0_vals, tile1_vals, metric, norm, cmap,
                          white_unvisited=white_unvisited)
 
-        ax.imshow(img, origin="lower", aspect="auto", extent=_EXTENT)
-        draw_constraint(ax, T)
+        ax.imshow(img, origin="lower", aspect="auto", extent=extent)
+        draw_constraint(ax, T, tile0_vals, tile1_vals)
 
         in_first_col = (idx % ncols == 0)
         in_bottom    = (idx >= (nrows - 1) * ncols)
@@ -139,34 +122,74 @@ def make_figure(metric, title, label, norm, cmap, *, white_unvisited=True):
     out_path = os.path.join(out_dir, f"pool_{metric}.png")
     fig.savefig(out_path, dpi=150, bbox_inches="tight")
     plt.close(fig)
-    print(f"Saved: {out_path}")
+    return out_path
 
 
-# ── Cost ──────────────────────────────────────────────────────────────────────
-cost_vals = agg["cost"].dropna()
-make_figure(
-    "cost",
-    title="Observed cost  [white = unsampled, gray = failed]",
-    label="Simulated cost (log scale, lower is better)",
-    norm=mcolors.LogNorm(vmin=cost_vals.min(), vmax=cost_vals.max()),
-    cmap=plt.cm.viridis_r,
-)
+def build_tasks(csv_path):
+    """Load one CSV and return (data_tuple, list_of_figure_kwargs)."""
+    out_dir = str(Path(csv_path).parent)
 
-# ── Surrogate outputs (log10 space) ───────────────────────────────────────────
-for metric, title, label, cmap in [
-    ("mu",    "Surrogate μ  (log₁₀ scale)",
-     "μ — predicted log₁₀(cost)  (lower is better)", plt.cm.viridis_r),
-    ("sigma", "Surrogate σ  (log₁₀ scale)",
-     "σ — uncertainty in log₁₀(cost)  (lower = more certain)", plt.cm.plasma),
-    ("acq",   "Acquisition score  (lower = higher priority)",
-     "UCB acquisition  μ − κσ  (log₁₀ scale)", plt.cm.plasma_r),
-]:
-    vals = agg[metric].dropna()
-    make_figure(
-        metric,
-        title=title,
-        label=label,
-        norm=mcolors.Normalize(vmin=vals.min(), vmax=vals.max()),
-        cmap=cmap,
-        white_unvisited=False,  # show all configs with valid values; only gray out failed
+    df = pd.read_csv(csv_path)
+    df = df[df["dpus"] == DPU]
+    # df = df[df['ranks'] == RANK]
+
+    group_cols = ["tile_", "tile_1", "tasklets", "dpus"]
+    agg = df.groupby(group_cols, as_index=False).agg(
+        visited=("visited", "max"),
+        cost=("cost", "min"),
+        mu=("mu", "mean"),
+        sigma=("sigma", "mean"),
+        acq=("acq", "min"),
     )
+
+    tile0_vals   = sorted(agg["tile_"].unique())
+    tile1_vals   = sorted(agg["tile_1"].unique())
+    tasklet_vals = sorted(agg["tasklets"].unique())
+    data = (agg, tile0_vals, tile1_vals, tasklet_vals, out_dir)
+
+    cost_vals = agg["cost"].dropna()
+    tasks = [
+        dict(metric="cost",
+             title="Observed cost  [white = unsampled, gray = failed]",
+             label="Simulated cost (log scale, lower is better)",
+             norm=mcolors.LogNorm(vmin=cost_vals.min(), vmax=cost_vals.max()),
+             cmap=plt.cm.viridis_r),
+    ]
+    for metric, title, label, cmap in [
+        ("mu",    "Surrogate μ  (log₁₀ scale)",
+         "μ — predicted log₁₀(cost)  (lower is better)", plt.cm.viridis_r),
+        ("sigma", "Surrogate σ  (log₁₀ scale)",
+         "σ — uncertainty in log₁₀(cost)  (lower = more certain)", plt.cm.plasma),
+        ("acq",   "Acquisition score  (lower = higher priority)",
+         "UCB acquisition  μ − κσ  (log₁₀ scale)", plt.cm.plasma_r),
+    ]:
+        vals = agg[metric].dropna()
+        tasks.append(dict(
+            metric=metric, title=title, label=label, cmap=cmap,
+            norm=mcolors.Normalize(vmin=vals.min(), vmax=vals.max()),
+            white_unvisited=False,
+        ))
+    return data, tasks
+
+
+if __name__ == "__main__":
+    import traceback
+
+    csv_paths = sys.argv[1:] or ["pool.csv"]
+
+    all_futures = {}
+    with ProcessPoolExecutor() as executor:
+        for csv_path in csv_paths:
+            data, tasks = build_tasks(csv_path)
+            for kw in tasks:
+                f = executor.submit(make_figure, *data, **kw)
+                all_futures[f] = (csv_path, kw["metric"])
+
+        for future in tqdm(as_completed(all_futures), total=len(all_futures), desc="plots"):
+            csv_path, metric = all_futures[future]
+            ex = future.exception()
+            if ex:
+                tqdm.write(f"Error plotting {metric} for {csv_path}:")
+                traceback.print_exception(ex)
+            else:
+                tqdm.write(f"Saved: {future.result()}")

@@ -16,7 +16,7 @@ func.func @batch_gemv_memref(%arg0: memref<4x8x1024xi32>, %arg1: memref<4x1024xi
   %alloc = memref.alloc() : memref<4x8xi32>
   %c0_i32 = arith.constant 0 : i32
   linalg.fill ins(%c0_i32 : i32) outs(%alloc : memref<4x8xi32>)
-  cinm.op.batch_gemv %arg0, %arg1 into %alloc {cinm.tile_sizes = array<i64: 2, 8, 128>}
+  cinm.op.batch_gemv %arg0, %arg1 into %alloc {cinm.tile_sizes = array<i64: 1, 2, 8, 128>}
       : memref<4x8x1024xi32>, memref<4x1024xi32> into memref<4x8xi32>
   return %alloc : memref<4x8xi32>
 }

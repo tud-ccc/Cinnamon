@@ -14,10 +14,18 @@
 #include "cinm-mlir/Utils/Scheduling/SchedulingSupport.h"
 
 #include <cstdint>
+#include <filesystem>
 #include <functional>
+#include <optional>
+#include <utility>
+
 #include <llvm/ADT/ArrayRef.h>
+#include <llvm/ADT/SmallVector.h>
 #include <llvm/ADT/StringRef.h>
 #include <llvm/Support/Casting.h>
+#include <llvm/Support/Debug.h>
+#include <llvm/Support/raw_ostream.h>
+
 #include <mlir/Conversion/AffineToStandard/AffineToStandard.h>
 #include <mlir/Dialect/Affine/IR/AffineOps.h>
 #include <mlir/Dialect/Affine/Transforms/Passes.h>
@@ -44,14 +52,8 @@
 #include <mlir/Pass/PassManager.h>
 #include <mlir/Support/LLVM.h>
 #include <mlir/Support/LogicalResult.h>
-
-#include <llvm/ADT/SmallVector.h>
-#include <llvm/Support/Debug.h>
-#include <llvm/Support/raw_ostream.h>
 #include <mlir/Support/WalkResult.h>
 #include <mlir/Transforms/Passes.h>
-#include <optional>
-#include <utility>
 
 #define DEBUG_TYPE "cinm-inference"
 
@@ -423,7 +425,10 @@ struct UpmemInferAcceleratorPass
     ModuleOp module = getOperation();
     DiagnosedSilenceableFailure failed = DiagnosedSilenceableFailure::success();
 
-    const UpmemInferenceOptions upmemOpts = buildOptions();
+    UpmemInferenceOptions upmemOpts = buildOptions();
+    auto dataDumpDir = std::move(upmemOpts.inference.dumpDir);
+
+    cinm::utils::NameInventor inferenceNamer(&getContext(), "infer_");
 
     IRRewriter rewriter(module->getContext());
     module.walk([&](cinm::ComputeBlockOp computeOp) -> WalkResult {
@@ -448,6 +453,19 @@ struct UpmemInferAcceleratorPass
         return WalkResult::skip(); // not a UPMEM target
 
       UpmemInferencePlugin plugin(platform, createOpCountSimulator());
+
+      if (!dataDumpDir.empty()) {
+        auto parentFunc = computeOp->getParentOfType<SymbolOpInterface>();
+        StringRef nameHint = parentFunc && parentFunc.getNameAttr()
+                                 ? parentFunc.getName()
+                                 : "op";
+        auto name = inferenceNamer.getUniqueName(nameHint);
+        LLVM_DEBUG(llvm::dbgs() << "===== START INFERENCE " << name << " =====";
+                   llvm::dbgs() << "==================";);
+
+        auto path = std::filesystem::path(dataDumpDir);
+        upmemOpts.inference.dumpDir = path / name.str();
+      }
       TRY_IN_WALK(failed, cinm::inferAcceleratorConfig(computeOp, plugin,
                                                        upmemOpts.inference));
       return WalkResult::skip();

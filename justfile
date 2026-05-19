@@ -4,6 +4,8 @@
 # Load environment vars from .env file
 # Write LLVM_BUILD_DIR="path" into that file or set this env var in your shell.
 set dotenv-load := true
+# Allows running eg `just experiments run gemv`
+mod experiments
 
 # Make sure your LLVM is https://github.com/oowekyala/llvm-project/tree/tilefirst-llvm
 

@@ -6,6 +6,7 @@
 #include <llvm/ADT/StringRef.h>
 #include <llvm/Support/Casting.h>
 #include <mlir/Dialect/Transform/Utils/DiagnosedSilenceableFailure.h>
+#include <mlir/IR/MLIRContext.h>
 #include <mlir/IR/Operation.h>
 #include <mlir/IR/Visitors.h>
 #include <variant>
@@ -25,6 +26,8 @@ public:
 
   NameInventor(SetType &&names, MLIRContext *ctx, StringRef prefix)
       : usedNames(std::move(names)), prefix(prefix), context(ctx) {}
+  NameInventor(MLIRContext *ctx, StringRef prefix = "")
+      : usedNames(), prefix(prefix), context(ctx) {}
 
   void addUsedName(llvm::StringRef ref) { usedNames.insert(ref); }
 
@@ -53,10 +56,10 @@ using Maybe = std::variant<T, DiagnosedSilenceableFailure>;
 #define TRY_GET(expr)                                                          \
   ({                                                                           \
     auto &&_result = (expr);                                                   \
-    if (std::holds_alternative<mlir::DiagnosedSilenceableFailure>(_result)) { \
+    if (std::holds_alternative<mlir::DiagnosedSilenceableFailure>(_result)) {  \
       return std::move(std::get<1>(_result));                                  \
     }                                                                          \
-    std::get<0>(std::move(_result));                                                      \
+    std::get<0>(std::move(_result));                                           \
   })
 
 /// Check a DiagnosedSilenceableFailure result and return early if failed.
@@ -93,10 +96,9 @@ using Maybe = std::variant<T, DiagnosedSilenceableFailure>;
     auto &&_result = (expr);                                                   \
     if (!_result.succeeded()) {                                                \
       out = std::move(_result);                                                \
-      return (orElse);                                          \
+      return (orElse);                                                         \
     }                                                                          \
   })
-
 
 template <typename Op, typename Res = Op>
 static llvm::SmallVector<Res> collect(Operation *root) {
