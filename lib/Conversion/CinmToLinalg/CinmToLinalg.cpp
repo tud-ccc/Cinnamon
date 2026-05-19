@@ -74,8 +74,7 @@ static Value buildGemmInit(OpBuilder &b, Location loc, Value out, Value bias,
     return bias;
   Value empty = tensor::EmptyOp::create(b, loc, resultTy.getShape(),
                                           resultTy.getElementType());
-  return b
-      .create<linalg::FillOp>(loc, buildZero(b, loc, resultTy.getElementType()),
+  return linalg::FillOp::create(b, loc, buildZero(b, loc, resultTy.getElementType()),
                               empty)
       .getResult(0);
 }
@@ -278,8 +277,7 @@ static FailureOr<Value> emitElementwiseScalar(OpBuilder &b, Location loc,
           loc, lhs, arith::MulFOp::create(b, loc, c, v3));
       Value t = math::TanhOp::create(b, 
           loc, arith::MulFOp::create(b, loc, s2pi, inner));
-      return b
-          .create<arith::MulFOp>(
+      return arith::MulFOp::create(b, 
               loc, half,
               arith::MulFOp::create(b, loc, lhs,
                                       arith::AddFOp::create(b, loc, one, t)))
@@ -411,8 +409,7 @@ struct ConvertGemvToLinalg : public OpConversionPattern<cinm::GemvOp> {
     Value init = buildGemmInit(rewriter, loc, adaptor.getOut(),
                                adaptor.getBias(), resultTy);
 
-    Value result = rewriter
-                       .create<linalg::MatvecOp>(
+    Value result = linalg::MatvecOp::create(rewriter, 
                            loc, TypeRange{resultTy},
                            ValueRange{adaptor.getLhs(), adaptor.getRhs()},
                            ValueRange{init})
@@ -440,8 +437,7 @@ struct ConvertGemmToLinalg : public OpConversionPattern<cinm::GemmOp> {
     Value init = buildGemmInit(rewriter, loc, adaptor.getOut(),
                                adaptor.getBias(), resultTy);
 
-    Value result = rewriter
-                       .create<linalg::MatmulOp>(
+    Value result = linalg::MatmulOp::create(rewriter, 
                            loc, TypeRange{resultTy},
                            ValueRange{adaptor.getLhs(), adaptor.getRhs()},
                            ValueRange{init})
@@ -470,8 +466,7 @@ struct ConvertBatchGemmToLinalg
     Value init = buildGemmInit(rewriter, loc, adaptor.getOut(),
                                adaptor.getBias(), resultTy);
 
-    Value result = rewriter
-                       .create<linalg::BatchMatmulOp>(
+    Value result = linalg::BatchMatmulOp::create(rewriter, 
                            loc, TypeRange{resultTy},
                            ValueRange{adaptor.getLhs(), adaptor.getRhs()},
                            ValueRange{init})
@@ -563,8 +558,7 @@ struct ConvertTransposeToLinalg
     Value init = tensor::EmptyOp::create(rewriter, loc, outputShape,
                                                   inputTy.getElementType());
     Value result =
-        rewriter
-            .create<linalg::TransposeOp>(loc, adaptor.getInput1(), init, perms)
+        linalg::TransposeOp::create(rewriter, loc, adaptor.getInput1(), init, perms)
             .getResults()[0];
     rewriter.replaceOp(op, result);
     return success();

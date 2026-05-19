@@ -75,8 +75,7 @@ void convertLaunchParameter(ConversionPatternRewriter &rewriter, Location loc,
       staticOffsets, staticSizes, staticStrides);
 
   const Value subview =
-      rewriter
-          .create<memref::SubViewOp>(loc, resultType, source, threadIds,
+      memref::SubViewOp::create(rewriter, loc, resultType, source, threadIds,
                                      ValueRange{}, ValueRange{}, staticOffsets,
                                      staticSizes, staticStrides)
           .getResult();

@@ -107,10 +107,10 @@ declareStringConstant(ModuleOp moduleOp, Location loc, StringRef value,
   str = getUniqueFunctionName(moduleOp, globalName.value_or(twine));
 
   builder.setInsertionPointToStart(&moduleOp.getBodyRegion().front());
-  return LLVM::GlobalOp::create(builder, 
-      loc, globalType,
-      /*isConstant=*/true, LLVM::Linkage::Private,
-      builder.getStringAttr(std::move(str)), valueAttr);
+  return LLVM::GlobalOp::create(builder, loc, globalType,
+                                /*isConstant=*/true, LLVM::Linkage::Private,
+                                builder.getStringAttr(std::move(str)),
+                                valueAttr);
 }
 
 static Value reifyAsString(ImplicitLocOpBuilder &builder, ModuleOp container,
@@ -248,10 +248,11 @@ public:
   matchAndRewrite(upmem::AllocDPUsOp op, typename upmem::AllocDPUsOp::Adaptor,
                   ConversionPatternRewriter &rewriter) const override {
     const DeviceHierarchyType hierarchyShape = op.getResult().getType();
-    const Value rankCount = LLVM::ConstantOp::create(rewriter, 
-        op.getLoc(), rewriter.getI32IntegerAttr(hierarchyShape.getNumRanks()));
-    const Value dpuCount = LLVM::ConstantOp::create(rewriter, 
-        op.getLoc(),
+    const Value rankCount = LLVM::ConstantOp::create(
+        rewriter, op.getLoc(),
+        rewriter.getI32IntegerAttr(hierarchyShape.getNumRanks()));
+    const Value dpuCount = LLVM::ConstantOp::create(
+        rewriter, op.getLoc(),
         rewriter.getI32IntegerAttr(hierarchyShape.getNumDpusPerRank()));
 
     const auto maybeFailed = createConstantForDpuProgramName(rewriter, op);
@@ -309,8 +310,9 @@ outlineAffineMap(ImplicitLocOpBuilder &rewriter,
     return existingOp;
   auto funName = getUniqueFunctionName(moduleOp, "scatter_map");
   rewriter.setInsertionPointToStart(&moduleOp.getBodyRegion().front());
-  auto affineMapFun = LLVM::LLVMFuncOp::create(rewriter, 
-      rewriter.getStringAttr(funName), affineFunTy, LLVM::Linkage::Private);
+  auto affineMapFun =
+      LLVM::LLVMFuncOp::create(rewriter, rewriter.getStringAttr(funName),
+                               affineFunTy, LLVM::Linkage::Private);
 
   // to find it later
   affineMapFun->setAttr("upmem.generated_from", AffineMapAttr::get(*linearMap));
@@ -363,7 +365,7 @@ static LogicalResult lowerScatterOrGather(Op op, typename Op::Adaptor adaptor,
 
   if (llvm::failed(runtimeScatterFun))
     return failure();
-  auto funPtrOp = rewriter0.create<LLVM::AddressOfOp>(loc, *affineMapFunOpt);
+  auto funPtrOp = LLVM::AddressOfOp::create(rewriter0, loc, *affineMapFunOpt);
   auto bufferId =
       reifyAsString(rewriter, moduleOp, op.getDpuBufRef(), "buffer_name");
   // Transfer count must be 8-byte aligned
@@ -374,14 +376,15 @@ static LogicalResult lowerScatterOrGather(Op op, typename Op::Adaptor adaptor,
   if (isa<LLVM::LLVMStructType>(adaptor.getHostBuffer().getType())) {
     // Here we compute the pointer to the start of the memref
     // converted memref
-    Value basePtr =
-        rewriter0.create<LLVM::ExtractValueOp>(loc, adaptor.getHostBuffer(), 1);
-    Value offset =
-        rewriter0.create<LLVM::ExtractValueOp>(loc, adaptor.getHostBuffer(), 2);
+    Value basePtr = LLVM::ExtractValueOp::create(rewriter0, loc,
+                                                 adaptor.getHostBuffer(), 1);
+    Value offset = LLVM::ExtractValueOp::create(rewriter0, loc,
+                                                adaptor.getHostBuffer(), 2);
     // need to do our own pointer arithmetic here
-    bareHostBuf = rewriter0.create<LLVM::GEPOp>(
-        loc, basePtr.getType(), op.getHostBuffer().getType().getElementType(),
-        basePtr, ValueRange{offset});
+    bareHostBuf =
+        LLVM::GEPOp::create(rewriter0, loc, basePtr.getType(),
+                            op.getHostBuffer().getType().getElementType(),
+                            basePtr, ValueRange{offset});
   } else {
     return emitError(op->getLoc(), "Unhandled buffer type: ")
            << adaptor.getHostBuffer().getType();
@@ -399,7 +402,7 @@ static LogicalResult lowerScatterOrGather(Op op, typename Op::Adaptor adaptor,
   const size_t numElementsPerTasklet = numElements / numTasklets;
 
   /*
-  void upmemrt_dpu_scatter( struct dpu_set_t *dpu_set, 
+  void upmemrt_dpu_scatter( struct dpu_set_t *dpu_set,
                             void *hostBuffer,
                             size_t element_size,
                             size_t num_elements,
@@ -408,8 +411,8 @@ static LogicalResult lowerScatterOrGather(Op op, typename Op::Adaptor adaptor,
                             const char *bufId,
                             size_t (*base_offset)(size_t))
   */
-  rewriter0.create<LLVM::CallOp>(
-      loc, *runtimeScatterFun,
+  LLVM::CallOp::create(
+      rewriter0, loc, *runtimeScatterFun,
       ValueRange{adaptor.getHierarchy(), bareHostBuf,
                  reifyAsIndex(rewriter, tyConverter, elementSize),
                  reifyAsIndex(rewriter, tyConverter, numElements),

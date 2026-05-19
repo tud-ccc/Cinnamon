@@ -113,12 +113,13 @@ struct ConvertCinmComputeToCim
                              rewriter.getI64IntegerAttr(vals[1]));
       }
     }
-    auto acquireXB = cim::AcquireCrossbarOp::create(rewriter, 
-        op.getLoc(), acquireDev.getResult(), xbAttrs);
+    auto acquireXB = cim::AcquireCrossbarOp::create(
+        rewriter, op.getLoc(), acquireDev.getResult(), xbAttrs);
 
     Operation &lastOp = op.getBody().back().back();
     rewriter.setInsertionPointAfter(&lastOp);
-    cim::ReleaseCrossbarOp::create(rewriter, op.getLoc(), acquireXB.getResult());
+    cim::ReleaseCrossbarOp::create(rewriter, op.getLoc(),
+                                   acquireXB.getResult());
     cim::ReleaseDeviceOp::create(rewriter, op.getLoc(), acquireDev.getResult());
 
     rewriter.finalizeOpModification(op);
@@ -201,12 +202,7 @@ struct LowerCinmActivate : public OpConversionPattern<cinm::ElementwiseOp> {
 
     auto futTy = cim::FutureType::get(outTy.getShape(), outTy.getElementType());
 
-    OperationState st(loc, cim::ActivateOp::getOperationName());
-    st.addTypes(futTy);
-    st.addOperands(src);
-    st.addAttribute(
-        "kind", cim::ActivationKindAttr::get(rewriter.getContext(), *cimKind));
-    Operation *act = rewriter.create(st);
+    auto act = cim::ActivateOp::create(rewriter, loc, futTy, *cimKind, src);
     Value fut = act->getResult(0);
 
     Value y = cim::BarrierOp::create(rewriter, loc, outTy, fut).getResult();
@@ -240,19 +236,9 @@ struct LowerCinmQuantize : public OpConversionPattern<cinm::QuantizeOp> {
 
     auto futTy = cim::FutureType::get(outTy.getShape(), outTy.getElementType());
 
-    OperationState st(loc, cim::QuantizeOp::getOperationName());
-    st.addTypes(futTy);
-    st.addOperands({xb, src});
-    st.addAttribute("scale", op.getScaleAttr());
-    st.addAttribute("zeroPoint", op.getZeroPointAttr());
-    if (auto axis = op.getAxisAttr())
-      st.addAttribute("axis", axis);
-    st.addAttribute("rounding",
-                    cim::RoundingModeAttr::get(rewriter.getContext(),
-                                               mapRounding(op.getRounding())));
-    st.addAttribute("narrowRange", rewriter.getBoolAttr(op.getNarrowRange()));
-
-    auto *qOp = rewriter.create(st);
+    auto qOp = cim::QuantizeOp::create(
+        rewriter, loc, futTy, xb, src, op.getScale(), op.getZeroPoint(),
+        op.getAxisAttr(), mapRounding(op.getRounding()), op.getNarrowRange());
     Value fut = qOp->getResult(0);
 
     Value y = cim::BarrierOp::create(rewriter, loc, outTy, fut).getResult();
@@ -286,15 +272,9 @@ struct LowerCinmDequantize : public OpConversionPattern<cinm::DequantizeOp> {
 
     auto futTy = cim::FutureType::get(outTy.getShape(), outTy.getElementType());
 
-    OperationState st(loc, cim::DequantizeOp::getOperationName());
-    st.addTypes(futTy);
-    st.addOperands({xb, src});
-    st.addAttribute("scale", op.getScaleAttr());
-    st.addAttribute("zeroPoint", op.getZeroPointAttr());
-    if (auto axis = op.getAxisAttr())
-      st.addAttribute("axis", axis);
-
-    auto *dqOp = rewriter.create(st);
+    auto dqOp =
+        cim::DequantizeOp::create(rewriter, loc, futTy, xb, src, op.getScale(),
+                                  op.getZeroPoint(), op.getAxisAttr());
     Value fut = dqOp->getResult(0);
 
     Value y = cim::BarrierOp::create(rewriter, loc, outTy, fut).getResult();
@@ -321,8 +301,8 @@ struct LowerCinmGemm : public OpConversionPattern<cinm::GemmOp> {
 
     Location loc = op.getLoc();
 
-    Value A = toMemrefLike(rewriter, loc, op.getLhs());
-    Value B = toMemrefLike(rewriter, loc, op.getRhs());
+    Value A = toMemrefLike(rewriter, loc, adaptor.getLhs());
+    Value B = toMemrefLike(rewriter, loc, adaptor.getRhs());
     Value C = op.getResult();
 
     auto CTy = dyn_cast<MemRefType>(C.getType());
