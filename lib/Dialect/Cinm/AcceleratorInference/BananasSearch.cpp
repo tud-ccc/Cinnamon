@@ -35,6 +35,11 @@ Configuration CandidatePool::operator[](size_t i) const {
 }
 
 void CandidatePool::recordObservation(size_t idx, double cost) {
+  if (nObs >= Xo.n_cols) {
+    const size_t newCols = Xo.n_cols + 32;
+    Xo.resize(Xo.n_rows, newCols);
+    yo.resize(1, newCols);
+  }
   Configuration conf;
   space_->at(idx, conf);
   for (size_t d = 0; d < space_->size(); ++d)
