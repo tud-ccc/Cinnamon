@@ -2,7 +2,7 @@
 
 run FILE *ARGS: 
     mkdir -p data/{{FILE}}
-    cinm-opt {{FILE}}.mlir --cinm-assign-platforms --cinm-isolate-compute-blocks --upmem-infer-accelerator={{ if ARGS != "" { ARGS + "\\ " } else { "" } }}dump-dir=data/{{FILE}} \
+    cinm-opt {{FILE}}.mlir --cinm-assign-platforms --cinm-isolate-compute-blocks "--upmem-infer-accelerator={{ if ARGS != "" { ARGS + " " } else { "" } }}dump-dir=data/{{FILE}}" \
       --mlir-print-ir-after-failure --split-input-file --debug-only=cinm-inference 2> data/{{FILE}}/foo.log > data/{{FILE}}/out.mlir --mlir-disable-threading
     $(realpath ../.venv/bin/python) plot_bayes_pool.py data/{{FILE}}/*/pool.csv
     
