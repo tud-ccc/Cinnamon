@@ -207,16 +207,16 @@ struct InferencePlugin {
 
 struct InferenceOptions {
   /// Total number of valid evaluations (LHS init + surrogate-guided).
-  int maxEvals = 50;
+  int maxEvals = 100;
   /// Number of configurations evaluated in the LHS initialisation phase
   /// before the surrogate model takes over.  Must be ≤ maxEvals.
-  int nInit = 10;
+  int nInit = 20;
 
   int rngSeed = 42;
 
   // Surrogate model (BANANAS) hyperparameters.
   double kappa = 2.0; ///< UCB exploration weight
-  int epochs = 400;   ///< Training epochs per ensemble member
+  int epochs = 5000;   ///< Training epochs per ensemble member
   int nEnsemble = 7;  ///< Number of MLP ensemble members
   int hidden = 64;    ///< Hidden layer width
   int depth = 2;      ///< Number of hidden layers

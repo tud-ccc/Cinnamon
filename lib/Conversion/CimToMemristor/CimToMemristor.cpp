@@ -83,9 +83,8 @@ struct ConvertCimGemvToMemristor : OpConversionPattern<cim::GemvOp> {
 
     // Allocate result tensor and create memref views.
     auto outTensorTy = RankedTensorType::get({rows}, elemTy);
-    Value outTensor = rewriter
-                          .create<bufferization::AllocTensorOp>(
-                              loc, outTensorTy, ValueRange{})
+    Value outTensor = bufferization::AllocTensorOp ::create(
+                          rewriter, loc, outTensorTy, ValueRange{})
                           .getResult();
     auto outMemTy = MemRefType::get({rows}, elemTy);
     Value Y =
@@ -128,9 +127,8 @@ struct ConvertCimGemmToMemristor : OpConversionPattern<cim::GemmOp> {
 
     // Allocate result tensor (MxN) and create memref views.
     auto outTensorTy = RankedTensorType::get({M, N}, elemTy);
-    Value outTensor = rewriter
-                          .create<bufferization::AllocTensorOp>(
-                              loc, outTensorTy, ValueRange{})
+    Value outTensor = bufferization::AllocTensorOp::create(
+                          rewriter, loc, outTensorTy, ValueRange{})
                           .getResult();
     auto outMemTy = MemRefType::get({M, N}, elemTy);
     Value C =
@@ -161,8 +159,8 @@ struct ConvertCimAcquireToMemristor
     for (Operation *user : llvm::make_early_inc_range(deviceId.getUsers())) {
       if (!isa<cim::AcquireCrossbarOp>(user))
         continue;
-      auto c = arith::ConstantOp::create(rewriter, 
-          user->getLoc(), rewriter.getI32Type(),
+      auto c = arith::ConstantOp::create(
+          rewriter, user->getLoc(), rewriter.getI32Type(),
           rewriter.getI32IntegerAttr(nextTile++));
       user->getResult(0).replaceAllUsesWith(c.getResult());
       rewriter.eraseOp(user);
