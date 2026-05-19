@@ -225,6 +225,13 @@ struct InferenceOptions {
   /// Max number of candidate configs passed to the surrogate for ranking
   /// each round (neighbors of observed points + random draws).
   size_t nCandidates = 500;
+  /// How many discrete steps away from observed points to include as
+  /// candidates. 1 = immediate neighbors only; 2 = neighbors-of-neighbors, etc.
+  unsigned neighborDepth = 1;
+  /// When true, only the outermost frontier (exactly `neighborDepth` steps
+  /// away) is added. When false, all points within `neighborDepth` steps are
+  /// added.
+  bool neighborFrontierOnly = false;
   /// If non-empty, dump the full candidate pool to a CSV file in this
   /// directory at the end of inference. Columns: one per search param,
   /// then observed cost (empty if not evaluated), then mu / sigma / acq

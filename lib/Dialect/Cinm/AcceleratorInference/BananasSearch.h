@@ -86,8 +86,12 @@ private:
   /// Add up to `target` random valid-unvisited indices to `result`.
   void fillRandom(std::unordered_set<size_t> &result, size_t target,
                   std::mt19937 &rng);
-  /// Collect valid, unvisited grid-neighbours of all observed configurations.
-  void fillNeighbors(std::unordered_set<size_t> &result);
+  /// Collect valid, unvisited grid-neighbours of all observed configurations,
+  /// up to `depth` discrete steps away (BFS). When `frontierOnly` is true,
+  /// only nodes at exactly `depth` steps are added; otherwise all reachable
+  /// nodes within `depth` steps are added.
+  void fillNeighbors(std::unordered_set<size_t> &result, unsigned depth = 1,
+                     bool frontierOnly = false);
 };
 
 } // namespace mlir::cinm

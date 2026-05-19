@@ -296,16 +296,34 @@ void CandidatePool::fillRandom(std::unordered_set<size_t> &result,
   }
 }
 
-void CandidatePool::fillNeighbors(std::unordered_set<size_t> &result) {
-  llvm::SmallVector<size_t> nbrs;
+void CandidatePool::fillNeighbors(std::unordered_set<size_t> &result,
+                                   unsigned depth, bool frontierOnly) {
+  // BFS outward from every observed point up to `depth` steps.
+  std::unordered_set<size_t> frontier;
   Configuration conf;
   for (size_t i = 0; i < N; ++i) {
-    if (std::isnan(costByIdx(i)))
-      continue;
-    nbrs.clear();
-    space_->neighborIndices(i, nbrs);
-    for (size_t nb : nbrs)
-      tryInsert(result, nb, conf);
+    if (!std::isnan(costByIdx(i)))
+      frontier.insert(i);
+  }
+
+  llvm::SmallVector<size_t> nbrs;
+  for (unsigned d = 0; d < depth && !frontier.empty(); ++d) {
+    const bool isLastStep = (d + 1 == depth);
+    std::unordered_set<size_t> nextFrontier;
+    for (size_t src : frontier) {
+      nbrs.clear();
+      space_->neighborIndices(src, nbrs);
+      for (size_t nb : nbrs) {
+        // When frontierOnly, only insert at the last BFS level.
+        if (!frontierOnly || isLastStep) {
+          tryInsert(result, nb, conf);
+        }
+        // Always track the frontier for BFS expansion regardless.
+        if (!visited.test(nb))
+          nextFrontier.insert(nb);
+      }
+    }
+    frontier = std::move(nextFrontier);
   }
 }
 
@@ -319,7 +337,7 @@ bool CandidatePool::nextCandidateIndices(const InferenceOptions &opts,
   // Neighbours differ in exactly one dimension by one discrete step, so they
   // are the most likely region to contain a better point.
   std::unordered_set<size_t> candSet;
-  fillNeighbors(candSet);
+  fillNeighbors(candSet, opts.neighborDepth);
   // Add random candidates.
   fillRandom(candSet, opts.nCandidates, rng);
 

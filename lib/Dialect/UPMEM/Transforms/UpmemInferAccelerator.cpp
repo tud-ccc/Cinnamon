@@ -416,6 +416,8 @@ struct UpmemInferAcceleratorPass
     o.nEnsemble = nEnsemble;
     o.hidden = hidden;
     o.depth = depth;
+    o.neighborDepth = neighborDepth;
+    o.neighborFrontierOnly = neighborFrontierOnly;
     upmemOpts.annotateOpCosts = annotateOpCosts;
     o.dumpDir = dumpDir;
     return upmemOpts;
