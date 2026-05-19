@@ -59,6 +59,9 @@ struct SearchParam {
   /// Map a value to its feature
   double featurize(int64_t n) const;
 
+  /// Return the i-th distinct value of this parameter (0-indexed).
+  int64_t valueAt(size_t subIdx) const;
+
   /// Retain only values that evenly divide n; converts a range to a ValueList.
   SearchParam &keepDivisorsOf(int64_t n);
 };
@@ -114,6 +117,14 @@ struct ConfigSpace {
   int64_t get(const Configuration &config, llvm::StringRef name) const;
   /// Return true iff all registered constraints accept this configuration.
   bool isValid(const Configuration &config) const;
+
+  /// Total number of configurations in the Cartesian product (ignoring
+  /// constraints). May overflow size_t for large spaces; callers should check.
+  size_t totalSize() const;
+  /// Fill conf with the configuration at flat index idx using mixed-radix
+  /// decomposition. idx must be in [0, totalSize()). Constraints are NOT
+  /// checked — call isValid() on the result if needed.
+  void at(size_t idx, Configuration &conf) const;
 
   void dump(llvm::raw_ostream &, const Configuration &) const;
 };

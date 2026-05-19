@@ -128,6 +128,18 @@ SearchParam &SearchParam::keepDivisorsOf(int64_t n) {
   return *this;
 }
 
+int64_t SearchParam::valueAt(size_t subIdx) const {
+  return std::visit(
+      [subIdx](auto &&d) -> int64_t {
+        using T = std::decay_t<decltype(d)>;
+        if constexpr (std::is_same_v<T, IntRange>)
+          return d.lo + static_cast<int64_t>(subIdx) * d.step;
+        else
+          return d.values[subIdx];
+      },
+      domain);
+}
+
 // ===----------------------------------------------------------------------===//
 // SearchParam factories
 // ===----------------------------------------------------------------------===//
@@ -172,6 +184,23 @@ bool ConfigSpace::isValid(const Configuration &config) const {
     if (!c(wrapper))
       return false;
   return true;
+}
+
+size_t ConfigSpace::totalSize() const {
+  size_t n = 1;
+  for (const auto &p : params)
+    n *= static_cast<size_t>(p.cardinality());
+  return n;
+}
+
+void ConfigSpace::at(size_t idx, Configuration &conf) const {
+  const size_t D = params.size();
+  conf.resize(D);
+  for (size_t i = D; i-- > 0;) {
+    size_t card = static_cast<size_t>(params[i].cardinality());
+    conf[i] = params[i].valueAt(idx % card);
+    idx /= card;
+  }
 }
 
 void ConfigSpace::dump(llvm::raw_ostream &out,
