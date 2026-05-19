@@ -228,11 +228,13 @@ size_t ConfigSpace::indexOf(const Configuration &conf) const {
 void ConfigSpace::neighborIndices(size_t idx,
                                   llvm::SmallVectorImpl<size_t> &result) const {
   const size_t D = params.size();
-  // Compute per-dimension strides (stride[d] = product of cardinalities of d+1..D-1).
+  // Compute per-dimension strides (stride[d] = product of cardinalities of
+  // d+1..D-1).
   llvm::SmallVector<size_t, 8> stride(D);
   stride[D - 1] = 1;
   for (size_t i = D - 1; i-- > 0;)
-    stride[i] = stride[i + 1] * static_cast<size_t>(params[i + 1].cardinality());
+    stride[i] =
+        stride[i + 1] * static_cast<size_t>(params[i + 1].cardinality());
 
   for (size_t d = 0; d < D; ++d) {
     size_t card = static_cast<size_t>(params[d].cardinality());
@@ -375,10 +377,9 @@ struct InferenceTask {
 
     CandidatePool pool(space, static_cast<size_t>(options.maxEvals));
 
-    LLVM_DEBUG(llvm::dbgs() << "[cinm-inference] Pool: "
-                            << (pool.size() - pool.numVisited())
-                            << " valid configs (" << pool.size()
-                            << " total)\n");
+    LLVM_DEBUG(llvm::dbgs()
+               << "[cinm-inference] Pool: " << (pool.size() - pool.numVisited())
+               << " valid configs (" << pool.size() << " total)\n");
 
     if (pool.empty())
       return emitSilenceableFailure(
@@ -504,6 +505,34 @@ InferencePlugin::commitBestCandidate(cinm::ComputeBlockOp original,
   // moved into the original module alongside the body.
   auto hostFunc = bestTrial.computeBlock->getParentOfType<func::FuncOp>();
 
+  // Move all top-level ops that the pipeline introduced into the trial module
+  // (e.g. kernel functions, globals) into the original module. We skip the
+  // host func wrapper — its compute block body was already taken above.
+  ModuleOp originalModule = original->getParentOfType<ModuleOp>();
+  auto *destBlock = originalModule.getBody();
+
+  // We take care of renaming symbols if needed.
+  // This needs to happen before we move the body of 
+  // the compute block to its destination.
+
+  SymbolTable dest(originalModule);
+  SymbolTable src(bestTrial.module.get());
+
+  SmallVector<Operation *> extraOps;
+  for (Operation &op : *bestTrial.module.get().getBody()) {
+    if (&op == hostFunc)
+      continue;
+    if (op.hasTrait<SymbolOpInterface::Trait>()) {
+      if (failed(src.renameToUnique(&op, {&dest})))
+        LLVM_DEBUG(llvm::dbgs()
+                   << "Could not rename " << op << " to unique name");
+    }
+    extraOps.push_back(&op);
+  }
+  for (auto *op : extraOps) {
+    op->moveBefore(destBlock, destBlock->end());
+  }
+
   original.getBody().takeBody(bestTrial.computeBlock.getBody());
   original.setAcceleratorAttr(bestTrial.computeBlock.getAcceleratorAttr());
 
@@ -526,20 +555,6 @@ InferencePlugin::commitBestCandidate(cinm::ComputeBlockOp original,
       yieldOpnd.set(cast->getResult(0));
     }
   }
-
-  // Move all top-level ops that the pipeline introduced into the trial module
-  // (e.g. kernel functions, globals) into the original module. We skip the
-  // host func wrapper — its compute block body was already taken above.
-  ModuleOp originalModule = original->getParentOfType<ModuleOp>();
-  Block *moduleBody = &originalModule.getBodyRegion().front();
-
-  SmallVector<Operation *> extraOps;
-  for (Operation &op : *bestTrial.module.get().getBody())
-    if (&op != hostFunc.getOperation())
-      extraOps.push_back(&op);
-
-  for (Operation *op : extraOps)
-    op->moveBefore(moduleBody, moduleBody->end());
 
   return DiagnosedSilenceableFailure::success();
 }
