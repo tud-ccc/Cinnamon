@@ -7,12 +7,11 @@
 #include <filesystem>
 #include <fstream>
 #include <limits>
+#include <llvm/ADT/STLExtras.h>
 #include <llvm/Support/Debug.h>
 #include <memory>
 #include <numeric>
 #include <random>
-#include <unordered_set>
-#include <variant>
 
 #define DEBUG_TYPE "cinm-inference"
 
@@ -22,46 +21,31 @@ namespace mlir::cinm {
 // CandidatePool construction
 // ===----------------------------------------------------------------------===//
 
-struct ConfigHash {
-  size_t operator()(const Configuration &c) const {
-    size_t h = c.size();
-    for (int64_t v : c)
-      h ^= static_cast<size_t>(v) + 0x9e3779b9u + (h << 6) + (h >> 2);
-    return h;
-  }
-};
+CandidatePool::CandidatePool(const ConfigSpace &space, size_t evalBudget)
+    : space_(&space), N(space.totalSize()), visited(static_cast<unsigned>(N)),
+      Xo(space.size(), evalBudget), yo(1, evalBudget),
+      costByIdx(arma::rowvec(N).fill(arma::datum::nan)) {}
 
-CandidatePool CandidatePool::sample(const ConfigSpace &space, size_t maxPool,
-                                    std::mt19937 &rng) {
-  const size_t D = space.size();
-  std::vector<Configuration> configs;
-  std::unordered_set<Configuration, ConfigHash> seen;
-  configs.reserve(maxPool);
+size_t CandidatePool::nDims() const { return space_->size(); }
 
-  for (size_t tries = 0, limit = maxPool * 50;
-       tries < limit && configs.size() < maxPool; ++tries) {
-    Configuration config(D);
-    for (size_t i = 0; i < D; ++i) {
-      std::uniform_real_distribution<double> dist(space[i].dlo(),
-                                                  space[i].dhi());
-      config[i] = space[i].discretize(dist(rng));
-    }
-    if (space.isValid(config) && seen.insert(config).second)
-      configs.push_back(config);
-  }
-
-  // Encode into D×N arma::mat (column-major: sample i is column i).
-  const size_t N = configs.size();
-  arma::mat encoded(D, N);
-  for (size_t i = 0; i < N; ++i) {
-    for (size_t d = 0; d < D; ++d) {
-      auto &dim = space[d];
-      encoded(d, i) = dim.featurize(configs[i][d]);
-    }
-  }
-
-  return CandidatePool(std::move(configs), std::move(encoded));
+Configuration CandidatePool::operator[](size_t i) const {
+  Configuration conf;
+  space_->at(i, conf);
+  return conf;
 }
+
+void CandidatePool::recordObservation(size_t idx, double cost) {
+  Configuration conf;
+  space_->at(idx, conf);
+  for (size_t d = 0; d < space_->size(); ++d)
+    Xo(d, nObs) = (*space_)[d].featurize(conf[d]);
+  yo(0, nObs) = cost;
+  costByIdx(idx) = cost;
+  ++nObs;
+}
+
+static arma::mat encodeSubset(const ConfigSpace &space,
+                              const std::vector<size_t> &indices);
 
 // ===----------------------------------------------------------------------===//
 // Latin Hypercube Sampling
@@ -69,34 +53,48 @@ CandidatePool CandidatePool::sample(const ConfigSpace &space, size_t maxPool,
 
 void CandidatePool::sampleInitialSet(size_t n, std::mt19937 &rng,
                                      std::function<bool(size_t)> accept) const {
-  const size_t N = size();
   const size_t D = nDims();
-  n = std::min(n, N);
-  if (n == 0)
+  if (n == 0 || N == 0)
     return;
 
-  // Per-dimension [0,1] normalisation of the already-encoded pool.
-  arma::mat normed(D, N);
+  // Collect valid, unvisited candidates for LHS distance computation.
+  std::vector<size_t> unvIdx;
+  unvIdx.reserve(N);
+  Configuration tmpConf;
+  for (size_t i = 0; i < N; ++i) {
+    if (visited.test(i))
+      continue;
+    space_->at(i, tmpConf);
+    if (space_->isValid(tmpConf))
+      unvIdx.push_back(i);
+  }
+
+  const size_t M = unvIdx.size();
+  if (M == 0)
+    return;
+  n = std::min(n, M);
+
+  arma::mat enc = encodeSubset(*space_, unvIdx);
+
+  // Per-dimension [0,1] normalisation.
+  arma::mat normed(D, M);
   for (size_t d = 0; d < D; ++d) {
-    double lo = encoded.row(d).min();
-    double hi = encoded.row(d).max();
+    double lo = enc.row(d).min();
+    double hi = enc.row(d).max();
     double range = (hi > lo) ? (hi - lo) : 1.0;
-    normed.row(d) = (encoded.row(d) - lo) / range;
+    normed.row(d) = (enc.row(d) - lo) / range;
   }
 
   std::uniform_real_distribution<double> u01(0.0, 1.0);
-  std::vector<bool> used(N, false);
+  std::vector<bool> used(M, false);
   size_t accepted = 0;
 
-  // Each iteration generates a fresh LHS batch of `want` targets and greedily
-  // matches them to unused pool candidates, calling accept() on each match.
-  // When onlyValid is false one pass suffices; when true we keep looping until
-  // n calls to accept() return true (or the pool runs dry).
+  // Keep generating LHS batches until n configurations pass accept().
   while (accepted < n) {
     size_t want = n - accepted;
 
     size_t nUnused = 0;
-    for (size_t i = 0; i < N; ++i)
+    for (size_t i = 0; i < M; ++i)
       nUnused += !used[i];
     if (nUnused == 0)
       break;
@@ -116,8 +114,8 @@ void CandidatePool::sampleInitialSet(size_t n, std::mt19937 &rng,
     // Greedy nearest-neighbour: each target → closest unused candidate.
     for (size_t t = 0; t < want && accepted < n; ++t) {
       double bestDist = std::numeric_limits<double>::max();
-      size_t bestIdx = N; // sentinel
-      for (size_t i = 0; i < N; ++i) {
+      size_t bestPos = M; // position in unvIdx
+      for (size_t i = 0; i < M; ++i) {
         if (used[i])
           continue;
         double dist = 0;
@@ -127,13 +125,13 @@ void CandidatePool::sampleInitialSet(size_t n, std::mt19937 &rng,
         }
         if (dist < bestDist) {
           bestDist = dist;
-          bestIdx = i;
+          bestPos = i;
         }
       }
-      if (bestIdx == N)
+      if (bestPos == M)
         break;
-      used[bestIdx] = true;
-      if (accept(bestIdx))
+      used[bestPos] = true;
+      if (accept(unvIdx[bestPos]))
         ++accepted;
     }
   }
@@ -245,7 +243,7 @@ struct BananasEnsemble {
 // mu exploitation gain" — a scale-independent, calibration-independent
 // trade-off that remains valid regardless of ensemble quality.
 static arma::rowvec computeAcq(const arma::rowvec &mu,
-                                const arma::rowvec &sigma, double kappa) {
+                               const arma::rowvec &sigma, double kappa) {
   auto zs = [](const arma::rowvec &v) -> arma::rowvec {
     double m = arma::mean(arma::vectorise(v));
     double s = arma::stddev(arma::vectorise(v));
@@ -258,30 +256,99 @@ static arma::rowvec computeAcq(const arma::rowvec &mu,
 // Next-candidate selection
 // ===----------------------------------------------------------------------===//
 
-bool CandidatePool::nextCandidateIndices(
-    const InferenceOptions &opts, std::function<bool(size_t)> accept) const {
-  const double kappa = opts.kappa;
-  const int epochs = opts.epochs;
-  const int nEnsemble = opts.nEnsemble;
-  const int hidden = opts.hidden;
-  const int depth = opts.depth;
+// Build a temporary D×M encoded matrix for a set of candidate pool indices.
+static arma::mat encodeSubset(const ConfigSpace &space,
+                              const std::vector<size_t> &indices) {
+  const size_t D = space.size();
+  const size_t M = indices.size();
+  arma::mat enc(D, M);
+  Configuration conf;
+  for (size_t j = 0; j < M; ++j) {
+    space.at(indices[j], conf);
+    for (size_t d = 0; d < D; ++d)
+      enc(d, j) = space[d].featurize(conf[d]);
+  }
+  return enc;
+}
 
-  // Zero-copy views of the preallocated observation matrices.
-  arma::mat Xo_obs(const_cast<double *>(Xo.memptr()), nDims(), nObs,
+bool CandidatePool::tryInsert(std::unordered_set<size_t> &result, size_t idx,
+                              Configuration &conf) {
+  if (visited.test(idx) || result.count(idx))
+    return false;
+  space_->at(idx, conf);
+  if (!space_->isValid(conf)) {
+    visited.set(idx);
+    return false;
+  }
+  result.insert(idx);
+  return true;
+}
+
+void CandidatePool::fillRandom(std::unordered_set<size_t> &result,
+                               size_t target, std::mt19937 &rng) {
+  if (result.size() >= target || N == 0)
+    return;
+  std::uniform_int_distribution<size_t> dist(0, N - 1);
+  Configuration conf;
+  for (size_t tries = 0; tries < target * 10 && result.size() < target;
+       ++tries) {
+    tryInsert(result, dist(rng), conf);
+  }
+}
+
+void CandidatePool::fillNeighbors(std::unordered_set<size_t> &result) {
+  llvm::SmallVector<size_t> nbrs;
+  Configuration conf;
+  for (size_t i = 0; i < N; ++i) {
+    if (std::isnan(costByIdx(i)))
+      continue;
+    nbrs.clear();
+    space_->neighborIndices(i, nbrs);
+    for (size_t nb : nbrs)
+      tryInsert(result, nb, conf);
+  }
+}
+
+bool CandidatePool::nextCandidateIndices(const InferenceOptions &opts,
+                                         std::mt19937 &rng,
+                                         std::function<bool(size_t)> accept) {
+  const size_t D = nDims();
+
+  // --- Build candidate set ---
+  // Start with the grid-neighbours of every already-observed configuration.
+  // Neighbours differ in exactly one dimension by one discrete step, so they
+  // are the most likely region to contain a better point.
+  std::unordered_set<size_t> candSet;
+  fillNeighbors(candSet);
+  // Add random candidates.
+  fillRandom(candSet, opts.nCandidates, rng);
+
+  if (candSet.empty())
+    return false;
+  assert(llvm::all_of(candSet, [&](auto idx) {
+    Configuration conf;
+    space_->at(idx, conf);
+    return space_->isValid(conf);
+  }));
+
+  std::vector<size_t> candIdx(candSet.begin(), candSet.end());
+  arma::mat candEncoded = encodeSubset(*space_, candIdx);
+
+  // --- Fit surrogate and rank candidates ---
+  arma::mat Xo_obs(const_cast<double *>(Xo.memptr()), D, nObs,
                    /*copy=*/false, /*strict=*/true);
   arma::mat yo_obs(const_cast<double *>(yo.memptr()), 1, nObs,
                    /*copy=*/false, /*strict=*/true);
 
-  BananasEnsemble ensemble(nEnsemble, hidden, depth);
-  ensemble.fit(Xo_obs, yo_obs, epochs);
-  auto [mu, sigma] = ensemble.predict(encoded);
+  BananasEnsemble ensemble(opts.nEnsemble, opts.hidden, opts.depth);
+  ensemble.fit(Xo_obs, yo_obs, opts.epochs);
+  auto [mu, sigma] = ensemble.predict(candEncoded);
 
-  arma::rowvec scores = computeAcq(mu, sigma, kappa);
+  arma::rowvec scores = computeAcq(mu, sigma, opts.kappa);
   arma::uvec order = arma::sort_index(scores, "ascend");
 
   for (size_t i = 0; i < order.n_elem; ++i) {
-    size_t idx = order(i);
-    if (!visited.test(idx) && accept(idx))
+    if (accept(candIdx[order(i)]))
       return true;
   }
   return false;
@@ -304,10 +371,23 @@ void CandidatePool::dumpToCSV(const ConfigSpace &space,
                           << "- " << nObs << " / " << visited.count()
                           << " successful trials\n");
 
+  // Collect all valid (constraint-passing) pool indices for surrogate
+  // prediction. Invalid configs get no surrogate columns in the output.
+  std::vector<size_t> validIdx;
+  {
+    Configuration conf;
+    for (size_t i = 0; i < N; ++i) {
+      space_->at(i, conf);
+      if (space_->isValid(conf))
+        validIdx.push_back(i);
+    }
+  }
+
   // Refit the ensemble on all observations to get per-candidate statistics.
   // Skipped when we have too few points to train on.
-  const bool hasModel = nObs >= 2;
-  arma::rowvec mu, sigma, acq;
+  const bool hasModel = nObs >= 2 && !validIdx.empty();
+  // Per-valid-index predictions; indexed by position in validIdx.
+  arma::rowvec mu_v, sigma_v, acq_v;
   if (hasModel) {
     arma::mat Xo_obs(const_cast<double *>(Xo.memptr()), nDims(), nObs,
                      /*copy=*/false, /*strict=*/true);
@@ -315,11 +395,17 @@ void CandidatePool::dumpToCSV(const ConfigSpace &space,
                      /*copy=*/false, /*strict=*/true);
     BananasEnsemble ensemble(opts.nEnsemble, opts.hidden, opts.depth);
     ensemble.fit(Xo_obs, yo_obs, opts.epochs);
-    auto [m, s] = ensemble.predict(encoded);
-    mu = m;
-    sigma = s;
-    acq = computeAcq(mu, sigma, opts.kappa);
+    arma::mat validEncoded = encodeSubset(*space_, validIdx);
+    auto [m, s] = ensemble.predict(validEncoded);
+    mu_v = m;
+    sigma_v = s;
+    acq_v = computeAcq(mu_v, sigma_v, opts.kappa);
   }
+
+  // Build reverse map: pool index → position in validIdx.
+  std::unordered_map<size_t, size_t> validPos;
+  for (size_t j = 0; j < validIdx.size(); ++j)
+    validPos[validIdx[j]] = j;
 
   // Header
   for (const auto &p : space.params)
@@ -330,15 +416,24 @@ void CandidatePool::dumpToCSV(const ConfigSpace &space,
   out << "\n";
 
   // One row per pool member
-  for (size_t i = 0; i < configs.size(); ++i) {
-    for (int64_t v : configs[i])
+  Configuration conf;
+  for (size_t i = 0; i < N; ++i) {
+    space_->at(i, conf);
+    for (int64_t v : conf)
       out << v << ",";
     out << (visited.test(i) ? 1 : 0) << ",";
     double c = costByIdx(i);
     if (!std::isnan(c))
       out << c;
-    if (hasModel)
-      out << "," << mu(i) << "," << sigma(i) << "," << acq(i);
+    if (hasModel) {
+      auto it = validPos.find(i);
+      if (it != validPos.end()) {
+        size_t j = it->second;
+        out << "," << mu_v(j) << "," << sigma_v(j) << "," << acq_v(j);
+      } else {
+        out << ",,,"; // invalid config — no surrogate prediction
+      }
+    }
     out << "\n";
   }
 }

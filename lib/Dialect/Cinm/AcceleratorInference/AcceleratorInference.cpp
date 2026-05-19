@@ -140,6 +140,20 @@ int64_t SearchParam::valueAt(size_t subIdx) const {
       domain);
 }
 
+size_t SearchParam::subIndexOf(int64_t value) const {
+  return std::visit(
+      [value](auto &&d) -> size_t {
+        using T = std::decay_t<decltype(d)>;
+        if constexpr (std::is_same_v<T, IntRange>)
+          return static_cast<size_t>((value - d.lo) / d.step);
+        else {
+          auto it = std::find(d.values.begin(), d.values.end(), value);
+          return static_cast<size_t>(std::distance(d.values.begin(), it));
+        }
+      },
+      domain);
+}
+
 // ===----------------------------------------------------------------------===//
 // SearchParam factories
 // ===----------------------------------------------------------------------===//
@@ -200,6 +214,33 @@ void ConfigSpace::at(size_t idx, Configuration &conf) const {
     size_t card = static_cast<size_t>(params[i].cardinality());
     conf[i] = params[i].valueAt(idx % card);
     idx /= card;
+  }
+}
+
+size_t ConfigSpace::indexOf(const Configuration &conf) const {
+  size_t idx = 0;
+  for (size_t i = 0; i < params.size(); ++i)
+    idx = idx * static_cast<size_t>(params[i].cardinality()) +
+          params[i].subIndexOf(conf[i]);
+  return idx;
+}
+
+void ConfigSpace::neighborIndices(size_t idx,
+                                  llvm::SmallVectorImpl<size_t> &result) const {
+  const size_t D = params.size();
+  // Compute per-dimension strides (stride[d] = product of cardinalities of d+1..D-1).
+  llvm::SmallVector<size_t, 8> stride(D);
+  stride[D - 1] = 1;
+  for (size_t i = D - 1; i-- > 0;)
+    stride[i] = stride[i + 1] * static_cast<size_t>(params[i + 1].cardinality());
+
+  for (size_t d = 0; d < D; ++d) {
+    size_t card = static_cast<size_t>(params[d].cardinality());
+    size_t subIdx = (idx / stride[d]) % card;
+    if (subIdx > 0)
+      result.push_back(idx - stride[d]);
+    if (subIdx < card - 1)
+      result.push_back(idx + stride[d]);
   }
 }
 
@@ -332,12 +373,12 @@ struct InferenceTask {
       return std::move(trial);
     }
 
-    const size_t maxPool =
-        std::max<size_t>(500, static_cast<size_t>(options.maxEvals) * 10);
-    auto pool = CandidatePool::sample(space, maxPool, rng);
+    CandidatePool pool(space, static_cast<size_t>(options.maxEvals));
 
-    LLVM_DEBUG(llvm::dbgs() << "[cinm-inference] Pool: " << pool.size()
-                            << " valid configs (max " << maxPool << ")\n");
+    LLVM_DEBUG(llvm::dbgs() << "[cinm-inference] Pool: "
+                            << (pool.size() - pool.numVisited())
+                            << " valid configs (" << pool.size()
+                            << " total)\n");
 
     if (pool.empty())
       return emitSilenceableFailure(
@@ -372,7 +413,7 @@ struct InferenceTask {
         continue;
       }
 
-      auto succeeded = pool.nextCandidateIndices(options, evalConf);
+      auto succeeded = pool.nextCandidateIndices(options, rng, evalConf);
 
       if (!succeeded)
         break;

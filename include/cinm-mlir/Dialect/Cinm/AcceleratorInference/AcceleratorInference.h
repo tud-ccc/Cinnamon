@@ -61,6 +61,8 @@ struct SearchParam {
 
   /// Return the i-th distinct value of this parameter (0-indexed).
   int64_t valueAt(size_t subIdx) const;
+  /// Return the sub-index of value within this parameter's domain (inverse of valueAt).
+  size_t subIndexOf(int64_t value) const;
 
   /// Retain only values that evenly divide n; converts a range to a ValueList.
   SearchParam &keepDivisorsOf(int64_t n);
@@ -85,6 +87,9 @@ using Constraint = std::function<bool(const ConfWrapper)>;
 struct ConfigSpace {
   std::vector<SearchParam> params;
   std::vector<Constraint> constraints;
+
+  ConfigSpace() = default;
+  ConfigSpace(const ConfigSpace&) = delete;
 
   /// Add a fully-constructed SearchParam; returns its index in the space.
   int64_t addDim(SearchParam &&param) {
@@ -125,6 +130,12 @@ struct ConfigSpace {
   /// decomposition. idx must be in [0, totalSize()). Constraints are NOT
   /// checked — call isValid() on the result if needed.
   void at(size_t idx, Configuration &conf) const;
+  /// Convert a configuration to its flat index (inverse of at()).
+  size_t indexOf(const Configuration &conf) const;
+  /// Append to result all flat indices that are one discrete step away from
+  /// idx in any single dimension (i.e. the axis-aligned grid neighbours).
+  void neighborIndices(size_t idx,
+                       llvm::SmallVectorImpl<size_t> &result) const;
 
   void dump(llvm::raw_ostream &, const Configuration &) const;
 };
@@ -211,6 +222,9 @@ struct InferenceOptions {
   int depth = 2;      ///< Number of hidden layers
 
   bool sampleOnlyValid = true;
+  /// Max number of candidate configs passed to the surrogate for ranking
+  /// each round (neighbors of observed points + random draws).
+  size_t nCandidates = 500;
   /// If non-empty, dump the full candidate pool to a CSV file in this
   /// directory at the end of inference. Columns: one per search param,
   /// then observed cost (empty if not evaluated), then mu / sigma / acq

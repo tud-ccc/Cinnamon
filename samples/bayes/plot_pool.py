@@ -27,6 +27,10 @@ os.makedirs(out_dir, exist_ok=True)
 
 # ── Load ──────────────────────────────────────────────────────────────────────
 df = pd.read_csv(csv_path)
+DPU = 1
+RANK = 1
+df = df[df['dpus'] == DPU]
+# df = df[df['ranks'] == RANK]
 
 # Aggregate over any extra dims (ranks, dpus, …) that are not the 3 we plot.
 group_cols = ["tile_", "tile_1", "tasklets", "dpus"]
@@ -37,8 +41,6 @@ agg = df.groupby(group_cols, as_index=False).agg(
     sigma=("sigma", "mean"),
     acq=("acq", "min"),     # lowest (most promising) acquisition value
 )
-DPU_PROJECTION = 32
-agg = agg[agg['dpus'] == DPU_PROJECTION]
 
 tile0_vals   = sorted(agg["tile_"].unique())
 tile1_vals   = sorted(agg["tile_1"].unique())
@@ -75,7 +77,7 @@ def build_rgba(subset, val_col, norm, cmap, *, white_unvisited=True):
 # Returns True for invalid cells (should be greyed out).
 # m = tile_, k = tile_1, T = tasklets.  Edit this formula as needed.
 WRAM_LIMIT = 65536 / 4
-constraint_violated = lambda m, k, T: T * k * m / DPU_PROJECTION + k + T * m / DPU_PROJECTION > WRAM_LIMIT
+constraint_violated = lambda m, k, T: T * k * m / (RANK * DPU) + k + T * m / (RANK * DPU) > WRAM_LIMIT
 
 _EXTENT = [0.5, len(tile1_vals) + 0.5, 0.5, len(tile0_vals) + 0.5]
 

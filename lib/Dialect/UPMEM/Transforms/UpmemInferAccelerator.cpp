@@ -347,11 +347,14 @@ void UpmemInferencePlugin::handleOpConstraints(cinm::CinmTilingInterface op,
           auto mv = tiles[0];
           auto kv = tiles[1];
 
-          if (mv % (r * d * t) != 0)
+          auto rdt = r * d * t;
+
+          // LLVM_DEBUG(llvm::dbgs() << "==\n");
+          if (mv < rdt || mv % rdt != 0)
             return false;
-          auto wm = t * mv / (r * d);
+          auto wm = t * mv / (r * d); // fixme
           auto usage = kv * wm + kv + wm;
-          // LLVM_DEBUG(llvm::dbgs() << "total wram usage=" << usage << "\n");
+          // LLVM_DEBUG(llvm::dbgs() << "=total wram usage=" << usage << "\n");
           return usage <= wramLevel.getSizeInElements(eltTy);
         });
   }
