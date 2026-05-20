@@ -163,7 +163,7 @@ static void createTransfer(RewriterBase &rewriter, bool toWram, Location loc,
 
   auto taskletId = upmem::TaskletDimOp::create(rewriter, loc);
 
-  Operation *insertionPointReset;
+  Operation *insertionPointReset = nullptr;
   if (!isBroadcast) {
     // scatter over tasklets
     assert(mramBufTy.getRank() == wramBufTy.getRank() + 1);
