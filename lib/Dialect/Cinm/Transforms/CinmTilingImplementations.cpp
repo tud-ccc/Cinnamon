@@ -154,15 +154,14 @@ DiagnosedSilenceableFailure convertGemmlikeToTiledOps(
     parBounds.push_back(getDimOfr(rewriter, loc, rhs, i));
   const OpFoldResult kBound = getDimOfr(rewriter, loc, lhs, nBatch + 1);
 
-  ValueRange initArgs{};
+  SmallVector<Value, 1> initArgs;
   if (!out) {
     SmallVector<Value> dynamicDims;
     for (auto ofr : parBounds)
       if (auto v = ofr.dyn_cast<Value>())
         dynamicDims.push_back(v);
-    Value resultInit = tensor::EmptyOp::create(
-        rewriter, loc, cast<RankedTensorType>(resultType), dynamicDims);
-    initArgs = resultInit;
+    initArgs.push_back(tensor::EmptyOp::create(
+        rewriter, loc, cast<RankedTensorType>(resultType), dynamicDims));
   }
 
   SmallVector<Value> finals = createNestedAffineForLoops(
@@ -183,7 +182,7 @@ DiagnosedSilenceableFailure convertGemmlikeToTiledOps(
                                   outBuf);
         }
 
-        ValueRange innerIterArgInit{};
+        SmallVector<Value, 1> innerIterArgInits;
         if (!outBuf) {
           Value initTile = biasSlice;
           if (!initTile) {
@@ -193,14 +192,14 @@ DiagnosedSilenceableFailure convertGemmlikeToTiledOps(
                            DenseElementsAttr::get(tileTy, b.getZeroAttr(eltTy)))
                            .getResult();
           }
-          innerIterArgInit = insertSliceND(
+          innerIterArgInits.push_back(insertSliceND(
               b, loc, initTile, cast<TypedValue<ShapedType>>(iterArgs[0]),
-              parTiles, parIndices);
+              parTiles, parIndices));
         }
 
         SmallVector<Value, 1> reductionResult = createNestedAffineForLoops(
             b, loc, ArrayRef<OpFoldResult>{kBound}, ArrayRef<int64_t>{r},
-            innerIterArgInit,
+            innerIterArgInits,
             [&, nBatch, nPar](OpBuilder &b, Location loc, ValueRange indices,
                               ValueRange innerIterArgs) -> SmallVector<Value> {
               const Value k = indices[0];
