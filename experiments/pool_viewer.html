@@ -661,6 +661,15 @@ function setMode(m) {
 document.getElementById('btn-agg').addEventListener('click',   () => setMode('agg'));
 document.getElementById('btn-slice').addEventListener('click', () => setMode('slice'));
 
+// Auto-load CSV from ?csv= query param (used by view_pool.py).
+{
+  const p = new URLSearchParams(window.location.search).get('csv');
+  if (p) fetch(p)
+    .then(r => { if (!r.ok) throw new Error(`HTTP ${r.status}`); return r.text(); })
+    .then(loadText)
+    .catch(e => console.error('Auto-load failed:', e));
+}
+
 // ─────────────────────────────────────────────
 // Event wiring
 // ─────────────────────────────────────────────

@@ -5,6 +5,9 @@ run FILE *ARGS:
     cinm-opt {{FILE}}.mlir --cinm-assign-platforms --cinm-isolate-compute-blocks "--upmem-infer-accelerator={{ if ARGS != "" { ARGS + " " } else { "" } }}dump-dir=data/{{FILE}}" \
       --mlir-print-ir-after-failure --split-input-file --debug-only=cinm-inference 2> data/{{FILE}}/{{FILE}}.log > data/{{FILE}}/out.mlir 
     $(realpath ../.venv/bin/python) plot_bayes_pool.py data/{{FILE}}/*/pool.csv
+
+view NAME:
+    $(realpath ../.venv/bin/python) view_pool.py data/{{NAME}}/pool.csv
     
 
 
