@@ -5,10 +5,9 @@
 
     // CHECK:       cinm.compute_block ({{.*}}) -> memref<8x128xi32>
     // CHECK:         %[[alloc:.*]] = memref.alloc() {{.*}} : memref<8x128xi32>
-    // CHECK:         affine.for %[[I:.*]] = 0 to 8 step 8
     // CHECK:           affine.for %[[J:.*]] = 0 to 128 step 32
     // CHECK:             memref.get_global @__constant_8x32xi32 : memref<8x32xi32>
-    // CHECK:             %[[tile:.*]] = memref.subview %[[alloc]][%[[I]], %[[J]]] [8, 32] [1, 1]
+    // CHECK:             %[[tile:.*]] = memref.subview %[[alloc]][0, %[[J]]] [8, 32] [1, 1]
     // CHECK:             memref.copy {{.*}}, %[[tile]]
     // CHECK:             affine.for %[[K:.*]] = 0 to 1024 step 128
     // CHECK:               cinm.op.gemm {{.*}} into %[[tile]]
