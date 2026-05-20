@@ -29,3 +29,5 @@ target_link_libraries(${PROJECT_NAME}
         LLVMSupport
         -Wl,$<IF:$<PLATFORM_ID:Darwin>,,--end-group>
 )
+# Information necessary for perf.
+target_compile_options(${PROJECT_NAME} PRIVATE -fno-omit-frame-pointer -g)

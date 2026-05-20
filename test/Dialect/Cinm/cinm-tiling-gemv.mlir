@@ -91,3 +91,24 @@ func.func @gemv_tensor_dynamic_m(%A: tensor<?x256xi32>, %x: tensor<256xi32>) -> 
       : tensor<?x256xi32>, tensor<256xi32> -> tensor<?xi32>
   func.return %0 : tensor<?xi32>
 }
+
+// -----
+// CHECK-LABEL: @gemv_dynamic
+// CHECK-SAME: (%[[A:.*]]: tensor<{{.*}}>, %[[x:.*]]: tensor<{{.*}}>) ->
+func.func @gemv_dynamic(%A: tensor<?x?xf32>, %x: tensor<?xf32>) -> tensor<?xf32> {
+  // Both M and K are dynamic.
+  // CHECK: %[[M:.*]] = tensor.dim %[[A]], {{.*}}
+  // CHECK: %[[K:.*]] = tensor.dim %[[A]], {{.*}}
+  // CHECK: %[[init:.*]] = tensor.empty(%[[M]]) : tensor<?xf32>
+  // CHECK: affine.for %[[i:.*]] = 0 to #[[map]](%[[M]]) step 4 iter_args(%[[acc0:.*]] = %[[init]])
+  // CHECK: %[[cst:.*]] = arith.constant dense<0.{{.*}}> : tensor<4xf32>
+  // CHECK: %[[initTile:.*]] = tensor.insert_slice %[[cst]] into %[[acc0]][%[[i]]] [4] [1] :
+  // CHECK: affine.for %[[k:.*]] = 0 to #[[map]](%[[K]]) step 64 iter_args(%[[acc1:.*]] = %[[initTile]])
+  // CHECK: %[[aTile:.*]] = tensor.extract_slice %[[A]][%[[i]], %[[k]]] [4, 64] [1, 1] :
+  // CHECK: %[[xTile:.*]] = tensor.extract_slice %[[x]][%[[k]]] [64] [1] :
+  // CHECK: %[[sliceAcc:.*]] = tensor.extract_slice %[[acc1]][%[[i]]] [4] [1] :
+  // CHECK: %[[r:.*]] = cinm.op.gemv %[[aTile]], %[[xTile]] plus %[[sliceAcc]] into %[[sliceAcc]] :
+  // CHECK: tensor.insert_slice %[[r]] into %[[acc1]][%[[i]]] [4] [1] :
+  %4 = cinm.op.gemv %A, %x {cinm.tile_sizes = array<i64: 4, 64>} : tensor<?x?xf32>, tensor<?xf32> -> tensor<?xf32>
+  return %4 : tensor<?xf32>
+}
