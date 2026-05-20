@@ -1,0 +1,705 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>BO Pool Viewer</title>
+  <script src="https://cdn.jsdelivr.net/npm/papaparse@5.4.1/papaparse.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/d3@7.9.0/dist/d3.min.js"></script>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: system-ui, sans-serif;
+      background: #181825;
+      color: #cdd6f4;
+      display: flex;
+      height: 100vh;
+      overflow: hidden;
+    }
+
+    /* ── Sidebar ── */
+    #sidebar {
+      width: 220px;
+      min-width: 220px;
+      background: #1e1e2e;
+      border-right: 1px solid #313244;
+      padding: 16px 12px;
+      display: flex;
+      flex-direction: column;
+      gap: 13px;
+      overflow-y: auto;
+    }
+    #sidebar h1 { font-size: 13px; font-weight: 700; color: #cba6f7; letter-spacing: 0.03em; }
+
+    .group { display: flex; flex-direction: column; gap: 4px; }
+    .group > label, .group > .lbl {
+      font-size: 10px;
+      color: #6c7086;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+    }
+
+    select {
+      width: 100%;
+      background: #313244;
+      color: #cdd6f4;
+      border: 1px solid #45475a;
+      border-radius: 4px;
+      padding: 5px 7px;
+      font-size: 12px;
+      cursor: pointer;
+    }
+    select:focus { outline: none; border-color: #cba6f7; }
+    select:disabled { opacity: 0.4; cursor: default; }
+
+    input[type=file] { display: none; }
+    .file-btn {
+      display: block;
+      width: 100%;
+      padding: 6px 8px;
+      background: #313244;
+      border: 1px solid #45475a;
+      border-radius: 4px;
+      color: #cdd6f4;
+      font-size: 12px;
+      cursor: pointer;
+      text-align: center;
+    }
+    .file-btn:hover { border-color: #cba6f7; }
+
+    /* Mode toggle */
+    .toggle-row {
+      display: flex;
+      gap: 6px;
+    }
+    .toggle-btn {
+      flex: 1;
+      padding: 4px 0;
+      border: 1px solid #45475a;
+      border-radius: 4px;
+      background: #313244;
+      color: #6c7086;
+      font-size: 11px;
+      cursor: pointer;
+      text-align: center;
+    }
+    .toggle-btn.active {
+      border-color: #cba6f7;
+      color: #cba6f7;
+      background: #2a273f;
+    }
+    .toggle-btn:disabled { opacity: 0.3; cursor: default; }
+
+    /* Dimension sliders */
+    #dim-sliders { display: flex; flex-direction: column; gap: 10px; }
+    .slider-group { display: flex; flex-direction: column; gap: 3px; }
+    .slider-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: baseline;
+    }
+    .slider-name { font-size: 10px; color: #6c7086; text-transform: uppercase; letter-spacing: 0.06em; }
+    .slider-val  { font-size: 12px; color: #cdd6f4; font-weight: 600; }
+    input[type=range] {
+      width: 100%;
+      accent-color: #cba6f7;
+      cursor: pointer;
+      height: 4px;
+    }
+    input[type=range]:disabled { opacity: 0.3; cursor: default; }
+
+    #status { font-size: 11px; color: #585b70; line-height: 1.5; }
+    #status b { color: #a6adc8; }
+    hr { border: none; border-top: 1px solid #313244; }
+
+    /* ── Main area ── */
+    #main {
+      flex: 1;
+      overflow: auto;
+      padding: 24px 28px;
+      display: flex;
+      flex-direction: column;
+      gap: 16px;
+    }
+
+    #drop-zone {
+      flex: 1;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      border: 2px dashed #313244;
+      border-radius: 10px;
+      color: #45475a;
+      font-size: 14px;
+      transition: border-color 0.15s;
+      user-select: none;
+    }
+    #drop-zone.drag-over { border-color: #cba6f7; color: #a6adc8; }
+
+    #heatmap-wrap { display: none; overflow: auto; }
+
+    /* ── Tooltip ── */
+    #tooltip {
+      position: fixed;
+      background: #1e1e2e;
+      border: 1px solid #45475a;
+      border-radius: 6px;
+      padding: 8px 12px;
+      font-size: 12px;
+      line-height: 1.65;
+      pointer-events: none;
+      display: none;
+      z-index: 999;
+      max-width: 260px;
+    }
+    #tooltip b { color: #cba6f7; }
+
+    /* ── SVG ── */
+    .x-axis text, .y-axis text { fill: #a6adc8; font-size: 11px; }
+    .x-axis path, .x-axis line,
+    .y-axis path, .y-axis line { stroke: #45475a; }
+    .axis-label { fill: #cdd6f4; font-size: 12px; }
+    .legend-tick text { fill: #6c7086; font-size: 10px; }
+    .legend-tick line, .legend-tick path { stroke: #45475a; }
+  </style>
+</head>
+<body>
+
+<div id="sidebar">
+  <h1>BO Pool Viewer</h1>
+
+  <div class="group">
+    <label>CSV File</label>
+    <label class="file-btn" for="file-input">Choose file…</label>
+    <input type="file" id="file-input" accept=".csv">
+  </div>
+
+  <hr>
+
+  <div class="group">
+    <label>X Axis</label>
+    <select id="sel-x" disabled></select>
+  </div>
+
+  <div class="group">
+    <label>Y Axis</label>
+    <select id="sel-y" disabled></select>
+  </div>
+
+  <div class="group">
+    <label>Metric</label>
+    <select id="sel-metric" disabled></select>
+  </div>
+
+  <div class="group">
+    <label>Facet by</label>
+    <select id="sel-facet" disabled></select>
+  </div>
+
+  <div id="facet-empty-ctrl" style="display:none" class="group">
+    <div style="display:flex;align-items:center;gap:8px;">
+      <button class="toggle-btn" id="btn-hide-empty" disabled>Hide empty</button>
+      <span id="hidden-count" style="font-size:11px;color:#585b70;"></span>
+    </div>
+  </div>
+
+  <hr>
+
+  <div class="group">
+    <div class="lbl">Other dimensions</div>
+    <div class="toggle-row">
+      <button class="toggle-btn active" id="btn-agg"  disabled>Aggregate</button>
+      <button class="toggle-btn"        id="btn-slice" disabled>Slice</button>
+    </div>
+  </div>
+
+  <!-- shown in aggregate mode -->
+  <div id="agg-section" class="group">
+    <label>Aggregation</label>
+    <select id="sel-agg" disabled>
+      <option value="min">Min</option>
+      <option value="max">Max</option>
+      <option value="mean">Mean</option>
+    </select>
+  </div>
+
+  <!-- shown in slice mode -->
+  <div id="slice-section" style="display:none">
+    <div id="dim-sliders"></div>
+  </div>
+
+  <hr>
+
+  <div class="group">
+    <label>Color scale</label>
+    <select id="sel-palette" disabled>
+      <option value="viridis">Viridis</option>
+      <option value="plasma">Plasma</option>
+      <option value="inferno">Inferno</option>
+      <option value="turbo">Turbo</option>
+      <option value="rdylgn">RdYlGn (low=red)</option>
+    </select>
+  </div>
+
+  <hr>
+  <div id="status">No file loaded.</div>
+</div>
+
+<div id="main">
+  <div id="drop-zone">Drop a pool.csv here, or use the file picker →</div>
+  <div id="heatmap-wrap"></div>
+</div>
+
+<div id="tooltip"></div>
+
+<script>
+// ─────────────────────────────────────────────
+// State
+// ─────────────────────────────────────────────
+const METRIC_COLS = new Set(['cost', 'mu', 'sigma', 'acq']);
+const META_COLS   = new Set(['visited', 'valid']);
+
+// Per-metric display defaults. 'invert' maps low→bright (better = brighter).
+const METRIC_DEFAULTS = {
+  cost:  { palette: 'viridis', invert: true  },
+  mu:    { palette: 'viridis', invert: true  },
+  acq:   { palette: 'plasma',  invert: true },
+  sigma: { palette: 'plasma',  invert: false },
+};
+
+// Applied to raw values before color-scaling and domain computation.
+const METRIC_TRANSFORM = {
+  cost: Math.log10,
+};
+
+const PALETTE = {
+  viridis:  d3.interpolateViridis,
+  plasma:   d3.interpolatePlasma,
+  inferno:  d3.interpolateInferno,
+  turbo:    d3.interpolateTurbo,
+  rdylgn:   t => d3.interpolateRdYlGn(1 - t),
+};
+
+let rows         = [];
+let dimCols      = [];
+let metricCols   = [];
+let dimUniq      = {};   // dim -> sorted unique values
+let metricDomain = {};   // metric -> [min, max] over full dataset (fixed on load)
+let mode         = 'agg'; // 'agg' | 'slice'
+let sliceIdx     = {};   // dim -> index into dimUniq[dim]
+let hasVisited   = false; // whether CSV contains a 'visited' column
+let hasValid     = false; // whether CSV contains a 'valid' column
+let facetDim        = '';    // dimension to spread into multiple heatmaps ('' = none)
+let hideEmptyFacets = false; // skip facets with no valid rows
+
+// ─────────────────────────────────────────────
+// CSV loading
+// ─────────────────────────────────────────────
+function loadText(text) {
+  const result = Papa.parse(text, { header: true, dynamicTyping: true, skipEmptyLines: true });
+  if (!result.data.length) { alert('CSV appears empty.'); return; }
+
+  rows = result.data;
+  const fields = result.meta.fields;
+
+  const firstMetricIdx = fields.findIndex(f => METRIC_COLS.has(f));
+  hasVisited = fields.includes('visited');
+  hasValid   = fields.includes('valid');
+  dimCols    = (firstMetricIdx === -1 ? fields : fields.slice(0, firstMetricIdx))
+               .filter(f => !META_COLS.has(f));
+  metricCols = firstMetricIdx === -1 ? [] : fields.slice(firstMetricIdx)
+               .filter(f => METRIC_COLS.has(f));
+
+  dimUniq = {};
+  for (const d of dimCols)
+    dimUniq[d] = [...new Set(rows.map(r => r[d]))].sort((a, b) => a - b);
+
+  // Fix color domain per metric over the entire dataset.
+  metricDomain = {};
+  for (const m of metricCols) {
+    const tf   = METRIC_TRANSFORM[m] ?? (v => v);
+    const vals = rows.map(r => r[m]).filter(Number.isFinite).map(tf).filter(Number.isFinite);
+    if (vals.length)
+      metricDomain[m] = [d3.min(vals), d3.max(vals)];
+  }
+
+  const availMetrics = metricCols.filter(m => m in metricDomain);
+
+  populate('sel-x', dimCols, 0);
+  populate('sel-y', dimCols, Math.min(1, dimCols.length - 1));
+  populate('sel-metric', availMetrics, 0);
+  applyMetricDefaults(availMetrics[0]);
+
+  ['sel-x','sel-y','sel-metric','sel-agg','sel-palette','sel-facet',
+   'btn-agg','btn-slice','btn-hide-empty'].forEach(id => {
+    const el = document.getElementById(id);
+    if (el) el.disabled = false;
+  });
+
+  sliceIdx = {};
+  for (const d of dimCols) sliceIdx[d] = 0;
+
+  const obsCount = rows.filter(r => Number.isFinite(r['cost'])).length;
+  document.getElementById('status').innerHTML =
+    `<b>${rows.length}</b> configs<br>` +
+    `<b>${obsCount}</b> observed<br>` +
+    `<b>${dimCols.length}</b> dims: ${dimCols.join(', ')}`;
+
+  document.getElementById('drop-zone').style.display = 'none';
+  document.getElementById('heatmap-wrap').style.display = 'block';
+
+  rebuildFacetSelector();
+  rebuildSliders();
+  render();
+}
+
+function applyMetricDefaults(metric) {
+  const def = METRIC_DEFAULTS[metric];
+  if (def) document.getElementById('sel-palette').value = def.palette;
+}
+
+function populate(id, options, defaultIdx) {
+  const sel = document.getElementById(id);
+  const prev = sel.value;
+  sel.innerHTML = '';
+  for (const o of options) {
+    const el = document.createElement('option');
+    el.value = el.textContent = String(o);
+    sel.appendChild(el);
+  }
+  if (options.map(String).includes(prev)) sel.value = prev;
+  else sel.selectedIndex = Math.min(defaultIdx, options.length - 1);
+}
+
+// ─────────────────────────────────────────────
+// Facet selector
+// ─────────────────────────────────────────────
+function rebuildFacetSelector() {
+  const xDim = get('sel-x');
+  const yDim = get('sel-y');
+  const sel  = document.getElementById('sel-facet');
+  const prev = facetDim;
+  sel.innerHTML = '<option value="">(none)</option>';
+  for (const d of dimCols) {
+    if (d === xDim || d === yDim) continue;
+    const el = document.createElement('option');
+    el.value = el.textContent = d;
+    sel.appendChild(el);
+  }
+  sel.value = (prev && prev !== xDim && prev !== yDim) ? prev : '';
+  facetDim = sel.value;
+}
+
+// ─────────────────────────────────────────────
+// Slice-mode sliders
+// ─────────────────────────────────────────────
+function rebuildSliders() {
+  const xDim = get('sel-x');
+  const yDim = get('sel-y');
+  const container = document.getElementById('dim-sliders');
+  container.innerHTML = '';
+
+  // Exclude X, Y, and the facet dim — facet values are iterated in render().
+  const otherDims = dimCols.filter(d => d !== xDim && d !== yDim && d !== facetDim);
+  for (const dim of otherDims) {
+    const vals = dimUniq[dim];
+    const idx  = Math.min(sliceIdx[dim] ?? 0, vals.length - 1);
+    sliceIdx[dim] = idx;
+
+    const wrap = document.createElement('div');
+    wrap.className = 'slider-group';
+    wrap.innerHTML = `
+      <div class="slider-header">
+        <span class="slider-name">${dim}</span>
+        <span class="slider-val" id="slval-${dim}">${vals[idx]}</span>
+      </div>
+      <input type="range" min="0" max="${vals.length - 1}" step="1" value="${idx}"
+             data-dim="${dim}">
+    `;
+    const input = wrap.querySelector('input');
+    input.addEventListener('input', () => {
+      sliceIdx[dim] = +input.value;
+      document.getElementById(`slval-${dim}`).textContent = dimUniq[dim][sliceIdx[dim]];
+      render();
+    });
+    container.appendChild(wrap);
+  }
+}
+
+// ─────────────────────────────────────────────
+// Aggregation helper
+// ─────────────────────────────────────────────
+function aggValues(values, method) {
+  const v = values.filter(Number.isFinite);
+  if (!v.length) return NaN;
+  if (method === 'min')  return Math.min(...v);
+  if (method === 'max')  return Math.max(...v);
+  return v.reduce((a, b) => a + b, 0) / v.length;
+}
+
+// ─────────────────────────────────────────────
+// Render
+// ─────────────────────────────────────────────
+function get(id) { return document.getElementById(id).value; }
+
+function buildGrid(sourceRows, xDim, yDim, xVals, yVals, metric) {
+  const needsCost = metric === 'cost';
+  const aggMethod = mode === 'agg' ? get('sel-agg') : 'mean';
+  const tf = METRIC_TRANSFORM[metric] ?? (v => v);
+
+  const grid = [];
+  for (const y of yVals) {
+    for (const x of xVals) {
+      let bucket = sourceRows.filter(r => r[xDim] === x && r[yDim] === y);
+
+      if (mode === 'slice') {
+        for (const dim of dimCols) {
+          if (dim === xDim || dim === yDim || dim === facetDim) continue;
+          const pinned = dimUniq[dim][sliceIdx[dim] ?? 0];
+          bucket = bucket.filter(r => r[dim] === pinned);
+        }
+      }
+
+      const aggBucket = hasValid
+        ? bucket.filter(r => r['valid'] == 1 && (!needsCost || Number.isFinite(r['cost'])))
+        : (needsCost ? bucket.filter(r => Number.isFinite(r['cost'])) : bucket);
+
+      const val         = tf(aggValues(aggBucket.map(r => r[metric]), aggMethod));
+      const nObs        = bucket.filter(r => Number.isFinite(r['cost'])).length;
+      const nVisited    = hasVisited ? bucket.filter(r => r['visited'] == 1).length : nObs;
+      const nFailed     = hasValid
+        ? bucket.filter(r => r['valid'] == 1 && r['visited'] == 1 && !Number.isFinite(r['cost'])).length
+        : 0;
+      const nUnobserved = hasValid
+        ? bucket.filter(r => r['valid'] == 1 && r['visited'] == 0).length
+        : 0;
+      const bestRow = aggBucket.filter(r => Number.isFinite(r[metric]))
+                               .reduce((b, r) => (!b || r[metric] < b[metric]) ? r : b, null);
+
+      grid.push({ x, y, value: val, nObs, nVisited, nFailed, nUnobserved, nTotal: bucket.length, bestRow });
+    }
+  }
+  return grid;
+}
+
+function render() {
+  if (!rows.length) return;
+
+  const xDim   = get('sel-x');
+  const yDim   = get('sel-y');
+  const metric = get('sel-metric');
+  const pal    = get('sel-palette');
+  const xVals  = dimUniq[xDim];
+  const yVals  = dimUniq[yDim];
+
+  const [minV, maxV] = metricDomain[metric] ?? [0, 1];
+  const invert = METRIC_DEFAULTS[metric]?.invert ?? false;
+
+  const wrap = document.getElementById('heatmap-wrap');
+  wrap.innerHTML = '';
+
+  const allFacetVals  = facetDim ? dimUniq[facetDim] : [null];
+  const isMultiFacet  = allFacetVals.length > 1;
+
+  // Filter out facet values that have no valid rows (when toggle is on).
+  let hiddenCount = 0;
+  const facetVals = allFacetVals.filter(fv => {
+    if (!isMultiFacet || fv === null || !hideEmptyFacets) return true;
+    const hasAnyValid = hasValid
+      ? rows.some(r => r[facetDim] === fv && r['valid'] == 1)
+      : rows.some(r => r[facetDim] === fv);
+    if (!hasAnyValid) { hiddenCount++; return false; }
+    return true;
+  });
+
+  // Show / update the hide-empty control.
+  document.getElementById('facet-empty-ctrl').style.display = isMultiFacet ? '' : 'none';
+  document.getElementById('btn-hide-empty').disabled = !isMultiFacet;
+  document.getElementById('hidden-count').textContent =
+    hiddenCount > 0 ? `${hiddenCount} hidden` : (hideEmptyFacets ? 'none hidden' : '');
+
+  wrap.style.display    = 'flex';
+  wrap.style.flexWrap   = 'wrap';
+  wrap.style.gap        = '24px';
+  wrap.style.alignItems = 'flex-start';
+
+  for (const fv of facetVals) {
+    const sourceRows = fv !== null ? rows.filter(r => r[facetDim] === fv) : rows;
+    const grid       = buildGrid(sourceRows, xDim, yDim, xVals, yVals, metric);
+
+    const panel = document.createElement('div');
+    if (fv !== null) {
+      const title = document.createElement('div');
+      title.textContent = `${facetDim} = ${fv}`;
+      title.style.cssText = 'color:#a6adc8;font-size:12px;font-weight:600;margin-bottom:6px;text-align:center;';
+      panel.appendChild(title);
+    }
+    wrap.appendChild(panel);
+    drawHeatmap(panel, grid, xVals, yVals, xDim, yDim, metric, pal, minV, maxV, invert);
+  }
+}
+
+// ─────────────────────────────────────────────
+// Draw
+// ─────────────────────────────────────────────
+function drawHeatmap(container, grid, xVals, yVals, xLabel, yLabel, metricLabel, palKey, minV, maxV, invert = false) {
+
+  const margin  = { top: 50, right: 90, bottom: 55, left: 65 };
+  const cellW   = Math.max(18, Math.min(64, Math.floor(700 / xVals.length)));
+  const cellH   = Math.max(18, Math.min(64, Math.floor(560 / yVals.length)));
+  const innerW  = xVals.length * cellW;
+  const innerH  = yVals.length * cellH;
+
+  const svg = d3.select(container).append('svg')
+    .attr('width',  innerW + margin.left + margin.right)
+    .attr('height', innerH + margin.top  + margin.bottom);
+
+  const g = svg.append('g')
+    .attr('transform', `translate(${margin.left},${margin.top})`);
+
+  const xScale = d3.scaleBand().domain(xVals.map(String)).range([0, innerW]).padding(0.04);
+  const yScale = d3.scaleBand().domain(yVals.map(String)).range([innerH, 0]).padding(0.04);
+
+  const baseInterp  = PALETTE[palKey] ?? PALETTE.viridis;
+  const interp      = invert ? (t => baseInterp(1 - t)) : baseInterp;
+  const colorScale  = d3.scaleSequential([minV, maxV], interp);
+
+  // Axes
+  g.append('g').attr('class', 'x-axis').attr('transform', `translate(0,${innerH})`)
+   .call(d3.axisBottom(xScale).tickSizeOuter(0));
+  g.append('g').attr('class', 'y-axis')
+   .call(d3.axisLeft(yScale).tickSizeOuter(0));
+
+  g.append('text').attr('class', 'axis-label')
+   .attr('x', innerW / 2).attr('y', innerH + 42)
+   .attr('text-anchor', 'middle').text(xLabel);
+  g.append('text').attr('class', 'axis-label')
+   .attr('transform', 'rotate(-90)')
+   .attr('x', -innerH / 2).attr('y', -52)
+   .attr('text-anchor', 'middle').text(yLabel);
+
+  // Cells
+  const tooltip = document.getElementById('tooltip');
+  g.selectAll('rect.cell')
+    .data(grid)
+    .join('rect')
+    .attr('class', 'cell')
+    .attr('x', d => xScale(String(d.x)))
+    .attr('y', d => yScale(String(d.y)))
+    .attr('width',  xScale.bandwidth())
+    .attr('height', yScale.bandwidth())
+    .attr('rx', 2)
+    .attr('fill', d => {
+      if (Number.isFinite(d.value)) return colorScale(d.value); // observed with cost
+      if (d.nFailed > 0)      return '#585b70'; // valid, visited, no cost → failed
+      if (d.nUnobserved > 0)  return '#e8e8f8'; // valid, not yet sampled
+      return '#252535';                          // invalid (constraint violation)
+    })
+    .attr('opacity', 1)
+    .on('mousemove', (event, d) => {
+      tooltip.style.display = 'block';
+      tooltip.style.left = (event.clientX + 14) + 'px';
+      tooltip.style.top  = (event.clientY - 12) + 'px';
+      let html = `<b>${xLabel}</b>: ${d.x}<br><b>${yLabel}</b>: ${d.y}<br>`;
+      html += `<b>${metricLabel}</b>: ${Number.isFinite(d.value) ? fmtNum(d.value) : '—'}<br>`;
+      if (hasValid)
+        html += `<b>observed</b>: ${d.nObs} &nbsp; <b>failed</b>: ${d.nFailed} &nbsp; <b>total</b>: ${d.nTotal}`;
+      else
+        html += `<b>observed</b>: ${d.nObs} / ${d.nTotal}`;
+      if (d.bestRow) {
+        const others = Object.keys(d.bestRow)
+          .filter(k => !METRIC_COLS.has(k) && k !== xLabel && k !== yLabel);
+        if (others.length) {
+          html += '<br><span style="color:#585b70;font-size:10px">best config (other dims):</span>';
+          for (const k of others) html += `<br><b>${k}</b>: ${d.bestRow[k]}`;
+        }
+      }
+      tooltip.innerHTML = html;
+    })
+    .on('mouseleave', () => { tooltip.style.display = 'none'; });
+
+  // Color bar legend (unique gradient id per SVG to avoid collisions when faceting)
+  const gradId = `cbar-grad-${Math.random().toString(36).slice(2)}`;
+  const lgH = innerH, lgW = 12, lgX = innerW + 22, nStops = 20;
+  const defs = svg.append('defs');
+  const grad = defs.append('linearGradient')
+    .attr('id', gradId)
+    .attr('x1','0%').attr('x2','0%').attr('y1','0%').attr('y2','100%');
+  for (let i = 0; i <= nStops; i++) {
+    const t = i / nStops;
+    grad.append('stop').attr('offset', `${t*100}%`).attr('stop-color', interp(1 - t));
+  }
+  const lg = svg.append('g').attr('transform', `translate(${margin.left + lgX},${margin.top})`);
+  lg.append('rect').attr('width', lgW).attr('height', lgH)
+    .attr('fill', `url(#${gradId})`).attr('rx', 2);
+  const lgScale = d3.scaleLinear().domain([maxV, minV]).range([0, lgH]);
+  lg.append('g').attr('class', 'legend-tick')
+    .attr('transform', `translate(${lgW},0)`)
+    .call(d3.axisRight(lgScale).ticks(5).tickFormat(d3.format('.3g')));
+  lg.append('text')
+    .attr('transform', `rotate(90) translate(${lgH / 2},${-lgW - 32})`)
+    .attr('text-anchor', 'middle').attr('fill', '#6c7086').attr('font-size', 10)
+    .text(metricLabel);
+}
+
+function fmtNum(v) {
+  if (Math.abs(v) >= 1e4 || (Math.abs(v) < 1e-2 && v !== 0)) return v.toExponential(3);
+  return v.toPrecision(5).replace(/\.?0+$/, '');
+}
+
+// ─────────────────────────────────────────────
+// Mode toggle
+// ─────────────────────────────────────────────
+function setMode(m) {
+  mode = m;
+  document.getElementById('btn-agg').classList.toggle('active', m === 'agg');
+  document.getElementById('btn-slice').classList.toggle('active', m === 'slice');
+  document.getElementById('agg-section').style.display   = m === 'agg'   ? '' : 'none';
+  document.getElementById('slice-section').style.display = m === 'slice' ? '' : 'none';
+  render();
+}
+
+document.getElementById('btn-agg').addEventListener('click',   () => setMode('agg'));
+document.getElementById('btn-slice').addEventListener('click', () => setMode('slice'));
+
+// ─────────────────────────────────────────────
+// Event wiring
+// ─────────────────────────────────────────────
+document.getElementById('file-input').addEventListener('change', e => {
+  const file = e.target.files[0];
+  if (file) file.text().then(loadText);
+});
+
+const dropZone = document.getElementById('drop-zone');
+document.body.addEventListener('dragover',  e => { e.preventDefault(); dropZone.classList.add('drag-over'); });
+document.body.addEventListener('dragleave', e => { if (!e.relatedTarget) dropZone.classList.remove('drag-over'); });
+document.body.addEventListener('drop', e => {
+  e.preventDefault();
+  dropZone.classList.remove('drag-over');
+  const file = e.dataTransfer.files[0];
+  if (file) file.text().then(loadText);
+});
+
+document.getElementById('sel-metric').addEventListener('change', () => {
+  applyMetricDefaults(get('sel-metric'));
+  render();
+});
+document.getElementById('sel-facet').addEventListener('change', () => {
+  facetDim = get('sel-facet');
+  rebuildSliders();
+  render();
+});
+document.getElementById('btn-hide-empty').addEventListener('click', () => {
+  hideEmptyFacets = !hideEmptyFacets;
+  document.getElementById('btn-hide-empty').classList.toggle('active', hideEmptyFacets);
+  render();
+});
+['sel-x', 'sel-y', 'sel-agg', 'sel-palette'].forEach(id => {
+  document.getElementById(id).addEventListener('change', () => {
+    rebuildFacetSelector();
+    rebuildSliders();
+    render();
+  });
+});
+</script>
+</body>
+</html>

@@ -433,7 +433,7 @@ void CandidatePool::dumpToCSV(const ConfigSpace &space,
   // Header
   for (const auto &p : space.params)
     out << p.name << ",";
-  out << "visited,cost";
+  out << "visited,valid,cost";
   if (hasModel)
     out << ",mu,sigma,acq";
   out << "\n";
@@ -444,7 +444,8 @@ void CandidatePool::dumpToCSV(const ConfigSpace &space,
     space_->at(i, conf);
     for (int64_t v : conf)
       out << v << ",";
-    out << (visited.test(i) ? 1 : 0) << ",";
+    out << (visited.test(i) ? 1 : 0) << ","
+        << (validPos.count(i) ? 1 : 0) << ",";
     double c = costByIdx(i);
     if (!std::isnan(c))
       out << c;
