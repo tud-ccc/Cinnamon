@@ -40,7 +40,7 @@ static Value toMemrefLike(ConversionPatternRewriter &rewriter, Location loc,
   auto t = dyn_cast<RankedTensorType>(ty);
   assert(t && "expected memref or ranked tensor");
   auto memTy = MemRefType::get(t.getShape(), t.getElementType());
-  return rewriter.create<bufferization::ToBufferOp>(loc, memTy, v);
+  return rewriter.create<bufferization::ToMemrefOp>(loc, memTy, v);
 }
 
 static Value getCrossbarIdFromCompute(cinm::ComputeMemRefOp computeOp) {

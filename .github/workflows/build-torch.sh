@@ -43,6 +43,25 @@ if [[ $checkout_and_build_torch_mlir -eq 1 ]]; then
     reconfigure_torch_mlir=1
   fi
 
+  # torch-mlir uses bufferization::ToBufferOp but the pinned LLVM fork still
+  # calls it ToMemrefOp — patch all affected files in one pass.
+  if grep -rl 'bufferization::ToBufferOp' "$torch_mlir_path/lib/" 2>/dev/null | grep -q .; then
+    status "Patching torch-mlir lib/: ToBufferOp → ToMemrefOp"
+    grep -rl 'bufferization::ToBufferOp' "$torch_mlir_path/lib/" \
+      | xargs sed -i 's/bufferization::ToBufferOp/bufferization::ToMemrefOp/g'
+  fi
+
+  # getBackwardSlice returns void in the pinned LLVM fork but LogicalResult in
+  # newer MLIR — drop the dead capture and the assert that depends on it.
+  inline_slots_cpp="$torch_mlir_path/lib/Dialect/Torch/Transforms/InlineGlobalSlots.cpp"
+  if grep -q '\[\[maybe_unused\]\] LogicalResult result' "$inline_slots_cpp" 2>/dev/null; then
+    status "Patching torch-mlir InlineGlobalSlots.cpp: getBackwardSlice return type"
+    sed -i \
+      -e 's/\[\[maybe_unused\]\] LogicalResult result =$//' \
+      -e '/assert(result\.succeeded/d' \
+      "$inline_slots_cpp"
+  fi
+
   pushd "$torch_mlir_path" >/dev/null
 
   if [ -f build/CMakeCache.txt ] && ! grep -q 'CMAKE_GENERATOR:INTERNAL=Ninja' build/CMakeCache.txt; then

@@ -115,9 +115,13 @@ cat <<'INFO'
 [host] compiling and linking inside container…
 INFO
 
+# When running inside a container with a forwarded Docker socket, volume paths
+# are resolved on the host. Use CINNAMON_HOST_PATH if set.
+host_repo_root="${CINNAMON_HOST_PATH:-$repo_root}"
+
 docker run --rm \
   -u "$(id -u):$(id -g)" \
-  -v "$repo_root":/workspace \
+  -v "$host_repo_root":/workspace \
   -w /workspace \
   -e BUILD_DIR="$build_rel" \
   -e DRIVER_SRC="$driver_rel" \

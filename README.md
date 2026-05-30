@@ -26,11 +26,48 @@ Tutorial notebooks live in `tutorial/notebooks`.
 ### Prerequisites
 - Docker
 
-### Run locally
+### Build the Cinnamon image
 ```bash
-./build.sh
-./start-notebook.sh
+docker build -t cinnamon-build .
 ```
+
+### Build Cinnamon (LLVM, Torch-MLIR, Cinnamon)
+Run the build inside the container. The source tree is mounted so build artifacts
+persist on the host between runs. `build-alpine.sh` is skipped automatically
+when running inside Docker.
+```bash
+docker run --rm -it \
+  -u "$(id -u)":"$(id -g)" \
+  -v "$(pwd)":/workspace \
+  -e HOME=/workspace \
+  cinnamon-build \
+  ./build.sh
+```
+
+### Build ALPINE / gem5
+The ALPINE build manages its own Docker image (`alpine-gem5`). Run this directly
+on the host — no Docker-in-Docker required.
+```bash
+.github/workflows/build-alpine.sh
+```
+
+### Start the notebook
+The notebooks invoke `alpine-gem5` via Docker, so the host Docker socket is
+forwarded into the container. `--group-add` gives the container user access to it.
+```bash
+docker run --rm -it \
+  -u "$(id -u)":"$(id -g)" \
+  --group-add "$(stat -c '%g' /var/run/docker.sock)" \
+  -v "$(pwd)":/workspace \
+  -v /var/run/docker.sock:/var/run/docker.sock \
+  -e HOME=/workspace \
+  -e CINNAMON_HOST_PATH="$(pwd)" \
+  -p 8888:8888 \
+  cinnamon-build \
+  ./start-notebook.sh --no-browser --ip=0.0.0.0 --port=8888
+```
+
+Open the URL printed in the terminal (replace `0.0.0.0` with `localhost` if needed).
 
 ### Run remotely
 Note: The XX is the user id, and will be given during the tutorial.

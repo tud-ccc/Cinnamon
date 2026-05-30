@@ -62,9 +62,13 @@ echo "[host] docker image: $docker_image"
 echo "[host] binary: $BIN_HOST"
 echo "[host] config: $CFG_HOST"
 echo "[host] output dir: $OUT_DIR_HOST"
+# When running inside a container with a forwarded Docker socket, volume paths
+# are resolved on the host. Use CINNAMON_HOST_PATH if set.
+host_root="${CINNAMON_HOST_PATH:-$ROOT}"
+
 docker run --rm \
   -u "$(id -u):$(id -g)" \
-  -v "$ROOT":/workspace \
+  -v "$host_root":/workspace \
   -w /workspace \
   -e PYTHONPATH="$PYTHONPATH_C" \
   "$docker_image" /bin/sh -eu -c "

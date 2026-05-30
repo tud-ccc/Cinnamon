@@ -73,7 +73,7 @@ if [[ "$checkout_and_build_llvm" -eq 1 && -n "${llvm_path:-}" ]]; then
   DEP_OPTS+=( -DLLVM_DIR="$llvm_path/build/lib/cmake/llvm" )
   DEP_OPTS+=( -DMLIR_DIR="$llvm_path/build/lib/cmake/mlir" )
 fi
-if [[ "$checkout_upmem" -eq 1 && -n "${upmem_path:-}" ]]; then
+if [[ "$checkout_upmem" -eq 1 && -n "${upmem_path:-}" && -d "${upmem_path}" ]]; then
   DEP_OPTS+=( -DUPMEM_DIR="$upmem_path" )
 fi
 if [[ "$checkout_and_build_torch_mlir" -eq 1 && -n "${torch_mlir_path:-}" ]]; then

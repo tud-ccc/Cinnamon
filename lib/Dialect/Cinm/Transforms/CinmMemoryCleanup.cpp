@@ -57,7 +57,7 @@ struct RewriteScfTensorIterArgsToMemref final : OpRewritePattern<scf::ForOp> {
       BaseMemRefType mr =
           bufferization::getMemRefTypeWithFullyDynamicLayout(tt);
       Value mem =
-          rewriter.create<bufferization::ToBufferOp>(loc, mr, init, false);
+          rewriter.create<bufferization::ToMemrefOp>(loc, mr, init, false);
       memInitArgs.push_back(mem);
       memIterTypes.push_back(mem.getType());
     }
@@ -102,7 +102,7 @@ struct RewriteScfTensorIterArgsToMemref final : OpRewritePattern<scf::ForOp> {
         auto expectTy = cast<MemRefType>(newBody->getArgument(1 + i).getType());
         Value y = mapped;
         if (!isa<MemRefType>(y.getType())) {
-          y = rewriter.create<bufferization::ToBufferOp>(loc, expectTy, y,
+          y = rewriter.create<bufferization::ToMemrefOp>(loc, expectTy, y,
                                                          false);
         } else if (y.getType() != Type(expectTy)) {
           y = rewriter.create<memref::CastOp>(loc, expectTy, y);
