@@ -603,8 +603,7 @@ struct ConvertElementWiseUnaryToCnm
                 cast<ShapedType>(buf.getType()).getShape().size(),
                 builder.getContext()));
 
-          linalg::ElementwiseOp::create(
-              builder, ValueRange(inputs), ValueRange(outputs),
+          builder.create<linalg::ElementwiseOp>( ValueRange(inputs), ValueRange(outputs),
               linalg::ElementwiseKindAttr::get(builder.getContext(),
                                                op.getMethod()),
               builder.getAffineMapArrayAttr(indexMaps));

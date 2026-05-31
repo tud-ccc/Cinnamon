@@ -63,8 +63,7 @@ struct ConvertTorchTensorOpToCinm : OpConversionPattern<SourceOp> {
             op.getLoc(), rhsType.toBuiltinTensor(), rhs);
 
     auto result = op.getResult();
-    auto resultType =
-        cast<torch::Torch::ValueTensorType>(result.getType());
+    auto resultType = cast<torch::Torch::ValueTensorType>(result.getType());
 
     rewriter.setInsertionPoint(op);
     auto cinmComputeOp = rewriter.create<cinm::ComputeOp>(
@@ -74,7 +73,7 @@ struct ConvertTorchTensorOpToCinm : OpConversionPattern<SourceOp> {
         rewriter.create<torch::TorchConversion::FromBuiltinTensorOp>(
             op.getLoc(), resultType, cinmComputeOp.getResult(0));
 
-    auto *computeBody = rewriter.createBlock(&cinmComputeOp.getRegion());
+    Block *computeBody = &cinmComputeOp.getRegion().front();
     rewriter.setInsertionPointToStart(computeBody);
 
     auto targetOp = rewriter.create<TargetOp>(

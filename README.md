@@ -20,80 +20,69 @@ Emerging compute-near-memory (CNM) and compute-in-memory (CIM) architectures hav
 
 <!-- GETTING STARTED -->
 ## Getting Started
-
-This is an example of how you can build the framework locally.
+This repository is designed for the ESWEEK tutorial 2025 and adds ALPINE support.
+Tutorial notebooks live in `tutorial/notebooks`.
 
 ### Prerequisites
+- Docker
 
-CINM depends on `LLVM 20.1`. This is built automatically.
-Additionally, a number of software packages are required to build it:
-- CMake (at least version 3.22)
-- [`just`](https://github.com/casey/just?tab=readme-ov-file#installation)
-- A somewhat recent Python installation (>=3.7?)
-
-On some systems you might need to update your C++ compiler or update the default, e.g. on Ubuntu 24.04:
-```sh
-sudo update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-13 70 --slave /usr/bin/g++ g++ /usr/bin/g++-13
-# Or use another compiler or gcc/g++ version supporting the C++ 20 standard.
+### Build the Cinnamon image
+```bash
+docker build -t cinnamon-build .
 ```
 
-### Download and Build
-
-The repository contains a `justfile` that installs all needed dependencies and builds the sources.
-
-* Make sure you install build dependencies:
-```sh
-sudo apt-get install clang ninja-build mold libvulkan-dev ccache
+### Build Cinnamon (LLVM, Torch-MLIR, Cinnamon)
+Run the build inside the container. The source tree is mounted so build artifacts
+persist on the host between runs. `build-alpine.sh` is skipped automatically
+when running inside Docker.
+```bash
+docker run --rm -it \
+  -u "$(id -u)":"$(id -g)" \
+  -v "$(pwd)":/workspace \
+  -e HOME=/workspace \
+  cinnamon-build \
+  ./build.sh
 ```
-* Clone the repo
-  ```sh
-  git clone https://github.com/tud-ccc/Cinnamon.git
-  ```
-* Set up the environment variables in a `.env`-file (in the root)
-  ```sh
-  # Recommended:
-  CMAKE_GENERATOR=Ninja
-  CMAKE_C_COMPILER=clang
-  CMAKE_CXX_COMPILER=clang++
-  CMAKE_LINKER_TYPE=MOLD
 
-  # Options passed to llvm when it is build by the build script
-  # Building llvm uses a lot of memory, so it is recommended to limit the number of parallel compile, link & tablegen jobs. The example values here work great for 32 GiB of RAM.
-  LLVM_CMAKE_OPTIONS='-DLLVM_CCACHE_BUILD=ON -DLLVM_PARALLEL_COMPILE_JOBS=16 -DLLVM_PARALLEL_LINK_JOBS=2 -DLLVM_PARALLEL_TABLEGEN_JOBS=8'
+### Build ALPINE / gem5
+The ALPINE build manages its own Docker image (`alpine-gem5`). Run this directly
+on the host — no Docker-in-Docker required.
+```bash
+.github/workflows/build-alpine.sh
+```
 
-  TORCH_MLIR_CMAKE_OPTIONS='-DCMAKE_CXX_COMPILER=clang++ -DCMAKE_C_COMPILER=clang'
-  CINNAMON_CMAKE_OPTIONS='-DCMAKE_CXX_COMPILER=clang++ -DCMAKE_C_COMPILER=clang -DLLVM_ENABLE_LIBCXX=ON'
+### Start the notebook
+The notebooks invoke `alpine-gem5` via Docker, so the host Docker socket is
+forwarded into the container. `--group-add` gives the container user access to it.
+```bash
+docker run --rm -it \
+  -u "$(id -u)":"$(id -g)" \
+  --group-add "$(stat -c '%g' /var/run/docker.sock)" \
+  -v "$(pwd)":/workspace \
+  -v /var/run/docker.sock:/var/run/docker.sock \
+  -e HOME=/workspace \
+  -e CINNAMON_HOST_PATH="$(pwd)" \
+  -p 8888:8888 \
+  cinnamon-build \
+  ./start-notebook.sh --no-browser --ip=0.0.0.0 --port=8888
+```
 
-  # You could add your own LLVM dir; the build script won't try to clone and build LLVM
-  LLVM_BUILD_DIR=/home/username/projects/Cinnamon/third-party/llvm/build/
-  ```
-* Download, configure, and build dependencies and the sources (without the torch-mlir frontend).
-  ```sh
-  just configure -no-torch-mlir
-  ```
+Open the URL printed in the terminal (replace `0.0.0.0` with `localhost` if needed).
 
-<!-- USAGE EXAMPLES -->
-## Usage
-All benchmarks at the `cinm` abstraction are in this repository under `testbench/`. The `compile-benches.sh` script compiles all the benchmarks using the Cinnamon flow. The generated code and the intermediate IRs for each bench can be found under`testbench/gen/`.
+### Run remotely
+Note: The XX is the user id, and will be given during the tutorial.
+```bash
+ssh -p 229X -L 8888:127.0.0.1:8888 esweek25-cim-XX@ios.inf.uos.de
+cd Cinnamon
+./start-notebook.sh --no-browser --ip=127.0.0.1 --port=8888
+```
 
-   ```sh
-   chmod +x compile-benches.sh
-   ./compile-benches.sh
-   ```
-The user can also try running individual benchmarks by manually trying individual conversions. The benchmark files have a comment at the top giving the command used to lower them to the upmem IR.
+Forward the notebook port:
+```bash
+ssh -p 229X -N -L 8888:127.0.0.1:8888 esweek25-cim-XX@ios.inf.uos.de
+```
 
-<!-- ROADMAP -->
-## Roadmap
 
-- [x] `cinm`, `cnm` and `cim` abstractions and their necessary conversions
-- [x] The `upmem` abstraction, its conversions and connection to the target
-- [x] The `tiling` transformation
-- [ ] `PyTorch` Front-end
-- [ ] The `xbar` abstraction, conversions and transformations
-    - [ ] Associated conversions and transformations
-    - [ ] Establishing the backend connection
-
-See the [open issues](https://github.com/tud-ccc/Cinnamon/issues) for a full list of proposed features (and known issues).
 
 <!-- CONTRIBUTING -->
 ## Contributing
@@ -109,8 +98,7 @@ Distributed under the BSD 2-clause License. See `LICENSE.txt` for more informati
 <!-- CONTACT -->
 ## Contributors
 
+- Hamid Farzaneh (hamid.farzaneh@tu-dresden.de)
 - Clément Fournier (clement.fournier@tu-dresden.de)
-- Hamid Farzaneh (amid.farzaneh@tu-dresden.de)
 - George M. Kunze (georg_maximilian.kunze@mailbox.tu-dresden.de)
-- Karl F. A. Friebel (karl.friebel@tu-dresden.de)
 - Asif Ali Khan (asif_ali.khan@tu-dresden.de)

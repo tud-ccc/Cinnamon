@@ -27,12 +27,10 @@
 
 namespace mlir::cinm {
 
-//===- Generated passes ---------------------------------------------------===//
 
 #define GEN_PASS_DEF_CINMTILINGPASS
 #include "cinm-mlir/Dialect/Cinm/Transforms/Passes.h.inc"
 
-//===----------------------------------------------------------------------===//
 
 struct CinmApplyTilingInterfacePattern
     : public OpInterfaceConversionPattern<cinm::CinmTilingInterface> {
@@ -45,15 +43,27 @@ struct CinmApplyTilingInterfacePattern
   LogicalResult
   matchAndRewrite(cinm::CinmTilingInterface op, ArrayRef<Value>,
                   ConversionPatternRewriter &rewriter) const override {
-    auto computeBlock = mlir::cinm::getEnclosingComputeBlock(op);
-    auto tilingParms = cinm::TilingParameters::fromComputeBlock(computeBlock);
-    auto result = op.convertToTiledOps(rewriter, tilingParms);
+    auto computeBlock = op->getParentOfType<cinm::ComputeOp>();
+    if (!computeBlock) {
+      markOpAsNoTile(op);
+      return failure();
+    }
+    auto params = cinm::TilingParameters::fromComputeBlock(computeBlock);
+
+    const bool hasExplicitTiles =
+        static_cast<bool>(computeBlock.getTileSizesAttr());
+
+    auto result = op.convertToTiledOps(rewriter, params);
     if (succeeded(result)) {
       rewriter.replaceOp(op, *result);
       return success();
-    } else {
-      markOpAsNoTile(op);
     }
+
+    if (hasExplicitTiles) {
+      return failure();
+    }
+
+    markOpAsNoTile(op);
     return failure();
   }
 };
@@ -81,4 +91,4 @@ struct CinmTilingPass : public impl::CinmTilingPassBase<CinmTilingPass> {
   }
 };
 
-} // namespace mlir::cinm
+}

@@ -11,6 +11,7 @@
 #include <llvm/ADT/APFloat.h>
 #include <llvm/ADT/APInt.h>
 
+#include "cinm-mlir/Dialect/Cinm/IR/CinmDialect.h"
 #include <llvm/ADT/ArrayRef.h>
 #include <llvm/ADT/SmallVector.h>
 #include <mlir/Dialect/Affine/IR/AffineOps.h>
@@ -74,6 +75,10 @@ cinm::ComputeOp getEnclosingComputeBlock(Operation *op) {
   assert(false && "CINM operator is not inside a cinm.compute block");
 }
 
+static bool dimsCompatible(int64_t a, int64_t b) {
+  return ShapedType::isDynamic(a) || ShapedType::isDynamic(b) || a == b;
+}
+
 ::mlir::LogicalResult GemmOp::inferReturnTypeComponents(
     ::mlir::MLIRContext *, ::std::optional<::mlir::Location>,
     GemmOp::Adaptor adaptor,
@@ -98,15 +103,77 @@ cinm::ComputeOp getEnclosingComputeBlock(Operation *op) {
   //  return context->emitError("operand types are not compatible");
 }
 
-
-::mlir::LogicalResult GemvOp::inferReturnTypeComponents(
-    ::mlir::MLIRContext *, std::optional<::mlir::Location>, Adaptor adaptor,
+::mlir::LogicalResult BatchGemmOp::inferReturnTypeComponents(
+    ::mlir::MLIRContext *, ::std::optional<::mlir::Location>,
+    BatchGemmOp::Adaptor adaptor,
     ::llvm::SmallVectorImpl<::mlir::ShapedTypeComponents>
         &inferredReturnShapes) {
-  // todo verify sizes
+  ShapeAdaptor lhsShape(adaptor.getLeft().getType());
+  ShapeAdaptor rhsShape(adaptor.getRight().getType());
 
-  auto result = ShapedTypeComponents(adaptor.getRight().getType());
-  inferredReturnShapes.emplace_back(std::move(result));
+  if (lhsShape.getRank() != 3 || rhsShape.getRank() != 3)
+    return failure();
+
+  if (!dimsCompatible(lhsShape.getDimSize(0), rhsShape.getDimSize(0)) ||
+      !dimsCompatible(lhsShape.getDimSize(2), rhsShape.getDimSize(1)))
+    return failure();
+
+  auto elementType = lhsShape.getElementType();
+  if (rhsShape.getElementType() != elementType)
+    return failure();
+
+  SmallVector<int64_t, 3> outShape = {lhsShape.getDimSize(0),
+                                      lhsShape.getDimSize(1),
+                                      rhsShape.getDimSize(2)};
+
+  if (Value bias = adaptor.getBias()) {
+    ShapeAdaptor biasShape(bias.getType());
+    if (biasShape.getRank() != 3 ||
+        !dimsCompatible(biasShape.getDimSize(0), outShape[0]) ||
+        !dimsCompatible(biasShape.getDimSize(1), outShape[1]) ||
+        !dimsCompatible(biasShape.getDimSize(2), outShape[2]) ||
+        biasShape.getElementType() != elementType)
+      return failure();
+  }
+
+  inferredReturnShapes.push_back(
+      ShapedTypeComponents(outShape, elementType));
+  return success();
+}
+
+::mlir::LogicalResult BatchGemvOp::inferReturnTypeComponents(
+    ::mlir::MLIRContext *, ::std::optional<::mlir::Location>,
+    BatchGemvOp::Adaptor adaptor,
+    ::llvm::SmallVectorImpl<::mlir::ShapedTypeComponents>
+        &inferredReturnShapes) {
+  ShapeAdaptor lhsShape(adaptor.getLeft().getType());
+  ShapeAdaptor rhsShape(adaptor.getRight().getType());
+
+  if (lhsShape.getRank() != 3 || rhsShape.getRank() != 2)
+    return failure();
+
+  if (!dimsCompatible(lhsShape.getDimSize(0), rhsShape.getDimSize(0)) ||
+      !dimsCompatible(lhsShape.getDimSize(2), rhsShape.getDimSize(1)))
+    return failure();
+
+  auto elementType = lhsShape.getElementType();
+  if (rhsShape.getElementType() != elementType)
+    return failure();
+
+  SmallVector<int64_t, 2> outShape = {lhsShape.getDimSize(0),
+                                      lhsShape.getDimSize(1)};
+
+  if (Value bias = adaptor.getBias()) {
+    ShapeAdaptor biasShape(bias.getType());
+    if (biasShape.getRank() != 2 ||
+        !dimsCompatible(biasShape.getDimSize(0), outShape[0]) ||
+        !dimsCompatible(biasShape.getDimSize(1), outShape[1]) ||
+        biasShape.getElementType() != elementType)
+      return failure();
+  }
+
+  inferredReturnShapes.push_back(
+      ShapedTypeComponents(outShape, elementType));
   return success();
 }
 
@@ -211,6 +278,54 @@ cinm::ComputeOp getEnclosingComputeBlock(Operation *op) {
   return success();
 }
 
+LogicalResult cinm::YieldOp::verify() {
+  Operation *parent = getOperation()->getParentOp();
+  auto asCompute = dyn_cast_or_null<cinm::ComputeOp>(parent);
+  auto asComputeMR = dyn_cast_or_null<cinm::ComputeMemRefOp>(parent);
+
+  if (!asCompute && !asComputeMR)
+    return emitOpError()
+           << "must be inside 'cinm.compute' or 'cinm.compute_memref'";
+
+  TypeRange expected = asCompute ? TypeRange(asCompute.getResultTypes())
+                                 : TypeRange(asComputeMR.getResultTypes());
+
+  if (getNumOperands() != expected.size())
+    return emitOpError() << "has " << getNumOperands()
+                         << " operand(s) but parent expects "
+                         << expected.size();
+
+  for (auto it : llvm::enumerate(expected)) {
+    Type got = getOperand(it.index()).getType();
+    if (got != it.value())
+      return emitOpError() << "operand #" << it.index()
+                           << " type mismatch: expected " << it.value()
+                           << " but got " << got;
+  }
+  return success();
+}
+
+LogicalResult ActivateMemRefOp::verify() {
+  auto inTy = dyn_cast<MemRefType>(getInput().getType());
+  auto outTy = dyn_cast<MemRefType>(getOut().getType());
+  if (!inTy || !outTy)
+    return emitOpError("expects memref types for input and out");
+
+  if (inTy.getElementType() != outTy.getElementType())
+    return emitOpError("element types must match: ") << inTy << " vs " << outTy;
+
+  if (inTy.getRank() != outTy.getRank())
+    return emitOpError("ranks must match: ")
+           << inTy.getRank() << " vs " << outTy.getRank();
+
+  for (int i = 0, e = inTy.getRank(); i < e; ++i) {
+    int64_t a = inTy.getDimSize(i), b = outTy.getDimSize(i);
+    if (a != ShapedType::kDynamic && b != ShapedType::kDynamic && a != b)
+      return emitOpError("static dims must match at dim ")
+             << i << ": " << a << " vs " << b;
+  }
+  return success();
+}
 
 } // namespace cinm
 } // namespace mlir

@@ -4,12 +4,15 @@
 /// @author      Karl F. A. Friebel (karl.friebel@tu-dresden.de)
 /// @author      Clément Fournier (clement.fournier@tu-dresden.de)
 
+#include "cinm-mlir/Conversion/AlpinePasses.h"
 #include "cinm-mlir/Conversion/CimPasses.h"
 #include "cinm-mlir/Conversion/CinmPasses.h"
 #include "cinm-mlir/Conversion/CnmPasses.h"
 #include "cinm-mlir/Conversion/MemristorPasses.h"
 #include "cinm-mlir/Conversion/UPMEMPasses.h"
 #include "cinm-mlir/Conversion/UPMEMToLLVM/UPMEMToLLVM.h"
+#include "cinm-mlir/Dialect/Alpine/IR/AlpineDialect.h"
+#include "cinm-mlir/Dialect/Alpine/Transforms/Passes.h"
 #include "cinm-mlir/Dialect/Cim/IR/CimDialect.h"
 #include "cinm-mlir/Dialect/Cim/Transforms/Passes.h"
 #include "cinm-mlir/Dialect/Cinm/IR/CinmDialect.h"
@@ -32,6 +35,7 @@
 #endif
 
 #include <mlir/IR/DialectRegistry.h>
+#include <mlir/Dialect/Bufferization/Transforms/Passes.h>
 #include <mlir/InitAllExtensions.h>
 
 #include "mlir/IR/MLIRContext.h"
@@ -50,6 +54,7 @@ int main(int argc, char *argv[]) {
                   cim::CimDialect,             //
                   cnm::CnmDialect,             //
                   memristor::MemristorDialect, //
+                  alpine::AlpineDialect,       //
                   upmem::UPMEMDialect>();
 
 #ifdef CINM_TORCH_MLIR_ENABLED
@@ -67,19 +72,26 @@ int main(int argc, char *argv[]) {
 #ifdef CINM_TORCH_MLIR_ENABLED
   registerCinmFrontendConversionPasses();
 #endif
+  registerAlpineConversionPasses();
   registerCinmConversionPasses();
   registerCimConversionPasses();
   registerCnmConversionPasses();
   registerMemristorConversionPasses();
+  cinm::registerCinmBufferizableOpInterfaces(registry);
   cim::registerCimTransformsPasses();
   cnm::registerCnmBufferizationExternalModels(registry);
   cnm::registerCnmTransformsPasses();
   cinm::registerCinmTransformsPasses();
   memristor::registerMemristorTransformsPasses();
+
+  alpine::registerAlpineTransformsPasses();
+  alpine::registerAlpineConversionPasses();
   upmem::registerConvertUpmemToLLvmInterface(registry);
 
   registerUPMEMTransformsPasses();
   registerUPMEMConversionPasses();
+
+  bufferization::registerBufferizationPasses();
 
   return asMainReturnCode(
       MlirOptMain(argc, argv, "cinm-mlir optimizer driver\n", registry));

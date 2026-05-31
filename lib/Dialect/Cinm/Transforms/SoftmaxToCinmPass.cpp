@@ -19,12 +19,10 @@
 
 namespace mlir::cinm {
 
-//===- Generated passes ---------------------------------------------------===//
 
 #define GEN_PASS_DEF_SOFTMAXTOCINMPASS
 #include "cinm-mlir/Dialect/Cinm/Transforms/Passes.h.inc"
 
-//===----------------------------------------------------------------------===//
 
 struct SoftmaxToCinmPattern : OpConversionPattern<linalg::SoftmaxOp> {
   using OpConversionPattern::OpConversionPattern;
@@ -40,7 +38,7 @@ struct SoftmaxToCinmPattern : OpConversionPattern<linalg::SoftmaxOp> {
 
     rewriter.setInsertionPointToEnd(&computeOp.getBody().emplaceBlock());
     const Value max = rewriter.create<ReduceOp>(
-        loc, inputType.getElementType(), ReduceMethod::MAX, input, /*dims=*/0);
+        loc, inputType.getElementType(), ReduceMethod::MAX, input, 0);
     const Value t = rewriter.create<SubsOp>(loc, input, max);
     const Value init = rewriter.create<tensor::EmptyOp>(
         loc, inputType.getShape(), inputType.getElementType());
@@ -52,7 +50,7 @@ struct SoftmaxToCinmPattern : OpConversionPattern<linalg::SoftmaxOp> {
             .create<linalg::ExpOp>(loc, types, ValueRange{t}, ValueRange{init})
             .getResult(0);
     const Value s = rewriter.create<ReduceOp>(loc, inputType.getElementType(),
-                                              ReduceMethod::ADD, e, /*dims=*/0);
+                                              ReduceMethod::ADD, e, 0);
     const Value result = rewriter.create<DivsOp>(loc, e, s);
     rewriter.create<YieldOp>(loc, ValueRange{result});
     return success();
@@ -76,4 +74,4 @@ struct SoftmaxToCinmPass
   }
 };
 
-} // namespace mlir::cinm
+}

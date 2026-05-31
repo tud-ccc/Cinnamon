@@ -3,12 +3,63 @@
 script_dir="$( cd -- "$(dirname "$0")" >/dev/null 2>&1 ; pwd -P )"
 source "$script_dir/common.sh"
 
+# Ensure we have a Python interpreter available (prefer the repo venv).
+if [[ -z "${VIRTUAL_ENV:-}" && -d "$py_venv_path" ]]; then
+  # shellcheck disable=SC1091
+  source "$py_venv_path/bin/activate"
+fi
+
+PYTHON_BIN="$(command -v python3 || command -v python || true)"
+if [[ -z "$PYTHON_BIN" ]]; then
+  error "No Python interpreter found (python3/python)"
+  exit 1
+fi
+
+if [[ $setup_python_venv -eq 1 ]]; then
+  python_for_install="$py_venv_path/bin/python"
+  if [[ ! -x "$python_for_install" ]]; then
+    error "Expected Python venv at $py_venv_path. Run setup-venv.sh first."
+    exit 1
+  fi
+else
+  python_for_install="$PYTHON_BIN"
+fi
+
+if ! "$python_for_install" -m pip --version >/dev/null 2>&1; then
+  error "pip is not available for interpreter $python_for_install"
+  exit 1
+fi
+
+if ! "$python_for_install" -m pip show wheel >/dev/null 2>&1; then
+  status "Installing wheel into Python environment ($python_for_install)"
+  verbose_cmd "$python_for_install" -m pip install wheel
+fi
+
 if [[ $checkout_and_build_torch_mlir -eq 1 ]]; then
   reconfigure_torch_mlir=0
   if [ ! -d "$torch_mlir_path" ]; then
     status "Checking out Torch-MLIR"
     git_clone_revision https://github.com/llvm/torch-mlir 327b6b793241a8aff8a3524e1f21c29cfd1f0457 "$torch_mlir_path"
     reconfigure_torch_mlir=1
+  fi
+
+  # torch-mlir uses bufferization::ToBufferOp but the pinned LLVM fork still
+  # calls it ToMemrefOp — patch all affected files in one pass.
+  if grep -rl 'bufferization::ToBufferOp' "$torch_mlir_path/lib/" 2>/dev/null | grep -q .; then
+    status "Patching torch-mlir lib/: ToBufferOp → ToMemrefOp"
+    grep -rl 'bufferization::ToBufferOp' "$torch_mlir_path/lib/" \
+      | xargs sed -i 's/bufferization::ToBufferOp/bufferization::ToMemrefOp/g'
+  fi
+
+  # getBackwardSlice returns void in the pinned LLVM fork but LogicalResult in
+  # newer MLIR — drop the dead capture and the assert that depends on it.
+  inline_slots_cpp="$torch_mlir_path/lib/Dialect/Torch/Transforms/InlineGlobalSlots.cpp"
+  if grep -q '\[\[maybe_unused\]\] LogicalResult result' "$inline_slots_cpp" 2>/dev/null; then
+    status "Patching torch-mlir InlineGlobalSlots.cpp: getBackwardSlice return type"
+    sed -i \
+      -e 's/\[\[maybe_unused\]\] LogicalResult result =$//' \
+      -e '/assert(result\.succeeded/d' \
+      "$inline_slots_cpp"
   fi
 
   pushd "$torch_mlir_path" >/dev/null
@@ -60,15 +111,17 @@ if [[ $checkout_and_build_torch_mlir -eq 1 ]]; then
   verbose_cmd cmake --install build --prefix install
 
   if [[ $setup_python_venv -eq 1 ]]; then
-    status "Building and installing Torch-MLIR Python package"
+    status "Building and installing Torch-MLIR Python package into $py_venv_path"
     python_package_dir=build/tools/torch-mlir/python_packages/torch_mlir
     python_package_rel_build_dir=../../../python_packages/torch_mlir
     mkdir -p "$(dirname "$python_package_dir")"
     ln -s "$python_package_rel_build_dir" "$python_package_dir" 2> /dev/null || true
-    TORCH_MLIR_CMAKE_ALREADY_BUILT=1 TORCH_MLIR_CMAKE_BUILD_DIR=build PYTHONWARNINGS=ignore verbose_cmd python setup.py build install
+    TORCH_MLIR_CMAKE_ALREADY_BUILT=1 TORCH_MLIR_CMAKE_BUILD_DIR=build PYTHONWARNINGS=ignore \
+      verbose_cmd "$python_for_install" -m pip install --no-build-isolation --no-deps --force-reinstall .
   elif [[ $setup_python_venv -eq 0 ]]; then
-    warning "Skipping Torch-MLIR Python package build"
-    warning "Make sure to have a correct Python environment set up"
+    warning "Building Torch-MLIR Python package with interpreter: $python_for_install"
+    TORCH_MLIR_CMAKE_ALREADY_BUILT=1 TORCH_MLIR_CMAKE_BUILD_DIR=build PYTHONWARNINGS=ignore \
+      verbose_cmd "$python_for_install" -m pip install --no-build-isolation --no-deps --force-reinstall .
   fi
 
   popd >/dev/null

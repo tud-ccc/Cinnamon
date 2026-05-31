@@ -38,7 +38,7 @@ Type mlir::cim::FutureType::parse(mlir::AsmParser &parser) {
   Type elementType;
 
   if (parser.parseLess() ||                            //
-      parser.parseDimensionList(shape, false, true) || //
+      parser.parseDimensionList(shape, /*allowDynamic=*/true, /*withTrailingX=*/true) || //
       parser.parseType(elementType) ||                 //
       parser.parseGreater()) {
     return Type();

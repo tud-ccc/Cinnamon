@@ -1,1 +1,0 @@
-python3 ./testbench/scripts/plot-fig-11.py

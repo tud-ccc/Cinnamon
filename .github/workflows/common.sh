@@ -41,7 +41,8 @@ git_clone_revision() {
   fi
 }
 
-project_root="$( cd -- "$(dirname "$0")/../.." >/dev/null 2>&1 ; pwd -P )"
+common_dir="$( cd -- "$(dirname "${BASH_SOURCE[0]:-$0}")" >/dev/null 2>&1 ; pwd -P )"
+project_root="$( cd -- "${common_dir}/../.." >/dev/null 2>&1 ; pwd -P )"
 status "Project root: $project_root"
 mkdir -p "$project_root/third-party"
 
@@ -138,4 +139,3 @@ if [[ -n "${TORCH_MLIR_INSTALL_DIR:-}" ]] && [[ "${checkout_and_build_torch_mlir
 fi
 
 fi
-
