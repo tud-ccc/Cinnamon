@@ -8,6 +8,9 @@ run FILE *ARGS:
 
 view NAME:
     $(realpath ../.venv/bin/python) view_pool.py data/{{NAME}}/pool.csv
+
+analyze NAME *ARGS:
+    $(realpath ../.venv/bin/python) analyze_landscape.py data/{{NAME}}/pool.csv {{ARGS}}
     
 
 
