@@ -22,7 +22,10 @@ func.func @gemv_larger(%A: tensor<2048x768xf32>, %x: tensor<768xf32>) -> tensor<
 
 func.func @gemv_square(%A: tensor<768x768xf32>, %x: tensor<768xf32>) -> tensor<768xf32>
   attributes {cinm.available_platforms = [#upmem]} {
-  %4 = cinm.op.gemv %A, %x : tensor<768x768xf32>, tensor<768xf32> -> tensor<768xf32>
+
+  %4 = cinm.op.gemv %A, %x 
+    : tensor<768x768xf32>, tensor<768xf32> -> tensor<768xf32>
+
   return %4 : tensor<768xf32>
 }
 

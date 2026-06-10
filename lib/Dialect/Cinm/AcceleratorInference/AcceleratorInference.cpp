@@ -26,9 +26,14 @@
 #include <mlir/Support/LogicalResult.h>
 
 #include <algorithm>
+#include <atomic>
+#include <chrono>
 #include <cmath>
 #include <limits>
+#include <optional>
 #include <random>
+#include <thread>
+#include <variant>
 #include <vector>
 
 #define DEBUG_TYPE "cinm-inference"
@@ -349,7 +354,9 @@ struct InferenceTask {
   }
 
   // Clone refModule to produce a fresh isolated trial module per evaluation.
-  TrialInfo makeTrialInfo(Configuration config) {
+  TrialInfo makeTrialInfo(Configuration config, ModuleOp refModule = nullptr) {
+    if (!refModule)
+      refModule = *this->refModule;
     mlir::OwningOpRef<mlir::ModuleOp> trialModule(
         llvm::cast<mlir::ModuleOp>(refModule->clone()));
     cinm::ComputeBlockOp candidate;
@@ -431,6 +438,106 @@ struct InferenceTask {
                << state.bestTrial.conf() << "\n");
     return std::move(state.bestTrial);
   }
+
+  /// Evaluate every valid configuration in the search space in parallel.
+  /// Results are collected per-thread and merged into a pool for CSV dump.
+  /// Does not commit a best candidate — returns success to skip
+  /// commitBestCandidate.
+  Maybe<TrialInfo> runExhaustive() {
+    const size_t N = space.totalSize();
+    unsigned nThreads = std::max(1u, std::thread::hardware_concurrency());
+    MLIRContext *ctx = refClone->getContext();
+
+    // Build and warm up one plugin clone per thread on the main thread.
+    std::vector<std::unique_ptr<InferencePlugin>> pluginClones;
+    pluginClones.reserve(nThreads);
+    for (unsigned t = 0; t < nThreads; ++t) {
+      pluginClones.push_back(plugin.clone());
+      pluginClones.back()->warmUp(ctx);
+    }
+
+    // Build pool now: constructor pre-marks invalid configs as visited,
+    // giving us the valid count before spawning threads.
+    CandidatePool pool(space, N);
+    size_t nValid = N - pool.numVisited();
+
+    LLVM_DEBUG(llvm::dbgs() << "[cinm-inference] Exhaustive search: " << nValid
+                            << " valid / " << N << " total configs, "
+                            << nThreads << " threads\n");
+
+    std::atomic<size_t> nextIdx{0};
+
+    struct Obs {
+      size_t idx;
+      std::optional<double> cost;
+    };
+    std::vector<std::vector<Obs>> perThreadObs(nThreads);
+
+    auto worker = [&](unsigned tid) {
+      auto &myPlugin = *pluginClones[tid];
+      // Each thread owns its own ref module copy so per-iteration clones
+      // need no synchronization.
+      OwningOpRef<ModuleOp> threadRef(llvm::cast<ModuleOp>(refModule->clone()));
+      Configuration conf;
+      while (true) {
+        size_t i = nextIdx.fetch_add(1, std::memory_order_relaxed);
+        if (i >= N)
+          break;
+        space.at(i, conf);
+        if (!space.isValid(conf))
+          continue;
+
+        auto trial = makeTrialInfo(conf, *threadRef);
+
+        auto result = myPlugin.evaluate(trial);
+        double *cost = std::get_if<double>(&result);
+        std::optional<double> opt_cost =
+            cost ? std::make_optional(*cost) : std::nullopt;
+        perThreadObs[tid].push_back({i, opt_cost});
+      }
+    };
+
+    std::vector<std::thread> threads;
+    threads.reserve(nThreads - 1);
+    auto t0 = std::chrono::steady_clock::now();
+    for (unsigned t = 1; t < nThreads; ++t)
+      threads.emplace_back(worker, t);
+    worker(0);
+    for (auto &t : threads)
+      t.join();
+    auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now() - t0);
+
+    // Merge per-thread observations into the pool for the CSV dump.
+    size_t total = 0;
+    size_t total_successful = 0;
+    for (auto &obs : perThreadObs) {
+      total += obs.size();
+      for (auto &[idx, cost] : obs) {
+        pool.markVisited(idx);
+        if (cost) {
+          pool.recordObservation(idx, *cost);
+          total_successful++;
+        }
+        // otherwise failed.
+      }
+    }
+
+    LLVM_DEBUG(llvm::dbgs()
+               << "[cinm-inference] Exhaustive: " << total_successful
+               << " successful / " << total << " valid / " << N
+               << " points, across " << nThreads << " threads in "
+               << elapsed.count() << " ms\n");
+
+    if (!options.dumpDir.empty()) {
+      auto path = options.dumpDir + "/pool.csv";
+      pool.dumpToCSV(space, options, path);
+      LLVM_DEBUG(llvm::dbgs()
+                 << "[cinm-inference] Pool dumped to " << path << "\n");
+    }
+
+    return DiagnosedSilenceableFailure::success();
+  }
 };
 
 bool InferenceState::tryEval(size_t poolIdx, InferenceTask &task,
@@ -477,7 +584,8 @@ inferAcceleratorConfig(cinm::ComputeBlockOp computeOp, InferencePlugin &plugin,
   LLVM_DEBUG(llvm::dbgs() << "[cinm-inference] Reference clone:\n";
              task.refClone->print(llvm::dbgs()); llvm::dbgs() << "\n");
 
-  auto bestResult = TRY_GET(task.runInference());
+  auto bestResult = TRY_GET(opts.exhaustiveSearch ? task.runExhaustive()
+                                                  : task.runInference());
 
   LLVM_DEBUG(llvm::dbgs() << "[cinm-inference] Committing best config"
                           << bestResult.conf() << "\n");
@@ -512,7 +620,7 @@ InferencePlugin::commitBestCandidate(cinm::ComputeBlockOp original,
   auto *destBlock = originalModule.getBody();
 
   // We take care of renaming symbols if needed.
-  // This needs to happen before we move the body of 
+  // This needs to happen before we move the body of
   // the compute block to its destination.
 
   SymbolTable dest(originalModule);

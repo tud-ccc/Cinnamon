@@ -70,7 +70,10 @@ def UpmemInferAcceleratorPass : Pass<"upmem-infer-accelerator", "ModuleOp"> {
     Option<"dumpDir", "dump-dir", "std::string", "\"\"",
            "If non-empty, write a pool.csv file to this directory containing "
            "all candidate configurations, their observed costs, and "
-           "surrogate model statistics (mu, sigma, acq) after inference">
+           "surrogate model statistics (mu, sigma, acq) after inference">,
+    Option<"exhaustiveSearch", "exhaustive-search", "bool", "false",
+           "Evaluate every valid configuration in the search space exhaustively "
+           "instead of running Bayesian optimisation">
   ];
 }
 
