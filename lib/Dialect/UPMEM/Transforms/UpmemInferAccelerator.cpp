@@ -210,6 +210,21 @@ struct UpmemInferencePlugin : cinm::InferencePlugin {
   }
 
   // --- InferencePlugin interface ---
+
+  std::unique_ptr<cinm::InferencePlugin> clone() const override {
+    auto c = std::make_unique<UpmemInferencePlugin>(platform,
+                                                    createOpCountSimulator());
+    c->rankIx = rankIx;
+    c->dpuIx = dpuIx;
+    c->taskletIx = taskletIx;
+    return c;
+  }
+
+  void warmUp(mlir::MLIRContext *ctx) override {
+    if (!pipeline)
+      pipeline = buildPipeline(ctx);
+  }
+
   void handleOpConstraints(cinm::CinmTilingInterface op,
                            ConstraintEditor &editor);
 
@@ -418,6 +433,7 @@ struct UpmemInferAcceleratorPass
     o.depth = depth;
     o.neighborDepth = neighborDepth;
     o.neighborFrontierOnly = neighborFrontierOnly;
+    o.exhaustiveSearch = exhaustiveSearch;
     upmemOpts.annotateOpCosts = annotateOpCosts;
     o.dumpDir = dumpDir;
     return upmemOpts;

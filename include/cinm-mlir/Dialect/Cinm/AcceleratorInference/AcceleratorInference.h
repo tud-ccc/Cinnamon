@@ -199,6 +199,17 @@ struct InferencePlugin {
   /// code into the original module and replace `original` with it.
   virtual DiagnosedSilenceableFailure
   commitBestCandidate(cinm::ComputeBlockOp original, TrialInfo bestTrial);
+
+  /// Return a fresh independent copy of this plugin, safe to use from a
+  /// different thread. Called by the framework before parallel exhaustive
+  /// search; `initializeSpace` has already run on `this` so any indices or
+  /// space-derived state should be copied to the new instance.
+  virtual std::unique_ptr<InferencePlugin> clone() const = 0;
+
+  /// Optional hook called on each clone (on the main thread) before parallel
+  /// evaluation begins. Use it to eagerly build pipelines or other state that
+  /// is cheaper to construct single-threaded.
+  virtual void warmUp(mlir::MLIRContext *) {}
 };
 
 // ===----------------------------------------------------------------------===//
@@ -237,6 +248,13 @@ struct InferenceOptions {
   /// then observed cost (empty if not evaluated), then mu / sigma / acq
   /// from a final ensemble fit (omitted when fewer than 2 observations).
   std::string dumpDir;
+
+  /// When true, evaluate every valid configuration in the search space
+  /// instead of running Bayesian optimisation. Useful for collecting ground-
+  /// truth cost data and comparing against BO solutions. The pool is dumped
+  /// in the same CSV format as the BO run (surrogate columns are omitted
+  /// since no model is trained).
+  bool exhaustiveSearch = false;
 };
 
 /// Entry point for Bayesian inference.
