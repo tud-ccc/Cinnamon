@@ -128,7 +128,7 @@ def make_figure(agg, tile0_vals, tile1_vals, tasklet_vals, out_dir,
 def plot_validation_rmse(val_csv_path, out_dir):
     """Plot surrogate RMSE on held-out validation points vs BO iteration."""
     val = pd.read_csv(val_csv_path)
-    val["log_true"] = np.log10(val["true_cost"])
+    val["log_true"] = np.log10(val["cost"])
     val["sq_err"]   = (val["mu"] - val["log_true"]) ** 2
 
     fig, ax = plt.subplots(figsize=(8, 4))
@@ -168,8 +168,8 @@ def plot_validation_mape(val_csv_path, out_dir):
     """
 
     val = pd.read_csv(val_csv_path)
-    logcost = np.log10(val["true_cost"])
-    val["pct_err"] = 100 * np.abs(val["mu"] - logcost) / logcost #/ val["true_cost"]
+    logcost = np.log10(val["cost"])
+    val["pct_err"] = 100 * np.abs(val["mu"] - logcost) / logcost #/ val["cost"]
 
     fig, ax = plt.subplots(figsize=(8, 4))
 

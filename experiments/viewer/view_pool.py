@@ -6,7 +6,7 @@ import sys
 import threading
 import webbrowser
 
-here    = pathlib.Path(__file__).parent.resolve()
+here    = pathlib.Path(__file__).parent.parent.resolve()
 csv_abs = pathlib.Path(sys.argv[1]).resolve()
 
 try:
@@ -25,7 +25,7 @@ port  = 8765
 httpd = http.server.HTTPServer(("127.0.0.1", port), Handler)
 threading.Thread(target=httpd.serve_forever, daemon=True).start()
 
-url = f"http://127.0.0.1:{port}/pool_viewer.html?csv={csv_rel}"
+url = f"http://127.0.0.1:{port}/viewer/pool_viewer.html?csv={csv_rel}"
 print(f"Serving at {url}")
 webbrowser.open(url)
 

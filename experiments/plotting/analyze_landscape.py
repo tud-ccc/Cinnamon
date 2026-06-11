@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Landscape analysis for pool.csv from exhaustive search.
+Landscape analysis for pool.csv from exhaustive search (oracle).
 
 Produces PNG figures in the same directory as the CSV:
 

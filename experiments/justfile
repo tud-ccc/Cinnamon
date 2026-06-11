@@ -7,7 +7,7 @@ run FILE *ARGS:
     $(realpath ../.venv/bin/python) plotting/plot_bayes_pool.py data/{{FILE}}/*/pool.csv
 
 view NAME:
-    $(realpath ../.venv/bin/python) plotting/view_pool.py data/{{NAME}}/pool.csv
+    $(realpath ../.venv/bin/python) viewer/view_pool.py data/{{NAME}}/pool.csv
 
 analyze NAME *ARGS:
     $(realpath ../.venv/bin/python) plotting/analyze_landscape.py data/{{NAME}}/pool.csv {{ARGS}}

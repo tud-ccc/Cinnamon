@@ -400,16 +400,15 @@ struct InferenceTask {
       return state.tryEval(idx, *this, pool, iter) || !options.sampleOnlyValid;
     };
 
-    // Validation set: sample held-out points before Phase 1 so they are never
-    // used as BO training data. Marked visited so BO skips them entirely.
+    // Validation set: pre-evaluate a set of points for surrogate quality
+    // tracking. NOT marked visited — BO may still select these points later.
     ValidationSet validSet(space);
     if (options.nValidation > 0) {
       LLVM_DEBUG(llvm::dbgs()
                  << "[cinm-inference] Sampling " << options.nValidation
-                 << " held-out validation points\n");
+                 << " validation points\n");
       pool.sampleInitialSet(
           static_cast<size_t>(options.nValidation), rng, [&](size_t idx) {
-            pool.markVisited(idx);
             TrialInfo trial = makeTrialInfo(pool[idx]);
             auto result = plugin.evaluate(trial);
             if (auto *cost = std::get_if<double>(&result))
