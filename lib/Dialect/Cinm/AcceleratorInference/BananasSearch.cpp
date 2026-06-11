@@ -191,26 +191,13 @@ struct BananasEnsemble {
     for (size_t mi = 0; mi < models.size(); ++mi) {
       arma::arma_rng::set_seed(
           static_cast<arma::arma_rng::seed_type>(mi * 1000003 + 7));
-      // Augmented bootstrap: every observation is included once (mandatory),
-      // then n additional samples are drawn with replacement for diversity.
-      // Pure bootstrap omits any observation ~37% of the time; with small n
-      // that means 2-3 members never see the worst-ever point and keep
-      // predicting good cost there, holding mu down after the bad eval.
-      arma::uvec mandatory = arma::regspace<arma::uvec>(0, n - 1);
-      arma::uvec extra = arma::randi<arma::uvec>(
-          n, arma::distr_param(0, static_cast<int>(n) - 1));
-      arma::uvec idx = arma::join_cols(mandatory, extra);
-      arma::mat Xb = X.cols(idx);
-      arma::mat yb = yNorm.cols(idx);
-      // ensmallen's maxIterations counts gradient updates, not epochs.
-      // Compute steps-per-epoch so the training budget scales with the dataset
-      // size, not with raw sample count (which caused ~100x overtraining
-      // before). Cap batchSize at n to avoid undefined behaviour when n < 32.
+      // Train all members on the full dataset; diversity comes from different
+      // random initialisations (seeded per-member above), not data resampling.
       int batchSize = std::min<size_t>(32, n);
-      size_t stepsPerEpoch = (2 * n + batchSize - 1) / batchSize;
+      size_t stepsPerEpoch = (n + batchSize - 1) / batchSize;
       size_t maxIter = static_cast<size_t>(epochs) * stepsPerEpoch;
       ens::Adam opt(3e-3, batchSize, 0.9, 0.999, 1e-8, maxIter, 1e-7, true);
-      models[mi]->Train(Xb, yb, opt);
+      models[mi]->Train(X, yNorm, opt);
     }
   }
 
