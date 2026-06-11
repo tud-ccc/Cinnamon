@@ -430,6 +430,8 @@ struct UpmemInferAcceleratorPass
     o.neighborDepth = neighborDepth;
     o.neighborFrontierOnly = neighborFrontierOnly;
     o.exhaustiveSearch = exhaustiveSearch;
+    o.nValidation = nValidation;
+    o.validationInterval = validationInterval;
     upmemOpts.annotateOpCosts = annotateOpCosts;
     o.dumpDir = dumpDir;
     return upmemOpts;

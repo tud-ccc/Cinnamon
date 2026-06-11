@@ -328,7 +328,8 @@ struct InferenceState {
 
   bool hasBudget() const { return budget > 0; }
 
-  bool tryEval(size_t poolIdx, InferenceTask &task, CandidatePool &pool);
+  bool tryEval(size_t poolIdx, InferenceTask &task, CandidatePool &pool,
+               int iter = 0);
 };
 
 struct InferenceTask {
@@ -394,10 +395,30 @@ struct InferenceTask {
 
     InferenceState state(options.maxEvals, refClone.getLoc());
 
+    int iter = 0;
     auto evalConf = [&](size_t idx) -> bool {
-      bool success = state.tryEval(idx, *this, pool);
-      return success || !options.sampleOnlyValid;
+      return state.tryEval(idx, *this, pool, iter) || !options.sampleOnlyValid;
     };
+
+    // Validation set: sample held-out points before Phase 1 so they are never
+    // used as BO training data. Marked visited so BO skips them entirely.
+    ValidationSet validSet(space);
+    if (options.nValidation > 0) {
+      LLVM_DEBUG(llvm::dbgs()
+                 << "[cinm-inference] Sampling " << options.nValidation
+                 << " held-out validation points\n");
+      pool.sampleInitialSet(
+          static_cast<size_t>(options.nValidation), rng, [&](size_t idx) {
+            pool.markVisited(idx);
+            TrialInfo trial = makeTrialInfo(pool[idx]);
+            auto result = plugin.evaluate(trial);
+            if (auto *cost = std::get_if<double>(&result))
+              validSet.record(idx, *cost);
+            return true;
+          });
+      LLVM_DEBUG(llvm::dbgs() << "[cinm-inference] Validation set: "
+                              << validSet.size() << " points\n");
+    }
 
     // Phase 1: LHS initialisation.
     int nInit = std::min(options.nInit, static_cast<int>(pool.size()));
@@ -421,14 +442,20 @@ struct InferenceTask {
         continue;
       }
 
-      auto succeeded = pool.nextCandidateIndices(options, rng, evalConf);
+      ValidationSet *snapPtr = validSet.empty() ? nullptr : &validSet;
+      auto succeeded = pool.nextCandidateIndices(options, rng, evalConf,
+                                                 snapPtr, iter);
+      ++iter;
 
       if (!succeeded)
         break;
     }
 
-    if (!options.dumpDir.empty())
+    if (!options.dumpDir.empty()) {
       pool.dumpToCSV(space, options, options.dumpDir + "/pool.csv");
+      if (!validSet.empty())
+        validSet.dumpToCSV(options.dumpDir + "/validation.csv");
+    }
 
     if (!state.anySuccess)
       return std::move(state.err);
@@ -541,7 +568,7 @@ struct InferenceTask {
 };
 
 bool InferenceState::tryEval(size_t poolIdx, InferenceTask &task,
-                             CandidatePool &pool) {
+                             CandidatePool &pool, int iter) {
   --budget;
   pool.markVisited(poolIdx);
   LLVM_DEBUG(llvm::dbgs() << "[cinm-inference] Trial #" << trialCount++ << " "
@@ -558,7 +585,7 @@ bool InferenceState::tryEval(size_t poolIdx, InferenceTask &task,
   double costVal = std::get<double>(cost);
   LLVM_DEBUG(llvm::dbgs() << "[cinm-inference]   -> cost = " << costVal
                           << "\n");
-  pool.recordObservation(poolIdx, costVal);
+  pool.recordObservation(poolIdx, costVal, iter);
   anySuccess = true;
   if (costVal < bestCost) {
     bestCost = costVal;

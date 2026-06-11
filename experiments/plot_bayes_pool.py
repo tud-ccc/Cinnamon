@@ -125,6 +125,82 @@ def make_figure(agg, tile0_vals, tile1_vals, tasklet_vals, out_dir,
     return out_path
 
 
+def plot_validation_rmse(val_csv_path, out_dir):
+    """Plot surrogate RMSE on held-out validation points vs BO iteration."""
+    val = pd.read_csv(val_csv_path)
+    val["log_true"] = np.log10(val["true_cost"])
+    val["sq_err"]   = (val["mu"] - val["log_true"]) ** 2
+
+    fig, ax = plt.subplots(figsize=(8, 4))
+
+    # Overall RMSE across all validation points.
+    overall = val.groupby("iter", sort=True)["sq_err"].mean().apply(np.sqrt)
+    ax.plot(overall.index, overall.values, color="black", lw=2, label="all", zorder=5)
+
+    # Per-tasklets breakdown if the column exists and has multiple values.
+    if "tasklets" in val.columns:
+        tasklet_vals = sorted(val["tasklets"].unique())
+        if len(tasklet_vals) > 1:
+            cmap = plt.cm.tab10
+            for i, T in enumerate(tasklet_vals):
+                grp = val[val["tasklets"] == T]
+                by_iter = grp.groupby("iter", sort=True)["sq_err"].mean().apply(np.sqrt)
+                ax.plot(by_iter.index, by_iter.values,
+                        color=cmap(i / len(tasklet_vals)),
+                        lw=1, alpha=0.7, label=f"T={T}")
+
+    ax.set_xlabel("BO iteration")
+    ax.set_ylabel("RMSE  (log₁₀ cost units)")
+    ax.set_title("Surrogate validation RMSE over BO iterations\n"
+                 "(lower = surrogate predictions closer to true cost)")
+    ax.legend(fontsize=8, loc="upper right")
+    ax.grid(True, alpha=0.3)
+    plt.tight_layout()
+
+    out_path = os.path.join(out_dir, "pool_validation_rmse.png")
+    fig.savefig(out_path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    return out_path
+
+
+def plot_validation_mape(val_csv_path, out_dir):
+    """Plot surrogate MAPE (mean absolute % error) on validation points vs BO iteration.
+    """
+
+    val = pd.read_csv(val_csv_path)
+    logcost = np.log10(val["true_cost"])
+    val["pct_err"] = 100 * np.abs(val["mu"] - logcost) / logcost #/ val["true_cost"]
+
+    fig, ax = plt.subplots(figsize=(8, 4))
+
+    overall = val.groupby("iter", sort=True)["pct_err"].mean()
+    ax.plot(overall.index, overall.values, color="black", lw=2, label="all", zorder=5)
+
+    if "tasklets" in val.columns:
+        tasklet_vals = sorted(val["tasklets"].unique())
+        if len(tasklet_vals) > 1:
+            cmap = plt.cm.tab10
+            for i, T in enumerate(tasklet_vals):
+                grp = val[val["tasklets"] == T]
+                by_iter = grp.groupby("iter", sort=True)["pct_err"].mean()
+                ax.plot(by_iter.index, by_iter.values,
+                        color=cmap(i / len(tasklet_vals)),
+                        lw=1, alpha=0.7, label=f"T={T}")
+
+    ax.set_xlabel("BO iteration")
+    ax.set_ylabel("MAPE (%)")
+    ax.set_title("Surrogate validation MAPE over BO iterations (cost in log space)\n"
+                 "mean |predicted cost − true cost| / true cost × 100")
+    ax.legend(fontsize=8, loc="upper right")
+    ax.grid(True, alpha=0.3)
+    plt.tight_layout()
+
+    out_path = os.path.join(out_dir, "pool_validation_mape.png")
+    fig.savefig(out_path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    return out_path
+
+
 def build_tasks(csv_path):
     """Load one CSV and return (data_tuple, list_of_figure_kwargs)."""
     out_dir = str(Path(csv_path).parent)
@@ -181,9 +257,17 @@ if __name__ == "__main__":
     with ProcessPoolExecutor() as executor:
         for csv_path in csv_paths:
             data, tasks = build_tasks(csv_path)
+            out_dir = str(Path(csv_path).parent)
             for kw in tasks:
                 f = executor.submit(make_figure, *data, **kw)
                 all_futures[f] = (csv_path, kw["metric"])
+
+            val_path = Path(csv_path).parent / "validation.csv"
+            if val_path.exists():
+                for fn, tag in [(plot_validation_rmse, "validation_rmse"),
+                                (plot_validation_mape, "validation_mape")]:
+                    f = executor.submit(fn, str(val_path), out_dir)
+                    all_futures[f] = (csv_path, tag)
 
         for future in tqdm(as_completed(all_futures), total=len(all_futures), desc="plots"):
             csv_path, metric = all_futures[future]
