@@ -1,6 +1,5 @@
 #pragma once
 
-#include <concepts>
 #include <cstddef>
 #include <random>
 #include <unordered_set>
@@ -22,6 +21,35 @@ struct ConfigSpace;
 struct InferenceOptions;
 using Configuration = std::vector<int64_t>;
 
+/// Holds a fixed set of held-out validation configurations, their true costs,
+/// and per-iteration surrogate predictions (mu/sigma). Populated once before
+/// BO begins; never used as BO training data.
+struct ValidationSet {
+  const ConfigSpace *space_;
+
+  std::vector<size_t> indices;   // pool indices of validation configs
+  arma::mat encoded;             // D × nVal encoded matrix, built incrementally
+  std::vector<double> trueCosts; // true cost for each validation config
+
+  struct Snapshot {
+    int iter;
+    arma::rowvec mu, sigma;
+  };
+  std::vector<Snapshot> snapshots; // one entry per recorded iteration
+
+  explicit ValidationSet(const ConfigSpace &space) : space_(&space) {}
+
+  bool empty() const { return indices.empty(); }
+  size_t size() const { return indices.size(); }
+
+  /// Record a validation point after evaluating its true cost.
+  void record(size_t idx, double cost);
+  /// Append a surrogate snapshot for the current BO iteration.
+  void recordSnapshot(int iter, arma::rowvec mu, arma::rowvec sigma);
+  /// Write one row per (validation config × snapshot) to a CSV file.
+  void dumpToCSV(llvm::StringRef path) const;
+};
+
 /// Addressable candidate pool backed by the full ConfigSpace Cartesian product.
 /// Configurations are not pre-stored; index i maps to the config at
 /// ConfigSpace::at(i).  Invalid configs (constraint failures) are pre-marked
@@ -41,6 +69,8 @@ struct CandidatePool {
 
   // Per-pool-index observed cost; NaN for unvisited or failed evaluations.
   arma::rowvec costByIdx;
+  // Per-pool-index BO iteration at which the cost was recorded; -1 if unrecorded.
+  std::vector<int> iterByIdx;
 
   /// Encode the full Cartesian product and pre-mark constraint-violating
   /// configs as visited. evalBudget sizes Xo/yo (not N).
@@ -59,7 +89,7 @@ struct CandidatePool {
   /// Index of the first unvisited entry, or size() if all have been visited.
   size_t firstUnvisited() const { return visited.find_first_unset(); }
 
-  void recordObservation(size_t idx, double cost);
+  void recordObservation(size_t idx, double cost, int iter = 0);
 
   /// Select n row-indices from the pool using Latin Hypercube Sampling.
   void sampleInitialSet(size_t n_samples, std::mt19937 &rng,
@@ -70,7 +100,8 @@ struct CandidatePool {
   /// Unvisited entries are derived from the visited bitvector; observations
   /// come from the incrementally maintained Xo/yo matrices (zero-copy view).
   bool nextCandidateIndices(const InferenceOptions &opts, std::mt19937 &rng,
-                            std::function<bool(size_t)> accept);
+                            std::function<bool(size_t)> accept,
+                            ValidationSet *validSet = nullptr, int iter = 0);
 
   /// Dump the full candidate pool to a CSV file at `path`.
   /// Columns: one per search param, then "cost" (empty if not evaluated),

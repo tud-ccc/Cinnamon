@@ -255,6 +255,15 @@ struct InferenceOptions {
   /// in the same CSV format as the BO run (surrogate columns are omitted
   /// since no model is trained).
   bool exhaustiveSearch = false;
+
+  /// Number of held-out validation points sampled (via LHS) before BO begins.
+  /// These are evaluated once for their true cost and never used as BO training
+  /// data. At each snapshot the surrogate's mu/sigma are recorded for them.
+  /// Zero disables validation entirely.
+  int nValidation = 0;
+  /// Record a surrogate snapshot on the validation set every N BO iterations
+  /// (Phase 2 iterations only). Has no effect when nValidation == 0.
+  int validationInterval = 5;
 };
 
 /// Entry point for Bayesian inference.

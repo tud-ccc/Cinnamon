@@ -73,7 +73,13 @@ def UpmemInferAcceleratorPass : Pass<"upmem-infer-accelerator", "ModuleOp"> {
            "surrogate model statistics (mu, sigma, acq) after inference">,
     Option<"exhaustiveSearch", "exhaustive-search", "bool", "false",
            "Evaluate every valid configuration in the search space exhaustively "
-           "instead of running Bayesian optimisation">
+           "instead of running Bayesian optimisation">,
+    Option<"nValidation", "n-validation", "int", "0",
+           "Number of held-out validation points sampled before BO begins; "
+           "0 disables surrogate validation">,
+    Option<"validationInterval", "validation-interval", "int", "5",
+           "Record surrogate predictions on the validation set every N BO "
+           "iterations (Phase 2 only)">
   ];
 }
 

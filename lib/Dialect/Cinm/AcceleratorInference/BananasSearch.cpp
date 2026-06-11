@@ -24,7 +24,8 @@ namespace mlir::cinm {
 CandidatePool::CandidatePool(const ConfigSpace &space, size_t evalBudget)
     : space_(&space), N(space.totalSize()), visited(static_cast<unsigned>(N)),
       Xo(space.size(), evalBudget), yo(1, evalBudget),
-      costByIdx(arma::rowvec(N).fill(arma::datum::nan)) {}
+      costByIdx(arma::rowvec(N).fill(arma::datum::nan)),
+      iterByIdx(N, -1) {}
 
 size_t CandidatePool::nDims() const { return space_->size(); }
 
@@ -34,7 +35,7 @@ Configuration CandidatePool::operator[](size_t i) const {
   return conf;
 }
 
-void CandidatePool::recordObservation(size_t idx, double cost) {
+void CandidatePool::recordObservation(size_t idx, double cost, int iter) {
   if (nObs >= Xo.n_cols) {
     const size_t newCols = Xo.n_cols + 32;
     Xo.resize(Xo.n_rows, newCols);
@@ -46,6 +47,7 @@ void CandidatePool::recordObservation(size_t idx, double cost) {
     Xo(d, nObs) = (*space_)[d].featurize(conf[d]);
   yo(0, nObs) = cost;
   costByIdx(idx) = cost;
+  iterByIdx[idx] = iter;
   ++nObs;
 }
 
@@ -334,7 +336,8 @@ void CandidatePool::fillNeighbors(std::unordered_set<size_t> &result,
 
 bool CandidatePool::nextCandidateIndices(const InferenceOptions &opts,
                                          std::mt19937 &rng,
-                                         std::function<bool(size_t)> accept) {
+                                         std::function<bool(size_t)> accept,
+                                         ValidationSet *validSet, int iter) {
   const size_t D = nDims();
 
   // --- Build candidate set ---
@@ -366,6 +369,12 @@ bool CandidatePool::nextCandidateIndices(const InferenceOptions &opts,
   BananasEnsemble ensemble(opts.nEnsemble, opts.hidden, opts.depth);
   ensemble.fit(Xo_obs, yo_obs, opts.epochs);
   auto [mu, sigma] = ensemble.predict(candEncoded);
+
+  if (validSet && !validSet->empty() && opts.validationInterval > 0 &&
+      iter % opts.validationInterval == 0) {
+    auto [vmu, vsigma] = ensemble.predict(validSet->encoded);
+    validSet->recordSnapshot(iter, std::move(vmu), std::move(vsigma));
+  }
 
   arma::rowvec scores = computeAcq(mu, sigma, opts.kappa);
   arma::uvec order = arma::sort_index(scores, "ascend");
@@ -433,7 +442,7 @@ void CandidatePool::dumpToCSV(const ConfigSpace &space,
   // Header
   for (const auto &p : space.params)
     out << p.name << ",";
-  out << "visited,valid,cost";
+  out << "visited,valid,cost,eval_iter";
   if (hasModel)
     out << ",mu,sigma,acq";
   out << "\n";
@@ -449,6 +458,9 @@ void CandidatePool::dumpToCSV(const ConfigSpace &space,
     double c = costByIdx(i);
     if (!std::isnan(c))
       out << c;
+    out << ",";
+    if (iterByIdx[i] >= 0)
+      out << iterByIdx[i];
     if (hasModel) {
       auto it = validPos.find(i);
       if (it != validPos.end()) {
@@ -459,6 +471,53 @@ void CandidatePool::dumpToCSV(const ConfigSpace &space,
       }
     }
     out << "\n";
+  }
+}
+
+// ===----------------------------------------------------------------------===//
+// ValidationSet
+// ===----------------------------------------------------------------------===//
+
+void ValidationSet::record(size_t idx, double cost) {
+  indices.push_back(idx);
+  trueCosts.push_back(cost);
+  const size_t D = space_->size();
+  Configuration conf;
+  space_->at(idx, conf);
+  if (encoded.is_empty())
+    encoded.set_size(D, 0);
+  encoded.insert_cols(encoded.n_cols, 1);
+  for (size_t d = 0; d < D; ++d)
+    encoded(d, encoded.n_cols - 1) = (*space_)[d].featurize(conf[d]);
+}
+
+void ValidationSet::recordSnapshot(int iter, arma::rowvec mu,
+                                   arma::rowvec sigma) {
+  snapshots.push_back({iter, std::move(mu), std::move(sigma)});
+}
+
+void ValidationSet::dumpToCSV(llvm::StringRef path) const {
+  if (empty() || snapshots.empty())
+    return;
+  std::filesystem::create_directories(
+      std::filesystem::path(path.str()).parent_path());
+  std::ofstream out(path.str());
+  if (!out)
+    return;
+
+  for (const auto &p : space_->params)
+    out << p.name << ",";
+  out << "true_cost,iter,mu,sigma\n";
+
+  Configuration conf;
+  for (const auto &snap : snapshots) {
+    for (size_t j = 0; j < indices.size(); ++j) {
+      space_->at(indices[j], conf);
+      for (int64_t v : conf)
+        out << v << ",";
+      out << trueCosts[j] << "," << snap.iter << "," << snap.mu(j) << ","
+          << snap.sigma(j) << "\n";
+    }
   }
 }
 
