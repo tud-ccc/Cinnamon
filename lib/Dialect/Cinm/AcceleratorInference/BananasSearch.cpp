@@ -507,7 +507,7 @@ void ValidationSet::dumpToCSV(llvm::StringRef path) const {
 
   for (const auto &p : space_->params)
     out << p.name << ",";
-  out << "true_cost,iter,mu,sigma\n";
+  out << "cost,iter,mu,sigma\n";
 
   Configuration conf;
   for (const auto &snap : snapshots) {
