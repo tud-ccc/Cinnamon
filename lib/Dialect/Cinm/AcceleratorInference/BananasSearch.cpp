@@ -27,6 +27,8 @@ CandidatePool::CandidatePool(const ConfigSpace &space, size_t evalBudget)
       costByIdx(arma::rowvec(N).fill(arma::datum::nan)),
       iterByIdx(N, -1) {}
 
+CandidatePool::~CandidatePool() = default;
+
 size_t CandidatePool::nDims() const { return space_->size(); }
 
 Configuration CandidatePool::operator[](size_t i) const {
@@ -353,12 +355,17 @@ bool CandidatePool::nextCandidateIndices(const InferenceOptions &opts,
   arma::mat yo_obs(const_cast<double *>(yo.memptr()), 1, nObs,
                    /*copy=*/false, /*strict=*/true);
 
-  BananasEnsemble ensemble(opts.nEnsemble, opts.hidden, opts.depth);
-  ensemble.fit(Xo_obs, yo_obs, opts.epochs);
-  auto [mu, sigma] = ensemble.predict(candEncoded);
+  // Warm-start: reuse weights from the previous iteration. Reinitialise only
+  // when the ensemble doesn't exist yet or its configuration has changed.
+  if (!ensemble_ ||
+      ensemble_->models.size() != static_cast<size_t>(opts.nEnsemble))
+    ensemble_ = std::make_unique<BananasEnsemble>(opts.nEnsemble, opts.hidden,
+                                                  opts.depth);
+  ensemble_->fit(Xo_obs, yo_obs, opts.epochs);
+  auto [mu, sigma] = ensemble_->predict(candEncoded);
 
   {
-    auto [tmu, _] = ensemble.predict(Xo_obs);
+    auto [tmu, _] = ensemble_->predict(Xo_obs);
     arma::rowvec yLog = arma::log10(yo_obs.row(0));
     double mse = arma::mean(arma::square(tmu - yLog));
     trainingSnapshots.push_back({iter, nObs, std::sqrt(mse)});
@@ -366,7 +373,7 @@ bool CandidatePool::nextCandidateIndices(const InferenceOptions &opts,
 
   if (validSet && !validSet->empty() && opts.validationInterval > 0 &&
       iter % opts.validationInterval == 0) {
-    auto [vmu, vsigma] = ensemble.predict(validSet->encoded);
+    auto [vmu, vsigma] = ensemble_->predict(validSet->encoded);
     validSet->recordSnapshot(iter, std::move(vmu), std::move(vsigma));
   }
 

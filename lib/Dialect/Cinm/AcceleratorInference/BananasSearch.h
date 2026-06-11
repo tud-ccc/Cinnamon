@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstddef>
+#include <memory>
 #include <random>
 #include <unordered_set>
 #include <vector>
@@ -19,6 +20,7 @@ namespace mlir::cinm {
 
 struct ConfigSpace;
 struct InferenceOptions;
+struct BananasEnsemble; // defined in BananasSearch.cpp
 using Configuration = std::vector<int64_t>;
 
 /// Holds a fixed set of held-out validation configurations, their true costs,
@@ -72,9 +74,15 @@ struct CandidatePool {
   // Per-pool-index BO iteration at which the cost was recorded; -1 if unrecorded.
   std::vector<int> iterByIdx;
 
+  /// Warm-start ensemble: persisted across BO iterations so each call to
+  /// nextCandidateIndices fine-tunes from the previous fit rather than
+  /// reinitialising from random weights.
+  std::unique_ptr<BananasEnsemble> ensemble_;
+
   /// Encode the full Cartesian product and pre-mark constraint-violating
   /// configs as visited. evalBudget sizes Xo/yo (not N).
   CandidatePool(const ConfigSpace &space, size_t evalBudget);
+  ~CandidatePool();
 
   size_t size() const { return N; }
   size_t nDims() const;
