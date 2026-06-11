@@ -201,6 +201,103 @@ def plot_validation_mape(val_csv_path, out_dir):
     return out_path
 
 
+META_COLS = {"visited", "valid", "cost", "eval_iter", "mu", "sigma", "acq"}
+
+def _dim_cols(df):
+    return [c for c in df.columns if c not in META_COLS]
+
+
+def _compute_min_dist(df, dims):
+    """Min L1 distance in discrete grid-step indices to the nearest visited config."""
+    index_maps = {c: {v: i for i, v in enumerate(sorted(df[c].unique()))} for c in dims}
+    coords = np.column_stack([df[c].map(index_maps[c]).values for c in dims]).astype(int)
+    visited_mask = df["visited"].fillna(0).astype(bool).values
+    visited_coords = coords[visited_mask]
+    if len(visited_coords) == 0:
+        return np.full(len(df), np.nan)
+    # (N, V, D) → L1 sum → (N, V) → min → (N,)
+    diffs = np.abs(coords[:, None, :] - visited_coords[None, :, :])
+    return diffs.sum(axis=2).min(axis=1).astype(float)
+
+
+def plot_sigma_vs_distance(df, out_dir):
+    """Median ± IQR of surrogate σ at each grid-step distance from the nearest observation."""
+    dims = _dim_cols(df)
+    if "sigma" not in df.columns:
+        return None
+    df = df.copy()
+    df["min_dist"] = _compute_min_dist(df, dims)
+    sub = df[df["sigma"].notna() & (df["valid"] == 1)]
+    if sub.empty:
+        return None
+
+    dist_vals = sorted(sub["min_dist"].dropna().unique())
+    medians, q25s, q75s, counts = [], [], [], []
+    kept_dists = []
+    for d in dist_vals:
+        g = sub[sub["min_dist"] == d]["sigma"].values
+        if len(g) == 0:
+            continue
+        kept_dists.append(d)
+        medians.append(np.median(g))
+        q25s.append(np.percentile(g, 25))
+        q75s.append(np.percentile(g, 75))
+        counts.append(len(g))
+
+    xs = np.array(kept_dists)
+    medians, q25s, q75s = map(np.array, (medians, q25s, q75s))
+
+    fig, ax = plt.subplots(figsize=(10, 4))
+    ax.plot(xs, medians, color="steelblue", lw=2, marker="o", ms=4, label="median σ")
+    ax.fill_between(xs, q25s, q75s, alpha=0.25, color="steelblue", label="IQR")
+    for d, m, n in zip(xs, medians, counts):
+        ax.annotate(f"n={n}", (d, m), textcoords="offset points",
+                    xytext=(0, 7), ha="center", fontsize=6, color="gray")
+    ax.set_xticks(xs.astype(int))
+    ax.set_xlabel("Min grid-step distance to nearest observation")
+    ax.set_ylabel("σ (surrogate uncertainty, log₁₀ units)")
+    ax.set_title("Surrogate σ vs. distance from observations\n"
+                 "Well-calibrated: σ increases monotonically with distance")
+    ax.legend(fontsize=8)
+    ax.grid(True, alpha=0.3)
+    plt.tight_layout()
+    out_path = os.path.join(out_dir, "pool_sigma_vs_dist.png")
+    fig.savefig(out_path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    return out_path
+
+
+def plot_sigma_scatter(df, out_dir):
+    """Scatter of (min_dist, σ) coloured by μ — reveals over/under-confident regions."""
+    dims = _dim_cols(df)
+    if "sigma" not in df.columns or "mu" not in df.columns:
+        return None
+    df = df.copy()
+    df["min_dist"] = _compute_min_dist(df, dims)
+    sub = df[df["sigma"].notna() & df["mu"].notna() & (df["valid"] == 1)]
+    if sub.empty:
+        return None
+
+    fig, ax = plt.subplots(figsize=(8, 5))
+    sc = ax.scatter(
+        sub["min_dist"], sub["sigma"],
+        c=sub["mu"], cmap="viridis_r",
+        alpha=0.4, s=8, linewidths=0,
+    )
+    fig.colorbar(sc, ax=ax, label="μ  (predicted log₁₀ cost — lower is better)")
+    ax.xaxis.set_major_locator(plt.MaxNLocator(integer=True))
+    ax.set_xlabel("Min grid-step distance to nearest observation")
+    ax.set_ylabel("σ (surrogate uncertainty, log₁₀ units)")
+    ax.set_title("Calibration scatter: σ vs. distance from observations\n"
+                 "Bottom-right = overconfident far from data  ·  Top-left = underfit near data")
+    ax.grid(True, alpha=0.3)
+    plt.tight_layout()
+    out_path = os.path.join(out_dir, "pool_sigma_scatter.png")
+    fig.savefig(out_path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    return out_path
+
+
 def build_tasks(csv_path):
     """Load one CSV and return (data_tuple, list_of_figure_kwargs)."""
     out_dir = str(Path(csv_path).parent)
@@ -267,6 +364,14 @@ if __name__ == "__main__":
                 for fn, tag in [(plot_validation_rmse, "validation_rmse"),
                                 (plot_validation_mape, "validation_mape")]:
                     f = executor.submit(fn, str(val_path), out_dir)
+                    all_futures[f] = (csv_path, tag)
+
+            raw_df = pd.read_csv(csv_path)
+            raw_df = raw_df[raw_df["dpus"] == DPU]
+            if "sigma" in raw_df.columns:
+                for fn, tag in [(plot_sigma_vs_distance, "sigma_vs_dist"),
+                                (plot_sigma_scatter,     "sigma_scatter")]:
+                    f = executor.submit(fn, raw_df, out_dir)
                     all_futures[f] = (csv_path, tag)
 
         for future in tqdm(as_completed(all_futures), total=len(all_futures), desc="plots"):
