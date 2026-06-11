@@ -110,6 +110,16 @@ struct CandidatePool {
   void dumpToCSV(const ConfigSpace &space, const InferenceOptions &opts,
                  llvm::StringRef path) const;
 
+  /// Dump per-iteration training RMSE to a CSV (iter, n_obs, rmse).
+  void dumpTrainingRmseToCSV(llvm::StringRef path) const;
+
+  struct TrainingSnapshot {
+    int iter;
+    size_t nObs;
+    double rmse;
+  };
+  std::vector<TrainingSnapshot> trainingSnapshots;
+
 private:
   /// Insert idx into result if it is unvisited, not already present, and valid.
   bool tryInsert(std::unordered_set<size_t> &result, size_t idx,

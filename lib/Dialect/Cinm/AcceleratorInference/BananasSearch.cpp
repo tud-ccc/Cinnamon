@@ -357,6 +357,13 @@ bool CandidatePool::nextCandidateIndices(const InferenceOptions &opts,
   ensemble.fit(Xo_obs, yo_obs, opts.epochs);
   auto [mu, sigma] = ensemble.predict(candEncoded);
 
+  {
+    auto [tmu, _] = ensemble.predict(Xo_obs);
+    arma::rowvec yLog = arma::log10(yo_obs.row(0));
+    double mse = arma::mean(arma::square(tmu - yLog));
+    trainingSnapshots.push_back({iter, nObs, std::sqrt(mse)});
+  }
+
   if (validSet && !validSet->empty() && opts.validationInterval > 0 &&
       iter % opts.validationInterval == 0) {
     auto [vmu, vsigma] = ensemble.predict(validSet->encoded);
@@ -459,6 +466,19 @@ void CandidatePool::dumpToCSV(const ConfigSpace &space,
     }
     out << "\n";
   }
+}
+
+void CandidatePool::dumpTrainingRmseToCSV(llvm::StringRef path) const {
+  if (trainingSnapshots.empty())
+    return;
+  std::filesystem::create_directories(
+      std::filesystem::path(path.str()).parent_path());
+  std::ofstream out(path.str());
+  if (!out)
+    return;
+  out << "iter,n_obs,rmse\n";
+  for (const auto &s : trainingSnapshots)
+    out << s.iter << "," << s.nObs << "," << s.rmse << "\n";
 }
 
 // ===----------------------------------------------------------------------===//

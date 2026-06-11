@@ -298,6 +298,29 @@ def plot_sigma_scatter(df, out_dir):
     return out_path
 
 
+def plot_training_rmse(csv_path, out_dir):
+    """RMSE of surrogate predictions on training observations vs. BO iteration."""
+    df = pd.read_csv(csv_path)
+    fig, ax1 = plt.subplots(figsize=(8, 4))
+    ax1.plot(df["iter"], df["rmse"], color="steelblue", lw=2, marker="o", ms=3)
+    ax1.set_xlabel("BO iteration")
+    ax1.set_ylabel("Training RMSE  (log₁₀ cost units)", color="steelblue")
+    ax1.tick_params(axis="y", labelcolor="steelblue")
+    ax1.xaxis.set_major_locator(plt.MaxNLocator(integer=True))
+    ax2 = ax1.twinx()
+    ax2.plot(df["iter"], df["n_obs"], color="gray", lw=1, ls="--", alpha=0.6)
+    ax2.set_ylabel("# training observations", color="gray")
+    ax2.tick_params(axis="y", labelcolor="gray")
+    ax1.set_title("Surrogate training RMSE over BO iterations\n"
+                  "Near-zero = ensemble fits training data well")
+    ax1.grid(True, alpha=0.3)
+    plt.tight_layout()
+    out_path = os.path.join(out_dir, "pool_training_rmse.png")
+    fig.savefig(out_path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    return out_path
+
+
 def build_tasks(csv_path):
     """Load one CSV and return (data_tuple, list_of_figure_kwargs)."""
     out_dir = str(Path(csv_path).parent)
@@ -365,6 +388,11 @@ if __name__ == "__main__":
                                 (plot_validation_mape, "validation_mape")]:
                     f = executor.submit(fn, str(val_path), out_dir)
                     all_futures[f] = (csv_path, tag)
+
+            train_rmse_path = Path(csv_path).parent / "training_rmse.csv"
+            if train_rmse_path.exists():
+                f = executor.submit(plot_training_rmse, str(train_rmse_path), out_dir)
+                all_futures[f] = (csv_path, "training_rmse")
 
             raw_df = pd.read_csv(csv_path)
             raw_df = raw_df[raw_df["dpus"] == DPU]
