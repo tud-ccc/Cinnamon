@@ -452,6 +452,7 @@ struct InferenceTask {
 
     if (!options.dumpDir.empty()) {
       pool.dumpToCSV(space, options, options.dumpDir + "/pool.csv");
+      pool.dumpTrainingRmseToCSV(options.dumpDir + "/training_rmse.csv");
       if (!validSet.empty())
         validSet.dumpToCSV(options.dumpDir + "/validation.csv");
     }
