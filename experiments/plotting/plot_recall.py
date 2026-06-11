@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """
-Top-k recall and best-cost-found curves for Bayesian optimisation runs.
+Plots that use both an oracle pool (as baseline) and one or more bayesian run pools.
+For now those are top-K kernel recall and best cost found by iteration.
 
 Usage:
     python plot_recall.py oracle.csv bo1.csv [bo2.csv ...] [--k 10] [--out-dir DIR]

@@ -4,13 +4,13 @@ run FILE *ARGS:
     mkdir -p data/{{FILE}}
     cinm-opt {{FILE}}.mlir --cinm-assign-platforms --cinm-isolate-compute-blocks "--upmem-infer-accelerator={{ if ARGS != "" { ARGS + " " } else { "" } }}dump-dir=data/{{FILE}}" \
       --mlir-print-ir-after-failure --dump-pass-pipeline --split-input-file --debug-only=cinm-inference 2> data/{{FILE}}/{{FILE}}.log > data/{{FILE}}/out.mlir 
-    $(realpath ../.venv/bin/python) plot_bayes_pool.py data/{{FILE}}/*/pool.csv
+    $(realpath ../.venv/bin/python) plotting/plot_bayes_pool.py data/{{FILE}}/*/pool.csv
 
 view NAME:
-    $(realpath ../.venv/bin/python) view_pool.py data/{{NAME}}/pool.csv
+    $(realpath ../.venv/bin/python) plotting/view_pool.py data/{{NAME}}/pool.csv
 
 analyze NAME *ARGS:
-    $(realpath ../.venv/bin/python) analyze_landscape.py data/{{NAME}}/pool.csv {{ARGS}}
+    $(realpath ../.venv/bin/python) plotting/analyze_landscape.py data/{{NAME}}/pool.csv {{ARGS}}
     
 
 
