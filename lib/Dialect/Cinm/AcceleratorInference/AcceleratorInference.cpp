@@ -329,7 +329,7 @@ struct InferenceState {
   bool hasBudget() const { return budget > 0; }
 
   bool tryEval(size_t poolIdx, InferenceTask &task, CandidatePool &pool,
-               int iter = 0);
+               double &cost, size_t iter = 0);
 };
 
 struct InferenceTask {
@@ -393,31 +393,39 @@ struct InferenceTask {
       return emitSilenceableFailure(
           refClone.getLoc(), "No valid configurations found in search space");
 
-    InferenceState state(options.maxEvals, refClone.getLoc());
-
-    int iter = 0;
-    auto evalConf = [&](size_t idx) -> bool {
-      return state.tryEval(idx, *this, pool, iter) || !options.sampleOnlyValid;
-    };
-
     // Validation set: pre-evaluate a set of points for surrogate quality
     // tracking. NOT marked visited — BO may still select these points later.
     ValidationSet validSet(space);
     if (options.nValidation > 0) {
-      LLVM_DEBUG(llvm::dbgs()
-                 << "[cinm-inference] Sampling " << options.nValidation
-                 << " validation points\n");
-      pool.sampleInitialSet(
-          static_cast<size_t>(options.nValidation), rng, [&](size_t idx) {
-            TrialInfo trial = makeTrialInfo(pool[idx]);
-            auto result = plugin.evaluate(trial);
-            if (auto *cost = std::get_if<double>(&result))
-              validSet.record(idx, *cost);
-            return true;
-          });
+      LLVM_DEBUG(llvm::dbgs() << "[cinm-inference] Sampling "
+                              << options.nValidation << " validation points\n");
+      pool.sampleInitialSet(static_cast<size_t>(options.nValidation), rng,
+                            [&](size_t idx) {
+                              TrialInfo trial = makeTrialInfo(pool[idx]);
+                              auto result = plugin.evaluate(trial);
+                              if (auto *cost = std::get_if<double>(&result))
+                                validSet.record(idx, *cost);
+                              return true;
+                            });
       LLVM_DEBUG(llvm::dbgs() << "[cinm-inference] Validation set: "
                               << validSet.size() << " points\n");
     }
+    // Record the training set in its own "validation set" to output
+    // the same kind of data for plotting
+    ValidationSet trainingSet(space);
+
+    InferenceState state(options.maxEvals, refClone.getLoc());
+
+    auto evalConf = [&](size_t idx) -> bool {
+      double cost;
+      bool success =
+          state.tryEval(idx, *this, pool, cost, static_cast<int>(pool.nObs)) ||
+          !options.sampleOnlyValid;
+      if (success) {
+        trainingSet.record(idx, cost);
+      }
+      return success;
+    };
 
     // Phase 1: LHS initialisation.
     int nInit = std::min(options.nInit, static_cast<int>(pool.size()));
@@ -436,25 +444,25 @@ struct InferenceTask {
 
       if (pool.nObs < 2) {
         // Not enough observations to fit a surrogate — pick first unvisited.
-        if (size_t idx = pool.firstUnvisited(); idx >= 0)
-          state.tryEval(idx, *this, pool);
+        if (size_t idx = pool.firstUnvisited(); idx >= 0) {
+          double cost;
+          state.tryEval(idx, *this, pool, cost, pool.nObs);
+        }
         continue;
       }
 
-      ValidationSet *snapPtr = validSet.empty() ? nullptr : &validSet;
-      auto succeeded = pool.nextCandidateIndices(options, rng, evalConf,
-                                                 snapPtr, iter);
-      ++iter;
+      auto succeeded = pool.nextCandidateIndices(
+          options, rng, evalConf, validSet, trainingSet, pool.nObs);
 
       if (!succeeded)
         break;
     }
 
     if (!options.dumpDir.empty()) {
-      pool.dumpToCSV(space, options, options.dumpDir + "/pool.csv");
-      pool.dumpTrainingRmseToCSV(options.dumpDir + "/training_rmse.csv");
-      if (!validSet.empty())
-        validSet.dumpToCSV(options.dumpDir + "/validation.csv");
+      auto dumpPath = std::filesystem::path(options.dumpDir);
+      pool.dumpToCSV(space, options, dumpPath / "pool.csv");
+      validSet.dumpToCSV(dumpPath / "validation.csv");
+      trainingSet.dumpToCSV(dumpPath / "training.csv");
     }
 
     if (!state.anySuccess)
@@ -568,7 +576,8 @@ struct InferenceTask {
 };
 
 bool InferenceState::tryEval(size_t poolIdx, InferenceTask &task,
-                             CandidatePool &pool, int iter) {
+                             CandidatePool &pool, double &costVal,
+                             size_t iter) {
   --budget;
   pool.markVisited(poolIdx);
   LLVM_DEBUG(llvm::dbgs() << "[cinm-inference] Trial #" << trialCount++ << " "
@@ -582,7 +591,7 @@ bool InferenceState::tryEval(size_t poolIdx, InferenceTask &task,
     LLVM_DEBUG(llvm::dbgs() << "[cinm-inference]   -> failed\n");
     return false;
   }
-  double costVal = std::get<double>(cost);
+  costVal = std::get<double>(cost);
   LLVM_DEBUG(llvm::dbgs() << "[cinm-inference]   -> cost = " << costVal
                           << "\n");
   pool.recordObservation(poolIdx, costVal, iter);

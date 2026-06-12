@@ -37,7 +37,7 @@ Configuration CandidatePool::operator[](size_t i) const {
   return conf;
 }
 
-void CandidatePool::recordObservation(size_t idx, double cost, int iter) {
+void CandidatePool::recordObservation(size_t idx, double cost, size_t iter) {
   if (nObs >= Xo.n_cols) {
     const size_t newCols = Xo.n_cols + 32;
     Xo.resize(Xo.n_rows, newCols);
@@ -321,10 +321,20 @@ void CandidatePool::fillNeighbors(std::unordered_set<size_t> &result,
   }
 }
 
+void recordValidationData(ValidationSet &validSet, BananasEnsemble *ensemble_,
+                          int iter) {
+  if (!validSet.empty()) {
+    auto [vmu, vsigma] = ensemble_->predict(validSet.encoded);
+    validSet.recordSnapshot(iter, std::move(vmu), std::move(vsigma));
+  }
+}
+
 bool CandidatePool::nextCandidateIndices(const InferenceOptions &opts,
                                          std::mt19937 &rng,
                                          std::function<bool(size_t)> accept,
-                                         ValidationSet *validSet, int iter) {
+                                         ValidationSet &validSet,
+                                         ValidationSet &trainingValidSet,
+                                         int iter) {
   const size_t D = nDims();
 
   // --- Build candidate set ---
@@ -363,17 +373,11 @@ bool CandidatePool::nextCandidateIndices(const InferenceOptions &opts,
   ensemble_->fit(Xo_obs, yo_obs, opts.epochs);
   auto [mu, sigma] = ensemble_->predict(candEncoded);
 
-  {
-    auto [tmu, _] = ensemble_->predict(Xo_obs);
-    arma::rowvec yScaled = applyScale(yo_obs, opts.objectiveScale).row(0);
-    double mse = arma::mean(arma::square(tmu - yScaled));
-    trainingSnapshots.push_back({iter, nObs, std::sqrt(mse)});
-  }
+  // validation logging
+  recordValidationData(trainingValidSet, ensemble_.get(), iter);
 
-  if (validSet && !validSet->empty() && opts.validationInterval > 0 &&
-      iter % opts.validationInterval == 0) {
-    auto [vmu, vsigma] = ensemble_->predict(validSet->encoded);
-    validSet->recordSnapshot(iter, std::move(vmu), std::move(vsigma));
+  if (opts.validationInterval > 0 && iter % opts.validationInterval == 0) {
+    recordValidationData(validSet, ensemble_.get(), iter);
   }
 
   arma::rowvec scores = computeAcq(mu, sigma, opts.kappa);
@@ -392,10 +396,9 @@ bool CandidatePool::nextCandidateIndices(const InferenceOptions &opts,
 
 void CandidatePool::dumpToCSV(const ConfigSpace &space,
                               const InferenceOptions &opts,
-                              llvm::StringRef path) const {
-  std::filesystem::create_directories(
-      std::filesystem::path(path.str()).parent_path());
-  std::ofstream out(path.str());
+                              std::filesystem::path path) const {
+  std::filesystem::create_directories(path.parent_path());
+  std::ofstream out(path);
   if (!out)
     return;
 
@@ -474,19 +477,6 @@ void CandidatePool::dumpToCSV(const ConfigSpace &space,
   }
 }
 
-void CandidatePool::dumpTrainingRmseToCSV(llvm::StringRef path) const {
-  if (trainingSnapshots.empty())
-    return;
-  std::filesystem::create_directories(
-      std::filesystem::path(path.str()).parent_path());
-  std::ofstream out(path.str());
-  if (!out)
-    return;
-  out << "iter,n_obs,rmse\n";
-  for (const auto &s : trainingSnapshots)
-    out << s.iter << "," << s.nObs << "," << s.rmse << "\n";
-}
-
 // ===----------------------------------------------------------------------===//
 // ValidationSet
 // ===----------------------------------------------------------------------===//
@@ -509,12 +499,11 @@ void ValidationSet::recordSnapshot(int iter, arma::rowvec mu,
   snapshots.push_back({iter, std::move(mu), std::move(sigma)});
 }
 
-void ValidationSet::dumpToCSV(llvm::StringRef path) const {
+void ValidationSet::dumpToCSV(std::filesystem::path path) const {
   if (empty() || snapshots.empty())
     return;
-  std::filesystem::create_directories(
-      std::filesystem::path(path.str()).parent_path());
-  std::ofstream out(path.str());
+  std::filesystem::create_directories(path.parent_path());
+  std::ofstream out(path);
   if (!out)
     return;
 
