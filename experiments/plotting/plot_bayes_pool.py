@@ -125,80 +125,89 @@ def make_figure(agg, tile0_vals, tile1_vals, tasklet_vals, out_dir,
     return out_path
 
 
+def _iter_to_nobs(val_csv_path):
+    """Return a Series mapping iter → n_obs from training_rmse.csv, or None."""
+    train_path = Path(val_csv_path).parent / "training_rmse.csv"
+    if not train_path.exists():
+        return None
+    tr = pd.read_csv(train_path)
+    return tr.set_index("iter")["n_obs"]
+
+
 def plot_validation_rmse(val_csv_path, out_dir):
-    """Plot surrogate RMSE on held-out validation points vs BO iteration."""
+    """Plot surrogate RMSE on held-out validation points vs training set size."""
     val = pd.read_csv(val_csv_path)
     val["log_true"] = np.log10(val["cost"])
-    val["sq_err"]   = (val["mu"] - val["log_true"]) ** 2
+    val["sq_err"] = (val["mu"] - val["log_true"]) ** 2
 
+    iter_to_nobs = _iter_to_nobs(val_csv_path)
+    if iter_to_nobs is not None:
+        val["x"] = val["iter"].map(iter_to_nobs)
+        xlabel = "Training set size"
+    else:
+        val["x"] = val["iter"]
+        xlabel = "BO iteration"
+
+    return _plot_validation_metric(
+        val,
+        err_col="sq_err",
+        agg_fn=lambda s: np.sqrt(s.mean()),
+        xlabel=xlabel,
+        ylabel="RMSE  (log₁₀ cost units)",
+        title="Surrogate validation RMSE\n"
+        "(lower = surrogate predictions closer to true cost)",
+        out_path=os.path.join(out_dir, "pool_validation_rmse.png"),
+    )
+
+
+def _plot_validation_metric(val, err_col, agg_fn, xlabel, ylabel, title, out_path):
     fig, ax = plt.subplots(figsize=(8, 4))
-
-    # Overall RMSE across all validation points.
-    overall = val.groupby("iter", sort=True)["sq_err"].mean().apply(np.sqrt)
+    overall = val.groupby("x", sort=True)[err_col].agg(agg_fn)
     ax.plot(overall.index, overall.values, color="black", lw=2, label="all", zorder=5)
-
-    # Per-tasklets breakdown if the column exists and has multiple values.
+    x_min, x_max = int(val["x"].min()), int(val["x"].max())
+    locator = plt.MaxNLocator(integer=True)
+    auto_ticks = [int(t) for t in locator.tick_values(x_min, x_max) if t >= x_min]
+    ax.set_xticks(sorted(set([x_min] + auto_ticks)))
+    ax.set_xlim(left=x_min - 5)
     if "tasklets" in val.columns:
         tasklet_vals = sorted(val["tasklets"].unique())
         if len(tasklet_vals) > 1:
             cmap = plt.cm.tab10
             for i, T in enumerate(tasklet_vals):
-                grp = val[val["tasklets"] == T]
-                by_iter = grp.groupby("iter", sort=True)["sq_err"].mean().apply(np.sqrt)
-                ax.plot(by_iter.index, by_iter.values,
+                by_x = val[val["tasklets"] == T].groupby("x", sort=True)[err_col].agg(agg_fn)
+                ax.plot(by_x.index, by_x.values,
                         color=cmap(i / len(tasklet_vals)),
                         lw=1, alpha=0.7, label=f"T={T}")
-
-    ax.set_xlabel("BO iteration")
-    ax.set_ylabel("RMSE  (log₁₀ cost units)")
-    ax.set_title("Surrogate validation RMSE over BO iterations\n"
-                 "(lower = surrogate predictions closer to true cost)")
+    ax.set_xlabel(xlabel)
+    ax.set_ylabel(ylabel)
+    ax.set_title(title)
     ax.legend(fontsize=8, loc="upper right")
     ax.grid(True, alpha=0.3)
     plt.tight_layout()
-
-    out_path = os.path.join(out_dir, "pool_validation_rmse.png")
     fig.savefig(out_path, dpi=150, bbox_inches="tight")
     plt.close(fig)
     return out_path
 
 
 def plot_validation_mape(val_csv_path, out_dir):
-    """Plot surrogate MAPE (mean absolute % error) on validation points vs BO iteration.
-    """
-
     val = pd.read_csv(val_csv_path)
     logcost = np.log10(val["cost"])
-    val["pct_err"] = 100 * np.abs(val["mu"] - logcost) / logcost #/ val["cost"]
-
-    fig, ax = plt.subplots(figsize=(8, 4))
-
-    overall = val.groupby("iter", sort=True)["pct_err"].mean()
-    ax.plot(overall.index, overall.values, color="black", lw=2, label="all", zorder=5)
-
-    if "tasklets" in val.columns:
-        tasklet_vals = sorted(val["tasklets"].unique())
-        if len(tasklet_vals) > 1:
-            cmap = plt.cm.tab10
-            for i, T in enumerate(tasklet_vals):
-                grp = val[val["tasklets"] == T]
-                by_iter = grp.groupby("iter", sort=True)["pct_err"].mean()
-                ax.plot(by_iter.index, by_iter.values,
-                        color=cmap(i / len(tasklet_vals)),
-                        lw=1, alpha=0.7, label=f"T={T}")
-
-    ax.set_xlabel("BO iteration")
-    ax.set_ylabel("MAPE (%)")
-    ax.set_title("Surrogate validation MAPE over BO iterations (cost in log space)\n"
-                 "mean |predicted cost − true cost| / true cost × 100")
-    ax.legend(fontsize=8, loc="upper right")
-    ax.grid(True, alpha=0.3)
-    plt.tight_layout()
-
-    out_path = os.path.join(out_dir, "pool_validation_mape.png")
-    fig.savefig(out_path, dpi=150, bbox_inches="tight")
-    plt.close(fig)
-    return out_path
+    val["pct_err"] = 100 * np.abs(val["mu"] - logcost) / logcost
+    iter_to_nobs = _iter_to_nobs(val_csv_path)
+    val["x"] = (
+        val["iter"].map(iter_to_nobs) if iter_to_nobs is not None else val["iter"]
+    )
+    xlabel = "Training set size" if iter_to_nobs is not None else "BO iteration"
+    return _plot_validation_metric(
+        val,
+        err_col="pct_err",
+        agg_fn="mean",
+        xlabel=xlabel,
+        ylabel="MAPE (%)",
+        title="Surrogate validation MAPE (cost in log space)\n"
+        "mean |predicted − true| / true × 100",
+        out_path=os.path.join(out_dir, "pool_validation_mape.png"),
+    )
 
 
 META_COLS = {"visited", "valid", "cost", "eval_iter", "mu", "sigma", "acq"}
