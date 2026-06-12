@@ -1,14 +1,13 @@
 #!/usr/bin/env python3
 """
-Plots that use both an oracle pool (as baseline) and one or more bayesian run pools.
-For now those are top-K kernel recall and best cost found by iteration.
+Top-k% recall and best-cost-found curves for Bayesian optimisation runs.
 
 Usage:
-    python plot_recall.py oracle.csv bo1.csv [bo2.csv ...] [--k 10] [--out-dir DIR]
+    python plot_recall.py oracle.csv bo1.csv [bo2.csv ...] [--pcts 2 5 10 15] [--out-dir DIR]
 
 oracle.csv  — exhaustive search pool.csv (ground truth costs for all configs)
 bo*.csv     — one or more BO pool.csv files covering the same config space
-              (multiple CSVs = multiple seeds; shown as individual lines + mean±σ band)
+              (multiple CSVs = multiple seeds; shown as mean±σ band per threshold)
 """
 import argparse
 import sys
@@ -104,8 +103,8 @@ def main():
     ap.add_argument("oracle", help="Exhaustive search pool.csv")
     ap.add_argument("bo_pools", nargs="+", metavar="bo.csv",
                     help="BO pool.csv files (one per seed/run)")
-    ap.add_argument("--k", type=int, default=10,
-                    help="Top-k threshold (default: 10)")
+    ap.add_argument("--pcts", type=float, nargs="+", default=[2, 5, 10, 15],
+                    help="Top-k%% thresholds to plot (default: 2 5 10 15)")
     ap.add_argument("--out-dir", default=None,
                     help="Output directory (default: first BO pool directory)")
     args = ap.parse_args()
@@ -113,22 +112,16 @@ def main():
     out_dir = Path(args.out_dir) if args.out_dir else Path(args.bo_pools[0]).parent
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    # ── Load oracle, identify top-k ───────────────────────────────────────────
+    # ── Load oracle ───────────────────────────────────────────────────────────
     oracle_df  = pd.read_csv(args.oracle)
     dims       = dim_cols(oracle_df)
     oracle_obs = oracle_df
     if "valid" in oracle_df.columns:
         oracle_obs = oracle_df[oracle_df["valid"] == 1]
     oracle_obs = oracle_obs[oracle_obs["cost"].notna()]
-
-    assert len(oracle_obs) >= args.k, (
-        f"Oracle has only {len(oracle_obs)} observed configs — fewer than k={args.k}"
-    )
-    topk_df   = oracle_obs.nsmallest(args.k, "cost")
-    topk_keys = set(make_keys(topk_df, dims))
     oracle_best = oracle_obs["cost"].min()
-    print(f"Oracle: {len(oracle_obs)} observed configs, "
-          f"top-{args.k} cost range [{topk_df['cost'].min():.3g}, {topk_df['cost'].max():.3g}]")
+    n_oracle = len(oracle_obs)
+    print(f"Oracle: {n_oracle} observed configs, best cost = {oracle_best:.3g}")
 
     # ── Load BO pools, assert same space ─────────────────────────────────────
     max_iter = 0
@@ -152,31 +145,57 @@ def main():
 
     print(f"BO runs: {len(bo_data)}, max iteration: {max_iter}")
 
-    # ── Compute curves ────────────────────────────────────────────────────────
-    all_recall = []
-    all_best   = []
-    for name, df in bo_data:
-        iters, recall, best_cost = compute_curves(df, dims, topk_keys, max_iter)
-        all_recall.append(recall)
-        all_best.append(best_cost)
-        final_recall = recall[-1]
-        print(f"  {name}: final recall = {final_recall:.1%}, "
-              f"best found = {np.nanmin(best_cost):.3g}")
+    # ── Compute curves for each percentage threshold ──────────────────────────
+    pct_results = []  # (pct, k, recalls[n_seeds, n_iters])
+    all_best = None
+    iters = None
 
-    all_recall = np.array(all_recall)
-    all_best   = np.array(all_best)
-    names      = [name for name, _ in bo_data]
+    for pi, pct in enumerate(sorted(args.pcts)):
+        k = max(1, int(np.ceil(pct / 100 * n_oracle)))
+        topk_df   = oracle_obs.nsmallest(k, "cost")
+        topk_keys = set(make_keys(topk_df, dims))
+        print(f"  top {pct}%: k={k}, cost range "
+              f"[{topk_df['cost'].min():.3g}, {topk_df['cost'].max():.3g}]")
 
-    # ── Plot 1: top-k recall ──────────────────────────────────────────────────
+        seed_recalls = []
+        seed_bests   = []
+        for name, df in bo_data:
+            it, recall, best_cost = compute_curves(df, dims, topk_keys, max_iter)
+            seed_recalls.append(recall)
+            seed_bests.append(best_cost)
+            if pi == 0:
+                print(f"    {name}: final recall = {recall[-1]:.1%}, "
+                      f"best found = {np.nanmin(best_cost):.3g}")
+
+        pct_results.append((pct, k, np.array(seed_recalls)))
+        if pi == 0:
+            all_best = np.array(seed_bests)
+            iters = it
+
+    names = [name for name, _ in bo_data]
+
+    # ── Plot 1: multi-threshold recall ────────────────────────────────────────
     fig, ax = plt.subplots(figsize=(9, 4))
-    plot_curves(ax, iters, all_recall, names,
-                ylabel=f"Recall  (fraction of true top-{args.k} found)",
-                title=f"Top-{args.k} recall over BO iterations")
+    cmap = plt.cm.tab10
+    for i, (pct, k, seed_recalls) in enumerate(pct_results):
+        color = cmap(i / max(len(pct_results), 1))
+        label = f"top {pct}% (k={k})"
+        if seed_recalls.shape[0] == 1:
+            ax.plot(iters, seed_recalls[0], color=color, lw=1.5, label=label)
+        else:
+            mean = np.nanmean(seed_recalls, axis=0)
+            std  = np.nanstd(seed_recalls,  axis=0)
+            ax.plot(iters, mean, color=color, lw=1.5, label=label)
+            ax.fill_between(iters, mean - std, mean + std, color=color, alpha=0.15)
     ax.set_ylim(-0.02, 1.05)
-    ax.axhline(1.0, color="gray", lw=0.8, ls="--", label="perfect recall")
+    ax.axhline(1.0, color="gray", lw=0.8, ls="--")
+    ax.set_xlabel("BO iteration")
+    ax.set_ylabel("Recall  (fraction of threshold found)")
+    ax.set_title("Top-k% recall over BO iterations")
     ax.legend(fontsize=8, loc="lower right")
+    ax.grid(True, alpha=0.3)
     plt.tight_layout()
-    p = out_dir / f"recall_top{args.k}.png"
+    p = out_dir / "recall_pcts.png"
     fig.savefig(p, dpi=150, bbox_inches="tight")
     plt.close(fig)
     print(f"Saved: {p}")
