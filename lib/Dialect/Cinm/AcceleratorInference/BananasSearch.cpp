@@ -24,8 +24,7 @@ namespace mlir::cinm {
 CandidatePool::CandidatePool(const ConfigSpace &space, size_t evalBudget)
     : space_(&space), N(space.totalSize()), visited(static_cast<unsigned>(N)),
       Xo(space.size(), evalBudget), yo(1, evalBudget),
-      costByIdx(arma::rowvec(N).fill(arma::datum::nan)),
-      iterByIdx(N, -1) {}
+      costByIdx(arma::rowvec(N).fill(arma::datum::nan)), iterByIdx(N, -1) {}
 
 CandidatePool::~CandidatePool() = default;
 
@@ -169,6 +168,7 @@ struct BananasEnsemble {
   std::vector<std::unique_ptr<MlpNet>> models;
   double yMean = 0.0;
   double yStd = 1.0;
+  int step = 0; // used to randomize seed
 
   BananasEnsemble(int n, int hidden, int depth) {
     models.reserve(n);
@@ -190,16 +190,20 @@ struct BananasEnsemble {
     arma::mat yNorm = (yLog - yMean) / yStd;
 
     size_t n = X.n_cols;
+    int step = this->step++;
     for (size_t mi = 0; mi < models.size(); ++mi) {
-      arma::arma_rng::set_seed(
-          static_cast<arma::arma_rng::seed_type>(mi * 1000003 + 7));
-      // Train all members on the full dataset; diversity comes from different
-      // random initialisations (seeded per-member above), not data resampling.
+      arma::arma_rng::set_seed(static_cast<arma::arma_rng::seed_type>(
+          mi * 1000003 + 7 + 399 * step));
+      // Shuffle training-set order per member so mini-batches differ across
+      // the ensemble, producing divergent gradient paths and diverse solutions.
+      arma::uvec perm = arma::shuffle(arma::regspace<arma::uvec>(0, n - 1));
+      arma::mat Xs = X.cols(perm);
+      arma::mat ys = yNorm.cols(perm);
       int batchSize = std::min<size_t>(32, n);
       size_t stepsPerEpoch = (n + batchSize - 1) / batchSize;
       size_t maxIter = static_cast<size_t>(epochs) * stepsPerEpoch;
       ens::Adam opt(3e-3, batchSize, 0.9, 0.999, 1e-8, maxIter, 1e-7, true);
-      models[mi]->Train(X, yNorm, opt);
+      models[mi]->Train(Xs, ys, opt);
     }
   }
 
@@ -293,7 +297,7 @@ void CandidatePool::fillRandom(std::unordered_set<size_t> &result,
 }
 
 void CandidatePool::fillNeighbors(std::unordered_set<size_t> &result,
-                                   unsigned depth, bool frontierOnly) {
+                                  unsigned depth, bool frontierOnly) {
   // BFS outward from every observed point up to `depth` steps.
   std::unordered_set<size_t> frontier;
   Configuration conf;
@@ -454,8 +458,8 @@ void CandidatePool::dumpToCSV(const ConfigSpace &space,
     space_->at(i, conf);
     for (int64_t v : conf)
       out << v << ",";
-    out << (visited.test(i) ? 1 : 0) << ","
-        << (validPos.count(i) ? 1 : 0) << ",";
+    out << (visited.test(i) ? 1 : 0) << "," << (validPos.count(i) ? 1 : 0)
+        << ",";
     double c = costByIdx(i);
     if (!std::isnan(c))
       out << c;
