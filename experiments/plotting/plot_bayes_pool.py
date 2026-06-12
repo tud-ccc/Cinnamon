@@ -62,7 +62,7 @@ def build_rgba(
     invalid = valid == 0
     unvisited = ~invalid & (vis != 0)
     no_data = np.isnan(vals)
-    failed = no_data & ~unvisited
+    failed = no_data & ~unvisited & ~invalid
 
     fill = np.nanmedian(vals) if not np.all(no_data) else 0.0
     safe = np.where(no_data, fill, vals)
@@ -348,6 +348,54 @@ def build_facet_plot_tasks(csv_path, scale, x, y, f):
     return tasks
 
 
+_SENTINEL_ITER = 2**63
+_TEMPLATE_PATH = Path(__file__).parent / "README_plot_synopsis.md"
+
+
+def generate_readme(csv_path, scale, ax_x, ax_y, ax_f):
+    if not _TEMPLATE_PATH.exists():
+        return
+    template = _TEMPLATE_PATH.read_text()
+
+    df = pd.read_csv(csv_path)
+    run_name = Path(csv_path).parent.name
+    n_total  = len(df)
+    n_valid  = int(df["valid"].sum()) if "valid" in df.columns else "?"
+    n_obs    = int(df["cost"].notna().sum())
+    visited_mask = (df["visited"] > 0) if "visited" in df.columns else pd.Series(False, index=df.index)
+    valid_mask   = (df["valid"]   == 1) if "valid"   in df.columns else pd.Series(True,  index=df.index)
+    n_failed = int((visited_mask & df["cost"].isna() & valid_mask).sum())
+
+    valid_iters = df["eval_iter"].dropna() if "eval_iter" in df.columns else pd.Series([], dtype=float)
+    valid_iters = valid_iters[valid_iters < _SENTINEL_ITER]
+    n_iters  = int(valid_iters.max()) if not valid_iters.empty else "?"
+
+    best_cost = df["cost"].min()
+    best_str  = f"{best_cost:.4g}" if pd.notna(best_cost) else "?"
+
+    subs = {
+        "run_name":     run_name,
+        "n_total":      n_total,
+        "n_valid":      n_valid,
+        "n_obs":        n_obs,
+        "n_failed":     n_failed,
+        "n_iters":      n_iters,
+        "best_cost":    best_str,
+        "oracle_best":  "—",
+        "gap_pct":      "—",
+        "scale":        scale,
+        "ax_x":         ax_x,
+        "ax_y":         ax_y,
+        "ax_f":         ax_f,
+    }
+    for key, val in subs.items():
+        template = template.replace(f"${{{key}}}", str(val))
+
+    out = Path(csv_path).parent / "README_bo_synopsis.md"
+    out.write_text(template)
+    return str(out)
+
+
 if __name__ == "__main__":
     import argparse
     import traceback
@@ -403,3 +451,8 @@ if __name__ == "__main__":
                 traceback.print_exception(ex)
             else:
                 tqdm.write(f"Saved: {future.result()}")
+
+    for csv_path in csv_paths:
+        out = generate_readme(csv_path, scale, ax_x, ax_y, ax_f)
+        if out:
+            print(f"Saved: {out}")
