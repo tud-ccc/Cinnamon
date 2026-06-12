@@ -79,7 +79,9 @@ def UpmemInferAcceleratorPass : Pass<"upmem-infer-accelerator", "ModuleOp"> {
            "0 disables surrogate validation">,
     Option<"validationInterval", "validation-interval", "int", "5",
            "Record surrogate predictions on the validation set every N BO "
-           "iterations (Phase 2 only)">
+           "iterations (Phase 2 only)">,
+    Option<"objectiveScale", "objective-scale", "std::string", "\"log10\"",
+           "Cost transform before surrogate training: linear, log2, log10, ln, sqrt, cbrt">
   ];
 }
 

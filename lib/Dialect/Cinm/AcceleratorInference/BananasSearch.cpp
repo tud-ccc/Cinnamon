@@ -12,6 +12,7 @@
 #include <memory>
 #include <numeric>
 #include <random>
+#include <utility>
 
 #define DEBUG_TYPE "cinm-inference"
 
@@ -164,11 +165,24 @@ static std::unique_ptr<MlpNet> makeNet(int hidden, int depth) {
   return net;
 }
 
+static arma::mat applyScale(const arma::mat &y, const std::string &scale) {
+  if (scale == "linear")
+    return y;
+  if (scale == "log2")
+    return arma::log2(y);
+  if (scale == "ln")
+    return arma::log(y);
+  if (scale == "sqrt")
+    return arma::sqrt(y);
+  if (scale == "cbrt")
+    return arma::pow(y, 1.0 / 3.0);
+  return arma::log10(y); // "log10" and default
+}
+
 struct BananasEnsemble {
   std::vector<std::unique_ptr<MlpNet>> models;
-  double yMean = 0.0;
-  double yStd = 1.0;
   int step = 0; // used to randomize seed
+  std::string scale_ = "log10";
 
   BananasEnsemble(int n, int hidden, int depth) {
     models.reserve(n);
@@ -177,17 +191,12 @@ struct BananasEnsemble {
   }
 
   void fit(const arma::mat &X, const arma::mat &y, int epochs) {
-    // Normalise in log10 space — compresses wide cost ranges into ~3 units.
-    // IMPORTANT: anchor the scale to the best (minimum) observed cost rather
-    // than the mean.  Using mean/std causes the worst-ever observation to shift
-    // yMean upward on each bad eval, which paradoxically lowers the predicted
-    // mu for the bad region after de-normalisation (the goalposts move).
-    arma::mat yLog = arma::log10(y);
-    yMean =
-        arma::min(arma::vectorise(yLog)); // anchor = best observed log10 cost
-    double s = arma::stddev(arma::vectorise(yLog));
-    yStd = (s > 1e-8) ? s : 1.0;
-    arma::mat yNorm = (yLog - yMean) / yStd;
+    // Train directly on the scale-transformed costs (no z-standardisation).
+    // z-standardisation shifts targets each iteration as the observed range
+    // grows, which destabilises warm-started weights and compresses the
+    // contrast between good and bad configs.  The scale transform already
+    // handles range compression.
+    arma::mat yScaled = applyScale(y, scale_);
 
     size_t n = X.n_cols;
     int step = this->step++;
@@ -198,10 +207,12 @@ struct BananasEnsemble {
       // the ensemble, producing divergent gradient paths and diverse solutions.
       arma::uvec perm = arma::shuffle(arma::regspace<arma::uvec>(0, n - 1));
       arma::mat Xs = X.cols(perm);
-      arma::mat ys = yNorm.cols(perm);
+      arma::mat ys = yScaled.cols(perm);
       int batchSize = std::min<size_t>(32, n);
       size_t stepsPerEpoch = (n + batchSize - 1) / batchSize;
-      size_t maxIter = static_cast<size_t>(epochs) * stepsPerEpoch;
+      // For the first few fits, use more epochs to get a better initial fit
+      size_t thisEpochs = step < 5 ? epochs * 5 : epochs;
+      size_t maxIter = thisEpochs * stepsPerEpoch;
       ens::Adam opt(3e-3, batchSize, 0.9, 0.999, 1e-8, maxIter, 1e-7, true);
       models[mi]->Train(Xs, ys, opt);
     }
@@ -215,12 +226,11 @@ struct BananasEnsemble {
       models[mi]->Predict(Xp, out);
       preds.row(mi) = out.row(0);
     }
-    // De-standardise back to log10 space. We intentionally do NOT exponentiate
-    // here: the acquisition function only needs correct ordering, which log10
-    // preserves, and exponentiating a mildly-off log prediction blows up errors
-    // by orders of magnitude in the original scale.
-    arma::rowvec mu = arma::mean(preds, 0) * yStd + yMean;
-    arma::rowvec sigma = arma::stddev(preds, 0, 0) * yStd;
+    // mu/sigma are in scaled space. We intentionally do NOT invert the
+    // transform: the acquisition function only needs correct ordering, which
+    // any monotone transform preserves.
+    arma::rowvec mu = arma::mean(preds, 0);
+    arma::rowvec sigma = arma::stddev(preds, 0, 0);
     return {mu, sigma};
   }
 };
@@ -229,27 +239,10 @@ struct BananasEnsemble {
 // Acquisition function
 // ===----------------------------------------------------------------------===//
 
-// LCB acquisition with z-scored components.
-//
-// Raw LCB (mu - kappa*sigma) breaks when mu and sigma live at very different
-// scales: if the sigma range (×kappa) exceeds the mu range, the acquisition
-// degenerates to pure exploration and mu is ignored entirely.  This happens
-// with MLP ensembles because sigma reflects cross-member disagreement, which
-// can be as large as the full objective range in unvisited regions.
-//
-// Fixing by z-scoring each component separately:
-//   acq = z(mu) - kappa * z(sigma)
-// Now kappa means "one std of sigma exploration bonus is worth kappa std of
-// mu exploitation gain" — a scale-independent, calibration-independent
-// trade-off that remains valid regardless of ensemble quality.
+// LCB acquisition
 static arma::rowvec computeAcq(const arma::rowvec &mu,
                                const arma::rowvec &sigma, double kappa) {
-  auto zs = [](const arma::rowvec &v) -> arma::rowvec {
-    double m = arma::mean(arma::vectorise(v));
-    double s = arma::stddev(arma::vectorise(v));
-    return (v - m) / ((s > 1e-8) ? s : 1.0);
-  };
-  return zs(mu) - kappa * zs(sigma);
+  return mu - kappa * sigma;
 }
 
 // ===----------------------------------------------------------------------===//
@@ -306,10 +299,10 @@ void CandidatePool::fillNeighbors(std::unordered_set<size_t> &result,
       frontier.insert(i);
   }
 
+  std::unordered_set<size_t> nextFrontier;
   llvm::SmallVector<size_t> nbrs;
   for (unsigned d = 0; d < depth && !frontier.empty(); ++d) {
     const bool isLastStep = (d + 1 == depth);
-    std::unordered_set<size_t> nextFrontier;
     for (size_t src : frontier) {
       nbrs.clear();
       space_->neighborIndices(src, nbrs);
@@ -323,7 +316,8 @@ void CandidatePool::fillNeighbors(std::unordered_set<size_t> &result,
           nextFrontier.insert(nb);
       }
     }
-    frontier = std::move(nextFrontier);
+    std::swap(frontier, nextFrontier);
+    nextFrontier.clear();
   }
 }
 
@@ -365,13 +359,14 @@ bool CandidatePool::nextCandidateIndices(const InferenceOptions &opts,
       ensemble_->models.size() != static_cast<size_t>(opts.nEnsemble))
     ensemble_ = std::make_unique<BananasEnsemble>(opts.nEnsemble, opts.hidden,
                                                   opts.depth);
+  ensemble_->scale_ = opts.objectiveScale;
   ensemble_->fit(Xo_obs, yo_obs, opts.epochs);
   auto [mu, sigma] = ensemble_->predict(candEncoded);
 
   {
     auto [tmu, _] = ensemble_->predict(Xo_obs);
-    arma::rowvec yLog = arma::log10(yo_obs.row(0));
-    double mse = arma::mean(arma::square(tmu - yLog));
+    arma::rowvec yScaled = applyScale(yo_obs, opts.objectiveScale).row(0);
+    double mse = arma::mean(arma::square(tmu - yScaled));
     trainingSnapshots.push_back({iter, nObs, std::sqrt(mse)});
   }
 
