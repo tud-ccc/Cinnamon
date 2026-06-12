@@ -1,25 +1,26 @@
 
 
 [arg("ORACLE", long="oracle")]
-[no-cd]
-run FILE ORACLE="" *ARGS: 
+[arg("SCALE", long="scale")]
+run FILE ORACLE="" SCALE="log10" *ARGS:
     mkdir -p data/{{FILE}}
-    cinm-opt {{FILE}}.mlir --cinm-assign-platforms --cinm-isolate-compute-blocks "--upmem-infer-accelerator={{ if ARGS != "" { ARGS + " " } else { "" } }}dump-dir=data/{{FILE}}" \
-      --mlir-print-ir-after-failure --dump-pass-pipeline --split-input-file --debug-only=cinm-inference 2> data/{{FILE}}/{{FILE}}.log > data/{{FILE}}/out.mlir 
-    just plot {{FILE}} --oracle {{ORACLE}}
+    cinm-opt {{FILE}}.mlir --cinm-assign-platforms --cinm-isolate-compute-blocks "--upmem-infer-accelerator={{ if ARGS != "" { ARGS + " " } else { "" } }}objective-scale={{SCALE}} dump-dir=data/{{FILE}}" \
+      --mlir-print-ir-after-failure --dump-pass-pipeline --split-input-file --debug-only=cinm-inference 2> data/{{FILE}}/{{FILE}}.log > data/{{FILE}}/out.mlir
+    just plot {{FILE}} --oracle {{ORACLE}} --scale {{SCALE}}
 
 [arg("ORACLE", long="oracle")]
-plot FILE ORACLE="":
-    $(realpath ../.venv/bin/python) plotting/plot_bayes_pool.py data/{{FILE}}/*/pool.csv
+[arg("SCALE", long="scale")]
+plot FILE ORACLE="" SCALE="log10":
+    $(realpath ../.venv/bin/python) plotting/plot_bayes_pool.py data/{{FILE}}/*/pool.csv --objective-scale {{SCALE}}
     if [[ -n "{{ORACLE}}" ]]; then \
       for dir in {{ORACLE}}/*/; do \
         subdir=$(basename "$dir"); \
-        $(realpath ../.venv/bin/python) plotting/plot_recall.py "$dir/pool.csv" "data/{{FILE}}/$subdir/pool.csv"; \
+        $(realpath ../.venv/bin/python) plotting/plot_recall.py "$dir/pool.csv" "data/{{FILE}}/$subdir/pool.csv" --objective-scale {{SCALE}}; \
       done \
     fi
 
 view NAME:
-    $(realpath ../.venv/bin/python) viewer/view_pool.py data/{{NAME}}/pool.csv
+    $(realpath ../.venv/bin/python) viewer/view_pool.py /data/{{NAME}}/pool.csv
 
 analyze NAME *ARGS:
     $(realpath ../.venv/bin/python) plotting/analyze_landscape.py data/{{NAME}}/pool.csv {{ARGS}}

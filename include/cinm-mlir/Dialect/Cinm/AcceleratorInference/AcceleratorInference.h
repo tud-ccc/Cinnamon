@@ -264,6 +264,10 @@ struct InferenceOptions {
   /// Record a surrogate snapshot on the validation set every N BO iterations
   /// (Phase 2 iterations only). Has no effect when nValidation == 0.
   int validationInterval = 5;
+
+  /// Transform applied to costs before surrogate training.
+  /// Supported: "linear", "log2", "log10", "ln", "sqrt", "cbrt".
+  std::string objectiveScale = "log10";
 };
 
 /// Entry point for Bayesian inference.

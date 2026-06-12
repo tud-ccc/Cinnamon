@@ -432,6 +432,7 @@ struct UpmemInferAcceleratorPass
     o.exhaustiveSearch = exhaustiveSearch;
     o.nValidation = nValidation;
     o.validationInterval = validationInterval;
+    o.objectiveScale = objectiveScale;
     upmemOpts.annotateOpCosts = annotateOpCosts;
     o.dumpDir = dumpDir;
     return upmemOpts;

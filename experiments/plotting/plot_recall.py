@@ -22,6 +22,25 @@ import matplotlib.pyplot as plt
 META_COLS = {"visited", "valid", "cost", "mu", "sigma", "acq", "eval_iter"}
 
 
+def apply_scale(costs, scale):
+    if scale == "linear":
+        return costs
+    if scale == "log2":
+        return np.log2(costs)
+    if scale == "ln":
+        return np.log(costs)
+    if scale == "sqrt":
+        return np.sqrt(costs)
+    if scale == "cbrt":
+        return np.cbrt(costs)
+    return np.log10(costs)  # "log10" and default
+
+
+def scale_label(scale):
+    return {"linear": "linear", "log2": "log₂", "log10": "log₁₀",
+            "ln": "ln", "sqrt": "√", "cbrt": "∛"}.get(scale, scale)
+
+
 def dim_cols(df):
     return [c for c in df.columns if c not in META_COLS]
 
@@ -107,9 +126,13 @@ def main():
                     help="Top-k%% thresholds to plot (default: 2 5 10 15)")
     ap.add_argument("--out-dir", default=None,
                     help="Output directory (default: first BO pool directory)")
+    ap.add_argument("--objective-scale", default="log10",
+                    help="Cost transform used during surrogate training "
+                         "(linear, log2, log10, ln, sqrt, cbrt)")
     args = ap.parse_args()
 
     out_dir = Path(args.out_dir) if args.out_dir else Path(args.bo_pools[0]).parent
+    scale = args.objective_scale
     out_dir.mkdir(parents=True, exist_ok=True)
 
     # ── Load oracle ───────────────────────────────────────────────────────────
@@ -200,13 +223,15 @@ def main():
     plt.close(fig)
     print(f"Saved: {p}")
 
-    # ── Plot 2: best cost found so far (log scale) ────────────────────────────
+    # ── Plot 2: best cost found so far ────────────────────────────────────────
     fig, ax = plt.subplots(figsize=(9, 4))
-    log_best = np.log10(all_best)
-    plot_curves(ax, iters, log_best, names,
-                ylabel="Best cost found so far  (log₁₀)",
+    scaled_best = apply_scale(all_best, scale)
+    sl = scale_label(scale)
+    ylabel = f"Best cost found so far  ({sl})" if scale != "linear" else "Best cost found so far"
+    plot_curves(ax, iters, scaled_best, names,
+                ylabel=ylabel,
                 title="Best cost found over BO iterations")
-    ax.axhline(np.log10(oracle_best), color="red", lw=1, ls="--",
+    ax.axhline(apply_scale(oracle_best, scale), color="red", lw=1, ls="--",
                label=f"Oracle best ({oracle_best:.3g})")
     ax.legend(fontsize=8, loc="upper right")
     plt.tight_layout()

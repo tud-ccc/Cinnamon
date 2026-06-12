@@ -9,7 +9,6 @@ Usage:
     python plot_pool.py [pool.csv] [out_dir]
 Defaults: pool.csv in cwd, output next to the CSV.
 """
-import sys
 import os
 from pathlib import Path
 
@@ -22,6 +21,26 @@ import matplotlib.colors as mcolors
 from matplotlib.cm import ScalarMappable
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from tqdm import tqdm
+
+
+def apply_scale(costs, scale):
+    if scale == "linear":
+        return costs
+    if scale == "log2":
+        return np.log2(costs)
+    if scale == "ln":
+        return np.log(costs)
+    if scale == "sqrt":
+        return np.sqrt(costs)
+    if scale == "cbrt":
+        return np.cbrt(costs)
+    return np.log10(costs)  # "log10" and default
+
+
+def scale_label(scale):
+    return {"linear": "linear", "log2": "log₂", "log10": "log₁₀",
+            "ln": "ln", "sqrt": "√", "cbrt": "∛"}.get(scale, scale)
+
 
 DPU = 1
 RANK = 1
@@ -134,11 +153,11 @@ def _iter_to_nobs(val_csv_path):
     return tr.set_index("iter")["n_obs"]
 
 
-def plot_validation_rmse(val_csv_path, out_dir):
+def plot_validation_rmse(val_csv_path, out_dir, scale="log10"):
     """Plot surrogate RMSE on held-out validation points vs training set size."""
     val = pd.read_csv(val_csv_path)
-    val["log_true"] = np.log10(val["cost"])
-    val["sq_err"] = (val["mu"] - val["log_true"]) ** 2
+    val["scaled_true"] = apply_scale(val["cost"], scale)
+    val["sq_err"] = (val["mu"] - val["scaled_true"]) ** 2
 
     iter_to_nobs = _iter_to_nobs(val_csv_path)
     if iter_to_nobs is not None:
@@ -153,7 +172,7 @@ def plot_validation_rmse(val_csv_path, out_dir):
         err_col="sq_err",
         agg_fn=lambda s: np.sqrt(s.mean()),
         xlabel=xlabel,
-        ylabel="RMSE  (log₁₀ cost units)",
+        ylabel=f"RMSE  ({scale_label(scale)} cost units)",
         title="Surrogate validation RMSE\n"
         "(lower = surrogate predictions closer to true cost)",
         out_path=os.path.join(out_dir, "pool_validation_rmse.png"),
@@ -189,10 +208,10 @@ def _plot_validation_metric(val, err_col, agg_fn, xlabel, ylabel, title, out_pat
     return out_path
 
 
-def plot_validation_mape(val_csv_path, out_dir):
+def plot_validation_mape(val_csv_path, out_dir, scale="log10"):
     val = pd.read_csv(val_csv_path)
-    logcost = np.log10(val["cost"])
-    val["pct_err"] = 100 * np.abs(val["mu"] - logcost) / logcost
+    scaled_cost = apply_scale(val["cost"], scale)
+    val["pct_err"] = 100 * np.abs(val["mu"] - scaled_cost) / scaled_cost
     iter_to_nobs = _iter_to_nobs(val_csv_path)
     val["x"] = (
         val["iter"].map(iter_to_nobs) if iter_to_nobs is not None else val["iter"]
@@ -204,7 +223,7 @@ def plot_validation_mape(val_csv_path, out_dir):
         agg_fn="mean",
         xlabel=xlabel,
         ylabel="MAPE (%)",
-        title="Surrogate validation MAPE (cost in log space)\n"
+        title=f"Surrogate validation MAPE (cost in {scale_label(scale)} space)\n"
         "mean |predicted − true| / true × 100",
         out_path=os.path.join(out_dir, "pool_validation_mape.png"),
     )
@@ -229,7 +248,7 @@ def _compute_min_dist(df, dims):
     return diffs.sum(axis=2).min(axis=1).astype(float)
 
 
-def plot_sigma_vs_distance(df, out_dir):
+def plot_sigma_vs_distance(df, out_dir, scale="log10"):
     """Median ± IQR of surrogate σ at each grid-step distance from the nearest observation."""
     dims = _dim_cols(df)
     if "sigma" not in df.columns:
@@ -264,7 +283,7 @@ def plot_sigma_vs_distance(df, out_dir):
                     xytext=(0, 7), ha="center", fontsize=6, color="gray")
     ax.set_xticks(xs.astype(int))
     ax.set_xlabel("Min grid-step distance to nearest observation")
-    ax.set_ylabel("σ (surrogate uncertainty, log₁₀ units)")
+    ax.set_ylabel(f"σ (surrogate uncertainty, {scale_label(scale)} units)")
     ax.set_title("Surrogate σ vs. distance from observations\n"
                  "Well-calibrated: σ increases monotonically with distance")
     ax.legend(fontsize=8)
@@ -276,7 +295,7 @@ def plot_sigma_vs_distance(df, out_dir):
     return out_path
 
 
-def plot_sigma_scatter(df, out_dir):
+def plot_sigma_scatter(df, out_dir, scale="log10"):
     """Scatter of (min_dist, σ) coloured by μ — reveals over/under-confident regions."""
     dims = _dim_cols(df)
     if "sigma" not in df.columns or "mu" not in df.columns:
@@ -293,10 +312,10 @@ def plot_sigma_scatter(df, out_dir):
         c=sub["mu"], cmap="viridis_r",
         alpha=0.4, s=8, linewidths=0,
     )
-    fig.colorbar(sc, ax=ax, label="μ  (predicted log₁₀ cost — lower is better)")
+    fig.colorbar(sc, ax=ax, label=f"μ  (predicted {scale_label(scale)} cost — lower is better)")
     ax.xaxis.set_major_locator(plt.MaxNLocator(integer=True))
     ax.set_xlabel("Min grid-step distance to nearest observation")
-    ax.set_ylabel("σ (surrogate uncertainty, log₁₀ units)")
+    ax.set_ylabel(f"σ (surrogate uncertainty, {scale_label(scale)} units)")
     ax.set_title("Calibration scatter: σ vs. distance from observations\n"
                  "Bottom-right = overconfident far from data  ·  Top-left = underfit near data")
     ax.grid(True, alpha=0.3)
@@ -307,13 +326,13 @@ def plot_sigma_scatter(df, out_dir):
     return out_path
 
 
-def plot_training_rmse(csv_path, out_dir):
+def plot_training_rmse(csv_path, out_dir, scale="log10"):
     """RMSE of surrogate predictions on training observations vs. BO iteration."""
     df = pd.read_csv(csv_path)
     fig, ax1 = plt.subplots(figsize=(8, 4))
     ax1.plot(df["n_obs"], df["rmse"], color="steelblue", lw=2, marker="o", ms=3)
     ax1.set_xlabel("Training set size (initial size + iteration)")
-    ax1.set_ylabel("Training RMSE  (log₁₀ cost units)", color="steelblue")
+    ax1.set_ylabel(f"Training RMSE  ({scale_label(scale)} cost units)")
     n_min, n_max = int(df["n_obs"].min()), int(df["n_obs"].max())
     locator = plt.MaxNLocator(integer=True)
     auto_ticks = [int(t) for t in locator.tick_values(n_min, n_max) if t >= n_min]
@@ -328,7 +347,7 @@ def plot_training_rmse(csv_path, out_dir):
     return out_path
 
 
-def build_tasks(csv_path):
+def build_tasks(csv_path, scale="log10"):
     """Load one CSV and return (data_tuple, list_of_figure_kwargs)."""
     out_dir = str(Path(csv_path).parent)
 
@@ -358,13 +377,14 @@ def build_tasks(csv_path):
              norm=mcolors.LogNorm(vmin=cost_vals.min(), vmax=cost_vals.max()),
              cmap=plt.cm.viridis_r),
     ]
+    sl = scale_label(scale)
     for metric, title, label, cmap in [
-        ("mu",    "Surrogate μ  (log₁₀ scale)",
-         "μ — predicted log₁₀(cost)  (lower is better)", plt.cm.viridis_r),
-        ("sigma", "Surrogate σ  (log₁₀ scale)",
-         "σ — uncertainty in log₁₀(cost)  (lower = more certain)", plt.cm.plasma),
+        ("mu",    f"Surrogate μ  ({sl} scale)",
+         f"μ — predicted {sl}(cost)  (lower is better)", plt.cm.viridis_r),
+        ("sigma", f"Surrogate σ  ({sl} scale)",
+         f"σ — uncertainty in {sl}(cost)  (lower = more certain)", plt.cm.plasma),
         ("acq",   "Acquisition score  (lower = higher priority)",
-         "UCB acquisition  μ − κσ  (log₁₀ scale)", plt.cm.plasma_r),
+         f"UCB acquisition  μ − κσ  ({sl} scale)", plt.cm.plasma_r),
     ]:
         vals = agg[metric].dropna()
         tasks.append(dict(
@@ -376,14 +396,22 @@ def build_tasks(csv_path):
 
 
 if __name__ == "__main__":
+    import argparse
     import traceback
 
-    csv_paths = sys.argv[1:] or ["pool.csv"]
+    ap = argparse.ArgumentParser(description=__doc__)
+    ap.add_argument("csv_paths", nargs="*", default=["pool.csv"], metavar="pool.csv")
+    ap.add_argument("--objective-scale", default="log10",
+                    help="Cost transform used during surrogate training "
+                         "(linear, log2, log10, ln, sqrt, cbrt)")
+    args = ap.parse_args()
+    scale = args.objective_scale
+    csv_paths = args.csv_paths
 
     all_futures = {}
     with ProcessPoolExecutor() as executor:
         for csv_path in csv_paths:
-            data, tasks = build_tasks(csv_path)
+            data, tasks = build_tasks(csv_path, scale)
             out_dir = str(Path(csv_path).parent)
             for kw in tasks:
                 f = executor.submit(make_figure, *data, **kw)
@@ -393,12 +421,12 @@ if __name__ == "__main__":
             if val_path.exists():
                 for fn, tag in [(plot_validation_rmse, "validation_rmse"),
                                 (plot_validation_mape, "validation_mape")]:
-                    f = executor.submit(fn, str(val_path), out_dir)
+                    f = executor.submit(fn, str(val_path), out_dir, scale)
                     all_futures[f] = (csv_path, tag)
 
             train_rmse_path = Path(csv_path).parent / "training_rmse.csv"
             if train_rmse_path.exists():
-                f = executor.submit(plot_training_rmse, str(train_rmse_path), out_dir)
+                f = executor.submit(plot_training_rmse, str(train_rmse_path), out_dir, scale)
                 all_futures[f] = (csv_path, "training_rmse")
 
             raw_df = pd.read_csv(csv_path)
@@ -406,7 +434,7 @@ if __name__ == "__main__":
             if "sigma" in raw_df.columns:
                 for fn, tag in [(plot_sigma_vs_distance, "sigma_vs_dist"),
                                 (plot_sigma_scatter,     "sigma_scatter")]:
-                    f = executor.submit(fn, raw_df, out_dir)
+                    f = executor.submit(fn, raw_df, out_dir, scale)
                     all_futures[f] = (csv_path, tag)
 
         for future in tqdm(as_completed(all_futures), total=len(all_futures), desc="plots"):
