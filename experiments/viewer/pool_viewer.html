@@ -192,6 +192,18 @@
   </div>
 
   <div class="group">
+    <label>Cost scale</label>
+    <select id="sel-scale">
+      <option value="log10">log₁₀</option>
+      <option value="log2">log₂</option>
+      <option value="ln">ln</option>
+      <option value="sqrt">√</option>
+      <option value="cbrt">∛</option>
+      <option value="linear">linear</option>
+    </select>
+  </div>
+
+  <div class="group">
     <label>Facet by</label>
     <select id="sel-facet" disabled></select>
   </div>
@@ -279,9 +291,20 @@ const METRIC_DEFAULTS = {
 };
 
 // Applied to raw values before color-scaling and domain computation.
-const METRIC_TRANSFORM = {
-  cost: Math.log10,
-};
+// costScale is kept in sync with the #sel-scale dropdown.
+let costScale = 'log10';
+function scaleTransform(scale) {
+  if (scale === 'linear') return v => v;
+  if (scale === 'log2')   return v => Math.log2(v);
+  if (scale === 'ln')     return v => Math.log(v);
+  if (scale === 'sqrt')   return v => Math.sqrt(v);
+  if (scale === 'cbrt')   return v => Math.cbrt(v);
+  return v => Math.log10(v); // 'log10' and default
+}
+function getMetricTransform(m) {
+  if (m === 'cost' || m === 'mu') return scaleTransform(costScale);
+  return v => v;
+}
 
 const PALETTE = {
   viridis:  d3.interpolateViridis,
@@ -336,7 +359,7 @@ function loadText(text) {
   // Fix color domain per metric over the entire dataset.
   metricDomain = {};
   for (const m of metricCols) {
-    const tf   = METRIC_TRANSFORM[m] ?? (v => v);
+    const tf   = getMetricTransform(m);
     const vals = rows.map(r => r[m]).filter(Number.isFinite).map(tf).filter(Number.isFinite);
     if (vals.length)
       metricDomain[m] = [d3.min(vals), d3.max(vals)];
@@ -481,7 +504,7 @@ function get(id) { return document.getElementById(id).value; }
 function buildGrid(sourceRows, xDim, yDim, xVals, yVals, metric) {
   const needsCost = metric === 'cost';
   const aggMethod = mode === 'agg' ? get('sel-agg') : 'mean';
-  const tf = METRIC_TRANSFORM[metric] ?? (v => v);
+  const tf = getMetricTransform(metric);
 
   const grid = [];
   for (const y of yVals) {
@@ -701,14 +724,38 @@ function setMode(m) {
 document.getElementById('btn-agg').addEventListener('click',   () => setMode('agg'));
 document.getElementById('btn-slice').addEventListener('click', () => setMode('slice'));
 
-// Auto-load CSV from ?csv= query param (used by view_pool.py).
+// Auto-load CSV and scale from ?csv= / ?scale= query params (used by view_pool.py).
 {
-  const p = new URLSearchParams(window.location.search).get('csv');
+  const params = new URLSearchParams(window.location.search);
+  const s = params.get('scale');
+  if (s) {
+    const sel = document.getElementById('sel-scale');
+    if ([...sel.options].some(o => o.value === s)) {
+      sel.value = s;
+      costScale = s;
+    }
+  }
+  const p = params.get('csv');
   if (p) fetch(p)
     .then(r => { if (!r.ok) throw new Error(`HTTP ${r.status}`); return r.text(); })
     .then(loadText)
     .catch(e => console.error('Auto-load failed:', e));
 }
+
+document.getElementById('sel-scale').addEventListener('change', e => {
+  costScale = e.target.value;
+  if (rows.length) {
+    // Recompute color domains with new scale then re-render.
+    metricDomain = {};
+    for (const m of metricCols) {
+      const tf   = getMetricTransform(m);
+      const vals = rows.map(r => r[m]).filter(Number.isFinite).map(tf).filter(Number.isFinite);
+      if (vals.length)
+        metricDomain[m] = [d3.min(vals), d3.max(vals)];
+    }
+    render();
+  }
+});
 
 // ─────────────────────────────────────────────
 // Event wiring

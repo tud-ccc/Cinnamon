@@ -19,8 +19,9 @@ plot FILE ORACLE="" SCALE="log10":
       done \
     fi
 
-view NAME:
-    $(realpath ../.venv/bin/python) viewer/view_pool.py /data/{{NAME}}/pool.csv
+[arg("SCALE", long="scale")]
+view NAME SCALE="log10":
+    $(realpath ../.venv/bin/python) viewer/view_pool.py data/{{NAME}}/pool.csv --scale {{SCALE}}
 
 analyze NAME *ARGS:
     $(realpath ../.venv/bin/python) plotting/analyze_landscape.py data/{{NAME}}/pool.csv {{ARGS}}

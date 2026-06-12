@@ -21,6 +21,9 @@ import matplotlib.pyplot as plt
 
 META_COLS = {"visited", "valid", "cost", "mu", "sigma", "acq", "eval_iter"}
 
+# size_t(-1) sentinel written for unvisited pool entries
+_SENTINEL_ITER = 2**63
+
 
 def apply_scale(costs, scale):
     if scale == "linear":
@@ -66,7 +69,7 @@ def make_keys(df, dims):
 
 def compute_curves(bo_df, dims, topk_keys, max_iter):
     """Return (iters, recall, best_cost) step-function arrays over [0, max_iter]."""
-    obs = bo_df[bo_df["eval_iter"].notna() & bo_df["cost"].notna()].copy()
+    obs = bo_df[bo_df["eval_iter"].notna() & (bo_df["eval_iter"] < _SENTINEL_ITER) & bo_df["cost"].notna()].copy()
     obs["eval_iter"] = obs["eval_iter"].astype(int)
     obs = obs.sort_values("eval_iter")
 
@@ -159,7 +162,10 @@ def main():
         if "eval_iter" not in df.columns:
             print(f"WARNING: {path} has no eval_iter column — skipping", file=sys.stderr)
             continue
-        max_iter = max(max_iter, int(df["eval_iter"].dropna().max()))
+        valid_iters = df["eval_iter"].dropna()
+        valid_iters = valid_iters[valid_iters < _SENTINEL_ITER]
+        if not valid_iters.empty:
+            max_iter = max(max_iter, int(valid_iters.max()))
         bo_data.append((Path(path).stem, df))
 
     if not bo_data:

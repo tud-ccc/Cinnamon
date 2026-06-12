@@ -418,20 +418,13 @@ void CandidatePool::dumpToCSV(const ConfigSpace &space,
     }
   }
 
-  // Refit the ensemble on all observations to get per-candidate statistics.
-  // Skipped when we have too few points to train on.
-  const bool hasModel = nObs >= 2 && !validIdx.empty();
+  // Use the warm-started ensemble to get per-candidate statistics.
+  const bool hasModel = ensemble_ && nObs >= 2 && !validIdx.empty();
   // Per-valid-index predictions; indexed by position in validIdx.
   arma::rowvec mu_v, sigma_v, acq_v;
   if (hasModel) {
-    arma::mat Xo_obs(const_cast<double *>(Xo.memptr()), nDims(), nObs,
-                     /*copy=*/false, /*strict=*/true);
-    arma::mat yo_obs(const_cast<double *>(yo.memptr()), 1, nObs,
-                     /*copy=*/false, /*strict=*/true);
-    BananasEnsemble ensemble(opts.nEnsemble, opts.hidden, opts.depth);
-    ensemble.fit(Xo_obs, yo_obs, opts.epochs);
     arma::mat validEncoded = encodeSubset(*space_, validIdx);
-    auto [m, s] = ensemble.predict(validEncoded);
+    auto [m, s] = ensemble_->predict(validEncoded);
     mu_v = m;
     sigma_v = s;
     acq_v = computeAcq(mu_v, sigma_v, opts.kappa);
@@ -462,7 +455,7 @@ void CandidatePool::dumpToCSV(const ConfigSpace &space,
     if (!std::isnan(c))
       out << c;
     out << ",";
-    if (iterByIdx[i] >= 0)
+    if (iterByIdx[i] != static_cast<size_t>(-1))
       out << iterByIdx[i];
     if (hasModel) {
       auto it = validPos.find(i);
@@ -513,7 +506,7 @@ void ValidationSet::dumpToCSV(std::filesystem::path path) const {
 
   Configuration conf;
   for (const auto &snap : snapshots) {
-    for (size_t j = 0; j < indices.size(); ++j) {
+    for (size_t j = 0; j < snap.mu.n_elem; ++j) {
       space_->at(indices[j], conf);
       for (int64_t v : conf)
         out << v << ",";
