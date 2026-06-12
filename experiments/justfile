@@ -11,20 +11,20 @@ run FILE ORACLE="" SCALE="log10" *ARGS:
 [arg("ORACLE", long="oracle")]
 [arg("SCALE", long="scale")]
 plot FILE ORACLE="" SCALE="log10":
-    $(realpath ../.venv/bin/python) plotting/plot_bayes_pool.py data/{{FILE}}/*/pool.csv --objective-scale {{SCALE}}
+    source $(realpath ../.venv/bin/activate) && python plotting/plot_bayes_pool.py data/{{FILE}}/*/pool.csv --objective-scale {{SCALE}}
     if [[ -n "{{ORACLE}}" ]]; then \
       for dir in {{ORACLE}}/*/; do \
         subdir=$(basename "$dir"); \
-        $(realpath ../.venv/bin/python) plotting/plot_recall.py "$dir/pool.csv" "data/{{FILE}}/$subdir/pool.csv" --objective-scale {{SCALE}}; \
+        source $(realpath ../.venv/bin/activate) && python plotting/plot_recall.py "$dir/pool.csv" "data/{{FILE}}/$subdir/pool.csv" --objective-scale {{SCALE}}; \
       done \
     fi
 
 [arg("SCALE", long="scale")]
 view NAME SCALE="log10":
-    $(realpath ../.venv/bin/python) viewer/view_pool.py data/{{NAME}}/pool.csv --scale {{SCALE}}
+    source $(realpath ../.venv/bin/activate) && python viewer/view_pool.py data/{{NAME}}/pool.csv --scale {{SCALE}}
 
 analyze NAME *ARGS:
-    $(realpath ../.venv/bin/python) plotting/analyze_landscape.py data/{{NAME}}/pool.csv {{ARGS}}
+    source $(realpath ../.venv/bin/activate) && python plotting/analyze_landscape.py data/{{NAME}}/pool.csv {{ARGS}}
     
 
 
