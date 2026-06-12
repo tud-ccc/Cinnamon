@@ -4,6 +4,7 @@
 #include <memory>
 #include <random>
 #include <unordered_set>
+#include <filesystem>
 #include <vector>
 
 #include <llvm/ADT/BitVector.h>
@@ -49,7 +50,7 @@ struct ValidationSet {
   /// Append a surrogate snapshot for the current BO iteration.
   void recordSnapshot(int iter, arma::rowvec mu, arma::rowvec sigma);
   /// Write one row per (validation config × snapshot) to a CSV file.
-  void dumpToCSV(llvm::StringRef path) const;
+  void dumpToCSV(std::filesystem::path path) const;
 };
 
 /// Addressable candidate pool backed by the full ConfigSpace Cartesian product.
@@ -71,8 +72,9 @@ struct CandidatePool {
 
   // Per-pool-index observed cost; NaN for unvisited or failed evaluations.
   arma::rowvec costByIdx;
-  // Per-pool-index BO iteration at which the cost was recorded; -1 if unrecorded.
-  std::vector<int> iterByIdx;
+  // Per-pool-index BO iteration at which the cost was recorded; -1 if
+  // unrecorded.
+  std::vector<size_t> iterByIdx;
 
   /// Warm-start ensemble: persisted across BO iterations so each call to
   /// nextCandidateIndices fine-tunes from the previous fit rather than
@@ -97,7 +99,7 @@ struct CandidatePool {
   /// Index of the first unvisited entry, or size() if all have been visited.
   size_t firstUnvisited() const { return visited.find_first_unset(); }
 
-  void recordObservation(size_t idx, double cost, int iter = 0);
+  void recordObservation(size_t idx, double cost, size_t iter = 0);
 
   /// Select n row-indices from the pool using Latin Hypercube Sampling.
   void sampleInitialSet(size_t n_samples, std::mt19937 &rng,
@@ -109,24 +111,15 @@ struct CandidatePool {
   /// come from the incrementally maintained Xo/yo matrices (zero-copy view).
   bool nextCandidateIndices(const InferenceOptions &opts, std::mt19937 &rng,
                             std::function<bool(size_t)> accept,
-                            ValidationSet *validSet = nullptr, int iter = 0);
+                            ValidationSet &validSet, ValidationSet &trainingSet,
+                            int iter);
 
   /// Dump the full candidate pool to a CSV file at `path`.
   /// Columns: one per search param, then "cost" (empty if not evaluated),
   /// then "mu", "sigma", "acq" from a final ensemble fit (columns omitted
   /// when fewer than 2 observations are available).
   void dumpToCSV(const ConfigSpace &space, const InferenceOptions &opts,
-                 llvm::StringRef path) const;
-
-  /// Dump per-iteration training RMSE to a CSV (iter, n_obs, rmse).
-  void dumpTrainingRmseToCSV(llvm::StringRef path) const;
-
-  struct TrainingSnapshot {
-    int iter;
-    size_t nObs;
-    double rmse;
-  };
-  std::vector<TrainingSnapshot> trainingSnapshots;
+                 std::filesystem::path path) const;
 
 private:
   /// Insert idx into result if it is unvisited, not already present, and valid.

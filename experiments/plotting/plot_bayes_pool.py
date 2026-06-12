@@ -144,40 +144,6 @@ def make_figure(agg, tile0_vals, tile1_vals, tasklet_vals, out_dir,
     return out_path
 
 
-def _iter_to_nobs(val_csv_path):
-    """Return a Series mapping iter → n_obs from training_rmse.csv, or None."""
-    train_path = Path(val_csv_path).parent / "training_rmse.csv"
-    if not train_path.exists():
-        return None
-    tr = pd.read_csv(train_path)
-    return tr.set_index("iter")["n_obs"]
-
-
-def plot_validation_rmse(val_csv_path, out_dir, scale="log10"):
-    """Plot surrogate RMSE on held-out validation points vs training set size."""
-    val = pd.read_csv(val_csv_path)
-    val["scaled_true"] = apply_scale(val["cost"], scale)
-    val["sq_err"] = (val["mu"] - val["scaled_true"]) ** 2
-
-    iter_to_nobs = _iter_to_nobs(val_csv_path)
-    if iter_to_nobs is not None:
-        val["x"] = val["iter"].map(iter_to_nobs)
-        xlabel = "Training set size"
-    else:
-        val["x"] = val["iter"]
-        xlabel = "BO iteration"
-
-    return _plot_validation_metric(
-        val,
-        err_col="sq_err",
-        agg_fn=lambda s: np.sqrt(s.mean()),
-        xlabel=xlabel,
-        ylabel=f"RMSE  ({scale_label(scale)} cost units)",
-        title="Surrogate validation RMSE\n"
-        "(lower = surrogate predictions closer to true cost)",
-        out_path=os.path.join(out_dir, "pool_validation_rmse.png"),
-    )
-
 
 def _plot_validation_metric(val, err_col, agg_fn, xlabel, ylabel, title, out_path):
     fig, ax = plt.subplots(figsize=(8, 4))
@@ -208,24 +174,38 @@ def _plot_validation_metric(val, err_col, agg_fn, xlabel, ylabel, title, out_pat
     return out_path
 
 
-def plot_validation_mape(val_csv_path, out_dir, scale="log10"):
+
+def plot_validation_rmse(val_csv_path, out_dir, dataset, scale):
+    """Plot surrogate RMSE on held-out validation points vs evaluations."""
+    val = pd.read_csv(val_csv_path)
+    val["scaled_true"] = apply_scale(val["cost"], scale)
+    val["sq_err"] = (val["mu"] - val["scaled_true"]) ** 2
+    val["x"] = val["iter"]
+
+    return _plot_validation_metric(
+        val,
+        err_col="sq_err",
+        agg_fn=lambda s: np.sqrt(s.mean()),
+        xlabel="Evaluations",
+        ylabel=f"RMSE  ({scale_label(scale)} cost units)",
+        title=f"Surrogate {dataset} RMSE\n",
+        out_path=os.path.join(out_dir, f"pool_{dataset}_rmse.png"),
+    )
+
+def plot_validation_mape(val_csv_path, out_dir, dataset, scale):
     val = pd.read_csv(val_csv_path)
     scaled_cost = apply_scale(val["cost"], scale)
     val["pct_err"] = 100 * np.abs(val["mu"] - scaled_cost) / scaled_cost
-    iter_to_nobs = _iter_to_nobs(val_csv_path)
-    val["x"] = (
-        val["iter"].map(iter_to_nobs) if iter_to_nobs is not None else val["iter"]
-    )
-    xlabel = "Training set size" if iter_to_nobs is not None else "BO iteration"
+    val["x"] = val["iter"]
     return _plot_validation_metric(
         val,
         err_col="pct_err",
         agg_fn="mean",
-        xlabel=xlabel,
+        xlabel="Evaluations",
         ylabel="MAPE (%)",
-        title=f"Surrogate validation MAPE (cost in {scale_label(scale)} space)\n"
+        title=f"Surrogate {dataset} MAPE (cost in {scale_label(scale)} space)\n"
         "mean |predicted − true| / true × 100",
-        out_path=os.path.join(out_dir, "pool_validation_mape.png"),
+        out_path=os.path.join(out_dir, f"pool_{dataset}_mape.png"),
     )
 
 
@@ -326,27 +306,6 @@ def plot_sigma_scatter(df, out_dir, scale="log10"):
     return out_path
 
 
-def plot_training_rmse(csv_path, out_dir, scale="log10"):
-    """RMSE of surrogate predictions on training observations vs. BO iteration."""
-    df = pd.read_csv(csv_path)
-    fig, ax1 = plt.subplots(figsize=(8, 4))
-    ax1.plot(df["n_obs"], df["rmse"], color="steelblue", lw=2, marker="o", ms=3)
-    ax1.set_xlabel("Training set size (initial size + iteration)")
-    ax1.set_ylabel(f"Training RMSE  ({scale_label(scale)} cost units)")
-    n_min, n_max = int(df["n_obs"].min()), int(df["n_obs"].max())
-    locator = plt.MaxNLocator(integer=True)
-    auto_ticks = [int(t) for t in locator.tick_values(n_min, n_max) if t >= n_min]
-    ax1.set_xticks(sorted(set([n_min] + auto_ticks)))
-    ax1.set_xlim(left=n_min - 5)
-    ax1.set_title("Surrogate training RMSE over BO iterations")
-    ax1.grid(True, alpha=0.3)
-    plt.tight_layout()
-    out_path = os.path.join(out_dir, "pool_training_rmse.png")
-    fig.savefig(out_path, dpi=150, bbox_inches="tight")
-    plt.close(fig)
-    return out_path
-
-
 def build_tasks(csv_path, scale="log10"):
     """Load one CSV and return (data_tuple, list_of_figure_kwargs)."""
     out_dir = str(Path(csv_path).parent)
@@ -421,13 +380,15 @@ if __name__ == "__main__":
             if val_path.exists():
                 for fn, tag in [(plot_validation_rmse, "validation_rmse"),
                                 (plot_validation_mape, "validation_mape")]:
-                    f = executor.submit(fn, str(val_path), out_dir, scale)
+                    f = executor.submit(fn, str(val_path), out_dir, dataset="validation", scale=scale)
                     all_futures[f] = (csv_path, tag)
 
-            train_rmse_path = Path(csv_path).parent / "training_rmse.csv"
+            train_rmse_path = Path(csv_path).parent / "training.csv"
             if train_rmse_path.exists():
-                f = executor.submit(plot_training_rmse, str(train_rmse_path), out_dir, scale)
-                all_futures[f] = (csv_path, "training_rmse")
+                for fn, tag in [(plot_validation_rmse, "training_rmse"),
+                                (plot_validation_mape, "training_mape")]:
+                    f = executor.submit(fn, str(val_path), out_dir, dataset="training", scale=scale)
+                    all_futures[f] = (csv_path, tag)
 
             raw_df = pd.read_csv(csv_path)
             raw_df = raw_df[raw_df["dpus"] == DPU]

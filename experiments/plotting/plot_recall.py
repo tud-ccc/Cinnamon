@@ -109,7 +109,7 @@ def plot_curves(ax, iters, curves, names, ylabel, title):
         ax.plot(iters, mean, color="black", lw=2, label="mean", zorder=5)
         ax.fill_between(iters, mean - std, mean + std,
                         color="black", alpha=0.15, label="±1σ")
-    ax.set_xlabel("BO iteration")
+    ax.set_xlabel("Evaluations")
     ax.set_ylabel(ylabel)
     ax.set_title(title)
     ax.grid(True, alpha=0.3)
@@ -212,9 +212,9 @@ def main():
             ax.fill_between(iters, mean - std, mean + std, color=color, alpha=0.15)
     ax.set_ylim(-0.02, 1.05)
     ax.axhline(1.0, color="gray", lw=0.8, ls="--")
-    ax.set_xlabel("BO iteration")
+    ax.set_xlabel("Evaluations")
     ax.set_ylabel("Recall  (fraction of threshold found)")
-    ax.set_title("Top-k% recall over BO iterations")
+    ax.set_title("Top-k% recall over Evaluationss")
     ax.legend(fontsize=8, loc="lower right")
     ax.grid(True, alpha=0.3)
     plt.tight_layout()
@@ -230,7 +230,7 @@ def main():
     ylabel = f"Best cost found so far  ({sl})" if scale != "linear" else "Best cost found so far"
     plot_curves(ax, iters, scaled_best, names,
                 ylabel=ylabel,
-                title="Best cost found over BO iterations")
+                title="Best cost found over Evaluationss")
     ax.axhline(apply_scale(oracle_best, scale), color="red", lw=1, ls="--",
                label=f"Oracle best ({oracle_best:.3g})")
     ax.legend(fontsize=8, loc="upper right")
