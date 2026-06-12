@@ -42,74 +42,67 @@ def scale_label(scale):
             "ln": "ln", "sqrt": "√", "cbrt": "∛"}.get(scale, scale)
 
 
-DPU = 1
-RANK = 1
-
 # ── Image builder ─────────────────────────────────────────────────────────────
-def build_rgba(subset, tile0_vals, tile1_vals, val_col, norm, cmap, *, white_unvisited=True):
+def build_rgba(
+    subset, x, y, x_vals, y_vals, val_col, norm, cmap, *, white_unvisited=True
+):
     """Return an RGBA image (H=tile_, W=tile_1) for one tasklets slice."""
-    piv_val  = subset.pivot_table(index="tile_",  columns="tile_1", values=val_col,   aggfunc="mean")
-    piv_vis  = subset.pivot_table(index="tile_",  columns="tile_1", values="visited", aggfunc="max")
-    piv_cost = subset.pivot_table(index="tile_",  columns="tile_1", values="cost",    aggfunc="min")
+    piv_val = subset.pivot_table(index=x, columns=y, values=val_col, aggfunc="mean")
+    piv_vis = subset.pivot_table(index=x, columns=y, values="visited", aggfunc="max")
+    piv_valid = subset.pivot_table(index=x, columns=y, values="valid", aggfunc="max")
 
-    vals = piv_val.reindex(index=tile0_vals, columns=tile1_vals).to_numpy(dtype=float)
-    vis  = piv_vis.reindex(index=tile0_vals, columns=tile1_vals).to_numpy(dtype=float)
-    cost = piv_cost.reindex(index=tile0_vals, columns=tile1_vals).to_numpy(dtype=float)
+    vals = piv_val.reindex(index=x_vals, columns=y_vals).to_numpy(dtype=float)
+    vis = np.nan_to_num(
+        piv_vis.reindex(index=x_vals, columns=y_vals).to_numpy(dtype=float)
+    )
+    valid = np.nan_to_num(
+        piv_valid.reindex(index=x_vals, columns=y_vals).to_numpy(dtype=float)
+    )
 
-    unvisited = np.isnan(vis) | (vis == 0)
-    failed    = (~unvisited) & np.isnan(cost)
-    no_data   = np.isnan(vals)
+    invalid = valid == 0
+    unvisited = ~invalid & (vis != 0)
+    no_data = np.isnan(vals)
+    failed = no_data & ~unvisited
 
     fill = np.nanmedian(vals) if not np.all(no_data) else 0.0
     safe = np.where(no_data, fill, vals)
 
     img = cmap(norm(safe))
-    img[no_data] = [1.0, 1.0, 1.0, 1.0]           # white — metric has no value
-    if white_unvisited:
-        img[unvisited] = [1.0, 1.0, 1.0, 1.0]     # white — not sampled (cost plot)
-    img[failed] = [0.55, 0.55, 0.55, 1.0]          # gray  — evaluated but cost failed
+    img[no_data] = [1.0, 1.0, 1.0, 1.0]  # white — metric has no value
+    img[invalid] = [0.88, 0.88, 0.88, 1.0]  # light gray — constraint violated
+    # if white_unvisited:
+    # img[unvisited] = [1.0, 1.0, 1.0, 1.0]      # white — not sampled
+    img[failed] = [0.55, 0.55, 0.55, 1.0]  # mid gray — evaluated but cost failed
 
     return img
 
 
-# ── Constraint mask ────────────────────────────────────────────────────────────
-# Returns True for invalid cells (should be greyed out).
-# m = tile_, k = tile_1, T = tasklets.  Edit this formula as needed.
-WRAM_LIMIT = 65536 / 4
-
-def constraint_violated(m, k, T):
-    return T * k * m / (RANK * DPU) + k + T * m / (RANK * DPU) > WRAM_LIMIT
-
-def draw_constraint(ax, T, tile0_vals, tile1_vals):
-    extent = [0.5, len(tile1_vals) + 0.5, 0.5, len(tile0_vals) + 0.5]
-    m_grid, k_grid = np.meshgrid(tile0_vals, tile1_vals, indexing="ij")
-    mask = constraint_violated(m_grid, k_grid, T)
-    overlay = np.zeros((*mask.shape, 4), dtype=float)
-    overlay[mask] = [0.75, 0.75, 0.75, 0.6]
-    ax.imshow(overlay, origin="lower", aspect="auto", extent=extent, zorder=3)
-
 
 # ── Figure factory ─────────────────────────────────────────────────────────────
-def make_figure(agg, tile0_vals, tile1_vals, tasklet_vals, out_dir,
-                metric, title, label, norm, cmap, *, white_unvisited=True):
+def make_facet_plot(
+    df, x, y, f, out_dir, metric, title, label, norm, cmap, *, white_unvisited=True
+):
+    tile0_vals   = sorted(df[x].unique())
+    tile1_vals   = sorted(df[y].unique())
+    facet_vals = sorted(df[f].unique())
+
     extent = [0.5, len(tile1_vals) + 0.5, 0.5, len(tile0_vals) + 0.5]
     ncols = 2
-    nrows = int(np.ceil(len(tasklet_vals) / ncols))
+    nrows = int(np.ceil(len(facet_vals) / ncols))
     fig, axes = plt.subplots(nrows, ncols,
                               figsize=(5.5 * ncols, 4.5 * nrows),
                               squeeze=False)
     flat = axes.flatten()
 
-    for ax in flat[len(tasklet_vals):]:
+    for ax in flat[len(facet_vals):]:
         ax.set_visible(False)
 
-    for idx, (ax, T) in enumerate(zip(flat, tasklet_vals)):
-        subset = agg[agg["tasklets"] == T]
-        img = build_rgba(subset, tile0_vals, tile1_vals, metric, norm, cmap,
+    for idx, (ax, T) in enumerate(zip(flat, facet_vals)):
+        subset = df[df["tasklets"] == T]
+        img = build_rgba(subset, x, y, tile0_vals, tile1_vals, metric, norm, cmap,
                          white_unvisited=white_unvisited)
 
         ax.imshow(img, origin="lower", aspect="auto", extent=extent)
-        draw_constraint(ax, T, tile0_vals, tile1_vals)
 
         in_first_col = (idx % ncols == 0)
         in_bottom    = (idx >= (nrows - 1) * ncols)
@@ -308,52 +301,51 @@ def plot_sigma_scatter(df, out_dir, scale):
     return out_path
 
 
-def build_tasks(csv_path, scale="log10"):
+def build_facet_plot_tasks(csv_path, scale, x, y, f):
     """Load one CSV and return (data_tuple, list_of_figure_kwargs)."""
-    out_dir = str(Path(csv_path).parent)
 
     df = pd.read_csv(csv_path)
-    df = df[df["dpus"] == DPU]
-    # df = df[df['ranks'] == RANK]
 
-    group_cols = ["tile_", "tile_1", "tasklets", "dpus"]
-    agg = df.groupby(group_cols, as_index=False).agg(
+    xyf_axes = [x, y, f]
+    agg = df.groupby(xyf_axes, as_index=False).agg(
         visited=("visited", "max"),
+        valid=("valid", "max"),
+
         cost=("cost", "min"),
-        mu=("mu", "mean"),
+        mu=("mu", "min"),
         sigma=("sigma", "mean"),
         acq=("acq", "min"),
     )
 
-    tile0_vals   = sorted(agg["tile_"].unique())
-    tile1_vals   = sorted(agg["tile_1"].unique())
-    tasklet_vals = sorted(agg["tasklets"].unique())
-    data = (agg, tile0_vals, tile1_vals, tasklet_vals, out_dir)
+    base_parms = dict(df=agg, x=x, y=y, f=f)
 
     cost_vals = agg["cost"].dropna()
     tasks = [
-        dict(metric="cost",
-             title="Observed cost  [white = unsampled, gray = failed]",
-             label="Simulated cost (log scale, lower is better)",
-             norm=mcolors.LogNorm(vmin=cost_vals.min(), vmax=cost_vals.max()),
-             cmap=plt.cm.viridis_r),
+        base_parms
+        | dict(
+            metric="cost",
+            title="Min observed cost  [white = unsampled, gray = failed]",
+            label="Simulated cost (log scale, lower is better)",
+            norm=mcolors.LogNorm(vmin=cost_vals.min(), vmax=cost_vals.max()),
+            cmap=plt.cm.viridis_r,
+        ),
     ]
     sl = scale_label(scale)
     for metric, title, label, cmap in [
-        ("mu",    f"Surrogate μ  ({sl} scale)",
+        ("mu",    f"Min surrogate μ  ({sl} scale)",
          f"μ — predicted {sl}(cost)  (lower is better)", plt.cm.viridis_r),
-        ("sigma", f"Surrogate σ  ({sl} scale)",
+        ("sigma", f"Mean surrogate σ  ({sl} scale)",
          f"σ — uncertainty in {sl}(cost)  (lower = more certain)", plt.cm.plasma),
-        ("acq",   "Acquisition score  (lower = higher priority)",
+        ("acq",   "Best acquisition score  (lower = higher priority)",
          f"UCB acquisition  μ − κσ  ({sl} scale)", plt.cm.plasma_r),
     ]:
         vals = agg[metric].dropna()
-        tasks.append(dict(
+        tasks.append(base_parms | dict(
             metric=metric, title=title, label=label, cmap=cmap,
             norm=mcolors.Normalize(vmin=vals.min(), vmax=vals.max()),
             white_unvisited=False,
         ))
-    return data, tasks
+    return tasks
 
 
 if __name__ == "__main__":
@@ -365,17 +357,21 @@ if __name__ == "__main__":
     ap.add_argument("--objective-scale", default="log10",
                     help="Cost transform used during surrogate training "
                          "(linear, log2, log10, ln, sqrt, cbrt)")
+    ap.add_argument("--axes", default="tile_1,tile_,tasklets", metavar="X,Y,FACET",
+                    help="Comma-separated x,y,facet column names for the heatmap "
+                         "(default: tile_1,tile_,tasklets)")
     args = ap.parse_args()
     scale = args.objective_scale
     csv_paths = args.csv_paths
+    ax_x, ax_y, ax_f = args.axes.split(",", 2)
 
     all_futures = {}
     with ProcessPoolExecutor() as executor:
         for csv_path in csv_paths:
-            data, tasks = build_tasks(csv_path, scale)
+            tasks = build_facet_plot_tasks(csv_path, scale, x=ax_x, y=ax_y, f=ax_f)
             out_dir = str(Path(csv_path).parent)
             for kw in tasks:
-                f = executor.submit(make_figure, *data, **kw)
+                f = executor.submit(make_facet_plot, out_dir=out_dir, **kw)
                 all_futures[f] = (csv_path, kw["metric"])
 
             val_path = Path(csv_path).parent / "validation.csv"
@@ -393,7 +389,6 @@ if __name__ == "__main__":
                     all_futures[f] = (csv_path, tag)
 
             raw_df = pd.read_csv(csv_path)
-            raw_df = raw_df[raw_df["dpus"] == DPU]
             if "sigma" in raw_df.columns:
                 for fn, tag in [(plot_sigma_vs_distance, "sigma_vs_dist"),
                                 (plot_sigma_scatter,     "sigma_scatter")]:
