@@ -217,18 +217,20 @@ def _dim_cols(df):
 
 def _compute_min_dist(df, dims):
     """Min L1 distance in discrete grid-step indices to the nearest visited config."""
+    from scipy.spatial import KDTree
     index_maps = {c: {v: i for i, v in enumerate(sorted(df[c].unique()))} for c in dims}
-    coords = np.column_stack([df[c].map(index_maps[c]).values for c in dims]).astype(int)
-    visited_mask = df["visited"].fillna(0).astype(bool).values
+    coords = np.column_stack([df[c].map(index_maps[c]).values for c in dims]).astype(float)
+    visited_mask = df["cost"].notna().values
     visited_coords = coords[visited_mask]
     if len(visited_coords) == 0:
         return np.full(len(df), np.nan)
-    # (N, V, D) → L1 sum → (N, V) → min → (N,)
-    diffs = np.abs(coords[:, None, :] - visited_coords[None, :, :])
-    return diffs.sum(axis=2).min(axis=1).astype(float)
+    # KDTree query with p=1 (Manhattan) is O((N+V) log V) in memory O(V·D).
+    tree = KDTree(visited_coords)
+    dists, _ = tree.query(coords, k=1, p=1, workers=-1)
+    return dists
 
 
-def plot_sigma_vs_distance(df, out_dir, scale="log10"):
+def plot_sigma_vs_distance(df, out_dir, scale):
     """Median ± IQR of surrogate σ at each grid-step distance from the nearest observation."""
     dims = _dim_cols(df)
     if "sigma" not in df.columns:
@@ -275,7 +277,7 @@ def plot_sigma_vs_distance(df, out_dir, scale="log10"):
     return out_path
 
 
-def plot_sigma_scatter(df, out_dir, scale="log10"):
+def plot_sigma_scatter(df, out_dir, scale):
     """Scatter of (min_dist, σ) coloured by μ — reveals over/under-confident regions."""
     dims = _dim_cols(df)
     if "sigma" not in df.columns or "mu" not in df.columns:
