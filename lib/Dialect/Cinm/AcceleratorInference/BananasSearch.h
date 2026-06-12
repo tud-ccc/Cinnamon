@@ -24,9 +24,10 @@ struct InferenceOptions;
 struct BananasEnsemble; // defined in BananasSearch.cpp
 using Configuration = std::vector<int64_t>;
 
-/// Holds a fixed set of held-out validation configurations, their true costs,
-/// and per-iteration surrogate predictions (mu/sigma). Populated once before
-/// BO begins; never used as BO training data.
+/// Holds a set of configurations, their true costs, and per-iteration surrogate 
+/// predictions (mu/sigma). This is used to hold a validation set and evaluate
+/// surrogate performance during training. Another instance is used to hold the
+/// training dataset and evaluate the surrogate fitting.
 struct ValidationSet {
   const ConfigSpace *space_;
 
