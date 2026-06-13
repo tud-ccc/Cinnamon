@@ -218,7 +218,7 @@ struct BananasEnsemble {
       int batchSize = std::min<size_t>(32, n);
       size_t stepsPerEpoch = (n + batchSize - 1) / batchSize;
       // For the first few fits, use more epochs to get a better initial fit
-      size_t thisEpochs = step < 5 ? epochs * 5 : epochs;
+      size_t thisEpochs = step < 2 ? epochs * 3 : epochs;
       size_t maxIter = thisEpochs * stepsPerEpoch;
       ens::Adam opt(3e-3, batchSize, 0.9, 0.999, 1e-8, maxIter, 1e-7, true);
       models[mi]->Train(Xs, ys, opt);
