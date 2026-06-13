@@ -25,49 +25,49 @@ namespace mlir::upmem {
 
 namespace {
 
-// Return the UPMEM accelerator attribute from a cnm buffer type, if present.
 static std::optional<UpmemAcceleratorAttr>
 upmemAccelOf(cnm::WorkgroupType buf) {
   return llvm::dyn_cast_or_null<UpmemAcceleratorAttr>(buf.getAccelerator());
 }
 
-// Total number of elements in a statically shaped tensor/memref.
-// Returns 1 if the shape is dynamic (conservative estimate).
 static int64_t staticElementCount(ShapedType ty) {
   if (!ty.hasStaticShape())
     return 1;
   return ty.getNumElements();
 }
 
-// Byte size of a single element (rounded up to whole bytes).
 static double elementBytes(Type elemTy) {
   if (elemTy.isIntOrFloat())
     return static_cast<double>(elemTy.getIntOrFloatBitWidth()) / 8.0;
-  return 4.0; // conservative fallback
+  return 4.0;
 }
 
 static double transferCost(double numBytes, int numRanks) {
-  return numBytes / 1024 / numRanks;
+  return numBytes / 1024 / numRanks / 100;
 }
 
 static constexpr llvm::StringLiteral kSimCostAttr = "upmem.sim_cost";
 
-// Forward declaration.
-static double costOfRegion(Region &region, bool annotate);
+static double costOfRegionCb(Region &region, bool annotate,
+                             const WaitForCostFn &cb);
 
-static double costOfOp(Operation &op, bool annotate) {
+static double costOfOpCb(Operation &op, bool annotate,
+                         const WaitForCostFn &cb) {
   double cost =
       llvm::TypeSwitch<Operation *, double>(&op)
-          // ── loops
-          // ───────────────────────────────────────────────────────────
           .Case([&](LoopLikeOpInterface forOp) {
             int64_t tripCount = 8;
             if (auto tc = forOp.getStaticTripCount())
               tripCount = tc->getZExtValue();
-            return costOfRegion(*forOp.getLoopRegions()[0], annotate) *
+            return costOfRegionCb(*forOp.getLoopRegions()[0], annotate, cb) *
                    static_cast<double>(tripCount);
           })
-          // ── cnm.scatter / cnm.gather ─────────────────────────────────────
+          .Case<memref::CopyOp>([](memref::CopyOp copyOp) {
+            auto hostTy = copyOp.getSource().getType();
+            double bytes = static_cast<double>(staticElementCount(hostTy)) *
+                           elementBytes(hostTy.getElementType());
+            return transferCost(bytes, 1);
+          })
           .Case<cnm::ScatterOp, cnm::GatherOp>([](auto scatterOp) {
             auto hostTy = scatterOp.getHostType();
             double bytes = static_cast<double>(staticElementCount(hostTy)) *
@@ -77,10 +77,6 @@ static double costOfOp(Operation &op, bool annotate) {
               numRanks = accel->getNumRanks();
             return transferCost(bytes, numRanks);
           })
-          // ── upmem.scatter / upmem.gather
-          // ───────────────────────────────────── Same transfer-cost formula as
-          // cnm equivalents: total bytes moved across the bus divided by the
-          // rank-level parallelism.
           .Case<ScatterOp, GatherOp>([](auto xferOp) {
             auto hier = llvm::cast<DeviceHierarchyType>(
                 xferOp.getHierarchy().getType());
@@ -89,28 +85,15 @@ static double costOfOp(Operation &op, bool annotate) {
                 hier.getNumRanks() * hier.getNumDpusPerRank();
             return transferCost(totalBytes, hier.getNumRanks());
           })
-          // ── upmem.local_transfer
-          // ───────────────────────────────────────────── Models the DMA
-          // latency for WRAM↔MRAM copies: ~36 cycles per 2 KiB chunk, with a
-          // minimum of one chunk for small transfers.
           .Case<LocalTransferOp>([](auto xferOp) {
             auto srcTy = llvm::cast<MemRefType>(xferOp.getSource().getType());
             double bytes = static_cast<double>(staticElementCount(srcTy)) *
                            elementBytes(srcTy.getElementType());
             return 36.0 * std::max(1.0, bytes / 2048.0);
           })
-          // ── upmem.wait_for
-          // ──────────────────────────────────────────────────── Estimates
-          // kernel execution cost by recursing into the DPU program body, then
-          // dividing by the number of tasklets (intra-DPU parallelism).
+          // Delegate DPU kernel cost to the callback.
           .Case<WaitForOp>([&](auto waitForOp) -> double {
-            auto dpuProgram = waitForOp.getDpuProgram();
-            if (!dpuProgram)
-              return 1.0;
-            auto hier = llvm::cast<DeviceHierarchyType>(
-                waitForOp.getDpuSet().getType());
-            return costOfRegion(dpuProgram.getBody(), annotate) /
-                   hier.getNumTaskletsPerDpu();
+            return cb(waitForOp.getOperation(), annotate);
           })
           .Case<cnm::LaunchOp>([](auto launchOp) -> double {
             if (auto acc = upmemAccelOf(launchOp.getWg().getType())) {
@@ -124,12 +107,10 @@ static double costOfOp(Operation &op, bool annotate) {
           })
           .Case<arith::ConstantOp, upmem::StaticAllocOp, cinm::YieldOp,
                 memref::SubViewOp>([](auto) { return 0.0; })
-          // ── default: recurse into sub-regions and charge 1 per leaf op
-          // ───────────
           .Default([&](Operation *o) {
-            double c = o->getNumRegions() > 0 ? 0.0 : 1.0;
+            double c = o->getNumRegions() > 0 ? 0.0 : 5e-3;
             for (auto &region : o->getRegions())
-              c += costOfRegion(region, annotate);
+              c += costOfRegionCb(region, annotate, cb);
             return c;
           });
 
@@ -139,11 +120,12 @@ static double costOfOp(Operation &op, bool annotate) {
   return cost;
 }
 
-static double costOfRegion(Region &region, bool annotate) {
+static double costOfRegionCb(Region &region, bool annotate,
+                             const WaitForCostFn &cb) {
   double cost = 0.0;
   for (auto &block : region)
     for (auto &op : block)
-      cost += costOfOp(op, annotate);
+      cost += costOfOpCb(op, annotate, cb);
   return cost;
 }
 
@@ -153,11 +135,29 @@ struct OpCountSimulator : UpmemSimulator {
       : annotateOpCosts(annotateOpCosts) {}
 
   mlir::cinm::utils::Maybe<double> simulate(Region &region) override {
-    return costOfRegion(region, true);
+    // Recursive callback: recurse into the DPU program body with the same
+    // heuristics, divided by tasklet parallelism.
+    std::function<double(Operation *, bool)> waitForCb;
+    waitForCb = [&](Operation *op, bool ann) -> double {
+      auto waitFor = llvm::cast<WaitForOp>(op);
+      auto dpuProgram = waitFor.getDpuProgram();
+      if (!dpuProgram)
+        return 1.0;
+      auto hier = llvm::cast<DeviceHierarchyType>(
+          waitFor.getDpuSet().getType());
+      return simulateHostRegion(dpuProgram.getBody(), ann, waitForCb) /
+             hier.getNumTaskletsPerDpu();
+    };
+    return simulateHostRegion(region, annotateOpCosts, waitForCb);
   }
 };
 
 } // namespace
+
+double simulateHostRegion(Region &region, bool annotate,
+                          const WaitForCostFn &waitForCb) {
+  return costOfRegionCb(region, annotate, waitForCb);
+}
 
 std::unique_ptr<UpmemSimulator> createOpCountSimulator(bool annotateOpCosts) {
   return std::make_unique<OpCountSimulator>(annotateOpCosts);

@@ -22,16 +22,6 @@ include "cinm-mlir/Dialect/UPMEM/IR/UPMEMBase.td"
 // def UPMEM_AddressSpaceAttr :
 //   UPMEM_I32EnumAttr<"address_space", UPMEM_AddressSpaceEnum>;
 
-def UPMEM_SimulatorAttr : I64EnumAttr<
-    "SimulatorKind", "",
-    [
-      I64EnumAttrCase<"OPCOUNT", 0, "opcount">,
-      I64EnumAttrCase<"CA", 1, "cycleaccurate">
-    ]> {
-  let cppNamespace = "::mlir::upmem";
-  let genSpecializedAttr = 0;
-}
-
 def DpuMemSpace : I64EnumAttr<
     "DpuMemSpace", "",
     [

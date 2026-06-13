@@ -85,4 +85,24 @@ def UpmemInferAcceleratorPass : Pass<"upmem-infer-accelerator", "ModuleOp"> {
   ];
 }
 
+def UpmemAnnotateCostsPass
+    : Pass<"upmem-annotate-costs"> {
+  let summary = "Annotate UPMEM ops with estimated simulation costs";
+  let description = [{
+    Runs the selected cost estimator on each cinm.compute_block body and
+    annotates each op with its estimated cost via the 'upmem.sim_cost'
+    float attribute.  Use 'opcount' for a fast weighted heuristic or
+    'cycleaccurate' for the cycle-accurate upmem_simulator Python backend.
+  }];
+  let dependentDialects = [
+    "::mlir::cinm::CinmDialect",
+    "::mlir::upmem::UPMEMDialect"
+  ];
+  let options = [
+    Option<"simulator", "simulator", "std::string", "\"opcount\"",
+           "Cost model: 'opcount' (weighted heuristic) or 'cycleaccurate' "
+           "(cycle-accurate Python simulator)">
+  ];
+}
+
 #endif // UPMEM_TRANSFORM_PASSES

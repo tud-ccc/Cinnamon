@@ -482,47 +482,45 @@ struct DpuTranslator {
 
 // ===----------------------------------------------------------------------===//
 // PythonSimulator
+// This calls out to third-party/upmem-cost-model (Hamid's cost model) 
+// for the DPU program cost estimation.
 // ===----------------------------------------------------------------------===//
 
 struct PythonSimulator : UpmemSimulator {
+  bool annotateOpCosts;
+  explicit PythonSimulator(bool annotateOpCosts)
+      : annotateOpCosts(annotateOpCosts) {}
+
   Maybe<double> simulate(Region &region) override {
     try {
       ensurePythonInitialized();
       PyClasses &cls = getPyClasses();
 
-      double total = 0.0;
-      bool found = false;
-
-      region.walk([&](WaitForOp waitFor) {
+      // Callback for WaitForOp: translate the DPU program to Python IR and
+      // simulate with the cycle-accurate Python simulator.
+      // Host-side ops (scatter/gather/loops) are handled by simulateHostRegion.
+      auto waitForCb = [&](Operation *op, bool /*ann*/) -> double {
+        auto waitFor = llvm::cast<WaitForOp>(op);
         DpuProgramOp dpuProg = waitFor.getDpuProgram();
         if (!dpuProg)
-          return WalkResult::skip();
-
+          return 1.0;
         int T = dpuProg.getNumTasklets();
         DpuTranslator tr(cls);
         py::object program = tr.translateProgram(dpuProg);
         if (program.is_none())
-          return WalkResult::skip();
-
+          return 1.0;
         py::object kernel = cls.lower_program(program);
         py::object sim = cls.Simulator(py::int_(T), kernel);
         py::tuple result = sim.attr("start")().cast<py::tuple>();
-        total += result[0].cast<double>();
-        found = true;
-        return WalkResult::skip();
-      });
+        return result[0].cast<double>();
+      };
 
-      if (!found) {
-        LLVM_DEBUG(llvm::dbgs()
-                   << "[upmem-python-sim] no DPU program found; returning 0\n");
-        return 0.0;
-      }
-      return total;
+      return simulateHostRegion(region, annotateOpCosts, waitForCb);
 
     } catch (py::error_already_set &e) {
       LLVM_DEBUG(llvm::dbgs() << "[upmem-python-sim] Python error: " << e.what()
                               << "\n  falling back to op-count simulator\n");
-      return createOpCountSimulator()->simulate(region);
+      return createOpCountSimulator(annotateOpCosts)->simulate(region);
     }
   }
 };
@@ -533,8 +531,8 @@ struct PythonSimulator : UpmemSimulator {
 // Factory
 // ===----------------------------------------------------------------------===//
 
-std::unique_ptr<UpmemSimulator> createPythonSimulator() {
-  return std::make_unique<PythonSimulator>();
+std::unique_ptr<UpmemSimulator> createPythonSimulator(bool annotateOpCosts) {
+  return std::make_unique<PythonSimulator>(annotateOpCosts);
 }
 
 } // namespace mlir::upmem
