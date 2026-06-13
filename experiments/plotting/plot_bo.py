@@ -533,6 +533,39 @@ def _plot_sigma_calibration(pool_csvs, out_dir, scale, names=None):
     return out_paths
 
 
+# ── Random-search baseline ────────────────────────────────────────────────────
+def _expected_random_best(oracle_costs, max_iter):
+    """Expected best cost after k uniform random draws without replacement.
+
+    Uses the order-statistics formula:
+        E[min_k] = c[0] + Σ_j diff_j · C(N-j, k) / C(N, k)
+    with the recursion  r_j(k) = r_j(k-1) · (N-j-k+1) / (N-k+1).
+    """
+    c = np.sort(oracle_costs.astype(float))
+    N = len(c)
+    if N == 0 or max_iter == 0:
+        return np.full(max_iter + 1, np.nan)
+
+    diffs = np.diff(c)           # shape (N-1,)
+    j_arr = np.arange(1, N)      # j = 1 … N-1
+
+    r = np.ones(N - 1)           # r_j(k=0) = 1 for all j
+    expected = np.full(max_iter + 1, np.nan)
+
+    for k in range(1, max_iter + 1):
+        denom = float(N - k + 1)
+        if denom <= 0:            # k ≥ N: sampled everything
+            expected[k:] = c[0]
+            break
+        numer = (N - j_arr - k + 1).astype(float)
+        mask = numer > 0
+        r[mask] *= numer[mask] / denom
+        r[~mask] = 0.0
+        expected[k] = c[0] + float(np.dot(diffs, r))
+
+    return expected
+
+
 # ── Oracle curves (recall + best-cost) ────────────────────────────────────────
 def _plot_oracle_curves(oracle_csv, bo_csvs, out_dir, pcts, scale):
     """Compute and save recall_pcts.png and best_cost_found.png."""
@@ -601,12 +634,16 @@ def _plot_oracle_curves(oracle_csv, bo_csvs, out_dir, pcts, scale):
     plt.close(fig)
     out_paths.append(str(p))
 
-    # best cost found
+    # best cost found — normalised so oracle best = 1
+    random_baseline = _expected_random_best(oracle_obs["cost"].values, max_iter)
     fig, ax = plt.subplots(figsize=(9, 4))
-    _plot_curves_on_ax(ax, iters, all_best, names,
-                       ylabel="Best cost found so far",
+    _plot_curves_on_ax(ax, iters, all_best / oracle_best, names,
+                       ylabel="Best cost found  (relative to oracle, log scale)",
                        title=f"Best cost found over evaluations  ({len(bo_data)} seeds)")
-    ax.axhline(oracle_best, color="red", lw=1, ls="--",
+    ax.set_yscale("log")
+    ax.plot(iters, random_baseline / oracle_best, color="gray", lw=1.5, ls=":",
+            label="random search (expected)", zorder=4)
+    ax.axhline(1.0, color="red", lw=1, ls="--",
                label=f"Oracle best ({oracle_best:.3g})")
     ax.legend(fontsize=8, loc="upper right")
     plt.tight_layout()
