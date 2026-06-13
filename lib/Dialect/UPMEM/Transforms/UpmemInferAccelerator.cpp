@@ -480,8 +480,10 @@ struct UpmemInferAcceleratorPass
         LLVM_DEBUG(llvm::dbgs() << "===== START INFERENCE " << name << " =====";
                    llvm::dbgs() << "==================";);
 
-        auto path = std::filesystem::path(dataDumpDir);
-        upmemOpts.inference.dumpDir = path / name.str();
+        auto path = std::filesystem::path(dataDumpDir) / name.str();
+        if (!upmemOpts.inference.exhaustiveSearch)
+          path /= "seed_" + std::to_string(upmemOpts.inference.rngSeed);
+        upmemOpts.inference.dumpDir = path;
       }
       TRY_IN_WALK(failed, cinm::inferAcceleratorConfig(computeOp, plugin,
                                                        upmemOpts.inference));
