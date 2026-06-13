@@ -210,7 +210,7 @@ struct UpmemInferencePlugin : cinm::InferencePlugin {
 
   std::unique_ptr<cinm::InferencePlugin> clone() const override {
     auto c = std::make_unique<UpmemInferencePlugin>(platform,
-                                                    createOpCountSimulator());
+                                                    createPythonSimulator());
     // c->rankIx = rankIx;
     c->dpuIx = dpuIx;
     c->taskletIx = taskletIx;
@@ -469,7 +469,7 @@ struct UpmemInferAcceleratorPass
       if (!platform)
         return WalkResult::skip(); // not a UPMEM target
 
-      UpmemInferencePlugin plugin(platform, createOpCountSimulator());
+      UpmemInferencePlugin plugin(platform, createPythonSimulator());
 
       if (!dataDumpDir.empty()) {
         auto parentFunc = computeOp->getParentOfType<SymbolOpInterface>();

@@ -21,4 +21,10 @@ struct UpmemSimulator {
 /// 'upmem.sim_cost' FloatAttr containing its individual simulated cost.
 std::unique_ptr<UpmemSimulator> createOpCountSimulator(bool annotateOpCosts = false);
 
+/// Creates a UpmemSimulator that translates the lowered UPMEM DPU program to
+/// the Python upmem_simulator high-level IR and runs cycle-accurate simulation.
+/// Requires the upmem_simulator Python package to be importable.
+/// Falls back to the op-count simulator on any Python error.
+std::unique_ptr<UpmemSimulator> createPythonSimulator();
+
 } // namespace mlir::upmem

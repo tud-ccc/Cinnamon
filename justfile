@@ -58,6 +58,15 @@ cleanBuild:
 
 alias b := build
 
+buildDependencies:
+  #!/bin/bash
+  source .venv/bin/activate
+  cd third-party/upmem-cost-model
+  cd packages/upmem_simulator && maturin develop --release && cd ../..
+  pip install -e packages/bo_search
+  pip install -e packages/cinm_integration
+
+
 # run tests
 test: (doNinja "check-cinm-mlir")
 

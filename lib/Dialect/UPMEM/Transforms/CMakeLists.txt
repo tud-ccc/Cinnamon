@@ -1,7 +1,8 @@
 add_mlir_dialect_library(UPMEMTransforms
     DedupKernels.cpp
     UpmemInferAccelerator.cpp
-    UpmemSimulator.cpp
+    UpmemOpCountSimulator.cpp
+    UpmemPythonSimulator.cpp
 
 DEPENDS
     UPMEMIncGen
@@ -26,7 +27,12 @@ LINK_LIBS PUBLIC
     MLIRMemRefTransforms
     MLIRAffineToStandard
     MLIRLinalgToStandard
+    MLIRArithDialect
+    MLIRSCFDialect
 )
 
-target_link_libraries(UPMEMTransforms PRIVATE dlib)
+target_link_libraries(UPMEMTransforms PRIVATE dlib pybind11::embed)
 include_directories(SYSTEM ${CMAKE_SOURCE_DIR}/third-party/dlib)
+add_compile_definitions(
+    UPMEM_SIM_PACKAGE_DIR="${CMAKE_SOURCE_DIR}/third-party/upmem-cost-model/packages/upmem_simulator"
+)
