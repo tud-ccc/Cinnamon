@@ -57,6 +57,7 @@ if [[ "$setup_python_venv" -eq 1 ]]; then
     verbose_cmd pip install build wheel
     # Note this needs to be done after LLVM has been cloned.
     verbose_cmd python -m pip install -r third-party/llvm/mlir/python/requirements.txt
+    verbose_cmd python -m pip install -r third-party/upmem-cost-model/requirements.txt
     verbose_cmd python -m pip install -r experiments/requirements.txt
   fi
 
