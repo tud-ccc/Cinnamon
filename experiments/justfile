@@ -1,22 +1,34 @@
 
 
+
 [arg("ORACLE", long="oracle")]
 [arg("SCALE", long="scale")]
 run FILE ORACLE="" SCALE="log10" *ARGS:
     mkdir -p data/{{FILE}}
-    cinm-opt {{FILE}}.mlir --cinm-assign-platforms --cinm-isolate-compute-blocks "--upmem-infer-accelerator={{ if ARGS != "" { ARGS + " " } else { "" } }}objective-scale={{SCALE}} dump-dir=data/{{FILE}}" \
-      --mlir-print-ir-after-failure --dump-pass-pipeline --split-input-file --debug-only=cinm-inference 2> data/{{FILE}}/{{FILE}}.log > data/{{FILE}}/out.mlir
-    just plot {{FILE}} --oracle {{ORACLE}} --scale {{SCALE}}
-
-[arg("ORACLE", long="oracle")]
+    just run_noplot {{FILE}} --scale {{SCALE}} {{ARGS}}
+    just plot {{FILE}} --oracle {{ORACLE}} -- --objective-scale {{SCALE}} --skip-existing-seed-plots
+ 
+[arg("DIR", long="dir")]
 [arg("SCALE", long="scale")]
-plot FILE ORACLE="" SCALE="log10":
-    source $(realpath ../.venv/bin/activate) && python plotting/plot_bayes_pool.py data/{{FILE}}/*/pool.csv --objective-scale {{SCALE}}
+[arg("SEED", long="seed")]
+run_noplot FILE DIR=FILE SCALE="log10" SEED="42" *ARGS:
+    cinm-opt {{FILE}}.mlir --cinm-assign-platforms --cinm-isolate-compute-blocks "--upmem-infer-accelerator={{ if ARGS != "" { ARGS + " " } else { "" } }}objective-scale={{SCALE}} dump-dir=data/{{DIR}} rng-seed={{SEED}}" \
+      --mlir-print-ir-after-failure --dump-pass-pipeline --split-input-file --debug-only=cinm-inference 2> data/{{DIR}}/{{FILE}}_seed{{SEED}}.log > data/{{DIR}}/out.mlir
+
+[arg("DIR", long="dir")]
+[arg("ORACLE", long="oracle")]
+plot FILE DIR=FILE ORACLE="" *ARGS:
+    source $(realpath ../.venv/bin/activate) && \
     if [[ -n "{{ORACLE}}" ]]; then \
-      for dir in {{ORACLE}}/*/; do \
-        subdir=$(basename "$dir"); \
-        source $(realpath ../.venv/bin/activate) && python plotting/plot_recall.py "$dir/pool.csv" "data/{{FILE}}/$subdir/pool.csv" --objective-scale {{SCALE}}; \
-      done \
+      python plotting/plot_bo.py \
+        {{ARGS}} \
+        $(for dir in {{ORACLE}}/*/; do \
+            subdir=$(basename "$dir"); \
+            printf -- '--oracle %s ' "$dir/pool.csv"; \
+            printf '%s ' data/{{DIR}}/$subdir/seed_*/pool.csv; \
+          done); \
+    else \
+      python plotting/plot_bo.py {{ARGS}} data/{{DIR}}/*/*/pool.csv; \
     fi
 
 [arg("SCALE", long="scale")]
@@ -26,5 +38,10 @@ view NAME SCALE="log10":
 analyze NAME *ARGS:
     source $(realpath ../.venv/bin/activate) && python plotting/analyze_landscape.py data/{{NAME}}/pool.csv {{ARGS}}
     
-
-
+[arg("DIR", long="dir")]
+[arg("ORACLE", long="oracle")]
+[arg("SCALE", long="scale")]
+[arg("N", long="n")]
+runLoop FILE DIR=FILE ORACLE="" SCALE="log10" N="5" *ARGS:
+    bash run_seeds.sh {{FILE}} {{DIR}} {{SCALE}} {{N}} {{ARGS}}
+    just plot {{FILE}} --dir {{DIR}} --oracle {{ORACLE}} -- --objective-scale {{SCALE}} --no-per-seed
