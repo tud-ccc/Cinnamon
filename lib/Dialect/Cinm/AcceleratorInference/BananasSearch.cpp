@@ -25,7 +25,7 @@ namespace mlir::cinm {
 CandidatePool::CandidatePool(const ConfigSpace &space, size_t evalBudget)
     : space_(&space), N(space.totalSize()), visited(static_cast<unsigned>(N)),
       Xo(space.size(), evalBudget), yo(1, evalBudget),
-      costByIdx(arma::rowvec(N).fill(arma::datum::nan)), iterByIdx(N, -1) {}
+      costByIdx(arma::rowvec(N).fill(arma::datum::nan)) {}
 
 CandidatePool::~CandidatePool() = default;
 
@@ -38,6 +38,7 @@ Configuration CandidatePool::operator[](size_t i) const {
 }
 
 void CandidatePool::recordObservation(size_t idx, double cost, size_t iter) {
+  assert(!std::isnan(cost));
   if (nObs >= Xo.n_cols) {
     const size_t newCols = Xo.n_cols + 32;
     Xo.resize(Xo.n_rows, newCols);
@@ -51,6 +52,12 @@ void CandidatePool::recordObservation(size_t idx, double cost, size_t iter) {
   costByIdx(idx) = cost;
   iterByIdx[idx] = iter;
   ++nObs;
+}
+
+void CandidatePool::recordFailedEvaluation(size_t idx, size_t iter) {
+  // For failed evaluations we still record the iteration number so
+  // that we can plot at what iteration we failed.
+  iterByIdx[idx] = iter;
 }
 
 static arma::mat encodeSubset(const ConfigSpace &space,
@@ -455,8 +462,9 @@ void CandidatePool::dumpToCSV(const ConfigSpace &space,
     if (!std::isnan(c))
       out << c;
     out << ",";
-    if (iterByIdx[i] != static_cast<size_t>(-1))
-      out << iterByIdx[i];
+    auto it = iterByIdx.find(i);
+    if (it != iterByIdx.end())
+      out << it->second;
     if (hasModel) {
       auto it = validPos.find(i);
       if (it != validPos.end()) {

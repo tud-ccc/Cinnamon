@@ -589,8 +589,10 @@ bool InferenceState::tryEval(size_t poolIdx, InferenceTask &task,
   if (std::holds_alternative<DiagnosedSilenceableFailure>(cost)) {
     err = std::move(std::get<DiagnosedSilenceableFailure>(cost));
     LLVM_DEBUG(llvm::dbgs() << "[cinm-inference]   -> failed\n");
+    pool.recordFailedEvaluation(poolIdx, iter);
     return false;
   }
+
   costVal = std::get<double>(cost);
   LLVM_DEBUG(llvm::dbgs() << "[cinm-inference]   -> cost = " << costVal
                           << "\n");
