@@ -42,37 +42,42 @@ def scale_label(scale):
             "ln": "ln", "sqrt": "√", "cbrt": "∛"}.get(scale, scale)
 
 
+def cell_status(valid, attempted, has_value):
+    """Return (invalid, failed) boolean masks.
+
+    Works with both numpy arrays (build_rgba) and pandas Series (generate_readme).
+    - invalid:  constraint-violated (valid == 0)
+    - failed:   actually attempted (eval_iter was set), valid, but produced no value
+    """
+    invalid = valid == 0
+    failed  = ~has_value & ~invalid & (attempted > 0)
+    return invalid, failed
+
+
 # ── Image builder ─────────────────────────────────────────────────────────────
 def build_rgba(
     subset, x, y, x_vals, y_vals, val_col, norm, cmap, *, white_unvisited=True
 ):
     """Return an RGBA image (H=tile_, W=tile_1) for one tasklets slice."""
-    piv_val = subset.pivot_table(index=x, columns=y, values=val_col, aggfunc="mean")
-    piv_vis = subset.pivot_table(index=x, columns=y, values="visited", aggfunc="max")
-    piv_valid = subset.pivot_table(index=x, columns=y, values="valid", aggfunc="max")
+    piv_val      = subset.pivot_table(index=x, columns=y, values=val_col,    aggfunc="mean")
+    piv_attempted = subset.pivot_table(index=x, columns=y, values="attempted", aggfunc="max")
+    piv_valid    = subset.pivot_table(index=x, columns=y, values="valid",    aggfunc="max")
 
     vals = piv_val.reindex(index=x_vals, columns=y_vals).to_numpy(dtype=float)
-    vis = np.nan_to_num(
-        piv_vis.reindex(index=x_vals, columns=y_vals).to_numpy(dtype=float)
+    attempted = np.nan_to_num(
+        piv_attempted.reindex(index=x_vals, columns=y_vals).to_numpy(dtype=float)
     )
     valid = np.nan_to_num(
         piv_valid.reindex(index=x_vals, columns=y_vals).to_numpy(dtype=float)
     )
 
-    invalid = valid == 0
-    unvisited = ~invalid & (vis != 0)
     no_data = np.isnan(vals)
-    failed = no_data & ~unvisited & ~invalid
+    invalid, failed = cell_status(valid, attempted, ~no_data)
 
-    fill = np.nanmedian(vals) if not np.all(no_data) else 0.0
-    safe = np.where(no_data, fill, vals)
-
-    img = cmap(norm(safe))
+    img = cmap(norm(vals))
     img[no_data] = [1.0, 1.0, 1.0, 1.0]  # white — metric has no value
-    img[invalid] = [0.88, 0.88, 0.88, 1.0]  # light gray — constraint violated
-    # if white_unvisited:
-    # img[unvisited] = [1.0, 1.0, 1.0, 1.0]      # white — not sampled
-    img[failed] = [0.55, 0.55, 0.55, 1.0]  # mid gray — evaluated but cost failed
+    img[invalid] = [0.80, 0.80, 0.80, 1.0]  # light gray — constraint violated
+    img[failed]  = [0.55, 0.55, 0.55, 1.0]  # mid gray — evaluated but cost failed
 
     return img
 
@@ -291,8 +296,7 @@ def plot_sigma_scatter(df, out_dir, scale):
     ax.xaxis.set_major_locator(plt.MaxNLocator(integer=True))
     ax.set_xlabel("Min grid-step distance to nearest observation")
     ax.set_ylabel(f"σ (surrogate uncertainty, {scale_label(scale)} units)")
-    ax.set_title("Calibration scatter: σ vs. distance from observations\n"
-                 "Bottom-right = overconfident far from data  ·  Top-left = underfit near data")
+    ax.set_title("Calibration scatter: σ vs. distance from observations")
     ax.grid(True, alpha=0.3)
     plt.tight_layout()
     out_path = os.path.join(out_dir, "pool_sigma_scatter.png")
@@ -308,9 +312,8 @@ def build_facet_plot_tasks(csv_path, scale, x, y, f):
 
     xyf_axes = [x, y, f]
     agg = df.groupby(xyf_axes, as_index=False).agg(
-        visited=("visited", "max"),
         valid=("valid", "max"),
-
+        attempted=("eval_iter", lambda x: x.notna().any()),
         cost=("cost", "min"),
         mu=("mu", "min"),
         sigma=("sigma", "mean"),
@@ -362,9 +365,10 @@ def generate_readme(csv_path, scale, ax_x, ax_y, ax_f):
     n_total  = len(df)
     n_valid  = int(df["valid"].sum()) if "valid" in df.columns else "?"
     n_obs    = int(df["cost"].notna().sum())
-    visited_mask = (df["visited"] > 0) if "visited" in df.columns else pd.Series(False, index=df.index)
-    valid_mask   = (df["valid"]   == 1) if "valid"   in df.columns else pd.Series(True,  index=df.index)
-    n_failed = int((visited_mask & df["cost"].isna() & valid_mask).sum())
+    _valid     = df["valid"]    if "valid"    in df.columns else pd.Series(1, index=df.index)
+    _attempted = df["eval_iter"].notna() if "eval_iter" in df.columns else pd.Series(False, index=df.index)
+    _, failed_mask = cell_status(_valid, _attempted, df["cost"].notna())
+    n_failed = int(failed_mask.sum())
 
     valid_iters = df["eval_iter"].dropna() if "eval_iter" in df.columns else pd.Series([], dtype=float)
     valid_iters = valid_iters[valid_iters < _SENTINEL_ITER]

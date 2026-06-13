@@ -3,6 +3,7 @@
 #include <cstddef>
 #include <memory>
 #include <random>
+#include <unordered_map>
 #include <unordered_set>
 #include <filesystem>
 #include <vector>
@@ -73,9 +74,8 @@ struct CandidatePool {
 
   // Per-pool-index observed cost; NaN for unvisited or failed evaluations.
   arma::rowvec costByIdx;
-  // Per-pool-index BO iteration at which the cost was recorded; -1 if
-  // unrecorded.
-  std::vector<size_t> iterByIdx;
+  // BO iteration at which the cost was recorded, keyed by pool index.
+  std::unordered_map<size_t, size_t> iterByIdx;
 
   /// Warm-start ensemble: persisted across BO iterations so each call to
   /// nextCandidateIndices fine-tunes from the previous fit rather than
@@ -101,6 +101,7 @@ struct CandidatePool {
   size_t firstUnvisited() const { return visited.find_first_unset(); }
 
   void recordObservation(size_t idx, double cost, size_t iter = 0);
+  void recordFailedEvaluation(size_t idx, size_t iter = 0);
 
   /// Select n row-indices from the pool using Latin Hypercube Sampling.
   void sampleInitialSet(size_t n_samples, std::mt19937 &rng,

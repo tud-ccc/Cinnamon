@@ -220,7 +220,7 @@ def main():
     ax.axhline(1.0, color="gray", lw=0.8, ls="--")
     ax.set_xlabel("Evaluations")
     ax.set_ylabel("Recall  (fraction of threshold found)")
-    ax.set_title("Top-k% recall over Evaluationss")
+    ax.set_title("Top-k% recall over evaluations")
     ax.legend(fontsize=8, loc="lower right")
     ax.grid(True, alpha=0.3)
     plt.tight_layout()
@@ -236,7 +236,7 @@ def main():
     ylabel = f"Best cost found so far  ({sl})" if scale != "linear" else "Best cost found so far"
     plot_curves(ax, iters, scaled_best, names,
                 ylabel=ylabel,
-                title="Best cost found over Evaluationss")
+                title="Best cost found over Evaluations")
     ax.axhline(apply_scale(oracle_best, scale), color="red", lw=1, ls="--",
                label=f"Oracle best ({oracle_best:.3g})")
     ax.legend(fontsize=8, loc="upper right")
