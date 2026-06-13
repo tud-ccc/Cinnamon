@@ -17,6 +17,7 @@
 #include <filesystem>
 #include <functional>
 #include <optional>
+#include <string>
 #include <utility>
 
 #include <llvm/ADT/ArrayRef.h>
@@ -410,6 +411,7 @@ void ConstraintEditor::addDynamicConstraint(
 struct UpmemInferenceOptions {
   cinm::InferenceOptions inference;
   bool annotateOpCosts = false;
+  std::string simulator = "cycleaccurate"; // todo wire this through a pass option
 };
 
 struct UpmemInferAcceleratorPass
@@ -469,7 +471,9 @@ struct UpmemInferAcceleratorPass
       if (!platform)
         return WalkResult::skip(); // not a UPMEM target
 
-      UpmemInferencePlugin plugin(platform, createPythonSimulator());
+      UpmemInferencePlugin plugin(
+          platform,
+          createSimulator(upmemOpts.simulator, upmemOpts.annotateOpCosts));
 
       if (!dataDumpDir.empty()) {
         auto parentFunc = computeOp->getParentOfType<SymbolOpInterface>();
