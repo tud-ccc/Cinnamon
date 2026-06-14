@@ -210,8 +210,8 @@ struct UpmemInferencePlugin : cinm::InferencePlugin {
   // --- InferencePlugin interface ---
 
   std::unique_ptr<cinm::InferencePlugin> clone() const override {
-    auto c = std::make_unique<UpmemInferencePlugin>(platform,
-                                                    createPythonSimulator());
+    auto c =
+        std::make_unique<UpmemInferencePlugin>(platform, simulator->clone());
     // c->rankIx = rankIx;
     c->dpuIx = dpuIx;
     c->taskletIx = taskletIx;
@@ -221,6 +221,7 @@ struct UpmemInferencePlugin : cinm::InferencePlugin {
   void warmUp(mlir::MLIRContext *ctx) override {
     if (!pipeline)
       pipeline = buildPipeline(ctx);
+    simulator->warmUp();
   }
 
   void handleOpConstraints(cinm::CinmTilingInterface op,
@@ -411,7 +412,8 @@ void ConstraintEditor::addDynamicConstraint(
 struct UpmemInferenceOptions {
   cinm::InferenceOptions inference;
   bool annotateOpCosts = false;
-  std::string simulator = "cycleaccurate"; // todo wire this through a pass option
+  std::string simulator =
+      "cycleaccurate"; // todo wire this through a pass option
 };
 
 struct UpmemInferAcceleratorPass

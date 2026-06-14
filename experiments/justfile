@@ -7,6 +7,13 @@ run FILE ORACLE="" SCALE="log10" *ARGS:
     mkdir -p data/{{FILE}}
     just run_noplot {{FILE}} --scale {{SCALE}} {{ARGS}}
     just plot {{FILE}} --oracle {{ORACLE}} -- --objective-scale {{SCALE}} --skip-existing-seed-plots
+
+[arg("DIR", long="dir")]
+run_exhaustive FILE DIR=(FILE + "_oracle"):
+    mkdir -p data/{{DIR}}
+    cinm-opt {{FILE}}.mlir --cinm-assign-platforms --cinm-isolate-compute-blocks "--upmem-infer-accelerator=dump-dir=data/{{DIR}} exhaustive-search" \
+      --mlir-print-ir-after-failure --dump-pass-pipeline --split-input-file --debug-only=cinm-inference 2> data/{{DIR}}/{{FILE}}.log > data/{{DIR}}/out.mlir
+
  
 [arg("DIR", long="dir")]
 [arg("SCALE", long="scale")]

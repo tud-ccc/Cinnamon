@@ -480,7 +480,7 @@ struct InferenceTask {
   /// commitBestCandidate.
   Maybe<TrialInfo> runExhaustive() {
     const size_t N = space.totalSize();
-    unsigned nThreads = std::max(1u, std::thread::hardware_concurrency());
+    unsigned nThreads = std::max(1u, std::thread::hardware_concurrency()); 
     MLIRContext *ctx = refClone->getContext();
 
     // Build and warm up one plugin clone per thread on the main thread.
