@@ -122,7 +122,7 @@ def _plot_curves_on_ax(ax, iters, curves, names, ylabel, title):
         mean = np.nanmean(curves, axis=0)
         std = np.nanstd(curves, axis=0)
         ax.plot(iters, mean, color="black", lw=2, label="mean", zorder=5)
-        ax.fill_between(iters, mean - std, mean + std, color="black", alpha=0.15, label="±1σ")
+        ax.fill_between(iters, np.maximum(mean - std, 1), mean + std, color="black", alpha=0.08, label="±1σ")
     ax.set_xlabel("Evaluations")
     ax.set_ylabel(ylabel)
     ax.set_title(title)
@@ -641,8 +641,8 @@ def _plot_oracle_curves(oracle_csv, bo_csvs, out_dir, pcts, scale):
                        ylabel="Best cost found  (relative to oracle, log scale)",
                        title=f"Best cost found over evaluations  ({len(bo_data)} seeds)")
     ax.set_yscale("log")
-    ax.plot(iters, random_baseline / oracle_best, color="gray", lw=1.5, ls=":",
-            label="random search (expected)", zorder=4)
+    ax.plot(iters, random_baseline / oracle_best, color="gray", lw=2, ls=":",
+            label="random search", zorder=4)
     ax.axhline(1.0, color="red", lw=1, ls="--",
                label=f"Oracle best ({oracle_best:.3g})")
     ax.legend(fontsize=8, loc="upper right")

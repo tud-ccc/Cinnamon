@@ -15,9 +15,8 @@ run_noplot FILE DIR=FILE SCALE="log10" SEED="42" *ARGS:
     cinm-opt {{FILE}}.mlir --cinm-assign-platforms --cinm-isolate-compute-blocks "--upmem-infer-accelerator={{ if ARGS != "" { ARGS + " " } else { "" } }}objective-scale={{SCALE}} dump-dir=data/{{DIR}} rng-seed={{SEED}}" \
       --mlir-print-ir-after-failure --dump-pass-pipeline --split-input-file --debug-only=cinm-inference 2> data/{{DIR}}/{{FILE}}_seed{{SEED}}.log > data/{{DIR}}/out.mlir
 
-[arg("DIR", long="dir")]
 [arg("ORACLE", long="oracle")]
-plot FILE DIR=FILE ORACLE="" *ARGS:
+plot DIR ORACLE="" *ARGS:
     source $(realpath ../.venv/bin/activate) && \
     if [[ -n "{{ORACLE}}" ]]; then \
       python plotting/plot_bo.py \
