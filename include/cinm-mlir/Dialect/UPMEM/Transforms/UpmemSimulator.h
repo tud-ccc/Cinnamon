@@ -17,9 +17,12 @@ struct UpmemSimulator {
   virtual ~UpmemSimulator() = default;
   virtual cinm::utils::Maybe<double> simulate(mlir::Region &region) = 0;
   virtual std::unique_ptr<UpmemSimulator> clone() = 0;
+  /// Whether this simulator is safe to call concurrently from multiple threads.
+  /// If false, exhaustive search will use a single thread.
+  virtual bool supportsMultithreading() const { return true; }
   /// Called on the thread that will later call simulate(), before the first
   /// simulate() call.  Implementations may use this to initialise per-thread
-  /// resources (e.g. a Python sub-interpreter) on the correct thread.
+  /// resources on the correct thread.
   virtual void warmUp() {}
 };
 

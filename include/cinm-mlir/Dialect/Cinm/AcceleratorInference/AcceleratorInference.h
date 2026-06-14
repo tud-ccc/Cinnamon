@@ -210,6 +210,10 @@ struct InferencePlugin {
   /// evaluation begins. Use it to eagerly build pipelines or other state that
   /// is cheaper to construct single-threaded.
   virtual void warmUp(mlir::MLIRContext *) {}
+
+  /// Whether this plugin is safe to evaluate concurrently from multiple threads.
+  /// If false, exhaustive search will run single-threaded.
+  virtual bool supportsMultithreading() const { return true; }
 };
 
 // ===----------------------------------------------------------------------===//

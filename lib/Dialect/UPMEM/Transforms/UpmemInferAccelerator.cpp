@@ -121,6 +121,10 @@ struct UpmemInferencePlugin : cinm::InferencePlugin {
                        std::unique_ptr<UpmemSimulator> sim)
       : platform(platform), simulator(std::move(sim)) {}
 
+  bool supportsMultithreading() const override {
+    return simulator && simulator->supportsMultithreading();
+  }
+
   // Full lowering pipeline (steps 1-6): cinm → cnm → bufferize → upmem.
   static std::unique_ptr<PassManager> buildPipeline(MLIRContext *ctx) {
     auto pm = std::make_unique<PassManager>(ctx);

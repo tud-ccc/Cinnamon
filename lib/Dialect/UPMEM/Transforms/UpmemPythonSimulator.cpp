@@ -64,7 +64,7 @@ struct PyClasses {
   py::object MemSpace;
   py::object DataType;
   py::object lower_program;
-  py::object Simulator;
+  py::object simulate;
 };
 
 // Import all needed Python classes in the currently active interpreter.
@@ -82,7 +82,7 @@ static PyClasses buildPyClasses() {
       hl.attr("Transfer"),   hl.attr("Program"),
       hl.attr("BinOp"),      ll.attr("MemSpace"),
       ut.attr("DataType"),   sim.attr("lower_program"),
-      sim.attr("Simulator"),
+      sim.attr("simulate_python")
   };
 }
 
@@ -503,79 +503,63 @@ struct DpuTranslator {
 
 struct PythonSimulator : UpmemSimulator {
   bool annotateOpCosts;
-  // Set by warmUp() on the execution thread; empty = use main interpreter.
-  py::subinterpreter interp;
-  // Python class handles for `interp`; only valid when interp is non-empty.
-  std::optional<PyClasses> interpCls;
 
   explicit PythonSimulator(bool annotateOpCosts)
       : annotateOpCosts(annotateOpCosts) {}
 
-  // Return a fresh, un-warmed clone; the framework calls warmUp() on the
-  // clone's own thread before the first simulate() call.
   std::unique_ptr<UpmemSimulator> clone() override {
     return std::make_unique<PythonSimulator>(annotateOpCosts);
   }
 
-  // Called on the thread that will run simulations.  Creates a sub-interpreter
-  // on that thread so parallel clones can run Python concurrently (each with
-  // its own GIL, Python 3.12+).
-  void warmUp() override {
-    ensurePythonInitialized();
-    interp = py::subinterpreter::create();
-    {
-      py::subinterpreter_scoped_activate act(interp);
-      py::module_::import("sys").attr("path").attr("insert")(
-          0, UPMEM_SIM_PACKAGE_DIR);
-      interpCls.emplace(buildPyClasses());
-    }
-  }
+  bool supportsMultithreading() const override { return false; }
+
+  void warmUp() override { ensurePythonInitialized(); }
 
   Maybe<double> simulate(Region &region) override {
+    ensurePythonInitialized();
+    // Acquire the GIL at function scope so it outlives the caught exception.
+    // If a Python error propagates out of the try block, C++ unwinds the try
+    // scope (releasing any try-local GIL acquire) before the catch handler
+    // runs. Holding the GIL here ensures error_already_set::~dtor can safely
+    // DECREF Python objects at the end of the catch block.
+    py::gil_scoped_acquire gil;
     try {
-      ensurePythonInitialized();
-
-      // runSim executes the host-region walk + DPU simulation using `cls`.
-      // Called either inside a subinterpreter_scoped_activate (parallel path)
-      // or with the main interpreter active (single-threaded path).
-      auto runSim = [&](const PyClasses &cls) -> Maybe<double> {
-        auto waitForCb = [&cls](Operation *op, bool) -> double {
-          auto waitFor = llvm::cast<WaitForOp>(op);
-          DpuProgramOp dpuProg = waitFor.getDpuProgram();
-          if (!dpuProg)
-            return 1.0;
-          int T = dpuProg.getNumTasklets();
-          DpuTranslator tr(cls);
-          py::object program = tr.translateProgram(dpuProg);
-          LLVM_DEBUG({
-            py::object repr = py::module_::import("builtins").attr("repr")(program);
-            llvm::dbgs() << "[upmem-python-sim] HL program: " << repr.cast<std::string>() << "\n";
-          });
-          if (program.is_none())
-            return 1.0;
-          py::object kernel = cls.lower_program(program);
-          LLVM_DEBUG({
-            py::object repr = py::module_::import("builtins").attr("repr")(kernel);
-            llvm::dbgs() << "[upmem-python-sim] LL program: " << repr.cast<std::string>() << "\n";
-          });
-          py::object simObj = cls.Simulator(py::int_(T), kernel);
-          py::tuple result = simObj.attr("start")().cast<py::tuple>();
-          return result[0].cast<double>();
-        };
-        return simulateHostRegion(region, annotateOpCosts, waitForCb);
+      const PyClasses &cls = getPyClasses();
+      auto waitForCb = [&cls](Operation *op, bool) -> double {
+        auto waitFor = llvm::cast<WaitForOp>(op);
+        DpuProgramOp dpuProg = waitFor.getDpuProgram();
+        if (!dpuProg)
+          return 1.0;
+        int T = dpuProg.getNumTasklets();
+        DpuTranslator tr(cls);
+        py::object program = tr.translateProgram(dpuProg);
+        LLVM_DEBUG({
+          py::object repr =
+              py::module_::import("builtins").attr("repr")(program);
+          llvm::dbgs() << "[upmem-python-sim] HL program: "
+                       << repr.cast<std::string>() << "\n";
+        });
+        if (program.is_none())
+          return 1.0;
+        py::object kernel = cls.lower_program(program);
+        LLVM_DEBUG({
+          py::object repr =
+              py::module_::import("builtins").attr("repr")(kernel);
+          llvm::dbgs() << "[upmem-python-sim] LL program: "
+                       << repr.cast<std::string>() << "\n";
+        });
+        py::object simObj = cls.simulate(py::int_(T), kernel);
+        py::tuple result = simObj.attr("start")().cast<py::tuple>();
+        return result[0].cast<double>();
       };
-
-      if (interpCls) {
-        // Parallel path: activate this instance's sub-interpreter.
-        py::subinterpreter_scoped_activate act(interp);
-        return runSim(*interpCls);
-      }
-      // Single-threaded path: main interpreter, shared class cache.
-      return runSim(getPyClasses());
-
+      return simulateHostRegion(region, annotateOpCosts, waitForCb);
     } catch (py::error_already_set &e) {
       LLVM_DEBUG(llvm::dbgs() << "[upmem-python-sim] Python error: " << e.what()
                               << "\n  falling back to op-count simulator\n");
+      // Release GIL for the pure-C++ fallback. `release` destructs before `e`
+      // (C++ local-var destruction order), re-acquiring the GIL so `e`'s dtor
+      // can safely DECREF.
+      py::gil_scoped_release release;
       return createOpCountSimulator(annotateOpCosts)->simulate(region);
     }
   }
