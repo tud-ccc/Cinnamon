@@ -85,5 +85,5 @@ PY
 
 elif [[ "$setup_python_venv" -eq 0 ]]; then
   warning "Skipping Python venv setup"
-  warning "Make sure your active Python has compatible torch, numpy, and pybind11 (>=2.10)."
+  warning "Make sure your active Python has compatible torch, numpy, and pybind11 (>=3.0)."
 fi

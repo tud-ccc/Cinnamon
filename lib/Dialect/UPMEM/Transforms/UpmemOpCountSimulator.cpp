@@ -1,7 +1,7 @@
-#include "cinm-mlir/Dialect/UPMEM/Transforms/UpmemSimulator.h"
 #include "cinm-mlir/Dialect/Cinm/IR/CinmOps.h"
 #include "cinm-mlir/Dialect/UPMEM/IR/UPMEMAttributes.h"
 #include "cinm-mlir/Dialect/UPMEM/IR/UPMEMOps.h"
+#include "cinm-mlir/Dialect/UPMEM/Transforms/UpmemSimulator.h"
 #include "cinm-mlir/Utils/Scheduling/SchedulingSupport.h"
 
 #include "cinm-mlir/Dialect/Cnm/IR/CnmOps.h"
@@ -11,6 +11,7 @@
 #include <llvm/ADT/APInt.h>
 #include <llvm/ADT/TypeSwitch.h>
 #include <llvm/Support/Casting.h>
+#include <memory>
 #include <mlir/Dialect/Affine/IR/AffineOps.h>
 #include <mlir/Dialect/Arith/IR/Arith.h>
 #include <mlir/Dialect/MemRef/IR/MemRef.h>
@@ -133,6 +134,11 @@ struct OpCountSimulator : UpmemSimulator {
   bool annotateOpCosts;
   explicit OpCountSimulator(bool annotateOpCosts)
       : annotateOpCosts(annotateOpCosts) {}
+  OpCountSimulator(OpCountSimulator &&) = default;
+
+  std::unique_ptr<UpmemSimulator> clone() override {
+    return std::make_unique<OpCountSimulator>(annotateOpCosts);
+  }
 
   mlir::cinm::utils::Maybe<double> simulate(Region &region) override {
     // Recursive callback: recurse into the DPU program body with the same
@@ -143,8 +149,8 @@ struct OpCountSimulator : UpmemSimulator {
       auto dpuProgram = waitFor.getDpuProgram();
       if (!dpuProgram)
         return 1.0;
-      auto hier = llvm::cast<DeviceHierarchyType>(
-          waitFor.getDpuSet().getType());
+      auto hier =
+          llvm::cast<DeviceHierarchyType>(waitFor.getDpuSet().getType());
       return simulateHostRegion(dpuProgram.getBody(), ann, waitForCb) /
              hier.getNumTaskletsPerDpu();
     };

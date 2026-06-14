@@ -18,12 +18,17 @@
 #include <mlir/Support/WalkResult.h>
 
 #include <pybind11/embed.h>
+#include <pybind11/subinterpreter.h>
 #include <pybind11/stl.h>
 
 #include <memory>
 #include <string>
 
 #define DEBUG_TYPE "upmem-python-sim"
+
+#ifndef PYBIND11_HAS_SUBINTERPRETER_SUPPORT
+#error Pybind11 version 3+ is required
+#endif
 
 #ifndef UPMEM_SIM_PACKAGE_DIR
 #error Macro UPMEM_SIM_PACKAGE_DIR should be set to the pythonpath of the upmem python simulator
@@ -50,7 +55,7 @@ static void ensurePythonInitialized() {
 }
 
 // ===----------------------------------------------------------------------===//
-// Python class handles (lazily cached)
+// Python class handles
 // ===----------------------------------------------------------------------===//
 
 struct PyClasses {
@@ -62,25 +67,31 @@ struct PyClasses {
   py::object Simulator;
 };
 
+// Import all needed Python classes in the currently active interpreter.
+// Must be called with the target interpreter active and sys.path already set.
+static PyClasses buildPyClasses() {
+  auto hl = py::module_::import("upmem_simulator.highlevel_ir");
+  auto ll = py::module_::import("upmem_simulator.lowlevel_ir");
+  auto ut = py::module_::import("upmem_simulator.ir_utils");
+  auto sim = py::module_::import("upmem_simulator");
+  return PyClasses{
+      hl.attr("Buffer"),     hl.attr("Var"),
+      hl.attr("VarRef"),     hl.attr("Const"),
+      hl.attr("BinExpr"),    hl.attr("Load"),
+      hl.attr("Store"),      hl.attr("For"),
+      hl.attr("Transfer"),   hl.attr("Program"),
+      hl.attr("BinOp"),      ll.attr("MemSpace"),
+      ut.attr("DataType"),   sim.attr("lower_program"),
+      sim.attr("Simulator"),
+  };
+}
+
+// Lazily-cached classes for the main interpreter (single-threaded path).
 static PyClasses *g_cls = nullptr;
 
 static PyClasses &getPyClasses() {
-  if (!g_cls) {
-    auto hl = py::module_::import("upmem_simulator.highlevel_ir");
-    auto ll = py::module_::import("upmem_simulator.lowlevel_ir");
-    auto ut = py::module_::import("upmem_simulator.ir_utils");
-    auto sim = py::module_::import("upmem_simulator");
-    g_cls = new PyClasses{
-        hl.attr("Buffer"),     hl.attr("Var"),
-        hl.attr("VarRef"),     hl.attr("Const"),
-        hl.attr("BinExpr"),    hl.attr("Load"),
-        hl.attr("Store"),      hl.attr("For"),
-        hl.attr("Transfer"),   hl.attr("Program"),
-        hl.attr("BinOp"),      ll.attr("MemSpace"),
-        ut.attr("DataType"),   sim.attr("lower_program"),
-        sim.attr("Simulator"),
-    };
-  }
+  if (!g_cls)
+    g_cls = new PyClasses(buildPyClasses());
   return *g_cls;
 }
 
@@ -349,6 +360,10 @@ struct DpuTranslator {
     if (accBufIt == val_map.end())
       return false;
 
+    // Copy the buffer object out before any mutations to val_map/var_map —
+    // insertions can reallocate the DenseMap and invalidate the iterator.
+    py::object accBuf = accBufIt->second;
+
     // Register the IV.
     std::string ivName = "iv_" + std::to_string(var_ctr++);
     py::object ivVar = cls.Var(ivName, cls.DataType.attr("S64"));
@@ -368,7 +383,7 @@ struct DpuTranslator {
       accIdx.append(getIndex(idx));
 
     py::list forBody;
-    forBody.append(cls.Store(accBufIt->second, accIdx, getExpr(computeVal),
+    forBody.append(cls.Store(accBuf, accIdx, getExpr(computeVal),
                              cls.BinOp.attr("ADD")));
 
     int64_t lb = getConstInt(forOp.getLowerBound());
@@ -488,34 +503,75 @@ struct DpuTranslator {
 
 struct PythonSimulator : UpmemSimulator {
   bool annotateOpCosts;
+  // Set by warmUp() on the execution thread; empty = use main interpreter.
+  py::subinterpreter interp;
+  // Python class handles for `interp`; only valid when interp is non-empty.
+  std::optional<PyClasses> interpCls;
+
   explicit PythonSimulator(bool annotateOpCosts)
       : annotateOpCosts(annotateOpCosts) {}
+
+  // Return a fresh, un-warmed clone; the framework calls warmUp() on the
+  // clone's own thread before the first simulate() call.
+  std::unique_ptr<UpmemSimulator> clone() override {
+    return std::make_unique<PythonSimulator>(annotateOpCosts);
+  }
+
+  // Called on the thread that will run simulations.  Creates a sub-interpreter
+  // on that thread so parallel clones can run Python concurrently (each with
+  // its own GIL, Python 3.12+).
+  void warmUp() override {
+    ensurePythonInitialized();
+    interp = py::subinterpreter::create();
+    {
+      py::subinterpreter_scoped_activate act(interp);
+      py::module_::import("sys").attr("path").attr("insert")(
+          0, UPMEM_SIM_PACKAGE_DIR);
+      interpCls.emplace(buildPyClasses());
+    }
+  }
 
   Maybe<double> simulate(Region &region) override {
     try {
       ensurePythonInitialized();
-      PyClasses &cls = getPyClasses();
 
-      // Callback for WaitForOp: translate the DPU program to Python IR and
-      // simulate with the cycle-accurate Python simulator.
-      // Host-side ops (scatter/gather/loops) are handled by simulateHostRegion.
-      auto waitForCb = [&](Operation *op, bool /*ann*/) -> double {
-        auto waitFor = llvm::cast<WaitForOp>(op);
-        DpuProgramOp dpuProg = waitFor.getDpuProgram();
-        if (!dpuProg)
-          return 1.0;
-        int T = dpuProg.getNumTasklets();
-        DpuTranslator tr(cls);
-        py::object program = tr.translateProgram(dpuProg);
-        if (program.is_none())
-          return 1.0;
-        py::object kernel = cls.lower_program(program);
-        py::object sim = cls.Simulator(py::int_(T), kernel);
-        py::tuple result = sim.attr("start")().cast<py::tuple>();
-        return result[0].cast<double>();
+      // runSim executes the host-region walk + DPU simulation using `cls`.
+      // Called either inside a subinterpreter_scoped_activate (parallel path)
+      // or with the main interpreter active (single-threaded path).
+      auto runSim = [&](const PyClasses &cls) -> Maybe<double> {
+        auto waitForCb = [&cls](Operation *op, bool) -> double {
+          auto waitFor = llvm::cast<WaitForOp>(op);
+          DpuProgramOp dpuProg = waitFor.getDpuProgram();
+          if (!dpuProg)
+            return 1.0;
+          int T = dpuProg.getNumTasklets();
+          DpuTranslator tr(cls);
+          py::object program = tr.translateProgram(dpuProg);
+          LLVM_DEBUG({
+            py::object repr = py::module_::import("builtins").attr("repr")(program);
+            llvm::dbgs() << "[upmem-python-sim] HL program: " << repr.cast<std::string>() << "\n";
+          });
+          if (program.is_none())
+            return 1.0;
+          py::object kernel = cls.lower_program(program);
+          LLVM_DEBUG({
+            py::object repr = py::module_::import("builtins").attr("repr")(kernel);
+            llvm::dbgs() << "[upmem-python-sim] LL program: " << repr.cast<std::string>() << "\n";
+          });
+          py::object simObj = cls.Simulator(py::int_(T), kernel);
+          py::tuple result = simObj.attr("start")().cast<py::tuple>();
+          return result[0].cast<double>();
+        };
+        return simulateHostRegion(region, annotateOpCosts, waitForCb);
       };
 
-      return simulateHostRegion(region, annotateOpCosts, waitForCb);
+      if (interpCls) {
+        // Parallel path: activate this instance's sub-interpreter.
+        py::subinterpreter_scoped_activate act(interp);
+        return runSim(*interpCls);
+      }
+      // Single-threaded path: main interpreter, shared class cache.
+      return runSim(getPyClasses());
 
     } catch (py::error_already_set &e) {
       LLVM_DEBUG(llvm::dbgs() << "[upmem-python-sim] Python error: " << e.what()
