@@ -32,8 +32,5 @@ LINK_LIBS PUBLIC
     MLIRSCFDialect
 )
 
-target_link_libraries(UPMEMTransforms PRIVATE dlib pybind11::embed)
+target_link_libraries(UPMEMTransforms PRIVATE dlib UpmemCostModel)
 include_directories(SYSTEM ${CMAKE_SOURCE_DIR}/third-party/dlib)
-add_compile_definitions(
-    UPMEM_SIM_PACKAGE_DIR="${CMAKE_SOURCE_DIR}/third-party/upmem-cost-model/packages/upmem_simulator"
-)
