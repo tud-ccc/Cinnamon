@@ -144,6 +144,7 @@ if (NOT pybind11_FOUND)
 endif()
 
 add_subdirectory("third-party/dlib")
+add_subdirectory("third-party/upmem-cost-model")
 if(TARGET dlib)
     target_compile_options(dlib PRIVATE -w)
 endif()
