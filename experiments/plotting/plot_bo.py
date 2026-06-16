@@ -1053,9 +1053,6 @@ def main():
                                             dataset="training", scale=scale)
                         all_futures[f] = f"standalone/{tag}"
 
-            f = executor.submit(_plot_sigma_calibration, [csv_path], out_dir, scale, None)
-            all_futures[f] = "standalone/sigma_calibration"
-
             readme_is_new = not (args.skip_existing_seed_plots
                                  and (Path(csv_path).parent / "README_bo_synopsis.md").exists())
             if readme_is_new:

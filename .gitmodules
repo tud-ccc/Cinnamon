@@ -8,3 +8,6 @@
 [submodule "third-party/upmem-cost-model"]
 	path = third-party/upmem-cost-model
 	url = git@github.com:h4midf/cnm_cost_model.git
+[submodule "third-party/mlpack"]
+	path = third-party/mlpack
+	url = git@github.com:mlpack/mlpack.git
