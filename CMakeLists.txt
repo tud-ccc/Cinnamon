@@ -135,13 +135,64 @@ else()
 endif()
 
 
-# Add indicators (header-only progress bar, like tqdm)
 include(FetchContent)
+
+# Add indicators (header-only progress bar, like tqdm)
 FetchContent_Declare(indicators
     GIT_REPOSITORY https://github.com/p-ranav/indicators
     GIT_TAG        v2.3
 )
 FetchContent_MakeAvailable(indicators)
+
+# BLAS + LAPACK: prefer system install, fall back to OpenBLAS (C-only build).
+find_package(BLAS)
+find_package(LAPACK)
+add_library(blas_lapack INTERFACE)
+if(NOT BLAS_FOUND OR NOT LAPACK_FOUND)
+    message(STATUS "System BLAS/LAPACK not found — fetching OpenBLAS")
+    FetchContent_Declare(openblas
+        GIT_REPOSITORY https://github.com/OpenMathLib/OpenBLAS.git
+        GIT_TAG        v0.3.29
+        GIT_SHALLOW    TRUE
+    )
+    # Build without Fortran; use the bundled C LAPACK implementation.
+    set(NOFORTRAN ON  CACHE BOOL "" FORCE)
+    set(C_LAPACK  ON  CACHE BOOL "" FORCE)
+    FetchContent_MakeAvailable(openblas)
+    target_link_libraries(blas_lapack INTERFACE openblas)
+else()
+    target_link_libraries(blas_lapack INTERFACE ${BLAS_LIBRARIES} ${LAPACK_LIBRARIES})
+endif()
+
+# Armadillo headers (header-only: ARMA_DONT_USE_WRAPPER bypasses libarmadillo
+# and calls BLAS/LAPACK symbols directly, so no wrapper build is needed).
+FetchContent_Declare(armadillo_src
+    GIT_REPOSITORY https://gitlab.com/conradsnicta/armadillo-code.git
+    GIT_TAG        15.2.6
+    GIT_SHALLOW    TRUE
+)
+FetchContent_GetProperties(armadillo_src)
+if(NOT armadillo_src_POPULATED)
+    FetchContent_Populate(armadillo_src)
+    add_library(armadillo INTERFACE)
+    target_include_directories(armadillo INTERFACE ${armadillo_src_SOURCE_DIR}/include)
+    target_compile_definitions(armadillo INTERFACE ARMA_DONT_USE_WRAPPER)
+    target_link_libraries(armadillo INTERFACE blas_lapack)
+endif()
+
+# mlpack headers (header-only; skip its own CMake build).
+FetchContent_Declare(mlpack_src
+    GIT_REPOSITORY https://github.com/mlpack/mlpack.git
+    GIT_TAG        4.6.0
+    GIT_SHALLOW    TRUE
+)
+FetchContent_GetProperties(mlpack_src)
+if(NOT mlpack_src_POPULATED)
+    FetchContent_Populate(mlpack_src)
+    add_library(mlpack_fc INTERFACE)
+    target_include_directories(mlpack_fc INTERFACE ${mlpack_src_SOURCE_DIR}/src)
+    target_link_libraries(mlpack_fc INTERFACE armadillo)
+endif()
 
 # Add pybind11
 find_package(pybind11 OPTIONAL)
