@@ -60,11 +60,44 @@ createSimulator(StringRef simulator, bool annotateOpCosts = false) {
 using WaitForCostFn =
     std::function<double(mlir::Operation * /*WaitForOp*/, bool /*annotate*/)>;
 
+inline double transferCost(double numBytes, int numRanks) {
+  return numBytes / 1024 / numRanks / 100;
+}
+
+inline double scatterGatherCost(int64_t elemsPerDpu, int64_t elemBytes,
+                         int64_t ranks, int64_t dpusPerRank) {
+  double totalBytes =
+      static_cast<double>(elemsPerDpu * elemBytes) * ranks * dpusPerRank;
+  return transferCost(totalBytes, static_cast<int>(ranks));
+}
+
 /// Estimates the cost of a host-side UPMEM region (scatter/gather/loops/etc.)
 /// and optionally annotates each visited op with 'upmem.sim_cost'.
 /// WaitForOp cost is delegated to `waitForCb`; all other op costs use the
 /// built-in weighted heuristics (same as OpCountSimulator).
 double simulateHostRegion(mlir::Region &region, bool annotate,
                           const WaitForCostFn &waitForCb);
+
+/// Cost model for a single upmem.scatter or upmem.gather operation.
+/// Models the off-chip transfer of `elemsPerDpu` elements (each `elemBytes`
+/// bytes) to/from all DPUs in a hierarchy of `ranks` ranks × `dpusPerRank`
+/// DPUs per rank, assuming all ranks transfer in parallel.
+/// Matches the formula used by the OpCount simulator's ScatterOp/GatherOp case.
+double scatterGatherCost(int64_t elemsPerDpu, int64_t elemBytes, int64_t ranks,
+                         int64_t dpusPerRank);
+
+/// Estimate the total cost of the host-side tiled GEMV (mv2) kernel,
+/// including scatter/gather transfers and DPU compute.
+///   M, N        — full matrix dimensions
+///   mramRows    — output rows per DPU in MRAM
+///   mramCols    — input columns per DPU in MRAM
+///   wramRows    — row tile size (rowTile for simulateGemv)
+///   wramCols    — column tile size (colTile for simulateGemv)
+///   ranks       — number of UPMEM ranks
+///   dpus        — DPUs per rank
+///   tasklets    — tasklets per DPU
+double simulateFullGemv(int64_t M, int64_t N, int64_t mramRows,
+                        int64_t mramCols, int64_t wramRows, int64_t wramCols,
+                        int64_t ranks, int64_t dpus, int64_t tasklets);
 
 } // namespace mlir::upmem

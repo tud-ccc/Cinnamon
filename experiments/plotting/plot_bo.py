@@ -926,9 +926,9 @@ def main():
     ap.add_argument("--objective-scale", default="log10",
                     help="Cost transform matching surrogate training "
                          "(linear, log2, log10, ln, sqrt, cbrt; default: log10)")
-    ap.add_argument("--axes", default="tile_1,tile_,tasklets", metavar="X,Y,FACET",
+    ap.add_argument("--axes", default="wtile1,wtile,tasklets", metavar="X,Y,FACET",
                     help="Comma-separated pivot x,y,facet column names for heatmaps "
-                         "(default: tile_1,tile_,tasklets)")
+                         "(default: wtile1,wtile,tasklets)")
     ap.add_argument("--pcts", type=float, nargs="+", default=[2, 5, 10, 15],
                     help="Top-k%% recall thresholds (default: 2 5 10 15)")
     ap.add_argument("--no-per-seed", action="store_true",

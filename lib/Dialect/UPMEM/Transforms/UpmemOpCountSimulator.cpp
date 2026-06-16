@@ -44,10 +44,6 @@ static double elementBytes(Type elemTy) {
   return 4.0;
 }
 
-static double transferCost(double numBytes, int numRanks) {
-  return numBytes / 1024 / numRanks / 100;
-}
-
 static constexpr llvm::StringLiteral kSimCostAttr = "upmem.sim_cost";
 
 static double costOfRegionCb(Region &region, bool annotate,

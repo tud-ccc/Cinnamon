@@ -51,8 +51,10 @@ $(IR_PREFIX).4.cnm.after_opts.mlir: $(IR_PREFIX).3.cnm.affine.mlir
 					--promote-buffers-to-stack --fold-memref-alias-ops --canonicalize --affine-loop-fusion --sroa --canonicalize --affine-scalrep --loop-invariant-code-motion --affine-loop-invariant-code-motion --sroa --affine-scalrep \
 				   --canonicalize --cse > $@
 
+#	$(CINM_OPT) $< --affine-loop-unroll=unroll-factor=4 --lower-affine --buffer-loop-hoisting --buffer-hoisting 
+
 $(IR_PREFIX).5.cnm.scf.mlir: $(IR_PREFIX).4.cnm.after_opts.mlir
-	$(CINM_OPT) $< --affine-loop-unroll=unroll-factor=4 --lower-affine --buffer-loop-hoisting --buffer-hoisting \
+	$(CINM_OPT) $<  --lower-affine --buffer-loop-hoisting --buffer-hoisting \
 				   --canonicalize --cse > $@
 
 $(IR_PREFIX).6.upmem.mlir: $(IR_PREFIX).5.cnm.scf.mlir
