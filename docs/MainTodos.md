@@ -24,7 +24,7 @@ The current cost model in `UpmemSimulator.cpp` uses rough estimates. It needs to
 - [x] Add some evaluation of the surrogate and make sure its learning parameters are adapted for the task
   - Add an evaluation metric, like recall for the best kernels
 
-- [ ] Bayesian is working ok but doesn't outperform random search significantly on small spaces. We need to make the space larger. 
+- [x] Bayesian is working ok but doesn't outperform random search significantly on small spaces. We need to make the space larger. 
 
 ## CINM 
 
