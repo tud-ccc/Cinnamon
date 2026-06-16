@@ -106,6 +106,15 @@ public:
       std::function<bool(int64_t rd, int64_t t, ArrayRef<int64_t> tilingFactors,
                          ArrayRef<int64_t> tiledDims)>
           callback);
+
+  /// Register that tilingFactors[childLocalIdx] must be a multiple of
+  /// tilingFactors[parentLocalIdx]. Committed to the space after dims are added.
+  void addMultiplesConstraint(size_t parentLocalIdx, size_t childLocalIdx) {
+    pendingMultiples_.push_back({parentLocalIdx, childLocalIdx});
+  }
+
+private:
+  SmallVector<std::pair<size_t, size_t>> pendingMultiples_;
 };
 
 struct UpmemInferencePlugin : cinm::InferencePlugin {
@@ -274,6 +283,8 @@ struct UpmemInferencePlugin : cinm::InferencePlugin {
       for (auto &parm : std::move(editor.tilingFactors)) {
         space.addDim(std::move(parm));
       }
+      for (auto [pi, ci] : editor.pendingMultiples_)
+        space.addMultiplesConstraint(firstDim + pi, firstDim + ci);
 
       op->setAttr(kTileParamNamesAttr,
                   OpBuilder(ctx).getStrArrayAttr(paramNames));
@@ -427,11 +438,6 @@ void UpmemInferencePlugin::handleOpConstraints(cinm::CinmTilingInterface op,
       const int64_t mramColTile = tiles[3]; // MRAM cols per DPU
       const int64_t M = dims[0], K = dims[1];
 
-      // WRAM tiles must divide their MRAM counterparts.
-      if (mramRowTile % wramRowTile != 0 || mramColTile % wramColTile != 0 ||
-          mramRowTile < wramRowTile || mramColTile < wramColTile)
-        return false;
-
       if (!ShapedType::isDynamic(M)) {
         // All DPUs and tasklets together cover
         // (totalDpus × tasklets × mramRowTile) rows per outer loop
@@ -455,6 +461,13 @@ void UpmemInferencePlugin::handleOpConstraints(cinm::CinmTilingInterface op,
 
       return true;
     });
+
+    if (mramTiling) {
+      // wramRowTile (local 0) must divide mramRowTile (local 2), and
+      // wramColTile (local 1) must divide mramColTile (local 3).
+      editor.addMultiplesConstraint(0, 2);
+      editor.addMultiplesConstraint(1, 3);
+    }
   }
 }
 void ConstraintEditor::addStaticConstraint(
