@@ -407,56 +407,52 @@ void UpmemInferencePlugin::handleOpConstraints(cinm::CinmTilingInterface op,
     auto eltTy = gemv.getLhs().getType().getElementType();
     bool mramTiling = this->mramTiling;
 
-    editor.addDynamicConstraint([wramLevel, mramLevel, eltTy, mramTiling](
-                                    auto rd, auto t, auto tiles, auto dims) {
-      auto mv = tiles[0];
-      auto kv = tiles[1];
+    editor.addDynamicConstraint([wramLevel, mramLevel, eltTy,
+                                 mramTiling](auto totalDpus, auto tasklets,
+                                             auto tiles, auto dims) {
+      const int64_t wramRowTile = tiles[0]; // WRAM rows per tasklet
+      const int64_t wramColTile = tiles[1]; // WRAM cols per tasklet
 
-      auto rdt = rd * t;
+      // Per-tasklet WRAM: A tile (wramRowTile×wramColTile) + x
+      // (wramColTile) + y (wramRowTile)
+      if (wramRowTile * wramColTile + wramColTile + wramRowTile >
+          wramLevel.getSizeInElements(eltTy))
+        return false;
 
-      // LLVM_DEBUG(llvm::dbgs() << "==\n");
-      if (mv < rdt || mv % rdt != 0)
+      if (!mramTiling)
+        return true;
+
+      const int64_t mramRowTile =
+          tiles[2]; // MRAM rows per DPU  (= ranks × dpusPerRank combined)
+      const int64_t mramColTile = tiles[3]; // MRAM cols per DPU
+      const int64_t M = dims[0], K = dims[1];
+
+      // WRAM tiles must divide their MRAM counterparts.
+      if (mramRowTile % wramRowTile != 0 || mramColTile % wramColTile != 0 ||
+          mramRowTile < wramRowTile || mramColTile < wramColTile)
         return false;
-      auto wm = t * mv / (rd); // fixme
-      auto usage = kv * wm + kv + wm;
-      if (usage > wramLevel.getSizeInElements(eltTy)) {
-        // LLVM_DEBUG(llvm::dbgs() << "=failed wram size check=" << usage << "\n");
+
+      if (!ShapedType::isDynamic(M)) {
+        // All DPUs and tasklets together cover
+        // (totalDpus × tasklets × mramRowTile) rows per outer loop
+        // iteration.
+        if (M % (totalDpus * tasklets * mramRowTile) != 0 ||
+            totalDpus * tasklets * mramRowTile > M)
+          return false;
+      }
+      if (!ShapedType::isDynamic(K)) {
+        if (K % mramColTile != 0 || mramColTile > K)
+          return false;
+      }
+
+      // MRAM per DPU: A (tasklets×mramRowTile×mramColTile) + x
+      // (mramColTile)
+      //               + y (tasklets×mramRowTile)
+      if (tasklets * mramRowTile * mramColTile + mramColTile +
+              tasklets * mramRowTile >
+          mramLevel.getSizeInElements(eltTy))
         return false;
-      }
-      if (mramTiling) {
-        auto mm = tiles[2];
-        auto km = tiles[3];
-        auto M = dims[0], K = dims[1];
-        if (mv > mm || kv > km)
-          return false;
-        if ((!ShapedType::isDynamic(M) &&
-             (mm * mv > M || M % (mm * mv) != 0)) ||
-            (!ShapedType::isDynamic(K) &&
-             (kv * km > K || K % (km * kv) != 0))) {
-          // LLVM_DEBUG({
-          //   auto dyn = [](int64_t v) -> std::string {
-          //     return ShapedType::isDynamic(v) ? "?" : std::to_string(v);
-          //   };
-          //   llvm::dbgs() << "=failed mram precheck: mm=" << mm << " km=" << km
-          //                << " mv=" << mv << " kv=" << kv << " M=" << dyn(M)
-          //                << " K=" << dyn(K) << " mm*mv=" << mm * mv
-          //                << " kv*km=" << kv * km << " M%(mm*mv)="
-          //                << (ShapedType::isDynamic(M)
-          //                        ? "?"
-          //                        : std::to_string(M % (mm * mv)))
-          //                << " K%(km*kv)="
-          //                << (ShapedType::isDynamic(K)
-          //                        ? "?"
-          //                        : std::to_string(K % (km * kv)))
-          //                << "\n";
-          // });
-          return false;
-        }
-        if (mm * km + mm + km > mramLevel.getSizeInElements(eltTy)) {
-          // LLVM_DEBUG(llvm::dbgs() << "=failed mram size check =" << "\n");
-          return false;
-        }
-      }
+
       return true;
     });
   }

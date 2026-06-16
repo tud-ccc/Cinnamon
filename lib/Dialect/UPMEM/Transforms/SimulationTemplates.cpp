@@ -163,13 +163,13 @@ double mlir::upmem::simulateFullGemv(int64_t M, int64_t N, int64_t mramRows,
                                 wramRows, wramCols);
 
   // Per inner-loop (col-tile) iteration: 3 scatters + wait + 1 gather.
-  double innerIterCost = xferCost(mramRows * wramCols) // scatter A tile
-                         + xferCost(wramCols)          // scatter x tile
+  double innerIterCost = xferCost(tasklets * mramRows * mramCols) // scatter A tile
+                         + xferCost(mramCols)          // scatter x tile
                          + xferCost(mramRows)          // scatter y (init)
                          + dpuCost                     // DPU kernel
-                         + xferCost(mramRows);         // gather y (result)
+                         + xferCost(tasklets * mramRows);         // gather y (result)
 
-  int64_t innerTrips = N / wramCols;
-  int64_t outerTrips = M / (ranks * dpus * mramRows);
+  int64_t innerTrips = N / mramCols;
+  int64_t outerTrips = M / (ranks * dpus * mramRows * tasklets);
   return static_cast<double>(outerTrips * innerTrips) * innerIterCost;
 }
