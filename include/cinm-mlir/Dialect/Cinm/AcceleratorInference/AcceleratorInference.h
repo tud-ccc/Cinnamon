@@ -88,6 +88,19 @@ struct ConfigSpace {
   std::vector<SearchParam> params;
   std::vector<Constraint> constraints;
 
+  /// A (parent, child) divisibility pair baked into the encoding.
+  /// Every flat index produced by at() satisfies child_value % parent_value == 0.
+  struct DependentGroup {
+    size_t parentIdx;
+    size_t childIdx;
+    /// childValues[k] = sorted valid child values when parent has sub-index k.
+    std::vector<std::vector<int64_t>> childValues;
+    /// cumCount[k] = sum of childValues[0..k-1].size(); cumCount.back() = total.
+    std::vector<size_t> cumCount;
+    size_t totalCount() const { return cumCount.back(); }
+  };
+  std::vector<DependentGroup> groups;
+
   ConfigSpace() = default;
   ConfigSpace(const ConfigSpace&) = delete;
 
@@ -95,15 +108,16 @@ struct ConfigSpace {
   int64_t addDim(SearchParam &&param) {
     int64_t idx = params.size();
     params.push_back(std::move(param));
+    encodingValid_ = false;
     return idx;
   }
 
   std::pair<int64_t, int64_t> addDims(SmallVector<SearchParam> &&dims) {
     int64_t start = params.size();
-    for (auto &dim : dims) {
+    for (auto &dim : dims)
       params.push_back(std::move(dim));
-    }
-    return {start, params.size()};
+    encodingValid_ = false;
+    return {start, (int64_t)params.size()};
   }
 
   /// Register a predicate; configurations for which any constraint returns
@@ -111,6 +125,12 @@ struct ConfigSpace {
   void addConstraint(Constraint &&constraint) {
     constraints.push_back(std::move(constraint));
   }
+
+  /// Register that params[childIdx] must be a multiple of params[parentIdx].
+  /// This eliminates invalid (parent, child) pairs from the flat index space —
+  /// at() never produces a config violating this constraint.
+  /// parentIdx must be < childIdx and both params must already be in params[].
+  void addMultiplesConstraint(size_t parentIdx, size_t childIdx);
 
   size_t size() const { return params.size(); }
   const SearchParam &operator[](size_t i) const { return params[i]; }
@@ -123,21 +143,36 @@ struct ConfigSpace {
   /// Return true iff all registered constraints accept this configuration.
   bool isValid(const Configuration &config) const;
 
-  /// Total number of configurations in the Cartesian product (ignoring
-  /// constraints). May overflow size_t for large spaces; callers should check.
+  /// Total number of configurations reachable by at() (excludes pairs
+  /// eliminated by addMultiplesConstraint, includes remaining invalid configs
+  /// that are filtered by isValid()).
   size_t totalSize() const;
-  /// Fill conf with the configuration at flat index idx using mixed-radix
-  /// decomposition. idx must be in [0, totalSize()). Constraints are NOT
-  /// checked — call isValid() on the result if needed.
+  /// Fill conf with the configuration at flat index idx.
+  /// idx must be in [0, totalSize()). Constraints are NOT checked.
   void at(size_t idx, Configuration &conf) const;
   /// Convert a configuration to its flat index (inverse of at()).
   size_t indexOf(const Configuration &conf) const;
-  /// Append to result all flat indices that are one discrete step away from
-  /// idx in any single dimension (i.e. the axis-aligned grid neighbours).
+  /// Append to result all flat indices one discrete step away in any dimension.
   void neighborIndices(size_t idx,
                        llvm::SmallVectorImpl<size_t> &result) const;
 
   void dump(llvm::raw_ostream &, const Configuration &) const;
+
+private:
+  /// One slot in the flat-index encoding. Child dims are merged into their
+  /// parent's slot and do not appear as separate slots.
+  struct EncodingSlot {
+    size_t dimIdx;    ///< index into params[] (the independent or parent dim)
+    size_t groupIdx;  ///< index into groups[], or SIZE_MAX for independent dims
+    size_t slotSize;  ///< number of distinct sub-indices this slot contributes
+  };
+
+  mutable bool encodingValid_ = false;
+  mutable std::vector<EncodingSlot> slots_;
+  /// suffixProd_[i] = product of slotSizes[i..end]; suffixProd_[slots_.size()] = 1.
+  mutable std::vector<size_t> suffixProd_;
+
+  void ensureEncoding() const;
 };
 
 /// Wrap a space and config for nicer interface.

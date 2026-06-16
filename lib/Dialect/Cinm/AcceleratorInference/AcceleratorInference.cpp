@@ -208,49 +208,125 @@ bool ConfigSpace::isValid(const Configuration &config) const {
   return true;
 }
 
+void ConfigSpace::ensureEncoding() const {
+  if (encodingValid_)
+    return;
+
+  slots_.clear();
+
+  std::vector<bool> isChild(params.size(), false);
+  for (const auto &g : groups)
+    isChild[g.childIdx] = true;
+
+  std::vector<size_t> parentToGroup(params.size(), SIZE_MAX);
+  for (size_t gi = 0; gi < groups.size(); ++gi)
+    parentToGroup[groups[gi].parentIdx] = gi;
+
+  for (size_t i = 0; i < params.size(); ++i) {
+    if (isChild[i])
+      continue;
+    size_t gi = parentToGroup[i];
+    size_t slotSize = (gi == SIZE_MAX)
+                          ? static_cast<size_t>(params[i].cardinality())
+                          : groups[gi].totalCount();
+    slots_.push_back({i, gi, slotSize});
+  }
+
+  const size_t S = slots_.size();
+  suffixProd_.resize(S + 1);
+  suffixProd_[S] = 1;
+  for (size_t i = S; i-- > 0;)
+    suffixProd_[i] = suffixProd_[i + 1] * slots_[i].slotSize;
+
+  encodingValid_ = true;
+}
+
+void ConfigSpace::addMultiplesConstraint(size_t parentIdx, size_t childIdx) {
+  const SearchParam &parent = params[parentIdx];
+  const SearchParam &child = params[childIdx];
+  int64_t parentCard = parent.cardinality();
+
+  std::vector<std::vector<int64_t>> childValues(
+      static_cast<size_t>(parentCard));
+  for (int64_t pi = 0; pi < parentCard; ++pi) {
+    int64_t parentVal = parent.valueAt(static_cast<size_t>(pi));
+    for (int64_t ci = 0, cc = child.cardinality(); ci < cc; ++ci) {
+      int64_t childVal = child.valueAt(static_cast<size_t>(ci));
+      if (childVal % parentVal == 0)
+        childValues[static_cast<size_t>(pi)].push_back(childVal);
+    }
+  }
+
+  std::vector<size_t> cumCount(static_cast<size_t>(parentCard) + 1);
+  cumCount[0] = 0;
+  for (int64_t pi = 0; pi < parentCard; ++pi)
+    cumCount[static_cast<size_t>(pi) + 1] =
+        cumCount[static_cast<size_t>(pi)] +
+        childValues[static_cast<size_t>(pi)].size();
+
+  groups.push_back(
+      {parentIdx, childIdx, std::move(childValues), std::move(cumCount)});
+  encodingValid_ = false;
+}
+
 size_t ConfigSpace::totalSize() const {
-  size_t n = 1;
-  for (const auto &p : params)
-    n *= static_cast<size_t>(p.cardinality());
-  return n;
+  ensureEncoding();
+  return slots_.empty() ? 1 : suffixProd_[0];
 }
 
 void ConfigSpace::at(size_t idx, Configuration &conf) const {
-  const size_t D = params.size();
-  conf.resize(D);
-  for (size_t i = D; i-- > 0;) {
-    size_t card = static_cast<size_t>(params[i].cardinality());
-    conf[i] = params[i].valueAt(idx % card);
-    idx /= card;
+  ensureEncoding();
+  conf.resize(params.size());
+  for (size_t si = slots_.size(); si-- > 0;) {
+    const auto &slot = slots_[si];
+    size_t subIdx = idx % slot.slotSize;
+    idx /= slot.slotSize;
+    if (slot.groupIdx == SIZE_MAX) {
+      conf[slot.dimIdx] = params[slot.dimIdx].valueAt(subIdx);
+    } else {
+      const auto &g = groups[slot.groupIdx];
+      auto it =
+          std::upper_bound(g.cumCount.begin(), g.cumCount.end(), subIdx);
+      --it;
+      size_t parentSubIdx = static_cast<size_t>(it - g.cumCount.begin());
+      size_t childLocalIdx = subIdx - g.cumCount[parentSubIdx];
+      conf[g.parentIdx] = params[g.parentIdx].valueAt(parentSubIdx);
+      conf[g.childIdx] = g.childValues[parentSubIdx][childLocalIdx];
+    }
   }
 }
 
 size_t ConfigSpace::indexOf(const Configuration &conf) const {
+  ensureEncoding();
   size_t idx = 0;
-  for (size_t i = 0; i < params.size(); ++i)
-    idx = idx * static_cast<size_t>(params[i].cardinality()) +
-          params[i].subIndexOf(conf[i]);
+  for (size_t si = 0; si < slots_.size(); ++si) {
+    const auto &slot = slots_[si];
+    size_t subIdx;
+    if (slot.groupIdx == SIZE_MAX) {
+      subIdx = params[slot.dimIdx].subIndexOf(conf[slot.dimIdx]);
+    } else {
+      const auto &g = groups[slot.groupIdx];
+      size_t parentSubIdx = params[g.parentIdx].subIndexOf(conf[g.parentIdx]);
+      const auto &cv = g.childValues[parentSubIdx];
+      auto it = std::find(cv.begin(), cv.end(), conf[g.childIdx]);
+      subIdx = g.cumCount[parentSubIdx] +
+               static_cast<size_t>(it - cv.begin());
+    }
+    idx = idx * slot.slotSize + subIdx;
+  }
   return idx;
 }
 
 void ConfigSpace::neighborIndices(size_t idx,
                                   llvm::SmallVectorImpl<size_t> &result) const {
-  const size_t D = params.size();
-  // Compute per-dimension strides (stride[d] = product of cardinalities of
-  // d+1..D-1).
-  llvm::SmallVector<size_t, 8> stride(D);
-  stride[D - 1] = 1;
-  for (size_t i = D - 1; i-- > 0;)
-    stride[i] =
-        stride[i + 1] * static_cast<size_t>(params[i + 1].cardinality());
-
-  for (size_t d = 0; d < D; ++d) {
-    size_t card = static_cast<size_t>(params[d].cardinality());
-    size_t subIdx = (idx / stride[d]) % card;
+  ensureEncoding();
+  for (size_t si = 0; si < slots_.size(); ++si) {
+    size_t stride = suffixProd_[si + 1];
+    size_t subIdx = (idx / stride) % slots_[si].slotSize;
     if (subIdx > 0)
-      result.push_back(idx - stride[d]);
-    if (subIdx < card - 1)
-      result.push_back(idx + stride[d]);
+      result.push_back(idx - stride);
+    if (subIdx + 1 < slots_[si].slotSize)
+      result.push_back(idx + stride);
   }
 }
 
