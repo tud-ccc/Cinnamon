@@ -174,8 +174,8 @@ def cmd_exhaustive(args: argparse.Namespace) -> int:
     out_path  = data_dir / "out.mlir"
 
     print(f"[exhaustive] log={log_path}")
-    with open(log_path, "w") as log_f, open(out_path, "w") as out_f:
-        return subprocess.run(cmd, stderr=log_f, stdout=out_f).returncode
+    with open(out_path, "w") as out_f:
+        return subprocess.run(cmd, stdout=out_f).returncode
 
 
 def cmd_plot(args: argparse.Namespace) -> int:

@@ -20,6 +20,7 @@
 
 #include <upmem_cost_model/ProgramBuilder.h>
 
+#include <atomic>
 #include <memory>
 #include <string>
 
@@ -48,8 +49,37 @@
 ///   3. Store all y from WRAM → MRAM
 ///
 /// Returns the estimated wall-clock time in seconds for one DPU.
+namespace {
+struct GemvCacheEntry {
+  std::atomic<uint64_t> keyHash{0};
+  std::atomic<double> value{0.0};
+};
+constexpr size_t kGemvCacheSlots = 4096;
+GemvCacheEntry gGemvCache[kGemvCacheSlots];
+
+uint64_t hashGemvKey(int nTasklets, int64_t mramRows, int64_t mramCols,
+                     int64_t rowTile, int64_t colTile) {
+  uint64_t h = 14695981039346656037ULL;
+  auto mix = [&](uint64_t v) {
+    h ^= v;
+    h *= 1099511628211ULL;
+  };
+  mix(static_cast<uint64_t>(nTasklets));
+  mix(static_cast<uint64_t>(mramRows));
+  mix(static_cast<uint64_t>(mramCols));
+  mix(static_cast<uint64_t>(rowTile));
+  mix(static_cast<uint64_t>(colTile));
+  return h ? h : 1; // 0 is reserved for "empty"
+}
+} // namespace
+
 double simulateGemv(int nTasklets, int64_t mramRows, int64_t mramCols,
                     int64_t rowTile, int64_t colTile) {
+  uint64_t h = hashGemvKey(nTasklets, mramRows, mramCols, rowTile, colTile);
+  GemvCacheEntry &entry = gGemvCache[h % kGemvCacheSlots];
+  if (entry.keyHash.load(std::memory_order_acquire) == h)
+    return entry.value.load(std::memory_order_relaxed);
+
   using namespace upmem_cm;
   ProgramBuilder b;
 
@@ -98,7 +128,10 @@ double simulateGemv(int nTasklets, int64_t mramRows, int64_t mramCols,
   // Store all y from WRAM back to MRAM
   b.createTransfer(y_wram, y_mram, mramRows);
 
-  return b.simulate(nTasklets);
+  double result = b.simulate(nTasklets);
+  entry.value.store(result, std::memory_order_relaxed);
+  entry.keyHash.store(h, std::memory_order_release);
+  return result;
 }
 
 /// Estimate the cost of the host side of a tiled GEMV (mv2) kernel.

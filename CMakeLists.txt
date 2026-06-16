@@ -135,6 +135,14 @@ else()
 endif()
 
 
+# Add indicators (header-only progress bar, like tqdm)
+include(FetchContent)
+FetchContent_Declare(indicators
+    GIT_REPOSITORY https://github.com/p-ranav/indicators
+    GIT_TAG        v2.3
+)
+FetchContent_MakeAvailable(indicators)
+
 # Add pybind11
 find_package(pybind11 OPTIONAL)
 if (NOT pybind11_FOUND)
