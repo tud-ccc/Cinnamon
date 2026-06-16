@@ -21,4 +21,4 @@ LINK_LIBS PUBLIC
     CinmUtils
 )
 
-target_link_libraries(CinmAcceleratorInference PRIVATE PkgConfig::mlpack)
+target_link_libraries(CinmAcceleratorInference PRIVATE PkgConfig::mlpack indicators::indicators)

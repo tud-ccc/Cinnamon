@@ -25,11 +25,13 @@
 #include <mlir/IR/SymbolTable.h>
 #include <mlir/Support/LogicalResult.h>
 
+#include <indicators/progress_bar.hpp>
+
 #include <algorithm>
 #include <atomic>
 #include <chrono>
-#include <fstream>
 #include <cmath>
+#include <fstream>
 #include <limits>
 #include <optional>
 #include <random>
@@ -422,8 +424,8 @@ struct InferenceTask {
     std::vector<std::pair<int, double>> timings; // (nObs, elapsed_ms)
 
     auto recordTiming = [&]() {
-      double ms = std::chrono::duration<double, std::milli>(
-                      Clock::now() - t0).count();
+      double ms =
+          std::chrono::duration<double, std::milli>(Clock::now() - t0).count();
       timings.emplace_back(static_cast<int>(pool.nObs), ms);
     };
 
@@ -524,6 +526,27 @@ struct InferenceTask {
                             << " valid / " << N << " total configs, "
                             << nThreads << " threads\n");
 
+    indicators::ProgressBar bar{
+        indicators::option::BarWidth{40},
+        indicators::option::MaxProgress{N},
+        indicators::option::PrefixText{"Exhaustive search "},
+        indicators::option::ShowPercentage{true},
+        indicators::option::ShowElapsedTime{true},
+        indicators::option::ShowRemainingTime{true},
+        indicators::option::Stream{std::cerr},
+    };
+    // Workers only touch this relaxed counter — zero synchronisation cost.
+    // A dedicated printer thread wakes every 100 ms and calls set_progress(),
+    // keeping all getenv/termcolor/mutex overhead off the worker threads.
+    std::atomic<size_t> barDone{0};
+    std::atomic<bool> barStop{false};
+    std::thread printerThread([&] {
+      while (!barStop.load(std::memory_order_relaxed)) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(200));
+        bar.set_progress(barDone.load(std::memory_order_relaxed));
+      }
+    });
+
     std::atomic<size_t> nextIdx{0};
 
     struct Obs {
@@ -534,8 +557,6 @@ struct InferenceTask {
 
     auto worker = [&](unsigned tid) {
       auto &myPlugin = *pluginClones[tid];
-      // Each thread owns its own ref module copy so per-iteration clones
-      // need no synchronization.
       OwningOpRef<ModuleOp> threadRef(llvm::cast<ModuleOp>(refModule->clone()));
       Configuration conf;
       while (true) {
@@ -543,11 +564,11 @@ struct InferenceTask {
         if (i >= N)
           break;
         space.at(i, conf);
+        barDone.fetch_add(1, std::memory_order_relaxed);
         if (!space.isValid(conf))
           continue;
 
         auto trial = makeTrialInfo(conf, *threadRef);
-
         auto result = myPlugin.evaluate(trial);
         double *cost = std::get_if<double>(&result);
         std::optional<double> opt_cost =
@@ -564,6 +585,9 @@ struct InferenceTask {
     worker(0);
     for (auto &t : threads)
       t.join();
+    barStop.store(true, std::memory_order_relaxed);
+    printerThread.join();
+    bar.mark_as_completed();
     auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
         std::chrono::steady_clock::now() - t0);
 
