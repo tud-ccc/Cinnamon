@@ -1,5 +1,6 @@
 #pragma once
 
+#include <chrono>
 #include <cinm-mlir/Utils/Scheduling/SchedulingSupport.h>
 #include <functional>
 #include <llvm/ADT/StringRef.h>
@@ -39,13 +40,15 @@ createOpCountSimulator(bool annotateOpCosts = false);
 /// Falls back to the op-count simulator on any Python error.
 /// When annotateOpCosts is true, annotates host-side ops with 'upmem.sim_cost'
 /// and annotates each WaitForOp with the Python-estimated cycle count.
-std::unique_ptr<UpmemSimulator>
-createPythonSimulator(bool annotateOpCosts = false);
+std::unique_ptr<UpmemSimulator> createPythonSimulator(
+    bool annotateOpCosts = false,
+    std::chrono::milliseconds timeoutMs = std::chrono::milliseconds(0));
 
-inline std::unique_ptr<UpmemSimulator>
-createSimulator(StringRef simulator, bool annotateOpCosts = false) {
+inline std::unique_ptr<UpmemSimulator> createSimulator(
+    StringRef simulator, bool annotateOpCosts = false,
+    std::chrono::milliseconds timeoutMs = std::chrono::milliseconds(0)) {
   if (simulator == "cycleaccurate")
-    return createPythonSimulator(annotateOpCosts);
+    return createPythonSimulator(annotateOpCosts, timeoutMs);
   else if (simulator == "opcount")
     return createOpCountSimulator(annotateOpCosts);
 
@@ -65,7 +68,7 @@ inline double transferCost(double numBytes, int numRanks) {
 }
 
 inline double scatterGatherCost(int64_t elemsPerDpu, int64_t elemBytes,
-                         int64_t ranks, int64_t dpusPerRank) {
+                                int64_t ranks, int64_t dpusPerRank) {
   double totalBytes =
       static_cast<double>(elemsPerDpu * elemBytes) * ranks * dpusPerRank;
   return transferCost(totalBytes, static_cast<int>(ranks));
@@ -96,8 +99,9 @@ double scatterGatherCost(int64_t elemsPerDpu, int64_t elemBytes, int64_t ranks,
 ///   ranks       — number of UPMEM ranks
 ///   dpus        — DPUs per rank
 ///   tasklets    — tasklets per DPU
-double simulateFullGemv(int64_t M, int64_t N, int64_t mramRows,
-                        int64_t mramCols, int64_t wramRows, int64_t wramCols,
-                        int64_t ranks, int64_t dpus, int64_t tasklets);
+double simulateFullGemv(std::chrono::milliseconds timeoutMs, int64_t M,
+                        int64_t N, int64_t mramRows, int64_t mramCols,
+                        int64_t wramRows, int64_t wramCols, int64_t ranks,
+                        int64_t dpus, int64_t tasklets);
 
 } // namespace mlir::upmem

@@ -73,7 +73,7 @@ uint64_t hashGemvKey(int nTasklets, int64_t mramRows, int64_t mramCols,
 }
 } // namespace
 
-double simulateGemv(int nTasklets, int64_t mramRows, int64_t mramCols,
+double simulateGemv(std::chrono::milliseconds timeout, int nTasklets, int64_t mramRows, int64_t mramCols,
                     int64_t rowTile, int64_t colTile) {
   uint64_t h = hashGemvKey(nTasklets, mramRows, mramCols, rowTile, colTile);
   GemvCacheEntry &entry = gGemvCache[h % kGemvCacheSlots];
@@ -128,7 +128,7 @@ double simulateGemv(int nTasklets, int64_t mramRows, int64_t mramCols,
   // Store all y from WRAM back to MRAM
   b.createTransfer(y_wram, y_mram, mramRows);
 
-  double result = b.simulate(nTasklets);
+  double result = b.simulate(nTasklets, timeout).value();
   entry.value.store(result, std::memory_order_relaxed);
   entry.keyHash.store(h, std::memory_order_release);
   return result;
@@ -149,7 +149,8 @@ double simulateGemv(int nTasklets, int64_t mramRows, int64_t mramCols,
 ///
 /// Transfer costs use the same formula as OpCountSimulator's ScatterOp/GatherOp
 /// case via scatterGatherCost().
-double mlir::upmem::simulateFullGemv(int64_t M, int64_t N, int64_t mramRows,
+double mlir::upmem::simulateFullGemv(std::chrono::milliseconds timeout,
+                                     int64_t M, int64_t N, int64_t mramRows,
                                      int64_t mramCols, int64_t wramRows,
                                      int64_t wramCols, int64_t ranks,
                                      int64_t dpus, int64_t tasklets) {
@@ -159,15 +160,16 @@ double mlir::upmem::simulateFullGemv(int64_t M, int64_t N, int64_t mramRows,
   };
 
   // DPU compute cost (one DPU, accounts for tasklet parallelism inside).
-  double dpuCost = simulateGemv(static_cast<int>(tasklets), mramRows, mramCols,
+  double dpuCost = simulateGemv(timeout, static_cast<int>(tasklets), mramRows, mramCols,
                                 wramRows, wramCols);
 
   // Per inner-loop (col-tile) iteration: 3 scatters + wait + 1 gather.
-  double innerIterCost = xferCost(tasklets * mramRows * mramCols) // scatter A tile
-                         + xferCost(mramCols)          // scatter x tile
-                         + xferCost(mramRows)          // scatter y (init)
-                         + dpuCost                     // DPU kernel
-                         + xferCost(tasklets * mramRows);         // gather y (result)
+  double innerIterCost =
+      xferCost(tasklets * mramRows * mramCols) // scatter A tile
+      + xferCost(mramCols)                     // scatter x tile
+      + xferCost(mramRows)                     // scatter y (init)
+      + dpuCost                                // DPU kernel
+      + xferCost(tasklets * mramRows);         // gather y (result)
 
   int64_t innerTrips = N / mramCols;
   int64_t outerTrips = M / (ranks * dpus * mramRows * tasklets);
