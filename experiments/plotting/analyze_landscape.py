@@ -34,7 +34,7 @@ import matplotlib.colors as mcolors
 import numpy as np
 import pandas as pd
 
-META_COLS = {"visited", "valid", "cost", "mu", "sigma", "acq"}
+META_COLS = {"visited", "valid", "cost", "mu", "sigma", "acq", "eval_iter"}
 
 
 # ── Data loading ───────────────────────────────────────────────────────────────

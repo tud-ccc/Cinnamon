@@ -310,7 +310,7 @@ def plot_validation_rmse(val_csv_path, out_dir, dataset, scale):
 def plot_validation_mape(val_csv_path, out_dir, dataset, scale):
     val = pd.read_csv(val_csv_path)
     scaled_cost = apply_scale(val["cost"], scale)
-    val["pct_err"] = 100 * np.abs(val["mu"] - scaled_cost) / scaled_cost
+    val["pct_err"] = 100 * np.abs(val["mu"] - scaled_cost) / np.abs(scaled_cost)
     val["x"] = val["iter"]
     return _plot_validation_metric(
         val,
@@ -342,7 +342,7 @@ def _plot_aggregate_learning_curves(seed_csv_paths, out_dir, scale):
                 continue
             scaled_true = apply_scale(val["cost"], scale)
             val["sq_err"]  = (val["mu"] - scaled_true) ** 2
-            val["pct_err"] = 100 * np.abs(val["mu"] - scaled_true) / scaled_true
+            val["pct_err"] = 100 * np.abs(val["mu"] - scaled_true) / np.abs(scaled_true)
             rmse_curves.append(val.groupby("iter")["sq_err"].agg(lambda s: np.sqrt(s.mean())))
             mape_curves.append(val.groupby("iter")["pct_err"].mean())
 
