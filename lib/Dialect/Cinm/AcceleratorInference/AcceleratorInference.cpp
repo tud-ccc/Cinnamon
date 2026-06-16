@@ -580,7 +580,6 @@ struct InferenceTask {
 bool InferenceState::tryEval(size_t poolIdx, InferenceTask &task,
                              CandidatePool &pool, double &costVal,
                              size_t iter) {
-  --budget;
   pool.markVisited(poolIdx);
   LLVM_DEBUG(llvm::dbgs() << "[cinm-inference] Trial #" << trialCount++ << " "
                           << task.wrap(pool[poolIdx]) << "\n");
@@ -594,6 +593,8 @@ bool InferenceState::tryEval(size_t poolIdx, InferenceTask &task,
     pool.recordFailedEvaluation(poolIdx, iter);
     return false;
   }
+  // only decrement budget if evaluation succeeded
+  --budget;
 
   costVal = std::get<double>(cost);
   LLVM_DEBUG(llvm::dbgs() << "[cinm-inference]   -> cost = " << costVal
