@@ -41,9 +41,41 @@ early but stopped improving — either the best region is already saturated or B
 exploring irrelevant regions. A curve that never flattens and ends far from the oracle
 line means the budget was exhausted before convergence.
 
+### First-hit curve
+
+![First-hit curve](first_hit_curve.png)
+
+For each quality threshold T (% above oracle best), the number of evaluations needed
+for a seed to first observe a configuration within that quality level.
+Blue = mean across seeds; red dashed = worst seed.
+The gray dotted line marks the total evaluation budget.
+
+**How to read:** A steep drop near 0% means BO reliably finds near-optimal solutions
+quickly. A flat region at the budget line for small T means no seed reached that quality
+within the budget — the threshold is too tight for the current settings.
+The gap between mean and worst-seed curves shows consistency: a large gap means at
+least one seed consistently underperforms.
+
 ---
 
-## 4. Surrogate Learning Curves — Aggregate
+## 4. Timing
+
+### Wall-clock time per evaluation
+
+![Aggregate timings](agg_timings.png)
+
+Cumulative wall-clock time as a function of evaluation number, aggregated across seeds.
+Bold black line is the mean; shaded band is the IQR (25th–75th percentile); thin coloured
+lines are individual seeds.
+
+**How to read:** A linear curve means each evaluation takes roughly the same time
+(expected for fixed-cost simulators). A curve that steepens over time means later
+evaluations are more expensive — common when the surrogate fitting cost grows with the
+number of observations.
+
+---
+
+## 5. Surrogate Learning Curves — Aggregate
 
 ### RMSE
 

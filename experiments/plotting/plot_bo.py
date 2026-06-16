@@ -388,6 +388,7 @@ def _plot_aggregate_learning_curves(seed_csv_paths, out_dir, scale):
             ax.set_xlim(left=x_min - 5)
             ax.set_xlabel("Evaluations")
             ax.set_ylabel(ylabel)
+            ax.set_yscale('log')
             ax.set_title(title)
             ax.legend(fontsize=8, loc="upper right")
             ax.grid(True, alpha=0.3)
@@ -398,6 +399,59 @@ def _plot_aggregate_learning_curves(seed_csv_paths, out_dir, scale):
             out_paths.append(str(p))
 
     return out_paths
+
+
+# ── Aggregate timing plot ──────────────────────────────────────────────────────
+def _plot_aggregate_timings(seed_csv_paths, out_dir):
+    """Wall-clock time per evaluation aggregated across seeds: mean + IQR band."""
+    out_dir = Path(out_dir)
+    curves = []
+    for seed_csv in seed_csv_paths:
+        timing_csv = Path(seed_csv).parent / "timings.csv"
+        if not timing_csv.exists():
+            continue
+        df = pd.read_csv(timing_csv)
+        if not {"iter", "elapsed_ms"}.issubset(df.columns):
+            continue
+        curves.append(df.set_index("iter")["elapsed_ms"] / 1000.0)  # → seconds
+
+    if not curves:
+        return []
+
+    all_iters = sorted(set().union(*[set(c.index) for c in curves]))
+    mat = np.full((len(curves), len(all_iters)), np.nan)
+    iter_idx = {it: j for j, it in enumerate(all_iters)}
+    for i, c in enumerate(curves):
+        for it, v in c.items():
+            if it in iter_idx:
+                mat[i, iter_idx[it]] = v
+
+    iters = np.array(all_iters)
+    mean = np.nanmean(mat, axis=0)
+    q25  = np.nanpercentile(mat, 25, axis=0)
+    q75  = np.nanpercentile(mat, 75, axis=0)
+
+    fig, ax = plt.subplots(figsize=(8, 4))
+    cmap_t = plt.cm.tab10
+    for i, row in enumerate(mat):
+        ok = ~np.isnan(row)
+        if ok.any():
+            ax.plot(iters[ok], row[ok],
+                    color=cmap_t(i / max(len(mat), 1)), lw=0.8, alpha=0.4)
+    ok = ~np.isnan(mean)
+    ax.plot(iters[ok], mean[ok], color="black", lw=2, label="mean", zorder=5)
+    ax.fill_between(iters[ok], q25[ok], q75[ok],
+                    color="black", alpha=0.15, label="IQR (25–75%)")
+    ax.set_xlabel("Evaluations")
+    ax.set_ylabel("Elapsed time (s)")
+    ax.set_title(f"Wall-clock time per evaluation — {len(curves)} seeds")
+    ax.legend(fontsize=8, loc="upper left")
+    ax.grid(True, alpha=0.3)
+    plt.tight_layout()
+    p = out_dir / "agg_timings.png"
+    fig.savefig(p, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    return [str(p)]
 
 
 # ── Sigma calibration plots (multi-seed aware) ────────────────────────────────
@@ -648,6 +702,42 @@ def _plot_oracle_curves(oracle_csv, bo_csvs, out_dir, pcts, scale):
     ax.legend(fontsize=8, loc="upper right")
     plt.tight_layout()
     p = out_dir / "best_cost_found.png"
+    fig.savefig(p, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    out_paths.append(str(p))
+
+    # first-hit curve: evaluations needed to reach a quality threshold
+    # all_best: (n_seeds, max_iter+1) — running minimum cost per seed per iter
+    thresholds = np.logspace(np.log10(0.05), np.log10(100), 200)  # 0.05 % … 5 %
+    targets = oracle_best * (1 + thresholds / 100)
+    hit_iters = np.full((len(bo_data), len(thresholds)), float(max_iter + 1))
+    for ti, target in enumerate(targets):
+        reached = all_best <= target           # (n_seeds, max_iter+1)
+        ever    = np.any(reached, axis=1)      # (n_seeds,)
+        first   = np.argmax(reached, axis=1)   # first True per seed (0 if never)
+        hit_iters[:, ti] = np.where(ever, first, max_iter + 1)
+
+    mean_hits  = np.mean(hit_iters,   axis=0)
+    worst_hits = np.max(hit_iters,    axis=0)
+    best_hits  = np.min(hit_iters,    axis=0)
+    q25_hits   = np.percentile(hit_iters, 25, axis=0)
+    q75_hits   = np.percentile(hit_iters, 75, axis=0)
+
+    fig, ax = plt.subplots(figsize=(9, 4))
+    ax.fill_between(thresholds, q25_hits, q75_hits, color="steelblue", alpha=0.2, label="IQR (25–75%)")
+    ax.plot(thresholds, mean_hits,  color="steelblue", lw=2,   label="mean across seeds")
+    ax.plot(thresholds, worst_hits, color="firebrick",  lw=1.5, ls="--", label="worst seed")
+    ax.plot(thresholds, best_hits,  color="seagreen",   lw=1.5, ls="--", label="best seed")
+    ax.set_xlabel("Quality threshold  (% above oracle best)")
+    ax.set_ylabel("Evaluations to first reach threshold")
+    ax.set_title(f"First-hit cost: evaluations needed per quality level  ({len(bo_data)} seeds)")
+    ax.set_xscale("log")
+    ax.set_xlim(thresholds[0], thresholds[-1])
+    ax.set_ylim(0, max_iter * 1.05)
+    ax.grid(True, alpha=0.3)
+    ax.legend(fontsize=8)
+    plt.tight_layout()
+    p = out_dir / "first_hit_curve.png"
     fig.savefig(p, dpi=150, bbox_inches="tight")
     plt.close(fig)
     out_paths.append(str(p))
@@ -919,6 +1009,9 @@ def main():
 
             f = executor.submit(_plot_aggregate_learning_curves, seed_csvs, agg_dir, scale)
             all_futures[f] = "aggregate_learning_curves"
+
+            f = executor.submit(_plot_aggregate_timings, seed_csvs, agg_dir)
+            all_futures[f] = "aggregate_timings"
 
             f = executor.submit(generate_problem_readme, group, seed_csvs, scale, ax_x, ax_y, ax_f)
             all_futures[f] = "problem_readme"

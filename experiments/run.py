@@ -26,6 +26,7 @@ import subprocess
 import sys
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from pathlib import Path
+from tqdm import tqdm
 
 # ── Paths ──────────────────────────────────────────────────────────────────────
 
@@ -86,7 +87,10 @@ def _run_seed(args: tuple) -> tuple[int, int]:
     seed, file, dump_dir, scale, extra, cinm_opt = args
     infer_opts = _infer_opts(scale=scale, dump_dir=dump_dir, seed=seed, extra=extra)
     cmd = _cinm_opt_cmd(file, infer_opts, cinm_opt=cinm_opt)
-    result = subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    log_path = Path(dump_dir) / f"{file}_seed{seed}.log"
+    out_path  = Path(dump_dir) / f"out_seed{seed}.mlir"
+    with open(log_path, "w") as log_f, open(out_path, "w") as out_f:
+        result = subprocess.run(cmd, stderr=log_f, stdout=out_f)
     return seed, result.returncode
 
 
@@ -125,7 +129,7 @@ def cmd_seeds(args: argparse.Namespace) -> int:
     data_dir = Path("data") / dir_
     data_dir.mkdir(parents=True, exist_ok=True)
 
-    seeds = [i * 31 + 67 for i in range(1, args.n + 1)]
+    seeds = [i * 31 + args.offset for i in range(1, args.n + 1)]
     worker_args = [
         (seed, args.file, str(data_dir), args.scale, args.extra, args.cinm_opt)
         for seed in seeds
@@ -137,7 +141,7 @@ def cmd_seeds(args: argparse.Namespace) -> int:
     failed = 0
     with ProcessPoolExecutor(max_workers=workers) as pool:
         futures = {pool.submit(_run_seed, wa): wa[0] for wa in worker_args}
-        for fut in as_completed(futures):
+        for fut in tqdm(as_completed(futures), total=len(futures)):
             seed = futures[fut]
             try:
                 _, rc = fut.result()
@@ -146,7 +150,7 @@ def cmd_seeds(args: argparse.Namespace) -> int:
                 failed += 1
                 continue
             status = "ok" if rc == 0 else f"FAILED (exit {rc})"
-            print(f"[seeds] seed={seed}  {status}")
+            tqdm.write(f"[seeds] seed={seed}  {status}")
             if rc != 0:
                 failed += 1
 
@@ -179,7 +183,7 @@ def cmd_plot(args: argparse.Namespace) -> int:
     oracle = getattr(args, "oracle", None) or ""
     scale  = getattr(args, "scale", "log10")
     extra  = getattr(args, "plot_extra", [])
-    no_per_seed = getattr(args, "no_per_seed", True)
+    no_per_seed = getattr(args, "no_per_seed", False)
 
     plot_script = EXPERIMENTS_DIR / "plotting" / "plot_bo.py"
 
@@ -285,7 +289,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_run.add_argument("--no-per-seed", action="store_true", dest="no_per_seed",
                        help="Pass --no-per-seed to plot_bo.py")
     _add_extra(p_run)
-    p_run.set_defaults(func=cmd_run, no_per_seed=True)
+    p_run.set_defaults(func=cmd_run)
 
     # ── seeds ────────────────────────────────────────────────────────────────
     p_seeds = sub.add_parser("seeds",
@@ -297,10 +301,12 @@ def build_parser() -> argparse.ArgumentParser:
                          help="Number of seeds (default: 5)")
     p_seeds.add_argument("-j", "--workers", type=int, default=None,
                          help="Worker processes (default: ncpu-2)")
+    p_seeds.add_argument("--offset", type=int, default=67,
+                         help="Offset to use to make generated seeds different from another run of the command")
     p_seeds.add_argument("--no-per-seed", action="store_true", dest="no_per_seed",
                          help="Pass --no-per-seed to plot_bo.py")
     _add_extra(p_seeds)
-    p_seeds.set_defaults(func=cmd_seeds, no_per_seed=True)
+    p_seeds.set_defaults(func=cmd_seeds)
 
     # ── exhaustive ───────────────────────────────────────────────────────────
     p_ex = sub.add_parser("exhaustive", help="Exhaustive search (oracle)")
@@ -317,8 +323,7 @@ def build_parser() -> argparse.ArgumentParser:
                         help="Pass --no-per-seed to plot_bo.py")
     p_plot.add_argument("plot_extra", nargs="*", metavar="ARG",
                         help="Extra args forwarded to plot_bo.py")
-    p_plot.set_defaults(func=lambda a: cmd_plot(a), no_per_seed=True,
-                        file=None, dir=None)
+    p_plot.set_defaults(func=lambda a: cmd_plot(a), file=None, dir=None)
 
     # ── view ─────────────────────────────────────────────────────────────────
     p_view = sub.add_parser("view", help="Interactive pool viewer")
