@@ -450,32 +450,86 @@ void CandidatePool::dumpToCSV(const ConfigSpace &space,
     out << ",mu,sigma,acq";
   out << "\n";
 
-  // One row per pool member
+  // One row per valid pool member (invalid configs are omitted entirely;
+  // consumers treat absent rows as invalid).
   Configuration conf;
   for (size_t i = 0; i < N; ++i) {
+    auto vit = validPos.find(i);
+    if (vit == validPos.end())
+      continue; // skip invalid configs
     space_->at(i, conf);
     for (int64_t v : conf)
       out << v << ",";
-    out << (visited.test(i) ? 1 : 0) << "," << (validPos.count(i) ? 1 : 0)
-        << ",";
+    out << (visited.test(i) ? 1 : 0) << ",1,"; // valid is always 1 here
     double c = costByIdx(i);
     if (!std::isnan(c))
       out << c;
     out << ",";
-    auto it = iterByIdx.find(i);
-    if (it != iterByIdx.end())
-      out << it->second;
+    auto iit = iterByIdx.find(i);
+    if (iit != iterByIdx.end())
+      out << iit->second;
     if (hasModel) {
-      auto it = validPos.find(i);
-      if (it != validPos.end()) {
-        size_t j = it->second;
-        out << "," << mu_v(j) << "," << sigma_v(j) << "," << acq_v(j);
-      } else {
-        out << ",,,"; // invalid config — no surrogate prediction
-      }
+      size_t j = vit->second;
+      out << "," << mu_v(j) << "," << sigma_v(j) << "," << acq_v(j);
     }
     out << "\n";
   }
+}
+
+void CandidatePool::dumpMetadataJSON(const ConfigSpace &space,
+                                     std::filesystem::path path) const {
+  std::filesystem::create_directories(path.parent_path());
+  std::ofstream out(path);
+  if (!out)
+    return;
+
+  // Count valid configurations (same logic as dumpToCSV).
+  size_t nValid = 0;
+  {
+    Configuration conf;
+    for (size_t i = 0; i < N; ++i) {
+      space_->at(i, conf);
+      if (space_->isValid(conf))
+        ++nValid;
+    }
+  }
+
+  auto jsonStr = [&](const std::string &s) {
+    out << '"';
+    for (char c : s) {
+      if (c == '"' || c == '\\') out << '\\';
+      out << c;
+    }
+    out << '"';
+  };
+
+  out << "{\n";
+  out << "  \"total_size\": " << N << ",\n";
+  out << "  \"n_valid\": " << nValid << ",\n";
+  out << "  \"params\": [\n";
+  for (size_t i = 0; i < space.params.size(); ++i) {
+    const auto &p = space.params[i];
+    out << "    {";
+    out << "\"name\": "; jsonStr(p.name); out << ", ";
+    out << "\"cardinality\": " << p.cardinality() << ", ";
+    if (auto *r = std::get_if<IntRange>(&p.domain)) {
+      out << "\"type\": \"range\", ";
+      out << "\"lo\": " << r->lo << ", ";
+      out << "\"hi\": " << r->hi << ", ";
+      out << "\"step\": " << r->step;
+    } else if (auto *v = std::get_if<ValueList>(&p.domain)) {
+      out << "\"type\": \"values\", \"values\": [";
+      for (size_t j = 0; j < v->values.size(); ++j) {
+        if (j) out << ", ";
+        out << v->values[j];
+      }
+      out << "]";
+    }
+    out << "}";
+    if (i + 1 < space.params.size()) out << ",";
+    out << "\n";
+  }
+  out << "  ]\n}\n";
 }
 
 // ===----------------------------------------------------------------------===//

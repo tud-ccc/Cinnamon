@@ -77,6 +77,7 @@ def _cinm_opt_cmd(
     ]
     if extra_mlir_flags:
         cmd.extend(extra_mlir_flags)
+    print(' '.join(cmd))
     return cmd
 
 

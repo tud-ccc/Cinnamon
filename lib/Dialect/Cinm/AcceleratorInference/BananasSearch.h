@@ -123,6 +123,12 @@ struct CandidatePool {
   void dumpToCSV(const ConfigSpace &space, const InferenceOptions &opts,
                  std::filesystem::path path) const;
 
+  /// Write a JSON sidecar at `path` summarising the search space:
+  /// total_size (Cartesian product), n_valid (constraint-passing configs),
+  /// and a per-parameter description (name, type, domain, cardinality).
+  void dumpMetadataJSON(const ConfigSpace &space,
+                        std::filesystem::path path) const;
+
 private:
   /// Insert idx into result if it is unvisited, not already present, and valid.
   bool tryInsert(std::unordered_set<size_t> &result, size_t idx,

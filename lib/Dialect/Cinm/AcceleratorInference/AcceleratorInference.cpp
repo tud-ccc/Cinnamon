@@ -474,6 +474,7 @@ struct InferenceTask {
     if (!options.dumpDir.empty()) {
       auto dumpPath = std::filesystem::path(options.dumpDir);
       pool.dumpToCSV(space, options, dumpPath / "pool.csv");
+      pool.dumpMetadataJSON(space, dumpPath / "space.json");
       validSet.dumpToCSV(dumpPath / "validation.csv");
       trainingSet.dumpToCSV(dumpPath / "training.csv");
       if (!timings.empty()) {

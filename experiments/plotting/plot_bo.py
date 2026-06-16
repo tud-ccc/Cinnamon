@@ -66,12 +66,15 @@ def assert_same_space(oracle_df, bo_df, dims, path):
         f"{path}: dimension columns differ from oracle\n"
         f"  oracle: {dims}\n  BO:     {bo_dims}"
     )
+    # Both CSVs now only contain valid rows, so the BO pool is a subset of the
+    # oracle's valid space — use subset check instead of equality.
+    oracle_valid = oracle_df[oracle_df["valid"] == 1] if "valid" in oracle_df.columns else oracle_df
     for d in dims:
-        ov = set(oracle_df[d].unique())
+        ov = set(oracle_valid[d].unique())
         bv = set(bo_df[d].unique())
-        assert ov == bv, (
-            f"{path}: dimension '{d}' has different unique values\n"
-            f"  oracle: {sorted(ov)}\n  BO:     {sorted(bv)}"
+        assert bv.issubset(ov), (
+            f"{path}: dimension '{d}' has values not present in oracle\n"
+            f"  extra in BO: {sorted(bv - ov)}\n  oracle: {sorted(ov)}"
         )
 
 
@@ -853,10 +856,19 @@ def generate_problem_readme(oracle_group, seed_csv_paths, scale, ax_x, ax_y, ax_
     problem_name = oracle_group.out_dir.name
     n_seeds = len(seed_csv_paths)
 
-    # Derive search space size from first seed
-    first_df = pd.read_csv(seed_csv_paths[0])
-    n_total = len(first_df)
-    n_valid = int(first_df["valid"].sum()) if "valid" in first_df.columns else "?"
+    # Derive search space size from space.json sidecar (written by C++ BananasSearch dumper).
+    # pool.csv only contains valid rows, so n_valid and n_total come from the JSON.
+    import json as _json
+    _space_json = Path(seed_csv_paths[0]).parent / "space.json"
+    if _space_json.exists():
+        with open(_space_json) as _f:
+            _meta = _json.load(_f)
+        n_total = _meta.get("total_size", "?")
+        n_valid = _meta.get("n_valid", "?")
+    else:
+        first_df = pd.read_csv(seed_csv_paths[0])
+        n_valid = len(first_df)
+        n_total = "?"
 
     max_iters = []
     bests = []
