@@ -54,17 +54,24 @@ struct DpuTranslator {
   // ── Type helpers ──────────────────────────────────────────────────────────
 
   DType mlirTypeToDtype(Type ty) {
-    if (ty.isF32()) return DType::F32;
-    if (ty.isF64()) return DType::F64;
+    if (ty.isF32())
+      return DType::F32;
+    if (ty.isF64())
+      return DType::F64;
     // F16/BF16 → F32 (UPMEM cost model has no 16-bit float type)
-    if (ty.isF16() || ty.isBF16()) return DType::F32;
+    if (ty.isF16() || ty.isBF16())
+      return DType::F32;
     if (auto it = dyn_cast<IntegerType>(ty)) {
       unsigned w = it.getWidth();
       bool s = !it.isUnsigned();
-      if (w == 8)  return s ? DType::I8  : DType::U8;
-      if (w == 16) return s ? DType::I16 : DType::U16;
-      if (w == 32) return s ? DType::I32 : DType::U32;
-      if (w == 64) return s ? DType::I64 : DType::U64;
+      if (w == 8)
+        return s ? DType::I8 : DType::U8;
+      if (w == 16)
+        return s ? DType::I16 : DType::U16;
+      if (w == 32)
+        return s ? DType::I32 : DType::U32;
+      if (w == 64)
+        return s ? DType::I64 : DType::U64;
     }
     return DType::I64; // index or unknown
   }
@@ -79,10 +86,12 @@ struct DpuTranslator {
   // ── Helpers ───────────────────────────────────────────────────────────────
 
   bool ivIndexedIn(ValueRange values) {
-    if (iv_stack.empty()) return false;
+    if (iv_stack.empty())
+      return false;
     Value iv = iv_stack.back();
     for (Value v : values)
-      if (v == iv) return true;
+      if (v == iv)
+        return true;
     return false;
   }
 
@@ -99,16 +108,16 @@ struct DpuTranslator {
   void translatePwramAlloc(PrivateWRAMAllocOp op) {
     auto mrt = op.getType();
     std::string name = "wram_" + std::to_string(buf_ctr++);
-    buf_map[op.getResult()] =
-        builder.addBuffer(name, MemSpace::WRAM, mlirTypeToDtype(mrt.getElementType()));
+    buf_map[op.getResult()] = builder.addBuffer(
+        name, MemSpace::WRAM, mlirTypeToDtype(mrt.getElementType()));
   }
 
   void translateStaticAlloc(StaticAllocOp op) {
     auto mrt = llvm::cast<MemRefType>(op.getBuffer().getType());
     std::string name = op.getSymName() ? op.getSymName()->str()
                                        : ("buf_" + std::to_string(buf_ctr++));
-    buf_map[op.getBuffer()] =
-        builder.addBuffer(name, memSpaceOf(mrt), mlirTypeToDtype(mrt.getElementType()));
+    buf_map[op.getBuffer()] = builder.addBuffer(
+        name, memSpaceOf(mrt), mlirTypeToDtype(mrt.getElementType()));
   }
 
   void translateTaskletDim(TaskletDimOp op) {
@@ -125,7 +134,10 @@ struct DpuTranslator {
     bool iv_indexed = false;
     for (OpFoldResult off : op.getMixedOffsets())
       if (auto v = off.dyn_cast<Value>())
-        if (ivIndexedIn({v})) { iv_indexed = true; break; }
+        if (ivIndexedIn({v})) {
+          iv_indexed = true;
+          break;
+        }
 
     int64_t n = 1;
     for (OpFoldResult sz : op.getMixedSizes())
@@ -186,13 +198,15 @@ struct DpuTranslator {
     auto it = buf_map.find(op.getMemRef());
     if (it == buf_map.end())
       return;
-    val_map[op.getResult()] = builder.createLoad(it->second, ivIndexedIn(op.getIndices()));
+    val_map[op.getResult()] =
+        builder.createLoad(it->second, ivIndexedIn(op.getIndices()));
   }
 
   void translateStore(memref::StoreOp op) {
     if (skip_vals.count(op.getValue()))
       return;
-    if (op.getValue().getDefiningOp() && isa<scf::ForOp>(op.getValue().getDefiningOp()))
+    if (op.getValue().getDefiningOp() &&
+        isa<scf::ForOp>(op.getValue().getDefiningOp()))
       return;
     auto bufIt = buf_map.find(op.getMemRef());
     if (bufIt == buf_map.end())
@@ -200,7 +214,8 @@ struct DpuTranslator {
     auto valIt = val_map.find(op.getValue());
     if (valIt == val_map.end())
       return;
-    builder.createStore(bufIt->second, valIt->second, ivIndexedIn(op.getIndices()));
+    builder.createStore(bufIt->second, valIt->second,
+                        ivIndexedIn(op.getIndices()));
   }
 
   void translateBinArith(Value result, Value lhs, Value rhs, ArithOp op) {
@@ -212,8 +227,8 @@ struct DpuTranslator {
                                           lit->second, rit->second);
   }
 
-  // Detect reduction: for iter_args(%acc = %init) { %s = addf %acc, %compute; yield %s }
-  // followed immediately by memref.store %forResult, %accBuf[...].
+  // Detect reduction: for iter_args(%acc = %init) { %s = addf %acc, %compute;
+  // yield %s } followed immediately by memref.store %forResult, %accBuf[...].
   // If detected, emits beginLoop + body + createReduceStore + endLoop and marks
   // the forResult so the following store is skipped.
   bool tryTranslateReduction(scf::ForOp forOp) {
@@ -232,9 +247,12 @@ struct DpuTranslator {
     BlockArgument iterArg = forOp.getRegionIterArgs()[0];
     Value addLhs = addOp->getOperand(0), addRhs = addOp->getOperand(1);
     Value computeVal;
-    if (addLhs == iterArg)       computeVal = addRhs;
-    else if (addRhs == iterArg)  computeVal = addLhs;
-    else                          return false;
+    if (addLhs == iterArg)
+      computeVal = addRhs;
+    else if (addRhs == iterArg)
+      computeVal = addLhs;
+    else
+      return false;
 
     Value forResult = forOp.getResult(0);
     if (!forResult.hasOneUse())
@@ -248,8 +266,8 @@ struct DpuTranslator {
       return false;
     ProgramBuilder::BufId accBufId = accBufIt->second;
 
-    int64_t lb   = getConstInt(forOp.getLowerBound());
-    int64_t ub   = getConstInt(forOp.getUpperBound());
+    int64_t lb = getConstInt(forOp.getLowerBound());
+    int64_t ub = getConstInt(forOp.getUpperBound());
     int64_t step = getConstInt(forOp.getStep());
 
     iv_stack.push_back(forOp.getInductionVar());
@@ -276,8 +294,8 @@ struct DpuTranslator {
     if (tryTranslateReduction(forOp))
       return;
 
-    int64_t lb   = getConstInt(forOp.getLowerBound());
-    int64_t ub   = getConstInt(forOp.getUpperBound());
+    int64_t lb = getConstInt(forOp.getLowerBound());
+    int64_t ub = getConstInt(forOp.getUpperBound());
     int64_t step = getConstInt(forOp.getStep());
 
     iv_stack.push_back(forOp.getInductionVar());
@@ -359,17 +377,21 @@ struct DpuTranslator {
 
 struct CppSimulator : UpmemSimulator {
   bool annotateOpCosts;
+  std::chrono::milliseconds timeoutMs;
 
-  explicit CppSimulator(bool annotateOpCosts) : annotateOpCosts(annotateOpCosts) {}
+  explicit CppSimulator(bool annotateOpCosts,
+                        std::chrono::milliseconds timeoutMs)
+      : annotateOpCosts(annotateOpCosts), timeoutMs(timeoutMs) {}
 
   std::unique_ptr<UpmemSimulator> clone() override {
-    return std::make_unique<CppSimulator>(annotateOpCosts);
+    return std::make_unique<CppSimulator>(annotateOpCosts, timeoutMs);
   }
 
   bool supportsMultithreading() const override { return true; }
 
   Maybe<double> simulate(Region &region) override {
-    auto waitForCb = [](Operation *op, bool) -> double {
+    std::chrono::milliseconds tms = timeoutMs;
+    auto waitForCb = [tms](Operation *op, bool) -> double {
       auto waitFor = llvm::cast<WaitForOp>(op);
       DpuProgramOp dpuProg = waitFor.getDpuProgram();
       if (!dpuProg)
@@ -378,7 +400,8 @@ struct CppSimulator : UpmemSimulator {
       ProgramBuilder builder;
       DpuTranslator tr(builder);
       tr.translateProgram(dpuProg);
-      return builder.simulate(T);
+      return builder.simulate(T, tms).value_or(
+          std::numeric_limits<double>::infinity());
     };
     return simulateHostRegion(region, annotateOpCosts, waitForCb);
   }
@@ -390,8 +413,10 @@ struct CppSimulator : UpmemSimulator {
 // Factory
 // ===----------------------------------------------------------------------===//
 
-std::unique_ptr<UpmemSimulator> createPythonSimulator(bool annotateOpCosts) {
-  return std::make_unique<CppSimulator>(annotateOpCosts);
+std::unique_ptr<UpmemSimulator>
+createPythonSimulator(bool annotateOpCosts,
+                      std::chrono::milliseconds timeoutMs) {
+  return std::make_unique<CppSimulator>(annotateOpCosts, timeoutMs);
 }
 
 } // namespace mlir::upmem

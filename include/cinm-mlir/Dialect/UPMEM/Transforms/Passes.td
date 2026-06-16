@@ -81,7 +81,14 @@ def UpmemInferAcceleratorPass : Pass<"upmem-infer-accelerator", "ModuleOp"> {
            "Record surrogate predictions on the validation set every N BO "
            "iterations">,
     Option<"objectiveScale", "objective-scale", "std::string", "\"log10\"",
-           "Cost transform before surrogate training: linear, log2, log10, ln, sqrt, cbrt">
+           "Cost transform before surrogate training: linear, log2, log10, ln, sqrt, cbrt">,
+    Option<"useMRAMTiling", "use-mram-tiling", "bool", "true",
+           "Enable MRAM tiling in the UPMEM lowering">,
+    Option<"simulator", "simulator", "std::string", "\"cycleaccurate\"",
+           "Simulator backend: 'cycleaccurate' or 'opcount'">,
+    Option<"evalTimeoutMs", "eval-timeout-ms", "int", "5000",
+           "Wall-clock timeout in milliseconds for a single simulation; "
+           "0 disables the timeout">
   ];
 }
 

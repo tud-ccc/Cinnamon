@@ -13,11 +13,11 @@
 #include "cinm-mlir/Dialect/UPMEM/Transforms/UpmemSimulator.h"
 #include "cinm-mlir/Utils/Scheduling/SchedulingSupport.h"
 
+#include <chrono>
 #include <cstdint>
 #include <filesystem>
 #include <functional>
 #include <limits>
-#include <optional>
 #include <string>
 #include <utility>
 
@@ -108,7 +108,8 @@ public:
           callback);
 
   /// Register that tilingFactors[childLocalIdx] must be a multiple of
-  /// tilingFactors[parentLocalIdx]. Committed to the space after dims are added.
+  /// tilingFactors[parentLocalIdx]. Committed to the space after dims are
+  /// added.
   void addMultiplesConstraint(size_t parentLocalIdx, size_t childLocalIdx) {
     pendingMultiples_.push_back({parentLocalIdx, childLocalIdx});
   }
@@ -117,9 +118,19 @@ private:
   SmallVector<std::pair<size_t, size_t>> pendingMultiples_;
 };
 
+/// UPMEM-specific inference options. Wraps the generic InferenceOptions and
+/// provides a place to add UPMEM-specific knobs in the future.
+struct UpmemInferenceOptions {
+  cinm::InferenceOptions inference;
+  bool annotateOpCosts = false;
+  bool useMRAMTiling = true;
+  std::string simulator = "cycleaccurate";
+  std::chrono::milliseconds evalTimeoutMs = std::chrono::milliseconds(2000);
+};
+
 struct UpmemInferencePlugin : cinm::InferencePlugin {
   upmem::UpmemPlatformAttr platform;
-  bool mramTiling;
+  const UpmemInferenceOptions &opts;
   std::unique_ptr<UpmemSimulator> simulator;
 
   // int64_t rankIx = -1;
@@ -130,9 +141,10 @@ struct UpmemInferencePlugin : cinm::InferencePlugin {
   static constexpr llvm::StringLiteral kTileParamNamesAttr =
       "upmem.tile_param_names";
 
-  UpmemInferencePlugin(upmem::UpmemPlatformAttr platform, bool mramTiling,
+  UpmemInferencePlugin(upmem::UpmemPlatformAttr platform,
+                       const UpmemInferenceOptions &opts,
                        std::unique_ptr<UpmemSimulator> sim)
-      : platform(platform), mramTiling(mramTiling), simulator(std::move(sim)) {}
+      : platform(platform), opts(opts), simulator(std::move(sim)) {}
 
   bool supportsMultithreading() const override {
     return simulator && simulator->supportsMultithreading();
@@ -227,7 +239,7 @@ struct UpmemInferencePlugin : cinm::InferencePlugin {
   // --- InferencePlugin interface ---
 
   std::unique_ptr<cinm::InferencePlugin> clone() const override {
-    auto c = std::make_unique<UpmemInferencePlugin>(platform, mramTiling,
+    auto c = std::make_unique<UpmemInferencePlugin>(platform, opts,
                                                     simulator->clone());
     // c->rankIx = rankIx;
     c->dpuIx = dpuIx;
@@ -269,7 +281,7 @@ struct UpmemInferencePlugin : cinm::InferencePlugin {
       llvm::SmallVector<cinm::SearchParam> tilingFactors;
       llvm::SmallVector<StringRef> paramNames;
       buildTilingParams(dimSizes, nameInventor, tilingFactors, paramNames);
-      if (mramTiling) {
+      if (opts.useMRAMTiling) {
         auto nameInventor2 = cinm::utils::NameInventor::getNameInventor(
             refClone.getOperation(), "mtile");
         buildTilingParams(dimSizes, nameInventor2, tilingFactors, paramNames);
@@ -304,7 +316,7 @@ struct UpmemInferencePlugin : cinm::InferencePlugin {
     trial.computeBlock.setAcceleratorAttr(
         upmem::UpmemAcceleratorAttr::get(platform, 1, dpus, tasklets));
 
-    if (mramTiling) {
+    if (opts.useMRAMTiling) {
       // then bypass the lowering completely, we run the simulator on a template
       // TODO when the CNM pipeline allows, remove this and run the regular
       // pipeline
@@ -321,9 +333,9 @@ struct UpmemInferencePlugin : cinm::InferencePlugin {
 
         if (auto gemv = llvm::dyn_cast_or_null<cinm::GemvOp>(op)) {
           auto shape = gemv.getLhs().getType().getShape();
-          result =
-              simulateFullGemv(shape[0], shape[1], tileSizes[2], tileSizes[3],
-                               tileSizes[0], tileSizes[1], 1, dpus, tasklets);
+          result = simulateFullGemv(opts.evalTimeoutMs, shape[0], shape[1],
+                                    tileSizes[2], tileSizes[3], tileSizes[0],
+                                    tileSizes[1], 1, dpus, tasklets);
         }
       });
       return result;
@@ -416,51 +428,51 @@ void UpmemInferencePlugin::handleOpConstraints(cinm::CinmTilingInterface op,
     auto wramLevel = platform.getWramLevel();
     auto mramLevel = platform.getMramLevel();
     auto eltTy = gemv.getLhs().getType().getElementType();
-    bool mramTiling = this->mramTiling;
+    bool mramTiling = opts.useMRAMTiling;
 
-    editor.addDynamicConstraint([wramLevel, mramLevel, eltTy,
-                                 mramTiling](auto totalDpus, auto tasklets,
-                                             auto tiles, auto dims) {
-      const int64_t wramRowTile = tiles[0]; // WRAM rows per tasklet
-      const int64_t wramColTile = tiles[1]; // WRAM cols per tasklet
+    editor.addDynamicConstraint(
+        [wramLevel, mramLevel, eltTy, mramTiling](auto totalDpus, auto tasklets,
+                                                  auto tiles, auto dims) {
+          const int64_t wramRowTile = tiles[0]; // WRAM rows per tasklet
+          const int64_t wramColTile = tiles[1]; // WRAM cols per tasklet
 
-      // Per-tasklet WRAM: A tile (wramRowTile×wramColTile) + x
-      // (wramColTile) + y (wramRowTile)
-      if (wramRowTile * wramColTile + wramColTile + wramRowTile >
-          wramLevel.getSizeInElements(eltTy))
-        return false;
+          // Per-tasklet WRAM: A tile (wramRowTile×wramColTile) + x
+          // (wramColTile) + y (wramRowTile)
+          if (wramRowTile * wramColTile + wramColTile + wramRowTile >
+              wramLevel.getSizeInElements(eltTy))
+            return false;
 
-      if (!mramTiling)
-        return true;
+          if (!mramTiling)
+            return true;
 
-      const int64_t mramRowTile =
-          tiles[2]; // MRAM rows per DPU  (= ranks × dpusPerRank combined)
-      const int64_t mramColTile = tiles[3]; // MRAM cols per DPU
-      const int64_t M = dims[0], K = dims[1];
+          const int64_t mramRowTile =
+              tiles[2]; // MRAM rows per DPU  (= ranks × dpusPerRank combined)
+          const int64_t mramColTile = tiles[3]; // MRAM cols per DPU
+          const int64_t M = dims[0], K = dims[1];
 
-      if (!ShapedType::isDynamic(M)) {
-        // All DPUs and tasklets together cover
-        // (totalDpus × tasklets × mramRowTile) rows per outer loop
-        // iteration.
-        if (M % (totalDpus * tasklets * mramRowTile) != 0 ||
-            totalDpus * tasklets * mramRowTile > M)
-          return false;
-      }
-      if (!ShapedType::isDynamic(K)) {
-        if (K % mramColTile != 0 || mramColTile > K)
-          return false;
-      }
+          if (!ShapedType::isDynamic(M)) {
+            // All DPUs and tasklets together cover
+            // (totalDpus × tasklets × mramRowTile) rows per outer loop
+            // iteration.
+            if (M % (totalDpus * tasklets * mramRowTile) != 0 ||
+                totalDpus * tasklets * mramRowTile > M)
+              return false;
+          }
+          if (!ShapedType::isDynamic(K)) {
+            if (K % mramColTile != 0 || mramColTile > K)
+              return false;
+          }
 
-      // MRAM per DPU: A (tasklets×mramRowTile×mramColTile) + x
-      // (mramColTile)
-      //               + y (tasklets×mramRowTile)
-      if (tasklets * mramRowTile * mramColTile + mramColTile +
-              tasklets * mramRowTile >
-          mramLevel.getSizeInElements(eltTy))
-        return false;
+          // MRAM per DPU: A (tasklets×mramRowTile×mramColTile) + x
+          // (mramColTile)
+          //               + y (tasklets×mramRowTile)
+          if (tasklets * mramRowTile * mramColTile + mramColTile +
+                  tasklets * mramRowTile >
+              mramLevel.getSizeInElements(eltTy))
+            return false;
 
-      return true;
-    });
+          return true;
+        });
 
     if (mramTiling) {
       // wramRowTile (local 0) must divide mramRowTile (local 2), and
@@ -504,16 +516,6 @@ void ConstraintEditor::addDynamicConstraint(
 // ===----------------------------------------------------------------------===//
 } // namespace
 
-/// UPMEM-specific inference options. Wraps the generic InferenceOptions and
-/// provides a place to add UPMEM-specific knobs in the future.
-struct UpmemInferenceOptions {
-  cinm::InferenceOptions inference;
-  bool annotateOpCosts = false;
-  // todo wire these two through pass options
-  bool useMRAMTiling = true;
-  std::string simulator = "cycleaccurate";
-};
-
 struct UpmemInferAcceleratorPass
     : impl::UpmemInferAcceleratorPassBase<UpmemInferAcceleratorPass> {
   using Base::Base;
@@ -536,6 +538,9 @@ struct UpmemInferAcceleratorPass
     o.validationInterval = validationInterval;
     o.objectiveScale = objectiveScale;
     upmemOpts.annotateOpCosts = annotateOpCosts;
+    upmemOpts.useMRAMTiling = useMRAMTiling;
+    upmemOpts.simulator = simulator;
+    upmemOpts.evalTimeoutMs = std::chrono::milliseconds(evalTimeoutMs);
     o.dumpDir = dumpDir;
     return upmemOpts;
   }
@@ -571,9 +576,10 @@ struct UpmemInferAcceleratorPass
       if (!platform)
         return WalkResult::skip(); // not a UPMEM target
 
-      UpmemInferencePlugin plugin(
-          platform, upmemOpts.useMRAMTiling,
-          createSimulator(upmemOpts.simulator, upmemOpts.annotateOpCosts));
+      UpmemInferencePlugin plugin(platform, upmemOpts,
+                                  createSimulator(upmemOpts.simulator,
+                                                  upmemOpts.annotateOpCosts,
+                                                  upmemOpts.evalTimeoutMs));
 
       if (!dataDumpDir.empty()) {
         auto parentFunc = computeOp->getParentOfType<SymbolOpInterface>();

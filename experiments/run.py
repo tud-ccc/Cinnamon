@@ -167,7 +167,7 @@ def cmd_exhaustive(args: argparse.Namespace) -> int:
     data_dir = Path("data") / dir_
     data_dir.mkdir(parents=True, exist_ok=True)
 
-    infer_opts = f"dump-dir={data_dir} exhaustive-search"
+    infer_opts = f"dump-dir={data_dir} exhaustive-search {' '.join(args.extra)}"
     cmd = _cinm_opt_cmd(args.file, infer_opts, cinm_opt=args.cinm_opt)
 
     log_path = data_dir / f"{args.file}.log"
@@ -312,6 +312,7 @@ def build_parser() -> argparse.ArgumentParser:
     # ── exhaustive ───────────────────────────────────────────────────────────
     p_ex = sub.add_parser("exhaustive", help="Exhaustive search (oracle)")
     _add_common(p_ex)
+    _add_extra(p_ex)
     p_ex.set_defaults(func=cmd_exhaustive)
 
     # ── plot ─────────────────────────────────────────────────────────────────

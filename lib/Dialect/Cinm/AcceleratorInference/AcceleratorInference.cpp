@@ -3,8 +3,10 @@
 #include "cinm-mlir/Dialect/Cinm/IR/CinmAttributes.h"
 #include "cinm-mlir/Dialect/Cinm/IR/CinmOps.h"
 
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <future>
 
 #include <iterator>
 #include <llvm/ADT/STLExtras.h>
