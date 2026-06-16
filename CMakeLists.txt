@@ -180,6 +180,19 @@ if(NOT armadillo_src_POPULATED)
     target_link_libraries(armadillo INTERFACE blas_lapack)
 endif()
 
+# cereal (header-only serialization, required by mlpack)
+FetchContent_Declare(cereal_src
+    GIT_REPOSITORY https://github.com/USCiLab/cereal.git
+    GIT_TAG        v1.3.2
+    GIT_SHALLOW    TRUE
+)
+FetchContent_GetProperties(cereal_src)
+if(NOT cereal_src_POPULATED)
+    FetchContent_Populate(cereal_src)
+    add_library(cereal_fc INTERFACE)
+    target_include_directories(cereal_fc INTERFACE ${cereal_src_SOURCE_DIR}/include)
+endif()
+
 # mlpack headers (header-only; skip its own CMake build).
 FetchContent_Declare(mlpack_src
     GIT_REPOSITORY https://github.com/mlpack/mlpack.git
@@ -191,7 +204,7 @@ if(NOT mlpack_src_POPULATED)
     FetchContent_Populate(mlpack_src)
     add_library(mlpack_fc INTERFACE)
     target_include_directories(mlpack_fc INTERFACE ${mlpack_src_SOURCE_DIR}/src)
-    target_link_libraries(mlpack_fc INTERFACE armadillo)
+    target_link_libraries(mlpack_fc INTERFACE armadillo cereal_fc)
 endif()
 
 # Add pybind11
