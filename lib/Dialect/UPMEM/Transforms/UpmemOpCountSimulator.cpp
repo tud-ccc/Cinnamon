@@ -20,6 +20,7 @@
 #include <mlir/IR/BuiltinTypeInterfaces.h>
 #include <mlir/IR/BuiltinTypes.h>
 #include <mlir/IR/Operation.h>
+#include <mlir/Dialect/Utils/StaticValueUtils.h>
 #include <mlir/Interfaces/LoopLikeInterface.h>
 
 namespace mlir::upmem {
@@ -57,9 +58,19 @@ static double costOfOpCb(Operation &op, bool annotate,
   double cost =
       llvm::TypeSwitch<Operation *, double>(&op)
           .Case([&](LoopLikeOpInterface forOp) {
-            int64_t tripCount = 8;
-            if (auto tc = forOp.getStaticTripCount())
+            int64_t tripCount;
+            if (auto tc = forOp.getStaticTripCount()) {
               tripCount = tc->getZExtValue();
+            } else {
+              // In the dynamic case, for now we assume a big number divided by the loop step
+              // We should use integer range analysis
+              int64_t step = 1;
+              if (auto steps = forOp.getLoopSteps())
+                if (!steps->empty())
+                  if (auto sv = mlir::getConstantIntValue(steps->front()))
+                    step = *sv;
+              tripCount = std::max(1L, 2048 / std::max(1L, step));
+            }
             return costOfRegionCb(*forOp.getLoopRegions()[0], annotate, cb) *
                    static_cast<double>(tripCount);
           })

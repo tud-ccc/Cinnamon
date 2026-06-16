@@ -28,6 +28,7 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <fstream>
 #include <cmath>
 #include <limits>
 #include <optional>
@@ -416,6 +417,16 @@ struct InferenceTask {
 
     InferenceState state(options.maxEvals, refClone.getLoc());
 
+    using Clock = std::chrono::steady_clock;
+    auto t0 = Clock::now();
+    std::vector<std::pair<int, double>> timings; // (nObs, elapsed_ms)
+
+    auto recordTiming = [&]() {
+      double ms = std::chrono::duration<double, std::milli>(
+                      Clock::now() - t0).count();
+      timings.emplace_back(static_cast<int>(pool.nObs), ms);
+    };
+
     auto evalConf = [&](size_t idx) -> bool {
       double cost;
       bool success =
@@ -423,6 +434,7 @@ struct InferenceTask {
           !options.sampleOnlyValid;
       if (success) {
         trainingSet.record(idx, cost);
+        recordTiming();
       }
       return success;
     };
@@ -446,7 +458,8 @@ struct InferenceTask {
         // Not enough observations to fit a surrogate — pick first unvisited.
         if (size_t idx = pool.firstUnvisited(); idx >= 0) {
           double cost;
-          state.tryEval(idx, *this, pool, cost, pool.nObs);
+          if (state.tryEval(idx, *this, pool, cost, pool.nObs))
+            recordTiming();
         }
         continue;
       }
@@ -463,6 +476,14 @@ struct InferenceTask {
       pool.dumpToCSV(space, options, dumpPath / "pool.csv");
       validSet.dumpToCSV(dumpPath / "validation.csv");
       trainingSet.dumpToCSV(dumpPath / "training.csv");
+      if (!timings.empty()) {
+        std::ofstream timOut(dumpPath / "timings.csv");
+        if (timOut) {
+          timOut << "iter,elapsed_ms\n";
+          for (auto [iter, ms] : timings)
+            timOut << iter << "," << ms << "\n";
+        }
+      }
     }
 
     if (!state.anySuccess)

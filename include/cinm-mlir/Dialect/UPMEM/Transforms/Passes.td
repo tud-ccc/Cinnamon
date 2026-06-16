@@ -49,15 +49,15 @@ def UpmemInferAcceleratorPass : Pass<"upmem-infer-accelerator", "ModuleOp"> {
            "RNG seed for reproducibility">,
     Option<"kappa", "kappa", "double", "2.0",
            "UCB exploration weight for the BANANAS surrogate">,
-    Option<"epochs", "epochs", "int", "200",
+    Option<"epochs", "epochs", "int", "622",
            "Training epochs per MLP ensemble member">,
     Option<"nEnsemble", "n-ensemble", "int", "5",
            "Number of MLP ensemble members">,
-    Option<"hidden", "hidden", "int", "64",
+    Option<"hidden", "hidden", "int", "16",
            "Hidden layer width of each ensemble MLP">,
-    Option<"depth", "depth", "int", "2",
+    Option<"depth", "depth", "int", "1",
            "Number of hidden layers in each ensemble MLP">,
-    Option<"neighborDepth", "neighbor-depth", "unsigned", "1",
+    Option<"neighborDepth", "neighbor-depth", "unsigned", "2",
            "Number of discrete steps away from observed points to include as "
            "candidates (1 = immediate neighbors only)">,
     Option<"neighborFrontierOnly", "neighbor-frontier-only", "bool", "false",
@@ -77,9 +77,9 @@ def UpmemInferAcceleratorPass : Pass<"upmem-infer-accelerator", "ModuleOp"> {
     Option<"nValidation", "n-validation", "int", "0",
            "Number of held-out validation points sampled before BO begins; "
            "0 disables surrogate validation">,
-    Option<"validationInterval", "validation-interval", "int", "5",
+    Option<"validationInterval", "validation-interval", "int", "1",
            "Record surrogate predictions on the validation set every N BO "
-           "iterations (Phase 2 only)">,
+           "iterations">,
     Option<"objectiveScale", "objective-scale", "std::string", "\"log10\"",
            "Cost transform before surrogate training: linear, log2, log10, ln, sqrt, cbrt">
   ];
