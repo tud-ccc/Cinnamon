@@ -28,7 +28,7 @@ from matplotlib.cm import ScalarMappable
 from tqdm import tqdm
 
 
-META_COLS = {"visited", "valid", "cost", "eval_iter", "mu", "sigma", "acq"}
+META_COLS = {"visited", "valid", "cost", "eval_iter", "eval_time_ms", "mu", "sigma", "acq"}
 _SENTINEL_ITER = 2**63
 _SEED_TEMPLATE_PATH    = Path(__file__).parent / "README_seed_synopsis.md"
 _PROBLEM_TEMPLATE_PATH = Path(__file__).parent / "README_problem_synopsis.md"
@@ -52,6 +52,18 @@ def apply_scale(costs, scale):
 def scale_label(scale):
     return {"linear": "linear", "log2": "log₂", "log10": "log₁₀",
             "ln": "ln", "sqrt": "√", "cbrt": "∛"}.get(scale, scale)
+
+
+# ── Pool CSV loading ───────────────────────────────────────────────────────────
+def _load_pool_csv(path, inf_margin=0.10):
+    """Read a pool CSV and replace +inf costs with max_finite * (1 + margin)."""
+    df = pd.read_csv(path)
+    if "cost" in df.columns:
+        cost = df["cost"]
+        finite_max = cost[np.isfinite(cost)].max()
+        if pd.notna(finite_max):
+            df["cost"] = cost.replace(np.inf, finite_max * (1 + inf_margin))
+    return df
 
 
 # ── Dimension utilities ────────────────────────────────────────────────────────
@@ -223,7 +235,7 @@ def make_facet_plot(df, x, y, f, out_dir, metric, title, label, norm, cmap, *, w
 
 
 def build_facet_plot_tasks(csv_path, scale, x, y, f):
-    df = pd.read_csv(csv_path)
+    df = _load_pool_csv(csv_path)
     xyf = [x, y, f]
     agg = df.groupby(xyf, as_index=False).agg(
         valid=("valid", "max"),
@@ -325,6 +337,132 @@ def plot_validation_mape(val_csv_path, out_dir, dataset, scale):
                "mean |predicted − true| / true × 100"),
         out_path=os.path.join(out_dir, f"pool_{dataset}_mape.png"),
     )
+
+
+def _plot_eval_time_vs_cost(seed_csv_paths, out_dir, scale, names=None):
+    """Scatter: evaluation wall-clock time (s) vs cost, all seeds overlaid."""
+    if names is None:
+        names = [Path(p).parent.name for p in seed_csv_paths]
+    cmap = plt.cm.tab10
+
+    fig, ax = plt.subplots(figsize=(7, 4))
+    any_data = False
+    for i, (path, name) in enumerate(zip(seed_csv_paths, names)):
+        df = _load_pool_csv(path)
+        if "eval_time_ms" not in df.columns or "cost" not in df.columns:
+            continue
+        obs = df[df["cost"].notna() & df["eval_time_ms"].notna()]
+        if obs.empty:
+            continue
+        cost_scaled = apply_scale(obs["cost"] * obs["dpus"] * obs["threads"], scale)
+        time_s = obs["eval_time_ms"] / 1000.0
+        color = cmap(i / max(len(seed_csv_paths), 1))
+        ax.scatter(cost_scaled, time_s, color=color, s=14, alpha=0.55,
+                   linewidths=0, label=name)
+        any_data = True
+
+    if not any_data:
+        plt.close(fig)
+        return None
+
+    sl = scale_label(scale)
+    ax.set_xlabel(f"Cost  ({sl})")
+    ax.set_ylabel("Evaluation time (s)")
+    ax.set_title(f"Evaluation time vs cost — {len(seed_csv_paths)} seed(s)")
+    if len(seed_csv_paths) <= 8:
+        ax.legend(fontsize=8, loc="upper left")
+    ax.grid(True, alpha=0.3)
+    plt.tight_layout()
+    out_path = os.path.join(out_dir, "agg_eval_time_vs_cost.png")
+    fig.savefig(out_path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    return out_path
+
+
+def _plot_eval_time_explainability(seed_csv_paths, out_dir):
+    """Box plots of eval_time_ms per discrete parameter value + Spearman correlation bar chart.
+
+    Combines all seeds into one dataset. Produces two output files:
+    - agg_eval_time_corr.png   — horizontal bar chart of |ρ| per dimension
+    - agg_eval_time_boxes.png  — one box plot per dimension, time vs param value
+    """
+    from scipy.stats import spearmanr
+
+    frames = []
+    for path in seed_csv_paths:
+        df = _load_pool_csv(path)
+        if "eval_time_ms" in df.columns:
+            frames.append(df[df["eval_time_ms"].notna() & df["cost"].notna()])
+    if not frames:
+        return []
+
+    data = pd.concat(frames, ignore_index=True)
+    dims = _dim_cols(data)
+    time_s = data["eval_time_ms"] / 1000.0
+    out_paths = []
+    out_dir = Path(out_dir)
+
+    # ── Spearman correlation bar chart ──────────────────────────────────────────
+    corrs = {}
+    for d in dims:
+        col = data[d].dropna()
+        valid = col.index.intersection(time_s.dropna().index)
+        if len(valid) < 5:
+            continue
+        rho, _ = spearmanr(col.loc[valid], time_s.loc[valid])
+        corrs[d] = rho
+
+    if corrs:
+        sorted_dims = sorted(corrs, key=lambda d: abs(corrs[d]), reverse=True)
+        rho_vals = [corrs[d] for d in sorted_dims]
+
+        fig, ax = plt.subplots(figsize=(6, max(2.5, 0.4 * len(sorted_dims))))
+        colors = ["#d62728" if r > 0 else "#1f77b4" for r in rho_vals]
+        ax.barh(sorted_dims, rho_vals, color=colors, alpha=0.8)
+        ax.axvline(0, color="black", lw=0.8)
+        ax.set_xlabel("Spearman ρ  (positive = larger value → slower)")
+        ax.set_title(f"Eval-time correlation with parameters — {len(frames)} seed(s)")
+        ax.grid(True, axis="x", alpha=0.3)
+        plt.tight_layout()
+        p = out_dir / "agg_eval_time_corr.png"
+        fig.savefig(p, dpi=150, bbox_inches="tight")
+        plt.close(fig)
+        out_paths.append(str(p))
+
+    # ── Box plots per dimension ─────────────────────────────────────────────────
+    if dims:
+        ncols = min(3, len(dims))
+        nrows = int(np.ceil(len(dims) / ncols))
+        fig, axes = plt.subplots(nrows, ncols,
+                                 figsize=(4.5 * ncols, 3.5 * nrows),
+                                 squeeze=False)
+        flat = axes.flatten()
+        for ax in flat[len(dims):]:
+            ax.set_visible(False)
+
+        for ax, d in zip(flat, dims):
+            groups = data.groupby(d)["eval_time_ms"].apply(
+                lambda s: (s / 1000.0).dropna().values
+            )
+            labels = [str(k) for k in groups.index]
+            ax.boxplot(groups.values, labels=labels, showfliers=False,
+                       medianprops=dict(color="#d62728", lw=1.5))
+            rho_str = f"  ρ={corrs[d]:.2f}" if d in corrs else ""
+            ax.set_title(f"{d}{rho_str}", fontsize=9)
+            ax.set_xlabel(d, fontsize=8)
+            ax.set_ylabel("Eval time (s)", fontsize=8)
+            ax.tick_params(axis="x", labelsize=7)
+            ax.grid(True, axis="y", alpha=0.3)
+
+        fig.suptitle(f"Eval time distribution by parameter — {len(frames)} seed(s)",
+                     fontsize=10)
+        plt.tight_layout()
+        p = out_dir / "agg_eval_time_boxes.png"
+        fig.savefig(p, dpi=150, bbox_inches="tight")
+        plt.close(fig)
+        out_paths.append(str(p))
+
+    return out_paths
 
 
 # ── Aggregate learning curves (multi-seed, problem-level) ─────────────────────
@@ -479,7 +617,7 @@ def _plot_sigma_calibration(pool_csvs, out_dir, scale, names=None):
     Single-seed: shows IQR band and n= annotations. Multi-seed: shows per-seed
     thin lines plus a cross-seed mean±1σ band.
     """
-    dfs = [pd.read_csv(p) for p in pool_csvs]
+    dfs = [_load_pool_csv(p) for p in pool_csvs]
     if names is None:
         names = [Path(p).parent.name for p in pool_csvs]
 
@@ -636,7 +774,7 @@ def _plot_oracle_curves(oracle_csv, bo_csvs, out_dir, pcts, scale):
     max_iter = 0
     bo_data = []
     for path in bo_csvs:
-        df = pd.read_csv(path)
+        df = _load_pool_csv(path)
         valid_iters = df["eval_iter"].dropna() if "eval_iter" in df.columns else pd.Series([], dtype=float)
         valid_iters = valid_iters[valid_iters < _SENTINEL_ITER]
         if not valid_iters.empty:
@@ -773,7 +911,7 @@ def _load_oracle_group(oracle_path, bo_paths):
 
     seeds = []
     for path in bo_paths:
-        df = pd.read_csv(path)
+        df = _load_pool_csv(path)
         try:
             if oracle_path:
                 assert_same_space(oracle_df, df, dims, path)
@@ -803,7 +941,7 @@ def generate_seed_readme(csv_path, scale, ax_x, ax_y, ax_f, oracle_group=None):
         return None
     template = _SEED_TEMPLATE_PATH.read_text()
 
-    df = pd.read_csv(csv_path)
+    df = _load_pool_csv(csv_path)
     seed_dir     = Path(csv_path).parent
     seed_name    = seed_dir.name
     problem_name = seed_dir.parent.name
@@ -871,14 +1009,14 @@ def generate_problem_readme(oracle_group, seed_csv_paths, scale, ax_x, ax_y, ax_
         n_total = _meta.get("total_size", "?")
         n_valid = _meta.get("n_valid", "?")
     else:
-        first_df = pd.read_csv(seed_csv_paths[0])
+        first_df = _load_pool_csv(seed_csv_paths[0])
         n_valid = len(first_df)
         n_total = "?"
 
     max_iters = []
     bests = []
     for p in seed_csv_paths:
-        df = pd.read_csv(p)
+        df = _load_pool_csv(p)
         iters = df["eval_iter"].dropna() if "eval_iter" in df.columns else pd.Series([], dtype=float)
         iters = iters[iters < _SENTINEL_ITER]
         if not iters.empty:
@@ -1048,6 +1186,12 @@ def main():
 
                 f = executor.submit(_plot_aggregate_timings, seed_csvs, agg_dir)
                 all_futures[f] = "aggregate_timings"
+
+            f = executor.submit(_plot_eval_time_vs_cost, seed_csvs, agg_dir, scale, seed_names)
+            all_futures[f] = "eval_time_vs_cost"
+
+            f = executor.submit(_plot_eval_time_explainability, seed_csvs, agg_dir)
+            all_futures[f] = "eval_time_explainability"
 
             f = executor.submit(generate_problem_readme, group, seed_csvs, scale, ax_x, ax_y, ax_f)
             all_futures[f] = "problem_readme"
