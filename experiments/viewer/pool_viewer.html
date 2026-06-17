@@ -256,7 +256,11 @@
   <hr>
 
   <div class="group">
-    <div class="lbl">Highlight top %</div>
+    <div class="lbl">Highlight top N</div>
+    <div class="toggle-row" style="margin-bottom:4px">
+      <button class="toggle-btn active" id="btn-topn-pct"   disabled>%</button>
+      <button class="toggle-btn"        id="btn-topn-count" disabled>#</button>
+    </div>
     <div class="slider-header">
       <span class="slider-name">Top configs</span>
       <span class="slider-val" id="topn-val">off</span>
@@ -325,7 +329,10 @@ let hasVisited   = false; // whether CSV contains a 'visited' column
 let hasValid     = false; // whether CSV contains a 'valid' column
 let facetDim        = '';    // dimension to spread into multiple heatmaps ('' = none)
 let hideEmptyFacets = false; // skip facets with no valid rows
+let topNMode        = 'pct'; // 'pct' | 'count'
 let topNPct         = 0;     // 0 = off; >0 = highlight cheapest n% configs
+let topNCount       = 0;     // 0 = off; >0 = highlight cheapest n configs (count mode)
+let countSteps      = [];    // exponential-ish step sequence for count mode
 let sortedCosts     = [];    // sorted valid costs, precomputed on load for O(1) threshold lookup
 
 // ─────────────────────────────────────────────
@@ -350,11 +357,14 @@ function loadText(text) {
   for (const d of dimCols)
     dimUniq[d] = [...new Set(rows.map(r => r[d]))].sort((a, b) => a - b);
 
-  // Precompute sorted costs for O(1) top-N% threshold lookup.
+  // Precompute sorted costs for O(1) top-N threshold lookup.
   sortedCosts = rows
     .filter(r => (!hasValid || r['valid'] == 1) && Number.isFinite(r['cost']))
     .map(r => r['cost'])
     .sort((a, b) => a - b);
+
+  // Build count-mode step sequence: 1-2-5 style, dense at the low end.
+  countSteps = buildCountSteps(sortedCosts.length);
 
   // Fix color domain per metric over the entire dataset.
   metricDomain = {};
@@ -373,12 +383,17 @@ function loadText(text) {
   applyMetricDefaults(availMetrics[0]);
 
   ['sel-x','sel-y','sel-metric','sel-agg','sel-palette','sel-facet',
-   'btn-agg','btn-slice','btn-hide-empty','topn-slider'].forEach(id => {
+   'btn-agg','btn-slice','btn-hide-empty','topn-slider',
+   'btn-topn-pct','btn-topn-count'].forEach(id => {
     const el = document.getElementById(id);
     if (el) el.disabled = false;
   });
-  topNPct = 0;
-  document.getElementById('topn-slider').value = 0;
+  topNPct   = 0;
+  topNCount = 0;
+  topNMode  = 'pct';
+  document.getElementById('btn-topn-pct').classList.add('active');
+  document.getElementById('btn-topn-count').classList.remove('active');
+  syncTopNSlider();
   document.getElementById('topn-val').textContent = 'off';
 
   sliceIdx = {};
@@ -472,17 +487,53 @@ function rebuildSliders() {
 }
 
 // ─────────────────────────────────────────────
-// Top-N% threshold (raw cost, lower = better)
+// Top-N threshold helpers
 // ─────────────────────────────────────────────
-function getTopNCostThreshold(pct) {
-  if (pct <= 0 || !sortedCosts.length) return null;
-  return sortedCosts[Math.max(0, Math.ceil(sortedCosts.length * pct / 100) - 1)];
+
+// Exponential-ish step sequence for count mode: 1-2-5 within each decade,
+// clipped to [1, nValid] with the exact maximum always included.
+function buildCountSteps(nValid) {
+  if (nValid <= 0) return [];
+  const mults = [1, 2, 3, 5, 7]; // per-decade multipliers
+  const steps = new Set();
+  let decade = 1;
+  while (decade <= nValid) {
+    for (const m of mults) {
+      const v = decade * m;
+      if (v >= 1 && v <= nValid) steps.add(v);
+    }
+    decade *= 10;
+  }
+  steps.add(nValid);
+  return [...steps].sort((a, b) => a - b);
+}
+
+// Sync the slider element to the current mode (range + value).
+function syncTopNSlider() {
+  const sl = document.getElementById('topn-slider');
+  if (topNMode === 'pct') {
+    sl.min = 0; sl.max = 50; sl.step = 1;
+    sl.value = topNPct;
+  } else {
+    sl.min = 0; sl.max = countSteps.length; sl.step = 1;
+    sl.value = topNCount === 0 ? 0 : countSteps.indexOf(topNCount) + 1;
+  }
+}
+
+function getTopNThreshold() {
+  if (topNMode === 'pct') {
+    if (topNPct <= 0 || !sortedCosts.length) return null;
+    return sortedCosts[Math.max(0, Math.ceil(sortedCosts.length * topNPct / 100) - 1)];
+  } else {
+    if (topNCount <= 0 || !sortedCosts.length) return null;
+    return sortedCosts[Math.min(topNCount, sortedCosts.length) - 1];
+  }
 }
 
 function opacityForCell(d) {
-  if (topNPct <= 0) return 1;
-  const thr = getTopNCostThreshold(topNPct);
-  return (thr !== null && d.minCost > thr) ? 0.2 : 1;
+  const thr = getTopNThreshold();
+  if (thr === null) return 1;
+  return d.minCost > thr ? 0.2 : 1;
 }
 
 // ─────────────────────────────────────────────
@@ -790,10 +841,29 @@ document.getElementById('btn-hide-empty').addEventListener('click', () => {
   render();
 });
 document.getElementById('topn-slider').addEventListener('input', () => {
-  topNPct = +document.getElementById('topn-slider').value;
-  document.getElementById('topn-val').textContent = topNPct === 0 ? 'off' : `top ${topNPct}%`;
+  const v = +document.getElementById('topn-slider').value;
+  if (topNMode === 'pct') {
+    topNPct = v;
+    document.getElementById('topn-val').textContent = v === 0 ? 'off' : `top ${v}%`;
+  } else {
+    topNCount = v === 0 ? 0 : countSteps[v - 1];
+    document.getElementById('topn-val').textContent = topNCount === 0 ? 'off' : `top ${topNCount}`;
+  }
   d3.selectAll('rect.cell').attr('opacity', d => opacityForCell(d));
 });
+
+function setTopNMode(m) {
+  topNMode = m;
+  topNPct  = 0;
+  topNCount = 0;
+  document.getElementById('btn-topn-pct').classList.toggle('active',   m === 'pct');
+  document.getElementById('btn-topn-count').classList.toggle('active', m === 'count');
+  syncTopNSlider();
+  document.getElementById('topn-val').textContent = 'off';
+  d3.selectAll('rect.cell').attr('opacity', 1);
+}
+document.getElementById('btn-topn-pct').addEventListener('click',   () => setTopNMode('pct'));
+document.getElementById('btn-topn-count').addEventListener('click', () => setTopNMode('count'));
 
 ['sel-x', 'sel-y', 'sel-agg', 'sel-palette'].forEach(id => {
   document.getElementById(id).addEventListener('change', () => {
