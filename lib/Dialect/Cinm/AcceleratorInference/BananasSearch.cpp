@@ -342,8 +342,6 @@ bool CandidatePool::nextCandidateIndices(const InferenceOptions &opts,
                                          ValidationSet &validSet,
                                          ValidationSet &trainingValidSet,
                                          int iter) {
-  const size_t D = nDims();
-
   // --- Build candidate set ---
   // Start with the grid-neighbours of every already-observed configuration.
   // Neighbours differ in exactly one dimension by one discrete step, so they
@@ -365,10 +363,26 @@ bool CandidatePool::nextCandidateIndices(const InferenceOptions &opts,
   arma::mat candEncoded = encodeSubset(*space_, candIdx);
 
   // --- Fit surrogate and rank candidates ---
-  arma::mat Xo_obs(const_cast<double *>(Xo.memptr()), D, nObs,
-                   /*copy=*/false, /*strict=*/true);
-  arma::mat yo_obs(const_cast<double *>(yo.memptr()), 1, nObs,
-                   /*copy=*/false, /*strict=*/true);
+  // Build compact training matrices excluding INF-cost observations.
+  // Training the MLP on INF targets causes gradient explosion → NaN weights
+  // → NaN predictions → arma::sort_index abort.
+  arma::uvec finiteCols(nObs);
+  arma::uword nFinite = 0;
+  for (arma::uword i = 0; i < static_cast<arma::uword>(nObs); ++i)
+    if (std::isfinite(yo(0, i)))
+      finiteCols(nFinite++) = i;
+  finiteCols.resize(nFinite);
+
+  if (nFinite < 2) {
+    // Not enough finite observations to train; pick the first accepted candidate.
+    for (size_t idx : candIdx)
+      if (accept(idx))
+        return true;
+    return false;
+  }
+
+  arma::mat Xo_obs = Xo.cols(finiteCols);
+  arma::mat yo_obs = yo.cols(finiteCols);
 
   // Warm-start: reuse weights from the previous iteration. Reinitialise only
   // when the ensemble doesn't exist yet or its configuration has changed.
@@ -388,6 +402,12 @@ bool CandidatePool::nextCandidateIndices(const InferenceOptions &opts,
   }
 
   arma::rowvec scores = computeAcq(mu, sigma, opts.kappa);
+  // Guard: replace any NaN/Inf from MLP instability with +inf so they
+  // land at the end of the sorted order and are never preferred.
+  scores.for_each([](double &x) {
+    if (!std::isfinite(x))
+      x = arma::datum::inf;
+  });
   arma::uvec order = arma::sort_index(scores, "ascend");
 
   for (size_t i = 0; i < order.n_elem; ++i) {

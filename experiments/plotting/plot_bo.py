@@ -446,8 +446,8 @@ def _plot_aggregate_timings(seed_csv_paths, out_dir):
     ax.fill_between(iters[ok], q25[ok], q75[ok],
                     color="black", alpha=0.15, label="IQR (25–75%)")
     ax.set_xlabel("Evaluations")
-    ax.set_ylabel("Elapsed time (s)")
-    ax.set_title(f"Wall-clock time per evaluation — {len(curves)} seeds")
+    ax.set_ylabel("Cumulated elapsed time (s)")
+    ax.set_title(f"Wall-clock time throughout evaluations — {len(curves)} seeds")
     ax.legend(fontsize=8, loc="upper left")
     ax.grid(True, alpha=0.3)
     plt.tight_layout()
@@ -723,12 +723,12 @@ def _plot_oracle_curves(oracle_csv, bo_csvs, out_dir, pcts, scale):
     mean_hits  = np.mean(hit_iters,   axis=0)
     worst_hits = np.max(hit_iters,    axis=0)
     best_hits  = np.min(hit_iters,    axis=0)
-    q25_hits   = np.percentile(hit_iters, 25, axis=0)
-    q75_hits   = np.percentile(hit_iters, 75, axis=0)
+    # q25_hits   = np.percentile(hit_iters, 25, axis=0)
+    # q75_hits   = np.percentile(hit_iters, 75, axis=0)
 
     fig, ax = plt.subplots(figsize=(9, 4))
-    ax.fill_between(thresholds, q25_hits, q75_hits, color="steelblue", alpha=0.2, label="IQR (25–75%)")
-    ax.plot(thresholds, mean_hits,  color="steelblue", lw=2,   label="mean across seeds")
+    # ax.fill_between(thresholds, q25_hits, q75_hits, color="gray", alpha=0.2, label="IQR (25–75%)")
+    ax.plot(thresholds, mean_hits,  color="black", lw=2,   label="mean across seeds")
     ax.plot(thresholds, worst_hits, color="firebrick",  lw=1.5, ls="--", label="worst seed")
     ax.plot(thresholds, best_hits,  color="seagreen",   lw=1.5, ls="--", label="best seed")
     ax.set_xlabel("Quality threshold  (% above oracle best)")
@@ -751,27 +751,32 @@ def _plot_oracle_curves(oracle_csv, bo_csvs, out_dir, pcts, scale):
 # ── Oracle group ───────────────────────────────────────────────────────────────
 @dataclass
 class OracleGroup:
-    oracle_csv:  str
-    oracle_best: float
-    seeds:       list   # [(name, csv_path), ...]
-    out_dir:     Path   # common parent of all seed directories
+    oracle_csv:  str | None   # None when no oracle is available
+    oracle_best: float | None # None when no oracle is available
+    seeds:       list         # [(name, csv_path), ...]
+    out_dir:     Path         # common parent of all seed directories
 
 
 def _load_oracle_group(oracle_path, bo_paths):
-    oracle_df = pd.read_csv(oracle_path)
-    dims = _dim_cols(oracle_df)
-    oracle_obs = oracle_df[oracle_df["valid"] == 1] if "valid" in oracle_df.columns else oracle_df
-    oracle_obs = oracle_obs[oracle_obs["cost"].notna()]
-    if oracle_obs.empty:
-        print(f"ERROR: oracle {oracle_path} has no valid evaluated configs", file=sys.stderr)
-        return None
-    oracle_best = float(oracle_obs["cost"].min())
+    oracle_df  = None
+    dims       = None
+    oracle_best = None
+    if oracle_path:
+        oracle_df = pd.read_csv(oracle_path)
+        dims = _dim_cols(oracle_df)
+        oracle_obs = oracle_df[oracle_df["valid"] == 1] if "valid" in oracle_df.columns else oracle_df
+        oracle_obs = oracle_obs[oracle_obs["cost"].notna()]
+        if oracle_obs.empty:
+            print(f"ERROR: oracle {oracle_path} has no valid evaluated configs", file=sys.stderr)
+            return None
+        oracle_best = float(oracle_obs["cost"].min())
 
     seeds = []
     for path in bo_paths:
         df = pd.read_csv(path)
         try:
-            assert_same_space(oracle_df, df, dims, path)
+            if oracle_path:
+                assert_same_space(oracle_df, df, dims, path)
         except AssertionError as e:
             print(f"ERROR: {e}", file=sys.stderr)
             continue
@@ -785,7 +790,7 @@ def _load_oracle_group(oracle_path, bo_paths):
         return None
 
     return OracleGroup(
-        oracle_csv=str(oracle_path),
+        oracle_csv=str(oracle_path) if oracle_path else None,
         oracle_best=oracle_best,
         seeds=seeds,
         out_dir=Path(seeds[0][1]).parent.parent,
@@ -817,7 +822,7 @@ def generate_seed_readme(csv_path, scale, ax_x, ax_y, ax_f, oracle_group=None):
     best_cost = df["cost"].min()
     best_str  = f"{best_cost:.4g}" if pd.notna(best_cost) else "?"
 
-    if oracle_group is not None and pd.notna(best_cost):
+    if oracle_group is not None and oracle_group.oracle_best is not None and pd.notna(best_cost):
         oracle_best_str = f"{oracle_group.oracle_best:.4g}"
         gap_pct_str = f"{100 * (best_cost / oracle_group.oracle_best - 1):.1f}"
     else:
@@ -963,9 +968,21 @@ def main():
             if group is not None:
                 oracle_groups.append(group)
 
-    standalone_pools = list(args.pool_csvs)
+    # Group standalone pool CSVs by their grandparent directory (the problem-level
+    # dir that contains multiple seed_* subdirs). This enables aggregate plots even
+    # when no exhaustive oracle is available.
+    seed_groups = []
+    if args.pool_csvs:
+        by_problem: dict[Path, list[str]] = {}
+        for csv_path in args.pool_csvs:
+            by_problem.setdefault(Path(csv_path).parent.parent, []).append(csv_path)
+        for paths in by_problem.values():
+            group = _load_oracle_group(None, sorted(paths))
+            if group is not None:
+                seed_groups.append(group)
 
-    if not oracle_groups and not standalone_pools:
+    all_groups = oracle_groups + seed_groups
+    if not all_groups:
         ap.print_help()
         sys.exit(0)
 
@@ -973,91 +990,67 @@ def main():
 
     with ProcessPoolExecutor() as executor:
 
-        for group in oracle_groups:
+        for group in all_groups:
             seed_csvs  = [p for _, p in group.seeds]
             seed_names = [n for n, _ in group.seeds]
 
+            # ── Per-seed plots ──
             for name, csv_path in group.seeds:
-                    out_dir = str(Path(csv_path).parent)
-                    seed_is_new = not (args.skip_existing_seed_plots
-                                       and os.path.exists(os.path.join(out_dir, "pool_cost.png")))
+                out_dir = str(Path(csv_path).parent)
+                seed_is_new = not (args.skip_existing_seed_plots
+                                   and os.path.exists(os.path.join(out_dir, "pool_cost.png")))
 
-                    if not args.no_per_seed and seed_is_new:
-                        for kw in build_facet_plot_tasks(csv_path, scale, ax_x, ax_y, ax_f):
-                            f = executor.submit(make_facet_plot, out_dir=out_dir, **kw)
-                            all_futures[f] = f"{name}/{kw['metric']}"
+                if not args.no_per_seed and seed_is_new:
+                    for kw in build_facet_plot_tasks(csv_path, scale, ax_x, ax_y, ax_f):
+                        f = executor.submit(make_facet_plot, out_dir=out_dir, **kw)
+                        all_futures[f] = f"{name}/{kw['metric']}"
 
-                        val_path = Path(csv_path).parent / "validation.csv"
-                        if val_path.exists():
-                            for fn, tag in [(plot_validation_rmse, "validation_rmse"),
-                                            (plot_validation_mape, "validation_mape")]:
-                                f = executor.submit(fn, str(val_path), out_dir,
-                                                    dataset="validation", scale=scale)
-                                all_futures[f] = f"{name}/{tag}"
+                    val_path = Path(csv_path).parent / "validation.csv"
+                    if val_path.exists():
+                        for fn, tag in [(plot_validation_rmse, "validation_rmse"),
+                                        (plot_validation_mape, "validation_mape")]:
+                            f = executor.submit(fn, str(val_path), out_dir,
+                                                dataset="validation", scale=scale)
+                            all_futures[f] = f"{name}/{tag}"
 
-                        train_path = Path(csv_path).parent / "training.csv"
-                        if train_path.exists():
-                            for fn, tag in [(plot_validation_rmse, "training_rmse"),
-                                            (plot_validation_mape, "training_mape")]:
-                                f = executor.submit(fn, str(train_path), out_dir,
-                                                    dataset="training", scale=scale)
-                                all_futures[f] = f"{name}/{tag}"
+                    train_path = Path(csv_path).parent / "training.csv"
+                    if train_path.exists():
+                        for fn, tag in [(plot_validation_rmse, "training_rmse"),
+                                        (plot_validation_mape, "training_mape")]:
+                            f = executor.submit(fn, str(train_path), out_dir,
+                                                dataset="training", scale=scale)
+                            all_futures[f] = f"{name}/{tag}"
 
-                    readme_is_new = not (args.skip_existing_seed_plots
-                                         and (Path(csv_path).parent / "README_bo_synopsis.md").exists())
-                    if not args.no_per_seed and readme_is_new:
-                        f = executor.submit(generate_seed_readme, csv_path, scale,
-                                            ax_x, ax_y, ax_f, group)
-                        all_futures[f] = f"{name}/seed_readme"
+                readme_is_new = not (args.skip_existing_seed_plots
+                                     and (Path(csv_path).parent / "README_bo_synopsis.md").exists())
+                if not args.no_per_seed and readme_is_new:
+                    f = executor.submit(generate_seed_readme, csv_path, scale,
+                                        ax_x, ax_y, ax_f, group)
+                    all_futures[f] = f"{name}/seed_readme"
 
+            # ── Aggregate plots ──
             agg_dir = str(group.out_dir)
-            f = executor.submit(_plot_oracle_curves,
-                                group.oracle_csv, seed_csvs, agg_dir, args.pcts, scale)
-            all_futures[f] = "recall+best_cost"
 
-            f = executor.submit(_plot_sigma_calibration,
-                                seed_csvs, agg_dir, scale, seed_names)
-            all_futures[f] = "sigma_calibration"
+            # Oracle-specific plots (recall curves, best-cost vs oracle).
+            if group.oracle_csv is not None:
+                f = executor.submit(_plot_oracle_curves,
+                                    group.oracle_csv, seed_csvs, agg_dir, args.pcts, scale)
+                all_futures[f] = "recall+best_cost"
 
-            f = executor.submit(_plot_aggregate_learning_curves, seed_csvs, agg_dir, scale)
-            all_futures[f] = "aggregate_learning_curves"
+            # Oracle-independent aggregate plots (generated for all groups).
+            if len(seed_csvs) > 1:
+                f = executor.submit(_plot_sigma_calibration,
+                                    seed_csvs, agg_dir, scale, seed_names)
+                all_futures[f] = "sigma_calibration"
 
-            f = executor.submit(_plot_aggregate_timings, seed_csvs, agg_dir)
-            all_futures[f] = "aggregate_timings"
+                f = executor.submit(_plot_aggregate_learning_curves, seed_csvs, agg_dir, scale)
+                all_futures[f] = "aggregate_learning_curves"
+
+                f = executor.submit(_plot_aggregate_timings, seed_csvs, agg_dir)
+                all_futures[f] = "aggregate_timings"
 
             f = executor.submit(generate_problem_readme, group, seed_csvs, scale, ax_x, ax_y, ax_f)
             all_futures[f] = "problem_readme"
-
-        for csv_path in standalone_pools:
-            out_dir = str(Path(csv_path).parent)
-            seed_is_new = not (args.skip_existing_seed_plots
-                               and os.path.exists(os.path.join(out_dir, "pool_cost.png")))
-            if seed_is_new:
-                for kw in build_facet_plot_tasks(csv_path, scale, ax_x, ax_y, ax_f):
-                    f = executor.submit(make_facet_plot, out_dir=out_dir, **kw)
-                    all_futures[f] = f"standalone/{kw['metric']}"
-
-                val_path = Path(csv_path).parent / "validation.csv"
-                if val_path.exists():
-                    for fn, tag in [(plot_validation_rmse, "validation_rmse"),
-                                    (plot_validation_mape, "validation_mape")]:
-                        f = executor.submit(fn, str(val_path), out_dir,
-                                            dataset="validation", scale=scale)
-                        all_futures[f] = f"standalone/{tag}"
-
-                train_path = Path(csv_path).parent / "training.csv"
-                if train_path.exists():
-                    for fn, tag in [(plot_validation_rmse, "training_rmse"),
-                                    (plot_validation_mape, "training_mape")]:
-                        f = executor.submit(fn, str(train_path), out_dir,
-                                            dataset="training", scale=scale)
-                        all_futures[f] = f"standalone/{tag}"
-
-            readme_is_new = not (args.skip_existing_seed_plots
-                                 and (Path(csv_path).parent / "README_bo_synopsis.md").exists())
-            if readme_is_new:
-                f = executor.submit(generate_seed_readme, csv_path, scale, ax_x, ax_y, ax_f)
-                all_futures[f] = "standalone/seed_readme"
 
         for future in tqdm(as_completed(all_futures), total=len(all_futures), desc="plots"):
             tag = all_futures[future]

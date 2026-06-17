@@ -77,7 +77,6 @@ def _cinm_opt_cmd(
     ]
     if extra_mlir_flags:
         cmd.extend(extra_mlir_flags)
-    print(' '.join(cmd))
     return cmd
 
 
@@ -190,7 +189,7 @@ def cmd_plot(args: argparse.Namespace) -> int:
 
     if oracle:
         # Build --oracle <oracle_subdir/pool.csv> <seed_csvs...> pairs per subdir
-        oracle_path = Path(oracle)
+        oracle_path = Path("data") / oracle
         data_path   = Path("data") / dir_
         plot_args: list[str] = []
         for subdir in sorted(oracle_path.iterdir()):

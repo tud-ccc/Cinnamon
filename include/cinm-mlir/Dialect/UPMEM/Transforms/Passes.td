@@ -86,9 +86,9 @@ def UpmemInferAcceleratorPass : Pass<"upmem-infer-accelerator", "ModuleOp"> {
            "Enable MRAM tiling in the UPMEM lowering">,
     Option<"simulator", "simulator", "std::string", "\"cycleaccurate\"",
            "Simulator backend: 'cycleaccurate' or 'opcount'">,
-    Option<"evalTimeoutMs", "eval-timeout-ms", "int", "5000",
+    Option<"evalTimeoutMs", "eval-timeout-ms", "int", "0",
            "Wall-clock timeout in milliseconds for a single simulation; "
-           "0 disables the timeout">
+           "0 disables the timeout (default: 0)">
   ];
 }
 
