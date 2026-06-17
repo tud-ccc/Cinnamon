@@ -6,6 +6,9 @@
 
 #include "cinm-mlir/Dialect/Cnm/IR/CnmOps.h"
 #include "cinm-mlir/Dialect/Cnm/IR/CnmTypes.h"
+#include "upmem_cost_model/Types.h"
+
+#include <upmem_cost_model/Simulation.h>
 
 #include <algorithm>
 #include <llvm/ADT/APInt.h>
@@ -15,12 +18,12 @@
 #include <mlir/Dialect/Affine/IR/AffineOps.h>
 #include <mlir/Dialect/Arith/IR/Arith.h>
 #include <mlir/Dialect/MemRef/IR/MemRef.h>
+#include <mlir/Dialect/Utils/StaticValueUtils.h>
 #include <mlir/IR/BuiltinAttributes.h>
 #include <mlir/IR/BuiltinOps.h>
 #include <mlir/IR/BuiltinTypeInterfaces.h>
 #include <mlir/IR/BuiltinTypes.h>
 #include <mlir/IR/Operation.h>
-#include <mlir/Dialect/Utils/StaticValueUtils.h>
 #include <mlir/Interfaces/LoopLikeInterface.h>
 
 namespace mlir::upmem {
@@ -58,8 +61,8 @@ static double costOfOpCb(Operation &op, bool annotate,
             if (auto tc = forOp.getStaticTripCount()) {
               tripCount = tc->getZExtValue();
             } else {
-              // In the dynamic case, for now we assume a big number divided by the loop step
-              // We should use integer range analysis
+              // In the dynamic case, for now we assume a big number divided by
+              // the loop step We should use integer range analysis
               int64_t step = 1;
               if (auto steps = forOp.getLoopSteps())
                 if (!steps->empty())
@@ -146,6 +149,9 @@ struct OpCountSimulator : UpmemSimulator {
   std::unique_ptr<UpmemSimulator> clone() override {
     return std::make_unique<OpCountSimulator>(annotateOpCosts);
   }
+  double simulateGemv(std::chrono::milliseconds timeout, int nTasklets,
+                      int64_t mramRows, int64_t mramCols, int64_t rowTile,
+                      int64_t colTile, upmem_cm::DType) override;
 
   mlir::cinm::utils::Maybe<double> simulate(Region &region) override {
     // Recursive callback: recurse into the DPU program body with the same
@@ -166,6 +172,41 @@ struct OpCountSimulator : UpmemSimulator {
 };
 
 } // namespace
+
+double wramToMramCost(long numelts, int nTasklets, upmem_cm::DType dty) {
+  return upmem_cm::lookupDmaLatency(true, upmem_cm::dtypeBytes(dty) * numelts) *
+         std::max(1, nTasklets / 2);
+}
+double mramToWramCost(long numelts, int nTasklets, upmem_cm::DType dty) {
+  return upmem_cm::lookupDmaLatency(false,
+                                    upmem_cm::dtypeBytes(dty) * numelts) *
+         std::max(1, nTasklets / 2);
+}
+double dpuOpLatency(upmem_cm::StatOp op, upmem_cm::DType dty) {
+  return upmem_cm::lookupStaticLatency(op, dty);
+}
+
+double mlir::upmem::OpCountSimulator::simulateGemv(
+    std::chrono::milliseconds timeout, int nTasklets, int64_t mramRows,
+    int64_t mramCols, int64_t rowTile, int64_t colTile, upmem_cm::DType dty) {
+
+  mramToWramCost(rowTile, 1, dty);
+
+  int64_t nRowTiles = mramRows / rowTile;
+  int64_t nColTiles = mramCols / colTile;
+
+  double trcost = mramToWramCost(rowTile * colTile, nTasklets, dty) +
+                  mramToWramCost(colTile, nTasklets, dty);
+
+  double innerLoopCost = rowTile * colTile *
+                         (dpuOpLatency(upmem_cm::StatOp::LOAD, dty) * 2 +
+                          dpuOpLatency(upmem_cm::StatOp::MUL, dty) +
+                          dpuOpLatency(upmem_cm::StatOp::ADD, dty) +
+                          dpuOpLatency(upmem_cm::StatOp::STORE, dty));
+
+  return nRowTiles * nColTiles * (trcost + innerLoopCost) +
+         wramToMramCost(mramRows, 1, dty);
+}
 
 double simulateHostRegion(Region &region, bool annotate,
                           const WaitForCostFn &waitForCb) {

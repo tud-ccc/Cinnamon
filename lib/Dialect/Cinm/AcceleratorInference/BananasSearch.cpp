@@ -37,7 +37,8 @@ Configuration CandidatePool::operator[](size_t i) const {
   return conf;
 }
 
-void CandidatePool::recordObservation(size_t idx, double cost, size_t iter) {
+void CandidatePool::recordObservation(size_t idx, double cost, size_t iter,
+                                      std::chrono::milliseconds evalTime) {
   assert(!std::isnan(cost));
   if (nObs >= Xo.n_cols) {
     const size_t newCols = Xo.n_cols + 32;
@@ -51,6 +52,8 @@ void CandidatePool::recordObservation(size_t idx, double cost, size_t iter) {
   yo(0, nObs) = cost;
   costByIdx(idx) = cost;
   iterByIdx[idx] = iter;
+  if (evalTime.count() > 0)
+    evalTimeByIdx[idx] = static_cast<uint64_t>(evalTime.count());
   ++nObs;
 }
 
@@ -465,7 +468,7 @@ void CandidatePool::dumpToCSV(const ConfigSpace &space,
   // Header
   for (const auto &p : space.params)
     out << p.name << ",";
-  out << "visited,valid,cost,eval_iter";
+  out << "visited,valid,cost,eval_iter,eval_time_ms";
   if (hasModel)
     out << ",mu,sigma,acq";
   out << "\n";
@@ -488,6 +491,10 @@ void CandidatePool::dumpToCSV(const ConfigSpace &space,
     auto iit = iterByIdx.find(i);
     if (iit != iterByIdx.end())
       out << iit->second;
+    out << ",";
+    auto tit = evalTimeByIdx.find(i);
+    if (tit != evalTimeByIdx.end())
+      out << tit->second;
     if (hasModel) {
       size_t j = vit->second;
       out << "," << mu_v(j) << "," << sigma_v(j) << "," << acq_v(j);

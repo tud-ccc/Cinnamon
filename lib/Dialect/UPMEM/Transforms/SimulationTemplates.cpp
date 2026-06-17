@@ -2,6 +2,7 @@
 #include "cinm-mlir/Dialect/UPMEM/IR/UPMEMOps.h"
 #include "cinm-mlir/Dialect/UPMEM/Transforms/UpmemSimulator.h"
 #include "cinm-mlir/Utils/Scheduling/SchedulingSupport.h"
+#include "upmem_cost_model/Types.h"
 
 #include <cstdint>
 #include <limits>
@@ -20,10 +21,6 @@
 #include <mlir/IR/Value.h>
 
 #include <upmem_cost_model/ProgramBuilder.h>
-
-#include <atomic>
-#include <memory>
-#include <string>
 
 #define DEBUG_TYPE "upmem-cpp-sim"
 
@@ -50,92 +47,7 @@
 ///   3. Store all y from WRAM → MRAM
 ///
 /// Returns the estimated wall-clock time in seconds for one DPU.
-namespace {
-struct GemvCacheEntry {
-  std::atomic<uint64_t> keyHash{0};
-  std::atomic<double> value{0.0};
-};
-constexpr size_t kGemvCacheSlots = 4096;
-GemvCacheEntry gGemvCache[kGemvCacheSlots];
-
-uint64_t hashGemvKey(int nTasklets, int64_t mramRows, int64_t mramCols,
-                     int64_t rowTile, int64_t colTile) {
-  uint64_t h = 14695981039346656037ULL;
-  auto mix = [&](uint64_t v) {
-    h ^= v;
-    h *= 1099511628211ULL;
-  };
-  mix(static_cast<uint64_t>(nTasklets));
-  mix(static_cast<uint64_t>(mramRows));
-  mix(static_cast<uint64_t>(mramCols));
-  mix(static_cast<uint64_t>(rowTile));
-  mix(static_cast<uint64_t>(colTile));
-  return h ? h : 1; // 0 is reserved for "empty"
-}
-} // namespace
-
-double simulateGemv(std::chrono::milliseconds timeout, int nTasklets,
-                    int64_t mramRows, int64_t mramCols, int64_t rowTile,
-                    int64_t colTile) {
-  uint64_t h = hashGemvKey(nTasklets, mramRows, mramCols, rowTile, colTile);
-  GemvCacheEntry &entry = gGemvCache[h % kGemvCacheSlots];
-  if (entry.keyHash.load(std::memory_order_acquire) == h)
-    return entry.value.load(std::memory_order_relaxed);
-
-  using namespace upmem_cm;
-  ProgramBuilder b;
-
-  // MRAM buffers
-  auto A_mram = b.addBuffer("A_mram", MemSpace::MRAM, DType::I32);
-  auto x_mram = b.addBuffer("x_mram", MemSpace::MRAM, DType::I32);
-  auto y_mram = b.addBuffer("y_mram", MemSpace::MRAM, DType::I32);
-
-  // WRAM tile buffers
-  auto A_wram = b.addBuffer("A_wram", MemSpace::WRAM, DType::I32);
-  auto x_wram = b.addBuffer("x_wram", MemSpace::WRAM, DType::I32);
-  auto y_wram = b.addBuffer("y_wram", MemSpace::WRAM, DType::I32);
-
-  // Load all y from MRAM to WRAM before loops
-  b.createTransfer(y_mram, y_wram, mramRows);
-
-  int64_t nRowTiles = mramRows / rowTile;
-  int64_t nColTiles = mramCols / colTile;
-
-  b.beginLoop(0, nRowTiles); // row tile loop
-  b.beginLoop(0, nColTiles); // col tile loop
-
-  // Transfer A tile [rowTile × colTile] from MRAM; address advances per
-  // col-tile iter
-  b.createTransfer(A_mram, A_wram, rowTile * colTile, /*src_iv_indexed=*/true);
-  // Transfer x tile [colTile] from MRAM; address advances per col-tile iter
-  // (in the kernel only tasklet 0 does this via scf.if; modeled
-  // unconditionally)
-  b.createTransfer(x_mram, x_wram, colTile, /*src_iv_indexed=*/true);
-
-  b.beginLoop(0, rowTile); // row loop within tile
-  b.beginLoop(0, colTile); // dot-product loop
-
-  // acc += A_wram[row, col] * x_wram[col]; both stride by 1 per inner iteration
-  auto a_val = b.createLoad(A_wram, /*iv_indexed=*/true);
-  auto x_val = b.createLoad(x_wram, /*iv_indexed=*/true);
-  auto prod = b.createArith(ArithOp::MUL, DType::I32, a_val, x_val);
-  // load-add-store into y_wram (models the iter_args reduction pattern)
-  b.createReduceStore(y_wram, ArithOp::ADD, prod);
-
-  b.endLoop(); // dot-product loop
-  b.endLoop(); // row loop within tile
-  b.endLoop(); // col tile loop
-  b.endLoop(); // row tile loop
-
-  // Store all y from WRAM back to MRAM
-  b.createTransfer(y_wram, y_mram, mramRows);
-
-  double result = b.simulate(nTasklets, timeout)
-                      .value_or(std::numeric_limits<double>::infinity());
-  entry.value.store(result, std::memory_order_relaxed);
-  entry.keyHash.store(h, std::memory_order_release);
-  return result;
-}
+namespace mlir::upmem {
 
 /// Estimate the cost of the host side of a tiled GEMV (mv2) kernel.
 ///
@@ -152,19 +64,22 @@ double simulateGemv(std::chrono::milliseconds timeout, int nTasklets,
 ///
 /// Transfer costs use the same formula as OpCountSimulator's ScatterOp/GatherOp
 /// case via scatterGatherCost().
-double mlir::upmem::simulateFullGemv(std::chrono::milliseconds timeout,
-                                     int64_t M, int64_t N, int64_t mramRows,
-                                     int64_t mramCols, int64_t wramRows,
-                                     int64_t wramCols, int64_t ranks,
-                                     int64_t dpus, int64_t tasklets) {
+double UpmemSimulator::simulateFullGemv(std::chrono::milliseconds timeout,
+                                        int64_t M, int64_t N, int64_t mramRows,
+                                        int64_t mramCols, int64_t wramRows,
+                                        int64_t wramCols, int64_t ranks,
+                                        int64_t dpus, int64_t tasklets,
+                                        upmem_cm::DType dty) {
   // Cost of one scatter/gather of `elemsPerDpu` i32 elements across all DPUs.
   auto xferCost = [&](int64_t elemsPerDpu) {
-    return scatterGatherCost(elemsPerDpu, /*elemBytes=*/4, ranks, dpus);
+    return scatterGatherCost(elemsPerDpu, upmem_cm::dtypeBytes(dty), ranks,
+                             dpus);
   };
 
   // DPU compute cost (one DPU, accounts for tasklet parallelism inside).
-  double dpuCost = simulateGemv(timeout, static_cast<int>(tasklets), mramRows,
-                                mramCols, wramRows, wramCols);
+  double dpuCost =
+      this->simulateGemv(timeout, static_cast<int>(tasklets), mramRows,
+                         mramCols, wramRows, wramCols, dty);
 
   // Per inner-loop (col-tile) iteration: 3 scatters + wait + 1 gather.
   double innerIterCost =
@@ -178,3 +93,4 @@ double mlir::upmem::simulateFullGemv(std::chrono::milliseconds timeout,
   int64_t outerTrips = M / (ranks * dpus * mramRows * tasklets);
   return static_cast<double>(outerTrips * innerTrips) * innerIterCost;
 }
+} // namespace mlir::upmem
