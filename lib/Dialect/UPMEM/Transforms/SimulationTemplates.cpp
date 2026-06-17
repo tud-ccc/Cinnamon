@@ -4,6 +4,7 @@
 #include "cinm-mlir/Utils/Scheduling/SchedulingSupport.h"
 
 #include <cstdint>
+#include <limits>
 #include <llvm/ADT/DenseMap.h>
 #include <llvm/ADT/DenseSet.h>
 #include <llvm/ADT/SmallVector.h>
@@ -73,8 +74,9 @@ uint64_t hashGemvKey(int nTasklets, int64_t mramRows, int64_t mramCols,
 }
 } // namespace
 
-double simulateGemv(std::chrono::milliseconds timeout, int nTasklets, int64_t mramRows, int64_t mramCols,
-                    int64_t rowTile, int64_t colTile) {
+double simulateGemv(std::chrono::milliseconds timeout, int nTasklets,
+                    int64_t mramRows, int64_t mramCols, int64_t rowTile,
+                    int64_t colTile) {
   uint64_t h = hashGemvKey(nTasklets, mramRows, mramCols, rowTile, colTile);
   GemvCacheEntry &entry = gGemvCache[h % kGemvCacheSlots];
   if (entry.keyHash.load(std::memory_order_acquire) == h)
@@ -128,7 +130,8 @@ double simulateGemv(std::chrono::milliseconds timeout, int nTasklets, int64_t mr
   // Store all y from WRAM back to MRAM
   b.createTransfer(y_wram, y_mram, mramRows);
 
-  double result = b.simulate(nTasklets, timeout).value();
+  double result = b.simulate(nTasklets, timeout)
+                      .value_or(std::numeric_limits<double>::infinity());
   entry.value.store(result, std::memory_order_relaxed);
   entry.keyHash.store(h, std::memory_order_release);
   return result;
@@ -160,8 +163,8 @@ double mlir::upmem::simulateFullGemv(std::chrono::milliseconds timeout,
   };
 
   // DPU compute cost (one DPU, accounts for tasklet parallelism inside).
-  double dpuCost = simulateGemv(timeout, static_cast<int>(tasklets), mramRows, mramCols,
-                                wramRows, wramCols);
+  double dpuCost = simulateGemv(timeout, static_cast<int>(tasklets), mramRows,
+                                mramCols, wramRows, wramCols);
 
   // Per inner-loop (col-tile) iteration: 3 scatters + wait + 1 gather.
   double innerIterCost =
