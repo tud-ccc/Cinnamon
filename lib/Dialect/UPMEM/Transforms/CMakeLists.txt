@@ -33,5 +33,4 @@ LINK_LIBS PUBLIC
     MLIRSCFDialect
 )
 
-target_link_libraries(UPMEMTransforms PRIVATE dlib UpmemCostModel)
-include_directories(SYSTEM ${CMAKE_SOURCE_DIR}/third-party/dlib)
+target_link_libraries(UPMEMTransforms PRIVATE UpmemCostModel)

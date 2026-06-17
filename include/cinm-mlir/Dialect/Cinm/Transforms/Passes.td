@@ -266,32 +266,6 @@ def CinmInferTileSizesPass : Pass<"cinm-infer-tile-sizes"> {
   }];
 }
 
-def RunCostModelPass: Pass<"run-cost-model"> {
-  let summary = "";
-  let description = [{}];
-
-  let options = [
-    Option<"costModelPath", "costModelPath", "std::string", "", "path to the costmodel">
-  ];
-
-  let dependentDialects = [
-    "cinm::CinmDialect",
-    "mlir::affine::AffineDialect",
-    "mlir::arith::ArithDialect",
-    "mlir::bufferization::BufferizationDialect",
-    "mlir::func::FuncDialect",
-    "mlir::linalg::LinalgDialect",
-    "mlir::LLVM::LLVMDialect",
-    "mlir::memref::MemRefDialect",
-    "mlir::tensor::TensorDialect",
-    "mlir::scf::SCFDialect",
-  ];
-}
-
-def CostModelFinalizePass: Pass<"cost-model-finalize"> {
-  let summary = "";
-  let description = [{}];
-}
 
 
 #endif // CINM_TRANSFORM_PASSES
