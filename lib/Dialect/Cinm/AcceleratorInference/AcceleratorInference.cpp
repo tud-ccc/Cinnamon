@@ -709,7 +709,10 @@ bool InferenceState::tryEval(size_t poolIdx, InferenceTask &task,
                           << task.wrap(pool[poolIdx]) << "\n");
 
   TrialInfo trial = task.makeTrialInfo(pool[poolIdx]);
+  auto t0 = std::chrono::steady_clock::now();
   auto cost = task.plugin.evaluate(trial);
+  auto evalTime = std::chrono::duration_cast<std::chrono::milliseconds>(
+      std::chrono::steady_clock::now() - t0);
 
   if (std::holds_alternative<DiagnosedSilenceableFailure>(cost)) {
     err = std::move(std::get<DiagnosedSilenceableFailure>(cost));
@@ -723,7 +726,7 @@ bool InferenceState::tryEval(size_t poolIdx, InferenceTask &task,
   costVal = std::get<double>(cost);
   LLVM_DEBUG(llvm::dbgs() << "[cinm-inference]   -> cost = " << costVal
                           << "\n");
-  pool.recordObservation(poolIdx, costVal, iter);
+  pool.recordObservation(poolIdx, costVal, iter, evalTime);
   anySuccess = true;
   if (costVal < bestCost) {
     bestCost = costVal;

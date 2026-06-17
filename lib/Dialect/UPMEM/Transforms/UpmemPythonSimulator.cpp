@@ -2,6 +2,7 @@
 #include "cinm-mlir/Dialect/UPMEM/IR/UPMEMOps.h"
 #include "cinm-mlir/Dialect/UPMEM/Transforms/UpmemSimulator.h"
 #include "cinm-mlir/Utils/Scheduling/SchedulingSupport.h"
+#include "upmem_cost_model/Types.h"
 
 #include <llvm/ADT/DenseMap.h>
 #include <llvm/ADT/DenseSet.h>
@@ -389,6 +390,10 @@ struct CppSimulator : UpmemSimulator {
 
   bool supportsMultithreading() const override { return true; }
 
+  double simulateGemv(std::chrono::milliseconds timeout, int nTasklets,
+                      int64_t mramRows, int64_t mramCols, int64_t rowTile,
+                      int64_t colTile, upmem_cm::DType dty) override;
+
   Maybe<double> simulate(Region &region) override {
     std::chrono::milliseconds tms = timeoutMs;
     auto waitForCb = [tms](Operation *op, bool) -> double {
@@ -408,6 +413,61 @@ struct CppSimulator : UpmemSimulator {
 };
 
 } // anonymous namespace
+
+double mlir::upmem::CppSimulator::simulateGemv(
+    std::chrono::milliseconds timeout, int nTasklets, int64_t mramRows,
+    int64_t mramCols, int64_t rowTile, int64_t colTile, upmem_cm::DType dty) {
+  using namespace upmem_cm;
+  ProgramBuilder b;
+
+  // MRAM buffers
+  auto A_mram = b.addBuffer("A_mram", MemSpace::MRAM, dty);
+  auto x_mram = b.addBuffer("x_mram", MemSpace::MRAM, dty);
+  auto y_mram = b.addBuffer("y_mram", MemSpace::MRAM, dty);
+
+  // WRAM tile buffers
+  auto A_wram = b.addBuffer("A_wram", MemSpace::WRAM, dty);
+  auto x_wram = b.addBuffer("x_wram", MemSpace::WRAM, dty);
+  auto y_wram = b.addBuffer("y_wram", MemSpace::WRAM, dty);
+
+  // Load all y from MRAM to WRAM before loops
+  b.createTransfer(y_mram, y_wram, mramRows);
+
+  int64_t nRowTiles = mramRows / rowTile;
+  int64_t nColTiles = mramCols / colTile;
+
+  b.beginLoop(0, nRowTiles); // row tile loop
+  b.beginLoop(0, nColTiles); // col tile loop
+
+  // Transfer A tile [rowTile × colTile] from MRAM; address advances per
+  // col-tile iter
+  b.createTransfer(A_mram, A_wram, rowTile * colTile, /*src_iv_indexed=*/true);
+  // Transfer x tile [colTile] from MRAM; address advances per col-tile iter
+  // (in the kernel only tasklet 0 does this via scf.if; modeled
+  // unconditionally)
+  b.createTransfer(x_mram, x_wram, colTile, /*src_iv_indexed=*/true);
+
+  b.beginLoop(0, rowTile); // row loop within tile
+  b.beginLoop(0, colTile); // dot-product loop
+
+  // acc += A_wram[row, col] * x_wram[col]; both stride by 1 per inner iteration
+  auto a_val = b.createLoad(A_wram, /*iv_indexed=*/true);
+  auto x_val = b.createLoad(x_wram, /*iv_indexed=*/true);
+  auto prod = b.createArith(ArithOp::MUL, dty, a_val, x_val);
+  // load-add-store into y_wram (models the iter_args reduction pattern)
+  b.createReduceStore(y_wram, ArithOp::ADD, prod);
+
+  b.endLoop(); // dot-product loop
+  b.endLoop(); // row loop within tile
+  b.endLoop(); // col tile loop
+  b.endLoop(); // row tile loop
+
+  // Store all y from WRAM back to MRAM
+  b.createTransfer(y_wram, y_mram, mramRows);
+
+  return b.simulate(nTasklets, timeout)
+      .value_or(std::numeric_limits<double>::infinity());
+}
 
 // ===----------------------------------------------------------------------===//
 // Factory

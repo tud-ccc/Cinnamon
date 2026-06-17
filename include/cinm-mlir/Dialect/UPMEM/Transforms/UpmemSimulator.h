@@ -8,6 +8,10 @@
 #include <mlir/IR/BuiltinOps.h>
 #include <mlir/IR/Operation.h>
 #include <mlir/Support/LogicalResult.h>
+#include <upmem_cost_model/Types.h>
+
+
+#include <optional>
 
 namespace mlir::upmem {
 
@@ -25,6 +29,25 @@ struct UpmemSimulator {
   /// simulate() call.  Implementations may use this to initialise per-thread
   /// resources on the correct thread.
   virtual void warmUp() {}
+
+  virtual double simulateGemv(std::chrono::milliseconds timeout, int nTasklets,
+                              int64_t mramRows, int64_t mramCols,
+                              int64_t rowTile, int64_t colTile, upmem_cm::DType);
+
+  /// Estimate the total cost of the host-side tiled GEMV (mv2) kernel,
+  /// including scatter/gather transfers and DPU compute.
+  ///   M, N        — full matrix dimensions
+  ///   mramRows    — output rows per DPU in MRAM
+  ///   mramCols    — input columns per DPU in MRAM
+  ///   wramRows    — row tile size (rowTile for simulateGemv)
+  ///   wramCols    — column tile size (colTile for simulateGemv)
+  ///   ranks       — number of UPMEM ranks
+  ///   dpus        — DPUs per rank
+  ///   tasklets    — tasklets per DPU
+  double simulateFullGemv(std::chrono::milliseconds timeoutMs, int64_t M,
+                          int64_t N, int64_t mramRows, int64_t mramCols,
+                          int64_t wramRows, int64_t wramCols, int64_t ranks,
+                          int64_t dpus, int64_t tasklets, upmem_cm::DType);
 };
 
 /// Simple baseline: weighted op count over the UPMEM dialect IR.
@@ -88,20 +111,5 @@ double simulateHostRegion(mlir::Region &region, bool annotate,
 /// Matches the formula used by the OpCount simulator's ScatterOp/GatherOp case.
 double scatterGatherCost(int64_t elemsPerDpu, int64_t elemBytes, int64_t ranks,
                          int64_t dpusPerRank);
-
-/// Estimate the total cost of the host-side tiled GEMV (mv2) kernel,
-/// including scatter/gather transfers and DPU compute.
-///   M, N        — full matrix dimensions
-///   mramRows    — output rows per DPU in MRAM
-///   mramCols    — input columns per DPU in MRAM
-///   wramRows    — row tile size (rowTile for simulateGemv)
-///   wramCols    — column tile size (colTile for simulateGemv)
-///   ranks       — number of UPMEM ranks
-///   dpus        — DPUs per rank
-///   tasklets    — tasklets per DPU
-double simulateFullGemv(std::chrono::milliseconds timeoutMs, int64_t M,
-                        int64_t N, int64_t mramRows, int64_t mramCols,
-                        int64_t wramRows, int64_t wramCols, int64_t ranks,
-                        int64_t dpus, int64_t tasklets);
 
 } // namespace mlir::upmem

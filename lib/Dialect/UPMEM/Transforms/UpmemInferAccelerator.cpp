@@ -333,9 +333,9 @@ struct UpmemInferencePlugin : cinm::InferencePlugin {
 
         if (auto gemv = llvm::dyn_cast_or_null<cinm::GemvOp>(op)) {
           auto shape = gemv.getLhs().getType().getShape();
-          result = simulateFullGemv(opts.evalTimeoutMs, shape[0], shape[1],
-                                    tileSizes[2], tileSizes[3], tileSizes[0],
-                                    tileSizes[1], 1, dpus, tasklets);
+          result = simulator->simulateFullGemv(
+              opts.evalTimeoutMs, shape[0], shape[1], tileSizes[2],
+              tileSizes[3], tileSizes[0], tileSizes[1], 1, dpus, tasklets);
         }
       });
       return result;
