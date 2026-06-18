@@ -88,12 +88,16 @@ class MlpackConan(ConanFile):
             self.cpp_info.system_libs.append("atomic")
 
         if self.settings.compiler in ("clang", "gcc"):
-            compiler_flags = ["-fopenmp"]
-            link_flags = ["-fopenmp"]
-            self.cpp_info.cflags = compiler_flags
-            self.cpp_info.cxxflags = compiler_flags
-            self.cpp_info.sharedlinkflags = link_flags
-            self.cpp_info.exelinkflags = link_flags
+            self.cpp_info.cflags = ["-fopenmp"]
+            self.cpp_info.cxxflags = ["-fopenmp"]
+            if self.settings.compiler == "clang" and self.settings.os in ["Linux", "FreeBSD"]:
+                # clang's -fopenmp defaults to libomp; use libgomp from GCC instead since
+                # it is always present and avoids pulling in the llvm-openmp conan package
+                # which injects -Xpreprocessor and breaks CMake's dependency-file flags.
+                self.cpp_info.system_libs.append("gomp")
+            else:
+                self.cpp_info.sharedlinkflags = ["-fopenmp"]
+                self.cpp_info.exelinkflags = ["-fopenmp"]
         elif is_msvc(self):
             compiler_flags = ["/openmp", "/bigobj", "/Zm200", "/Zc:__cplusplus"]
             self.cpp_info.cflags = compiler_flags

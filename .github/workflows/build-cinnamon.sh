@@ -93,6 +93,8 @@ fi
 configure() {
   status "Configuring Cinnamon (Ninja)"
   ln -s "$project_root/LICENSE" "$cinnamon_path/python/" 2>/dev/null || true
+  cd "$cinnamon_path"
+  source .venv/bin/activate
 
   BUILD_TYPE=${CMAKE_BUILD_TYPE:=RelWithDebInfo}
 
@@ -105,7 +107,6 @@ configure() {
     warning "conan not found or no conanfile.txt — skipping conan install"
   fi
 
-  # pushd build/$BUILD_TYPE
   local cmake_args=(
     -S .
     -B build
@@ -130,8 +131,7 @@ configure() {
   source build/conanbuild.sh
   print_and_run cmake "${cmake_args[@]}"
   cmake --build build --target all $CINNAMON_BUILD_OPTIONS
-  source deactivate_conanbuild.sh
-  popd
+  source build/deactivate_conanbuild.sh
 }
 
 # ---- Build with one clean retry on failure ----
