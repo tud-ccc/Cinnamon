@@ -1,0 +1,11 @@
+[requires]
+mlpack/4.8.0
+indicators/2.3
+
+[generators]
+CMakeDeps
+CMakeToolchain
+
+#[layout]
+#cmake_layout
+
