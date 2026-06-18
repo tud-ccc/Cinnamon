@@ -437,11 +437,11 @@ double mlir::upmem::CppSimulator::simulateGemv(
   int64_t nRowTiles = mramRows / rowTile;
   int64_t nColTiles = mramCols / colTile;
 
-  int64_t rowTilesMin = std::min(nRowTiles, 4L);
-  int64_t colTilesMin = std::min(nColTiles, 4L);
+  // int64_t rowTilesMin = std::min(nRowTiles, 4L);
+  // int64_t colTilesMin = std::min(nColTiles, 4L);
 
-  b.beginLoop(0, rowTilesMin); // row tile loop
-  b.beginLoop(0, colTilesMin); // col tile loop
+  b.beginLoop(0, nRowTiles); // row tile loop
+  b.beginLoop(0, nColTiles); // col tile loop
 
   // Transfer A tile [rowTile × colTile] from MRAM; address advances per
   // col-tile iter
@@ -470,8 +470,7 @@ double mlir::upmem::CppSimulator::simulateGemv(
   b.createTransfer(y_wram, y_mram, mramRows);
 
   return b.simulate(nTasklets, timeout)
-             .value_or(std::numeric_limits<double>::infinity()) *
-         (nRowTiles / rowTilesMin) * (nColTiles / colTilesMin);
+      .value_or(std::numeric_limits<double>::infinity());
 }
 
 // ===----------------------------------------------------------------------===//
