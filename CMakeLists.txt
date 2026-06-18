@@ -179,6 +179,12 @@ FetchContent_Declare(cereal_src
     GIT_SHALLOW    TRUE
     SOURCE_SUBDIR  NONE
 )
+FetchContent_Declare(ensmallen_src
+    GIT_REPOSITORY https://github.com/mlpack/ensmallen.git
+    GIT_TAG        2.10.0
+    GIT_SHALLOW    TRUE
+    SOURCE_SUBDIR  NONE
+)
 FetchContent_Declare(mlpack_src
     GIT_REPOSITORY https://github.com/mlpack/mlpack.git
     GIT_TAG        4.6.0
@@ -187,8 +193,10 @@ FetchContent_Declare(mlpack_src
 )
 
 # cereal (header-only serialization, required by mlpack)
-FetchContent_MakeAvailable(cereal_src mlpack_src)
+# ensmallen (header-only optimizer, required by mlpack ANN)
+FetchContent_MakeAvailable(cereal_src ensmallen_src mlpack_src)
 include_directories(SYSTEM ${cereal_src_SOURCE_DIR}/include)
+include_directories(SYSTEM ${ensmallen_src_SOURCE_DIR}/include)
 
 # mlpack headers (header-only; skip its own CMake build).
 add_library(mlpack_fc INTERFACE)
