@@ -32,7 +32,7 @@ struct UpmemSimulator {
 
   virtual double simulateGemv(std::chrono::milliseconds timeout, int nTasklets,
                               int64_t mramRows, int64_t mramCols,
-                              int64_t rowTile, int64_t colTile, upmem_cm::DType);
+                              int64_t rowTile, int64_t colTile, upmem_cm::DType) = 0;
 
   /// Estimate the total cost of the host-side tiled GEMV (mv2) kernel,
   /// including scatter/gather transfers and DPU compute.
