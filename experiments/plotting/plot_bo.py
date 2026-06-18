@@ -340,38 +340,43 @@ def plot_validation_mape(val_csv_path, out_dir, dataset, scale):
 
 
 def _plot_eval_time_vs_cost(seed_csv_paths, out_dir, scale, names=None):
-    """Scatter: evaluation wall-clock time (s) vs cost, all seeds overlaid."""
-    if names is None:
-        names = [Path(p).parent.name for p in seed_csv_paths]
-    cmap = plt.cm.tab10
-
-    fig, ax = plt.subplots(figsize=(7, 4))
-    any_data = False
-    for i, (path, name) in enumerate(zip(seed_csv_paths, names)):
+    """Scatter: evaluation wall-clock time (s) vs cost, coloured by dpus value."""
+    frames = []
+    for path in seed_csv_paths:
         df = _load_pool_csv(path)
         if "eval_time_ms" not in df.columns or "cost" not in df.columns:
             continue
-        obs = df[df["cost"].notna() & df["eval_time_ms"].notna()]
-        obs = df[df["dpus"] == 4 and df["tasklets"] == 1]
-        if obs.empty:
-            continue
-        cost_scaled = apply_scale(obs["cost"], scale)
-        time_s = obs["eval_time_ms"] / 1000.0
-        color = cmap(i / max(len(seed_csv_paths), 1))
-        ax.scatter(cost_scaled, time_s, color=color, s=14, alpha=0.55,
-                   linewidths=0, label=name)
-        any_data = True
+        obs = df[df["cost"].notna() & df["eval_time_ms"].notna()].copy()
+        if not obs.empty:
+            frames.append(obs)
 
-    if not any_data:
-        plt.close(fig)
+    if not frames:
         return None
+
+    all_data = pd.concat(frames, ignore_index=True)
+
+    fig, ax = plt.subplots(figsize=(7, 4))
+
+    if "dpus" in all_data.columns:
+        dpu_vals = sorted(all_data["dpus"].dropna().unique())
+        cmap = plt.cm.tab10
+        for i, d in enumerate(dpu_vals):
+            subset = all_data[all_data["dpus"] == d]
+            cost_scaled = apply_scale(subset["cost"] , scale)
+            time_s = subset["eval_time_ms"] / 1000.0
+            ax.scatter(cost_scaled, time_s, color=cmap(i % 10), s=14,
+                       alpha=0.55, linewidths=0, label=f"dpus={int(d)}")
+        ax.legend(title="dpus", fontsize=8, loc="upper right",
+                  title_fontsize=8, ncol=max(1, len(dpu_vals) // 8))
+    else:
+        cost_scaled = apply_scale(all_data["cost"], scale)
+        time_s = all_data["eval_time_ms"] / 1000.0
+        ax.scatter(cost_scaled, time_s, s=14, alpha=0.55, linewidths=0)
 
     sl = scale_label(scale)
     ax.set_xlabel(f"Cost  ({sl})")
     ax.set_ylabel("Evaluation time (s)")
     ax.set_title(f"Evaluation time vs cost — {len(seed_csv_paths)} seed(s)")
-    if len(seed_csv_paths) <= 8:
-        ax.legend(fontsize=8, loc="upper left")
     ax.grid(True, alpha=0.3)
     plt.tight_layout()
     out_path = os.path.join(out_dir, "agg_eval_time_vs_cost.png")
