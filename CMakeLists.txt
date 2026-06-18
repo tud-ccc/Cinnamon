@@ -76,7 +76,10 @@ include(HandleLLVMOptions)
 include_directories(SYSTEM ${LLVM_INCLUDE_DIRS})
 include_directories(SYSTEM ${MLIR_INCLUDE_DIRS})
 link_directories(${LLVM_BUILD_LIBRARY_DIR})
-add_definitions(${LLVM_DEFINITIONS})
+# Note: do NOT call add_definitions(${LLVM_DEFINITIONS}) here. HandleLLVMOptions already
+# adds all required compile definitions via add_compile_definitions(). LLVM_DEFINITIONS is
+# a space-separated string (not a CMake list), so passing it to add_definitions as a single
+# argument creates a malformed -D_GLIBCXX_USE_CXX11_ABI="0 -D..." flag.
 
 # Apply target properties for this project globally.
 include_directories(SYSTEM ${PROJECT_BINARY_DIR}/include)
