@@ -187,7 +187,7 @@ double dpuOpLatency(upmem_cm::StatOp op, upmem_cm::DType dty) {
 }
 
 double mlir::upmem::OpCountSimulator::simulateGemv(
-    std::chrono::milliseconds timeout, int nTasklets, int64_t mramRows,
+    std::chrono::milliseconds, int nTasklets, int64_t mramRows,
     int64_t mramCols, int64_t rowTile, int64_t colTile, upmem_cm::DType dty) {
 
   mramToWramCost(rowTile, 1, dty);
@@ -204,8 +204,9 @@ double mlir::upmem::OpCountSimulator::simulateGemv(
                           dpuOpLatency(upmem_cm::StatOp::ADD, dty) +
                           dpuOpLatency(upmem_cm::StatOp::STORE, dty));
 
-  return nRowTiles * nColTiles * (trcost + innerLoopCost) +
-         wramToMramCost(mramRows, 1, dty);
+  double cycleCount = nRowTiles * nColTiles * (trcost + innerLoopCost) +
+                      wramToMramCost(mramRows, 1, dty);
+  return cycleCount / 350'000;
 }
 
 double simulateHostRegion(Region &region, bool annotate,

@@ -12,6 +12,7 @@
 #include "cinm-mlir/Dialect/UPMEM/Transforms/Passes.h"
 #include "cinm-mlir/Dialect/UPMEM/Transforms/UpmemSimulator.h"
 #include "cinm-mlir/Utils/Scheduling/SchedulingSupport.h"
+#include "upmem_cost_model/Types.h"
 
 #include <chrono>
 #include <cstdint>
@@ -306,6 +307,21 @@ struct UpmemInferencePlugin : cinm::InferencePlugin {
     this->dpuIx = space.addDim(std::move(dpuCountParam));
     this->taskletIx = space.addDim(std::move(taskletParam));
   }
+  static upmem_cm::DType cmDtyFromMlirDty(Type ty) {
+    if (ty.isF32())
+      return upmem_cm::DType::F32;
+    if (ty.isF64())
+      return upmem_cm::DType::F64;
+    if (ty.isInteger(8))
+      return upmem_cm::DType::I8;
+    if (ty.isInteger(16))
+      return upmem_cm::DType::I16;
+    if (ty.isInteger(32))
+      return upmem_cm::DType::I32;
+    if (ty.isInteger(64))
+      return upmem_cm::DType::I64;
+    assert(false && "unsuported datatye");
+  }
 
   Maybe<double> evaluate(cinm::TrialInfo &trial) override {
     auto conf = trial.conf();
@@ -335,7 +351,8 @@ struct UpmemInferencePlugin : cinm::InferencePlugin {
           auto shape = gemv.getLhs().getType().getShape();
           result = simulator->simulateFullGemv(
               opts.evalTimeoutMs, shape[0], shape[1], tileSizes[2],
-              tileSizes[3], tileSizes[0], tileSizes[1], 1, dpus, tasklets);
+              tileSizes[3], tileSizes[0], tileSizes[1], 1, dpus, tasklets,
+              cmDtyFromMlirDty(gemv.getLhs().getType().getElementType()));
         }
       });
       return result;

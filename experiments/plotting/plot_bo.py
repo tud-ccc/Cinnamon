@@ -352,9 +352,10 @@ def _plot_eval_time_vs_cost(seed_csv_paths, out_dir, scale, names=None):
         if "eval_time_ms" not in df.columns or "cost" not in df.columns:
             continue
         obs = df[df["cost"].notna() & df["eval_time_ms"].notna()]
+        obs = df[df["dpus"] == 4 and df["tasklets"] == 1]
         if obs.empty:
             continue
-        cost_scaled = apply_scale(obs["cost"] * obs["dpus"] * obs["threads"], scale)
+        cost_scaled = apply_scale(obs["cost"], scale)
         time_s = obs["eval_time_ms"] / 1000.0
         color = cmap(i / max(len(seed_csv_paths), 1))
         ax.scatter(cost_scaled, time_s, color=color, s=14, alpha=0.55,
@@ -1091,6 +1092,9 @@ def main():
     ap.add_argument("--skip-existing-seed-plots", action="store_true",
                     help="Skip per-seed plots when pool_cost.png already exists "
                          "(problem-level aggregate plots are always regenerated)")
+    ap.add_argument("--plots", nargs="+", default=None, metavar="NAME",
+                    help="Only generate plots whose tag contains one of these substrings "
+                         "(e.g. --plots eval_time sigma_calibration cost)")
     args = ap.parse_args()
 
     scale = args.objective_scale
@@ -1125,8 +1129,15 @@ def main():
         sys.exit(0)
 
     all_futures = {}  # future → tag string
+    _plot_filter = args.plots  # None = all; list[str] = substring allowlist
 
     with ProcessPoolExecutor() as executor:
+
+        def sub(tag, fn, /, *a, **kw):
+            """Submit fn(*a, **kw) only if tag matches the --plots filter."""
+            if _plot_filter and not any(p in tag for p in _plot_filter):
+                return
+            all_futures[executor.submit(fn, *a, **kw)] = tag
 
         for group in all_groups:
             seed_csvs  = [p for _, p in group.seeds]
@@ -1140,61 +1151,51 @@ def main():
 
                 if not args.no_per_seed and seed_is_new:
                     for kw in build_facet_plot_tasks(csv_path, scale, ax_x, ax_y, ax_f):
-                        f = executor.submit(make_facet_plot, out_dir=out_dir, **kw)
-                        all_futures[f] = f"{name}/{kw['metric']}"
+                        sub(f"{name}/{kw['metric']}", make_facet_plot, out_dir=out_dir, **kw)
 
                     val_path = Path(csv_path).parent / "validation.csv"
                     if val_path.exists():
                         for fn, tag in [(plot_validation_rmse, "validation_rmse"),
                                         (plot_validation_mape, "validation_mape")]:
-                            f = executor.submit(fn, str(val_path), out_dir,
-                                                dataset="validation", scale=scale)
-                            all_futures[f] = f"{name}/{tag}"
+                            sub(f"{name}/{tag}", fn, str(val_path), out_dir,
+                                dataset="validation", scale=scale)
 
                     train_path = Path(csv_path).parent / "training.csv"
                     if train_path.exists():
                         for fn, tag in [(plot_validation_rmse, "training_rmse"),
                                         (plot_validation_mape, "training_mape")]:
-                            f = executor.submit(fn, str(train_path), out_dir,
-                                                dataset="training", scale=scale)
-                            all_futures[f] = f"{name}/{tag}"
+                            sub(f"{name}/{tag}", fn, str(train_path), out_dir,
+                                dataset="training", scale=scale)
 
                 readme_is_new = not (args.skip_existing_seed_plots
                                      and (Path(csv_path).parent / "README_bo_synopsis.md").exists())
                 if not args.no_per_seed and readme_is_new:
-                    f = executor.submit(generate_seed_readme, csv_path, scale,
-                                        ax_x, ax_y, ax_f, group)
-                    all_futures[f] = f"{name}/seed_readme"
+                    sub(f"{name}/seed_readme", generate_seed_readme,
+                        csv_path, scale, ax_x, ax_y, ax_f, group)
 
             # ── Aggregate plots ──
             agg_dir = str(group.out_dir)
 
             # Oracle-specific plots (recall curves, best-cost vs oracle).
             if group.oracle_csv is not None:
-                f = executor.submit(_plot_oracle_curves,
-                                    group.oracle_csv, seed_csvs, agg_dir, args.pcts, scale)
-                all_futures[f] = "recall+best_cost"
+                sub("recall+best_cost", _plot_oracle_curves,
+                    group.oracle_csv, seed_csvs, agg_dir, args.pcts, scale)
 
             # Oracle-independent aggregate plots (generated for all groups).
             if len(seed_csvs) > 1:
-                f = executor.submit(_plot_sigma_calibration,
-                                    seed_csvs, agg_dir, scale, seed_names)
-                all_futures[f] = "sigma_calibration"
+                sub("sigma_calibration", _plot_sigma_calibration,
+                    seed_csvs, agg_dir, scale, seed_names)
+                sub("aggregate_learning_curves", _plot_aggregate_learning_curves,
+                    seed_csvs, agg_dir, scale)
+                sub("aggregate_timings", _plot_aggregate_timings,
+                    seed_csvs, agg_dir)
 
-                f = executor.submit(_plot_aggregate_learning_curves, seed_csvs, agg_dir, scale)
-                all_futures[f] = "aggregate_learning_curves"
-
-                f = executor.submit(_plot_aggregate_timings, seed_csvs, agg_dir)
-                all_futures[f] = "aggregate_timings"
-
-            f = executor.submit(_plot_eval_time_vs_cost, seed_csvs, agg_dir, scale, seed_names)
-            all_futures[f] = "eval_time_vs_cost"
-
-            f = executor.submit(_plot_eval_time_explainability, seed_csvs, agg_dir)
-            all_futures[f] = "eval_time_explainability"
-
-            f = executor.submit(generate_problem_readme, group, seed_csvs, scale, ax_x, ax_y, ax_f)
-            all_futures[f] = "problem_readme"
+            sub("eval_time_vs_cost", _plot_eval_time_vs_cost,
+                seed_csvs, agg_dir, scale, seed_names)
+            sub("eval_time_explainability", _plot_eval_time_explainability,
+                seed_csvs, agg_dir)
+            sub("problem_readme", generate_problem_readme,
+                group, seed_csvs, scale, ax_x, ax_y, ax_f)
 
         for future in tqdm(as_completed(all_futures), total=len(all_futures), desc="plots"):
             tag = all_futures[future]

@@ -184,6 +184,7 @@ def cmd_plot(args: argparse.Namespace) -> int:
     scale  = getattr(args, "scale", "log10")
     extra  = getattr(args, "plot_extra", [])
     no_per_seed = getattr(args, "no_per_seed", False)
+    plots_filter = getattr(args, "plots", None) or []
 
     plot_script = EXPERIMENTS_DIR / "plotting" / "plot_bo.py"
 
@@ -211,8 +212,12 @@ def cmd_plot(args: argparse.Namespace) -> int:
         *(["--no-per-seed"] if no_per_seed else []),
         *plot_args,
         *extra,
+        *(["--plots", *plots_filter] if plots_filter else []),
     ]
-    return subprocess.run(cmd).returncode
+    code = subprocess.run(cmd).returncode
+    if code != 0:
+      print("FAILED" + ' '.join(cmd))
+    return code
 
 
 def cmd_view(args: argparse.Namespace) -> int:
@@ -272,6 +277,12 @@ def _add_plot_extra(p: argparse.ArgumentParser) -> None:
                    metavar="ARG", help="Extra args forwarded to plot_bo.py")
 
 
+def _add_plots_filter(p: argparse.ArgumentParser) -> None:
+    p.add_argument("--plots", nargs="+", default=None, metavar="NAME",
+                   help="Only generate plots whose tag contains one of these substrings "
+                        "(forwarded to plot_bo.py --plots)")
+
+
 def build_parser() -> argparse.ArgumentParser:
     root = argparse.ArgumentParser(
         prog="run.py",
@@ -288,6 +299,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_run.add_argument("--seed", type=int, default=42, help="RNG seed (default: 42)")
     p_run.add_argument("--no-per-seed", action="store_true", dest="no_per_seed",
                        help="Pass --no-per-seed to plot_bo.py")
+    _add_plots_filter(p_run)
     _add_extra(p_run)
     p_run.set_defaults(func=cmd_run)
 
@@ -305,6 +317,7 @@ def build_parser() -> argparse.ArgumentParser:
                          help="Offset to use to make generated seeds different from another run of the command")
     p_seeds.add_argument("--no-per-seed", action="store_true", dest="no_per_seed",
                          help="Pass --no-per-seed to plot_bo.py")
+    _add_plots_filter(p_seeds)
     _add_extra(p_seeds)
     p_seeds.set_defaults(func=cmd_seeds)
 
@@ -322,6 +335,7 @@ def build_parser() -> argparse.ArgumentParser:
     _add_oracle(p_plot)
     p_plot.add_argument("--no-per-seed", action="store_true", dest="no_per_seed",
                         help="Pass --no-per-seed to plot_bo.py")
+    _add_plots_filter(p_plot)
     p_plot.add_argument("plot_extra", nargs="*", metavar="ARG",
                         help="Extra args forwarded to plot_bo.py")
     p_plot.set_defaults(func=lambda a: cmd_plot(a), file=None, dir=None)
