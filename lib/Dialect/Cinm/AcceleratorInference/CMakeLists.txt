@@ -16,6 +16,8 @@ LINK_LIBS PUBLIC
     MLIRLLVMDialect
     CinmIR
     CinmUtils
+    mlpack::mlpack 
+    indicators::indicators
 )
 
-target_link_libraries(CinmAcceleratorInference PUBLIC mlpack::mlpack indicators::indicators)
+# target_link_libraries(CinmAcceleratorInference PUBLIC mlpack::mlpack indicators::indicators)

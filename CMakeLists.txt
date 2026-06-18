@@ -152,6 +152,10 @@ foreach(_pkg mlpack indicators ensmallen cereal armadillo OpenBLAS stb)
   set(_var "${_pkg}_INCLUDE_DIRS_${_build_type_upper}")
   if(DEFINED "${_var}")
     include_directories(SYSTEM "${${_var}}")
+  elseif(DEFINED "${_pkg}_INCLUDE_DIRS")
+    message(SEND_ERROR "Package '${_pkg}' has no include dirs for build type '${CMAKE_BUILD_TYPE}' "
+      "(looked for '${_var}'). Conan dependencies were likely built with a different build type. "
+      "Re-run: conan install . --output-folder=build --build=missing -s build_type=${CMAKE_BUILD_TYPE}")
   endif()
 endforeach()
 unset(_build_type_upper)

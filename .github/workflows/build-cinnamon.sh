@@ -100,7 +100,7 @@ configure() {
   if command -v conan >/dev/null 2>&1 && [[ -f conanfile.txt ]]; then
     status "Running conan install"
     mkdir -p build
-    conan install . --output-folder=build --build=missing -s build_type=${BUILD_TYPE} -s cppstd=20
+    conan install . --output-folder=build --build=missing -s build_type=${BUILD_TYPE} -s compiler.cppstd=20
   else
     warning "conan not found or no conanfile.txt — skipping conan install"
   fi
