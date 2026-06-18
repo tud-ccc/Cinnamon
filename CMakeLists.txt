@@ -134,15 +134,26 @@ else()
     message(WARNING "UPMEM_DIR not set, runtime lib will not be compiled.")
 endif()
 
-# These are installed by conan: 
+# These are installed by conan:
 #     conan install . --output-folder=build --build=missing
 find_package(indicators REQUIRED)
 find_package(mlpack REQUIRED)
 
-# mlpack headers (header-only; skip its own CMake build).
-#add_library(mlpack_fc INTERFACE)
-#target_link_libraries(mlpack_fc INTERFACE armadillo)
-#include_directories(SYSTEM ${mlpack_src_SOURCE_DIR}/src)
+# LLVM's llvm_add_library wraps each target in an OBJECT library and
+# re-forwards includes via target_include_directories without SYSTEM
+# (AddLLVM.cmake ~655), stripping the -isystem marker that CMake would
+# normally apply to IMPORTED targets. Workaround: add conan include paths
+# as global system includes so the flag reaches every compilation unit.
+string(TOUPPER "${CMAKE_BUILD_TYPE}" _build_type_upper)
+foreach(_pkg mlpack indicators ensmallen cereal armadillo OpenBLAS stb)
+  set(_var "${_pkg}_INCLUDE_DIRS_${_build_type_upper}")
+  if(DEFINED "${_var}")
+    include_directories(SYSTEM "${${_var}}")
+  endif()
+endforeach()
+unset(_build_type_upper)
+unset(_var)
+unset(_pkg)
 
 # Add pybind11
 find_package(pybind11 OPTIONAL)
