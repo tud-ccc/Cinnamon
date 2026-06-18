@@ -1,3 +1,4 @@
+set shell := ["zsh", "-c"]
 
 run *ARGS:
     source $(realpath ../.venv/bin/activate) && python run.py run {{ARGS}}
