@@ -18,4 +18,4 @@ LINK_LIBS PUBLIC
     CinmUtils
 )
 
-target_link_libraries(CinmAcceleratorInference PRIVATE mlpack_fc indicators::indicators)
+target_link_libraries(CinmAcceleratorInference PUBLIC mlpack::mlpack indicators::indicators)
