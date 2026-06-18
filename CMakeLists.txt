@@ -134,74 +134,15 @@ else()
     message(WARNING "UPMEM_DIR not set, runtime lib will not be compiled.")
 endif()
 
-
-include(FetchContent)
-
-# Add indicators (header-only progress bar, like tqdm)
-FetchContent_Declare(indicators
-    GIT_REPOSITORY https://github.com/p-ranav/indicators
-    GIT_TAG        v2.3
-)
-FetchContent_MakeAvailable(indicators)
-
-# BLAS + LAPACK: prefer system install, fall back to OpenBLAS (C-only build).
-find_package(BLAS)
-find_package(LAPACK)
-add_library(blas_lapack INTERFACE)
-if(NOT BLAS_FOUND OR NOT LAPACK_FOUND)
-    message(ERROR "BLAS or LAPACK required - install those on your system")
-else()
-    target_link_libraries(blas_lapack INTERFACE ${BLAS_LIBRARIES} ${LAPACK_LIBRARIES})
-endif()
-
-# These are header-only libraries,
-# we use SOURCE_SUBDIR NONE (which is a nonexistent subdir) 
-# so that cmake doesn't try to build them.
-# https://stackoverflow.com/questions/79261625/cmake-fetchcontent-with-header-only-project
-
-FetchContent_Declare(armadillo_src
-    GIT_REPOSITORY https://gitlab.com/conradsnicta/armadillo-code.git
-    GIT_TAG        15.2.6
-    GIT_SHALLOW    TRUE
-    SOURCE_SUBDIR  NONE
-)
-FetchContent_MakeAvailable(armadillo_src)
-add_library(armadillo INTERFACE)
-target_compile_definitions(armadillo INTERFACE ARMA_DONT_USE_WRAPPER)
-target_link_libraries(armadillo INTERFACE blas_lapack)
-# Use global include_directories(SYSTEM) — the only reliable way to get
-# -isystem with LLVM's add_mlir_dialect_library macro.
-include_directories(SYSTEM ${armadillo_src_SOURCE_DIR}/include)
-
-FetchContent_Declare(cereal_src
-    GIT_REPOSITORY https://github.com/USCiLab/cereal.git
-    GIT_TAG        v1.3.2
-    GIT_SHALLOW    TRUE
-    SOURCE_SUBDIR  NONE
-)
-FetchContent_Declare(ensmallen_src
-    GIT_REPOSITORY https://github.com/mlpack/ensmallen.git
-    GIT_TAG        2.10.0
-    GIT_SHALLOW    TRUE
-    SOURCE_SUBDIR  NONE
-)
-FetchContent_Declare(mlpack_src
-    GIT_REPOSITORY https://github.com/mlpack/mlpack.git
-    GIT_TAG        4.6.0
-    GIT_SHALLOW    TRUE
-    SOURCE_SUBDIR  NONE
-)
-
-# cereal (header-only serialization, required by mlpack)
-# ensmallen (header-only optimizer, required by mlpack ANN)
-FetchContent_MakeAvailable(cereal_src ensmallen_src mlpack_src)
-include_directories(SYSTEM ${cereal_src_SOURCE_DIR}/include)
-include_directories(SYSTEM ${ensmallen_src_SOURCE_DIR}/include)
+# These are installed by conan: 
+#     conan install . --output-folder=build --build=missing
+find_package(indicators REQUIRED)
+find_package(mlpack REQUIRED)
 
 # mlpack headers (header-only; skip its own CMake build).
-add_library(mlpack_fc INTERFACE)
-target_link_libraries(mlpack_fc INTERFACE armadillo)
-include_directories(SYSTEM ${mlpack_src_SOURCE_DIR}/src)
+#add_library(mlpack_fc INTERFACE)
+#target_link_libraries(mlpack_fc INTERFACE armadillo)
+#include_directories(SYSTEM ${mlpack_src_SOURCE_DIR}/src)
 
 # Add pybind11
 find_package(pybind11 OPTIONAL)

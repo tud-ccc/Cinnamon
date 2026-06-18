@@ -54,7 +54,7 @@ if [[ "$setup_python_venv" -eq 1 ]]; then
     # PyTorch first (per official guidance), then build tooling & bindings
     verbose_cmd pip install torch torchvision torchaudio --index-url "$torch_source"
     # Build dependencies
-    verbose_cmd pip install build wheel
+    verbose_cmd pip install build wheel conan
     # Note this needs to be done after LLVM has been cloned.
     verbose_cmd python -m pip install -r third-party/llvm/mlir/python/requirements.txt
     verbose_cmd python -m pip install -r experiments/requirements.txt

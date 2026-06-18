@@ -27,6 +27,7 @@ command -v cmake >/dev/null 2>&1 || { error "CMake not found. Install it."; exit
 
 cd "$cinnamon_path"
 
+
 # ---- Build dir sanity: reconfigure if wrong generator / missing files ----
 need_config=0
 reason=""
@@ -93,11 +94,24 @@ configure() {
   status "Configuring Cinnamon (Ninja)"
   ln -s "$project_root/LICENSE" "$cinnamon_path/python/" 2>/dev/null || true
 
+  BUILD_TYPE=${CMAKE_BUILD_TYPE:=RelWithDebInfo}
+
+  # ---- Conan: install C++ dependencies into build/ ----
+  if command -v conan >/dev/null 2>&1 && [[ -f conanfile.txt ]]; then
+    status "Running conan install"
+    mkdir -p build
+    conan install . --output-folder=build --build=missing -s build_type=${BUILD_TYPE}
+  else
+    warning "conan not found or no conanfile.txt — skipping conan install"
+  fi
+
+  # pushd build/$BUILD_TYPE
   local cmake_args=(
     -S .
     -B build
     -G Ninja
-    -DCMAKE_BUILD_TYPE=RelWithDebInfo
+    -DCMAKE_TOOLCHAIN_FILE=build/conan_toolchain.cmake
+    -DCMAKE_BUILD_TYPE=${BUILD_TYPE}
     -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
     -DLLVM_ENABLE_EH=ON
     -DLLVM_ENABLE_RTTI=ON
@@ -113,7 +127,11 @@ configure() {
     cmake_args+=("${EXTRA_USER_OPTS[@]}")
   fi
 
+  source build/conanbuild.sh
   print_and_run cmake "${cmake_args[@]}"
+  cmake --build build --target all $CINNAMON_BUILD_OPTIONS
+  source deactivate_conanbuild.sh
+  popd
 }
 
 # ---- Build with one clean retry on failure ----
@@ -122,7 +140,6 @@ if ! cmake --build build --target all $CINNAMON_BUILD_OPTIONS; then
   warning "Build failed — cleaning build/ and retrying from fresh configure…"
   rm -rf build
   configure
-  cmake --build build --target all $CINNAMON_BUILD_OPTIONS
 fi
 
 # ---- Python package wiring (optional) ----
