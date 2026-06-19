@@ -25,9 +25,18 @@ namespace mlir::cinm {
 CandidatePool::CandidatePool(const ConfigSpace &space, size_t evalBudget,
                              bool exhaustive)
     : space_(&space), N(space.totalSize()), visited(static_cast<unsigned>(N)),
+      validMask_(static_cast<unsigned>(N)),
       Xo(space.size(), evalBudget), yo(1, evalBudget),
       costByIdx(arma::rowvec(N).fill(arma::datum::nan)),
-      exhaustive(exhaustive) {}
+      exhaustive(exhaustive) {
+  space_->forEach([&](const Configuration &conf, size_t i) {
+    if (space_->isValid(conf))
+      validMask_.set(static_cast<unsigned>(i));
+    else
+      visited.set(static_cast<unsigned>(i));
+    return true;
+  });
+}
 
 CandidatePool::~CandidatePool() = default;
 
@@ -77,20 +86,15 @@ static arma::mat encodeSubset(const ConfigSpace &space,
 void CandidatePool::sampleInitialSet(size_t n, std::mt19937 &rng,
                                      std::function<bool(size_t)> accept) const {
   const size_t D = nDims();
-  if (n == 0 || N == 0)
+  if (n == 0 || validMask_.none())
     return;
 
   // Collect valid, unvisited candidates for LHS distance computation.
+  // Iterate validMask_ (O(nValid)) rather than the full [0,N) range.
   std::vector<size_t> unvIdx;
-  unvIdx.reserve(N);
-  Configuration tmpConf;
-  for (size_t i = 0; i < N; ++i) {
-    if (visited.test(i))
-      continue;
-    space_->at(i, tmpConf);
-    if (space_->isValid(tmpConf))
-      unvIdx.push_back(i);
-  }
+  for (int i = validMask_.find_first(); i != -1; i = validMask_.find_next(i))
+    if (!visited.test(static_cast<unsigned>(i)))
+      unvIdx.push_back(static_cast<size_t>(i));
 
   const size_t M = unvIdx.size();
   if (M == 0)
@@ -280,27 +284,30 @@ static arma::mat encodeSubset(const ConfigSpace &space,
 
 bool CandidatePool::tryInsert(std::unordered_set<size_t> &result, size_t idx,
                               Configuration &conf) {
-  if (visited.test(idx) || result.count(idx))
+  (void)conf;
+  if (visited.test(idx) || !validMask_.test(idx) || result.count(idx))
     return false;
-  space_->at(idx, conf);
-  if (!space_->isValid(conf)) {
-    visited.set(idx);
-    return false;
-  }
   result.insert(idx);
   return true;
 }
 
 void CandidatePool::fillRandom(std::unordered_set<size_t> &result,
                                size_t target, std::mt19937 &rng) {
-  if (result.size() >= target || N == 0)
+  if (result.size() >= target || validMask_.none())
     return;
-  std::uniform_int_distribution<size_t> dist(0, N - 1);
+  // Build a flat list of unvisited valid indices (O(nValid)), then sample
+  // from it uniformly — avoids the near-certain misses of [0,N) sampling when
+  // nValid << N.
+  std::vector<size_t> pool;
+  for (int i = validMask_.find_first(); i != -1; i = validMask_.find_next(i))
+    if (!visited.test(static_cast<unsigned>(i)) && !result.count(static_cast<size_t>(i)))
+      pool.push_back(static_cast<size_t>(i));
+  if (pool.empty())
+    return;
+  std::shuffle(pool.begin(), pool.end(), rng);
   Configuration conf;
-  for (size_t tries = 0; tries < target * 10 && result.size() < target;
-       ++tries) {
-    tryInsert(result, dist(rng), conf);
-  }
+  for (size_t i = 0; i < pool.size() && result.size() < target; ++i)
+    tryInsert(result, pool[i], conf);
 }
 
 void CandidatePool::fillNeighbors(std::unordered_set<size_t> &result,
@@ -308,10 +315,9 @@ void CandidatePool::fillNeighbors(std::unordered_set<size_t> &result,
   // BFS outward from every observed point up to `depth` steps.
   std::unordered_set<size_t> frontier;
   Configuration conf;
-  for (size_t i = 0; i < N; ++i) {
-    if (!std::isnan(costByIdx(i)))
-      frontier.insert(i);
-  }
+  for (int i = validMask_.find_first(); i != -1; i = validMask_.find_next(i))
+    if (!std::isnan(costByIdx(static_cast<size_t>(i))))
+      frontier.insert(static_cast<size_t>(i));
 
   std::unordered_set<size_t> nextFrontier;
   llvm::SmallVector<size_t> nbrs;
@@ -444,14 +450,8 @@ void CandidatePool::dumpToCSV(const ConfigSpace &space,
   // Collect all valid (constraint-passing) pool indices for surrogate
   // prediction. Invalid configs get no surrogate columns in the output.
   std::vector<size_t> validIdx;
-  {
-    Configuration conf;
-    for (size_t i = 0; i < N; ++i) {
-      space_->at(i, conf);
-      if (space_->isValid(conf))
-        validIdx.push_back(i);
-    }
-  }
+  for (int i = validMask_.find_first(); i != -1; i = validMask_.find_next(i))
+    validIdx.push_back(static_cast<size_t>(i));
 
   // Use the warm-started ensemble to get per-candidate statistics.
   const bool hasModel = ensemble_ && nObs >= 2 && !validIdx.empty();
@@ -465,11 +465,6 @@ void CandidatePool::dumpToCSV(const ConfigSpace &space,
     acq_v = computeAcq(mu_v, sigma_v, opts.kappa);
   }
 
-  // Build reverse map: pool index → position in validIdx.
-  std::unordered_map<size_t, size_t> validPos;
-  for (size_t j = 0; j < validIdx.size(); ++j)
-    validPos[validIdx[j]] = j;
-
   // Header
   for (const auto &p : space.params)
     out << p.name << ",";
@@ -478,17 +473,14 @@ void CandidatePool::dumpToCSV(const ConfigSpace &space,
     out << ",mu,sigma,acq";
   out << "\n";
 
-  // One row per valid pool member (invalid configs are omitted entirely;
-  // consumers treat absent rows as invalid).
+  // One row per valid pool member, in flat-index order.
   Configuration conf;
-  for (size_t i = 0; i < N; ++i) {
-    auto vit = validPos.find(i);
-    if (vit == validPos.end())
-      continue; // skip invalid configs
+  for (size_t j = 0; j < validIdx.size(); ++j) {
+    const size_t i = validIdx[j];
     space_->at(i, conf);
     for (int64_t v : conf)
       out << v << ",";
-    out << (visited.test(i) ? 1 : 0) << ",1,"; // valid is always 1 here
+    out << (visited.test(i) ? 1 : 0) << ",1,";
     double c = costByIdx(i);
     if (!std::isnan(c))
       out << c;
@@ -500,10 +492,8 @@ void CandidatePool::dumpToCSV(const ConfigSpace &space,
     auto tit = evalTimeByIdx.find(i);
     if (tit != evalTimeByIdx.end())
       out << tit->second;
-    if (hasModel) {
-      size_t j = vit->second;
+    if (hasModel)
       out << "," << mu_v(j) << "," << sigma_v(j) << "," << acq_v(j);
-    }
     out << "\n";
   }
 }
@@ -515,16 +505,7 @@ void CandidatePool::dumpMetadataJSON(const ConfigSpace &space,
   if (!out)
     return;
 
-  // Count valid configurations (same logic as dumpToCSV).
-  size_t nValid = 0;
-  {
-    Configuration conf;
-    for (size_t i = 0; i < N; ++i) {
-      space_->at(i, conf);
-      if (space_->isValid(conf))
-        ++nValid;
-    }
-  }
+  const size_t nValid = static_cast<size_t>(validMask_.count());
 
   auto jsonStr = [&](const std::string &s) {
     out << '"';
