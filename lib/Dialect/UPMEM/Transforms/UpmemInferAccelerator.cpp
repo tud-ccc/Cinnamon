@@ -70,7 +70,6 @@ namespace mlir::upmem {
 
 namespace {
 using mlir::cinm::SpaceBuilder;
-using mlir::cinm::SpaceExpr;
 using mlir::cinm::SpaceVar;
 using mlir::cinm::utils::Maybe;
 
@@ -347,10 +346,10 @@ void UpmemInferencePlugin::handleGemv(cinm::GemvOp gemv, SpaceBuilder &b) {
   if (mramTiling) {
     auto mramRow = b.divisorsOf("mramRow", M);
     auto mramCol = b.divisorsOf("mramCol", K);
-    b.require(SpaceExpr(M) / (dpus / dpuCols * tasklets * mramRow));
+    b.require(M / (dpus / dpuCols * tasklets * mramRow));
     b.require(mramRow / (tasklets * wramRow));
     b.require(mramCol / wramCol);
-    b.require(SpaceExpr(K) / (mramCol * dpuCols));
+    b.require(K / (mramCol * dpuCols));
 
     // Per-DPU MRAM must fit: A (T×mr×mc) + x (mc) + y (T×mr)
     b.require(tasklets * mramRow * mramCol + mramCol + tasklets * mramRow <=

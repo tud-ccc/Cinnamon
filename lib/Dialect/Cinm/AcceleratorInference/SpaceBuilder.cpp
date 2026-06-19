@@ -4,122 +4,11 @@
 #include <llvm/Support/Debug.h>
 #include <llvm/Support/raw_ostream.h>
 #include <mlir/IR/BuiltinTypeInterfaces.h>
+#include <set>
 
 #define DEBUG_TYPE "cinm-inference"
 
 namespace mlir::cinm {
-
-// ===----------------------------------------------------------------------===//
-// SpaceExpr — construction and evaluation
-// ===----------------------------------------------------------------------===//
-
-using Node    = detail::ExprNode;
-using NodePtr = detail::NodePtr;
-
-namespace {
-NodePtr makeNode(Node::Kind k, int64_t v = 0) {
-  auto n    = std::make_shared<Node>();
-  n->kind   = k;
-  n->constVal = v;
-  return n;
-}
-
-NodePtr binNode(Node::Kind k, NodePtr lhs, NodePtr rhs) {
-  auto n  = std::make_shared<Node>();
-  n->kind = k;
-  n->lhs  = std::move(lhs);
-  n->rhs  = std::move(rhs);
-  return n;
-}
-
-int64_t evalNode(const Node &root, const ConfWrapper &c) {
-  struct Frame { const Node *node; bool visited; };
-  llvm::SmallVector<Frame, 16> work;
-  llvm::SmallVector<int64_t, 8> vals;
-  work.push_back({&root, false});
-
-  while (!work.empty()) {
-    const auto [node, visited] = work.back();
-    work.pop_back();
-
-    if (node->kind == Node::Const) { vals.push_back(node->constVal); continue; }
-    if (node->kind == Node::Var)   { vals.push_back(node->var.get(c)); continue; }
-
-    if (!visited) {
-      work.push_back({node, true});
-      work.push_back({node->rhs.get(), false}); // right evaluated before revisit
-      work.push_back({node->lhs.get(), false}); // left evaluated first (on top)
-    } else {
-      int64_t rhs = vals.pop_back_val();
-      int64_t lhs = vals.pop_back_val();
-      switch (node->kind) {
-      case Node::Add: vals.push_back(lhs + rhs); break;
-      case Node::Sub: vals.push_back(lhs - rhs); break;
-      case Node::Mul: vals.push_back(lhs * rhs); break;
-      case Node::Div: vals.push_back(rhs != 0 ? lhs / rhs : 0); break;
-      default: llvm_unreachable("unknown binary ExprNode kind");
-      }
-    }
-  }
-  return vals.back();
-}
-} // namespace
-
-SpaceExpr::SpaceExpr(int64_t constant) {
-  auto n       = makeNode(Node::Const, constant);
-  root_        = std::move(n);
-}
-
-SpaceExpr::SpaceExpr(const SpaceVar &var) {
-  auto n  = std::make_shared<Node>();
-  n->kind = Node::Var;
-  n->var  = var;
-  root_   = std::move(n);
-}
-
-int64_t SpaceExpr::eval(const ConfWrapper &c) const {
-  return evalNode(*root_, c);
-}
-
-// ===----------------------------------------------------------------------===//
-// Arithmetic operators
-// ===----------------------------------------------------------------------===//
-
-SpaceExpr operator+(SpaceExpr lhs, SpaceExpr rhs) {
-  return SpaceExpr(binNode(Node::Add, lhs.root_, rhs.root_));
-}
-SpaceExpr operator-(SpaceExpr lhs, SpaceExpr rhs) {
-  return SpaceExpr(binNode(Node::Sub, lhs.root_, rhs.root_));
-}
-SpaceExpr operator*(SpaceExpr lhs, SpaceExpr rhs) {
-  return SpaceExpr(binNode(Node::Mul, lhs.root_, rhs.root_));
-}
-SpaceExpr operator/(SpaceExpr lhs, SpaceExpr rhs) {
-  return SpaceExpr(binNode(Node::Div, lhs.root_, rhs.root_));
-}
-
-// ===----------------------------------------------------------------------===//
-// Comparison operators → ConstraintExpr
-// ===----------------------------------------------------------------------===//
-
-ConstraintExpr operator<=(SpaceExpr lhs, SpaceExpr rhs) {
-  return ConstraintExpr(ConstraintExpr::Le, std::move(lhs), std::move(rhs));
-}
-ConstraintExpr operator>=(SpaceExpr lhs, SpaceExpr rhs) {
-  return ConstraintExpr(ConstraintExpr::Ge, std::move(lhs), std::move(rhs));
-}
-ConstraintExpr operator<(SpaceExpr lhs, SpaceExpr rhs) {
-  return ConstraintExpr(ConstraintExpr::Lt, std::move(lhs), std::move(rhs));
-}
-ConstraintExpr operator>(SpaceExpr lhs, SpaceExpr rhs) {
-  return ConstraintExpr(ConstraintExpr::Gt, std::move(lhs), std::move(rhs));
-}
-ConstraintExpr operator==(SpaceExpr lhs, SpaceExpr rhs) {
-  return ConstraintExpr(ConstraintExpr::Eq, std::move(lhs), std::move(rhs));
-}
-ConstraintExpr operator!=(SpaceExpr lhs, SpaceExpr rhs) {
-  return ConstraintExpr(ConstraintExpr::Ne, std::move(lhs), std::move(rhs));
-}
 
 // ===----------------------------------------------------------------------===//
 // SpaceBuilder — dimension declaration
@@ -189,65 +78,6 @@ void SpaceBuilder::require(Constraint pred) {
 }
 
 // ===----------------------------------------------------------------------===//
-// Expression constraint extraction
-// ===----------------------------------------------------------------------===//
-
-void SpaceBuilder::addDivConstraint(const NodePtr &num, const NodePtr &den) {
-  if (num->kind == Node::Const && den->kind == Node::Var) {
-    // den must divide num  (static filter on den's values)
-    LLVM_DEBUG(llvm::dbgs() << "[cinm-space]   div constraint: " << den->var.name()
-                            << " | " << num->constVal << "  (static filter)\n");
-    mustDivide(den->var, num->constVal);
-  } else if (num->kind == Node::Var && den->kind == Node::Var) {
-    // den divides num at runtime  (structural constraint)
-    LLVM_DEBUG(llvm::dbgs() << "[cinm-space]   div constraint: " << den->var.name()
-                            << " | " << num->var.name() << "  (structural)\n");
-    mustDivide(den->var, num->var);
-  } else {
-    // compound expressions: register a dynamic divisibility predicate
-    LLVM_DEBUG(llvm::dbgs() << "[cinm-space]   div constraint: compound  (dynamic predicate)\n");
-    SpaceExpr numExpr(num), denExpr(den);
-    predicates_.push_back([numExpr, denExpr](const ConfWrapper &c) {
-      auto dv = denExpr.eval(c);
-      return dv != 0 && numExpr.eval(c) % dv == 0;
-    });
-  }
-}
-
-void SpaceBuilder::extractDivConstraints(const NodePtr &node) {
-  if (!node || node->kind == Node::Const || node->kind == Node::Var)
-    return;
-  if (node->kind == Node::Div)
-    addDivConstraint(node->lhs, node->rhs);
-  extractDivConstraints(node->lhs);
-  extractDivConstraints(node->rhs);
-}
-
-void SpaceBuilder::require(SpaceExpr expr) {
-  extractDivConstraints(expr.root_);
-}
-
-void SpaceBuilder::require(ConstraintExpr expr) {
-  extractDivConstraints(expr.lhs_.root_);
-  extractDivConstraints(expr.rhs_.root_);
-  auto lhs  = expr.lhs_;
-  auto rhs  = expr.rhs_;
-  auto kind = expr.kind_;
-  predicates_.push_back([lhs, rhs, kind](const ConfWrapper &c) {
-    auto lv = lhs.eval(c), rv = rhs.eval(c);
-    switch (kind) {
-    case ConstraintExpr::Le: return lv <= rv;
-    case ConstraintExpr::Ge: return lv >= rv;
-    case ConstraintExpr::Lt: return lv < rv;
-    case ConstraintExpr::Gt: return lv > rv;
-    case ConstraintExpr::Eq: return lv == rv;
-    case ConstraintExpr::Ne: return lv != rv;
-    }
-    return false;
-  });
-}
-
-// ===----------------------------------------------------------------------===//
 // SpaceBuilder::buildInto
 // ===----------------------------------------------------------------------===//
 
@@ -277,14 +107,21 @@ void SpaceBuilder::buildInto(ConfigSpace &space) {
     LLVM_DEBUG({
       llvm::dbgs() << "[cinm-space]   dim '" << entry.var.name_ << "': ";
       switch (entry.kind) {
-      case DimEntry::IntRange:        llvm::dbgs() << "int[" << entry.lo << ".." << entry.hi << "]"; break;
-      case DimEntry::DivisorsOfConst: llvm::dbgs() << "divisors[" << entry.lo << ".." << entry.hi << "]"; break;
-      case DimEntry::Pow2:            llvm::dbgs() << "pow2[2^" << entry.lo << "..2^" << entry.hi << "]"; break;
+      case DimEntry::IntRange:
+        llvm::dbgs() << "int[" << entry.lo << ".." << entry.hi << "]";
+        break;
+      case DimEntry::DivisorsOfConst:
+        llvm::dbgs() << "divisors[" << entry.lo << ".." << entry.hi << "]";
+        break;
+      case DimEntry::Pow2:
+        llvm::dbgs() << "pow2[2^" << entry.lo << "..2^" << entry.hi << "]";
+        break;
       }
       if (!entry.divisorFilters.empty()) {
         llvm::dbgs() << "  filters=divisorsOf{";
         for (size_t i = 0; i < entry.divisorFilters.size(); ++i) {
-          if (i) llvm::dbgs() << ",";
+          if (i)
+            llvm::dbgs() << ",";
           llvm::dbgs() << entry.divisorFilters[i];
         }
         llvm::dbgs() << "}";
@@ -306,14 +143,11 @@ void SpaceBuilder::buildInto(ConfigSpace &space) {
   for (auto &m : multiples_)
     multsSet.insert({m.parent, m.child});
 
-  // childSet tracks dims already committed as structural children; these cannot
-  // be structural parents (the encoding has no slot for them, so their child
-  // would never be decoded).
+  // childSet tracks dims already committed as structural children.
   std::set<std::string> childSet;
 
-  // Pairs replaced by fallback constraints (indices valid after phase 1).
-  std::vector<std::pair<SpaceVar, SpaceVar>> equalityFallbacks;    // A == B
-  std::vector<std::pair<SpaceVar, SpaceVar>> dynamicDivFallbacks;  // child % parent == 0
+  std::vector<std::pair<SpaceVar, SpaceVar>> equalityFallbacks;
+  std::vector<std::pair<SpaceVar, SpaceVar>> dynamicDivFallbacks;
 
   std::set<std::pair<std::string, std::string>> handled;
 
@@ -321,22 +155,20 @@ void SpaceBuilder::buildInto(ConfigSpace &space) {
     if (handled.count({m.parent, m.child}))
       continue;
 
-    // Note if parent was declared after child (informational: encoding is
-    // index-agnostic and handles this correctly).
     LLVM_DEBUG({
       int pi = dimIndexByName(m.parent), ci = dimIndexByName(m.child);
       if (pi > ci)
-        llvm::dbgs() << "[cinm-space]   note: '" << m.parent
-                     << "' (dim " << pi << ") declared after child '"
-                     << m.child << "' (dim " << ci << ") — OK for encoding\n";
+        llvm::dbgs() << "[cinm-space]   note: '" << m.parent << "' (dim " << pi
+                     << ") declared after child '" << m.child << "' (dim " << ci
+                     << ") — OK for encoding\n";
     });
 
     // Detect mutual divisibility: A|B AND B|A → implies A == B.
     if (multsSet.count({m.child, m.parent})) {
       LLVM_DEBUG(llvm::dbgs()
-                 << "[cinm-space]   WARNING: mutual divisibility '"
-                 << m.parent << "' | '" << m.child << "' AND '" << m.child
-                 << "' | '" << m.parent
+                 << "[cinm-space]   WARNING: mutual divisibility '" << m.parent
+                 << "' | '" << m.child << "' AND '" << m.child << "' | '"
+                 << m.parent
                  << "'  (implies equality; replacing both with dynamic A==B)\n");
       handled.insert({m.parent, m.child});
       handled.insert({m.child, m.parent});
@@ -345,12 +177,11 @@ void SpaceBuilder::buildInto(ConfigSpace &space) {
       continue;
     }
 
-    // Detect chains: parent is already a structural child — the encoding has
-    // no slot for it, so its own child would never be decoded.
+    // Detect chains: parent is already a structural child.
     if (childSet.count(m.parent)) {
       LLVM_DEBUG(llvm::dbgs()
-                 << "[cinm-space]   WARNING: chained divisibility '"
-                 << m.parent << "' | '" << m.child << "' where '" << m.parent
+                 << "[cinm-space]   WARNING: chained divisibility '" << m.parent
+                 << "' | '" << m.child << "' where '" << m.parent
                  << "' is already a structural child"
                  << "  (converting to dynamic predicate)\n");
       handled.insert({m.parent, m.child});
@@ -365,13 +196,14 @@ void SpaceBuilder::buildInto(ConfigSpace &space) {
     childSet.insert(m.child);
   }
 
-  // Add fallback dynamic predicates (indices set during phase 1).
+  // Add fallback dynamic predicates.
   for (auto [va, vb] : equalityFallbacks)
     space.addConstraint(
         [va, vb](const ConfWrapper &c) { return va[c] == vb[c]; });
   for (auto [parent, child] : dynamicDivFallbacks)
-    space.addConstraint(
-        [parent, child](const ConfWrapper &c) { return child[c] % parent[c] == 0; });
+    space.addConstraint([parent, child](const ConfWrapper &c) {
+      return child[c] % parent[c] == 0;
+    });
 
   // Phase 3: dynamic predicates.
   LLVM_DEBUG(llvm::dbgs() << "[cinm-space]   dynamic predicates: "
