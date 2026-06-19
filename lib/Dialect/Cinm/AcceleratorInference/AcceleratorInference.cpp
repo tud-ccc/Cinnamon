@@ -287,8 +287,7 @@ void ConfigSpace::at(size_t idx, Configuration &conf) const {
       conf[slot.dimIdx] = params[slot.dimIdx].valueAt(subIdx);
     } else {
       const auto &g = groups[slot.groupIdx];
-      auto it =
-          std::upper_bound(g.cumCount.begin(), g.cumCount.end(), subIdx);
+      auto it = std::upper_bound(g.cumCount.begin(), g.cumCount.end(), subIdx);
       --it;
       size_t parentSubIdx = static_cast<size_t>(it - g.cumCount.begin());
       size_t childLocalIdx = subIdx - g.cumCount[parentSubIdx];
@@ -311,8 +310,7 @@ size_t ConfigSpace::indexOf(const Configuration &conf) const {
       size_t parentSubIdx = params[g.parentIdx].subIndexOf(conf[g.parentIdx]);
       const auto &cv = g.childValues[parentSubIdx];
       auto it = std::find(cv.begin(), cv.end(), conf[g.childIdx]);
-      subIdx = g.cumCount[parentSubIdx] +
-               static_cast<size_t>(it - cv.begin());
+      subIdx = g.cumCount[parentSubIdx] + static_cast<size_t>(it - cv.begin());
     }
     idx = idx * slot.slotSize + subIdx;
   }
@@ -630,6 +628,7 @@ struct InferenceTask {
     struct Obs {
       size_t idx;
       std::optional<double> cost;
+      std::chrono::milliseconds eval_time;
     };
     std::vector<std::vector<Obs>> perThreadObs(nThreads);
 
@@ -647,11 +646,15 @@ struct InferenceTask {
           continue;
 
         auto trial = makeTrialInfo(conf, *threadRef);
+        auto t0 = std::chrono::steady_clock::now();
         auto result = myPlugin.evaluate(trial);
+        auto evalTime = std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now() - t0);
         double *cost = std::get_if<double>(&result);
         std::optional<double> opt_cost =
             cost ? std::make_optional(*cost) : std::nullopt;
-        perThreadObs[tid].push_back({i, opt_cost});
+        perThreadObs[tid].push_back(
+            {.idx = i, .cost = opt_cost, .eval_time = evalTime});
       }
     };
 
@@ -674,10 +677,10 @@ struct InferenceTask {
     size_t total_successful = 0;
     for (auto &obs : perThreadObs) {
       total += obs.size();
-      for (auto &[idx, cost] : obs) {
+      for (auto &[idx, cost, eval_time] : obs) {
         pool.markVisited(idx);
         if (cost) {
-          pool.recordObservation(idx, *cost);
+          pool.recordObservation(idx, *cost, 0, eval_time);
           total_successful++;
         }
         // otherwise failed.
