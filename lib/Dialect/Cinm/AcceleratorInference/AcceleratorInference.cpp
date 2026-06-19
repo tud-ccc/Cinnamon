@@ -243,7 +243,12 @@ void ConfigSpace::ensureEncoding() const {
   encodingValid_ = true;
 }
 
-void ConfigSpace::addMultiplesConstraint(size_t parentIdx, size_t childIdx) {
+void ConfigSpace::addMultiplesConstraint(StringRef parentName,
+                                         StringRef childName) {
+  int parentIdx = findIndex(parentName);
+  int childIdx = findIndex(childName);
+  assert(parentIdx >= 0);
+  assert(childIdx >= 0);
   const SearchParam &parent = params[parentIdx];
   const SearchParam &child = params[childIdx];
   int64_t parentCard = parent.cardinality();
@@ -266,8 +271,9 @@ void ConfigSpace::addMultiplesConstraint(size_t parentIdx, size_t childIdx) {
         cumCount[static_cast<size_t>(pi)] +
         childValues[static_cast<size_t>(pi)].size();
 
-  groups.push_back(
-      {parentIdx, childIdx, std::move(childValues), std::move(cumCount)});
+  groups.push_back({static_cast<size_t>(parentIdx),
+                    static_cast<size_t>(childIdx), std::move(childValues),
+                    std::move(cumCount)});
   encodingValid_ = false;
 }
 
@@ -595,7 +601,7 @@ struct InferenceTask {
 
     // Build pool now: constructor pre-marks invalid configs as visited,
     // giving us the valid count before spawning threads.
-    CandidatePool pool(space, N);
+    CandidatePool pool(space, N, true);
     size_t nValid = N - pool.numVisited();
 
     LLVM_DEBUG(llvm::dbgs() << "[cinm-inference] Exhaustive search: " << nValid

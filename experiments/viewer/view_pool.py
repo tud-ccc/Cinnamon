@@ -25,6 +25,11 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         super().__init__(*a, directory=str(here), **kw)
     def log_message(self, *_):
         pass
+    def end_headers(self):
+        # Cross-Origin Isolation: required for SharedArrayBuffer (parallel workers).
+        self.send_header("Cross-Origin-Opener-Policy",   "same-origin")
+        self.send_header("Cross-Origin-Embedder-Policy", "require-corp")
+        super().end_headers()
 
 port  = 8765
 httpd = http.server.HTTPServer(("127.0.0.1", port), Handler)
