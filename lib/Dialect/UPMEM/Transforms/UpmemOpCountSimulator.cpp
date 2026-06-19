@@ -180,7 +180,7 @@ double wramToMramCost(long numelts, int nTasklets, upmem_cm::DType dty) {
 double mramToWramCost(long numelts, int nTasklets, upmem_cm::DType dty) {
   return upmem_cm::lookupDmaLatency(false,
                                     upmem_cm::dtypeBytes(dty) * numelts) *
-         std::max(1, nTasklets / 2);
+         std::max(1.0, nTasklets / 1.5);
 }
 double dpuOpLatency(upmem_cm::StatOp op, upmem_cm::DType dty) {
   return upmem_cm::lookupStaticLatency(op, dty);
@@ -190,9 +190,10 @@ double mlir::upmem::OpCountSimulator::simulateGemv(
     std::chrono::milliseconds, int nTasklets, int64_t mramRows,
     int64_t mramCols, int64_t rowTile, int64_t colTile, upmem_cm::DType dty) {
 
+  // result
   mramToWramCost(rowTile, 1, dty);
 
-  int64_t nRowTiles = mramRows / rowTile;
+  int64_t nRowTiles = mramRows / rowTile / nTasklets;
   int64_t nColTiles = mramCols / colTile;
 
   double trcost = mramToWramCost(rowTile * colTile, nTasklets, dty) +
@@ -205,6 +206,7 @@ double mlir::upmem::OpCountSimulator::simulateGemv(
                           dpuOpLatency(upmem_cm::StatOp::STORE, dty));
 
   double cycleCount = nRowTiles * nColTiles * (trcost + innerLoopCost) +
+                      // result write back
                       wramToMramCost(mramRows, 1, dty);
   return cycleCount / 350'000;
 }

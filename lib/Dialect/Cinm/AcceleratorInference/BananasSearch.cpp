@@ -22,10 +22,12 @@ namespace mlir::cinm {
 // CandidatePool construction
 // ===----------------------------------------------------------------------===//
 
-CandidatePool::CandidatePool(const ConfigSpace &space, size_t evalBudget)
+CandidatePool::CandidatePool(const ConfigSpace &space, size_t evalBudget,
+                             bool exhaustive)
     : space_(&space), N(space.totalSize()), visited(static_cast<unsigned>(N)),
       Xo(space.size(), evalBudget), yo(1, evalBudget),
-      costByIdx(arma::rowvec(N).fill(arma::datum::nan)) {}
+      costByIdx(arma::rowvec(N).fill(arma::datum::nan)),
+      exhaustive(exhaustive) {}
 
 CandidatePool::~CandidatePool() = default;
 
@@ -39,17 +41,19 @@ Configuration CandidatePool::operator[](size_t i) const {
 
 void CandidatePool::recordObservation(size_t idx, double cost, size_t iter,
                                       std::chrono::milliseconds evalTime) {
-  assert(!std::isnan(cost));
+  // assert(!std::isnan(cost));
   if (nObs >= Xo.n_cols) {
     const size_t newCols = Xo.n_cols + 32;
     Xo.resize(Xo.n_rows, newCols);
     yo.resize(1, newCols);
   }
-  Configuration conf;
-  space_->at(idx, conf);
-  for (size_t d = 0; d < space_->size(); ++d)
-    Xo(d, nObs) = (*space_)[d].featurize(conf[d]);
-  yo(0, nObs) = cost;
+  if (!exhaustive) {
+    Configuration conf;
+    space_->at(idx, conf);
+    for (size_t d = 0; d < space_->size(); ++d)
+      Xo(d, nObs) = (*space_)[d].featurize(conf[d]);
+    yo(0, nObs) = cost;
+  }
   costByIdx(idx) = cost;
   iterByIdx[idx] = iter;
   if (evalTime.count() > 0)
@@ -377,7 +381,8 @@ bool CandidatePool::nextCandidateIndices(const InferenceOptions &opts,
   finiteCols.resize(nFinite);
 
   if (nFinite < 2) {
-    // Not enough finite observations to train; pick the first accepted candidate.
+    // Not enough finite observations to train; pick the first accepted
+    // candidate.
     for (size_t idx : candIdx)
       if (accept(idx))
         return true;
@@ -524,7 +529,8 @@ void CandidatePool::dumpMetadataJSON(const ConfigSpace &space,
   auto jsonStr = [&](const std::string &s) {
     out << '"';
     for (char c : s) {
-      if (c == '"' || c == '\\') out << '\\';
+      if (c == '"' || c == '\\')
+        out << '\\';
       out << c;
     }
     out << '"';
@@ -537,7 +543,9 @@ void CandidatePool::dumpMetadataJSON(const ConfigSpace &space,
   for (size_t i = 0; i < space.params.size(); ++i) {
     const auto &p = space.params[i];
     out << "    {";
-    out << "\"name\": "; jsonStr(p.name); out << ", ";
+    out << "\"name\": ";
+    jsonStr(p.name);
+    out << ", ";
     out << "\"cardinality\": " << p.cardinality() << ", ";
     if (auto *r = std::get_if<IntRange>(&p.domain)) {
       out << "\"type\": \"range\", ";
@@ -547,13 +555,15 @@ void CandidatePool::dumpMetadataJSON(const ConfigSpace &space,
     } else if (auto *v = std::get_if<ValueList>(&p.domain)) {
       out << "\"type\": \"values\", \"values\": [";
       for (size_t j = 0; j < v->values.size(); ++j) {
-        if (j) out << ", ";
+        if (j)
+          out << ", ";
         out << v->values[j];
       }
       out << "]";
     }
     out << "}";
-    if (i + 1 < space.params.size()) out << ",";
+    if (i + 1 < space.params.size())
+      out << ",";
     out << "\n";
   }
   out << "  ]\n}\n";

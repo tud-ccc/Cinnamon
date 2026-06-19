@@ -2,11 +2,11 @@
 
 #include <chrono>
 #include <cstddef>
+#include <filesystem>
 #include <memory>
 #include <random>
 #include <unordered_map>
 #include <unordered_set>
-#include <filesystem>
 #include <vector>
 
 #include <llvm/ADT/BitVector.h>
@@ -26,7 +26,7 @@ struct InferenceOptions;
 struct BananasEnsemble; // defined in BananasSearch.cpp
 using Configuration = std::vector<int64_t>;
 
-/// Holds a set of configurations, their true costs, and per-iteration surrogate 
+/// Holds a set of configurations, their true costs, and per-iteration surrogate
 /// predictions (mu/sigma). This is used to hold a validation set and evaluate
 /// surrogate performance during training. Another instance is used to hold the
 /// training dataset and evaluate the surrogate fitting.
@@ -85,9 +85,12 @@ struct CandidatePool {
   /// reinitialising from random weights.
   std::unique_ptr<BananasEnsemble> ensemble_;
 
+  bool exhaustive;
+
   /// Encode the full Cartesian product and pre-mark constraint-violating
   /// configs as visited. evalBudget sizes Xo/yo (not N).
-  CandidatePool(const ConfigSpace &space, size_t evalBudget);
+  CandidatePool(const ConfigSpace &space, size_t evalBudget,
+                bool exhaustive = false);
   ~CandidatePool();
 
   size_t size() const { return N; }

@@ -46,8 +46,8 @@ struct UpmemSimulator {
   ///   tasklets    — tasklets per DPU
   double simulateFullGemv(std::chrono::milliseconds timeoutMs, int64_t M,
                           int64_t N, int64_t mramRows, int64_t mramCols,
-                          int64_t wramRows, int64_t wramCols, int64_t ranks,
-                          int64_t dpus, int64_t tasklets, upmem_cm::DType);
+                          int64_t wramRows, int64_t wramCols, int64_t dpuRows,
+                          int64_t dpuCols, int64_t tasklets, upmem_cm::DType);
 };
 
 /// Simple baseline: weighted op count over the UPMEM dialect IR.

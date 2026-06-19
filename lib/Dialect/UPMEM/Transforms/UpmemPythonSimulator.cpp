@@ -432,9 +432,10 @@ double mlir::upmem::CppSimulator::simulateGemv(
   auto y_wram = b.addBuffer("y_wram", MemSpace::WRAM, dty);
 
   // Load all y from MRAM to WRAM before loops
-  b.createTransfer(y_mram, y_wram, mramRows);
+  b.createTransfer(y_mram, y_wram, mramRows); // todo mark exclusive
 
-  int64_t nRowTiles = mramRows / rowTile;
+  // note that there is nTasklet threads doing this at the same time.
+  int64_t nRowTiles = mramRows / rowTile / nTasklets;
   int64_t nColTiles = mramCols / colTile;
 
   // int64_t rowTilesMin = std::min(nRowTiles, 4L);
@@ -467,6 +468,7 @@ double mlir::upmem::CppSimulator::simulateGemv(
   b.endLoop(); // row tile loop
 
   // Store all y from WRAM back to MRAM
+  // todo mark exclusive
   b.createTransfer(y_wram, y_mram, mramRows);
 
   return b.simulate(nTasklets, timeout)
