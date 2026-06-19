@@ -203,6 +203,7 @@ def run_trial(
             f"hidden-depth={cfg['depth']}",
             f"neighbor-depth={cfg.get('neighbor_depth', 2)}",
             f"neighbor-frontier-only={cfg.get('neighbor_frontier_only',"false")}",
+            "simulator=opcount",
             f"n-validation={n_validation}",
             f"validation-interval={validation_interval}",
             # f"simulator={simulator}", # TODO
@@ -220,6 +221,7 @@ def run_trial(
 
         t0 = time.perf_counter()
         try:
+            print(' '.join(cmd))
             proc = subprocess.run(
                 cmd, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True,
                 timeout=trial_timeout,

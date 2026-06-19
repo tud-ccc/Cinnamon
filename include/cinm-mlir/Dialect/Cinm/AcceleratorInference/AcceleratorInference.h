@@ -152,6 +152,10 @@ struct ConfigSpace {
   void at(size_t idx, Configuration &conf) const;
   /// Convert a configuration to its flat index (inverse of at()).
   size_t indexOf(const Configuration &conf) const;
+  /// Iterate all configurations in flat-index order, calling fn(conf, flatIdx)
+  /// for each. Return false from fn to stop early. Successive calls update only
+  /// the suffix of conf that changed (O(1) amortised per step vs O(S) for at()).
+  void forEach(std::function<bool(const Configuration &, size_t)> fn) const;
   /// Append to result all flat indices one discrete step away in any dimension.
   void neighborIndices(size_t idx,
                        llvm::SmallVectorImpl<size_t> &result) const;

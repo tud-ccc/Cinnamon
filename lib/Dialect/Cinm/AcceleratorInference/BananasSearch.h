@@ -60,12 +60,15 @@ struct ValidationSet {
 /// Configurations are not pre-stored; index i maps to the config at
 /// ConfigSpace::at(i).  Invalid configs (constraint failures) are pre-marked
 /// visited during construction so they are never selected.
-/// encoded is a D×N arma::mat (one column per config) used for surrogate
-/// predictions. Xo/yo are pre-allocated to evalBudget, not totalSize().
+/// validMask_ is a compact BitVector over [0, N) marking which flat indices pass
+/// all constraints. All O(nValid) operations iterate validMask_ rather than the
+/// full [0, N) range. Xo/yo are pre-allocated to evalBudget, not totalSize().
 struct CandidatePool {
   const ConfigSpace *space_;
   size_t N; // = space_->totalSize(), cached
-  llvm::BitVector visited;
+  llvm::BitVector visited;    // marks invalid + evaluated flat indices
+  llvm::BitVector validMask_; // bit i set iff config at flat index i is valid
+  size_t nValidVisited_ = 0;  // count of valid configs that have been visited
 
   // Incrementally maintained observation matrices.
   // Preallocated to D×evalBudget / 1×evalBudget; first nObs columns are valid.
@@ -87,24 +90,37 @@ struct CandidatePool {
 
   bool exhaustive;
 
-  /// Encode the full Cartesian product and pre-mark constraint-violating
-  /// configs as visited. evalBudget sizes Xo/yo (not N).
+  /// Iterate [0, N), pre-mark constraint-violating configs as visited, and
+  /// build validMask_. evalBudget sizes Xo/yo (not N).
   CandidatePool(const ConfigSpace &space, size_t evalBudget,
                 bool exhaustive = false);
   ~CandidatePool();
 
-  size_t size() const { return N; }
+  /// Number of valid (constraint-passing) configs in the pool.
+  size_t size() const { return static_cast<size_t>(validMask_.count()); }
   size_t nDims() const;
-  bool empty() const { return N == 0; }
+  bool empty() const { return validMask_.none(); }
 
-  /// Return the configuration at index i (allocated by value).
+  /// Return the configuration at flat pool index i (allocated by value).
   Configuration operator[](size_t i) const;
 
-  void markVisited(size_t idx) { visited.set(idx); }
+  void markVisited(size_t idx) {
+    if (!visited.test(static_cast<unsigned>(idx))) {
+      visited.set(static_cast<unsigned>(idx));
+      if (validMask_.test(static_cast<unsigned>(idx)))
+        ++nValidVisited_;
+    }
+  }
   bool isVisited(size_t idx) const { return visited.test(idx); }
-  size_t numVisited() const { return static_cast<size_t>(visited.count()); }
-  /// Index of the first unvisited entry, or size() if all have been visited.
-  size_t firstUnvisited() const { return visited.find_first_unset(); }
+  /// Number of valid configs that have been evaluated (or marked visited).
+  size_t numVisited() const { return nValidVisited_; }
+  /// Flat index of the first valid unvisited config, or N if all visited.
+  size_t firstUnvisited() const {
+    for (int i = validMask_.find_first(); i != -1; i = validMask_.find_next(i))
+      if (!visited.test(static_cast<unsigned>(i)))
+        return static_cast<size_t>(i);
+    return N;
+  }
 
   void recordObservation(size_t idx, double cost, size_t iter = 0,
                          std::chrono::milliseconds evalTime = {});

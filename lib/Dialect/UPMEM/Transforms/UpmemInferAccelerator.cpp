@@ -2,6 +2,7 @@
 #include "cinm-mlir/Conversion/CnmToUPMEM/CnmToUPMEM.h"
 #include "cinm-mlir/Conversion/CommonPatterns.h"
 #include "cinm-mlir/Dialect/Cinm/AcceleratorInference/AcceleratorInference.h"
+#include "cinm-mlir/Dialect/Cinm/AcceleratorInference/SpaceBuilder.h"
 #include "cinm-mlir/Dialect/Cinm/IR/CinmAttributes.h"
 #include "cinm-mlir/Dialect/Cinm/IR/CinmBase.h"
 #include "cinm-mlir/Dialect/Cinm/IR/CinmOps.h"
@@ -68,68 +69,9 @@ namespace mlir::upmem {
 #include "cinm-mlir/Dialect/UPMEM/Transforms/Passes.h.inc"
 
 namespace {
+using mlir::cinm::SpaceBuilder;
+using mlir::cinm::SpaceVar;
 using mlir::cinm::utils::Maybe;
-
-// ===----------------------------------------------------------------------===//
-// UpmemInferencePlugin
-// ===----------------------------------------------------------------------===//
-
-struct UpmemInferencePlugin;
-
-// helper struct to add dynamic/static constraints on variables of the design
-// space without manipulating bare arrays.
-class ConstraintEditor {
-  friend struct UpmemInferencePlugin;
-
-  cinm::ConfigSpace &space;
-  UpmemInferencePlugin *plugin;
-  cinm::SearchParam &dpuCount;
-  cinm::SearchParam &t;
-  SmallVector<cinm::SearchParam> tilingFactors;
-  ArrayRef<int64_t> tiledDimensions;
-  unsigned tfStart;
-  cinm::utils::NameInventor &nameInventor;
-
-public:
-  ConstraintEditor(cinm::ConfigSpace &space, UpmemInferencePlugin *plugin,
-                   cinm::SearchParam &dpuCount, cinm::SearchParam &t,
-                   SmallVector<cinm::SearchParam> &&tilingFactors,
-                   ArrayRef<int64_t> tiledDims, unsigned tfStart,
-                   cinm::utils::NameInventor &nameInventor)
-      : space(space), plugin(plugin), dpuCount(dpuCount), t(t),
-        tilingFactors(std::move(tilingFactors)), tiledDimensions(tiledDims),
-        tfStart(tfStart), nameInventor(nameInventor) {}
-
-  StringAttr newName(StringRef hint) {
-    return nameInventor.getUniqueName(hint);
-  }
-  size_t newParam(cinm::SearchParam &&parm) {
-    auto ix = tilingFactors.size();
-    tilingFactors.emplace_back(std::move(parm));
-    return ix;
-  }
-
-  void addStaticConstraint(
-      function_ref<void(cinm::SearchParam &rd, cinm::SearchParam &t,
-                        llvm::SmallVectorImpl<cinm::SearchParam> &tilingFactors,
-                        ArrayRef<int64_t> tiledDims)>
-          callback);
-
-  void addDynamicConstraint(
-      std::function<bool(int64_t rd, int64_t t, ArrayRef<int64_t> tilingFactors,
-                         ArrayRef<int64_t> tiledDims)>
-          callback);
-
-  /// Register that tilingFactors[childLocalIdx] must be a multiple of
-  /// tilingFactors[parentLocalIdx]. Committed to the space after dims are
-  /// added.
-  void addMultiplesConstraint(StringRef parent, StringRef child) {
-    pendingMultiples_.push_back({parent.str(), child.str()});
-  }
-
-private:
-  SmallVector<std::pair<std::string, std::string>> pendingMultiples_;
-};
 
 /// UPMEM-specific inference options. Wraps the generic InferenceOptions and
 /// provides a place to add UPMEM-specific knobs in the future.
@@ -146,9 +88,17 @@ struct UpmemInferencePlugin : cinm::InferencePlugin {
   const UpmemInferenceOptions &opts;
   std::unique_ptr<UpmemSimulator> simulator;
 
-  // int64_t rankIx = -1;
-  int64_t dpuIx = -1;
-  int64_t taskletIx = -1;
+  // SpaceVars for dpus and tasklets, assigned during initializeSpace.
+  SpaceVar dpusVar_, taskletsVar_;
+
+  // Simulation callbacks registered by per-op handlers. Each receives the
+  // current configuration and the (per-thread) simulator; evaluate() sums
+  // their return values. The simulator is passed at call time so that clones
+  // (which have their own simulator) work without lambda modification.
+  using SimFn =
+      std::function<double(const cinm::ConfWrapper &, UpmemSimulator &)>;
+  std::vector<SimFn> simulators_;
+
   std::unique_ptr<PassManager> pipeline;
 
   static constexpr llvm::StringLiteral kTileParamNamesAttr =
@@ -158,6 +108,8 @@ struct UpmemInferencePlugin : cinm::InferencePlugin {
                        const UpmemInferenceOptions &opts,
                        std::unique_ptr<UpmemSimulator> sim)
       : platform(platform), opts(opts), simulator(std::move(sim)) {}
+
+  void registerSimulator(SimFn fn) { simulators_.push_back(std::move(fn)); }
 
   bool supportsMultithreading() const override {
     return simulator && simulator->supportsMultithreading();
@@ -254,9 +206,9 @@ struct UpmemInferencePlugin : cinm::InferencePlugin {
   std::unique_ptr<cinm::InferencePlugin> clone() const override {
     auto c = std::make_unique<UpmemInferencePlugin>(platform, opts,
                                                     simulator->clone());
-    // c->rankIx = rankIx;
-    c->dpuIx = dpuIx;
-    c->taskletIx = taskletIx;
+    c->dpusVar_ = dpusVar_;
+    c->taskletsVar_ = taskletsVar_;
+    c->simulators_ = simulators_;
     return c;
   }
 
@@ -268,64 +220,24 @@ struct UpmemInferencePlugin : cinm::InferencePlugin {
 
   void printStats() const override { simulator->printStats(); }
 
-  void handleOpConstraints(cinm::CinmTilingInterface op,
-                           ConstraintEditor &editor);
+  void handleGemv(cinm::GemvOp gemv, SpaceBuilder &b);
 
   void initializeSpace(cinm::ComputeBlockOp refClone,
                        cinm::ConfigSpace &space) override {
-    auto dpuCountParam = cinm::makeRange(
+    SpaceBuilder b;
+    simulators_.clear();
+    dpusVar_ = b.intRange(
         "dpus", 1, platform.getMaxNumRanks() * platform.getMaxNumDpusPerRank());
-    // auto rankParam = cinm::makeRange("ranks", 1, platform.getMaxNumRanks());
-    // auto dpuParam = cinm::makeRange("dpus", 1,
-    // platform.getMaxNumDpusPerRank());
-    auto taskletParam =
-        cinm::makeRange("tasklets", 1, platform.getMaxNumTasklets());
-
-    auto nameInventor = cinm::utils::NameInventor::getNameInventor(
-        refClone.getOperation(), "tile");
-    MLIRContext *ctx = refClone->getContext();
-
-    SmallVector<std::pair<std::string, std::string>> pendingMultiples;
+    taskletsVar_ = b.intRange("tasklets", 1, platform.getMaxNumTasklets());
 
     refClone.getBody().walk([&](mlir::Operation *op) {
-      auto tileable = llvm::dyn_cast<cinm::CinmTilingInterface>(op);
-      if (!tileable)
-        return;
-
-      llvm::SmallVector<int64_t> dimSizes;
-      tileable.getTilableDimSizes(dimSizes);
-
-      llvm::SmallVector<cinm::SearchParam> tilingFactors;
-      llvm::SmallVector<StringRef> paramNames;
-      buildTilingParams(dimSizes, nameInventor, "wram", tilingFactors,
-                        paramNames);
-      if (opts.useMRAMTiling) {
-        buildTilingParams(dimSizes, nameInventor, "mram", tilingFactors,
-                          paramNames);
-      }
-      auto firstDim = space.params.size();
-      ConstraintEditor editor(space, this, dpuCountParam, taskletParam,
-                              std::move(tilingFactors), dimSizes, firstDim,
-                              nameInventor);
-
-      handleOpConstraints(tileable, editor);
-
-      for (auto &parm : std::move(editor.tilingFactors)) {
-        space.addDim(std::move(parm));
-      }
-      pendingMultiples.append(std::move(editor.pendingMultiples_));
-
-      op->setAttr(kTileParamNamesAttr,
-                  OpBuilder(ctx).getStrArrayAttr(paramNames));
+      if (auto gemv = llvm::dyn_cast<cinm::GemvOp>(op))
+        handleGemv(gemv, b);
     });
 
-    // this->rankIx = space.addDim(std::move(rankParam));
-    this->dpuIx = space.addDim(std::move(dpuCountParam));
-    this->taskletIx = space.addDim(std::move(taskletParam));
-
-    for (auto [pi, ci] : std::move(pendingMultiples))
-      space.addMultiplesConstraint(pi, ci);
+    b.buildInto(space);
   }
+
   static upmem_cm::DType cmDtyFromMlirDty(Type ty) {
     if (ty.isF32())
       return upmem_cm::DType::F32;
@@ -344,7 +256,8 @@ struct UpmemInferencePlugin : cinm::InferencePlugin {
 
   Maybe<double> evaluate(cinm::TrialInfo &trial) override {
     auto conf = trial.conf();
-    int64_t dpus = conf[this->dpuIx], tasklets = conf[this->taskletIx];
+    int64_t dpus = dpusVar_[conf];
+    int64_t tasklets = taskletsVar_[conf];
 
     MLIRContext *ctx = trial.computeBlock->getContext();
     mlir::Location loc = trial.computeBlock->getLoc();
@@ -352,31 +265,11 @@ struct UpmemInferencePlugin : cinm::InferencePlugin {
         upmem::UpmemAcceleratorAttr::get(platform, 1, dpus, tasklets));
 
     if (opts.useMRAMTiling) {
-      // then bypass the lowering completely, we run the simulator on a template
-      // TODO when the CNM pipeline allows, remove this and run the regular
-      // pipeline
-      double result = std::numeric_limits<double>::infinity();
-      trial.computeBlock.getBody().walk([&](mlir::Operation *op) {
-        auto paramNamesAttr = op->getAttrOfType<ArrayAttr>(kTileParamNamesAttr);
-        if (!paramNamesAttr)
-          return;
-
-        llvm::SmallVector<int64_t> tileSizes;
-        for (auto nameAttr : paramNamesAttr)
-          tileSizes.push_back(
-              trial.conf()[llvm::cast<StringAttr>(nameAttr).strref()]);
-
-        if (auto gemv = llvm::dyn_cast_or_null<cinm::GemvOp>(op)) {
-          tileSizes.push_back(conf["tileDpuCols"]);
-          auto ty = gemv.getLhs().getType();
-          auto shape = ty.getShape();
-          result = simulator->simulateFullGemv(
-              opts.evalTimeoutMs, shape[0], shape[1], tileSizes[2],
-              tileSizes[3], tileSizes[0], tileSizes[1], dpus / tileSizes[4],
-              tileSizes[4], tasklets, cmDtyFromMlirDty(ty.getElementType()));
-        }
-      });
-      return result;
+      // Bypass the lowering pipeline: call each op's registered simulator.
+      double total = 0.0;
+      for (auto &sim : simulators_)
+        total += sim(conf, *simulator);
+      return total;
     }
 
     applyTileSizes(trial);
@@ -385,46 +278,24 @@ struct UpmemInferencePlugin : cinm::InferencePlugin {
       pipeline = buildPipeline(ctx);
 
     {
-      // This handler suppresses errors caused during trials, as they are
-      // normal.
       ScopedDiagnosticHandler scopedHandler(ctx, [](Diagnostic &diag) {
         LLVM_DEBUG(llvm::dbgs()
                        << "[cinm-inference]   pipeline failed:\n      ";
                    diag.print(llvm::dbgs()); llvm::dbgs() << "\n";);
-
         return success();
       });
       LLVM_DEBUG(llvm::dbgs() << "[cinm-inference]   running pipeline\n");
       if (mlir::failed(pipeline->run(trial.module.get()))) {
         LLVM_DEBUG(trial.module->print(llvm::dbgs());
                    llvm::dbgs() << "\n========\n";);
-
         return emitSilenceableFailure(loc, "Pipeline failed");
       }
     }
 
-    // computeBlock is gone after the pipeline; simulate the lowered module.
     return simulator->simulate(trial.computeBlock.getBody());
   }
 
 private:
-  static void
-  buildTilingParams(llvm::ArrayRef<int64_t> dimSizes,
-                    cinm::utils::NameInventor &nameInventor, StringRef nameHint,
-                    llvm::SmallVector<cinm::SearchParam> &tilingFactors,
-                    llvm::SmallVector<StringRef> &paramNames) {
-    for (int64_t size : dimSizes) {
-      StringRef paramName = nameInventor.getUniqueName(nameHint);
-      if (ShapedType::isDynamic(size)) {
-        tilingFactors.emplace_back(cinm::makePow2Range(paramName, 0, 10));
-      } else {
-        tilingFactors.emplace_back(paramName, cinm::IntRange{1, size})
-            .keepDivisorsOf(size);
-      }
-      paramNames.push_back(paramName);
-    }
-  }
-
   void applyTileSizes(cinm::TrialInfo &trial) const {
     trial.computeBlock.getBody().walk([&](mlir::Operation *op) {
       auto paramNamesAttr = op->getAttrOfType<ArrayAttr>(kTileParamNamesAttr);
@@ -444,132 +315,56 @@ private:
   }
 };
 
-void UpmemInferencePlugin::handleOpConstraints(cinm::CinmTilingInterface op,
-                                               ConstraintEditor &editor) {
+void UpmemInferencePlugin::handleGemv(cinm::GemvOp gemv, SpaceBuilder &b) {
+  auto lhsTy = gemv.getLhs().getType();
+  const int64_t M = lhsTy.getShape()[0], K = lhsTy.getShape()[1];
+  auto eltTy = lhsTy.getElementType();
+  auto wramLevel = platform.getWramLevel();
+  auto mramLevel = platform.getMramLevel();
+  const bool mramTiling = opts.useMRAMTiling;
+  auto dpus = dpusVar_;
+  auto tasklets = taskletsVar_;
 
-  bool mramTiling = opts.useMRAMTiling;
-  if (auto gemv = llvm::dyn_cast_or_null<cinm::GemvOp>(op.getOperation())) {
-    auto dpuColsName = editor.newName("DpuCols");
-    auto dpuColsIx =
-        editor.newParam(cinm::makeRange(dpuColsName, 1, editor.dpuCount.dhi()));
-    editor.addMultiplesConstraint(dpuColsName, "dpus");
-    editor.addStaticConstraint(
-        [&](auto &dpus, auto &tasklets, auto &tilingfactors, auto dims) {
-          (void)dpus;
-          auto M = dims[0];
-          if (!ShapedType::isDynamic(M)) {
-            // dpuRows must divide M
-            // todo dpus = dpucols * dpuRows
-            //  => M / (dpus/dpucols)
-            // dpus.keepDivisorsOf(M);
+  // Hardware dimensions.
+  b.mustDivide(tasklets, M); // tasklets must divide M
 
-            // dpuRows must divide M (todo and mramRows actually)
-            tasklets.keepDivisorsOf(M);
-          }
-          auto K = dims[1];
-          if (!ShapedType::isDynamic(K)) {
-            // dpuCols must divide K
-            tilingfactors[dpuColsIx].keepDivisorsOf(K);
-          }
-          if (mramTiling) {
-            // wramRowTile (local 0) must divide mramRowTile (local 2),
-            // and wramColTile (local 1) must divide mramColTile (local
-            // 3).
-            editor.addMultiplesConstraint(tilingfactors[0].name,
-                                          tilingfactors[2].name);
-            editor.addMultiplesConstraint(tilingfactors[1].name,
-                                          tilingfactors[3].name);
-            // todo technically tasklets must divide mramrows, for now
-            //  this is written as a dyn constraint
-          }
-        });
-    auto wramLevel = platform.getWramLevel();
-    auto mramLevel = platform.getMramLevel();
-    auto eltTy = gemv.getLhs().getType().getElementType();
+  // WRAM tile dims: each is a divisor of its corresponding problem dimension.
+  // K = dpuCols * mramCols * k1  ⟹  dpuCols | K  and  dpuCols | dpus
+  auto wramRow = b.divisorsOf("wramRow", M);
+  auto wramCol = b.divisorsOf("wramCol", K);
+  auto dpuCols = b.divisorsOf("dpuCols", K);
 
-    editor.addDynamicConstraint(
-        [wramLevel, mramLevel, eltTy, mramTiling,
-         dpuColsIx](auto totalDpus, auto tasklets, auto tiles, auto dims) {
-          const int64_t wramRowTile = tiles[0]; // WRAM rows per tasklet
-          const int64_t wramColTile = tiles[1]; // WRAM cols per tasklet
+  // Per-tasklet WRAM must fit: A tile (wr×wc) + x slice (wc) + y slot (wr)
+  b.require(wramRow * wramCol + wramCol + wramRow <=
+            wramLevel.getSizeInElements(eltTy));
 
-          // Per-tasklet WRAM: A tile (wramRowTile×wramColTile) + x
-          // (wramColTile) + y (wramRowTile)
-          if (wramRowTile * wramColTile + wramColTile + wramRowTile >
-              wramLevel.getSizeInElements(eltTy))
-            return false;
+  // Attributes used by applyTileSizes() in the non-MRAM pipeline path.
+  gemv->setAttr(kTileParamNamesAttr,
+                OpBuilder(gemv->getContext())
+                    .getStrArrayAttr({wramRow.name(), wramCol.name()}));
 
-          const int64_t M = dims[0], K = dims[1];
-          const int64_t dpuCols = tiles[dpuColsIx];
-          if (totalDpus % dpuCols != 0)
-            return false;
-          const int64_t dpuRows = totalDpus / dpuCols;
+  if (mramTiling) {
+    auto mramRow = b.divisorsOf("mramRow", M);
+    auto mramCol = b.divisorsOf("mramCol", K);
+    b.require(M / (dpus / dpuCols * tasklets * mramRow));
+    b.require(mramRow / (tasklets * wramRow));
+    b.require(mramCol / wramCol);
+    b.require(K / (mramCol * dpuCols));
 
-          // K = k1 * mramcols * dpucols
-          // M = k2 * mramrows * dpurows
-          // mramrows = k3 * ntasklets * wramrows
-          // mramcols = k4 * wramcols
-          // The k{1..4} are trip counts of the loops.
-          // k1 * k2 is the number of times the whole array is launched.
+    // Per-DPU MRAM must fit: A (T×mr×mc) + x (mc) + y (T×mr)
+    b.require(tasklets * mramRow * mramCol + mramCol + tasklets * mramRow <=
+              mramLevel.getSizeInElements(eltTy));
 
-          if (!mramTiling)
-            return true;
-
-          const int64_t mramRowTile =
-              tiles[2]; // MRAM rows per DPU  (= ranks × dpusPerRank combined)
-          const int64_t mramColTile = tiles[3]; // MRAM cols per DPU
-
-          if (!ShapedType::isDynamic(M)) {
-            // Make sure k1 exists
-            if (M % (dpuRows * tasklets * mramRowTile) != 0 ||
-                dpuRows * tasklets * mramRowTile > M)
-              return false;
-          }
-          if (!ShapedType::isDynamic(K)) {
-            // Make sure k2 exists
-            if (K % (mramColTile * dpuCols) != 0 || mramColTile * dpuCols > K)
-              return false;
-          }
-
-          // MRAM per DPU: A (tasklets×mramRowTile×mramColTile) + x
-          // (mramColTile)
-          //               + y (tasklets×mramRowTile)
-          if (tasklets * mramRowTile * mramColTile + mramColTile +
-                  tasklets * mramRowTile >
-              mramLevel.getSizeInElements(eltTy))
-            return false;
-
-          return true;
-        });
+    // Simulation template for the MRAM fast path (bypasses the lowering
+    // pipeline).
+    auto timeout = opts.evalTimeoutMs;
+    auto dtype = cmDtyFromMlirDty(eltTy);
+    registerSimulator([=](const cinm::ConfWrapper &c, UpmemSimulator &sim) {
+      return sim.simulateFullGemv(timeout, M, K, mramRow[c], mramCol[c],
+                                  wramRow[c], wramCol[c], dpus[c] / dpuCols[c],
+                                  dpuCols[c], tasklets[c], dtype);
+    });
   }
-}
-void ConstraintEditor::addStaticConstraint(
-    function_ref<void(cinm::SearchParam &rd, cinm::SearchParam &t,
-                      SmallVectorImpl<cinm::SearchParam> &tilingFactors,
-                      ArrayRef<int64_t> tiledDims)>
-        callback) {
-
-  callback(dpuCount, t, tilingFactors, tiledDimensions);
-}
-
-void ConstraintEditor::addDynamicConstraint(
-    std::function<bool(int64_t rd, int64_t t, ArrayRef<int64_t> tilingFactors,
-                       ArrayRef<int64_t> tiledDims)>
-        callback) {
-  // It is tricky to get the lifetimes right with dynamic constraints
-  // so that's why we use this wrapper here.
-
-  auto tfStart = this->tfStart;
-  auto tfEnd = tfStart + tilingFactors.size();
-  auto plugin = this->plugin;
-  std::vector<int64_t> dimsCopy(tiledDimensions);
-  space.addConstraint(
-      [=, dimsCopy = std::move(dimsCopy)](const cinm::ConfWrapper conf) {
-        // auto r = conf[plugin->rankIx], d = conf[plugin->dpuIx],
-        auto rd = conf[plugin->dpuIx], t = conf[plugin->taskletIx];
-        ArrayRef<int64_t> range(&conf.conf[tfStart], &conf.conf[tfEnd]);
-        return callback(rd, t, range, dimsCopy);
-      });
 }
 
 // ===----------------------------------------------------------------------===//
