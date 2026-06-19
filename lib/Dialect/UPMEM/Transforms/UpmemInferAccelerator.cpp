@@ -266,6 +266,8 @@ struct UpmemInferencePlugin : cinm::InferencePlugin {
     simulator->warmUp();
   }
 
+  void printStats() const override { simulator->printStats(); }
+
   void handleOpConstraints(cinm::CinmTilingInterface op,
                            ConstraintEditor &editor);
 
