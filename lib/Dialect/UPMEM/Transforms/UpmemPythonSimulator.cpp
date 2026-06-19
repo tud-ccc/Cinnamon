@@ -26,7 +26,7 @@
 #include <string>
 #include <unordered_map>
 
-#define DEBUG_TYPE "upmem-cpp-sim"
+#define DEBUG_TYPE "cinm-inference"
 
 namespace mlir::upmem {
 
