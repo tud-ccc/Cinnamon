@@ -303,6 +303,63 @@ void ConfigSpace::at(size_t idx, Configuration &conf) const {
   }
 }
 
+void ConfigSpace::forEach(
+    std::function<bool(const Configuration &, size_t)> fn) const {
+  ensureEncoding();
+  const size_t S = slots_.size();
+  // Use suffixProd_[0] directly — avoids a redundant ensureEncoding() call
+  // inside totalSize() after we already ensured encoding above.
+  const size_t total = S == 0 ? 1 : suffixProd_[0];
+  if (total == 0)
+    return;
+
+  // Per-slot combined sub-index in [0, slot.slotSize).
+  std::vector<size_t> subIdx(S, 0);
+  Configuration conf(params.size());
+
+  // Decode sub-index k for slot si and write the corresponding parameter
+  // values into conf.  For grouped slots this uses the same upper_bound logic
+  // as ConfigSpace::at(), which correctly handles parents that have no valid
+  // children (their cumCount entries are equal and are never selected).
+  auto applySubIdx = [&](size_t si, size_t k) {
+    const auto &slot = slots_[si];
+    if (slot.groupIdx == SIZE_MAX) {
+      conf[slot.dimIdx] = params[slot.dimIdx].valueAt(k);
+    } else {
+      const auto &g = groups[slot.groupIdx];
+      auto it = std::upper_bound(g.cumCount.begin(), g.cumCount.end(), k);
+      --it; // it now points to the last cumCount entry ≤ k
+      size_t psi = static_cast<size_t>(it - g.cumCount.begin());
+      size_t cli = k - g.cumCount[psi];
+      conf[g.parentIdx] = params[g.parentIdx].valueAt(psi);
+      conf[g.childIdx] = g.childValues[psi][cli];
+    }
+  };
+
+  // Initialise conf at sub-index 0 for every slot.
+  for (size_t si = 0; si < S; ++si)
+    applySubIdx(si, 0);
+
+  for (size_t flat = 0; flat < total; ++flat) {
+    if (!fn(conf, flat))
+      return;
+
+    if (flat + 1 == total)
+      break;
+
+    // Mixed-radix increment from the least-significant slot.
+    for (size_t si = S; si-- > 0;) {
+      ++subIdx[si];
+      bool carry = (subIdx[si] >= slots_[si].slotSize);
+      if (carry)
+        subIdx[si] = 0;
+      applySubIdx(si, subIdx[si]);
+      if (!carry)
+        break;
+    }
+  }
+}
+
 size_t ConfigSpace::indexOf(const Configuration &conf) const {
   ensureEncoding();
   size_t idx = 0;
@@ -470,9 +527,8 @@ struct InferenceTask {
 
     CandidatePool pool(space, static_cast<size_t>(options.maxEvals));
 
-    LLVM_DEBUG(llvm::dbgs()
-               << "[cinm-inference] Pool: " << (pool.size() - pool.numVisited())
-               << " valid configs (" << pool.size() << " total)\n");
+    LLVM_DEBUG(llvm::dbgs() << "[cinm-inference] Pool: " << pool.size()
+                            << " valid configs (" << pool.N << " total)\n");
 
     if (pool.empty())
       return emitSilenceableFailure(
@@ -604,7 +660,7 @@ struct InferenceTask {
     // Build pool now: constructor pre-marks invalid configs as visited,
     // giving us the valid count before spawning threads.
     CandidatePool pool(space, N, true);
-    size_t nValid = N - pool.numVisited();
+    size_t nValid = pool.size();
 
     LLVM_DEBUG(llvm::dbgs() << "[cinm-inference] Exhaustive search: " << nValid
                             << " valid / " << N << " total configs, "
