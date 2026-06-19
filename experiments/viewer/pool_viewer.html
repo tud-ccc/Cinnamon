@@ -336,6 +336,14 @@ let topNCount       = 0;     // 0 = off; >0 = highlight cheapest n configs (coun
 let countSteps      = [];    // exponential-ish step sequence for count mode
 let sortedCosts     = [];    // sorted valid costs, precomputed on load for O(1) threshold lookup
 
+// ─── Parallel worker state ──────────────────────────────────────────────────
+let renderToken  = 0;
+let sharedBuf    = null;   // SharedArrayBuffer (null if unsupported / not yet loaded)
+let sharedCols   = [];     // column names in sharedBuf order
+let workerPool   = null;
+let dispatchIdCt = 0;
+const N_WORKERS  = Math.min(8, Math.max(1, (navigator.hardwareConcurrency || 4) - 1));
+
 // ─────────────────────────────────────────────
 // CSV loading
 // ─────────────────────────────────────────────
@@ -411,6 +419,7 @@ function loadText(text) {
 
   rebuildFacetSelector();
   rebuildSliders();
+  encodeToShared();
   render();
 }
 
@@ -557,6 +566,196 @@ function aggValues(values, method) {
 }
 
 // ─────────────────────────────────────────────
+// Parallel worker infrastructure
+// ─────────────────────────────────────────────
+
+// Worker source: receives a SharedArrayBuffer slice, returns partial cell stats.
+// 12 fields per cell: sum, count, min, max, nObs, nFailed, nUnobserved,
+//                     minCost, bestRowIdx, bestMetricVal, nTotal, nVisited
+const WORKER_SRC = `
+self.onmessage = function({ data: msg }) {
+  const { id, buf, nCols, rowStart, rowEnd, nCells,
+          xIdx, yIdx, metricIdx, costIdx, validIdx, visitedIdx,
+          facetIdx, facetVal, hasFacet,
+          mode, pins, xValsArr, yValsArr, nXVals,
+          hasValid, hasVisited, needsCost } = msg;
+  const arr = new Float64Array(buf);
+  const FIELDS = 12;
+  const stats = new Float64Array(nCells * FIELDS);
+  for (let c = 0; c < nCells; c++) {
+    const b = c * FIELDS;
+    stats[b+2] = Infinity; stats[b+3] = -Infinity;
+    stats[b+7] = Infinity; stats[b+8] = -1; stats[b+9] = Infinity;
+  }
+  const nPins = pins.length;
+  for (let i = rowStart; i < rowEnd; i++) {
+    const base = i * nCols;
+    if (hasFacet && arr[base + facetIdx] !== facetVal) continue;
+    if (mode === 'slice') {
+      let skip = false;
+      for (let p = 0; p < nPins; p += 2) {
+        if (arr[base + (pins[p]|0)] !== pins[p+1]) { skip = true; break; }
+      }
+      if (skip) continue;
+    }
+    const xV = arr[base + xIdx], yV = arr[base + yIdx];
+    let xi = -1, yi = -1;
+    for (let k = 0; k < xValsArr.length; k++) { if (xValsArr[k] === xV) { xi = k; break; } }
+    for (let k = 0; k < yValsArr.length; k++) { if (yValsArr[k] === yV) { yi = k; break; } }
+    if (xi < 0 || yi < 0) continue;
+    const ci = yi * nXVals + xi, cs = ci * FIELDS;
+    const valid   = validIdx   >= 0 ? arr[base + validIdx]   : 1;
+    const visited = visitedIdx >= 0 ? arr[base + visitedIdx] : NaN;
+    const cost    = costIdx    >= 0 ? arr[base + costIdx]    : NaN;
+    const mval    = metricIdx  >= 0 ? arr[base + metricIdx]  : NaN;
+    const isValid   = !hasValid || valid == 1;
+    const hasCost   = isFinite(cost);
+    const hasMetric = isValid && (!needsCost || hasCost) && isFinite(mval);
+    stats[cs+10] += 1;
+    if (hasVisited && isFinite(visited) && visited == 1) stats[cs+11] += 1;
+    if (hasMetric) {
+      stats[cs+0] += mval; stats[cs+1] += 1;
+      if (mval < stats[cs+2]) stats[cs+2] = mval;
+      if (mval > stats[cs+3]) stats[cs+3] = mval;
+    }
+    if (hasCost) stats[cs+4] += 1;
+    if (hasValid && hasVisited) {
+      if (valid == 1 && visited == 1 && !hasCost) stats[cs+5] += 1;
+      if (valid == 1 && visited == 0)             stats[cs+6] += 1;
+    }
+    if (isValid && hasCost && cost < stats[cs+7]) stats[cs+7] = cost;
+    if (hasMetric && mval < stats[cs+9]) { stats[cs+9] = mval; stats[cs+8] = i; }
+  }
+  self.postMessage({ id, stats: stats.buffer }, [stats.buffer]);
+};
+`;
+
+function getWorkerPool() {
+  if (workerPool) return workerPool;
+  const url = URL.createObjectURL(new Blob([WORKER_SRC], { type: 'text/javascript' }));
+  workerPool = Array.from({ length: N_WORKERS }, () => new Worker(url));
+  return workerPool;
+}
+
+function encodeToShared() {
+  if (typeof SharedArrayBuffer === 'undefined') return;
+  const colSet = new Set([...dimCols, ...metricCols]);
+  if (hasVisited) colSet.add('visited');
+  if (hasValid)   colSet.add('valid');
+  sharedCols = [...colSet];
+  const nCols = sharedCols.length;
+  sharedBuf = new SharedArrayBuffer(rows.length * nCols * 8);
+  const arr = new Float64Array(sharedBuf);
+  for (let i = 0; i < rows.length; i++) {
+    const base = i * nCols, r = rows[i];
+    for (let j = 0; j < nCols; j++) {
+      const v = r[sharedCols[j]];
+      arr[base + j] = (v == null) ? NaN : +v;
+    }
+  }
+  getWorkerPool(); // warm up workers while page finishes loading
+}
+
+function _initPartial(nCells, FIELDS) {
+  const e = new Float64Array(nCells * FIELDS);
+  for (let c = 0; c < nCells; c++) {
+    e[c*FIELDS+2] = Infinity;  e[c*FIELDS+3] = -Infinity;
+    e[c*FIELDS+7] = Infinity;  e[c*FIELDS+8] = -1;  e[c*FIELDS+9] = Infinity;
+  }
+  return e;
+}
+
+async function buildGridParallel(facetVal, xDim, yDim, xVals, yVals, metric) {
+  const pool = getWorkerPool();
+  const N = rows.length, nCols = sharedCols.length, nCells = xVals.length * yVals.length;
+  const xIdx       = sharedCols.indexOf(xDim);
+  const yIdx       = sharedCols.indexOf(yDim);
+  const metricIdx  = sharedCols.indexOf(metric);
+  const costIdx    = sharedCols.indexOf('cost');
+  const validIdx   = sharedCols.indexOf('valid');
+  const visitedIdx = sharedCols.indexOf('visited');
+  const facetIdx   = facetDim ? sharedCols.indexOf(facetDim) : -1;
+  const aggMethod  = mode === 'agg' ? get('sel-agg') : 'mean';
+  const needsCost  = metric === 'cost';
+
+  const pinsRaw = [];
+  if (mode === 'slice') {
+    for (const d of dimCols.filter(d => d !== xDim && d !== yDim && d !== facetDim)) {
+      const ci = sharedCols.indexOf(d);
+      if (ci >= 0) pinsRaw.push(ci, dimUniq[d][sliceIdx[d] ?? 0]);
+    }
+  }
+
+  const myId = ++dispatchIdCt;
+  const chunkSize = Math.ceil(N / pool.length);
+  const FIELDS = 12;
+
+  const partials = await Promise.all(pool.map((w, i) => {
+    const rowStart = i * chunkSize, rowEnd = Math.min(rowStart + chunkSize, N);
+    if (rowStart >= rowEnd) return Promise.resolve(_initPartial(nCells, FIELDS));
+    return new Promise(resolve => {
+      const handler = ({ data }) => {
+        if (data.id !== myId) return; // wrong dispatch, ignore
+        w.removeEventListener('message', handler);
+        resolve(new Float64Array(data.stats));
+      };
+      w.addEventListener('message', handler);
+      w.postMessage({
+        id: myId, buf: sharedBuf, nCols, rowStart, rowEnd, nCells,
+        xIdx, yIdx, metricIdx, costIdx, validIdx, visitedIdx,
+        facetIdx, facetVal: facetVal !== null ? facetVal : NaN, hasFacet: facetVal !== null,
+        mode, pins: new Float64Array(pinsRaw),
+        xValsArr: new Float64Array(xVals), yValsArr: new Float64Array(yVals),
+        nXVals: xVals.length, hasValid, hasVisited, needsCost,
+      });
+    });
+  }));
+
+  // Merge partial stats
+  const m = _initPartial(nCells, FIELDS);
+  for (const p of partials) {
+    for (let c = 0; c < nCells; c++) {
+      const b = c * FIELDS;
+      m[b+0] += p[b+0]; m[b+1] += p[b+1];
+      if (p[b+2] < m[b+2]) m[b+2] = p[b+2];
+      if (p[b+3] > m[b+3]) m[b+3] = p[b+3];
+      m[b+4] += p[b+4]; m[b+5] += p[b+5]; m[b+6] += p[b+6];
+      m[b+10] += p[b+10]; m[b+11] += p[b+11];
+      if (p[b+7] < m[b+7]) m[b+7] = p[b+7];
+      if (p[b+9] < m[b+9]) { m[b+9] = p[b+9]; m[b+8] = p[b+8]; }
+    }
+  }
+
+  // Build grid cell objects from merged stats
+  const tf = getMetricTransform(metric);
+  const grid = [];
+  for (let yi = 0; yi < yVals.length; yi++) {
+    for (let xi = 0; xi < xVals.length; xi++) {
+      const c = yi * xVals.length + xi, b = c * FIELDS;
+      const cnt = m[b+1];
+      let value = NaN;
+      if (cnt > 0) {
+        if (aggMethod === 'min')      value = tf(m[b+2]);
+        else if (aggMethod === 'max') value = tf(m[b+3]);
+        else                          value = tf(m[b+0] / cnt);
+      }
+      const bri = m[b+8];
+      grid.push({
+        x: xVals[xi], y: yVals[yi], value,
+        nObs:        m[b+4],
+        nVisited:    hasVisited ? m[b+11] : m[b+4],
+        nFailed:     m[b+5],
+        nUnobserved: m[b+6],
+        nTotal:      m[b+10],
+        bestRow:     (bri >= 0 && bri < rows.length) ? rows[bri] : null,
+        minCost:     m[b+7] < Infinity ? m[b+7] : Infinity,
+      });
+    }
+  }
+  return grid;
+}
+
+// ─────────────────────────────────────────────
 // Render
 // ─────────────────────────────────────────────
 function get(id) { return document.getElementById(id).value; }
@@ -616,8 +815,16 @@ function buildGrid(sourceRows, xDim, yDim, xVals, yVals, metric) {
   return grid;
 }
 
+// render() schedules a deferred async render. Multiple rapid calls coalesce:
+// only the call with the current renderToken actually runs to completion.
 function render() {
   if (!rows.length) return;
+  const myToken = ++renderToken;
+  Promise.resolve().then(() => _renderAsync(myToken));
+}
+
+async function _renderAsync(myToken) {
+  if (myToken !== renderToken) return;
 
   const xDim   = get('sel-x');
   const yDim   = get('sel-y');
@@ -629,13 +836,9 @@ function render() {
   const [minV, maxV] = metricDomain[metric] ?? [0, 1];
   const invert = METRIC_DEFAULTS[metric]?.invert ?? false;
 
-  const wrap = document.getElementById('heatmap-wrap');
-  wrap.innerHTML = '';
+  const allFacetVals = facetDim ? dimUniq[facetDim] : [null];
+  const isMultiFacet = allFacetVals.length > 1;
 
-  const allFacetVals  = facetDim ? dimUniq[facetDim] : [null];
-  const isMultiFacet  = allFacetVals.length > 1;
-
-  // Filter out facet values that have no valid rows (when toggle is on).
   let hiddenCount = 0;
   const facetVals = allFacetVals.filter(fv => {
     if (!isMultiFacet || fv === null || !hideEmptyFacets) return true;
@@ -646,21 +849,34 @@ function render() {
     return true;
   });
 
-  // Show / update the hide-empty control.
   document.getElementById('facet-empty-ctrl').style.display = isMultiFacet ? '' : 'none';
   document.getElementById('btn-hide-empty').disabled = !isMultiFacet;
   document.getElementById('hidden-count').textContent =
     hiddenCount > 0 ? `${hiddenCount} hidden` : (hideEmptyFacets ? 'none hidden' : '');
 
+  // Build grids — parallel path when SharedArrayBuffer is available.
+  const grids = [];
+  for (const fv of facetVals) {
+    if (myToken !== renderToken) return; // cancelled by a newer render
+    if (sharedBuf) {
+      grids.push(await buildGridParallel(fv, xDim, yDim, xVals, yVals, metric));
+    } else {
+      const sourceRows = fv !== null ? rows.filter(r => r[facetDim] === fv) : rows;
+      grids.push(buildGrid(sourceRows, xDim, yDim, xVals, yVals, metric));
+    }
+  }
+
+  if (myToken !== renderToken) return; // cancelled while workers ran
+
+  const wrap = document.getElementById('heatmap-wrap');
+  wrap.innerHTML = '';
   wrap.style.display    = 'flex';
   wrap.style.flexWrap   = 'wrap';
   wrap.style.gap        = '24px';
   wrap.style.alignItems = 'flex-start';
 
-  for (const fv of facetVals) {
-    const sourceRows = fv !== null ? rows.filter(r => r[facetDim] === fv) : rows;
-    const grid       = buildGrid(sourceRows, xDim, yDim, xVals, yVals, metric);
-
+  for (let fi = 0; fi < facetVals.length; fi++) {
+    const fv = facetVals[fi], grid = grids[fi];
     const panel = document.createElement('div');
     if (fv !== null) {
       const title = document.createElement('div');
