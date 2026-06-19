@@ -21,8 +21,10 @@
 
 #include <upmem_cost_model/ProgramBuilder.h>
 
+#include <atomic>
 #include <memory>
 #include <string>
+#include <unordered_map>
 
 #define DEBUG_TYPE "upmem-cpp-sim"
 
@@ -377,6 +379,80 @@ struct DpuTranslator {
 // CppSimulator
 // ===----------------------------------------------------------------------===//
 
+// ── simulateGemv cache ───────────────────────────────────────────────────────
+// All CppSimulator instances share one process-wide cache (the function is
+// pure). Two lookup strategies depending on problem size:
+//   lookupBlocking — spin until lock acquired (expensive configs, worth it)
+//   lookupTry      — try once, skip on contention (cheap configs)
+struct GemvCache {
+  using Key = std::array<int64_t, 7>;
+  struct KeyHash {
+    size_t operator()(const Key &k) const noexcept {
+      size_t h = 0;
+      for (int64_t v : k)
+        h ^= std::hash<int64_t>{}(v) + 0x9e3779b9 + (h << 6) + (h >> 2);
+      return h;
+    }
+  };
+
+  std::unordered_map<Key, double, KeyHash> map;
+  std::atomic_flag lock; // zero-initialized for static-storage instances
+  std::atomic<uint64_t> hits{0};
+  std::atomic<uint64_t> misses{0};
+
+  // Spin until the lock is available, then look up key.
+  // Returns the cached value, or nullopt on a confirmed cache miss.
+  std::optional<double> lookupBlocking(const Key &key) {
+    while (lock.test_and_set(std::memory_order_acquire))
+      ; // short critical section — spin is cheaper than blocking
+    auto it = map.find(key);
+    if (it != map.end()) {
+      double v = it->second;
+      lock.clear(std::memory_order_release);
+      hits.fetch_add(1, std::memory_order_relaxed);
+      return v;
+    }
+    lock.clear(std::memory_order_release);
+    misses.fetch_add(1, std::memory_order_relaxed);
+    return std::nullopt;
+  }
+
+  // Try to acquire the lock once; return cached value if found.
+  // Returns nullopt on cache miss OR on lock contention (best-effort).
+  std::optional<double> lookupTry(const Key &key) {
+    if (!lock.test_and_set(std::memory_order_acquire)) {
+      auto it = map.find(key);
+      if (it != map.end()) {
+        double v = it->second;
+        lock.clear(std::memory_order_release);
+        hits.fetch_add(1, std::memory_order_relaxed);
+        return v;
+      }
+      lock.clear(std::memory_order_release);
+    }
+    misses.fetch_add(1, std::memory_order_relaxed);
+    return std::nullopt;
+  }
+
+  void store(const Key &key, double value) {
+    if (!lock.test_and_set(std::memory_order_acquire)) {
+      map.emplace(key, value);
+      lock.clear(std::memory_order_release);
+    }
+  }
+
+  void printStats(llvm::raw_ostream &os) const {
+    auto h = hits.load(std::memory_order_relaxed);
+    auto total = h + misses.load(std::memory_order_relaxed);
+    os << "[upmem-cpp-sim] simulateGemv cache: " << h << " hits / " << total
+       << " lookups";
+    if (total > 0)
+      os << " (" << (100 * h / total) << "%)";
+    os << ", " << map.size() << " unique configs cached\n";
+  }
+};
+static GemvCache gemvCache;
+
 struct CppSimulator : UpmemSimulator {
   bool annotateOpCosts;
   std::chrono::milliseconds timeoutMs;
@@ -390,6 +466,10 @@ struct CppSimulator : UpmemSimulator {
   }
 
   bool supportsMultithreading() const override { return true; }
+
+  void printStats() const override {
+    LLVM_DEBUG(gemvCache.printStats(llvm::dbgs()));
+  }
 
   double simulateGemv(std::chrono::milliseconds timeout, int nTasklets,
                       int64_t mramRows, int64_t mramCols, int64_t rowTile,
@@ -418,6 +498,17 @@ struct CppSimulator : UpmemSimulator {
 double mlir::upmem::CppSimulator::simulateGemv(
     std::chrono::milliseconds timeout, int nTasklets, int64_t mramRows,
     int64_t mramCols, int64_t rowTile, int64_t colTile, upmem_cm::DType dty) {
+  const GemvCache::Key key{
+      timeout.count(),          nTasklets, mramRows, mramCols, rowTile, colTile,
+      static_cast<int64_t>(dty)};
+
+  // Large (expensive) configs: spin-wait for a definitive cache check.
+  // Small (cheap) configs: try once, fall through on contention.
+  const bool expensive = (mramRows * mramCols >= 512);
+  if (auto cached =
+          expensive ? gemvCache.lookupBlocking(key) : gemvCache.lookupTry(key))
+    return *cached;
+
   using namespace upmem_cm;
   ProgramBuilder b;
 
@@ -471,8 +562,11 @@ double mlir::upmem::CppSimulator::simulateGemv(
   // todo mark exclusive
   b.createTransfer(y_wram, y_mram, mramRows);
 
-  return b.simulate(nTasklets, timeout)
-      .value_or(std::numeric_limits<double>::infinity());
+  double result = b.simulate(nTasklets, timeout)
+                      .value_or(std::numeric_limits<double>::infinity());
+
+  gemvCache.store(key, result);
+  return result;
 }
 
 // ===----------------------------------------------------------------------===//

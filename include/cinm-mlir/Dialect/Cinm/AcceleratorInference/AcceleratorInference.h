@@ -249,6 +249,10 @@ struct InferencePlugin {
   /// Whether this plugin is safe to evaluate concurrently from multiple threads.
   /// If false, exhaustive search will run single-threaded.
   virtual bool supportsMultithreading() const { return true; }
+
+  /// Emit debug statistics (e.g. cache hit rate). Called after exhaustive
+  /// search completes. Default is a no-op.
+  virtual void printStats() const {}
 };
 
 // ===----------------------------------------------------------------------===//

@@ -700,6 +700,7 @@ struct InferenceTask {
                << " successful / " << total << " valid / " << N
                << " points, across " << nThreads << " threads in "
                << elapsed.count() << " ms\n");
+    plugin.printStats();
 
     if (!options.dumpDir.empty()) {
       auto path = options.dumpDir + "/pool.csv";

@@ -29,6 +29,7 @@ struct UpmemSimulator {
   /// simulate() call.  Implementations may use this to initialise per-thread
   /// resources on the correct thread.
   virtual void warmUp() {}
+  virtual void printStats() const {}
 
   virtual double simulateGemv(std::chrono::milliseconds timeout, int nTasklets,
                               int64_t mramRows, int64_t mramCols,
