@@ -587,7 +587,9 @@ struct InferenceTask {
   Maybe<TrialInfo> runExhaustive() {
     const size_t N = space.totalSize();
     unsigned nThreads = plugin.supportsMultithreading()
-                            ? std::max(1u, std::thread::hardware_concurrency())
+                            ? (options.numWorkers > 0
+                                   ? options.numWorkers
+                                   : std::max(1u, std::thread::hardware_concurrency()))
                             : 1u;
     MLIRContext *ctx = refClone->getContext();
 

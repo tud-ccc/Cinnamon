@@ -53,9 +53,9 @@ def UpmemInferAcceleratorPass : Pass<"upmem-infer-accelerator", "ModuleOp"> {
            "Training epochs per MLP ensemble member">,
     Option<"nEnsemble", "n-ensemble", "int", "5",
            "Number of MLP ensemble members">,
-    Option<"hidden", "hidden", "int", "16",
+    Option<"hidden", "hidden-width", "int", "16",
            "Hidden layer width of each ensemble MLP">,
-    Option<"depth", "depth", "int", "1",
+    Option<"depth", "hidden-depth", "int", "1",
            "Number of hidden layers in each ensemble MLP">,
     Option<"neighborDepth", "neighbor-depth", "unsigned", "2",
            "Number of discrete steps away from observed points to include as "
@@ -88,7 +88,9 @@ def UpmemInferAcceleratorPass : Pass<"upmem-infer-accelerator", "ModuleOp"> {
            "Simulator backend: 'cycleaccurate' or 'opcount'">,
     Option<"evalTimeoutMs", "eval-timeout-ms", "int", "0",
            "Wall-clock timeout in milliseconds for a single simulation; "
-           "0 disables the timeout (default: 0)">
+           "0 disables the timeout (default: 0)">,
+    Option<"numWorkers", "num-workers", "unsigned", "0u",
+           "Worker threads for exhaustive search (0 = hardware_concurrency)">
   ];
 }
 
