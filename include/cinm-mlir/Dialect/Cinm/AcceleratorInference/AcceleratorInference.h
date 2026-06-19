@@ -307,6 +307,10 @@ struct InferenceOptions {
   /// Transform applied to costs before surrogate training.
   /// Supported: "linear", "log2", "log10", "ln", "sqrt", "cbrt".
   std::string objectiveScale = "log10";
+
+  /// Number of worker threads used for exhaustive search.
+  /// 0 (default) means use std::thread::hardware_concurrency().
+  unsigned numWorkers = 0;
 };
 
 /// Entry point for Bayesian inference.

@@ -596,6 +596,7 @@ struct UpmemInferAcceleratorPass
     o.nValidation = nValidation;
     o.validationInterval = validationInterval;
     o.objectiveScale = objectiveScale;
+    o.numWorkers = numWorkers;
     upmemOpts.annotateOpCosts = annotateOpCosts;
     upmemOpts.useMRAMTiling = useMRAMTiling;
     upmemOpts.simulator = simulator;
