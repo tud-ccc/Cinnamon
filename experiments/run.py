@@ -269,7 +269,7 @@ def _add_oracle(p: argparse.ArgumentParser) -> None:
 
 def _add_extra(p: argparse.ArgumentParser, dest: str = "extra",
                help: str = "Extra options forwarded to --upmem-infer-accelerator") -> None:
-    p.add_argument("extra", nargs="*", metavar="KEY=VAL", help=help)
+    p.add_argument("--infer-opts", dest="extra", nargs="*", default=[], metavar="KEY=VAL", help=help)
 
 
 def _add_plot_extra(p: argparse.ArgumentParser) -> None:
