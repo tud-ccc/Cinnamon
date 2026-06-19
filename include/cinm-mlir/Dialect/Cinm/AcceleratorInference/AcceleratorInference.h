@@ -130,7 +130,7 @@ struct ConfigSpace {
   /// This eliminates invalid (parent, child) pairs from the flat index space —
   /// at() never produces a config violating this constraint.
   /// parentIdx must be < childIdx and both params must already be in params[].
-  void addMultiplesConstraint(size_t parentIdx, size_t childIdx);
+  void addMultiplesConstraint(StringRef parent, StringRef child);
 
   size_t size() const { return params.size(); }
   const SearchParam &operator[](size_t i) const { return params[i]; }

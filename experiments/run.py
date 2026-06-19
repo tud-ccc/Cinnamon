@@ -233,12 +233,11 @@ def cmd_view(args: argparse.Namespace) -> int:
 
 
 def cmd_analyze(args: argparse.Namespace) -> int:
-    """Run landscape analysis."""
-    pool_csv = Path("data") / args.name / "pool.csv"
+    """Run landscape analysis (single problem dir or parent dir of many problems)."""
     cmd = [
         python_bin(),
         str(EXPERIMENTS_DIR / "plotting" / "analyze_landscape.py"),
-        str(pool_csv),
+        str(Path("data") / args.name),
         *args.extra,
     ]
     return subprocess.run(cmd).returncode

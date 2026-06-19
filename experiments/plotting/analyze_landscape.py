@@ -511,71 +511,161 @@ def generate_readme(stats: dict, out_dir: Path):
     print(f"  {out_path.name}")
 
 
+# ── Per-problem analysis (module-level so ProcessPoolExecutor can pickle it) ───
+
+def _analyze_csv(csv_path: Path, top_frac: float, max_lag: int) -> str:
+    """Full landscape analysis for one pool.csv. Plots run sequentially.
+    Returns the problem name. Safe to call from a subprocess."""
+    import os as _os
+    out_dir = csv_path.parent
+    print(f"\n[{_os.getpid()}] === {csv_path.parent.name}")
+
+    stats: dict = {}
+    _, good, dim_cols = load_pool(csv_path, stats)
+    if good.empty:
+        print(f"  WARNING: no valid observed configs — skipping {csv_path}")
+        return csv_path.parent.name
+
+    sub_maps = subindex_maps(good, dim_cols)
+
+    stats.setdefault("roughness_table",    "_No axis-aligned pairs found._")
+    stats.setdefault("compensation_table", "_Not enough data for compensation analysis._")
+    stats.setdefault("top_frac_pct",       f"{top_frac:.0%}")
+    stats.setdefault("n_top",              max(1, int(len(good) * top_frac)))
+
+    tasks = [
+        ("cost_dist",    plot_cost_dist,    (good, out_dir)),
+        ("marginals",    plot_marginals,    (good, dim_cols, out_dir)),
+        ("roughness",    plot_roughness,    (good, dim_cols, sub_maps, out_dir)),
+        ("variogram",    plot_variogram,    (good, dim_cols, sub_maps, out_dir, max_lag)),
+        ("2d_marginals", plot_2d_marginals, (good, dim_cols, out_dir)),
+        ("compensation", plot_compensation, (good, dim_cols, sub_maps, out_dir)),
+        ("topk",         plot_topk,         (good, dim_cols, out_dir, top_frac)),
+    ]
+    for name, fn, fn_args in tasks:
+        try:
+            result = fn(*fn_args) or {}
+            for line in result.pop("_log", []):
+                print(line)
+            png = result.pop("_name", None)
+            if png:
+                print(f"  Saved: {png}")
+            stats.update(result)
+        except Exception as ex:
+            print(f"  ERROR in {name}:")
+            traceback.print_exception(ex)
+
+    generate_readme(stats, out_dir)
+    return csv_path.parent.name
+
+
 # ── Main ──────────────────────────────────────────────────────────────────────
+
+def _collect_csvs(path: Path) -> list[Path]:
+    """Resolve a path argument to a list of pool.csv files to analyse."""
+    if path.suffix == ".csv":
+        return [path]
+    direct = path / "pool.csv"
+    if direct.exists():
+        # Directory that IS a problem dir (has pool.csv directly)
+        return [direct]
+    # Directory of problem subdirs — walk one level down
+    found = sorted(path.glob("*/pool.csv"))
+    return found
+
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Landscape analysis for exhaustive-search pool.csv",
+        description="Landscape analysis for exhaustive-search pool.csv.\n\n"
+                    "PATH may be:\n"
+                    "  • a pool.csv file       → analyse that one problem\n"
+                    "  • a problem directory   → analyse pool.csv inside it\n"
+                    "  • a parent directory    → analyse all */pool.csv in parallel",
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    parser.add_argument("csv", help="Path to pool.csv")
+    parser.add_argument("path", help="pool.csv, problem dir, or parent dir of problems")
     parser.add_argument("--top-frac", type=float, default=0.05,
                         help="Fraction of best configs to highlight (default: 0.05)")
     parser.add_argument("--max-lag", type=int, default=6,
                         help="Maximum variogram lag in sub-index steps (default: 6)")
+    parser.add_argument("-j", "--workers", type=int, default=None,
+                        help="Worker processes for multi-problem mode (default: n_problems)")
     args = parser.parse_args()
 
-    csv_path = Path(args.csv)
-    out_dir  = csv_path.parent
+    csv_paths = _collect_csvs(Path(args.path))
+    if not csv_paths:
+        sys.exit(f"No pool.csv found under {args.path}")
 
-    print(f"=== Landscape analysis: {csv_path}")
-    print(f"=== Output directory:   {out_dir}\n")
+    if len(csv_paths) == 1:
+        # Single problem: run plots in parallel (existing behaviour)
+        csv_path = csv_paths[0]
+        out_dir  = csv_path.parent
+        print(f"=== Landscape analysis: {csv_path}")
+        print(f"=== Output directory:   {out_dir}\n")
 
-    stats: dict = {}
-    df, good, dim_cols = load_pool(csv_path, stats)
-    if good.empty:
-        sys.exit("No valid observed configs in CSV — run exhaustive search first.")
+        stats: dict = {}
+        _, good, dim_cols = load_pool(csv_path, stats)
+        if good.empty:
+            sys.exit("No valid observed configs in CSV — run exhaustive search first.")
 
-    sub_maps = subindex_maps(good, dim_cols)
+        sub_maps = subindex_maps(good, dim_cols)
+        stats.setdefault("roughness_table",    "_No axis-aligned pairs found._")
+        stats.setdefault("compensation_table", "_Not enough data for compensation analysis._")
+        stats.setdefault("top_frac_pct",       f"{args.top_frac:.0%}")
+        stats.setdefault("n_top",              max(1, int(len(good) * args.top_frac)))
 
-    # Fallbacks for stats that may not be populated if a section is skipped.
-    stats.setdefault("roughness_table",    "_No axis-aligned pairs found._")
-    stats.setdefault("compensation_table", "_Not enough data for compensation analysis._")
-    stats.setdefault("top_frac_pct",       f"{args.top_frac:.0%}")
-    stats.setdefault("n_top",              max(1, int(len(good) * args.top_frac)))
+        plot_tasks = {
+            "cost_dist":    (plot_cost_dist,    (good, out_dir)),
+            "marginals":    (plot_marginals,    (good, dim_cols, out_dir)),
+            "roughness":    (plot_roughness,    (good, dim_cols, sub_maps, out_dir)),
+            "variogram":    (plot_variogram,    (good, dim_cols, sub_maps, out_dir, args.max_lag)),
+            "2d_marginals": (plot_2d_marginals, (good, dim_cols, out_dir)),
+            "compensation": (plot_compensation, (good, dim_cols, sub_maps, out_dir)),
+            "topk":         (plot_topk,         (good, dim_cols, out_dir, args.top_frac)),
+        }
+        futures = {}
+        with ProcessPoolExecutor() as executor:
+            for name, (fn, fn_args) in plot_tasks.items():
+                futures[executor.submit(fn, *fn_args)] = name
+            for future in tqdm(as_completed(futures), total=len(futures), desc="plots"):
+                name = futures[future]
+                ex = future.exception()
+                if ex:
+                    tqdm.write(f"  ERROR in {name}:")
+                    tqdm.write("".join(traceback.format_exception(ex)))
+                else:
+                    result = future.result() or {}
+                    for line in result.pop("_log", []):
+                        tqdm.write(line)
+                    png = result.pop("_name", None)
+                    if png:
+                        tqdm.write(f"  Saved: {png}")
+                    stats.update(result)
 
-    tasks = {
-        "cost_dist":    (plot_cost_dist,    (good, out_dir)),
-        "marginals":    (plot_marginals,    (good, dim_cols, out_dir)),
-        "roughness":    (plot_roughness,    (good, dim_cols, sub_maps, out_dir)),
-        "variogram":    (plot_variogram,    (good, dim_cols, sub_maps, out_dir, args.max_lag)),
-        "2d_marginals": (plot_2d_marginals, (good, dim_cols, out_dir)),
-        "compensation": (plot_compensation, (good, dim_cols, sub_maps, out_dir)),
-        "topk":         (plot_topk,         (good, dim_cols, out_dir, args.top_frac)),
-    }
+        print("\n[README]")
+        generate_readme(stats, out_dir)
 
-    futures = {}
-    with ProcessPoolExecutor() as executor:
-        for name, (fn, fn_args) in tasks.items():
-            futures[executor.submit(fn, *fn_args)] = name
+    else:
+        # Multiple problems: one process per problem, plots sequential inside each
+        workers = args.workers or len(csv_paths)
+        print(f"=== Landscape analysis: {len(csv_paths)} problems, {workers} workers")
+        for p in csv_paths:
+            print(f"    {p}")
+        print()
 
-        for future in tqdm(as_completed(futures), total=len(futures), desc="plots"):
-            name = futures[future]
-            ex = future.exception()
-            if ex:
-                tqdm.write(f"  ERROR in {name}:")
-                tqdm.write("".join(traceback.format_exception(ex)))
-            else:
-                result = future.result() or {}
-                for line in result.pop("_log", []):
-                    tqdm.write(line)
-                png = result.pop("_name", None)
-                if png:
-                    tqdm.write(f"  Saved: {png}")
-                stats.update(result)
+        futures = {}
+        with ProcessPoolExecutor(max_workers=workers) as executor:
+            for p in csv_paths:
+                futures[executor.submit(_analyze_csv, p, args.top_frac, args.max_lag)] = p
+            for future in tqdm(as_completed(futures), total=len(futures), desc="problems"):
+                p = futures[future]
+                ex = future.exception()
+                if ex:
+                    tqdm.write(f"  ERROR in {p.parent.name}:")
+                    tqdm.write("".join(traceback.format_exception(ex)))
+                else:
+                    tqdm.write(f"  Done: {future.result()}")
 
-    print("\n[README]")
-    generate_readme(stats, out_dir)
     print("\nDone.")
 
 

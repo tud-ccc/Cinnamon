@@ -283,11 +283,12 @@
 // ─────────────────────────────────────────────
 // State
 // ─────────────────────────────────────────────
-const METRIC_COLS = new Set(['cost', 'mu', 'sigma', 'acq']);
+const METRIC_COLS = new Set(['cost', 'mu', 'sigma', 'acq', 'eval_time_ms']);
 const META_COLS   = new Set(['visited', 'valid']);
 
 // Per-metric display defaults. 'invert' maps low→bright (better = brighter).
 const METRIC_DEFAULTS = {
+  eval_time_ms:  { palette: 'viridis', invert: true  },
   cost:  { palette: 'viridis', invert: true  },
   mu:    { palette: 'viridis', invert: true  },
   acq:   { palette: 'plasma',  invert: true },
@@ -540,11 +541,19 @@ function opacityForCell(d) {
 // Aggregation helper
 // ─────────────────────────────────────────────
 function aggValues(values, method) {
-  const v = values.filter(Number.isFinite);
-  if (!v.length) return NaN;
-  if (method === 'min')  return Math.min(...v);
-  if (method === 'max')  return Math.max(...v);
-  return v.reduce((a, b) => a + b, 0) / v.length;
+  // Use reduce, not spread, to avoid call-stack overflow on large arrays.
+  let min = Infinity, max = -Infinity, sum = 0, count = 0;
+  for (const v of values) {
+    if (!Number.isFinite(v)) continue;
+    if (v < min) min = v;
+    if (v > max) max = v;
+    sum += v;
+    count++;
+  }
+  if (!count) return NaN;
+  if (method === 'min') return min;
+  if (method === 'max') return max;
+  return sum / count;
 }
 
 // ─────────────────────────────────────────────
@@ -557,18 +566,30 @@ function buildGrid(sourceRows, xDim, yDim, xVals, yVals, metric) {
   const aggMethod = mode === 'agg' ? get('sel-agg') : 'mean';
   const tf = getMetricTransform(metric);
 
+  // Pre-filter for slice mode once (O(N)) instead of per-cell (O(N × cells)).
+  let filteredRows = sourceRows;
+  if (mode === 'slice') {
+    const pins = dimCols
+      .filter(d => d !== xDim && d !== yDim && d !== facetDim)
+      .map(d => [d, dimUniq[d][sliceIdx[d] ?? 0]]);
+    if (pins.length) {
+      filteredRows = sourceRows.filter(r => pins.every(([d, v]) => r[d] === v));
+    }
+  }
+
+  // Index rows by "xVal|yVal" — O(N) build, O(1) per-cell lookup.
+  const cellMap = new Map();
+  for (const r of filteredRows) {
+    const key = `${r[xDim]}|${r[yDim]}`;
+    let bucket = cellMap.get(key);
+    if (!bucket) { bucket = []; cellMap.set(key, bucket); }
+    bucket.push(r);
+  }
+
   const grid = [];
   for (const y of yVals) {
     for (const x of xVals) {
-      let bucket = sourceRows.filter(r => r[xDim] === x && r[yDim] === y);
-
-      if (mode === 'slice') {
-        for (const dim of dimCols) {
-          if (dim === xDim || dim === yDim || dim === facetDim) continue;
-          const pinned = dimUniq[dim][sliceIdx[dim] ?? 0];
-          bucket = bucket.filter(r => r[dim] === pinned);
-        }
-      }
+      const bucket = cellMap.get(`${x}|${y}`) ?? [];
 
       const aggBucket = hasValid
         ? bucket.filter(r => r['valid'] == 1 && (!needsCost || Number.isFinite(r['cost'])))
