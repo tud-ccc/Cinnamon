@@ -31,7 +31,7 @@ namespace mlir::upmem {
 /// Transfer costs use the same formula as OpCountSimulator's ScatterOp/GatherOp
 /// case via scatterGatherCost().
 double UpmemSimulator::simulateFullGemv(std::chrono::milliseconds timeout,
-                                        int64_t M, int64_t N, int64_t mramRows,
+                                        int64_t M, int64_t K, int64_t mramRows,
                                         int64_t mramCols, int64_t wramRows,
                                         int64_t wramCols, int64_t dpuRows,
                                         int64_t dpuCols, int64_t tasklets,
@@ -54,7 +54,7 @@ double UpmemSimulator::simulateFullGemv(std::chrono::milliseconds timeout,
                          + dpuCost                     // DPU kernel
                          + xferCost(mramRows);         // gather y (result)
 
-  int64_t innerTrips = N / (dpuCols * mramCols);
+  int64_t innerTrips = K / (dpuCols * mramCols);
   int64_t outerTrips = M / (dpuRows * mramRows);
   return static_cast<double>(outerTrips * innerTrips) * innerIterCost;
 }
