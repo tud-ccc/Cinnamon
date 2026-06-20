@@ -182,6 +182,7 @@ def run_trial(
     cinm_opt: str,
     seed: int,
     split_input: bool,
+    eval_timeout_ms: int,
     extra_opts: list[str],
     problem_name: str,
     trial_timeout: float,
@@ -202,6 +203,7 @@ def run_trial(
             f"hidden-width={cfg['hidden']}",
             f"hidden-depth={cfg['depth']}",
             f"neighbor-depth={cfg.get('neighbor_depth', 2)}",
+            f"eval-timeout-ms={cfg.get('eval_timeout_ms', 1000)}",
             f"neighbor-frontier-only={cfg.get('neighbor_frontier_only','false')}",
             "simulator=opcount",
             f"n-validation={n_validation}",
@@ -247,7 +249,7 @@ def run_trial(
 
         val_csv = Path(tmp) / problem_name / f"seed_{seed}" / "validation.csv"
         if not val_csv.exists():
-            debug_dir = Path("data/bo_meta_debug")
+            debug_dir = Path(f"data/bo_meta_debug")
             shutil.rmtree(debug_dir, ignore_errors=True)
             shutil.copytree(tmp, debug_dir)
             print(
@@ -289,6 +291,7 @@ def make_objective(
     n_seeds: int,
     split_input: bool,
     extra_opts: list[str],
+    eval_timeout_ms: int,
     problem_name: str,
     trial_timeout: float,
 ):
@@ -310,6 +313,7 @@ def make_objective(
                 cinm_opt=cinm_opt,
                 seed=(seed * 100 + s + 1) % (2**31),
                 split_input=split_input,
+                eval_timeout_ms=eval_timeout_ms,
                 extra_opts=extra_opts,
                 problem_name=problem_name,
                 trial_timeout=trial_timeout,
@@ -482,6 +486,11 @@ def main():
              "(default: 5)",
     )
     ap.add_argument(
+        "--eval-timeout-ms", type=int, default=1000,
+        help="Simulation timeout (milliseconds)"
+             "(default: 1000)",
+    )
+    ap.add_argument(
         "--simulator", default="cycleaccurate",
         choices=["cycleaccurate", "opcount"],
         help="DPU cost simulator used inside cinm-opt (default: cycleaccurate)",
@@ -550,6 +559,7 @@ def main():
         split_input=not args.no_split_input_file,
         extra_opts=args.extra_opts or [],
         problem_name=args.problem,
+        eval_timeout_ms=args.eval_timeout_ms,
         trial_timeout=args.trial_timeout,
     )
 
