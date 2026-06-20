@@ -202,7 +202,7 @@ def run_trial(
             f"hidden-width={cfg['hidden']}",
             f"hidden-depth={cfg['depth']}",
             f"neighbor-depth={cfg.get('neighbor_depth', 2)}",
-            f"neighbor-frontier-only={cfg.get('neighbor_frontier_only',"false")}",
+            f"neighbor-frontier-only={cfg.get('neighbor_frontier_only','false')}",
             "simulator=opcount",
             f"n-validation={n_validation}",
             f"validation-interval={validation_interval}",
