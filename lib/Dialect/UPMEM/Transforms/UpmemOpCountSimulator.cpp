@@ -1,3 +1,4 @@
+#include "cinm-mlir/Dialect/Cinm/IR/CinmAttributes.h"
 #include "cinm-mlir/Dialect/Cinm/IR/CinmOps.h"
 #include "cinm-mlir/Dialect/UPMEM/IR/UPMEMAttributes.h"
 #include "cinm-mlir/Dialect/UPMEM/IR/UPMEMOps.h"
@@ -152,6 +153,11 @@ struct OpCountSimulator : UpmemSimulator {
   double simulateGemv(std::chrono::milliseconds timeout, int nTasklets,
                       int64_t mramRows, int64_t mramCols, int64_t rowTile,
                       int64_t colTile, upmem_cm::DType) override;
+  double simulateReduction(std::chrono::milliseconds timeout,
+                           cinm::ReduceMethod reduction, int taskletRows,
+                           int taskletCols, int64_t mramRows, int64_t mramCols,
+                           int64_t wramRows, int64_t wramCols,
+                           upmem_cm::DType dty) override;
 
   mlir::cinm::utils::Maybe<double> simulate(Region &region) override {
     // Recursive callback: recurse into the DPU program body with the same
@@ -185,13 +191,54 @@ double mramToWramCost(long numelts, int nTasklets, upmem_cm::DType dty) {
 double dpuOpLatency(upmem_cm::StatOp op, upmem_cm::DType dty) {
   return upmem_cm::lookupStaticLatency(op, dty);
 }
+double dpuOpLatency(upmem_cm::ArithOp op, upmem_cm::DType dty) {
+  return dpuOpLatency(upmem_cm::arithToStatOp(op), dty);
+}
+
+double mlir::upmem::OpCountSimulator::simulateReduction(
+    std::chrono::milliseconds, cinm::ReduceMethod reduction, int taskletRows,
+    int taskletCols, int64_t mramRows, int64_t mramCols, int64_t wramRows,
+    int64_t wramCols, upmem_cm::DType dty) {
+
+  // - The DPU receives an <mramRows x mramCols> buffer, it sends back an
+  // <mramRows> buffer
+  // - The DPU runs taskletRows * taskletCols concurrent tasklets
+  // - Each tasklet reduces a buffer <wramRows * wramCols> in a loop this number
+  // of times: mramCols / wramCols / taskletCols
+  // - When that's done, the partial results of the tasklets running on the same
+  // row are reduced, we start over with a different set of rows
+
+  auto init =
+      // Move result partial bufs
+      mramToWramCost(taskletCols, taskletRows, dty);
+
+  int64_t nRowTiles = mramRows / wramRows / taskletRows;
+  int64_t nColTiles = mramCols / wramCols / taskletCols;
+
+  auto cycles =
+      init +
+      nRowTiles *
+          (nColTiles * (mramToWramCost(wramRows * wramCols,
+                                       taskletRows * taskletCols, dty) +
+                        wramRows * wramCols *
+                            (dpuOpLatency(upmem_cm::StatOp::LOAD, dty) +
+                             dpuOpLatency(upmemCmOp(reduction), dty) +
+                             dpuOpLatency(upmem_cm::StatOp::STORE, dty))) +
+           taskletCols * (dpuOpLatency(upmem_cm::StatOp::LOAD, dty) +
+                          dpuOpLatency(upmemCmOp(reduction), dty) +
+                          dpuOpLatency(upmem_cm::StatOp::STORE, dty)))
+
+      + wramToMramCost(mramRows, 1, dty);
+
+  return cycles / 350'000;
+}
 
 double mlir::upmem::OpCountSimulator::simulateGemv(
     std::chrono::milliseconds, int nTasklets, int64_t mramRows,
     int64_t mramCols, int64_t rowTile, int64_t colTile, upmem_cm::DType dty) {
 
   // result
-  mramToWramCost(rowTile, 1, dty);
+  auto init = mramToWramCost(rowTile, 1, dty);
 
   int64_t nRowTiles = mramRows / rowTile / nTasklets;
   int64_t nColTiles = mramCols / colTile;
@@ -205,7 +252,7 @@ double mlir::upmem::OpCountSimulator::simulateGemv(
                           dpuOpLatency(upmem_cm::StatOp::ADD, dty) +
                           dpuOpLatency(upmem_cm::StatOp::STORE, dty));
 
-  double cycleCount = nRowTiles * nColTiles * (trcost + innerLoopCost) +
+  double cycleCount = init + nRowTiles * nColTiles * (trcost + innerLoopCost) +
                       // result write back
                       wramToMramCost(mramRows, 1, dty);
   return cycleCount / 350'000;

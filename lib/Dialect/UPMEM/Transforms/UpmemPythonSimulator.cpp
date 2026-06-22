@@ -471,6 +471,11 @@ struct CppSimulator : UpmemSimulator {
     LLVM_DEBUG(gemvCache.printStats(llvm::dbgs()));
   }
 
+  double simulateReduction(std::chrono::milliseconds timeout,
+                           cinm::ReduceMethod reduction, int taskletRows,
+                           int taskletCols, int64_t mramRows, int64_t mramCols,
+                           int64_t wramRows, int64_t wramCols,
+                           upmem_cm::DType dty) override;
   double simulateGemv(std::chrono::milliseconds timeout, int nTasklets,
                       int64_t mramRows, int64_t mramCols, int64_t rowTile,
                       int64_t colTile, upmem_cm::DType dty) override;
@@ -494,6 +499,59 @@ struct CppSimulator : UpmemSimulator {
 };
 
 } // anonymous namespace
+double mlir::upmem::CppSimulator::simulateReduction(
+    std::chrono::milliseconds timeout, cinm::ReduceMethod reduction,
+    int taskletRows, int taskletCols, int64_t mramRows, int64_t mramCols,
+    int64_t wramRows, int64_t wramCols, upmem_cm::DType dty) {
+
+  using namespace upmem_cm;
+  ProgramBuilder b;
+
+  // MRAM buffers
+  auto A_mram = b.addBuffer("A_mram", MemSpace::MRAM, dty);
+  auto y_mram = b.addBuffer("y_mram", MemSpace::MRAM, dty);
+
+  // WRAM tile buffers
+  auto A_wram = b.addBuffer("A_wram", MemSpace::WRAM, dty);
+  auto y_wram = b.addBuffer("y_wram", MemSpace::WRAM, dty);
+
+  // Load all y from MRAM to WRAM before loops
+  b.createTransfer(y_mram, y_wram, mramRows); // todo mark exclusive
+
+  int64_t nRowTiles = mramRows / wramRows / taskletRows;
+  int64_t nColTiles = mramCols / wramCols / taskletCols;
+
+  // int64_t rowTilesMin = std::min(nRowTiles, 4L);
+  // int64_t colTilesMin = std::min(nColTiles, 4L);
+
+  b.beginLoop(0, nRowTiles); // row tile loop
+  b.beginLoop(0, nColTiles); // col tile loop
+
+  // Transfer A tile [rowTile × colTile] from MRAM; address advances per
+  // col-tile iter
+  b.createTransfer(A_mram, A_wram, wramCols * wramRows,
+                   /*src_iv_indexed=*/true);
+
+  b.beginLoop(0, wramRows); // row loop within tile
+  b.createReductionLoop(wramCols, A_wram, y_wram, upmemCmOp(reduction));
+  b.endLoop(); // row loop within tile
+
+  b.endLoop(); // col tile loop
+
+  // todo we iterate `taskletCols` times, this happens on taskletRows threads
+  b.createReductionLoop(taskletCols, y_wram, y_wram, upmemCmOp(reduction));
+
+  b.endLoop(); // dot-product loop
+  b.endLoop(); // row tile loop
+
+  // Store all y from WRAM back to MRAM
+  // todo mark exclusive
+  b.createTransfer(y_wram, y_mram, mramRows);
+
+  double result = b.simulate(taskletRows * taskletCols, timeout)
+                      .value_or(std::numeric_limits<double>::infinity());
+  return result;
+}
 
 double mlir::upmem::CppSimulator::simulateGemv(
     std::chrono::milliseconds timeout, int nTasklets, int64_t mramRows,

@@ -1,3 +1,4 @@
+#include "cinm-mlir/Dialect/Cinm/IR/CinmAttributes.h"
 #include "cinm-mlir/Dialect/UPMEM/IR/UPMEMAttributes.h"
 #include "cinm-mlir/Dialect/UPMEM/IR/UPMEMOps.h"
 #include "cinm-mlir/Dialect/UPMEM/Transforms/UpmemSimulator.h"
@@ -53,6 +54,39 @@ double UpmemSimulator::simulateFullGemv(std::chrono::milliseconds timeout,
                          + xferCost(mramRows)          // scatter y (init)
                          + dpuCost                     // DPU kernel
                          + xferCost(mramRows);         // gather y (result)
+
+  int64_t innerTrips = K / (dpuCols * mramCols);
+  int64_t outerTrips = M / (dpuRows * mramRows);
+  return static_cast<double>(outerTrips * innerTrips) * innerIterCost;
+}
+
+// For the reduction we have:
+
+/// Estimate the cost of the host side of a tiled reduction.
+/// This is like reducing an <MxK> tensor into <M>.
+///
+double UpmemSimulator::simulateTailReduction(
+    std::chrono::milliseconds timeoutMs, int64_t M, int64_t K,
+    cinm::ReduceMethod reduction, int64_t mramRows, int64_t mramCols,
+    int64_t wramRows, int64_t wramCols, int64_t dpuRows, int64_t dpuCols,
+    int64_t taskletRows, int64_t taskletCols, upmem_cm::DType dty) {
+
+  // Cost of one scatter/gather of `elemsPerDpu` i32 elements across all DPUs.
+  auto xferCost = [&](int64_t elemsPerDpu) {
+    return scatterGatherCost(elemsPerDpu, upmem_cm::dtypeBytes(dty),
+                             std::max(1L, (dpuRows * dpuCols) / 64), 64);
+  };
+
+  // DPU compute cost (one DPU, accounts for tasklet parallelism inside).
+  double dpuCost =
+      this->simulateReduction(timeoutMs, reduction, taskletRows, taskletCols,
+                              mramRows, mramCols, wramRows, wramCols, dty);
+
+  // Per inner-loop (col-tile) iteration: 3 scatters + wait + 1 gather.
+  double innerIterCost = xferCost(mramRows * mramCols) // scatter A tile
+                         + xferCost(mramRows)  // scatter y (result init)
+                         + dpuCost             // DPU kernel
+                         + xferCost(mramRows); // gather y (result)
 
   int64_t innerTrips = K / (dpuCols * mramCols);
   int64_t outerTrips = M / (dpuRows * mramRows);

@@ -2,16 +2,21 @@
 #include "cinm-mlir/Dialect/Cinm/AcceleratorInference/AcceleratorInference.h"
 
 #include <algorithm>
+#include <armadillo>
 #include <cmath>
 #include <cstddef>
 #include <filesystem>
 #include <fstream>
+#include <iterator>
 #include <limits>
+#include <llvm/ADT/BitVector.h>
 #include <llvm/ADT/STLExtras.h>
 #include <llvm/Support/Debug.h>
 #include <memory>
 #include <numeric>
 #include <random>
+#include <type_traits>
+#include <unordered_set>
 #include <utility>
 
 #define DEBUG_TYPE "cinm-inference"
@@ -24,18 +29,18 @@ namespace mlir::cinm {
 
 CandidatePool::CandidatePool(const ConfigSpace &space, size_t evalBudget,
                              bool exhaustive)
-    : space_(&space), N(space.totalSize()), visited(static_cast<unsigned>(N)),
-      validMask_(static_cast<unsigned>(N)),
-      Xo(space.size(), evalBudget), yo(1, evalBudget),
-      costByIdx(arma::rowvec(N).fill(arma::datum::nan)),
+    : space_(&space), N(space.totalSize()), visited(),
+      validMask_(static_cast<unsigned>(N)), Xo(space.size(), evalBudget),
+      yo(1, evalBudget), costByIdx(arma::rowvec(N).fill(arma::datum::nan)),
       exhaustive(exhaustive) {
   space_->forEach([&](const Configuration &conf, size_t i) {
     if (space_->isValid(conf))
       validMask_.set(static_cast<unsigned>(i));
-    else
-      visited.set(static_cast<unsigned>(i));
     return true;
   });
+  visited = validMask_;
+  // by marking invalid solutions visited, we will never pick them
+  visited.flip();
 }
 
 CandidatePool::~CandidatePool() = default;
@@ -76,53 +81,79 @@ void CandidatePool::recordFailedEvaluation(size_t idx, size_t iter) {
   iterByIdx[idx] = iter;
 }
 
+// Build a temporary D×M encoded matrix for a set of candidate pool indices.
+template <class Collection>
 static arma::mat encodeSubset(const ConfigSpace &space,
-                              const std::vector<size_t> &indices);
-
+                              const Collection &indices) {
+  const size_t D = space.size();
+  const size_t M = indices.size();
+  arma::mat enc(D, M);
+  Configuration conf;
+  size_t j = 0;
+  for (auto ix : indices) {
+    space.at(ix, conf);
+    for (size_t d = 0; d < D; ++d)
+      enc(d, j) = space[d].featurize(conf[d]);
+    j++;
+  }
+  return enc;
+}
 // ===----------------------------------------------------------------------===//
 // Latin Hypercube Sampling
 // ===----------------------------------------------------------------------===//
 
 void CandidatePool::sampleInitialSet(size_t n, std::mt19937 &rng,
-                                     std::function<bool(size_t)> accept) const {
+                                     std::function<bool(size_t)> accept) {
+  // size_t nAccepted = 0;
+  // while (nAccepted < n) {
+  //   std::unordered_set<size_t> result;
+  //   size_t want = n - nAccepted;
+  //   fillRandom(result, want, rng);
+  //   for (auto i : result) {
+  //     if (accept(i))
+  //       nAccepted++;
+  //   }
+  //   if (result.size() < want || nAccepted >= n)
+  //     return;
+  //   result.clear();
+  // }
+  // return;
+
   const size_t D = nDims();
   if (n == 0 || validMask_.none())
     return;
 
-  // Collect valid, unvisited candidates for LHS distance computation.
-  // Iterate validMask_ (O(nValid)) rather than the full [0,N) range.
-  std::vector<size_t> unvIdx;
-  for (int i = validMask_.find_first(); i != -1; i = validMask_.find_next(i))
-    if (!visited.test(static_cast<unsigned>(i)))
-      unvIdx.push_back(static_cast<size_t>(i));
+  // Undersample the space, but still try to sample
+  // enough points to get a "fairer" random sampling.
+  std::vector<size_t> candidates;
+  for (auto i : validMask_.set_bits()) {
+    candidates.push_back(i);
+  }
 
-  const size_t M = unvIdx.size();
+  const size_t M = candidates.size();
   if (M == 0)
     return;
-  n = std::min(n, M);
 
-  arma::mat enc = encodeSubset(*space_, unvIdx);
+  // DxM matrix
+  arma::mat enc = encodeSubset(*space_, candidates);
 
   // Per-dimension [0,1] normalisation.
-  arma::mat normed(D, M);
   for (size_t d = 0; d < D; ++d) {
     double lo = enc.row(d).min();
     double hi = enc.row(d).max();
     double range = (hi > lo) ? (hi - lo) : 1.0;
-    normed.row(d) = (enc.row(d) - lo) / range;
+    enc.row(d) = (enc.row(d) - lo) / range;
   }
 
   std::uniform_real_distribution<double> u01(0.0, 1.0);
-  std::vector<bool> used(M, false);
+  llvm::BitVector used(M);
   size_t accepted = 0;
 
   // Keep generating LHS batches until n configurations pass accept().
   while (accepted < n) {
     size_t want = n - accepted;
 
-    size_t nUnused = 0;
-    for (size_t i = 0; i < M; ++i)
-      nUnused += !used[i];
+    size_t nUnused = M - used.count();
     if (nUnused == 0)
       break;
     want = std::min(want, nUnused);
@@ -147,7 +178,7 @@ void CandidatePool::sampleInitialSet(size_t n, std::mt19937 &rng,
           continue;
         double dist = 0;
         for (size_t d = 0; d < D; ++d) {
-          double diff = normed(d, i) - batchTargets[t][d];
+          double diff = enc(d, i) - batchTargets[t][d];
           dist += diff * diff;
         }
         if (dist < bestDist) {
@@ -157,8 +188,8 @@ void CandidatePool::sampleInitialSet(size_t n, std::mt19937 &rng,
       }
       if (bestPos == M)
         break;
-      used[bestPos] = true;
-      if (accept(unvIdx[bestPos]))
+      used.set(bestPos);
+      if (accept(candidates[bestPos]))
         ++accepted;
     }
   }
@@ -267,54 +298,35 @@ static arma::rowvec computeAcq(const arma::rowvec &mu,
 // Next-candidate selection
 // ===----------------------------------------------------------------------===//
 
-// Build a temporary D×M encoded matrix for a set of candidate pool indices.
-static arma::mat encodeSubset(const ConfigSpace &space,
-                              const std::vector<size_t> &indices) {
-  const size_t D = space.size();
-  const size_t M = indices.size();
-  arma::mat enc(D, M);
-  Configuration conf;
-  for (size_t j = 0; j < M; ++j) {
-    space.at(indices[j], conf);
-    for (size_t d = 0; d < D; ++d)
-      enc(d, j) = space[d].featurize(conf[d]);
-  }
-  return enc;
-}
-
-bool CandidatePool::tryInsert(std::unordered_set<size_t> &result, size_t idx,
-                              Configuration &conf) {
-  (void)conf;
-  if (visited.test(idx) || !validMask_.test(idx) || result.count(idx))
+bool CandidatePool::tryInsert(std::unordered_set<size_t> &result, size_t idx) {
+  if (visited.test(idx) || !validMask_.test(idx))
     return false;
-  result.insert(idx);
-  return true;
+  auto res = result.insert(idx);
+  return res.second;
 }
 
 void CandidatePool::fillRandom(std::unordered_set<size_t> &result,
                                size_t target, std::mt19937 &rng) {
   if (result.size() >= target || validMask_.none())
     return;
-  // Build a flat list of unvisited valid indices (O(nValid)), then sample
-  // from it uniformly — avoids the near-certain misses of [0,N) sampling when
-  // nValid << N.
-  std::vector<size_t> pool;
-  for (int i = validMask_.find_first(); i != -1; i = validMask_.find_next(i))
-    if (!visited.test(static_cast<unsigned>(i)) && !result.count(static_cast<size_t>(i)))
-      pool.push_back(static_cast<size_t>(i));
-  if (pool.empty())
-    return;
-  std::shuffle(pool.begin(), pool.end(), rng);
-  Configuration conf;
-  for (size_t i = 0; i < pool.size() && result.size() < target; ++i)
-    tryInsert(result, pool[i], conf);
+  size_t numValid = validMask_.count();
+  auto dist = std::uniform_int_distribution<>(0, numValid - 1);
+
+  while (result.size() < std::min(target, numValid)) {
+    auto i = dist(rng);
+    auto iter = validMask_.set_bits_begin();
+    // This is O(n) unfortunately. We could use dynamic programming to
+    // speed up things (build an index of already seen positions)
+    std::advance(iter, i);
+    auto solIdx = *iter;
+    tryInsert(result, solIdx);
+  }
 }
 
 void CandidatePool::fillNeighbors(std::unordered_set<size_t> &result,
                                   unsigned depth, bool frontierOnly) {
   // BFS outward from every observed point up to `depth` steps.
   std::unordered_set<size_t> frontier;
-  Configuration conf;
   for (int i = validMask_.find_first(); i != -1; i = validMask_.find_next(i))
     if (!std::isnan(costByIdx(static_cast<size_t>(i))))
       frontier.insert(static_cast<size_t>(i));
@@ -329,7 +341,7 @@ void CandidatePool::fillNeighbors(std::unordered_set<size_t> &result,
       for (size_t nb : nbrs) {
         // When frontierOnly, only insert at the last BFS level.
         if (!frontierOnly || isLastStep) {
-          tryInsert(result, nb, conf);
+          tryInsert(result, nb);
         }
         // Always track the frontier for BFS expansion regardless.
         if (!visited.test(nb))

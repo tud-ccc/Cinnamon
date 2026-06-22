@@ -21,6 +21,7 @@
 #include <filesystem>
 #include <functional>
 #include <limits>
+#include <mlir/Dialect/Utils/IndexingUtils.h>
 #include <string>
 #include <utility>
 
@@ -221,6 +222,8 @@ struct UpmemInferencePlugin : cinm::InferencePlugin {
   void printStats() const override { simulator->printStats(); }
 
   void handleGemv(cinm::GemvOp gemv, SpaceBuilder &b);
+  void handleReduce(cinm::ReduceOp op, SpaceBuilder &b);
+  void handleEltwise(cinm::ElementwiseOp op, SpaceBuilder &b);
 
   void initializeSpace(cinm::ComputeBlockOp refClone,
                        cinm::ConfigSpace &space) override {
@@ -233,6 +236,10 @@ struct UpmemInferencePlugin : cinm::InferencePlugin {
     refClone.getBody().walk([&](mlir::Operation *op) {
       if (auto gemv = llvm::dyn_cast<cinm::GemvOp>(op))
         handleGemv(gemv, b);
+      else if (auto red = llvm::dyn_cast<cinm::ReduceOp>(op))
+        handleReduce(red, b);
+      // else if (auto ew = llvm::dyn_cast<cinm::ElementwiseOp>(op))
+      //   handleEltwise(ew, b);
     });
 
     b.buildInto(space);
@@ -346,13 +353,13 @@ void UpmemInferencePlugin::handleGemv(cinm::GemvOp gemv, SpaceBuilder &b) {
   if (mramTiling) {
     auto mramRow = b.divisorsOf("mramRow", M);
     auto mramCol = b.divisorsOf("mramCol", K);
-    b.require(M / (dpus / dpuCols * tasklets * mramRow));
+    b.require(M / ((dpus / dpuCols) * mramRow));
     b.require(mramRow / (tasklets * wramRow));
     b.require(mramCol / wramCol);
-    b.require(K / (mramCol * dpuCols));
+    b.require(K / (dpuCols * mramCol));
 
     // Per-DPU MRAM must fit: A (T×mr×mc) + x (mc) + y (T×mr)
-    b.require(tasklets * mramRow * mramCol + mramCol + tasklets * mramRow <=
+    b.require(mramRow * mramCol + mramCol + mramRow <=
               mramLevel.getSizeInElements(eltTy));
 
     // Simulation template for the MRAM fast path (bypasses the lowering
@@ -364,6 +371,71 @@ void UpmemInferencePlugin::handleGemv(cinm::GemvOp gemv, SpaceBuilder &b) {
                                   wramRow[c], wramCol[c], dpus[c] / dpuCols[c],
                                   dpuCols[c], tasklets[c], dtype);
     });
+  }
+}
+
+void UpmemInferencePlugin::handleReduce(cinm::ReduceOp op, SpaceBuilder &b) {
+  auto type = op.getInput().getType();
+  if (op.getDimension() != type.getShape().size() - 1) {
+    // For now only support when the reduction dimension is the last one
+    return;
+  }
+  auto parShape = type.getShape().drop_back();
+  const auto M = computeProduct(parShape);
+  const auto K = type.getShape()[op.getDimension()];
+  auto reduction = op.getMethod();
+
+  auto eltTy = type.getElementType();
+  auto wramLevel = platform.getWramLevel();
+  auto mramLevel = platform.getMramLevel();
+  const bool mramTiling = opts.useMRAMTiling;
+  const auto timeout = opts.evalTimeoutMs;
+  const auto dtype = cmDtyFromMlirDty(eltTy);
+  auto dpus = dpusVar_;
+  auto tasklets = taskletsVar_;
+
+  auto taskletCols = b.divisorsOf("taskletCols", tasklets);
+
+  // Hardware dimensions.
+  b.mustDivide(tasklets, M); // tasklets must divide M
+
+  // WRAM tile dims: each is a divisor of its corresponding problem dimension.
+  // K = dpuCols * mramCols * k1  ⟹  dpuCols | K  and  dpuCols | dpus
+  auto wramRow = b.divisorsOf("wramRow", M);
+  auto wramCol = b.divisorsOf("wramCol", K);
+  auto dpuCols = b.divisorsOf("dpuCols", K);
+
+  // Per-tasklet WRAM must fit: wramTile * tasklets + tasklets
+  b.require(wramCol * wramRow * tasklets + tasklets <=
+            wramLevel.getSizeInElements(eltTy));
+
+  // Attributes used by applyTileSizes() in the non-MRAM pipeline path.
+  // fixme here
+  // op->setAttr(kTileParamNamesAttr,
+  //             OpBuilder(op->getContext()).getStrArrayAttr({wramTile.name()}));
+
+  if (mramTiling) {
+    auto mramRow = b.divisorsOf("mramRow", M);
+    auto mramCol = b.divisorsOf("mramCol", K);
+    b.require(M / ((dpus / dpuCols) * mramRow));
+    b.require(mramRow / ((tasklets / taskletCols) * wramRow));
+    b.require(mramCol / (taskletCols * wramCol));
+    b.require(K / (dpuCols * mramCol));
+
+    // Per-DPU MRAM must fit: A (T×mr×mc) + y (T×mr)
+    b.require(mramRow * mramCol + mramRow <=
+              mramLevel.getSizeInElements(eltTy));
+
+    // Simulation template for the MRAM fast path (bypasses the lowering
+    // pipeline).
+    if (op.getDimension() == type.getShape().size() - 1) {
+      registerSimulator([=](const cinm::ConfWrapper &c, UpmemSimulator &sim) {
+        return sim.simulateTailReduction(
+            timeout, M, K, reduction, mramRow[c], mramCol[c], wramRow[c],
+            wramCol[c], dpus[c] / dpuCols[c], dpuCols[c],
+            tasklets[c] / taskletCols[c], taskletCols[c], dtype);
+      });
+    }
   }
 }
 

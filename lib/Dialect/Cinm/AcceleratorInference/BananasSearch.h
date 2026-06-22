@@ -60,12 +60,13 @@ struct ValidationSet {
 /// Configurations are not pre-stored; index i maps to the config at
 /// ConfigSpace::at(i).  Invalid configs (constraint failures) are pre-marked
 /// visited during construction so they are never selected.
-/// validMask_ is a compact BitVector over [0, N) marking which flat indices pass
-/// all constraints. All O(nValid) operations iterate validMask_ rather than the
-/// full [0, N) range. Xo/yo are pre-allocated to evalBudget, not totalSize().
+/// validMask_ is a compact BitVector over [0, N) marking which flat indices
+/// pass all constraints. All O(nValid) operations iterate validMask_ rather
+/// than the full [0, N) range. Xo/yo are pre-allocated to evalBudget, not
+/// totalSize().
 struct CandidatePool {
   const ConfigSpace *space_;
-  size_t N; // = space_->totalSize(), cached
+  size_t N;                   // = space_->totalSize(), cached
   llvm::BitVector visited;    // marks invalid + evaluated flat indices
   llvm::BitVector validMask_; // bit i set iff config at flat index i is valid
   size_t nValidVisited_ = 0;  // count of valid configs that have been visited
@@ -128,7 +129,7 @@ struct CandidatePool {
 
   /// Select n row-indices from the pool using Latin Hypercube Sampling.
   void sampleInitialSet(size_t n_samples, std::mt19937 &rng,
-                        std::function<bool(size_t)> accept) const;
+                        std::function<bool(size_t)> accept);
 
   /// Fit a BANANAS MLP ensemble on the observed subset (Xo/yo) and return
   /// the k unvisited pool indices with the lowest UCB acquisition score.
@@ -154,8 +155,7 @@ struct CandidatePool {
 
 private:
   /// Insert idx into result if it is unvisited, not already present, and valid.
-  bool tryInsert(std::unordered_set<size_t> &result, size_t idx,
-                 Configuration &conf);
+  bool tryInsert(std::unordered_set<size_t> &result, size_t idx);
   /// Add up to `target` random valid-unvisited indices to `result`.
   void fillRandom(std::unordered_set<size_t> &result, size_t target,
                   std::mt19937 &rng);
