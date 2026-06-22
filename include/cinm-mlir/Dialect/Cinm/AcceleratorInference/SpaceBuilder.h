@@ -102,6 +102,11 @@ template <typename T> struct is_bin_expr : std::false_type {};
 template <typename L, typename R, typename Op>
 struct is_bin_expr<BinExpr<L, R, Op>> : std::true_type {};
 template <typename T> constexpr bool is_bin_expr_v = is_bin_expr<T>::value;
+
+template <typename T> struct is_mul_expr : std::false_type {};
+template <typename L, typename R>
+struct is_mul_expr<MulExpr<L, R>> : std::true_type {};
+template <typename T> constexpr bool is_mul_expr_v = is_mul_expr<T>::value;
 } // namespace detail
 
 // ===----------------------------------------------------------------------===//
@@ -379,6 +384,13 @@ private:
     } else if constexpr (std::is_same_v<Num, SpaceVar> &&
                          std::is_same_v<Den, SpaceVar>) {
       mustDivide(den, num);
+    } else if constexpr (detail::is_mul_expr_v<Den>) {
+      // (B * C) | A  ⟺  B | A  ∧  C | A  ∧  B * C ≤ A
+      addDivConstraint(num, den.lhs);
+      addDivConstraint(num, den.rhs);
+      predicates_.push_back([num, den](const ConfWrapper &c) -> bool {
+        return den.eval(c) <= num.eval(c);
+      });
     } else {
       predicates_.push_back([num, den](const ConfWrapper &c) -> bool {
         const auto dv = den.eval(c);

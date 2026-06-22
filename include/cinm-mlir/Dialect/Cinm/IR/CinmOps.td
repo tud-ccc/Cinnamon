@@ -233,6 +233,7 @@ def Cinm_ReduceOp : Cinm_Op<"op.reduce",
   );
 
   let hasCanonicalizer = 1;
+  let hasVerifier = 1;
   let extraClassDeclaration = [{
   }];
 

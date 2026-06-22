@@ -1,7 +1,9 @@
 #pragma once
 
 #include <chrono>
+#include <cinm-mlir/Dialect/Cinm/IR/CinmAttributes.h>
 #include <cinm-mlir/Utils/Scheduling/SchedulingSupport.h>
+#include <cstdint>
 #include <functional>
 #include <llvm/ADT/StringRef.h>
 #include <memory>
@@ -9,7 +11,6 @@
 #include <mlir/IR/Operation.h>
 #include <mlir/Support/LogicalResult.h>
 #include <upmem_cost_model/Types.h>
-
 
 #include <optional>
 
@@ -33,7 +34,8 @@ struct UpmemSimulator {
 
   virtual double simulateGemv(std::chrono::milliseconds timeout, int nTasklets,
                               int64_t mramRows, int64_t mramCols,
-                              int64_t rowTile, int64_t colTile, upmem_cm::DType) = 0;
+                              int64_t rowTile, int64_t colTile,
+                              upmem_cm::DType dty) = 0;
 
   /// Estimate the total cost of the host-side tiled GEMV (mv2) kernel,
   /// including scatter/gather transfers and DPU compute.
@@ -48,7 +50,29 @@ struct UpmemSimulator {
   double simulateFullGemv(std::chrono::milliseconds timeoutMs, int64_t M,
                           int64_t K, int64_t mramRows, int64_t mramCols,
                           int64_t wramRows, int64_t wramCols, int64_t dpuRows,
-                          int64_t dpuCols, int64_t tasklets, upmem_cm::DType);
+                          int64_t dpuCols, int64_t tasklets,
+                          upmem_cm::DType dty);
+
+  virtual double simulateReduction(std::chrono::milliseconds timeout,
+                                   cinm::ReduceMethod reduction,
+                                   int taskletRows, int taskletCols,
+                                   int64_t mramRows, int64_t mramCols,
+                                   int64_t wramRows, int64_t wramCols,
+                                   upmem_cm::DType dty) = 0;
+
+  /// Simulate a reduction operation.
+  /// The reduction is like reducing a tensor <MxK> into a tensor <M>.
+  /// The M rows are tiled into dpus, tasklets, mram and wram.
+  /// The K cols are also tiled into dpus, tasklets, mram and wram and
+  /// influence a partial reductions.
+
+  double simulateTailReduction(std::chrono::milliseconds timeoutMs, int64_t M,
+                               int64_t K, cinm::ReduceMethod reduction,
+                               int64_t mramRows, int64_t mramCols,
+                               int64_t wramRows, int64_t wramCols,
+                               int64_t dpuRows, int64_t dpuCols,
+                               int64_t taskletRows, int64_t taskletCols,
+                               upmem_cm::DType dty);
 };
 
 /// Simple baseline: weighted op count over the UPMEM dialect IR.
@@ -98,6 +122,18 @@ inline double scatterGatherCost(int64_t elemsPerDpu, int64_t elemBytes,
   return transferCost(totalBytes, static_cast<int>(ranks));
 }
 
+inline upmem_cm::ArithOp upmemCmOp(cinm::ReduceMethod red) {
+  switch (red) {
+  case cinm::ReduceMethod::ADD:
+    return upmem_cm::ArithOp::ADD;
+  case cinm::ReduceMethod::MUL:
+    return upmem_cm::ArithOp::MUL;
+  default:
+    // todo the simulator doesn't have measurements for the remaining
+    // operations.
+    assert(false && "Unsupported reduce method");
+  }
+}
 /// Estimates the cost of a host-side UPMEM region (scatter/gather/loops/etc.)
 /// and optionally annotates each visited op with 'upmem.sim_cost'.
 /// WaitForOp cost is delegated to `waitForCb`; all other op costs use the

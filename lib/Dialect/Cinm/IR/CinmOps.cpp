@@ -319,6 +319,13 @@ LogicalResult ComputeBlockOp::verify() {
     return emitOpError("Cannot specify both platform and accelerator");
   return success();
 }
+LogicalResult ReduceOp::verify() {
+  uint64_t maxDim = getInput().getType().getRank();
+  if (getDimension() < 0 || getDimension() >= maxDim)
+    return emitOpError("Reduce op dimension should be within [0, ")
+           << maxDim << ")";
+  return success();
+}
 
 void ReduceOp::build(OpBuilder &builder, OperationState &state, Type resultTy,
                      ReduceMethod kind, Value input, int64_t dimension) {
@@ -988,7 +995,7 @@ static bool isZeroSplatAttr(Attribute attr) {
 
 template <typename Op, typename Adaptor>
 static LogicalResult foldGemmlike(Op op, Adaptor adaptor,
-                                   SmallVectorImpl<OpFoldResult> &) {
+                                  SmallVectorImpl<OpFoldResult> &) {
   bool changed = false;
   if (op.getBias() && isZeroSplatAttr(adaptor.getBias())) {
     op.getBiasMutable().clear();
