@@ -441,49 +441,20 @@ void UpmemInferencePlugin::handleReduce(cinm::ReduceOp op, SpaceBuilder &b) {
     // Simulation template for the MRAM fast path (bypasses the lowering
     // pipeline).
     if (op.getDimension() == type.getShape().size() - 1) {
-      auto bufferizePm = std::make_shared<PassManager>(op.getContext());
-      {
-        bufferization::OneShotBufferizePassOptions opts;
-        opts.unknownTypeConversion =
-            bufferization::LayoutMapOption::IdentityLayoutMap;
-        // opts.bufferizeFunctionBoundaries = true;
-        // opts.functionBoundaryTypeConversion =
-        //     bufferization::LayoutMapOption::IdentityLayoutMap;
-        bufferizePm->addPass(bufferization::createOneShotBufferizePass(opts));
-      }
-
-      auto cleanupPm = std::make_shared<PassManager>(op.getContext());
-      {
-        auto &funcs = cleanupPm->nest<upmem::DpuProgramOp>();
-        funcs.addPass(
-            affine::createLoopUnrollPass(1, /*unrollUpToFactor=*/true));
-        funcs.addPass(createCanonicalizerPass());
-        // funcs.addPass(bufferization::createPromoteBuffersToStackPass());
-        funcs.addPass(memref::createFoldMemRefAliasOpsPass());
-        funcs.addPass(createCanonicalizerPass());
-        funcs.addPass(affine::createLoopFusionPass());
-        funcs.addPass(createSROA());
-        funcs.addPass(createCanonicalizerPass());
-        funcs.addPass(affine::createAffineScalarReplacementPass());
-        funcs.addPass(createLoopInvariantCodeMotionPass());
-        funcs.addPass(affine::createAffineLoopInvariantCodeMotionPass());
-        funcs.addPass(createSROA());
-        funcs.addPass(affine::createAffineScalarReplacementPass());
-        funcs.addPass(createCanonicalizerPass());
-        funcs.addPass(createCSEPass());
-        funcs.addPass(createLowerAffinePass());
-        // pm->addPass(bufferization::createBufferLoopHoistingPass());
-        // pm->addPass(bufferization::createBufferHoistingPass());
-        funcs.addPass(createCanonicalizerPass());
-        funcs.addPass(createCSEPass());
-        funcs.addPass(arith::createIntRangeOptimizationsPass());
-        funcs.addPass(createCanonicalizerPass());
-        funcs.addPass(createCSEPass());
-        funcs.addPass(createCanonicalizerPass());
-      }
 
       registerSimulator([=](const cinm::ConfWrapper &c, UpmemSimulator &sim,
                             cinm::TrialInfo &trial) -> Maybe<double> {
+        auto bufferizePm =
+            std::make_unique<PassManager>(trial.computeBlock.getContext());
+        {
+          bufferization::OneShotBufferizePassOptions opts;
+          opts.unknownTypeConversion =
+              bufferization::LayoutMapOption::IdentityLayoutMap;
+          // opts.bufferizeFunctionBoundaries = true;
+          // opts.functionBoundaryTypeConversion =
+          //     bufferization::LayoutMapOption::IdentityLayoutMap;
+          bufferizePm->addPass(bufferization::createOneShotBufferizePass(opts));
+        }
         TRY(runPipeline(bufferizePm.get(), op->getLoc(), trial.module.get()));
 
         IRRewriter rewriter(trial.module->getContext());
@@ -495,6 +466,36 @@ void UpmemInferencePlugin::handleReduce(cinm::ReduceOp op, SpaceBuilder &b) {
                                 mramRow[c], mramCol[c], wramRow[c], wramCol[c],
                                 tasklets[c] / taskletCols[c], taskletCols[c]);
         });
+        auto cleanupPm =
+            std::make_unique<PassManager>(trial.computeBlock.getContext());
+        {
+          auto &funcs = cleanupPm->nest<upmem::DpuProgramOp>();
+          funcs.addPass(
+              affine::createLoopUnrollPass(1, /*unrollUpToFactor=*/true));
+          funcs.addPass(createCanonicalizerPass());
+          // funcs.addPass(bufferization::createPromoteBuffersToStackPass());
+          funcs.addPass(memref::createFoldMemRefAliasOpsPass());
+          funcs.addPass(createCanonicalizerPass());
+          funcs.addPass(affine::createLoopFusionPass());
+          funcs.addPass(createSROA());
+          funcs.addPass(createCanonicalizerPass());
+          funcs.addPass(affine::createAffineScalarReplacementPass());
+          funcs.addPass(createLoopInvariantCodeMotionPass());
+          funcs.addPass(affine::createAffineLoopInvariantCodeMotionPass());
+          funcs.addPass(createSROA());
+          funcs.addPass(affine::createAffineScalarReplacementPass());
+          funcs.addPass(createCanonicalizerPass());
+          funcs.addPass(createCSEPass());
+          funcs.addPass(createLowerAffinePass());
+          // pm->addPass(bufferization::createBufferLoopHoistingPass());
+          // pm->addPass(bufferization::createBufferHoistingPass());
+          funcs.addPass(createCanonicalizerPass());
+          funcs.addPass(createCSEPass());
+          funcs.addPass(arith::createIntRangeOptimizationsPass());
+          funcs.addPass(createCanonicalizerPass());
+          funcs.addPass(createCSEPass());
+          funcs.addPass(createCanonicalizerPass());
+        }
 
         TRY(runPipeline(cleanupPm.get(), op->getLoc(), trial.module.get()));
 
