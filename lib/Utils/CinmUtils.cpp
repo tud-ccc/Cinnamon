@@ -253,17 +253,13 @@ TypedValue<ShapedType> reshapeStatic(OpBuilder &b, Location loc,
 TypedValue<ShapedType> reshapeStatic(OpBuilder &builder, Location loc,
                                      Value value, ShapedType type,
                                      llvm::ArrayRef<int64_t> newShape) {
-  auto newTy = type.cloneWith(newShape, type.getElementType());
-
-  if (isa<RankedTensorType>(newTy)) {
-    auto reifiedShape = arith::ConstantOp::create(
-        builder, loc,
-        RankedTensorType::get({newTy.getRank()}, builder.getI64Type()),
-        builder.getI64TensorAttr(newShape));
-    return dyn_cast<TypedValue<ShapedType>>(
-        tensor::ReshapeOp::create(builder, loc, newTy, value, reifiedShape)
-            .getResult());
-  } else if (isa<MemRefType>(newTy)) {
+  if (auto memrefTy = dyn_cast<MemRefType>(type)) {
+    // Use identity (null) layout for the target type: cloneWith would preserve
+    // any strided layout from the source, which causes a rank mismatch when the
+    // new shape has a different rank than the strides count.
+    auto newTy = MemRefType::get(newShape, memrefTy.getElementType(),
+                                 MemRefLayoutAttrInterface{},
+                                 memrefTy.getMemorySpace());
     auto shapeBuf = memref::AllocaOp::create(
         builder, loc, MemRefType::get({newTy.getRank()}, builder.getI64Type()));
     for (auto [i, dim] : llvm::enumerate(newShape)) {
@@ -272,12 +268,20 @@ TypedValue<ShapedType> reshapeStatic(OpBuilder &builder, Location loc,
                                                builder.getI64IntegerAttr(dim));
       memref::StoreOp::create(builder, loc, dimSize, shapeBuf, ValueRange{idx});
     }
-
     return dyn_cast<TypedValue<ShapedType>>(
         memref::ReshapeOp::create(builder, loc, newTy, value, shapeBuf)
             .getResult());
   }
-  assert(false && "must be memref or tensor");
+
+  auto newTy = type.cloneWith(newShape, type.getElementType());
+  assert(isa<RankedTensorType>(newTy) && "must be memref or tensor");
+  auto reifiedShape = arith::ConstantOp::create(
+      builder, loc,
+      RankedTensorType::get({newTy.getRank()}, builder.getI64Type()),
+      builder.getI64TensorAttr(newShape));
+  return dyn_cast<TypedValue<ShapedType>>(
+      tensor::ReshapeOp::create(builder, loc, newTy, value, reifiedShape)
+          .getResult());
 }
 
 } // namespace mlir

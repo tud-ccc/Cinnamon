@@ -10,6 +10,7 @@
 #include "cinm-mlir/Dialect/Cinm/Transforms/Passes.h"
 #include "cinm-mlir/Dialect/Cnm/Transforms/Passes.h"
 #include "cinm-mlir/Dialect/UPMEM/IR/UPMEMAttributes.h"
+#include "cinm-mlir/Dialect/UPMEM/IR/UPMEMOps.h"
 #include "cinm-mlir/Dialect/UPMEM/Transforms/Passes.h"
 #include "cinm-mlir/Dialect/UPMEM/Transforms/UpmemSimulator.h"
 #include "cinm-mlir/Utils/Scheduling/SchedulingSupport.h"
@@ -23,6 +24,7 @@
 #include <limits>
 #include <llvm/Support/LogicalResult.h>
 #include <memory>
+#include <mlir/Dialect/Arith/Transforms/Passes.h>
 #include <mlir/Dialect/Utils/IndexingUtils.h>
 #include <mlir/IR/BuiltinTypes.h>
 #include <mlir/IR/Location.h>
@@ -189,6 +191,10 @@ struct UpmemInferencePlugin : cinm::InferencePlugin {
     pm->addPass(createLowerAffinePass());
     // pm->addPass(bufferization::createBufferLoopHoistingPass());
     // pm->addPass(bufferization::createBufferHoistingPass());
+    pm->addPass(arith::createIntRangeOptimizationsPass());
+    pm->addPass(createCanonicalizerPass());
+    pm->addPass(createCSEPass());
+    pm->addPass(createCanonicalizerPass());
     pm->addPass(createCanonicalizerPass());
     pm->addPass(createCSEPass());
 
@@ -435,7 +441,7 @@ void UpmemInferencePlugin::handleReduce(cinm::ReduceOp op, SpaceBuilder &b) {
     // Simulation template for the MRAM fast path (bypasses the lowering
     // pipeline).
     if (op.getDimension() == type.getShape().size() - 1) {
-      auto pm = std::make_shared<PassManager>(op.getContext());
+      auto bufferizePm = std::make_shared<PassManager>(op.getContext());
       {
         bufferization::OneShotBufferizePassOptions opts;
         opts.unknownTypeConversion =
@@ -443,11 +449,42 @@ void UpmemInferencePlugin::handleReduce(cinm::ReduceOp op, SpaceBuilder &b) {
         // opts.bufferizeFunctionBoundaries = true;
         // opts.functionBoundaryTypeConversion =
         //     bufferization::LayoutMapOption::IdentityLayoutMap;
-        pm->addPass(bufferization::createOneShotBufferizePass(opts));
+        bufferizePm->addPass(bufferization::createOneShotBufferizePass(opts));
       }
+
+      auto cleanupPm = std::make_shared<PassManager>(op.getContext());
+      {
+        auto &funcs = cleanupPm->nest<upmem::DpuProgramOp>();
+        funcs.addPass(
+            affine::createLoopUnrollPass(1, /*unrollUpToFactor=*/true));
+        funcs.addPass(createCanonicalizerPass());
+        // funcs.addPass(bufferization::createPromoteBuffersToStackPass());
+        funcs.addPass(memref::createFoldMemRefAliasOpsPass());
+        funcs.addPass(createCanonicalizerPass());
+        funcs.addPass(affine::createLoopFusionPass());
+        funcs.addPass(createSROA());
+        funcs.addPass(createCanonicalizerPass());
+        funcs.addPass(affine::createAffineScalarReplacementPass());
+        funcs.addPass(createLoopInvariantCodeMotionPass());
+        funcs.addPass(affine::createAffineLoopInvariantCodeMotionPass());
+        funcs.addPass(createSROA());
+        funcs.addPass(affine::createAffineScalarReplacementPass());
+        funcs.addPass(createCanonicalizerPass());
+        funcs.addPass(createCSEPass());
+        funcs.addPass(createLowerAffinePass());
+        // pm->addPass(bufferization::createBufferLoopHoistingPass());
+        // pm->addPass(bufferization::createBufferHoistingPass());
+        funcs.addPass(createCanonicalizerPass());
+        funcs.addPass(createCSEPass());
+        funcs.addPass(arith::createIntRangeOptimizationsPass());
+        funcs.addPass(createCanonicalizerPass());
+        funcs.addPass(createCSEPass());
+        funcs.addPass(createCanonicalizerPass());
+      }
+
       registerSimulator([=](const cinm::ConfWrapper &c, UpmemSimulator &sim,
                             cinm::TrialInfo &trial) -> Maybe<double> {
-        TRY(runPipeline(pm.get(), op->getLoc(), trial.module.get()));
+        TRY(runPipeline(bufferizePm.get(), op->getLoc(), trial.module.get()));
 
         IRRewriter rewriter(trial.module->getContext());
         rewriter.setInsertionPointToStart(
@@ -458,6 +495,8 @@ void UpmemInferencePlugin::handleReduce(cinm::ReduceOp op, SpaceBuilder &b) {
                                 mramRow[c], mramCol[c], wramRow[c], wramCol[c],
                                 tasklets[c] / taskletCols[c], taskletCols[c]);
         });
+
+        TRY(runPipeline(cleanupPm.get(), op->getLoc(), trial.module.get()));
 
         return sim.simulate(trial.computeBlock.getBody());
       });

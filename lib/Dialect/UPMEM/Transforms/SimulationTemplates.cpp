@@ -14,6 +14,7 @@
 #include <llvm/ADT/DenseMap.h>
 #include <llvm/ADT/DenseSet.h>
 #include <llvm/ADT/SmallVector.h>
+#include <llvm/ADT/StringRef.h>
 #include <llvm/Support/Debug.h>
 #include <llvm/Support/raw_ostream.h>
 
@@ -244,16 +245,19 @@ static void mergeYTile(OpBuilder &b, Location loc, Value yStage, Value output,
 upmem::DpuProgramOp createDpuTailReductionKernel(
     Location loc, RewriterBase &rewriter, ModuleOp target, int64_t mramRows,
     int64_t mramCols, int64_t wramRows, int64_t wramCols, int64_t taskletRows,
-    int64_t taskletCols, Type eltTy, FlatSymbolRefAttr &aBufSym,
-    FlatSymbolRefAttr &yBufSym) {
+    int64_t taskletCols, Type eltTy, llvm::StringRef &aBufSym,
+    llvm::StringRef &yBufSym) {
 
   rewriter.clearInsertionPoint();
   const auto taskletCount = taskletRows * taskletCols;
   auto kernl = upmem::DpuProgramOp::create(rewriter, loc, "red", taskletCount);
   SymbolTable symTable(target);
   symTable.insert(kernl);
+  auto *block = &kernl.getBody().emplaceBlock();
+  rewriter.setInsertionPointToEnd(block);
+  upmem::ReturnOp::create(rewriter, loc);
 
-  rewriter.setInsertionPointToStart(&kernl.getBody().front());
+  rewriter.setInsertionPointToStart(block);
   MLIRContext *ctx = rewriter.getContext();
 
   auto mramMS =
@@ -267,13 +271,13 @@ upmem::DpuProgramOp createDpuTailReductionKernel(
       MemRefType::get({mramRows, mramCols}, eltTy, MemRefLayoutAttrInterface{},
                       mramMS),
       upmem::DpuMemSpace::MRAM, "bufa");
-  aBufSym = FlatSymbolRefAttr::get(ctx, abufMram.getSymName().value());
+  aBufSym = *abufMram.getSymName();
 
   auto ybufMram = upmem::StaticAllocOp::create(
       rewriter, loc,
       MemRefType::get({mramRows}, eltTy, MemRefLayoutAttrInterface{}, mramMS),
       upmem::DpuMemSpace::MRAM, "bufy");
-  yBufSym = FlatSymbolRefAttr::get(ctx, ybufMram.getSymName().value());
+  yBufSym = *ybufMram.getSymName();
 
   // WRAM staging buffers (shared across tasklets)
   Value abufWram =
@@ -299,7 +303,7 @@ upmem::DpuProgramOp createDpuTailReductionKernel(
 
   // Tasklet indices: tcolix = tid % taskletCols, trowix = (tid - tcolix) /
   // taskletCols
-  Value tid = upmem::TaskletDimOp::create(rewriter, loc);
+  Value tid = upmem::TaskletDimOp::create(rewriter, loc).getResult();
   Value tcolsCst = arith::ConstantIndexOp::create(rewriter, loc, taskletCols);
   Value tcolix = arith::RemUIOp::create(rewriter, loc, tid, tcolsCst);
   Value trowix = arith::DivUIOp::create(
@@ -311,6 +315,9 @@ upmem::DpuProgramOp createDpuTailReductionKernel(
   MemRefType myMramFlatTy = MemRefType::get(
       {taskletCols * wramCols}, eltTy,
       StridedLayoutAttr::get(ctx, ShapedType::kDynamic, {1}), mramMS);
+  MemRefType myMramReshapedTy = MemRefType::get(
+      {taskletCols, wramCols}, eltTy,
+      StridedLayoutAttr::get(ctx, ShapedType::kDynamic, {wramCols, 1}), mramMS);
   MemRefType myWramColsTy = MemRefType::get(
       {taskletCols, wramCols}, eltTy,
       StridedLayoutAttr::get(ctx, ShapedType::kDynamic, {wramCols, 1}), wramMS);
@@ -387,9 +394,9 @@ upmem::DpuProgramOp createDpuTailReductionKernel(
                               b.getIndexAttr(taskletCols * wramCols)},
                           ArrayRef<OpFoldResult>{b.getIndexAttr(1),
                                                  b.getIndexAttr(1)});
-                      Value myMramReshaped = reshapeStatic(
-                          b, loc, cast<TypedValue<ShapedType>>(myMramFlat),
-                          {taskletCols, wramCols});
+                      Value myMramReshaped = memref::ExpandShapeOp::create(
+                          b, loc, myMramReshapedTy, myMramFlat,
+                          ArrayRef<ReassociationIndices>{{0, 1}});
                       // Rank-reducing subview: abufWram[trowix, i, :, :] ->
                       // [taskletCols, wramCols]
                       Value myWramCols = memref::SubViewOp::create(
@@ -514,9 +521,10 @@ upmem::DpuProgramOp createDpuTailReductionKernel(
 /// The DPU-side kernel (and the upmem.dpu_program containing aBufSym/yBufSym)
 /// must be created separately before calling this function.
 void upmem::generateTailReduction(cinm::ReduceOp op, RewriterBase &rewriter,
-                           int64_t dpuRows, int64_t dpuCols, int64_t mramRows,
-                           int64_t mramCols, int64_t wramRows, int64_t wramCols,
-                           int64_t taskletRows, int64_t taskletCols) {
+                                  int64_t dpuRows, int64_t dpuCols,
+                                  int64_t mramRows, int64_t mramCols,
+                                  int64_t wramRows, int64_t wramCols,
+                                  int64_t taskletRows, int64_t taskletCols) {
   MLIRContext *ctx = rewriter.getContext();
   Location loc = op->getLoc();
   auto inputTy = cast<MemRefType>(op.getInput().getType());
@@ -528,7 +536,7 @@ void upmem::generateTailReduction(cinm::ReduceOp op, RewriterBase &rewriter,
   const int64_t K = inputTy.getShape().back();
 
   auto reshapedInput =
-      reshapeStatic(rewriter, op->getLoc(), op.getInput(), {M, K});
+      reshapeStatic(rewriter, loc, op.getInput(), inputTy, {M, K});
 
   auto output =
       memref::AllocOp::create(rewriter, loc, MemRefType::get({M}, eltTy));
@@ -541,7 +549,7 @@ void upmem::generateTailReduction(cinm::ReduceOp op, RewriterBase &rewriter,
   Value yStage = memref::AllocOp::create(
       rewriter, loc, MemRefType::get({numDpus, mramRows}, eltTy));
 
-  FlatSymbolRefAttr aBufSym, yBufSym;
+  llvm::StringRef aBufSym, yBufSym;
 
   auto parentMod = op->getParentOfType<ModuleOp>();
 
@@ -576,13 +584,13 @@ void upmem::generateTailReduction(cinm::ReduceOp op, RewriterBase &rewriter,
                   mramRows, mramCols);
         packYTile(b, loc, output, yStage, mOff, dpuRows, dpuCols, mramRows);
 
-        upmem::ScatterOp::create(b, loc, aStage, aBufSym.getValue(),
+        upmem::ScatterOp::create(b, loc, aStage, aBufSym,
                                  static_cast<uint64_t>(mramRows * mramCols),
                                  aMap, dpus);
-        upmem::ScatterOp::create(b, loc, yStage, yBufSym.getValue(),
+        upmem::ScatterOp::create(b, loc, yStage, yBufSym,
                                  static_cast<uint64_t>(mramRows), yMap, dpus);
         upmem::WaitForOp::create(b, loc, dpus);
-        upmem::GatherOp::create(b, loc, yStage, yBufSym.getValue(),
+        upmem::GatherOp::create(b, loc, yStage, yBufSym,
                                 static_cast<uint64_t>(mramRows), yMap, dpus);
 
         mergeYTile(b, loc, yStage, output, mOff, dpuRows, dpuCols, mramRows);
@@ -591,8 +599,22 @@ void upmem::generateTailReduction(cinm::ReduceOp op, RewriterBase &rewriter,
 
   memref::DeallocOp::create(rewriter, loc, aStage);
   memref::DeallocOp::create(rewriter, loc, yStage);
-  // here also dealloc the dpus
-  rewriter.eraseOp(op);
+
+  upmem::FreeDPUsOp::create(rewriter, loc, dpus);
+
+  Type resultTy = op.getResult().getType();
+  if (isa<MemRefType>(resultTy)) {
+    rewriter.replaceOp(op, output);
+  } else if (!isa<ShapedType>(resultTy)) {
+    // Scalar result: load the single element from output[0].
+    Value zero = arith::ConstantIndexOp::create(rewriter, loc, 0).getResult();
+    Value scalar =
+        memref::LoadOp::create(rewriter, loc, output, ValueRange{zero});
+    rewriter.replaceOp(op, scalar);
+  } else {
+    op.emitError("generateTailReduction: unexpected result type ") << resultTy;
+    rewriter.eraseOp(op);
+  }
 }
 
 } // namespace mlir
