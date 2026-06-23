@@ -3,6 +3,7 @@
 #include "cinm-mlir/Dialect/Cinm/IR/CinmUtils.h"
 #include "cinm-mlir/Dialect/UPMEM/IR/UPMEMAttributes.h"
 #include "cinm-mlir/Dialect/UPMEM/IR/UPMEMOps.h"
+#include "cinm-mlir/Dialect/UPMEM/IR/UPMEMTypes.h"
 #include "cinm-mlir/Dialect/UPMEM/Transforms/UpmemSimulator.h"
 #include "cinm-mlir/Utils/CinmUtils.h"
 #include "cinm-mlir/Utils/Scheduling/SchedulingSupport.h"
@@ -243,7 +244,7 @@ static void mergeYTile(OpBuilder &b, Location loc, Value yStage, Value output,
 upmem::DpuProgramOp createDpuTailReductionKernel(
     Location loc, RewriterBase &rewriter, ModuleOp target, int64_t mramRows,
     int64_t mramCols, int64_t wramRows, int64_t wramCols, int64_t taskletRows,
-    int64_t taskletCols, FlatSymbolRefAttr &aBufSym,
+    int64_t taskletCols, Type eltTy, FlatSymbolRefAttr &aBufSym,
     FlatSymbolRefAttr &yBufSym) {
 
   rewriter.clearInsertionPoint();
@@ -253,79 +254,246 @@ upmem::DpuProgramOp createDpuTailReductionKernel(
   symTable.insert(kernl);
 
   rewriter.setInsertionPointToStart(&kernl.getBody().front());
+  MLIRContext *ctx = rewriter.getContext();
 
-  // clang-format off
-  // TODO generate buffers and loop nests:
-  /*
-   %abuf_mram = upmem.static_alloc @bufa(mram): memref<mramRows x mramCols xi32, #upmem.mram>
-   %ybuf_mram = upmem.static_alloc @bufy(mram): memref<mramRows xi32, #upmem.mram>
+  auto mramMS =
+      rewriter.getAttr<upmem::DpuMemSpaceAttr>(upmem::DpuMemSpace::MRAM);
+  auto wramMS =
+      rewriter.getAttr<upmem::DpuMemSpaceAttr>(upmem::DpuMemSpace::WRAM);
 
-   %abuf_wram = upmem.static_alloc @bufaw(wram): memref<taskletRows x wramRows x taskletCols x wramCols xi32, #upmem.wram>
-   %ybuf_wram = upmem.static_alloc @bufyw(wram): memref<taskletRows x taskletCols x wramRows xi32, #upmem.wram>
-   %ybuf_wram_2 = upmem.static_alloc @bufyw2(wram): memref<taskletRows * wramRows xi32, #upmem.wram>
-  
-   %tid = upmem.tasklet_dim()  // thread id
-   %tcolix = (arith ops that does tid modulo taskletCols)
-   %trowix = (arith ops that does (tid - tcolIx) floordiv taskletCols)
-   
-  affine.for %mr = 0 to mramRows step (taskletRows * wramRows) {
-    affine.for %mc = 0 to mramCols step (taskletCols * wramCols) {
-      if %tcolix == 0 {
-        for %i in 0 to wramRows {
-          // transfer contiguous rows (need to loop unless wramRows == mramRows?)
-          %myMramCols = subview of the %abuf_mram with 
-            sizes [1, taskletCols * wramCols] offsets [%mr + %trowix + %i * taskletRows, %mc] strides [1, 1]
-            : memref<taskletCols * wramCols x eltTy>
-          %myMramReshaped = memref.reshape %myMramCols 
-            : memref<taskletCols * wramCols x eltTy> into memref<taskletCols x wramCols x eltTy>
-          %myWramCols = subview of the %abuf_wram with
-            sizes [1, 1, taskletCols, wramCols] offsets [%trowix, %i, 0, 0] strides [1, 1, 1, 1]
-            : memref<taskletCols x wramCols x eltTy>  // rank-reduced, drops the two size-1 dims
+  // MRAM buffers (named so host scatter/gather can reference them)
+  auto abufMram = upmem::StaticAllocOp::create(
+      rewriter, loc,
+      MemRefType::get({mramRows, mramCols}, eltTy, MemRefLayoutAttrInterface{},
+                      mramMS),
+      upmem::DpuMemSpace::MRAM, "bufa");
+  aBufSym = FlatSymbolRefAttr::get(ctx, abufMram.getSymName().value());
 
-          upmem.local_transfer %myMramReshaped into %myWramCols
+  auto ybufMram = upmem::StaticAllocOp::create(
+      rewriter, loc,
+      MemRefType::get({mramRows}, eltTy, MemRefLayoutAttrInterface{}, mramMS),
+      upmem::DpuMemSpace::MRAM, "bufy");
+  yBufSym = FlatSymbolRefAttr::get(ctx, ybufMram.getSymName().value());
+
+  // WRAM staging buffers (shared across tasklets)
+  Value abufWram =
+      upmem::StaticAllocOp::create(
+          rewriter, loc,
+          MemRefType::get({taskletRows, wramRows, taskletCols, wramCols}, eltTy,
+                          MemRefLayoutAttrInterface{}, wramMS),
+          upmem::DpuMemSpace::WRAM)
+          .getBuffer();
+  Value ybufWram =
+      upmem::StaticAllocOp::create(
+          rewriter, loc,
+          MemRefType::get({taskletRows, taskletCols, wramRows}, eltTy,
+                          MemRefLayoutAttrInterface{}, wramMS),
+          upmem::DpuMemSpace::WRAM)
+          .getBuffer();
+  Value ybufWram2 = upmem::StaticAllocOp::create(
+                        rewriter, loc,
+                        MemRefType::get({taskletRows * wramRows}, eltTy,
+                                        MemRefLayoutAttrInterface{}, wramMS),
+                        upmem::DpuMemSpace::WRAM)
+                        .getBuffer();
+
+  // Tasklet indices: tcolix = tid % taskletCols, trowix = (tid - tcolix) /
+  // taskletCols
+  Value tid = upmem::TaskletDimOp::create(rewriter, loc);
+  Value tcolsCst = arith::ConstantIndexOp::create(rewriter, loc, taskletCols);
+  Value tcolix = arith::RemUIOp::create(rewriter, loc, tid, tcolsCst);
+  Value trowix = arith::DivUIOp::create(
+      rewriter, loc, arith::SubIOp::create(rewriter, loc, tid, tcolix),
+      tcolsCst);
+
+  // Precomputed result types for rank-reducing subviews.
+  // Strides are derived from the source layout (see comment block above).
+  MemRefType myMramFlatTy = MemRefType::get(
+      {taskletCols * wramCols}, eltTy,
+      StridedLayoutAttr::get(ctx, ShapedType::kDynamic, {1}), mramMS);
+  MemRefType myWramColsTy = MemRefType::get(
+      {taskletCols, wramCols}, eltTy,
+      StridedLayoutAttr::get(ctx, ShapedType::kDynamic, {wramCols, 1}), wramMS);
+  MemRefType myATy =
+      MemRefType::get({wramRows, wramCols}, eltTy,
+                      StridedLayoutAttr::get(ctx, ShapedType::kDynamic,
+                                             {taskletCols * wramCols, 1}),
+                      wramMS);
+  MemRefType myYTy = MemRefType::get(
+      {wramRows}, eltTy, StridedLayoutAttr::get(ctx, ShapedType::kDynamic, {1}),
+      wramMS);
+  MemRefType sliceMramTy = MemRefType::get(
+      {wramRows}, eltTy, StridedLayoutAttr::get(ctx, ShapedType::kDynamic, {1}),
+      mramMS);
+  MemRefType sliceWramTy = MemRefType::get(
+      {wramRows}, eltTy, StridedLayoutAttr::get(ctx, ShapedType::kDynamic, {1}),
+      wramMS);
+
+  auto elemAdd = [&](OpBuilder &b, Location loc, Value lhs,
+                     Value rhs) -> Value {
+    return eltTy.isIntOrIndex()
+               ? arith::AddIOp::create(b, loc, lhs, rhs).getResult()
+               : arith::AddFOp::create(b, loc, lhs, rhs).getResult();
+  };
+
+  // mr loop: iterate MRAM row chunks of size taskletRows*wramRows
+  cinm::createNestedAffineForLoops(
+      rewriter, loc, {mramRows}, {taskletRows * wramRows}, {},
+      [&](OpBuilder &b, Location loc, ValueRange ivs,
+          ValueRange) -> SmallVector<Value> {
+        Value mr = ivs[0];
+
+        // mc loop: iterate MRAM col chunks of size taskletCols*wramCols
+        cinm::createNestedAffineForLoops(
+            b, loc, {mramCols}, {taskletCols * wramCols}, {},
+            [&](OpBuilder &b, Location loc, ValueRange ivs2,
+                ValueRange) -> SmallVector<Value> {
+              Value mc = ivs2[0];
+
+              // Only the tcolix==0 tasklet in each row group loads A into WRAM
+              Value zero = arith::ConstantIndexOp::create(b, loc, 0);
+              Value loadCond = arith::CmpIOp::create(
+                  b, loc, arith::CmpIPredicate::eq, tcolix, zero);
+              auto loadIf =
+                  scf::IfOp::create(b, loc, TypeRange{}, loadCond, false);
+              {
+                OpBuilder::InsertionGuard guard(b);
+                b.setInsertionPointToStart(&loadIf.getThenRegion().front());
+
+                // i loop: load one MRAM row per iteration into abufWram[trowix,
+                // i, :, :]
+                Value taskletRowsCst =
+                    arith::ConstantIndexOp::create(b, loc, taskletRows);
+                cinm::createNestedAffineForLoops(
+                    b, loc, {wramRows}, {1}, {},
+                    [&](OpBuilder &b, Location loc, ValueRange ivs3,
+                        ValueRange) -> SmallVector<Value> {
+                      Value i = ivs3[0];
+                      // rowOff = mr + trowix + i * taskletRows  (interleaved
+                      // row assignment)
+                      Value rowOff = arith::AddIOp::create(
+                          b, loc, mr,
+                          arith::AddIOp::create(
+                              b, loc, trowix,
+                              arith::MulIOp::create(b, loc, i,
+                                                    taskletRowsCst)));
+                      // Flat 1D view of the MRAM row, then reshape to
+                      // [taskletCols, wramCols]
+                      Value myMramFlat = memref::SubViewOp::create(
+                          b, loc, myMramFlatTy, abufMram.getBuffer(),
+                          ArrayRef<OpFoldResult>{rowOff, mc},
+                          ArrayRef<OpFoldResult>{
+                              b.getIndexAttr(1),
+                              b.getIndexAttr(taskletCols * wramCols)},
+                          ArrayRef<OpFoldResult>{b.getIndexAttr(1),
+                                                 b.getIndexAttr(1)});
+                      Value myMramReshaped = reshapeStatic(
+                          b, loc, cast<TypedValue<ShapedType>>(myMramFlat),
+                          {taskletCols, wramCols});
+                      // Rank-reducing subview: abufWram[trowix, i, :, :] ->
+                      // [taskletCols, wramCols]
+                      Value myWramCols = memref::SubViewOp::create(
+                          b, loc, myWramColsTy, abufWram,
+                          ArrayRef<OpFoldResult>{trowix, i, b.getIndexAttr(0),
+                                                 b.getIndexAttr(0)},
+                          ArrayRef<OpFoldResult>{b.getIndexAttr(1),
+                                                 b.getIndexAttr(1),
+                                                 b.getIndexAttr(taskletCols),
+                                                 b.getIndexAttr(wramCols)},
+                          ArrayRef<OpFoldResult>{
+                              b.getIndexAttr(1), b.getIndexAttr(1),
+                              b.getIndexAttr(1), b.getIndexAttr(1)});
+                      upmem::LocalTransferOp::create(b, loc, myMramReshaped,
+                                                     myWramCols);
+                      return {};
+                    });
+              } // guard restores insertion point to after loadIf
+
+              upmem::BarrierOp::create(b, loc);
+
+              // Each tasklet processes its slice: abufWram[trowix, :, tcolix,
+              // :]
+              Value myA = memref::SubViewOp::create(
+                  b, loc, myATy, abufWram,
+                  ArrayRef<OpFoldResult>{trowix, b.getIndexAttr(0), tcolix,
+                                         b.getIndexAttr(0)},
+                  ArrayRef<OpFoldResult>{
+                      b.getIndexAttr(1), b.getIndexAttr(wramRows),
+                      b.getIndexAttr(1), b.getIndexAttr(wramCols)},
+                  ArrayRef<OpFoldResult>{b.getIndexAttr(1), b.getIndexAttr(1),
+                                         b.getIndexAttr(1), b.getIndexAttr(1)});
+              Value myY = memref::SubViewOp::create(
+                  b, loc, myYTy, ybufWram,
+                  ArrayRef<OpFoldResult>{trowix, tcolix, b.getIndexAttr(0)},
+                  ArrayRef<OpFoldResult>{b.getIndexAttr(1), b.getIndexAttr(1),
+                                         b.getIndexAttr(wramRows)},
+                  ArrayRef<OpFoldResult>{b.getIndexAttr(1), b.getIndexAttr(1),
+                                         b.getIndexAttr(1)});
+
+              // Reduction: myY[i] += myA[i, j]
+              cinm::createNestedAffineForLoops(
+                  b, loc, {wramRows, wramCols}, {1, 1}, {},
+                  [&](OpBuilder &b, Location loc, ValueRange ivs3,
+                      ValueRange) -> SmallVector<Value> {
+                    Value i = ivs3[0], j = ivs3[1];
+                    Value aij =
+                        memref::LoadOp::create(b, loc, myA, ValueRange{i, j});
+                    Value yi =
+                        memref::LoadOp::create(b, loc, myY, ValueRange{i});
+                    memref::StoreOp::create(b, loc, elemAdd(b, loc, yi, aij),
+                                            myY, ValueRange{i});
+                    return {};
+                  });
+
+              return {};
+            }); // end mc loop
+
+        // All tasklets done with ybufWram; row-leaders merge and write back
+        upmem::BarrierOp::create(b, loc);
+        Value zero2 = arith::ConstantIndexOp::create(b, loc, 0);
+        Value accumCond = arith::CmpIOp::create(
+            b, loc, arith::CmpIPredicate::eq, tcolix, zero2);
+        auto accumIf = scf::IfOp::create(b, loc, TypeRange{}, accumCond, false);
+        {
+          OpBuilder::InsertionGuard guard(b);
+          b.setInsertionPointToStart(&accumIf.getThenRegion().front());
+
+          Value wramRowsCst = arith::ConstantIndexOp::create(b, loc, wramRows);
+          Value mramOff = arith::AddIOp::create(
+              b, loc, mr, arith::MulIOp::create(b, loc, trowix, wramRowsCst));
+          Value myMramSlice = memref::SubViewOp::create(
+              b, loc, sliceMramTy, ybufMram.getBuffer(),
+              ArrayRef<OpFoldResult>{mramOff},
+              ArrayRef<OpFoldResult>{b.getIndexAttr(wramRows)},
+              ArrayRef<OpFoldResult>{b.getIndexAttr(1)});
+
+          Value wram2Off = arith::MulIOp::create(b, loc, trowix, wramRowsCst);
+          Value myWram2 = memref::SubViewOp::create(
+              b, loc, sliceWramTy, ybufWram2, ArrayRef<OpFoldResult>{wram2Off},
+              ArrayRef<OpFoldResult>{b.getIndexAttr(wramRows)},
+              ArrayRef<OpFoldResult>{b.getIndexAttr(1)});
+
+          // Load running partial sum from MRAM, accumulate ybufWram
+          // contributions
+          upmem::LocalTransferOp::create(b, loc, myMramSlice, myWram2);
+          cinm::createNestedAffineForLoops(
+              b, loc, {wramRows, taskletCols}, {1, 1}, {},
+              [&](OpBuilder &b, Location loc, ValueRange ivs3,
+                  ValueRange) -> SmallVector<Value> {
+                Value i = ivs3[0], ci = ivs3[1];
+                Value ywi = memref::LoadOp::create(b, loc, ybufWram,
+                                                   ValueRange{trowix, ci, i});
+                Value w2i =
+                    memref::LoadOp::create(b, loc, myWram2, ValueRange{i});
+                memref::StoreOp::create(b, loc, elemAdd(b, loc, w2i, ywi),
+                                        myWram2, ValueRange{i});
+                return {};
+              });
+          upmem::LocalTransferOp::create(b, loc, myWram2, myMramSlice);
         }
-      }
-      upmem.barrier()
 
-      %myA = subview of the %abuf_wram with
-            sizes [1, wramRows, 1, wramCols] offsets [%trowix, 0, %tcolix, 0] strides [1, 1, 1, 1]
-            : memref<wramRows x wramCols x eltTy>  // rank-reduced; result strides are [taskletCols*wramCols, 1]
-
-      %myY = subview of the %ybuf_wram with
-            sizes [1, 1, wramRows] offsets [%trowix, %tcolix, 0] strides [1, 1, 1]
-            : memref<wramRows x eltTy>  // rank-reduced; contiguous
-
-      for %i = 0 to wramRows { // inner reduction loop
-        for %j = 0 to wramCols {
-          %myY[i] += %myA[i, j]
-        }
-      }
-    }
-
-    upmem.barrier()
-    if %tcolix == 0 {
-      %myMram = subview of %ybuf_mram with
-            sizes [wramRows] offsets [%mr + %trowix * wramRows] strides [1]
-            : memref<wramRows x eltTy>
-      %myWram2 = subview of %ybuf_wram_2 with
-            sizes [wramRows] offsets [%trowix * wramRows] strides [1]
-            : memref<wramRows x eltTy>
-      upmem.local_transfer %myMram into %myWram2 // transfer initial values
-
-      for %i in 0 to wramRows {
-        // Partial result accumulation into the buffer
-        for %ci in 0 to taskletCols {
-          %ybuf_wram2[%trowix * wramRows + %i] += %ybuf_wram[%trowix, %ci, %i]
-        }
-      }
-      upmem.local_transfer %myWram2 into %myMram
-    }
-  }
-  
-
-  */
-  // clang-format on
-
+        return {};
+      }); // end mr loop
 
   return kernl;
 }
@@ -345,7 +513,7 @@ upmem::DpuProgramOp createDpuTailReductionKernel(
 /// The hierarchy must have type <1 x (dpuRows*dpuCols) x tasklets>.
 /// The DPU-side kernel (and the upmem.dpu_program containing aBufSym/yBufSym)
 /// must be created separately before calling this function.
-void generateTailReduction(cinm::ReduceOp op, RewriterBase &rewriter,
+void upmem::generateTailReduction(cinm::ReduceOp op, RewriterBase &rewriter,
                            int64_t dpuRows, int64_t dpuCols, int64_t mramRows,
                            int64_t mramCols, int64_t wramRows, int64_t wramCols,
                            int64_t taskletRows, int64_t taskletCols) {
@@ -354,6 +522,7 @@ void generateTailReduction(cinm::ReduceOp op, RewriterBase &rewriter,
   auto inputTy = cast<MemRefType>(op.getInput().getType());
   Type eltTy = inputTy.getElementType();
   int64_t numDpus = dpuRows * dpuCols;
+  int64_t numTasklets = taskletRows * taskletCols;
 
   const int64_t M = computeProduct(inputTy.getShape().drop_back());
   const int64_t K = inputTy.getShape().back();
@@ -371,14 +540,21 @@ void generateTailReduction(cinm::ReduceOp op, RewriterBase &rewriter,
       rewriter, loc, MemRefType::get({numDpus, mramRows, mramCols}, eltTy));
   Value yStage = memref::AllocOp::create(
       rewriter, loc, MemRefType::get({numDpus, mramRows}, eltTy));
+
   FlatSymbolRefAttr aBufSym, yBufSym;
-  Value dpus;
 
   auto parentMod = op->getParentOfType<ModuleOp>();
 
   upmem::DpuProgramOp krnlOp = createDpuTailReductionKernel(
       loc, rewriter, parentMod, mramRows, mramCols, wramRows, wramCols,
-      taskletRows, taskletCols, aBufSym, yBufSym);
+      taskletRows, taskletCols, eltTy, aBufSym, yBufSym);
+
+  rewriter.setInsertionPointAfter(yStage.getDefiningOp());
+  // dpus = upmem.alloc_dpus with program (reference to the krnlOp) :
+  // !upmem.hierarchy<1 x (dpuRows*dpuCols) x taskletCount>
+  auto wgTy = upmem::DeviceHierarchyType::get(ctx, 1, numDpus, numTasklets);
+  auto dpuProgramSymbol = SymbolRefAttr::get(krnlOp.getSymNameAttr());
+  auto dpus = upmem::AllocDPUsOp::create(rewriter, loc, wgTy, dpuProgramSymbol);
 
   // Scatter maps for hierarchy <1 x numDpus x tasklets>.
   // The flat DPU index is rank*numDpus + dpu; since numRanks=1, rank=0
@@ -400,13 +576,13 @@ void generateTailReduction(cinm::ReduceOp op, RewriterBase &rewriter,
                   mramRows, mramCols);
         packYTile(b, loc, output, yStage, mOff, dpuRows, dpuCols, mramRows);
 
-        upmem::ScatterOp::create(b, loc, aStage, aBufSym,
+        upmem::ScatterOp::create(b, loc, aStage, aBufSym.getValue(),
                                  static_cast<uint64_t>(mramRows * mramCols),
                                  aMap, dpus);
-        upmem::ScatterOp::create(b, loc, yStage, yBufSym,
+        upmem::ScatterOp::create(b, loc, yStage, yBufSym.getValue(),
                                  static_cast<uint64_t>(mramRows), yMap, dpus);
         upmem::WaitForOp::create(b, loc, dpus);
-        upmem::GatherOp::create(b, loc, yStage, yBufSym,
+        upmem::GatherOp::create(b, loc, yStage, yBufSym.getValue(),
                                 static_cast<uint64_t>(mramRows), yMap, dpus);
 
         mergeYTile(b, loc, yStage, output, mOff, dpuRows, dpuCols, mramRows);
@@ -415,6 +591,8 @@ void generateTailReduction(cinm::ReduceOp op, RewriterBase &rewriter,
 
   memref::DeallocOp::create(rewriter, loc, aStage);
   memref::DeallocOp::create(rewriter, loc, yStage);
+  // here also dealloc the dpus
+  rewriter.eraseOp(op);
 }
 
 } // namespace mlir

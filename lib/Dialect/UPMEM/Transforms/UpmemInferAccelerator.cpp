@@ -114,7 +114,7 @@ struct UpmemInferencePlugin : cinm::InferencePlugin {
                        std::unique_ptr<UpmemSimulator> sim)
       : platform(platform), opts(opts), simulator(std::move(sim)) {}
 
-  void registerSimulator(SimFn fn) { simulators_.push_back(std::move(fn)); }
+  void registerSimulator(SimFn &&fn) { simulators_.push_back(std::move(fn)); }
 
   bool supportsMultithreading() const override {
     return simulator && simulator->supportsMultithreading();
@@ -288,6 +288,7 @@ struct UpmemInferencePlugin : cinm::InferencePlugin {
 
     MLIRContext *ctx = trial.computeBlock->getContext();
     mlir::Location loc = trial.computeBlock->getLoc();
+    trial.computeBlock.setPlatformAttr({});
     trial.computeBlock.setAcceleratorAttr(
         upmem::UpmemAcceleratorAttr::get(platform, 1, dpus, tasklets));
 
@@ -434,7 +435,7 @@ void UpmemInferencePlugin::handleReduce(cinm::ReduceOp op, SpaceBuilder &b) {
     // Simulation template for the MRAM fast path (bypasses the lowering
     // pipeline).
     if (op.getDimension() == type.getShape().size() - 1) {
-      auto pm = std::make_unique<PassManager>(op.getContext());
+      auto pm = std::make_shared<PassManager>(op.getContext());
       {
         bufferization::OneShotBufferizePassOptions opts;
         opts.unknownTypeConversion =
@@ -444,24 +445,21 @@ void UpmemInferencePlugin::handleReduce(cinm::ReduceOp op, SpaceBuilder &b) {
         //     bufferization::LayoutMapOption::IdentityLayoutMap;
         pm->addPass(bufferization::createOneShotBufferizePass(opts));
       }
-      registerSimulator([=, pm = std::move(pm)](
-                            const cinm::ConfWrapper &c, UpmemSimulator &sim,
+      registerSimulator([=](const cinm::ConfWrapper &c, UpmemSimulator &sim,
                             cinm::TrialInfo &trial) -> Maybe<double> {
         TRY(runPipeline(pm.get(), op->getLoc(), trial.module.get()));
+
         IRRewriter rewriter(trial.module->getContext());
         rewriter.setInsertionPointToStart(
             &trial.computeBlock.getBody().front());
 
         trial.computeBlock->walk([&](cinm::ReduceOp op) {
-          generateTailReduction(op, rewriter,
-                                dpus[c] / dpuCols[c], dpuCols[c], mramRow[c],
-                                mramCol[c]);
+          generateTailReduction(op, rewriter, dpus[c] / dpuCols[c], dpuCols[c],
+                                mramRow[c], mramCol[c], wramRow[c], wramCol[c],
+                                tasklets[c] / taskletCols[c], taskletCols[c]);
         });
 
-        return sim.simulateTailReduction(
-            timeout, M, K, reduction, mramRow[c], mramCol[c], wramRow[c],
-            wramCol[c], dpus[c] / dpuCols[c], dpuCols[c],
-            tasklets[c] / taskletCols[c], taskletCols[c], dtype);
+        return sim.simulate(trial.computeBlock.getBody());
       });
     }
   }
