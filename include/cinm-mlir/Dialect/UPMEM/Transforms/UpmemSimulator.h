@@ -155,7 +155,7 @@ double scatterGatherCost(int64_t elemsPerDpu, int64_t elemBytes, int64_t ranks,
 
 } // namespace mlir::upmem
 
-namespace mlir {
+namespace mlir::upmem {
 
 /// Emit the host-side tiled loop nest for a tail reduction.
 ///
@@ -168,12 +168,10 @@ namespace mlir {
 ///   input  - memref<M x K x elt> (caller collapses leading dims first)
 ///   output - memref<M x elt>
 ///   dpus   - !upmem.hierarchy<1 x (dpuRows*dpuCols) x tasklets>
-///   aBufSym / yBufSym - symbol names of the MRAM buffers inside the DPU program
+///   aBufSym / yBufSym - symbol names of the MRAM buffers inside the DPU
+///   program
 void generateTailReduction(cinm::ReduceOp op, RewriterBase &rewriter,
-                            Value input, Value output, Value dpus,
-                            int64_t M, int64_t K,
-                            int64_t dpuRows, int64_t dpuCols,
-                            int64_t mramRows, int64_t mramCols,
-                            StringRef aBufSym, StringRef yBufSym);
-
-} // namespace mlir
+                           int64_t dpuRows, int64_t dpuCols, int64_t mramRows,
+                           int64_t mramCols, int64_t wramRows, int64_t wramCols,
+                           int64_t taskletRows, int64_t taskletCols);
+} // namespace mlir::upmem
