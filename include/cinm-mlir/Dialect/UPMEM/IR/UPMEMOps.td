@@ -30,8 +30,8 @@ include "mlir/IR/RegionKindInterface.td"
 
 
 class IndexOp<string mnemonic, list<Trait> traits = []> :
-    Upmem_Op<mnemonic, !listconcat(traits, [Pure])>,
-        Results<(outs Index)> {
+    Upmem_Op<mnemonic, !listconcat(traits, [Pure])> {
+  let results = (outs Index:$result);
   let assemblyFormat = "`(` `)` attr-dict";
 }
 
@@ -204,6 +204,7 @@ def LocalTransferOp : Upmem_Op<"local_transfer"> {
                        Arg<AnyMemRef, "the memref to copy to",
                            [MemWriteAt<0, FullEffect>]>:$target);
 
+  let hasCanonicalizer = 1;
   let assemblyFormat = [{
     $source `into` $target attr-dict `:` type($source) `to` type($target)
   }];
@@ -301,8 +302,7 @@ def DpuProgramOp : Upmem_Op<"dpu_program",
   IsolatedFromAbove,
   SymbolTable,
   Symbol,
-  AffineScope,
-  OpAsmOpInterface
+  AffineScope
 ]> {
   let summary = "the DPU-side kernel program";
   let description = [{
@@ -337,8 +337,6 @@ def DpuProgramOp : Upmem_Op<"dpu_program",
 
   let extraClassDeclaration = [{
 
-    static StringRef getDefaultDialect() { return "upmem"; }
-  
   }];
 }
 

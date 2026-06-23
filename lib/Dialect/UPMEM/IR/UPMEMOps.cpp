@@ -5,6 +5,7 @@
 #include "cinm-mlir/Dialect/UPMEM/IR/UPMEMOps.h"
 
 #include "cinm-mlir/Dialect/UPMEM/IR/UPMEMAttributes.h"
+#include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/IR/Builders.h"
 
 #include "mlir/IR/Attributes.h"
@@ -23,6 +24,7 @@
 #include <mlir/IR/BuiltinAttributeInterfaces.h>
 #include <mlir/IR/BuiltinTypes.h>
 #include <mlir/IR/OperationSupport.h>
+#include <mlir/IR/PatternMatch.h>
 #include <mlir/IR/SymbolTable.h>
 #include <mlir/IR/Value.h>
 #include <mlir/Support/LogicalResult.h>
@@ -189,7 +191,6 @@ upmem::GatherOp::verifySymbolUses(SymbolTableCollection &symbolTable) {
   // the hierarchy (result type)
   return success();
 }
-
 void upmem::PrivateWRAMAllocOp::getAsmResultNames(
     ::mlir::OpAsmSetValueNameFn fn) {
   fn(getBuffer(), "pwram_buf");
@@ -197,4 +198,38 @@ void upmem::PrivateWRAMAllocOp::getAsmResultNames(
 
 void upmem::StaticAllocOp::getAsmResultNames(::mlir::OpAsmSetValueNameFn fn) {
   fn(getBuffer(), isWram() ? "wram_buf" : "mram_buf");
+}
+namespace {
+
+struct FoldCastForLocalTransfer
+    : public OpRewritePattern<upmem::LocalTransferOp> {
+public:
+  using OpRewritePattern<upmem::LocalTransferOp>::OpRewritePattern;
+
+  static bool foldOperand(OpOperand &opnd, PatternRewriter &rewriter) {
+    auto cast = opnd.get().getDefiningOp<memref::CastOp>();
+    if (!cast)
+      return false;
+
+    if (!memref::CastOp::canFoldIntoConsumerOp(cast))
+      return false;
+
+    rewriter.modifyOpInPlace(opnd.getOwner(),
+                             [&]() { opnd.set(cast.getSource()); });
+    return true;
+  }
+
+  LogicalResult matchAndRewrite(upmem::LocalTransferOp op,
+                                PatternRewriter &rewriter) const override {
+
+    auto foldSource = foldOperand(op.getSourceMutable(), rewriter);
+    auto foldDest = foldOperand(op.getTargetMutable(), rewriter);
+    return success(foldSource || foldDest);
+  }
+};
+
+} // namespace
+void upmem::LocalTransferOp::getCanonicalizationPatterns(
+    RewritePatternSet &results, MLIRContext *context) {
+  results.add<FoldCastForLocalTransfer>(context);
 }

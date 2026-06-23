@@ -14,6 +14,7 @@
 #include <mlir/Dialect/Arith/IR/Arith.h>
 #include <mlir/Dialect/MemRef/IR/MemRef.h>
 #include <mlir/Dialect/SCF/IR/SCF.h>
+#include <mlir/Dialect/Utils/IndexingUtils.h>
 #include <mlir/Dialect/Utils/StaticValueUtils.h>
 #include <mlir/IR/BuiltinTypes.h>
 #include <mlir/IR/Operation.h>
@@ -151,6 +152,25 @@ struct DpuTranslator {
     sv_map[op.getResult()] = {srcIt->second, iv_indexed, n};
   }
 
+  void translateExpandShape(memref::ExpandShapeOp op) {
+    auto srcIt = buf_map.find(op.getSrc());
+    if (srcIt != buf_map.end()) {
+      bool iv_indexed = false;
+      int64_t n = computeProduct(op.getStaticOutputShape());
+
+      sv_map[op.getResult()] = {srcIt->second, iv_indexed, n};
+      return;
+    }
+
+    auto subv = sv_map.find(op.getSrc());
+    if (subv == sv_map.end()) {
+      return;
+    }
+
+    sv_map[op.getResult()] = subv->second;
+    return;
+  }
+
   void translateLocalTransfer(LocalTransferOp op) {
     Value srcVal = op.getSource();
     Value dstVal = op.getTarget();
@@ -171,6 +191,8 @@ struct DpuTranslator {
           n_elems = mrt.getNumElements();
     } else {
       LLVM_DEBUG(llvm::dbgs() << "[upmem-cpp-sim] transfer: unknown src\n");
+      op->dump();
+      op->getParentOfType<DpuProgramOp>()->dump();
       return;
     }
 
@@ -333,6 +355,8 @@ struct DpuTranslator {
       translateTaskletDim(o);
     else if (auto o = dyn_cast<memref::SubViewOp>(&op))
       translateSubView(o);
+    else if (auto o = dyn_cast<memref::ExpandShapeOp>(&op))
+      translateExpandShape(o);
     else if (auto o = dyn_cast<LocalTransferOp>(&op))
       translateLocalTransfer(o);
     else if (auto o = dyn_cast<arith::ConstantOp>(&op))
