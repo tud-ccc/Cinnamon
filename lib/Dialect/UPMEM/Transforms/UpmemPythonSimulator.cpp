@@ -387,7 +387,10 @@ struct DpuTranslator {
       translateFor(o);
     else if (auto o = dyn_cast<scf::IfOp>(&op))
       translateIf(o);
-    // BarrierOp, ReturnOp, arith.cmpi, etc. → silently skip
+    else if (auto o = dyn_cast<upmem::BarrierOp>(&op))
+      builder.createBarrier();
+    // todo add remui, cmpi
+    // others → silently skip
   }
 
   void translateProgram(DpuProgramOp prog) {
