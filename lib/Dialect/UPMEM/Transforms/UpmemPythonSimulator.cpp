@@ -542,7 +542,6 @@ double mlir::upmem::CppSimulator::simulateReduction(
   b.createReductionLoop(taskletCols, y_wram, y_wram, upmemCmOp(reduction));
 
   b.endLoop(); // dot-product loop
-  b.endLoop(); // row tile loop
 
   // Store all y from WRAM back to MRAM
   // todo mark exclusive

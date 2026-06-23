@@ -2,13 +2,17 @@
 
 #include <chrono>
 #include <cinm-mlir/Dialect/Cinm/IR/CinmAttributes.h>
+#include <cinm-mlir/Dialect/Cinm/IR/CinmOps.h>
 #include <cinm-mlir/Utils/Scheduling/SchedulingSupport.h>
 #include <cstdint>
 #include <functional>
 #include <llvm/ADT/StringRef.h>
 #include <memory>
+#include <mlir/IR/Builders.h>
 #include <mlir/IR/BuiltinOps.h>
 #include <mlir/IR/Operation.h>
+#include <mlir/IR/PatternMatch.h>
+#include <mlir/IR/Value.h>
 #include <mlir/Support/LogicalResult.h>
 #include <upmem_cost_model/Types.h>
 
@@ -150,3 +154,26 @@ double scatterGatherCost(int64_t elemsPerDpu, int64_t elemBytes, int64_t ranks,
                          int64_t dpusPerRank);
 
 } // namespace mlir::upmem
+
+namespace mlir {
+
+/// Emit the host-side tiled loop nest for a tail reduction.
+///
+/// Replaces the body of a cinm::ReduceOp with two nested loops (M then K)
+/// each of whose bodies scatters the input tile and the running partial-sum
+/// buffer to all DPUs, fires the kernel, and gathers the updated partial sum
+/// back. Data is staged through flat-DPU-major host buffers; the actual
+/// DPU kernel and its MRAM symbol declarations must be set up by the caller.
+///
+///   input  - memref<M x K x elt> (caller collapses leading dims first)
+///   output - memref<M x elt>
+///   dpus   - !upmem.hierarchy<1 x (dpuRows*dpuCols) x tasklets>
+///   aBufSym / yBufSym - symbol names of the MRAM buffers inside the DPU program
+void generateTailReduction(cinm::ReduceOp op, RewriterBase &rewriter,
+                            Value input, Value output, Value dpus,
+                            int64_t M, int64_t K,
+                            int64_t dpuRows, int64_t dpuCols,
+                            int64_t mramRows, int64_t mramCols,
+                            StringRef aBufSym, StringRef yBufSym);
+
+} // namespace mlir

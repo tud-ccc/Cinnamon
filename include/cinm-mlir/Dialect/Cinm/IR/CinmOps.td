@@ -218,8 +218,8 @@ def Cinm_ReduceOp : Cinm_Op<"op.reduce",
     // This attribute is internal and to pass information
     // to the result type inference, in case the result should
     // not be implicitly rank-reduced (scalarized).
-    DefaultValuedAttr<BoolAttr, "{true}">:$rankReduce,
-    DefaultValuedAttr<I64Attr, "{-1}">:$dimension
+    I64Attr:$dimension,
+    DefaultValuedAttr<BoolAttr, "{true}">:$rankReduce
   );
 
   let skipDefaultBuilders = 1;

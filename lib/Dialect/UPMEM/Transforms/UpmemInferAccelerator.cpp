@@ -21,7 +21,11 @@
 #include <filesystem>
 #include <functional>
 #include <limits>
+#include <llvm/Support/LogicalResult.h>
+#include <memory>
 #include <mlir/Dialect/Utils/IndexingUtils.h>
+#include <mlir/IR/BuiltinTypes.h>
+#include <mlir/IR/Location.h>
 #include <string>
 #include <utility>
 
@@ -96,8 +100,8 @@ struct UpmemInferencePlugin : cinm::InferencePlugin {
   // current configuration and the (per-thread) simulator; evaluate() sums
   // their return values. The simulator is passed at call time so that clones
   // (which have their own simulator) work without lambda modification.
-  using SimFn =
-      std::function<double(const cinm::ConfWrapper &, UpmemSimulator &)>;
+  using SimFn = std::function<Maybe<double>(
+      const cinm::ConfWrapper &, UpmemSimulator &, cinm::TrialInfo &)>;
   std::vector<SimFn> simulators_;
 
   std::unique_ptr<PassManager> pipeline;
@@ -260,6 +264,22 @@ struct UpmemInferencePlugin : cinm::InferencePlugin {
       return upmem_cm::DType::I64;
     assert(false && "unsuported datatye");
   }
+  static DiagnosedSilenceableFailure
+  runPipeline(PassManager *pipeline, Location loc, ModuleOp module) {
+    ScopedDiagnosticHandler scopedHandler(
+        pipeline->getContext(), [](Diagnostic &diag) {
+          LLVM_DEBUG(llvm::dbgs()
+                         << "[cinm-inference]   pipeline failed:\n      ";
+                     diag.print(llvm::dbgs()); llvm::dbgs() << "\n";);
+          return success();
+        });
+    LLVM_DEBUG(llvm::dbgs() << "[cinm-inference]   running pipeline\n");
+    if (mlir::failed(pipeline->run(module))) {
+      LLVM_DEBUG(module->print(llvm::dbgs()); llvm::dbgs() << "\n========\n";);
+      return mlir::emitSilenceableFailure(loc, "Pipeline failed");
+    }
+    return DiagnosedSilenceableFailure::success();
+  }
 
   Maybe<double> evaluate(cinm::TrialInfo &trial) override {
     auto conf = trial.conf();
@@ -275,7 +295,7 @@ struct UpmemInferencePlugin : cinm::InferencePlugin {
       // Bypass the lowering pipeline: call each op's registered simulator.
       double total = 0.0;
       for (auto &sim : simulators_)
-        total += sim(conf, *simulator);
+        total += TRY_GET(sim(conf, *simulator, trial));
       return total;
     }
 
@@ -284,20 +304,7 @@ struct UpmemInferencePlugin : cinm::InferencePlugin {
     if (!pipeline)
       pipeline = buildPipeline(ctx);
 
-    {
-      ScopedDiagnosticHandler scopedHandler(ctx, [](Diagnostic &diag) {
-        LLVM_DEBUG(llvm::dbgs()
-                       << "[cinm-inference]   pipeline failed:\n      ";
-                   diag.print(llvm::dbgs()); llvm::dbgs() << "\n";);
-        return success();
-      });
-      LLVM_DEBUG(llvm::dbgs() << "[cinm-inference]   running pipeline\n");
-      if (mlir::failed(pipeline->run(trial.module.get()))) {
-        LLVM_DEBUG(trial.module->print(llvm::dbgs());
-                   llvm::dbgs() << "\n========\n";);
-        return emitSilenceableFailure(loc, "Pipeline failed");
-      }
-    }
+    TRY(runPipeline(pipeline.get(), loc, trial.module.get()));
 
     return simulator->simulate(trial.computeBlock.getBody());
   }
@@ -366,7 +373,8 @@ void UpmemInferencePlugin::handleGemv(cinm::GemvOp gemv, SpaceBuilder &b) {
     // pipeline).
     auto timeout = opts.evalTimeoutMs;
     auto dtype = cmDtyFromMlirDty(eltTy);
-    registerSimulator([=](const cinm::ConfWrapper &c, UpmemSimulator &sim) {
+    registerSimulator([=](const cinm::ConfWrapper &c, UpmemSimulator &sim,
+                          cinm::TrialInfo &) {
       return sim.simulateFullGemv(timeout, M, K, mramRow[c], mramCol[c],
                                   wramRow[c], wramCol[c], dpus[c] / dpuCols[c],
                                   dpuCols[c], tasklets[c], dtype);
@@ -395,9 +403,6 @@ void UpmemInferencePlugin::handleReduce(cinm::ReduceOp op, SpaceBuilder &b) {
   auto tasklets = taskletsVar_;
 
   auto taskletCols = b.divisorsOf("taskletCols", tasklets);
-
-  // Hardware dimensions.
-  b.mustDivide(tasklets, M); // tasklets must divide M
 
   // WRAM tile dims: each is a divisor of its corresponding problem dimension.
   // K = dpuCols * mramCols * k1  ⟹  dpuCols | K  and  dpuCols | dpus
@@ -429,7 +434,30 @@ void UpmemInferencePlugin::handleReduce(cinm::ReduceOp op, SpaceBuilder &b) {
     // Simulation template for the MRAM fast path (bypasses the lowering
     // pipeline).
     if (op.getDimension() == type.getShape().size() - 1) {
-      registerSimulator([=](const cinm::ConfWrapper &c, UpmemSimulator &sim) {
+      auto pm = std::make_unique<PassManager>(op.getContext());
+      {
+        bufferization::OneShotBufferizePassOptions opts;
+        opts.unknownTypeConversion =
+            bufferization::LayoutMapOption::IdentityLayoutMap;
+        // opts.bufferizeFunctionBoundaries = true;
+        // opts.functionBoundaryTypeConversion =
+        //     bufferization::LayoutMapOption::IdentityLayoutMap;
+        pm->addPass(bufferization::createOneShotBufferizePass(opts));
+      }
+      registerSimulator([=, pm = std::move(pm)](
+                            const cinm::ConfWrapper &c, UpmemSimulator &sim,
+                            cinm::TrialInfo &trial) -> Maybe<double> {
+        TRY(runPipeline(pm.get(), op->getLoc(), trial.module.get()));
+        IRRewriter rewriter(trial.module->getContext());
+        rewriter.setInsertionPointToStart(
+            &trial.computeBlock.getBody().front());
+
+        trial.computeBlock->walk([&](cinm::ReduceOp op) {
+          generateTailReduction(op, rewriter,
+                                dpus[c] / dpuCols[c], dpuCols[c], mramRow[c],
+                                mramCol[c]);
+        });
+
         return sim.simulateTailReduction(
             timeout, M, K, reduction, mramRow[c], mramCol[c], wramRow[c],
             wramCol[c], dpus[c] / dpuCols[c], dpuCols[c],
