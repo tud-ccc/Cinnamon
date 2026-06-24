@@ -21,7 +21,7 @@ int fib(int n) {
   return b;
 }
 
-int[24] buf;
+int buf[24];
 
 int main(void) {
   int tid = me();

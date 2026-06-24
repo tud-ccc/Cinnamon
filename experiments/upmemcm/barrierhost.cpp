@@ -4,7 +4,9 @@
 #include <cstdlib>
 #include <vector>
 
+extern "C" {
 #include <dpu.h>
+}
 
 #define DPU_ASSERT(x)                                                          \
   do {                                                                         \
@@ -18,10 +20,10 @@
 static const int WARMUP = 2;
 static const int N = 100;
 // Number of barrier iterations per DPU launch (matches barrier.c)
-static const int BARRIER_ITERS = 200;
+static const int BARRIER_ITERS = 100;
 
-// Returns average nanoseconds per launch over N launches.
-static double measure(const char *path) {
+// Returns nanoseconds per launch for each of the N trials.
+static std::vector<double> measure(const char *path) {
   struct dpu_set_t set;
   DPU_ASSERT(dpu_alloc(1, NULL, &set));
   DPU_ASSERT(dpu_load(set, path, NULL));
@@ -29,35 +31,38 @@ static double measure(const char *path) {
   for (int i = 0; i < WARMUP; i++)
     DPU_ASSERT(dpu_launch(set, DPU_SYNCHRONOUS));
 
-  auto t0 = std::chrono::steady_clock::now();
-  for (int i = 0; i < N; i++)
+  std::vector<double> results(N);
+  for (int i = 0; i < N; i++) {
+    auto t0 = std::chrono::steady_clock::now();
     DPU_ASSERT(dpu_launch(set, DPU_SYNCHRONOUS));
-  auto t1 = std::chrono::steady_clock::now();
+    auto t1 = std::chrono::steady_clock::now();
+    results[i] = static_cast<double>(
+        std::chrono::duration_cast<std::chrono::nanoseconds>(t1 - t0).count());
+  }
 
   DPU_ASSERT(dpu_free(set));
-
-  double ns = static_cast<double>(
-      std::chrono::duration_cast<std::chrono::nanoseconds>(t1 - t0).count());
-  return ns / N;
+  return results;
 }
 
 int main(int argc, char **argv) {
-  std::vector<double> barrier_ns(25, 0.0);
-  std::vector<double> control_ns(25, 0.0);
+  std::vector<std::vector<double>> barrier_ns(25);
+  std::vector<std::vector<double>> control_ns(25);
 
   for (int T = 1; T <= 24; T++) {
     char path[64];
-    snprintf(path, sizeof(path), "./barrier_%d", T);
+    snprintf(path, sizeof(path), "./bin/barrier_%d", T);
     barrier_ns[T] = measure(path);
 
-    snprintf(path, sizeof(path), "./barrier_%d_control", T);
+    snprintf(path, sizeof(path), "./bin/barrier_%d_control", T);
     control_ns[T] = measure(path);
   }
 
-  printf("tasklets,barrier_ns_per_launch,control_ns_per_launch,overhead_ns_per_barrier\n");
+  printf("tasklets,trial,barrier_ns,control_ns,overhead_ns_per_barrier\n");
   for (int T = 1; T <= 24; T++) {
-    double overhead = (barrier_ns[T] - control_ns[T]) / BARRIER_ITERS;
-    printf("%d,%.1f,%.1f,%.2f\n", T, barrier_ns[T], control_ns[T], overhead);
+    for (int i = 0; i < N; i++) {
+      double overhead = (barrier_ns[T][i] - control_ns[T][i]) / BARRIER_ITERS;
+      printf("%d,%d,%.1f,%.1f,%.2f\n", T, i, barrier_ns[T][i], control_ns[T][i], overhead);
+    }
   }
 
   return 0;
