@@ -319,6 +319,12 @@ struct InferenceOptions {
   /// Number of worker threads used for exhaustive search.
   /// 0 (default) means use std::thread::hardware_concurrency().
   unsigned numWorkers = 0;
+
+  /// When set, skip search entirely and evaluate only this single configuration.
+  /// The values are in the same order as the ConfigSpace params populated by the
+  /// plugin's initializeSpace(). Acts as a third mode alongside exhaustiveSearch
+  /// and Bayesian optimisation.
+  std::optional<Configuration> evalSingleSolution;
 };
 
 /// Entry point for Bayesian inference.

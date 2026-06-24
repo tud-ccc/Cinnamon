@@ -820,8 +820,15 @@ inferAcceleratorConfig(cinm::ComputeBlockOp computeOp, InferencePlugin &plugin,
   LLVM_DEBUG(llvm::dbgs() << "[cinm-inference] Reference clone:\n";
              task.refClone->print(llvm::dbgs()); llvm::dbgs() << "\n");
 
-  auto bestResult = TRY_GET(opts.exhaustiveSearch ? task.runExhaustive()
-                                                  : task.runInference());
+  TrialInfo bestResult;
+  if (opts.evalSingleSolution) {
+    bestResult = task.makeTrialInfo(*opts.evalSingleSolution);
+    plugin.warmUp(computeOp->getContext());
+    TRY_GET(plugin.evaluate(bestResult)); //may return early
+  } else {
+    bestResult = TRY_GET(opts.exhaustiveSearch ? task.runExhaustive()
+                                              : task.runInference());
+  }
 
   LLVM_DEBUG(llvm::dbgs() << "[cinm-inference] Committing best config"
                           << bestResult.conf() << "\n");
@@ -878,8 +885,8 @@ InferencePlugin::commitBestCandidate(cinm::ComputeBlockOp original,
   }
 
   original.getBody().takeBody(bestTrial.computeBlock.getBody());
-  original.setAcceleratorAttr(bestTrial.computeBlock.getAcceleratorAttr());
   original.setPlatformAttr({}); // remove platform attr
+  original->setAttrs(bestTrial.computeBlock->getAttrs());
 
   // Fix up any type mismatches introduced by bufferization.
   OpBuilder builder(original->getContext());
