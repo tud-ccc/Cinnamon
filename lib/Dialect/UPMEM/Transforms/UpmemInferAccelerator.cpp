@@ -279,7 +279,6 @@ struct UpmemInferencePlugin : cinm::InferencePlugin {
                      diag.print(llvm::dbgs()); llvm::dbgs() << "\n";);
           return success();
         });
-    LLVM_DEBUG(llvm::dbgs() << "[cinm-inference]   running pipeline\n");
     if (mlir::failed(pipeline->run(module))) {
       LLVM_DEBUG(module->print(llvm::dbgs()); llvm::dbgs() << "\n========\n";);
       return mlir::emitSilenceableFailure(loc, "Pipeline failed");

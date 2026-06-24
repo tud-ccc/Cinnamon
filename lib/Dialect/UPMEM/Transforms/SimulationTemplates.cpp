@@ -309,6 +309,18 @@ upmem::DpuProgramOp createDpuTailReductionKernel(
   Value trowix = arith::DivUIOp::create(
       rewriter, loc, arith::SubIOp::create(rewriter, loc, tid, tcolix),
       tcolsCst);
+  Value zero = arith::ConstantIndexOp::create(rewriter, loc, 0);
+  Value loadCond = arith::CmpIOp::create(
+      rewriter, loc, arith::CmpIPredicate::eq, tcolix, zero);
+  DenseI8ArrayAttr taskletIdsAttr;
+  {
+    SmallVector<int8_t, 8> taskletIds;
+    for (int8_t i = 0; i < taskletCount; i++) {
+      if (i % taskletCols == 0)
+        taskletIds.push_back(i);
+    }
+    taskletIdsAttr = rewriter.getDenseI8ArrayAttr(std::move(taskletIds));
+  }
 
   // Precomputed result types for rank-reducing subviews.
   // Strides are derived from the source layout (see comment block above).
@@ -358,11 +370,10 @@ upmem::DpuProgramOp createDpuTailReductionKernel(
               Value mc = ivs2[0];
 
               // Only the tcolix==0 tasklet in each row group loads A into WRAM
-              Value zero = arith::ConstantIndexOp::create(b, loc, 0);
-              Value loadCond = arith::CmpIOp::create(
-                  b, loc, arith::CmpIPredicate::eq, tcolix, zero);
+
               auto loadIf =
                   scf::IfOp::create(b, loc, TypeRange{}, loadCond, false);
+              loadIf->setAttr("upmem_cm.const_tasklets", taskletIdsAttr);
               {
                 OpBuilder::InsertionGuard guard(b);
                 b.setInsertionPointToStart(&loadIf.getThenRegion().front());
@@ -457,10 +468,8 @@ upmem::DpuProgramOp createDpuTailReductionKernel(
 
         // All tasklets done with ybufWram; row-leaders merge and write back
         upmem::BarrierOp::create(b, loc);
-        Value zero2 = arith::ConstantIndexOp::create(b, loc, 0);
-        Value accumCond = arith::CmpIOp::create(
-            b, loc, arith::CmpIPredicate::eq, tcolix, zero2);
-        auto accumIf = scf::IfOp::create(b, loc, TypeRange{}, accumCond, false);
+        auto accumIf = scf::IfOp::create(b, loc, TypeRange{}, loadCond, false);
+        accumIf->setAttr("upmem_cm.const_tasklets", taskletIdsAttr);
         {
           OpBuilder::InsertionGuard guard(b);
           b.setInsertionPointToStart(&accumIf.getThenRegion().front());
