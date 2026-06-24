@@ -1,37 +1,36 @@
 
-#include <alloc.h>
 #include <barrier.h>
 #include <defs.h>
-#include <mram.h>
-#include <perfcounter.h>
-
 #include <stdint.h>
-#include <stdio.h>
-#include <stdlib.h>
+
+#define NITER      100
+#define WARM_ITERS 10
 
 BARRIER_INIT(my_barrier, NR_TASKLETS);
-
-int fib(int n) {
-  int a = 1, b = 1; 
-  for (int i = 0; i < n; i++) {
-    int b0 = b;
-    b = a + b;
-    a = b0;
-  }
-  return b;
-}
 
 int buf[24];
 
 int main(void) {
   int tid = me();
-  buf[tid] = fib(tid);
-  for (int i = 0; i < 100; i++) {
-    buf[tid] *= i;
+
+  // Pre-work: fixed arithmetic loop, result stored to prevent elimination.
+  int x = 1;
+  for (int i = 0; i < WARM_ITERS; i++)
+    x = x * 2 + 1;
+  buf[tid] = x;
+
+  for (int i = 0; i < NITER; i++) {
+    buf[tid] += 1;
 #ifdef BENCH
     barrier_wait(&my_barrier);
 #endif
   }
-  buf[tid] += fib(tid);
+
+  // Post-work: same fixed loop reading back from buf.
+  x = buf[tid];
+  for (int i = 0; i < WARM_ITERS; i++)
+    x = x * 2 + 1;
+  buf[tid] = x;
+
   return 0;
 }
