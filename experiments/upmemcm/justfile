@@ -1,7 +1,10 @@
 
 
 run:
-    cd .. && just b
+    cd ../.. && just b
     make
     ./barrier_sim > sim_results.csv
+    just plot
+
+plot:
     $(realpath ../../.venv/bin)/python plot_barrier.py

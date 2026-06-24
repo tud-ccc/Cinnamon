@@ -1,5 +1,7 @@
 set shell := ["zsh", "-c"]
 
+mod upmemcm
+
 b:
     cd .. && just build
 

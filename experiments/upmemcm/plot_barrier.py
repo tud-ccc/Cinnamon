@@ -157,7 +157,7 @@ ax_main.bar(sim_positions, diff_vals,
 add_separators(ax_main, best_cutoff)
 ax_main.set_xlabel("Tasklet count")
 ax_main.set_ylabel("Overhead per barrier (cycles)")
-ax_main.set_title(f"Barrier overhead — real vs simulated (best cutoff: T={best_cutoff})")
+ax_main.set_title("Barrier overhead — real vs simulated")
 ax_main.grid(axis="y", linestyle="--", alpha=0.5)
 ax_main.legend(loc="upper left")
 
