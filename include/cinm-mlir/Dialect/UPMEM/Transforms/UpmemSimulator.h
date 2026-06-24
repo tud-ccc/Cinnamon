@@ -116,7 +116,7 @@ using WaitForCostFn =
     std::function<double(mlir::Operation * /*WaitForOp*/, bool /*annotate*/)>;
 
 inline double transferCost(double numBytes, int numRanks) {
-  return numBytes / 1024 / numRanks / 100;
+  return numBytes / 1024 / numRanks / 100'000;
 }
 
 inline double scatterGatherCost(int64_t elemsPerDpu, int64_t elemBytes,
@@ -153,9 +153,7 @@ double simulateHostRegion(mlir::Region &region, bool annotate,
 double scatterGatherCost(int64_t elemsPerDpu, int64_t elemBytes, int64_t ranks,
                          int64_t dpusPerRank);
 
-} // namespace mlir::upmem
-
-namespace mlir::upmem {
+static constexpr llvm::StringLiteral kSimCostAttr = "upmem.sim_cost";
 
 /// Emit the host-side tiled loop nest for a tail reduction.
 ///

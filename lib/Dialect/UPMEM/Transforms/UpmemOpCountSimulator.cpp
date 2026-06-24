@@ -9,6 +9,8 @@
 #include "cinm-mlir/Dialect/Cnm/IR/CnmTypes.h"
 #include "upmem_cost_model/Types.h"
 
+#include <cmath>
+#include <limits>
 #include <upmem_cost_model/Simulation.h>
 
 #include <algorithm>
@@ -48,8 +50,6 @@ static double elementBytes(Type elemTy) {
   return 4.0;
 }
 
-static constexpr llvm::StringLiteral kSimCostAttr = "upmem.sim_cost";
-
 static double costOfRegionCb(Region &region, bool annotate,
                              const WaitForCostFn &cb);
 
@@ -80,6 +80,7 @@ static double costOfOpCb(Operation &op, bool annotate,
                            elementBytes(hostTy.getElementType());
             return transferCost(bytes, 1);
           })
+          .Case<memref::LoadOp, memref::StoreOp>([](auto) { return 1e-7; })
           .Case<cnm::ScatterOp, cnm::GatherOp>([](auto scatterOp) {
             auto hostTy = scatterOp.getHostType();
             double bytes = static_cast<double>(staticElementCount(hostTy)) *
@@ -120,7 +121,7 @@ static double costOfOpCb(Operation &op, bool annotate,
           .Case<arith::ConstantOp, upmem::StaticAllocOp, cinm::YieldOp,
                 memref::SubViewOp>([](auto) { return 0.0; })
           .Default([&](Operation *o) {
-            double c = o->getNumRegions() > 0 ? 0.0 : 5e-3;
+            double c = o->getNumRegions() > 0 ? 0.0 : 5e-9;
             for (auto &region : o->getRegions())
               c += costOfRegionCb(region, annotate, cb);
             return c;
@@ -135,9 +136,14 @@ static double costOfOpCb(Operation &op, bool annotate,
 static double costOfRegionCb(Region &region, bool annotate,
                              const WaitForCostFn &cb) {
   double cost = 0.0;
-  for (auto &block : region)
-    for (auto &op : block)
+  for (auto &block : region) {
+    for (auto &op : block) {
       cost += costOfOpCb(op, annotate, cb);
+      if (!std::isfinite(cost))
+        return cost;
+    }
+  }
+
   return cost;
 }
 

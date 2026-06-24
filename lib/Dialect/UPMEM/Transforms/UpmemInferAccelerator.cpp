@@ -302,6 +302,10 @@ struct UpmemInferencePlugin : cinm::InferencePlugin {
       double total = 0.0;
       for (auto &sim : simulators_)
         total += TRY_GET(sim(conf, *simulator, trial));
+      if (opts.annotateOpCosts) {
+        OpBuilder b(ctx);
+        trial.computeBlock->setAttr(kSimCostAttr, b.getF64FloatAttr(total));
+      }
       return total;
     }
 
@@ -312,7 +316,12 @@ struct UpmemInferencePlugin : cinm::InferencePlugin {
 
     TRY(runPipeline(pipeline.get(), loc, trial.module.get()));
 
-    return simulator->simulate(trial.computeBlock.getBody());
+    auto total = TRY_GET(simulator->simulate(trial.computeBlock.getBody()));
+    if (opts.annotateOpCosts) {
+      OpBuilder b(ctx);
+      trial.computeBlock->setAttr(kSimCostAttr, b.getF64FloatAttr(total));
+    }
+    return total;
   }
 
 private:
@@ -536,6 +545,9 @@ struct UpmemInferAcceleratorPass
     upmemOpts.simulator = simulator;
     upmemOpts.evalTimeoutMs = std::chrono::milliseconds(evalTimeoutMs);
     o.dumpDir = dumpDir;
+    if (!evalSolution.empty())
+      o.evalSingleSolution =
+          cinm::Configuration(evalSolution.begin(), evalSolution.end());
     return upmemOpts;
   }
 
