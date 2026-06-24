@@ -1,10 +1,12 @@
 
 
-run:
-    cd ../.. && just b
+[working-directory: 'barrier_cost']
+barrier_run:
+    cd ../../.. && just b
     make
     ./barrier_sim > sim_results.csv
-    just plot
+    just barrier_plot
 
-plot:
-    $(realpath ../../.venv/bin)/python plot_barrier.py
+[working-directory: 'barrier_cost']
+barrier_plot:
+    $(realpath ../../../.venv/bin)/python plot_barrier.py
