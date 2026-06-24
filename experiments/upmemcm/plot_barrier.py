@@ -7,6 +7,10 @@ from scipy import stats
 
 FREQ_HZ = 350e6  # 350 MHz
 
+# Figure layout — reduce WIDTH_PER_TASKLET to pull x values closer together
+WIDTH_PER_TASKLET = 0.3  # inches per tasklet on the x axis
+FIG_HEIGHT        = 5.0   # inches
+
 def ns_to_cycles(ns):
     return ns * FREQ_HZ * 1e-9
 
@@ -70,6 +74,14 @@ def add_annotations(ax, annotations):
                 color=color, fontsize=8, verticalalignment="top",
                 bbox=dict(boxstyle="round,pad=0.3", fc="white", ec=color, alpha=0.8))
 
+def align_zeros(ax_left, ax_right):
+    l_bot, l_top = ax_left.get_ylim()
+    r_bot, r_top = ax_right.get_ylim()
+    f = -l_bot / (l_top - l_bot)  # fraction from bottom where 0 sits on left axis
+    r_range = max(r_top / (1 - f) if f < 1 else 0,
+                  -r_bot / f      if f > 0 else 0)
+    ax_right.set_ylim(-f * r_range, (1 - f) * r_range)
+
 def add_separators(ax, cutoff):
     ax.axvline(tasklet_counts.index(1) + 1.5,      color="gray", linestyle=":", linewidth=1)
     ax.axvline(tasklet_counts.index(cutoff) + 1.5, color="gray", linestyle=":", linewidth=1)
@@ -80,7 +92,7 @@ best_cutoff = find_best_cutoff(multi_tasklets, medians, label="real")
 lo = [t for t in multi_tasklets if t <= best_cutoff]
 hi = [t for t in multi_tasklets if t > best_cutoff]
 
-fig1, ax1 = plt.subplots(figsize=(14, 5))
+fig1, ax1 = plt.subplots(figsize=(2 + len(tasklet_counts) * WIDTH_PER_TASKLET, FIG_HEIGHT))
 ax1.boxplot(box_data, tick_labels=tasklet_counts, showfliers=False)
 
 annotations1 = [("tab:green", "T = 1", medians[1], None, None)]
@@ -101,42 +113,72 @@ print(f"Saved {out1}")
 
 # ── plot 2: simulated results (scatter) ──────────────────────────────────────
 
-sim_cutoff = find_best_cutoff(multi_tasklets, sim_values, label="sim")
-lo_sim = [t for t in multi_tasklets if t <= sim_cutoff]
-hi_sim = [t for t in multi_tasklets if t > sim_cutoff]
-
-fig2, ax2 = plt.subplots(figsize=(14, 5))
+fig2, ax2 = plt.subplots(figsize=(2 + len(tasklet_counts) * WIDTH_PER_TASKLET, FIG_HEIGHT))
 positions_all = [tasklet_counts.index(t) + 1 for t in tasklet_counts]
-ax2.scatter(positions_all, sim_values[tasklet_counts].values, color="steelblue", s=30, zorder=3)
+ax2.plot(positions_all, sim_values[tasklet_counts].values,
+         color="crimson", linewidth=1.5, marker="o", markersize=4)
 ax2.set_xticks(positions_all)
 ax2.set_xticklabels(tasklet_counts)
-
-annotations2 = [("tab:green", "T = 1", sim_values[1], None, None)]
-annotations2.append(("tab:blue",   f"T ∈ [2, {sim_cutoff}]", *draw_regression(ax2, lo_sim, sim_values, "tab:blue",   f"T ∈ [2, {sim_cutoff}]")))
-annotations2.append(("tab:orange", f"T > {sim_cutoff}",       *draw_regression(ax2, hi_sim, sim_values, "tab:orange", f"T > {sim_cutoff}")))
-
-add_separators(ax2, sim_cutoff)
-add_annotations(ax2, annotations2)
-ax2.legend()
 ax2.set_xlabel("Tasklet count")
 ax2.set_ylabel("Overhead per barrier (cycles)")
-ax2.set_title(f"Barrier overhead — simulated (best cutoff: T={sim_cutoff})")
+ax2.set_title("Barrier overhead — simulated")
 ax2.grid(axis="y", linestyle="--", alpha=0.5)
 fig2.tight_layout()
 out2 = sim_csv_file.rsplit(".", 1)[0] + ".png"
 fig2.savefig(out2, dpi=150)
 print(f"Saved {out2}")
 
+# ── plot 4: merged ───────────────────────────────────────────────────────────
+
+fig4, ax_main = plt.subplots(figsize=(2 + len(tasklet_counts) * WIDTH_PER_TASKLET, FIG_HEIGHT))
+
+# Box plots and regression lines
+ax_main.boxplot(box_data, tick_labels=tasklet_counts, showfliers=False)
+draw_regression(ax_main, lo, medians, "tab:blue",   f"T ∈ [2, {best_cutoff}]")
+draw_regression(ax_main, hi, medians, "tab:orange", f"T > {best_cutoff}")
+
+# Sim line
+sim_positions = [tasklet_counts.index(t) + 1 for t in tasklet_counts]
+ax_main.plot(sim_positions, sim_values[tasklet_counts].values,
+             color="crimson", linewidth=1.5, marker="o", markersize=3,
+             label="simulated", zorder=3)
+
+# Difference bars on the same axis
+diff = pd.Series({t: medians[t] - sim_values[t] for t in tasklet_counts})
+diff_vals = diff[tasklet_counts].values
+diff_colors = ["steelblue" if v >= 0 else "tomato" for v in diff_vals]
+ax_main.bar(sim_positions, diff_vals,
+            color=diff_colors, alpha=0.4, width=0.6, label="real − sim", zorder=2)
+
+# diff_hi_tasklets = [t for t in tasklet_counts if t > 12]
+# diff_reg = draw_regression(ax_main, diff_hi_tasklets, diff, "purple", "diff fit (T > 12)")
+# add_annotations(ax_main, [("purple", "diff fit (T > 12)", *diff_reg)])
+
+add_separators(ax_main, best_cutoff)
+ax_main.set_xlabel("Tasklet count")
+ax_main.set_ylabel("Overhead per barrier (cycles)")
+ax_main.set_title(f"Barrier overhead — real vs simulated (best cutoff: T={best_cutoff})")
+ax_main.grid(axis="y", linestyle="--", alpha=0.5)
+ax_main.legend(loc="upper left")
+
+fig4.tight_layout()
+out4 = "merged.png"
+fig4.savefig(out4, dpi=150)
+print(f"Saved {out4}")
+
 # ── plot 3: difference (real median − sim) ───────────────────────────────────
 
-diff = pd.Series({t: medians[t] - sim_values[t] for t in tasklet_counts})
-
-fig3, ax3 = plt.subplots(figsize=(14, 4))
+fig3, ax3 = plt.subplots(figsize=(2 + len(tasklet_counts) * WIDTH_PER_TASKLET, FIG_HEIGHT))
 ax3.bar(positions_all, diff[tasklet_counts].values, color=[
     "tab:green" if t == 1 else ("tab:blue" if t <= best_cutoff else "tab:orange")
     for t in tasklet_counts
 ], alpha=0.75)
 ax3.axhline(0, color="black", linewidth=0.8)
+
+# diff_reg3 = draw_regression(ax3, diff_hi_tasklets, diff, "purple", "diff fit (T > 12)")
+# add_annotations(ax3, [("purple", "diff fit (T > 12)", *diff_reg3)])
+# ax3.legend()
+
 ax3.set_xticks(positions_all)
 ax3.set_xticklabels(tasklet_counts)
 ax3.set_xlabel("Tasklet count")
