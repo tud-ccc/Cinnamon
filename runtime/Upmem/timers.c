@@ -1,0 +1,124 @@
+#ifdef UPMEM_RT_STATS
+
+#include "timers.h"
+
+#include <inttypes.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <time.h>
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Record types
+// ─────────────────────────────────────────────────────────────────────────────
+
+typedef struct {
+  int      iteration;
+  uint64_t elapsed_ns;
+  size_t   bytes_per_dpu;
+  uint32_t num_dpus;
+} XferRecord;
+
+typedef struct {
+  int      iteration;
+  uint64_t elapsed_ns;
+  uint32_t num_dpus;
+} LaunchRecord;
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Growable buffers
+// ─────────────────────────────────────────────────────────────────────────────
+
+#define DEFINE_BUF(Name, T)                                                    \
+  typedef struct {                                                              \
+    T     *data;                                                                \
+    size_t size, cap;                                                           \
+  } Name;                                                                      \
+  static void Name##_push(Name *b, T r) {                                      \
+    if (b->size == b->cap) {                                                    \
+      b->cap  = b->cap ? b->cap * 2 : 64;                                      \
+      b->data = realloc(b->data, b->cap * sizeof(T));                          \
+    }                                                                           \
+    b->data[b->size++] = r;                                                    \
+  }
+
+DEFINE_BUF(XferBuf, XferRecord)
+DEFINE_BUF(LaunchBuf, LaunchRecord)
+
+static XferBuf   g_scatter   = {NULL, 0, 0};
+static XferBuf   g_gather    = {NULL, 0, 0};
+static LaunchBuf g_launch    = {NULL, 0, 0};
+static int       g_iteration = 0;
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Public API
+// ─────────────────────────────────────────────────────────────────────────────
+
+uint64_t upmemrt_now_ns(void) {
+  struct timespec ts;
+  clock_gettime(CLOCK_MONOTONIC, &ts);
+  return (uint64_t)ts.tv_sec * 1000000000ULL + (uint64_t)ts.tv_nsec;
+}
+
+void upmemrt_start_stat_collection(int iter) { g_iteration = iter; }
+
+void upmemrt_record_scatter(uint64_t elapsed_ns, size_t bytes_per_dpu,
+                             uint32_t num_dpus) {
+  XferBuf_push(&g_scatter,
+               (XferRecord){g_iteration, elapsed_ns, bytes_per_dpu, num_dpus});
+}
+
+void upmemrt_record_gather(uint64_t elapsed_ns, size_t bytes_per_dpu,
+                            uint32_t num_dpus) {
+  XferBuf_push(&g_gather,
+               (XferRecord){g_iteration, elapsed_ns, bytes_per_dpu, num_dpus});
+}
+
+void upmemrt_record_launch(uint64_t elapsed_ns, uint32_t num_dpus) {
+  LaunchBuf_push(&g_launch, (LaunchRecord){g_iteration, elapsed_ns, num_dpus});
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// CSV dump
+// ─────────────────────────────────────────────────────────────────────────────
+
+static void dump_xfer(const XferBuf *buf, const char *path) {
+  FILE *f = fopen(path, "w");
+  if (!f) {
+    perror(path);
+    return;
+  }
+  fprintf(f, "iteration,elapsed_ns,bytes_per_dpu,num_dpus\n");
+  for (size_t i = 0; i < buf->size; i++) {
+    const XferRecord *r = &buf->data[i];
+    fprintf(f, "%d,%" PRIu64 ",%zu,%u\n", r->iteration, r->elapsed_ns,
+            r->bytes_per_dpu, r->num_dpus);
+  }
+  fclose(f);
+}
+
+static void dump_launch(const LaunchBuf *buf, const char *path) {
+  FILE *f = fopen(path, "w");
+  if (!f) {
+    perror(path);
+    return;
+  }
+  fprintf(f, "iteration,elapsed_ns,num_dpus\n");
+  for (size_t i = 0; i < buf->size; i++) {
+    const LaunchRecord *r = &buf->data[i];
+    fprintf(f, "%d,%" PRIu64 ",%u\n", r->iteration, r->elapsed_ns,
+            r->num_dpus);
+  }
+  fclose(f);
+}
+
+void upmemrt_dump_stats(const char *prefix) {
+  char path[4096];
+  snprintf(path, sizeof(path), "%s_scatter.csv", prefix);
+  dump_xfer(&g_scatter, path);
+  snprintf(path, sizeof(path), "%s_gather.csv", prefix);
+  dump_xfer(&g_gather, path);
+  snprintf(path, sizeof(path), "%s_launch.csv", prefix);
+  dump_launch(&g_launch, path);
+}
+
+#endif // UPMEM_RT_STATS
