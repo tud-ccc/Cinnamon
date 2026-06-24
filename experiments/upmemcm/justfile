@@ -10,3 +10,8 @@ barrier_run:
 [working-directory: 'barrier_cost']
 barrier_plot:
     $(realpath ../../../.venv/bin)/python plot_barrier.py
+
+[working-directory: 'reduce_cost']
+reduce_run:
+    cd ../../.. && just b
+    # todo 

@@ -5,7 +5,7 @@
 // -----
 #upmem = #upmem.platform<type = v1A, dimensions = 32x64x24>
 
-func.func @red_4MB(%x: tensor<524288xi32>) -> i32 
+func.func @red_4MB(%x: tensor<524288xi32> {bufferization.buffer_layout = affine_map<(d0) -> (d0)>, bufferization.writable = true}) -> i32 
   attributes {cinm.available_platforms = [#upmem]} {
   %4 = cinm.compute on platform #upmem -> i32 {
     %4 = cinm.op.reduce add (%x) {dimension=0} : tensor<524288xi32> -> i32
@@ -17,7 +17,7 @@ func.func @red_4MB(%x: tensor<524288xi32>) -> i32
 // -----
 #upmem = #upmem.platform<type = v1A, dimensions = 32x64x24>
 
-func.func @red_64MB(%x: tensor<8388608xi32>) -> i32 
+func.func @red_64MB(%x: tensor<8388608xi32>{bufferization.buffer_layout = affine_map<(d0) -> (d0)>, bufferization.writable = true}) -> i32 
   attributes {cinm.available_platforms = [#upmem]} {
   %4 = cinm.compute on platform #upmem -> i32 {
     %4 = cinm.op.reduce add (%x) {dimension=0} : tensor<8388608xi32> -> i32
@@ -29,7 +29,7 @@ func.func @red_64MB(%x: tensor<8388608xi32>) -> i32
 // -----
 #upmem = #upmem.platform<type = v1A, dimensions = 32x64x24>
 
-func.func @red_256MB(%x: tensor<34554432xi32>) -> i32
+func.func @red_256MB(%x: tensor<34554432xi32>{bufferization.buffer_layout = affine_map<(d0) -> (d0)>, bufferization.writable = true}) -> i32
   attributes {cinm.available_platforms = [#upmem]} {
   %4 = cinm.compute on platform #upmem -> i32 {
     %4 = cinm.op.reduce add (%x) {dimension=0} : tensor<34554432xi32> -> i32
@@ -41,7 +41,7 @@ func.func @red_256MB(%x: tensor<34554432xi32>) -> i32
 // -----
 #upmem = #upmem.platform<type = v1A, dimensions = 32x64x24>
 
-func.func @red_512MB(%x: tensor<67108864xi32>) -> i32
+func.func @red_512MB(%x: tensor<67108864xi32>{bufferization.buffer_layout = affine_map<(d0) -> (d0)>, bufferization.writable = true}) -> i32
   attributes {cinm.available_platforms = [#upmem]} {
   %4 = cinm.compute on platform #upmem -> i32 {
     %4 = cinm.op.reduce add (%x) {dimension=0} : tensor<67108864xi32> -> i32

@@ -1,6 +1,7 @@
 
 
 #include "upmem_rt.h"
+#include "timers.h"
 #include <assert.h>
 #include <stdio.h>
 #include <string.h>
@@ -35,14 +36,25 @@ void upmemrt_dpu_scatter(struct dpu_set_t *dpu_set, void *hostBuffer,
                          size_t element_size, size_t num_elements,
                          size_t num_elements_per_tasklet, size_t copy_bytes,
                          const char *bufId, size_t (*base_offset)(size_t)) {
+#ifdef UPMEM_RT_STATS
+  uint64_t t0 = upmemrt_now_ns();
+#endif
   do_dpu_transfer(DPU_XFER_TO_DPU, dpu_set, hostBuffer, copy_bytes, bufId, 1,
                   base_offset);
+#ifdef UPMEM_RT_STATS
+  uint32_t nr_dpus = 0;
+  dpu_get_nr_dpus(*dpu_set, &nr_dpus);
+  upmemrt_record_scatter(upmemrt_now_ns() - t0, copy_bytes, nr_dpus);
+#endif
 }
 
 void upmemrt_dpu_gather(struct dpu_set_t *dpu_set, void *host_buffer,
                         size_t element_size, size_t num_elements,
                         size_t num_elements_per_tasklet, size_t copy_bytes,
                         const char *bufid, size_t (*base_offset)(size_t)) {
+#ifdef UPMEM_RT_STATS
+  uint64_t t0 = upmemrt_now_ns();
+#endif
   if (num_elements * element_size >= 8) {
     do_dpu_transfer(DPU_XFER_FROM_DPU, dpu_set, host_buffer, copy_bytes, bufid,
                     1, base_offset);
@@ -56,6 +68,11 @@ void upmemrt_dpu_gather(struct dpu_set_t *dpu_set, void *host_buffer,
              element_size);
     }
   }
+#ifdef UPMEM_RT_STATS
+  uint32_t nr_dpus = 0;
+  dpu_get_nr_dpus(*dpu_set, &nr_dpus);
+  upmemrt_record_gather(upmemrt_now_ns() - t0, copy_bytes, nr_dpus);
+#endif
 }
 
 struct dpu_set_t *upmemrt_dpu_alloc(int32_t num_ranks, int32_t num_dpus,
@@ -70,7 +87,15 @@ struct dpu_set_t *upmemrt_dpu_alloc(int32_t num_ranks, int32_t num_dpus,
 
 void upmemrt_dpu_launch(struct dpu_set_t *void_dpu_set) {
   struct dpu_set_t *dpu_set = (struct dpu_set_t *)void_dpu_set;
+#ifdef UPMEM_RT_STATS
+  uint64_t t0 = upmemrt_now_ns();
+#endif
   dpu_error_t error = dpu_launch(*dpu_set, DPU_SYNCHRONOUS);
+#ifdef UPMEM_RT_STATS
+  uint32_t nr_dpus = 0;
+  dpu_get_nr_dpus(*dpu_set, &nr_dpus);
+  upmemrt_record_launch(upmemrt_now_ns() - t0, nr_dpus);
+#endif
   if (getenv("UPMEM_LOG")) {
     size_t i = 0;
     struct dpu_set_t dpu;
