@@ -11,7 +11,7 @@ HOST_LDFLAGS  = -ldpu -ldpuverbose -L$(UPMEM_HOME)/lib
 
 CM_INCDIR    = ../../third-party/upmem-cost-model/include
 CM_LIB       = ../../build/lib/libUpmemCostModel.a
-SIM_CXXFLAGS = -O2 -std=c++20 -I$(CM_INCDIR)
+SIM_CXXFLAGS = -O2 -std=c++20 -I$(CM_INCDIR) -pthread
 
 BIN = bin
 
