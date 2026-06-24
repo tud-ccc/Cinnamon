@@ -74,13 +74,13 @@ static double costOfOpCb(Operation &op, bool annotate,
             return costOfRegionCb(*forOp.getLoopRegions()[0], annotate, cb) *
                    static_cast<double>(tripCount);
           })
-          .Case<memref::CopyOp>([](memref::CopyOp copyOp) {
-            auto hostTy = copyOp.getSource().getType();
-            double bytes = static_cast<double>(staticElementCount(hostTy)) *
-                           elementBytes(hostTy.getElementType());
-            return transferCost(bytes, 1);
-          })
-          .Case<memref::LoadOp, memref::StoreOp>([](auto) { return 1e-7; })
+          // .Case<memref::CopyOp>([](memref::CopyOp copyOp) {
+          //   auto hostTy = copyOp.getSource().getType();
+          //   double bytes = static_cast<double>(staticElementCount(hostTy)) *
+          //                  elementBytes(hostTy.getElementType());
+          //   return transferCost(bytes, 1);
+          // })
+          // .Case<memref::LoadOp, memref::StoreOp>([](auto) { return 1e-7; })
           .Case<cnm::ScatterOp, cnm::GatherOp>([](auto scatterOp) {
             auto hostTy = scatterOp.getHostType();
             double bytes = static_cast<double>(staticElementCount(hostTy)) *
@@ -108,6 +108,7 @@ static double costOfOpCb(Operation &op, bool annotate,
           .Case<WaitForOp>([&](auto waitForOp) -> double {
             return cb(waitForOp.getOperation(), annotate);
           })
+          // alloc/free dpus are not counted as they are considered amortized
           .Case<cnm::LaunchOp>([](auto launchOp) -> double {
             if (auto acc = upmemAccelOf(launchOp.getWg().getType())) {
               double c = 1;
@@ -121,7 +122,8 @@ static double costOfOpCb(Operation &op, bool annotate,
           .Case<arith::ConstantOp, upmem::StaticAllocOp, cinm::YieldOp,
                 memref::SubViewOp>([](auto) { return 0.0; })
           .Default([&](Operation *o) {
-            double c = o->getNumRegions() > 0 ? 0.0 : 5e-9;
+            // double c = o->getNumRegions() > 0 ? 0.0 : 5e-9;
+            double c = 0.0;
             for (auto &region : o->getRegions())
               c += costOfRegionCb(region, annotate, cb);
             return c;
