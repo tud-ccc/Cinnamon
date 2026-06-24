@@ -16,6 +16,7 @@
 #include <mlir/Dialect/SCF/IR/SCF.h>
 #include <mlir/Dialect/Utils/IndexingUtils.h>
 #include <mlir/Dialect/Utils/StaticValueUtils.h>
+#include <mlir/IR/BuiltinAttributes.h>
 #include <mlir/IR/BuiltinTypes.h>
 #include <mlir/IR/Operation.h>
 #include <mlir/IR/Value.h>
@@ -26,6 +27,7 @@
 #include <memory>
 #include <string>
 #include <unordered_map>
+#include <vector>
 
 #define DEBUG_TYPE "cinm-inference"
 
@@ -338,6 +340,23 @@ struct DpuTranslator {
   }
 
   void translateIf(scf::IfOp ifOp) {
+    if (auto attr =
+            ifOp->getAttrOfType<DenseI8ArrayAttr>("upmem_cm.const_tasklets")) {
+      std::vector<int> allowedTasklets;
+      allowedTasklets.reserve(attr.size());
+      for (auto tid : attr.asArrayRef()) {
+        allowedTasklets.push_back(tid);
+      }
+      builder.beginIfThread(std::move(allowedTasklets));
+      for (Operation &op : ifOp.getThenRegion().front()) {
+        if (isa<scf::YieldOp>(&op))
+          continue;
+        translateOp(op);
+      }
+      builder.endIfThread();
+      return;
+    }
+
     // Approximation: translate the then-block as unconditional.
     for (Operation &op : ifOp.getThenRegion().front()) {
       if (isa<scf::YieldOp>(&op))
