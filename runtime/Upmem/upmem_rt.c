@@ -106,7 +106,15 @@ void upmemrt_dpu_launch(struct dpu_set_t *void_dpu_set) {
 
 void upmemrt_dpu_free(struct dpu_set_t *void_dpu_set) {
   struct dpu_set_t *dpu_set = (struct dpu_set_t *)void_dpu_set;
+#ifdef UPMEM_RT_STATS
+  uint32_t nr_dpus = 0;
+  dpu_get_nr_dpus(*dpu_set, &nr_dpus);
+  uint64_t t0 = upmemrt_now_ns();
+#endif
   DPU_ASSERT(dpu_free(*dpu_set));
+#ifdef UPMEM_RT_STATS
+  upmemrt_record_free(upmemrt_now_ns() - t0, nr_dpus);
+#endif
 }
 
 void upmemrt_dpu_free_all(struct dpu_set_t *void_dpu_set) {

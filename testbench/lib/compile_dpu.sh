@@ -22,7 +22,7 @@ if [[ "$header" =~ $pat ]]; then
         bin_name="${BASH_REMATCH[4]}"
         bin_path=$(realpath "$OUTPATH/$bin_name")
 
-        command="'$dpuCompiler' -DSTACK_SIZE_DEFAULT=$stack_size -DNR_TASKLETS=$threads -D$var '$PROG' -o '$bin_path' '-I$curdir/dpu' -Wall -Wextra -Werror -Wno-unused-variable"
+        command="'$dpuCompiler' -DSTACK_SIZE_DEFAULT=$stack_size -DNR_TASKLETS=$threads -D$var '$PROG' -o '$bin_path' '-I$curdir/dpu' -O3 -Wall -Wextra -Werror -Wno-unused-variable"
         echo $command
         eval "$command"
     fi

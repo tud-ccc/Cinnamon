@@ -117,4 +117,15 @@ def UpmemAnnotateCostsPass
   ];
 }
 
+def UpmemLegalizeForTranslationPass
+    : Pass<"upmem-legalize-for-translation", "ModuleOp"> {
+  let summary = "Strip all ops except upmem.dpu_program for DPU translation";
+  let description = [{
+    Erases every top-level op in the module that is not a upmem.dpu_program,
+    leaving a module that contains only DPU kernels and is ready for
+    mlir-to-upmem-cpp translation.
+  }];
+  let dependentDialects = ["::mlir::upmem::UPMEMDialect"];
+}
+
 #endif // UPMEM_TRANSFORM_PASSES

@@ -13,8 +13,9 @@
 // tagged with this number until the next call.
 void upmemrt_start_stat_collection(int iter);
 
-// Write three CSV files: {prefix}_scatter.csv, {prefix}_gather.csv,
-// {prefix}_launch.csv, containing all rows collected since program start.
+// Write four CSV files: {prefix}_scatter.csv, {prefix}_gather.csv,
+// {prefix}_launch.csv, {prefix}_free.csv, containing all rows collected since
+// program start.
 void upmemrt_dump_stats(const char *prefix);
 
 // Internal: called by upmem_rt.c ─────────────────────────────────────────────
@@ -25,6 +26,7 @@ void upmemrt_record_scatter(uint64_t elapsed_ns, size_t bytes_per_dpu,
 void upmemrt_record_gather(uint64_t elapsed_ns, size_t bytes_per_dpu,
                             uint32_t num_dpus);
 void upmemrt_record_launch(uint64_t elapsed_ns, uint32_t num_dpus);
+void upmemrt_record_free(uint64_t elapsed_ns, uint32_t num_dpus);
 
 #else // UPMEM_RT_STATS not defined ─────────────────────────────────────────
 
