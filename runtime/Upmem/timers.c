@@ -47,6 +47,7 @@ DEFINE_BUF(LaunchBuf, LaunchRecord)
 static XferBuf   g_scatter   = {NULL, 0, 0};
 static XferBuf   g_gather    = {NULL, 0, 0};
 static LaunchBuf g_launch    = {NULL, 0, 0};
+static LaunchBuf g_free      = {NULL, 0, 0};
 static int       g_iteration = 0;
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -75,6 +76,10 @@ void upmemrt_record_gather(uint64_t elapsed_ns, size_t bytes_per_dpu,
 
 void upmemrt_record_launch(uint64_t elapsed_ns, uint32_t num_dpus) {
   LaunchBuf_push(&g_launch, (LaunchRecord){g_iteration, elapsed_ns, num_dpus});
+}
+
+void upmemrt_record_free(uint64_t elapsed_ns, uint32_t num_dpus) {
+  LaunchBuf_push(&g_free, (LaunchRecord){g_iteration, elapsed_ns, num_dpus});
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -119,6 +124,8 @@ void upmemrt_dump_stats(const char *prefix) {
   dump_xfer(&g_gather, path);
   snprintf(path, sizeof(path), "%s_launch.csv", prefix);
   dump_launch(&g_launch, path);
+  snprintf(path, sizeof(path), "%s_free.csv", prefix);
+  dump_launch(&g_free, path);
 }
 
 #endif // UPMEM_RT_STATS
