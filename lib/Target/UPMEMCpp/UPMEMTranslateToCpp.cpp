@@ -41,6 +41,7 @@
 #include <llvm/Support/raw_ostream.h>
 #include <mlir/IR/Builders.h>
 #include <mlir/IR/BuiltinAttributes.h>
+#include <mlir/IR/Diagnostics.h>
 #include <mlir/IR/Location.h>
 #include <mlir/IR/OpDefinition.h>
 #include <mlir/IR/SymbolTable.h>
@@ -362,6 +363,17 @@ static bool isInMemspace(MemRefType ty, upmem::DpuMemSpace space) {
   return false;
 }
 
+// Peel through ignorable reshape-like ops to reach the underlying value.
+static Value skipIgnorableOps(Value v) {
+  while (Operation *op = v.getDefiningOp())
+    if (isa<memref::ExpandShapeOp, memref::CollapseShapeOp, memref::ReshapeOp>(
+            op))
+      v = op->getOperand(0);
+    else
+      break;
+  return v;
+}
+
 static LogicalResult getBasePtrOfAlloc(Operation *op, Value &basePtr) {
   if (auto pwramAlloc = llvm::dyn_cast_or_null<upmem::PrivateWRAMAllocOp>(op)) {
     basePtr = pwramAlloc.getBuffer();
@@ -371,6 +383,8 @@ static LogicalResult getBasePtrOfAlloc(Operation *op, Value &basePtr) {
     basePtr = staticAlloc.getBuffer();
     return success();
   }
+  if (!op)
+    return emitError(UnknownLoc(), "unknown error during translation");
   return op->emitOpError("Expected upmem allocation op");
 }
 
@@ -380,14 +394,11 @@ static LogicalResult getBasePtrAndOffset(CppEmitter &emitter, Value v,
   offsetExpr.resize(0);
   offsetExpr.append("0");
 
+  // Peel ignorable ops, then check for an optional single subview.
+  v = skipIgnorableOps(v);
   if (auto view =
           llvm::dyn_cast_or_null<memref::SubViewOp>(v.getDefiningOp())) {
-    if (failed(getBasePtrOfAlloc(view.getSource().getDefiningOp(), basePtr)))
-      return failure();
     auto offsets = view.getMixedOffsets();
-    if (offsets.empty()) {
-      return success();
-    }
     auto sizes = view.getMixedSizes();
     for (auto [off, size] : llvm::zip_equal(std::views::reverse(offsets),
                                             std::views::reverse(sizes))) {
@@ -397,9 +408,10 @@ static LogicalResult getBasePtrAndOffset(CppEmitter &emitter, Value v,
       emitter.appendNameOrInt(size, offsetExpr);
       offsetExpr.append(")");
     }
-
-    return success();
+    // Peel ignorable ops between the subview and the allocation.
+    v = skipIgnorableOps(view.getSource());
   }
+
   return getBasePtrOfAlloc(v.getDefiningOp(), basePtr);
 }
 
@@ -1139,12 +1151,13 @@ static LogicalResult printBufferDecl(CppEmitter &emitter,
   // We emit static buffers as array of bytes to be able to pad them.
   auto &out = emitter.ostream();
   out << "char " << qualifier << " ";
-  if (auto name = op.getSymNameAttr()) {
-    if (failed(emitter.recordStaticName(op.getBuffer(), name.getValue())))
+  if (auto name = op.getSymName()) {
+    if (failed(emitter.recordStaticName(op.getBuffer(), *name)))
       return failure();
-    out << name.getValue();
+    out << *name;
   } else {
-    emitter.getOrCreateName(op.getBuffer());
+    name = emitter.getOrCreateName(op.getBuffer());
+    out << *name;
   }
 
   auto bufferType = op.getBuffer().getType();
@@ -1344,7 +1357,6 @@ static LogicalResult printOperation(CppEmitter &emitter, ModuleOp moduleOp) {
       return failure();
     os << "#endif\n\n";
   }
-
 
   os << "int main(void) {\n";
   os << "  barrier_wait(&my_barrier);\n";
@@ -1743,14 +1755,12 @@ LogicalResult CppEmitter::emitOperation(Operation &op, bool trailingSemicolon) {
               [&](auto op) { return printOperation(*this, op); })
           .Case<upmem::BarrierOp>(
               [&](auto op) { return printOperation(*this, op); })
-          .Case<memref::SubViewOp>([&](memref::SubViewOp op) -> LogicalResult {
-            if (llvm::all_of(op.getResult().getUsers(), [](auto user) {
-                  return llvm::isa<upmem::LocalTransferOp>(user);
-                })) {
-              return success();
-            }
-            return op->emitOpError("cannot be printed");
-          })
+          .Case<memref::SubViewOp, memref::ExpandShapeOp,
+                memref::CollapseShapeOp, memref::CastOp>(
+              [&](auto) -> LogicalResult {
+                // fine, handled by local transfer printer
+                return success();
+              })
           // [&](auto op) { skipSemicolon = true; return success(); })
           .Default([&](Operation *) {
             return op.emitOpError("unable to find printer for op");
@@ -1849,12 +1859,18 @@ LogicalResult upmem_emitc::UPMEMtranslateToCpp(Operation *op, raw_ostream &os,
   CppEmitter emitter(os, declareVariablesAtTop);
   LogicalResult res = success();
   op->walk<WalkOrder::PreOrder>([&](Operation *child) {
+    // todo we should not hardcode the module name
     if (auto mod = llvm::dyn_cast_or_null<ModuleOp>(child)) {
       if (mod.getSymName() == "dpu_kernels") {
         res = emitter.emitOperation(*child, /*trailingSemicolon=*/false);
-        return WalkResult::interrupt();
+        return WalkResult::skip();
       }
       return WalkResult::advance();
+    }
+    if (auto dpuProg = llvm::dyn_cast_or_null<upmem::DpuProgramOp>(child)) {
+      res = emitter.emitOperation(*child->getParentOfType<ModuleOp>(),
+                                  /*trailingSemicolon=*/false);
+      return WalkResult::interrupt();
     }
     return WalkResult::skip();
   });

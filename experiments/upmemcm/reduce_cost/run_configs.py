@@ -24,6 +24,7 @@ import pathlib
 import subprocess
 import sys
 from concurrent.futures import ProcessPoolExecutor, as_completed
+from tqdm import tqdm
 
 # ── Constants ────────────────────────────────────────────────────────────────
 
@@ -44,10 +45,18 @@ NON_PARAM_COLS = frozenset({
 # Passes to run before upmem-infer-accelerator.
 PRE_PASSES = ["--cinm-assign-platforms", "--cinm-isolate-compute-blocks"]
 
+# ── Config filter ─────────────────────────────────────────────────────────────
+# Edit this function to restrict which configs are compiled and benchmarked.
+# Receives the config parameters as a dict {param_name: int_value}.
+# Return True to include the config, False to skip it.
+
+def config_filter(params: dict) -> bool:
+    return params['mramCol'] * params['dpus'] >= 128000
+
 # ── Pool parsing ─────────────────────────────────────────────────────────────
 
 def parse_pool(pool_csv: pathlib.Path):
-    """Return list of (row_index, list[int]) for rows where valid == 1."""
+    """Return list of (row_index, list[int]) for rows where valid == 1 and config_filter passes."""
     configs = []
     with open(pool_csv) as f:
         reader = csv.DictReader(f)
@@ -56,11 +65,13 @@ def parse_pool(pool_csv: pathlib.Path):
             if row.get("valid", "0").strip() != "1":
                 continue
             try:
-                values = [int(row[c]) for c in param_cols]
+                params = {c: int(row[c]) for c in param_cols}
             except (ValueError, KeyError) as e:
                 print(f"  skip row {i}: {e}", file=sys.stderr)
                 continue
-            configs.append((i, values))
+            if not config_filter(params):
+                continue
+            configs.append((i, list(params.values())))
     return configs
 
 
@@ -124,7 +135,7 @@ def compile_one(args):
     ]
     r = subprocess.run(cmd_opt, capture_output=True, text=True)
     if r.returncode != 0:
-        return fn_name, config_id, False, f"cinm-opt failed:\n{r.stderr[-3000:]}"
+        return fn_name, config_id, False, f"cinm-opt failed:\n{r.stderr}"
 
     # Step 2: compile host + DPU.
     ir_dir  = config_dir / "ir"
@@ -135,11 +146,11 @@ def compile_one(args):
         f"IR_DIR={ir_dir.resolve()}",
         f"BIN_DIR={bin_dir.resolve()}",
         f"BENCH_FN={fn_name}",
-        "bench-single",
+        "bench-single"
     ]
     r = subprocess.run(cmd_make, capture_output=True, text=True)
     if r.returncode != 0:
-        return fn_name, config_id, False, f"make failed:\n{r.stderr[-3000:]}"
+        return fn_name, config_id, False, f"make failed:\n{r.stderr}"
 
     return fn_name, config_id, True, ""
 
@@ -147,7 +158,7 @@ def compile_one(args):
 # ── Run step (sequential to avoid DPU over-allocation) ───────────────────────
 
 def run_one(fn_name, config_id, run_dir, fn_size, iters):
-    config_dir = pathlib.Path(run_dir) / fn_name / f"config_{config_id:05d}"
+    config_dir = pathlib.Path(run_dir).absolute() / fn_name / f"config_{config_id:05d}"
     bench_bin  = config_dir / "bin" / f"bench_{fn_name}"
     output_dir = config_dir / "output"
     output_dir.mkdir(exist_ok=True)
@@ -158,7 +169,7 @@ def run_one(fn_name, config_id, run_dir, fn_size, iters):
         capture_output=True,
         text=True,
         # DPU binaries are loaded relative to cwd; place bench next to them.
-        cwd=str(config_dir / "bin"),
+        cwd=str(config_dir / "bin" / fn_name),
     )
     if r.returncode != 0:
         return fn_name, config_id, False, r.stderr[-1000:]
@@ -230,13 +241,13 @@ def main():
         print(f"\nCompiling with {args.workers} workers...")
         with ProcessPoolExecutor(max_workers=args.workers) as ex:
             futures = {ex.submit(compile_one, a): (a[0], a[1]) for a in compile_args}
-            for fut in as_completed(futures):
+            for fut in tqdm(as_completed(futures), total=len(futures)):
                 fn_name, cid = futures[fut]
                 _, _, ok, msg = fut.result()
                 status = "OK" if ok else "FAIL"
-                print(f"  [{status}] {fn_name} config {cid:05d}")
+                tqdm.write(f"  [{status}] {fn_name} config {cid:05d}")
                 if not ok:
-                    print(f"         {msg[:300]}", file=sys.stderr)
+                    tqdm.write(f"         {msg[:300]}", file=sys.stderr)
                 if ok:
                     compiled.append((fn_name, cid))
     else:
@@ -245,7 +256,7 @@ def main():
     # ── Benchmark phase ───────────────────────────────────────────────────────
     if not args.compile_only:
         print(f"\nRunning {len(compiled)} benchmarks (sequential)...")
-        for fn_name, cid in compiled:
+        for fn_name, cid in tqdm(compiled):
             fn_size = FUNC_SIZES[fn_name]
             _, _, ok, msg = run_one(fn_name, cid, run_dir, fn_size, args.iters)
             status = "OK" if ok else "FAIL"

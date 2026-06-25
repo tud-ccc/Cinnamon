@@ -2,7 +2,6 @@
 
 [working-directory: 'barrier_cost']
 barrier_run:
-    cd ../../.. && just b
     make
     ./barrier_sim > sim_results.csv
     just barrier_plot
@@ -12,6 +11,6 @@ barrier_plot:
     $(realpath ../../../.venv/bin)/python plot_barrier.py
 
 [working-directory: 'reduce_cost']
-reduce_run:
-    cd ../../.. && just b
-    # todo 
+reduce_run *ARGS:
+    $(realpath ../../../.venv/bin)/python run_configs.py {{ARGS}}
+     
