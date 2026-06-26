@@ -114,6 +114,10 @@ def split_source(src_mlir: pathlib.Path, out_dir: pathlib.Path):
 
 
 # ── Compile step (runs in a worker process) ──────────────────────────────────
+def fmt_cmd(args: list[str]) -> str:
+    def quote(s):
+      return f'"{s}"' if ' ' in s else s
+    return ' '.join(quote(s) for s in args)
 
 def compile_one(args):
     (fn_name, config_id, param_values, fn_module_path,
@@ -135,7 +139,9 @@ def compile_one(args):
     ]
     r = subprocess.run(cmd_opt, capture_output=True, text=True)
     if r.returncode != 0:
-        return fn_name, config_id, False, f"cinm-opt failed:\n{r.stderr}"
+        cinm_opt_cmd = fmt_cmd(cmd_opt)
+        (config_dir / "cinm_opt_stderr.txt").write_text(r.stderr)
+        return fn_name, config_id, False, f"cinm-opt failed:\n{cinm_opt_cmd}\n{r.stderr}"
 
     # Step 2: compile host + DPU.
     ir_dir  = config_dir / "ir"
@@ -146,10 +152,12 @@ def compile_one(args):
         f"IR_DIR={ir_dir.resolve()}",
         f"BIN_DIR={bin_dir.resolve()}",
         f"BENCH_FN={fn_name}",
+        f"BENCH_N={FUNC_SIZES[fn_name]}",
         "bench-single"
     ]
     r = subprocess.run(cmd_make, capture_output=True, text=True)
     if r.returncode != 0:
+        (config_dir / "make_stderr.txt").write_text(r.stderr)
         return fn_name, config_id, False, f"make failed:\n{r.stderr}"
 
     return fn_name, config_id, True, ""
@@ -163,7 +171,7 @@ def run_one(fn_name, config_id, run_dir, fn_size, iters):
     output_dir = config_dir / "output"
     output_dir.mkdir(exist_ok=True)
 
-    cmd = [str(bench_bin), str(fn_size), str(output_dir), str(iters)]
+    cmd = [str(bench_bin), str(output_dir), str(iters)]
     r = subprocess.run(
         cmd,
         capture_output=True,
@@ -172,6 +180,7 @@ def run_one(fn_name, config_id, run_dir, fn_size, iters):
         cwd=str(config_dir / "bin" / fn_name),
     )
     if r.returncode != 0:
+        (config_dir / "bench_stderr.txt").write_text(r.stderr)
         return fn_name, config_id, False, r.stderr[-1000:]
     return fn_name, config_id, True, r.stdout.strip()
 
@@ -247,7 +256,7 @@ def main():
                 status = "OK" if ok else "FAIL"
                 tqdm.write(f"  [{status}] {fn_name} config {cid:05d}")
                 if not ok:
-                    tqdm.write(f"         {msg[:300]}", file=sys.stderr)
+                    tqdm.write(f"         {msg}", file=sys.stderr)
                 if ok:
                     compiled.append((fn_name, cid))
     else:

@@ -152,6 +152,7 @@ def StaticAllocOp : Upmem_Op<"static_alloc", [//Symbol,
   let arguments = (ins
         UPMEM_DpuMemSpaceAttr:$memSpace, 
         DefaultValuedAttr<UnitAttr, "false">:$noinit,
+        DefaultValuedAttr<UnitAttr, "false">:$zeroinit,
         OptionalAttr<SymbolNameAttr>:$sym_name);
 
   let results = (outs Res<AnyMemRef, "structured view of the source buffer",
@@ -163,10 +164,11 @@ def StaticAllocOp : Upmem_Op<"static_alloc", [//Symbol,
       "MemRefType":$structuredType,
       "upmem::DpuMemSpace":$memSpace,
       CArg<"StringRef", "{}">:$sym_name,
-      CArg<"bool", "false">:$noinit
+      CArg<"bool", "false">:$noinit,
+      CArg<"bool", "false">:$zeroinit
     )>
   ];
-  let assemblyFormat = "($sym_name^)? `(` $memSpace `)` (`noinit` $noinit^)? attr-dict `:` type($buffer)";
+  let assemblyFormat = "($sym_name^)? `(` $memSpace `)` (`noinit` $noinit^)? (`zeroinit` $zeroinit^)? attr-dict `:` type($buffer)";
 
   let extraClassDeclaration = [{
 

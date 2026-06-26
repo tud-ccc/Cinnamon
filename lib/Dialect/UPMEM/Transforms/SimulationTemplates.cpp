@@ -155,91 +155,6 @@ static void packATile(OpBuilder &b, Location loc, Value input, Value aStage,
       });
 }
 
-// Broadcast output row slices into yStage for all DPUs. Outer step is mramRows
-// so iv0 is the row offset directly; iv1 is the dc index (step 1).
-static void packYTile(OpBuilder &b, Location loc, Value output, Value yStage,
-                      Value mOff, int64_t dpuRows, int64_t dpuCols,
-                      int64_t mramRows) {
-  MLIRContext *ctx = b.getContext();
-  AffineExpr d0 = getAffineDimExpr(0, ctx), d1 = getAffineDimExpr(1, ctx);
-  AffineMap flatDpuMap =
-      AffineMap::get(2, 0, {d0.floorDiv(mramRows) * dpuCols + d1}, ctx);
-
-  cinm::createNestedAffineForLoops(
-      b, loc, {dpuRows * mramRows, dpuCols}, {mramRows, 1}, {},
-      [&](OpBuilder &b, Location loc, ValueRange ivs,
-          ValueRange) -> SmallVector<Value> {
-        Value rowBase = arith::AddIOp::create(b, loc, mOff, ivs[0]);
-        Value flatDpu = affine::AffineApplyOp::create(
-            b, loc, flatDpuMap, ValueRange{ivs[0], ivs[1]});
-        Value srcRow = memref::SubViewOp::create(
-            b, loc, output, ArrayRef<OpFoldResult>{rowBase},
-            ArrayRef<OpFoldResult>{b.getIndexAttr(mramRows)},
-            ArrayRef<OpFoldResult>{b.getIndexAttr(1)});
-        Value dst2 = memref::SubViewOp::create(
-            b, loc, yStage, ArrayRef<OpFoldResult>{flatDpu, b.getIndexAttr(0)},
-            ArrayRef<OpFoldResult>{b.getIndexAttr(1), b.getIndexAttr(mramRows)},
-            ArrayRef<OpFoldResult>{b.getIndexAttr(1), b.getIndexAttr(1)});
-        Value dst = memref::CollapseShapeOp::create(
-            b, loc, dst2, ArrayRef<ReassociationIndices>{{0, 1}});
-        memref::CopyOp::create(b, loc, srcRow, dst);
-        return {};
-      });
-}
-
-// Merge yStage back into output after gather. Outer step is mramRows so iv0
-// is the row offset directly; firstDpu is recovered via affine floordiv.
-static void mergeYTile(OpBuilder &b, Location loc, Value yStage, Value output,
-                       Value mOff, int64_t dpuRows, int64_t dpuCols,
-                       int64_t mramRows) {
-  MLIRContext *ctx = b.getContext();
-  AffineMap firstDpuMap = AffineMap::get(
-      1, 0, {getAffineDimExpr(0, ctx).floorDiv(mramRows) * dpuCols}, ctx);
-
-  cinm::createNestedAffineForLoops(
-      b, loc, {dpuRows * mramRows}, {mramRows}, {},
-      [&](OpBuilder &b, Location loc, ValueRange ivs,
-          ValueRange) -> SmallVector<Value> {
-        Value rowBase = arith::AddIOp::create(b, loc, mOff, ivs[0]);
-        Value firstDpu = affine::AffineApplyOp::create(b, loc, firstDpuMap,
-                                                       ValueRange{ivs[0]});
-        Value outRow = memref::SubViewOp::create(
-            b, loc, output, ArrayRef<OpFoldResult>{rowBase},
-            ArrayRef<OpFoldResult>{b.getIndexAttr(mramRows)},
-            ArrayRef<OpFoldResult>{b.getIndexAttr(1)});
-        Value first2 = memref::SubViewOp::create(
-            b, loc, yStage, ArrayRef<OpFoldResult>{firstDpu, b.getIndexAttr(0)},
-            ArrayRef<OpFoldResult>{b.getIndexAttr(1), b.getIndexAttr(mramRows)},
-            ArrayRef<OpFoldResult>{b.getIndexAttr(1), b.getIndexAttr(1)});
-        Value first1 = memref::CollapseShapeOp::create(
-            b, loc, first2, ArrayRef<ReassociationIndices>{{0, 1}});
-        memref::CopyOp::create(b, loc, first1, outRow);
-
-        if (dpuCols > 1) {
-          cinm::createNestedAffineForLoops(
-              b, loc, {mramRows}, {1}, {},
-              [&](OpBuilder &b, Location loc, ValueRange ivs2,
-                  ValueRange) -> SmallVector<Value> {
-                Value mr = ivs2[0];
-                Value acc =
-                    memref::LoadOp::create(b, loc, outRow, ValueRange{mr});
-                for (int64_t dc = 1; dc < dpuCols; ++dc) {
-                  Value flatDpu = arith::AddIOp::create(
-                      b, loc, firstDpu,
-                      arith::ConstantIndexOp::create(b, loc, dc));
-                  acc = arith::AddIOp::create(
-                      b, loc, acc,
-                      memref::LoadOp::create(b, loc, yStage,
-                                             ValueRange{flatDpu, mr}));
-                }
-                memref::StoreOp::create(b, loc, acc, outRow, ValueRange{mr});
-                return {};
-              });
-        }
-        return {};
-      });
-}
-
 } // namespace
 
 upmem::DpuProgramOp createDpuTailReductionKernel(
@@ -556,7 +471,7 @@ void upmem::generateTailReduction(cinm::ReduceOp op, RewriterBase &rewriter,
   Value aStage = memref::AllocOp::create(
       rewriter, loc, MemRefType::get({numDpus, mramRows, mramCols}, eltTy));
   Value yStage = memref::AllocOp::create(
-      rewriter, loc, MemRefType::get({numDpus, mramRows}, eltTy));
+      rewriter, loc, MemRefType::get({dpuRows, dpuCols, mramRows}, eltTy));
 
   llvm::StringRef aBufSym, yBufSym;
 
@@ -575,41 +490,87 @@ void upmem::generateTailReduction(cinm::ReduceOp op, RewriterBase &rewriter,
 
   // Scatter maps for hierarchy <1 x numDpus x tasklets>.
   // The flat DPU index is rank*numDpus + dpu; since numRanks=1, rank=0
-  // always, so flat = dpu. Map: (rank, dpu) -> (dpu, 0, ...).
+  // always, so flat = dpu.
+  // aStage: (rank, dpu) -> (dpu, 0, 0)
+  // yStage: (rank, dpu) -> (dpu / dpuCols, dpu % dpuCols, 0)
   auto dpuDim = getAffineDimExpr(1, ctx);
   auto zero = getAffineConstantExpr(0, ctx);
   AffineMap aMap = AffineMap::get(2, 0, {dpuDim, zero, zero}, ctx);
-  AffineMap yMap = AffineMap::get(2, 0, {dpuDim, zero}, ctx);
+  AffineMap yMap = AffineMap::get(
+      2, 0, {dpuDim.floorDiv(dpuCols), dpuDim % dpuCols, zero}, ctx);
+
+  auto arithReductionKind = cinm::getArithConstant(op.getMethod(), eltTy);
+  auto neutral =
+      arith::getIdentityValue(arithReductionKind, eltTy, rewriter, loc);
 
   cinm::createNestedAffineForLoops(
-      rewriter, loc, {M, K}, {dpuRows * mramRows, dpuCols * mramCols},
+      rewriter, loc, {M}, {dpuRows * mramRows},
       /*iterArgInit=*/ValueRange{},
       [&](OpBuilder &b, Location loc, ValueRange ivs,
           ValueRange) -> SmallVector<Value> {
         Value mOff = ivs[0];
-        Value kOff = ivs[1];
 
-        packATile(b, loc, reshapedInput, aStage, mOff, kOff, dpuRows, dpuCols,
-                  mramRows, mramCols);
-        packYTile(b, loc, output, yStage, mOff, dpuRows, dpuCols, mramRows);
+        // Fill the yStage output buffer with the neutral
+        // element of the reduction.
+        linalg::FillOp::create(rewriter, loc, neutral, yStage);
 
-        upmem::ScatterOp::create(b, loc, aStage, aBufSym,
-                                 static_cast<uint64_t>(mramRows * mramCols),
-                                 aMap, dpus);
+        // Scatter it. We do this only once - if there are several iterations
+        // over dpuCols*mramCols, then the future calls to wait_for will reuse
+        // the partial results that are already in mram.
         upmem::ScatterOp::create(b, loc, yStage, yBufSym,
                                  static_cast<uint64_t>(mramRows), yMap, dpus);
-        upmem::WaitForOp::create(b, loc, dpus);
+
+        cinm::createNestedAffineForLoops(
+            b, loc, {K}, {dpuCols * mramCols},
+            /*iterArgInit=*/ValueRange{},
+            [&](OpBuilder &b, Location loc, ValueRange ivs,
+                ValueRange) -> SmallVector<Value> {
+              Value kOff = ivs[0];
+
+              packATile(b, loc, reshapedInput, aStage, mOff, kOff, dpuRows,
+                        dpuCols, mramRows, mramCols);
+              upmem::ScatterOp::create(
+                  b, loc, aStage, aBufSym,
+                  static_cast<uint64_t>(mramRows * mramCols), aMap, dpus);
+              upmem::WaitForOp::create(b, loc, dpus);
+              return {};
+            });
+
+        // Once we're done with a set of rows, we gather their results.
+        // We still need to reduce over dpuCols.
         upmem::GatherOp::create(b, loc, yStage, yBufSym,
                                 static_cast<uint64_t>(mramRows), yMap, dpus);
+        // Subview of output for this row tile, shaped to match yStage after
+        // reducing dpuCols: output[mOff .. mOff + dpuRows*mramRows).
+        Value outRows = memref::SubViewOp::create(
+            b, loc, output, ArrayRef<OpFoldResult>{mOff},
+            ArrayRef<OpFoldResult>{b.getIndexAttr(dpuRows * mramRows)},
+            ArrayRef<OpFoldResult>{b.getIndexAttr(1)});
+        linalg::FillOp::create(b, loc, neutral, outRows);
 
-        mergeYTile(b, loc, yStage, output, mOff, dpuRows, dpuCols, mramRows);
+        // Reshape outRows {dpuRows*mramRows} -> {dpuRows, mramRows}.
+        // The subview has stride 1 and dynamic offset, so the 2D shape
+        // has strides {mramRows, 1} with the same dynamic offset.
+        Value outRows2D = memref::ExpandShapeOp::create(
+            b, loc,
+            MemRefType::get({dpuRows, mramRows}, eltTy,
+                            StridedLayoutAttr::get(ctx, ShapedType::kDynamic,
+                                                   {mramRows, 1})),
+            outRows, ArrayRef<ReassociationIndices>{{0, 1}});
+
+        // Reduce yStage {dpuRows, dpuCols, mramRows} over dim 1 (dpuCols)
+        // into outRows2D {dpuRows, mramRows}, writing directly into output.
+        linalg::ReduceOp::create(
+            b, loc, ValueRange{yStage}, ValueRange{outRows2D},
+            ArrayRef<int64_t>{1},
+            [&](OpBuilder &b, Location loc, ValueRange args) {
+              linalg::YieldOp::create(
+                  b, loc, arith::getReductionOp(arithReductionKind, b, loc,
+                                                args[0], args[1]));
+            });
         return {};
       });
 
-  memref::DeallocOp::create(rewriter, loc, aStage);
-  memref::DeallocOp::create(rewriter, loc, yStage);
-
-  upmem::FreeDPUsOp::create(rewriter, loc, dpus);
 
   Type resultTy = op.getResult().getType();
   if (isa<MemRefType>(resultTy)) {
@@ -624,6 +585,10 @@ void upmem::generateTailReduction(cinm::ReduceOp op, RewriterBase &rewriter,
     op.emitError("generateTailReduction: unexpected result type ") << resultTy;
     rewriter.eraseOp(op);
   }
+  memref::DeallocOp::create(rewriter, loc, aStage);
+  memref::DeallocOp::create(rewriter, loc, yStage);
+
+  upmem::FreeDPUsOp::create(rewriter, loc, dpus);
 }
 
 } // namespace mlir

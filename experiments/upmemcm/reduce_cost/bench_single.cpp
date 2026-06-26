@@ -4,9 +4,12 @@
 #include <cstdlib>
 #include <cstring>
 
-// BENCH_FN is set by the compiler via -DBENCH_FN=red_4MB etc.
+// BENCH_FN and BENCH_N are set by the compiler (e.g. -DBENCH_FN=red_4MB -DBENCH_N=524288).
 #ifndef BENCH_FN
 #error "BENCH_FN must be defined at compile time (-DBENCH_FN=<function_name>)"
+#endif
+#ifndef BENCH_N
+#error "BENCH_N must be defined at compile time (-DBENCH_N=<num_elements>)"
 #endif
 
 #define STRINGIFY(x) #x
@@ -19,16 +22,17 @@ extern "C" {
   void upmemrt_dump_stats(const char *prefix);
 }
 
-// argv: bench_<fn> <num_elements> <output_dir> [<iters>]
+static constexpr size_t N = (size_t)BENCH_N;
+
+// argv: bench_<fn> <output_dir> [<iters>]
 int main(int argc, char *argv[]) {
-  if (argc < 3) {
-    fprintf(stderr, "usage: %s <num_elements> <output_dir> [<iters>]\n", argv[0]);
+  if (argc < 2) {
+    fprintf(stderr, "usage: %s <output_dir> [<iters>]\n", argv[0]);
     return 1;
   }
 
-  size_t N         = (size_t)atoll(argv[1]);
-  const char *out  = argv[2];
-  int iters        = argc > 3 ? atoi(argv[3]) : 5;
+  const char *out  = argv[1];
+  int iters        = argc > 2 ? atoi(argv[2]) : 5;
 
   int32_t *buf = (int32_t *)malloc(N * sizeof(int32_t));
   assert(buf && "malloc failed");

@@ -58,7 +58,7 @@ $(BIN_DIR)/$(BENCH_FN): $(IR_DIR)/$(BENCH_FN).dpu.c | $(BIN_DIR)
 	$(COMPILE_DPU) $< $@
 
 bench-single: $(IR_DIR)/$(BENCH_FN).o $(BIN_DIR)/$(BENCH_FN) | $(BIN_DIR) $(OUT_DIR)
-	clang++ $(CXXFLAGS) -DBENCH_FN=$(BENCH_FN) bench_single.cpp \
+	clang++ $(CXXFLAGS) -DBENCH_FN=$(BENCH_FN) -DBENCH_N=$(BENCH_N) bench_single.cpp \
 	    $(IR_DIR)/$(BENCH_FN).o $(LDFLAGS) \
 	    -o $(BIN_DIR)/bench_$(BENCH_FN)
 
@@ -74,7 +74,7 @@ $(IR_DIR)/%.mlir: $(IR_DIR)/.split_stamp ;
 # ─── Host compilation ────────────────────────────────────────────────────────
 
 # Prevent Make from deleting intermediate files produced by pattern rules.
-.PRECIOUS: $(IR_DIR)/%.kernels.mlir $(IR_DIR)/%.llvm.mlir $(IR_DIR)/%.ll $(IR_DIR)/%.opt.ll
+.PRECIOUS: $(IR_DIR)/%.kernels.mlir $(IR_DIR)/%.llvm.mlir $(IR_DIR)/%.ll $(IR_DIR)/%.opt.ll $(IR_DIR)/%.mlir
 
 $(IR_DIR)/%.llvm.mlir: $(IR_DIR)/%.mlir
 	$(CINM_OPT) $< $(LOWER_PIPELINE) -o $@

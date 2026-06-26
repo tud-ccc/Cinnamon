@@ -11,6 +11,7 @@
 
 #include <cmath>
 #include <limits>
+#include <type_traits>
 #include <upmem_cost_model/Simulation.h>
 
 #include <algorithm>
@@ -90,13 +91,17 @@ static double costOfOpCb(Operation &op, bool annotate,
               numRanks = accel->getNumRanks();
             return transferCost(bytes, numRanks);
           })
-          .Case<ScatterOp, GatherOp>([](auto xferOp) {
+          .Case<upmem::ScatterOp, upmem::GatherOp>([](auto xferOp) {
             auto hier = llvm::cast<DeviceHierarchyType>(
                 xferOp.getHierarchy().getType());
-            double totalBytes =
-                static_cast<double>(xferOp.getDpuBufferSizeInBytes()) *
-                hier.getNumRanks() * hier.getNumDpusPerRank();
-            return transferCost(totalBytes, hier.getNumRanks());
+            int numDpus = hier.getNumRanks() * hier.getNumDpusPerRank();
+            if constexpr (std::is_same_v<decltype(xferOp), upmem::ScatterOp>) {
+              return 1e-3 * upmem_cm::scatterCostMs(
+                                numDpus, xferOp.getDpuBufferSizeInBytes());
+            } else {
+              return 1e-3 * upmem_cm::gatherCostMs(
+                                numDpus, xferOp.getDpuBufferSizeInBytes());
+            }
           })
           .Case<LocalTransferOp>([](auto xferOp) {
             auto srcTy = llvm::cast<MemRefType>(xferOp.getSource().getType());

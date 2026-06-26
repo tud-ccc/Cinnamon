@@ -1143,9 +1143,10 @@ static LogicalResult printBufferDecl(CppEmitter &emitter,
   StringRef qualifier;
   if (op.isWram()) {
     qualifier = "__dma_aligned";
+  } else if (op.getNoinit()) {
+    qualifier = "__mram_noinit __dma_aligned";
   } else {
-    qualifier =
-        op.getNoinit() ? "__mram_noinit __dma_aligned" : "__mram __dma_aligned";
+    qualifier = "__mram __dma_aligned";
   }
 
   // We emit static buffers as array of bytes to be able to pad them.
@@ -1165,7 +1166,12 @@ static LogicalResult printBufferDecl(CppEmitter &emitter,
   auto sizeInBytes = bufferType.getNumElements() * eltWidthBytes;
   sizeInBytes = llvm::alignTo(sizeInBytes, 8);
 
-  out << "[" << sizeInBytes << "]; // ";
+  out << "[" << sizeInBytes << "]";
+  if (op.getZeroinit()) {
+    out << " {0}";
+  }
+  
+  out << "; // ";
   // add real type as comment
   if (failed(emitter.emitType(op->getLoc(), bufferType.getElementType())))
     return failure();
