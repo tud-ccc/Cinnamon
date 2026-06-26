@@ -90,6 +90,31 @@ struct UpmemInferenceOptions {
   std::chrono::milliseconds evalTimeoutMs = std::chrono::milliseconds(2000);
 };
 
+static void addAffineOpts(OpPassManager &pm) {
+  pm.addPass(affine::createLoopUnrollPass(-1));
+  pm.addPass(createCanonicalizerPass());
+  pm.addPass(affine::createAffineFoldMemRefAliasOps());
+  pm.addPass(memref::createFoldMemRefAliasOpsPass());
+  pm.addPass(createCanonicalizerPass());
+  pm.addPass(affine::createLoopFusionPass());
+  pm.addPass(createSROA());
+  pm.addPass(createCanonicalizerPass());
+  pm.addPass(affine::createRaiseMemrefToAffine());
+  pm.addPass(affine::createAffineScalarReplacementPass());
+  pm.addPass(createLoopInvariantCodeMotionPass());
+  pm.addPass(affine::createAffineLoopInvariantCodeMotionPass());
+  pm.addPass(createSROA());
+  pm.addPass(affine::createAffineScalarReplacementPass());
+  pm.addPass(createCanonicalizerPass());
+  pm.addPass(createCSEPass());
+  pm.addPass(arith::createIntRangeOptimizationsPass());
+  // pm->addPass(bufferization::createBufferLoopHoistingPass());
+  // pm->addPass(bufferization::createBufferHoistingPass());
+  pm.addPass(createCanonicalizerPass());
+  pm.addPass(createCSEPass());
+  pm.addPass(createCanonicalizerPass());
+}
+
 struct UpmemInferencePlugin : cinm::InferencePlugin {
   upmem::UpmemPlatformAttr platform;
   const UpmemInferenceOptions &opts;
@@ -173,19 +198,16 @@ struct UpmemInferencePlugin : cinm::InferencePlugin {
     // Step 4: affine opts
     {
       auto &funcs = pm->nest<func::FuncOp>();
-      funcs.addPass(bufferization::createPromoteBuffersToStackPass());
-      funcs.addPass(memref::createFoldMemRefAliasOpsPass());
-      funcs.addPass(createCanonicalizerPass());
-      funcs.addPass(affine::createLoopFusionPass());
-      funcs.addPass(createSROA());
-      funcs.addPass(createCanonicalizerPass());
-      funcs.addPass(affine::createAffineScalarReplacementPass());
-      funcs.addPass(createLoopInvariantCodeMotionPass());
-      funcs.addPass(affine::createAffineLoopInvariantCodeMotionPass());
-      funcs.addPass(createSROA());
-      funcs.addPass(affine::createAffineScalarReplacementPass());
+      addAffineOpts(funcs);
+      funcs.addPass(createLowerAffinePass());
+      // pm->addPass(bufferization::createBufferLoopHoistingPass());
+      // pm->addPass(bufferization::createBufferHoistingPass());
       funcs.addPass(createCanonicalizerPass());
       funcs.addPass(createCSEPass());
+      funcs.addPass(arith::createIntRangeOptimizationsPass());
+      funcs.addPass(createCanonicalizerPass());
+      funcs.addPass(createCSEPass());
+      funcs.addPass(createCanonicalizerPass());
     }
     // Step 5: lower affine to SCF
     pm->addPass(createLowerAffinePass());
@@ -450,6 +472,8 @@ void UpmemInferencePlugin::handleReduce(cinm::ReduceOp op, SpaceBuilder &b) {
     // pipeline).
     if (op.getDimension() == type.getShape().size() - 1) {
 
+      // todo register simulator for specific op, here we assume
+      //  that there is a single op in the compute block
       registerSimulator([=](const cinm::ConfWrapper &c, UpmemSimulator &sim,
                             cinm::TrialInfo &trial) -> Maybe<double> {
         auto bufferizePm =
@@ -477,32 +501,20 @@ void UpmemInferencePlugin::handleReduce(cinm::ReduceOp op, SpaceBuilder &b) {
         auto cleanupPm =
             std::make_unique<PassManager>(trial.computeBlock.getContext());
         {
-          auto &funcs = cleanupPm->nest<upmem::DpuProgramOp>();
-          funcs.addPass(
-              affine::createLoopUnrollPass(1, /*unrollUpToFactor=*/true));
-          funcs.addPass(createCanonicalizerPass());
-          // funcs.addPass(bufferization::createPromoteBuffersToStackPass());
-          funcs.addPass(memref::createFoldMemRefAliasOpsPass());
-          funcs.addPass(createCanonicalizerPass());
-          funcs.addPass(affine::createLoopFusionPass());
-          funcs.addPass(createSROA());
-          funcs.addPass(createCanonicalizerPass());
-          funcs.addPass(affine::createAffineScalarReplacementPass());
-          funcs.addPass(createLoopInvariantCodeMotionPass());
-          funcs.addPass(affine::createAffineLoopInvariantCodeMotionPass());
-          funcs.addPass(createSROA());
-          funcs.addPass(affine::createAffineScalarReplacementPass());
-          funcs.addPass(createCanonicalizerPass());
-          funcs.addPass(createCSEPass());
-          funcs.addPass(createLowerAffinePass());
-          // pm->addPass(bufferization::createBufferLoopHoistingPass());
-          // pm->addPass(bufferization::createBufferHoistingPass());
-          funcs.addPass(createCanonicalizerPass());
-          funcs.addPass(createCSEPass());
-          funcs.addPass(arith::createIntRangeOptimizationsPass());
-          funcs.addPass(createCanonicalizerPass());
-          funcs.addPass(createCSEPass());
-          funcs.addPass(createCanonicalizerPass());
+          auto &dpuPm = cleanupPm->nest<upmem::DpuProgramOp>();
+          addAffineOpts(dpuPm);
+          dpuPm.addPass(createLowerAffinePass());
+          dpuPm.addPass(createCanonicalizerPass());
+          dpuPm.addPass(createCSEPass());
+        }
+        {
+          auto &funcs = cleanupPm->nest<func::FuncOp>();
+          funcs.addPass(createConvertLinalgToAffineLoopsPass());
+          addAffineOpts(funcs);
+          // funcs.addPass(affine::createAffineVectorize(
+          //     affine::AffineVectorizeOptions{.vectorSizes = {8},
+          //                                    .fastestVaryingPattern = {},
+          //                                    .vectorizeReductions = true}));
         }
 
         TRY(runPipeline(cleanupPm.get(), op->getLoc(), trial.module.get()));
