@@ -97,11 +97,14 @@ LogicalResult upmem::UPMEMDialect::verifyOperationAttribute(Operation *,
 
 void upmem::StaticAllocOp::build(OpBuilder &builder, OperationState &result,
                                  MemRefType ty, DpuMemSpace memSpace,
-                                 StringRef name, bool noinit) {
+                                 StringRef name, bool noinit, bool zeroinit) {
   result.addAttribute(getMemSpaceAttrName(result.name),
                       builder.getAttr<DpuMemSpaceAttr>(memSpace));
   if (noinit)
     result.addAttribute(getNoinitAttrName(result.name), builder.getUnitAttr());
+  if (zeroinit)
+    result.addAttribute(getZeroinitAttrName(result.name),
+                        builder.getUnitAttr());
 
   if (!name.empty()) {
     result.addAttribute(getSymNameAttrName(result.name),
