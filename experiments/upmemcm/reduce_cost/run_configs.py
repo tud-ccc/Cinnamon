@@ -23,7 +23,7 @@ import os
 import pathlib
 import subprocess
 import sys
-from concurrent.futures import ProcessPoolExecutor, as_completed
+from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_completed, wait, FIRST_COMPLETED
 from tqdm import tqdm
 
 # ── Constants ────────────────────────────────────────────────────────────────
@@ -51,12 +51,12 @@ PRE_PASSES = ["--cinm-assign-platforms", "--cinm-isolate-compute-blocks"]
 # Return True to include the config, False to skip it.
 
 def config_filter(params: dict) -> bool:
-    return params['mramCol'] * params['dpus'] >= 128000
+    return params['mramCol'] * params['dpus'] >= 128000 and 4 <= params['dpus'] <= 512
 
 # ── Pool parsing ─────────────────────────────────────────────────────────────
 
 def parse_pool(pool_csv: pathlib.Path):
-    """Return list of (row_index, list[int]) for rows where valid == 1 and config_filter passes."""
+    """Return list of (row_index, params_dict, num_dpus) for rows where valid == 1 and config_filter passes."""
     configs = []
     with open(pool_csv) as f:
         reader = csv.DictReader(f)
@@ -71,7 +71,7 @@ def parse_pool(pool_csv: pathlib.Path):
                 continue
             if not config_filter(params):
                 continue
-            configs.append((i, list(params.values())))
+            configs.append((i, params, params.get("dpus", 1)))
     return configs
 
 
@@ -114,17 +114,30 @@ def split_source(src_mlir: pathlib.Path, out_dir: pathlib.Path):
 
 
 # ── Compile step (runs in a worker process) ──────────────────────────────────
+def fmt_cmd(args: list[str]) -> str:
+    def quote(s):
+      return f'"{s}"' if ' ' in s else s
+    return ' '.join(quote(s) for s in args)
 
 def compile_one(args):
-    (fn_name, config_id, param_values, fn_module_path,
+    (fn_name, config_id, params, fn_module_path,
      run_dir, makefile_dir, cinm_opt, pre_passes) = args
 
     config_dir = pathlib.Path(run_dir) / fn_name / f"config_{config_id:05d}"
     config_dir.mkdir(parents=True, exist_ok=True)
 
+    # Write a one-row CSV with the config parameters so the aggregation script
+    # can join it with benchmark output without re-reading the pool.
+    config_csv = config_dir / "config.csv"
+    if not config_csv.exists():
+        with open(config_csv, "w", newline="") as f:
+            writer = csv.DictWriter(f, fieldnames=["fn_name", "config_id"] + list(params.keys()))
+            writer.writeheader()
+            writer.writerow({"fn_name": fn_name, "config_id": config_id, **params})
+
     # Step 1: lower the single-function module with this configuration.
     lowered = config_dir / "lowered.mlir"
-    solution_str = ",".join(str(v) for v in param_values)
+    solution_str = ",".join(str(v) for v in params.values())
     cmd_opt = [
         cinm_opt,
         str(fn_module_path),
@@ -135,7 +148,10 @@ def compile_one(args):
     ]
     r = subprocess.run(cmd_opt, capture_output=True, text=True)
     if r.returncode != 0:
-        return fn_name, config_id, False, f"cinm-opt failed:\n{r.stderr}"
+        cinm_opt_cmd = fmt_cmd(cmd_opt)
+        (config_dir / "cinm_opt_stderr.txt").write_text(r.stderr)
+        (config_dir / "failed").touch()
+        return fn_name, config_id, False, f"cinm-opt failed:\n{cinm_opt_cmd}\n{r.stderr}"
 
     # Step 2: compile host + DPU.
     ir_dir  = config_dir / "ir"
@@ -146,10 +162,13 @@ def compile_one(args):
         f"IR_DIR={ir_dir.resolve()}",
         f"BIN_DIR={bin_dir.resolve()}",
         f"BENCH_FN={fn_name}",
+        f"BENCH_N={FUNC_SIZES[fn_name]}",
         "bench-single"
     ]
     r = subprocess.run(cmd_make, capture_output=True, text=True)
     if r.returncode != 0:
+        (config_dir / "make_stderr.txt").write_text(r.stderr)
+        (config_dir / "failed").touch()
         return fn_name, config_id, False, f"make failed:\n{r.stderr}"
 
     return fn_name, config_id, True, ""
@@ -157,13 +176,13 @@ def compile_one(args):
 
 # ── Run step (sequential to avoid DPU over-allocation) ───────────────────────
 
-def run_one(fn_name, config_id, run_dir, fn_size, iters):
+def run_one(fn_name, config_id, run_dir, iters):
     config_dir = pathlib.Path(run_dir).absolute() / fn_name / f"config_{config_id:05d}"
     bench_bin  = config_dir / "bin" / f"bench_{fn_name}"
     output_dir = config_dir / "output"
     output_dir.mkdir(exist_ok=True)
 
-    cmd = [str(bench_bin), str(fn_size), str(output_dir), str(iters)]
+    cmd = [str(bench_bin), str(output_dir), str(iters)]
     r = subprocess.run(
         cmd,
         capture_output=True,
@@ -172,6 +191,7 @@ def run_one(fn_name, config_id, run_dir, fn_size, iters):
         cwd=str(config_dir / "bin" / fn_name),
     )
     if r.returncode != 0:
+        (config_dir / "bench_stderr.txt").write_text(r.stderr)
         return fn_name, config_id, False, r.stderr[-1000:]
     return fn_name, config_id, True, r.stdout.strip()
 
@@ -197,6 +217,10 @@ def main():
                         default=str(here / "../../../build/bin/cinm-opt"))
     parser.add_argument("--limit",        type=int, default=None,
                         help="Only process the first N configs per function (for testing)")
+    parser.add_argument("--fn",           default=None,
+                        help="Only process this function (e.g. red_4MB)")
+    parser.add_argument("--dpu-cap",    type=int, default=1024,
+                        help="Max DPUs to use concurrently during benchmarking (default 2048)")
     parser.add_argument("--compile-only", action="store_true")
     parser.add_argument("--run-only",     action="store_true")
     args = parser.parse_args()
@@ -215,6 +239,8 @@ def main():
     # Collect (fn_name, config_id, param_values) tasks.
     tasks = []
     for fn_name, pool_csv in find_function_pools(data_dir):
+        if args.fn is not None and fn_name != args.fn:
+            continue
         if fn_name not in modules:
             print(f"  WARNING: {fn_name} not found in source MLIR, skipping", file=sys.stderr)
             continue
@@ -225,8 +251,8 @@ def main():
         if args.limit is not None:
             configs = configs[:args.limit]
         print(f"  {fn_name}: {len(configs)} valid configs in {pool_csv.parent.name}")
-        for config_id, vals in configs:
-            tasks.append((fn_name, config_id, vals))
+        for config_id, vals, num_dpus in configs:
+            tasks.append((fn_name, config_id, vals, num_dpus))
 
     print(f"\nTotal: {len(tasks)} (function, config) pairs")
 
@@ -234,35 +260,74 @@ def main():
     compiled = []
     if not args.run_only:
         compile_args = [
-            (fn, cid, vals, str(modules[fn]),
+            (fn, cid, params, str(modules[fn]),
              str(run_dir), str(here), args.cinm_opt, PRE_PASSES)
-            for fn, cid, vals in tasks
+            for fn, cid, params, _num_dpus in tasks
         ]
         print(f"\nCompiling with {args.workers} workers...")
+        dpus_for = {(fn, cid): nd for fn, cid, _, nd in tasks}
         with ProcessPoolExecutor(max_workers=args.workers) as ex:
             futures = {ex.submit(compile_one, a): (a[0], a[1]) for a in compile_args}
-            for fut in tqdm(as_completed(futures), total=len(futures)):
+            for fut in tqdm(as_completed(futures), desc="Compiling", total=len(futures)):
                 fn_name, cid = futures[fut]
                 _, _, ok, msg = fut.result()
                 status = "OK" if ok else "FAIL"
                 tqdm.write(f"  [{status}] {fn_name} config {cid:05d}")
                 if not ok:
-                    tqdm.write(f"         {msg[:300]}", file=sys.stderr)
+                    tqdm.write(f"         {msg}", file=sys.stderr)
                 if ok:
-                    compiled.append((fn_name, cid))
+                    compiled.append((fn_name, cid, dpus_for[fn_name, cid]))
     else:
-        compiled = [(fn, cid) for fn, cid, _ in tasks]
+        compiled = [
+            (fn, cid, nd) for fn, cid, _, nd in tasks
+            if not (run_dir / fn / f"config_{cid:05d}" / "failed").exists()
+        ]
 
     # ── Benchmark phase ───────────────────────────────────────────────────────
     if not args.compile_only:
-        print(f"\nRunning {len(compiled)} benchmarks (sequential)...")
-        for fn_name, cid in tqdm(compiled):
-            fn_size = FUNC_SIZES[fn_name]
-            _, _, ok, msg = run_one(fn_name, cid, run_dir, fn_size, args.iters)
-            status = "OK" if ok else "FAIL"
-            print(f"  [{status}] {fn_name} config {cid:05d}")
-            if not ok:
-                print(f"         {msg[:300]}", file=sys.stderr)
+        print(f"\nRunning {len(compiled)} benchmarks "
+              f"(parallel, DPU cap={args.dpu_cap})...")
+        pending   = list(compiled)   # [(fn_name, cid, num_dpus), ...]
+        in_flight = {}               # future -> (fn_name, cid, num_dpus)
+        used_dpus = 0
+
+        with ThreadPoolExecutor(max_workers=len(pending) or 1) as ex:
+            pbar = tqdm(total=len(pending), desc="Running",)
+            while pending or in_flight:
+                # Launch every task that fits within the DPU cap.
+                remaining = []
+                for fn_name, cid, num_dpus in pending:
+                    if used_dpus + num_dpus <= args.dpu_cap:
+                        fut = ex.submit(run_one, fn_name, cid, str(run_dir), args.iters)
+                        in_flight[fut] = (fn_name, cid, num_dpus)
+                        used_dpus += num_dpus
+                    else:
+                        remaining.append((fn_name, cid, num_dpus))
+                pending = remaining
+
+                if not in_flight:
+                    # A task needs more DPUs than the cap — launch it alone.
+                    fn_name, cid, num_dpus = pending.pop(0)
+                    tqdm.write(f"  WARNING: {fn_name} config {cid:05d} needs "
+                               f"{num_dpus} DPUs > cap {args.dpu_cap}, running alone",
+                               file=sys.stderr)
+                    fut = ex.submit(run_one, fn_name, cid, str(run_dir), args.iters)
+                    in_flight[fut] = (fn_name, cid, num_dpus)
+                    used_dpus += num_dpus
+
+                # Wait for at least one to finish before re-scheduling.
+                done, _ = wait(in_flight, return_when=FIRST_COMPLETED)
+                for fut in done:
+                    fn_name, cid, num_dpus = in_flight.pop(fut)
+                    used_dpus -= num_dpus
+                    _, _, ok, msg = fut.result()
+                    status = "OK" if ok else "FAIL"
+                    tqdm.write(f"  [{status}] {fn_name} config {cid:05d}"
+                               f"  (used={used_dpus}/{args.dpu_cap} DPUs)")
+                    if not ok:
+                        tqdm.write(f"         {msg[:300]}", file=sys.stderr)
+                    pbar.update(1)
+            pbar.close()
 
     print("\nDone.")
 
