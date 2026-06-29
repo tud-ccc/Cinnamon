@@ -80,8 +80,16 @@ struct dpu_set_t *upmemrt_dpu_alloc(int32_t num_ranks, int32_t num_dpus,
   int32_t num_alloc_dpu = num_ranks * num_dpus;
   struct dpu_set_t *dpu_set =
       (struct dpu_set_t *)malloc(sizeof(struct dpu_set_t));
+#ifdef UPMEM_RT_STATS
+  uint64_t t0 = upmemrt_now_ns();
+#endif
   DPU_ASSERT(dpu_alloc(num_alloc_dpu, getenv("UPMEM_PROFILE"), dpu_set));
   DPU_ASSERT(dpu_load(*dpu_set, dpu_binary_path, NULL));
+#ifdef UPMEM_RT_STATS
+  uint32_t nr_dpus = 0;
+  dpu_get_nr_dpus(*dpu_set, &nr_dpus);
+  upmemrt_record_alloc(upmemrt_now_ns() - t0, nr_dpus);
+#endif
   return dpu_set;
 }
 
@@ -115,9 +123,4 @@ void upmemrt_dpu_free(struct dpu_set_t *void_dpu_set) {
 #ifdef UPMEM_RT_STATS
   upmemrt_record_free(upmemrt_now_ns() - t0, nr_dpus);
 #endif
-}
-
-void upmemrt_dpu_free_all(struct dpu_set_t *void_dpu_set) {
-  struct dpu_set_t *dpu_set = (struct dpu_set_t *)void_dpu_set;
-  DPU_ASSERT(dpu_free(*dpu_set));
 }

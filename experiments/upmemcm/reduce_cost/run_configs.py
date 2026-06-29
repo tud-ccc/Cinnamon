@@ -51,7 +51,7 @@ PRE_PASSES = ["--cinm-assign-platforms", "--cinm-isolate-compute-blocks"]
 # Return True to include the config, False to skip it.
 
 def config_filter(params: dict) -> bool:
-    return params['mramCol'] * params['dpus'] >= 128000 and 4 <= params['dpus'] <= 512
+    return params['mramCol'] * params['dpus'] >= 64*1024 and params['dpus'] <= 512
 
 # ── Pool parsing ─────────────────────────────────────────────────────────────
 
@@ -217,7 +217,7 @@ def main():
                         default=str(here / "../../../build/bin/cinm-opt"))
     parser.add_argument("--limit",        type=int, default=None,
                         help="Only process the first N configs per function (for testing)")
-    parser.add_argument("--fn",           default=None,
+    parser.add_argument("--problem",           default=None,
                         help="Only process this function (e.g. red_4MB)")
     parser.add_argument("--dpu-cap",    type=int, default=1024,
                         help="Max DPUs to use concurrently during benchmarking (default 2048)")
@@ -239,7 +239,7 @@ def main():
     # Collect (fn_name, config_id, param_values) tasks.
     tasks = []
     for fn_name, pool_csv in find_function_pools(data_dir):
-        if args.fn is not None and fn_name != args.fn:
+        if args.problem is not None and fn_name != args.problem:
             continue
         if fn_name not in modules:
             print(f"  WARNING: {fn_name} not found in source MLIR, skipping", file=sys.stderr)
