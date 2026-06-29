@@ -1365,8 +1365,8 @@ static LogicalResult printOperation(CppEmitter &emitter, ModuleOp moduleOp) {
   }
 
   os << "int main(void) {\n";
-  os << "  barrier_wait(&my_barrier);\n";
-  os << "  mem_reset();\n";
+  // os << "  barrier_wait(&my_barrier);\n";
+  // os << "  mem_reset();\n";
   for (auto kernel : kernels) {
     os << "#ifdef ";
     printCompilationVar(kernel, os);
@@ -1374,7 +1374,7 @@ static LogicalResult printOperation(CppEmitter &emitter, ModuleOp moduleOp) {
     os << "  " << kernel.getName() << "();\n";
     os << "#endif\n";
   }
-  os << "  mem_reset();\n";
+  // os << "  mem_reset();\n";
   os << "  return 0;\n";
   os << "}";
 

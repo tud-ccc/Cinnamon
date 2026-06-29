@@ -74,7 +74,7 @@ $(IR_DIR)/%.mlir: $(IR_DIR)/.split_stamp ;
 # ─── Host compilation ────────────────────────────────────────────────────────
 
 # Prevent Make from deleting intermediate files produced by pattern rules.
-.PRECIOUS: $(IR_DIR)/%.kernels.mlir $(IR_DIR)/%.llvm.mlir $(IR_DIR)/%.ll $(IR_DIR)/%.opt.ll $(IR_DIR)/%.mlir
+#.PRECIOUS: $(IR_DIR)/%.kernels.mlir $(IR_DIR)/%.llvm.mlir $(IR_DIR)/%.ll $(IR_DIR)/%.opt.ll $(IR_DIR)/%.mlir
 
 $(IR_DIR)/%.llvm.mlir: $(IR_DIR)/%.mlir
 	$(CINM_OPT) $< $(LOWER_PIPELINE) -o $@

@@ -196,6 +196,12 @@ def run_one(fn_name, config_id, run_dir, iters):
     return fn_name, config_id, True, r.stdout.strip()
 
 
+def is_dpu_allocation_error(stderr: str) -> bool:
+    """True if the failure was a DPU allocation error (transient under
+    concurrent over-subscription), as opposed to a real bug in the binary."""
+    return "allocation error" in stderr.lower()
+
+
 # ── Main ─────────────────────────────────────────────────────────────────────
 
 def main():
@@ -290,6 +296,7 @@ def main():
         pending   = list(compiled)   # [(fn_name, cid, num_dpus), ...]
         in_flight = {}               # future -> (fn_name, cid, num_dpus)
         used_dpus = 0
+        retry_pending = []           # [(fn_name, cid, num_dpus), ...] — allocation errors
 
         with ThreadPoolExecutor(max_workers=len(pending) or 1) as ex:
             pbar = tqdm(total=len(pending), desc="Running",)
@@ -321,12 +328,34 @@ def main():
                     fn_name, cid, num_dpus = in_flight.pop(fut)
                     used_dpus -= num_dpus
                     _, _, ok, msg = fut.result()
+                    if not ok and is_dpu_allocation_error(msg):
+                        # The DPU cap accounting doesn't perfectly reflect real
+                        # hardware availability (fragmentation, other jobs, ...).
+                        # Defer to a sequential retry pass instead of failing it.
+                        tqdm.write(f"  [RETRY] {fn_name} config {cid:05d} hit a DPU "
+                                   f"allocation error, queued for sequential retry"
+                                   f"  (used={used_dpus}/{args.dpu_cap} DPUs) (needs {num_dpus})")
+                        retry_pending.append((fn_name, cid, num_dpus))
+                        continue
                     status = "OK" if ok else "FAIL"
                     tqdm.write(f"  [{status}] {fn_name} config {cid:05d}"
                                f"  (used={used_dpus}/{args.dpu_cap} DPUs)")
                     if not ok:
                         tqdm.write(f"         {msg[:300]}", file=sys.stderr)
                     pbar.update(1)
+
+            if retry_pending:
+                tqdm.write(f"\nRetrying {len(retry_pending)} config(s) sequentially "
+                           f"after DPU allocation errors...")
+                for fn_name, cid, num_dpus in retry_pending:
+                    fut = ex.submit(run_one, fn_name, cid, str(run_dir), args.iters)
+                    _, _, ok, msg = fut.result()
+                    status = "OK" if ok else "FAIL"
+                    tqdm.write(f"  [{status}] {fn_name} config {cid:05d}  (retry)")
+                    if not ok:
+                        tqdm.write(f"         {msg[:300]}", file=sys.stderr)
+                    pbar.update(1)
+
             pbar.close()
 
     print("\nDone.")
