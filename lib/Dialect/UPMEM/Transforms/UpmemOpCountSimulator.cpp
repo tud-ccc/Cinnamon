@@ -11,6 +11,7 @@
 
 #include <cmath>
 #include <limits>
+#include <llvm/Support/Debug.h>
 #include <type_traits>
 #include <upmem_cost_model/Simulation.h>
 
@@ -29,6 +30,8 @@
 #include <mlir/IR/BuiltinTypes.h>
 #include <mlir/IR/Operation.h>
 #include <mlir/Interfaces/LoopLikeInterface.h>
+
+#define DEBUG_TYPE "cinm-inference"
 
 namespace mlir::upmem {
 
@@ -72,8 +75,11 @@ static double costOfOpCb(Operation &op, bool annotate,
                     step = *sv;
               tripCount = std::max(1L, 2048 / std::max(1L, step));
             }
-            return costOfRegionCb(*forOp.getLoopRegions()[0], annotate, cb) *
-                   static_cast<double>(tripCount);
+            double bodyCost =
+                costOfRegionCb(*forOp.getLoopRegions()[0], annotate, cb);
+            LLVM_DEBUG(llvm::dbgs() << "TC=" << tripCount << " body= "
+                                    << bodyCost << " for " << forOp << "\n\n");
+            return bodyCost * tripCount;
           })
           // .Case<memref::CopyOp>([](memref::CopyOp copyOp) {
           //   auto hostTy = copyOp.getSource().getType();
