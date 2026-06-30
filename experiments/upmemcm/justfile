@@ -22,3 +22,6 @@ reduce_plot *ARGS:
 [working-directory: 'reduce_cost']
 reduce_fit *ARGS:
     $(realpath ../../../.venv/bin)/python fit_overhead_term.py {{ARGS}}
+
+@b:
+  cd ../.. && just build
