@@ -35,7 +35,7 @@ import pandas as pd
 from scipy.optimize import nnls
 from scipy.stats import spearmanr
 
-from plot_cost import find_function_pools
+from plot_cost import find_function_pools, compute_measured_cost
 
 # ── Templates: name -> feature function (dpus, mramCols -> [n, k] feature matrix) ─
 
@@ -56,6 +56,16 @@ TEMPLATE_N_FEATURES: dict[str, int] = {
 
 
 # ── Ranking metric ─────────────────────────────────────────────────────────────
+
+def false_positive_count(predicted_ms: np.ndarray, measured_ms: np.ndarray) -> int:
+    """Number of configs the simulator ranks better than the true optimum.
+
+    Equivalently, the 0-based rank of argmin(measured_ms) in the predicted ranking.
+    Zero means the simulator's top pick is the true best config.
+    """
+    true_best = np.argmin(measured_ms)
+    return int(np.sum(predicted_ms < predicted_ms[true_best]))
+
 
 def spearman_topk_rho(corrected_ms: np.ndarray, measured_ms: np.ndarray,
                        top_quantile: float) -> float:
@@ -95,6 +105,28 @@ def compute_measured_launch_cost(agg_dir: pathlib.Path, fn_name: str) -> pd.Data
         "n_launches": grp.count(),
     })
     return per_iter.groupby("config_id").mean().reset_index()
+
+def build_full_cost_data(agg_dir: pathlib.Path, full_oracle_pool_csv: pathlib.Path,
+                          fn_name: str) -> pd.DataFrame:
+    """Join a full-simulation oracle pool with measured full-loop cost and n_launches.
+
+    Returns a DataFrame with at least: dpus, mramCol, cost (ms, full simulation),
+    measured_cost (ns), n_launches. Rows with NaN/inf in cost or measured_cost
+    are dropped; no dpus filter is applied.
+    """
+    mc = compute_measured_cost(agg_dir, fn_name)
+    if mc.empty:
+        return pd.DataFrame()
+    lc = compute_measured_launch_cost(agg_dir, fn_name)
+
+    pool = pd.read_csv(full_oracle_pool_csv)
+    pool = pool.merge(mc, left_index=True, right_on="config_id", how="left")
+    pool = pool.merge(lc[["config_id", "n_launches"]], on="config_id", how="left")
+    pool = pool.drop(columns=["config_id"])
+    pool = pool.dropna(subset=["measured_cost", "n_launches"])
+    pool = pool[np.isfinite(pool["cost"]) & np.isfinite(pool["measured_cost"])]
+    return pool
+
 
 def build_clean_pool(agg_dir: pathlib.Path, pool_csv: pathlib.Path, fn_name: str) -> pd.DataFrame:
     """measured_launch_cost/cost/dpus for fn_name, dropping unmeasured/timeout configs."""
@@ -313,7 +345,8 @@ def make_calibration_scatter_plot(dpus: np.ndarray,
                                    top_quantile: float,
                                    out_path: pathlib.Path,
                                    title: str,
-                                   correction_params: list[tuple[str, float]] | None = None):
+                                   correction_params: list[tuple[str, float]] | None = None,
+                                   cmap: str = "viridis"):
     """Two-panel scatter: raw predicted vs measured (left), corrected vs measured (right).
     Each panel is annotated with Spearman ρ, wRMSE, and (right panel) the fitted coefficients."""
     corrected_ms = predicted_ms + correction_ms
@@ -331,8 +364,9 @@ def make_calibration_scatter_plot(dpus: np.ndarray,
 
     # Shared axis limits across both panels for direct comparability
     all_x = np.concatenate([predicted_ms, corrected_ms])
-    lo = min(all_x.min(), measured_ms.min())
-    hi = max(all_x.max(), measured_ms.max())
+    pad = 1.15  # multiplicative margin on log scale: equal visual gap on both sides
+    lo = min(all_x.min(), measured_ms.min()) / pad
+    hi = max(all_x.max(), measured_ms.max()) * pad
     dpu_norm = LogNorm(vmin=dpus.min(), vmax=dpus.max())
 
     # 3-column GridSpec: two equal plot columns + one narrow colorbar column.
@@ -348,7 +382,7 @@ def make_calibration_scatter_plot(dpus: np.ndarray,
         (ax0, predicted_ms, "without correction",              rho_raw,  rmse_raw,  None),
         (ax1, corrected_ms, f"corrected ({correction_label})", rho_corr, rmse_corr, correction_params),
     ]:
-        sc = ax.scatter(x, measured_ms, s=10, alpha=0.7, c=dpus, cmap="viridis", norm=dpu_norm)
+        sc = ax.scatter(x, measured_ms, s=10, alpha=0.7, c=dpus, cmap=cmap, norm=dpu_norm)
         ax.plot([lo, hi], [lo, hi], color="gray", linestyle="--", linewidth=1, label="y = x")
         ax.set_xlim(lo, hi)
         ax.set_ylim(lo, hi)
@@ -359,8 +393,10 @@ def make_calibration_scatter_plot(dpus: np.ndarray,
         ax.set_title(subtitle)
         ax.grid(True, which="both", linestyle="--", alpha=0.4)
         ax.legend()
+        fp = false_positive_count(x, measured_ms)
         lines = [
             f"Spearman ρ@top-{top_quantile:.0%} (n={k}): {rho:.3f}",
+            f"false positives (rank of true best): {fp}",
             f"wRMSE (1/cost²): {rmse:.3f} ms",
         ]
         if params:
@@ -386,6 +422,11 @@ def main():
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--kernel-oracle", required=True,
                         help="Path to kernel-only oracle directory (infer_{fn_name}/pool.csv layout)")
+    parser.add_argument("--full-oracle", default=None,
+                        help="Path to full-simulation oracle directory (same layout, cost = full "
+                             "loop simulation cost in ms). When given, generates an additional "
+                             "scatter plot of full loop cost: predicted = full_oracle_cost + "
+                             "correction × n_launches, measured = total - alloc - free.")
     parser.add_argument("--in-dir", default="aggregated",
                         help="Directory with aggregated CSVs (default: aggregated)")
     parser.add_argument("--plots-dir", default="plots",
@@ -407,13 +448,18 @@ def main():
     parser.add_argument("--seed", type=int, default=42)
     args = parser.parse_args()
 
-    agg_dir   = pathlib.Path(args.in_dir)
-    plots_dir = pathlib.Path(args.plots_dir)
-    top_q     = args.top_quantile
+    agg_dir      = pathlib.Path(args.in_dir)
+    plots_dir    = pathlib.Path(args.plots_dir)
+    top_q        = args.top_quantile
+    full_oracle  = pathlib.Path(args.full_oracle) if args.full_oracle else None
 
     all_dpus, all_mramCols, all_residual_ms = [], [], []
     all_measured_ms, all_predicted_ms = [], []
     smac_datasets: list[tuple] = []
+
+    # Accumulators for full-loop-cost scatter (only populated when --full-oracle given)
+    all_full_dpus, all_full_mramCols = [], []
+    all_full_predicted_ms, all_full_measured_ms, all_full_n_launches = [], [], []
 
     for fn_name, pool_csv in find_function_pools(pathlib.Path(args.kernel_oracle)):
         data = build_clean_pool(agg_dir, pool_csv, fn_name)
@@ -446,7 +492,34 @@ def main():
             plots_dir / fn_name / "overhead_fit_calibration.png",
             f"{fn_name}: predicted vs measured kernel cost",
             correction_params=[("a", fit["intercept"])] + list(zip("bc", fit["coef"])),
+            cmap="plasma",
         )
+
+        if full_oracle is not None:
+            full_pool_csv = full_oracle / f"infer_{fn_name}" / "pool.csv"
+            if full_pool_csv.exists():
+                fd = build_full_cost_data(agg_dir, full_pool_csv, fn_name)
+                if not fd.empty:
+                    fd_dpus  = fd["dpus"].to_numpy(dtype=float)
+                    fd_mram  = fd["mramCol"].to_numpy(dtype=float)
+                    fd_pred  = fd["cost"].to_numpy()                      # ms
+                    fd_meas  = fd["measured_cost"].to_numpy() / 1e6       # ns → ms
+                    fd_nl    = fd["n_launches"].to_numpy()
+                    fd_corr  = apply_correction(fd_dpus, fd_mram,
+                                                fit["intercept"], fit["coef"],
+                                                TEMPLATES[best]) * fd_nl
+                    make_calibration_scatter_plot(
+                        fd_dpus, fd_pred, fd_meas, fd_corr,
+                        f"NNLS: {best}", top_q,
+                        plots_dir / fn_name / "full_cost_calibration.png",
+                        f"{fn_name}: full loop cost (predicted vs measured)",
+                        correction_params=[("a", fit["intercept"])] + list(zip("bc", fit["coef"])),
+                    )
+                    all_full_dpus.append(fd_dpus)
+                    all_full_mramCols.append(fd_mram)
+                    all_full_predicted_ms.append(fd_pred)
+                    all_full_measured_ms.append(fd_meas)
+                    all_full_n_launches.append(fd_nl)
 
         all_dpus.append(dpus)
         all_mramCols.append(mramCols)
@@ -485,7 +558,25 @@ def main():
         plots_dir / "overhead_fit_calibration_pooled.png",
         "All problems pooled: predicted vs measured kernel cost",
         correction_params=[("a", fit_pooled["intercept"])] + list(zip("bc", fit_pooled["coef"])),
+        cmap="plasma",
     )
+
+    if all_full_dpus:
+        dpus_fp      = np.concatenate(all_full_dpus)
+        mramCols_fp  = np.concatenate(all_full_mramCols)
+        predicted_fp = np.concatenate(all_full_predicted_ms)
+        measured_fp  = np.concatenate(all_full_measured_ms)
+        n_launches_fp = np.concatenate(all_full_n_launches)
+        corr_fp = apply_correction(dpus_fp, mramCols_fp,
+                                   fit_pooled["intercept"], fit_pooled["coef"],
+                                   TEMPLATES[best_pooled]) * n_launches_fp
+        make_calibration_scatter_plot(
+            dpus_fp, predicted_fp, measured_fp, corr_fp,
+            f"NNLS: {best_pooled}", top_q,
+            plots_dir / "full_cost_calibration_pooled.png",
+            "All problems pooled: full loop cost (predicted vs measured)",
+            correction_params=[("a", fit_pooled["intercept"])] + list(zip("bc", fit_pooled["coef"])),
+        )
 
     # ── SMAC: cross-validated ranking-objective fit ────────────────────────────
     if args.smac_trials <= 0:
@@ -523,7 +614,20 @@ def main():
         f"All problems pooled: predicted vs measured kernel cost "
         f"(SMAC, top-{top_q:.0%})",
         correction_params=[("a", smac_result["intercept"])] + list(zip("bc", smac_result["coef"])),
+        cmap="plasma",
     )
+
+    if all_full_dpus:
+        smac_corr_fp = apply_correction(dpus_fp, mramCols_fp,
+                                        smac_result["intercept"], smac_result["coef"],
+                                        TEMPLATES[smac_result["template"]]) * n_launches_fp
+        make_calibration_scatter_plot(
+            dpus_fp, predicted_fp, measured_fp, smac_corr_fp,
+            f"SMAC: {smac_result['template']}", top_q,
+            plots_dir / "full_cost_calibration_smac_pooled.png",
+            f"All problems pooled: full loop cost (predicted vs measured, SMAC, top-{top_q:.0%})",
+            correction_params=[("a", smac_result["intercept"])] + list(zip("bc", smac_result["coef"])),
+        )
 
 
 if __name__ == "__main__":
