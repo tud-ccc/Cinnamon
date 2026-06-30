@@ -537,8 +537,13 @@ struct CppSimulator : UpmemSimulator {
       ProgramBuilder builder;
       DpuTranslator tr(builder);
       tr.translateProgram(dpuProg);
-      return builder.simulate(T, tms).value_or(
-          std::numeric_limits<double>::infinity());
+      auto kernelMs = 1e3 * builder.simulate(T, tms).value_or(
+                                std::numeric_limits<double>::infinity());
+      auto hierarchy =
+          llvm::cast<DeviceHierarchyType>(waitFor.getDpuSet().getType());
+      int numDpus = (hierarchy.getNumRanks() * hierarchy.getNumDpusPerRank());
+      auto launchOverhead = 0.041958 * log2(numDpus);
+      return kernelMs + launchOverhead;
     };
     return simulateHostRegion(region, annotateOpCosts, waitForCb);
   }
