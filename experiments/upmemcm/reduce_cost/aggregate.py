@@ -48,7 +48,7 @@ def main():
                         help="Output directory for aggregated CSVs")
     parser.add_argument("--types", default=None,
                         help="Comma-separated list of types to include "
-                             "(default: all found, e.g. scatter,gather,launch,free,total)")
+                             "(default: all found, e.g. scatter,gather,alloc,launch,free,total)")
     args = parser.parse_args()
 
     run_dir  = pathlib.Path(args.run_dir)

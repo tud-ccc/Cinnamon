@@ -13,4 +13,12 @@ barrier_plot:
 [working-directory: 'reduce_cost']
 reduce_run *ARGS:
     $(realpath ../../../.venv/bin)/python run_configs.py {{ARGS}}
-     
+    $(realpath ../../../.venv/bin)/python aggregate.py --run-dir runs --out aggregated
+
+[working-directory: 'reduce_cost']
+reduce_plot *ARGS:
+    $(realpath ../../../.venv/bin)/python plot_cost.py {{ARGS}}
+
+[working-directory: 'reduce_cost']
+reduce_fit *ARGS:
+    $(realpath ../../../.venv/bin)/python fit_overhead_term.py {{ARGS}}

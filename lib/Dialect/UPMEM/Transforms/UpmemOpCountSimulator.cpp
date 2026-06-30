@@ -11,6 +11,7 @@
 
 #include <cmath>
 #include <limits>
+#include <llvm/Support/Debug.h>
 #include <type_traits>
 #include <upmem_cost_model/Simulation.h>
 
@@ -29,6 +30,8 @@
 #include <mlir/IR/BuiltinTypes.h>
 #include <mlir/IR/Operation.h>
 #include <mlir/Interfaces/LoopLikeInterface.h>
+
+#define DEBUG_TYPE "cinm-inference"
 
 namespace mlir::upmem {
 
@@ -72,15 +75,19 @@ static double costOfOpCb(Operation &op, bool annotate,
                     step = *sv;
               tripCount = std::max(1L, 2048 / std::max(1L, step));
             }
-            return costOfRegionCb(*forOp.getLoopRegions()[0], annotate, cb) *
-                   static_cast<double>(tripCount);
+            double bodyCost =
+                costOfRegionCb(*forOp.getLoopRegions()[0], annotate, cb);
+            return bodyCost * tripCount;
           })
-          // .Case<memref::CopyOp>([](memref::CopyOp copyOp) {
-          //   auto hostTy = copyOp.getSource().getType();
-          //   double bytes = static_cast<double>(staticElementCount(hostTy)) *
-          //                  elementBytes(hostTy.getElementType());
-          //   return transferCost(bytes, 1);
-          // })
+          .Case<memref::CopyOp>([](memref::CopyOp copyOp) {
+            // Experiment: try to account for the copy happening
+            // LLVM O3 usually unroll the tile copy loop
+            auto hostTy = copyOp.getSource().getType();
+            double bytes = static_cast<double>(staticElementCount(hostTy)) *
+                           elementBytes(hostTy.getElementType());
+            double time_ns = 0.63 * pow(bytes, 0.907);
+            return time_ns / 1e6; // ns -> ms
+          })
           // .Case<memref::LoadOp, memref::StoreOp>([](auto) { return 1e-7; })
           .Case<cnm::ScatterOp, cnm::GatherOp>([](auto scatterOp) {
             auto hostTy = scatterOp.getHostType();
@@ -91,16 +98,16 @@ static double costOfOpCb(Operation &op, bool annotate,
               numRanks = accel->getNumRanks();
             return transferCost(bytes, numRanks);
           })
-          .Case<upmem::ScatterOp, upmem::GatherOp>([](auto xferOp) {
+          .Case<upmem::ScatterOp, upmem::GatherOp>([](auto xferOp) -> double {
             auto hier = llvm::cast<DeviceHierarchyType>(
                 xferOp.getHierarchy().getType());
             int numDpus = hier.getNumRanks() * hier.getNumDpusPerRank();
             if constexpr (std::is_same_v<decltype(xferOp), upmem::ScatterOp>) {
-              return 1e-3 * upmem_cm::scatterCostMs(
-                                numDpus, xferOp.getDpuBufferSizeInBytes());
+              return upmem_cm::scatterCostMs(numDpus,
+                                             xferOp.getDpuBufferSizeInBytes());
             } else {
-              return 1e-3 * upmem_cm::gatherCostMs(
-                                numDpus, xferOp.getDpuBufferSizeInBytes());
+              return upmem_cm::gatherCostMs(numDpus,
+                                            xferOp.getDpuBufferSizeInBytes());
             }
           })
           .Case<LocalTransferOp>([](auto xferOp) {

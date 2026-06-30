@@ -91,7 +91,7 @@ struct UpmemInferenceOptions {
 };
 
 static void addAffineOpts(OpPassManager &pm) {
-  pm.addPass(affine::createLoopUnrollPass(-1));
+  pm.addPass(affine::createLoopUnrollPass(1, true));
   pm.addPass(createCanonicalizerPass());
   pm.addPass(affine::createAffineFoldMemRefAliasOps());
   pm.addPass(memref::createFoldMemRefAliasOpsPass());
@@ -503,6 +503,18 @@ void UpmemInferencePlugin::handleReduce(cinm::ReduceOp op, SpaceBuilder &b) {
         {
           auto &dpuPm = cleanupPm->nest<upmem::DpuProgramOp>();
           addAffineOpts(dpuPm);
+          // dpuPm.addPass(affine::createLoopUnrollPass(
+          //     -1, false, [](affine::AffineForOp forOp) -> unsigned int {
+          //       auto tc = dyn_cast<LoopLikeOpInterface>(*forOp).getStaticTripCount();
+          //       if (tc && tc->getZExtValue() <= 4) {
+          //         // In an upmem DPU program, we want to either unroll in
+          //         // full and have static (immediate) index patterns, or not
+          //         // unroll. This is because the IRAM is shared with the WRAM.
+          //         return tc->getZExtValue();
+          //       }
+          //       return 1; // do not unroll
+          //     }));
+
           dpuPm.addPass(createLowerAffinePass());
           dpuPm.addPass(createCanonicalizerPass());
           dpuPm.addPass(createCSEPass());
