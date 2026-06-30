@@ -77,16 +77,17 @@ static double costOfOpCb(Operation &op, bool annotate,
             }
             double bodyCost =
                 costOfRegionCb(*forOp.getLoopRegions()[0], annotate, cb);
-            LLVM_DEBUG(llvm::dbgs() << "TC=" << tripCount << " body= "
-                                    << bodyCost << " for " << forOp << "\n\n");
             return bodyCost * tripCount;
           })
-          // .Case<memref::CopyOp>([](memref::CopyOp copyOp) {
-          //   auto hostTy = copyOp.getSource().getType();
-          //   double bytes = static_cast<double>(staticElementCount(hostTy)) *
-          //                  elementBytes(hostTy.getElementType());
-          //   return transferCost(bytes, 1);
-          // })
+          .Case<memref::CopyOp>([](memref::CopyOp copyOp) {
+            // Experiment: try to account for the copy happening
+            // LLVM O3 usually unroll the tile copy loop
+            auto hostTy = copyOp.getSource().getType();
+            double bytes = static_cast<double>(staticElementCount(hostTy)) *
+                           elementBytes(hostTy.getElementType());
+            double time_ns = 0.63 * pow(bytes, 0.907);
+            return time_ns / 1e6; // ns -> ms
+          })
           // .Case<memref::LoadOp, memref::StoreOp>([](auto) { return 1e-7; })
           .Case<cnm::ScatterOp, cnm::GatherOp>([](auto scatterOp) {
             auto hostTy = scatterOp.getHostType();

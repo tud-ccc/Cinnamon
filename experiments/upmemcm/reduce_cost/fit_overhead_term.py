@@ -29,7 +29,7 @@ import matplotlib.pyplot as plt
 from matplotlib.ticker import FuncFormatter, NullFormatter
 import numpy as np
 import pandas as pd
-from sklearn.linear_model import LinearRegression
+from scipy.optimize import nnls
 
 from plot_cost import compute_measured_launch_cost, find_function_pools
 
@@ -77,16 +77,19 @@ def weighted_rmse(residual: np.ndarray, pred: np.ndarray, weight: np.ndarray) ->
 
 
 def fit_template(dpus: np.ndarray, mramCols: np.ndarray, residual: np.ndarray, weight: np.ndarray, feature_fn):
+    """Weighted non-negative least squares: all coefficients, including the
+    intercept, are constrained to be >= 0. Every feature column (dpus,
+    mramCols, log2 of either, dpus//64) is itself non-negative, so this keeps
+    f(dpus) non-negative and monotonically non-decreasing, avoiding the
+    blow-up-to-negative-outlier failure mode an unconstrained negative slope
+    can produce at the extremes of the range.
+    """
     X = feature_fn(dpus, mramCols)
-    if X.shape[1] == 0:
-        # Baseline: weighted mean of the residual, no dpus dependence.
-        a = float(np.average(residual, weights=weight))
-        pred = np.full_like(residual, a)
-        return {"intercept": a, "coef": [], "pred": pred}
-    model = LinearRegression()
-    model.fit(X, residual, sample_weight=weight)
-    pred = model.predict(X)
-    return {"intercept": float(model.intercept_), "coef": list(model.coef_), "pred": pred}
+    X_full = np.column_stack([np.ones(len(residual)), X])
+    sqrt_w = np.sqrt(weight)
+    coef_full, _ = nnls(X_full * sqrt_w[:, None], residual * sqrt_w)
+    pred = X_full @ coef_full
+    return {"intercept": float(coef_full[0]), "coef": list(coef_full[1:]), "pred": pred}
 
 
 def fit_all_templates(dpus: np.ndarray, mramCols: np.ndarray, residual: np.ndarray, weight: np.ndarray) -> pd.DataFrame:
