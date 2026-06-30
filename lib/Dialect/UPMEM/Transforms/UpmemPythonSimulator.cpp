@@ -542,8 +542,7 @@ struct CppSimulator : UpmemSimulator {
       auto hierarchy =
           llvm::cast<DeviceHierarchyType>(waitFor.getDpuSet().getType());
       int numDpus = (hierarchy.getNumRanks() * hierarchy.getNumDpusPerRank());
-      auto launchOverhead = -2.347115 - 0.001803433284655423 * numDpus +
-                            0.3805487552732298 * log2(numDpus);
+      auto launchOverhead = 0.041958 * log2(numDpus);
       return kernelMs + launchOverhead;
     };
     return simulateHostRegion(region, annotateOpCosts, waitForCb);
