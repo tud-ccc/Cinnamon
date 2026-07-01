@@ -107,6 +107,7 @@ static double costOfOpCb(Operation &op, bool annotate,
             auto hier = llvm::cast<DeviceHierarchyType>(
                 xferOp.getHierarchy().getType());
             int numDpus = hier.getNumRanks() * hier.getNumDpusPerRank();
+            // return 0.0;
             if constexpr (std::is_same_v<decltype(xferOp), upmem::ScatterOp>) {
               return upmem_cm::scatterCostMs(numDpus,
                                              xferOp.getDpuBufferSizeInBytes());

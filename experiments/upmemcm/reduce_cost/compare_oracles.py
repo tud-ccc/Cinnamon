@@ -63,15 +63,59 @@ def _load_pool(oracle_dir: pathlib.Path, fn_name: str) -> pd.DataFrame:
         return pd.DataFrame()
     df = pd.read_csv(pool_csv)
     df["config_id"] = df.index
-    return df[["config_id", "dpus", "mramCol", "cost"]]
+    return df
 
+
+# ── Derived oracle B ───────────────────────────────────────────────────────────
+
+def compute_cost_b(pool_a: pd.DataFrame, agg_dir: pathlib.Path, fn_name: str) -> pd.Series:
+    """Add measured gather+scatter transfer cost to the oracle-A prediction.
+
+    For each config, computes the per-iteration sum of gather and scatter
+    elapsed_ns, averages over iterations, converts to ms, and adds it to
+    pool_a["cost"] (the oracle-A kernel cost prediction).
+    """
+    rows = []
+    for fname in ("gather.csv", "scatter.csv"):
+        path = agg_dir / fname
+        if not path.exists():
+            raise FileNotFoundError(f"Transfer CSV not found: {path}")
+        df = pd.read_csv(path)
+        df = df[df["fn_name"] == fn_name][["config_id", "iteration", "elapsed_ns"]]
+        rows.append(df)
+
+    transfer = pd.concat(rows)
+    # sum gather + scatter per (config_id, iteration), then average over iterations
+    per_iter = transfer.groupby(["config_id", "iteration"])["elapsed_ns"].sum()
+    mean_transfer_ns = per_iter.groupby("config_id").mean()
+    mean_transfer_ms = mean_transfer_ns / 1e6
+
+    transfer_ms = pool_a["config_id"].map(mean_transfer_ms)
+    return pool_a["cost"] + transfer_ms
+
+
+# ── Data alignment ─────────────────────────────────────────────────────────────
 
 def build_comparison_data(agg_dir, oracle_a, oracle_b, fn_name, measured_mode):
-    """Return DataFrame with [dpus, cost_a, cost_b, measured_ms], NaN/inf dropped."""
+    """Return DataFrame with [dpus, cost_a, cost_b, measured_ms], NaN/inf dropped.
+
+    If oracle_b is None, cost_b is derived from oracle_a's pool via compute_cost_b().
+    """
     pool_a = _load_pool(oracle_a, fn_name)
-    pool_b = _load_pool(oracle_b, fn_name)
-    if pool_a.empty or pool_b.empty:
+    if pool_a.empty:
         return pd.DataFrame()
+
+    if oracle_b is not None:
+        pool_b = _load_pool(oracle_b, fn_name)
+        if pool_b.empty:
+            return pd.DataFrame()
+        cost_b_series = pool_b.set_index("config_id")["cost"].rename("cost_b")
+        df = pool_a.rename(columns={"cost": "cost_a"})[["config_id", "dpus", "mramCol", "cost_a"]]
+        df = df.merge(cost_b_series, on="config_id", how="inner")
+    else:
+        df = pool_a.copy()
+        df["cost_b"] = compute_cost_b(pool_a, agg_dir, fn_name)
+        df = df.rename(columns={"cost": "cost_a"})[["config_id", "dpus", "mramCol", "cost_a", "cost_b"]]
 
     if measured_mode == "launch":
         meas = _measured_launch(agg_dir, fn_name)
@@ -80,12 +124,7 @@ def build_comparison_data(agg_dir, oracle_a, oracle_b, fn_name, measured_mode):
     if meas.empty:
         return pd.DataFrame()
 
-    df = (
-        pool_a.rename(columns={"cost": "cost_a"})
-        .merge(pool_b[["config_id", "cost"]].rename(columns={"cost": "cost_b"}),
-               on="config_id", how="inner")
-        .merge(meas, on="config_id", how="inner")
-    )
+    df = df.merge(meas, on="config_id", how="inner")
     df = df.dropna(subset=["cost_a", "cost_b", "measured_ms"])
     df = df[np.isfinite(df["cost_a"]) & np.isfinite(df["cost_b"]) & np.isfinite(df["measured_ms"])]
     return df.reset_index(drop=True)
@@ -169,8 +208,9 @@ def main():
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--oracle-a", required=True,
                    help="First oracle directory (infer_<fn>/pool.csv layout)")
-    p.add_argument("--oracle-b", required=True,
-                   help="Second oracle directory (same layout)")
+    p.add_argument("--oracle-b", default=None,
+                   help="Second oracle directory (same layout); "
+                        "if omitted, cost_b is derived from oracle A via compute_cost_b()")
     p.add_argument("--label-a", default="oracle A", help="Legend label for oracle A")
     p.add_argument("--label-b", default="oracle B", help="Legend label for oracle B")
     p.add_argument("--in-dir",  default="aggregated",
@@ -190,7 +230,7 @@ def main():
     args = p.parse_args()
 
     oracle_a  = pathlib.Path(args.oracle_a)
-    oracle_b  = pathlib.Path(args.oracle_b)
+    oracle_b  = pathlib.Path(args.oracle_b) if args.oracle_b else None
     agg_dir   = pathlib.Path(args.in_dir)
     plots_dir = pathlib.Path(args.plots_dir)
     top_q     = args.top_quantile
