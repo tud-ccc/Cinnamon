@@ -262,7 +262,7 @@ struct UpmemInferencePlugin : cinm::InferencePlugin {
     SpaceBuilder b;
     simulators_.clear();
     dpusVar_ = b.intRange(
-        "dpus", 1, platform.getMaxNumRanks() * platform.getMaxNumDpusPerRank());
+        "dpus", 2, platform.getMaxNumRanks() * platform.getMaxNumDpusPerRank());
     taskletsVar_ = b.intRange("tasklets", 1, platform.getMaxNumTasklets());
 
     refClone.getBody().walk([&](mlir::Operation *op) {
