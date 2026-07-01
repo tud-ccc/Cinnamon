@@ -43,6 +43,10 @@ def python_bin() -> str:
 
 # ── cinm-opt invocation helpers ────────────────────────────────────────────────
 
+def fmt_cmd(args: list[str]) -> str:
+    def quote(s):
+      return f'"{s}"' if ' ' in s else s
+    return ' '.join(quote(s) for s in args)
 
 def _infer_opts(
     *,
@@ -80,7 +84,7 @@ def _cinm_opt_cmd(
     ]
     if extra_mlir_flags:
         cmd.extend(extra_mlir_flags)
-    #print(" ".join(cmd))
+    print(fmt_cmd(cmd))
     return cmd
 
 

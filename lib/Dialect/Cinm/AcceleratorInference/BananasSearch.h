@@ -66,8 +66,9 @@ struct ValidationSet {
 /// totalSize().
 struct CandidatePool {
   const ConfigSpace *space_;
-  size_t N;                   // = space_->totalSize(), cached
-  llvm::BitVector visited;    // marks invalid + evaluated flat indices
+  size_t N; // = space_->totalSize(), cached
+  std::set<size_t>
+      visited; // marks evaluated flat indices, set bc it is sparse
   llvm::BitVector validMask_; // bit i set iff config at flat index i is valid
   size_t nValidVisited_ = 0;  // count of valid configs that have been visited
 
@@ -106,19 +107,18 @@ struct CandidatePool {
   Configuration operator[](size_t i) const;
 
   void markVisited(size_t idx) {
-    if (!visited.test(static_cast<unsigned>(idx))) {
-      visited.set(static_cast<unsigned>(idx));
+    if (visited.insert(idx).second) {
       if (validMask_.test(static_cast<unsigned>(idx)))
         ++nValidVisited_;
     }
   }
-  bool isVisited(size_t idx) const { return visited.test(idx); }
+  bool isVisited(size_t idx) const { return visited.count(idx); }
   /// Number of valid configs that have been evaluated (or marked visited).
   size_t numVisited() const { return nValidVisited_; }
   /// Flat index of the first valid unvisited config, or N if all visited.
   size_t firstUnvisited() const {
     for (int i = validMask_.find_first(); i != -1; i = validMask_.find_next(i))
-      if (!visited.test(static_cast<unsigned>(i)))
+      if (!visited.count(i))
         return static_cast<size_t>(i);
     return N;
   }
