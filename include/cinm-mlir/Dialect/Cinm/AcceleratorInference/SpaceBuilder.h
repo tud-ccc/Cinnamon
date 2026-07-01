@@ -394,7 +394,7 @@ private:
         predicates_.push_back([num, den](const ConfWrapper &c) -> bool {
           const auto nv = num.eval(c);
           const auto dv = den.eval(c);
-          return dv != 0 && nv % dv == 0 && nv <= dv;
+          return dv != 0 && nv % dv == 0;// && dv <= nv;
         });
       } else {
         // (B * C) | A  ⟺  B | A  ∧  C | A  ∧  B * C ≤ A
