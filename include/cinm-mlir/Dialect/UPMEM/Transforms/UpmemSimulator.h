@@ -14,11 +14,33 @@
 #include <mlir/IR/PatternMatch.h>
 #include <mlir/IR/Value.h>
 #include <mlir/Support/LogicalResult.h>
-#include <upmem_cost_model/Types.h>
 
 #include <optional>
 
 namespace mlir::upmem {
+enum class DType : uint8_t { U8, I8, U16, I16, U32, I32, F32, U64, I64, F64 };
+
+inline int dtypeBits(DType dt) {
+  switch (dt) {
+  case DType::U8:
+  case DType::I8:
+    return 8;
+  case DType::U16:
+  case DType::I16:
+    return 16;
+  case DType::U32:
+  case DType::I32:
+  case DType::F32:
+    return 32;
+  case DType::U64:
+  case DType::I64:
+  case DType::F64:
+    return 64;
+  }
+  return 32;
+}
+
+inline int dtypeBytes(DType dt) { return dtypeBits(dt) / 8; }
 
 /// Abstract cost estimator for UPMEM programs in UPMEM dialect.
 /// Returns an estimated cost (lower is better) given a region.
@@ -38,8 +60,7 @@ struct UpmemSimulator {
 
   virtual double simulateGemv(std::chrono::milliseconds timeout, int nTasklets,
                               int64_t mramRows, int64_t mramCols,
-                              int64_t rowTile, int64_t colTile,
-                              upmem_cm::DType dty) = 0;
+                              int64_t rowTile, int64_t colTile, DType dty) = 0;
 
   /// Estimate the total cost of the host-side tiled GEMV (mv2) kernel,
   /// including scatter/gather transfers and DPU compute.
@@ -54,15 +75,14 @@ struct UpmemSimulator {
   double simulateFullGemv(std::chrono::milliseconds timeoutMs, int64_t M,
                           int64_t K, int64_t mramRows, int64_t mramCols,
                           int64_t wramRows, int64_t wramCols, int64_t dpuRows,
-                          int64_t dpuCols, int64_t tasklets,
-                          upmem_cm::DType dty);
+                          int64_t dpuCols, int64_t tasklets, DType dty);
 
   virtual double simulateReduction(std::chrono::milliseconds timeout,
                                    cinm::ReduceMethod reduction,
                                    int taskletRows, int taskletCols,
                                    int64_t mramRows, int64_t mramCols,
                                    int64_t wramRows, int64_t wramCols,
-                                   upmem_cm::DType dty) = 0;
+                                   DType dty) = 0;
 
   /// Simulate a reduction operation.
   /// The reduction is like reducing a tensor <MxK> into a tensor <M>.
@@ -76,7 +96,7 @@ struct UpmemSimulator {
                                int64_t wramRows, int64_t wramCols,
                                int64_t dpuRows, int64_t dpuCols,
                                int64_t taskletRows, int64_t taskletCols,
-                               upmem_cm::DType dty);
+                               DType dty);
 };
 
 /// Simple baseline: weighted op count over the UPMEM dialect IR.
@@ -86,72 +106,62 @@ struct UpmemSimulator {
 std::unique_ptr<UpmemSimulator>
 createOpCountSimulator(bool annotateOpCosts = false);
 
+enum class UpmemSimulatorId {
+  CYCLE_ACCURATE = 0,
+  FAST = 1,
+  HYBRID = 2,
+  OPCOUNT = 3
+};
+
+inline raw_ostream &operator<<(raw_ostream &os, UpmemSimulatorId simid) {
+  switch (simid) {
+  case UpmemSimulatorId::CYCLE_ACCURATE:
+    os << "cycle-accurate";
+    return os;
+  case UpmemSimulatorId::FAST:
+    os << "fast";
+    return os;
+  case UpmemSimulatorId::HYBRID:
+    os << "hybrid";
+    return os;
+  case UpmemSimulatorId::OPCOUNT:
+    os << "opcount";
+    return os;
+  }
+}
+
 /// Creates a UpmemSimulator that translates the lowered UPMEM DPU program to
 /// the Python upmem_simulator high-level IR and runs cycle-accurate simulation.
 /// Requires the upmem_simulator Python package to be importable.
 /// Falls back to the op-count simulator on any Python error.
 /// When annotateOpCosts is true, annotates host-side ops with 'upmem.sim_cost'
 /// and annotates each WaitForOp with the Python-estimated cycle count.
-std::unique_ptr<UpmemSimulator> createPythonSimulator(
+std::unique_ptr<UpmemSimulator> createCycleAccurateSimulator(
+    bool annotateOpCosts = false,
+    std::chrono::milliseconds timeoutMs = std::chrono::milliseconds(0));
+
+std::unique_ptr<UpmemSimulator> createFastSimulator(
+    bool annotateOpCosts = false,
+    std::chrono::milliseconds timeoutMs = std::chrono::milliseconds(0));
+
+std::unique_ptr<UpmemSimulator> createHybridSimulator(
     bool annotateOpCosts = false,
     std::chrono::milliseconds timeoutMs = std::chrono::milliseconds(0));
 
 inline std::unique_ptr<UpmemSimulator> createSimulator(
-    StringRef simulator, bool annotateOpCosts = false,
+    UpmemSimulatorId simulator, bool annotateOpCosts = false,
     std::chrono::milliseconds timeoutMs = std::chrono::milliseconds(0)) {
-  if (simulator == "cycleaccurate")
-    return createPythonSimulator(annotateOpCosts, timeoutMs);
-  else if (simulator == "opcount")
+  if (simulator == UpmemSimulatorId::CYCLE_ACCURATE)
+    return createCycleAccurateSimulator(annotateOpCosts, timeoutMs);
+  if (simulator == UpmemSimulatorId::HYBRID)
+    return createHybridSimulator(annotateOpCosts, timeoutMs);
+  if (simulator == UpmemSimulatorId::FAST)
+    return createFastSimulator(annotateOpCosts, timeoutMs);
+  else if (simulator == UpmemSimulatorId::OPCOUNT)
     return createOpCountSimulator(annotateOpCosts);
 
   return nullptr;
 }
-
-/// Callback invoked by simulateHostRegion for each WaitForOp encountered.
-/// `op` is the WaitForOp (as Operation*). `annotate` mirrors the outer flag.
-/// Must return the estimated cost of that DPU kernel launch.
-/// The WaitForOp itself will be annotated by simulateHostRegion using the
-/// returned value; the callback need not annotate it.
-using WaitForCostFn =
-    std::function<double(mlir::Operation * /*WaitForOp*/, bool /*annotate*/)>;
-
-inline double transferCost(double numBytes, int numRanks) {
-  return numBytes / 1024 / numRanks / 100'000;
-}
-
-inline double scatterGatherCost(int64_t elemsPerDpu, int64_t elemBytes,
-                                int64_t ranks, int64_t dpusPerRank) {
-  double totalBytes =
-      static_cast<double>(elemsPerDpu * elemBytes) * ranks * dpusPerRank;
-  return transferCost(totalBytes, static_cast<int>(ranks));
-}
-
-inline upmem_cm::ArithOp upmemCmOp(cinm::ReduceMethod red) {
-  switch (red) {
-  case cinm::ReduceMethod::ADD:
-    return upmem_cm::ArithOp::ADD;
-  case cinm::ReduceMethod::MUL:
-    return upmem_cm::ArithOp::MUL;
-  default:
-    // todo the simulator doesn't have measurements for the remaining
-    // operations.
-    assert(false && "Unsupported reduce method");
-  }
-}
-/// Estimates the cost of a host-side UPMEM region (scatter/gather/loops/etc.)
-/// and optionally annotates each visited op with 'upmem.sim_cost'.
-/// WaitForOp cost is delegated to `waitForCb`; all other op costs use the
-/// built-in weighted heuristics (same as OpCountSimulator).
-double simulateHostRegion(mlir::Region &region, bool annotate,
-                          const WaitForCostFn &waitForCb);
-
-/// Cost model for a single upmem.scatter or upmem.gather operation.
-/// Models the off-chip transfer of `elemsPerDpu` elements (each `elemBytes`
-/// bytes) to/from all DPUs in a hierarchy of `ranks` ranks × `dpusPerRank`
-/// DPUs per rank, assuming all ranks transfer in parallel.
-/// Matches the formula used by the OpCount simulator's ScatterOp/GatherOp case.
-double scatterGatherCost(int64_t elemsPerDpu, int64_t elemBytes, int64_t ranks,
-                         int64_t dpusPerRank);
 
 static constexpr llvm::StringLiteral kSimCostAttr = "upmem.sim_cost";
 

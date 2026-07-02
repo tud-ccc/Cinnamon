@@ -20,11 +20,6 @@ struct UpmemAnnotateCostsPass
     Operation *container = getOperation();
 
     std::unique_ptr<UpmemSimulator> sim = createSimulator(simulator, true);
-    if (!sim) {
-      container->emitError("Unknown simulator ") << simulator;
-      signalPassFailure();
-      return;
-    }
 
     container->walk([&](cinm::ComputeBlockOp computeBlock) {
       auto res = sim->simulate(computeBlock.getBody());
