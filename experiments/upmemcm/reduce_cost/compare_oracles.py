@@ -30,29 +30,42 @@ import numpy as np
 import pandas as pd
 from scipy.stats import spearmanr
 
-from plot_cost import find_function_pools, compute_measured_cost
+from plot_cost import find_function_pools
 
 
 # ── Measured-cost loaders ──────────────────────────────────────────────────────
+# config_id is consistent within the aggregate directory, so it is used for
+# internal merges. key_cols are attached to the output so the caller can join
+# against oracle pools (whose config_ids may not match).
 
-def _measured_launch(agg_dir: pathlib.Path, fn_name: str) -> pd.DataFrame:
-    """[config_id, measured_ms] — mean per-launch cost (ns→ms)."""
-    launch = pd.read_csv(agg_dir / "launch.csv")
-    launch = launch[launch["fn_name"] == fn_name]
-    per_iter = launch.groupby(["config_id", "iteration"])["elapsed_ns"].mean()
-    df = per_iter.groupby("config_id").mean().rename("measured_ms").reset_index()
-    df["measured_ms"] /= 1e6
-    return df
+def _measured_launch(agg_dir: pathlib.Path, fn_name: str, key_cols: list) -> pd.DataFrame:
+    """[*key_cols, measured_ms] — mean per-launch cost (ns→ms)."""
+    df = pd.read_csv(agg_dir / "launch.csv")
+    df = df[df["fn_name"] == fn_name]
+    per_iter = df.groupby(["config_id", "iteration"])["elapsed_ns"].mean().reset_index()
+    result = per_iter.groupby("config_id")["elapsed_ns"].mean().rename("measured_ms").reset_index()
+    result["measured_ms"] /= 1e6
+    key_df = df.drop_duplicates("config_id")[["config_id"] + key_cols]
+    return result.merge(key_df, on="config_id")[key_cols + ["measured_ms"]]
 
 
-def _measured_full(agg_dir: pathlib.Path, fn_name: str) -> pd.DataFrame:
-    """[config_id, measured_ms] — full loop cost (ns→ms)."""
-    mc = compute_measured_cost(agg_dir, fn_name)
-    if mc.empty:
-        return pd.DataFrame()
-    mc = mc.rename(columns={"measured_cost": "measured_ms"})
-    mc["measured_ms"] /= 1e6
-    return mc
+def _measured_full(agg_dir: pathlib.Path, fn_name: str, key_cols: list) -> pd.DataFrame:
+    """[*key_cols, measured_ms] — full loop cost minus alloc/free (ns→ms)."""
+    total = pd.read_csv(agg_dir / "total.csv").rename(columns={"iter": "iteration"})
+    free  = pd.read_csv(agg_dir / "free.csv")
+    alloc = pd.read_csv(agg_dir / "alloc.csv")
+    sel = lambda d: d[d["fn_name"] == fn_name]
+
+    total_g = sel(total).groupby(["config_id", "iteration"])["elapsed_ns"].mean()
+    free_g  = sel(free).groupby(["config_id", "iteration"])["elapsed_ns"].mean()
+    alloc_g = sel(alloc).groupby(["config_id", "iteration"])["elapsed_ns"].mean()
+
+    joined = pd.concat({"total": total_g, "free": free_g, "alloc": alloc_g}, axis=1).dropna()
+    joined["net_ns"] = joined["total"] - joined["free"] - joined["alloc"]
+    result = joined.groupby("config_id")["net_ns"].mean().rename("measured_ms").reset_index()
+    result["measured_ms"] /= 1e6
+    key_df = sel(total).drop_duplicates("config_id")[["config_id"] + key_cols]
+    return result.merge(key_df, on="config_id")[key_cols + ["measured_ms"]]
 
 
 # ── Data alignment ─────────────────────────────────────────────────────────────
@@ -68,12 +81,12 @@ def _load_pool(oracle_dir: pathlib.Path, fn_name: str) -> pd.DataFrame:
 
 # ── Derived oracle B ───────────────────────────────────────────────────────────
 
-def compute_cost_b(pool_a: pd.DataFrame, agg_dir: pathlib.Path, fn_name: str) -> pd.Series:
+def compute_cost_b(pool_a: pd.DataFrame, agg_dir: pathlib.Path, fn_name: str,
+                   key_cols: list) -> pd.Series:
     """Add measured gather+scatter transfer cost to the oracle-A prediction.
 
-    For each config, computes the per-iteration sum of gather and scatter
-    elapsed_ns, averages over iterations, converts to ms, and adds it to
-    pool_a["cost"] (the oracle-A kernel cost prediction).
+    Uses config_id within the aggregate for internal grouping, then joins onto
+    pool_a via key_cols (since pool config_ids may differ from aggregate config_ids).
     """
     rows = []
     for fname in ("gather.csv", "scatter.csv"):
@@ -81,50 +94,64 @@ def compute_cost_b(pool_a: pd.DataFrame, agg_dir: pathlib.Path, fn_name: str) ->
         if not path.exists():
             raise FileNotFoundError(f"Transfer CSV not found: {path}")
         df = pd.read_csv(path)
-        df = df[df["fn_name"] == fn_name][["config_id", "iteration", "elapsed_ns"]]
+        df = df[df["fn_name"] == fn_name][["config_id", "iteration", "elapsed_ns"] + key_cols]
         rows.append(df)
 
     transfer = pd.concat(rows)
-    # sum gather + scatter per (config_id, iteration), then average over iterations
-    per_iter = transfer.groupby(["config_id", "iteration"])["elapsed_ns"].sum()
-    mean_transfer_ns = per_iter.groupby("config_id").mean()
-    mean_transfer_ms = mean_transfer_ns / 1e6
+    per_iter = transfer.groupby(["config_id", "iteration"])["elapsed_ns"].sum().reset_index()
+    mean_ns  = per_iter.groupby("config_id")["elapsed_ns"].mean().rename("transfer_ns").reset_index()
+    key_df   = transfer.drop_duplicates("config_id")[["config_id"] + key_cols]
+    mean_ns  = mean_ns.merge(key_df, on="config_id")[key_cols + ["transfer_ns"]]
 
-    transfer_ms = pool_a["config_id"].map(mean_transfer_ms)
-    return pool_a["cost"] + transfer_ms
+    merged = pool_a[key_cols + ["cost"]].merge(mean_ns, on=key_cols, how="left")
+    return (merged["cost"] + merged["transfer_ns"] / 1e6).values
 
 
 # ── Data alignment ─────────────────────────────────────────────────────────────
+
+def _config_key_cols(df: pd.DataFrame) -> list:
+    """Columns that form the config vector: everything before 'visited'."""
+    cols = list(df.columns)
+    cut = cols.index("visited") if "visited" in cols else len(cols)
+    return [c for c in cols[:cut] if c != "config_id"]
+
 
 def build_comparison_data(agg_dir, oracle_a, oracle_b, fn_name, measured_mode):
     """Return DataFrame with [dpus, cost_a, cost_b, measured_ms], NaN/inf dropped.
 
     If oracle_b is None, cost_b is derived from oracle_a's pool via compute_cost_b().
+    Pools are aligned on the config vector (all columns before 'visited'), not config_id.
     """
     pool_a = _load_pool(oracle_a, fn_name)
     if pool_a.empty:
         return pd.DataFrame()
 
+    key_cols = _config_key_cols(pool_a)
+
     if oracle_b is not None:
         pool_b = _load_pool(oracle_b, fn_name)
         if pool_b.empty:
             return pd.DataFrame()
-        cost_b_series = pool_b.set_index("config_id")["cost"].rename("cost_b")
-        df = pool_a.rename(columns={"cost": "cost_a"})[["config_id", "dpus", "mramCol", "cost_a"]]
-        df = df.merge(cost_b_series, on="config_id", how="inner")
+        df = (
+            pool_a[["config_id"] + key_cols + ["cost"]].rename(columns={"cost": "cost_a"})
+            .merge(
+                pool_b[key_cols + ["cost"]].rename(columns={"cost": "cost_b"}),
+                on=key_cols, how="inner",
+            )
+        )
     else:
-        df = pool_a.copy()
-        df["cost_b"] = compute_cost_b(pool_a, agg_dir, fn_name)
-        df = df.rename(columns={"cost": "cost_a"})[["config_id", "dpus", "mramCol", "cost_a", "cost_b"]]
+        df = pool_a[["config_id"] + key_cols + ["cost"]].copy()
+        df["cost_b"] = compute_cost_b(pool_a, agg_dir, fn_name, key_cols)
+        df = df.rename(columns={"cost": "cost_a"})
 
     if measured_mode == "launch":
-        meas = _measured_launch(agg_dir, fn_name)
+        meas = _measured_launch(agg_dir, fn_name, key_cols)
     else:
-        meas = _measured_full(agg_dir, fn_name)
+        meas = _measured_full(agg_dir, fn_name, key_cols)
     if meas.empty:
         return pd.DataFrame()
 
-    df = df.merge(meas, on="config_id", how="inner")
+    df = df.merge(meas, on=key_cols, how="inner")
     df = df.dropna(subset=["cost_a", "cost_b", "measured_ms"])
     df = df[np.isfinite(df["cost_a"]) & np.isfinite(df["cost_b"]) & np.isfinite(df["measured_ms"])]
     return df.reset_index(drop=True)

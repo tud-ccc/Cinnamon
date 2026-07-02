@@ -33,12 +33,14 @@ CandidatePool::CandidatePool(const ConfigSpace &space, size_t evalBudget,
       validMask_(static_cast<unsigned>(N)), Xo(space.size(), evalBudget),
       yo(1, evalBudget), costByIdx(arma::rowvec(N).fill(arma::datum::nan)),
       exhaustive(exhaustive) {
-  assert(N <= static_cast<size_t>(std::numeric_limits<unsigned>::max()));
   space_->forEach([&](const Configuration &conf, size_t i) {
     if (space_->isValid(conf))
-      validMask_.set(static_cast<unsigned long>(i));
+      validMask_.set(static_cast<unsigned>(i));
     return true;
   });
+  visited = validMask_;
+  // by marking invalid solutions visited, we will never pick them
+  visited.flip();
 }
 
 CandidatePool::~CandidatePool() = default;
@@ -316,7 +318,7 @@ static arma::rowvec computeAcq(const arma::rowvec &mu,
 // ===----------------------------------------------------------------------===//
 
 bool CandidatePool::tryInsert(std::unordered_set<size_t> &result, size_t idx) {
-  if (isVisited(idx) || !validMask_.test(idx))
+  if (visited.test(idx) || !validMask_.test(idx))
     return false;
   auto res = result.insert(idx);
   return res.second;
@@ -361,7 +363,7 @@ void CandidatePool::fillNeighbors(std::unordered_set<size_t> &result,
           tryInsert(result, nb);
         }
         // Always track the frontier for BFS expansion regardless.
-        if (!isVisited(nb))
+        if (!visited.test(nb))
           nextFrontier.insert(nb);
       }
     }
@@ -398,29 +400,7 @@ bool CandidatePool::nextCandidateIndices(const InferenceOptions &opts,
   assert(llvm::all_of(candSet, [&](auto idx) {
     Configuration conf;
     space_->at(idx, conf);
-    bool valid = space_->isValid(conf);
-    if (!valid) {
-      llvm::errs() << "INVALID in candSet: idx=" << idx
-                   << " conf=" << ConfWrapper(*space_, conf) << "\n";
-
-      Configuration forEachConf;
-      size_t target = idx;
-      space_->forEach([&](const Configuration &c, size_t i) {
-        if (i == target) {
-          forEachConf = c;
-          return false;
-        }
-        return true;
-      });
-      llvm::errs() << "MISMATCH at idx=" << idx << "\n"
-                   << "  at():     " << ConfWrapper(*space_, conf) << "\n"
-                   << "  forEach() " << ConfWrapper(*space_, forEachConf)
-                   << "\n"
-                   << "  isValid(forEach result): "
-                   << space_->isValid(forEachConf) << "\n";
-    }
-    // dump conf values here
-    return valid;
+    return space_->isValid(conf);
   }));
 
   std::vector<size_t> candIdx(candSet.begin(), candSet.end());
@@ -495,7 +475,7 @@ void CandidatePool::dumpToCSV(const ConfigSpace &space,
     return;
 
   LLVM_DEBUG(llvm::dbgs() << "Finished inference\n"
-                          << "- " << nObs << " / " << visited.size()
+                          << "- " << nObs << " / " << visited.count()
                           << " successful trials\n");
 
   // Collect all valid (constraint-passing) pool indices for surrogate
@@ -531,7 +511,7 @@ void CandidatePool::dumpToCSV(const ConfigSpace &space,
     space_->at(i, conf);
     for (int64_t v : conf)
       out << v << ",";
-    out << (isVisited(i) ? 1 : 0) << ",1,";
+    out << (visited.test(i) ? 1 : 0) << ",1,";
     double c = costByIdx(i);
     if (!std::isnan(c))
       out << c;

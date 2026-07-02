@@ -870,11 +870,19 @@ def _plot_oracle_curves(oracle_csv, bo_csvs, out_dir, pcts, scale):
     # q25_hits   = np.percentile(hit_iters, 25, axis=0)
     # q75_hits   = np.percentile(hit_iters, 75, axis=0)
 
+    # random baseline: first k where expected_random_best[k] <= target
+    random_hit_iters = np.full(len(thresholds), float(max_iter + 1))
+    for ti, target in enumerate(targets):
+        reached = random_baseline <= target
+        if np.any(reached):
+            random_hit_iters[ti] = float(np.argmax(reached))
+
     fig, ax = plt.subplots(figsize=(9, 4))
     # ax.fill_betweenx(thresholds, q25_hits, q75_hits, color="gray", alpha=0.2, label="IQR (25–75%)")
     ax.plot(mean_hits,  thresholds, color="black", lw=2,   label="mean across seeds")
     ax.plot(worst_hits, thresholds, color="firebrick",  lw=1.5, ls="--", label="worst seed")
     ax.plot(best_hits,  thresholds, color="seagreen",   lw=1.5, ls="--", label="best seed")
+    ax.plot(random_hit_iters, thresholds, color="gray", lw=1.5, ls=":", label="random search")
     ax.set_xlabel("Evaluations to first reach threshold")
     ax.set_ylabel("Quality threshold  (% above oracle best)")
     ax.set_title(f"First-hit cost: evaluations needed per quality level  ({len(bo_data)} seeds)")

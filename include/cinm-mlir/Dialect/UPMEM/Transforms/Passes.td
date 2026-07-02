@@ -18,6 +18,16 @@ def UPMEMDedupKernelsPass: Pass<"upmem-dedup-kernels", "ModuleOp"> {
   ];
 }
 
+def simulatorClValues {
+  string values = [{
+  ::llvm::cl::values(
+    clEnumValN(UpmemSimulatorId::CYCLE_ACCURATE, "cycle-accurate", "Cycle accurate simulator"),
+    clEnumValN(UpmemSimulatorId::FAST, "fast", "Fast simulator based on the cycle-accurate one, may be imprecise"),
+    clEnumValN(UpmemSimulatorId::HYBRID, "hybrid", "Cycle accurate, falling back on the hybrid model on timeout"),
+    clEnumValN(UpmemSimulatorId::OPCOUNT, "op-count", "Operation counting, broken because doesn't report time in milliseconds")
+    )}];
+}
+
 def UpmemInferAcceleratorPass : Pass<"upmem-infer-accelerator", "ModuleOp"> {
   let summary = "Infer UPMEM accelerator parameters for cinm.compute ops";
   let description = [{
@@ -84,8 +94,9 @@ def UpmemInferAcceleratorPass : Pass<"upmem-infer-accelerator", "ModuleOp"> {
            "Cost transform before surrogate training: linear, log2, log10, ln, sqrt, cbrt">,
     Option<"useMRAMTiling", "use-mram-tiling", "bool", "true",
            "Enable MRAM tiling in the UPMEM lowering">,
-    Option<"simulator", "simulator", "std::string", "\"cycleaccurate\"",
-           "Simulator backend: 'cycleaccurate' or 'opcount'">,
+    Option<"simulator", "simulator", "UpmemSimulatorId", "UpmemSimulatorId::CYCLE_ACCURATE",
+           "Simulator backend",
+           simulatorClValues.values>,
     Option<"evalTimeoutMs", "eval-timeout-ms", "int", "0",
            "Wall-clock timeout in milliseconds for a single simulation; "
            "0 disables the timeout (default: 0)">,
@@ -111,9 +122,9 @@ def UpmemAnnotateCostsPass
     "::mlir::upmem::UPMEMDialect"
   ];
   let options = [
-    Option<"simulator", "simulator", "std::string", "\"opcount\"",
-           "Cost model: 'opcount' (weighted heuristic) or 'cycleaccurate' "
-           "(cycle-accurate Python simulator)">
+    Option<"simulator", "simulator", "UpmemSimulatorId", "UpmemSimulatorId::CYCLE_ACCURATE",
+           "Simulator backend",
+           simulatorClValues.values>,
   ];
 }
 

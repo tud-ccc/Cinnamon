@@ -1,10 +1,11 @@
+#include "SimulatorBase.h"
 #include "cinm-mlir/Dialect/UPMEM/IR/UPMEMAttributes.h"
 #include "cinm-mlir/Dialect/UPMEM/IR/UPMEMOps.h"
-#include "cinm-mlir/Dialect/UPMEM/Transforms/UpmemSimulator.h"
 #include "cinm-mlir/Utils/Scheduling/SchedulingSupport.h"
 #include "upmem_cost_model/Types.h"
 
 #include <cstdint>
+#include <limits>
 #include <llvm/ADT/DenseMap.h>
 #include <llvm/ADT/DenseSet.h>
 #include <llvm/ADT/SmallVector.h>
@@ -31,8 +32,8 @@
 
 #define DEBUG_TYPE "cinm-inference"
 
-namespace mlir::upmem {
-
+using namespace mlir;
+using namespace upmem;
 using mlir::cinm::utils::Maybe;
 using upmem_cm::ArithOp;
 using upmem_cm::DType;
@@ -60,27 +61,27 @@ struct DpuTranslator {
 
   // ── Type helpers ──────────────────────────────────────────────────────────
 
-  DType mlirTypeToDtype(Type ty) {
+  upmem_cm::DType mlirTypeToDtype(Type ty) {
     if (ty.isF32())
-      return DType::F32;
+      return upmem_cm::DType::F32;
     if (ty.isF64())
-      return DType::F64;
+      return upmem_cm::DType::F64;
     // F16/BF16 → F32 (UPMEM cost model has no 16-bit float type)
     if (ty.isF16() || ty.isBF16())
-      return DType::F32;
+      return upmem_cm::DType::F32;
     if (auto it = dyn_cast<IntegerType>(ty)) {
       unsigned w = it.getWidth();
       bool s = !it.isUnsigned();
       if (w == 8)
-        return s ? DType::I8 : DType::U8;
+        return s ? upmem_cm::DType::I8 : upmem_cm::DType::U8;
       if (w == 16)
-        return s ? DType::I16 : DType::U16;
+        return s ? upmem_cm::DType::I16 : upmem_cm::DType::U16;
       if (w == 32)
-        return s ? DType::I32 : DType::U32;
+        return s ? upmem_cm::DType::I32 : upmem_cm::DType::U32;
       if (w == 64)
-        return s ? DType::I64 : DType::U64;
+        return s ? upmem_cm::DType::I64 : upmem_cm::DType::U64;
     }
-    return DType::I64; // index or unknown
+    return upmem_cm::DType::I64; // index or unknown
   }
 
   MemSpace memSpaceOf(MemRefType mrt) {
@@ -130,7 +131,7 @@ struct DpuTranslator {
   void translateTaskletDim(TaskletDimOp op) {
     // tid is not a loop IV; store a dummy const so downstream val_map lookups
     // can still find it without crashing (e.g. when tid feeds a BinOp)
-    val_map[op.getResult()] = builder.createConst(0, DType::I64);
+    val_map[op.getResult()] = builder.createConst(0, upmem_cm::DType::I64);
   }
 
   void translateSubView(memref::SubViewOp op) {
@@ -213,7 +214,7 @@ struct DpuTranslator {
   }
 
   void translateConstant(arith::ConstantOp op) {
-    DType dtype = mlirTypeToDtype(op.getType());
+    upmem_cm::DType dtype = mlirTypeToDtype(op.getType());
     int64_t raw = 0;
     if (auto ia = dyn_cast<IntegerAttr>(op.getValue()))
       raw = ia.getInt();
@@ -499,16 +500,19 @@ struct GemvCache {
 };
 static GemvCache gemvCache;
 
+enum class SimMode { FAST = 0, CYCLEACCURATE = 1, HYBRID = 2 };
+
 struct CppSimulator : UpmemSimulator {
   bool annotateOpCosts;
   std::chrono::milliseconds timeoutMs;
+  SimMode mode;
 
   explicit CppSimulator(bool annotateOpCosts,
-                        std::chrono::milliseconds timeoutMs)
-      : annotateOpCosts(annotateOpCosts), timeoutMs(timeoutMs) {}
+                        std::chrono::milliseconds timeoutMs, SimMode mode)
+      : annotateOpCosts(annotateOpCosts), timeoutMs(timeoutMs), mode(mode) {}
 
   std::unique_ptr<UpmemSimulator> clone() override {
-    return std::make_unique<CppSimulator>(annotateOpCosts, timeoutMs);
+    return std::make_unique<CppSimulator>(annotateOpCosts, timeoutMs, mode);
   }
 
   bool supportsMultithreading() const override { return true; }
@@ -521,14 +525,14 @@ struct CppSimulator : UpmemSimulator {
                            cinm::ReduceMethod reduction, int taskletRows,
                            int taskletCols, int64_t mramRows, int64_t mramCols,
                            int64_t wramRows, int64_t wramCols,
-                           upmem_cm::DType dty) override;
+                           upmem::DType dty) override;
   double simulateGemv(std::chrono::milliseconds timeout, int nTasklets,
                       int64_t mramRows, int64_t mramCols, int64_t rowTile,
-                      int64_t colTile, upmem_cm::DType dty) override;
+                      int64_t colTile, upmem::DType dty) override;
 
   Maybe<double> simulate(Region &region) override {
     std::chrono::milliseconds tms = timeoutMs;
-    auto waitForCb = [tms](Operation *op, bool) -> double {
+    auto waitForCb = [tms, mode = this->mode](Operation *op, bool) -> double {
       auto waitFor = llvm::cast<WaitForOp>(op);
       DpuProgramOp dpuProg = waitFor.getDpuProgram();
       if (!dpuProg)
@@ -537,8 +541,15 @@ struct CppSimulator : UpmemSimulator {
       ProgramBuilder builder;
       DpuTranslator tr(builder);
       tr.translateProgram(dpuProg);
-      auto kernelMs = 1e3 * builder.simulate(T, tms).value_or(
-                                std::numeric_limits<double>::infinity());
+      auto kernelNs = builder.simulate(T, tms, mode == SimMode::FAST);
+      if (!kernelNs.has_value() && mode == SimMode::HYBRID) {
+        // In hybrid mode we first try to simulate with the cycle accurate
+        // simulator, and if we time out we reply with the fast simulator.
+        kernelNs = builder.simulate(T, tms, true);
+      }
+      auto kernelMs =
+          1e3 * kernelNs.value_or(std::numeric_limits<double>::infinity());
+
       auto hierarchy =
           llvm::cast<DeviceHierarchyType>(waitFor.getDpuSet().getType());
       int numDpus = (hierarchy.getNumRanks() * hierarchy.getNumDpusPerRank());
@@ -555,13 +566,16 @@ struct CppSimulator : UpmemSimulator {
 };
 
 } // anonymous namespace
-double mlir::upmem::CppSimulator::simulateReduction(
-    std::chrono::milliseconds timeout, cinm::ReduceMethod reduction,
-    int taskletRows, int taskletCols, int64_t mramRows, int64_t mramCols,
-    int64_t wramRows, int64_t wramCols, upmem_cm::DType dty) {
+double CppSimulator::simulateReduction(std::chrono::milliseconds timeout,
+                                       cinm::ReduceMethod reduction,
+                                       int taskletRows, int taskletCols,
+                                       int64_t mramRows, int64_t mramCols,
+                                       int64_t wramRows, int64_t wramCols,
+                                       upmem::DType dty0) {
 
   using namespace upmem_cm;
   ProgramBuilder b;
+  auto dty = from_upmem_dty(dty0);
 
   // MRAM buffers
   auto A_mram = b.addBuffer("A_mram", MemSpace::MRAM, dty);
@@ -608,9 +622,11 @@ double mlir::upmem::CppSimulator::simulateReduction(
   return result;
 }
 
-double mlir::upmem::CppSimulator::simulateGemv(
-    std::chrono::milliseconds timeout, int nTasklets, int64_t mramRows,
-    int64_t mramCols, int64_t rowTile, int64_t colTile, upmem_cm::DType dty) {
+double CppSimulator::simulateGemv(std::chrono::milliseconds timeout,
+                                  int nTasklets, int64_t mramRows,
+                                  int64_t mramCols, int64_t rowTile,
+                                  int64_t colTile, upmem::DType dty0) {
+  auto dty = from_upmem_dty(dty0);
   const GemvCache::Key key{
       timeout.count(),          nTasklets, mramRows, mramCols, rowTile, colTile,
       static_cast<int64_t>(dty)};
@@ -686,10 +702,21 @@ double mlir::upmem::CppSimulator::simulateGemv(
 // Factory
 // ===----------------------------------------------------------------------===//
 
-std::unique_ptr<UpmemSimulator>
-createPythonSimulator(bool annotateOpCosts,
-                      std::chrono::milliseconds timeoutMs) {
-  return std::make_unique<CppSimulator>(annotateOpCosts, timeoutMs);
+std::unique_ptr<mlir::upmem::UpmemSimulator>
+mlir::upmem::createCycleAccurateSimulator(bool annotateOpCosts,
+                                          std::chrono::milliseconds timeoutMs) {
+  return std::make_unique<CppSimulator>(annotateOpCosts, timeoutMs,
+                                        SimMode::CYCLEACCURATE);
 }
-
-} // namespace mlir::upmem
+std::unique_ptr<mlir::upmem::UpmemSimulator>
+mlir::upmem::createFastSimulator(bool annotateOpCosts,
+                                 std::chrono::milliseconds timeoutMs) {
+  return std::make_unique<CppSimulator>(annotateOpCosts, timeoutMs,
+                                        SimMode::FAST);
+}
+std::unique_ptr<mlir::upmem::UpmemSimulator>
+mlir::upmem::createHybridSimulator(bool annotateOpCosts,
+                                   std::chrono::milliseconds timeoutMs) {
+  return std::make_unique<CppSimulator>(annotateOpCosts, timeoutMs,
+                                        SimMode::HYBRID);
+}

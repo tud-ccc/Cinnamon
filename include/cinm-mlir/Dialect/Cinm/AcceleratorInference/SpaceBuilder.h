@@ -385,25 +385,12 @@ private:
                          std::is_same_v<Den, SpaceVar>) {
       mustDivide(den, num);
     } else if constexpr (detail::is_mul_expr_v<Den>) {
-      if constexpr (std::is_same_v<Num, SpaceVar>) {
-        // When num is a SpaceVar, recursing into addDivConstraint(num, den.lhs) and
-        // addDivConstraint(num, den.rhs) would call mustDivide() twice with the same
-        // child (num), registering it in two separate parent groups. Both groups then
-        // write conf[num] from different slots, making at() and forEach() decode the
-        // same flat index to different values — breaking the isValid assertion.
-        predicates_.push_back([num, den](const ConfWrapper &c) -> bool {
-          const auto nv = num.eval(c);
-          const auto dv = den.eval(c);
-          return dv != 0 && nv % dv == 0;// && dv <= nv;
-        });
-      } else {
-        // (B * C) | A  ⟺  B | A  ∧  C | A  ∧  B * C ≤ A
-        addDivConstraint(num, den.lhs);
-        addDivConstraint(num, den.rhs);
-        predicates_.push_back([num, den](const ConfWrapper &c) -> bool {
-          return den.eval(c) <= num.eval(c);
-        });
-      }
+      // (B * C) | A  ⟺  B | A  ∧  C | A  ∧  B * C ≤ A
+      // addDivConstraint(num, den.lhs);
+      // addDivConstraint(num, den.rhs);
+      predicates_.push_back([num, den](const ConfWrapper &c) -> bool {
+        return num.eval(c) % den.eval(c) == 0 && den.eval(c) <= num.eval(c);
+      });
     } else {
       predicates_.push_back([num, den](const ConfWrapper &c) -> bool {
         const auto dv = den.eval(c);
