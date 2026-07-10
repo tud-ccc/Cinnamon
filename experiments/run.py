@@ -92,8 +92,8 @@ def _run_seed(args: tuple) -> tuple[int, int]:
     seed, file, dump_dir, scale, extra, cinm_opt = args
     infer_opts = _infer_opts(scale=scale, dump_dir=dump_dir, seed=seed, extra=extra)
     cmd = _cinm_opt_cmd(file, infer_opts, cinm_opt=cinm_opt)
-    log_path = Path(dump_dir) / f"{file}_seed{seed}.log"
-    out_path = Path(dump_dir) / f"out_seed{seed}.mlir"
+    log_path = Path(dump_dir) / f"seed{seed}.log"
+    out_path = Path(dump_dir) / f"seed{seed}_out.mlir"
     with open(log_path, "w") as log_f, open(out_path, "w") as out_f:
         result = subprocess.run(cmd, stderr=log_f, stdout=out_f)
     return seed, result.returncode
@@ -162,8 +162,11 @@ def cmd_seeds(args: argparse.Namespace) -> int:
     if failed:
         print(f"[seeds] WARNING: {failed}/{args.n} seed(s) failed", file=sys.stderr)
 
+    code = 1 if failed else 0
+    if args.no_plots:
+      return code
     args.in_dir = args.out_dir
-    return cmd_plot(args) or (1 if failed else 0)
+    return cmd_plot(args)
 
 
 def cmd_exhaustive(args: argparse.Namespace) -> int:
@@ -372,6 +375,12 @@ def build_parser() -> argparse.ArgumentParser:
         type=int,
         default=67,
         help="Offset to use to make generated seeds different from another run of the command",
+    )
+    p_seeds.add_argument(
+        "--no-plots",
+        action="store_true",
+        dest="no_plots",
+        help="Don't run the plotting code",
     )
     p_seeds.add_argument(
         "--no-per-seed",

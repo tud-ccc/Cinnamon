@@ -9,9 +9,12 @@
 #include <fstream>
 #include <iterator>
 #include <limits>
+#include <atomic>
 #include <llvm/ADT/BitVector.h>
 #include <llvm/ADT/STLExtras.h>
 #include <llvm/Support/Debug.h>
+#include <llvm/Support/ThreadPool.h>
+#include <llvm/Support/Threading.h>
 #include <memory>
 #include <numeric>
 #include <random>
@@ -101,7 +104,9 @@ static arma::mat encodeSubset(const ConfigSpace &space,
 static arma::mat encodeValidSpace(const ConfigSpace &space,
                                   const CandidatePool &pool) {
   const size_t D = space.size();
-  arma::mat enc(D + 1, pool.N);
+  // Only valid configs get a column; sizing to pool.N (the full Cartesian
+  // product) would waste — and can fail to allocate — many GB for large spaces.
+  arma::mat enc(D + 1, pool.size());
 
   size_t ix = 0;
   space.forEach([&](const Configuration &conf, size_t i) {
@@ -122,7 +127,8 @@ static arma::mat encodeValidSpace(const ConfigSpace &space,
 // ===----------------------------------------------------------------------===//
 
 void CandidatePool::sampleInitialSet(size_t n, std::mt19937 &rng,
-                                     std::function<bool(size_t)> accept) {
+                                     std::function<bool(size_t)> accept,
+                                     unsigned workers) {
   // size_t nAccepted = 0;
   // while (nAccepted < n) {
   //   std::unordered_set<size_t> result;
@@ -166,11 +172,19 @@ void CandidatePool::sampleInitialSet(size_t n, std::mt19937 &rng,
 
   std::uniform_real_distribution<double> u01(0.0, 1.0);
   std::unordered_set<size_t> used;
-  size_t accepted = 0;
+  std::atomic<size_t> accepted{0};
+
+  // accept() may run a simulator that takes seconds, so the accepted calls are
+  // dispatched to a thread pool. The (cheap) LHS target generation and greedy
+  // nearest-neighbour candidate selection stay on this thread; only accept()
+  // runs concurrently. `workers` sizes the pool (same knob as exhaustive
+  // search).
+  llvm::DefaultThreadPool threadPool(
+      llvm::hardware_concurrency(std::max(1u, workers)));
 
   // Keep generating LHS batches until n configurations pass accept().
-  while (accepted < n) {
-    size_t want = n - accepted;
+  while (accepted.load(std::memory_order_relaxed) < n) {
+    size_t want = n - accepted.load(std::memory_order_relaxed);
 
     size_t nUnused = M - used.size();
     if (nUnused == 0)
@@ -188,10 +202,13 @@ void CandidatePool::sampleInitialSet(size_t n, std::mt19937 &rng,
                              static_cast<double>(want);
     }
 
-    // Greedy nearest-neighbour: each target → closest unused candidate.
-    for (size_t t = 0; t < want && accepted < n; ++t) {
+    // Greedy nearest-neighbour: each target → closest unused candidate. Select
+    // the whole batch on this thread, then dispatch the accept() calls.
+    std::vector<size_t> batch;
+    batch.reserve(want);
+    for (size_t t = 0; t < want; ++t) {
       double bestDist = std::numeric_limits<double>::max();
-      size_t bestPos = M; // position in unvIdx
+      size_t bestPos = M; // position in candidates
       for (size_t i = 0; i < M; ++i) {
         if (used.count(i))
           continue;
@@ -208,9 +225,23 @@ void CandidatePool::sampleInitialSet(size_t n, std::mt19937 &rng,
       if (bestPos == M)
         break;
       used.insert(bestPos);
-      if (accept(candidates[bestPos]))
-        ++accepted;
+      batch.push_back(candidates[bestPos]);
     }
+    if (batch.empty())
+      break;
+
+    // Evaluate the batch in parallel; skip any candidate once enough have been
+    // accepted so we don't waste simulator runs past the target.
+    for (size_t idx : batch) {
+      threadPool.async([&accept, &accepted, idx, n]() {
+        if (accepted.load(std::memory_order_relaxed) >= n)
+          return;
+        if (accept(idx))
+          accepted.fetch_add(1, std::memory_order_relaxed);
+      });
+    }
+    // Barrier: the next batch's `want` depends on how many were accepted.
+    threadPool.wait();
   }
 }
 

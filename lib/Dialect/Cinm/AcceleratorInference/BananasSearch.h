@@ -129,8 +129,12 @@ struct CandidatePool {
   void recordFailedEvaluation(size_t idx, size_t iter = 0);
 
   /// Select n row-indices from the pool using Latin Hypercube Sampling.
+  /// `accept` is invoked for each selected index; it must be thread-safe when
+  /// `workers > 1`, as up to `workers` calls run concurrently on a thread pool.
+  /// Sampling stops as soon as `n` calls have returned true.
   void sampleInitialSet(size_t n_samples, std::mt19937 &rng,
-                        std::function<bool(size_t)> accept);
+                        std::function<bool(size_t)> accept,
+                        unsigned workers = 1);
 
   /// Fit a BANANAS MLP ensemble on the observed subset (Xo/yo) and return
   /// the k unvisited pool indices with the lowest UCB acquisition score.

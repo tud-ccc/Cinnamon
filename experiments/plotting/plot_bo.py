@@ -1150,8 +1150,15 @@ def main():
         sys.exit(0)
 
     out_dir = Path(args.out_dir)
+    # Give each group its own per-problem subdirectory so aggregate plots from
+    # different problems don't collide on identical filenames (which previously
+    # left only the last group's plots — looking like one aggregate over all
+    # problems). The problem name is the group's native out_dir name (set to the
+    # problem-level dir in _load_oracle_group).
     for group in all_groups:
-        group.out_dir = out_dir
+        problem_name = Path(group.out_dir).name
+        group.out_dir = out_dir / problem_name
+        os.makedirs(group.out_dir, exist_ok=True)
 
     all_futures = {}  # future → tag string
     _plot_filter = args.plots  # None = all; list[str] = substring allowlist

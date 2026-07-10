@@ -35,6 +35,7 @@
 #include <cmath>
 #include <fstream>
 #include <limits>
+#include <mutex>
 #include <optional>
 #include <random>
 #include <thread>
@@ -454,6 +455,63 @@ void buildConfigSpace(cinm::ComputeBlockOp refClone, InferencePlugin &plugin,
   });
 }
 
+/// A fixed set of per-thread evaluation workers. Each worker owns a warmed-up
+/// InferencePlugin clone and its own reference-module clone, so evaluate() can
+/// run concurrently from accept() callbacks. Workers are leased for the
+/// duration of a call and returned automatically, so with one worker per pool
+/// thread a worker is always available.
+struct EvaluatorPool {
+  EvaluatorPool(InferencePlugin &plugin, ModuleOp refModule,
+                mlir::MLIRContext *ctx, unsigned nWorkers)
+      : workers(nWorkers), freeWorkers(nWorkers) {
+    for (unsigned i = 0; i < nWorkers; ++i) {
+      workers[i].plugin = plugin.clone();
+      workers[i].plugin->warmUp(ctx);
+      workers[i].ref =
+          OwningOpRef<ModuleOp>(llvm::cast<ModuleOp>(refModule->clone()));
+      freeWorkers[i] = i;
+    }
+  }
+
+  unsigned size() const { return static_cast<unsigned>(workers.size()); }
+
+  /// Lease a worker, invoke `fn(plugin, refModule)`, then return the worker.
+  /// The worker is released even if `fn` throws.
+  template <class Fn>
+  auto withWorker(Fn &&fn)
+      -> decltype(fn(std::declval<InferencePlugin &>(),
+                     std::declval<ModuleOp>())) {
+    unsigned w = lease();
+    struct Guard {
+      EvaluatorPool *pool;
+      unsigned w;
+      ~Guard() { pool->release(w); }
+    } guard{this, w};
+    return fn(*workers[w].plugin, *workers[w].ref);
+  }
+
+private:
+  struct Worker {
+    std::unique_ptr<InferencePlugin> plugin;
+    OwningOpRef<ModuleOp> ref;
+  };
+
+  unsigned lease() {
+    std::lock_guard<std::mutex> g(mutex);
+    unsigned w = freeWorkers.back();
+    freeWorkers.pop_back();
+    return w;
+  }
+  void release(unsigned w) {
+    std::lock_guard<std::mutex> g(mutex);
+    freeWorkers.push_back(w);
+  }
+
+  std::vector<Worker> workers;
+  std::vector<unsigned> freeWorkers; // indices of idle workers
+  std::mutex mutex;                  // guards freeWorkers
+};
+
 struct InferenceTask; // forward declaration for InferenceState::tryEval
 
 struct InferenceState {
@@ -470,8 +528,15 @@ struct InferenceState {
 
   bool hasBudget() const { return budget > 0; }
 
+  /// Evaluate the config at `poolIdx` and commit the result into shared state.
+  /// The (expensive) evaluate() call runs outside any lock. When `lock` is
+  /// non-null the shared-state commit is serialised through it, and `plugin`/
+  /// `refOverride` supply a per-thread plugin clone and reference module so the
+  /// evaluation is safe to run concurrently.
   bool tryEval(size_t poolIdx, InferenceTask &task, CandidatePool &pool,
-               double &cost, size_t iter = 0);
+               double &cost, size_t iter = 0,
+               InferencePlugin *pluginOverride = nullptr,
+               mlir::ModuleOp refOverride = nullptr, std::mutex *lock = nullptr);
 };
 
 struct InferenceTask {
@@ -534,20 +599,41 @@ struct InferenceTask {
       return emitSilenceableFailure(
           refClone.getLoc(), "No valid configurations found in search space");
 
+    // Parallel evaluation workers. sampleInitialSet() dispatches accept() calls
+    // to a thread pool, so the accept() callbacks below must be thread-safe: the
+    // expensive plugin.evaluate() runs on a per-thread plugin+module clone
+    // leased from `evalPool`, while shared-state updates are serialised by
+    // `stateMx`. Reuses the same worker knob as exhaustive search.
+    unsigned nWorkers =
+        plugin.supportsMultithreading()
+            ? (options.numWorkers > 0
+                   ? options.numWorkers
+                   : std::max(1u, std::thread::hardware_concurrency()))
+            : 1u;
+    EvaluatorPool evalPool(plugin, *refModule, refClone->getContext(), nWorkers);
+    std::mutex stateMx; // guards pool / state / validSet / trainingSet / timings
+
     // Validation set: pre-evaluate a set of points for surrogate quality
     // tracking. NOT marked visited — BO may still select these points later.
     ValidationSet validSet(space);
     if (options.nValidation > 0) {
       LLVM_DEBUG(llvm::dbgs() << "[cinm-inference] Sampling "
                               << options.nValidation << " validation points\n");
-      pool.sampleInitialSet(static_cast<size_t>(options.nValidation), rng,
-                            [&](size_t idx) {
-                              TrialInfo trial = makeTrialInfo(pool[idx]);
-                              auto result = plugin.evaluate(trial);
-                              if (auto *cost = std::get_if<double>(&result))
-                                validSet.record(idx, *cost);
-                              return true;
-                            });
+      pool.sampleInitialSet(
+          static_cast<size_t>(options.nValidation), rng,
+          [&](size_t idx) {
+            auto result =
+                evalPool.withWorker([&](InferencePlugin &plug, ModuleOp ref) {
+                  TrialInfo trial = makeTrialInfo(pool[idx], ref);
+                  return plug.evaluate(trial);
+                });
+            if (auto *cost = std::get_if<double>(&result)) {
+              std::lock_guard<std::mutex> g(stateMx);
+              validSet.record(idx, *cost);
+            }
+            return true;
+          },
+          nWorkers);
       LLVM_DEBUG(llvm::dbgs() << "[cinm-inference] Validation set: "
                               << validSet.size() << " points\n");
     }
@@ -569,10 +655,17 @@ struct InferenceTask {
 
     auto evalConf = [&](size_t idx) -> bool {
       double cost;
-      bool success =
-          state.tryEval(idx, *this, pool, cost, static_cast<int>(pool.nObs)) ||
-          !options.sampleOnlyValid;
+      // tryEval runs evaluate() outside the lock and serialises its commit
+      // through stateMx; pool.nObs is only used as an iteration label.
+      bool evaluated =
+          evalPool.withWorker([&](InferencePlugin &plug, ModuleOp ref) {
+            return state.tryEval(idx, *this, pool, cost,
+                                 static_cast<size_t>(pool.nObs), &plug, ref,
+                                 &stateMx);
+          });
+      bool success = evaluated || !options.sampleOnlyValid;
       if (success) {
+        std::lock_guard<std::mutex> g(stateMx);
         trainingSet.record(idx, cost);
         recordTiming();
       }
@@ -585,7 +678,7 @@ struct InferenceTask {
                << "[cinm-inference] Phase 1 (Generate initial population): "
                << nInit << " configs\n");
 
-    pool.sampleInitialSet(nInit, rng, evalConf);
+    pool.sampleInitialSet(nInit, rng, evalConf, nWorkers);
 
     // Phase 2: surrogate-guided.
     LLVM_DEBUG(llvm::dbgs() << "[cinm-inference] Phase 2 (surrogate): budget="
@@ -770,17 +863,27 @@ struct InferenceTask {
 };
 
 bool InferenceState::tryEval(size_t poolIdx, InferenceTask &task,
-                             CandidatePool &pool, double &costVal,
-                             size_t iter) {
+                             CandidatePool &pool, double &costVal, size_t iter,
+                             InferencePlugin *pluginOverride,
+                             mlir::ModuleOp refOverride, std::mutex *lock) {
+  InferencePlugin &plugin = pluginOverride ? *pluginOverride : task.plugin;
+
+  // The evaluation itself runs without holding any lock so the simulator can
+  // execute concurrently across worker threads.
+  TrialInfo trial = task.makeTrialInfo(pool[poolIdx], refOverride);
+  auto t0 = std::chrono::steady_clock::now();
+  auto cost = plugin.evaluate(trial);
+  auto evalTime = std::chrono::duration_cast<std::chrono::milliseconds>(
+      std::chrono::steady_clock::now() - t0);
+
+  // Everything below mutates shared state and must be serialised.
+  std::unique_lock<std::mutex> guard;
+  if (lock)
+    guard = std::unique_lock<std::mutex>(*lock);
+
   pool.markVisited(poolIdx);
   LLVM_DEBUG(llvm::dbgs() << "[cinm-inference] Trial #" << trialCount++ << " "
                           << task.wrap(pool[poolIdx]) << "\n");
-
-  TrialInfo trial = task.makeTrialInfo(pool[poolIdx]);
-  auto t0 = std::chrono::steady_clock::now();
-  auto cost = task.plugin.evaluate(trial);
-  auto evalTime = std::chrono::duration_cast<std::chrono::milliseconds>(
-      std::chrono::steady_clock::now() - t0);
 
   if (std::holds_alternative<DiagnosedSilenceableFailure>(cost)) {
     err = std::move(std::get<DiagnosedSilenceableFailure>(cost));
