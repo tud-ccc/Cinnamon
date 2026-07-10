@@ -359,12 +359,12 @@ def _plot_eval_time_vs_cost(seed_csv_paths, out_dir, scale, names=None):
 
     if "dpus" in all_data.columns:
         dpu_vals = sorted(all_data["dpus"].dropna().unique())
-        cmap = plt.cm.tab10
+        cmap = plt.cm.tab20
         for i, d in enumerate(dpu_vals):
             subset = all_data[all_data["dpus"] == d]
             cost_scaled = apply_scale(subset["cost"] , scale)
             time_s = subset["eval_time_ms"] / 1000.0
-            ax.scatter(cost_scaled, time_s, color=cmap(i % 10), s=14,
+            ax.scatter(cost_scaled, time_s, color=cmap(i % 20), s=14,
                        alpha=0.55, linewidths=0, label=f"dpus={int(d)}")
         ax.legend(title="dpus", fontsize=8, loc="upper right",
                   title_fontsize=8, ncol=max(1, len(dpu_vals) // 8))
@@ -870,17 +870,31 @@ def _plot_oracle_curves(oracle_csv, bo_csvs, out_dir, pcts, scale):
     # q25_hits   = np.percentile(hit_iters, 25, axis=0)
     # q75_hits   = np.percentile(hit_iters, 75, axis=0)
 
+    # random baseline: first k where expected_random_best[k] <= target
+    random_hit_iters = np.full(len(thresholds), float(max_iter + 1))
+    for ti, target in enumerate(targets):
+        reached = random_baseline <= target
+        if np.any(reached):
+            random_hit_iters[ti] = float(np.argmax(reached))
+
     fig, ax = plt.subplots(figsize=(9, 4))
-    # ax.fill_between(thresholds, q25_hits, q75_hits, color="gray", alpha=0.2, label="IQR (25–75%)")
-    ax.plot(thresholds, mean_hits,  color="black", lw=2,   label="mean across seeds")
-    ax.plot(thresholds, worst_hits, color="firebrick",  lw=1.5, ls="--", label="worst seed")
-    ax.plot(thresholds, best_hits,  color="seagreen",   lw=1.5, ls="--", label="best seed")
-    ax.set_xlabel("Quality threshold  (% above oracle best)")
-    ax.set_ylabel("Evaluations to first reach threshold")
+    # ax.fill_betweenx(thresholds, q25_hits, q75_hits, color="gray", alpha=0.2, label="IQR (25–75%)")
+    ax.plot(mean_hits,  thresholds, color="black", lw=2,   label="mean across seeds")
+    ax.plot(worst_hits, thresholds, color="firebrick",  lw=1.5, ls="--", label="worst seed")
+    ax.plot(best_hits,  thresholds, color="seagreen",   lw=1.5, ls="--", label="best seed")
+    ax.plot(random_hit_iters, thresholds, color="gray", lw=1.5, ls=":", label="random search")
+    ax.set_xlabel("Evaluations to first reach threshold")
+    ax.set_ylabel("Quality threshold  (% above oracle best)")
     ax.set_title(f"First-hit cost: evaluations needed per quality level  ({len(bo_data)} seeds)")
-    ax.set_xscale("log")
-    ax.set_xlim(thresholds[0], thresholds[-1])
-    ax.set_ylim(0, max_iter * 1.05)
+    ax.set_yscale("log")
+    ax.set_ylim(thresholds[-1], thresholds[0])  # inverted: better (lower %) at top
+    ax.set_xlim(0, max_iter * 1.05)
+    tick_vals = [v for v in [0.05, 0.1, 0.2, 0.5, 1, 2, 5, 10, 20, 50, 100]
+                 if thresholds[0] <= v <= thresholds[-1]]
+    ax.set_yticks(tick_vals)
+    ax.yaxis.set_major_formatter(
+        matplotlib.ticker.FuncFormatter(lambda v, _: f"+{v:g}%"))
+    ax.set_ylabel("Quality threshold (% above oracle best) — better ↑")
     ax.grid(True, alpha=0.3)
     ax.legend(fontsize=8)
     plt.tight_layout()
@@ -1097,6 +1111,8 @@ def main():
     ap.add_argument("--skip-existing-seed-plots", action="store_true",
                     help="Skip per-seed plots when pool_cost.png already exists "
                          "(problem-level aggregate plots are always regenerated)")
+    ap.add_argument("--out-dir", dest="out_dir", required=True, metavar="DIR",
+                    help="Output directory for aggregate (problem-level) plots and README")
     ap.add_argument("--plots", nargs="+", default=None, metavar="NAME",
                     help="Only generate plots whose tag contains one of these substrings "
                          "(e.g. --plots eval_time sigma_calibration cost)")
@@ -1132,6 +1148,10 @@ def main():
     if not all_groups:
         ap.print_help()
         sys.exit(0)
+
+    out_dir = Path(args.out_dir)
+    for group in all_groups:
+        group.out_dir = out_dir
 
     all_futures = {}  # future → tag string
     _plot_filter = args.plots  # None = all; list[str] = substring allowlist

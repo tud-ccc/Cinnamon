@@ -386,10 +386,10 @@ private:
       mustDivide(den, num);
     } else if constexpr (detail::is_mul_expr_v<Den>) {
       // (B * C) | A  ⟺  B | A  ∧  C | A  ∧  B * C ≤ A
-      addDivConstraint(num, den.lhs);
-      addDivConstraint(num, den.rhs);
+      // addDivConstraint(num, den.lhs);
+      // addDivConstraint(num, den.rhs);
       predicates_.push_back([num, den](const ConfWrapper &c) -> bool {
-        return den.eval(c) <= num.eval(c);
+        return num.eval(c) % den.eval(c) == 0 && den.eval(c) <= num.eval(c);
       });
     } else {
       predicates_.push_back([num, den](const ConfWrapper &c) -> bool {

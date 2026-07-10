@@ -113,6 +113,7 @@ struct CandidatePool {
     }
   }
   bool isVisited(size_t idx) const { return visited.test(idx); }
+  bool isValid(size_t idx) const { return validMask_.test(idx); }
   /// Number of valid configs that have been evaluated (or marked visited).
   size_t numVisited() const { return nValidVisited_; }
   /// Flat index of the first valid unvisited config, or N if all visited.

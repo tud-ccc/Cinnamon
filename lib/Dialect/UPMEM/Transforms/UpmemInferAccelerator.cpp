@@ -15,6 +15,7 @@
 #include "cinm-mlir/Dialect/UPMEM/Transforms/UpmemSimulator.h"
 #include "cinm-mlir/Utils/Scheduling/SchedulingSupport.h"
 #include "upmem_cost_model/Types.h"
+#include "SimulatorBase.h"
 
 #include <chrono>
 #include <cstddef>
@@ -86,7 +87,7 @@ struct UpmemInferenceOptions {
   cinm::InferenceOptions inference;
   bool annotateOpCosts = false;
   bool useMRAMTiling = true;
-  std::string simulator = "cycleaccurate";
+  UpmemSimulatorId simulator = UpmemSimulatorId::CYCLE_ACCURATE;
   std::chrono::milliseconds evalTimeoutMs = std::chrono::milliseconds(2000);
 };
 
@@ -277,19 +278,19 @@ struct UpmemInferencePlugin : cinm::InferencePlugin {
     b.buildInto(space);
   }
 
-  static upmem_cm::DType cmDtyFromMlirDty(Type ty) {
+  static DType cmDtyFromMlirDty(Type ty) {
     if (ty.isF32())
-      return upmem_cm::DType::F32;
+      return DType::F32;
     if (ty.isF64())
-      return upmem_cm::DType::F64;
+      return DType::F64;
     if (ty.isInteger(8))
-      return upmem_cm::DType::I8;
+      return DType::I8;
     if (ty.isInteger(16))
-      return upmem_cm::DType::I16;
+      return DType::I16;
     if (ty.isInteger(32))
-      return upmem_cm::DType::I32;
+      return DType::I32;
     if (ty.isInteger(64))
-      return upmem_cm::DType::I64;
+      return DType::I64;
     assert(false && "unsuported datatye");
   }
   static DiagnosedSilenceableFailure
@@ -428,14 +429,11 @@ void UpmemInferencePlugin::handleReduce(cinm::ReduceOp op, SpaceBuilder &b) {
   auto parShape = type.getShape().drop_back();
   const auto M = computeProduct(parShape);
   const auto K = type.getShape()[op.getDimension()];
-  auto reduction = op.getMethod();
 
   auto eltTy = type.getElementType();
   auto wramLevel = platform.getWramLevel();
   auto mramLevel = platform.getMramLevel();
   const bool mramTiling = opts.useMRAMTiling;
-  const auto timeout = opts.evalTimeoutMs;
-  const auto dtype = cmDtyFromMlirDty(eltTy);
   auto dpus = dpusVar_;
   auto tasklets = taskletsVar_;
 

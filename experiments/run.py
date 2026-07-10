@@ -68,7 +68,7 @@ def _cinm_opt_cmd(
 ) -> list[str]:
     cmd = [
         cinm_opt,
-        f"{file}.mlir",
+        f"{file}",
         "--cinm-assign-platforms",
         "--cinm-isolate-compute-blocks",
         f"--upmem-infer-accelerator={infer_opts}",
@@ -104,8 +104,7 @@ def _run_seed(args: tuple) -> tuple[int, int]:
 
 def cmd_run(args: argparse.Namespace) -> int:
     """Single-seed run followed by plot."""
-    dir_ = args.dir or args.file
-    data_dir = Path("data") / dir_
+    data_dir = Path(args.out_dir)
     data_dir.mkdir(parents=True, exist_ok=True)
 
     infer_opts = _infer_opts(
@@ -126,13 +125,13 @@ def cmd_run(args: argparse.Namespace) -> int:
     if rc != 0:
         print(f"[run] cinm-opt exited {rc} — see {log_path}", file=sys.stderr)
 
+    args.in_dir = args.out_dir
     return cmd_plot(args) or rc
 
 
 def cmd_seeds(args: argparse.Namespace) -> int:
     """Run N seeds in parallel, then plot."""
-    dir_ = args.dir or args.file
-    data_dir = Path("data") / dir_
+    data_dir = Path(args.out_dir)
     data_dir.mkdir(parents=True, exist_ok=True)
 
     seeds = [i * 31 + args.offset for i in range(1, args.n + 1)]
@@ -142,7 +141,7 @@ def cmd_seeds(args: argparse.Namespace) -> int:
     ]
 
     workers = args.workers or max(1, (os.cpu_count() or 2) - 2)
-    print(f"[seeds] {args.n} seeds, {workers} workers, dir=data/{dir_}")
+    print(f"[seeds] {args.n} seeds, {workers} workers, dir={args.out_dir}")
 
     failed = 0
     with ProcessPoolExecutor(max_workers=workers) as pool:
@@ -163,13 +162,13 @@ def cmd_seeds(args: argparse.Namespace) -> int:
     if failed:
         print(f"[seeds] WARNING: {failed}/{args.n} seed(s) failed", file=sys.stderr)
 
+    args.in_dir = args.out_dir
     return cmd_plot(args) or (1 if failed else 0)
 
 
 def cmd_exhaustive(args: argparse.Namespace) -> int:
     """Run exhaustive search (oracle / ground truth)."""
-    dir_ = args.dir or (args.file + "_oracle")
-    data_dir = Path("data") / dir_
+    data_dir = Path(args.out_dir)
     data_dir.mkdir(parents=True, exist_ok=True)
 
     infer_opts = f"dump-dir={data_dir} exhaustive-search {' '.join(args.extra)}"
@@ -185,7 +184,8 @@ def cmd_exhaustive(args: argparse.Namespace) -> int:
 
 def cmd_plot(args: argparse.Namespace) -> int:
     """Call plot_bo.py on the data directory."""
-    dir_ = getattr(args, "dir", None) or getattr(args, "name", None) or args.file
+    in_dir = Path(args.in_dir)
+    out_dir = str(args.out_dir)
     oracle = getattr(args, "oracle", None) or ""
     scale = getattr(args, "scale", "log10")
     extra = getattr(args, "plot_extra", [])
@@ -196,27 +196,25 @@ def cmd_plot(args: argparse.Namespace) -> int:
 
     if oracle:
         # Build --oracle <oracle_subdir/pool.csv> <seed_csvs...> pairs per subdir
-        oracle_path = Path("data") / oracle
-        data_path = Path("data") / dir_
+        oracle_path = Path(oracle)
         plot_args: list[str] = []
         for subdir in sorted(oracle_path.iterdir()):
             if not subdir.is_dir():
                 continue
             name = subdir.name
             oracle_csv = subdir / "pool.csv"
-            seed_csvs = sorted((data_path / name).glob("seed_*/pool.csv"))
+            seed_csvs = sorted((in_dir / name).glob("seed_*/pool.csv"))
             if oracle_csv.exists() and seed_csvs:
                 plot_args += ["--oracle", str(oracle_csv)]
                 plot_args += [str(p) for p in seed_csvs]
     else:
-        data_path = Path("data") / dir_
-        plot_args = [str(p) for p in sorted(data_path.glob("*/seed_*/pool.csv"))]
+        plot_args = [str(p) for p in sorted(in_dir.glob("*/seed_*/pool.csv"))]
 
     cmd = [
         python_bin(),
         str(plot_script),
-        "--objective-scale",
-        scale,
+        "--objective-scale", scale,
+        "--out-dir", out_dir,
         *(["--no-per-seed"] if no_per_seed else []),
         *plot_args,
         *extra,
@@ -246,7 +244,8 @@ def cmd_analyze(args: argparse.Namespace) -> int:
     cmd = [
         python_bin(),
         str(EXPERIMENTS_DIR / "plotting" / "analyze_landscape.py"),
-        str(Path("data") / args.name),
+        "--in-dir", args.in_dir,
+        "--out-dir", args.out_dir,
         *args.extra,
     ]
     return subprocess.run(cmd).returncode
@@ -261,10 +260,11 @@ def _add_common(p: argparse.ArgumentParser) -> None:
         "file", metavar="FILE", help="Input file stem (without .mlir extension)"
     )
     p.add_argument(
-        "--dir",
+        "--out-dir",
+        dest="out_dir",
+        required=True,
         metavar="DIR",
-        default=None,
-        help="Output subdirectory under data/ (default: FILE)",
+        help="Output directory",
     )
     p.add_argument(
         "--cinm-opt", default="cinm-opt", metavar="PATH", help="Path to cinm-opt binary"
@@ -391,7 +391,10 @@ def build_parser() -> argparse.ArgumentParser:
 
     # ── plot ─────────────────────────────────────────────────────────────────
     p_plot = sub.add_parser("plot", help="Plot an existing data directory")
-    p_plot.add_argument("name", metavar="DIR", help="Subdirectory under data/ to plot")
+    p_plot.add_argument("--in-dir", dest="in_dir", required=True, metavar="DIR",
+                        help="Input directory containing pool.csv files")
+    p_plot.add_argument("--out-dir", dest="out_dir", required=True, metavar="DIR",
+                        help="Output directory for plots")
     _add_scale(p_plot)
     _add_oracle(p_plot)
     p_plot.add_argument(
@@ -407,7 +410,7 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="ARG",
         help="Extra args forwarded to plot_bo.py",
     )
-    p_plot.set_defaults(func=lambda a: cmd_plot(a), file=None, dir=None)
+    p_plot.set_defaults(func=cmd_plot, file=None)
 
     # ── view ─────────────────────────────────────────────────────────────────
     p_view = sub.add_parser("view", help="Interactive pool viewer")
@@ -417,7 +420,10 @@ def build_parser() -> argparse.ArgumentParser:
 
     # ── analyze ──────────────────────────────────────────────────────────────
     p_an = sub.add_parser("analyze", help="Landscape analysis")
-    p_an.add_argument("name", metavar="NAME", help="Subdirectory under data/")
+    p_an.add_argument("--in-dir", dest="in_dir", required=True, metavar="DIR",
+                      help="Input: pool.csv, problem dir, or parent dir of problems")
+    p_an.add_argument("--out-dir", dest="out_dir", required=True, metavar="DIR",
+                      help="Output directory for analysis plots and README")
     _add_extra(p_an, help="Extra args forwarded to analyze_landscape.py")
     p_an.set_defaults(func=cmd_analyze)
 
@@ -427,10 +433,6 @@ def build_parser() -> argparse.ArgumentParser:
 def main() -> None:
     parser = build_parser()
     args = parser.parse_args()
-
-    # Make sure we run from the experiments directory so relative data/ paths work.
-    os.chdir(EXPERIMENTS_DIR)
-
     rc = args.func(args)
     sys.exit(rc or 0)
 

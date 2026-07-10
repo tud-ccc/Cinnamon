@@ -513,11 +513,10 @@ def generate_readme(stats: dict, out_dir: Path):
 
 # ── Per-problem analysis (module-level so ProcessPoolExecutor can pickle it) ───
 
-def _analyze_csv(csv_path: Path, top_frac: float, max_lag: int) -> str:
+def _analyze_csv(csv_path: Path, top_frac: float, max_lag: int, out_dir: Path) -> str:
     """Full landscape analysis for one pool.csv. Plots run sequentially.
     Returns the problem name. Safe to call from a subprocess."""
     import os as _os
-    out_dir = csv_path.parent
     print(f"\n[{_os.getpid()}] === {csv_path.parent.name}")
 
     stats: dict = {}
@@ -583,7 +582,10 @@ def main():
                     "  • a parent directory    → analyse all */pool.csv in parallel",
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    parser.add_argument("path", help="pool.csv, problem dir, or parent dir of problems")
+    parser.add_argument("--in-dir", dest="in_dir", required=True, metavar="DIR",
+                        help="pool.csv, problem dir, or parent dir of problems")
+    parser.add_argument("--out-dir", dest="out_dir", required=True, metavar="DIR",
+                        help="Output directory for plots and README")
     parser.add_argument("--top-frac", type=float, default=0.05,
                         help="Fraction of best configs to highlight (default: 0.05)")
     parser.add_argument("--max-lag", type=int, default=6,
@@ -592,14 +594,15 @@ def main():
                         help="Worker processes for multi-problem mode (default: n_problems)")
     args = parser.parse_args()
 
-    csv_paths = _collect_csvs(Path(args.path))
+    csv_paths = _collect_csvs(Path(args.in_dir))
     if not csv_paths:
-        sys.exit(f"No pool.csv found under {args.path}")
+        sys.exit(f"No pool.csv found under {args.in_dir}")
 
     if len(csv_paths) == 1:
         # Single problem: run plots in parallel (existing behaviour)
         csv_path = csv_paths[0]
-        out_dir  = csv_path.parent
+        out_dir  = Path(args.out_dir)
+        out_dir.mkdir(parents=True, exist_ok=True)
         print(f"=== Landscape analysis: {csv_path}")
         print(f"=== Output directory:   {out_dir}\n")
 
@@ -656,7 +659,9 @@ def main():
         futures = {}
         with ProcessPoolExecutor(max_workers=workers) as executor:
             for p in csv_paths:
-                futures[executor.submit(_analyze_csv, p, args.top_frac, args.max_lag)] = p
+                p_out = Path(args.out_dir) / p.parent.name
+                p_out.mkdir(parents=True, exist_ok=True)
+                futures[executor.submit(_analyze_csv, p, args.top_frac, args.max_lag, p_out)] = p
             for future in tqdm(as_completed(futures), total=len(futures), desc="problems"):
                 p = futures[future]
                 ex = future.exception()
