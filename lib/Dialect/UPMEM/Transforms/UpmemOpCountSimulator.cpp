@@ -1,3 +1,4 @@
+#include "SimulatorBase.h"
 #include "cinm-mlir/Dialect/Cinm/IR/CinmAttributes.h"
 #include "cinm-mlir/Dialect/Cinm/IR/CinmOps.h"
 #include "cinm-mlir/Dialect/UPMEM/IR/UPMEMAttributes.h"
@@ -78,6 +79,11 @@ static double costOfOpCb(Operation &op, bool annotate,
             double bodyCost =
                 costOfRegionCb(*forOp.getLoopRegions()[0], annotate, cb);
             return bodyCost * tripCount;
+          })
+          .Case<arith::AddIOp>([](auto) {
+            // Between 1.6 and 10 ns on chios.
+            // It's lower with more iterations of the enclosing loop
+            return 3e-6;
           })
           .Case<memref::CopyOp>([](memref::CopyOp copyOp) {
             // Experiment: try to account for the copy happening
@@ -172,12 +178,12 @@ struct OpCountSimulator : UpmemSimulator {
   }
   double simulateGemv(std::chrono::milliseconds timeout, int nTasklets,
                       int64_t mramRows, int64_t mramCols, int64_t rowTile,
-                      int64_t colTile, upmem_cm::DType) override;
+                      int64_t colTile, DType) override;
   double simulateReduction(std::chrono::milliseconds timeout,
                            cinm::ReduceMethod reduction, int taskletRows,
                            int taskletCols, int64_t mramRows, int64_t mramCols,
                            int64_t wramRows, int64_t wramCols,
-                           upmem_cm::DType dty) override;
+                           DType dty) override;
 
   mlir::cinm::utils::Maybe<double> simulate(Region &region) override {
     // Recursive callback: recurse into the DPU program body with the same
@@ -215,10 +221,13 @@ double dpuOpLatency(upmem_cm::ArithOp op, upmem_cm::DType dty) {
   return dpuOpLatency(upmem_cm::arithToStatOp(op), dty);
 }
 
+
 double mlir::upmem::OpCountSimulator::simulateReduction(
     std::chrono::milliseconds, cinm::ReduceMethod reduction, int taskletRows,
     int taskletCols, int64_t mramRows, int64_t mramCols, int64_t wramRows,
-    int64_t wramCols, upmem_cm::DType dty) {
+    int64_t wramCols, DType dty0) {
+
+  auto dty = from_upmem_dty(dty0);
 
   // - The DPU receives an <mramRows x mramCols> buffer, it sends back an
   // <mramRows> buffer
@@ -255,7 +264,8 @@ double mlir::upmem::OpCountSimulator::simulateReduction(
 
 double mlir::upmem::OpCountSimulator::simulateGemv(
     std::chrono::milliseconds, int nTasklets, int64_t mramRows,
-    int64_t mramCols, int64_t rowTile, int64_t colTile, upmem_cm::DType dty) {
+    int64_t mramCols, int64_t rowTile, int64_t colTile, DType dty0) {
+  auto dty = from_upmem_dty(dty0);
 
   // result
   auto init = mramToWramCost(rowTile, 1, dty);

@@ -9,6 +9,8 @@
 #include "cinm-mlir/Utils/Scheduling/SchedulingSupport.h"
 #include "upmem_cost_model/Types.h"
 
+#include "SimulatorBase.h"
+
 #include <cstdint>
 #include <limits>
 #include <llvm/ADT/DenseMap.h>
@@ -50,10 +52,10 @@ double UpmemSimulator::simulateFullGemv(std::chrono::milliseconds timeout,
                                         int64_t mramCols, int64_t wramRows,
                                         int64_t wramCols, int64_t dpuRows,
                                         int64_t dpuCols, int64_t tasklets,
-                                        upmem_cm::DType dty) {
+                                        DType dty) {
   // Cost of one scatter/gather of `elemsPerDpu` i32 elements across all DPUs.
   auto xferCost = [&](int64_t elemsPerDpu) {
-    return scatterGatherCost(elemsPerDpu, upmem_cm::dtypeBytes(dty),
+    return scatterGatherCost(elemsPerDpu, dty,
                              std::max(1L, dpuCols * dpuRows / 64), 64);
   };
 
@@ -80,11 +82,11 @@ double UpmemSimulator::simulateTailReduction(
     std::chrono::milliseconds timeoutMs, int64_t M, int64_t K,
     cinm::ReduceMethod reduction, int64_t mramRows, int64_t mramCols,
     int64_t wramRows, int64_t wramCols, int64_t dpuRows, int64_t dpuCols,
-    int64_t taskletRows, int64_t taskletCols, upmem_cm::DType dty) {
+    int64_t taskletRows, int64_t taskletCols, DType dty) {
 
   // Cost of one scatter/gather of `elemsPerDpu` i32 elements across all DPUs.
   auto xferCost = [&](int64_t elemsPerDpu) {
-    return scatterGatherCost(elemsPerDpu, upmem_cm::dtypeBytes(dty),
+    return scatterGatherCost(elemsPerDpu, dty,
                              std::max(1L, (dpuRows * dpuCols) / 64), 64);
   };
 
@@ -564,13 +566,13 @@ void upmem::generateTailReduction(cinm::ReduceOp op, RewriterBase &rewriter,
             b, loc, ValueRange{yStage}, ValueRange{outRows2D},
             ArrayRef<int64_t>{1},
             [&](OpBuilder &b, Location loc, ValueRange args) {
-              linalg::YieldOp::create(
-                  b, loc, arith::getReductionOp(arithReductionKind, b, loc,
-                                                args[0], args[1]));
+              linalg::YieldOp::create(b, loc,
+                                      arith::getReductionOp(arithReductionKind,
+                                                            b, loc, args[0],
+                                                            args[1]));
             });
         return {};
       });
-
 
   Type resultTy = op.getResult().getType();
   if (isa<MemRefType>(resultTy)) {

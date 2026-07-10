@@ -98,6 +98,25 @@ static arma::mat encodeSubset(const ConfigSpace &space,
   }
   return enc;
 }
+static arma::mat encodeValidSpace(const ConfigSpace &space,
+                                  const CandidatePool &pool) {
+  const size_t D = space.size();
+  arma::mat enc(D + 1, pool.N);
+
+  size_t ix = 0;
+  space.forEach([&](const Configuration &conf, size_t i) {
+    if (!pool.isValid(i))
+      return true;
+
+    for (size_t d = 0; d < D; ++d)
+      enc(d, ix) = space[d].featurize(conf[d]);
+    // save the actual index for later
+    enc(D, ix) = i;
+    ix++;
+    return true;
+  });
+  return enc;
+}
 // ===----------------------------------------------------------------------===//
 // Latin Hypercube Sampling
 // ===----------------------------------------------------------------------===//
@@ -135,7 +154,7 @@ void CandidatePool::sampleInitialSet(size_t n, std::mt19937 &rng,
     return;
 
   // DxM matrix
-  arma::mat enc = encodeSubset(*space_, candidates);
+  arma::mat enc = encodeValidSpace(*space_, *this);
 
   // Per-dimension [0,1] normalisation.
   for (size_t d = 0; d < D; ++d) {
@@ -146,14 +165,14 @@ void CandidatePool::sampleInitialSet(size_t n, std::mt19937 &rng,
   }
 
   std::uniform_real_distribution<double> u01(0.0, 1.0);
-  llvm::BitVector used(M);
+  std::unordered_set<size_t> used;
   size_t accepted = 0;
 
   // Keep generating LHS batches until n configurations pass accept().
   while (accepted < n) {
     size_t want = n - accepted;
 
-    size_t nUnused = M - used.count();
+    size_t nUnused = M - used.size();
     if (nUnused == 0)
       break;
     want = std::min(want, nUnused);
@@ -174,7 +193,7 @@ void CandidatePool::sampleInitialSet(size_t n, std::mt19937 &rng,
       double bestDist = std::numeric_limits<double>::max();
       size_t bestPos = M; // position in unvIdx
       for (size_t i = 0; i < M; ++i) {
-        if (used[i])
+        if (used.count(i))
           continue;
         double dist = 0;
         for (size_t d = 0; d < D; ++d) {
@@ -188,7 +207,7 @@ void CandidatePool::sampleInitialSet(size_t n, std::mt19937 &rng,
       }
       if (bestPos == M)
         break;
-      used.set(bestPos);
+      used.insert(bestPos);
       if (accept(candidates[bestPos]))
         ++accepted;
     }
