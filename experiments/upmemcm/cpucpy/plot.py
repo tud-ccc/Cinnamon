@@ -64,6 +64,9 @@ def main():
         y_fit = a * x_fit ** b
         ax_time.plot(x_fit, y_fit, color="red", linestyle="--", linewidth=1.0,
                      alpha=0.8)
+        y0_fit = 0.63 * x_fit ** 0.907
+        ax_time.plot(x_fit, y0_fit, color="green", linestyle="--", linewidth=1.0,
+                     alpha=0.8)
         formula = f"{label}: t = {a:.2f} · size^{b:.3f} ns"
         fit_lines.append((formula, color))
         print(f"  {formula}")
