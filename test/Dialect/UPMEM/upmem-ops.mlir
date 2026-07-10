@@ -38,19 +38,19 @@ module {
   }
   module @dpu_kernels {
     upmem.dpu_program @program() tasklets(1) {
-      %pwram_buf = pwram_alloc() : memref<i32, "wram">
-      %mram_buf = static_alloc @buf(mram) : memref<1xi32, "mram">
-      %pwram_buf_0 = pwram_alloc() : memref<1024xi32, "wram">
-      %mram_buf_1 = static_alloc @buf_0(mram) : memref<1x1024xi32, "mram">
-      %pwram_buf_2 = pwram_alloc() : memref<1024xi32, "wram">
-      %mram_buf_3 = static_alloc @buf_1(mram) : memref<1x1024xi32, "mram">
-      %0 = tasklet_dim()
+      %pwram_buf = upmem.pwram_alloc() : memref<i32, "wram">
+      %mram_buf = upmem.static_alloc @buf(mram) : memref<1xi32, "mram">
+      %pwram_buf_0 = upmem.pwram_alloc() : memref<1024xi32, "wram">
+      %mram_buf_1 = upmem.static_alloc @buf_0(mram) : memref<1x1024xi32, "mram">
+      %pwram_buf_2 = upmem.pwram_alloc() : memref<1024xi32, "wram">
+      %mram_buf_3 = upmem.static_alloc @buf_1(mram) : memref<1x1024xi32, "mram">
+      %0 = upmem.tasklet_dim()
       %subview = memref.subview %mram_buf[%0] [1] [1] : memref<1xi32, "mram"> to memref<i32, strided<[], offset: ?>, "mram">
-      local_transfer %subview into %pwram_buf : memref<i32, strided<[], offset: ?>, "mram"> to memref<i32, "wram">
+      upmem.local_transfer %subview into %pwram_buf : memref<i32, strided<[], offset: ?>, "mram"> to memref<i32, "wram">
       %subview_4 = memref.subview %mram_buf_1[%0, 0] [1, 1024] [1, 1] : memref<1x1024xi32, "mram"> to memref<1024xi32, strided<[1], offset: ?>, "mram">
-      local_transfer %subview_4 into %pwram_buf_0 : memref<1024xi32, strided<[1], offset: ?>, "mram"> to memref<1024xi32, "wram">
+      upmem.local_transfer %subview_4 into %pwram_buf_0 : memref<1024xi32, strided<[1], offset: ?>, "mram"> to memref<1024xi32, "wram">
       %subview_5 = memref.subview %mram_buf_3[%0, 0] [1, 1024] [1, 1] : memref<1x1024xi32, "mram"> to memref<1024xi32, strided<[1], offset: ?>, "mram">
-      local_transfer %subview_5 into %pwram_buf_2 : memref<1024xi32, strided<[1], offset: ?>, "mram"> to memref<1024xi32, "wram">
+      upmem.local_transfer %subview_5 into %pwram_buf_2 : memref<1024xi32, strided<[1], offset: ?>, "mram"> to memref<1024xi32, "wram">
       %c0 = arith.constant 0 : index
       %c1024 = arith.constant 1024 : index
       %c1 = arith.constant 1 : index
@@ -62,8 +62,8 @@ module {
         %5 = arith.addi %3, %4 : i32
         memref.store %5, %pwram_buf[] : memref<i32, "wram">
       }
-      local_transfer %pwram_buf into %subview : memref<i32, "wram"> to memref<i32, strided<[], offset: ?>, "mram">
-      return
+      upmem.local_transfer %pwram_buf into %subview : memref<i32, "wram"> to memref<i32, strided<[], offset: ?>, "mram">
+      upmem.return
     }
   }
 }

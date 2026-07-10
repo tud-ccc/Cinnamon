@@ -41,31 +41,31 @@ module {
   memref.global "private" constant @__constant_16xf32_0 : memref<16xf32> = dense<0.000000e+00> {alignment = 64 : i64}
   module @dpu_kernels_0 {
     upmem.dpu_program @program() tasklets(16) {
-      %pwram_buf = pwram_alloc()  : memref<1xf32, #upmem.wram>
-      %mram_buf = static_alloc @buf(mram)  : memref<16x1xf32, #upmem.mram>
-      %wram_buf = static_alloc @buf_0(wram) noinit  : memref<1xf32, #upmem.wram>
-      %mram_buf_0 = static_alloc @buf_1(mram)  : memref<1xf32, #upmem.mram>
-      %pwram_buf_1 = pwram_alloc()  : memref<f32, #upmem.wram>
-      %mram_buf_2 = static_alloc @buf_2(mram)  : memref<16xf32, #upmem.mram>
-      %0 = tasklet_dim() 
+      %pwram_buf = upmem.pwram_alloc()  : memref<1xf32, #upmem.wram>
+      %mram_buf = upmem.static_alloc @buf(mram)  : memref<16x1xf32, #upmem.mram>
+      %wram_buf = upmem.static_alloc @buf_0(wram) noinit  : memref<1xf32, #upmem.wram>
+      %mram_buf_0 = upmem.static_alloc @buf_1(mram)  : memref<1xf32, #upmem.mram>
+      %pwram_buf_1 = upmem.pwram_alloc()  : memref<f32, #upmem.wram>
+      %mram_buf_2 = upmem.static_alloc @buf_2(mram)  : memref<16xf32, #upmem.mram>
+      %0 = upmem.tasklet_dim() 
       %subview = memref.subview %mram_buf[%0, 0] [1, 1] [1, 1]  : memref<16x1xf32, #upmem.mram> to memref<1xf32, strided<[1], offset: ?>, #upmem.mram>
-      local_transfer %subview into %pwram_buf  : memref<1xf32, strided<[1], offset: ?>, #upmem.mram> to memref<1xf32, #upmem.wram>
+      upmem.local_transfer %subview into %pwram_buf  : memref<1xf32, strided<[1], offset: ?>, #upmem.mram> to memref<1xf32, #upmem.wram>
       %c0 = arith.constant  0 : index
       %1 = arith.cmpi eq, %0, %c0  : index
       scf.if %1 {
         upmem.local_transfer %mram_buf_0 into %wram_buf  : memref<1xf32, #upmem.mram> to memref<1xf32, #upmem.wram>
       } 
-      barrier() 
+      upmem.barrier() 
       %subview_3 = memref.subview %mram_buf_2[%0] [1] [1]  : memref<16xf32, #upmem.mram> to memref<f32, strided<[], offset: ?>, #upmem.mram>
-      local_transfer %subview_3 into %pwram_buf_1  : memref<f32, strided<[], offset: ?>, #upmem.mram> to memref<f32, #upmem.wram>
+      upmem.local_transfer %subview_3 into %pwram_buf_1  : memref<f32, strided<[], offset: ?>, #upmem.mram> to memref<f32, #upmem.wram>
       %2 = memref.load %pwram_buf[%c0]  : memref<1xf32, #upmem.wram>
       %3 = memref.load %wram_buf[%c0]  : memref<1xf32, #upmem.wram>
       %4 = memref.load %pwram_buf_1[]  : memref<f32, #upmem.wram>
       %5 = arith.mulf %2, %3  : f32
       %6 = arith.addf %4, %5  : f32
       memref.store %6, %pwram_buf_1[]  : memref<f32, #upmem.wram>
-      local_transfer %pwram_buf_1 into %subview_3  : memref<f32, #upmem.wram> to memref<f32, strided<[], offset: ?>, #upmem.mram>
-      return 
+      upmem.local_transfer %pwram_buf_1 into %subview_3  : memref<f32, #upmem.wram> to memref<f32, strided<[], offset: ?>, #upmem.mram>
+      upmem.return 
     }
   }
 }
