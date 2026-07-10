@@ -327,6 +327,60 @@ LogicalResult ReduceOp::verify() {
   return success();
 }
 
+::mlir::ParseResult ReduceOp::parse(::mlir::OpAsmParser &parser,
+                                    ::mlir::OperationState &result) {
+  // $method `(` $input `)` (`dim` $dimension^ )? attr-dict
+  //     `:` type($input) `->` type($result)
+  std::string methodKw;
+  auto loc = parser.getCurrentLocation();
+  if (parser.parseKeywordOrString(&methodKw))
+    return failure();
+  auto method = symbolizeReduceMethod(methodKw);
+  if (!method)
+    return parser.emitError(loc, "Unknown reduce method");
+
+  OpAsmParser::UnresolvedOperand input;
+  if (parser.parseLParen() || parser.parseOperand(input) ||
+      parser.parseRParen())
+    return failure();
+
+  // default to last dim
+  int64_t dimension = -1;
+  if (parser.parseOptionalKeyword("dim").succeeded()) {
+    if (parser.parseInteger(dimension))
+      return failure();
+  }
+
+  if (parser.parseOptionalAttrDict(result.attributes) || parser.parseColon())
+    return failure();
+
+  Type inputType, resultType;
+  if (parser.parseType(inputType) || parser.parseArrow() ||
+      parser.parseType(resultType))
+    return failure();
+
+  SmallVector<Value, 1> inputResolved;
+  if (parser.resolveOperand(input, inputType, inputResolved))
+    return failure();
+
+  OpBuilder b(parser.getContext());
+  build(b, result, resultType, *method, inputResolved[0], dimension);
+  return success();
+}
+
+void ReduceOp::print(::mlir::OpAsmPrinter &out) {
+  out << ' ' << stringifyReduceMethod(getMethod());
+  out << '(' << getInput() << ')';
+  auto dim = getDimension();
+  if (dim != getInput().getType().getShape().size() - 1)
+    out << " dim " << dim;
+
+  out.printOptionalAttrDict(
+      (*this)->getAttrs(),
+      /*elidedAttrs=*/{getMethodAttrName(), getDimensionAttrName(), getRankReduceAttrName()});
+  out << " : " << getInput().getType() << " -> " << getResult().getType();
+}
+
 void ReduceOp::build(OpBuilder &builder, OperationState &state, Type resultTy,
                      ReduceMethod kind, Value input, int64_t dimension) {
   state.addTypes(resultTy);

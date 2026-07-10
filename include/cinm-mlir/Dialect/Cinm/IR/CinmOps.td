@@ -218,7 +218,7 @@ def Cinm_ReduceOp : Cinm_Op<"op.reduce",
     // This attribute is internal and to pass information
     // to the result type inference, in case the result should
     // not be implicitly rank-reduced (scalarized).
-    I64Attr:$dimension,
+    ConfinedAttr<I64Attr, [IntNonNegative]>:$dimension,
     DefaultValuedAttr<BoolAttr, "{true}">:$rankReduce
   );
 
@@ -237,7 +237,7 @@ def Cinm_ReduceOp : Cinm_Op<"op.reduce",
   let extraClassDeclaration = [{
   }];
 
-  let assemblyFormat = "$method `(` $input `)` attr-dict `:` type($input) `->` type($result)";
+  let hasCustomAssemblyFormat = 1;
 }
 
 def Cinm_TopKOp : Cinm_Op<"op.topK", [InferShapedTypeOpAdaptor, Pure]> {

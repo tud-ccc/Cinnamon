@@ -11,7 +11,7 @@ module {
   }
   module @dpu_kernels {
     upmem.dpu_program @program() tasklets(1) {
-      return
+      upmem.return
     }
   }
 }
@@ -45,8 +45,8 @@ module {
   }
   module @dpu_kernels {
     upmem.dpu_program @program() tasklets(1) {
-      %buf = static_alloc @buf(mram) : memref<8x128xi32, "mram">
-      return
+      %buf = upmem.static_alloc @buf(mram) : memref<8x128xi32, "mram">
+      upmem.return
     }
   }
 }
@@ -64,8 +64,8 @@ module {
   }
   module @dpu_kernels {
     upmem.dpu_program @program() tasklets(1) {
-      %buf = static_alloc @buf(mram) : memref<8x128xi32, "mram">
-      return
+      %buf = upmem.static_alloc @buf(mram) : memref<8x128xi32, "mram">
+      upmem.return
     }
   }
 }
@@ -86,7 +86,7 @@ module {
       func.func @not_a_buf() {
         return
       }
-      return
+      upmem.return
     }
   }
 }
@@ -104,8 +104,8 @@ module {
   }
   module @dpu_kernels {
     upmem.dpu_program @program() tasklets(1) {
-      %buf = static_alloc @buf(mram) : memref<8x128xi32, "mram">
-      return
+      %buf = upmem.static_alloc @buf(mram) : memref<8x128xi32, "mram">
+      upmem.return
     }
   }
 }
@@ -123,8 +123,8 @@ module {
   }
   module @dpu_kernels {
     upmem.dpu_program @program() tasklets(1) {
-      %buf = static_alloc @buf(mram) : memref<128xi32, "mram">
-      return
+      %buf = upmem.static_alloc @buf(mram) : memref<128xi32, "mram">
+      upmem.return
     }
   }
 }

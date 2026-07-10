@@ -78,7 +78,7 @@ func.func @compute_block_unused_arg(%arg0: tensor<8xf32>, %arg1: tensor<8xf32>) 
 // CHECK:       cinm.op.reduce add(%{{.*}}) : tensor<4x8xi32> -> tensor<4xi32>
 func.func @reduce_normalize_dim(%arg0: tensor<4x8xi32>) -> tensor<4xi32> {
   %0 = cinm.compute -> tensor<4xi32> {
-    %r = cinm.op.reduce add (%arg0) {dimension = -1} : tensor<4x8xi32> -> tensor<4xi32>
+    %r = cinm.op.reduce add (%arg0) dim -1 : tensor<4x8xi32> -> tensor<4xi32>
     cinm.yield %r : tensor<4xi32>
   }
   return %0 : tensor<4xi32>
@@ -87,10 +87,10 @@ func.func @reduce_normalize_dim(%arg0: tensor<4x8xi32>) -> tensor<4xi32> {
 // ReduceOpNormalizeDim: already-positive dimension should not change.
 
 // CHECK-LABEL: func.func @reduce_positive_dim_unchanged
-// CHECK:       cinm.op.reduce add(%{{.*}}) {dimension = 0
+// CHECK:       cinm.op.reduce add(%{{.*}}) dim 0 :
 func.func @reduce_positive_dim_unchanged(%arg0: tensor<4x8xi32>) -> tensor<8xi32> {
   %0 = cinm.compute -> tensor<8xi32> {
-    %r = cinm.op.reduce add (%arg0) {dimension = 0} : tensor<4x8xi32> -> tensor<8xi32>
+    %r = cinm.op.reduce add (%arg0) dim 0 : tensor<4x8xi32> -> tensor<8xi32>
     cinm.yield %r : tensor<8xi32>
   }
   return %0 : tensor<8xi32>
