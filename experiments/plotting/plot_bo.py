@@ -1111,6 +1111,8 @@ def main():
     ap.add_argument("--skip-existing-seed-plots", action="store_true",
                     help="Skip per-seed plots when pool_cost.png already exists "
                          "(problem-level aggregate plots are always regenerated)")
+    ap.add_argument("--out-dir", dest="out_dir", required=True, metavar="DIR",
+                    help="Output directory for aggregate (problem-level) plots and README")
     ap.add_argument("--plots", nargs="+", default=None, metavar="NAME",
                     help="Only generate plots whose tag contains one of these substrings "
                          "(e.g. --plots eval_time sigma_calibration cost)")
@@ -1146,6 +1148,10 @@ def main():
     if not all_groups:
         ap.print_help()
         sys.exit(0)
+
+    out_dir = Path(args.out_dir)
+    for group in all_groups:
+        group.out_dir = out_dir
 
     all_futures = {}  # future → tag string
     _plot_filter = args.plots  # None = all; list[str] = substring allowlist

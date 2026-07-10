@@ -37,3 +37,5 @@ sandbox
 python/cinnamon/_resources
 .env
 **/__pycache__
+
+.experiments/
