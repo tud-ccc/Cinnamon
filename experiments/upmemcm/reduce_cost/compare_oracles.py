@@ -181,28 +181,25 @@ def make_comparison_plot(dpus, cost_a, cost_b, measured_ms,
     rmse_b = float(np.sqrt(np.average((cost_b - measured_ms) ** 2, weights=w)))
     k      = max(2, int(np.ceil(top_quantile * len(measured_ms))))
 
-    k_min     = int(np.floor(np.log2(dpus.min())))
-    k_max     = int(np.ceil(np.log2(dpus.max())))
-    dpu_ticks = [2 ** i for i in range(k_min, k_max + 1)]
-    dpu_norm  = LogNorm(vmin=dpus.min(), vmax=dpus.max())
-
     pad = 1.15
     all_x = np.concatenate([cost_a, cost_b])
     lo = min(all_x.min(), measured_ms.min()) / pad
     hi = max(all_x.max(), measured_ms.max()) * pad
 
-    fig = plt.figure(figsize=(14, 6))
-    gs  = fig.add_gridspec(1, 3, width_ratios=[1, 1, 0.05], wspace=0.35)
+    fig = plt.figure(figsize=(12, 6))
+    gs  = fig.add_gridspec(1, 2, wspace=0.35)
     ax0 = fig.add_subplot(gs[0])
     ax1 = fig.add_subplot(gs[1])
-    cax = fig.add_subplot(gs[2])
 
-    sc = None
-    for ax, x, subtitle, rho, rmse in [
-        (ax0, cost_a, label_a, rho_a, rmse_a),
-        (ax1, cost_b, label_b, rho_b, rmse_b),
+    # blue = cost_b differs from cost_a (transfer cost was added); red = identical
+    changed = ~np.isclose(cost_a, cost_b, rtol=1e-9, atol=0)
+    colors_b = np.where(changed, "blue", "red")
+
+    for ax, x, subtitle, rho, rmse, colors in [
+        (ax0, cost_a, label_a, rho_a, rmse_a, "red"),
+        (ax1, cost_b, label_b, rho_b, rmse_b, colors_b),
     ]:
-        sc = ax.scatter(x, measured_ms, s=10, alpha=0.7, c=dpus, cmap="viridis", norm=dpu_norm)
+        ax.scatter(x, measured_ms, s=10, alpha=0.7, c=colors)
         ax.plot([lo, hi], [lo, hi], color="gray", linestyle="--", linewidth=1, label="y = x")
         ax.set_xlim(lo, hi); ax.set_ylim(lo, hi)
         ax.set_xscale("log"); ax.set_yscale("log")
@@ -219,8 +216,12 @@ def make_comparison_plot(dpus, cost_a, cost_b, measured_ms,
                 transform=ax.transAxes, fontsize=8, verticalalignment="top",
                 bbox=dict(boxstyle="round,pad=0.3", facecolor="white", alpha=0.7))
 
-    cbar = fig.colorbar(sc, cax=cax, label="Number of DPUs", ticks=dpu_ticks)
-    cbar.ax.yaxis.set_major_formatter(FuncFormatter(lambda v, _: f"{v:g}"))
+    from matplotlib.patches import Patch
+    ax1.legend(handles=[
+        Patch(color="red",  label="unchanged from A"),
+        Patch(color="blue", label="differs from A"),
+    ], fontsize=7, loc="lower right")
+
     fig.suptitle(title)
     fig.tight_layout()
     out_path.parent.mkdir(parents=True, exist_ok=True)
