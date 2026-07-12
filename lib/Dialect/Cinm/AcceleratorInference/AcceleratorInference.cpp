@@ -584,7 +584,8 @@ struct InferenceTask {
   /// Shared state produced by prepareBO() and consumed by both runInference and
   /// runMultiSeed.
   struct BOSetup {
-    llvm::BitVector validMask;
+    std::shared_ptr<llvm::BitVector> validMask;
+    std::shared_ptr<std::vector<size_t>> validIndices;
     ValidationSet validSet;
   };
 
@@ -594,33 +595,40 @@ struct InferenceTask {
   /// `nWorkers` is always resolveWorkers() — independent of nSeeds so
   /// validation is never artificially throttled.
   Maybe<BOSetup> prepareBO(unsigned nWorkers) {
-    auto validMask = CandidatePool::computeValidMask(space);
-    if (validMask.none())
+
+    auto validMask = std::make_shared<llvm::BitVector>();
+    auto validIndices = std::make_shared<std::vector<size_t>>();
+
+    CandidatePool::computeValidMask(space, *validMask, *validIndices);
+    if (validIndices->empty())
       return emitSilenceableFailure(
           refClone.getLoc(), "No valid configurations found in search space");
-    LLVM_DEBUG(llvm::dbgs() << "[cinm-inference] " << validMask.count()
+    LLVM_DEBUG(llvm::dbgs() << "[cinm-inference] " << validIndices->size()
                             << " valid configs\n");
     ValidationSet validSet = [&] {
       // Scoped pool: freed before the caller creates its BO-sized pool,
       // so nWorkers clones never overlap with per-seed CandidatePool allocs.
       EvaluatorPool validationPool(plugin, *refModule, refClone->getContext(),
                                    nWorkers);
-      return buildValidationSet(validMask, validationPool);
+      return buildValidationSet(validMask, validIndices, validationPool);
     }();
-    return BOSetup{std::move(validMask), std::move(validSet)};
+    return BOSetup{std::move(validMask), std::move(validIndices),
+                   std::move(validSet)};
   }
 
   /// Sample `options.nValidation` configs via LHS and evaluate them in
   /// parallel across `evalPool`, returning the resulting ValidationSet.
-  ValidationSet buildValidationSet(const llvm::BitVector &validMask,
-                                   EvaluatorPool &evalPool) {
+  ValidationSet
+  buildValidationSet(std::shared_ptr<llvm::BitVector> validMask,
+                     std::shared_ptr<std::vector<size_t>> validIndices,
+                     EvaluatorPool &evalPool) {
     ValidationSet result(space);
     if (options.nValidation <= 0)
       return result;
 
     unsigned nWorkers = evalPool.size();
-    CandidatePool samplePool(space, static_cast<size_t>(options.nValidation),
-                             validMask);
+    CandidatePool samplePool(space, options.nValidation, std::move(validMask),
+                             std::move(validIndices));
     std::mt19937 vrng(options.rngSeed);
     LLVM_DEBUG(llvm::dbgs() << "[cinm-inference] Sampling validation set: "
                             << options.nValidation << " points\n");
@@ -783,9 +791,13 @@ struct InferenceTask {
     if (!state.anySuccess)
       return std::move(state.err);
 
-    if (log)
+    if (log) {
+      *log << "Finished inference\n"
+           << "- " << pool.nObs << " / " << pool.visited.size()
+           << " successful trials\n";
       *log << "[cinm-inference] Best config (cost=" << state.bestCost << ")"
            << state.bestTrial.conf() << "\n";
+    }
     return std::move(state.bestTrial);
   }
 
@@ -825,7 +837,7 @@ struct InferenceTask {
 
     unsigned nWorkers = resolveWorkers();
     // Validation uses a temporary nWorkers-wide pool (freed before BO starts).
-    auto [validMask, validSet] = TRY_GET(prepareBO(nWorkers));
+    auto [validMask, validIndices, validSet] = TRY_GET(prepareBO(nWorkers));
 
     // Single-seed fast path: behaves exactly like the old runInference.
     // seedValue(0) = 0 * 31 + rngSeed = rngSeed. Uses full nWorkers for LHS.
@@ -834,7 +846,7 @@ struct InferenceTask {
           plugin, *refModule, refClone->getContext(), nWorkers);
       EvalLease withEval = [&](auto &fn) { return evalPool->withWorker(fn); };
       CandidatePool pool(space, static_cast<size_t>(options.maxEvals),
-                         validMask);
+                         std::move(validMask), std::move(validIndices));
       std::mutex stateMx;
       llvm::raw_ostream *log = nullptr;
       LLVM_DEBUG(log = &llvm::dbgs());
@@ -878,7 +890,7 @@ struct InferenceTask {
 
         std::mt19937 seedRng(static_cast<unsigned>(sv));
         CandidatePool pool(space, static_cast<size_t>(options.maxEvals),
-                           validMask);
+                           validMask, validIndices);
         ValidationSet vs = validSet; // copy of shared contents
         std::string dir = baseDumpDir.empty()
                               ? std::string()
@@ -962,7 +974,7 @@ struct InferenceTask {
 
     // Build pool now: constructor pre-marks invalid configs as visited,
     // giving us the valid count before spawning threads.
-    CandidatePool pool(space, N, true);
+    auto pool = CandidatePool::build(space, N, true);
     size_t nValid = pool.size();
 
     LLVM_DEBUG(llvm::dbgs() << "[cinm-inference] Exhaustive search: " << nValid
