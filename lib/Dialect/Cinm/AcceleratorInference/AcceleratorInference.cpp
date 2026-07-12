@@ -581,6 +581,97 @@ struct InferenceTask {
     return ConfWrapper(space, conf);
   }
 
+  /// Shared state produced by prepareBO() and consumed by both runInference and
+  /// runMultiSeed.
+  struct BOSetup {
+    llvm::BitVector validMask;
+    ValidationSet validSet;
+  };
+
+  /// Compute the valid-config mask and pre-evaluate the validation set using a
+  /// temporary `nWorkers`-wide pool. The pool is destroyed before returning so
+  /// callers can create a correctly-sized BO pool without doubling memory.
+  /// `nWorkers` is always resolveWorkers() — independent of nSeeds so
+  /// validation is never artificially throttled.
+  Maybe<BOSetup> prepareBO(unsigned nWorkers) {
+    auto validMask = CandidatePool::computeValidMask(space);
+    if (validMask.none())
+      return emitSilenceableFailure(
+          refClone.getLoc(), "No valid configurations found in search space");
+    LLVM_DEBUG(llvm::dbgs() << "[cinm-inference] " << validMask.count()
+                            << " valid configs\n");
+    ValidationSet validSet = [&] {
+      // Scoped pool: freed before the caller creates its BO-sized pool,
+      // so nWorkers clones never overlap with per-seed CandidatePool allocs.
+      EvaluatorPool validationPool(plugin, *refModule, refClone->getContext(),
+                                   nWorkers);
+      return buildValidationSet(validMask, validationPool);
+    }();
+    return BOSetup{std::move(validMask), std::move(validSet)};
+  }
+
+  /// Sample `options.nValidation` configs via LHS and evaluate them in
+  /// parallel across `evalPool`, returning the resulting ValidationSet.
+  ValidationSet buildValidationSet(const llvm::BitVector &validMask,
+                                   EvaluatorPool &evalPool) {
+    ValidationSet result(space);
+    if (options.nValidation <= 0)
+      return result;
+
+    unsigned nWorkers = evalPool.size();
+    CandidatePool samplePool(space, static_cast<size_t>(options.nValidation),
+                             validMask);
+    std::mt19937 vrng(options.rngSeed);
+    LLVM_DEBUG(llvm::dbgs() << "[cinm-inference] Sampling validation set: "
+                            << options.nValidation << " points\n");
+    {
+      SimpleProgressBar validBar(static_cast<size_t>(options.nValidation),
+                                 "  validation ");
+      // Phase 1: LHS candidate selection (serial, cheap — O(n×M) NN search).
+      std::vector<size_t> validIdxs;
+      validIdxs.reserve(options.nValidation);
+      samplePool.sampleInitialSet(
+          static_cast<size_t>(options.nValidation), vrng,
+          [&](size_t idx) {
+            validIdxs.push_back(idx);
+            return true;
+          },
+          /*workers=*/1);
+
+      // Phase 2: evaluate in parallel via the shared pool.
+      std::mutex recordMx;
+      std::atomic<size_t> nextValIdx{0};
+      auto evalOne = [&]() {
+        for (;;) {
+          size_t pos = nextValIdx.fetch_add(1, std::memory_order_relaxed);
+          if (pos >= validIdxs.size())
+            break;
+          size_t idx = validIdxs[pos];
+          auto r =
+              evalPool.withWorker([&](InferencePlugin &plug, ModuleOp ref) {
+                auto trial = makeTrialInfo(samplePool[idx], ref);
+                return plug.evaluate(trial);
+              });
+          if (auto *c = std::get_if<double>(&r)) {
+            std::lock_guard<std::mutex> g(recordMx);
+            result.record(idx, *c);
+          }
+          validBar.tick();
+        }
+      };
+      std::vector<std::thread> valThreads;
+      valThreads.reserve(nWorkers - 1);
+      for (unsigned t = 1; t < nWorkers; ++t)
+        valThreads.emplace_back(evalOne);
+      evalOne();
+      for (auto &t : valThreads)
+        t.join();
+    }
+    LLVM_DEBUG(llvm::dbgs() << "[cinm-inference] Validation set: "
+                            << result.size() << " points\n");
+    return result;
+  }
+
   /// Lease an evaluator (plugin clone + reference module) for one evaluation
   /// and invoke `fn` on it. Single-seed mode leases from a parallel
   /// EvaluatorPool; a multi-seed worker binds its one dedicated per-seed clone.
@@ -709,11 +800,21 @@ struct InferenceTask {
                : 1u;
   }
 
-  /// Run Bayesian optimization over the config space (single seed).
-  /// Returns the TrialInfo from the winning evaluation — its module is
-  /// fully lowered and ready for commitBestCandidate.
-  Maybe<TrialInfo> runInference() {
-    // Trivial: zero-dimensional space → evaluate the only possible config.
+  /// Run Bayesian optimisation (single seed). Delegates to runMultiSeed with
+  /// nSeeds=1, which uses all available workers for the BO LHS phase and
+  /// seeds the RNG directly with options.rngSeed (seedValue(0) = 0*31+rngSeed).
+  Maybe<TrialInfo> runInference() { return runMultiSeed(options.dumpDir); }
+
+  /// Unified BO entry point for one or more seeds.
+  ///
+  /// Validation and evaluator warm-up always use resolveWorkers() — never
+  /// capped by nSeeds. When nSeeds <= 1, all workers go to the single seed's
+  /// LHS phase (identical to the old runInference). When nSeeds > 1, up to
+  /// min(nWorkers, nSeeds) seeds run concurrently, each single-threaded.
+  ///
+  /// Seed RNG: seedValue(k) = k * 31 + rngSeed, so k=0 → rngSeed exactly.
+  Maybe<TrialInfo> runMultiSeed(const std::string &baseDumpDir) {
+    // Trivial: zero-dimensional space → evaluate the single possible config.
     if (space.size() == 0) {
       TrialInfo trial = makeTrialInfo({});
       auto cost = plugin.evaluate(trial);
@@ -722,129 +823,42 @@ struct InferenceTask {
       return std::move(trial);
     }
 
-    CandidatePool pool(space, static_cast<size_t>(options.maxEvals));
-    LLVM_DEBUG(llvm::dbgs() << "[cinm-inference] Pool: " << pool.size()
-                            << " valid configs (" << pool.N << " total)\n");
-    if (pool.empty())
-      return emitSilenceableFailure(
-          refClone.getLoc(), "No valid configurations found in search space");
-
-    // Parallel evaluation workers. sampleInitialSet() / nextCandidateIndices()
-    // dispatch accept() calls to a thread pool, so evaluation runs on a
-    // per-thread plugin+module clone leased from `evalPool` while shared-state
-    // commits are serialised by `stateMx`.
     unsigned nWorkers = resolveWorkers();
-    EvaluatorPool evalPool(plugin, *refModule, refClone->getContext(),
-                           nWorkers);
-    std::mutex stateMx; // guards state / validSet / trainingSet / timings
-    EvalLease withEval =
-        [&](const std::function<bool(InferencePlugin &, ModuleOp)> &fn) {
-          return evalPool.withWorker(fn);
-        };
+    // Validation uses a temporary nWorkers-wide pool (freed before BO starts).
+    auto [validMask, validSet] = TRY_GET(prepareBO(nWorkers));
 
-    // Validation set: pre-evaluate a set of points for surrogate quality
-    // tracking. NOT marked visited — BO may still select these points later.
-    ValidationSet validSet(space);
-    if (options.nValidation > 0) {
-      LLVM_DEBUG(llvm::dbgs() << "[cinm-inference] Sampling "
-                              << options.nValidation << " validation points\n");
-      pool.sampleInitialSet(
-          static_cast<size_t>(options.nValidation), rng,
-          [&](size_t idx) {
-            auto result =
-                evalPool.withWorker([&](InferencePlugin &plug, ModuleOp ref) {
-                  TrialInfo trial = makeTrialInfo(pool[idx], ref);
-                  return plug.evaluate(trial);
-                });
-            if (auto *cost = std::get_if<double>(&result)) {
-              std::lock_guard<std::mutex> g(stateMx);
-              validSet.record(idx, *cost);
-            }
-            return true;
-          },
-          nWorkers);
-      LLVM_DEBUG(llvm::dbgs() << "[cinm-inference] Validation set: "
-                              << validSet.size() << " points\n");
+    // Single-seed fast path: behaves exactly like the old runInference.
+    // seedValue(0) = 0 * 31 + rngSeed = rngSeed. Uses full nWorkers for LHS.
+    if (options.nSeeds <= 1) {
+      auto evalPool = std::make_unique<EvaluatorPool>(
+          plugin, *refModule, refClone->getContext(), nWorkers);
+      EvalLease withEval = [&](auto &fn) { return evalPool->withWorker(fn); };
+      CandidatePool pool(space, static_cast<size_t>(options.maxEvals),
+                         validMask);
+      std::mutex stateMx;
+      llvm::raw_ostream *log = nullptr;
+      LLVM_DEBUG(log = &llvm::dbgs());
+      std::mt19937 seedRng(static_cast<unsigned>(options.rngSeed));
+      return runSeedBO(seedRng, pool, std::move(validSet), withEval, &stateMx,
+                       nWorkers, baseDumpDir, {}, nullptr, log);
     }
 
-    llvm::raw_ostream *log = nullptr;
-    LLVM_DEBUG(log = &llvm::dbgs());
-    return runSeedBO(rng, pool, std::move(validSet), withEval, &stateMx,
-                     nWorkers, options.dumpDir, {}, nullptr, log);
-  }
-
-  /// Run `options.nSeeds` independent BO seeds concurrently, sharing the
-  /// ConfigSpace, the valid-config scan, and the validation set. Each seed runs
-  /// single-threaded on its own warmed plugin+module clone; up to
-  /// `resolveWorkers()` seeds run at once. `baseDumpDir` (when non-empty)
-  /// receives one `seed_<value>/` subdirectory per seed. Returns the globally
-  /// best trial across all seeds for commitBestCandidate.
-  Maybe<TrialInfo> runMultiSeed(const std::string &baseDumpDir) {
-    // Trivial: zero-dimensional space → a single config; seeds are redundant.
-    if (space.size() == 0)
-      return runInference();
-
-    // Shared valid-config scan (the expensive part), computed once.
-    llvm::BitVector validMask = CandidatePool::computeValidMask(space);
-    if (validMask.none())
-      return emitSilenceableFailure(
-          refClone.getLoc(), "No valid configurations found in search space");
-    LLVM_DEBUG(llvm::dbgs()
-               << "[cinm-inference] Multi-seed: " << options.nSeeds
-               << " seeds, " << validMask.count() << " valid configs\n");
-
-    MLIRContext *ctx = refClone->getContext();
+    // Multi-seed: run nSeeds BO seeds concurrently, capped by nWorkers.
+    // Pool is sized to cap (not nWorkers) — one slot per concurrent seed.
     unsigned cap = std::min<unsigned>(
-        resolveWorkers(), static_cast<unsigned>(std::max(1, options.nSeeds)));
+        nWorkers, static_cast<unsigned>(std::max(1, options.nSeeds)));
+    auto evalPool = std::make_unique<EvaluatorPool>(
+        plugin, *refModule, refClone->getContext(), cap);
+    EvalLease withEval = [&](auto &fn) { return evalPool->withWorker(fn); };
+    LLVM_DEBUG(llvm::dbgs() << "[cinm-inference] Multi-seed: " << options.nSeeds
+                            << " seeds, cap=" << cap << "\n");
 
-    // One warmed (plugin, reference module) clone per concurrent worker slot.
-    struct Evaluator {
-      std::unique_ptr<InferencePlugin> plugin;
-      OwningOpRef<ModuleOp> ref;
-    };
-    std::vector<Evaluator> evaluators(cap);
-    for (unsigned t = 0; t < cap; ++t) {
-      evaluators[t].plugin = plugin.clone();
-      evaluators[t].plugin->warmUp(ctx);
-      evaluators[t].ref =
-          OwningOpRef<ModuleOp>(llvm::cast<ModuleOp>(refModule->clone()));
-    }
-
-    // Shared validation set: evaluated once, serially, on slot 0's clone.
-    // Validation points are NOT marked visited, so a throwaway pool suffices.
-    ValidationSet validTemplate(space);
-    if (options.nValidation > 0) {
-      CandidatePool samplePool(space, static_cast<size_t>(options.nValidation),
-                               validMask);
-      std::mt19937 vrng(options.rngSeed);
-      LLVM_DEBUG(llvm::dbgs()
-                 << "[cinm-inference] Sampling shared validation set: "
-                 << options.nValidation << " points\n");
-      {
-        SimpleProgressBar validBar(static_cast<size_t>(options.nValidation),
-                                   "  validation ");
-        samplePool.sampleInitialSet(
-            static_cast<size_t>(options.nValidation), vrng,
-            [&](size_t idx) {
-              TrialInfo trial =
-                  makeTrialInfo(samplePool[idx], *evaluators[0].ref);
-              auto result = evaluators[0].plugin->evaluate(trial);
-              if (auto *cost = std::get_if<double>(&result))
-                validTemplate.record(idx, *cost);
-              validBar.tick();
-              return true;
-            },
-            /*workers=*/1);
-      } // validBar.finish() — completes bar before MultiSeedProgress starts
-      LLVM_DEBUG(llvm::dbgs() << "[cinm-inference] Shared validation set: "
-                              << validTemplate.size() << " points\n");
-    }
-
-    // Seed values, comparable to run.py's `i*31 + offset` scheme (offset =
-    // rngSeed): the k-th seed (k in [0, nSeeds)) uses (k+1)*31 + rngSeed.
-    auto seedValue = [&](int k) { return (k + 1) * 31 + options.rngSeed; };
+    // k * 31 + rngSeed: k=0 gives rngSeed (matches single-seed path above).
+    auto seedValue = [&](int k) { return k * 31 + options.rngSeed; };
 
     MultiSeedProgress progress(options.nSeeds, cap, options.maxEvals);
+    if (!progress.active)
+      LLVM_DEBUG(llvm::dbgs() << "[cinm-inference] (no progress bar)\n");
 
     std::atomic<int> nextSeed{0};
     std::mutex bestMx;
@@ -855,11 +869,6 @@ struct InferenceTask {
         DiagnosedSilenceableFailure::success();
 
     auto worker = [&](unsigned slot) {
-      Evaluator &ev = evaluators[slot];
-      EvalLease withEval =
-          [&](const std::function<bool(InferencePlugin &, ModuleOp)> &fn) {
-            return fn(*ev.plugin, *ev.ref);
-          };
       while (true) {
         int k = nextSeed.fetch_add(1, std::memory_order_relaxed);
         if (k >= options.nSeeds)
@@ -867,10 +876,10 @@ struct InferenceTask {
         int sv = seedValue(k);
         progress.startSeed(slot, sv);
 
-        std::mt19937 rng(static_cast<unsigned>(sv));
+        std::mt19937 seedRng(static_cast<unsigned>(sv));
         CandidatePool pool(space, static_cast<size_t>(options.maxEvals),
                            validMask);
-        ValidationSet vs = validTemplate; // copy of shared contents
+        ValidationSet vs = validSet; // copy of shared contents
         std::string dir = baseDumpDir.empty()
                               ? std::string()
                               : (std::filesystem::path(baseDumpDir) /
@@ -880,9 +889,7 @@ struct InferenceTask {
           progress.seedProgress(slot, nObs);
         };
 
-        // Open a per-seed log file so concurrent seeds don't interleave on
-        // stderr. Fall back to llvm::dbgs() when there is no dump directory
-        // and debug output is active.
+        // Per-seed log file; fall back to llvm::dbgs() when no dump dir.
         std::unique_ptr<llvm::raw_fd_ostream> logFile;
         llvm::raw_ostream *log = nullptr;
         if (!dir.empty()) {
@@ -896,7 +903,8 @@ struct InferenceTask {
         LLVM_DEBUG(if (!log) log = &llvm::dbgs());
 
         double bestCost = std::numeric_limits<double>::max();
-        auto result = runSeedBO(rng, pool, std::move(vs), withEval,
+        // Each seed is single-threaded; outer cap-parallelism covers all cores.
+        auto result = runSeedBO(seedRng, pool, std::move(vs), withEval,
                                 /*stateMx=*/nullptr, /*sampleWorkers=*/1, dir,
                                 onProgress, &bestCost, log);
         progress.seedDone();

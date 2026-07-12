@@ -6,6 +6,7 @@
 #include <atomic>
 #include <chrono>
 #include <cstdio>
+#include <cstring>
 #include <iostream>
 #include <memory>
 #include <string>
@@ -17,8 +18,8 @@
 bool canRenderProgress();
 
 /// A single progress bar driven by a background printer thread.
-/// Workers increment the atomic counter; the printer calls set_progress() every
-/// ~150 ms. Active only when canRenderProgress() is true.
+/// Workers call tick(); the printer calls set_progress() every ~150 ms.
+/// Active only when canRenderProgress() is true.
 struct SimpleProgressBar {
   using Bar = indicators::ProgressBar;
   bool active;
@@ -58,32 +59,45 @@ struct SimpleProgressBar {
     stop_.store(true, std::memory_order_relaxed);
     if (printer_.joinable())
       printer_.join();
-    bar->set_progress(done_.load(std::memory_order_relaxed));
+    // Printer thread has stopped; one final render to mark completion.
+    // Do NOT call set_progress() here — that would render a second line.
     bar->mark_as_completed();
   }
   ~SimpleProgressBar() { finish(); }
 };
 
 /// Live multi-bar progress for concurrent seeds: one overall bar (seeds
-/// completed) plus one bar per worker slot (current seed's evaluations). A
-/// dedicated printer thread renders every ~150 ms so worker threads only touch
-/// the bars' internal (mutex-guarded, non-printing in multi-progress mode)
-/// setters. `indicators::DynamicProgress` renders to std::cout; that also
-/// carries the result IR, so bars are only enabled when canRenderProgress().
+/// completed) plus one bar per worker slot (current seed's evaluations).
+///
+/// Worker threads ONLY write to atomic counters. A single printer thread owns
+/// all bar mutations so that DynamicProgress cursor-up tracking is never
+/// disrupted by concurrent renders triggered from worker threads.
 struct MultiSeedProgress {
   using Bar = indicators::ProgressBar;
   bool active;
   int maxEvals;
-  std::vector<std::unique_ptr<Bar>> bars; // [0]=overall, [1..cap]=slots
+  unsigned cap_;
+  std::vector<std::unique_ptr<Bar>> bars; // [0]=overall, [1..cap_]=slots
   std::unique_ptr<indicators::DynamicProgress<Bar>> dyn;
   std::thread printer;
   std::atomic<bool> stop{false};
   std::atomic<bool> finished{false};
 
+  // Written by worker threads, read exclusively by the printer thread.
+  std::atomic<int> seedsDone_{0};
+  std::unique_ptr<std::atomic<int>[]> slotProgress_;  // [0..cap_)
+  std::unique_ptr<std::atomic<int>[]> slotSeedValue_; // [0..cap_), -1 = idle
+
   MultiSeedProgress(int nSeeds, unsigned cap, int maxEvals)
-      : active(canRenderProgress()), maxEvals(maxEvals) {
+      : active(canRenderProgress()), maxEvals(maxEvals), cap_(cap),
+        slotProgress_(std::make_unique<std::atomic<int>[]>(cap)),
+        slotSeedValue_(std::make_unique<std::atomic<int>[]>(cap)) {
+    for (unsigned i = 0; i < cap; ++i)
+      slotSeedValue_[i].store(-1, std::memory_order_relaxed);
+
     if (!active)
       return;
+
     auto makeBar = [](size_t maxProgress, const std::string &prefix) {
       return std::make_unique<Bar>(indicators::option::BarWidth{30},
                                    indicators::option::MaxProgress{maxProgress},
@@ -99,30 +113,42 @@ struct MultiSeedProgress {
     dyn = std::make_unique<indicators::DynamicProgress<Bar>>();
     for (auto &b : bars)
       dyn->push_back(*b);
+
     printer = std::thread([this] {
       while (!stop.load(std::memory_order_relaxed)) {
-        dyn->print_progress();
+        // Only the printer thread calls set_option/set_progress on bars.
+        // DynamicProgress re-renders (cursor-up + reprint) on each
+        // set_progress call, so keeping all mutations here prevents racing
+        // renders that would break the cursor position.
+        bars[0]->set_progress(
+            static_cast<size_t>(seedsDone_.load(std::memory_order_relaxed)));
+        for (unsigned i = 0; i < cap_; ++i) {
+          int sv = slotSeedValue_[i].load(std::memory_order_relaxed);
+          char buf[32];
+          if (sv < 0)
+            std::strncpy(buf, "  slot idle  ", sizeof(buf));
+          else
+            std::snprintf(buf, sizeof(buf), "  seed %6d", sv);
+          bars[i + 1]->set_option(indicators::option::PrefixText{buf});
+          bars[i + 1]->set_progress(static_cast<size_t>(
+              std::max(0, slotProgress_[i].load(std::memory_order_relaxed))));
+        }
         std::this_thread::sleep_for(std::chrono::milliseconds(150));
       }
     });
   }
 
+  // Worker-thread API: write atomics only, never touch bars directly.
   void startSeed(unsigned slot, int seedValue) {
-    if (!active)
-      return;
-    char buf[32];
-    std::snprintf(buf, sizeof(buf), "  seed %6d", seedValue);
-    bars[slot + 1]->set_option(indicators::option::PrefixText{buf});
-    bars[slot + 1]->set_progress(0);
+    slotSeedValue_[slot].store(seedValue, std::memory_order_relaxed);
+    slotProgress_[slot].store(0, std::memory_order_relaxed);
   }
   void seedProgress(unsigned slot, int nObs) {
-    if (active)
-      bars[slot + 1]->set_progress(
-          static_cast<size_t>(std::min(nObs, maxEvals)));
+    slotProgress_[slot].store(std::min(nObs, maxEvals),
+                              std::memory_order_relaxed);
   }
   void seedDone() {
-    if (active)
-      bars[0]->tick();
+    seedsDone_.fetch_add(1, std::memory_order_relaxed);
   }
 
   void finish() {
