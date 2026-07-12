@@ -3,13 +3,13 @@
 
 #include <algorithm>
 #include <armadillo>
+#include <atomic>
 #include <cmath>
 #include <cstddef>
 #include <filesystem>
 #include <fstream>
 #include <iterator>
 #include <limits>
-#include <atomic>
 #include <llvm/ADT/BitVector.h>
 #include <llvm/ADT/STLExtras.h>
 #include <llvm/Support/Debug.h>
@@ -48,8 +48,7 @@ CandidatePool::CandidatePool(const ConfigSpace &space, size_t evalBudget,
                              llvm::BitVector validMask, bool exhaustive)
     : space_(&space), N(space.totalSize()), visited(),
       validMask_(std::move(validMask)), Xo(space.size(), evalBudget),
-      yo(1, evalBudget), costByIdx(arma::rowvec(N).fill(arma::datum::nan)),
-      exhaustive(exhaustive) {
+      yo(1, evalBudget), exhaustive(exhaustive) {
   visited = validMask_;
   // by marking invalid solutions visited, we will never pick them
   visited.flip();
@@ -80,7 +79,7 @@ void CandidatePool::recordObservation(size_t idx, double cost, size_t iter,
       Xo(d, nObs) = (*space_)[d].featurize(conf[d]);
     yo(0, nObs) = cost;
   }
-  costByIdx(idx) = cost;
+  costByIdx[idx] = cost;
   iterByIdx[idx] = iter;
   if (evalTime.count() > 0)
     evalTimeByIdx[idx] = static_cast<uint64_t>(evalTime.count());
@@ -211,10 +210,11 @@ void CandidatePool::sampleInitialSet(size_t n, std::mt19937 &rng,
                              static_cast<double>(want);
     }
 
-    // Greedy nearest-neighbour: each target → closest unused candidate. Select
-    // the whole batch on this thread, then dispatch the accept() calls.
-    std::vector<size_t> batch;
-    batch.reserve(want);
+    // Greedy nearest-neighbour: each target → closest unused candidate.
+    // Dispatch each candidate to the thread pool immediately after selection
+    // so that NN selection and evaluation overlap (selection is O(want×M)
+    // and would otherwise block pool threads for the entire batch).
+    size_t nDispatched = 0;
     for (size_t t = 0; t < want; ++t) {
       double bestDist = std::numeric_limits<double>::max();
       size_t bestPos = M; // position in candidates
@@ -234,14 +234,8 @@ void CandidatePool::sampleInitialSet(size_t n, std::mt19937 &rng,
       if (bestPos == M)
         break;
       used.insert(bestPos);
-      batch.push_back(candidates[bestPos]);
-    }
-    if (batch.empty())
-      break;
-
-    // Evaluate the batch in parallel; skip any candidate once enough have been
-    // accepted so we don't waste simulator runs past the target.
-    for (size_t idx : batch) {
+      ++nDispatched;
+      size_t idx = candidates[bestPos];
       threadPool.async([&accept, &accepted, idx, n]() {
         if (accepted.load(std::memory_order_relaxed) >= n)
           return;
@@ -249,6 +243,8 @@ void CandidatePool::sampleInitialSet(size_t n, std::mt19937 &rng,
           accepted.fetch_add(1, std::memory_order_relaxed);
       });
     }
+    if (nDispatched == 0)
+      break;
     // Barrier: the next batch's `want` depends on how many were accepted.
     threadPool.wait();
   }
@@ -387,7 +383,7 @@ void CandidatePool::fillNeighbors(std::unordered_set<size_t> &result,
   // BFS outward from every observed point up to `depth` steps.
   std::unordered_set<size_t> frontier;
   for (int i = validMask_.find_first(); i != -1; i = validMask_.find_next(i))
-    if (!std::isnan(costByIdx(static_cast<size_t>(i))))
+    if (costByIdx.count(static_cast<size_t>(i)))
       frontier.insert(static_cast<size_t>(i));
 
   std::unordered_set<size_t> nextFrontier;
@@ -518,18 +514,12 @@ void CandidatePool::dumpToCSV(const ConfigSpace &space,
                           << "- " << nObs << " / " << visited.count()
                           << " successful trials\n");
 
-  // Collect all valid (constraint-passing) pool indices for surrogate
-  // prediction. Invalid configs get no surrogate columns in the output.
-  std::vector<size_t> validIdx;
-  for (int i = validMask_.find_first(); i != -1; i = validMask_.find_next(i))
-    validIdx.push_back(static_cast<size_t>(i));
-
   // Use the warm-started ensemble to get per-candidate statistics.
-  const bool hasModel = ensemble_ && nObs >= 2 && !validIdx.empty();
+  const bool hasModel = ensemble_ && nObs >= 2 && validMask_.any();
   // Per-valid-index predictions; indexed by position in validIdx.
   arma::rowvec mu_v, sigma_v, acq_v;
   if (hasModel) {
-    arma::mat validEncoded = encodeSubset(*space_, validIdx);
+    arma::mat validEncoded = encodeValidSpace(*space_, *this);
     auto [m, s] = ensemble_->predict(validEncoded);
     mu_v = m;
     sigma_v = s;
@@ -545,14 +535,16 @@ void CandidatePool::dumpToCSV(const ConfigSpace &space,
   out << "\n";
 
   // One row per valid pool member, in flat-index order.
-  Configuration conf;
-  for (size_t j = 0; j < validIdx.size(); ++j) {
-    const size_t i = validIdx[j];
-    space_->at(i, conf);
+  size_t j = 0;
+  space.forEach([&](auto &conf, size_t i) -> bool {
+    if (!isValid(i))
+      return true;
+
     for (int64_t v : conf)
       out << v << ",";
     out << (visited.test(i) ? 1 : 0) << ",1,";
-    double c = costByIdx(i);
+    auto cit = costByIdx.find(i);
+    double c = (cit != costByIdx.end()) ? cit->second : arma::datum::nan;
     if (!std::isnan(c))
       out << c;
     out << ",";
@@ -566,7 +558,9 @@ void CandidatePool::dumpToCSV(const ConfigSpace &space,
     if (hasModel)
       out << "," << mu_v(j) << "," << sigma_v(j) << "," << acq_v(j);
     out << "\n";
-  }
+    j++;
+    return true;
+  });
 }
 
 void CandidatePool::dumpMetadataJSON(const ConfigSpace &space,

@@ -77,8 +77,8 @@ struct CandidatePool {
   arma::mat yo;
   size_t nObs = 0;
 
-  // Per-pool-index observed cost; NaN for unvisited or failed evaluations.
-  arma::rowvec costByIdx;
+  // Per-pool-index observed cost; absent = unvisited or failed evaluation.
+  std::unordered_map<size_t, double> costByIdx;
   // BO iteration at which the cost was recorded, keyed by pool index.
   std::unordered_map<size_t, size_t> iterByIdx;
   // Wall-clock evaluation time in milliseconds, keyed by pool index.
