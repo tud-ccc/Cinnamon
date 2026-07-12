@@ -550,6 +550,7 @@ struct UpmemInferAcceleratorPass
     o.maxEvals = maxEvals;
     o.nInit = nInit;
     o.rngSeed = rngSeed;
+    o.nSeeds = nSeeds;
     o.kappa = kappa;
     o.epochs = epochs;
     o.nEnsemble = nEnsemble;
@@ -619,7 +620,10 @@ struct UpmemInferAcceleratorPass
                    llvm::dbgs() << "==================";);
 
         auto path = std::filesystem::path(dataDumpDir) / name.str();
-        if (!upmemOpts.inference.exhaustiveSearch)
+        // Multi-seed mode appends its own seed_<value>/ per seed, so pass the
+        // base (per-op) dir. Single-seed BO gets the seed_<rngSeed>/ suffix here.
+        if (!upmemOpts.inference.exhaustiveSearch &&
+            upmemOpts.inference.nSeeds <= 1)
           path /= "seed_" + std::to_string(upmemOpts.inference.rngSeed);
         upmemOpts.inference.dumpDir = path;
       }

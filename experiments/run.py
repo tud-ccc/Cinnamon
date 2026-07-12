@@ -65,10 +65,11 @@ def _cinm_opt_cmd(
     *,
     cinm_opt: str = "cinm-opt",
     extra_mlir_flags: list[str] | None = None,
+    out_file = None
 ) -> list[str]:
     cmd = [
         cinm_opt,
-        f"{file}",
+        str(file),
         "--cinm-assign-platforms",
         "--cinm-isolate-compute-blocks",
         f"--upmem-infer-accelerator={infer_opts}",
@@ -78,6 +79,8 @@ def _cinm_opt_cmd(
         "--mlir-disable-threading",
         "--debug-only=cinm-inference",
     ]
+    if out_file:
+      cmd.extend(("-o", str(out_file)))
     if extra_mlir_flags:
         cmd.extend(extra_mlir_flags)
     #print(" ".join(cmd))
@@ -167,6 +170,40 @@ def cmd_seeds(args: argparse.Namespace) -> int:
       return code
     args.in_dir = args.out_dir
     return cmd_plot(args)
+
+
+def cmd_multiseed(args: argparse.Namespace) -> int:
+    """Run N seeds in a single cinm-opt process (C++ multi-seed engine), then
+    plot. Unlike `seeds` (process-per-seed), this shares the config space, the
+    valid-config scan, and the validation set across seeds and runs them
+    concurrently in-process. Produces the same seed_<value>/ dump layout."""
+    data_dir = Path(args.out_dir)
+    data_dir.mkdir(parents=True, exist_ok=True)
+
+    extra = list(args.extra) + [f"n-seeds={args.n}"]
+    if args.workers:
+        extra.append(f"num-workers={args.workers}")
+    # rng-seed acts as the seed offset: seed k (1..n) uses k*31 + offset, matching
+    # the `seeds` command's scheme so the two engines produce comparable seeds.
+    infer_opts = _infer_opts(
+        scale=args.scale, dump_dir=str(data_dir), seed=args.offset, extra=extra
+    )
+    out_path = data_dir / "out.mlir"
+    cmd = _cinm_opt_cmd(args.file, infer_opts, cinm_opt=args.cinm_opt, out_file=out_path)
+
+    print(
+        f"[multiseed] {args.n} seeds, workers={args.workers or 'auto'}, "
+        f"dir={args.out_dir}"
+    )
+
+    rc = subprocess.run(cmd).returncode
+    if rc != 0:
+        print(f"[multiseed] cinm-opt exited {rc}", file=sys.stderr)
+
+    if args.no_plots:
+        return rc
+    args.in_dir = args.out_dir
+    return cmd_plot(args) or rc
 
 
 def cmd_exhaustive(args: argparse.Namespace) -> int:
@@ -391,6 +428,46 @@ def build_parser() -> argparse.ArgumentParser:
     _add_plots_filter(p_seeds)
     _add_extra(p_seeds)
     p_seeds.set_defaults(func=cmd_seeds)
+
+    # ── multiseed ────────────────────────────────────────────────────────────
+    p_ms = sub.add_parser(
+        "multiseed",
+        help="Run N seeds concurrently in one cinm-opt process (shared init) + plot",
+    )
+    _add_common(p_ms)
+    _add_scale(p_ms)
+    _add_oracle(p_ms)
+    p_ms.add_argument(
+        "-n", "--n", type=int, default=5, help="Number of seeds (default: 5)"
+    )
+    p_ms.add_argument(
+        "-j",
+        "--workers",
+        type=int,
+        default=None,
+        help="Max concurrent seeds / num-workers (default: auto = hw threads)",
+    )
+    p_ms.add_argument(
+        "--offset",
+        type=int,
+        default=67,
+        help="Seed offset (seed k uses k*31 + offset); forwarded as rng-seed",
+    )
+    p_ms.add_argument(
+        "--no-plots",
+        action="store_true",
+        dest="no_plots",
+        help="Don't run the plotting code",
+    )
+    p_ms.add_argument(
+        "--no-per-seed",
+        action="store_true",
+        dest="no_per_seed",
+        help="Pass --no-per-seed to plot_bo.py",
+    )
+    _add_plots_filter(p_ms)
+    _add_extra(p_ms)
+    p_ms.set_defaults(func=cmd_multiseed)
 
     # ── exhaustive ───────────────────────────────────────────────────────────
     p_ex = sub.add_parser("exhaustive", help="Exhaustive search (oracle)")

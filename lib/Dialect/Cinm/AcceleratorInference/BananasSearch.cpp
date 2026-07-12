@@ -30,17 +30,26 @@ namespace mlir::cinm {
 // CandidatePool construction
 // ===----------------------------------------------------------------------===//
 
-CandidatePool::CandidatePool(const ConfigSpace &space, size_t evalBudget,
-                             bool exhaustive)
-    : space_(&space), N(space.totalSize()), visited(),
-      validMask_(static_cast<unsigned>(N)), Xo(space.size(), evalBudget),
-      yo(1, evalBudget), costByIdx(arma::rowvec(N).fill(arma::datum::nan)),
-      exhaustive(exhaustive) {
-  space_->forEach([&](const Configuration &conf, size_t i) {
-    if (space_->isValid(conf))
-      validMask_.set(static_cast<unsigned>(i));
+llvm::BitVector CandidatePool::computeValidMask(const ConfigSpace &space) {
+  llvm::BitVector mask(static_cast<unsigned>(space.totalSize()));
+  space.forEach([&](const Configuration &conf, size_t i) {
+    if (space.isValid(conf))
+      mask.set(static_cast<unsigned>(i));
     return true;
   });
+  return mask;
+}
+
+CandidatePool::CandidatePool(const ConfigSpace &space, size_t evalBudget,
+                             bool exhaustive)
+    : CandidatePool(space, evalBudget, computeValidMask(space), exhaustive) {}
+
+CandidatePool::CandidatePool(const ConfigSpace &space, size_t evalBudget,
+                             llvm::BitVector validMask, bool exhaustive)
+    : space_(&space), N(space.totalSize()), visited(),
+      validMask_(std::move(validMask)), Xo(space.size(), evalBudget),
+      yo(1, evalBudget), costByIdx(arma::rowvec(N).fill(arma::datum::nan)),
+      exhaustive(exhaustive) {
   visited = validMask_;
   // by marking invalid solutions visited, we will never pick them
   visited.flip();
