@@ -133,6 +133,8 @@ struct MultiSeedProgress {
           bars[i + 1]->set_progress(static_cast<size_t>(
               std::max(0, slotProgress_[i].load(std::memory_order_relaxed))));
         }
+        // Flush all bar updates to the terminal in one pass (cursor-up + reprint).
+        dyn->print_progress();
         std::this_thread::sleep_for(std::chrono::milliseconds(150));
       }
     });

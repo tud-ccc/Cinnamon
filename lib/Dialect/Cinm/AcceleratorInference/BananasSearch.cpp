@@ -30,29 +30,40 @@ namespace mlir::cinm {
 // CandidatePool construction
 // ===----------------------------------------------------------------------===//
 
-llvm::BitVector CandidatePool::computeValidMask(const ConfigSpace &space) {
-  llvm::BitVector mask(static_cast<unsigned>(space.totalSize()));
+void CandidatePool::computeValidMask(const ConfigSpace &space,
+                                     llvm::BitVector &validMask,
+                                     std::vector<size_t> &validIndices) {
+  validMask.clear();
+  validMask.resize(space.totalSize());
   space.forEach([&](const Configuration &conf, size_t i) {
-    if (space.isValid(conf))
-      mask.set(static_cast<unsigned>(i));
+    if (space.isValid(conf)) {
+      validMask.set(static_cast<unsigned>(i));
+      validIndices.push_back(i);
+    }
     return true;
   });
-  return mask;
+}
+
+CandidatePool CandidatePool::build(const ConfigSpace &space, size_t evalBudget,
+                                   bool exhaustive) {
+
+  auto validMask = std::make_shared<llvm::BitVector>();
+  auto validIndices = std::make_shared<std::vector<size_t>>();
+
+  computeValidMask(space, *validMask, *validIndices);
+
+  return CandidatePool(space, evalBudget, std::move(validMask),
+                       std::move(validIndices), exhaustive);
 }
 
 CandidatePool::CandidatePool(const ConfigSpace &space, size_t evalBudget,
+                             std::shared_ptr<llvm::BitVector> validMask,
+
+                             std::shared_ptr<std::vector<size_t>> validIndices,
                              bool exhaustive)
-    : CandidatePool(space, evalBudget, computeValidMask(space), exhaustive) {}
-
-CandidatePool::CandidatePool(const ConfigSpace &space, size_t evalBudget,
-                             llvm::BitVector validMask, bool exhaustive)
-    : space_(&space), N(space.totalSize()), visited(),
-      validMask_(std::move(validMask)), Xo(space.size(), evalBudget),
-      yo(1, evalBudget), exhaustive(exhaustive) {
-  visited = validMask_;
-  // by marking invalid solutions visited, we will never pick them
-  visited.flip();
-}
+    : space_(&space), N(space.totalSize()), validMask_(std::move(validMask)),
+      validIndices_(std::move(validIndices)), Xo(space.size(), evalBudget),
+      yo(1, evalBudget), exhaustive(exhaustive) {}
 
 CandidatePool::~CandidatePool() = default;
 
@@ -114,7 +125,7 @@ static arma::mat encodeValidSpace(const ConfigSpace &space,
   const size_t D = space.size();
   // Only valid configs get a column; sizing to pool.N (the full Cartesian
   // product) would waste — and can fail to allocate — many GB for large spaces.
-  arma::mat enc(D + 1, pool.size());
+  arma::mat enc(D, pool.size());
 
   size_t ix = 0;
   space.forEach([&](const Configuration &conf, size_t i) {
@@ -123,8 +134,6 @@ static arma::mat encodeValidSpace(const ConfigSpace &space,
 
     for (size_t d = 0; d < D; ++d)
       enc(d, ix) = space[d].featurize(conf[d]);
-    // save the actual index for later
-    enc(D, ix) = i;
     ix++;
     return true;
   });
@@ -153,18 +162,8 @@ void CandidatePool::sampleInitialSet(size_t n, std::mt19937 &rng,
   // return;
 
   const size_t D = nDims();
-  if (n == 0 || validMask_.none())
-    return;
-
-  // Undersample the space, but still try to sample
-  // enough points to get a "fairer" random sampling.
-  std::vector<size_t> candidates;
-  for (auto i : validMask_.set_bits()) {
-    candidates.push_back(i);
-  }
-
-  const size_t M = candidates.size();
-  if (M == 0)
+  const size_t M = size();
+  if (n == 0 || M == 0)
     return;
 
   // DxM matrix
@@ -235,7 +234,7 @@ void CandidatePool::sampleInitialSet(size_t n, std::mt19937 &rng,
         break;
       used.insert(bestPos);
       ++nDispatched;
-      size_t idx = candidates[bestPos];
+      size_t idx = (*validIndices_)[bestPos];
       threadPool.async([&accept, &accepted, idx, n]() {
         if (accepted.load(std::memory_order_relaxed) >= n)
           return;
@@ -354,7 +353,7 @@ static arma::rowvec computeAcq(const arma::rowvec &mu,
 // ===----------------------------------------------------------------------===//
 
 bool CandidatePool::tryInsert(std::unordered_set<size_t> &result, size_t idx) {
-  if (visited.test(idx) || !validMask_.test(idx))
+  if (isVisited(idx) || !isValid(idx))
     return false;
   auto res = result.insert(idx);
   return res.second;
@@ -362,19 +361,13 @@ bool CandidatePool::tryInsert(std::unordered_set<size_t> &result, size_t idx) {
 
 void CandidatePool::fillRandom(std::unordered_set<size_t> &result,
                                size_t target, std::mt19937 &rng) {
-  if (result.size() >= target || validMask_.none())
+  if (result.size() >= target || empty())
     return;
-  size_t numValid = validMask_.count();
-  auto dist = std::uniform_int_distribution<>(0, numValid - 1);
+  size_t numValid = size();
+  auto dist = std::uniform_int_distribution<size_t>(0, numValid - 1);
 
   while (result.size() < std::min(target, numValid)) {
-    auto i = dist(rng);
-    auto iter = validMask_.set_bits_begin();
-    // This is O(n) unfortunately. We could use dynamic programming to
-    // speed up things (build an index of already seen positions)
-    std::advance(iter, i);
-    auto solIdx = *iter;
-    tryInsert(result, solIdx);
+    tryInsert(result, (*validIndices_)[dist(rng)]);
   }
 }
 
@@ -382,9 +375,9 @@ void CandidatePool::fillNeighbors(std::unordered_set<size_t> &result,
                                   unsigned depth, bool frontierOnly) {
   // BFS outward from every observed point up to `depth` steps.
   std::unordered_set<size_t> frontier;
-  for (int i = validMask_.find_first(); i != -1; i = validMask_.find_next(i))
-    if (costByIdx.count(static_cast<size_t>(i)))
-      frontier.insert(static_cast<size_t>(i));
+
+  for (auto [k, _] : costByIdx)
+    frontier.insert(k);
 
   std::unordered_set<size_t> nextFrontier;
   llvm::SmallVector<size_t> nbrs;
@@ -399,7 +392,7 @@ void CandidatePool::fillNeighbors(std::unordered_set<size_t> &result,
           tryInsert(result, nb);
         }
         // Always track the frontier for BFS expansion regardless.
-        if (!visited.test(nb))
+        if (!isVisited(nb))
           nextFrontier.insert(nb);
       }
     }
@@ -510,12 +503,9 @@ void CandidatePool::dumpToCSV(const ConfigSpace &space,
   if (!out)
     return;
 
-  LLVM_DEBUG(llvm::dbgs() << "Finished inference\n"
-                          << "- " << nObs << " / " << visited.count()
-                          << " successful trials\n");
 
   // Use the warm-started ensemble to get per-candidate statistics.
-  const bool hasModel = ensemble_ && nObs >= 2 && validMask_.any();
+  const bool hasModel = ensemble_ && nObs >= 2 && !empty();
   // Per-valid-index predictions; indexed by position in validIdx.
   arma::rowvec mu_v, sigma_v, acq_v;
   if (hasModel) {
@@ -542,7 +532,7 @@ void CandidatePool::dumpToCSV(const ConfigSpace &space,
 
     for (int64_t v : conf)
       out << v << ",";
-    out << (visited.test(i) ? 1 : 0) << ",1,";
+    out << (visited.count(i) ? 1 : 0) << ",1,";
     auto cit = costByIdx.find(i);
     double c = (cit != costByIdx.end()) ? cit->second : arma::datum::nan;
     if (!std::isnan(c))
@@ -570,8 +560,6 @@ void CandidatePool::dumpMetadataJSON(const ConfigSpace &space,
   if (!out)
     return;
 
-  const size_t nValid = static_cast<size_t>(validMask_.count());
-
   auto jsonStr = [&](const std::string &s) {
     out << '"';
     for (char c : s) {
@@ -584,7 +572,7 @@ void CandidatePool::dumpMetadataJSON(const ConfigSpace &space,
 
   out << "{\n";
   out << "  \"total_size\": " << N << ",\n";
-  out << "  \"n_valid\": " << nValid << ",\n";
+  out << "  \"n_valid\": " << size() << ",\n";
   out << "  \"params\": [\n";
   for (size_t i = 0; i < space.params.size(); ++i) {
     const auto &p = space.params[i];

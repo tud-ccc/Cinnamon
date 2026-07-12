@@ -58,18 +58,20 @@ struct ValidationSet {
 
 /// Addressable candidate pool backed by the full ConfigSpace Cartesian product.
 /// Configurations are not pre-stored; index i maps to the config at
-/// ConfigSpace::at(i).  Invalid configs (constraint failures) are pre-marked
-/// visited during construction so they are never selected.
+/// ConfigSpace::at(i).
 /// validMask_ is a compact BitVector over [0, N) marking which flat indices
 /// pass all constraints. All O(nValid) operations iterate validMask_ rather
 /// than the full [0, N) range. Xo/yo are pre-allocated to evalBudget, not
 /// totalSize().
 struct CandidatePool {
   const ConfigSpace *space_;
-  size_t N;                   // = space_->totalSize(), cached
-  llvm::BitVector visited;    // marks invalid + evaluated flat indices
-  llvm::BitVector validMask_; // bit i set iff config at flat index i is valid
-  size_t nValidVisited_ = 0;  // count of valid configs that have been visited
+  size_t N;                           // = space_->totalSize(), cached
+  std::unordered_set<size_t> visited; // flat indices of evaluated configs
+  std::shared_ptr<llvm::BitVector>
+      validMask_; // bit i set iff config at flat index i is valid
+  std::shared_ptr<std::vector<size_t>>
+      validIndices_;         // flat indices of all valid configs, built once
+  size_t nValidVisited_ = 0; // count of valid configs that have been visited
 
   // Incrementally maintained observation matrices.
   // Preallocated to D×evalBudget / 1×evalBudget; first nObs columns are valid.
@@ -93,44 +95,47 @@ struct CandidatePool {
 
   /// Iterate [0, N), pre-mark constraint-violating configs as visited, and
   /// build validMask_. evalBudget sizes Xo/yo (not N).
-  CandidatePool(const ConfigSpace &space, size_t evalBudget,
-                bool exhaustive = false);
+  static CandidatePool build(const ConfigSpace &space, size_t evalBudget,
+                             bool exhaustive = false);
+
   /// Construct with a precomputed validity mask, skipping the O(N) validity
   /// scan. `validMask` must have been produced by computeValidMask() for the
   /// same ConfigSpace. Used to share the (expensive) scan across seeds while
   /// each seed keeps its own mutable pool state.
   CandidatePool(const ConfigSpace &space, size_t evalBudget,
-                llvm::BitVector validMask, bool exhaustive = false);
+                std::shared_ptr<llvm::BitVector> validMask,
+                std::shared_ptr<std::vector<size_t>> validIndices,
+                bool exhaustive = false);
   ~CandidatePool();
 
   /// Scan the whole Cartesian product once and return a bitmask over [0, N)
   /// with bit i set iff the config at flat index i passes all constraints.
-  static llvm::BitVector computeValidMask(const ConfigSpace &space);
+  static void computeValidMask(const ConfigSpace &space,
+                               llvm::BitVector &validMask,
+                               std::vector<size_t> &validIndices);
 
   /// Number of valid (constraint-passing) configs in the pool.
-  size_t size() const { return static_cast<size_t>(validMask_.count()); }
+  size_t size() const { return validIndices_->size(); }
   size_t nDims() const;
-  bool empty() const { return validMask_.none(); }
+  bool empty() const { return validMask_->none(); }
 
   /// Return the configuration at flat pool index i (allocated by value).
   Configuration operator[](size_t i) const;
 
   void markVisited(size_t idx) {
-    if (!visited.test(static_cast<unsigned>(idx))) {
-      visited.set(static_cast<unsigned>(idx));
-      if (validMask_.test(static_cast<unsigned>(idx)))
-        ++nValidVisited_;
-    }
+    if (visited.insert(idx).second &&
+        validMask_->test(static_cast<unsigned>(idx)))
+      ++nValidVisited_;
   }
-  bool isVisited(size_t idx) const { return visited.test(idx); }
-  bool isValid(size_t idx) const { return validMask_.test(idx); }
+  bool isVisited(size_t idx) const { return visited.count(idx); }
+  bool isValid(size_t idx) const { return validMask_->test(idx); }
   /// Number of valid configs that have been evaluated (or marked visited).
   size_t numVisited() const { return nValidVisited_; }
   /// Flat index of the first valid unvisited config, or N if all visited.
   size_t firstUnvisited() const {
-    for (int i = validMask_.find_first(); i != -1; i = validMask_.find_next(i))
-      if (!visited.test(static_cast<unsigned>(i)))
-        return static_cast<size_t>(i);
+    for (size_t i : *validIndices_)
+      if (!visited.count(i))
+        return i;
     return N;
   }
 
