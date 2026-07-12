@@ -95,7 +95,17 @@ struct CandidatePool {
   /// build validMask_. evalBudget sizes Xo/yo (not N).
   CandidatePool(const ConfigSpace &space, size_t evalBudget,
                 bool exhaustive = false);
+  /// Construct with a precomputed validity mask, skipping the O(N) validity
+  /// scan. `validMask` must have been produced by computeValidMask() for the
+  /// same ConfigSpace. Used to share the (expensive) scan across seeds while
+  /// each seed keeps its own mutable pool state.
+  CandidatePool(const ConfigSpace &space, size_t evalBudget,
+                llvm::BitVector validMask, bool exhaustive = false);
   ~CandidatePool();
+
+  /// Scan the whole Cartesian product once and return a bitmask over [0, N)
+  /// with bit i set iff the config at flat index i passes all constraints.
+  static llvm::BitVector computeValidMask(const ConfigSpace &space);
 
   /// Number of valid (constraint-passing) configs in the pool.
   size_t size() const { return static_cast<size_t>(validMask_.count()); }

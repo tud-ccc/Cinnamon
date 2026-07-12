@@ -272,6 +272,14 @@ struct InferenceOptions {
 
   int rngSeed = 42;
 
+  /// Number of independent BO seeds to run in one process. When > 1, the
+  /// ConfigSpace, the valid-config scan, and the validation set are built once
+  /// and shared; each seed then runs concurrently on its own thread (single-
+  /// threaded per seed), capped by `numWorkers`. Seed values are derived from
+  /// `rngSeed`. Each seed dumps to a `seed_<value>/` subdirectory. Has no
+  /// effect in exhaustive or single-solution modes.
+  int nSeeds = 1;
+
   // Surrogate model (BANANAS) hyperparameters.
   double kappa = 2.0; ///< UCB exploration weight
   int epochs = 5000;   ///< Training epochs per ensemble member

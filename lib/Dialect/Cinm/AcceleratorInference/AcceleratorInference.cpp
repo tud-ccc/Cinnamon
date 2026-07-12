@@ -12,6 +12,7 @@
 #include <llvm/ADT/STLExtras.h>
 #include <llvm/ADT/SmallVector.h>
 #include <llvm/ADT/StringRef.h>
+#include <llvm/Support/CommandLine.h>
 #include <llvm/Support/Debug.h>
 #include <llvm/Support/LogicalResult.h>
 #include <llvm/Support/raw_ostream.h>
@@ -27,18 +28,22 @@
 #include <mlir/IR/SymbolTable.h>
 #include <mlir/Support/LogicalResult.h>
 
+#include <indicators/dynamic_progress.hpp>
 #include <indicators/progress_bar.hpp>
 
 #include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <cmath>
+#include <cstdio>
 #include <fstream>
+#include <functional>
 #include <limits>
 #include <mutex>
 #include <optional>
 #include <random>
 #include <thread>
+#include <unistd.h>
 #include <variant>
 #include <vector>
 
@@ -512,6 +517,97 @@ private:
   std::mutex mutex;                  // guards freeWorkers
 };
 
+/// True when cinm-opt was invoked with `-o <file>` (result IR is written to
+/// that file rather than stdout). In that case stdout carries no IR and is free
+/// for live progress rendering.
+static bool resultGoesToFile() {
+  auto &opts = llvm::cl::getRegisteredOptions();
+  auto it = opts.find("o");
+  if (it == opts.end() || !it->second)
+    return false;
+  // The `-o` option registered by MlirOptMain is a cl::opt<std::string>
+  // defaulting to "-" (stdout).
+  auto *opt = static_cast<llvm::cl::opt<std::string> *>(it->second);
+  const std::string &v = opt->getValue();
+  return !v.empty() && v != "-";
+}
+
+/// Live multi-bar progress for concurrent seeds: one overall bar (seeds
+/// completed) plus one bar per worker slot (current seed's evaluations). A
+/// dedicated printer thread renders every ~150 ms so worker threads only touch
+/// the bars' internal (mutex-guarded, non-printing in multi-progress mode)
+/// setters. `indicators::DynamicProgress` renders to std::cout; that also
+/// carries the result IR, so bars are only enabled when the IR is diverted to a
+/// file via `-o` (see resultGoesToFile) and stdout is an interactive terminal.
+struct MultiSeedProgress {
+  using Bar = indicators::ProgressBar;
+  bool active;
+  int maxEvals;
+  std::vector<std::unique_ptr<Bar>> bars; // [0]=overall, [1..cap]=slots
+  std::unique_ptr<indicators::DynamicProgress<Bar>> dyn;
+  std::thread printer;
+  std::atomic<bool> stop{false};
+  std::atomic<bool> finished{false};
+
+  MultiSeedProgress(int nSeeds, unsigned cap, int maxEvals)
+      : active(resultGoesToFile() && ::isatty(fileno(stdout))),
+        maxEvals(maxEvals) {
+    if (!active)
+      return;
+    auto makeBar = [](size_t maxProgress, const std::string &prefix) {
+      return std::make_unique<Bar>(
+          indicators::option::BarWidth{30},
+          indicators::option::MaxProgress{maxProgress},
+          indicators::option::PrefixText{prefix},
+          indicators::option::ShowPercentage{true},
+          indicators::option::ShowElapsedTime{true});
+    };
+    bars.push_back(makeBar(static_cast<size_t>(std::max(1, nSeeds)),
+                           "seeds        "));
+    for (unsigned t = 0; t < cap; ++t)
+      bars.push_back(makeBar(static_cast<size_t>(std::max(1, maxEvals)),
+                             "  slot idle  "));
+    dyn = std::make_unique<indicators::DynamicProgress<Bar>>();
+    for (auto &b : bars)
+      dyn->push_back(*b);
+    printer = std::thread([this] {
+      while (!stop.load(std::memory_order_relaxed)) {
+        dyn->print_progress();
+        std::this_thread::sleep_for(std::chrono::milliseconds(150));
+      }
+    });
+  }
+
+  void startSeed(unsigned slot, int seedValue) {
+    if (!active)
+      return;
+    bars[slot + 1]->set_option(
+        indicators::option::PrefixText{"  seed " + std::to_string(seedValue)});
+    bars[slot + 1]->set_progress(0);
+  }
+  void seedProgress(unsigned slot, int nObs) {
+    if (active)
+      bars[slot + 1]->set_progress(
+          static_cast<size_t>(std::min(nObs, maxEvals)));
+  }
+  void seedDone() {
+    if (active)
+      bars[0]->tick();
+  }
+
+  /// Stop the printer and leave the cursor below the bars.
+  void finish() {
+    if (!active || finished.exchange(true))
+      return;
+    stop.store(true, std::memory_order_relaxed);
+    if (printer.joinable())
+      printer.join();
+    dyn->print_progress();
+    std::cout << std::endl;
+  }
+  ~MultiSeedProgress() { finish(); }
+};
+
 struct InferenceTask; // forward declaration for InferenceState::tryEval
 
 struct InferenceState {
@@ -577,7 +673,131 @@ struct InferenceTask {
     return ConfWrapper(space, conf);
   }
 
-  /// Run Bayesian optimization over the config space.
+  /// Lease an evaluator (plugin clone + reference module) for one evaluation
+  /// and invoke `fn` on it. Single-seed mode leases from a parallel
+  /// EvaluatorPool; a multi-seed worker binds its one dedicated per-seed clone.
+  using EvalLease = std::function<bool(
+      const std::function<bool(InferencePlugin &, ModuleOp)> &)>;
+
+  /// Core Bayesian-optimisation loop for one seed over a pre-built pool and
+  /// (pre-evaluated) validation set. `withEval` supplies the evaluator;
+  /// `stateMx` serialises bookkeeping when the LHS phase evaluates concurrently
+  /// (null when the caller is single-threaded). `onProgress` receives the
+  /// running observation count after each successful evaluation. When
+  /// `outBestCost` is non-null it receives the seed's best cost.
+  Maybe<TrialInfo>
+  runSeedBO(std::mt19937 &rng, CandidatePool &pool, ValidationSet validSet,
+            const EvalLease &withEval, std::mutex *stateMx,
+            unsigned sampleWorkers, const std::string &dumpDir,
+            const std::function<void(int)> &onProgress = {},
+            double *outBestCost = nullptr) {
+    // Record the training set in its own "validation set" to output the same
+    // kind of data for plotting.
+    ValidationSet trainingSet(space);
+    InferenceState state(options.maxEvals, refClone.getLoc());
+
+    using Clock = std::chrono::steady_clock;
+    auto t0 = Clock::now();
+    std::vector<std::pair<int, double>> timings; // (nObs, elapsed_ms)
+    auto recordTiming = [&]() {
+      double ms =
+          std::chrono::duration<double, std::milli>(Clock::now() - t0).count();
+      timings.emplace_back(static_cast<int>(pool.nObs), ms);
+    };
+
+    // Evaluate config `idx`. `recordTraining` preserves the original behaviour
+    // where LHS / surrogate picks feed the training set but cold-start
+    // (nObs < 2) picks do not. tryEval runs evaluate() outside `stateMx`; the
+    // bookkeeping below is guarded only when a mutex is supplied (the concurrent
+    // LHS phase of single-seed mode).
+    auto evalConf = [&](size_t idx, bool recordTraining) -> bool {
+      double cost;
+      bool evaluated = withEval([&](InferencePlugin &plug, ModuleOp ref) {
+        return state.tryEval(idx, *this, pool, cost,
+                             static_cast<size_t>(pool.nObs), &plug, ref,
+                             stateMx);
+      });
+      bool success = evaluated || !options.sampleOnlyValid;
+      if (success) {
+        std::unique_lock<std::mutex> guard;
+        if (stateMx)
+          guard = std::unique_lock<std::mutex>(*stateMx);
+        if (recordTraining)
+          trainingSet.record(idx, cost);
+        recordTiming();
+        if (onProgress)
+          onProgress(static_cast<int>(pool.nObs));
+      }
+      return success;
+    };
+    auto evalTrain = [&](size_t idx) { return evalConf(idx, true); };
+
+    // Phase 1: LHS initialisation.
+    int nInit = std::min(options.nInit, static_cast<int>(pool.size()));
+    LLVM_DEBUG(llvm::dbgs()
+               << "[cinm-inference] Phase 1 (Generate initial population): "
+               << nInit << " configs\n");
+    pool.sampleInitialSet(nInit, rng, evalTrain, sampleWorkers);
+
+    // Phase 2: surrogate-guided.
+    LLVM_DEBUG(llvm::dbgs() << "[cinm-inference] Phase 2 (surrogate): budget="
+                            << state.budget << "\n");
+    while (state.hasBudget()) {
+      if (pool.numVisited() >= pool.size())
+        break;
+
+      if (pool.nObs < 2) {
+        // Not enough observations to fit a surrogate — pick first unvisited.
+        if (size_t idx = pool.firstUnvisited(); idx >= 0)
+          evalConf(idx, /*recordTraining=*/false);
+        continue;
+      }
+
+      auto succeeded = pool.nextCandidateIndices(
+          options, rng, evalTrain, validSet, trainingSet, pool.nObs);
+      if (!succeeded)
+        break;
+    }
+
+    if (!dumpDir.empty()) {
+      auto dumpPath = std::filesystem::path(dumpDir);
+      std::filesystem::create_directories(dumpPath);
+      pool.dumpToCSV(space, options, dumpPath / "pool.csv");
+      pool.dumpMetadataJSON(space, dumpPath / "space.json");
+      validSet.dumpToCSV(dumpPath / "validation.csv");
+      trainingSet.dumpToCSV(dumpPath / "training.csv");
+      if (!timings.empty()) {
+        std::ofstream timOut(dumpPath / "timings.csv");
+        if (timOut) {
+          timOut << "iter,elapsed_ms\n";
+          for (auto [iter, ms] : timings)
+            timOut << iter << "," << ms << "\n";
+        }
+      }
+    }
+
+    if (outBestCost)
+      *outBestCost = state.bestCost;
+    if (!state.anySuccess)
+      return std::move(state.err);
+
+    LLVM_DEBUG(llvm::dbgs()
+               << "[cinm-inference] Best config (cost=" << state.bestCost << ")"
+               << state.bestTrial.conf() << "\n");
+    return std::move(state.bestTrial);
+  }
+
+  /// Worker-count knob shared by BO and exhaustive search: honour numWorkers,
+  /// else hardware_concurrency, clamped to 1 when the plugin is single-threaded.
+  unsigned resolveWorkers() const {
+    return plugin.supportsMultithreading()
+               ? (options.numWorkers > 0
+                      ? options.numWorkers
+                      : std::max(1u, std::thread::hardware_concurrency()))
+               : 1u;
+  }
+
+  /// Run Bayesian optimization over the config space (single seed).
   /// Returns the TrialInfo from the winning evaluation — its module is
   /// fully lowered and ready for commitBestCandidate.
   Maybe<TrialInfo> runInference() {
@@ -591,27 +811,23 @@ struct InferenceTask {
     }
 
     CandidatePool pool(space, static_cast<size_t>(options.maxEvals));
-
     LLVM_DEBUG(llvm::dbgs() << "[cinm-inference] Pool: " << pool.size()
                             << " valid configs (" << pool.N << " total)\n");
-
     if (pool.empty())
       return emitSilenceableFailure(
           refClone.getLoc(), "No valid configurations found in search space");
 
-    // Parallel evaluation workers. sampleInitialSet() dispatches accept() calls
-    // to a thread pool, so the accept() callbacks below must be thread-safe: the
-    // expensive plugin.evaluate() runs on a per-thread plugin+module clone
-    // leased from `evalPool`, while shared-state updates are serialised by
-    // `stateMx`. Reuses the same worker knob as exhaustive search.
-    unsigned nWorkers =
-        plugin.supportsMultithreading()
-            ? (options.numWorkers > 0
-                   ? options.numWorkers
-                   : std::max(1u, std::thread::hardware_concurrency()))
-            : 1u;
+    // Parallel evaluation workers. sampleInitialSet() / nextCandidateIndices()
+    // dispatch accept() calls to a thread pool, so evaluation runs on a
+    // per-thread plugin+module clone leased from `evalPool` while shared-state
+    // commits are serialised by `stateMx`.
+    unsigned nWorkers = resolveWorkers();
     EvaluatorPool evalPool(plugin, *refModule, refClone->getContext(), nWorkers);
-    std::mutex stateMx; // guards pool / state / validSet / trainingSet / timings
+    std::mutex stateMx; // guards state / validSet / trainingSet / timings
+    EvalLease withEval =
+        [&](const std::function<bool(InferencePlugin &, ModuleOp)> &fn) {
+          return evalPool.withWorker(fn);
+        };
 
     // Validation set: pre-evaluate a set of points for surrogate quality
     // tracking. NOT marked visited — BO may still select these points later.
@@ -637,96 +853,145 @@ struct InferenceTask {
       LLVM_DEBUG(llvm::dbgs() << "[cinm-inference] Validation set: "
                               << validSet.size() << " points\n");
     }
-    // Record the training set in its own "validation set" to output
-    // the same kind of data for plotting
-    ValidationSet trainingSet(space);
 
-    InferenceState state(options.maxEvals, refClone.getLoc());
+    return runSeedBO(rng, pool, std::move(validSet), withEval, &stateMx,
+                     nWorkers, options.dumpDir);
+  }
 
-    using Clock = std::chrono::steady_clock;
-    auto t0 = Clock::now();
-    std::vector<std::pair<int, double>> timings; // (nObs, elapsed_ms)
+  /// Run `options.nSeeds` independent BO seeds concurrently, sharing the
+  /// ConfigSpace, the valid-config scan, and the validation set. Each seed runs
+  /// single-threaded on its own warmed plugin+module clone; up to
+  /// `resolveWorkers()` seeds run at once. `baseDumpDir` (when non-empty)
+  /// receives one `seed_<value>/` subdirectory per seed. Returns the globally
+  /// best trial across all seeds for commitBestCandidate.
+  Maybe<TrialInfo> runMultiSeed(const std::string &baseDumpDir) {
+    // Trivial: zero-dimensional space → a single config; seeds are redundant.
+    if (space.size() == 0)
+      return runInference();
 
-    auto recordTiming = [&]() {
-      double ms =
-          std::chrono::duration<double, std::milli>(Clock::now() - t0).count();
-      timings.emplace_back(static_cast<int>(pool.nObs), ms);
-    };
-
-    auto evalConf = [&](size_t idx) -> bool {
-      double cost;
-      // tryEval runs evaluate() outside the lock and serialises its commit
-      // through stateMx; pool.nObs is only used as an iteration label.
-      bool evaluated =
-          evalPool.withWorker([&](InferencePlugin &plug, ModuleOp ref) {
-            return state.tryEval(idx, *this, pool, cost,
-                                 static_cast<size_t>(pool.nObs), &plug, ref,
-                                 &stateMx);
-          });
-      bool success = evaluated || !options.sampleOnlyValid;
-      if (success) {
-        std::lock_guard<std::mutex> g(stateMx);
-        trainingSet.record(idx, cost);
-        recordTiming();
-      }
-      return success;
-    };
-
-    // Phase 1: LHS initialisation.
-    int nInit = std::min(options.nInit, static_cast<int>(pool.size()));
+    // Shared valid-config scan (the expensive part), computed once.
+    llvm::BitVector validMask = CandidatePool::computeValidMask(space);
+    if (validMask.none())
+      return emitSilenceableFailure(
+          refClone.getLoc(), "No valid configurations found in search space");
     LLVM_DEBUG(llvm::dbgs()
-               << "[cinm-inference] Phase 1 (Generate initial population): "
-               << nInit << " configs\n");
+               << "[cinm-inference] Multi-seed: " << options.nSeeds << " seeds, "
+               << validMask.count() << " valid configs\n");
 
-    pool.sampleInitialSet(nInit, rng, evalConf, nWorkers);
+    MLIRContext *ctx = refClone->getContext();
+    unsigned cap =
+        std::min<unsigned>(resolveWorkers(),
+                           static_cast<unsigned>(std::max(1, options.nSeeds)));
 
-    // Phase 2: surrogate-guided.
-    LLVM_DEBUG(llvm::dbgs() << "[cinm-inference] Phase 2 (surrogate): budget="
-                            << state.budget << "\n");
-    while (state.hasBudget()) {
-      if (pool.numVisited() >= pool.size())
-        break;
-
-      if (pool.nObs < 2) {
-        // Not enough observations to fit a surrogate — pick first unvisited.
-        if (size_t idx = pool.firstUnvisited(); idx >= 0) {
-          double cost;
-          if (state.tryEval(idx, *this, pool, cost, pool.nObs))
-            recordTiming();
-        }
-        continue;
-      }
-
-      auto succeeded = pool.nextCandidateIndices(
-          options, rng, evalConf, validSet, trainingSet, pool.nObs);
-
-      if (!succeeded)
-        break;
+    // One warmed (plugin, reference module) clone per concurrent worker slot.
+    struct Evaluator {
+      std::unique_ptr<InferencePlugin> plugin;
+      OwningOpRef<ModuleOp> ref;
+    };
+    std::vector<Evaluator> evaluators(cap);
+    for (unsigned t = 0; t < cap; ++t) {
+      evaluators[t].plugin = plugin.clone();
+      evaluators[t].plugin->warmUp(ctx);
+      evaluators[t].ref =
+          OwningOpRef<ModuleOp>(llvm::cast<ModuleOp>(refModule->clone()));
     }
 
-    if (!options.dumpDir.empty()) {
-      auto dumpPath = std::filesystem::path(options.dumpDir);
-      pool.dumpToCSV(space, options, dumpPath / "pool.csv");
-      pool.dumpMetadataJSON(space, dumpPath / "space.json");
-      validSet.dumpToCSV(dumpPath / "validation.csv");
-      trainingSet.dumpToCSV(dumpPath / "training.csv");
-      if (!timings.empty()) {
-        std::ofstream timOut(dumpPath / "timings.csv");
-        if (timOut) {
-          timOut << "iter,elapsed_ms\n";
-          for (auto [iter, ms] : timings)
-            timOut << iter << "," << ms << "\n";
-        }
-      }
+    // Shared validation set: evaluated once, serially, on slot 0's clone.
+    // Validation points are NOT marked visited, so a throwaway pool suffices.
+    ValidationSet validTemplate(space);
+    if (options.nValidation > 0) {
+      CandidatePool samplePool(space, static_cast<size_t>(options.nValidation),
+                               validMask);
+      std::mt19937 vrng(options.rngSeed);
+      samplePool.sampleInitialSet(
+          static_cast<size_t>(options.nValidation), vrng,
+          [&](size_t idx) {
+            TrialInfo trial =
+                makeTrialInfo(samplePool[idx], *evaluators[0].ref);
+            auto result = evaluators[0].plugin->evaluate(trial);
+            if (auto *cost = std::get_if<double>(&result))
+              validTemplate.record(idx, *cost);
+            return true;
+          },
+          /*workers=*/1);
+      LLVM_DEBUG(llvm::dbgs() << "[cinm-inference] Shared validation set: "
+                              << validTemplate.size() << " points\n");
     }
 
-    if (!state.anySuccess)
-      return std::move(state.err);
+    // Seed values, comparable to run.py's `i*31 + offset` scheme (offset =
+    // rngSeed): the k-th seed (k in [0, nSeeds)) uses (k+1)*31 + rngSeed.
+    auto seedValue = [&](int k) { return (k + 1) * 31 + options.rngSeed; };
 
-    LLVM_DEBUG(llvm::dbgs()
-               << "[cinm-inference] Best config (cost=" << state.bestCost << ")"
-               << state.bestTrial.conf() << "\n");
-    return std::move(state.bestTrial);
+    MultiSeedProgress progress(options.nSeeds, cap, options.maxEvals);
+
+    std::atomic<int> nextSeed{0};
+    std::mutex bestMx;
+    TrialInfo globalBest;
+    double globalBestCost = std::numeric_limits<double>::max();
+    bool anySuccess = false;
+    DiagnosedSilenceableFailure firstErr =
+        DiagnosedSilenceableFailure::success();
+
+    auto worker = [&](unsigned slot) {
+      Evaluator &ev = evaluators[slot];
+      EvalLease withEval =
+          [&](const std::function<bool(InferencePlugin &, ModuleOp)> &fn) {
+            return fn(*ev.plugin, *ev.ref);
+          };
+      while (true) {
+        int k = nextSeed.fetch_add(1, std::memory_order_relaxed);
+        if (k >= options.nSeeds)
+          break;
+        int sv = seedValue(k);
+        progress.startSeed(slot, sv);
+
+        std::mt19937 rng(static_cast<unsigned>(sv));
+        CandidatePool pool(space, static_cast<size_t>(options.maxEvals),
+                           validMask);
+        ValidationSet vs = validTemplate; // copy of shared contents
+        std::string dir =
+            baseDumpDir.empty()
+                ? std::string()
+                : (std::filesystem::path(baseDumpDir) /
+                   ("seed_" + std::to_string(sv)))
+                      .string();
+        auto onProgress = [&, slot](int nObs) {
+          progress.seedProgress(slot, nObs);
+        };
+
+        double bestCost = std::numeric_limits<double>::max();
+        auto result = runSeedBO(rng, pool, std::move(vs), withEval,
+                                /*stateMx=*/nullptr, /*sampleWorkers=*/1, dir,
+                                onProgress, &bestCost);
+        progress.seedDone();
+
+        std::lock_guard<std::mutex> g(bestMx);
+        if (auto *trial = std::get_if<TrialInfo>(&result)) {
+          anySuccess = true;
+          if (bestCost < globalBestCost) {
+            globalBestCost = bestCost;
+            globalBest = std::move(*trial);
+          }
+        } else if (firstErr.succeeded()) {
+          firstErr = std::move(std::get<DiagnosedSilenceableFailure>(result));
+        }
+      }
+    };
+
+    std::vector<std::thread> threads;
+    threads.reserve(cap - 1);
+    for (unsigned t = 1; t < cap; ++t)
+      threads.emplace_back(worker, t);
+    worker(0);
+    for (auto &t : threads)
+      t.join();
+    progress.finish();
+
+    if (!anySuccess)
+      return std::move(firstErr);
+    LLVM_DEBUG(llvm::dbgs() << "[cinm-inference] Multi-seed best cost="
+                            << globalBestCost << "\n");
+    return std::move(globalBest);
   }
 
   /// Evaluate every valid configuration in the search space in parallel.
@@ -928,9 +1193,15 @@ inferAcceleratorConfig(cinm::ComputeBlockOp computeOp, InferencePlugin &plugin,
     bestResult = task.makeTrialInfo(*opts.evalSingleSolution);
     plugin.warmUp(computeOp->getContext());
     TRY_GET(plugin.evaluate(bestResult)); //may return early
+  } else if (opts.exhaustiveSearch) {
+    bestResult = TRY_GET(task.runExhaustive());
+  } else if (opts.nSeeds > 1) {
+    // Multi-seed: shares the space / valid scan / validation set across seeds,
+    // dumping each into a `seed_<value>/` subdir of opts.dumpDir. Returns the
+    // globally best trial for committing.
+    bestResult = TRY_GET(task.runMultiSeed(opts.dumpDir));
   } else {
-    bestResult = TRY_GET(opts.exhaustiveSearch ? task.runExhaustive()
-                                              : task.runInference());
+    bestResult = TRY_GET(task.runInference());
   }
 
   LLVM_DEBUG(llvm::dbgs() << "[cinm-inference] Committing best config"

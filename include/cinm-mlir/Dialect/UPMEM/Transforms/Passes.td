@@ -57,6 +57,10 @@ def UpmemInferAcceleratorPass : Pass<"upmem-infer-accelerator", "ModuleOp"> {
            "Number of LHS evaluations before the surrogate model takes over">,
     Option<"rngSeed", "rng-seed", "int", "42",
            "RNG seed for reproducibility">,
+    Option<"nSeeds", "n-seeds", "int", "1",
+           "Number of independent BO seeds to run concurrently in one process, "
+           "sharing the config space / valid-config scan / validation set. Each "
+           "seed dumps to a seed_<value>/ subdirectory. 1 = single-seed">,
     Option<"kappa", "kappa", "double", "2.0",
            "UCB exploration weight for the BANANAS surrogate">,
     Option<"epochs", "epochs", "int", "622",

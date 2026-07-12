@@ -1,4 +1,4 @@
-// RUN: cinm-opt --upmem-annotate-costs=simulator=cycleaccurate %s | FileCheck %s
+// RUN: cinm-opt --upmem-annotate-costs=simulator=cycle-accurate %s | FileCheck %s
 
 // CHECK: upmem.wait_for %{{.*}} {upmem.sim_cost = 
 
