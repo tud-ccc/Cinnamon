@@ -27,7 +27,7 @@ def iter_config_dirs(run_dir: pathlib.Path):
         if not fn_dir.is_dir() or fn_dir.name.startswith("_"):
             continue
         for config_dir in sorted(fn_dir.iterdir()):
-            if not config_dir.is_dir() or not config_dir.name.startswith("config_"):
+            if not config_dir.is_dir() or not (config_dir.name.startswith("config_") or config_dir.name.startswith("seed_")):
                 continue
             yield fn_dir.name, config_dir
 
