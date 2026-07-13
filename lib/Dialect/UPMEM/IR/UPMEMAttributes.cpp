@@ -146,6 +146,10 @@ static cinm::CinmLevelArrayAttr upmemLevels(mlir::MLIRContext *ctx,
                                             bool isV1A) {
   int indices = 2;
   int wramSize = isV1A ? 65536 : 63488;
+  // Don't let the whole wram be partitioned
+  // for the application, some of it is required for data structures such as the barrier. Let's estimate this as 8192 bytes
+  wramSize -= 8192; 
+
   Builder builder(ctx);
   cinm::CinmLevelDefAttr mram =
       builder.getAttr<cinm::CinmLevelDefAttr>(builder.getStringAttr("mram"),
