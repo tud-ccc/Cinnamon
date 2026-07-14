@@ -31,10 +31,10 @@ import pandas as pd
 
 SOURCE_LABELS = {
     "prim_red_cinm2_CA":        "Cycle accurate",
-    "prim_red_cinm2_CA_200ms":  "Cycle accurate (200ms)",
+    "prim_red_cinm2_CA_200ms":  "Cycle accurate (TO 200ms)",
     "prim_red_cinm2_fast":      "Fast",
-    "prim_red_cinm2_hybrid200": "Hybrid (200ms)",
-    "prim_red_cinm2_hybrid400": "Hybrid (400ms)",
+    "prim_red_cinm2_hybrid200": "Hybrid (TO 200ms)",
+    "prim_red_cinm2_hybrid400": "Hybrid (TO 400ms)",
 }
 
 FUNC_ORDER = ["red_4MB", "red_64MB", "red_256MB", "red_512MB"]
@@ -91,7 +91,6 @@ def plot_violins(data: pd.DataFrame, out_dir: pathlib.Path, sources: list[str]):
     if len(funcs) == 1:
         axes = [axes]
 
-    labels = [SOURCE_LABELS.get(s, s) for s in sources]
     for ax, fn in zip(axes, funcs):
         sub = data[data["fn_name"] == fn]
         pairs = [
