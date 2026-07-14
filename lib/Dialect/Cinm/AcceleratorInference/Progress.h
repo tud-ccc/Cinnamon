@@ -149,8 +149,10 @@ struct MultiSeedProgress {
     slotProgress_[slot].store(std::min(nObs, maxEvals),
                               std::memory_order_relaxed);
   }
-  void seedDone() {
+  void seedDone(unsigned slot) {
     seedsDone_.fetch_add(1, std::memory_order_relaxed);
+    slotSeedValue_[slot].store(-1, std::memory_order_relaxed);
+    slotProgress_[slot].store(0, std::memory_order_relaxed);
   }
 
   void finish() {
