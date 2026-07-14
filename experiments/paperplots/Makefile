@@ -1,23 +1,27 @@
 
 
-FUNCS   = red_4MB red_64MB red_256MB red_512MB
-SOURCES = prim_red_cinm2_ca prim_red_cinm2_ca200 prim_red_cinm2_ca400 \
-          prim_red_cinm2_fast \
-          prim_red_cinm2_hybrid200 prim_red_cinm2_hybrid400 \
-					prim_red_cinm1
+PRIMS   = prim_gemv prim_red
+TARGETS = cinm2_ca cinm2_ca200 cinm2_ca400 \
+          cinm2_fast \
+          cinm2_hybrid200 cinm2_hybrid400 \
+          cinm1
+
+SOURCES = $(foreach p,$(PRIMS),$(foreach t,$(TARGETS),$(p)_$(t)))
 
 ROOT        := $(shell git -C $(dir $(abspath $(lastword $(MAKEFILE_LIST)))) rev-parse --show-toplevel)
 HERE        := $(ROOT)/experiments/paperplots
 
 EXP_ROOT    := $(ROOT)/.experiments/tags
-SRC_MLIR    := $(ROOT)/experiments/prim_red.mlir
 PLOT_SCRIPT := $(HERE)/plot_best_configs.py
 
 RUN_STAMPS  := $(patsubst %, .stamps/%.run,        $(SOURCES))
 AGG_STAMPS  := $(patsubst %, .stamps/%.aggregated, $(SOURCES))
 
-WORKERS := 48
+WORKERS := 24
 BO_OPTS := --workers $(WORKERS) --n 128 --no-plots --out-dir @+results --infer-opts n-validation=600 validation-interval=1 max-evals=120
+
+# Extract primitive name from a source tag: prim_red_cinm2_hybrid200 → red
+prim_of = $(firstword $(subst _, ,$(patsubst prim_%,%,$(1))))
 
 .PHONY: all run aggregate plots clean
 .PRECIOUS: .stamps/
@@ -63,7 +67,9 @@ aggregate: $(AGG_STAMPS)
 .stamps/%.run: .stamps/%.bo | .stamps/
 	@test -d $(EXP_ROOT)/$*/results || (echo "ERROR: no results handle for $* — run the search first"; exit 1)
 	exp run +$* python $(HERE)/run_best_configs.py --workers 48 --iters 10 \
-		--in-dir @results --run-dir @+run --src $(SRC_MLIR)
+		--in-dir @results --run-dir @+run \
+		--src $(ROOT)/experiments/prim_$(call prim_of,$*).mlir \
+		--prim $(call prim_of,$*)
 	@touch $@
 
 # Aggregate per-config benchmark CSVs into per-type summary CSVs

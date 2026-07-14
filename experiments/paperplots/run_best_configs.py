@@ -26,13 +26,6 @@ from tqdm import tqdm
 
 # ── Constants ────────────────────────────────────────────────────────────────
 
-FUNC_SIZES = {
-    "red_4MB":   524288,
-    "red_64MB":  8388608,
-    "red_256MB": 34554432,
-    "red_512MB": 67108864,
-}
-
 NON_PARAM_COLS = frozenset({
     "visited", "valid", "cost", "eval_iter", "eval_time_ms",
     "mu", "sigma", "acq", "index",
@@ -116,7 +109,7 @@ def fmt_cmd(args: list[str]) -> str:
 
 def compile_one(args):
     (fn_name, seed, params, fn_module_path,
-     run_dir, makefile_dir, cinm_opt, pre_passes) = args
+     run_dir, makefile_dir, cinm_opt, pre_passes, prim) = args
 
     config_dir = pathlib.Path(run_dir) / fn_name / f"seed_{seed}"
     config_dir.mkdir(parents=True, exist_ok=True)
@@ -152,7 +145,7 @@ def compile_one(args):
         f"IR_DIR={ir_dir.resolve()}",
         f"BIN_DIR={bin_dir.resolve()}",
         f"BENCH_FN={fn_name}",
-        f"BENCH_N={FUNC_SIZES[fn_name]}",
+        f"PRIM={prim}",
         "bench-single"
     ]
     r = subprocess.run(cmd_make, capture_output=True, text=True)
@@ -206,6 +199,8 @@ def main():
     parser.add_argument("--cinm-opt", default=str(here / "../../build/bin/cinm-opt"))
     parser.add_argument("--problem",  default=None,
                         help="Only process this function (e.g. red_4MB)")
+    parser.add_argument("--prim", default=None,
+                        help="Primitive name (red, gemv, …); inferred from --src stem if omitted")
     parser.add_argument("--dpu-cap",  type=int, default=1024)
     parser.add_argument("--compile-only", action="store_true")
     parser.add_argument("--run-only",     action="store_true")
@@ -215,6 +210,9 @@ def main():
     src_mlir    = pathlib.Path(args.src)
     run_dir     = pathlib.Path(args.run_dir)
     run_dir.mkdir(parents=True, exist_ok=True)
+
+    # Infer prim from the MLIR filename (prim_red.mlir → "red") if not given.
+    prim = args.prim or src_mlir.stem.removeprefix("prim_")
 
     split_dir = run_dir / "_split"
     split_dir.mkdir(exist_ok=True)
@@ -227,9 +225,6 @@ def main():
             continue
         if fn_name not in modules:
             print(f"  WARNING: {fn_name} not found in source MLIR, skipping", file=sys.stderr)
-            continue
-        if fn_name not in FUNC_SIZES:
-            print(f"  WARNING: unknown size for {fn_name}, skipping", file=sys.stderr)
             continue
         result = parse_best(pool_csv)
         if result is None:
@@ -246,7 +241,7 @@ def main():
         makefile_dir = str(here / ".." / "upmemcm" / "reduce_cost")
         compile_args = [
             (fn, seed, params, str(modules[fn]),
-             str(run_dir), makefile_dir, args.cinm_opt, PRE_PASSES)
+             str(run_dir), makefile_dir, args.cinm_opt, PRE_PASSES, prim)
             for fn, seed, params, _ in tasks
         ]
         print(f"\nCompiling with {args.workers} workers...")

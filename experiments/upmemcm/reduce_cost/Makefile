@@ -7,8 +7,12 @@ CLANG_BASE   = $(ROOT)/third-party/llvm/build/bin
 DPU_CC       = $(UPMEM_HOME)/bin/dpu-upmem-dpurte-clang
 COMPILE_DPU  = $(ROOT)/testbench/lib/compile_dpu.sh
 
-SRC_MLIR = $(ROOT)/experiments/data/prim_red/out.mlir
-FUNCS    = red_4MB red_64MB red_256MB red_512MB
+# Primitive name (red, gemv, …).  Selects the bench driver under experiments/bench/.
+PRIM         ?= red
+BENCH_DRIVER ?= $(ROOT)/experiments/bench/$(PRIM).cpp
+
+SRC_MLIR = $(ROOT)/experiments/prim_$(PRIM).mlir
+FUNCS    = $(shell grep -oP '(?<=func\.func @)\w+' $(SRC_MLIR) 2>/dev/null)
 
 IR_DIR  = ir
 BIN_DIR = bin
@@ -58,7 +62,7 @@ $(BIN_DIR)/$(BENCH_FN): $(IR_DIR)/$(BENCH_FN).dpu.c | $(BIN_DIR)
 	$(COMPILE_DPU) $< $@
 
 bench-single: $(IR_DIR)/$(BENCH_FN).o $(BIN_DIR)/$(BENCH_FN) | $(BIN_DIR) $(OUT_DIR)
-	clang++ $(CXXFLAGS) -DBENCH_FN=$(BENCH_FN) -DBENCH_N=$(BENCH_N) bench_single.cpp \
+	clang++ $(CXXFLAGS) -DBENCH_FN=$(BENCH_FN) $(BENCH_DRIVER) \
 	    $(IR_DIR)/$(BENCH_FN).o $(LDFLAGS) \
 	    -o $(BIN_DIR)/bench_$(BENCH_FN)
 
