@@ -1,3 +1,4 @@
+#include "SimulatorBase.h"
 #include "cinm-mlir/Conversion/CinmPasses.h"
 #include "cinm-mlir/Conversion/CnmToUPMEM/CnmToUPMEM.h"
 #include "cinm-mlir/Conversion/CommonPatterns.h"
@@ -15,7 +16,6 @@
 #include "cinm-mlir/Dialect/UPMEM/Transforms/UpmemSimulator.h"
 #include "cinm-mlir/Utils/Scheduling/SchedulingSupport.h"
 #include "upmem_cost_model/Types.h"
-#include "SimulatorBase.h"
 
 #include <chrono>
 #include <cstddef>
@@ -320,7 +320,7 @@ struct UpmemInferencePlugin : cinm::InferencePlugin {
     trial.computeBlock.setAcceleratorAttr(
         upmem::UpmemAcceleratorAttr::get(platform, 1, dpus, tasklets));
 
-    if (opts.useMRAMTiling) {
+    // if (opts.useMRAMTiling) {
       // Bypass the lowering pipeline: call each op's registered simulator.
       double total = 0.0;
       for (auto &sim : simulators_)
@@ -330,21 +330,21 @@ struct UpmemInferencePlugin : cinm::InferencePlugin {
         trial.computeBlock->setAttr(kSimCostAttr, b.getF64FloatAttr(total));
       }
       return total;
-    }
+    // }
 
-    applyTileSizes(trial);
+    // applyTileSizes(trial);
 
-    if (!pipeline)
-      pipeline = buildPipeline(ctx);
+    // if (!pipeline)
+    //   pipeline = buildPipeline(ctx);
 
-    TRY(runPipeline(pipeline.get(), loc, trial.module.get()));
+    // TRY(runPipeline(pipeline.get(), loc, trial.module.get()));
 
-    auto total = TRY_GET(simulator->simulate(trial.computeBlock.getBody()));
-    if (opts.annotateOpCosts) {
-      OpBuilder b(ctx);
-      trial.computeBlock->setAttr(kSimCostAttr, b.getF64FloatAttr(total));
-    }
-    return total;
+    // auto total = TRY_GET(simulator->simulate(trial.computeBlock.getBody()));
+    // if (opts.annotateOpCosts) {
+    //   OpBuilder b(ctx);
+    //   trial.computeBlock->setAttr(kSimCostAttr, b.getF64FloatAttr(total));
+    // }
+    // return total;
   }
 
 private:
@@ -395,29 +395,38 @@ void UpmemInferencePlugin::handleGemv(cinm::GemvOp gemv, SpaceBuilder &b) {
                 OpBuilder(gemv->getContext())
                     .getStrArrayAttr({wramRow.name(), wramCol.name()}));
 
-  if (mramTiling) {
-    auto mramRow = b.divisorsOf("mramRow", M);
-    auto mramCol = b.divisorsOf("mramCol", K);
-    b.require(M / ((dpus / dpuCols) * mramRow));
-    b.require(mramRow / (tasklets * wramRow));
-    b.require(mramCol / wramCol);
-    b.require(K / (dpuCols * mramCol));
-
-    // Per-DPU MRAM must fit: A (T×mr×mc) + x (mc) + y (T×mr)
-    b.require(mramRow * mramCol + mramCol + mramRow <=
-              mramLevel.getSizeInElements(eltTy));
-
-    // Simulation template for the MRAM fast path (bypasses the lowering
-    // pipeline).
-    auto timeout = opts.evalTimeoutMs;
-    auto dtype = cmDtyFromMlirDty(eltTy);
-    registerSimulator([=](const cinm::ConfWrapper &c, UpmemSimulator &sim,
-                          cinm::TrialInfo &) {
-      return sim.simulateFullGemv(timeout, M, K, mramRow[c], mramCol[c],
-                                  wramRow[c], wramCol[c], dpus[c] / dpuCols[c],
-                                  dpuCols[c], tasklets[c], dtype);
+  auto mramRow = b.divisorsOf("mramRow", M);
+  auto mramCol = b.divisorsOf("mramCol", K);
+  if (!mramTiling) {
+    // In this mode we imitate cinm 1.0 behavior and do not tile on MRAM,
+    // equivalently this means the MRAM and WRAM tiles have the same dimensions.
+    // This corresponds to constraints:
+    // - mramRow := wramRow * tasklets
+    // - mramCol := wramCol
+    b.require([=](auto c) -> bool {
+      return mramRow[c] == wramRow[c] * tasklets[c] && mramCol[c] == wramCol[c];
     });
   }
+
+  b.require(M / ((dpus / dpuCols) * mramRow));
+  b.require(mramRow / (tasklets * wramRow));
+  b.require(mramCol / wramCol);
+  b.require(K / (dpuCols * mramCol));
+
+  // Per-DPU MRAM must fit: A (T×mr×mc) + x (mc) + y (T×mr)
+  b.require(mramRow * mramCol + mramCol + mramRow <=
+            mramLevel.getSizeInElements(eltTy));
+
+  // Simulation template for the MRAM fast path (bypasses the lowering
+  // pipeline).
+  auto timeout = opts.evalTimeoutMs;
+  auto dtype = cmDtyFromMlirDty(eltTy);
+  registerSimulator([=](const cinm::ConfWrapper &c, UpmemSimulator &sim,
+                        cinm::TrialInfo &) {
+    return sim.simulateFullGemv(timeout, M, K, mramRow[c], mramCol[c],
+                                wramRow[c], wramCol[c], dpus[c] / dpuCols[c],
+                                dpuCols[c], tasklets[c], dtype);
+  });
 }
 
 void UpmemInferencePlugin::handleReduce(cinm::ReduceOp op, SpaceBuilder &b) {
@@ -454,84 +463,95 @@ void UpmemInferencePlugin::handleReduce(cinm::ReduceOp op, SpaceBuilder &b) {
   // op->setAttr(kTileParamNamesAttr,
   //             OpBuilder(op->getContext()).getStrArrayAttr({wramTile.name()}));
 
-  if (mramTiling) {
-    auto mramRow = b.divisorsOf("mramRow", M);
-    auto mramCol = b.divisorsOf("mramCol", K);
-    b.require(M / ((dpus / dpuCols) * mramRow));
-    b.require(mramRow / ((tasklets / taskletCols) * wramRow));
-    b.require(mramCol / (taskletCols * wramCol));
-    b.require(K / (dpuCols * mramCol));
+  auto mramRow = b.divisorsOf("mramRow", M);
+  auto mramCol = b.divisorsOf("mramCol", K);
+  b.require(M / ((dpus / dpuCols) * mramRow));
+  b.require(mramRow / ((tasklets / taskletCols) * wramRow));
+  b.require(mramCol / (taskletCols * wramCol));
+  b.require(K / (dpuCols * mramCol));
 
-    // Per-DPU MRAM must fit: A (T×mr×mc) + y (T×mr)
-    b.require(mramRow * mramCol + mramRow <=
-              mramLevel.getSizeInElements(eltTy));
+  if (!mramTiling) {
+    // In this mode we imitate cinm 1.0 behavior and do not tile on MRAM,
+    // equivalently this means the MRAM and WRAM tiles have the same dimensions.
+    // This corresponds to constraints:
+    // - mramRow := wramRow * (tasklets / taskletCols)
+    // - mramCol := wramCol * taskletCols
+    //
+    // (tasklets / taskletCols) is taskletRows
+    b.require([=](auto c) -> bool {
+      return mramRow[c] == (wramRow[c] * tasklets[c] / taskletCols[c]) &&
+             mramCol[c] == wramCol[c] * taskletCols[c];
+    });
+  }
 
-    // Simulation template for the MRAM fast path (bypasses the lowering
-    // pipeline).
-    if (op.getDimension() == type.getShape().size() - 1) {
+  // Per-DPU MRAM must fit: A (T×mr×mc) + y (T×mr)
+  b.require(mramRow * mramCol + mramRow <= mramLevel.getSizeInElements(eltTy));
 
-      // todo register simulator for specific op, here we assume
-      //  that there is a single op in the compute block
-      registerSimulator([=](const cinm::ConfWrapper &c, UpmemSimulator &sim,
-                            cinm::TrialInfo &trial) -> Maybe<double> {
-        auto bufferizePm =
-            std::make_unique<PassManager>(trial.computeBlock.getContext());
-        {
-          bufferization::OneShotBufferizePassOptions opts;
-          opts.unknownTypeConversion =
-              bufferization::LayoutMapOption::IdentityLayoutMap;
-          // opts.bufferizeFunctionBoundaries = true;
-          // opts.functionBoundaryTypeConversion =
-          //     bufferization::LayoutMapOption::IdentityLayoutMap;
-          bufferizePm->addPass(bufferization::createOneShotBufferizePass(opts));
-        }
-        TRY(runPipeline(bufferizePm.get(), op->getLoc(), trial.module.get()));
+  // Simulation template for the MRAM fast path (bypasses the lowering
+  // pipeline).
+  if (op.getDimension() == type.getShape().size() - 1) {
 
-        IRRewriter rewriter(trial.module->getContext());
-        rewriter.setInsertionPointToStart(
-            &trial.computeBlock.getBody().front());
+    // todo register simulator for specific op, here we assume
+    //  that there is a single op in the compute block
+    registerSimulator([=](const cinm::ConfWrapper &c, UpmemSimulator &sim,
+                          cinm::TrialInfo &trial) -> Maybe<double> {
+      auto bufferizePm =
+          std::make_unique<PassManager>(trial.computeBlock.getContext());
+      {
+        bufferization::OneShotBufferizePassOptions opts;
+        opts.unknownTypeConversion =
+            bufferization::LayoutMapOption::IdentityLayoutMap;
+        // opts.bufferizeFunctionBoundaries = true;
+        // opts.functionBoundaryTypeConversion =
+        //     bufferization::LayoutMapOption::IdentityLayoutMap;
+        bufferizePm->addPass(bufferization::createOneShotBufferizePass(opts));
+      }
+      TRY(runPipeline(bufferizePm.get(), op->getLoc(), trial.module.get()));
 
-        trial.computeBlock->walk([&](cinm::ReduceOp op) {
-          generateTailReduction(op, rewriter, dpus[c] / dpuCols[c], dpuCols[c],
-                                mramRow[c], mramCol[c], wramRow[c], wramCol[c],
-                                tasklets[c] / taskletCols[c], taskletCols[c]);
-        });
-        auto cleanupPm =
-            std::make_unique<PassManager>(trial.computeBlock.getContext());
-        {
-          auto &dpuPm = cleanupPm->nest<upmem::DpuProgramOp>();
-          addAffineOpts(dpuPm);
-          // dpuPm.addPass(affine::createLoopUnrollPass(
-          //     -1, false, [](affine::AffineForOp forOp) -> unsigned int {
-          //       auto tc = dyn_cast<LoopLikeOpInterface>(*forOp).getStaticTripCount();
-          //       if (tc && tc->getZExtValue() <= 4) {
-          //         // In an upmem DPU program, we want to either unroll in
-          //         // full and have static (immediate) index patterns, or not
-          //         // unroll. This is because the IRAM is shared with the WRAM.
-          //         return tc->getZExtValue();
-          //       }
-          //       return 1; // do not unroll
-          //     }));
+      IRRewriter rewriter(trial.module->getContext());
+      rewriter.setInsertionPointToStart(&trial.computeBlock.getBody().front());
 
-          dpuPm.addPass(createLowerAffinePass());
-          dpuPm.addPass(createCanonicalizerPass());
-          dpuPm.addPass(createCSEPass());
-        }
-        {
-          auto &funcs = cleanupPm->nest<func::FuncOp>();
-          funcs.addPass(createConvertLinalgToAffineLoopsPass());
-          addAffineOpts(funcs);
-          // funcs.addPass(affine::createAffineVectorize(
-          //     affine::AffineVectorizeOptions{.vectorSizes = {8},
-          //                                    .fastestVaryingPattern = {},
-          //                                    .vectorizeReductions = true}));
-        }
-
-        TRY(runPipeline(cleanupPm.get(), op->getLoc(), trial.module.get()));
-
-        return sim.simulate(trial.computeBlock.getBody());
+      trial.computeBlock->walk([&](cinm::ReduceOp op) {
+        generateTailReduction(op, rewriter, dpus[c] / dpuCols[c], dpuCols[c],
+                              mramRow[c], mramCol[c], wramRow[c], wramCol[c],
+                              tasklets[c] / taskletCols[c], taskletCols[c]);
       });
-    }
+      auto cleanupPm =
+          std::make_unique<PassManager>(trial.computeBlock.getContext());
+      {
+        auto &dpuPm = cleanupPm->nest<upmem::DpuProgramOp>();
+        addAffineOpts(dpuPm);
+        // dpuPm.addPass(affine::createLoopUnrollPass(
+        //     -1, false, [](affine::AffineForOp forOp) -> unsigned int {
+        //       auto tc =
+        //       dyn_cast<LoopLikeOpInterface>(*forOp).getStaticTripCount(); if
+        //       (tc && tc->getZExtValue() <= 4) {
+        //         // In an upmem DPU program, we want to either unroll in
+        //         // full and have static (immediate) index patterns, or not
+        //         // unroll. This is because the IRAM is shared with the WRAM.
+        //         return tc->getZExtValue();
+        //       }
+        //       return 1; // do not unroll
+        //     }));
+
+        dpuPm.addPass(createLowerAffinePass());
+        dpuPm.addPass(createCanonicalizerPass());
+        dpuPm.addPass(createCSEPass());
+      }
+      {
+        auto &funcs = cleanupPm->nest<func::FuncOp>();
+        funcs.addPass(createConvertLinalgToAffineLoopsPass());
+        addAffineOpts(funcs);
+        // funcs.addPass(affine::createAffineVectorize(
+        //     affine::AffineVectorizeOptions{.vectorSizes = {8},
+        //                                    .fastestVaryingPattern = {},
+        //                                    .vectorizeReductions = true}));
+      }
+
+      TRY(runPipeline(cleanupPm.get(), op->getLoc(), trial.module.get()));
+
+      return sim.simulate(trial.computeBlock.getBody());
+    });
   }
 }
 
@@ -621,7 +641,8 @@ struct UpmemInferAcceleratorPass
 
         auto path = std::filesystem::path(dataDumpDir) / name.str();
         // Multi-seed mode appends its own seed_<value>/ per seed, so pass the
-        // base (per-op) dir. Single-seed BO gets the seed_<rngSeed>/ suffix here.
+        // base (per-op) dir. Single-seed BO gets the seed_<rngSeed>/ suffix
+        // here.
         if (!upmemOpts.inference.exhaustiveSearch &&
             upmemOpts.inference.nSeeds <= 1)
           path /= "seed_" + std::to_string(upmemOpts.inference.rngSeed);
