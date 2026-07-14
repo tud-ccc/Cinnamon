@@ -19,7 +19,7 @@ RUN_STAMPS       := $(patsubst %, .stamps/%.run,          $(SOURCES))
 AGG_STAMPS       := $(patsubst %, .stamps/%.aggregated,   $(SOURCES))
 BO_TIMING_STAMPS := $(patsubst %, .stamps/%.bo_timings,   $(SOURCES))
 
-WORKERS := 16
+WORKERS := 32
 BO_OPTS := --workers $(WORKERS) --n 128 --no-plots --out-dir @+results --infer-opts n-validation=600 validation-interval=1 max-evals=120
 
 # Extract primitive name from a source tag: prim_red_cinm2_hybrid200 → red
@@ -40,7 +40,7 @@ bo-timings: $(BO_TIMING_STAMPS)
 	@mkdir -p $@
 
 .stamps/%_cinm2_ca.bo: $(ROOT)/experiments/%.mlir
-	exp run +$*_cinm2_ca python $(ROOT)/experiments/run.py multiseed $< $(BO_OPTS) simulator=cycle-accurate eval-timeout-ms=0
+	exp run +$*_cinm2_ca python $(ROOT)/experiments/run.py multiseed $< $(BO_OPTS) simulator=cycle-accurate eval-timeout-ms=60000
 	@touch $@
 
 .stamps/%_cinm2_ca200.bo: $(ROOT)/experiments/%.mlir

@@ -919,7 +919,7 @@ struct InferenceTask {
         auto result = runSeedBO(seedRng, pool, std::move(vs), withEval,
                                 /*stateMx=*/nullptr, /*sampleWorkers=*/1, dir,
                                 onProgress, &bestCost, log);
-        progress.seedDone();
+        progress.seedDone(slot);
 
         std::lock_guard<std::mutex> g(bestMx);
         if (auto *trial = std::get_if<TrialInfo>(&result)) {
