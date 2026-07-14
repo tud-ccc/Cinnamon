@@ -119,6 +119,79 @@ def plot_violins(data: pd.DataFrame, out_dir: pathlib.Path, sources: list[str]):
     print(f"  violin  → {out_dir}/violin.{{pdf,png}}")
 
 
+def load_bo_timings(bo_timings_dir: pathlib.Path) -> pd.DataFrame:
+    """Return DataFrame[fn_name, seed, mean_elapsed_ms] (mean over iters per seed)."""
+    csv = bo_timings_dir / "timings.csv"
+    df = pd.read_csv(csv)
+    result = (
+        df.groupby(["fn_name", "seed"], as_index=False)["elapsed_ms"].mean()
+        .rename(columns={"elapsed_ms": "mean_elapsed_ms"})
+    )
+    return result
+
+
+def plot_speedup_bars(data: pd.DataFrame, out_dir: pathlib.Path, sources: list[str]):
+    """Bar chart of speedup over the slowest target, per problem (fn_name)."""
+    funcs = [f for f in FUNC_ORDER if f in data["fn_name"].unique()]
+    if not funcs:
+        funcs = sorted(data["fn_name"].unique())
+
+    # mean over seeds per (source, fn_name)
+    stats = (
+        data.groupby(["source", "fn_name"])["mean_elapsed_ms"]
+        .agg(mean="mean", std="std").reset_index()
+    )
+
+    # baseline = source with highest mean time (averaged across all problems)
+    overall = stats.groupby("source")["mean"].mean()
+    baseline_src = overall.idxmax()
+    print(f"  speedup baseline: {baseline_src} (slowest overall)")
+
+    baseline_means = (
+        stats[stats["source"] == baseline_src]
+        .set_index("fn_name")["mean"]
+    )
+
+    x = np.arange(len(funcs))
+    width = 0.8 / len(sources)
+    labels = [SOURCE_LABELS.get(s, s) for s in sources]
+
+    fig, ax = plt.subplots(figsize=(max(6, 2 * len(funcs)), 5))
+    for i, (src, lbl) in enumerate(zip(sources, labels)):
+        sub = stats[stats["source"] == src].set_index("fn_name")
+        speedups, errs = [], []
+        for fn in funcs:
+            if fn not in sub.index or fn not in baseline_means.index:
+                speedups.append(0)
+                errs.append(0)
+                continue
+            base = baseline_means[fn]
+            m = sub.loc[fn, "mean"]
+            s = sub.loc[fn, "std"] if not pd.isna(sub.loc[fn, "std"]) else 0
+            speedups.append(base / m if m > 0 else 0)
+            # error propagation: d(base/m)/dm = -base/m^2 → relative std passes through
+            errs.append((base / m) * (s / m) if m > 0 else 0)
+        ax.bar(
+            x + (i - len(sources) / 2 + 0.5) * width,
+            speedups, width * 0.9,
+            yerr=errs, capsize=3,
+            label=lbl,
+        )
+
+    ax.axhline(1.0, color="black", linewidth=0.8, linestyle="--")
+    ax.set_xticks(x)
+    ax.set_xticklabels(funcs)
+    ax.set_ylabel(f"Speedup over {SOURCE_LABELS.get(baseline_src, baseline_src)}")
+    ax.set_title("Speedup over slowest target (BO-search timings, mean ± std over seeds)")
+    ax.legend(fontsize=8)
+    ax.yaxis.set_minor_locator(ticker.AutoMinorLocator())
+    fig.tight_layout()
+    for ext in ("pdf", "png"):
+        fig.savefig(out_dir / f"speedup.{ext}", bbox_inches="tight", dpi=150)
+    plt.close(fig)
+    print(f"  speedup → {out_dir}/speedup.{{pdf,png}}")
+
+
 def plot_bars(data: pd.DataFrame, out_dir: pathlib.Path, sources: list[str]):
     funcs  = [f for f in FUNC_ORDER if f in data["fn_name"].unique()]
     labels = [SOURCE_LABELS.get(s, s) for s in sources]
@@ -194,6 +267,21 @@ def main():
     sources_present = [s for s in args.sources if s in data["source"].unique()]
     plot_violins(data, out_dir, sources_present)
     plot_bars(data, out_dir, sources_present)
+
+    bo_frames = []
+    for src in args.sources:
+        bo_dir = exp_root / src / "bo_timings"
+        if not bo_dir.exists():
+            continue
+        df = load_bo_timings(bo_dir)
+        df["source"] = src
+        bo_frames.append(df)
+
+    if bo_frames:
+        bo_data = pd.concat(bo_frames, ignore_index=True)
+        bo_sources = [s for s in args.sources if s in bo_data["source"].unique()]
+        plot_speedup_bars(bo_data, out_dir, bo_sources)
+
     print("Done.")
 
 

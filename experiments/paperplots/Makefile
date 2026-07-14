@@ -14,22 +14,27 @@ HERE        := $(ROOT)/experiments/paperplots
 EXP_ROOT    := $(ROOT)/.experiments/tags
 PLOT_SCRIPT := $(HERE)/plot_best_configs.py
 
-RUN_STAMPS  := $(patsubst %, .stamps/%.run,        $(SOURCES))
-AGG_STAMPS  := $(patsubst %, .stamps/%.aggregated, $(SOURCES))
+BO_STAMPS        := $(patsubst %, .stamps/%.bo,           $(SOURCES))
+RUN_STAMPS       := $(patsubst %, .stamps/%.run,          $(SOURCES))
+AGG_STAMPS       := $(patsubst %, .stamps/%.aggregated,   $(SOURCES))
+BO_TIMING_STAMPS := $(patsubst %, .stamps/%.bo_timings,   $(SOURCES))
 
-WORKERS := 24
+WORKERS := 16
 BO_OPTS := --workers $(WORKERS) --n 128 --no-plots --out-dir @+results --infer-opts n-validation=600 validation-interval=1 max-evals=120
 
 # Extract primitive name from a source tag: prim_red_cinm2_hybrid200 → red
 prim_of = $(firstword $(subst _, ,$(patsubst prim_%,%,$(1))))
 
-.PHONY: all run aggregate plots clean
+.PHONY: all run aggregate bo-timings plots clean all-bo
 .PRECIOUS: .stamps/
+
 
 all: plots
 
-run:       $(RUN_STAMPS)
-aggregate: $(AGG_STAMPS)
+bo:         $(BO_STAMPS)
+run:        $(RUN_STAMPS)
+aggregate:  $(AGG_STAMPS)
+bo-timings: $(BO_TIMING_STAMPS)
 
 .stamps/:
 	@mkdir -p $@
@@ -78,10 +83,17 @@ aggregate: $(AGG_STAMPS)
 		--run-dir @run --out @+aggregated
 	@touch $@
 
+# Aggregate raw BO-search timings (one CSV per seed) into a single timings.csv
+.stamps/%.bo_timings: .stamps/%.bo | .stamps/
+	@test -d $(EXP_ROOT)/$*/results || (echo "ERROR: no results handle for $* — run the search first"; exit 1)
+	exp run +$* python $(HERE)/aggregate_bo_timings.py \
+		--results-dir @results --out @+bo_timings
+	@touch $@
+
 # Plot violin and bar charts across all sources
 plots: .stamps/plots.done
 
-.stamps/plots.done: $(AGG_STAMPS) | .stamps/
+.stamps/plots.done: $(AGG_STAMPS) $(BO_TIMING_STAMPS) | .stamps/
 	python $(PLOT_SCRIPT) \
 		--exp-root $(EXP_ROOT) \
 		--sources $(SOURCES) \
