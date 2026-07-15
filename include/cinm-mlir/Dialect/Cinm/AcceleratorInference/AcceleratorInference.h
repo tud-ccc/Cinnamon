@@ -272,6 +272,10 @@ struct InferenceOptions {
 
   int rngSeed = 42;
 
+  /// If true, dumping stats will dump the entire valid space into the pool.csv.
+  /// Otherwise pool.csv only contains the visited points, not the whole space.
+  bool dumpFullPool = true;
+
   /// Number of independent BO seeds to run in one process. When > 1, the
   /// ConfigSpace, the valid-config scan, and the validation set are built once
   /// and shared; each seed then runs concurrently on its own thread (single-

@@ -530,7 +530,7 @@ void CandidatePool::dumpToCSV(const ConfigSpace &space,
   // One row per valid pool member, in flat-index order.
   size_t j = 0;
   space.forEach([&](auto &conf, size_t i) -> bool {
-    if (!isValid(i))
+    if (!isValid(i) && (opts.dumpFullPool || isVisited(i)))
       return true;
 
     for (int64_t v : conf)

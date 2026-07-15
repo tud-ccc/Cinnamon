@@ -318,7 +318,7 @@ struct UpmemInferencePlugin : cinm::InferencePlugin {
     int64_t tasklets = taskletsVar_[conf];
 
     MLIRContext *ctx = trial.computeBlock->getContext();
-    mlir::Location loc = trial.computeBlock->getLoc();
+    // mlir::Location loc = trial.computeBlock->getLoc();
     trial.computeBlock.setPlatformAttr({});
     trial.computeBlock.setAcceleratorAttr(
         upmem::UpmemAcceleratorAttr::get(platform, 1, dpus, tasklets));
@@ -618,6 +618,7 @@ struct UpmemInferAcceleratorPass
     o.validationInterval = validationInterval;
     o.objectiveScale = objectiveScale;
     o.numWorkers = numWorkers;
+    o.dumpFullPool = dumpFullPool;
     upmemOpts.annotateOpCosts = annotateOpCosts;
     upmemOpts.useMRAMTiling = useMRAMTiling;
     upmemOpts.simulator = simulator;
