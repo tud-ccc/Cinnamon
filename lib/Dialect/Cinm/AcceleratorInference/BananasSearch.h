@@ -85,6 +85,8 @@ struct CandidatePool {
   std::unordered_map<size_t, size_t> iterByIdx;
   // Wall-clock evaluation time in milliseconds, keyed by pool index.
   std::unordered_map<size_t, uint64_t> evalTimeByIdx;
+  // CPU time (CLOCK_THREAD_CPUTIME_ID) in milliseconds, keyed by pool index.
+  std::unordered_map<size_t, uint64_t> cpuTimeByIdx;
 
   /// Warm-start ensemble: persisted across BO iterations so each call to
   /// nextCandidateIndices fine-tunes from the previous fit rather than
@@ -140,7 +142,8 @@ struct CandidatePool {
   }
 
   void recordObservation(size_t idx, double cost, size_t iter = 0,
-                         std::chrono::milliseconds evalTime = {});
+                         std::chrono::milliseconds evalTime = {},
+                         uint64_t cpuTimeMs = 0);
   void recordFailedEvaluation(size_t idx, size_t iter = 0);
 
   /// Select n row-indices from the pool using Latin Hypercube Sampling.

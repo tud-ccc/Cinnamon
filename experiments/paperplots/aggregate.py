@@ -3,11 +3,12 @@
 Aggregate benchmark output CSVs from a run directory into per-type dataframes.
 
 Usage:
-  python3 aggregate.py --run-dir runs/ --out aggregated/
+  python3 aggregate.py --run-dir runs/ --compile-dir compiled/ --out aggregated/
 
-Walks every {run_dir}/{fn_name}/config_*/  directory that contains both
-config.csv and an output/ subdirectory, and produces one output CSV per
-measurement type (scatter, gather, launch, free, total).
+Walks every {run_dir}/{fn_name}/seed_{N}/  directory that contains an
+output/ subdirectory, reads the matching config.csv from
+{compile_dir}/{fn_name}/seed_{N}/config.csv, and produces one output CSV
+per measurement type (scatter, gather, launch, free, total).
 
 Each output CSV contains the original measurement columns plus fn_name,
 config_id, and all parameter columns from config.csv, so the full dataset
@@ -43,7 +44,9 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument("--run-dir", required=True,
-                        help="Root run directory (contains fn_name/config_*/ subdirs)")
+                        help="Root run directory (contains fn_name/seed_N/ subdirs with output/)")
+    parser.add_argument("--compile-dir", default=None,
+                        help="Root compile directory for config.csv files; defaults to --run-dir")
     parser.add_argument("--out", required=True,
                         help="Output directory for aggregated CSVs")
     parser.add_argument("--types", default=None,
@@ -51,8 +54,9 @@ def main():
                              "(default: all found, e.g. scatter,gather,alloc,launch,free,total)")
     args = parser.parse_args()
 
-    run_dir  = pathlib.Path(args.run_dir)
-    out_dir  = pathlib.Path(args.out)
+    run_dir      = pathlib.Path(args.run_dir)
+    compile_dir  = pathlib.Path(args.compile_dir) if args.compile_dir else run_dir
+    out_dir      = pathlib.Path(args.out)
     out_dir.mkdir(parents=True, exist_ok=True)
 
     type_filter = set(args.types.split(",")) if args.types else None
@@ -62,11 +66,11 @@ def main():
     n_missing = 0
 
     for fn_name, config_dir in iter_config_dirs(run_dir):
-        config_csv  = config_dir / "config.csv"
+        config_csv  = compile_dir / fn_name / config_dir.name / "config.csv"
         output_dir  = config_dir / "output"
 
         if not config_csv.exists():
-            print(f"  skip {config_dir.relative_to(run_dir)}: no config.csv",
+            print(f"  skip {config_dir.relative_to(run_dir)}: no config.csv in compile dir",
                   file=sys.stderr)
             n_missing += 1
             continue

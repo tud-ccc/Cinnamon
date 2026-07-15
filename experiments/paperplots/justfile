@@ -1,0 +1,7 @@
+
+
+
+run_all_benchmarks:
+  make compile -j6 
+  make run # single threaded
+  make plots -j6

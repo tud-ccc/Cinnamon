@@ -41,7 +41,9 @@ struct SimpleProgressBar {
         indicators::option::ShowRemainingTime{true});
     printer_ = std::thread([this] {
       while (!stop_.load(std::memory_order_relaxed)) {
+        std::cout << "\033[?2026h";
         bar->set_progress(done_.load(std::memory_order_relaxed));
+        std::cout << "\033[?2026l" << std::flush;
         std::this_thread::sleep_for(std::chrono::milliseconds(150));
       }
     });
@@ -134,7 +136,9 @@ struct MultiSeedProgress {
               std::max(0, slotProgress_[i].load(std::memory_order_relaxed))));
         }
         // Flush all bar updates to the terminal in one pass (cursor-up + reprint).
+        std::cout << "\033[?2026h";
         dyn->print_progress();
+        std::cout << "\033[?2026l" << std::flush;
         std::this_thread::sleep_for(std::chrono::milliseconds(150));
       }
     });

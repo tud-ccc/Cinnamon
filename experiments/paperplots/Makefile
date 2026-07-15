@@ -1,10 +1,11 @@
 
 
 PRIMS   = prim_gemv prim_red
-TARGETS = cinm2_ca cinm2_ca200 cinm2_ca400 \
+TARGETS = cinm2_ca200 cinm2_ca400 \
           cinm2_fast \
-          cinm2_hybrid200 cinm2_hybrid400 \
-          cinm1
+          cinm2_hybrid200 cinm2_hybrid400 
+# 					\
+#           cinm1 # cinm2_ca
 
 SOURCES = $(foreach p,$(PRIMS),$(foreach t,$(TARGETS),$(p)_$(t)))
 
@@ -15,23 +16,27 @@ EXP_ROOT    := $(ROOT)/.experiments/tags
 PLOT_SCRIPT := $(HERE)/plot_best_configs.py
 
 BO_STAMPS        := $(patsubst %, .stamps/%.bo,           $(SOURCES))
+COMPILE_STAMPS   := $(patsubst %, .stamps/%.compiled,     $(SOURCES))
 RUN_STAMPS       := $(patsubst %, .stamps/%.run,          $(SOURCES))
 AGG_STAMPS       := $(patsubst %, .stamps/%.aggregated,   $(SOURCES))
 BO_TIMING_STAMPS := $(patsubst %, .stamps/%.bo_timings,   $(SOURCES))
 
-WORKERS := 32
+WORKERS := 64
 BO_OPTS := --workers $(WORKERS) --n 128 --no-plots --out-dir @+results --infer-opts n-validation=600 validation-interval=1 max-evals=120
+
+RUN_MAX_CONC := systemd-run --user --scope -p CPUWeight=100 --same-dir --collect --
 
 # Extract primitive name from a source tag: prim_red_cinm2_hybrid200 → red
 prim_of = $(firstword $(subst _, ,$(patsubst prim_%,%,$(1))))
 
-.PHONY: all run aggregate bo-timings plots clean all-bo
+.PHONY: all compile run aggregate bo-timings plots clean bo
 .PRECIOUS: .stamps/
 
 
 all: plots
 
 bo:         $(BO_STAMPS)
+compile:    $(COMPILE_STAMPS)
 run:        $(RUN_STAMPS)
 aggregate:  $(AGG_STAMPS)
 bo-timings: $(BO_TIMING_STAMPS)
@@ -40,47 +45,62 @@ bo-timings: $(BO_TIMING_STAMPS)
 	@mkdir -p $@
 
 .stamps/%_cinm2_ca.bo: $(ROOT)/experiments/%.mlir
-	exp run +$*_cinm2_ca python $(ROOT)/experiments/run.py multiseed $< $(BO_OPTS) simulator=cycle-accurate eval-timeout-ms=60000
+	$(RUN_MAX_CONC) exp run +$*_cinm2_ca python $(ROOT)/experiments/run.py multiseed $< $(BO_OPTS) simulator=cycle-accurate eval-timeout-ms=60000
 	@touch $@
 
 .stamps/%_cinm2_ca200.bo: $(ROOT)/experiments/%.mlir
-	exp run +$*_cinm2_ca200 python $(ROOT)/experiments/run.py multiseed $< $(BO_OPTS) simulator=cycle-accurate eval-timeout-ms=200
+	$(RUN_MAX_CONC) exp run +$*_cinm2_ca200 python $(ROOT)/experiments/run.py multiseed $< $(BO_OPTS) simulator=cycle-accurate eval-timeout-ms=200
 	@touch $@
 
 .stamps/%_cinm2_ca400.bo: $(ROOT)/experiments/%.mlir
-	exp run +$*_cinm2_ca400 python $(ROOT)/experiments/run.py multiseed $< $(BO_OPTS) simulator=cycle-accurate eval-timeout-ms=400
+	$(RUN_MAX_CONC) exp run +$*_cinm2_ca400 python $(ROOT)/experiments/run.py multiseed $< $(BO_OPTS) simulator=cycle-accurate eval-timeout-ms=400
 	@touch $@
 
 .stamps/%_cinm2_fast.bo: $(ROOT)/experiments/%.mlir
-	exp run +$*_cinm2_fast python $(ROOT)/experiments/run.py multiseed $< $(BO_OPTS) simulator=fast eval-timeout-ms=0
+	$(RUN_MAX_CONC) exp run +$*_cinm2_fast python $(ROOT)/experiments/run.py multiseed $< $(BO_OPTS) simulator=fast eval-timeout-ms=60000
 	@touch $@
 
 .stamps/%_cinm2_hybrid200.bo: $(ROOT)/experiments/%.mlir
-	exp run +$*_cinm2_hybrid200 python $(ROOT)/experiments/run.py multiseed $< $(BO_OPTS) simulator=hybrid eval-timeout-ms=200
+	$(RUN_MAX_CONC) exp run +$*_cinm2_hybrid200 python $(ROOT)/experiments/run.py multiseed $< $(BO_OPTS) simulator=hybrid eval-timeout-ms=200
 	@touch $@
 
 .stamps/%_cinm2_hybrid400.bo: $(ROOT)/experiments/%.mlir
-	exp run +$*_cinm2_hybrid400 python $(ROOT)/experiments/run.py multiseed $< $(BO_OPTS) simulator=hybrid eval-timeout-ms=400
+	$(RUN_MAX_CONC) exp run +$*_cinm2_hybrid400 python $(ROOT)/experiments/run.py multiseed $< $(BO_OPTS) simulator=hybrid eval-timeout-ms=400
 	@touch $@
 
 .stamps/%_cinm1.bo: $(ROOT)/experiments/%.mlir
-	exp run +$*_cinm1 python $(ROOT)/experiments/run.py multiseed $< $(BO_OPTS) simulator=hybrid eval-timeout-ms=300 use-mram-tiling=false
+	$(RUN_MAX_CONC) exp run +$*_cinm1 python $(ROOT)/experiments/run.py multiseed $< $(BO_OPTS) simulator=hybrid eval-timeout-ms=300 use-mram-tiling=false
 	@touch $@
 
 
-# Compile and benchmark the best config (by cost) for each seed under @results
-.stamps/%.run: .stamps/%.bo | .stamps/
+filter_bo: 
+
+# Compile the best config (by cost) for each seed under @results
+.stamps/%.compiled: .stamps/%.bo | .stamps/
 	@test -d $(EXP_ROOT)/$*/results || (echo "ERROR: no results handle for $* — run the search first"; exit 1)
-	exp run +$* python $(HERE)/run_best_configs.py --workers 48 --iters 10 \
-		--in-dir @results --run-dir @+run \
+	$(RUN_MAX_CONC) exp run +$* python $(HERE)/run_best_configs.py \
+		--in-dir @results --compile-dir @+compiled \
 		--src $(ROOT)/experiments/prim_$(call prim_of,$*).mlir \
-		--prim $(call prim_of,$*)
+		--prim $(call prim_of,$*) \
+		--workers $(WORKERS) \
+		--compile-only
+	@touch $@
+
+# Benchmark the compiled binaries (--workers 1: serial for accurate wall-clock time)
+.stamps/%.run: .stamps/%.compiled | .stamps/
+	exp run +$* python $(HERE)/run_best_configs.py \
+		--in-dir @results --compile-dir @compiled --run-dir @+run \
+		--src $(ROOT)/experiments/prim_$(call prim_of,$*).mlir \
+		--prim $(call prim_of,$*) \
+		--iters 10 \
+		--workers 1 \
+		--run-only
 	@touch $@
 
 # Aggregate per-config benchmark CSVs into per-type summary CSVs
 .stamps/%.aggregated: .stamps/%.run | .stamps/
-	exp run +$* python $(ROOT)/experiments/upmemcm/reduce_cost/aggregate.py \
-		--run-dir @run --out @+aggregated
+	exp run +$* python $(HERE)/aggregate.py \
+		--run-dir @run --compile-dir @compiled --out @+aggregated
 	@touch $@
 
 # Aggregate raw BO-search timings (one CSV per seed) into a single timings.csv

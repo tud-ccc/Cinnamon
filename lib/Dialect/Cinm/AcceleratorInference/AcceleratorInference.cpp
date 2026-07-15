@@ -34,6 +34,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstdio>
+#include <ctime>
 #include <fstream>
 #include <functional>
 #include <limits>
@@ -48,6 +49,18 @@
 #define DEBUG_TYPE "cinm-inference"
 
 using mlir::cinm::utils::Maybe;
+
+static double getThreadCpuTimeMs() {
+  struct timespec ts;
+  clock_gettime(CLOCK_THREAD_CPUTIME_ID, &ts);
+  return ts.tv_sec * 1000.0 + ts.tv_nsec / 1e6;
+}
+
+static double getProcessCpuTimeMs() {
+  struct timespec ts;
+  clock_gettime(CLOCK_PROCESS_CPUTIME_ID, &ts);
+  return ts.tv_sec * 1000.0 + ts.tv_nsec / 1e6;
+}
 
 namespace mlir::cinm {
 
@@ -707,11 +720,13 @@ struct InferenceTask {
 
     using Clock = std::chrono::steady_clock;
     auto t0 = Clock::now();
-    std::vector<std::pair<int, double>> timings; // (nObs, elapsed_ms)
+    double cpuT0 = getProcessCpuTimeMs();
+    std::vector<std::tuple<int, double, double>> timings; // (nObs, wall_ms, cpu_ms)
     auto recordTiming = [&]() {
       double ms =
           std::chrono::duration<double, std::milli>(Clock::now() - t0).count();
-      timings.emplace_back(static_cast<int>(pool.nObs), ms);
+      double cpuMs = getProcessCpuTimeMs() - cpuT0;
+      timings.emplace_back(static_cast<int>(pool.nObs), ms, cpuMs);
     };
 
     // Evaluate config `idx`. `recordTraining` preserves the original behaviour
@@ -779,9 +794,9 @@ struct InferenceTask {
       if (!timings.empty()) {
         std::ofstream timOut(dumpPath / "timings.csv");
         if (timOut) {
-          timOut << "iter,elapsed_ms\n";
-          for (auto [iter, ms] : timings)
-            timOut << iter << "," << ms << "\n";
+          timOut << "iter,elapsed_ms,cpu_ms\n";
+          for (auto [iter, ms, cpu_ms] : timings)
+            timOut << iter << "," << ms << "," << cpu_ms << "\n";
         }
       }
     }
@@ -1008,6 +1023,7 @@ struct InferenceTask {
       size_t idx;
       std::optional<double> cost;
       std::chrono::milliseconds eval_time;
+      uint64_t cpu_eval_time_ms;
     };
     std::vector<std::vector<Obs>> perThreadObs(nThreads);
 
@@ -1026,14 +1042,16 @@ struct InferenceTask {
 
         auto trial = makeTrialInfo(conf, *threadRef);
         auto t0 = std::chrono::steady_clock::now();
+        double cpuT0 = getThreadCpuTimeMs();
         auto result = myPlugin.evaluate(trial);
         auto evalTime = std::chrono::duration_cast<std::chrono::milliseconds>(
             std::chrono::steady_clock::now() - t0);
+        auto cpuMs = static_cast<uint64_t>(getThreadCpuTimeMs() - cpuT0);
         double *cost = std::get_if<double>(&result);
         std::optional<double> opt_cost =
             cost ? std::make_optional(*cost) : std::nullopt;
         perThreadObs[tid].push_back(
-            {.idx = i, .cost = opt_cost, .eval_time = evalTime});
+            {.idx = i, .cost = opt_cost, .eval_time = evalTime, .cpu_eval_time_ms = cpuMs});
       }
     };
 
@@ -1056,10 +1074,10 @@ struct InferenceTask {
     size_t total_successful = 0;
     for (auto &obs : perThreadObs) {
       total += obs.size();
-      for (auto &[idx, cost, eval_time] : obs) {
+      for (auto &[idx, cost, eval_time, cpu_eval_time_ms] : obs) {
         pool.markVisited(idx);
         if (cost) {
-          pool.recordObservation(idx, *cost, 0, eval_time);
+          pool.recordObservation(idx, *cost, 0, eval_time, cpu_eval_time_ms);
           total_successful++;
         }
         // otherwise failed.
@@ -1094,9 +1112,11 @@ bool InferenceState::tryEval(size_t poolIdx, InferenceTask &task,
   // execute concurrently across worker threads.
   TrialInfo trial = task.makeTrialInfo(pool[poolIdx], refOverride);
   auto t0 = std::chrono::steady_clock::now();
+  double cpuT0 = getThreadCpuTimeMs();
   auto cost = plugin.evaluate(trial);
   auto evalTime = std::chrono::duration_cast<std::chrono::milliseconds>(
       std::chrono::steady_clock::now() - t0);
+  auto cpuEvalMs = static_cast<uint64_t>(getThreadCpuTimeMs() - cpuT0);
 
   // Everything below mutates shared state and must be serialised.
   std::unique_lock<std::mutex> guard;
@@ -1122,7 +1142,7 @@ bool InferenceState::tryEval(size_t poolIdx, InferenceTask &task,
   costVal = std::get<double>(cost);
   if (log)
     *log << "[cinm-inference]   -> cost = " << costVal << "\n";
-  pool.recordObservation(poolIdx, costVal, iter, evalTime);
+  pool.recordObservation(poolIdx, costVal, iter, evalTime, cpuEvalMs);
   anySuccess = true;
   if (costVal < bestCost) {
     bestCost = costVal;

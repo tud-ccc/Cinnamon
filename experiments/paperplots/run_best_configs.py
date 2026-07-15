@@ -4,15 +4,21 @@ For each seed in a results directory, find the best visited config and benchmark
 
 Usage:
   python3 run_best_configs.py \\
-      --results  .experiments/tags/prim_red_cinm2_hybrid400/results \\
-      --src      experiments/prim_red.mlir \\
-      [--workers 4] [--iters 5] [--run-dir runs/] [--compile-only] [--run-only]
+      --results      .experiments/tags/prim_red_cinm2_hybrid400/results \\
+      --src          experiments/prim_red.mlir \\
+      --compile-dir  compiled/ \\
+      --run-dir      runs/ \\
+      [--workers 4] [--iters 5] [--compile-only] [--run-only]
 
 Layout of --results:
   {results}/{problem}/seed_{N}/pool.csv
 
 For each (problem, seed) the script picks the row with visited==1 and minimal cost,
 then follows the same compile+run pipeline as run_configs.py.
+
+--compile-dir holds lowered MLIR, IR, and binaries (written by compile phase).
+--run-dir     holds benchmark output CSVs (written by run phase).
+Both have the same {problem}/seed_{N}/ structure.
 """
 
 import argparse
@@ -27,7 +33,7 @@ from tqdm import tqdm
 # ── Constants ────────────────────────────────────────────────────────────────
 
 NON_PARAM_COLS = frozenset({
-    "visited", "valid", "cost", "eval_iter", "eval_time_ms",
+    "visited", "valid", "cost", "eval_iter", "eval_time_ms", "cpu_time_ms",
     "mu", "sigma", "acq", "index",
 })
 
@@ -109,9 +115,9 @@ def fmt_cmd(args: list[str]) -> str:
 
 def compile_one(args):
     (fn_name, seed, params, fn_module_path,
-     run_dir, makefile_dir, cinm_opt, pre_passes, prim) = args
+     compile_dir, makefile_dir, cinm_opt, pre_passes, prim) = args
 
-    config_dir = pathlib.Path(run_dir) / fn_name / f"seed_{seed}"
+    config_dir = pathlib.Path(compile_dir) / fn_name / f"seed_{seed}"
     config_dir.mkdir(parents=True, exist_ok=True)
 
     config_csv = config_dir / "config.csv"
@@ -159,21 +165,22 @@ def compile_one(args):
 
 # ── Run step ─────────────────────────────────────────────────────────────────
 
-def run_one(fn_name, seed, run_dir, iters):
-    config_dir = pathlib.Path(run_dir).absolute() / fn_name / f"seed_{seed}"
-    bench_bin  = config_dir / "bin" / f"bench_{fn_name}"
-    output_dir = config_dir / "output"
-    output_dir.mkdir(exist_ok=True)
+def run_one(fn_name, seed, compile_dir, run_dir, iters):
+    compile_config_dir = pathlib.Path(compile_dir).absolute() / fn_name / f"seed_{seed}"
+    run_config_dir     = pathlib.Path(run_dir).absolute() / fn_name / f"seed_{seed}"
+    bench_bin  = compile_config_dir / "bin" / f"bench_{fn_name}"
+    output_dir = run_config_dir / "output"
+    output_dir.mkdir(parents=True, exist_ok=True)
 
     cmd = [str(bench_bin), str(output_dir), str(iters)]
     r = subprocess.run(
         cmd,
         capture_output=True,
         text=True,
-        cwd=str(config_dir / "bin" / fn_name),
+        cwd=str(compile_config_dir / "bin" / fn_name),
     )
     if r.returncode != 0:
-        (config_dir / "bench_stderr.txt").write_text(r.stderr)
+        (run_config_dir / "bench_stderr.txt").write_text(r.stderr)
         return fn_name, seed, False, r.stderr[-1000:]
     return fn_name, seed, True, r.stdout.strip()
 
@@ -193,9 +200,12 @@ def main():
                         help="Results directory containing {problem}/seed_{N}/pool.csv")
     parser.add_argument("--src",      required=True,
                         help="High-level cinm source MLIR (with // ----- splits)")
-    parser.add_argument("--workers",  type=int, default=4)
-    parser.add_argument("--iters",    type=int, default=5)
-    parser.add_argument("--run-dir",  default="runs")
+    parser.add_argument("--workers",      type=int, default=4)
+    parser.add_argument("--iters",        type=int, default=5)
+    parser.add_argument("--compile-dir",  required=True,
+                        help="Directory for compiled artifacts (lowered MLIR, IR, binaries)")
+    parser.add_argument("--run-dir",      default=None,
+                        help="Directory for benchmark output CSVs (required unless --compile-only)")
     parser.add_argument("--cinm-opt", default=str(here / "../../build/bin/cinm-opt"))
     parser.add_argument("--problem",  default=None,
                         help="Only process this function (e.g. red_4MB)")
@@ -206,15 +216,24 @@ def main():
     parser.add_argument("--run-only",     action="store_true")
     args = parser.parse_args()
 
-    results_dir = pathlib.Path(args.in_dir)
-    src_mlir    = pathlib.Path(args.src)
-    run_dir     = pathlib.Path(args.run_dir)
-    run_dir.mkdir(parents=True, exist_ok=True)
+    if args.workers == 0:
+      args.workers = os.cpu_count()
+
+    if not args.compile_only and not args.run_dir:
+        parser.error("--run-dir is required unless --compile-only is set")
+
+    results_dir  = pathlib.Path(args.in_dir)
+    src_mlir     = pathlib.Path(args.src)
+    compile_dir  = pathlib.Path(args.compile_dir)
+    run_dir      = pathlib.Path(args.run_dir) if args.run_dir else None
+    compile_dir.mkdir(parents=True, exist_ok=True)
+    if run_dir:
+        run_dir.mkdir(parents=True, exist_ok=True)
 
     # Infer prim from the MLIR filename (prim_red.mlir → "red") if not given.
     prim = args.prim or src_mlir.stem.removeprefix("prim_")
 
-    split_dir = run_dir / "_split"
+    split_dir = compile_dir / "_split"
     split_dir.mkdir(exist_ok=True)
     modules = split_source(src_mlir, split_dir)
     print(f"Split {src_mlir.name} → {list(modules.keys())}")
@@ -241,7 +260,7 @@ def main():
         makefile_dir = str(here / ".." / "upmemcm" / "reduce_cost")
         compile_args = [
             (fn, seed, params, str(modules[fn]),
-             str(run_dir), makefile_dir, args.cinm_opt, PRE_PASSES, prim)
+             str(compile_dir), makefile_dir, args.cinm_opt, PRE_PASSES, prim)
             for fn, seed, params, _ in tasks
         ]
         print(f"\nCompiling with {args.workers} workers...")
@@ -260,7 +279,7 @@ def main():
     else:
         compiled = [
             (fn, seed, nd) for fn, seed, _, nd in tasks
-            if not (run_dir / fn / f"seed_{seed}" / "failed").exists()
+            if not (compile_dir / fn / f"seed_{seed}" / "failed").exists()
         ]
 
     # ── Benchmark phase ───────────────────────────────────────────────────────
@@ -280,7 +299,7 @@ def main():
                 remaining = []
                 for fn_name, seed, num_dpus in pending:
                     if used_dpus + num_dpus <= args.dpu_cap:
-                        fut = ex.submit(run_one, fn_name, seed, str(run_dir), args.iters)
+                        fut = ex.submit(run_one, fn_name, seed, str(compile_dir), str(run_dir), args.iters)
                         in_flight[fut] = (fn_name, seed, num_dpus)
                         used_dpus += num_dpus
                     else:
@@ -292,7 +311,7 @@ def main():
                     tqdm.write(f"  WARNING: {fn_name} seed_{seed} needs "
                                f"{num_dpus} DPUs > cap {args.dpu_cap}, running alone",
                                file=sys.stderr)
-                    fut = ex.submit(run_one, fn_name, seed, str(run_dir), args.iters)
+                    fut = ex.submit(run_one, fn_name, seed, str(compile_dir), str(run_dir), args.iters)
                     in_flight[fut] = (fn_name, seed, num_dpus)
                     used_dpus += num_dpus
 
@@ -318,7 +337,7 @@ def main():
             if retry_pending:
                 tqdm.write(f"\nRetrying {len(retry_pending)} config(s) sequentially...")
                 for fn_name, seed, num_dpus in retry_pending:
-                    fut = ex.submit(run_one, fn_name, seed, str(run_dir), args.iters)
+                    fut = ex.submit(run_one, fn_name, seed, str(compile_dir), str(run_dir), args.iters)
                     _, _, ok, msg = fut.result()
                     status = "OK" if ok else "FAIL"
                     tqdm.write(f"  [{status}] {fn_name} seed_{seed}  (retry)")
