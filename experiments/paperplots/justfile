@@ -1,7 +1,13 @@
 
 
+b: 
+  cd ../.. && just b
+
 
 run_all_benchmarks:
   make compile -j6 
   make run # single threaded
   make plots -j6
+
+filter TAG:
+  find  ../../.experiments/tags/{{TAG}} -name 'pool.csv' -size +10k -exec gawk -i inplace -f filter_visited.awk \{\} \; -print

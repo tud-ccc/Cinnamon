@@ -21,7 +21,7 @@ RUN_STAMPS       := $(patsubst %, .stamps/%.run,          $(SOURCES))
 AGG_STAMPS       := $(patsubst %, .stamps/%.aggregated,   $(SOURCES))
 BO_TIMING_STAMPS := $(patsubst %, .stamps/%.bo_timings,   $(SOURCES))
 
-WORKERS := 64
+WORKERS := 2
 BO_OPTS := --workers $(WORKERS) --n 128 --no-plots --out-dir @+results --infer-opts n-validation=600 validation-interval=1 max-evals=120
 
 RUN_MAX_CONC := systemd-run --user --scope -p CPUWeight=100 --same-dir --collect --

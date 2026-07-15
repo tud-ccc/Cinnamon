@@ -138,27 +138,31 @@ def compile_one(args):
         "-o", str(lowered),
     ]
     r = subprocess.run(cmd_opt, capture_output=True, text=True)
+    failed = None
     if r.returncode != 0:
-        (config_dir / "cinm_opt_stderr.txt").write_text(r.stderr)
-        (config_dir / "failed").touch()
-        return fn_name, seed, False, f"cinm-opt failed:\n{fmt_cmd(cmd_opt)}\n{r.stderr}"
+      failed = "cinm-opt"
+    else:
+      ir_dir  = config_dir / "ir"
+      bin_dir = config_dir / "bin"
+      cmd_make = [
+          "make", "-C", str(makefile_dir),
+          f"SRC_MLIR={lowered.resolve()}",
+          f"IR_DIR={ir_dir.resolve()}",
+          f"BIN_DIR={bin_dir.resolve()}",
+          f"BENCH_FN={fn_name}",
+          f"PRIM={prim}",
+          "bench-single"
+      ]
+      r = subprocess.run(cmd_make, capture_output=True, text=True)
+      if r.returncode != 0:
+        failed = "make"
 
-    ir_dir  = config_dir / "ir"
-    bin_dir = config_dir / "bin"
-    cmd_make = [
-        "make", "-C", str(makefile_dir),
-        f"SRC_MLIR={lowered.resolve()}",
-        f"IR_DIR={ir_dir.resolve()}",
-        f"BIN_DIR={bin_dir.resolve()}",
-        f"BENCH_FN={fn_name}",
-        f"PRIM={prim}",
-        "bench-single"
-    ]
-    r = subprocess.run(cmd_make, capture_output=True, text=True)
-    if r.returncode != 0:
+    if failed:
         (config_dir / "make_stderr.txt").write_text(r.stderr)
+        (config_dir / "cinm_opt_cmd.sh").write_text(fmt_cmd(cmd_opt))
+        (config_dir / "make_cmd.sh").write_text(fmt_cmd(cmd_make))
         (config_dir / "failed").touch()
-        return fn_name, seed, False, f"make failed:\n{r.stderr}"
+        return fn_name, seed, False, f"{failed} failed:\n{r.stderr}"
 
     return fn_name, seed, True, ""
 

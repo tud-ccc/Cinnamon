@@ -92,12 +92,15 @@ struct UpmemInferenceOptions {
 };
 
 static void addAffineOpts(OpPassManager &pm) {
-  pm.addPass(affine::createLoopUnrollPass(1, true));
+  // pm.addPass(affine::createLoopUnrollPass(1, true));
   pm.addPass(createCanonicalizerPass());
   pm.addPass(affine::createAffineFoldMemRefAliasOps());
   pm.addPass(memref::createFoldMemRefAliasOpsPass());
   pm.addPass(createCanonicalizerPass());
-  pm.addPass(affine::createLoopFusionPass());
+  pm.addPass(affine::createRaiseMemrefToAffine());
+  pm.addPass(createCanonicalizerPass());
+  pm.addPass(affine::createAffineExpandIndexOpsAsAffinePass());
+  // pm.addPass(affine::createLoopFusionPass());
   pm.addPass(createSROA());
   pm.addPass(createCanonicalizerPass());
   pm.addPass(affine::createRaiseMemrefToAffine());
@@ -419,13 +422,45 @@ void UpmemInferencePlugin::handleGemv(cinm::GemvOp gemv, SpaceBuilder &b) {
 
   // Simulation template for the MRAM fast path (bypasses the lowering
   // pipeline).
-  auto timeout = opts.evalTimeoutMs;
-  auto dtype = cmDtyFromMlirDty(eltTy);
   registerSimulator([=](const cinm::ConfWrapper &c, UpmemSimulator &sim,
-                        cinm::TrialInfo &) {
-    return sim.simulateFullGemv(timeout, M, K, mramRow[c], mramCol[c],
-                                wramRow[c], wramCol[c], dpus[c] / dpuCols[c],
-                                dpuCols[c], tasklets[c], dtype);
+                        cinm::TrialInfo &trial) -> Maybe<double> {
+    auto bufferizePm =
+        std::make_unique<PassManager>(trial.computeBlock.getContext());
+    {
+      bufferization::OneShotBufferizePassOptions opts;
+      opts.unknownTypeConversion =
+          bufferization::LayoutMapOption::IdentityLayoutMap;
+      bufferizePm->addPass(bufferization::createOneShotBufferizePass(opts));
+    }
+    TRY(runPipeline(bufferizePm.get(), gemv->getLoc(), trial.module.get()));
+
+    IRRewriter rewriter(trial.module->getContext());
+    rewriter.setInsertionPointToStart(&trial.computeBlock.getBody().front());
+
+    trial.computeBlock->walk([&](cinm::GemvOp op) {
+      generateGemv(op, rewriter, dpus[c] / dpuCols[c], dpuCols[c],
+                   mramRow[c], mramCol[c], wramRow[c], wramCol[c],
+                   tasklets[c]);
+    });
+
+    auto cleanupPm =
+        std::make_unique<PassManager>(trial.computeBlock.getContext());
+    {
+      auto &dpuPm = cleanupPm->nest<upmem::DpuProgramOp>();
+      addAffineOpts(dpuPm);
+      dpuPm.addPass(createLowerAffinePass());
+      dpuPm.addPass(createCanonicalizerPass());
+      dpuPm.addPass(createCSEPass());
+    }
+    {
+      auto &funcs = cleanupPm->nest<func::FuncOp>();
+      funcs.addPass(createConvertLinalgToAffineLoopsPass());
+      addAffineOpts(funcs);
+    }
+
+    TRY(runPipeline(cleanupPm.get(), gemv->getLoc(), trial.module.get()));
+
+    return sim.simulate(trial.computeBlock.getBody());
   });
 }
 
