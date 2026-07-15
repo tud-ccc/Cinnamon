@@ -24,7 +24,7 @@ BO_TIMING_STAMPS := $(patsubst %, .stamps/%.bo_timings,   $(SOURCES))
 WORKERS := 64
 NICE := 19 # Default is 0, highest is 19
 
-BO_OPTS := --workers $(WORKERS) --n 128 --no-plots --out-dir @+results --infer-opts n-validation=600 validation-interval=1 max-evals=120
+BO_OPTS := --workers $(WORKERS) --n 128 --no-plots --out-dir @+results --infer-opts n-validation=600 validation-interval=1 max-evals=120 dump-full-pool=false
 
 RUN_MAX_CONC := nice -n $(NICE) systemd-run --user --scope -p CPUWeight=20 --same-dir --collect --
 
