@@ -182,4 +182,13 @@ void generateTailReduction(cinm::ReduceOp op, RewriterBase &rewriter,
                            int64_t dpuRows, int64_t dpuCols, int64_t mramRows,
                            int64_t mramCols, int64_t wramRows, int64_t wramCols,
                            int64_t taskletRows, int64_t taskletCols);
+
+/// Emit the host-side tiled loop nest for a memref GEMV (out += lhs * rhs).
+/// Parameters mirror simulateFullGemv(): dpuRows/dpuCols partition the DPU
+/// grid over M and K; mramRows/mramCols are the per-DPU MRAM tile;
+/// wramRows/wramCols are the per-tasklet WRAM tile; tasklets is total
+/// tasklets per DPU (all split by M, each handling wramRows rows).
+void generateGemv(cinm::GemvOp op, RewriterBase &rewriter, int64_t dpuRows,
+                  int64_t dpuCols, int64_t mramRows, int64_t mramCols,
+                  int64_t wramRows, int64_t wramCols, int64_t tasklets);
 } // namespace mlir::upmem

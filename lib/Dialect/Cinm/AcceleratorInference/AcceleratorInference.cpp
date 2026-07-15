@@ -1195,7 +1195,7 @@ static Operation *createCast(OpBuilder &builder, Location loc, Type toType,
   if (isa<TensorType>(operand.getType()) && isa<MemRefType>(toType)) {
     return bufferization::ToBufferOp::create(builder, loc, toType, operand);
   } else if (isa<MemRefType>(operand.getType()) && isa<TensorType>(toType)) {
-    return bufferization::ToTensorOp::create(builder, loc, toType, operand);
+    return bufferization::ToTensorOp::create(builder, loc, toType, operand, true);
   }
   return mlir::UnrealizedConversionCastOp::create(builder, loc, toType,
                                                   operand);
