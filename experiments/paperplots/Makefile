@@ -22,9 +22,11 @@ AGG_STAMPS       := $(patsubst %, .stamps/%.aggregated,   $(SOURCES))
 BO_TIMING_STAMPS := $(patsubst %, .stamps/%.bo_timings,   $(SOURCES))
 
 WORKERS := 2
+NICE := 0 # Default is 0, highest is 19
+
 BO_OPTS := --workers $(WORKERS) --n 128 --no-plots --out-dir @+results --infer-opts n-validation=600 validation-interval=1 max-evals=120
 
-RUN_MAX_CONC := systemd-run --user --scope -p CPUWeight=100 --same-dir --collect --
+RUN_MAX_CONC := nice -n $(NICE) systemd-run --user --scope -p CPUWeight=100 --same-dir --collect --
 
 # Extract primitive name from a source tag: prim_red_cinm2_hybrid200 → red
 prim_of = $(firstword $(subst _, ,$(patsubst prim_%,%,$(1))))
