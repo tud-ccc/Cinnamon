@@ -390,7 +390,7 @@ void UpmemInferencePlugin::handleGemv(cinm::GemvOp gemv, SpaceBuilder &b) {
   auto dpuCols = b.divisorsOf("dpuCols", K);
 
   // Per-tasklet WRAM must fit: A tile (wr×wc) + x slice (wc) + y slot (wr)
-  b.require(wramRow * wramCol + wramCol + wramRow <=
+  b.require(tasklets * wramRow * wramCol + wramCol + tasklets * wramRow <=
             wramLevel.getSizeInElements(eltTy));
 
   // Attributes used by applyTileSizes() in the non-MRAM pipeline path.
