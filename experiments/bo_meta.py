@@ -31,6 +31,7 @@ import subprocess
 import sys
 import tempfile
 import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import numpy as np
@@ -203,9 +204,10 @@ def run_trial(
             f"hidden-width={cfg['hidden']}",
             f"hidden-depth={cfg['depth']}",
             f"neighbor-depth={cfg.get('neighbor_depth', 2)}",
-            f"eval-timeout-ms={cfg.get('eval_timeout_ms', 1000)}",
+            f"eval-timeout-ms={cfg.get('eval_timeout_ms', 400)}",
             f"neighbor-frontier-only={cfg.get('neighbor_frontier_only','false')}",
-            "simulator=opcount",
+            "simulator=hybrid",
+            "dump-full-pool=false",
             f"n-validation={n_validation}",
             f"validation-interval={validation_interval}",
             # f"simulator={simulator}", # TODO
@@ -247,13 +249,13 @@ def run_trial(
                 )
             return {"rmse": 1e6, "instability": 1e6, "time": elapsed}
 
-        val_csv = Path(tmp) / problem_name / f"seed_{seed}" / "validation.csv"
+        val_csv = Path(tmp) / f"infer_{problem_name}" / f"seed_{seed}" / "validation.csv"
         if not val_csv.exists():
-            debug_dir = Path(f"data/bo_meta_debug")
+            debug_dir = Path("data/bo_meta_debug")
             shutil.rmtree(debug_dir, ignore_errors=True)
             shutil.copytree(tmp, debug_dir)
             print(
-                f"\n[bo_meta] WARNING: no validation.csv for problem '{problem_name}'. "
+                f"\n[bo_meta] WARNING: no validation.csv for problem '{problem_name}', seed {seed}. "
                 f"Temp dir preserved at {debug_dir}",
                 file=sys.stderr,
             )
@@ -301,8 +303,8 @@ def make_objective(
     to reduce noise.
     """
     def objective(smac_cfg, seed: int = 0) -> dict:
-        results = [
-            run_trial(
+        def run_one_seed(s: int) -> dict[str, float]:
+            return run_trial(
                 smac_cfg,
                 mlir_file=mlir_file,
                 scale=scale,
@@ -318,8 +320,12 @@ def make_objective(
                 problem_name=problem_name,
                 trial_timeout=trial_timeout,
             )
-            for s in range(n_seeds)
-        ]
+
+        # n_seeds independent cinm-opt runs are launched in parallel: each one
+        # mostly blocks in subprocess.run, so a thread pool is enough to
+        # overlap them without the pickling overhead of a process pool.
+        with ThreadPoolExecutor(max_workers=n_seeds) as pool:
+            results = list(pool.map(run_one_seed, range(n_seeds)))
         return {
             "rmse":        float(np.mean([r["rmse"]        for r in results])),
             "instability": float(np.mean([r["instability"] for r in results])),
@@ -439,6 +445,7 @@ def plot_pareto_3d(smac, out_path: str) -> None:
                    label="Pareto front")
 
     ax.set_xlabel(xl, labelpad=8)
+    ax.set_xscale("log")
     ax.set_ylabel(yl, labelpad=8)
     ax.set_zlabel(zl, labelpad=8)
     ax.legend(fontsize=9)
@@ -531,6 +538,13 @@ def main():
         help="Additional key=value options forwarded verbatim to "
              "--upmem-infer-accelerator (e.g. kappa=2.5 n-ensemble=7)",
     )
+    ap.add_argument(
+        "--replot-only", action="store_true",
+        help="Skip optimization entirely. Reconstruct the Scenario/facade from all "
+             "other arguments (they must match the original run exactly) so SMAC "
+             "reloads the existing runhistory from --smac-dir, then just regenerate "
+             "the Pareto plots from it.",
+    )
     args = ap.parse_args()
 
     mlir_file = args.input
@@ -583,23 +597,32 @@ def main():
             # Weights for RMSE, instability, and time
             objective_weights=[0.5, 1, 0.6],
         ),
-        overwrite=True,
+        overwrite=not args.replot_only,
     )
 
-    print("[bo_meta] Starting meta-optimization")
-    print(f"  input:               {mlir_file}")
-    print(f"  scale:               {args.scale}")
-    print(f"  simulator:           {args.simulator}")
-    print(f"  max_evals / trial:   {args.max_evals}")
-    print(f"  n_validation:        {args.n_validation}")
-    print(f"  validation_interval: {args.validation_interval}")
-    print(f"  n_seeds / trial:     {args.n_seeds}")
-    print(f"  trial_timeout:       {args.trial_timeout}s")
-    print(f"  smac_trials:         {args.n_trials}")
-    print(f"  smac_workers:        {args.workers}")
-    print()
+    if args.replot_only:
+        # overwrite=False above made SMBO._initialize_state() compare this
+        # Scenario against the one saved in --smac-dir; if they match it loaded
+        # runhistory.json (and the intensifier state) automatically. No trial
+        # is run here.
+        print(f"[bo_meta] Reloaded {smac.runhistory.finished} finished trial(s) "
+              f"from {args.smac_dir}")
+        incumbents = smac.intensifier.get_incumbents()
+    else:
+        print("[bo_meta] Starting meta-optimization")
+        print(f"  input:               {mlir_file}")
+        print(f"  scale:               {args.scale}")
+        print(f"  simulator:           {args.simulator}")
+        print(f"  max_evals / trial:   {args.max_evals}")
+        print(f"  n_validation:        {args.n_validation}")
+        print(f"  validation_interval: {args.validation_interval}")
+        print(f"  n_seeds / trial:     {args.n_seeds}")
+        print(f"  trial_timeout:       {args.trial_timeout}s")
+        print(f"  smac_trials:         {args.n_trials}")
+        print(f"  smac_workers:        {args.workers}")
+        print()
 
-    incumbents = smac.optimize()
+        incumbents = smac.optimize()
 
     print("\n── Pareto-optimal configurations " + "─" * 40)
     header = f"{'rmse':>10}  {'instability':>12}  {'time':>8}  config"

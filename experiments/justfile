@@ -22,3 +22,10 @@ view *ARGS:
 
 analyze *ARGS:
     source $(realpath ../.venv/bin/activate) && python run.py analyze {{ARGS}}
+
+meta_bo *ARGS:
+    #!/bin/zsh
+    source $(realpath ../.venv/bin/activate)
+    tmp=$(mktemp -d)
+    python upmemcm/reduce_cost/split_modules.py prim_gemv.mlir ${tmp} gemv_4MB gemv_64MB gemv_256MB gemv_512MB
+    python bo_meta.py --problem gemv_512MB --input ${tmp}/gemv_512MB.mlir --n-trials 256 --eval-timeout-ms 300 --n-seeds 4 --max-evals 90 --trial-timeout=3600 --workers 16 
