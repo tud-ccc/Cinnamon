@@ -506,14 +506,25 @@ void CandidatePool::dumpToCSV(const ConfigSpace &space,
   if (!out)
     return;
 
-
   // Use the warm-started ensemble to get per-candidate statistics.
   const bool hasModel = ensemble_ && nObs >= 2 && !empty();
   // Per-valid-index predictions; indexed by position in validIdx.
   arma::rowvec mu_v, sigma_v, acq_v;
   if (hasModel) {
-    arma::mat validEncoded = encodeValidSpace(*space_, *this);
-    auto [m, s] = ensemble_->predict(validEncoded);
+    const size_t D = space_->size();
+    const size_t confsToEncode =
+        opts.dumpFullPool ? this->size() : visited.size();
+    arma::mat encoded(D, confsToEncode);
+    size_t ix = 0;
+    space_->forEach([&](const Configuration &conf, size_t i) {
+      if (!isValid(i) || !isVisited(i))
+        return true;
+      for (size_t d = 0; d < D; ++d)
+        encoded(d, ix) = (*space_)[d].featurize(conf[d]);
+      ix++;
+      return true;
+    });
+    auto [m, s] = ensemble_->predict(encoded);
     mu_v = m;
     sigma_v = s;
     acq_v = computeAcq(mu_v, sigma_v, opts.kappa);
@@ -530,7 +541,7 @@ void CandidatePool::dumpToCSV(const ConfigSpace &space,
   // One row per valid pool member, in flat-index order.
   size_t j = 0;
   space.forEach([&](auto &conf, size_t i) -> bool {
-    if (!isValid(i) && (opts.dumpFullPool || isVisited(i)))
+    if (!isValid(i) || (!opts.dumpFullPool && !isVisited(i)))
       return true;
 
     for (int64_t v : conf)
