@@ -48,7 +48,7 @@ def parse_best(pool_csv: pathlib.Path):
     best_params = None
     with open(pool_csv) as f:
         reader = csv.DictReader(f)
-        param_cols = [c for c in reader.fieldnames if c not in NON_PARAM_COLS]
+        param_cols = [c for c in (reader.fieldnames or ()) if c not in NON_PARAM_COLS]
         for i, row in enumerate(reader):
             if row.get("visited", "0").strip() != "1":
                 continue

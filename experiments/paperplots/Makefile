@@ -1,11 +1,10 @@
 
 
 PRIMS   = prim_gemv prim_red
-TARGETS = cinm2_ca200 cinm2_ca400 \
+TARGETS =  cinm2_ca400 \
           cinm2_fast \
-          cinm2_hybrid200 cinm2_hybrid400 
-# 					\
-#           cinm1 # cinm2_ca
+          cinm2_hybrid200 cinm2_hybrid400 \
+          cinm1 # cinm2_ca cinm2_ca200
 
 SOURCES = $(foreach p,$(PRIMS),$(foreach t,$(TARGETS),$(p)_$(t)))
 
@@ -71,7 +70,7 @@ bo-timings: $(BO_TIMING_STAMPS)
 	@touch $@
 
 .stamps/%_cinm1.bo: $(ROOT)/experiments/%.mlir
-	$(RUN_MAX_CONC) exp run +$*_cinm1 python $(ROOT)/experiments/run.py multiseed $< $(BO_OPTS) simulator=hybrid eval-timeout-ms=300 use-mram-tiling=false
+	$(RUN_MAX_CONC) exp run +$*_cinm1 python $(ROOT)/experiments/run.py multiseed $< $(BO_OPTS) simulator=hybrid eval-timeout-ms=400 use-mram-tiling=false
 	@touch $@
 
 
@@ -116,6 +115,7 @@ filter_bo:
 plots: .stamps/plots.done
 
 .stamps/plots.done: $(AGG_STAMPS) $(BO_TIMING_STAMPS) | .stamps/
+	echo $(SOURCES)
 	python $(PLOT_SCRIPT) \
 		--exp-root $(EXP_ROOT) \
 		--sources $(SOURCES) \

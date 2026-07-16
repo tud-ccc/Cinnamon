@@ -182,7 +182,7 @@ def cmd_multiseed(args: argparse.Namespace) -> int:
 
     extra = list(args.extra) + [f"n-seeds={args.n}"]
     if args.workers:
-        extra.append(f"num-workers={args.workers}")
+        extra.append(f"n-workers={args.workers}")
     # rng-seed acts as the seed offset: seed k (1..n) uses k*31 + offset, matching
     # the `seeds` command's scheme so the two engines produce comparable seeds.
     infer_opts = _infer_opts(
@@ -445,7 +445,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--workers",
         type=int,
         default=None,
-        help="Max concurrent seeds / num-workers (default: auto = hw threads)",
+        help="Max concurrent seeds / n-workers (default: auto = hw threads)",
     )
     p_ms.add_argument(
         "--offset",
