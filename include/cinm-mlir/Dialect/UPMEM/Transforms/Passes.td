@@ -104,7 +104,7 @@ def UpmemInferAcceleratorPass : Pass<"upmem-infer-accelerator", "ModuleOp"> {
     Option<"evalTimeoutMs", "eval-timeout-ms", "int", "0",
            "Wall-clock timeout in milliseconds for a single simulation; "
            "0 disables the timeout (default: 0)">,
-    Option<"dumpFullPool", "dump-full-pool", "bool", "true",
+    Option<"dumpFullPool", "dump-full-pool", "bool", "false",
            "Dump the full pool (all valid configurations) into pool.csv, otherwise only the visited configurations are dumped.">,
     Option<"numWorkers", "n-workers", "unsigned", "0u",
            "Worker threads for exhaustive search (0 = hardware_concurrency)">,
