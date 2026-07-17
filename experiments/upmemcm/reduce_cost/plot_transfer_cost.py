@@ -91,8 +91,10 @@ def make_plot(df_gather: pd.DataFrame, df_scatter: pd.DataFrame, out_path: pathl
             c=df["transfersize_bytes"], cmap="plasma", norm=dpu_norm,
         )
         ax.plot([lo, hi], [lo, hi], color="gray", linestyle="--", linewidth=1)
-        ax.set_xlim(lo, hi); ax.set_ylim(lo, hi)
-        ax.set_xscale("log"); ax.set_yscale("log")
+        ax.set_xlim(lo, hi)
+        ax.set_ylim(lo, hi)
+        ax.set_xscale("log")
+        ax.set_yscale("log")
         ax.set_xlabel("predicted (ns)")
         ax.set_ylabel("measured (ns)")
         ax.set_title(title)
