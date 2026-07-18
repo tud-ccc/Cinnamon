@@ -1,0 +1,383 @@
+"""doit tasks for the CINM 1.0 vs CINM 2.0 comparison experiment.
+
+Same pipeline as experiment.py's module docstring (screen -> CINM1 configs /
+CINM2 search -> compile -> run -> compare -> plot), but driven by doit
+instead of a plain top-to-bottom script: each stage declares its file
+inputs/outputs, so `doit` only reruns what's actually stale -- e.g. if a
+CINM1 compile fails and you fix cinm1.py and rerun, the CINM2 Bayesian
+search (expensive, already done) is not repeated.
+
+Usage:
+  doit list              # show all tasks (some only appear after upstream
+                          # tasks that create them dynamically have run once)
+  doit                   # run everything up to the plots
+  doit compile_cinm1     # just compile CINM 1.0's configs
+  doit forget screen     # force screening to rerun next time
+
+Stages are connected by files on disk, not in-memory state, since doit may
+skip any stage in a given invocation: pairs.csv (screen's output) and the
+CINM 2.0 search's pool.csv files are the source of truth read back by every
+downstream stage.
+"""
+from __future__ import annotations
+
+import os
+import pathlib
+import sys
+
+import pandas as pd
+from doit import create_after
+
+HERE = pathlib.Path(__file__).resolve().parent
+EXPERIMENTS_DIR = HERE.parent
+sys.path.insert(0, str(EXPERIMENTS_DIR))
+
+from cinm_experiments import cinm1, cinmopt, compile_run, measurements, pools  # noqa: E402
+from cinm_experiments.paths import DEFAULT_CINM_OPT  # noqa: E402
+from cinm_experiments.split_source import list_functions, split_source  # noqa: E402
+
+from experiment import compare  # noqa: E402
+from plot import plot_speedup, print_summary  # noqa: E402
+
+PRIMS = ["prim_gemv", "prim_red"]
+DATA_DIR = HERE / "data"
+CINM_OPT = pathlib.Path(os.environ.get("CINM_OPT", DEFAULT_CINM_OPT))
+
+OPTS = dict(
+    top_frac=0.10,
+    min_configs=200,
+    n_seeds=32,
+    iters=10,
+    screen_sim="cycle-accurate",
+    workers=os.cpu_count(),
+)
+
+# Seed k in a multiseed run uses k*31+offset for k in 1..n_seeds; offsets must
+# be spaced by more than n_seeds*31 apart so different pairs' seed_* dirs
+# never collide within the same {fn_name}/ results directory.
+_OFFSET_STRIDE = 4096
+_BASE_OFFSET = 67
+
+DOIT_CONFIG = {"default_tasks": ["plot"], "verbosity": 2}
+
+
+def _prim_dir(prim: str) -> pathlib.Path:
+    return DATA_DIR / prim
+
+
+def _read_pairs(prim: str, fn_name: str) -> pd.DataFrame:
+    return pd.read_csv(_prim_dir(prim) / "screen" / fn_name / "pairs.csv")
+
+
+# ── split ────────────────────────────────────────────────────────────────────
+
+def _split_one(prim_mlir: pathlib.Path, split_dir: pathlib.Path) -> bool:
+    split_source(prim_mlir, split_dir)  # dict return value isn't JSON-picklable for doit's DB
+    return True
+
+
+def task_split():
+    """Split each prim's source into one module per function."""
+    for prim in PRIMS:
+        prim_mlir = EXPERIMENTS_DIR / f"{prim}.mlir"
+        split_dir = _prim_dir(prim) / "_split"
+        fns = list_functions(prim_mlir)
+        yield {
+            "name": prim,
+            "file_dep": [str(prim_mlir)],
+            "targets": [str(split_dir / f"{fn}.mlir") for fn in fns],
+            "actions": [(_split_one, [prim_mlir, split_dir])],
+        }
+
+
+# ── screen ───────────────────────────────────────────────────────────────────
+
+def _screen_one(prim: str, fn_name: str, fn_module: pathlib.Path) -> bool:
+    screen_dir = _prim_dir(prim) / "screen"
+    cinmopt.exhaustive_search(
+        fn_module, screen_dir, workers=OPTS["workers"],
+        infer_opts={"use-mram-tiling": False, "simulator": OPTS["screen_sim"]},
+        cinm_opt=CINM_OPT,
+    )
+    pool_csv = screen_dir / f"infer_{fn_name}" / "pool.csv"
+    top, n_valid, n_kept = pools.select_best(
+        pool_csv, top_frac=OPTS["top_frac"], min_configs=OPTS["min_configs"]
+    )
+    if top.empty:
+        raise RuntimeError(f"no valid configs for {prim}:{fn_name}")
+    pairs = (
+        top[["dpus", "tasklets"]]
+        .drop_duplicates()
+        .sort_values(["dpus", "tasklets"])
+        .reset_index(drop=True)
+    )
+    print(f"  {fn_name:20s}  kept {n_kept} of {n_valid} valid rows"
+          f" -> {len(pairs)} (dpus,tasklets) pairs")
+    (screen_dir / fn_name).mkdir(parents=True, exist_ok=True)
+    pairs.to_csv(screen_dir / f"infer_{fn_name}" / "pairs.csv", index=False)
+    return True
+
+
+@create_after(executed="split")
+def task_screen():
+    """Sweep CINM 2.0's configuration space with MRAM tiling disabled (CINM
+    1.0's own best configs are known to lie in this constrained subspace),
+    and select the (dpus, tasklets) working groups worth real hardware
+    measurements. One subtask per function -- its config space (problem
+    size, valid tile shapes) is its own."""
+    for prim in PRIMS:
+        split_dir = _prim_dir(prim) / "_split"
+        for fn_name in list_functions(EXPERIMENTS_DIR / f"{prim}.mlir"):
+            fn_module = split_dir / f"{fn_name}.mlir"
+            yield {
+                "name": f"{prim}:{fn_name}",
+                "file_dep": [str(fn_module)],
+                "targets": [str(_prim_dir(prim) / "screen" / f"infer_{fn_name}" / "pairs.csv")],
+                "actions": [(_screen_one, [prim, fn_name, fn_module])],
+            }
+
+
+# ── CINM 2.0 search ──────────────────────────────────────────────────────────
+
+def _cinm2_search_one(prim: str, fn_name: str, fn_module: pathlib.Path,
+                       dpus: int, tasklets: int, offset: int, marker: pathlib.Path) -> bool:
+    results_dir = _prim_dir(prim) / "cinm2_results"
+    print(f"  {fn_name} dpus={dpus} tasklets={tasklets}: BO search "
+          f"({OPTS['n_seeds']} seeds, offset={offset})")
+    cinmopt.bo_multiseed(
+        fn_module, results_dir, n_seeds=OPTS["n_seeds"], offset=offset,
+        workers=OPTS["workers"],
+        infer_opts={"fixed-dpus": dpus, "fixed-tasklets": tasklets},
+        cinm_opt=CINM_OPT,
+    )
+    marker.parent.mkdir(parents=True, exist_ok=True)
+    marker.touch()
+    return True
+
+
+@create_after(executed="screen")
+def task_cinm2_search():
+    """For each selected working group, run CINM 2.0's Bayesian search
+    n_seeds times with (dpus, tasklets) pinned (MRAM tiling enabled -- CINM
+    2.0's normal codegen)."""
+    if OPTS["n_seeds"] * 31 >= _OFFSET_STRIDE:
+        raise RuntimeError(f"n_seeds {OPTS['n_seeds']} too large for offset stride {_OFFSET_STRIDE}")
+
+    for prim in PRIMS:
+        split_dir = _prim_dir(prim) / "_split"
+        for fn_name in list_functions(EXPERIMENTS_DIR / f"{prim}.mlir"):
+            pairs_csv = _prim_dir(prim) / "screen" / fn_name / "pairs.csv"
+            if not pairs_csv.exists():
+                continue
+            fn_module = split_dir / f"{fn_name}.mlir"
+            pairs = pd.read_csv(pairs_csv)
+            for pair_idx, (dpus, tasklets) in enumerate(pairs[["dpus", "tasklets"]].itertuples(index=False)):
+                offset = _BASE_OFFSET + pair_idx * _OFFSET_STRIDE
+                marker = _prim_dir(prim) / "cinm2_search_markers" / fn_name / f"D{dpus}_T{tasklets}.done"
+                yield {
+                    "name": f"{prim}:{fn_name}:D{dpus}_T{tasklets}",
+                    "file_dep": [str(pairs_csv)],
+                    "targets": [str(marker)],
+                    "actions": [(_cinm2_search_one,
+                                 [prim, fn_name, fn_module, int(dpus), int(tasklets), offset, marker])],
+                }
+
+
+# ── compile ──────────────────────────────────────────────────────────────────
+
+def _compile_one(config: compile_run.Config, compile_root: pathlib.Path) -> bool:
+    compiled = compile_run.compile_config(config, compile_root=compile_root)
+    if not compiled.ok:
+        raise RuntimeError(f"{config.system} {config.fn_name} {config.label}: {compiled.error}")
+    return True
+
+
+@create_after(executed="screen")
+def task_compile_cinm1():
+    """Compile CINM 1.0 once per selected working group -- no search, its
+    tile sizes are inferred deterministically."""
+    for prim in PRIMS:
+        op = prim.removeprefix("prim_")
+        split_dir = _prim_dir(prim) / "_split"
+        compile_root = _prim_dir(prim) / "compiled"
+        for fn_name in list_functions(EXPERIMENTS_DIR / f"{prim}.mlir"):
+            pairs_csv = _prim_dir(prim) / "screen" / fn_name / "pairs.csv"
+            if not pairs_csv.exists():
+                continue
+            fn_module = split_dir / f"{fn_name}.mlir"
+            pairs = pd.read_csv(pairs_csv)
+            for dpus, tasklets in pairs[["dpus", "tasklets"]].itertuples(index=False):
+                dpus, tasklets = int(dpus), int(tasklets)
+                label = f"D{dpus}_T{tasklets}"
+                config = compile_run.Config(
+                    system="cinm1", fn_name=fn_name, label=label,
+                    params={"dpus": dpus, "tasklets": tasklets},
+                    fn_module=fn_module, prim=op,
+                    lower=cinm1.lowerer(dpus, tasklets, cinm_opt=CINM_OPT),
+                )
+                yield {
+                    "name": f"{prim}:{fn_name}:{label}",
+                    "file_dep": [str(pairs_csv)],
+                    "targets": [str(compile_root / "cinm1" / fn_name / label / "bin" / f"bench_{fn_name}")],
+                    "actions": [(_compile_one, [config, compile_root])],
+                }
+
+
+@create_after(executed="cinm2_search")
+def task_compile_cinm2():
+    """Compile every seed's best CINM 2.0 config for real."""
+    for prim in PRIMS:
+        op = prim.removeprefix("prim_")
+        results_dir = _prim_dir(prim) / "cinm2_results"
+        compile_root = _prim_dir(prim) / "compiled"
+        if not results_dir.exists():
+            continue
+        split_dir = _prim_dir(prim) / "_split"
+        for fn_name, seed, params in pools.best_per_seed(results_dir):
+            fn_module = split_dir / f"{fn_name}.mlir"
+            pool_csv = results_dir / f"infer_{fn_name}" / f"seed_{seed}" / "pool.csv"
+            config = compile_run.Config(
+                system="cinm2", fn_name=fn_name, label=seed, params=params,
+                fn_module=fn_module, prim=op,
+                lower=cinmopt.eval_solution_lowerer(params, cinm_opt=CINM_OPT),
+            )
+            yield {
+                "name": f"{prim}:{fn_name}:{seed}",
+                "file_dep": [str(pool_csv)],
+                "targets": [str(compile_root / "cinm2" / fn_name / seed / "bin" / f"bench_{fn_name}")],
+                "actions": [(_compile_one, [config, compile_root])],
+            }
+
+
+# ── run (sequential -- accurate wall-clock timing) ──────────────────────────
+
+def _discover_configs(prim: str) -> list[compile_run.Config]:
+    """Reconstruct every Config for a prim from what screen/cinm2_search
+    already wrote to disk (mirrors build_cinm1_configs/build_cinm2_configs
+    in experiment.py, but reading state back instead of computing it)."""
+    op = prim.removeprefix("prim_")
+    split_dir = _prim_dir(prim) / "_split"
+    configs = []
+    for fn_name in list_functions(EXPERIMENTS_DIR / f"{prim}.mlir"):
+        pairs_csv = _prim_dir(prim) / "screen" / fn_name / "pairs.csv"
+        if not pairs_csv.exists():
+            continue
+        fn_module = split_dir / f"{fn_name}.mlir"
+        pairs = pd.read_csv(pairs_csv)
+        for dpus, tasklets in pairs[["dpus", "tasklets"]].itertuples(index=False):
+            dpus, tasklets = int(dpus), int(tasklets)
+            configs.append(compile_run.Config(
+                system="cinm1", fn_name=fn_name, label=f"D{dpus}_T{tasklets}",
+                params={"dpus": dpus, "tasklets": tasklets}, fn_module=fn_module, prim=op,
+                lower=cinm1.lowerer(dpus, tasklets, cinm_opt=CINM_OPT),
+            ))
+
+    results_dir = _prim_dir(prim) / "cinm2_results"
+    if results_dir.exists():
+        for fn_name, seed, params in pools.best_per_seed(results_dir):
+            fn_module = split_dir / f"{fn_name}.mlir"
+            configs.append(compile_run.Config(
+                system="cinm2", fn_name=fn_name, label=seed, params=params,
+                fn_module=fn_module, prim=op,
+                lower=cinmopt.eval_solution_lowerer(params, cinm_opt=CINM_OPT),
+            ))
+    return configs
+
+
+def _bench_prim(prim: str, marker: pathlib.Path) -> bool:
+    configs = _discover_configs(prim)
+    compile_root = _prim_dir(prim) / "compiled"
+    run_root = _prim_dir(prim) / "run"
+    compiled = compile_run.discover_compiled(configs, compile_root=compile_root)
+    print(f"\n=== {prim}: running {len(compiled)} configs ===")
+    compile_run.run_configs(compiled, run_root=run_root, iters=OPTS["iters"])
+    marker.touch()
+    return True
+
+
+@create_after(executed="compile_cinm2")
+def task_bench():
+    """Benchmark every compiled config for a prim, one at a time -- not
+    parallel, so concurrent hardware runs don't skew wall-clock timing.
+    One task per prim (not per config): running is inherently sequential
+    here, so there is no parallelism for doit to schedule within it, and a
+    single task per prim keeps the dependency graph simple (it just needs
+    every compile_cinm1/compile_cinm2 subtask for that prim to be done)."""
+    for prim in PRIMS:
+        compile_root = _prim_dir(prim) / "compiled"
+        bins = [
+            str(compile_root / c.system / c.fn_name / c.label / "bin" / f"bench_{c.fn_name}")
+            for c in _discover_configs(prim)
+        ]
+        if not bins:
+            continue
+        marker = _prim_dir(prim) / "bench.done"
+        yield {
+            "name": prim,
+            "file_dep": bins,
+            "targets": [str(marker)],
+            "actions": [(_bench_prim, [prim, marker])],
+        }
+
+
+# ── compare + plot ───────────────────────────────────────────────────────────
+
+def _compare_prim(prim: str) -> bool:
+    run_root = _prim_dir(prim) / "run"
+    configs = _discover_configs(prim)
+    compile_root = _prim_dir(prim) / "compiled"
+    compiled = compile_run.discover_compiled(configs, compile_root=compile_root)
+
+    # Reconstruct RunResults by pointing at the already-written output dirs
+    # (no need to re-run bench_* -- bench.done guarantees they exist).
+    results = []
+    for c in compiled:
+        output_dir = run_root / c.config.system / c.config.fn_name / c.config.label / "output"
+        results.append(compile_run.RunResult(c, output_dir.exists(), output_dir))
+
+    cinm1_results = [r for r in results if r.compiled.config.system == "cinm1"]
+    cinm2_results = [r for r in results if r.compiled.config.system == "cinm2"]
+    cmp_df = compare(cinm1_results, cinm2_results)
+    cmp_df["prim"] = prim
+    cmp_df.to_csv(_prim_dir(prim) / "comparison.csv", index=False)
+    return True
+
+
+@create_after(executed="bench")
+def task_compare():
+    """Geomean speedup of CINM 2.0 (seed-median) over CINM 1.0 per working
+    group, aggregated per benchmark."""
+    for prim in PRIMS:
+        marker = _prim_dir(prim) / "bench.done"
+        if not marker.exists():
+            continue
+        yield {
+            "name": prim,
+            "file_dep": [str(marker)],
+            "targets": [str(_prim_dir(prim) / "comparison.csv")],
+            "actions": [(_compare_prim, [prim])],
+        }
+
+
+def _plot_all() -> bool:
+    comparison = pd.concat(
+        [pd.read_csv(_prim_dir(prim) / "comparison.csv") for prim in PRIMS
+         if (_prim_dir(prim) / "comparison.csv").exists()],
+        ignore_index=True,
+    )
+    out_dir = DATA_DIR / "plots"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    comparison.to_csv(out_dir / "comparison.csv", index=False)
+    print_summary(comparison)
+    plot_speedup(comparison, out_dir)
+    return True
+
+
+@create_after(executed="compare")
+def task_plot():
+    comparison_csvs = [str(_prim_dir(prim) / "comparison.csv") for prim in PRIMS]
+    return {
+        "file_dep": [p for p in comparison_csvs if pathlib.Path(p).exists()],
+        "targets": [str(DATA_DIR / "plots" / "cinm1_vs_cinm2_speedup.pdf")],
+        "actions": [_plot_all],
+    }
