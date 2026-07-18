@@ -89,6 +89,10 @@ struct UpmemInferenceOptions {
   bool useMRAMTiling = true;
   UpmemSimulatorId simulator = UpmemSimulatorId::CYCLE_ACCURATE;
   std::chrono::milliseconds evalTimeoutMs = std::chrono::milliseconds(2000);
+  // Pin dpus/tasklets to a fixed value instead of searching over them.
+  // -1 means "search normally".
+  int64_t fixedDpus = -1;
+  int64_t fixedTasklets = -1;
 };
 
 static void addAffineOpts(OpPassManager &pm) {
@@ -265,9 +269,16 @@ struct UpmemInferencePlugin : cinm::InferencePlugin {
                        cinm::ConfigSpace &space) override {
     SpaceBuilder b;
     simulators_.clear();
-    dpusVar_ = b.intRange(
-        "dpus", 1, platform.getMaxNumRanks() * platform.getMaxNumDpusPerRank());
-    taskletsVar_ = b.intRange("tasklets", 1, platform.getMaxNumTasklets());
+    const int64_t maxDpus =
+        platform.getMaxNumRanks() * platform.getMaxNumDpusPerRank();
+    const int64_t maxTasklets = platform.getMaxNumTasklets();
+    dpusVar_ = opts.fixedDpus > 0
+                   ? b.intRange("dpus", opts.fixedDpus, opts.fixedDpus)
+                   : b.intRange("dpus", 1, maxDpus);
+    taskletsVar_ =
+        opts.fixedTasklets > 0
+            ? b.intRange("tasklets", opts.fixedTasklets, opts.fixedTasklets)
+            : b.intRange("tasklets", 1, maxTasklets);
 
     refClone.getBody().walk([&](mlir::Operation *op) {
       if (auto gemv = llvm::dyn_cast<cinm::GemvOp>(op))
@@ -621,6 +632,8 @@ struct UpmemInferAcceleratorPass
     o.dumpFullPool = dumpFullPool;
     upmemOpts.annotateOpCosts = annotateOpCosts;
     upmemOpts.useMRAMTiling = useMRAMTiling;
+    upmemOpts.fixedDpus = fixedDpus;
+    upmemOpts.fixedTasklets = fixedTasklets;
     upmemOpts.simulator = simulator;
     upmemOpts.evalTimeoutMs = std::chrono::milliseconds(evalTimeoutMs);
     o.dumpDir = dumpDir;
