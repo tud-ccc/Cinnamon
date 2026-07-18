@@ -108,6 +108,14 @@ def UpmemInferAcceleratorPass : Pass<"upmem-infer-accelerator", "ModuleOp"> {
            "Dump the full pool (all valid configurations) into pool.csv, otherwise only the visited configurations are dumped.">,
     Option<"numWorkers", "n-workers", "unsigned", "0u",
            "Worker threads for exhaustive search (0 = hardware_concurrency)">,
+    Option<"fixedDpus", "fixed-dpus", "int64_t", "-1",
+           "Pin the number of DPUs to this value instead of searching over it "
+           "(-1 = search normally). Remaining dimensions are still searched, "
+           "so this fixes the working group while letting the tiling be chosen "
+           "for it -- useful for comparing codegen quality at a fixed group size">,
+    Option<"fixedTasklets", "fixed-tasklets", "int64_t", "-1",
+           "Pin the number of tasklets to this value instead of searching over "
+           "it (-1 = search normally). See fixed-dpus.">,
     ListOption<"evalSolution", "eval-solution", "int64_t",
                "Evaluate this single configuration (one int per space parameter) "
                "and commit it, bypassing search entirely">
