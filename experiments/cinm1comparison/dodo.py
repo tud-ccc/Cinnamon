@@ -33,12 +33,15 @@ import sys
 import pandas as pd
 from doit import create_after
 from doit.tools import result_dep
+from tqdm import tqdm 
 
 HERE = pathlib.Path(__file__).resolve().parent
 EXPERIMENTS_DIR = HERE.parent
 sys.path.insert(0, str(EXPERIMENTS_DIR))
 
+
 from cinm_experiments import cinm1, cinmopt, compile_run, measurements, pools  # noqa: E402
+from cinm_experiments.doit_reporter import TqdmReporter  # noqa: E402
 from cinm_experiments.paths import DEFAULT_CINM_OPT  # noqa: E402
 from cinm_experiments.split_source import list_functions, split_source  # noqa: E402
 
@@ -52,7 +55,7 @@ OPTS = dict(
     top_frac=0.10,
     min_configs=200,
     n_seeds=32,
-    iters=10,
+    iters=6,
     screen_sim="cycle-accurate",
     workers=os.cpu_count(),
 )
@@ -63,7 +66,17 @@ OPTS = dict(
 _OFFSET_STRIDE = 4096
 _BASE_OFFSET = 67
 
-DOIT_CONFIG = {"default_tasks": ["plot"], "verbosity": 2, "continue": True}
+DOIT_CONFIG = {
+    "default_tasks": ["plot"],
+    "verbosity": 2,
+    "continue": True,
+    # Pipelines here run into the tens of thousands of leaf tasks (BO
+    # search seeds x working groups x functions); the default console
+    # reporter's one-line-per-task log is unreadable at that scale.
+    # Override with `doit -r console` for a single invocation if you need
+    # the full per-task log back (e.g. while debugging a specific task).
+    "reporter": TqdmReporter,
+}
 
 
 @dataclasses.dataclass(frozen=True)
@@ -357,63 +370,79 @@ def _cinm2_search_groups(prim: str, fn_name: str, fn_module: pathlib.Path):
     )
 
 
-def _config_ids(prim: str):
-    """Yield (system, fn_name, label, dpus, tasklets, pair_idx) for every
-    config that will exist for `prim` once screening has written
-    pairs.csv. Unlike a compile_run.Config's params/lower, these identities
-    are fully known right after screening -- compile/run directories are
-    keyed off (system, fn_name, label) alone, and CINM 2.0's dpus/tasklets
-    are pinned to the pair's before its search even starts -- so this is the
-    single place task_compile_cinm1 and task_cinm2_search each derive the
-    same set of configs (and their bench_cinm1/bench_cinm2 tasks) from,
-    instead of re-deriving it (or, for CINM 2.0, waiting on search/compile
-    results) independently.
+def _config_ids():
+    """Yield (prim, system, fn_name, label, dpus, tasklets, pair_idx) for
+    every config that will exist once screening has written pairs.csv, for
+    every prim in PRIMS -- one flat sequence spanning ALL prims, in PRIMS
+    order (flip PRIMS to reverse it), not one sequence per prim. Unlike a
+    compile_run.Config's params/lower, these identities are fully known
+    right after screening -- compile/run directories are keyed off (system,
+    fn_name, label) alone, and CINM 2.0's dpus/tasklets are pinned to the
+    pair's before its search even starts -- so this is the single place
+    task_compile_cinm1 and task_cinm2_search each derive the same set of
+    configs (and their bench_cinm1/bench_cinm2 tasks) from, instead of
+    re-deriving it (or, for CINM 2.0, waiting on search/compile results)
+    independently.
 
-    The unconstrained (dpus/tasklets free) cinm2_unconstrained configs are
-    appended last, after every matched-config cinm1/cinm2 entry for every
-    function -- keeping them all in this one flat sequence is what lets
-    _prev_bench_task_dep chain the unconstrained sweep's hardware benches
-    onto the tail of the matched sweep's, so all three systems' real-hardware
-    runs still execute strictly one at a time."""
-    for fn_name in list_functions(PATHS.source_mlir(prim)):
-        pairs_csv = PATHS.pairs_csv(prim, fn_name)
-        if not pairs_csv.exists():
-            continue
-        pairs = pd.read_csv(pairs_csv)
-        for pair_idx, (dpus, tasklets) in enumerate(
-            pairs[["dpus", "tasklets"]].itertuples(index=False)
-        ):
-            dpus, tasklets = int(dpus), int(tasklets)
-            yield "cinm1", fn_name, f"D{dpus}_T{tasklets}", dpus, tasklets, pair_idx
-            for seed in gen_seeds(pair_idx):
-                yield "cinm2", fn_name, str(seed), dpus, tasklets, pair_idx
+    Spanning every prim in one sequence (rather than scoping this per prim,
+    as it used to) matters for _prev_bench_task_dep: each prim's benches
+    must run strictly one at a time (real hardware, wall-clock timing), but
+    with two independent per-prim chains -- each starting its own unchained
+    i==0 -- nothing stopped doit's dispatcher from interleaving them (both
+    chains' heads become ready around the same time, and each completion
+    re-races its chain's next link against whatever the other chain already
+    had waiting), which is exactly what happened before this was one
+    sequence. The unconstrained (dpus/tasklets free) cinm2_unconstrained
+    configs are appended after every matched-config cinm1/cinm2 entry for
+    that same prim -- keeping them all in this one flat sequence chains the
+    unconstrained sweep's hardware benches onto the tail of the matched
+    sweep's for that prim, so all three systems' real-hardware runs still
+    execute strictly one at a time, in prim order."""
+    for prim in PRIMS:
+        for fn_name in list_functions(PATHS.source_mlir(prim)):
+            pairs_csv = PATHS.pairs_csv(prim, fn_name)
+            if not pairs_csv.exists():
+                continue
+            pairs = pd.read_csv(pairs_csv)
+            for pair_idx, (dpus, tasklets) in enumerate(
+                pairs[["dpus", "tasklets"]].itertuples(index=False)
+            ):
+                dpus, tasklets = int(dpus), int(tasklets)
+                yield prim, "cinm1", fn_name, f"D{dpus}_T{tasklets}", dpus, tasklets, pair_idx
+                for seed in gen_seeds(pair_idx):
+                    yield prim, "cinm2", fn_name, str(seed), dpus, tasklets, pair_idx
 
-    for fn_name in list_functions(PATHS.source_mlir(prim)):
-        for seed in gen_seeds(0):
-            yield "cinm2_unconstrained", fn_name, str(seed), None, None, None
+        for fn_name in list_functions(PATHS.source_mlir(prim)):
+            for seed in gen_seeds(0):
+                yield prim, "cinm2_unconstrained", fn_name, str(seed), None, None, None
 
 
-def _config_index(config_ids: list[tuple]) -> dict[tuple[str, str, str], int]:
-    return {(system, fn_name, label): i
-            for i, (system, fn_name, label, *_rest) in enumerate(config_ids)}
+def _config_index(config_ids: list[tuple]) -> dict[tuple[str, str, str, str], int]:
+    return {(prim, system, fn_name, label): i
+            for i, (prim, system, fn_name, label, *_rest) in enumerate(config_ids)}
 
 
 def _prev_bench_task_dep(
-    prim: str,
     config_ids: list[tuple],
-    index_of: dict[tuple[str, str, str], int],
+    index_of: dict[tuple[str, str, str, str], int],
+    prim: str,
     system: str,
     fn_name: str,
     label: str,
 ) -> list[str]:
     """task_dep entry (or none, for the first config overall) on the
-    bench_cinm1/bench_cinm2 subtask immediately before (system, fn_name,
-    label) in `config_ids`'s order. Chains those tasks -- which, unlike
-    compile, must run strictly one at a time so concurrent hardware runs
-    don't skew wall-clock timing -- into one global sequence across both
-    systems, even though they're generated by two different task creator
-    functions (doit doesn't allow two creators to share a basename, so
-    there's no single 'bench' task group to chain within).
+    bench_cinm1/bench_cinm2 subtask immediately before (prim, system,
+    fn_name, label) in `config_ids`'s order. Chains those tasks -- which,
+    unlike compile, must run strictly one at a time so concurrent hardware
+    runs don't skew wall-clock timing -- into one global sequence across
+    every prim and system, even though they're generated by different task
+    creator functions (doit doesn't allow two creators to share a basename,
+    so there's no single 'bench' task group to chain within).
+
+    The predecessor can belong to a *different* prim than `prim` (the last
+    entry of one prim's sequence chains to the first entry of the next, per
+    _config_ids) -- so the returned task name uses the predecessor's own
+    prim, not the `prim` argument.
 
     Must be task_dep, not file_dep on the predecessor's bench.done marker:
     doit's implicit file_dep -> task_dep inference (control.py
@@ -424,11 +453,11 @@ def _prev_bench_task_dep(
     the task directly resolves correctly instead (via the loader's
     delayed-placeholder machinery), regardless of which creator happens to
     run first."""
-    i = index_of[(system, fn_name, label)]
+    i = index_of[(prim, system, fn_name, label)]
     if i == 0:
         return []
-    prev_system, prev_fn_name, prev_label = config_ids[i - 1][:3]
-    return [f"bench_{prev_system}:{prim}:{prev_fn_name}:{prev_label}"]
+    prev_prim, prev_system, prev_fn_name, prev_label = config_ids[i - 1][:4]
+    return [f"bench_{prev_system}:{prev_prim}:{prev_fn_name}:{prev_label}"]
 
 
 @create_after(
@@ -453,11 +482,11 @@ def task_cinm2_search():
             f"n_seeds {OPTS['n_seeds']} too large for offset stride {_OFFSET_STRIDE}"
         )
 
+    config_ids = list(_config_ids())
+    index_of = _config_index(config_ids)
     for prim in PRIMS:
         op = prim.removeprefix("prim_")
         compile_root = PATHS.compile_root(prim)
-        config_ids = list(_config_ids(prim))
-        index_of = _config_index(config_ids)
         for fn_name in list_functions(PATHS.source_mlir(prim)):
             fn_module = PATHS.split_module(prim, fn_name)
             for group in _cinm2_search_groups(prim, fn_name, fn_module):
@@ -515,7 +544,7 @@ def task_cinm2_search():
                         "name": f"{prim}:{fn_name}:{seed}",
                         "file_dep": [str(marker)],
                         "task_dep": _prev_bench_task_dep(
-                            prim, config_ids, index_of, group.system, fn_name, seed
+                            config_ids, index_of, prim, group.system, fn_name, seed
                         ),
                         "targets": [str(bench_marker)],
                         "actions": [
@@ -583,53 +612,52 @@ def task_compile_cinm1():
     bench_cinm1 task (basename "bench_cinm1", see _bench_one_config) right
     here, so the set of CINM 1.0 configs is derived exactly once instead of
     separately for compile and bench."""
-    for prim in PRIMS:
+    config_ids = list(_config_ids())
+    index_of = _config_index(config_ids)
+    for prim, system, fn_name, label, dpus, tasklets, _ in config_ids:
+        if system != "cinm1":
+            continue
         op = prim.removeprefix("prim_")
         compile_root = PATHS.compile_root(prim)
-        config_ids = list(_config_ids(prim))
-        index_of = _config_index(config_ids)
-        for system, fn_name, label, dpus, tasklets, _ in config_ids:
-            if system != "cinm1":
-                continue
-            fn_module = PATHS.split_module(prim, fn_name)
-            config = compile_run.Config(
-                system="cinm1",
-                fn_name=fn_name,
-                label=label,
-                params={"dpus": dpus, "tasklets": tasklets},
-                fn_module=fn_module,
-                prim=op,
-                lower=cinm1.lowerer(dpus, tasklets, cinm_opt=CINM_OPT),
-            )
-            marker = PATHS.compile_marker(prim, config)
-            yield {
-                "basename": "compile_cinm1",
-                "name": f"{prim}:{fn_name}:{label}",
-                "file_dep": [str(PATHS.pairs_csv(prim, fn_name))],
-                "targets": [str(marker)],
-                "actions": [(_compile_one, [config, compile_root, marker])],
-            }
+        fn_module = PATHS.split_module(prim, fn_name)
+        config = compile_run.Config(
+            system="cinm1",
+            fn_name=fn_name,
+            label=label,
+            params={"dpus": dpus, "tasklets": tasklets},
+            fn_module=fn_module,
+            prim=op,
+            lower=cinm1.lowerer(dpus, tasklets, cinm_opt=CINM_OPT),
+        )
+        marker = PATHS.compile_marker(prim, config)
+        yield {
+            "basename": "compile_cinm1",
+            "name": f"{prim}:{fn_name}:{label}",
+            "file_dep": [str(PATHS.pairs_csv(prim, fn_name))],
+            "targets": [str(marker)],
+            "actions": [(_compile_one, [config, compile_root, marker])],
+        }
 
-            bench_marker = PATHS.bench_marker(prim, config)
-            yield {
-                "basename": "bench_cinm1",
-                "name": f"{prim}:{fn_name}:{label}",
-                "file_dep": [str(marker)],
-                "task_dep": _prev_bench_task_dep(prim, config_ids, index_of, system, fn_name, label),
-                "targets": [str(bench_marker)],
-                "actions": [
-                    (
-                        _bench_one_config,
-                        [config],
-                        dict(
-                            compile_root=compile_root,
-                            run_root=PATHS.run_root(prim),
-                            iters=OPTS["iters"],
-                            bench_marker=bench_marker,
-                        ),
-                    )
-                ],
-            }
+        bench_marker = PATHS.bench_marker(prim, config)
+        yield {
+            "basename": "bench_cinm1",
+            "name": f"{prim}:{fn_name}:{label}",
+            "file_dep": [str(marker)],
+            "task_dep": _prev_bench_task_dep(config_ids, index_of, prim, system, fn_name, label),
+            "targets": [str(bench_marker)],
+            "actions": [
+                (
+                    _bench_one_config,
+                    [config],
+                    dict(
+                        compile_root=compile_root,
+                        run_root=PATHS.run_root(prim),
+                        iters=OPTS["iters"],
+                        bench_marker=bench_marker,
+                    ),
+                )
+            ],
+        }
 
 
 # ── run (sequential -- accurate wall-clock timing) ──────────────────────────
@@ -716,7 +744,7 @@ def _bench_one_config(
     -- rerun it explicitly via `doit retry_failed_bench`."""
     compiled = compile_run.discover_compiled([config], compile_root=compile_root)[0]
     if not compiled.ok:
-        print(f"  SKIP bench (not compiled): {config.system} {config.fn_name} {config.label}")
+        tqdm.write(f"  SKIP bench (not compiled): {config.system} {config.fn_name} {config.label}")
     else:
         r = compile_run.run_config(compiled, run_root=run_root, iters=iters)
         if not r.ok and compile_run.is_dpu_allocation_error(r.error):
