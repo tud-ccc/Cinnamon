@@ -42,7 +42,7 @@ from cinm_experiments import cinm1, cinmopt, compile_run, measurements, pools  #
 from cinm_experiments.paths import DEFAULT_CINM_OPT  # noqa: E402
 from cinm_experiments.split_source import list_functions, split_source  # noqa: E402
 
-from plot import plot_speedup, print_summary  # noqa: E402
+from plot import geomean, plot_best_speedup, plot_speedup, plot_speedup_violin, print_summary  # noqa: E402
 
 PRIMS = ["prim_gemv", "prim_red"]
 DATA_DIR = HERE / "data"
@@ -52,6 +52,13 @@ OPTS = dict(
     top_frac=0.10,
     min_configs=200,
     n_seeds=32,
+    # Independent unconstrained (dpus/tasklets free) BO searches per
+    # function, for the best-vs-best comparison (see
+    # task_cinm2_search_unconstrained). Lower than n_seeds: this runs once
+    # per function rather than once per (dpus,tasklets) working group, so
+    # even at half the seed count it's already far fewer hardware benches
+    # than the matched-config sweep.
+    n_seeds_unconstrained=16,
     iters=10,
     screen_sim="cycle-accurate",
     workers=os.cpu_count(),
@@ -62,6 +69,12 @@ OPTS = dict(
 # never collide within the same {fn_name}/ results directory.
 _OFFSET_STRIDE = 4096
 _BASE_OFFSET = 67
+
+# The unconstrained search has exactly one unconstrained-search call per
+# fn_name (no per-pair loop), and each fn_name already gets its own results
+# subdirectory (cinm2_unconstrained_pool_csv), so unlike the matched search's
+# per-pair offsets, every call can safely reuse the same offset.
+_UNCONSTRAINED_OFFSET = _BASE_OFFSET
 
 DOIT_CONFIG = {"default_tasks": ["plot"], "verbosity": 2, "continue": True}
 
@@ -119,6 +132,17 @@ class Paths:
             / f"D{dpus}_T{tasklets}.done"
         )
 
+    def cinm2_unconstrained_results_dir(self, prim: str) -> pathlib.Path:
+        return self.prim_dir(prim) / "cinm2_unconstrained_results"
+
+    def cinm2_unconstrained_pool_csv(self, prim: str, fn_name: str, seed: str) -> pathlib.Path:
+        return (
+            self.cinm2_unconstrained_results_dir(prim)
+            / f"infer_{fn_name}"
+            / f"seed_{seed}"
+            / "pool.csv"
+        )
+
     def compile_root(self, prim: str) -> pathlib.Path:
         return self.prim_dir(prim) / "compiled"
 
@@ -160,6 +184,9 @@ class Paths:
 
     def comparison_csv(self, prim: str) -> pathlib.Path:
         return self.prim_dir(prim) / "comparison.csv"
+
+    def comparison_best_csv(self, prim: str) -> pathlib.Path:
+        return self.prim_dir(prim) / "comparison_best.csv"
 
     def plots_dir(self) -> pathlib.Path:
         return self.data_dir / "plots"
@@ -287,6 +314,36 @@ def _cinm2_search_one(
     return True
 
 
+def _cinm2_search_unconstrained_one(
+    prim: str,
+    fn_name: str,
+    fn_module: pathlib.Path,
+) -> bool:
+    """Like _cinm2_search_one, but dpus/tasklets are left as free search
+    dimensions instead of pinned to a screened working group -- one call per
+    function, not per (dpus, tasklets) pair."""
+    results_dir = PATHS.cinm2_unconstrained_results_dir(prim)
+    print(
+        f"  {fn_name}: unconstrained BO search, dpus/tasklets free "
+        f"({OPTS['n_seeds_unconstrained']} seeds)"
+    )
+    cinmopt.bo_multiseed(
+        fn_module,
+        results_dir,
+        n_seeds=OPTS["n_seeds_unconstrained"],
+        offset=_UNCONSTRAINED_OFFSET,
+        workers=OPTS["workers"],
+        infer_opts={
+            "simulator": "hybrid",
+            "eval-timeout-ms": 400,
+            "max-evals": 100,
+            "n-init": 10,
+        },
+        cinm_opt=CINM_OPT,
+    )
+    return True
+
+
 def get_offset(pair_idx):
     return _BASE_OFFSET + pair_idx * _OFFSET_STRIDE
 
@@ -294,6 +351,10 @@ def get_offset(pair_idx):
 def gen_seeds(pair_idx):
     offset = get_offset(pair_idx)
     return (31 * k + offset for k in range(0, OPTS["n_seeds"]))
+
+
+def gen_seeds_unconstrained():
+    return (31 * k + _UNCONSTRAINED_OFFSET for k in range(0, OPTS["n_seeds_unconstrained"]))
 
 
 def _config_ids(prim: str):
@@ -306,7 +367,14 @@ def _config_ids(prim: str):
     single place task_compile_cinm1 and task_cinm2_search each derive the
     same set of configs (and their bench_cinm1/bench_cinm2 tasks) from,
     instead of re-deriving it (or, for CINM 2.0, waiting on search/compile
-    results) independently."""
+    results) independently.
+
+    The unconstrained (dpus/tasklets free) cinm2_unc configs are appended
+    last, after every matched-config cinm1/cinm2 entry for every function --
+    keeping them all in this one flat sequence is what lets
+    _prev_bench_task_dep chain task_cinm2_search_unconstrained's hardware
+    benches onto the tail of the matched-config sweep's, so all three
+    systems' real-hardware runs still execute strictly one at a time."""
     for fn_name in list_functions(PATHS.source_mlir(prim)):
         pairs_csv = PATHS.pairs_csv(prim, fn_name)
         if not pairs_csv.exists():
@@ -320,13 +388,17 @@ def _config_ids(prim: str):
             for seed in gen_seeds(pair_idx):
                 yield "cinm2", fn_name, str(seed), dpus, tasklets, pair_idx
 
+    for fn_name in list_functions(PATHS.source_mlir(prim)):
+        for seed in gen_seeds_unconstrained():
+            yield "cinm2_unc", fn_name, str(seed), None, None, None
+
 
 def _config_index(config_ids: list[tuple]) -> dict[tuple[str, str, str], int]:
     return {(system, fn_name, label): i
             for i, (system, fn_name, label, *_rest) in enumerate(config_ids)}
 
 
-def _prev_bench_marker_dep(
+def _prev_bench_task_dep(
     prim: str,
     config_ids: list[tuple],
     index_of: dict[tuple[str, str, str], int],
@@ -334,21 +406,29 @@ def _prev_bench_marker_dep(
     fn_name: str,
     label: str,
 ) -> list[str]:
-    """file_dep entry (or none, for the first config overall) on the
-    bench.done marker of the config immediately before (system, fn_name,
-    label) in `config_ids`'s order. Chains bench_cinm1/bench_cinm2 tasks --
-    which, unlike compile, must run strictly one at a time so concurrent
-    hardware runs don't skew wall-clock timing -- into one global sequence
-    across both systems, even though they're generated by two different
-    task creator functions (doit doesn't allow two creators to share a
-    basename, so they can't be a single 'bench' task group that a task_dep
-    chain could name directly; a shared file target works across creators
-    where a task name wouldn't)."""
+    """task_dep entry (or none, for the first config overall) on the
+    bench_cinm1/bench_cinm2 subtask immediately before (system, fn_name,
+    label) in `config_ids`'s order. Chains those tasks -- which, unlike
+    compile, must run strictly one at a time so concurrent hardware runs
+    don't skew wall-clock timing -- into one global sequence across both
+    systems, even though they're generated by two different task creator
+    functions (doit doesn't allow two creators to share a basename, so
+    there's no single 'bench' task group to chain within).
+
+    Must be task_dep, not file_dep on the predecessor's bench.done marker:
+    doit's implicit file_dep -> task_dep inference (control.py
+    set_implicit_deps) is computed once, right when each delayed creator's
+    tasks are generated, against whatever targets are already known at that
+    moment -- it does NOT retroactively wire up a file_dep against a target
+    a *different*, not-yet-expanded delayed creator produces later. Naming
+    the task directly resolves correctly instead (via the loader's
+    delayed-placeholder machinery), regardless of which creator happens to
+    run first."""
     i = index_of[(system, fn_name, label)]
     if i == 0:
         return []
     prev_system, prev_fn_name, prev_label = config_ids[i - 1][:3]
-    return [str(PATHS.bench_marker_id(prim, prev_system, prev_fn_name, prev_label))]
+    return [f"bench_{prev_system}:{prim}:{prev_fn_name}:{prev_label}"]
 
 
 @create_after(executed="screen", creates=["compile_cinm2", "cinm2_search", "bench_cinm2"])
@@ -426,10 +506,8 @@ def task_cinm2_search():
                     yield {
                         "basename": "bench_cinm2",
                         "name": f"{prim}:{fn_name}:{seed}",
-                        "file_dep": [
-                            str(marker),
-                            *_prev_bench_marker_dep(prim, config_ids, index_of, "cinm2", fn_name, seed),
-                        ],
+                        "file_dep": [str(marker)],
+                        "task_dep": _prev_bench_task_dep(prim, config_ids, index_of, "cinm2", fn_name, seed),
                         "targets": [str(bench_marker)],
                         "actions": [
                             (
@@ -444,6 +522,87 @@ def task_cinm2_search():
                             )
                         ],
                     }
+
+
+@create_after(
+    executed="screen",
+    creates=["compile_cinm2_unconstrained", "cinm2_search_unconstrained", "bench_cinm2_unconstrained"],
+)
+def task_cinm2_search_unconstrained():
+    """For each function (not each screened (dpus, tasklets) working group),
+    run CINM 2.0's Bayesian search n_seeds_unconstrained times with dpus and
+    tasklets left free alongside every other search dimension, instead of
+    pinned. Not part of the default pipeline -- run explicitly (`doit
+    cinm2_search_unconstrained` or `doit plot_best`) since it's an additional
+    real-hardware sweep on top of the matched-config one. Feeds
+    task_compare_best / plot_best_speedup's steelmanned-CINM-1.0 comparison,
+    see plot.py."""
+    for prim in PRIMS:
+        op = prim.removeprefix("prim_")
+        compile_root = PATHS.compile_root(prim)
+        config_ids = list(_config_ids(prim))
+        index_of = _config_index(config_ids)
+        for fn_name in list_functions(PATHS.source_mlir(prim)):
+            fn_module = PATHS.split_module(prim, fn_name)
+            yield {
+                "basename": "cinm2_search_unconstrained",
+                "name": f"{prim}:{fn_name}",
+                "file_dep": [str(fn_module)],
+                "targets": [
+                    str(PATHS.cinm2_unconstrained_pool_csv(prim, fn_name, seed))
+                    for seed in gen_seeds_unconstrained()
+                ],
+                "actions": [
+                    (_cinm2_search_unconstrained_one, [prim, fn_name, fn_module])
+                ],
+            }
+
+            for seed in gen_seeds_unconstrained():
+                seed = str(seed)
+                config = compile_run.Config(
+                    system="cinm2_unc",
+                    fn_name=fn_name,
+                    label=seed,
+                    # Will be replaced once we know which config params are the best
+                    params={},
+                    fn_module=fn_module,
+                    prim=op,
+                    lower=None,  # lower also gets replaced
+                )
+                marker = PATHS.compile_marker(prim, config)
+                pool_csv = PATHS.cinm2_unconstrained_pool_csv(prim, fn_name, seed)
+                yield {
+                    "basename": "compile_cinm2_unconstrained",
+                    "name": f"{prim}:{fn_name}:{seed}",
+                    "file_dep": [str(pool_csv)],
+                    "targets": [str(marker)],
+                    "actions": [
+                        (_compile_best, [config, pool_csv, compile_root, marker])
+                    ],
+                }
+
+                bench_marker = PATHS.bench_marker(prim, config)
+                yield {
+                    "basename": "bench_cinm2_unconstrained",
+                    "name": f"{prim}:{fn_name}:{seed}",
+                    "file_dep": [str(marker)],
+                    "task_dep": _prev_bench_task_dep(
+                        prim, config_ids, index_of, "cinm2_unc", fn_name, seed
+                    ),
+                    "targets": [str(bench_marker)],
+                    "actions": [
+                        (
+                            _bench_one_config,
+                            [config],
+                            dict(
+                                compile_root=compile_root,
+                                run_root=PATHS.run_root(prim),
+                                iters=OPTS["iters"],
+                                bench_marker=bench_marker,
+                            ),
+                        )
+                    ],
+                }
 
 
 # ── compile ──────────────────────────────────────────────────────────────────
@@ -527,10 +686,8 @@ def task_compile_cinm1():
             yield {
                 "basename": "bench_cinm1",
                 "name": f"{prim}:{fn_name}:{label}",
-                "file_dep": [
-                    str(marker),
-                    *_prev_bench_marker_dep(prim, config_ids, index_of, system, fn_name, label),
-                ],
+                "file_dep": [str(marker)],
+                "task_dep": _prev_bench_task_dep(prim, config_ids, index_of, system, fn_name, label),
                 "targets": [str(bench_marker)],
                 "actions": [
                     (
@@ -594,6 +751,31 @@ def _discover_configs(prim: str) -> list[compile_run.Config]:
     return configs
 
 
+def _discover_unconstrained_configs(prim: str) -> list[compile_run.Config]:
+    """Like _discover_configs' CINM 2.0 branch, but reading back
+    task_cinm2_search_unconstrained's results dir (system tag "cinm2_unc")
+    instead of the matched search's."""
+    op = prim.removeprefix("prim_")
+    configs = []
+    results_dir = PATHS.cinm2_unconstrained_results_dir(prim)
+    if not results_dir.exists():
+        return configs
+    for fn_name, seed, params in pools.best_per_seed(results_dir):
+        fn_module = PATHS.split_module(prim, fn_name)
+        configs.append(
+            compile_run.Config(
+                system="cinm2_unc",
+                fn_name=fn_name,
+                label=seed,
+                params=params,
+                fn_module=fn_module,
+                prim=op,
+                lower=cinmopt.eval_solution_lowerer(params, cinm_opt=CINM_OPT),
+            )
+        )
+    return configs
+
+
 def _bench_one_config(
     config: compile_run.Config,
     *,
@@ -615,6 +797,7 @@ def _bench_one_config(
     else:
         r = compile_run.run_config(compiled, run_root=run_root, iters=iters)
         if not r.ok and compile_run.is_dpu_allocation_error(r.error):
+            # retry
             r = compile_run.run_config(compiled, run_root=run_root, iters=iters)
         if not r.ok:
             print(f"  FAIL run: {config.system} {config.fn_name} {config.label}: {r.error[:200]}")
@@ -718,6 +901,7 @@ def compare(
         cinm2_raw.groupby(["fn_name", "dpus", "tasklets"])["net_time_ms"]
         .agg(
             cinm2_ms="median",
+            cinm2_ms_geomean=geomean,
             cinm2_p25=lambda s: s.quantile(0.25),
             cinm2_p75=lambda s: s.quantile(0.75),
             cinm2_n="count",
@@ -736,6 +920,11 @@ def compare(
             file=sys.stderr,
         )
     merged["speedup"] = merged["cinm1_ms"] / merged["cinm2_ms"]
+    # Per-config speedup with CINM2's seed noise collapsed by geomean instead
+    # of by seed-median -- the population plot_speedup_violin draws one violin
+    # point per (dpus,tasklets) config from, so config-to-config spread stays
+    # visible instead of also being averaged away.
+    merged["speedup_seed_geomean"] = merged["cinm1_ms"] / merged["cinm2_ms_geomean"]
     return merged
 
 
@@ -776,6 +965,75 @@ def task_compare():
         }
 
 
+def _cinm1_best_per_fn(prim: str) -> pd.DataFrame:
+    """CINM 1.0's lowest net time reached anywhere in its matched-config
+    sweep, per fn_name -- the steelmanned baseline comparison_best.csv uses,
+    as opposed to comparison.csv's per-(dpus,tasklets) matched one."""
+    configs = [c for c in _discover_configs(prim) if c.system == "cinm1"]
+    compiled = compile_run.discover_compiled(configs, compile_root=PATHS.compile_root(prim))
+    results = [
+        compile_run.RunResult(
+            c, PATHS.run_output_dir(prim, c.config).exists(), PATHS.run_output_dir(prim, c.config)
+        )
+        for c in compiled
+    ]
+    frame = measurements.results_to_frame(results)
+    return (
+        frame.groupby("fn_name")["net_time_ms"]
+        .agg(cinm1_best_ms="min", cinm1_n_configs="count")
+        .reset_index()
+    )
+
+
+def _compare_best_prim(prim: str) -> bool:
+    cinm1_best = _cinm1_best_per_fn(prim)
+
+    configs = _discover_unconstrained_configs(prim)
+    compiled = compile_run.discover_compiled(configs, compile_root=PATHS.compile_root(prim))
+    results = [
+        compile_run.RunResult(
+            c, PATHS.run_output_dir(prim, c.config).exists(), PATHS.run_output_dir(prim, c.config)
+        )
+        for c in compiled
+    ]
+    cinm2_unc = measurements.results_to_frame(results).rename(
+        columns={"net_time_ms": "cinm2_unc_ms", "label": "seed"}
+    )
+
+    merged = cinm2_unc.merge(cinm1_best, on="fn_name", how="inner")
+    missing = set(cinm2_unc.fn_name) - set(merged.fn_name)
+    if missing:
+        print(
+            f"  WARNING: {len(missing)} fn_name(s) have CINM2 unconstrained results "
+            f"but no CINM1 baseline: {sorted(missing)}",
+            file=sys.stderr,
+        )
+    merged["speedup_vs_cinm1_best"] = merged["cinm1_best_ms"] / merged["cinm2_unc_ms"]
+    merged["prim"] = prim
+    merged.to_csv(PATHS.comparison_best_csv(prim), index=False)
+    return True
+
+
+@create_after(executed="screen")
+def task_compare_best():
+    """Best-vs-best comparison, one row per (fn_name, seed): CINM 1.0's best
+    time anywhere in its matched-config sweep vs CINM 2.0's unconstrained
+    search (task_cinm2_search_unconstrained), seed indexing CINM 2.0's
+    independent search runs. Not part of the default pipeline -- depends on
+    task_cinm2_search_unconstrained's hardware benches, which a plain `doit`
+    doesn't run."""
+    for prim in PRIMS:
+        yield {
+            "name": prim,
+            "uptodate": [
+                result_dep(f"bench_cinm1:{prim}"),
+                result_dep(f"bench_cinm2_unconstrained:{prim}"),
+            ],
+            "targets": [str(PATHS.comparison_best_csv(prim))],
+            "actions": [(_compare_best_prim, [prim])],
+        }
+
+
 def _plot_all() -> bool:
     comparison = pd.concat(
         [
@@ -790,6 +1048,7 @@ def _plot_all() -> bool:
     comparison.to_csv(out_dir / "comparison.csv", index=False)
     print_summary(comparison)
     plot_speedup(comparison, out_dir)
+    plot_speedup_violin(comparison, out_dir)
     return True
 
 
@@ -798,6 +1057,41 @@ def task_plot():
     comparison_csvs = [PATHS.comparison_csv(prim) for prim in PRIMS]
     return {
         "file_dep": [str(p) for p in comparison_csvs if p.exists()],
-        "targets": [str(PATHS.plots_dir() / "cinm1_vs_cinm2_speedup.pdf")],
+        "targets": [
+            str(PATHS.plots_dir() / "cinm1_vs_cinm2_speedup.pdf"),
+            str(PATHS.plots_dir() / "cinm1_vs_cinm2_speedup_violin.pdf"),
+        ],
         "actions": [_plot_all],
+    }
+
+
+def _plot_best_all() -> bool:
+    comparison_best = pd.concat(
+        [
+            pd.read_csv(PATHS.comparison_best_csv(prim))
+            for prim in PRIMS
+            if PATHS.comparison_best_csv(prim).exists()
+        ],
+        ignore_index=True,
+    )
+    out_dir = PATHS.plots_dir()
+    out_dir.mkdir(parents=True, exist_ok=True)
+    comparison_best.to_csv(out_dir / "comparison_best.csv", index=False)
+    plot_best_speedup(comparison_best, out_dir)
+    return True
+
+
+def task_plot_best():
+    """Not part of the default pipeline -- run explicitly (`doit
+    plot_best`), since it depends on the unconstrained CINM 2.0 search's
+    hardware benches (task_cinm2_search_unconstrained), which a plain `doit`
+    doesn't run."""
+    comparison_best_csvs = [PATHS.comparison_best_csv(prim) for prim in PRIMS]
+    return {
+        "file_dep": [str(p) for p in comparison_best_csvs if p.exists()],
+        "targets": [
+            str(PATHS.plots_dir() / "cinm1_best_vs_cinm2_speedup_violin.pdf"),
+            str(PATHS.plots_dir() / "cinm1_best_vs_cinm2_speedup_bar.pdf"),
+        ],
+        "actions": [_plot_best_all],
     }
