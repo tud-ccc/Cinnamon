@@ -261,5 +261,5 @@ int64_t UpmemAcceleratorAttr::bufferSizeOfLeaf() const {
 }
 
 bool UpmemPlatformAttr::isOffloadingTarget(Operation *op) const {
-  return isa<cinm::GemmOp, cinm::GemvOp>(op);
+  return isa<cinm::GemmOp, cinm::GemvOp, cinm::ReduceOp, cinm::ElementwiseOp>(op);
 }

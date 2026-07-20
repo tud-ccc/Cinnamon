@@ -975,9 +975,16 @@ struct ConvertCinmGemvToCnm : public OpConversionPattern<cinm::GemvOp> {
     Value outputInit = getOutputInitForGemmLike(op, builder);
 
     llvm::SmallVector<Value, 1> newResults;
+    // Only lhs/rhs are scattered as reduction inputs here (matching the two
+    // entries in reductionDimensionsSorted below); bias/out are folded into
+    // outputInit above and allocated once via outputInitializers. Passing
+    // the full adaptor.getOperands() (4 segments: lhs, rhs, bias, out) would
+    // inflate convertCinmToCnm's per-tasklet WRAM budget divisor with two
+    // operands that never get their own buffer.
     if (convertCinmToCnm(
             builder, op, workgroup.getResult(), {{1}, {0}},
-            adaptor.getOperands(), ValueRange{outputInit},
+            ValueRange{adaptor.getLhs(), adaptor.getRhs()},
+            ValueRange{outputInit},
             ValueRange{op.getOut()}, op->getResults(), newResults,
             [&](ImplicitLocOpBuilder &builder, ValueRange inputs,
                 ValueRange outputs) {
