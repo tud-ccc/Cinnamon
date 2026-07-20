@@ -47,6 +47,10 @@ namespace mlir::cnm {
 
 namespace {
 
+struct Opts {
+  bool cinm1codegen = false;
+};
+
 template <typename T> T reduceMul(ArrayRef<T> arr) {
   T result{1};
   for (const T &elem : arr) {
@@ -154,7 +158,7 @@ static LogicalResult convertCnmScatterToUpmem(RewriterBase &rewriter,
 
 static void createTransfer(RewriterBase &rewriter, bool toWram, Location loc,
                            upmem::StaticAllocOp mramBuf,
-                           TypedValue<MemRefType> wramBuffer) {
+                           TypedValue<MemRefType> wramBuffer, Opts opts) {
 
   auto mramBufTy = mramBuf.getBuffer().getType();
   auto wramBufTy = wramBuffer.getType();
@@ -164,7 +168,7 @@ static void createTransfer(RewriterBase &rewriter, bool toWram, Location loc,
   auto taskletId = upmem::TaskletDimOp::create(rewriter, loc);
 
   Operation *insertionPointReset = nullptr;
-  if (!isBroadcast) {
+  if (!isBroadcast || opts.cinm1codegen) {
     // scatter over tasklets
     assert(mramBufTy.getRank() == wramBufTy.getRank() + 1);
 
@@ -253,7 +257,7 @@ static bool isScatterBroadcastOverThreads(cnm::AllocOp alloc) {
 }
 
 static LogicalResult convertCnmLaunchToUpmem(cnm::LaunchOp launch,
-                                             RewriterBase &rewriter,
+                                             RewriterBase &rewriter, Opts opts,
                                              SymbolTable rootModule,
                                              ModuleOp dpuKernelModule) {
 
@@ -309,7 +313,7 @@ static LogicalResult convertCnmLaunchToUpmem(cnm::LaunchOp launch,
           MemRefType::get(bufShape, bufferType.getElementType(),
                           MemRefLayoutAttrInterface{}, wramMemspaceAttr);
 
-      if (isScatterBroadcastOverThreads(alloc)) {
+      if (!opts.cinm1codegen && isScatterBroadcastOverThreads(alloc)) {
         // If all threads see the same buffer (broadcast), then we only
         // create one static buffer in WRAM.
         auto wrambuf =
@@ -385,7 +389,7 @@ static LogicalResult convertCnmLaunchToUpmem(cnm::LaunchOp launch,
   rewriter.setInsertionPointToEnd(&dpuProgram.getBody().front());
   for (auto [buf, mramBuf] : buffersToMramBuf) {
     auto wramBuf = buffersToWramBufValue[buf];
-    createTransfer(rewriter, true, buf.getLoc(), mramBuf, wramBuf);
+    createTransfer(rewriter, true, buf.getLoc(), mramBuf, wramBuf, opts);
     rewriter.setInsertionPointToEnd(&dpuProgram.getBody().front());
   }
 
@@ -399,7 +403,7 @@ static LogicalResult convertCnmLaunchToUpmem(cnm::LaunchOp launch,
     auto wramBuf = buffersToWramBufValue[buf];
     auto mramBuf = buffersToMramBuf[buf];
 
-    createTransfer(rewriter, false, buf.getLoc(), mramBuf, wramBuf);
+    createTransfer(rewriter, false, buf.getLoc(), mramBuf, wramBuf, opts);
     rewriter.setInsertionPointToEnd(&dpuProgram.getBody().front());
   }
 
@@ -459,6 +463,7 @@ struct ConvertCnmToUPMEMPass
 
   void runOnOperation() final {
     Operation *rootOp = getOperation();
+    Opts opts{.cinm1codegen = cinm1Codegen};
 
     // Determine kernel module name: prefer per-op annotation, else option.
     std::string kmName = kernelModuleName;
@@ -496,7 +501,7 @@ struct ConvertCnmToUPMEMPass
 
     IRRewriter rewriter(&getContext());
     for (auto launch : launchOps) {
-      if (failed(convertCnmLaunchToUpmem(launch, rewriter, rootSymTable,
+      if (failed(convertCnmLaunchToUpmem(launch, rewriter, opts, rootSymTable,
                                          dpuKernelModule))) {
         signalPassFailure();
         return;

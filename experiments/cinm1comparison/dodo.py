@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import os
 import pathlib
+import shutil
 import sys
 
 import pandas as pd
@@ -99,7 +100,17 @@ def _screen_one(prim: str, fn_name: str, fn_module: pathlib.Path) -> bool:
         infer_opts={"use-mram-tiling": False, "simulator": OPTS["screen_sim"]},
         cinm_opt=CINM_OPT,
     )
-    pool_csv = screen_dir / f"infer_{fn_name}" / "pool.csv"
+
+    # exhaustive_search names the dump dir after its own NameInventor
+    # ("infer_" prefix); rename it to the plain function name so every
+    # downstream reader can use one consistent path.
+    infer_dir = screen_dir / f"infer_{fn_name}"
+    fn_dir = screen_dir / fn_name
+    if fn_dir.exists():
+        shutil.rmtree(fn_dir)
+    infer_dir.rename(fn_dir)
+
+    pool_csv = fn_dir / "pool.csv"
     top, n_valid, n_kept = pools.select_best(
         pool_csv, top_frac=OPTS["top_frac"], min_configs=OPTS["min_configs"]
     )
@@ -113,8 +124,7 @@ def _screen_one(prim: str, fn_name: str, fn_module: pathlib.Path) -> bool:
     )
     print(f"  {fn_name:20s}  kept {n_kept} of {n_valid} valid rows"
           f" -> {len(pairs)} (dpus,tasklets) pairs")
-    (screen_dir / fn_name).mkdir(parents=True, exist_ok=True)
-    pairs.to_csv(screen_dir / f"infer_{fn_name}" / "pairs.csv", index=False)
+    pairs.to_csv(fn_dir / "pairs.csv", index=False)
     return True
 
 
@@ -132,7 +142,7 @@ def task_screen():
             yield {
                 "name": f"{prim}:{fn_name}",
                 "file_dep": [str(fn_module)],
-                "targets": [str(_prim_dir(prim) / "screen" / f"infer_{fn_name}" / "pairs.csv")],
+                "targets": [str(_prim_dir(prim) / "screen" / fn_name / "pairs.csv")],
                 "actions": [(_screen_one, [prim, fn_name, fn_module])],
             }
 

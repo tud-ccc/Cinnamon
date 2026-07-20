@@ -31,7 +31,9 @@ def ConvertCnmToUPMEMPass : Pass<"convert-cnm-to-upmem"> {
     let options = [
       Option<"kernelModuleName", "kernel-module-name", "std::string",
              [{"dpu_kernels"}],
-             "Name of the submodule to create DPU kernels in">
+             "Name of the submodule to create DPU kernels in">,
+      Option<"cinm1Codegen", "cinm1-codegen", "bool", "false",
+             "Whether to match CINM 1 code generation (no barriers, tasklets don't share buffers)">
     ];
     let dependentDialects = [
         "mlir::affine::AffineDialect",
