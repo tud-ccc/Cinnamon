@@ -30,6 +30,7 @@ import sys
 
 import pandas as pd
 from doit import create_after
+from doit.tools import result_dep
 
 HERE = pathlib.Path(__file__).resolve().parent
 EXPERIMENTS_DIR = HERE.parent
@@ -365,16 +366,17 @@ def _discover_configs(prim: str) -> list[compile_run.Config]:
     return configs
 
 
-def _bench_prim(prim: str, marker: pathlib.Path) -> bool:
+def _bench_prim(prim: str) -> bool:
     configs = _discover_configs(prim)
     compiled = compile_run.discover_compiled(configs, compile_root=PATHS.compile_root(prim))
     print(f"\n=== {prim}: running {len(compiled)} configs ===")
-    compile_run.run_configs(compiled, run_root=PATHS.run_root(prim), iters=OPTS["iters"])
-    marker.touch()
+    compile_run.run_configs(
+        compiled, run_root=PATHS.run_root(prim), iters=OPTS["iters"]
+    )
     return True
 
 
-@create_after(executed="compile_cinm2")
+# @create_after(executed="compile_cinm2")
 def task_bench():
     """Benchmark every compiled config for a prim, one at a time -- not
     parallel, so concurrent hardware runs don't skew wall-clock timing.
@@ -389,15 +391,18 @@ def task_bench():
     every config that did compile (discover_compiled treats a missing
     binary as a per-config failure, not a fatal one)."""
     for prim in PRIMS:
-        compile_markers = [str(PATHS.compile_marker(prim, c)) for c in _discover_configs(prim)]
-        if not compile_markers:
-            continue
-        marker = PATHS.bench_done(prim)
+        # compile_markers = [str(PATHS.compile_marker(prim, c)) for c in _discover_configs(prim)]
+        # if not compile_markers:
+        #     continue
+        # marker = PATHS.bench_done(prim)
         yield {
             "name": prim,
-            "file_dep": compile_markers,
-            "targets": [str(marker)],
-            "actions": [(_bench_prim, [prim, marker])],
+            "uptodate": [
+                result_dep(f"compile_cinm2:{prim}"),
+                result_dep(f"compile_cinm1:{prim}"),
+            ],
+            # "file_dep": compile_markers,
+            "actions": [(_bench_prim, [prim])],
         }
 
 
@@ -454,17 +459,14 @@ def _compare_prim(prim: str) -> bool:
     return True
 
 
-@create_after(executed="bench")
+# @create_after(executed="bench")
 def task_compare():
     """Geomean speedup of CINM 2.0 (seed-median) over CINM 1.0 per working
     group, aggregated per benchmark."""
     for prim in PRIMS:
-        marker = PATHS.bench_done(prim)
-        if not marker.exists():
-            continue
         yield {
             "name": prim,
-            "file_dep": [str(marker)],
+            "uptodate": [result_dep(f"bench:{prim}")],
             "targets": [str(PATHS.comparison_csv(prim))],
             "actions": [(_compare_prim, [prim])],
         }
@@ -484,7 +486,7 @@ def _plot_all() -> bool:
     return True
 
 
-@create_after(executed="compare")
+# @create_after(executed="compare")
 def task_plot():
     comparison_csvs = [PATHS.comparison_csv(prim) for prim in PRIMS]
     return {
