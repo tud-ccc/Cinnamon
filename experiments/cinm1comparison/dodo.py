@@ -14,6 +14,7 @@ Usage:
   doit compile_cinm1     # just compile CINM 1.0's configs
   doit forget screen     # force screening to rerun next time
   doit retry_failed_compiles && doit  # clear + retry configs that failed to compile
+  doit retry_failed_bench && doit bench_cinm1 bench_cinm2  # clear + retry configs that failed on hardware
 
 Stages are connected by files on disk, not in-memory state, since doit may
 skip any stage in a given invocation: pairs.csv (screen's output) and the
@@ -133,17 +134,29 @@ class Paths:
     def run_root(self, prim: str) -> pathlib.Path:
         return self.prim_dir(prim) / "run"
 
-    def run_output_dir(self, prim: str, config: compile_run.Config) -> pathlib.Path:
-        return (
-            self.run_root(prim)
-            / config.system
-            / config.fn_name
-            / config.label
-            / "output"
-        )
+    def run_config_dir_id(self, prim: str, system: str, fn_name: str, label: str) -> pathlib.Path:
+        return self.run_root(prim) / system / fn_name / label
 
-    def bench_done(self, prim: str) -> pathlib.Path:
-        return self.prim_dir(prim) / "bench.done"
+    def run_config_dir(self, prim: str, config: compile_run.Config) -> pathlib.Path:
+        return self.run_config_dir_id(prim, config.system, config.fn_name, config.label)
+
+    def run_output_dir(self, prim: str, config: compile_run.Config) -> pathlib.Path:
+        return self.run_config_dir(prim, config) / "output"
+
+    def bench_marker_id(self, prim: str, system: str, fn_name: str, label: str) -> pathlib.Path:
+        """Per-config bench-attempted marker (touched whether the run
+        succeeded or not -- see _bench_one_config), sibling of that config's
+        output/ dir. Lets doit save bench progress config-by-config instead
+        of only per-prim, so an interrupted `doit bench` resumes where it
+        left off. Takes the bare (system, fn_name, label) identity rather
+        than a full Config so bench_cinm1/bench_cinm2 tasks can reference
+        each other's markers (to chain hardware runs into one global
+        sequence, see task_compile_cinm1/task_cinm2_search) without needing
+        each other's Config objects (fn_module/lower/params)."""
+        return self.run_config_dir_id(prim, system, fn_name, label) / "bench.done"
+
+    def bench_marker(self, prim: str, config: compile_run.Config) -> pathlib.Path:
+        return self.bench_marker_id(prim, config.system, config.fn_name, config.label)
 
     def comparison_csv(self, prim: str) -> pathlib.Path:
         return self.prim_dir(prim) / "comparison.csv"
@@ -266,6 +279,8 @@ def _cinm2_search_one(
             "fixed-tasklets": tasklets,
             "simulator": "hybrid",
             "eval-timeout-ms": 400,
+            "max-evals": 100,
+            "n-init": 10
         },
         cinm_opt=CINM_OPT,
     )
@@ -281,7 +296,62 @@ def gen_seeds(pair_idx):
     return (31 * k + offset for k in range(0, OPTS["n_seeds"]))
 
 
-@create_after(executed="screen", creates=["compile_cinm2", "cinm2_search"])
+def _config_ids(prim: str):
+    """Yield (system, fn_name, label, dpus, tasklets, pair_idx) for every
+    config that will exist for `prim` once screening has written
+    pairs.csv. Unlike a compile_run.Config's params/lower, these identities
+    are fully known right after screening -- compile/run directories are
+    keyed off (system, fn_name, label) alone, and CINM 2.0's dpus/tasklets
+    are pinned to the pair's before its search even starts -- so this is the
+    single place task_compile_cinm1 and task_cinm2_search each derive the
+    same set of configs (and their bench_cinm1/bench_cinm2 tasks) from,
+    instead of re-deriving it (or, for CINM 2.0, waiting on search/compile
+    results) independently."""
+    for fn_name in list_functions(PATHS.source_mlir(prim)):
+        pairs_csv = PATHS.pairs_csv(prim, fn_name)
+        if not pairs_csv.exists():
+            continue
+        pairs = pd.read_csv(pairs_csv)
+        for pair_idx, (dpus, tasklets) in enumerate(
+            pairs[["dpus", "tasklets"]].itertuples(index=False)
+        ):
+            dpus, tasklets = int(dpus), int(tasklets)
+            yield "cinm1", fn_name, f"D{dpus}_T{tasklets}", dpus, tasklets, pair_idx
+            for seed in gen_seeds(pair_idx):
+                yield "cinm2", fn_name, str(seed), dpus, tasklets, pair_idx
+
+
+def _config_index(config_ids: list[tuple]) -> dict[tuple[str, str, str], int]:
+    return {(system, fn_name, label): i
+            for i, (system, fn_name, label, *_rest) in enumerate(config_ids)}
+
+
+def _prev_bench_marker_dep(
+    prim: str,
+    config_ids: list[tuple],
+    index_of: dict[tuple[str, str, str], int],
+    system: str,
+    fn_name: str,
+    label: str,
+) -> list[str]:
+    """file_dep entry (or none, for the first config overall) on the
+    bench.done marker of the config immediately before (system, fn_name,
+    label) in `config_ids`'s order. Chains bench_cinm1/bench_cinm2 tasks --
+    which, unlike compile, must run strictly one at a time so concurrent
+    hardware runs don't skew wall-clock timing -- into one global sequence
+    across both systems, even though they're generated by two different
+    task creator functions (doit doesn't allow two creators to share a
+    basename, so they can't be a single 'bench' task group that a task_dep
+    chain could name directly; a shared file target works across creators
+    where a task name wouldn't)."""
+    i = index_of[(system, fn_name, label)]
+    if i == 0:
+        return []
+    prev_system, prev_fn_name, prev_label = config_ids[i - 1][:3]
+    return [str(PATHS.bench_marker_id(prim, prev_system, prev_fn_name, prev_label))]
+
+
+@create_after(executed="screen", creates=["compile_cinm2", "cinm2_search", "bench_cinm2"])
 def task_cinm2_search():
     """For each selected working group, run CINM 2.0's Bayesian search
     n_seeds times with (dpus, tasklets) pinned (MRAM tiling enabled -- CINM
@@ -292,6 +362,10 @@ def task_cinm2_search():
         )
 
     for prim in PRIMS:
+        op = prim.removeprefix("prim_")
+        compile_root = PATHS.compile_root(prim)
+        config_ids = list(_config_ids(prim))
+        index_of = _config_index(config_ids)
         for fn_name in list_functions(PATHS.source_mlir(prim)):
             pairs_csv = PATHS.pairs_csv(prim, fn_name)
             if not pairs_csv.exists():
@@ -333,10 +407,9 @@ def task_cinm2_search():
                         # Will be replaced once we know which config params are the best
                         params={},
                         fn_module=fn_module,
-                        prim=prim.removeprefix("prim_"),
+                        prim=op,
                         lower=None,  # lower also gets replaced
                     )
-                    compile_root = PATHS.compile_root(prim)
                     marker = PATHS.compile_marker(prim, config)
                     pool_csv = PATHS.cinm2_pool_csv(prim, fn_name, seed)
                     yield {
@@ -346,6 +419,29 @@ def task_cinm2_search():
                         "targets": [str(marker)],
                         "actions": [
                             (_compile_best, [config, pool_csv, compile_root, marker])
+                        ],
+                    }
+
+                    bench_marker = PATHS.bench_marker(prim, config)
+                    yield {
+                        "basename": "bench_cinm2",
+                        "name": f"{prim}:{fn_name}:{seed}",
+                        "file_dep": [
+                            str(marker),
+                            *_prev_bench_marker_dep(prim, config_ids, index_of, "cinm2", fn_name, seed),
+                        ],
+                        "targets": [str(bench_marker)],
+                        "actions": [
+                            (
+                                _bench_one_config,
+                                [config],
+                                dict(
+                                    compile_root=compile_root,
+                                    run_root=PATHS.run_root(prim),
+                                    iters=OPTS["iters"],
+                                    bench_marker=bench_marker,
+                                ),
+                            )
                         ],
                     }
 
@@ -393,38 +489,62 @@ def _compile_one(
     return True
 
 
-@create_after(executed="screen")
+@create_after(executed="screen", creates=["bench_cinm1", "compile_cinm1"])
 def task_compile_cinm1():
     """Compile CINM 1.0 once per selected working group -- no search, its
-    tile sizes are inferred deterministically."""
+    tile sizes are inferred deterministically. Also generates that config's
+    bench_cinm1 task (basename "bench_cinm1", see _bench_one_config) right
+    here, so the set of CINM 1.0 configs is derived exactly once instead of
+    separately for compile and bench."""
     for prim in PRIMS:
         op = prim.removeprefix("prim_")
         compile_root = PATHS.compile_root(prim)
-        for fn_name in list_functions(PATHS.source_mlir(prim)):
-            pairs_csv = PATHS.pairs_csv(prim, fn_name)
-            if not pairs_csv.exists():
+        config_ids = list(_config_ids(prim))
+        index_of = _config_index(config_ids)
+        for system, fn_name, label, dpus, tasklets, _ in config_ids:
+            if system != "cinm1":
                 continue
             fn_module = PATHS.split_module(prim, fn_name)
-            pairs = pd.read_csv(pairs_csv)
-            for dpus, tasklets in pairs[["dpus", "tasklets"]].itertuples(index=False):
-                dpus, tasklets = int(dpus), int(tasklets)
-                label = f"D{dpus}_T{tasklets}"
-                config = compile_run.Config(
-                    system="cinm1",
-                    fn_name=fn_name,
-                    label=label,
-                    params={"dpus": dpus, "tasklets": tasklets},
-                    fn_module=fn_module,
-                    prim=op,
-                    lower=cinm1.lowerer(dpus, tasklets, cinm_opt=CINM_OPT),
-                )
-                marker = PATHS.compile_marker(prim, config)
-                yield {
-                    "name": f"{prim}:{fn_name}:{label}",
-                    "file_dep": [str(pairs_csv)],
-                    "targets": [str(marker)],
-                    "actions": [(_compile_one, [config, compile_root, marker])],
-                }
+            config = compile_run.Config(
+                system="cinm1",
+                fn_name=fn_name,
+                label=label,
+                params={"dpus": dpus, "tasklets": tasklets},
+                fn_module=fn_module,
+                prim=op,
+                lower=cinm1.lowerer(dpus, tasklets, cinm_opt=CINM_OPT),
+            )
+            marker = PATHS.compile_marker(prim, config)
+            yield {
+                "basename": "compile_cinm1",
+                "name": f"{prim}:{fn_name}:{label}",
+                "file_dep": [str(PATHS.pairs_csv(prim, fn_name))],
+                "targets": [str(marker)],
+                "actions": [(_compile_one, [config, compile_root, marker])],
+            }
+
+            bench_marker = PATHS.bench_marker(prim, config)
+            yield {
+                "basename": "bench_cinm1",
+                "name": f"{prim}:{fn_name}:{label}",
+                "file_dep": [
+                    str(marker),
+                    *_prev_bench_marker_dep(prim, config_ids, index_of, system, fn_name, label),
+                ],
+                "targets": [str(bench_marker)],
+                "actions": [
+                    (
+                        _bench_one_config,
+                        [config],
+                        dict(
+                            compile_root=compile_root,
+                            run_root=PATHS.run_root(prim),
+                            iters=OPTS["iters"],
+                            bench_marker=bench_marker,
+                        ),
+                    )
+                ],
+            }
 
 
 # ── run (sequential -- accurate wall-clock timing) ──────────────────────────
@@ -474,46 +594,77 @@ def _discover_configs(prim: str) -> list[compile_run.Config]:
     return configs
 
 
-def _bench_prim(prim: str) -> bool:
-    configs = _discover_configs(prim)
-    compiled = compile_run.discover_compiled(
-        configs, compile_root=PATHS.compile_root(prim)
-    )
-    print(f"\n=== {prim}: running {len(compiled)} configs ===")
-    compile_run.run_configs(
-        compiled, run_root=PATHS.run_root(prim), iters=OPTS["iters"]
-    )
+def _bench_one_config(
+    config: compile_run.Config,
+    *,
+    compile_root: pathlib.Path,
+    run_root: pathlib.Path,
+    iters: int,
+    bench_marker: pathlib.Path,
+) -> bool:
+    """Never raises, like _compile_one/_compile_best: a config whose compile
+    failed (compile.done marker present, no bench_* binary -- compile is
+    fallible, see _compile_one) is skipped rather than treated as a hard
+    doit failure, so it doesn't block sibling configs' bench tasks. The
+    bench.done marker is always touched, even when the hardware run itself
+    fails, so a flaky config doesn't get retried on every `doit` invocation
+    -- rerun it explicitly via `doit retry_failed_bench`."""
+    compiled = compile_run.discover_compiled([config], compile_root=compile_root)[0]
+    if not compiled.ok:
+        print(f"  SKIP bench (not compiled): {config.system} {config.fn_name} {config.label}")
+    else:
+        r = compile_run.run_config(compiled, run_root=run_root, iters=iters)
+        if not r.ok and compile_run.is_dpu_allocation_error(r.error):
+            r = compile_run.run_config(compiled, run_root=run_root, iters=iters)
+        if not r.ok:
+            print(f"  FAIL run: {config.system} {config.fn_name} {config.label}: {r.error[:200]}")
+    bench_marker.parent.mkdir(parents=True, exist_ok=True)
+    bench_marker.touch()
     return True
 
 
-@create_after(executed="screen")
-def task_bench():
-    """Benchmark every compiled config for a prim, one at a time -- not
-    parallel, so concurrent hardware runs don't skew wall-clock timing.
-    One task per prim (not per config): running is inherently sequential
-    here, so there is no parallelism for doit to schedule within it, and a
-    single task per prim keeps the dependency graph simple (it just needs
-    every compile_cinm1/compile_cinm2 subtask for that prim to be done).
 
-    Depends on each config's compile.done marker rather than its bench_*
-    binary: the marker is always written, even when that one config failed
-    to compile, so one bad config doesn't stop doit from running bench for
-    every config that did compile (discover_compiled treats a missing
-    binary as a per-config failure, not a fatal one)."""
+def task_bench():
+    return {'actions': None,
+            'task_dep': ['bench_cinm1', 'bench_cinm2']}
+
+
+# ── retry failed benches ────────────────────────────────────────────────────
+
+
+def _retry_failed_bench() -> bool:
+    """Delete the bench.done marker of every config whose compile succeeded
+    but whose run didn't leave a measurable result (see _bench_one_config
+    and measurements.net_time_ms) -- i.e. every config that failed on
+    hardware instead of just being un-benched yet. With the marker gone,
+    the next `doit bench_cinm1 bench_cinm2` (or plain `doit`) retries just
+    those configs; configs that already benched successfully are
+    untouched."""
+    n = 0
     for prim in PRIMS:
-        # compile_markers = [str(PATHS.compile_marker(prim, c)) for c in _discover_configs(prim)]
-        # if not compile_markers:
-        #     continue
-        # marker = PATHS.bench_done(prim)
-        yield {
-            "name": prim,
-            "uptodate": [
-                result_dep(f"compile_cinm2:{prim}"),
-                result_dep(f"compile_cinm1:{prim}"),
-            ],
-            # "file_dep": compile_markers,
-            "actions": [(_bench_prim, [prim])],
-        }
+        for c in _discover_configs(prim):
+            bin_path = PATHS.bench_bin(prim, c)
+            bench_marker = PATHS.bench_marker(prim, c)
+            if not (bin_path.exists() and bench_marker.exists()):
+                continue
+            output_dir = PATHS.run_output_dir(prim, c)
+            if measurements.net_time_ms(output_dir) is None:
+                print(f"  retry bench: {c.system} {c.fn_name} {c.label}")
+                bench_marker.unlink()
+                n += 1
+    print(f"cleared {n} failed bench(es)")
+    return True
+
+
+def task_retry_failed_bench():
+    """Not part of the default pipeline. Run explicitly (`doit
+    retry_failed_bench`) after fixing whatever caused some configs to fail
+    on hardware, then rerun `doit bench_cinm1 bench_cinm2` (or `doit`) to
+    pick them back up."""
+    return {
+        "actions": [_retry_failed_bench],
+        "uptodate": [False],
+    }
 
 
 # ── retry failed compiles ───────────────────────────────────────────────────
@@ -609,7 +760,6 @@ def _compare_prim(prim: str) -> bool:
     return True
 
 
-# @create_after(executed="bench")
 @create_after(executed="screen")
 def task_compare():
     """Geomean speedup of CINM 2.0 (seed-median) over CINM 1.0 per working
@@ -617,7 +767,10 @@ def task_compare():
     for prim in PRIMS:
         yield {
             "name": prim,
-            "uptodate": [result_dep(f"bench:{prim}")],
+            "uptodate": [
+                result_dep(f"bench_cinm1:{prim}"),
+                result_dep(f"bench_cinm2:{prim}"),
+            ],
             "targets": [str(PATHS.comparison_csv(prim))],
             "actions": [(_compare_prim, [prim])],
         }
