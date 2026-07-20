@@ -59,7 +59,7 @@ OPTS = dict(
 _OFFSET_STRIDE = 4096
 _BASE_OFFSET = 67
 
-DOIT_CONFIG = {"default_tasks": ["plot"], "verbosity": 2}
+DOIT_CONFIG = {"default_tasks": ["plot"], "verbosity": 2, "continue": True}
 
 
 def _prim_dir(prim: str) -> pathlib.Path:
