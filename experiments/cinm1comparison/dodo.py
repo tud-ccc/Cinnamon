@@ -40,7 +40,6 @@ from cinm_experiments import cinm1, cinmopt, compile_run, measurements, pools  #
 from cinm_experiments.paths import DEFAULT_CINM_OPT  # noqa: E402
 from cinm_experiments.split_source import list_functions, split_source  # noqa: E402
 
-from experiment import compare  # noqa: E402
 from plot import plot_speedup, print_summary  # noqa: E402
 
 PRIMS = ["prim_gemv", "prim_red"]
@@ -194,7 +193,7 @@ def _screen_one(prim: str, fn_name: str, fn_module: pathlib.Path) -> bool:
     return True
 
 
-@create_after(executed="split")
+# @create_after(executed="split")
 def task_screen():
     """Sweep CINM 2.0's configuration space with MRAM tiling disabled (CINM
     1.0's own best configs are known to lie in this constrained subspace),
@@ -214,23 +213,36 @@ def task_screen():
 
 # ── CINM 2.0 search ──────────────────────────────────────────────────────────
 
-def _cinm2_search_one(prim: str, fn_name: str, fn_module: pathlib.Path,
-                       dpus: int, tasklets: int, offset: int, marker: pathlib.Path) -> bool:
+def _cinm2_search_one(
+    prim: str,
+    fn_name: str,
+    fn_module: pathlib.Path,
+    dpus: int,
+    tasklets: int,
+    offset: int,
+) -> bool:
     results_dir = PATHS.cinm2_results_dir(prim)
     print(f"  {fn_name} dpus={dpus} tasklets={tasklets}: BO search "
           f"({OPTS['n_seeds']} seeds, offset={offset})")
     cinmopt.bo_multiseed(
-        fn_module, results_dir, n_seeds=OPTS["n_seeds"], offset=offset,
+        fn_module,
+        results_dir,
+        n_seeds=OPTS["n_seeds"],
+        offset=offset,
         workers=OPTS["workers"],
         infer_opts={"fixed-dpus": dpus, "fixed-tasklets": tasklets},
         cinm_opt=CINM_OPT,
     )
-    marker.parent.mkdir(parents=True, exist_ok=True)
-    marker.touch()
     return True
 
+def get_offset(pair_idx):
+    return _BASE_OFFSET + pair_idx * _OFFSET_STRIDE
 
-@create_after(executed="screen")
+def gen_seeds(pair_idx):
+    offset = get_offset(pair_idx)
+    return (31 * k + offset for k in range(0, OPTS["n_seeds"]))
+
+@create_after(executed="screen", creates=["compile_cinm2", "cinm2_search"])
 def task_cinm2_search():
     """For each selected working group, run CINM 2.0's Bayesian search
     n_seeds times with (dpus, tasklets) pinned (MRAM tiling enabled -- CINM
@@ -246,18 +258,66 @@ def task_cinm2_search():
             fn_module = PATHS.split_module(prim, fn_name)
             pairs = pd.read_csv(pairs_csv)
             for pair_idx, (dpus, tasklets) in enumerate(pairs[["dpus", "tasklets"]].itertuples(index=False)):
-                offset = _BASE_OFFSET + pair_idx * _OFFSET_STRIDE
-                marker = PATHS.cinm2_search_marker(prim, fn_name, dpus, tasklets)
                 yield {
+                    "basename": "cinm2_search",
                     "name": f"{prim}:{fn_name}:D{dpus}_T{tasklets}",
                     "file_dep": [str(pairs_csv)],
-                    "targets": [str(marker)],
-                    "actions": [(_cinm2_search_one,
-                                 [prim, fn_name, fn_module, int(dpus), int(tasklets), offset, marker])],
+                    "targets": [
+                        str(PATHS.cinm2_pool_csv(prim, fn_name, seed)) for seed in gen_seeds(pair_idx)
+                    ],
+                    "actions": [
+                        (
+                            _cinm2_search_one,
+                            [
+                                prim,
+                                fn_name,
+                                fn_module,
+                                int(dpus),
+                                int(tasklets),
+                                get_offset(pair_idx),
+                            ],
+                        )
+                    ],
                 }
 
+                for seed in gen_seeds(pair_idx):
+                  seed = str(seed)
+                  config = compile_run.Config(
+                      system="cinm2",
+                      fn_name=fn_name,
+                      label=seed,
+                      # Will be replaced once we know which config params are the best
+                      params={}, 
+                      fn_module=fn_module,
+                      prim=prim.removeprefix("prim_"),
+                      lower=None # lower also gets replaced
+                  )
+                  compile_root = PATHS.compile_root(prim)
+                  marker = PATHS.compile_marker(prim, config)
+                  pool_csv = PATHS.cinm2_pool_csv(prim, fn_name, seed)
+                  yield {
+                      "basename": "compile_cinm2",
+                      "name": f"{prim}:{fn_name}:D{dpus}_T{tasklets}:{seed}",
+                      "file_dep": [str(pool_csv)],
+                      "targets": [str(marker)],
+                      "actions": [(_compile_best, [config, pool_csv, compile_root, marker])],
+                  }
 
 # ── compile ──────────────────────────────────────────────────────────────────
+
+def _compile_best(config: compile_run.Config, pool_csv: pathlib.Path, compile_root: pathlib.Path, marker: pathlib.Path) -> bool:
+    """Never raises: a config that fails to compile is recorded (printed +
+    left out of the marker's sibling bin/) but must not block sibling
+    configs' bench task from running -- doit treats a raised exception as a
+    hard failure and skips every downstream task that depends on it, which
+    is more than we want for one bad config out of many. discover_compiled()
+    already treats a missing bench_* binary as a per-config failure, so
+    downstream stages tolerate this fine."""
+    config.params = pools.best_in_pool(pool_csv)
+    if not config.params: 
+      return False
+    config.lower=cinmopt.eval_solution_lowerer(config.params, cinm_opt=CINM_OPT)
+    return _compile_one(config, compile_root, marker)
 
 def _compile_one(config: compile_run.Config, compile_root: pathlib.Path, marker: pathlib.Path) -> bool:
     """Never raises: a config that fails to compile is recorded (printed +
@@ -306,31 +366,6 @@ def task_compile_cinm1():
                 }
 
 
-@create_after(executed="cinm2_search")
-def task_compile_cinm2():
-    """Compile every seed's best CINM 2.0 config for real."""
-    for prim in PRIMS:
-        op = prim.removeprefix("prim_")
-        results_dir = PATHS.cinm2_results_dir(prim)
-        compile_root = PATHS.compile_root(prim)
-        if not results_dir.exists():
-            continue
-        for fn_name, seed, params in pools.best_per_seed(results_dir):
-            fn_module = PATHS.split_module(prim, fn_name)
-            pool_csv = PATHS.cinm2_pool_csv(prim, fn_name, seed)
-            config = compile_run.Config(
-                system="cinm2", fn_name=fn_name, label=seed, params=params,
-                fn_module=fn_module, prim=op,
-                lower=cinmopt.eval_solution_lowerer(params, cinm_opt=CINM_OPT),
-            )
-            marker = PATHS.compile_marker(prim, config)
-            yield {
-                "name": f"{prim}:{fn_name}:{seed}",
-                "file_dep": [str(pool_csv)],
-                "targets": [str(marker)],
-                "actions": [(_compile_one, [config, compile_root, marker])],
-            }
-
 
 # ── run (sequential -- accurate wall-clock timing) ──────────────────────────
 
@@ -376,7 +411,7 @@ def _bench_prim(prim: str) -> bool:
     return True
 
 
-# @create_after(executed="compile_cinm2")
+@create_after(executed="screen")
 def task_bench():
     """Benchmark every compiled config for a prim, one at a time -- not
     parallel, so concurrent hardware runs don't skew wall-clock timing.
@@ -440,6 +475,37 @@ def task_retry_failed_compiles():
 
 # ── compare + plot ───────────────────────────────────────────────────────────
 
+
+
+def compare(cinm1_results: list[compile_run.RunResult],
+            cinm2_results: list[compile_run.RunResult]) -> pd.DataFrame:
+    """Merge CINM 1.0 (one point per working group) with CINM 2.0 (n_seeds
+    points per working group -> seed-median) into a speedup table keyed by
+    (fn_name, dpus, tasklets)."""
+    cinm1 = measurements.results_to_frame(cinm1_results).drop(columns=["label"])
+    cinm1 = cinm1.rename(columns={"net_time_ms": "cinm1_ms"})
+
+    cinm2_raw = measurements.results_to_frame(cinm2_results)
+    cinm2_summary = (
+        cinm2_raw.groupby(["fn_name", "dpus", "tasklets"])["net_time_ms"]
+        .agg(cinm2_ms="median",
+             cinm2_p25=lambda s: s.quantile(0.25),
+             cinm2_p75=lambda s: s.quantile(0.75),
+             cinm2_n="count")
+        .reset_index()
+    )
+
+    merged = cinm1.merge(cinm2_summary, on=["fn_name", "dpus", "tasklets"], how="inner")
+    missing = set(zip(cinm1.fn_name, cinm1.dpus, cinm1.tasklets)) - set(
+        zip(merged.fn_name, merged.dpus, merged.tasklets)
+    )
+    if missing:
+        print(f"  WARNING: {len(missing)} (fn_name,dpus,tasklets) pairs have CINM1 "
+              f"but no CINM2 data: {sorted(missing)[:5]}...", file=sys.stderr)
+    merged["speedup"] = merged["cinm1_ms"] / merged["cinm2_ms"]
+    return merged
+
+
 def _compare_prim(prim: str) -> bool:
     configs = _discover_configs(prim)
     compiled = compile_run.discover_compiled(configs, compile_root=PATHS.compile_root(prim))
@@ -460,6 +526,7 @@ def _compare_prim(prim: str) -> bool:
 
 
 # @create_after(executed="bench")
+@create_after(executed="screen")
 def task_compare():
     """Geomean speedup of CINM 2.0 (seed-median) over CINM 1.0 per working
     group, aggregated per benchmark."""

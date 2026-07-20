@@ -367,9 +367,12 @@ void CandidatePool::fillRandom(std::unordered_set<size_t> &result,
   if (result.size() >= target || empty())
     return;
   size_t numValid = size();
+  size_t numVisited = this->numVisited();
   auto dist = std::uniform_int_distribution<size_t>(0, numValid - 1);
 
-  while (result.size() < std::min(target, numValid)) {
+  size_t numAttempts = 0;
+  while (result.size() < std::min(target, numValid - numVisited) &&
+         numAttempts++ <= target * 5) {
     tryInsert(result, (*validIndices_)[dist(rng)]);
   }
 }

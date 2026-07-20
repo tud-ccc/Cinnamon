@@ -54,15 +54,24 @@ def best_per_seed(results_dir: pathlib.Path):
     for fn_name, fn_dir in fn_dirs(results_dir):
         for seed_dir in sorted(fn_dir.iterdir()):
             pool_csv = seed_dir / "pool.csv"
-            if not pool_csv.exists():
+            best_conf = best_in_pool(pool_csv)
+            if not best_conf:
                 continue
             seed = seed_dir.name.removeprefix("seed_")
-            df = pd.read_csv(pool_csv)
-            if "visited" in df.columns:
-                df = df[df["visited"] == 1]
-            df = df[pd.to_numeric(df["cost"], errors="coerce").notna()]
-            if df.empty:
-                continue
-            cols = param_cols(df)
-            row = df.loc[df["cost"].astype(float).idxmin()]
-            yield fn_name, seed, {c: int(row[c]) for c in cols}
+            yield fn_name, seed, best_conf
+
+def best_in_pool(pool_csv: pathlib.Path):
+    """Yield (fn_name, seed, params_dict) for the lowest-cost visited row of
+    every {results_dir}/{fn_name}/seed_{N}/pool.csv (the output of
+    cinmopt.bo_multiseed)."""
+    if not pool_csv.exists():
+        return None
+    df = pd.read_csv(pool_csv)
+    if "visited" in df.columns:
+        df = df[df["visited"] == 1]
+    df = df[pd.to_numeric(df["cost"], errors="coerce").notna()]
+    if df.empty:
+        return None
+    cols = param_cols(df)
+    row = df.loc[df["cost"].astype(float).idxmin()]
+    return {c: int(row[c]) for c in cols}

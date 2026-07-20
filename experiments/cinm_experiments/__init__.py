@@ -3,7 +3,7 @@
 hardware, parallelizing that work, and turning raw benchmark output into
 net-time measurements or per-source aggregate CSVs.
 
-Experiments (e.g. experiments/cinm1comparison/experiment.py) import this
-package and define their pipeline as plain Python function calls; there is no
-CLI or Makefile glue layer between the steps.
+Experiments (e.g. experiments/cinm1comparison/dodo.py) import this package
+and define their pipeline as plain Python function calls / doit tasks; there
+is no CLI or Makefile glue layer between the steps.
 """

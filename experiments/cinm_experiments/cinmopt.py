@@ -24,22 +24,42 @@ def _opt_value(v) -> str:
 def _infer_opts_str(opts: dict) -> str:
     return " ".join(f"{k}={_opt_value(v)}" for k, v in opts.items())
 
+def fmt_cmd(args: list[str]) -> str:
+    def quote(s):
+      return f'"{s}"' if ' ' in s else s
+    return ' '.join(quote(s) for s in args)
 
-def _run(src: pathlib.Path, infer_opts: dict, *, out_file: pathlib.Path,
-          cinm_opt: pathlib.Path, log_file: pathlib.Path,
-          nice: bool = False) -> subprocess.CompletedProcess:
+
+def _run(
+    src: pathlib.Path,
+    infer_opts: dict,
+    *,
+    out_file: pathlib.Path,
+    cinm_opt: pathlib.Path,
+    log_file: pathlib.Path,
+    extra_opts: list = [],
+    nice: bool = False,
+    nolog: bool = False
+) -> subprocess.CompletedProcess:
     cmd = [
-        str(cinm_opt), str(src),
+        str(cinm_opt),
+        str(src),
         "--split-input-file",
         *PRE_PASSES,
         f"--upmem-infer-accelerator={_infer_opts_str(infer_opts)}",
-        "-o", str(out_file),
+        *extra_opts,
+        "-o",
+        str(out_file),
     ]
     if nice:
         cmd = ["nice", "-n", "19", *cmd]
     with open(log_file, "w") as log:
-        log.write(" ".join(cmd) + "\n\n")
-        return subprocess.run(cmd, stdout=log, stderr=subprocess.STDOUT, text=True)
+        log.write(fmt_cmd(cmd) + "\n\n")
+        
+        if nolog:
+          return subprocess.run(cmd)
+        else:
+          return subprocess.run(cmd, stdout=log, stderr=subprocess.STDOUT, text=True)
 
 
 def exhaustive_search(src: pathlib.Path, out_dir: pathlib.Path, *, workers: int | None = None,
@@ -63,10 +83,19 @@ def exhaustive_search(src: pathlib.Path, out_dir: pathlib.Path, *, workers: int 
     return out_dir
 
 
-def bo_multiseed(src: pathlib.Path, out_dir: pathlib.Path, *, n_seeds: int = 32,
-                  offset: int = 67, workers: int | None = None,
-                  infer_opts: dict | None = None, nice: bool = False,
-                  cinm_opt: pathlib.Path = DEFAULT_CINM_OPT) -> pathlib.Path:
+def bo_multiseed(
+    src: pathlib.Path,
+    out_dir: pathlib.Path,
+    *,
+    n_seeds: int = 32,
+    offset: int = 67,
+    workers: int | None = None,
+    infer_opts: dict | None = None,
+    nice: bool = False,
+    debug: bool = False,
+    nolog : bool = False,
+    cinm_opt: pathlib.Path = DEFAULT_CINM_OPT,
+) -> pathlib.Path:
     """Run n_seeds independent BO searches sharing the config-space setup
     (the C++ multi-seed engine), dumping
     {out_dir}/infer_{fn_name}/seed_<k>/pool.csv for k = 1..n_seeds (seed k
@@ -76,8 +105,13 @@ def bo_multiseed(src: pathlib.Path, out_dir: pathlib.Path, *, n_seeds: int = 32,
     out_dir.mkdir(parents=True, exist_ok=True)
     opts = {"dump-dir": str(out_dir), "rng-seed": offset, "n-seeds": n_seeds,
             **({"n-workers": workers} if workers else {}), **(infer_opts or {})}
+    extra_opts = []
+    if debug:
+      extra_opts = ["--debug-only=cinm-inference"]
+
     r = _run(src, opts, out_file=out_dir / "out.mlir", cinm_opt=cinm_opt,
-             log_file=out_dir / "cinm-opt.log", nice=nice)
+             log_file=out_dir / "cinm-opt.log",extra_opts=extra_opts, nice=nice,
+             nolog=nolog)
     if r.returncode != 0:
         raise RuntimeError(f"bo_multiseed failed for {src}; see {out_dir}/cinm-opt.log")
     return out_dir
