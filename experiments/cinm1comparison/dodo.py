@@ -20,6 +20,7 @@ skip any stage in a given invocation: pairs.csv (screen's output) and the
 CINM 2.0 search's pool.csv files are the source of truth read back by every
 downstream stage.
 """
+
 from __future__ import annotations
 
 import dataclasses
@@ -74,6 +75,7 @@ class Paths:
     -- not its `prim` field, which is the unrelated bench PRIM= op name
     ("gemv"/"red"), not the "prim_gemv"/"prim_red" directory prefix used
     here."""
+
     experiments_dir: pathlib.Path
     data_dir: pathlib.Path
 
@@ -99,10 +101,22 @@ class Paths:
         return self.prim_dir(prim) / "cinm2_results"
 
     def cinm2_pool_csv(self, prim: str, fn_name: str, seed: str) -> pathlib.Path:
-        return self.cinm2_results_dir(prim) / f"infer_{fn_name}" / f"seed_{seed}" / "pool.csv"
+        return (
+            self.cinm2_results_dir(prim)
+            / f"infer_{fn_name}"
+            / f"seed_{seed}"
+            / "pool.csv"
+        )
 
-    def cinm2_search_marker(self, prim: str, fn_name: str, dpus: int, tasklets: int) -> pathlib.Path:
-        return self.prim_dir(prim) / "cinm2_search_markers" / fn_name / f"D{dpus}_T{tasklets}.done"
+    def cinm2_search_marker(
+        self, prim: str, fn_name: str, dpus: int, tasklets: int
+    ) -> pathlib.Path:
+        return (
+            self.prim_dir(prim)
+            / "cinm2_search_markers"
+            / fn_name
+            / f"D{dpus}_T{tasklets}.done"
+        )
 
     def compile_root(self, prim: str) -> pathlib.Path:
         return self.prim_dir(prim) / "compiled"
@@ -120,7 +134,13 @@ class Paths:
         return self.prim_dir(prim) / "run"
 
     def run_output_dir(self, prim: str, config: compile_run.Config) -> pathlib.Path:
-        return self.run_root(prim) / config.system / config.fn_name / config.label / "output"
+        return (
+            self.run_root(prim)
+            / config.system
+            / config.fn_name
+            / config.label
+            / "output"
+        )
 
     def bench_done(self, prim: str) -> pathlib.Path:
         return self.prim_dir(prim) / "bench.done"
@@ -137,8 +157,11 @@ PATHS = Paths(EXPERIMENTS_DIR, DATA_DIR)
 
 # ── split ────────────────────────────────────────────────────────────────────
 
+
 def _split_one(prim_mlir: pathlib.Path, split_dir: pathlib.Path) -> bool:
-    split_source(prim_mlir, split_dir)  # dict return value isn't JSON-picklable for doit's DB
+    split_source(
+        prim_mlir, split_dir
+    )  # dict return value isn't JSON-picklable for doit's DB
     return True
 
 
@@ -158,10 +181,13 @@ def task_split():
 
 # ── screen ───────────────────────────────────────────────────────────────────
 
+
 def _screen_one(prim: str, fn_name: str, fn_module: pathlib.Path) -> bool:
     screen_dir = PATHS.screen_dir(prim)
     cinmopt.exhaustive_search(
-        fn_module, screen_dir, workers=OPTS["workers"],
+        fn_module,
+        screen_dir,
+        workers=OPTS["workers"],
         infer_opts={"use-mram-tiling": False, "simulator": OPTS["screen_sim"]},
         cinm_opt=CINM_OPT,
     )
@@ -187,8 +213,10 @@ def _screen_one(prim: str, fn_name: str, fn_module: pathlib.Path) -> bool:
         .sort_values(["dpus", "tasklets"])
         .reset_index(drop=True)
     )
-    print(f"  {fn_name:20s}  kept {n_kept} of {n_valid} valid rows"
-          f" -> {len(pairs)} (dpus,tasklets) pairs")
+    print(
+        f"  {fn_name:20s}  kept {n_kept} of {n_valid} valid rows"
+        f" -> {len(pairs)} (dpus,tasklets) pairs"
+    )
     pairs.to_csv(PATHS.pairs_csv(prim, fn_name), index=False)
     return True
 
@@ -213,6 +241,7 @@ def task_screen():
 
 # ── CINM 2.0 search ──────────────────────────────────────────────────────────
 
+
 def _cinm2_search_one(
     prim: str,
     fn_name: str,
@@ -222,25 +251,35 @@ def _cinm2_search_one(
     offset: int,
 ) -> bool:
     results_dir = PATHS.cinm2_results_dir(prim)
-    print(f"  {fn_name} dpus={dpus} tasklets={tasklets}: BO search "
-          f"({OPTS['n_seeds']} seeds, offset={offset})")
+    print(
+        f"  {fn_name} dpus={dpus} tasklets={tasklets}: BO search "
+        f"({OPTS['n_seeds']} seeds, offset={offset})"
+    )
     cinmopt.bo_multiseed(
         fn_module,
         results_dir,
         n_seeds=OPTS["n_seeds"],
         offset=offset,
         workers=OPTS["workers"],
-        infer_opts={"fixed-dpus": dpus, "fixed-tasklets": tasklets},
+        infer_opts={
+            "fixed-dpus": dpus,
+            "fixed-tasklets": tasklets,
+            "simulator": "hybrid",
+            "eval-timeout-ms": 400,
+        },
         cinm_opt=CINM_OPT,
     )
     return True
 
+
 def get_offset(pair_idx):
     return _BASE_OFFSET + pair_idx * _OFFSET_STRIDE
+
 
 def gen_seeds(pair_idx):
     offset = get_offset(pair_idx)
     return (31 * k + offset for k in range(0, OPTS["n_seeds"]))
+
 
 @create_after(executed="screen", creates=["compile_cinm2", "cinm2_search"])
 def task_cinm2_search():
@@ -248,7 +287,9 @@ def task_cinm2_search():
     n_seeds times with (dpus, tasklets) pinned (MRAM tiling enabled -- CINM
     2.0's normal codegen)."""
     if OPTS["n_seeds"] * 31 >= _OFFSET_STRIDE:
-        raise RuntimeError(f"n_seeds {OPTS['n_seeds']} too large for offset stride {_OFFSET_STRIDE}")
+        raise RuntimeError(
+            f"n_seeds {OPTS['n_seeds']} too large for offset stride {_OFFSET_STRIDE}"
+        )
 
     for prim in PRIMS:
         for fn_name in list_functions(PATHS.source_mlir(prim)):
@@ -257,13 +298,16 @@ def task_cinm2_search():
                 continue
             fn_module = PATHS.split_module(prim, fn_name)
             pairs = pd.read_csv(pairs_csv)
-            for pair_idx, (dpus, tasklets) in enumerate(pairs[["dpus", "tasklets"]].itertuples(index=False)):
+            for pair_idx, (dpus, tasklets) in enumerate(
+                pairs[["dpus", "tasklets"]].itertuples(index=False)
+            ):
                 yield {
                     "basename": "cinm2_search",
                     "name": f"{prim}:{fn_name}:D{dpus}_T{tasklets}",
                     "file_dep": [str(pairs_csv)],
                     "targets": [
-                        str(PATHS.cinm2_pool_csv(prim, fn_name, seed)) for seed in gen_seeds(pair_idx)
+                        str(PATHS.cinm2_pool_csv(prim, fn_name, seed))
+                        for seed in gen_seeds(pair_idx)
                     ],
                     "actions": [
                         (
@@ -281,31 +325,40 @@ def task_cinm2_search():
                 }
 
                 for seed in gen_seeds(pair_idx):
-                  seed = str(seed)
-                  config = compile_run.Config(
-                      system="cinm2",
-                      fn_name=fn_name,
-                      label=seed,
-                      # Will be replaced once we know which config params are the best
-                      params={}, 
-                      fn_module=fn_module,
-                      prim=prim.removeprefix("prim_"),
-                      lower=None # lower also gets replaced
-                  )
-                  compile_root = PATHS.compile_root(prim)
-                  marker = PATHS.compile_marker(prim, config)
-                  pool_csv = PATHS.cinm2_pool_csv(prim, fn_name, seed)
-                  yield {
-                      "basename": "compile_cinm2",
-                      "name": f"{prim}:{fn_name}:D{dpus}_T{tasklets}:{seed}",
-                      "file_dep": [str(pool_csv)],
-                      "targets": [str(marker)],
-                      "actions": [(_compile_best, [config, pool_csv, compile_root, marker])],
-                  }
+                    seed = str(seed)
+                    config = compile_run.Config(
+                        system="cinm2",
+                        fn_name=fn_name,
+                        label=seed,
+                        # Will be replaced once we know which config params are the best
+                        params={},
+                        fn_module=fn_module,
+                        prim=prim.removeprefix("prim_"),
+                        lower=None,  # lower also gets replaced
+                    )
+                    compile_root = PATHS.compile_root(prim)
+                    marker = PATHS.compile_marker(prim, config)
+                    pool_csv = PATHS.cinm2_pool_csv(prim, fn_name, seed)
+                    yield {
+                        "basename": "compile_cinm2",
+                        "name": f"{prim}:{fn_name}:D{dpus}_T{tasklets}:{seed}",
+                        "file_dep": [str(pool_csv)],
+                        "targets": [str(marker)],
+                        "actions": [
+                            (_compile_best, [config, pool_csv, compile_root, marker])
+                        ],
+                    }
+
 
 # ── compile ──────────────────────────────────────────────────────────────────
 
-def _compile_best(config: compile_run.Config, pool_csv: pathlib.Path, compile_root: pathlib.Path, marker: pathlib.Path) -> bool:
+
+def _compile_best(
+    config: compile_run.Config,
+    pool_csv: pathlib.Path,
+    compile_root: pathlib.Path,
+    marker: pathlib.Path,
+) -> bool:
     """Never raises: a config that fails to compile is recorded (printed +
     left out of the marker's sibling bin/) but must not block sibling
     configs' bench task from running -- doit treats a raised exception as a
@@ -314,12 +367,15 @@ def _compile_best(config: compile_run.Config, pool_csv: pathlib.Path, compile_ro
     already treats a missing bench_* binary as a per-config failure, so
     downstream stages tolerate this fine."""
     config.params = pools.best_in_pool(pool_csv)
-    if not config.params: 
-      return False
-    config.lower=cinmopt.eval_solution_lowerer(config.params, cinm_opt=CINM_OPT)
+    if not config.params:
+        return False
+    config.lower = cinmopt.eval_solution_lowerer(config.params, cinm_opt=CINM_OPT)
     return _compile_one(config, compile_root, marker)
 
-def _compile_one(config: compile_run.Config, compile_root: pathlib.Path, marker: pathlib.Path) -> bool:
+
+def _compile_one(
+    config: compile_run.Config, compile_root: pathlib.Path, marker: pathlib.Path
+) -> bool:
     """Never raises: a config that fails to compile is recorded (printed +
     left out of the marker's sibling bin/) but must not block sibling
     configs' bench task from running -- doit treats a raised exception as a
@@ -329,7 +385,9 @@ def _compile_one(config: compile_run.Config, compile_root: pathlib.Path, marker:
     downstream stages tolerate this fine."""
     compiled = compile_run.compile_config(config, compile_root=compile_root)
     if not compiled.ok:
-        print(f"  FAIL compile: {config.system} {config.fn_name} {config.label}: {compiled.error}")
+        print(
+            f"  FAIL compile: {config.system} {config.fn_name} {config.label}: {compiled.error}"
+        )
     marker.parent.mkdir(parents=True, exist_ok=True)
     marker.touch()
     return True
@@ -352,9 +410,12 @@ def task_compile_cinm1():
                 dpus, tasklets = int(dpus), int(tasklets)
                 label = f"D{dpus}_T{tasklets}"
                 config = compile_run.Config(
-                    system="cinm1", fn_name=fn_name, label=label,
+                    system="cinm1",
+                    fn_name=fn_name,
+                    label=label,
                     params={"dpus": dpus, "tasklets": tasklets},
-                    fn_module=fn_module, prim=op,
+                    fn_module=fn_module,
+                    prim=op,
                     lower=cinm1.lowerer(dpus, tasklets, cinm_opt=CINM_OPT),
                 )
                 marker = PATHS.compile_marker(prim, config)
@@ -366,8 +427,8 @@ def task_compile_cinm1():
                 }
 
 
-
 # ── run (sequential -- accurate wall-clock timing) ──────────────────────────
+
 
 def _discover_configs(prim: str) -> list[compile_run.Config]:
     """Reconstruct every Config for a prim from what screen/cinm2_search
@@ -383,27 +444,41 @@ def _discover_configs(prim: str) -> list[compile_run.Config]:
         pairs = pd.read_csv(pairs_csv)
         for dpus, tasklets in pairs[["dpus", "tasklets"]].itertuples(index=False):
             dpus, tasklets = int(dpus), int(tasklets)
-            configs.append(compile_run.Config(
-                system="cinm1", fn_name=fn_name, label=f"D{dpus}_T{tasklets}",
-                params={"dpus": dpus, "tasklets": tasklets}, fn_module=fn_module, prim=op,
-                lower=cinm1.lowerer(dpus, tasklets, cinm_opt=CINM_OPT),
-            ))
+            configs.append(
+                compile_run.Config(
+                    system="cinm1",
+                    fn_name=fn_name,
+                    label=f"D{dpus}_T{tasklets}",
+                    params={"dpus": dpus, "tasklets": tasklets},
+                    fn_module=fn_module,
+                    prim=op,
+                    lower=cinm1.lowerer(dpus, tasklets, cinm_opt=CINM_OPT),
+                )
+            )
 
     results_dir = PATHS.cinm2_results_dir(prim)
     if results_dir.exists():
         for fn_name, seed, params in pools.best_per_seed(results_dir):
             fn_module = PATHS.split_module(prim, fn_name)
-            configs.append(compile_run.Config(
-                system="cinm2", fn_name=fn_name, label=seed, params=params,
-                fn_module=fn_module, prim=op,
-                lower=cinmopt.eval_solution_lowerer(params, cinm_opt=CINM_OPT),
-            ))
+            configs.append(
+                compile_run.Config(
+                    system="cinm2",
+                    fn_name=fn_name,
+                    label=seed,
+                    params=params,
+                    fn_module=fn_module,
+                    prim=op,
+                    lower=cinmopt.eval_solution_lowerer(params, cinm_opt=CINM_OPT),
+                )
+            )
     return configs
 
 
 def _bench_prim(prim: str) -> bool:
     configs = _discover_configs(prim)
-    compiled = compile_run.discover_compiled(configs, compile_root=PATHS.compile_root(prim))
+    compiled = compile_run.discover_compiled(
+        configs, compile_root=PATHS.compile_root(prim)
+    )
     print(f"\n=== {prim}: running {len(compiled)} configs ===")
     compile_run.run_configs(
         compiled, run_root=PATHS.run_root(prim), iters=OPTS["iters"]
@@ -443,6 +518,7 @@ def task_bench():
 
 # ── retry failed compiles ───────────────────────────────────────────────────
 
+
 def _retry_failed_compiles() -> bool:
     """Delete the compile output of every config whose compile.done marker
     exists but whose bench_* binary doesn't -- i.e. every config _compile_one
@@ -476,9 +552,10 @@ def task_retry_failed_compiles():
 # ── compare + plot ───────────────────────────────────────────────────────────
 
 
-
-def compare(cinm1_results: list[compile_run.RunResult],
-            cinm2_results: list[compile_run.RunResult]) -> pd.DataFrame:
+def compare(
+    cinm1_results: list[compile_run.RunResult],
+    cinm2_results: list[compile_run.RunResult],
+) -> pd.DataFrame:
     """Merge CINM 1.0 (one point per working group) with CINM 2.0 (n_seeds
     points per working group -> seed-median) into a speedup table keyed by
     (fn_name, dpus, tasklets)."""
@@ -488,10 +565,12 @@ def compare(cinm1_results: list[compile_run.RunResult],
     cinm2_raw = measurements.results_to_frame(cinm2_results)
     cinm2_summary = (
         cinm2_raw.groupby(["fn_name", "dpus", "tasklets"])["net_time_ms"]
-        .agg(cinm2_ms="median",
-             cinm2_p25=lambda s: s.quantile(0.25),
-             cinm2_p75=lambda s: s.quantile(0.75),
-             cinm2_n="count")
+        .agg(
+            cinm2_ms="median",
+            cinm2_p25=lambda s: s.quantile(0.25),
+            cinm2_p75=lambda s: s.quantile(0.75),
+            cinm2_n="count",
+        )
         .reset_index()
     )
 
@@ -500,15 +579,20 @@ def compare(cinm1_results: list[compile_run.RunResult],
         zip(merged.fn_name, merged.dpus, merged.tasklets)
     )
     if missing:
-        print(f"  WARNING: {len(missing)} (fn_name,dpus,tasklets) pairs have CINM1 "
-              f"but no CINM2 data: {sorted(missing)[:5]}...", file=sys.stderr)
+        print(
+            f"  WARNING: {len(missing)} (fn_name,dpus,tasklets) pairs have CINM1 "
+            f"but no CINM2 data: {sorted(missing)[:5]}...",
+            file=sys.stderr,
+        )
     merged["speedup"] = merged["cinm1_ms"] / merged["cinm2_ms"]
     return merged
 
 
 def _compare_prim(prim: str) -> bool:
     configs = _discover_configs(prim)
-    compiled = compile_run.discover_compiled(configs, compile_root=PATHS.compile_root(prim))
+    compiled = compile_run.discover_compiled(
+        configs, compile_root=PATHS.compile_root(prim)
+    )
 
     # Reconstruct RunResults by pointing at the already-written output dirs
     # (no need to re-run bench_* -- bench.done guarantees they exist).
@@ -541,8 +625,11 @@ def task_compare():
 
 def _plot_all() -> bool:
     comparison = pd.concat(
-        [pd.read_csv(PATHS.comparison_csv(prim)) for prim in PRIMS
-         if PATHS.comparison_csv(prim).exists()],
+        [
+            pd.read_csv(PATHS.comparison_csv(prim))
+            for prim in PRIMS
+            if PATHS.comparison_csv(prim).exists()
+        ],
         ignore_index=True,
     )
     out_dir = PATHS.plots_dir()
