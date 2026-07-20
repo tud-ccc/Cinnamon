@@ -13,6 +13,7 @@ Usage:
   doit                   # run everything up to the plots
   doit compile_cinm1     # just compile CINM 1.0's configs
   doit forget screen     # force screening to rerun next time
+  doit retry_failed_compiles && doit  # clear + retry configs that failed to compile
 
 Stages are connected by files on disk, not in-memory state, since doit may
 skip any stage in a given invocation: pairs.csv (screen's output) and the
@@ -195,10 +196,19 @@ def task_cinm2_search():
 
 # ── compile ──────────────────────────────────────────────────────────────────
 
-def _compile_one(config: compile_run.Config, compile_root: pathlib.Path) -> bool:
+def _compile_one(config: compile_run.Config, compile_root: pathlib.Path, marker: pathlib.Path) -> bool:
+    """Never raises: a config that fails to compile is recorded (printed +
+    left out of the marker's sibling bin/) but must not block sibling
+    configs' bench task from running -- doit treats a raised exception as a
+    hard failure and skips every downstream task that depends on it, which
+    is more than we want for one bad config out of many. discover_compiled()
+    already treats a missing bench_* binary as a per-config failure, so
+    downstream stages tolerate this fine."""
     compiled = compile_run.compile_config(config, compile_root=compile_root)
     if not compiled.ok:
-        raise RuntimeError(f"{config.system} {config.fn_name} {config.label}: {compiled.error}")
+        print(f"  FAIL compile: {config.system} {config.fn_name} {config.label}: {compiled.error}")
+    marker.parent.mkdir(parents=True, exist_ok=True)
+    marker.touch()
     return True
 
 
@@ -225,11 +235,12 @@ def task_compile_cinm1():
                     fn_module=fn_module, prim=op,
                     lower=cinm1.lowerer(dpus, tasklets, cinm_opt=CINM_OPT),
                 )
+                marker = compile_root / "cinm1" / fn_name / label / "compile.done"
                 yield {
                     "name": f"{prim}:{fn_name}:{label}",
                     "file_dep": [str(pairs_csv)],
-                    "targets": [str(compile_root / "cinm1" / fn_name / label / "bin" / f"bench_{fn_name}")],
-                    "actions": [(_compile_one, [config, compile_root])],
+                    "targets": [str(marker)],
+                    "actions": [(_compile_one, [config, compile_root, marker])],
                 }
 
 
@@ -251,11 +262,12 @@ def task_compile_cinm2():
                 fn_module=fn_module, prim=op,
                 lower=cinmopt.eval_solution_lowerer(params, cinm_opt=CINM_OPT),
             )
+            marker = compile_root / "cinm2" / fn_name / seed / "compile.done"
             yield {
                 "name": f"{prim}:{fn_name}:{seed}",
                 "file_dep": [str(pool_csv)],
-                "targets": [str(compile_root / "cinm2" / fn_name / seed / "bin" / f"bench_{fn_name}")],
-                "actions": [(_compile_one, [config, compile_root])],
+                "targets": [str(marker)],
+                "actions": [(_compile_one, [config, compile_root, marker])],
             }
 
 
@@ -312,22 +324,62 @@ def task_bench():
     One task per prim (not per config): running is inherently sequential
     here, so there is no parallelism for doit to schedule within it, and a
     single task per prim keeps the dependency graph simple (it just needs
-    every compile_cinm1/compile_cinm2 subtask for that prim to be done)."""
+    every compile_cinm1/compile_cinm2 subtask for that prim to be done).
+
+    Depends on each config's compile.done marker rather than its bench_*
+    binary: the marker is always written, even when that one config failed
+    to compile, so one bad config doesn't stop doit from running bench for
+    every config that did compile (discover_compiled treats a missing
+    binary as a per-config failure, not a fatal one)."""
     for prim in PRIMS:
         compile_root = _prim_dir(prim) / "compiled"
-        bins = [
-            str(compile_root / c.system / c.fn_name / c.label / "bin" / f"bench_{c.fn_name}")
+        compile_markers = [
+            str(compile_root / c.system / c.fn_name / c.label / "compile.done")
             for c in _discover_configs(prim)
         ]
-        if not bins:
+        if not compile_markers:
             continue
         marker = _prim_dir(prim) / "bench.done"
         yield {
             "name": prim,
-            "file_dep": bins,
+            "file_dep": compile_markers,
             "targets": [str(marker)],
             "actions": [(_bench_prim, [prim, marker])],
         }
+
+
+# ── retry failed compiles ───────────────────────────────────────────────────
+
+def _retry_failed_compiles() -> bool:
+    """Delete the compile output of every config whose compile.done marker
+    exists but whose bench_* binary doesn't -- i.e. every config _compile_one
+    recorded as failed (see its docstring) instead of leaving broken. With
+    the marker gone, the next `doit compile_cinm1` / `compile_cinm2` (or
+    plain `doit`) sees a missing target and retries just those configs;
+    configs that already compiled are untouched."""
+    n = 0
+    for prim in PRIMS:
+        compile_root = _prim_dir(prim) / "compiled"
+        for c in _discover_configs(prim):
+            config_dir = compile_root / c.system / c.fn_name / c.label
+            marker = config_dir / "compile.done"
+            bench_bin = config_dir / "bin" / f"bench_{c.fn_name}"
+            if marker.exists() and not bench_bin.exists():
+                print(f"  retry: {c.system} {c.fn_name} {c.label}")
+                shutil.rmtree(config_dir)
+                n += 1
+    print(f"cleared {n} failed compile(s)")
+    return True
+
+
+def task_retry_failed_compiles():
+    """Not part of the default pipeline. Run explicitly (`doit
+    retry_failed_compiles`) after fixing whatever caused some configs to
+    fail to compile, then rerun `doit` to pick them back up."""
+    return {
+        "actions": [_retry_failed_compiles],
+        "uptodate": [False],
+    }
 
 
 # ── compare + plot ───────────────────────────────────────────────────────────

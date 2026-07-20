@@ -111,10 +111,19 @@ computeShapeOfTensors(Location loc, llvm::ArrayRef<int64_t> shape,
   // Now we support 3 cases: either
   // 0. scattering a single element, or broadcasting
   if (scatterScalar || numReductionElts == numBufItems) {
+    // The buffer may end up with fewer dims than the (possibly wrapped)
+    // input tensor, e.g. when scatterScalar wraps a bare scalar into
+    // tensor<numTasklets x ElementTy> but the buffer stays a plain scalar
+    // (shapeOfBuffer empty), or when leading unit parallel dims aren't
+    // classified as reduction dims. The scatter map must produce one result
+    // per truncated dim; since every value being scattered is identical
+    // (broadcast to all workgroup members), a constant 0 index is always
+    // valid.
+    size_t numTruncatedDims = shape.size() - shapeOfBuffer.size();
     scatterMap = AffineMap::get(
-        wgShape.size(), 0, {}, // empty means broadcast
-                               // SmallVector<AffineExpr>(1,
-                               // getAffineConstantExpr(0, wgTy.getContext())),
+        wgShape.size(), 0,
+        SmallVector<AffineExpr>(numTruncatedDims,
+                                getAffineConstantExpr(0, wgTy.getContext())),
         wgTy.getContext());
     return success();
   }
@@ -450,17 +459,32 @@ LogicalResult convertCinmToCnm(
     auto res = cnm::GatherOp::create(builder, cnmAlloc, workgroup, map, outBuf);
     if (isa<TensorType>(reshaped.getType())) {
       auto correspondingResult = results[i];
-      Value shapedBack = mlir::reshapeStatic(
-          builder, builder.getLoc(),
-          cast<TypedValue<ShapedType>>(res.getOutput()),
-          cast<ShapedType>(correspondingResult.getType()).getShape());
-      // If an explicit destination was provided, tell the bufferizer that the
-      // result should alias it so the copy can be folded away.
-      if (gatherBuf && !matchPattern(gatherBuf, m_Constant()))
-        shapedBack = bufferization::MaterializeInDestinationOp::create(
-                         builder, shapedBack, gatherBuf)
-                         .getResult();
-      resultValues.push_back(shapedBack);
+      if (auto resultShapedTy =
+              dyn_cast<ShapedType>(correspondingResult.getType())) {
+        Value shapedBack = mlir::reshapeStatic(
+            builder, builder.getLoc(),
+            cast<TypedValue<ShapedType>>(res.getOutput()),
+            resultShapedTy.getShape());
+        // If an explicit destination was provided, tell the bufferizer that
+        // the result should alias it so the copy can be folded away.
+        if (gatherBuf && !matchPattern(gatherBuf, m_Constant()))
+          shapedBack = bufferization::MaterializeInDestinationOp::create(
+                           builder, shapedBack, gatherBuf)
+                           .getResult();
+        resultValues.push_back(shapedBack);
+      } else {
+        // The op's result is a scalar (e.g. cinm.op.reduce fully reducing
+        // its input to a single value): `reshaped` was only wrapped into a
+        // tensor to make it scatterable (see convertInputIntoAlloc's
+        // scatterScalar handling), so unwrap it back to the scalar the op
+        // actually returns.
+        auto outTy = cast<ShapedType>(res.getOutput().getType());
+        SmallVector<Value> indices(
+            outTy.getRank(), arith::ConstantIndexOp::create(builder, 0));
+        Value scalar =
+            tensor::ExtractOp::create(builder, res.getOutput(), indices);
+        resultValues.push_back(scalar);
+      }
     }
   }
 
