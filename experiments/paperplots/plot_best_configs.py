@@ -56,7 +56,13 @@ def _iter_col(df: pd.DataFrame) -> str:
 
 
 def _id_col(df: pd.DataFrame) -> str:
-    return "seed" if "seed" in df.columns else "config_id"
+    # "seed" (legacy run_best_configs.py config.csv) / "label" (compile_run.Config,
+    # e.g. "seed_1234") / "config_id" (oldest format) -- whichever this source's
+    # config.csv happened to use.
+    for col in ("seed", "label", "config_id"):
+        if col in df.columns:
+            return col
+    raise KeyError(f"no id column (seed/label/config_id) in {list(df.columns)}")
 
 
 def load_net_time(agg_dir: pathlib.Path) -> pd.DataFrame:
@@ -350,6 +356,72 @@ def plot_bars(data: pd.DataFrame, out_dir: pathlib.Path, sources: list[str]):
     print(f"  bars    → {out_dir}/bars.{{pdf,png}}")
 
 
+def run_plots(exp_root: pathlib.Path, sources: list[str], out_dir: pathlib.Path) -> None:
+    """Load every source's aggregated/ + bo_timings/ output under exp_root
+    and produce net_times.csv, violin.{pdf,png}, bars.{pdf,png}, and the two
+    speedup-bar charts (net time, BO-search timing) in out_dir. Called
+    directly by paperplots/dodo.py's plot task; see main() below for the
+    standalone CLI."""
+    exp_root = pathlib.Path(exp_root)
+    out_dir = pathlib.Path(out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    frames = []
+    for src in sources:
+        agg_dir = exp_root / src / "aggregated"
+        if not agg_dir.exists():
+            print(f"  WARNING: {agg_dir} does not exist, skipping", file=sys.stderr)
+            continue
+        print(f"  Loading {src}")
+        df = load_net_time(agg_dir)
+        df["source"] = src
+        frames.append(df)
+
+    if not frames:
+        raise RuntimeError(f"no aggregated data found under {exp_root} for sources {sources}")
+
+    data = pd.concat(frames, ignore_index=True)
+    combined_csv = out_dir / "net_times.csv"
+    data.to_csv(combined_csv, index=False)
+    print(f"  combined → {combined_csv}")
+
+    sources_present = [s for s in sources if s in data["source"].unique()]
+    plot_violins(data, out_dir, sources_present)
+    plot_bars(data, out_dir, sources_present)
+    plot_speedup_bars(
+        data,
+        out_dir,
+        sources_present,
+        value_col="net_time_ms",
+        out_name="speedup_net",
+        subtitle="net execution time",
+        colors=NET_SPEEDUP_COLORS,
+    )
+
+    bo_frames = []
+    for src in sources:
+        bo_dir = exp_root / src / "bo_timings"
+        if not bo_dir.exists():
+            continue
+        df = load_bo_timings(bo_dir)
+        df["source"] = src
+        bo_frames.append(df)
+
+    if bo_frames:
+        bo_data = pd.concat(bo_frames, ignore_index=True)
+        bo_sources = [s for s in sources if s in bo_data["source"].unique()]
+        plot_speedup_bars(
+            bo_data,
+            out_dir,
+            bo_sources,
+            value_col="mean_elapsed_ms",
+            out_name="speedup",
+            subtitle="BO-search timings",
+        )
+
+    print("Done.")
+
+
 def main():
     parser = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
@@ -364,66 +436,7 @@ def main():
         "--out", required=True, help="Output directory for plots and combined CSV"
     )
     args = parser.parse_args()
-
-    exp_root = pathlib.Path(args.exp_root)
-    out_dir = pathlib.Path(args.out)
-    out_dir.mkdir(parents=True, exist_ok=True)
-
-    frames = []
-    for src in args.sources:
-        agg_dir = exp_root / src / "aggregated"
-        if not agg_dir.exists():
-            print(f"  WARNING: {agg_dir} does not exist, skipping", file=sys.stderr)
-            continue
-        print(f"  Loading {src}")
-        df = load_net_time(agg_dir)
-        df["source"] = src
-        frames.append(df)
-
-    if not frames:
-        print("No data loaded.", file=sys.stderr)
-        sys.exit(1)
-
-    data = pd.concat(frames, ignore_index=True)
-    combined_csv = out_dir / "net_times.csv"
-    data.to_csv(combined_csv, index=False)
-    print(f"  combined → {combined_csv}")
-
-    sources_present = [s for s in args.sources if s in data["source"].unique()]
-    plot_violins(data, out_dir, sources_present)
-    plot_bars(data, out_dir, sources_present)
-    plot_speedup_bars(
-        data,
-        out_dir,
-        sources_present,
-        value_col="net_time_ms",
-        out_name="speedup_net",
-        subtitle="net execution time",
-        colors=NET_SPEEDUP_COLORS,
-    )
-
-    bo_frames = []
-    for src in args.sources:
-        bo_dir = exp_root / src / "bo_timings"
-        if not bo_dir.exists():
-            continue
-        df = load_bo_timings(bo_dir)
-        df["source"] = src
-        bo_frames.append(df)
-
-    if bo_frames:
-        bo_data = pd.concat(bo_frames, ignore_index=True)
-        bo_sources = [s for s in args.sources if s in bo_data["source"].unique()]
-        plot_speedup_bars(
-            bo_data,
-            out_dir,
-            bo_sources,
-            value_col="mean_elapsed_ms",
-            out_name="speedup",
-            subtitle="BO-search timings",
-        )
-
-    print("Done.")
+    run_plots(pathlib.Path(args.exp_root), args.sources, pathlib.Path(args.out))
 
 
 if __name__ == "__main__":
