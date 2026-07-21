@@ -5,6 +5,7 @@
 #include "cinm-mlir/Dialect/UPMEM/IR/UPMEMOps.h"
 
 #include "cinm-mlir/Dialect/UPMEM/IR/UPMEMAttributes.h"
+#include "cinm-mlir/Utils/CinmUtils.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/IR/Builders.h"
 
@@ -111,32 +112,6 @@ void upmem::StaticAllocOp::build(OpBuilder &builder, OperationState &result,
                         builder.getStringAttr(name));
   }
   result.addTypes(ty);
-}
-
-/// Returns the number of trailing elements of `type` that are guaranteed to
-/// be laid out contiguously in memory (i.e. the largest suffix of dimensions
-/// that is packed row-major), or -1 if this cannot be determined statically
-/// (dynamic shape/strides, or an unsupported layout).
-static int64_t getContiguousSuffixSize(MemRefType type) {
-  if (type.getLayout().isIdentity())
-    return type.hasStaticShape() ? type.getNumElements() : -1;
-
-  auto strided = llvm::dyn_cast<StridedLayoutAttr>(type.getLayout());
-  if (!strided)
-    return -1;
-
-  ArrayRef<int64_t> shape = type.getShape();
-  ArrayRef<int64_t> strides = strided.getStrides();
-  int64_t expectedStride = 1;
-  int64_t count = 1;
-  for (int64_t i = static_cast<int64_t>(shape.size()) - 1; i >= 0; --i) {
-    if (ShapedType::isDynamic(shape[i]) || ShapedType::isDynamic(strides[i]) ||
-        strides[i] != expectedStride)
-      break;
-    count *= shape[i];
-    expectedStride *= shape[i];
-  }
-  return count;
 }
 
 /// The runtime copies `transferCount` elements per DPU via a single flat

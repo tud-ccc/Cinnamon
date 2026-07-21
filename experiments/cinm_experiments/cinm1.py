@@ -82,7 +82,7 @@ _STEP4 = ["--promote-buffers-to-stack", "--fold-memref-alias-ops", "--canonicali
 _STEP5 = ["--lower-affine", "--cnm-ensure-scatter-gather-contiguous", "--buffer-loop-hoisting", "--buffer-hoisting",
           "--canonicalize", "--cse"]
 _STEP6 = ["--convert-cnm-to-upmem=cinm1-codegen=true", "--cse", "--buffer-loop-hoisting", "--buffer-deallocation-pipeline",
-          "--upmem-dedup-kernels", "--cse", "--"]
+          "--upmem-dedup-kernels", "--cse"]
 
 _STAGES = [
     (["--pass-pipeline=" + _STEP1A_PIPELINE], "1a.mlir"),

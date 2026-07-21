@@ -11,6 +11,14 @@ SmallString<20> getUniqueFunctionName(ModuleOp &moduleOp, StringRef prefix);
 bool scatteredMemrefIsContiguous(TypedValue<ShapedType> value,
                                  llvm::ArrayRef<int64_t> bufShape);
 
+/// Returns the number of trailing elements of `type` that are guaranteed to
+/// be laid out contiguously in memory (i.e. the largest suffix of dimensions
+/// that is packed row-major), or -1 if this cannot be determined statically
+/// (dynamic shape/strides, or an unsupported layout). This is the same
+/// criterion upmem::ScatterOp/GatherOp::verify() uses to reject transfers
+/// that wouldn't be safe as a single flat memcpy per DPU.
+int64_t getContiguousSuffixSize(MemRefType type);
+
 /// Simplify an affine map given static upper bounds on the inputs.
 /// This is used to simplify even more the affine maps on the CNM and UPMEM
 /// levels, given knowledge of the workgroup shape. That makes the generated code

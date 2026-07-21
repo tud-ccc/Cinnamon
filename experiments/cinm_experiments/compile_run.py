@@ -82,7 +82,7 @@ def compile_config(config: Config, *, compile_root: pathlib.Path) -> CompiledCon
     r = subprocess.run(cmd, capture_output=True, text=True)
     if r.returncode != 0:
         (config_dir / "make_stderr.txt").write_text(r.stderr)
-        return CompiledConfig(config, config_dir, False, f"make failed:\n{r.stderr[-2000:]}")
+        return CompiledConfig(config, config_dir, False, f"make failed:\n{r.stderr[-10000:]}")
 
     return CompiledConfig(config, config_dir, True)
 
