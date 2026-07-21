@@ -239,6 +239,13 @@ class ScatterGatherLike<string mnemonic, string kw, MemoryEffect effect, MemoryE
     `scatterMap` is an affine map `(rank, dpu) -> (i, ...)` that computes the
     starting index in `hostBuffer` for each DPU. It must have exactly two
     dimensions (rank and dpu) and as many results as the rank of `hostBuffer`.
+
+    In case of a scatter (not a gather), the `scatterMap` may also be `(rank,
+    dpu, tasklet) -> ...`. In this case the transfer uses the UPMEM SDK's scatter
+    transfer API. The scatter map computes the index of the block to transfer for
+    a specific tasklet within a DPU. The transfer count must be the size of this
+    block in element. All of those blocks must have the same length (this is not a
+    restriction of the UPMEM API, but ours, for now).
   }];
 
   let extraClassDeclaration = [{
