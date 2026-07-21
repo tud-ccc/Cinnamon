@@ -150,11 +150,19 @@ LogicalResult upmem::GatherOp::verify() {
 }
 
 LogicalResult upmem::ScatterOp::verify() {
+  unsigned numDims = getScatterMap().getNumDims();
   if (getScatterMap().getNumResults() !=
           getHostBuffer().getType().getShape().size() ||
-      getScatterMap().getNumDims() != 2)
-    return emitOpError("Scatter map should map (rank, dpu) to a start index in "
-                       "the host buffer");
+      (numDims != 2 && numDims != 3))
+    return emitOpError(
+        "Scatter map should map (rank, dpu) or (rank, dpu, tasklet) to a "
+        "start index in the host buffer");
+
+  // In the (rank, dpu, tasklet) form, `transferCount` is the size of a single
+  // tasklet's block (see UPMEM SDK scatter/gather transfer in the op
+  // description): each such block still needs to be contiguous in the host
+  // buffer, even though blocks belonging to different tasklets need not be
+  // contiguous with one another.
   if (failed(verifyScatterGatherContiguity(
           *this, getHostBuffer().getType(), getTransferCount())))
     return failure();

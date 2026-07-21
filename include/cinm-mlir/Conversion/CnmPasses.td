@@ -33,7 +33,13 @@ def ConvertCnmToUPMEMPass : Pass<"convert-cnm-to-upmem"> {
              [{"dpu_kernels"}],
              "Name of the submodule to create DPU kernels in">,
       Option<"cinm1Codegen", "cinm1-codegen", "bool", "false",
-             "Whether to match CINM 1 code generation (no barriers, tasklets don't share buffers)">
+             "Whether to match CINM 1 code generation (no barriers, tasklets don't share buffers)">,
+      Option<"useSgXferCodegen", "use-sg-xfer-codegen", "bool", "true",
+             "Whether upmem.scatter may use the (rank, dpu, tasklet) scatter-map "
+             "form (lowered via the UPMEM SDK's scatter/gather transfer API) when "
+             "the per-tasklet blocks of a cnm.scatter are not contiguous in the "
+             "host buffer, instead of staging them into a contiguous host buffer "
+             "first">
     ];
     let dependentDialects = [
         "mlir::affine::AffineDialect",

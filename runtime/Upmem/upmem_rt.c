@@ -75,6 +75,59 @@ void upmemrt_dpu_gather(struct dpu_set_t *dpu_set, void *host_buffer,
 #endif
 }
 
+/// Arguments closed over by get_scatter_to_tasklets_block, passed through the
+/// UPMEM SDK's get_block_t.args (which the SDK copies internally, so it is
+/// safe for this struct to live on the stack of the calling function).
+typedef struct sg_xfer_context {
+  uint8_t *host_buffer;
+  size_t element_size;
+  size_t num_tasklets;
+  size_t block_num_elements;
+  size_t (*base_offset)(size_t, size_t);
+} sg_xfer_context;
+
+static bool get_scatter_to_tasklets_block(struct sg_block_info *out,
+                                          uint32_t dpu_index,
+                                          uint32_t block_index, void *args) {
+  const sg_xfer_context *ctx = (const sg_xfer_context *)args;
+  if (block_index >= ctx->num_tasklets)
+    return false;
+
+  out->addr = ctx->host_buffer + ctx->base_offset(dpu_index, block_index);
+  out->length = ctx->block_num_elements * ctx->element_size;
+  return true;
+}
+
+void upmemrt_dpu_scatter_to_tasklets(struct dpu_set_t *dpu_set,
+                                     void *host_buffer, size_t element_size,
+                                     size_t num_tasklets,
+                                     size_t block_num_elements,
+                                     const char *buffer_id,
+                                     size_t (*base_offset)(size_t, size_t)) {
+#ifdef UPMEM_RT_STATS
+  uint64_t t0 = upmemrt_now_ns();
+#endif
+  sg_xfer_context ctx = {
+      .host_buffer = (uint8_t *)host_buffer,
+      .element_size = element_size,
+      .num_tasklets = num_tasklets,
+      .block_num_elements = block_num_elements,
+      .base_offset = base_offset,
+  };
+  get_block_t get_block_info = {.f = get_scatter_to_tasklets_block,
+                                .args = &ctx,
+                                .args_size = sizeof(ctx)};
+
+  size_t length = num_tasklets * block_num_elements * element_size;
+  DPU_ASSERT(dpu_push_sg_xfer(*dpu_set, DPU_XFER_TO_DPU, buffer_id, 0, length,
+                              &get_block_info, DPU_SG_XFER_DEFAULT));
+#ifdef UPMEM_RT_STATS
+  uint32_t nr_dpus = 0;
+  dpu_get_nr_dpus(*dpu_set, &nr_dpus);
+  upmemrt_record_scatter(upmemrt_now_ns() - t0, length, nr_dpus);
+#endif
+}
+
 struct dpu_set_t *upmemrt_dpu_alloc(int32_t num_ranks, int32_t num_dpus,
                                     const char *dpu_binary_path) {
   int32_t num_alloc_dpu = num_ranks * num_dpus;
@@ -83,7 +136,21 @@ struct dpu_set_t *upmemrt_dpu_alloc(int32_t num_ranks, int32_t num_dpus,
 #ifdef UPMEM_RT_STATS
   uint64_t t0 = upmemrt_now_ns();
 #endif
-  DPU_ASSERT(dpu_alloc(num_alloc_dpu, getenv("UPMEM_PROFILE"), dpu_set));
+  // sgXferEnable/sgXferMaxBlocksPerDpu are required for
+  // upmemrt_dpu_scatter_to_tasklets (dpu_push_sg_xfer): scatter/gather
+  // transfers are disabled by default, and the max number of blocks per DPU
+  // otherwise defaults to the number of DPUs in the set, which is too low
+  // once we're scattering one block per tasklet (up to 24 tasklets/DPU).
+  const char *userProfile = getenv("UPMEM_PROFILE");
+  char profile[256];
+  if (userProfile && userProfile[0] != '\0') {
+    snprintf(profile, sizeof(profile),
+             "%s,sgXferEnable=true,sgXferMaxBlocksPerDpu=24", userProfile);
+  } else {
+    snprintf(profile, sizeof(profile),
+             "sgXferEnable=true,sgXferMaxBlocksPerDpu=24");
+  }
+  DPU_ASSERT(dpu_alloc(num_alloc_dpu, profile, dpu_set));
   DPU_ASSERT(dpu_load(*dpu_set, dpu_binary_path, NULL));
 #ifdef UPMEM_RT_STATS
   uint32_t nr_dpus = 0;

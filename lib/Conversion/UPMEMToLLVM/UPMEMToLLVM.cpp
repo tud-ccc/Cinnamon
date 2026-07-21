@@ -120,21 +120,14 @@ static Value reifyAsString(ImplicitLocOpBuilder &builder, ModuleOp container,
   return LLVM::AddressOfOp::create(builder, global);
 }
 
-/// Linearize the scatter map.
-/// The map is from (rank, dpu) -> tensor, both index spaces are
-/// multidimensional. The input shape is the WG shape, the output shape is the
-/// tensor shape.
-///
-static FailureOr<AffineMap> linearizeAffineMap(AffineMap map,
-                                               ArrayRef<int64_t> inputShape,
-                                               MemRefType bufferTy) {
-
-  auto ctx = map.getContext();
-  SmallVector<AffineExpr> inflatedIndices;
-  mlir::structureIndex(getAffineDimExpr(0, ctx), inputShape, inflatedIndices);
-  AffineMap inflateMap = AffineMap::get(1, 0, inflatedIndices, ctx);
-
-  // complete map with zero dims
+/// Composes `inflateMap.compose(map)`'s results with `bufferTy`'s layout to
+/// produce a single result expressing a byte offset into `bufferTy`, and
+/// converts the (element) result of that composition to bytes. Shared tail of
+/// linearizeAffineMap and linearizeAffineMapForTasklets.
+static FailureOr<AffineMap> composeWithBufferLayoutToBytes(AffineMap map,
+                                                           AffineMap inflateMap,
+                                                           MemRefType bufferTy) {
+  auto ctx = bufferTy.getContext();
   auto outputShape = bufferTy.getShape();
   auto layoutMap = bufferTy.getLayout().getAffineMap();
   if (isa<StridedLayoutAttr>(bufferTy.getLayout())) {
@@ -161,7 +154,7 @@ static FailureOr<AffineMap> linearizeAffineMap(AffineMap map,
   LLVM_DEBUG(llvm::errs() << "- after simplification " << result.getAffineMap()
                           << '\n');
 
-  assert(result.getNumResults() == 1 && result.getNumDims() == 1);
+  assert(result.getNumResults() == 1);
 
   // last step is making sure this map operates on bytes and not on elements
   auto resExpr = result.getResult(0);
@@ -169,6 +162,49 @@ static FailureOr<AffineMap> linearizeAffineMap(AffineMap map,
   result.simplify();
   LLVM_DEBUG(llvm::errs() << "- result " << result.getAffineMap() << '\n');
   return success(result.getAffineMap());
+}
+
+/// Linearize the scatter map.
+/// The map is from (rank, dpu) -> tensor, both index spaces are
+/// multidimensional. The input shape is the WG shape, the output shape is the
+/// tensor shape.
+///
+static FailureOr<AffineMap> linearizeAffineMap(AffineMap map,
+                                               ArrayRef<int64_t> inputShape,
+                                               MemRefType bufferTy) {
+
+  auto ctx = map.getContext();
+  SmallVector<AffineExpr> inflatedIndices;
+  mlir::structureIndex(getAffineDimExpr(0, ctx), inputShape, inflatedIndices);
+  AffineMap inflateMap = AffineMap::get(1, 0, inflatedIndices, ctx);
+
+  auto result = composeWithBufferLayoutToBytes(map, inflateMap, bufferTy);
+  if (failed(result))
+    return failure();
+  assert(result->getNumDims() == 1);
+  return result;
+}
+
+/// Linearize the (rank, dpu, tasklet) scatter map used by the UPMEM SDK
+/// scatter transfer API form of upmem.scatter. Unlike linearizeAffineMap,
+/// the resulting function of two arguments (dpu index, tasklet index) is not
+/// further inflated on the tasklet dim: it is passed straight through to
+/// `map`, since the runtime calls it once per (dpu, tasklet) pair (see
+/// upmemrt_dpu_scatter_to_tasklets / get_block_func_t).
+static FailureOr<AffineMap>
+linearizeAffineMapForTasklets(AffineMap map, ArrayRef<int64_t> dpuShape,
+                              MemRefType bufferTy) {
+  auto ctx = map.getContext();
+  SmallVector<AffineExpr> inflatedIndices;
+  mlir::structureIndex(getAffineDimExpr(0, ctx), dpuShape, inflatedIndices);
+  inflatedIndices.push_back(getAffineDimExpr(1, ctx));
+  AffineMap inflateMap = AffineMap::get(2, 0, inflatedIndices, ctx);
+
+  auto result = composeWithBufferLayoutToBytes(map, inflateMap, bufferTy);
+  if (failed(result))
+    return failure();
+  assert(result->getNumDims() == 2);
+  return result;
 }
 
 /*
@@ -188,6 +224,27 @@ getScatterOrGatherFunc(OpBuilder &rewriter, ModuleOp moduleOp,
   return LLVM::lookupOrCreateFn(
       rewriter, moduleOp, name,
       {ptrTy, ptrTy, sizeTy, sizeTy, sizeTy, sizeTy, ptrTy, funPtrTy},
+      LLVM::LLVMVoidType::get(ctx));
+}
+
+/*
+void upmemrt_dpu_scatter_to_tasklets(struct dpu_set_t *dpu_set,
+                                     void *host_buffer, size_t element_size,
+                                     size_t num_tasklets,
+                                     size_t block_num_elements,
+                                     const char *buffer_id,
+                                     size_t (*base_offset)(size_t, size_t));
+*/
+static FailureOr<LLVM::LLVMFuncOp>
+getScatterToTaskletsFunc(OpBuilder &rewriter, ModuleOp moduleOp,
+                        LLVMTypeConverter const *tyConverter) {
+  auto ctx = moduleOp->getContext();
+  auto ptrTy = untypedPtrType(ctx);
+  auto sizeTy = tyConverter->getIndexType();
+  auto funPtrTy = functionPtrTy(sizeTy, {sizeTy, sizeTy});
+  return LLVM::lookupOrCreateFn(
+      rewriter, moduleOp, "upmemrt_dpu_scatter_to_tasklets",
+      {ptrTy, ptrTy, sizeTy, sizeTy, sizeTy, ptrTy, funPtrTy},
       LLVM::LLVMVoidType::get(ctx));
 }
 
@@ -335,6 +392,72 @@ outlineAffineMap(ImplicitLocOpBuilder &rewriter,
   return failure();
 }
 
+/// Same as outlineAffineMap, but for the (rank, dpu, tasklet) upmem.scatter
+/// form: emits a function of two arguments (dpu index, tasklet index)
+/// matching the runtime's base_offset(size_t, size_t) callback (see
+/// upmemrt_dpu_scatter_to_tasklets).
+static FailureOr<LLVM::LLVMFuncOp>
+outlineAffineMapForTasklets(ImplicitLocOpBuilder &rewriter,
+                           LLVMTypeConverter const *tyConverter,
+                           ModuleOp moduleOp, AffineMap map,
+                           DeviceHierarchyType hierarchyTy,
+                           MemRefType bufferTy) {
+
+  ConversionPatternRewriter::InsertionGuard guard(rewriter);
+  rewriter.setInsertionPointToStart(moduleOp.getBody());
+
+  auto sizeTy =
+      tyConverter->convertType(IndexType::get(moduleOp->getContext()));
+  auto shape = hierarchyTy.getWgShape();
+  auto linearMap = linearizeAffineMapForTasklets(
+      map, ArrayRef<int64_t>(shape).drop_back(), bufferTy);
+  if (failed(linearMap)) {
+    emitError(rewriter.getLoc(), "Unsupported layout map for ") << bufferTy;
+    return failure();
+  }
+
+  auto affineFunTy = LLVM::LLVMFunctionType::get(sizeTy, {sizeTy, sizeTy});
+  LLVM::LLVMFuncOp existingOp;
+  moduleOp.getBodyRegion().walk<WalkOrder::PreOrder>([&](LLVM::LLVMFuncOp op) {
+    if (auto map = op->getAttrOfType<AffineMapAttr>("upmem.generated_from"))
+      if (map.getAffineMap() == linearMap) {
+        existingOp = op;
+        return WalkResult::interrupt();
+      }
+    return WalkResult::skip();
+  });
+  if (existingOp)
+    return existingOp;
+  auto funName = getUniqueFunctionName(moduleOp, "sg_scatter_map");
+  rewriter.setInsertionPointToStart(&moduleOp.getBodyRegion().front());
+  auto affineMapFun =
+      LLVM::LLVMFuncOp::create(rewriter, rewriter.getStringAttr(funName),
+                               affineFunTy, LLVM::Linkage::Private);
+
+  // to find it later
+  affineMapFun->setAttr("upmem.generated_from", AffineMapAttr::get(*linearMap));
+
+  rewriter = ImplicitLocOpBuilder::atBlockBegin(
+      rewriter.getLoc(), affineMapFun.addEntryBlock(rewriter));
+  Value arg0 = affineMapFun.getArgument(0);
+  Value arg1 = affineMapFun.getArgument(1);
+  // affine expects to deal with index type only
+  arg0 = createOrFoldUnrealizedConversionCast(rewriter.getLoc(), rewriter,
+                                              rewriter.getIndexType(), arg0);
+  arg1 = createOrFoldUnrealizedConversionCast(rewriter.getLoc(), rewriter,
+                                              rewriter.getIndexType(), arg1);
+
+  if (auto resOpt = affine::expandAffineMap(
+          rewriter, rewriter.getLoc(), *linearMap, ValueRange{arg0, arg1})) {
+    auto result = (*resOpt)[0];
+    result = createOrFoldUnrealizedConversionCast(rewriter.getLoc(), rewriter,
+                                                  sizeTy, result);
+    LLVM::ReturnOp::create(rewriter, ValueRange{result});
+    return affineMapFun;
+  }
+  return failure();
+}
+
 template <class Op>
 static LogicalResult lowerScatterOrGather(Op op, typename Op::Adaptor adaptor,
                                           LLVMTypeConverter const *tyConverter,
@@ -351,26 +474,6 @@ static LogicalResult lowerScatterOrGather(Op op, typename Op::Adaptor adaptor,
 
   // generate the function
   auto moduleOp = op->template getParentOfType<ModuleOp>();
-
-  auto affineMapFunOpt = outlineAffineMap(
-      rewriter, tyConverter, moduleOp, op.getScatterMap(),
-      op.getHierarchy().getType(), op.getHostBuffer().getType());
-  if (failed(affineMapFunOpt)) {
-    return emitError(op->getLoc(), "Cannot emit affine map");
-  }
-
-  auto runtimeScatterFun = getScatterOrGatherFunc(
-      rewriter, moduleOp, tyConverter,
-      isGather ? "upmemrt_dpu_gather" : "upmemrt_dpu_scatter");
-
-  if (llvm::failed(runtimeScatterFun))
-    return failure();
-  auto funPtrOp = LLVM::AddressOfOp::create(rewriter0, loc, *affineMapFunOpt);
-  auto bufferId =
-      reifyAsString(rewriter, moduleOp, op.getDpuBufRef(), "buffer_name");
-  // Transfer count must be 8-byte aligned
-  auto numBytesCopied = op.getDpuBufferSizeInBytes();
-  numBytesCopied = llvm::alignTo(numBytesCopied, 8);
 
   Value bareHostBuf = adaptor.getHostBuffer();
   if (isa<LLVM::LLVMStructType>(adaptor.getHostBuffer().getType())) {
@@ -389,6 +492,74 @@ static LogicalResult lowerScatterOrGather(Op op, typename Op::Adaptor adaptor,
     return emitError(op->getLoc(), "Unhandled buffer type: ")
            << adaptor.getHostBuffer().getType();
   }
+  auto bufferId =
+      reifyAsString(rewriter, moduleOp, op.getDpuBufRef(), "buffer_name");
+
+  // The (rank, dpu, tasklet) scatter map form: use the UPMEM SDK's scatter
+  // transfer API (dpu_push_sg_xfer) so each tasklet's block can come from a
+  // location in the host buffer that isn't contiguous with the other
+  // tasklets' blocks. Only upmem.scatter supports this form (see
+  // upmem::ScatterOp::verify).
+  if (!isGather && op.getScatterMap().getNumDims() == 3) {
+    auto affineMapFunOpt = outlineAffineMapForTasklets(
+        rewriter, tyConverter, moduleOp, op.getScatterMap(),
+        op.getHierarchy().getType(), op.getHostBuffer().getType());
+    if (failed(affineMapFunOpt))
+      return emitError(op->getLoc(), "Cannot emit affine map");
+
+    auto runtimeFun = getScatterToTaskletsFunc(rewriter, moduleOp, tyConverter);
+    if (llvm::failed(runtimeFun))
+      return failure();
+    auto funPtrOp = LLVM::AddressOfOp::create(rewriter0, loc, *affineMapFunOpt);
+
+    // Size of elements in bytes
+    const size_t elementSize =
+        op.getHostBuffer().getType().getElementTypeBitWidth() / 8;
+    // Number of tasklets (blocks) per DPU
+    const size_t numTaskletsPerDpu =
+        op.getHierarchy().getType().getNumTaskletsPerDpu();
+    // transferCount is the size of a single tasklet's block, in elements
+    // (see the op description)
+    const size_t blockNumElements = op.getTransferCount();
+
+    /*
+    void upmemrt_dpu_scatter_to_tasklets(struct dpu_set_t *dpu_set,
+                                         void *host_buffer,
+                                         size_t element_size,
+                                         size_t num_tasklets,
+                                         size_t block_num_elements,
+                                         const char *buffer_id,
+                                         size_t (*base_offset)(size_t, size_t))
+    */
+    LLVM::CallOp::create(
+        rewriter0, loc, *runtimeFun,
+        ValueRange{adaptor.getHierarchy(), bareHostBuf,
+                   reifyAsIndex(rewriter, tyConverter, elementSize),
+                   reifyAsIndex(rewriter, tyConverter, numTaskletsPerDpu),
+                   reifyAsIndex(rewriter, tyConverter, blockNumElements),
+                   bufferId, funPtrOp.getRes()});
+
+    rewriter0.eraseOp(op);
+    return success();
+  }
+
+  auto affineMapFunOpt = outlineAffineMap(
+      rewriter, tyConverter, moduleOp, op.getScatterMap(),
+      op.getHierarchy().getType(), op.getHostBuffer().getType());
+  if (failed(affineMapFunOpt)) {
+    return emitError(op->getLoc(), "Cannot emit affine map");
+  }
+
+  auto runtimeScatterFun = getScatterOrGatherFunc(
+      rewriter, moduleOp, tyConverter,
+      isGather ? "upmemrt_dpu_gather" : "upmemrt_dpu_scatter");
+
+  if (llvm::failed(runtimeScatterFun))
+    return failure();
+  auto funPtrOp = LLVM::AddressOfOp::create(rewriter0, loc, *affineMapFunOpt);
+  // Transfer count must be 8-byte aligned
+  auto numBytesCopied = op.getDpuBufferSizeInBytes();
+  numBytesCopied = llvm::alignTo(numBytesCopied, 8);
 
   // Size of elements in bytes
   const size_t elementSize =

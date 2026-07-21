@@ -97,7 +97,7 @@ module {
 module {
   func.func @test(%arg0: memref<8x128xi32>) {
     %1 = upmem.alloc_dpus with program @dpu_kernels::@program : !upmem.hierarchy<8x128x1>
-    // expected-error @+1 {{Scatter map should map (rank, dpu) to a start index in the host buffer}}
+    // expected-error @+1 {{Scatter map should map (rank, dpu) or (rank, dpu, tasklet) to a start index in the host buffer}}
     upmem.scatter %arg0[128, affine_map<(d0, d1) -> (d0)>] onto @buf of %1
         : memref<8x128xi32> onto !upmem.hierarchy<8x128x1>
     return
@@ -112,11 +112,12 @@ module {
 
 // -----
 
-// scatter map has fewer than 2 dimensions (must be (rank, dpu) -> ...).
+// scatter map has fewer than 2 dimensions (must be (rank, dpu) -> ... or
+// (rank, dpu, tasklet) -> ...).
 module {
   func.func @test(%arg0: memref<128xi32>) {
     %1 = upmem.alloc_dpus with program @dpu_kernels::@program : !upmem.hierarchy<8x128x1>
-    // expected-error @+1 {{Scatter map should map (rank, dpu) to a start index in the host buffer}}
+    // expected-error @+1 {{Scatter map should map (rank, dpu) or (rank, dpu, tasklet) to a start index in the host buffer}}
     upmem.scatter %arg0[128, affine_map<(d0) -> (d0)>] onto @buf of %1
         : memref<128xi32> onto !upmem.hierarchy<8x128x1>
     return
@@ -124,6 +125,48 @@ module {
   module @dpu_kernels {
     upmem.dpu_program @program() tasklets(1) {
       %buf = upmem.static_alloc @buf(mram) : memref<128xi32, "mram">
+      upmem.return
+    }
+  }
+}
+
+// -----
+
+// gather map may not use the (rank, dpu, tasklet) form: only scatter
+// supports the UPMEM SDK scatter transfer API.
+module {
+  func.func @test(%arg0: memref<8x128x4xi32>) {
+    %1 = upmem.alloc_dpus with program @dpu_kernels::@program : !upmem.hierarchy<8x128x4>
+    // expected-error @+1 {{Scatter map should map (rank, dpu) to a start index in the host buffer}}
+    upmem.gather %arg0[32, affine_map<(d0, d1, d2) -> (d1, d2, 0)>] from @buf of %1
+        : memref<8x128x4xi32> from !upmem.hierarchy<8x128x4>
+    return
+  }
+  module @dpu_kernels {
+    upmem.dpu_program @program() tasklets(4) {
+      %buf = upmem.static_alloc @buf(mram) : memref<4x32xi32, "mram">
+      upmem.return
+    }
+  }
+}
+
+// -----
+
+// A valid scatter using the (rank, dpu, tasklet) form: the scatter map
+// computes, for each tasklet, the start index of its own block in the host
+// buffer. Blocks for different tasklets need not be contiguous with each
+// other (here they come from non-adjacent rows of the host buffer), only
+// each individual block (32 contiguous elements) must be contiguous.
+module {
+  func.func @test(%arg0: memref<128x1024xi32>) {
+    %1 = upmem.alloc_dpus with program @dpu_kernels::@program : !upmem.hierarchy<1x128x4>
+    upmem.scatter %arg0[32, affine_map<(d0, d1, d2) -> (d1 * 4 + d2, 0)>] onto @buf of %1
+        : memref<128x1024xi32> onto !upmem.hierarchy<1x128x4>
+    return
+  }
+  module @dpu_kernels {
+    upmem.dpu_program @program() tasklets(4) {
+      %buf = upmem.static_alloc @buf(mram) : memref<4x32xi32, "mram">
       upmem.return
     }
   }
