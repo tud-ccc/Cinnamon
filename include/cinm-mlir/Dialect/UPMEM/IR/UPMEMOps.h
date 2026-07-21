@@ -28,6 +28,13 @@
 namespace mlir::upmem::detail {
   MemRefType flatMemRefType(Type structured);
 }
+namespace mlir::upmem {
+
+struct DpuSetResource : public SideEffects::Resource::Base<DpuSetResource> {
+  DpuSetResource() = default;
+  StringRef getName() const override { return "<DPU set>"; }
+};
+}
 
 #define GET_OP_CLASSES
 #include "cinm-mlir/Dialect/UPMEM/IR/UPMEMOps.h.inc"

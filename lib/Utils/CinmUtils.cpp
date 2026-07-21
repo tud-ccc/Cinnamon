@@ -100,8 +100,10 @@ bool scatteredMemrefIsContiguous(TypedValue<ShapedType> value,
     if (failed(type.getStridesAndOffset(strides, offset)))
       return false;
 
-    // MemRef is contiguous if outer dimensions are size-1 and inner
-    // dimensions have unit strides.
+    // MemRef is contiguous if the inner dimensions (corresponding to
+    // bufShape) are packed row-major, and the remaining outer dimensions
+    // are all size-1 (so they don't introduce any gaps between repeats of
+    // the inner block, regardless of their stride).
     int64_t runningStride = 1;
     int64_t curDim = strides.size() - 1;
     int64_t lastDimToCheck = strides.size() - bufShape.size();
@@ -110,14 +112,20 @@ bool scatteredMemrefIsContiguous(TypedValue<ShapedType> value,
       runningStride *= type.getDimSize(curDim);
       --curDim;
     }
+    // The inner (bufShape) dimensions must be fully packed: if we stopped
+    // before reaching lastDimToCheck, some inner dimension broke contiguity.
+    if (curDim >= lastDimToCheck)
+      return false;
 
-    // Check if other dimensions are size-1.
-    while (curDim >= lastDimToCheck && type.getDimSize(curDim) == 1) {
+    // Check that all remaining (outer) dimensions are size-1. Note this
+    // must range all the way down to 0, not just down to lastDimToCheck:
+    // those outer dims are exactly the ones not covered by bufShape.
+    while (curDim >= 0 && type.getDimSize(curDim) == 1) {
       --curDim;
     }
 
-    // All dims are unit-strided or size-1.
-    return curDim < lastDimToCheck;
+    // All dims are either part of the packed inner block, or size-1.
+    return curDim < 0;
   }
   return true;
 }

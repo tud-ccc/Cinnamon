@@ -62,5 +62,19 @@ def CnmHoistWorkgroupsPass : Pass<"cnm-hoist-workgroups"> {
   let dependentDialects = [];
 }
 
+def CnmEnsureScatterGatherContiguousPass : Pass<"cnm-ensure-scatter-gather-contiguous"> {
+  let summary = "Ensure cnm.scatter/cnm.gather transfer contiguous host memrefs";
+  let description = [{
+    Lowering a `cnm.scatter`/`cnm.gather` to `upmem.scatter`/`upmem.gather`
+    performs a single flat memcpy per DPU, computed from a start offset and an
+    element count. This is only correct if the transferred elements are
+    actually contiguous in the host memref. This pass detects host memrefs
+    that are not contiguous (e.g. because they are subviews of a larger
+    tensor) and inserts an intermediate contiguous buffer: a `memref.alloc`
+    plus a `memref.copy` before a scatter (or after a gather), so that the
+    memref handed to the op is always safe to transfer with a flat memcpy.
+  }];
+  let dependentDialects = ["memref::MemRefDialect"];
+}
 
 #endif // CNM_TRANSFORM_PASSES

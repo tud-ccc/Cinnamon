@@ -128,3 +128,63 @@ module {
     }
   }
 }
+
+// -----
+
+// scatter transferCount spans several rows of a strided (tiled) host buffer,
+// so each DPU's elements would not actually be contiguous in memory: a
+// 4-row x 1024-col tile of a 4096-wide matrix is not a contiguous run of
+// 4096 elements.
+module {
+  func.func @test(%arg0: memref<1024x1024xi32, strided<[4096, 1], offset: ?>>) {
+    %1 = upmem.alloc_dpus with program @dpu_kernels::@program : !upmem.hierarchy<1x256x4>
+    // expected-error @+1 {{transferCount (4096) exceeds the largest contiguous run of elements (1024) in host buffer}}
+    upmem.scatter %arg0[4096, affine_map<(d0, d1) -> (d0 * 1024 + d1 * 4, 0)>] onto @buf of %1
+        : memref<1024x1024xi32, strided<[4096, 1], offset: ?>> onto !upmem.hierarchy<1x256x4>
+    return
+  }
+  module @dpu_kernels {
+    upmem.dpu_program @program() tasklets(4) {
+      %buf = upmem.static_alloc @buf(mram) : memref<4x1024xi32, "mram">
+      upmem.return
+    }
+  }
+}
+
+// -----
+
+// Same non-contiguity issue, but for gather.
+module {
+  func.func @test(%arg0: memref<1024x1024xi32, strided<[4096, 1], offset: ?>>) {
+    %1 = upmem.alloc_dpus with program @dpu_kernels::@program : !upmem.hierarchy<1x256x4>
+    // expected-error @+1 {{transferCount (4096) exceeds the largest contiguous run of elements (1024) in host buffer}}
+    upmem.gather %arg0[4096, affine_map<(d0, d1) -> (d0 * 1024 + d1 * 4, 0)>] from @buf of %1
+        : memref<1024x1024xi32, strided<[4096, 1], offset: ?>> from !upmem.hierarchy<1x256x4>
+    return
+  }
+  module @dpu_kernels {
+    upmem.dpu_program @program() tasklets(4) {
+      %buf = upmem.static_alloc @buf(mram) : memref<4x1024xi32, "mram">
+      upmem.return
+    }
+  }
+}
+
+// -----
+
+// A strided host buffer whose transferred elements ARE contiguous (a single
+// full row of the tile) must still verify successfully.
+module {
+  func.func @test(%arg0: memref<1024x1024xi32, strided<[4096, 1], offset: ?>>) {
+    %1 = upmem.alloc_dpus with program @dpu_kernels::@program : !upmem.hierarchy<1x1024x1>
+    upmem.scatter %arg0[1024, affine_map<(d0, d1) -> (d0 * 1024 + d1, 0)>] onto @buf of %1
+        : memref<1024x1024xi32, strided<[4096, 1], offset: ?>> onto !upmem.hierarchy<1x1024x1>
+    return
+  }
+  module @dpu_kernels {
+    upmem.dpu_program @program() tasklets(1) {
+      %buf = upmem.static_alloc @buf(mram) : memref<1024xi32, "mram">
+      upmem.return
+    }
+  }
+}

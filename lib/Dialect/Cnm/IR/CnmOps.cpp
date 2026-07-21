@@ -7,7 +7,6 @@
 #include <cinm-mlir/Dialect/Cnm/IR/CnmOps.h>
 
 #include <cinm-mlir/Dialect/Cnm/IR/CnmTypes.h>
-#include <cinm-mlir/Utils/CinmUtils.h>
 #include <llvm/ADT/SmallVector.h>
 #include <llvm/ADT/StringRef.h>
 #include <llvm/Support/LogicalResult.h>
@@ -282,9 +281,13 @@ LogicalResult ScatterOp::verify() {
            << " != " << bufferTy.getShape() << ")";
   }
 
-  if (!mlir::scatteredMemrefIsContiguous(getInput(), bufferTy.getShape())) {
-    return emitOpError("should scatter a contiguous memref");
-  }
+  // Note: we used to reject non-contiguous scattered memrefs here, but
+  // scatteredMemrefIsContiguous only checks contiguity of the bufShape
+  // suffix, which isn't sufficient to guarantee a valid single-DMA transfer
+  // once lowered (e.g. it misses non-contiguity introduced by the workgroup's
+  // thread dimension). Instead of rejecting here, the
+  // cnm-ensure-scatter-gather-contiguous pass detects genuinely
+  // non-contiguous transfers and inserts a packing buffer before lowering.
 
   if (auto accelerator =
           cinm::getEnclosingAcceleratorAs<CnmAcceleratorAttrInterface>(
@@ -328,9 +331,8 @@ LogicalResult GatherOp::verify() {
            << " != " << bufferTy.getShape() << ")";
   }
 
-  if (!mlir::scatteredMemrefIsContiguous(getOutputBuf(), bufferTy.getShape())) {
-    return emitOpError("should gather into a contiguous memref");
-  }
+  // See the note in ScatterOp::verify(): contiguity is ensured later by the
+  // cnm-ensure-scatter-gather-contiguous pass rather than rejected here.
 
   return success();
 }

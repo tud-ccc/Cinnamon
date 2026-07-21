@@ -23,6 +23,7 @@
 #include "cinm-mlir/Dialect/Memristor/Transforms/Passes.h"
 #include "cinm-mlir/Dialect/UPMEM/IR/UPMEMDialect.h"
 #include "cinm-mlir/Dialect/UPMEM/Transforms/Passes.h"
+#include "cinm-mlir/Utils/DebugPasses.h"
 
 #ifdef CINM_TORCH_MLIR_ENABLED
 #include "cinm-mlir/Conversion/CinmFrontendPasses.h" // Does the TorchToCinm pass
@@ -93,6 +94,7 @@ int main(int argc, char *argv[]) {
   registerUPMEMConversionPasses();
 
   bufferization::registerBufferizationPasses();
+  cinm::registerPrintModuleIRPass();
 
   return asMainReturnCode(
       MlirOptMain(argc, argv, "cinm-mlir optimizer driver\n", registry));
