@@ -56,7 +56,19 @@ void upmemrt_dpu_scatter_to_tasklets(struct dpu_set_t *dpu_set,
                                      const char *buffer_id,
                                      size_t (*base_offset)(size_t, size_t));
 
+/// Allocates and loads a DPU set.
+///
+/// @param num_ranks            Number of ranks to allocate
+/// @param num_dpus             Number of DPUs per rank to allocate
+/// @param dpu_binary_path      Path to the DPU program binary to load
+/// @param max_blocks_per_dpu   Largest number of blocks any
+/// upmemrt_dpu_scatter_to_tasklets call against this DPU set will use, or 0 if
+/// none will. Sets the UPMEM SDK's sgXferMaxBlocksPerDpu profile option
+/// (and enables scatter/gather transfers) only when actually needed, so
+/// programs that never use the scatter transfer API don't pay for its
+/// (larger) memory footprint.
 struct dpu_set_t *upmemrt_dpu_alloc(int32_t num_ranks, int32_t num_dpus,
-                                    const char *dpu_binary_path);
+                                    const char *dpu_binary_path,
+                                    size_t max_blocks_per_dpu);
 
 void upmemrt_dpu_launch(struct dpu_set_t *void_dpu_set);

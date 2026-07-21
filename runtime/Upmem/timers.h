@@ -25,8 +25,13 @@ void upmemrt_dump_stats(const char *prefix);
 // Internal: called by upmem_rt.c / memref_rt.cpp ────────────────────────────
 
 uint64_t upmemrt_now_ns(void);
+// `kind` labels which upmem.scatter lowering produced this transfer: "block"
+// for the classic flat per-DPU memcpy, "sg" for the UPMEM SDK scatter
+// transfer API (dpu_push_sg_xfer), and (in the future) "bc" for a broadcast.
+// Must be a string literal (or otherwise live for the process lifetime): it
+// is stored by pointer, not copied.
 void upmemrt_record_scatter(uint64_t elapsed_ns, size_t bytes_per_dpu,
-                             uint32_t num_dpus);
+                             uint32_t num_dpus, const char *kind);
 void upmemrt_record_gather(uint64_t elapsed_ns, size_t bytes_per_dpu,
                             uint32_t num_dpus);
 void upmemrt_record_launch(uint64_t elapsed_ns, uint32_t num_dpus);

@@ -44,7 +44,7 @@ void upmemrt_dpu_scatter(struct dpu_set_t *dpu_set, void *hostBuffer,
 #ifdef UPMEM_RT_STATS
   uint32_t nr_dpus = 0;
   dpu_get_nr_dpus(*dpu_set, &nr_dpus);
-  upmemrt_record_scatter(upmemrt_now_ns() - t0, copy_bytes, nr_dpus);
+  upmemrt_record_scatter(upmemrt_now_ns() - t0, copy_bytes, nr_dpus, "block");
 #endif
 }
 
@@ -124,33 +124,45 @@ void upmemrt_dpu_scatter_to_tasklets(struct dpu_set_t *dpu_set,
 #ifdef UPMEM_RT_STATS
   uint32_t nr_dpus = 0;
   dpu_get_nr_dpus(*dpu_set, &nr_dpus);
-  upmemrt_record_scatter(upmemrt_now_ns() - t0, length, nr_dpus);
+  upmemrt_record_scatter(upmemrt_now_ns() - t0, length, nr_dpus, "sg");
 #endif
 }
 
 struct dpu_set_t *upmemrt_dpu_alloc(int32_t num_ranks, int32_t num_dpus,
-                                    const char *dpu_binary_path) {
+                                    const char *dpu_binary_path,
+                                    size_t max_blocks_per_dpu) {
   int32_t num_alloc_dpu = num_ranks * num_dpus;
   struct dpu_set_t *dpu_set =
       (struct dpu_set_t *)malloc(sizeof(struct dpu_set_t));
 #ifdef UPMEM_RT_STATS
   uint64_t t0 = upmemrt_now_ns();
 #endif
-  // sgXferEnable/sgXferMaxBlocksPerDpu are required for
-  // upmemrt_dpu_scatter_to_tasklets (dpu_push_sg_xfer): scatter/gather
-  // transfers are disabled by default, and the max number of blocks per DPU
-  // otherwise defaults to the number of DPUs in the set, which is too low
-  // once we're scattering one block per tasklet (up to 24 tasklets/DPU).
   const char *userProfile = getenv("UPMEM_PROFILE");
   char profile[256];
-  if (userProfile && userProfile[0] != '\0') {
-    snprintf(profile, sizeof(profile),
-             "%s,sgXferEnable=true,sgXferMaxBlocksPerDpu=24", userProfile);
+  if (max_blocks_per_dpu > 0) {
+    // sgXferEnable/sgXferMaxBlocksPerDpu are required for
+    // upmemrt_dpu_scatter_to_tasklets (dpu_push_sg_xfer): scatter/gather
+    // transfers are disabled by default, and the max number of blocks per
+    // DPU otherwise defaults to the number of DPUs in the set, which is too
+    // low once we're scattering one block per tasklet/mram-row. Only set
+    // this when actually needed: a larger sgXferMaxBlocksPerDpu increases
+    // the SDK's memory footprint.
+    if (userProfile && userProfile[0] != '\0') {
+      snprintf(profile, sizeof(profile),
+               "%s,sgXferEnable=true,sgXferMaxBlocksPerDpu=%zu", userProfile,
+               max_blocks_per_dpu);
+    } else {
+      snprintf(profile, sizeof(profile),
+               "sgXferEnable=true,sgXferMaxBlocksPerDpu=%zu",
+               max_blocks_per_dpu);
+    }
+  } else if (userProfile && userProfile[0] != '\0') {
+    snprintf(profile, sizeof(profile), "%s", userProfile);
   } else {
-    snprintf(profile, sizeof(profile),
-             "sgXferEnable=true,sgXferMaxBlocksPerDpu=24");
+    profile[0] = '\0';
   }
-  DPU_ASSERT(dpu_alloc(num_alloc_dpu, profile, dpu_set));
+  DPU_ASSERT(
+      dpu_alloc(num_alloc_dpu, profile[0] ? profile : NULL, dpu_set));
   DPU_ASSERT(dpu_load(*dpu_set, dpu_binary_path, NULL));
 #ifdef UPMEM_RT_STATS
   uint32_t nr_dpus = 0;

@@ -160,6 +160,28 @@ module {
 module {
   func.func @test(%arg0: memref<128x1024xi32>) {
     %1 = upmem.alloc_dpus with program @dpu_kernels::@program : !upmem.hierarchy<1x128x4>
+    upmem.scatter %arg0[32, affine_map<(d0, d1, d2) -> (d1 * 4 + d2, 0)>] onto @buf of %1 {numBlocksPerDpu = 4 : i64}
+        : memref<128x1024xi32> onto !upmem.hierarchy<1x128x4>
+    return
+  }
+  module @dpu_kernels {
+    upmem.dpu_program @program() tasklets(4) {
+      %buf = upmem.static_alloc @buf(mram) : memref<4x32xi32, "mram">
+      upmem.return
+    }
+  }
+}
+
+// -----
+
+// The (rank, dpu, tasklet) scatter map form requires numBlocksPerDpu: the
+// number of blocks per DPU (the extent of the tasklet dim) can't otherwise be
+// recovered from the affine map alone, and need not match the hierarchy's
+// declared tasklet count (blocks are just UPMEM SDK transfer units).
+module {
+  func.func @test(%arg0: memref<128x1024xi32>) {
+    %1 = upmem.alloc_dpus with program @dpu_kernels::@program : !upmem.hierarchy<1x128x4>
+    // expected-error @+1 {{numBlocksPerDpu is required for the (rank, dpu, tasklet) scatter map form}}
     upmem.scatter %arg0[32, affine_map<(d0, d1, d2) -> (d1 * 4 + d2, 0)>] onto @buf of %1
         : memref<128x1024xi32> onto !upmem.hierarchy<1x128x4>
     return
@@ -167,6 +189,25 @@ module {
   module @dpu_kernels {
     upmem.dpu_program @program() tasklets(4) {
       %buf = upmem.static_alloc @buf(mram) : memref<4x32xi32, "mram">
+      upmem.return
+    }
+  }
+}
+
+// -----
+
+// numBlocksPerDpu is meaningless for the classic (rank, dpu) scatter form.
+module {
+  func.func @test(%arg0: memref<8x128xi32>) {
+    %1 = upmem.alloc_dpus with program @dpu_kernels::@program : !upmem.hierarchy<8x128x1>
+    // expected-error @+1 {{numBlocksPerDpu is only meaningful for the (rank, dpu, tasklet) scatter map form}}
+    upmem.scatter %arg0[128, affine_map<(d0, d1) -> (d0, d1)>] onto @buf of %1 {numBlocksPerDpu = 4 : i64}
+        : memref<8x128xi32> onto !upmem.hierarchy<8x128x1>
+    return
+  }
+  module @dpu_kernels {
+    upmem.dpu_program @program() tasklets(1) {
+      %buf = upmem.static_alloc @buf(mram) : memref<8x128xi32, "mram">
       upmem.return
     }
   }

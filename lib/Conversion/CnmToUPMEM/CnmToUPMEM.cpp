@@ -206,7 +206,7 @@ static LogicalResult convertCnmGatherToUpmem(RewriterBase &rewriter,
   upmem::GatherOp::create(
       rewriter, op->getLoc(), outputBuf, refToBuffer, transferCount,
       adaptAffineMapCnmToUpmem(op.getGatherMap(), op.getBuffer().getType()),
-      upmemWgAlloc.getResult());
+      upmemWgAlloc.getResult(), /*numBlocksPerDpu=*/IntegerAttr{});
 
   if (!isBufferized) {
     Value outputAsTensor = createOrFoldUnrealizedConversionCast(
@@ -251,10 +251,12 @@ static LogicalResult convertCnmScatterToUpmem(RewriterBase &rewriter,
 
   AffineMap upmemMap;
   int64_t transferCount;
+  IntegerAttr numBlocksPerDpu;
   if (useTaskletForm) {
     upmemMap =
         keepTaskletDimAffineMapCnmToUpmem(op.getScatterMap(), op.getBuffer().getType());
     transferCount = blockSizeInItems;
+    numBlocksPerDpu = rewriter.getI64IntegerAttr(numTasklets);
   } else {
     upmemMap =
         adaptAffineMapCnmToUpmem(op.getScatterMap(), op.getBuffer().getType());
@@ -263,7 +265,8 @@ static LogicalResult convertCnmScatterToUpmem(RewriterBase &rewriter,
   }
 
   upmem::ScatterOp::create(rewriter, op->getLoc(), inputAsMemref, refToBuffer,
-                           transferCount, upmemMap, upmemWgAlloc.getResult());
+                           transferCount, upmemMap, upmemWgAlloc.getResult(),
+                           numBlocksPerDpu);
 
   rewriter.eraseOp(op);
   return success();

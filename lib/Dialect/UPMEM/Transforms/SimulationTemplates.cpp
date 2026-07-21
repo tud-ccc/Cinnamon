@@ -116,15 +116,35 @@ double UpmemSimulator::simulateTailReduction(
 namespace mlir {
 namespace {
 
-// Pack the [dpuRows*mramRows, dpuCols*mramCols] tile of `input` at
-// (mOff, kOff) for scatter. Returns the memref to scatter from: a direct
-// DPU-major view of `input` if that view is already contiguous enough for
-// upmem to transfer per DPU without staging (same criterion as
-// upmem::ScatterOp::verify -- see getContiguousSuffixSize), otherwise
-// `aStage` after a single memref.copy of the whole tile into it.
-static Value packATile(OpBuilder &b, Location loc, Value input, Value aStage,
-                       Value mOff, Value kOff, int64_t dpuRows, int64_t dpuCols,
-                       int64_t mramRows, int64_t mramCols) {
+// Emit the upmem.scatter(s) that place the [dpuRows*mramRows,
+// dpuCols*mramCols] tile of `input` at (mOff, kOff) into each DPU's
+// `aBufSym` MRAM buffer, scattering directly from `input` -- never staging
+// through an intermediate host-side copy.
+//
+// `view` below is a DPU-major [dpuRows, dpuCols, mramRows, mramCols]
+// reinterpretation of the tile (no data movement, just a stride swap versus
+// `input`'s natural [dpuRows, mramRows, dpuCols, mramCols] split). Every
+// upmem.scatter requires the elements it transfers per DPU to be contiguous
+// in the host buffer (see upmem::ScatterOp::verify / getContiguousSuffixSize).
+// Two cases, distinguished by whether one DPU's whole mramRows x mramCols
+// chunk is itself one contiguous span:
+//  - It is, when mramRows == 1 (only one row per DPU, trivially contiguous)
+//    or the tile's row-to-row stride equals mramCols (no column-tiling: the
+//    assigned columns already span the underlying matrix's full row, so
+//    consecutive mram rows sit back-to-back in memory). Use the classic
+//    (rank, dpu) scatter form, transferring the whole chunk in one shot.
+//  - Otherwise, only each individual mram row (mramCols contiguous elements)
+//    is guaranteed contiguous -- consecutive rows of the same DPU's tile are
+//    not adjacent, since the underlying matrix is wider than this k-tile.
+//    Use the UPMEM SDK's scatter transfer API instead, via the (rank, dpu,
+//    block) scatter form with one block per mram row.
+// Either way, `view`'s own (possibly non-mergeable) strides are used as-is:
+// no memref.collapse_shape is needed, since the scatter map itself flattens
+// the (dpuRow, dpuCol) grid via floordiv/mod on the flat dpu index.
+static void scatterATile(OpBuilder &b, Location loc, Value input, Value mOff,
+                         Value kOff, int64_t dpuRows, int64_t dpuCols,
+                         int64_t mramRows, int64_t mramCols,
+                         StringRef aBufSym, Value dpus) {
   Value tile2D = memref::SubViewOp::create(
       b, loc, input, ArrayRef<OpFoldResult>{mOff, kOff},
       ArrayRef<OpFoldResult>{b.getIndexAttr(dpuRows * mramRows),
@@ -143,13 +163,13 @@ static Value packATile(OpBuilder &b, Location loc, Value input, Value aStage,
         !ShapedType::isDynamic(naturalStrides[1]) &&
         !ShapedType::isDynamic(naturalStrides[2]) &&
         !ShapedType::isDynamic(naturalStrides[3]) &&
-        "packATile requires a 2D input with static strides");
+        "scatterATile requires a 2D input with static strides");
 
-  // aStage's DPU-major grouping needs [dpuRows, dpuCols, mramRows, mramCols]
-  // instead: swap the middle two dims (mramRows, dpuCols). expand_shape can
-  // only split dims in place, not reorder them, so the transpose itself
-  // still needs a reinterpret_cast -- built on top of the natural split
-  // above (via extract_strided_metadata) rather than computed from scratch.
+  // DPU-major grouping needs [dpuRows, dpuCols, mramRows, mramCols] instead:
+  // swap the middle two dims (mramRows, dpuCols). expand_shape can only
+  // split dims in place, not reorder them, so the transpose itself still
+  // needs a reinterpret_cast -- built on top of the natural split above (via
+  // extract_strided_metadata) rather than computed from scratch.
   SmallVector<int64_t> viewStrides = {naturalStrides[0], naturalStrides[2],
                                       naturalStrides[1], naturalStrides[3]};
   auto meta = memref::ExtractStridedMetadataOp::create(b, loc, natural);
@@ -165,19 +185,31 @@ static Value packATile(OpBuilder &b, Location loc, Value input, Value aStage,
                                                mramCols}),
       getAsIndexOpFoldResult(b.getContext(), viewStrides));
 
-  if (mlir::getContiguousSuffixSize(viewTy) ==
-      dpuRows * dpuCols * mramRows * mramCols) {
-    // The whole tile is already laid out DPU-block-by-DPU-block in memory:
-    // collapse to aStage's shape and scatter directly, no staging copy.
-    return memref::CollapseShapeOp::create(
-        b, loc, view, ArrayRef<ReassociationIndices>{{0, 1}, {2}, {3}});
+  MLIRContext *ctx = b.getContext();
+  auto dpuDim = getAffineDimExpr(1, ctx);
+  auto zero = getAffineConstantExpr(0, ctx);
+  // `naturalStrides[1]` is the row-to-row stride within one DPU's own tile,
+  // inherited from `input`'s row stride regardless of tiling.
+  bool wholeChunkContiguous = mramRows == 1 || naturalStrides[1] == mramCols;
+
+  if (wholeChunkContiguous) {
+    AffineMap aMap = AffineMap::get(
+        2, 0, {dpuDim.floorDiv(dpuCols), dpuDim % dpuCols, zero, zero}, ctx);
+    upmem::ScatterOp::create(b, loc, view, aBufSym,
+                             static_cast<uint64_t>(mramRows * mramCols), aMap,
+                             dpus, /*numBlocksPerDpu=*/IntegerAttr{});
+    return;
   }
 
-  Value dst = memref::ExpandShapeOp::create(
-      b, loc, ArrayRef<int64_t>{dpuRows, dpuCols, mramRows, mramCols}, aStage,
-      ArrayRef<ReassociationIndices>{{0, 1}, {2}, {3}});
-  memref::CopyOp::create(b, loc, view, dst);
-  return aStage;
+  // (rank, dpu, block) form: one block per mram row.
+  AffineMap aMap =
+      AffineMap::get(3, 0,
+                     {dpuDim.floorDiv(dpuCols), dpuDim % dpuCols,
+                      getAffineDimExpr(2, ctx), zero},
+                     ctx);
+  upmem::ScatterOp::create(
+      b, loc, view, aBufSym, static_cast<uint64_t>(mramCols), aMap, dpus,
+      b.getI64IntegerAttr(mramRows));
 }
 
 // Pack the [dpuCols*mramCols] slice of `x` at kOff for scatter. Returns the
@@ -191,7 +223,7 @@ static Value packXSlice(OpBuilder &b, Location loc, Value x, Value xStage,
       ArrayRef<OpFoldResult>{b.getIndexAttr(dpuCols * mramCols)},
       ArrayRef<OpFoldResult>{b.getIndexAttr(1)});
 
-  // No transpose needed here (unlike packATile): a straight split.
+  // No transpose needed here (unlike scatterATile): a straight split.
   Value view = memref::ExpandShapeOp::create(
       b, loc, ArrayRef<int64_t>{dpuCols, mramCols}, slice1D,
       ArrayRef<ReassociationIndices>{{0, 1}});
@@ -483,8 +515,7 @@ upmem::DpuProgramOp createDpuTailReductionKernel(
 ///
 ///   for m = 0 to M step dpuRows*mramRows:
 ///     for k = 0 to K step dpuCols*mramCols:
-///       [pack A tile and y into staging buffers]
-///       upmem.scatter aStage → @aBufSym
+///       upmem.scatter A tile directly → @aBufSym
 ///       upmem.scatter yStage → @yBufSym
 ///       upmem.wait_for dpus
 ///       upmem.gather  yStage ← @yBufSym
@@ -514,11 +545,9 @@ void upmem::generateTailReduction(cinm::ReduceOp op, RewriterBase &rewriter,
   auto output =
       memref::AllocOp::create(rewriter, loc, MemRefType::get({M}, eltTy));
 
-  // Flat-DPU-major staging buffers: one contiguous mramRows×mramCols slice
-  // per DPU for A, and one mramRows slice per DPU for the running y
-  // partial.
-  Value aStage = memref::AllocOp::create(
-      rewriter, loc, MemRefType::get({numDpus, mramRows, mramCols}, eltTy));
+  // Flat-DPU-major staging buffer: one mramRows slice per DPU for the
+  // running y partial. A is scattered directly from `reshapedInput`, no
+  // staging (see scatterATile).
   Value yStage = memref::AllocOp::create(
       rewriter, loc, MemRefType::get({dpuRows, dpuCols, mramRows}, eltTy));
 
@@ -537,14 +566,12 @@ void upmem::generateTailReduction(cinm::ReduceOp op, RewriterBase &rewriter,
   auto dpuProgramSymbol = SymbolRefAttr::get(krnlOp.getSymNameAttr());
   auto dpus = upmem::AllocDPUsOp::create(rewriter, loc, wgTy, dpuProgramSymbol);
 
-  // Scatter maps for hierarchy <1 x numDpus x tasklets>.
+  // Scatter map for yStage, for hierarchy <1 x numDpus x tasklets>.
   // The flat DPU index is rank*numDpus + dpu; since numRanks=1, rank=0
   // always, so flat = dpu.
-  // aStage: (rank, dpu) -> (dpu, 0, 0)
   // yStage: (rank, dpu) -> (dpu / dpuCols, dpu % dpuCols, 0)
   auto dpuDim = getAffineDimExpr(1, ctx);
   auto zero = getAffineConstantExpr(0, ctx);
-  AffineMap aMap = AffineMap::get(2, 0, {dpuDim, zero, zero}, ctx);
   AffineMap yMap = AffineMap::get(
       2, 0, {dpuDim.floorDiv(dpuCols), dpuDim % dpuCols, zero}, ctx);
 
@@ -567,7 +594,8 @@ void upmem::generateTailReduction(cinm::ReduceOp op, RewriterBase &rewriter,
         // over dpuCols*mramCols, then the future calls to wait_for will reuse
         // the partial results that are already in mram.
         upmem::ScatterOp::create(b, loc, yStage, yBufSym,
-                                 static_cast<uint64_t>(mramRows), yMap, dpus);
+                                 static_cast<uint64_t>(mramRows), yMap, dpus,
+                                 /*numBlocksPerDpu=*/IntegerAttr{});
 
         cinm::createNestedAffineForLoops(
             b, loc, {K}, {dpuCols * mramCols},
@@ -576,12 +604,8 @@ void upmem::generateTailReduction(cinm::ReduceOp op, RewriterBase &rewriter,
                 ValueRange) -> SmallVector<Value> {
               Value kOff = ivs[0];
 
-              Value aToScatter = packATile(b, loc, reshapedInput, aStage, mOff,
-                                          kOff, dpuRows, dpuCols, mramRows,
-                                          mramCols);
-              upmem::ScatterOp::create(
-                  b, loc, aToScatter, aBufSym,
-                  static_cast<uint64_t>(mramRows * mramCols), aMap, dpus);
+              scatterATile(b, loc, reshapedInput, mOff, kOff, dpuRows, dpuCols,
+                          mramRows, mramCols, aBufSym, dpus);
               upmem::WaitForOp::create(b, loc, dpus);
               return {};
             });
@@ -589,7 +613,8 @@ void upmem::generateTailReduction(cinm::ReduceOp op, RewriterBase &rewriter,
         // Once we're done with a set of rows, we gather their results.
         // We still need to reduce over dpuCols.
         upmem::GatherOp::create(b, loc, yStage, yBufSym,
-                                static_cast<uint64_t>(mramRows), yMap, dpus);
+                                static_cast<uint64_t>(mramRows), yMap, dpus,
+                                /*numBlocksPerDpu=*/IntegerAttr{});
         // Subview of output for this row tile, shaped to match yStage after
         // reducing dpuCols: output[mOff .. mOff + dpuRows*mramRows).
         Value outRows = memref::SubViewOp::create(
@@ -635,7 +660,6 @@ void upmem::generateTailReduction(cinm::ReduceOp op, RewriterBase &rewriter,
     op.emitError("generateTailReduction: unexpected result type ") << resultTy;
     rewriter.eraseOp(op);
   }
-  memref::DeallocOp::create(rewriter, loc, aStage);
   memref::DeallocOp::create(rewriter, loc, yStage);
 
   upmem::FreeDPUsOp::create(rewriter, loc, dpus);
@@ -905,8 +929,8 @@ upmem::DpuProgramOp createDpuGemvKernel(
 ///   for m = 0 to M step dpuRows*mramRows:
 ///     fill yStage ← 0
 ///     for k = 0 to K step dpuCols*mramCols:
-///       [pack A tile → aStage, x slice → xStage]
-///       upmem.scatter aStage → @aBufSym
+///       [pack x slice → xStage]
+///       upmem.scatter A tile directly → @aBufSym
 ///       upmem.scatter xStage → @xBufSym
 ///       upmem.scatter yStage → @yBufSym   (running partial)
 ///       upmem.wait_for dpus               (DPU: y += A*x)
@@ -931,12 +955,10 @@ void upmem::generateGemv(cinm::GemvOp op, RewriterBase &rewriter,
   Value x = op.getRhs();
   Value y = op.getOut();
 
-  // Staging buffers on the host.
-  // aStage: one [mramRows, mramCols] tile per DPU (flat DPU-major).
+  // Staging buffers on the host. A is scattered directly from `A`, no
+  // staging (see scatterATile).
   // xStage: one [mramCols] slice per DPU column group (dpuCols groups).
   // yStage: one [mramRows] partial accumulator per DPU (2D DPU grid).
-  Value aStage = memref::AllocOp::create(
-      rewriter, loc, MemRefType::get({numDpus, mramRows, mramCols}, eltTy));
   Value xStage = memref::AllocOp::create(
       rewriter, loc, MemRefType::get({dpuCols, mramCols}, eltTy));
   Value yStage = memref::AllocOp::create(
@@ -959,12 +981,10 @@ void upmem::generateGemv(cinm::GemvOp op, RewriterBase &rewriter,
       upmem::AllocDPUsOp::create(rewriter, loc, wgTy, dpuProgramSymbol);
 
   // Scatter maps for hierarchy <1 x numDpus x tasklets> (numRanks=1, rank=0).
-  // aStage: (rank, dpu) → (dpu, 0, 0)
   // xStage: (rank, dpu) → (dpu % dpuCols, 0)   — same x for all DPU rows
   // yStage: (rank, dpu) → (dpu / dpuCols, dpu % dpuCols, 0)
   auto dpuDim = getAffineDimExpr(1, ctx);
   auto zeroExpr = getAffineConstantExpr(0, ctx);
-  AffineMap aMap = AffineMap::get(2, 0, {dpuDim, zeroExpr, zeroExpr}, ctx);
   AffineMap xMap =
       AffineMap::get(2, 0, {dpuDim % dpuCols, zeroExpr}, ctx);
   AffineMap yMap = AffineMap::get(
@@ -983,8 +1003,8 @@ void upmem::generateGemv(cinm::GemvOp op, RewriterBase &rewriter,
         // Reset the running y partials to zero for this M tile.
         linalg::FillOp::create(b, loc, neutral, yStage);
         upmem::ScatterOp::create(b, loc, yStage, yBufSym,
-                                  static_cast<uint64_t>(mramRows), yMap,
-                                  dpus);
+                                  static_cast<uint64_t>(mramRows), yMap, dpus,
+                                  /*numBlocksPerDpu=*/IntegerAttr{});
 
         cinm::createNestedAffineForLoops(
             b, loc, {K}, {dpuCols * mramCols}, {},
@@ -992,25 +1012,22 @@ void upmem::generateGemv(cinm::GemvOp op, RewriterBase &rewriter,
                 ValueRange) -> SmallVector<Value> {
               Value kOff = ivs2[0];
 
-              Value aToScatter = packATile(b, loc, A, aStage, mOff, kOff,
-                                          dpuRows, dpuCols, mramRows, mramCols);
+              scatterATile(b, loc, A, mOff, kOff, dpuRows, dpuCols, mramRows,
+                          mramCols, aBufSym, dpus);
               Value xToScatter =
                   packXSlice(b, loc, x, xStage, kOff, dpuCols, mramCols);
 
-              upmem::ScatterOp::create(
-                  b, loc, aToScatter, aBufSym,
-                  static_cast<uint64_t>(mramRows * mramCols), aMap, dpus);
               upmem::ScatterOp::create(b, loc, xToScatter, xBufSym,
                                        static_cast<uint64_t>(mramCols), xMap,
-                                       dpus);
+                                       dpus, /*numBlocksPerDpu=*/IntegerAttr{});
               upmem::WaitForOp::create(b, loc, dpus);
 
               return {};
             }); // end k loop
 
         upmem::GatherOp::create(b, loc, yStage, yBufSym,
-                                static_cast<uint64_t>(mramRows), yMap,
-                                dpus);
+                                static_cast<uint64_t>(mramRows), yMap, dpus,
+                                /*numBlocksPerDpu=*/IntegerAttr{});
 
         // Reduce yStage[dpuRows, dpuCols, mramRows] over dim 1 (dpuCols)
         // and accumulate into out[mOff .. mOff + dpuRows*mramRows).
@@ -1037,7 +1054,6 @@ void upmem::generateGemv(cinm::GemvOp op, RewriterBase &rewriter,
       }); // end m loop
 
   rewriter.eraseOp(op);
-  memref::DeallocOp::create(rewriter, loc, aStage);
   memref::DeallocOp::create(rewriter, loc, xStage);
   memref::DeallocOp::create(rewriter, loc, yStage);
   upmem::FreeDPUsOp::create(rewriter, loc, dpus);

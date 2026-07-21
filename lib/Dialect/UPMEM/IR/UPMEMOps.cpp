@@ -139,6 +139,9 @@ LogicalResult upmem::GatherOp::verify() {
       getScatterMap().getNumDims() != 2)
     return emitOpError("Scatter map should map (rank, dpu) to a start index in "
                        "the host buffer");
+  if (getNumBlocksPerDpu())
+    return emitOpError("numBlocksPerDpu is only meaningful for the (rank, "
+                       "dpu, tasklet) upmem.scatter form");
   if (failed(verifyScatterGatherContiguity(
           *this, getHostBuffer().getType(), getTransferCount())))
     return failure();
@@ -157,6 +160,13 @@ LogicalResult upmem::ScatterOp::verify() {
     return emitOpError(
         "Scatter map should map (rank, dpu) or (rank, dpu, tasklet) to a "
         "start index in the host buffer");
+
+  if (numDims == 3 && !getNumBlocksPerDpu())
+    return emitOpError("numBlocksPerDpu is required for the (rank, dpu, "
+                       "tasklet) scatter map form");
+  if (numDims == 2 && getNumBlocksPerDpu())
+    return emitOpError("numBlocksPerDpu is only meaningful for the (rank, "
+                       "dpu, tasklet) scatter map form");
 
   // In the (rank, dpu, tasklet) form, `transferCount` is the size of a single
   // tasklet's block (see UPMEM SDK scatter/gather transfer in the op
