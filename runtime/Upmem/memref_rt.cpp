@@ -1,4 +1,6 @@
 
+#include "timers.h"
+
 #include <alloca.h>
 #include <cstdint>
 #include <cstring>
@@ -11,16 +13,30 @@ extern "C" void memrefCopy(int64_t elemSize, UnrankedMemRefType<char> *srcArg,
 
   int64_t rank = src.rank;
 
+#ifdef UPMEM_RT_STATS
+  uint64_t t0 = upmemrt_now_ns();
+  int64_t numElements = 1;
+  for (int64_t rankp = 0; rankp < rank; ++rankp)
+    numElements *= src.sizes[rankp];
+#endif
+
   // Handle empty shapes -> nothing to copy.
   for (int rankp = 0; rankp < rank; ++rankp)
-    if (src.sizes[rankp] == 0)
+    if (src.sizes[rankp] == 0) {
+#ifdef UPMEM_RT_STATS
+      upmemrt_record_copy(upmemrt_now_ns() - t0, 0);
+#endif
       return;
+    }
 
   char *srcPtr = src.data + src.offset * elemSize;
   char *dstPtr = dst.data + dst.offset * elemSize;
 
   if (rank == 0) {
     memcpy(dstPtr, srcPtr, elemSize);
+#ifdef UPMEM_RT_STATS
+    upmemrt_record_copy(upmemrt_now_ns() - t0, elemSize);
+#endif
     return;
   }
 
@@ -49,8 +65,12 @@ extern "C" void memrefCopy(int64_t elemSize, UnrankedMemRefType<char> *srcArg,
       if (src.sizes[axis] != newIndex)
         break;
       // We reached the end of this axis. If this is axis 0, we are done.
-      if (axis == 0)
+      if (axis == 0) {
+#ifdef UPMEM_RT_STATS
+        upmemrt_record_copy(upmemrt_now_ns() - t0, numElements * elemSize);
+#endif
         return;
+      }
       // Else, reset to 0 and undo the advancement of the linear index that
       // this axis had. Then continue with the axis one outer.
       indices[axis] = 0;

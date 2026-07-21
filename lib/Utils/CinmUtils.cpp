@@ -130,6 +130,28 @@ bool scatteredMemrefIsContiguous(TypedValue<ShapedType> value,
   return true;
 }
 
+int64_t getContiguousSuffixSize(MemRefType type) {
+  if (type.getLayout().isIdentity())
+    return type.hasStaticShape() ? type.getNumElements() : -1;
+
+  auto strided = llvm::dyn_cast<StridedLayoutAttr>(type.getLayout());
+  if (!strided)
+    return -1;
+
+  ArrayRef<int64_t> shape = type.getShape();
+  ArrayRef<int64_t> strides = strided.getStrides();
+  int64_t expectedStride = 1;
+  int64_t count = 1;
+  for (int64_t i = static_cast<int64_t>(shape.size()) - 1; i >= 0; --i) {
+    if (ShapedType::isDynamic(shape[i]) || ShapedType::isDynamic(strides[i]) ||
+        strides[i] != expectedStride)
+      break;
+    count *= shape[i];
+    expectedStride *= shape[i];
+  }
+  return count;
+}
+
 /// Simplify the affine expression by flattening it and reconstructing it.
 static AffineExpr simplifyAffineExprWithBounds(
     AffineExpr expr, unsigned numDims, unsigned numSymbols,

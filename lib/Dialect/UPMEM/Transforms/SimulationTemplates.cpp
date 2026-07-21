@@ -116,78 +116,92 @@ double UpmemSimulator::simulateTailReduction(
 namespace mlir {
 namespace {
 
-// Pack input tiles into aStage for scatter. Loop steps are (mramRows, mramCols)
-// so the IVs directly represent the row/col offsets within the current M/K
-// tile. flatDpu is recovered via affine floordiv on the IVs.
-static void packATile(OpBuilder &b, Location loc, Value input, Value aStage,
-                      Value mOff, Value kOff, int64_t dpuRows, int64_t dpuCols,
-                      int64_t mramRows, int64_t mramCols) {
-  MLIRContext *ctx = b.getContext();
-  AffineExpr d0 = getAffineDimExpr(0, ctx), d1 = getAffineDimExpr(1, ctx);
-  AffineMap flatDpuMap = AffineMap::get(
-      2, 0, {d0.floorDiv(mramRows) * dpuCols + d1.floorDiv(mramCols)}, ctx);
+// Pack the [dpuRows*mramRows, dpuCols*mramCols] tile of `input` at
+// (mOff, kOff) for scatter. Returns the memref to scatter from: a direct
+// DPU-major view of `input` if that view is already contiguous enough for
+// upmem to transfer per DPU without staging (same criterion as
+// upmem::ScatterOp::verify -- see getContiguousSuffixSize), otherwise
+// `aStage` after a single memref.copy of the whole tile into it.
+static Value packATile(OpBuilder &b, Location loc, Value input, Value aStage,
+                       Value mOff, Value kOff, int64_t dpuRows, int64_t dpuCols,
+                       int64_t mramRows, int64_t mramCols) {
+  Value tile2D = memref::SubViewOp::create(
+      b, loc, input, ArrayRef<OpFoldResult>{mOff, kOff},
+      ArrayRef<OpFoldResult>{b.getIndexAttr(dpuRows * mramRows),
+                             b.getIndexAttr(dpuCols * mramCols)},
+      ArrayRef<OpFoldResult>{b.getIndexAttr(1), b.getIndexAttr(1)});
 
-  cinm::createNestedAffineForLoops(
-      b, loc, {dpuRows * mramRows, dpuCols * mramCols}, {mramRows, mramCols},
-      {},
-      [&](OpBuilder &b, Location loc, ValueRange ivs,
-          ValueRange) -> SmallVector<Value> {
-        Value rowBase = arith::AddIOp::create(b, loc, mOff, ivs[0]);
-        Value colBase = arith::AddIOp::create(b, loc, kOff, ivs[1]);
-        Value flatDpu = affine::AffineApplyOp::create(
-            b, loc, flatDpuMap, ValueRange{ivs[0], ivs[1]});
+  // Natural split of the tile: [dpuRows, mramRows, dpuCols, mramCols], with
+  // strides inferred by expand_shape from tile2D's own layout (no manual
+  // stride arithmetic).
+  Value natural = memref::ExpandShapeOp::create(
+      b, loc, ArrayRef<int64_t>{dpuRows, mramRows, dpuCols, mramCols}, tile2D,
+      ArrayRef<ReassociationIndices>{{0, 1}, {2, 3}});
+  auto naturalTy = cast<MemRefType>(natural.getType());
+  auto [naturalStrides, naturalOffset] = naturalTy.getStridesAndOffset();
+  assert(!ShapedType::isDynamic(naturalStrides[0]) &&
+        !ShapedType::isDynamic(naturalStrides[1]) &&
+        !ShapedType::isDynamic(naturalStrides[2]) &&
+        !ShapedType::isDynamic(naturalStrides[3]) &&
+        "packATile requires a 2D input with static strides");
 
-        Value src = memref::SubViewOp::create(
-            b, loc, input, ArrayRef<OpFoldResult>{rowBase, colBase},
-            ArrayRef<OpFoldResult>{b.getIndexAttr(mramRows),
-                                   b.getIndexAttr(mramCols)},
-            ArrayRef<OpFoldResult>{b.getIndexAttr(1), b.getIndexAttr(1)});
-        Value dst3 = memref::SubViewOp::create(
-            b, loc, aStage,
-            ArrayRef<OpFoldResult>{flatDpu, b.getIndexAttr(0),
-                                   b.getIndexAttr(0)},
-            ArrayRef<OpFoldResult>{b.getIndexAttr(1), b.getIndexAttr(mramRows),
-                                   b.getIndexAttr(mramCols)},
-            ArrayRef<OpFoldResult>{b.getIndexAttr(1), b.getIndexAttr(1),
-                                   b.getIndexAttr(1)});
-        Value dst = memref::CollapseShapeOp::create(
-            b, loc, dst3, ArrayRef<ReassociationIndices>{{0, 1}, {2}});
-        memref::CopyOp::create(b, loc, src, dst);
-        return {};
-      });
+  // aStage's DPU-major grouping needs [dpuRows, dpuCols, mramRows, mramCols]
+  // instead: swap the middle two dims (mramRows, dpuCols). expand_shape can
+  // only split dims in place, not reorder them, so the transpose itself
+  // still needs a reinterpret_cast -- built on top of the natural split
+  // above (via extract_strided_metadata) rather than computed from scratch.
+  SmallVector<int64_t> viewStrides = {naturalStrides[0], naturalStrides[2],
+                                      naturalStrides[1], naturalStrides[3]};
+  auto meta = memref::ExtractStridedMetadataOp::create(b, loc, natural);
+  MemRefType viewTy = MemRefType::get(
+      {dpuRows, dpuCols, mramRows, mramCols}, naturalTy.getElementType(),
+      StridedLayoutAttr::get(b.getContext(), ShapedType::kDynamic,
+                             viewStrides));
+  Value view = memref::ReinterpretCastOp::create(
+      b, loc, viewTy, meta.getBaseBuffer(),
+      static_cast<OpFoldResult>(meta.getOffset()),
+      getAsIndexOpFoldResult(b.getContext(),
+                            ArrayRef<int64_t>{dpuRows, dpuCols, mramRows,
+                                               mramCols}),
+      getAsIndexOpFoldResult(b.getContext(), viewStrides));
+
+  if (mlir::getContiguousSuffixSize(viewTy) ==
+      dpuRows * dpuCols * mramRows * mramCols) {
+    // The whole tile is already laid out DPU-block-by-DPU-block in memory:
+    // collapse to aStage's shape and scatter directly, no staging copy.
+    return memref::CollapseShapeOp::create(
+        b, loc, view, ArrayRef<ReassociationIndices>{{0, 1}, {2}, {3}});
+  }
+
+  Value dst = memref::ExpandShapeOp::create(
+      b, loc, ArrayRef<int64_t>{dpuRows, dpuCols, mramRows, mramCols}, aStage,
+      ArrayRef<ReassociationIndices>{{0, 1}, {2}, {3}});
+  memref::CopyOp::create(b, loc, view, dst);
+  return aStage;
 }
 
-// Pack x slices into xStage for scatter. xStage is [dpuCols, mramCols]; each
-// column group c gets x[kOff + c*mramCols : kOff + (c+1)*mramCols].
-static void packXSlice(OpBuilder &b, Location loc, Value x, Value xStage,
-                       Value kOff, int64_t dpuCols, int64_t mramCols) {
-  MLIRContext *ctx = b.getContext();
-  AffineExpr d0 = getAffineDimExpr(0, ctx);
-  AffineMap colGroupMap = AffineMap::get(1, 0, {d0.floorDiv(mramCols)}, ctx);
+// Pack the [dpuCols*mramCols] slice of `x` at kOff for scatter. Returns the
+// memref to scatter from: a direct view of `x` if it's already contiguous
+// enough (same criterion as upmem::ScatterOp::verify), otherwise `xStage`
+// after a single memref.copy of the whole slice into it.
+static Value packXSlice(OpBuilder &b, Location loc, Value x, Value xStage,
+                        Value kOff, int64_t dpuCols, int64_t mramCols) {
+  Value slice1D = memref::SubViewOp::create(
+      b, loc, x, ArrayRef<OpFoldResult>{kOff},
+      ArrayRef<OpFoldResult>{b.getIndexAttr(dpuCols * mramCols)},
+      ArrayRef<OpFoldResult>{b.getIndexAttr(1)});
 
-  cinm::createNestedAffineForLoops(
-      b, loc, {dpuCols * mramCols}, {mramCols}, {},
-      [&](OpBuilder &b, Location loc, ValueRange ivs,
-          ValueRange) -> SmallVector<Value> {
-        Value colBase = arith::AddIOp::create(b, loc, kOff, ivs[0]);
-        Value colGroup = affine::AffineApplyOp::create(b, loc, colGroupMap,
-                                                        ValueRange{ivs[0]});
+  // No transpose needed here (unlike packATile): a straight split.
+  Value view = memref::ExpandShapeOp::create(
+      b, loc, ArrayRef<int64_t>{dpuCols, mramCols}, slice1D,
+      ArrayRef<ReassociationIndices>{{0, 1}});
+  auto viewTy = cast<MemRefType>(view.getType());
 
-        Value src = memref::SubViewOp::create(
-            b, loc, x, ArrayRef<OpFoldResult>{colBase},
-            ArrayRef<OpFoldResult>{b.getIndexAttr(mramCols)},
-            ArrayRef<OpFoldResult>{b.getIndexAttr(1)});
-        // Subview of xStage row 'colGroup', then collapse [1, mramCols] → [mramCols].
-        Value dst2D = memref::SubViewOp::create(
-            b, loc, xStage,
-            ArrayRef<OpFoldResult>{colGroup, b.getIndexAttr(0)},
-            ArrayRef<OpFoldResult>{b.getIndexAttr(1), b.getIndexAttr(mramCols)},
-            ArrayRef<OpFoldResult>{b.getIndexAttr(1), b.getIndexAttr(1)});
-        Value dst = memref::CollapseShapeOp::create(
-            b, loc, dst2D, ArrayRef<ReassociationIndices>{{0, 1}});
-        memref::CopyOp::create(b, loc, src, dst);
-        return {};
-      });
+  if (mlir::getContiguousSuffixSize(viewTy) == dpuCols * mramCols)
+    return view;
+
+  memref::CopyOp::create(b, loc, view, xStage);
+  return xStage;
 }
 
 } // namespace
@@ -562,10 +576,11 @@ void upmem::generateTailReduction(cinm::ReduceOp op, RewriterBase &rewriter,
                 ValueRange) -> SmallVector<Value> {
               Value kOff = ivs[0];
 
-              packATile(b, loc, reshapedInput, aStage, mOff, kOff, dpuRows,
-                        dpuCols, mramRows, mramCols);
+              Value aToScatter = packATile(b, loc, reshapedInput, aStage, mOff,
+                                          kOff, dpuRows, dpuCols, mramRows,
+                                          mramCols);
               upmem::ScatterOp::create(
-                  b, loc, aStage, aBufSym,
+                  b, loc, aToScatter, aBufSym,
                   static_cast<uint64_t>(mramRows * mramCols), aMap, dpus);
               upmem::WaitForOp::create(b, loc, dpus);
               return {};
@@ -977,14 +992,15 @@ void upmem::generateGemv(cinm::GemvOp op, RewriterBase &rewriter,
                 ValueRange) -> SmallVector<Value> {
               Value kOff = ivs2[0];
 
-              packATile(b, loc, A, aStage, mOff, kOff, dpuRows, dpuCols,
-                        mramRows, mramCols);
-              packXSlice(b, loc, x, xStage, kOff, dpuCols, mramCols);
+              Value aToScatter = packATile(b, loc, A, aStage, mOff, kOff,
+                                          dpuRows, dpuCols, mramRows, mramCols);
+              Value xToScatter =
+                  packXSlice(b, loc, x, xStage, kOff, dpuCols, mramCols);
 
               upmem::ScatterOp::create(
-                  b, loc, aStage, aBufSym,
+                  b, loc, aToScatter, aBufSym,
                   static_cast<uint64_t>(mramRows * mramCols), aMap, dpus);
-              upmem::ScatterOp::create(b, loc, xStage, xBufSym,
+              upmem::ScatterOp::create(b, loc, xToScatter, xBufSym,
                                        static_cast<uint64_t>(mramCols), xMap,
                                        dpus);
               upmem::WaitForOp::create(b, loc, dpus);

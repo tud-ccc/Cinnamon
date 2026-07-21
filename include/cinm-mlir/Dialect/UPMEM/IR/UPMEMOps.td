@@ -386,7 +386,7 @@ def FreeDPUsOp: Upmem_Op <"free_dpus", [MemoryEffects<[MemFree<DpuResource>]>]>{
   }];
 }
 
-def WaitForOp : Upmem_Op<"wait_for", [MemoryEffects<[MemRead<DpuResource>]>]> {
+def WaitForOp : Upmem_Op<"wait_for", [MemoryEffects<[MemRead<DpuResource>, MemWrite<DpuResource>]>]> {
   let summary = "launch DPU execution and block until all DPUs complete";
   let description = [{
     Triggers execution of the DPU program previously loaded by `upmem.alloc_dpus`

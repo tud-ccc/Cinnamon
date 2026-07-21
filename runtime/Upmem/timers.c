@@ -24,6 +24,12 @@ typedef struct {
   uint32_t num_dpus;
 } LaunchRecord;
 
+typedef struct {
+  int      iteration;
+  uint64_t elapsed_ns;
+  size_t   bytes;
+} CopyRecord;
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Growable buffers
 // ─────────────────────────────────────────────────────────────────────────────
@@ -43,12 +49,14 @@ typedef struct {
 
 DEFINE_BUF(XferBuf, XferRecord)
 DEFINE_BUF(LaunchBuf, LaunchRecord)
+DEFINE_BUF(CopyBuf, CopyRecord)
 
 static XferBuf   g_scatter   = {NULL, 0, 0};
 static XferBuf   g_gather    = {NULL, 0, 0};
 static LaunchBuf g_launch    = {NULL, 0, 0};
 static LaunchBuf g_free      = {NULL, 0, 0};
 static LaunchBuf g_alloc     = {NULL, 0, 0};
+static CopyBuf   g_copy      = {NULL, 0, 0};
 static int       g_iteration = 0;
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -87,6 +95,10 @@ void upmemrt_record_alloc(uint64_t elapsed_ns, uint32_t num_dpus) {
   LaunchBuf_push(&g_alloc, (LaunchRecord){g_iteration, elapsed_ns, num_dpus});
 }
 
+void upmemrt_record_copy(uint64_t elapsed_ns, size_t bytes) {
+  CopyBuf_push(&g_copy, (CopyRecord){g_iteration, elapsed_ns, bytes});
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // CSV dump
 // ─────────────────────────────────────────────────────────────────────────────
@@ -121,6 +133,20 @@ static void dump_launch(const LaunchBuf *buf, const char *path) {
   fclose(f);
 }
 
+static void dump_copy(const CopyBuf *buf, const char *path) {
+  FILE *f = fopen(path, "w");
+  if (!f) {
+    perror(path);
+    return;
+  }
+  fprintf(f, "iteration,elapsed_ns,bytes\n");
+  for (size_t i = 0; i < buf->size; i++) {
+    const CopyRecord *r = &buf->data[i];
+    fprintf(f, "%d,%" PRIu64 ",%zu\n", r->iteration, r->elapsed_ns, r->bytes);
+  }
+  fclose(f);
+}
+
 void upmemrt_dump_stats(const char *prefix) {
   char path[4096];
   snprintf(path, sizeof(path), "%s_scatter.csv", prefix);
@@ -133,6 +159,8 @@ void upmemrt_dump_stats(const char *prefix) {
   dump_launch(&g_free, path);
   snprintf(path, sizeof(path), "%s_alloc.csv", prefix);
   dump_launch(&g_alloc, path);
+  snprintf(path, sizeof(path), "%s_copy.csv", prefix);
+  dump_copy(&g_copy, path);
 }
 
 #endif // UPMEM_RT_STATS
