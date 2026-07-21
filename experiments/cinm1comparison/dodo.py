@@ -33,7 +33,8 @@ import sys
 import pandas as pd
 from doit import create_after
 from doit.tools import result_dep
-from tqdm import tqdm 
+from doit.reporter import ProgressBarReporter  # noqa: E402
+# from tqdm import tqdm 
 
 HERE = pathlib.Path(__file__).resolve().parent
 EXPERIMENTS_DIR = HERE.parent
@@ -41,7 +42,6 @@ sys.path.insert(0, str(EXPERIMENTS_DIR))
 
 
 from cinm_experiments import cinm1, cinmopt, compile_run, measurements, pools  # noqa: E402
-from cinm_experiments.doit_reporter import TqdmReporter  # noqa: E402
 from cinm_experiments.paths import DEFAULT_CINM_OPT  # noqa: E402
 from cinm_experiments.split_source import list_functions, split_source  # noqa: E402
 
@@ -75,7 +75,7 @@ DOIT_CONFIG = {
     # reporter's one-line-per-task log is unreadable at that scale.
     # Override with `doit -r console` for a single invocation if you need
     # the full per-task log back (e.g. while debugging a specific task).
-    "reporter": TqdmReporter,
+    "reporter": ProgressBarReporter,
 }
 
 
@@ -744,7 +744,7 @@ def _bench_one_config(
     -- rerun it explicitly via `doit retry_failed_bench`."""
     compiled = compile_run.discover_compiled([config], compile_root=compile_root)[0]
     if not compiled.ok:
-        tqdm.write(f"  SKIP bench (not compiled): {config.system} {config.fn_name} {config.label}")
+        print(f"  SKIP bench (not compiled): {config.system} {config.fn_name} {config.label}")
     else:
         r = compile_run.run_config(compiled, run_root=run_root, iters=iters)
         if not r.ok and compile_run.is_dpu_allocation_error(r.error):
