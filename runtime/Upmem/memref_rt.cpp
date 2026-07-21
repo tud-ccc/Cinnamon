@@ -32,20 +32,37 @@ extern "C" void memrefCopy(int64_t elemSize, UnrankedMemRefType<char> *srcArg,
   char *srcPtr = src.data + src.offset * elemSize;
   char *dstPtr = dst.data + dst.offset * elemSize;
 
-  if (rank == 0) {
-    memcpy(dstPtr, srcPtr, elemSize);
+  // Merge the maximal run of innermost axes that are contiguous in both src
+  // and dst into a single bulk memcpy, instead of copying elemSize bytes at
+  // a time: e.g. for a [256, 1, 4, 1024] tile whose innermost axis is
+  // contiguous in both operands, this does 1024 memcpy(4KB) calls instead of
+  // 1048576 memcpy(4B) calls.
+  int64_t chunkElems = 1;
+  int64_t chunkAxis = rank; // first axis NOT absorbed into the chunk
+  while (chunkAxis > 0 && src.strides[chunkAxis - 1] == chunkElems &&
+         dst.strides[chunkAxis - 1] == chunkElems) {
+    chunkElems *= src.sizes[chunkAxis - 1];
+    --chunkAxis;
+  }
+  int64_t chunkBytes = chunkElems * elemSize;
+
+  if (chunkAxis == 0) {
+    // The whole operand is one contiguous run (this also covers rank == 0,
+    // where the loop above never executes and chunkElems stays 1).
+    memcpy(dstPtr, srcPtr, chunkBytes);
 #ifdef UPMEM_RT_STATS
-    upmemrt_record_copy(upmemrt_now_ns() - t0, elemSize);
+    upmemrt_record_copy(upmemrt_now_ns() - t0, numElements * elemSize);
 #endif
     return;
   }
 
-  int64_t *indices = static_cast<int64_t *>(alloca(sizeof(int64_t) * rank));
-  int64_t *srcStrides = static_cast<int64_t *>(alloca(sizeof(int64_t) * rank));
-  int64_t *dstStrides = static_cast<int64_t *>(alloca(sizeof(int64_t) * rank));
+  int64_t *indices = static_cast<int64_t *>(alloca(sizeof(int64_t) * chunkAxis));
+  int64_t *srcStrides = static_cast<int64_t *>(alloca(sizeof(int64_t) * chunkAxis));
+  int64_t *dstStrides = static_cast<int64_t *>(alloca(sizeof(int64_t) * chunkAxis));
 
-  // Initialize index and scale strides.
-  for (int rankp = 0; rankp < rank; ++rankp) {
+  // Initialize index and scale strides for the remaining (non-contiguous)
+  // outer axes.
+  for (int64_t rankp = 0; rankp < chunkAxis; ++rankp) {
     indices[rankp] = 0;
     srcStrides[rankp] = src.strides[rankp] * elemSize;
     dstStrides[rankp] = dst.strides[rankp] * elemSize;
@@ -53,10 +70,10 @@ extern "C" void memrefCopy(int64_t elemSize, UnrankedMemRefType<char> *srcArg,
 
   int64_t readIndex = 0, writeIndex = 0;
   for (;;) {
-    // Copy over the element, byte by byte.
-    memcpy(dstPtr + writeIndex, srcPtr + readIndex, elemSize);
-    // Advance index and read position.
-    for (int64_t axis = rank - 1; axis >= 0; --axis) {
+    // Copy the largest contiguous chunk at the current position.
+    memcpy(dstPtr + writeIndex, srcPtr + readIndex, chunkBytes);
+    // Advance index and read position over the remaining outer axes.
+    for (int64_t axis = chunkAxis - 1; axis >= 0; --axis) {
       // Advance at current axis.
       auto newIndex = ++indices[axis];
       readIndex += srcStrides[axis];

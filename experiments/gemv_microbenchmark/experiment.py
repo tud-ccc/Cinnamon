@@ -121,4 +121,3 @@ if breakdowns:
     out_path = HERE / "breakdown.png"
     fig.savefig(out_path, dpi=150)
     print(f"wrote {out_path}")
-
