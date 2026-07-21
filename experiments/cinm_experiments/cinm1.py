@@ -110,8 +110,8 @@ _STEP4 = [
 
 def _step5(use_upmem_scatter_api: bool):
     step = ["--lower-affine"]
-    # if not use_upmem_scatter_api:
-    #     step.append("--cnm-ensure-scatter-gather-contiguous")
+    if not use_upmem_scatter_api:
+        step.append("--cnm-ensure-scatter-gather-contiguous")
     step.extend(
         ["--buffer-loop-hoisting", "--buffer-hoisting", "--canonicalize", "--cse"]
     )
@@ -119,9 +119,10 @@ def _step5(use_upmem_scatter_api: bool):
 
 
 def _step6(use_upmem_scatter_api: bool):
-    options = {"cinm1-codegen": "true"}
-    if use_upmem_scatter_api:
-        options["use-sg-xfer-codegen"] = "true"
+    options = {
+        "cinm1-codegen": "true",
+        "use-sg-xfer-codegen": str(use_upmem_scatter_api).lower(),
+    }
     pass_opts = _infer_opts_str(options)
 
     return [
@@ -208,11 +209,7 @@ def compile_cinm1(
 
 
 def lowerer(
-    dpus: int,
-    tasklets: int,
-    *,
-    cinm_opt: pathlib.Path = DEFAULT_CINM_OPT,
-    **kwargs
+    dpus: int, tasklets: int, *, cinm_opt: pathlib.Path = DEFAULT_CINM_OPT, **kwargs
 ):
     """A (fn_module, out_file, log_file) -> CompletedProcess callable, for use
     as compile_run.Config.lower -- compiles CINM 1.0's program for this fixed
@@ -229,7 +226,7 @@ def lowerer(
             work_dir=pathlib.Path(out_file).parent / "cinm1_stages",
             cinm_opt=cinm_opt,
             log_file=log_file,
-            **kwargs
+            **kwargs,
         )
 
     return _lower

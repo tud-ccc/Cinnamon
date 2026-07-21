@@ -223,7 +223,8 @@ class ScatterGatherLike<string mnemonic, string kw, MemoryEffect effect, MemoryE
                   FlatSymbolRefAttr:$dpuBufRef,
                   I64Attr:$transferCount,
                   AffineMapAttr:$scatterMap,
-                  DeviceHierarchyType:$hierarchy);
+                  DeviceHierarchyType:$hierarchy,
+                  OptionalAttr<I64Attr>:$numBlocksPerDpu);
 
   let results = (outs);
 
@@ -246,6 +247,13 @@ class ScatterGatherLike<string mnemonic, string kw, MemoryEffect effect, MemoryE
     a specific tasklet within a DPU. The transfer count must be the size of this
     block in element. All of those blocks must have the same length (this is not a
     restriction of the UPMEM API, but ours, for now).
+
+    In that case, `numBlocksPerDpu` is required and gives the number of blocks
+    (i.e. the extent of the `tasklet` dimension) transferred per DPU. This is
+    independent of the number of tasklets declared by `hierarchy`: blocks are
+    just units of transfer for the UPMEM SDK's scatter API and need not
+    correspond 1:1 to actual DPU tasklets. `numBlocksPerDpu` must not be set
+    when `scatterMap` only has the (rank, dpu) form.
   }];
 
   let extraClassDeclaration = [{

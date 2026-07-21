@@ -16,6 +16,9 @@ typedef struct {
   uint64_t elapsed_ns;
   size_t   bytes_per_dpu;
   uint32_t num_dpus;
+  // "block"/"sg" for scatter (see upmemrt_record_scatter), "gather" for
+  // gather.
+  const char *kind;
 } XferRecord;
 
 typedef struct {
@@ -72,15 +75,15 @@ uint64_t upmemrt_now_ns(void) {
 void upmemrt_start_stat_collection(int iter) { g_iteration = iter; }
 
 void upmemrt_record_scatter(uint64_t elapsed_ns, size_t bytes_per_dpu,
-                             uint32_t num_dpus) {
-  XferBuf_push(&g_scatter,
-               (XferRecord){g_iteration, elapsed_ns, bytes_per_dpu, num_dpus});
+                             uint32_t num_dpus, const char *kind) {
+  XferBuf_push(&g_scatter, (XferRecord){g_iteration, elapsed_ns, bytes_per_dpu,
+                                        num_dpus, kind});
 }
 
 void upmemrt_record_gather(uint64_t elapsed_ns, size_t bytes_per_dpu,
                             uint32_t num_dpus) {
-  XferBuf_push(&g_gather,
-               (XferRecord){g_iteration, elapsed_ns, bytes_per_dpu, num_dpus});
+  XferBuf_push(&g_gather, (XferRecord){g_iteration, elapsed_ns, bytes_per_dpu,
+                                       num_dpus, "gather"});
 }
 
 void upmemrt_record_launch(uint64_t elapsed_ns, uint32_t num_dpus) {
@@ -109,11 +112,11 @@ static void dump_xfer(const XferBuf *buf, const char *path) {
     perror(path);
     return;
   }
-  fprintf(f, "iteration,elapsed_ns,bytes_per_dpu,num_dpus\n");
+  fprintf(f, "iteration,elapsed_ns,bytes_per_dpu,num_dpus,kind\n");
   for (size_t i = 0; i < buf->size; i++) {
     const XferRecord *r = &buf->data[i];
-    fprintf(f, "%d,%" PRIu64 ",%zu,%u\n", r->iteration, r->elapsed_ns,
-            r->bytes_per_dpu, r->num_dpus);
+    fprintf(f, "%d,%" PRIu64 ",%zu,%u,%s\n", r->iteration, r->elapsed_ns,
+            r->bytes_per_dpu, r->num_dpus, r->kind);
   }
   fclose(f);
 }

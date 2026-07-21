@@ -283,6 +283,15 @@ public:
   }
 };
 
+// Set by ConvertUPMEMToLLVMPass on each upmem.alloc_dpus before conversion
+// starts (see computeMaxBlocksPerDpu): the largest numBlocksPerDpu among the
+// upmem.scatter ops using that hierarchy, or absent if none use the (rank,
+// dpu, tasklet) form. AllocDPUOpToFuncCallLowering reads it back to size the
+// UPMEM SDK's sgXferMaxBlocksPerDpu profile option -- this can't be
+// recomputed from inside the conversion pattern itself, since by the time an
+// individual op is legalized, its users may already have been converted away.
+constexpr StringLiteral kMaxBlocksPerDpuAttrName = "upmem.max_blocks_per_dpu";
+
 struct AllocDPUOpToFuncCallLowering
     : public ConvertOpToLLVMPattern<upmem::AllocDPUsOp> {
 public:
@@ -317,19 +326,31 @@ public:
       return failure();
     const Value dpuProgramPath = *maybeFailed;
 
+    // Computed by ConvertUPMEMToLLVMPass before conversion started (see
+    // kMaxBlocksPerDpuAttrName): 0 if no upmem.scatter using this hierarchy
+    // needs the UPMEM SDK's scatter transfer API.
+    int64_t maxBlocksPerDpu = 0;
+    if (auto attr = op->getAttrOfType<IntegerAttr>(kMaxBlocksPerDpuAttrName))
+      maxBlocksPerDpu = attr.getInt();
+    Type sizeTy = getTypeConverter()->getIndexType();
+    Value maxBlocksPerDpuVal = LLVM::ConstantOp::create(
+        rewriter, op.getLoc(), sizeTy,
+        rewriter.getIntegerAttr(sizeTy, maxBlocksPerDpu));
+
     // struct dpu_set_t *upmemrt_dpu_alloc(int32_t num_ranks, int32_t
-    // num_dpus);
+    // num_dpus, const char *dpu_binary_path, size_t max_blocks_per_dpu);
     Type resultType = LLVM::LLVMPointerType::get(rewriter.getContext(), 0);
-    auto funcOp =
-        appendOrGetFuncOp(rewriter, "upmemrt_dpu_alloc", resultType,
-                          {rewriter.getI32Type(), rewriter.getI32Type(),
-                           untypedPtrType(getContext())},
-                          op);
+    auto funcOp = appendOrGetFuncOp(
+        rewriter, "upmemrt_dpu_alloc", resultType,
+        {rewriter.getI32Type(), rewriter.getI32Type(), untypedPtrType(getContext()),
+         sizeTy},
+        op);
 
     if (llvm::failed(funcOp))
       return failure();
     rewriter.replaceOpWithNewOp<LLVM::CallOp>(
-        op, *funcOp, ValueRange{rankCount, dpuCount, dpuProgramPath});
+        op, *funcOp,
+        ValueRange{rankCount, dpuCount, dpuProgramPath, maxBlocksPerDpuVal});
     return success();
   }
 };
@@ -515,9 +536,12 @@ static LogicalResult lowerScatterOrGather(Op op, typename Op::Adaptor adaptor,
     // Size of elements in bytes
     const size_t elementSize =
         op.getHostBuffer().getType().getElementTypeBitWidth() / 8;
-    // Number of tasklets (blocks) per DPU
-    const size_t numTaskletsPerDpu =
-        op.getHierarchy().getType().getNumTaskletsPerDpu();
+    // Number of blocks per DPU. This is independent of the hierarchy's
+    // declared tasklet count -- blocks are just UPMEM SDK transfer units and
+    // need not correspond 1:1 to actual DPU tasklets (see the op
+    // description) -- so it must come from the required numBlocksPerDpu
+    // attribute, not from op.getHierarchy().
+    const size_t numTaskletsPerDpu = *op.getNumBlocksPerDpu();
     // transferCount is the size of a single tasklet's block, in elements
     // (see the op description)
     const size_t blockNumElements = op.getTransferCount();
@@ -684,6 +708,24 @@ void populateUPMEMToLLVMConversionPatterns(LLVMTypeConverter &typeConverter,
 struct ConvertUPMEMToLLVMPass
     : public impl::ConvertUPMEMToLLVMPassBase<ConvertUPMEMToLLVMPass> {
   void runOnOperation() final {
+    // Stash, on each upmem.alloc_dpus, the largest numBlocksPerDpu among the
+    // upmem.scatter ops using it (see kMaxBlocksPerDpuAttrName). This must
+    // happen as a plain IR walk before conversion starts: once conversion is
+    // under way, a scatter op may already have been legalized (and erased)
+    // by the time alloc_dpus's own pattern runs, so it can no longer be
+    // found by scanning the hierarchy value's users from inside a pattern.
+    getOperation()->walk([&](upmem::AllocDPUsOp allocOp) {
+      uint64_t maxBlocks = 0;
+      for (Operation *user : allocOp.getResult().getUsers())
+        if (auto scatter = dyn_cast<upmem::ScatterOp>(user))
+          if (auto blocks = scatter.getNumBlocksPerDpu())
+            maxBlocks = std::max(maxBlocks, *blocks);
+      if (maxBlocks > 0)
+        allocOp->setAttr(kMaxBlocksPerDpuAttrName,
+                         IntegerAttr::get(IntegerType::get(&getContext(), 64),
+                                          maxBlocks));
+    });
+
     // ModuleOp module = getOperation();
     LowerToLLVMOptions convOptions(&getContext());
     // necessary for C interop

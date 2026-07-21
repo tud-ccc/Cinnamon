@@ -145,7 +145,7 @@ def task_plot():
     """Print + plot the net-time breakdown (scatter/gather/copy/launch/
     unaccounted) for both systems."""
 
-    def action(out_path):
+    def action(out_path, by_kind):
         breakdowns = {}
         for config in CONFIGS:
             output_dir = config.dir(DATA_ROOT) / "output"
@@ -153,7 +153,7 @@ def task_plot():
             if net_ms is None:
                 print(f"{config.system}: no results (run failed?)")
                 continue
-            breakdown = measurements.net_breakdown_ms(output_dir)
+            breakdown = measurements.net_breakdown_ms(output_dir, by_kind=by_kind)
             breakdowns[config.system] = breakdown
             parts = "  ".join(f"{k}={v:.3f}ms" for k, v in breakdown.items())
             print(f"{config.system}: net_time={net_ms:.3f}ms  {parts}")
@@ -164,13 +164,17 @@ def task_plot():
         import matplotlib.pyplot as plt
 
         systems = list(breakdowns.keys())
-        categories = measurements.NET_BREAKDOWN_CATEGORIES
-        colors = [plt.get_cmap("Dark2")(i) for i in range(len(categories))]
+        categories = sorted({cat for s in systems for cat in breakdowns[s].keys()}, key=measurements.net_breakdown_sort_ix)
+        # Color by each category's fixed, global sort index (not its position
+        # in this plot's local `categories` list) so the same category name
+        # always gets the same color across both plots, even though the flat
+        # and by-kind plots don't show the same set of categories.
+        colors = [plt.get_cmap("Dark2")(measurements.net_breakdown_color_ix(cat)) for cat in categories]
 
         fig, ax = plt.subplots(figsize=(5, 5))
         bottoms = [0.0] * len(systems)
         for cat, color in zip(categories, colors):
-            values = [breakdowns[s][cat] for s in systems]
+            values = [breakdowns[s].get(cat, 0) for s in systems]
             totals = [sum(breakdowns[s].values()) for s in systems]
             bars = ax.bar(
                 systems,
@@ -202,12 +206,16 @@ def task_plot():
         print(f"wrote {out_path}")
 
     out_path = HERE / "breakdown.png"
+    out_path_by_kind = HERE / "breakdown_by_kind.png"
     return {
         "uptodate": [
             check_timestamp_unchanged(c.dir(DATA_ROOT) / "bench.done", "ctime")
             for c in CONFIGS
         ],
         "file_dep": [c.dir(DATA_ROOT) / "bench.done" for c in CONFIGS],
-        "targets": [out_path],
-        "actions": [(action, [out_path])],
+        "targets": [out_path, out_path_by_kind],
+        "actions": [
+          (action, [out_path, False]),
+          (action, [out_path_by_kind, True])
+        ],
     }

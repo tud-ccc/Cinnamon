@@ -26,3 +26,13 @@ Then I implemented the scatter/gather thing using UPMEM's API.
 At this point it was only implemented in the CINM 1 pipeline so this is the plot to show for it:
 
 ![image](1_gemv_nocopy.png)
+
+And this is when it's implemented in the CINM 2 pipeline:
+
+![image](2_gemv_noacopy_in_cinm2.png)
+
+Now there is still copy happening for the x buffer - this should be replaced by a broadcast over all DPUs.
+
+This is a more detailed breakdown (showing SG transfer vs block transfer)
+
+![image](3_scatter_breakdown.png)
