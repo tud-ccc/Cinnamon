@@ -7,6 +7,7 @@
 #include "cinm-mlir/Dialect/UPMEM/IR/UPMEMTypes.h"
 
 #include <cinm-mlir/Dialect/UPMEM/Transforms/Utils.h>
+#include <cinm-mlir/Utils/CinmUtils.h>
 #include <cstdint>
 #include <llvm/ADT/MapVector.h>
 #include <llvm/ADT/STLExtras.h>
@@ -49,6 +50,7 @@ namespace {
 
 struct Opts {
   bool cinm1codegen = false;
+  bool useSgXferCodegen = true;
 };
 
 template <typename T> T reduceMul(ArrayRef<T> arr) {
@@ -92,6 +94,98 @@ static AffineMap adaptAffineMapCnmToUpmem(AffineMap map,
   return AffineMap::get(2, 0, std::move(exprs), map.getContext());
 }
 
+// Same as adaptAffineMapCnmToUpmem, but keeps the tasklet dim (dim 2) instead
+// of zeroing it out. Used for the upmem.scatter (rank, dpu, tasklet) form,
+// where the tasklet dim is evaluated per-tasklet by the UPMEM SDK's scatter
+// transfer API rather than being folded into a single flat per-DPU memcpy.
+static AffineMap keepTaskletDimAffineMapCnmToUpmem(AffineMap map,
+                                                   cnm::BufferType bufTy) {
+  assert(map.getNumDims() == 3);
+  auto cst0 = getAffineConstantExpr(0, map.getContext());
+  SmallVector<AffineExpr> exprs(map.getResults());
+  for (auto _ : bufTy.getShape()) {
+    exprs.push_back(cst0);
+  }
+  return AffineMap::get(3, 0, std::move(exprs), map.getContext());
+}
+
+// Linearizes `map` (assumed to already have one result per dimension of
+// `hostBufferTy`) into a single element-offset expression in the map's
+// dims, using `hostBufferTy`'s layout to convert a multi-dim index into an
+// element offset. The base offset of a strided layout is dropped, since only
+// relative (stride) information matters for the contiguity check below.
+// Returns failure if the layout isn't identity or a static StridedLayoutAttr.
+static FailureOr<AffineExpr> linearizeToElementOffset(AffineMap map,
+                                                      MemRefType hostBufferTy) {
+  MLIRContext *ctx = map.getContext();
+  ArrayRef<int64_t> shape = hostBufferTy.getShape();
+  AffineMap layoutMap;
+  if (hostBufferTy.getLayout().isIdentity()) {
+    layoutMap =
+        AffineMap::get(shape.size(), 0, linearizeIndices(ctx, shape), ctx);
+  } else if (auto strided =
+                dyn_cast<StridedLayoutAttr>(hostBufferTy.getLayout())) {
+    AffineExpr linear = getAffineConstantExpr(0, ctx);
+    for (auto [i, stride] : llvm::enumerate(strided.getStrides())) {
+      if (ShapedType::isDynamic(stride))
+        return failure();
+      linear = linear + getAffineDimExpr(i, ctx) * stride;
+    }
+    layoutMap = AffineMap::get(shape.size(), 0, linear, ctx);
+  } else {
+    return failure();
+  }
+
+  MutableAffineMap composed(layoutMap.compose(map));
+  composed.simplify();
+  assert(composed.getAffineMap().getNumResults() == 1);
+  return composed.getAffineMap().getResult(0);
+}
+
+// Returns the constant coefficient of `dim` in `expr`, or nullopt if `expr`
+// doesn't vary with `dim` in a simple affine (constant-coefficient) way.
+static std::optional<int64_t>
+getAffineExprDimCoefficient(AffineExpr expr, unsigned dim, unsigned numDims) {
+  MLIRContext *ctx = expr.getContext();
+  SmallVector<AffineExpr> substAt0, substAt1;
+  for (unsigned i = 0; i < numDims; ++i) {
+    substAt0.push_back(getAffineDimExpr(i, ctx));
+    substAt1.push_back(getAffineDimExpr(i, ctx));
+  }
+  substAt0[dim] = getAffineConstantExpr(0, ctx);
+  substAt1[dim] = getAffineConstantExpr(1, ctx);
+
+  AffineExpr diff =
+      expr.replaceDims(substAt1) - expr.replaceDims(substAt0);
+  diff = simplifyAffineExpr(diff, numDims, 0);
+  if (auto cst = dyn_cast<AffineConstantExpr>(diff))
+    return cst.getValue();
+  return std::nullopt;
+}
+
+// Whether, for every (rank, dpu), the per-tasklet blocks addressed by
+// `scatterMap(rank, dpu, tasklet)` -- each `blockSizeInItems` elements long
+// -- are laid out back-to-back in `hostBufferTy`, in tasklet order, forming
+// one contiguous run of `numTasklets * blockSizeInItems` elements. This is
+// exactly the condition under which collapsing to the classic (rank, dpu)
+// upmem.scatter form (a single flat memcpy per DPU) is correct. We check
+// this by verifying that the element offset (linearized using the host
+// buffer's actual layout) is affine in the tasklet dim with a coefficient of
+// exactly `blockSizeInItems`.
+static bool taskletBlocksAreContiguous(AffineMap scatterMap,
+                                       cnm::BufferType bufTy,
+                                       MemRefType hostBufferTy,
+                                       int64_t blockSizeInItems) {
+  AffineMap extended = keepTaskletDimAffineMapCnmToUpmem(scatterMap, bufTy);
+  FailureOr<AffineExpr> offset =
+      linearizeToElementOffset(extended, hostBufferTy);
+  if (failed(offset))
+    return false;
+  std::optional<int64_t> coeff =
+      getAffineExprDimCoefficient(*offset, /*dim=*/2, /*numDims=*/3);
+  return coeff.has_value() && *coeff == blockSizeInItems;
+}
+
 static LogicalResult convertCnmGatherToUpmem(RewriterBase &rewriter,
                                              cnm::GatherOp op,
                                              upmem::AllocDPUsOp upmemWgAlloc,
@@ -128,24 +222,48 @@ static LogicalResult convertCnmScatterToUpmem(RewriterBase &rewriter,
                                               cnm::ScatterOp op,
                                               bool isBroadcast,
                                               upmem::AllocDPUsOp upmemWgAlloc,
-                                              StringAttr refToBuffer) {
+                                              StringAttr refToBuffer,
+                                              const Opts &opts) {
 
   rewriter.setInsertionPoint(op);
   const Value tensor = op.getInput();
   const ShapedType inputTy = op.getInput().getType();
+  const MemRefType hostBufferTy = convertTensorToMemref(inputTy);
 
   const Value inputAsMemref = createOrFoldUnrealizedConversionCast(
-      op.getLoc(), rewriter, convertTensorToMemref(inputTy), tensor);
+      op.getLoc(), rewriter, hostBufferTy, tensor);
 
   const size_t numTasklets = upmemWgAlloc.getType().getNumTaskletsPerDpu();
-  const int64_t transferCount =
-      isBroadcast ? op.getTransferCountInItems()
-                  : op.getTransferCountInItems() * numTasklets;
+  const int64_t blockSizeInItems = op.getTransferCountInItems();
 
-  upmem::ScatterOp::create(
-      rewriter, op->getLoc(), inputAsMemref, refToBuffer, transferCount,
-      adaptAffineMapCnmToUpmem(op.getScatterMap(), op.getBuffer().getType()),
-      upmemWgAlloc.getResult());
+  // The classic upmem.scatter (rank, dpu) form performs a single flat memcpy
+  // per DPU of numTasklets*blockSizeInItems elements: correct only when
+  // those per-tasklet blocks are actually contiguous in the host buffer (see
+  // adaptAffineMapCnmToUpmem). When they aren't, instead of forcing a
+  // staging copy upstream, we can use the (rank, dpu, tasklet) form, which
+  // uses the UPMEM SDK's scatter transfer API (dpu_push_sg_xfer) to gather
+  // each tasklet's (still individually contiguous) block directly from its
+  // real, possibly non-contiguous, location.
+  bool useTaskletForm =
+      !isBroadcast && numTasklets > 1 && opts.useSgXferCodegen &&
+      !taskletBlocksAreContiguous(op.getScatterMap(), op.getBuffer().getType(),
+                                  hostBufferTy, blockSizeInItems);
+
+  AffineMap upmemMap;
+  int64_t transferCount;
+  if (useTaskletForm) {
+    upmemMap =
+        keepTaskletDimAffineMapCnmToUpmem(op.getScatterMap(), op.getBuffer().getType());
+    transferCount = blockSizeInItems;
+  } else {
+    upmemMap =
+        adaptAffineMapCnmToUpmem(op.getScatterMap(), op.getBuffer().getType());
+    transferCount =
+        isBroadcast ? blockSizeInItems : blockSizeInItems * numTasklets;
+  }
+
+  upmem::ScatterOp::create(rewriter, op->getLoc(), inputAsMemref, refToBuffer,
+                           transferCount, upmemMap, upmemWgAlloc.getResult());
 
   rewriter.eraseOp(op);
   return success();
@@ -391,9 +509,9 @@ static LogicalResult convertCnmLaunchToUpmem(cnm::LaunchOp launch,
                        static_cast<int64_t>(
                            scatter.getBuffer().getType().getShape().size());
 
-      if (!alloc || failed(convertCnmScatterToUpmem(rewriter, scatter,
-                                                    isBroadcast, upmemWgAlloc,
-                                                    alloc.getSymNameAttr()))) {
+      if (!alloc || failed(convertCnmScatterToUpmem(
+                        rewriter, scatter, isBroadcast, upmemWgAlloc,
+                        alloc.getSymNameAttr(), opts))) {
         return failure();
       }
     }
@@ -500,7 +618,8 @@ struct ConvertCnmToUPMEMPass
 
   void runOnOperation() final {
     Operation *rootOp = getOperation();
-    Opts opts{.cinm1codegen = cinm1Codegen};
+    Opts opts{.cinm1codegen = cinm1Codegen,
+              .useSgXferCodegen = useSgXferCodegen};
 
     // Determine kernel module name: prefer per-op annotation, else option.
     std::string kmName = kernelModuleName;

@@ -8,6 +8,7 @@ from __future__ import annotations
 from typing import Union
 import pathlib
 
+from math import isnan
 import pandas as pd
 
 from .compile_run import RunResult
@@ -60,7 +61,10 @@ def _sum_time_ms(output_dir : Union[pathlib.Path, RunResult], csv_type: str) -> 
             continue
         df = pd.read_csv(csv_path)
         df = df.rename(columns={_iter_col(df): "iteration"})
-        return float(df.groupby("iteration")["elapsed_ns"].sum().mean()) / 1e6
+        mean = float(df.groupby("iteration")["elapsed_ns"].sum().mean())
+        if isnan(mean):
+          return None
+        return float(mean) / 1e6
     return None
 
 

@@ -24,6 +24,7 @@ flow), stopping at its `.6.upmem.mlir` stage instead of continuing on to
 DPU-C/host-LLVM as that Makefile itself does -- reduce_cost/Makefile's
 bench-single already does that part, and is what compile_run.py drives.
 """
+
 from __future__ import annotations
 
 import pathlib
@@ -31,6 +32,7 @@ import re
 import subprocess
 
 from .paths import DEFAULT_CINM_OPT
+from .cinmopt import _infer_opts_str
 
 PRE_PASSES = ["--cinm-assign-platforms"]
 
@@ -59,52 +61,122 @@ def to_cinm1_accelerator(text: str, dpus: int, tasklets: int) -> str:
 # deterministically (no search); steps 2-6 are the ordinary CINM -> CNM ->
 # UPMEM lowering, the same one that also carries CINM 2.0's own
 # eval-solution output to this stage.
-_STEP1A_PIPELINE = (
-    "builtin.module(func.func(cinm-infer-tile-sizes,cinm-tiling,cinm-isolate-compute-blocks,canonicalize))"
-)
+_STEP1A_PIPELINE = "builtin.module(func.func(cinm-infer-tile-sizes,cinm-tiling,cinm-isolate-compute-blocks,canonicalize))"
 _STEP1B_PIPELINE = (
     "builtin.module(**cinm.compute_block(affine-loop-unroll{unroll-full-threshold=1},"
     "canonicalize),cinm-deisolate-compute-blocks)"
 )
 
-_STEP2 = ["--cinm-deisolate-compute-blocks", "--convert-cinm-to-cnm", "--canonicalize", "--cnm-hoist-workgroups",
-          "--canonicalize", "--cse"]
-_STEP3 = ["--eliminate-empty-tensors", "--cse",
-          "--one-shot-bufferize=bufferize-function-boundaries "
-          "function-boundary-type-conversion=identity-layout-map",
-          "--cse", "--canonicalize", "--convert-linalg-to-affine-loops",
-          "--buffer-loop-hoisting", "--buffer-hoisting", "--canonicalize", "--cse",
-          "--buffer-results-to-out-params=hoist-static-allocs", "--canonicalize", "--cse"]
-_STEP4 = ["--promote-buffers-to-stack", "--fold-memref-alias-ops", "--canonicalize",
-          "--affine-loop-fusion", "--sroa", "--canonicalize", "--affine-scalrep",
-          "--loop-invariant-code-motion", "--affine-loop-invariant-code-motion",
-          "--sroa", "--affine-scalrep", "--canonicalize", "--cse"]
-_STEP5 = ["--lower-affine", "--cnm-ensure-scatter-gather-contiguous", "--buffer-loop-hoisting", "--buffer-hoisting",
-          "--canonicalize", "--cse"]
-_STEP6 = ["--convert-cnm-to-upmem=cinm1-codegen=true", "--cse", "--buffer-loop-hoisting", "--buffer-deallocation-pipeline",
-          "--upmem-dedup-kernels", "--cse"]
-
-_STAGES = [
-    (["--pass-pipeline=" + _STEP1A_PIPELINE], "1a.mlir"),
-    # (["--pass-pipeline=" + _STEP1B_PIPELINE], "1b.mlir"),
-    (_STEP2, "2.mlir"),
-    (_STEP3, "3.mlir"),
-    (_STEP4, "4.mlir"),
-    (_STEP5, "5.mlir"),
-    (_STEP6, "6.mlir"),
+_STEP2 = [
+    "--cinm-deisolate-compute-blocks",
+    "--convert-cinm-to-cnm",
+    "--canonicalize",
+    "--cnm-hoist-workgroups",
+    "--canonicalize",
+    "--cse",
+]
+_STEP3 = [
+    "--eliminate-empty-tensors",
+    "--cse",
+    "--one-shot-bufferize=bufferize-function-boundaries "
+    "function-boundary-type-conversion=identity-layout-map",
+    "--cse",
+    "--canonicalize",
+    "--convert-linalg-to-affine-loops",
+    "--buffer-loop-hoisting",
+    "--buffer-hoisting",
+    "--canonicalize",
+    "--cse",
+    "--buffer-results-to-out-params=hoist-static-allocs",
+    "--canonicalize",
+    "--cse",
+]
+_STEP4 = [
+    "--promote-buffers-to-stack",
+    "--fold-memref-alias-ops",
+    "--canonicalize",
+    "--affine-loop-fusion",
+    "--sroa",
+    "--canonicalize",
+    "--affine-scalrep",
+    "--loop-invariant-code-motion",
+    "--affine-loop-invariant-code-motion",
+    "--sroa",
+    "--affine-scalrep",
+    "--canonicalize",
+    "--cse",
 ]
 
 
-def _run_stage(cinm_opt: pathlib.Path, in_file: pathlib.Path, flags: list[str],
-                out_file: pathlib.Path, log) -> subprocess.CompletedProcess:
-    cmd = [str(cinm_opt), str(in_file), *flags, "--mlir-print-ir-after-failure", "--mlir-print-assume-verified", "-o", str(out_file)]
+def _step5(use_upmem_scatter_api: bool):
+    step = ["--lower-affine"]
+    # if not use_upmem_scatter_api:
+    #     step.append("--cnm-ensure-scatter-gather-contiguous")
+    step.extend(
+        ["--buffer-loop-hoisting", "--buffer-hoisting", "--canonicalize", "--cse"]
+    )
+    return step
+
+
+def _step6(use_upmem_scatter_api: bool):
+    options = {"cinm1-codegen": "true"}
+    if use_upmem_scatter_api:
+        options["use-sg-xfer-codegen"] = "true"
+    pass_opts = _infer_opts_str(options)
+
+    return [
+        f"--convert-cnm-to-upmem={pass_opts}",
+        "--cse",
+        "--buffer-loop-hoisting",
+        "--buffer-deallocation-pipeline",
+        "--upmem-dedup-kernels",
+        "--cse",
+    ]
+
+
+def _stages(use_upmem_scatter_api: bool):
+    return [
+        (["--pass-pipeline=" + _STEP1A_PIPELINE], "1a.mlir"),
+        # (["--pass-pipeline=" + _STEP1B_PIPELINE], "1b.mlir"),
+        (_STEP2, "2.mlir"),
+        (_STEP3, "3.mlir"),
+        (_STEP4, "4.mlir"),
+        (_step5(use_upmem_scatter_api), "5.mlir"),
+        (_step6(use_upmem_scatter_api), "6.mlir"),
+    ]
+
+
+def _run_stage(
+    cinm_opt: pathlib.Path,
+    in_file: pathlib.Path,
+    flags: list[str],
+    out_file: pathlib.Path,
+    log,
+) -> subprocess.CompletedProcess:
+    cmd = [
+        str(cinm_opt),
+        str(in_file),
+        *flags,
+        "--mlir-print-ir-after-failure",
+        "--mlir-print-assume-verified",
+        "-o",
+        str(out_file),
+    ]
     log.write(" ".join(cmd) + "\n")
     return subprocess.run(cmd, stdout=log, stderr=subprocess.STDOUT, text=True)
 
 
-def compile_cinm1(fn_module: pathlib.Path, dpus: int, tasklets: int, out_file: pathlib.Path,
-                   *, work_dir: pathlib.Path, cinm_opt: pathlib.Path = DEFAULT_CINM_OPT,
-                   log_file: pathlib.Path | None = None) -> subprocess.CompletedProcess:
+def compile_cinm1(
+    fn_module: pathlib.Path,
+    dpus: int,
+    tasklets: int,
+    out_file: pathlib.Path,
+    *,
+    work_dir: pathlib.Path,
+    cinm_opt: pathlib.Path = DEFAULT_CINM_OPT,
+    log_file: pathlib.Path | None = None,
+    use_upmem_scatter_api: bool = False,
+) -> subprocess.CompletedProcess:
     """Compile fn_module (a single-function module produced by
     split_source.split_source) as CINM 1.0 would for the fixed (dpus,
     tasklets) working group -- no search. Intermediate stage files are kept
@@ -124,7 +196,7 @@ def compile_cinm1(fn_module: pathlib.Path, dpus: int, tasklets: int, out_file: p
         pinned.write_text(to_cinm1_accelerator(assigned.read_text(), dpus, tasklets))
 
         stage = pinned
-        for flags, name in _STAGES:
+        for flags, name in _stages(use_upmem_scatter_api):
             nxt = work_dir / name
             r = _run_stage(cinm_opt, stage, flags, nxt, log)
             if r.returncode != 0:
@@ -135,17 +207,29 @@ def compile_cinm1(fn_module: pathlib.Path, dpus: int, tasklets: int, out_file: p
     return r
 
 
-def lowerer(dpus: int, tasklets: int, *, cinm_opt: pathlib.Path = DEFAULT_CINM_OPT):
+def lowerer(
+    dpus: int,
+    tasklets: int,
+    *,
+    cinm_opt: pathlib.Path = DEFAULT_CINM_OPT,
+    **kwargs
+):
     """A (fn_module, out_file, log_file) -> CompletedProcess callable, for use
     as compile_run.Config.lower -- compiles CINM 1.0's program for this fixed
     (dpus, tasklets) working group."""
 
-    def _lower(fn_module: pathlib.Path, out_file: pathlib.Path,
-               log_file: pathlib.Path) -> subprocess.CompletedProcess:
+    def _lower(
+        fn_module: pathlib.Path, out_file: pathlib.Path, log_file: pathlib.Path
+    ) -> subprocess.CompletedProcess:
         return compile_cinm1(
-            fn_module, dpus, tasklets, out_file,
+            fn_module,
+            dpus,
+            tasklets,
+            out_file,
             work_dir=pathlib.Path(out_file).parent / "cinm1_stages",
-            cinm_opt=cinm_opt, log_file=log_file,
+            cinm_opt=cinm_opt,
+            log_file=log_file,
+            **kwargs
         )
 
     return _lower

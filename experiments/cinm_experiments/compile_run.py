@@ -29,6 +29,9 @@ class Config:
     # lower(fn_module, out_file, log_file) -> CompletedProcess; produces
     # out_file at the "upmem dialect" stage bench-single expects as input.
 
+    def dir(self, root: pathlib.Path):
+      return root / self.system / self.fn_name / self.label
+
 
 @dataclasses.dataclass
 class CompiledConfig:
