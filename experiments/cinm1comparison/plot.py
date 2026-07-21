@@ -4,6 +4,7 @@ the figure-making code don't tangle."""
 from __future__ import annotations
 
 import pathlib
+import re
 
 import matplotlib
 matplotlib.use("Agg")
@@ -17,10 +18,25 @@ def geomean(x) -> float:
     return float(np.exp(np.mean(np.log(x))))
 
 
+_SIZE_RE = re.compile(r"(\d+)MB")
+
+
+def _fn_name_sort_key(fn_name: str):
+    """Sort fn_names like 'gemv_4MB'/'gemv_64MB' by their MB size instead of
+    lexicographically (which would put '256MB' before '4MB')."""
+    m = _SIZE_RE.search(fn_name)
+    return (int(m.group(1)) if m else float("inf"), fn_name)
+
+
+def sorted_fn_names(fn_names) -> list[str]:
+    return sorted(set(fn_names), key=_fn_name_sort_key)
+
+
 def print_summary(comparison: pd.DataFrame) -> None:
     print(f"\n{len(comparison)} matched (benchmark, dpus, tasklets) configs\n")
     print(f"{'benchmark':20s} {'n_pairs':>8s} {'geomean speedup':>18s}")
-    for fn_name, sub in comparison.groupby("fn_name"):
+    for fn_name in sorted_fn_names(comparison["fn_name"]):
+        sub = comparison[comparison.fn_name == fn_name]
         print(f"{fn_name:20s} {len(sub):8d} {geomean(sub['speedup']):18.3f}")
     print(f"\n{'OVERALL':20s} {len(comparison):8d} {geomean(comparison['speedup']):18.3f}")
 
@@ -28,7 +44,7 @@ def print_summary(comparison: pd.DataFrame) -> None:
 def plot_speedup(comparison: pd.DataFrame, out_dir: pathlib.Path) -> pathlib.Path:
     """Bar chart of geomean speedup per benchmark, with whiskers showing the
     CINM 2.0 25th-75th percentile spread across its BO search seeds."""
-    funcs = sorted(comparison["fn_name"].unique())
+    funcs = sorted_fn_names(comparison["fn_name"].unique())
     means, lo, hi = [], [], []
     for f in funcs:
         sub = comparison[comparison.fn_name == f]
@@ -39,8 +55,12 @@ def plot_speedup(comparison: pd.DataFrame, out_dir: pathlib.Path) -> pathlib.Pat
     fig, ax = plt.subplots(figsize=(max(6, 0.8 * len(funcs)), 5))
     x = np.arange(len(funcs))
     colors = [plt.get_cmap("Dark2")(i % 8) for i in range(len(funcs))]
-    err_lo = np.array(means) - np.array(lo)
-    err_hi = np.array(hi) - np.array(means)
+    # geomean(speedup) can fall outside [lo, hi] since lo/hi are computed
+    # from cinm2_p75/p25 independently rather than as a quantile of speedup
+    # itself -- clip so the whisker on that side collapses to zero instead
+    # of going negative.
+    err_lo = np.clip(np.array(means) - np.array(lo), 0, None)
+    err_hi = np.clip(np.array(hi) - np.array(means), 0, None)
     ax.bar(x, means, color=colors, yerr=[err_lo, err_hi], capsize=4)
     ax.axhline(1.0, color="black", linewidth=0.8, linestyle="--")
     ax.set_xticks(x)
@@ -92,7 +112,7 @@ def plot_speedup_violin(comparison: pd.DataFrame, out_dir: pathlib.Path) -> path
     which also geomeans across configs down to a single bar, the spread shown
     here is the sensitivity of the win to which hardware config was tested,
     not seed noise."""
-    funcs = sorted(comparison["fn_name"].unique())
+    funcs = sorted_fn_names(comparison["fn_name"].unique())
     data = [
         comparison.loc[comparison.fn_name == f, "speedup_seed_geomean"].to_numpy()
         for f in funcs
@@ -136,7 +156,7 @@ def plot_best_speedup(
     a bar chart collapsing each fn_name down to one geomean -- for when the
     violin is too crowded to read at a glance, at the cost of the
     seed-to-seed detail."""
-    funcs = sorted(comparison_best["fn_name"].unique())
+    funcs = sorted_fn_names(comparison_best["fn_name"].unique())
     colors = [plt.get_cmap("Dark2")(i % 8) for i in range(len(funcs))]
     out_dir = pathlib.Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -169,8 +189,11 @@ def plot_best_speedup(
     hi = [np.quantile(d, 0.75) for d in data]
     fig, ax = plt.subplots(figsize=(max(6, 0.8 * len(funcs)), 5))
     x = np.arange(len(funcs))
-    err_lo = np.array(means) - np.array(lo)
-    err_hi = np.array(hi) - np.array(means)
+    # geomean can fall outside [q25, q75] on skewed populations (a few
+    # outlier seeds pull it past the tight bulk of the rest) -- clip so the
+    # whisker on that side just collapses to zero instead of going negative.
+    err_lo = np.clip(np.array(means) - np.array(lo), 0, None)
+    err_hi = np.clip(np.array(hi) - np.array(means), 0, None)
     ax.bar(x, means, color=colors, yerr=[err_lo, err_hi], capsize=4)
     ax.axhline(1.0, color="black", linewidth=0.8, linestyle="--")
     ax.set_xticks(x)

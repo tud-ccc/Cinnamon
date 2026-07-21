@@ -366,7 +366,7 @@ static bool isInMemspace(MemRefType ty, upmem::DpuMemSpace space) {
 // Peel through ignorable reshape-like ops to reach the underlying value.
 static Value skipIgnorableOps(Value v) {
   while (Operation *op = v.getDefiningOp())
-    if (isa<memref::ExpandShapeOp, memref::CollapseShapeOp, memref::ReshapeOp>(
+    if (isa<memref::ExpandShapeOp, memref::CollapseShapeOp, memref::ReshapeOp, memref::ReinterpretCastOp>(
             op))
       v = op->getOperand(0);
     else

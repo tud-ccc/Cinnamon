@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import pathlib
 import subprocess
+import shlex
 
 from .paths import DEFAULT_CINM_OPT
 
@@ -23,11 +24,6 @@ def _opt_value(v) -> str:
 
 def _infer_opts_str(opts: dict) -> str:
     return " ".join(f"{k}={_opt_value(v)}" for k, v in opts.items())
-
-def fmt_cmd(args: list[str]) -> str:
-    def quote(s):
-      return f'"{s}"' if ' ' in s else s
-    return ' '.join(quote(s) for s in args)
 
 
 def _run(
@@ -54,7 +50,7 @@ def _run(
     if nice:
         cmd = ["nice", "-n", "19", *cmd]
     with open(log_file, "w") as log:
-        log.write(fmt_cmd(cmd) + "\n\n")
+        log.write(shlex.join(cmd) + "\n\n")
         
         if nolog:
           return subprocess.run(cmd)

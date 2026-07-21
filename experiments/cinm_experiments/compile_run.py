@@ -7,6 +7,7 @@ from __future__ import annotations
 import csv
 import dataclasses
 import pathlib
+import shlex
 import subprocess
 from typing import Callable
 
@@ -75,6 +76,9 @@ def compile_config(config: Config, *, compile_root: pathlib.Path) -> CompiledCon
         f"PRIM={config.prim}",
         "bench-single",
     ]
+    with open(config_dir / "make.sh", "w") as f:
+        f.write(f"#!/bin/sh\n{shlex.join(cmd)}\n")
+
     r = subprocess.run(cmd, capture_output=True, text=True)
     if r.returncode != 0:
         (config_dir / "make_stderr.txt").write_text(r.stderr)
