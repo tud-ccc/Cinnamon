@@ -25,7 +25,7 @@ def _fn_name_sort_key(fn_name: str):
     """Sort fn_names like 'gemv_4MB'/'gemv_64MB' by their MB size instead of
     lexicographically (which would put '256MB' before '4MB')."""
     m = _SIZE_RE.search(fn_name)
-    return (int(m.group(1)) if m else float("inf"), fn_name)
+    return (fn_name, int(m.group(1)) if m else float("inf"))
 
 
 def sorted_fn_names(fn_names) -> list[str]:

@@ -2,6 +2,7 @@ add_mlir_dialect_library(CnmTransforms
     SPIRVAttachAttributes.cpp
     BufferizeCnm.cpp
     HoistWorkgroups.cpp
+    EnsureScatterGatherContiguous.cpp
 
 DEPENDS
     CnmIncGen

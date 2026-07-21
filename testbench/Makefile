@@ -58,7 +58,7 @@ $(IR_PREFIX).5.cnm.scf.mlir: $(IR_PREFIX).4.cnm.after_opts.mlir
 				   --canonicalize --cse > $@
 
 $(IR_PREFIX).6.upmem.mlir: $(IR_PREFIX).5.cnm.scf.mlir
-	$(CINM_OPT) $< --convert-cnm-to-upmem --cse --upmem-dedup-kernels --cse  > $@
+	$(CINM_OPT) $< --cnm-ensure-scatter-gather-contiguous --convert-cnm-to-upmem --cse --upmem-dedup-kernels --cse  > $@
 
 $(IR_PREFIX).6a1.llvm.mlir: $(IR_PREFIX).6.upmem.mlir
 	$(CINM_OPT) $< --mlir-print-ir-after-failure --canonicalize --cinm-unwrap-compute-blocks \

@@ -213,9 +213,10 @@ def LocalTransferOp : Upmem_Op<"local_transfer"> {
 
 }
 
+def DpuResource : Resource<"DpuSetResource">;
 
-class ScatterGatherLike<string mnemonic, string kw, MemoryEffect effect>
-  : Upmem_Op<mnemonic, [MemoryEffects<[MemWrite]>,
+class ScatterGatherLike<string mnemonic, string kw, MemoryEffect effect, MemoryEffect dpuEffect>
+  : Upmem_Op<mnemonic, [MemoryEffects<[effect, dpuEffect]>,
                         DeclareOpInterfaceMethods<SymbolUserOpInterface>]> {
 
   let arguments = (ins Arg<AnyMemRef, "", [effect]>:$hostBuffer,
@@ -259,7 +260,7 @@ class ScatterGatherLike<string mnemonic, string kw, MemoryEffect effect>
      # "`:` type($hostBuffer) `" # kw # "` qualified(type($hierarchy))";
 }
 
-def ScatterOp: ScatterGatherLike<"scatter", "onto", MemRead> {
+def ScatterOp: ScatterGatherLike<"scatter", "onto", MemRead, MemWrite<DpuResource>> {
   let summary = "copy slices of a host buffer into the MRAM of each DPU";
   let description = [{
     For each DPU in `hierarchy`, copies `transferCount` elements from `hostBuffer`
@@ -278,7 +279,7 @@ def ScatterOp: ScatterGatherLike<"scatter", "onto", MemRead> {
 }
 
 
-def GatherOp: ScatterGatherLike<"gather", "from", MemWrite> {
+def GatherOp: ScatterGatherLike<"gather", "from", MemWrite, MemRead<DpuResource>> {
   let summary = "collect MRAM results from each DPU into a host buffer";
   let description = [{
     For each DPU in `hierarchy`, copies `transferCount` elements from the DPU's
@@ -343,7 +344,7 @@ def DpuProgramOp : Upmem_Op<"dpu_program",
 }
 
 
-def AllocDPUsOp: Upmem_Op <"alloc_dpus",  [ DeclareOpInterfaceMethods<SymbolUserOpInterface> ]> {
+def AllocDPUsOp: Upmem_Op <"alloc_dpus",  [ DeclareOpInterfaceMethods<SymbolUserOpInterface>, MemoryEffects<[MemAlloc<DpuResource>]> ]> {
   let summary = "UPMEM alloc dpus";
   let description = [{
     The upmem.alloc_dpus op calls initialization routine of the UPMEM SDK.
@@ -368,7 +369,7 @@ def AllocDPUsOp: Upmem_Op <"alloc_dpus",  [ DeclareOpInterfaceMethods<SymbolUser
 
 
 
-def FreeDPUsOp: Upmem_Op <"free_dpus", []>{
+def FreeDPUsOp: Upmem_Op <"free_dpus", [MemoryEffects<[MemFree<DpuResource>]>]>{
   let summary = "release a DPU allocation back to the runtime";
   let description = [{
     Releases the DPU set acquired by the corresponding `upmem.alloc_dpus`.
@@ -385,7 +386,7 @@ def FreeDPUsOp: Upmem_Op <"free_dpus", []>{
   }];
 }
 
-def WaitForOp : Upmem_Op<"wait_for", []> {
+def WaitForOp : Upmem_Op<"wait_for", [MemoryEffects<[MemRead<DpuResource>]>]> {
   let summary = "launch DPU execution and block until all DPUs complete";
   let description = [{
     Triggers execution of the DPU program previously loaded by `upmem.alloc_dpus`

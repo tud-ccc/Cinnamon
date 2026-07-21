@@ -1,21 +1,23 @@
+#include <cinm-mlir/Conversion/CinmPasses.h>
+#include <cinm-mlir/Conversion/CnmToUPMEM/CnmToUPMEM.h>
+#include <cinm-mlir/Conversion/CommonPatterns.h>
+#include <cinm-mlir/Dialect/Cinm/AcceleratorInference/AcceleratorInference.h>
+#include <cinm-mlir/Dialect/Cinm/AcceleratorInference/SpaceBuilder.h>
+#include <cinm-mlir/Dialect/Cinm/IR/CinmAttributes.h>
+#include <cinm-mlir/Dialect/Cinm/IR/CinmBase.h>
+#include <cinm-mlir/Dialect/Cinm/IR/CinmOps.h>
+#include <cinm-mlir/Dialect/Cinm/Transforms/CinmTransforms.h>
+#include <cinm-mlir/Dialect/Cinm/Transforms/Passes.h>
+#include <cinm-mlir/Dialect/Cnm/Transforms/Passes.h>
+#include <cinm-mlir/Dialect/UPMEM/IR/UPMEMAttributes.h>
+#include <cinm-mlir/Dialect/UPMEM/IR/UPMEMOps.h>
+#include <cinm-mlir/Dialect/UPMEM/Transforms/Passes.h>
+#include <cinm-mlir/Dialect/UPMEM/Transforms/UpmemSimulator.h>
+#include <cinm-mlir/Utils/Scheduling/SchedulingSupport.h>
+#include <cinm-mlir/Utils/DebugPasses.h>
+#include <upmem_cost_model/Types.h>
+
 #include "SimulatorBase.h"
-#include "cinm-mlir/Conversion/CinmPasses.h"
-#include "cinm-mlir/Conversion/CnmToUPMEM/CnmToUPMEM.h"
-#include "cinm-mlir/Conversion/CommonPatterns.h"
-#include "cinm-mlir/Dialect/Cinm/AcceleratorInference/AcceleratorInference.h"
-#include "cinm-mlir/Dialect/Cinm/AcceleratorInference/SpaceBuilder.h"
-#include "cinm-mlir/Dialect/Cinm/IR/CinmAttributes.h"
-#include "cinm-mlir/Dialect/Cinm/IR/CinmBase.h"
-#include "cinm-mlir/Dialect/Cinm/IR/CinmOps.h"
-#include "cinm-mlir/Dialect/Cinm/Transforms/CinmTransforms.h"
-#include "cinm-mlir/Dialect/Cinm/Transforms/Passes.h"
-#include "cinm-mlir/Dialect/Cnm/Transforms/Passes.h"
-#include "cinm-mlir/Dialect/UPMEM/IR/UPMEMAttributes.h"
-#include "cinm-mlir/Dialect/UPMEM/IR/UPMEMOps.h"
-#include "cinm-mlir/Dialect/UPMEM/Transforms/Passes.h"
-#include "cinm-mlir/Dialect/UPMEM/Transforms/UpmemSimulator.h"
-#include "cinm-mlir/Utils/Scheduling/SchedulingSupport.h"
-#include "upmem_cost_model/Types.h"
 
 #include <chrono>
 #include <cstddef>
@@ -23,40 +25,41 @@
 #include <filesystem>
 #include <functional>
 #include <limits>
-#include <llvm/Support/LogicalResult.h>
 #include <memory>
-#include <mlir/Dialect/Arith/Transforms/Passes.h>
-#include <mlir/Dialect/Utils/IndexingUtils.h>
-#include <mlir/IR/BuiltinTypes.h>
-#include <mlir/IR/Location.h>
 #include <string>
 #include <utility>
+#include <vector>
 
 #include <llvm/ADT/ArrayRef.h>
 #include <llvm/ADT/SmallVector.h>
 #include <llvm/ADT/StringRef.h>
 #include <llvm/Support/Casting.h>
 #include <llvm/Support/Debug.h>
+#include <llvm/Support/LogicalResult.h>
 #include <llvm/Support/raw_ostream.h>
 
 #include <mlir/Conversion/AffineToStandard/AffineToStandard.h>
 #include <mlir/Dialect/Affine/IR/AffineOps.h>
 #include <mlir/Dialect/Affine/Transforms/Passes.h>
+#include <mlir/Dialect/Arith/Transforms/Passes.h>
 #include <mlir/Dialect/Bufferization/IR/BufferizableOpInterface.h>
 #include <mlir/Dialect/Bufferization/IR/Bufferization.h>
 #include <mlir/Dialect/Bufferization/Transforms/OneShotAnalysis.h>
 #include <mlir/Dialect/Bufferization/Transforms/Passes.h>
+#include <mlir/Dialect/Bufferization/Pipelines/Passes.h>
 #include <mlir/Dialect/Func/IR/FuncOps.h>
 #include <mlir/Dialect/LLVMIR/LLVMDialect.h>
 #include <mlir/Dialect/Linalg/Passes.h>
 #include <mlir/Dialect/MemRef/IR/MemRef.h>
 #include <mlir/Dialect/MemRef/Transforms/Passes.h>
-
+#include <mlir/Dialect/Utils/IndexingUtils.h>
 #include <mlir/IR/Builders.h>
 #include <mlir/IR/BuiltinAttributes.h>
 #include <mlir/IR/BuiltinOps.h>
 #include <mlir/IR/BuiltinTypeInterfaces.h>
+#include <mlir/IR/BuiltinTypes.h>
 #include <mlir/IR/Diagnostics.h>
+#include <mlir/IR/Location.h>
 #include <mlir/IR/OpImplementation.h>
 #include <mlir/IR/PatternMatch.h>
 #include <mlir/IR/SymbolTable.h>
@@ -67,14 +70,13 @@
 #include <mlir/Support/LogicalResult.h>
 #include <mlir/Support/WalkResult.h>
 #include <mlir/Transforms/Passes.h>
-#include <vector>
 
 #define DEBUG_TYPE "cinm-inference"
 
 namespace mlir::upmem {
 
 #define GEN_PASS_DEF_UPMEMINFERACCELERATORPASS
-#include "cinm-mlir/Dialect/UPMEM/Transforms/Passes.h.inc"
+#include <cinm-mlir/Dialect/UPMEM/Transforms/Passes.h.inc>
 
 namespace {
 using mlir::cinm::SpaceBuilder;
@@ -229,7 +231,11 @@ struct UpmemInferencePlugin : cinm::InferencePlugin {
     pm->addPass(createCSEPass());
 
     // Step 6: cnm → upmem
+    pm->addPass(cnm::createCnmEnsureScatterGatherContiguousPass());
     pm->addPass(cnm::createConvertCnmToUPMEMPass({}));
+    pm->addPass(bufferization::createBufferLoopHoistingPass());
+    auto nested = pm->nestAny();
+    bufferization::buildBufferDeallocationPipeline(nested); //fixme
     pm->addPass(createCSEPass());
     pm->addPass(createUPMEMDedupKernelsPass());
     pm->addPass(createCSEPass());
@@ -335,15 +341,15 @@ struct UpmemInferencePlugin : cinm::InferencePlugin {
         upmem::UpmemAcceleratorAttr::get(platform, 1, dpus, tasklets));
 
     // if (opts.useMRAMTiling) {
-      // Bypass the lowering pipeline: call each op's registered simulator.
-      double total = 0.0;
-      for (auto &sim : simulators_)
-        total += TRY_GET(sim(conf, *simulator, trial));
-      if (opts.annotateOpCosts) {
-        OpBuilder b(ctx);
-        trial.computeBlock->setAttr(kSimCostAttr, b.getF64FloatAttr(total));
-      }
-      return total;
+    // Bypass the lowering pipeline: call each op's registered simulator.
+    double total = 0.0;
+    for (auto &sim : simulators_)
+      total += TRY_GET(sim(conf, *simulator, trial));
+    if (opts.annotateOpCosts) {
+      OpBuilder b(ctx);
+      trial.computeBlock->setAttr(kSimCostAttr, b.getF64FloatAttr(total));
+    }
+    return total;
     // }
 
     // applyTileSizes(trial);
@@ -449,9 +455,8 @@ void UpmemInferencePlugin::handleGemv(cinm::GemvOp gemv, SpaceBuilder &b) {
     rewriter.setInsertionPointToStart(&trial.computeBlock.getBody().front());
 
     trial.computeBlock->walk([&](cinm::GemvOp op) {
-      generateGemv(op, rewriter, dpus[c] / dpuCols[c], dpuCols[c],
-                   mramRow[c], mramCol[c], wramRow[c], wramCol[c],
-                   tasklets[c]);
+      generateGemv(op, rewriter, dpus[c] / dpuCols[c], dpuCols[c], mramRow[c],
+                   mramCol[c], wramRow[c], wramCol[c], tasklets[c]);
     });
 
     auto cleanupPm =

@@ -366,8 +366,8 @@ static bool isInMemspace(MemRefType ty, upmem::DpuMemSpace space) {
 // Peel through ignorable reshape-like ops to reach the underlying value.
 static Value skipIgnorableOps(Value v) {
   while (Operation *op = v.getDefiningOp())
-    if (isa<memref::ExpandShapeOp, memref::CollapseShapeOp, memref::ReshapeOp, memref::ReinterpretCastOp>(
-            op))
+    if (isa<memref::ExpandShapeOp, memref::CollapseShapeOp, memref::ReshapeOp,
+            memref::ReinterpretCastOp, memref::CastOp>(op))
       v = op->getOperand(0);
     else
       break;
@@ -1170,7 +1170,7 @@ static LogicalResult printBufferDecl(CppEmitter &emitter,
   if (op.getZeroinit()) {
     out << " {0}";
   }
-  
+
   out << "; // ";
   // add real type as comment
   if (failed(emitter.emitType(op->getLoc(), bufferType.getElementType())))
@@ -1762,11 +1762,11 @@ LogicalResult CppEmitter::emitOperation(Operation &op, bool trailingSemicolon) {
           .Case<upmem::BarrierOp>(
               [&](auto op) { return printOperation(*this, op); })
           .Case<memref::SubViewOp, memref::ExpandShapeOp,
-                memref::CollapseShapeOp, memref::CastOp>(
-              [&](auto) -> LogicalResult {
-                // fine, handled by local transfer printer
-                return success();
-              })
+                memref::CollapseShapeOp, memref::CastOp,
+                memref::ReinterpretCastOp>([&](auto) -> LogicalResult {
+            // fine, handled by local transfer printer
+            return success();
+          })
           // [&](auto op) { skipSemicolon = true; return success(); })
           .Default([&](Operation *) {
             return op.emitOpError("unable to find printer for op");

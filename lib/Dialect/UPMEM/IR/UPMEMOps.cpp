@@ -113,12 +113,60 @@ void upmem::StaticAllocOp::build(OpBuilder &builder, OperationState &result,
   result.addTypes(ty);
 }
 
+/// Returns the number of trailing elements of `type` that are guaranteed to
+/// be laid out contiguously in memory (i.e. the largest suffix of dimensions
+/// that is packed row-major), or -1 if this cannot be determined statically
+/// (dynamic shape/strides, or an unsupported layout).
+static int64_t getContiguousSuffixSize(MemRefType type) {
+  if (type.getLayout().isIdentity())
+    return type.hasStaticShape() ? type.getNumElements() : -1;
+
+  auto strided = llvm::dyn_cast<StridedLayoutAttr>(type.getLayout());
+  if (!strided)
+    return -1;
+
+  ArrayRef<int64_t> shape = type.getShape();
+  ArrayRef<int64_t> strides = strided.getStrides();
+  int64_t expectedStride = 1;
+  int64_t count = 1;
+  for (int64_t i = static_cast<int64_t>(shape.size()) - 1; i >= 0; --i) {
+    if (ShapedType::isDynamic(shape[i]) || ShapedType::isDynamic(strides[i]) ||
+        strides[i] != expectedStride)
+      break;
+    count *= shape[i];
+    expectedStride *= shape[i];
+  }
+  return count;
+}
+
+/// The runtime copies `transferCount` elements per DPU via a single flat
+/// memcpy starting at the offset computed from `scatterMap` (see
+/// do_dpu_transfer in the UPMEM runtime). This is only correct if those
+/// elements are actually contiguous in the host buffer; otherwise the copy
+/// silently reads/writes across unrelated rows/tiles.
+static LogicalResult verifyScatterGatherContiguity(Operation *op,
+                                                    MemRefType hostBufferTy,
+                                                    int64_t transferCount) {
+  int64_t contiguous = getContiguousSuffixSize(hostBufferTy);
+  if (contiguous >= 0 && transferCount > contiguous)
+    return op->emitOpError("transferCount (")
+           << transferCount
+           << ") exceeds the largest contiguous run of elements ("
+           << contiguous << ") in host buffer " << hostBufferTy
+           << "; each DPU's transferred elements must be contiguous in "
+              "memory";
+  return success();
+}
+
 LogicalResult upmem::GatherOp::verify() {
   if (getScatterMap().getNumResults() !=
           getHostBuffer().getType().getShape().size() ||
       getScatterMap().getNumDims() != 2)
     return emitOpError("Scatter map should map (rank, dpu) to a start index in "
                        "the host buffer");
+  if (failed(verifyScatterGatherContiguity(
+          *this, getHostBuffer().getType(), getTransferCount())))
+    return failure();
   // auto count = getDpuMemOffset();
   // if ((count % 8) != 0)
   //   return emitOpError("has unaligned DPU memory offset ")
@@ -132,6 +180,9 @@ LogicalResult upmem::ScatterOp::verify() {
       getScatterMap().getNumDims() != 2)
     return emitOpError("Scatter map should map (rank, dpu) to a start index in "
                        "the host buffer");
+  if (failed(verifyScatterGatherContiguity(
+          *this, getHostBuffer().getType(), getTransferCount())))
+    return failure();
 
   // auto count = getDpuMemOffset();
   // if ((count % 8) != 0)

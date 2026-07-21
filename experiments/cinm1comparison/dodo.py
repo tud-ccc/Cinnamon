@@ -846,19 +846,30 @@ def compare(
     (fn_name, dpus, tasklets)."""
     cinm1 = measurements.results_to_frame(cinm1_results).drop(columns=["label"])
     cinm1 = cinm1.rename(columns={"net_time_ms": "cinm1_ms"})
+    if cinm1.empty:
+        # results_to_frame() only guarantees fn_name/label/net_time_ms when
+        # empty -- dpus/tasklets come from cfg.params, which needs at least
+        # one row to appear at all.
+        cinm1["dpus"] = cinm1["tasklets"] = pd.Series(dtype=object)
 
     cinm2_raw = measurements.results_to_frame(cinm2_results)
-    cinm2_summary = (
-        cinm2_raw.groupby(["fn_name", "dpus", "tasklets"])["net_time_ms"]
-        .agg(
-            cinm2_ms="median",
-            cinm2_ms_geomean=geomean,
-            cinm2_p25=lambda s: s.quantile(0.25),
-            cinm2_p75=lambda s: s.quantile(0.75),
-            cinm2_n="count",
+    if cinm2_raw.empty:
+        cinm2_summary = pd.DataFrame(
+            columns=["fn_name", "dpus", "tasklets", "cinm2_ms", "cinm2_ms_geomean",
+                     "cinm2_p25", "cinm2_p75", "cinm2_n"]
         )
-        .reset_index()
-    )
+    else:
+        cinm2_summary = (
+            cinm2_raw.groupby(["fn_name", "dpus", "tasklets"])["net_time_ms"]
+            .agg(
+                cinm2_ms="median",
+                cinm2_ms_geomean=geomean,
+                cinm2_p25=lambda s: s.quantile(0.25),
+                cinm2_p75=lambda s: s.quantile(0.75),
+                cinm2_n="count",
+            )
+            .reset_index()
+        )
 
     merged = cinm1.merge(cinm2_summary, on=["fn_name", "dpus", "tasklets"], how="inner")
     missing = set(zip(cinm1.fn_name, cinm1.dpus, cinm1.tasklets)) - set(
@@ -905,7 +916,7 @@ def _compare_prim(prim: str) -> bool:
     return True
 
 
-@create_after(executed="screen")
+# @create_after(executed="screen")
 def task_compare():
     """Geomean speedup of CINM 2.0 (seed-median) over CINM 1.0 per working
     group, aggregated per benchmark."""
@@ -970,7 +981,7 @@ def _compare_best_prim(prim: str) -> bool:
     return True
 
 
-@create_after(executed="screen")
+# @create_after(executed="screen")
 def task_compare_best():
     """Best-vs-best comparison, one row per (fn_name, seed): CINM 1.0's best
     time anywhere in its matched-config sweep vs CINM 2.0's unconstrained

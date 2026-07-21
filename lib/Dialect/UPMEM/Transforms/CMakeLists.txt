@@ -26,6 +26,7 @@ LINK_LIBS PUBLIC
     MLIRCinmToCnm
     MLIRCnmToUPMEM
     MLIRBufferizationTransforms
+    MLIRBufferizationPipelines
     MLIRAffineTransforms
     MLIRMemRefTransforms
     MLIRAffineToStandard

@@ -156,22 +156,31 @@ static LogicalResult convertCnmScatterToUpmem(RewriterBase &rewriter,
 //                          fromTy.getLayout(), memspace);
 // }
 
+// Whether `wramBuffer` is a single copy shared by every tasklet (as opposed
+// to a private per-tasklet WRAM buffer). MRAM sharing (see
+// isMramBroadcastOverThreads) and WRAM sharing are independent decisions:
+// under cinm1-codegen, WRAM is never shared, but MRAM can still be a single
+// copy that every tasklet loads from into its own private WRAM buffer.
+static bool isWramShared(TypedValue<MemRefType> wramBuffer) {
+  return isa_and_nonnull<upmem::StaticAllocOp>(wramBuffer.getDefiningOp());
+}
+
 static void createTransfer(RewriterBase &rewriter, bool toWram, Location loc,
                            upmem::StaticAllocOp mramBuf,
-                           TypedValue<MemRefType> wramBuffer, Opts opts) {
+                           TypedValue<MemRefType> wramBuffer) {
 
   auto mramBufTy = mramBuf.getBuffer().getType();
   auto wramBufTy = wramBuffer.getType();
-  bool isBroadcast = mramBufTy.getShape() == wramBufTy.getShape();
+  // The MRAM buffer has an extra leading tasklet dimension whenever it isn't
+  // itself broadcast over threads (see isMramBroadcastOverThreads).
+  bool mramHasTaskletDim = mramBufTy.getRank() == wramBufTy.getRank() + 1;
   Value mramBufToScatter;
 
   auto taskletId = upmem::TaskletDimOp::create(rewriter, loc);
 
   Operation *insertionPointReset = nullptr;
-  if (!isBroadcast || opts.cinm1codegen) {
+  if (mramHasTaskletDim) {
     // scatter over tasklets
-    assert(mramBufTy.getRank() == wramBufTy.getRank() + 1);
-
     SmallVector<OpFoldResult, 4> offsets(mramBufTy.getRank(),
                                          rewriter.getIndexAttr(0));
     offsets[0] = taskletId.getResult();
@@ -197,9 +206,9 @@ static void createTransfer(RewriterBase &rewriter, bool toWram, Location loc,
 
     mramBufToScatter = memref::SubViewOp::create(
         rewriter, loc, viewType, mramBuf.getBuffer(), offsets, sizes, strides);
-  } else {
-    // MRAM buffer corresponds exactly to WRAM buffer
-    // This corresponds to a broadcast.
+  } else if (isWramShared(wramBuffer)) {
+    // MRAM buffer corresponds exactly to WRAM buffer, and WRAM is shared:
+    // this is a full broadcast (every tasklet reads the same WRAM copy).
     mramBufToScatter = mramBuf.getBuffer();
 
     // In that case we need to make only thread 0 call
@@ -226,6 +235,15 @@ static void createTransfer(RewriterBase &rewriter, bool toWram, Location loc,
     // conditional block
     rewriter.setInsertionPointToStart(&scfIf.getThenRegion().front());
     insertionPointReset = scfIf;
+  } else {
+    // MRAM is broadcast (single shared copy) but WRAM is private per-tasklet
+    // (cinm1-codegen): every tasklet independently loads its own copy from
+    // the same MRAM location into its own private WRAM buffer. No subview,
+    // no restriction to a single tasklet, no barrier needed.
+    assert(toWram && "a broadcast MRAM buffer should never be an output "
+                     "(outputs always have a gather, disqualifying MRAM "
+                     "broadcast -- see isMramBroadcastOverThreads)");
+    mramBufToScatter = mramBuf.getBuffer();
   }
 
   if (toWram)
@@ -237,7 +255,14 @@ static void createTransfer(RewriterBase &rewriter, bool toWram, Location loc,
     rewriter.setInsertionPointAfter(insertionPointReset);
 }
 
-static bool isScatterBroadcastOverThreads(cnm::AllocOp alloc) {
+// Whether every scatter into `alloc` addresses the buffer without using the
+// thread dimension of the affine map (and there is no gather reading it
+// back, which would require distinguishable per-tasklet results). This is
+// purely a property of the CNM scatter maps, independent of whether WRAM
+// ends up shared or private for this buffer: even when WRAM is private per
+// tasklet (cinm1-codegen), a single shared MRAM copy is enough, since every
+// tasklet can load the same MRAM location into its own private WRAM buffer.
+static bool isMramBroadcastOverThreads(cnm::AllocOp alloc) {
   for (auto user : alloc->getUsers()) {
     if (llvm::isa<cnm::GatherOp>(user))
       return false;
@@ -313,7 +338,13 @@ static LogicalResult convertCnmLaunchToUpmem(cnm::LaunchOp launch,
           MemRefType::get(bufShape, bufferType.getElementType(),
                           MemRefLayoutAttrInterface{}, wramMemspaceAttr);
 
-      if (!opts.cinm1codegen && isScatterBroadcastOverThreads(alloc)) {
+      // MRAM sharing only depends on the scatter maps (isMramBroadcastOverThreads);
+      // WRAM sharing additionally requires that cinm1-codegen isn't forcing
+      // private per-tasklet WRAM buffers.
+      bool mramIsBroadcast = isMramBroadcastOverThreads(alloc);
+      bool wramIsShared = !opts.cinm1codegen && mramIsBroadcast;
+
+      if (wramIsShared) {
         // If all threads see the same buffer (broadcast), then we only
         // create one static buffer in WRAM.
         auto wrambuf =
@@ -322,12 +353,14 @@ static LogicalResult convertCnmLaunchToUpmem(cnm::LaunchOp launch,
         dpuProgramSymTable.insert(wrambuf); // this renames it to a unique name
         buffersToWramBufValue[alloc.getResult()] = wrambuf.getBuffer();
       } else {
-        // not a broadcast - each tasklet gets its own buffer
+        // WRAM is private - each tasklet gets its own buffer.
         auto pwramBuf = upmem::PrivateWRAMAllocOp::create(
             rewriter, alloc.getLoc(), memrefTy);
 
         buffersToWramBufValue[alloc.getResult()] = pwramBuf.getBuffer();
+      }
 
+      if (!mramIsBroadcast) {
         // the mram buffer type has tasklet dimension prepended - unless the
         // buffer is broadcasted.
         bufShape.insert(bufShape.begin(), upmemTy.getNumTaskletsPerDpu());
@@ -349,10 +382,14 @@ static LogicalResult convertCnmLaunchToUpmem(cnm::LaunchOp launch,
   for (auto user : launch.getWg().getUsers()) {
 
     if (auto scatter = llvm::dyn_cast_or_null<cnm::ScatterOp>(user)) {
-      // If there is a shared wram buffer, this takes priority.
       upmem::StaticAllocOp alloc = buffersToMramBuf.lookup(scatter.getBuffer());
-      bool isBroadcast = isa<upmem::StaticAllocOp>(
-          buffersToWramBufValue[scatter.getBuffer()].getDefiningOp());
+      // transferCount only needs the numTasklets multiplier when the MRAM
+      // buffer itself has a per-tasklet leading dimension, i.e. isn't
+      // broadcast -- this is independent of whether WRAM ends up shared.
+      bool isBroadcast =
+          alloc && alloc.getBuffer().getType().getRank() ==
+                       static_cast<int64_t>(
+                           scatter.getBuffer().getType().getShape().size());
 
       if (!alloc || failed(convertCnmScatterToUpmem(rewriter, scatter,
                                                     isBroadcast, upmemWgAlloc,
@@ -389,7 +426,7 @@ static LogicalResult convertCnmLaunchToUpmem(cnm::LaunchOp launch,
   rewriter.setInsertionPointToEnd(&dpuProgram.getBody().front());
   for (auto [buf, mramBuf] : buffersToMramBuf) {
     auto wramBuf = buffersToWramBufValue[buf];
-    createTransfer(rewriter, true, buf.getLoc(), mramBuf, wramBuf, opts);
+    createTransfer(rewriter, true, buf.getLoc(), mramBuf, wramBuf);
     rewriter.setInsertionPointToEnd(&dpuProgram.getBody().front());
   }
 
@@ -403,7 +440,7 @@ static LogicalResult convertCnmLaunchToUpmem(cnm::LaunchOp launch,
     auto wramBuf = buffersToWramBufValue[buf];
     auto mramBuf = buffersToMramBuf[buf];
 
-    createTransfer(rewriter, false, buf.getLoc(), mramBuf, wramBuf, opts);
+    createTransfer(rewriter, false, buf.getLoc(), mramBuf, wramBuf);
     rewriter.setInsertionPointToEnd(&dpuProgram.getBody().front());
   }
 

@@ -58,4 +58,10 @@ def results_to_frame(results: list[RunResult]) -> pd.DataFrame:
             continue
         cfg = res.compiled.config
         rows.append({"fn_name": cfg.fn_name, "label": cfg.label, **cfg.params, "net_time_ms": t})
+    if not rows:
+        # pd.DataFrame([]) has no columns at all, since there are no rows to
+        # infer them from -- guarantee the fixed columns so callers can rely
+        # on e.g. df["fn_name"] / df.drop(columns=["label"]) even when every
+        # run in `results` failed or was never attempted.
+        return pd.DataFrame(columns=["fn_name", "label", "net_time_ms"])
     return pd.DataFrame(rows)

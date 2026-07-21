@@ -14,7 +14,6 @@
 #include "cinm-mlir/Dialect/Cnm/IR/CnmBase.h"
 #include "cinm-mlir/Dialect/Cnm/IR/CnmOps.h"
 #include "cinm-mlir/Dialect/Cnm/Transforms/Passes.h"
-#include "cinm-mlir/Utils/CinmUtils.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Bufferization/IR/AllocationOpInterface.h"
 #include "mlir/Dialect/Bufferization/IR/BufferizableOpInterface.h"
@@ -67,25 +66,12 @@ struct ScatterOpInterface
     if (failed(v))
       return failure();
 
-    Value input = *v;
-    auto bufShape = scatter.getBuffer().getType().getShape();
-    // cnm.scatter requires the input to be contiguous in the suffix of
-    // dimensions that correspond to the per-DPU buffer shape. When the
-    // input is a non-contiguous subview (e.g. produced by expand_shape on
-    // a strided subview), insert an alloc+copy to make it contiguous first.
-    if (auto mr = dyn_cast<MemRefType>(input.getType())) {
-      if (!mlir::scatteredMemrefIsContiguous(
-              cast<TypedValue<ShapedType>>(input), bufShape)) {
-        auto contiguousTy = MemRefType::get(mr.getShape(), mr.getElementType());
-        Value alloc =
-            memref::AllocOp::create(rewriter, op->getLoc(), contiguousTy);
-        memref::CopyOp::create(rewriter, op->getLoc(), input, alloc);
-        input = alloc;
-      }
-    }
-
+    // Note: contiguity of the scattered memref is no longer ensured here.
+    // It is handled by the cnm-ensure-scatter-gather-contiguous pass, which
+    // runs after bufferization and can also see cases arising from other
+    // sources of strided memrefs.
     replaceOpWithNewBufferizedOp<cnm::ScatterOp>(
-        rewriter, op, input, scatter.getBuffer(), scatter.getWg(),
+        rewriter, op, *v, scatter.getBuffer(), scatter.getWg(),
         scatter.getScatterMap());
     return success();
   }
