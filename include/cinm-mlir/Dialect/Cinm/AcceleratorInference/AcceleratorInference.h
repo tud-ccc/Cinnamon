@@ -10,6 +10,7 @@
 #include <llvm/ADT/StringRef.h>
 #include <llvm/Support/raw_ostream.h>
 #include <mlir/IR/BuiltinOps.h>
+#include <mlir/IR/Diagnostics.h>
 #include <mlir/IR/OwningOpRef.h>
 #include <mlir/Support/LogicalResult.h>
 #include <string>
@@ -61,7 +62,8 @@ struct SearchParam {
 
   /// Return the i-th distinct value of this parameter (0-indexed).
   int64_t valueAt(size_t subIdx) const;
-  /// Return the sub-index of value within this parameter's domain (inverse of valueAt).
+  /// Return the sub-index of value within this parameter's domain (inverse of
+  /// valueAt).
   size_t subIndexOf(int64_t value) const;
 
   /// Retain only values that evenly divide n; converts a range to a ValueList.
@@ -89,20 +91,22 @@ struct ConfigSpace {
   std::vector<Constraint> constraints;
 
   /// A (parent, child) divisibility pair baked into the encoding.
-  /// Every flat index produced by at() satisfies child_value % parent_value == 0.
+  /// Every flat index produced by at() satisfies child_value % parent_value ==
+  /// 0.
   struct DependentGroup {
     size_t parentIdx;
     size_t childIdx;
     /// childValues[k] = sorted valid child values when parent has sub-index k.
     std::vector<std::vector<int64_t>> childValues;
-    /// cumCount[k] = sum of childValues[0..k-1].size(); cumCount.back() = total.
+    /// cumCount[k] = sum of childValues[0..k-1].size(); cumCount.back() =
+    /// total.
     std::vector<size_t> cumCount;
     size_t totalCount() const { return cumCount.back(); }
   };
   std::vector<DependentGroup> groups;
 
   ConfigSpace() = default;
-  ConfigSpace(const ConfigSpace&) = delete;
+  ConfigSpace(const ConfigSpace &) = delete;
 
   /// Add a fully-constructed SearchParam; returns its index in the space.
   int64_t addDim(SearchParam &&param) {
@@ -154,26 +158,33 @@ struct ConfigSpace {
   size_t indexOf(const Configuration &conf) const;
   /// Iterate all configurations in flat-index order, calling fn(conf, flatIdx)
   /// for each. Return false from fn to stop early. Successive calls update only
-  /// the suffix of conf that changed (O(1) amortised per step vs O(S) for at()).
+  /// the suffix of conf that changed (O(1) amortised per step vs O(S) for
+  /// at()).
   void forEach(std::function<bool(const Configuration &, size_t)> fn) const;
   /// Append to result all flat indices one discrete step away in any dimension.
-  void neighborIndices(size_t idx,
-                       llvm::SmallVectorImpl<size_t> &result) const;
+  void neighborIndices(size_t idx, llvm::SmallVectorImpl<size_t> &result) const;
 
-  void dump(llvm::raw_ostream &, const Configuration &) const;
+  template <class Out> void dump(Out &out, const Configuration &config) const {
+    out << " {";
+    for (auto [i, dim, value] : llvm::enumerate(params, config)) {
+      out << dim.name << "=" << value << (i + 1 < size() ? ", " : "");
+    }
+    out << "}";
+  }
 
 private:
   /// One slot in the flat-index encoding. Child dims are merged into their
   /// parent's slot and do not appear as separate slots.
   struct EncodingSlot {
-    size_t dimIdx;    ///< index into params[] (the independent or parent dim)
-    size_t groupIdx;  ///< index into groups[], or SIZE_MAX for independent dims
-    size_t slotSize;  ///< number of distinct sub-indices this slot contributes
+    size_t dimIdx;   ///< index into params[] (the independent or parent dim)
+    size_t groupIdx; ///< index into groups[], or SIZE_MAX for independent dims
+    size_t slotSize; ///< number of distinct sub-indices this slot contributes
   };
 
   mutable bool encodingValid_ = false;
   mutable std::vector<EncodingSlot> slots_;
-  /// suffixProd_[i] = product of slotSizes[i..end]; suffixProd_[slots_.size()] = 1.
+  /// suffixProd_[i] = product of slotSizes[i..end]; suffixProd_[slots_.size()]
+  /// = 1.
   mutable std::vector<size_t> suffixProd_;
 
   void ensureEncoding() const;
@@ -191,8 +202,12 @@ struct ConfWrapper {
   int64_t operator[](int64_t ix) const { return conf[ix]; }
 };
 
-inline raw_ostream &operator<<(raw_ostream &os, const ConfWrapper &se) {
-  se.space.dump(os, se.conf);
+inline raw_ostream &operator<<(raw_ostream &os, const ConfWrapper &wrapper) {
+  wrapper.space.dump(os, wrapper.conf);
+  return os;
+}
+inline Diagnostic &operator<<(Diagnostic &os, const ConfWrapper &wrapper) {
+  wrapper.space.dump(os, wrapper.conf);
   return os;
 }
 
@@ -250,8 +265,8 @@ struct InferencePlugin {
   /// is cheaper to construct single-threaded.
   virtual void warmUp(mlir::MLIRContext *) {}
 
-  /// Whether this plugin is safe to evaluate concurrently from multiple threads.
-  /// If false, exhaustive search will run single-threaded.
+  /// Whether this plugin is safe to evaluate concurrently from multiple
+  /// threads. If false, exhaustive search will run single-threaded.
   virtual bool supportsMultithreading() const { return true; }
 
   /// Emit debug statistics (e.g. cache hit rate). Called after exhaustive
@@ -286,7 +301,7 @@ struct InferenceOptions {
 
   // Surrogate model (BANANAS) hyperparameters.
   double kappa = 2.0; ///< UCB exploration weight
-  int epochs = 5000;   ///< Training epochs per ensemble member
+  int epochs = 5000;  ///< Training epochs per ensemble member
   int nEnsemble = 7;  ///< Number of MLP ensemble members
   int hidden = 64;    ///< Hidden layer width
   int depth = 2;      ///< Number of hidden layers
@@ -332,10 +347,10 @@ struct InferenceOptions {
   /// 0 (default) means use std::thread::hardware_concurrency().
   unsigned numWorkers = 0;
 
-  /// When set, skip search entirely and evaluate only this single configuration.
-  /// The values are in the same order as the ConfigSpace params populated by the
-  /// plugin's initializeSpace(). Acts as a third mode alongside exhaustiveSearch
-  /// and Bayesian optimisation.
+  /// When set, skip search entirely and evaluate only this single
+  /// configuration. The values are in the same order as the ConfigSpace params
+  /// populated by the plugin's initializeSpace(). Acts as a third mode
+  /// alongside exhaustiveSearch and Bayesian optimisation.
   std::optional<Configuration> evalSingleSolution;
 };
 

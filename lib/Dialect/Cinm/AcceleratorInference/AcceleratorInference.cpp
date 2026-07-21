@@ -410,14 +410,6 @@ void ConfigSpace::neighborIndices(size_t idx,
   }
 }
 
-void ConfigSpace::dump(llvm::raw_ostream &out,
-                       const Configuration &config) const {
-  out << " {";
-  for (auto [i, dim, value] : llvm::enumerate(params, config)) {
-    out << dim.name << "=" << value << (i + 1 < size() ? ", " : "");
-  }
-  out << "}";
-}
 
 // ===----------------------------------------------------------------------===//
 // Core framework
@@ -1170,7 +1162,11 @@ inferAcceleratorConfig(cinm::ComputeBlockOp computeOp, InferencePlugin &plugin,
 
   TrialInfo bestResult;
   if (opts.evalSingleSolution) {
-    bestResult = task.makeTrialInfo(*opts.evalSingleSolution);
+    Configuration conf = *opts.evalSingleSolution;
+    if (!task.space.isValid(conf)) {
+      return emitDefiniteFailure(computeOp->getLoc(), "Configuration is invalid: ") << task.wrap(conf);
+    }
+    bestResult = task.makeTrialInfo(std::move(conf));
     plugin.warmUp(computeOp->getContext());
     TRY_GET(plugin.evaluate(bestResult)); // may return early
   } else if (opts.exhaustiveSearch) {

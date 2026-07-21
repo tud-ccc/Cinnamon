@@ -721,15 +721,29 @@ upmem::DpuProgramOp createDpuGemvKernel(
   MemRefType myYWramTy = MemRefType::get(
       {wramRows}, eltTy, StridedLayoutAttr::get(ctx, ShapedType::kDynamic, {1}),
       wramMS);
-  MemRefType myAMramTy = MemRefType::get(
-      {wramRows, wramCols}, eltTy,
-      StridedLayoutAttr::get(ctx, ShapedType::kDynamic, {mramCols, 1}), mramMS);
   MemRefType myYMramTy = MemRefType::get(
       {wramRows}, eltTy, StridedLayoutAttr::get(ctx, ShapedType::kDynamic, {1}),
       mramMS);
   MemRefType myXMramTy = MemRefType::get(
       {wramCols}, eltTy, StridedLayoutAttr::get(ctx, ShapedType::kDynamic, {1}),
       mramMS);
+  // Bulk A tile covering every tasklet's slice at once (tasklet 0 loads it
+  // in a single DMA rather than each tasklet issuing its own transfer).
+  // abufWram[tasklets, wramRows, wramCols] is contiguous, so it is bit-
+  // identical to a flat [tasklets*wramRows, wramCols] view.
+  MemRefType bulkAMramTy = MemRefType::get(
+      {tasklets * wramRows, wramCols}, eltTy,
+      StridedLayoutAttr::get(ctx, ShapedType::kDynamic, {mramCols, 1}), mramMS);
+  MemRefType bulkAWramTy = MemRefType::get(
+      {tasklets * wramRows, wramCols}, eltTy, MemRefLayoutAttrInterface{},
+      wramMS);
+  // Same idea for the y write-back: t0 flushes every tasklet's y slice in
+  // one bulk DMA instead of each tasklet writing back its own.
+  MemRefType bulkYMramTy = MemRefType::get(
+      {tasklets * wramRows}, eltTy,
+      StridedLayoutAttr::get(ctx, ShapedType::kDynamic, {1}), mramMS);
+  MemRefType bulkYWramTy = MemRefType::get(
+      {tasklets * wramRows}, eltTy, MemRefLayoutAttrInterface{}, wramMS);
 
   // Per-tasklet WRAM slices: fixed for the lifetime of the kernel invocation.
   // abufWram[tasklets, wramRows, wramCols] → [wramRows, wramCols]
@@ -803,18 +817,25 @@ upmem::DpuProgramOp createDpuGemvKernel(
                     ArrayRef<OpFoldResult>{b.getIndexAttr(wramCols)},
                     ArrayRef<OpFoldResult>{b.getIndexAttr(1)});
                 upmem::LocalTransferOp::create(b, loc, myXMram, xbufWram);
+
+                // Tasklet 0 also loads the whole A tile (every tasklet's
+                // slice) in one bulk DMA, instead of each tasklet issuing
+                // its own transfer for its wramRows x wramCols slice.
+                Value bulkAMram = memref::SubViewOp::create(
+                    b, loc, bulkAMramTy, abufMram.getBuffer(),
+                    ArrayRef<OpFoldResult>{mr, mc},
+                    ArrayRef<OpFoldResult>{b.getIndexAttr(tasklets * wramRows),
+                                           b.getIndexAttr(wramCols)},
+                    ArrayRef<OpFoldResult>{b.getIndexAttr(1),
+                                           b.getIndexAttr(1)});
+                Value bulkAWram = memref::ReinterpretCastOp::create(
+                    b, loc, bulkAWramTy, abufWram, /*offset=*/0,
+                    ArrayRef<int64_t>{tasklets * wramRows, wramCols},
+                    ArrayRef<int64_t>{wramCols, 1});
+                upmem::LocalTransferOp::create(b, loc, bulkAMram, bulkAWram);
               }
 
-              // Each tasklet loads its own A slice from MRAM.
-              Value myAMram = memref::SubViewOp::create(
-                  b, loc, myAMramTy, abufMram.getBuffer(),
-                  ArrayRef<OpFoldResult>{rowOff, mc},
-                  ArrayRef<OpFoldResult>{b.getIndexAttr(wramRows),
-                                         b.getIndexAttr(wramCols)},
-                  ArrayRef<OpFoldResult>{b.getIndexAttr(1), b.getIndexAttr(1)});
-              upmem::LocalTransferOp::create(b, loc, myAMram, myAWram);
-
-              // Barrier: all loads (x by t0, A by each tasklet) must complete.
+              // Barrier: all loads (x and A, both by t0) must complete.
               upmem::BarrierOp::create(b, loc);
 
               // Compute: myY[i] += myA[i, j] * xbufWram[j]
@@ -838,8 +859,25 @@ upmem::DpuProgramOp createDpuGemvKernel(
               return {};
             }); // end mc loop
 
-        // Write updated y slice back to MRAM.
-        upmem::LocalTransferOp::create(b, loc, myYWram, myYMram);
+        // Barrier: every tasklet must finish writing its y slice before t0
+        // bulk-transfers all of them back to MRAM at once.
+        upmem::BarrierOp::create(b, loc);
+
+        auto yWritebackIf = scf::IfOp::create(b, loc, TypeRange{}, isT0, false);
+        yWritebackIf->setAttr("upmem_cm.const_tasklets", t0Attr);
+        {
+          OpBuilder::InsertionGuard guard(b);
+          b.setInsertionPointToStart(&yWritebackIf.getThenRegion().front());
+          Value bulkYMram = memref::SubViewOp::create(
+              b, loc, bulkYMramTy, ybufMram.getBuffer(),
+              ArrayRef<OpFoldResult>{mr},
+              ArrayRef<OpFoldResult>{b.getIndexAttr(tasklets * wramRows)},
+              ArrayRef<OpFoldResult>{b.getIndexAttr(1)});
+          Value bulkYWram = memref::ReinterpretCastOp::create(
+              b, loc, bulkYWramTy, ybufWram, /*offset=*/0,
+              ArrayRef<int64_t>{tasklets * wramRows}, ArrayRef<int64_t>{1});
+          upmem::LocalTransferOp::create(b, loc, bulkYWram, bulkYMram);
+        }
         return {};
       }); // end mr loop
 
