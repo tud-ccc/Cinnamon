@@ -1,3 +1,6 @@
+from doit.tools import config_changed
+from os import getenv
+
 """doit tasks for the scatter_cost microbenchmark.
 
 Only wraps the two cheap steps (build, plot) -- generating results.csv means
@@ -11,7 +14,7 @@ Usage:
   doit        # both (default task)
 """
 
-DOIT_CONFIG = {"default_tasks": ["make", "plot"], "verbosity":2}
+DOIT_CONFIG = {"default_tasks": ["make", "plot"], "verbosity": 2}
 
 
 def task_make():
@@ -22,14 +25,18 @@ def task_make():
         "actions": ["make"],
     }
 
+
+env_vars = ["SCATTER_DENSE", "SCATTER_ITERS", "SCATTER_WARMUP"]
+
+
 def task_bench():
     """Build the DPU kernel and host benchmark binary."""
     return {
         "targets": ["results.csv"],
+        "uptodate": [config_changed({var: getenv(var) for var in env_vars})],
         "file_dep": ["bin/scatter_dpu", "bin/scatter_bench"],
         "actions": ["bin/scatter_bench"],
     }
-
 
 
 def task_plot():
