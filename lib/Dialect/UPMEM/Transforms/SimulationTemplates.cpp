@@ -200,7 +200,7 @@ static void scatterATile(OpBuilder &b, Location loc, Value input, Value mOff,
         2, 0, {dpuDim.floorDiv(dpuCols), dpuDim % dpuCols, zero, zero}, ctx);
     upmem::ScatterOp::create(b, loc, view, aBufSym,
                              static_cast<uint64_t>(mramRows * mramCols), aMap,
-                             dpus, /*numBlocksPerDpu=*/IntegerAttr{});
+                             dpus);
     return;
   }
 
@@ -209,9 +209,9 @@ static void scatterATile(OpBuilder &b, Location loc, Value input, Value mOff,
                                   {dpuDim.floorDiv(dpuCols), dpuDim % dpuCols,
                                    getAffineDimExpr(2, ctx), zero},
                                   ctx);
-  upmem::ScatterOp::create(b, loc, view, aBufSym,
-                           static_cast<uint64_t>(mramCols), aMap, dpus,
-                           b.getI64IntegerAttr(mramRows));
+  upmem::ScatterOnTaskletsOp::create(b, loc, view, aBufSym,
+                                     static_cast<uint64_t>(mramCols), aMap,
+                                     dpus, static_cast<int64_t>(mramRows));
 }
 
 // Pack the [dpuCols*mramCols] slice of `x` at kOff for scatter. Returns the
@@ -596,8 +596,7 @@ void upmem::generateTailReduction(cinm::ReduceOp op, RewriterBase &rewriter,
         // over dpuCols*mramCols, then the future calls to wait_for will reuse
         // the partial results that are already in mram.
         upmem::ScatterOp::create(b, loc, yStage, yBufSym,
-                                 static_cast<uint64_t>(mramRows), yMap, dpus,
-                                 /*numBlocksPerDpu=*/IntegerAttr{});
+                                 static_cast<uint64_t>(mramRows), yMap, dpus);
 
         cinm::createNestedAffineForLoops(
             b, loc, {K}, {dpuCols * mramCols},
@@ -615,8 +614,7 @@ void upmem::generateTailReduction(cinm::ReduceOp op, RewriterBase &rewriter,
         // Once we're done with a set of rows, we gather their results.
         // We still need to reduce over dpuCols.
         upmem::GatherOp::create(b, loc, yStage, yBufSym,
-                                static_cast<uint64_t>(mramRows), yMap, dpus,
-                                /*numBlocksPerDpu=*/IntegerAttr{});
+                                static_cast<uint64_t>(mramRows), yMap, dpus);
         // Subview of output for this row tile, shaped to match yStage after
         // reducing dpuCols: output[mOff .. mOff + dpuRows*mramRows).
         Value outRows = memref::SubViewOp::create(
@@ -1069,8 +1067,7 @@ void upmem::generateGemv(cinm::GemvOp op, RewriterBase &rewriter,
         // Reset the running y partials to zero for this M tile.
         upmem::ScatterOp::create(b, loc, yZero, yBufSym,
                                  static_cast<uint64_t>(mramRows),
-                                 zeroScatterMap, dpus,
-                                 /*numBlocksPerDpu=*/IntegerAttr{});
+                                 zeroScatterMap, dpus);
 
         cinm::createNestedAffineForLoops(
             b, loc, {K}, {dpuCols * mramCols}, {},
@@ -1085,7 +1082,7 @@ void upmem::generateGemv(cinm::GemvOp op, RewriterBase &rewriter,
 
               upmem::ScatterOp::create(b, loc, xToScatter, xBufSym,
                                        static_cast<uint64_t>(mramCols), xMap,
-                                       dpus, /*numBlocksPerDpu=*/IntegerAttr{});
+                                       dpus);
               upmem::WaitForOp::create(b, loc, dpus);
 
               return {};
@@ -1111,8 +1108,7 @@ void upmem::generateGemv(cinm::GemvOp op, RewriterBase &rewriter,
         }
 
         upmem::GatherOp::create(b, loc, yBuf, yBufSym,
-                                static_cast<uint64_t>(mramRows), yMap, dpus,
-                                /*numBlocksPerDpu=*/IntegerAttr{});
+                                static_cast<uint64_t>(mramRows), yMap, dpus);
 
         if (needsPartialReduction) {
           // Reduce yStage[dpuRows, dpuCols, mramRows] over dim 1 (dpuCols)

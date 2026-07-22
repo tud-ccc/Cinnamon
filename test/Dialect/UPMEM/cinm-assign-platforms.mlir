@@ -21,11 +21,10 @@ func.func @gemv_gets_wrapped(%A: tensor<8x1024xi32>, %x: tensor<1024xi32>) -> te
   return %r : tensor<8xi32>
 }
 
-// Elementwise is not handled by upmem — no wrapping.
-// CHECK-LABEL: @elementwise_not_wrapped
-// CHECK-NOT:   cinm.compute
+// CHECK-LABEL: @elementwise_gets_wrapped
+// CHECK:       cinm.compute -> tensor<4xi32> attributes {cinm.available_platforms = [#upmem]}
 // CHECK:       cinm.op.elementwise add
-func.func @elementwise_not_wrapped(%a: tensor<4xi32>, %b: tensor<4xi32>) -> tensor<4xi32>
+func.func @elementwise_gets_wrapped(%a: tensor<4xi32>, %b: tensor<4xi32>) -> tensor<4xi32>
     attributes {cinm.available_platforms = [#upmem]} {
   %r = cinm.op.elementwise add %a, %b : tensor<4xi32>
   return %r : tensor<4xi32>

@@ -116,6 +116,17 @@ static double costOfOpCb(Operation &op, bool annotate,
                                             xferOp.getDpuBufferSizeInBytes());
             }
           })
+          .Case<upmem::ScatterOnTaskletsOp>([](auto xferOp) -> double {
+            auto hier = llvm::cast<DeviceHierarchyType>(
+                xferOp.getHierarchy().getType());
+            int numDpus = hier.getNumRanks() * hier.getNumDpusPerRank();
+            // getDpuBufferSizeInBytes() is the size of a single tasklet's
+            // block; the actual per-DPU transfer covers numBlocksPerDpu of
+            // them.
+            int64_t bytesPerDpu =
+                xferOp.getDpuBufferSizeInBytes() * xferOp.getNumBlocksPerDpu();
+            return upmem_cm::scatterCostMs(numDpus, bytesPerDpu);
+          })
           .Case<LocalTransferOp>([](auto xferOp) {
             auto srcTy = llvm::cast<MemRefType>(xferOp.getSource().getType());
             double bytes = static_cast<double>(staticElementCount(srcTy)) *

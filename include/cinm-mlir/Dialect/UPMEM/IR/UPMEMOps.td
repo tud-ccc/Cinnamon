@@ -223,8 +223,7 @@ class ScatterGatherLike<string mnemonic, string kw, MemoryEffect effect, MemoryE
                   FlatSymbolRefAttr:$dpuBufRef,
                   I64Attr:$transferCount,
                   AffineMapAttr:$scatterMap,
-                  DeviceHierarchyType:$hierarchy,
-                  OptionalAttr<I64Attr>:$numBlocksPerDpu);
+                  DeviceHierarchyType:$hierarchy);
 
   let results = (outs);
 
@@ -240,20 +239,6 @@ class ScatterGatherLike<string mnemonic, string kw, MemoryEffect effect, MemoryE
     `scatterMap` is an affine map `(rank, dpu) -> (i, ...)` that computes the
     starting index in `hostBuffer` for each DPU. It must have exactly two
     dimensions (rank and dpu) and as many results as the rank of `hostBuffer`.
-
-    In case of a scatter (not a gather), the `scatterMap` may also be `(rank,
-    dpu, tasklet) -> ...`. In this case the transfer uses the UPMEM SDK's scatter
-    transfer API. The scatter map computes the index of the block to transfer for
-    a specific tasklet within a DPU. The transfer count must be the size of this
-    block in element. All of those blocks must have the same length (this is not a
-    restriction of the UPMEM API, but ours, for now).
-
-    In that case, `numBlocksPerDpu` is required and gives the number of blocks
-    (i.e. the extent of the `tasklet` dimension) transferred per DPU. This is
-    independent of the number of tasklets declared by `hierarchy`: blocks are
-    just units of transfer for the UPMEM SDK's scatter API and need not
-    correspond 1:1 to actual DPU tasklets. `numBlocksPerDpu` must not be set
-    when `scatterMap` only has the (rank, dpu) form.
   }];
 
   let extraClassDeclaration = [{
@@ -271,7 +256,7 @@ class ScatterGatherLike<string mnemonic, string kw, MemoryEffect effect, MemoryE
 
   let hasVerifier = 1;
   let assemblyFormat =
-     "$hostBuffer `[` $transferCount `,` $scatterMap `]` `" # kw # "` $dpuBufRef `of` $hierarchy attr-dict"
+     "$hostBuffer `[` $transferCount `elts` `,` $scatterMap `]` `" # kw # "` $dpuBufRef `of` $hierarchy attr-dict"
      # "`:` type($hostBuffer) `" # kw # "` qualified(type($hierarchy))";
 }
 
@@ -281,12 +266,18 @@ def ScatterOp: ScatterGatherLike<"scatter", "onto", MemRead, MemWrite<DpuResourc
     For each DPU in `hierarchy`, copies `transferCount` elements from `hostBuffer`
     into the DPU's MRAM buffer named `dpuBufRef`. The slice of `hostBuffer`
     assigned to a given DPU is determined by evaluating `scatterMap(rank, dpu)`,
-    which yields the starting multi-dimensional index into `hostBuffer`.
+    which yields the starting multi-dimensional index into `hostBuffer`. The
+    copy happens as a single flat transfer per DPU, so the `transferCount`
+    elements must be contiguous in `hostBuffer`.
+
+    See `upmem.scatter_on_tasklets` for the variant that distributes
+    non-contiguous per-tasklet blocks using the UPMEM SDK's scatter transfer
+    API.
 
     ```mlir
     // scatter 1024 elements into @input_buf on each DPU;
     // DPU (r, d) reads from hostBuf[d, 0]
-    upmem.scatter %hostBuf[1024, affine_map<(r, d) -> (d, 0)>] onto @input_buf of %dpus
+    upmem.scatter %hostBuf[1024 elts, affine_map<(r, d) -> (d, 0)>] onto @input_buf of %dpus
         : memref<128x1024xi32> onto !upmem.hierarchy<1x128x16>
     ```
   }];
@@ -306,11 +297,78 @@ def GatherOp: ScatterGatherLike<"gather", "from", MemWrite, MemRead<DpuResource>
 
     ```mlir
     // gather 128 result elements per DPU back into hostBuf[d, 0]
-    upmem.gather %hostBuf[128, affine_map<(r, d) -> (d, 0)>] from @output_buf of %dpus
+    upmem.gather %hostBuf[128 elts, affine_map<(r, d) -> (d, 0)>] from @output_buf of %dpus
         : memref<128x128xi32> from !upmem.hierarchy<1x128x16>
     ```
   }];
 
+}
+
+def ScatterOnTaskletsOp: Upmem_Op<"scatter_on_tasklets", [
+      MemoryEffects<[MemRead, MemWrite<DpuResource>]>,
+      DeclareOpInterfaceMethods<SymbolUserOpInterface>]> {
+  let summary = "copy per-tasklet blocks of a host buffer into the MRAM of each DPU using the UPMEM SDK scatter transfer API";
+  let description = [{
+    Like `upmem.scatter`, but for the case where the blocks assigned to a
+    DPU's tasklets are not contiguous with one another in `hostBuffer`. This
+    uses the UPMEM SDK's scatter transfer API, which fetches each tasklet's
+    block from a location computed independently.
+
+    `dpuBufRef` is the symbol name of a `upmem.static_alloc` declared inside the
+    body of the `upmem.dpu_program` loaded by the `hierarchy`. The verifier checks
+    that the symbol exists and refers to a `upmem.static_alloc`.
+
+    `transferCount` is the number of elements (not bytes) in a single tasklet's
+    block, and must be the same for every block. Each such block must be
+    contiguous in `hostBuffer`, but blocks belonging to different tasklets need
+    not be contiguous with one another.
+
+    `scatterMap` is an affine map `(rank, dpu, tasklet) -> (i, ...)` that
+    computes the starting index in `hostBuffer` of a specific tasklet's block
+    within a DPU. It must have exactly three dimensions (rank, dpu, tasklet)
+    and as many results as the rank of `hostBuffer`.
+
+    `numBlocksPerDpu` gives the number of blocks (i.e. the extent of the
+    `tasklet` dimension) transferred per DPU. This is independent of the
+    number of tasklets declared by `hierarchy`: blocks are just units of
+    transfer for the UPMEM SDK's scatter API and need not correspond 1:1 to
+    actual DPU tasklets.
+
+    ```mlir
+    // scatter 8-element blocks into @input_buf on each DPU; DPU (r, d)'s
+    // tasklet t reads its block from hostBuf[d, t, 0]
+    upmem.scatter_on_tasklets %hostBuf[8 elts, affine_map<(r, d, t) -> (d, t, 0)>, 4 blocks] onto @input_buf of %dpus
+        : memref<1x4x8xi32> onto !upmem.hierarchy<1x4x4>
+    ```
+  }];
+
+  let arguments = (ins Arg<AnyMemRef, "", [MemRead]>:$hostBuffer,
+                  FlatSymbolRefAttr:$dpuBufRef,
+                  I64Attr:$transferCount,
+                  AffineMapAttr:$scatterMap,
+                  DeviceHierarchyType:$hierarchy,
+                  I64Attr:$numBlocksPerDpu);
+
+  let results = (outs);
+
+  let extraClassDeclaration = [{
+    int64_t getDpuBufferSizeInBits() {
+      return getTransferCount() * getHostBuffer().getType().getElementTypeBitWidth();
+    }
+
+    int64_t getDpuBufferSizeInBytes() {
+      return getDpuBufferSizeInBits() / 8;
+    }
+
+    /// Return the DpuProgramOp loaded on this hierarchy, or null.
+    DpuProgramOp getDpuProgram();
+  }];
+
+  let hasVerifier = 1;
+  let assemblyFormat = [{
+    $hostBuffer `[` $transferCount `elts` `,` $scatterMap `,` $numBlocksPerDpu `blocks` `]` `onto` $dpuBufRef `of` $hierarchy attr-dict
+    `:` type($hostBuffer) `onto` qualified(type($hierarchy))
+  }];
 }
 
 

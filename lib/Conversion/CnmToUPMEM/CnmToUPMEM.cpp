@@ -51,6 +51,7 @@ namespace {
 struct Opts {
   bool cinm1codegen = false;
   bool useSgXferCodegen = true;
+  bool useMramNoInit = true;
 };
 
 template <typename T> T reduceMul(ArrayRef<T> arr) {
@@ -206,7 +207,7 @@ static LogicalResult convertCnmGatherToUpmem(RewriterBase &rewriter,
   upmem::GatherOp::create(
       rewriter, op->getLoc(), outputBuf, refToBuffer, transferCount,
       adaptAffineMapCnmToUpmem(op.getGatherMap(), op.getBuffer().getType()),
-      upmemWgAlloc.getResult(), /*numBlocksPerDpu=*/IntegerAttr{});
+      upmemWgAlloc.getResult());
 
   if (!isBufferized) {
     Value outputAsTensor = createOrFoldUnrealizedConversionCast(
@@ -249,24 +250,23 @@ static LogicalResult convertCnmScatterToUpmem(RewriterBase &rewriter,
       !taskletBlocksAreContiguous(op.getScatterMap(), op.getBuffer().getType(),
                                   hostBufferTy, blockSizeInItems);
 
-  AffineMap upmemMap;
-  int64_t transferCount;
-  IntegerAttr numBlocksPerDpu;
   if (useTaskletForm) {
-    upmemMap =
-        keepTaskletDimAffineMapCnmToUpmem(op.getScatterMap(), op.getBuffer().getType());
-    transferCount = blockSizeInItems;
-    numBlocksPerDpu = rewriter.getI64IntegerAttr(numTasklets);
+    AffineMap upmemMap = keepTaskletDimAffineMapCnmToUpmem(
+        op.getScatterMap(), op.getBuffer().getType());
+    int64_t transferCount = blockSizeInItems;
+    upmem::ScatterOnTaskletsOp::create(rewriter, op->getLoc(), inputAsMemref,
+                                       refToBuffer, transferCount, upmemMap,
+                                       upmemWgAlloc.getResult(),
+                                       static_cast<int64_t>(numTasklets));
   } else {
-    upmemMap =
+    AffineMap upmemMap =
         adaptAffineMapCnmToUpmem(op.getScatterMap(), op.getBuffer().getType());
-    transferCount =
+    int64_t transferCount =
         isBroadcast ? blockSizeInItems : blockSizeInItems * numTasklets;
+    upmem::ScatterOp::create(rewriter, op->getLoc(), inputAsMemref,
+                             refToBuffer, transferCount, upmemMap,
+                             upmemWgAlloc.getResult());
   }
-
-  upmem::ScatterOp::create(rewriter, op->getLoc(), inputAsMemref, refToBuffer,
-                           transferCount, upmemMap, upmemWgAlloc.getResult(),
-                           numBlocksPerDpu);
 
   rewriter.eraseOp(op);
   return success();
@@ -492,7 +492,7 @@ static LogicalResult convertCnmLaunchToUpmem(cnm::LaunchOp launch,
 
       auto mrambuf =
           upmem::StaticAllocOp::create(rewriter, alloc->getLoc(), memrefTy,
-                                       upmem::DpuMemSpace::MRAM, "buf", false);
+                                       upmem::DpuMemSpace::MRAM, "buf", opts.useMramNoInit);
       dpuProgramSymTable.insert(mrambuf); // this renames it to a unique name
       buffersToMramBuf[alloc.getResult()] = mrambuf;
     }
@@ -622,7 +622,8 @@ struct ConvertCnmToUPMEMPass
   void runOnOperation() final {
     Operation *rootOp = getOperation();
     Opts opts{.cinm1codegen = cinm1Codegen,
-              .useSgXferCodegen = useSgXferCodegen};
+              .useSgXferCodegen = useSgXferCodegen,
+              .useMramNoInit = !cinm1Codegen};
 
     // Determine kernel module name: prefer per-op annotation, else option.
     std::string kmName = kernelModuleName;

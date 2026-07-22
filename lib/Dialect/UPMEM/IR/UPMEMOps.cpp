@@ -74,6 +74,12 @@ upmem::DpuProgramOp upmem::GatherOp::getDpuProgram() {
   return alloc ? alloc.getDpuProgram() : upmem::DpuProgramOp{};
 }
 
+upmem::DpuProgramOp upmem::ScatterOnTaskletsOp::getDpuProgram() {
+  auto alloc =
+      dyn_cast_or_null<upmem::AllocDPUsOp>(getHierarchy().getDefiningOp());
+  return alloc ? alloc.getDpuProgram() : upmem::DpuProgramOp{};
+}
+
 upmem::DpuProgramOp upmem::WaitForOp::getDpuProgram() {
   auto alloc =
       dyn_cast_or_null<upmem::AllocDPUsOp>(getDpuSet().getDefiningOp());
@@ -139,9 +145,6 @@ LogicalResult upmem::GatherOp::verify() {
       getScatterMap().getNumDims() != 2)
     return emitOpError("Scatter map should map (rank, dpu) to a start index in "
                        "the host buffer");
-  if (getNumBlocksPerDpu())
-    return emitOpError("numBlocksPerDpu is only meaningful for the (rank, "
-                       "dpu, tasklet) upmem.scatter form");
   if (failed(verifyScatterGatherContiguity(
           *this, getHostBuffer().getType(), getTransferCount())))
     return failure();
@@ -153,26 +156,12 @@ LogicalResult upmem::GatherOp::verify() {
 }
 
 LogicalResult upmem::ScatterOp::verify() {
-  unsigned numDims = getScatterMap().getNumDims();
   if (getScatterMap().getNumResults() !=
           getHostBuffer().getType().getShape().size() ||
-      (numDims != 2 && numDims != 3))
-    return emitOpError(
-        "Scatter map should map (rank, dpu) or (rank, dpu, tasklet) to a "
-        "start index in the host buffer");
+      getScatterMap().getNumDims() != 2)
+    return emitOpError("Scatter map should map (rank, dpu) to a start index in "
+                       "the host buffer");
 
-  if (numDims == 3 && !getNumBlocksPerDpu())
-    return emitOpError("numBlocksPerDpu is required for the (rank, dpu, "
-                       "tasklet) scatter map form");
-  if (numDims == 2 && getNumBlocksPerDpu())
-    return emitOpError("numBlocksPerDpu is only meaningful for the (rank, "
-                       "dpu, tasklet) scatter map form");
-
-  // In the (rank, dpu, tasklet) form, `transferCount` is the size of a single
-  // tasklet's block (see UPMEM SDK scatter/gather transfer in the op
-  // description): each such block still needs to be contiguous in the host
-  // buffer, even though blocks belonging to different tasklets need not be
-  // contiguous with one another.
   if (failed(verifyScatterGatherContiguity(
           *this, getHostBuffer().getType(), getTransferCount())))
     return failure();
@@ -181,6 +170,24 @@ LogicalResult upmem::ScatterOp::verify() {
   // if ((count % 8) != 0)
   // return emitOpError("has unaligned DPU memory offset ")
   //        << count << ", needs to be 8-byte-aligned.";
+  return success();
+}
+
+LogicalResult upmem::ScatterOnTaskletsOp::verify() {
+  if (getScatterMap().getNumResults() !=
+          getHostBuffer().getType().getShape().size() ||
+      getScatterMap().getNumDims() != 3)
+    return emitOpError("Scatter map should map (rank, dpu, tasklet) to a "
+                       "start index in the host buffer");
+
+  // `transferCount` is the size of a single tasklet's block (see the op
+  // description): each such block still needs to be contiguous in the host
+  // buffer, even though blocks belonging to different tasklets need not be
+  // contiguous with one another.
+  if (failed(verifyScatterGatherContiguity(
+          *this, getHostBuffer().getType(), getTransferCount())))
+    return failure();
+
   return success();
 }
 
@@ -218,6 +225,12 @@ upmem::ScatterOp::verifySymbolUses(SymbolTableCollection &symbolTable) {
 
 LogicalResult
 upmem::GatherOp::verifySymbolUses(SymbolTableCollection &symbolTable) {
+  return verifyScatterGatherSymbolUses(*this, getHierarchy(),
+                                       getDpuBufRefAttr(), symbolTable);
+}
+
+LogicalResult upmem::ScatterOnTaskletsOp::verifySymbolUses(
+    SymbolTableCollection &symbolTable) {
   return verifyScatterGatherSymbolUses(*this, getHierarchy(),
                                        getDpuBufRefAttr(), symbolTable);
 }
