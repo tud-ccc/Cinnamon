@@ -235,6 +235,7 @@ def task_plot():
             check_timestamp_unchanged(c.dir(DATA_ROOT) / "bench.done", "ctime")
             for c in CONFIGS
         ],
+        # "task_dep": [f"bench:{c.system}" for c in CONFIGS],
         "file_dep": [c.dir(DATA_ROOT) / "bench.done" for c in CONFIGS],
         "targets": [out_path, out_path_by_kind],
         "actions": [(action, [out_path, False]), (action, [out_path_by_kind, True])],
