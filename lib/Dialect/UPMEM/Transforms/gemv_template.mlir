@@ -31,11 +31,11 @@ module {
           %reshape = memref.reshape %alloc_1(%alloca) : (memref<1024xi32>, memref<2xindex>) -> memref<512x2xi32>
           %expand_shape_4 = memref.expand_shape %subview_2 [[0, 1], [2]] output_shape [512, 2, 512] : memref<1024x512xi32, strided<[2048, 1], offset: ?>> into memref<512x2x512xi32, strided<[4096, 2048, 1], offset: ?>>
           memref.copy %expand_shape_4, %alloc_0 : memref<512x2x512xi32, strided<[4096, 2048, 1], offset: ?>> to memref<512x2x512xi32>
-          upmem.scatter %alloc_0[1024, #map] onto @buf of %1 : memref<512x2x512xi32> onto !upmem.hierarchy<4x128x1>
-          upmem.scatter %subview_3[512, #map1] onto @buf_1 of %1 : memref<512xi32, strided<[1], offset: ?>> onto !upmem.hierarchy<4x128x1>
-          upmem.scatter %expand_shape[2, #map2] onto @buf_2 of %1 : memref<512x2xi32, strided<[2, 1], offset: ?>> onto !upmem.hierarchy<4x128x1>
+          upmem.scatter %alloc_0[1024 elts, #map] onto @buf of %1 : memref<512x2x512xi32> onto !upmem.hierarchy<4x128x1>
+          upmem.scatter %subview_3[512 elts, #map1] onto @buf_1 of %1 : memref<512xi32, strided<[1], offset: ?>> onto !upmem.hierarchy<4x128x1>
+          upmem.scatter %expand_shape[2 elts, #map2] onto @buf_2 of %1 : memref<512x2xi32, strided<[2, 1], offset: ?>> onto !upmem.hierarchy<4x128x1>
           upmem.wait_for %1 : !upmem.hierarchy<4x128x1>
-          upmem.gather %reshape[2, #map2] from @buf_2 of %1 : memref<512x2xi32> from !upmem.hierarchy<4x128x1>
+          upmem.gather %reshape[2 elts, #map2] from @buf_2 of %1 : memref<512x2xi32> from !upmem.hierarchy<4x128x1>
           %collapse_shape = memref.collapse_shape %reshape [[0, 1]] : memref<512x2xi32> into memref<1024xi32>
           memref.copy %collapse_shape, %subview : memref<1024xi32> to memref<1024xi32, strided<[1], offset: ?>>
         }
