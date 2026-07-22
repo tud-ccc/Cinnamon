@@ -1,0 +1,5 @@
+bin
+*.csv
+plots
+.doit.db*
+__pycache__
