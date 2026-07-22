@@ -39,3 +39,4 @@ python/cinnamon/_resources
 **/__pycache__
 
 .experiments/
+experiments/meta.log

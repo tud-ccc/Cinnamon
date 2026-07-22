@@ -959,10 +959,17 @@ void upmem::generateGemv(cinm::GemvOp op, RewriterBase &rewriter,
   // staging (see scatterATile).
   // xStage: one [mramCols] slice per DPU column group (dpuCols groups).
   // yStage: one [mramRows] partial accumulator per DPU (2D DPU grid).
+  // When dpuCols == 1 there is only one partial per DPU row, so it is
+  // already the final result: instead of allocating a separate yStage and
+  // reducing it into `y` afterwards, we scatter/gather directly into a
+  // (expanded) subview of `y`, skipping the host-side reduction entirely.
+  bool needsPartialReduction = dpuCols > 1;
   Value xStage = memref::AllocOp::create(
       rewriter, loc, MemRefType::get({dpuCols, mramCols}, eltTy));
-  Value yStage = memref::AllocOp::create(
-      rewriter, loc, MemRefType::get({dpuRows, dpuCols, mramRows}, eltTy));
+  Value yStage;
+  if (needsPartialReduction)
+    yStage = memref::AllocOp::create(
+        rewriter, loc, MemRefType::get({dpuRows, dpuCols, mramRows}, eltTy));
 
   llvm::StringRef aBufSym, xBufSym, yBufSym;
   auto parentMod = op->getParentOfType<ModuleOp>();
@@ -1000,9 +1007,29 @@ void upmem::generateGemv(cinm::GemvOp op, RewriterBase &rewriter,
           ValueRange) -> SmallVector<Value> {
         Value mOff = ivs[0];
 
+        // yBuf is the buffer scattered to / gathered from the DPUs for this
+        // M tile: either the shared yStage allocation (dpuCols > 1), or a
+        // 3D view directly into `y` (dpuCols == 1, see comment above).
+        Value yBuf;
+        if (needsPartialReduction) {
+          yBuf = yStage;
+        } else {
+          Value outRows = memref::SubViewOp::create(
+              b, loc, y, ArrayRef<OpFoldResult>{mOff},
+              ArrayRef<OpFoldResult>{b.getIndexAttr(dpuRows * mramRows)},
+              ArrayRef<OpFoldResult>{b.getIndexAttr(1)});
+          yBuf = memref::ExpandShapeOp::create(
+              b, loc,
+              MemRefType::get(
+                  {dpuRows, 1, mramRows}, eltTy,
+                  StridedLayoutAttr::get(ctx, ShapedType::kDynamic,
+                                         {mramRows, mramRows, 1})),
+              outRows, ArrayRef<ReassociationIndices>{{0, 1, 2}});
+        }
+
         // Reset the running y partials to zero for this M tile.
-        linalg::FillOp::create(b, loc, neutral, yStage);
-        upmem::ScatterOp::create(b, loc, yStage, yBufSym,
+        linalg::FillOp::create(b, loc, neutral, yBuf);
+        upmem::ScatterOp::create(b, loc, yBuf, yBufSym,
                                   static_cast<uint64_t>(mramRows), yMap, dpus,
                                   /*numBlocksPerDpu=*/IntegerAttr{});
 
@@ -1025,37 +1052,40 @@ void upmem::generateGemv(cinm::GemvOp op, RewriterBase &rewriter,
               return {};
             }); // end k loop
 
-        upmem::GatherOp::create(b, loc, yStage, yBufSym,
+        upmem::GatherOp::create(b, loc, yBuf, yBufSym,
                                 static_cast<uint64_t>(mramRows), yMap, dpus,
                                 /*numBlocksPerDpu=*/IntegerAttr{});
 
-        // Reduce yStage[dpuRows, dpuCols, mramRows] over dim 1 (dpuCols)
-        // and accumulate into out[mOff .. mOff + dpuRows*mramRows).
-        Value outRows = memref::SubViewOp::create(
-            b, loc, y, ArrayRef<OpFoldResult>{mOff},
-            ArrayRef<OpFoldResult>{b.getIndexAttr(dpuRows * mramRows)},
-            ArrayRef<OpFoldResult>{b.getIndexAttr(1)});
-        Value outRows2D = memref::ExpandShapeOp::create(
-            b, loc,
-            MemRefType::get({dpuRows, mramRows}, eltTy,
-                            StridedLayoutAttr::get(ctx, ShapedType::kDynamic,
-                                                   {mramRows, 1})),
-            outRows, ArrayRef<ReassociationIndices>{{0, 1}});
-        linalg::ReduceOp::create(
-            b, loc, ValueRange{yStage}, ValueRange{outRows2D},
-            ArrayRef<int64_t>{1},
-            [&](OpBuilder &b, Location loc, ValueRange args) {
-              linalg::YieldOp::create(
-                  b, loc,
-                  arith::getReductionOp(addKind, b, loc, args[0], args[1]));
-            });
+        if (needsPartialReduction) {
+          // Reduce yStage[dpuRows, dpuCols, mramRows] over dim 1 (dpuCols)
+          // and accumulate into out[mOff .. mOff + dpuRows*mramRows).
+          Value outRows = memref::SubViewOp::create(
+              b, loc, y, ArrayRef<OpFoldResult>{mOff},
+              ArrayRef<OpFoldResult>{b.getIndexAttr(dpuRows * mramRows)},
+              ArrayRef<OpFoldResult>{b.getIndexAttr(1)});
+          Value outRows2D = memref::ExpandShapeOp::create(
+              b, loc,
+              MemRefType::get({dpuRows, mramRows}, eltTy,
+                              StridedLayoutAttr::get(
+                                  ctx, ShapedType::kDynamic, {mramRows, 1})),
+              outRows, ArrayRef<ReassociationIndices>{{0, 1}});
+          linalg::ReduceOp::create(
+              b, loc, ValueRange{yBuf}, ValueRange{outRows2D},
+              ArrayRef<int64_t>{1},
+              [&](OpBuilder &b, Location loc, ValueRange args) {
+                linalg::YieldOp::create(
+                    b, loc,
+                    arith::getReductionOp(addKind, b, loc, args[0], args[1]));
+              });
+        }
 
         return {};
       }); // end m loop
 
   rewriter.eraseOp(op);
   memref::DeallocOp::create(rewriter, loc, xStage);
-  memref::DeallocOp::create(rewriter, loc, yStage);
+  if (needsPartialReduction)
+    memref::DeallocOp::create(rewriter, loc, yStage);
   upmem::FreeDPUsOp::create(rewriter, loc, dpus);
 }
 
