@@ -43,43 +43,58 @@ ITERS = 10
 DPUS = 256
 TASKLETS = 4
 
-cinm2parms = {
-    "dpus": DPUS,
-    "tasklets": TASKLETS,
-    "wramRow": 1,
-    "wramCol": 1024,
-    "dpuCols": 1,
-    "mramRow": 4,
-    "mramCol": 1024,
-}
-# {dpus=256, tasklets=4, wramRow=1, wramCol=1024, dpuCols=1, mramRow=4096, mramCol=1024}
 CONFIGS = [
     compile_run.Config(
-        system="cinm2as1",
+        system="cinm2",
         fn_name="gemv_64MB",
-        label="foo",
-        params=cinm2parms,
+        label="default",
+        params={
+            "dpus": DPUS,
+            "tasklets": TASKLETS,
+            "wramRow": 1,
+            "wramCol": 1024,
+            "dpuCols": 1,
+            "mramRow": 4,
+            "mramCol": 1024,
+        },
         fn_module="/home/clement.fournier/Work/cinm-mlir/experiments/cinm1comparison/data/prim_gemv/_split/gemv_64MB.mlir",
         prim="gemv",
-        lower=cinmopt.eval_solution_lowerer(params=cinm2parms),
+        lower=cinmopt.eval_solution_lowerer(),
+    ),
+    compile_run.Config(
+        system="cinm2_partial_reduction",
+        fn_name="gemv_64MB",
+        label="default",
+        params={
+            "dpus": DPUS,
+            "tasklets": TASKLETS,
+            "wramRow": 1,
+            "wramCol": 1024,
+            "dpuCols": 2,
+            "mramRow": 4,
+            "mramCol": 1024,
+        },
+        fn_module="/home/clement.fournier/Work/cinm-mlir/experiments/cinm1comparison/data/prim_gemv/_split/gemv_64MB.mlir",
+        prim="gemv",
+        lower=cinmopt.eval_solution_lowerer(),
     ),
     compile_run.Config(
         system="cinm1",
         fn_name="gemv_64MB",
-        label="foo",
+        label="default",
         params={"dpus": DPUS, "tasklets": TASKLETS},
         fn_module="/home/clement.fournier/Work/cinm-mlir/experiments/cinm1comparison/data/prim_gemv/_split/gemv_64MB.mlir",
         prim="gemv",
-        lower=cinm1.lowerer(dpus=DPUS, tasklets=TASKLETS),
+        lower=cinm1.lowerer(),
     ),
     compile_run.Config(
         system="cinm1_with_sg",
         fn_name="gemv_64MB",
-        label="foo",
+        label="default",
         params={"dpus": DPUS, "tasklets": TASKLETS},
         fn_module="/home/clement.fournier/Work/cinm-mlir/experiments/cinm1comparison/data/prim_gemv/_split/gemv_64MB.mlir",
         prim="gemv",
-        lower=cinm1.lowerer(dpus=DPUS, tasklets=TASKLETS, use_upmem_scatter_api=True),
+        lower=cinm1.lowerer(use_upmem_scatter_api=True),
     ),
 ]
 
@@ -164,12 +179,18 @@ def task_plot():
         import matplotlib.pyplot as plt
 
         systems = list(breakdowns.keys())
-        categories = sorted({cat for s in systems for cat in breakdowns[s].keys()}, key=measurements.net_breakdown_sort_ix)
+        categories = sorted(
+            {cat for s in systems for cat in breakdowns[s].keys()},
+            key=measurements.net_breakdown_sort_ix,
+        )
         # Color by each category's fixed, global sort index (not its position
         # in this plot's local `categories` list) so the same category name
         # always gets the same color across both plots, even though the flat
         # and by-kind plots don't show the same set of categories.
-        colors = [plt.get_cmap("Dark2")(measurements.net_breakdown_color_ix(cat)) for cat in categories]
+        colors = [
+            plt.get_cmap("Dark2")(measurements.net_breakdown_color_ix(cat))
+            for cat in categories
+        ]
 
         fig, ax = plt.subplots(figsize=(5, 5))
         bottoms = [0.0] * len(systems)
@@ -201,6 +222,8 @@ def task_plot():
         ax.set_ylabel("time (ms)")
         ax.set_title("gemv_64MB net-time breakdown")
         ax.legend(loc="upper left", bbox_to_anchor=(1.0, 1.0))
+        ax.set_xticks(range(len(systems)))
+        ax.set_xticklabels(systems, rotation=45, ha="right")
         fig.tight_layout()
         fig.savefig(out_path, dpi=150)
         print(f"wrote {out_path}")
@@ -214,8 +237,5 @@ def task_plot():
         ],
         "file_dep": [c.dir(DATA_ROOT) / "bench.done" for c in CONFIGS],
         "targets": [out_path, out_path_by_kind],
-        "actions": [
-          (action, [out_path, False]),
-          (action, [out_path_by_kind, True])
-        ],
+        "actions": [(action, [out_path, False]), (action, [out_path_by_kind, True])],
     }

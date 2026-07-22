@@ -524,7 +524,7 @@ def task_cinm2_search():
                         params={},
                         fn_module=fn_module,
                         prim=op,
-                        lower=None,  # lower also gets replaced
+                        lower=cinmopt.eval_solution_lowerer(cinm_opt=CINM_OPT),
                     )
                     pool_csv = group.results_dir / f"infer_{fn_name}" / f"seed_{seed}" / "pool.csv"
                     marker = PATHS.compile_marker(prim, config)
@@ -581,7 +581,6 @@ def _compile_best(
     config.params = pools.best_in_pool(pool_csv)
     if not config.params:
         return False
-    config.lower = cinmopt.eval_solution_lowerer(config.params, cinm_opt=CINM_OPT)
     return _compile_one(config, compile_root, marker)
 
 
@@ -627,7 +626,7 @@ def task_compile_cinm1():
             params={"dpus": dpus, "tasklets": tasklets},
             fn_module=fn_module,
             prim=op,
-            lower=cinm1.lowerer(dpus, tasklets, cinm_opt=CINM_OPT),
+            lower=cinm1.lowerer(cinm_opt=CINM_OPT),
         )
         marker = PATHS.compile_marker(prim, config)
         yield {
@@ -686,7 +685,7 @@ def _discover_cinm2_configs(
                 params=params,
                 fn_module=fn_module,
                 prim=op,
-                lower=cinmopt.eval_solution_lowerer(params, cinm_opt=CINM_OPT),
+                lower=cinmopt.eval_solution_lowerer(cinm_opt=CINM_OPT),
             )
         )
     return configs
@@ -716,7 +715,7 @@ def _discover_configs(prim: str) -> list[compile_run.Config]:
                     params={"dpus": dpus, "tasklets": tasklets},
                     fn_module=fn_module,
                     prim=op,
-                    lower=cinm1.lowerer(dpus, tasklets, cinm_opt=CINM_OPT),
+                    lower=cinm1.lowerer(cinm_opt=CINM_OPT),
                 )
             )
 

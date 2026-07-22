@@ -64,7 +64,7 @@ def compile_config(config: Config, *, compile_root: pathlib.Path) -> CompiledCon
                           "label": config.label, **config.params})
 
     lowered = config_dir / "lowered.mlir"
-    r = config.lower(config.fn_module, lowered, config_dir / "cinm-opt.log")
+    r = config.lower(config.fn_module, lowered, config_dir / "cinm-opt.log", **config.params)
     if r.returncode != 0:
         return CompiledConfig(config, config_dir, False,
                                f"cinm-opt failed, see {config_dir}/cinm-opt.log")

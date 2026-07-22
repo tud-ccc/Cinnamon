@@ -126,13 +126,13 @@ def eval_solution(src: pathlib.Path, params: dict, *, out_file: pathlib.Path,
                 cinm_opt=cinm_opt, log_file=log_file, nice=nice)
 
 
-def eval_solution_lowerer(params: dict, *, cinm_opt: pathlib.Path = DEFAULT_CINM_OPT):
+def eval_solution_lowerer(*, cinm_opt: pathlib.Path = DEFAULT_CINM_OPT):
     """A (fn_module, out_file, log_file) -> CompletedProcess callable, for use
     as compile_run.Config.lower -- compiles CINM 2.0's chosen `params` with no
     further search."""
 
     def _lower(fn_module: pathlib.Path, out_file: pathlib.Path,
-               log_file: pathlib.Path) -> subprocess.CompletedProcess:
+               log_file: pathlib.Path, **params) -> subprocess.CompletedProcess:
         return eval_solution(fn_module, params, out_file=out_file,
                               cinm_opt=cinm_opt, log_file=log_file)
 

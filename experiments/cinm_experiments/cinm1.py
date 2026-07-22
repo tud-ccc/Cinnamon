@@ -209,14 +209,19 @@ def compile_cinm1(
 
 
 def lowerer(
-    dpus: int, tasklets: int, *, cinm_opt: pathlib.Path = DEFAULT_CINM_OPT, **kwargs
+    *, cinm_opt: pathlib.Path = DEFAULT_CINM_OPT, **kwargs
 ):
     """A (fn_module, out_file, log_file) -> CompletedProcess callable, for use
     as compile_run.Config.lower -- compiles CINM 1.0's program for this fixed
     (dpus, tasklets) working group."""
 
     def _lower(
-        fn_module: pathlib.Path, out_file: pathlib.Path, log_file: pathlib.Path
+        fn_module: pathlib.Path, 
+        out_file: pathlib.Path, log_file: pathlib.Path,
+        *,
+        dpus: int,
+        tasklets: int,
+        **parms
     ) -> subprocess.CompletedProcess:
         return compile_cinm1(
             fn_module,
