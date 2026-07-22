@@ -17,11 +17,14 @@
 #include <llvm/ADT/DenseSet.h>
 #include <llvm/ADT/SmallVector.h>
 #include <llvm/ADT/StringRef.h>
+#include <llvm/Support/Casting.h>
 #include <llvm/Support/Debug.h>
+#include <llvm/Support/LogicalResult.h>
 #include <llvm/Support/raw_ostream.h>
 
 #include <mlir/Dialect/Affine/IR/AffineOps.h>
 #include <mlir/Dialect/Arith/IR/Arith.h>
+#include <mlir/Dialect/Linalg/IR/Linalg.h>
 #include <mlir/Dialect/MemRef/IR/MemRef.h>
 #include <mlir/Dialect/SCF/IR/SCF.h>
 #include <mlir/Dialect/Utils/IndexingUtils.h>
@@ -919,6 +922,43 @@ upmem::DpuProgramOp createDpuGemvKernel(Location loc, RewriterBase &rewriter,
   return kernl;
 }
 
+// When we know the buffer is not going to be read from,
+// we can delete previous updates.
+static void deleteUnusedUpdates(const Value aMemrefValue, Operation *stopAt) {
+  // getUses() order reflects use-list construction order (newest first), not
+  // program order, and it can include uses created *after* stopAt (e.g. a
+  // later bufferization.to_tensor of the same buffer) -- those must be
+  // ignored entirely rather than merely skipped, since they don't bound the
+  // backward walk through the uses that actually precede stopAt. So filter
+  // to same-block uses strictly before stopAt and sort explicitly by
+  // position, walking from the one closest to stopAt backwards: as long as
+  // each is a pure overwrite of the whole buffer, nothing before stopAt
+  // reads it, so it's dead and can be erased.
+  llvm::SmallVector<OpOperand *, 4> uses;
+  for (auto &use : aMemrefValue.getUses()) {
+    Operation *owner = use.getOwner();
+    if (owner == stopAt || owner->getBlock() != stopAt->getBlock() ||
+        !owner->isBeforeInBlock(stopAt))
+      continue;
+    uses.push_back(&use);
+  }
+  llvm::sort(uses, [](OpOperand *a, OpOperand *b) {
+    return b->getOwner()->isBeforeInBlock(a->getOwner());
+  });
+  for (auto *use : uses) {
+
+    auto op = use->getOwner();
+    if (auto fill = llvm::dyn_cast_or_null<linalg::FillOp>(op)) {
+      auto inits = fill.getDpsInits();
+      if (inits.size() == 1 && inits.front() == aMemrefValue) {
+        fill->erase();
+        continue;
+      }
+    }
+    return; // give up
+  }
+}
+
 /// Emit the host-side tiled loop nest for a GEMV out += lhs * rhs where
 /// lhs is memref<M x K x elt>, rhs is memref<K x elt>, out is memref<M x elt>.
 ///
@@ -966,6 +1006,8 @@ void upmem::generateGemv(cinm::GemvOp op, RewriterBase &rewriter,
   if (needsPartialReduction)
     yStage = memref::AllocOp::create(
         rewriter, loc, MemRefType::get({dpuRows, dpuCols, mramRows}, eltTy));
+  else
+    deleteUnusedUpdates(y, op);
 
   llvm::StringRef aBufSym, xBufSym, yBufSym;
   auto parentMod = op->getParentOfType<ModuleOp>();
