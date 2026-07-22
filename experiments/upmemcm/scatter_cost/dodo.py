@@ -22,6 +22,15 @@ def task_make():
         "actions": ["make"],
     }
 
+def task_bench():
+    """Build the DPU kernel and host benchmark binary."""
+    return {
+        "targets": ["results.csv"],
+        "file_dep": ["bin/scatter_dpu", "bin/scatter_bench"],
+        "actions": ["bin/scatter_bench"],
+    }
+
+
 
 def task_plot():
     """Analyze results.csv and write plots to plots/."""
