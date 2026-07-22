@@ -36,3 +36,11 @@ Now there is still copy happening for the x buffer - this should be replaced by 
 This is a more detailed breakdown (showing SG transfer vs block transfer)
 
 ![image](3_scatter_breakdown.png)
+
+Finally
+- I removed unaccounted time, which was mostly extra loops introduced to fill buffers with zeros that are never read.
+- The partial reduction is also removed if it is unnecessary (the cinm2 column). The cinm2_partial_reduction column is not an equivalent example, it's testing a case where partial reduction is needed. The time to do partial reduction is insignificant here. I'm not sure why the scatters become cheaper, I would need to look at the code.
+
+![image](4_final.png)
+
+

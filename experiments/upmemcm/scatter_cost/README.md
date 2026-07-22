@@ -41,3 +41,28 @@ Prints a table comparing several regression templates (raw dims, log2(block
 size), log2 of everything, total_bytes, ...) fit by OLS, and writes
 latency-vs-block-size / latency-vs-num-dpus / blocks-vs-size-heatmap /
 regression-fit plots to `plots/`.
+
+## Thoughts
+
+Ok so it seems the best fit I can for this is a model that has a parameter for each of the three dimensions, one for each of their pairwise products, and one for the triple product (total bytes).
+
+Additionally, the fit is improved if you cut the model in 2, one for low DPU counts (<=32), and another for higher DPU counts, with different parameters.
+
+The next steps to be able to use this experiment is describe the scientific protocol. If I want to be thorough I should also do an ablation study/ a study of which parameters matter most, and prune the useless parameters. Then try to explain the trends architecturally.
+
+I also need to do the same kind of study for broadcast, and maybe for the regular scatter and gather. The good thing is that the data I have here is very fast to collect (not 2 days like Georg's experiment) and process. But this still needs lots of work.
+
+I also need to review the literature for existing cost models for the scatter/gather overhead. Maybe we're the first to model the UPMEM scatter API?
+
+
+
+
+
+
+
+
+
+
+
+
+

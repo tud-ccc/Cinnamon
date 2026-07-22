@@ -44,5 +44,5 @@ def task_plot():
     return {
         "file_dep": ["results.csv", "analyze.py"],
         "targets": ["plots/regression_fit.png"],
-        "actions": ["python3 analyze.py results.csv --out-dir plots"],
+        "actions": ["python3 analyze.py results.csv --out-dir plots --dpu-split 32"],
     }

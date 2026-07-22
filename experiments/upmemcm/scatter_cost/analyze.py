@@ -21,9 +21,15 @@ Produces:
   - plots/regression_fit.png                  (measured vs. predicted, one subplot per template)
   - plots/regression_fit_best.png             (measured vs. predicted, best template only)
   - a regression table (stdout): several feature-transform templates fit by
-    OLS and compared by RMSE/R^2, e.g. raw dims vs. log2(block_size) vs.
-    log2(everything) vs. total_bytes -- same idea as reduce_cost's
-    fit_overhead_term.py TEMPLATES dict, simplified to plain OLS. Every
+    weighted least squares (weight = 1/measured_ms^2) and ranked by
+    relative_rmse (RMS of (pred-measured)/measured), not flat ms RMSE --
+    latency spans ~0.18ms to tens of ms here, so a 1ms error is huge at the
+    low end and negligible at the high end; flat RMSE (and an unweighted
+    fit) would be dominated by the handful of largest-latency configs and
+    say nothing about how well small transfers are predicted. ms RMSE and R^2
+    (on absolute error) are still reported alongside for reference. Same idea
+    as reduce_cost's fit_overhead_term.py TEMPLATES dict (which also uses a
+    cost-weighted fit for the same reason), simplified to weighted OLS. Every
     template's predictions are floored at the empirical minimum measured
     latency (see --floor) before scoring/plotting, since no call can ever be
     faster than that fixed per-call overhead. Also included: a "hinge" model
@@ -75,6 +81,7 @@ TEMPLATES = {
             d.num_dpus * d.blocks_per_dpu,
             d.num_dpus * d.block_size,
             d.blocks_per_dpu * d.block_size,
+            d.blocks_per_dpu * d.block_size * d.num_dpus,
         ]
     ),
     "quadratic": lambda d: np.column_stack(
@@ -137,7 +144,20 @@ TEMPLATES = {
 }
 
 
-def fit_ols(X: np.ndarray, y: np.ndarray, floor: float = 0.0) -> dict:
+def relative_rmse(resid: np.ndarray, y: np.ndarray) -> float:
+    """RMS of (resid/y): unlike a flat ms RMSE, a 1ms error is scored the
+    same whether the true latency is 0.2ms (500% off) or 30ms (3% off).
+    This weights every config by how significant its error actually is,
+    which flat RMSE does not -- a template can look great on ms-RMSE purely
+    by nailing the handful of huge high-byte configs while being way off
+    (relatively) on every small-transfer one, since ms-RMSE is dominated by
+    the largest latencies in the dataset."""
+    return float(np.sqrt(np.mean((resid / y) ** 2)))
+
+
+def fit_ols(
+    X: np.ndarray, y: np.ndarray, floor: float = 0.0, weighted: bool = True
+) -> dict:
     """OLS with intercept, floored: a dpu_push_sg_xfer call can never
     complete faster than `floor` (the empirical minimum measured latency --
     fixed per-call overhead: rank dispatch, WRAM setup, etc.), but an
@@ -147,13 +167,27 @@ def fit_ols(X: np.ndarray, y: np.ndarray, floor: float = 0.0) -> dict:
     fitted value back through the floor (floor + max(0, raw)) before scoring
     -- this can only pull predictions up to the floor in the region that
     used to undershoot it, never push them down elsewhere.
+
+    weighted=True (default) fits via weighted least squares with weight =
+    1/y^2 -- i.e. it directly optimizes relative error (see relative_rmse),
+    not just reports it after an absolute-error fit. Without this, the fit
+    itself (not just the RMSE-based ranking) would be dominated by the
+    largest latencies, the same problem relative_rmse is meant to fix.
     """
     Xi = np.column_stack([np.ones(len(y)), X])
-    coef, *_ = np.linalg.lstsq(Xi, y - floor, rcond=None)
+    target = y - floor
+    if weighted:
+        sqrt_w = 1.0 / y
+        coef, *_ = np.linalg.lstsq(
+            Xi * sqrt_w[:, None], target * sqrt_w, rcond=None
+        )
+    else:
+        coef, *_ = np.linalg.lstsq(Xi, target, rcond=None)
     raw = Xi @ coef
     pred = floor + np.maximum(raw, 0.0)
     resid = y - pred
     rmse = float(np.sqrt(np.mean(resid**2)))
+    rel_rmse = relative_rmse(resid, y)
     ss_res = float(np.sum(resid**2))
     ss_tot = float(np.sum((y - y.mean()) ** 2))
     r2 = 1.0 - ss_res / ss_tot if ss_tot > 0 else float("nan")
@@ -162,6 +196,7 @@ def fit_ols(X: np.ndarray, y: np.ndarray, floor: float = 0.0) -> dict:
         "intercept": float(coef[0]),
         "coef": coef[1:],
         "rmse": rmse,
+        "rel_rmse": rel_rmse,
         "r2": r2,
         "floor": floor,
     }
@@ -176,8 +211,15 @@ def fit_all_templates(
         X = feature_fn(data)
         fit = fit_ols(X, y, floor=floor)
         fits[name] = fit
-        rows.append({"template": name, "rmse_ms": fit["rmse"], "r2": fit["r2"]})
-    table = pd.DataFrame(rows).sort_values("rmse_ms").reset_index(drop=True)
+        rows.append(
+            {
+                "template": name,
+                "rel_rmse": fit["rel_rmse"],
+                "rmse_ms": fit["rmse"],
+                "r2": fit["r2"],
+            }
+        )
+    table = pd.DataFrame(rows).sort_values("rel_rmse").reset_index(drop=True)
     return table, fits
 
 
@@ -203,26 +245,41 @@ def fit_hinge_fixed_effects(
     this uses the standard "fixed effects" / within-estimator trick instead:
     demean x and y by num_dpus group, fit the single shared slope on the
     demeaned data (group means contribute nothing to that regression), then
-    recover each group's own intercept from its own mean afterwards.
+    recover each group's own intercept from its own mean afterwards. As in
+    fit_ols, this is weighted by 1/y^2 throughout (weighted group means,
+    weighted slope) so it optimizes relative error too, not absolute ms
+    error -- otherwise this template would be on a different, easier-to-win
+    footing than every fit_ols-based template when ranked by relative_rmse.
     """
     x = np.maximum(data.block_size.to_numpy(dtype=float) - threshold, 0.0)
     y_excess = y - floor
     groups = data.num_dpus.to_numpy()
+    w = 1.0 / y**2
 
-    tmp = pd.DataFrame({"g": groups, "x": x, "y": y_excess})
-    x_tilde = tmp["x"] - tmp.groupby("g")["x"].transform("mean")
-    y_tilde = tmp["y"] - tmp.groupby("g")["y"].transform("mean")
-    denom = float((x_tilde**2).sum())
-    slope = float((x_tilde * y_tilde).sum() / denom) if denom > 0 else 0.0
+    tmp = pd.DataFrame({"g": groups, "x": x, "y": y_excess, "w": w})
+    tmp["wx"] = tmp["w"] * tmp["x"]
+    tmp["wy"] = tmp["w"] * tmp["y"]
+    group_w_sum = tmp.groupby("g")["w"].transform("sum")
+    x_mean_w = tmp.groupby("g")["wx"].transform("sum") / group_w_sum
+    y_mean_w = tmp.groupby("g")["wy"].transform("sum") / group_w_sum
+    x_tilde = tmp["x"] - x_mean_w
+    y_tilde = tmp["y"] - y_mean_w
+    denom = float((tmp["w"] * x_tilde**2).sum())
+    slope = float((tmp["w"] * x_tilde * y_tilde).sum() / denom) if denom > 0 else 0.0
 
-    group_mean_x = tmp.groupby("g")["x"].mean()
-    group_mean_y = tmp.groupby("g")["y"].mean()
+    group_mean_x = tmp.groupby("g").apply(
+        lambda d: np.average(d["x"], weights=d["w"]), include_groups=False
+    )
+    group_mean_y = tmp.groupby("g").apply(
+        lambda d: np.average(d["y"], weights=d["w"]), include_groups=False
+    )
     dpu_intercepts = (group_mean_y - slope * group_mean_x).to_dict()
 
     raw = tmp["g"].map(dpu_intercepts).to_numpy() + slope * x
     pred = floor + np.maximum(raw, 0.0)
     resid = y - pred
     rmse = float(np.sqrt(np.mean(resid**2)))
+    rel_rmse = relative_rmse(resid, y)
     ss_res = float(np.sum(resid**2))
     ss_tot = float(np.sum((y - y.mean()) ** 2))
     r2 = 1.0 - ss_res / ss_tot if ss_tot > 0 else float("nan")
@@ -231,6 +288,7 @@ def fit_hinge_fixed_effects(
         "intercept": float(np.mean(list(dpu_intercepts.values()))),
         "coef": np.array([slope]),
         "rmse": rmse,
+        "rel_rmse": rel_rmse,
         "r2": r2,
         "floor": floor,
         "dpu_intercepts": dpu_intercepts,
@@ -612,7 +670,8 @@ def plot_all_regression_fits(
         ax.set_ylabel("measured latency (ms)")
         is_best = name == best_name
         ax.set_title(
-            f"{name}\nR²={fit['r2']:.3f}, RMSE={fit['rmse']:.4g} ms",
+            f"{name}\nrelRMSE={fit['rel_rmse'] * 100:.1f}%, R²={fit['r2']:.3f}, "
+            f"RMSE={fit['rmse']:.3g}ms",
             color="red" if is_best else "black",
             fontweight="bold" if is_best else "normal",
         )
@@ -659,7 +718,9 @@ def plot_best_regression_fit(
     ax.set_xlabel("predicted latency (ms)")
     ax.set_ylabel("measured latency (ms)")
     ax.set_title(
-        f"Best fit: {name}  (R²={fit['r2']:.3f}, RMSE={fit['rmse']:.4g} ms)",
+        f"Best fit: {name}\n"
+        f"relRMSE={fit['rel_rmse'] * 100:.1f}%, R²={fit['r2']:.3f}, "
+        f"RMSE={fit['rmse']:.3g}ms",
         color="red",
         fontweight="bold",
     )
@@ -695,6 +756,7 @@ def fit_and_report(
                     [
                         {
                             "template": hinge_name,
+                            "rel_rmse": fits[hinge_name]["rel_rmse"],
                             "rmse_ms": fits[hinge_name]["rmse"],
                             "r2": fits[hinge_name]["r2"],
                         }
@@ -703,7 +765,7 @@ def fit_and_report(
             ],
             ignore_index=True,
         )
-        .sort_values("rmse_ms")
+        .sort_values("rel_rmse")
         .reset_index(drop=True)
     )
 
@@ -744,12 +806,14 @@ def fit_regime_hybrid(
 
     resid = y - pred
     rmse = float(np.sqrt(np.mean(resid**2)))
+    rel_rmse = relative_rmse(resid, y)
     ss_res = float(np.sum(resid**2))
     ss_tot = float(np.sum((y - y.mean()) ** 2))
     r2 = 1.0 - ss_res / ss_tot if ss_tot > 0 else float("nan")
     return {
         "pred": pred,
         "rmse": rmse,
+        "rel_rmse": rel_rmse,
         "r2": r2,
         "floor": floor,
         "low_template": low_template,
@@ -813,13 +877,13 @@ def main():
     )
     parser.add_argument(
         "--hybrid-low-template",
-        default="quadratic",
+        default="threeway",
         help="template (a TEMPLATES key) to fit on num_dpus <= --dpu-split for the "
         "hybrid model (default: %(default)r)",
     )
     parser.add_argument(
         "--hybrid-high-template",
-        default="total_bytes",
+        default="threeway",
         help="template (a TEMPLATES key) to fit on num_dpus > --dpu-split for the "
         "hybrid model (default: %(default)r)",
     )
@@ -918,6 +982,7 @@ def main():
                         [
                             {
                                 "template": hybrid_name,
+                                "rel_rmse": hybrid_fit["rel_rmse"],
                                 "rmse_ms": hybrid_fit["rmse"],
                                 "r2": hybrid_fit["r2"],
                             }
@@ -926,11 +991,14 @@ def main():
                 ],
                 ignore_index=True,
             )
-            .sort_values("rmse_ms")
+            .sort_values("rel_rmse")
             .reset_index(drop=True)
         )
         print(f"\n=== {hybrid_name} ===")
-        print(f"  RMSE = {hybrid_fit['rmse']:.4g} ms   R² = {hybrid_fit['r2']:.4f}")
+        print(
+            f"  relRMSE = {hybrid_fit['rel_rmse'] * 100:.2f}%   "
+            f"RMSE = {hybrid_fit['rmse']:.4g} ms   R² = {hybrid_fit['r2']:.4f}"
+        )
 
     best_name = table.iloc[0]["template"]
     plot_all_regression_fits(
@@ -953,6 +1021,10 @@ def main():
     )
     print(f"\nBest fit: {best_name}")
     best_fit = fits[best_name]
+    print(
+        f"  relRMSE = {best_fit['rel_rmse'] * 100:.2f}%   "
+        f"RMSE = {best_fit['rmse']:.4g} ms   R² = {best_fit['r2']:.4f}"
+    )
     if "low_template" in best_fit:
         print(
             f"  {best_fit['low_template']} (<= {best_fit['split']:g} dpus): "
