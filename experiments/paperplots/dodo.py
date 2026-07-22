@@ -49,7 +49,6 @@ EXPERIMENTS_DIR = HERE.parent
 sys.path.insert(0, str(EXPERIMENTS_DIR))
 
 from cinm_experiments import aggregate, cinmopt, compile_run, parallel, pools  # noqa: E402
-from cinm_experiments.paths import DEFAULT_CINM_OPT  # noqa: E402
 from cinm_experiments.split_source import list_functions, split_source  # noqa: E402
 
 from plot_best_configs import run_plots  # noqa: E402
@@ -72,7 +71,6 @@ TARGETS = list(TARGET_INFER_OPTS)
 SOURCES = [f"{prim}_{target}" for prim in PRIMS for target in TARGETS]
 
 PREFIX = "prim_largesurrogate"
-CINM_OPT = pathlib.Path(os.environ.get("CINM_OPT", DEFAULT_CINM_OPT))
 
 BASE_BO_INFER_OPTS = {
     "n-validation": 600, "validation-interval": 1, "max-evals": 120,
@@ -162,7 +160,7 @@ def _discover_configs(source: str, op: str) -> list[compile_run.Config]:
         compile_run.Config(
             system="", fn_name=fn_name, label=f"seed_{seed}", params=params,
             fn_module=split_dir / f"{fn_name}.mlir", prim=op,
-            lower=cinmopt.eval_solution_lowerer(params, cinm_opt=CINM_OPT),
+            lower=cinmopt.eval_solution_lowerer(params),
         )
         for fn_name, seed, params in pools.best_per_seed(results_dir)
     ]
@@ -173,7 +171,7 @@ def _discover_configs(source: str, op: str) -> list[compile_run.Config]:
 def _bo_one(prim_mlir: pathlib.Path, results_dir: pathlib.Path, infer_opts: dict) -> bool:
     cinmopt.bo_multiseed(
         prim_mlir, results_dir, n_seeds=N_SEEDS, offset=BO_OFFSET, workers=WORKERS,
-        infer_opts={**BASE_BO_INFER_OPTS, **infer_opts}, nice=True, cinm_opt=CINM_OPT,
+        infer_opts={**BASE_BO_INFER_OPTS, **infer_opts}, nice=True,
     )
     return True
 

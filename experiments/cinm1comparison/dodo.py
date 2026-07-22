@@ -42,14 +42,12 @@ sys.path.insert(0, str(EXPERIMENTS_DIR))
 
 
 from cinm_experiments import cinm1, cinmopt, compile_run, measurements, pools  # noqa: E402
-from cinm_experiments.paths import DEFAULT_CINM_OPT  # noqa: E402
 from cinm_experiments.split_source import list_functions, split_source  # noqa: E402
 
 from plot import geomean, plot_best_speedup, plot_speedup, plot_speedup_violin, print_summary  # noqa: E402
 
 PRIMS = ["prim_gemv", "prim_red"]
 DATA_DIR = HERE / "data"
-CINM_OPT = pathlib.Path(os.environ.get("CINM_OPT", DEFAULT_CINM_OPT))
 
 OPTS = dict(
     top_frac=0.10,
@@ -213,7 +211,6 @@ def _screen_one(prim: str, fn_name: str, fn_module: pathlib.Path) -> bool:
         screen_dir,
         workers=OPTS["workers"],
         infer_opts={"use-mram-tiling": False, "simulator": OPTS["screen_sim"]},
-        cinm_opt=CINM_OPT,
     )
 
     # exhaustive_search names the dump dir after its own NameInventor
@@ -295,7 +292,6 @@ def _cinm2_search_one(
             "max-evals": 100,
             "n-init": 10,
         },
-        cinm_opt=CINM_OPT,
     )
     return True
 
@@ -524,7 +520,7 @@ def task_cinm2_search():
                         params={},
                         fn_module=fn_module,
                         prim=op,
-                        lower=cinmopt.eval_solution_lowerer(cinm_opt=CINM_OPT),
+                        lower=cinmopt.eval_solution_lowerer(),
                     )
                     pool_csv = group.results_dir / f"infer_{fn_name}" / f"seed_{seed}" / "pool.csv"
                     marker = PATHS.compile_marker(prim, config)
@@ -626,7 +622,7 @@ def task_compile_cinm1():
             params={"dpus": dpus, "tasklets": tasklets},
             fn_module=fn_module,
             prim=op,
-            lower=cinm1.lowerer(cinm_opt=CINM_OPT),
+            lower=cinm1.lowerer(),
         )
         marker = PATHS.compile_marker(prim, config)
         yield {
@@ -685,7 +681,7 @@ def _discover_cinm2_configs(
                 params=params,
                 fn_module=fn_module,
                 prim=op,
-                lower=cinmopt.eval_solution_lowerer(cinm_opt=CINM_OPT),
+                lower=cinmopt.eval_solution_lowerer(),
             )
         )
     return configs
@@ -715,7 +711,7 @@ def _discover_configs(prim: str) -> list[compile_run.Config]:
                     params={"dpus": dpus, "tasklets": tasklets},
                     fn_module=fn_module,
                     prim=op,
-                    lower=cinm1.lowerer(cinm_opt=CINM_OPT),
+                    lower=cinm1.lowerer(),
                 )
             )
 

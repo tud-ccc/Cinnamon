@@ -1,7 +1,7 @@
 """Compile one fixed configuration down to a real UPMEM binary (via
 Config.lower -- either cinmopt.eval_solution_lowerer for CINM 2.0 or
-cinm1.lowerer for CINM 1.0 -- + the existing upmemcm/reduce_cost bench-single
-Makefile target) and benchmark it on hardware."""
+cinm1.lowerer for CINM 1.0 -- + this package's own bench-single Makefile
+target) and benchmark it on hardware."""
 from __future__ import annotations
 
 import csv
@@ -14,7 +14,7 @@ from typing import Callable
 from tqdm import tqdm
 
 from . import parallel
-from .paths import REDUCE_COST_MAKEFILE_DIR
+from .paths import COMPILE_MAKEFILE_DIR
 
 
 @dataclasses.dataclass
@@ -71,7 +71,7 @@ def compile_config(config: Config, *, compile_root: pathlib.Path) -> CompiledCon
 
     ir_dir, bin_dir = config_dir / "ir", config_dir / "bin"
     cmd = [
-        "make", "-C", str(REDUCE_COST_MAKEFILE_DIR),
+        "make", "-C", str(COMPILE_MAKEFILE_DIR),
         f"SRC_MLIR={lowered.resolve()}",
         f"IR_DIR={ir_dir.resolve()}",
         f"BIN_DIR={bin_dir.resolve()}",

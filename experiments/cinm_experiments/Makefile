@@ -1,24 +1,23 @@
 UPMEM_HOME ?= $(error UPMEM_HOME is not set)
 
-ROOT         = ../../..
+ROOT         = ../..
 CINM_OPT     = $(ROOT)/build/bin/cinm-opt
 CINM_TRANS   = $(ROOT)/build/bin/cinm-translate
 CLANG_BASE   = $(ROOT)/third-party/llvm/build/bin
-DPU_CC       = $(UPMEM_HOME)/bin/dpu-upmem-dpurte-clang
 COMPILE_DPU  = $(ROOT)/testbench/lib/compile_dpu.sh
 
-# Primitive name (red, gemv, …).  Selects the bench driver under experiments/bench/.
+# Primitive name (red, gemv, …). Selects the bench driver under experiments/bench/.
 PRIM         ?= red
 BENCH_DRIVER ?= $(ROOT)/experiments/bench/$(PRIM).cpp
 
-SRC_MLIR = $(ROOT)/experiments/prim_$(PRIM).mlir
-FUNCS    = $(shell grep -oP '(?<=func\.func @)\w+' $(SRC_MLIR) 2>/dev/null)
+# Single-function source module, already lowered to the upmem dialect by the
+# caller (e.g. cinmopt.py / cinm1.py). This makefile takes over from there:
+# host lowering + DPU kernel compilation + linking the bench binary.
+SRC_MLIR ?= $(error SRC_MLIR is not set)
+BENCH_FN ?= $(error BENCH_FN is not set)
 
-IR_DIR  = ir
-BIN_DIR = bin
-OUT_DIR = output
-
-HOST_OBJS = $(FUNCS:%=$(IR_DIR)/%.o)
+IR_DIR  ?= ir
+BIN_DIR ?= bin
 
 CXXFLAGS = -O3 -std=c++17 \
            -I$(ROOT)/runtime/Upmem \
@@ -31,10 +30,11 @@ LDFLAGS = -lUpmemDialectRuntime -ldpu -ldpuverbose -Wl,-s \
 # Passes to lower a upmem-level module to host LLVM IR.
 # Bufferize function boundaries first, then the standard lowering sequence.
 LOWER_PIPELINE = \
+    --cinm-unwrap-compute-blocks \
     --one-shot-bufferize="bufferize-function-boundaries function-boundary-type-conversion=identity-layout-map" \
-		--buffer-results-to-out-params=hoist-static-allocs \
-    --canonicalize --cse \
-    --cinm-unwrap-compute-blocks
+    --buffer-results-to-out-params=hoist-static-allocs \
+    --canonicalize --cse 
+#     --cinm-unwrap-compute-blocks
 
 TO_LLVM_PIPELINE = \
     --convert-upmem-to-llvm \
@@ -45,42 +45,17 @@ TO_LLVM_PIPELINE = \
     --cse --reconcile-unrealized-casts --canonicalize \
     --llvm-legalize-for-export --canonicalize --cse
 
-.PHONY: all clean dpu bench bench-single
+.PHONY: bench-single clean
 
-all: bench dpu
+.PRECIOUS: $(IR_DIR)/%.mlir $(IR_DIR)/%.final.mlir $(IR_DIR)/%.llvm.mlir $(IR_DIR)/%.ll $(IR_DIR)/%.opt.ll $(IR_DIR)/%.kernels.mlir
 
-bench: $(BIN_DIR)/bench
+$(IR_DIR) $(BIN_DIR):
+	mkdir -p $@
 
-# Per-function single benchmark binary (BENCH_FN must be set externally).
-# SRC_MLIR is already a single-function file here — copy it directly instead
-# of going through the multi-function split-stamp rule.
 $(IR_DIR)/$(BENCH_FN).mlir: $(SRC_MLIR) | $(IR_DIR)
 	cp $< $@
 
-$(IR_DIR):
-	mkdir -p $@
-
-$(BIN_DIR)/$(BENCH_FN): $(IR_DIR)/$(BENCH_FN).dpu.c | $(BIN_DIR)
-	$(COMPILE_DPU) $< $@
-
-bench-single: $(IR_DIR)/$(BENCH_FN).o $(BIN_DIR)/$(BENCH_FN) | $(BIN_DIR) $(OUT_DIR)
-	clang++ $(CXXFLAGS) -DBENCH_FN=$(BENCH_FN) $(BENCH_DRIVER) \
-	    $(IR_DIR)/$(BENCH_FN).o $(LDFLAGS) \
-	    -o $(BIN_DIR)/bench_$(BENCH_FN)
-
-# ─── Split source modules ────────────────────────────────────────────────────
-
-$(IR_DIR)/.split_stamp: $(SRC_MLIR) split_modules.py
-	@mkdir -p $(IR_DIR)
-	python3 split_modules.py $< $(IR_DIR) $(FUNCS)
-	@touch $@
-
-$(IR_DIR)/%.mlir: $(IR_DIR)/.split_stamp ;
-
 # ─── Host compilation ────────────────────────────────────────────────────────
-
-# Prevent Make from deleting intermediate files produced by pattern rules.
-.PRECIOUS: $(IR_DIR)/%.kernels.mlir $(IR_DIR)/%.llvm.mlir $(IR_DIR)/%.ll $(IR_DIR)/%.opt.ll $(IR_DIR)/%.mlir
 
 $(IR_DIR)/%.final.mlir: $(IR_DIR)/%.mlir
 	$(CINM_OPT) $< $(LOWER_PIPELINE) -o $@
@@ -105,22 +80,15 @@ $(IR_DIR)/%.kernels.mlir: $(IR_DIR)/%.mlir
 $(IR_DIR)/%.dpu.c: $(IR_DIR)/%.kernels.mlir
 	$(CINM_TRANS) --allow-unregistered-dialect --mlir-to-upmem-cpp $< -o $@
 
-dpu: $(FUNCS:%=$(IR_DIR)/%.dpu.c)
-	@mkdir -p $(BIN_DIR)
-	@for f in $(FUNCS); do \
-	    echo "Compiling DPU kernel $$f..."; \
-	    $(COMPILE_DPU) $(IR_DIR)/$$f.dpu.c $(BIN_DIR)/$$f; \
-	done
+$(BIN_DIR)/$(BENCH_FN): $(IR_DIR)/$(BENCH_FN).dpu.c | $(BIN_DIR)
+	$(COMPILE_DPU) $< $@
 
 # ─── Final host binary ───────────────────────────────────────────────────────
 
-$(BIN_DIR)/bench: bench.cpp $(HOST_OBJS) | $(BIN_DIR) $(OUT_DIR)
-	clang++ $(CXXFLAGS) $^ $(LDFLAGS) -o $@
-
-$(BIN_DIR) $(OUT_DIR):
-	mkdir -p $@
-
-# ─── Utilities ───────────────────────────────────────────────────────────────
+bench-single: $(IR_DIR)/$(BENCH_FN).o $(BIN_DIR)/$(BENCH_FN) | $(BIN_DIR)
+	clang++ $(CXXFLAGS) -DBENCH_FN=$(BENCH_FN) $(BENCH_DRIVER) \
+	    $(IR_DIR)/$(BENCH_FN).o $(LDFLAGS) \
+	    -o $(BIN_DIR)/bench_$(BENCH_FN)
 
 clean:
-	rm -rf $(IR_DIR) $(BIN_DIR) $(OUT_DIR)
+	rm -rf $(IR_DIR) $(BIN_DIR)
