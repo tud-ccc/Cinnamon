@@ -220,7 +220,7 @@ module {
 module {
   func.func @test(%arg0: memref<1024x1024xi32, strided<[4096, 1], offset: ?>>) {
     %1 = upmem.alloc_dpus with program @dpu_kernels::@program : !upmem.hierarchy<1x256x4>
-    // expected-error @+1 {{transferCount (4096) exceeds the largest contiguous run of elements (1024) in host buffer}}
+    // expected-error @+1 {{the number of transferred elements (4096) exceeds the largest contiguous run of elements (1024) in host buffer}}
     upmem.scatter %arg0[4096 elts, affine_map<(d0, d1) -> (d0 * 1024 + d1 * 4, 0)>] onto @buf of %1
         : memref<1024x1024xi32, strided<[4096, 1], offset: ?>> onto !upmem.hierarchy<1x256x4>
     return
@@ -239,7 +239,7 @@ module {
 module {
   func.func @test(%arg0: memref<1024x1024xi32, strided<[4096, 1], offset: ?>>) {
     %1 = upmem.alloc_dpus with program @dpu_kernels::@program : !upmem.hierarchy<1x256x4>
-    // expected-error @+1 {{transferCount (4096) exceeds the largest contiguous run of elements (1024) in host buffer}}
+    // expected-error @+1 {{the number of transferred elements (4096) exceeds the largest contiguous run of elements (1024) in host buffer}}
     upmem.gather %arg0[4096 elts, affine_map<(d0, d1) -> (d0 * 1024 + d1 * 4, 0)>] from @buf of %1
         : memref<1024x1024xi32, strided<[4096, 1], offset: ?>> from !upmem.hierarchy<1x256x4>
     return
@@ -266,6 +266,120 @@ module {
   module @dpu_kernels {
     upmem.dpu_program @program() tasklets(1) {
       %buf = upmem.static_alloc @buf(mram) : memref<1024xi32, "mram">
+      upmem.return
+    }
+  }
+}
+
+// -----
+
+// A valid broadcast: the host buffer's shape matches the target buffer's
+// shape once the target's leading extent-1 dim is dropped.
+module {
+  func.func @test(%arg0: memref<32xi32>) {
+    %1 = upmem.alloc_dpus with program @dpu_kernels::@program : !upmem.hierarchy<8x128x1>
+    upmem.broadcast %arg0 onto @buf of %1 : memref<32xi32> onto !upmem.hierarchy<8x128x1>
+    return
+  }
+  module @dpu_kernels {
+    upmem.dpu_program @program() tasklets(1) {
+      %buf = upmem.static_alloc @buf(mram) : memref<1x32xi32, "mram">
+      upmem.return
+    }
+  }
+}
+
+// -----
+
+// broadcast references a buffer name that does not exist in the dpu_program.
+module {
+  func.func @test(%arg0: memref<32xi32>) {
+    %1 = upmem.alloc_dpus with program @dpu_kernels::@program : !upmem.hierarchy<8x128x1>
+    // expected-error @+1 {{buffer reference @nonexistent does not refer to any symbol in @dpu_kernels::@program}}
+    upmem.broadcast %arg0 onto @nonexistent of %1 : memref<32xi32> onto !upmem.hierarchy<8x128x1>
+    return
+  }
+  module @dpu_kernels {
+    upmem.dpu_program @program() tasklets(1) {
+      %buf = upmem.static_alloc @buf(mram) : memref<32xi32, "mram">
+      upmem.return
+    }
+  }
+}
+
+// -----
+
+// broadcast references a symbol in the dpu_program that is not a
+// upmem.static_alloc.
+module {
+  func.func @test(%arg0: memref<32xi32>) {
+    %1 = upmem.alloc_dpus with program @dpu_kernels::@program : !upmem.hierarchy<8x128x1>
+    // expected-error @+1 {{buffer reference @not_a_buf must refer to a named upmem.static_alloc op}}
+    upmem.broadcast %arg0 onto @not_a_buf of %1 : memref<32xi32> onto !upmem.hierarchy<8x128x1>
+    return
+  }
+  module @dpu_kernels {
+    upmem.dpu_program @program() tasklets(1) {
+      func.func @not_a_buf() {
+        return
+      }
+      upmem.return
+    }
+  }
+}
+
+// -----
+
+// broadcast host buffer shape is not compatible with the target buffer's
+// shape, even up to extent-1 dimensions.
+module {
+  func.func @test(%arg0: memref<32xi32>) {
+    %1 = upmem.alloc_dpus with program @dpu_kernels::@program : !upmem.hierarchy<8x128x1>
+    // expected-error @+1 {{host buffer shape 'memref<32xi32>' is not compatible with target buffer 'memref<2x16xi32, "mram">' (shapes must be equal up to extent-1 dimensions)}}
+    upmem.broadcast %arg0 onto @buf of %1 : memref<32xi32> onto !upmem.hierarchy<8x128x1>
+    return
+  }
+  module @dpu_kernels {
+    upmem.dpu_program @program() tasklets(1) {
+      %buf = upmem.static_alloc @buf(mram) : memref<2x16xi32, "mram">
+      upmem.return
+    }
+  }
+}
+
+// -----
+
+// broadcast host buffer must have a static shape.
+module {
+  func.func @test(%arg0: memref<?xi32>) {
+    %1 = upmem.alloc_dpus with program @dpu_kernels::@program : !upmem.hierarchy<8x128x1>
+    // expected-error @+1 {{host buffer must have a static shape}}
+    upmem.broadcast %arg0 onto @buf of %1 : memref<?xi32> onto !upmem.hierarchy<8x128x1>
+    return
+  }
+  module @dpu_kernels {
+    upmem.dpu_program @program() tasklets(1) {
+      %buf = upmem.static_alloc @buf(mram) : memref<32xi32, "mram">
+      upmem.return
+    }
+  }
+}
+
+// -----
+
+// broadcast host buffer must be entirely contiguous: a 4-row x 8-col tile of
+// a 16-wide matrix is not one contiguous run of 32 elements.
+module {
+  func.func @test(%arg0: memref<4x8xi32, strided<[16, 1], offset: ?>>) {
+    %1 = upmem.alloc_dpus with program @dpu_kernels::@program : !upmem.hierarchy<8x128x1>
+    // expected-error @+1 {{the number of transferred elements (32) exceeds the largest contiguous run of elements (8) in host buffer}}
+    upmem.broadcast %arg0 onto @buf of %1
+        : memref<4x8xi32, strided<[16, 1], offset: ?>> onto !upmem.hierarchy<8x128x1>
+    return
+  }
+  module @dpu_kernels {
+    upmem.dpu_program @program() tasklets(1) {
+      %buf = upmem.static_alloc @buf(mram) : memref<4x8xi32, "mram">
       upmem.return
     }
   }

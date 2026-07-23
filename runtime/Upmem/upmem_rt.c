@@ -128,6 +128,20 @@ void upmemrt_dpu_scatter_to_tasklets(struct dpu_set_t *dpu_set,
 #endif
 }
 
+void upmemrt_dpu_broadcast(struct dpu_set_t *dpu_set, void *host_buffer,
+                           size_t copy_bytes, const char *buffer_id) {
+#ifdef UPMEM_RT_STATS
+  uint64_t t0 = upmemrt_now_ns();
+#endif
+  DPU_ASSERT(dpu_broadcast_to(*dpu_set, buffer_id, 0, host_buffer, copy_bytes,
+                              DPU_XFER_DEFAULT));
+#ifdef UPMEM_RT_STATS
+  uint32_t nr_dpus = 0;
+  dpu_get_nr_dpus(*dpu_set, &nr_dpus);
+  upmemrt_record_scatter(upmemrt_now_ns() - t0, copy_bytes, nr_dpus, "bc");
+#endif
+}
+
 struct dpu_set_t *upmemrt_dpu_alloc(int32_t num_ranks, int32_t num_dpus,
                                     const char *dpu_binary_path,
                                     size_t max_blocks_per_dpu) {

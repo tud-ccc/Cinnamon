@@ -80,6 +80,12 @@ upmem::DpuProgramOp upmem::ScatterOnTaskletsOp::getDpuProgram() {
   return alloc ? alloc.getDpuProgram() : upmem::DpuProgramOp{};
 }
 
+upmem::DpuProgramOp upmem::BroadcastOp::getDpuProgram() {
+  auto alloc =
+      dyn_cast_or_null<upmem::AllocDPUsOp>(getHierarchy().getDefiningOp());
+  return alloc ? alloc.getDpuProgram() : upmem::DpuProgramOp{};
+}
+
 upmem::DpuProgramOp upmem::WaitForOp::getDpuProgram() {
   auto alloc =
       dyn_cast_or_null<upmem::AllocDPUsOp>(getDpuSet().getDefiningOp());
@@ -130,7 +136,7 @@ static LogicalResult verifyScatterGatherContiguity(Operation *op,
                                                     int64_t transferCount) {
   int64_t contiguous = getContiguousSuffixSize(hostBufferTy);
   if (contiguous >= 0 && transferCount > contiguous)
-    return op->emitOpError("transferCount (")
+    return op->emitOpError("the number of transferred elements (")
            << transferCount
            << ") exceeds the largest contiguous run of elements ("
            << contiguous << ") in host buffer " << hostBufferTy
@@ -191,13 +197,30 @@ LogicalResult upmem::ScatterOnTaskletsOp::verify() {
   return success();
 }
 
-static LogicalResult
-verifyScatterGatherSymbolUses(Operation *op, Value hierarchy,
-                              FlatSymbolRefAttr dpuBufRef,
-                              SymbolTableCollection &symbolTable) {
+LogicalResult upmem::BroadcastOp::verify() {
+  MemRefType hostTy = getHostBuffer().getType();
+  if (!hostTy.hasStaticShape())
+    return emitOpError("host buffer must have a static shape");
+
+  if (failed(verifyScatterGatherContiguity(*this, hostTy,
+                                           hostTy.getNumElements())))
+    return failure();
+
+  return success();
+}
+
+/// Resolves `dpuBufRef` to the upmem.static_alloc it must name, in the
+/// dpu_program loaded onto `hierarchy`. Returns a null StaticAllocOp (not a
+/// failure) if `hierarchy` is a block argument and can't be resolved
+/// statically; emits an error and returns failure if it resolves to
+/// something else.
+static FailureOr<upmem::StaticAllocOp>
+resolveDpuBuffer(Operation *op, Value hierarchy, FlatSymbolRefAttr dpuBufRef,
+                 SymbolTableCollection &symbolTable) {
   auto allocOp = hierarchy.getDefiningOp<upmem::AllocDPUsOp>();
   if (!allocOp)
-    return success(); // hierarchy is a block argument; can't verify statically
+    return upmem::StaticAllocOp{}; // hierarchy is a block argument; can't
+                                   // verify statically
 
   auto program = symbolTable.lookupNearestSymbolFrom<upmem::DpuProgramOp>(
       op, allocOp.getDpuProgramRefAttr());
@@ -210,11 +233,33 @@ verifyScatterGatherSymbolUses(Operation *op, Value hierarchy,
            << dpuBufRef << " does not refer to any symbol in "
            << allocOp.getDpuProgramRefAttr();
 
-  if (!isa<upmem::StaticAllocOp>(bufOp))
+  auto staticAlloc = dyn_cast<upmem::StaticAllocOp>(bufOp);
+  if (!staticAlloc)
     return op->emitOpError("buffer reference ")
            << dpuBufRef << " must refer to a named upmem.static_alloc op";
 
-  return success();
+  return staticAlloc;
+}
+
+static LogicalResult
+verifyScatterGatherSymbolUses(Operation *op, Value hierarchy,
+                              FlatSymbolRefAttr dpuBufRef,
+                              SymbolTableCollection &symbolTable) {
+  return resolveDpuBuffer(op, hierarchy, dpuBufRef, symbolTable);
+}
+
+/// Returns true if `a` and `b` are equal once dimensions of extent 1 are
+/// dropped from each -- i.e. one is reachable from the other by only
+/// inserting/removing unit dims (as memref.expand_shape/collapse_shape would).
+static bool shapesCompatibleUpToUnitDims(ArrayRef<int64_t> a,
+                                         ArrayRef<int64_t> b) {
+  auto dropUnitDims = [](ArrayRef<int64_t> shape) {
+    SmallVector<int64_t> result;
+    llvm::copy_if(shape, std::back_inserter(result),
+                 [](int64_t d) { return d != 1; });
+    return result;
+  };
+  return dropUnitDims(a) == dropUnitDims(b);
 }
 
 LogicalResult
@@ -233,6 +278,27 @@ LogicalResult upmem::ScatterOnTaskletsOp::verifySymbolUses(
     SymbolTableCollection &symbolTable) {
   return verifyScatterGatherSymbolUses(*this, getHierarchy(),
                                        getDpuBufRefAttr(), symbolTable);
+}
+
+LogicalResult
+upmem::BroadcastOp::verifySymbolUses(SymbolTableCollection &symbolTable) {
+  auto staticAllocOrFailure =
+      resolveDpuBuffer(*this, getHierarchy(), getDpuBufRefAttr(), symbolTable);
+  if (failed(staticAllocOrFailure))
+    return failure();
+  upmem::StaticAllocOp staticAlloc = *staticAllocOrFailure;
+  if (!staticAlloc)
+    return success(); // hierarchy is a block argument; can't verify statically
+
+  if (!shapesCompatibleUpToUnitDims(getHostBuffer().getType().getShape(),
+                                    staticAlloc.getType().getShape()))
+    return emitOpError("host buffer shape ")
+           << getHostBuffer().getType()
+           << " is not compatible with target buffer "
+           << staticAlloc.getType()
+           << " (shapes must be equal up to extent-1 dimensions)";
+
+  return success();
 }
 
 ::mlir::LogicalResult upmem::AllocDPUsOp::verifySymbolUses(

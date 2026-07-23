@@ -56,6 +56,16 @@ void upmemrt_dpu_scatter_to_tasklets(struct dpu_set_t *dpu_set,
                                      const char *buffer_id,
                                      size_t (*base_offset)(size_t, size_t));
 
+/// Broadcast a buffer to the MRAM of every DPU in the set, identically.
+///
+/// @param dpu_set     Pointer to DPU structure
+/// @param host_buffer Buffer to broadcast; the `copy_bytes` bytes starting
+/// here are copied into every DPU's MRAM buffer, unchanged.
+/// @param copy_bytes  Number of bytes to copy into each DPU
+/// @param buffer_id   Constant string of the buffer ID
+void upmemrt_dpu_broadcast(struct dpu_set_t *dpu_set, void *host_buffer,
+                           size_t copy_bytes, const char *buffer_id);
+
 /// Allocates and loads a DPU set.
 ///
 /// @param num_ranks            Number of ranks to allocate
