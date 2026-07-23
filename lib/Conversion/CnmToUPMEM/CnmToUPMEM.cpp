@@ -187,6 +187,25 @@ static bool taskletBlocksAreContiguous(AffineMap scatterMap,
   return coeff.has_value() && *coeff == blockSizeInItems;
 }
 
+// Whether `scatterMap` (the CNM (rank, dpu, tasklet) -> host index map) does
+// not depend on any of its three dimensions and evaluates to the origin --
+// i.e. every DPU's tasklets all read the exact same region of the host
+// buffer, starting at its very first element. This is strictly stronger than
+// the tasklet-only broadcast used to decide MRAM layout (see
+// isMramBroadcastOverThreads), which only requires the tasklet dim to be
+// unused: `upmem.broadcast` (unlike `upmem.scatter`) has no affine map at
+// all, so every DPU in the hierarchy must get byte-for-byte identical data
+// straight from the start of the host buffer.
+static bool isGloballyBroadcast(AffineMap scatterMap) {
+  auto unusedDims = getUnusedDimsBitVector({scatterMap});
+  if (!unusedDims[0] || !unusedDims[1] || !unusedDims[2])
+    return false;
+  if (!scatterMap.isConstant())
+    return false;
+  return llvm::all_of(scatterMap.getConstantResults(),
+                      [](int64_t v) { return v == 0; });
+}
+
 static LogicalResult convertCnmGatherToUpmem(RewriterBase &rewriter,
                                              cnm::GatherOp op,
                                              upmem::AllocDPUsOp upmemWgAlloc,
@@ -250,6 +269,20 @@ static LogicalResult convertCnmScatterToUpmem(RewriterBase &rewriter,
       !taskletBlocksAreContiguous(op.getScatterMap(), op.getBuffer().getType(),
                                   hostBufferTy, blockSizeInItems);
 
+  // When every DPU's tasklets read byte-for-byte identical data straight
+  // from the start of the host buffer (isGloballyBroadcast), and that data
+  // is already exactly `hostBuffer`'s own contents (no slicing needed), we
+  // can skip the affine map entirely and use upmem.broadcast -- one runtime
+  // call broadcasting the whole buffer to every DPU, rather than a per-DPU
+  // scatter transfer that happens to always fetch the same bytes. This is
+  // gated behind !cinm1codegen the same way WRAM sharing already is (see
+  // wramIsShared above): cinm1-codegen's DPU-side code doesn't expect this
+  // shortcut, only the plain upmem.scatter (rank, dpu) form.
+  bool useBroadcastOp = isBroadcast && !opts.cinm1codegen &&
+                       hostBufferTy.hasStaticShape() &&
+                       hostBufferTy.getNumElements() == blockSizeInItems &&
+                       isGloballyBroadcast(op.getScatterMap());
+
   if (useTaskletForm) {
     AffineMap upmemMap = keepTaskletDimAffineMapCnmToUpmem(
         op.getScatterMap(), op.getBuffer().getType());
@@ -258,6 +291,9 @@ static LogicalResult convertCnmScatterToUpmem(RewriterBase &rewriter,
                                        refToBuffer, transferCount, upmemMap,
                                        upmemWgAlloc.getResult(),
                                        static_cast<int64_t>(numTasklets));
+  } else if (useBroadcastOp) {
+    upmem::BroadcastOp::create(rewriter, op->getLoc(), inputAsMemref,
+                               refToBuffer, upmemWgAlloc.getResult());
   } else {
     AffineMap upmemMap =
         adaptAffineMapCnmToUpmem(op.getScatterMap(), op.getBuffer().getType());
