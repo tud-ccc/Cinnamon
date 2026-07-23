@@ -1061,13 +1061,8 @@ void upmem::generateGemv(cinm::GemvOp op, RewriterBase &rewriter,
           ValueRange) -> SmallVector<Value> {
         Value mOff = ivs[0];
 
-        // the zero scatter map is a broadcast of the smaller tile
-        AffineMap zeroScatterMap = AffineMap::get(2, 0, {zeroExpr}, ctx);
-
         // Reset the running y partials to zero for this M tile.
-        upmem::ScatterOp::create(b, loc, yZero, yBufSym,
-                                 static_cast<uint64_t>(mramRows),
-                                 zeroScatterMap, dpus);
+        upmem::BroadcastOp::create(b, loc, yZero, yBufSym, dpus);
 
         cinm::createNestedAffineForLoops(
             b, loc, {K}, {dpuCols * mramCols}, {},
@@ -1080,9 +1075,14 @@ void upmem::generateGemv(cinm::GemvOp op, RewriterBase &rewriter,
               Value xToScatter =
                   packXSlice(b, loc, x, xStage, kOff, dpuCols, mramCols);
 
-              upmem::ScatterOp::create(b, loc, xToScatter, xBufSym,
-                                       static_cast<uint64_t>(mramCols), xMap,
-                                       dpus);
+              if (xMap.getNumOfZeroResults() == 2) {
+                // broadcast
+                upmem::BroadcastOp::create(b, loc, xToScatter, xBufSym, dpus);
+              } else {
+                upmem::ScatterOp::create(b, loc, xToScatter, xBufSym,
+                                         static_cast<uint64_t>(mramCols), xMap,
+                                         dpus);
+              }
               upmem::WaitForOp::create(b, loc, dpus);
 
               return {};
