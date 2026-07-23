@@ -371,6 +371,64 @@ def ScatterOnTaskletsOp: Upmem_Op<"scatter_on_tasklets", [
   }];
 }
 
+def BroadcastOp: Upmem_Op<"broadcast", [
+      MemoryEffects<[MemRead, MemWrite<DpuResource>]>,
+      DeclareOpInterfaceMethods<SymbolUserOpInterface>]> {
+  let summary = "copy a host buffer into the MRAM of every DPU, identically";
+  let description = [{
+    Copies all of `hostBuffer` into the DPU's MRAM buffer named `dpuBufRef`,
+    identically for every DPU in `hierarchy`. Unlike `upmem.scatter`, there is
+    no affine map and no per-DPU slicing: every DPU receives the same data, a
+    single flat transfer starting at offset zero in `hostBuffer` and covering
+    all of its elements. To broadcast a subset of a larger buffer, take a
+    `memref.subview` of it first.
+
+    `hostBuffer` must be contiguous in memory (a `memref.subview` is only
+    valid here if the sliced region is itself contiguous). Its shape must be
+    compatible with the target buffer's shape up to rank reduction/expansion
+    by extent-1 dimensions.
+
+    `dpuBufRef` is the symbol name of a `upmem.static_alloc` declared inside the
+    body of the `upmem.dpu_program` loaded by the `hierarchy`. The verifier checks
+    that the symbol exists and refers to a `upmem.static_alloc`.
+
+    ```mlir
+    // broadcast 1024 elements into @input_buf on every DPU
+    upmem.broadcast %hostBuf onto @input_buf of %dpus
+        : memref<1024xi32> onto !upmem.hierarchy<1x128x16>
+    ```
+  }];
+
+  let arguments = (ins Arg<AnyMemRef, "", [MemRead]>:$hostBuffer,
+                  FlatSymbolRefAttr:$dpuBufRef,
+                  DeviceHierarchyType:$hierarchy);
+
+  let results = (outs);
+
+  let extraClassDeclaration = [{
+    int64_t getNumElements() {
+      return getHostBuffer().getType().getNumElements();
+    }
+
+    int64_t getDpuBufferSizeInBits() {
+      return getNumElements() * getHostBuffer().getType().getElementTypeBitWidth();
+    }
+
+    int64_t getDpuBufferSizeInBytes() {
+      return getDpuBufferSizeInBits() / 8;
+    }
+
+    /// Return the DpuProgramOp loaded on this hierarchy, or null.
+    DpuProgramOp getDpuProgram();
+  }];
+
+  let hasVerifier = 1;
+  let assemblyFormat = [{
+    $hostBuffer `onto` $dpuBufRef `of` $hierarchy attr-dict
+    `:` type($hostBuffer) `onto` qualified(type($hierarchy))
+  }];
+}
+
 
 
 def DpuProgramOp : Upmem_Op<"dpu_program",

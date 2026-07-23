@@ -248,6 +248,21 @@ getScatterToTaskletsFunc(OpBuilder &rewriter, ModuleOp moduleOp,
       LLVM::LLVMVoidType::get(ctx));
 }
 
+/*
+void upmemrt_dpu_broadcast(struct dpu_set_t *dpu_set, void *host_buffer,
+                           size_t copy_bytes, const char *buffer_id);
+*/
+static FailureOr<LLVM::LLVMFuncOp>
+getBroadcastFunc(OpBuilder &rewriter, ModuleOp moduleOp,
+                 LLVMTypeConverter const *tyConverter) {
+  auto ctx = moduleOp->getContext();
+  auto ptrTy = untypedPtrType(ctx);
+  auto sizeTy = tyConverter->getIndexType();
+  return LLVM::lookupOrCreateFn(rewriter, moduleOp, "upmemrt_dpu_broadcast",
+                                {ptrTy, ptrTy, sizeTy, ptrTy},
+                                LLVM::LLVMVoidType::get(ctx));
+}
+
 static FailureOr<LLVM::LLVMFuncOp>
 appendOrGetFuncOp(OpBuilder &rewriter, StringRef funcName, Type resultType,
                   ArrayRef<Type> paramTypes, Operation *op) {
@@ -573,6 +588,44 @@ lowerScatterOnTasklets(upmem::ScatterOnTaskletsOp op,
   return success();
 }
 
+static LogicalResult
+lowerBroadcast(upmem::BroadcastOp op, upmem::BroadcastOp::Adaptor adaptor,
+              LLVMTypeConverter const *tyConverter,
+              ConversionPatternRewriter &rewriter0) {
+  auto loc = op->getLoc();
+  ImplicitLocOpBuilder rewriter(loc, rewriter0);
+  auto moduleOp = op->getParentOfType<ModuleOp>();
+
+  auto bufsOrFailure = computeBareHostBufAndBufferId(
+      op, adaptor.getHostBuffer(), op.getHostBuffer().getType().getElementType(),
+      op.getDpuBufRef(), rewriter, rewriter0, moduleOp);
+  if (failed(bufsOrFailure))
+    return failure();
+  auto [bareHostBuf, bufferId] = *bufsOrFailure;
+
+  auto runtimeFun = getBroadcastFunc(rewriter, moduleOp, tyConverter);
+  if (llvm::failed(runtimeFun))
+    return failure();
+
+  // Transfer size must be 8-byte aligned, like the classic scatter/gather
+  // block form.
+  auto numBytesCopied = op.getDpuBufferSizeInBytes();
+  numBytesCopied = llvm::alignTo(numBytesCopied, 8);
+
+  /*
+  void upmemrt_dpu_broadcast(struct dpu_set_t *dpu_set, void *host_buffer,
+                             size_t copy_bytes, const char *buffer_id)
+  */
+  LLVM::CallOp::create(
+      rewriter0, loc, *runtimeFun,
+      ValueRange{adaptor.getHierarchy(), bareHostBuf,
+                 reifyAsIndex(rewriter, tyConverter, numBytesCopied),
+                 bufferId});
+
+  rewriter0.eraseOp(op);
+  return success();
+}
+
 template <class Op>
 static LogicalResult lowerScatterOrGather(Op op, typename Op::Adaptor adaptor,
                                           LLVMTypeConverter const *tyConverter,
@@ -692,6 +745,20 @@ public:
   }
 };
 
+struct BroadcastOpToFuncCallLowering
+    : public ConvertOpToLLVMPattern<upmem::BroadcastOp> {
+public:
+  explicit BroadcastOpToFuncCallLowering(LLVMTypeConverter &lowering)
+      : ConvertOpToLLVMPattern<upmem::BroadcastOp>(lowering) {}
+
+  LogicalResult
+  matchAndRewrite(upmem::BroadcastOp op,
+                  typename upmem::BroadcastOp::Adaptor adaptor,
+                  ConversionPatternRewriter &rewriter0) const override {
+    return lowerBroadcast(op, adaptor, getTypeConverter(), rewriter0);
+  }
+};
+
 struct WaitForOpToFuncCallLowering
     : public ConvertOpToLLVMPattern<upmem::WaitForOp> {
   using ConvertOpToLLVMPattern<upmem::WaitForOp>::ConvertOpToLLVMPattern;
@@ -744,6 +811,7 @@ void populateUPMEMToLLVMConversionPatterns(LLVMTypeConverter &typeConverter,
   patterns.add<AllocDPUOpToFuncCallLowering>(typeConverter);
   patterns.add<ScatterOpToFuncCallLowering>(typeConverter);
   patterns.add<ScatterOnTaskletsOpToFuncCallLowering>(typeConverter);
+  patterns.add<BroadcastOpToFuncCallLowering>(typeConverter);
   patterns.add<GatherOpToFuncCallLowering>(typeConverter);
   patterns.add<WaitForOpToFuncCallLowering>(typeConverter);
   patterns.add<FreeDPUsOpToFuncCallLowering>(typeConverter);
