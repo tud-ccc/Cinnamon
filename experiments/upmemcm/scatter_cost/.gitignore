@@ -1,5 +1,2 @@
-bin
-*.csv
 plots
-.doit.db*
-__pycache__
+bin

@@ -1,9 +1,20 @@
-// Benchmark harness for the UPMEM SDK's dpu_push_sg_xfer scatter API.
+// Benchmark harness for UPMEM SDK host->DPU transfer APIs.
 //
 // Sweeps (num_dpus, blocks_per_dpu, block_size), timing a host-to-DPU
-// scatter transfer for each combination, and appends one CSV row per timed
+// transfer for each combination, and appends one CSV row per timed
 // repetition to SCATTER_CSV_OUT (default results.csv) as it goes, so an
 // interrupted run still leaves usable data.
+//
+// Which transfer API is benchmarked is chosen at compile time via XFER_MODE
+// (see Makefile, which builds one binary per mode):
+//   XFER_SG        (default) - dpu_push_sg_xfer, per-block scatter/gather.
+//                    Sweeps blocks_per_dpu 1..MAX_BLOCKS_PER_DPU.
+//   XFER_BLOCK     - dpu_push_xfer, one contiguous block per DPU
+//                    (dpu_prepare_xfer'd from a distinct host offset per
+//                    DPU). blocks_per_dpu is fixed at 1 (kept as a CSV
+//                    column for compatibility with analyze.py).
+//   XFER_BROADCAST - dpu_broadcast_to, the same host block copied to every
+//                    DPU. blocks_per_dpu is fixed at 1.
 //
 // Env vars:
 //   SCATTER_DENSE    - if set, sweep the full "multiples of 32" ranges in
@@ -35,9 +46,23 @@ extern "C" {
 #include <unistd.h>
 #include <vector>
 
+#define XFER_SG 0
+#define XFER_BLOCK 1
+#define XFER_BROADCAST 2
+
+#ifndef XFER_MODE
+#define XFER_MODE XFER_SG
+#endif
+
 namespace {
 
+// Only XFER_SG exercises more than one block per DPU; the other two APIs
+// each move exactly one contiguous block per DPU.
+#if XFER_MODE == XFER_SG
 constexpr int MAX_BLOCKS_PER_DPU = 24;
+#else
+constexpr int MAX_BLOCKS_PER_DPU = 1;
+#endif
 constexpr int MAX_BLOCK_SIZE = 8192;
 // Gap inserted after every block so consecutive blocks are never adjacent in
 // host memory -- otherwise the SDK could coalesce them into one contiguous
@@ -57,37 +82,49 @@ std::string envStr(const char *name, const char *def) {
   return v ? std::string(v) : std::string(def);
 }
 
-// {1..10} ∪ {powers of 2 up to MAX_DPUS}, plus {multiples of 32 up to
-// MAX_DPUS} when dense is requested.
+static std::vector<int> sampleFairLog2(bool dense, int max, int align,
+                                       int sampling) {
+  std::vector<int> s;
+  for (int i = align; i < align * sampling; i += align)
+    s.push_back(i);
+
+  if (dense) {
+    for (int lo = align * sampling; lo < MAX_DPUS; lo *= 2) {
+      // between 16 and max dpus, we
+      // take 16 samples in every bucket
+      // between 2^n and 2^(n+1)
+      for (int i = lo; i < lo * 2; i += lo / sampling) {
+        s.push_back(i);
+      }
+    }
+  } else {
+    for (int p = align * sampling; p <= max; p *= 2)
+      s.push_back(p);
+  }
+  return std::move(s);
+}
+
 std::vector<int> genDpuCounts(bool dense) {
-  std::set<int> s;
-  for (int i = 1; i <= 10; i++)
-    s.insert(i);
-  for (int p = 1; p <= MAX_DPUS; p *= 2)
-    s.insert(p);
-  if (dense)
-    for (int m = 32; m <= MAX_DPUS; m += 32)
-      s.insert(m);
-  return {s.begin(), s.end()};
+  return sampleFairLog2(dense, MAX_DPUS, 1, 16);
 }
 
 // {powers of 2, 8..MAX_BLOCK_SIZE}, plus {multiples of 32} when dense.
 std::vector<int> genBlockSizes(bool dense) {
-  std::set<int> s;
-  for (int p = 8; p <= MAX_BLOCK_SIZE; p *= 2)
-    s.insert(p);
-  if (dense)
-    for (int m = 32; m <= MAX_BLOCK_SIZE; m += 32)
-      s.insert(m);
-  return {s.begin(), s.end()};
+  return sampleFairLog2(dense, MAX_BLOCK_SIZE, 8, 16);
 }
 
 std::vector<int> genBlocksPerDpu() {
+#if XFER_MODE == XFER_SG
   std::vector<int> v;
   for (int i = 1; i <= MAX_BLOCKS_PER_DPU; i++)
     v.push_back(i);
   return v;
+#else
+  return {1};
+#endif
 }
+
+#if XFER_MODE == XFER_SG
 
 // Arguments closed over by the get_block callback. The SDK copies this
 // struct internally (get_block_t.args/args_size), so it's safe to keep on
@@ -112,6 +149,49 @@ bool getBlock(struct sg_block_info *out, uint32_t dpu_index,
   return true;
 }
 
+// Times a dpu_push_sg_xfer of `blocksPerDpu` blocks of `blockSize` bytes to
+// every DPU in `set`.
+dpu_error_t runTransfer(struct dpu_set_t set, const uint8_t *arena,
+                        size_t stride, int blocksPerDpu, uint32_t blockSize,
+                        size_t length) {
+  ScatterCtx ctx{arena, stride, blocksPerDpu, blockSize};
+  get_block_t getBlockInfo{getBlock, &ctx, sizeof(ctx)};
+  return dpu_push_sg_xfer(set, DPU_XFER_TO_DPU, MRAM_SYMBOL, 0, length,
+                          &getBlockInfo, DPU_SG_XFER_DEFAULT);
+}
+
+#elif XFER_MODE == XFER_BLOCK
+
+// Times a dpu_push_xfer of one contiguous `blockSize`-byte block per DPU,
+// each read from a distinct offset in `arena` (dpu_prepare_xfer'd per DPU) --
+// mirrors do_dpu_transfer in runtime/Upmem/upmem_rt.c.
+dpu_error_t runTransfer(struct dpu_set_t set, const uint8_t *arena,
+                        size_t stride, int /*blocksPerDpu*/,
+                        uint32_t /*blockSize*/, size_t length) {
+  struct dpu_set_t dpu;
+  size_t i = 0;
+  DPU_FOREACH(set, dpu, i) {
+    dpu_error_t err =
+        dpu_prepare_xfer(dpu, const_cast<uint8_t *>(arena + i * stride));
+    if (err != DPU_OK)
+      return err;
+  }
+  return dpu_push_xfer(set, DPU_XFER_TO_DPU, MRAM_SYMBOL, 0, length,
+                       DPU_XFER_DEFAULT);
+}
+
+#elif XFER_MODE == XFER_BROADCAST
+
+// Times a dpu_broadcast_to of one `blockSize`-byte block, copied to every
+// DPU in `set`.
+dpu_error_t runTransfer(struct dpu_set_t set, const uint8_t *arena,
+                        size_t /*stride*/, int /*blocksPerDpu*/,
+                        uint32_t /*blockSize*/, size_t length) {
+  return dpu_broadcast_to(set, MRAM_SYMBOL, 0, arena, length, DPU_XFER_DEFAULT);
+}
+
+#endif
+
 // Three stacked progress bars (dpus / blocks-per-dpu / block-size), rendered
 // by a single background thread reading atomics -- same pattern as
 // SimpleProgressBar/MultiSeedProgress in
@@ -130,13 +210,12 @@ struct SweepProgress {
     if (!active)
       return;
     auto makeBar = [](size_t maxProgress, const std::string &prefix) {
-      return std::make_unique<Bar>(
-          indicators::option::BarWidth{30},
-          indicators::option::MaxProgress{maxProgress},
-          indicators::option::PrefixText{prefix},
-          indicators::option::ShowPercentage{true},
-          indicators::option::ShowElapsedTime{true},
-          indicators::option::ShowRemainingTime{true});
+      return std::make_unique<Bar>(indicators::option::BarWidth{30},
+                                   indicators::option::MaxProgress{maxProgress},
+                                   indicators::option::PrefixText{prefix},
+                                   indicators::option::ShowPercentage{true},
+                                   indicators::option::ShowElapsedTime{true},
+                                   indicators::option::ShowRemainingTime{true});
     };
     bars.push_back(makeBar(nDpuCounts, "dpus       "));
     bars.push_back(makeBar(nBlocks, "blocks/dpu "));
@@ -192,49 +271,56 @@ int main() {
   size_t totalConfigs =
       dpuCounts.size() * blocksPerDpuList.size() * blockSizes.size();
   std::cerr << "scatter_bench: " << dpuCounts.size() << " dpu counts x "
-            << blocksPerDpuList.size() << " blocks/dpu x "
-            << blockSizes.size() << " block sizes = " << totalConfigs
-            << " configs, " << iters << " iters each"
-            << (dense ? " [dense]" : " [default]") << "\n";
+            << blocksPerDpuList.size() << " blocks/dpu x " << blockSizes.size()
+            << " block sizes = " << totalConfigs << " configs, " << iters
+            << " iters each" << (dense ? " [dense]" : " [default]") << "\n";
 
   // One padded host arena, sized for the worst case, allocated once so
   // per-config allocation cost never pollutes the timing loop.
-  size_t stride = static_cast<size_t>(MAX_BLOCK_SIZE) + BLOCK_PAD;
+  size_t maxStride = static_cast<size_t>(MAX_BLOCK_SIZE) + BLOCK_PAD;
   size_t arenaBytes =
-      static_cast<size_t>(MAX_DPUS) * MAX_BLOCKS_PER_DPU * stride;
+      static_cast<size_t>(MAX_DPUS) * MAX_BLOCKS_PER_DPU * maxStride;
   std::vector<uint8_t> arena(arenaBytes);
   for (size_t i = 0; i < arenaBytes; i++)
     arena[i] = static_cast<uint8_t>(i);
 
   std::ofstream csv(csvPath, std::ios::out | std::ios::trunc);
   if (!csv) {
-    std::cerr << "scatter_bench: failed to open " << csvPath << " for writing\n";
+    std::cerr << "scatter_bench: failed to open " << csvPath
+              << " for writing\n";
     return 1;
   }
   csv << "num_dpus,blocks_per_dpu,block_size,iter,ns\n";
   csv.flush();
 
   SweepProgress progress(dpuCounts.size(), blocksPerDpuList.size(),
-                          blockSizes.size());
+                         blockSizes.size());
 
+  // start with the biggest ones first because they're the slowest
+  std::reverse(dpuCounts.begin(), dpuCounts.end());
   for (int numDpus : dpuCounts) {
     struct dpu_set_t set;
+    dpu_error_t err;
+#if XFER_MODE == XFER_SG
     char profile[128];
     std::snprintf(profile, sizeof(profile),
                   "sgXferEnable=true,sgXferMaxBlocksPerDpu=%d",
                   MAX_BLOCKS_PER_DPU);
-    dpu_error_t err = dpu_alloc(numDpus, profile, &set);
+    err = dpu_alloc(numDpus, profile, &set);
+#else
+    err = dpu_alloc(numDpus, NULL, &set);
+#endif
     if (err != DPU_OK) {
       std::cerr << "scatter_bench: dpu_alloc(" << numDpus
-                 << ") failed: " << dpu_error_to_string(err)
-                 << " -- skipping this DPU count\n";
+                << ") failed: " << dpu_error_to_string(err)
+                << " -- skipping this DPU count\n";
       progress.tickDpu();
       continue;
     }
     err = dpu_load(set, DPU_BINARY, NULL);
     if (err != DPU_OK) {
       std::cerr << "scatter_bench: dpu_load failed for " << numDpus
-                 << " dpus: " << dpu_error_to_string(err) << "\n";
+                << " dpus: " << dpu_error_to_string(err) << "\n";
       dpu_free(set);
       progress.tickDpu();
       continue;
@@ -244,33 +330,30 @@ int main() {
     for (int blocksPerDpu : blocksPerDpuList) {
       progress.resetSizes();
       for (int blockSize : blockSizes) {
-        ScatterCtx ctx{arena.data(), static_cast<size_t>(blockSize) + BLOCK_PAD,
-                       blocksPerDpu, static_cast<uint32_t>(blockSize)};
-        get_block_t getBlockInfo{getBlock, &ctx, sizeof(ctx)};
+        size_t stride = static_cast<size_t>(blockSize) + BLOCK_PAD;
         size_t length =
             static_cast<size_t>(blocksPerDpu) * static_cast<size_t>(blockSize);
 
         for (int w = 0; w < warmup; w++)
-          dpu_push_sg_xfer(set, DPU_XFER_TO_DPU, MRAM_SYMBOL, 0, length,
-                            &getBlockInfo, DPU_SG_XFER_DEFAULT);
+          runTransfer(set, arena.data(), stride, blocksPerDpu,
+                      static_cast<uint32_t>(blockSize), length);
 
         for (int it = 0; it < iters; it++) {
           auto t0 = std::chrono::steady_clock::now();
-          err = dpu_push_sg_xfer(set, DPU_XFER_TO_DPU, MRAM_SYMBOL, 0, length,
-                                  &getBlockInfo, DPU_SG_XFER_DEFAULT);
+          err = runTransfer(set, arena.data(), stride, blocksPerDpu,
+                            static_cast<uint32_t>(blockSize), length);
           auto t1 = std::chrono::steady_clock::now();
           if (err != DPU_OK) {
-            std::cerr << "scatter_bench: dpu_push_sg_xfer failed (dpus="
-                       << numDpus << " blocks=" << blocksPerDpu
-                       << " size=" << blockSize
-                       << "): " << dpu_error_to_string(err) << "\n";
+            std::cerr << "scatter_bench: transfer failed (dpus=" << numDpus
+                      << " blocks=" << blocksPerDpu << " size=" << blockSize
+                      << "): " << dpu_error_to_string(err) << "\n";
             continue;
           }
-          int64_t ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
-                           t1 - t0)
-                           .count();
-          csv << numDpus << "," << blocksPerDpu << "," << blockSize << ","
-              << it << "," << ns << "\n";
+          int64_t ns =
+              std::chrono::duration_cast<std::chrono::nanoseconds>(t1 - t0)
+                  .count();
+          csv << numDpus << "," << blocksPerDpu << "," << blockSize << "," << it
+              << "," << ns << "\n";
           csv.flush();
         }
         progress.tickSize();

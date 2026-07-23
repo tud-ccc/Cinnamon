@@ -16,10 +16,10 @@ This file is split into two parts:
     study would define its own ScatterProblem and reuse every function below
     unchanged. Every template is a Template(key, name, features): `key` is
     the short identifier used as every dict/table key (and for
-    fit_regime_hybrid's low_template/high_template); `name` is the longer
-    display label used in printed tables and plot titles. (Candidate for
-    lifting into cinm_experiments once a second experiment is actually
-    written against it.)
+    fit_regime_hybrid's regime_templates); `name` is the longer display
+    label used in printed tables and plot titles. (Candidate for lifting
+    into cinm_experiments once a second experiment is actually written
+    against it.)
   - scatter_cost-*specific* configuration at the bottom (PROBLEM,
     EXTRA_TEMPLATES, CLI flags/defaults, main()) wiring the engine to this
     experiment's actual 3 dimensions and its own hand-found extra templates.
@@ -35,19 +35,22 @@ for reference. Same idea as reduce_cost's fit_overhead_term.py TEMPLATES dict
 (which also uses a cost-weighted fit for the same reason), simplified to
 weighted OLS.
 
---dpu-split fits every template separately on group <= threshold and
-group > threshold, to compare which template wins in each regime (e.g. if a
-single template can't fit both very low and very high DPU counts well); it
-also adds a "hybrid" template built from whichever templates actually won
-each regime (no need to name them by hand), fit again on just their own
-regime and stitched together, competing alongside every other whole-dataset
-template for best_key (and so also appearing in
+--split BOUNDARY [BOUNDARY ...] fits every template separately on each
+regime carved out of --split-dim (the group dimension, e.g. num_dpus, by
+default) by those boundaries -- e.g. --split 32 512 gives 3 regimes (<=32,
+32-512, >512) -- to compare which template wins in each (useful when a
+single template can't fit every regime well, e.g. very low vs. very high DPU
+counts). It also adds a "hybrid" template built from whichever templates
+actually won each regime (no need to name them by hand), fit again on just
+their own regime and stitched together, competing alongside every other
+whole-dataset template for best_key (and so also appearing in
 regression_fit.png/regression_fit_best.png if it wins).
 
 Usage:
   python3 analyze.py results.csv
   python3 analyze.py results.csv --out-dir plots --blocks-per-dpu 24 --num-dpus 2048
-  python3 analyze.py results.csv --dpu-split 32
+  python3 analyze.py results.csv --split 32
+  python3 analyze.py results.csv --split 32 512 --split-dim num_dpus
 """
 
 from __future__ import annotations
@@ -68,7 +71,6 @@ from matplotlib.ticker import FuncFormatter, NullFormatter
 import numpy as np
 import pandas as pd
 
-
 # ═══════════════════════════════════════════════════════════════════════════
 # Generic engine -- dimension-agnostic, no scatter_cost-specific column names
 # ═══════════════════════════════════════════════════════════════════════════
@@ -78,17 +80,36 @@ import pandas as pd
 
 @dataclasses.dataclass(frozen=True)
 class Dim:
-    """One independent variable of the sweep: a DataFrame column, its axis
-    label, and whether it spans enough orders of magnitude to warrant a log2
-    axis/tick scale (True for num_dpus/block_size/num_bytes-like columns;
-    False for something like blocks_per_dpu, 1-24 and best shown linearly)."""
+    """One independent variable (or measured value) of a sweep: a DataFrame
+    column, its axis label, and display preferences.
+
+    `log`: preferred log base for this dimension's axis/colorbar scale, or
+    None for a linear scale. Byte/count-like quantities (num_dpus,
+    block_size, num_bytes) are naturally binary and read better base-2;
+    time-like quantities (latency) are naturally decimal and read better
+    base-10; something with a small linear range (blocks_per_dpu, 1-24)
+    wants no log scale at all (None).
+    `decimal_labels`: whether tick/colorbar labels are written in plain
+    decimal (e.g. "1024") rather than exponent form. Decimal reads better
+    for log2 in practice; log10 is fine as decimal too, so this defaults to
+    True regardless of `log`.
+    `cmap`: preferred colormap name when this dimension is used as a color
+    axis, or None to let the plotting function fall back to its own
+    default (e.g. viridis).
+    """
 
     col: str
     label: str
-    log: bool = True
+    log: int | None = 2
+    decimal_labels: bool = True
+    cmap: str | None = None
 
 
-@dataclasses.dataclass(frozen=True)
+def _product(cols: list[pd.Series]) -> pd.Series:
+    return functools.reduce(operator.mul, cols)
+
+
+@dataclasses.dataclass
 class ScatterProblem:
     """Describes the dimensions of a scatter_bench-style sweep, so the fitting
     and plotting machinery below never needs to hardcode column names.
@@ -99,18 +120,37 @@ class ScatterProblem:
     natural thing to facet/color by. `shape` is the remaining dimension(s)
     describing the transfer itself (e.g. [blocks_per_dpu, block_size], or
     just [num_bytes] for a one-transfer-per-DPU variant).
+
+    `derived` holds Dim descriptors for columns computed by
+    add_derived_columns ("total", "shape_product") -- empty until that's
+    called. Not frozen (unlike Dim/Template) because add_derived_columns
+    populates this dict after construction.
     """
 
     group: Dim
     shape: list[Dim]
+    derived: dict[str, Dim] = dataclasses.field(default_factory=dict)
 
     @property
     def all_dims(self) -> list[Dim]:
         return [self.group] + self.shape
 
-
-def _product(cols: list[pd.Series]) -> pd.Series:
-    return functools.reduce(operator.mul, cols)
+    def add_derived_columns(self, agg: pd.DataFrame, log: int | None = 2) -> None:
+        """Adds "total" (product of every dim) and "shape_product" (product
+        of just the shape dims -- the dim itself when there's only one) to
+        `agg` in place, and registers Dim descriptors for them in
+        `self.derived` so they can be used for plotting like any other
+        dimension (e.g. plot_faceted_scatter/plot_vs_dim). Both are
+        byte/count-like products, hence `log` (base-2 by default) rather
+        than inferring a base from the constituent dims."""
+        agg["total"] = _product([agg[d.col] for d in self.all_dims])
+        agg["shape_product"] = _product([agg[d.col] for d in self.shape])
+        self.derived = {
+            "total": Dim("total", " × ".join(d.label for d in self.all_dims), log=log),
+            "shape_product": Dim(
+                "shape_product", " × ".join(d.label for d in self.shape), log=log
+            ),
+        }
 
 
 @dataclasses.dataclass(frozen=True)
@@ -119,18 +159,28 @@ class Template:
     CLI/dict-friendly identifier (e.g. "pairwise"); `name` is the longer
     human-readable label used in tables and plot titles (e.g. "pairwise
     (all dims)"); `features` is the DataFrame -> [n, k] design-matrix
-    function, same contract fit_ols/fit_all_templates expect."""
+    function, same contract fit_ols/fit_all_templates expect.
+
+    `fit` overrides the (X, y) -> fit-dict function used to fit this
+    template's design matrix -- None (the default) means fit_ols, the
+    weighted-least-squares fit every other template uses. Set it to swap in
+    a different fitting procedure (e.g. fit_lasso) that shares fit_ols's
+    return-dict contract (pred, intercept, coef, rmse, rel_rmse, r2) but
+    fits differently -- without teaching fit_all_templates about every
+    possible fitting procedure by name.
+
+    `report`, if set, is called with this template's own fit-dict once
+    after the whole-dataset fit, to print whatever extra info is specific
+    to this template (e.g. LASSO's alpha/which terms got pruned) -- keeps
+    that knowledge on the Template itself instead of main() reaching into
+    `fits[some_hardcoded_key]` and knowing what that particular template's
+    fit dict contains."""
 
     key: str
     name: str
     features: Callable[[pd.DataFrame], np.ndarray]
-
-
-def add_derived_columns(agg: pd.DataFrame, problem: ScatterProblem) -> None:
-    """Adds "total" (product of every dim) and "shape_product" (product of
-    just the shape dims -- the dim itself when there's only one) in place."""
-    agg["total"] = _product([agg[d.col] for d in problem.all_dims])
-    agg["shape_product"] = _product([agg[d.col] for d in problem.shape])
+    fit: Callable[[np.ndarray, np.ndarray], dict] | None = None
+    report: Callable[[dict], None] | None = None
 
 
 # ── Regression templates ────────────────────────────────────────────────────
@@ -153,6 +203,50 @@ def _pairwise_cols(dims: list[Dim], df: pd.DataFrame) -> list:
     return out
 
 
+def _pairwise_col_names(dims: list[Dim]) -> list[str]:
+    """Names matching _interaction_cols' columns 1:1, for labeling
+    coefficients (e.g. LASSO's) back by term instead of bare index."""
+    names = [d.col for d in dims]
+    for i in range(len(dims)):
+        for j in range(i, len(dims)):
+            if i == j:
+                names.append(f"{dims[i].col}²")
+            else:
+                names.append(f"{dims[i].col}*{dims[j].col}")
+    if len(dims) > 2:
+        names.append("*".join(d.col for d in dims))
+    return names
+
+
+def _interaction_col_names(dims: list[Dim]) -> list[str]:
+    """Names matching _interaction_cols' columns 1:1, for labeling
+    coefficients (e.g. LASSO's) back by term instead of bare index."""
+    names = [d.col for d in dims]
+    for i in range(len(dims)):
+        for j in range(i + 1, len(dims)):
+            names.append(f"{dims[i].col}*{dims[j].col}")
+    if len(dims) > 2:
+        names.append("*".join(d.col for d in dims))
+    return names
+
+
+def _interaction_cols(dims: list[Dim], df: pd.DataFrame) -> list:
+    """[dim for each dim] + [dim_i * dim_j for i < j] + [product of all
+    dims] -- every main effect and every cross term, but unlike
+    _pairwise_cols, no squared terms. This is the "a + bx + cy + dz + e*xy +
+    f*xz + g*yz + h*xyz" interaction-model form: the full set of candidates
+    a term-pruning procedure (manual backward elimination, or LASSO) picks
+    a subset from."""
+    cols = [df[d.col] for d in dims]
+    out = list(cols)
+    for i in range(len(cols)):
+        for j in range(i + 1, len(cols)):
+            out.append(cols[i] * cols[j])
+    if len(cols) > 2:
+        out.append(_product(cols))
+    return out
+
+
 def build_templates(
     problem: ScatterProblem, extra: dict[str, Template] | None = None
 ) -> dict[str, Template]:
@@ -162,39 +256,32 @@ def build_templates(
     dict keyed by each Template's short `key` (what every dict/CLI lookup
     uses), not its longer display `name`."""
     dims = problem.all_dims
-    group, shape = problem.group, problem.shape
 
     generated = [
-        Template("linear", "linear (all dims)", lambda df: _cols(*[df[d.col] for d in dims])),
+        Template(
+            "linear", "linear (all dims)", lambda df: _cols(*[df[d.col] for d in dims])
+        ),
         Template(
             "pairwise", "pairwise products", lambda df: _cols(*_pairwise_cols(dims, df))
         ),
-        Template(
-            "log2_all", "log2(all dims)", lambda df: _cols(*[np.log2(df[d.col]) for d in dims])
-        ),
-        # Matches the "each group value is the same curve, shifted by
-        # a*log2(group)" shape: a single log2(group) offset, plus a full
-        # pairwise (incl. cross terms) for the group-independent shape part.
-        Template(
-            "log2g_quad_shape",
-            "log2(group) + pairwise(shape)",
-            lambda df: _cols(np.log2(df[group.col]), *_pairwise_cols(shape, df)),
-        ),
+       
         Template(
             "total",
             "total (product of all dims)",
             lambda df: _cols(_product([df[d.col] for d in dims])),
         ),
-        Template(
-            "log2_total",
-            "log2(total)",
-            lambda df: _cols(np.log2(_product([df[d.col] for d in dims]))),
-        ),
-        Template(
-            "log2g_shape_prod",
-            "log2(group) + shape_product",
-            lambda df: _cols(np.log2(df[group.col]), _product([df[d.col] for d in shape])),
-        ),
+        # Template(
+        #     "log2_total",
+        #     "log2(total)",
+        #     lambda df: _cols(np.log2(_product([df[d.col] for d in dims]))),
+        # ),
+        # Template(
+        #     "log2g_shape_prod",
+        #     "log2(group) + shape_product",
+        #     lambda df: _cols(
+        #         np.log2(df[group.col]), _product([df[d.col] for d in shape])
+        #     ),
+        # ),
     ]
     templates = {t.key: t for t in generated}
     if extra:
@@ -212,6 +299,66 @@ def relative_rmse(resid: np.ndarray, y: np.ndarray) -> float:
     the largest latencies in the dataset."""
     return float(np.sqrt(np.mean((resid / y) ** 2)))
 
+
+def fit_lasso(
+    X: np.ndarray,
+    y: np.ndarray,
+    weighted: bool = True,
+    cv: int = 5,
+    random_state: int = 0,
+) -> dict:
+    from sklearn.linear_model import LassoCV
+    """Standardize X (zero mean, unit variance per column), fit LassoCV --
+    weighted by 1/y^2 the same way fit_ols's weighted OLS is, if
+    weighted=True, so this template is scored on the same relative-error
+    footing as every other one in the table -- then unwind the
+    standardization so `intercept`/`coef` come back on the *original*
+    feature scale (directly comparable to any other template's printed
+    coef, and usable to predict on raw, unstandardized inputs).
+
+    Coefficients LassoCV shrinks to exactly zero are the terms this
+    technique prunes automatically, in place of manually dropping one term
+    at a time and refitting.
+    """
+    mean = X.mean(axis=0)
+    std = X.std(axis=0)
+    std[std == 0] = 1.0
+    Xs = (X - mean) / std
+
+    # sample_weight = 1/y^2, matching fit_ols's row-scaling-by-1/y trick:
+    # scaling rows by sqrt(w) before an unweighted fit minimizes
+    # sum(w * resid^2) with w = sqrt(w)^2 -- same weighting, expressed via
+    # sklearn's native sample_weight instead, which (unlike row-scaling)
+    # doesn't also drag the intercept into the penalty term.
+    sample_weight = (1.0 / y) ** 2 if weighted else None
+
+    model = LassoCV(cv=cv, fit_intercept=True, max_iter=100_000, random_state=random_state)
+    model.fit(Xs, y, sample_weight=sample_weight)
+
+    # Unwind standardization: y = intercept_s + Xs @ coef_s
+    #                            = intercept_s + ((X - mean) / std) @ coef_s
+    #                            = (intercept_s - (mean/std)@coef_s) + X @ (coef_s/std)
+    coef = model.coef_ / std
+    intercept = float(model.intercept_ - np.sum(mean / std * model.coef_))
+
+    pred = intercept + X @ coef
+    resid = y - pred
+    rmse = float(np.sqrt(np.mean(resid**2)))
+    rel_rmse = float(np.sqrt(np.mean((resid / y) ** 2)))
+    ss_res = float(np.sum(resid**2))
+    ss_tot = float(np.sum((y - y.mean()) ** 2))
+    r2 = 1.0 - ss_res / ss_tot if ss_tot > 0 else float("nan")
+
+    return {
+        "pred": pred,
+        "intercept": intercept,
+        "coef": coef,
+        "rmse": rmse,
+        "rel_rmse": rel_rmse,
+        "r2": r2,
+        "alpha": float(model.alpha_),
+        "n_nonzero": int(np.sum(coef != 0)),
+    }
 
 def fit_ols(X: np.ndarray, y: np.ndarray, weighted: bool = True) -> dict:
     """OLS with intercept (the empirical minimum measured latency -- fixed
@@ -256,7 +403,8 @@ def fit_all_templates(
     fits = {}
     for key, tmpl in templates.items():
         X = tmpl.features(data)
-        fit = fit_ols(X, y)
+        fit_fn = tmpl.fit or fit_ols
+        fit = fit_fn(X, y)
         fit["name"] = tmpl.name
         fits[key] = fit
         rows.append(
@@ -287,37 +435,72 @@ def fit_and_report(
     table, fits = fit_all_templates(templates, agg, y)
 
     g = agg[problem.group.col]
-    print(f"\n=== {label} (n={len(agg)} configs, {problem.group.col} {g.min():g}-{g.max():g}) ===")
+    print(
+        f"\n=== {label} (n={len(agg)} configs, {problem.group.col} {g.min():g}-{g.max():g}) ==="
+    )
     print(table.to_string(index=False))
     return table, fits
+
+
+def regime_masks(values: pd.Series, boundaries: list[float]) -> list[np.ndarray]:
+    """Partitions `values` into len(boundaries)+1 boolean masks by a list of
+    upper boundaries (need not be pre-sorted): (values <= boundaries[0]),
+    (boundaries[0] < values <= boundaries[1]), ..., (values > boundaries[-1]).
+    Generalizes a single low/high threshold to an arbitrary number of
+    regimes along one dimension -- e.g. boundaries=[32, 512] on num_dpus
+    gives 3 regimes (<=32, 32-512, >512) instead of just 2."""
+    boundaries = sorted(boundaries)
+    masks = []
+    lo = -np.inf
+    for b in boundaries:
+        masks.append(((values > lo) & (values <= b)).to_numpy())
+        lo = b
+    masks.append((values > lo).to_numpy())
+    return masks
+
+
+def regime_labels(col: str, boundaries: list[float]) -> list[str]:
+    """Display labels matching regime_masks' regimes 1:1, e.g.
+    ["num_dpus <= 32", "32 < num_dpus <= 512", "num_dpus > 512"]."""
+    boundaries = sorted(boundaries)
+    labels = [f"{col} <= {boundaries[0]:g}"]
+    for lo, hi in zip(boundaries, boundaries[1:]):
+        labels.append(f"{lo:g} < {col} <= {hi:g}")
+    labels.append(f"{col} > {boundaries[-1]:g}")
+    return labels
 
 
 def fit_regime_hybrid(
     templates: dict[str, Template],
     agg: pd.DataFrame,
     y: np.ndarray,
-    problem: ScatterProblem,
-    split: float,
-    low_template: str,
-    high_template: str,
+    split_col: str,
+    boundaries: list[float],
+    regime_templates: list[str],
 ) -> dict:
-    """Fit `low_template` on group <= split and `high_template` on
-    group > split *separately* -- each regime only sees its own rows, so
-    neither fit is diluted by the other regime the way a single whole-dataset
-    fit is -- then stitch the two predictions together by regime and score
-    the combined result against the whole dataset. This is what --dpu-split's
-    two regime tables hint at (different templates win in each regime): does
-    picking the right template per regime actually beat every single
-    template fit globally? `low_template`/`high_template` are template keys
-    (short identifiers), not display names.
+    """Fit each regime's own template (`regime_templates[i]`, a template key)
+    on just that regime's own rows -- carved out of `agg` by `split_col` and
+    `boundaries` via regime_masks -- so no fit is diluted by rows from a
+    different regime the way a single whole-dataset fit is -- then stitch
+    the per-regime predictions back together and score the combined result
+    against the whole dataset. This is what --split's per-regime tables hint
+    at (different templates can win in different regimes): does picking the
+    right template per regime actually beat every single whole-dataset
+    template fit? `regime_templates` must have len(boundaries)+1 entries,
+    one per regime in the same low-to-high order regime_masks produces.
     """
-    mask_low = (agg[problem.group.col] <= split).to_numpy()
-    low_fit = fit_ols(templates[low_template].features(agg[mask_low]), y[mask_low])
-    high_fit = fit_ols(templates[high_template].features(agg[~mask_low]), y[~mask_low])
+    assert len(regime_templates) == len(boundaries) + 1, (
+        "need one template per regime (len(boundaries)+1)"
+    )
+    masks = regime_masks(agg[split_col], boundaries)
+    regime_fits = [
+        fit_ols(templates[key].features(agg[mask]), y[mask])
+        for mask, key in zip(masks, regime_templates)
+    ]
 
     pred = np.empty_like(y)
-    pred[mask_low] = low_fit["pred"]
-    pred[~mask_low] = high_fit["pred"]
+    for mask, fit in zip(masks, regime_fits):
+        pred[mask] = fit["pred"]
 
     resid = y - pred
     rmse = float(np.sqrt(np.mean(resid**2)))
@@ -330,74 +513,107 @@ def fit_regime_hybrid(
         "rmse": rmse,
         "rel_rmse": rel_rmse,
         "r2": r2,
-        "low_template": low_template,
-        "high_template": high_template,
-        "split": split,
-        "low_fit": low_fit,
-        "high_fit": high_fit,
+        "split_col": split_col,
+        "boundaries": boundaries,
+        "regime_templates": regime_templates,
+        "regime_fits": regime_fits,
     }
 
 
 # ── Plots ────────────────────────────────────────────────────────────────────
 
 
-def _pow2_ticks(values) -> list[int]:
-    """Powers of 2 spanning values' range, for colorbar/axis ticks."""
+def _log_ticks(values, base: int) -> list[float]:
+    """Powers of `base` spanning values' range, for colorbar/axis ticks."""
     lo, hi = float(np.min(values)), float(np.max(values))
-    k_min = int(np.floor(np.log2(lo)))
-    k_max = int(np.ceil(np.log2(hi)))
-    return [2**k for k in range(k_min, k_max + 1)]
+    k_min = int(np.floor(np.log(lo) / np.log(base)))
+    k_max = int(np.ceil(np.log(hi) / np.log(base)))
+    return [base**k for k in range(k_min, k_max + 1)]
+
+
+def _cmap_for(dim: Dim, default: str = "viridis"):
+    """`dim`'s preferred colormap, falling back to `default` if unset."""
+    return plt.get_cmap(dim.cmap or default)
 
 
 def _norm_for(dim: Dim, values):
     """(matplotlib Normalize, tick list-or-None) for a dimension's colorbar/
-    color-mapped axis, honoring its `log` flag."""
-    if dim.log:
-        return LogNorm(vmin=np.min(values), vmax=np.max(values)), _pow2_ticks(values)
+    color-mapped axis, honoring its `log` base (None = linear)."""
+    if dim.log is not None:
+        return LogNorm(vmin=np.min(values), vmax=np.max(values)), _log_ticks(
+            values, dim.log
+        )
     return Normalize(vmin=np.min(values), vmax=np.max(values)), None
 
 
+def _apply_log_scale(ax, dim: Dim, axis: str) -> None:
+    """Configure one matplotlib axis ('x' or 'y') for `dim`: log scale at its
+    preferred base (a no-op if dim.log is None), decimal tick labels if
+    dim.decimal_labels."""
+    if dim.log is None:
+        return
+    (ax.set_xscale if axis == "x" else ax.set_yscale)("log", base=dim.log)
+    if dim.decimal_labels:
+        axis_obj = ax.xaxis if axis == "x" else ax.yaxis
+        axis_obj.set_major_formatter(FuncFormatter(lambda v, _: f"{v:g}"))
+
+
 def _add_colorbar(fig, mappable, ax, dim: Dim, values, **kwargs):
-    ticks = _pow2_ticks(values) if dim.log else None
+    ticks = _log_ticks(values, dim.log) if dim.log is not None else None
     cbar = fig.colorbar(mappable, ax=ax, ticks=ticks, label=dim.label, **kwargs)
-    if dim.log:
+    if dim.log is not None and dim.decimal_labels:
         cbar.ax.yaxis.set_major_formatter(FuncFormatter(lambda v, _: f"{v:g}"))
         cbar.ax.yaxis.set_minor_formatter(NullFormatter())
     return cbar
 
 
-def plot_latency_vs_dim(
+def plot_vs_dim(
     agg: pd.DataFrame,
     x: Dim,
     color: Dim,
-    fixed: dict,
+    value: Dim,
     out_path: pathlib.Path,
-    cmap_name: str = "viridis",
+    fixed: dict | None = None,
+    connect: bool = True,
 ) -> None:
-    """Lines per `color` value, x = `x`, restricted to rows where every
-    column in `fixed` equals its given value. Pass fixed={} when there's
-    nothing left to hold fixed (e.g. only one shape dim total)."""
+    """`value` vs `x`, one line (connect=True) or scatter (connect=False)
+    per `color` value, optionally restricted to rows where every column in
+    `fixed` equals its given value. Use connect=False whenever several
+    combinations of other dims can share the same `x` value (e.g. a derived
+    product dim) -- connecting those with a line would draw a misleading
+    jagged zigzag instead of a cloud. `color`'s own `cmap` (falling back to
+    viridis) picks the marker/line colors."""
     sub = agg
-    for col, val in fixed.items():
+    for col, val in (fixed or {}).items():
         sub = sub[sub[col] == val]
     if sub.empty:
         return
     norm, _ = _norm_for(color, sub[color.col])
-    cmap = plt.get_cmap(cmap_name)
+    cmap = _cmap_for(color)
 
     fig, ax = plt.subplots(figsize=(7, 5))
     for c in sorted(sub[color.col].unique()):
-        s = sub[sub[color.col] == c].sort_values(x.col)
-        ax.plot(
-            s[x.col], s["ms"], marker="o", markersize=3, linewidth=1.5, color=cmap(norm(c))
-        )
-    if x.log:
-        ax.set_xscale("log", base=2)
-    ax.set_yscale("log")
+        s = sub[sub[color.col] == c]
+        if connect:
+            s = s.sort_values(x.col)
+            ax.plot(
+                s[x.col],
+                s[value.col],
+                marker="o",
+                markersize=3,
+                linewidth=1.5,
+                color=cmap(norm(c)),
+            )
+        else:
+            ax.scatter(s[x.col], s[value.col], s=10, alpha=0.6, color=cmap(norm(c)))
+    _apply_log_scale(ax, x, "x")
+    _apply_log_scale(ax, value, "y")
     ax.set_xlabel(x.label)
-    ax.set_ylabel("latency (ms)")
-    fixed_str = ", ".join(f"{k}={v}" for k, v in fixed.items())
-    ax.set_title(f"Scatter latency vs. {x.label}" + (f" ({fixed_str})" if fixed_str else ""))
+    ax.set_ylabel(value.label)
+    fixed_str = ", ".join(f"{k}={v}" for k, v in (fixed or {}).items())
+    ax.set_title(
+        f"{value.label} vs. {x.label}" + (f" ({fixed_str})" if fixed_str else "")
+    )
     ax.grid(True, which="both", linestyle="--", alpha=0.4)
     sm = plt.cm.ScalarMappable(cmap=cmap, norm=norm)
     _add_colorbar(fig, sm, ax, color, sub[color.col])
@@ -407,134 +623,117 @@ def plot_latency_vs_dim(
     plt.close(fig)
 
 
-def plot_latency_vs_shape_product(
-    agg: pd.DataFrame, problem: ScatterProblem, out_path: pathlib.Path
-) -> None:
-    """x = shape_product (every shape dim multiplied together -- the dim
-    itself when there's only one), scatter points (not connected lines,
-    since several shape-dim combinations can share the same product),
-    colored by group. Vertical spread at a fixed x means the shape dims
-    matter individually, not just through their product."""
-    color = problem.group
-    norm, _ = _norm_for(color, agg[color.col])
-    cmap = plt.get_cmap("viridis")
-
-    fig, ax = plt.subplots(figsize=(7, 5))
-    for c in sorted(agg[color.col].unique()):
-        s = agg[agg[color.col] == c]
-        ax.scatter(s["shape_product"], s["ms"], s=10, alpha=0.6, color=cmap(norm(c)))
-    ax.set_xscale("log", base=2)
-    ax.set_yscale("log")
-    shape_label = " × ".join(d.label for d in problem.shape)
-    ax.set_xlabel(shape_label)
-    ax.set_ylabel("latency (ms)")
-    suffix = " (every split)" if len(problem.shape) > 1 else ""
-    ax.set_title(f"Scatter latency vs. {shape_label}{suffix}")
-    ax.grid(True, which="both", linestyle="--", alpha=0.4)
-    sm = plt.cm.ScalarMappable(cmap=cmap, norm=norm)
-    _add_colorbar(fig, sm, ax, color, agg[color.col])
-    fig.tight_layout()
-    out_path.parent.mkdir(parents=True, exist_ok=True)
-    fig.savefig(out_path, dpi=150)
-    plt.close(fig)
-
-
 def plot_heatmap(
-    agg: pd.DataFrame, problem: ScatterProblem, group_value, out_path: pathlib.Path
+    agg: pd.DataFrame,
+    x: Dim,
+    y: Dim,
+    value: Dim,
+    group: Dim,
+    group_value,
+    out_path: pathlib.Path,
 ) -> None:
-    """Pivot of the first two shape dims -> latency, at one fixed group
-    value. Needs (at least) 2 shape dims to make sense -- a no-op when
-    there's only one (nothing to put on the second axis)."""
-    if len(problem.shape) < 2:
-        return
-    x_dim, y_dim = problem.shape[0], problem.shape[1]
-    sub = agg[agg[problem.group.col] == group_value]
+    """Pivot of `x` x `y` -> `value`, at one fixed `group` value. Fully
+    Dim-parametric -- no ScatterProblem here, so this (like the rest of the
+    plot_* functions) can move into a shared plotting module."""
+    sub = agg[agg[group.col] == group_value]
     if sub.empty:
         return
-    pivot = sub.pivot(index=y_dim.col, columns=x_dim.col, values="ms")
+    pivot = sub.pivot(index=y.col, columns=x.col, values=value.col)
     pivot = pivot.sort_index().sort_index(axis=1)
 
+    finite = pivot.values[~np.isnan(pivot.values)]
+    norm, _ = _norm_for(value, finite)
     fig, ax = plt.subplots(figsize=(8, 5))
     im = ax.pcolormesh(
         pivot.columns,
         pivot.index,
         pivot.values,
-        norm=LogNorm(vmin=np.nanmin(pivot.values), vmax=np.nanmax(pivot.values)),
-        cmap="viridis",
+        norm=norm,
+        cmap=_cmap_for(value),
         shading="nearest",
     )
-    if x_dim.log:
-        ax.set_xscale("log", base=2)
-    ax.set_xlabel(x_dim.label)
-    ax.set_ylabel(y_dim.label)
-    ax.set_title(f"Scatter latency (ms), {problem.group.col}={group_value}")
-    fig.colorbar(im, ax=ax, label="latency (ms)")
+    _apply_log_scale(ax, x, "x")
+    _apply_log_scale(ax, y, "y")
+    ax.set_xlabel(x.label)
+    ax.set_ylabel(y.label)
+    ax.set_title(f"{value.label}, {group.col}={group_value}")
+    _add_colorbar(fig, im, ax, value, finite)
     fig.tight_layout()
     out_path.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(out_path, dpi=150)
     plt.close(fig)
 
 
-def _plot_latency_3d_html(
+def _plot_3d_scatter_html(
     agg: pd.DataFrame,
-    problem: ScatterProblem,
-    z: np.ndarray,
-    z_name: str,
+    x: Dim,
+    y: Dim,
+    z: Dim,
+    z_values: np.ndarray,
+    z_label: str,
     title: str,
     out_path: pathlib.Path,
+    color: Dim | None = None,
 ) -> None:
-    """Interactive 3D scatter, written as a standalone HTML file via Plotly.
+    """Interactive 3D scatter (x, y, z=`z` described by `value`, optionally
+    colored by `color`), written as a standalone HTML file via Plotly. Fully
+    Dim-parametric -- no ScatterProblem here.
 
     Matplotlib's mplot3d does NOT reliably support log-scaled 3D axes --
     set_xscale/set_zscale exist but don't correctly rescale the 3D
     projection. Plotly's WebGL 3D scene supports log axes directly and
     correctly, plus rotate/zoom/hover instead of a single fixed static angle.
 
-    Axes: the first two shape dims with color=group when there are >= 2
-    shape dims (this experiment's layout); otherwise x=group, y=the one
-    shape dim, no color dimension (there's nothing left to spend it on) --
-    either way, exactly 3 informative axes.
+    `z` is passed as a raw array rather than read off `agg` because it may be
+    a regression template's prediction, not a real column; `value` supplies
+    its axis scale/label preferences (log base, decimal labels) while
+    `z_label` supplies the specific wording for *this* call (e.g. "measured
+    latency" vs. "predicted latency (some template)").
     """
     import plotly.graph_objects as go
 
-    if len(problem.shape) >= 2:
-        x_dim, y_dim, color_dim = problem.shape[0], problem.shape[1], problem.group
-    else:
-        x_dim, y_dim, color_dim = problem.group, problem.shape[0], None
-
     marker = dict(size=4, opacity=0.7)
-    if color_dim is not None:
-        color_vals = agg[color_dim.col]
-        if color_dim.log:
-            ticks = _pow2_ticks(color_vals)
+    if color is not None:
+        color_vals = agg[color.col]
+        if color.log is not None:
+            ticks = _log_ticks(color_vals, color.log)
+            log_vals = np.log(color_vals) / np.log(color.log)
             marker.update(
-                color=np.log2(color_vals),
-                colorscale="Viridis",
+                color=log_vals,
+                colorscale=color.cmap or "Viridis",
                 colorbar=dict(
-                    title=color_dim.label,
-                    tickvals=np.log2(ticks),
-                    ticktext=[f"{t:g}" for t in ticks],
+                    title=color.label,
+                    tickvals=(np.log(ticks) / np.log(color.log))
+                    if color.decimal_labels
+                    else None,
+                    ticktext=[f"{t:g}" for t in ticks]
+                    if color.decimal_labels
+                    else None,
                 ),
             )
         else:
             marker.update(
-                color=color_vals, colorscale="Viridis", colorbar=dict(title=color_dim.label)
+                color=color_vals,
+                colorscale=color.cmap or "Viridis",
+                colorbar=dict(title=color.label),
             )
     else:
-        marker.update(color=z, colorscale="Viridis", colorbar=dict(title=z_name))
+        marker.update(
+            color=z_values, colorscale=z.cmap or "Viridis", colorbar=dict(title=z_label)
+        )
 
-    hover_dims = problem.all_dims
-    customdata = np.column_stack([agg[d.col] for d in hover_dims] + [z])
+    hover_dims = [d for d in (x, y, color) if d is not None]
+    customdata = np.column_stack([agg[d.col] for d in hover_dims] + [z_values])
     hover_lines = [f"{d.col}=%{{customdata[{i}]}}" for i, d in enumerate(hover_dims)]
-    hover_lines.append(f"{z_name}=%{{customdata[{len(hover_dims)}]:.4g}} ms")
+    hover_lines.append(f"{z_label}=%{{customdata[{len(hover_dims)}]:.4g}}")
     hovertemplate = "<br>".join(hover_lines) + "<extra></extra>"
 
     fig = go.Figure(
         data=[
             go.Scatter3d(
-                x=agg[x_dim.col],
-                y=agg[y_dim.col],
-                z=z,
+                x=agg[x.col],
+                y=agg[y.col],
+                z=z_values,
                 mode="markers",
                 marker=marker,
                 customdata=customdata,
@@ -542,12 +741,17 @@ def _plot_latency_3d_html(
             )
         ]
     )
+    # Plotly's 3D scene axis "type" only distinguishes log vs. linear, not
+    # log base -- there's no "log2"/"log10" variant, just "log".
     fig.update_layout(
         title=title,
         scene=dict(
-            xaxis=dict(title=x_dim.label, type="log" if x_dim.log else "linear"),
-            yaxis=dict(title=y_dim.label, type="log" if y_dim.log else "linear"),
-            zaxis=dict(title=f"{z_name} (ms)", type="log"),
+            xaxis=dict(title=x.label, type="log" if x.log is not None else "linear"),
+            yaxis=dict(title=y.label, type="log" if y.log is not None else "linear"),
+            zaxis=dict(
+                title=f"{z_label} ({z.label})",
+                type="log" if z.log is not None else "linear",
+            ),
         ),
         margin=dict(l=0, r=0, b=0, t=40),
     )
@@ -555,44 +759,68 @@ def _plot_latency_3d_html(
     fig.write_html(str(out_path))
 
 
-def plot_latency_3d(agg: pd.DataFrame, problem: ScatterProblem, out_path: pathlib.Path) -> None:
-    """Interactive 3D scatter of *measured* latency."""
-    title = "Measured latency: " + " × ".join(d.label for d in problem.all_dims)
-    _plot_latency_3d_html(agg, problem, agg["ms"].to_numpy(), "measured latency", title, out_path)
+def plot_3d_measured(
+    agg: pd.DataFrame, x: Dim, y: Dim, z: Dim, color: Dim, out_path: pathlib.Path
+) -> None:
+    """Interactive 3D scatter of *measured* `value`."""
+    title = f"Measured {z.label}: "
+    _plot_3d_scatter_html(
+        agg,
+        x=x,
+        y=y,
+        z=z,
+        z_values=agg[z.col].to_numpy(),
+        z_label=f"measured {z.label}",
+        title=title,
+        out_path=out_path,
+        color=color,
+    )
 
 
-def plot_predicted_latency_3d(
+def plot_3d_predicted(
     agg: pd.DataFrame,
-    problem: ScatterProblem,
-    pred: np.ndarray,
+    x: Dim,
+    y: Dim,
+    z: Dim,
+    z_values: np.ndarray,
+    color: Dim,
     template_name: str,
     out_path: pathlib.Path,
 ) -> None:
-    """Same 3D view as plot_latency_3d, but z = a regression template's
-    *predicted* latency instead of the measured value. Comparing this
-    against plot_latency_3d's measured point cloud shows what shape each
-    model actually assumes -- e.g. a template with no term for some
-    dimension predicts a surface that's completely flat along it, so if the
-    measured cloud visibly fans out along that dimension instead, that
-    mismatch is exactly why the template fits poorly."""
-    title = f"Predicted latency ({template_name}): " + " × ".join(
-        d.label for d in problem.all_dims
+    """Same 3D view as plot_3d_measured, but z = a regression template's
+    *predicted* value instead of the measured one. Comparing this against
+    plot_3d_measured's point cloud shows what shape each model actually
+    assumes -- e.g. a template with no term for some dimension predicts a
+    surface that's completely flat along it, so if the measured cloud
+    visibly fans out along that dimension instead, that mismatch is exactly
+    why the template fits poorly."""
+    title = f"Predicted {y.label} ({template_name})"
+
+    _plot_3d_scatter_html(
+        agg,
+        x=x,
+        y=y,
+        z=z,
+        z_values=z_values,
+        z_label=f"predicted {z.label}",
+        title=title,
+        out_path=out_path,
+        color=color,
     )
-    _plot_latency_3d_html(agg, problem, pred, "predicted latency", title, out_path)
 
 
-def plot_latency_vs_x_faceted(
+def plot_faceted_scatter(
     agg: pd.DataFrame,
-    x_col: str,
-    x_label: str,
+    x: Dim,
+    y: Dim,
     title: str,
     out_path: pathlib.Path,
     facet: Dim,
     color: Dim,
 ) -> None:
     """One small subplot per `facet` value (not colored by it, faceted on
-    it), latency vs. x_col, points colored by `color`. Every subplot shares
-    the same x/y limits, so this shows whether x_col alone collapses latency
+    it), `value` vs. `x`, points colored by `color`. Every subplot shares
+    the same x/y limits, so this shows whether `x` alone collapses `value`
     onto (roughly) the same curve regardless of `facet`, or whether the
     curves still shift from panel to panel."""
     facet_values = sorted(agg[facet.col].unique())
@@ -601,14 +829,18 @@ def plot_latency_vs_x_faceted(
     nrows = (n + ncols - 1) // ncols
 
     color_norm, _ = _norm_for(color, agg[color.col])
-    cmap = plt.get_cmap("plasma")
+    cmap = _cmap_for(color, default="plasma")
 
     pad = 1.15
-    x_lo, x_hi = agg[x_col].min() / pad, agg[x_col].max() * pad
-    y_lo, y_hi = agg["ms"].min() / pad, agg["ms"].max() * pad
+    x_lo, x_hi = agg[x.col].min() / pad, agg[x.col].max() * pad
+    y_lo, y_hi = agg[y.col].min() / pad, agg[y.col].max() * pad
 
     fig, axes = plt.subplots(
-        nrows, ncols, figsize=(2.6 * ncols, 2.6 * nrows), squeeze=False, constrained_layout=True
+        nrows,
+        ncols,
+        figsize=(2.6 * ncols, 2.6 * nrows),
+        squeeze=False,
+        constrained_layout=True,
     )
 
     sc = None
@@ -616,10 +848,16 @@ def plot_latency_vs_x_faceted(
         ax = axes[divmod(i, ncols)[0]][divmod(i, ncols)[1]]
         sub = agg[agg[facet.col] == v]
         sc = ax.scatter(
-            sub[x_col], sub["ms"], s=6, alpha=0.6, c=sub[color.col], cmap=cmap, norm=color_norm
+            sub[x.col],
+            sub[y.col],
+            s=6,
+            alpha=0.6,
+            c=sub[color.col],
+            cmap=cmap,
+            norm=color_norm,
         )
-        ax.set_xscale("log")
-        ax.set_yscale("log")
+        _apply_log_scale(ax, x, "x")
+        _apply_log_scale(ax, y, "y")
         ax.set_xlim(x_lo, x_hi)
         ax.set_ylim(y_lo, y_hi)
         ax.set_title(f"{facet.col}={v}", fontsize=9)
@@ -629,12 +867,12 @@ def plot_latency_vs_x_faceted(
     for j in range(n, nrows * ncols):
         axes[divmod(j, ncols)[0]][divmod(j, ncols)[1]].axis("off")
 
-    fig.supxlabel(x_label)
-    fig.supylabel("latency (ms)")
+    fig.supxlabel(x.label)
+    fig.supylabel(y.label)
     fig.suptitle(title)
     if sc is not None:
         cbar = fig.colorbar(sc, ax=axes.ravel().tolist(), shrink=0.8, label=color.label)
-        if color.log:
+        if color.log is not None and color.decimal_labels:
             cbar.ax.yaxis.set_major_formatter(FuncFormatter(lambda v, _: f"{v:g}"))
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
@@ -648,20 +886,20 @@ def plot_all_regression_fits(
     fits: dict,
     table: pd.DataFrame,
     best_key: str,
-    problem: ScatterProblem,
+    color: Dim,
+    value: Dim,
     out_path: pathlib.Path,
 ) -> None:
     """One square measured-vs-predicted subplot per regression template, 2
     per row. The best template's title is red. Every subplot in a row shares
-    the same color scale (group), so only one colorbar is drawn per row (at
-    the row's right edge) instead of one per subplot."""
+    the same color scale (`color`), so only one colorbar is drawn per row
+    (at the row's right edge) instead of one per subplot."""
     keys = list(table["key"])
     ncols = 2
     nrows = (len(keys) + ncols - 1) // ncols
 
-    color = problem.group
     norm, ticks = _norm_for(color, data[color.col])
-    cmap = plt.get_cmap("viridis")
+    cmap = _cmap_for(color)
     sm = plt.cm.ScalarMappable(cmap=cmap, norm=norm)
 
     # Shared axis limits across every subplot for direct comparability. Some
@@ -687,15 +925,19 @@ def plot_all_regression_fits(
         r, c = divmod(i, ncols)
         ax = fig.add_subplot(gs[r, c])
         fit = fits[key]
-        ax.scatter(fit["pred"], y, s=8, alpha=0.5, c=data[color.col], cmap=cmap, norm=norm)
-        ax.plot([lo, hi], [lo, hi], color="gray", linestyle="--", linewidth=1, label="y = x")
+        ax.scatter(
+            fit["pred"], y, s=8, alpha=0.5, c=data[color.col], cmap=cmap, norm=norm
+        )
+        ax.plot(
+            [lo, hi], [lo, hi], color="gray", linestyle="--", linewidth=1, label="y = x"
+        )
         ax.set_xlim(lo, hi)
         ax.set_ylim(lo, hi)
-        ax.set_xscale("log")
-        ax.set_yscale("log")
+        _apply_log_scale(ax, value, "x")
+        _apply_log_scale(ax, value, "y")
         ax.set_aspect("equal", adjustable="box")
-        ax.set_xlabel("predicted latency (ms)")
-        ax.set_ylabel("measured latency (ms)")
+        ax.set_xlabel(f"predicted {value.label}")
+        ax.set_ylabel(f"measured {value.label}")
         is_best = key == best_key
         ax.set_title(
             f"{fit['name']}\nrelRMSE={fit['rel_rmse'] * 100:.1f}%, R²={fit['r2']:.3f}, "
@@ -710,7 +952,7 @@ def plot_all_regression_fits(
     for r in range(nrows):
         cax = fig.add_subplot(gs[r, ncols])
         cbar = fig.colorbar(sm, cax=cax, ticks=ticks, label=color.label)
-        if color.log:
+        if color.log is not None and color.decimal_labels:
             cbar.ax.yaxis.set_major_formatter(FuncFormatter(lambda v, _: f"{v:g}"))
             cbar.ax.yaxis.set_minor_formatter(NullFormatter())
 
@@ -724,7 +966,8 @@ def plot_best_regression_fit(
     data: pd.DataFrame,
     y: np.ndarray,
     fit: dict,
-    problem: ScatterProblem,
+    color: Dim,
+    value: Dim,
     out_path: pathlib.Path,
 ) -> None:
     """Same square measured-vs-predicted style as plot_all_regression_fits,
@@ -737,21 +980,25 @@ def plot_best_regression_fit(
     lo = positive.min() / pad
     hi = positive.max() * pad
 
-    color = problem.group
     norm, ticks = _norm_for(color, data[color.col])
 
     fig, ax = plt.subplots(figsize=(6, 6))
-    sc = ax.scatter(pred, y, s=8, alpha=0.5, c=data[color.col], cmap="viridis", norm=norm)
-    ax.plot([lo, hi], [lo, hi], color="gray", linestyle="--", linewidth=1, label="y = x")
+    sc = ax.scatter(
+        pred, y, s=8, alpha=0.5, c=data[color.col], cmap=_cmap_for(color), norm=norm
+    )
+    ax.plot(
+        [lo, hi], [lo, hi], color="gray", linestyle="--", linewidth=1, label="y = x"
+    )
     ax.set_xlim(lo, hi)
     ax.set_ylim(lo, hi)
-    ax.set_xscale("log")
-    ax.set_yscale("log")
+    _apply_log_scale(ax, value, "x")
+    _apply_log_scale(ax, value, "y")
     ax.set_aspect("equal", adjustable="box")
-    ax.set_xlabel("predicted latency (ms)")
-    ax.set_ylabel("measured latency (ms)")
+    ax.set_xlabel(f"predicted {value.label}")
+    ax.set_ylabel(f"measured {value.label}")
+    nl = '\n'
     ax.set_title(
-        f"Best fit: {fit['name']}\n"
+        f"Best fit:\n {fit['name'].replace('/', '/' + nl)}\n"
         f"relRMSE={fit['rel_rmse'] * 100:.1f}%, R²={fit['r2']:.3f}, RMSE={fit['rmse']:.3g}ms",
         color="red",
         fontweight="bold",
@@ -759,7 +1006,7 @@ def plot_best_regression_fit(
     ax.grid(True, which="both", linestyle="--", alpha=0.4)
     ax.legend()
     cbar = fig.colorbar(sc, ax=ax, ticks=ticks, label=color.label)
-    if color.log:
+    if color.log is not None and color.decimal_labels:
         cbar.ax.yaxis.set_major_formatter(FuncFormatter(lambda v, _: f"{v:g}"))
         cbar.ax.yaxis.set_minor_formatter(NullFormatter())
     fig.tight_layout()
@@ -773,25 +1020,75 @@ def plot_best_regression_fit(
 # ═══════════════════════════════════════════════════════════════════════════
 
 PROBLEM = ScatterProblem(
-    group=Dim("num_dpus", "number of DPUs"),
+    group=Dim("num_dpus", "number of DPUs", log=2),
     shape=[
-        Dim("blocks_per_dpu", "blocks per DPU", log=False),
-        Dim("block_size", "block size (bytes)"),
+        Dim("blocks_per_dpu", "blocks per DPU", log=None),
+        Dim("block_size", "block size (bytes)", cmap="plasma", log=2),
     ],
 )
+
+# The measured/predicted value every plot's "value" axis describes -- time-like,
+# so base-10 (unlike the byte/count-like sweep dimensions above, which are base-2).
+LATENCY = Dim(
+    col="ms", label="latency (ms)", log=10, decimal_labels=False, cmap="viridis"
+)
+
+
+def _lasso_term_report(dims: list[Dim]) -> Callable[[dict], None]:
+    """Builds a Template.report callback for a LASSO fit whose features were
+    built by _pairwise_cols(dims, ...) -- prints which of those terms
+    survived vs. were pruned to exactly zero, labeled by name (via
+    _pairwise_col_names, matching _pairwise_cols' column order 1:1) instead
+    of bare coefficient index."""
+    names = _pairwise_col_names(dims)
+
+    def report(fit: dict) -> None:
+        print(
+            f"\n=== LASSO term selection (alpha={fit['alpha']:.4g}, "
+            f"{fit['n_nonzero']}/{len(names)} terms kept) ==="
+        )
+        for name, c in zip(names, fit["coef"]):
+            print(f"  {name:24s} {c:14.6g}" + ("" if c != 0 else "  (pruned)"))
+
+    return report
+
 
 # Bespoke templates found by trial and error that don't fall out of
 # build_templates' generic families -- kept as `extra` rather than forcing
 # the generator to special-case them.
 EXTRA_TEMPLATES: dict[str, Template] = {
+    "simplest": Template(
+        key="simplest",
+        name="dpu, size",
+        features=lambda d: _cols(
+            d.num_dpus,
+            d.block_size,
+            # d.num_dpus * d.blocks_per_dpu * d.block_size,
+        ),
+    ),
     "compound": Template(
         "compound",
         "compound",
         lambda d: _cols(
-            np.log2(d.num_dpus), d.blocks_per_dpu, d.num_dpus * d.blocks_per_dpu * d.block_size
+            np.log2(d.num_dpus),
+            d.blocks_per_dpu,
+            d.num_dpus * d.blocks_per_dpu * d.block_size,
         ),
     ),
+    # Standardized LASSO over the same terms as "pairwise" -- the automatic
+    # term-pruning analogue of it, fit via fit_lasso instead of fit_ols.
+    # Which terms LASSO zeros out is printed via `report` (see
+    # _lasso_term_report below) instead of main() hardcoding this template's
+    # own coefficient layout.
+    "lasso": Template(
+        "lasso",
+        "LASSO (pairwise)",
+        lambda d: _cols(*_pairwise_cols(PROBLEM.all_dims, d)),
+        fit=fit_lasso,
+        report=_lasso_term_report(PROBLEM.all_dims),
+    ),
 }
+
 
 def main():
     parser = argparse.ArgumentParser(
@@ -815,15 +1112,25 @@ def main():
         help="num_dpus to slice for the heatmap (default: the largest value present)",
     )
     parser.add_argument(
-        "--dpu-split",
+        "--split",
         type=float,
+        nargs="+",
         default=None,
-        help="if given, also fit+report every template separately on num_dpus <= "
-        "this threshold and num_dpus > this threshold (in addition to the "
-        "whole-dataset fit), to compare which template wins in each regime. "
-        "Also builds a 'hybrid' template out of whichever template won each "
-        "regime, competing alongside every other template "
+        metavar="BOUNDARY",
+        help="one or more boundaries to split --split-dim on (e.g. --split 32 512 "
+        "gives 3 regimes: <=32, 32-512, >512), to fit+report every template "
+        "separately per regime (in addition to the whole-dataset fit) and "
+        "compare which template wins in each. Also builds a 'hybrid' "
+        "template out of whichever template won each regime, competing "
+        "alongside every other template "
         "(default: no split, whole-dataset fit only, no hybrid)",
+    )
+    parser.add_argument(
+        "--split-dim",
+        default=None,
+        nargs="+",
+        help="which dimension's column --split's boundaries apply to. If multiple are provided, the product is computed."
+        "(default: the group dimension, e.g. num_dpus)",
     )
     args = parser.parse_args()
 
@@ -833,7 +1140,7 @@ def main():
     df["ms"] = df["ns"] / 1e6
 
     agg = df.groupby([d.col for d in PROBLEM.all_dims])["ms"].mean().reset_index()
-    add_derived_columns(agg, PROBLEM)
+    PROBLEM.add_derived_columns(agg)
     templates = build_templates(PROBLEM, extra=EXTRA_TEMPLATES)
 
     blocks_dim, size_dim = PROBLEM.shape
@@ -842,37 +1149,70 @@ def main():
     out_dir = pathlib.Path(args.out_dir)
 
     fixed_blocks = {blocks_dim.col: blocks_per_dpu}
-    plot_latency_vs_dim(
-        agg, size_dim, PROBLEM.group, fixed_blocks, out_dir / "latency_vs_block_size.png"
+
+    p_x, p_y = (
+        (blocks_dim, size_dim)
+        if agg[blocks_dim.col].nunique() > 1
+        else (size_dim, PROBLEM.group)
     )
-    plot_latency_vs_dim(
+
+    plot_vs_dim(
+        agg,
+        size_dim,
+        PROBLEM.group,
+        LATENCY,
+        out_dir / "latency_vs_block_size.png",
+        fixed=fixed_blocks,
+    )
+    plot_vs_dim(
         agg,
         PROBLEM.group,
         size_dim,
-        fixed_blocks,
+        LATENCY,
         out_dir / "latency_vs_num_dpus.png",
-        cmap_name="plasma",
+        fixed=fixed_blocks,
     )
-    plot_latency_vs_shape_product(agg, PROBLEM, out_dir / "latency_vs_bytes_per_dpu.png")
-    plot_latency_3d(agg, PROBLEM, out_dir / "latency_3d.html")
-    plot_heatmap(agg, PROBLEM, num_dpus, out_dir / "heatmap_blocks_vs_size.png")
-    total_label = " × ".join(d.label for d in PROBLEM.all_dims)
-    shape_label = " × ".join(d.label for d in PROBLEM.shape)
-    plot_latency_vs_x_faceted(
+    plot_vs_dim(
         agg,
-        "total",
-        total_label,
-        "Scatter latency vs. total bytes, one panel per DPU count",
-        out_dir / "latency_vs_total_bytes.png",
+        PROBLEM.derived["shape_product"],
+        PROBLEM.group,
+        LATENCY,
+        out_dir / "latency_vs_bytes_per_dpu.png",
+        connect=False,
+    )
+    plot_3d_measured(
+        agg,
+        x=p_x,
+        y=p_y,
+        z=LATENCY,
+        color=PROBLEM.group,
+        out_path=out_dir / "latency_3d.html",
+    )
+    if len(PROBLEM.shape) >= 2:
+        plot_heatmap(
+            agg,
+            x=p_x,
+            y=p_y,
+            value=LATENCY,
+            group=PROBLEM.group,
+            group_value=num_dpus,
+            out_path=out_dir / "heatmap_blocks_vs_size.png",
+        )
+    plot_faceted_scatter(
+        agg,
+        x=PROBLEM.derived["total"],
+        y=LATENCY,
+        title="Total bytes, one panel per DPU count",
+        out_path=out_dir / "latency_vs_total_bytes.png",
         facet=PROBLEM.group,
         color=size_dim,
     )
-    plot_latency_vs_x_faceted(
+    plot_faceted_scatter(
         agg,
-        "shape_product",
-        shape_label,
-        "Scatter latency vs. bytes per DPU, one panel per DPU count",
-        out_dir / "latency_vs_bytes_per_dpu_faceted.png",
+        x=PROBLEM.derived["shape_product"],
+        y=LATENCY,
+        title="Bytes per DPU, one panel per DPU count",
+        out_path=out_dir / "latency_vs_bytes_per_dpu_faceted.png",
         facet=PROBLEM.group,
         color=size_dim,
     )
@@ -880,32 +1220,47 @@ def main():
     y = agg["ms"].to_numpy(dtype=float)
     table, fits = fit_and_report(templates, agg, PROBLEM, "All DPU counts")
 
-    if args.dpu_split is not None:
-        low = agg[agg[PROBLEM.group.col] <= args.dpu_split]
-        high = agg[agg[PROBLEM.group.col] > args.dpu_split]
-        low_best_key = high_best_key = None
-        if not low.empty:
-            low_table, _ = fit_and_report(templates, low, PROBLEM, f"DPU count <= {args.dpu_split:g}")
-            low_best_key = low_table.iloc[0]["key"]
-        if not high.empty:
-            high_table, _ = fit_and_report(templates, high, PROBLEM, f"DPU count > {args.dpu_split:g}")
-            high_best_key = high_table.iloc[0]["key"]
+    for key, tmpl in templates.items():
+        if tmpl.report is not None:
+            tmpl.report(fits[key])
 
-        # Hybrid: whichever template won the low regime, fit only on
-        # num_dpus <= split, plus whichever won the high regime, fit only on
-        # num_dpus > split, stitched together -- added to `fits`/`table`
+    if len(args.split) > 0:
+        if len(args.split_dim) == 0:
+          split_col = PROBLEM.group.col
+        elif len(args.split_dim) == 1:
+          split_col = args.split_dim[0] 
+        elif len(args.split_dim) > 1:
+          split_col = ' x '.join(args.split_dim)
+          agg[split_col] = _product(agg[col] for col in args.split_dim)
+
+        boundaries = sorted(args.split)
+        labels = regime_labels(split_col, boundaries)
+        masks = regime_masks(agg[split_col], boundaries)
+
+        regime_best_keys = []
+        for mask, label in zip(masks, labels):
+            sub = agg[mask]
+            if sub.empty:
+                regime_best_keys.append(None)
+                print(f"Not building hybrid model because mask empty: {label}")
+                continue
+            regime_table, _ = fit_and_report(templates, sub, PROBLEM, label)
+            regime_best_keys.append(regime_table.iloc[0]["key"])
+
+        # Hybrid: whichever template won each regime, fit only on that
+        # regime's own rows, stitched together -- added to `fits`/`table`
         # alongside every whole-dataset template, so it competes for
         # best_key and shows up in regression_fit.png (and
-        # regression_fit_best.png if it wins). Only meaningful with both
-        # regimes populated.
-        if low_best_key is not None and high_best_key is not None:
+        # regression_fit_best.png if it wins). Only meaningful with every
+        # regime populated.
+        if all(k is not None for k in regime_best_keys):
             hybrid_key = "hybrid"
-            hybrid_name = (
-                f"hybrid: {templates[low_best_key].name} (≤{args.dpu_split:g} dpus) / "
-                f"{templates[high_best_key].name} (>{args.dpu_split:g} dpus)"
+            hybrid_name = "hybrid: " + " / ".join(
+                f"{templates[key].name} ({label})"
+                for key, label in zip(regime_best_keys, labels)
             )
             hybrid_fit = fit_regime_hybrid(
-                templates, agg, y, PROBLEM, args.dpu_split, low_best_key, high_best_key
+                templates, agg, y, split_col, boundaries, regime_best_keys
             )
             hybrid_fit["name"] = hybrid_name
             fits[hybrid_key] = hybrid_fit
@@ -937,14 +1292,33 @@ def main():
             )
 
     best_key = table.iloc[0]["key"]
-    plot_all_regression_fits(agg, y, fits, table, best_key, PROBLEM, out_dir / "regression_fit.png")
-    plot_best_regression_fit(agg, y, fits[best_key], PROBLEM, out_dir / "regression_fit_best.png")
-    plot_predicted_latency_3d(
+    plot_all_regression_fits(
         agg,
-        PROBLEM,
-        fits[best_key]["pred"],
-        fits[best_key]["name"],
-        out_dir / "latency_3d_predicted_best.html",
+        y,
+        fits,
+        table,
+        best_key,
+        PROBLEM.group,
+        LATENCY,
+        out_dir / "regression_fit.png",
+    )
+    plot_best_regression_fit(
+        agg,
+        y,
+        fits[best_key],
+        PROBLEM.group,
+        LATENCY,
+        out_dir / "regression_fit_best.png",
+    )
+    plot_3d_predicted(
+        agg,
+        x=p_x,
+        y=p_y,
+        z=LATENCY,
+        color=PROBLEM.group,
+        z_values=fits[best_key]["pred"],
+        template_name=fits[best_key]["name"],
+        out_path=out_dir / "latency_3d_predicted_best.html",
     )
     best_fit = fits[best_key]
     print(f"\nBest fit: {best_fit['name']} (key={best_key})")
@@ -952,17 +1326,15 @@ def main():
         f"  relRMSE = {best_fit['rel_rmse'] * 100:.2f}%   "
         f"RMSE = {best_fit['rmse']:.4g} ms   R² = {best_fit['r2']:.4f}"
     )
-    if "low_template" in best_fit:
-        print(
-            f"  {best_fit['low_template']} (<= {best_fit['split']:g} dpus): "
-            f"intercept = {best_fit['low_fit']['intercept']:.4g}, "
-            f"coef = {[f'{c:.4g}' for c in best_fit['low_fit']['coef']]}"
-        )
-        print(
-            f"  {best_fit['high_template']} (> {best_fit['split']:g} dpus): "
-            f"intercept = {best_fit['high_fit']['intercept']:.4g}, "
-            f"coef = {[f'{c:.4g}' for c in best_fit['high_fit']['coef']]}"
-        )
+    if "regime_fits" in best_fit:
+        labels = regime_labels(best_fit["split_col"], best_fit["boundaries"])
+        for label, key, fit in zip(
+            labels, best_fit["regime_templates"], best_fit["regime_fits"]
+        ):
+            print(
+                f"  {key} ({label}): intercept = {fit['intercept']:.4g}, "
+                f"coef = {[f'{c:.4g}' for c in fit['coef']]}"
+            )
     else:
         print(f"  intercept = {best_fit['intercept']:.4g}")
         print(f"  coef = {[f'{c:.4g}' for c in best_fit['coef']]}")

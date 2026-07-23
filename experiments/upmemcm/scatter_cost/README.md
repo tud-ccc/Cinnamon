@@ -1,17 +1,29 @@
-This is a microbenchmark to determine cost-modelling parameters for
-`dpu_push_sg_xfer` scatter transfers (host -> DPU), sweeping number of DPUs,
-blocks per DPU, and block size.
+This is a microbenchmark to determine cost-modelling parameters for UPMEM
+host -> DPU transfer APIs, sweeping number of DPUs, blocks per DPU, and block
+size. Three transfer APIs are covered, each as its own host binary built from
+the same `scatter_bench.cpp` (see the `XFER_MODE` doc-comment at its top) and
+sharing one DPU-side binary (`scatter_dpu.c`, whose MRAM buffer is sized for
+the worst case of all three):
+
+- `bin/scatter_bench` — `dpu_push_sg_xfer` (per-block scatter/gather; sweeps
+  blocks_per_dpu 1..24).
+- `bin/scatter_bench_block` — `dpu_push_xfer` (one contiguous block per DPU;
+  blocks_per_dpu fixed at 1).
+- `bin/scatter_bench_broadcast` — `dpu_broadcast_to` (same block copied to
+  every DPU; blocks_per_dpu fixed at 1).
 
 ## Build
 
 ```
-make                 # builds bin/scatter_dpu and bin/scatter_bench
+make                 # builds bin/scatter_dpu and all three bin/scatter_bench* binaries
 ```
 
 ## Run
 
 ```
-./bin/scatter_bench
+./bin/scatter_bench             # dpu_push_sg_xfer
+SCATTER_CSV_OUT=results_block.csv ./bin/scatter_bench_block
+SCATTER_CSV_OUT=results_broadcast.csv ./bin/scatter_bench_broadcast
 ```
 
 Sweeps a reduced default range (~4.8k configs, ~1 minute) and appends results
