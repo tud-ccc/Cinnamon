@@ -51,6 +51,7 @@ namespace {
 struct Opts {
   bool cinm1codegen = false;
   bool useSgXferCodegen = true;
+  bool useBcXferCodegen = true;
   bool useMramNoInit = true;
 };
 
@@ -202,6 +203,7 @@ static bool isGloballyBroadcast(AffineMap scatterMap) {
     return false;
   if (!scatterMap.isConstant())
     return false;
+  // todo in the future detect offset != 0 and turn it into a subview then broadcast
   return llvm::all_of(scatterMap.getConstantResults(),
                       [](int64_t v) { return v == 0; });
 }
@@ -278,7 +280,7 @@ static LogicalResult convertCnmScatterToUpmem(RewriterBase &rewriter,
   // gated behind !cinm1codegen the same way WRAM sharing already is (see
   // wramIsShared above): cinm1-codegen's DPU-side code doesn't expect this
   // shortcut, only the plain upmem.scatter (rank, dpu) form.
-  bool useBroadcastOp = isBroadcast && !opts.cinm1codegen &&
+  bool useBroadcastOp = isBroadcast && opts.useBcXferCodegen &&
                        hostBufferTy.hasStaticShape() &&
                        hostBufferTy.getNumElements() == blockSizeInItems &&
                        isGloballyBroadcast(op.getScatterMap());
@@ -659,6 +661,7 @@ struct ConvertCnmToUPMEMPass
     Operation *rootOp = getOperation();
     Opts opts{.cinm1codegen = cinm1Codegen,
               .useSgXferCodegen = useSgXferCodegen,
+              .useBcXferCodegen = useBcXferCodegen,
               .useMramNoInit = !cinm1Codegen};
 
     // Determine kernel module name: prefer per-op annotation, else option.

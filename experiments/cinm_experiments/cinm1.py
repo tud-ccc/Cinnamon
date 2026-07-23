@@ -122,6 +122,7 @@ def _step6(use_upmem_scatter_api: bool):
     options = {
         "cinm1-codegen": "true",
         "use-sg-xfer-codegen": str(use_upmem_scatter_api).lower(),
+        "use-bc-xfer-codegen": str(use_upmem_scatter_api).lower(),
     }
     pass_opts = _infer_opts_str(options)
 

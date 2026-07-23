@@ -43,4 +43,8 @@ Finally
 
 ![image](4_final.png)
 
+Final: also use the broadcast API. This is very beneficial to reduce the latency of the scatter of the x buffer in gemv. This specific broadcast cannot be used in the form that has a partial reduction.
+
+![image](5_final_with_bc.png)
+
 
