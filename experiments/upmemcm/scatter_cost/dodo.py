@@ -44,7 +44,6 @@ def task_bench():
         yield {
             "name": f"{fn}",
             "targets": [f"plots/{fn}/results.csv"],
-            "uptodate": [config_changed({var: os.getenv(var) for var in env_vars})],
             "file_dep": ["bin/scatter_dpu", f"bin/scatter_bench_{fn}"],
             "actions": [
                 Interactive(
@@ -53,6 +52,7 @@ def task_bench():
                         **os.environ,
                         **bench_env.get(fn, {}),
                         "SCATTER_CSV_OUT": f"plots/{fn}/results.csv",
+                        "SCATTER_ITERS": '10',
                     },
                 )
             ],

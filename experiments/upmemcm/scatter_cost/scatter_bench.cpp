@@ -28,7 +28,6 @@ extern "C" {
 #include <dpu.h>
 }
 
-#include <indicators/dynamic_progress.hpp>
 #include <indicators/progress_bar.hpp>
 
 #include <atomic>
@@ -192,56 +191,39 @@ dpu_error_t runTransfer(struct dpu_set_t set, const uint8_t *arena,
 
 #endif
 
-// Three stacked progress bars (dpus / blocks-per-dpu / block-size), rendered
-// by a single background thread reading atomics -- same pattern as
-// SimpleProgressBar/MultiSeedProgress in
-// lib/Dialect/Cinm/AcceleratorInference/Progress.h.
+// Single progress bar over all (num_dpus, blocks_per_dpu, block_size)
+// configs, ticked once per config from the hot loop via a plain atomic;
+// a background thread reads it and redraws every 150ms -- same pattern as
+// SimpleProgressBar in lib/Dialect/Cinm/AcceleratorInference/Progress.h.
 struct SweepProgress {
   using Bar = indicators::ProgressBar;
   bool active;
-  std::vector<std::unique_ptr<Bar>> bars;
-  std::unique_ptr<indicators::DynamicProgress<Bar>> dyn;
-  std::atomic<size_t> dpuDone_{0}, blockDone_{0}, sizeDone_{0};
+  std::unique_ptr<Bar> bar;
+  std::atomic<size_t> done_{0};
   std::atomic<bool> stop_{false};
   std::thread printer_;
 
-  SweepProgress(size_t nDpuCounts, size_t nBlocks, size_t nSizes)
+  explicit SweepProgress(size_t totalConfigs)
       : active(isatty(fileno(stdout))) {
     if (!active)
       return;
-    auto makeBar = [](size_t maxProgress, const std::string &prefix) {
-      return std::make_unique<Bar>(indicators::option::BarWidth{30},
-                                   indicators::option::MaxProgress{maxProgress},
-                                   indicators::option::PrefixText{prefix},
-                                   indicators::option::ShowPercentage{true},
-                                   indicators::option::ShowElapsedTime{true},
-                                   indicators::option::ShowRemainingTime{true});
-    };
-    bars.push_back(makeBar(nDpuCounts, "dpus       "));
-    bars.push_back(makeBar(nBlocks, "blocks/dpu "));
-    bars.push_back(makeBar(nSizes, "block size "));
-    dyn = std::make_unique<indicators::DynamicProgress<Bar>>();
-    for (auto &b : bars)
-      dyn->push_back(*b);
+    bar = std::make_unique<Bar>(
+        indicators::option::BarWidth{30},
+        indicators::option::MaxProgress{totalConfigs},
+        indicators::option::PrefixText{"configs "},
+        indicators::option::ShowPercentage{true},
+        indicators::option::ShowElapsedTime{true},
+        indicators::option::ShowRemainingTime{true});
 
     printer_ = std::thread([this] {
       while (!stop_.load(std::memory_order_relaxed)) {
-        bars[0]->set_progress(dpuDone_.load(std::memory_order_relaxed));
-        bars[1]->set_progress(blockDone_.load(std::memory_order_relaxed));
-        bars[2]->set_progress(sizeDone_.load(std::memory_order_relaxed));
-        std::cout << "\033[?2026h";
-        dyn->print_progress();
-        std::cout << "\033[?2026l" << std::flush;
+        bar->set_progress(done_.load(std::memory_order_relaxed));
         std::this_thread::sleep_for(std::chrono::milliseconds(150));
       }
     });
   }
 
-  void resetBlocks() { blockDone_.store(0, std::memory_order_relaxed); }
-  void resetSizes() { sizeDone_.store(0, std::memory_order_relaxed); }
-  void tickDpu() { dpuDone_.fetch_add(1, std::memory_order_relaxed); }
-  void tickBlock() { blockDone_.fetch_add(1, std::memory_order_relaxed); }
-  void tickSize() { sizeDone_.fetch_add(1, std::memory_order_relaxed); }
+  void tick(size_t n = 1) { done_.fetch_add(n, std::memory_order_relaxed); }
 
   void finish() {
     if (!active)
@@ -250,8 +232,7 @@ struct SweepProgress {
     stop_.store(true, std::memory_order_relaxed);
     if (printer_.joinable())
       printer_.join();
-    for (auto &b : bars)
-      b->mark_as_completed();
+    bar->mark_as_completed();
   }
   ~SweepProgress() { finish(); }
 };
@@ -260,8 +241,8 @@ struct SweepProgress {
 
 int main() {
   bool dense = std::getenv("SCATTER_DENSE") != nullptr;
-  int iters = envInt("SCATTER_ITERS", 3);
-  int warmup = envInt("SCATTER_WARMUP", 1);
+  int iters = envInt("SCATTER_ITERS", 10);
+  int warmup = envInt("SCATTER_WARMUP", 2);
   std::string csvPath = envStr("SCATTER_CSV_OUT", "results.csv");
 
   std::vector<int> dpuCounts = genDpuCounts(dense);
@@ -293,8 +274,8 @@ int main() {
   csv << "num_dpus,blocks_per_dpu,block_size,iter,ns\n";
   csv.flush();
 
-  SweepProgress progress(dpuCounts.size(), blocksPerDpuList.size(),
-                         blockSizes.size());
+  SweepProgress progress(totalConfigs);
+  size_t configsPerDpuCount = blocksPerDpuList.size() * blockSizes.size();
 
   // start with the biggest ones first because they're the slowest
   std::reverse(dpuCounts.begin(), dpuCounts.end());
@@ -314,7 +295,7 @@ int main() {
       std::cerr << "scatter_bench: dpu_alloc(" << numDpus
                 << ") failed: " << dpu_error_to_string(err)
                 << " -- skipping this DPU count\n";
-      progress.tickDpu();
+      progress.tick(configsPerDpuCount);
       continue;
     }
     err = dpu_load(set, DPU_BINARY, NULL);
@@ -322,13 +303,11 @@ int main() {
       std::cerr << "scatter_bench: dpu_load failed for " << numDpus
                 << " dpus: " << dpu_error_to_string(err) << "\n";
       dpu_free(set);
-      progress.tickDpu();
+      progress.tick(configsPerDpuCount);
       continue;
     }
 
-    progress.resetBlocks();
     for (int blocksPerDpu : blocksPerDpuList) {
-      progress.resetSizes();
       for (int blockSize : blockSizes) {
         size_t stride = static_cast<size_t>(blockSize) + BLOCK_PAD;
         size_t length =
@@ -356,12 +335,10 @@ int main() {
               << "," << ns << "\n";
           csv.flush();
         }
-        progress.tickSize();
+        progress.tick();
       }
-      progress.tickBlock();
     }
     dpu_free(set);
-    progress.tickDpu();
   }
 
   progress.finish();

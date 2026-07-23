@@ -880,6 +880,71 @@ def plot_faceted_scatter(
     plt.close(fig)
 
 
+def plot_faceted_fit(
+    agg: pd.DataFrame,
+    x: Dim,
+    value: Dim,
+    pred: np.ndarray,
+    facet: Dim,
+    title: str,
+    out_path: pathlib.Path,
+) -> None:
+    """One small subplot per `facet` value: measured `value` vs. `x` overlaid
+    with the model's `pred` vs. `x` for the same rows, so over/undershoot
+    within a facet is visible directly (not just in the aggregate rel_rmse).
+    Each panel's title carries that facet's own relative RMSE, so the
+    regimes where the model does worst stand out at a glance."""
+    facet_values = sorted(agg[facet.col].unique())
+    n = len(facet_values)
+    ncols = min(6, n)
+    nrows = (n + ncols - 1) // ncols
+
+    y = agg[value.col].to_numpy(dtype=float)
+    pred = np.asarray(pred, dtype=float)
+
+    pad = 1.15
+    x_lo, x_hi = agg[x.col].min() / pad, agg[x.col].max() * pad
+    positive = np.concatenate([y[y > 0], pred[pred > 0]])
+    y_lo, y_hi = positive.min() / pad, positive.max() * pad
+
+    fig, axes = plt.subplots(
+        nrows,
+        ncols,
+        figsize=(2.6 * ncols, 2.6 * nrows),
+        squeeze=False,
+        constrained_layout=True,
+    )
+
+    for i, v in enumerate(facet_values):
+        ax = axes[divmod(i, ncols)[0]][divmod(i, ncols)[1]]
+        mask = (agg[facet.col] == v).to_numpy()
+        xv, yv, pv = agg.loc[mask, x.col], y[mask], pred[mask]
+        rel = relative_rmse(yv - pv, yv)
+
+        ax.scatter(xv, yv, s=10, alpha=0.6, color="tab:blue", label="measured")
+        ax.scatter(xv, pv, s=10, alpha=0.6, color="tab:orange", marker="x", label="predicted")
+        _apply_log_scale(ax, x, "x")
+        _apply_log_scale(ax, value, "y")
+        ax.set_xlim(x_lo, x_hi)
+        ax.set_ylim(y_lo, y_hi)
+        ax.set_title(f"{facet.col}={v}\nrelRMSE={rel * 100:.1f}%", fontsize=9)
+        ax.grid(True, which="both", linestyle="--", alpha=0.3)
+        ax.tick_params(labelsize=7)
+        if i == 0:
+            ax.legend(fontsize=7)
+
+    for j in range(n, nrows * ncols):
+        axes[divmod(j, ncols)[0]][divmod(j, ncols)[1]].axis("off")
+
+    fig.supxlabel(x.label)
+    fig.supylabel(value.label)
+    fig.suptitle(title)
+
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(out_path, dpi=150)
+    plt.close(fig)
+
+
 def plot_all_regression_fits(
     data: pd.DataFrame,
     y: np.ndarray,
@@ -1139,7 +1204,7 @@ def main():
         raise SystemExit(f"{args.csv}: no rows (empty or header-only)")
     df["ms"] = df["ns"] / 1e6
 
-    agg = df.groupby([d.col for d in PROBLEM.all_dims])["ms"].mean().reset_index()
+    agg = df.groupby([d.col for d in PROBLEM.all_dims])["ms"].median().reset_index()
     PROBLEM.add_derived_columns(agg)
     templates = build_templates(PROBLEM, extra=EXTRA_TEMPLATES)
 
@@ -1203,7 +1268,7 @@ def main():
         x=PROBLEM.derived["total"],
         y=LATENCY,
         title="Total bytes, one panel per DPU count",
-        out_path=out_dir / "latency_vs_total_bytes.png",
+        out_path=out_dir / "latency_vs_total_bytes_faceted.png",
         facet=PROBLEM.group,
         color=size_dim,
     )
@@ -1309,7 +1374,7 @@ def main():
         PROBLEM.group,
         LATENCY,
         out_dir / "regression_fit_best.png",
-    )
+    ) 
     plot_3d_predicted(
         agg,
         x=p_x,
@@ -1321,6 +1386,15 @@ def main():
         out_path=out_dir / "latency_3d_predicted_best.html",
     )
     best_fit = fits[best_key]
+    plot_faceted_fit(
+        agg,
+        x=PROBLEM.derived["total"],
+        value=LATENCY,
+        pred=best_fit["pred"],
+        facet=PROBLEM.group,
+        title=f"Measured vs. {best_fit['name']} prediction, per DPU count",
+        out_path=out_dir / "latency_vs_total_bytes_fit.png",
+    )
     print(f"\nBest fit: {best_fit['name']} (key={best_key})")
     print(
         f"  relRMSE = {best_fit['rel_rmse'] * 100:.2f}%   "
