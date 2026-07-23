@@ -160,22 +160,10 @@ foreach(_pkg mlpack indicators ensmallen cereal armadillo OpenBLAS stb)
 endforeach()
 unset(_build_type_upper)
 unset(_var)
-unset(_pkg)
+# unset(_pkg)
 
-# Add pybind11
-find_package(pybind11 OPTIONAL)
-if (NOT pybind11_FOUND)
-    set(PYBIND11_FINDPYTHON ON)
-    add_subdirectory("third-party/pybind11")
-    message(STATUS "using third-party/pybind11")
-endif()
 
 add_subdirectory("third-party/upmem-cost-model")
-
-execute_process(COMMAND python3 -m pybind11 --includes OUTPUT_VARIABLE PYBIND_INCLUDES OUTPUT_STRIP_TRAILING_WHITESPACE)
-message(STATUS "using python headers from ${PYBIND_INCLUDES}")
-separate_arguments(PYBIND_INCLUDES UNIX_COMMAND "${PYBIND_INCLUDES}")
-add_compile_options(${PYBIND_INCLUDES})
 
 
 add_subdirectory(include)
