@@ -25,6 +25,7 @@
 #include <mlir/Dialect/Affine/IR/AffineOps.h>
 #include <mlir/Dialect/Arith/IR/Arith.h>
 #include <mlir/Dialect/Linalg/IR/Linalg.h>
+#include <mlir/Dialect/Linalg/Transforms/Transforms.h>
 #include <mlir/Dialect/MemRef/IR/MemRef.h>
 #include <mlir/Dialect/SCF/IR/SCF.h>
 #include <mlir/Dialect/Utils/IndexingUtils.h>
@@ -1123,7 +1124,7 @@ void upmem::generateGemv(cinm::GemvOp op, RewriterBase &rewriter,
                               StridedLayoutAttr::get(ctx, ShapedType::kDynamic,
                                                      {mramRows, 1})),
               outRows, ArrayRef<ReassociationIndices>{{0, 1}});
-          linalg::ReduceOp::create(
+          auto reduction = linalg::ReduceOp::create(
               b, loc, ValueRange{yBuf}, ValueRange{outRows2D},
               ArrayRef<int64_t>{1},
               [&](OpBuilder &b, Location loc, ValueRange args) {
@@ -1131,6 +1132,9 @@ void upmem::generateGemv(cinm::GemvOp op, RewriterBase &rewriter,
                     b, loc,
                     arith::getReductionOp(addKind, b, loc, args[0], args[1]));
               });
+          // move the reduction up one level so that it can be vectorized later
+          auto generic = *linalg::generalizeNamedOp(rewriter, reduction);
+          (void)linalg::interchangeGenericOp(rewriter, generic, {0, 2, 1});
         }
 
         return {};
