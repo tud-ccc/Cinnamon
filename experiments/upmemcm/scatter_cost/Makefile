@@ -16,9 +16,9 @@ BIN = bin
 
 # One host binary per UPMEM transfer API under test (see the XFER_MODE
 # doc-comment in scatter_bench.cpp); scatter_dpu.c is shared unchanged by all
-# three since its MRAM buffer is already sized for the worst case.
+# four since its MRAM buffer is already sized for the worst case.
 HOST_BINS = $(BIN)/scatter_bench_sg $(BIN)/scatter_bench_block \
-            $(BIN)/scatter_bench_broadcast
+            $(BIN)/scatter_bench_broadcast $(BIN)/scatter_bench_gather
 
 .PHONY: all dpu host run clean
 
@@ -40,6 +40,9 @@ $(BIN)/scatter_bench_block: scatter_bench.cpp | $(BIN)
 $(BIN)/scatter_bench_broadcast: scatter_bench.cpp | $(BIN)
 	$(CXX) $(HOST_CXXFLAGS) -DXFER_MODE=XFER_BROADCAST $< $(HOST_LDFLAGS) -o $@
 
+$(BIN)/scatter_bench_gather: scatter_bench.cpp | $(BIN)
+	$(CXX) $(HOST_CXXFLAGS) -DXFER_MODE=XFER_GATHER $< $(HOST_LDFLAGS) -o $@
+
 $(BIN):
 	mkdir -p $(BIN)
 
@@ -47,6 +50,7 @@ run: all
 	./$(BIN)/scatter_bench_sg
 	./$(BIN)/scatter_bench_block
 	./$(BIN)/scatter_bench_broadcast
+	./$(BIN)/scatter_bench_gather
 
 clean:
 	rm -rf $(BIN) results.csv

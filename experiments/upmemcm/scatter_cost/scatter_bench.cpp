@@ -15,6 +15,10 @@
 //                    column for compatibility with analyze.py).
 //   XFER_BROADCAST - dpu_broadcast_to, the same host block copied to every
 //                    DPU. blocks_per_dpu is fixed at 1.
+//   XFER_GATHER    - dpu_push_xfer(DPU_XFER_FROM_DPU), one contiguous block
+//                    per DPU read back to a distinct host offset per DPU
+//                    (the reverse direction of XFER_BLOCK). blocks_per_dpu
+//                    is fixed at 1.
 //
 // Env vars:
 //   SCATTER_DENSE    - if set, sweep the full "multiples of 32" ranges in
@@ -48,6 +52,7 @@ extern "C" {
 #define XFER_SG 0
 #define XFER_BLOCK 1
 #define XFER_BROADCAST 2
+#define XFER_GATHER 3
 
 #ifndef XFER_MODE
 #define XFER_MODE XFER_SG
@@ -187,6 +192,26 @@ dpu_error_t runTransfer(struct dpu_set_t set, const uint8_t *arena,
                         size_t /*stride*/, int /*blocksPerDpu*/,
                         uint32_t /*blockSize*/, size_t length) {
   return dpu_broadcast_to(set, MRAM_SYMBOL, 0, arena, length, DPU_XFER_DEFAULT);
+}
+
+#elif XFER_MODE == XFER_GATHER
+
+// Times a dpu_push_xfer(DPU_XFER_FROM_DPU) of one contiguous `blockSize`-byte
+// block per DPU, each written back to a distinct offset in `arena`
+// (dpu_prepare_xfer'd per DPU) -- the read-back mirror of XFER_BLOCK.
+dpu_error_t runTransfer(struct dpu_set_t set, const uint8_t *arena,
+                        size_t stride, int /*blocksPerDpu*/,
+                        uint32_t /*blockSize*/, size_t length) {
+  struct dpu_set_t dpu;
+  size_t i = 0;
+  DPU_FOREACH(set, dpu, i) {
+    dpu_error_t err =
+        dpu_prepare_xfer(dpu, const_cast<uint8_t *>(arena + i * stride));
+    if (err != DPU_OK)
+      return err;
+  }
+  return dpu_push_xfer(set, DPU_XFER_FROM_DPU, MRAM_SYMBOL, 0, length,
+                       DPU_XFER_DEFAULT);
 }
 
 #endif

@@ -17,7 +17,7 @@ Usage:
 
 DOIT_CONFIG = {"default_tasks": ["make", "plot"], "verbosity": 2}
 
-fns = ["block", "broadcast", "sg"]
+fns = ["block", "broadcast", "sg", "gather"]
 
 
 def task_make():
@@ -36,8 +36,9 @@ def task_bench():
     dense = {"SCATTER_DENSE": ""}
     bench_env = {
         "broadcast": dense,
-        # "sg": dense,
+        "sg": dense,
         "block": dense,
+        "gather": dense,
     }
     """Build the DPU kernel and host benchmark binary."""
     for fn in fns:
@@ -61,10 +62,11 @@ def task_bench():
 
 def task_plot():
     bench_splits = {
-        "broadcast": "--split 1023 2047 --split-dim block_size",
+        "broadcast": "--split 1023 --split-dim block_size",
         "sg": "--split 1023 2047 --split-dim block_size blocks_per_dpu",
+        # "sg": "--split 9 13 --split-dim blocks_per_dpu",
         # "sg": "--split 64 --split-dim num_dpus",
-        "block": "--split 1023 2047 --split-dim block_size",
+        "block": "--split block_size 1023",
     }
     """Analyze results.csv and write plots to plots/."""
     for fn in fns:
@@ -72,7 +74,8 @@ def task_plot():
             "name": f"{fn}",
             "file_dep": ["analyze.py", f"plots/{fn}/results.csv"],
             "targets": [f"plots/{fn}/regression_fit.png"],
+            "uptodate": [config_changed(bench_splits.get(fn, ''))],
             "actions": [
-                f"python3 analyze.py plots/{fn}/results.csv --out-dir plots/{fn} {bench_splits[fn]} | tee plots/{fn}/log.log"
+                f"python3 analyze.py plots/{fn}/results.csv --out-dir plots/{fn} {bench_splits.get(fn, '')} | tee plots/{fn}/log.log"
             ],
         }

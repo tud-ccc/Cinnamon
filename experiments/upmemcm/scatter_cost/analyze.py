@@ -35,22 +35,25 @@ for reference. Same idea as reduce_cost's fit_overhead_term.py TEMPLATES dict
 (which also uses a cost-weighted fit for the same reason), simplified to
 weighted OLS.
 
---split BOUNDARY [BOUNDARY ...] fits every template separately on each
-regime carved out of --split-dim (the group dimension, e.g. num_dpus, by
-default) by those boundaries -- e.g. --split 32 512 gives 3 regimes (<=32,
-32-512, >512) -- to compare which template wins in each (useful when a
-single template can't fit every regime well, e.g. very low vs. very high DPU
-counts). It also adds a "hybrid" template built from whichever templates
-actually won each regime (no need to name them by hand), fit again on just
-their own regime and stitched together, competing alongside every other
-whole-dataset template for best_key (and so also appearing in
-regression_fit.png/regression_fit_best.png if it wins).
+--split DIM BOUNDARY [BOUNDARY ...] fits every template separately on each
+regime carved out of column DIM by those boundaries -- e.g. --split num_dpus
+32 512 gives 3 regimes (<=32, 32-512, >512) -- to compare which template
+wins in each (useful when a single template can't fit every regime well,
+e.g. very low vs. very high DPU counts). Repeat --split for more dimensions
+(e.g. --split block_size 1024 2048 --split num_dpus 64) to split on several
+dimensions at once; a row's combined regime is then the cross product of
+every dimension's own regime. It also adds a "hybrid" template built from
+whichever templates actually won each combined regime (no need to name them
+by hand), fit again on just their own regime and stitched together,
+competing alongside every other whole-dataset template for best_key (and so
+also appearing in regression_fit.png/regression_fit_best.png if it wins).
 
 Usage:
   python3 analyze.py results.csv
   python3 analyze.py results.csv --out-dir plots --blocks-per-dpu 24 --num-dpus 2048
-  python3 analyze.py results.csv --split 32
-  python3 analyze.py results.csv --split 32 512 --split-dim num_dpus
+  python3 analyze.py results.csv --split num_dpus 32
+  python3 analyze.py results.csv --split num_dpus 32 512
+  python3 analyze.py results.csv --split block_size 1024 2048 --split num_dpus 64
 """
 
 from __future__ import annotations
@@ -58,6 +61,7 @@ from __future__ import annotations
 import argparse
 import dataclasses
 import functools
+import itertools
 import operator
 import pathlib
 from typing import Callable
@@ -470,29 +474,51 @@ def regime_labels(col: str, boundaries: list[float]) -> list[str]:
     return labels
 
 
+def combined_regime_masks(
+    agg: pd.DataFrame, splits: dict[str, list[float]]
+) -> tuple[list[np.ndarray], list[str]]:
+    """Cross product of one regime_masks/regime_labels split per (col,
+    boundaries) pair in `splits` -- e.g. splits={"block_size": [1024, 2048],
+    "num_dpus": [64]} carves the 3 block_size regimes x the 2 num_dpus
+    regimes into 6 combined regimes, each the intersection of one regime
+    from every split dimension. Order matches itertools.product's (first
+    split's regimes vary slowest), consistently between the returned masks
+    and labels. len(splits) == 1 degenerates to plain regime_masks/
+    regime_labels on that one column."""
+    per_dim = [
+        list(zip(regime_masks(agg[col], boundaries), regime_labels(col, boundaries)))
+        for col, boundaries in splits.items()
+    ]
+    masks, labels = [], []
+    for combo in itertools.product(*per_dim):
+        masks.append(functools.reduce(operator.and_, (m for m, _ in combo)))
+        labels.append(" & ".join(label for _, label in combo))
+    return masks, labels
+
+
 def fit_regime_hybrid(
     templates: dict[str, Template],
     agg: pd.DataFrame,
     y: np.ndarray,
-    split_col: str,
-    boundaries: list[float],
+    splits: dict[str, list[float]],
     regime_templates: list[str],
 ) -> dict:
-    """Fit each regime's own template (`regime_templates[i]`, a template key)
-    on just that regime's own rows -- carved out of `agg` by `split_col` and
-    `boundaries` via regime_masks -- so no fit is diluted by rows from a
+    """Fit each combined regime's own template (`regime_templates[i]`, a
+    template key) on just that regime's own rows -- carved out of `agg` by
+    `splits` via combined_regime_masks -- so no fit is diluted by rows from a
     different regime the way a single whole-dataset fit is -- then stitch
     the per-regime predictions back together and score the combined result
     against the whole dataset. This is what --split's per-regime tables hint
     at (different templates can win in different regimes): does picking the
     right template per regime actually beat every single whole-dataset
-    template fit? `regime_templates` must have len(boundaries)+1 entries,
-    one per regime in the same low-to-high order regime_masks produces.
+    template fit? `regime_templates` must have one entry per combined regime,
+    in the same order combined_regime_masks produces.
     """
-    assert len(regime_templates) == len(boundaries) + 1, (
-        "need one template per regime (len(boundaries)+1)"
+    masks, labels = combined_regime_masks(agg, splits)
+    assert len(regime_templates) == len(masks), (
+        "need one template per combined regime (product of each split's own "
+        "len(boundaries)+1)"
     )
-    masks = regime_masks(agg[split_col], boundaries)
     regime_fits = [
         fit_ols(templates[key].features(agg[mask]), y[mask])
         for mask, key in zip(masks, regime_templates)
@@ -513,8 +539,8 @@ def fit_regime_hybrid(
         "rmse": rmse,
         "rel_rmse": rel_rmse,
         "r2": r2,
-        "split_col": split_col,
-        "boundaries": boundaries,
+        "splits": splits,
+        "regime_labels": labels,
         "regime_templates": regime_templates,
         "regime_fits": regime_fits,
     }
@@ -807,6 +833,124 @@ def plot_3d_predicted(
         out_path=out_path,
         color=color,
     )
+
+
+def plot_3d_fit_wireframe(
+    agg: pd.DataFrame,
+    x: Dim,
+    y: Dim,
+    z: Dim,
+    pred: np.ndarray,
+    group: Dim,
+    template_name: str,
+    out_path: pathlib.Path,
+    splits: dict[str, list[float]] | None = None,
+) -> None:
+    """Interactive 3D view combining plot_3d_measured's point cloud with a
+    wireframe of `pred` (some template's prediction, e.g. the per-regime
+    LASSO "hybrid" fit) instead of another scatter cloud -- for each `group`
+    value, pivot that group's rows into an (x, y) grid of predicted z, then
+    draw one line through every fixed-x row (varying y) and one line
+    through every fixed-y column (varying x), so a smooth model surface
+    folds into a visible grid instead of blending into the measured cloud.
+    Measured points are colored per `group` value (so each group's own
+    cloud is identifiable); every wireframe is drawn in a fixed bright red,
+    unrelated to `group`'s color, so the grid reads as "the model" against
+    any/every group's points rather than needing its own color key --
+    wireframe segments are left out of the legend for the same reason.
+
+    `splits` (typically a stitched fit's own "splits", e.g.
+    fit_regime_hybrid's) carve each group's rows into
+    combined_regime_masks' combined regimes first, and the grid is
+    pivoted/drawn separately per combined regime -- since a stitched
+    per-regime pred is fit independently per regime, it's generally
+    discontinuous at a regime boundary, and a single wireframe spanning both
+    sides would draw a misleading line across that jump. None (the default)
+    skips this and treats each group's rows as a single regime, for a
+    `pred` that isn't regime-based.
+
+    Unlike plot_3d_predicted, this needs `pred` values aligned 1:1 with
+    `agg`'s rows -- any stitched-together per-regime pred array (e.g.
+    fit_regime_hybrid's) works, it doesn't have to come from a single
+    whole-dataset template."""
+    import plotly.graph_objects as go
+
+    agg = agg.assign(__pred=np.asarray(pred, dtype=float))
+    group_values = sorted(agg[group.col].unique())
+    norm, _ = _norm_for(group, agg[group.col])
+    cmap = _cmap_for(group)
+
+    if splits:
+        regime_masks_list, _ = combined_regime_masks(agg, splits)
+    else:
+        regime_masks_list = [np.ones(len(agg), dtype=bool)]
+
+    traces = []
+    for g in group_values:
+        group_mask = (agg[group.col] == g).to_numpy()
+        r, gr, b, _ = cmap(norm(g))
+        color = f"rgb({r * 255:.0f},{gr * 255:.0f},{b * 255:.0f})"
+        label = f"{group.col}={g:g}"
+
+        sub_all = agg[group_mask]
+        traces.append(
+            go.Scatter3d(
+                x=sub_all[x.col],
+                y=sub_all[y.col],
+                z=sub_all[z.col],
+                mode="markers",
+                marker=dict(size=3, color=color, opacity=0.5),
+                name=f"{label} measured",
+                legendgroup=label,
+            )
+        )
+
+        for rmask in regime_masks_list:
+            sub = agg[group_mask & rmask]
+            if sub.empty:
+                continue
+
+            pivot = sub.pivot_table(index=x.col, columns=y.col, values="__pred")
+            pivot = pivot.sort_index().sort_index(axis=1)
+            xs, ys = pivot.index.to_numpy(), pivot.columns.to_numpy()
+
+            for xv in xs:
+                traces.append(
+                    go.Scatter3d(
+                        x=np.full(len(ys), xv),
+                        y=ys,
+                        z=pivot.loc[xv].to_numpy(),
+                        mode="lines",
+                        line=dict(color="red", width=3),
+                        legendgroup=label,
+                        showlegend=False,
+                    )
+                )
+            for yv in ys:
+                traces.append(
+                    go.Scatter3d(
+                        x=xs,
+                        y=np.full(len(xs), yv),
+                        z=pivot[yv].to_numpy(),
+                        mode="lines",
+                        line=dict(color="red", width=3),
+                        legendgroup=label,
+                        showlegend=False,
+                    )
+                )
+
+    fig = go.Figure(data=traces)
+    fig.update_layout(
+        title=f"Measured {z.label} (points) vs. {template_name} prediction (wireframe)",
+        scene=dict(
+            xaxis=dict(title=x.label, type="log" if x.log is not None else "linear"),
+            yaxis=dict(title=y.label, type="log" if y.log is not None else "linear"),
+            zaxis=dict(title=z.label, type="log" if z.log is not None else "linear"),
+        ),
+        margin=dict(l=0, r=0, b=0, t=40),
+    )
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    fig.write_html(str(out_path))
 
 
 def plot_faceted_scatter(
@@ -1131,15 +1275,15 @@ EXTRA_TEMPLATES: dict[str, Template] = {
             # d.num_dpus * d.blocks_per_dpu * d.block_size,
         ),
     ),
-    "compound": Template(
-        "compound",
-        "compound",
-        lambda d: _cols(
-            np.log2(d.num_dpus),
-            d.blocks_per_dpu,
-            d.num_dpus * d.blocks_per_dpu * d.block_size,
-        ),
-    ),
+    # "compound": Template(
+    #     "compound",
+    #     "compound",
+    #     lambda d: _cols(
+    #         np.log2(d.num_dpus),
+    #         d.blocks_per_dpu,
+    #         d.num_dpus * d.blocks_per_dpu * d.block_size,
+    #     ),
+    # ),
     # Standardized LASSO over the same terms as "pairwise" -- the automatic
     # term-pruning analogue of it, fit via fit_lasso instead of fit_ols.
     # Which terms LASSO zeros out is printed via `report` (see
@@ -1178,26 +1322,25 @@ def main():
     )
     parser.add_argument(
         "--split",
-        type=float,
+        action="append",
         nargs="+",
         default=None,
-        metavar="BOUNDARY",
-        help="one or more boundaries to split --split-dim on (e.g. --split 32 512 "
-        "gives 3 regimes: <=32, 32-512, >512), to fit+report every template "
-        "separately per regime (in addition to the whole-dataset fit) and "
-        "compare which template wins in each. Also builds a 'hybrid' "
-        "template out of whichever template won each regime, competing "
-        "alongside every other template "
+        metavar=("DIM", "BOUNDARY"),
+        help="DIM BOUNDARY [BOUNDARY ...]: split column DIM into regimes at those "
+        "boundaries (e.g. --split num_dpus 32 512 gives 3 regimes: <=32, 32-512, "
+        ">512) and fit+report every template separately per regime (in addition "
+        "to the whole-dataset fit), to compare which template wins in each. "
+        "Repeatable, once per dimension, to split on several dimensions at once "
+        "(e.g. --split block_size 1024 2048 --split num_dpus 64) -- a row's "
+        "combined regime is then the cross product of every dimension's own "
+        "regime. Also builds a 'hybrid' template out of whichever template won "
+        "each combined regime, competing alongside every other template "
         "(default: no split, whole-dataset fit only, no hybrid)",
     )
-    parser.add_argument(
-        "--split-dim",
-        default=None,
-        nargs="+",
-        help="which dimension's column --split's boundaries apply to. If multiple are provided, the product is computed."
-        "(default: the group dimension, e.g. num_dpus)",
-    )
     args = parser.parse_args()
+    splits: dict[str, list[float]] = {}
+    for dim, *boundaries in args.split or []:
+        splits[dim] = sorted(float(b) for b in boundaries)
 
     df = pd.read_csv(args.csv)
     if df.empty:
@@ -1289,19 +1432,11 @@ def main():
         if tmpl.report is not None:
             tmpl.report(fits[key])
 
-    if len(args.split) > 0:
-        if len(args.split_dim) == 0:
-          split_col = PROBLEM.group.col
-        elif len(args.split_dim) == 1:
-          split_col = args.split_dim[0] 
-        elif len(args.split_dim) > 1:
-          split_col = ' x '.join(args.split_dim)
-          agg[split_col] = _product(agg[col] for col in args.split_dim)
+    if splits:
+        masks, labels = combined_regime_masks(agg, splits)
 
-        boundaries = sorted(args.split)
-        labels = regime_labels(split_col, boundaries)
-        masks = regime_masks(agg[split_col], boundaries)
-
+        mask_templates = [templates["pairwise"]]
+        mask_templates = {t.key : t for t in mask_templates}
         regime_best_keys = []
         for mask, label in zip(masks, labels):
             sub = agg[mask]
@@ -1309,7 +1444,7 @@ def main():
                 regime_best_keys.append(None)
                 print(f"Not building hybrid model because mask empty: {label}")
                 continue
-            regime_table, _ = fit_and_report(templates, sub, PROBLEM, label)
+            regime_table, _ = fit_and_report(mask_templates, sub, PROBLEM, label)
             regime_best_keys.append(regime_table.iloc[0]["key"])
 
         # Hybrid: whichever template won each regime, fit only on that
@@ -1320,12 +1455,13 @@ def main():
         # regime populated.
         if all(k is not None for k in regime_best_keys):
             hybrid_key = "hybrid"
-            hybrid_name = "hybrid: " + " / ".join(
-                f"{templates[key].name} ({label})"
-                for key, label in zip(regime_best_keys, labels)
-            )
+            hybrid_name = "hybrid"
+            #  + " / ".join(
+            #     f"{templates[key].name} ({label})"
+            #     for key, label in zip(regime_best_keys, labels)
+            # )
             hybrid_fit = fit_regime_hybrid(
-                templates, agg, y, split_col, boundaries, regime_best_keys
+                templates, agg, y, splits, regime_best_keys
             )
             hybrid_fit["name"] = hybrid_name
             fits[hybrid_key] = hybrid_fit
@@ -1385,6 +1521,18 @@ def main():
         template_name=fits[best_key]["name"],
         out_path=out_dir / "latency_3d_predicted_best.html",
     )
+    if "hybrid" in fits:
+        plot_3d_fit_wireframe(
+            agg,
+            x=p_x,
+            y=p_y,
+            z=LATENCY,
+            pred=fits["hybrid"]["pred"],
+            group=PROBLEM.group,
+            template_name=fits["hybrid"]["name"],
+            out_path=out_dir / "latency_3d_hybrid_wireframe.html",
+            splits=fits["hybrid"]["splits"],
+        )
     best_fit = fits[best_key]
     plot_faceted_fit(
         agg,
@@ -1401,9 +1549,8 @@ def main():
         f"RMSE = {best_fit['rmse']:.4g} ms   R² = {best_fit['r2']:.4f}"
     )
     if "regime_fits" in best_fit:
-        labels = regime_labels(best_fit["split_col"], best_fit["boundaries"])
         for label, key, fit in zip(
-            labels, best_fit["regime_templates"], best_fit["regime_fits"]
+            best_fit["regime_labels"], best_fit["regime_templates"], best_fit["regime_fits"]
         ):
             print(
                 f"  {key} ({label}): intercept = {fit['intercept']:.4g}, "
