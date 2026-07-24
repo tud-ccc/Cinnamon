@@ -217,7 +217,7 @@ def _pairwise_col_names(dims: list[Dim]) -> list[str]:
     for i in range(len(dims)):
         for j in range(i, len(dims)):
             if i == j:
-                names.append(f"{dims[i].col}²")
+                names.append(f"{dims[i].col}*{dims[i].col}")
             else:
                 names.append(f"{dims[i].col}*{dims[j].col}")
     if len(dims) > 2:
@@ -495,7 +495,7 @@ def combined_regime_masks(
     masks, labels = [], []
     for combo in itertools.product(*per_dim):
         masks.append(functools.reduce(operator.and_, (m for m, _ in combo)))
-        labels.append(" & ".join(label for _, label in combo))
+        labels.append(" && ".join(label for _, label in combo))
     return masks, labels
 
 
@@ -859,8 +859,10 @@ def plot_3d_fit_wireframe(
     Measured points are colored per `group` value (so each group's own
     cloud is identifiable); every wireframe is drawn in a fixed bright red,
     unrelated to `group`'s color, so the grid reads as "the model" against
-    any/every group's points rather than needing its own color key --
-    wireframe segments are left out of the legend for the same reason.
+    any/every group's points rather than needing its own color key. There's
+    no legend -- with one entry per group per measured/wireframe trace it'd
+    be a wall of text -- toggling measured points/wireframe wholesale is a
+    button (see updatemenus below) instead of a legend click.
 
     `splits` (typically a stitched fit's own "splits", e.g.
     fit_regime_hybrid's) carve each group's rows into
@@ -889,6 +891,8 @@ def plot_3d_fit_wireframe(
         regime_masks_list = [np.ones(len(agg), dtype=bool)]
 
     traces = []
+    scatter_indices = []
+    wireframe_indices = []
     for g in group_values:
         group_mask = (agg[group.col] == g).to_numpy()
         r, gr, b, _ = cmap(norm(g))
@@ -896,6 +900,7 @@ def plot_3d_fit_wireframe(
         label = f"{group.col}={g:g}"
 
         sub_all = agg[group_mask]
+        scatter_indices.append(len(traces))
         traces.append(
             go.Scatter3d(
                 x=sub_all[x.col],
@@ -904,7 +909,7 @@ def plot_3d_fit_wireframe(
                 mode="markers",
                 marker=dict(size=3, color=color, opacity=0.5),
                 name=f"{label} measured",
-                legendgroup=label,
+                showlegend=False,
             )
         )
 
@@ -918,6 +923,7 @@ def plot_3d_fit_wireframe(
             xs, ys = pivot.index.to_numpy(), pivot.columns.to_numpy()
 
             for xv in xs:
+                wireframe_indices.append(len(traces))
                 traces.append(
                     go.Scatter3d(
                         x=np.full(len(ys), xv),
@@ -930,6 +936,7 @@ def plot_3d_fit_wireframe(
                     )
                 )
             for yv in ys:
+                wireframe_indices.append(len(traces))
                 traces.append(
                     go.Scatter3d(
                         x=xs,
@@ -951,6 +958,40 @@ def plot_3d_fit_wireframe(
             zaxis=dict(title=z.label, type="log" if z.log is not None else "linear"),
         ),
         margin=dict(l=0, r=0, b=0, t=40),
+        # No legend -- every trace is showlegend=False (one entry per group
+        # per measured/wireframe would be a wall of text for little value
+        # now that the buttons below toggle each kind wholesale instead).
+        showlegend=False,
+        # One-click show/hide -- `args`/`args2` on a single button is
+        # Plotly's native toggle idiom: click applies `args`, click again
+        # applies `args2`, restyle's second positional element restricts the
+        # {"visible": ...} patch to just these trace indices instead of
+        # every trace in the figure.
+        updatemenus=[
+            dict(
+                type="buttons",
+                direction="right",
+                x=0.0,
+                xanchor="left",
+                y=1.08,
+                yanchor="top",
+                showactive=False,
+                buttons=[
+                    dict(
+                        label="Toggle measured points",
+                        method="restyle",
+                        args=[{"visible": False}, scatter_indices],
+                        args2=[{"visible": True}, scatter_indices],
+                    ),
+                    dict(
+                        label="Toggle wireframe",
+                        method="restyle",
+                        args=[{"visible": False}, wireframe_indices],
+                        args2=[{"visible": True}, wireframe_indices],
+                    ),
+                ],
+            )
+        ],
     )
     out_path.parent.mkdir(parents=True, exist_ok=True)
     fig.write_html(str(out_path))
@@ -1248,7 +1289,7 @@ class PlotPool:
 
     _PARALLEL_SAFE = {"plot_3d_measured", "plot_3d_predicted", "plot_3d_fit_wireframe"}
 
-    def __init__(self, max_workers: int = 8):
+    def __init__(self, max_workers: int = 16):
         self._executor = concurrent.futures.ThreadPoolExecutor(max_workers=max_workers)
         self._futures: list[concurrent.futures.Future] = []
         self._mpl_lock = threading.Lock()
@@ -1617,12 +1658,18 @@ def main():
             best_fit["regime_labels"], best_fit["regime_templates"], best_fit["regime_fits"]
         ):
             print(
-                f"  {key} ({label}): intercept = {fit['intercept']:.4g}, "
-                f"coef = {[f'{c:.4g}' for c in fit['coef']]}"
+                f"  if ({label}) {{\n"
+                f"\tintercept = {fit['intercept']:.7g};\n"
+                f"\tcoef =  {{{', '.join(f'{c:.7g}' for c in fit['coef'])}}}; }}"
             )
+        print("   double result = intercept + ", end=None)
+        terms = [f"{name} * coef[{i}]" for i, name in enumerate(_pairwise_col_names(PROBLEM.all_dims))]
+        print(' + '.join(terms), end=";\n")
+
+
     else:
-        print(f"  intercept = {best_fit['intercept']:.4g}")
-        print(f"  coef = {[f'{c:.4g}' for c in best_fit['coef']]}")
+        print(f"  intercept = {best_fit['intercept']:.4g};")
+        print(f"  coef = {{{', '.join(f'{c:.4g}' for c in best_fit['coef'])}}};")
     p.join()
     print(f"\nPlots written to {out_dir}/")
 

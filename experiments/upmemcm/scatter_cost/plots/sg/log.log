@@ -1,0 +1,43 @@
+
+=== All DPU counts (n=240792 configs, num_dpus 1-1984) ===
+     key                        name  rel_rmse  rmse_ms       r2
+pairwise           pairwise products  0.237584 0.153776 0.876754
+   lasso            LASSO (pairwise)  0.238786 0.155056 0.874694
+  linear           linear (all dims)  0.360770 0.330218 0.431674
+simplest                   dpu, size  0.384896 0.339432 0.399515
+   total total (product of all dims)  0.401946 0.224063 0.738341
+
+=== LASSO term selection (alpha=0.0001558, 10/10 terms kept) ===
+  num_dpus                    0.000464581
+  blocks_per_dpu               0.00124111
+  block_size                  5.21558e-05
+  num_dpus²                  -1.70876e-07
+  num_dpus*blocks_per_dpu     3.65399e-06
+  num_dpus*block_size         6.30639e-08
+  blocks_per_dpu²            -2.04384e-05
+  blocks_per_dpu*block_size     3.3969e-06
+  block_size²                -2.52019e-08
+  num_dpus*blocks_per_dpu*block_size    3.60809e-08
+
+=== block_size x blocks_per_dpu <= 1023 (n=48768 configs, num_dpus 1-1984) ===
+  key             name  rel_rmse  rmse_ms       r2
+lasso LASSO (pairwise)  0.185245 0.039868 0.924768
+
+=== 1023 < block_size x blocks_per_dpu <= 2047 (n=33655 configs, num_dpus 1-1984) ===
+  key             name  rel_rmse  rmse_ms       r2
+lasso LASSO (pairwise)  0.200718 0.049644 0.926987
+
+=== block_size x blocks_per_dpu > 2047 (n=158369 configs, num_dpus 1-1984) ===
+  key             name  rel_rmse  rmse_ms      r2
+lasso LASSO (pairwise)  0.232751 0.207528 0.83388
+
+=== hybrid: LASSO (pairwise) (block_size x blocks_per_dpu <= 1023) / LASSO (pairwise) (1023 < block_size x blocks_per_dpu <= 2047) / LASSO (pairwise) (block_size x blocks_per_dpu > 2047) ===
+  relRMSE = 21.80%   RMSE = 0.1719 ms   R² = 0.8461
+
+Best fit: hybrid: LASSO (pairwise) (block_size x blocks_per_dpu <= 1023) / LASSO (pairwise) (1023 < block_size x blocks_per_dpu <= 2047) / LASSO (pairwise) (block_size x blocks_per_dpu > 2047) (key=hybrid)
+  relRMSE = 21.80%   RMSE = 0.1719 ms   R² = 0.8461
+  lasso (block_size x blocks_per_dpu <= 1023): intercept = 0.04805, coef = ['0.0003601', '7.458e-05', '2.509e-05', '-1.286e-07', '-3.972e-06', '3.028e-08', '1.013e-05', '1.71e-05', '-3.153e-08', '2.645e-07']
+  lasso (1023 < block_size x blocks_per_dpu <= 2047): intercept = 0.06218, coef = ['0.0005159', '-0.002125', '-2.884e-05', '-2.196e-07', '4.474e-07', '-1.855e-08', '4.551e-05', '1.853e-05', '9.182e-09', '1.13e-07']
+  lasso (block_size x blocks_per_dpu > 2047): intercept = 0.007259, coef = ['0.0006808', '0.004666', '7.754e-05', '-2.892e-07', '4.136e-06', '-3.037e-08', '-0.0001079', '2.224e-06', '-2.848e-08', '3.487e-08']
+
+Plots written to plots/sg/
