@@ -62,11 +62,11 @@ def task_bench():
 
 def task_plot():
     bench_splits = {
-        "broadcast": "--split 1023 --split-dim block_size",
-        "sg": "--split 1023 2047 --split-dim block_size blocks_per_dpu",
+        "broadcast": "--split block_size 1023",
+        "sg": "--split block_size 1023",
         # "sg": "--split 9 13 --split-dim blocks_per_dpu",
         # "sg": "--split 64 --split-dim num_dpus",
-        "block": "--split block_size 1023",
+        "block": "--split block_size 1023 --split num_dpus 16 64 128",
     }
     """Analyze results.csv and write plots to plots/."""
     for fn in fns:
