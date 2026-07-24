@@ -11,33 +11,118 @@ simplest                   dpu, size  0.384896 0.339432 0.399515
   num_dpus                    0.000464581
   blocks_per_dpu               0.00124111
   block_size                  5.21558e-05
-  num_dpus²                  -1.70876e-07
+  num_dpus*num_dpus          -1.70876e-07
   num_dpus*blocks_per_dpu     3.65399e-06
   num_dpus*block_size         6.30639e-08
-  blocks_per_dpu²            -2.04384e-05
+  blocks_per_dpu*blocks_per_dpu   -2.04384e-05
   blocks_per_dpu*block_size     3.3969e-06
-  block_size²                -2.52019e-08
+  block_size*block_size      -2.52019e-08
   num_dpus*blocks_per_dpu*block_size    3.60809e-08
 
-=== block_size x blocks_per_dpu <= 1023 (n=48768 configs, num_dpus 1-1984) ===
-  key             name  rel_rmse  rmse_ms       r2
-lasso LASSO (pairwise)  0.185245 0.039868 0.924768
+=== block_size <= 1023 && num_dpus <= 16 (n=24192 configs, num_dpus 1-16) ===
+     key              name  rel_rmse  rmse_ms       r2
+pairwise pairwise products  0.077884 0.005984 0.938242
 
-=== 1023 < block_size x blocks_per_dpu <= 2047 (n=33655 configs, num_dpus 1-1984) ===
-  key             name  rel_rmse  rmse_ms       r2
-lasso LASSO (pairwise)  0.200718 0.049644 0.926987
+=== block_size <= 1023 && 16 < num_dpus <= 24 (n=12096 configs, num_dpus 17-24) ===
+     key              name  rel_rmse  rmse_ms       r2
+pairwise pairwise products  0.110889  0.01113 0.912416
 
-=== block_size x blocks_per_dpu > 2047 (n=158369 configs, num_dpus 1-1984) ===
-  key             name  rel_rmse  rmse_ms      r2
-lasso LASSO (pairwise)  0.232751 0.207528 0.83388
+=== block_size <= 1023 && 24 < num_dpus <= 64 (n=36288 configs, num_dpus 25-64) ===
+     key              name  rel_rmse  rmse_ms       r2
+pairwise pairwise products   0.14654 0.021201 0.868155
 
-=== hybrid: LASSO (pairwise) (block_size x blocks_per_dpu <= 1023) / LASSO (pairwise) (1023 < block_size x blocks_per_dpu <= 2047) / LASSO (pairwise) (block_size x blocks_per_dpu > 2047) ===
-  relRMSE = 21.80%   RMSE = 0.1719 ms   R² = 0.8461
+=== block_size <= 1023 && 64 < num_dpus <= 128 (n=24192 configs, num_dpus 68-128) ===
+     key              name  rel_rmse  rmse_ms       r2
+pairwise pairwise products  0.110003   0.0265 0.894501
 
-Best fit: hybrid: LASSO (pairwise) (block_size x blocks_per_dpu <= 1023) / LASSO (pairwise) (1023 < block_size x blocks_per_dpu <= 2047) / LASSO (pairwise) (block_size x blocks_per_dpu > 2047) (key=hybrid)
-  relRMSE = 21.80%   RMSE = 0.1719 ms   R² = 0.8461
-  lasso (block_size x blocks_per_dpu <= 1023): intercept = 0.04805, coef = ['0.0003601', '7.458e-05', '2.509e-05', '-1.286e-07', '-3.972e-06', '3.028e-08', '1.013e-05', '1.71e-05', '-3.153e-08', '2.645e-07']
-  lasso (1023 < block_size x blocks_per_dpu <= 2047): intercept = 0.06218, coef = ['0.0005159', '-0.002125', '-2.884e-05', '-2.196e-07', '4.474e-07', '-1.855e-08', '4.551e-05', '1.853e-05', '9.182e-09', '1.13e-07']
-  lasso (block_size x blocks_per_dpu > 2047): intercept = 0.007259, coef = ['0.0006808', '0.004666', '7.754e-05', '-2.892e-07', '4.136e-06', '-3.037e-08', '-0.0001079', '2.224e-06', '-2.848e-08', '3.487e-08']
+=== block_size <= 1023 && 128 < num_dpus <= 256 (n=24192 configs, num_dpus 136-256) ===
+     key              name  rel_rmse  rmse_ms      r2
+pairwise pairwise products  0.108428 0.030579 0.87213
+
+=== block_size <= 1023 && 256 < num_dpus <= 384 (n=12096 configs, num_dpus 272-384) ===
+     key              name  rel_rmse  rmse_ms       r2
+pairwise pairwise products  0.147041 0.045625 0.748972
+
+=== block_size <= 1023 && num_dpus > 384 (n=58968 configs, num_dpus 400-1984) ===
+     key              name  rel_rmse  rmse_ms       r2
+pairwise pairwise products  0.178215 0.152985 0.787414
+
+=== block_size > 1023 && num_dpus <= 16 (n=6144 configs, num_dpus 1-16) ===
+     key              name  rel_rmse  rmse_ms       r2
+pairwise pairwise products  0.064689 0.007879 0.956172
+
+=== block_size > 1023 && 16 < num_dpus <= 24 (n=3072 configs, num_dpus 17-24) ===
+     key              name  rel_rmse  rmse_ms       r2
+pairwise pairwise products  0.065515 0.011194 0.924761
+
+=== block_size > 1023 && 24 < num_dpus <= 64 (n=9216 configs, num_dpus 25-64) ===
+     key              name  rel_rmse  rmse_ms       r2
+pairwise pairwise products  0.103397 0.027977 0.854204
+
+=== block_size > 1023 && 64 < num_dpus <= 128 (n=6144 configs, num_dpus 68-128) ===
+     key              name  rel_rmse  rmse_ms       r2
+pairwise pairwise products  0.089689 0.047373 0.925188
+
+=== block_size > 1023 && 128 < num_dpus <= 256 (n=6144 configs, num_dpus 136-256) ===
+     key              name  rel_rmse  rmse_ms       r2
+pairwise pairwise products  0.082034 0.041372 0.939428
+
+=== block_size > 1023 && 256 < num_dpus <= 384 (n=3072 configs, num_dpus 272-384) ===
+     key              name  rel_rmse  rmse_ms       r2
+pairwise pairwise products  0.146203 0.100397 0.675504
+
+=== block_size > 1023 && num_dpus > 384 (n=14976 configs, num_dpus 400-1984) ===
+     key              name  rel_rmse  rmse_ms       r2
+pairwise pairwise products  0.204478 0.432908 0.808053
+
+=== hybrid ===
+  relRMSE = 13.98%   RMSE = 0.1342 ms   R² = 0.9062
+
+Best fit: hybrid (key=hybrid)
+  relRMSE = 13.98%   RMSE = 0.1342 ms   R² = 0.9062
+  if (block_size <= 1023 && num_dpus <= 16) {
+    intercept = 0.03820124;
+    coef =  {0.002021186, 0.0006351038, 7.57378e-06, -6.885736e-05, 2.654825e-05, 1.61933e-07, -2.710201e-05, 3.21959e-06, -9.148592e-09, 1.493406e-07}; }
+  if (block_size <= 1023 && 16 < num_dpus <= 24) {
+    intercept = -0.1547557;
+    coef =  {0.02009847, 0.002253585, 6.54315e-05, -0.0004821167, -5.811076e-05, 4.022297e-07, -3.557817e-05, 5.047541e-06, -6.27453e-08, 9.746236e-08}; }
+  if (block_size <= 1023 && 24 < num_dpus <= 64) {
+    intercept = 0.006633432;
+    coef =  {0.002093515, 0.001211818, 0.000113911, -2.123064e-05, 4.107002e-05, 5.103964e-07, -8.15312e-05, 2.839805e-06, -1.131756e-07, 1.375441e-07}; }
+  if (block_size <= 1023 && 64 < num_dpus <= 128) {
+    intercept = 0.04036064;
+    coef =  {0.0007023191, 0.002645646, 0.0002828079, -2.455443e-06, 9.687165e-06, 1.285636e-07, -3.141264e-05, 1.465269e-05, -2.620628e-07, -2.980232e-08}; }
+  if (block_size <= 1023 && 128 < num_dpus <= 256) {
+    intercept = -0.01015212;
+    coef =  {0.000925271, 0.00302771, 0.0003005594, -1.905861e-06, -4.098972e-07, 2.275864e-07, 1.934596e-05, 1.153931e-05, -3.071052e-07, -3.003963e-09}; }
+  if (block_size <= 1023 && 256 < num_dpus <= 384) {
+    intercept = 0.3491096;
+    coef =  {-0.001765869, 0.003565074, 0.0003901609, 3.105425e-06, -4.178861e-06, 2.173735e-07, 2.176746e-05, 2.287418e-05, -4.150722e-07, -3.736867e-08}; }
+  if (block_size <= 1023 && num_dpus > 384) {
+    intercept = 0.113671;
+    coef =  {0.0001003288, 0.001221467, 0.0006755427, 1.423802e-08, 3.809035e-06, 4.971699e-08, 2.024296e-05, -8.990338e-08, -6.436483e-07, 3.069108e-08}; }
+  if (block_size > 1023 && num_dpus <= 16) {
+    intercept = -0.00535094;
+    coef =  {0.003436917, 0.005039664, 4.23789e-05, -0.0001981786, 0.0002117995, 6.018374e-07, -0.0001387211, 1.054667e-06, -1.115567e-08, -2.565929e-08}; }
+  if (block_size > 1023 && 16 < num_dpus <= 24) {
+    intercept = -0.1592823;
+    coef =  {0.01456662, 0.009612274, 8.987142e-05, -0.0003439787, 6.948789e-05, -1.683914e-07, -0.0001927669, 3.720957e-07, -1.958688e-08, -4.225427e-08}; }
+  if (block_size > 1023 && 24 < num_dpus <= 64) {
+    intercept = -0.1299523;
+    coef =  {0.006723068, 0.01123388, 9.349221e-05, -6.471027e-05, -3.16957e-05, -4.368839e-07, -0.0001850292, -3.197733e-06, -1.821407e-08, 1.175204e-07}; }
+  if (block_size > 1023 && 64 < num_dpus <= 128) {
+    intercept = 0.2083512;
+    coef =  {-0.001853795, -0.0001342955, 5.417983e-05, 1.409244e-05, -6.98267e-05, -3.800186e-07, 0.000259399, 1.545369e-05, -1.075556e-08, -7.660834e-09}; }
+  if (block_size > 1023 && 128 < num_dpus <= 256) {
+    intercept = 0.02088328;
+    coef =  {0.001399619, -0.008419023, 1.560656e-05, -2.854948e-06, 3.617201e-06, 1.962339e-08, 0.0003100277, 1.673163e-05, -1.256988e-08, -1.171852e-08}; }
+  if (block_size > 1023 && 256 < num_dpus <= 384) {
+    intercept = 0.2127411;
+    coef =  {-0.0003265677, 0.0002047009, 6.273883e-05, 8.567395e-07, -2.342576e-05, -4.176898e-08, 0.000161031, 1.136106e-05, -1.972343e-08, 9.764534e-09}; }
+  if (block_size > 1023 && num_dpus > 384) {
+    intercept = 0.4455987;
+    coef =  {0.0001859888, -0.02168233, -0.0001385256, 2.571397e-08, -3.440802e-05, -9.065543e-08, 0.001025797, 3.301748e-06, 3.226617e-08, 6.601865e-08}; }
+  double result = intercept + 
+num_dpus * coef[0] + blocks_per_dpu * coef[1] + block_size * coef[2] + num_dpus*num_dpus * coef[3] + num_dpus*blocks_per_dpu * coef[4] + num_dpus*block_size * coef[5] + blocks_per_dpu*blocks_per_dpu * coef[6] + blocks_per_dpu*block_size * coef[7] + block_size*block_size * coef[8] + num_dpus*blocks_per_dpu*block_size * coef[9];
 
 Plots written to plots/sg/

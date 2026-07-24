@@ -1659,10 +1659,10 @@ def main():
         ):
             print(
                 f"  if ({label}) {{\n"
-                f"\tintercept = {fit['intercept']:.7g};\n"
-                f"\tcoef =  {{{', '.join(f'{c:.7g}' for c in fit['coef'])}}}; }}"
+                f"    intercept = {fit['intercept']:.7g};\n"
+                f"    coef =  {{{', '.join(f'{c:.7g}' for c in fit['coef'])}}}; }}"
             )
-        print("   double result = intercept + ", end=None)
+        print("  double result = intercept + ", end=None)
         terms = [f"{name} * coef[{i}]" for i, name in enumerate(_pairwise_col_names(PROBLEM.all_dims))]
         print(' + '.join(terms), end=";\n")
 

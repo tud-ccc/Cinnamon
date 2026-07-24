@@ -1,5 +1,6 @@
 from doit.tools import config_changed
 from doit.tools import Interactive
+import pathlib
 import os
 
 """doit tasks for the scatter_cost microbenchmark.
@@ -42,9 +43,12 @@ def task_bench():
     }
     """Build the DPU kernel and host benchmark binary."""
     for fn in fns:
+        out_path = pathlib.Path(f"plots/{fn}")
+        out_path.mkdir(parents=True, exist_ok=True)
+
         yield {
             "name": f"{fn}",
-            "targets": [f"plots/{fn}/results.csv"],
+            "targets": [ out_path / "results.csv"],
             "file_dep": ["bin/scatter_dpu", f"bin/scatter_bench_{fn}"],
             "actions": [
                 Interactive(
@@ -64,10 +68,8 @@ def task_plot():
     splits = "--split block_size 1023 --split num_dpus 16 24 64 128 256 384"
 
     bench_splits = {
-        # "broadcast": "--split block_size 1023",
-        "sg": "--split block_size 1023",
-        # "sg": "--split 9 13 --split-dim blocks_per_dpu",
-        # "sg": "--split 64 --split-dim num_dpus",
+        "sg": splits,#"--split block_size 1023",
+        "gather": "--split block_size 1023 --split num_dpus 16 24 64 128",
         "broadcast": splits,
         "block": splits,
     }

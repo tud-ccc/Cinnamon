@@ -43,6 +43,7 @@ ITERS = 10
 DPUS = 256
 TASKLETS = 4
 
+source="/home/clement.fournier/Work/cinm-mlir/experiments/cinm1comparison/data/prim_gemv/_split/gemv_64MB.mlir"
 CONFIGS = [
     compile_run.Config(
         system="cinm2",
@@ -57,7 +58,24 @@ CONFIGS = [
             "mramRow": 4,
             "mramCol": 1024,
         },
-        fn_module="/home/clement.fournier/Work/cinm-mlir/experiments/cinm1comparison/data/prim_gemv/_split/gemv_64MB.mlir",
+        fn_module=source,
+        prim="gemv",
+        lower=cinmopt.eval_solution_lowerer(),
+    ),
+    compile_run.Config(
+        system="atim",
+        fn_name="gemv_64MB",
+        label="default",
+        params={
+            "dpus": 2048,
+            "tasklets": 8,
+            "wramRow": 8,
+            "wramCol": 64,
+            "dpuCols": 32, # 64 rows
+            "mramRow": 64,
+            "mramCol": 128,
+        },
+        fn_module=source,
         prim="gemv",
         lower=cinmopt.eval_solution_lowerer(),
     ),
@@ -74,7 +92,7 @@ CONFIGS = [
             "mramRow": 4,
             "mramCol": 1024,
         },
-        fn_module="/home/clement.fournier/Work/cinm-mlir/experiments/cinm1comparison/data/prim_gemv/_split/gemv_64MB.mlir",
+        fn_module=source,
         prim="gemv",
         lower=cinmopt.eval_solution_lowerer(),
     ),
@@ -83,7 +101,7 @@ CONFIGS = [
         fn_name="gemv_64MB",
         label="default",
         params={"dpus": DPUS, "tasklets": TASKLETS},
-        fn_module="/home/clement.fournier/Work/cinm-mlir/experiments/cinm1comparison/data/prim_gemv/_split/gemv_64MB.mlir",
+        fn_module=source,
         prim="gemv",
         lower=cinm1.lowerer(),
     ),
@@ -92,7 +110,7 @@ CONFIGS = [
         fn_name="gemv_64MB",
         label="default",
         params={"dpus": DPUS, "tasklets": TASKLETS},
-        fn_module="/home/clement.fournier/Work/cinm-mlir/experiments/cinm1comparison/data/prim_gemv/_split/gemv_64MB.mlir",
+        fn_module=source,
         prim="gemv",
         lower=cinm1.lowerer(use_upmem_scatter_api=True),
     ),
@@ -163,6 +181,8 @@ def task_plot():
     def action(out_path, by_kind):
         breakdowns = {}
         for config in CONFIGS:
+            # if config.system != "atim":
+            #   continue
             output_dir = config.dir(DATA_ROOT) / "output"
             net_ms = measurements.net_time_ms(output_dir)
             if net_ms is None:
