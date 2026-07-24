@@ -59,11 +59,13 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import concurrent.futures
 import dataclasses
 import functools
 import itertools
 import operator
 import pathlib
+import threading
 from typing import Callable
 
 import matplotlib
@@ -72,6 +74,7 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 from matplotlib.colors import LogNorm, Normalize
 from matplotlib.ticker import FuncFormatter, NullFormatter
+from tqdm import tqdm
 import numpy as np
 import pandas as pd
 
@@ -1224,6 +1227,65 @@ def plot_best_regression_fit(
     plt.close(fig)
 
 
+class PlotPool:
+    """Dispatches plot_*-style calls (e.g. `p.plot_vs_dim(...)`) to
+    background threads instead of running them inline, so a caller's dozen
+    independent plot calls overlap instead of running strictly one after
+    another. `p.<name>(...)` looks up `<name>` as a module-level function
+    (any plot_* function below) and submits a call to it with the same
+    args/kwargs -- so call sites need only add a `p.` prefix, no other
+    change. Call `.join()` once every plot has been dispatched, to wait for
+    them all and re-raise the first exception any of them hit (a
+    worker-thread exception would otherwise just vanish).
+
+    matplotlib's pyplot interface (plt.subplots/plt.figure/plt.close, used
+    by every PNG plot here) is not thread-safe -- it tracks the "current
+    figure" in a shared global registry -- so every plot not listed in
+    `_PARALLEL_SAFE` is serialized behind a lock; only the Plotly-based 3D
+    HTML plots (which never touch that registry) actually run concurrently
+    with each other and with whichever matplotlib call currently holds the
+    lock."""
+
+    _PARALLEL_SAFE = {"plot_3d_measured", "plot_3d_predicted", "plot_3d_fit_wireframe"}
+
+    def __init__(self, max_workers: int = 8):
+        self._executor = concurrent.futures.ThreadPoolExecutor(max_workers=max_workers)
+        self._futures: list[concurrent.futures.Future] = []
+        self._mpl_lock = threading.Lock()
+
+    def __getattr__(self, name: str):
+        fn = globals().get(name)
+        if not callable(fn):
+            raise AttributeError(f"PlotPool: no such plot function {name!r}")
+        parallel_safe = name in self._PARALLEL_SAFE
+
+        def dispatch(*args, **kwargs) -> None:
+            def run() -> None:
+                if parallel_safe:
+                    fn(*args, **kwargs)
+                else:
+                    with self._mpl_lock:
+                        fn(*args, **kwargs)
+
+            self._futures.append(self._executor.submit(run))
+
+        return dispatch
+
+    def join(self) -> None:
+        """Blocks until every dispatched plot has finished (a tqdm bar
+        advances as each one completes), then re-raises the first exception
+        any of them hit -- only after every plot has had a chance to run,
+        so one failure doesn't hide whether others also failed."""
+        for _ in tqdm(
+            concurrent.futures.as_completed(self._futures),
+            total=len(self._futures),
+            desc="Plots",
+        ):
+            pass
+        for future in self._futures:
+            future.result()
+
+
 # ═══════════════════════════════════════════════════════════════════════════
 # scatter_cost-specific configuration
 # ═══════════════════════════════════════════════════════════════════════════
@@ -1364,7 +1426,9 @@ def main():
         else (size_dim, PROBLEM.group)
     )
 
-    plot_vs_dim(
+    p = PlotPool()
+
+    p.plot_vs_dim(
         agg,
         size_dim,
         PROBLEM.group,
@@ -1372,7 +1436,7 @@ def main():
         out_dir / "latency_vs_block_size.png",
         fixed=fixed_blocks,
     )
-    plot_vs_dim(
+    p.plot_vs_dim(
         agg,
         PROBLEM.group,
         size_dim,
@@ -1380,7 +1444,7 @@ def main():
         out_dir / "latency_vs_num_dpus.png",
         fixed=fixed_blocks,
     )
-    plot_vs_dim(
+    p.plot_vs_dim(
         agg,
         PROBLEM.derived["shape_product"],
         PROBLEM.group,
@@ -1388,7 +1452,7 @@ def main():
         out_dir / "latency_vs_bytes_per_dpu.png",
         connect=False,
     )
-    plot_3d_measured(
+    p.plot_3d_measured(
         agg,
         x=p_x,
         y=p_y,
@@ -1397,7 +1461,7 @@ def main():
         out_path=out_dir / "latency_3d.html",
     )
     if len(PROBLEM.shape) >= 2:
-        plot_heatmap(
+        p.plot_heatmap(
             agg,
             x=p_x,
             y=p_y,
@@ -1406,24 +1470,24 @@ def main():
             group_value=num_dpus,
             out_path=out_dir / "heatmap_blocks_vs_size.png",
         )
-    plot_faceted_scatter(
-        agg,
-        x=PROBLEM.derived["total"],
-        y=LATENCY,
-        title="Total bytes, one panel per DPU count",
-        out_path=out_dir / "latency_vs_total_bytes_faceted.png",
-        facet=PROBLEM.group,
-        color=size_dim,
-    )
-    plot_faceted_scatter(
-        agg,
-        x=PROBLEM.derived["shape_product"],
-        y=LATENCY,
-        title="Bytes per DPU, one panel per DPU count",
-        out_path=out_dir / "latency_vs_bytes_per_dpu_faceted.png",
-        facet=PROBLEM.group,
-        color=size_dim,
-    )
+    # p.plot_faceted_scatter(
+    #     agg,
+    #     x=PROBLEM.derived["total"],
+    #     y=LATENCY,
+    #     title="Total bytes, one panel per DPU count",
+    #     out_path=out_dir / "latency_vs_total_bytes_faceted.png",
+    #     facet=PROBLEM.group,
+    #     color=size_dim,
+    # )
+    # p.plot_faceted_scatter(
+    #     agg,
+    #     x=PROBLEM.derived["shape_product"],
+    #     y=LATENCY,
+    #     title="Bytes per DPU, one panel per DPU count",
+    #     out_path=out_dir / "latency_vs_bytes_per_dpu_faceted.png",
+    #     facet=PROBLEM.group,
+    #     color=size_dim,
+    # )
 
     y = agg["ms"].to_numpy(dtype=float)
     table, fits = fit_and_report(templates, agg, PROBLEM, "All DPU counts")
@@ -1493,7 +1557,7 @@ def main():
             )
 
     best_key = table.iloc[0]["key"]
-    plot_all_regression_fits(
+    p.plot_all_regression_fits(
         agg,
         y,
         fits,
@@ -1503,15 +1567,15 @@ def main():
         LATENCY,
         out_dir / "regression_fit.png",
     )
-    plot_best_regression_fit(
+    p.plot_best_regression_fit(
         agg,
         y,
         fits[best_key],
         PROBLEM.group,
         LATENCY,
         out_dir / "regression_fit_best.png",
-    ) 
-    plot_3d_predicted(
+    )
+    p.plot_3d_predicted(
         agg,
         x=p_x,
         y=p_y,
@@ -1522,7 +1586,7 @@ def main():
         out_path=out_dir / "latency_3d_predicted_best.html",
     )
     if "hybrid" in fits:
-        plot_3d_fit_wireframe(
+        p.plot_3d_fit_wireframe(
             agg,
             x=p_x,
             y=p_y,
@@ -1534,15 +1598,15 @@ def main():
             splits=fits["hybrid"]["splits"],
         )
     best_fit = fits[best_key]
-    plot_faceted_fit(
-        agg,
-        x=PROBLEM.derived["total"],
-        value=LATENCY,
-        pred=best_fit["pred"],
-        facet=PROBLEM.group,
-        title=f"Measured vs. {best_fit['name']} prediction, per DPU count",
-        out_path=out_dir / "latency_vs_total_bytes_fit.png",
-    )
+    # p.plot_faceted_fit(
+    #     agg,
+    #     x=PROBLEM.derived["total"],
+    #     value=LATENCY,
+    #     pred=best_fit["pred"],
+    #     facet=PROBLEM.group,
+    #     title=f"Measured vs. {best_fit['name']} prediction, per DPU count",
+    #     out_path=out_dir / "latency_vs_total_bytes_fit.png",
+    # )
     print(f"\nBest fit: {best_fit['name']} (key={best_key})")
     print(
         f"  relRMSE = {best_fit['rel_rmse'] * 100:.2f}%   "
@@ -1559,6 +1623,7 @@ def main():
     else:
         print(f"  intercept = {best_fit['intercept']:.4g}")
         print(f"  coef = {[f'{c:.4g}' for c in best_fit['coef']]}")
+    p.join()
     print(f"\nPlots written to {out_dir}/")
 
 
