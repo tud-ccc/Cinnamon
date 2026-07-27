@@ -15,6 +15,7 @@
 #include <llvm/ADT/StringRef.h>
 #include <llvm/Support/CommandLine.h>
 #include <llvm/Support/Debug.h>
+#include <llvm/Support/Format.h>
 #include <llvm/Support/LogicalResult.h>
 #include <llvm/Support/raw_ostream.h>
 #include <mlir/Dialect/Bufferization/IR/Bufferization.h>
@@ -410,7 +411,6 @@ void ConfigSpace::neighborIndices(size_t idx,
   }
 }
 
-
 // ===----------------------------------------------------------------------===//
 // Core framework
 // ===----------------------------------------------------------------------===//
@@ -713,7 +713,8 @@ struct InferenceTask {
     using Clock = std::chrono::steady_clock;
     auto t0 = Clock::now();
     double cpuT0 = getProcessCpuTimeMs();
-    std::vector<std::tuple<int, double, double>> timings; // (nObs, wall_ms, cpu_ms)
+    std::vector<std::tuple<int, double, double>>
+        timings; // (nObs, wall_ms, cpu_ms)
     auto recordTiming = [&]() {
       double ms =
           std::chrono::duration<double, std::milli>(Clock::now() - t0).count();
@@ -1042,8 +1043,10 @@ struct InferenceTask {
         double *cost = std::get_if<double>(&result);
         std::optional<double> opt_cost =
             cost ? std::make_optional(*cost) : std::nullopt;
-        perThreadObs[tid].push_back(
-            {.idx = i, .cost = opt_cost, .eval_time = evalTime, .cpu_eval_time_ms = cpuMs});
+        perThreadObs[tid].push_back({.idx = i,
+                                     .cost = opt_cost,
+                                     .eval_time = evalTime,
+                                     .cpu_eval_time_ms = cpuMs});
       }
     };
 
@@ -1164,11 +1167,16 @@ inferAcceleratorConfig(cinm::ComputeBlockOp computeOp, InferencePlugin &plugin,
   if (opts.evalSingleSolution) {
     Configuration conf = *opts.evalSingleSolution;
     if (!task.space.isValid(conf)) {
-      return emitDefiniteFailure(computeOp->getLoc(), "Configuration is invalid: ") << task.wrap(conf);
+      return emitDefiniteFailure(computeOp->getLoc(),
+                                 "Configuration is invalid: ")
+             << task.wrap(conf);
     }
     bestResult = task.makeTrialInfo(std::move(conf));
     plugin.warmUp(computeOp->getContext());
-    TRY_GET(plugin.evaluate(bestResult)); // may return early
+    auto estimate = TRY_GET(plugin.evaluate(bestResult)); // may return early
+    llvm::errs() << "Estimated cost: " << llvm::format("%.3f", estimate)
+                 << " ms\n";
+
   } else if (opts.exhaustiveSearch) {
     bestResult = TRY_GET(task.runExhaustive());
   } else if (opts.nSeeds > 1) {
@@ -1191,7 +1199,8 @@ static Operation *createCast(OpBuilder &builder, Location loc, Type toType,
   if (isa<TensorType>(operand.getType()) && isa<MemRefType>(toType)) {
     return bufferization::ToBufferOp::create(builder, loc, toType, operand);
   } else if (isa<MemRefType>(operand.getType()) && isa<TensorType>(toType)) {
-    return bufferization::ToTensorOp::create(builder, loc, toType, operand, true);
+    return bufferization::ToTensorOp::create(builder, loc, toType, operand,
+                                             true);
   }
   return mlir::UnrealizedConversionCastOp::create(builder, loc, toType,
                                                   operand);
