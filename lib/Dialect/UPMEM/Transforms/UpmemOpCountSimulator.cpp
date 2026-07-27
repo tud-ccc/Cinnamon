@@ -13,7 +13,6 @@
 #include <cmath>
 #include <limits>
 #include <llvm/Support/Debug.h>
-#include <type_traits>
 #include <upmem_cost_model/Simulation.h>
 
 #include <algorithm>
@@ -55,13 +54,13 @@ static double elementBytes(Type elemTy) {
   return 4.0;
 }
 
-static double costOfRegionCb(Region &region, bool annotate,
-                             const WaitForCostFn &cb);
+static SimCost costOfRegionCb(Region &region, bool annotate,
+                              const WaitForCostFn &cb);
 
-static double costOfOpCb(Operation &op, bool annotate,
-                         const WaitForCostFn &cb) {
-  double cost =
-      llvm::TypeSwitch<Operation *, double>(&op)
+static SimCost costOfOpCb(Operation &op, bool annotate,
+                          const WaitForCostFn &cb) {
+  SimCost cost =
+      llvm::TypeSwitch<Operation *, SimCost>(&op)
           .Case([&](LoopLikeOpInterface forOp) {
             int64_t tripCount;
             if (auto tc = forOp.getStaticTripCount()) {
@@ -76,14 +75,16 @@ static double costOfOpCb(Operation &op, bool annotate,
                     step = *sv;
               tripCount = std::max(1L, 2048 / std::max(1L, step));
             }
-            double bodyCost =
+            SimCost bodyCost =
                 costOfRegionCb(*forOp.getLoopRegions()[0], annotate, cb);
-            return bodyCost * tripCount;
+            // Scale each cost component independently by the trip count,
+            // rather than collapsing to a single aggregate first.
+            return bodyCost * static_cast<double>(tripCount);
           })
           .Case<arith::AddIOp>([](auto) {
             // Between 1.6 and 10 ns on chios.
             // It's lower with more iterations of the enclosing loop
-            return 3e-6;
+            return SimCost::forCpu(3e-6, "other");
           })
           .Case<memref::CopyOp>([](memref::CopyOp copyOp) {
             // Experiment: try to account for the copy happening
@@ -92,31 +93,48 @@ static double costOfOpCb(Operation &op, bool annotate,
             double bytes = static_cast<double>(staticElementCount(hostTy)) *
                            elementBytes(hostTy.getElementType());
             double time_ns = 0.63 * pow(bytes, 0.907);
-            return time_ns / 1e6; // ns -> ms
+            return SimCost::forCpu(time_ns / 1e6, "copy"); // ns -> ms
           })
           // .Case<memref::LoadOp, memref::StoreOp>([](auto) { return 1e-7; })
-          .Case<cnm::ScatterOp, cnm::GatherOp>([](auto scatterOp) {
+          .Case<cnm::ScatterOp>([](cnm::ScatterOp scatterOp) {
             auto hostTy = scatterOp.getHostType();
             double bytes = static_cast<double>(staticElementCount(hostTy)) *
                            elementBytes(hostTy.getElementType());
             int numRanks = 1;
             if (auto accel = upmemAccelOf(scatterOp.getWg().getType()))
               numRanks = accel->getNumRanks();
-            return transferCost(bytes, numRanks);
+            return SimCost::forTransfer(transferCost(bytes, numRanks),
+                                        "scatter");
           })
-          .Case<upmem::ScatterOp, upmem::GatherOp>([](auto xferOp) -> double {
+          .Case<cnm::GatherOp>([](cnm::GatherOp gatherOp) {
+            auto hostTy = gatherOp.getHostType();
+            double bytes = static_cast<double>(staticElementCount(hostTy)) *
+                           elementBytes(hostTy.getElementType());
+            int numRanks = 1;
+            if (auto accel = upmemAccelOf(gatherOp.getWg().getType()))
+              numRanks = accel->getNumRanks();
+            return SimCost::forTransferBack(transferCost(bytes, numRanks),
+                                            "gather");
+          })
+          .Case<upmem::ScatterOp>([](upmem::ScatterOp xferOp) -> SimCost {
             auto hier = llvm::cast<DeviceHierarchyType>(
                 xferOp.getHierarchy().getType());
             int numDpus = hier.getNumRanks() * hier.getNumDpusPerRank();
-            if constexpr (std::is_same_v<decltype(xferOp), upmem::ScatterOp>) {
-              return upmem_cm::scatterCostMs(numDpus,
-                                             xferOp.getDpuBufferSizeInBytes());
-            } else {
-              return upmem_cm::gatherCostMs(numDpus,
-                                            xferOp.getDpuBufferSizeInBytes());
-            }
+            return SimCost::forTransfer(
+                upmem_cm::scatterCostMs(numDpus,
+                                        xferOp.getDpuBufferSizeInBytes()),
+                "scatter");
           })
-          .Case<upmem::ScatterOnTaskletsOp>([](auto xferOp) -> double {
+          .Case<upmem::GatherOp>([](upmem::GatherOp xferOp) -> SimCost {
+            auto hier = llvm::cast<DeviceHierarchyType>(
+                xferOp.getHierarchy().getType());
+            int numDpus = hier.getNumRanks() * hier.getNumDpusPerRank();
+            return SimCost::forTransferBack(
+                upmem_cm::gatherCostMs(numDpus,
+                                       xferOp.getDpuBufferSizeInBytes()),
+                "gather");
+          })
+          .Case<upmem::ScatterOnTaskletsOp>([](auto xferOp) -> SimCost {
             auto hier = llvm::cast<DeviceHierarchyType>(
                 xferOp.getHierarchy().getType());
             int numDpus = hier.getNumRanks() * hier.getNumDpusPerRank();
@@ -125,34 +143,51 @@ static double costOfOpCb(Operation &op, bool annotate,
             // them.
             int64_t bytesPerDpu =
                 xferOp.getDpuBufferSizeInBytes() * xferOp.getNumBlocksPerDpu();
-            return upmem_cm::scatterCostMs(numDpus, bytesPerDpu);
+            return SimCost::forTransfer(
+                upmem_cm::scatterCostMs(numDpus, bytesPerDpu),
+                "scatter_on_tasklets");
+          })
+          .Case<upmem::BroadcastOp>([](auto xferOp) -> SimCost {
+            auto hier = llvm::cast<DeviceHierarchyType>(
+                xferOp.getHierarchy().getType());
+            int numDpus = hier.getNumRanks() * hier.getNumDpusPerRank();
+            // Same size is sent to every DPU; model it like a scatter of
+            // that buffer's full size.
+            return SimCost::forTransfer(
+                upmem_cm::scatterCostMs(numDpus,
+                                        xferOp.getDpuBufferSizeInBytes()),
+                "broadcast");
           })
           .Case<LocalTransferOp>([](auto xferOp) {
             auto srcTy = llvm::cast<MemRefType>(xferOp.getSource().getType());
             double bytes = static_cast<double>(staticElementCount(srcTy)) *
                            elementBytes(srcTy.getElementType());
-            return 36.0 * std::max(1.0, bytes / 2048.0);
+            // DPU-internal WRAM<->MRAM transfer: contributes to kernel
+            // (upmem.wait_for) time, not host<->DPU transfer time.
+            return SimCost::forKernel(36.0 * std::max(1.0, bytes / 2048.0),
+                                      "local_transfer");
           })
           // Delegate DPU kernel cost to the callback.
-          .Case<WaitForOp>([&](auto waitForOp) -> double {
-            return cb(waitForOp.getOperation(), annotate);
+          .Case<WaitForOp>([&](auto waitForOp) -> SimCost {
+            return SimCost::forKernel(cb(waitForOp.getOperation(), annotate),
+                                      "wait_for");
           })
           // alloc/free dpus are not counted as they are considered amortized
-          .Case<cnm::LaunchOp>([](auto launchOp) -> double {
+          .Case<cnm::LaunchOp>([](auto launchOp) -> SimCost {
             if (auto acc = upmemAccelOf(launchOp.getWg().getType())) {
               double c = 1;
               for (auto buf : launchOp.getBody().getArguments())
                 if (auto mr = llvm::dyn_cast_or_null<MemRefType>(buf.getType()))
                   c *= mr.getNumElements();
-              return c / acc->getNumTaskletsPerDpu();
+              return SimCost::forKernel(c / acc->getNumTaskletsPerDpu(),
+                                        "launch");
             }
-            return 1.0;
+            return SimCost::forKernel(1.0, "launch");
           })
           .Case<arith::ConstantOp, upmem::StaticAllocOp, cinm::YieldOp,
-                memref::SubViewOp>([](auto) { return 0.0; })
+                memref::SubViewOp>([](auto) { return SimCost{}; })
           .Default([&](Operation *o) {
-            // double c = o->getNumRegions() > 0 ? 0.0 : 5e-9;
-            double c = 0.0;
+            SimCost c;
             for (auto &region : o->getRegions())
               c += costOfRegionCb(region, annotate, cb);
             return c;
@@ -160,17 +195,18 @@ static double costOfOpCb(Operation &op, bool annotate,
 
   if (annotate)
     op.setAttr(kSimCostAttr,
-               FloatAttr::get(Float64Type::get(op.getContext()), cost));
+               FloatAttr::get(Float64Type::get(op.getContext()),
+                              cost.total()));
   return cost;
 }
 
-static double costOfRegionCb(Region &region, bool annotate,
-                             const WaitForCostFn &cb) {
-  double cost = 0.0;
+static SimCost costOfRegionCb(Region &region, bool annotate,
+                              const WaitForCostFn &cb) {
+  SimCost cost;
   for (auto &block : region) {
     for (auto &op : block) {
       cost += costOfOpCb(op, annotate, cb);
-      if (!std::isfinite(cost))
+      if (!cost.isFinite())
         return cost;
     }
   }
@@ -187,18 +223,21 @@ struct OpCountSimulator : UpmemSimulator {
   std::unique_ptr<UpmemSimulator> clone() override {
     return std::make_unique<OpCountSimulator>(annotateOpCosts);
   }
-  double simulateGemv(std::chrono::milliseconds timeout, int nTasklets,
+  SimCost simulateGemv(std::chrono::milliseconds timeout, int nTasklets,
                       int64_t mramRows, int64_t mramCols, int64_t rowTile,
                       int64_t colTile, DType) override;
-  double simulateReduction(std::chrono::milliseconds timeout,
+  SimCost simulateReduction(std::chrono::milliseconds timeout,
                            cinm::ReduceMethod reduction, int taskletRows,
                            int taskletCols, int64_t mramRows, int64_t mramCols,
                            int64_t wramRows, int64_t wramCols,
                            DType dty) override;
 
-  mlir::cinm::utils::Maybe<double> simulate(Region &region) override {
+  mlir::cinm::utils::Maybe<SimCost> simulate(Region &region) override {
     // Recursive callback: recurse into the DPU program body with the same
-    // heuristics, divided by tasklet parallelism.
+    // heuristics, divided by tasklet parallelism. The callback returns a
+    // single scalar (kernel-launch time as seen from the host): whatever
+    // happens inside the DPU program body all counts towards the kernel
+    // component of the enclosing upmem.wait_for.
     std::function<double(Operation *, bool)> waitForCb;
     waitForCb = [&](Operation *op, bool ann) -> double {
       auto waitFor = llvm::cast<WaitForOp>(op);
@@ -207,7 +246,7 @@ struct OpCountSimulator : UpmemSimulator {
         return 1.0;
       auto hier =
           llvm::cast<DeviceHierarchyType>(waitFor.getDpuSet().getType());
-      return simulateHostRegion(dpuProgram.getBody(), ann, waitForCb) /
+      return simulateHostRegion(dpuProgram.getBody(), ann, waitForCb).total() /
              hier.getNumTaskletsPerDpu();
     };
     return simulateHostRegion(region, annotateOpCosts, waitForCb);
@@ -233,7 +272,7 @@ double dpuOpLatency(upmem_cm::ArithOp op, upmem_cm::DType dty) {
 }
 
 
-double mlir::upmem::OpCountSimulator::simulateReduction(
+SimCost mlir::upmem::OpCountSimulator::simulateReduction(
     std::chrono::milliseconds, cinm::ReduceMethod reduction, int taskletRows,
     int taskletCols, int64_t mramRows, int64_t mramCols, int64_t wramRows,
     int64_t wramCols, DType dty0) {
@@ -270,10 +309,10 @@ double mlir::upmem::OpCountSimulator::simulateReduction(
 
       + wramToMramCost(mramRows, 1, dty);
 
-  return cycles / 350'000;
+  return SimCost::forKernel(cycles / 350'000);
 }
 
-double mlir::upmem::OpCountSimulator::simulateGemv(
+SimCost mlir::upmem::OpCountSimulator::simulateGemv(
     std::chrono::milliseconds, int nTasklets, int64_t mramRows,
     int64_t mramCols, int64_t rowTile, int64_t colTile, DType dty0) {
   auto dty = from_upmem_dty(dty0);
@@ -296,10 +335,10 @@ double mlir::upmem::OpCountSimulator::simulateGemv(
   double cycleCount = init + nRowTiles * nColTiles * (trcost + innerLoopCost) +
                       // result write back
                       wramToMramCost(mramRows, 1, dty);
-  return cycleCount / 350'000;
+  return SimCost::forKernel(cycleCount / 350'000);
 }
 
-double simulateHostRegion(Region &region, bool annotate,
+SimCost simulateHostRegion(Region &region, bool annotate,
                           const WaitForCostFn &waitForCb) {
   return costOfRegionCb(region, annotate, waitForCb);
 }

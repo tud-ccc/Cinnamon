@@ -521,16 +521,16 @@ struct CppSimulator : UpmemSimulator {
     LLVM_DEBUG(gemvCache.printStats(llvm::dbgs()));
   }
 
-  double simulateReduction(std::chrono::milliseconds timeout,
+  SimCost simulateReduction(std::chrono::milliseconds timeout,
                            cinm::ReduceMethod reduction, int taskletRows,
                            int taskletCols, int64_t mramRows, int64_t mramCols,
                            int64_t wramRows, int64_t wramCols,
                            upmem::DType dty) override;
-  double simulateGemv(std::chrono::milliseconds timeout, int nTasklets,
+  SimCost simulateGemv(std::chrono::milliseconds timeout, int nTasklets,
                       int64_t mramRows, int64_t mramCols, int64_t rowTile,
                       int64_t colTile, upmem::DType dty) override;
 
-  Maybe<double> simulate(Region &region) override {
+  Maybe<SimCost> simulate(Region &region) override {
     std::chrono::milliseconds tms = timeoutMs;
     auto waitForCb = [tms, mode = this->mode](Operation *op, bool) -> double {
       auto waitFor = llvm::cast<WaitForOp>(op);
@@ -566,7 +566,7 @@ struct CppSimulator : UpmemSimulator {
 };
 
 } // anonymous namespace
-double CppSimulator::simulateReduction(std::chrono::milliseconds timeout,
+SimCost CppSimulator::simulateReduction(std::chrono::milliseconds timeout,
                                        cinm::ReduceMethod reduction,
                                        int taskletRows, int taskletCols,
                                        int64_t mramRows, int64_t mramCols,
@@ -619,10 +619,10 @@ double CppSimulator::simulateReduction(std::chrono::milliseconds timeout,
 
   double result = b.simulate(taskletRows * taskletCols, timeout)
                       .value_or(std::numeric_limits<double>::infinity());
-  return result;
+  return SimCost::forKernel(result);
 }
 
-double CppSimulator::simulateGemv(std::chrono::milliseconds timeout,
+SimCost CppSimulator::simulateGemv(std::chrono::milliseconds timeout,
                                   int nTasklets, int64_t mramRows,
                                   int64_t mramCols, int64_t rowTile,
                                   int64_t colTile, upmem::DType dty0) {
@@ -636,7 +636,7 @@ double CppSimulator::simulateGemv(std::chrono::milliseconds timeout,
   const bool expensive = (mramRows * mramCols >= 512);
   if (auto cached =
           expensive ? gemvCache.lookupBlocking(key) : gemvCache.lookupTry(key))
-    return *cached;
+    return SimCost::forKernel(*cached);
 
   using namespace upmem_cm;
   ProgramBuilder b;
@@ -695,7 +695,7 @@ double CppSimulator::simulateGemv(std::chrono::milliseconds timeout,
                       .value_or(std::numeric_limits<double>::infinity());
 
   gemvCache.store(key, result);
-  return result;
+  return SimCost::forKernel(result);
 }
 
 // ===----------------------------------------------------------------------===//

@@ -476,7 +476,7 @@ void UpmemInferencePlugin::handleGemv(cinm::GemvOp gemv, SpaceBuilder &b) {
 
     TRY(runPipeline(cleanupPm.get(), gemv->getLoc(), trial.module.get()));
 
-    return sim.simulate(trial.computeBlock.getBody());
+    return TRY_GET(sim.simulate(trial.computeBlock.getBody())).total();
   });
 }
 
@@ -601,7 +601,7 @@ void UpmemInferencePlugin::handleReduce(cinm::ReduceOp op, SpaceBuilder &b) {
 
       TRY(runPipeline(cleanupPm.get(), op->getLoc(), trial.module.get()));
 
-      return sim.simulate(trial.computeBlock.getBody());
+      return TRY_GET(sim.simulate(trial.computeBlock.getBody())).total();
     });
   }
 }

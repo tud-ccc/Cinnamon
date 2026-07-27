@@ -139,6 +139,10 @@ def UpmemAnnotateCostsPass
     Option<"simulator", "simulator", "UpmemSimulatorId", "UpmemSimulatorId::CYCLE_ACCURATE",
            "Simulator backend",
            simulatorClValues.values>,
+    Option<"costsCsv", "costs-csv", "std::string", "\"\"",
+           "If non-empty, write a detailed cost breakdown (one row per "
+           "compute_block x cost category x sub-label, e.g. transfer/scatter) "
+           "to this CSV path">,
   ];
 }
 
