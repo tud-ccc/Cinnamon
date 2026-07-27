@@ -29,6 +29,7 @@ sys.path.insert(0, str(EXPERIMENTS_DIR))
 from doit.tools import check_timestamp_unchanged
 from doit.reporter import ProgressBarReporter  # noqa: E402
 from cinm_experiments import compile_run, cinm1, cinmopt, measurements  # noqa: E402
+from cinm_experiments.paths import DEFAULT_CINM_OPT
 
 DOIT_CONFIG = {
     "default_tasks": ["plot"],
@@ -151,7 +152,7 @@ def task_compile():
             "name": config.system,
             # todo add directory check?
             # "uptodate": [check_timestamp_unchanged(compile_marker)],
-            "file_dep": [config.fn_module],
+            "file_dep": [config.fn_module, DEFAULT_CINM_OPT],
             "targets": [compile_marker],
             "actions": [(_compile_one, [config, compile_marker])],
         }
@@ -181,8 +182,8 @@ def task_plot():
     def action(out_path, by_kind):
         breakdowns = {}
         for config in CONFIGS:
-            # if config.system != "atim":
-            #   continue
+            if config.system != "atim":
+              continue
             output_dir = config.dir(DATA_ROOT) / "output"
             net_ms = measurements.net_time_ms(output_dir)
             if net_ms is None:

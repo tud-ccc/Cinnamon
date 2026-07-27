@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """
-Analyze scatter_bench.cpp-style results.csv files (columns: <dims...>, iter,
-ns) for a UPMEM scatter/gather/broadcast cost-model study. All latencies are
-converted to milliseconds up front and reported/plotted in ms throughout.
+Analyze scatter_bench.cpp-style results_agg.csv files (columns: <dims...>,
+ms -- one row per config, already median-reduced across iterations by
+aggregate.py/dodo.py's agg task) for a UPMEM scatter/gather/broadcast
+cost-model study. Latencies are reported/plotted in ms throughout.
 
 This file is split into two parts:
 
@@ -49,11 +50,11 @@ competing alongside every other whole-dataset template for best_key (and so
 also appearing in regression_fit.png/regression_fit_best.png if it wins).
 
 Usage:
-  python3 analyze.py results.csv
-  python3 analyze.py results.csv --out-dir plots --blocks-per-dpu 24 --num-dpus 2048
-  python3 analyze.py results.csv --split num_dpus 32
-  python3 analyze.py results.csv --split num_dpus 32 512
-  python3 analyze.py results.csv --split block_size 1024 2048 --split num_dpus 64
+  python3 analyze.py results_agg.csv
+  python3 analyze.py results_agg.csv --out-dir plots --blocks-per-dpu 24 --num-dpus 2048
+  python3 analyze.py results_agg.csv --split num_dpus 32
+  python3 analyze.py results_agg.csv --split num_dpus 32 512
+  python3 analyze.py results_agg.csv --split block_size 1024 2048 --split num_dpus 64
 """
 
 from __future__ import annotations
@@ -1401,12 +1402,24 @@ EXTRA_TEMPLATES: dict[str, Template] = {
     ),
 }
 
+def principal_dims(agg):
+    blocks_dim, size_dim = PROBLEM.shape
+
+    p_x, p_y = (
+        (blocks_dim, size_dim)
+        if agg[blocks_dim.col].nunique() > 1
+        else (size_dim, PROBLEM.group)
+    )
+    return p_x, p_y
+
 
 def main():
     parser = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
-    parser.add_argument("csv", help="Path to results.csv from scatter_bench")
+    parser.add_argument(
+        "csv", help="Path to results_agg.csv (see dodo.py's agg task)"
+    )
     parser.add_argument(
         "--out-dir", default="plots", help="Output directory for plots (default: plots)"
     )
@@ -1445,12 +1458,10 @@ def main():
     for dim, *boundaries in args.split or []:
         splits[dim] = sorted(float(b) for b in boundaries)
 
-    df = pd.read_csv(args.csv)
-    if df.empty:
+    agg = pd.read_csv(args.csv)
+    if agg.empty:
         raise SystemExit(f"{args.csv}: no rows (empty or header-only)")
-    df["ms"] = df["ns"] / 1e6
 
-    agg = df.groupby([d.col for d in PROBLEM.all_dims])["ms"].median().reset_index()
     PROBLEM.add_derived_columns(agg)
     templates = build_templates(PROBLEM, extra=EXTRA_TEMPLATES)
 
@@ -1493,14 +1504,14 @@ def main():
         out_dir / "latency_vs_bytes_per_dpu.png",
         connect=False,
     )
-    p.plot_3d_measured(
-        agg,
-        x=p_x,
-        y=p_y,
-        z=LATENCY,
-        color=PROBLEM.group,
-        out_path=out_dir / "latency_3d.html",
-    )
+    # p.plot_3d_measured(
+    #     agg,
+    #     x=p_x,
+    #     y=p_y,
+    #     z=LATENCY,
+    #     color=PROBLEM.group,
+    #     out_path=out_dir / "latency_3d.html",
+    # )
     if len(PROBLEM.shape) >= 2:
         p.plot_heatmap(
             agg,
@@ -1616,28 +1627,28 @@ def main():
         LATENCY,
         out_dir / "regression_fit_best.png",
     )
-    p.plot_3d_predicted(
-        agg,
-        x=p_x,
-        y=p_y,
-        z=LATENCY,
-        color=PROBLEM.group,
-        z_values=fits[best_key]["pred"],
-        template_name=fits[best_key]["name"],
-        out_path=out_dir / "latency_3d_predicted_best.html",
-    )
-    if "hybrid" in fits:
-        p.plot_3d_fit_wireframe(
-            agg,
-            x=p_x,
-            y=p_y,
-            z=LATENCY,
-            pred=fits["hybrid"]["pred"],
-            group=PROBLEM.group,
-            template_name=fits["hybrid"]["name"],
-            out_path=out_dir / "latency_3d_hybrid_wireframe.html",
-            splits=fits["hybrid"]["splits"],
-        )
+    # p.plot_3d_predicted(
+    #     agg,
+    #     x=p_x,
+    #     y=p_y,
+    #     z=LATENCY,
+    #     color=PROBLEM.group,
+    #     z_values=fits[best_key]["pred"],
+    #     template_name=fits[best_key]["name"],
+    #     out_path=out_dir / "latency_3d_predicted_best.html",
+    # )
+    # if "hybrid" in fits:
+    #     p.plot_3d_fit_wireframe(
+    #         agg,
+    #         x=p_x,
+    #         y=p_y,
+    #         z=LATENCY,
+    #         pred=fits["hybrid"]["pred"],
+    #         group=PROBLEM.group,
+    #         template_name=fits["hybrid"]["name"],
+    #         out_path=out_dir / "latency_3d_hybrid_wireframe.html",
+    #         splits=fits["hybrid"]["splits"],
+    #     )
     best_fit = fits[best_key]
     # p.plot_faceted_fit(
     #     agg,

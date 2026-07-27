@@ -12,11 +12,12 @@ SCATTER_* env vars), which is a manual step done separately, not modeled here.
 Usage:
   doit list   # show tasks
   doit make   # build bin/scatter_dpu + bin/scatter_bench
+  doit agg    # aggregate results.csv -> results_agg.csv (median per config)
   doit plot   # analyze results.csv -> plots/
-  doit        # both (default task)
+  doit        # make + agg + plot (default task)
 """
 
-DOIT_CONFIG = {"default_tasks": ["make", "plot"], "verbosity": 2}
+DOIT_CONFIG = {"default_tasks": ["make", "agg", "plot"], "verbosity": 2}
 
 fns = ["block", "broadcast", "sg", "gather"]
 
@@ -63,6 +64,31 @@ def task_bench():
             ],
         }
 
+def _aggregate_one(in_path, out_path):
+    import pandas as pd
+    DIMS = ["num_dpus", "blocks_per_dpu", "block_size"]
+
+    df = pd.read_csv(in_path)
+    df["ms"] = df["ns"] / 1e6
+    agg = df.groupby(DIMS)["ms"].median().reset_index()
+    agg.to_csv(out_path, index=False)
+    # print(f"{in_path}: {len(df):,} rows -> {out_path}: {len(agg):,} configs")
+
+def task_agg():
+    """Aggregate each results.csv (one row/iteration) into results_agg.csv
+    (median "ms" per config) -- cached by doit so re-opening explore_3d.ipynb
+    doesn't re-parse the full per-iteration CSV and re-run groupby every time,
+    only when results.csv actually changed."""
+    for fn in fns:
+        yield {
+            "name": fn,
+            "file_dep": [f"plots/{fn}/results.csv"],
+            "targets": [f"plots/{fn}/results_agg.csv"],
+            "actions": [
+              (_aggregate_one, [f"plots/{fn}/results.csv", f"plots/{fn}/results_agg.csv"])
+            ],
+        }
+
 
 def task_plot():
     splits = "--split block_size 1023 --split num_dpus 16 24 64 128 256 384"
@@ -77,10 +103,10 @@ def task_plot():
     for fn in fns:
         yield {
             "name": f"{fn}",
-            "file_dep": ["analyze.py", f"plots/{fn}/results.csv"],
+            "file_dep": ["analyze.py", f"plots/{fn}/results_agg.csv"],
             "targets": [f"plots/{fn}/regression_fit.png"],
             "uptodate": [config_changed(bench_splits.get(fn, ''))],
             "actions": [
-                f"python3 analyze.py plots/{fn}/results.csv --out-dir plots/{fn} {bench_splits.get(fn, '')} | tee plots/{fn}/log.log"
+                f"python3 analyze.py plots/{fn}/results_agg.csv --out-dir plots/{fn} {bench_splits.get(fn, '')} | tee plots/{fn}/log.log"
             ],
         }
