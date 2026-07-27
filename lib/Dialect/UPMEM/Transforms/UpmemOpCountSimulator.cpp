@@ -1,25 +1,26 @@
 #include "SimulatorBase.h"
-#include "cinm-mlir/Dialect/Cinm/IR/CinmAttributes.h"
-#include "cinm-mlir/Dialect/Cinm/IR/CinmOps.h"
-#include "cinm-mlir/Dialect/UPMEM/IR/UPMEMAttributes.h"
-#include "cinm-mlir/Dialect/UPMEM/IR/UPMEMOps.h"
-#include "cinm-mlir/Dialect/UPMEM/Transforms/UpmemSimulator.h"
-#include "cinm-mlir/Utils/Scheduling/SchedulingSupport.h"
+#include <cinm-mlir/Dialect/Cinm/IR/CinmAttributes.h>
+#include <cinm-mlir/Dialect/Cinm/IR/CinmOps.h>
+#include <cinm-mlir/Dialect/Cnm/IR/CnmOps.h>
+#include <cinm-mlir/Dialect/Cnm/IR/CnmTypes.h>
+#include <cinm-mlir/Dialect/UPMEM/IR/UPMEMAttributes.h>
+#include <cinm-mlir/Dialect/UPMEM/IR/UPMEMOps.h>
+#include <cinm-mlir/Dialect/UPMEM/Transforms/UpmemSimulator.h>
+#include <cinm-mlir/Utils/Scheduling/SchedulingSupport.h>
 
-#include "cinm-mlir/Dialect/Cnm/IR/CnmOps.h"
-#include "cinm-mlir/Dialect/Cnm/IR/CnmTypes.h"
-#include "upmem_cost_model/Types.h"
-
-#include <cmath>
-#include <limits>
-#include <llvm/Support/Debug.h>
+#include <upmem_cost_model/ScatterGatherCm.h>
 #include <upmem_cost_model/Simulation.h>
+#include <upmem_cost_model/Types.h>
 
 #include <algorithm>
+#include <cmath>
+#include <memory>
+
 #include <llvm/ADT/APInt.h>
 #include <llvm/ADT/TypeSwitch.h>
 #include <llvm/Support/Casting.h>
-#include <memory>
+#include <llvm/Support/Debug.h>
+
 #include <mlir/Dialect/Affine/IR/AffineOps.h>
 #include <mlir/Dialect/Arith/IR/Arith.h>
 #include <mlir/Dialect/MemRef/IR/MemRef.h>
@@ -121,8 +122,8 @@ static SimCost costOfOpCb(Operation &op, bool annotate,
                 xferOp.getHierarchy().getType());
             int numDpus = hier.getNumRanks() * hier.getNumDpusPerRank();
             return SimCost::forTransfer(
-                upmem_cm::scatterCostMs(numDpus,
-                                        xferOp.getDpuBufferSizeInBytes()),
+                upmem_cm::scatterBlockCostMs(numDpus,
+                                             xferOp.getDpuBufferSizeInBytes()),
                 "scatter");
           })
           .Case<upmem::GatherOp>([](upmem::GatherOp xferOp) -> SimCost {
@@ -141,10 +142,10 @@ static SimCost costOfOpCb(Operation &op, bool annotate,
             // getDpuBufferSizeInBytes() is the size of a single tasklet's
             // block; the actual per-DPU transfer covers numBlocksPerDpu of
             // them.
-            int64_t bytesPerDpu =
-                xferOp.getDpuBufferSizeInBytes() * xferOp.getNumBlocksPerDpu();
             return SimCost::forTransfer(
-                upmem_cm::scatterCostMs(numDpus, bytesPerDpu),
+                upmem_cm::scatterSgCostMs(numDpus,
+                                          xferOp.getDpuBufferSizeInBytes(),
+                                          xferOp.getNumBlocksPerDpu()),
                 "scatter_on_tasklets");
           })
           .Case<upmem::BroadcastOp>([](auto xferOp) -> SimCost {
@@ -154,8 +155,8 @@ static SimCost costOfOpCb(Operation &op, bool annotate,
             // Same size is sent to every DPU; model it like a scatter of
             // that buffer's full size.
             return SimCost::forTransfer(
-                upmem_cm::scatterCostMs(numDpus,
-                                        xferOp.getDpuBufferSizeInBytes()),
+                upmem_cm::broadcastCostMs(numDpus,
+                                          xferOp.getDpuBufferSizeInBytes()),
                 "broadcast");
           })
           .Case<LocalTransferOp>([](auto xferOp) {
@@ -195,8 +196,7 @@ static SimCost costOfOpCb(Operation &op, bool annotate,
 
   if (annotate)
     op.setAttr(kSimCostAttr,
-               FloatAttr::get(Float64Type::get(op.getContext()),
-                              cost.total()));
+               FloatAttr::get(Float64Type::get(op.getContext()), cost.total()));
   return cost;
 }
 
@@ -224,13 +224,13 @@ struct OpCountSimulator : UpmemSimulator {
     return std::make_unique<OpCountSimulator>(annotateOpCosts);
   }
   SimCost simulateGemv(std::chrono::milliseconds timeout, int nTasklets,
-                      int64_t mramRows, int64_t mramCols, int64_t rowTile,
-                      int64_t colTile, DType) override;
+                       int64_t mramRows, int64_t mramCols, int64_t rowTile,
+                       int64_t colTile, DType) override;
   SimCost simulateReduction(std::chrono::milliseconds timeout,
-                           cinm::ReduceMethod reduction, int taskletRows,
-                           int taskletCols, int64_t mramRows, int64_t mramCols,
-                           int64_t wramRows, int64_t wramCols,
-                           DType dty) override;
+                            cinm::ReduceMethod reduction, int taskletRows,
+                            int taskletCols, int64_t mramRows, int64_t mramCols,
+                            int64_t wramRows, int64_t wramCols,
+                            DType dty) override;
 
   mlir::cinm::utils::Maybe<SimCost> simulate(Region &region) override {
     // Recursive callback: recurse into the DPU program body with the same
@@ -270,7 +270,6 @@ double dpuOpLatency(upmem_cm::StatOp op, upmem_cm::DType dty) {
 double dpuOpLatency(upmem_cm::ArithOp op, upmem_cm::DType dty) {
   return dpuOpLatency(upmem_cm::arithToStatOp(op), dty);
 }
-
 
 SimCost mlir::upmem::OpCountSimulator::simulateReduction(
     std::chrono::milliseconds, cinm::ReduceMethod reduction, int taskletRows,
@@ -339,7 +338,7 @@ SimCost mlir::upmem::OpCountSimulator::simulateGemv(
 }
 
 SimCost simulateHostRegion(Region &region, bool annotate,
-                          const WaitForCostFn &waitForCb) {
+                           const WaitForCostFn &waitForCb) {
   return costOfRegionCb(region, annotate, waitForCb);
 }
 
