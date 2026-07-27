@@ -88,7 +88,10 @@ using Constraint = std::function<bool(const ConfWrapper)>;
 /// Ordered collection of SearchParams that defines the search space.
 struct ConfigSpace {
   std::vector<SearchParam> params;
-  std::vector<Constraint> constraints;
+  /// Each constraint paired with a human-readable description of what it
+  /// checks (e.g. "wramRow | mramRow"); empty if the constraint was added
+  /// without one. Used by debugIsValid() to report violations.
+  std::vector<std::pair<std::string, Constraint>> constraints;
 
   /// A (parent, child) divisibility pair baked into the encoding.
   /// Every flat index produced by at() satisfies child_value % parent_value ==
@@ -126,8 +129,10 @@ struct ConfigSpace {
 
   /// Register a predicate; configurations for which any constraint returns
   /// false are skipped and never passed to the plugin for evaluation.
-  void addConstraint(Constraint &&constraint) {
-    constraints.push_back(std::move(constraint));
+  /// `description` is an optional human-readable label for the constraint,
+  /// reported by debugIsValid() when it is violated.
+  void addConstraint(Constraint &&constraint, std::string description = "") {
+    constraints.emplace_back(std::move(description), std::move(constraint));
   }
 
   /// Register that params[childIdx] must be a multiple of params[parentIdx].
@@ -146,6 +151,10 @@ struct ConfigSpace {
   int64_t get(const Configuration &config, llvm::StringRef name) const;
   /// Return true iff all registered constraints accept this configuration.
   bool isValid(const Configuration &config) const;
+  /// Like isValid(), but also prints the configuration and the description
+  /// of every violated constraint to `os` (nothing is printed if the
+  /// configuration is valid). Returns the same result as isValid().
+  bool debugIsValid(const Configuration &config, raw_ostream &os) const;
 
   /// Total number of configurations reachable by at() (excludes pairs
   /// eliminated by addMultiplesConstraint, includes remaining invalid configs

@@ -423,9 +423,12 @@ void UpmemInferencePlugin::handleGemv(cinm::GemvOp gemv, SpaceBuilder &b) {
     // This corresponds to constraints:
     // - mramRow := wramRow * tasklets
     // - mramCol := wramCol
-    b.require([=](auto c) -> bool {
-      return mramRow[c] == wramRow[c] * tasklets[c] && mramCol[c] == wramCol[c];
-    });
+    b.require(
+        [=](auto c) -> bool {
+          return mramRow[c] == wramRow[c] * tasklets[c] &&
+                 mramCol[c] == wramCol[c];
+        },
+        "mramRow == wramRow * tasklets && mramCol == wramCol");
   }
 
   b.require(M / ((dpus / dpuCols) * mramRow));
@@ -529,10 +532,13 @@ void UpmemInferencePlugin::handleReduce(cinm::ReduceOp op, SpaceBuilder &b) {
     // - mramCol := wramCol * taskletCols
     //
     // (tasklets / taskletCols) is taskletRows
-    b.require([=](auto c) -> bool {
-      return mramRow[c] == (wramRow[c] * tasklets[c] / taskletCols[c]) &&
-             mramCol[c] == wramCol[c] * taskletCols[c];
-    });
+    b.require(
+        [=](auto c) -> bool {
+          return mramRow[c] == (wramRow[c] * tasklets[c] / taskletCols[c]) &&
+                 mramCol[c] == wramCol[c] * taskletCols[c];
+        },
+        "mramRow == wramRow * tasklets / taskletCols && "
+        "mramCol == wramCol * taskletCols (MRAM trip count == 1)");
   }
 
   // Per-DPU MRAM must fit: A (T×mr×mc) + y (T×mr)

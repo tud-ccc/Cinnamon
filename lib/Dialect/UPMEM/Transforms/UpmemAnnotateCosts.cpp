@@ -57,6 +57,10 @@ struct UpmemAnnotateCostsPass
         return;
       }
 
+      computeBlock->setAttr(kSimCostAttr,
+                            FloatAttr::get(Float64Type::get(&getContext()),
+                                           std::get<SimCost>(res).total()));
+
       if (!costsCsv.empty()) {
         const SimCost &cost = std::get<SimCost>(res);
         std::string location;
@@ -64,10 +68,10 @@ struct UpmemAnnotateCostsPass
         double blockTotal = cost.total();
         cost.forEachEntry([&](CostCategory category, llvm::StringRef label,
                               double value) {
-          rows.push_back({blockId, location, costCategoryName(category),
-                          label.empty() ? costCategoryName(category).str()
-                                        : label.str(),
-                          value, blockTotal});
+          rows.push_back(
+              {blockId, location, costCategoryName(category),
+               label.empty() ? costCategoryName(category).str() : label.str(),
+               value, blockTotal});
         });
       }
       ++blockId;
@@ -78,16 +82,15 @@ struct UpmemAnnotateCostsPass
 
     std::ofstream out(costsCsv);
     if (!out) {
-      container->emitWarning()
-          << "upmem-annotate-costs: could not open '" << costsCsv
-          << "' for writing";
+      container->emitWarning() << "upmem-annotate-costs: could not open '"
+                               << costsCsv << "' for writing";
       return;
     }
     out << "block_id,location,category,label,cost_ms,block_total_ms\n";
     for (auto &r : rows)
-      out << r.blockId << "," << csvQuote(r.location) << ","
-          << r.category.str() << "," << csvQuote(r.label) << "," << r.costMs
-          << "," << r.blockTotalMs << "\n";
+      out << r.blockId << "," << csvQuote(r.location) << "," << r.category.str()
+          << "," << csvQuote(r.label) << "," << r.costMs << ","
+          << r.blockTotalMs << "\n";
   }
 };
 
