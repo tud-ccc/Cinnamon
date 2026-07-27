@@ -877,8 +877,10 @@ static LogicalResult printOperation(CppEmitter &emitter,
        llvm::zip(branchOp.getOperands(), successor.getArguments())) {
     Value &operand = std::get<0>(pair);
     BlockArgument &argument = std::get<1>(pair);
-    os << emitter.getOrCreateName(argument) << " = "
-       << emitter.getOrCreateName(operand) << ";\n";
+    os << emitter.getOrCreateName(argument) << " = ";
+    if (printValueOrConstant(emitter, operand).failed())
+      return failure();
+    os << ";\n";
   }
 
   os << "goto ";
@@ -904,8 +906,10 @@ static LogicalResult printOperation(CppEmitter &emitter,
                              trueSuccessor.getArguments())) {
     Value &operand = std::get<0>(pair);
     BlockArgument &argument = std::get<1>(pair);
-    os << emitter.getOrCreateName(argument) << " = "
-       << emitter.getOrCreateName(operand) << ";\n";
+    os << emitter.getOrCreateName(argument) << " = ";
+    if (printValueOrConstant(emitter, operand).failed())
+      return failure();
+    os << ";\n";
   }
 
   os << "goto ";
@@ -920,8 +924,10 @@ static LogicalResult printOperation(CppEmitter &emitter,
                              falseSuccessor.getArguments())) {
     Value &operand = std::get<0>(pair);
     BlockArgument &argument = std::get<1>(pair);
-    os << emitter.getOrCreateName(argument) << " = "
-       << emitter.getOrCreateName(operand) << ";\n";
+    os << emitter.getOrCreateName(argument) << " = ";
+    if (printValueOrConstant(emitter, operand).failed())
+      return failure();
+    os << ";\n";
   }
 
   os << "goto ";
@@ -973,7 +979,9 @@ static LogicalResult printOperation(CppEmitter &emitter, scf::ForOp forOp) {
     if (failed(emitter.emitType(forOp.getLoc(), std::get<0>(pair).getType())))
       return failure();
     os << " " << emitter.getOrCreateName(std::get<0>(pair)) << " = ";
-    os << emitter.getOrCreateName(std::get<1>(pair)) << ";";
+    if (printValueOrConstant(emitter, std::get<1>(pair)).failed())
+      return failure();
+    os << ";";
     os << "\n";
   }
 
@@ -1019,8 +1027,10 @@ static LogicalResult printOperation(CppEmitter &emitter, scf::ForOp forOp) {
   for (auto pair : llvm::zip(iterArgs, yieldOp->getOperands())) {
     BlockArgument iterArg = std::get<0>(pair);
     Value operand = std::get<1>(pair);
-    os << emitter.getOrCreateName(iterArg) << " = "
-       << emitter.getOrCreateName(operand) << ";\n";
+    os << emitter.getOrCreateName(iterArg) << " = ";
+    if (printValueOrConstant(emitter, operand).failed())
+      return failure();
+    os << ";\n";
   }
 
   os.unindent() << "}";
@@ -1098,10 +1108,13 @@ static LogicalResult printOperation(CppEmitter &emitter, scf::YieldOp yieldOp) {
             auto operand = std::get<1>(pair);
             os << emitter.getOrCreateName(result) << " = ";
 
-            if (!emitter.hasValueInScope(operand))
+            // Constants are inlined at every use (see printValueOrConstant)
+            // rather than being assigned a declared variable name, so the
+            // scope check below only applies to non-constant operands.
+            if (!isa_and_nonnull<arith::ConstantOp>(operand.getDefiningOp()) &&
+                !emitter.hasValueInScope(operand))
               return yieldOp.emitError("operand value not in scope");
-            os << emitter.getOrCreateName(operand);
-            return success();
+            return printValueOrConstant(emitter, operand);
           },
           [&]() { os << ";\n"; })))
     return failure();

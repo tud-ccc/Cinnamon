@@ -6,6 +6,12 @@
 #include <stdio.h>
 #include <string.h>
 
+#ifdef ASYNC_TRANSFERS
+#define TRANSFER_FLAGS DPU_XFER_ASYNC
+#else
+#define TRANSFER_FLAGS DPU_XFER_DEFAULT
+#endif
+
 void do_dpu_transfer(dpu_xfer_t xfer_type, struct dpu_set_t *dpu_set,
                      void *host_buffer, size_t copy_bytes, const char *buf_id,
                      size_t padding_ratio, size_t (*base_offset)(size_t)) {
@@ -29,7 +35,7 @@ void do_dpu_transfer(dpu_xfer_t xfer_type, struct dpu_set_t *dpu_set,
   }
 
   DPU_ASSERT(dpu_push_xfer(*dpu_set, xfer_type, buf_id, 0, copy_bytes,
-                           DPU_XFER_DEFAULT));
+                           TRANSFER_FLAGS));
 }
 
 void upmemrt_dpu_scatter(struct dpu_set_t *dpu_set, void *hostBuffer,
@@ -134,7 +140,7 @@ void upmemrt_dpu_broadcast(struct dpu_set_t *dpu_set, void *host_buffer,
   uint64_t t0 = upmemrt_now_ns();
 #endif
   DPU_ASSERT(dpu_broadcast_to(*dpu_set, buffer_id, 0, host_buffer, copy_bytes,
-                              DPU_XFER_DEFAULT));
+                               TRANSFER_FLAGS));
 #ifdef UPMEM_RT_STATS
   uint32_t nr_dpus = 0;
   dpu_get_nr_dpus(*dpu_set, &nr_dpus);
@@ -190,6 +196,10 @@ void upmemrt_dpu_launch(struct dpu_set_t *void_dpu_set) {
   struct dpu_set_t *dpu_set = (struct dpu_set_t *)void_dpu_set;
 #ifdef UPMEM_RT_STATS
   uint64_t t0 = upmemrt_now_ns();
+#endif
+#ifdef ASYNC_TRANSFERS
+  dpu_sync(*dpu_set); // Wait for asynchronous transfers to finish. 
+  // This is fucking up our time measurements so I don't include it by default
 #endif
   dpu_error_t error = dpu_launch(*dpu_set, DPU_SYNCHRONOUS);
 #ifdef UPMEM_RT_STATS
