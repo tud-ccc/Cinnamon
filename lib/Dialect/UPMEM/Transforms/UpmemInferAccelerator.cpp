@@ -397,6 +397,8 @@ void UpmemInferencePlugin::handleGemv(cinm::GemvOp gemv, SpaceBuilder &b) {
   auto dpus = dpusVar_;
   auto tasklets = taskletsVar_;
 
+  auto taskletCols = b.divisorsOf("taskletCols", tasklets);
+
   // Hardware dimensions.
   b.mustDivide(tasklets, M); // tasklets must divide M
 
@@ -406,8 +408,12 @@ void UpmemInferencePlugin::handleGemv(cinm::GemvOp gemv, SpaceBuilder &b) {
   auto wramCol = b.divisorsOf("wramCol", K);
   auto dpuCols = b.divisorsOf("dpuCols", K);
 
-  // Per-tasklet WRAM must fit: A tile (wr×wc) + x slice (wc) + y slot (wr)
-  b.require(tasklets * wramRow * wramCol + wramCol + tasklets * wramRow <=
+  // Per-tasklet WRAM must fit: A tile (wr×wc, same total size whether split
+  // or not) + x slice (now taskletCols*wc, shared but column-split) + y
+  // slots (T×wr, same total size) + merge scratch for the MRAM-resident
+  // running total ((T/taskletCols)×wr, one wr-slice per row group)
+  b.require(tasklets * wramRow * wramCol + taskletCols * wramCol +
+                tasklets * wramRow + (tasklets / taskletCols) * wramRow <=
             wramLevel.getSizeInElements(eltTy));
 
   // Attributes used by applyTileSizes() in the non-MRAM pipeline path.
@@ -421,19 +427,20 @@ void UpmemInferencePlugin::handleGemv(cinm::GemvOp gemv, SpaceBuilder &b) {
     // In this mode we imitate cinm 1.0 behavior and do not tile on MRAM,
     // equivalently this means the MRAM and WRAM tiles have the same dimensions.
     // This corresponds to constraints:
-    // - mramRow := wramRow * tasklets
-    // - mramCol := wramCol
+    // - mramRow := wramRow * (tasklets / taskletCols)
+    // - mramCol := wramCol * taskletCols
     b.require(
         [=](auto c) -> bool {
-          return mramRow[c] == wramRow[c] * tasklets[c] &&
-                 mramCol[c] == wramCol[c];
+          return mramRow[c] == (wramRow[c] * tasklets[c] / taskletCols[c]) &&
+                 mramCol[c] == wramCol[c] * taskletCols[c];
         },
-        "mramRow == wramRow * tasklets && mramCol == wramCol");
+        "mramRow == wramRow * tasklets / taskletCols && "
+        "mramCol == wramCol * taskletCols");
   }
 
   b.require(M / ((dpus / dpuCols) * mramRow));
-  b.require(mramRow / (tasklets * wramRow));
-  b.require(mramCol / wramCol);
+  b.require(mramRow / ((tasklets / taskletCols) * wramRow));
+  b.require(mramCol / (taskletCols * wramCol));
   b.require(K / (dpuCols * mramCol));
 
   // Per-DPU MRAM must fit: A (T×mr×mc) + x (mc) + y (T×mr)
@@ -459,7 +466,8 @@ void UpmemInferencePlugin::handleGemv(cinm::GemvOp gemv, SpaceBuilder &b) {
 
     trial.computeBlock->walk([&](cinm::GemvOp op) {
       generateGemv(op, rewriter, dpus[c] / dpuCols[c], dpuCols[c], mramRow[c],
-                   mramCol[c], wramRow[c], wramCol[c], tasklets[c]);
+                   mramCol[c], wramRow[c], wramCol[c],
+                   tasklets[c] / taskletCols[c], taskletCols[c]);
     });
 
     auto cleanupPm =
