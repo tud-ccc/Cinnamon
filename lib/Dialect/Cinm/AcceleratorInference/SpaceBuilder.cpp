@@ -73,8 +73,8 @@ void SpaceBuilder::mustDivide(SpaceVar parent, SpaceVar child) {
   multiples_.push_back({parent.name_, child.name_});
 }
 
-void SpaceBuilder::require(Constraint pred) {
-  predicates_.push_back(std::move(pred));
+void SpaceBuilder::require(Constraint pred, llvm::StringRef description) {
+  predicates_.push_back({description.str(), std::move(pred)});
 }
 
 // ===----------------------------------------------------------------------===//
@@ -199,17 +199,20 @@ void SpaceBuilder::buildInto(ConfigSpace &space) {
   // Add fallback dynamic predicates.
   for (auto [va, vb] : equalityFallbacks)
     space.addConstraint(
-        [va, vb](const ConfWrapper &c) { return va[c] == vb[c]; });
+        [va, vb](const ConfWrapper &c) { return va[c] == vb[c]; },
+        va.name().str() + " == " + vb.name().str());
   for (auto [parent, child] : dynamicDivFallbacks)
-    space.addConstraint([parent, child](const ConfWrapper &c) {
-      return child[c] % parent[c] == 0;
-    });
+    space.addConstraint(
+        [parent, child](const ConfWrapper &c) {
+          return child[c] % parent[c] == 0;
+        },
+        parent.name().str() + " | " + child.name().str());
 
   // Phase 3: dynamic predicates.
   LLVM_DEBUG(llvm::dbgs() << "[cinm-space]   dynamic predicates: "
                           << predicates_.size() << "\n");
-  for (auto &pred : predicates_)
-    space.addConstraint(Constraint(pred));
+  for (auto &[desc, pred] : predicates_)
+    space.addConstraint(Constraint(pred), desc);
 }
 
 } // namespace mlir::cinm

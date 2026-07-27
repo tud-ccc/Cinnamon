@@ -222,10 +222,26 @@ int64_t ConfigSpace::get(const Configuration &config,
 
 bool ConfigSpace::isValid(const Configuration &config) const {
   auto wrapper = ConfWrapper(*this, config);
-  for (auto &c : constraints)
+  for (auto &[desc, c] : constraints)
     if (!c(wrapper))
       return false;
   return true;
+}
+
+bool ConfigSpace::debugIsValid(const Configuration &config,
+                               raw_ostream &os) const {
+  auto wrapper = ConfWrapper(*this, config);
+  bool valid = true;
+  for (auto &[desc, c] : constraints) {
+    if (!c(wrapper)) {
+      if (valid) {
+        os << "Configuration " << wrapper << " violates:\n";
+        valid = false;
+      }
+      os << "  - " << (desc.empty() ? "<unnamed constraint>" : desc) << "\n";
+    }
+  }
+  return valid;
 }
 
 void ConfigSpace::ensureEncoding() const {
@@ -1167,9 +1183,13 @@ inferAcceleratorConfig(cinm::ComputeBlockOp computeOp, InferencePlugin &plugin,
   if (opts.evalSingleSolution) {
     Configuration conf = *opts.evalSingleSolution;
     if (!task.space.isValid(conf)) {
+      std::string details;
+      llvm::raw_string_ostream detailsOs(details);
+      task.space.debugIsValid(conf, detailsOs);
       return emitDefiniteFailure(computeOp->getLoc(),
                                  "Configuration is invalid: ")
-             << task.wrap(conf);
+             << task.wrap(conf) << "\n"
+             << details;
     }
     bestResult = task.makeTrialInfo(std::move(conf));
     plugin.warmUp(computeOp->getContext());

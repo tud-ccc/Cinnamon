@@ -63,6 +63,40 @@ CONFIGS = [
         prim="gemv",
         lower=cinmopt.eval_solution_lowerer(),
     ),
+    # compile_run.Config(
+    #     system="atim3",
+    #     fn_name="gemv_64MB",
+    #     label="default",
+    #     params={
+    #         "dpus": 2048,
+    #         "tasklets": 8,
+    #         "wramRow": 8,
+    #         "wramCol": 64,
+    #         "dpuCols": 1, # 64 rows
+    #         "mramRow": 8,
+    #         "mramCol": 4096,
+    #     },
+    #     fn_module=source,
+    #     prim="gemv",
+    #     lower=cinmopt.eval_solution_lowerer(),
+    # ),
+    compile_run.Config(
+        system="atim2",
+        fn_name="gemv_64MB",
+        label="default",
+        params={
+            "dpus": 2048,
+            "tasklets": 2,
+            "wramRow": 1,
+            "wramCol": 256,
+            "dpuCols": 1, 
+            "mramRow": 2,
+            "mramCol": 4096,
+        },
+        fn_module=source,
+        prim="gemv",
+        lower=cinmopt.eval_solution_lowerer(),
+    ),
     compile_run.Config(
         system="atim",
         fn_name="gemv_64MB",
@@ -182,7 +216,7 @@ def task_plot():
     def action(out_path, by_kind):
         breakdowns = {}
         for config in CONFIGS:
-            if config.system != "atim":
+            if not config.system.startswith("atim"):
               continue
             output_dir = config.dir(DATA_ROOT) / "output"
             net_ms = measurements.net_time_ms(output_dir)

@@ -3,6 +3,7 @@
 #include "cinm-mlir/Dialect/Cinm/AcceleratorInference/AcceleratorInference.h"
 #include <cstdint>
 #include <llvm/ADT/StringRef.h>
+#include <llvm/Support/ErrorHandling.h>
 #include <llvm/Support/raw_ostream.h>
 #include <memory>
 #include <string>
@@ -19,6 +20,11 @@ template <typename Derived>
 struct SpaceExprBase {
   int64_t eval(const ConfWrapper &c) const {
     return static_cast<const Derived &>(*this).evalImpl(c);
+  }
+  /// Human-readable rendering of this expression, e.g. "(wramRow * tasklets)".
+  /// Used to give debugIsValid() a description of violated constraints.
+  std::string describe() const {
+    return static_cast<const Derived &>(*this).describeImpl();
   }
 };
 
@@ -44,6 +50,7 @@ public:
   int64_t maxVal() const { return maxVal_; }
 
   int64_t evalImpl(const ConfWrapper &c) const { return get(c); }
+  std::string describeImpl() const { return name_; }
 
 private:
   friend class SpaceBuilder;
@@ -64,6 +71,7 @@ struct ConstExpr : SpaceExprBase<ConstExpr> {
   int64_t value;
   explicit ConstExpr(int64_t v) : value(v) {}
   int64_t evalImpl(const ConfWrapper &) const { return value; }
+  std::string describeImpl() const { return std::to_string(value); }
 };
 
 // ===----------------------------------------------------------------------===//
@@ -71,10 +79,22 @@ struct ConstExpr : SpaceExprBase<ConstExpr> {
 // ===----------------------------------------------------------------------===//
 
 namespace detail {
-struct OpAdd { static int64_t apply(int64_t a, int64_t b) { return a + b; } };
-struct OpSub { static int64_t apply(int64_t a, int64_t b) { return a - b; } };
-struct OpMul { static int64_t apply(int64_t a, int64_t b) { return a * b; } };
-struct OpDiv { static int64_t apply(int64_t a, int64_t b) { return b ? a / b : 0; } };
+struct OpAdd {
+  static int64_t apply(int64_t a, int64_t b) { return a + b; }
+  static const char *symbol() { return " + "; }
+};
+struct OpSub {
+  static int64_t apply(int64_t a, int64_t b) { return a - b; }
+  static const char *symbol() { return " - "; }
+};
+struct OpMul {
+  static int64_t apply(int64_t a, int64_t b) { return a * b; }
+  static const char *symbol() { return " * "; }
+};
+struct OpDiv {
+  static int64_t apply(int64_t a, int64_t b) { return b ? a / b : 0; }
+  static const char *symbol() { return " / "; }
+};
 } // namespace detail
 
 template <typename L, typename R, typename Op>
@@ -84,6 +104,9 @@ struct BinExpr : SpaceExprBase<BinExpr<L, R, Op>> {
   BinExpr(L l, R r) : lhs(std::move(l)), rhs(std::move(r)) {}
   int64_t evalImpl(const ConfWrapper &c) const {
     return Op::apply(lhs.eval(c), rhs.eval(c));
+  }
+  std::string describeImpl() const {
+    return "(" + lhs.describe() + Op::symbol() + rhs.describe() + ")";
   }
 };
 
@@ -175,11 +198,32 @@ auto operator/(const SpaceExprBase<L> &l, int64_t r) {
 
 enum class CmpKind { Le, Ge, Lt, Gt, Eq, Ne };
 
+inline const char *cmpSymbol(CmpKind k) {
+  switch (k) {
+  case CmpKind::Le:
+    return " <= ";
+  case CmpKind::Ge:
+    return " >= ";
+  case CmpKind::Lt:
+    return " < ";
+  case CmpKind::Gt:
+    return " > ";
+  case CmpKind::Eq:
+    return " == ";
+  case CmpKind::Ne:
+    return " != ";
+  }
+  llvm_unreachable("unknown CmpKind");
+}
+
 template <typename L, typename R, CmpKind K>
 struct ConstraintExpr {
   L lhs;
   R rhs;
   ConstraintExpr(L l, R r) : lhs(std::move(l)), rhs(std::move(r)) {}
+  std::string describe() const {
+    return lhs.describe() + cmpSymbol(K) + rhs.describe();
+  }
 };
 
 // Expr cmp Expr
@@ -309,7 +353,9 @@ public:
   /// child; child % parent == 0). Applied after all dims are added.
   void mustDivide(SpaceVar parent, SpaceVar child);
   /// Arbitrary predicate; invalid configurations are skipped by the framework.
-  void require(Constraint pred);
+  /// `description` is optional; it is reported by ConfigSpace::debugIsValid()
+  /// when the predicate rejects a configuration.
+  void require(Constraint pred, llvm::StringRef description = "");
 
   /// Walk expr for / nodes; each one is extracted as a static, structural, or
   /// dynamic divisibility constraint (see addDivConstraint).
@@ -324,23 +370,25 @@ public:
   void require(ConstraintExpr<L, R, K> expr) {
     extractDivConstraints(expr.lhs);
     extractDivConstraints(expr.rhs);
+    std::string desc = expr.describe();
     predicates_.push_back(
-        [lhs = std::move(expr.lhs),
-         rhs = std::move(expr.rhs)](const ConfWrapper &c) -> bool {
-          const auto lv = lhs.eval(c), rv = rhs.eval(c);
-          if constexpr (K == CmpKind::Le)
-            return lv <= rv;
-          else if constexpr (K == CmpKind::Ge)
-            return lv >= rv;
-          else if constexpr (K == CmpKind::Lt)
-            return lv < rv;
-          else if constexpr (K == CmpKind::Gt)
-            return lv > rv;
-          else if constexpr (K == CmpKind::Eq)
-            return lv == rv;
-          else
-            return lv != rv;
-        });
+        {std::move(desc),
+         [lhs = std::move(expr.lhs),
+          rhs = std::move(expr.rhs)](const ConfWrapper &c) -> bool {
+           const auto lv = lhs.eval(c), rv = rhs.eval(c);
+           if constexpr (K == CmpKind::Le)
+             return lv <= rv;
+           else if constexpr (K == CmpKind::Ge)
+             return lv >= rv;
+           else if constexpr (K == CmpKind::Lt)
+             return lv < rv;
+           else if constexpr (K == CmpKind::Gt)
+             return lv > rv;
+           else if constexpr (K == CmpKind::Eq)
+             return lv == rv;
+           else
+             return lv != rv;
+         }});
   }
 
   /// Commit all declarations and constraints into space in the correct order.
@@ -366,7 +414,7 @@ private:
 
   std::vector<DimEntry> dims_;
   std::vector<MultiplesEntry> multiples_;
-  std::vector<Constraint> predicates_;
+  std::vector<std::pair<std::string, Constraint>> predicates_;
 
   DimEntry &findEntry(const SpaceVar &v);
   SpaceVar findVarByName(llvm::StringRef name) const;
@@ -388,14 +436,18 @@ private:
       // (B * C) | A  ⟺  B | A  ∧  C | A  ∧  B * C ≤ A
       // addDivConstraint(num, den.lhs);
       // addDivConstraint(num, den.rhs);
-      predicates_.push_back([num, den](const ConfWrapper &c) -> bool {
-        return num.eval(c) % den.eval(c) == 0 && den.eval(c) <= num.eval(c);
-      });
+      std::string desc = den.describe() + " | " + num.describe();
+      predicates_.push_back(
+          {std::move(desc), [num, den](const ConfWrapper &c) -> bool {
+             return num.eval(c) % den.eval(c) == 0 && den.eval(c) <= num.eval(c);
+           }});
     } else {
-      predicates_.push_back([num, den](const ConfWrapper &c) -> bool {
-        const auto dv = den.eval(c);
-        return dv != 0 && num.eval(c) % dv == 0;
-      });
+      std::string desc = den.describe() + " | " + num.describe();
+      predicates_.push_back(
+          {std::move(desc), [num, den](const ConfWrapper &c) -> bool {
+             const auto dv = den.eval(c);
+             return dv != 0 && num.eval(c) % dv == 0;
+           }});
     }
   }
 
