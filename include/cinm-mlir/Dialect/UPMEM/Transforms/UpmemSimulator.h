@@ -1,11 +1,14 @@
 #pragma once
 
+#include <array>
 #include <chrono>
 #include <cinm-mlir/Dialect/Cinm/IR/CinmAttributes.h>
 #include <cinm-mlir/Dialect/Cinm/IR/CinmOps.h>
 #include <cinm-mlir/Utils/Scheduling/SchedulingSupport.h>
+#include <cmath>
 #include <cstdint>
 #include <functional>
+#include <llvm/ADT/SmallVector.h>
 #include <llvm/ADT/StringRef.h>
 #include <memory>
 #include <mlir/IR/Builders.h>
@@ -16,6 +19,8 @@
 #include <mlir/Support/LogicalResult.h>
 
 #include <optional>
+#include <string>
+#include <utility>
 
 namespace mlir::upmem {
 enum class DType : uint8_t { U8, I8, U16, I16, U32, I32, F32, U64, I64, F64 };
@@ -42,12 +47,141 @@ inline int dtypeBits(DType dt) {
 
 inline int dtypeBytes(DType dt) { return dtypeBits(dt) / 8; }
 
+/// The four top-level buckets a cost can be attributed to.
+///   Kernel       — DPU kernel launch/execution time (upmem.wait_for)
+///   Cpu          — host CPU time (memref.copy and other host instructions)
+///   Transfer     — host->DPU transfers (upmem.scatter,
+///                  upmem.scatter_on_tasklets, upmem.broadcast)
+///   TransferBack — DPU->host transfers (upmem.gather)
+enum class CostCategory : uint8_t { Kernel, Cpu, Transfer, TransferBack };
+
+constexpr size_t kNumCostCategories = 4;
+
+inline llvm::StringRef costCategoryName(CostCategory c) {
+  switch (c) {
+  case CostCategory::Kernel:
+    return "kernel";
+  case CostCategory::Cpu:
+    return "cpu";
+  case CostCategory::Transfer:
+    return "transfer";
+  case CostCategory::TransferBack:
+    return "transfer_back";
+  }
+  return "?";
+}
+
+/// Breakdown of an estimated UPMEM program cost (in milliseconds) into the
+/// four CostCategory buckets. Within a category, callers may further tag a
+/// cost with an arbitrary sub-label (e.g. Cpu "copy" vs "other", Transfer
+/// "scatter" vs "broadcast") for finer-grained reporting; same
+/// category+label pairs accumulate, distinct labels under the same category
+/// are tracked separately but still roll up into that category's total.
+/// Combinators (loops, sequences of ops) combine costs label-wise so that
+/// e.g. a loop trip count scales every label independently rather than an
+/// opaque aggregate.
+class SimCost {
+public:
+  SimCost() = default;
+
+  /// Cost attributed to `category`, optionally tagged with a sub-label for
+  /// finer-grained reporting (e.g. forCategory(Cpu, 1.2, "copy")). An empty
+  /// label rolls the cost up under the bare category name.
+  static SimCost forCategory(CostCategory category, double value,
+                             llvm::StringRef label = {}) {
+    SimCost c;
+    if (value != 0.0)
+      c.add(category, label, value);
+    return c;
+  }
+  static SimCost forKernel(double v, llvm::StringRef label = {}) {
+    return forCategory(CostCategory::Kernel, v, label);
+  }
+  static SimCost forCpu(double v, llvm::StringRef label = {}) {
+    return forCategory(CostCategory::Cpu, v, label);
+  }
+  static SimCost forTransfer(double v, llvm::StringRef label = {}) {
+    return forCategory(CostCategory::Transfer, v, label);
+  }
+  static SimCost forTransferBack(double v, llvm::StringRef label = {}) {
+    return forCategory(CostCategory::TransferBack, v, label);
+  }
+
+  /// Sum of every category/label.
+  double total() const {
+    double t = 0.0;
+    for (auto &bucket : buckets)
+      for (auto &e : bucket)
+        t += e.second;
+    return t;
+  }
+  /// Sum of every label under `category`.
+  double categoryTotal(CostCategory category) const {
+    double t = 0.0;
+    for (auto &e : buckets[static_cast<size_t>(category)])
+      t += e.second;
+    return t;
+  }
+  bool isFinite() const {
+    for (auto &bucket : buckets)
+      for (auto &e : bucket)
+        if (!std::isfinite(e.second))
+          return false;
+    return true;
+  }
+
+  /// Invokes `fn(CostCategory, StringRef label, double value)` for every
+  /// entry, for reporting/debugging.
+  template <typename Fn>
+  void forEachEntry(Fn &&fn) const {
+    for (size_t i = 0; i < kNumCostCategories; ++i)
+      for (auto &e : buckets[i])
+        fn(static_cast<CostCategory>(i), llvm::StringRef(e.first), e.second);
+  }
+
+  SimCost &operator+=(const SimCost &o) {
+    for (size_t i = 0; i < kNumCostCategories; ++i)
+      for (auto &e : o.buckets[i])
+        add(static_cast<CostCategory>(i), e.first, e.second);
+    return *this;
+  }
+  SimCost &operator*=(double scale) {
+    for (auto &bucket : buckets)
+      for (auto &e : bucket)
+        e.second *= scale;
+    return *this;
+  }
+  SimCost &operator/=(double scale) { return *this *= (1.0 / scale); }
+
+private:
+  // Per category, the (label, value) pairs tagged under it. Most categories
+  // only ever see a handful of distinct labels, so a small inline vector
+  // avoids hashing/heap allocation in the common case.
+  using Bucket = llvm::SmallVector<std::pair<std::string, double>, 2>;
+  std::array<Bucket, kNumCostCategories> buckets;
+
+  void add(CostCategory category, llvm::StringRef label, double value) {
+    auto &bucket = buckets[static_cast<size_t>(category)];
+    for (auto &e : bucket)
+      if (e.first == label) {
+        e.second += value;
+        return;
+      }
+    bucket.emplace_back(label.str(), value);
+  }
+};
+
+inline SimCost operator+(SimCost a, const SimCost &b) { return a += b; }
+inline SimCost operator*(SimCost a, double scale) { return a *= scale; }
+inline SimCost operator*(double scale, SimCost a) { return a *= scale; }
+inline SimCost operator/(SimCost a, double scale) { return a /= scale; }
+
 /// Abstract cost estimator for UPMEM programs in UPMEM dialect.
 /// Returns an estimated cost (lower is better) given a region.
 /// Implementations may range from simple op counts to full simulation.
 struct UpmemSimulator {
   virtual ~UpmemSimulator() = default;
-  virtual cinm::utils::Maybe<double> simulate(mlir::Region &region) = 0;
+  virtual cinm::utils::Maybe<SimCost> simulate(mlir::Region &region) = 0;
   virtual std::unique_ptr<UpmemSimulator> clone() = 0;
   /// Whether this simulator is safe to call concurrently from multiple threads.
   /// If false, exhaustive search will use a single thread.
@@ -58,9 +192,10 @@ struct UpmemSimulator {
   virtual void warmUp() {}
   virtual void printStats() const {}
 
-  virtual double simulateGemv(std::chrono::milliseconds timeout, int nTasklets,
-                              int64_t mramRows, int64_t mramCols,
-                              int64_t rowTile, int64_t colTile, DType dty) = 0;
+  virtual SimCost simulateGemv(std::chrono::milliseconds timeout,
+                               int nTasklets, int64_t mramRows,
+                               int64_t mramCols, int64_t rowTile,
+                               int64_t colTile, DType dty) = 0;
 
   /// Estimate the total cost of the host-side tiled GEMV (mv2) kernel,
   /// including scatter/gather transfers and DPU compute.
@@ -72,17 +207,17 @@ struct UpmemSimulator {
   ///   ranks       — number of UPMEM ranks
   ///   dpus        — DPUs per rank
   ///   tasklets    — tasklets per DPU
-  double simulateFullGemv(std::chrono::milliseconds timeoutMs, int64_t M,
+  SimCost simulateFullGemv(std::chrono::milliseconds timeoutMs, int64_t M,
                           int64_t K, int64_t mramRows, int64_t mramCols,
                           int64_t wramRows, int64_t wramCols, int64_t dpuRows,
                           int64_t dpuCols, int64_t tasklets, DType dty);
 
-  virtual double simulateReduction(std::chrono::milliseconds timeout,
-                                   cinm::ReduceMethod reduction,
-                                   int taskletRows, int taskletCols,
-                                   int64_t mramRows, int64_t mramCols,
-                                   int64_t wramRows, int64_t wramCols,
-                                   DType dty) = 0;
+  virtual SimCost simulateReduction(std::chrono::milliseconds timeout,
+                                    cinm::ReduceMethod reduction,
+                                    int taskletRows, int taskletCols,
+                                    int64_t mramRows, int64_t mramCols,
+                                    int64_t wramRows, int64_t wramCols,
+                                    DType dty) = 0;
 
   /// Simulate a reduction operation.
   /// The reduction is like reducing a tensor <MxK> into a tensor <M>.
@@ -90,7 +225,7 @@ struct UpmemSimulator {
   /// The K cols are also tiled into dpus, tasklets, mram and wram and
   /// influence a partial reductions.
 
-  double simulateTailReduction(std::chrono::milliseconds timeoutMs, int64_t M,
+  SimCost simulateTailReduction(std::chrono::milliseconds timeoutMs, int64_t M,
                                int64_t K, cinm::ReduceMethod reduction,
                                int64_t mramRows, int64_t mramCols,
                                int64_t wramRows, int64_t wramCols,

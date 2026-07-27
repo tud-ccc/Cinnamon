@@ -51,64 +51,81 @@ namespace mlir::upmem {
 ///
 /// Transfer costs use the same formula as OpCountSimulator's ScatterOp/GatherOp
 /// case via scatterGatherCost().
-double UpmemSimulator::simulateFullGemv(std::chrono::milliseconds timeout,
+SimCost UpmemSimulator::simulateFullGemv(std::chrono::milliseconds timeout,
                                         int64_t M, int64_t K, int64_t mramRows,
                                         int64_t mramCols, int64_t wramRows,
                                         int64_t wramCols, int64_t dpuRows,
                                         int64_t dpuCols, int64_t tasklets,
                                         DType dty) {
   // Cost of one scatter/gather of `elemsPerDpu` i32 elements across all DPUs.
-  auto xferCost = [&](int64_t elemsPerDpu) {
-    return scatterGatherCost(elemsPerDpu, dty,
-                             std::max(1L, dpuCols * dpuRows / 64), 64);
+  auto scatterCost = [&](int64_t elemsPerDpu, llvm::StringRef label) {
+    return SimCost::forTransfer(
+        scatterGatherCost(elemsPerDpu, dty,
+                          std::max(1L, dpuCols * dpuRows / 64), 64),
+        label);
+  };
+  auto gatherCost = [&](int64_t elemsPerDpu, llvm::StringRef label) {
+    return SimCost::forTransferBack(
+        scatterGatherCost(elemsPerDpu, dty,
+                          std::max(1L, dpuCols * dpuRows / 64), 64),
+        label);
   };
 
   // DPU compute cost (one DPU, accounts for tasklet parallelism inside).
-  double dpuCost =
+  SimCost dpuCost =
       this->simulateGemv(timeout, static_cast<int>(tasklets), mramRows,
                          mramCols, wramRows, wramCols, dty);
 
   // Per inner-loop (col-tile) iteration: 3 scatters + wait + 1 gather.
-  double innerIterCost = xferCost(mramRows * mramCols) // scatter A tile
-                         + xferCost(mramCols)          // scatter x tile
-                         + xferCost(mramRows)          // scatter y (init)
-                         + dpuCost                     // DPU kernel
-                         + xferCost(mramRows);         // gather y (result)
+  SimCost innerIterCost =
+      scatterCost(mramRows * mramCols, "a_tile") +
+      scatterCost(mramCols, "x_tile") + scatterCost(mramRows, "y_init") +
+      dpuCost                                  // DPU kernel
+      + gatherCost(mramRows, "y_result");
 
   int64_t innerTrips = K / (dpuCols * mramCols);
   int64_t outerTrips = M / (dpuRows * mramRows);
-  return static_cast<double>(outerTrips * innerTrips) * innerIterCost;
+  return innerIterCost * static_cast<double>(outerTrips * innerTrips);
 }
 
 /// Estimate the cost of the host side of a tiled reduction.
 /// This is like reducing an <MxK> tensor into <M>.
-double UpmemSimulator::simulateTailReduction(
+SimCost UpmemSimulator::simulateTailReduction(
     std::chrono::milliseconds timeoutMs, int64_t M, int64_t K,
     cinm::ReduceMethod reduction, int64_t mramRows, int64_t mramCols,
     int64_t wramRows, int64_t wramCols, int64_t dpuRows, int64_t dpuCols,
     int64_t taskletRows, int64_t taskletCols, DType dty) {
 
   // Cost of one scatter/gather of `elemsPerDpu` i32 elements across all DPUs.
-  auto xferCost = [&](int64_t elemsPerDpu) {
-    return scatterGatherCost(elemsPerDpu, dty,
-                             std::max(1L, (dpuRows * dpuCols) / 64), 64);
+  auto scatterCost = [&](int64_t elemsPerDpu, llvm::StringRef label) {
+    return SimCost::forTransfer(
+        scatterGatherCost(elemsPerDpu, dty,
+                          std::max(1L, (dpuRows * dpuCols) / 64), 64),
+        label);
+  };
+  auto gatherCost = [&](int64_t elemsPerDpu, llvm::StringRef label) {
+    return SimCost::forTransferBack(
+        scatterGatherCost(elemsPerDpu, dty,
+                          std::max(1L, (dpuRows * dpuCols) / 64), 64),
+        label);
   };
 
   // DPU compute cost (one DPU, accounts for tasklet parallelism inside).
-  double dpuCost =
+  SimCost dpuCost =
       this->simulateReduction(timeoutMs, reduction, taskletRows, taskletCols,
                               mramRows, mramCols, wramRows, wramCols, dty);
 
   // Per inner-loop (col-tile) iteration: scatter A + scatter y + wait + gather
   // y.
-  double innerIterCost = xferCost(mramRows * mramCols) // scatter A tile
-                         + xferCost(mramRows)  // scatter y (running partial)
-                         + dpuCost             // DPU kernel
-                         + xferCost(mramRows); // gather y (result)
+  SimCost innerIterCost =
+      scatterCost(mramRows * mramCols, "a_tile") +
+      scatterCost(mramRows, "y_partial") +
+      dpuCost                                     // DPU kernel
+      + gatherCost(mramRows, "y_result");
 
   int64_t innerTrips = K / (dpuCols * mramCols);
   int64_t outerTrips = M / (dpuRows * mramRows);
-  return static_cast<double>(outerTrips * innerTrips) * innerIterCost;
+  return innerIterCost * static_cast<double>(outerTrips * innerTrips);
 }
 
 } // namespace mlir::upmem

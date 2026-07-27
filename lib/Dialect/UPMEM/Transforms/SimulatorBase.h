@@ -64,7 +64,7 @@ inline upmem_cm::ArithOp upmemCmOp(mlir::cinm::ReduceMethod red) {
 /// and optionally annotates each visited op with 'upmem.sim_cost'.
 /// WaitForOp cost is delegated to `waitForCb`; all other op costs use the
 /// built-in weighted heuristics (same as OpCountSimulator).
-double simulateHostRegion(mlir::Region &region, bool annotate,
+SimCost simulateHostRegion(mlir::Region &region, bool annotate,
                           const WaitForCostFn &waitForCb);
 
 /// Cost model for a single upmem.scatter or upmem.gather operation.
