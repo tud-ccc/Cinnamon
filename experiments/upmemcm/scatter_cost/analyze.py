@@ -188,7 +188,7 @@ class Template:
     name: str
     features: Callable[[pd.DataFrame], np.ndarray]
     fit: Callable[[np.ndarray, np.ndarray], dict] | None = None
-    report: Callable[[dict], None] | None = None
+    report: Callable[[dict, pd.DataFrame], None] | None = None
 
 
 # ── Regression templates ────────────────────────────────────────────────────
@@ -202,16 +202,21 @@ def _cols(*columns) -> np.ndarray:
 def _pairwise_cols(dims: list[Dim], df: pd.DataFrame) -> list:
     """[dim for each dim] + [dim_i * dim_j for i <= j] -- linear terms, plus
     every square and cross term exactly once (no duplicate cross terms)."""
+
+    dims = [d for d in dims if df[d.col].nunique() > 1]
+
     cols = [df[d.col] for d in dims]
     out = list(cols)
     for i in range(len(cols)):
         for j in range(i, len(cols)):
             out.append(cols[i] * cols[j])
-    out.append(_product(cols[i] for i in range(len(cols))))
+    if len(dims) > 2:
+      out.append(_product(cols[i] for i in range(len(cols))))
     return out
 
 
-def _pairwise_col_names(dims: list[Dim]) -> list[str]:
+def _pairwise_col_names(dims: list[Dim], df: pd.DataFrame) -> list[str]:
+    dims = [d for d in dims if df[d.col].nunique() > 1]
     """Names matching _interaction_cols' columns 1:1, for labeling
     coefficients (e.g. LASSO's) back by term instead of bare index."""
     names = [d.col for d in dims]
@@ -272,7 +277,6 @@ def build_templates(
         Template(
             "pairwise", "pairwise products", lambda df: _cols(*_pairwise_cols(dims, df))
         ),
-       
         Template(
             "total",
             "total (product of all dims)",
@@ -316,6 +320,7 @@ def fit_lasso(
     random_state: int = 0,
 ) -> dict:
     from sklearn.linear_model import LassoCV
+
     """Standardize X (zero mean, unit variance per column), fit LassoCV --
     weighted by 1/y^2 the same way fit_ols's weighted OLS is, if
     weighted=True, so this template is scored on the same relative-error
@@ -340,7 +345,9 @@ def fit_lasso(
     # doesn't also drag the intercept into the penalty term.
     sample_weight = (1.0 / y) ** 2 if weighted else None
 
-    model = LassoCV(cv=cv, fit_intercept=True, max_iter=100_000, random_state=random_state)
+    model = LassoCV(
+        cv=cv, fit_intercept=True, max_iter=100_000, random_state=random_state
+    )
     model.fit(Xs, y, sample_weight=sample_weight)
 
     # Unwind standardization: y = intercept_s + Xs @ coef_s
@@ -367,6 +374,7 @@ def fit_lasso(
         "alpha": float(model.alpha_),
         "n_nonzero": int(np.sum(coef != 0)),
     }
+
 
 def fit_ols(X: np.ndarray, y: np.ndarray, weighted: bool = True) -> dict:
     """OLS with intercept (the empirical minimum measured latency -- fixed
@@ -473,7 +481,7 @@ def regime_labels(col: str, boundaries: list[float]) -> list[str]:
     boundaries = sorted(boundaries)
     labels = [f"{col} <= {boundaries[0]:g}"]
     for lo, hi in zip(boundaries, boundaries[1:]):
-        labels.append(f"{lo:g} < {col} <= {hi:g}")
+        labels.append(f"{lo:g} < {col} && {col} <= {hi:g}")
     labels.append(f"{col} > {boundaries[-1]:g}")
     return labels
 
@@ -1111,7 +1119,9 @@ def plot_faceted_fit(
         rel = relative_rmse(yv - pv, yv)
 
         ax.scatter(xv, yv, s=10, alpha=0.6, color="tab:blue", label="measured")
-        ax.scatter(xv, pv, s=10, alpha=0.6, color="tab:orange", marker="x", label="predicted")
+        ax.scatter(
+            xv, pv, s=10, alpha=0.6, color="tab:orange", marker="x", label="predicted"
+        )
         _apply_log_scale(ax, x, "x")
         _apply_log_scale(ax, value, "y")
         ax.set_xlim(x_lo, x_hi)
@@ -1250,7 +1260,7 @@ def plot_best_regression_fit(
     ax.set_aspect("equal", adjustable="box")
     ax.set_xlabel(f"predicted {value.label}")
     ax.set_ylabel(f"measured {value.label}")
-    nl = '\n'
+    nl = "\n"
     ax.set_title(
         f"Best fit:\n {fit['name'].replace('/', '/' + nl)}\n"
         f"relRMSE={fit['rel_rmse'] * 100:.1f}%, R²={fit['r2']:.3f}, RMSE={fit['rmse']:.3g}ms",
@@ -1353,9 +1363,9 @@ def _lasso_term_report(dims: list[Dim]) -> Callable[[dict], None]:
     survived vs. were pruned to exactly zero, labeled by name (via
     _pairwise_col_names, matching _pairwise_cols' column order 1:1) instead
     of bare coefficient index."""
-    names = _pairwise_col_names(dims)
 
-    def report(fit: dict) -> None:
+    def report(fit: dict, df: pd.DataFrame) -> None:
+        names = _pairwise_col_names(dims, df)
         print(
             f"\n=== LASSO term selection (alpha={fit['alpha']:.4g}, "
             f"{fit['n_nonzero']}/{len(names)} terms kept) ==="
@@ -1402,6 +1412,7 @@ EXTRA_TEMPLATES: dict[str, Template] = {
     ),
 }
 
+
 def principal_dims(agg):
     blocks_dim, size_dim = PROBLEM.shape
 
@@ -1417,9 +1428,7 @@ def main():
     parser = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
-    parser.add_argument(
-        "csv", help="Path to results_agg.csv (see dodo.py's agg task)"
-    )
+    parser.add_argument("csv", help="Path to results_agg.csv (see dodo.py's agg task)")
     parser.add_argument(
         "--out-dir", default="plots", help="Output directory for plots (default: plots)"
     )
@@ -1546,13 +1555,13 @@ def main():
 
     for key, tmpl in templates.items():
         if tmpl.report is not None:
-            tmpl.report(fits[key])
+            tmpl.report(fits[key], agg)
 
     if splits:
         masks, labels = combined_regime_masks(agg, splits)
 
         mask_templates = [templates["pairwise"]]
-        mask_templates = {t.key : t for t in mask_templates}
+        mask_templates = {t.key: t for t in mask_templates}
         regime_best_keys = []
         for mask, label in zip(masks, labels):
             sub = agg[mask]
@@ -1576,9 +1585,7 @@ def main():
             #     f"{templates[key].name} ({label})"
             #     for key, label in zip(regime_best_keys, labels)
             # )
-            hybrid_fit = fit_regime_hybrid(
-                templates, agg, y, splits, regime_best_keys
-            )
+            hybrid_fit = fit_regime_hybrid(templates, agg, y, splits, regime_best_keys)
             hybrid_fit["name"] = hybrid_name
             fits[hybrid_key] = hybrid_fit
             table = (
@@ -1665,18 +1672,39 @@ def main():
         f"RMSE = {best_fit['rmse']:.4g} ms   R² = {best_fit['r2']:.4f}"
     )
     if "regime_fits" in best_fit:
-        for label, key, fit in zip(
-            best_fit["regime_labels"], best_fit["regime_templates"], best_fit["regime_fits"]
-        ):
-            print(
-                f"  if ({label}) {{\n"
-                f"    intercept = {fit['intercept']:.7g};\n"
-                f"    coef =  {{{', '.join(f'{c:.7g}' for c in fit['coef'])}}}; }}"
+        num_terms = 1 + len(best_fit["regime_fits"][0]["coef"])
+        print(f"constexpr double lut[][{num_terms}] = {{")
+        for i, (label, key, fit) in enumerate(
+            zip(
+                best_fit["regime_labels"],
+                best_fit["regime_templates"],
+                best_fit["regime_fits"],
             )
-        print("  double result = intercept + ", end=None)
-        terms = [f"{name} * coef[{i}]" for i, name in enumerate(_pairwise_col_names(PROBLEM.all_dims))]
-        print(' + '.join(terms), end=";\n")
+        ):
+            coefs = [fit["intercept"], *fit["coef"]]
+            print(
+                f"  // region {i}: {label}\n"
+                f"  {{{', '.join(f'{c:.7g}' for c in coefs)}}},"
+            )
+        print("};")
+        print("int ix;")
 
+        for i, (label, key, fit) in enumerate(
+            zip(
+                best_fit["regime_labels"],
+                best_fit["regime_templates"],
+                best_fit["regime_fits"],
+            )
+        ):
+            pref = "else " if i > 0 else ""
+            print(f"{pref}if ({label}) ix = {i};")
+        print("else assert(false);")
+        print("return lut[ix][0] + ", end=None)
+        terms = [
+            f"{name} * lut[ix][{i + 1}]"
+            for i, name in enumerate(_pairwise_col_names(PROBLEM.all_dims, agg))
+        ]
+        print(" + ".join(terms), end=";\n")
 
     else:
         print(f"  intercept = {best_fit['intercept']:.4g};")
