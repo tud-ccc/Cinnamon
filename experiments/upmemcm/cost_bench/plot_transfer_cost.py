@@ -14,6 +14,7 @@ Usage:
 
 import argparse
 import pathlib
+import sys
 
 import matplotlib
 matplotlib.use("Agg")
@@ -22,6 +23,9 @@ from matplotlib.colors import LogNorm
 from matplotlib.ticker import FuncFormatter
 import numpy as np
 import pandas as pd
+
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent.parent))
+from cinm_experiments import plots as shared_plots  # noqa: E402
 
 
 def _group(csv_path: pathlib.Path) -> pd.DataFrame:
@@ -85,20 +89,12 @@ def make_plot(df_gather: pd.DataFrame, df_scatter: pd.DataFrame, out_path: pathl
         (ax0, df_gather,  "Gather"),
         (ax1, df_scatter, "Scatter"),
     ]:
-        sc = ax.scatter(
-            df["predicted_ns"], df["elapsed_ns"],
-            s=20, alpha=0.7,
-            c=df["transfersize_bytes"], cmap="plasma", norm=dpu_norm,
+        sc = shared_plots.plot_measured_vs_predicted(
+            df["predicted_ns"], df["elapsed_ns"], ax=ax,
+            color=df["transfersize_bytes"], cmap="plasma", norm=dpu_norm,
+            xlabel="predicted (ns)", ylabel="measured (ns)", title=title,
+            lim=(lo, hi), legend=False,
         )
-        ax.plot([lo, hi], [lo, hi], color="gray", linestyle="--", linewidth=1)
-        ax.set_xlim(lo, hi)
-        ax.set_ylim(lo, hi)
-        ax.set_xscale("log")
-        ax.set_yscale("log")
-        ax.set_xlabel("predicted (ns)")
-        ax.set_ylabel("measured (ns)")
-        ax.set_title(title)
-        ax.grid(True, which="both", linestyle="--", alpha=0.4)
 
     cbar = fig.colorbar(sc, cax=cax, label="Total transfer size", ticks=dpu_ticks)
     cbar.ax.yaxis.set_major_formatter(FuncFormatter(

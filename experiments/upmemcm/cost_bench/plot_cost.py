@@ -24,11 +24,13 @@ from typing import Optional
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
-from matplotlib.colors import LogNorm
 from matplotlib.ticker import FuncFormatter, NullFormatter
 import numpy as np
 import pandas as pd
 from tqdm import tqdm
+
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent.parent))
+from cinm_experiments import plots as shared_plots  # noqa: E402
 
 X_AXES = {
     "dpus": "Number of DPUs",
@@ -38,18 +40,34 @@ X_AXES = {
 
 
 # ── Cost-model calibration data prep ──────────────────────────────────────────
+#
+# Aggregated CSVs (produced by cinm_experiments.aggregate.aggregate_run) tag
+# every measurement row with fn_name/label plus every config.csv param column
+# (dpus, mramCol, ...) -- there is no positional config_id the way there was
+# under the old run_configs.py-driven layout. So a config is identified
+# internally by `label` (compile_run.Config.label, unique within fn_name),
+# and joined back onto an oracle pool.csv (which has no `label`, just the raw
+# param columns) via those param columns -- `key_cols` below, the same
+# columns compare_oracles.py's _config_key_cols identifies (everything before
+# 'visited').
 
-def compute_measured_cost(agg_dir: pathlib.Path, fn_name: str) -> pd.DataFrame:
-    """Return columns [config_id, measured_cost] (ns), one row per config_id.
+def _key_cols(pool: pd.DataFrame) -> list[str]:
+    """Columns that form the config vector: everything before 'visited'."""
+    cols = list(pool.columns)
+    cut = cols.index("visited") if "visited" in cols else len(cols)
+    return [c for c in cols[:cut] if c != "cost"]
 
-    For each (config_id, iteration), net_cost = total - free - alloc, i.e.
-    the per-call wall-clock time with the DPU-set alloc/free session overhead
+
+def compute_measured_cost(agg_dir: pathlib.Path, fn_name: str, key_cols: list) -> pd.DataFrame:
+    """Return columns [*key_cols, measured_cost] (ns), one row per config.
+
+    For each (label, iteration), net_cost = total - free - alloc, i.e. the
+    per-call wall-clock time with the DPU-set alloc/free session overhead
     removed (the cost model predicts kernel + transfer cost, not session
     setup/teardown). alloc/free/total each fire exactly once per iteration,
-    so duplicate rows for the same (config_id, iteration) — which happen when
-    runs/ was populated across multiple invocations of run_configs.py — are
-    averaged rather than summed. measured_cost is the mean of net_cost over
-    iterations, per config_id.
+    so duplicate rows for the same (label, iteration) are averaged rather
+    than summed. measured_cost is the mean of net_cost over iterations, per
+    config.
     """
     total = pd.read_csv(agg_dir / "total.csv").rename(columns={"iter": "iteration"})
     free = pd.read_csv(agg_dir / "free.csv")
@@ -57,67 +75,56 @@ def compute_measured_cost(agg_dir: pathlib.Path, fn_name: str) -> pd.DataFrame:
 
     select = lambda df: df[df["fn_name"] == fn_name]
 
-    total_g = select(total).groupby(["config_id", "iteration"])["elapsed_ns"].mean()
-    free_g = select(free).groupby(["config_id", "iteration"])["elapsed_ns"].mean()
-    alloc_g = select(alloc).groupby(["config_id", "iteration"])["elapsed_ns"].mean()
+    total_g = select(total).groupby(["label", "iteration"])["elapsed_ns"].mean()
+    free_g = select(free).groupby(["label", "iteration"])["elapsed_ns"].mean()
+    alloc_g = select(alloc).groupby(["label", "iteration"])["elapsed_ns"].mean()
 
     joined = pd.concat({"total": total_g, "free": free_g, "alloc": alloc_g}, axis=1).dropna()
     joined["net_cost"] = joined["total"] - joined["free"] - joined["alloc"]
 
-    return (
-        joined.groupby("config_id")["net_cost"]
-        .mean()
-        .rename("measured_cost")
-        .reset_index()
-    )
+    measured = joined.groupby("label")["net_cost"].mean().rename("measured_cost").reset_index()
+    key_df = select(total).drop_duplicates("label")[["label"] + key_cols]
+    return measured.merge(key_df, on="label")[key_cols + ["measured_cost"]]
 
 
-def compute_n_launches(agg_dir: pathlib.Path, fn_name: str) -> pd.DataFrame:
-    """Return columns [config_id, n_launches], one row per config_id.
+def compute_n_launches(agg_dir: pathlib.Path, fn_name: str, key_cols: list) -> pd.DataFrame:
+    """Return columns [*key_cols, n_launches], one row per config.
 
     n_launches = mean over iterations of the number of dpu_launch calls
-    recorded for that iteration (rows in launch.csv for that (config_id,
+    recorded for that iteration (rows in launch.csv for that (label,
     iteration)). dpu_launch may fire multiple times per iteration (e.g. one
     launch per reduction-tree stage), so a per-launch overhead would scale
     with this count rather than being a flat per-trial constant.
     """
     launch = pd.read_csv(agg_dir / "launch.csv")
     launch = launch[launch["fn_name"] == fn_name]
-    counts = launch.groupby(["config_id", "iteration"]).size()
-    return (
-        counts.groupby("config_id")
-        .mean()
-        .rename("n_launches")
-        .reset_index()
-    )
+    counts = launch.groupby(["label", "iteration"]).size()
+    n_launches = counts.groupby("label").mean().rename("n_launches").reset_index()
+    key_df = launch.drop_duplicates("label")[["label"] + key_cols]
+    return n_launches.merge(key_df, on="label")[key_cols + ["n_launches"]]
 
 
-def compute_measured_launch_cost(agg_dir: pathlib.Path, fn_name: str) -> pd.DataFrame:
-    """Return columns [config_id, measured_launch_cost] (ns), one row per config_id.
+def compute_measured_launch_cost(agg_dir: pathlib.Path, fn_name: str, key_cols: list) -> pd.DataFrame:
+    """Return columns [*key_cols, measured_launch_cost] (ns), one row per config.
 
-    For each (config_id, iteration), launch cost = sum of all dpu_launch call
+    For each (label, iteration), launch cost = sum of all dpu_launch call
     durations in that iteration (the kernel may launch multiple times per
     iteration, e.g. one launch per reduction-tree stage). measured_launch_cost
-    is the mean of that per-iteration sum, over iterations, per config_id —
+    is the mean of that per-iteration sum, over iterations, per config —
     for comparison against a cost model that predicts only the on-DPU kernel
     cost (no transfer/alloc/free overhead).
     """
     launch = pd.read_csv(agg_dir / "launch.csv")
     launch = launch[launch["fn_name"] == fn_name]
-    per_iter = launch.groupby(["config_id", "iteration"])["elapsed_ns"].mean()
-    return (
-        per_iter.groupby("config_id")
-        .mean()
-        .rename("measured_launch_cost")
-        .reset_index()
-    )
+    per_iter = launch.groupby(["label", "iteration"])["elapsed_ns"].mean()
+    measured = per_iter.groupby("label").mean().rename("measured_launch_cost").reset_index()
+    key_df = launch.drop_duplicates("label")[["label"] + key_cols]
+    return measured.merge(key_df, on="label")[key_cols + ["measured_launch_cost"]]
 
 
-def augment_pool(pool_csv: pathlib.Path, measured: pd.DataFrame) -> pd.DataFrame:
-    """pool.csv + measured_cost + error, joined on row index == config_id."""
-    pool = pd.read_csv(pool_csv)
-    pool = pool.merge(measured, left_index=True, right_on="config_id", how="left")
-    pool = pool.drop(columns=["config_id"])
+def augment_pool(pool: pd.DataFrame, measured: pd.DataFrame, key_cols: list) -> pd.DataFrame:
+    """pool.csv + measured_cost + error, joined on the config's param columns."""
+    pool = pool.merge(measured, on=key_cols, how="left")
     pool["error"] = pool["measured_cost"] - pool["cost"]
     # cost == inf marks a cost-model timeout, not a real prediction — exclude
     # those rows from the error rather than reporting a meaningless -inf.
@@ -170,26 +177,16 @@ def plot_cost_calibration(pool: pd.DataFrame, fn_name: str, out_path: pathlib.Pa
     x = data["cost"]                 # ms -> ms
     y = data["measured_cost"] / 1e6  # ns -> ms
 
-    fig, ax = plt.subplots(figsize=(6, 6))
-    sc = ax.scatter(x, y, s=10, alpha=0.7, c=data["dpus"], cmap="viridis", norm=LogNorm())
-    k_min = int(np.floor(np.log2(data["dpus"].min())))
-    k_max = int(np.ceil(np.log2(data["dpus"].max())))
-    dpu_ticks = [2 ** k for k in range(k_min, k_max + 1)]
-    cbar = fig.colorbar(sc, ax=ax, label="Number of DPUs", ticks=dpu_ticks)
-    cbar.ax.yaxis.set_major_formatter(FuncFormatter(lambda val, _: f"{val:g}"))
-    lo, hi = min(x.min(), y.min()), max(x.max(), y.max())
-    ax.plot([lo, hi], [lo, hi], color="gray", linestyle="--", linewidth=1, label="y = x")
-    ax.set_xscale("log")
-    ax.set_yscale("log")
-    ax.set_xlabel("predicted cost (ms)")
-    ax.set_ylabel("measured cost (ms)")
-    ax.set_title(f"{fn_name}: measured vs predicted cost")
-    ax.grid(True, which="both", linestyle="--", alpha=0.4)
-    ax.legend()
-    fig.tight_layout()
-    out_path.parent.mkdir(parents=True, exist_ok=True)
-    fig.savefig(out_path, dpi=150)
-    plt.close(fig)
+    shared_plots.plot_measured_vs_predicted(
+        x, y,
+        out_path=out_path,
+        color=data["dpus"],
+        color_label="Number of DPUs",
+        cbar_ticks=shared_plots.log2_ticks(data["dpus"]),
+        xlabel="predicted cost (ms)",
+        ylabel="measured cost (ms)",
+        title=f"{fn_name}: measured vs predicted cost",
+    )
 
     # Residual (measured - predicted) vs number of dpu_launch calls, linear
     # scales — a per-launch overhead (paid every time the array is launched,
@@ -235,26 +232,16 @@ def plot_launch_calibration(pool: pd.DataFrame, fn_name: str, out_path: pathlib.
     x = data["cost"] + correction(data["dpus"], data["mramCol"])  # ms -> ms (kernel-only oracle, no transfer cost)
     y = data["measured_launch_cost"] / 1e6  # ns -> ms
 
-    fig, ax = plt.subplots(figsize=(6, 6))
-    sc = ax.scatter(x, y, s=10, alpha=0.7, c=data["dpus"], cmap="viridis", norm=LogNorm())
-    k_min = int(np.floor(np.log2(data["dpus"].min())))
-    k_max = int(np.ceil(np.log2(data["dpus"].max())))
-    dpu_ticks = [2 ** k for k in range(k_min, k_max + 1)]
-    cbar = fig.colorbar(sc, ax=ax, label="Number of DPUs", ticks=dpu_ticks)
-    cbar.ax.yaxis.set_major_formatter(FuncFormatter(lambda val, _: f"{val:g}"))
-    lo, hi = min(x.min(), y.min()), max(x.max(), y.max())
-    ax.plot([lo, hi], [lo, hi], color="gray", linestyle="--", linewidth=1, label="y = x")
-    ax.set_xscale("log")
-    ax.set_yscale("log")
-    ax.set_xlabel("predicted kernel cost (ms)")
-    ax.set_ylabel("measured launch cost (ms)")
-    ax.set_title(f"{fn_name}: measured vs predicted kernel cost")
-    ax.grid(True, which="both", linestyle="--", alpha=0.4)
-    ax.legend()
-    fig.tight_layout()
-    out_path.parent.mkdir(parents=True, exist_ok=True)
-    fig.savefig(out_path, dpi=150)
-    plt.close(fig)
+    shared_plots.plot_measured_vs_predicted(
+        x, y,
+        out_path=out_path,
+        color=data["dpus"],
+        color_label="Number of DPUs",
+        cbar_ticks=shared_plots.log2_ticks(data["dpus"]),
+        xlabel="predicted kernel cost (ms)",
+        ylabel="measured launch cost (ms)",
+        title=f"{fn_name}: measured vs predicted kernel cost",
+    )
 
     # Residual (measured - predicted) vs number of dpu_launch calls, linear
     # scales — a per-launch overhead (paid every time the array is launched,
@@ -319,13 +306,15 @@ def collect_calibration_tasks(oracle_dir: pathlib.Path, agg_dir: pathlib.Path,
     tasks = []
     pool_out_dir.mkdir(parents=True, exist_ok=True)
     for fn_name, pool_csv in find_function_pools(oracle_dir):
-        measured = compute_measured_cost(agg_dir, fn_name)
+        pool = pd.read_csv(pool_csv)
+        key_cols = _key_cols(pool)
+        measured = compute_measured_cost(agg_dir, fn_name, key_cols)
         if measured.empty:
             print(f"  {fn_name}: no aggregated data, skipping calibration", file=sys.stderr)
             continue
-        n_launches = compute_n_launches(agg_dir, fn_name)
-        measured = measured.merge(n_launches, on="config_id", how="left")
-        pool = augment_pool(pool_csv, measured)
+        n_launches = compute_n_launches(agg_dir, fn_name, key_cols)
+        measured = measured.merge(n_launches, on=key_cols, how="left")
+        pool = augment_pool(pool, measured, key_cols)
         pool.to_csv(pool_out_dir / f"{fn_name}_pool.csv", index=False)
 
         out_path = out_dir / fn_name / f"{plot_name}.png"
@@ -342,13 +331,13 @@ def collect_launch_calibration_tasks(kernel_oracle_dir: pathlib.Path, agg_dir: p
 
     tasks = []
     for fn_name, pool_csv in find_function_pools(kernel_oracle_dir):
-        measured = compute_measured_launch_cost(agg_dir, fn_name)
+        pool = pd.read_csv(pool_csv)
+        key_cols = _key_cols(pool)
+        measured = compute_measured_launch_cost(agg_dir, fn_name, key_cols)
         if measured.empty:
             print(f"  {fn_name}: no aggregated data, skipping launch calibration", file=sys.stderr)
             continue
-        pool = pd.read_csv(pool_csv)
-        pool = pool.merge(measured, left_index=True, right_on="config_id", how="left")
-        pool = pool.drop(columns=["config_id"])
+        pool = pool.merge(measured, on=key_cols, how="left")
 
         out_path = out_dir / fn_name / f"{plot_name}.png"
         tasks.append((f"{plot_name} ({fn_name})", plot_launch_calibration,
@@ -372,7 +361,7 @@ def main():
     parser.add_argument("--oracle", default=None,
                          help="Path to an oracle directory, containing one "
                               "infer_{fn_name}/pool.csv subdir per problem "
-                              "(same layout as run_configs.py --data). Enables the "
+                              "(same layout dodo.py reads configs from). Enables the "
                               "cost_calibration plot; omit to skip it.")
     parser.add_argument("--pool-out-dir", default="pool_measured",
                          help="Where to write cost-model-augmented pool CSVs "
@@ -380,8 +369,8 @@ def main():
     parser.add_argument("--kernel-oracle", default=None,
                          help="Path to a second oracle directory predicting only the "
                               "on-DPU kernel cost (no transfer/alloc/free), same "
-                              "infer_{fn_name}/pool.csv layout and config_id ordering "
-                              "as --oracle. Enables the launch_calibration plot "
+                              "infer_{fn_name}/pool.csv layout as --oracle (joined by "
+                              "param columns, not row order). Enables the launch_calibration plot "
                               "(measured launch cost vs predicted kernel cost); "
                               "omit to skip it.")
     parser.add_argument("--workers", type=int, default=os.cpu_count(),

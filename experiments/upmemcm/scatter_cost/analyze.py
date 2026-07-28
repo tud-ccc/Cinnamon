@@ -32,7 +32,7 @@ tens of ms, so a 1ms error is huge at the low end and negligible at the high
 end; flat RMSE (and an unweighted fit) would be dominated by the handful of
 largest-latency configs and say nothing about how well small transfers are
 predicted. ms RMSE and R^2 (on absolute error) are still reported alongside
-for reference. Same idea as reduce_cost's fit_overhead_term.py TEMPLATES dict
+for reference. Same idea as cost_bench's fit_overhead_term.py TEMPLATES dict
 (which also uses a cost-weighted fit for the same reason), simplified to
 weighted OLS.
 
@@ -66,6 +66,7 @@ import functools
 import itertools
 import operator
 import pathlib
+import sys
 import threading
 from typing import Callable
 
@@ -77,6 +78,9 @@ from matplotlib.colors import LogNorm, Normalize
 from matplotlib.ticker import FuncFormatter, NullFormatter
 from tqdm import tqdm
 import numpy as np
+
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent.parent))
+from cinm_experiments import plots as shared_plots  # noqa: E402
 import pandas as pd
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -1186,19 +1190,11 @@ def plot_all_regression_fits(
         r, c = divmod(i, ncols)
         ax = fig.add_subplot(gs[r, c])
         fit = fits[key]
-        ax.scatter(
-            fit["pred"], y, s=8, alpha=0.5, c=data[color.col], cmap=cmap, norm=norm
+        shared_plots.plot_measured_vs_predicted(
+            fit["pred"], y, ax=ax, color=data[color.col], cmap=cmap, norm=norm,
+            xlabel=f"predicted {value.label}", ylabel=f"measured {value.label}",
+            lim=(lo, hi), legend=(i == 0),
         )
-        ax.plot(
-            [lo, hi], [lo, hi], color="gray", linestyle="--", linewidth=1, label="y = x"
-        )
-        ax.set_xlim(lo, hi)
-        ax.set_ylim(lo, hi)
-        _apply_log_scale(ax, value, "x")
-        _apply_log_scale(ax, value, "y")
-        ax.set_aspect("equal", adjustable="box")
-        ax.set_xlabel(f"predicted {value.label}")
-        ax.set_ylabel(f"measured {value.label}")
         is_best = key == best_key
         ax.set_title(
             f"{fit['name']}\nrelRMSE={fit['rel_rmse'] * 100:.1f}%, R²={fit['r2']:.3f}, "
@@ -1206,9 +1202,6 @@ def plot_all_regression_fits(
             color="red" if is_best else "black",
             fontweight="bold" if is_best else "normal",
         )
-        ax.grid(True, which="both", linestyle="--", alpha=0.4)
-        if i == 0:
-            ax.legend(fontsize=8)
 
     for r in range(nrows):
         cax = fig.add_subplot(gs[r, ncols])
@@ -1244,19 +1237,11 @@ def plot_best_regression_fit(
     norm, ticks = _norm_for(color, data[color.col])
 
     fig, ax = plt.subplots(figsize=(6, 6))
-    sc = ax.scatter(
-        pred, y, s=8, alpha=0.5, c=data[color.col], cmap=_cmap_for(color), norm=norm
+    sc = shared_plots.plot_measured_vs_predicted(
+        pred, y, ax=ax, color=data[color.col], cmap=_cmap_for(color), norm=norm,
+        xlabel=f"predicted {value.label}", ylabel=f"measured {value.label}",
+        lim=(lo, hi),
     )
-    ax.plot(
-        [lo, hi], [lo, hi], color="gray", linestyle="--", linewidth=1, label="y = x"
-    )
-    ax.set_xlim(lo, hi)
-    ax.set_ylim(lo, hi)
-    _apply_log_scale(ax, value, "x")
-    _apply_log_scale(ax, value, "y")
-    ax.set_aspect("equal", adjustable="box")
-    ax.set_xlabel(f"predicted {value.label}")
-    ax.set_ylabel(f"measured {value.label}")
     nl = "\n"
     ax.set_title(
         f"Best fit:\n {fit['name'].replace('/', '/' + nl)}\n"
@@ -1264,8 +1249,6 @@ def plot_best_regression_fit(
         color="red",
         fontweight="bold",
     )
-    ax.grid(True, which="both", linestyle="--", alpha=0.4)
-    ax.legend()
     cbar = fig.colorbar(sc, ax=ax, ticks=ticks, label=color.label)
     if color.log is not None and color.decimal_labels:
         cbar.ax.yaxis.set_major_formatter(FuncFormatter(lambda v, _: f"{v:g}"))

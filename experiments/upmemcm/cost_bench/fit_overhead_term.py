@@ -37,6 +37,9 @@ from scipy.stats import spearmanr
 
 from plot_cost import find_function_pools, compute_measured_cost
 
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent.parent))
+from cinm_experiments import plots as shared_plots  # noqa: E402
+
 # ── Templates: name -> feature function (dpus, mramCols -> [n, k] feature matrix) ─
 
 TEMPLATES = {
@@ -84,13 +87,20 @@ def spearman_topk_rho(corrected_ms: np.ndarray, measured_ms: np.ndarray,
 # ── Data helpers ───────────────────────────────────────────────────────────────
 
 
-def compute_measured_launch_cost(agg_dir: pathlib.Path, fn_name: str) -> pd.DataFrame:
-    """Return columns [config_id, measured_launch_cost, n_launches] (ns), one row per config_id.
+def _key_cols(pool: pd.DataFrame) -> list[str]:
+    """Columns that form the config vector: everything before 'visited'."""
+    cols = list(pool.columns)
+    cut = cols.index("visited") if "visited" in cols else len(cols)
+    return [c for c in cols[:cut] if c != "cost"]
 
-    For each (config_id, iteration), launch cost = sum of all dpu_launch call
+
+def compute_measured_launch_cost(agg_dir: pathlib.Path, fn_name: str, key_cols: list) -> pd.DataFrame:
+    """Return columns [*key_cols, measured_launch_cost, n_launches] (ns), one row per config.
+
+    For each (label, iteration), launch cost = sum of all dpu_launch call
     durations in that iteration (the kernel may launch multiple times per
     iteration, e.g. one launch per reduction-tree stage). measured_launch_cost
-    is the mean of that per-iteration sum, over iterations, per config_id —
+    is the mean of that per-iteration sum, over iterations, per config —
     for comparison against a cost model that predicts only the on-DPU kernel
     cost (no transfer/alloc/free overhead).
 
@@ -99,12 +109,14 @@ def compute_measured_launch_cost(agg_dir: pathlib.Path, fn_name: str) -> pd.Data
     """
     launch = pd.read_csv(agg_dir / "launch.csv")
     launch = launch[launch["fn_name"] == fn_name]
-    grp = launch.groupby(["config_id", "iteration"])["elapsed_ns"]
+    grp = launch.groupby(["label", "iteration"])["elapsed_ns"]
     per_iter = pd.DataFrame({
         "measured_launch_cost": grp.mean(),
         "n_launches": grp.count(),
     })
-    return per_iter.groupby("config_id").mean().reset_index()
+    measured = per_iter.groupby("label").mean().reset_index()
+    key_df = launch.drop_duplicates("label")[["label"] + key_cols]
+    return measured.merge(key_df, on="label")[key_cols + ["measured_launch_cost", "n_launches"]]
 
 def build_full_cost_data(agg_dir: pathlib.Path, full_oracle_pool_csv: pathlib.Path,
                           fn_name: str) -> pd.DataFrame:
@@ -114,15 +126,15 @@ def build_full_cost_data(agg_dir: pathlib.Path, full_oracle_pool_csv: pathlib.Pa
     measured_cost (ns), n_launches. Rows with NaN/inf in cost or measured_cost
     are dropped; no dpus filter is applied.
     """
-    mc = compute_measured_cost(agg_dir, fn_name)
+    pool = pd.read_csv(full_oracle_pool_csv)
+    key_cols = _key_cols(pool)
+    mc = compute_measured_cost(agg_dir, fn_name, key_cols)
     if mc.empty:
         return pd.DataFrame()
-    lc = compute_measured_launch_cost(agg_dir, fn_name)
+    lc = compute_measured_launch_cost(agg_dir, fn_name, key_cols)
 
-    pool = pd.read_csv(full_oracle_pool_csv)
-    pool = pool.merge(mc, left_index=True, right_on="config_id", how="left")
-    pool = pool.merge(lc[["config_id", "n_launches"]], on="config_id", how="left")
-    pool = pool.drop(columns=["config_id"])
+    pool = pool.merge(mc, on=key_cols, how="left")
+    pool = pool.merge(lc[key_cols + ["n_launches"]], on=key_cols, how="left")
     pool = pool.dropna(subset=["measured_cost", "n_launches"])
     pool = pool[np.isfinite(pool["cost"]) & np.isfinite(pool["measured_cost"])]
     return pool
@@ -130,12 +142,12 @@ def build_full_cost_data(agg_dir: pathlib.Path, full_oracle_pool_csv: pathlib.Pa
 
 def build_clean_pool(agg_dir: pathlib.Path, pool_csv: pathlib.Path, fn_name: str) -> pd.DataFrame:
     """measured_launch_cost/cost/dpus for fn_name, dropping unmeasured/timeout configs."""
-    measured = compute_measured_launch_cost(agg_dir, fn_name)
+    pool = pd.read_csv(pool_csv)
+    key_cols = _key_cols(pool)
+    measured = compute_measured_launch_cost(agg_dir, fn_name, key_cols)
     if measured.empty:
         return measured
-    pool = pd.read_csv(pool_csv)
-    pool = pool.merge(measured, left_index=True, right_on="config_id", how="left")
-    pool = pool.drop(columns=["config_id"])
+    pool = pool.merge(measured, on=key_cols, how="left")
     data = pool.dropna(subset=["measured_launch_cost"])
     data = data[np.isfinite(data["cost"]) & np.isfinite(data["measured_launch_cost"])]
     data["cost"] = data["cost"] / data["n_launches"]
@@ -382,17 +394,6 @@ def make_calibration_scatter_plot(dpus: np.ndarray,
         (ax0, predicted_ms, "without correction",              rho_raw,  rmse_raw,  None),
         (ax1, corrected_ms, f"corrected ({correction_label})", rho_corr, rmse_corr, correction_params),
     ]:
-        sc = ax.scatter(x, measured_ms, s=10, alpha=0.7, c=dpus, cmap=cmap, norm=dpu_norm)
-        ax.plot([lo, hi], [lo, hi], color="gray", linestyle="--", linewidth=1, label="y = x")
-        ax.set_xlim(lo, hi)
-        ax.set_ylim(lo, hi)
-        ax.set_xscale("log")
-        ax.set_yscale("log")
-        ax.set_xlabel("predicted kernel cost (ms)")
-        ax.set_ylabel("measured launch cost (ms)")
-        ax.set_title(subtitle)
-        ax.grid(True, which="both", linestyle="--", alpha=0.4)
-        ax.legend()
         fp = false_positive_count(x, measured_ms)
         lines = [
             f"Spearman ρ@top-{top_quantile:.0%} (n={k}): {rho:.3f}",
@@ -401,9 +402,11 @@ def make_calibration_scatter_plot(dpus: np.ndarray,
         ]
         if params:
             lines.extend(f"{name} = {val:.6g}" for name, val in params)
-        ax.text(0.03, 0.97, "\n".join(lines),
-                transform=ax.transAxes, fontsize=8, verticalalignment="top",
-                bbox=dict(boxstyle="round,pad=0.3", facecolor="white", alpha=0.7))
+        sc = shared_plots.plot_measured_vs_predicted(
+            x, measured_ms, ax=ax, color=dpus, norm=dpu_norm, cmap=cmap,
+            xlabel="predicted kernel cost (ms)", ylabel="measured launch cost (ms)",
+            title=subtitle, annotate_lines=lines, lim=(lo, hi),
+        )
 
     cbar = fig.colorbar(sc, cax=cax, label="Number of DPUs", ticks=dpu_ticks)
     cbar.ax.yaxis.set_major_formatter(FuncFormatter(lambda val, _: f"{val:g}"))

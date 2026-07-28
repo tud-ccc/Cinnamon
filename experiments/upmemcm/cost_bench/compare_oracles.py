@@ -34,19 +34,20 @@ from plot_cost import find_function_pools
 
 
 # ── Measured-cost loaders ──────────────────────────────────────────────────────
-# config_id is consistent within the aggregate directory, so it is used for
-# internal merges. key_cols are attached to the output so the caller can join
-# against oracle pools (whose config_ids may not match).
+# `label` (compile_run.Config.label, unique within fn_name) is consistent
+# within the aggregate directory, so it is used for internal merges. key_cols
+# are attached to the output so the caller can join against oracle pools
+# (whose own row indices/config_ids may not match the aggregate's labels).
 
 def _measured_launch(agg_dir: pathlib.Path, fn_name: str, key_cols: list) -> pd.DataFrame:
     """[*key_cols, measured_ms] — mean per-launch cost (ns→ms)."""
     df = pd.read_csv(agg_dir / "launch.csv")
     df = df[df["fn_name"] == fn_name]
-    per_iter = df.groupby(["config_id", "iteration"])["elapsed_ns"].mean().reset_index()
-    result = per_iter.groupby("config_id")["elapsed_ns"].mean().rename("measured_ms").reset_index()
+    per_iter = df.groupby(["label", "iteration"])["elapsed_ns"].mean().reset_index()
+    result = per_iter.groupby("label")["elapsed_ns"].mean().rename("measured_ms").reset_index()
     result["measured_ms"] /= 1e6
-    key_df = df.drop_duplicates("config_id")[["config_id"] + key_cols]
-    return result.merge(key_df, on="config_id")[key_cols + ["measured_ms"]]
+    key_df = df.drop_duplicates("label")[["label"] + key_cols]
+    return result.merge(key_df, on="label")[key_cols + ["measured_ms"]]
 
 
 def _measured_full(agg_dir: pathlib.Path, fn_name: str, key_cols: list) -> pd.DataFrame:
@@ -56,16 +57,16 @@ def _measured_full(agg_dir: pathlib.Path, fn_name: str, key_cols: list) -> pd.Da
     alloc = pd.read_csv(agg_dir / "alloc.csv")
     sel = lambda d: d[d["fn_name"] == fn_name]
 
-    total_g = sel(total).groupby(["config_id", "iteration"])["elapsed_ns"].mean()
-    free_g  = sel(free).groupby(["config_id", "iteration"])["elapsed_ns"].mean()
-    alloc_g = sel(alloc).groupby(["config_id", "iteration"])["elapsed_ns"].mean()
+    total_g = sel(total).groupby(["label", "iteration"])["elapsed_ns"].mean()
+    free_g  = sel(free).groupby(["label", "iteration"])["elapsed_ns"].mean()
+    alloc_g = sel(alloc).groupby(["label", "iteration"])["elapsed_ns"].mean()
 
     joined = pd.concat({"total": total_g, "free": free_g, "alloc": alloc_g}, axis=1).dropna()
     joined["net_ns"] = joined["total"] - joined["free"] - joined["alloc"]
-    result = joined.groupby("config_id")["net_ns"].mean().rename("measured_ms").reset_index()
+    result = joined.groupby("label")["net_ns"].mean().rename("measured_ms").reset_index()
     result["measured_ms"] /= 1e6
-    key_df = sel(total).drop_duplicates("config_id")[["config_id"] + key_cols]
-    return result.merge(key_df, on="config_id")[key_cols + ["measured_ms"]]
+    key_df = sel(total).drop_duplicates("label")[["label"] + key_cols]
+    return result.merge(key_df, on="label")[key_cols + ["measured_ms"]]
 
 
 # ── Data alignment ─────────────────────────────────────────────────────────────
@@ -85,8 +86,8 @@ def compute_cost_b(pool_a: pd.DataFrame, agg_dir: pathlib.Path, fn_name: str,
                    key_cols: list) -> pd.Series:
     """Add measured gather+scatter transfer cost to the oracle-A prediction.
 
-    Uses config_id within the aggregate for internal grouping, then joins onto
-    pool_a via key_cols (since pool config_ids may differ from aggregate config_ids).
+    Uses `label` within the aggregate for internal grouping, then joins onto
+    pool_a via key_cols (since pool row indices may differ from aggregate labels).
     """
     rows = []
     for fname in ("gather.csv", "scatter.csv"):
@@ -94,14 +95,14 @@ def compute_cost_b(pool_a: pd.DataFrame, agg_dir: pathlib.Path, fn_name: str,
         if not path.exists():
             raise FileNotFoundError(f"Transfer CSV not found: {path}")
         df = pd.read_csv(path)
-        df = df[df["fn_name"] == fn_name][["config_id", "iteration", "elapsed_ns"] + key_cols]
+        df = df[df["fn_name"] == fn_name][["label", "iteration", "elapsed_ns"] + key_cols]
         rows.append(df)
 
     transfer = pd.concat(rows)
-    per_iter = transfer.groupby(["config_id", "iteration"])["elapsed_ns"].sum().reset_index()
-    mean_ns  = per_iter.groupby("config_id")["elapsed_ns"].mean().rename("transfer_ns").reset_index()
-    key_df   = transfer.drop_duplicates("config_id")[["config_id"] + key_cols]
-    mean_ns  = mean_ns.merge(key_df, on="config_id")[key_cols + ["transfer_ns"]]
+    per_iter = transfer.groupby(["label", "iteration"])["elapsed_ns"].sum().reset_index()
+    mean_ns  = per_iter.groupby("label")["elapsed_ns"].mean().rename("transfer_ns").reset_index()
+    key_df   = transfer.drop_duplicates("label")[["label"] + key_cols]
+    mean_ns  = mean_ns.merge(key_df, on="label")[key_cols + ["transfer_ns"]]
 
     merged = pool_a[key_cols + ["cost"]].merge(mean_ns, on=key_cols, how="left")
     return (merged["cost"] + merged["transfer_ns"] / 1e6).values

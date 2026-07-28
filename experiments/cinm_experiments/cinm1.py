@@ -17,11 +17,11 @@ order:
      sizes deterministically for that fixed working group.
   3. The same CINM -> CNM -> UPMEM lowering used everywhere in this repo
      carries the result to the "upmem dialect" stage that
-     reduce_cost/Makefile's bench-single target expects as input.
+     cinm_experiments/Makefile's bench-single target expects as input.
 
 Steps 2-3 are transcribed from testbench/Makefile (the original CINM 1.0
 flow), stopping at its `.6.upmem.mlir` stage instead of continuing on to
-DPU-C/host-LLVM as that Makefile itself does -- reduce_cost/Makefile's
+DPU-C/host-LLVM as that Makefile itself does -- cinm_experiments/Makefile's
 bench-single already does that part, and is what compile_run.py drives.
 """
 
