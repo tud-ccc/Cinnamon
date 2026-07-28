@@ -681,9 +681,9 @@ struct InferenceTask {
                 auto trial = makeTrialInfo(samplePool[idx], ref);
                 return plug.evaluate(trial);
               });
-          if (auto *c = std::get_if<double>(&r)) {
+          if (auto *c = std::get_if<utils::SimCost>(&r)) {
             std::lock_guard<std::mutex> g(recordMx);
-            result.record(idx, *c);
+            result.record(idx, c->total());
           }
           validBar.tick();
         }
@@ -1056,9 +1056,9 @@ struct InferenceTask {
         auto evalTime = std::chrono::duration_cast<std::chrono::milliseconds>(
             std::chrono::steady_clock::now() - t0);
         auto cpuMs = static_cast<uint64_t>(getThreadCpuTimeMs() - cpuT0);
-        double *cost = std::get_if<double>(&result);
+        utils::SimCost *cost = std::get_if<utils::SimCost>(&result);
         std::optional<double> opt_cost =
-            cost ? std::make_optional(*cost) : std::nullopt;
+            cost ? std::make_optional(cost->total()) : std::nullopt;
         perThreadObs[tid].push_back({.idx = i,
                                      .cost = opt_cost,
                                      .eval_time = evalTime,
@@ -1150,7 +1150,7 @@ bool InferenceState::tryEval(size_t poolIdx, InferenceTask &task,
   // only decrement budget if evaluation succeeded
   --budget;
 
-  costVal = std::get<double>(cost);
+  costVal = std::get<utils::SimCost>(cost).total();
   if (log)
     *log << "[cinm-inference]   -> cost = " << costVal << "\n";
   pool.recordObservation(poolIdx, costVal, iter, evalTime, cpuEvalMs);
@@ -1194,8 +1194,15 @@ inferAcceleratorConfig(cinm::ComputeBlockOp computeOp, InferencePlugin &plugin,
     bestResult = task.makeTrialInfo(std::move(conf));
     plugin.warmUp(computeOp->getContext());
     auto estimate = TRY_GET(plugin.evaluate(bestResult)); // may return early
-    llvm::errs() << "Estimated cost: " << llvm::format("%.3f", estimate)
+    llvm::errs() << "Estimated cost: " << llvm::format("%.3f", estimate.total())
                  << " ms\n";
+    estimate.forEachEntry([&](utils::CostCategory category, StringRef label,
+                              double value) {
+      llvm::errs() << "  " << utils::costCategoryName(category);
+      if (!label.empty())
+        llvm::errs() << "." << label;
+      llvm::errs() << ": " << llvm::format("%.3f", value) << " ms\n";
+    });
 
   } else if (opts.exhaustiveSearch) {
     bestResult = TRY_GET(task.runExhaustive());
