@@ -174,6 +174,32 @@ struct DpuTranslator {
     return;
   }
 
+  void translateReinterpretCast(memref::ReinterpretCastOp op) {
+    bool iv_indexed = false;
+    for (OpFoldResult off : op.getMixedOffsets())
+      if (auto v = off.dyn_cast<Value>())
+        if (ivIndexedIn({v})) {
+          iv_indexed = true;
+          break;
+        }
+
+    int64_t n = 1;
+    for (OpFoldResult sz : op.getMixedSizes())
+      if (auto cv = getConstantIntValue(sz))
+        n *= *cv;
+
+    if (auto srcIt = buf_map.find(op.getSource()); srcIt != buf_map.end()) {
+      sv_map[op.getResult()] = {srcIt->second, iv_indexed, n};
+      return;
+    }
+
+    if (auto subv = sv_map.find(op.getSource()); subv != sv_map.end()) {
+      iv_indexed |= subv->second.iv_indexed;
+      sv_map[op.getResult()] = {subv->second.buf_id, iv_indexed, n};
+      return;
+    }
+  }
+
   void translateLocalTransfer(LocalTransferOp op) {
     Value srcVal = op.getSource();
     Value dstVal = op.getTarget();
@@ -377,6 +403,8 @@ struct DpuTranslator {
       translateSubView(o);
     else if (auto o = dyn_cast<memref::ExpandShapeOp>(&op))
       translateExpandShape(o);
+    else if (auto o = dyn_cast<memref::ReinterpretCastOp>(&op))
+      translateReinterpretCast(o);
     else if (auto o = dyn_cast<LocalTransferOp>(&op))
       translateLocalTransfer(o);
     else if (auto o = dyn_cast<arith::ConstantOp>(&op))
