@@ -13,23 +13,29 @@ code here needs to change.
 doit tasks are one per (prim, function), not one per config row: oracle
 pools run into hundreds of thousands of valid rows (gemv), and doit's own
 task-graph bookkeeping (not the actual compile/bench work) becomes the
-bottleneck well before that many doit tasks -- `doit list` alone took over a
-minute with one-task-per-row. So each (prim, function) task internally loops
-over every filtered config for that function via compile_run.compile_configs
-/run_configs (the same helpers a flat, non-doit script would use), and doit
-only tracks completion at the function level.
+bottleneck well before that many doit tasks -- confirmed in practice, both
+at million-row scale (`doit list` alone took over a minute) and, after
+tightening the gemv filter down to ~209k configs total, at that scale too.
+So each (prim, function) task internally loops over every filtered config
+for that function, but -- unlike a plain compile_run.compile_configs/
+run_configs call -- skips configs that already have a successful result on
+disk (see _compile_fn/_bench_fn), so doit's own per-function tracking plus
+this inner skip together give the practical effect of per-config tracking
+without doit ever seeing more than a handful of tasks.
 
 Usage:
   doit list                       # show all tasks
   doit                            # split -> compile -> bench -> agg -> plot (default)
   doit compile:red:red_4MB        # just compile red_4MB's configs (no hardware needed)
   doit forget bench:red:red_4MB   # force that function's hardware runs to redo
+                                   # (only outstanding/failed configs actually rerun --
+                                   # see _bench_one)
 """
+
 from __future__ import annotations
 
 import dataclasses
 import functools
-import os
 import pathlib
 import sys
 
@@ -52,7 +58,6 @@ DOIT_CONFIG = {
 
 ITERS = 5
 SYSTEM = "cinm2"  # single fixed system tag -- this pipeline doesn't compare systems
-COMPILE_WORKERS = os.cpu_count()
 
 
 def _red_filter(p: dict) -> bool:
@@ -66,26 +71,42 @@ def _gemv_filter(p: dict) -> bool:
     # tighter structural constraint (mirroring red's `mramCol*dpus >= 64k`
     # total-coverage idea, using gemv's own tile dims) and/or an explicit cap
     # on how many configs to keep per function.
-    return p["dpus"] <= 512
+    return p["M"] == (p["dpus"] / p["dpuCols"]) * p["mramRow"] and p["K"] == p["dpuCols"] * p["mramCol"]
 
 
 @dataclasses.dataclass(frozen=True)
 class Prim:
+    name: str
     source_mlir: pathlib.Path
     oracle_dir: pathlib.Path
     config_filter: callable
+    dimensions: dict[str, dict]
 
 
 PRIMS: dict[str, Prim] = {
     "red": Prim(
+        name="red",
         source_mlir=EXPERIMENTS_DIR / "prim_red.mlir",
         oracle_dir=EXPERIMENTS_DIR / "data" / "prim_red_oracle",
         config_filter=_red_filter,
+        dimensions={
+            "4MB": dict(K=524288),
+            "64MB": dict(K=8388608),
+            "256MB": dict(K=34554432),
+            "512MB": dict(K=67108864),
+        },
     ),
     "gemv": Prim(
+        name="gemv",
         source_mlir=EXPERIMENTS_DIR / "prim_gemv.mlir",
-        oracle_dir=EXPERIMENTS_DIR / "data" / "gemv_prim_gemv_oracle_new",
+        oracle_dir=HERE / "data" / "gemv_hybrid_400_oracle",
         config_filter=_gemv_filter,
+        dimensions={
+            "4MB": dict(M=1024, K=1024),
+            "64MB": dict(M=4096, K=4096),
+            "256MB": dict(M=8192, K=8192),
+            "512MB": dict(M=8192, K=16394),
+        },
     ),
 }
 
@@ -117,8 +138,24 @@ class Paths:
     def bench_marker(self, prim: str, fn_name: str) -> pathlib.Path:
         return self.run_root(prim) / f"{fn_name}.bench.done"
 
+    def bench_bin(self, prim: str, config: compile_run.Config) -> pathlib.Path:
+        return (
+            self.compile_root(prim)
+            / config.system
+            / config.fn_name
+            / config.label
+            / "bin"
+            / f"bench_{config.fn_name}"
+        )
+
     def output_dir(self, prim: str, config: compile_run.Config) -> pathlib.Path:
-        return self.run_root(prim) / config.system / config.fn_name / config.label / "output"
+        return (
+            self.run_root(prim)
+            / config.system
+            / config.fn_name
+            / config.label
+            / "output"
+        )
 
     def agg_dir(self, prim: str) -> pathlib.Path:
         return self.data_dir / prim / "aggregated"
@@ -162,6 +199,7 @@ def _fn_configs(prim_name: str, fn_name: str) -> tuple[compile_run.Config, ...]:
     """
     prim = PRIMS[prim_name]
     pool_csv = prim.oracle_dir / f"infer_{fn_name}" / "pool.csv"
+    problem_dims = fn_name.removeprefix(prim.name + "_")
     fn_module = PATHS.split_module(prim_name, fn_name)
     df = pools.load_valid(pool_csv)
     cols = pools.param_cols(df)
@@ -169,17 +207,20 @@ def _fn_configs(prim_name: str, fn_name: str) -> tuple[compile_run.Config, ...]:
     for row in df[cols].itertuples(index=True, name=None):
         idx, values = row[0], row[1:]
         params = dict(zip(cols, (int(v) for v in values)))
+        params |= prim.dimensions[problem_dims]
         if not prim.config_filter(params):
             continue
-        configs.append(compile_run.Config(
-            system=SYSTEM,
-            fn_name=fn_name,
-            label=f"row_{idx:05d}",
-            params=params,
-            fn_module=fn_module,
-            prim=prim_name,
-            lower=cinmopt.eval_solution_lowerer(),
-        ))
+        configs.append(
+            compile_run.Config(
+                system=SYSTEM,
+                fn_name=fn_name,
+                label=f"row_{idx:05d}",
+                params=params,
+                fn_module=fn_module,
+                prim=prim_name,
+                lower=cinmopt.eval_solution_lowerer(),
+            )
+        )
     return tuple(configs)
 
 
@@ -187,7 +228,9 @@ def _fn_configs(prim_name: str, fn_name: str) -> tuple[compile_run.Config, ...]:
 
 
 def _split_one(source_mlir: pathlib.Path, split_dir: pathlib.Path) -> bool:
-    split_source(source_mlir, split_dir)  # dict return value isn't JSON-picklable for doit's DB
+    split_source(
+        source_mlir, split_dir
+    )  # dict return value isn't JSON-picklable for doit's DB
     return True
 
 
@@ -209,13 +252,17 @@ def task_split():
 
 def _compile_fn(prim_name: str, fn_name: str, marker: pathlib.Path) -> bool:
     """Compile every filtered pool row for one function, in parallel
-    (compile_run.compile_configs). Each config gets its own compile dir with
-    file-based (make) targets, so re-running this after an interruption is
-    cheap for whatever already succeeded -- a config that failed to compile
-    is printed and skipped (never raises), it doesn't block its siblings."""
+    (compile_run.compile_configs) -- except configs that already have a
+    compiled binary on disk, which are skipped up front so re-running this
+    (e.g. after `doit forget compile:<prim>:<fn>`, or resuming an
+    interrupted previous run) only (re)compiles what's outstanding or
+    previously failed instead of recompiling the whole function's sweep. A
+    config that fails to compile is printed and skipped (never raises), it
+    doesn't block its siblings."""
     configs = list(_fn_configs(prim_name, fn_name))
-    compile_run.compile_configs(configs, compile_root=PATHS.compile_root(prim_name),
-                                 workers=COMPILE_WORKERS)
+    pending = [c for c in configs if not PATHS.bench_bin(prim_name, c).exists()]
+    print(f"  {prim_name}:{fn_name}: {len(pending)}/{len(configs)} configs need compiling")
+    compile_run.compile_configs(pending, compile_root=PATHS.compile_root(prim_name))
     marker.parent.mkdir(parents=True, exist_ok=True)
     marker.touch()
     return True
