@@ -249,12 +249,13 @@ struct InferencePlugin {
   virtual void initializeSpace(cinm::ComputeBlockOp refClone,
                                ConfigSpace &space) = 0;
 
-  /// Evaluate a configuration. Lower cost is better.
+  /// Evaluate a configuration. Lower total cost is better.
   /// `trial.computeBlock` is a fresh clone inside a minimal trial module
   /// (`module { func @host { clone } }`). The plugin annotates computeBlock,
-  /// runs passes on `trial.module`, then returns a cost. The framework owns
-  /// `trial`; the plugin must not retain references after returning.
-  virtual utils::Maybe<double> evaluate(TrialInfo &trial) = 0;
+  /// runs passes on `trial.module`, then returns a cost breakdown. The
+  /// framework owns `trial`; the plugin must not retain references after
+  /// returning.
+  virtual utils::Maybe<utils::SimCost> evaluate(TrialInfo &trial) = 0;
 
   /// Called once after the best configuration has been found.
   /// `bestTrial.module` is the fully-lowered module from the winning evaluation

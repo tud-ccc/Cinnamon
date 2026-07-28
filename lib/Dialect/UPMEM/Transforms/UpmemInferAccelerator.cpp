@@ -137,7 +137,7 @@ struct UpmemInferencePlugin : cinm::InferencePlugin {
   // current configuration and the (per-thread) simulator; evaluate() sums
   // their return values. The simulator is passed at call time so that clones
   // (which have their own simulator) work without lambda modification.
-  using SimFn = std::function<Maybe<double>(
+  using SimFn = std::function<Maybe<SimCost>(
       const cinm::ConfWrapper &, UpmemSimulator &, cinm::TrialInfo &)>;
   std::vector<SimFn> simulators_;
 
@@ -329,7 +329,7 @@ struct UpmemInferencePlugin : cinm::InferencePlugin {
     return DiagnosedSilenceableFailure::success();
   }
 
-  Maybe<double> evaluate(cinm::TrialInfo &trial) override {
+  Maybe<SimCost> evaluate(cinm::TrialInfo &trial) override {
     auto conf = trial.conf();
     int64_t dpus = dpusVar_[conf];
     int64_t tasklets = taskletsVar_[conf];
@@ -342,12 +342,13 @@ struct UpmemInferencePlugin : cinm::InferencePlugin {
 
     // if (opts.useMRAMTiling) {
     // Bypass the lowering pipeline: call each op's registered simulator.
-    double total = 0.0;
+    SimCost total;
     for (auto &sim : simulators_)
       total += TRY_GET(sim(conf, *simulator, trial));
     if (opts.annotateOpCosts) {
       OpBuilder b(ctx);
-      trial.computeBlock->setAttr(kSimCostAttr, b.getF64FloatAttr(total));
+      trial.computeBlock->setAttr(kSimCostAttr,
+                                  b.getF64FloatAttr(total.total()));
     }
     return total;
     // }
@@ -450,7 +451,7 @@ void UpmemInferencePlugin::handleGemv(cinm::GemvOp gemv, SpaceBuilder &b) {
   // Simulation template for the MRAM fast path (bypasses the lowering
   // pipeline).
   registerSimulator([=](const cinm::ConfWrapper &c, UpmemSimulator &sim,
-                        cinm::TrialInfo &trial) -> Maybe<double> {
+                        cinm::TrialInfo &trial) -> Maybe<SimCost> {
     auto bufferizePm =
         std::make_unique<PassManager>(trial.computeBlock.getContext());
     {
@@ -487,7 +488,7 @@ void UpmemInferencePlugin::handleGemv(cinm::GemvOp gemv, SpaceBuilder &b) {
 
     TRY(runPipeline(cleanupPm.get(), gemv->getLoc(), trial.module.get()));
 
-    return TRY_GET(sim.simulate(trial.computeBlock.getBody())).total();
+    return TRY_GET(sim.simulate(trial.computeBlock.getBody()));
   });
 }
 
@@ -559,7 +560,7 @@ void UpmemInferencePlugin::handleReduce(cinm::ReduceOp op, SpaceBuilder &b) {
     // todo register simulator for specific op, here we assume
     //  that there is a single op in the compute block
     registerSimulator([=](const cinm::ConfWrapper &c, UpmemSimulator &sim,
-                          cinm::TrialInfo &trial) -> Maybe<double> {
+                          cinm::TrialInfo &trial) -> Maybe<SimCost> {
       auto bufferizePm =
           std::make_unique<PassManager>(trial.computeBlock.getContext());
       {
@@ -615,7 +616,7 @@ void UpmemInferencePlugin::handleReduce(cinm::ReduceOp op, SpaceBuilder &b) {
 
       TRY(runPipeline(cleanupPm.get(), op->getLoc(), trial.module.get()));
 
-      return TRY_GET(sim.simulate(trial.computeBlock.getBody())).total();
+      return TRY_GET(sim.simulate(trial.computeBlock.getBody()));
     });
   }
 }

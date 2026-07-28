@@ -201,14 +201,14 @@ def _cols(*columns) -> np.ndarray:
 
 def _pairwise_cols(dims: list[Dim], df: pd.DataFrame) -> list:
     """[dim for each dim] + [dim_i * dim_j for i <= j] -- linear terms, plus
-    every square and cross term exactly once (no duplicate cross terms)."""
+    cross term exactly once (no duplicate cross terms)."""
 
     dims = [d for d in dims if df[d.col].nunique() > 1]
 
     cols = [df[d.col] for d in dims]
     out = list(cols)
     for i in range(len(cols)):
-        for j in range(i, len(cols)):
+        for j in range(i + 1, len(cols)):
             out.append(cols[i] * cols[j])
     if len(dims) > 2:
       out.append(_product(cols[i] for i in range(len(cols))))
@@ -221,10 +221,7 @@ def _pairwise_col_names(dims: list[Dim], df: pd.DataFrame) -> list[str]:
     coefficients (e.g. LASSO's) back by term instead of bare index."""
     names = [d.col for d in dims]
     for i in range(len(dims)):
-        for j in range(i, len(dims)):
-            if i == j:
-                names.append(f"{dims[i].col}*{dims[i].col}")
-            else:
+        for j in range(i + 1, len(dims)):
                 names.append(f"{dims[i].col}*{dims[j].col}")
     if len(dims) > 2:
         names.append("*".join(d.col for d in dims))
@@ -1560,7 +1557,7 @@ def main():
     if splits:
         masks, labels = combined_regime_masks(agg, splits)
 
-        mask_templates = [templates["pairwise"]]
+        mask_templates = [templates["lasso"]]
         mask_templates = {t.key: t for t in mask_templates}
         regime_best_keys = []
         for mask, label in zip(masks, labels):

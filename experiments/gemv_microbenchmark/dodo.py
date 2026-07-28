@@ -53,6 +53,7 @@ CONFIGS = [
         params={
             "dpus": DPUS,
             "tasklets": TASKLETS,
+            "taskletCols": 1,
             "wramRow": 1,
             "wramCol": 1024,
             "dpuCols": 1,
@@ -105,6 +106,7 @@ CONFIGS = [
         params={
             "dpus": 2048,
             "tasklets": 8,
+            "taskletCols": 1,
             "wramRow": 8,
             "wramCol": 64,
             "dpuCols": 32, # 64 rows
@@ -122,6 +124,7 @@ CONFIGS = [
         params={
             "dpus": DPUS,
             "tasklets": TASKLETS,
+            "taskletCols": 1,
             "wramRow": 1,
             "wramCol": 1024,
             "dpuCols": 2,
