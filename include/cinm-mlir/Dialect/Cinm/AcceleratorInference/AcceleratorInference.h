@@ -341,16 +341,26 @@ struct InferenceOptions {
   bool exhaustiveSearch = false;
 
   /// When > 0, evaluate a random sample of this many valid configurations
-  /// (drawn without replacement from the same valid-config scan exhaustive
-  /// search uses, see CandidatePool::fillRandom) instead of every valid
-  /// config or running Bayesian optimisation. A cheap alternative to
-  /// exhaustiveSearch when only a small ground-truth sample is needed --
-  /// exhaustive search's cost is entirely the O(n_valid) simulator calls,
-  /// not the O(N) validity scan, so sampling down to sampleN evaluations
-  /// makes this proportionally faster. Takes priority over exhaustiveSearch
-  /// if both are set. Dumped the same way (dumpFullPool controls whether
-  /// pool.csv includes unvisited configs too).
+  /// (drawn via Latin Hypercube Sampling over the valid-config scan
+  /// exhaustive search uses, see CandidatePool::sampleInitialSet) instead of
+  /// every valid config or running Bayesian optimisation. A cheap
+  /// alternative to exhaustiveSearch when only a small ground-truth sample
+  /// is needed -- exhaustive search's cost is entirely the O(n_valid)
+  /// simulator calls, not the O(N) validity scan, so sampling down to
+  /// sampleN evaluations makes this proportionally faster. Takes priority
+  /// over exhaustiveSearch if both are set. Dumped the same way
+  /// (dumpFullPool controls whether pool.csv includes unvisited configs
+  /// too). See also sampleMaxCostMs.
   unsigned sampleN = 0;
+
+  /// When sampleN > 0, a candidate predicted to cost more than this many ms
+  /// is rejected (not counted towards sampleN, and never dumped) and
+  /// resampled past -- without this, a uniform-random sample over the valid
+  /// space routinely includes configs whose predicted (and, worse, actual
+  /// on-hardware) cost is orders of magnitude above the rest of the sample,
+  /// which is wasteful once every sampled config gets compiled and run on
+  /// real hardware downstream.
+  double sampleMaxCostMs = 2000.0;
 
   /// Number of held-out validation points sampled (via LHS) before BO begins.
   /// These are evaluated once for their true cost and never used as BO training
