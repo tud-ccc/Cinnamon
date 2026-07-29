@@ -1,31 +1,39 @@
-"""doit tasks for cost_bench: exhaustively benchmark every valid config
-already dumped in an existing cost-model oracle pool.csv, for one or more
-primitives (red, gemv, ...), to validate the cost model (measured vs
-predicted -- see plot_cost.py's cost_calibration plot). Unlike
-cinm1comparison's BO-search comparison, there's no search stage here --
-pool.csv is assumed to already exist under experiments/data/ (produced by
-cinmopt.exhaustive_search or similar, run separately).
+"""doit tasks for cost_bench: benchmark a random sample of valid configs, for
+one or more primitives (red, gemv, ...), to validate the cost model (measured
+vs predicted -- see plot_cost.py's cost_calibration plot).
 
-Adding a new benchmark later = one more PRIMS entry (source mlir + oracle
-dir + config filter) plus an experiments/bench/<prim>.cpp driver; no other
-code here needs to change.
+search -> split -> compile -> bench -> agg -> plot. The search stage
+(task_search) generates each prim's own oracle pool via
+cinmopt.random_sample -- evaluating only ORACLE_SAMPLE_N random valid configs
+per function instead of every valid config in the space (which can run into
+the hundreds of thousands, e.g. ~230k for gemv, and take hours to evaluate
+exhaustively) -- so the whole pipeline is self-contained: no oracle needs to
+be produced separately beforehand (unlike cinm1comparison's BO-search
+comparison, which still has no search stage of its own).
 
-doit tasks are one per (prim, function), not one per config row: oracle
-pools run into hundreds of thousands of valid rows (gemv), and doit's own
-task-graph bookkeeping (not the actual compile/bench work) becomes the
-bottleneck well before that many doit tasks -- confirmed in practice, both
-at million-row scale (`doit list` alone took over a minute) and, after
-tightening the gemv filter down to ~209k configs total, at that scale too.
-So each (prim, function) task internally loops over every filtered config
-for that function, but -- unlike a plain compile_run.compile_configs/
-run_configs call -- skips configs that already have a successful result on
-disk (see _compile_fn/_bench_fn), so doit's own per-function tracking plus
-this inner skip together give the practical effect of per-config tracking
-without doit ever seeing more than a handful of tasks.
+Adding a new benchmark later = one more PRIMS entry (source mlir + config
+filter) plus an experiments/bench/<prim>.cpp driver; no other code here needs
+to change.
+
+doit tasks are one per (prim, function), not one per config row: even a
+sampled oracle pool degenerates back toward the old exhaustive-search scale
+if ORACLE_SAMPLE_N is pushed up, and doit's own task-graph bookkeeping (not
+the actual compile/bench work) becomes the bottleneck well before that many
+doit tasks -- confirmed in practice, both at million-row scale (`doit list`
+alone took over a minute) and, after tightening the gemv filter down to
+~209k configs total, at that scale too. So each (prim, function) task
+internally loops over every filtered config for that function, but --
+unlike a plain compile_run.compile_configs/run_configs call -- skips
+configs that already have a successful result on disk (see
+_compile_fn/_bench_fn), so doit's own per-function tracking plus this inner
+skip together give the practical effect of per-config tracking without doit
+ever seeing more than a handful of tasks.
 
 Usage:
   doit list                       # show all tasks
-  doit                            # split -> compile -> bench -> agg -> plot (default)
+  doit                            # search -> split -> compile -> bench -> agg -> plot (default)
+  doit single:red:red_4MB         # the whole pipeline, but only for red_4MB
+  doit search:red                 # (re)generate just red's oracle pool (no hardware needed)
   doit compile:red:red_4MB        # just compile red_4MB's configs (no hardware needed)
   doit forget bench:red:red_4MB   # force that function's hardware runs to redo
                                    # (only outstanding/failed configs actually rerun --
@@ -68,40 +76,32 @@ DOIT_CONFIG = {
 
 ITERS = 5
 SYSTEM = "cinm2"  # single fixed system tag -- this pipeline doesn't compare systems
+
 # How many filtered pool rows actually get compiled+benched per function.
-# Currently a re-downsample of an exhaustive oracle (cinmopt.exhaustive_search
-# evaluates every valid config, e.g. ~19k for red / ~230k for gemv, of which
-# only this many ever get hardware time) -- cinmopt.random_sample now makes it
-# possible to skip generating that full pool at all and point a Prim's
-# oracle_dir straight at a small sampled one instead, in which case this just
-# becomes a safety cap. Named here so both roles are one obvious knob.
 SAMPLE_N = 512
+# Increase this if the filter throws things away
+ORACLE_SAMPLE_N = SAMPLE_N  # * 4
 
 
 def _red_filter(p: dict) -> bool:
-    return p["mramCol"] * p["dpus"] >= 64 * 1024 and p["dpus"] <= 512
+    return True
+    # return p["mramCol"] * p["dpus"] >= 64 * 1024 and p["dpus"] <= 512
 
 
 def _gemv_filter(p: dict) -> bool:
-    # TODO: needs a real filter before running the gemv sweep. gemv's oracle
-    # pool is ~230k valid configs per function (vs red's ~19k), and dpus<=512
-    # alone still leaves ~2.5M surviving configs for gemv_4MB. Needs either a
-    # tighter structural constraint (mirroring red's `mramCol*dpus >= 64k`
-    # total-coverage idea, using gemv's own tile dims) and/or an explicit cap
-    # on how many configs to keep per function.
-    return (
-        p["M"] == (p["dpus"] / p["dpuCols"]) * p["mramRow"]
-        and p["K"] == p["dpuCols"] * p["mramCol"]
-        and p["dpus"] >= 32
-        and p["wramCol"] > 16
-    )
+    return True
+    # return (
+    #     p["M"] == (p["dpus"] / p["dpuCols"]) * p["mramRow"]
+    #     and p["K"] == p["dpuCols"] * p["mramCol"]
+    #     and p["dpus"] >= 32
+    #     and p["wramCol"] > 16
+    # )
 
 
 @dataclasses.dataclass(frozen=True)
 class Prim:
     name: str
     source_mlir: pathlib.Path
-    oracle_dir: pathlib.Path
     config_filter: callable
     dimensions: dict[str, dict]
 
@@ -110,7 +110,6 @@ PRIMS: dict[str, Prim] = {
     "red": Prim(
         name="red",
         source_mlir=EXPERIMENTS_DIR / "prim_red.mlir",
-        oracle_dir=EXPERIMENTS_DIR / "data" / "prim_red_oracle",
         config_filter=_red_filter,
         dimensions={
             "4MB": dict(K=524288),
@@ -122,7 +121,6 @@ PRIMS: dict[str, Prim] = {
     "gemv": Prim(
         name="gemv",
         source_mlir=EXPERIMENTS_DIR / "prim_gemv.mlir",
-        oracle_dir=HERE / "oracles" / "gemv_hybrid_400",
         config_filter=_gemv_filter,
         dimensions={
             "4MB": dict(M=1024, K=1024),
@@ -161,6 +159,16 @@ class Paths:
     def bench_marker(self, prim: str, fn_name: str) -> pathlib.Path:
         return self.run_root(prim) / f"{fn_name}.bench.done"
 
+    # Same flat-file-next-to-the-fn-dir convention as the markers above --
+    # written right after _compile_fn/_bench_fn so a post-mortem doesn't
+    # depend on having scrolled back through doit's stdout, or on having run
+    # the separate (whole-prim) `failures` task afterwards.
+    def compile_failures_csv(self, prim: str, fn_name: str) -> pathlib.Path:
+        return self.compile_root(prim) / f"{fn_name}.compile_failures.csv"
+
+    def run_failures_csv(self, prim: str, fn_name: str) -> pathlib.Path:
+        return self.run_root(prim) / f"{fn_name}.run_failures.csv"
+
     def bench_bin(self, prim: str, config: compile_run.Config) -> pathlib.Path:
         return (
             self.compile_root(prim)
@@ -195,23 +203,73 @@ class Paths:
     def pool_measured_dir(self, prim: str) -> pathlib.Path:
         return self.data_dir / prim / "pool_measured"
 
+    def oracle_dir(self, prim: str) -> pathlib.Path:
+        return self.data_dir / prim / "oracle"
+
 
 PATHS = Paths(DATA_DIR)
+
+
+# ── search (generate the oracle) ────────────────────────────────────────────
+#
+# The oracle pool used to be assumed pre-existing (produced separately by a
+# multi-hour cinmopt.exhaustive_search run, or handed to us as a fixed
+# external dir -- see git history). cinmopt.random_sample makes generating it
+# fast enough to fold into this pipeline directly: one doit subtask per
+# (prim, function), each running its own cinm-opt invocation against that
+# function's already-split module (task_split's output, used as file_dep here
+# the same way task_compile uses it) -- so re-splitting or editing one
+# function's source only reruns that function's search, not the whole prim's.
+
+
+def _search_one(prim_name: str, fn_name: str) -> bool:
+    out_dir = PATHS.oracle_dir(prim_name)
+    print(
+        f"  {prim_name}:{fn_name}: sampling {ORACLE_SAMPLE_N} random valid "
+        f"configs -> {out_dir}"
+    )
+    cinmopt.random_sample(
+        PATHS.split_module(prim_name, fn_name),
+        out_dir,
+        infer_opts={
+            "simulator": "hybrid",
+            "eval-timeout-ms": "400",
+        },
+        n_samples=ORACLE_SAMPLE_N,
+        workers=os.cpu_count(),
+        nice=True,
+        seed=0,
+    )
+    return True
+
+
+def task_search():
+    """(Re)generate one function's oracle pool -- see module docstring
+    above. One doit subtask per (prim, function), depending (via file_dep,
+    same as task_compile) on that function's split module rather than the
+    prim's whole unsplit source_mlir."""
+    for name in PRIMS:
+        for fn_name in _fn_names(name):
+            yield {
+                "name": f"{name}:{fn_name}",
+                "file_dep": [str(PATHS.split_module(name, fn_name))],
+                "targets": [
+                    str(PATHS.oracle_dir(name) / f"infer_{fn_name}" / "pool.csv")
+                ],
+                "actions": [PythonInteractiveAction(_search_one, [name, fn_name])],
+            }
 
 
 # ── config discovery ─────────────────────────────────────────────────────────
 
 
-def _oracle_pools(oracle_dir: pathlib.Path):
-    """Yield (fn_name, pool_csv) for every infer_<fn>/pool.csv under oracle_dir."""
-    for sub in sorted(oracle_dir.iterdir()):
-        pool_csv = sub / "pool.csv"
-        if sub.is_dir() and pool_csv.exists():
-            yield sub.name.removeprefix("infer_"), pool_csv
-
-
 def _fn_names(prim_name: str) -> list[str]:
-    return [fn for fn, _ in _oracle_pools(PRIMS[prim_name].oracle_dir)]
+    """Every function declared in this prim's source_mlir -- a cheap static
+    parse (list_functions), deliberately not derived from the oracle pool
+    (unlike _fn_configs below): task_compile/task_bench/etc. call this while
+    doit is still just building its task list, before any task has actually
+    run search:<prim> yet, so it must work even before the oracle exists."""
+    return list_functions(PRIMS[prim_name].source_mlir)
 
 
 @functools.cache
@@ -227,7 +285,7 @@ def _fn_configs(prim_name: str, fn_name: str) -> tuple[compile_run.Config, ...]:
     iterrows() boxes every row into a Series.
     """
     prim = PRIMS[prim_name]
-    pool_csv = prim.oracle_dir / f"infer_{fn_name}" / "pool.csv"
+    pool_csv = PATHS.oracle_dir(prim_name) / f"infer_{fn_name}" / "pool.csv"
     problem_dims = fn_name.removeprefix(prim.name + "_")
     fn_module = PATHS.split_module(prim_name, fn_name)
     df = pools.load_valid(pool_csv)
@@ -296,11 +354,17 @@ def _compile_fn(prim_name: str, fn_name: str, marker: pathlib.Path) -> bool:
         f"  {prim_name}:{fn_name}: {len(pending)}/{len(configs)} configs need compiling"
     )
     compile_run.compile_configs(
-        pending, compile_root=PATHS.compile_root(prim_name), workers=os.cpu_count()
+        pending,
+        compile_root=PATHS.compile_root(prim_name),
+        workers=os.cpu_count(),
+        label=fn_name,
     )
     fn_failures = failures.collect_compile_failures(
         PATHS.compile_root(prim_name) / SYSTEM, only_fn=fn_name
     )
+    # Written unconditionally (even when empty) so the file's mere presence
+    # means "checked as of this compile run", not just "had failures".
+    fn_failures.to_csv(PATHS.compile_failures_csv(prim_name, fn_name), index=False)
     if not fn_failures.empty:
         print(f"  {prim_name}:{fn_name}: {len(fn_failures)} compile failures")
         print(failures.summarize(fn_failures))
@@ -317,6 +381,7 @@ def task_compile():
             marker = PATHS.compile_marker(name, fn_name)
             yield {
                 "name": f"{name}:{fn_name}",
+                "task_dep": [f"search:{name}:{fn_name}"],
                 "file_dep": [str(PATHS.split_module(name, fn_name))],
                 "targets": [str(marker)],
                 # PythonInteractiveAction, not a plain (callable, args) tuple:
@@ -361,6 +426,7 @@ def _bench_fn(prim_name: str, fn_name: str, marker: pathlib.Path) -> bool:
         PATHS.compile_root(prim_name) / SYSTEM,
         only_fn=fn_name,
     )
+    fn_failures.to_csv(PATHS.run_failures_csv(prim_name, fn_name), index=False)
     if not fn_failures.empty:
         print(f"  {prim_name}:{fn_name}: {len(fn_failures)} run failures")
         print(failures.summarize(fn_failures))
@@ -476,11 +542,11 @@ def task_plot():
     source of truth for what it does. Like task_agg, always reruns -- cheap
     relative to compile/bench, and its output set is dynamic (one plot per
     function/metric found)."""
-    for name, prim in PRIMS.items():
+    for name in PRIMS:
         cmd = (
             f"{python_bin()} plot_cost.py "
             f"--in-dir {PATHS.agg_dir(name)} --out-dir {PATHS.plots_dir(name)} "
-            f"--oracle {prim.oracle_dir} --pool-out-dir {PATHS.pool_measured_dir(name)} "
+            f"--oracle {PATHS.oracle_dir(name)} --pool-out-dir {PATHS.pool_measured_dir(name)} "
             f"--predicted-dir {PATHS.predicted_dir(name)} "
             f"--failures-csv {PATHS.failures_csv(name)}"
         )
@@ -490,3 +556,33 @@ def task_plot():
             "uptodate": [False],
             "actions": [cmd],
         }
+
+
+# ── single (whole pipeline for one function) ────────────────────────────────
+
+
+def task_single():
+    """`doit single:<prim>:<fn>` -- the whole pipeline (search -> split ->
+    compile -> bench -> agg -> agg_predictions -> failures -> plot) for one
+    function, instead of having to run each stage's own <prim>-wide task by
+    hand. A pure grouping task (no actions of its own): agg/agg_predictions/
+    failures/plot are still whole-prim (they fold in whatever else of that
+    prim happens to already be compiled/benched too, which is harmless), but
+    search/compile/bench are scoped to exactly this function so
+    `doit single:...` doesn't also search/compile/bench every other function
+    of that prim."""
+    for name in PRIMS:
+        for fn_name in _fn_names(name):
+            yield {
+                "name": f"{name}:{fn_name}",
+                "task_dep": [
+                    f"search:{name}:{fn_name}",
+                    f"compile:{name}:{fn_name}",
+                    f"bench:{name}:{fn_name}",
+                    f"agg:{name}",
+                    f"agg_predictions:{name}",
+                    f"failures:{name}",
+                    f"plot:{name}",
+                ],
+                "actions": [],
+            }

@@ -137,7 +137,7 @@ def random_sample(
     }
     r = _run(
         src,
-        opts,
+        infer_opts=opts,
         out_file=out_dir / "out.mlir",
         cinm_opt=cinm_opt,
         log_file=out_dir / "cinm-opt.log",

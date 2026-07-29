@@ -171,7 +171,11 @@ def is_dpu_allocation_error(error: str) -> bool:
 
 
 def compile_configs(
-    configs: list[Config], *, compile_root: pathlib.Path, workers: int = 8
+    configs: list[Config],
+    *,
+    compile_root: pathlib.Path,
+    workers: int = 8,
+    label: str = None,
 ) -> list[CompiledConfig]:
     """Compile every config in parallel (threads -- the actual work happens
     in spawned cinm-opt/make subprocesses either way, and a lambda closure
@@ -181,7 +185,7 @@ def compile_configs(
         configs,
         lambda c: compile_config(c, compile_root=compile_root),
         workers=workers,
-        desc="compile",
+        desc="compile" if not label else f"compile {label:<10}",
         use_threads=True,
     )
     for c in compiled:
