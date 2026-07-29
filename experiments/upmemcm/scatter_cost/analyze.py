@@ -473,6 +473,9 @@ def fit_mlp(
         "kind": "mlp",
         "n_iter": model.n_iter_,
         "loss": model.loss_,
+        "model": model,
+        "mean": mean,
+        "std": std,
     }
 
 
@@ -1477,20 +1480,133 @@ EXTRA_TEMPLATES: dict[str, Template] = {
     ),
 }
 
+# Single source of truth for the MLP's input features, shared between
+# MLP_TEMPLATE's `features` (Python side, fit against this) and
+# export_mlp_cpp (C++ side, must transform its inputs identically before
+# applying the exported standardization/weights) -- (column name, transform)
+# where transform is "log2" or None. Log2-scaled num_dpus/block_size
+# (matching their Dim(log=2) display scale -- they're naturally
+# binary/multiplicative), raw blocks_per_dpu (Dim(log=None) -- see
+# PROBLEM's own Dim declarations for why).
+MLP_FEATURE_SPEC: list[tuple[str, str | None]] = [
+    ("num_dpus", "log2"),
+    ("blocks_per_dpu", None),
+    ("block_size", "log2"),
+]
+
+
+def _mlp_feature_cols(d: pd.DataFrame) -> np.ndarray:
+    return _cols(
+        *(
+            np.log2(d[col]) if transform == "log2" else d[col]
+            for col, transform in MLP_FEATURE_SPEC
+        )
+    )
+
+
 # Not in EXTRA_TEMPLATES: an MLP is a much heavier/slower fit than every
 # polynomial template above (it trains a small neural net instead of
 # solving a linear system) and doesn't export to a C++ LUT the way the
-# others do, so it's opt-in via --mlp rather than always fit. Log2-scaled
-# inputs on num_dpus/block_size (matching their Dim(log=2) display scale --
-# they're naturally binary/multiplicative), raw blocks_per_dpu (Dim(log=None)
-# -- see PROBLEM's own Dim declarations for why).
+# others do, so it's opt-in via --mlp rather than always fit.
 MLP_TEMPLATE = Template(
     "mlp",
     "MLP (log-space)",
-    lambda d: _cols(np.log2(d.num_dpus), d.blocks_per_dpu, np.log2(d.block_size)),
+    _mlp_feature_cols,
     fit=fit_mlp,
     report=_mlp_report,
 )
+
+
+def export_mlp_cpp(
+    fit: dict,
+    feature_spec: list[tuple[str, str | None]],
+    fn_name: str = "scatterSgCostMs",
+    fn_params: str = "int num_dpus, int block_size, int blocks_per_dpu",
+) -> str:
+    """Renders a fit_mlp fit-dict's trained MLPRegressor as a copy-pasteable
+    mlpack::FFN, matching the FFN/Linear/ReLU API this codebase already uses
+    for the BANANAS surrogate (see BananasSearch.cpp's makeNet) rather than a
+    hand-rolled forward pass -- built once per thread (a mlpack FFN caches
+    mutable per-call scratch state internally, so a single shared instance
+    is not safe to call from multiple threads concurrently, which the
+    accelerator-search framework's exhaustive mode does; thread_local avoids
+    that without needing a mutex on this hot a path) via layer Weight()/
+    Bias() injection, verified against a standalone test program (see the
+    scatter_cost session that generated this) that Linear::Weight() is
+    (outSize x inSize) and Forward computes Weight()*input + Bias() --
+    sklearn's coefs_[i] is the transpose of that ((inSize x outSize)), hence
+    the transpose below.
+
+    `fn_name`/`fn_params` must produce the exact signature the exported
+    function is meant to match (e.g. upmem_cost_model's existing
+    `double scatterSgCostMs(int num_dpus, int block_size, int
+    blocks_per_dpu)`) -- fn_params' names must match feature_spec's column
+    names, referenced directly in the generated body."""
+    model = fit["model"]
+    mean = fit["mean"]
+    std = fit["std"]
+    # sklearn stores coefs_[i] as (inSize, outSize); mlpack's Linear::Weight()
+    # wants (outSize, inSize) -- transpose once here.
+    weights = [np.asarray(w).T for w in model.coefs_]
+    biases = [np.asarray(b) for b in model.intercepts_]
+    n_features = len(feature_spec)
+    hidden_sizes = [w.shape[0] for w in weights[:-1]]
+
+    def arma_mat(w: np.ndarray) -> str:
+        if w.ndim == 1:
+            return "{" + ", ".join(f"{x:.8g}" for x in w) + "}"
+        rows = ["{" + ", ".join(f"{x:.8g}" for x in row) + "}" for row in w]
+        return "{\n      " + ",\n      ".join(rows) + "\n    }"
+
+    lines = [
+        "// Includes needed by the function body below:",
+        "#ifndef MLPACK_NO_STD_COUT_PRINT",
+        "#define MLPACK_NO_STD_COUT_PRINT",
+        "#endif",
+        "#include <mlpack.hpp>",
+        "#include <cmath>  // std::log2, std::exp",
+        "",
+        f"double {fn_name}({fn_params}) {{",
+        "  using MlpNet = mlpack::FFN<mlpack::MeanSquaredError, mlpack::RandomInitialization>;",
+        "  thread_local static MlpNet net = [] {",
+        "    MlpNet n;",
+    ]
+    for h in hidden_sizes:
+        lines.append(f"    n.Add<mlpack::Linear>({h});")
+        lines.append("    n.Add<mlpack::ReLU>();")
+    lines.append(f"    n.Add<mlpack::Linear>({weights[-1].shape[0]});")
+    lines.append("")
+    lines.append(
+        f"    arma::mat dummyIn({n_features}, 1, arma::fill::zeros), dummyOut;"
+    )
+    lines.append("    n.Predict(dummyIn, dummyOut);  // force weight/bias allocation")
+    lines.append("")
+    for i, (w, b) in enumerate(zip(weights, biases)):
+        layer_ix = 2 * i  # Linear/ReLU pairs, final Linear has no trailing ReLU
+        lines.append(
+            f"    auto *l{i} = dynamic_cast<mlpack::Linear<arma::mat> *>(n.Network()[{layer_ix}]);"
+        )
+        lines.append(f"    l{i}->Weight() = arma::mat({arma_mat(w)});")
+        lines.append(f"    l{i}->Bias() = arma::mat({arma_mat(b)});")
+    lines.append("    return n;")
+    lines.append("  }();")
+    lines.append("")
+    lines.append(f"  constexpr double featMean[{n_features}] = {arma_mat(mean)};")
+    lines.append(f"  constexpr double featStd[{n_features}] = {arma_mat(std)};")
+    lines.append(f"  arma::mat x({n_features}, 1);")
+    for i, (name, transform) in enumerate(feature_spec):
+        expr = (
+            f"std::log2(static_cast<double>({name}))"
+            if transform == "log2"
+            else f"static_cast<double>({name})"
+        )
+        lines.append(f"  x({i}, 0) = ({expr} - featMean[{i}]) / featStd[{i}];")
+    lines.append("")
+    lines.append("  arma::mat out;")
+    lines.append("  net.Predict(x, out);")
+    lines.append("  return std::exp(out(0, 0));  // undo fit_mlp's log-space target")
+    lines.append("}")
+    return "\n".join(lines)
 
 
 def principal_dims(agg):
@@ -1803,10 +1919,7 @@ def main():
         print(" + ".join(terms), end=";\n")
 
     elif best_fit.get("kind") == "mlp":
-        print(
-            "  (MLP has no closed form to print here -- export its weights "
-            "separately if it's going to be used.)"
-        )
+        print(export_mlp_cpp(best_fit, MLP_FEATURE_SPEC))
     else:
         print(f"  intercept = {best_fit['intercept']:.4g};")
         print(f"  coef = {{{', '.join(f'{c:.4g}' for c in best_fit['coef'])}}};")
