@@ -139,6 +139,9 @@ def UpmemAnnotateCostsPass
     Option<"simulator", "simulator", "UpmemSimulatorId", "UpmemSimulatorId::CYCLE_ACCURATE",
            "Simulator backend",
            simulatorClValues.values>,
+    Option<"evalTimeoutMs", "eval-timeout-ms", "int", "0",
+           "Wall-clock timeout in milliseconds for a single simulation; "
+           "0 disables the timeout (default: 0)">,
     Option<"costsCsv", "costs-csv", "std::string", "\"\"",
            "If non-empty, write a detailed cost breakdown (one row per "
            "compute_block x cost category x sub-label, e.g. transfer/scatter) "

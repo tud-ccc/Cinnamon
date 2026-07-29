@@ -35,7 +35,7 @@ inline upmem_cm::DType from_upmem_dty(upmem::DType dty) {
 /// The WaitForOp itself will be annotated by simulateHostRegion using the
 /// returned value; the callback need not annotate it.
 using WaitForCostFn =
-    std::function<double(mlir::Operation * /*WaitForOp*/, bool /*annotate*/)>;
+    std::function<SimCost(mlir::Operation * /*WaitForOp*/, bool /*annotate*/)>;
 
 inline double transferCost(double numBytes, int numRanks) {
   return numBytes / 1024 / numRanks / 100'000;

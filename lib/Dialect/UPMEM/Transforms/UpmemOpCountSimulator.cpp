@@ -170,8 +170,7 @@ static SimCost costOfOpCb(Operation &op, bool annotate,
           })
           // Delegate DPU kernel cost to the callback.
           .Case<WaitForOp>([&](auto waitForOp) -> SimCost {
-            return SimCost::forKernel(cb(waitForOp.getOperation(), annotate),
-                                      "wait_for");
+            return cb(waitForOp.getOperation(), annotate);
           })
           // alloc/free dpus are not counted as they are considered amortized
           .Case<cnm::LaunchOp>([](auto launchOp) -> SimCost {
@@ -238,16 +237,18 @@ struct OpCountSimulator : UpmemSimulator {
     // single scalar (kernel-launch time as seen from the host): whatever
     // happens inside the DPU program body all counts towards the kernel
     // component of the enclosing upmem.wait_for.
-    std::function<double(Operation *, bool)> waitForCb;
-    waitForCb = [&](Operation *op, bool ann) -> double {
+    std::function<SimCost(Operation *, bool)> waitForCb;
+    waitForCb = [&](Operation *op, bool ann) -> SimCost {
       auto waitFor = llvm::cast<WaitForOp>(op);
       auto dpuProgram = waitFor.getDpuProgram();
       if (!dpuProgram)
-        return 1.0;
+        return {};
       auto hier =
           llvm::cast<DeviceHierarchyType>(waitFor.getDpuSet().getType());
-      return simulateHostRegion(dpuProgram.getBody(), ann, waitForCb).total() /
-             hier.getNumTaskletsPerDpu();
+      return SimCost::forKernel(
+          simulateHostRegion(dpuProgram.getBody(), ann, waitForCb).total() /
+              hier.getNumTaskletsPerDpu(),
+          "opcount");
     };
     return simulateHostRegion(region, annotateOpCosts, waitForCb);
   }

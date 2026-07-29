@@ -54,6 +54,9 @@ TO_LLVM_PIPELINE = \
 $(IR_DIR) $(BIN_DIR):
 	mkdir -p $@
 
+$(IR_DIR)/cost.csv: $(SRC_MLIR) | $(IR_DIR)
+	cinm-opt $< --upmem-annotate-costs="simulator=hybrid eval-timeout-ms=400 costs-csv=$@"
+
 $(IR_DIR)/$(BENCH_FN).mlir: $(SRC_MLIR) | $(IR_DIR)
 	cp $< $@
 
@@ -87,7 +90,7 @@ $(BIN_DIR)/$(BENCH_FN): $(IR_DIR)/$(BENCH_FN).dpu.c | $(BIN_DIR)
 
 # ─── Final host binary ───────────────────────────────────────────────────────
 
-bench-single: $(IR_DIR)/$(BENCH_FN).o $(BIN_DIR)/$(BENCH_FN) | $(BIN_DIR)
+bench-single: $(IR_DIR)/$(BENCH_FN).o $(BIN_DIR)/$(BENCH_FN) $(IR_DIR)/cost.csv | $(BIN_DIR)
 	clang++ $(CXXFLAGS) -DBENCH_FN=$(BENCH_FN) $(BENCH_DRIVER) \
 	    $(IR_DIR)/$(BENCH_FN).o $(LDFLAGS) \
 	    -o $(BIN_DIR)/bench_$(BENCH_FN)
