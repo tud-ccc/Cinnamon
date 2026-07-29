@@ -221,6 +221,8 @@ int64_t ConfigSpace::get(const Configuration &config,
 }
 
 bool ConfigSpace::isValid(const Configuration &config) const {
+  if (config.size() != params.size())
+    return false;
   auto wrapper = ConfWrapper(*this, config);
   for (auto &[desc, c] : constraints)
     if (!c(wrapper))
@@ -230,6 +232,14 @@ bool ConfigSpace::isValid(const Configuration &config) const {
 
 bool ConfigSpace::debugIsValid(const Configuration &config,
                                raw_ostream &os) const {
+  if (config.size() != params.size()) {
+    os << "Configuration has " << config.size() << " value(s) but this space "
+       << "has " << params.size() << " parameter(s): {";
+    for (size_t i = 0; i < params.size(); ++i)
+      os << params[i].name << (i + 1 < params.size() ? ", " : "");
+    os << "}\n";
+    return false;
+  }
   auto wrapper = ConfWrapper(*this, config);
   bool valid = true;
   for (auto &[desc, c] : constraints) {

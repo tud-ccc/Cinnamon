@@ -550,21 +550,21 @@ struct CppSimulator : UpmemSimulator {
   }
 
   SimCost simulateReduction(std::chrono::milliseconds timeout,
-                           cinm::ReduceMethod reduction, int taskletRows,
-                           int taskletCols, int64_t mramRows, int64_t mramCols,
-                           int64_t wramRows, int64_t wramCols,
-                           upmem::DType dty) override;
+                            cinm::ReduceMethod reduction, int taskletRows,
+                            int taskletCols, int64_t mramRows, int64_t mramCols,
+                            int64_t wramRows, int64_t wramCols,
+                            upmem::DType dty) override;
   SimCost simulateGemv(std::chrono::milliseconds timeout, int nTasklets,
-                      int64_t mramRows, int64_t mramCols, int64_t rowTile,
-                      int64_t colTile, upmem::DType dty) override;
+                       int64_t mramRows, int64_t mramCols, int64_t rowTile,
+                       int64_t colTile, upmem::DType dty) override;
 
   Maybe<SimCost> simulate(Region &region) override {
     std::chrono::milliseconds tms = timeoutMs;
-    auto waitForCb = [tms, mode = this->mode](Operation *op, bool) -> double {
+    auto waitForCb = [tms, mode = this->mode](Operation *op, bool) -> SimCost {
       auto waitFor = llvm::cast<WaitForOp>(op);
       DpuProgramOp dpuProg = waitFor.getDpuProgram();
       if (!dpuProg)
-        return 1.0;
+        return {};
       int T = dpuProg.getNumTasklets();
       ProgramBuilder builder;
       DpuTranslator tr(builder);
@@ -587,7 +587,8 @@ struct CppSimulator : UpmemSimulator {
       // auto launchOverhead =
       //      -2.347115 - 0.001803433284655423 * numDpus +
       //                       0.3805487552732298 * log2(numDpus);
-      return kernelMs + launchOverhead;
+      return SimCost::forKernel(kernelMs) +
+             SimCost::forKernel(launchOverhead, "launchOverhead");
     };
     return simulateHostRegion(region, annotateOpCosts, waitForCb);
   }
@@ -595,11 +596,11 @@ struct CppSimulator : UpmemSimulator {
 
 } // anonymous namespace
 SimCost CppSimulator::simulateReduction(std::chrono::milliseconds timeout,
-                                       cinm::ReduceMethod reduction,
-                                       int taskletRows, int taskletCols,
-                                       int64_t mramRows, int64_t mramCols,
-                                       int64_t wramRows, int64_t wramCols,
-                                       upmem::DType dty0) {
+                                        cinm::ReduceMethod reduction,
+                                        int taskletRows, int taskletCols,
+                                        int64_t mramRows, int64_t mramCols,
+                                        int64_t wramRows, int64_t wramCols,
+                                        upmem::DType dty0) {
 
   using namespace upmem_cm;
   ProgramBuilder b;
@@ -651,9 +652,9 @@ SimCost CppSimulator::simulateReduction(std::chrono::milliseconds timeout,
 }
 
 SimCost CppSimulator::simulateGemv(std::chrono::milliseconds timeout,
-                                  int nTasklets, int64_t mramRows,
-                                  int64_t mramCols, int64_t rowTile,
-                                  int64_t colTile, upmem::DType dty0) {
+                                   int nTasklets, int64_t mramRows,
+                                   int64_t mramCols, int64_t rowTile,
+                                   int64_t colTile, upmem::DType dty0) {
   auto dty = from_upmem_dty(dty0);
   const GemvCache::Key key{
       timeout.count(),          nTasklets, mramRows, mramCols, rowTile, colTile,

@@ -36,7 +36,8 @@ struct UpmemAnnotateCostsPass
   void runOnOperation() override {
     Operation *container = getOperation();
 
-    std::unique_ptr<UpmemSimulator> sim = createSimulator(simulator, true);
+    auto timeout = std::chrono::milliseconds(evalTimeoutMs);
+    std::unique_ptr<UpmemSimulator> sim = createSimulator(simulator, true, timeout);
 
     struct CsvRow {
       unsigned blockId;
