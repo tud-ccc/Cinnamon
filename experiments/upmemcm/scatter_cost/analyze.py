@@ -411,6 +411,78 @@ def fit_ols(X: np.ndarray, y: np.ndarray, weighted: bool = True) -> dict:
     }
 
 
+def fit_mlp(
+    X: np.ndarray,
+    y: np.ndarray,
+    hidden_layer_sizes: tuple[int, ...] = (16, 16),
+    random_state: int = 0,
+) -> dict:
+    """Small MLP regressor, meant as a flexible-model comparison point for
+    templates the polynomial families in build_templates fit poorly (e.g.
+    scatter:sg -- see residual_vs_blocks.py, which shows real structure vs.
+    blocks_per_dpu the per-region polynomials don't capture). Not meant to
+    replace the polynomial templates wherever those already fit well (they
+    also export trivially to a C++ LUT, which an MLP does not).
+
+    Standardizes X the same way fit_lasso does. MLPRegressor has no
+    sample_weight support (unlike LassoCV), so this fits log(y) instead of
+    raw y with 1/y^2 weights -- squared error in log-space is the same
+    relative-error motivation as fit_ols's weighting (see its docstring),
+    just via a different mechanism.
+
+    Like every other template here, this reports in-sample error (no
+    train/test split anywhere in this script) -- not a proof of
+    generalization on its own, but with ~200 parameters and 10^4-10^5 rows
+    per fit, overfitting is not the primary risk the way it would be for a
+    per-region fit with few points.
+    """
+    from sklearn.neural_network import MLPRegressor
+
+    mean = X.mean(axis=0)
+    std = X.std(axis=0)
+    std[std == 0] = 1.0
+    Xs = (X - mean) / std
+
+    model = MLPRegressor(
+        hidden_layer_sizes=hidden_layer_sizes,
+        activation="relu",
+        solver="adam",
+        batch_size=min(4096, len(y)),
+        max_iter=300,
+        early_stopping=True,
+        n_iter_no_change=15,
+        random_state=random_state,
+    )
+    model.fit(Xs, np.log(y))
+    pred = np.exp(model.predict(Xs))
+
+    resid = y - pred
+    rmse = float(np.sqrt(np.mean(resid**2)))
+    rel_rmse = relative_rmse(resid, y)
+    ss_res = float(np.sum(resid**2))
+    ss_tot = float(np.sum((y - y.mean()) ** 2))
+    r2 = 1.0 - ss_res / ss_tot if ss_tot > 0 else float("nan")
+
+    return {
+        "pred": pred,
+        "intercept": None,
+        "coef": None,
+        "rmse": rmse,
+        "rel_rmse": rel_rmse,
+        "r2": r2,
+        "kind": "mlp",
+        "n_iter": model.n_iter_,
+        "loss": model.loss_,
+    }
+
+
+def _mlp_report(fit: dict, df: pd.DataFrame) -> None:
+    print(
+        f"\n=== MLP (log-space) ===\n"
+        f"  converged in {fit['n_iter']} iterations, final loss={fit['loss']:.4g}"
+    )
+
+
 def fit_all_templates(
     templates: dict[str, Template], data: pd.DataFrame, y: np.ndarray
 ) -> tuple[pd.DataFrame, dict]:
@@ -1405,6 +1477,21 @@ EXTRA_TEMPLATES: dict[str, Template] = {
     ),
 }
 
+# Not in EXTRA_TEMPLATES: an MLP is a much heavier/slower fit than every
+# polynomial template above (it trains a small neural net instead of
+# solving a linear system) and doesn't export to a C++ LUT the way the
+# others do, so it's opt-in via --mlp rather than always fit. Log2-scaled
+# inputs on num_dpus/block_size (matching their Dim(log=2) display scale --
+# they're naturally binary/multiplicative), raw blocks_per_dpu (Dim(log=None)
+# -- see PROBLEM's own Dim declarations for why).
+MLP_TEMPLATE = Template(
+    "mlp",
+    "MLP (log-space)",
+    lambda d: _cols(np.log2(d.num_dpus), d.blocks_per_dpu, np.log2(d.block_size)),
+    fit=fit_mlp,
+    report=_mlp_report,
+)
+
 
 def principal_dims(agg):
     blocks_dim, size_dim = PROBLEM.shape
@@ -1455,6 +1542,18 @@ def main():
         "each combined regime, competing alongside every other template "
         "(default: no split, whole-dataset fit only, no hybrid)",
     )
+    parser.add_argument(
+        "--mlp",
+        action="store_true",
+        help="Also fit a small MLP (see MLP_TEMPLATE/fit_mlp) as a whole-dataset "
+        "template, competing alongside every polynomial template for best_key. "
+        "Slower than the others (trains a neural net, not a linear solve) and "
+        "doesn't participate in --split's per-regime hybrid (its whole point is "
+        "not needing regions) or the final LUT printout if it wins outright "
+        "(no closed form to print -- see main()'s best_fit['kind'] == 'mlp' "
+        "check). Off by default since most templates here don't need it; meant "
+        "for regimes a polynomial fits poorly (e.g. scatter:sg).",
+    )
     args = parser.parse_args()
     splits: dict[str, list[float]] = {}
     for dim, *boundaries in args.split or []:
@@ -1466,6 +1565,8 @@ def main():
 
     PROBLEM.add_derived_columns(agg)
     templates = build_templates(PROBLEM, extra=EXTRA_TEMPLATES)
+    if args.mlp:
+        templates = {**templates, "mlp": MLP_TEMPLATE}
 
     blocks_dim, size_dim = PROBLEM.shape
     blocks_per_dpu = args.blocks_per_dpu or int(agg[blocks_dim.col].max())
@@ -1637,18 +1738,20 @@ def main():
     #     template_name=fits[best_key]["name"],
     #     out_path=out_dir / "latency_3d_predicted_best.html",
     # )
-    # if "hybrid" in fits:
-    #     p.plot_3d_fit_wireframe(
-    #         agg,
-    #         x=p_x,
-    #         y=p_y,
-    #         z=LATENCY,
-    #         pred=fits["hybrid"]["pred"],
-    #         group=PROBLEM.group,
-    #         template_name=fits["hybrid"]["name"],
-    #         out_path=out_dir / "latency_3d_hybrid_wireframe.html",
-    #         splits=fits["hybrid"]["splits"],
-    #     )
+    for model in ("mlp", "hybrid"):
+        if model in fits:
+            p.plot_3d_fit_wireframe(
+                agg,
+                x=p_x,
+                y=p_y,
+                z=LATENCY,
+                pred=fits[model]["pred"],
+                group=PROBLEM.group,
+                template_name=fits[model]["name"],
+                out_path=out_dir / f"latency_3d_{model}_wireframe.html",
+                splits=fits[model].get("splits", None),
+            )
+
     best_fit = fits[best_key]
     # p.plot_faceted_fit(
     #     agg,
@@ -1699,6 +1802,11 @@ def main():
         ]
         print(" + ".join(terms), end=";\n")
 
+    elif best_fit.get("kind") == "mlp":
+        print(
+            "  (MLP has no closed form to print here -- export its weights "
+            "separately if it's going to be used.)"
+        )
     else:
         print(f"  intercept = {best_fit['intercept']:.4g};")
         print(f"  coef = {{{', '.join(f'{c:.4g}' for c in best_fit['coef'])}}};")

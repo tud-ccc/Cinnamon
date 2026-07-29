@@ -100,7 +100,12 @@ def task_plot():
     splits = "--split block_size 1023 --split num_dpus 16 24 64 128 256 384"
 
     bench_splits = {
-        "sg": splits,  # "--split block_size 1023",
+        # --mlp only for sg: it's the one regime where the per-region
+        # polynomial families leave real accuracy on the table (see
+        # analyze.py's fit_mlp/MLP_TEMPLATE docstrings and
+        # residual_vs_blocks.py) -- block/broadcast/gather already fit well
+        # with the (much cheaper, C++-exportable) polynomial templates.
+        "sg": splits + " --mlp",
         "gather": "--split block_size 1023 --split num_dpus 16 24 64 128",
         "broadcast": splits,
         "block": splits,

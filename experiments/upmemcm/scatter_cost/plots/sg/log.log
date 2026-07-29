@@ -1,6 +1,7 @@
 
 === All DPU counts (n=240792 configs, num_dpus 1-1984) ===
      key                        name  rel_rmse  rmse_ms       r2
+     mlp             MLP (log-space)  0.134671 0.122646 0.921602
 pairwise           pairwise products  0.271911 0.146422 0.888259
    lasso            LASSO (pairwise)  0.286330 0.201615 0.788143
   linear           linear (all dims)  0.360770 0.330218 0.431674
@@ -15,6 +16,9 @@ simplest                   dpu, size  0.384896 0.339432 0.399515
   num_dpus*block_size         1.14874e-07
   blocks_per_dpu*block_size     4.2165e-06
   num_dpus*blocks_per_dpu*block_size    1.82818e-08
+
+=== MLP (log-space) ===
+  converged in 100 iterations, final loss=0.009007
 
 === block_size <= 1023 && num_dpus <= 16 (n=24192 configs, num_dpus 1-16) ===
   key             name  rel_rmse  rmse_ms      r2
@@ -75,55 +79,8 @@ lasso LASSO (pairwise)  0.210595 0.460381 0.782917
 === hybrid ===
   relRMSE = 16.00%   RMSE = 0.1394 ms   R² = 0.8987
 
-Best fit: hybrid (key=hybrid)
-  relRMSE = 16.00%   RMSE = 0.1394 ms   R² = 0.8987
-constexpr double lut[][8] = {
-  // region 0: block_size <= 1023 && num_dpus <= 16
-  {0.04535467, 0.0008552467, -6.727315e-05, -1.928037e-06, 2.994397e-05, 2.1161e-07, 3.351828e-06, 1.482258e-07},
-  // region 1: block_size <= 1023 && 16 < num_dpus && num_dpus <= 24
-  {0.05433495, 0.000340994, 0.001478444, 9.866019e-06, -6.57898e-05, 4.653581e-07, 5.186766e-06, 1.081538e-07},
-  // region 2: block_size <= 1023 && 24 < num_dpus && num_dpus <= 64
-  {0.06127763, 0.0002321225, -0.0009294908, 1.470047e-05, 4.427079e-05, 5.770144e-07, 3.559355e-06, 1.310082e-07},
-  // region 3: block_size <= 1023 && 64 < num_dpus && num_dpus <= 128
-  {0.08785742, 0.0002339745, 0.001596336, 6.437105e-05, 1.000799e-05, 9.973246e-08, 1.639886e-05, -3.845515e-08},
-  // region 4: block_size <= 1023 && 128 < num_dpus && num_dpus <= 256
-  {0.0873413, 0.0001676474, 0.003037233, 3.886719e-05, 4.986753e-07, 2.484457e-07, 1.285586e-05, -5.876128e-09},
-  // region 5: block_size <= 1023 && 256 < num_dpus && num_dpus <= 384
-  {0.05671111, 0.0002587243, 0.003148979, 5.037492e-05, -2.590674e-06, 1.971401e-07, 2.446895e-05, -3.96103e-08},
-  // region 6: block_size <= 1023 && num_dpus > 384
-  {0.1541061, 0.0001305668, 0.0009097787, 0.0001263552, 3.725206e-06, 5.593335e-08, 2.64884e-06, 3.124224e-08},
-  // region 7: block_size > 1023 && num_dpus <= 16
-  {0.03852772, 4.202878e-05, 0.001858735, 8.013854e-06, 0.0002302585, 6.766384e-07, 1.118512e-06, -3.316795e-08},
-  // region 8: block_size > 1023 && 16 < num_dpus && num_dpus <= 24
-  {0.03463273, 0.0005814568, 0.005610375, 3.40146e-05, 6.420579e-05, -2.310979e-07, 1.739513e-07, -3.791967e-08},
-  // region 9: block_size > 1023 && 24 < num_dpus && num_dpus <= 64
-  {0.03184173, 0.001099005, 0.007270272, 4.088522e-05, -3.322902e-05, -4.564337e-07, -3.5325e-06, 1.255418e-07},
-  // region 10: block_size > 1023 && 64 < num_dpus && num_dpus <= 128
-  {0.0916766, 0.0007994282, 0.004797697, 2.031497e-05, -6.104689e-05, -3.36883e-07, 1.534964e-05, -9.728392e-09},
-  // region 11: block_size > 1023 && 128 < num_dpus && num_dpus <= 256
-  {0.1286546, 0.0002839835, -0.00156618, -1.844001e-05, 4.210902e-06, 1.594537e-08, 1.640975e-05, -1.181359e-08},
-  // region 12: block_size > 1023 && 256 < num_dpus && num_dpus <= 384
-  {0.1538746, 0.0002247795, 0.003635513, 3.80035e-06, -2.26989e-05, -3.661466e-08, 1.140303e-05, 9.197586e-09},
-  // region 13: block_size > 1023 && num_dpus > 384
-  {0.2472156, 0.0002529576, 0.003454545, -1.905395e-05, -3.427071e-05, -9.091464e-08, 1.408249e-06, 6.464463e-08},
-};
-int ix;
-if (block_size <= 1023 && num_dpus <= 16) ix = 0;
-else if (block_size <= 1023 && 16 < num_dpus && num_dpus <= 24) ix = 1;
-else if (block_size <= 1023 && 24 < num_dpus && num_dpus <= 64) ix = 2;
-else if (block_size <= 1023 && 64 < num_dpus && num_dpus <= 128) ix = 3;
-else if (block_size <= 1023 && 128 < num_dpus && num_dpus <= 256) ix = 4;
-else if (block_size <= 1023 && 256 < num_dpus && num_dpus <= 384) ix = 5;
-else if (block_size <= 1023 && num_dpus > 384) ix = 6;
-else if (block_size > 1023 && num_dpus <= 16) ix = 7;
-else if (block_size > 1023 && 16 < num_dpus && num_dpus <= 24) ix = 8;
-else if (block_size > 1023 && 24 < num_dpus && num_dpus <= 64) ix = 9;
-else if (block_size > 1023 && 64 < num_dpus && num_dpus <= 128) ix = 10;
-else if (block_size > 1023 && 128 < num_dpus && num_dpus <= 256) ix = 11;
-else if (block_size > 1023 && 256 < num_dpus && num_dpus <= 384) ix = 12;
-else if (block_size > 1023 && num_dpus > 384) ix = 13;
-else assert(false);
-return lut[ix][0] + 
-num_dpus * lut[ix][1] + blocks_per_dpu * lut[ix][2] + block_size * lut[ix][3] + num_dpus*blocks_per_dpu * lut[ix][4] + num_dpus*block_size * lut[ix][5] + blocks_per_dpu*block_size * lut[ix][6] + num_dpus*blocks_per_dpu*block_size * lut[ix][7];
+Best fit: MLP (log-space) (key=mlp)
+  relRMSE = 13.47%   RMSE = 0.1226 ms   R² = 0.9216
+  (MLP has no closed form to print here -- export its weights separately if it's going to be used.)
 
 Plots written to plots/sg/

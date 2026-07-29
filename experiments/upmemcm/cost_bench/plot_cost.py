@@ -619,6 +619,84 @@ def plot_breakdown_scatter(df: pd.DataFrame, fn_name: str, out_path: pathlib.Pat
     plt.close(fig)
 
 
+def plot_calibration_and_breakdown(
+    pool: pd.DataFrame, df: pd.DataFrame, fn_name: str, out_path: pathlib.Path
+):
+    """cost_calibration.png (total measured vs. predicted cost, one big
+    panel) stacked over cost_breakdown_scatter.png (the same, per category)
+    in a single 4x3 figure: row 0-1/col 0-1 is the calibration scatter,
+    row 0-1/col 2 its colorbar, rows 2-3 are the per-category panels
+    reflowed from 1x6 into 2x3 (see plot_cost_calibration/
+    plot_breakdown_scatter for the two panels' data prep -- this just
+    shares their drawing code, so the two stay in sync instead of
+    accidentally diverging)."""
+    cal_data = pool.dropna(subset=["measured_cost"])
+    cal_data = cal_data[
+        np.isfinite(cal_data["cost"]) & np.isfinite(cal_data["measured_cost"])
+    ]
+    cal_data = cal_data[(cal_data["dpus"] >= 2) & (cal_data["measured_cost"] > 10e4)]
+
+    bd_data = df.dropna(subset=["measured_ms", "predicted_ms"])
+    bd_data = bd_data[(bd_data["measured_ms"] > 0) & (bd_data["predicted_ms"] > 0)]
+    if cal_data.empty or bd_data.empty:
+        return
+    order = _present_buckets(bd_data)[:6]
+    has_dpus = "dpus" in bd_data.columns
+
+    fig = plt.figure(figsize=(12.6, 4.2 * 2 + 4.2 * 2))
+    gs = fig.add_gridspec(4, 3)
+
+    cal_ax = fig.add_subplot(gs[0:2, 0:2])
+    sc = shared_plots.plot_measured_vs_predicted(
+        cal_data["cost"],
+        cal_data["measured_cost"] / 1e6,
+        ax=cal_ax,
+        color=cal_data["dpus"],
+        color_label="Number of DPUs",
+        cbar_ticks=shared_plots.log2_ticks(cal_data["dpus"]),
+        xlabel="predicted cost (ms)",
+        ylabel="measured cost (ms)",
+        title="total (calibration)",
+    )
+    if sc is not None:
+        cbar_cell = fig.add_subplot(gs[0:2, 2])
+        cbar_cell.axis("off")
+        cbar_ax = cbar_cell.inset_axes([0.3, 0.05, 0.25, 0.9])
+        cbar = fig.colorbar(
+            sc, cax=cbar_ax, ticks=shared_plots.log2_ticks(cal_data["dpus"])
+        )
+        cbar.set_label("Number of DPUs")
+        cbar.ax.yaxis.set_major_formatter(FuncFormatter(lambda v, _: f"{v:g}"))
+
+    ncols_bottom = 3
+    for i, bucket in enumerate(order):
+        row, col = divmod(i, ncols_bottom)
+        ax = fig.add_subplot(gs[2 + row, col])
+        sub = bd_data[bd_data["bucket"] == bucket]
+        # Only label the bottom-most panel of each column (no panel below it)
+        # and the leftmost column, so "predicted (ms)"/"measured (ms)" each
+        # print once per column/row instead of on every one of the 6 panels.
+        is_bottom = (i + ncols_bottom) >= len(order)
+        is_left = col == 0
+        shared_plots.plot_measured_vs_predicted(
+            sub["predicted_ms"],
+            sub["measured_ms"],
+            ax=ax,
+            color=sub["dpus"] if has_dpus else None,
+            log_color=True,
+            xlabel="predicted (ms)" if is_bottom else "",
+            ylabel="measured (ms)" if is_left else "",
+            title=bucket,
+            legend=False,
+        )
+
+    fig.suptitle(f"{fn_name}: cost calibration + per-category breakdown")
+    fig.tight_layout(rect=(0, 0, 1, 0.97))
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(out_path, dpi=150)
+    plt.close(fig)
+
+
 def plot_breakdown_error_heatmap(
     df: pd.DataFrame,
     fn_name: str,
@@ -996,6 +1074,71 @@ def collect_breakdown_tasks(
     return tasks
 
 
+def collect_combined_tasks(
+    oracle_dir: pathlib.Path,
+    agg_dir: pathlib.Path,
+    predicted_dir: pathlib.Path,
+    out_dir: pathlib.Path,
+    pool_out_dir: pathlib.Path,
+    name_filter: Optional[str],
+    fn_filter: Optional[str] = None,
+):
+    """cost_overview.png: plot_cost_calibration's panel stacked over
+    plot_breakdown_scatter's panels in one 4x3 figure (see
+    plot_calibration_and_breakdown) -- requires both --oracle (for the
+    calibration pool) and --predicted-dir (for the breakdown), and only
+    for fn_names present in both."""
+    plot_name = "cost_overview"
+    if name_filter and name_filter not in plot_name:
+        return []
+
+    predicted_csv = predicted_dir / "predicted_costs.csv"
+    if not predicted_csv.exists():
+        print(
+            f"  {predicted_csv} not found, skipping {plot_name} plots",
+            file=sys.stderr,
+        )
+        return []
+    predicted_all = pd.read_csv(predicted_csv)
+
+    tasks = []
+    pool_out_dir.mkdir(parents=True, exist_ok=True)
+    for fn_name, pool_csv in find_function_pools(oracle_dir):
+        if not _fn_matches(fn_name, fn_filter):
+            continue
+        pool = pd.read_csv(pool_csv)
+        key_cols = _key_cols(pool)
+        measured = compute_measured_cost(agg_dir, fn_name, key_cols)
+        if measured.empty:
+            print(
+                f"  {fn_name}: no aggregated data, skipping {plot_name}",
+                file=sys.stderr,
+            )
+            continue
+        n_launches = compute_n_launches(agg_dir, fn_name, key_cols)
+        measured = measured.merge(n_launches, on=key_cols, how="left")
+        fresh = compute_fresh_predicted_cost(predicted_all, fn_name, key_cols)
+        pool = augment_pool(pool, measured, key_cols, fresh)
+
+        joined = build_breakdown_frame(agg_dir, predicted_all, fn_name)
+        if joined.empty:
+            print(
+                f"  {fn_name}: no measured/predicted overlap, skipping {plot_name}",
+                file=sys.stderr,
+            )
+            continue
+
+        out_path = out_dir / fn_name / f"{plot_name}.png"
+        tasks.append(
+            (
+                f"{plot_name} ({fn_name})",
+                plot_calibration_and_breakdown,
+                (pool, joined, fn_name, out_path),
+            )
+        )
+    return tasks
+
+
 def collect_failure_tasks(
     failures_csv: pathlib.Path,
     out_dir: pathlib.Path,
@@ -1140,6 +1283,16 @@ def main():
             in_dir,
             pathlib.Path(args.predicted_dir),
             out_dir,
+            args.filter,
+            args.fn_filter,
+        )
+    if args.oracle and args.predicted_dir:
+        tasks += collect_combined_tasks(
+            pathlib.Path(args.oracle),
+            in_dir,
+            pathlib.Path(args.predicted_dir),
+            out_dir,
+            pathlib.Path(args.pool_out_dir),
             args.filter,
             args.fn_filter,
         )
