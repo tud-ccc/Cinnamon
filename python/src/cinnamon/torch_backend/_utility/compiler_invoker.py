@@ -11,7 +11,6 @@ from ..exceptions import BackendException
 
 
 class CompilerInvoker:
-
     def __init__(self, dump_dir: str = None, step_by_step: bool = False):
         self._dump_dir = dump_dir
         self._step_by_step = step_by_step
@@ -37,7 +36,7 @@ class CompilerInvoker:
             raise BackendException(f"Compiler invocation failed: {args}") from e
 
     def _pass_pipeline(self, pipeline: list[str]) -> str:
-        return f'--pass-pipeline=builtin.module({",".join(pipeline)})'
+        return f"--pass-pipeline=builtin.module({','.join(pipeline)})"
 
     def _invoke_opt(self, binary: str, pipeline: list[str], input_mlir: bytes) -> bytes:
         opt_name = os.path.basename(binary)

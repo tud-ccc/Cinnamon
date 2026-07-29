@@ -1,5 +1,4 @@
 import os
-import subprocess 
 import generated.run_benchmarks
 import prim.run_benchmarks
 
@@ -15,7 +14,7 @@ f = open("exp-fig-12.txt", "w")
 dimm_counts = [4, 8, 16]
 print(results)
 
-fig12 = {"va":"VA", "sel":"SEL", "mv":"GEMV", "hst":"HST-L", "red":"RED"}
+fig12 = {"va": "VA", "sel": "SEL", "mv": "GEMV", "hst": "HST-L", "red": "RED"}
 # benchmarks = {"mv":"GEMV"}
 
 for bench in fig12:
@@ -26,7 +25,7 @@ for bench in fig12:
         f.write(str(results["cinm"][bench][dimm_count]["Opt"]))
         f.write(" ")
     f.write("\n")
-     
+
 f.close()
 
 f = open("exp-fig-11.txt", "w")
@@ -40,5 +39,5 @@ for bench in fig11:
         f.write(str(results["cinm"][bench][dimm_count]["Opt"]))
         f.write(" ")
     f.write("\n")
-     
+
 f.close()

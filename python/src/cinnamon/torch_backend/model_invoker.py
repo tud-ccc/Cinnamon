@@ -6,7 +6,6 @@ from ._utility.ciface_type_wrappers import get_ciface_wrapper
 
 
 class ModelInvoker:
-
     def __init__(self, compiled_model: CompiledModel, runtimes: list[str] = None):
         self._shared_object = tempfile.NamedTemporaryFile(
             prefix="cinnamon_compiled_model", suffix=".so"
