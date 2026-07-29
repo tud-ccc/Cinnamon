@@ -340,6 +340,18 @@ struct InferenceOptions {
   /// since no model is trained).
   bool exhaustiveSearch = false;
 
+  /// When > 0, evaluate a random sample of this many valid configurations
+  /// (drawn without replacement from the same valid-config scan exhaustive
+  /// search uses, see CandidatePool::fillRandom) instead of every valid
+  /// config or running Bayesian optimisation. A cheap alternative to
+  /// exhaustiveSearch when only a small ground-truth sample is needed --
+  /// exhaustive search's cost is entirely the O(n_valid) simulator calls,
+  /// not the O(N) validity scan, so sampling down to sampleN evaluations
+  /// makes this proportionally faster. Takes priority over exhaustiveSearch
+  /// if both are set. Dumped the same way (dumpFullPool controls whether
+  /// pool.csv includes unvisited configs too).
+  unsigned sampleN = 0;
+
   /// Number of held-out validation points sampled (via LHS) before BO begins.
   /// These are evaluated once for their true cost and never used as BO training
   /// data. At each snapshot the surrogate's mu/sigma are recorded for them.

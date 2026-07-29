@@ -154,6 +154,14 @@ struct CandidatePool {
                         std::function<bool(size_t)> accept,
                         unsigned workers = 1);
 
+  /// Add up to `target` random valid-unvisited indices to `result` (rejection
+  /// sampling over validIndices_, deduplicated via `result`). Used both
+  /// internally for BO candidate generation and by InferenceTask::
+  /// runRandomSample (AcceleratorInference.cpp) to pick a fast random subset
+  /// of valid configs to evaluate instead of every valid config.
+  void fillRandom(std::unordered_set<size_t> &result, size_t target,
+                  std::mt19937 &rng);
+
   /// Fit a BANANAS MLP ensemble on the observed subset (Xo/yo) and return
   /// the k unvisited pool indices with the lowest UCB acquisition score.
   /// Unvisited entries are derived from the visited bitvector; observations
@@ -179,9 +187,6 @@ struct CandidatePool {
 private:
   /// Insert idx into result if it is unvisited, not already present, and valid.
   bool tryInsert(std::unordered_set<size_t> &result, size_t idx);
-  /// Add up to `target` random valid-unvisited indices to `result`.
-  void fillRandom(std::unordered_set<size_t> &result, size_t target,
-                  std::mt19937 &rng);
   /// Collect valid, unvisited grid-neighbours of all observed configurations,
   /// up to `depth` discrete steps away (BFS). When `frontierOnly` is true,
   /// only nodes at exactly `depth` steps are added; otherwise all reachable
