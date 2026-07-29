@@ -132,6 +132,11 @@ def run_config(
         cwd=str(bin_dir / cfg.fn_name),
     )
     if r.returncode != 0:
+        # Persisted next to (not inside) output/ -- same config_dir level as
+        # compile's own cinm-opt.log/make_stderr.txt -- so a failure survives
+        # past this process for later triage (see cinm_experiments.failures),
+        # not just the truncated in-memory RunResult.error below.
+        (output_dir.parent / "error.txt").write_text(r.stderr)
         return RunResult(compiled, False, output_dir, r.stderr[-1000:])
     return RunResult(compiled, True, output_dir)
 

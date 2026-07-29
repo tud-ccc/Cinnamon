@@ -210,6 +210,33 @@ def net_breakdown_ms(
     }
 
 
+# Maps a predicted (category, cost_label) pair from aggregate.
+# aggregate_predicted_costs' ir/cost.csv rows onto the net_breakdown_ms
+# bucket it should be compared against. "cpu"/"other" (host-side work outside
+# any instrumented UPMEM runtime call) maps to "unaccounted" rather than
+# "copy" -- copy is specifically the strided host-side memrefCopy repacks
+# feeding upmem.scatter, which the cost model doesn't currently break out as
+# its own predicted category, so there's no predicted counterpart to compare
+# it against yet. Falls back to the bare category name for any (category,
+# label) pair not listed here, so a new/renamed label doesn't silently
+# vanish from aggregation -- it just lands in its own bucket instead of
+# being merged into an existing one.
+PREDICTED_TO_MEASURED = {
+    ("kernel", "kernel"): "launch",
+    ("kernel", "launchOverhead"): "launch",
+    ("transfer", "scatter"): "scatter",
+    ("transfer_back", "gather"): "gather",
+    ("cpu", "other"): "unaccounted",
+}
+
+
+def predicted_bucket(category: str, cost_label: str) -> str:
+    """The net_breakdown_ms bucket a predicted (category, cost_label) pair
+    (as found in aggregate.aggregate_predicted_costs' output) should be
+    compared against -- see PREDICTED_TO_MEASURED."""
+    return PREDICTED_TO_MEASURED.get((category, cost_label), category)
+
+
 def results_to_frame(results: list[RunResult]) -> pd.DataFrame:
     """Turn a list of compile_run.RunResult into a DataFrame with one row per
     successfully-run config: fn_name, label, every config param, net_time_ms."""

@@ -32,6 +32,7 @@ from tqdm import tqdm
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent.parent))
 from cinm_experiments import plots as shared_plots  # noqa: E402
+from cinm_experiments import measurements  # noqa: E402
 
 X_AXES = {
     "dpus": "Number of DPUs",
@@ -137,11 +138,52 @@ def compute_measured_launch_cost(
     return measured.merge(key_df, on="label")[key_cols + ["measured_launch_cost"]]
 
 
-def augment_pool(
-    pool: pd.DataFrame, measured: pd.DataFrame, key_cols: list
+def compute_fresh_predicted_cost(
+    predicted_all: pd.DataFrame, fn_name: str, key_cols: list
 ) -> pd.DataFrame:
-    """pool.csv + measured_cost + error, joined on the config's param columns."""
+    """[*key_cols, fresh_cost] (ms) -- total predicted cost recomputed by
+    *today's* cinm-opt binary at compile time (sum of every distinct block's
+    block_total_ms across a config's ir/cost.csv, see aggregate.
+    aggregate_predicted_costs), for preferring over a pool.csv's own `cost`
+    column in augment_pool -- that column was computed whenever the oracle
+    pool was last (re)generated, and goes stale if the cost model changes
+    afterward without regenerating it."""
+    df = predicted_all[predicted_all["fn_name"] == fn_name]
+    if df.empty:
+        return pd.DataFrame(columns=key_cols + ["fresh_cost"])
+    per_block = df.drop_duplicates(["label", "block_id"])[
+        ["label", "block_id", "block_total_ms"]
+    ]
+    fresh = (
+        per_block.groupby("label")["block_total_ms"]
+        .sum()
+        .rename("fresh_cost")
+        .reset_index()
+    )
+    key_df = df.drop_duplicates("label")[["label"] + key_cols]
+    return fresh.merge(key_df, on="label")[key_cols + ["fresh_cost"]]
+
+
+def augment_pool(
+    pool: pd.DataFrame,
+    measured: pd.DataFrame,
+    key_cols: list,
+    fresh: pd.DataFrame | None = None,
+) -> pd.DataFrame:
+    """pool.csv + measured_cost + error, joined on the config's param
+    columns. When `fresh` (compute_fresh_predicted_cost) is given, its
+    per-config cost -- recomputed from today's compile, not whenever the
+    pool was last generated -- overrides pool.csv's own `cost` column
+    wherever available (the original is kept as `stale_cost`, for
+    comparison); rows the pool has but that were never (re)compiled fall
+    back to the pool's own value."""
     pool = pool.merge(measured, on=key_cols, how="left")
+    if fresh is not None and not fresh.empty:
+        pool = pool.merge(fresh, on=key_cols, how="left")
+        pool["stale_cost"] = pool["cost"]
+        pool["cost"] = pool["fresh_cost"].where(
+            pool["fresh_cost"].notna(), pool["cost"]
+        )
     pool["error"] = pool["measured_cost"] - pool["cost"]
     # cost == inf marks a cost-model timeout, not a real prediction — exclude
     # those rows from the error rather than reporting a meaningless -inf.
@@ -159,6 +201,157 @@ def find_function_pools(oracle_dir: pathlib.Path):
             print(f"  warning: {sub} has no pool.csv, skipping", file=sys.stderr)
             continue
         yield sub.name.removeprefix("infer_"), pool
+
+
+# ── Category-breakdown data prep ──────────────────────────────────────────────
+#
+# predicted_costs.csv (aggregate.aggregate_predicted_costs' output, one row
+# per (config, block, category, cost_label)) and the per-type aggregated CSVs
+# (aggregate.aggregate_run's output, one row per (config, iteration)) are each
+# reshaped to a common long format [*key_cols, label, bucket, {measured,
+# predicted}_ms] -- bucket in {launch, scatter, gather, copy, unaccounted},
+# see measurements.PREDICTED_TO_MEASURED -- then inner-joined on
+# (*key_cols, label, bucket) so every plot below works off one flat frame.
+
+# Non-parameter columns in predicted_costs.csv (aggregate_predicted_costs);
+# everything else is a config param shared with the measured-side aggregated
+# CSVs (both are tagged from the same config.csv).
+_PREDICTED_NON_PARAM_COLS = frozenset(
+    {
+        "block_id",
+        "location",
+        "category",
+        "cost_label",
+        "cost_ms",
+        "block_total_ms",
+        "system",
+        "fn_name",
+        "label",
+    }
+)
+
+_BUCKET_ORDER = ["launch", "scatter", "gather", "copy", "unaccounted"]
+
+
+def predicted_key_cols(predicted_all: pd.DataFrame) -> list[str]:
+    return [c for c in predicted_all.columns if c not in _PREDICTED_NON_PARAM_COLS]
+
+
+def compute_predicted_breakdown_long(
+    predicted_all: pd.DataFrame, fn_name: str, key_cols: list
+) -> pd.DataFrame:
+    """[*key_cols, label, bucket, predicted_ms], long format: every (category,
+    cost_label) row in predicted_costs.csv mapped onto its measured bucket
+    (measurements.predicted_bucket) and summed per (label, bucket) -- a
+    config's total predicted cost in a bucket may come from more than one
+    (category, cost_label), e.g. kernel's "kernel" + "launchOverhead" both
+    feed "launch"."""
+    df = predicted_all[predicted_all["fn_name"] == fn_name].copy()
+    if df.empty:
+        return pd.DataFrame(columns=key_cols + ["label", "bucket", "predicted_ms"])
+    df["bucket"] = [
+        measurements.predicted_bucket(c, l)
+        for c, l in zip(df["category"], df["cost_label"])
+    ]
+    grouped = (
+        df.groupby(["label", "bucket"])["cost_ms"]
+        .sum()
+        .reset_index()
+        .rename(columns={"cost_ms": "predicted_ms"})
+    )
+    key_df = df.drop_duplicates("label")[["label"] + key_cols]
+    return grouped.merge(key_df, on="label")[
+        key_cols + ["label", "bucket", "predicted_ms"]
+    ]
+
+
+def _load_measured_csv(agg_dir: pathlib.Path, fn_name: str, csv_type: str):
+    path = agg_dir / f"{csv_type}.csv"
+    if not path.exists():
+        return None
+    df = pd.read_csv(path)
+    if "iter" in df.columns and "iteration" not in df.columns:
+        df = df.rename(columns={"iter": "iteration"})
+    df = df[df["fn_name"] == fn_name]
+    return df if not df.empty else None
+
+
+def compute_measured_breakdown_long(
+    agg_dir: pathlib.Path, fn_name: str, key_cols: list
+) -> pd.DataFrame:
+    """[*key_cols, label, bucket, measured_ms], long format -- the
+    aggregated-CSV equivalent of measurements.net_breakdown_ms (net = total -
+    alloc - free, split into scatter/gather/copy/launch plus whatever's left
+    over as "unaccounted"), computed once for every config via the combined
+    per-measurement-type CSVs instead of directory-by-directory."""
+    total = _load_measured_csv(agg_dir, fn_name, "total")
+    if total is None:
+        return pd.DataFrame(columns=key_cols + ["label", "bucket", "measured_ms"])
+
+    def mean_by_iter(csv_type):
+        df = _load_measured_csv(agg_dir, fn_name, csv_type)
+        if df is None:
+            return pd.Series(dtype=float)
+        return df.groupby(["label", "iteration"])["elapsed_ns"].mean()
+
+    def sum_by_iter(csv_type):
+        df = _load_measured_csv(agg_dir, fn_name, csv_type)
+        if df is None:
+            return pd.Series(dtype=float)
+        return df.groupby(["label", "iteration"])["elapsed_ns"].sum()
+
+    total_g = mean_by_iter("total")
+    free_g = mean_by_iter("free")
+    alloc_g = mean_by_iter("alloc")
+    joined = pd.concat({"total": total_g, "free": free_g, "alloc": alloc_g}, axis=1)
+    joined["free"] = joined["free"].fillna(0)
+    joined["alloc"] = joined["alloc"].fillna(0)
+    joined = joined.dropna(subset=["total"])
+    joined["net"] = joined["total"] - joined["free"] - joined["alloc"]
+    net_ms = (joined.groupby("label")["net"].mean() / 1e6).rename("net_ms")
+
+    wide = pd.DataFrame({"net_ms": net_ms})
+    for bucket, csv_type in [
+        ("scatter", "scatter"),
+        ("gather", "gather"),
+        ("copy", "copy"),
+        ("launch", "launch"),
+    ]:
+        per_iter = sum_by_iter(csv_type)
+        per_label = (
+            (per_iter.groupby("label").mean() / 1e6)
+            if len(per_iter)
+            else pd.Series(dtype=float)
+        )
+        wide[bucket] = per_label.reindex(wide.index).fillna(0.0)
+    wide["unaccounted"] = wide["net_ms"] - wide[
+        ["scatter", "gather", "copy", "launch"]
+    ].sum(axis=1)
+    wide = wide.drop(columns=["net_ms"]).reset_index()
+
+    long = wide.melt(
+        id_vars=["label"],
+        value_vars=_BUCKET_ORDER,
+        var_name="bucket",
+        value_name="measured_ms",
+    )
+    key_df = total.drop_duplicates("label")[["label"] + key_cols]
+    return long.merge(key_df, on="label")[key_cols + ["label", "bucket", "measured_ms"]]
+
+
+def build_breakdown_frame(
+    agg_dir: pathlib.Path, predicted_all: pd.DataFrame, fn_name: str
+) -> pd.DataFrame:
+    """[*key_cols, label, bucket, measured_ms, predicted_ms] for one function
+    -- the shared input to every plot_breakdown_* function below."""
+    key_cols = predicted_key_cols(predicted_all)
+    measured_long = compute_measured_breakdown_long(agg_dir, fn_name, key_cols)
+    if measured_long.empty:
+        return measured_long
+    predicted_long = compute_predicted_breakdown_long(predicted_all, fn_name, key_cols)
+    return measured_long.merge(
+        predicted_long, on=key_cols + ["label", "bucket"], how="inner"
+    )
 
 
 # ── Plot workers (top-level functions so ProcessPoolExecutor can pickle them) ─
@@ -325,6 +518,255 @@ def plot_launch_calibration(pool: pd.DataFrame, fn_name: str, out_path: pathlib.
     plt.close(fig2)
 
 
+def _present_buckets(df: pd.DataFrame) -> list[str]:
+    present = set(df["bucket"].unique())
+    return [b for b in _BUCKET_ORDER if b in present]
+
+
+def plot_breakdown_error_box(df: pd.DataFrame, fn_name: str, out_path: pathlib.Path):
+    """One box per category of (measured - predicted) / measured -- the fast
+    "which category is biased" check, meant to be looked at before any of the
+    other, more detailed breakdown plots."""
+    data = df.dropna(subset=["measured_ms", "predicted_ms"])
+    data = data[data["measured_ms"] > 0]
+    if data.empty:
+        return
+    order = _present_buckets(data)
+    rel_error = (data["measured_ms"] - data["predicted_ms"]) / data["measured_ms"]
+    data = data.assign(rel_error=rel_error)
+
+    fig, ax = plt.subplots(figsize=(1.6 * len(order) + 2, 4.5))
+    ax.boxplot(
+        [data.loc[data["bucket"] == b, "rel_error"] for b in order],
+        tick_labels=order,
+        showfliers=False,
+    )
+    ax.axhline(0, color="gray", linestyle="--", linewidth=1)
+    ax.set_ylabel("(measured - predicted) / measured")
+    ax.set_title(f"{fn_name}: per-category relative error")
+    ax.grid(True, axis="y", linestyle="--", alpha=0.4)
+    fig.tight_layout()
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(out_path, dpi=150)
+    plt.close(fig)
+
+
+def plot_breakdown_scatter(df: pd.DataFrame, fn_name: str, out_path: pathlib.Path):
+    """Faceted measured-vs-predicted scatter, one panel per category --
+    per-category extension of plot_cost_calibration's single (total-cost)
+    panel."""
+    data = df.dropna(subset=["measured_ms", "predicted_ms"])
+    data = data[(data["measured_ms"] > 0) & (data["predicted_ms"] > 0)]
+    if data.empty:
+        return
+    order = _present_buckets(data)
+    has_dpus = "dpus" in data.columns
+
+    fig, axes = plt.subplots(
+        1, len(order), figsize=(4.2 * len(order), 4.2), squeeze=False
+    )
+    for ax, bucket in zip(axes[0], order):
+        sub = data[data["bucket"] == bucket]
+        shared_plots.plot_measured_vs_predicted(
+            sub["predicted_ms"],
+            sub["measured_ms"],
+            ax=ax,
+            color=sub["dpus"] if has_dpus else None,
+            log_color=True,
+            xlabel="predicted (ms)",
+            ylabel="measured (ms)",
+            title=bucket,
+            legend=False,
+        )
+    fig.suptitle(f"{fn_name}: measured vs predicted, per category")
+    fig.tight_layout()
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(out_path, dpi=150)
+    plt.close(fig)
+
+
+def plot_breakdown_error_heatmap(
+    df: pd.DataFrame,
+    fn_name: str,
+    out_path: pathlib.Path,
+    xdim: str = "dpus",
+    ydim: str = "mramCol",
+):
+    """Per-category relative error over two config dims (color-coded scatter,
+    not a binned heatmap -- configs aren't on a dense regular grid), diverging
+    colormap centered at 0 -- surfaces regions of the space where a specific
+    category's prediction breaks down."""
+    data = df.dropna(subset=["measured_ms", "predicted_ms"])
+    data = data[data["measured_ms"] > 0]
+    if data.empty or xdim not in data.columns or ydim not in data.columns:
+        return
+    order = _present_buckets(data)
+    rel_error = (data["measured_ms"] - data["predicted_ms"]) / data["measured_ms"]
+    data = data.assign(rel_error=rel_error)
+    vmax = float(data["rel_error"].abs().quantile(0.95)) or 1.0
+
+    fig, axes = plt.subplots(
+        1, len(order), figsize=(4.6 * len(order), 4.2), squeeze=False
+    )
+    for ax, bucket in zip(axes[0], order):
+        sub = data[data["bucket"] == bucket]
+        sc = ax.scatter(
+            sub[xdim],
+            sub[ydim],
+            c=sub["rel_error"],
+            cmap="RdBu_r",
+            vmin=-vmax,
+            vmax=vmax,
+            s=18,
+        )
+        ax.set_xscale("log", base=2)
+        ax.set_yscale("log", base=2)
+        ax.set_xlabel(xdim)
+        ax.set_ylabel(ydim)
+        ax.set_title(bucket)
+        fig.colorbar(sc, ax=ax, label="(measured - predicted) / measured")
+    fig.suptitle(f"{fn_name}: per-category relative error over ({xdim}, {ydim})")
+    fig.tight_layout()
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(out_path, dpi=150)
+    plt.close(fig)
+
+
+def plot_breakdown_composition(
+    df: pd.DataFrame, fn_name: str, out_path: pathlib.Path, n_configs: int = 8
+):
+    """Paired stacked bars (predicted vs measured) for a handful of
+    representative configs spread across the dpus range, each bar normalized
+    to 100% -- shows where the predicted *composition* diverges from
+    measured (e.g. "predicted says scatter is 80% of cost, measured says
+    50%"), independent of the total cost's absolute scale, which otherwise
+    spans several orders of magnitude across dpu counts and would make a
+    plain ms-scale stacked bar unreadable."""
+    data = df.dropna(subset=["measured_ms", "predicted_ms"])
+    if data.empty or "dpus" not in data.columns:
+        return
+    order = _present_buckets(data)
+    labels_by_dpus = data.drop_duplicates("label").sort_values("dpus")["label"].tolist()
+    if len(labels_by_dpus) > n_configs:
+        idx = np.linspace(0, len(labels_by_dpus) - 1, n_configs).round().astype(int)
+        chosen = [labels_by_dpus[i] for i in idx]
+    else:
+        chosen = labels_by_dpus
+
+    pivot_pred = data.pivot_table(
+        index="label", columns="bucket", values="predicted_ms", aggfunc="sum"
+    ).reindex(index=chosen, columns=order, fill_value=0.0)
+    pivot_meas = data.pivot_table(
+        index="label", columns="bucket", values="measured_ms", aggfunc="sum"
+    ).reindex(index=chosen, columns=order, fill_value=0.0)
+    # Normalize each config's bar to 100% -- a category's *share* of total
+    # cost is what's comparable across configs of very different absolute
+    # scale; clip(lower=...) guards against an all-zero row (e.g. a bucket
+    # with genuinely 0 predicted cost everywhere) causing a 0/0 divide.
+    pivot_pred = pivot_pred.div(pivot_pred.sum(axis=1).clip(lower=1e-12), axis=0) * 100
+    pivot_meas = pivot_meas.div(pivot_meas.sum(axis=1).clip(lower=1e-12), axis=0) * 100
+    dpus_by_label = data.drop_duplicates("label").set_index("label")["dpus"]
+
+    colors = plt.get_cmap("tab10").colors
+    x = np.arange(len(chosen))
+    width = 0.35
+    fig, ax = plt.subplots(figsize=(max(6, len(chosen) * 1.3), 5))
+    bottom_pred = np.zeros(len(chosen))
+    bottom_meas = np.zeros(len(chosen))
+    for i, bucket in enumerate(order):
+        vals_pred = pivot_pred[bucket].to_numpy()
+        vals_meas = pivot_meas[bucket].to_numpy()
+        color = colors[i % len(colors)]
+        ax.bar(
+            x - width / 2,
+            vals_pred,
+            width,
+            bottom=bottom_pred,
+            color=color,
+            label=bucket,
+        )
+        ax.bar(
+            x + width / 2, vals_meas, width, bottom=bottom_meas, color=color, hatch="//"
+        )
+        bottom_pred += vals_pred
+        bottom_meas += vals_meas
+
+    ax.set_xticks(x)
+    ax.set_xticklabels([str(int(dpus_by_label[lbl])) for lbl in chosen])
+    ax.set_xlabel("dpus  (left bar = predicted, right hatched bar = measured)")
+    ax.set_ylabel("share of total cost (%)")
+    ax.set_title(f"{fn_name}: predicted vs measured cost composition")
+    ax.legend(fontsize=8)
+    ax.grid(True, axis="y", linestyle="--", alpha=0.4)
+    fig.tight_layout()
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(out_path, dpi=150)
+    plt.close(fig)
+
+
+def plot_failure_summary(failures_df: pd.DataFrame, out_path: pathlib.Path):
+    """Bar chart of failure counts per (stage, signature), pooled across
+    every function -- the first thing to look at in the crash report (see
+    cinm_experiments.failures), before drilling into where in the config
+    space a given signature clusters (plot_failure_scatter)."""
+    if failures_df.empty:
+        return
+    counts = (
+        failures_df.groupby(["stage", "signature"]).size().sort_values(ascending=False)
+    )
+    labels = [f"{stage}:{sig}" for stage, sig in counts.index]
+    colors = [
+        "crimson" if stage == "compile" else "steelblue" for stage, _ in counts.index
+    ]
+
+    fig, ax = plt.subplots(figsize=(max(6, len(labels) * 0.9), 4.5))
+    ax.bar(labels, counts.values, color=colors)
+    ax.set_ylabel("count")
+    ax.set_title("Compile/run failures by signature")
+    ax.tick_params(axis="x", rotation=30)
+    for lbl in ax.get_xticklabels():
+        lbl.set_ha("right")
+    ax.grid(True, axis="y", linestyle="--", alpha=0.4)
+    fig.tight_layout()
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(out_path, dpi=150)
+    plt.close(fig)
+
+
+def plot_failure_scatter(
+    failures_df: pd.DataFrame,
+    fn_name: str,
+    out_path: pathlib.Path,
+    xdim: str = "dpus",
+    ydim: str = "mramCol",
+):
+    """Failing configs' (xdim, ydim), colored by signature -- surfaces
+    whether a signature clusters in a region of the space (e.g. only at very
+    high dpu counts), which would signal that fn's config_filter needs
+    tightening rather than that config being individually broken."""
+    data = failures_df[failures_df["fn_name"] == fn_name]
+    if data.empty or xdim not in data.columns or ydim not in data.columns:
+        return
+    sigs = sorted(data["signature"].unique())
+    cmap = plt.get_cmap("tab10")
+
+    fig, ax = plt.subplots(figsize=(6, 4.5))
+    for i, sig in enumerate(sigs):
+        sub = data[data["signature"] == sig]
+        ax.scatter(sub[xdim], sub[ydim], s=18, alpha=0.7, label=sig, color=cmap(i % 10))
+    ax.set_xscale("log", base=2)
+    ax.set_yscale("log", base=2)
+    ax.set_xlabel(xdim)
+    ax.set_ylabel(ydim)
+    ax.set_title(f"{fn_name}: failing configs by signature")
+    ax.legend(fontsize=8)
+    ax.grid(True, which="both", linestyle="--", alpha=0.3)
+    fig.tight_layout()
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(out_path, dpi=150)
+    plt.close(fig)
+
+
 # ── Task collection (runs in the main process) ────────────────────────────────
 
 
@@ -363,10 +805,23 @@ def collect_calibration_tasks(
     out_dir: pathlib.Path,
     pool_out_dir: pathlib.Path,
     name_filter: Optional[str],
+    predicted_dir: Optional[pathlib.Path] = None,
 ):
     plot_name = "cost_calibration"
     if name_filter and name_filter not in plot_name:
         return []
+
+    predicted_all = None
+    if predicted_dir is not None:
+        predicted_csv = predicted_dir / "predicted_costs.csv"
+        if predicted_csv.exists():
+            predicted_all = pd.read_csv(predicted_csv)
+        else:
+            print(
+                f"  {predicted_csv} not found, cost_calibration will use each "
+                "pool's own (possibly stale) cost column",
+                file=sys.stderr,
+            )
 
     tasks = []
     pool_out_dir.mkdir(parents=True, exist_ok=True)
@@ -382,7 +837,12 @@ def collect_calibration_tasks(
             continue
         n_launches = compute_n_launches(agg_dir, fn_name, key_cols)
         measured = measured.merge(n_launches, on=key_cols, how="left")
-        pool = augment_pool(pool, measured, key_cols)
+        fresh = (
+            compute_fresh_predicted_cost(predicted_all, fn_name, key_cols)
+            if predicted_all is not None
+            else None
+        )
+        pool = augment_pool(pool, measured, key_cols, fresh)
         pool.to_csv(pool_out_dir / f"{fn_name}_pool.csv", index=False)
 
         out_path = out_dir / fn_name / f"{plot_name}.png"
@@ -428,6 +888,87 @@ def collect_launch_calibration_tasks(
             )
         )
 
+    return tasks
+
+
+def collect_breakdown_tasks(
+    agg_dir: pathlib.Path,
+    predicted_dir: pathlib.Path,
+    out_dir: pathlib.Path,
+    name_filter: Optional[str],
+):
+    plot_name = "cost_breakdown"
+    if name_filter and name_filter not in plot_name:
+        return []
+
+    predicted_csv = predicted_dir / "predicted_costs.csv"
+    if not predicted_csv.exists():
+        print(
+            f"  {predicted_csv} not found, skipping cost_breakdown plots "
+            "(run `doit agg_predictions:<prim>` first)",
+            file=sys.stderr,
+        )
+        return []
+    predicted_all = pd.read_csv(predicted_csv)
+
+    tasks = []
+    for fn_name in sorted(predicted_all["fn_name"].unique()):
+        joined = build_breakdown_frame(agg_dir, predicted_all, fn_name)
+        if joined.empty:
+            print(
+                f"  {fn_name}: no measured/predicted overlap, skipping breakdown plots",
+                file=sys.stderr,
+            )
+            continue
+        fn_out = out_dir / fn_name
+        for suffix, func in [
+            ("error_box", plot_breakdown_error_box),
+            ("scatter", plot_breakdown_scatter),
+            ("error_heatmap", plot_breakdown_error_heatmap),
+            ("composition", plot_breakdown_composition),
+        ]:
+            tasks.append(
+                (
+                    f"{plot_name}_{suffix} ({fn_name})",
+                    func,
+                    (joined, fn_name, fn_out / f"{plot_name}_{suffix}.png"),
+                )
+            )
+    return tasks
+
+
+def collect_failure_tasks(
+    failures_csv: pathlib.Path, out_dir: pathlib.Path, name_filter: Optional[str]
+):
+    plot_name = "failures"
+    if name_filter and name_filter not in plot_name:
+        return []
+    if not failures_csv.exists():
+        print(
+            f"  {failures_csv} not found, skipping failure plots "
+            "(run `doit failures:<prim>` first)",
+            file=sys.stderr,
+        )
+        return []
+    df = pd.read_csv(failures_csv)
+    if df.empty:
+        return []
+
+    tasks = [
+        (
+            f"{plot_name}_by_signature",
+            plot_failure_summary,
+            (df, out_dir / f"{plot_name}_by_signature.png"),
+        )
+    ]
+    for fn_name in sorted(df["fn_name"].unique()):
+        tasks.append(
+            (
+                f"{plot_name}_scatter ({fn_name})",
+                plot_failure_scatter,
+                (df, fn_name, out_dir / fn_name / f"{plot_name}_scatter.png"),
+            )
+        )
     return tasks
 
 
@@ -477,6 +1018,20 @@ def main():
         "omit to skip it.",
     )
     parser.add_argument(
+        "--predicted-dir",
+        default=None,
+        help="Directory containing predicted_costs.csv (aggregate."
+        "aggregate_predicted_costs' output, e.g. PATHS.predicted_dir(prim)). "
+        "Enables the per-category cost_breakdown plots; omit to skip them.",
+    )
+    parser.add_argument(
+        "--failures-csv",
+        default=None,
+        help="Path to a failures.csv (cinm_experiments.failures.collect_failures' "
+        "output, e.g. PATHS.failures_csv(prim)). Enables the failures_by_signature "
+        "and per-function failures_scatter plots; omit to skip them.",
+    )
+    parser.add_argument(
         "--workers",
         type=int,
         default=os.cpu_count(),
@@ -495,10 +1050,19 @@ def main():
             out_dir,
             pathlib.Path(args.pool_out_dir),
             args.filter,
+            pathlib.Path(args.predicted_dir) if args.predicted_dir else None,
         )
     if args.kernel_oracle:
         tasks += collect_launch_calibration_tasks(
             pathlib.Path(args.kernel_oracle), in_dir, out_dir, args.filter
+        )
+    if args.predicted_dir:
+        tasks += collect_breakdown_tasks(
+            in_dir, pathlib.Path(args.predicted_dir), out_dir, args.filter
+        )
+    if args.failures_csv:
+        tasks += collect_failure_tasks(
+            pathlib.Path(args.failures_csv), out_dir, args.filter
         )
 
     if not tasks:

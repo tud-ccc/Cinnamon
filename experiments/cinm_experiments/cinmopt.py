@@ -52,6 +52,14 @@ def _run(
         cmd = ["nice", "-n", "19", *cmd]
     with open(log_file, "w") as log:
         log.write(shlex.join(cmd) + "\n\n")
+        # subprocess.run(stdout=log) hands the child the fd directly, which
+        # writes straight to the OS file at its current position -- without
+        # this flush, the write() above is still sitting in Python's
+        # userspace buffer (not yet at that position), so the child's output
+        # lands first and the echoed command line gets appended after it
+        # once the buffer finally flushes at file-close time, silently
+        # reordering the log.
+        log.flush()
 
         if nolog:
             return subprocess.run(cmd)
@@ -94,6 +102,50 @@ def exhaustive_search(
     if r.returncode != 0:
         raise RuntimeError(
             f"exhaustive_search failed for {src}; see {out_dir}/cinm-opt.log"
+        )
+    return out_dir
+
+
+def random_sample(
+    src: pathlib.Path,
+    out_dir: pathlib.Path,
+    *,
+    n_samples: int,
+    workers: int | None = None,
+    infer_opts: dict | None = None,
+    seed: int | None = None,
+    nice: bool = True,
+    cinm_opt: pathlib.Path = DEFAULT_CINM_OPT,
+) -> pathlib.Path:
+    """Evaluate a random sample of n_samples valid configs (instead of every
+    valid config, see exhaustive_search), dumping {out_dir}/infer_{fn_name}/
+    pool.csv per function found in src. Cheap alternative to
+    exhaustive_search when only a small ground-truth sample is needed --
+    exhaustive search's cost is entirely the O(n_valid) simulator calls (not
+    the O(N) validity scan), so this is O(n_samples) instead, turning
+    hours-long full-space sweeps into a low-minutes/seconds run. dump-full-pool
+    is left off (the InferenceOptions default), so pool.csv only contains the
+    n_samples visited rows, not the whole space. Returns out_dir."""
+    out_dir = pathlib.Path(out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    opts = {
+        "dump-dir": str(out_dir),
+        "sample-n": n_samples,
+        **({"rng-seed": seed} if seed is not None else {}),
+        **({"n-workers": workers} if workers else {}),
+        **(infer_opts or {}),
+    }
+    r = _run(
+        src,
+        opts,
+        out_file=out_dir / "out.mlir",
+        cinm_opt=cinm_opt,
+        log_file=out_dir / "cinm-opt.log",
+        nice=nice,
+    )
+    if r.returncode != 0:
+        raise RuntimeError(
+            f"random_sample failed for {src}; see {out_dir}/cinm-opt.log"
         )
     return out_dir
 

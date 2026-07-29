@@ -93,6 +93,68 @@ def aggregate_run(
     return combined
 
 
+def aggregate_predicted_costs(
+    compile_dir: pathlib.Path, out_dir: pathlib.Path
+) -> pd.DataFrame:
+    """Merge every config's ir/cost.csv (block_id/location/category/label/
+    cost_ms/block_total_ms -- the cost-model breakdown written during
+    compile by UpmemAnnotateCosts, see cinmopt.eval_solution_lowerer) across
+    compile_dir into one predicted_costs.csv, tagged with fn_name and every
+    column from that config's config.csv -- same join key (fn_name/label/
+    params) aggregate_run uses on the measured side, so the two can be
+    joined later without any extra bookkeeping.
+
+    compile_dir is expected in aggregate_run's compile_dir shape
+    ({fn_name}/{label}/, e.g. PATHS.compile_root(prim) / SYSTEM), since
+    everything read here (config.csv, ir/cost.csv) lives under compile_dir
+    already -- no separate run_dir needed.
+
+    cost.csv's own `label` column (the block label, e.g. "kernel",
+    "launchOverhead") is renamed to `cost_label` before merging in the
+    config's metadata, since config.csv also has a `label` column (the
+    config's row id, e.g. "row_00157") -- without the rename, assigning the
+    config's `label` column would silently clobber the block label.
+
+    Skips configs with no config.csv (not compiled) or no ir/cost.csv (e.g.
+    a plugin/simulator that doesn't emit a per-op breakdown)."""
+    compile_dir = pathlib.Path(compile_dir)
+    out_dir = pathlib.Path(out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    frames = []
+    n_configs = n_missing = 0
+
+    for fn_name, config_dir in iter_config_dirs(compile_dir):
+        config_csv = config_dir / "config.csv"
+        cost_csv = config_dir / "ir" / "cost.csv"
+
+        if not config_csv.exists() or not cost_csv.exists():
+            n_missing += 1
+            continue
+
+        config_meta = pd.read_csv(config_csv).iloc[0].to_dict()
+        n_configs += 1
+
+        df = pd.read_csv(cost_csv).rename(columns={"label": "cost_label"})
+        for col, val in config_meta.items():
+            df[col] = val
+        frames.append(df)
+
+    if n_missing:
+        print(
+            f"  {n_missing} config dir(s) skipped (no config.csv or ir/cost.csv)",
+            file=sys.stderr,
+        )
+    if not frames:
+        raise RuntimeError(f"no predicted cost data found under {compile_dir}")
+
+    combined = pd.concat(frames, ignore_index=True)
+    out_csv = out_dir / "predicted_costs.csv"
+    combined.to_csv(out_csv, index=False)
+    print(f"  {n_configs} configs aggregated -> {out_csv} ({len(combined):,} rows)")
+    return combined
+
+
 def aggregate_bo_timings(
     results_dir: pathlib.Path, out_dir: pathlib.Path
 ) -> pd.DataFrame:

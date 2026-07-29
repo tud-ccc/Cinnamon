@@ -645,6 +645,7 @@ struct UpmemInferAcceleratorPass
     o.neighborDepth = neighborDepth;
     o.neighborFrontierOnly = neighborFrontierOnly;
     o.exhaustiveSearch = exhaustiveSearch;
+    o.sampleN = sampleN;
     o.nValidation = nValidation;
     o.validationInterval = validationInterval;
     o.objectiveScale = objectiveScale;
@@ -711,9 +712,10 @@ struct UpmemInferAcceleratorPass
         auto path = std::filesystem::path(dataDumpDir) / name.str();
         // Multi-seed mode appends its own seed_<value>/ per seed, so pass the
         // base (per-op) dir. Single-seed BO gets the seed_<rngSeed>/ suffix
-        // here.
+        // here. Neither exhaustive search nor random sampling are seeded BO
+        // runs, so both dump straight to the base dir.
         if (!upmemOpts.inference.exhaustiveSearch &&
-            upmemOpts.inference.nSeeds <= 1)
+            !upmemOpts.inference.sampleN && upmemOpts.inference.nSeeds <= 1)
           path /= "seed_" + std::to_string(upmemOpts.inference.rngSeed);
         upmemOpts.inference.dumpDir = path;
       }

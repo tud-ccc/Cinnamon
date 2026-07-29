@@ -88,6 +88,12 @@ def UpmemInferAcceleratorPass : Pass<"upmem-infer-accelerator", "ModuleOp"> {
     Option<"exhaustiveSearch", "exhaustive-search", "bool", "false",
            "Evaluate every valid configuration in the search space exhaustively "
            "instead of running Bayesian optimisation">,
+    Option<"sampleN", "sample-n", "unsigned", "0u",
+           "If > 0, evaluate a random sample of this many valid configurations "
+           "instead of the full exhaustive scan or Bayesian optimisation -- a "
+           "cheap alternative to exhaustive-search when only a small "
+           "ground-truth sample is needed. Takes priority over "
+           "exhaustive-search if both are set">,
     Option<"nValidation", "n-validation", "int", "0",
            "Number of held-out validation points sampled before BO begins; "
            "0 disables surrogate validation">,

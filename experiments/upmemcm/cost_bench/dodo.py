@@ -48,7 +48,14 @@ HERE = pathlib.Path(__file__).resolve().parent
 EXPERIMENTS_DIR = HERE.parent.parent
 sys.path.insert(0, str(EXPERIMENTS_DIR))
 
-from cinm_experiments import compile_run, cinmopt, aggregate, pools, measurements
+from cinm_experiments import (
+    compile_run,
+    cinmopt,
+    aggregate,
+    pools,
+    measurements,
+    failures,
+)
 from cinm_experiments.split_source import list_functions, split_source
 from cinm_experiments.paths import python_bin
 
@@ -61,6 +68,14 @@ DOIT_CONFIG = {
 
 ITERS = 5
 SYSTEM = "cinm2"  # single fixed system tag -- this pipeline doesn't compare systems
+# How many filtered pool rows actually get compiled+benched per function.
+# Currently a re-downsample of an exhaustive oracle (cinmopt.exhaustive_search
+# evaluates every valid config, e.g. ~19k for red / ~230k for gemv, of which
+# only this many ever get hardware time) -- cinmopt.random_sample now makes it
+# possible to skip generating that full pool at all and point a Prim's
+# oracle_dir straight at a small sampled one instead, in which case this just
+# becomes a safety cap. Named here so both roles are one obvious knob.
+SAMPLE_N = 512
 
 
 def _red_filter(p: dict) -> bool:
@@ -168,6 +183,12 @@ class Paths:
     def agg_dir(self, prim: str) -> pathlib.Path:
         return self.data_dir / prim / "aggregated"
 
+    def predicted_dir(self, prim: str) -> pathlib.Path:
+        return self.data_dir / prim / "predicted"
+
+    def failures_csv(self, prim: str) -> pathlib.Path:
+        return self.data_dir / prim / "failures.csv"
+
     def plots_dir(self, prim: str) -> pathlib.Path:
         return self.data_dir / prim / "plots"
 
@@ -231,7 +252,7 @@ def _fn_configs(prim_name: str, fn_name: str) -> tuple[compile_run.Config, ...]:
             )
         )
     random.seed(0)
-    return tuple(random.sample(configs, k=512))
+    return tuple(random.sample(configs, k=min(SAMPLE_N, len(configs))))
 
 
 # ── split ────────────────────────────────────────────────────────────────────
@@ -277,6 +298,12 @@ def _compile_fn(prim_name: str, fn_name: str, marker: pathlib.Path) -> bool:
     compile_run.compile_configs(
         pending, compile_root=PATHS.compile_root(prim_name), workers=os.cpu_count()
     )
+    fn_failures = failures.collect_compile_failures(
+        PATHS.compile_root(prim_name) / SYSTEM, only_fn=fn_name
+    )
+    if not fn_failures.empty:
+        print(f"  {prim_name}:{fn_name}: {len(fn_failures)} compile failures")
+        print(failures.summarize(fn_failures))
     marker.parent.mkdir(parents=True, exist_ok=True)
     marker.touch()
     return True
@@ -329,6 +356,14 @@ def _bench_fn(prim_name: str, fn_name: str, marker: pathlib.Path) -> bool:
         f"  {prim_name}:{fn_name}: {len(pending)}/{len(compiled)} configs need a bench run"
     )
     compile_run.run_configs(pending, run_root=PATHS.run_root(prim_name), iters=ITERS)
+    fn_failures = failures.collect_run_failures(
+        PATHS.run_root(prim_name) / SYSTEM,
+        PATHS.compile_root(prim_name) / SYSTEM,
+        only_fn=fn_name,
+    )
+    if not fn_failures.empty:
+        print(f"  {prim_name}:{fn_name}: {len(fn_failures)} run failures")
+        print(failures.summarize(fn_failures))
     marker.parent.mkdir(parents=True, exist_ok=True)
     marker.touch()
     return True
@@ -384,6 +419,52 @@ def task_agg():
         }
 
 
+def _agg_predictions_one(prim_name: str) -> bool:
+    compile_dir = PATHS.compile_root(prim_name) / SYSTEM
+    aggregate.aggregate_predicted_costs(compile_dir, PATHS.predicted_dir(prim_name))
+    return True
+
+
+def task_agg_predictions():
+    """Merge every config's ir/cost.csv (the cost-model's per-op category
+    breakdown, written at compile time -- see aggregate.
+    aggregate_predicted_costs) into one predicted_costs.csv. Depends only on
+    compile (not bench), since the breakdown is a compile-time artifact that
+    doesn't need hardware. Like task_agg, always reruns rather than tracking
+    staleness."""
+    for name in PRIMS:
+        yield {
+            "name": name,
+            "task_dep": [f"compile:{name}:{fn}" for fn in _fn_names(name)],
+            "uptodate": [False],
+            "actions": [(_agg_predictions_one, [name])],
+        }
+
+
+def _failures_one(prim_name: str) -> bool:
+    df = failures.collect_failures(
+        PATHS.run_root(prim_name) / SYSTEM, PATHS.compile_root(prim_name) / SYSTEM
+    )
+    df.to_csv(PATHS.failures_csv(prim_name), index=False)
+    print(f"  {prim_name}: {len(df)} failures -> {PATHS.failures_csv(prim_name)}")
+    print(failures.summarize(df))
+    return True
+
+
+def task_failures():
+    """Collect every compile/run failure left on disk across this prim's
+    functions into one failures.csv (see cinm_experiments.failures) --
+    depends on bench (not just compile), since run failures need bench to
+    have been attempted too. Like task_agg, always reruns."""
+    for name in PRIMS:
+        yield {
+            "name": name,
+            "task_dep": [f"bench:{name}:{fn}" for fn in _fn_names(name)],
+            "uptodate": [False],
+            "actions": [(_failures_one, [name])],
+        }
+
+
 # ── plot ─────────────────────────────────────────────────────────────────────
 
 
@@ -399,11 +480,13 @@ def task_plot():
         cmd = (
             f"{python_bin()} plot_cost.py "
             f"--in-dir {PATHS.agg_dir(name)} --out-dir {PATHS.plots_dir(name)} "
-            f"--oracle {prim.oracle_dir} --pool-out-dir {PATHS.pool_measured_dir(name)}"
+            f"--oracle {prim.oracle_dir} --pool-out-dir {PATHS.pool_measured_dir(name)} "
+            f"--predicted-dir {PATHS.predicted_dir(name)} "
+            f"--failures-csv {PATHS.failures_csv(name)}"
         )
         yield {
             "name": name,
-            "task_dep": [f"agg:{name}"],
+            "task_dep": [f"agg:{name}", f"agg_predictions:{name}", f"failures:{name}"],
             "uptodate": [False],
             "actions": [cmd],
         }

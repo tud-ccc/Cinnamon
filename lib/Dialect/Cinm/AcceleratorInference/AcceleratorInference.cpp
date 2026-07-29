@@ -1121,6 +1121,151 @@ struct InferenceTask {
 
     return DiagnosedSilenceableFailure::success();
   }
+
+  /// Like runExhaustive, but only evaluates a random sample of `sampleN`
+  /// valid configurations instead of every valid config in the space.
+  /// Exhaustive search's cost is entirely the O(n_valid) simulator calls
+  /// (the validity scan itself, CandidatePool::build, is a cheap O(N)
+  /// arithmetic pass) -- so evaluating a bounded random subset instead of
+  /// every valid config turns an O(n_valid) sweep (hours, for spaces with
+  /// hundreds of thousands of valid configs) into an O(sampleN) one
+  /// (seconds), while still exercising the real cost model on real
+  /// configurations rather than needing a stale/previously-dumped pool.
+  /// Shares almost all of runExhaustive's machinery (pool construction,
+  /// per-thread plugin clones, progress bar, dump) -- only the index
+  /// source workers pull from differs: a fixed, pre-sampled list instead of
+  /// every index in [0, N).
+  Maybe<TrialInfo> runRandomSample(size_t sampleN) {
+    const size_t N = space.totalSize();
+    unsigned nThreads =
+        plugin.supportsMultithreading()
+            ? (options.numWorkers > 0
+                   ? options.numWorkers
+                   : std::max(1u, std::thread::hardware_concurrency()))
+            : 1u;
+    MLIRContext *ctx = refClone->getContext();
+
+    std::vector<std::unique_ptr<InferencePlugin>> pluginClones;
+    pluginClones.reserve(nThreads);
+    for (unsigned t = 0; t < nThreads; ++t) {
+      pluginClones.push_back(plugin.clone());
+      pluginClones.back()->warmUp(ctx);
+    }
+
+    // Build pool (cheap O(N) validity scan, no simulator calls yet), then
+    // draw sampleN random valid indices up front -- fillRandom rejects
+    // already-visited/invalid draws internally, so `sampled` ends up with
+    // min(sampleN, nValid) distinct valid indices.
+    auto pool = CandidatePool::build(space, sampleN, false);
+    std::unordered_set<size_t> sampledSet;
+    pool.fillRandom(sampledSet, sampleN, rng);
+    std::vector<size_t> sampled(sampledSet.begin(), sampledSet.end());
+
+    LLVM_DEBUG(llvm::dbgs() << "[cinm-inference] Random sample: " << sampled.size()
+                            << " / " << pool.size() << " valid / " << N
+                            << " total configs, " << nThreads << " threads\n");
+
+    indicators::ProgressBar bar{
+        indicators::option::BarWidth{40},
+        indicators::option::MaxProgress{sampled.size()},
+        indicators::option::PrefixText{"Random sample search "},
+        indicators::option::ShowPercentage{true},
+        indicators::option::ShowElapsedTime{true},
+        indicators::option::ShowRemainingTime{true},
+        indicators::option::Stream{std::cerr},
+    };
+    std::atomic<size_t> barDone{0};
+    std::atomic<bool> barStop{false};
+    std::thread printerThread([&] {
+      while (!barStop.load(std::memory_order_relaxed)) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(200));
+        bar.set_progress(barDone.load(std::memory_order_relaxed));
+      }
+    });
+
+    std::atomic<size_t> nextIdx{0};
+
+    struct Obs {
+      size_t idx;
+      std::optional<double> cost;
+      std::chrono::milliseconds eval_time;
+      uint64_t cpu_eval_time_ms;
+    };
+    std::vector<std::vector<Obs>> perThreadObs(nThreads);
+
+    auto worker = [&](unsigned tid) {
+      auto &myPlugin = *pluginClones[tid];
+      OwningOpRef<ModuleOp> threadRef(llvm::cast<ModuleOp>(refModule->clone()));
+      Configuration conf;
+      while (true) {
+        size_t pos = nextIdx.fetch_add(1, std::memory_order_relaxed);
+        if (pos >= sampled.size())
+          break;
+        size_t i = sampled[pos];
+        space.at(i, conf);
+        barDone.fetch_add(1, std::memory_order_relaxed);
+
+        auto trial = makeTrialInfo(conf, *threadRef);
+        auto t0 = std::chrono::steady_clock::now();
+        double cpuT0 = getThreadCpuTimeMs();
+        auto result = myPlugin.evaluate(trial);
+        auto evalTime = std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now() - t0);
+        auto cpuMs = static_cast<uint64_t>(getThreadCpuTimeMs() - cpuT0);
+        utils::SimCost *cost = std::get_if<utils::SimCost>(&result);
+        std::optional<double> opt_cost =
+            cost ? std::make_optional(cost->total()) : std::nullopt;
+        perThreadObs[tid].push_back({.idx = i,
+                                     .cost = opt_cost,
+                                     .eval_time = evalTime,
+                                     .cpu_eval_time_ms = cpuMs});
+      }
+    };
+
+    std::vector<std::thread> threads;
+    threads.reserve(nThreads - 1);
+    auto t0 = std::chrono::steady_clock::now();
+    for (unsigned t = 1; t < nThreads; ++t)
+      threads.emplace_back(worker, t);
+    worker(0);
+    for (auto &t : threads)
+      t.join();
+    barStop.store(true, std::memory_order_relaxed);
+    printerThread.join();
+    bar.mark_as_completed();
+    auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now() - t0);
+
+    size_t total = 0;
+    size_t total_successful = 0;
+    for (auto &obs : perThreadObs) {
+      total += obs.size();
+      for (auto &[idx, cost, eval_time, cpu_eval_time_ms] : obs) {
+        pool.markVisited(idx);
+        if (cost) {
+          pool.recordObservation(idx, *cost, 0, eval_time, cpu_eval_time_ms);
+          total_successful++;
+        }
+        // otherwise failed.
+      }
+    }
+
+    LLVM_DEBUG(llvm::dbgs()
+               << "[cinm-inference] Random sample: " << total_successful
+               << " successful / " << total << " sampled / " << pool.size()
+               << " valid, across " << nThreads << " threads in "
+               << elapsed.count() << " ms\n");
+    plugin.printStats();
+
+    if (!options.dumpDir.empty()) {
+      auto path = options.dumpDir + "/pool.csv";
+      pool.dumpToCSV(space, options, path);
+      LLVM_DEBUG(llvm::dbgs()
+                 << "[cinm-inference] Pool dumped to " << path << "\n");
+    }
+
+    return DiagnosedSilenceableFailure::success();
+  }
 };
 
 bool InferenceState::tryEval(size_t poolIdx, InferenceTask &task,
@@ -1214,6 +1359,8 @@ inferAcceleratorConfig(cinm::ComputeBlockOp computeOp, InferencePlugin &plugin,
       llvm::errs() << ": " << llvm::format("%.3f", value) << " ms\n";
     });
 
+  } else if (opts.sampleN > 0) {
+    bestResult = TRY_GET(task.runRandomSample(opts.sampleN));
   } else if (opts.exhaustiveSearch) {
     bestResult = TRY_GET(task.runExhaustive());
   } else if (opts.nSeeds > 1) {
