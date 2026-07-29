@@ -1123,20 +1123,26 @@ struct InferenceTask {
   }
 
   /// Like runExhaustive, but only evaluates a random sample of `sampleN`
-  /// valid configurations instead of every valid config in the space.
+  /// valid configurations instead of every valid config in the space, and
+  /// rejects (without counting towards sampleN) any candidate predicted to
+  /// cost more than options.sampleMaxCostMs -- a uniform-random draw over
+  /// the valid space routinely turns up configs whose actual on-hardware
+  /// cost is minutes instead of milliseconds, which is wasteful once every
+  /// sampled config gets compiled and benchmarked downstream. Uses
+  /// CandidatePool::sampleInitialSet (Latin Hypercube Sampling, already
+  /// parallelized internally -- see its own doc comment) rather than
+  /// fillRandom precisely so the accept/reject decision can happen inside
+  /// the sampling loop itself: a rejected candidate is immediately replaced
+  /// by another LHS draw instead of being sampled once ahead of time.
+  ///
   /// Exhaustive search's cost is entirely the O(n_valid) simulator calls
   /// (the validity scan itself, CandidatePool::build, is a cheap O(N)
   /// arithmetic pass) -- so evaluating a bounded random subset instead of
   /// every valid config turns an O(n_valid) sweep (hours, for spaces with
-  /// hundreds of thousands of valid configs) into an O(sampleN) one
-  /// (seconds), while still exercising the real cost model on real
-  /// configurations rather than needing a stale/previously-dumped pool.
-  /// Shares almost all of runExhaustive's machinery (pool construction,
-  /// per-thread plugin clones, progress bar, dump) -- only the index
-  /// source workers pull from differs: a fixed, pre-sampled list instead of
-  /// every index in [0, N).
+  /// hundreds of thousands of valid configs) into roughly an O(sampleN)
+  /// one (seconds to low minutes, depending how much sampleMaxCostMs ends
+  /// up rejecting).
   Maybe<TrialInfo> runRandomSample(size_t sampleN) {
-    const size_t N = space.totalSize();
     unsigned nThreads =
         plugin.supportsMultithreading()
             ? (options.numWorkers > 0
@@ -1145,116 +1151,94 @@ struct InferenceTask {
             : 1u;
     MLIRContext *ctx = refClone->getContext();
 
-    std::vector<std::unique_ptr<InferencePlugin>> pluginClones;
-    pluginClones.reserve(nThreads);
-    for (unsigned t = 0; t < nThreads; ++t) {
-      pluginClones.push_back(plugin.clone());
-      pluginClones.back()->warmUp(ctx);
-    }
-
-    // Build pool (cheap O(N) validity scan, no simulator calls yet), then
-    // draw sampleN random valid indices up front -- fillRandom rejects
-    // already-visited/invalid draws internally, so `sampled` ends up with
-    // min(sampleN, nValid) distinct valid indices.
+    // Build pool (cheap O(N) validity scan, no simulator calls yet).
     auto pool = CandidatePool::build(space, sampleN, false);
-    std::unordered_set<size_t> sampledSet;
-    pool.fillRandom(sampledSet, sampleN, rng);
-    std::vector<size_t> sampled(sampledSet.begin(), sampledSet.end());
 
-    LLVM_DEBUG(llvm::dbgs() << "[cinm-inference] Random sample: " << sampled.size()
-                            << " / " << pool.size() << " valid / " << N
-                            << " total configs, " << nThreads << " threads\n");
+    LLVM_DEBUG(llvm::dbgs()
+               << "[cinm-inference] Random sample: requesting " << sampleN
+               << " / " << pool.size() << " valid configs (max cost "
+               << options.sampleMaxCostMs << " ms), " << nThreads
+               << " threads\n");
 
     indicators::ProgressBar bar{
         indicators::option::BarWidth{40},
-        indicators::option::MaxProgress{sampled.size()},
+        indicators::option::MaxProgress{sampleN},
         indicators::option::PrefixText{"Random sample search "},
         indicators::option::ShowPercentage{true},
         indicators::option::ShowElapsedTime{true},
         indicators::option::ShowRemainingTime{true},
         indicators::option::Stream{std::cerr},
     };
-    std::atomic<size_t> barDone{0};
     std::atomic<bool> barStop{false};
     std::thread printerThread([&] {
       while (!barStop.load(std::memory_order_relaxed)) {
         std::this_thread::sleep_for(std::chrono::milliseconds(200));
-        bar.set_progress(barDone.load(std::memory_order_relaxed));
+        bar.set_progress(pool.numVisited());
       }
     });
 
-    std::atomic<size_t> nextIdx{0};
+    std::mutex poolMutex;
+    std::atomic<size_t> nAttempted{0};
+    std::atomic<size_t> nRejected{0};
+    double maxCostMs = options.sampleMaxCostMs;
 
-    struct Obs {
-      size_t idx;
-      std::optional<double> cost;
-      std::chrono::milliseconds eval_time;
-      uint64_t cpu_eval_time_ms;
-    };
-    std::vector<std::vector<Obs>> perThreadObs(nThreads);
+    // Invoked concurrently on sampleInitialSet's own thread pool -- a fixed
+    // set of persistent worker threads, so thread_local here gives every
+    // worker its own InferencePlugin clone + module clone, created once on
+    // first use and reused for every later candidate that thread evaluates
+    // (mirrors runExhaustive's explicit per-thread clone vector, just
+    // without needing a stable numeric thread index to index into it).
+    auto accept = [&](size_t idx) -> bool {
+      thread_local std::unique_ptr<InferencePlugin> tlsPlugin = [&] {
+        auto p = plugin.clone();
+        p->warmUp(ctx);
+        return p;
+      }();
+      thread_local OwningOpRef<ModuleOp> tlsRef(
+          llvm::cast<ModuleOp>(refModule->clone()));
 
-    auto worker = [&](unsigned tid) {
-      auto &myPlugin = *pluginClones[tid];
-      OwningOpRef<ModuleOp> threadRef(llvm::cast<ModuleOp>(refModule->clone()));
+      nAttempted.fetch_add(1, std::memory_order_relaxed);
       Configuration conf;
-      while (true) {
-        size_t pos = nextIdx.fetch_add(1, std::memory_order_relaxed);
-        if (pos >= sampled.size())
-          break;
-        size_t i = sampled[pos];
-        space.at(i, conf);
-        barDone.fetch_add(1, std::memory_order_relaxed);
+      space.at(idx, conf);
+      auto trial = makeTrialInfo(conf, *tlsRef);
+      auto t0 = std::chrono::steady_clock::now();
+      double cpuT0 = getThreadCpuTimeMs();
+      auto result = tlsPlugin->evaluate(trial);
+      auto evalTime = std::chrono::duration_cast<std::chrono::milliseconds>(
+          std::chrono::steady_clock::now() - t0);
+      auto cpuMs = static_cast<uint64_t>(getThreadCpuTimeMs() - cpuT0);
 
-        auto trial = makeTrialInfo(conf, *threadRef);
-        auto t0 = std::chrono::steady_clock::now();
-        double cpuT0 = getThreadCpuTimeMs();
-        auto result = myPlugin.evaluate(trial);
-        auto evalTime = std::chrono::duration_cast<std::chrono::milliseconds>(
-            std::chrono::steady_clock::now() - t0);
-        auto cpuMs = static_cast<uint64_t>(getThreadCpuTimeMs() - cpuT0);
-        utils::SimCost *cost = std::get_if<utils::SimCost>(&result);
-        std::optional<double> opt_cost =
-            cost ? std::make_optional(cost->total()) : std::nullopt;
-        perThreadObs[tid].push_back({.idx = i,
-                                     .cost = opt_cost,
-                                     .eval_time = evalTime,
-                                     .cpu_eval_time_ms = cpuMs});
+      utils::SimCost *cost = std::get_if<utils::SimCost>(&result);
+      if (!cost || cost->total() > maxCostMs) {
+        // Rejected (or failed to evaluate): not recorded, so it never shows
+        // up in the dump (dumpFullPool is off by default) and doesn't count
+        // towards sampleN -- sampleInitialSet's own `used` bookkeeping
+        // already ensures this exact candidate is never retried.
+        nRejected.fetch_add(1, std::memory_order_relaxed);
+        return false;
       }
+
+      std::lock_guard<std::mutex> guard(poolMutex);
+      pool.markVisited(idx);
+      pool.recordObservation(idx, cost->total(), 0, evalTime, cpuMs);
+      return true;
     };
 
-    std::vector<std::thread> threads;
-    threads.reserve(nThreads - 1);
     auto t0 = std::chrono::steady_clock::now();
-    for (unsigned t = 1; t < nThreads; ++t)
-      threads.emplace_back(worker, t);
-    worker(0);
-    for (auto &t : threads)
-      t.join();
-    barStop.store(true, std::memory_order_relaxed);
-    printerThread.join();
-    bar.mark_as_completed();
+    pool.sampleInitialSet(sampleN, rng, accept, nThreads);
     auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
         std::chrono::steady_clock::now() - t0);
 
-    size_t total = 0;
-    size_t total_successful = 0;
-    for (auto &obs : perThreadObs) {
-      total += obs.size();
-      for (auto &[idx, cost, eval_time, cpu_eval_time_ms] : obs) {
-        pool.markVisited(idx);
-        if (cost) {
-          pool.recordObservation(idx, *cost, 0, eval_time, cpu_eval_time_ms);
-          total_successful++;
-        }
-        // otherwise failed.
-      }
-    }
+    barStop.store(true, std::memory_order_relaxed);
+    printerThread.join();
+    bar.mark_as_completed();
 
     LLVM_DEBUG(llvm::dbgs()
-               << "[cinm-inference] Random sample: " << total_successful
-               << " successful / " << total << " sampled / " << pool.size()
-               << " valid, across " << nThreads << " threads in "
-               << elapsed.count() << " ms\n");
+               << "[cinm-inference] Random sample: " << pool.numVisited()
+               << " / " << sampleN << " accepted (<= " << maxCostMs
+               << " ms), " << nRejected.load() << " rejected / "
+               << nAttempted.load() << " attempted, across " << nThreads
+               << " threads in " << elapsed.count() << " ms\n");
     plugin.printStats();
 
     if (!options.dumpDir.empty()) {

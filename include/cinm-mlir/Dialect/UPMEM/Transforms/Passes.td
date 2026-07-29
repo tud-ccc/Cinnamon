@@ -94,6 +94,10 @@ def UpmemInferAcceleratorPass : Pass<"upmem-infer-accelerator", "ModuleOp"> {
            "cheap alternative to exhaustive-search when only a small "
            "ground-truth sample is needed. Takes priority over "
            "exhaustive-search if both are set">,
+    Option<"sampleMaxCostMs", "sample-max-cost-ms", "double", "2000.0",
+           "When sample-n > 0, reject (and resample past) candidates predicted "
+           "to cost more than this many ms, so the sample isn't dominated by "
+           "configs that would take minutes on real hardware">,
     Option<"nValidation", "n-validation", "int", "0",
            "Number of held-out validation points sampled before BO begins; "
            "0 disables surrogate validation">,

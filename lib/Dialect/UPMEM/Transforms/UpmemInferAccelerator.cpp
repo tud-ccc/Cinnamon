@@ -646,6 +646,7 @@ struct UpmemInferAcceleratorPass
     o.neighborFrontierOnly = neighborFrontierOnly;
     o.exhaustiveSearch = exhaustiveSearch;
     o.sampleN = sampleN;
+    o.sampleMaxCostMs = sampleMaxCostMs;
     o.nValidation = nValidation;
     o.validationInterval = validationInterval;
     o.objectiveScale = objectiveScale;

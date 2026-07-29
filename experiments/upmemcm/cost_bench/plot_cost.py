@@ -230,7 +230,15 @@ _PREDICTED_NON_PARAM_COLS = frozenset(
     }
 )
 
-_BUCKET_ORDER = ["launch", "scatter", "gather", "copy", "unaccounted"]
+_BUCKET_ORDER = [
+    "launch",
+    "scatter:block",
+    "scatter:sg",
+    "scatter:bc",
+    "gather",
+    "copy",
+    "unaccounted",
+]
 
 
 def predicted_key_cols(predicted_all: pd.DataFrame) -> list[str]:
@@ -300,6 +308,22 @@ def compute_measured_breakdown_long(
             return pd.Series(dtype=float)
         return df.groupby(["label", "iteration"])["elapsed_ns"].sum()
 
+    def sum_by_iter_and_kind(csv_type) -> dict[str, pd.Series]:
+        """Like sum_by_iter, but split by scatter.csv's `kind` column (see
+        timers.c's XferRecord.kind) into one Series per kind ("block"/"sg"/
+        "bc") instead of summing every kind into one bucket -- so scatter:sg
+        can be compared against its own prediction instead of being averaged
+        together with scatter:block/scatter:bc into a single "scatter"
+        number that the predicted side no longer produces (see
+        measurements.PREDICTED_TO_MEASURED)."""
+        df = _load_measured_csv(agg_dir, fn_name, csv_type)
+        if df is None or "kind" not in df.columns:
+            return {}
+        return {
+            str(kind): group.groupby(["label", "iteration"])["elapsed_ns"].sum()
+            for kind, group in df.groupby("kind")
+        }
+
     total_g = mean_by_iter("total")
     free_g = mean_by_iter("free")
     alloc_g = mean_by_iter("alloc")
@@ -311,8 +335,18 @@ def compute_measured_breakdown_long(
     net_ms = (joined.groupby("label")["net"].mean() / 1e6).rename("net_ms")
 
     wide = pd.DataFrame({"net_ms": net_ms})
+    scatter_bucket_cols = []
+    for kind, per_iter in sum_by_iter_and_kind("scatter").items():
+        bucket = f"scatter:{kind}"
+        scatter_bucket_cols.append(bucket)
+        wide[bucket] = (
+            (per_iter.groupby("label").mean() / 1e6).reindex(wide.index).fillna(0.0)
+        )
+    for bucket in ["scatter:block", "scatter:sg", "scatter:bc"]:
+        if bucket not in wide.columns:
+            wide[bucket] = 0.0
+            scatter_bucket_cols.append(bucket)
     for bucket, csv_type in [
-        ("scatter", "scatter"),
         ("gather", "gather"),
         ("copy", "copy"),
         ("launch", "launch"),
@@ -325,7 +359,7 @@ def compute_measured_breakdown_long(
         )
         wide[bucket] = per_label.reindex(wide.index).fillna(0.0)
     wide["unaccounted"] = wide["net_ms"] - wide[
-        ["scatter", "gather", "copy", "launch"]
+        scatter_bucket_cols + ["gather", "copy", "launch"]
     ].sum(axis=1)
     wide = wide.drop(columns=["net_ms"]).reset_index()
 
@@ -770,7 +804,21 @@ def plot_failure_scatter(
 # ── Task collection (runs in the main process) ────────────────────────────────
 
 
-def collect_metric_tasks(in_dir: pathlib.Path, out_dir: pathlib.Path, name_filter: str):
+def _fn_matches(fn_name: str, fn_filter: Optional[str]) -> bool:
+    """Whether fn_name should be included given --fn-filter (None/empty means
+    every function). fn_filter is a comma-separated set of exact fn_name
+    values -- unlike --filter (a substring match on plot *names*), a
+    substring match on fn_name itself would be ambiguous (e.g. "4MB" also
+    matches "red_64MB")."""
+    return not fn_filter or fn_name in fn_filter.split(",")
+
+
+def collect_metric_tasks(
+    in_dir: pathlib.Path,
+    out_dir: pathlib.Path,
+    name_filter: str,
+    fn_filter: Optional[str] = None,
+):
     """Return [(label, func, args), ...] for every gather/scatter/launch/free/total plot."""
     tasks = []
     for csv_path in sorted(in_dir.glob("*.csv")):
@@ -784,6 +832,8 @@ def collect_metric_tasks(in_dir: pathlib.Path, out_dir: pathlib.Path, name_filte
         xcols = ["dpus"] + (["bytes_per_dpu", "total_bytes"] if has_bytes else [])
 
         for fn_name, group in df.groupby("fn_name"):
+            if not _fn_matches(fn_name, fn_filter):
+                continue
             for xcol in xcols:
                 plot_name = f"{metric}_vs_{xcol}"
                 if name_filter and name_filter not in plot_name:
@@ -806,6 +856,7 @@ def collect_calibration_tasks(
     pool_out_dir: pathlib.Path,
     name_filter: Optional[str],
     predicted_dir: Optional[pathlib.Path] = None,
+    fn_filter: Optional[str] = None,
 ):
     plot_name = "cost_calibration"
     if name_filter and name_filter not in plot_name:
@@ -826,6 +877,8 @@ def collect_calibration_tasks(
     tasks = []
     pool_out_dir.mkdir(parents=True, exist_ok=True)
     for fn_name, pool_csv in find_function_pools(oracle_dir):
+        if not _fn_matches(fn_name, fn_filter):
+            continue
         pool = pd.read_csv(pool_csv)
         key_cols = _key_cols(pool)
         measured = compute_measured_cost(agg_dir, fn_name, key_cols)
@@ -861,6 +914,7 @@ def collect_launch_calibration_tasks(
     agg_dir: pathlib.Path,
     out_dir: pathlib.Path,
     name_filter: Optional[str],
+    fn_filter: Optional[str] = None,
 ):
     plot_name = "launch_calibration"
     if name_filter and name_filter not in plot_name:
@@ -868,6 +922,8 @@ def collect_launch_calibration_tasks(
 
     tasks = []
     for fn_name, pool_csv in find_function_pools(kernel_oracle_dir):
+        if not _fn_matches(fn_name, fn_filter):
+            continue
         pool = pd.read_csv(pool_csv)
         key_cols = _key_cols(pool)
         measured = compute_measured_launch_cost(agg_dir, fn_name, key_cols)
@@ -896,6 +952,7 @@ def collect_breakdown_tasks(
     predicted_dir: pathlib.Path,
     out_dir: pathlib.Path,
     name_filter: Optional[str],
+    fn_filter: Optional[str] = None,
 ):
     plot_name = "cost_breakdown"
     if name_filter and name_filter not in plot_name:
@@ -913,6 +970,8 @@ def collect_breakdown_tasks(
 
     tasks = []
     for fn_name in sorted(predicted_all["fn_name"].unique()):
+        if not _fn_matches(fn_name, fn_filter):
+            continue
         joined = build_breakdown_frame(agg_dir, predicted_all, fn_name)
         if joined.empty:
             print(
@@ -938,7 +997,10 @@ def collect_breakdown_tasks(
 
 
 def collect_failure_tasks(
-    failures_csv: pathlib.Path, out_dir: pathlib.Path, name_filter: Optional[str]
+    failures_csv: pathlib.Path,
+    out_dir: pathlib.Path,
+    name_filter: Optional[str],
+    fn_filter: Optional[str] = None,
 ):
     plot_name = "failures"
     if name_filter and name_filter not in plot_name:
@@ -951,6 +1013,8 @@ def collect_failure_tasks(
         )
         return []
     df = pd.read_csv(failures_csv)
+    if fn_filter:
+        df = df[df["fn_name"].isin(fn_filter.split(","))]
     if df.empty:
         return []
 
@@ -992,6 +1056,16 @@ def main():
         help="Only generate plots whose name contains this substring, "
         "e.g. --filter dpus or --filter cost_calibration "
         "(default: all plots)",
+    )
+    parser.add_argument(
+        "--fn-filter",
+        default=None,
+        help="Only generate plots for these fn_name(s) (comma-separated, "
+        "exact match -- e.g. --fn-filter red_4MB or "
+        "--fn-filter red_4MB,red_64MB). Unlike --filter, this is an exact "
+        "match rather than substring, since fn_name substrings collide "
+        "(e.g. '4MB' also matches 'red_64MB'). Default: every function "
+        "found in the input data.",
     )
     parser.add_argument(
         "--oracle",
@@ -1042,7 +1116,7 @@ def main():
     in_dir = pathlib.Path(args.in_dir)
     out_dir = pathlib.Path(args.out_dir)
 
-    tasks = collect_metric_tasks(in_dir, out_dir, args.filter)
+    tasks = collect_metric_tasks(in_dir, out_dir, args.filter, args.fn_filter)
     if args.oracle:
         tasks += collect_calibration_tasks(
             pathlib.Path(args.oracle),
@@ -1051,18 +1125,27 @@ def main():
             pathlib.Path(args.pool_out_dir),
             args.filter,
             pathlib.Path(args.predicted_dir) if args.predicted_dir else None,
+            args.fn_filter,
         )
     if args.kernel_oracle:
         tasks += collect_launch_calibration_tasks(
-            pathlib.Path(args.kernel_oracle), in_dir, out_dir, args.filter
+            pathlib.Path(args.kernel_oracle),
+            in_dir,
+            out_dir,
+            args.filter,
+            args.fn_filter,
         )
     if args.predicted_dir:
         tasks += collect_breakdown_tasks(
-            in_dir, pathlib.Path(args.predicted_dir), out_dir, args.filter
+            in_dir,
+            pathlib.Path(args.predicted_dir),
+            out_dir,
+            args.filter,
+            args.fn_filter,
         )
     if args.failures_csv:
         tasks += collect_failure_tasks(
-            pathlib.Path(args.failures_csv), out_dir, args.filter
+            pathlib.Path(args.failures_csv), out_dir, args.filter, args.fn_filter
         )
 
     if not tasks:

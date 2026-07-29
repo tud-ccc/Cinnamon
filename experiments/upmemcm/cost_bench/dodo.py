@@ -411,6 +411,10 @@ def _bench_fn(prim_name: str, fn_name: str, marker: pathlib.Path) -> bool:
     compiled = compile_run.discover_compiled(
         configs, compile_root=PATHS.compile_root(prim_name)
     )
+    # --- Subsample for a quicker run. TODO remove this
+    random.seed(0)
+    compiled = random.sample(compiled, k=256)
+    # ---
     pending = [
         c
         for c in compiled
@@ -534,6 +538,20 @@ def task_failures():
 # ── plot ─────────────────────────────────────────────────────────────────────
 
 
+def _plot_cmd(prim_name: str) -> str:
+    """The plot_cost.py invocation for one prim -- factored out so
+    task_single can run the exact same command directly (see its docstring
+    for why), without duplicating the CLI string by hand."""
+    return (
+        f"{python_bin()} plot_cost.py "
+        f"--in-dir {PATHS.agg_dir(prim_name)} --out-dir {PATHS.plots_dir(prim_name)} "
+        f"--oracle {PATHS.oracle_dir(prim_name)} "
+        f"--pool-out-dir {PATHS.pool_measured_dir(prim_name)} "
+        f"--predicted-dir {PATHS.predicted_dir(prim_name)} "
+        f"--failures-csv {PATHS.failures_csv(prim_name)}"
+    )
+
+
 def task_plot():
     """Regenerate this prim's plots/ (per-metric-vs-dim scatter plots, plus
     the cost_calibration measured-vs-predicted plot). Shells out to
@@ -543,18 +561,11 @@ def task_plot():
     relative to compile/bench, and its output set is dynamic (one plot per
     function/metric found)."""
     for name in PRIMS:
-        cmd = (
-            f"{python_bin()} plot_cost.py "
-            f"--in-dir {PATHS.agg_dir(name)} --out-dir {PATHS.plots_dir(name)} "
-            f"--oracle {PATHS.oracle_dir(name)} --pool-out-dir {PATHS.pool_measured_dir(name)} "
-            f"--predicted-dir {PATHS.predicted_dir(name)} "
-            f"--failures-csv {PATHS.failures_csv(name)}"
-        )
         yield {
             "name": name,
             "task_dep": [f"agg:{name}", f"agg_predictions:{name}", f"failures:{name}"],
             "uptodate": [False],
-            "actions": [cmd],
+            "actions": [_plot_cmd(name)],
         }
 
 
@@ -564,13 +575,21 @@ def task_plot():
 def task_single():
     """`doit single:<prim>:<fn>` -- the whole pipeline (search -> split ->
     compile -> bench -> agg -> agg_predictions -> failures -> plot) for one
-    function, instead of having to run each stage's own <prim>-wide task by
-    hand. A pure grouping task (no actions of its own): agg/agg_predictions/
-    failures/plot are still whole-prim (they fold in whatever else of that
-    prim happens to already be compiled/benched too, which is harmless), but
-    search/compile/bench are scoped to exactly this function so
-    `doit single:...` doesn't also search/compile/bench every other function
-    of that prim."""
+    function.
+
+    task_dep only covers search/compile/bench for exactly this function --
+    NOT agg:<prim>/agg_predictions:<prim>/failures:<prim>/plot:<prim>
+    themselves, since those task_dep on *every* function of the prim (see
+    their own docstrings), which would silently force search+compile+bench
+    of every sibling function too, defeating the point of "single". Instead
+    the aggregate+plot step is called directly as this task's own actions --
+    the exact same functions/command task_agg/task_agg_predictions/
+    task_failures/task_plot use, just invoked here rather than depended on --
+    which is safe because all four are already unconditional/"uptodate:
+    False" (cheap, always-rerun-from-whatever's-on-disk), not incremental.
+    One consequence worth knowing: that rerun still aggregates/plots every
+    function of the prim that happens to already have data on disk, not
+    narrowly just this one -- plot_cost.py has no per-function scope today."""
     for name in PRIMS:
         for fn_name in _fn_names(name):
             yield {
@@ -579,10 +598,12 @@ def task_single():
                     f"search:{name}:{fn_name}",
                     f"compile:{name}:{fn_name}",
                     f"bench:{name}:{fn_name}",
-                    f"agg:{name}",
-                    f"agg_predictions:{name}",
-                    f"failures:{name}",
-                    f"plot:{name}",
                 ],
-                "actions": [],
+                "uptodate": [False],
+                "actions": [
+                    (_agg_one, [name]),
+                    (_agg_predictions_one, [name]),
+                    (_failures_one, [name]),
+                    _plot_cmd(name),
+                ],
             }

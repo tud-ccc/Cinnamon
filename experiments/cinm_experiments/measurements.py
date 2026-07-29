@@ -221,10 +221,24 @@ def net_breakdown_ms(
 # label) pair not listed here, so a new/renamed label doesn't silently
 # vanish from aggregation -- it just lands in its own bucket instead of
 # being merged into an existing one.
+#
+# The three "transfer" cost_labels (scatter/scatter_on_tasklets/broadcast --
+# see UpmemOpCountSimulator.cpp's upmem::ScatterOp / ScatterOnTaskletsOp /
+# BroadcastOp cases) map onto the same "scatter:block"/"scatter:sg"/
+# "scatter:bc" buckets net_breakdown_ms(by_kind=True) already splits the
+# *measured* side into (scatter.csv's `kind` column) -- keep both sides on
+# the same three buckets rather than merging them back into one "scatter"
+# bucket, so a kernel that measures scatter:sg but predicts scatter:block
+# (or vice versa) shows up as an error instead of silently cancelling out --
+# or, before this mapping existed, instead of scatter_on_tasklets/broadcast
+# predictions falling through to the unlisted "transfer" bucket (not in
+# _BUCKET_ORDER) and vanishing from the comparison entirely.
 PREDICTED_TO_MEASURED = {
     ("kernel", "kernel"): "launch",
     ("kernel", "launchOverhead"): "launch",
-    ("transfer", "scatter"): "scatter",
+    ("transfer", "scatter"): "scatter:block",
+    ("transfer", "scatter_on_tasklets"): "scatter:sg",
+    ("transfer", "broadcast"): "scatter:bc",
     ("transfer_back", "gather"): "gather",
     ("cpu", "other"): "unaccounted",
 }
