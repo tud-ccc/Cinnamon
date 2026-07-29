@@ -44,7 +44,7 @@ ITERS = 10
 DPUS = 256
 TASKLETS = 4
 
-source="/home/clement.fournier/Work/cinm-mlir/experiments/cinm1comparison/data/prim_gemv/_split/gemv_64MB.mlir"
+source = "/home/clement.fournier/Work/cinm-mlir/experiments/cinm1comparison/data/prim_gemv/_split/gemv_64MB.mlir"
 CONFIGS = [
     compile_run.Config(
         system="cinm2",
@@ -91,7 +91,7 @@ CONFIGS = [
             "taskletCols": 8,
             "wramRow": 1,
             "wramCol": 256,
-            "dpuCols": 1, 
+            "dpuCols": 1,
             "mramRow": 1,
             "mramCol": 4096,
         },
@@ -109,7 +109,7 @@ CONFIGS = [
             "taskletCols": 1,
             "wramRow": 8,
             "wramCol": 64,
-            "dpuCols": 32, # 64 rows
+            "dpuCols": 32,  # 64 rows
             "mramRow": 64,
             "mramCol": 128,
         },
@@ -221,7 +221,7 @@ def task_plot():
         breakdowns = {}
         for config in CONFIGS:
             if not config.system.startswith("atim"):
-              continue
+                continue
             output_dir = config.dir(DATA_ROOT) / "output"
             net_ms = measurements.net_time_ms(output_dir)
             if net_ms is None:

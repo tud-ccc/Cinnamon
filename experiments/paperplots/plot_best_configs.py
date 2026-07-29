@@ -211,7 +211,10 @@ def plot_speedup_bars(
         baseline_src = f"prim_{p}_cinm1"
         sub = stats[(stats["problem"] == p) & (stats["source"] == baseline_src)]
         if sub.empty:
-            print(f"  WARNING: no {baseline_src} data, skipping problem {p}", file=sys.stderr)
+            print(
+                f"  WARNING: no {baseline_src} data, skipping problem {p}",
+                file=sys.stderr,
+            )
             continue
         baseline_means[p] = sub.set_index("fn_name")["mean"]
 
@@ -226,7 +229,10 @@ def plot_speedup_bars(
     fig, axes = plt.subplots(
         len(problems),
         1,
-        figsize=(max(6, 2 * max(len(funcs_by_problem[p]) for p in problems)), 4.5 * len(problems)),
+        figsize=(
+            max(6, 2 * max(len(funcs_by_problem[p]) for p in problems)),
+            4.5 * len(problems),
+        ),
         squeeze=False,
     )
     axes = axes[:, 0]
@@ -239,7 +245,9 @@ def plot_speedup_bars(
         base = baseline_means[p]
         for i, src in enumerate(p_sources):
             lbl = SOURCE_LABELS.get(src, src)
-            sub = stats[(stats["source"] == src) & (stats["problem"] == p)].set_index("fn_name")
+            sub = stats[(stats["source"] == src) & (stats["problem"] == p)].set_index(
+                "fn_name"
+            )
             xs, heights, errs, actuals, clipped = [], [], [], [], []
             for j, f in enumerate(funcs):
                 if f not in sub.index or f not in base.index:
@@ -259,7 +267,9 @@ def plot_speedup_bars(
                 actuals.append(speedup)
                 clipped.append(is_clipped)
             color = colors[i % len(colors)] if colors else f"C{i}"
-            bars = ax.bar(xs, heights, width * 0.9, yerr=errs, capsize=3, color=color, label=lbl)
+            bars = ax.bar(
+                xs, heights, width * 0.9, yerr=errs, capsize=3, color=color, label=lbl
+            )
             for bar, is_clipped, val in zip(bars, clipped, actuals):
                 if not is_clipped:
                     continue
@@ -316,7 +326,10 @@ def plot_bars(data: pd.DataFrame, out_dir: pathlib.Path, sources: list[str]):
     fig, axes = plt.subplots(
         len(problems),
         1,
-        figsize=(max(6, 2 * max(len(funcs_by_problem[p]) for p in problems)), 4.5 * len(problems)),
+        figsize=(
+            max(6, 2 * max(len(funcs_by_problem[p]) for p in problems)),
+            4.5 * len(problems),
+        ),
         squeeze=False,
     )
     axes = axes[:, 0]
@@ -328,7 +341,9 @@ def plot_bars(data: pd.DataFrame, out_dir: pathlib.Path, sources: list[str]):
         width = 0.8 / max(len(p_sources), 1)
         for i, src in enumerate(p_sources):
             lbl = SOURCE_LABELS.get(src, src)
-            sub = stats[(stats["source"] == src) & (stats["problem"] == p)].set_index("fn_name")
+            sub = stats[(stats["source"] == src) & (stats["problem"] == p)].set_index(
+                "fn_name"
+            )
             means = [sub.loc[f, "mean"] if f in sub.index else 0 for f in funcs]
             stds = [sub.loc[f, "std"] if f in sub.index else 0 for f in funcs]
             ax.bar(
@@ -356,7 +371,9 @@ def plot_bars(data: pd.DataFrame, out_dir: pathlib.Path, sources: list[str]):
     print(f"  bars    → {out_dir}/bars.{{pdf,png}}")
 
 
-def run_plots(exp_root: pathlib.Path, sources: list[str], out_dir: pathlib.Path) -> None:
+def run_plots(
+    exp_root: pathlib.Path, sources: list[str], out_dir: pathlib.Path
+) -> None:
     """Load every source's aggregated/ + bo_timings/ output under exp_root
     and produce net_times.csv, violin.{pdf,png}, bars.{pdf,png}, and the two
     speedup-bar charts (net time, BO-search timing) in out_dir. Called
@@ -378,7 +395,9 @@ def run_plots(exp_root: pathlib.Path, sources: list[str], out_dir: pathlib.Path)
         frames.append(df)
 
     if not frames:
-        raise RuntimeError(f"no aggregated data found under {exp_root} for sources {sources}")
+        raise RuntimeError(
+            f"no aggregated data found under {exp_root} for sources {sources}"
+        )
 
     data = pd.concat(frames, ignore_index=True)
     combined_csv = out_dir / "net_times.csv"

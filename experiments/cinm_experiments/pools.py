@@ -1,4 +1,5 @@
 """pool.csv utilities: loading and selecting configs."""
+
 from __future__ import annotations
 
 import pathlib
@@ -6,8 +7,18 @@ import pathlib
 import pandas as pd
 
 NON_PARAM_COLS = frozenset(
-    {"visited", "valid", "cost", "eval_iter", "eval_time_ms", "cpu_time_ms",
-     "mu", "sigma", "acq", "index"}
+    {
+        "visited",
+        "valid",
+        "cost",
+        "eval_iter",
+        "eval_time_ms",
+        "cpu_time_ms",
+        "mu",
+        "sigma",
+        "acq",
+        "index",
+    }
 )
 
 
@@ -34,8 +45,9 @@ def load_valid(pool_csv: pathlib.Path) -> pd.DataFrame:
     return df
 
 
-def select_best(pool_csv: pathlib.Path, *, top_frac: float = 0.10,
-                 min_configs: int = 200) -> tuple[pd.DataFrame, int, int]:
+def select_best(
+    pool_csv: pathlib.Path, *, top_frac: float = 0.10, min_configs: int = 200
+) -> tuple[pd.DataFrame, int, int]:
     """Rank every valid config in pool_csv by cost, keep the best
     max(top_frac * N, min_configs). Returns (kept_df, n_valid, n_kept)."""
     df = load_valid(pool_csv)
@@ -59,6 +71,7 @@ def best_per_seed(results_dir: pathlib.Path):
                 continue
             seed = seed_dir.name.removeprefix("seed_")
             yield fn_name, seed, best_conf
+
 
 def best_in_pool(pool_csv: pathlib.Path):
     """Yield (fn_name, seed, params_dict) for the lowest-cost visited row of

@@ -34,7 +34,7 @@ import pandas as pd
 from doit import create_after
 from doit.tools import result_dep
 from doit.reporter import ProgressBarReporter  # noqa: E402
-# from tqdm import tqdm 
+# from tqdm import tqdm
 
 HERE = pathlib.Path(__file__).resolve().parent
 EXPERIMENTS_DIR = HERE.parent
@@ -44,7 +44,13 @@ sys.path.insert(0, str(EXPERIMENTS_DIR))
 from cinm_experiments import cinm1, cinmopt, compile_run, measurements, pools  # noqa: E402
 from cinm_experiments.split_source import list_functions, split_source  # noqa: E402
 
-from plot import geomean, plot_best_speedup, plot_speedup, plot_speedup_violin, print_summary  # noqa: E402
+from plot import (
+    geomean,
+    plot_best_speedup,
+    plot_speedup,
+    plot_speedup_violin,
+    print_summary,
+)  # noqa: E402
 
 PRIMS = ["prim_gemv", "prim_red"]
 DATA_DIR = HERE / "data"
@@ -140,7 +146,9 @@ class Paths:
     def run_root(self, prim: str) -> pathlib.Path:
         return self.prim_dir(prim) / "run"
 
-    def run_config_dir_id(self, prim: str, system: str, fn_name: str, label: str) -> pathlib.Path:
+    def run_config_dir_id(
+        self, prim: str, system: str, fn_name: str, label: str
+    ) -> pathlib.Path:
         return self.run_root(prim) / system / fn_name / label
 
     def run_config_dir(self, prim: str, config: compile_run.Config) -> pathlib.Path:
@@ -149,7 +157,9 @@ class Paths:
     def run_output_dir(self, prim: str, config: compile_run.Config) -> pathlib.Path:
         return self.run_config_dir(prim, config) / "output"
 
-    def bench_marker_id(self, prim: str, system: str, fn_name: str, label: str) -> pathlib.Path:
+    def bench_marker_id(
+        self, prim: str, system: str, fn_name: str, label: str
+    ) -> pathlib.Path:
         """Per-config bench-attempted marker (touched whether the run
         succeeded or not -- see _bench_one_config), sibling of that config's
         output/ dir. Lets doit save bench progress config-by-config instead
@@ -322,8 +332,9 @@ class _Cinm2SearchGroup:
     independently-chosen tag -- because _prev_bench_task_dep reconstructs a
     predecessor config's bench basename as f"bench_{system}" purely from its
     system string (config_ids doesn't carry the suffix separately)."""
-    system: str                    # "cinm2" | "cinm2_unconstrained"
-    task_label: str                # e.g. "D8_T4" | "unconstrained"
+
+    system: str  # "cinm2" | "cinm2_unconstrained"
+    task_label: str  # e.g. "D8_T4" | "unconstrained"
     extra_infer_opts: dict
     offset: int
     results_dir: pathlib.Path
@@ -404,7 +415,15 @@ def _config_ids():
                 pairs[["dpus", "tasklets"]].itertuples(index=False)
             ):
                 dpus, tasklets = int(dpus), int(tasklets)
-                yield prim, "cinm1", fn_name, f"D{dpus}_T{tasklets}", dpus, tasklets, pair_idx
+                yield (
+                    prim,
+                    "cinm1",
+                    fn_name,
+                    f"D{dpus}_T{tasklets}",
+                    dpus,
+                    tasklets,
+                    pair_idx,
+                )
                 for seed in gen_seeds(pair_idx):
                     yield prim, "cinm2", fn_name, str(seed), dpus, tasklets, pair_idx
 
@@ -414,8 +433,10 @@ def _config_ids():
 
 
 def _config_index(config_ids: list[tuple]) -> dict[tuple[str, str, str, str], int]:
-    return {(prim, system, fn_name, label): i
-            for i, (prim, system, fn_name, label, *_rest) in enumerate(config_ids)}
+    return {
+        (prim, system, fn_name, label): i
+        for i, (prim, system, fn_name, label, *_rest) in enumerate(config_ids)
+    }
 
 
 def _prev_bench_task_dep(
@@ -459,8 +480,12 @@ def _prev_bench_task_dep(
 @create_after(
     executed="screen",
     creates=[
-        "cinm2_search", "compile_cinm2", "bench_cinm2",
-        "cinm2_search_unconstrained", "compile_cinm2_unconstrained", "bench_cinm2_unconstrained",
+        "cinm2_search",
+        "compile_cinm2",
+        "bench_cinm2",
+        "cinm2_search_unconstrained",
+        "compile_cinm2_unconstrained",
+        "bench_cinm2_unconstrained",
     ],
 )
 def task_cinm2_search():
@@ -492,7 +517,12 @@ def task_cinm2_search():
                     "name": f"{prim}:{fn_name}:{group.task_label}",
                     "file_dep": [str(group.search_file_dep)],
                     "targets": [
-                        str(group.results_dir / f"infer_{fn_name}" / f"seed_{seed}" / "pool.csv")
+                        str(
+                            group.results_dir
+                            / f"infer_{fn_name}"
+                            / f"seed_{seed}"
+                            / "pool.csv"
+                        )
                         for seed in group.seeds
                     ],
                     "actions": [
@@ -522,7 +552,12 @@ def task_cinm2_search():
                         prim=op,
                         lower=cinmopt.eval_solution_lowerer(),
                     )
-                    pool_csv = group.results_dir / f"infer_{fn_name}" / f"seed_{seed}" / "pool.csv"
+                    pool_csv = (
+                        group.results_dir
+                        / f"infer_{fn_name}"
+                        / f"seed_{seed}"
+                        / "pool.csv"
+                    )
                     marker = PATHS.compile_marker(prim, config)
                     yield {
                         "basename": "compile_cinm2" + basename_suffix,
@@ -638,7 +673,9 @@ def task_compile_cinm1():
             "basename": "bench_cinm1",
             "name": f"{prim}:{fn_name}:{label}",
             "file_dep": [str(marker)],
-            "task_dep": _prev_bench_task_dep(config_ids, index_of, prim, system, fn_name, label),
+            "task_dep": _prev_bench_task_dep(
+                config_ids, index_of, prim, system, fn_name, label
+            ),
             "targets": [str(bench_marker)],
             "actions": [
                 (
@@ -739,23 +776,28 @@ def _bench_one_config(
     -- rerun it explicitly via `doit retry_failed_bench`."""
     compiled = compile_run.discover_compiled([config], compile_root=compile_root)[0]
     if not compiled.ok:
-        print(f"  SKIP bench (not compiled): {config.system} {config.fn_name} {config.label}")
+        print(
+            f"  SKIP bench (not compiled): {config.system} {config.fn_name} {config.label}"
+        )
     else:
         r = compile_run.run_config(compiled, run_root=run_root, iters=iters)
         if not r.ok and compile_run.is_dpu_allocation_error(r.error):
             # retry
             r = compile_run.run_config(compiled, run_root=run_root, iters=iters)
         if not r.ok:
-            print(f"  FAIL run: {config.system} {config.fn_name} {config.label}: {r.error[:200]}")
+            print(
+                f"  FAIL run: {config.system} {config.fn_name} {config.label}: {r.error[:200]}"
+            )
     bench_marker.parent.mkdir(parents=True, exist_ok=True)
     bench_marker.touch()
     return True
 
 
-
 def task_bench():
-    return {'actions': None,
-            'task_dep': ['bench_cinm1', 'bench_cinm2', 'bench_cinm2_unconstrained']}
+    return {
+        "actions": None,
+        "task_dep": ["bench_cinm1", "bench_cinm2", "bench_cinm2_unconstrained"],
+    }
 
 
 # ── retry failed benches ────────────────────────────────────────────────────
@@ -850,8 +892,16 @@ def compare(
     cinm2_raw = measurements.results_to_frame(cinm2_results)
     if cinm2_raw.empty:
         cinm2_summary = pd.DataFrame(
-            columns=["fn_name", "dpus", "tasklets", "cinm2_ms", "cinm2_ms_geomean",
-                     "cinm2_p25", "cinm2_p75", "cinm2_n"]
+            columns=[
+                "fn_name",
+                "dpus",
+                "tasklets",
+                "cinm2_ms",
+                "cinm2_ms_geomean",
+                "cinm2_p25",
+                "cinm2_p75",
+                "cinm2_n",
+            ]
         )
     else:
         cinm2_summary = (
@@ -932,10 +982,14 @@ def _cinm1_best_per_fn(prim: str) -> pd.DataFrame:
     sweep, per fn_name -- the steelmanned baseline comparison_best.csv uses,
     as opposed to comparison.csv's per-(dpus,tasklets) matched one."""
     configs = [c for c in _discover_configs(prim) if c.system == "cinm1"]
-    compiled = compile_run.discover_compiled(configs, compile_root=PATHS.compile_root(prim))
+    compiled = compile_run.discover_compiled(
+        configs, compile_root=PATHS.compile_root(prim)
+    )
     results = [
         compile_run.RunResult(
-            c, PATHS.run_output_dir(prim, c.config).exists(), PATHS.run_output_dir(prim, c.config)
+            c,
+            PATHS.run_output_dir(prim, c.config).exists(),
+            PATHS.run_output_dir(prim, c.config),
         )
         for c in compiled
     ]
@@ -951,10 +1005,14 @@ def _compare_best_prim(prim: str) -> bool:
     cinm1_best = _cinm1_best_per_fn(prim)
 
     configs = [c for c in _discover_configs(prim) if c.system == "cinm2_unconstrained"]
-    compiled = compile_run.discover_compiled(configs, compile_root=PATHS.compile_root(prim))
+    compiled = compile_run.discover_compiled(
+        configs, compile_root=PATHS.compile_root(prim)
+    )
     results = [
         compile_run.RunResult(
-            c, PATHS.run_output_dir(prim, c.config).exists(), PATHS.run_output_dir(prim, c.config)
+            c,
+            PATHS.run_output_dir(prim, c.config).exists(),
+            PATHS.run_output_dir(prim, c.config),
         )
         for c in compiled
     ]

@@ -4,18 +4,15 @@ import optparse
 import sys
 import os
 
-import m5
-from m5.defines import buildEnv
 from m5.objects import *
-from m5.util import addToPath, fatal, warn
+from m5.util import addToPath, fatal
 
 # Hardcode path to ALPINE gem5 configs so imports work regardless of cwd.
-addToPath('/project/ALPINE/gem5-X-ALPINE/configs')
+addToPath("/project/ALPINE/gem5-X-ALPINE/configs")
 
 from common import Options
 from common import Simulation
 from common import CacheConfig
-from common import CpuConfig
 from common import MemConfig
 from common.Caches import *
 
@@ -49,7 +46,7 @@ def get_processes(options):
         process.cwd = os.getcwd()
 
         if options.env:
-            with open(options.env, 'r') as f:
+            with open(options.env, "r") as f:
                 process.env = [line.rstrip() for line in f]
 
         if len(pargs) > idx:
@@ -68,7 +65,7 @@ def get_processes(options):
         idx += 1
 
     if options.smt:
-        assert options.cpu_type == 'DerivO3CPU'
+        assert options.cpu_type == "DerivO3CPU"
         return multiprocesses, idx
     else:
         return multiprocesses, 1
@@ -98,7 +95,9 @@ else:
 
 
 # ALPINE's Simulation.setCPUClass returns 4 values
-(CurrCPUClass, test_mem_mode, FutureCPUClass, FutureCPUClass2) = Simulation.setCPUClass(options)
+(CurrCPUClass, test_mem_mode, FutureCPUClass, FutureCPUClass2) = Simulation.setCPUClass(
+    options
+)
 CurrCPUClass.numThreads = numThreads
 
 if options.smt and options.num_cpus > 1:
@@ -117,9 +116,13 @@ if numThreads > 1:
     system.multi_thread = True
 
 system.voltage_domain = VoltageDomain(voltage=options.sys_voltage)
-system.clk_domain = SrcClockDomain(clock=options.sys_clock, voltage_domain=system.voltage_domain)
+system.clk_domain = SrcClockDomain(
+    clock=options.sys_clock, voltage_domain=system.voltage_domain
+)
 system.cpu_voltage_domain = VoltageDomain()
-system.cpu_clk_domain = SrcClockDomain(clock=options.cpu_clock, voltage_domain=system.cpu_voltage_domain)
+system.cpu_clk_domain = SrcClockDomain(
+    clock=options.cpu_clock, voltage_domain=system.cpu_voltage_domain
+)
 
 for cpu in system.cpu:
     cpu.clk_domain = system.cpu_clk_domain
@@ -141,7 +144,9 @@ if options.ruby and Ruby is not None:
     Ruby.create_system(options, False, system)
     assert options.num_cpus == len(system.ruby._cpu_ports)
 
-    system.ruby.clk_domain = SrcClockDomain(clock=options.ruby_clock, voltage_domain=system.voltage_domain)
+    system.ruby.clk_domain = SrcClockDomain(
+        clock=options.ruby_clock, voltage_domain=system.voltage_domain
+    )
     for i in xrange(np):
         ruby_port = system.ruby._cpu_ports[i]
         system.cpu[i].createInterruptController()

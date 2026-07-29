@@ -65,7 +65,7 @@ def _cinm_opt_cmd(
     *,
     cinm_opt: str = "cinm-opt",
     extra_mlir_flags: list[str] | None = None,
-    out_file = None
+    out_file=None,
 ) -> list[str]:
     cmd = [
         cinm_opt,
@@ -80,10 +80,10 @@ def _cinm_opt_cmd(
         "--debug-only=cinm-inference",
     ]
     if out_file:
-      cmd.extend(("-o", str(out_file)))
+        cmd.extend(("-o", str(out_file)))
     if extra_mlir_flags:
         cmd.extend(extra_mlir_flags)
-    #print(" ".join(cmd))
+    # print(" ".join(cmd))
     return cmd
 
 
@@ -167,7 +167,7 @@ def cmd_seeds(args: argparse.Namespace) -> int:
 
     code = 1 if failed else 0
     if args.no_plots:
-      return code
+        return code
     args.in_dir = args.out_dir
     return cmd_plot(args)
 
@@ -189,7 +189,9 @@ def cmd_multiseed(args: argparse.Namespace) -> int:
         scale=args.scale, dump_dir=str(data_dir), seed=args.offset, extra=extra
     )
     out_path = data_dir / "out.mlir"
-    cmd = _cinm_opt_cmd(args.file, infer_opts, cinm_opt=args.cinm_opt, out_file=out_path)
+    cmd = _cinm_opt_cmd(
+        args.file, infer_opts, cinm_opt=args.cinm_opt, out_file=out_path
+    )
 
     print(
         f"[multiseed] {args.n} seeds, workers={args.workers or 'auto'}, "
@@ -253,8 +255,10 @@ def cmd_plot(args: argparse.Namespace) -> int:
     cmd = [
         python_bin(),
         str(plot_script),
-        "--objective-scale", scale,
-        "--out-dir", out_dir,
+        "--objective-scale",
+        scale,
+        "--out-dir",
+        out_dir,
         *(["--no-per-seed"] if no_per_seed else []),
         *plot_args,
         *extra,
@@ -284,8 +288,10 @@ def cmd_analyze(args: argparse.Namespace) -> int:
     cmd = [
         python_bin(),
         str(EXPERIMENTS_DIR / "plotting" / "analyze_landscape.py"),
-        "--in-dir", args.in_dir,
-        "--out-dir", args.out_dir,
+        "--in-dir",
+        args.in_dir,
+        "--out-dir",
+        args.out_dir,
         *args.extra,
     ]
     return subprocess.run(cmd).returncode
@@ -477,10 +483,20 @@ def build_parser() -> argparse.ArgumentParser:
 
     # ── plot ─────────────────────────────────────────────────────────────────
     p_plot = sub.add_parser("plot", help="Plot an existing data directory")
-    p_plot.add_argument("--in-dir", dest="in_dir", required=True, metavar="DIR",
-                        help="Input directory containing pool.csv files")
-    p_plot.add_argument("--out-dir", dest="out_dir", required=True, metavar="DIR",
-                        help="Output directory for plots")
+    p_plot.add_argument(
+        "--in-dir",
+        dest="in_dir",
+        required=True,
+        metavar="DIR",
+        help="Input directory containing pool.csv files",
+    )
+    p_plot.add_argument(
+        "--out-dir",
+        dest="out_dir",
+        required=True,
+        metavar="DIR",
+        help="Output directory for plots",
+    )
     _add_scale(p_plot)
     _add_oracle(p_plot)
     p_plot.add_argument(
@@ -506,10 +522,20 @@ def build_parser() -> argparse.ArgumentParser:
 
     # ── analyze ──────────────────────────────────────────────────────────────
     p_an = sub.add_parser("analyze", help="Landscape analysis")
-    p_an.add_argument("--in-dir", dest="in_dir", required=True, metavar="DIR",
-                      help="Input: pool.csv, problem dir, or parent dir of problems")
-    p_an.add_argument("--out-dir", dest="out_dir", required=True, metavar="DIR",
-                      help="Output directory for analysis plots and README")
+    p_an.add_argument(
+        "--in-dir",
+        dest="in_dir",
+        required=True,
+        metavar="DIR",
+        help="Input: pool.csv, problem dir, or parent dir of problems",
+    )
+    p_an.add_argument(
+        "--out-dir",
+        dest="out_dir",
+        required=True,
+        metavar="DIR",
+        help="Output directory for analysis plots and README",
+    )
     _add_extra(p_an, help="Extra args forwarded to analyze_landscape.py")
     p_an.set_defaults(func=cmd_analyze)
 

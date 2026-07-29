@@ -37,6 +37,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 import matplotlib
+
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
@@ -44,6 +45,7 @@ import matplotlib.pyplot as plt
 # references it.  Restore the constant before SMAC is imported.
 try:
     import sklearn.tree._tree as _skt
+
     if not hasattr(_skt, "DTYPE"):
         _skt.DTYPE = np.float32
 except Exception:
@@ -64,17 +66,24 @@ except ImportError as exc:
 
 # ── Scale helpers (mirrors plot_bo.py) ────────────────────────────────────────
 
+
 def _apply_scale(costs: np.ndarray, scale: str) -> np.ndarray:
     eps = 1e-30
-    if scale == "log2":  return np.log2(np.maximum(costs, eps))
-    if scale == "ln":    return np.log(np.maximum(costs, eps))
-    if scale == "sqrt":  return np.sqrt(np.maximum(costs, 0.0))
-    if scale == "cbrt":  return np.cbrt(costs)
-    if scale == "log10": return np.log10(np.maximum(costs, eps))
+    if scale == "log2":
+        return np.log2(np.maximum(costs, eps))
+    if scale == "ln":
+        return np.log(np.maximum(costs, eps))
+    if scale == "sqrt":
+        return np.sqrt(np.maximum(costs, 0.0))
+    if scale == "cbrt":
+        return np.cbrt(costs)
+    if scale == "log10":
+        return np.log10(np.maximum(costs, eps))
     return costs  # linear
 
 
 # ── Metric computation ─────────────────────────────────────────────────────────
+
 
 def compute_metrics(val_csv: Path, scale: str) -> tuple[float, float]:
     """
@@ -108,8 +117,8 @@ def compute_metrics(val_csv: Path, scale: str) -> tuple[float, float]:
 
     rmse_by_iter = (
         val.groupby("iter")["sq_err"]
-           .apply(lambda s: float(np.sqrt(s.mean())))
-           .sort_index()
+        .apply(lambda s: float(np.sqrt(s.mean())))
+        .sort_index()
     )
 
     if rmse_by_iter.empty:
@@ -124,7 +133,7 @@ def compute_metrics(val_csv: Path, scale: str) -> tuple[float, float]:
 
     # Late-stage standard deviation (last 25% of iterations)
     n = len(rmse_vals)
-    late = rmse_vals[max(0, n - max(1, n // 4)):]
+    late = rmse_vals[max(0, n - max(1, n // 4)) :]
     late_std = float(np.std(late)) if len(late) > 1 else 0.0
 
     # Normalise by initial RMSE so the metric is scale-invariant
@@ -136,40 +145,52 @@ def compute_metrics(val_csv: Path, scale: str) -> tuple[float, float]:
 
 # ── Config space ───────────────────────────────────────────────────────────────
 
+
 def build_config_space() -> ConfigurationSpace:
     """
     Hyperparameters of the BANANAS MLP ensemble used as the BO surrogate,
     plus BO search strategy parameters that affect surrogate quality.
     """
     cs = ConfigurationSpace()
-    cs.add_hyperparameters([
-        # MLP architecture
-        CategoricalHyperparameter(
-            "hidden", choices=[16, 32, 48, 64, 80, 96, 128, 256], default_value=64,
-        ),
-        UniformIntegerHyperparameter(
-            "depth", lower=1, upper=8, default_value=2,
-        ),
-        # MLP training
-        UniformIntegerHyperparameter(
-            "epochs", lower=100, upper=3000, default_value=500,
-        ),
-        # BO initialization: how many LHS samples before the surrogate takes over
-        # UniformIntegerHyperparameter(
-        #     "n_init", lower=5, upper=25, default_value=20,
-        # ),
-        # Candidate neighbour generation
-        # UniformIntegerHyperparameter(
-        #     "neighbor_depth", lower=1, upper=5, default_value=1,
-        # ),
-        # CategoricalHyperparameter(
-        #     "neighbor_frontier_only", choices=["true", "false"], default_value="false",
-        # ),
-    ])
+    cs.add_hyperparameters(
+        [
+            # MLP architecture
+            CategoricalHyperparameter(
+                "hidden",
+                choices=[16, 32, 48, 64, 80, 96, 128, 256],
+                default_value=64,
+            ),
+            UniformIntegerHyperparameter(
+                "depth",
+                lower=1,
+                upper=8,
+                default_value=2,
+            ),
+            # MLP training
+            UniformIntegerHyperparameter(
+                "epochs",
+                lower=100,
+                upper=3000,
+                default_value=500,
+            ),
+            # BO initialization: how many LHS samples before the surrogate takes over
+            # UniformIntegerHyperparameter(
+            #     "n_init", lower=5, upper=25, default_value=20,
+            # ),
+            # Candidate neighbour generation
+            # UniformIntegerHyperparameter(
+            #     "neighbor_depth", lower=1, upper=5, default_value=1,
+            # ),
+            # CategoricalHyperparameter(
+            #     "neighbor_frontier_only", choices=["true", "false"], default_value="false",
+            # ),
+        ]
+    )
     return cs
 
 
 # ── Single trial ──────────────────────────────────────────────────────────────
+
 
 def run_trial(
     cfg,
@@ -205,7 +226,7 @@ def run_trial(
             f"hidden-depth={cfg['depth']}",
             f"neighbor-depth={cfg.get('neighbor_depth', 2)}",
             f"eval-timeout-ms={cfg.get('eval_timeout_ms', 400)}",
-            f"neighbor-frontier-only={cfg.get('neighbor_frontier_only','false')}",
+            f"neighbor-frontier-only={cfg.get('neighbor_frontier_only', 'false')}",
             "simulator=hybrid",
             "dump-full-pool=false",
             f"n-validation={n_validation}",
@@ -214,7 +235,8 @@ def run_trial(
         ] + extra_opts
 
         cmd = [
-            cinm_opt, mlir_file,
+            cinm_opt,
+            mlir_file,
             "--cinm-assign-platforms",
             "--cinm-isolate-compute-blocks",
             f"--upmem-infer-accelerator={' '.join(opts_parts)}",
@@ -225,9 +247,12 @@ def run_trial(
 
         t0 = time.perf_counter()
         try:
-            print(' '.join(cmd))
+            print(" ".join(cmd))
             proc = subprocess.run(
-                cmd, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True,
+                cmd,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.PIPE,
+                text=True,
                 timeout=trial_timeout,
             )
         except subprocess.TimeoutExpired:
@@ -249,7 +274,9 @@ def run_trial(
                 )
             return {"rmse": 1e6, "instability": 1e6, "time": elapsed}
 
-        val_csv = Path(tmp) / f"infer_{problem_name}" / f"seed_{seed}" / "validation.csv"
+        val_csv = (
+            Path(tmp) / f"infer_{problem_name}" / f"seed_{seed}" / "validation.csv"
+        )
         if not val_csv.exists():
             debug_dir = Path("data/bo_meta_debug")
             shutil.rmtree(debug_dir, ignore_errors=True)
@@ -264,13 +291,15 @@ def run_trial(
         try:
             final_rmse, instability = compute_metrics(val_csv, scale)
         except Exception as exc:
-            print(f"[bo_meta] WARNING: metric computation failed: {exc}", file=sys.stderr)
+            print(
+                f"[bo_meta] WARNING: metric computation failed: {exc}", file=sys.stderr
+            )
             return {"rmse": 1e6, "instability": 1e6, "time": elapsed}
 
         return {
-            "rmse":        final_rmse if np.isfinite(final_rmse) else 1e6,
+            "rmse": final_rmse if np.isfinite(final_rmse) else 1e6,
             "instability": instability if np.isfinite(instability) else 1e6,
-            "time":        elapsed,
+            "time": elapsed,
         }
 
 
@@ -280,6 +309,7 @@ run_trial._warned = False
 
 
 # ── SMAC objective factory ────────────────────────────────────────────────────
+
 
 def make_objective(
     *,
@@ -302,6 +332,7 @@ def make_objective(
     cinm-opt invocations (different RNG seeds) and averages their objectives
     to reduce noise.
     """
+
     def objective(smac_cfg, seed: int = 0) -> dict:
         def run_one_seed(s: int) -> dict[str, float]:
             return run_trial(
@@ -327,15 +358,16 @@ def make_objective(
         with ThreadPoolExecutor(max_workers=n_seeds) as pool:
             results = list(pool.map(run_one_seed, range(n_seeds)))
         return {
-            "rmse":        float(np.mean([r["rmse"]        for r in results])),
+            "rmse": float(np.mean([r["rmse"] for r in results])),
             "instability": float(np.mean([r["instability"] for r in results])),
-            "time":        float(np.mean([r["time"]        for r in results])),
+            "time": float(np.mean([r["time"] for r in results])),
         }
 
     return objective
 
 
 # ── Pareto plot ───────────────────────────────────────────────────────────────
+
 
 def plot_pareto(smac, out_path: str) -> None:
     """
@@ -373,15 +405,39 @@ def plot_pareto(smac, out_path: str) -> None:
     fig, axes = plt.subplots(1, 3, figsize=(14, 4))
     for ax, (i, j) in zip(axes, PAIRS):
         if bg.size:
-            ax.scatter(bg[:, i], bg[:, j], c="steelblue", alpha=0.25, s=18,
-                       linewidths=0, label="evaluated", zorder=2)
+            ax.scatter(
+                bg[:, i],
+                bg[:, j],
+                c="steelblue",
+                alpha=0.25,
+                s=18,
+                linewidths=0,
+                label="evaluated",
+                zorder=2,
+            )
         if fg.size:
-            ax.scatter(fg[:, i], fg[:, j], c="red", alpha=1.0, s=60,
-                       marker="x", linewidths=1.5, label="Pareto front", zorder=3)
+            ax.scatter(
+                fg[:, i],
+                fg[:, j],
+                c="red",
+                alpha=1.0,
+                s=60,
+                marker="x",
+                linewidths=1.5,
+                label="Pareto front",
+                zorder=3,
+            )
             # Connect the Pareto front with a step line sorted by the x-axis objective
             order = np.argsort(fg[:, i])
-            ax.step(fg[order, i], fg[order, j], where="post",
-                    color="red", lw=0.8, alpha=0.5, zorder=3)
+            ax.step(
+                fg[order, i],
+                fg[order, j],
+                where="post",
+                color="red",
+                lw=0.8,
+                alpha=0.5,
+                zorder=3,
+            )
         ax.set_xlabel(LABELS[i])
         ax.set_ylabel(LABELS[j])
         ax.grid(True, alpha=0.3)
@@ -437,12 +493,28 @@ def plot_pareto_3d(smac, out_path: str) -> None:
     ax = fig.add_subplot(111, projection="3d")
 
     if bg.size:
-        ax.scatter(bg[:, xi], bg[:, yi], bg[:, zi],
-                   c="steelblue", alpha=0.25, s=20, linewidths=0, label="evaluated")
+        ax.scatter(
+            bg[:, xi],
+            bg[:, yi],
+            bg[:, zi],
+            c="steelblue",
+            alpha=0.25,
+            s=20,
+            linewidths=0,
+            label="evaluated",
+        )
     if fg.size:
-        ax.scatter(fg[:, xi], fg[:, yi], fg[:, zi],
-                   c="red", alpha=1.0, s=80, marker="*", linewidths=0,
-                   label="Pareto front")
+        ax.scatter(
+            fg[:, xi],
+            fg[:, yi],
+            fg[:, zi],
+            c="red",
+            alpha=1.0,
+            s=80,
+            marker="*",
+            linewidths=0,
+            label="Pareto front",
+        )
 
     ax.set_xlabel(xl, labelpad=8)
     ax.set_xscale("log")
@@ -458,92 +530,125 @@ def plot_pareto_3d(smac, out_path: str) -> None:
 
 # ── Main ───────────────────────────────────────────────────────────────────────
 
+
 def main():
     ap = argparse.ArgumentParser(
         description=__doc__,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     ap.add_argument(
-        "--input", required=True, metavar="FILE[.mlir]",
+        "--input",
+        required=True,
+        metavar="FILE[.mlir]",
         help="MLIR input file (the .mlir extension is added if omitted)",
     )
     ap.add_argument(
-        "--problem", required=True, metavar="NAME",
+        "--problem",
+        required=True,
+        metavar="NAME",
         help="Problem (function name in the input file) used to compute the objectives",
     )
     ap.add_argument(
-        "--scale", default="log10",
+        "--scale",
+        default="log10",
         metavar="SCALE",
         help="Objective transform used by BO: linear, log2, log10, ln, sqrt, cbrt "
-             "(must match the surrogate's training scale; default: log10)",
+        "(must match the surrogate's training scale; default: log10)",
     )
     ap.add_argument(
-        "--max-evals", type=int, default=60,
+        "--max-evals",
+        type=int,
+        default=60,
         help="BO evaluations per cinm-opt trial (controls how long each trial runs; "
-             "default: 60)",
+        "default: 60)",
     )
     ap.add_argument(
-        "--n-validation", type=int, default=30,
+        "--n-validation",
+        type=int,
+        default=30,
         help="Size of the held-out validation set used to measure surrogate RMSE "
-             "(default: 30)",
+        "(default: 30)",
     )
     ap.add_argument(
-        "--validation-interval", type=int, default=5,
+        "--validation-interval",
+        type=int,
+        default=5,
         help="Record a surrogate snapshot on the validation set every N BO iterations "
-             "(default: 5)",
+        "(default: 5)",
     )
     ap.add_argument(
-        "--eval-timeout-ms", type=int, default=1000,
-        help="Simulation timeout (milliseconds)"
-             "(default: 1000)",
+        "--eval-timeout-ms",
+        type=int,
+        default=1000,
+        help="Simulation timeout (milliseconds)(default: 1000)",
     )
     ap.add_argument(
-        "--simulator", default="cycleaccurate",
+        "--simulator",
+        default="cycleaccurate",
         choices=["cycleaccurate", "opcount"],
         help="DPU cost simulator used inside cinm-opt (default: cycleaccurate)",
     )
     ap.add_argument(
-        "--n-seeds", type=int, default=2,
+        "--n-seeds",
+        type=int,
+        default=2,
         help="Number of BO seeds averaged per SMAC trial to reduce noise (default: 2)",
     )
     ap.add_argument(
-        "--n-trials", type=int, default=80,
+        "--n-trials",
+        type=int,
+        default=80,
         help="SMAC meta-optimization budget in number of trials (default: 80)",
     )
     ap.add_argument(
-        "--workers", type=int, default=max(1, ((os.cpu_count() or 2)- 1) // 2),
+        "--workers",
+        type=int,
+        default=max(1, ((os.cpu_count() or 2) - 1) // 2),
         help="Parallel SMAC trial workers.  Each worker spawns n_seeds cinm-opt "
-             "processes, so total concurrency = workers × n_seeds.  Default: ncpu/2.",
+        "processes, so total concurrency = workers × n_seeds.  Default: ncpu/2.",
     )
     ap.add_argument(
-        "--cinm-opt", default="cinm-opt", metavar="PATH",
+        "--cinm-opt",
+        default="cinm-opt",
+        metavar="PATH",
         help="Path to cinm-opt binary (default: cinm-opt found on PATH)",
     )
     ap.add_argument(
-        "--smac-dir", default="data/bo_meta_smac", metavar="DIR",
+        "--smac-dir",
+        default="data/bo_meta_smac",
+        metavar="DIR",
         help="Directory for SMAC output / run history (default: data/bo_meta_smac)",
     )
     ap.add_argument(
-        "--no-split-input-file", action="store_true", dest="no_split_input_file",
+        "--no-split-input-file",
+        action="store_true",
+        dest="no_split_input_file",
         help="Do NOT pass --split-input-file to cinm-opt. "
-             "By default it is always passed (as run_seeds.sh does).",
+        "By default it is always passed (as run_seeds.sh does).",
     )
     ap.add_argument(
-        "--trial-timeout", type=float, default=60.0, metavar="SECONDS",
+        "--trial-timeout",
+        type=float,
+        default=60.0,
+        metavar="SECONDS",
         help="Kill cinm-opt if a single seed takes longer than this many seconds "
-             "(default: 60). Timed-out trials receive maximum penalty on all objectives.",
+        "(default: 60). Timed-out trials receive maximum penalty on all objectives.",
     )
     ap.add_argument(
-        "--extra-opts", nargs="*", default=[], metavar="KEY=VAL",
+        "--extra-opts",
+        nargs="*",
+        default=[],
+        metavar="KEY=VAL",
         help="Additional key=value options forwarded verbatim to "
-             "--upmem-infer-accelerator (e.g. kappa=2.5 n-ensemble=7)",
+        "--upmem-infer-accelerator (e.g. kappa=2.5 n-ensemble=7)",
     )
     ap.add_argument(
-        "--replot-only", action="store_true",
+        "--replot-only",
+        action="store_true",
         help="Skip optimization entirely. Reconstruct the Scenario/facade from all "
-             "other arguments (they must match the original run exactly) so SMAC "
-             "reloads the existing runhistory from --smac-dir, then just regenerate "
-             "the Pareto plots from it.",
+        "other arguments (they must match the original run exactly) so SMAC "
+        "reloads the existing runhistory from --smac-dir, then just regenerate "
+        "the Pareto plots from it.",
     )
     args = ap.parse_args()
 
@@ -558,7 +663,9 @@ def main():
     mlir_file = os.path.abspath(mlir_file)
 
     if args.n_validation < 2:
-        print("ERROR: --n-validation must be at least 2 to compute RMSE", file=sys.stderr)
+        print(
+            "ERROR: --n-validation must be at least 2 to compute RMSE", file=sys.stderr
+        )
         sys.exit(1)
 
     objective = make_objective(
@@ -592,7 +699,6 @@ def main():
         target_function=objective,
         logging_level=10,
         multi_objective_algorithm=HPOFacade.get_multi_objective_algorithm(
-
             scenario,
             # Weights for RMSE, instability, and time
             objective_weights=[0.5, 1, 0.6],
@@ -605,8 +711,10 @@ def main():
         # Scenario against the one saved in --smac-dir; if they match it loaded
         # runhistory.json (and the intensifier state) automatically. No trial
         # is run here.
-        print(f"[bo_meta] Reloaded {smac.runhistory.finished} finished trial(s) "
-              f"from {args.smac_dir}")
+        print(
+            f"[bo_meta] Reloaded {smac.runhistory.finished} finished trial(s) "
+            f"from {args.smac_dir}"
+        )
         incumbents = smac.intensifier.get_incumbents()
     else:
         print("[bo_meta] Starting meta-optimization")

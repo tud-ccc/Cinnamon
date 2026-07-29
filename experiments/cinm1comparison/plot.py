@@ -1,12 +1,14 @@
 """Experiment-specific analysis/plotting for the CINM 1.0 vs CINM 2.0
 comparison. Kept separate from experiment.py so the pipeline definition and
 the figure-making code don't tangle."""
+
 from __future__ import annotations
 
 import pathlib
 import re
 
 import matplotlib
+
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
@@ -38,7 +40,9 @@ def print_summary(comparison: pd.DataFrame) -> None:
     for fn_name in sorted_fn_names(comparison["fn_name"]):
         sub = comparison[comparison.fn_name == fn_name]
         print(f"{fn_name:20s} {len(sub):8d} {geomean(sub['speedup']):18.3f}")
-    print(f"\n{'OVERALL':20s} {len(comparison):8d} {geomean(comparison['speedup']):18.3f}")
+    print(
+        f"\n{'OVERALL':20s} {len(comparison):8d} {geomean(comparison['speedup']):18.3f}"
+    )
 
 
 def plot_speedup(comparison: pd.DataFrame, out_dir: pathlib.Path) -> pathlib.Path:
@@ -65,7 +69,9 @@ def plot_speedup(comparison: pd.DataFrame, out_dir: pathlib.Path) -> pathlib.Pat
     ax.axhline(1.0, color="black", linewidth=0.8, linestyle="--")
     ax.set_xticks(x)
     ax.set_xticklabels(funcs, rotation=45, ha="right")
-    ax.set_ylabel("Geomean speedup, CINM 2.0 vs CINM 1.0\n(net time, same dpus/tasklets)")
+    ax.set_ylabel(
+        "Geomean speedup, CINM 2.0 vs CINM 1.0\n(net time, same dpus/tasklets)"
+    )
     ax.set_title(
         "CINM 2.0 vs CINM 1.0 codegen at matched hardware configs\n"
         "(bars: CINM2 seed-median; whiskers: CINM2 25th-75th pct across seeds)"
@@ -79,7 +85,9 @@ def plot_speedup(comparison: pd.DataFrame, out_dir: pathlib.Path) -> pathlib.Pat
     return out_dir / "cinm1_vs_cinm2_speedup.pdf"
 
 
-def _draw_violin(ax, data: list[np.ndarray], positions: np.ndarray, colors: list) -> None:
+def _draw_violin(
+    ax, data: list[np.ndarray], positions: np.ndarray, colors: list
+) -> None:
     """Violin body per position, plus the raw points as a jittered-free
     scatter on top (so a violin backed by few configs still shows its actual
     sample instead of just a KDE blob). Positions with under 2 points are
@@ -104,7 +112,9 @@ def _draw_violin(ax, data: list[np.ndarray], positions: np.ndarray, colors: list
         ax.scatter([x] * len(d), d, color="black", s=8, alpha=0.5, zorder=3)
 
 
-def plot_speedup_violin(comparison: pd.DataFrame, out_dir: pathlib.Path) -> pathlib.Path:
+def plot_speedup_violin(
+    comparison: pd.DataFrame, out_dir: pathlib.Path
+) -> pathlib.Path:
     """Violin plot of matched-config speedup (same (dpus, tasklets) on both
     sides), one violin per benchmark. Each point is one (dpus, tasklets)
     working group's speedup with CINM 2.0's seed noise collapsed by geomean
@@ -162,7 +172,9 @@ def plot_best_speedup(
     out_dir.mkdir(parents=True, exist_ok=True)
 
     data = [
-        comparison_best.loc[comparison_best.fn_name == f, "speedup_vs_cinm1_best"].to_numpy()
+        comparison_best.loc[
+            comparison_best.fn_name == f, "speedup_vs_cinm1_best"
+        ].to_numpy()
         for f in funcs
     ]
 
@@ -198,7 +210,9 @@ def plot_best_speedup(
     ax.axhline(1.0, color="black", linewidth=0.8, linestyle="--")
     ax.set_xticks(x)
     ax.set_xticklabels(funcs, rotation=45, ha="right")
-    ax.set_ylabel("Geomean speedup vs CINM 1.0's best config\n(CINM 2.0, dpus/tasklets unconstrained)")
+    ax.set_ylabel(
+        "Geomean speedup vs CINM 1.0's best config\n(CINM 2.0, dpus/tasklets unconstrained)"
+    )
     ax.set_title(
         "CINM 2.0 (free search) vs CINM 1.0's best-ever config, per benchmark\n"
         "(bars: geomean across search seeds; whiskers: 25th-75th pct)"

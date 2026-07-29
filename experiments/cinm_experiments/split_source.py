@@ -1,6 +1,7 @@
 """Splitting a `// -----`-separated multi-function MLIR module into one file
 per function, so individual functions can be driven separately (needed to
 pin dpus/tasklets per function)."""
+
 from __future__ import annotations
 
 import pathlib
@@ -24,7 +25,9 @@ def list_functions(src_mlir: pathlib.Path) -> list[str]:
     return names
 
 
-def split_source(src_mlir: pathlib.Path, out_dir: pathlib.Path) -> dict[str, pathlib.Path]:
+def split_source(
+    src_mlir: pathlib.Path, out_dir: pathlib.Path
+) -> dict[str, pathlib.Path]:
     """Split a `// -----`-separated multi-function module into one .mlir file
     per function. Returns {fn_name: path}.
 

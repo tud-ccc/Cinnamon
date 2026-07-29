@@ -34,10 +34,10 @@ Usage:
   doit bo:prim_gemv_cinm2_ca    # just that source's BO search
   doit retry_failed_compiles && doit  # clear + retry configs that failed to compile
 """
+
 from __future__ import annotations
 
 import dataclasses
-import os
 import pathlib
 import shutil
 import sys
@@ -59,13 +59,13 @@ PRIMS = ["prim_gemv", "prim_red"]
 # Makefile's per-target BO_RULE invocations. Dict order is preserved as the
 # order sources are plotted in (matches the old Makefile's TARGETS var).
 TARGET_INFER_OPTS = {
-    "cinm2_ca400":     {"simulator": "cycle-accurate", "eval-timeout-ms": 400},
-    "cinm2_fast":      {"simulator": "fast", "eval-timeout-ms": 60000},
+    "cinm2_ca400": {"simulator": "cycle-accurate", "eval-timeout-ms": 400},
+    "cinm2_fast": {"simulator": "fast", "eval-timeout-ms": 60000},
     "cinm2_hybrid200": {"simulator": "hybrid", "eval-timeout-ms": 200},
     "cinm2_hybrid400": {"simulator": "hybrid", "eval-timeout-ms": 400},
-    "cinm1":           {"simulator": "hybrid", "eval-timeout-ms": 400, "use-mram-tiling": False},
-    "cinm2_ca":        {"simulator": "cycle-accurate", "eval-timeout-ms": 60000},
-    "cinm2_ca200":     {"simulator": "cycle-accurate", "eval-timeout-ms": 200},
+    "cinm1": {"simulator": "hybrid", "eval-timeout-ms": 400, "use-mram-tiling": False},
+    "cinm2_ca": {"simulator": "cycle-accurate", "eval-timeout-ms": 60000},
+    "cinm2_ca200": {"simulator": "cycle-accurate", "eval-timeout-ms": 200},
 }
 TARGETS = list(TARGET_INFER_OPTS)
 SOURCES = [f"{prim}_{target}" for prim in PRIMS for target in TARGETS]
@@ -73,8 +73,13 @@ SOURCES = [f"{prim}_{target}" for prim in PRIMS for target in TARGETS]
 PREFIX = "prim_largesurrogate"
 
 BASE_BO_INFER_OPTS = {
-    "n-validation": 600, "validation-interval": 1, "max-evals": 120,
-    "dump-full-pool": False, "hidden-depth": 6, "epochs": 1810, "hidden-width": 32,
+    "n-validation": 600,
+    "validation-interval": 1,
+    "max-evals": 120,
+    "dump-full-pool": False,
+    "hidden-depth": 6,
+    "epochs": 1810,
+    "hidden-width": 32,
 }
 N_SEEDS = 128
 BO_OFFSET = 67  # fixed: every source has its own results dir, so seeds never collide across sources
@@ -92,6 +97,7 @@ class Paths:
     Matches the legacy Makefile-produced layout exactly (config_dir has no
     extra "system" nesting -- see task_compile) so already-completed sources
     are recognized by `doit reset-dep` instead of doit wanting to redo them."""
+
     experiments_dir: pathlib.Path
     data_dir: pathlib.Path  # data/{PREFIX}
 
@@ -158,8 +164,12 @@ def _discover_configs(source: str, op: str) -> list[compile_run.Config]:
     split_dir = PATHS.split_dir(source)
     return [
         compile_run.Config(
-            system="", fn_name=fn_name, label=f"seed_{seed}", params=params,
-            fn_module=split_dir / f"{fn_name}.mlir", prim=op,
+            system="",
+            fn_name=fn_name,
+            label=f"seed_{seed}",
+            params=params,
+            fn_module=split_dir / f"{fn_name}.mlir",
+            prim=op,
             lower=cinmopt.eval_solution_lowerer(params),
         )
         for fn_name, seed, params in pools.best_per_seed(results_dir)
@@ -168,10 +178,18 @@ def _discover_configs(source: str, op: str) -> list[compile_run.Config]:
 
 # ── BO search ────────────────────────────────────────────────────────────────
 
-def _bo_one(prim_mlir: pathlib.Path, results_dir: pathlib.Path, infer_opts: dict) -> bool:
+
+def _bo_one(
+    prim_mlir: pathlib.Path, results_dir: pathlib.Path, infer_opts: dict
+) -> bool:
     cinmopt.bo_multiseed(
-        prim_mlir, results_dir, n_seeds=N_SEEDS, offset=BO_OFFSET, workers=WORKERS,
-        infer_opts={**BASE_BO_INFER_OPTS, **infer_opts}, nice=True,
+        prim_mlir,
+        results_dir,
+        n_seeds=N_SEEDS,
+        offset=BO_OFFSET,
+        workers=WORKERS,
+        infer_opts={**BASE_BO_INFER_OPTS, **infer_opts},
+        nice=True,
     )
     return True
 
@@ -190,11 +208,21 @@ def task_bo():
                 "name": source,
                 "file_dep": [str(prim_mlir)],
                 "targets": [str(PATHS.bo_out(source))],
-                "actions": [(_bo_one, [prim_mlir, PATHS.results_dir(source), TARGET_INFER_OPTS[target]])],
+                "actions": [
+                    (
+                        _bo_one,
+                        [
+                            prim_mlir,
+                            PATHS.results_dir(source),
+                            TARGET_INFER_OPTS[target],
+                        ],
+                    )
+                ],
             }
 
 
 # ── split (compile needs one function per module; bo above doesn't) ────────
+
 
 def _split_one(prim_mlir: pathlib.Path, split_dir: pathlib.Path) -> bool:
     split_source(prim_mlir, split_dir)
@@ -222,6 +250,7 @@ def task_split():
 
 # ── compile ──────────────────────────────────────────────────────────────────
 
+
 def _compile_one(config: compile_run.Config, compile_root: pathlib.Path) -> bool:
     """Never raises: compile_config() already catches subprocess failures
     and always writes config.csv (this action's doit target) before
@@ -245,7 +274,9 @@ def task_compile():
             compile_root = PATHS.compile_root(source)
             results_dir = PATHS.results_dir(source)
             for config in _discover_configs(source, op):
-                pool_csv = results_dir / f"infer_{config.fn_name}" / config.label / "pool.csv"
+                pool_csv = (
+                    results_dir / f"infer_{config.fn_name}" / config.label / "pool.csv"
+                )
                 yield {
                     "name": f"{source}:{config.fn_name}:{config.label}",
                     "file_dep": [str(pool_csv), str(config.fn_module)],
@@ -267,7 +298,9 @@ def _retry_failed_compiles() -> bool:
             source = f"{prim}_{target}"
             for config in _discover_configs(source, op):
                 config_dir = PATHS.config_dir(source, config)
-                if (config_dir / "config.csv").exists() and not PATHS.bench_bin(source, config).exists():
+                if (config_dir / "config.csv").exists() and not PATHS.bench_bin(
+                    source, config
+                ).exists():
                     print(f"  retry: {source} {config.fn_name} {config.label}")
                     shutil.rmtree(config_dir)
                     n += 1
@@ -287,6 +320,7 @@ def task_retry_failed_compiles():
 
 # ── run (DPU-cap-concurrent -- thousands of configs, sequential is too slow) ─
 
+
 def _run_source(source: str, op: str, marker: pathlib.Path) -> bool:
     """Benchmark every compiled config for a source concurrently, capped at
     DPU_CAP DPUs in flight (unlike cinm1comparison's task_bench, which runs
@@ -302,11 +336,15 @@ def _run_source(source: str, op: str, marker: pathlib.Path) -> bool:
     reset-dep` -- but every config it looks at is already benchmarked, so
     that pass is a fast no-op, not a real re-run on real hardware."""
     configs = _discover_configs(source, op)
-    compiled = compile_run.discover_compiled(configs, compile_root=PATHS.compile_root(source))
+    compiled = compile_run.discover_compiled(
+        configs, compile_root=PATHS.compile_root(source)
+    )
     ok = [c for c in compiled if c.ok]
     n_failed = len(compiled) - len(ok)
     if n_failed:
-        print(f"  {n_failed}/{len(compiled)} configs not compiled for {source}, skipping them")
+        print(
+            f"  {n_failed}/{len(compiled)} configs not compiled for {source}, skipping them"
+        )
 
     def _already_run(c: compile_run.CompiledConfig) -> bool:
         out = PATHS.run_output_dir(source, c.config)
@@ -314,19 +352,27 @@ def _run_source(source: str, op: str, marker: pathlib.Path) -> bool:
 
     todo = [c for c in ok if not _already_run(c)]
     if len(todo) < len(ok):
-        print(f"  {len(ok) - len(todo)}/{len(ok)} configs already benchmarked for {source}, skipping")
+        print(
+            f"  {len(ok) - len(todo)}/{len(ok)} configs already benchmarked for {source}, skipping"
+        )
 
     run_root = PATHS.run_root(source)
     results = parallel.run_resource_capped(
         todo,
         lambda c: compile_run.run_config(c, run_root=run_root, iters=ITERS),
         cost_fn=lambda c: c.num_dpus,
-        cap=DPU_CAP, workers=WORKERS, desc=f"run {source}",
-        should_retry=lambda r: not r.ok and compile_run.is_dpu_allocation_error(r.error),
+        cap=DPU_CAP,
+        workers=WORKERS,
+        desc=f"run {source}",
+        should_retry=lambda r: (
+            not r.ok and compile_run.is_dpu_allocation_error(r.error)
+        ),
     )
     for r in results:
         if not r.ok:
-            print(f"  FAIL run: {source} {r.compiled.config.fn_name} {r.compiled.config.label}: {r.error[:200]}")
+            print(
+                f"  FAIL run: {source} {r.compiled.config.fn_name} {r.compiled.config.label}: {r.error[:200]}"
+            )
 
     marker.parent.mkdir(parents=True, exist_ok=True)
     marker.touch()
@@ -341,7 +387,9 @@ def task_bench():
         op = prim.removeprefix("prim_")
         for target in TARGETS:
             source = f"{prim}_{target}"
-            config_csvs = [str(PATHS.config_csv(source, c)) for c in _discover_configs(source, op)]
+            config_csvs = [
+                str(PATHS.config_csv(source, c)) for c in _discover_configs(source, op)
+            ]
             if not config_csvs:
                 continue
             marker = PATHS.run_done(source)
@@ -355,8 +403,11 @@ def task_bench():
 
 # ── aggregate ────────────────────────────────────────────────────────────────
 
+
 def _aggregate_one(source: str) -> bool:
-    aggregate.aggregate_run(PATHS.run_root(source), PATHS.compile_root(source), PATHS.aggregated_dir(source))
+    aggregate.aggregate_run(
+        PATHS.run_root(source), PATHS.compile_root(source), PATHS.aggregated_dir(source)
+    )
     return True
 
 
@@ -380,7 +431,9 @@ def task_aggregate():
 
 
 def _aggregate_bo_timings_one(source: str) -> bool:
-    aggregate.aggregate_bo_timings(PATHS.results_dir(source), PATHS.bo_timings_dir(source))
+    aggregate.aggregate_bo_timings(
+        PATHS.results_dir(source), PATHS.bo_timings_dir(source)
+    )
     return True
 
 
@@ -402,6 +455,7 @@ def task_bo_timings():
 
 
 # ── plot ─────────────────────────────────────────────────────────────────────
+
 
 def _plot_all() -> bool:
     run_plots(PATHS.data_dir, SOURCES, PATHS.plots_dir())

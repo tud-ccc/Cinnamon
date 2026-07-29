@@ -215,7 +215,7 @@ def _pairwise_cols(dims: list[Dim], df: pd.DataFrame) -> list:
         for j in range(i + 1, len(cols)):
             out.append(cols[i] * cols[j])
     if len(dims) > 2:
-      out.append(_product(cols[i] for i in range(len(cols))))
+        out.append(_product(cols[i] for i in range(len(cols))))
     return out
 
 
@@ -226,7 +226,7 @@ def _pairwise_col_names(dims: list[Dim], df: pd.DataFrame) -> list[str]:
     names = [d.col for d in dims]
     for i in range(len(dims)):
         for j in range(i + 1, len(dims)):
-                names.append(f"{dims[i].col}*{dims[j].col}")
+            names.append(f"{dims[i].col}*{dims[j].col}")
     if len(dims) > 2:
         names.append("*".join(d.col for d in dims))
     return names
@@ -1191,9 +1191,16 @@ def plot_all_regression_fits(
         ax = fig.add_subplot(gs[r, c])
         fit = fits[key]
         shared_plots.plot_measured_vs_predicted(
-            fit["pred"], y, ax=ax, color=data[color.col], cmap=cmap, norm=norm,
-            xlabel=f"predicted {value.label}", ylabel=f"measured {value.label}",
-            lim=(lo, hi), legend=(i == 0),
+            fit["pred"],
+            y,
+            ax=ax,
+            color=data[color.col],
+            cmap=cmap,
+            norm=norm,
+            xlabel=f"predicted {value.label}",
+            ylabel=f"measured {value.label}",
+            lim=(lo, hi),
+            legend=(i == 0),
         )
         is_best = key == best_key
         ax.set_title(
@@ -1238,8 +1245,14 @@ def plot_best_regression_fit(
 
     fig, ax = plt.subplots(figsize=(6, 6))
     sc = shared_plots.plot_measured_vs_predicted(
-        pred, y, ax=ax, color=data[color.col], cmap=_cmap_for(color), norm=norm,
-        xlabel=f"predicted {value.label}", ylabel=f"measured {value.label}",
+        pred,
+        y,
+        ax=ax,
+        color=data[color.col],
+        cmap=_cmap_for(color),
+        norm=norm,
+        xlabel=f"predicted {value.label}",
+        ylabel=f"measured {value.label}",
         lim=(lo, hi),
     )
     nl = "\n"

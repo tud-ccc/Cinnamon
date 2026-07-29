@@ -3,6 +3,7 @@ that sweep many (function, seed) configs and need one combined view per
 measurement type instead of thousands of tiny per-config files -- e.g.
 experiments/paperplots, which runs O(1000) (function, seed) configs per
 source."""
+
 from __future__ import annotations
 
 import pathlib
@@ -29,8 +30,13 @@ def iter_config_dirs(run_dir: pathlib.Path):
                 yield fn_dir.name, config_dir
 
 
-def aggregate_run(run_dir: pathlib.Path, compile_dir: pathlib.Path, out_dir: pathlib.Path,
-                   *, types: set[str] | None = None) -> dict[str, pd.DataFrame]:
+def aggregate_run(
+    run_dir: pathlib.Path,
+    compile_dir: pathlib.Path,
+    out_dir: pathlib.Path,
+    *,
+    types: set[str] | None = None,
+) -> dict[str, pd.DataFrame]:
     """Merge every config's output/*.csv (scatter/gather/alloc/free/total/...,
     written by a bench_* binary) across run_dir into one combined DataFrame
     per measurement type, tagged with that config's fn_name and every column
@@ -69,7 +75,10 @@ def aggregate_run(run_dir: pathlib.Path, compile_dir: pathlib.Path, out_dir: pat
             frames.setdefault(t, []).append(df)
 
     if n_missing:
-        print(f"  {n_missing} config dir(s) skipped (no config.csv -- not compiled)", file=sys.stderr)
+        print(
+            f"  {n_missing} config dir(s) skipped (no config.csv -- not compiled)",
+            file=sys.stderr,
+        )
     if not frames:
         raise RuntimeError(f"no aggregatable data found under {run_dir}")
 
@@ -84,7 +93,9 @@ def aggregate_run(run_dir: pathlib.Path, compile_dir: pathlib.Path, out_dir: pat
     return combined
 
 
-def aggregate_bo_timings(results_dir: pathlib.Path, out_dir: pathlib.Path) -> pd.DataFrame:
+def aggregate_bo_timings(
+    results_dir: pathlib.Path, out_dir: pathlib.Path
+) -> pd.DataFrame:
     """Merge every {results_dir}/infer_{fn_name}/seed_{N}/timings.csv (raw
     per-seed BO-search timing, written by cinmopt.bo_multiseed) into one
     {out_dir}/timings.csv tagged with fn_name and seed."""
@@ -115,6 +126,8 @@ def aggregate_bo_timings(results_dir: pathlib.Path, out_dir: pathlib.Path) -> pd
     merged = pd.concat(frames, ignore_index=True)
     out_csv = out_dir / "timings.csv"
     merged.to_csv(out_csv, index=False)
-    print(f"  {len(merged)} rows ({merged['fn_name'].nunique()} functions, "
-          f"{merged['seed'].nunique()} seeds) -> {out_csv}")
+    print(
+        f"  {len(merged)} rows ({merged['fn_name'].nunique()} functions, "
+        f"{merged['seed'].nunique()} seeds) -> {out_csv}"
+    )
     return merged

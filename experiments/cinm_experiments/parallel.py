@@ -2,6 +2,7 @@
 worker-pool map, and a resource-capped scheduler for hardware runs that share
 a fixed budget (e.g. total DPUs in use across concurrently running
 benchmarks)."""
+
 from __future__ import annotations
 
 import concurrent.futures as cf
@@ -13,8 +14,14 @@ T = TypeVar("T")
 R = TypeVar("R")
 
 
-def run_parallel(items: Iterable[T], fn: Callable[[T], R], *, workers: int,
-                  desc: str = "", use_threads: bool = False) -> list[R]:
+def run_parallel(
+    items: Iterable[T],
+    fn: Callable[[T], R],
+    *,
+    workers: int,
+    desc: str = "",
+    use_threads: bool = False,
+) -> list[R]:
     """Run fn(item) for every item with a worker pool and a progress bar.
 
     Use use_threads=True for subprocess-heavy / I/O-bound work (the default,
@@ -30,10 +37,16 @@ def run_parallel(items: Iterable[T], fn: Callable[[T], R], *, workers: int,
     return results
 
 
-def run_resource_capped(items: Iterable[T], fn: Callable[[T], R], *,
-                         cost_fn: Callable[[T], int], cap: int, workers: int,
-                         desc: str = "",
-                         should_retry: Callable[[R], bool] = lambda r: False) -> list[R]:
+def run_resource_capped(
+    items: Iterable[T],
+    fn: Callable[[T], R],
+    *,
+    cost_fn: Callable[[T], int],
+    cap: int,
+    workers: int,
+    desc: str = "",
+    should_retry: Callable[[R], bool] = lambda r: False,
+) -> list[R]:
     """Run fn(item) in a thread pool, never letting the sum of cost_fn(item)
     over in-flight items exceed `cap` -- e.g. a DPU budget shared across
     concurrently running hardware benchmarks. If a single item's cost exceeds

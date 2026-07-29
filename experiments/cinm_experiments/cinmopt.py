@@ -5,6 +5,7 @@ called in-process -- but they turn "build a shell command line" into ordinary
 function calls with real arguments, so experiment scripts never construct
 --upmem-infer-accelerator option strings by hand.
 """
+
 from __future__ import annotations
 
 import pathlib
@@ -35,7 +36,7 @@ def _run(
     log_file: pathlib.Path,
     extra_opts: list = [],
     nice: bool = False,
-    nolog: bool = False
+    nolog: bool = False,
 ) -> subprocess.CompletedProcess:
     cmd = [
         str(cinm_opt),
@@ -51,16 +52,22 @@ def _run(
         cmd = ["nice", "-n", "19", *cmd]
     with open(log_file, "w") as log:
         log.write(shlex.join(cmd) + "\n\n")
-        
+
         if nolog:
-          return subprocess.run(cmd)
+            return subprocess.run(cmd)
         else:
-          return subprocess.run(cmd, stdout=log, stderr=subprocess.STDOUT, text=True)
+            return subprocess.run(cmd, stdout=log, stderr=subprocess.STDOUT, text=True)
 
 
-def exhaustive_search(src: pathlib.Path, out_dir: pathlib.Path, *, workers: int | None = None,
-                       infer_opts: dict | None = None, nice: bool = True,
-                       cinm_opt: pathlib.Path = DEFAULT_CINM_OPT) -> pathlib.Path:
+def exhaustive_search(
+    src: pathlib.Path,
+    out_dir: pathlib.Path,
+    *,
+    workers: int | None = None,
+    infer_opts: dict | None = None,
+    nice: bool = True,
+    cinm_opt: pathlib.Path = DEFAULT_CINM_OPT,
+) -> pathlib.Path:
     """Exhaustively evaluate every valid config, dumping
     {out_dir}/infer_{fn_name}/pool.csv per function found in src (the
     "infer_" prefix comes from the pass's own NameInventor; dump-full-pool is
@@ -69,13 +76,25 @@ def exhaustive_search(src: pathlib.Path, out_dir: pathlib.Path, *, workers: int 
     this is usually run alongside other work. Returns out_dir."""
     out_dir = pathlib.Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
-    opts = {"dump-dir": str(out_dir), "exhaustive-search": True,
-            "dump-full-pool": True, **({"n-workers": workers} if workers else {}),
-            **(infer_opts or {})}
-    r = _run(src, opts, out_file=out_dir / "out.mlir", cinm_opt=cinm_opt,
-             log_file=out_dir / "cinm-opt.log", nice=nice)
+    opts = {
+        "dump-dir": str(out_dir),
+        "exhaustive-search": True,
+        "dump-full-pool": True,
+        **({"n-workers": workers} if workers else {}),
+        **(infer_opts or {}),
+    }
+    r = _run(
+        src,
+        opts,
+        out_file=out_dir / "out.mlir",
+        cinm_opt=cinm_opt,
+        log_file=out_dir / "cinm-opt.log",
+        nice=nice,
+    )
     if r.returncode != 0:
-        raise RuntimeError(f"exhaustive_search failed for {src}; see {out_dir}/cinm-opt.log")
+        raise RuntimeError(
+            f"exhaustive_search failed for {src}; see {out_dir}/cinm-opt.log"
+        )
     return out_dir
 
 
@@ -89,7 +108,7 @@ def bo_multiseed(
     infer_opts: dict | None = None,
     nice: bool = False,
     debug: bool = False,
-    nolog : bool = False,
+    nolog: bool = False,
     cinm_opt: pathlib.Path = DEFAULT_CINM_OPT,
 ) -> pathlib.Path:
     """Run n_seeds independent BO searches sharing the config-space setup
@@ -99,31 +118,55 @@ def bo_multiseed(
     out_dir."""
     out_dir = pathlib.Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
-    opts = {"dump-dir": str(out_dir), "rng-seed": offset, "n-seeds": n_seeds,
-            **({"n-workers": workers} if workers else {}), **(infer_opts or {})}
+    opts = {
+        "dump-dir": str(out_dir),
+        "rng-seed": offset,
+        "n-seeds": n_seeds,
+        **({"n-workers": workers} if workers else {}),
+        **(infer_opts or {}),
+    }
     extra_opts = []
     if debug:
-      extra_opts = ["--debug-only=cinm-inference"]
+        extra_opts = ["--debug-only=cinm-inference"]
 
-    r = _run(src, opts, out_file=out_dir / "out.mlir", cinm_opt=cinm_opt,
-             log_file=out_dir / "cinm-opt.log",extra_opts=extra_opts, nice=nice,
-             nolog=nolog)
+    r = _run(
+        src,
+        opts,
+        out_file=out_dir / "out.mlir",
+        cinm_opt=cinm_opt,
+        log_file=out_dir / "cinm-opt.log",
+        extra_opts=extra_opts,
+        nice=nice,
+        nolog=nolog,
+    )
     if r.returncode != 0:
         raise RuntimeError(f"bo_multiseed failed for {src}; see {out_dir}/cinm-opt.log")
     return out_dir
 
 
-def eval_solution(src: pathlib.Path, params: dict, *, out_file: pathlib.Path,
-                   cinm_opt: pathlib.Path = DEFAULT_CINM_OPT, nice: bool = False,
-                   log_file: pathlib.Path | None = None) -> subprocess.CompletedProcess:
+def eval_solution(
+    src: pathlib.Path,
+    params: dict,
+    *,
+    out_file: pathlib.Path,
+    cinm_opt: pathlib.Path = DEFAULT_CINM_OPT,
+    nice: bool = False,
+    log_file: pathlib.Path | None = None,
+) -> subprocess.CompletedProcess:
     """Compile exactly one configuration, no search. `params` must be ordered
     to match the dimensions UpmemInferAccelerator declared for this op (dpus,
     tasklets, then whatever the op handler added) -- see pools.param_cols for
     a way to recover that order from an existing pool.csv."""
     solution_str = ",".join(str(v) for v in params.values())
     log_file = log_file or (pathlib.Path(out_file).parent / "cinm-opt.log")
-    return _run(src, {"eval-solution": solution_str}, out_file=out_file,
-                cinm_opt=cinm_opt, log_file=log_file, nice=nice)
+    return _run(
+        src,
+        {"eval-solution": solution_str},
+        out_file=out_file,
+        cinm_opt=cinm_opt,
+        log_file=log_file,
+        nice=nice,
+    )
 
 
 def eval_solution_lowerer(*, cinm_opt: pathlib.Path = DEFAULT_CINM_OPT):
@@ -131,9 +174,14 @@ def eval_solution_lowerer(*, cinm_opt: pathlib.Path = DEFAULT_CINM_OPT):
     as compile_run.Config.lower -- compiles CINM 2.0's chosen `params` with no
     further search."""
 
-    def _lower(fn_module: pathlib.Path, out_file: pathlib.Path,
-               log_file: pathlib.Path, **params) -> subprocess.CompletedProcess:
-        return eval_solution(fn_module, params, out_file=out_file,
-                              cinm_opt=cinm_opt, log_file=log_file)
+    def _lower(
+        fn_module: pathlib.Path,
+        out_file: pathlib.Path,
+        log_file: pathlib.Path,
+        **params,
+    ) -> subprocess.CompletedProcess:
+        return eval_solution(
+            fn_module, params, out_file=out_file, cinm_opt=cinm_opt, log_file=log_file
+        )
 
     return _lower

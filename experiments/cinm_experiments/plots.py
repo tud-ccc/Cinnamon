@@ -5,6 +5,7 @@ reference line, optional colorbar, optional stats text box. Only the
 rendering is shared; fitting/metric computation (NNLS, Spearman rho, RMSE,
 ...) stays with each caller, since what's being fit and how differs per
 experiment."""
+
 from __future__ import annotations
 
 import pathlib
@@ -68,12 +69,20 @@ def plot_measured_vs_predicted(
     if color is not None:
         color = np.asarray(color, dtype=float)
         if norm is None:
-            norm = LogNorm(vmin=color.min(), vmax=color.max()) if log_color else Normalize()
-        sc = ax.scatter(predicted, measured, s=10, alpha=0.7, c=color, cmap=cmap, norm=norm)
+            norm = (
+                LogNorm(vmin=color.min(), vmax=color.max())
+                if log_color
+                else Normalize()
+            )
+        sc = ax.scatter(
+            predicted, measured, s=10, alpha=0.7, c=color, cmap=cmap, norm=norm
+        )
     else:
         ax.scatter(predicted, measured, s=10, alpha=0.7, color="steelblue")
 
-    ax.plot([lo, hi], [lo, hi], color="gray", linestyle="--", linewidth=1, label="y = x")
+    ax.plot(
+        [lo, hi], [lo, hi], color="gray", linestyle="--", linewidth=1, label="y = x"
+    )
     ax.set_xlim(lo, hi)
     ax.set_ylim(lo, hi)
     ax.set_xscale("log")
@@ -88,9 +97,15 @@ def plot_measured_vs_predicted(
         ax.legend(fontsize=8)
 
     if annotate_lines:
-        ax.text(0.03, 0.97, "\n".join(annotate_lines),
-                transform=ax.transAxes, fontsize=8, verticalalignment="top",
-                bbox=dict(boxstyle="round,pad=0.3", facecolor="white", alpha=0.7))
+        ax.text(
+            0.03,
+            0.97,
+            "\n".join(annotate_lines),
+            transform=ax.transAxes,
+            fontsize=8,
+            verticalalignment="top",
+            bbox=dict(boxstyle="round,pad=0.3", facecolor="white", alpha=0.7),
+        )
 
     if own_fig:
         if sc is not None:
@@ -112,4 +127,4 @@ def log2_ticks(values) -> list[float]:
     values = np.asarray(values, dtype=float)
     k_min = int(np.floor(np.log2(values.min())))
     k_max = int(np.ceil(np.log2(values.max())))
-    return [2 ** k for k in range(k_min, k_max + 1)]
+    return [2**k for k in range(k_min, k_max + 1)]

@@ -9,7 +9,6 @@ from __future__ import annotations
 import pathlib
 import sys
 
-import pandas as pd
 
 HERE = pathlib.Path(__file__).resolve().parent
 EXPERIMENTS_DIR = HERE.parent
@@ -77,4 +76,3 @@ conf = compile_run.Config(
 )
 
 compile_run.compile_config(conf, compile_root=HERE / "foodata")
-

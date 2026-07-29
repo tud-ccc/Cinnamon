@@ -140,7 +140,7 @@ _NET_BREAKDOWN_CATEGORIES = [
 
 
 def net_breakdown_color_ix(cat):
-    order=[
+    order = [
         "scatter",
         "gather",
         "copy",
@@ -153,6 +153,7 @@ def net_breakdown_color_ix(cat):
     if cat == "scatter:block":
         cat = "scatter"  # Give scatter:block same color/sort ix as scatter for consistency, that's ok since both cannot be in the same plot
     return order.index(cat)
+
 
 def net_breakdown_sort_ix(cat):
     if cat == "scatter:block":

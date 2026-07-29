@@ -1,7 +1,7 @@
 import torch
 import sys
 
-sys.path.append('./llama2.c')
+sys.path.append("./llama2.c")
 
 from model import ModelArgs, Transformer  # from llama2.c
 

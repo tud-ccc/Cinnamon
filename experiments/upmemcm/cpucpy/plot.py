@@ -6,10 +6,12 @@ Usage:
   python3 plot.py                          # reads output/results.csv, writes output/cpucpy.png
   python3 plot.py --csv my.csv --out fig.png
 """
+
 import argparse
 import pathlib
 
 import matplotlib
+
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 from matplotlib.ticker import FuncFormatter
@@ -20,19 +22,26 @@ import pandas as pd
 def bytes_label(val, _):
     """Format a bytes value as KB/MB for axis tick labels."""
     if val >= 1024 * 1024:
-        return f"{val / (1024*1024):.0f}M"
+        return f"{val / (1024 * 1024):.0f}M"
     if val >= 1024:
         return f"{val / 1024:.0f}K"
     return f"{val:.0f}"
 
 
 def main():
-    p = argparse.ArgumentParser(description=__doc__,
-                                formatter_class=argparse.RawDescriptionHelpFormatter)
-    p.add_argument("--csv", default="output/results.csv",
-                   help="Input CSV (default: output/results.csv)")
-    p.add_argument("--out", default="output/cpucpy.png",
-                   help="Output PNG (default: output/cpucpy.png)")
+    p = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
+    p.add_argument(
+        "--csv",
+        default="output/results.csv",
+        help="Input CSV (default: output/results.csv)",
+    )
+    p.add_argument(
+        "--out",
+        default="output/cpucpy.png",
+        help="Output PNG (default: output/cpucpy.png)",
+    )
     args = p.parse_args()
 
     df = pd.read_csv(args.csv)
@@ -46,35 +55,52 @@ def main():
     fit_lines = []
     for m, color in zip(m_values, colors):
         sub = df[df["M"] == m]
-        label = f"M={m // (1024*1024)}M" if m >= 1024*1024 else f"M={m}"
+        label = f"M={m // (1024 * 1024)}M" if m >= 1024 * 1024 else f"M={m}"
 
         # ── time_iter_ns vs T ─────────────────────────────────────────────
-        ax_time.scatter(sub["copy_bytes"], sub["time_iter_ns"],
-                        s=6, alpha=0.25, color=color)
+        ax_time.scatter(
+            sub["copy_bytes"], sub["time_iter_ns"], s=6, alpha=0.25, color=color
+        )
         med = sub.groupby("copy_bytes")["time_iter_ns"].median().sort_index()
-        ax_time.plot(med.index, med.values, color=color, marker="o",
-                     markersize=4, linewidth=1.4, label=label)
+        ax_time.plot(
+            med.index,
+            med.values,
+            color=color,
+            marker="o",
+            markersize=4,
+            linewidth=1.4,
+            label=label,
+        )
 
         # ── regression: time = a · size^b (power law, linear in log-log) ───
         log2_x = np.log2(med.index.to_numpy(dtype=float))
         log2_y = np.log2(med.values.astype(float))
         b, log2_a = np.polyfit(log2_x, log2_y, 1)
-        a = 2.0 ** log2_a
+        a = 2.0**log2_a
         x_fit = np.geomspace(med.index.min(), med.index.max(), 200)
-        y_fit = a * x_fit ** b
-        ax_time.plot(x_fit, y_fit, color="red", linestyle="--", linewidth=1.0,
-                     alpha=0.8)
-        y0_fit = 0.63 * x_fit ** 0.907
-        ax_time.plot(x_fit, y0_fit, color="green", linestyle="--", linewidth=1.0,
-                     alpha=0.8)
+        y_fit = a * x_fit**b
+        ax_time.plot(
+            x_fit, y_fit, color="red", linestyle="--", linewidth=1.0, alpha=0.8
+        )
+        y0_fit = 0.63 * x_fit**0.907
+        ax_time.plot(
+            x_fit, y0_fit, color="green", linestyle="--", linewidth=1.0, alpha=0.8
+        )
         formula = f"{label}: t = {a:.2f} · size^{b:.3f} ns"
         fit_lines.append((formula, color))
         print(f"  {formula}")
 
     annotation = "\n".join(f for f, _ in fit_lines)
-    ax_time.text(0.03, 0.97, annotation, transform=ax_time.transAxes,
-                 fontsize=7.5, verticalalignment="top", fontfamily="monospace",
-                 bbox=dict(boxstyle="round,pad=0.3", facecolor="white", alpha=0.7))
+    ax_time.text(
+        0.03,
+        0.97,
+        annotation,
+        transform=ax_time.transAxes,
+        fontsize=7.5,
+        verticalalignment="top",
+        fontfamily="monospace",
+        bbox=dict(boxstyle="round,pad=0.3", facecolor="white", alpha=0.7),
+    )
 
     ax_time.set_xscale("log", base=2)
     ax_time.xaxis.set_major_formatter(FuncFormatter(bytes_label))

@@ -38,16 +38,19 @@ import dataclasses
 import functools
 import pathlib
 import sys
+import os
+import random
 
 from doit.reporter import ProgressBarReporter
+from doit.tools import PythonInteractiveAction
 
 HERE = pathlib.Path(__file__).resolve().parent
 EXPERIMENTS_DIR = HERE.parent.parent
 sys.path.insert(0, str(EXPERIMENTS_DIR))
 
-from cinm_experiments import compile_run, cinmopt, aggregate, pools, measurements  # noqa: E402
-from cinm_experiments.split_source import list_functions, split_source  # noqa: E402
-from cinm_experiments.paths import python_bin  # noqa: E402
+from cinm_experiments import compile_run, cinmopt, aggregate, pools, measurements
+from cinm_experiments.split_source import list_functions, split_source
+from cinm_experiments.paths import python_bin
 
 DOIT_CONFIG = {
     "default_tasks": ["plot"],
@@ -71,7 +74,12 @@ def _gemv_filter(p: dict) -> bool:
     # tighter structural constraint (mirroring red's `mramCol*dpus >= 64k`
     # total-coverage idea, using gemv's own tile dims) and/or an explicit cap
     # on how many configs to keep per function.
-    return p["M"] == (p["dpus"] / p["dpuCols"]) * p["mramRow"] and p["K"] == p["dpuCols"] * p["mramCol"]
+    return (
+        p["M"] == (p["dpus"] / p["dpuCols"]) * p["mramRow"]
+        and p["K"] == p["dpuCols"] * p["mramCol"]
+        and p["dpus"] >= 32
+        and p["wramCol"] > 16
+    )
 
 
 @dataclasses.dataclass(frozen=True)
@@ -99,7 +107,7 @@ PRIMS: dict[str, Prim] = {
     "gemv": Prim(
         name="gemv",
         source_mlir=EXPERIMENTS_DIR / "prim_gemv.mlir",
-        oracle_dir=HERE / "data" / "gemv_hybrid_400_oracle",
+        oracle_dir=HERE / "oracles" / "gemv_hybrid_400",
         config_filter=_gemv_filter,
         dimensions={
             "4MB": dict(M=1024, K=1024),
@@ -207,8 +215,9 @@ def _fn_configs(prim_name: str, fn_name: str) -> tuple[compile_run.Config, ...]:
     for row in df[cols].itertuples(index=True, name=None):
         idx, values = row[0], row[1:]
         params = dict(zip(cols, (int(v) for v in values)))
-        params |= prim.dimensions[problem_dims]
-        if not prim.config_filter(params):
+        # The filter also has access to the problem dimensions
+        full_parms = params | prim.dimensions[problem_dims]
+        if not prim.config_filter(full_parms):
             continue
         configs.append(
             compile_run.Config(
@@ -221,7 +230,8 @@ def _fn_configs(prim_name: str, fn_name: str) -> tuple[compile_run.Config, ...]:
                 lower=cinmopt.eval_solution_lowerer(),
             )
         )
-    return tuple(configs)
+    random.seed(0)
+    return tuple(random.sample(configs, k=512))
 
 
 # ── split ────────────────────────────────────────────────────────────────────
@@ -261,8 +271,12 @@ def _compile_fn(prim_name: str, fn_name: str, marker: pathlib.Path) -> bool:
     doesn't block its siblings."""
     configs = list(_fn_configs(prim_name, fn_name))
     pending = [c for c in configs if not PATHS.bench_bin(prim_name, c).exists()]
-    print(f"  {prim_name}:{fn_name}: {len(pending)}/{len(configs)} configs need compiling")
-    compile_run.compile_configs(pending, compile_root=PATHS.compile_root(prim_name))
+    print(
+        f"  {prim_name}:{fn_name}: {len(pending)}/{len(configs)} configs need compiling"
+    )
+    compile_run.compile_configs(
+        pending, compile_root=PATHS.compile_root(prim_name), workers=os.cpu_count()
+    )
     marker.parent.mkdir(parents=True, exist_ok=True)
     marker.touch()
     return True
@@ -278,7 +292,14 @@ def task_compile():
                 "name": f"{name}:{fn_name}",
                 "file_dep": [str(PATHS.split_module(name, fn_name))],
                 "targets": [str(marker)],
-                "actions": [(_compile_fn, [name, fn_name, marker])],
+                # PythonInteractiveAction, not a plain (callable, args) tuple:
+                # a normal PythonAction captures stdout into a StringIO (see
+                # doit/action.py's PythonAction.execute), which is what
+                # mangles compile_configs' own tqdm bar through the
+                # ProgressBarReporter -- Interactive actions never capture.
+                "actions": [
+                    PythonInteractiveAction(_compile_fn, [name, fn_name, marker])
+                ],
             }
 
 
@@ -295,12 +316,18 @@ def _bench_fn(prim_name: str, fn_name: str, marker: pathlib.Path) -> bool:
     an interrupted previous run) only (re)does what's outstanding or
     previously failed instead of re-benching the whole function's sweep."""
     configs = list(_fn_configs(prim_name, fn_name))
-    compiled = compile_run.discover_compiled(configs, compile_root=PATHS.compile_root(prim_name))
+    compiled = compile_run.discover_compiled(
+        configs, compile_root=PATHS.compile_root(prim_name)
+    )
     pending = [
-        c for c in compiled
-        if c.ok and measurements.net_time_ms(PATHS.output_dir(prim_name, c.config)) is None
+        c
+        for c in compiled
+        if c.ok
+        and measurements.net_time_ms(PATHS.output_dir(prim_name, c.config)) is None
     ]
-    print(f"  {prim_name}:{fn_name}: {len(pending)}/{len(compiled)} configs need a bench run")
+    print(
+        f"  {prim_name}:{fn_name}: {len(pending)}/{len(compiled)} configs need a bench run"
+    )
     compile_run.run_configs(pending, run_root=PATHS.run_root(prim_name), iters=ITERS)
     marker.parent.mkdir(parents=True, exist_ok=True)
     marker.touch()
@@ -322,7 +349,11 @@ def task_bench():
                 "name": f"{name}:{fn_name}",
                 "file_dep": [str(PATHS.compile_marker(name, fn_name))],
                 "targets": [str(marker)],
-                "actions": [(_bench_fn, [name, fn_name, marker])],
+                # see task_compile's comment -- run_configs has its own tqdm
+                # bar too.
+                "actions": [
+                    PythonInteractiveAction(_bench_fn, [name, fn_name, marker])
+                ],
             }
 
 

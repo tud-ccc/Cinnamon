@@ -49,7 +49,7 @@ def task_bench():
 
         yield {
             "name": f"{fn}",
-            "targets": [ out_path / "results.csv"],
+            "targets": [out_path / "results.csv"],
             "file_dep": ["bin/scatter_dpu", f"bin/scatter_bench_{fn}"],
             "actions": [
                 Interactive(
@@ -58,14 +58,16 @@ def task_bench():
                         **os.environ,
                         **bench_env.get(fn, {}),
                         "SCATTER_CSV_OUT": f"plots/{fn}/results.csv",
-                        "SCATTER_ITERS": '10',
+                        "SCATTER_ITERS": "10",
                     },
                 )
             ],
         }
 
+
 def _aggregate_one(in_path, out_path):
     import pandas as pd
+
     DIMS = ["num_dpus", "blocks_per_dpu", "block_size"]
 
     df = pd.read_csv(in_path)
@@ -73,6 +75,7 @@ def _aggregate_one(in_path, out_path):
     agg = df.groupby(DIMS)["ms"].median().reset_index()
     agg.to_csv(out_path, index=False)
     # print(f"{in_path}: {len(df):,} rows -> {out_path}: {len(agg):,} configs")
+
 
 def task_agg():
     """Aggregate each results.csv (one row/iteration) into results_agg.csv
@@ -85,7 +88,10 @@ def task_agg():
             "file_dep": [f"plots/{fn}/results.csv"],
             "targets": [f"plots/{fn}/results_agg.csv"],
             "actions": [
-              (_aggregate_one, [f"plots/{fn}/results.csv", f"plots/{fn}/results_agg.csv"])
+                (
+                    _aggregate_one,
+                    [f"plots/{fn}/results.csv", f"plots/{fn}/results_agg.csv"],
+                )
             ],
         }
 
@@ -94,7 +100,7 @@ def task_plot():
     splits = "--split block_size 1023 --split num_dpus 16 24 64 128 256 384"
 
     bench_splits = {
-        "sg": splits,#"--split block_size 1023",
+        "sg": splits,  # "--split block_size 1023",
         "gather": "--split block_size 1023 --split num_dpus 16 24 64 128",
         "broadcast": splits,
         "block": splits,
@@ -105,7 +111,7 @@ def task_plot():
             "name": f"{fn}",
             "file_dep": ["analyze.py", f"plots/{fn}/results_agg.csv"],
             "targets": [f"plots/{fn}/regression_fit.png"],
-            "uptodate": [config_changed(bench_splits.get(fn, ''))],
+            "uptodate": [config_changed(bench_splits.get(fn, ""))],
             "actions": [
                 f"python3 analyze.py plots/{fn}/results_agg.csv --out-dir plots/{fn} {bench_splits.get(fn, '')} | tee plots/{fn}/log.log"
             ],

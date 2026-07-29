@@ -22,6 +22,7 @@ from concurrent.futures import ProcessPoolExecutor, as_completed
 
 from typing import Optional
 import matplotlib
+
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 from matplotlib.ticker import FuncFormatter, NullFormatter
@@ -51,6 +52,7 @@ X_AXES = {
 # columns compare_oracles.py's _config_key_cols identifies (everything before
 # 'visited').
 
+
 def _key_cols(pool: pd.DataFrame) -> list[str]:
     """Columns that form the config vector: everything before 'visited'."""
     cols = list(pool.columns)
@@ -58,7 +60,9 @@ def _key_cols(pool: pd.DataFrame) -> list[str]:
     return [c for c in cols[:cut] if c != "cost"]
 
 
-def compute_measured_cost(agg_dir: pathlib.Path, fn_name: str, key_cols: list) -> pd.DataFrame:
+def compute_measured_cost(
+    agg_dir: pathlib.Path, fn_name: str, key_cols: list
+) -> pd.DataFrame:
     """Return columns [*key_cols, measured_cost] (ns), one row per config.
 
     For each (label, iteration), net_cost = total - free - alloc, i.e. the
@@ -73,21 +77,28 @@ def compute_measured_cost(agg_dir: pathlib.Path, fn_name: str, key_cols: list) -
     free = pd.read_csv(agg_dir / "free.csv")
     alloc = pd.read_csv(agg_dir / "alloc.csv")
 
-    select = lambda df: df[df["fn_name"] == fn_name]
+    def select(df):
+        return df[df["fn_name"] == fn_name]
 
     total_g = select(total).groupby(["label", "iteration"])["elapsed_ns"].mean()
     free_g = select(free).groupby(["label", "iteration"])["elapsed_ns"].mean()
     alloc_g = select(alloc).groupby(["label", "iteration"])["elapsed_ns"].mean()
 
-    joined = pd.concat({"total": total_g, "free": free_g, "alloc": alloc_g}, axis=1).dropna()
+    joined = pd.concat(
+        {"total": total_g, "free": free_g, "alloc": alloc_g}, axis=1
+    ).dropna()
     joined["net_cost"] = joined["total"] - joined["free"] - joined["alloc"]
 
-    measured = joined.groupby("label")["net_cost"].mean().rename("measured_cost").reset_index()
+    measured = (
+        joined.groupby("label")["net_cost"].mean().rename("measured_cost").reset_index()
+    )
     key_df = select(total).drop_duplicates("label")[["label"] + key_cols]
     return measured.merge(key_df, on="label")[key_cols + ["measured_cost"]]
 
 
-def compute_n_launches(agg_dir: pathlib.Path, fn_name: str, key_cols: list) -> pd.DataFrame:
+def compute_n_launches(
+    agg_dir: pathlib.Path, fn_name: str, key_cols: list
+) -> pd.DataFrame:
     """Return columns [*key_cols, n_launches], one row per config.
 
     n_launches = mean over iterations of the number of dpu_launch calls
@@ -104,7 +115,9 @@ def compute_n_launches(agg_dir: pathlib.Path, fn_name: str, key_cols: list) -> p
     return n_launches.merge(key_df, on="label")[key_cols + ["n_launches"]]
 
 
-def compute_measured_launch_cost(agg_dir: pathlib.Path, fn_name: str, key_cols: list) -> pd.DataFrame:
+def compute_measured_launch_cost(
+    agg_dir: pathlib.Path, fn_name: str, key_cols: list
+) -> pd.DataFrame:
     """Return columns [*key_cols, measured_launch_cost] (ns), one row per config.
 
     For each (label, iteration), launch cost = sum of all dpu_launch call
@@ -117,12 +130,16 @@ def compute_measured_launch_cost(agg_dir: pathlib.Path, fn_name: str, key_cols: 
     launch = pd.read_csv(agg_dir / "launch.csv")
     launch = launch[launch["fn_name"] == fn_name]
     per_iter = launch.groupby(["label", "iteration"])["elapsed_ns"].mean()
-    measured = per_iter.groupby("label").mean().rename("measured_launch_cost").reset_index()
+    measured = (
+        per_iter.groupby("label").mean().rename("measured_launch_cost").reset_index()
+    )
     key_df = launch.drop_duplicates("label")[["label"] + key_cols]
     return measured.merge(key_df, on="label")[key_cols + ["measured_launch_cost"]]
 
 
-def augment_pool(pool: pd.DataFrame, measured: pd.DataFrame, key_cols: list) -> pd.DataFrame:
+def augment_pool(
+    pool: pd.DataFrame, measured: pd.DataFrame, key_cols: list
+) -> pd.DataFrame:
     """pool.csv + measured_cost + error, joined on the config's param columns."""
     pool = pool.merge(measured, on=key_cols, how="left")
     pool["error"] = pool["measured_cost"] - pool["cost"]
@@ -146,13 +163,24 @@ def find_function_pools(oracle_dir: pathlib.Path):
 
 # ── Plot workers (top-level functions so ProcessPoolExecutor can pickle them) ─
 
-def plot_metric_vs_x(df: pd.DataFrame, metric: str, fn_name: str, xcol: str,
-                      out_path: pathlib.Path):
+
+def plot_metric_vs_x(
+    df: pd.DataFrame, metric: str, fn_name: str, xcol: str, out_path: pathlib.Path
+):
     fig, ax = plt.subplots(figsize=(6, 4.5))
-    ax.scatter(df[xcol], df["elapsed_ms"], s=8, alpha=0.35, color="steelblue", label="samples")
+    ax.scatter(
+        df[xcol], df["elapsed_ms"], s=8, alpha=0.35, color="steelblue", label="samples"
+    )
     medians = df.groupby(xcol)["elapsed_ms"].median().sort_index()
-    ax.plot(medians.index, medians.values, color="crimson", marker="o",
-            markersize=4, linewidth=1.2, label="median")
+    ax.plot(
+        medians.index,
+        medians.values,
+        color="crimson",
+        marker="o",
+        markersize=4,
+        linewidth=1.2,
+        label="median",
+    )
     ax.set_xscale("log")
     ax.set_yscale("log")
     ax.set_xlabel(X_AXES.get(xcol, xcol))
@@ -172,13 +200,14 @@ def plot_cost_calibration(pool: pd.DataFrame, fn_name: str, out_path: pathlib.Pa
     if data.empty:
         return
 
-    data = data[(data['dpus'] >= 2) & (data["measured_cost"] > 10e4)]
+    data = data[(data["dpus"] >= 2) & (data["measured_cost"] > 10e4)]
 
-    x = data["cost"]                 # ms -> ms
+    x = data["cost"]  # ms -> ms
     y = data["measured_cost"] / 1e6  # ns -> ms
 
     shared_plots.plot_measured_vs_predicted(
-        x, y,
+        x,
+        y,
         out_path=out_path,
         color=data["dpus"],
         color_label="Number of DPUs",
@@ -196,10 +225,21 @@ def plot_cost_calibration(pool: pd.DataFrame, fn_name: str, out_path: pathlib.Pa
     residual = (y - x) / data["n_launches"]
     fig2, ax2 = plt.subplots(figsize=(6, 4.5))
     ax2.scatter(x2, residual, s=10, alpha=0.5, color="darkorange", label="configs")
-    trend = pd.DataFrame({"n_launches": x2, "residual": residual}) \
-        .groupby("n_launches")["residual"].median().sort_index()
-    ax2.plot(trend.index, trend.values, color="crimson", marker="o",
-             markersize=4, linewidth=1.2, label="median")
+    trend = (
+        pd.DataFrame({"n_launches": x2, "residual": residual})
+        .groupby("n_launches")["residual"]
+        .median()
+        .sort_index()
+    )
+    ax2.plot(
+        trend.index,
+        trend.values,
+        color="crimson",
+        marker="o",
+        markersize=4,
+        linewidth=1.2,
+        label="median",
+    )
     ax2.axhline(0, color="gray", linestyle="--", linewidth=1, label="0")
     ax2.set_xlabel("Number of DPUs")
     ax2.set_ylabel("(measured cost - predicted cost) / (n launches) (ms)")
@@ -225,15 +265,19 @@ def plot_launch_calibration(pool: pd.DataFrame, fn_name: str, out_path: pathlib.
     # correction = lambda dpus,mramCols: 0.209862 - 6.424585947849452e-05 * mramCols + 7.869968869100642e-06 * dpus
 
     # correction = lambda dpus, mramCols: -2.347115 -0.001803433284655423 * dpus + 0.3805487552732298 * np.log2(dpus)
-    correction = lambda a, b: 0
+    def correction(a, b):
+        return 0
 
     # data = data[data['dpus'] >= 8]
 
-    x = data["cost"] + correction(data["dpus"], data["mramCol"])  # ms -> ms (kernel-only oracle, no transfer cost)
+    x = data["cost"] + correction(
+        data["dpus"], data["mramCol"]
+    )  # ms -> ms (kernel-only oracle, no transfer cost)
     y = data["measured_launch_cost"] / 1e6  # ns -> ms
 
     shared_plots.plot_measured_vs_predicted(
-        x, y,
+        x,
+        y,
         out_path=out_path,
         color=data["dpus"],
         color_label="Number of DPUs",
@@ -248,13 +292,24 @@ def plot_launch_calibration(pool: pd.DataFrame, fn_name: str, out_path: pathlib.
     # not just once per trial) should show up as a trend here rather than
     # against raw dpu count.
     x2 = data["dpus"]
-    residual = y - x 
+    residual = y - x
     fig2, ax2 = plt.subplots(figsize=(6, 4.5))
     ax2.scatter(x2, residual, s=10, alpha=0.5, color="darkorange", label="configs")
-    trend = pd.DataFrame({"n_launches": x2, "residual": residual}) \
-        .groupby("n_launches")["residual"].median().sort_index()
-    ax2.plot(trend.index, trend.values, color="crimson", marker="o",
-             markersize=4, linewidth=1.2, label="median")
+    trend = (
+        pd.DataFrame({"n_launches": x2, "residual": residual})
+        .groupby("n_launches")["residual"]
+        .median()
+        .sort_index()
+    )
+    ax2.plot(
+        trend.index,
+        trend.values,
+        color="crimson",
+        marker="o",
+        markersize=4,
+        linewidth=1.2,
+        label="median",
+    )
     ax2.axhline(0, color="gray", linestyle="--", linewidth=1, label="0")
     ax2.set_xlabel("Number of DPUs")
     ax2.set_ylabel("measured cost - predicted cost (ms)")
@@ -271,6 +326,7 @@ def plot_launch_calibration(pool: pd.DataFrame, fn_name: str, out_path: pathlib.
 
 
 # ── Task collection (runs in the main process) ────────────────────────────────
+
 
 def collect_metric_tasks(in_dir: pathlib.Path, out_dir: pathlib.Path, name_filter: str):
     """Return [(label, func, args), ...] for every gather/scatter/launch/free/total plot."""
@@ -291,14 +347,23 @@ def collect_metric_tasks(in_dir: pathlib.Path, out_dir: pathlib.Path, name_filte
                 if name_filter and name_filter not in plot_name:
                     continue
                 out_path = out_dir / fn_name / f"{plot_name}.png"
-                tasks.append((f"{plot_name} ({fn_name})", plot_metric_vs_x,
-                              (group.copy(), metric, fn_name, xcol, out_path)))
+                tasks.append(
+                    (
+                        f"{plot_name} ({fn_name})",
+                        plot_metric_vs_x,
+                        (group.copy(), metric, fn_name, xcol, out_path),
+                    )
+                )
     return tasks
 
 
-def collect_calibration_tasks(oracle_dir: pathlib.Path, agg_dir: pathlib.Path,
-                               out_dir: pathlib.Path, pool_out_dir: pathlib.Path,
-                               name_filter: Optional[str]):
+def collect_calibration_tasks(
+    oracle_dir: pathlib.Path,
+    agg_dir: pathlib.Path,
+    out_dir: pathlib.Path,
+    pool_out_dir: pathlib.Path,
+    name_filter: Optional[str],
+):
     plot_name = "cost_calibration"
     if name_filter and name_filter not in plot_name:
         return []
@@ -310,7 +375,10 @@ def collect_calibration_tasks(oracle_dir: pathlib.Path, agg_dir: pathlib.Path,
         key_cols = _key_cols(pool)
         measured = compute_measured_cost(agg_dir, fn_name, key_cols)
         if measured.empty:
-            print(f"  {fn_name}: no aggregated data, skipping calibration", file=sys.stderr)
+            print(
+                f"  {fn_name}: no aggregated data, skipping calibration",
+                file=sys.stderr,
+            )
             continue
         n_launches = compute_n_launches(agg_dir, fn_name, key_cols)
         measured = measured.merge(n_launches, on=key_cols, how="left")
@@ -318,13 +386,22 @@ def collect_calibration_tasks(oracle_dir: pathlib.Path, agg_dir: pathlib.Path,
         pool.to_csv(pool_out_dir / f"{fn_name}_pool.csv", index=False)
 
         out_path = out_dir / fn_name / f"{plot_name}.png"
-        tasks.append((f"{plot_name} ({fn_name})", plot_cost_calibration,
-                      (pool, fn_name, out_path)))
+        tasks.append(
+            (
+                f"{plot_name} ({fn_name})",
+                plot_cost_calibration,
+                (pool, fn_name, out_path),
+            )
+        )
     return tasks
 
 
-def collect_launch_calibration_tasks(kernel_oracle_dir: pathlib.Path, agg_dir: pathlib.Path,
-                                      out_dir: pathlib.Path, name_filter: Optional[str]):
+def collect_launch_calibration_tasks(
+    kernel_oracle_dir: pathlib.Path,
+    agg_dir: pathlib.Path,
+    out_dir: pathlib.Path,
+    name_filter: Optional[str],
+):
     plot_name = "launch_calibration"
     if name_filter and name_filter not in plot_name:
         return []
@@ -335,46 +412,76 @@ def collect_launch_calibration_tasks(kernel_oracle_dir: pathlib.Path, agg_dir: p
         key_cols = _key_cols(pool)
         measured = compute_measured_launch_cost(agg_dir, fn_name, key_cols)
         if measured.empty:
-            print(f"  {fn_name}: no aggregated data, skipping launch calibration", file=sys.stderr)
+            print(
+                f"  {fn_name}: no aggregated data, skipping launch calibration",
+                file=sys.stderr,
+            )
             continue
         pool = pool.merge(measured, on=key_cols, how="left")
 
         out_path = out_dir / fn_name / f"{plot_name}.png"
-        tasks.append((f"{plot_name} ({fn_name})", plot_launch_calibration,
-                      (pool, fn_name, out_path)))
-
+        tasks.append(
+            (
+                f"{plot_name} ({fn_name})",
+                plot_launch_calibration,
+                (pool, fn_name, out_path),
+            )
+        )
 
     return tasks
 
 
 def main():
     parser = argparse.ArgumentParser(
-        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--in-dir", default="aggregated",
-                         help="Directory containing aggregated CSVs (default: aggregated)")
-    parser.add_argument("--out-dir", default="plots",
-                         help="Root output directory for plots (default: plots)")
-    parser.add_argument("--filter", default=None,
-                         help="Only generate plots whose name contains this substring, "
-                              "e.g. --filter dpus or --filter cost_calibration "
-                              "(default: all plots)")
-    parser.add_argument("--oracle", default=None,
-                         help="Path to an oracle directory, containing one "
-                              "infer_{fn_name}/pool.csv subdir per problem "
-                              "(same layout dodo.py reads configs from). Enables the "
-                              "cost_calibration plot; omit to skip it.")
-    parser.add_argument("--pool-out-dir", default="pool_measured",
-                         help="Where to write cost-model-augmented pool CSVs "
-                              "(default: pool_measured; only used with --oracle)")
-    parser.add_argument("--kernel-oracle", default=None,
-                         help="Path to a second oracle directory predicting only the "
-                              "on-DPU kernel cost (no transfer/alloc/free), same "
-                              "infer_{fn_name}/pool.csv layout as --oracle (joined by "
-                              "param columns, not row order). Enables the launch_calibration plot "
-                              "(measured launch cost vs predicted kernel cost); "
-                              "omit to skip it.")
-    parser.add_argument("--workers", type=int, default=os.cpu_count(),
-                         help="Parallel plotting processes (default: cpu count)")
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
+    parser.add_argument(
+        "--in-dir",
+        default="aggregated",
+        help="Directory containing aggregated CSVs (default: aggregated)",
+    )
+    parser.add_argument(
+        "--out-dir",
+        default="plots",
+        help="Root output directory for plots (default: plots)",
+    )
+    parser.add_argument(
+        "--filter",
+        default=None,
+        help="Only generate plots whose name contains this substring, "
+        "e.g. --filter dpus or --filter cost_calibration "
+        "(default: all plots)",
+    )
+    parser.add_argument(
+        "--oracle",
+        default=None,
+        help="Path to an oracle directory, containing one "
+        "infer_{fn_name}/pool.csv subdir per problem "
+        "(same layout dodo.py reads configs from). Enables the "
+        "cost_calibration plot; omit to skip it.",
+    )
+    parser.add_argument(
+        "--pool-out-dir",
+        default="pool_measured",
+        help="Where to write cost-model-augmented pool CSVs "
+        "(default: pool_measured; only used with --oracle)",
+    )
+    parser.add_argument(
+        "--kernel-oracle",
+        default=None,
+        help="Path to a second oracle directory predicting only the "
+        "on-DPU kernel cost (no transfer/alloc/free), same "
+        "infer_{fn_name}/pool.csv layout as --oracle (joined by "
+        "param columns, not row order). Enables the launch_calibration plot "
+        "(measured launch cost vs predicted kernel cost); "
+        "omit to skip it.",
+    )
+    parser.add_argument(
+        "--workers",
+        type=int,
+        default=os.cpu_count(),
+        help="Parallel plotting processes (default: cpu count)",
+    )
     args = parser.parse_args()
 
     in_dir = pathlib.Path(args.in_dir)
@@ -383,11 +490,16 @@ def main():
     tasks = collect_metric_tasks(in_dir, out_dir, args.filter)
     if args.oracle:
         tasks += collect_calibration_tasks(
-            pathlib.Path(args.oracle), in_dir, out_dir,
-            pathlib.Path(args.pool_out_dir), args.filter)
+            pathlib.Path(args.oracle),
+            in_dir,
+            out_dir,
+            pathlib.Path(args.pool_out_dir),
+            args.filter,
+        )
     if args.kernel_oracle:
         tasks += collect_launch_calibration_tasks(
-            pathlib.Path(args.kernel_oracle), in_dir, out_dir, args.filter)
+            pathlib.Path(args.kernel_oracle), in_dir, out_dir, args.filter
+        )
 
     if not tasks:
         print("No plots matched.", file=sys.stderr)
