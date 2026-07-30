@@ -32,8 +32,10 @@ extern "C" {
 #include <dpu.h>
 }
 
+#include <indicators/dynamic_progress.hpp>
 #include <indicators/progress_bar.hpp>
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <cstdint>
@@ -46,6 +48,7 @@ extern "C" {
 #include <set>
 #include <string>
 #include <thread>
+#include <tuple>
 #include <unistd.h>
 #include <vector>
 
@@ -103,6 +106,12 @@ static std::vector<int> sampleFairLog2(bool dense, int max, int align,
         s.push_back(i);
       }
     }
+    // The loop above is strict-< throughout (bucket boundary and outer
+    // `lo < max`), so it always stops one step short of `max` itself (e.g.
+    // max=4096 -> last value 3584) -- `max` is a corner of the swept space
+    // just as much as the smallest values are, so make sure it's present.
+    if (s.empty() || s.back() != max)
+      s.push_back(max);
   } else {
     for (int p = align * sampling; p <= max; p *= 2)
       s.push_back(p);
@@ -219,37 +228,55 @@ dpu_error_t runTransfer(struct dpu_set_t set, const uint8_t *arena,
 
 #endif
 
-// Single progress bar over all (num_dpus, blocks_per_dpu, block_size)
-// configs, ticked once per config from the hot loop via a plain atomic;
-// a background thread reads it and redraws every 150ms -- same pattern as
+// Three stacked progress bars (dpus / blocks-per-dpu / block-size), rendered
+// by a single background thread reading atomics -- same pattern as
 // SimpleProgressBar in lib/Dialect/Cinm/AcceleratorInference/Progress.h.
 struct SweepProgress {
   using Bar = indicators::ProgressBar;
   bool active;
-  std::unique_ptr<Bar> bar;
-  std::atomic<size_t> done_{0};
+  std::vector<std::unique_ptr<Bar>> bars;
+  std::unique_ptr<indicators::DynamicProgress<Bar>> dyn;
+  std::atomic<size_t> dpuDone_{0}, blockDone_{0}, sizeDone_{0};
   std::atomic<bool> stop_{false};
   std::thread printer_;
 
-  explicit SweepProgress(size_t totalConfigs) : active(isatty(fileno(stdout))) {
+  SweepProgress(size_t nDpuCounts, size_t nBlocks, size_t nSizes)
+      : active(isatty(fileno(stdout))) {
     if (!active)
       return;
-    bar = std::make_unique<Bar>(indicators::option::BarWidth{30},
-                                indicators::option::MaxProgress{totalConfigs},
-                                indicators::option::PrefixText{"configs "},
-                                indicators::option::ShowPercentage{true},
-                                indicators::option::ShowElapsedTime{true},
-                                indicators::option::ShowRemainingTime{true});
+    auto makeBar = [](size_t maxProgress, const std::string &prefix) {
+      return std::make_unique<Bar>(indicators::option::BarWidth{30},
+                                   indicators::option::MaxProgress{maxProgress},
+                                   indicators::option::PrefixText{prefix},
+                                   indicators::option::ShowPercentage{true},
+                                   indicators::option::ShowElapsedTime{true},
+                                   indicators::option::ShowRemainingTime{true});
+    };
+    bars.push_back(makeBar(nDpuCounts, "dpus       "));
+    bars.push_back(makeBar(nBlocks, "blocks/dpu "));
+    bars.push_back(makeBar(nSizes, "block size "));
+    dyn = std::make_unique<indicators::DynamicProgress<Bar>>();
+    for (auto &b : bars)
+      dyn->push_back(*b);
 
     printer_ = std::thread([this] {
       while (!stop_.load(std::memory_order_relaxed)) {
-        bar->set_progress(done_.load(std::memory_order_relaxed));
+        bars[0]->set_progress(dpuDone_.load(std::memory_order_relaxed));
+        bars[1]->set_progress(blockDone_.load(std::memory_order_relaxed));
+        bars[2]->set_progress(sizeDone_.load(std::memory_order_relaxed));
+        std::cout << "\033[?2026h";
+        dyn->print_progress();
+        std::cout << "\033[?2026l" << std::flush;
         std::this_thread::sleep_for(std::chrono::milliseconds(150));
       }
     });
   }
 
-  void tick(size_t n = 1) { done_.fetch_add(n, std::memory_order_relaxed); }
+  void resetBlocks() { blockDone_.store(0, std::memory_order_relaxed); }
+  void resetSizes() { sizeDone_.store(0, std::memory_order_relaxed); }
+  void tickDpu() { dpuDone_.fetch_add(1, std::memory_order_relaxed); }
+  void tickBlock() { blockDone_.fetch_add(1, std::memory_order_relaxed); }
+  void tickSize() { sizeDone_.fetch_add(1, std::memory_order_relaxed); }
 
   void finish() {
     if (!active)
@@ -258,12 +285,51 @@ struct SweepProgress {
     stop_.store(true, std::memory_order_relaxed);
     if (printer_.joinable())
       printer_.join();
-    bar->mark_as_completed();
+    for (auto &b : bars)
+      b->mark_as_completed();
   }
   ~SweepProgress() { finish(); }
 };
 
 bool ispow2(int n) { return (n & (n - 1)) == 0; }
+
+// Corner-point filter: past MAX_BLOCK_SIZE*16 total bytes/DPU, most of the
+// (blocks_per_dpu, block_size) plane is unrealistic (real kernels don't
+// exercise it) and prohibitively slow to sweep exhaustively -- only sample
+// the "regular" grid points there (power-of-2 blocks_per_dpu/block_size,
+// dpu count a multiple of 64) instead of every combination.
+bool sampleInExpensiveRegion(int blocksPerDpu, int blockSize, int numDpus) {
+  bool result = true;
+  result &= ispow2(blocksPerDpu) || ispow2(blocksPerDpu - 1);
+  result &= ispow2(blockSize) || ispow2(blockSize - 1);
+  result &= numDpus % 64 == 0 || numDpus % 64 == 1;
+  return result;
+}
+bool shouldSkipExpensive(int blocksPerDpu, int blockSize, int numDpus) {
+  return static_cast<long>(blocksPerDpu) * blockSize > MAX_BLOCK_SIZE * 16 &&
+         !sampleInExpensiveRegion(blocksPerDpu, blockSize, numDpus);
+}
+
+// Reads (num_dpus, blocks_per_dpu, block_size) triples already present in
+// `path` (if it exists), for incremental resume -- a config is "already
+// measured" as soon as it has at least one row, regardless of iters count.
+std::set<std::tuple<int, int, int>>
+loadExistingConfigs(const std::string &path) {
+  std::set<std::tuple<int, int, int>> done;
+  std::ifstream in(path);
+  if (!in)
+    return done;
+  std::string line;
+  std::getline(in, line); // header
+  int numDpus, blocksPerDpu, blockSize, iter;
+  long long ns;
+  while (std::getline(in, line)) {
+    if (std::sscanf(line.c_str(), "%d,%d,%d,%d,%lld", &numDpus, &blocksPerDpu,
+                    &blockSize, &iter, &ns) == 5)
+      done.emplace(numDpus, blocksPerDpu, blockSize);
+  }
+  return done;
+}
 } // namespace
 
 int main() {
@@ -283,6 +349,19 @@ int main() {
             << " block sizes = " << totalConfigs << " configs, " << iters
             << " iters each" << (dense ? " [dense]" : " [default]") << "\n";
 
+  // Incremental resume: a prior (possibly interrupted) run's results.csv is
+  // read for (num_dpus, blocks_per_dpu, block_size) triples already
+  // present, and every such config is skipped below -- so re-running after
+  // an interruption (or after widening the swept ranges) only measures what
+  // isn't already on disk, instead of redoing an hour-long sweep from
+  // scratch.
+  std::set<std::tuple<int, int, int>> alreadyDone =
+      loadExistingConfigs(csvPath);
+  bool resuming = !alreadyDone.empty();
+  if (resuming)
+    std::cerr << "scatter_bench: resuming -- " << alreadyDone.size()
+              << " configs already in " << csvPath << "\n";
+
   // One padded host arena, sized for the worst case, allocated once so
   // per-config allocation cost never pollutes the timing loop.
   size_t maxStride = static_cast<size_t>(MAX_BLOCK_SIZE) + BLOCK_PAD;
@@ -292,21 +371,45 @@ int main() {
   for (size_t i = 0; i < arenaBytes; i++)
     arena[i] = static_cast<uint8_t>(i);
 
-  std::ofstream csv(csvPath, std::ios::out | std::ios::trunc);
+  std::ofstream csv(csvPath, resuming ? (std::ios::out | std::ios::app)
+                                      : (std::ios::out | std::ios::trunc));
   if (!csv) {
     std::cerr << "scatter_bench: failed to open " << csvPath
               << " for writing\n";
     return 1;
   }
-  csv << "num_dpus,blocks_per_dpu,block_size,iter,ns\n";
-  csv.flush();
+  if (!resuming) {
+    csv << "num_dpus,blocks_per_dpu,block_size,iter,ns\n";
+    csv.flush();
+  }
 
-  SweepProgress progress(totalConfigs);
-  size_t configsPerDpuCount = blocksPerDpuList.size() * blockSizes.size();
+  SweepProgress progress(dpuCounts.size(), blocksPerDpuList.size(),
+                         blockSizes.size());
 
   // start with the biggest ones first because they're the slowest
   std::reverse(dpuCounts.begin(), dpuCounts.end());
   for (int numDpus : dpuCounts) {
+    // Every config for this dpu count is either already measured or would
+    // be skipped by the corner filter anyway -- skip dpu_alloc/dpu_load
+    // entirely rather than pay for a rank allocation with nothing to do.
+    bool allDoneForDpu = true;
+    for (int blocksPerDpu : blocksPerDpuList) {
+      for (int blockSize : blockSizes) {
+        if (shouldSkipExpensive(blocksPerDpu, blockSize, numDpus))
+          continue;
+        if (!alreadyDone.count({numDpus, blocksPerDpu, blockSize})) {
+          allDoneForDpu = false;
+          break;
+        }
+      }
+      if (!allDoneForDpu)
+        break;
+    }
+    if (allDoneForDpu) {
+      progress.tickDpu();
+      continue;
+    }
+
     struct dpu_set_t set;
     dpu_error_t err;
 #if XFER_MODE == XFER_SG
@@ -322,7 +425,7 @@ int main() {
       std::cerr << "scatter_bench: dpu_alloc(" << numDpus
                 << ") failed: " << dpu_error_to_string(err)
                 << " -- skipping this DPU count\n";
-      progress.tick(configsPerDpuCount);
+      progress.tickDpu();
       continue;
     }
     err = dpu_load(set, DPU_BINARY, NULL);
@@ -330,19 +433,23 @@ int main() {
       std::cerr << "scatter_bench: dpu_load failed for " << numDpus
                 << " dpus: " << dpu_error_to_string(err) << "\n";
       dpu_free(set);
-      progress.tick(configsPerDpuCount);
+      progress.tickDpu();
       continue;
     }
 
+    progress.resetBlocks();
     for (int blocksPerDpu : blocksPerDpuList) {
+      progress.resetSizes();
       for (int blockSize : blockSizes) {
-        if (static_cast<long>(blocksPerDpu) * blockSize > MAX_BLOCK_SIZE * 16 &&
-            !(ispow2(blocksPerDpu) && ispow2(blockSize) &&
-              (numDpus % 64 == 0))) {
+        if (shouldSkipExpensive(blocksPerDpu, blockSize, numDpus)) {
           // This is in the "expensive region".
           // We only sample here if we are exactly on a
           // "regular" config (power of 2 params).
-          progress.tick();
+          progress.tickSize();
+          continue;
+        }
+        if (alreadyDone.count({numDpus, blocksPerDpu, blockSize})) {
+          progress.tickSize();
           continue;
         }
 
@@ -372,10 +479,12 @@ int main() {
               << "," << ns << "\n";
           csv.flush();
         }
-        progress.tick();
+        progress.tickSize();
       }
+      progress.tickBlock();
     }
     dpu_free(set);
+    progress.tickDpu();
   }
 
   progress.finish();
