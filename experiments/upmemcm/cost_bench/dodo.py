@@ -52,7 +52,7 @@ import os
 import random
 
 from doit.reporter import ProgressBarReporter
-from doit.tools import PythonInteractiveAction
+from doit.tools import PythonInteractiveAction, glob_dep
 
 HERE = pathlib.Path(__file__).resolve().parent
 EXPERIMENTS_DIR = HERE.parent.parent
@@ -543,16 +543,26 @@ def _agg_one(prim_name: str) -> bool:
     return True
 
 
+def _agg_uptodate(prim_name: str) -> list:
+    return [
+        glob_dep(
+            str(PATHS.run_root(prim_name) / SYSTEM / "*" / "*" / "output" / "*.csv")
+        )
+    ]
+
+
 def task_agg():
     """Merge every config's raw per-iteration output CSVs into one CSV per
-    measurement type. Cheap (pandas concat over what bench already wrote to
-    disk), so unlike compile/bench it just always reruns rather than tracking
-    which of its dynamically-named output files are stale."""
+    measurement type. Tracked via glob_dep over those same output CSVs
+    (potentially hundreds of thousands of tiny per-config files), so it only
+    reruns the pandas concat when bench actually wrote/removed something --
+    used to be "uptodate: [False]" (always reruns), which made this the slow
+    step in an otherwise-incremental pipeline."""
     for name in PRIMS:
         yield {
             "name": name,
             "task_dep": [f"bench:{name}:{fn}" for fn in _fn_names(name)],
-            "uptodate": [False],
+            "uptodate": _agg_uptodate(name),
             "actions": [(_agg_one, [name])],
         }
 
@@ -563,18 +573,26 @@ def _agg_predictions_one(prim_name: str) -> bool:
     return True
 
 
+def _agg_predictions_uptodate(prim_name: str) -> list:
+    return [
+        glob_dep(
+            str(PATHS.compile_root(prim_name) / SYSTEM / "*" / "*" / "ir" / "cost.csv")
+        )
+    ]
+
+
 def task_agg_predictions():
     """Merge every config's ir/cost.csv (the cost-model's per-op category
     breakdown, written at compile time -- see aggregate.
     aggregate_predicted_costs) into one predicted_costs.csv. Depends only on
     compile (not bench), since the breakdown is a compile-time artifact that
-    doesn't need hardware. Like task_agg, always reruns rather than tracking
-    staleness."""
+    doesn't need hardware. Tracked via glob_dep over those same ir/cost.csv
+    files, like task_agg."""
     for name in PRIMS:
         yield {
             "name": name,
             "task_dep": [f"compile:{name}:{fn}" for fn in _fn_names(name)],
-            "uptodate": [False],
+            "uptodate": _agg_predictions_uptodate(name),
             "actions": [(_agg_predictions_one, [name])],
         }
 
@@ -589,16 +607,31 @@ def _failures_one(prim_name: str) -> bool:
     return True
 
 
+def _failures_uptodate(prim_name: str) -> list:
+    # Tracked via the flat per-function {compile,run}_failures_csv markers
+    # (written unconditionally by _compile_fn/_bench_fn every time they run,
+    # see their own comments) rather than re-globbing every config dir's
+    # make_stderr.txt/cinm-opt.log/error.txt/bin/output directly: those
+    # per-function CSVs are already a deterministic function of exactly the
+    # same underlying files collect_failures would rescan, and there's only
+    # one pair of them per function instead of one set of marker files per
+    # config -- much cheaper to check.
+    return [
+        glob_dep(str(PATHS.compile_root(prim_name) / "*.compile_failures.csv")),
+        glob_dep(str(PATHS.run_root(prim_name) / "*.run_failures.csv")),
+    ]
+
+
 def task_failures():
     """Collect every compile/run failure left on disk across this prim's
     functions into one failures.csv (see cinm_experiments.failures) --
     depends on bench (not just compile), since run failures need bench to
-    have been attempted too. Like task_agg, always reruns."""
+    have been attempted too. Tracked via glob_dep, see _failures_uptodate."""
     for name in PRIMS:
         yield {
             "name": name,
             "task_dep": [f"bench:{name}:{fn}" for fn in _fn_names(name)],
-            "uptodate": [False],
+            "uptodate": _failures_uptodate(name),
             "actions": [(_failures_one, [name])],
         }
 
@@ -620,19 +653,31 @@ def _plot_cmd(prim_name: str) -> str:
     )
 
 
+def _plot_uptodate(prim_name: str) -> list:
+    # plot_cost.py's actual inputs (--in-dir/--predicted-dir/--failures-csv/
+    # --oracle); --out-dir/--pool-out-dir are its outputs, not tracked here.
+    return [
+        glob_dep(str(PATHS.agg_dir(prim_name) / "*.csv")),
+        glob_dep(str(PATHS.predicted_dir(prim_name) / "*.csv")),
+        glob_dep(str(PATHS.failures_csv(prim_name))),
+        glob_dep(str(PATHS.oracle_dir(prim_name) / "*" / "pool.csv")),
+    ]
+
+
 def task_plot():
     """Regenerate this prim's plots/ (per-metric-vs-dim scatter plots, plus
     the cost_calibration measured-vs-predicted plot). Shells out to
     plot_cost.py (a standalone CLI script, also runnable on its own) rather
     than importing it, so its own --filter/--oracle CLI stays the single
-    source of truth for what it does. Like task_agg, always reruns -- cheap
-    relative to compile/bench, and its output set is dynamic (one plot per
-    function/metric found)."""
+    source of truth for what it does. Tracked via glob_dep over its actual
+    inputs (agg_dir/predicted_dir/failures_csv/oracle_dir) -- cheap, since
+    those are already-aggregated summaries, not the raw per-config CSVs
+    task_agg/task_agg_predictions glob."""
     for name in PRIMS:
         yield {
             "name": name,
             "task_dep": [f"agg:{name}", f"agg_predictions:{name}", f"failures:{name}"],
-            "uptodate": [False],
+            "uptodate": _plot_uptodate(name),
             "actions": [_plot_cmd(name)],
         }
 
@@ -653,11 +698,13 @@ def task_single():
     the aggregate+plot step is called directly as this task's own actions --
     the exact same functions/command task_agg/task_agg_predictions/
     task_failures/task_plot use, just invoked here rather than depended on --
-    which is safe because all four are already unconditional/"uptodate:
-    False" (cheap, always-rerun-from-whatever's-on-disk), not incremental.
-    One consequence worth knowing: that rerun still aggregates/plots every
-    function of the prim that happens to already have data on disk, not
-    narrowly just this one -- plot_cost.py has no per-function scope today."""
+    tracked via the union of all four's own glob_dep uptodate checks (see
+    _agg_uptodate/_agg_predictions_uptodate/_failures_uptodate/
+    _plot_uptodate), so this reruns exactly when any of those four
+    standalone tasks would. One consequence worth knowing: that rerun still
+    aggregates/plots every function of the prim that happens to already
+    have data on disk, not narrowly just this one -- plot_cost.py has no
+    per-function scope today."""
     for name in PRIMS:
         for fn_name in _fn_names(name):
             yield {
@@ -667,7 +714,12 @@ def task_single():
                     f"compile:{name}:{fn_name}",
                     f"bench:{name}:{fn_name}",
                 ],
-                "uptodate": [False],
+                "uptodate": [
+                    *_agg_uptodate(name),
+                    *_agg_predictions_uptodate(name),
+                    *_failures_uptodate(name),
+                    *_plot_uptodate(name),
+                ],
                 "actions": [
                     (_agg_one, [name]),
                     (_agg_predictions_one, [name]),
