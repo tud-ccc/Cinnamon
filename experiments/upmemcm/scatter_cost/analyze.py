@@ -1609,6 +1609,42 @@ def export_mlp_cpp(
     return "\n".join(lines)
 
 
+def export_mlp_npz(
+    fit: dict, feature_spec: list[tuple[str, str | None]], path: pathlib.Path
+) -> None:
+    """Dumps a fit_mlp fit-dict's trained MLPRegressor (weights/biases,
+    standardization mean/std, and feature_spec) to an .npz, so the same
+    model can be reloaded and evaluated from a notebook instead of only via
+    export_mlp_cpp's generated C++. Layout mirrors export_mlp_cpp: sklearn's
+    coefs_[i]/intercepts_[i] stored as-is (NOT transposed -- that transpose
+    in export_mlp_cpp is only to match mlpack's Linear::Weight() layout), so
+    a notebook can reload with plain numpy:
+
+        d = np.load("mlp_weights.npz", allow_pickle=True)
+        x = (x_raw - d["mean"]) / d["std"]  # x_raw ordered per d["feature_names"],
+                                             # log2 first for any "log2" entry in
+                                             # d["feature_transforms"]
+        for i in range(int(d["n_layers"])):
+            x = x @ d[f"weight_{i}"] + d[f"bias_{i}"]
+            if i < int(d["n_layers"]) - 1:
+                x = np.maximum(x, 0)  # ReLU
+        pred = np.exp(x)  # undo fit_mlp's log-space target
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    model = fit["model"]
+    arrays = {
+        "mean": fit["mean"],
+        "std": fit["std"],
+        "feature_names": np.array([name for name, _ in feature_spec]),
+        "feature_transforms": np.array([t or "" for _, t in feature_spec]),
+        "n_layers": len(model.coefs_),
+    }
+    for i, (w, b) in enumerate(zip(model.coefs_, model.intercepts_)):
+        arrays[f"weight_{i}"] = np.asarray(w)
+        arrays[f"bias_{i}"] = np.asarray(b)
+    np.savez(path, **arrays)
+
+
 def principal_dims(agg):
     blocks_dim, size_dim = PROBLEM.shape
 
@@ -1766,6 +1802,11 @@ def main():
     for key, tmpl in templates.items():
         if tmpl.report is not None:
             tmpl.report(fits[key], agg)
+
+    if "mlp" in fits:
+        mlp_path = out_dir / "mlp_weights.npz"
+        export_mlp_npz(fits["mlp"], MLP_FEATURE_SPEC, mlp_path)
+        print(f"MLP weights written to {mlp_path}")
 
     if splits:
         masks, labels = combined_regime_masks(agg, splits)

@@ -19,6 +19,7 @@ simplest                   dpu, size  0.508060 1.068280 0.041310
 
 === MLP (log-space) ===
   converged in 155 iterations, final loss=0.009135
+MLP weights written to plots/sg/mlp_weights.npz
 
 === block_size <= 1023 && num_dpus <= 16 (n=24160 configs, num_dpus 1-16) ===
   key             name  rel_rmse  rmse_ms       r2

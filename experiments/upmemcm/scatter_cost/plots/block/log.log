@@ -121,3 +121,5 @@ else if (block_size > 1023 && num_dpus > 384) ix = 13;
 else assert(false);
 return lut[ix][0] + 
 num_dpus * lut[ix][1] + block_size * lut[ix][2] + num_dpus*block_size * lut[ix][3];
+
+Plots written to plots/block/
