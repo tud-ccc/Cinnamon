@@ -2,7 +2,8 @@
 cost-model validation experiments (cost_bench, scatter_cost) that each used
 to draw their own near-identical version of it -- log-log scatter, y=x
 reference line, optional colorbar, optional stats text box. Only the
-rendering is shared; fitting/metric computation (NNLS, Spearman rho, RMSE,
+rendering and a handful of common ranking metrics (MAPE, top-k Spearman,
+false positives) are shared; fitting/other metric computation (NNLS, RMSE,
 ...) stays with each caller, since what's being fit and how differs per
 experiment."""
 
@@ -15,6 +16,34 @@ import matplotlib.pyplot as plt
 from matplotlib.colors import LogNorm, Normalize
 from matplotlib.ticker import FuncFormatter
 import numpy as np
+from scipy.stats import spearmanr
+
+
+def mape(predicted, measured) -> float:
+    """Mean absolute percentage error, in percent."""
+    predicted = np.asarray(predicted, dtype=float)
+    measured = np.asarray(measured, dtype=float)
+    return float(np.mean(np.abs((predicted - measured) / measured)) * 100)
+
+
+def spearman_topk(predicted, measured, top_quantile: float) -> float:
+    """Spearman rho between predicted and measured, restricted to the top
+    `top_quantile` fraction of configs by predicted value (ascending --
+    lower predicted is better). Returns 0.0 on degenerate inputs."""
+    predicted = np.asarray(predicted, dtype=float)
+    measured = np.asarray(measured, dtype=float)
+    k = max(2, int(np.ceil(top_quantile * len(predicted))))
+    idx = np.argsort(predicted)[:k]
+    rho, _ = spearmanr(predicted[idx], measured[idx])
+    return float(rho) if np.isfinite(rho) else 0.0
+
+
+def false_positives(predicted, measured) -> int:
+    """Configs ranked better than the true optimum -- rank of argmin(measured)."""
+    predicted = np.asarray(predicted, dtype=float)
+    measured = np.asarray(measured, dtype=float)
+    true_best = np.argmin(measured)
+    return int(np.sum(predicted < predicted[true_best]))
 
 
 def plot_measured_vs_predicted(
@@ -33,13 +62,19 @@ def plot_measured_vs_predicted(
     ylabel: str = "measured",
     title: str | None = None,
     annotate_lines: Sequence[str] | None = None,
+    metrics: bool = False,
+    top_quantile: float = 0.20,
     lim: tuple[float, float] | None = None,
     legend: bool = True,
 ):
     """Log-log scatter of measured vs predicted values with a y=x reference
-    line, optionally colored by `color`, plus an optional stats text box
-    (`annotate_lines`, rendered verbatim -- computing those stats is the
-    caller's job).
+    line, optionally colored by `color`, plus an optional stats text box.
+
+    `annotate_lines` is rendered verbatim -- computing those stats is the
+    caller's job. If `metrics=True`, MAPE, Spearman rho@top-`top_quantile`
+    (by predicted value) and false-positive count (configs ranked better
+    than the true optimum) are computed here and appended below any
+    `annotate_lines`.
 
     Draws onto `ax` if given, for embedding into a multi-panel figure (e.g.
     scatter_cost's plot_all_regression_fits, which shares one colorbar per
@@ -96,11 +131,22 @@ def plot_measured_vs_predicted(
     if legend:
         ax.legend(fontsize=8)
 
-    if annotate_lines:
+    lines = list(annotate_lines) if annotate_lines else []
+    if metrics:
+        k = max(2, int(np.ceil(top_quantile * len(predicted))))
+        lines += [
+            f"MAPE: {mape(predicted, measured):.1f}%",
+            f"Spearman ρ@top-{top_quantile:.0%} (n={k}): "
+            f"{spearman_topk(predicted, measured, top_quantile):.3f}",
+            f"false positives (rank of true best): "
+            f"{false_positives(predicted, measured)}",
+        ]
+
+    if lines:
         ax.text(
             0.03,
             0.97,
-            "\n".join(annotate_lines),
+            "\n".join(lines),
             transform=ax.transAxes,
             fontsize=8,
             verticalalignment="top",

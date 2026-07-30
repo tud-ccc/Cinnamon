@@ -35,6 +35,8 @@ Usage:
   doit single:red:red_4MB         # the whole pipeline, but only for red_4MB
   doit search:red                 # (re)generate just red's oracle pool (no hardware needed)
   doit compile:red:red_4MB        # just compile red_4MB's configs (no hardware needed)
+  doit cost:red:red_4MB           # just predict costs for red_4MB's configs (cheaper than
+                                   # compile -- no DPU/host compile, no hardware needed)
   doit forget bench:red:red_4MB   # force that function's hardware runs to redo
                                    # (only outstanding/failed configs actually rerun --
                                    # see _bench_one)
@@ -156,6 +158,9 @@ class Paths:
     def compile_marker(self, prim: str, fn_name: str) -> pathlib.Path:
         return self.compile_root(prim) / f"{fn_name}.compile.done"
 
+    def cost_marker(self, prim: str, fn_name: str) -> pathlib.Path:
+        return self.compile_root(prim) / f"{fn_name}.cost.done"
+
     def bench_marker(self, prim: str, fn_name: str) -> pathlib.Path:
         return self.run_root(prim) / f"{fn_name}.bench.done"
 
@@ -177,6 +182,16 @@ class Paths:
             / config.label
             / "bin"
             / f"bench_{config.fn_name}"
+        )
+
+    def cost_csv(self, prim: str, config: compile_run.Config) -> pathlib.Path:
+        return (
+            self.compile_root(prim)
+            / config.system
+            / config.fn_name
+            / config.label
+            / "ir"
+            / "cost.csv"
         )
 
     def output_dir(self, prim: str, config: compile_run.Config) -> pathlib.Path:
@@ -392,6 +407,59 @@ def task_compile():
                 "actions": [
                     PythonInteractiveAction(_compile_fn, [name, fn_name, marker])
                 ],
+            }
+
+
+# ── cost (predicted costs only -- no DPU/host compile, no hardware) ────────
+#
+# Standalone alternative to task_compile for when only the cost model's
+# predicted breakdown is needed: compute_costs runs just cinm-opt's
+# --upmem-annotate-costs pass (Makefile's costs-only target) per config,
+# skipping DPU kernel compilation and host object/link entirely. Writes into
+# the same compile_root layout task_compile does (config.csv + ir/cost.csv,
+# no bin/), so aggregate_predicted_costs/task_agg_predictions pick up
+# whichever configs have a cost.csv on disk regardless of which of these two
+# tasks produced it. Not wired into task_agg_predictions/task_plot/
+# task_single's task_dep chain -- those still depend on compile (which
+# already produces ir/cost.csv as a side effect of bench-single, so nothing
+# extra would be gained there); this is for getting cost predictions for a
+# sweep on its own, without paying for full compile+link.
+
+
+def _cost_fn(prim_name: str, fn_name: str, marker: pathlib.Path) -> bool:
+    """Predict costs for every filtered pool row for one function, in
+    parallel (compile_run.compute_costs) -- except configs that already
+    have a cost.csv on disk, which are skipped up front the same way
+    _compile_fn skips already-compiled configs."""
+    configs = list(_fn_configs(prim_name, fn_name))
+    pending = [c for c in configs if not PATHS.cost_csv(prim_name, c).exists()]
+    print(
+        f"  {prim_name}:{fn_name}: {len(pending)}/{len(configs)} configs need cost prediction"
+    )
+    compile_run.compute_costs(
+        pending,
+        compile_root=PATHS.compile_root(prim_name),
+        workers=os.cpu_count(),
+        label=fn_name,
+    )
+    marker.parent.mkdir(parents=True, exist_ok=True)
+    marker.touch()
+    return True
+
+
+def task_cost():
+    """`doit cost:<prim>:<fn>` -- one doit subtask per (prim, function), like
+    task_compile. Needs no hardware."""
+    for name in PRIMS:
+        for fn_name in _fn_names(name):
+            marker = PATHS.cost_marker(name, fn_name)
+            yield {
+                "name": f"{name}:{fn_name}",
+                "task_dep": [f"search:{name}:{fn_name}"],
+                "file_dep": [str(PATHS.split_module(name, fn_name))],
+                "targets": [str(marker)],
+                # PythonInteractiveAction -- see task_compile's comment.
+                "actions": [PythonInteractiveAction(_cost_fn, [name, fn_name, marker])],
             }
 
 

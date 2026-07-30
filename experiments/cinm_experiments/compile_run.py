@@ -1,7 +1,9 @@
 """Compile one fixed configuration down to a real UPMEM binary (via
 Config.lower -- either cinmopt.eval_solution_lowerer for CINM 2.0 or
 cinm1.lowerer for CINM 1.0 -- + this package's own bench-single Makefile
-target) and benchmark it on hardware."""
+target) and benchmark it on hardware. compute_cost/compute_costs offer a
+much cheaper alternative (the Makefile's costs-only target) for when only
+the cost model's predicted breakdown is needed, not an actual binary."""
 
 from __future__ import annotations
 
@@ -58,12 +60,7 @@ class RunResult:
     error: str = ""
 
 
-def compile_config(config: Config, *, compile_root: pathlib.Path) -> CompiledConfig:
-    config_dir = (
-        pathlib.Path(compile_root) / config.system / config.fn_name / config.label
-    )
-    config_dir.mkdir(parents=True, exist_ok=True)
-
+def _write_config_csv(config: Config, config_dir: pathlib.Path) -> None:
     with open(config_dir / "config.csv", "w", newline="") as f:
         writer = csv.DictWriter(
             f, fieldnames=["system", "fn_name", "label", *config.params.keys()]
@@ -78,31 +75,94 @@ def compile_config(config: Config, *, compile_root: pathlib.Path) -> CompiledCon
             }
         )
 
+
+def _lower_config(
+    config: Config, config_dir: pathlib.Path
+) -> tuple[pathlib.Path, subprocess.CompletedProcess]:
+    """Shared prefix of compile_config/compute_cost: write config.csv, then
+    lower config.fn_module to config_dir/lowered.mlir (the "upmem dialect"
+    stage the Makefile takes over from)."""
+    config_dir.mkdir(parents=True, exist_ok=True)
+    _write_config_csv(config, config_dir)
     lowered = config_dir / "lowered.mlir"
     r = config.lower(
         config.fn_module, lowered, config_dir / "cinm-opt.log", **config.params
     )
-    if r.returncode != 0:
-        return CompiledConfig(
-            config, config_dir, False, f"cinm-opt failed, see {config_dir}/cinm-opt.log"
-        )
+    return lowered, r
 
-    ir_dir, bin_dir = config_dir / "ir", config_dir / "bin"
+
+def _run_make(
+    config: Config,
+    config_dir: pathlib.Path,
+    ir_dir: pathlib.Path,
+    lowered: pathlib.Path,
+    *,
+    target: str,
+    extra_vars: dict[str, str] | None = None,
+) -> subprocess.CompletedProcess:
     cmd = [
         "make",
         "-C",
         str(COMPILE_MAKEFILE_DIR),
         f"SRC_MLIR={lowered.resolve()}",
         f"IR_DIR={ir_dir.resolve()}",
-        f"BIN_DIR={bin_dir.resolve()}",
         f"BENCH_FN={config.fn_name}",
         f"PRIM={config.prim}",
-        "bench-single",
+        *(f"{k}={v}" for k, v in (extra_vars or {}).items()),
+        target,
     ]
     with open(config_dir / "make.sh", "w") as f:
         f.write(f"#!/bin/sh\n{shlex.join(cmd)}\n")
+    return subprocess.run(cmd, capture_output=True, text=True)
 
-    r = subprocess.run(cmd, capture_output=True, text=True)
+
+def compile_config(config: Config, *, compile_root: pathlib.Path) -> CompiledConfig:
+    config_dir = (
+        pathlib.Path(compile_root) / config.system / config.fn_name / config.label
+    )
+    lowered, r = _lower_config(config, config_dir)
+    if r.returncode != 0:
+        return CompiledConfig(
+            config, config_dir, False, f"cinm-opt failed, see {config_dir}/cinm-opt.log"
+        )
+
+    ir_dir, bin_dir = config_dir / "ir", config_dir / "bin"
+    r = _run_make(
+        config,
+        config_dir,
+        ir_dir,
+        lowered,
+        target="bench-single",
+        extra_vars={"BIN_DIR": str(bin_dir.resolve())},
+    )
+    if r.returncode != 0:
+        (config_dir / "make_stderr.txt").write_text(r.stderr)
+        return CompiledConfig(
+            config, config_dir, False, f"make failed:\n{r.stderr[-10000:]}"
+        )
+
+    return CompiledConfig(config, config_dir, True)
+
+
+def compute_cost(config: Config, *, compile_root: pathlib.Path) -> CompiledConfig:
+    """Like compile_config, but only predicts costs (cinm-opt's
+    --upmem-annotate-costs, via the Makefile's costs-only target) instead of
+    compiling all the way to a linked hardware binary -- skips DPU kernel
+    compilation and host object/link entirely. Produces the same
+    config_dir/{config.csv,ir/cost.csv} layout compile_config does (no
+    config_dir/bin), so aggregate.aggregate_predicted_costs works unchanged
+    on either, or a mix of both under the same compile_root."""
+    config_dir = (
+        pathlib.Path(compile_root) / config.system / config.fn_name / config.label
+    )
+    lowered, r = _lower_config(config, config_dir)
+    if r.returncode != 0:
+        return CompiledConfig(
+            config, config_dir, False, f"cinm-opt failed, see {config_dir}/cinm-opt.log"
+        )
+
+    ir_dir = config_dir / "ir"
+    r = _run_make(config, config_dir, ir_dir, lowered, target="costs-only")
     if r.returncode != 0:
         (config_dir / "make_stderr.txt").write_text(r.stderr)
         return CompiledConfig(
@@ -194,6 +254,31 @@ def compile_configs(
                 f"  FAIL compile: {c.config.system} {c.config.fn_name} {c.config.label}: {c.error}"
             )
     return compiled
+
+
+def compute_costs(
+    configs: list[Config],
+    *,
+    compile_root: pathlib.Path,
+    workers: int = 8,
+    label: str = None,
+) -> list[CompiledConfig]:
+    """Predict costs for every config in parallel -- see compute_cost. Much
+    cheaper than compile_configs: skips DPU kernel compilation and host
+    object/link entirely, just the cinm-opt cost-annotation pass."""
+    predicted = parallel.run_parallel(
+        configs,
+        lambda c: compute_cost(c, compile_root=compile_root),
+        workers=workers,
+        desc="cost" if not label else f"cost {label:<10}",
+        use_threads=True,
+    )
+    for c in predicted:
+        if not c.ok:
+            print(
+                f"  FAIL cost: {c.config.system} {c.config.fn_name} {c.config.label}: {c.error}"
+            )
+    return predicted
 
 
 def run_configs(

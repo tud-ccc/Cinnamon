@@ -47,7 +47,7 @@ TO_LLVM_PIPELINE = \
     --cse --reconcile-unrealized-casts --canonicalize \
     --llvm-legalize-for-export --canonicalize --cse
 
-.PHONY: bench-single clean
+.PHONY: bench-single costs-only clean
 
 .PRECIOUS: $(IR_DIR)/%.mlir $(IR_DIR)/%.final.mlir $(IR_DIR)/%.llvm.mlir $(IR_DIR)/%.ll $(IR_DIR)/%.opt.ll $(IR_DIR)/%.kernels.mlir
 
@@ -56,6 +56,13 @@ $(IR_DIR) $(BIN_DIR):
 
 $(IR_DIR)/cost.csv: $(SRC_MLIR) | $(IR_DIR)
 	cinm-opt $< --upmem-annotate-costs="simulator=hybrid eval-timeout-ms=400 costs-csv=$@"
+
+# Predicted costs only -- no DPU kernel compilation, no host object/link step.
+# Just the cinm-opt cost-annotation pass above, so this is much cheaper than
+# bench-single when only the cost breakdown is needed (e.g. validating/
+# retraining the cost model against a much larger config sweep than what
+# actually gets compiled to a real binary).
+costs-only: $(IR_DIR)/cost.csv
 
 $(IR_DIR)/$(BENCH_FN).mlir: $(SRC_MLIR) | $(IR_DIR)
 	cp $< $@

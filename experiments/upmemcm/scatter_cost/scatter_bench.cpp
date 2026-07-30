@@ -63,7 +63,7 @@ namespace {
 // Only XFER_SG exercises more than one block per DPU; the other two APIs
 // each move exactly one contiguous block per DPU.
 #if XFER_MODE == XFER_SG
-constexpr int MAX_BLOCKS_PER_DPU = 24;
+constexpr int MAX_BLOCKS_PER_DPU = 4096;
 #else
 constexpr int MAX_BLOCKS_PER_DPU = 1;
 #endif
@@ -86,6 +86,9 @@ std::string envStr(const char *name, const char *def) {
   return v ? std::string(v) : std::string(def);
 }
 
+/// In dense mode, this samples all points 
+///   - k * align for k in [1, sampling)
+///   - k * align for k in [1, sampling)
 static std::vector<int> sampleFairLog2(bool dense, int max, int align,
                                        int sampling) {
   std::vector<int> s;
@@ -93,9 +96,8 @@ static std::vector<int> sampleFairLog2(bool dense, int max, int align,
     s.push_back(i);
 
   if (dense) {
-    for (int lo = align * sampling; lo < MAX_DPUS; lo *= 2) {
-      // between 16 and max dpus, we
-      // take 16 samples in every bucket
+    for (int lo = align * sampling; lo < max; lo *= 2) {
+      // we take `sampling` samples in every bucket
       // between 2^n and 2^(n+1)
       for (int i = lo; i < lo * 2; i += lo / sampling) {
         s.push_back(i);
@@ -117,12 +119,13 @@ std::vector<int> genBlockSizes(bool dense) {
   return sampleFairLog2(dense, MAX_BLOCK_SIZE, 8, 16);
 }
 
-std::vector<int> genBlocksPerDpu() {
+std::vector<int> genBlocksPerDpu(bool dense) {
 #if XFER_MODE == XFER_SG
-  std::vector<int> v;
-  for (int i = 1; i <= MAX_BLOCKS_PER_DPU; i++)
-    v.push_back(i);
-  return v;
+  return sampleFairLog2(dense, MAX_BLOCKS_PER_DPU, 1, 4);
+  // std::vector<int> v;
+  // for (int i = 1; i <= MAX_BLOCKS_PER_DPU; i++)
+  //   v.push_back(i);
+  // return v;
 #else
   return {1};
 #endif
@@ -271,7 +274,7 @@ int main() {
   std::string csvPath = envStr("SCATTER_CSV_OUT", "results.csv");
 
   std::vector<int> dpuCounts = genDpuCounts(dense);
-  std::vector<int> blocksPerDpuList = genBlocksPerDpu();
+  std::vector<int> blocksPerDpuList = genBlocksPerDpu(dense);
   std::vector<int> blockSizes = genBlockSizes(dense);
 
   size_t totalConfigs =
@@ -334,6 +337,12 @@ int main() {
 
     for (int blocksPerDpu : blocksPerDpuList) {
       for (int blockSize : blockSizes) {
+        if (static_cast<long>(blocksPerDpu) * blockSize > MAX_BLOCK_SIZE * 4) {
+          // skip this one
+          progress.tick();
+          continue;
+        }
+
         size_t stride = static_cast<size_t>(blockSize) + BLOCK_PAD;
         size_t length =
             static_cast<size_t>(blocksPerDpu) * static_cast<size_t>(blockSize);

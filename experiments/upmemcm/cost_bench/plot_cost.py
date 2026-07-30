@@ -657,6 +657,7 @@ def plot_calibration_and_breakdown(
         xlabel="predicted cost (ms)",
         ylabel="measured cost (ms)",
         title="total (calibration)",
+        metrics=True,
     )
     if sc is not None:
         cbar_cell = fig.add_subplot(gs[0:2, 2])
@@ -688,6 +689,7 @@ def plot_calibration_and_breakdown(
             ylabel="measured (ms)" if is_left else "",
             title=bucket,
             legend=False,
+            metrics=True,
         )
 
     fig.suptitle(f"{fn_name}: cost calibration + per-category breakdown")
