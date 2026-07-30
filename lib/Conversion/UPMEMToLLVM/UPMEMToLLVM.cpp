@@ -562,7 +562,7 @@ lowerScatterOnTasklets(upmem::ScatterOnTaskletsOp op,
   // need not correspond 1:1 to actual DPU tasklets (see the op
   // description) -- so it must come from the required numBlocksPerDpu
   // attribute, not from op.getHierarchy().
-  const size_t numTaskletsPerDpu = op.getNumBlocksPerDpu();
+  const size_t numBlocksPerDpu = op.getNumBlocksPerDpu();
   // transferCount is the size of a single tasklet's block, in elements
   // (see the op description)
   const size_t blockNumElements = op.getTransferCount();
@@ -580,7 +580,7 @@ lowerScatterOnTasklets(upmem::ScatterOnTaskletsOp op,
       rewriter0, loc, *runtimeFun,
       ValueRange{adaptor.getHierarchy(), bareHostBuf,
                  reifyAsIndex(rewriter, tyConverter, elementSize),
-                 reifyAsIndex(rewriter, tyConverter, numTaskletsPerDpu),
+                 reifyAsIndex(rewriter, tyConverter, numBlocksPerDpu),
                  reifyAsIndex(rewriter, tyConverter, blockNumElements),
                  bufferId, funPtrOp.getRes()});
 

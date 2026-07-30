@@ -30,8 +30,15 @@ uint64_t upmemrt_now_ns(void);
 // transfer API (dpu_push_sg_xfer), and (in the future) "bc" for a broadcast.
 // Must be a string literal (or otherwise live for the process lifetime): it
 // is stored by pointer, not copied.
+// `num_blocks` is the number of per-DPU blocks the transfer was split into
+// -- only "sg" can be >1 ("block"/"bc" always pass 1, one contiguous copy
+// per DPU). Not necessarily the tasklet count: a single tasklet's
+// get_block callback can be invoked for more than one block (see
+// get_scatter_to_tasklets_block in upmem_rt.c), so this must come from the
+// call site's own num_blocks, not be inferred from NR_TASKLETS.
 void upmemrt_record_scatter(uint64_t elapsed_ns, size_t bytes_per_dpu,
-                             uint32_t num_dpus, const char *kind);
+                             uint32_t num_dpus, size_t num_blocks,
+                             const char *kind);
 void upmemrt_record_gather(uint64_t elapsed_ns, size_t bytes_per_dpu,
                             uint32_t num_dpus);
 void upmemrt_record_launch(uint64_t elapsed_ns, uint32_t num_dpus);
