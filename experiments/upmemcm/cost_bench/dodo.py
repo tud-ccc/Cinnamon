@@ -432,6 +432,7 @@ def _cost_fn(prim_name: str, fn_name: str, marker: pathlib.Path) -> bool:
     have a cost.csv on disk, which are skipped up front the same way
     _compile_fn skips already-compiled configs."""
     configs = list(_fn_configs(prim_name, fn_name))
+    pending = configs
     pending = [c for c in configs if not PATHS.cost_csv(prim_name, c).exists()]
     print(
         f"  {prim_name}:{fn_name}: {len(pending)}/{len(configs)} configs need cost prediction"

@@ -58,7 +58,8 @@ def task_bench():
                         **os.environ,
                         **bench_env.get(fn, {}),
                         "SCATTER_CSV_OUT": f"plots/{fn}/results.csv",
-                        "SCATTER_ITERS": "10",
+                        "SCATTER_ITERS": "5",
+                        "SCATTER_WARMUP": "1",
                     },
                 )
             ],

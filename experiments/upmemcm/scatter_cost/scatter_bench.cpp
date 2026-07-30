@@ -86,7 +86,7 @@ std::string envStr(const char *name, const char *def) {
   return v ? std::string(v) : std::string(def);
 }
 
-/// In dense mode, this samples all points 
+/// In dense mode, this samples all points
 ///   - k * align for k in [1, sampling)
 ///   - k * align for k in [1, sampling)
 static std::vector<int> sampleFairLog2(bool dense, int max, int align,
@@ -231,17 +231,15 @@ struct SweepProgress {
   std::atomic<bool> stop_{false};
   std::thread printer_;
 
-  explicit SweepProgress(size_t totalConfigs)
-      : active(isatty(fileno(stdout))) {
+  explicit SweepProgress(size_t totalConfigs) : active(isatty(fileno(stdout))) {
     if (!active)
       return;
-    bar = std::make_unique<Bar>(
-        indicators::option::BarWidth{30},
-        indicators::option::MaxProgress{totalConfigs},
-        indicators::option::PrefixText{"configs "},
-        indicators::option::ShowPercentage{true},
-        indicators::option::ShowElapsedTime{true},
-        indicators::option::ShowRemainingTime{true});
+    bar = std::make_unique<Bar>(indicators::option::BarWidth{30},
+                                indicators::option::MaxProgress{totalConfigs},
+                                indicators::option::PrefixText{"configs "},
+                                indicators::option::ShowPercentage{true},
+                                indicators::option::ShowElapsedTime{true},
+                                indicators::option::ShowRemainingTime{true});
 
     printer_ = std::thread([this] {
       while (!stop_.load(std::memory_order_relaxed)) {
@@ -265,6 +263,7 @@ struct SweepProgress {
   ~SweepProgress() { finish(); }
 };
 
+bool ispow2(int n) { return (n & (n - 1)) == 0; }
 } // namespace
 
 int main() {
@@ -337,8 +336,12 @@ int main() {
 
     for (int blocksPerDpu : blocksPerDpuList) {
       for (int blockSize : blockSizes) {
-        if (static_cast<long>(blocksPerDpu) * blockSize > MAX_BLOCK_SIZE * 4) {
-          // skip this one
+        if (static_cast<long>(blocksPerDpu) * blockSize > MAX_BLOCK_SIZE * 16 &&
+            !(ispow2(blocksPerDpu) && ispow2(blockSize) &&
+              (numDpus % 64 == 0))) {
+          // This is in the "expensive region".
+          // We only sample here if we are exactly on a
+          // "regular" config (power of 2 params).
           progress.tick();
           continue;
         }

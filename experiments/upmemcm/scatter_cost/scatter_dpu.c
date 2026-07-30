@@ -8,6 +8,6 @@
 // code ever runs. _keep is required: nothing on the DPU side ever reads or
 // writes this symbol, so a plain __mram_noinit would be garbage-collected
 // by the linker.
-__mram_noinit_keep uint8_t buffer[24 * 8192];
+__mram_noinit_keep uint8_t buffer[8192 * 4096];
 
 int main() { return 0; }

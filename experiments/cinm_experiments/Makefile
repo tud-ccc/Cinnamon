@@ -47,7 +47,7 @@ TO_LLVM_PIPELINE = \
     --cse --reconcile-unrealized-casts --canonicalize \
     --llvm-legalize-for-export --canonicalize --cse
 
-.PHONY: bench-single costs-only clean
+.PHONY: bench-single costs-only clean relink
 
 .PRECIOUS: $(IR_DIR)/%.mlir $(IR_DIR)/%.final.mlir $(IR_DIR)/%.llvm.mlir $(IR_DIR)/%.ll $(IR_DIR)/%.opt.ll $(IR_DIR)/%.kernels.mlir
 
@@ -97,10 +97,21 @@ $(BIN_DIR)/$(BENCH_FN): $(IR_DIR)/$(BENCH_FN).dpu.c | $(BIN_DIR)
 
 # ─── Final host binary ───────────────────────────────────────────────────────
 
-bench-single: $(IR_DIR)/$(BENCH_FN).o $(BIN_DIR)/$(BENCH_FN) $(IR_DIR)/cost.csv | $(BIN_DIR)
+define LINK_BENCH
 	clang++ $(CXXFLAGS) -DBENCH_FN=$(BENCH_FN) $(BENCH_DRIVER) \
 	    $(IR_DIR)/$(BENCH_FN).o $(LDFLAGS) \
 	    -o $(BIN_DIR)/bench_$(BENCH_FN)
+endef
+
+bench-single: $(IR_DIR)/$(BENCH_FN).o $(BIN_DIR)/$(BENCH_FN) $(IR_DIR)/cost.csv | $(BIN_DIR)
+	$(LINK_BENCH)
+
+# Just the final link step (e.g. after editing BENCH_DRIVER or the runtime
+# lib) -- skips bench-single's .o/DPU-kernel/cost.csv prerequisites, and
+# (being prerequisite-less and phony) always relinks instead of relying on
+# make's timestamp check against the already-built $(IR_DIR)/$(BENCH_FN).o.
+relink: | $(BIN_DIR)
+	$(LINK_BENCH)
 
 clean:
 	rm -rf $(IR_DIR) $(BIN_DIR)

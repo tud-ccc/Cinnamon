@@ -448,7 +448,7 @@ def fit_mlp(
         activation="relu",
         solver="adam",
         batch_size=min(4096, len(y)),
-        max_iter=300,
+        max_iter=500,
         early_stopping=True,
         n_iter_no_change=15,
         random_state=random_state,
@@ -1488,20 +1488,42 @@ EXTRA_TEMPLATES: dict[str, Template] = {
 # (matching their Dim(log=2) display scale -- they're naturally
 # binary/multiplicative), raw blocks_per_dpu (Dim(log=None) -- see
 # PROBLEM's own Dim declarations for why).
+#
+# "num_dpus*blocks_per_dpu" is a derived feature, not a literal df column --
+# see MLP_DERIVED_FEATURES below. It's an explicit stand-in for the UPMEM
+# SDK's per-(dpu, block) host-side callback-invocation overhead
+# (sg_xfer_rank_handler's get_block loop in dpu_memory.c, walked once per
+# (dpu, block) *before* any hardware transfer starts, so its cost scales
+# with the block count, not with bytes transferred). A ReLU net could in
+# principle reconstruct num_dpus from log2(num_dpus) and multiply by
+# blocks_per_dpu itself, but that's a nonlinear operation piecewise-linear
+# hidden units have to approximate from scratch; handing it the product
+# directly turns that into a single linear unit's job.
 MLP_FEATURE_SPEC: list[tuple[str, str | None]] = [
     ("num_dpus", "log2"),
     ("blocks_per_dpu", None),
     ("block_size", "log2"),
+    ("num_dpus*blocks_per_dpu", None),
 ]
+
+# Features in MLP_FEATURE_SPEC computed from other columns rather than read
+# directly off the df/C++ params -- name -> (left, right) factors to
+# multiply. Consulted by _mlp_feature_cols (Python fit) and export_mlp_cpp
+# (C++ codegen); export_mlp_npz needs no special-casing since it only
+# records names/transforms, not how to compute them.
+MLP_DERIVED_FEATURES: dict[str, tuple[str, str]] = {
+    "num_dpus*blocks_per_dpu": ("num_dpus", "blocks_per_dpu"),
+}
 
 
 def _mlp_feature_cols(d: pd.DataFrame) -> np.ndarray:
-    return _cols(
-        *(
-            np.log2(d[col]) if transform == "log2" else d[col]
-            for col, transform in MLP_FEATURE_SPEC
-        )
-    )
+    def col(name, transform):
+        if name in MLP_DERIVED_FEATURES:
+            a, b = MLP_DERIVED_FEATURES[name]
+            return d[a] * d[b]
+        return np.log2(d[name]) if transform == "log2" else d[name]
+
+    return _cols(*(col(name, transform) for name, transform in MLP_FEATURE_SPEC))
 
 
 # Not in EXTRA_TEMPLATES: an MLP is a much heavier/slower fit than every
@@ -1541,7 +1563,9 @@ def export_mlp_cpp(
     function is meant to match (e.g. upmem_cost_model's existing
     `double scatterSgCostMs(int num_dpus, int block_size, int
     blocks_per_dpu)`) -- fn_params' names must match feature_spec's column
-    names, referenced directly in the generated body."""
+    names, referenced directly in the generated body (except entries in
+    MLP_DERIVED_FEATURES, which reference two other fn_params instead of
+    being one themselves)."""
     model = fit["model"]
     mean = fit["mean"]
     std = fit["std"]
@@ -1595,11 +1619,13 @@ def export_mlp_cpp(
     lines.append(f"  constexpr double featStd[{n_features}] = {arma_mat(std)};")
     lines.append(f"  arma::mat x({n_features}, 1);")
     for i, (name, transform) in enumerate(feature_spec):
-        expr = (
-            f"std::log2(static_cast<double>({name}))"
-            if transform == "log2"
-            else f"static_cast<double>({name})"
-        )
+        if name in MLP_DERIVED_FEATURES:
+            a, b = MLP_DERIVED_FEATURES[name]
+            expr = f"static_cast<double>({a}) * static_cast<double>({b})"
+        elif transform == "log2":
+            expr = f"std::log2(static_cast<double>({name}))"
+        else:
+            expr = f"static_cast<double>({name})"
         lines.append(f"  x({i}, 0) = ({expr} - featMean[{i}]) / featStd[{i}];")
     lines.append("")
     lines.append("  arma::mat out;")
