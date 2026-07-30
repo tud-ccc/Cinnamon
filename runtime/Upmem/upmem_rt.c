@@ -50,7 +50,8 @@ void upmemrt_dpu_scatter(struct dpu_set_t *dpu_set, void *hostBuffer,
 #ifdef UPMEM_RT_STATS
   uint32_t nr_dpus = 0;
   dpu_get_nr_dpus(*dpu_set, &nr_dpus);
-  upmemrt_record_scatter(upmemrt_now_ns() - t0, copy_bytes, nr_dpus, "block");
+  upmemrt_record_scatter(upmemrt_now_ns() - t0, copy_bytes, nr_dpus,
+                         /*num_blocks=*/1, "block");
 #endif
 }
 
@@ -87,7 +88,7 @@ void upmemrt_dpu_gather(struct dpu_set_t *dpu_set, void *host_buffer,
 typedef struct sg_xfer_context {
   uint8_t *host_buffer;
   size_t element_size;
-  size_t num_tasklets;
+  size_t num_blocks;
   size_t block_num_elements;
   size_t (*base_offset)(size_t, size_t);
 } sg_xfer_context;
@@ -96,7 +97,7 @@ static bool get_scatter_to_tasklets_block(struct sg_block_info *out,
                                           uint32_t dpu_index,
                                           uint32_t block_index, void *args) {
   const sg_xfer_context *ctx = (const sg_xfer_context *)args;
-  if (block_index >= ctx->num_tasklets)
+  if (block_index >= ctx->num_blocks)
     return false;
 
   out->addr = ctx->host_buffer + ctx->base_offset(dpu_index, block_index);
@@ -106,7 +107,7 @@ static bool get_scatter_to_tasklets_block(struct sg_block_info *out,
 
 void upmemrt_dpu_scatter_to_tasklets(struct dpu_set_t *dpu_set,
                                      void *host_buffer, size_t element_size,
-                                     size_t num_tasklets,
+                                     size_t num_blocks,
                                      size_t block_num_elements,
                                      const char *buffer_id,
                                      size_t (*base_offset)(size_t, size_t)) {
@@ -116,7 +117,7 @@ void upmemrt_dpu_scatter_to_tasklets(struct dpu_set_t *dpu_set,
   sg_xfer_context ctx = {
       .host_buffer = (uint8_t *)host_buffer,
       .element_size = element_size,
-      .num_tasklets = num_tasklets,
+      .num_blocks = num_blocks,
       .block_num_elements = block_num_elements,
       .base_offset = base_offset,
   };
@@ -124,13 +125,14 @@ void upmemrt_dpu_scatter_to_tasklets(struct dpu_set_t *dpu_set,
                                 .args = &ctx,
                                 .args_size = sizeof(ctx)};
 
-  size_t length = num_tasklets * block_num_elements * element_size;
+  size_t length = num_blocks * block_num_elements * element_size;
   DPU_ASSERT(dpu_push_sg_xfer(*dpu_set, DPU_XFER_TO_DPU, buffer_id, 0, length,
                               &get_block_info, DPU_SG_XFER_DEFAULT));
 #ifdef UPMEM_RT_STATS
   uint32_t nr_dpus = 0;
   dpu_get_nr_dpus(*dpu_set, &nr_dpus);
-  upmemrt_record_scatter(upmemrt_now_ns() - t0, length, nr_dpus, "sg");
+  upmemrt_record_scatter(upmemrt_now_ns() - t0, length, nr_dpus, num_blocks,
+                         "sg");
 #endif
 }
 
@@ -144,7 +146,8 @@ void upmemrt_dpu_broadcast(struct dpu_set_t *dpu_set, void *host_buffer,
 #ifdef UPMEM_RT_STATS
   uint32_t nr_dpus = 0;
   dpu_get_nr_dpus(*dpu_set, &nr_dpus);
-  upmemrt_record_scatter(upmemrt_now_ns() - t0, copy_bytes, nr_dpus, "bc");
+  upmemrt_record_scatter(upmemrt_now_ns() - t0, copy_bytes, nr_dpus,
+                         /*num_blocks=*/1, "bc");
 #endif
 }
 

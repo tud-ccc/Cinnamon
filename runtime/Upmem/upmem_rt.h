@@ -44,14 +44,14 @@ void upmemrt_dpu_gather(struct dpu_set_t *dpu_set, void *host_buffer,
 /// @param dpu_set              Pointer to DPU structure
 /// @param host_buffer          Input tensor to scatter
 /// @param element_size         Size of a tensor element in bytes
-/// @param num_tasklets         Number of tasklets (blocks) per DPU
+/// @param num_blocks           Number of blocks sent per DPU
 /// @param block_num_elements   Number of elements transferred per tasklet's block
 /// @param buffer_id            Constant string of the buffer ID
 /// @param base_offset          Function mapping (dpu_index, tasklet_index) to
 /// the starting byte offset of that tasklet's block in the host buffer.
 void upmemrt_dpu_scatter_to_tasklets(struct dpu_set_t *dpu_set,
                                      void *host_buffer, size_t element_size,
-                                     size_t num_tasklets,
+                                     size_t num_blocks,
                                      size_t block_num_elements,
                                      const char *buffer_id,
                                      size_t (*base_offset)(size_t, size_t));
