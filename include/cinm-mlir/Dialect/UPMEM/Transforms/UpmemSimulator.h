@@ -126,6 +126,19 @@ struct UpmemSimulator {
 std::unique_ptr<UpmemSimulator>
 createOpCountSimulator(bool annotateOpCosts = false);
 
+/// Which lowering the inference plugin evaluates a configuration through.
+enum class UpmemLoweringPath {
+  /// The hand-written per-op generators in SimulationTemplates.cpp. These bake
+  /// every decision into the generator, and are the quality bar the generic
+  /// path has to reach.
+  TEMPLATES,
+  /// The real pass pipeline: --cinm-tiling, --convert-cinm-to-cnm,
+  /// --upmem-tile-mram-buffers, --convert-cnm-to-upmem. What a committed
+  /// solution is actually compiled with, so its cost cannot drift from what
+  /// the search measured.
+  GENERIC,
+};
+
 enum class UpmemSimulatorId {
   CYCLE_ACCURATE = 0,
   FAST = 1,

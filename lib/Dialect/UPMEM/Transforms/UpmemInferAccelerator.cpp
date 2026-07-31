@@ -89,6 +89,7 @@ struct UpmemInferenceOptions {
   cinm::InferenceOptions inference;
   bool annotateOpCosts = false;
   bool useMRAMTiling = true;
+  UpmemLoweringPath lowering = UpmemLoweringPath::TEMPLATES;
   UpmemSimulatorId simulator = UpmemSimulatorId::CYCLE_ACCURATE;
   std::chrono::milliseconds evalTimeoutMs = std::chrono::milliseconds(2000);
   // Pin dpus/tasklets to a fixed value instead of searching over them.
@@ -141,7 +142,8 @@ struct UpmemInferencePlugin : cinm::InferencePlugin {
       const cinm::ConfWrapper &, UpmemSimulator &, cinm::TrialInfo &)>;
   std::vector<SimFn> simulators_;
 
-  std::unique_ptr<PassManager> pipeline;
+  std::unique_ptr<PassManager> frontPipeline;
+  std::unique_ptr<PassManager> backPipeline;
 
   static constexpr llvm::StringLiteral kTileParamNamesAttr =
       "upmem.tile_param_names";
@@ -158,7 +160,11 @@ struct UpmemInferencePlugin : cinm::InferencePlugin {
   }
 
   // Full lowering pipeline (steps 1-6): cinm → cnm → bufferize → upmem.
-  static std::unique_ptr<PassManager> buildPipeline(MLIRContext *ctx) {
+  /// Everything up to and including bufferization. Split from the rest so the
+  /// leaf tile sizes can be stamped on the launch bodies in between: those ops
+  /// are created by --convert-cinm-to-cnm and so do not exist yet when the
+  /// search space is built.
+  static std::unique_ptr<PassManager> buildFrontPipeline(MLIRContext *ctx) {
     auto pm = std::make_unique<PassManager>(ctx);
 
     // Step 1: tiling
@@ -170,8 +176,13 @@ struct UpmemInferencePlugin : cinm::InferencePlugin {
     pm->addPass(createCanonicalizerPass());
     // pm->addPass(cinm::createCinmDeisolateComputeBlocks());
 
-    // Step 2: cinm → cnm
-    pm->addPass(cinm::createConvertTiledCinmToCnmPass());
+    // Step 2: cinm → cnm, with the buffers in MRAM. The launch bodies then
+    // compute on MRAM, and --upmem-tile-mram-buffers stages them down to WRAM.
+    {
+      ConvertTiledCinmToCnmOptions cnmOpts;
+      cnmOpts.bufferLevel = "mram";
+      pm->addPass(cinm::createConvertTiledCinmToCnmPass(cnmOpts));
+    }
     pm->addPass(createCanonicalizerPass());
     pm->addPass(cnm::createCnmHoistWorkgroupsPass());
     pm->addPass(createCanonicalizerPass());
@@ -192,9 +203,9 @@ struct UpmemInferencePlugin : cinm::InferencePlugin {
     }
     pm->addPass(createCSEPass());
     pm->addPass(createCanonicalizerPass());
-    pm->addPass(createConvertLinalgToAffineLoopsPass());
-    // pm->addPass(bufferization::createBufferLoopHoistingPass());
-    // pm->addPass(bufferization::createBufferHoistingPass());
+    // Linalg is *not* lowered to loops here: --upmem-tile-mram-buffers needs
+    // to see the launch bodies as linalg ops on memrefs. That happens at the
+    // start of the back pipeline instead.
     pm->addPass(createCanonicalizerPass());
     pm->addPass(createCSEPass());
     {
@@ -230,6 +241,23 @@ struct UpmemInferencePlugin : cinm::InferencePlugin {
     pm->addPass(createCanonicalizerPass());
     pm->addPass(createCSEPass());
 
+    return pm;
+  }
+
+  /// Everything after the launch bodies have been staged down to the leaf
+  /// level.
+  static std::unique_ptr<PassManager> buildBackPipeline(MLIRContext *ctx) {
+    auto pm = std::make_unique<PassManager>(ctx);
+
+    // Staging has to see linalg on memrefs, so it runs after bufferization and
+    // before linalg is lowered to loops.
+    pm->addPass(createUpmemTileMRAMBuffersPass());
+    pm->addPass(createCanonicalizerPass());
+    pm->addPass(createCSEPass());
+    pm->addPass(createConvertLinalgToAffineLoopsPass());
+    pm->addPass(createCanonicalizerPass());
+    pm->addPass(createCSEPass());
+
     // Step 6: cnm → upmem
     pm->addPass(cnm::createCnmEnsureScatterGatherContiguousPass());
     pm->addPass(cnm::createConvertCnmToUPMEMPass({}));
@@ -256,12 +284,18 @@ struct UpmemInferencePlugin : cinm::InferencePlugin {
     c->dpusVar_ = dpusVar_;
     c->taskletsVar_ = taskletsVar_;
     c->simulators_ = simulators_;
+    // A clone evaluates trials, so it needs the search parameters recorded
+    // when the space was built.
+    c->opParams_ = opParams_;
+    c->refBlock_ = refBlock_;
     return c;
   }
 
   void warmUp(mlir::MLIRContext *ctx) override {
-    if (!pipeline)
-      pipeline = buildPipeline(ctx);
+    if (!frontPipeline) {
+      frontPipeline = buildFrontPipeline(ctx);
+      backPipeline = buildBackPipeline(ctx);
+    }
     simulator->warmUp();
   }
 
@@ -271,10 +305,22 @@ struct UpmemInferencePlugin : cinm::InferencePlugin {
   void handleReduce(cinm::ReduceOp op, SpaceBuilder &b);
   void handleEltwise(cinm::ElementwiseOp op, SpaceBuilder &b);
 
+  /// Record the search parameters `op`'s lowering needs. `op` belongs to the
+  /// reference clone; see opParams_ for how it is found again in a trial.
+  void recordParams(Operation *op, ArrayRef<SpaceVar> outerTile,
+                    ArrayRef<SpaceVar> leafTile) {
+    OpSearchParams params;
+    params.outerTile.assign(outerTile.begin(), outerTile.end());
+    params.leafTile.assign(leafTile.begin(), leafTile.end());
+    opParams_.push_back({walkIndexOf(op), std::move(params)});
+  }
+
   void initializeSpace(cinm::ComputeBlockOp refClone,
                        cinm::ConfigSpace &space) override {
     SpaceBuilder b;
     simulators_.clear();
+    opParams_.clear();
+    refBlock_ = refClone;
     const int64_t maxDpus =
         platform.getMaxNumRanks() * platform.getMaxNumDpusPerRank();
     const int64_t maxTasklets = platform.getMaxNumTasklets();
@@ -296,6 +342,17 @@ struct UpmemInferencePlugin : cinm::InferencePlugin {
     });
 
     b.buildInto(space);
+  }
+
+  /// Position of `op` in a pre-order walk of the reference compute block.
+  unsigned walkIndexOf(Operation *op) {
+    unsigned index = 0, found = 0;
+    refBlock_.getBody().walk([&](Operation *candidate) {
+      if (candidate == op)
+        found = index;
+      ++index;
+    });
+    return found;
   }
 
   static DType cmDtyFromMlirDty(Type ty) {
@@ -340,35 +397,124 @@ struct UpmemInferencePlugin : cinm::InferencePlugin {
     trial.computeBlock.setAcceleratorAttr(
         upmem::UpmemAcceleratorAttr::get(platform, 1, dpus, tasklets));
 
-    // if (opts.useMRAMTiling) {
-    // Bypass the lowering pipeline: call each op's registered simulator.
-    SimCost total;
-    for (auto &sim : simulators_)
-      total += TRY_GET(sim(conf, *simulator, trial));
-    if (opts.annotateOpCosts) {
-      OpBuilder b(ctx);
-      trial.computeBlock->setAttr(kSimCostAttr,
-                                  b.getF64FloatAttr(total.total()));
+    if (opts.lowering == UpmemLoweringPath::TEMPLATES) {
+      // Each op's hand-written generator produces the program directly.
+      SimCost total;
+      for (auto &sim : simulators_)
+        total += TRY_GET(sim(conf, *simulator, trial));
+      annotateCost(ctx, trial, total.total());
+      return total;
     }
+
+    TRY(runGenericLowering(trial));
+    SimCost total = TRY_GET(simulator->simulate(trial.computeBlock.getBody()));
+    annotateCost(ctx, trial, total.total());
     return total;
-    // }
+  }
 
-    // applyTileSizes(trial);
+  /// Lower `trial` through the real pass pipeline, stamping each stage's
+  /// search parameters immediately before the pass that reads them.
+  DiagnosedSilenceableFailure runGenericLowering(cinm::TrialInfo &trial) {
+    mlir::Location loc = trial.computeBlock->getLoc();
+    MLIRContext *ctx = trial.computeBlock->getContext();
+    if (!frontPipeline) {
+      frontPipeline = buildFrontPipeline(ctx);
+      backPipeline = buildBackPipeline(ctx);
+    }
 
-    // if (!pipeline)
-    //   pipeline = buildPipeline(ctx);
+    stampOuterTileSizes(trial);
+    TRY(runPipeline(frontPipeline.get(), loc, trial.module.get()));
 
-    // TRY(runPipeline(pipeline.get(), loc, trial.module.get()));
+    // The launch bodies exist only now, which is why their tile sizes could
+    // not have been stamped alongside the host-side ones.
+    if (failed(stampLeafTileSizes(trial)))
+      return DiagnosedSilenceableFailure::definiteFailure();
+    TRY(runPipeline(backPipeline.get(), loc, trial.module.get()));
+    return DiagnosedSilenceableFailure::success();
+  }
 
-    // auto total = TRY_GET(simulator->simulate(trial.computeBlock.getBody()));
-    // if (opts.annotateOpCosts) {
-    //   OpBuilder b(ctx);
-    //   trial.computeBlock->setAttr(kSimCostAttr, b.getF64FloatAttr(total));
-    // }
-    // return total;
+  void annotateCost(MLIRContext *ctx, cinm::TrialInfo &trial,
+                    double cost) const {
+    if (!opts.annotateOpCosts)
+      return;
+    OpBuilder b(ctx);
+    trial.computeBlock->setAttr(kSimCostAttr, b.getF64FloatAttr(cost));
   }
 
 private:
+  /// The search parameters one op's lowering needs.
+  struct OpSearchParams {
+    /// Tile sizes for the host-side --cinm-tiling round, which decides how
+    /// much work each workgroup element gets.
+    SmallVector<SpaceVar> outerTile;
+    /// Tile sizes for --upmem-tile-mram-buffers, which decides how the launch
+    /// body walks its buffers through the leaf memory level.
+    SmallVector<SpaceVar> leafTile;
+  };
+
+  /// Search parameters per op, keyed by the op's position in a pre-order walk
+  /// of the compute block rather than by Operation*: makeTrialInfo deep-clones
+  /// the module without retaining an IRMapping, so a trial's ops are different
+  /// pointers. The clone is structurally identical, so walk position is a
+  /// stable correspondence.
+  SmallVector<std::pair<unsigned, OpSearchParams>> opParams_;
+  cinm::ComputeBlockOp refBlock_;
+
+  /// Resolve the recorded parameters against this trial's configuration and
+  /// stamp the host-side tile sizes on the ops that consume them, immediately
+  /// before the pass that reads them.
+  void stampOuterTileSizes(cinm::TrialInfo &trial) const {
+    llvm::DenseMap<unsigned, const OpSearchParams *> byIndex;
+    for (auto &[index, params] : opParams_)
+      byIndex[index] = &params;
+
+    unsigned index = 0;
+    trial.computeBlock.getBody().walk([&](Operation *op) {
+      auto it = byIndex.find(index++);
+      if (it == byIndex.end() || it->second->outerTile.empty())
+        return;
+      SmallVector<int64_t> sizes;
+      for (const SpaceVar &var : it->second->outerTile)
+        sizes.push_back(var[trial.conf()]);
+      op->setAttr(cinm::CinmDialect::TILING_FACTORS_NAME,
+                  DenseI64ArrayAttr::get(op->getContext(), sizes));
+    });
+  }
+
+  /// Stamp the leaf tile sizes on the launch bodies produced by
+  /// --convert-cinm-to-cnm. Those ops did not exist when the space was built,
+  /// so they cannot be in opParams_; the correspondence is positional, since
+  /// the conversion creates one launch per op it converts, in order.
+  LogicalResult stampLeafTileSizes(cinm::TrialInfo &trial) const {
+    SmallVector<cnm::LaunchOp> launches;
+    trial.computeBlock->walk([&](cnm::LaunchOp launch) {
+      launches.push_back(launch);
+    });
+
+    SmallVector<const OpSearchParams *> withLeafTile;
+    for (auto &[index, params] : opParams_)
+      if (!params.leafTile.empty())
+        withLeafTile.push_back(&params);
+
+    if (launches.size() != withLeafTile.size())
+      return trial.computeBlock->emitOpError()
+             << "expected one cnm.launch per op with leaf tile sizes, got "
+             << launches.size() << " launches for " << withLeafTile.size()
+             << " ops; the positional correspondence between them no longer "
+                "holds";
+
+    for (auto [launch, params] : llvm::zip_equal(launches, withLeafTile)) {
+      SmallVector<int64_t> sizes;
+      for (const SpaceVar &var : params->leafTile)
+        sizes.push_back(var[trial.conf()]);
+      auto attr = DenseI64ArrayAttr::get(launch->getContext(), sizes);
+      launch.getBody().walk([&](linalg::LinalgOp op) {
+        op->setAttr(UPMEMDialect::LEAF_TILE_SIZES_NAME, attr);
+      });
+    }
+    return success();
+  }
+
   void applyTileSizes(cinm::TrialInfo &trial) const {
     trial.computeBlock.getBody().walk([&](mlir::Operation *op) {
       auto paramNamesAttr = op->getAttrOfType<ArrayAttr>(kTileParamNamesAttr);
@@ -417,13 +563,16 @@ void UpmemInferencePlugin::handleGemv(cinm::GemvOp gemv, SpaceBuilder &b) {
                 tasklets * wramRow + (tasklets / taskletCols) * wramRow <=
             wramLevel.getSizeInElements(eltTy));
 
-  // Attributes used by applyTileSizes() in the non-MRAM pipeline path.
-  gemv->setAttr(kTileParamNamesAttr,
-                OpBuilder(gemv->getContext())
-                    .getStrArrayAttr({wramRow.name(), wramCol.name()}));
-
   auto mramRow = b.divisorsOf("mramRow", M);
   auto mramCol = b.divisorsOf("mramCol", K);
+
+  // What the generic pipeline needs to lower this op: the MRAM tile drives the
+  // host-side --cinm-tiling round, the WRAM tile drives the staging in
+  // --upmem-tile-mram-buffers. Recorded in the plugin rather than stamped on
+  // the op, because nothing guarantees an attribute survives the passes
+  // between here and the one that reads it.
+  recordParams(gemv, {mramRow, mramCol}, {wramRow, wramCol});
+
   if (!mramTiling) {
     // In this mode we imitate cinm 1.0 behavior and do not tile on MRAM,
     // equivalently this means the MRAM and WRAM tiles have the same dimensions.
@@ -521,13 +670,12 @@ void UpmemInferencePlugin::handleReduce(cinm::ReduceOp op, SpaceBuilder &b) {
   b.require(wramCol * wramRow * tasklets + tasklets <=
             wramLevel.getSizeInElements(eltTy));
 
-  // Attributes used by applyTileSizes() in the non-MRAM pipeline path.
-  // fixme here
-  // op->setAttr(kTileParamNamesAttr,
-  //             OpBuilder(op->getContext()).getStrArrayAttr({wramTile.name()}));
-
   auto mramRow = b.divisorsOf("mramRow", M);
   auto mramCol = b.divisorsOf("mramCol", K);
+
+  // See handleGemv: the same two tiles, recorded for the generic pipeline.
+  recordParams(op, {mramRow, mramCol}, {wramRow, wramCol});
+
   b.require(M / ((dpus / dpuCols) * mramRow));
   b.require(mramRow / ((tasklets / taskletCols) * wramRow));
   b.require(mramCol / (taskletCols * wramCol));
@@ -654,6 +802,7 @@ struct UpmemInferAcceleratorPass
     o.dumpFullPool = dumpFullPool;
     upmemOpts.annotateOpCosts = annotateOpCosts;
     upmemOpts.useMRAMTiling = useMRAMTiling;
+    upmemOpts.lowering = lowering;
     upmemOpts.fixedDpus = fixedDpus;
     upmemOpts.fixedTasklets = fixedTasklets;
     upmemOpts.simulator = simulator;
