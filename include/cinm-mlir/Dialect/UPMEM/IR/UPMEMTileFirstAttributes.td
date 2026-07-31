@@ -34,7 +34,7 @@ def UpmemPlatformAttr: UPMEM_Attr<"UpmemPlatform", [
 
     // void collectSchedulingStartingPoints(::mlir::cinm::CinmSchedulingStarter &driver) const;
 
-    Attribute getMemrefMemspace(mlir::cinm::CinmLevelDefAttr level) const;
+    ::mlir::cinm::CinmLevelAttrInterface getMemrefMemspace(mlir::cinm::CinmLevelDefAttr level) const;
 
    
     ::mlir::cinm::CinmLevelDefAttr getMramLevel() const {

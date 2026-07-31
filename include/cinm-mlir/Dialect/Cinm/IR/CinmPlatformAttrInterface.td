@@ -6,6 +6,38 @@ include "mlir/IR/Interfaces.td"
 include "mlir/IR/OpAsmInterface.td"
 include "cinm-mlir/Dialect/Cinm/IR/CinmBase.td"
 
+def CinmLevelAttrInterface : AttrInterface<"CinmLevelAttrInterface", []> {
+  let description = [{
+    Interface for attributes that identify a level of a platform's memory
+    hierarchy. Such an attribute is what a `cnm.buffer` carries as its level,
+    and what the memrefs of that level carry as their memory space, so it must
+    be usable as a memref memory space: in particular it must not be
+    parameterized by anything that varies between instances of the same
+    platform (a level's capacity, for instance, differs between UPMEM v1A and
+    v1B, and baking it in would make `memref<64xi32, wram>` two distinct types
+    on the two boards).
+
+    Consequently this interface carries *identity only*. The capacity,
+    alignment and other quantitative properties of the level live in the
+    platform's `CinmLevelDefAttr` for that name, reachable with
+    `platform.getLevel(attr.getLevelName())`.
+  }];
+
+  let cppNamespace = "::mlir::cinm";
+
+  let methods = [
+    InterfaceMethod<
+      /*desc=*/[{
+        The name of the level this attribute denotes. Must match the name of a
+        `CinmLevelDefAttr` in the platform this level belongs to.
+      }],
+      /*retTy=*/"llvm::StringRef",
+      /*methodName=*/"getLevelName",
+      /*args=*/(ins)
+    >
+  ];
+}
+
 def CinmPlatformAttrInterface : AttrInterface<"CinmPlatformAttrInterface", []> {
   let description = [{
     Interface for attributes that can be used as a platform descriptor for Cinm scheduling.
@@ -43,12 +75,35 @@ def CinmPlatformAttrInterface : AttrInterface<"CinmPlatformAttrInterface", []> {
       }]
     >,
     InterfaceMethod<
-      /*desc=*/"Translate a cinm memspace to memref memspace (could be string or int or whatever).",
-      /*retTy=*/"::mlir::Attribute",
+      /*desc=*/[{
+        Translate a level descriptor of this platform into the attribute used
+        as the memref memory space (and as the `cnm.buffer` level) for that
+        level. Falsy if this platform has no such level.
+      }],
+      /*retTy=*/"::mlir::cinm::CinmLevelAttrInterface",
       /*methodName=*/"getMemrefMemspace",
       /*args=*/(ins "::mlir::cinm::CinmLevelDefAttr":$level),
       "",
       /*default=*/"return {};"
+    >,
+    InterfaceMethod<
+      /*desc=*/[{
+        The inverse of `getMemrefMemspace`: recover the level descriptor a
+        memref memory space (or `cnm.buffer` level) refers to. Falsy if the
+        attribute does not denote a level of this platform.
+      }],
+      /*retTy=*/"::mlir::cinm::CinmLevelDefAttr",
+      /*methodName=*/"getLevelOfMemspace",
+      /*args=*/(ins "::mlir::Attribute":$memspace),
+      [{
+        auto space = ::llvm::dyn_cast_or_null<::mlir::cinm::CinmLevelAttrInterface>(memspace);
+        if (!space)
+          return {};
+        for (auto level : $_self.getLevels()) {
+          if (level.getName() == space.getLevelName()) return level;
+        }
+        return {};
+      }]
     >,
 
     InterfaceMethod<

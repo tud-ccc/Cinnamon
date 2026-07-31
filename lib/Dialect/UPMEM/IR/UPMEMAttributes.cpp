@@ -222,9 +222,12 @@ UpmemPlatformAttr UpmemPlatformAttr::getDefault(MLIRContext *ctx) {
   return UpmemPlatformAttr::get(ctx, upmemLevels(ctx, true), true, 8, 64, 24);
 }
 
-Attribute
+cinm::CinmLevelAttrInterface
 UpmemPlatformAttr::getMemrefMemspace(cinm::CinmLevelDefAttr level) const {
-  return level.getName();
+  auto space = symbolizeDpuMemSpace(level.getName().getValue());
+  if (!space)
+    return {};
+  return DpuMemSpaceAttr::get(getContext(), *space);
 }
 
 cinm::CinmAcceleratorAttrInterface

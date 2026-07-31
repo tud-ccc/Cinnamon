@@ -8,6 +8,7 @@
 #define UPMEM_ATTRIBUTES
 
 include "cinm-mlir/Dialect/UPMEM/IR/UPMEMBase.td"
+include "cinm-mlir/Dialect/Cinm/IR/CinmPlatformAttrInterface.td"
 
 // def UPMEM_AddressSpaceGlobal : I32EnumAttrCase<"Global", 1, "global">;
 // def UPMEM_AddressSpaceWorkgroup : I32EnumAttrCase<"Workgroup", 2, "workgroup">;
@@ -32,9 +33,19 @@ def DpuMemSpace : I64EnumAttr<
   let genSpecializedAttr = 0;
 }
 
-def UPMEM_DpuMemSpaceAttr : EnumAttr<UPMEM_Dialect, DpuMemSpace, ""> {
+def UPMEM_DpuMemSpaceAttr : EnumAttr<UPMEM_Dialect, DpuMemSpace, "",
+    [CinmLevelAttrInterface]> {
   let assemblyFormat = ?;
   let hasCustomAssemblyFormat = 1;
+
+  let extraClassDeclaration = [{
+    // The stringified enum cases are exactly the names `upmemLevels()` gives
+    // the corresponding CinmLevelDefAttrs, so a memory space round-trips to
+    // its level descriptor through UpmemPlatformAttr::getLevel.
+    llvm::StringRef getLevelName() const {
+      return stringifyDpuMemSpace(getValue());
+    }
+  }];
 }
 
 include "UPMEMTileFirstAttributes.td"
