@@ -1,5 +1,6 @@
 #include <cinm-mlir/Conversion/CinmPasses.h>
 #include <cinm-mlir/Conversion/CnmToUPMEM/CnmToUPMEM.h>
+#include <cinm-mlir/Conversion/LinalgToCnm/LinalgToCnm.h>
 #include <cinm-mlir/Conversion/CommonPatterns.h>
 #include <cinm-mlir/Dialect/Cinm/AcceleratorInference/AcceleratorInference.h>
 #include <cinm-mlir/Dialect/Cinm/AcceleratorInference/SpaceBuilder.h>
@@ -82,6 +83,20 @@ namespace {
 using mlir::cinm::SpaceBuilder;
 using mlir::cinm::SpaceVar;
 using mlir::cinm::utils::Maybe;
+
+/// A search-space quantity resolved against a configuration. Type-erased so a
+/// recorded parameter can be a derived expression rather than a bare variable
+/// -- what a pass consumes is rarely what the search declares.
+using SpaceValue = std::function<int64_t(const cinm::ConfWrapper &)>;
+
+/// Type-erase any space expression into a SpaceValue. Handles copy the
+/// variables' shared index cells, so this stays valid across
+/// SpaceBuilder::buildInto().
+template <typename E>
+static SpaceValue spaceValue(const cinm::SpaceExprBase<E> &expr) {
+  E copy = static_cast<const E &>(expr);
+  return [copy](const cinm::ConfWrapper &c) { return copy.eval(c); };
+}
 
 /// UPMEM-specific inference options. Wraps the generic InferenceOptions and
 /// provides a place to add UPMEM-specific knobs in the future.
@@ -167,21 +182,25 @@ struct UpmemInferencePlugin : cinm::InferencePlugin {
   static std::unique_ptr<PassManager> buildFrontPipeline(MLIRContext *ctx) {
     auto pm = std::make_unique<PassManager>(ctx);
 
-    // Step 1: tiling
-    pm->addPass(cinm::createCinmTilingPass());
-    // pm->addPass(cinm::createCinmIsolateComputePass());
-    // Fully unroll single-iteration loops produced by tiling.
-    pm->addNestedPass<func::FuncOp>(
-        affine::createLoopUnrollPass(1, /*unrollUpToFactor=*/true));
+    // Step 1: cinm → linalg. The distribution below reads indexing maps, so
+    // it needs the ops in structured form; this is also where fusion will go
+    // (design §G8), which is why it runs on the generic branch only.
+    pm->addPass(cinm::createConvertCinmOpsToLinalgPass());
     pm->addPass(createCanonicalizerPass());
-    // pm->addPass(cinm::createCinmDeisolateComputeBlocks());
 
-    // Step 2: cinm → cnm, with the buffers in MRAM. The launch bodies then
-    // compute on MRAM, and --upmem-tile-mram-buffers stages them down to WRAM.
+    // Step 2: distribute onto the workgroup, with the buffers in MRAM. The
+    // launch bodies then compute on MRAM, and --upmem-tile-mram-buffers stages
+    // them down to WRAM. No separate tiling round: `cnm.tile_sizes` is a block
+    // size per iteration dimension and the workgroup takes the whole tile
+    // space at once.
     {
-      ConvertTiledCinmToCnmOptions cnmOpts;
+      mlir::ConvertLinalgToCnmPassOptions cnmOpts;
       cnmOpts.bufferLevel = "mram";
-      pm->addPass(cinm::createConvertTiledCinmToCnmPass(cnmOpts));
+      // Splitting a reduction rewrites the op and adds an iteration
+      // dimension; the leaf tile sizes have to follow it, or
+      // --upmem-tile-mram-buffers below silently stages the whole tile.
+      cnmOpts.perDimAttrs = {UPMEMDialect::LEAF_TILE_SIZES_NAME.str()};
+      pm->addPass(cnm::createConvertLinalgToCnmPass(cnmOpts));
     }
     pm->addPass(createCanonicalizerPass());
     pm->addPass(cnm::createCnmHoistWorkgroupsPass());
@@ -307,8 +326,8 @@ struct UpmemInferencePlugin : cinm::InferencePlugin {
 
   /// Record the search parameters `op`'s lowering needs. `op` belongs to the
   /// reference clone; see opParams_ for how it is found again in a trial.
-  void recordParams(Operation *op, ArrayRef<SpaceVar> outerTile,
-                    ArrayRef<SpaceVar> leafTile) {
+  void recordParams(Operation *op, ArrayRef<SpaceValue> outerTile,
+                    ArrayRef<SpaceValue> leafTile) {
     OpSearchParams params;
     params.outerTile.assign(outerTile.begin(), outerTile.end());
     params.leafTile.assign(leafTile.begin(), leafTile.end());
@@ -422,13 +441,8 @@ struct UpmemInferencePlugin : cinm::InferencePlugin {
       backPipeline = buildBackPipeline(ctx);
     }
 
-    stampOuterTileSizes(trial);
+    stampSearchParams(trial);
     TRY(runPipeline(frontPipeline.get(), loc, trial.module.get()));
-
-    // The launch bodies exist only now, which is why their tile sizes could
-    // not have been stamped alongside the host-side ones.
-    if (failed(stampLeafTileSizes(trial)))
-      return DiagnosedSilenceableFailure::definiteFailure();
     TRY(runPipeline(backPipeline.get(), loc, trial.module.get()));
     return DiagnosedSilenceableFailure::success();
   }
@@ -444,12 +458,13 @@ struct UpmemInferencePlugin : cinm::InferencePlugin {
 private:
   /// The search parameters one op's lowering needs.
   struct OpSearchParams {
-    /// Tile sizes for the host-side --cinm-tiling round, which decides how
-    /// much work each workgroup element gets.
-    SmallVector<SpaceVar> outerTile;
-    /// Tile sizes for --upmem-tile-mram-buffers, which decides how the launch
-    /// body walks its buffers through the leaf memory level.
-    SmallVector<SpaceVar> leafTile;
+    /// Block size per iteration dimension for --convert-linalg-to-cnm, which
+    /// decides how much of the iteration space each workgroup leaf gets.
+    SmallVector<SpaceValue> outerTile;
+    /// Block size per iteration dimension for --upmem-tile-mram-buffers, which
+    /// decides how the launch body walks its buffers through the leaf memory
+    /// level.
+    SmallVector<SpaceValue> leafTile;
   };
 
   /// Search parameters per op, keyed by the op's position in a pre-order walk
@@ -461,58 +476,38 @@ private:
   cinm::ComputeBlockOp refBlock_;
 
   /// Resolve the recorded parameters against this trial's configuration and
-  /// stamp the host-side tile sizes on the ops that consume them, immediately
-  /// before the pass that reads them.
-  void stampOuterTileSizes(cinm::TrialInfo &trial) const {
+  /// stamp them on the ops that consume them.
+  ///
+  /// Both levels are stamped here, before anything runs, because
+  /// --convert-cinm-ops-to-linalg carries discardable attributes onto the
+  /// linalg op it produces and --convert-linalg-to-cnm carries them again into
+  /// the launch body. Nothing has to find the op again half way down the
+  /// pipeline.
+  void stampSearchParams(cinm::TrialInfo &trial) const {
     llvm::DenseMap<unsigned, const OpSearchParams *> byIndex;
     for (auto &[index, params] : opParams_)
       byIndex[index] = &params;
 
+    auto resolve = [&](ArrayRef<SpaceValue> exprs) {
+      SmallVector<int64_t> sizes;
+      for (const SpaceValue &expr : exprs)
+        sizes.push_back(expr(trial.conf()));
+      return sizes;
+    };
+
     unsigned index = 0;
     trial.computeBlock.getBody().walk([&](Operation *op) {
       auto it = byIndex.find(index++);
-      if (it == byIndex.end() || it->second->outerTile.empty())
+      if (it == byIndex.end())
         return;
-      SmallVector<int64_t> sizes;
-      for (const SpaceVar &var : it->second->outerTile)
-        sizes.push_back(var[trial.conf()]);
-      op->setAttr(cinm::CinmDialect::TILING_FACTORS_NAME,
-                  DenseI64ArrayAttr::get(op->getContext(), sizes));
+      MLIRContext *ctx = op->getContext();
+      if (!it->second->outerTile.empty())
+        op->setAttr(cnm::CnmDialect::TILE_SIZES_NAME,
+                    DenseI64ArrayAttr::get(ctx, resolve(it->second->outerTile)));
+      if (!it->second->leafTile.empty())
+        op->setAttr(UPMEMDialect::LEAF_TILE_SIZES_NAME,
+                    DenseI64ArrayAttr::get(ctx, resolve(it->second->leafTile)));
     });
-  }
-
-  /// Stamp the leaf tile sizes on the launch bodies produced by
-  /// --convert-cinm-to-cnm. Those ops did not exist when the space was built,
-  /// so they cannot be in opParams_; the correspondence is positional, since
-  /// the conversion creates one launch per op it converts, in order.
-  LogicalResult stampLeafTileSizes(cinm::TrialInfo &trial) const {
-    SmallVector<cnm::LaunchOp> launches;
-    trial.computeBlock->walk([&](cnm::LaunchOp launch) {
-      launches.push_back(launch);
-    });
-
-    SmallVector<const OpSearchParams *> withLeafTile;
-    for (auto &[index, params] : opParams_)
-      if (!params.leafTile.empty())
-        withLeafTile.push_back(&params);
-
-    if (launches.size() != withLeafTile.size())
-      return trial.computeBlock->emitOpError()
-             << "expected one cnm.launch per op with leaf tile sizes, got "
-             << launches.size() << " launches for " << withLeafTile.size()
-             << " ops; the positional correspondence between them no longer "
-                "holds";
-
-    for (auto [launch, params] : llvm::zip_equal(launches, withLeafTile)) {
-      SmallVector<int64_t> sizes;
-      for (const SpaceVar &var : params->leafTile)
-        sizes.push_back(var[trial.conf()]);
-      auto attr = DenseI64ArrayAttr::get(launch->getContext(), sizes);
-      launch.getBody().walk([&](linalg::LinalgOp op) {
-        op->setAttr(UPMEMDialect::LEAF_TILE_SIZES_NAME, attr);
-      });
-    }
-    return success();
   }
 
   void applyTileSizes(cinm::TrialInfo &trial) const {
@@ -566,12 +561,33 @@ void UpmemInferencePlugin::handleGemv(cinm::GemvOp gemv, SpaceBuilder &b) {
   auto mramRow = b.divisorsOf("mramRow", M);
   auto mramCol = b.divisorsOf("mramCol", K);
 
-  // What the generic pipeline needs to lower this op: the MRAM tile drives the
-  // host-side --cinm-tiling round, the WRAM tile drives the staging in
-  // --upmem-tile-mram-buffers. Recorded in the plugin rather than stamped on
-  // the op, because nothing guarantees an attribute survives the passes
-  // between here and the one that reads it.
-  recordParams(gemv, {mramRow, mramCol}, {wramRow, wramCol});
+  // What the generic pipeline needs, projected from the template's parameters
+  // (design §G2). The two paths search one space; they differ only in how they
+  // read it.
+  //
+  // mramRow/mramCol are per-*DPU*, and the tasklets of a DPU subdivide that
+  // tile -- see the mramRow/mramCol constraints below. A CNM leaf is a
+  // tasklet, so a leaf's share of the iteration space is
+  //
+  //     b_m = mramRow / taskletRows = mramRow * taskletCols / tasklets
+  //     b_k = mramCol / taskletCols
+  //
+  // Both divisions are exact given those constraints; multiplying before
+  // dividing keeps them exact here too.
+  //
+  // The generic path's own requirement -- that the tile counts fill the
+  // workgroup exactly -- then follows from the constraints below rather than
+  // being an extra restriction:
+  //
+  //     (M/b_m) * (K/b_k) = (dpuRows*taskletRows) * (dpuCols*taskletCols)
+  //                       = dpus * tasklets
+  //
+  // --convert-linalg-to-cnm checks that anyway, so a wrong projection fails
+  // loudly instead of silently mis-tiling. That check is what M7 lacked.
+  recordParams(gemv,
+               {spaceValue(mramRow * taskletCols / tasklets),
+                spaceValue(mramCol / taskletCols)},
+               {spaceValue(wramRow), spaceValue(wramCol)});
 
   if (!mramTiling) {
     // In this mode we imitate cinm 1.0 behavior and do not tile on MRAM,
@@ -673,8 +689,11 @@ void UpmemInferencePlugin::handleReduce(cinm::ReduceOp op, SpaceBuilder &b) {
   auto mramRow = b.divisorsOf("mramRow", M);
   auto mramCol = b.divisorsOf("mramCol", K);
 
-  // See handleGemv: the same two tiles, recorded for the generic pipeline.
-  recordParams(op, {mramRow, mramCol}, {wramRow, wramCol});
+  // See handleGemv for the projection; the decomposition is identical.
+  recordParams(op,
+               {spaceValue(mramRow * taskletCols / tasklets),
+                spaceValue(mramCol / taskletCols)},
+               {spaceValue(wramRow), spaceValue(wramCol)});
 
   b.require(M / ((dpus / dpuCols) * mramRow));
   b.require(mramRow / ((tasklets / taskletCols) * wramRow));
