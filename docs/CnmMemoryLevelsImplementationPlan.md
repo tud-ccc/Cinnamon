@@ -45,15 +45,17 @@ hand-written templates in `SimulationTemplates.cpp`.
 10. **No cost/transfer metadata at the CNM level.** The cost model runs
     on UPMEM-dialect IR, after conversion.
 
-### 0.1 Two corrections to fold back into the design doc
+### 0.1 Status
 
-- **§A1** says `CinmLevelDefAttr` becomes an implementation of the new
-  level interface. It shouldn't — it's a capacity *descriptor*, a
-  different concept from the level *identity* that goes in a memref
-  memory space (§1.4). Only `DpuMemSpaceAttr` implements the interface.
-- **§F** suggests keeping the templates "as an oracle during
-  development", implying eventual removal. Per decision 9 they stay
-  indefinitely as the quality objective.
+**M0 and M3 are implemented** (branch `cost-model`). The two design-doc
+corrections they turned up — §A1 (`CinmLevelDefAttr` is a capacity
+descriptor and does *not* implement the level interface) and §F (the
+templates stay indefinitely, not just as a development oracle) — have
+been folded back into [CnmMemoryLevelsDesign.md](CnmMemoryLevelsDesign.md).
+
+M1, M2 and M4–M7 remain. M1 and M2 are unblocked and mutually
+independent; M4 now has both its prerequisites (M1 is the only one
+outstanding).
 
 ## 1. What already exists
 
@@ -225,7 +227,27 @@ M1, M2, M3 are mutually independent once M0 lands.
 
 ## 3. Milestones
 
-### M0 — Unblock: round-trip fix, red-test refresh, level interface
+### M0 — Unblock: round-trip fix, red-test refresh, level interface — **DONE**
+
+Landed as three commits. Deviations from the plan below, all discovered
+while implementing:
+
+- `getMemrefMemspace` returns `CinmLevelAttrInterface`, not `Attribute`
+  — a stronger contract that costs nothing since UPMEM is the only
+  implementer. Its inverse `getLevelOfMemspace` was added at the same
+  time; M5 needs it to ask "which level is this memref in", and writing
+  it now keeps the pair symmetric.
+- `cnm-to-upmem-broadcast.mlir`'s second RUN line was not a stale CHECK.
+  It asserted that `cinm1-codegen` disables the `upmem.broadcast`
+  shortcut, which was never implemented: the shortcut is gated on
+  `use-bc-xfer-codegen` alone. The two transfer forms deliver identical
+  bytes to identical MRAM symbols, so `cinm1-codegen` has no reason to
+  care — the code comment claiming the gating existed was simply wrong
+  and has been corrected. The fallback case now uses the option that
+  really controls it, and the `cinm1-codegen` case checks what it does
+  control (private WRAM per tasklet, no `noinit`).
+- The `CinmLevelAttrInterface` methods have no lit coverage yet; they
+  have no IR-observable effect until M1 consumes them.
 
 **Goal:** make the tree trustworthy and put the level interface in place.
 Nothing here changes generated code.
@@ -346,10 +368,31 @@ cleanup.
   `-verify-diagnostics` in the style of
   `test/Dialect/UPMEM/verifier.mlir`.
 
-### M3 — `cinm.op.reduce`: fix tiled accumulation, then add DPS mode
+### M3 — `cinm.op.reduce`: fix tiled accumulation, then add DPS mode — **DONE**
 
-Two changes, in this order; the first is an independent bug fix worth
-landing on its own.
+Landed as two commits. Deviations from the plan below:
+
+- The combine is a `linalg.map` over `arith::getReductionOp` on the
+  element type, rather than a switch from `ReduceMethod` to a linalg
+  named op. One code path covers every method, including the
+  `maxnumf`/`maximumf` distinction a named-op switch would blur.
+- The 3a regression test is not a new file. `Transform/Cinm/
+  cinm-tiling-reduce.mlir` already existed and had locked in the broken
+  output for its `@min` and `@mul` cases (`tensor.empty` seed +
+  overwriting `insert_slice`), so the fix belongs there; a new
+  `Dialect/Cinm/cinm-reduce-tiling.mlir` would have duplicated it.
+- 3b rejects a *tensor* `into` operand rather than accepting it as a
+  bufferization hint the way the gemm-like ops do. Nothing needs that
+  form for reduce, and rejecting it keeps the memref mode's accumulate
+  semantics unambiguous.
+- Making the result optional removes the implicit `ReduceOp -> Value`
+  conversion (two call sites in `SoftmaxToCinmPass`), and the reduce
+  patterns in `CinmToLinalg` and `CinmToCnm` had to learn to bail out on
+  memref mode — they would otherwise have dereferenced the null result.
+  Both now mirror the guard the gemm-like patterns beside them already
+  had.
+
+Original plan follows.
 
 **3a — fix the accumulation bug (§1.6).** In `ReduceTilingModel::
 convertToTiledOps`
@@ -567,10 +610,10 @@ MRAM-level ones, whose staging M5 has already made explicit.
 
 | Milestone | Subject | Tests |
 |---|---|---|
-| M0 | launch round-trip fix; `CinmLevelAttrInterface` on `DpuMemSpaceAttr` | `Dialect/Cnm/cnm-launch-roundtrip.mlir` (new); refresh `Conversion/CnmToUpmem/cnm-to-upmem.mlir` + `-broadcast.mlir` (currently red) |
+| M0 ✅ | launch round-trip fix; `CinmLevelAttrInterface` on `DpuMemSpaceAttr` | `Dialect/Cnm/cnm-launch-roundtrip.mlir` (new); `Conversion/CnmToUpmem/cnm-to-upmem.mlir` + `-broadcast.mlir` fixed, now green |
 | M1 | `--convert-cinm-to-cnm=cnm-buffer-level=<name>` | `Conversion/CinmToCnm/cinm-to-cnm-mram-buffers.mlir` (new; mram, wram, bad-name cases); `cinm-to-cnm.mlir` + `-difficult.mlir` stay green |
 | M2 | `cnm.local_transfer` | `Dialect/Cnm/cnm-ops.mlir` (extend); `Dialect/Cnm/cnm-verifier.mlir` (new) |
-| M3 | reduce accumulation fix; reduce DPS mode | `Dialect/Cinm/cinm-reduce-tiling.mlir` (new, bug repro); `cinm-reduce-memref-tiling.mlir` (new); `cinm-gemv-memref-tiling.mlir` (new, existing gap); `cinm-ops.mlir` (extend) |
+| M3 ✅ | reduce accumulation fix; reduce DPS mode | `Transform/Cinm/cinm-tiling-reduce.mlir` (fixed: had locked in the bug); `Dialect/Cinm/cinm-reduce-memref-tiling.mlir` (new); `cinm-reduce-verifier.mlir` (new); `cinm-gemv-memref-tiling.mlir` (new, existing gap); `cinm-parse-memrefs.mlir` (extended) |
 | M4 | `cinm` ops in launch bodies | `cinm-to-cnm-mram-buffers.mlir` (extend: gemv, reduce, no-flag) |
 | M5 | `--upmem-tile-mram-buffers` | `Transform/UPMEM/upmem-tile-mram-buffers.mlir` (new, 2 cases) |
 | M6 | MRAM launch args; `cnm.local_transfer` lowering | `Conversion/CnmToUpmem/cnm-to-upmem-mram-level.mlir` (new, 2 cases) |

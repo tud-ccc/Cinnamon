@@ -100,15 +100,28 @@ speak in terms of the interface rather than the concrete
 `CinmLevelDefAttr`. Backend dialects are then free to define their own
 attributes implementing it — `#upmem.mram`/`#upmem.wram` — and attach
 backend-specific behavior directly to them (the motivating case: SDK
-transfer-call selection per level, see §B). `CinmLevelDefAttr` stops
-being *the* level representation and becomes one concrete
-implementation of the interface: still useful as a quick, declarative
-way to stand up a level for testing or for a backend that doesn't need
-per-level behavior yet, and it's what `UpmemPlatformAttr` currently
-constructs its `mram`/`wram` levels as
+transfer-call selection per level, see §B).
+
+**Correction (implemented).** This section originally had
+`CinmLevelDefAttr` become one implementation of the interface. It
+doesn't, and can't: the level attribute doubles as a *memref memory
+space*, so parameterizing it with a capacity would make
+`memref<64xi32, wram>` two distinct types on UPMEM v1A and v1B, whose
+WRAM sizes differ. The two are therefore different concepts —
+`CinmLevelAttrInterface` carries level *identity* only (a single
+`getLevelName()`), and `CinmLevelDefAttr` stays a platform-side
+capacity *descriptor* that does not implement it. `getLevelOfMemspace`
+on the platform interface maps one to the other, so generic code can
+still reach a level's size from a memref's memory space.
+
+Concretely this made the change much smaller than anticipated:
+`upmem::DpuMemSpaceAttr` (`#upmem.mram`/`#upmem.wram`) already existed
+and was already the memref memory space throughout the UPMEM backend,
+so it just implements the interface. `upmemLevels()`
 ([UPMEMAttributes.cpp:145-163](../lib/Dialect/UPMEM/IR/UPMEMAttributes.cpp#L145-L163))
-— that call site would migrate to real `#upmem.mram`/`#upmem.wram`
-attributes once they exist.
+keeps building `CinmLevelDefAttr`s unchanged, and
+`getWorkgroupMemoryLevels()`/`CinmLevelArrayAttr` need no change at
+all.
 
 Two reasons for this over reusing `CinmLevelDefAttr` directly: (1) it
 lets a level attribute drive backend-specific lowering decisions
@@ -446,9 +459,12 @@ effort lands.
 Not designed here, just flagged: once §A produces *some* end-to-end
 `cinm.gemv → cnm → upmem` path, how do we know it reproduces
 `generateGemv`'s output (or at least its cost/perf characteristics)?
-Suggest keeping the template path alive as an oracle during
-development, and using gemv specifically as the first target for the
-new pipeline (it's the smallest existing worked example with an actual
+**Decided:** the template path stays *indefinitely*, not just as a
+development oracle — `SimulationTemplates.cpp` and the
+`registerSimulator` bypass are the quality bar the generic pipeline
+must reach, and `evaluate()` selects between the two so their costs can
+be compared directly on the same configuration. Use gemv specifically
+as the first target for the new pipeline (it's the smallest existing worked example with an actual
 MRAM/WRAM split, and `UpmemGenericLoweringNotes.md` already flags
 matmul/double-reduction as the next-hardest cases — no need to jump
 there first).
