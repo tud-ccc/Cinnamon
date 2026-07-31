@@ -262,7 +262,8 @@ static FailureOr<SmallVector<int64_t>> getTileCounts(linalg::LinalgOp op,
 static FailureOr<linalg::LinalgOp>
 splitDistributedReductions(RewriterBase &rewriter, linalg::LinalgOp op,
                            SmallVector<int64_t> &blocks,
-                           bool allowFloatReassociation) {
+                           bool allowFloatReassociation,
+                           ArrayRef<std::string> perDimAttrs) {
   while (true) {
     FailureOr<SmallVector<int64_t>> extents = getLoopExtents(op);
     if (failed(extents))
@@ -314,7 +315,25 @@ splitDistributedReductions(RewriterBase &rewriter, linalg::LinalgOp op,
     // [reduction dims], with the split dimension holding one tile per leaf and
     // the original reduction dimension now spanning exactly one block.
     blocks.insert(blocks.begin(), 1);
+
+    // splitReduction builds a fresh op, so whatever the pipeline stamped on
+    // this one has to be carried across -- otherwise a decision made upstream
+    // silently disappears exactly when a reduction is split. Lists indexed by
+    // iteration dimension additionally get an entry for the new dimension.
+    unsigned oldNumLoops = op.getNumLoops();
+    DictionaryAttr carried = op->getDiscardableAttrDictionary();
     op = split->splitLinalgOp;
+    op->setDiscardableAttrs(carried);
+    for (StringRef name : llvm::concat<const std::string>(
+             SmallVector<std::string>{cnm::CnmDialect::TILE_SIZES_NAME.str()},
+             perDimAttrs)) {
+      auto attr = op->getAttrOfType<DenseI64ArrayAttr>(name);
+      if (!attr || attr.size() != static_cast<int64_t>(oldNumLoops))
+        continue;
+      SmallVector<int64_t> updated(attr.asArrayRef());
+      updated.insert(updated.begin(), 1);
+      op->setAttr(name, DenseI64ArrayAttr::get(op->getContext(), updated));
+    }
 
     FailureOr<SmallVector<int64_t>> newExtents = getLoopExtents(op);
     if (failed(newExtents))
@@ -327,7 +346,8 @@ splitDistributedReductions(RewriterBase &rewriter, linalg::LinalgOp op,
 
 LogicalResult distribute(RewriterBase &rewriter, linalg::LinalgOp op,
                          StringRef bufferLevelName,
-                         bool allowFloatReassociation) {
+                         bool allowFloatReassociation,
+                         ArrayRef<std::string> perDimAttrs) {
   auto tileAttr =
       op->getAttrOfType<DenseI64ArrayAttr>(cnm::CnmDialect::TILE_SIZES_NAME);
   assert(tileAttr && "caller filters on the attribute");
@@ -376,7 +396,7 @@ LogicalResult distribute(RewriterBase &rewriter, linalg::LinalgOp op,
   // a parallel dimension over partial results, plus a merge left on the host.
   // Everything below therefore only ever sees unsplit reductions.
   FailureOr<linalg::LinalgOp> split = splitDistributedReductions(
-      rewriter, op, blocks, allowFloatReassociation);
+      rewriter, op, blocks, allowFloatReassociation, perDimAttrs);
   if (failed(split))
     return failure();
   op = *split;
@@ -543,7 +563,7 @@ struct ConvertLinalgToCnmPass
     IRRewriter rewriter(&getContext());
     for (linalg::LinalgOp op : targets)
       if (failed(distribute(rewriter, op, bufferLevel,
-                            allowFloatReassociation)))
+                            allowFloatReassociation, perDimAttrs)))
         return signalPassFailure();
   }
 };
