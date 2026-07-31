@@ -98,6 +98,23 @@ static Value insertSliceND(OpBuilder &builder, Location loc, Value slice,
   assert(false && "type not handled");
 }
 
+/// Combine two same-shaped tensors elementwise with `method`'s binary
+/// operator, producing a new tensor. Used to fold a reduction tile's partial
+/// result into the accumulator; going through arith::getReductionOp on the
+/// element type means every ReduceMethod is handled without a second switch.
+static Value combineElementwise(OpBuilder &builder, Location loc,
+                                ReduceMethod method, Value acc, Value tile) {
+  auto kind = getArithConstant(
+      method, cast<ShapedType>(acc.getType()).getElementType());
+  auto map = linalg::MapOp::create(
+      builder, loc, ValueRange{acc, tile}, acc,
+      [&](OpBuilder &b, Location l, ValueRange args) {
+        linalg::YieldOp::create(
+            b, l, arith::getReductionOp(kind, b, l, args[0], args[1]));
+      });
+  return map->getResult(0);
+}
+
 static OpFoldResult getDimOfr(OpBuilder &b, Location loc,
                               TypedValue<ShapedType> shaped, int64_t dimIdx) {
   const int64_t size = shaped.getType().getDimSize(dimIdx);
@@ -291,9 +308,13 @@ struct ReduceTilingModel
     auto resultType = reduce.getResult().getType();
 
     Value result;
-    if (isa<TensorType>(resultType))
-      result =
-          tensor::EmptyOp::create(builder, reduce.getLoc(), resultType, {});
+    if (auto shapedResultTy = dyn_cast<TensorType>(resultType))
+      // Seed with the reduction's identity, not tensor.empty: when the
+      // reduction dimension is split into several trips, every trip combines
+      // into this accumulator, so its initial contents are read.
+      result = arith::ConstantOp::create(
+          builder, reduce.getLoc(),
+          DenseElementsAttr::get(shapedResultTy, neutral));
     else if (resultType.isIntOrFloat())
       result = arith::ConstantOp::create(builder, reduce.getLoc(), neutral);
     else
@@ -329,7 +350,14 @@ struct ReduceTilingModel
               llvm::dyn_cast_or_null<TypedValue<ShapedType>>(acc);
 
           if (shapedResult && shapedResultTile) {
-            return {insertSliceND(b, loc, shapedResultTile, shapedResult,
+            // The reduction dimension may be split into several trips, each
+            // producing a partial result for the same accumulator slice, so
+            // the slice has to be combined rather than overwritten.
+            Value accSlice = extractSliceND(b, loc, shapedResult, resultTileSize,
+                                            resultTileIndex);
+            Value combined =
+                combineElementwise(b, loc, method, accSlice, shapedResultTile);
+            return {insertSliceND(b, loc, combined, shapedResult,
                                   resultTileSize, resultTileIndex)};
           } else if (smaller.getResult().getType().isIntOrFloat()) {
             if (isa<TensorType>(acc.getType())) {
