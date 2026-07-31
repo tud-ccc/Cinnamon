@@ -7,6 +7,7 @@
 #include <llvm/ADT/SmallVector.h>
 #include <llvm/Support/Casting.h>
 #include <mlir/Dialect/Arith/IR/Arith.h>
+#include <mlir/Dialect/Linalg/IR/Linalg.h>
 #include <mlir/Dialect/MemRef/IR/MemRef.h>
 #include <mlir/Dialect/Tensor/IR/Tensor.h>
 #include <mlir/Dialect/Utils/IndexingUtils.h>
@@ -31,11 +32,28 @@ static bool isSplatZeroAttr(DenseElementsAttr attr) {
   return false;
 }
 
+static bool isZeroScalar(Value v) {
+  Attribute attr;
+  if (!matchPattern(v, m_Constant(&attr)))
+    return false;
+  if (auto intAttr = dyn_cast<IntegerAttr>(attr))
+    return intAttr.getValue().isZero();
+  if (auto floatAttr = dyn_cast<FloatAttr>(attr))
+    return floatAttr.getValue().isZero();
+  return false;
+}
+
 bool isZeroSplatFoldable(Value v) {
   // Fast path: direct constant.
   DenseElementsAttr attr;
   if (matchPattern(v, m_Constant(&attr)))
     return isSplatZeroAttr(attr);
+
+  // `linalg.fill` has no folder producing a constant tensor, so the generic
+  // path below never sees through it -- but it is the usual way a zeroed
+  // buffer is spelled, so match it directly.
+  if (auto fill = v.getDefiningOp<linalg::FillOp>())
+    return fill.getInputs().size() == 1 && isZeroScalar(fill.getInputs()[0]);
 
   // Slow path: try folding the defining op with whatever constant operands
   // are available (non-constant operands are passed as null Attributes).
