@@ -109,6 +109,23 @@ static Value buildElementwiseGeneric(
   return generic.getResult(0);
 }
 
+/// Replace a `cinm` op with the linalg op carrying its computation, keeping
+/// the discardable attributes.
+///
+/// Those attributes are how decisions travel down the pipeline: the inference
+/// plugin stamps `cnm.tile_sizes` / `upmem.leaf_tile_sizes` on a cinm op, and
+/// the passes that consume them run well after this conversion. Dropping them
+/// here would silently lose the configuration, so they move onto the op that
+/// inherits the same iteration space. Ops produced alongside it (an init
+/// `linalg.fill`, a `tensor.empty`) deliberately do not get them.
+static void replaceWithLinalgOp(ConversionPatternRewriter &rewriter,
+                                Operation *op, Value result) {
+  if (Operation *producer = result.getDefiningOp())
+    if (isa<linalg::LinalgOp>(producer))
+      producer->setDiscardableAttrs(op->getDiscardableAttrDictionary());
+  rewriter.replaceOp(op, result);
+}
+
 //===----------------------------------------------------------------------===//
 // cinm.op.elementwise
 //===----------------------------------------------------------------------===//
@@ -334,7 +351,7 @@ struct ConvertElementwiseToLinalg
       return op.emitError(
           "unsupported elementwise kind/element-type combination");
 
-    rewriter.replaceOp(op, result);
+    replaceWithLinalgOp(rewriter, op, result);
     return success();
   }
 };
@@ -390,7 +407,7 @@ struct ConvertReduceToLinalg : public OpConversionPattern<cinm::ReduceOp> {
     if (isScalarResult)
       result = tensor::ExtractOp::create(rewriter, loc, result, ValueRange{});
 
-    rewriter.replaceOp(op, result);
+    replaceWithLinalgOp(rewriter, op, result);
     return success();
   }
 };
@@ -418,7 +435,7 @@ struct ConvertGemvToLinalg : public OpConversionPattern<cinm::GemvOp> {
                            ValueRange{adaptor.getLhs(), adaptor.getRhs()},
                            ValueRange{init})
                        .getResult(0);
-    rewriter.replaceOp(op, result);
+    replaceWithLinalgOp(rewriter, op, result);
     return success();
   }
 };
@@ -446,7 +463,7 @@ struct ConvertGemmToLinalg : public OpConversionPattern<cinm::GemmOp> {
                            ValueRange{adaptor.getLhs(), adaptor.getRhs()},
                            ValueRange{init})
                        .getResult(0);
-    rewriter.replaceOp(op, result);
+    replaceWithLinalgOp(rewriter, op, result);
     return success();
   }
 };
@@ -475,7 +492,7 @@ struct ConvertBatchGemmToLinalg
                            ValueRange{adaptor.getLhs(), adaptor.getRhs()},
                            ValueRange{init})
                        .getResult(0);
-    rewriter.replaceOp(op, result);
+    replaceWithLinalgOp(rewriter, op, result);
     return success();
   }
 };
@@ -535,7 +552,7 @@ struct ConvertBatchGemvToLinalg
         },
         ArrayRef<NamedAttribute>{});
 
-    rewriter.replaceOp(op, generic.getResult(0));
+    replaceWithLinalgOp(rewriter, op, generic.getResult(0));
     return success();
   }
 };
@@ -564,7 +581,7 @@ struct ConvertTransposeToLinalg
     Value result =
         linalg::TransposeOp::create(rewriter, loc, adaptor.getInput1(), init, perms)
             .getResults()[0];
-    rewriter.replaceOp(op, result);
+    replaceWithLinalgOp(rewriter, op, result);
     return success();
   }
 };
