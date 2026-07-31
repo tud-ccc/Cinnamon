@@ -58,6 +58,44 @@ using namespace mlir;
 
 namespace {
 
+/// Resolve the pass's `cnm-buffer-level` option against the accelerator's
+/// platform, yielding the attribute that goes in the `cnm.buffer` type's level
+/// field and in the memory space of the launch body's memrefs.
+///
+/// An empty name yields a null level, which is what every buffer got before
+/// this option existed: the backend conversion then picks the staging itself.
+FailureOr<cinm::CinmLevelAttrInterface>
+resolveBufferLevel(StringRef levelName, cnm::CnmAcceleratorAttrInterface acc,
+                   Operation *op) {
+  if (levelName.empty())
+    return cinm::CinmLevelAttrInterface{};
+
+  auto platform = acc.getPlatform();
+  if (!platform)
+    return op->emitOpError("cannot resolve memory level '")
+           << levelName << "': the accelerator declares no platform";
+
+  cinm::CinmLevelDefAttr def = platform.getLevel(levelName);
+  if (!def) {
+    auto diag = op->emitOpError("unknown memory level '")
+                << levelName << "' for platform '" << platform.getName()
+                << "'; known levels are ";
+    llvm::interleaveComma(platform.getLevels(), diag,
+                          [&](cinm::CinmLevelDefAttr l) {
+                            diag << "'" << l.getName().getValue() << "'";
+                          });
+    return diag;
+  }
+
+  cinm::CinmLevelAttrInterface space = platform.getMemrefMemspace(def);
+  if (!space)
+    return op->emitOpError("platform '")
+           << platform.getName()
+           << "' does not provide a memref memory space for level '"
+           << levelName << "'";
+  return space;
+}
+
 LogicalResult
 computeShapeOfTensors(Location loc, llvm::ArrayRef<int64_t> shape,
                       cnm::WorkgroupType wgTy, int64_t maxBlockSize,
@@ -269,6 +307,7 @@ LogicalResult convertInputIntoAlloc(Value &inputBuf, Value workGroup,
                                     cnm::WorkgroupType wgTy,
                                     int64_t maxBlockSizeBytes,
                                     ArrayRef<int64_t> reduceDims,
+                                    cinm::CinmLevelAttrInterface level,
                                     AffineMap &scatterMap, Value &result,
                                     ImplicitLocOpBuilder &rewriter) {
   // For each input of the reduce, we need to
@@ -306,9 +345,9 @@ LogicalResult convertInputIntoAlloc(Value &inputBuf, Value workGroup,
   }
 
   // Allocate a cinm buffer
-  cnm::BufferType bufTy = cnm::BufferType::get(
-      shapeOfBuffer, inputType.getElementType(), wgTy.getAccelerator(),
-      0); // todo level is hardcoded
+  cnm::BufferType bufTy =
+      cnm::BufferType::get(shapeOfBuffer, inputType.getElementType(),
+                           wgTy.getAccelerator(), level);
 
   Value alloc = cnm::AllocOp::create(rewriter, bufTy, workGroup);
 
@@ -335,8 +374,13 @@ cnm::LaunchOp createLaunchOp(
     // arguments are memrefs with same shape as inputs
     for (auto input : launchOp.getParams()) {
       if (auto inputTy = dyn_cast<cnm::BufferType>(input.getType())) {
-        auto mappedTy =
-            MemRefType::get(inputTy.getShape(), inputTy.getElementType());
+        // The buffer's level becomes the memref's memory space -- this is what
+        // LaunchOp::verify requires, and it is how the launch body learns
+        // which memory it is computing on.
+        auto mappedTy = MemRefType::get(inputTy.getShape(),
+                                        inputTy.getElementType(),
+                                        MemRefLayoutAttrInterface{},
+                                        inputTy.getLevel());
         launchBlock.addArgument(mappedTy, input.getLoc());
       } else {
         launchBlock.addArgument(input.getType(), input.getLoc());
@@ -362,6 +406,7 @@ LogicalResult convertCinmToCnm(
     ArrayRef<ArrayRef<int64_t>> reductionDimensionsSorted, ValueRange operands,
     ValueRange outputInitializers,
     ValueRange /*optional elements*/ gatherBuffers, ValueRange results,
+    cinm::CinmLevelAttrInterface level,
     llvm::SmallVectorImpl<Value> &resultValues,
     function_ref<void(ImplicitLocOpBuilder &, ValueRange, ValueRange)>
         createCnmLaunchBlock) {
@@ -416,7 +461,7 @@ LogicalResult convertCinmToCnm(
 
   for (auto [input, redDims] : llvm::zip(operands, reductionDimensionsSorted)) {
     if (convertInputIntoAlloc(input, workgroup, wgTy, maxBlockSizeBytes,
-                              redDims, gatherMaps.emplace_back(),
+                              redDims, level, gatherMaps.emplace_back(),
                               launchInputs.emplace_back(), builder)
             .failed()) {
       return failure();
@@ -427,7 +472,7 @@ LogicalResult convertCinmToCnm(
   llvm::SmallVector<Value, 1> reshapedOutputs;
   for (auto output : outputInitializers) {
     if (convertInputIntoAlloc(output, workgroup, wgTy, maxBlockSizeBytes, {},
-                              gatherMaps.emplace_back(),
+                              level, gatherMaps.emplace_back(),
                               launchOutputs.emplace_back(), builder)
             .failed()) {
       return failure();
@@ -492,10 +537,22 @@ LogicalResult convertCinmToCnm(
   return success();
 }
 
+/// Base for the CINM->CNM patterns, carrying the pass's `cnm-buffer-level`
+/// option. The name is resolved against each op's own accelerator rather than
+/// once for the pass, since the mapping from level name to memory-space
+/// attribute is the platform's business.
+template <typename OpT>
+struct CinmToCnmPattern : public OpConversionPattern<OpT> {
+  CinmToCnmPattern(MLIRContext *ctx, StringRef bufferLevel)
+      : OpConversionPattern<OpT>(ctx), bufferLevel(bufferLevel) {}
+
+  std::string bufferLevel;
+};
+
 // todo change that into
 struct ConvertLinalgReduceIntoLaunch
-    : public OpConversionPattern<linalg::ReduceOp> {
-  using OpConversionPattern::OpConversionPattern;
+    : public CinmToCnmPattern<linalg::ReduceOp> {
+  using CinmToCnmPattern::CinmToCnmPattern;
 
   LogicalResult
   matchAndRewrite(linalg::ReduceOp op, OpAdaptor adaptor,
@@ -509,6 +566,10 @@ struct ConvertLinalgReduceIntoLaunch
     if (!cnmAccelerator)
       return failure();
 
+    auto level = resolveBufferLevel(bufferLevel, cnmAccelerator, op);
+    if (failed(level))
+      return failure();
+
     cnm::WorkgroupOp workgroup =
         cnm::WorkgroupOp::create(builder, cnmAccelerator.getWorkgroupType());
 
@@ -516,7 +577,7 @@ struct ConvertLinalgReduceIntoLaunch
     if (convertCinmToCnm(
             builder, op, workgroup.getResult(), {op.getDimensions()},
             adaptor.getInputs(), adaptor.getInits(), adaptor.getInits(),
-            op->getResults(), newResults,
+            op->getResults(), *level, newResults,
             [&](ImplicitLocOpBuilder &builder, ValueRange memrefInputs,
                 ValueRange memrefOutputs) {
               // Here we are copying the original reduce into the launch,
@@ -542,9 +603,9 @@ struct ConvertLinalgReduceIntoLaunch
   }
 };
 
-struct ConvertElementwiseOpToCnm : OpConversionPattern<cinm::ElementwiseOp> {
-  explicit ConvertElementwiseOpToCnm(MLIRContext *ctx)
-      : OpConversionPattern(ctx) {
+struct ConvertElementwiseOpToCnm : CinmToCnmPattern<cinm::ElementwiseOp> {
+  ConvertElementwiseOpToCnm(MLIRContext *ctx, StringRef bufferLevel)
+      : CinmToCnmPattern(ctx, bufferLevel) {
     this->setHasBoundedRewriteRecursion();
   }
 
@@ -593,6 +654,10 @@ struct ConvertElementwiseOpToCnm : OpConversionPattern<cinm::ElementwiseOp> {
     if (!cnmAccelerator)
       return failure();
 
+    auto level = resolveBufferLevel(bufferLevel, cnmAccelerator, op);
+    if (failed(level))
+      return failure();
+
     cnm::WorkgroupOp workgroup =
         cnm::WorkgroupOp::create(builder, cnmAccelerator.getWorkgroupType());
 
@@ -610,7 +675,7 @@ struct ConvertElementwiseOpToCnm : OpConversionPattern<cinm::ElementwiseOp> {
     const auto conversionResult = convertCinmToCnm(
         builder, op, workgroup.getResult(), reductionDims,
         adaptor.getOperands(), ValueRange{outputInit}, ValueRange{op.getOut()},
-        op->getResults(), newResults,
+        op->getResults(), *level, newResults,
         [&](ImplicitLocOpBuilder &builder, ValueRange inputs,
             ValueRange outputs) {
           SmallVector<AffineMap> affineMaps;
@@ -822,8 +887,8 @@ static Value getOutputInitForGemmLike(Op op, ImplicitLocOpBuilder &builder) {
       builder, op.getResult().getType(),
       builder.getZeroAttr(op.getResult().getType()));
 }
-struct ConvertCinmGemmToCnm : public OpConversionPattern<cinm::GemmOp> {
-  using OpConversionPattern<cinm::GemmOp>::OpConversionPattern;
+struct ConvertCinmGemmToCnm : public CinmToCnmPattern<cinm::GemmOp> {
+  using CinmToCnmPattern::CinmToCnmPattern;
 
   static Value transpose(ImplicitLocOpBuilder &builder, Value tensor) {
     auto inTy = cast<ShapedType>(tensor.getType());
@@ -866,6 +931,10 @@ struct ConvertCinmGemmToCnm : public OpConversionPattern<cinm::GemmOp> {
     if (!cnmAccelerator || !cnmAccelerator.bufferSizeOfLeaf())
       return failure();
 
+    auto level = resolveBufferLevel(bufferLevel, cnmAccelerator, op);
+    if (failed(level))
+      return failure();
+
     cnm::WorkgroupOp workgroup =
         cnm::WorkgroupOp::create(builder, cnmAccelerator.getWorkgroupType());
     auto wgShape = cnmAccelerator.getWorkgroupShape();
@@ -884,13 +953,13 @@ struct ConvertCinmGemmToCnm : public OpConversionPattern<cinm::GemmOp> {
     auto eltTy = lhs.getType().getElementType();
     // buffer type for A and B
     cnm::BufferType bufferType =
-        cnm::BufferType::get({reductionSize}, eltTy, cnmAccelerator);
+        cnm::BufferType::get({reductionSize}, eltTy, cnmAccelerator, *level);
     Value bufferA = cnm::AllocOp::create(builder, bufferType, workgroup);
     Value bufferB = cnm::AllocOp::create(builder, bufferType, workgroup);
 
     // C has a single element and no dimensions
     cnm::BufferType bufferCType =
-        cnm::BufferType::get({}, eltTy, cnmAccelerator);
+        cnm::BufferType::get({}, eltTy, cnmAccelerator, *level);
     Value bufferC = cnm::AllocOp::create(builder, bufferCType, workgroup);
 
     //::mlir::Value input, ::mlir::Value buffer, ::mlir::Value wg,
@@ -971,10 +1040,9 @@ struct ConvertCinmGemmToCnm : public OpConversionPattern<cinm::GemmOp> {
   }
 };
 
-struct ConvertCinmGemvToCnm : public OpConversionPattern<cinm::GemvOp> {
-  using OpConversionPattern<cinm::GemvOp>::OpConversionPattern;
-  ConvertCinmGemvToCnm(MLIRContext *ctx)
-      : mlir::OpConversionPattern<cinm::GemvOp>(ctx) {
+struct ConvertCinmGemvToCnm : public CinmToCnmPattern<cinm::GemvOp> {
+  ConvertCinmGemvToCnm(MLIRContext *ctx, StringRef bufferLevel)
+      : CinmToCnmPattern(ctx, bufferLevel) {
     this->setHasBoundedRewriteRecursion();
   }
 
@@ -988,6 +1056,10 @@ struct ConvertCinmGemvToCnm : public OpConversionPattern<cinm::GemvOp> {
         mlir::cinm::getEnclosingAcceleratorAs<cnm::CnmAcceleratorAttrInterface>(
             op);
     if (!cnmAccelerator)
+      return failure();
+
+    auto level = resolveBufferLevel(bufferLevel, cnmAccelerator, op);
+    if (failed(level))
       return failure();
 
     cnm::WorkgroupOp workgroup =
@@ -1009,7 +1081,7 @@ struct ConvertCinmGemvToCnm : public OpConversionPattern<cinm::GemvOp> {
             builder, op, workgroup.getResult(), {{1}, {0}},
             ValueRange{adaptor.getLhs(), adaptor.getRhs()},
             ValueRange{outputInit},
-            ValueRange{op.getOut()}, op->getResults(), newResults,
+            ValueRange{op.getOut()}, op->getResults(), *level, newResults,
             [&](ImplicitLocOpBuilder &builder, ValueRange inputs,
                 ValueRange outputs) {
               int outputRank =
@@ -1045,10 +1117,9 @@ struct ConvertCinmGemvToCnm : public OpConversionPattern<cinm::GemvOp> {
   }
 };
 
-struct ConvertCinmReduceToCnm : public OpConversionPattern<cinm::ReduceOp> {
-  using OpConversionPattern<cinm::ReduceOp>::OpConversionPattern;
-  ConvertCinmReduceToCnm(MLIRContext *ctx)
-      : mlir::OpConversionPattern<cinm::ReduceOp>(ctx) {
+struct ConvertCinmReduceToCnm : public CinmToCnmPattern<cinm::ReduceOp> {
+  ConvertCinmReduceToCnm(MLIRContext *ctx, StringRef bufferLevel)
+      : CinmToCnmPattern(ctx, bufferLevel) {
     this->setHasBoundedRewriteRecursion();
   }
 
@@ -1067,6 +1138,10 @@ struct ConvertCinmReduceToCnm : public OpConversionPattern<cinm::ReduceOp> {
     if (!cnmAccelerator)
       return failure();
 
+    auto level = resolveBufferLevel(bufferLevel, cnmAccelerator, op);
+    if (failed(level))
+      return failure();
+
     cnm::WorkgroupOp workgroup =
         cnm::WorkgroupOp::create(builder, cnmAccelerator.getWorkgroupType());
     auto outputInit = arith::ConstantOp::create(
@@ -1079,7 +1154,7 @@ struct ConvertCinmReduceToCnm : public OpConversionPattern<cinm::ReduceOp> {
     if (convertCinmToCnm(
             builder, op, workgroup.getResult(), {redDim}, adaptor.getOperands(),
             ValueRange{outputInit}, ValueRange{nullptr}, op->getResults(),
-            newResults,
+            *level, newResults,
             [&](ImplicitLocOpBuilder &builder, ValueRange inputs,
                 ValueRange outputs) {
               linalg::ReduceOp::create(
@@ -1103,24 +1178,25 @@ struct ConvertCinmReduceToCnm : public OpConversionPattern<cinm::ReduceOp> {
   }
 };
 
-void populateCinmRewritePatterns(RewritePatternSet &patterns,
-                                 MLIRContext *ctx) {
-  patterns.insert<ConvertLinalgReduceIntoLaunch>(ctx);
+void populateCinmRewritePatterns(RewritePatternSet &patterns, MLIRContext *ctx,
+                                 StringRef bufferLevel) {
+  patterns.insert<ConvertLinalgReduceIntoLaunch>(ctx, bufferLevel);
   // elementwise
-  patterns.insert<ConvertElementwiseOpToCnm>(ctx);
+  patterns.insert<ConvertElementwiseOpToCnm>(ctx, bufferLevel);
   // matmul
-  patterns.insert<ConvertCinmGemmToCnm>(ctx);
-  patterns.insert<ConvertCinmGemvToCnm>(ctx);
+  patterns.insert<ConvertCinmGemmToCnm>(ctx, bufferLevel);
+  patterns.insert<ConvertCinmGemvToCnm>(ctx, bufferLevel);
   // reduce
-  patterns.insert<ConvertCinmReduceToCnm>(ctx);
+  patterns.insert<ConvertCinmReduceToCnm>(ctx, bufferLevel);
 }
 
 struct ConvertTiledCinmToCnm
     : public impl::ConvertTiledCinmToCnmBase<ConvertTiledCinmToCnm> {
+  using Base::Base;
 
   void runOnOperation() override {
     RewritePatternSet patterns(&getContext());
-    populateCinmRewritePatterns(patterns, &getContext());
+    populateCinmRewritePatterns(patterns, &getContext(), bufferLevel);
     ConversionTarget target(getContext());
 
     //  target.addIllegalDialect<linalg::ReduceOp>();
@@ -1148,6 +1224,11 @@ struct ConvertTiledCinmToCnm
 
 std::unique_ptr<Pass> mlir::cinm::createConvertTiledCinmToCnmPass() {
   return std::make_unique<ConvertTiledCinmToCnm>();
+}
+
+std::unique_ptr<Pass> mlir::cinm::createConvertTiledCinmToCnmPass(
+    ConvertTiledCinmToCnmOptions options) {
+  return std::make_unique<ConvertTiledCinmToCnm>(std::move(options));
 }
 
 void mlir::cinm::registerCinmToCnmPipeline() {
