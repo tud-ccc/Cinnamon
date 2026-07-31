@@ -255,6 +255,20 @@ LogicalResult LaunchOp::verify() {
   return success();
 }
 
+LogicalResult LocalTransferOp::verify() {
+  auto srcTy = getSource().getType();
+  auto dstTy = getTarget().getType();
+  if (srcTy.getShape() != dstTy.getShape())
+    return emitOpError("source shape ")
+           << srcTy.getShape() << " does not match target shape "
+           << dstTy.getShape();
+  if (srcTy.getElementType() != dstTy.getElementType())
+    return emitOpError("source element type ")
+           << srcTy.getElementType() << " does not match target element type "
+           << dstTy.getElementType();
+  return success();
+}
+
 LogicalResult ScatterOp::verify() {
   auto tensorTy = getInput().getType();
   auto bufferTy = getBuffer().getType();
