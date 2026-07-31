@@ -249,9 +249,14 @@ static FailureOr<SmallVector<int64_t>> getTileCounts(linalg::LinalgOp op,
 /// accumulates into the *original* `outs`, so an incoming accumulator is
 /// folded in exactly once rather than once per leaf.
 ///
-/// The split dimension is inserted directly after the parallel dimensions,
-/// making it the innermost parallel one. Under §G3's linearization that puts
-/// the partials of one output region in consecutive leaves.
+/// The split dimension is inserted *before* the parallel dimensions, making it
+/// the outermost one. Under §G3's linearization the original parallel
+/// dimensions then vary fastest across leaves, so the leaves sharing one node
+/// of the workgroup (tasklets within a DPU, on UPMEM) differ in their parallel
+/// tile and share their reduction tile. That is what lets a broadcast operand
+/// indexed only by reduction dimensions -- gemv's vector -- be stored once per
+/// node instead of replicated per leaf. See §G3 for the evidence and for what
+/// it costs.
 ///
 /// `blocks` is updated to describe the rewritten op.
 static FailureOr<linalg::LinalgOp>
@@ -264,9 +269,6 @@ splitDistributedReductions(RewriterBase &rewriter, linalg::LinalgOp op,
       return failure();
 
     auto iterators = op.getIteratorTypesArray();
-    unsigned numParallel =
-        llvm::count(iterators, utils::IteratorType::parallel);
-
     std::optional<unsigned> target;
     for (auto [dim, kind] : llvm::enumerate(iterators)) {
       if (kind == utils::IteratorType::parallel) {
@@ -297,7 +299,7 @@ splitDistributedReductions(RewriterBase &rewriter, linalg::LinalgOp op,
                 "the result; pass allow-float-reassociation to permit it";
 
     linalg::ControlSplitReductionFn control = [&](linalg::LinalgOp) {
-      return linalg::SplitReductionOptions{ratio, numParallel,
+      return linalg::SplitReductionOptions{ratio, /*index=*/0,
                                            /*innerParallel=*/false};
     };
     FailureOr<linalg::SplitReductionResult> split =
@@ -308,16 +310,16 @@ splitDistributedReductions(RewriterBase &rewriter, linalg::LinalgOp op,
              << ": its combiner was not recognised as one with a neutral "
                 "element";
 
-    // The rewritten iteration space is [parallel dims] ++ [split dim] ++
+    // The rewritten iteration space is [split dim] ++ [parallel dims] ++
     // [reduction dims], with the split dimension holding one tile per leaf and
     // the original reduction dimension now spanning exactly one block.
-    blocks.insert(blocks.begin() + numParallel, 1);
+    blocks.insert(blocks.begin(), 1);
     op = split->splitLinalgOp;
 
     FailureOr<SmallVector<int64_t>> newExtents = getLoopExtents(op);
     if (failed(newExtents))
       return failure();
-    if ((*newExtents)[numParallel] != ratio)
+    if ((*newExtents)[0] != ratio)
       return op->emitOpError("internal error: splitReduction placed the split "
                              "dimension somewhere unexpected");
   }

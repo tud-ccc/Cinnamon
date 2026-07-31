@@ -27,27 +27,29 @@ func.func @gemv_split_k(%A: tensor<1024x512xi32>, %x: tensor<512xi32>, %y: tenso
 
   // Every leaf starts from the combiner's neutral element, not from %y --
   // otherwise the incoming accumulator would be added once per leaf (§G5).
-  // CHECK: %[[P:.*]] = tensor.empty() : tensor<1024x4xi32>
+  // The split dimension goes *first*, which is what makes the parallel
+  // dimension vary fastest across leaves (§G3).
+  // CHECK: %[[P:.*]] = tensor.empty() : tensor<4x1024xi32>
   // CHECK: %[[Z:.*]] = arith.constant 0 : i32
-  // CHECK: linalg.fill ins(%[[Z]] : i32) outs(%[[P]] : tensor<1024x4xi32>)
+  // CHECK: linalg.fill ins(%[[Z]] : i32) outs(%[[P]] : tensor<4x1024xi32>)
 
   // The leaf buffers carry the split dimension with extent 1: one k-tile each.
   // CHECK: cnm.workgroup
   // CHECK-DAG: cnm.alloc() {{.*}} : !cnm.buffer<256x1x128xi32 on
   // CHECK-DAG: cnm.alloc() {{.*}} : !cnm.buffer<1x128xi32 on
-  // CHECK-DAG: cnm.alloc() {{.*}} : !cnm.buffer<256x1xi32 on
+  // CHECK-DAG: cnm.alloc() {{.*}} : !cnm.buffer<1x256xi32 on
 
   // The launch body is the partial op: the split dimension is parallel, only
   // the 128-wide remainder is still a reduction.
   // CHECK: cnm.launch
   // CHECK: iterator_types = ["parallel", "parallel", "reduction"]
-  // CHECK: ins(%{{.*}}, %{{.*}} : memref<256x1x128xi32>, memref<1x128xi32>) outs(%{{.*}} : memref<256x1xi32>)
+  // CHECK: ins(%{{.*}}, %{{.*}} : memref<256x1x128xi32>, memref<1x128xi32>) outs(%{{.*}} : memref<1x256xi32>)
 
   // The partials come back with the k-tile as a separate dimension, and the
   // merge accumulates them into the *original* %y, folding it in exactly once.
   // CHECK: cnm.gather
-  // CHECK: %[[MERGED:.*]] = tensor.reshape %{{.*}} -> tensor<1024x4xi32>
-  // CHECK: linalg.generic {{.*}} iterator_types = ["parallel", "reduction"]} ins(%[[MERGED]] : tensor<1024x4xi32>) outs(%arg2 : tensor<1024xi32>)
+  // CHECK: %[[MERGED:.*]] = tensor.reshape %{{.*}} -> tensor<4x1024xi32>
+  // CHECK: linalg.generic {{.*}} iterator_types = ["reduction", "parallel"]} ins(%[[MERGED]] : tensor<4x1024xi32>) outs(%arg2 : tensor<1024xi32>)
   // CHECK: arith.addi
   %r = cinm.compute on accelerator #acc -> tensor<1024xi32> {
     %g = linalg.contract indexing_maps = [#m, #v, #r]
