@@ -32,6 +32,12 @@ def UPMEM_Dialect : Dialect {
       void printAttribute(Attribute attr, DialectAsmPrinter &printer) const override;
       Attribute parseAttribute(DialectAsmParser &parser, Type type) const override;
 
+      /// Tile sizes --upmem-tile-mram-buffers should use for an op in a
+      /// cnm.launch body when staging it down to the leaf memory level.
+      /// Distinct from cinm.tile_sizes, which the Cinm dialect reserves for
+      /// ops implementing CinmTilingInterface -- these sit on linalg ops.
+      constexpr static StringRef LEAF_TILE_SIZES_NAME = "upmem.leaf_tile_sizes";
+
     private:
         void registerOps();
         void registerTypes();

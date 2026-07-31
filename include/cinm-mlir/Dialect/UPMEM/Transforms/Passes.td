@@ -18,6 +18,43 @@ def UPMEMDedupKernelsPass: Pass<"upmem-dedup-kernels", "ModuleOp"> {
   ];
 }
 
+def UpmemTileMRAMBuffersPass: Pass<"upmem-tile-mram-buffers"> {
+  let summary = "Stage a launch body's non-leaf buffers down to the leaf memory level";
+  let description = [{
+    Inside a `cnm.launch`, operands may live in a memory level the compute
+    elements cannot address directly -- MRAM, for UPMEM. This pass tiles each
+    such op down to a leaf-sized tile and stages the tile through the leaf
+    level, wrapping it in `cnm.local_transfer`s.
+
+    It applies to any `linalg` op with pure buffer semantics whose operands are
+    in a non-leaf level, rather than to a fixed set of ops: the tiling is
+    `scf::tileUsingSCF` and the staging is `linalg::promoteSubViews`, with the
+    memory space, allocation and copy op supplied by this pass. Which levels
+    exist, which one is the leaf, and what memory space attribute denotes them
+    all come from the accelerator, so no backend names appear in the logic.
+
+    Tile sizes come from an `upmem.leaf_tile_sizes` attribute on the op when
+    present (which is how the inference plugin passes a resolved configuration
+    in), otherwise from the `tile-sizes` option. With neither, the op is staged
+    whole -- correct when the buffer already fits the leaf level. The attribute
+    is not `cinm.tile_sizes`: the Cinm dialect reserves that one for ops
+    implementing CinmTilingInterface, and these are linalg ops.
+  }];
+  let dependentDialects = [
+    "::mlir::cnm::CnmDialect",
+    "::mlir::upmem::UPMEMDialect",
+    "mlir::arith::ArithDialect",
+    "mlir::linalg::LinalgDialect",
+    "mlir::memref::MemRefDialect",
+    "mlir::scf::SCFDialect"
+  ];
+  let options = [
+    ListOption<"tileSizes", "tile-sizes", "int64_t",
+               "Tile sizes for ops that carry no cinm.tile_sizes attribute. "
+               "One per iteration-space dimension; 0 means do not tile.">
+  ];
+}
+
 def simulatorClValues {
   string values = [{
   ::llvm::cl::values(
