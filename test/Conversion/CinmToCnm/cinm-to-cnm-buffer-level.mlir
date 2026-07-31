@@ -16,10 +16,8 @@ func.func @gemv(%A: tensor<16x1024xi32>, %x: tensor<1024xi32>) -> tensor<16xi32>
   // MRAM: cnm.alloc() for %{{.*}} : !cnm.buffer<1024xi32 on #{{.*}}, #upmem.mram>
   // MRAM: cnm.alloc() for %{{.*}} : !cnm.buffer<i32 on #{{.*}}, #upmem.mram>
   // MRAM: cnm.launch %{{.*}} ins(%{{.*}} : <1024xi32, #upmem.mram>, %{{.*}} : <1024xi32, #upmem.mram>) outs(%{{.*}} : <i32, #upmem.mram>)
-  // Each leaf gets a single output element here, so its tile is a dot product,
-  // which cinm.op.gemv does not model: the body stays linalg even with a level.
+  // The level changes where the buffers live, not what the body is.
   // MRAM: linalg.contract {{.*}} ins(%{{.*}}, %{{.*}} : memref<1024xi32, #upmem.mram>, memref<1024xi32, #upmem.mram>) outs(%{{.*}} : memref<i32, #upmem.mram>)
-  // MRAM-NOT: cinm.op.gemv
 
   // Same shapes, different level: the option is really consulted rather than
   // the level being hardcoded.
@@ -54,11 +52,7 @@ func.func @gemv(%A: tensor<16x1024xi32>, %x: tensor<1024xi32>) -> tensor<16xi32>
 func.func @gemm(%A: tensor<8x1024xi32>, %B: tensor<1024x128xi32>) -> tensor<8x128xi32> {
   // MRAM: cnm.alloc() for %{{.*}} : !cnm.buffer<1024xi32 on #{{.*}}, #upmem.mram>
   // MRAM: cnm.alloc() for %{{.*}} : !cnm.buffer<i32 on #{{.*}}, #upmem.mram>
-  // The gemm pattern gives each leaf exactly one output element, so its tile is
-  // always a dot product: unlike gemv, it has no shape in which a cinm op could
-  // stand in the launch body.
   // MRAM: linalg.contract {{.*}} : memref<1024xi32, #upmem.mram>, memref<1024xi32, #upmem.mram>) outs(%{{.*}} : memref<i32, #upmem.mram>)
-  // MRAM-NOT: cinm.op.gemm
   // WRAM: cnm.alloc() for %{{.*}} : !cnm.buffer<1024xi32 on #{{.*}}, #upmem.wram>
   // NONE: cnm.alloc() for %{{.*}} : !cnm.buffer<1024xi32 on #{{.*}}>
   %r0 = cinm.compute on accelerator #upmem -> tensor<8x128xi32> {
@@ -80,8 +74,9 @@ func.func @gemm(%A: tensor<8x1024xi32>, %B: tensor<1024x128xi32>) -> tensor<8x12
 // WRAM-LABEL: @reduce_multirow
 // NONE-LABEL: @reduce_multirow
 func.func @reduce_multirow(%a: tensor<1024x8xi32>) -> tensor<1024xi32> {
-  // MRAM: cinm.op.reduce add(%{{.*}}) into %{{.*}} : memref<64x8xi32, #upmem.mram> into memref<64xi32, #upmem.mram>
-  // WRAM: cinm.op.reduce add(%{{.*}}) into %{{.*}} : memref<64x8xi32, #upmem.wram> into memref<64xi32, #upmem.wram>
+  // MRAM: linalg.reduce ins(%{{.*}} : memref<64x8xi32, #upmem.mram>) outs(%{{.*}} : memref<64xi32, #upmem.mram>)
+  // MRAM-SAME: dimensions = [1]
+  // WRAM: linalg.reduce ins(%{{.*}} : memref<64x8xi32, #upmem.wram>) outs(%{{.*}} : memref<64xi32, #upmem.wram>)
   // NONE: linalg.reduce
   // NONE-SAME: dimensions = [1]
   %r0 = cinm.compute on accelerator #upmem -> tensor<1024xi32> {

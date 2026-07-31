@@ -53,9 +53,10 @@ descriptor and does *not* implement the level interface) and §F (the
 templates stay indefinitely, not just as a development oracle) — have
 been folded back into [CnmMemoryLevelsDesign.md](CnmMemoryLevelsDesign.md).
 
-**M5, M6 and M7 remain.** M5 is unblocked.
+**M5, M5b, M6 and M7 remain.** M5 is unblocked.
 
-One decision was added along the way that the plan did not anticipate:
+Two decisions were added along the way that the plan did not anticipate.
+
 **11. The per-leaf buffer budget follows the selected level.** It is
 derived from `getWorkgroupMemoryLevels()` (which workgroup dimension owns
 the level) and `getWorkgroupShape()` (how many leaves share it), rather
@@ -64,6 +65,32 @@ MRAM buffers against WRAM and rejects every tile that needs MRAM, which
 made the option almost inert. The derivation reproduces
 `bufferSizeOfLeaf()` exactly for UPMEM's leaf level, so the no-flag path
 is unchanged. See M4.
+
+**12. Launch bodies stay linalg; the level tag alone drives staging.**
+This *replaces* decision 4's second half. Selecting a level changes where
+buffers live, not what the launch body is, and `--upmem-tile-mram-buffers`
+recognizes any `LinalgOp` with buffer semantics whose operands are in a
+non-leaf level. Reasons:
+
+- It covers gemm. `ConvertCinmGemmToCnm` gives each leaf exactly one
+  output element, so its per-leaf tile is always a dot product and no
+  `cinm.op.gemm` could ever stand in its launch body. The same is true of
+  gemv whenever the tile is a single row.
+- Upstream already does the work: `linalg::promoteSubViews` is built for
+  "allocate in faster memory, copy in, compute, copy out", with hooks for
+  the memory space, the allocation, and the copy op — the last of which is
+  where `cnm.local_transfer` goes.
+- It generalizes to any linalg op rather than the two or three cinm ops
+  that have a usable launch-body shape.
+- `--convert-cinm-to-cnm` goes back to making no decision at all about the
+  body, which is the point of the exercise.
+
+The `cinm`-op-in-launch-body branch M4 originally added was reverted.
+`CinmTilingInterface` remains what drives the *outer* `--cinm-tiling`
+round on the host side; it is only the on-device staging that is linalg's
+job. The memref (destination-passing) mode added to `cinm.op.reduce` in
+M3b is consequently off this critical path, though it still fills a real
+gap for memref-mode input programs.
 
 ## 1. What already exists
 
@@ -222,9 +249,11 @@ M0  round-trip fix + refresh red CnmToUpmem tests + level interface
  |
  └─ M3  cinm.op.reduce: fix tiled-reduction accumulation, add DPS mode
         |
-M4  --convert-cinm-to-cnm emits cinm ops inside cnm.launch      (needs M1, M3)
+M4  (withdrawn -- see decision 12; launch bodies stay linalg)
  |
-M5  --upmem-tile-mram-buffers cleanup pass                      (needs M2, M4)
+M5  --upmem-tile-mram-buffers: tile + promote linalg on MRAM    (needs M1, M2)
+ |
+M5b hoist the output tile out of the reduction loop             (needs M5)
  |
 M6  --convert-cnm-to-upmem: MRAM launch args, cnm.local_transfer (needs M5)
  |
@@ -452,9 +481,21 @@ restricts itself to
 - `test/Dialect/Cinm/cinm-ops.mlir`: round-trip the new
   `cinm.op.reduce ... into %out` syntax.
 
-### M4 — `cinm` ops inside `cnm.launch` bodies — **DONE**
+### M4 — `cinm` ops inside `cnm.launch` bodies — **WITHDRAWN**
 
-Deviations from the plan below:
+Implemented, then reverted in favour of decision 12: the launch body
+stays linalg and `--upmem-tile-mram-buffers` keys off the memref memory
+space instead. What that revert kept, because both are real bugs
+independent of it:
+
+- the launch body's reduction dimension (see below), and
+- the reduce scatter init, which was zero for every method and therefore
+  made `mul` reductions always return zero.
+
+The reasoning that led here is recorded below, since it is what motivated
+decision 12.
+
+Deviations from the original plan:
 
 - **The buffer budget had to move first** (decision 11 above). Without it
   a multi-row per-leaf tile never fits, so the launch body is always a
@@ -464,9 +505,9 @@ Deviations from the plan below:
   product; there is no shape in which `cinm.op.gemm` could stand in its
   launch body. Gemv falls back to `linalg.contract` for the same reason
   when the tile happens to be a single row (lhs rank 1). This is a
-  legality condition, not a strategy choice, but it does mean **M5 will
-  only ever see gemv and reduce launch bodies** until the gemm pattern is
-  reworked to give leaves multi-element tiles.
+  legality condition, not a strategy choice, but it meant M5 would only
+  ever see gemv and reduce launch bodies. **This is what made the whole
+  approach look wrong**, and led to decision 12.
 - **The launch body's reduction dimension was hardcoded to 0** and had to
   be fixed to the buffer's last dimension. `convertInputIntoAlloc`
   prepends the parallel work that did not fit on the workgroup, so
@@ -512,40 +553,106 @@ Original plan follows.
 
 ### M5 — `--upmem-tile-mram-buffers`
 
-**Goal:** decision 5. New UPMEM-dialect pass, new file
+**Goal:** decision 5, now via linalg rather than cinm ops (decision 12).
+New UPMEM-dialect pass, new file
 `lib/Dialect/UPMEM/Transforms/UpmemTileMRAMBuffers.cpp`, registered in
 [UPMEM Passes.td](../include/cinm-mlir/Dialect/UPMEM/Transforms/Passes.td)
 alongside `UPMEMDedupKernelsPass`.
 
-**Changes — two phases:**
-1. Run `--cinm-tiling` nested under each `cnm::LaunchOp` (legal:
-   `LaunchOp` is `IsolatedFromAbove`,
-   [CnmOps.td:126](../include/cinm-mlir/Dialect/Cnm/IR/CnmOps.td#L126)),
-   driven by the WRAM tile sizes M7 stamps immediately before this pass.
-2. For each remaining leaf `cinm` op whose operand memrefs are still in a
-   non-leaf level: allocate a private WRAM `memref.alloc` at tile size,
-   insert `cnm.local_transfer` from a `memref.subview` of the MRAM
-   operand before the op (and the reverse after, for outputs), and
-   rewrite the op onto the WRAM buffers. "Non-leaf" is decided by
-   comparing the memref's memory space against
-   `getWorkgroupMemoryLevels()`'s entries mapped through
-   `getMemrefMemspace` — using `CinmLevelAttrInterface::getLevelName()`
-   (M0.3) to avoid hardcoding `mram`/`wram` in pass logic.
+**Changes.** For each `LinalgOp` inside a `cnm::LaunchOp` that has pure
+buffer semantics and whose operands live in a non-leaf level:
+
+1. Tile it with `scf::tileUsingSCF`, at the WRAM tile sizes M7 supplies.
+   Tiling a buffer-semantics `LinalgOp` through `TilingInterface` is
+   supported — the guards in
+   [TilingInterfaceImpl.cpp](../third-party/llvm/mlir/lib/Dialect/Linalg/Transforms/TilingInterfaceImpl.cpp)
+   are on `generateScalarImplementation` (wants buffers) and
+   `LinalgOpPartialReductionInterface` (wants tensors, and we don't need
+   partial reduction: memref `outs` accumulates in place).
+2. Promote the resulting subviews with `linalg::promoteSubViews`
+   ([Transforms.h:961](../third-party/llvm/mlir/include/mlir/Dialect/Linalg/Transforms/Transforms.h#L961)),
+   configured through `LinalgPromotionOptions`:
+   - `setMemorySpace` — the leaf level's memref memory space, obtained
+     via `getMemrefMemspace` (M0.5), not hardcoded;
+   - `setAllocationDeallocationFns` — **required**, see the note below;
+   - `setCopyInOutFns` — emit `cnm.local_transfer` (M2) instead of the
+     default `linalg.copy`.
+
+   `promoteSubviewsPrecondition` wants exactly what step 1 produces:
+   pure buffer semantics and operands defined by `memref.subview`.
+
+"Non-leaf" is decided by mapping the memref's memory space back through
+`getLevelOfMemspace` (M0.5) and comparing against
+`getWorkgroupMemoryLevels()`, so no `mram`/`wram` literals appear in the
+pass.
+
+**Verified before writing any of this**: tiling then promoting a
+`linalg.contract` over `#upmem.mram` memrefs, driven by the transform
+interpreter on stock upstream, already produces M5's intended shape —
+an `scf.for` nest, `#upmem.wram` allocations, copy-in, the contract on
+WRAM operands, copy-out.
+
+**The custom allocation callback is not optional.** The default scheme
+allocates a flat `memref<8192xi8, #upmem.wram>` and takes a
+`memref.view` of it, yielding *dynamically shaped* promoted buffers
+(`memref<?x?xi32>`). UPMEM's `static_alloc` needs static sizes, so the
+callback must emit a statically shaped `memref.alloc` directly.
 
 Out of scope (§A3's deferred optimization): sharing the WRAM buffer
 across tasklets via a static alloc plus barrier when the scatter map is
 tasklet-independent. Always private WRAM here.
 
+Also out of scope, deliberately: hoisting the output tile out of the
+reduction loop. See M5b — land M5 correct first, then measure.
+
 **Tests:**
 - `test/Transform/UPMEM/upmem-tile-mram-buffers.mlir` (new): input is a
-  `cnm.launch` holding an MRAM-level `cinm.op.gemv` with hand-written
-  `cinm.tile_sizes` (standing in for M7's stamping). CHECK the
-  `affine.for` nest, the `#upmem.wram` alloc, `cnm.local_transfer` before
+  `cnm.launch` holding an MRAM-level `linalg.contract` (the shape
+  `cinm-to-cnm-launch-body.mlir` pins). CHECK the loop nest, the
+  `#upmem.wram` allocs with *static* shapes, `cnm.local_transfer` before
   and after, and the inner op on WRAM operands.
-- Second case: MRAM tile already equals the WRAM tile (no second tiling
-  round needed) — the degenerate shape `useMRAMTiling=false` produces
-  ([UpmemInferAccelerator.cpp:427-440](../lib/Dialect/UPMEM/Transforms/UpmemInferAccelerator.cpp#L427-L440)) —
+- A `linalg.reduce` case, to demonstrate the pass is not
+  contract-specific.
+- Second contract case: MRAM tile already equals the WRAM tile (no
+  second tiling round needed) — the degenerate shape `useMRAMTiling=false`
+  produces ([UpmemInferAccelerator.cpp:427-440](../lib/Dialect/UPMEM/Transforms/UpmemInferAccelerator.cpp#L427-L440)) —
   still gets alloc + transfers.
+
+### M5b — hoist the output tile out of the reduction loop
+
+**Goal:** close the transfer-volume gap with the templates.
+
+`promoteSubViews` places copy-in and copy-out immediately around the op,
+so with the reduction loop innermost the output tile is read from and
+written back to MRAM on *every* trip. The hand-written templates keep the
+output tile in WRAM across the whole reduction and write it back once.
+On a K-split gemv that is the difference between one output transfer and
+`K/tile` of them.
+
+**Approach, in order of preference:**
+1. Try MLIR's existing loop-invariant machinery first —
+   `--loop-invariant-code-motion` and
+   `--loop-invariant-subset-hoisting`. The copy-in/copy-out pair is a
+   loop-invariant *subset* (same subview, same buffer, every trip), which
+   is what `loop-invariant-subset-hoisting` targets, though it is
+   primarily exercised on tensor subset ops rather than on memref copies
+   guarded by aliasing. Worth an experiment before writing anything: if
+   it works, M5b is a pipeline entry, not a pass.
+2. Failing that, promote in two stages within M5's pass: promote the
+   output operand at the outer (parallel) loop level and the inputs at
+   the inner (reduction) level, using `setOperandsToPromote` twice. This
+   is purpose-built and certain to work, at the cost of M5 knowing which
+   loops are reductions — available from
+   `LinalgOp::getIteratorTypesArray()`.
+
+**Tests:**
+- Extend `upmem-tile-mram-buffers.mlir` with a case whose reduction
+  dimension is split into several trips, CHECKing that the output
+  `cnm.local_transfer` pair sits outside the reduction loop while the
+  input transfers stay inside.
+- The templates-vs-generic cost comparison in M7 is what says whether
+  this actually closed the gap; M5b should not be declared done on IR
+  shape alone.
 
 ### M6 — `--convert-cnm-to-upmem` for MRAM-level launches
 
@@ -665,8 +772,9 @@ MRAM-level ones, whose staging M5 has already made explicit.
 | M1 ✅ | `--convert-cinm-to-cnm=cnm-buffer-level=<name>` | `Conversion/CinmToCnm/cinm-to-cnm-buffer-level.mlir` (new; mram/wram/no-flag prefixes); `cinm-to-cnm-buffer-level-invalid.mlir` (new; unknown level); `cinm-to-cnm.mlir` + `-difficult.mlir` stay green |
 | M2 ✅ | `cnm.local_transfer` | `Dialect/Cnm/cnm-local-transfer.mlir` (new, round-trip); `Dialect/Cnm/cnm-verifier.mlir` (new) |
 | M3 ✅ | reduce accumulation fix; reduce DPS mode | `Transform/Cinm/cinm-tiling-reduce.mlir` (fixed: had locked in the bug); `Dialect/Cinm/cinm-reduce-memref-tiling.mlir` (new); `cinm-reduce-verifier.mlir` (new); `cinm-gemv-memref-tiling.mlir` (new, existing gap); `cinm-parse-memrefs.mlir` (extended) |
-| M4 ✅ | `cinm` ops in launch bodies | `Conversion/CinmToCnm/cinm-to-cnm-launch-body.mlir` (new; gemv, reduce, dot-product fallback); `cinm-to-cnm-buffer-level.mlir` (extended: gemm stays linalg, reduce dimension) |
-| M5 | `--upmem-tile-mram-buffers` | `Transform/UPMEM/upmem-tile-mram-buffers.mlir` (new, 2 cases) |
+| M4 ⊘ | withdrawn; launch bodies stay linalg | `Conversion/CinmToCnm/cinm-to-cnm-launch-body.mlir` (new; pins the linalg-on-levelled-memrefs shape M5 consumes); `cinm-to-cnm-buffer-level.mlir` (extended: reduce dimension, `mul` identity) |
+| M5 | `--upmem-tile-mram-buffers` (tile + promote) | `Transform/UPMEM/upmem-tile-mram-buffers.mlir` (new; contract, reduce, degenerate-tile cases) |
+| M5b | output-tile hoisting | `upmem-tile-mram-buffers.mlir` (extend: split reduction, transfers outside the loop); M7's cost comparison is the real signal |
 | M6 | MRAM launch args; `cnm.local_transfer` lowering | `Conversion/CnmToUpmem/cnm-to-upmem-mram-level.mlir` (new, 2 cases) |
 | M7 | plugin map, staged pipeline, `lowering=` selector | `Transform/UPMEM/gemv-generic-mram-pipeline.mlir` (new, flags-only end-to-end); `Dialect/UPMEM/upmem-infer-accelerator.mlir` (add RUN line); `upmem-infer-accelerator-generic.mlir` (new); templates-vs-generic cost comparison |
 

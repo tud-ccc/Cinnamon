@@ -66,8 +66,6 @@ struct BufferLevel {
   cinm::CinmLevelAttrInterface space;
   /// How many bytes of that level one leaf of the workgroup may use.
   int64_t bytesPerLeaf;
-
-  bool isSet() const { return static_cast<bool>(space); }
 };
 
 /// Bytes of `level` available to a single leaf of the workgroup.
@@ -1128,19 +1126,6 @@ struct ConvertCinmGemvToCnm : public CinmToCnmPattern<cinm::GemvOp> {
             ValueRange{op.getOut()}, op->getResults(), *level, newResults,
             [&](ImplicitLocOpBuilder &builder, ValueRange inputs,
                 ValueRange outputs) {
-              // With a level selected, the launch body must stay tilable so a
-              // later pass can stage it down to the leaf level, which means a
-              // cinm op rather than linalg. That needs the per-leaf tile to be
-              // a real matrix-vector product; when the tile is a single row
-              // (one output element per leaf) it is a dot product, which
-              // cinm.op.gemv does not model, so linalg it stays.
-              auto lhsTy = cast<ShapedType>(inputs[0].getType());
-              if (level->isSet() && lhsTy.getRank() >= 2) {
-                cinm::GemvOp::create(builder, inputs[0], inputs[1],
-                                     /*bias=*/Value{}, outputs[0]);
-                return;
-              }
-
               int outputRank =
                   dyn_cast<ShapedType>(outputs[0].getType()).getRank();
               auto ctx = builder.getContext();
@@ -1229,14 +1214,6 @@ struct ConvertCinmReduceToCnm : public CinmToCnmPattern<cinm::ReduceOp> {
               // the buffer holds nothing but the reduction.
               auto inTy = cast<ShapedType>(inputs[0].getType());
               int64_t innerRedDim = inTy.getRank() - 1;
-
-              // With a level selected the launch body must stay tilable so a
-              // later pass can stage it down to the leaf level.
-              if (level->isSet()) {
-                cinm::ReduceOp::create(builder, op.getMethod(), inputs[0],
-                                       outputs[0], innerRedDim);
-                return;
-              }
 
               linalg::ReduceOp::create(
                   builder, inputs, outputs, ArrayRef<int64_t>{innerRedDim},

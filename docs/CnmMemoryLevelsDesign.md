@@ -233,32 +233,40 @@ issuing it.
   unchanged: this is backend-lowering detection, not something the
   CNM-generic side needs to model or decide.
 - Inside the launch body, `--convert-cinm-to-cnm` doesn't emit lowered
-  loops directly — it emits actual **cinm ops** operating on those
-  memrefs (e.g. a smaller `cinm.gemv` over `memref<mramRow x mramCol,
-  #upmem.mram>`), as long as they implement the existing
-  **`CinmTilingInterface`**
-  ([TilingInterface.td](../include/cinm-mlir/Dialect/Cinm/IR/TilingInterface.td)).
-  This interface and its pass (`--cinm-tiling`,
-  [TilingPass.cpp](../lib/Dialect/Cinm/Transforms/TilingPass.cpp))
-  already exist and already do exactly "tile this op down into a loop
-  nest around a smaller instance of itself, given a `cinm.tile_sizes`
-  attribute" — today it's used once, pre-bufferization, to tile a
-  host-level tensor op down to what becomes the workgroup tile. The
-  new idea is to **apply it a second time**, post-materialization,
-  *inside* the launch body: run `--cinm-tiling` again (now over
-  memref-operand ops) with tile sizes equal to the WRAM tile
-  (`wramRow`/`wramCol`), producing a loop nest around an
-  innermost `cinm.gemv` that is exactly WRAM-sized, still typed
-  `memref<wramRow x wramCol, #upmem.mram>` (tiling only changes the
-  loop bounds/subview offsets, not the memory level of the operand).
-- A new pattern then closes the gap: when it sees a tileable op whose
-  operand memref is already at the desired leaf tile size but tagged
-  with a non-leaf level, it allocates a new **private WRAM** buffer of
-  that tile size, inserts a `cnm.local_transfer` (§A4) from a
-  `memref.subview` of the MRAM memref into it before the op, rewrites
-  the op to use the WRAM buffer, and inserts the reverse transfer
-  after (for outputs). This is the piece that replaces the hand-coded
-  `mr`/`mc` loop body of `generateGemv`.
+  loops directly — it emits a structured op over those memrefs, which a
+  later pass tiles down to the leaf level and wraps in transfers.
+
+  **Revised (implemented).** This section originally required those to be
+  **cinm ops**, so that the second staging round could reuse
+  `CinmTilingInterface` and `--cinm-tiling`. That does not work, and the
+  revision generalizes rather than narrows:
+
+  - `--convert-cinm-to-cnm` maps each *leaf* of the workgroup to a slice
+    of the computation. For `cinm.op.gemm` that slice is a single output
+    element, so the per-leaf body is a **dot product** — there is no
+    shape in which `cinm.op.gemm` could stand inside its own launch. The
+    same happens to gemv whenever a leaf gets one row. So the cinm-op
+    requirement would have excluded gemm entirely.
+  - The launch body is already linalg today, and staging it down is
+    exactly what `linalg::promoteSubViews` does: allocate in a faster
+    memory space, copy in, compute, copy out — with hooks for the memory
+    space, the allocation, and the copy op, the last of which is where
+    `cnm.local_transfer` goes.
+
+  So the launch body **stays linalg**, and the staging pass keys off the
+  memref's memory space alone. It then applies to *any* `LinalgOp` with
+  buffer semantics rather than to the two or three cinm ops that happen
+  to have a usable per-leaf shape, and `--convert-cinm-to-cnm` goes back
+  to making no decision at all about the body.
+
+  `CinmTilingInterface` keeps its original role: the *host-side*
+  `--cinm-tiling` round that produces the workgroup tile. Only the
+  on-device staging round is linalg's.
+
+- The staging pass (`--upmem-tile-mram-buffers`) tiles the body with
+  `scf::tileUsingSCF` at the leaf tile size, then promotes the resulting
+  subviews into the leaf level. This is the piece that replaces the
+  hand-coded `mr`/`mc` loop body of `generateGemv`.
 - **Deferred optimization:** when the scatter map shows a buffer is
   broadcast across tasklets of a DPU (same tile for every tasklet on a
   DPU, DPUs may still differ), the private-WRAM buffer above can
@@ -268,10 +276,16 @@ issuing it.
   living at the UPMEM dialect level rather than CNM, partly because
   CNM has no barrier primitive yet (§C already flags this gap).
 
-This reuses existing, working machinery (`CinmTilingInterface` +
-`--cinm-tiling`) for both levels of tiling instead of inventing a
-second mechanism, which is a nice simplification over my original
-framing of this as a from-scratch design.
+Both levels of tiling reuse existing, working machinery instead of
+inventing a new mechanism — `CinmTilingInterface`/`--cinm-tiling` on the
+host side, `scf::tileUsingSCF`/`linalg::promoteSubViews` on the device
+side. That is a considerable simplification over my original framing of
+this as a from-scratch design.
+
+One known gap to close afterwards: promotion places copy-in and copy-out
+immediately around the op, so an output tile inside a reduction loop
+round-trips to the outer level on every trip, where the hand-written
+templates write it back once. See M5b in the implementation plan.
 
 Both remaining implementation questions from the previous draft are
 resolved:
