@@ -276,10 +276,9 @@ static LogicalResult convertCnmScatterToUpmem(RewriterBase &rewriter,
   // is already exactly `hostBuffer`'s own contents (no slicing needed), we
   // can skip the affine map entirely and use upmem.broadcast -- one runtime
   // call broadcasting the whole buffer to every DPU, rather than a per-DPU
-  // scatter transfer that happens to always fetch the same bytes. This is
-  // gated behind !cinm1codegen the same way WRAM sharing already is (see
-  // wramIsShared above): cinm1-codegen's DPU-side code doesn't expect this
-  // shortcut, only the plain upmem.scatter (rank, dpu) form.
+  // scatter transfer that happens to always fetch the same bytes. The two
+  // forms deliver identical bytes to identical MRAM symbols, so this is
+  // independent of cinm1codegen and is gated only on its own option.
   bool useBroadcastOp = isBroadcast && opts.useBcXferCodegen &&
                        hostBufferTy.hasStaticShape() &&
                        hostBufferTy.getNumElements() == blockSizeInItems &&

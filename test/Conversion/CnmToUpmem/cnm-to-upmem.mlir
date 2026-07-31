@@ -1,7 +1,6 @@
 // RUN: cinm-opt %s --eliminate-empty-tensors --one-shot-bufferize --cse --canonicalize --convert-cnm-to-upmem | FileCheck %s
 
 // CHECK-DAG: #[[MAP:[^ ]*]] = affine_map<(d0, d1) -> (d1, 0)>
-// CHECK-DAG: #[[MAP1:[^ ]*]] = affine_map<(d0, d1) -> (0, 0)>
 
 // CHECK: memref.global "private" constant @__constant_16x1xi32 : memref<16x1xi32> = dense<0>
 // CHECK-LABEL: func.func @main
@@ -15,7 +14,9 @@
 // CHECK: %[[ALLOC_T:.*]] = memref.alloc() {{.*}} : memref<1x64xi32>
 // CHECK: linalg.transpose ins(%[[SV_B]] : memref<64x1xi32, {{.*}}>) outs(%[[ALLOC_T]] : memref<1x64xi32>) permutation = [1, 0]
 // CHECK: upmem.scatter %[[SV_A]][64 elts, #[[MAP]]] onto @buf_3 of %[[DPU]] : memref<16x64xi32, {{.*}}> onto !upmem.hierarchy<1x16x1>
-// CHECK: upmem.scatter %[[ALLOC_T]][64 elts, #[[MAP1]]] onto @buf_1 of %[[DPU]] : memref<1x64xi32> onto !upmem.hierarchy<1x16x1>
+// The scatter map for this operand does not depend on the processing element,
+// so the conversion specializes it into a broadcast.
+// CHECK: upmem.broadcast %[[ALLOC_T]] onto @buf_1 of %[[DPU]] : memref<1x64xi32> onto !upmem.hierarchy<1x16x1>
 // CHECK: upmem.scatter %[[CST]][1 elts, #[[MAP]]] onto @buf of %[[DPU]] : memref<16x1xi32> onto !upmem.hierarchy<1x16x1>
 // CHECK: upmem.wait_for %[[DPU]] : !upmem.hierarchy<1x16x1>
 // CHECK: %[[SV_OUT:.*]] = memref.subview %[[ALLOC]][%[[I]], %[[J]]] [16, 1] [1, 1] : memref<64x64xi32> to memref<16x1xi32, {{.*}}>
@@ -24,11 +25,11 @@
 // CHECK: module @dpu_kernels
 // CHECK: upmem.dpu_program @program() tasklets(1) {
 // CHECK: %[[WRAM_C:.*]] = upmem.pwram_alloc() : memref<i32, #upmem.wram>
-// CHECK: %[[MRAM_C:.*]] = upmem.static_alloc @buf(mram) : memref<1xi32, #upmem.mram>
+// CHECK: %[[MRAM_C:.*]] = upmem.static_alloc @buf(mram) noinit : memref<1xi32, #upmem.mram>
 // CHECK: %[[WRAM_B:.*]] = upmem.static_alloc @buf_0(wram) noinit : memref<64xi32, #upmem.wram>
-// CHECK: %[[MRAM_B:.*]] = upmem.static_alloc @buf_1(mram) : memref<64xi32, #upmem.mram>
+// CHECK: %[[MRAM_B:.*]] = upmem.static_alloc @buf_1(mram) noinit : memref<64xi32, #upmem.mram>
 // CHECK: %[[WRAM_A:.*]] = upmem.static_alloc @buf_2(wram) noinit : memref<64xi32, #upmem.wram>
-// CHECK: %[[MRAM_A:.*]] = upmem.static_alloc @buf_3(mram) : memref<64xi32, #upmem.mram>
+// CHECK: %[[MRAM_A:.*]] = upmem.static_alloc @buf_3(mram) noinit : memref<64xi32, #upmem.mram>
 // CHECK: %[[T0:.*]] = upmem.tasklet_dim()
 // CHECK: %[[SV0:.*]] = memref.subview %[[MRAM_C]][%[[T0]]] [1] [1] : memref<1xi32, #upmem.mram> to memref<i32, {{.*}}, #upmem.mram>
 // CHECK: upmem.local_transfer %[[SV0]] into %[[WRAM_C]] : memref<i32, {{.*}}, #upmem.mram> to memref<i32, #upmem.wram>
