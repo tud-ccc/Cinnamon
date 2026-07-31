@@ -5,6 +5,7 @@ add_mlir_dialect_library(UPMEMTransforms
     UpmemInferAccelerator.cpp
     UpmemOpCountSimulator.cpp
     UpmemPythonSimulator.cpp
+    UpmemTileMRAMBuffers.cpp
     SimulationTemplates.cpp
 
 DEPENDS
@@ -33,6 +34,8 @@ LINK_LIBS PUBLIC
     MLIRLinalgToStandard
     MLIRArithDialect
     MLIRSCFDialect
+    MLIRLinalgTransforms
+    MLIRSCFTransforms
 )
 
 target_link_libraries(UPMEMTransforms PRIVATE UpmemCostModel)
