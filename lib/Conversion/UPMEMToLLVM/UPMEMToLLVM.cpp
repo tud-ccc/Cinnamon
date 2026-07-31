@@ -120,6 +120,21 @@ static Value reifyAsString(ImplicitLocOpBuilder &builder, ModuleOp container,
   return LLVM::AddressOfOp::create(builder, global);
 }
 
+// Name of the discardable string attribute an upmem.scatter/gather/broadcast/
+// scatter_on_tasklets op may carry to label its transfer's stats rows (see
+// timers.h/upmemrt_record_scatter's `tag` parameter). Absent means untagged.
+constexpr StringLiteral kTimingTagAttrName = "upmem.timing_tag";
+
+/// Reifies the op's `upmem.timing_tag` attribute (if present) as a string
+/// constant, or a null pointer otherwise, for use as the `tag` argument of
+/// the runtime transfer functions.
+static Value reifyTimingTag(ImplicitLocOpBuilder &builder, ModuleOp container,
+                            Operation *op) {
+  if (auto tagAttr = op->getAttrOfType<StringAttr>(kTimingTagAttrName))
+    return reifyAsString(builder, container, tagAttr.getValue(), "timing_tag");
+  return LLVM::ZeroOp::create(builder, untypedPtrType(builder.getContext()));
+}
+
 /// Composes `inflateMap.compose(map)`'s results with `bufferTy`'s layout to
 /// produce a single result expressing a byte offset into `bufferTy`, and
 /// converts the (element) result of that composition to bytes. Shared tail of
@@ -212,7 +227,8 @@ size_t upmemrt_dpu_scatter(struct dpu_set_t *dpu_set, void *host_buffer,
                            size_t element_size, size_t num_elements,
                            size_t num_elements_per_tasklet, size_t copy_bytes,
                            char* buffer_id,
-                           size_t (*base_offset)(size_t));
+                           size_t (*base_offset)(size_t),
+                           const char *tag);
 */
 static FailureOr<LLVM::LLVMFuncOp>
 getScatterOrGatherFunc(OpBuilder &rewriter, ModuleOp moduleOp,
@@ -223,7 +239,7 @@ getScatterOrGatherFunc(OpBuilder &rewriter, ModuleOp moduleOp,
   auto funPtrTy = functionPtrTy(sizeTy, {sizeTy});
   return LLVM::lookupOrCreateFn(
       rewriter, moduleOp, name,
-      {ptrTy, ptrTy, sizeTy, sizeTy, sizeTy, sizeTy, ptrTy, funPtrTy},
+      {ptrTy, ptrTy, sizeTy, sizeTy, sizeTy, sizeTy, ptrTy, funPtrTy, ptrTy},
       LLVM::LLVMVoidType::get(ctx));
 }
 
@@ -233,7 +249,8 @@ void upmemrt_dpu_scatter_to_tasklets(struct dpu_set_t *dpu_set,
                                      size_t num_tasklets,
                                      size_t block_num_elements,
                                      const char *buffer_id,
-                                     size_t (*base_offset)(size_t, size_t));
+                                     size_t (*base_offset)(size_t, size_t),
+                                     const char *tag);
 */
 static FailureOr<LLVM::LLVMFuncOp>
 getScatterToTaskletsFunc(OpBuilder &rewriter, ModuleOp moduleOp,
@@ -244,13 +261,14 @@ getScatterToTaskletsFunc(OpBuilder &rewriter, ModuleOp moduleOp,
   auto funPtrTy = functionPtrTy(sizeTy, {sizeTy, sizeTy});
   return LLVM::lookupOrCreateFn(
       rewriter, moduleOp, "upmemrt_dpu_scatter_to_tasklets",
-      {ptrTy, ptrTy, sizeTy, sizeTy, sizeTy, ptrTy, funPtrTy},
+      {ptrTy, ptrTy, sizeTy, sizeTy, sizeTy, ptrTy, funPtrTy, ptrTy},
       LLVM::LLVMVoidType::get(ctx));
 }
 
 /*
 void upmemrt_dpu_broadcast(struct dpu_set_t *dpu_set, void *host_buffer,
-                           size_t copy_bytes, const char *buffer_id);
+                           size_t copy_bytes, const char *buffer_id,
+                           const char *tag);
 */
 static FailureOr<LLVM::LLVMFuncOp>
 getBroadcastFunc(OpBuilder &rewriter, ModuleOp moduleOp,
@@ -259,7 +277,7 @@ getBroadcastFunc(OpBuilder &rewriter, ModuleOp moduleOp,
   auto ptrTy = untypedPtrType(ctx);
   auto sizeTy = tyConverter->getIndexType();
   return LLVM::lookupOrCreateFn(rewriter, moduleOp, "upmemrt_dpu_broadcast",
-                                {ptrTy, ptrTy, sizeTy, ptrTy},
+                                {ptrTy, ptrTy, sizeTy, ptrTy, ptrTy},
                                 LLVM::LLVMVoidType::get(ctx));
 }
 
@@ -553,6 +571,7 @@ lowerScatterOnTasklets(upmem::ScatterOnTaskletsOp op,
   if (llvm::failed(runtimeFun))
     return failure();
   auto funPtrOp = LLVM::AddressOfOp::create(rewriter0, loc, *affineMapFunOpt);
+  Value tag = reifyTimingTag(rewriter, moduleOp, op);
 
   // Size of elements in bytes
   const size_t elementSize =
@@ -574,7 +593,8 @@ lowerScatterOnTasklets(upmem::ScatterOnTaskletsOp op,
                                        size_t num_tasklets,
                                        size_t block_num_elements,
                                        const char *buffer_id,
-                                       size_t (*base_offset)(size_t, size_t))
+                                       size_t (*base_offset)(size_t, size_t),
+                                       const char *tag)
   */
   LLVM::CallOp::create(
       rewriter0, loc, *runtimeFun,
@@ -582,7 +602,7 @@ lowerScatterOnTasklets(upmem::ScatterOnTaskletsOp op,
                  reifyAsIndex(rewriter, tyConverter, elementSize),
                  reifyAsIndex(rewriter, tyConverter, numBlocksPerDpu),
                  reifyAsIndex(rewriter, tyConverter, blockNumElements),
-                 bufferId, funPtrOp.getRes()});
+                 bufferId, funPtrOp.getRes(), tag});
 
   rewriter0.eraseOp(op);
   return success();
@@ -606,6 +626,7 @@ lowerBroadcast(upmem::BroadcastOp op, upmem::BroadcastOp::Adaptor adaptor,
   auto runtimeFun = getBroadcastFunc(rewriter, moduleOp, tyConverter);
   if (llvm::failed(runtimeFun))
     return failure();
+  Value tag = reifyTimingTag(rewriter, moduleOp, op);
 
   // Transfer size must be 8-byte aligned, like the classic scatter/gather
   // block form.
@@ -614,13 +635,14 @@ lowerBroadcast(upmem::BroadcastOp op, upmem::BroadcastOp::Adaptor adaptor,
 
   /*
   void upmemrt_dpu_broadcast(struct dpu_set_t *dpu_set, void *host_buffer,
-                             size_t copy_bytes, const char *buffer_id)
+                             size_t copy_bytes, const char *buffer_id,
+                             const char *tag)
   */
   LLVM::CallOp::create(
       rewriter0, loc, *runtimeFun,
       ValueRange{adaptor.getHierarchy(), bareHostBuf,
                  reifyAsIndex(rewriter, tyConverter, numBytesCopied),
-                 bufferId});
+                 bufferId, tag});
 
   rewriter0.eraseOp(op);
   return success();
@@ -664,6 +686,7 @@ static LogicalResult lowerScatterOrGather(Op op, typename Op::Adaptor adaptor,
   if (llvm::failed(runtimeScatterFun))
     return failure();
   auto funPtrOp = LLVM::AddressOfOp::create(rewriter0, loc, *affineMapFunOpt);
+  Value tag = reifyTimingTag(rewriter, moduleOp, op);
   // Transfer count must be 8-byte aligned
   auto numBytesCopied = op.getDpuBufferSizeInBytes();
   numBytesCopied = llvm::alignTo(numBytesCopied, 8);
@@ -687,7 +710,8 @@ static LogicalResult lowerScatterOrGather(Op op, typename Op::Adaptor adaptor,
                             size_t num_elements_per_tasklet,
                             size_t copy_bytes,
                             const char *bufId,
-                            size_t (*base_offset)(size_t))
+                            size_t (*base_offset)(size_t),
+                            const char *tag)
   */
   LLVM::CallOp::create(
       rewriter0, loc, *runtimeScatterFun,
@@ -696,7 +720,7 @@ static LogicalResult lowerScatterOrGather(Op op, typename Op::Adaptor adaptor,
                  reifyAsIndex(rewriter, tyConverter, numElements),
                  reifyAsIndex(rewriter, tyConverter, numElementsPerTasklet),
                  reifyAsIndex(rewriter, tyConverter, numBytesCopied), bufferId,
-                 funPtrOp.getRes()});
+                 funPtrOp.getRes(), tag});
 
   rewriter0.eraseOp(op);
   return success();
