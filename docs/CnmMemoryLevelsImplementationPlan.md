@@ -801,7 +801,7 @@ MRAM-level ones, whose staging M5 has already made explicit.
   success criterion, not a nice-to-have — without it "as good as the
   templates" is unmeasurable.
 
-### M8 — `--convert-linalg-to-cnm`: mechanical distribution — **TODO**
+### M8 — `--convert-linalg-to-cnm`: mechanical distribution — **DONE**
 
 Design §G1-G3. A new conversion that distributes a `linalg` op on
 tensors onto a `cnm.workgroup`, driven entirely by a block-size vector.
@@ -826,12 +826,18 @@ behaviour on a principled footing.
   is exactly the shape M5's `--upmem-tile-mram-buffers` already
   consumes (pinned by `cinm-to-cnm-launch-body.mlir`).
 
-**Tests:** `test/Conversion/LinalgToCnm/linalg-to-cnm.mlir` (new):
-`linalg.contract` gemv-shaped and `linalg.reduce`, checking buffer
-shapes and scatter maps; `linalg-to-cnm-invalid.mlir` (new): product
-mismatch, and `f_d > 1` rejected for now.
+**Tests:** `test/Conversion/LinalgToCnm/linalg-to-cnm.mlir`,
+`linalg-to-cnm-invalid.mlir`, and
+`test/Transform/UPMEM/gemv-linalg-generic-pipeline.mlir` — the last one
+runs the whole flags-only chain from a `linalg.contract` to a DPU
+program, confirming `--upmem-tile-mram-buffers` and
+`--convert-cnm-to-upmem` consume this pass's output unchanged.
 
-### M9 — Reduction splitting — **TODO**
+**Landed as** `a99fc64`. One restriction worth remembering: indexing
+maps must be projected permutations. Dropping a dimension is fine (that
+is how broadcast operands work); repeating one is rejected.
+
+### M9 — Reduction splitting — **DONE**
 
 Design §G4-G6. The structural addition: allow `f_d > 1`.
 
@@ -842,16 +848,28 @@ Design §G4-G6. The structural addition: allow `f_d > 1`.
   folded in exactly once at the merge (§G5).
 - Legality gate: associative + commutative combiner required; floats
   behind an explicit opt-in flag, not silent (§G6).
-- **Resolve open question 8 first:** try `linalg::splitReduction`
-  before hand-rolling — it does the partial+merge rewrite and creates
-  the neutral-element fill. Check whether its extra-dim placement suits
-  the gather; fall back to `PartialReductionOpInterface` if not.
+**Open question 8 resolved:** `linalg::splitReduction` does the job.
+It turns the reduction tile index into an extra *parallel* dimension and
+leaves all indexing maps projected permutations, so M8's distribution
+then applies unchanged — no `PartialReductionOpInterface` needed. It
+also covers §G5 for free (neutral-element fill; merge accumulates into
+the original `outs`).
 
-**Tests:** extend `linalg-to-cnm.mlir` with a K-split gemv (the
-configuration class that motivated all of §G — see the M7 failure);
-check the host merge op and the identity fill; a non-associative
-`linalg.reduce` body must be rejected; a float reduction must be
-rejected without the opt-in and accepted with it.
+**Tests:** `linalg-to-cnm-split-reduction.mlir` (new; K-split gemv,
+`max` reduce with its own neutral element, float under the opt-in);
+`linalg-to-cnm-invalid.mlir` (float without the opt-in, non-associative
+`arith.subi` combiner).
+
+**Landed as** `4289c03`.
+
+**Known cost, deliberately not fixed here** (`0d9413d`): the identity
+seed is a constant-zero buffer that gets scattered to every leaf on
+every launch. `cnm.set_zero` is the right answer but only
+`--convert-cnm-to-gpu` lowers it; `--convert-cnm-to-upmem` has no
+pattern, and emitting it makes the backend conversion fail *silently*.
+Fixing this needs device-side zeroing of an MRAM buffer — worth its own
+milestone, and worth also giving `--convert-cnm-to-upmem` a diagnostic
+for ops it cannot legalise.
 
 ### M10 — Linalg-first pipeline — **TODO**
 
@@ -900,8 +918,8 @@ decide with `grep`, not in advance.
 | M5b ✅ | output-tile hoisting | `upmem-tile-mram-buffers.mlir` (extend: split reduction, transfers outside the loop); M7's cost comparison is the real signal |
 | M6 ✅ | MRAM launch args; `cnm.local_transfer` lowering | `Conversion/CnmToUpmem/cnm-to-upmem-mram-level.mlir` (new, 2 cases) |
 | M7 ◐ | plugin map, staged pipeline, `lowering=` selector (cost comparison outstanding) | `Transform/UPMEM/gemv-generic-mram-pipeline.mlir` (new, flags-only end-to-end); `Dialect/UPMEM/upmem-infer-accelerator.mlir` (add RUN line); `upmem-infer-accelerator-generic.mlir` (new); templates-vs-generic cost comparison |
-| M8 ☐ | `--convert-linalg-to-cnm`, block sizes + canonical order | `Conversion/LinalgToCnm/linalg-to-cnm.mlir` (new); `linalg-to-cnm-invalid.mlir` (new) |
-| M9 ☐ | reduction splitting: partials, gather dim, host merge | `linalg-to-cnm.mlir` (extend: K-split gemv, identity fill, non-associative rejection, float opt-in) |
+| M8 ✅ | `--convert-linalg-to-cnm`, block sizes + canonical order | `Conversion/LinalgToCnm/linalg-to-cnm.mlir` (new); `linalg-to-cnm-invalid.mlir` (new); `Transform/UPMEM/gemv-linalg-generic-pipeline.mlir` (new, flags-only end-to-end) |
+| M9 ✅ | reduction splitting via `linalg::splitReduction` | `linalg-to-cnm-split-reduction.mlir` (new: K-split gemv, `max` neutral element, float opt-in); `linalg-to-cnm-invalid.mlir` (extended: float without opt-in, non-associative combiner) |
 | M10 ☐ | linalg-first pipeline + fusion | `gemv-generic-mram-pipeline.mlir` (extend or sibling); two-op fusion case |
 | M11 ☐ | generic space builder from indexing maps | `upmem-infer-accelerator.mlir` with `lowering=generic` and `f_d > 1` |
 | M12 ☐ | delete `CinmToCnm.cpp` distribution heuristics | existing suite stays green; no new tests |
