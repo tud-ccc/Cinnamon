@@ -298,6 +298,14 @@ struct UpmemInferencePlugin : cinm::InferencePlugin {
       auto &funcs = pm->nest<func::FuncOp>();
       funcs.addPass(affine::createLoopUnrollPass(4));
     }
+    // The affine dialect is an artefact of lowering linalg above; the DPU
+    // kernels have to leave here free of it, because the C translator that
+    // consumes them does not register affine (the hand-written templates emit
+    // scf directly, so this only bites the generic path). Last, so the affine
+    // passes above still see affine loops.
+    pm->addPass(createLowerAffinePass());
+    pm->addPass(createCanonicalizerPass());
+    pm->addPass(createCSEPass());
     return pm;
   }
 
