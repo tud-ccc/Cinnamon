@@ -175,6 +175,10 @@ def LocalTransferOp: Cnm_Op<"local_transfer"> {
     let results = (outs);
 
     let hasVerifier = 1;
+    // Absorbs memref.cast on either operand, so a transfer keeps the most
+    // static type available -- the backend needs static shapes to size the
+    // transfer. Same rule memref.copy uses.
+    let hasFolder = 1;
     let assemblyFormat = [{
         $source `into` $target attr-dict `:` type($source) `to` type($target)
     }];
