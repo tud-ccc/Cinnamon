@@ -50,8 +50,14 @@ def UpmemTileMRAMBuffersPass: Pass<"upmem-tile-mram-buffers"> {
   ];
   let options = [
     ListOption<"tileSizes", "tile-sizes", "int64_t",
-               "Tile sizes for ops that carry no cinm.tile_sizes attribute. "
-               "One per iteration-space dimension; 0 means do not tile.">
+               "Tile sizes for ops that carry no upmem.leaf_tile_sizes "
+               "attribute. One per iteration-space dimension; 0 means do not "
+               "tile.">,
+    Option<"hoistOutputTransfers", "hoist-output-transfers", "bool", "true",
+           "Stage the output tile outside the reduction loops rather than "
+           "around the op. An output is indexed only by parallel dimensions, "
+           "so its tile is the same on every trip of a reduction loop; staging "
+           "it inside would transfer it back and forth once per trip.">
   ];
 }
 
