@@ -78,17 +78,37 @@ func.func @too_few_tiles(%A: tensor<1024x512xi32>, %x: tensor<512xi32>) -> tenso
 #pf = #upmem.platform<type=v1A, dimensions = 4x16>
 #acc = #upmem.array<1x16x1, #pf>
 
-// Splitting the reduction dimension: 16 K-tiles, so each leaf would hold a
-// partial sum needing a merge. That is M9; for now it must be rejected rather
-// than silently producing wrong results.
-func.func @split_reduction(%A: tensor<1024x512xi32>, %x: tensor<512xi32>) -> tensor<1024xi32> {
-  %init = tensor.empty() : tensor<1024xi32>
-  %r = cinm.compute on accelerator #acc -> tensor<1024xi32> {
-    // expected-error @below {{iteration dimension 1 is a reduction and would be split 16 ways}}
+// Splitting a float reduction reassociates the sum, so it needs the opt-in.
+// The search would otherwise silently change results.
+func.func @float_split_needs_optin(%A: tensor<1024x512xf32>, %x: tensor<512xf32>, %y: tensor<1024xf32>) -> tensor<1024xf32> {
+  %r = cinm.compute on accelerator #acc -> tensor<1024xf32> {
+    // expected-error @below {{splitting reduction dimension 1 16 ways reassociates a floating-point reduction, which changes the result; pass allow-float-reassociation to permit it}}
     %g = linalg.contract indexing_maps = [#m, #v, #r]
       {cnm.tile_sizes = array<i64: 1024, 32>}
-      ins(%A, %x : tensor<1024x512xi32>, tensor<512xi32>)
-      outs(%init : tensor<1024xi32>) -> tensor<1024xi32>
+      ins(%A, %x : tensor<1024x512xf32>, tensor<512xf32>)
+      outs(%y : tensor<1024xf32>) -> tensor<1024xf32>
+    cinm.yield %g : tensor<1024xf32>
+  }
+  func.return %r : tensor<1024xf32>
+}
+
+// -----
+
+#pf = #upmem.platform<type=v1A, dimensions = 4x16>
+#acc = #upmem.array<1x16x1, #pf>
+
+// Splitting requires an associative combiner with a neutral element.
+// Subtraction has neither, and must not be split into partials.
+func.func @non_associative_split(%A: tensor<1024x512xi32>, %o: tensor<1024xi32>) -> tensor<1024xi32> {
+  %r = cinm.compute on accelerator #acc -> tensor<1024xi32> {
+    // expected-error @below {{could not split reduction dimension 1: its combiner was not recognised as one with a neutral element}}
+    %g = linalg.reduce ins(%A : tensor<1024x512xi32>) outs(%o : tensor<1024xi32>)
+      dimensions = [1]
+      {cnm.tile_sizes = array<i64: 1024, 32>}
+      (%in: i32, %acc: i32) {
+        %s = arith.subi %in, %acc : i32
+        linalg.yield %s : i32
+      }
     cinm.yield %g : tensor<1024xi32>
   }
   func.return %r : tensor<1024xi32>
