@@ -143,6 +143,43 @@ def LaunchOp: Cnm_Op<"launch", [AffineScope, AttrSizedOperandSegments, IsolatedF
     }];
 }
 
+def LocalTransferOp: Cnm_Op<"local_transfer"> {
+    let summary = "Copy a buffer between memory levels of the device.";
+    let description = [{
+        Copies `source` into `target`, which must have the same shape and
+        element type but generally live in different memory levels of the
+        device (their memref memory spaces). The direction is therefore implied
+        by the operands and is not spelled out separately.
+
+        This op operates on memrefs, not on `!cnm.buffer`: a `cnm.buffer`
+        describes a buffer distributed over a whole workgroup, whereas a
+        transfer moves an ordinary, locally-shaped block. It is consequently a
+        *device-side* op, appearing inside a `cnm.launch` body, in contrast
+        with `cnm.scatter`/`cnm.gather`, which move data between host and
+        device. Transferring part of a buffer is expressed with an ordinary
+        `memref.subview` on either operand.
+
+        How the transfer is realized (DMA engine, blocked copy, leader tasklet)
+        is the business of the conversion to the backend dialect.
+
+        ```mlir
+        cnm.local_transfer %mram_tile into %wram_buf
+          : memref<64xi32, #upmem.mram> to memref<64xi32, #upmem.wram>
+        ```
+    }];
+
+    let arguments = (ins Arg<AnyMemRef, "the memref to copy from",
+                             [MemReadAt<0, FullEffect>]>:$source,
+                         Arg<AnyMemRef, "the memref to copy to",
+                             [MemWriteAt<0, FullEffect>]>:$target);
+    let results = (outs);
+
+    let hasVerifier = 1;
+    let assemblyFormat = [{
+        $source `into` $target attr-dict `:` type($source) `to` type($target)
+    }];
+}
+
 def TerminatorOp: Cnm_Op<"terminator", [Terminator]> {
     let summary = "Terminates an `upmem.launch` operator region.";
     let description = [{}];
