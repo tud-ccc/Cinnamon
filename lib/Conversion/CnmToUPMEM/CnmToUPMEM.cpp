@@ -323,6 +323,46 @@ static bool isWramShared(TypedValue<MemRefType> wramBuffer) {
   return isa_and_nonnull<upmem::StaticAllocOp>(wramBuffer.getDefiningOp());
 }
 
+// The slice of `mramBuf` belonging to the calling tasklet, shaped like
+// `tileTy`. When the MRAM buffer carries a leading tasklet dimension (i.e. it
+// is not broadcast over threads, see isMramBroadcastOverThreads) that is a
+// subview indexed by the tasklet id; otherwise every tasklet sees the whole
+// buffer and there is nothing to slice.
+static Value getTaskletSlice(RewriterBase &rewriter, Location loc,
+                             upmem::StaticAllocOp mramBuf, MemRefType tileTy) {
+  auto mramBufTy = mramBuf.getBuffer().getType();
+  if (mramBufTy.getRank() != tileTy.getRank() + 1)
+    return mramBuf.getBuffer();
+
+  auto taskletId = upmem::TaskletDimOp::create(rewriter, loc);
+
+  SmallVector<OpFoldResult, 4> offsets(mramBufTy.getRank(),
+                                       rewriter.getIndexAttr(0));
+  offsets[0] = taskletId.getResult();
+
+  SmallVector<OpFoldResult, 4> sizes;
+  sizes.push_back(rewriter.getIndexAttr(1));
+  for (auto size : tileTy.getShape())
+    sizes.push_back(rewriter.getIndexAttr(size));
+
+  llvm::SmallVector<OpFoldResult, 4> strides(mramBufTy.getRank(),
+                                             rewriter.getIndexAttr(1));
+
+  auto [baseStrides, baseOffset] = mramBufTy.getStridesAndOffset();
+
+  // this is the type of the tile. We cannot let it be inferred as it may be
+  // rank-reduced.
+  MemRefType viewType = MemRefType::get(
+      tileTy.getShape(), tileTy.getElementType(),
+      rewriter.getAttr<StridedLayoutAttr>(
+          ShapedType::kDynamic, ArrayRef<long>(baseStrides).drop_front()),
+      mramBufTy.getMemorySpace());
+
+  return memref::SubViewOp::create(rewriter, loc, viewType,
+                                   mramBuf.getBuffer(), offsets, sizes,
+                                   strides);
+}
+
 static void createTransfer(RewriterBase &rewriter, bool toWram, Location loc,
                            upmem::StaticAllocOp mramBuf,
                            TypedValue<MemRefType> wramBuffer) {
@@ -334,37 +374,11 @@ static void createTransfer(RewriterBase &rewriter, bool toWram, Location loc,
   bool mramHasTaskletDim = mramBufTy.getRank() == wramBufTy.getRank() + 1;
   Value mramBufToScatter;
 
-  auto taskletId = upmem::TaskletDimOp::create(rewriter, loc);
-
   Operation *insertionPointReset = nullptr;
   if (mramHasTaskletDim) {
-    // scatter over tasklets
-    SmallVector<OpFoldResult, 4> offsets(mramBufTy.getRank(),
-                                         rewriter.getIndexAttr(0));
-    offsets[0] = taskletId.getResult();
-
-    SmallVector<OpFoldResult, 4> sizes;
-    sizes.push_back(rewriter.getIndexAttr(1));
-    for (auto size : wramBufTy.getShape()) {
-      sizes.push_back(rewriter.getIndexAttr(size));
-    }
-
-    llvm::SmallVector<OpFoldResult, 4> strides(mramBufTy.getRank(),
-                                               rewriter.getIndexAttr(1));
-
-    auto [baseStrides, baseOffset] = mramBufTy.getStridesAndOffset();
-
-    // this is the type of the tile. We cannot let it be inferred as it may be
-    // rank-reduced.
-    MemRefType viewType = MemRefType::get(
-        wramBufTy.getShape(), wramBufTy.getElementType(),
-        rewriter.getAttr<StridedLayoutAttr>(
-            ShapedType::kDynamic, ArrayRef<long>(baseStrides).drop_front()),
-        mramBufTy.getMemorySpace());
-
-    mramBufToScatter = memref::SubViewOp::create(
-        rewriter, loc, viewType, mramBuf.getBuffer(), offsets, sizes, strides);
+    mramBufToScatter = getTaskletSlice(rewriter, loc, mramBuf, wramBufTy);
   } else if (isWramShared(wramBuffer)) {
+    auto taskletId = upmem::TaskletDimOp::create(rewriter, loc);
     // MRAM buffer corresponds exactly to WRAM buffer, and WRAM is shared:
     // this is a full broadcast (every tasklet reads the same WRAM copy).
     mramBufToScatter = mramBuf.getBuffer();
@@ -439,6 +453,50 @@ static bool isMramBroadcastOverThreads(cnm::AllocOp alloc) {
   return true;
 }
 
+// Give the ops a launch body uses to stage its own buffers their UPMEM
+// equivalents. Runs over the whole DPU program after the body has been cloned
+// in, because the staging sits inside the body's loop nests and cloning copies
+// regions wholesale.
+static LogicalResult lowerBodyStagingOps(RewriterBase &rewriter,
+                                         upmem::DpuProgramOp dpuProgram,
+                                         Attribute wramMemspace) {
+  SmallVector<Operation *> toRewrite;
+  dpuProgram->walk([&](Operation *op) {
+    if (isa<cnm::LocalTransferOp, memref::AllocOp, memref::DeallocOp>(op))
+      toRewrite.push_back(op);
+  });
+
+  for (Operation *op : toRewrite) {
+    rewriter.setInsertionPoint(op);
+
+    if (auto transfer = dyn_cast<cnm::LocalTransferOp>(op)) {
+      rewriter.replaceOpWithNewOp<upmem::LocalTransferOp>(
+          transfer, transfer.getSource(), transfer.getTarget());
+      continue;
+    }
+
+    if (auto alloc = dyn_cast<memref::AllocOp>(op)) {
+      auto type = alloc.getType();
+      if (type.getMemorySpace() != wramMemspace)
+        return alloc->emitOpError("cannot be lowered to UPMEM: only WRAM "
+                                  "allocations are supported inside a launch "
+                                  "body");
+      // WRAM scratch is a per-tasklet allocation carved out of the WRAM
+      // partition, which is what upmem.pwram_alloc denotes.
+      rewriter.replaceOpWithNewOp<upmem::PrivateWRAMAllocOp>(alloc, type);
+      continue;
+    }
+
+    // The WRAM partition is reclaimed when the kernel returns, so a matching
+    // deallocation has nothing to do.
+    auto dealloc = cast<memref::DeallocOp>(op);
+    if (cast<MemRefType>(dealloc.getMemref().getType()).getMemorySpace() ==
+        wramMemspace)
+      rewriter.eraseOp(dealloc);
+  }
+  return success();
+}
+
 static LogicalResult convertCnmLaunchToUpmem(cnm::LaunchOp launch,
                                              RewriterBase &rewriter, Opts opts,
                                              SymbolTable rootModule,
@@ -470,6 +528,10 @@ static LogicalResult convertCnmLaunchToUpmem(cnm::LaunchOp launch,
   llvm::MapVector<Value, upmem::StaticAllocOp> buffersToMramBuf;
   // llvm::MapVector<Value, upmem::StaticAllocOp> buffersToSharedWramBuf;
   llvm::MapVector<Value, TypedValue<MemRefType>> buffersToWramBufValue;
+  // Buffers the launch body computes on in MRAM directly. It has already been
+  // given its own WRAM staging (--upmem-tile-mram-buffers), so this pass must
+  // not add a second one around it: the body binds straight to MRAM.
+  llvm::DenseSet<Value> mramLevelBuffers;
 
   rewriter.setInsertionPointToStart(&dpuProgram.getBody().front());
 
@@ -501,8 +563,14 @@ static LogicalResult convertCnmLaunchToUpmem(cnm::LaunchOp launch,
       // private per-tasklet WRAM buffers.
       bool mramIsBroadcast = isMramBroadcastOverThreads(alloc);
       bool wramIsShared = !opts.cinm1codegen && mramIsBroadcast;
+      bool stagedInBody = bufferType.getLevel() == mramMemspaceAttr;
 
-      if (wramIsShared) {
+      if (stagedInBody) {
+        // No WRAM buffer and no transfers here: the body already stages what
+        // it needs. It binds to the tasklet's slice of the MRAM buffer, which
+        // is created below once its shape is known.
+        mramLevelBuffers.insert(alloc.getResult());
+      } else if (wramIsShared) {
         // If all threads see the same buffer (broadcast), then we only
         // create one static buffer in WRAM.
         auto wrambuf =
@@ -523,6 +591,7 @@ static LogicalResult convertCnmLaunchToUpmem(cnm::LaunchOp launch,
         // buffer is broadcasted.
         bufShape.insert(bufShape.begin(), upmemTy.getNumTaskletsPerDpu());
       }
+      (void)memrefTy;
 
       memrefTy = MemRefType::get(bufShape, bufferType.getElementType(),
                                  MemRefLayoutAttrInterface{}, mramMemspaceAttr);
@@ -572,10 +641,18 @@ static LogicalResult convertCnmLaunchToUpmem(cnm::LaunchOp launch,
   // these memrefs map to the pwram bufs. TODO we need to transfer from mram to
   // pwram
   IRMapping mapping;
+  rewriter.setInsertionPointToEnd(&dpuProgram.getBody().front());
   for (auto [cnmBuf, memref] : llvm::zip_equal(
            llvm::concat<Value>(launch.getInputs(), launch.getOutBuffers()),
            launch.getBody().getArguments())) {
 
+    if (mramLevelBuffers.contains(cnmBuf)) {
+      // The body computes on MRAM: bind it to this tasklet's slice.
+      mapping.map(memref, getTaskletSlice(rewriter, cnmBuf.getLoc(),
+                                          buffersToMramBuf[cnmBuf],
+                                          cast<MemRefType>(memref.getType())));
+      continue;
+    }
     auto wrambuf = buffersToWramBufValue.lookup(cnmBuf);
     mapping.map(memref, wrambuf);
   }
@@ -583,18 +660,21 @@ static LogicalResult convertCnmLaunchToUpmem(cnm::LaunchOp launch,
   // todo support moving tiles of the mram buffer into pwram
   rewriter.setInsertionPointToEnd(&dpuProgram.getBody().front());
   for (auto [buf, mramBuf] : buffersToMramBuf) {
+    if (mramLevelBuffers.contains(buf))
+      continue;
     auto wramBuf = buffersToWramBufValue[buf];
     createTransfer(rewriter, true, buf.getLoc(), mramBuf, wramBuf);
     rewriter.setInsertionPointToEnd(&dpuProgram.getBody().front());
   }
 
   // copy the old ops
-  for (auto &op : launch.getBody().front().without_terminator()) {
+  for (auto &op : launch.getBody().front().without_terminator())
     rewriter.clone(op, mapping);
-  }
 
   // transfer buffers back to mram
   for (auto buf : launch.getOutBuffers()) {
+    if (mramLevelBuffers.contains(buf))
+      continue;
     auto wramBuf = buffersToWramBufValue[buf];
     auto mramBuf = buffersToMramBuf[buf];
 
@@ -603,6 +683,9 @@ static LogicalResult convertCnmLaunchToUpmem(cnm::LaunchOp launch,
   }
 
   upmem::ReturnOp::create(rewriter, launch->getLoc());
+
+  if (failed(lowerBodyStagingOps(rewriter, dpuProgram, wramMemspaceAttr)))
+    return failure();
 
   rewriter.setInsertionPoint(launch);
   upmem::WaitForOp::create(rewriter, launch->getLoc(),
