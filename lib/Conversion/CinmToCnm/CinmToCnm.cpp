@@ -58,17 +58,53 @@ using namespace mlir;
 
 namespace {
 
-/// Resolve the pass's `cnm-buffer-level` option against the accelerator's
-/// platform, yielding the attribute that goes in the `cnm.buffer` type's level
-/// field and in the memory space of the launch body's memrefs.
+/// The memory level selected by `cnm-buffer-level`, resolved against a
+/// particular accelerator.
+struct BufferLevel {
+  /// Goes in the `cnm.buffer` type's level field and in the memory space of the
+  /// launch body's memrefs. Null when no level was requested.
+  cinm::CinmLevelAttrInterface space;
+  /// How many bytes of that level one leaf of the workgroup may use.
+  int64_t bytesPerLeaf;
+
+  bool isSet() const { return static_cast<bool>(space); }
+};
+
+/// Bytes of `level` available to a single leaf of the workgroup.
 ///
-/// An empty name yields a null level, which is what every buffer got before
-/// this option existed: the backend conversion then picks the staging itself.
-FailureOr<cinm::CinmLevelAttrInterface>
+/// `getWorkgroupMemoryLevels()` is indexed by workgroup dimension: entry `i`
+/// lists the levels owned by a node at dimension `i`. Everything below that
+/// dimension shares the level, so one leaf's share is the level's capacity
+/// divided by the number of leaves under one such node. For UPMEM's leaf level
+/// this reproduces `bufferSizeOfLeaf()` (WRAM per DPU, divided by tasklets).
+std::optional<int64_t> capacityPerLeaf(cnm::CnmAcceleratorAttrInterface acc,
+                                       StringRef levelName) {
+  auto wgShape = acc.getWorkgroupShape();
+  auto levelsPerDim = acc.getWorkgroupMemoryLevels();
+  for (auto [dim, levels] : llvm::enumerate(levelsPerDim)) {
+    for (cinm::CinmLevelDefAttr level : levels) {
+      if (level.getName() != levelName)
+        continue;
+      int64_t leaves = 1;
+      for (size_t below = dim + 1; below < wgShape.size(); ++below)
+        leaves *= wgShape[below];
+      return leaves ? level.getSizeInBytes() / leaves : 0;
+    }
+  }
+  return std::nullopt;
+}
+
+/// Resolve the pass's `cnm-buffer-level` option against the accelerator's
+/// platform.
+///
+/// An empty name yields a null level and the accelerator's own leaf budget,
+/// which is what every buffer got before this option existed: the backend
+/// conversion then picks the staging itself.
+FailureOr<BufferLevel>
 resolveBufferLevel(StringRef levelName, cnm::CnmAcceleratorAttrInterface acc,
                    Operation *op) {
   if (levelName.empty())
-    return cinm::CinmLevelAttrInterface{};
+    return BufferLevel{{}, acc.bufferSizeOfLeaf()};
 
   auto platform = acc.getPlatform();
   if (!platform)
@@ -93,7 +129,16 @@ resolveBufferLevel(StringRef levelName, cnm::CnmAcceleratorAttrInterface acc,
            << platform.getName()
            << "' does not provide a memref memory space for level '"
            << levelName << "'";
-  return space;
+
+  // The buffer budget has to follow the level: sizing an MRAM buffer by the
+  // WRAM budget would reject perfectly good tiles.
+  std::optional<int64_t> capacity = capacityPerLeaf(acc, levelName);
+  if (!capacity)
+    return op->emitOpError("level '")
+           << levelName
+           << "' is not one of the workgroup's memory levels on this "
+              "accelerator";
+  return BufferLevel{space, *capacity};
 }
 
 LogicalResult
@@ -307,7 +352,7 @@ LogicalResult convertInputIntoAlloc(Value &inputBuf, Value workGroup,
                                     cnm::WorkgroupType wgTy,
                                     int64_t maxBlockSizeBytes,
                                     ArrayRef<int64_t> reduceDims,
-                                    cinm::CinmLevelAttrInterface level,
+                                    const BufferLevel &level,
                                     AffineMap &scatterMap, Value &result,
                                     ImplicitLocOpBuilder &rewriter) {
   // For each input of the reduce, we need to
@@ -347,7 +392,7 @@ LogicalResult convertInputIntoAlloc(Value &inputBuf, Value workGroup,
   // Allocate a cinm buffer
   cnm::BufferType bufTy =
       cnm::BufferType::get(shapeOfBuffer, inputType.getElementType(),
-                           wgTy.getAccelerator(), level);
+                           wgTy.getAccelerator(), level.space);
 
   Value alloc = cnm::AllocOp::create(rewriter, bufTy, workGroup);
 
@@ -406,8 +451,7 @@ LogicalResult convertCinmToCnm(
     ArrayRef<ArrayRef<int64_t>> reductionDimensionsSorted, ValueRange operands,
     ValueRange outputInitializers,
     ValueRange /*optional elements*/ gatherBuffers, ValueRange results,
-    cinm::CinmLevelAttrInterface level,
-    llvm::SmallVectorImpl<Value> &resultValues,
+    const BufferLevel &level, llvm::SmallVectorImpl<Value> &resultValues,
     function_ref<void(ImplicitLocOpBuilder &, ValueRange, ValueRange)>
         createCnmLaunchBlock) {
 
@@ -455,7 +499,7 @@ LogicalResult convertCinmToCnm(
   //    }
   // }
 
-  int maxBlockSizeBytes = cnmAccelerator.bufferSizeOfLeaf() / operands.size();
+  int maxBlockSizeBytes = level.bytesPerLeaf / operands.size();
 
   builder.setInsertionPointAfter(operation);
 
@@ -945,21 +989,21 @@ struct ConvertCinmGemmToCnm : public CinmToCnmPattern<cinm::GemmOp> {
 
     // Check that the tiling pass chose a fitting reduction size.
     auto reductionSize = lhs.getType().getDimSize(1);
-    if (reductionSize * 2 * elTyBytes >
-        cnmAccelerator.bufferSizeOfLeaf() - elTyBytes) {
+    if (reductionSize * 2 * elTyBytes > level->bytesPerLeaf - elTyBytes) {
       return op->emitOpError(
           "cannot be converted to CINM, reduction size is too large");
     }
     auto eltTy = lhs.getType().getElementType();
     // buffer type for A and B
     cnm::BufferType bufferType =
-        cnm::BufferType::get({reductionSize}, eltTy, cnmAccelerator, *level);
+        cnm::BufferType::get({reductionSize}, eltTy, cnmAccelerator,
+                             level->space);
     Value bufferA = cnm::AllocOp::create(builder, bufferType, workgroup);
     Value bufferB = cnm::AllocOp::create(builder, bufferType, workgroup);
 
     // C has a single element and no dimensions
     cnm::BufferType bufferCType =
-        cnm::BufferType::get({}, eltTy, cnmAccelerator, *level);
+        cnm::BufferType::get({}, eltTy, cnmAccelerator, level->space);
     Value bufferC = cnm::AllocOp::create(builder, bufferCType, workgroup);
 
     //::mlir::Value input, ::mlir::Value buffer, ::mlir::Value wg,
@@ -1084,6 +1128,19 @@ struct ConvertCinmGemvToCnm : public CinmToCnmPattern<cinm::GemvOp> {
             ValueRange{op.getOut()}, op->getResults(), *level, newResults,
             [&](ImplicitLocOpBuilder &builder, ValueRange inputs,
                 ValueRange outputs) {
+              // With a level selected, the launch body must stay tilable so a
+              // later pass can stage it down to the leaf level, which means a
+              // cinm op rather than linalg. That needs the per-leaf tile to be
+              // a real matrix-vector product; when the tile is a single row
+              // (one output element per leaf) it is a dot product, which
+              // cinm.op.gemv does not model, so linalg it stays.
+              auto lhsTy = cast<ShapedType>(inputs[0].getType());
+              if (level->isSet() && lhsTy.getRank() >= 2) {
+                cinm::GemvOp::create(builder, inputs[0], inputs[1],
+                                     /*bias=*/Value{}, outputs[0]);
+                return;
+              }
+
               int outputRank =
                   dyn_cast<ShapedType>(outputs[0].getType()).getRank();
               auto ctx = builder.getContext();
@@ -1157,8 +1214,24 @@ struct ConvertCinmReduceToCnm : public CinmToCnmPattern<cinm::ReduceOp> {
             *level, newResults,
             [&](ImplicitLocOpBuilder &builder, ValueRange inputs,
                 ValueRange outputs) {
+              // convertInputIntoAlloc puts the reduced dimensions last in the
+              // buffer and prepends whatever parallel work did not fit on the
+              // workgroup, so the reduction is always over the buffer's last
+              // dimension -- not over dimension 0, which only coincides when
+              // the buffer holds nothing but the reduction.
+              auto inTy = cast<ShapedType>(inputs[0].getType());
+              int64_t innerRedDim = inTy.getRank() - 1;
+
+              // With a level selected the launch body must stay tilable so a
+              // later pass can stage it down to the leaf level.
+              if (level->isSet()) {
+                cinm::ReduceOp::create(builder, op.getMethod(), inputs[0],
+                                       outputs[0], innerRedDim);
+                return;
+              }
+
               linalg::ReduceOp::create(
-                  builder, inputs, outputs, ArrayRef<int64_t>{0},
+                  builder, inputs, outputs, ArrayRef<int64_t>{innerRedDim},
                   [&](OpBuilder &builder, Location loc,
                       ValueRange inputs) -> void {
                     arith::AtomicRMWKind arithMethod = cinm::getArithConstant(
