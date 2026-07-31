@@ -349,6 +349,10 @@ struct ConvertReduceToLinalg : public OpConversionPattern<cinm::ReduceOp> {
   LogicalResult
   matchAndRewrite(cinm::ReduceOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
+    // Memref mode is not handled here, same as the gemm-like patterns below.
+    if (!op.getResult())
+      return failure();
+
     auto loc = op.getLoc();
     auto inputTy = cast<RankedTensorType>(adaptor.getInput().getType());
     Type elemTy = inputTy.getElementType();

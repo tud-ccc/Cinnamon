@@ -24,6 +24,18 @@ module {
     }
     return %0 : memref<8xi32>
   }
+  // CHECK-LABEL: reduce
+  func.func @reduce(%arg0: memref<8x1024xi32>, %arg1: memref<8xi32>, %arg2: memref<1024xi32>, %arg3: memref<i32>, %arg4: memref<1024xi32>) {
+    // CHECK: cinm.op.reduce add(%{{.*}}) into %{{.*}} : memref<8x1024xi32> into memref<8xi32>
+    cinm.op.reduce add (%arg0) into %arg1 : memref<8x1024xi32> into memref<8xi32>
+    // CHECK: cinm.op.reduce maxsi(%{{.*}}) dim 0 into %{{.*}} : memref<8x1024xi32> into memref<1024xi32>
+    cinm.op.reduce maxsi (%arg0) dim 0 into %arg2 : memref<8x1024xi32> into memref<1024xi32>
+    // A fully-reduced destination is rank 0, not a scalar: memrefs don't
+    // rank-reduce the way the tensor mode's result does.
+    // CHECK: cinm.op.reduce add(%{{.*}}) into %{{.*}} : memref<1024xi32> into memref<i32>
+    cinm.op.reduce add (%arg4) into %arg3 : memref<1024xi32> into memref<i32>
+    return
+  }
   // CHECK-LABEL: eltwise
   func.func @eltwise(%arg0: memref<6x6xi32>, %arg1: memref<6xf32>, %arg2: memref<6xf32>) {
     %alloc = memref.alloc() : memref<6x6xi32>

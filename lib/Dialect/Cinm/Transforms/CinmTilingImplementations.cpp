@@ -279,7 +279,7 @@ struct ReduceTilingModel
   void getTilableDimSizes(Operation *op,
                           SmallVectorImpl<int64_t> &dimSizes) const {
     auto reduce = cast<cinm::ReduceOp>(op);
-    auto inputType = cast<ShapedType>(reduce.getOperand().getType());
+    auto inputType = reduce.getInput().getType();
     auto shape = inputType.getShape();
     dimSizes.append(shape.begin(), shape.end());
   }
@@ -300,6 +300,42 @@ struct ReduceTilingModel
     int64_t reductionDim = reduce.getDimensionAttr().getInt();
     if (reductionDim < 0)
       reductionDim += inputType.getRank();
+
+    // Split the parallel and reduction components of a tile index.
+    auto splitTileIndex = [&](ValueRange tileIndex,
+                              SmallVectorImpl<int64_t> &parTileSize,
+                              SmallVectorImpl<Value> &parTileIndex) {
+      parTileSize.assign(tileSizes.begin(), tileSizes.end());
+      parTileSize.erase(parTileSize.begin() + reductionDim);
+      parTileIndex.assign(tileIndex.begin(), tileIndex.end());
+      parTileIndex.erase(parTileIndex.begin() + reductionDim);
+    };
+
+    if (Value outBuf = reduce.getOut()) {
+      // Memref (destination-passing) mode. The op accumulates into `out`, so
+      // each tile accumulates into the matching tile of `out` and there is no
+      // accumulator to carry through the loop nest -- the same shape
+      // gemm-like ops take when their operands are memrefs.
+      auto out = cast<TypedValue<ShapedType>>(outBuf);
+      createNestedAffineForLoops(
+          builder, reduce.getLoc(), inputType.getShape(), tileSizes, {},
+          [&](OpBuilder &b, Location loc, ValueRange tileIndex,
+              ValueRange) -> SmallVector<Value> {
+            Value sliceIn = extractSliceND(b, loc, reduce.getInput(), tileSizes,
+                                           tileIndex);
+            SmallVector<int64_t> parTileSize;
+            SmallVector<Value> parTileIndex;
+            splitTileIndex(tileIndex, parTileSize, parTileIndex);
+            // A fully-reduced output is rank 0: there is no slice to take.
+            Value sliceOut =
+                parTileSize.empty()
+                    ? out
+                    : extractSliceND(b, loc, out, parTileSize, parTileIndex);
+            ReduceOp::create(b, loc, method, sliceIn, sliceOut, reductionDim);
+            return {};
+          });
+      return DiagnosedSilenceableFailure::success();
+    }
 
     auto neutral = arith::getIdentityValueAttr(
         getArithConstant(method, inputType.getElementType()),
@@ -330,10 +366,9 @@ struct ReduceTilingModel
           Value sliceIn =
               extractSliceND(b, loc, reduce.getInput(), tileSizes, tileIndex);
 
-          SmallVector<int64_t> resultTileSize(tileSizes);
-          resultTileSize.erase(resultTileSize.begin() + reductionDim);
-          SmallVector<Value> resultTileIndex(tileIndex);
-          resultTileIndex.erase(resultTileIndex.begin() + reductionDim);
+          SmallVector<int64_t> resultTileSize;
+          SmallVector<Value> resultTileIndex;
+          splitTileIndex(tileIndex, resultTileSize, resultTileIndex);
 
           Type resultTy = resultTileSize.size() == 0
                               ? inputType.getElementType()
