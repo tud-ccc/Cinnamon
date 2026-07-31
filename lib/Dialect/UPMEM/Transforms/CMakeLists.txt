@@ -25,6 +25,8 @@ LINK_LIBS PUBLIC
     MLIRFuncDialect
     MLIRAffineDialect
     MLIRCinmToCnm
+    MLIRCinmToLinalg
+    MLIRLinalgToCnm
     MLIRCnmToUPMEM
     MLIRBufferizationTransforms
     MLIRBufferizationPipelines
