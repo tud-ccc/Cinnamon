@@ -274,6 +274,12 @@ struct UpmemInferencePlugin : cinm::InferencePlugin {
     pm->addPass(createCanonicalizerPass());
     pm->addPass(createCSEPass());
     pm->addPass(createConvertLinalgToAffineLoopsPass());
+    // Keep the reduction accumulator in a register. Straight out of linalg the
+    // innermost loop reloads and restores the output element on every
+    // iteration; the hand-written templates carry it in an scf.for iter_arg by
+    // construction, so without this the generic path pays two extra memory ops
+    // per multiply-accumulate.
+    pm->addNestedPass<func::FuncOp>(affine::createAffineScalarReplacementPass());
     pm->addPass(createCanonicalizerPass());
     pm->addPass(createCSEPass());
 
