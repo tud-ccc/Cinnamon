@@ -1,5 +1,6 @@
 // RUN: cinm-opt %s \
-// RUN:   --convert-linalg-to-cnm=cnm-buffer-level=mram --canonicalize --cse \
+// RUN:   --convert-linalg-to-cnm='cnm-buffer-level=mram per-dim-attrs=upmem.leaf_tile_sizes' \
+// RUN:   --canonicalize --cse \
 // RUN:   --eliminate-empty-tensors --one-shot-bufferize --cse --canonicalize \
 // RUN:   --upmem-tile-mram-buffers --canonicalize --cse \
 // RUN:   --cnm-ensure-scatter-gather-contiguous \
@@ -16,6 +17,11 @@
 //   b_m = mramRow * taskletCols / tasklets = 64 * 1 / 8 = 8
 //   b_k = mramCol / taskletCols            = 128 / 1    = 128
 //   leaf tile = [wramRow, wramCol]         = [8, 64]
+//
+// `per-dim-attrs` is needed because splitting the reduction rewrites the op
+// with an extra iteration dimension, and `upmem.leaf_tile_sizes` is indexed by
+// iteration dimension. Without it the list arrives one entry short and
+// --upmem-tile-mram-buffers rejects it.
 //
 // `taskletCols = 1` means the tasklets of one DPU split the *parallel*
 // dimension and share their slice of the vector. That is only reproducible

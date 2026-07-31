@@ -64,7 +64,13 @@ def ConvertLinalgToCnmPass : Pass<"convert-linalg-to-cnm"> {
              "Permit splitting a floating-point reduction across the "
              "workgroup. Doing so reassociates the sum and changes the "
              "result, so it is off by default rather than something the "
-             "search does silently.">
+             "search does silently.">,
+      ListOption<"perDimAttrs", "per-dim-attrs", "std::string",
+             "Names of discardable attributes holding one i64 per iteration "
+             "dimension of the op (e.g. `upmem.leaf_tile_sizes`). Splitting a "
+             "reduction rewrites the op and adds a dimension, so these are "
+             "carried onto the new op with a 1 inserted for it. Without this "
+             "a later pass would silently read a stale or missing list.">
     ];
 }
 
