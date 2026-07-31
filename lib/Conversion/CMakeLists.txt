@@ -1,5 +1,6 @@
 add_mlir_library(CinmCommonPatterns
     CommonPatterns.cpp
+    CnmBufferLevel.cpp
 
     LINK_COMPONENTS
     Core

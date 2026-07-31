@@ -1,5 +1,6 @@
 
 #include "cinm-mlir/Conversion/CinmPasses.h"
+#include "cinm-mlir/Conversion/CnmBufferLevel.h"
 #include "cinm-mlir/Dialect/Cinm/IR/CinmAttributes.h"
 #include "cinm-mlir/Dialect/Cinm/IR/CinmBase.h"
 #include "cinm-mlir/Dialect/Cinm/IR/CinmOps.h"
@@ -58,86 +59,8 @@ using namespace mlir;
 
 namespace {
 
-/// The memory level selected by `cnm-buffer-level`, resolved against a
-/// particular accelerator.
-struct BufferLevel {
-  /// Goes in the `cnm.buffer` type's level field and in the memory space of the
-  /// launch body's memrefs. Null when no level was requested.
-  cinm::CinmLevelAttrInterface space;
-  /// How many bytes of that level one leaf of the workgroup may use.
-  int64_t bytesPerLeaf;
-};
-
-/// Bytes of `level` available to a single leaf of the workgroup.
-///
-/// `getWorkgroupMemoryLevels()` is indexed by workgroup dimension: entry `i`
-/// lists the levels owned by a node at dimension `i`. Everything below that
-/// dimension shares the level, so one leaf's share is the level's capacity
-/// divided by the number of leaves under one such node. For UPMEM's leaf level
-/// this reproduces `bufferSizeOfLeaf()` (WRAM per DPU, divided by tasklets).
-std::optional<int64_t> capacityPerLeaf(cnm::CnmAcceleratorAttrInterface acc,
-                                       StringRef levelName) {
-  auto wgShape = acc.getWorkgroupShape();
-  auto levelsPerDim = acc.getWorkgroupMemoryLevels();
-  for (auto [dim, levels] : llvm::enumerate(levelsPerDim)) {
-    for (cinm::CinmLevelDefAttr level : levels) {
-      if (level.getName() != levelName)
-        continue;
-      int64_t leaves = 1;
-      for (size_t below = dim + 1; below < wgShape.size(); ++below)
-        leaves *= wgShape[below];
-      return leaves ? level.getSizeInBytes() / leaves : 0;
-    }
-  }
-  return std::nullopt;
-}
-
-/// Resolve the pass's `cnm-buffer-level` option against the accelerator's
-/// platform.
-///
-/// An empty name yields a null level and the accelerator's own leaf budget,
-/// which is what every buffer got before this option existed: the backend
-/// conversion then picks the staging itself.
-FailureOr<BufferLevel>
-resolveBufferLevel(StringRef levelName, cnm::CnmAcceleratorAttrInterface acc,
-                   Operation *op) {
-  if (levelName.empty())
-    return BufferLevel{{}, acc.bufferSizeOfLeaf()};
-
-  auto platform = acc.getPlatform();
-  if (!platform)
-    return op->emitOpError("cannot resolve memory level '")
-           << levelName << "': the accelerator declares no platform";
-
-  cinm::CinmLevelDefAttr def = platform.getLevel(levelName);
-  if (!def) {
-    auto diag = op->emitOpError("unknown memory level '")
-                << levelName << "' for platform '" << platform.getName()
-                << "'; known levels are ";
-    llvm::interleaveComma(platform.getLevels(), diag,
-                          [&](cinm::CinmLevelDefAttr l) {
-                            diag << "'" << l.getName().getValue() << "'";
-                          });
-    return diag;
-  }
-
-  cinm::CinmLevelAttrInterface space = platform.getMemrefMemspace(def);
-  if (!space)
-    return op->emitOpError("platform '")
-           << platform.getName()
-           << "' does not provide a memref memory space for level '"
-           << levelName << "'";
-
-  // The buffer budget has to follow the level: sizing an MRAM buffer by the
-  // WRAM budget would reject perfectly good tiles.
-  std::optional<int64_t> capacity = capacityPerLeaf(acc, levelName);
-  if (!capacity)
-    return op->emitOpError("level '")
-           << levelName
-           << "' is not one of the workgroup's memory levels on this "
-              "accelerator";
-  return BufferLevel{space, *capacity};
-}
+using cnm::BufferLevel;
+using cnm::resolveBufferLevel;
 
 LogicalResult
 computeShapeOfTensors(Location loc, llvm::ArrayRef<int64_t> shape,
