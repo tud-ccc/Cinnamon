@@ -53,7 +53,23 @@ descriptor and does *not* implement the level interface) and §F (the
 templates stay indefinitely, not just as a development oracle) — have
 been folded back into [CnmMemoryLevelsDesign.md](CnmMemoryLevelsDesign.md).
 
-**M5, M5b, M6 and M7 remain.** M5 is unblocked.
+**All milestones are implemented**, with one piece of M7 outstanding: the
+templates-vs-generic cost comparison. Both paths are selectable
+(`lowering=templates|generic`) and both are under test, but nothing yet
+*measures* the gap, and the cheap `op-count` simulator cannot ---
+it does not report time. That comparison is the milestone's real success
+criterion and needs a working cycle-accurate simulator run.
+
+Known gaps worth carrying forward:
+- `--upmem-tile-mram-buffers` promotes with `useFullTileBuffers=false`, so
+  a tile that does not divide its extent gets a full-size staging buffer
+  and a partial view of it. Correct, but the buffer is larger than the
+  tile; observed in the plugin test, where a 16-row WRAM buffer holds a
+  2-row tile.
+- The positional launch/op correspondence in `stampLeafTileSizes` holds
+  for one launch per converted op. It is checked, not assumed, so a
+  future pass that fuses or splits launches will fail loudly rather than
+  silently mis-tile.
 
 Two decisions were added along the way that the plan did not anticipate.
 
@@ -551,7 +567,7 @@ Original plan follows.
   `memref<..., #upmem.mram>`; plus a no-flag case still producing
   `linalg.contract`.
 
-### M5 — `--upmem-tile-mram-buffers`
+### M5 — `--upmem-tile-mram-buffers` — **DONE**
 
 **Goal:** decision 5, now via linalg rather than cinm ops (decision 12).
 New UPMEM-dialect pass, new file
@@ -618,7 +634,14 @@ reduction loop. See M5b — land M5 correct first, then measure.
   produces ([UpmemInferAccelerator.cpp:427-440](../lib/Dialect/UPMEM/Transforms/UpmemInferAccelerator.cpp#L427-L440)) —
   still gets alloc + transfers.
 
-### M5b — hoist the output tile out of the reduction loop
+### M5b — hoist the output tile out of the reduction loop — **DONE**
+
+Option 1 (existing loop-invariant passes) was tried and does not work:
+`--loop-invariant-code-motion` will not move ops with memory effects, and
+`--loop-invariant-subset-hoisting` threads subsets through loop
+`iter_args`, which an `scf.for` over memrefs does not have. Both hoist
+the `memref.subview` and leave the transfer and the allocation behind.
+Option 2 (two-stage promotion) is what landed.
 
 **Goal:** close the transfer-volume gap with the templates.
 
@@ -654,7 +677,7 @@ On a K-split gemv that is the difference between one output transfer and
   this actually closed the gap; M5b should not be declared done on IR
   shape alone.
 
-### M6 — `--convert-cnm-to-upmem` for MRAM-level launches
+### M6 — `--convert-cnm-to-upmem` for MRAM-level launches — **DONE**
 
 **Goal:** decisions 4 and 6, backend side.
 
@@ -691,7 +714,7 @@ MRAM-level ones, whose staging M5 has already made explicit.
 - Second case: tasklet-independent scatter map → the static alloc is used
   whole, no subview.
 
-### M7 — Plugin wiring
+### M7 — Plugin wiring — **DONE except the cost comparison**
 
 **Goal:** decisions 7, 8, 9.
 
@@ -773,10 +796,10 @@ MRAM-level ones, whose staging M5 has already made explicit.
 | M2 ✅ | `cnm.local_transfer` | `Dialect/Cnm/cnm-local-transfer.mlir` (new, round-trip); `Dialect/Cnm/cnm-verifier.mlir` (new) |
 | M3 ✅ | reduce accumulation fix; reduce DPS mode | `Transform/Cinm/cinm-tiling-reduce.mlir` (fixed: had locked in the bug); `Dialect/Cinm/cinm-reduce-memref-tiling.mlir` (new); `cinm-reduce-verifier.mlir` (new); `cinm-gemv-memref-tiling.mlir` (new, existing gap); `cinm-parse-memrefs.mlir` (extended) |
 | M4 ⊘ | withdrawn; launch bodies stay linalg | `Conversion/CinmToCnm/cinm-to-cnm-launch-body.mlir` (new; pins the linalg-on-levelled-memrefs shape M5 consumes); `cinm-to-cnm-buffer-level.mlir` (extended: reduce dimension, `mul` identity) |
-| M5 | `--upmem-tile-mram-buffers` (tile + promote) | `Transform/UPMEM/upmem-tile-mram-buffers.mlir` (new; contract, reduce, degenerate-tile cases) |
-| M5b | output-tile hoisting | `upmem-tile-mram-buffers.mlir` (extend: split reduction, transfers outside the loop); M7's cost comparison is the real signal |
-| M6 | MRAM launch args; `cnm.local_transfer` lowering | `Conversion/CnmToUpmem/cnm-to-upmem-mram-level.mlir` (new, 2 cases) |
-| M7 | plugin map, staged pipeline, `lowering=` selector | `Transform/UPMEM/gemv-generic-mram-pipeline.mlir` (new, flags-only end-to-end); `Dialect/UPMEM/upmem-infer-accelerator.mlir` (add RUN line); `upmem-infer-accelerator-generic.mlir` (new); templates-vs-generic cost comparison |
+| M5 ✅ | `--upmem-tile-mram-buffers` (tile + promote) | `Transform/UPMEM/upmem-tile-mram-buffers.mlir` (new; contract, reduce, degenerate-tile cases) |
+| M5b ✅ | output-tile hoisting | `upmem-tile-mram-buffers.mlir` (extend: split reduction, transfers outside the loop); M7's cost comparison is the real signal |
+| M6 ✅ | MRAM launch args; `cnm.local_transfer` lowering | `Conversion/CnmToUpmem/cnm-to-upmem-mram-level.mlir` (new, 2 cases) |
+| M7 ◐ | plugin map, staged pipeline, `lowering=` selector (cost comparison outstanding) | `Transform/UPMEM/gemv-generic-mram-pipeline.mlir` (new, flags-only end-to-end); `Dialect/UPMEM/upmem-infer-accelerator.mlir` (add RUN line); `upmem-infer-accelerator-generic.mlir` (new); templates-vs-generic cost comparison |
 
 ---
 
