@@ -10,8 +10,17 @@ include "mlir/Pass/PassBase.td"
 def ConvertTiledCinmToCnm : Pass<"convert-cinm-to-cnm"> {
     let summary = "Convert CINM dialect to CNM dialect (may require --cinm-tiling before)";
     let constructor = "mlir::cinm::createConvertTiledCinmToCnmPass()";
-    let dependentDialects = ["cnm::CnmDialect", "func::FuncDialect", 
+    let dependentDialects = ["cnm::CnmDialect", "func::FuncDialect",
         "arith::ArithDialect", "tensor::TensorDialect", "bufferization::BufferizationDialect"];
+    let options = [
+      Option<"bufferLevel", "cnm-buffer-level", "std::string", [{""}],
+             "Name of the memory level to allocate cnm.buffers in, resolved "
+             "against the accelerator's platform (e.g. `mram` or `wram` for "
+             "UPMEM). The level becomes the buffer type's level and the memory "
+             "space of the launch body's memrefs. Empty means unlevelled "
+             "buffers, which is what the backend conversion assumes when it "
+             "picks the staging itself.">
+    ];
 }
 
 def ConvertTiledCinmToCim : Pass<"convert-cinm-to-cim"> {
