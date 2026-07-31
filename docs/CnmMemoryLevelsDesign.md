@@ -483,6 +483,196 @@ MRAM/WRAM split, and `UpmemGenericLoweringNotes.md` already flags
 matmul/double-reduction as the next-hardest cases — no need to jump
 there first).
 
+## G. Parameterizing the distribution: `linalg → cnm`
+
+**Motivating failure.** M7's plugin fed the template search's
+`mramRow`/`mramCol` into `cinm.tile_sizes` and produced a tile far too
+small, then failed in `--convert-cinm-to-cnm` with `numParallelElts
+(64) % numWgItems (16384) != 0`. Two separate causes:
+
+1. `mramRow`/`mramCol` are *per-DPU* block sizes, but `--cinm-tiling`
+   must produce the *per-workgroup* tile that `--convert-cinm-to-cnm`
+   then distributes over all `dpus * tasklets` leaves.
+2. More fundamentally, `computeShapeOfTensors`
+   ([CinmToCnm.cpp:143-340](../lib/Conversion/CinmToCnm/CinmToCnm.cpp#L143-L340))
+   maps *parallel* dims onto workgroup elements and places the *whole*
+   reduction extent in each leaf's buffer. It never splits a reduction
+   across the workgroup. So `dpuCols`/`taskletCols` — K-splitting with
+   partial-sum merging, which the templates do — have **no
+   representation at all** in the CNM path. For the logged
+   configuration (M=4096, K=4096, 2048 DPUs × 8 tasklets) the
+   constraints force `dpuCols >= 32`; the CNM path would need 4096 rows
+   spread over 16384 leaves, a quarter row each. The search space was
+   describing a decomposition the generic pipeline cannot express.
+
+**Decided:** give CNM reduction splitting, and take the opportunity to
+make the distribution mechanical rather than heuristic. This is the
+same theme as the rest of this effort — `--convert-cinm-to-cnm` takes
+too many decisions; they should be parameters the DSE supplies.
+
+### G1. The model
+
+Treat the op as a loop nest over its iteration space. Tiling each
+dimension yields outer loops over tiles and inner loops within a tile.
+The inner loops become the `cnm.launch` body; the outer loops are never
+emitted — they *are* the workgroup, and they determine the
+scatter/gather maps. Everything the conversion needs follows from one
+block-size vector.
+
+### G2. The parameter
+
+A per-iteration-dimension **block size** `b_i`, from which the tile
+count `f_i = E_i / b_i` is derived.
+
+Block sizes, not factors, deliberately: `--cinm-tiling`'s
+`cinm.tile_sizes` are block sizes (loop steps — verified: `array<i64:
+16, 32>` on `memref<64x128xi32>` gives `step 16`/`step 32`), and the
+search's natural variables (`mramRow`, `mramCol`) are block sizes too.
+One unit throughout the stack; the M7 failure above was precisely a
+units confusion.
+
+Constraint: `∏(E_i / b_i) == |WG|` **exactly**. Sequential outer trips
+stay upstream in `--cinm-tiling`, so this conversion distributes one
+workgroup-sized tile and never emits a host loop of its own.
+
+This lines up term-for-term with the template constraints: M-tiles ↔
+`dpuRows`, K-tiles ↔ `dpuCols`. The `numParallelElts % numWgItems`
+failure class disappears — the constraint is stated in the parameters
+and checked in `SpaceBuilder` rather than discovered mid-conversion.
+
+### G3. Tile-space → workgroup order: fixed by rule, not searched
+
+Mapping tile coordinates to workgroup coordinates needs an *order*, not
+just sizes, and the order is not neutral: it decides which dim varies
+fastest across tasklets vs DPUs, hence scatter contiguity.
+
+**Decided:** linearize both sides (the workgroup already is —
+`mlir::linearizeIndices(ctx, wgShape)`) and fix the tile-side order by
+rule: **parallel dims outer, reduction dims inner, op dim order within
+each group.** No search variable.
+
+Rationale for why this costs nothing *now*: under this formulation the
+template's `dpuCols` and `taskletCols` collapse into a single `k_tiles
+= K / b_k`, and where the DPU/tasklet boundary falls inside that split
+stops being a parameter. Since partial merging happens on the host
+(G5), two tasklets in the same DPU holding partials of the same output
+row have no advantage over two different DPUs — both go through the
+gather. The boundary only becomes semantically visible once
+device-side partial merging exists.
+
+What is given up: every factorization `(m_tiles, k_tiles)` stays
+reachable, so utilization, buffer sizes and capacity constraints are
+fully covered. What is fixed is only which hardware axis each
+iteration dim lands on — a locality/contiguity dimension, not a
+coverage one.
+
+**When to revisit:** when device-side merging lands. Note the scale
+then — iteration rank is 1 (elementwise), 2 (gemv), 3 (gemm), so there
+are at most `3! = 6` orders. Enumerate them (a small categorical
+variable, or one space instance per order); a first-class permutation
+representation with a permutation-aware distance function, BACO-style,
+is not warranted at this size and probably never will be.
+
+### G4. Reduction splitting: the one structural addition
+
+If reduction dim `d` has `f_d > 1`, leaves differing only in `d`'s tile
+coordinate compute partials of the *same* output region, so the gather
+map is no longer injective unless the host destination gains a
+dimension of size `f_d`. The conversion emits `cnm.gather` into
+`tensor<... × f_d × outTile>` followed by a host-side `linalg.reduce`
+over that dim using the op's combiner.
+
+This is genuinely new IR, not bookkeeping — everything else in G1
+follows mechanically from the tiling.
+
+Reuse candidate: `linalg::splitReduction`
+([Transforms.h:1271](../third-party/llvm/mlir/include/mlir/Dialect/Linalg/Transforms/Transforms.h#L1271))
+performs exactly this partial+merge transformation and creates the
+neutral-element fill itself, covering G5 too. To check: whether its
+extra-dim placement convention matches what the gather wants, or
+whether `PartialReductionOpInterface`
+([TilingInterface.td:404](../third-party/llvm/mlir/include/mlir/Interfaces/TilingInterface.td#L404))
+is the better route.
+
+### G5. Identity seeding
+
+Every leaf starts from the reduction identity, never from the incoming
+`out` value — otherwise the init is applied `f_d` times. The original
+`out` is folded in exactly once during the host merge. Commit 71cd9c1
+already seeds the scatter init with the method's identity for the
+unsplit case; splitting makes it mandatory. Seeding *all* leaves with
+identity (rather than one with `out` and the rest with identity) also
+composes with the broadcast-of-constant reduction optimization.
+
+### G6. Legality
+
+Splitting requires an associative and commutative combiner.
+`add`/`mul`/`min`/`max` qualify; an arbitrary `linalg.reduce` region
+does not. The op must answer "may dim `d` be split?", and the
+conversion must refuse `f_d > 1` when it cannot. On floats even `add`
+is a numerics change, so float reassociation is an **explicit opt-in
+flag**, not something the search does silently (expected to be enabled
+most of the time in practice).
+
+### G7. What the parameter set does *not* need
+
+- **Broadcast operands** come free: an operand whose indexing map omits
+  dim `d` gets a scatter map constant in `d`'s workgroup coordinate —
+  the existing `#bcast` shape.
+- **Buffer level** stays the separate `cnm-buffer-level` parameter (§A2).
+- **Leaf tiling** stays `upmem.leaf_tile_sizes`, consumed by
+  `--upmem-tile-mram-buffers` (M5).
+- **Operand placement** is derived from indexing maps.
+
+### G8. Prerequisite: distribute `linalg`, not `cinm`
+
+The conversion needs, per op: iteration domain, per-operand indexing
+maps, reduction dims, combiner. That is exactly the `LinalgOp`
+contract, and M5 already committed to keying off linalg indexing maps
+rather than op identity.
+
+**Decided:** convert to linalg first and add a
+`--convert-linalg-to-cnm` pass. `--convert-cinm-to-linalg` already
+exists and covers gemv/gemm/batch variants/reduce/elementwise/transpose
+([CinmToLinalg.cpp](../lib/Conversion/CinmToLinalg/CinmToLinalg.cpp)),
+though it may need updating.
+
+This also gives **operator fusion for free** — linalg fusion on tensors
+before distribution.
+
+Consequences to plan around:
+
+- **Fusion breaks op identification.** `recordParams`/`walkIndexOf`
+  index ops by walk position; fusion changes the op count, the walk
+  indices, *and* the iteration space (a fused op's dim set is neither
+  producer's). Required ordering: convert to linalg → fuse → build the
+  search space by walking the fused linalg ops → stamp. This is also a
+  simplification: `handleGemv` and the other per-op handlers become one
+  generic handler driven by indexing maps and `getReductionDims`.
+- **The two paths fork earlier.** The templates path stays on cinm ops,
+  so `--convert-cinm-to-linalg` sits on the generic branch only. §F's
+  "same configuration, two lowerings" comparison weakens — after fusion
+  the generic path may not have the same op set to configure. **Open:**
+  should the comparison baseline be the *unfused* generic path?
+
+### G9. Simplification payoff
+
+Most of
+[CinmToCnm.cpp:143-340](../lib/Conversion/CinmToCnm/CinmToCnm.cpp#L143-L340)
+deletes. The "case 0 / case 1 / case 2, flatten trailing parallel dims
+until `trailing % k == 0`, maybe emit a reshape, and the transpose has
+to happen in the caller" block exists to *guess* a distribution. Here
+the scatter map is `indexingMap ∘ (workgroup → tile)`, computed
+directly, and contiguity is already somebody else's job
+(`--cnm-ensure-scatter-gather-contiguous`).
+
+### G10. Deferred
+
+Device-side tree reduction of partials — host merge only for now. A
+pure optimization over the same parameterization; it can land later
+without changing the parameter set. It is, however, the trigger for
+revisiting G3.
+
 ## Summary of open questions
 
 1. ~~§A1: reuse `CinmLevelDefAttr` for `cnm.buffer`'s `level`, or
@@ -526,7 +716,15 @@ there first).
    mechanism, or serve a different class of parameters? (Still open —
    §D confirms the *existing* mechanism, reused twice, is sufficient
    for this effort, but doesn't say what these stubs are for.)
-7. §E: merge with `UpmemGenericLoweringNotes.md` once §A3 is settled,
+7. §G8: with fusion on the generic branch only, the two paths no longer
+   share an op set, so §F's same-configuration cost comparison weakens.
+   Should the comparison baseline be the *unfused* generic path? (New,
+   open.)
+8. §G4: reuse `linalg::splitReduction` for the partial+merge rewrite, or
+   go through `PartialReductionOpInterface`? Depends on whether
+   `splitReduction`'s extra-dim placement matches what the gather needs.
+   (New, open — resolve empirically during M8.)
+9. §E: merge with `UpmemGenericLoweringNotes.md` once §A3 is settled,
    or keep the direct `linalg.generic → upmem` path as a permanent
    parallel option? (§A3 being settled now makes this more concrete:
    the note's points 1-3 map onto the two `--cinm-tiling` passes'
