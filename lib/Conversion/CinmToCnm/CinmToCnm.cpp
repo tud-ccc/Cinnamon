@@ -1056,6 +1056,9 @@ struct ConvertCinmReduceToCnm : public OpConversionPattern<cinm::ReduceOp> {
   matchAndRewrite(cinm::ReduceOp op,
                   OpConversionPattern<cinm::ReduceOp>::OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
+    // Memref mode is not handled here, same as the gemm-like patterns.
+    if (!op.getResult())
+      return failure();
 
     ImplicitLocOpBuilder builder(op->getLoc(), rewriter);
     auto cnmAccelerator =

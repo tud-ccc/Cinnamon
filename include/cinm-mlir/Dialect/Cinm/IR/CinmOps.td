@@ -189,7 +189,8 @@ def Cinm_ScanOp : Cinm_Op<"op.scan", [SameOperandsAndResultType, Pure]> {
 }
 
 def Cinm_ReduceOp : Cinm_Op<"op.reduce",
-    [Pure, DeclareOpInterfaceMethods<InferTypeOpInterface, ["inferReturnTypes"]>]> {
+    [DeclareOpInterfaceMethods<MemoryEffectsOpInterface>,
+     DeclareOpInterfaceMethods<InferTypeOpInterface, ["inferReturnTypes"]>]> {
   let summary = "Reduce the tensor according to a given binary operator.";
 
   let description = [{
@@ -210,11 +211,28 @@ def Cinm_ReduceOp : Cinm_Op<"op.reduce",
         cinm.yield %max_along_dim1_a : tensor<288xf32>
     }
     ```
+
+    Like the GEMM-like ops, this op has a memref (destination-passing) mode,
+    used when the operands live in device memory -- in particular inside a
+    `cnm.launch` body. There the reduction accumulates into `%out` rather than
+    producing a value, and reads `%out`'s previous contents:
+
+    ```mlir
+        // %out = combine(%out, reduce(%x))
+        cinm.op.reduce add (%x) into %out : memref<288x512xf32> into memref<288xf32>
+    ```
+
+    Accumulating rather than overwriting is what makes the memref mode tilable:
+    a tile of the reduction dimension contributes a partial result, and the
+    caller seeds `%out` with the reduction's identity beforehand (which is what
+    the `cnm.scatter` of the output init already does on the CNM path).
   }];
 
   let arguments = (ins
     Cinm_ReduceMethodAttr:$method,
     AnyShaped:$input,
+    // Destination buffer for the memref mode; absent in tensor mode.
+    Optional<AnyShaped>:$out,
     // This attribute is internal and to pass information
     // to the result type inference, in case the result should
     // not be implicitly rank-reduced (scalarized).
@@ -224,17 +242,22 @@ def Cinm_ReduceOp : Cinm_Op<"op.reduce",
 
   let skipDefaultBuilders = 1;
   let builders = [
-    OpBuilder<(ins "Type":$resultTy, "cinm::ReduceMethod":$method,  "Value":$input, CArg<"int64_t", "-1">:$dimension)>
+    OpBuilder<(ins "Type":$resultTy, "cinm::ReduceMethod":$method,  "Value":$input, CArg<"int64_t", "-1">:$dimension)>,
+    // Memref mode: no result, accumulates into `out`.
+    OpBuilder<(ins "cinm::ReduceMethod":$method, "Value":$input, "Value":$out, CArg<"int64_t", "-1">:$dimension)>
     ];
 
   let results = (
     outs
-    AnyType:$result
+    Optional<AnyType>:$result
   );
 
   let hasCanonicalizer = 1;
   let hasVerifier = 1;
   let extraClassDeclaration = [{
+    /// True when the op operates on tensors (produces a result).
+    /// False when it accumulates in-place into a memref output buffer.
+    bool isTensorVariant() { return static_cast<bool>(getResult()); }
   }];
 
   let hasCustomAssemblyFormat = 1;

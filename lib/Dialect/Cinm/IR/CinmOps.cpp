@@ -324,6 +324,29 @@ LogicalResult ReduceOp::verify() {
   if (getDimension() < 0 || getDimension() >= maxDim)
     return emitOpError("Reduce op dimension should be within [0, ")
            << maxDim << ")";
+
+  if (!getOut())
+    return success();
+
+  // Memref (destination-passing) mode.
+  auto inputTy = getInput().getType();
+  auto outTy = cast<ShapedType>(getOut().getType());
+  if (!isa<MemRefType>(inputTy) || !isa<MemRefType>(outTy))
+    return emitOpError("`into` output buffer is only supported in memref mode, "
+                       "where the input is a memref too");
+  if (getResult())
+    return emitOpError("memref mode does not produce a result");
+  if (outTy.getElementType() != inputTy.getElementType())
+    return emitOpError("output buffer element type ")
+           << outTy.getElementType() << " does not match input element type "
+           << inputTy.getElementType();
+
+  SmallVector<int64_t> expected(inputTy.getShape());
+  expected.erase(expected.begin() + getDimension());
+  if (outTy.getShape() != ArrayRef<int64_t>(expected))
+    return emitOpError("output buffer shape ")
+           << outTy.getShape() << " does not match the shape obtained by "
+           << "reducing dimension " << getDimension() << " of the input";
   return success();
 }
 
@@ -351,20 +374,37 @@ LogicalResult ReduceOp::verify() {
       return failure();
   }
 
+  // Memref mode: `into $out ... : type($input) into type($out)`.
+  OpAsmParser::UnresolvedOperand outBuf;
+  bool hasOut = parser.parseOptionalKeyword("into").succeeded();
+  if (hasOut && parser.parseOperand(outBuf))
+    return failure();
+
   if (parser.parseOptionalAttrDict(result.attributes) || parser.parseColon())
     return failure();
 
-  Type inputType, resultType;
-  if (parser.parseType(inputType) || parser.parseArrow() ||
-      parser.parseType(resultType))
+  Type inputType, otherType;
+  if (parser.parseType(inputType))
     return failure();
+  if (hasOut) {
+    if (parser.parseKeyword("into") || parser.parseType(otherType))
+      return failure();
+  } else if (parser.parseArrow() || parser.parseType(otherType)) {
+    return failure();
+  }
 
-  SmallVector<Value, 1> inputResolved;
-  if (parser.resolveOperand(input, inputType, inputResolved))
+  SmallVector<Value, 2> resolved;
+  if (parser.resolveOperand(input, inputType, resolved))
     return failure();
 
   OpBuilder b(parser.getContext());
-  build(b, result, resultType, *method, inputResolved[0], dimension);
+  if (hasOut) {
+    if (parser.resolveOperand(outBuf, otherType, resolved))
+      return failure();
+    build(b, result, *method, resolved[0], resolved[1], dimension);
+  } else {
+    build(b, result, otherType, *method, resolved[0], dimension);
+  }
   return success();
 }
 
@@ -374,11 +414,17 @@ void ReduceOp::print(::mlir::OpAsmPrinter &out) {
   auto dim = getDimension();
   if (dim != getInput().getType().getShape().size() - 1)
     out << " dim " << dim;
+  if (getOut())
+    out << " into " << getOut();
 
   out.printOptionalAttrDict(
       (*this)->getAttrs(),
       /*elidedAttrs=*/{getMethodAttrName(), getDimensionAttrName(), getRankReduceAttrName()});
-  out << " : " << getInput().getType() << " -> " << getResult().getType();
+  out << " : " << getInput().getType();
+  if (getOut())
+    out << " into " << getOut().getType();
+  else
+    out << " -> " << getResult().getType();
 }
 
 void ReduceOp::build(OpBuilder &builder, OperationState &state, Type resultTy,
@@ -403,11 +449,32 @@ void ReduceOp::build(OpBuilder &builder, OperationState &state, Type resultTy,
                      builder.getI64IntegerAttr(dimension));
 }
 
+void ReduceOp::build(OpBuilder &builder, OperationState &state,
+                     ReduceMethod kind, Value input, Value out,
+                     int64_t dimension) {
+  state.addOperands({input, out});
+  state.addAttribute(getMethodAttrName(state.name),
+                     builder.getAttr<ReduceMethodAttr>(kind));
+  if (auto shaped = llvm::dyn_cast_or_null<ShapedType>(input.getType());
+      shaped && dimension < 0)
+    dimension += shaped.getRank();
+
+  // Irrelevant in memref mode: the result shape is `out`'s.
+  state.addAttribute(getRankReduceAttrName(state.name),
+                     builder.getBoolAttr(true));
+  state.addAttribute(getDimensionAttrName(state.name),
+                     builder.getI64IntegerAttr(dimension));
+}
+
 ::llvm::LogicalResult ReduceOp::inferReturnTypes(
     ::mlir::MLIRContext *, ::std::optional<::mlir::Location>,
     ::mlir::ValueRange operands, ::mlir::DictionaryAttr,
     ::mlir::PropertyRef properties, ::mlir::RegionRange,
     ::llvm::SmallVectorImpl<::mlir::Type> &inferredReturnTypes) {
+
+  // Memref mode accumulates into its `out` operand and yields nothing.
+  if (operands.size() > 1)
+    return success();
 
   auto inputTy = cast<ShapedType>(operands[0].getType());
   const Properties *props = properties.as<Properties *>();
@@ -829,6 +896,19 @@ void BatchGemvOp::getEffects(
     llvm::SmallVectorImpl<SideEffects::EffectInstance<MemoryEffects::Effect>>
         &effects) {
   getGemmLikeEffects(*this, effects);
+}
+
+void ReduceOp::getEffects(
+    llvm::SmallVectorImpl<SideEffects::EffectInstance<MemoryEffects::Effect>>
+        &effects) {
+  if (!getOut()) {
+    // tensor variant, no effects
+    return;
+  }
+  addEffect<MemoryEffects::Read>(getInputMutable(), effects);
+  // The reduction accumulates into the out buffer, so it reads it too.
+  addEffect<MemoryEffects::Read>(getOutMutable()[0], effects);
+  addEffect<MemoryEffects::Write>(getOutMutable()[0], effects);
 }
 
 void ElementwiseOp::getEffects(
