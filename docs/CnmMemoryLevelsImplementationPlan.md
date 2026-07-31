@@ -1,688 +1,580 @@
 # Implementation plan: CNM memory-level awareness (§A)
 
-This is the concrete, code-level plan for [CnmMemoryLevelsDesign.md](CnmMemoryLevelsDesign.md)
-§A. It assumes that document's decisions as given and does not re-litigate
-them. Two things this pass over the design surfaced that aren't in that
-document yet:
+Code-level plan for [CnmMemoryLevelsDesign.md](CnmMemoryLevelsDesign.md) §A.
+Everything in §0 below is settled context to keep in mind while
+implementing; the per-milestone sections (§3) carry the actual work.
 
-1. A **consistency review** (§0 below) — gaps between §A's decisions and
-   the current code, found by reading `UpmemInferAccelerator.cpp`,
-   `CinmToCnm.cpp`, `CinmTilingImplementations.cpp`, and the relevant
-   `Passes.td` files in full rather than the excerpts the design doc
-   quotes. Two of these are real blockers, not polish.
-2. A **milestone breakdown** (§1 onward) — one shippable unit per
-   milestone, each ending in working, tested code, in dependency order.
-   Every new pass and every new pass option gets a test file specified
-   as part of its milestone, per existing lit conventions (`cinm-opt`
-   + `FileCheck`, `--split-input-file` where a file holds multiple
-   cases).
+## 0. Standing decisions
 
-Reassuring finding first: `CinmToCnm.cpp` already has a comment block
-sketching almost exactly this design
-([CinmToCnm.cpp:376-411](../lib/Conversion/CinmToCnm/CinmToCnm.cpp#L376-L411)) —
-down to `cnm.buffer<128xi32 on 8, "wram">` syntax and a `cnm.launch`
-whose block arguments are MRAM buffers. This plan is the realization of
-that TODO, not a new direction.
+**Goal.** `cinm.op.gemv`/`cinm.op.reduce` should reach UPMEM through the
+real pipeline (`--cinm-tiling` → `--convert-cinm-to-cnm` → cleanup →
+`--convert-cnm-to-upmem`), producing code of the same quality as the
+hand-written templates in `SimulationTemplates.cpp`.
 
-## 0. Consistency review
+1. **Levels are `#upmem.mram` / `#upmem.wram`** — the *existing*
+   `upmem::DpuMemSpaceAttr`, which already serves as the memref memory
+   space everywhere downstream. It gains a `CinmLevelAttrInterface`
+   implementation. No new attributes.
+2. **Level identity ≠ level capacity.** The level attribute identifies a
+   level and doubles as the memref memory space; it carries no size
+   (it can't — see §1.4). Capacity stays platform-side in
+   `CinmLevelDefAttr`, reached via `platform.getLevel(name)`.
+3. **`--convert-cinm-to-cnm` gets one pass-wide `cnm-buffer-level`
+   option.** No per-operand granularity. UPMEM always passes `mram`.
+   Default (empty) = today's behavior exactly.
+4. **`cnm.launch` bodies receive level-tagged memrefs and contain real
+   `cinm` ops.** The launch body is device code; on-device staging can't
+   be hoisted outside it. Inner ops implement `CinmTilingInterface`.
+5. **WRAM staging = a second `--cinm-tiling` round inside the launch
+   body**, then a UPMEM-provided pass that allocates private WRAM and
+   wraps the leaf op in `cnm.local_transfer`s. `--cinm-tiling` itself is
+   reused unmodified.
+6. **`cnm.local_transfer` operates on memrefs**, not `cnm.buffer` —
+   tiling is expressed with ordinary `memref.subview`. Its backend
+   realization is `--convert-cnm-to-upmem`'s business.
+7. **Search parameters live in the plugin, not in IR attributes.**
+   `UpmemInferencePlugin` keeps an `Operation* → SpaceVars` map and
+   re-stamps freshly resolved values immediately before each pass that
+   consumes them. IR attributes are never assumed to survive a pass.
+8. **`evaluate()` runs the full lowering** — there is no separate,
+   cheaper "evaluation-only" lowering that could drift from real codegen.
+9. **The templates stay.** `SimulationTemplates.cpp` and the
+   `registerSimulator` bypass are *not* deleted; they are the quality
+   bar the generic pipeline must reach. `evaluate()` selects between the
+   two paths so they can be compared directly.
+10. **No cost/transfer metadata at the CNM level.** The cost model runs
+    on UPMEM-dialect IR, after conversion.
 
-### 0.1 `cinm.op.reduce` has no memref/DPS mode — blocks §A3 for `handleReduce`
+### 0.1 Two corrections to fold back into the design doc
 
-`Cinm_GemmlikeOp` (backing `gemv`/`gemm`/`batch_gemv`/`batch_gemm`) already
-has a dual tensor/memref mode via `GemmlikeOpInterface::isTensorVariant()`
-([CinmGemmlikeOpInterface.td](../include/cinm-mlir/Dialect/Cinm/IR/CinmGemmlikeOpInterface.td),
-[CinmOps.td:104-109](../include/cinm-mlir/Dialect/Cinm/IR/CinmOps.td#L104-L109)):
-`lhs`/`rhs`/`bias`/`out` are all `AnyShaped`, and in memref mode the op
-accumulates into `out` in place with no result. `GemmLikeTilingModel`
-already branches on `isa<MemRefType>(out.getType())`
-([CinmTilingImplementations.cpp:178-183](../lib/Dialect/Cinm/Transforms/CinmTilingImplementations.cpp#L178-L183)).
-This is exactly what §A3 needs for a smaller `cinm.op.gemv` to live inside
-a `cnm.launch` body operating on memrefs — **no changes needed for
-gemv/gemm/batch_gemv/batch_gemm.**
+- **§A1** says `CinmLevelDefAttr` becomes an implementation of the new
+  level interface. It shouldn't — it's a capacity *descriptor*, a
+  different concept from the level *identity* that goes in a memref
+  memory space (§1.4). Only `DpuMemSpaceAttr` implements the interface.
+- **§F** suggests keeping the templates "as an oracle during
+  development", implying eventual removal. Per decision 9 they stay
+  indefinitely as the quality objective.
 
-`Cinm_ReduceOp` does not have this. It's declared `Pure`
-([CinmOps.td:191-192](../include/cinm-mlir/Dialect/Cinm/IR/CinmOps.td#L191-L192)),
-has only `input: AnyShaped` and a tensor/scalar `result` — no `out`
-operand. `ReduceTilingModel::convertToTiledOps` only builds a
-`tensor::EmptyOp` or scalar `arith::ConstantOp` accumulator
-([CinmTilingImplementations.cpp:293-302](../lib/Dialect/Cinm/Transforms/CinmTilingImplementations.cpp#L293-L302)) —
-there is no path that produces a memref-mode reduce. So `handleReduce`'s
-launch body cannot contain a smaller `cinm.op.reduce` today; §A3 as
-designed does not yet apply to reduce.
+## 1. What already exists
 
-**This needs its own sub-step before milestone M3** (below): give
-`Cinm_ReduceOp` a memref/DPS mode mirroring `GemmlikeOpInterface` —
-add an optional `out: AnyShaped` operand, drop (or conditionally relax)
-`Pure`, add `isTensorVariant()`, and extend `ReduceTilingModel` to
-accumulate into `out` when present, the same way `GemmLikeTilingModel`
-does. Scope note: this only needs to support the last-dimension
-reduction case `handleReduce` already restricts itself to
+Reviewing the code (and running it) turned up considerably more working
+infrastructure than the design doc assumed. Each of these shrinks or
+redirects a milestone.
+
+### 1.1 `#upmem.mram` / `#upmem.wram` already exist and are already used as memory spaces
+
+`upmem::DpuMemSpaceAttr`
+([UPMEMAttributes.td:25-38](../include/cinm-mlir/Dialect/UPMEM/IR/UPMEMAttributes.td#L25-L38))
+is an enum attr over `{MRAM, WRAM}` that prints as `#upmem.mram` /
+`#upmem.wram`. It is already:
+
+- the `memSpace` attribute of `upmem.static_alloc`
+  ([UPMEMOps.td:153](../include/cinm-mlir/Dialect/UPMEM/IR/UPMEMOps.td#L153));
+- the **memref memory space** produced by `--convert-cnm-to-upmem`
+  ([CnmToUPMEM.cpp:482-498](../lib/Conversion/CnmToUPMEM/CnmToUPMEM.cpp#L482-L498));
+- what the C++ translator dispatches on
+  (`isInMemspace`, [UPMEMTranslateToCpp.cpp:358-364](../lib/Target/UPMEMCpp/UPMEMTranslateToCpp.cpp#L358-L364))
+  and what the Python simulator reads
+  ([UpmemPythonSimulator.cpp:88-89](../lib/Dialect/UPMEM/Transforms/UpmemPythonSimulator.cpp#L88-L89)).
+
+So M0 is not "define new attributes", it is "implement one interface on
+an attribute that already exists and is already load-bearing".
+
+### 1.2 `cnm.buffer`'s `level` field is already exercised end-to-end
+
+Contrary to the design doc's inventory ("nothing ever sets it"),
+`test/Conversion/CnmToUpmem/cnm-to-upmem.mlir:72-79` already writes
+`!cnm.buffer<64xi32 on #upmem_1_16_1, #upmem.wram>` with matching
+`memref<64xi32, #upmem.wram>` launch block arguments, and that input
+lowers correctly through `--convert-cnm-to-upmem` today (verified by
+running it). What is true is narrower: **`--convert-cinm-to-cnm` never
+sets it** ([CinmToCnm.cpp:309-311](../lib/Conversion/CinmToCnm/CinmToCnm.cpp#L309-L311),
+`// todo level is hardcoded`), and **`--convert-cnm-to-upmem` never
+reads it** — `getLevel()` has no callers outside the type's own
+printer and `LaunchOp::verify`. Today the field is decorative: writing
+`#upmem.wram` or nothing produces identical output.
+
+I also confirmed by construction that an MRAM-tagged buffer with
+MRAM-tagged launch block arguments parses and verifies today — §A3's
+type-level premise needs no new IR support.
+
+### 1.3 BUG: `cnm.launch` does not round-trip level-carrying buffers
+
+`printShorthandBufferType`
+([CnmOps.cpp:74-79](../lib/Dialect/Cnm/IR/CnmOps.cpp#L74-L79)) prints
+only shape and element type, while `parseShorthandBufferType`
+([CnmOps.cpp:120-133](../lib/Dialect/Cnm/IR/CnmOps.cpp#L120-L133))
+accepts an optional level. So printing then re-parsing a launch whose
+operands carry a level fails:
+
+```
+error: use of value '%cnm_buf' expects different type than prior uses:
+  '!cnm.buffer<64xi32 on ...>' vs '!cnm.buffer<64xi32 on ..., #upmem.mram>'
+```
+
+Latent today (nothing emits levels), but it becomes a hard blocker the
+moment M1 lands, and it breaks any `cinm-opt | cinm-opt` test. Three-line
+fix, scheduled first (M0).
+
+### 1.4 Capacity cannot live on the level attribute
+
+`DpuMemSpaceAttr` is a parameterless enum, and it must stay that way: it
+is a memref memory space, so parameterizing it with a size would make
+`memref<64xi32, #upmem.wram<size=57344>>` and `...<size=55296>`
+*different types* on different platforms. But WRAM capacity genuinely
+differs per platform — v1A 65536 vs v1B 63488, both less 8192
+([UPMEMAttributes.cpp:145-163](../lib/Dialect/UPMEM/IR/UPMEMAttributes.cpp#L145-L163)).
+
+Hence decision 2: the interface carries identity only; size/alignment
+stay in `CinmLevelDefAttr` on the platform. Every existing size consumer
+already has the platform or accelerator in hand
+(`handleGemv`'s `platform.getWramLevel().getSizeInElements()`,
+`UpmemAcceleratorAttr::bufferSizeOfLeaf()`), so nothing needs rerouting.
+
+A welcome consequence: because levels stay `CinmLevelDefAttr`,
+`getWorkgroupMemoryLevels()` and `CinmLevelArrayAttr` need no change at
+all — the `ArrayOfAttr`-can't-hold-an-interface problem the previous
+draft worried about simply doesn't arise.
+
+### 1.5 `getMemrefMemspace` already exists, is dead, and is wrong
+
+`CinmPlatformAttrInterface::getMemrefMemspace(level)`
+([CinmPlatformAttrInterface.td:45-52](../include/cinm-mlir/Dialect/Cinm/IR/CinmPlatformAttrInterface.td#L45-L52))
+is exactly the level→memspace mapping M1 needs. It has no callers, and
+the UPMEM implementation returns `level.getName()` — a `StringAttr`
+`"mram"` — where the rest of the compiler uses `#upmem.mram`. Fixing it
+to return `DpuMemSpaceAttr` is a one-line change that hands M1 its
+entire resolution path.
+
+### 1.6 `--cinm-tiling` on memref operands works; on reductions it is broken
+
+Verified by running both:
+
+- **Memref-mode gemv tiles correctly.** `cinm.op.gemv %A, %x into %y`
+  with `cinm.tile_sizes = array<i64: 16, 32>` produces the expected
+  `affine.for` nest with an inner `cinm.op.gemv` accumulating in place
+  into a `memref.subview` of `%y` across the K loop. Confirms decision 4
+  needs no DPS-variant work for gemm-like ops. It also confirms
+  decision 7's premise: the inner op comes out carrying **no**
+  attributes from the outer one.
+- **Reduce tiling silently drops all but the last reduction tile.** For
+  `cinm.op.reduce add` over `tensor<64x128xi32>` with tile sizes
+  `[16, 32]`, the generated inner loop is:
+
+  ```mlir
+  %0 = tensor.empty() : tensor<64xi32>              // uninitialised, not identity
+  affine.for %i = 0 to 64 step 16 iter_args(%acc = %0) {
+    affine.for %i_0 = 0 to 128 step 32 iter_args(%acc_1 = %acc) {
+      %3 = cinm.op.reduce add(%slice) : tensor<16x32xi32> -> tensor<16xi32>
+      %ins = tensor.insert_slice %3 into %acc_1[%i] [16] [1]   // OVERWRITES
+  ```
+
+  Each of the four K trips overwrites the accumulator slice with its own
+  partial sum instead of combining. The combining path in
+  `ReduceTilingModel` ([CinmTilingImplementations.cpp:334-347](../lib/Dialect/Cinm/Transforms/CinmTilingImplementations.cpp#L334-L347))
+  is only reached when the tile's result is *scalar*, i.e. when no
+  non-reduced dimension remains; the shaped case
+  ([:325-333](../lib/Dialect/Cinm/Transforms/CinmTilingImplementations.cpp#L325-L333))
+  always overwrites. Latent because nothing has yet tiled a reduction
+  dimension into more than one trip — but `handleReduce` splits K across
+  `dpuCols`/`mramCol`/`wramCol`, so this effort hits it immediately.
+
+### 1.7 Test baseline is already red
+
+`ninja check-cinm-mlir`: **32/42 passing, 9 failing, 1 unresolved.**
+Failing tests this effort touches:
+
+| Test | Status | Cause |
+|---|---|---|
+| `Conversion/CnmToUpmem/cnm-to-upmem.mlir` | FAIL | Stale CHECKs: pass now emits `upmem.broadcast` (not `upmem.scatter`) and `static_alloc ... noinit` |
+| `Conversion/CnmToUpmem/cnm-to-upmem-broadcast.mlir` | FAIL | Stale CHECKs (second RUN line, `cinm1-codegen=true`) |
+| `Dialect/UPMEM/upmem-to-c.mlir` | FAIL | Translation test, separate cause |
+| `Transform/UPMEM/simulate-python.mlir` | FAIL | Simulator test, separate cause |
+| `Dialect/UPMEM/upmem-infer-accelerator.mlir` | UNRESOLVED | No `RUN:` line at all |
+
+(The other four failures — `CimToMemristor` ×2, `TorchToCinm`,
+`Transform/Cim` ×2 — are unrelated to this work.)
+
+Consequence for the plan: "confirm existing tests still pass" is not a
+usable check for the CnmToUpmem tests. **M0 starts by refreshing those
+CHECK lines** so later milestones have a trustworthy signal. Without
+that, every subsequent milestone is working blind in exactly the area it
+changes.
+
+## 2. Milestone dependency graph
+
+```
+M0  round-trip fix + refresh red CnmToUpmem tests + level interface
+ |
+ ├─ M1  --convert-cinm-to-cnm  cnm-buffer-level option
+ |
+ ├─ M2  cnm.local_transfer op
+ |
+ └─ M3  cinm.op.reduce: fix tiled-reduction accumulation, add DPS mode
+        |
+M4  --convert-cinm-to-cnm emits cinm ops inside cnm.launch      (needs M1, M3)
+ |
+M5  --upmem-tile-mram-buffers cleanup pass                      (needs M2, M4)
+ |
+M6  --convert-cnm-to-upmem: MRAM launch args, cnm.local_transfer (needs M5)
+ |
+M7  plugin wiring: search-param map, staged pipeline, path selector
+```
+
+M1, M2, M3 are mutually independent once M0 lands.
+
+## 3. Milestones
+
+### M0 — Unblock: round-trip fix, red-test refresh, level interface
+
+**Goal:** make the tree trustworthy and put the level interface in place.
+Nothing here changes generated code.
+
+**Changes:**
+
+1. **Fix the round-trip bug (§1.3).** `printShorthandBufferType`
+   ([CnmOps.cpp:74-79](../lib/Dialect/Cnm/IR/CnmOps.cpp#L74-L79)) must
+   print `, <level>` when the buffer type has one, mirroring
+   `parseShorthandBufferType`'s optional-comma form and
+   `BufferType::print` ([CnmTypes.cpp:88-89](../lib/Dialect/Cnm/IR/CnmTypes.cpp#L88-L89)).
+2. **Refresh the stale CHECK lines** in
+   `test/Conversion/CnmToUpmem/cnm-to-upmem.mlir` and
+   `cnm-to-upmem-broadcast.mlir` to match current output (`upmem.broadcast`
+   for the tasklet-independent scatter, `noinit` on the static allocs).
+   Leave `upmem-to-c.mlir` and `simulate-python.mlir` alone — unrelated
+   causes, out of scope, but note them so nobody mistakes them for
+   regressions from this work.
+3. **Add `CinmLevelAttrInterface`** next to the existing platform/
+   accelerator interfaces
+   ([CinmPlatformAttrInterface.td](../include/cinm-mlir/Dialect/Cinm/IR/CinmPlatformAttrInterface.td)).
+   Identity only, per decision 2 — one method, `getLevelName() ->
+   StringRef`, which is what lets generic code round-trip a memspace back
+   to its capacity record via `platform.getLevel(name)`. No size, no
+   alignment, no arity. This is deliberately minimal: it exists so §B's
+   backend-specific transfer hooks have somewhere to live later, and so
+   M5 can ask "which level is this memref in" without hardcoding UPMEM.
+4. **Implement it on `DpuMemSpaceAttr`** — `getLevelName()` returns
+   `stringifyDpuMemSpace(getValue())`, which already yields exactly
+   `"mram"`/`"wram"`, matching the names `upmemLevels()` gives the
+   corresponding `CinmLevelDefAttr`s. Add
+   `DeclareAttrInterfaceMethods<CinmLevelAttrInterface>` to
+   `UPMEM_DpuMemSpaceAttr`
+   ([UPMEMAttributes.td:35-38](../include/cinm-mlir/Dialect/UPMEM/IR/UPMEMAttributes.td#L35-L38)).
+5. **Fix `UpmemPlatformAttr::getMemrefMemspace`** (§1.5) to return
+   `DpuMemSpaceAttr` for the level whose name is `"mram"`/`"wram"`,
+   instead of the level's name as a `StringAttr`
+   ([UPMEMAttributes.cpp:225-228](../lib/Dialect/UPMEM/IR/UPMEMAttributes.cpp#L225-L228)).
+
+Explicitly **not** done here: no changes to `CinmLevelDefAttr`,
+`getLevels()`, `getWorkgroupMemoryLevels()`, or `CinmLevelArrayAttr`
+(§1.4 — the ripple the earlier draft anticipated doesn't exist). The dead
+`arity` parameter on `CinmLevelDefAttr` stays; removing it is unrelated
+cleanup.
+
+**Tests:**
+- `test/Dialect/Cnm/cnm-launch-roundtrip.mlir` (new): a `cnm.launch` with
+  `#upmem.mram`-level buffers, run as `cinm-opt %s | cinm-opt |
+  FileCheck %s` plus a `--mlir-print-op-generic` variant (the existing
+  double-round-trip idiom from `test/Dialect/Cnm/cnm-ops.mlir:1-2`).
+  This test fails before the §1.3 fix and passes after — the direct
+  regression test for it.
+- Refreshed `cnm-to-upmem.mlir` / `cnm-to-upmem-broadcast.mlir` go green.
+
+### M1 — `cnm-buffer-level` option on `--convert-cinm-to-cnm`
+
+**Goal:** decision 3. Buffers and launch block args get a level.
+
+**Changes:**
+- `CinmPasses.td`
+  ([:10-15](../include/cinm-mlir/Conversion/CinmPasses.td#L10-L15)): add
+  `Option<"bufferLevel", "cnm-buffer-level", "std::string", "\"\"", ...>`.
+  Keyed by level *name*, resolved against the platform — the pass stays
+  backend-agnostic.
+- `CinmToCnm.h`: add a
+  `createConvertTiledCinmToCnmPass(ConvertTiledCinmToCnmOptions)`
+  overload, mirroring `CnmToUPMEM.h`'s existing options-taking factory.
+- `CinmToCnm.cpp`: resolve once per pattern application —
+  `platform.getLevel(bufferLevel)` for the capacity record, then
+  `platform.getMemrefMemspace(record)` (M0.5) for the attribute to store.
+  Empty option → null level (today's behavior, byte-identical output);
+  unknown name → `emitOpError` and fail the pass. Thread the result into
+  the three `cnm::BufferType::get` call sites
+  ([:309-311](../lib/Conversion/CinmToCnm/CinmToCnm.cpp#L309-L311),
+  [:886-893](../lib/Conversion/CinmToCnm/CinmToCnm.cpp#L886-L893)),
+  resolving the `// todo level is hardcoded` comment.
+- `createLaunchOp` ([:334-344](../lib/Conversion/CinmToCnm/CinmToCnm.cpp#L334-L344))
+  currently builds block args as `MemRefType::get(shape, elt)` with no
+  memory space. Add the level as the memory space. This is required for
+  `LaunchOp::verify` to accept the result at all
+  ([CnmOps.cpp:236-242](../lib/Dialect/Cnm/IR/CnmOps.cpp#L236-L242)),
+  and is a latent inconsistency today independent of this option.
+
+**Tests:**
+- `test/Conversion/CinmToCnm/cinm-to-cnm-mram-buffers.mlir` (new,
+  `--split-input-file`):
+  1. `--convert-cinm-to-cnm=cnm-buffer-level=mram` on a small
+     `cinm.op.gemv`: CHECK `!cnm.buffer<... , #upmem.mram>` on the allocs
+     and `memref<..., #upmem.mram>` on the launch block args.
+  2. `cnm-buffer-level=wram`: same shape, different level — proves the
+     option is really consulted rather than hardcoded.
+  3. `cnm-buffer-level=nosuchlevel` with `-verify-diagnostics`: clean
+     error.
+- Regression: `cinm-to-cnm.mlir` and `cinm-to-cnm-difficult.mlir` must
+  stay green with no flag (these two are currently *passing*, so unlike
+  the CnmToUpmem tests they are a trustworthy signal).
+
+### M2 — `cnm.local_transfer`
+
+**Goal:** decision 6.
+
+**Changes:**
+- Add to `CnmOps.td`, modeled 1:1 on `upmem.local_transfer`
+  ([UPMEMOps.td:190-210](../include/cinm-mlir/Dialect/UPMEM/IR/UPMEMOps.td#L190-L210)):
+  `source`/`target` memref operands with `MemReadAt`/`MemWriteAt`
+  effects, no results, verifier requiring equal shape and element type.
+  Direction is implicit in the operands' memory spaces — no direction
+  attribute, unlike `upmem.local_transfer`'s prose which mentions a
+  "declared direction".
+- No new dialect dependency (`cnm` already depends on `memref`).
+
+**Tests:**
+- `test/Dialect/Cnm/cnm-ops.mlir`: round-trip `cnm.local_transfer` both
+  directions, including a `memref.subview`-of-MRAM source (the shape M5
+  emits).
+- `test/Dialect/Cnm/cnm-verifier.mlir` (new — `test/Dialect/Cnm/` has no
+  verifier test today): shape mismatch and element-type mismatch, using
+  `-verify-diagnostics` in the style of
+  `test/Dialect/UPMEM/verifier.mlir`.
+
+### M3 — `cinm.op.reduce`: fix tiled accumulation, then add DPS mode
+
+Two changes, in this order; the first is an independent bug fix worth
+landing on its own.
+
+**3a — fix the accumulation bug (§1.6).** In `ReduceTilingModel::
+convertToTiledOps`
+([CinmTilingImplementations.cpp:270-354](../lib/Dialect/Cinm/Transforms/CinmTilingImplementations.cpp#L270-L354)):
+- Seed the shaped accumulator with the reduction's identity instead of
+  `tensor.empty()`. The identity is already computed at
+  [:287-289](../lib/Dialect/Cinm/Transforms/CinmTilingImplementations.cpp#L287-L289)
+  and currently used only by the scalar branch.
+- Make the shaped branch
+  ([:325-333](../lib/Dialect/Cinm/Transforms/CinmTilingImplementations.cpp#L325-L333))
+  extract the accumulator slice, combine it with the tile result via
+  `arith::getReductionOp`, and re-insert — the same shape the scalar
+  branch already has, applied per-slice.
+
+**3b — add memref/DPS mode.** `Cinm_ReduceOp` has no `out` operand and is
+`Pure` ([CinmOps.td:191-223](../include/cinm-mlir/Dialect/Cinm/IR/CinmOps.td#L191-L223)),
+so it cannot appear in a `cnm.launch` body over memrefs the way
+gemm-like ops can (§1.6). Add `Optional<AnyShaped>:$out`, swap `Pure` for
+`DeclareOpInterfaceMethods<MemoryEffectsOpInterface>` (matching
+`Cinm_GemmlikeOp`), add an `isTensorVariant()` accessor, and extend the
+tiling model to accumulate into `out` when it is a memref — mirroring
+`GemmLikeTilingModel`'s `outBuf` branch
+([:177-183](../lib/Dialect/Cinm/Transforms/CinmTilingImplementations.cpp#L177-L183)).
+Scope: only the last-dimension reduction case `handleReduce` already
+restricts itself to
 ([UpmemInferAccelerator.cpp:497-500](../lib/Dialect/UPMEM/Transforms/UpmemInferAccelerator.cpp#L497-L500)).
 
-### 0.2 Tiled-op attribute propagation: the WRAM tile-size handoff has no carrier
+**Tests:**
+- `test/Dialect/Cinm/cinm-reduce-tiling.mlir` (new, 3a): tensor-mode
+  reduce with the reduction dim split into 4 trips (the §1.6 repro).
+  CHECK that the loop body extracts, combines and re-inserts, and that
+  the accumulator is seeded with the identity constant. Fails before 3a.
+- `test/Dialect/Cinm/cinm-reduce-memref-tiling.mlir` (new, 3b): memref
+  mode accumulating into `%out`.
+- `test/Dialect/Cinm/cinm-gemv-memref-tiling.mlir` (new): locks in the
+  memref-mode gemv behavior verified in §1.6. Pre-existing coverage gap —
+  `test/Dialect/Cinm/` has no `--cinm-tiling` test at all today.
+- `test/Dialect/Cinm/cinm-ops.mlir`: round-trip the new
+  `cinm.op.reduce ... into %out` syntax.
 
-This is the sharpest gap and worth spelling out precisely, because it's
-easy to design around without noticing it's broken.
+### M4 — `cinm` ops inside `cnm.launch` bodies
 
-`SpaceBuilder`-driven tile sizes reach a pass today via a two-attribute
-relay: `handleGemv` stamps `kTileParamNamesAttr` (`upmem.tile_param_names`,
-an array of SpaceVar *names*) on the **original, untiled** op
-([UpmemInferAccelerator.cpp:420-423](../lib/Dialect/UPMEM/Transforms/UpmemInferAccelerator.cpp#L420-L423)),
-and later `applyTileSizes()` reads those names, looks up their *values*
-for the current trial configuration, and writes `cinm.tile_sizes`
-(`CinmDialect::TILING_FACTORS_NAME`) — which `--cinm-tiling` then
-consumes via `CinmTilingInterface::convertToTiledOps`
-([UpmemInferAccelerator.cpp:372-388](../lib/Dialect/UPMEM/Transforms/UpmemInferAccelerator.cpp#L372-L388)).
-
-§A3's design runs this same tiling mechanism **twice**: once on the
-original op (host tile → MRAM tile), once again inside the `cnm.launch`
-body, on a **different op instance**, (MRAM tile → WRAM tile). But
-`convertToTiledOps` implementations build their inner op with a plain
-builder call and copy no attributes from the original — e.g.
-`GemmLikeTilingModel`'s `buildTileOp` is just
-`Op::create(b, loc, lhs, rhs, acc, out).getResult()`
-([CinmTilingImplementations.cpp:485-488](../lib/Dialect/Cinm/Transforms/CinmTilingImplementations.cpp#L485-L488)).
-So any attribute placed on the **outer** op before the first
-`--cinm-tiling` run (including a hypothetical
-`upmem.tile_param_names` naming the WRAM SpaceVars) is simply gone by
-the time the inner op exists — there is nothing on the inner op for a
-second `applyTileSizes()`-style pass to read.
-
-Two ways to fix this, evaluated:
-
-- **(Recommended) Teach the tiling mechanism to propagate a fixed
-  attribute allowlist.** Add an allowlist parameter (or a fixed,
-  documented set of attribute name prefixes, e.g. everything under
-  `upmem.`) to `CinmTilingPass`/`CinmApplyTilingInterfacePattern`
-  ([TilingPass.cpp:26-51](../lib/Dialect/Cinm/Transforms/TilingPass.cpp#L26-L51)),
-  copied from the original op onto every op `convertToTiledOps`
-  produces of the same op type (i.e. onto the new inner `cinm.op.gemv`,
-  not onto loop ops). `handleGemv` then stamps a *second*
-  tile-param-names attribute for the WRAM SpaceVars (analogous to the
-  existing MRAM one) directly on the original op; it rides along
-  through the first tiling pass for free and is present on the inner
-  op for the second tiling pass to consume via the same
-  `applyTileSizes()` logic. Minimal new surface, reuses the existing
-  relay idiom exactly.
-- **(Rejected for v1)** Have the cleanup pass recompute WRAM tile sizes
-  from scratch (e.g. via `computeTilingFactors`) instead of relying on
-  a propagated, DSE-searched value. This throws away the ability to
-  search over WRAM tile size independently of MRAM tile size — a real
-  capability regression relative to today's `handleGemv`, which
-  searches `wramRow`/`wramCol` and `mramRow`/`mramCol` as independent
-  `SpaceVar`s. Only acceptable as a stopgap if the propagation fix is
-  deferred.
-
-This is a prerequisite for milestone M5 (the cleanup pass) and needs to
-land in M2 alongside the `--cinm-tiling` changes, since it's a change
-to `--cinm-tiling` itself, not to any MRAM-specific pass.
-
-### 0.3 `evaluate()`'s real-pipeline path is dead code — needs an explicit decision, not a silent assumption
-
-`UpmemInferencePlugin::evaluate()` **always** takes the "bypass" branch:
-it calls each op's `registerSimulator` lambda (which invokes
-`generateGemv`/`generateTailReduction` directly). The entire
-`buildPipeline()` / `runPipeline()` / `applyTileSizes()` path — which
-already exists, already runs `--cinm-tiling` → `--convert-cinm-to-cnm`
-→ bufferize → `--convert-cnm-to-upmem`, i.e. exactly the pipeline this
-whole effort is about — is commented out
-([UpmemInferAccelerator.cpp:343-368](../lib/Dialect/UPMEM/Transforms/UpmemInferAccelerator.cpp#L343-L368)).
-`buildPipeline()` is otherwise unused dead code today.
-
-The design doc doesn't say what happens to the *search-time* cost
-evaluation once §A ships — it only talks about `cnm.local_transfer`
-lowering and the cost model running "at the UPMEM-dialect level" in
-the abstract. Concretely there are two different things that could mean
-"run the real pipeline":
-
-- **(a) Final codegen only.** DSE keeps using the fast per-op template
-  simulators for search (thousands of evaluations; the templates exist
-  *because* running the full pipeline per candidate is presumably too
-  slow), and the real pipeline is invoked exactly once, after search
-  picks a winner, to materialize the actual output program. This
-  matches §F's "keep the template path alive as an oracle" framing.
-- **(b) Search-time evaluation too.** `evaluate()` switches to always
-  running `buildPipeline()` and simulating its output, replacing the
-  template bypass entirely. More accurate (no more risk of the
-  template's hand-derived cost diverging from what real codegen
-  produces), but only viable if the real pipeline is fast enough to run
-  O(maxEvals) times per op — unverified, and `buildPipeline()` includes
-  heavyweight passes (one-shot bufferize, full affine optimization,
-  `createUPMEMDedupKernelsPass`, loop unrolling) that were presumably
-  never tuned for being on this hot path.
-
-**Recommendation: (a) for the milestones in this plan.** Wire the new
-passes into `buildPipeline()` (M6), add a flag to opt into running it
-(default off, so `evaluate()`'s behavior — and therefore existing BO
-results/tests — doesn't change), and treat "switch DSE's inner loop to
-the real pipeline" as a separate, later decision once (a) has validated
-that the real pipeline's output is correct and roughly cost-equivalent
-to the templates'. This needs sign-off since it affects search runtime
-and isn't purely mechanical — flagging rather than assuming.
-
-### 0.4 `useMRAMTiling` is already spoken for — don't reuse it as the new pipeline's on/off switch
-
-`opts.useMRAMTiling` (`--upmem-infer-accelerator=use-mram-tiling=...`)
-already has a meaning: inside `handleGemv`/`handleReduce`'s constraint
-building, it toggles whether `mramRow`/`mramCol` are forced equal to
-`wramRow * tasklets/taskletCols` (i.e. CINM-1.0-style, single-level
-tiling) or free to differ (real two-level tiling)
-([UpmemInferAccelerator.cpp:427-440](../lib/Dialect/UPMEM/Transforms/UpmemInferAccelerator.cpp#L427-L440)).
-That's a statement about the **shape of the search space**, orthogonal
-to *which code path realizes a given configuration* (hand-written
-template vs. this effort's generic pipeline). Conflating them would
-mean "generic pipeline" and "single-level tiling" become impossible to
-select independently, which is a real combination someone will want
-(e.g. for validating the generic pipeline against the CINM-1.0-shaped
-template before trusting it with two-level tiling). Introduce a
-separate option, e.g. `use-generic-pipeline` (default `false` per §0.3),
-for M6's pipeline switch.
-
-## 1. Dependency graph
-
-```
-M0  CinmLevelAttrInterface + #upmem.mram/#upmem.wram         (§A1)
- |
-M1  cnm-buffer-level pass option on --convert-cinm-to-cnm    (§A2)
- |
-M2  cnm.local_transfer op  +  --cinm-tiling attribute         (§A4, §0.2)
- |   propagation fix
- |
-M3  cinm.op.reduce memref/DPS mode                            (§0.1)
- |
-M4  --convert-cinm-to-cnm emits inner cinm ops inside          (§A3, stage 1)
- |   cnm.launch instead of lowering straight to linalg
- |
-M5  upmem-tile-mram-buffers cleanup pass (2nd --cinm-tiling    (§A3, stage 2)
- |   round + private-WRAM alloc + cnm.local_transfer insertion)
- |
-M6  --convert-cnm-to-upmem: MRAM block-arg lowering (static     (§A3 backend,
- |   alloc + subview, broadcast detection) + cnm.local_transfer  §A4 backend)
- |   -> upmem.local_transfer
- |
-M7  UpmemInferAccelerator plugin wiring (buildPipeline update,  (§D, §0.2-0.4)
-     WRAM tile-size stamping, use-generic-pipeline flag)
-```
-
-M0-M1 and M2-M3 are independent of each other and could be parallelized;
-everything from M4 onward depends on all four.
-
-## 2. Milestones
-
-### M0 — `CinmLevelAttrInterface` + `#upmem.mram`/`#upmem.wram`
-
-**Goal:** implement §A1's decision.
+**Goal:** decision 4, first half.
 
 **Changes:**
-- New `include/cinm-mlir/Dialect/Cinm/IR/CinmLevelAttrInterface.td`
-  (or fold into `CinmPlatformAttrInterface.td`, matching where
-  `CinmPlatformAttrInterface`/`CinmAcceleratorAttrInterface` already
-  live): `AttrInterface<"CinmLevelAttrInterface">` with `getName()`,
-  `getSizeInBytes()`, `getAlignment()`, and a `getMemrefMemspace()`
-  default-implemented as returning `getName()` as a `StringAttr`
-  (moves `UpmemPlatformAttr::getMemrefMemspace`'s current one-line body
-  onto the level itself, per §A1's follow-up note). No `arity` method —
-  per the design decision, that's dropped from the generic surface.
-  Keep `getSizeInElements(Type)` as an `extraClassDeclaration` helper
-  (pure function of `getSizeInBytes()`, no need for it to be virtual).
-- `CinmLevelDefAttr` gains
-  `DeclareAttrInterfaceMethods<CinmLevelAttrInterface>` in its trait
-  list ([CinmAttributesBase.td:70](../include/cinm-mlir/Dialect/Cinm/IR/CinmAttributesBase.td#L70)).
-  Leave its `arity` parameter in place (dead, but removing a
-  tablegen-generated attribute parameter ripples into its
-  `struct(params)` assembly format and every existing user for no
-  functional gain — out of scope for this effort; note as optional
-  follow-up cleanup).
-- `CinmPlatformAttrInterface::getLevels()`/`getLevel(name)`
-  ([CinmPlatformAttrInterface.td:27-44](../include/cinm-mlir/Dialect/Cinm/IR/CinmPlatformAttrInterface.td#L27-L44))
-  change return type from `ArrayRef<CinmLevelDefAttr>`/`CinmLevelDefAttr`
-  to `ArrayRef<CinmLevelAttrInterface>`(-compatible, e.g.
-  `SmallVector<Attribute>` cast at use sites) /`CinmLevelAttrInterface`.
-- `CnmAcceleratorAttrInterface::getWorkgroupMemoryLevels()`
-  ([CnmInterfaces.td:27-33](../include/cinm-mlir/Dialect/Cnm/IR/CnmInterfaces.td#L27-L33))
-  and its concrete `CinmLevelArrayAttr` return type: replace with an
-  `ArrayRef<Attribute>`-based signature (or a small hand-written array
-  attr over the interface) — `CinmLevelArrayAttr`'s `ArrayOfAttr`
-  tablegen helper can't parameterize over an interface.
-- New UPMEM attrs, in `UPMEMTileFirstAttributes.td` next to
-  `UpmemPlatformAttr`: `UpmemMramAttr` (mnemonic `mram`) and
-  `UpmemWramAttr` (mnemonic `wram`), each
-  `DeclareAttrInterfaceMethods<CinmLevelAttrInterface>`, parameters
-  `(ins "int64_t":$sizeInBytes, "int64_t":$alignment)` (mirrors what
-  `upmemLevels()` already computes per `isV1a`
-  ([UPMEMAttributes.cpp:145-163](../lib/Dialect/UPMEM/IR/UPMEMAttributes.cpp#L145-L163))).
-  `UpmemPlatformAttr::getMramLevel()`/`getWramLevel()`
-  ([UPMEMTileFirstAttributes.td:40-46](../include/cinm-mlir/Dialect/UPMEM/IR/UPMEMTileFirstAttributes.td#L40-L46))
-  now return these instead of indexing into a `CinmLevelDefAttr` array;
-  `upmemLevels()` constructs `UpmemMramAttr`/`UpmemWramAttr` instead of
-  `CinmLevelDefAttr`.
-- Ripple: every call site currently assuming `CinmLevelDefAttr`
-  specifically (`UpmemAcceleratorAttr::getMramLevel()`/`getWramLevel()`,
-  `handleGemv`/`handleReduce`'s `platform.getWramLevel()`/
-  `getMramLevel()` calls) keeps compiling unchanged as long as they
-  only use interface methods (`getSizeInElements`, etc.) — verify none
-  of them pattern-match on the concrete `CinmLevelDefAttr` type
-  directly (a quick `grep -n "CinmLevelDefAttr"` after the change
-  should only show the definition site and `CinmLevelArrayAttr`'s
-  removal).
+- In `ConvertCinmGemmToCnm` / `ConvertCinmGemvToCnm` / the reduce
+  pattern, the launch body is built by the callback passed to
+  `createLaunchOp`, which today emits `linalg::ContractOp`
+  ([CinmToCnm.cpp:927-933](../lib/Conversion/CinmToCnm/CinmToCnm.cpp#L927-L933),
+  [:1036](../lib/Conversion/CinmToCnm/CinmToCnm.cpp#L1036)). When
+  `bufferLevel` is set, emit the corresponding memref-mode `cinm` op over
+  the block arguments instead. When unset, keep emitting linalg exactly
+  as today — a new branch, not a rewrite of the existing one.
+- The output buffer is already zero/bias-initialized by the existing
+  scatter of `getOutputInitForGemmLike`
+  ([:914-919](../lib/Conversion/CinmToCnm/CinmToCnm.cpp#L914-L919)),
+  which is what memref-mode `cinm.op.gemv`'s accumulate-into-`out`
+  semantics require. Worth confirming this holds for the reduce path too
+  rather than assuming it.
 
 **Tests:**
-- `test/Dialect/UPMEM/upmem-level-attrs.mlir` (new): round-trip parse/print
-  of `#upmem.mram<...>` and `#upmem.wram<...>` standalone (`cinm-opt %s |
-  cinm-opt | FileCheck %s`, mirroring `test/Dialect/Cnm/cnm-ops.mlir`'s
-  double round-trip style), plus a case using them inside
-  `#upmem.platform<..., levels = [...]>`'s optional `levels` parameter
-  ([UPMEMAttributes.cpp:184-191](../lib/Dialect/UPMEM/IR/UPMEMAttributes.cpp#L184-L191)
-  already supports an explicit `levels=` override — extend that case to
-  use the new attrs instead of `#cinm.level<...>`).
-- `test/Dialect/UPMEM/upmem-ops.mlir`: add a regression case confirming
-  `#upmem.platform<type=v1A, dimensions=...>` (no explicit `levels=`)
-  still round-trips to the *same* printed form as before (default levels
-  now built from `UpmemMramAttr`/`UpmemWramAttr`, printed form should be
-  unaffected since `getDefault()`'s levels aren't printed unless they
-  differ — verifies the migration didn't change default printing).
+- Extend `cinm-to-cnm-mram-buffers.mlir`: a gemv case and a reduce case
+  checking the launch body holds `cinm.op.gemv`/`cinm.op.reduce` over
+  `memref<..., #upmem.mram>`; plus a no-flag case still producing
+  `linalg.contract`.
 
-### M1 — `cnm-buffer-level` pass option
+### M5 — `--upmem-tile-mram-buffers`
 
-**Goal:** implement §A2. `--convert-cinm-to-cnm` (`ConvertTiledCinmToCnm`)
-gets a level knob; default preserves today's behavior exactly.
+**Goal:** decision 5. New UPMEM-dialect pass, new file
+`lib/Dialect/UPMEM/Transforms/UpmemTileMRAMBuffers.cpp`, registered in
+[UPMEM Passes.td](../include/cinm-mlir/Dialect/UPMEM/Transforms/Passes.td)
+alongside `UPMEMDedupKernelsPass`.
+
+**Changes — two phases:**
+1. Run `--cinm-tiling` nested under each `cnm::LaunchOp` (legal:
+   `LaunchOp` is `IsolatedFromAbove`,
+   [CnmOps.td:126](../include/cinm-mlir/Dialect/Cnm/IR/CnmOps.td#L126)),
+   driven by the WRAM tile sizes M7 stamps immediately before this pass.
+2. For each remaining leaf `cinm` op whose operand memrefs are still in a
+   non-leaf level: allocate a private WRAM `memref.alloc` at tile size,
+   insert `cnm.local_transfer` from a `memref.subview` of the MRAM
+   operand before the op (and the reverse after, for outputs), and
+   rewrite the op onto the WRAM buffers. "Non-leaf" is decided by
+   comparing the memref's memory space against
+   `getWorkgroupMemoryLevels()`'s entries mapped through
+   `getMemrefMemspace` — using `CinmLevelAttrInterface::getLevelName()`
+   (M0.3) to avoid hardcoding `mram`/`wram` in pass logic.
+
+Out of scope (§A3's deferred optimization): sharing the WRAM buffer
+across tasklets via a static alloc plus barrier when the scatter map is
+tasklet-independent. Always private WRAM here.
+
+**Tests:**
+- `test/Transform/UPMEM/upmem-tile-mram-buffers.mlir` (new): input is a
+  `cnm.launch` holding an MRAM-level `cinm.op.gemv` with hand-written
+  `cinm.tile_sizes` (standing in for M7's stamping). CHECK the
+  `affine.for` nest, the `#upmem.wram` alloc, `cnm.local_transfer` before
+  and after, and the inner op on WRAM operands.
+- Second case: MRAM tile already equals the WRAM tile (no second tiling
+  round needed) — the degenerate shape `useMRAMTiling=false` produces
+  ([UpmemInferAccelerator.cpp:427-440](../lib/Dialect/UPMEM/Transforms/UpmemInferAccelerator.cpp#L427-L440)) —
+  still gets alloc + transfers.
+
+### M6 — `--convert-cnm-to-upmem` for MRAM-level launches
+
+**Goal:** decisions 4 and 6, backend side.
+
+Today this pass ignores `getLevel()` and unconditionally gives every
+`cnm.alloc` an MRAM static alloc *plus* a WRAM alloc with transfers
+around the launch
+([CnmToUPMEM.cpp:471-602](../lib/Conversion/CnmToUPMEM/CnmToUPMEM.cpp#L471-L602)).
+That is exactly right for WRAM-level buffers and exactly wrong for
+MRAM-level ones, whose staging M5 has already made explicit.
 
 **Changes:**
-- `CnmPasses.td`... actually `CinmPasses.td`
-  ([CinmPasses.td:10-15](../include/cinm-mlir/Conversion/CinmPasses.td#L10-L15)):
-  add `Option<"bufferLevel", "cnm-buffer-level", "std::string", "\"\"",
-  "Name of the platform memory level (e.g. \"mram\") that newly
-  allocated cnm.buffers should target. Empty = unset level (today's
-  behavior).">`. String-keyed against `platform.getLevel(name)` rather
-  than a fixed enum, matching the design's backend-agnostic framing —
-  the pass doesn't need to know level names in advance.
-- `CinmToCnm.h`: add
-  `std::unique_ptr<Pass> createConvertTiledCinmToCnmPass(ConvertTiledCinmToCnmOptions)`
-  overload, mirroring `CnmToUPMEM.h`'s
-  `createConvertCnmToUPMEMPass(ConvertCnmToUPMEMPassOptions)` pattern
-  ([CnmToUPMEM.h](../include/cinm-mlir/Conversion/CnmToUPMEM/CnmToUPMEM.h)).
-- `CinmToCnm.cpp`: thread the resolved level attribute (via
-  `workgroup.getType().getAccelerator().getPlatform().getLevel(bufferLevel)`,
-  empty string → null attribute, unresolved name → pass failure with a
-  diagnostic) into both `cnm::BufferType::get(...)` call sites,
-  replacing the hardcoded `nullptr`/`0` (`convertInputIntoAlloc`,
-  [CinmToCnm.cpp:309-311](../lib/Conversion/CinmToCnm/CinmToCnm.cpp#L309-L311),
-  and the two calls around
-  [CinmToCnm.cpp:886-893](../lib/Conversion/CinmToCnm/CinmToCnm.cpp#L886-L893)).
-  This also directly resolves the long-standing `// todo level is
-  hardcoded` comment at line 311.
-- No changes needed to `cnm.launch`'s verifier or `createLaunchOp`'s
-  block-argument typing
-  ([CinmToCnm.cpp:324-357](../lib/Conversion/CinmToCnm/CinmToCnm.cpp#L324-L357)) —
-  it already does `MemRefType::get(inputTy.getShape(),
-  inputTy.getElementType())` with no memory space; this needs to pick up
-  `inputTy.getLevel()` as the memory space, matching what the verifier
-  already independently requires. This is a one-line fix
-  (`MemRefType::get(shape, elt, /*layout*/{}, inputTy.getLevel())`)
-  needed regardless of `bufferLevel`'s value, since it's currently
-  inconsistent with the verifier whenever `level` is non-null.
+- Branch on the buffer's level. WRAM-level (or absent, today's default):
+  unchanged. MRAM-level: create the static MRAM alloc and bind the launch
+  block argument directly to it — a `memref.subview` indexed by tasklet,
+  or the whole allocation when `isMramBroadcastOverThreads`
+  ([:424](../lib/Conversion/CnmToUPMEM/CnmToUPMEM.cpp#L424)) holds. The
+  subview logic already exists inside `createTransfer`
+  ([:335-367](../lib/Conversion/CnmToUPMEM/CnmToUPMEM.cpp#L335-L367));
+  this generalizes it from "the transfers this pass inserts" to "every
+  use of the block argument".
+- Lower `cnm.local_transfer` → `upmem.local_transfer` (near-1:1).
+- Confirm (don't assume) that `--cnm-ensure-scatter-gather-contiguous`
+  needs no `cnm.local_transfer` handling — it targets host↔device
+  scatter/gather, and M5 constructs these operands already correctly
+  shaped.
 
 **Tests:**
-- `test/Conversion/CinmToCnm/cinm-to-cnm-mram-buffers.mlir` (new):
-  `// RUN: cinm-opt --convert-cinm-to-cnm=cnm-buffer-level=mram
-  --canonicalize %s | FileCheck %s` on a small `cinm.op.gemv`, checking
-  `!cnm.buffer<... , #upmem.mram>` on the allocated buffers and
-  `cnm.launch ... { ^bb0(%arg: memref<..., #upmem.mram>, ...)` on the
-  block argument types.
-- Same file, second case (`--split-input-file`) with an unrecognized
-  level name (`cnm-buffer-level=nonexistent`) checking the pass reports
-  a clear error (`// CHECK: error: ...`, using
-  `-verify-diagnostics` per existing error-path test conventions if any
-  exist in this repo — check `test/Dialect/UPMEM/verifier.mlir`'s style
-  and match it).
-- Regression: confirm `test/Conversion/CinmToCnm/cinm-to-cnm.mlir` and
-  `test/Conversion/CinmToCnm/cinm-to-cnm-difficult.mlir` pass unmodified
-  (no `cnm-buffer-level` flag passed → empty string → null level → byte
-  identical to today, since `CnmTypes.cpp:88-89` only prints `level`
-  when non-null). This is a required check, not a new file.
+- `test/Conversion/CnmToUpmem/cnm-to-upmem-mram-level.mlir` (new): input
+  with MRAM-level buffers and `cnm.local_transfer` inside the launch
+  (M5-shaped, hand-written). CHECK a single `upmem.static_alloc
+  ...(mram)`, a tasklet-indexed `memref.subview` of it, no spurious WRAM
+  staging around the launch, and `upmem.local_transfer` where
+  `cnm.local_transfer` was.
+- Second case: tasklet-independent scatter map → the static alloc is used
+  whole, no subview.
 
-### M2 — `cnm.local_transfer` + `--cinm-tiling` attribute propagation
+### M7 — Plugin wiring
 
-**Goal:** implement §A4, and fix §0.2.
-
-**Changes — `cnm.local_transfer`:**
-- Add to `CnmOps.td`, mirroring `upmem.local_transfer`
-  ([UPMEMOps.td:190-210](../include/cinm-mlir/Dialect/UPMEM/IR/UPMEMOps.td#L190-L210))
-  exactly: `arguments = (ins Arg<AnyMemRef, ..., [MemReadAt<0,
-  FullEffect>]>:$source, Arg<AnyMemRef, ..., [MemWriteAt<0,
-  FullEffect>]>:$target)`, no results, a verifier requiring matching
-  shape/element type (direction — which side is MRAM/WRAM — is implicit
-  in the operand types' `level`, not a separate attribute, consistent
-  with "memrefs already carry their level as memory space"). Assembly
-  format modeled 1:1 on `upmem.local_transfer`'s.
-- `CnmDialect` dependent-dialect list already includes `memref` (used by
-  `EnsureScatterGatherContiguousPass`); no new dependency needed.
-
-**Changes — attribute propagation (§0.2 fix):**
-- `TilingPass.cpp`'s `CinmApplyTilingInterfacePattern`
-  ([TilingPass.cpp:26-51](../lib/Dialect/Cinm/Transforms/TilingPass.cpp#L26-L51)):
-  after `op.convertToTiledOps(...)` succeeds, walk the newly produced
-  `results`/the region the op was replaced in for freshly created ops of
-  the *same op name* as `op`, and copy over attributes from `op` whose
-  name matches an allowlist. Concretely: a fixed prefix list
-  (`"upmem."`, extensible) checked via `StringRef::starts_with`, since
-  this needs to stay generic (not UPMEM-specific) even though today's
-  only user is UPMEM. Alternative considered: make the allowlist a pass
-  option (`ListOption<"propagatedAttrPrefixes", ...>`) instead of a
-  hardcoded constant — slightly more flexible, low cost, recommended if
-  time allows since it keeps `--cinm-tiling` fully backend-agnostic
-  rather than hardcoding a `upmem.` prefix into cinm-dialect code.
-- `handleGemv`: add a second attribute analogous to
-  `kTileParamNamesAttr` for the WRAM SpaceVars — reuses the same
-  key/mechanism, just needs a distinct attribute name (e.g.
-  `upmem.wram_tile_param_names`) so both survive independently and
-  `applyTileSizes()` (or its M7 successor) can find the right one at
-  each of the two tiling rounds.
-
-**Tests:**
-- `test/Dialect/Cnm/cnm-ops.mlir`: add `cnm.local_transfer` round-trip
-  cases to the existing double-parse test (`memref<...,#upmem.mram>` to
-  `memref<...,#upmem.wram>` and the reverse), plus a verifier-failure
-  case (shape mismatch) in `test/Dialect/UPMEM/verifier.mlir`-style
-  (or a new `test/Dialect/Cnm/verifier.mlir` if one doesn't exist yet —
-  check first).
-- `test/Dialect/Cinm/cinm-tiling-attr-propagation.mlir` (new): a
-  `cinm.op.gemv` (memref mode, from M3 — or gemv directly, since gemv
-  already supports memref mode, no need to wait for M3 here) carrying
-  both `cinm.tile_sizes` and a dummy `upmem.test_marker` attribute, run
-  through `--cinm-tiling`, checking the marker attribute survives onto
-  the inner `cinm.op.gemv` inside the generated loop nest but *not* onto
-  the `affine.for` ops themselves.
-
-### M3 — `cinm.op.reduce` memref/DPS mode
-
-**Goal:** fix §0.1, the reduce-specific prerequisite for §A3.
+**Goal:** decisions 7, 8, 9.
 
 **Changes:**
-- `CinmOps.td`: add `Optional<AnyShaped>:$out` to `Cinm_ReduceOp`'s
-  arguments, relax `Pure` (drop it, or make it conditional the way
-  `Cinm_GemmlikeOp` uses `DeclareOpInterfaceMethods<MemoryEffectsOpInterface>`
-  instead of `Pure` — match that pattern for consistency with the other
-  DPS-capable cinm ops), add `isTensorVariant()` /
-  `CinmGemmlikeOpInterface`-style accessors, or a small bespoke
-  interface if reusing `CinmGemmlikeOpInterface` doesn't fit reduce's
-  shape (it has no `rhs`/`bias`).
-- `CinmTilingImplementations.cpp`'s `ReduceTilingModel::convertToTiledOps`
-  ([CinmTilingImplementations.cpp:270-354](../lib/Dialect/Cinm/Transforms/CinmTilingImplementations.cpp#L270-L354)):
-  when `out` is present and a memref, accumulate into slices of it
-  instead of building a `tensor::EmptyOp`/`arith::ConstantOp`
-  accumulator — mirrors `GemmLikeTilingModel`'s `outBuf` branch
-  ([CinmTilingImplementations.cpp:177-183](../lib/Dialect/Cinm/Transforms/CinmTilingImplementations.cpp#L177-L183)).
-- `--convert-cinm-to-cnm`'s reduce-handling path (wherever it currently
-  builds the linalg reduction inside `cnm.launch` — same place M4
-  touches for gemv) needs the equivalent branch for reduce once M4 is
-  in place; listed here for completeness but implemented as part of M4.
+- **Search-param map (decision 7).** Add
+  `DenseMap<Operation *, SmallVector<std::pair<std::string, SpaceVar>>>`
+  to `UpmemInferencePlugin`. `handleGemv`/`handleReduce` populate it
+  during `initializeSpace` with *every* SpaceVar the op's lowering will
+  need (`mramRow`, `mramCol`, `wramRow`, `wramCol`, `dpuCols`,
+  `taskletCols`), replacing the `kTileParamNamesAttr` stamping
+  ([UpmemInferAccelerator.cpp:420-423](../lib/Dialect/UPMEM/Transforms/UpmemInferAccelerator.cpp#L420-L423))
+  and filling the `// fixme here` gap where `handleReduce` records
+  nothing at all ([:524-527](../lib/Dialect/UPMEM/Transforms/UpmemInferAccelerator.cpp#L524-L527)).
+- **Trial correspondence.** `makeTrialInfo` deep-clones the reference
+  module with no retained `IRMapping`
+  ([AcceleratorInference.cpp:600-609](../lib/Dialect/Cinm/AcceleratorInference/AcceleratorInference.cpp#L600-L609)),
+  so trial ops are different pointers. The clone is structurally
+  identical, so a lockstep pre-order walk of `refClone` and
+  `trial.computeBlock` recovers the correspondence. Resolve
+  `SpaceVar`s against `trial.conf()` into a trial-local
+  `DenseMap<Operation *, ...>` once, at the top of `evaluate()`.
+  (I looked for an existing utility for this in `AcceleratorInference.cpp`
+  and didn't find one — worth a second look before writing a new helper,
+  in case it lives somewhere I missed.)
+- **Staged pipeline (decision 8).** `buildPipeline()`
+  ([:161-249](../lib/Dialect/UPMEM/Transforms/UpmemInferAccelerator.cpp#L161-L249))
+  becomes a sequence of sub-pipelines with stamping steps between them:
+  stamp MRAM tile sizes → `--cinm-tiling` →
+  `--convert-cinm-to-cnm=cnm-buffer-level=mram` → stamp WRAM tile sizes on
+  the ops now inside the launch bodies → `--upmem-tile-mram-buffers` →
+  the existing bufferize/affine/`--convert-cnm-to-upmem` tail. Each stamp
+  writes a fresh `cinm.tile_sizes` from the trial-local map immediately
+  before the pass that reads it; nothing relies on an attribute surviving
+  a pass.
+- **Path selection (decision 9).** `evaluate()` gains an explicit choice
+  between the template path (today's `registerSimulator` loop, unchanged
+  and *not* deleted) and the generic pipeline above. Suggest an enum
+  option on `UpmemInferAcceleratorPass` — `lowering=templates|generic`,
+  defaulting to `templates` while the generic path is under development —
+  following the existing `simulatorClValues` enum-option idiom
+  ([Passes.td:21-29](../include/cinm-mlir/Dialect/UPMEM/Transforms/Passes.td#L21-L29))
+  rather than another bool. Deliberately *not* `useMRAMTiling`: that
+  option means something else (whether `mramRow`/`mramCol` may differ
+  from the WRAM tile, [:427-440](../lib/Dialect/UPMEM/Transforms/UpmemInferAccelerator.cpp#L427-L440))
+  and stays independently selectable — "single-level tiling through the
+  generic pipeline" is a combination worth being able to ask for.
 
 **Tests:**
-- `test/Dialect/Cinm/cinm-ops.mlir`: round-trip parse/print of the new
-  memref-mode `cinm.op.reduce ... into %out : ...` syntax.
-- `test/Dialect/Cinm/cinm-reduce-memref-tiling.mlir` (new): `--cinm-tiling`
-  on a memref-mode `cinm.op.reduce`, checking the generated loop nest
-  accumulates into slices of `%out` rather than building a fresh tensor
-  accumulator (structurally analogous to what a `--cinm-tiling` test for
-  memref-mode gemv would check, were one to exist — flag as a gap that
-  M2 or this milestone should also add a basic
-  `test/Dialect/Cinm/cinm-gemv-memref-tiling.mlir` if the existing test
-  suite has no coverage of memref-mode `--cinm-tiling` today; confirm by
-  checking `test/Dialect/Cinm/` — currently only `cinm-ops.mlir`,
-  `cinm-parse-memrefs.mlir`, `cinm-verifier.mlir` exist, none of which
-  are `--cinm-tiling` pass tests, so this is a genuine pre-existing
-  coverage gap, not just new-feature coverage).
+- `test/Transform/UPMEM/gemv-generic-mram-pipeline.mlir` (new): the whole
+  chain driven by pass flags only, no plugin, no BO — `--cinm-tiling`
+  (hand-annotated sizes) → `--convert-cinm-to-cnm=cnm-buffer-level=mram`
+  → `--upmem-tile-mram-buffers` → `--cnm-ensure-scatter-gather-contiguous`
+  → `--convert-cnm-to-upmem`, on a static-shape `cinm.op.gemv`.
+  CHECK the final UPMEM structure: DPU alloc, MRAM static allocs, WRAM
+  private allocs, transfers, kernel body. **Land this before the plugin
+  work** — it is the milestone's real correctness signal, and it isolates
+  pipeline bugs from plugin bugs.
+- `test/Dialect/UPMEM/upmem-infer-accelerator.mlir`: give it a `RUN:`
+  line (§1.7 — it is currently UNRESOLVED). Use `eval-solution` to pin a
+  single configuration and skip search
+  ([Passes.td:129-131](../include/cinm-mlir/Dialect/UPMEM/Transforms/Passes.td#L129-L131)).
+- `test/Dialect/UPMEM/upmem-infer-accelerator-generic.mlir` (new): same
+  fixed-solution technique with `lowering=generic`, checking the committed
+  module really contains `upmem.dpu_program` / `upmem.local_transfer`.
+- **Comparison harness (decision 9's actual purpose).** The point of
+  keeping both paths is measuring the gap. Worth adding a small script or
+  lit test that runs the same op under `lowering=templates` and
+  `lowering=generic` with `eval-solution` pinned to the same
+  configuration and reports both simulated costs. This is the milestone's
+  success criterion, not a nice-to-have — without it "as good as the
+  templates" is unmeasurable.
 
-### M4 — inner `cinm` ops inside `cnm.launch` bodies
+## 4. Test summary
 
-**Goal:** implement §A3's first bullet list item: when `bufferLevel` is
-set to a non-leaf level, `--convert-cinm-to-cnm` emits a smaller `cinm`
-op referencing the level-tagged block arguments, instead of lowering
-straight to `linalg.contract`/whatever it emits today.
-
-**Changes:**
-- Locate and branch the launch-body-construction code path (the
-  `createCnmLaunchBlock` callback passed into `createLaunchOp`
-  /`convertCinmToCnm`
-  ([CinmToCnm.cpp:324-357](../lib/Conversion/CinmToCnm/CinmToCnm.cpp#L324-L357)),
-  and the call sites building `linalg::ContractOp`
-  ([CinmToCnm.cpp:930](../lib/Conversion/CinmToCnm/CinmToCnm.cpp#L930),
-  [:1036](../lib/Conversion/CinmToCnm/CinmToCnm.cpp#L1036))): when
-  `bufferLevel` was set (buffers are non-leaf), build a smaller
-  `cinm.op.gemv`/`cinm.op.gemm`/`cinm.op.reduce` (memref mode, per
-  M0-M3) over the launch block's memref arguments instead of the linalg
-  op. When `bufferLevel` is unset (today's default path), keep emitting
-  linalg exactly as today — **this is a genuinely new code path, not a
-  modification of the existing one**, gated on the same option added in
-  M1.
-- The new inner op needs `cinm.tile_sizes`/the WRAM-tile-param-names
-  attribute (M2) already present for M5 to pick up — but at this stage
-  (`--convert-cinm-to-cnm` runtime) that attribute must have already
-  been propagated by the *first* `--cinm-tiling` run (M2's fix) from the
-  original pre-tiling op onto whatever `--convert-cinm-to-cnm` is now
-  consuming. Verify the pipeline ordering in `buildPipeline()`
-  (tiling → convert-cinm-to-cnm, already the existing order) makes this
-  hold; this milestone shouldn't need pipeline reordering, just
-  confirmation.
-
-**Tests:**
-- Extend `test/Conversion/CinmToCnm/cinm-to-cnm-mram-buffers.mlir`
-  (from M1) with a case checking the launch body contains
-  `cinm.op.gemv %arg0, %arg1 into %arg2 : memref<...>, memref<...> into
-  memref<..., #upmem.mram>` rather than `linalg.contract`.
-- A parallel case for `cinm.op.reduce` in the same file (depends on M3).
-- Regression: the *default* (`cnm-buffer-level` unset) path in the same
-  file still produces `linalg.contract`, unchanged from
-  `cinm-to-cnm.mlir`'s existing checks.
-
-### M5 — `upmem-tile-mram-buffers` cleanup pass
-
-**Goal:** implement §A3's core: the UPMEM-provided pass that runs
-`--cinm-tiling` a second time inside `cnm.launch` bodies and rewrites
-leaf-tiled ops onto new private-WRAM buffers with `cnm.local_transfer`
-around them.
-
-**Changes:**
-- New pass, registered in
-  `include/cinm-mlir/Dialect/UPMEM/Transforms/Passes.td`
-  (alongside `UPMEMDedupKernelsPass` etc.
-  ([Passes.td:12-19](../include/cinm-mlir/Dialect/UPMEM/Transforms/Passes.td#L12-L19))):
-  `UpmemTileMRAMBuffersPass`, pass name `upmem-tile-mram-buffers`, no
-  options needed for v1 (tile sizes come from attributes already on the
-  IR, per M2/M4). New file
-  `lib/Dialect/UPMEM/Transforms/UpmemTileMRAMBuffers.cpp`.
-- Implementation, two phases:
-  1. For every `cnm::LaunchOp` in the module, run `--cinm-tiling`
-     nested under it (`OpPassManager` scoped via `.nest<cnm::LaunchOp>()`
-     — legal because `LaunchOp` is `IsolatedFromAbove`
-     ([CnmOps.td:126](../include/cinm-mlir/Dialect/Cnm/IR/CnmOps.td#L126)));
-     the inner `cinm` op's WRAM tile-size attribute (from M2/M4) drives
-     this round exactly like the outer round does today.
-  2. Walk the resulting IR for leaf-tiled `cinm` ops whose operand
-     memrefs carry a non-leaf level (i.e. still `#upmem.mram`, since
-     tiling only changed loop bounds/subview offsets, not the memory
-     level — per §A3). For each such operand: allocate a private
-     `memref.alloc` sized to the tile with memory space
-     `#upmem.wram`, insert `cnm.local_transfer` from a
-     `memref.subview` of the MRAM operand into it (inputs) or from it
-     into a subview (outputs), and rewrite the op to use the new WRAM
-     buffer. "Leaf-tiled" = the op's tile size now equals the leaf
-     entry of `getWorkgroupMemoryLevels()`
-     ([CnmInterfaces.td:27-33](../include/cinm-mlir/Dialect/Cnm/IR/CnmInterfaces.td#L27-L33))
-     — i.e. no `cinm.tile_sizes` attribute remains that would trigger
-     another `--cinm-tiling` pass, which is the natural post-condition
-     of phase 1 rather than something this pass needs to re-derive.
-- Explicitly **not** in scope for M5 (§A3 "deferred optimization" +
-  §C): broadcast-across-tasklets sharing of the new WRAM buffer via a
-  static alloc + barrier. Phase 2 always allocates private WRAM.
-
-**Tests:**
-- `test/Transform/UPMEM/upmem-tile-mram-buffers.mlir` (new, matching
-  where other post-pipeline UPMEM transform tests live —
-  `test/Transform/UPMEM/simulate-python.mlir`): input is a `cnm.launch`
-  containing an MRAM-level `cinm.op.gemv` already carrying
-  `cinm.tile_sizes` (hand-written, standing in for what M2/M4 would
-  produce) — output checks: nested `affine.for` loop, `memref.alloc`
-  with `#upmem.wram` memory space at tile size, `cnm.local_transfer`
-  before and after, smaller `cinm.op.gemv` on the WRAM buffers.
-- A second case with an already-leaf-sized MRAM op (no `cinm.tile_sizes`)
-  checking the pass still inserts the alloc+transfer+op+transfer
-  rewrite even without a second tiling round needed (MRAM tile ==
-  WRAM tile is a legal degenerate case, corresponds to
-  `useMRAMTiling=false`'s "cinm 1.0 mode" per
-  [UpmemInferAccelerator.cpp:427-440](../lib/Dialect/UPMEM/Transforms/UpmemInferAccelerator.cpp#L427-L440)).
-
-### M6 — `--convert-cnm-to-upmem` backend lowering
-
-**Goal:** implement §A3's backend-realization bullets and §A4's backend
-realization: MRAM block arguments lower to a subview of a single static
-allocation (or the allocation itself, if broadcast), and
-`cnm.local_transfer` lowers to `upmem.local_transfer`.
-
-**Changes, in `CnmToUPMEM.cpp`:**
-- Generalize the existing `mramHasTaskletDim` subview logic in
-  `createTransfer`
-  ([CnmToUPMEM.cpp:335-367](../lib/Conversion/CnmToUPMEM/CnmToUPMEM.cpp#L335-L367))
-  so it applies to *every* use of an MRAM-level `cnm.launch` block
-  argument that this pass rewrites, not just the transfers it already
-  inserts today. Since `cnm.alloc` already unconditionally gets an
-  `upmem::StaticAllocOp`
-  ([CnmToUPMEM.cpp:522-535](../lib/Conversion/CnmToUPMEM/CnmToUPMEM.cpp#L522-L535)),
-  the main change is making sure *all* remaining uses inside the launch
-  body (not just the pass's own inserted transfers) get the subview
-  treatment — after M4/M5, uses inside the body are exactly the
-  `cnm.local_transfer` ops M5 inserted (M5 already builds them as
-  memref-to-memref against subviews of the *logical* MRAM memref;
-  this milestone's job is making sure the memref that ends up there,
-  post-conversion, really is a subview of the single static alloc).
-  `isMramBroadcastOverThreads`
-  ([CnmToUPMEM.cpp:424](../lib/Conversion/CnmToUPMEM/CnmToUPMEM.cpp#L424))
-  is reused as-is for the shared-vs-subview decision, per §A3.
-- Add a conversion pattern for `cnm.local_transfer` →
-  `upmem.local_transfer`, near-1:1 (both take `source`/`target` memrefs,
-  no shape transformation needed — the operands are already
-  correctly-shaped memrefs by construction from M5).
-- Verify `--cnm-ensure-scatter-gather-contiguous`
-  ([Passes.td:65-78](../include/cinm-mlir/Dialect/Cnm/Transforms/Passes.td#L65-L78))
-  doesn't need to run on `cnm.local_transfer` too — it currently only
-  targets `cnm.scatter`/`cnm.gather` (host↔device transfers);
-  `cnm.local_transfer`'s operands are subviews of on-device buffers
-  M5 already constructed to be the right shape, so contiguity should
-  be a non-issue, but worth an explicit check/comment rather than an
-  assumption.
-
-**Tests:**
-- `test/Conversion/CnmToUpmem/cnm-to-upmem-mram-level.mlir` (new,
-  following `cnm-to-upmem.mlir`'s RUN-line style): feed IR with an
-  MRAM-level `cnm.alloc`/`cnm.launch` (block arg `memref<...,
-  #upmem.mram>`) containing `cnm.local_transfer` ops (hand-written,
-  standing in for M5's output), checking: `upmem.static_alloc` with
-  `DpuMemSpace::MRAM`, `memref.subview` of it inside the launch body,
-  `upmem.local_transfer` where `cnm.local_transfer` was.
-- A second case with a broadcast scatter map (tasklet-independent),
-  checking no subview is inserted — the whole static alloc is used
-  directly, matching `isMramBroadcastOverThreads`'s existing
-  broadcast path.
-
-### M7 — `UpmemInferAccelerator` plugin wiring
-
-**Goal:** implement §D concretely, resolving §0.2-0.4.
-
-**Changes:**
-- `buildPipeline()`
-  ([UpmemInferAccelerator.cpp:161-249](../lib/Dialect/UPMEM/Transforms/UpmemInferAccelerator.cpp#L161-L249)):
-  insert `--convert-cinm-to-cnm=cnm-buffer-level=mram` (replacing the
-  option-less call at Step 2) and `--upmem-tile-mram-buffers`
-  (M5) right after it, before `cnm::createCnmHoistWorkgroupsPass()` —
-  matching §A3's pipeline sketch
-  (`--convert-cinm-to-cnm=cnm-buffer-level=mram` → cleanup pass →
-  further CNM optimizations → `--convert-cnm-to-upmem`).
-- `handleGemv`/`handleReduce`: uncomment and fix the
-  `kTileParamNamesAttr` stamping for `mramRow`/`mramCol` too (today only
-  `wramRow`/`wramCol` are stamped, with a comment saying it's "used by
-  applyTileSizes() in the non-MRAM pipeline path" — that comment is
-  stale/backwards now that MRAM is the primary path; both tile-size
-  pairs need stamping). Fix the `// fixme here` commented-out stamping
-  in `handleReduce`
-  ([UpmemInferAccelerator.cpp:524-527](../lib/Dialect/UPMEM/Transforms/UpmemInferAccelerator.cpp#L524-L527)) —
-  currently `handleReduce` stamps nothing at all, presumably because
-  reduce never had a working non-bypass path; now it needs both MRAM-
-  and WRAM-tile attributes like gemv (depends on M3 existing so there's
-  a memref-mode reduce for it to apply to).
-- Add `use-generic-pipeline` option (§0.4) to `UpmemInferAcceleratorPass`
-  (`UPMEMTransformsPasses.td`), default `false`. In `evaluate()`, when
-  true, call `runPipeline(pipeline.get(), ...)` (resurrecting the
-  commented-out block at
-  [UpmemInferAccelerator.cpp:356-368](../lib/Dialect/UPMEM/Transforms/UpmemInferAccelerator.cpp#L356-L368))
-  and simulate its output, instead of the `registerSimulator` bypass —
-  per §0.3(a), this stays off by default; flipping it on is milestone
-  M8 (below), not this one.
-- `applyTileSizes()` needs to run (at least) twice per trial when the
-  generic pipeline is enabled: once before `buildPipeline()`'s tiling
-  step for the MRAM round, and the WRAM round's attribute is already
-  riding along on the original op per M2's propagation fix, so no
-  second explicit `applyTileSizes()` call should be needed — the
-  *values* were already resolved into `cinm.tile_sizes`-adjacent form
-  before `--cinm-tiling` ever ran the first time. Double check this
-  holds once implemented; if the WRAM SpaceVar values can't be resolved
-  until dpus/tasklets are known (which they are, at `evaluate()` time,
-  before `applyTileSizes()` runs) this should be fine, but call out
-  explicitly since it's exactly the kind of interaction §0.2 flagged.
-
-**Tests:**
-- Fix `test/Dialect/UPMEM/upmem-infer-accelerator.mlir`: it currently
-  has **no `RUN:` line** at all (confirmed — it's dead as a lit test
-  today). Give it one, e.g. `// RUN: cinm-opt
-  --upmem-infer-accelerator="eval-solution=... use-generic-pipeline=false"
-  %s | FileCheck %s` using the existing `eval-solution` option to force
-  a single, deterministic configuration (bypasses BO search, per
-  [Passes.td:129-131](../include/cinm-mlir/Dialect/UPMEM/Transforms/Passes.td#L129-L131)) —
-  this is needed regardless of this effort, flagging as a pre-existing
-  gap this work should also close since it's directly relevant.
-- `test/Dialect/UPMEM/upmem-infer-accelerator-generic-pipeline.mlir`
-  (new): same fixed-solution technique, `use-generic-pipeline=true`,
-  small static-shape gemv, checking the annotated/committed output
-  module contains real `upmem.dpu_program`/`upmem.local_transfer`
-  structure (i.e. the real pipeline actually ran and produced UPMEM IR)
-  rather than whatever the bypass path leaves behind.
-- End-to-end structural test,
-  `test/Transform/UPMEM/gemv-generic-mram-pipeline.mlir` (new): skip the
-  inference plugin entirely and manually chain
-  `--cinm-tiling{...tile-sizes already annotated by hand...}
-  --convert-cinm-to-cnm=cnm-buffer-level=mram --upmem-tile-mram-buffers
-  --cnm-ensure-scatter-gather-contiguous --convert-cnm-to-upmem` on a
-  small, fully concrete (static-shape) `cinm.op.gemv`, FileCheck'ing the
-  final UPMEM IR shape (DPU alloc, MRAM static alloc, WRAM private
-  alloc, transfers, kernel body). This is the closest thing to a
-  regression test against §F's migration goal ("does the generic
-  pipeline produce something structurally equivalent to what
-  `generateGemv` produces") that doesn't require BO/simulator
-  infrastructure, and is valuable independent of M8.
-
-### M8 (not scheduled — explicitly deferred per §0.3)
-
-Switching DSE's inner-loop cost evaluation to always run the real
-pipeline (§0.3 option (b)), and/or retiring the `generateGemv`/
-`generateTailReduction` templates and their `SimulationTemplates.cpp`
-machinery entirely. Blocked on M0-M7 landing and on validating that the
-real pipeline's output cost roughly matches the templates' for at least
-gemv (§F's suggested first target), and on a runtime-cost check that
-running `buildPipeline()` per BO candidate is actually affordable.
-Explicitly out of scope for this plan; listed so it doesn't get lost.
-
-## 3. Test file summary
-
-| Milestone | New/changed pass or option | Test file(s) |
+| Milestone | Subject | Tests |
 |---|---|---|
-| M0 | `#upmem.mram`, `#upmem.wram` attrs | `test/Dialect/UPMEM/upmem-level-attrs.mlir` (new); `test/Dialect/UPMEM/upmem-ops.mlir` (regression case) |
-| M1 | `--convert-cinm-to-cnm=cnm-buffer-level=<level>` | `test/Conversion/CinmToCnm/cinm-to-cnm-mram-buffers.mlir` (new, incl. error case); existing `cinm-to-cnm.mlir`/`cinm-to-cnm-difficult.mlir` (regression) |
-| M2 | `cnm.local_transfer` op; `--cinm-tiling` attr propagation | `test/Dialect/Cnm/cnm-ops.mlir` (extend); `test/Dialect/Cnm/verifier.mlir` (new or extend); `test/Dialect/Cinm/cinm-tiling-attr-propagation.mlir` (new) |
-| M3 | `cinm.op.reduce` memref mode | `test/Dialect/Cinm/cinm-ops.mlir` (extend); `test/Dialect/Cinm/cinm-reduce-memref-tiling.mlir` (new); `test/Dialect/Cinm/cinm-gemv-memref-tiling.mlir` (new, pre-existing coverage gap) |
-| M4 | `--convert-cinm-to-cnm` inner-cinm-op launch bodies | `test/Conversion/CinmToCnm/cinm-to-cnm-mram-buffers.mlir` (extend, gemv + reduce cases + default-path regression) |
-| M5 | `--upmem-tile-mram-buffers` (new pass) | `test/Transform/UPMEM/upmem-tile-mram-buffers.mlir` (new, 2 cases) |
-| M6 | `--convert-cnm-to-upmem` MRAM handling; `cnm.local_transfer` lowering | `test/Conversion/CnmToUpmem/cnm-to-upmem-mram-level.mlir` (new, 2 cases) |
-| M7 | `--upmem-infer-accelerator=use-generic-pipeline=<bool>` | `test/Dialect/UPMEM/upmem-infer-accelerator.mlir` (fix — currently has no RUN line); `test/Dialect/UPMEM/upmem-infer-accelerator-generic-pipeline.mlir` (new); `test/Transform/UPMEM/gemv-generic-mram-pipeline.mlir` (new, end-to-end) |
+| M0 | launch round-trip fix; `CinmLevelAttrInterface` on `DpuMemSpaceAttr` | `Dialect/Cnm/cnm-launch-roundtrip.mlir` (new); refresh `Conversion/CnmToUpmem/cnm-to-upmem.mlir` + `-broadcast.mlir` (currently red) |
+| M1 | `--convert-cinm-to-cnm=cnm-buffer-level=<name>` | `Conversion/CinmToCnm/cinm-to-cnm-mram-buffers.mlir` (new; mram, wram, bad-name cases); `cinm-to-cnm.mlir` + `-difficult.mlir` stay green |
+| M2 | `cnm.local_transfer` | `Dialect/Cnm/cnm-ops.mlir` (extend); `Dialect/Cnm/cnm-verifier.mlir` (new) |
+| M3 | reduce accumulation fix; reduce DPS mode | `Dialect/Cinm/cinm-reduce-tiling.mlir` (new, bug repro); `cinm-reduce-memref-tiling.mlir` (new); `cinm-gemv-memref-tiling.mlir` (new, existing gap); `cinm-ops.mlir` (extend) |
+| M4 | `cinm` ops in launch bodies | `cinm-to-cnm-mram-buffers.mlir` (extend: gemv, reduce, no-flag) |
+| M5 | `--upmem-tile-mram-buffers` | `Transform/UPMEM/upmem-tile-mram-buffers.mlir` (new, 2 cases) |
+| M6 | MRAM launch args; `cnm.local_transfer` lowering | `Conversion/CnmToUpmem/cnm-to-upmem-mram-level.mlir` (new, 2 cases) |
+| M7 | plugin map, staged pipeline, `lowering=` selector | `Transform/UPMEM/gemv-generic-mram-pipeline.mlir` (new, flags-only end-to-end); `Dialect/UPMEM/upmem-infer-accelerator.mlir` (add RUN line); `upmem-infer-accelerator-generic.mlir` (new); templates-vs-generic cost comparison |
 
 ---
 
