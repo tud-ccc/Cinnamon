@@ -458,21 +458,26 @@ LogicalResult distribute(RewriterBase &rewriter, linalg::LinalgOp op,
                                          operandTy.getElementType(),
                                          accelerator, level->space);
     Value alloc = cnm::AllocOp::create(b, bufferTy, workgroup);
+    bool isDestination = operand.getOperandNumber() >= numInputs;
 
-    // A freshly allocated destination has undefined contents, so there is
-    // nothing to bring over. Anything else -- including a real accumulator
-    // passed as `outs` -- has to be scattered.
-    bool isFreshDestination =
-        operand.getOperandNumber() >= numInputs &&
-        isa_and_nonnull<tensor::EmptyOp>(operand.get().getDefiningOp());
-    if (!isFreshDestination) {
+    if (isDestination &&
+        isa_and_nonnull<tensor::EmptyOp>(operand.get().getDefiningOp())) {
+      // A freshly allocated destination has undefined contents, so there is
+      // nothing to bring over.
+    } else {
+      // NOTE: when the destination is a constant zero -- which is exactly what
+      // a split reduction's identity seed is (§G5) -- this transfers a
+      // full-size buffer of zeros per launch. `cnm.set_zero` exists for this,
+      // but `--convert-cnm-to-upmem` has no pattern for it (only the GPU path
+      // does), so emitting it here makes the backend conversion fail. Fixing
+      // that needs a device-side zeroing of the MRAM buffer, which is its own
+      // piece of work.
       Value host = toTiledLayout(b, operand.get(), tiling.counts,
                                  tiling.blocks);
       cnm::ScatterOp::create(b, host, alloc, workgroup, tiling.scatterMap);
     }
 
-    (operand.getOperandNumber() < numInputs ? launchInputs : launchOutputs)
-        .push_back(alloc);
+    (isDestination ? launchOutputs : launchInputs).push_back(alloc);
   }
 
   auto launch = cnm::LaunchOp::create(b, workgroup, launchInputs,
