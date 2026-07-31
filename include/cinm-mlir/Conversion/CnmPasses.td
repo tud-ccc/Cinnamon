@@ -39,8 +39,10 @@ def ConvertLinalgToCnmPass : Pass<"convert-linalg-to-cnm"> {
       accelerator (`cinm.compute_block`), and the product of the tile counts
       `dimSize / blockSize` must equal the number of workgroup leaves.
 
-      Splitting a reduction dimension across the workgroup is not implemented
-      yet and is rejected; see docs/CnmMemoryLevelsDesign.md §G4.
+      A block size smaller than the extent of a *reduction* dimension spreads
+      that reduction across the workgroup: each leaf computes a partial
+      result from the reduction identity, and a merge is left on the host.
+      See docs/CnmMemoryLevelsDesign.md §G4.
     }];
     let constructor = "mlir::cnm::createConvertLinalgToCnmPass()";
     let dependentDialects = [
@@ -56,7 +58,13 @@ def ConvertLinalgToCnmPass : Pass<"convert-linalg-to-cnm"> {
              "UPMEM). The level becomes the buffer type's level and the memory "
              "space of the launch body's memrefs. Empty means unlevelled "
              "buffers, which is what the backend conversion assumes when it "
-             "picks the staging itself.">
+             "picks the staging itself.">,
+      Option<"allowFloatReassociation", "allow-float-reassociation", "bool",
+             "false",
+             "Permit splitting a floating-point reduction across the "
+             "workgroup. Doing so reassociates the sum and changes the "
+             "result, so it is off by default rather than something the "
+             "search does silently.">
     ];
 }
 

@@ -26,6 +26,7 @@
 #include <llvm/ADT/SmallVector.h>
 #include <mlir/Dialect/Arith/IR/Arith.h>
 #include <mlir/Dialect/Linalg/IR/Linalg.h>
+#include <mlir/Dialect/Linalg/Transforms/Transforms.h>
 #include <mlir/Dialect/Tensor/IR/Tensor.h>
 #include <mlir/IR/AffineExpr.h>
 #include <mlir/IR/AffineMap.h>
@@ -180,8 +181,151 @@ static Operation *cloneOnBuffers(ImplicitLocOpBuilder &b, linalg::LinalgOp op,
   return b.create(state);
 }
 
+/// Every indexing map must be a projected permutation: the tiling of an
+/// operand dimension is then simply the tiling of the one loop dimension that
+/// indexes it. Anything else (a repeated dimension, a window) would need the
+/// tile to be a strided or overlapping slice, which `cnm.buffer` cannot
+/// describe. Dropping a dimension is fine -- that is a broadcast operand.
+static LogicalResult checkProjectedPermutations(linalg::LinalgOp op) {
+  for (auto [operand, map] :
+       llvm::zip(op->getOpOperands(), op.getIndexingMapsArray()))
+    if (!map.isProjectedPermutation())
+      return op->emitOpError("cannot distribute operand #")
+             << operand.getOperandNumber() << ": indexing map "
+             << AffineMapAttr::get(map) << " is not a projected permutation";
+  return success();
+}
+
+/// Loop extents, read off the operands. Only valid once
+/// `checkProjectedPermutations` has passed.
+static FailureOr<SmallVector<int64_t>> getLoopExtents(linalg::LinalgOp op) {
+  SmallVector<int64_t> extents(op.getNumLoops(), ShapedType::kDynamic);
+  for (auto [operand, map] :
+       llvm::zip(op->getOpOperands(), op.getIndexingMapsArray())) {
+    auto shape = cast<ShapedType>(operand.get().getType()).getShape();
+    for (auto [pos, expr] : llvm::enumerate(map.getResults()))
+      extents[cast<AffineDimExpr>(expr).getPosition()] = shape[pos];
+  }
+  for (auto [dim, extent] : llvm::enumerate(extents))
+    if (ShapedType::isDynamic(extent))
+      return op->emitOpError("iteration dimension ")
+             << dim << " has a dynamic extent; the distribution is computed "
+                       "from static sizes";
+  return extents;
+}
+
+/// Tile counts `extent / block`, checking that the block sizes make sense for
+/// this op.
+static FailureOr<SmallVector<int64_t>> getTileCounts(linalg::LinalgOp op,
+                                                     ArrayRef<int64_t> blocks,
+                                                     ArrayRef<int64_t> extents) {
+  if (blocks.size() != op.getNumLoops())
+    return op->emitOpError("expected ")
+           << op.getNumLoops() << " block size(s) in '"
+           << cnm::CnmDialect::TILE_SIZES_NAME << "' (one per iteration "
+           << "dimension), got " << blocks.size();
+
+  SmallVector<int64_t> counts(blocks.size());
+  for (auto [dim, extent, block] : llvm::enumerate(extents, blocks)) {
+    if (block <= 0)
+      return op->emitOpError("block size for iteration dimension ")
+             << dim << " must be positive, got " << block;
+    if (extent % block != 0)
+      return op->emitOpError("block size ")
+             << block << " does not divide the extent " << extent
+             << " of iteration dimension " << dim;
+    counts[dim] = extent / block;
+  }
+  return counts;
+}
+
+/// Spread across the workgroup every reduction dimension whose block size asks
+/// for it, by rewriting the op into a partial-reduction op plus a host-side
+/// merge (design §G4).
+///
+/// Upstream's `splitReduction` performs exactly this rewrite, and it also
+/// covers §G5: it seeds the partial result with the combiner's neutral
+/// element, so every leaf starts from the reduction identity, and its merge op
+/// accumulates into the *original* `outs`, so an incoming accumulator is
+/// folded in exactly once rather than once per leaf.
+///
+/// The split dimension is inserted directly after the parallel dimensions,
+/// making it the innermost parallel one. Under §G3's linearization that puts
+/// the partials of one output region in consecutive leaves.
+///
+/// `blocks` is updated to describe the rewritten op.
+static FailureOr<linalg::LinalgOp>
+splitDistributedReductions(RewriterBase &rewriter, linalg::LinalgOp op,
+                           SmallVector<int64_t> &blocks,
+                           bool allowFloatReassociation) {
+  while (true) {
+    FailureOr<SmallVector<int64_t>> extents = getLoopExtents(op);
+    if (failed(extents))
+      return failure();
+
+    auto iterators = op.getIteratorTypesArray();
+    unsigned numParallel =
+        llvm::count(iterators, utils::IteratorType::parallel);
+
+    std::optional<unsigned> target;
+    for (auto [dim, kind] : llvm::enumerate(iterators)) {
+      if (kind == utils::IteratorType::parallel) {
+        // The insert position below assumes the parallel dimensions come
+        // first, which also makes `blocks` line up with the rewritten op.
+        if (target)
+          return op->emitOpError(
+              "cannot split a reduction dimension of an op whose parallel "
+              "dimensions do not all come first");
+        continue;
+      }
+      if (!target && (*extents)[dim] != blocks[dim])
+        target = dim;
+    }
+    if (!target)
+      return op;
+
+    int64_t ratio = (*extents)[*target] / blocks[*target];
+
+    // Reassociating a float reduction changes the result, so it is opt-in
+    // rather than something the search does behind the user's back (§G6).
+    Type elementType =
+        cast<ShapedType>(op.getDpsInits()[0].getType()).getElementType();
+    if (isa<FloatType>(elementType) && !allowFloatReassociation)
+      return op->emitOpError("splitting reduction dimension ")
+             << *target << " " << ratio
+             << " ways reassociates a floating-point reduction, which changes "
+                "the result; pass allow-float-reassociation to permit it";
+
+    linalg::ControlSplitReductionFn control = [&](linalg::LinalgOp) {
+      return linalg::SplitReductionOptions{ratio, numParallel,
+                                           /*innerParallel=*/false};
+    };
+    FailureOr<linalg::SplitReductionResult> split =
+        linalg::splitReduction(rewriter, op, control);
+    if (failed(split))
+      return op->emitOpError("could not split reduction dimension ")
+             << *target
+             << ": its combiner was not recognised as one with a neutral "
+                "element";
+
+    // The rewritten iteration space is [parallel dims] ++ [split dim] ++
+    // [reduction dims], with the split dimension holding one tile per leaf and
+    // the original reduction dimension now spanning exactly one block.
+    blocks.insert(blocks.begin() + numParallel, 1);
+    op = split->splitLinalgOp;
+
+    FailureOr<SmallVector<int64_t>> newExtents = getLoopExtents(op);
+    if (failed(newExtents))
+      return failure();
+    if ((*newExtents)[numParallel] != ratio)
+      return op->emitOpError("internal error: splitReduction placed the split "
+                             "dimension somewhere unexpected");
+  }
+}
+
 LogicalResult distribute(RewriterBase &rewriter, linalg::LinalgOp op,
-                         StringRef bufferLevelName) {
+                         StringRef bufferLevelName,
+                         bool allowFloatReassociation) {
   auto tileAttr =
       op->getAttrOfType<DenseI64ArrayAttr>(cnm::CnmDialect::TILE_SIZES_NAME);
   assert(tileAttr && "caller filters on the attribute");
@@ -202,79 +346,59 @@ LogicalResult distribute(RewriterBase &rewriter, linalg::LinalgOp op,
   if (failed(level))
     return failure();
 
+  if (failed(checkProjectedPermutations(op)))
+    return failure();
+
+  SmallVector<int64_t> blocks(tileAttr.asArrayRef());
+  {
+    FailureOr<SmallVector<int64_t>> extents = getLoopExtents(op);
+    if (failed(extents))
+      return failure();
+    FailureOr<SmallVector<int64_t>> counts = getTileCounts(op, blocks, *extents);
+    if (failed(counts))
+      return failure();
+
+    ArrayRef<int64_t> wgShape = accelerator.getWorkgroupShape();
+    int64_t numLeaves = std::reduce(wgShape.begin(), wgShape.end(), int64_t{1},
+                                    std::multiplies<>());
+    int64_t numTiles = std::reduce(counts->begin(), counts->end(), int64_t{1},
+                                   std::multiplies<>());
+    if (numTiles != numLeaves)
+      return op->emitOpError("the block sizes produce ")
+             << numTiles << " tile(s) but the workgroup has " << numLeaves
+             << " leaves; their product must match exactly (sequential trips "
+                "over the problem belong to a tiling pass upstream)";
+  }
+
+  // Any reduction dimension the block sizes spread over the workgroup becomes
+  // a parallel dimension over partial results, plus a merge left on the host.
+  // Everything below therefore only ever sees unsplit reductions.
+  FailureOr<linalg::LinalgOp> split = splitDistributedReductions(
+      rewriter, op, blocks, allowFloatReassociation);
+  if (failed(split))
+    return failure();
+  op = *split;
+
   auto indexingMaps = op.getIndexingMapsArray();
   unsigned numLoops = op.getNumLoops();
 
-  // Every indexing map must be a projected permutation: the tiling of an
-  // operand dimension is then simply the tiling of the one loop dimension
-  // that indexes it. Anything else (a broadcast expression, a window) would
-  // need the tile to be a strided or overlapping slice, which `cnm.buffer`
-  // cannot describe.
-  for (auto [operand, map] : llvm::zip(op->getOpOperands(), indexingMaps)) {
-    if (!map.isProjectedPermutation())
-      return op->emitOpError("cannot distribute operand #")
-             << operand.getOperandNumber() << ": indexing map "
-             << AffineMapAttr::get(map) << " is not a projected permutation";
-  }
-
-  // Loop extents, read off the operands. Safe because of the check above.
-  SmallVector<int64_t> loopExtents(numLoops, ShapedType::kDynamic);
-  for (auto [operand, map] : llvm::zip(op->getOpOperands(), indexingMaps)) {
-    auto shape = cast<ShapedType>(operand.get().getType()).getShape();
-    for (auto [pos, expr] : llvm::enumerate(map.getResults()))
-      loopExtents[cast<AffineDimExpr>(expr).getPosition()] = shape[pos];
-  }
-  for (auto [dim, extent] : llvm::enumerate(loopExtents))
-    if (ShapedType::isDynamic(extent))
-      return op->emitOpError("iteration dimension ")
-             << dim << " has a dynamic extent; the distribution is computed "
-                       "from static sizes";
-
-  // Block sizes -> tile counts.
-  ArrayRef<int64_t> blocks = tileAttr.asArrayRef();
-  if (blocks.size() != numLoops)
-    return op->emitOpError("expected ")
-           << numLoops << " block size(s) in '"
-           << cnm::CnmDialect::TILE_SIZES_NAME << "' (one per iteration "
-           << "dimension), got " << blocks.size();
-
-  SmallVector<int64_t> counts(numLoops);
-  for (auto [dim, extent, block] : llvm::enumerate(loopExtents, blocks)) {
-    if (block <= 0)
-      return op->emitOpError("block size for iteration dimension ")
-             << dim << " must be positive, got " << block;
-    if (extent % block != 0)
-      return op->emitOpError("block size ")
-             << block << " does not divide the extent " << extent
-             << " of iteration dimension " << dim;
-    counts[dim] = extent / block;
-  }
-
+  FailureOr<SmallVector<int64_t>> loopExtents = getLoopExtents(op);
+  if (failed(loopExtents))
+    return failure();
+  FailureOr<SmallVector<int64_t>> tileCounts =
+      getTileCounts(op, blocks, *loopExtents);
+  if (failed(tileCounts))
+    return failure();
+  SmallVector<int64_t> counts = *tileCounts;
   ArrayRef<int64_t> wgShape = accelerator.getWorkgroupShape();
-  int64_t numLeaves = std::reduce(wgShape.begin(), wgShape.end(), int64_t{1},
-                                  std::multiplies<>());
-  int64_t numTiles =
-      std::reduce(counts.begin(), counts.end(), int64_t{1}, std::multiplies<>());
-  if (numTiles != numLeaves)
-    return op->emitOpError("the block sizes produce ")
-           << numTiles << " tile(s) but the workgroup has " << numLeaves
-           << " leaves; their product must match exactly (sequential trips "
-              "over the problem belong to a tiling pass upstream)";
-
-  auto iteratorTypes = op.getIteratorTypesArray();
-  for (auto [dim, kind] : llvm::enumerate(iteratorTypes))
-    if (kind != utils::IteratorType::parallel && counts[dim] != 1)
-      return op->emitOpError("iteration dimension ")
-             << dim << " is a reduction and would be split " << counts[dim]
-             << " ways; splitting a reduction across the workgroup is not "
-                "implemented yet (design §G4)";
 
   // Tile-space -> workgroup mapping. Both sides are linearized, and the
   // tile-side order is fixed by rule rather than searched: parallel
   // dimensions outer, reduction dimensions inner, op order within each group
   // (design §G3). Reduction dimensions innermost means the partials of one
   // output region occupy consecutive leaves, which is what makes them
-  // mergeable locally once §G4 lands.
+  // mergeable locally once device-side merging exists (§G10).
+  auto iteratorTypes = op.getIteratorTypesArray();
   SmallVector<unsigned> order;
   for (auto [dim, kind] : llvm::enumerate(iteratorTypes))
     if (kind == utils::IteratorType::parallel)
@@ -411,7 +535,8 @@ struct ConvertLinalgToCnmPass
 
     IRRewriter rewriter(&getContext());
     for (linalg::LinalgOp op : targets)
-      if (failed(distribute(rewriter, op, bufferLevel)))
+      if (failed(distribute(rewriter, op, bufferLevel,
+                            allowFloatReassociation)))
         return signalPassFailure();
   }
 };
