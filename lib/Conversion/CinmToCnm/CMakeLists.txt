@@ -11,6 +11,7 @@ add_mlir_conversion_library(MLIRCinmToCnm
     Core
 
     LINK_LIBS PUBLIC
+    CinmCommonPatterns
     CnmIR
     CinmUtils
     CinmIR
