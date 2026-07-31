@@ -47,15 +47,23 @@ hand-written templates in `SimulationTemplates.cpp`.
 
 ### 0.1 Status
 
-**M0 and M3 are implemented** (branch `cost-model`). The two design-doc
-corrections they turned up — §A1 (`CinmLevelDefAttr` is a capacity
+**M0–M4 are implemented** (branch `cost-model`). The two design-doc
+corrections M0/M3 turned up — §A1 (`CinmLevelDefAttr` is a capacity
 descriptor and does *not* implement the level interface) and §F (the
 templates stay indefinitely, not just as a development oracle) — have
 been folded back into [CnmMemoryLevelsDesign.md](CnmMemoryLevelsDesign.md).
 
-M1, M2 and M4–M7 remain. M1 and M2 are unblocked and mutually
-independent; M4 now has both its prerequisites (M1 is the only one
-outstanding).
+**M5, M6 and M7 remain.** M5 is unblocked.
+
+One decision was added along the way that the plan did not anticipate:
+**11. The per-leaf buffer budget follows the selected level.** It is
+derived from `getWorkgroupMemoryLevels()` (which workgroup dimension owns
+the level) and `getWorkgroupShape()` (how many leaves share it), rather
+than from `bufferSizeOfLeaf()`. Otherwise `cnm-buffer-level=mram` sizes
+MRAM buffers against WRAM and rejects every tile that needs MRAM, which
+made the option almost inert. The derivation reproduces
+`bufferSizeOfLeaf()` exactly for UPMEM's leaf level, so the no-flag path
+is unchanged. See M4.
 
 ## 1. What already exists
 
@@ -302,7 +310,14 @@ cleanup.
   regression test for it.
 - Refreshed `cnm-to-upmem.mlir` / `cnm-to-upmem-broadcast.mlir` go green.
 
-### M1 — `cnm-buffer-level` option on `--convert-cinm-to-cnm`
+### M1 — `cnm-buffer-level` option on `--convert-cinm-to-cnm` — **DONE**
+
+Landed as planned. `createLaunchOp` derives each block argument's memory
+space from its own buffer's level rather than taking the level as a
+separate parameter — `LaunchOp::verify` requires exactly that agreement,
+so there is no second source of truth to get wrong.
+
+Original plan follows.
 
 **Goal:** decision 3. Buffers and launch block args get a level.
 
@@ -345,7 +360,11 @@ cleanup.
   stay green with no flag (these two are currently *passing*, so unlike
   the CnmToUpmem tests they are a trustworthy signal).
 
-### M2 — `cnm.local_transfer`
+### M2 — `cnm.local_transfer` — **DONE**
+
+Landed as planned.
+
+Original plan follows.
 
 **Goal:** decision 6.
 
@@ -433,7 +452,39 @@ restricts itself to
 - `test/Dialect/Cinm/cinm-ops.mlir`: round-trip the new
   `cinm.op.reduce ... into %out` syntax.
 
-### M4 — `cinm` ops inside `cnm.launch` bodies
+### M4 — `cinm` ops inside `cnm.launch` bodies — **DONE**
+
+Deviations from the plan below:
+
+- **The buffer budget had to move first** (decision 11 above). Without it
+  a multi-row per-leaf tile never fits, so the launch body is always a
+  dot product and M4 has nothing to convert.
+- **Gemm is not converted.** `ConvertCinmGemmToCnm` gives each leaf
+  exactly one output element, so its per-leaf tile is always a dot
+  product; there is no shape in which `cinm.op.gemm` could stand in its
+  launch body. Gemv falls back to `linalg.contract` for the same reason
+  when the tile happens to be a single row (lhs rank 1). This is a
+  legality condition, not a strategy choice, but it does mean **M5 will
+  only ever see gemv and reduce launch bodies** until the gemm pattern is
+  reworked to give leaves multi-element tiles.
+- **The launch body's reduction dimension was hardcoded to 0** and had to
+  be fixed to the buffer's last dimension. `convertInputIntoAlloc`
+  prepends the parallel work that did not fit on the workgroup, so
+  dimension 0 is only right when the buffer holds nothing but the
+  reduction. Previously unreachable — a multi-row tile never fit the WRAM
+  budget — and immediately reachable once the budget follows MRAM, where
+  `linalg.reduce` rejected the op outright.
+- The output-init question the plan flagged ("worth confirming this holds
+  for the reduce path too") turned up a bug and was fixed here. The reduce
+  pattern scattered a *zero* `outputInit` regardless of method, which is
+  the identity only for `add`; a `mul` reduction was seeded with zero and
+  therefore always returned zero. It now scatters
+  `arith::getIdentityValueAttr` for the method. This was equally broken on
+  the pre-existing linalg path, but the memref-mode `cinm.op.reduce` M4
+  emits accumulates into `out` by definition, so the identity seed is now
+  load-bearing rather than incidental.
+
+Original plan follows.
 
 **Goal:** decision 4, first half.
 
@@ -611,10 +662,10 @@ MRAM-level ones, whose staging M5 has already made explicit.
 | Milestone | Subject | Tests |
 |---|---|---|
 | M0 ✅ | launch round-trip fix; `CinmLevelAttrInterface` on `DpuMemSpaceAttr` | `Dialect/Cnm/cnm-launch-roundtrip.mlir` (new); `Conversion/CnmToUpmem/cnm-to-upmem.mlir` + `-broadcast.mlir` fixed, now green |
-| M1 | `--convert-cinm-to-cnm=cnm-buffer-level=<name>` | `Conversion/CinmToCnm/cinm-to-cnm-mram-buffers.mlir` (new; mram, wram, bad-name cases); `cinm-to-cnm.mlir` + `-difficult.mlir` stay green |
-| M2 | `cnm.local_transfer` | `Dialect/Cnm/cnm-ops.mlir` (extend); `Dialect/Cnm/cnm-verifier.mlir` (new) |
+| M1 ✅ | `--convert-cinm-to-cnm=cnm-buffer-level=<name>` | `Conversion/CinmToCnm/cinm-to-cnm-buffer-level.mlir` (new; mram/wram/no-flag prefixes); `cinm-to-cnm-buffer-level-invalid.mlir` (new; unknown level); `cinm-to-cnm.mlir` + `-difficult.mlir` stay green |
+| M2 ✅ | `cnm.local_transfer` | `Dialect/Cnm/cnm-local-transfer.mlir` (new, round-trip); `Dialect/Cnm/cnm-verifier.mlir` (new) |
 | M3 ✅ | reduce accumulation fix; reduce DPS mode | `Transform/Cinm/cinm-tiling-reduce.mlir` (fixed: had locked in the bug); `Dialect/Cinm/cinm-reduce-memref-tiling.mlir` (new); `cinm-reduce-verifier.mlir` (new); `cinm-gemv-memref-tiling.mlir` (new, existing gap); `cinm-parse-memrefs.mlir` (extended) |
-| M4 | `cinm` ops in launch bodies | `cinm-to-cnm-mram-buffers.mlir` (extend: gemv, reduce, no-flag) |
+| M4 ✅ | `cinm` ops in launch bodies | `Conversion/CinmToCnm/cinm-to-cnm-launch-body.mlir` (new; gemv, reduce, dot-product fallback); `cinm-to-cnm-buffer-level.mlir` (extended: gemm stays linalg, reduce dimension) |
 | M5 | `--upmem-tile-mram-buffers` | `Transform/UPMEM/upmem-tile-mram-buffers.mlir` (new, 2 cases) |
 | M6 | MRAM launch args; `cnm.local_transfer` lowering | `Conversion/CnmToUpmem/cnm-to-upmem-mram-level.mlir` (new, 2 cases) |
 | M7 | plugin map, staged pipeline, `lowering=` selector | `Transform/UPMEM/gemv-generic-mram-pipeline.mlir` (new, flags-only end-to-end); `Dialect/UPMEM/upmem-infer-accelerator.mlir` (add RUN line); `upmem-infer-accelerator-generic.mlir` (new); templates-vs-generic cost comparison |

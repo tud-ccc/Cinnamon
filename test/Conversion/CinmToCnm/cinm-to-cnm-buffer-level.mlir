@@ -90,3 +90,25 @@ func.func @reduce_multirow(%a: tensor<1024x8xi32>) -> tensor<1024xi32> {
   }
   func.return %r0 : tensor<1024xi32>
 }
+
+// -----
+
+#upmem_platform = #upmem.platform<type=v1A, dimensions = 4x16>
+#upmem = #upmem.array<1x16x1, #upmem_platform>
+
+// The launch body combines into the scattered output init, so that init has to
+// be the reduction's identity. Zero only happens to be right for `add`.
+// MRAM-LABEL: @reduce_mul_identity
+// WRAM-LABEL: @reduce_mul_identity
+// NONE-LABEL: @reduce_mul_identity
+func.func @reduce_mul_identity(%a: tensor<1024x8xi32>) -> tensor<1024xi32> {
+  // MRAM: arith.constant dense<1> : tensor<16x64xi32>
+  // WRAM: arith.constant dense<1> : tensor<16x64xi32>
+  // NONE: arith.constant dense<1> : tensor<16x64xi32>
+  // NONE-NOT: arith.constant dense<0> : tensor<16x64xi32>
+  %r0 = cinm.compute on accelerator #upmem -> tensor<1024xi32> {
+    %r = cinm.op.reduce mul (%a) : tensor<1024x8xi32> -> tensor<1024xi32>
+    cinm.yield %r : tensor<1024xi32>
+  }
+  func.return %r0 : tensor<1024xi32>
+}
