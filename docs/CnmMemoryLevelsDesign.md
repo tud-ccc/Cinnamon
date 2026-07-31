@@ -548,63 +548,77 @@ fastest across tasklets vs DPUs, hence scatter contiguity.
 
 **Decided:** linearize both sides (the workgroup already is —
 `mlir::linearizeIndices(ctx, wgShape)`) and fix the tile-side order by
-rule: **parallel dims outer, reduction dims inner, op dim order within
-each group.** No search variable.
+rule: **reduction-derived (split) dimensions outermost, then the
+original parallel dimensions, then the unsplit reduction remainder**,
+op dim order within each group. No search variable.
 
 Under this formulation the template's `dpuCols` and `taskletCols`
 collapse into a single `k_tiles = K / b_k`: the DSE picks how many
 reduction tiles there are, not where the DPU/tasklet boundary falls
 inside them.
 
-Note that linearization is not *bad* at locality. With reduction dims
-innermost, the partials of one output region occupy consecutive linear
-leaf indices, and leaves within a DPU are consecutive blocks of `T`, so
-all `k_tiles` partials share a DPU exactly when `k_tiles | T`. When
-`k_tiles > T` the split degrades gracefully into a two-level merge:
-`T` partials merged locally, then `k_tiles / T` groups merged across
-DPUs.
+**Why the split dimension goes outermost.** Whichever tile dimension
+varies fastest across leaves is the one that the leaves sharing a
+hardware node differ in. MRAM is per-DPU and shared across its
+tasklets, and `--convert-cnm-to-upmem` decides *syntactically* — from
+whether the scatter map mentions the tasklet dimension
+(`isMramBroadcastOverThreads`) — whether a buffer is stored once per DPU
+or replicated per tasklet. So:
 
-**What is actually given up is the ratio.** Linearization is greedy —
-the innermost tile dim fills the fastest hardware axis completely
-before spilling to the next — so it forces `taskletCols = min(k_tiles,
-T)`. The template space can choose `taskletCols = 2` with `T = 8`
-(leaving `taskletRows = 4`); linearization with the same `k_tiles = 8`
-must give `taskletCols = 8, taskletRows = 1`.
+- *Split dimension innermost*: a DPU's tasklets differ in their
+  reduction tile. Any operand indexed only by reduction dimensions —
+  gemv's vector — is replicated once per tasklet.
+- *Split dimension outermost*: a DPU's tasklets differ in their parallel
+  tile and share their reduction tile, so that operand is stored once
+  per DPU.
 
-**Why the ratio matters, and it is not merge cost.** MRAM is per-DPU
-and shared across tasklets, and whether an operand is *replicated per
-tasklet* or *shared* is decided by whether its indexing map varies
-along the tasklet axis — i.e. by the assignment. The lowering shows
-this directly: a scatter map depending on the tasklet dim produces a
-leading tasklet dimension plus per-tasklet subviews, one that does not
-produces a single shared buffer
-([cnm-to-upmem-mram-level.mlir:73-84](../test/Conversion/CnmToUpmem/cnm-to-upmem-mram-level.mlir#L73-L84)).
-For gemv (`A[m,k]`, `x[k]`, `y[m]`) the two ends are:
+The evidence picks the second. The gemv_64MB optimum found by an
+independent autotuner
+([dodo.py](../experiments/gemv_microbenchmark/dodo.py)) has
+`taskletCols = 1` — tasklets splitting rows, sharing the vector — and
+with the split dimension innermost that configuration is not reachable
+at all: the linearization forces `taskletCols = min(k_tiles, tasklets)`.
+With it outermost, the per-DPU footprint comes out at
+`8192 + 128 + 64` elements, which is exactly the template's own MRAM
+constraint `mramRow*mramCol + mramCol + mramRow`. Pinned by
+[gemv-split-k-grouping.mlir](../test/Transform/UPMEM/gemv-split-k-grouping.mlir).
 
-- *Reduction innermost* (what linearization gives): tasklets share
-  `m_tile`, differ in `k_tile`. `y` becomes `T` locally-mergeable
-  partials, but `x` is replicated `T` times in MRAM.
-- *Parallel innermost*: tasklets share `k_tile`, differ in `m_tile`.
-  `x` is one shared slice — a `T`× MRAM saving — but every partial goes
-  to the host.
+This depends on the scatter map actually *simplifying* to something free
+of the tasklet dimension. Delinearizing a workgroup index yields
+`(dpu * T + tasklet) floordiv S`, which is constant in `tasklet`
+whenever `T | S` but still names it; `simplifyAffineExprWithBounds`
+gained the rule that discharges this (`ae698cc`). Without it the
+ordering decision above has no observable effect.
 
-Neither dominates; which wins depends on the broadcast operand's size
-relative to the merge traffic, i.e. on the problem shape. That is
-search-variable material.
+**What is given up.** Partials of one output region are no longer
+adjacent in the leaf index — they are `m_tiles` apart — so device-side
+merging (§G10) will have nothing local to merge. That costs nothing
+while merging is host-side, and it is precisely the point at which this
+order should stop being a rule and become a parameter. Note the
+symmetry: the two orders trade broadcast-operand sharing against merge
+locality, and only one of the two is currently exploitable.
 
-**So this is not purely a performance knob**: per-tasklet replication
-changes per-DPU MRAM footprint, so a fixed order can change
-*feasibility* under capacity constraints. Every factorization
-`(m_tiles, k_tiles)` stays reachable, but not every factorization stays
-*fittable*.
+The general loss remains the *ratio*: linearization is greedy, so it
+cannot independently choose how a hardware level splits between two tile
+dimensions. With the split dimension outermost the reachable corner is
+`taskletCols = max(1, tasklets / m_tiles)`, which covers the
+configurations we care about today but is not the full template space.
 
-**Why deferring is still right, and when to revisit.** For gemv the
-effect is second-order: `A` dominates the footprint and is indexed by
-both dims, so it is replicated under every assignment and the `x`
-saving is small. Good enough for M8/M9. The revisit trigger is **a
-broadcast operand large relative to the per-leaf tile** — gemm with a
-shared operand will hit this well before device-side merging (G10)
-does.
+**This is not purely a performance knob**: per-tasklet replication
+changes the per-DPU MRAM footprint, so the order can change
+*feasibility* under capacity constraints, not just speed. Every
+factorization `(m_tiles, k_tiles)` stays reachable, but under the wrong
+order not every one stays *fittable*. That is why the rule above is
+settled by evidence rather than by taste.
+
+**When to revisit.** Two triggers, either of which makes the order a
+parameter rather than a rule:
+
+- **Device-side merging (§G10)**, which is what the current order gives
+  up.
+- **An op where both trades bite at once** — one large broadcast operand
+  *and* a reduction worth merging locally. gemm with a shared operand is
+  the likely first case.
 
 Note the scale when revisiting: iteration rank is 1 (elementwise), 2
 (gemv), 3 (gemm), so there are at most `3! = 6` orders. Enumerate them
