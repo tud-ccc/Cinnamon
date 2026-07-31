@@ -551,27 +551,67 @@ fastest across tasklets vs DPUs, hence scatter contiguity.
 rule: **parallel dims outer, reduction dims inner, op dim order within
 each group.** No search variable.
 
-Rationale for why this costs nothing *now*: under this formulation the
-template's `dpuCols` and `taskletCols` collapse into a single `k_tiles
-= K / b_k`, and where the DPU/tasklet boundary falls inside that split
-stops being a parameter. Since partial merging happens on the host
-(G5), two tasklets in the same DPU holding partials of the same output
-row have no advantage over two different DPUs — both go through the
-gather. The boundary only becomes semantically visible once
-device-side partial merging exists.
+Under this formulation the template's `dpuCols` and `taskletCols`
+collapse into a single `k_tiles = K / b_k`: the DSE picks how many
+reduction tiles there are, not where the DPU/tasklet boundary falls
+inside them.
 
-What is given up: every factorization `(m_tiles, k_tiles)` stays
-reachable, so utilization, buffer sizes and capacity constraints are
-fully covered. What is fixed is only which hardware axis each
-iteration dim lands on — a locality/contiguity dimension, not a
-coverage one.
+Note that linearization is not *bad* at locality. With reduction dims
+innermost, the partials of one output region occupy consecutive linear
+leaf indices, and leaves within a DPU are consecutive blocks of `T`, so
+all `k_tiles` partials share a DPU exactly when `k_tiles | T`. When
+`k_tiles > T` the split degrades gracefully into a two-level merge:
+`T` partials merged locally, then `k_tiles / T` groups merged across
+DPUs.
 
-**When to revisit:** when device-side merging lands. Note the scale
-then — iteration rank is 1 (elementwise), 2 (gemv), 3 (gemm), so there
-are at most `3! = 6` orders. Enumerate them (a small categorical
-variable, or one space instance per order); a first-class permutation
-representation with a permutation-aware distance function, BACO-style,
-is not warranted at this size and probably never will be.
+**What is actually given up is the ratio.** Linearization is greedy —
+the innermost tile dim fills the fastest hardware axis completely
+before spilling to the next — so it forces `taskletCols = min(k_tiles,
+T)`. The template space can choose `taskletCols = 2` with `T = 8`
+(leaving `taskletRows = 4`); linearization with the same `k_tiles = 8`
+must give `taskletCols = 8, taskletRows = 1`.
+
+**Why the ratio matters, and it is not merge cost.** MRAM is per-DPU
+and shared across tasklets, and whether an operand is *replicated per
+tasklet* or *shared* is decided by whether its indexing map varies
+along the tasklet axis — i.e. by the assignment. The lowering shows
+this directly: a scatter map depending on the tasklet dim produces a
+leading tasklet dimension plus per-tasklet subviews, one that does not
+produces a single shared buffer
+([cnm-to-upmem-mram-level.mlir:73-84](../test/Conversion/CnmToUpmem/cnm-to-upmem-mram-level.mlir#L73-L84)).
+For gemv (`A[m,k]`, `x[k]`, `y[m]`) the two ends are:
+
+- *Reduction innermost* (what linearization gives): tasklets share
+  `m_tile`, differ in `k_tile`. `y` becomes `T` locally-mergeable
+  partials, but `x` is replicated `T` times in MRAM.
+- *Parallel innermost*: tasklets share `k_tile`, differ in `m_tile`.
+  `x` is one shared slice — a `T`× MRAM saving — but every partial goes
+  to the host.
+
+Neither dominates; which wins depends on the broadcast operand's size
+relative to the merge traffic, i.e. on the problem shape. That is
+search-variable material.
+
+**So this is not purely a performance knob**: per-tasklet replication
+changes per-DPU MRAM footprint, so a fixed order can change
+*feasibility* under capacity constraints. Every factorization
+`(m_tiles, k_tiles)` stays reachable, but not every factorization stays
+*fittable*.
+
+**Why deferring is still right, and when to revisit.** For gemv the
+effect is second-order: `A` dominates the footprint and is indexed by
+both dims, so it is replicated under every assignment and the `x`
+saving is small. Good enough for M8/M9. The revisit trigger is **a
+broadcast operand large relative to the per-leaf tile** — gemm with a
+shared operand will hit this well before device-side merging (G10)
+does.
+
+Note the scale when revisiting: iteration rank is 1 (elementwise), 2
+(gemv), 3 (gemm), so there are at most `3! = 6` orders. Enumerate them
+(a small categorical variable, or one space instance per order); a
+first-class permutation representation with a permutation-aware
+distance function, BACO-style, is not warranted at this size and
+probably never will be.
 
 ### G4. Reduction splitting: the one structural addition
 
