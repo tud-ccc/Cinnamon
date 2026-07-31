@@ -1,4 +1,5 @@
 // RUN: cinm-opt %s --split-input-file --upmem-tile-mram-buffers --canonicalize | FileCheck %s
+// RUN: cinm-opt %s --split-input-file --upmem-tile-mram-buffers=hoist-output-transfers=false --canonicalize | FileCheck %s --check-prefix=NOHOIST
 
 // A cnm.launch body may operate on buffers in a level the compute elements
 // cannot address (MRAM). This pass tiles the body down to a leaf-sized tile and
@@ -19,28 +20,41 @@ func.func @gemv() {
   %a = cnm.alloc() for %wg : !cnm.buffer<64x512xi32 on #acc, #upmem.mram>
   %x = cnm.alloc() for %wg : !cnm.buffer<512xi32 on #acc, #upmem.mram>
   %y = cnm.alloc() for %wg : !cnm.buffer<64xi32 on #acc, #upmem.mram>
+  // The output tile is indexed only by the parallel dimension, so it is staged
+  // once outside the reduction loop and accumulated into in WRAM across every
+  // trip -- the structure the hand-written templates use. Staging it around
+  // the op instead would move it to and from MRAM on each of the 4 trips.
   // CHECK: scf.for %[[I:.*]] = %{{.*}} to %{{.*}} step %{{.*}} {
-  // CHECK: scf.for %[[K:.*]] = %{{.*}} to %{{.*}} step %{{.*}} {
-  // CHECK: %[[SA:.*]] = memref.subview %{{.*}}[%[[I]], %[[K]]] [16, 128] [1, 1] : memref<64x512xi32, #upmem.mram>
-  // CHECK: %[[SX:.*]] = memref.subview %{{.*}}[%[[K]]] [128] [1] : memref<512xi32, #upmem.mram>
   // CHECK: %[[SY:.*]] = memref.subview %{{.*}}[%[[I]]] [16] [1] : memref<64xi32, #upmem.mram>
-
   // Statically shaped WRAM buffers, not the flat i8 buffer + memref.view the
   // default promotion allocator would produce.
-  // CHECK: %[[WA:.*]] = memref.alloc() : memref<16x128xi32, #upmem.wram>
-  // CHECK: %[[WX:.*]] = memref.alloc() : memref<128xi32, #upmem.wram>
   // CHECK: %[[WY:.*]] = memref.alloc() : memref<16xi32, #upmem.wram>
-
-  // CHECK: cnm.local_transfer %[[SA]] into %[[WA]] : memref<16x128xi32, strided<[512, 1], offset: ?>, #upmem.mram> to memref<16x128xi32, #upmem.wram>
-  // CHECK: cnm.local_transfer %[[SX]] into %[[WX]]
   // The output is read as well as written: the contract accumulates into it.
   // CHECK: cnm.local_transfer %[[SY]] into %[[WY]]
+
+  // CHECK: scf.for %[[K:.*]] = %{{.*}} to %{{.*}} step %{{.*}} {
+  // CHECK: %[[SA:.*]] = memref.subview %{{.*}}[0, %[[K]]] [16, 128] [1, 1]
+  // CHECK: %[[SX:.*]] = memref.subview %{{.*}}[%[[K]]] [128] [1] : memref<512xi32, #upmem.mram>
+  // CHECK: %[[WA:.*]] = memref.alloc() : memref<16x128xi32, #upmem.wram>
+  // CHECK: %[[WX:.*]] = memref.alloc() : memref<128xi32, #upmem.wram>
+  // CHECK: cnm.local_transfer %[[SA]] into %[[WA]]
+  // CHECK: cnm.local_transfer %[[SX]] into %[[WX]]
   // CHECK: linalg.contract {{.*}} ins(%[[WA]], %[[WX]] : memref<16x128xi32, #upmem.wram>, memref<128xi32, #upmem.wram>) outs(%[[WY]] : memref<16xi32, #upmem.wram>)
-  // CHECK: cnm.local_transfer %[[WY]] into %[[SY]] : memref<16xi32, #upmem.wram> to memref<16xi32, strided<[1], offset: ?>, #upmem.mram>
   // CHECK: memref.dealloc %[[WA]]
+  // CHECK: }
+  // CHECK: cnm.local_transfer %[[WY]] into %[[SY]] : memref<16xi32, #upmem.wram> to memref<16xi32, strided<[1], offset: ?>, #upmem.mram>
 
   // The tile sizes have been consumed.
   // CHECK-NOT: upmem.leaf_tile_sizes
+
+  // Without hoisting, everything is staged around the op, inside both loops.
+  // NOHOIST: scf.for
+  // NOHOIST: scf.for
+  // NOHOIST: %[[NSY:.*]] = memref.subview %{{.*}}[%{{.*}}] [16] [1] : memref<64xi32, #upmem.mram>
+  // NOHOIST: %[[NWY:.*]] = memref.alloc() : memref<16xi32, #upmem.wram>
+  // NOHOIST: cnm.local_transfer %[[NSY]] into %[[NWY]]
+  // NOHOIST: linalg.contract
+  // NOHOIST: cnm.local_transfer %[[NWY]] into %[[NSY]]
   cnm.launch %wg ins(%A = %a : <64x512xi32, #upmem.mram>, %X = %x : <512xi32, #upmem.mram>)
                  outs(%Y = %y : <64xi32, #upmem.mram>) on !cnm.workgroup<#acc> {
     linalg.contract indexing_maps = [#m, #v, #r]
@@ -63,10 +77,15 @@ func.func @reduce() {
   %wg = cnm.workgroup : !cnm.workgroup<#acc>
   %a = cnm.alloc() for %wg : !cnm.buffer<64x512xi32 on #acc, #upmem.mram>
   %o = cnm.alloc() for %wg : !cnm.buffer<64xi32 on #acc, #upmem.mram>
-  // CHECK: memref.alloc() : memref<16x128xi32, #upmem.wram>
-  // CHECK: memref.alloc() : memref<16xi32, #upmem.wram>
-  // CHECK: cnm.local_transfer
-  // CHECK: linalg.reduce ins(%{{.*}} : memref<16x128xi32, #upmem.wram>) outs(%{{.*}} : memref<16xi32, #upmem.wram>)
+  // Same two-stage staging as the contract: the output tile is hoisted out of
+  // the reduction loop.
+  // CHECK: scf.for
+  // CHECK: %[[WO:.*]] = memref.alloc() : memref<16xi32, #upmem.wram>
+  // CHECK: cnm.local_transfer %{{.*}} into %[[WO]]
+  // CHECK: scf.for
+  // CHECK: %[[WI:.*]] = memref.alloc() : memref<16x128xi32, #upmem.wram>
+  // CHECK: cnm.local_transfer %{{.*}} into %[[WI]]
+  // CHECK: linalg.reduce ins(%[[WI]] : memref<16x128xi32, #upmem.wram>) outs(%[[WO]] : memref<16xi32, #upmem.wram>)
   cnm.launch %wg ins(%A = %a : <64x512xi32, #upmem.mram>)
                  outs(%O = %o : <64xi32, #upmem.mram>) on !cnm.workgroup<#acc> {
     linalg.reduce ins(%A : memref<64x512xi32, #upmem.mram>)

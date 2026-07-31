@@ -228,34 +228,81 @@ struct UpmemTileMRAMBuffersPass
       return success(); // already entirely in the leaf level
 
     SmallVector<int64_t> sizes = getTileSizes(op, tileSizes);
-    if (!sizes.empty()) {
-      auto tileable = cast<TilingInterface>(op.getOperation());
-      if (sizes.size() != tileable.getLoopIteratorTypes().size())
-        return op->emitOpError("expected ")
-               << tileable.getLoopIteratorTypes().size()
-               << " tile sizes for a " << op->getName() << " with "
-               << tileable.getLoopIteratorTypes().size()
-               << " iteration dimensions, got " << sizes.size();
+    if (sizes.empty())
+      return promote(rewriter, op, *levels);
 
-      scf::SCFTilingOptions options;
-      options.setTileSizes(getAsIndexOpFoldResult(&getContext(), sizes));
-      rewriter.setInsertionPoint(op);
-      FailureOr<scf::SCFTilingResult> tiled =
-          scf::tileUsingSCF(rewriter, tileable, options);
-      if (failed(tiled))
-        return op->emitOpError("failed to tile for the leaf memory level");
-      rewriter.eraseOp(op);
-      op = cast<linalg::LinalgOp>(tiled->tiledOps.back());
-      // The op's operands are now subviews, which is what promotion needs.
-      op->removeAttr(UPMEMDialect::LEAF_TILE_SIZES_NAME); // consumed
+    auto tileable = cast<TilingInterface>(op.getOperation());
+    if (sizes.size() != tileable.getLoopIteratorTypes().size())
+      return op->emitOpError("expected ")
+             << tileable.getLoopIteratorTypes().size() << " tile sizes for a "
+             << op->getName() << " with "
+             << tileable.getLoopIteratorTypes().size()
+             << " iteration dimensions, got " << sizes.size();
+
+    // Split the tile sizes into the parallel and reduction dimensions. An
+    // output is indexed only by parallel dimensions, so its tile does not
+    // change across the reduction loops: tiling in two steps lets it be staged
+    // once, outside them, instead of round-tripping on every trip.
+    SmallVector<int64_t> parallelSizes(sizes), reductionSizes(sizes);
+    bool anyReduction = false;
+    for (auto [i, iterType] : llvm::enumerate(tileable.getLoopIteratorTypes())) {
+      if (iterType == utils::IteratorType::reduction) {
+        parallelSizes[i] = 0;
+        anyReduction |= sizes[i] != 0;
+      } else {
+        reductionSizes[i] = 0;
+      }
     }
 
-    return promote(rewriter, op, *levels);
+    if (!hoistOutputTransfers || !anyReduction) {
+      FailureOr<linalg::LinalgOp> tiled = tile(rewriter, op, sizes);
+      if (failed(tiled))
+        return failure();
+      return promote(rewriter, *tiled, *levels);
+    }
+
+    // Outer loops over the parallel dimensions, with the outputs staged there.
+    FailureOr<linalg::LinalgOp> outer = tile(rewriter, op, parallelSizes);
+    if (failed(outer))
+      return failure();
+    if (failed(promote(rewriter, *outer, *levels, /*initsOnly=*/true)))
+      return failure();
+
+    // Inner loops over the reduction dimensions. The outputs are already in
+    // the leaf level, so this stages only the inputs.
+    FailureOr<linalg::LinalgOp> inner = tile(rewriter, *outer, reductionSizes);
+    if (failed(inner))
+      return failure();
+    return promote(rewriter, *inner, *levels);
+  }
+
+  /// Tile `op`, or return it unchanged when every tile size is 0.
+  FailureOr<linalg::LinalgOp> tile(IRRewriter &rewriter, linalg::LinalgOp op,
+                                   ArrayRef<int64_t> sizes) {
+    if (llvm::all_of(sizes, [](int64_t s) { return s == 0; }))
+      return op;
+
+    scf::SCFTilingOptions options;
+    options.setTileSizes(getAsIndexOpFoldResult(&getContext(), sizes));
+    rewriter.setInsertionPoint(op);
+    FailureOr<scf::SCFTilingResult> tiled = scf::tileUsingSCF(
+        rewriter, cast<TilingInterface>(op.getOperation()), options);
+    if (failed(tiled))
+      return op->emitOpError("failed to tile for the leaf memory level");
+
+    rewriter.eraseOp(op);
+    auto result = cast<linalg::LinalgOp>(tiled->tiledOps.back());
+    result->removeAttr(UPMEMDialect::LEAF_TILE_SIZES_NAME); // consumed
+    return result;
   }
 
   LogicalResult promote(IRRewriter &rewriter, linalg::LinalgOp op,
-                        const LevelHierarchy &levels) {
+                        const LevelHierarchy &levels, bool initsOnly = false) {
     SmallVector<int64_t> toStage = operandsToStage(op, levels);
+    if (initsOnly)
+      llvm::erase_if(toStage, [&](int64_t idx) {
+        return !op.isDpsInit(&op->getOpOperand(idx));
+      });
     if (toStage.empty())
       return success();
     if (failed(materializeIdentitySubviews(rewriter, op, toStage)))
