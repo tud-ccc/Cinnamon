@@ -286,7 +286,7 @@ M10 linalg-first pipeline: refresh --convert-cinm-to-linalg, add fusion
  |
 M11 plugin: generic space builder from linalg indexing maps  (needs M9, M10)
  |
-M12 delete the distribution heuristics in CinmToCnm.cpp      (needs M11)
+M12 (not doing: --convert-cinm-to-cnm is the CINM 1.0 baseline's lowering)
 ```
 
 M1, M2, M3 are mutually independent once M0 lands. M9 and M10 are
@@ -871,39 +871,91 @@ Fixing this needs device-side zeroing of an MRAM buffer — worth its own
 milestone, and worth also giving `--convert-cnm-to-upmem` a diagnostic
 for ops it cannot legalise.
 
-### M10 — Linalg-first pipeline — **TODO**
+### M10 — Linalg-first pipeline — **DONE (fusion deferred)**
 
-Design §G8. Refresh `--convert-cinm-to-linalg` as needed and put linalg
-fusion ahead of distribution on the generic branch.
+Design §G8. The generic branch now runs `--convert-cinm-ops-to-linalg`
+→ `--convert-linalg-to-cnm` in place of `--cinm-tiling` →
+`--convert-cinm-to-cnm`. Landed as `1d1d094`, `5217f22`.
 
-Ordering is mandatory (§G8): convert → fuse → build the search space by
-walking the *fused* ops → stamp. Anything that indexes ops by walk
-position before fusion is wrong.
+Two things fell out that the plan did not anticipate:
 
-**Tests:** extend `gemv-generic-mram-pipeline.mlir` (or add a sibling)
-to run the flags-only chain from `cinm.op.gemv` through
-`--convert-cinm-to-linalg` → `--convert-linalg-to-cnm`; add a
-two-op fusion case showing one launch where there were two.
+- **The host-side tiling round disappears.** `cnm.tile_sizes` is a block
+  size and the workgroup takes the whole tile space at once, so there is
+  no sequential outer loop left for `--cinm-tiling` to emit.
+- **`stampLeafTileSizes` disappears with it.** Both levels are stamped
+  up front on the same op and ride the conversions
+  (`--convert-cinm-ops-to-linalg` forwards discardable attributes,
+  `--convert-linalg-to-cnm` clones them into the launch body). Nothing
+  has to re-find the op mid-pipeline, so the positional
+  launch-to-op correspondence — the thing §G8 said could not survive
+  fusion — is gone already.
 
-### M11 — Plugin: generic space builder — **TODO**
+**Fusion is deliberately not added.** The benchmarks (gemv, reduce) are
+single-op compute blocks, so fusion would be a no-op for them, while
+enabling it requires moving search-space construction after the
+conversion (§G8: fusion changes the op count, the walk indices and the
+iteration space). That refactor should be paid for by a benchmark that
+needs it. The pipeline is arranged so fusion slots in right after the
+linalg conversion when that day comes.
 
-Design §G2, §G8. Replace `handleGemv` and the other per-op handlers
-with one handler driven by indexing maps and `getReductionDims`.
-Emit block sizes in one consistent unit throughout (§G2) — this is
-what fixes the M7 defect at its root rather than by rescaling.
+**Attribute plumbing was the real work here** (`1d1d094`, `190678e`).
+Two silent-loss bugs had to be fixed for decisions to survive the
+pipeline at all: `--convert-cinm-ops-to-linalg` dropped discardable
+attributes, and `linalg::splitReduction` builds a fresh op so
+`upmem.leaf_tile_sizes` vanished exactly when a reduction split —
+producing slower code with no diagnostic, only for the configurations
+that split.
 
-**Tests:** `upmem-infer-accelerator.mlir` with `lowering=generic` must
-survive a configuration with `f_d > 1`, i.e. the case that previously
-failed with `numParallelElts % numWgItems != 0`.
+### M11 — Plugin: projected search space — **DONE**
 
-### M12 — Delete the distribution heuristics — **TODO**
+Design §G2, §G8. Landed as `5217f22`. The plan called for replacing the
+per-op handlers with one generic handler; that turned out to be the
+wrong move for now, and the *projection* is what was actually needed.
 
-Design §G9. Remove the case analysis, the flatten-until-divisible
-loop, the `reshapeInputTo` plumbing and the caller-side transpose from
-`CinmToCnm.cpp:143-340` once M11 has the generic path on
-`--convert-linalg-to-cnm`. Keep `--convert-cinm-to-cnm` working for the
-templates branch, or retire it if nothing depends on it by then —
-decide with `grep`, not in advance.
+`mramRow`/`mramCol` are per-DPU and a DPU's tasklets subdivide that
+tile, while a CNM leaf *is* a tasklet, so a leaf's share is
+
+    b_m = mramRow * taskletCols / tasklets
+    b_k = mramCol / taskletCols
+
+Both divisions are exact given the constraints already in `handleGemv`,
+and the generic path's own requirement — tile counts filling the
+workgroup exactly — *follows* from those constraints rather than adding
+one. This is the M7 defect fixed at its root: it fed `mramRow` straight
+through, which is the per-DPU tile, not the per-leaf one.
+
+**No new `SpaceVar`, by design.** `eval_solution` serialises
+positionally ([cinmopt.py:214](../experiments/cinm_experiments/cinmopt.py#L214)),
+so inserting a variable would silently reinterpret every params dict in
+`experiments/`. Parameter names and their order are unchanged and
+nothing outside the compiler needs updating. Recording a *derived
+expression* rather than a variable is what `SpaceValue` is for.
+
+**Tests:** `Dialect/UPMEM/upmem-infer-accelerator-generic-split.mlir`
+(new) pins the autotuner's gemv_64MB configuration end to end — the one
+that used to fail with `numParallelElts (64) % numWgItems (16384)`. The
+per-DPU MRAM footprint it produces (`8192 + 128 + 64` elements) is
+exactly the template's own constraint `mramRow*mramCol + mramCol +
+mramRow`.
+
+### M12 — Delete the distribution heuristics — **NOT DOING**
+
+The plan said to decide this with `grep`, not in advance. The grep says
+keep them: `--convert-cinm-to-cnm` is the backbone of the **CINM 1.0
+baseline flow** ([cinm1.py:72](../experiments/cinm_experiments/cinm1.py#L72),
+transcribed from `testbench/Makefile`), which is a comparison point in
+the experiments, and it is also the only cinm→cnm route for the GPU
+backend. Deleting `computeShapeOfTensors`' case analysis would break a
+published baseline to tidy a path nothing on the UPMEM side uses any
+more.
+
+The simplification §G9 promised is therefore *realised* rather than
+*collected*: `--convert-linalg-to-cnm` has none of that machinery, and
+the UPMEM generic path no longer runs any of it. The old code stays
+where it is, serving the flow it was written for.
+
+**Revisit when** the CINM 1.0 baseline is retired, or if the GPU backend
+moves to `--convert-linalg-to-cnm`. Neither is on the critical path.
 
 ## 4. Test summary
 
@@ -920,9 +972,9 @@ decide with `grep`, not in advance.
 | M7 ◐ | plugin map, staged pipeline, `lowering=` selector (cost comparison outstanding) | `Transform/UPMEM/gemv-generic-mram-pipeline.mlir` (new, flags-only end-to-end); `Dialect/UPMEM/upmem-infer-accelerator.mlir` (add RUN line); `upmem-infer-accelerator-generic.mlir` (new); templates-vs-generic cost comparison |
 | M8 ✅ | `--convert-linalg-to-cnm`, block sizes + canonical order | `Conversion/LinalgToCnm/linalg-to-cnm.mlir` (new); `linalg-to-cnm-invalid.mlir` (new); `Transform/UPMEM/gemv-linalg-generic-pipeline.mlir` (new, flags-only end-to-end) |
 | M9 ✅ | reduction splitting via `linalg::splitReduction` | `linalg-to-cnm-split-reduction.mlir` (new: K-split gemv, `max` neutral element, float opt-in); `linalg-to-cnm-invalid.mlir` (extended: float without opt-in, non-associative combiner) |
-| M10 ☐ | linalg-first pipeline + fusion | `gemv-generic-mram-pipeline.mlir` (extend or sibling); two-op fusion case |
-| M11 ☐ | generic space builder from indexing maps | `upmem-infer-accelerator.mlir` with `lowering=generic` and `f_d > 1` |
-| M12 ☐ | delete `CinmToCnm.cpp` distribution heuristics | existing suite stays green; no new tests |
+| M10 ✅ | linalg-first pipeline (fusion deferred) | `Transform/UPMEM/gemv-linalg-generic-pipeline.mlir` (new); `gemv-split-k-grouping.mlir` (new) |
+| M11 ✅ | projected search space for the generic path | `Dialect/UPMEM/upmem-infer-accelerator-generic-split.mlir` (new, the autotuner's gemv_64MB configuration) |
+| M12 ⊘ | not doing: `--convert-cinm-to-cnm` is the CINM 1.0 baseline's lowering | — |
 
 ---
 
