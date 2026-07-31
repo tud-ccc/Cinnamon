@@ -18,12 +18,14 @@
 #include <cstdint>
 #include <llvm/ADT/ArrayRef.h>
 #include <llvm/Support/Casting.h>
+#include <mlir/Dialect/MemRef/IR/MemRef.h>
 #include <mlir/Dialect/MemRef/Utils/MemRefUtils.h>
 #include <mlir/IR/BuiltinAttributes.h>
 #include <mlir/IR/BuiltinTypeInterfaces.h>
 #include <mlir/IR/BuiltinTypes.h>
 #include <mlir/IR/Diagnostics.h>
 #include <mlir/IR/TypeRange.h>
+#include <mlir/IR/TypeUtilities.h>
 #include <mlir/IR/Value.h>
 #include <mlir/Interfaces/InferTypeOpInterface.h>
 #include <mlir/Support/LogicalResult.h>
@@ -258,15 +260,33 @@ LogicalResult LaunchOp::verify() {
 LogicalResult LocalTransferOp::verify() {
   auto srcTy = getSource().getType();
   auto dstTy = getTarget().getType();
-  if (srcTy.getShape() != dstTy.getShape())
+  // Compatible, not equal: a transfer between a statically shaped buffer and a
+  // dynamically shaped view of one is legal as long as they agree at runtime.
+  // memref.copy has the same rule (SameOperandsShape).
+  if (failed(verifyCompatibleShape(srcTy, dstTy)))
     return emitOpError("source shape ")
-           << srcTy.getShape() << " does not match target shape "
+           << srcTy.getShape() << " is not compatible with target shape "
            << dstTy.getShape();
   if (srcTy.getElementType() != dstTy.getElementType())
     return emitOpError("source element type ")
            << srcTy.getElementType() << " does not match target element type "
            << dstTy.getElementType();
   return success();
+}
+
+LogicalResult LocalTransferOp::fold(FoldAdaptor,
+                                    SmallVectorImpl<OpFoldResult> &) {
+  // Promotion hands us dynamically shaped views of statically shaped buffers;
+  // looking through the cast is what recovers the static transfer size.
+  bool folded = false;
+  for (OpOperand &operand : getOperation()->getOpOperands()) {
+    auto cast = operand.get().getDefiningOp<memref::CastOp>();
+    if (cast && memref::CastOp::canFoldIntoConsumerOp(cast)) {
+      operand.set(cast.getSource());
+      folded = true;
+    }
+  }
+  return success(folded);
 }
 
 LogicalResult ScatterOp::verify() {

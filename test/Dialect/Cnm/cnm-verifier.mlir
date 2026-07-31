@@ -1,7 +1,7 @@
 // RUN: cinm-opt %s --split-input-file -verify-diagnostics
 
 func.func @transfer_shape_mismatch(%a: memref<64xi32, #upmem.mram>, %b: memref<32xi32, #upmem.wram>) {
-  // expected-error @below {{source shape 64 does not match target shape 32}}
+  // expected-error @below {{source shape 64 is not compatible with target shape 32}}
   cnm.local_transfer %a into %b : memref<64xi32, #upmem.mram> to memref<32xi32, #upmem.wram>
   return
 }
