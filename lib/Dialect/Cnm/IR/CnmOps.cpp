@@ -75,7 +75,10 @@ static void printShorthandBufferType(OpAsmPrinter &p, cnm::BufferType bufTy) {
   p << "<";
   for (auto dim : bufTy.getShape())
     p << dim << "x";
-  p << bufTy.getElementType() << ">";
+  p << bufTy.getElementType();
+  if (auto level = bufTy.getLevel())
+    p << ", " << level;
+  p << ">";
 }
 
 void LaunchOp::print(OpAsmPrinter &p) {
