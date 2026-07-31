@@ -25,6 +25,41 @@ def ConvertCnmToGPUPass : Pass<"convert-cnm-to-gpu"> {
 }
 #endif
 
+def ConvertLinalgToCnmPass : Pass<"convert-linalg-to-cnm"> {
+    let summary = "Distribute a linalg op onto a cnm workgroup";
+    let description = [{
+      Rewrites a `linalg` op with pure tensor semantics into
+      `cnm.workgroup` / `cnm.alloc` / `cnm.scatter` / `cnm.launch` /
+      `cnm.gather`, driven entirely by a `cnm.tile_sizes` attribute giving
+      one block size per iteration dimension.
+
+      Unlike `--convert-cinm-to-cnm`, this pass takes no decisions: the
+      distribution is a mechanical consequence of the block sizes and the
+      op's own indexing maps. The op must be inside a region that carries an
+      accelerator (`cinm.compute_block`), and the product of the tile counts
+      `dimSize / blockSize` must equal the number of workgroup leaves.
+
+      Splitting a reduction dimension across the workgroup is not implemented
+      yet and is rejected; see docs/CnmMemoryLevelsDesign.md §G4.
+    }];
+    let constructor = "mlir::cnm::createConvertLinalgToCnmPass()";
+    let dependentDialects = [
+        "mlir::cnm::CnmDialect",
+        "mlir::arith::ArithDialect",
+        "mlir::linalg::LinalgDialect",
+        "mlir::tensor::TensorDialect"
+    ];
+    let options = [
+      Option<"bufferLevel", "cnm-buffer-level", "std::string", [{""}],
+             "Name of the memory level to allocate cnm.buffers in, resolved "
+             "against the accelerator's platform (e.g. `mram` or `wram` for "
+             "UPMEM). The level becomes the buffer type's level and the memory "
+             "space of the launch body's memrefs. Empty means unlevelled "
+             "buffers, which is what the backend conversion assumes when it "
+             "picks the staging itself.">
+    ];
+}
+
 def ConvertCnmToUPMEMPass : Pass<"convert-cnm-to-upmem"> {
     let summary = "";
     let constructor = "mlir::cnm::createConvertCnmToUPMEMPass()";
