@@ -36,11 +36,15 @@ uint64_t upmemrt_now_ns(void);
 // get_block callback can be invoked for more than one block (see
 // get_scatter_to_tasklets_block in upmem_rt.c), so this must come from the
 // call site's own num_blocks, not be inferred from NR_TASKLETS.
+// `tag` is an optional, user-supplied label (see upmem.timing_tag) identifying
+// which MLIR op produced this transfer; NULL if the op carried no tag. Like
+// `kind`, must be a string literal (or otherwise live for the process
+// lifetime): it is stored by pointer, not copied.
 void upmemrt_record_scatter(uint64_t elapsed_ns, size_t bytes_per_dpu,
                              uint32_t num_dpus, size_t num_blocks,
-                             const char *kind);
+                             const char *kind, const char *tag);
 void upmemrt_record_gather(uint64_t elapsed_ns, size_t bytes_per_dpu,
-                            uint32_t num_dpus);
+                            uint32_t num_dpus, const char *tag);
 void upmemrt_record_launch(uint64_t elapsed_ns, uint32_t num_dpus);
 void upmemrt_record_free(uint64_t elapsed_ns, uint32_t num_dpus);
 void upmemrt_record_alloc(uint64_t elapsed_ns, uint32_t num_dpus);

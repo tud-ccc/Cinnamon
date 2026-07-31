@@ -41,7 +41,8 @@ void do_dpu_transfer(dpu_xfer_t xfer_type, struct dpu_set_t *dpu_set,
 void upmemrt_dpu_scatter(struct dpu_set_t *dpu_set, void *hostBuffer,
                          size_t element_size, size_t num_elements,
                          size_t num_elements_per_tasklet, size_t copy_bytes,
-                         const char *bufId, size_t (*base_offset)(size_t)) {
+                         const char *bufId, size_t (*base_offset)(size_t),
+                         const char *tag) {
 #ifdef UPMEM_RT_STATS
   uint64_t t0 = upmemrt_now_ns();
 #endif
@@ -51,14 +52,15 @@ void upmemrt_dpu_scatter(struct dpu_set_t *dpu_set, void *hostBuffer,
   uint32_t nr_dpus = 0;
   dpu_get_nr_dpus(*dpu_set, &nr_dpus);
   upmemrt_record_scatter(upmemrt_now_ns() - t0, copy_bytes, nr_dpus,
-                         /*num_blocks=*/1, "block");
+                         /*num_blocks=*/1, "block", tag);
 #endif
 }
 
 void upmemrt_dpu_gather(struct dpu_set_t *dpu_set, void *host_buffer,
                         size_t element_size, size_t num_elements,
                         size_t num_elements_per_tasklet, size_t copy_bytes,
-                        const char *bufid, size_t (*base_offset)(size_t)) {
+                        const char *bufid, size_t (*base_offset)(size_t),
+                        const char *tag) {
 #ifdef UPMEM_RT_STATS
   uint64_t t0 = upmemrt_now_ns();
 #endif
@@ -78,7 +80,7 @@ void upmemrt_dpu_gather(struct dpu_set_t *dpu_set, void *host_buffer,
 #ifdef UPMEM_RT_STATS
   uint32_t nr_dpus = 0;
   dpu_get_nr_dpus(*dpu_set, &nr_dpus);
-  upmemrt_record_gather(upmemrt_now_ns() - t0, copy_bytes, nr_dpus);
+  upmemrt_record_gather(upmemrt_now_ns() - t0, copy_bytes, nr_dpus, tag);
 #endif
 }
 
@@ -110,7 +112,8 @@ void upmemrt_dpu_scatter_to_tasklets(struct dpu_set_t *dpu_set,
                                      size_t num_blocks,
                                      size_t block_num_elements,
                                      const char *buffer_id,
-                                     size_t (*base_offset)(size_t, size_t)) {
+                                     size_t (*base_offset)(size_t, size_t),
+                                     const char *tag) {
 #ifdef UPMEM_RT_STATS
   uint64_t t0 = upmemrt_now_ns();
 #endif
@@ -132,12 +135,13 @@ void upmemrt_dpu_scatter_to_tasklets(struct dpu_set_t *dpu_set,
   uint32_t nr_dpus = 0;
   dpu_get_nr_dpus(*dpu_set, &nr_dpus);
   upmemrt_record_scatter(upmemrt_now_ns() - t0, length, nr_dpus, num_blocks,
-                         "sg");
+                         "sg", tag);
 #endif
 }
 
 void upmemrt_dpu_broadcast(struct dpu_set_t *dpu_set, void *host_buffer,
-                           size_t copy_bytes, const char *buffer_id) {
+                           size_t copy_bytes, const char *buffer_id,
+                           const char *tag) {
 #ifdef UPMEM_RT_STATS
   uint64_t t0 = upmemrt_now_ns();
 #endif
@@ -147,7 +151,7 @@ void upmemrt_dpu_broadcast(struct dpu_set_t *dpu_set, void *host_buffer,
   uint32_t nr_dpus = 0;
   dpu_get_nr_dpus(*dpu_set, &nr_dpus);
   upmemrt_record_scatter(upmemrt_now_ns() - t0, copy_bytes, nr_dpus,
-                         /*num_blocks=*/1, "bc");
+                         /*num_blocks=*/1, "bc", tag);
 #endif
 }
 

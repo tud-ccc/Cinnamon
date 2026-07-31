@@ -20,15 +20,21 @@
 /// @param buffer_id            Constant string of the buffer ID
 /// @param base_offset          Function mapping the index of a DPU to an offset
 /// in the input tensor.
+/// @param tag                  Optional user-supplied label (from the
+/// originating op's `upmem.timing_tag` attribute) recorded alongside the
+/// transfer's stats, or NULL if the op carried no tag. Ignored unless built
+/// with -DUPMEM_RT_STATS.
 void upmemrt_dpu_scatter(struct dpu_set_t *dpu_set, void *host_buffer,
                          size_t element_size, size_t num_elements,
                          size_t num_elements_per_tasklet, size_t copy_bytes,
-                         const char *buffer_id, size_t (*base_offset)(size_t));
+                         const char *buffer_id, size_t (*base_offset)(size_t),
+                         const char *tag);
 
 void upmemrt_dpu_gather(struct dpu_set_t *dpu_set, void *host_buffer,
                         size_t element_size, size_t num_elements,
                         size_t num_elements_per_tasklet, size_t copy_bytes,
-                        const char *buffer_id, size_t (*base_offset)(size_t));
+                        const char *buffer_id, size_t (*base_offset)(size_t),
+                        const char *tag);
 
 /// Scatter a tensor on the given DPU set using the UPMEM SDK's scatter/gather
 /// transfer API (dpu_push_sg_xfer), so that the block scattered to each
@@ -49,12 +55,17 @@ void upmemrt_dpu_gather(struct dpu_set_t *dpu_set, void *host_buffer,
 /// @param buffer_id            Constant string of the buffer ID
 /// @param base_offset          Function mapping (dpu_index, tasklet_index) to
 /// the starting byte offset of that tasklet's block in the host buffer.
+/// @param tag                  Optional user-supplied label (from the
+/// originating op's `upmem.timing_tag` attribute) recorded alongside the
+/// transfer's stats, or NULL if the op carried no tag. Ignored unless built
+/// with -DUPMEM_RT_STATS.
 void upmemrt_dpu_scatter_to_tasklets(struct dpu_set_t *dpu_set,
                                      void *host_buffer, size_t element_size,
                                      size_t num_blocks,
                                      size_t block_num_elements,
                                      const char *buffer_id,
-                                     size_t (*base_offset)(size_t, size_t));
+                                     size_t (*base_offset)(size_t, size_t),
+                                     const char *tag);
 
 /// Broadcast a buffer to the MRAM of every DPU in the set, identically.
 ///
@@ -63,8 +74,12 @@ void upmemrt_dpu_scatter_to_tasklets(struct dpu_set_t *dpu_set,
 /// here are copied into every DPU's MRAM buffer, unchanged.
 /// @param copy_bytes  Number of bytes to copy into each DPU
 /// @param buffer_id   Constant string of the buffer ID
+/// @param tag         Optional user-supplied label (from the originating op's
+/// `upmem.timing_tag` attribute) recorded alongside the transfer's stats, or
+/// NULL if the op carried no tag. Ignored unless built with -DUPMEM_RT_STATS.
 void upmemrt_dpu_broadcast(struct dpu_set_t *dpu_set, void *host_buffer,
-                           size_t copy_bytes, const char *buffer_id);
+                           size_t copy_bytes, const char *buffer_id,
+                           const char *tag);
 
 /// Allocates and loads a DPU set.
 ///

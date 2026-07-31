@@ -52,11 +52,11 @@ namespace mlir::upmem {
 /// Transfer costs use the same formula as OpCountSimulator's ScatterOp/GatherOp
 /// case via scatterGatherCost().
 SimCost UpmemSimulator::simulateFullGemv(std::chrono::milliseconds timeout,
-                                        int64_t M, int64_t K, int64_t mramRows,
-                                        int64_t mramCols, int64_t wramRows,
-                                        int64_t wramCols, int64_t dpuRows,
-                                        int64_t dpuCols, int64_t tasklets,
-                                        DType dty) {
+                                         int64_t M, int64_t K, int64_t mramRows,
+                                         int64_t mramCols, int64_t wramRows,
+                                         int64_t wramCols, int64_t dpuRows,
+                                         int64_t dpuCols, int64_t tasklets,
+                                         DType dty) {
   // Cost of one scatter/gather of `elemsPerDpu` i32 elements across all DPUs.
   auto scatterCost = [&](int64_t elemsPerDpu, llvm::StringRef label) {
     return SimCost::forTransfer(
@@ -77,11 +77,11 @@ SimCost UpmemSimulator::simulateFullGemv(std::chrono::milliseconds timeout,
                          mramCols, wramRows, wramCols, dty);
 
   // Per inner-loop (col-tile) iteration: 3 scatters + wait + 1 gather.
-  SimCost innerIterCost =
-      scatterCost(mramRows * mramCols, "a_tile") +
-      scatterCost(mramCols, "x_tile") + scatterCost(mramRows, "y_init") +
-      dpuCost                                  // DPU kernel
-      + gatherCost(mramRows, "y_result");
+  SimCost innerIterCost = scatterCost(mramRows * mramCols, "a_tile") +
+                          scatterCost(mramCols, "x_tile") +
+                          scatterCost(mramRows, "y_init") +
+                          dpuCost // DPU kernel
+                          + gatherCost(mramRows, "y_result");
 
   int64_t innerTrips = K / (dpuCols * mramCols);
   int64_t outerTrips = M / (dpuRows * mramRows);
@@ -117,11 +117,10 @@ SimCost UpmemSimulator::simulateTailReduction(
 
   // Per inner-loop (col-tile) iteration: scatter A + scatter y + wait + gather
   // y.
-  SimCost innerIterCost =
-      scatterCost(mramRows * mramCols, "a_tile") +
-      scatterCost(mramRows, "y_partial") +
-      dpuCost                                     // DPU kernel
-      + gatherCost(mramRows, "y_result");
+  SimCost innerIterCost = scatterCost(mramRows * mramCols, "a_tile") +
+                          scatterCost(mramRows, "y_partial") +
+                          dpuCost // DPU kernel
+                          + gatherCost(mramRows, "y_result");
 
   int64_t innerTrips = K / (dpuCols * mramCols);
   int64_t outerTrips = M / (dpuRows * mramRows);
@@ -213,23 +212,25 @@ static void scatterATile(OpBuilder &b, Location loc, Value input, Value mOff,
   // inherited from `input`'s row stride regardless of tiling.
   bool wholeChunkContiguous = mramRows == 1 || naturalStrides[1] == mramCols;
 
+  Operation *scatter;
   if (wholeChunkContiguous) {
     AffineMap aMap = AffineMap::get(
         2, 0, {dpuDim.floorDiv(dpuCols), dpuDim % dpuCols, zero, zero}, ctx);
-    upmem::ScatterOp::create(b, loc, view, aBufSym,
-                             static_cast<uint64_t>(mramRows * mramCols), aMap,
-                             dpus);
-    return;
+    scatter = upmem::ScatterOp::create(
+        b, loc, view, aBufSym, static_cast<uint64_t>(mramRows * mramCols), aMap,
+        dpus);
+  } else {
+    // (rank, dpu, block) form: one block per mram row.
+    AffineMap aMap = AffineMap::get(3, 0,
+                                    {dpuDim.floorDiv(dpuCols), dpuDim % dpuCols,
+                                     getAffineDimExpr(2, ctx), zero},
+                                    ctx);
+    scatter = upmem::ScatterOnTaskletsOp::create(
+        b, loc, view, aBufSym, static_cast<uint64_t>(mramCols), aMap, dpus,
+        static_cast<int64_t>(mramRows));
   }
 
-  // (rank, dpu, block) form: one block per mram row.
-  AffineMap aMap = AffineMap::get(3, 0,
-                                  {dpuDim.floorDiv(dpuCols), dpuDim % dpuCols,
-                                   getAffineDimExpr(2, ctx), zero},
-                                  ctx);
-  upmem::ScatterOnTaskletsOp::create(b, loc, view, aBufSym,
-                                     static_cast<uint64_t>(mramCols), aMap,
-                                     dpus, static_cast<int64_t>(mramRows));
+  scatter->setAttr("upmem.timing_tag", b.getStringAttr("A"));
 }
 
 // Pack the [dpuCols*mramCols] slice of `x` at kOff for scatter. Returns the
@@ -715,14 +716,12 @@ void upmem::generateTailReduction(cinm::ReduceOp op, RewriterBase &rewriter,
 /// Tasklet 0 loads the shared x/A slices; two barriers per mc iteration (one
 /// before t0 overwrites the shared buffers, one after all loads complete),
 /// plus a barrier before the merge and one before the final write-back.
-upmem::DpuProgramOp createDpuGemvKernel(Location loc, RewriterBase &rewriter,
-                                        ModuleOp target, int64_t mramRows,
-                                        int64_t mramCols, int64_t wramRows,
-                                        int64_t wramCols, int64_t taskletRows,
-                                        int64_t taskletCols, Type eltTy,
-                                        llvm::StringRef &aBufSym,
-                                        llvm::StringRef &xBufSym,
-                                        llvm::StringRef &yBufSym) {
+upmem::DpuProgramOp
+createDpuGemvKernel(Location loc, RewriterBase &rewriter, ModuleOp target,
+                    int64_t mramRows, int64_t mramCols, int64_t wramRows,
+                    int64_t wramCols, int64_t taskletRows, int64_t taskletCols,
+                    Type eltTy, llvm::StringRef &aBufSym,
+                    llvm::StringRef &xBufSym, llvm::StringRef &yBufSym) {
 
   rewriter.clearInsertionPoint();
   const int64_t tasklets = taskletRows * taskletCols;
@@ -769,8 +768,8 @@ upmem::DpuProgramOp createDpuGemvKernel(Location loc, RewriterBase &rewriter,
   Value abufWram =
       upmem::StaticAllocOp::create(
           rewriter, loc,
-          MemRefType::get({taskletRows, wramRows, taskletCols, wramCols},
-                          eltTy, MemRefLayoutAttrInterface{}, wramMS),
+          MemRefType::get({taskletRows, wramRows, taskletCols, wramCols}, eltTy,
+                          MemRefLayoutAttrInterface{}, wramMS),
           upmem::DpuMemSpace::WRAM)
           .getBuffer();
   Value xbufWram = upmem::StaticAllocOp::create(
@@ -779,13 +778,13 @@ upmem::DpuProgramOp createDpuGemvKernel(Location loc, RewriterBase &rewriter,
                                        MemRefLayoutAttrInterface{}, wramMS),
                        upmem::DpuMemSpace::WRAM)
                        .getBuffer();
-  Value ybufWram = upmem::StaticAllocOp::create(
-                       rewriter, loc,
-                       MemRefType::get({taskletCols, taskletRows, wramRows},
-                                       eltTy, MemRefLayoutAttrInterface{},
-                                       wramMS),
-                       upmem::DpuMemSpace::WRAM)
-                       .getBuffer();
+  Value ybufWram =
+      upmem::StaticAllocOp::create(
+          rewriter, loc,
+          MemRefType::get({taskletCols, taskletRows, wramRows}, eltTy,
+                          MemRefLayoutAttrInterface{}, wramMS),
+          upmem::DpuMemSpace::WRAM)
+          .getBuffer();
   Value priorWram = upmem::StaticAllocOp::create(
                         rewriter, loc,
                         MemRefType::get({taskletRows, wramRows}, eltTy,
@@ -821,11 +820,11 @@ upmem::DpuProgramOp createDpuGemvKernel(Location loc, RewriterBase &rewriter,
   }
 
   // Precomputed result types for rank-reducing subviews.
-  MemRefType myAWramTy = MemRefType::get(
-      {wramRows, wramCols}, eltTy,
-      StridedLayoutAttr::get(ctx, ShapedType::kDynamic,
-                            {taskletCols * wramCols, 1}),
-      wramMS);
+  MemRefType myAWramTy =
+      MemRefType::get({wramRows, wramCols}, eltTy,
+                      StridedLayoutAttr::get(ctx, ShapedType::kDynamic,
+                                             {taskletCols * wramCols, 1}),
+                      wramMS);
   MemRefType myXWramTy = MemRefType::get(
       {wramCols}, eltTy, StridedLayoutAttr::get(ctx, ShapedType::kDynamic, {1}),
       wramMS);
@@ -838,10 +837,9 @@ upmem::DpuProgramOp createDpuGemvKernel(Location loc, RewriterBase &rewriter,
   MemRefType priorSliceTy = MemRefType::get(
       {wramRows}, eltTy, StridedLayoutAttr::get(ctx, ShapedType::kDynamic, {1}),
       wramMS);
-  MemRefType myXMramTy =
-      MemRefType::get({taskletCols * wramCols}, eltTy,
-                      StridedLayoutAttr::get(ctx, ShapedType::kDynamic, {1}),
-                      mramMS);
+  MemRefType myXMramTy = MemRefType::get(
+      {taskletCols * wramCols}, eltTy,
+      StridedLayoutAttr::get(ctx, ShapedType::kDynamic, {1}), mramMS);
   // Bulk A tile covering every row group's and column-sibling's slice at
   // once (tasklet 0 loads it in a single DMA rather than each tasklet
   // issuing its own transfer).
@@ -851,9 +849,9 @@ upmem::DpuProgramOp createDpuGemvKernel(Location loc, RewriterBase &rewriter,
   MemRefType bulkAMramTy = MemRefType::get(
       {taskletRows * wramRows, taskletCols * wramCols}, eltTy,
       StridedLayoutAttr::get(ctx, ShapedType::kDynamic, {mramCols, 1}), mramMS);
-  MemRefType bulkAWramTy = MemRefType::get(
-      {taskletRows * wramRows, taskletCols * wramCols}, eltTy,
-      MemRefLayoutAttrInterface{}, wramMS);
+  MemRefType bulkAWramTy =
+      MemRefType::get({taskletRows * wramRows, taskletCols * wramCols}, eltTy,
+                      MemRefLayoutAttrInterface{}, wramMS);
   // Same idea for the y write-back: t0 flushes every row group's merged
   // result (slot 0 of ybufWram, contiguous since tcolix is outermost) in one
   // bulk DMA instead of each row group leader writing back its own.
@@ -864,15 +862,15 @@ upmem::DpuProgramOp createDpuGemvKernel(Location loc, RewriterBase &rewriter,
                                            MemRefLayoutAttrInterface{}, wramMS);
 
   // Per-tasklet WRAM slices: fixed for the lifetime of the kernel invocation.
-  // abufWram[taskletRows, wramRows, taskletCols, wramCols] → [wramRows, wramCols]
+  // abufWram[taskletRows, wramRows, taskletCols, wramCols] → [wramRows,
+  // wramCols]
   Value myAWram = memref::SubViewOp::create(
       rewriter, loc, myAWramTy, abufWram,
       ArrayRef<OpFoldResult>{trowix, rewriter.getIndexAttr(0), tcolix,
                              rewriter.getIndexAttr(0)},
-      ArrayRef<OpFoldResult>{rewriter.getIndexAttr(1),
-                             rewriter.getIndexAttr(wramRows),
-                             rewriter.getIndexAttr(1),
-                             rewriter.getIndexAttr(wramCols)},
+      ArrayRef<OpFoldResult>{
+          rewriter.getIndexAttr(1), rewriter.getIndexAttr(wramRows),
+          rewriter.getIndexAttr(1), rewriter.getIndexAttr(wramCols)},
       ArrayRef<OpFoldResult>{rewriter.getIndexAttr(1), rewriter.getIndexAttr(1),
                              rewriter.getIndexAttr(1),
                              rewriter.getIndexAttr(1)});
@@ -885,8 +883,7 @@ upmem::DpuProgramOp createDpuGemvKernel(Location loc, RewriterBase &rewriter,
   Value myYWram = memref::SubViewOp::create(
       rewriter, loc, myYWramTy, ybufWram,
       ArrayRef<OpFoldResult>{tcolix, trowix, rewriter.getIndexAttr(0)},
-      ArrayRef<OpFoldResult>{rewriter.getIndexAttr(1),
-                             rewriter.getIndexAttr(1),
+      ArrayRef<OpFoldResult>{rewriter.getIndexAttr(1), rewriter.getIndexAttr(1),
                              rewriter.getIndexAttr(wramRows)},
       ArrayRef<OpFoldResult>{rewriter.getIndexAttr(1), rewriter.getIndexAttr(1),
                              rewriter.getIndexAttr(1)});
@@ -1061,8 +1058,7 @@ upmem::DpuProgramOp createDpuGemvKernel(Location loc, RewriterBase &rewriter,
               ArrayRef<OpFoldResult>{b.getIndexAttr(1)});
           Value bulkYWram = memref::ReinterpretCastOp::create(
               b, loc, bulkYWramTy, ybufWram, /*offset=*/0,
-              ArrayRef<int64_t>{taskletRows * wramRows},
-              ArrayRef<int64_t>{1});
+              ArrayRef<int64_t>{taskletRows * wramRows}, ArrayRef<int64_t>{1});
           upmem::LocalTransferOp::create(b, loc, bulkYWram, bulkYMram);
         }
         return {};
@@ -1227,14 +1223,17 @@ void upmem::generateGemv(cinm::GemvOp op, RewriterBase &rewriter,
               Value xToScatter =
                   packXSlice(b, loc, x, xStage, kOff, dpuCols, mramCols);
 
+              Operation *scatterX;
               if (xMap.getNumOfZeroResults() == 2) {
                 // broadcast
-                upmem::BroadcastOp::create(b, loc, xToScatter, xBufSym, dpus);
+                scatterX = upmem::BroadcastOp::create(b, loc, xToScatter,
+                                                      xBufSym, dpus);
               } else {
-                upmem::ScatterOp::create(b, loc, xToScatter, xBufSym,
-                                         static_cast<uint64_t>(mramCols), xMap,
-                                         dpus);
+                scatterX = upmem::ScatterOp::create(
+                    b, loc, xToScatter, xBufSym,
+                    static_cast<uint64_t>(mramCols), xMap, dpus);
               }
+              scatterX->setAttr("upmem.timing_tag", b.getStringAttr("x"));
               upmem::WaitForOp::create(b, loc, dpus);
 
               return {};
