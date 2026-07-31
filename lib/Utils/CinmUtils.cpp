@@ -17,6 +17,7 @@
 #include <mlir/IR/BuiltinOps.h>
 #include <mlir/IR/BuiltinTypeInterfaces.h>
 #include <mlir/IR/Matchers.h>
+#include <functional>
 #include <optional>
 
 namespace mlir {
@@ -223,6 +224,76 @@ static AffineExpr simplifyAffineExprWithBounds(
           return sLHS;
         } else if (kind == AffineExprKind::FloorDiv && *lhsUB < rhs) {
           return getAffineConstantExpr(0, expr.getContext());
+        }
+      }
+
+      // Drop the low-order terms of a division that cannot influence the
+      // quotient. If the dividend splits as A + B where A is a multiple of
+      // some `g` dividing `rhs` and B is always smaller than `g`, then B can
+      // never carry into the quotient:
+      //
+      //   (A + B) floordiv rhs  ==  (A floordiv g) floordiv (rhs / g)
+      //
+      // Proof: write A = g*a and rhs = g*q, and a = k*q + r with 0 <= r < q.
+      // Then A + B = g*q*k + (g*r + B), and 0 <= g*r + B <= g*(q-1) + g-1
+      // < g*q, so the quotient is exactly k.
+      //
+      // This is what turns a linearized workgroup index back into a
+      // coordinate of a single workgroup dimension -- e.g. with 2048 DPUs of
+      // 8 tasklets, (dpu*8 + tasklet) floordiv 512 is just dpu floordiv 64.
+      // Downstream passes test whether a scatter map depends on a workgroup
+      // dimension to decide whether a buffer is shared or replicated, and
+      // that test is syntactic, so leaving `tasklet` in the expression costs
+      // a real buffer.
+      if (kind == AffineExprKind::FloorDiv && rhs > 1) {
+        SmallVector<AffineExpr> terms;
+        std::function<void(AffineExpr)> flatten = [&](AffineExpr e) {
+          if (auto add = llvm::dyn_cast<AffineBinaryOpExpr>(e);
+              add && add.getKind() == AffineExprKind::Add) {
+            flatten(add.getLHS());
+            flatten(add.getRHS());
+          } else {
+            terms.push_back(e);
+          }
+        };
+        flatten(sLHS);
+
+        // The coefficient a term contributes, or nullopt if it is not a
+        // constant multiple of something we can reason about.
+        auto coefficientOf = [](AffineExpr e) -> std::optional<int64_t> {
+          if (llvm::isa<AffineDimExpr>(e) || llvm::isa<AffineSymbolExpr>(e))
+            return 1;
+          if (auto mul = llvm::dyn_cast<AffineBinaryOpExpr>(e);
+              mul && mul.getKind() == AffineExprKind::Mul)
+            if (auto c = llvm::dyn_cast<AffineConstantExpr>(mul.getRHS()))
+              return c.getValue();
+          return std::nullopt;
+        };
+
+        for (int64_t g = rhs; g > 1; --g) {
+          if (rhs % g != 0)
+            continue;
+          AffineExpr big;
+          int64_t restUB = 0;
+          bool usable = true;
+          for (AffineExpr term : terms) {
+            std::optional<int64_t> coeff = coefficientOf(term);
+            if (coeff && *coeff % g == 0) {
+              big = big ? big + term : term;
+              continue;
+            }
+            auto ub = getBoundForAffineExpr(term, numDims, numSymbols,
+                                            dimLowerBounds, dimUpperBounds,
+                                            true);
+            if (!ub || *ub < 0) {
+              usable = false;
+              break;
+            }
+            restUB += *ub;
+          }
+          if (!usable || !big || restUB >= g)
+            continue;
+          return big.floorDiv(g).floorDiv(rhs / g);
         }
       }
     }
