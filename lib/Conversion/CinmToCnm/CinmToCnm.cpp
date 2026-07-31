@@ -1201,9 +1201,17 @@ struct ConvertCinmReduceToCnm : public CinmToCnmPattern<cinm::ReduceOp> {
 
     cnm::WorkgroupOp workgroup =
         cnm::WorkgroupOp::create(builder, cnmAccelerator.getWorkgroupType());
-    auto outputInit = arith::ConstantOp::create(
-        builder, op.getResult().getType(),
-        builder.getZeroAttr(op.getResult().getType()));
+    // The launch body combines into this buffer, so it has to start at the
+    // reduction's identity -- zero only happens to be right for `add`, and
+    // seeding a `mul` reduction with zero annihilates the whole product.
+    Type resultTy = op.getResult().getType();
+    Type eltTy = op.getInput().getType().getElementType();
+    TypedAttr identity = arith::getIdentityValueAttr(
+        cinm::getArithConstant(op.getMethod(), eltTy), eltTy, builder,
+        op.getLoc());
+    if (auto shapedResultTy = dyn_cast<ShapedType>(resultTy))
+      identity = DenseElementsAttr::get(shapedResultTy, identity);
+    auto outputInit = arith::ConstantOp::create(builder, identity);
 
     SmallVector<int64_t> redDim = {static_cast<int64_t>(op.getDimension())};
 
