@@ -70,7 +70,7 @@ func.func @reduce_max_2d(%a: tensor<8x128xi32>) -> tensor<8xi32> {
 // CHECK-SAME: (%[[A:.*]]: tensor<8x1024xi32>, %[[x:.*]]: tensor<1024xi32>)
 // CHECK: %[[INIT:.*]] = tensor.empty() : tensor<8xi32>
 // CHECK: %[[FILL:.*]] = linalg.fill ins({{.*}}) outs(%[[INIT]]
-// CHECK: %[[R:.*]] = linalg.matvec ins(%[[A]], %[[x]] :
+// CHECK: %[[R:.*]] = linalg.matvec {{.*}}ins(%[[A]], %[[x]] :
 // CHECK-SAME: outs(%[[FILL]]
 // CHECK: return %[[R]] : tensor<8xi32>
 func.func @gemv(%A: tensor<8x1024xi32>, %x: tensor<1024xi32>) -> tensor<8xi32> {
@@ -85,7 +85,7 @@ func.func @gemv(%A: tensor<8x1024xi32>, %x: tensor<1024xi32>) -> tensor<8xi32> {
 // CHECK-SAME: (%[[A:.*]]: tensor<8x1024xi32>, %[[B:.*]]: tensor<1024x128xi32>)
 // CHECK: %[[INIT:.*]] = tensor.empty() : tensor<8x128xi32>
 // CHECK: %[[FILL:.*]] = linalg.fill ins({{.*}}) outs(%[[INIT]]
-// CHECK: %[[R:.*]] = linalg.matmul ins(%[[A]], %[[B]] :
+// CHECK: %[[R:.*]] = linalg.matmul {{.*}}ins(%[[A]], %[[B]] :
 // CHECK-SAME: outs(%[[FILL]]
 // CHECK: return %[[R]] : tensor<8x128xi32>
 func.func @gemm(%A: tensor<8x1024xi32>, %B: tensor<1024x128xi32>) -> tensor<8x128xi32> {
@@ -99,7 +99,7 @@ func.func @gemm(%A: tensor<8x1024xi32>, %B: tensor<1024x128xi32>) -> tensor<8x12
 // CHECK-LABEL: @gemm_bias
 // CHECK-SAME: (%[[A:.*]]: tensor<8x1024xi32>, %[[B:.*]]: tensor<1024x128xi32>, %[[bias:.*]]: tensor<8x128xi32>)
 // CHECK-NOT: linalg.fill
-// CHECK: %[[R:.*]] = linalg.matmul ins(%[[A]], %[[B]] :
+// CHECK: %[[R:.*]] = linalg.matmul {{.*}}ins(%[[A]], %[[B]] :
 // CHECK-SAME: outs(%[[bias]]
 // CHECK: return %[[R]] : tensor<8x128xi32>
 func.func @gemm_bias(%A: tensor<8x1024xi32>, %B: tensor<1024x128xi32>, %bias: tensor<8x128xi32>) -> tensor<8x128xi32> {
@@ -113,7 +113,7 @@ func.func @gemm_bias(%A: tensor<8x1024xi32>, %B: tensor<1024x128xi32>, %bias: te
 // CHECK-LABEL: @batch_gemm
 // CHECK-SAME: (%[[A:.*]]: tensor<2x8x1024xi32>, %[[B:.*]]: tensor<2x1024x128xi32>)
 // CHECK: %[[FILL:.*]] = linalg.fill
-// CHECK: %[[R:.*]] = linalg.batch_matmul ins(%[[A]], %[[B]] :
+// CHECK: %[[R:.*]] = linalg.batch_matmul {{.*}}ins(%[[A]], %[[B]] :
 // CHECK-SAME: outs(%[[FILL]]
 // CHECK: return %[[R]] : tensor<2x8x128xi32>
 func.func @batch_gemm(%A: tensor<2x8x1024xi32>, %B: tensor<2x1024x128xi32>) -> tensor<2x8x128xi32> {
@@ -146,7 +146,7 @@ func.func @batch_gemv(%A: tensor<2x8x1024xi32>, %x: tensor<2x1024xi32>) -> tenso
 // CHECK-LABEL: @transpose
 // CHECK-SAME: (%[[A:.*]]: tensor<8x4xi32>)
 // CHECK: %[[INIT:.*]] = tensor.empty() : tensor<4x8xi32>
-// CHECK: %[[R:.*]] = linalg.transpose ins(%[[A]] :
+// CHECK: %[[R:.*]] = linalg.transpose {{.*}}ins(%[[A]] :
 // CHECK-SAME: outs(%[[INIT]]
 // CHECK-SAME: permutation = [1, 0]
 // CHECK: return %[[R]] : tensor<4x8xi32>

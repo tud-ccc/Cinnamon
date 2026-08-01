@@ -121,8 +121,15 @@ static Value buildElementwiseGeneric(
 static void replaceWithLinalgOp(ConversionPatternRewriter &rewriter,
                                 Operation *op, Value result) {
   if (Operation *producer = result.getDefiningOp())
-    if (isa<linalg::LinalgOp>(producer))
+    if (isa<linalg::LinalgOp>(producer)) {
       producer->setDiscardableAttrs(op->getDiscardableAttrDictionary());
+      // Record which cinm op this came from. Consumers need to tell the op
+      // carrying the computation apart from the ops produced around it -- an
+      // init `linalg.fill` is a LinalgOp too, and giving it tile sizes or
+      // search parameters would be nonsense.
+      producer->setAttr(cinm::CinmDialect::LOWERED_FROM_NAME,
+                        rewriter.getStringAttr(op->getName().getStringRef()));
+    }
   rewriter.replaceOp(op, result);
 }
 

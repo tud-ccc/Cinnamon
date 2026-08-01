@@ -124,6 +124,13 @@ CinmDialect::verifyOperationAttribute(::mlir::Operation *op,
     }
     return success();
   }
+  if (attribute.getName() == CinmDialect::LOWERED_FROM_NAME) {
+    if (!llvm::isa<StringAttr>(attribute.getValue()))
+      return op->emitOpError("Attribute ")
+             << CinmDialect::LOWERED_FROM_NAME
+             << " must be a string naming the cinm op this was lowered from";
+    return success();
+  }
   return op->emitOpError("unknown attribute ") << attribute.getName();
 }
 
