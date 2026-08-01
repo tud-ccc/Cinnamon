@@ -112,17 +112,18 @@ CONFIGS = [
         fn_name="gemv_64MB",
         label="default",
         # The atim optimum, in the generic search space: one block size per
-        # iteration dimension of the gemv (m, k), at the workgroup level
-        # (block) and the leaf level (leaf). The template path reads the same
+        # iteration dimension of the gemv, named <op>.<dim><level> -- level 0
+        # is what a workgroup leaf gets, level 1 what it walks that in at the
+        # leaf memory level. The template path reads the same
         # numbers back as mramRow=64, mramCol=128, taskletCols=1, wramRow=8,
         # wramCol=64 -- see docs/CnmMemoryLevelsDesign.md §H5.
         params={
             "dpus": 2048,
             "tasklets": 8,
-            "op0.block0": 8,  # mramRow * taskletCols / tasklets
-            "op0.block1": 128,  # mramCol / taskletCols
-            "op0.leaf0": 8,  # wramRow
-            "op0.leaf1": 64,  # wramCol
+            "gemv.M0": 8,  # mramRow * taskletCols / tasklets
+            "gemv.K0": 128,  # mramCol / taskletCols
+            "gemv.M1": 8,  # wramRow
+            "gemv.K1": 64,  # wramCol
         },
         fn_module=source,
         prim="gemv",
@@ -137,17 +138,18 @@ CONFIGS = [
         fn_name="gemv_64MB",
         label="default",
         # The atim optimum, in the generic search space: one block size per
-        # iteration dimension of the gemv (m, k), at the workgroup level
-        # (block) and the leaf level (leaf). The template path reads the same
+        # iteration dimension of the gemv, named <op>.<dim><level> -- level 0
+        # is what a workgroup leaf gets, level 1 what it walks that in at the
+        # leaf memory level. The template path reads the same
         # numbers back as mramRow=64, mramCol=128, taskletCols=1, wramRow=8,
         # wramCol=64 -- see docs/CnmMemoryLevelsDesign.md §H5.
         params={
             "dpus": 2048,
             "tasklets": 8,
-            "op0.block0": 8,  # mramRow * taskletCols / tasklets
-            "op0.block1": 128,  # mramCol / taskletCols
-            "op0.leaf0": 8,  # wramRow
-            "op0.leaf1": 64,  # wramCol
+            "gemv.M0": 8,  # mramRow * taskletCols / tasklets
+            "gemv.K0": 128,  # mramCol / taskletCols
+            "gemv.M1": 8,  # wramRow
+            "gemv.K1": 64,  # wramCol
         },
         fn_module=source,
         prim="gemv",

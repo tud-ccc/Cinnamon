@@ -142,6 +142,12 @@ static void addAffineOpts(OpPassManager &pm) {
   pm.addPass(createCanonicalizerPass());
 }
 
+/// `cinm.op.gemv` -> `gemv`, for use in search-parameter names.
+static std::string shortOpName(StringRef opName) {
+  auto [prefix, last] = opName.rsplit('.');
+  return (last.empty() ? opName : last).str();
+}
+
 struct UpmemInferencePlugin : cinm::InferencePlugin {
   upmem::UpmemPlatformAttr platform;
   const UpmemInferenceOptions &opts;
@@ -366,7 +372,7 @@ struct UpmemInferencePlugin : cinm::InferencePlugin {
   /// This is the whole space. `dpuRows`/`dpuCols`/`taskletRows`/`taskletCols`
   /// and the MRAM/WRAM tile pairs are not parameters -- they are a *reading*
   /// of these numbers that the template path derives when it needs them.
-  void handleLinalgOp(linalg::LinalgOp op, unsigned opIndex,
+  void handleLinalgOp(linalg::LinalgOp op, StringRef namePrefix,
                       unsigned walkIndex, SpaceBuilder &b);
 
   /// Record the search parameters `op`'s lowering needs. `op` belongs to the
@@ -425,17 +431,35 @@ struct UpmemInferencePlugin : cinm::InferencePlugin {
       return;
     }
 
+    // Name each op's parameters after the cinm op it came from, e.g.
+    // `gemv.M0`. Count the kinds first so that a block with two gemvs gets
+    // `gemv0`/`gemv1` while the common single-op case stays unadorned.
+    llvm::StringMap<unsigned> kindCount;
+    convertedBlock.getBody().walk([&](Operation *op) {
+      if (auto origin =
+              op->getAttrOfType<StringAttr>(cinm::CinmDialect::LOWERED_FROM_NAME))
+        ++kindCount[shortOpName(origin.getValue())];
+    });
+
     // Walk the *body*, which is exactly what stampSearchParams walks in a
     // trial, so the recorded positions mean the same thing on both sides.
-    unsigned walkIndex = 0, opIndex = 0;
+    llvm::StringMap<unsigned> kindSeen;
+    unsigned walkIndex = 0;
     convertedBlock.getBody().walk([&](Operation *op) {
       unsigned here = walkIndex++;
       // Only the ops carrying a cinm op's computation are distributed; the
       // inits produced alongside them are LinalgOps too and must be left out.
-      if (!op->hasAttr(cinm::CinmDialect::LOWERED_FROM_NAME))
+      auto origin =
+          op->getAttrOfType<StringAttr>(cinm::CinmDialect::LOWERED_FROM_NAME);
+      if (!origin)
         return;
-      if (auto linalgOp = llvm::dyn_cast<linalg::LinalgOp>(op))
-        handleLinalgOp(linalgOp, opIndex++, here, b);
+      auto linalgOp = llvm::dyn_cast<linalg::LinalgOp>(op);
+      if (!linalgOp)
+        return;
+      std::string kind = shortOpName(origin.getValue());
+      std::string prefix =
+          kindCount[kind] > 1 ? kind + std::to_string(kindSeen[kind]++) : kind;
+      handleLinalgOp(linalgOp, prefix, here, b);
     });
 
     b.buildInto(space);
@@ -624,6 +648,52 @@ private:
   }
 };
 
+/// Human-readable names for an op's iteration dimensions, so the space reads
+/// as `gemv.M0` -- the workgroup block on M -- rather than `op0.block0`.
+/// Falls back to D0, D1, ... for ops without an established convention.
+static SmallVector<std::string> iterationDimNames(StringRef origin,
+                                                  unsigned rank) {
+  auto fixed = [&](ArrayRef<StringRef> names)
+      -> std::optional<SmallVector<std::string>> {
+    if (names.size() != rank)
+      return std::nullopt;
+    SmallVector<std::string> out;
+    for (StringRef name : names)
+      out.push_back(name.str());
+    return out;
+  };
+
+  std::optional<SmallVector<std::string>> named;
+  if (origin == cinm::GemvOp::getOperationName())
+    named = fixed({"M", "K"});
+  else if (origin == cinm::GemmOp::getOperationName())
+    named = fixed({"M", "N", "K"});
+  else if (origin == cinm::BatchGemvOp::getOperationName())
+    named = fixed({"B", "M", "K"});
+  else if (origin == cinm::BatchGemmOp::getOperationName())
+    named = fixed({"B", "M", "N", "K"});
+  else if (origin == cinm::ReduceOp::getOperationName() && rank >= 2) {
+    // This generator only handles a trailing reduction, so the leading
+    // dimensions are the parallel ones.
+    SmallVector<std::string> out;
+    if (rank == 2) {
+      out.push_back("M");
+    } else {
+      for (unsigned dim = 0; dim + 1 < rank; ++dim)
+        out.push_back("P" + std::to_string(dim));
+    }
+    out.push_back("K");
+    named = std::move(out);
+  }
+  if (named)
+    return *named;
+
+  SmallVector<std::string> out;
+  for (unsigned dim = 0; dim < rank; ++dim)
+    out.push_back("D" + std::to_string(dim));
+  return out;
+}
+
 /// Loop extents of a linalg op, read off its operands. Only valid for
 /// projected-permutation indexing maps, which is what --convert-linalg-to-cnm
 /// requires anyway.
@@ -656,7 +726,8 @@ linalgOperandDims(linalg::LinalgOp op) {
 }
 
 void UpmemInferencePlugin::handleLinalgOp(linalg::LinalgOp op,
-                                          unsigned opIndex, unsigned walkIndex,
+                                          StringRef namePrefix,
+                                          unsigned walkIndex,
                                           SpaceBuilder &b) {
   FailureOr<SmallVector<int64_t>> extents = linalgLoopExtents(op);
   if (failed(extents))
@@ -666,19 +737,20 @@ void UpmemInferencePlugin::handleLinalgOp(linalg::LinalgOp op,
   auto tasklets = taskletsVar_;
   Type eltTy = cast<ShapedType>(op.getDpsInits()[0].getType()).getElementType();
 
-  // Names are prefixed with the op's position *among the distributed ops* so
-  // several ops in one compute block do not collide. Deliberately not the raw
-  // walk position: these are the user-facing names that eval-solution refers
-  // to, and they should not move when an unrelated op appears nearby.
-
-  const std::string prefix = "op" + std::to_string(opIndex) + ".";
+  // `<op>.<dim><level>`: level 0 is the block a workgroup leaf gets, level 1
+  // the block it walks that in at the leaf memory level. So a gemv declares
+  // gemv.M0, gemv.K0, gemv.M1, gemv.K1. These are the user-facing names that
+  // eval-solution refers to.
+  StringRef origin =
+      op->getAttrOfType<StringAttr>(cinm::CinmDialect::LOWERED_FROM_NAME)
+          .getValue();
+  SmallVector<std::string> dimNames = iterationDimNames(origin, extents->size());
 
   SmallVector<SpaceVar> blocks, leaves;
   for (auto [dim, extent] : llvm::enumerate(*extents)) {
-    blocks.push_back(
-        b.divisorsOf(prefix + "block" + std::to_string(dim), extent));
-    leaves.push_back(
-        b.divisorsOf(prefix + "leaf" + std::to_string(dim), blocks.back()));
+    std::string base = (namePrefix + "." + dimNames[dim]).str();
+    blocks.push_back(b.divisorsOf(base + "0", extent));
+    leaves.push_back(b.divisorsOf(base + "1", blocks.back()));
   }
 
   // The tile counts must fill the workgroup exactly (design §G2). This is the
@@ -738,9 +810,6 @@ void UpmemInferencePlugin::handleLinalgOp(linalg::LinalgOp op,
   // type: the generators still rewrite the cinm op in the trial, so the two
   // must agree on what they are looking at.
   if (opts.lowering == UpmemLoweringPath::TEMPLATES) {
-    StringRef origin =
-        op->getAttrOfType<StringAttr>(cinm::CinmDialect::LOWERED_FROM_NAME)
-            .getValue();
     if (origin == cinm::GemvOp::getOperationName())
       registerGemvTemplate(b, blocks, leaves, *extents, eltTy);
     else if (origin == cinm::ReduceOp::getOperationName())
