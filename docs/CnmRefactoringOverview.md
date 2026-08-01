@@ -1,319 +1,458 @@
-# CNM refactoring: overview
+# The CINM 2.0 lowering pipeline: an overview
 
-A one-page map of the `cinm → linalg → cnm → upmem` refactoring: the flow
-we had, the flow we are building, what was broken along the way, and what
-is left. Full reasoning lives in
-[CnmMemoryLevelsDesign.md](CnmMemoryLevelsDesign.md) (§A–§I); the
-milestone record is in
-[CnmMemoryLevelsImplementationPlan.md](CnmMemoryLevelsImplementationPlan.md).
+This document describes how cinm-mlir compiles a high-level tensor
+operation down to code for the UPMEM processing-in-memory architecture:
+the pipeline as it was, the pipeline as it is being rebuilt, why, and what
+remains to be done. It is meant to be readable on its own. Detailed
+argument and derivations live in
+[CnmMemoryLevelsDesign.md](CnmMemoryLevelsDesign.md), and the
+milestone-by-milestone record in
+[CnmMemoryLevelsImplementationPlan.md](CnmMemoryLevelsImplementationPlan.md);
+neither is required reading for what follows.
 
-**The thesis in one line.** Passes expose *parameters*; they do not take
-decisions. Every distribution decision the old flow made by case analysis
-is now a number the UPMEM inference plugin supplies, and the plugin
-derives those numbers from the op's own iteration space rather than from a
-per-op template.
+## 0. Background
 
-## 1. The CINM 1.0 flow, and who decided what
+### The dialects
 
-Transcribed in [cinm1.py](../experiments/cinm_experiments/cinm1.py) from
-`testbench/Makefile`, still live as the comparison baseline.
+cinm-mlir lowers through three of its own MLIR dialects:
 
-| Stage | Pass | Decisions it took |
+- **`cinm`** — the input language. Whole-tensor operations
+  (`cinm.op.gemv`, `cinm.op.gemm`, `cinm.op.reduce`, …) inside a
+  `cinm.compute` region that names the accelerator it should run on.
+  Nothing here is device-specific.
+- **`cnm`** — "compute near memory", a device-independent model of
+  *distributed* computation. Its vocabulary is a **workgroup** (a
+  multi-dimensional grid of processing elements), a **buffer**
+  (`cnm.buffer`: one tile of data per workgroup element), **scatter** and
+  **gather** (move data between a host tensor and a buffer, addressed by
+  an affine **scatter map** from workgroup coordinates into the host
+  tensor), and **launch** (run a region once per workgroup element, on its
+  own tiles). We call an individual workgroup element a **leaf**.
+- **`upmem`** — the backend dialect. DPU allocation, kernels, DMA
+  transfers, and the memory spaces `#upmem.mram` / `#upmem.wram`. It is
+  translated to C and compiled by the UPMEM SDK.
+
+### The hardware, in the four terms this document uses
+
+A UPMEM system is a set of **ranks**; each rank holds ~64 **DPUs**
+(simple in-order cores); each DPU runs up to 16 or 24 hardware threads
+called **tasklets**. Each DPU has two memories:
+
+- **MRAM** — 64 MiB of DRAM per DPU. Large, slow, reached only by
+  explicit DMA. This is where the host scatters data to.
+- **WRAM** — 64 KiB of SRAM per DPU (minus ~8 KiB reserved for runtime
+  structures). Small, fast, directly addressable. Compute happens here,
+  so a kernel must stage its working set MRAM → WRAM and back.
+
+The workgroup shape used for UPMEM is therefore `ranks × DPUs ×
+tasklets`, and a **leaf is one tasklet**. Note the asymmetry that causes
+most of the subtlety below: MRAM and WRAM are physically per-*DPU*, so
+the tasklets of a DPU may share a buffer or may each need their own,
+and which one it is depends on how the data was distributed.
+
+### Design-space exploration
+
+Tile sizes and distribution choices are not fixed by the compiler; they
+are searched. The `--upmem-infer-accelerator` pass hosts an **inference
+plugin** that (1) builds a **search space** of integer parameters with
+constraints, (2) asks a Bayesian optimizer for a configuration,
+(3) lowers the program with that configuration and costs the result with
+a simulator, and (4) commits the best one. A configuration can also be
+pinned by hand with the `eval-solution` pass option, which is how the
+tests and benchmarks work.
+
+Historically the plugin had a second, faster route: **templates**, in
+`SimulationTemplates.cpp` — hand-written generators that emit UPMEM code
+for `gemv` and `reduce` directly, bypassing the real pipeline. They exist
+because the real pipeline could not express the configurations the
+templates could. Removing them is a goal of this work; §4.1 says when.
+
+### The thesis of the refactoring
+
+> Passes expose **parameters**; they do not take decisions.
+
+Every distribution decision the old pipeline made by case analysis on
+shapes becomes a number supplied by the search, and the search derives
+those numbers from the operation's own iteration space rather than from
+per-operation special-casing.
+
+## 1. The old pipeline (CINM 1.0), and who decided what
+
+Still live: it is the comparison baseline in the experiments, transcribed
+into [cinm1.py](../experiments/cinm_experiments/cinm1.py) from
+`testbench/Makefile`.
+
+| Stage | Pass | Decisions it takes |
 |---|---|---|
-| 1a | `--cinm-infer-tile-sizes` | **Tile sizes**, from the accelerator's `computeTilingFactors` — a fixed heuristic per op, no search. |
-| 1a | `--cinm-tiling` | Emits the host-side loop nest over tiles, via `CinmTilingInterface` per op kind. |
-| 2 | `--convert-cinm-to-cnm` | **Everything about the distribution**: how a tile's elements map onto workgroup leaves, whether an operand is broadcast / chunked / transposed, what the per-leaf buffer shape is, and what the launch body computes. |
-| 3–5 | bufferize, hoist, `--cnm-ensure-scatter-gather-contiguous` | Mechanical. |
-| 6 | `--convert-cnm-to-upmem` | MRAM alloc + WRAM staging around every launch, unconditionally. Transfer API selection via `use-sg-xfer-codegen` / `use-bc-xfer-codegen`. |
+| 1a | `--cinm-infer-tile-sizes` | **Tile sizes**, from the accelerator's `computeTilingFactors` — a fixed per-op heuristic, no search. |
+| 1a | `--cinm-tiling` | Emits the host-side loop nest over tiles, through `CinmTilingInterface`, implemented once per op kind. |
+| 2 | `--convert-cinm-to-cnm` | **Everything about the distribution**: how a tile's elements map onto leaves, whether an operand is broadcast / chunked / transposed, the per-leaf buffer shape, and what the launch body computes. |
+| 3–5 | bufferization, hoisting, `--cnm-ensure-scatter-gather-contiguous` | Mechanical. |
+| 6 | `--convert-cnm-to-upmem` | Allocates MRAM and stages MRAM→WRAM around *every* launch, identically for every program. Transfer API chosen by pass flags (`use-sg-xfer-codegen`, `use-bc-xfer-codegen`). |
 
-The weight is all in step 2. `computeShapeOfTensors` is ~200 lines of
-case analysis — "tensor has exactly one parallel element, so broadcast";
-"parallel elements equal `|WG|` but chunks are not contiguous, so
-`linalg.transpose`, and the transpose has to happen in the caller";
-"flatten trailing parallel dims until `trailing % k == 0`, then maybe emit
-a reshape". Each case *guesses* a distribution from the shapes.
+The weight is all in stage 2. Its core routine, `computeShapeOfTensors`,
+is roughly 200 lines of case analysis — "this tensor has exactly one
+parallel element, so broadcast it"; "its parallel elements equal the
+workgroup size but the chunks are not contiguous, so insert a
+`linalg.transpose`, which the caller has to do"; "flatten trailing
+parallel dimensions until the product divides `k`, then maybe emit a
+reshape". Each case *guesses* a distribution from the operand shapes.
 
-Three consequences shaped everything that follows:
+Three consequences shaped everything that follows.
 
-- **The decisions are not addressable.** DSE can move the tile sizes and
-  nothing else, so the search space is whatever the templates expose,
-  which is why `SimulationTemplates.cpp` exists at all: to reach
-  configurations the real pipeline could not express.
-- **Reduction splitting is inexpressible.** A reduction dimension spread
-  across the workgroup has no representation, so any configuration
-  needing partial results per leaf is simply out of reach.
-- **Levels are implicit.** `cnm.buffer`'s `level` field was decorative;
-  `--convert-cnm-to-upmem` staged MRAM→WRAM the same way for every
-  program, so on-device staging could not be tiled, hoisted or shared.
+**The decisions are not addressable.** The search can move tile sizes and
+nothing else. Any configuration that differs in *how* work is spread over
+the workgroup is unreachable, which is precisely why the hand-written
+templates exist.
 
-## 2. The CINM 2.0 flow
+**Reduction splitting is inexpressible.** Spreading a reduction dimension
+across the workgroup — each leaf computing a partial result, merged
+afterwards — has no representation at all. Configurations needing it are
+simply out of reach. The failure was concrete: the best known `gemv`
+configuration from an independent autotuner made
+`--convert-cinm-to-cnm` fail with `numParallelElts (64) % numWgItems
+(16384) != 0`.
 
-The whole picture, including the parts not yet implemented — those are
-marked **[todo]** and collected with due dates in §4.
+**Memory levels are implicit.** `cnm.buffer` had a `level` field, but
+nothing ever set it and nothing read it. `--convert-cnm-to-upmem` staged
+MRAM→WRAM the same way for every program, so on-device staging could not
+be tiled, hoisted, or shared between tasklets.
+
+## 2. The new pipeline (CINM 2.0)
+
+The full picture, including parts not yet implemented — those are marked
+**[todo]** and collected with priorities in §4.2.
 
 ```
---convert-cinm-ops-to-linalg      cinm op -> linalg, carrying attributes
-                                  and a cinm.lowered_from marker
+--convert-cinm-ops-to-linalg      cinm op -> linalg op, carrying its
+                                  attributes and a cinm.lowered_from marker
   [todo] fusion                   producer/consumer fusion on linalg
 --convert-linalg-to-cnm           distribute onto the workgroup
-    cnm-buffer-level=mram         <- buffers live in MRAM
-    per-dim-attrs=...             <- attrs that must survive a split
-bufferize / hoist / CSE
---upmem-tile-mram-buffers         tile + promote MRAM -> WRAM, staging
+    cnm-buffer-level=mram           -> buffers live in MRAM
+    per-dim-attrs=...               -> attributes that must survive a split
+bufferization / hoisting / CSE
+--upmem-tile-mram-buffers         tile the launch body and promote its
+                                  operands MRAM -> WRAM, staging them
                                   with cnm.local_transfer
 --convert-linalg-to-affine-loops, --affine-scalrep
 --cnm-ensure-scatter-gather-contiguous
   [todo] scatter specializations  broadcast, constant-scatter
---convert-cnm-to-upmem            level-aware: MRAM args bind straight to
-                                  the static alloc
-  [todo] occupancy check          exact, on the lowered IR
+--convert-cnm-to-upmem            level-aware: MRAM buffers bind straight
+                                  to the static allocation
+  [todo] occupancy check          exact, measured on the lowered IR
 --lower-affine, --fold-memref-alias-ops, --upmem-dedup-kernels
 ```
 
-### Memory levels are explicit
+### 2.1 Memory levels are explicit
 
-`#upmem.mram` / `#upmem.wram` already were the memref memory space
-everywhere downstream; they now also implement a new
-`CinmLevelAttrInterface`, so generic code can ask "which level is this
-memref in" without hardcoding UPMEM. Capacity stays on the platform in
-`CinmLevelDefAttr` — the level attribute cannot carry a size, because
-then `memref<64xi32, #upmem.wram<size=…>>` would be a *different type* on
-each platform.
+`#upmem.mram` and `#upmem.wram` were already the memref memory space
+throughout the backend. They now also implement a new
+`CinmLevelAttrInterface`, so target-independent code can ask "which
+memory level does this memref live in" without hardcoding UPMEM.
 
-**Yes, `--convert-linalg-to-cnm` has the same `cnm-buffer-level` option**
-as `--convert-cinm-to-cnm` — the resolution logic is shared
-([CnmBufferLevel.h](../include/cinm-mlir/Conversion/CnmBufferLevel.h),
-extracted for exactly this). Empty means unlevelled buffers, i.e. the
-backend picks the staging itself. `--convert-linalg-to-cnm` also takes
-`allow-float-reassociation` and `per-dim-attrs`.
+Capacity deliberately does *not* live on that attribute. It stays on the
+platform, in `CinmLevelDefAttr`, because a memory space is part of a
+memref's type: parameterizing it with a size would make
+`memref<64xi32, #upmem.wram<size=57344>>` and `…<size=55296>` *different
+types* on hardware revisions that differ only in how much WRAM they have.
+So the level attribute carries identity, the platform carries size and
+alignment, and `platform.getLevel(name)` connects them.
 
-Consequences down the stack: a launch body computes on MRAM memrefs, and
-`--upmem-tile-mram-buffers` tiles that body and promotes its operands
-into WRAM with `cnm.local_transfer` around them. Promotion runs in two
-stages so the output tile is staged *outside* the reduction loop and
-written back once, as the hand-written templates do.
+Two conversions take a **`cnm-buffer-level` option** naming the level to
+allocate `cnm.buffer`s in: `--convert-cinm-to-cnm` (the old path) and
+`--convert-linalg-to-cnm` (the new one). They share one resolution helper,
+[CnmBufferLevel.h](../include/cinm-mlir/Conversion/CnmBufferLevel.h), so
+the two cannot drift. An empty value means unlevelled buffers, which is
+the historical behaviour where the backend picks the staging itself.
+`--convert-linalg-to-cnm` additionally takes `allow-float-reassociation`
+and `per-dim-attrs`, both explained below.
 
-The launch body stays **linalg**, not `cinm` ops. That was tried and
-reverted: selecting a level changes where buffers live, not what the body
-is, and the body is very often a dot product that no `cinm` op can
-express. Keying the staging off the memory space instead means it works
-for any linalg op, and `--convert-cinm-to-cnm` goes back to deciding
-nothing about the body.
+With `cnm-buffer-level=mram`, a launch body computes on MRAM memrefs, and
+a new pass **`--upmem-tile-mram-buffers`** tiles that body and promotes
+its operands into WRAM, wrapping them in `cnm.local_transfer` (a new
+memref-to-memref `cnm` op whose direction is implicit in its operands'
+memory spaces). Promotion runs in two stages, so the *output* tile is
+staged outside the reduction loop and written back once rather than on
+every trip — matching what the hand-written templates do by construction.
 
-### Distribution is mechanical
+One deliberate non-choice: **launch bodies stay `linalg`**. Putting
+memref-mode `cinm` ops in them was implemented and then reverted.
+Selecting a memory level changes where buffers live, not what the body
+computes, and the per-leaf body is very often a dot product that no
+`cinm` op can express. Keying the staging off the memory space instead
+means it works for any `linalg` op, and it lets the distribution pass go
+back to deciding nothing at all about the body.
 
-`--convert-linalg-to-cnm` replaces the case analysis. Its parameter is
-`cnm.tile_sizes`: one **block size** per iteration dimension of the op.
-Everything else follows:
+### 2.2 Distribution is mechanical
 
-- **check** `∏(E_i / b_i) == |WG|`;
-- **scatter map** = `indexingMap ∘ (workgroup → tile)` — computed, not
-  guessed. Contiguity is somebody else's job
-  (`--cnm-ensure-scatter-gather-contiguous`);
-- **per-leaf buffer shape** = the block sizes of the dims in that
-  operand's own indexing map. A dropped dim *is* broadcast, so that case
-  needs no special handling. (Repeating a dim is rejected: maps must be
-  projected permutations.)
+**`--convert-linalg-to-cnm`** replaces the case analysis. It distributes a
+`linalg` op on tensors onto a workgroup, driven by one attribute:
+`cnm.tile_sizes`, giving one **block size** per iteration dimension —
+the extent of that dimension inside a single leaf. Everything else is
+derived:
 
-Starting from linalg rather than cinm is what buys this — indexing maps
-already say what the case analysis was trying to reconstruct — and it is
-also what makes fusion available later, essentially for free.
+- **legality check**: `∏(E_i / b_i) == |WG|`, i.e. the tile counts must
+  fill the workgroup exactly (`E_i` = dimension extent, `b_i` = block
+  size). Failure reports both numbers.
+- **scatter map** = `indexingMap ∘ (workgroup → tile)`. Computed by
+  composition, not guessed. Contiguity is left to a later pass,
+  `--cnm-ensure-scatter-gather-contiguous`.
+- **per-leaf buffer shape** = the block sizes of the dimensions appearing
+  in that operand's own indexing map. An operand that *drops* a dimension
+  is a broadcast, and needs no special case to be one.
+- **launch body** = the same `linalg` op on leaf-shaped memrefs.
 
-**Reduction splitting**, the one structural addition, comes from
-`linalg::splitReduction`: it turns the reduction tile index into an extra
-*parallel* dimension, so distribution applies unchanged, and it does the
-identity seeding and folds the original `outs` in exactly once at the
-host-side merge. Associative and commutative combiner required; floats
-behind `allow-float-reassociation`, since splitting them reassociates.
+Starting from `linalg` rather than `cinm` is what buys this: an indexing
+map already states what the old case analysis was trying to reconstruct
+from shapes. (One restriction follows: indexing maps must be projected
+permutations. Dropping a dimension is fine; repeating one is rejected.)
+It also makes operator fusion available essentially for free later.
 
-Two things are fixed **by rule** rather than searched, both because they
-are permutations rather than integer factors and a search space cannot
-hold them without a first-class representation and distance function:
+**Reduction splitting** is the one structural addition. Giving a
+reduction dimension a block size smaller than its extent spreads it
+across the workgroup: each leaf computes a partial result and a merge is
+left on the host. The rewrite is `linalg::splitReduction` from upstream,
+which turns the reduction tile index into an extra *parallel* dimension —
+so the distribution above applies unchanged — and which also seeds every
+leaf with the combiner's identity and folds the original output in
+exactly once at the merge. Legality: the combiner must be associative and
+commutative, and floating-point reductions require the explicit
+`allow-float-reassociation` flag, since splitting them reassociates the
+arithmetic and changes results.
 
-- **§G3, tile-dim → workgroup-axis order**: split reduction dims
-  outermost, then the original parallel dims, then the unsplit reduction
-  remainder. This is not cosmetic — which tile dim varies fastest decides
-  which operands a DPU's tasklets *share*, and `--convert-cnm-to-upmem`
-  reads that syntactically off the scatter map. The current rule
-  reproduces the autotuner's grouping.
-- **§I, trips**: when the tile counts exceed the workgroup, the tile
-  space is linearized in the §G3 order, low-order digits indexing the
-  workgroup and high-order digits a host trip loop. **[todo]**
+Two things are fixed **by rule** rather than searched. Both are
+permutations rather than integer factors, and a search space cannot hold
+a permutation without a first-class representation and a distance
+function over it:
 
-### The search space is derived, not written
+- **Tile-dimension → workgroup-axis order.** The rule: split
+  reduction-derived dimensions outermost, then the original parallel
+  dimensions, then any unsplit reduction remainder. This is not cosmetic.
+  Which tile dimension varies fastest determines which operands the
+  tasklets of one DPU *share* versus replicate, and
+  `--convert-cnm-to-upmem` reads that off the scatter map syntactically.
+  The current rule reproduces the grouping the independent autotuner
+  found best.
+- **Sequential trips.** When the tile counts exceed the workgroup size,
+  the tile space is linearized in the order above; the low-order digits
+  index the workgroup and the high-order digits index a host-side trip
+  loop. **[todo]**
 
-One space, built by walking the linalg ops: one block size per iteration
-dimension per level (level 0 = what a workgroup leaf gets, level 1 = what
-it walks that in at the leaf memory level), constrained by
-`∏(E_i/b_i) == dpus*tasklets` and leaf-divides-block. No
-`dpuRows`/`dpuCols`/`taskletRows`/`taskletCols` — those are a *reading* of
-these numbers, not parameters. It generalizes to any iteration rank.
+### 2.3 The search space is derived, not written
 
-Variables are named `<op>.<dim><level>` — `gemv.M0, gemv.K0, gemv.M1,
-gemv.K1` — with dimension names taken from the originating `cinm` op via
-`cinm.lowered_from`, and op kinds counted first so two gemvs get
-`gemv0`/`gemv1`. `eval-solution` resolves by name, not position; the old
-positional encoding was an ABI for every params dict in `experiments/`
-and had already been a hazard twice.
+The plugin builds one space by walking the `linalg` ops of the compute
+block. Per operation it declares one block size per iteration dimension
+per memory level — **level 0** being what a leaf gets (its MRAM tile),
+**level 1** what the leaf walks that in at the fast level (its WRAM tile)
+— constrained by `∏(E_i / b_i) == dpus × tasklets` and by each level-1
+block dividing its level-0 block.
 
-**Capacity is deliberately not modelled a priori.** Occupancy is a
-property of the *lowered* program: operand sharing, `useFullTileBuffers`,
-buffer hoisting, kernel dedup — and even the affine simplifier, since
-`ae698cc` changed nothing but that and moved per-DPU MRAM from 9280 to
-8384 elements. So the space carries only a bound that can never
-over-estimate (assume maximal sharing), and the exact check reads the
-real `upmem.static_alloc` sizes off the lowered IR. **[todo]**
+Notably absent: `dpuRows`, `dpuCols`, `taskletRows`, `taskletCols`. Those
+are a *reading* of the block sizes, not independent parameters. Dropping
+them is what lets the space generalize to any iteration rank instead of
+being written out per operation.
 
-### Where the templates fit
+Variables are named `<op>.<dim><level>`, so a `gemv` declares `gemv.M0`,
+`gemv.K0`, `gemv.M1`, `gemv.K1`. Dimension names come from the originating
+`cinm` op — M/K for gemv, M/N/K for gemm, and so on — recovered through a
+`cinm.lowered_from` marker attribute, falling back to `D0, D1, …` for ops
+with no established convention. Operation kinds are counted first, so a
+block containing two gemvs gets `gemv0`/`gemv1` while the ordinary
+single-op case stays unadorned. `eval-solution` resolves parameters by
+name; it used to be positional, which made the variable list an implicit
+ABI for every configuration recorded under `experiments/`.
 
-`SimulationTemplates.cpp` stays for now as the quality bar. Both
-lowerings are selectable (`lowering=templates|generic`) against the *same*
-space — the templates read its numbers back through a projection (§H5) —
-so one configuration can be costed both ways. That comparison is the
-criterion for deleting them.
+**Memory capacity is deliberately not modelled in the space.** Occupancy
+is a property of the *lowered* program, not of the configuration: it moves
+with operand sharing, with whether promotion allocates a full-size
+staging buffer, with buffer hoisting, with kernel deduplication — and even
+with the affine simplifier, since one commit that changed nothing but that
+moved per-DPU MRAM for a fixed configuration from 9280 to 8384 elements.
+Any a-priori bound is therefore either too permissive (and the
+configuration is discovered infeasible only when the DPU binary fails to
+link) or too strict (and it silently deletes good configurations). The
+scheme instead is: keep only a bound that can never over-estimate (assume
+maximal sharing), and check exactly by summing the real `upmem.static_alloc`
+sizes on the lowered IR. **[todo — the a-priori bound exists, the exact
+check does not]**
 
-## 3. Bug fixes
+### 2.4 Where the templates fit
 
-Latent ones first; several were invisible until this work reached them.
+Both lowerings are selectable — `lowering=templates|generic` — against
+the *same* search space. The templates read its numbers back through a
+projection, for example:
 
-- **`cnm.launch` did not round-trip levelled buffers.** The shorthand
-  buffer type printed shape and element type only, while the parser
-  accepted an optional level. Any `cinm-opt | cinm-opt` on levelled IR
-  failed. (`0f5dede`)
+    taskletRows = min(tasklets, mTiles)   taskletCols = tasklets / taskletRows
+    mramRow     = blockM * taskletRows    mramCol     = blockK * taskletCols
+    wramRow     = leafM                   wramCol     = leafK
+
+so one configuration can be lowered and costed both ways. That comparison
+is the criterion for deleting the templates; §4.1 has the schedule.
+
+## 3. Bugs found and fixed
+
+Several of these were latent — real defects that nothing had yet
+exercised. They are worth recording because most were silent.
+
+- **`cnm.launch` did not round-trip buffers carrying a memory level.**
+  The shorthand buffer type printed shape and element type only, while
+  the parser accepted an optional level, so `cinm-opt | cinm-opt` on
+  levelled IR failed. (`0f5dede`)
 - **Tiled reductions dropped every trip but the last.** With a shaped
-  result, `ReduceTilingModel` overwrote the accumulator slice instead of
+  result, the tiling model overwrote the accumulator slice instead of
   combining into it, and seeded it with `tensor.empty()` rather than the
-  identity. Unreachable until something tiled a reduction dimension into
-  more than one trip. (`3caea2d`)
-- **Reduce scattered a zero init for every method**, so a `mul` reduction
-  always returned zero. Now the method's identity. (`71cd9c1`)
-- **The launch body's reduction dimension was hardcoded to 0** — correct
-  only when the buffer holds nothing but the reduction.
-- **`--convert-cinm-ops-to-linalg` dropped discardable attributes**, and
-  **`linalg::splitReduction` builds a fresh op**, so the leaf tile sizes
-  vanished *exactly* for the configurations that split a reduction:
-  slower code, no diagnostic. (`1d1d094`, `190678e`)
-- **`simplifyAffineExprWithBounds` could not fold a `floordiv` of a sum.**
-  Without the rule the delinearized scatter index never simplified to
-  something tasklet-independent, `isMramBroadcastOverThreads` said no, and
-  the shared operand was replicated per tasklet. Load-bearing: it is what
-  makes §G3's ordering observable at all, and worth 9280 → 8384 elements
-  of per-DPU MRAM on gemv_64MB. (`ae698cc`)
+  reduction's identity. Unreachable until something tiled a reduction
+  dimension into more than one trip. (`3caea2d`)
+- **Reduce scattered a zero initializer for every method**, so a `mul`
+  reduction always returned zero. It now scatters the method's identity.
+  (`71cd9c1`)
+- **The launch body's reduction dimension was hardcoded to 0**, which is
+  correct only when the per-leaf buffer holds nothing but the reduction.
+- **Two attribute-loss bugs.** `--convert-cinm-ops-to-linalg` dropped
+  discardable attributes, and `linalg::splitReduction` builds a fresh op,
+  so the level-1 (WRAM) tile sizes vanished *exactly* for configurations
+  that split a reduction: slower code, no diagnostic. The
+  `per-dim-attrs` option exists to carry such attributes across a split.
+  (`1d1d094`, `190678e`)
+- **The affine simplifier could not fold a `floordiv` of a sum.** Without
+  that rule, a delinearized scatter index never simplified to something
+  provably independent of the tasklet coordinate, so the check for "can
+  the tasklets share this buffer" said no and the operand was replicated
+  per tasklet. Load-bearing: it is what makes the ordering rule of §2.2
+  observable at all, and worth 9280 → 8384 elements of per-DPU MRAM on
+  the 64 MB gemv. (`ae698cc`)
 - **The UPMEM C translator computed subview offsets from the subview's
-  own sizes instead of the source's strides.** For
+  own sizes instead of the source memref's strides.** For
   `subview %buf[%t,0,0,%k] [1,8,1,64]` of `memref<8x8x1x128xi32>` it
   emitted `%k*64 + %t` where `%t*1024 + %k` was meant — silently wrong
-  MRAM addresses. It now uses `getStridesAndOffset` and **rejects nested
-  subviews loudly**; the pipeline runs `--fold-memref-alias-ops` (not
-  `--canonicalize`, which does not do this) to compose them first.
-  (`b6cbc0b`, `a12f33c`)
-- **`affine.for` survived into DPU kernels** on the generic path.
-  (`85371ca`)
-- **`isZeroSplatFoldable` could not see through `linalg.fill`**, so the
-  identity seed defeated the constant-scatter fold. (`eececea`)
-- **A stale test asserted gating that never existed** — `cinm1-codegen`
-  was documented in a comment as disabling the `upmem.broadcast`
-  shortcut, which is gated on `use-bc-xfer-codegen` alone. The comment was
+  MRAM addresses. It now uses `getStridesAndOffset`, and **rejects nested
+  subviews loudly** rather than mis-addressing them; the pipeline runs
+  `--fold-memref-alias-ops` (note: `--canonicalize` does *not* do this) to
+  compose chains into one first. (`b6cbc0b`, `a12f33c`)
+- **`affine.for` survived into DPU kernels**, which the C translator
+  cannot consume. (`85371ca`)
+- **The zero-splat fold could not see through `linalg.fill`**, so the
+  reduction identity seed defeated it. (`eececea`)
+- **A test asserted gating that never existed.** A code comment claimed
+  the `cinm1-codegen` option disabled the broadcast-transfer shortcut,
+  which is in fact gated on `use-bc-xfer-codegen` alone. The comment was
   wrong, not the code. (`d6b8fca`)
 
-## 4. What is left
+## 4. What remains
 
-### 4.1 Technical debt to remove
+### 4.1 Code to remove
 
 | What | When | Blocked on |
 |---|---|---|
-| `cnm-buffer-level` on `--convert-cinm-to-cnm`, and `cinm-to-cnm-launch-body.mlir` / `gemv-generic-mram-pipeline.mlir` | **now** | nothing — see below |
-| The templates path: `SimulationTemplates.cpp`, the `registerSimulator` bypass, `readAsGemvTemplate` and the §H5 projection, the `lowering=` option | **before the artifact** | parity on a cycle-accurate simulator, which needs 4.2's repack and broadcast items |
-| `--convert-cinm-to-cnm` itself, `computeShapeOfTensors`' case analysis, and `--cinm-infer-tile-sizes`/`--cinm-tiling` on the UPMEM path | **after the artifact** | it is the CINM 1.0 baseline's lowering *and* the only cinm→cnm route for the GPU backend; needs the baseline retired or GPU moved to `--convert-linalg-to-cnm` |
-| `cinm.op.reduce`'s memref/DPS mode (M3b) | opportunistic | added for the withdrawn M4; only consumer left is its own tiling model |
-| `CinmLevelDefAttr`'s dead `arity`; the `getDesignParams`/`instantiateDesignParams` stubs; `CostModel.cpp` | opportunistic | — |
+| The `cnm-buffer-level` option on `--convert-cinm-to-cnm`, and the two tests exercising it | **now** | nothing — see below |
+| The templates path: `SimulationTemplates.cpp`, the simulator bypass, the projection of §2.4, the `lowering=` option | **before the artifact** | demonstrated cost parity on a cycle-accurate simulator, which needs the first two items of §4.2 |
+| `--convert-cinm-to-cnm` itself, its `computeShapeOfTensors` case analysis, and `--cinm-infer-tile-sizes` / `--cinm-tiling` on the UPMEM path | **after the artifact** | it is the CINM 1.0 baseline's lowering *and* the only `cinm`→`cnm` route for the GPU backend; needs the baseline retired or the GPU backend moved to `--convert-linalg-to-cnm` |
+| `cinm.op.reduce`'s memref (destination-passing) mode | opportunistic | built for a milestone that was withdrawn; its only remaining consumer is its own tiling model, though it does fill a real gap for memref-mode input programs |
+| `CinmLevelDefAttr`'s unused `arity` parameter; the unexplained `getDesignParams`/`instantiateDesignParams` stubs; `CostModel.cpp`, superseded by the Bayesian search | opportunistic | — |
 
-**On the first row — no, `--convert-cinm-to-cnm` does not need to keep
-handling MRAM.** Its `cnm-buffer-level` option (milestone M1) has no live
-caller: the generic path goes through `--convert-linalg-to-cnm`, and the
-CINM 1.0 baseline and the GPU path both invoke `--convert-cinm-to-cnm`
-with no flag, which is byte-identical to the pre-refactoring behaviour.
-The option is exercised only by its own tests. It was a necessary
-stepping stone — M1 through M7 built the level machinery on the old pass
-before `--convert-linalg-to-cnm` existed — but it is dead now and can be
-deleted well before the pass around it. What must stay is the shared
-`CnmBufferLevel.h` helper and everything level-related in
-`--convert-cnm-to-upmem`, which the generic path depends on.
+**On the first row: `--convert-cinm-to-cnm` does not need to keep handling
+MRAM.** Its `cnm-buffer-level` option has no live caller. The new pipeline
+distributes through `--convert-linalg-to-cnm`; the CINM 1.0 baseline and
+the GPU path both invoke `--convert-cinm-to-cnm` with no level, which is
+byte-identical to its pre-refactoring behaviour. The option is exercised
+only by its own tests. It was a necessary stepping stone — the memory-level
+machinery was built on the old pass before `--convert-linalg-to-cnm`
+existed — but it is dead now and can go well before the pass around it.
+What must stay is the shared `CnmBufferLevel.h` helper and all the
+level-awareness in `--convert-cnm-to-upmem`, on which the new pipeline
+depends.
 
 ### 4.2 Optimizations to implement
 
-Roughly in value order; the first two are the whole measured gap.
+Roughly in value order. The first two account for the entire measured gap
+against the templates (§5).
 
-- **Stop materializing the tiled layout on the host** (M15). `cnm.scatter`
-  requires the host value's shape to *end with* the buffer shape, so
-  `toTiledLayout` emits a real permuted copy for any operand tiled in ≥2
-  dims — on gemv_64MB a 64 MB copy of `A`, **77.9 ms of the generic path's
-  103.4 ms**. Fix: give `cnm.scatter` a general affine map into the host
-  buffer (the real answer), or emit a strided view and let
-  `--cnm-ensure-scatter-gather-contiguous` decide where packing is really
-  needed (cheap to try, and it measures how much is necessary).
-- **Broadcast detection** — a scatter map that does not depend on the PE
-  dimension should specialize into a broadcast. Concretely: the template
-  path uses a broadcast transfer for the gemv vector and the generic path
-  does not, so it pays a full scatter for the same data.
-- **Sequential trips** (M13, §I). Decided, not implemented. Needs
-  `expand_shape` where the trip boundary falls *inside* a dimension, and
-  an `scf.for` iter_arg where trips run over a reduction dimension.
-  Blocks the `cinm2` baselines, commented out in
-  [dodo.py](../experiments/gemv_microbenchmark/dodo.py) until it lands.
-- **Exact post-lowering occupancy check** (M14, §H4). Until it exists,
+- **Stop materializing the tiled layout on the host.** `cnm.scatter`
+  requires the host value's shape to *end with* the per-leaf buffer
+  shape, so the distribution pass emits a real permuted copy for any
+  operand tiled in two or more dimensions. On the 64 MB gemv that is a
+  full 64 MB copy of the matrix — **77.9 ms of the new pipeline's
+  103.4 ms**. Two candidate fixes: give `cnm.scatter` a general affine map
+  into the host buffer, so a strided DMA falls out of the map instead of a
+  copy (the real answer, and the larger change); or emit a strided memref
+  view with no copy and let `--cnm-ensure-scatter-gather-contiguous`
+  decide where packing is genuinely required (cheap to try, and it
+  measures how much of the repack is actually necessary).
+- **Broadcast detection.** A scatter map that does not depend on the
+  processing-element coordinate should specialize into a broadcast
+  transfer. Concretely: the template path uses one for the gemv vector and
+  the new pipeline does not, so it pays a full scatter for the same data.
+- **Sequential trips.** Decided but unimplemented (§2.2). Needs an
+  `expand_shape` where the trip boundary falls *inside* a dimension — it
+  does not always fall between two — and a loop-carried accumulator where
+  trips run over a reduction dimension. This blocks two baseline
+  configurations, currently commented out in
+  [dodo.py](../experiments/gemv_microbenchmark/dodo.py).
+- **Exact post-lowering occupancy check** (§2.3). Until it exists,
   infeasible configurations are discovered only when the DPU binary fails
   to link.
-- **Constant-scatter simplification** — the general form of the zero-seed
-  problem: the identity seed is a constant buffer scattered to every leaf
-  on every launch. `cnm.set_zero` is the right answer but only
-  `--convert-cnm-to-gpu` lowers it, and emitting it makes
-  `--convert-cnm-to-upmem` fail *silently* — so this also owes that pass a
-  diagnostic for ops it cannot legalise.
-- **Linalg fusion** (§G8). A no-op for today's single-op benchmarks, and
-  enabling it forces search-space construction after the conversion
-  (fusion changes the op count, the walk indices *and* the iteration
-  space). The pipeline is arranged so it slots in right after the linalg
-  conversion. It also weakens the same-configuration comparison, since the
-  two paths would no longer share an op set.
-- **On-device transfer coalescing** (§C) — merge sibling per-tasklet
-  `cnm.local_transfer`s into one leader transfer plus a barrier. **CNM has
-  no barrier primitive**; this and the row-leader merge already
-  hand-written in the reduce template both need one.
+- **Constant-scatter simplification.** The general form of a specific
+  cost: the reduction identity seed is a constant buffer scattered to
+  every leaf on every launch. A `cnm.set_zero` op exists, but only the GPU
+  backend lowers it — emitting it makes `--convert-cnm-to-upmem` fail
+  *silently*, so this work also owes that pass a diagnostic for ops it
+  cannot legalize.
+- **Operator fusion on `linalg`.** A no-op for today's single-operation
+  benchmarks, and enabling it forces search-space construction to move
+  after the conversion, since fusion changes the operation count, the walk
+  indices, and the iteration space. The pipeline is arranged so it slots
+  in right after the `linalg` conversion. It also weakens the
+  same-configuration comparison of §2.4, because the two paths would no
+  longer share an operation set.
+- **On-device transfer coalescing.** Transfers performed concurrently by
+  sibling tasklets can be merged into one blocked transfer by a leader
+  tasklet. Note that **`cnm` has no barrier primitive** — launch bodies
+  are implicitly SPMD with no cross-tasklet coordination modelled — so
+  this, and the row-leader merge already hand-written in the reduce
+  template, both need one first.
 - **Share the WRAM staging buffer across tasklets** when the scatter map
-  is tasklet-independent (§A3); always private today.
-- **Device-side tree reduction of partials** (§G10) — host merge only for
-  now. Same parameters, but it is the trigger for revisiting §G3.
-- **Blocked vs. multi-block transfer API selection**, decided generically
-  from the scatter map rather than by pass flags.
-- Smaller: `--upmem-tile-mram-buffers` promotes with
-  `useFullTileBuffers=false`, so a tile that does not divide its extent
-  gets a staging buffer larger than the tile.
+  is tasklet-independent. Always private today.
+- **Device-side tree reduction of partial results**, instead of merging
+  them on the host. Same parameters, but it is the trigger for revisiting
+  the ordering rule of §2.2.
+- **Blocked vs. multi-block transfer API selection** decided generically
+  from the scatter map, rather than by pass flags as today.
+- Smaller: `--upmem-tile-mram-buffers` promotes without full tile
+  buffers, so a tile that does not divide its extent gets a staging
+  buffer larger than the tile it holds. Correct, just wasteful.
 
-### 4.3 Design questions still open
+### 4.3 Open design questions
 
-- **§G3 (and §I) as real search parameters.** Both are fixed rules
-  standing in for a permutation-valued parameter, which needs a
-  first-class representation with a sensible distance function (cf. BACO).
-  Worth revisiting together, once either is shown to cost measurable
-  performance.
-- **A cycle-accurate cost model.** `op-count` models neither loads nor
-  stores and does not report time, so it cannot answer "is the generic
-  path as good as the templates" — the question that gates 4.1's second
-  row.
-- **Merge or keep `UpmemGenericLoweringNotes.md`** (§E): is the direct
-  `linalg.generic → upmem` path a permanent parallel option, or superseded?
+- **Making the two fixed rules of §2.2 searchable.** Both stand in for a
+  permutation-valued parameter, which needs a first-class representation
+  and a distance function to be searched sensibly (compare BACO's
+  approach). Worth revisiting together, once either is shown to cost
+  measurable performance.
+- **A cycle-accurate cost model.** The cheap `op-count` simulator models
+  neither loads nor stores and does not report time, so it cannot answer
+  "is the generic pipeline as good as the templates" — the question
+  gating the second row of §4.1.
+- **The status of the direct `linalg.generic → upmem` path** sketched in
+  [UpmemGenericLoweringNotes.md](UpmemGenericLoweringNotes.md): a
+  permanent parallel option, or superseded by this pipeline and to be
+  merged into it?
 
-## 5. Where things stand
+## 5. Current state
 
-`gemv_64MB` on hardware, one configuration through both lowerings:
+Test suite: 54 of 61 lit tests pass. The seven failures predate this work
+and are unrelated to it (`CimToMemristor` ×2, `TorchToCinm`,
+`Transform/Cim` ×2, `upmem-to-c`, `simulate-python`).
+
+Measured on real hardware: a 4096×4096 integer `gemv`, one configuration,
+lowered both ways.
 
 | | net | scatter | gather | launch | unaccounted |
 |---|---|---|---|---|---|
-| `atim_templateflow` | 10.782 | 9.428 | 0.555 | 0.434 | 0.365 |
-| `atim_genericflow` | 103.433 | 24.557 | 0.609 | 0.390 | 77.877 |
+| templates | 10.782 | 9.428 | 0.555 | 0.434 | 0.365 |
+| new pipeline | 103.433 | 24.557 | 0.609 | 0.390 | 77.877 |
 
-All in ms. **Device time already matches** (launch 0.390 vs 0.434) — the
-DPU program the generic path emits is as good as the template's. The
-entire gap is host-side data movement: the repack and the missing
-broadcast, the first two items of §4.2.
+All figures in milliseconds. **Device time already matches** — `launch` is
+0.390 ms against the template's 0.434 ms, so the DPU program the new
+pipeline generates is as good as the hand-written one. The entire gap is
+host-side data movement: the 64 MB repack and the missing broadcast, the
+first two items of §4.2.
