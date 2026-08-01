@@ -1,7 +1,7 @@
 #include <cinm-mlir/Conversion/CinmPasses.h>
 #include <cinm-mlir/Conversion/CnmToUPMEM/CnmToUPMEM.h>
-#include <cinm-mlir/Conversion/LinalgToCnm/LinalgToCnm.h>
 #include <cinm-mlir/Conversion/CommonPatterns.h>
+#include <cinm-mlir/Conversion/LinalgToCnm/LinalgToCnm.h>
 #include <cinm-mlir/Dialect/Cinm/AcceleratorInference/AcceleratorInference.h>
 #include <cinm-mlir/Dialect/Cinm/AcceleratorInference/SpaceBuilder.h>
 #include <cinm-mlir/Dialect/Cinm/IR/CinmAttributes.h>
@@ -15,7 +15,6 @@
 #include <cinm-mlir/Dialect/UPMEM/Transforms/Passes.h>
 #include <cinm-mlir/Dialect/UPMEM/Transforms/UpmemSimulator.h>
 #include <cinm-mlir/Utils/Scheduling/SchedulingSupport.h>
-#include <cinm-mlir/Utils/DebugPasses.h>
 #include <upmem_cost_model/Types.h>
 
 #include "SimulatorBase.h"
@@ -46,9 +45,9 @@
 #include <mlir/Dialect/Arith/Transforms/Passes.h>
 #include <mlir/Dialect/Bufferization/IR/BufferizableOpInterface.h>
 #include <mlir/Dialect/Bufferization/IR/Bufferization.h>
+#include <mlir/Dialect/Bufferization/Pipelines/Passes.h>
 #include <mlir/Dialect/Bufferization/Transforms/OneShotAnalysis.h>
 #include <mlir/Dialect/Bufferization/Transforms/Passes.h>
-#include <mlir/Dialect/Bufferization/Pipelines/Passes.h>
 #include <mlir/Dialect/Func/IR/FuncOps.h>
 #include <mlir/Dialect/LLVMIR/LLVMDialect.h>
 #include <mlir/Dialect/Linalg/Passes.h>
@@ -208,6 +207,7 @@ struct UpmemInferencePlugin : cinm::InferencePlugin {
     // them down to WRAM. No separate tiling round: `cnm.tile_sizes` is a block
     // size per iteration dimension and the workgroup takes the whole tile
     // space at once.
+    pm->addPass(createPrintIRPass({.label = "before-linalg-to-cnm"}));
     {
       mlir::ConvertLinalgToCnmPassOptions cnmOpts;
       cnmOpts.bufferLevel = "mram";
@@ -217,7 +217,9 @@ struct UpmemInferencePlugin : cinm::InferencePlugin {
       cnmOpts.perDimAttrs = {UPMEMDialect::LEAF_TILE_SIZES_NAME.str()};
       pm->addPass(cnm::createConvertLinalgToCnmPass(cnmOpts));
     }
+    pm->addPass(createPrintIRPass({.label = "after-linalg-to-cnm"}));
     pm->addPass(createCanonicalizerPass());
+    pm->addPass(createPrintIRPass({.label = "after-canonicalization"}));
     pm->addPass(cnm::createCnmHoistWorkgroupsPass());
     pm->addPass(createCanonicalizerPass());
     pm->addPass(createCSEPass());
@@ -286,6 +288,7 @@ struct UpmemInferencePlugin : cinm::InferencePlugin {
     // Staging has to see linalg on memrefs, so it runs after bufferization and
     // before linalg is lowered to loops.
     pm->addPass(createUpmemTileMRAMBuffersPass());
+    pm->addPass(createPrintIRPass({.label = "after-tile-mram-buffers"}));
     pm->addPass(createCanonicalizerPass());
     pm->addPass(createCSEPass());
     pm->addPass(createConvertLinalgToAffineLoopsPass());
@@ -294,7 +297,8 @@ struct UpmemInferencePlugin : cinm::InferencePlugin {
     // iteration; the hand-written templates carry it in an scf.for iter_arg by
     // construction, so without this the generic path pays two extra memory ops
     // per multiply-accumulate.
-    pm->addNestedPass<func::FuncOp>(affine::createAffineScalarReplacementPass());
+    pm->addNestedPass<func::FuncOp>(
+        affine::createAffineScalarReplacementPass());
     pm->addPass(createCanonicalizerPass());
     pm->addPass(createCSEPass());
 
@@ -303,7 +307,7 @@ struct UpmemInferencePlugin : cinm::InferencePlugin {
     pm->addPass(cnm::createConvertCnmToUPMEMPass({}));
     pm->addPass(bufferization::createBufferLoopHoistingPass());
     auto nested = pm->nestAny();
-    bufferization::buildBufferDeallocationPipeline(nested); //fixme
+    bufferization::buildBufferDeallocationPipeline(nested); // fixme
     pm->addPass(createCSEPass());
     pm->addPass(createUPMEMDedupKernelsPass());
     pm->addPass(createCSEPass());
@@ -442,8 +446,8 @@ struct UpmemInferencePlugin : cinm::InferencePlugin {
     // `gemv0`/`gemv1` while the common single-op case stays unadorned.
     llvm::StringMap<unsigned> kindCount;
     convertedBlock.getBody().walk([&](Operation *op) {
-      if (auto origin =
-              op->getAttrOfType<StringAttr>(cinm::CinmDialect::LOWERED_FROM_NAME))
+      if (auto origin = op->getAttrOfType<StringAttr>(
+              cinm::CinmDialect::LOWERED_FROM_NAME))
         ++kindCount[shortOpName(origin.getValue())];
     });
 
@@ -625,8 +629,9 @@ private:
         return;
       MLIRContext *ctx = op->getContext();
       if (!it->second->outerTile.empty())
-        op->setAttr(cnm::CnmDialect::TILE_SIZES_NAME,
-                    DenseI64ArrayAttr::get(ctx, resolve(it->second->outerTile)));
+        op->setAttr(
+            cnm::CnmDialect::TILE_SIZES_NAME,
+            DenseI64ArrayAttr::get(ctx, resolve(it->second->outerTile)));
       if (!it->second->leafTile.empty())
         op->setAttr(UPMEMDialect::LEAF_TILE_SIZES_NAME,
                     DenseI64ArrayAttr::get(ctx, resolve(it->second->leafTile)));
@@ -742,8 +747,7 @@ linalgOperandDims(linalg::LinalgOp op) {
 
 void UpmemInferencePlugin::handleLinalgOp(linalg::LinalgOp op,
                                           StringRef namePrefix,
-                                          unsigned walkIndex,
-                                          SpaceBuilder &b) {
+                                          unsigned walkIndex, SpaceBuilder &b) {
   FailureOr<SmallVector<int64_t>> extents = linalgLoopExtents(op);
   if (failed(extents))
     return; // Not distributable; contributes no parameters.
@@ -759,7 +763,8 @@ void UpmemInferencePlugin::handleLinalgOp(linalg::LinalgOp op,
   StringRef origin =
       op->getAttrOfType<StringAttr>(cinm::CinmDialect::LOWERED_FROM_NAME)
           .getValue();
-  SmallVector<std::string> dimNames = iterationDimNames(origin, extents->size());
+  SmallVector<std::string> dimNames =
+      iterationDimNames(origin, extents->size());
 
   SmallVector<SpaceVar> blocks, leaves;
   for (auto [dim, extent] : llvm::enumerate(*extents)) {
@@ -806,12 +811,16 @@ void UpmemInferencePlugin::handleLinalgOp(linalg::LinalgOp op,
 
   const int64_t mramElements = platform.getMramLevel().getSizeInElements(eltTy);
   const int64_t wramElements = platform.getWramLevel().getSizeInElements(eltTy);
-  b.require([=](const cinm::ConfWrapper &c)
-                -> bool { return footprint(blocks, c) <= mramElements; },
-            "sum of per-leaf operand tiles <= MRAM (assuming maximal sharing)");
-  b.require([=](const cinm::ConfWrapper &c)
-                -> bool { return footprint(leaves, c) <= wramElements; },
-            "sum of leaf tiles <= WRAM (assuming maximal sharing)");
+  b.require(
+      [=](const cinm::ConfWrapper &c) -> bool {
+        return footprint(blocks, c) <= mramElements;
+      },
+      "sum of per-leaf operand tiles <= MRAM (assuming maximal sharing)");
+  b.require(
+      [=](const cinm::ConfWrapper &c) -> bool {
+        return footprint(leaves, c) <= wramElements;
+      },
+      "sum of leaf tiles <= WRAM (assuming maximal sharing)");
 
   SmallVector<SpaceValue> outerTile, leafTile;
   for (const SpaceVar &var : blocks)
@@ -861,10 +870,14 @@ readAsGemvTemplate(int64_t M, int64_t K, int64_t dpus, int64_t tasklets,
   const int64_t dpuRows = mTiles / taskletRows, dpuCols = kTiles / taskletCols;
   if (dpus != dpuRows * dpuCols)
     return std::nullopt;
-  return GemvTemplateArgs{dpuRows,             dpuCols,
-                          taskletRows,         taskletCols,
-                          blockM * taskletRows, blockK * taskletCols,
-                          leafM,               leafK};
+  return GemvTemplateArgs{dpuRows,
+                          dpuCols,
+                          taskletRows,
+                          taskletCols,
+                          blockM * taskletRows,
+                          blockK * taskletCols,
+                          leafM,
+                          leafK};
 }
 
 void UpmemInferencePlugin::registerGemvTemplate(SpaceBuilder &b,
@@ -1029,7 +1042,6 @@ void UpmemInferencePlugin::registerReduceTemplate(SpaceBuilder &b,
       "the reduction template's MRAM working set fits");
 
   {
-
 
     // todo register simulator for specific op, here we assume
     //  that there is a single op in the compute block

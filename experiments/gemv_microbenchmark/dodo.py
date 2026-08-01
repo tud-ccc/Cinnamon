@@ -46,32 +46,32 @@ TASKLETS = 4
 
 source = "/home/clement.fournier/Work/cinm-mlir/experiments/cinm1comparison/data/prim_gemv/_split/gemv_64MB.mlir"
 CONFIGS = [
-    compile_run.Config(
-        system="cinm2",
-        fn_name="gemv_64MB",
-        label="default",
-        # FIXME: not expressible in the generic search space yet.
-        # This configuration relies on *sequential outer trips*: with
-        # dpus=256 tasklets=4 (1024 leaves) it covers the 4096x4096 problem in
-        # 4 trips over M and 4 over K. The generic space requires the tile
-        # counts to fill the workgroup exactly and has no notion of trips --
-        # design §G2 parked them in --cinm-tiling, which the generic pipeline
-        # no longer runs. Left in the old parameter names deliberately so it
-        # fails loudly rather than being silently reinterpreted.
-        params={
-            "dpus": DPUS,
-            "tasklets": TASKLETS,
-            "taskletCols": 1,
-            "wramRow": 1,
-            "wramCol": 1024,
-            "dpuCols": 1,
-            "mramRow": 4,
-            "mramCol": 1024,
-        },
-        fn_module=source,
-        prim="gemv",
-        lower=cinmopt.eval_solution_lowerer(),
-    ),
+    # compile_run.Config(
+    # system="cinm2",
+    # fn_name="gemv_64MB",
+    # label="default",
+    # # FIXME: not expressible in the generic search space yet.
+    # # This configuration relies on *sequential outer trips*: with
+    # # dpus=256 tasklets=4 (1024 leaves) it covers the 4096x4096 problem in
+    # # 4 trips over M and 4 over K. The generic space requires the tile
+    # # counts to fill the workgroup exactly and has no notion of trips --
+    # # design §G2 parked them in --cinm-tiling, which the generic pipeline
+    # # no longer runs. Left in the old parameter names deliberately so it
+    # # fails loudly rather than being silently reinterpreted.
+    # params={
+    # "dpus": DPUS,
+    # "tasklets": TASKLETS,
+    # "taskletCols": 1,
+    # "wramRow": 1,
+    # "wramCol": 1024,
+    # "dpuCols": 1,
+    # "mramRow": 4,
+    # "mramCol": 1024,
+    # },
+    # fn_module=source,
+    # prim="gemv",
+    # lower=cinmopt.eval_solution_lowerer(),
+    # ),
     # compile_run.Config(
     #     system="atim3",
     #     fn_name="gemv_64MB",
@@ -159,24 +159,24 @@ CONFIGS = [
             }
         ),
     ),
-    compile_run.Config(
-        system="cinm2_partial_reduction",
-        fn_name="gemv_64MB",
-        label="default",
-        params={
-            "dpus": DPUS,
-            "tasklets": TASKLETS,
-            "taskletCols": 1,
-            "wramRow": 1,
-            "wramCol": 1024,
-            "dpuCols": 2,
-            "mramRow": 4,
-            "mramCol": 1024,
-        },
-        fn_module=source,
-        prim="gemv",
-        lower=cinmopt.eval_solution_lowerer(),
-    ),
+    # compile_run.Config(
+    # system="cinm2_partial_reduction",
+    # fn_name="gemv_64MB",
+    # label="default",
+    # params={
+    # "dpus": DPUS,
+    # "tasklets": TASKLETS,
+    # "taskletCols": 1,
+    # "wramRow": 1,
+    # "wramCol": 1024,
+    # "dpuCols": 2,
+    # "mramRow": 4,
+    # "mramCol": 1024,
+    # },
+    # fn_module=source,
+    # prim="gemv",
+    # lower=cinmopt.eval_solution_lowerer(),
+    # ),
     compile_run.Config(
         system="cinm1",
         fn_name="gemv_64MB",
