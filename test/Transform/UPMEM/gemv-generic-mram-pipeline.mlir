@@ -34,11 +34,10 @@ func.func @gemv(%A: tensor<1024x512xi32>, %x: tensor<512xi32>) -> tensor<1024xi3
   // Every buffer is in MRAM, and nothing is staged around the kernel body.
   // CHECK-DAG: %[[MY:.*]] = upmem.static_alloc @{{.*}}(mram) {{.*}} : memref<1x64xi32, #upmem.mram>
   // CHECK-DAG: %[[MX:.*]] = upmem.static_alloc @{{.*}}(mram) {{.*}} : memref<512xi32, #upmem.mram>
-  // CHECK-DAG: %[[MA:.*]] = upmem.static_alloc @{{.*}}(mram) {{.*}} : memref<1x64x512xi32, #upmem.mram>
+  // CHECK-DAG: %[[MA:.*]] = upmem.static_alloc @{{.*}}(mram) {{.*}} : memref<64x512xi32, #upmem.mram>
 
   // 1024 rows over 16 DPUs = 64 rows each; the block arguments are this
   // tasklet's slice of the MRAM allocations.
-  // CHECK: %[[VA:.*]] = memref.subview %[[MA]]{{.*}} to memref<64x512xi32, {{.*}}, #upmem.mram>
   // CHECK: %[[VY:.*]] = memref.subview %[[MY]]{{.*}} to memref<64xi32, {{.*}}, #upmem.mram>
 
   // The 64x512 tile does not fit WRAM, so the body walks it in 16x128 tiles.
