@@ -79,15 +79,16 @@ func.func @get_global() {
 // apart, so it must be left alone. So must a value with no known contents.
 
 // CHECK-LABEL: func.func @not_uniform
-// CHECK:       cnm.scatter %{{.*}}[#map] of %{{.*}} : tensor<2x1x2xi32> into
+// CHECK:       cnm.scatter %{{.*}}[#map] of %{{.*}} : tensor<4x2x2xi32> into
 // CHECK:       cnm.scatter %{{.*}}[#map] of %{{.*}} : memref<4x2x1x8xi32> into
 func.func @not_uniform() {
   %wg = cnm.workgroup : !cnm.workgroup<#wg>
 
   %buf = cnm.alloc() for %wg : !cnm.buffer<2xi32 on #wg>
-  %cst = arith.constant dense<[[[0, 1]], [[2, 3]]]> : tensor<2x1x2xi32>
+  %cst = arith.constant dense<[[[0, 1], [2, 3]], [[4, 5], [6, 7]],
+                              [[8, 9], [10, 11]], [[12, 13], [14, 15]]]> : tensor<4x2x2xi32>
   cnm.scatter %cst into %buf[#map] of %wg
-      : tensor<2x1x2xi32> into !cnm.buffer<2xi32 on #wg>
+      : tensor<4x2x2xi32> into !cnm.buffer<2xi32 on #wg>
 
   %buf2 = cnm.alloc() for %wg : !cnm.buffer<1x8xi32 on #wg>
   %opaque = memref.alloc() : memref<4x2x1x8xi32>
