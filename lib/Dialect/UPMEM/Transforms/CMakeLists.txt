@@ -2,6 +2,7 @@ add_mlir_dialect_library(UPMEMTransforms
     DedupKernels.cpp
     UpmemLegalizeForTranslation.cpp
     UpmemAnnotateCosts.cpp
+    UpmemCheckOccupancy.cpp
     UpmemInferAccelerator.cpp
     UpmemOpCountSimulator.cpp
     UpmemPythonSimulator.cpp

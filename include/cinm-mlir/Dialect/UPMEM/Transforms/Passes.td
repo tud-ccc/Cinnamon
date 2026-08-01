@@ -220,6 +220,41 @@ def UpmemAnnotateCostsPass
   ];
 }
 
+def UpmemCheckOccupancyPass
+    : Pass<"upmem-check-occupancy", "ModuleOp"> {
+  let summary = "Fail if a DPU program's buffers do not fit the device";
+  let description = [{
+    Sums what each `upmem.dpu_program` actually allocates -- static MRAM and
+    WRAM buffers once per DPU, private WRAM once per tasklet plus the runtime's
+    stack reserve -- and fails the pass if either exceeds the capacity the
+    accelerator declares for that level.
+
+    This is a *measurement*, not a model, and that is the point. How much
+    memory a configuration ends up needing is not a property of the
+    configuration: it moves with whether the tasklets of a DPU can share a
+    buffer or must replicate it, with how promotion sizes its staging buffers,
+    with buffer hoisting, kernel deduplication, and even with how well the
+    affine simplifier folds a delinearized index. So it can only be known
+    after every memory optimization has run, which is where this pass belongs
+    -- last. See docs/CnmMemoryLevelsDesign.md §H3.
+
+    The capacities come from the accelerator of the `cinm.compute_block` whose
+    `upmem.alloc_dpus` loads the program, unless `mram-size`/`wram-size`
+    override them. A program that no `upmem.alloc_dpus` refers to is dead and
+    is not checked.
+  }];
+  let dependentDialects = [
+    "::mlir::cinm::CinmDialect",
+    "::mlir::upmem::UPMEMDialect"
+  ];
+  let options = [
+    Option<"mramSize", "mram-size", "int64_t", "0",
+           "MRAM capacity per DPU in bytes; 0 takes it from the accelerator">,
+    Option<"wramSize", "wram-size", "int64_t", "0",
+           "WRAM capacity per DPU in bytes; 0 takes it from the accelerator">,
+  ];
+}
+
 def UpmemLegalizeForTranslationPass
     : Pass<"upmem-legalize-for-translation", "ModuleOp"> {
   let summary = "Strip all ops except upmem.dpu_program for DPU translation";
