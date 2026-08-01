@@ -8,6 +8,7 @@
 #include "cinm-mlir/Dialect/UPMEM/IR/UPMEMAttributes.h"
 #include "cinm-mlir/Dialect/UPMEM/IR/UPMEMDialect.h"
 #include "cinm-mlir/Dialect/UPMEM/IR/UPMEMOps.h"
+#include "cinm-mlir/Dialect/UPMEM/IR/UPMEMOccupancy.h"
 #include "cinm-mlir/Target/UPMEMCpp/UPMEMCppEmitter.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
@@ -1337,17 +1338,13 @@ static void printCompilationVar(upmem::DpuProgramOp kernel, raw_ostream &os) {
   have to allocate on the stack. We need to estimate how
   much stack each tasklet will require though and write
   that out as a compiler argument.
-*/
-static int getMinStackSize(upmem::DpuProgramOp kernel) {
-  int stackSize = 1024;
-  kernel->walk([&](upmem::PrivateWRAMAllocOp wramAlloc) {
-    auto bufType = wramAlloc.getBuffer().getType();
-    auto size = bufType.getNumElements() * bufType.getElementTypeBitWidth() / 8;
-    stackSize += size;
-  });
 
-  return llvm::alignTo(stackSize, 8);
-}
+  The estimate lives in UPMEMOccupancy.h, shared with
+  --upmem-check-occupancy: that pass decides whether a program fits the device
+  using this same number, so the two must not drift. It used to be computed
+  here from unpadded element counts, which under-estimated the arrays printed
+  by printOperation(PrivateWRAMAllocOp) below -- those are padded.
+*/
 
 static LogicalResult printOperation(CppEmitter &emitter, ModuleOp moduleOp) {
   CppEmitter::Scope scope(emitter);
@@ -1371,10 +1368,10 @@ static LogicalResult printOperation(CppEmitter &emitter, ModuleOp moduleOp) {
     // same C file, with different tasklet numbers and other
     // parameters.
     printCompilationVar(kernel, os);
-    auto stackSize = getMinStackSize(kernel);
-    // if (stackSize * kernel.getNumTasklets() > wramSize)
-    // todo make the upmem platform attr accessible
-    // todo print error
+    // Whether this actually fits WRAM is checked by --upmem-check-occupancy,
+    // which has the platform in hand; by the time we get here the capacity is
+    // no longer reachable from the IR.
+    auto stackSize = upmem::taskletStackBytes(kernel);
     os << ":" << kernel.getNumTasklets();
     os << ":" << stackSize;
     os << ":" << kernel.getSymName(); // name of the binary
