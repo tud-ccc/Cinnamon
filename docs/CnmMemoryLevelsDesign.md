@@ -951,7 +951,7 @@ of `∏B` elements. Three costs follow.
    copy — see M15.
 2. **It understates what the hardware can do.** The UPMEM SDK's scatter
    transfer API takes an arbitrary number of blocks per DPU, and
-   `upmem.scatter_on_tasklets` already exposes it: `numBlocksPerDpu` is
+   `upmem.scatter_blocks` already exposes it: `numBlocksPerDpu` is
    documented as "independent of the number of tasklets declared by
    `hierarchy`: blocks are just units of transfer"
    ([UPMEMOps.td:331-335](../include/cinm-mlir/Dialect/UPMEM/IR/UPMEMOps.td#L331-L335)).
@@ -964,7 +964,7 @@ of `∏B` elements. Three costs follow.
 
 The templates avoid the copy by hand: `scatterATile` builds a permuted
 `memref.reinterpret_cast` view of `A` and picks between a flat
-`upmem.scatter` and `upmem.scatter_on_tasklets`
+`upmem.scatter_on_array` and `upmem.scatter_blocks`
 ([SimulationTemplates.cpp:164-231](../lib/Dialect/UPMEM/Transforms/SimulationTemplates.cpp#L164-L231)).
 That is sound as far as addressing goes — the lowering composes the
 scatter map with the memref's `StridedLayoutAttr` and applies the offset
@@ -1005,7 +1005,7 @@ The transfer unit falls out: **one block of shape `B[p..m)` per (leaf,
 retained index) pair**, so blocks per DPU = `tasklets * ∏B[0..p)`.
 Choosing the transfer API stops being a codegen guess and becomes a
 reading of `p`: `p = 0` is a flat `upmem.scatter`, `p > 0` is
-`upmem.scatter_on_tasklets` with that block count. This answers §B's
+`upmem.scatter_blocks` with that block count. This answers §B's
 third bullet.
 
 **Why the block is index-structured rather than linear.** The tempting
@@ -1142,9 +1142,9 @@ should be spelled with, and where that choice is made.
 
 ### K1. The general form is the only form the conversion emits
 
-`upmem.scatter`, `upmem.gather`, `upmem.scatter_on_tasklets` and
-`upmem.broadcast` are not four capabilities, they are one capability at
-three levels of specificity:
+`upmem.scatter_on_array`, `upmem.gather_on_array`, `upmem.scatter_blocks`,
+`upmem.gather_blocks` and `upmem.broadcast` are not five capabilities, they
+are one capability at three levels of specificity:
 
 ```
 scatter_blocks(host, map(r,d,b), blockSize, numBlocks)   -- dpu_push_sg_xfer
@@ -1178,17 +1178,23 @@ there is a `upmem.scatter`, that fact is already baked into
 `transferCount`, so the condition is local: constant-zero map, and
 `transferCount == host.getNumElements()`.
 
-**Naming.** `scatter_on_tasklets` is a misnomer: its own description
-says blocks "need not correspond 1:1 to actual DPU tasklets", and under
-§J a leaf routinely takes several. Rename the pair to
+**Naming, as landed.** `scatter_on_tasklets` was a misnomer: its own
+description said blocks "need not correspond 1:1 to actual DPU tasklets",
+and under §J a leaf routinely takes several. The general pair is
 `upmem.scatter_blocks` / `upmem.gather_blocks`, with the map's third
-dimension renamed `block` to match `numBlocksPerDpu`. (`_sg` was the
-other candidate; it names the SDK call, `dpu_push_sg_xfer`, but reads as
+dimension named `block` to match `numBlocksPerDpu`. (`_sg` was the other
+candidate; it names the SDK call, `dpu_push_sg_xfer`, but reads as
 "scatter scatter-gather" in a dialect that already has `scatter` and
 `gather`. The SDK call belongs in the op description.)
 
-**Gather needs the general form too.** There is no counterpart to
-`scatter_on_tasklets` on the gather side, so
+The one-block-per-DPU pair is `upmem.scatter_on_array` /
+`upmem.gather_on_array`: it spreads one block across the array, and its
+plain name would otherwise suggest it was the general case. The runtime's
+`kind` column (timers.h) uses the same three words -- `on_array`, `blocks`,
+`broadcast` -- so a CSV row names the op that produced it.
+
+**Gather needs the general form too.** There was no counterpart to
+`scatter_blocks` on the gather side, so
 `convertCnmGatherToUpmem`
 ([CnmToUPMEM.cpp:227-257](../lib/Conversion/CnmToUPMEM/CnmToUPMEM.cpp#L227-L257))
 emits a flat `upmem.gather` at `transferCount * numTasklets`
@@ -1197,7 +1203,7 @@ directions, so `upmem.gather_blocks` is the symmetric fix and belongs in
 the same change — otherwise "the conversion only emits the general form"
 stays a scatter-only claim and the two paths keep diverging.
 
-### K2. All four ops share one contiguity contract
+### K2. All five ops share one contiguity contract
 
 The verifiers do not currently agree on what they are checking.
 `verifyScatterGatherContiguity`
@@ -1211,7 +1217,7 @@ results are not `(0, 0)`, because the run then crosses the gap at
 element 24.
 
 The honest condition is the same one §J1 gave the CNM ops, and it is the
-same for all four:
+same for all five:
 
 > Decompose the host memref into its regular grid of contiguous runs of
 > `C = getContiguousSuffixSize` elements. Linearize the map's trailing
@@ -1221,7 +1227,7 @@ same for all four:
 The index box is known in every case: the hierarchy type gives
 `ranks × dpus`, and the `_blocks` forms add `numBlocksPerDpu`. The
 block is `transferCount` in all four ops — that is what `transferCount`
-already means for `scatter_on_tasklets`, and after specialization it is
+already means for `scatter_blocks`, and after specialization it is
 what it means for `scatter`, since a specialized flat transfer *is* one
 block. So one helper serves all four and the arity of the box is the
 only difference.
