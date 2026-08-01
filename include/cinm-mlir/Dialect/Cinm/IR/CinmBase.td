@@ -30,6 +30,11 @@ def Cinm_Dialect : Dialect {
     Attribute parseAttribute(DialectAsmParser &parser, Type type) const override;
 
     constexpr static StringRef TILING_FACTORS_NAME = "cinm.tile_sizes";
+    /// Set by `--convert-cinm-ops-to-linalg` on the linalg op that inherits a
+    /// cinm op's computation, holding that op's name. Distinguishes it from
+    /// the ops produced alongside it (an init `linalg.fill`, a
+    /// `tensor.empty`), which must not inherit its parameters.
+    constexpr static StringRef LOWERED_FROM_NAME = "cinm.lowered_from";
     constexpr static StringRef AVAILABLE_PLATFORMS_NAME = "cinm.available_platforms";
     private:
         void registerOps();
