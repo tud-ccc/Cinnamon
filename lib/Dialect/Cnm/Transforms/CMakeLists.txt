@@ -3,6 +3,7 @@ add_mlir_dialect_library(CnmTransforms
     BufferizeCnm.cpp
     HoistWorkgroups.cpp
     EnsureScatterGatherContiguous.cpp
+    ScatterOptimizations.cpp
 
 DEPENDS
     CnmIncGen

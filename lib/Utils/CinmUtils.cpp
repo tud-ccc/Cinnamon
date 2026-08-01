@@ -22,39 +22,61 @@
 
 namespace mlir {
 
-static bool isSplatZeroAttr(DenseElementsAttr attr) {
-  if (!attr.isSplat())
-    return false;
-  Attribute splatVal = attr.getSplatValue<Attribute>();
-  if (auto intAttr = dyn_cast<IntegerAttr>(splatVal))
+static bool isZeroAttr(Attribute attr) {
+  if (auto intAttr = dyn_cast_or_null<IntegerAttr>(attr))
     return intAttr.getValue().isZero();
-  if (auto floatAttr = dyn_cast<FloatAttr>(splatVal))
+  if (auto floatAttr = dyn_cast_or_null<FloatAttr>(attr))
     return floatAttr.getValue().isZero();
   return false;
 }
 
-static bool isZeroScalar(Value v) {
-  Attribute attr;
-  if (!matchPattern(v, m_Constant(&attr)))
-    return false;
-  if (auto intAttr = dyn_cast<IntegerAttr>(attr))
-    return intAttr.getValue().isZero();
-  if (auto floatAttr = dyn_cast<FloatAttr>(attr))
-    return floatAttr.getValue().isZero();
-  return false;
+/// The splat element of `attr`, or nullopt if it isn't a splat.
+static std::optional<TypedAttr> getSplatElement(DenseElementsAttr attr) {
+  if (!attr || !attr.isSplat())
+    return std::nullopt;
+  if (auto typed = dyn_cast<TypedAttr>(attr.getSplatValue<Attribute>()))
+    return typed;
+  return std::nullopt;
+}
+
+std::optional<TypedAttr> getUniformValue(Value v) {
+  if (!isa<ShapedType>(v.getType()))
+    return std::nullopt;
+
+  // A splat constant, or anything whose folder produces one.
+  DenseElementsAttr dense;
+  if (matchPattern(v, m_Constant(&dense)))
+    return getSplatElement(dense);
+
+  // `linalg.fill` has no folder producing a constant tensor (upstream
+  // deliberately keeps the value lazy and pushes fills through consumers
+  // instead), so it has to be matched directly. A fill overwrites every
+  // element, so its destination operand is irrelevant here.
+  if (auto fill = v.getDefiningOp<linalg::FillOp>()) {
+    TypedAttr scalar;
+    if (fill.getInputs().size() == 1 &&
+        matchPattern(fill.getInputs()[0], m_Constant(&scalar)))
+      return scalar;
+    return std::nullopt;
+  }
+
+  // A constant global with a splat initializer -- what a splat `arith.constant`
+  // becomes after bufferization.
+  if (auto getGlobal = v.getDefiningOp<memref::GetGlobalOp>()) {
+    auto global = SymbolTable::lookupNearestSymbolFrom<memref::GlobalOp>(
+        getGlobal, getGlobal.getNameAttr());
+    if (!global || !global.getConstant())
+      return std::nullopt;
+    return getSplatElement(
+        dyn_cast_or_null<DenseElementsAttr>(global.getInitialValueAttr()));
+  }
+
+  return std::nullopt;
 }
 
 bool isZeroSplatFoldable(Value v) {
-  // Fast path: direct constant.
-  DenseElementsAttr attr;
-  if (matchPattern(v, m_Constant(&attr)))
-    return isSplatZeroAttr(attr);
-
-  // `linalg.fill` has no folder producing a constant tensor, so the generic
-  // path below never sees through it -- but it is the usual way a zeroed
-  // buffer is spelled, so match it directly.
-  if (auto fill = v.getDefiningOp<linalg::FillOp>())
-    return fill.getInputs().size() == 1 && isZeroScalar(fill.getInputs()[0]);
+  if (auto uniform = getUniformValue(v))
+    return isZeroAttr(*uniform);
 
   // Slow path: try folding the defining op with whatever constant operands
   // are available (non-constant operands are passed as null Attributes).
@@ -73,9 +95,9 @@ bool isZeroSplatFoldable(Value v) {
   if (failed(defOp->fold(foldOperands, foldResults)) || foldResults.size() != 1)
     return false;
 
-  auto foldedAttr =
-      dyn_cast_or_null<DenseElementsAttr>(foldResults[0].dyn_cast<Attribute>());
-  return foldedAttr && isSplatZeroAttr(foldedAttr);
+  auto splat = getSplatElement(
+      dyn_cast_or_null<DenseElementsAttr>(foldResults[0].dyn_cast<Attribute>()));
+  return splat && isZeroAttr(*splat);
 }
 
 SmallString<20> getUniqueFunctionName(ModuleOp &moduleOp, StringRef prefix) {

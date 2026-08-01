@@ -2,6 +2,8 @@
 #include <llvm/ADT/StringRef.h>
 #include <mlir/IR/BuiltinOps.h>
 
+#include <optional>
+
 namespace mlir {
 
 SmallString<20> getUniqueFunctionName(ModuleOp &moduleOp, StringRef prefix);
@@ -32,6 +34,19 @@ AffineExpr linearizeIndices(MLIRContext *ctx, ArrayRef<int64_t> shape);
 // inflate a linear index into the given shape
 void structureIndex(AffineExpr index, ArrayRef<int64_t> shape,
                     SmallVectorImpl<AffineExpr> &map);
+
+/// The value that every element of the shaped value \p v is statically known
+/// to hold, or nullopt if that is not known. Recognizes the three spellings a
+/// uniform value takes in this compiler:
+///  - a splat `arith.constant dense<...>` (or anything folding to one),
+///  - a `linalg.fill` with a constant scalar input,
+///  - a `memref.get_global` of a constant global with a splat initializer.
+///
+/// This only looks at SSA definitions. In particular it says nothing about a
+/// memref that some earlier op filled in place: proving that needs alias and
+/// effect analysis, so callers that care about such cases must run before
+/// bufferization.
+std::optional<TypedAttr> getUniformValue(Value v);
 
 /// Returns true if \p v folds to a splat-zero tensor or memref constant.
 /// Beyond matching a direct `arith.constant dense<0>`, this also tries to fold

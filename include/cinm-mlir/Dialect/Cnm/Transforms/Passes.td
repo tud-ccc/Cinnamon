@@ -77,4 +77,40 @@ def CnmEnsureScatterGatherContiguousPass : Pass<"cnm-ensure-scatter-gather-conti
   let dependentDialects = ["memref::MemRefDialect"];
 }
 
+def CnmScatterOptimizationsPass : Pass<"cnm-scatter-optimizations"> {
+  let summary = "Shrink cnm.scatter transfers that carry redundant data";
+  let description = [{
+    A `cnm.scatter` names, for every workgroup element, the region of the host
+    buffer that element receives. When several workgroup elements provably
+    receive the same bytes, the host side of the transfer holds more data than
+    the workgroup can distinguish, and it can be replaced by a smaller one.
+
+    Currently implemented: *uniform sources*. If every element of the scattered
+    value holds the same constant -- it is a splat `arith.constant`, a
+    `linalg.fill` of a constant, or a `memref.get_global` of a constant global
+    with a splat initializer -- then the scatter map is irrelevant, since every
+    workgroup element receives that same constant whichever region it reads.
+    The scatter is rewritten to broadcast a single buffer-shaped tile:
+
+    ```mlir
+    %big = linalg.fill ins(%c0 : i32) outs(%e : tensor<32x512x1x8xi32>) -> ...
+    cnm.scatter %big into %buf[(d0, d1, d2) -> (d1 floordiv 64, ...)] of %wg
+      : tensor<32x512x1x8xi32> into !cnm.buffer<1x8xi32 on ...>
+    // becomes
+    %tile = arith.constant dense<0> : tensor<1x8xi32>
+    cnm.scatter %tile into %buf[(d0, d1, d2) -> ()] of %wg
+      : tensor<1x8xi32> into !cnm.buffer<1x8xi32 on ...>
+    ```
+
+    This is a pure CNM-to-CNM rewrite: it says nothing about how the backend
+    realizes the transfer, only that the data it has to move shrinks from the
+    whole workgroup's worth to one tile.
+
+    The recognition is purely SSA-based, so a memref that some earlier op
+    filled in place is *not* matched (that would need alias and effect
+    analysis). Run the pass before bufferization to catch those.
+  }];
+  let dependentDialects = ["arith::ArithDialect", "memref::MemRefDialect"];
+}
+
 #endif // CNM_TRANSFORM_PASSES

@@ -5,6 +5,7 @@
 #include "cinm-mlir/Dialect/Cinm/IR/CinmOps.h"
 #include "cinm-mlir/Dialect/Cnm/IR/CnmInterfaces.h"
 #include <cinm-mlir/Dialect/Cnm/IR/CnmOps.h>
+#include <cinm-mlir/Utils/CinmUtils.h>
 
 #include <cinm-mlir/Dialect/Cnm/IR/CnmTypes.h>
 #include <llvm/ADT/SmallVector.h>
@@ -24,6 +25,7 @@
 #include <mlir/IR/BuiltinTypeInterfaces.h>
 #include <mlir/IR/BuiltinTypes.h>
 #include <mlir/IR/Diagnostics.h>
+#include <mlir/IR/PatternMatch.h>
 #include <mlir/IR/TypeRange.h>
 #include <mlir/IR/TypeUtilities.h>
 #include <mlir/IR/Value.h>
@@ -288,6 +290,34 @@ LogicalResult LocalTransferOp::fold(FoldAdaptor,
   }
   return success(folded);
 }
+namespace {
+
+template <class Op> class SimplifyScatterMap : public OpRewritePattern<Op> {
+  using OpRewritePattern<Op>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(Op op,
+                                PatternRewriter &rewriter) const override {
+    auto map = op.getScatterMap();
+    auto simplified = simplifyAffineMapWithBounds(
+        map, op.getBuffer().getType().getWorkgroupShape());
+    if (simplified == map)
+      return failure();
+
+    rewriter.modifyOpInPlace(op, [&] { op.setScatterMap(simplified); });
+    return success();
+  }
+};
+} // namespace
+
+void GatherOp::getCanonicalizationPatterns(::mlir::RewritePatternSet &results,
+                                           ::mlir::MLIRContext *context) {
+  results.insert<SimplifyScatterMap<GatherOp>>(context);
+}
+
+void ScatterOp::getCanonicalizationPatterns(::mlir::RewritePatternSet &results,
+                                            ::mlir::MLIRContext *context) {
+  results.insert<SimplifyScatterMap<ScatterOp>>(context);
+}
 
 LogicalResult ScatterOp::verify() {
   auto tensorTy = getInput().getType();
@@ -327,13 +357,10 @@ LogicalResult ScatterOp::verify() {
   // non-contiguous transfers and inserts a packing buffer before lowering.
 
   if (auto accelerator =
-          cinm::getEnclosingAcceleratorAs<CnmAcceleratorAttrInterface>(
-              *this)) {
+          cinm::getEnclosingAcceleratorAs<CnmAcceleratorAttrInterface>(*this)) {
     // todo if there is an accelerator, we could give it an opportunity to
     //  verify the scattering. For instance for upmem it is illegal to use
-    //  the thread ID to scattering from host to mram. 
-
-
+    //  the thread ID to scattering from host to mram.
   }
 
   return success();

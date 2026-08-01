@@ -92,6 +92,7 @@ def ScatterOp: Cnm_Op<"scatter", [InferWorkgroupTypeFromBuffer<"buffer", "wg">]>
     }];
 
     let hasVerifier = 1;
+    let hasCanonicalizer = 1;
 
     let assemblyFormat = "$input `into` $buffer `[` $scatterMap `]` `of` $wg attr-dict `:` type($input) `into` qualified(type($buffer))";
 }
@@ -112,6 +113,12 @@ def GatherOp: Cnm_Op<"gather", [InferWorkgroupTypeFromBuffer<"buffer", "wg">, In
             auto bufShape = getBuffer().getType().getShape();
             return bufShape.empty() ? 1 : mlir::computeProduct(bufShape);
         }
+        AffineMap getScatterMap() {
+          return getGatherMap();
+        }
+        void setScatterMap(AffineMap map) {
+          setGatherMap(map);
+        }
         ShapedType getHostType() {
           if (getOutput())
             return getOutput().getType();
@@ -120,6 +127,7 @@ def GatherOp: Cnm_Op<"gather", [InferWorkgroupTypeFromBuffer<"buffer", "wg">, In
     }];
 
     let hasVerifier = 1;
+    let hasCanonicalizer = 1;
     let assemblyFormat = "$buffer `[` $gatherMap `]` `of` $wg attr-dict `into` $outputBuf `:` qualified(type($buffer)) `into` type($outputBuf)";
 }
 
