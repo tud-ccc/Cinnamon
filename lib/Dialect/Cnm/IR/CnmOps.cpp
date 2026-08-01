@@ -300,7 +300,7 @@ template <class Op> class SimplifyScatterMap : public OpRewritePattern<Op> {
                                 PatternRewriter &rewriter) const override {
     auto map = op.getScatterMap();
     auto simplified = simplifyAffineMapWithBounds(
-        map, op.getBuffer().getType().getWorkgroupShape());
+        map, getScatterMapDomain(map, op.getBuffer().getType()));
     if (simplified == map)
       return failure();
 

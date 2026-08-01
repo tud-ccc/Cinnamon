@@ -56,6 +56,10 @@ AffineMap inflateScatterMapToPointwise(AffineMap map, BufferType buffer);
 /// buffer shape.
 SmallVector<int64_t> getScatterIndexSpace(BufferType buffer);
 
+/// Extents of `map`'s own domain: the workgroup shape followed by the buffer
+/// dimensions it retains.
+SmallVector<int64_t> getScatterMapDomain(AffineMap map, BufferType buffer);
+
 //===----------------------------------------------------------------------===//
 // Analysis of the linearized map
 //
