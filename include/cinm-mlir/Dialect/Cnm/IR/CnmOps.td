@@ -89,6 +89,12 @@ def ScatterOp: Cnm_Op<"scatter", [InferWorkgroupTypeFromBuffer<"buffer", "wg">]>
         ShapedType getHostType() {
           return getInput().getType();
         }
+        TypedValue<ShapedType> getHostValue() {
+          return getInput();
+        }
+        ::mlir::MutableOperandRange getHostValueMutable() {
+          return getInputMutable();
+        }
     }];
 
     let hasVerifier = 1;
@@ -123,6 +129,12 @@ def GatherOp: Cnm_Op<"gather", [InferWorkgroupTypeFromBuffer<"buffer", "wg">, In
           if (getOutput())
             return getOutput().getType();
           return getOutputBuf().getType();
+        }
+        TypedValue<ShapedType> getHostValue() {
+          return ::llvm::cast<TypedValue<ShapedType>>(getOutputBuf());
+        }
+        ::mlir::MutableOperandRange getHostValueMutable() {
+          return getOutputBufMutable();
         }
     }];
 
