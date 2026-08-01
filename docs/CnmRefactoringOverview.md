@@ -142,7 +142,10 @@ bufferization / hoisting / CSE
                                   only what is left over
   [todo] scatter specializations  broadcast, constant-scatter
 --convert-cnm-to-upmem            level-aware: MRAM buffers bind straight
-                                  to the static allocation
+                                  to the static allocation; emits only the
+                                  general block transfer form
+  [todo] --upmem-specialize-transfers
+                                  blocks -> flat -> broadcast, where legal
 --lower-affine, --fold-memref-alias-ops, --upmem-dedup-kernels
 --upmem-check-occupancy           last: reject the program if its buffers
                                   do not fit a DPU -- measured, not modelled

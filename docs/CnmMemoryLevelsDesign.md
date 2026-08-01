@@ -388,6 +388,10 @@ happen after §A:
   the scatter map as infrastructure. **Answered by §J**: the number of
   device dimensions the map retains *is* the block count, so the
   selection is a reading of the map rather than a separate decision.
+  §K takes the remaining step and moves the *op* selection out of the
+  conversion entirely — the conversion emits the general form and the
+  UPMEM dialect specializes it, so the first two bullets above no longer
+  have to predict which backend op they will produce.
 
 ## C. On-device transfer coalescing (later)
 
@@ -1129,6 +1133,161 @@ coordinates before matching, not to teach the matcher about floordiv.
   split-reduction accumulator case — so it is likely to end up as a
   memref-level rewrite, where that identity is explicit, or to be
   superseded by a device-side fill.
+
+## K. UPMEM transfer ops: one general form, specialized late
+
+§J made the transfer *shape* a reading of the CNM map. This section is
+about the other half: which of the four UPMEM transfer ops that shape
+should be spelled with, and where that choice is made.
+
+### K1. The general form is the only form the conversion emits
+
+`upmem.scatter`, `upmem.gather`, `upmem.scatter_on_tasklets` and
+`upmem.broadcast` are not four capabilities, they are one capability at
+three levels of specificity:
+
+```
+scatter_blocks(host, map(r,d,b), blockSize, numBlocks)   -- dpu_push_sg_xfer
+  |  blocks are adjacent, in order  ==>
+scatter(host, map(r,d), numBlocks*blockSize)              -- flat memcpy per DPU
+  |  map is constant zero and covers all of host  ==>
+broadcast(host)                                           -- one broadcast call
+```
+
+Today the choice is made *during* `cnm → upmem`, by
+`convertCnmScatterToUpmem`
+([CnmToUPMEM.cpp:259-330](../lib/Conversion/CnmToUPMEM/CnmToUPMEM.cpp#L259-L330)),
+and independently again by hand in the simulation templates
+([SimulationTemplates.cpp:215-232](../lib/Dialect/UPMEM/Transforms/SimulationTemplates.cpp#L215-L232)
+and [1229-1232](../lib/Dialect/UPMEM/Transforms/SimulationTemplates.cpp#L1229-L1232)).
+Two emitters, one rule, no shared code.
+
+**Decision: the conversion emits only the general form, and the UPMEM
+dialect specializes it.** The conversion then has no branch: block size
+and block count both come straight off the CNM map, and
+`taskletBlocksAreContiguous`, `getAffineExprDimCoefficient` and
+`isGloballyBroadcast` move into the dialect, where they get *shorter* —
+they currently have to rebuild the `(r, d, t)` map with
+`keepTaskletDimAffineMapCnmToUpmem` before they can reason about it,
+and after the move that map is the op's own attribute.
+
+The `scatter → broadcast` step gets cheaper in the same way. It is
+currently gated on `isBroadcast`, a fact about the `cnm.alloc`'s users
+(does the MRAM buffer have a per-tasklet leading dimension). By the time
+there is a `upmem.scatter`, that fact is already baked into
+`transferCount`, so the condition is local: constant-zero map, and
+`transferCount == host.getNumElements()`.
+
+**Naming.** `scatter_on_tasklets` is a misnomer: its own description
+says blocks "need not correspond 1:1 to actual DPU tasklets", and under
+§J a leaf routinely takes several. Rename the pair to
+`upmem.scatter_blocks` / `upmem.gather_blocks`, with the map's third
+dimension renamed `block` to match `numBlocksPerDpu`. (`_sg` was the
+other candidate; it names the SDK call, `dpu_push_sg_xfer`, but reads as
+"scatter scatter-gather" in a dialect that already has `scatter` and
+`gather`. The SDK call belongs in the op description.)
+
+**Gather needs the general form too.** There is no counterpart to
+`scatter_on_tasklets` on the gather side, so
+`convertCnmGatherToUpmem`
+([CnmToUPMEM.cpp:227-257](../lib/Conversion/CnmToUPMEM/CnmToUPMEM.cpp#L227-L257))
+emits a flat `upmem.gather` at `transferCount * numTasklets`
+unconditionally and checks nothing. `dpu_push_sg_xfer` runs both
+directions, so `upmem.gather_blocks` is the symmetric fix and belongs in
+the same change — otherwise "the conversion only emits the general form"
+stays a scatter-only claim and the two paths keep diverging.
+
+### K2. All four ops share one contiguity contract
+
+The verifiers do not currently agree on what they are checking.
+`verifyScatterGatherContiguity`
+([UPMEMOps.cpp:134-146](../lib/Dialect/UPMEM/IR/UPMEMOps.cpp#L134-L146))
+asks a question about the *type*: is `transferCount` at most the memref's
+contiguous suffix. But whether a transfer is contiguous depends on where
+the map *starts*, not only on how long the run is. For
+`memref<4x3x8xi32, strided<[100, 8, 1]>>` the suffix is 24, so a
+`transferCount` of 24 passes — and it is wrong for any map whose last two
+results are not `(0, 0)`, because the run then crosses the gap at
+element 24.
+
+The honest condition is the same one §J1 gave the CNM ops, and it is the
+same for all four:
+
+> Decompose the host memref into its regular grid of contiguous runs of
+> `C = getContiguousSuffixSize` elements. Linearize the map's trailing
+> results against that packed suffix, take the affine upper bound over
+> the op's own index box, and require `maxInnerOffset + blockSize <= C`.
+
+The index box is known in every case: the hierarchy type gives
+`ranks × dpus`, and the `_blocks` forms add `numBlocksPerDpu`. The
+block is `transferCount` in all four ops — that is what `transferCount`
+already means for `scatter_on_tasklets`, and after specialization it is
+what it means for `scatter`, since a specialized flat transfer *is* one
+block. So one helper serves all four and the arity of the box is the
+only difference.
+
+This also supplies the **bounds** check none of the four has today — the
+transfer staying inside the memref at all — which is the check M16 added
+to `cnm.scatter`/`cnm.gather`. The UPMEM ops end up verifying the
+UPMEM-level statement of the same property, which is the point.
+
+`getAffineUpperBound` and `linearizeToElementOffset` are both
+dialect-neutral (one is interval arithmetic on `AffineExpr`, the other is
+memref-layout linearization) and currently sit in
+`Dialect/Cnm/IR/CnmScatterMap.cpp` and `Conversion/CnmToUPMEM/` respectively.
+They move to `Utils/` so the UPMEM dialect can use them without
+depending on CNM.
+
+### K3. A pass, not a canonicalization — for now
+
+Specialization is *not* a canonicalization, because it has to be
+switchable: `use-sg-xfer-codegen` and `use-bc-xfer-codegen` are the
+CINM 1.0 baseline's controls, both driven from one `use_upmem_scatter_api`
+knob ([cinm1.py:111-129](../experiments/cinm_experiments/cinm1.py#L111-L129)).
+A canonicalization pattern fires in every `--canonicalize` and cannot be
+turned off. So the patterns go in `--upmem-specialize-transfers`, carrying
+the two existing option names.
+
+**This is temporary and should be recorded as such.** The switch exists
+only to reproduce a baseline for the paper; once that measurement is
+locked, the pass becomes `hasCanonicalizer = 1` on the two `_blocks` ops
+and the flags disappear. Listed with the other post-paper cleanups in the
+implementation plan.
+
+**The "off" switch is currently a miscompile, and the move fixes it.**
+`use-sg-xfer-codegen=false` today does not mean "do not specialize", it
+means "collapse to the flat form *even when that is wrong*" — the
+`NOSG` line of
+[cnm-to-upmem-sg-xfer.mlir:22](../test/Conversion/CnmToUpmem/cnm-to-upmem-sg-xfer.mlir#L22)
+pins a 16-element flat transfer for a map whose two tasklet blocks have a
+one-row gap between them. It reads the wrong bytes, deliberately, to
+reproduce pre-sg-xfer behaviour.
+
+Under K1 that cannot happen by construction: a pattern only fires when
+its precondition holds. The correct reading of the flag is "the sg
+runtime call is not available; make the transfers flat upstream" — which
+is what `cinm1.py` already does, running
+`--cnm-ensure-scatter-gather-contiguous` in step 5 exactly when the flag
+is off. So with the flag off and specialization impossible, the pass
+should **emit a diagnostic**, not a wrong transfer: the packing that was
+supposed to happen upstream did not. The `NOSG` expectation is rewritten
+to that diagnostic. This should be inert for the CINM 1.0 configurations,
+whose shape-suffix distribution packs upstream anyway — worth confirming
+by running them, since it is the one behavioural change visible to the
+baseline.
+
+### K4. What this changes elsewhere
+
+- **The simulation templates stop choosing.** Both hand-written branches
+  emit the general form and let the pass specialize. They were the
+  second, uncoordinated copy of the rule.
+- **`--cnm-scatter-optimizations` composes.** Its broadcast rewrite
+  (§B, second bullet) can rewrite CNM-level scatters freely without
+  reasoning about which UPMEM op will result; whether a
+  `upmem.broadcast` comes out is settled downstream by K1's third step.
+- **`adaptAffineMapCnmToUpmem` survives only in the launch-argument
+  path.** Both transfer paths use `keepTaskletDimAffineMapCnmToUpmem`
+  (renamed for the block dimension) once the conversion stops collapsing.
 
 ## Summary of open questions
 
