@@ -71,8 +71,9 @@ struct BroadcastUniformScatter : OpRewritePattern<cnm::ScatterOp> {
     ShapedType inputTy = op.getInput().getType();
     ArrayRef<int64_t> tileShape = op.getBuffer().getType().getShape();
 
-    // Already one tile: the map has no results left to drop.
-    if (inputTy.getRank() == static_cast<int64_t>(tileShape.size()))
+    // Already one tile, so there is nothing to shrink -- and rewriting it
+    // again would not terminate.
+    if (inputTy.getShape() == tileShape)
       return failure();
 
     std::optional<TypedAttr> uniform = getUniformValue(op.getInput());

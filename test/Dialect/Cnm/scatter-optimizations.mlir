@@ -118,3 +118,30 @@ func.func @already_broadcast() {
   cnm.free_workgroup %wg : !cnm.workgroup<#wg>
   return
 }
+
+// -----
+
+#map = affine_map<(d0, d1, d2, d3, d4) -> (d1 floordiv 16, d1 * 256 + d2 * 32 + d4 - (d1 floordiv 16) * 4096)>
+#wg = #upmem.array<1x512x8, <type = v1A, dimensions = 1x2048x24>>
+
+// The split-reduction identity seed, as --convert-linalg-to-cnm leaves it: a
+// pointwise map, and a host value that has the same rank as the buffer while
+// being 4096 times its size. Rank alone says nothing about how much is being
+// transferred.
+
+// CHECK: #[[BC:.*]] = affine_map<(d0, d1, d2) -> ()>
+// CHECK-LABEL: func.func @seed_same_rank_as_buffer
+// CHECK:       %[[TILE:.*]] = arith.constant dense<0> : tensor<1x32xi32>
+// CHECK:       cnm.scatter %[[TILE]] into %{{.*}}[#[[BC]]] of %{{.*}} : tensor<1x32xi32> into
+// CHECK-NOT:   linalg.fill
+func.func @seed_same_rank_as_buffer() {
+  %c0 = arith.constant 0 : i32
+  %wg = cnm.workgroup : !cnm.workgroup<#wg>
+  %buf = cnm.alloc() for %wg : !cnm.buffer<1x32xi32 on #wg>
+  %empty = tensor.empty() : tensor<32x4096xi32>
+  %seed = linalg.fill ins(%c0 : i32) outs(%empty : tensor<32x4096xi32>) -> tensor<32x4096xi32>
+  cnm.scatter %seed into %buf[#map] of %wg
+      : tensor<32x4096xi32> into !cnm.buffer<1x32xi32 on #wg>
+  cnm.free_workgroup %wg : !cnm.workgroup<#wg>
+  return
+}
