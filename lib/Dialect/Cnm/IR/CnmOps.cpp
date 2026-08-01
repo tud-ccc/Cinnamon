@@ -5,6 +5,7 @@
 #include "cinm-mlir/Dialect/Cinm/IR/CinmOps.h"
 #include "cinm-mlir/Dialect/Cnm/IR/CnmInterfaces.h"
 #include <cinm-mlir/Dialect/Cnm/IR/CnmOps.h>
+#include <cinm-mlir/Dialect/Cnm/IR/CnmScatterMap.h>
 #include <cinm-mlir/Utils/CinmUtils.h>
 
 #include <cinm-mlir/Dialect/Cnm/IR/CnmTypes.h>
@@ -319,84 +320,86 @@ void ScatterOp::getCanonicalizationPatterns(::mlir::RewritePatternSet &results,
   results.insert<SimplifyScatterMap<ScatterOp>>(context);
 }
 
-LogicalResult ScatterOp::verify() {
-  auto tensorTy = getInput().getType();
-  auto bufferTy = getBuffer().getType();
-  auto map = getScatterMap();
-  // The affine map maps every WG element to a prefix of the input tensor which
-  // has buffer shape
+/// The map's domain is the workgroup shape followed by the first `p` of the
+/// buffer's own dimensions, for any `p`. The `bufferRank - p` dimensions left
+/// out are transferred as a block, and the same number of host dimensions are
+/// left out of the results: they are the block's shape, so they have to match
+/// extent for extent. `p = bufferRank` names a host element per buffer
+/// element; `p = 0` is one whole-buffer block per leaf.
+///
+/// `requireInjective` is set for gathers only: two leaves reading the same
+/// host element is a broadcast, two leaves *writing* it is a race.
+static LogicalResult verifyScatterGatherMap(Operation *op, ShapedType hostTy,
+                                            cnm::BufferType bufferTy,
+                                            AffineMap map,
+                                            bool requireInjective) {
+  ArrayRef<int64_t> wgShape = bufferTy.getWorkgroupShape();
+  ArrayRef<int64_t> bufShape = bufferTy.getShape();
+  ArrayRef<int64_t> hostShape = hostTy.getShape();
 
-  if (map.getNumInputs() != bufferTy.getWorkgroupShape().size()) {
-    return emitError() << "Affine map inputs (" << map.getNumInputs()
-                       << " dims) do not correspond to workgroup dimensions ("
-                       << bufferTy.getWorkgroupShape().size() << " dims)";
-  }
+  if (map.getNumInputs() < wgShape.size() ||
+      map.getNumInputs() > wgShape.size() + bufShape.size())
+    return op->emitOpError("map has ")
+           << map.getNumInputs() << " dimension(s); expected the workgroup's "
+           << wgShape.size() << ", optionally followed by up to "
+           << bufShape.size() << " leading buffer dimension(s)";
 
-  auto truncatedDims = tensorTy.getShape().size() - bufferTy.getShape().size();
-  if (map.getNumResults() != truncatedDims) {
-    return emitError()
-           << "Affine map results (" << map.getNumResults()
-           << ") do not correspond to truncated scattered tensor dimensions ("
-           << tensorTy.getShape().size() << " - " << bufferTy.getShape().size()
-           << ")";
-  }
+  int64_t blockRank = cnm::getNumImplicitHostDims(map, bufferTy);
+  if (static_cast<int64_t>(map.getNumResults()) + blockRank !=
+      static_cast<int64_t>(hostShape.size()))
+    return op->emitOpError("map has ")
+           << map.getNumResults() << " result(s) and leaves " << blockRank
+           << " buffer dimension(s) implicit, which does not add up to the "
+           << hostShape.size() << " dimension(s) of the host value";
 
-  if (tensorTy.getShape().slice(truncatedDims) != bufferTy.getShape()) {
-    return emitError()
-           << "Scattered tensor shape should end with buffer shape, ("
-           << tensorTy.getShape().slice(truncatedDims)
-           << " != " << bufferTy.getShape() << ")";
-  }
+  ArrayRef<int64_t> blockShape = cnm::getScatterBlockShape(map, bufferTy);
+  if (hostShape.take_back(blockRank) != blockShape)
+    return op->emitOpError("the implicit block has shape ")
+           << blockShape << " but the host dimensions it covers have shape "
+           << hostShape.take_back(blockRank);
 
-  // Note: we used to reject non-contiguous scattered memrefs here, but
-  // scatteredMemrefIsContiguous only checks contiguity of the bufShape
-  // suffix, which isn't sufficient to guarantee a valid single-DMA transfer
-  // once lowered (e.g. it misses non-contiguity introduced by the workgroup's
-  // thread dimension). Instead of rejecting here, the
-  // cnm-ensure-scatter-gather-contiguous pass detects genuinely
-  // non-contiguous transfers and inserts a packing buffer before lowering.
+  // What is left is where the transfer lands, which needs the host value's
+  // element order. A memref with a non-identity layout does not have one until
+  // its strides are taken into account, and that is the business of
+  // --cnm-ensure-scatter-gather-contiguous, not of a verifier.
+  if (!hostTy.hasStaticShape())
+    return success();
+  if (auto memrefTy = dyn_cast<MemRefType>(hostTy))
+    if (!memrefTy.getLayout().isIdentity())
+      return success();
 
-  if (auto accelerator =
-          cinm::getEnclosingAcceleratorAs<CnmAcceleratorAttrInterface>(*this)) {
-    // todo if there is an accelerator, we could give it an opportunity to
-    //  verify the scattering. For instance for upmem it is illegal to use
-    //  the thread ID to scattering from host to mram.
-  }
+  FailureOr<AffineExpr> offset = cnm::linearizeScatterMap(
+      cnm::inflateScatterMapToPointwise(map, bufferTy), hostShape);
+  if (failed(offset))
+    return success();
+  SmallVector<int64_t> extents = cnm::getScatterIndexSpace(bufferTy);
+
+  int64_t hostElements = computeProduct(hostShape);
+  if (std::optional<int64_t> highest =
+          cnm::getAffineUpperBound(*offset, extents))
+    if (*highest >= hostElements)
+      return op->emitOpError("transfer reaches element ")
+             << *highest << " of a host value that has only " << hostElements;
+
+  if (requireInjective)
+    if (std::optional<bool> injective =
+            cnm::isAffineExprInjective(*offset, extents))
+      if (!*injective)
+        return op->emitOpError(
+            "map is not injective: two leaves would write the same host "
+            "element. A gather must partition the host value");
 
   return success();
 }
 
+LogicalResult ScatterOp::verify() {
+  return verifyScatterGatherMap(*this, getInput().getType(),
+                                getBuffer().getType(), getScatterMap(),
+                                /*requireInjective=*/false);
+}
+
 LogicalResult GatherOp::verify() {
-  auto tensorTy = getOutputBuf().getType();
-  auto bufferTy = getBuffer().getType();
-  auto map = getGatherMap();
-  // The affine map maps every WG-element index and buffer element index
-  // to a result tensor index
-
-  if (map.getNumInputs() != bufferTy.getWorkgroupShape().size()) {
-    return emitError() << "Affine map inputs (" << map.getNumInputs()
-                       << " dims) do not correspond to workgroup dimensions ("
-                       << bufferTy.getWorkgroupShape().size() << " dims)";
-  }
-
-  auto truncatedDims = tensorTy.getShape().size() - bufferTy.getShape().size();
-  if (map.getNumResults() != truncatedDims) {
-    return emitError()
-           << "Affine map results (" << map.getNumResults()
-           << ") do not correspond to truncated scattered tensor dimensions ("
-           << tensorTy.getShape().size() << " - " << bufferTy.getShape().size()
-           << ")";
-  }
-
-  if (tensorTy.getShape().slice(truncatedDims) != bufferTy.getShape()) {
-    return emitError()
-           << "Scattered tensor shape should end with buffer shape, ("
-           << tensorTy.getShape().slice(truncatedDims)
-           << " != " << bufferTy.getShape() << ")";
-  }
-
-  // See the note in ScatterOp::verify(): contiguity is ensured later by the
-  // cnm-ensure-scatter-gather-contiguous pass rather than rejected here.
-
-  return success();
+  return verifyScatterGatherMap(*this, getOutputBuf().getType(),
+                                getBuffer().getType(), getGatherMap(),
+                                /*requireInjective=*/true);
 }
