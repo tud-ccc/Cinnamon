@@ -304,6 +304,10 @@ struct UpmemInferencePlugin : cinm::InferencePlugin {
     // scf directly, so this only bites the generic path). Last, so the affine
     // passes above still see affine loops.
     pm->addPass(createLowerAffinePass());
+    // The C translator addresses a buffer as base pointer + one linear
+    // offset, so it can only express a single subview. Staging a tile of a
+    // tasklet's slice naturally produces two nested ones; compose them.
+    pm->addPass(memref::createFoldMemRefAliasOpsPass());
     pm->addPass(createCanonicalizerPass());
     pm->addPass(createCSEPass());
     return pm;
