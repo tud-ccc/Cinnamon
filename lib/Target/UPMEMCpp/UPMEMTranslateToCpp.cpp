@@ -17,6 +17,7 @@
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
+#include "mlir/Dialect/Utils/StaticValueUtils.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/Dialect.h"
@@ -398,18 +399,45 @@ static LogicalResult getBasePtrAndOffset(CppEmitter &emitter, Value v,
   v = skipIgnorableOps(v);
   if (auto view =
           llvm::dyn_cast_or_null<memref::SubViewOp>(v.getDefiningOp())) {
-    auto offsets = view.getMixedOffsets();
-    auto sizes = view.getMixedSizes();
-    for (auto [off, size] : llvm::zip_equal(std::views::reverse(offsets),
-                                            std::views::reverse(sizes))) {
+    // Peel ignorable ops between the subview and the allocation.
+    Value source = skipIgnorableOps(view.getSource());
+
+    // A buffer is addressed here as base pointer + one linear offset, so only
+    // a single subview can be expressed. --fold-memref-alias-ops composes
+    // chains into one before translation; if a chain reaches this point the
+    // pipeline has changed, and refusing beats emitting a wrong address.
+    if (llvm::isa_and_nonnull<memref::SubViewOp>(source.getDefiningOp()))
+      return view.emitOpError(
+          "nested memref.subview is not supported by the UPMEM C translator; "
+          "run --fold-memref-alias-ops to compose the chain into one view");
+
+    // The offset of a subview within its source is the dot product of its
+    // offsets with the *source's strides*. Using the subview's sizes instead
+    // happens to agree only when every dimension is either fully covered or
+    // offset zero, which is why this went unnoticed: the hand-written
+    // templates address their MRAM buffers directly and never take a subview.
+    SmallVector<int64_t> strides;
+    int64_t sourceOffset = 0;
+    if (failed(view.getSourceType().getStridesAndOffset(strides, sourceOffset)))
+      return view.emitOpError("subview source has no strided layout");
+
+    for (auto [off, stride] :
+         llvm::zip_equal(view.getMixedOffsets(), strides)) {
+      if (ShapedType::isDynamic(stride))
+        return view.emitOpError(
+            "subview source has a dynamic stride, so its offset cannot be "
+            "computed at compile time");
+      // Skip the zero terms: they contribute nothing and the generated C is
+      // read by humans.
+      if (isConstantIntValue(off, 0))
+        continue;
       offsetExpr.append(" + (");
       emitter.appendNameOrInt(off, offsetExpr);
       offsetExpr.append(" * ");
-      emitter.appendNameOrInt(size, offsetExpr);
+      offsetExpr.append(std::to_string(stride));
       offsetExpr.append(")");
     }
-    // Peel ignorable ops between the subview and the allocation.
-    v = skipIgnorableOps(view.getSource());
+    v = source;
   }
 
   return getBasePtrOfAlloc(v.getDefiningOp(), basePtr);
