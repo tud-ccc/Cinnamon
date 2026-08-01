@@ -29,9 +29,9 @@ func.func @gemv(%A: tensor<1024x512xi32>, %x: tensor<512xi32>) -> tensor<1024xi3
 
   // Host side.
   // CHECK: %[[DPU:.*]] = upmem.alloc_dpus with program @dpu_kernels::@program : !upmem.hierarchy<1x16x1>
-  // CHECK: upmem.scatter %{{.*}} onto @{{.*}} of %[[DPU]]
+  // CHECK: upmem.scatter_on_array %{{.*}} onto @{{.*}} of %[[DPU]]
   // CHECK: upmem.wait_for %[[DPU]]
-  // CHECK: upmem.gather %{{.*}} from @{{.*}} of %[[DPU]]
+  // CHECK: upmem.gather_on_array %{{.*}} from @{{.*}} of %[[DPU]]
   // CHECK: upmem.free_dpus %[[DPU]]
 
   // Device side. 1024 rows over 16 leaves = 64 rows each; the 64x512 tile does

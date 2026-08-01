@@ -105,8 +105,8 @@ def _sum_time_ms_by_kind(
     output_dir: Union[pathlib.Path, RunResult], csv_type: str
 ) -> dict[str, float]:
     """Like _sum_time_ms, but broken down per `kind` column value (e.g.
-    "block"/"sg" for scatter, see timers.c's XferRecord.kind) instead of
-    summed across all of them. Returns {} if no matching csv-type file is
+    "on_array"/"blocks" for scatter, see timers.h's `kind` parameter) instead
+    of summed across all of them. Returns {} if no matching csv-type file is
     present, or if it predates the `kind` column."""
     for csv_path in _output_dir(output_dir).glob("*.csv"):
         if _csv_type(csv_path) != csv_type:
@@ -124,19 +124,36 @@ def _sum_time_ms_by_kind(
     return {}
 
 
+# The `kind` column now carries the transfer op's own mnemonic. Runs recorded
+# before that alignment used "block"/"sg"/"bc"; map them onto the current
+# names so old and new output plot the same way.
+_LEGACY_KINDS = {
+    "scatter:block": "scatter:on_array",
+    "scatter:sg": "scatter:blocks",
+    "scatter:bc": "scatter:broadcast",
+}
+
+
 # Fixed stacking/legend order for net_breakdown_ms -- keep display code (e.g.
 # experiment.py's stacked bar chart) agreeing on category order and colors
 # without recomputing it.
 _NET_BREAKDOWN_CATEGORIES = [
-    "scatter",
-    "scatter:block",
-    "scatter:sg",
-    "scatter:bc",
+    "scatter",  # also where scatter:on_array lands, see _canonical_kind
+    "scatter:blocks",
+    "scatter:broadcast",
     "gather",
     "copy",
     "launch",
     "unaccounted",
 ]
+
+
+def _canonical_kind(cat):
+    cat = _LEGACY_KINDS.get(cat, cat)
+    # The flat per-DPU scatter is the plain "scatter" of a run that wasn't
+    # split by kind, so give it the same colour and slot: the two never
+    # appear in one plot.
+    return "scatter" if cat == "scatter:on_array" else cat
 
 
 def net_breakdown_color_ix(cat):
@@ -146,19 +163,14 @@ def net_breakdown_color_ix(cat):
         "copy",
         "launch",
         "unaccounted",
-        # "scatter:block",
-        "scatter:sg",
-        "scatter:bc",
+        "scatter:blocks",
+        "scatter:broadcast",
     ]
-    if cat == "scatter:block":
-        cat = "scatter"  # Give scatter:block same color/sort ix as scatter for consistency, that's ok since both cannot be in the same plot
-    return order.index(cat)
+    return order.index(_canonical_kind(cat))
 
 
 def net_breakdown_sort_ix(cat):
-    if cat == "scatter:block":
-        cat = "scatter"  # Give scatter:block same color/sort ix as scatter for consistency, that's ok since both cannot be in the same plot
-    return _NET_BREAKDOWN_CATEGORIES.index(cat)
+    return _NET_BREAKDOWN_CATEGORIES.index(_canonical_kind(cat))
 
 
 def net_breakdown_ms(
@@ -171,8 +183,8 @@ def net_breakdown_ms(
     present.
 
     If by_kind is True, the "scatter" bucket is instead split into one
-    "scatter:<kind>" entry per upmem.scatter lowering kind recorded in
-    scatter.csv's `kind` column (e.g. "scatter:block", "scatter:sg") -- note
+    "scatter:<kind>" entry per transfer op kind recorded in scatter.csv's
+    `kind` column (e.g. "scatter:on_array", "scatter:blocks") -- note
     these dynamic keys aren't covered by NET_BREAKDOWN_CATEGORIES. Falls back
     to a single "scatter" bucket if the recorded CSV predates the `kind`
     column.
@@ -222,24 +234,29 @@ def net_breakdown_ms(
 # vanish from aggregation -- it just lands in its own bucket instead of
 # being merged into an existing one.
 #
-# The three "transfer" cost_labels (scatter/scatter_on_tasklets/broadcast --
-# see UpmemOpCountSimulator.cpp's upmem::ScatterOp / ScatterOnTaskletsOp /
-# BroadcastOp cases) map onto the same "scatter:block"/"scatter:sg"/
-# "scatter:bc" buckets net_breakdown_ms(by_kind=True) already splits the
-# *measured* side into (scatter.csv's `kind` column) -- keep both sides on
-# the same three buckets rather than merging them back into one "scatter"
-# bucket, so a kernel that measures scatter:sg but predicts scatter:block
-# (or vice versa) shows up as an error instead of silently cancelling out --
-# or, before this mapping existed, instead of scatter_on_tasklets/broadcast
-# predictions falling through to the unlisted "transfer" bucket (not in
-# _BUCKET_ORDER) and vanishing from the comparison entirely.
+# The three "transfer" cost_labels (scatter/scatter_blocks/broadcast -- see
+# UpmemOpCountSimulator.cpp's upmem::ScatterOnArrayOp / ScatterBlocksOp /
+# BroadcastOp cases) map onto the same
+# "scatter:on_array"/"scatter:blocks"/"scatter:broadcast" buckets
+# net_breakdown_ms(by_kind=True) already splits the *measured* side into
+# (scatter.csv's `kind` column) -- keep both sides on the same three buckets
+# rather than merging them back into one "scatter" bucket, so a kernel that
+# measures scatter:blocks but predicts scatter:on_array (or vice versa) shows
+# up as an error instead of silently cancelling out -- or, before this mapping
+# existed, instead of scatter_blocks/broadcast predictions falling through to
+# the unlisted "transfer" bucket (not in _BUCKET_ORDER) and vanishing from the
+# comparison entirely.
+#
+# The `kind` values match the op mnemonics; runs recorded before that
+# alignment used "block"/"sg"/"bc" and land in their own buckets.
 PREDICTED_TO_MEASURED = {
     ("kernel", "kernel"): "launch",
     ("kernel", "launchOverhead"): "launch",
-    ("transfer", "scatter"): "scatter:block",
-    ("transfer", "scatter_on_tasklets"): "scatter:sg",
-    ("transfer", "broadcast"): "scatter:bc",
+    ("transfer", "scatter"): "scatter:on_array",
+    ("transfer", "scatter_blocks"): "scatter:blocks",
+    ("transfer", "broadcast"): "scatter:broadcast",
     ("transfer_back", "gather"): "gather",
+    ("transfer_back", "gather_blocks"): "gather",
     ("cpu", "other"): "unaccounted",
 }
 

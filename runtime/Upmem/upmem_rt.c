@@ -52,7 +52,7 @@ void upmemrt_dpu_scatter(struct dpu_set_t *dpu_set, void *hostBuffer,
   uint32_t nr_dpus = 0;
   dpu_get_nr_dpus(*dpu_set, &nr_dpus);
   upmemrt_record_scatter(upmemrt_now_ns() - t0, copy_bytes, nr_dpus,
-                         /*num_blocks=*/1, "block", tag);
+                         /*num_blocks=*/1, "on_array", tag);
 #endif
 }
 
@@ -80,13 +80,14 @@ void upmemrt_dpu_gather(struct dpu_set_t *dpu_set, void *host_buffer,
 #ifdef UPMEM_RT_STATS
   uint32_t nr_dpus = 0;
   dpu_get_nr_dpus(*dpu_set, &nr_dpus);
-  upmemrt_record_gather(upmemrt_now_ns() - t0, copy_bytes, nr_dpus, tag);
+  upmemrt_record_gather(upmemrt_now_ns() - t0, copy_bytes, nr_dpus,
+                        /*num_blocks=*/1, "on_array", tag);
 #endif
 }
 
-/// Arguments closed over by get_scatter_to_tasklets_block, passed through the
-/// UPMEM SDK's get_block_t.args (which the SDK copies internally, so it is
-/// safe for this struct to live on the stack of the calling function).
+/// Arguments closed over by get_sg_xfer_block, passed through the UPMEM SDK's
+/// get_block_t.args (which the SDK copies internally, so it is safe for this
+/// struct to live on the stack of the calling function).
 typedef struct sg_xfer_context {
   uint8_t *host_buffer;
   size_t element_size;
@@ -95,9 +96,8 @@ typedef struct sg_xfer_context {
   size_t (*base_offset)(size_t, size_t);
 } sg_xfer_context;
 
-static bool get_scatter_to_tasklets_block(struct sg_block_info *out,
-                                          uint32_t dpu_index,
-                                          uint32_t block_index, void *args) {
+static bool get_sg_xfer_block(struct sg_block_info *out, uint32_t dpu_index,
+                              uint32_t block_index, void *args) {
   const sg_xfer_context *ctx = (const sg_xfer_context *)args;
   if (block_index >= ctx->num_blocks)
     return false;
@@ -107,13 +107,14 @@ static bool get_scatter_to_tasklets_block(struct sg_block_info *out,
   return true;
 }
 
-void upmemrt_dpu_scatter_to_tasklets(struct dpu_set_t *dpu_set,
-                                     void *host_buffer, size_t element_size,
-                                     size_t num_blocks,
-                                     size_t block_num_elements,
-                                     const char *buffer_id,
-                                     size_t (*base_offset)(size_t, size_t),
-                                     const char *tag) {
+/// Both directions of the scatter/gather transfer API; only the xfer_type and
+/// which CSV the timing lands in differ.
+static void do_sg_xfer(dpu_xfer_t xfer_type, struct dpu_set_t *dpu_set,
+                       void *host_buffer, size_t element_size,
+                       size_t num_blocks, size_t block_num_elements,
+                       const char *buffer_id,
+                       size_t (*base_offset)(size_t, size_t),
+                       const char *tag) {
 #ifdef UPMEM_RT_STATS
   uint64_t t0 = upmemrt_now_ns();
 #endif
@@ -124,19 +125,44 @@ void upmemrt_dpu_scatter_to_tasklets(struct dpu_set_t *dpu_set,
       .block_num_elements = block_num_elements,
       .base_offset = base_offset,
   };
-  get_block_t get_block_info = {.f = get_scatter_to_tasklets_block,
-                                .args = &ctx,
-                                .args_size = sizeof(ctx)};
+  get_block_t get_block_info = {
+      .f = get_sg_xfer_block, .args = &ctx, .args_size = sizeof(ctx)};
 
   size_t length = num_blocks * block_num_elements * element_size;
-  DPU_ASSERT(dpu_push_sg_xfer(*dpu_set, DPU_XFER_TO_DPU, buffer_id, 0, length,
+  DPU_ASSERT(dpu_push_sg_xfer(*dpu_set, xfer_type, buffer_id, 0, length,
                               &get_block_info, DPU_SG_XFER_DEFAULT));
 #ifdef UPMEM_RT_STATS
   uint32_t nr_dpus = 0;
   dpu_get_nr_dpus(*dpu_set, &nr_dpus);
-  upmemrt_record_scatter(upmemrt_now_ns() - t0, length, nr_dpus, num_blocks,
-                         "sg", tag);
+  if (xfer_type == DPU_XFER_TO_DPU)
+    upmemrt_record_scatter(upmemrt_now_ns() - t0, length, nr_dpus, num_blocks,
+                           "blocks", tag);
+  else
+    upmemrt_record_gather(upmemrt_now_ns() - t0, length, nr_dpus, num_blocks,
+                          "blocks", tag);
+#else
+  (void)tag;
 #endif
+}
+
+void upmemrt_dpu_scatter_blocks(struct dpu_set_t *dpu_set, void *host_buffer,
+                                size_t element_size, size_t num_blocks,
+                                size_t block_num_elements,
+                                const char *buffer_id,
+                                size_t (*base_offset)(size_t, size_t),
+                                const char *tag) {
+  do_sg_xfer(DPU_XFER_TO_DPU, dpu_set, host_buffer, element_size, num_blocks,
+             block_num_elements, buffer_id, base_offset, tag);
+}
+
+void upmemrt_dpu_gather_blocks(struct dpu_set_t *dpu_set, void *host_buffer,
+                               size_t element_size, size_t num_blocks,
+                               size_t block_num_elements,
+                               const char *buffer_id,
+                               size_t (*base_offset)(size_t, size_t),
+                               const char *tag) {
+  do_sg_xfer(DPU_XFER_FROM_DPU, dpu_set, host_buffer, element_size, num_blocks,
+             block_num_elements, buffer_id, base_offset, tag);
 }
 
 void upmemrt_dpu_broadcast(struct dpu_set_t *dpu_set, void *host_buffer,
@@ -151,7 +177,7 @@ void upmemrt_dpu_broadcast(struct dpu_set_t *dpu_set, void *host_buffer,
   uint32_t nr_dpus = 0;
   dpu_get_nr_dpus(*dpu_set, &nr_dpus);
   upmemrt_record_scatter(upmemrt_now_ns() - t0, copy_bytes, nr_dpus,
-                         /*num_blocks=*/1, "bc", tag);
+                         /*num_blocks=*/1, "broadcast", tag);
 #endif
 }
 
@@ -168,7 +194,7 @@ struct dpu_set_t *upmemrt_dpu_alloc(int32_t num_ranks, int32_t num_dpus,
   char profile[256];
   if (max_blocks_per_dpu > 0) {
     // sgXferEnable/sgXferMaxBlocksPerDpu are required for
-    // upmemrt_dpu_scatter_to_tasklets (dpu_push_sg_xfer): scatter/gather
+    // upmemrt_dpu_scatter_blocks/gather_blocks (dpu_push_sg_xfer): scatter/gather
     // transfers are disabled by default, and the max number of blocks per
     // DPU otherwise defaults to the number of DPUs in the set, which is too
     // low once we're scattering one block per tasklet/mram-row. Only set

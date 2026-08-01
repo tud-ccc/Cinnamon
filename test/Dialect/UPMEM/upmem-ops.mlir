@@ -27,12 +27,12 @@ module {
         memref.store %2, %alloc[%arg2, %arg3] : memref<128x1024xi32>
       }
     }
-    upmem.scatter %arg0[1024 elts, #map3] onto @buf_1 of %1 : memref<8x1024xi32> onto !upmem.hierarchy<8x128x1>
-    upmem.scatter %alloc[1024 elts, #map1] onto @buf_0 of %1 : memref<128x1024xi32> onto !upmem.hierarchy<8x128x1>
-    upmem.scatter %0[1 elts, #map2] onto @buf of %1 : memref<8x128xi32> onto !upmem.hierarchy<8x128x1>
+    upmem.scatter_on_array %arg0[1024 elts, #map3] onto @buf_1 of %1 : memref<8x1024xi32> onto !upmem.hierarchy<8x128x1>
+    upmem.scatter_on_array %alloc[1024 elts, #map1] onto @buf_0 of %1 : memref<128x1024xi32> onto !upmem.hierarchy<8x128x1>
+    upmem.scatter_on_array %0[1 elts, #map2] onto @buf of %1 : memref<8x128xi32> onto !upmem.hierarchy<8x128x1>
     upmem.wait_for %1 : !upmem.hierarchy<8x128x1>
     %alloc_0 = memref.alloc() {alignment = 64 : i64} : memref<8x128xi32>
-    upmem.gather %alloc_0[1 elts, #map2] from @buf of %1 : memref<8x128xi32> from !upmem.hierarchy<8x128x1>
+    upmem.gather_on_array %alloc_0[1 elts, #map2] from @buf of %1 : memref<8x128xi32> from !upmem.hierarchy<8x128x1>
     upmem.free_dpus %1 : !upmem.hierarchy<8x128x1>
     return %alloc_0 : memref<8x128xi32>
   }

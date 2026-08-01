@@ -13,14 +13,14 @@
 // CHECK: %[[SV_B:.*]] = memref.subview %[[ALLOC]][0, %[[J]]] [64, 1] [1, 1] : memref<64x64xi32> to memref<64x1xi32, {{.*}}>
 // CHECK: %[[ALLOC_T:.*]] = memref.alloc() {{.*}} : memref<1x64xi32>
 // CHECK: linalg.transpose ins(%[[SV_B]] : memref<64x1xi32, {{.*}}>) outs(%[[ALLOC_T]] : memref<1x64xi32>) permutation = [1, 0]
-// CHECK: upmem.scatter %[[SV_A]][64 elts, #[[MAP]]] onto @buf_3 of %[[DPU]] : memref<16x64xi32, {{.*}}> onto !upmem.hierarchy<1x16x1>
+// CHECK: upmem.scatter_on_array %[[SV_A]][64 elts, #[[MAP]]] onto @buf_3 of %[[DPU]] : memref<16x64xi32, {{.*}}> onto !upmem.hierarchy<1x16x1>
 // The scatter map for this operand does not depend on the processing element,
 // so the conversion specializes it into a broadcast.
 // CHECK: upmem.broadcast %[[ALLOC_T]] onto @buf_1 of %[[DPU]] : memref<1x64xi32> onto !upmem.hierarchy<1x16x1>
-// CHECK: upmem.scatter %[[CST]][1 elts, #[[MAP]]] onto @buf of %[[DPU]] : memref<16x1xi32> onto !upmem.hierarchy<1x16x1>
+// CHECK: upmem.scatter_on_array %[[CST]][1 elts, #[[MAP]]] onto @buf of %[[DPU]] : memref<16x1xi32> onto !upmem.hierarchy<1x16x1>
 // CHECK: upmem.wait_for %[[DPU]] : !upmem.hierarchy<1x16x1>
 // CHECK: %[[SV_OUT:.*]] = memref.subview %[[ALLOC]][%[[I]], %[[J]]] [16, 1] [1, 1] : memref<64x64xi32> to memref<16x1xi32, {{.*}}>
-// CHECK: upmem.gather %[[SV_OUT]][1 elts, #[[MAP]]] from @buf of %[[DPU]] : memref<16x1xi32, {{.*}}> from !upmem.hierarchy<1x16x1>
+// CHECK: upmem.gather_on_array %[[SV_OUT]][1 elts, #[[MAP]]] from @buf of %[[DPU]] : memref<16x1xi32, {{.*}}> from !upmem.hierarchy<1x16x1>
 // CHECK: upmem.free_dpus %[[DPU]] : !upmem.hierarchy<1x16x1>
 // CHECK: module @dpu_kernels
 // CHECK: upmem.dpu_program @program() tasklets(1) {

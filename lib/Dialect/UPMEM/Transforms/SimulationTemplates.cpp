@@ -49,7 +49,7 @@ namespace mlir::upmem {
 
 /// Estimate the cost of the host side of a tiled GEMV (mv2) kernel.
 ///
-/// Transfer costs use the same formula as OpCountSimulator's ScatterOp/GatherOp
+/// Transfer costs use the same formula as OpCountSimulator's ScatterOnArrayOp/GatherOnArrayOp
 /// case via scatterGatherCost().
 SimCost UpmemSimulator::simulateFullGemv(std::chrono::milliseconds timeout,
                                          int64_t M, int64_t K, int64_t mramRows,
@@ -145,7 +145,7 @@ namespace {
 // reinterpretation of the tile (no data movement, just a stride swap versus
 // `input`'s natural [dpuRows, mramRows, dpuCols, mramCols] split). Every
 // upmem.scatter requires the elements it transfers per DPU to be contiguous
-// in the host buffer (see upmem::ScatterOp::verify / getContiguousSuffixSize).
+// in the host buffer (see upmem::ScatterOnArrayOp::verify / getContiguousSuffixSize).
 // Two cases, distinguished by whether one DPU's whole mramRows x mramCols
 // chunk is itself one contiguous span:
 //  - It is, when mramRows == 1 (only one row per DPU, trivially contiguous)
@@ -216,7 +216,7 @@ static void scatterATile(OpBuilder &b, Location loc, Value input, Value mOff,
   if (wholeChunkContiguous) {
     AffineMap aMap = AffineMap::get(
         2, 0, {dpuDim.floorDiv(dpuCols), dpuDim % dpuCols, zero, zero}, ctx);
-    scatter = upmem::ScatterOp::create(
+    scatter = upmem::ScatterOnArrayOp::create(
         b, loc, view, aBufSym, static_cast<uint64_t>(mramRows * mramCols), aMap,
         dpus);
   } else {
@@ -225,7 +225,7 @@ static void scatterATile(OpBuilder &b, Location loc, Value input, Value mOff,
                                     {dpuDim.floorDiv(dpuCols), dpuDim % dpuCols,
                                      getAffineDimExpr(2, ctx), zero},
                                     ctx);
-    scatter = upmem::ScatterOnTaskletsOp::create(
+    scatter = upmem::ScatterBlocksOp::create(
         b, loc, view, aBufSym, static_cast<uint64_t>(mramCols), aMap, dpus,
         static_cast<int64_t>(mramRows));
   }
@@ -235,7 +235,7 @@ static void scatterATile(OpBuilder &b, Location loc, Value input, Value mOff,
 
 // Pack the [dpuCols*mramCols] slice of `x` at kOff for scatter. Returns the
 // memref to scatter from: a direct view of `x` if it's already contiguous
-// enough (same criterion as upmem::ScatterOp::verify), otherwise `xStage`
+// enough (same criterion as upmem::ScatterOnArrayOp::verify), otherwise `xStage`
 // after a single memref.copy of the whole slice into it.
 static Value packXSlice(OpBuilder &b, Location loc, Value x, Value xStage,
                         Value kOff, int64_t dpuCols, int64_t mramCols) {
@@ -614,7 +614,7 @@ void upmem::generateTailReduction(cinm::ReduceOp op, RewriterBase &rewriter,
         // Scatter it. We do this only once - if there are several iterations
         // over dpuCols*mramCols, then the future calls to wait_for will reuse
         // the partial results that are already in mram.
-        upmem::ScatterOp::create(b, loc, yStage, yBufSym,
+        upmem::ScatterOnArrayOp::create(b, loc, yStage, yBufSym,
                                  static_cast<uint64_t>(mramRows), yMap, dpus);
 
         cinm::createNestedAffineForLoops(
@@ -632,7 +632,7 @@ void upmem::generateTailReduction(cinm::ReduceOp op, RewriterBase &rewriter,
 
         // Once we're done with a set of rows, we gather their results.
         // We still need to reduce over dpuCols.
-        upmem::GatherOp::create(b, loc, yStage, yBufSym,
+        upmem::GatherOnArrayOp::create(b, loc, yStage, yBufSym,
                                 static_cast<uint64_t>(mramRows), yMap, dpus);
         // Subview of output for this row tile, shaped to match yStage after
         // reducing dpuCols: output[mOff .. mOff + dpuRows*mramRows).
@@ -1229,7 +1229,7 @@ void upmem::generateGemv(cinm::GemvOp op, RewriterBase &rewriter,
                 scatterX = upmem::BroadcastOp::create(b, loc, xToScatter,
                                                       xBufSym, dpus);
               } else {
-                scatterX = upmem::ScatterOp::create(
+                scatterX = upmem::ScatterOnArrayOp::create(
                     b, loc, xToScatter, xBufSym,
                     static_cast<uint64_t>(mramCols), xMap, dpus);
               }
@@ -1258,7 +1258,7 @@ void upmem::generateGemv(cinm::GemvOp op, RewriterBase &rewriter,
               outRows, ArrayRef<ReassociationIndices>{{0, 1, 2}});
         }
 
-        upmem::GatherOp::create(b, loc, yBuf, yBufSym,
+        upmem::GatherOnArrayOp::create(b, loc, yBuf, yBufSym,
                                 static_cast<uint64_t>(mramRows), yMap, dpus);
 
         if (needsPartialReduction) {

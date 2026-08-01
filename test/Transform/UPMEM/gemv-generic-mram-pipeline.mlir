@@ -13,7 +13,7 @@
 //
 // Pass ordering worth noting: staging runs *after* bufferization, because it
 // works on memrefs, and --cnm-ensure-scatter-gather-contiguous runs before the
-// backend conversion, because upmem.scatter requires each DPU's elements to be
+// backend conversion, because upmem.scatter_on_array requires each DPU's elements to be
 // contiguous in the host buffer.
 
 #pf = #upmem.platform<type=v1A, dimensions = 4x16>
@@ -23,9 +23,9 @@
 func.func @gemv(%A: tensor<1024x512xi32>, %x: tensor<512xi32>) -> tensor<1024xi32> {
   // Host side: allocate the DPUs, scatter the operands, wait, gather back.
   // CHECK: %[[DPU:.*]] = upmem.alloc_dpus with program @dpu_kernels::@program : !upmem.hierarchy<1x16x1>
-  // CHECK: upmem.scatter %{{.*}} onto @{{.*}} of %[[DPU]]
+  // CHECK: upmem.scatter_on_array %{{.*}} onto @{{.*}} of %[[DPU]]
   // CHECK: upmem.wait_for %[[DPU]]
-  // CHECK: upmem.gather %{{.*}} from @{{.*}} of %[[DPU]]
+  // CHECK: upmem.gather_on_array %{{.*}} from @{{.*}} of %[[DPU]]
   // CHECK: upmem.free_dpus %[[DPU]]
 
   // Device side.

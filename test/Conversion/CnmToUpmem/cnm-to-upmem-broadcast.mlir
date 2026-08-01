@@ -6,26 +6,26 @@
 // tasklet) at all, so every DPU's tasklets all read byte-for-byte identical
 // data straight from %c's own start. By default this lowers to
 // upmem.broadcast -- one runtime call broadcasting the whole buffer to every
-// DPU -- instead of a upmem.scatter whose affine map always happens to
+// DPU -- instead of a upmem.scatter_on_array whose affine map always happens to
 // return the same (zero) offset.
 //
 // %d's scatter map is tasklet-broadcast too (dim d2 unused) but still
 // depends on the dpu dim d1: different DPUs must see different data, so
 // upmem.broadcast (which has no affine map at all) would be wrong here. This
-// must keep using upmem.scatter regardless of cinm1-codegen.
+// must keep using upmem.scatter_on_array regardless of cinm1-codegen.
 
 // CHECK-DAG: #[[MAPD:[^ ]*]] = affine_map<(d0, d1) -> (d1, 0)>
 
 // CHECK-LABEL: func.func @main
 // CHECK: upmem.broadcast %{{.*}} onto @buf_0 of %{{.*}} : memref<8xi32> onto !upmem.hierarchy<1x4x2>
 // CHECK-LABEL: func.func @dpu_varying
-// CHECK: upmem.scatter %{{.*}}[8 elts, #[[MAPD]]] onto @buf_0 of %{{.*}} : memref<4x8xi32> onto !upmem.hierarchy<1x4x2>
+// CHECK: upmem.scatter_on_array %{{.*}}[8 elts, #[[MAPD]]] onto @buf_0 of %{{.*}} : memref<4x8xi32> onto !upmem.hierarchy<1x4x2>
 
 // use-bc-xfer-codegen=false turns the shortcut off, so %c falls back to the
-// classic upmem.scatter (rank, dpu) form with an all-zero map.
+// classic upmem.scatter_on_array (rank, dpu) form with an all-zero map.
 // NOBC-DAG: #[[MAPZ:[^ ]*]] = affine_map<(d0, d1) -> (0)>
 // NOBC-LABEL: func.func @main
-// NOBC: upmem.scatter %{{.*}}[8 elts, #[[MAPZ]]] onto @buf_0 of %{{.*}} : memref<8xi32> onto !upmem.hierarchy<1x4x2>
+// NOBC: upmem.scatter_on_array %{{.*}}[8 elts, #[[MAPZ]]] onto @buf_0 of %{{.*}} : memref<8xi32> onto !upmem.hierarchy<1x4x2>
 
 // cinm1-codegen does *not* affect the broadcast shortcut -- it selects the
 // DPU-side codegen style: no WRAM sharing between tasklets (a private

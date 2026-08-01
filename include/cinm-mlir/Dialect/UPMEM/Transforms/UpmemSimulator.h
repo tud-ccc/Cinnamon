@@ -51,7 +51,7 @@ inline int dtypeBytes(DType dt) { return dtypeBits(dt) / 8; }
 ///   Kernel       — DPU kernel launch/execution time (upmem.wait_for)
 ///   Cpu          — host CPU time (memref.copy and other host instructions)
 ///   Transfer     — host->DPU transfers (upmem.scatter,
-///                  upmem.scatter_on_tasklets, upmem.broadcast)
+///                  upmem.scatter_blocks, upmem.broadcast)
 ///   TransferBack — DPU->host transfers (upmem.gather)
 using cinm::utils::CostCategory;
 using cinm::utils::costCategoryName;
