@@ -183,9 +183,13 @@ def UpmemInferAcceleratorPass : Pass<"upmem-infer-accelerator", "ModuleOp"> {
     Option<"fixedTasklets", "fixed-tasklets", "int64_t", "-1",
            "Pin the number of tasklets to this value instead of searching over "
            "it (-1 = search normally). See fixed-dpus.">,
-    ListOption<"evalSolution", "eval-solution", "int64_t",
-               "Evaluate this single configuration (one int per space parameter) "
-               "and commit it, bypassing search entirely">
+    ListOption<"evalSolution", "eval-solution", "std::string",
+               "Evaluate this single configuration and commit it, bypassing "
+               "search entirely. Given as `name=value` pairs, e.g. "
+               "`eval-solution=blockM=8,blockK=128`. Every parameter the space "
+               "declares must be named; unknown names are an error. Named "
+               "rather than positional so that changing the space cannot "
+               "silently reinterpret a stored configuration.">
   ];
 }
 

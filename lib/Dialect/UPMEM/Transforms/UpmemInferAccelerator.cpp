@@ -815,7 +815,7 @@ struct UpmemInferAcceleratorPass
     : impl::UpmemInferAcceleratorPassBase<UpmemInferAcceleratorPass> {
   using Base::Base;
 
-  UpmemInferenceOptions buildOptions() const {
+  UpmemInferenceOptions buildOptions() {
     UpmemInferenceOptions upmemOpts;
     auto &o = upmemOpts.inference;
     o.maxEvals = maxEvals;
@@ -845,9 +845,23 @@ struct UpmemInferAcceleratorPass
     upmemOpts.simulator = simulator;
     upmemOpts.evalTimeoutMs = std::chrono::milliseconds(evalTimeoutMs);
     o.dumpDir = dumpDir;
-    if (!evalSolution.empty())
-      o.evalSingleSolution =
-          cinm::Configuration(evalSolution.begin(), evalSolution.end());
+    if (!evalSolution.empty()) {
+      llvm::StringMap<int64_t> named;
+      for (StringRef entry : evalSolution) {
+        auto [name, value] = entry.split('=');
+        int64_t parsed;
+        if (name.empty() || value.getAsInteger(10, parsed)) {
+          getOperation()->emitError()
+              << "eval-solution entry '" << entry
+              << "' is not a `name=value` pair; configurations are named, not "
+                 "positional";
+          signalPassFailure();
+          break;
+        }
+        named[name.trim()] = parsed;
+      }
+      o.evalSingleSolution = std::move(named);
+    }
     return upmemOpts;
   }
 
