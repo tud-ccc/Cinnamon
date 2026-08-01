@@ -20,11 +20,11 @@
 // CHECK: upmem.scatter_on_array %[[CST]][1 elts, #[[MAP]]] onto @buf of %[[DPU]] : memref<16x1xi32> onto !upmem.hierarchy<1x16x1>
 // CHECK: upmem.wait_for %[[DPU]] : !upmem.hierarchy<1x16x1>
 // CHECK: %[[SV_OUT:.*]] = memref.subview %[[ALLOC]][%[[I]], %[[J]]] [16, 1] [1, 1] : memref<64x64xi32> to memref<16x1xi32, {{.*}}>
-// CHECK: upmem.gather_on_array %[[SV_OUT]][1 elts, #[[MAP]]] from @buf of %[[DPU]] : memref<16x1xi32, {{.*}}> from !upmem.hierarchy<1x16x1>
+// CHECK: upmem.gather_from_array %[[SV_OUT]][1 elts, #[[MAP]]] from @buf of %[[DPU]] : memref<16x1xi32, {{.*}}> from !upmem.hierarchy<1x16x1>
 // CHECK: upmem.free_dpus %[[DPU]] : !upmem.hierarchy<1x16x1>
 // CHECK: module @dpu_kernels
 // CHECK: upmem.dpu_program @program() tasklets(1) {
-// CHECK: %[[WRAM_C:.*]] = upmem.pwram_alloc() : memref<i32, #upmem.wram>
+// CHECK: %[[WRAM_C:.*]] = memref.alloca() : memref<i32, #upmem.wram>
 // CHECK: %[[MRAM_C:.*]] = upmem.static_alloc @buf(mram) noinit : memref<1xi32, #upmem.mram>
 // CHECK: %[[WRAM_B:.*]] = upmem.static_alloc @buf_0(wram) noinit : memref<64xi32, #upmem.wram>
 // CHECK: %[[MRAM_B:.*]] = upmem.static_alloc @buf_1(mram) noinit : memref<64xi32, #upmem.mram>

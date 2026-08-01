@@ -22,7 +22,7 @@ module @kernels {
   // the 16384 the first RUN line allows.
   // CHECK: upmem.dpu_program @program
   upmem.dpu_program @program() tasklets(8) {
-    %wram = upmem.pwram_alloc() : memref<64xi32, #upmem.wram>
+    %wram = memref.alloca() : memref<64xi32, #upmem.wram>
     upmem.return
   }
 }

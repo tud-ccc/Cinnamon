@@ -35,7 +35,7 @@ func.func @gemv(%hostA: memref<8x16x64xi32>, %hostY: memref<8x16xi32>) {
   // The body's own staging becomes UPMEM ops: memref.alloc in WRAM is a
   // per-tasklet allocation, and memref.dealloc has nothing to do because the
   // WRAM partition is reclaimed when the kernel returns.
-  // CHECK: %[[W:.*]] = upmem.pwram_alloc() : memref<16xi32, #upmem.wram>
+  // CHECK: %[[W:.*]] = memref.alloca() : memref<16xi32, #upmem.wram>
   // CHECK: upmem.local_transfer %[[VY]] into %[[W]]
   // CHECK: upmem.local_transfer %[[VA]] into %{{.*}}
   // CHECK-NOT: memref.alloc
@@ -76,7 +76,7 @@ func.func @broadcast(%host: memref<4x64xi32>) {
   cnm.scatter %host into %b[#bcast] of %wg : memref<4x64xi32> into !cnm.buffer<64xi32 on #acc, #upmem.mram>
   // CHECK: %[[MB:.*]] = upmem.static_alloc @{{.*}}(mram) {{.*}} : memref<64xi32, #upmem.mram>
   // CHECK-NOT: memref.subview
-  // CHECK: %[[W:.*]] = upmem.pwram_alloc() : memref<64xi32, #upmem.wram>
+  // CHECK: %[[W:.*]] = memref.alloca() : memref<64xi32, #upmem.wram>
   // CHECK: upmem.local_transfer %[[MB]] into %[[W]]
   cnm.launch %wg ins(%B = %b : <64xi32, #upmem.mram>) on !cnm.workgroup<#acc> {
     %w = memref.alloc() : memref<64xi32, #upmem.wram>

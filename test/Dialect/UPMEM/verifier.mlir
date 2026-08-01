@@ -58,7 +58,7 @@ module {
   func.func @test(%arg0: memref<8x128xi32>) {
     %1 = upmem.alloc_dpus with program @dpu_kernels::@program : !upmem.hierarchy<8x128x1>
     // expected-error @+1 {{buffer reference @nonexistent does not refer to any symbol in @dpu_kernels::@program}}
-    upmem.gather_on_array %arg0[128 elts, affine_map<(d0, d1) -> (d0, 0)>] from @nonexistent of %1
+    upmem.gather_from_array %arg0[128 elts, affine_map<(d0, d1) -> (d0, 0)>] from @nonexistent of %1
         : memref<8x128xi32> from !upmem.hierarchy<8x128x1>
     return
   }
@@ -151,13 +151,13 @@ module {
 
 // -----
 
-// gather_on_array's map may not use the three-dimensional form: that is what
+// gather_from_array's map may not use the three-dimensional form: that is what
 // upmem.gather_blocks is for.
 module {
   func.func @test(%arg0: memref<8x128x4xi32>) {
     %1 = upmem.alloc_dpus with program @dpu_kernels::@program : !upmem.hierarchy<8x128x4>
     // expected-error @+1 {{Scatter map should map (rank, dpu) to a start index in the host buffer}}
-    upmem.gather_on_array %arg0[32 elts, affine_map<(d0, d1, d2) -> (d1, d2, 0)>] from @buf of %1
+    upmem.gather_from_array %arg0[32 elts, affine_map<(d0, d1, d2) -> (d1, d2, 0)>] from @buf of %1
         : memref<8x128x4xi32> from !upmem.hierarchy<8x128x4>
     return
   }
@@ -297,7 +297,7 @@ module {
   func.func @test(%arg0: memref<1024x1024xi32, strided<[4096, 1], offset: ?>>) {
     %1 = upmem.alloc_dpus with program @dpu_kernels::@program : !upmem.hierarchy<1x256x4>
     // expected-error @+1 {{the number of transferred elements (4096) exceeds the largest contiguous run of elements (1024) in host buffer}}
-    upmem.gather_on_array %arg0[4096 elts, affine_map<(d0, d1) -> (d0 * 1024 + d1 * 4, 0)>] from @buf of %1
+    upmem.gather_from_array %arg0[4096 elts, affine_map<(d0, d1) -> (d0 * 1024 + d1 * 4, 0)>] from @buf of %1
         : memref<1024x1024xi32, strided<[4096, 1], offset: ?>> from !upmem.hierarchy<1x256x4>
     return
   }

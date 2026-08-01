@@ -11,7 +11,7 @@ upmem.dpu_program @nested() tasklets(8) {
   %inner = memref.subview %outer[0, 0, %c0] [8, 1, 64] [1, 1, 1]
     : memref<8x1x128xi32, strided<[128, 128, 1], offset: ?>, #upmem.mram>
     to memref<8x1x64xi32, strided<[128, 128, 1], offset: ?>, #upmem.mram>
-  %w = upmem.pwram_alloc() : memref<8x1x64xi32, #upmem.wram>
+  %w = memref.alloca() : memref<8x1x64xi32, #upmem.wram>
   upmem.local_transfer %inner into %w
     : memref<8x1x64xi32, strided<[128, 128, 1], offset: ?>, #upmem.mram>
     to memref<8x1x64xi32, #upmem.wram>

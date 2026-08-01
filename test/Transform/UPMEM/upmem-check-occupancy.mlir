@@ -22,7 +22,7 @@ module @kernels {
   // CHECK: upmem.dpu_program @program
   upmem.dpu_program @program() tasklets(8) {
     %mram = upmem.static_alloc @buf(mram) : memref<64xi32, #upmem.mram>
-    %wram = upmem.pwram_alloc() : memref<64xi32, #upmem.wram>
+    %wram = memref.alloca() : memref<64xi32, #upmem.wram>
     upmem.local_transfer %mram into %wram
       : memref<64xi32, #upmem.mram> to memref<64xi32, #upmem.wram>
     upmem.return
@@ -46,7 +46,7 @@ func.func @private_wram_is_per_tasklet() {
 module @kernels {
   // expected-error @below {{WRAM occupancy of 278528 bytes exceeds the 57344 bytes a DPU has (16 tasklets x 17408 bytes of stack, plus 0 bytes of static buffers)}}
   upmem.dpu_program @program() tasklets(16) {
-    %wram = upmem.pwram_alloc() : memref<4096xi32, #upmem.wram>
+    %wram = memref.alloca() : memref<4096xi32, #upmem.wram>
     upmem.return
   }
 }
@@ -101,7 +101,7 @@ module @kernels {
 module @kernels {
   upmem.dpu_program @never_loaded() tasklets(24) {
     %mram = upmem.static_alloc @buf(mram) : memref<17825792xi32, #upmem.mram>
-    %wram = upmem.pwram_alloc() : memref<1048576xi32, #upmem.wram>
+    %wram = memref.alloca() : memref<1048576xi32, #upmem.wram>
     upmem.return
   }
 }

@@ -23,7 +23,7 @@ upmem.dpu_program @k() tasklets(8) {
   // CHECK: for (int32_t [[K:v[0-9]+]] = 0; [[K]] < 128; [[K]] += 64) {
   // CHECK: mram_read(&a[0 + ({{v[0-9]+}} * 1024) + ([[K]] * 1) + 0]
   scf.for %k = %c0 to %c128 step %c64 {
-    %w = upmem.pwram_alloc() : memref<8x1x64xi32, #upmem.wram>
+    %w = memref.alloca() : memref<8x1x64xi32, #upmem.wram>
     %s = memref.subview %a[%t, 0, 0, %k] [1, 8, 1, 64] [1, 1, 1, 1]
       : memref<8x8x1x128xi32, #upmem.mram>
       to memref<8x1x64xi32, strided<[128, 128, 1], offset: ?>, #upmem.mram>

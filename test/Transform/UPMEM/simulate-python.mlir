@@ -30,7 +30,7 @@ module {
           upmem.scatter_on_array %subview_2[1 elts, #map1] onto @buf_1 of %5  : memref<1xf32, strided<[1], offset: ?>> onto !upmem.hierarchy<1x1x16>
           upmem.scatter_on_array %subview[16 elts, #map2] onto @buf_2 of %5  : memref<16xf32, strided<[1], offset: ?>> onto !upmem.hierarchy<1x1x16>
           upmem.wait_for %5  : !upmem.hierarchy<1x1x16>
-          upmem.gather_on_array %subview[16 elts, #map2] from @buf_2 of %5  : memref<16xf32, strided<[1], offset: ?>> from !upmem.hierarchy<1x1x16>
+          upmem.gather_from_array %subview[16 elts, #map2] from @buf_2 of %5  : memref<16xf32, strided<[1], offset: ?>> from !upmem.hierarchy<1x1x16>
         } 
       } 
       upmem.free_dpus %5  : !upmem.hierarchy<1x1x16>
@@ -41,11 +41,11 @@ module {
   memref.global "private" constant @__constant_16xf32_0 : memref<16xf32> = dense<0.000000e+00> {alignment = 64 : i64}
   module @dpu_kernels_0 {
     upmem.dpu_program @program() tasklets(16) {
-      %pwram_buf = upmem.pwram_alloc()  : memref<1xf32, #upmem.wram>
+      %pwram_buf = memref.alloca()  : memref<1xf32, #upmem.wram>
       %mram_buf = upmem.static_alloc @buf(mram)  : memref<16x1xf32, #upmem.mram>
       %wram_buf = upmem.static_alloc @buf_0(wram) noinit  : memref<1xf32, #upmem.wram>
       %mram_buf_0 = upmem.static_alloc @buf_1(mram)  : memref<1xf32, #upmem.mram>
-      %pwram_buf_1 = upmem.pwram_alloc()  : memref<f32, #upmem.wram>
+      %pwram_buf_1 = memref.alloca()  : memref<f32, #upmem.wram>
       %mram_buf_2 = upmem.static_alloc @buf_2(mram)  : memref<16xf32, #upmem.mram>
       %0 = upmem.tasklet_dim() 
       %subview = memref.subview %mram_buf[%0, 0] [1, 1] [1, 1]  : memref<16x1xf32, #upmem.mram> to memref<1xf32, strided<[1], offset: ?>, #upmem.mram>

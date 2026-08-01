@@ -17,9 +17,9 @@
 
 // CHECK: module @dpu_kernels
 // CHECK: upmem.dpu_program @program() tasklets(2) {
-// CHECK: %[[PWRAM_B:.*]] = upmem.pwram_alloc() : memref<8xi32, #upmem.wram>
+// CHECK: %[[PWRAM_B:.*]] = memref.alloca() : memref<8xi32, #upmem.wram>
 // CHECK: %[[MRAM_B:.*]] = upmem.static_alloc @buf(mram) : memref<8xi32, #upmem.mram>
-// CHECK: %[[PWRAM_A:.*]] = upmem.pwram_alloc() : memref<8xi32, #upmem.wram>
+// CHECK: %[[PWRAM_A:.*]] = memref.alloca() : memref<8xi32, #upmem.wram>
 // CHECK: %[[MRAM_A:.*]] = upmem.static_alloc @buf_0(mram) : memref<2x8xi32, #upmem.mram>
 // CHECK: upmem.local_transfer %[[MRAM_B]] into %[[PWRAM_B]] : memref<8xi32, #upmem.mram> to memref<8xi32, #upmem.wram>
 // CHECK-NOT: scf.if

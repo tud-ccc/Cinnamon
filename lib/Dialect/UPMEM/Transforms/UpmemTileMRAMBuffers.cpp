@@ -127,7 +127,7 @@ std::optional<Value> allocateInLeaf(OpBuilder &b, memref::SubViewOp subView,
 
   auto type = MemRefType::get(shape, subView.getType().getElementType(),
                               MemRefLayoutAttrInterface{}, levels.leafSpace);
-  return memref::AllocOp::create(b, subView.getLoc(), type).getResult();
+  return memref::AllocaOp::create(b, subView.getLoc(), type).getResult();
 }
 
 /// promoteSubViews only promotes operands defined by a `memref.subview`, which

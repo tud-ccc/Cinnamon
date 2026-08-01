@@ -34,7 +34,7 @@
 // CINM1-LABEL: func.func @main
 // CINM1: upmem.broadcast %{{.*}} onto @buf of %{{.*}} : memref<8xi32> onto !upmem.hierarchy<1x4x2>
 // CINM1: upmem.dpu_program @program() tasklets(2) {
-// CINM1: upmem.pwram_alloc() : memref<8xi32, #upmem.wram>
+// CINM1: memref.alloca() : memref<8xi32, #upmem.wram>
 // CINM1: upmem.static_alloc @buf(mram) : memref<8xi32, #upmem.mram>
 
 #mapC = affine_map<(d0, d1, d2) -> ()>
