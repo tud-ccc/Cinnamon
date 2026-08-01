@@ -43,6 +43,7 @@ def _run(
         str(src),
         "--split-input-file",
         *PRE_PASSES,
+        "--debug-only=cinm-inference",
         f"--upmem-infer-accelerator={_infer_opts_str(infer_opts)}",
         *extra_opts,
         "-o",
@@ -201,19 +202,21 @@ def eval_solution(
     params: dict,
     *,
     out_file: pathlib.Path,
+    extra_infer_opts: dict = {},
     cinm_opt: pathlib.Path = DEFAULT_CINM_OPT,
     nice: bool = False,
     log_file: pathlib.Path | None = None,
 ) -> subprocess.CompletedProcess:
-    """Compile exactly one configuration, no search. `params` must be ordered
-    to match the dimensions UpmemInferAccelerator declared for this op (dpus,
-    tasklets, then whatever the op handler added) -- see pools.param_cols for
-    a way to recover that order from an existing pool.csv."""
-    solution_str = ",".join(str(v) for v in params.values())
+    """Compile exactly one configuration, no search. `params` maps the search
+    space's parameter names to values -- e.g. dpus, tasklets, and one
+    `op<N>.block<D>` / `op<N>.leaf<D>` per iteration dimension of the Nth
+    distributed op. Every parameter the space declares must be present;
+    cinm-opt rejects missing or unknown names and lists what it expects."""
+    solution_str = ",".join(f"{name}={value}" for name, value in params.items())
     log_file = log_file or (pathlib.Path(out_file).parent / "cinm-opt.log")
     return _run(
         src,
-        {"eval-solution": solution_str},
+        infer_opts={"eval-solution": solution_str, **extra_infer_opts},
         out_file=out_file,
         cinm_opt=cinm_opt,
         log_file=log_file,
@@ -221,7 +224,9 @@ def eval_solution(
     )
 
 
-def eval_solution_lowerer(*, cinm_opt: pathlib.Path = DEFAULT_CINM_OPT):
+def eval_solution_lowerer(
+    *, cinm_opt: pathlib.Path = DEFAULT_CINM_OPT, extra_infer_opts: dict = {}
+):
     """A (fn_module, out_file, log_file) -> CompletedProcess callable, for use
     as compile_run.Config.lower -- compiles CINM 2.0's chosen `params` with no
     further search."""
@@ -233,7 +238,12 @@ def eval_solution_lowerer(*, cinm_opt: pathlib.Path = DEFAULT_CINM_OPT):
         **params,
     ) -> subprocess.CompletedProcess:
         return eval_solution(
-            fn_module, params, out_file=out_file, cinm_opt=cinm_opt, log_file=log_file
+            fn_module,
+            params,
+            out_file=out_file,
+            cinm_opt=cinm_opt,
+            log_file=log_file,
+            extra_infer_opts=extra_infer_opts,
         )
 
     return _lower

@@ -50,6 +50,14 @@ CONFIGS = [
         system="cinm2",
         fn_name="gemv_64MB",
         label="default",
+        # FIXME: not expressible in the generic search space yet.
+        # This configuration relies on *sequential outer trips*: with
+        # dpus=256 tasklets=4 (1024 leaves) it covers the 4096x4096 problem in
+        # 4 trips over M and 4 over K. The generic space requires the tile
+        # counts to fill the workgroup exactly and has no notion of trips --
+        # design §G2 parked them in --cinm-tiling, which the generic pipeline
+        # no longer runs. Left in the old parameter names deliberately so it
+        # fails loudly rather than being silently reinterpreted.
         params={
             "dpus": DPUS,
             "tasklets": TASKLETS,
@@ -81,41 +89,73 @@ CONFIGS = [
     #     prim="gemv",
     #     lower=cinmopt.eval_solution_lowerer(),
     # ),
+    # compile_run.Config(
+    #     system="atim2",
+    #     fn_name="gemv_64MB",
+    #     label="default",
+    #     params={
+    #         "dpus": 2048,
+    #         "tasklets": 8,
+    #         "taskletCols": 8,
+    #         "wramRow": 1,
+    #         "wramCol": 256,
+    #         "dpuCols": 1,
+    #         "mramRow": 1,
+    #         "mramCol": 4096,
+    #     },
+    #     fn_module=source,
+    #     prim="gemv",
+    #     lower=cinmopt.eval_solution_lowerer(),
+    # ),
     compile_run.Config(
-        system="atim2",
+        system="atim_templateflow",
         fn_name="gemv_64MB",
         label="default",
+        # The atim optimum, in the generic search space: one block size per
+        # iteration dimension of the gemv (m, k), at the workgroup level
+        # (block) and the leaf level (leaf). The template path reads the same
+        # numbers back as mramRow=64, mramCol=128, taskletCols=1, wramRow=8,
+        # wramCol=64 -- see docs/CnmMemoryLevelsDesign.md §H5.
         params={
             "dpus": 2048,
             "tasklets": 8,
-            "taskletCols": 8,
-            "wramRow": 1,
-            "wramCol": 256,
-            "dpuCols": 1,
-            "mramRow": 1,
-            "mramCol": 4096,
+            "op0.block0": 8,  # mramRow * taskletCols / tasklets
+            "op0.block1": 128,  # mramCol / taskletCols
+            "op0.leaf0": 8,  # wramRow
+            "op0.leaf1": 64,  # wramCol
         },
         fn_module=source,
         prim="gemv",
-        lower=cinmopt.eval_solution_lowerer(),
+        lower=cinmopt.eval_solution_lowerer(
+            extra_infer_opts={
+                "lowering": "templates",
+            }
+        ),
     ),
     compile_run.Config(
-        system="atim",
+        system="atim_genericflow",
         fn_name="gemv_64MB",
         label="default",
+        # The atim optimum, in the generic search space: one block size per
+        # iteration dimension of the gemv (m, k), at the workgroup level
+        # (block) and the leaf level (leaf). The template path reads the same
+        # numbers back as mramRow=64, mramCol=128, taskletCols=1, wramRow=8,
+        # wramCol=64 -- see docs/CnmMemoryLevelsDesign.md §H5.
         params={
             "dpus": 2048,
             "tasklets": 8,
-            "taskletCols": 1,
-            "wramRow": 8,
-            "wramCol": 64,
-            "dpuCols": 32,  # 64 rows
-            "mramRow": 64,
-            "mramCol": 128,
+            "op0.block0": 8,  # mramRow * taskletCols / tasklets
+            "op0.block1": 128,  # mramCol / taskletCols
+            "op0.leaf0": 8,  # wramRow
+            "op0.leaf1": 64,  # wramCol
         },
         fn_module=source,
         prim="gemv",
-        lower=cinmopt.eval_solution_lowerer(),
+        lower=cinmopt.eval_solution_lowerer(
+            extra_infer_opts={
+                "lowering": "generic",
+            }
+        ),
     ),
     compile_run.Config(
         system="cinm2_partial_reduction",
