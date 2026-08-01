@@ -1,6 +1,7 @@
 #include "cinm-mlir/Conversion/CnmToGPU/CnmToGPU.h"
 #include "cinm-mlir/Conversion/CommonPatterns.h"
 #include "cinm-mlir/Dialect/Cnm/IR/CnmOps.h"
+#include "cinm-mlir/Dialect/Cnm/IR/CnmScatterMap.h"
 #include "cinm-mlir/Dialect/Cnm/IR/CnmTypes.h"
 
 #include <cstdint>
@@ -119,8 +120,6 @@ struct ConvertCnmScatterToGPU : public OpConversionPattern<cnm::ScatterOp> {
   LogicalResult
   matchAndRewrite(cnm::ScatterOp op, OpAdaptor,
                   ConversionPatternRewriter &rewriter) const override {
-    const WorkgroupType workgroupType = op.getWg().getType();
-    const ArrayRef<int64_t> workgroupShape = workgroupType.getShape();
     const auto bufferType =
         dyn_cast<cnm::BufferType>(op.getOperand(1).getType());
 
@@ -129,14 +128,20 @@ struct ConvertCnmScatterToGPU : public OpConversionPattern<cnm::ScatterOp> {
     dst = createOrFoldUnrealizedConversionCast(
         op.getLoc(), rewriter, convertCnmBufferToMemRefType(bufferType), dst);
 
-    const SmallVector<int64_t> loopSteps(workgroupShape.size(), 1);
+    // One iteration per transfer: over the workgroup, and over the buffer
+    // dimensions the map retains when a leaf receives several blocks.
+    const SmallVector<int64_t> domain =
+        cnm::getScatterMapDomain(op.getScatterMap(), bufferType);
+    const SmallVector<int64_t> loopSteps(domain.size(), 1);
+    const ArrayRef<int64_t> blockShape =
+        cnm::getScatterBlockShape(op.getScatterMap(), bufferType);
     cinm::createNestedAffineForLoops(
-        rewriter, op.getLoc(), workgroupShape, loopSteps, ValueRange{},
+        rewriter, op.getLoc(), domain, loopSteps, ValueRange{},
         [&](OpBuilder &builder, Location loc, ValueRange indices,
             ValueRange) -> SmallVector<Value> {
           const SmallVector<Value> mappedIndices =
               createAffineApply(builder, loc, op.getScatterMap(), indices);
-          createMemrefSubviewCopy(builder, loc, src, dst, bufferType.getShape(),
+          createMemrefSubviewCopy(builder, loc, src, dst, blockShape,
                                   mappedIndices, indices);
           return {};
         });
@@ -152,8 +157,6 @@ struct ConvertCnmGatherToGPU : public OpConversionPattern<cnm::GatherOp> {
   LogicalResult
   matchAndRewrite(cnm::GatherOp op, OpAdaptor,
                   ConversionPatternRewriter &rewriter) const override {
-    const WorkgroupType workgroupType = op.getWg().getType();
-    const ArrayRef<int64_t> workgroupShape = workgroupType.getShape();
     const auto bufferType =
         dyn_cast<cnm::BufferType>(op.getOperand(0).getType());
 
@@ -162,15 +165,19 @@ struct ConvertCnmGatherToGPU : public OpConversionPattern<cnm::GatherOp> {
         op.getLoc(), rewriter, convertCnmBufferToMemRefType(bufferType), src);
     Value dst = rewriter.getRemappedValue(op.getOperand(2));
 
-    const SmallVector<int64_t> loopSteps(workgroupShape.size(), 1);
+    const SmallVector<int64_t> domain =
+        cnm::getScatterMapDomain(op.getGatherMap(), bufferType);
+    const SmallVector<int64_t> loopSteps(domain.size(), 1);
+    const ArrayRef<int64_t> blockShape =
+        cnm::getScatterBlockShape(op.getGatherMap(), bufferType);
     cinm::createNestedAffineForLoops(
-        rewriter, op.getLoc(), workgroupShape, loopSteps, ValueRange{},
+        rewriter, op.getLoc(), domain, loopSteps, ValueRange{},
         [&](OpBuilder &builder, Location loc, ValueRange indices,
             ValueRange) -> SmallVector<Value> {
           const SmallVector<Value> mappedIndices =
               createAffineApply(builder, loc, op.getGatherMap(), indices);
-          createMemrefSubviewCopy(builder, loc, src, dst, bufferType.getShape(),
-                                  indices, mappedIndices);
+          createMemrefSubviewCopy(builder, loc, src, dst, blockShape, indices,
+                                  mappedIndices);
           return {};
         });
 
