@@ -48,107 +48,12 @@ namespace {
 
 /// How one operand is spread over the workgroup.
 struct OperandTiling {
-  /// Number of tiles along each of the operand's own dimensions.
-  SmallVector<int64_t> counts;
   /// Extent of one tile along each of the operand's own dimensions. This is
   /// the `cnm.buffer` shape.
   SmallVector<int64_t> blocks;
-  /// Workgroup coordinates -> leading tile coordinates of the host value.
+  /// (workgroup coordinates, buffer coordinates) -> host element.
   AffineMap scatterMap;
 };
-
-//===----------------------------------------------------------------------===//
-// Tiled layout
-//===----------------------------------------------------------------------===//
-
-/// `cnm.scatter` requires the host value's shape to be the leading tile
-/// coordinates followed by *exactly* the buffer shape, so an operand of shape
-/// `[E_0..E_{r-1}]` has to be presented as `[f_0..f_{r-1}, b_0..b_{r-1}]`.
-/// Getting there is a split of each dimension (`[E_p] -> [f_p, b_p]`,
-/// producing the interleaved `[f_0, b_0, f_1, b_1, ...]`) followed by a
-/// permutation that groups the tile coordinates ahead of the block
-/// coordinates.
-static void tiledLayoutShapes(ArrayRef<int64_t> counts,
-                              ArrayRef<int64_t> blocks,
-                              SmallVectorImpl<int64_t> &interleaved,
-                              SmallVectorImpl<int64_t> &grouped,
-                              SmallVectorImpl<int64_t> &perm) {
-  unsigned rank = counts.size();
-  for (unsigned p = 0; p < rank; ++p) {
-    interleaved.push_back(counts[p]);
-    interleaved.push_back(blocks[p]);
-  }
-  llvm::append_range(grouped, counts);
-  llvm::append_range(grouped, blocks);
-  for (unsigned p = 0; p < rank; ++p)
-    perm.push_back(2 * p);
-  for (unsigned p = 0; p < rank; ++p)
-    perm.push_back(2 * p + 1);
-}
-
-/// True when `perm` moves no dimension of extent > 1 past another, so the
-/// permutation is a pure relabelling and the data can be reinterpreted in
-/// place instead of copied. This is the common case: it holds whenever at
-/// most one of the operand's dimensions is actually tiled.
-static bool isLayoutPreserving(ArrayRef<int64_t> shape,
-                               ArrayRef<int64_t> perm) {
-  int64_t previous = -1;
-  for (int64_t src : perm) {
-    if (shape[src] == 1)
-      continue;
-    if (src < previous)
-      return false;
-    previous = src;
-  }
-  return true;
-}
-
-/// Rewrite `value` into the tiled layout `cnm.scatter` expects.
-static Value toTiledLayout(ImplicitLocOpBuilder &b, Value value,
-                           ArrayRef<int64_t> counts, ArrayRef<int64_t> blocks) {
-  if (counts.empty())
-    return value;
-
-  SmallVector<int64_t> interleaved, grouped, perm;
-  tiledLayoutShapes(counts, blocks, interleaved, grouped, perm);
-
-  auto typed = cast<TypedValue<ShapedType>>(value);
-  if (isLayoutPreserving(interleaved, perm))
-    return reshapeStatic(b, b.getLoc(), typed, grouped);
-
-  // A genuine transpose, i.e. a host-side copy. It only arises when two or
-  // more of this operand's dimensions are tiled at once.
-  Value split = reshapeStatic(b, b.getLoc(), typed, interleaved);
-  Value init = tensor::EmptyOp::create(b, grouped,
-                                       typed.getType().getElementType());
-  return linalg::TransposeOp::create(b, split, init, perm).getResult()[0];
-}
-
-/// Inverse of `toTiledLayout`: bring a gathered value in tiled layout back to
-/// `origShape`.
-static Value fromTiledLayout(ImplicitLocOpBuilder &b, Value value,
-                             ArrayRef<int64_t> counts, ArrayRef<int64_t> blocks,
-                             ArrayRef<int64_t> origShape) {
-  if (counts.empty())
-    return value;
-
-  SmallVector<int64_t> interleaved, grouped, perm;
-  tiledLayoutShapes(counts, blocks, interleaved, grouped, perm);
-
-  auto typed = cast<TypedValue<ShapedType>>(value);
-  if (isLayoutPreserving(interleaved, perm))
-    return reshapeStatic(b, b.getLoc(), typed, origShape);
-
-  SmallVector<int64_t> inversePerm(perm.size());
-  for (auto [i, src] : llvm::enumerate(perm))
-    inversePerm[src] = i;
-  Value init = tensor::EmptyOp::create(b, interleaved,
-                                       typed.getType().getElementType());
-  Value back =
-      linalg::TransposeOp::create(b, typed, init, inversePerm).getResult()[0];
-  return reshapeStatic(b, b.getLoc(), cast<TypedValue<ShapedType>>(back),
-                       origShape);
-}
 
 //===----------------------------------------------------------------------===//
 // Distribution
@@ -444,20 +349,26 @@ LogicalResult distribute(RewriterBase &rewriter, linalg::LinalgOp op,
                           ? getAffineConstantExpr(0, ctx)
                           : leaf.floorDiv(strides[dim]) % counts[dim];
 
-  // Per-operand tiling, derived from the indexing maps.
+  // Per-operand tiling, derived from the indexing maps. The scatter map names
+  // a host element for every element of every leaf's buffer: the operand is
+  // scattered as it stands, in whatever layout it already has.
   SmallVector<OperandTiling> tilings;
   for (auto [operand, map] : llvm::zip(op->getOpOperands(), indexingMaps)) {
     OperandTiling tiling;
     SmallVector<AffineExpr> scatterResults;
-    for (AffineExpr expr : map.getResults()) {
+    unsigned operandRank = map.getNumResults();
+    for (auto [position, expr] : llvm::enumerate(map.getResults())) {
       unsigned dim = cast<AffineDimExpr>(expr).getPosition();
-      tiling.counts.push_back(counts[dim]);
       tiling.blocks.push_back(blocks[dim]);
-      scatterResults.push_back(tileCoords[dim]);
+      AffineExpr within =
+          getAffineDimExpr(wgShape.size() + position, ctx);
+      scatterResults.push_back(tileCoords[dim] * blocks[dim] + within);
     }
-    tiling.scatterMap =
-        simplifyAffineMapWithBounds(
-            AffineMap::get(wgShape.size(), 0, scatterResults, ctx), wgShape);
+    SmallVector<int64_t> bounds(wgShape);
+    llvm::append_range(bounds, tiling.blocks);
+    tiling.scatterMap = simplifyAffineMapWithBounds(
+        AffineMap::get(wgShape.size() + operandRank, 0, scatterResults, ctx),
+        bounds);
     tilings.push_back(std::move(tiling));
   }
 
@@ -488,15 +399,14 @@ LogicalResult distribute(RewriterBase &rewriter, linalg::LinalgOp op,
       // nothing to bring over.
     } else {
       // NOTE: when the destination is a constant zero -- which is exactly what
-      // a split reduction's identity seed is (§G5) -- this transfers a
-      // full-size buffer of zeros per launch. `cnm.set_zero` exists for this,
-      // but `--convert-cnm-to-upmem` has no pattern for it (only the GPU path
+      // a split reduction's identity seed is -- this transfers a full-size
+      // buffer of zeros per launch. `cnm.set_zero` exists for this, but
+      // `--convert-cnm-to-upmem` has no pattern for it (only the GPU path
       // does), so emitting it here makes the backend conversion fail. Fixing
       // that needs a device-side zeroing of the MRAM buffer, which is its own
       // piece of work.
-      Value host = toTiledLayout(b, operand.get(), tiling.counts,
-                                 tiling.blocks);
-      cnm::ScatterOp::create(b, host, alloc, workgroup, tiling.scatterMap);
+      cnm::ScatterOp::create(b, operand.get(), alloc, workgroup,
+                             tiling.scatterMap);
     }
 
     (isDestination ? launchOutputs : launchInputs).push_back(alloc);
@@ -524,21 +434,16 @@ LogicalResult distribute(RewriterBase &rewriter, linalg::LinalgOp op,
     cnm::TerminatorOp::create(b);
   }
 
-  // Gather each result back and undo the tiled layout.
+  // Gather each result straight back into a value of the op's own shape.
   SmallVector<Value> results;
   for (auto [index, init] : llvm::enumerate(op.getDpsInits())) {
     const OperandTiling &tiling = tilings[numInputs + index];
     auto initTy = cast<ShapedType>(init.getType());
-
-    SmallVector<int64_t> gatheredShape(tiling.counts);
-    llvm::append_range(gatheredShape, tiling.blocks);
-    Value destination = tensor::EmptyOp::create(b, gatheredShape,
+    Value destination = tensor::EmptyOp::create(b, initTy.getShape(),
                                                 initTy.getElementType());
-    Value gathered = cnm::GatherOp::create(b, launchOutputs[index], workgroup,
-                                           tiling.scatterMap, destination)
-                         .getOutput();
-    results.push_back(fromTiledLayout(b, gathered, tiling.counts,
-                                      tiling.blocks, initTy.getShape()));
+    results.push_back(cnm::GatherOp::create(b, launchOutputs[index], workgroup,
+                                            tiling.scatterMap, destination)
+                          .getOutput());
   }
 
   cnm::FreeWorkgroupOp::create(b, workgroup);
