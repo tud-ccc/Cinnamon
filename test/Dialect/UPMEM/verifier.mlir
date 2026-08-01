@@ -39,7 +39,7 @@ module {
   func.func @test(%arg0: memref<8x128xi32>) {
     %1 = upmem.alloc_dpus with program @dpu_kernels::@program : !upmem.hierarchy<8x128x1>
     // expected-error @+1 {{buffer reference @nonexistent does not refer to any symbol in @dpu_kernels::@program}}
-    upmem.scatter %arg0[128 elts, affine_map<(d0, d1) -> (d0, d1)>] onto @nonexistent of %1
+    upmem.scatter_on_array %arg0[128 elts, affine_map<(d0, d1) -> (d0, 0)>] onto @nonexistent of %1
         : memref<8x128xi32> onto !upmem.hierarchy<8x128x1>
     return
   }
@@ -58,7 +58,7 @@ module {
   func.func @test(%arg0: memref<8x128xi32>) {
     %1 = upmem.alloc_dpus with program @dpu_kernels::@program : !upmem.hierarchy<8x128x1>
     // expected-error @+1 {{buffer reference @nonexistent does not refer to any symbol in @dpu_kernels::@program}}
-    upmem.gather %arg0[128 elts, affine_map<(d0, d1) -> (d0, d1)>] from @nonexistent of %1
+    upmem.gather_on_array %arg0[128 elts, affine_map<(d0, d1) -> (d0, 0)>] from @nonexistent of %1
         : memref<8x128xi32> from !upmem.hierarchy<8x128x1>
     return
   }
@@ -77,7 +77,7 @@ module {
   func.func @test(%arg0: memref<8x128xi32>) {
     %1 = upmem.alloc_dpus with program @dpu_kernels::@program : !upmem.hierarchy<8x128x1>
     // expected-error @+1 {{buffer reference @not_a_buf must refer to a named upmem.static_alloc op}}
-    upmem.scatter %arg0[128 elts, affine_map<(d0, d1) -> (d0, d1)>] onto @not_a_buf of %1
+    upmem.scatter_on_array %arg0[128 elts, affine_map<(d0, d1) -> (d0, 0)>] onto @not_a_buf of %1
         : memref<8x128xi32> onto !upmem.hierarchy<8x128x1>
     return
   }
@@ -98,7 +98,7 @@ module {
   func.func @test(%arg0: memref<8x128xi32>) {
     %1 = upmem.alloc_dpus with program @dpu_kernels::@program : !upmem.hierarchy<8x128x1>
     // expected-error @+1 {{Scatter map should map (rank, dpu) to a start index in the host buffer}}
-    upmem.scatter %arg0[128 elts, affine_map<(d0, d1) -> (d0)>] onto @buf of %1
+    upmem.scatter_on_array %arg0[128 elts, affine_map<(d0, d1) -> (d0)>] onto @buf of %1
         : memref<8x128xi32> onto !upmem.hierarchy<8x128x1>
     return
   }
@@ -117,7 +117,7 @@ module {
   func.func @test(%arg0: memref<128xi32>) {
     %1 = upmem.alloc_dpus with program @dpu_kernels::@program : !upmem.hierarchy<8x128x1>
     // expected-error @+1 {{Scatter map should map (rank, dpu) to a start index in the host buffer}}
-    upmem.scatter %arg0[128 elts, affine_map<(d0) -> (d0)>] onto @buf of %1
+    upmem.scatter_on_array %arg0[128 elts, affine_map<(d0) -> (d0)>] onto @buf of %1
         : memref<128xi32> onto !upmem.hierarchy<8x128x1>
     return
   }
@@ -131,13 +131,13 @@ module {
 
 // -----
 
-// upmem.scatter (unlike upmem.scatter_on_tasklets) may not use the (rank,
+// upmem.scatter_on_array (unlike upmem.scatter_blocks) may not use the (rank,
 // dpu, tasklet) form.
 module {
   func.func @test(%arg0: memref<8x128x4xi32>) {
     %1 = upmem.alloc_dpus with program @dpu_kernels::@program : !upmem.hierarchy<8x128x4>
     // expected-error @+1 {{Scatter map should map (rank, dpu) to a start index in the host buffer}}
-    upmem.scatter %arg0[32 elts, affine_map<(d0, d1, d2) -> (d1, d2, 0)>] onto @buf of %1
+    upmem.scatter_on_array %arg0[32 elts, affine_map<(d0, d1, d2) -> (d1, d2, 0)>] onto @buf of %1
         : memref<8x128x4xi32> onto !upmem.hierarchy<8x128x4>
     return
   }
@@ -151,13 +151,13 @@ module {
 
 // -----
 
-// gather map may not use the (rank, dpu, tasklet) form: only
-// upmem.scatter_on_tasklets supports the UPMEM SDK scatter transfer API.
+// gather_on_array's map may not use the three-dimensional form: that is what
+// upmem.gather_blocks is for.
 module {
   func.func @test(%arg0: memref<8x128x4xi32>) {
     %1 = upmem.alloc_dpus with program @dpu_kernels::@program : !upmem.hierarchy<8x128x4>
     // expected-error @+1 {{Scatter map should map (rank, dpu) to a start index in the host buffer}}
-    upmem.gather %arg0[32 elts, affine_map<(d0, d1, d2) -> (d1, d2, 0)>] from @buf of %1
+    upmem.gather_on_array %arg0[32 elts, affine_map<(d0, d1, d2) -> (d1, d2, 0)>] from @buf of %1
         : memref<8x128x4xi32> from !upmem.hierarchy<8x128x4>
     return
   }
@@ -171,16 +171,16 @@ module {
 
 // -----
 
-// A valid upmem.scatter_on_tasklets: the scatter map computes, for each
-// tasklet, the start index of its own block in the host buffer. Blocks for
-// different tasklets need not be contiguous with each other (here they come
-// from non-adjacent rows of the host buffer), only each individual block (32
-// contiguous elements) must be contiguous.
+// A valid upmem.scatter_blocks: the scatter map computes, for each block, its
+// own start index in the host buffer. Blocks need not be contiguous with each
+// other (here they come from non-adjacent rows of the host buffer), only each
+// individual block (32 contiguous elements) must be. 128 DPUs x 4 blocks need
+// 512 rows to draw from.
 module {
-  func.func @test(%arg0: memref<128x1024xi32>) {
+  func.func @test(%arg0: memref<512x1024xi32>) {
     %1 = upmem.alloc_dpus with program @dpu_kernels::@program : !upmem.hierarchy<1x128x4>
-    upmem.scatter_on_tasklets %arg0[32 elts, affine_map<(d0, d1, d2) -> (d1 * 4 + d2, 0)>, 4 blocks] onto @buf of %1
-        : memref<128x1024xi32> onto !upmem.hierarchy<1x128x4>
+    upmem.scatter_blocks %arg0[32 elts, affine_map<(d0, d1, d2) -> (d1 * 4 + d2, 0)>, 4 blocks] onto @buf of %1
+        : memref<512x1024xi32> onto !upmem.hierarchy<1x128x4>
     return
   }
   module @dpu_kernels {
@@ -193,13 +193,70 @@ module {
 
 // -----
 
-// upmem.scatter_on_tasklets requires the (rank, dpu, tasklet) scatter map
-// form.
+// A valid upmem.gather_blocks, the mirror image of the scatter above: each
+// DPU's four blocks are written back to four non-adjacent host rows.
+module {
+  func.func @test(%arg0: memref<512x1024xi32>) {
+    %1 = upmem.alloc_dpus with program @dpu_kernels::@program : !upmem.hierarchy<1x128x4>
+    upmem.gather_blocks %arg0[32 elts, affine_map<(d0, d1, d2) -> (d1 * 4 + d2, 0)>, 4 blocks] from @buf of %1
+        : memref<512x1024xi32> from !upmem.hierarchy<1x128x4>
+    return
+  }
+  module @dpu_kernels {
+    upmem.dpu_program @program() tasklets(4) {
+      %buf = upmem.static_alloc @buf(mram) : memref<4x32xi32, "mram">
+      upmem.return
+    }
+  }
+}
+
+// -----
+
+// A block must fit inside one contiguous run, and where it starts is part of
+// that question: this host memref stores rows of 128 elements 1024 apart, so
+// only a block starting at column 0 has 128 elements behind it.
+module {
+  func.func @test(%arg0: memref<8x128xi32, strided<[1024, 1], offset: ?>>) {
+    %1 = upmem.alloc_dpus with program @dpu_kernels::@program : !upmem.hierarchy<1x8x1>
+    // expected-error @+1 {{a transferred block starts at offset 64 of a contiguous run of 128 elements}}
+    upmem.scatter_on_array %arg0[128 elts, affine_map<(d0, d1) -> (d1, 64)>] onto @buf of %1
+        : memref<8x128xi32, strided<[1024, 1], offset: ?>> onto !upmem.hierarchy<1x8x1>
+    return
+  }
+  module @dpu_kernels {
+    upmem.dpu_program @program() tasklets(1) {
+      %buf = upmem.static_alloc @buf(mram) : memref<128xi32, "mram">
+      upmem.return
+    }
+  }
+}
+
+// -----
+
+// The same map is fine at column 0, where the whole row is behind it.
+module {
+  func.func @test(%arg0: memref<8x128xi32, strided<[1024, 1], offset: ?>>) {
+    %1 = upmem.alloc_dpus with program @dpu_kernels::@program : !upmem.hierarchy<1x8x1>
+    upmem.scatter_on_array %arg0[128 elts, affine_map<(d0, d1) -> (d1, 0)>] onto @buf of %1
+        : memref<8x128xi32, strided<[1024, 1], offset: ?>> onto !upmem.hierarchy<1x8x1>
+    return
+  }
+  module @dpu_kernels {
+    upmem.dpu_program @program() tasklets(1) {
+      %buf = upmem.static_alloc @buf(mram) : memref<128xi32, "mram">
+      upmem.return
+    }
+  }
+}
+
+// -----
+
+// upmem.scatter_blocks requires the (rank, dpu, block) scatter map form.
 module {
   func.func @test(%arg0: memref<128x1024xi32>) {
     %1 = upmem.alloc_dpus with program @dpu_kernels::@program : !upmem.hierarchy<1x128x4>
-    // expected-error @+1 {{Scatter map should map (rank, dpu, tasklet) to a start index in the host buffer}}
-    upmem.scatter_on_tasklets %arg0[32 elts, affine_map<(d0, d1) -> (d0, d1)>, 4 blocks] onto @buf of %1
+    // expected-error @+1 {{Scatter map should map (rank, dpu, block) to a start index in the host buffer}}
+    upmem.scatter_blocks %arg0[32 elts, affine_map<(d0, d1) -> (d0, d1)>, 4 blocks] onto @buf of %1
         : memref<128x1024xi32> onto !upmem.hierarchy<1x128x4>
     return
   }
@@ -221,7 +278,7 @@ module {
   func.func @test(%arg0: memref<1024x1024xi32, strided<[4096, 1], offset: ?>>) {
     %1 = upmem.alloc_dpus with program @dpu_kernels::@program : !upmem.hierarchy<1x256x4>
     // expected-error @+1 {{the number of transferred elements (4096) exceeds the largest contiguous run of elements (1024) in host buffer}}
-    upmem.scatter %arg0[4096 elts, affine_map<(d0, d1) -> (d0 * 1024 + d1 * 4, 0)>] onto @buf of %1
+    upmem.scatter_on_array %arg0[4096 elts, affine_map<(d0, d1) -> (d0 * 1024 + d1 * 4, 0)>] onto @buf of %1
         : memref<1024x1024xi32, strided<[4096, 1], offset: ?>> onto !upmem.hierarchy<1x256x4>
     return
   }
@@ -240,7 +297,7 @@ module {
   func.func @test(%arg0: memref<1024x1024xi32, strided<[4096, 1], offset: ?>>) {
     %1 = upmem.alloc_dpus with program @dpu_kernels::@program : !upmem.hierarchy<1x256x4>
     // expected-error @+1 {{the number of transferred elements (4096) exceeds the largest contiguous run of elements (1024) in host buffer}}
-    upmem.gather %arg0[4096 elts, affine_map<(d0, d1) -> (d0 * 1024 + d1 * 4, 0)>] from @buf of %1
+    upmem.gather_on_array %arg0[4096 elts, affine_map<(d0, d1) -> (d0 * 1024 + d1 * 4, 0)>] from @buf of %1
         : memref<1024x1024xi32, strided<[4096, 1], offset: ?>> from !upmem.hierarchy<1x256x4>
     return
   }
@@ -259,7 +316,7 @@ module {
 module {
   func.func @test(%arg0: memref<1024x1024xi32, strided<[4096, 1], offset: ?>>) {
     %1 = upmem.alloc_dpus with program @dpu_kernels::@program : !upmem.hierarchy<1x1024x1>
-    upmem.scatter %arg0[1024 elts, affine_map<(d0, d1) -> (d0 * 1024 + d1, 0)>] onto @buf of %1
+    upmem.scatter_on_array %arg0[1024 elts, affine_map<(d0, d1) -> (d0 * 1024 + d1, 0)>] onto @buf of %1
         : memref<1024x1024xi32, strided<[4096, 1], offset: ?>> onto !upmem.hierarchy<1x1024x1>
     return
   }

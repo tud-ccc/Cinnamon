@@ -61,20 +61,26 @@ upmem::DpuProgramOp upmem::AllocDPUsOp::getDpuProgram() {
   return dyn_cast_or_null<upmem::DpuProgramOp>(sym);
 }
 
-// ScatterOp/GatherOp both carry the hierarchy value produced by AllocDPUsOp.
-upmem::DpuProgramOp upmem::ScatterOp::getDpuProgram() {
+// Every transfer op carries the hierarchy value produced by AllocDPUsOp.
+upmem::DpuProgramOp upmem::ScatterOnArrayOp::getDpuProgram() {
   auto alloc =
       dyn_cast_or_null<upmem::AllocDPUsOp>(getHierarchy().getDefiningOp());
   return alloc ? alloc.getDpuProgram() : upmem::DpuProgramOp{};
 }
 
-upmem::DpuProgramOp upmem::GatherOp::getDpuProgram() {
+upmem::DpuProgramOp upmem::GatherOnArrayOp::getDpuProgram() {
   auto alloc =
       dyn_cast_or_null<upmem::AllocDPUsOp>(getHierarchy().getDefiningOp());
   return alloc ? alloc.getDpuProgram() : upmem::DpuProgramOp{};
 }
 
-upmem::DpuProgramOp upmem::ScatterOnTaskletsOp::getDpuProgram() {
+upmem::DpuProgramOp upmem::ScatterBlocksOp::getDpuProgram() {
+  auto alloc =
+      dyn_cast_or_null<upmem::AllocDPUsOp>(getHierarchy().getDefiningOp());
+  return alloc ? alloc.getDpuProgram() : upmem::DpuProgramOp{};
+}
+
+upmem::DpuProgramOp upmem::GatherBlocksOp::getDpuProgram() {
   auto alloc =
       dyn_cast_or_null<upmem::AllocDPUsOp>(getHierarchy().getDefiningOp());
   return alloc ? alloc.getDpuProgram() : upmem::DpuProgramOp{};
@@ -126,75 +132,129 @@ void upmem::StaticAllocOp::build(OpBuilder &builder, OperationState &result,
   result.addTypes(ty);
 }
 
-/// The runtime copies `transferCount` elements per DPU via a single flat
-/// memcpy starting at the offset computed from `scatterMap` (see
-/// do_dpu_transfer in the UPMEM runtime). This is only correct if those
-/// elements are actually contiguous in the host buffer; otherwise the copy
-/// silently reads/writes across unrelated rows/tiles.
-static LogicalResult verifyScatterGatherContiguity(Operation *op,
-                                                    MemRefType hostBufferTy,
-                                                    int64_t transferCount) {
-  int64_t contiguous = getContiguousSuffixSize(hostBufferTy);
-  if (contiguous >= 0 && transferCount > contiguous)
+/// Every transfer op moves `blockSize` elements at a time, starting at the
+/// host index `map` computes for each point of `box` -- the DPU array, plus
+/// the block index for the `_blocks` forms. Both the flat memcpy
+/// (do_dpu_transfer) and the SDK's scatter-gather API (dpu_push_sg_xfer) take
+/// one *address* and a length, so a block that runs over a gap in the host
+/// memref's layout silently reads or writes unrelated data. This is the one
+/// contract all five ops share, checked the same way for each.
+///
+/// A strided memref is a regular grid of contiguous runs of
+/// `getContiguousSuffixSize` elements. Linearizing the map's trailing results
+/// against that run gives where in it each block starts; the block fits iff
+/// that offset plus its length still lies inside. The check declines (rather
+/// than rejects) whenever a bound cannot be computed exactly.
+static LogicalResult verifyTransferBlocks(Operation *op, MemRefType hostTy,
+                                          AffineMap map, int64_t blockSize,
+                                          ArrayRef<int64_t> box) {
+  int64_t runSize = getContiguousSuffixSize(hostTy);
+  if (runSize < 0)
+    return success(); // dynamic or unsupported layout; nothing to check
+
+  if (blockSize > runSize)
     return op->emitOpError("the number of transferred elements (")
-           << transferCount
-           << ") exceeds the largest contiguous run of elements ("
-           << contiguous << ") in host buffer " << hostBufferTy
-           << "; each DPU's transferred elements must be contiguous in "
-              "memory";
+           << blockSize << ") exceeds the largest contiguous run of elements ("
+           << runSize << ") in host buffer " << hostTy
+           << "; each transferred block must be contiguous in memory";
+
+  ArrayRef<int64_t> shape = hostTy.getShape();
+  MLIRContext *ctx = op->getContext();
+  int64_t runRank = getContiguousSuffixRank(hostTy);
+  if (runRank > 0) {
+    AffineMap runLayout =
+        AffineMap::get(runRank, 0,
+                       linearizeIndices(ctx, shape.take_back(runRank)), ctx);
+    AffineMap trailing =
+        AffineMap::get(map.getNumDims(), map.getNumSymbols(),
+                       map.getResults().take_back(runRank), ctx);
+    std::optional<int64_t> start =
+        getAffineUpperBound(runLayout.compose(trailing).getResult(0), box);
+    if (start && *start + blockSize > runSize)
+      return op->emitOpError("a transferred block starts at offset ")
+             << *start << " of a contiguous run of " << runSize
+             << " elements in host buffer " << hostTy << " and is "
+             << blockSize
+             << " elements long, so it runs past the end of the run";
+  }
+
+  // The transfer must also stay inside the memref at all. The largest linear
+  // offset any index reaches is the last element's.
+  FailureOr<AffineExpr> offset = linearizeToElementOffset(map, hostTy);
+  if (succeeded(offset)) {
+    if (std::optional<int64_t> highest = getAffineUpperBound(*offset, box)) {
+      SmallVector<int64_t> last(llvm::map_range(
+          shape, [](int64_t extent) { return extent - 1; }));
+      AffineMap lastIndex = AffineMap::get(
+          0, 0,
+          llvm::to_vector(llvm::map_range(
+              last, [&](int64_t i) { return getAffineConstantExpr(i, ctx); })),
+          ctx);
+      FailureOr<AffineExpr> extent =
+          linearizeToElementOffset(lastIndex, hostTy);
+      if (succeeded(extent))
+        if (auto constant = dyn_cast<AffineConstantExpr>(*extent))
+          if (*highest + blockSize > constant.getValue() + 1)
+            return op->emitOpError("a transferred block reaches element ")
+                   << (*highest + blockSize - 1) << " of a host buffer "
+                   << hostTy << " that only addresses "
+                   << (constant.getValue() + 1);
+    }
+  }
   return success();
 }
 
-LogicalResult upmem::GatherOp::verify() {
+/// The (rank, dpu) box of `hierarchy`. The tasklet dimension is deliberately
+/// absent: a transfer targets a DPU's MRAM, which its tasklets share.
+static SmallVector<int64_t> arrayBox(upmem::DeviceHierarchyType hierarchy) {
+  return {hierarchy.getNumRanks(), hierarchy.getNumDpusPerRank()};
+}
+
+LogicalResult upmem::GatherOnArrayOp::verify() {
   if (getScatterMap().getNumResults() !=
           getHostBuffer().getType().getShape().size() ||
       getScatterMap().getNumDims() != 2)
     return emitOpError("Scatter map should map (rank, dpu) to a start index in "
                        "the host buffer");
-  if (failed(verifyScatterGatherContiguity(
-          *this, getHostBuffer().getType(), getTransferCount())))
-    return failure();
-  // auto count = getDpuMemOffset();
-  // if ((count % 8) != 0)
-  //   return emitOpError("has unaligned DPU memory offset ")
-  //          << count << ", needs to be 8-byte-aligned.";
-  return success();
+  return verifyTransferBlocks(*this, getHostBuffer().getType(), getScatterMap(),
+                              getTransferCount(),
+                              arrayBox(getHierarchy().getType()));
 }
 
-LogicalResult upmem::ScatterOp::verify() {
+LogicalResult upmem::ScatterOnArrayOp::verify() {
   if (getScatterMap().getNumResults() !=
           getHostBuffer().getType().getShape().size() ||
       getScatterMap().getNumDims() != 2)
     return emitOpError("Scatter map should map (rank, dpu) to a start index in "
                        "the host buffer");
-
-  if (failed(verifyScatterGatherContiguity(
-          *this, getHostBuffer().getType(), getTransferCount())))
-    return failure();
-
-  // auto count = getDpuMemOffset();
-  // if ((count % 8) != 0)
-  // return emitOpError("has unaligned DPU memory offset ")
-  //        << count << ", needs to be 8-byte-aligned.";
-  return success();
+  return verifyTransferBlocks(*this, getHostBuffer().getType(), getScatterMap(),
+                              getTransferCount(),
+                              arrayBox(getHierarchy().getType()));
 }
 
-LogicalResult upmem::ScatterOnTaskletsOp::verify() {
-  if (getScatterMap().getNumResults() !=
-          getHostBuffer().getType().getShape().size() ||
-      getScatterMap().getNumDims() != 3)
-    return emitOpError("Scatter map should map (rank, dpu, tasklet) to a "
-                       "start index in the host buffer");
+/// Shared by both `_blocks` ops: same map arity, same box, and
+/// `transferCount` is one block of the `numBlocksPerDpu` a DPU receives.
+template <class Op> static LogicalResult verifyBlockTransfer(Op op) {
+  if (op.getScatterMap().getNumResults() !=
+          op.getHostBuffer().getType().getShape().size() ||
+      op.getScatterMap().getNumDims() != 3)
+    return op.emitOpError("Scatter map should map (rank, dpu, block) to a "
+                          "start index in the host buffer");
+  if (op.getNumBlocksPerDpu() < 1)
+    return op.emitOpError("must transfer at least one block per DPU");
 
-  // `transferCount` is the size of a single tasklet's block (see the op
-  // description): each such block still needs to be contiguous in the host
-  // buffer, even though blocks belonging to different tasklets need not be
-  // contiguous with one another.
-  if (failed(verifyScatterGatherContiguity(
-          *this, getHostBuffer().getType(), getTransferCount())))
-    return failure();
+  SmallVector<int64_t> box = arrayBox(op.getHierarchy().getType());
+  box.push_back(op.getNumBlocksPerDpu());
+  return verifyTransferBlocks(op, op.getHostBuffer().getType(),
+                              op.getScatterMap(), op.getTransferCount(), box);
+}
 
-  return success();
+LogicalResult upmem::ScatterBlocksOp::verify() {
+  return verifyBlockTransfer(*this);
+}
+
+LogicalResult upmem::GatherBlocksOp::verify() {
+  return verifyBlockTransfer(*this);
 }
 
 LogicalResult upmem::BroadcastOp::verify() {
@@ -202,11 +262,14 @@ LogicalResult upmem::BroadcastOp::verify() {
   if (!hostTy.hasStaticShape())
     return emitOpError("host buffer must have a static shape");
 
-  if (failed(verifyScatterGatherContiguity(*this, hostTy,
-                                           hostTy.getNumElements())))
-    return failure();
-
-  return success();
+  // One block, the whole buffer, at the origin -- so the map is the constant
+  // zero index and the box is a single point.
+  MLIRContext *ctx = getContext();
+  SmallVector<AffineExpr> origin(hostTy.getRank(),
+                                 getAffineConstantExpr(0, ctx));
+  return verifyTransferBlocks(*this, hostTy,
+                              AffineMap::get(1, 0, origin, ctx),
+                              hostTy.getNumElements(), /*box=*/{1});
 }
 
 /// Resolves `dpuBufRef` to the upmem.static_alloc it must name, in the
@@ -263,19 +326,25 @@ static bool shapesCompatibleUpToUnitDims(ArrayRef<int64_t> a,
 }
 
 LogicalResult
-upmem::ScatterOp::verifySymbolUses(SymbolTableCollection &symbolTable) {
+upmem::ScatterOnArrayOp::verifySymbolUses(SymbolTableCollection &symbolTable) {
   return verifyScatterGatherSymbolUses(*this, getHierarchy(),
                                        getDpuBufRefAttr(), symbolTable);
 }
 
 LogicalResult
-upmem::GatherOp::verifySymbolUses(SymbolTableCollection &symbolTable) {
+upmem::GatherOnArrayOp::verifySymbolUses(SymbolTableCollection &symbolTable) {
   return verifyScatterGatherSymbolUses(*this, getHierarchy(),
                                        getDpuBufRefAttr(), symbolTable);
 }
 
-LogicalResult upmem::ScatterOnTaskletsOp::verifySymbolUses(
-    SymbolTableCollection &symbolTable) {
+LogicalResult
+upmem::ScatterBlocksOp::verifySymbolUses(SymbolTableCollection &symbolTable) {
+  return verifyScatterGatherSymbolUses(*this, getHierarchy(),
+                                       getDpuBufRefAttr(), symbolTable);
+}
+
+LogicalResult
+upmem::GatherBlocksOp::verifySymbolUses(SymbolTableCollection &symbolTable) {
   return verifyScatterGatherSymbolUses(*this, getHierarchy(),
                                        getDpuBufRefAttr(), symbolTable);
 }

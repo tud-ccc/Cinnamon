@@ -127,39 +127,6 @@ static AffineMap keepTaskletDimAffineMapCnmToUpmem(AffineMap map,
   return rewriteMapForUpmem(map, bufTy, substitutions, 3);
 }
 
-// Linearizes `map` (assumed to already have one result per dimension of
-// `hostBufferTy`) into a single element-offset expression in the map's
-// dims, using `hostBufferTy`'s layout to convert a multi-dim index into an
-// element offset. The base offset of a strided layout is dropped, since only
-// relative (stride) information matters for the contiguity check below.
-// Returns failure if the layout isn't identity or a static StridedLayoutAttr.
-static FailureOr<AffineExpr> linearizeToElementOffset(AffineMap map,
-                                                      MemRefType hostBufferTy) {
-  MLIRContext *ctx = map.getContext();
-  ArrayRef<int64_t> shape = hostBufferTy.getShape();
-  AffineMap layoutMap;
-  if (hostBufferTy.getLayout().isIdentity()) {
-    layoutMap =
-        AffineMap::get(shape.size(), 0, linearizeIndices(ctx, shape), ctx);
-  } else if (auto strided =
-                dyn_cast<StridedLayoutAttr>(hostBufferTy.getLayout())) {
-    AffineExpr linear = getAffineConstantExpr(0, ctx);
-    for (auto [i, stride] : llvm::enumerate(strided.getStrides())) {
-      if (ShapedType::isDynamic(stride))
-        return failure();
-      linear = linear + getAffineDimExpr(i, ctx) * stride;
-    }
-    layoutMap = AffineMap::get(shape.size(), 0, linear, ctx);
-  } else {
-    return failure();
-  }
-
-  MutableAffineMap composed(layoutMap.compose(map));
-  composed.simplify();
-  assert(composed.getAffineMap().getNumResults() == 1);
-  return composed.getAffineMap().getResult(0);
-}
-
 // Returns the constant coefficient of `dim` in `expr`, or nullopt if `expr`
 // doesn't vary with `dim` in a simple affine (constant-coefficient) way.
 static std::optional<int64_t>
@@ -227,7 +194,8 @@ static bool isGloballyBroadcast(AffineMap scatterMap) {
 static LogicalResult convertCnmGatherToUpmem(RewriterBase &rewriter,
                                              cnm::GatherOp op,
                                              upmem::AllocDPUsOp upmemWgAlloc,
-                                             StringAttr refToBuffer) {
+                                             StringAttr refToBuffer,
+                                             const Opts &opts) {
 
   rewriter.setInsertionPoint(op);
   Value outputBuf = op.getOutputBuf();
@@ -239,12 +207,36 @@ static LogicalResult convertCnmGatherToUpmem(RewriterBase &rewriter,
   }
 
   const size_t numTasklets = upmemWgAlloc.getType().getNumTaskletsPerDpu();
-  const int64_t transferCount = op.getTransferCountInItems() * numTasklets;
+  const cnm::BufferType bufferTy = op.getBuffer().getType();
+  const MemRefType hostBufferTy = cast<MemRefType>(outputBuf.getType());
+  const int64_t blocksPerLeaf =
+      cnm::getScatterBlocksPerLeaf(op.getGatherMap(), bufferTy);
+  const int64_t blockSizeInItems =
+      op.getTransferCountInItems() / blocksPerLeaf;
 
-  upmem::GatherOp::create(
-      rewriter, op->getLoc(), outputBuf, refToBuffer, transferCount,
-      adaptAffineMapCnmToUpmem(op.getGatherMap(), op.getBuffer().getType()),
-      upmemWgAlloc.getResult());
+  // Same reading as the scatter direction: a leaf's results only come back as
+  // one flat run per DPU if it produces a single block and those blocks sit
+  // one tasklet after another in the host buffer.
+  bool useBlockForm =
+      opts.useSgXferCodegen &&
+      (blocksPerLeaf > 1 ||
+       (numTasklets > 1 &&
+        !taskletBlocksAreContiguous(op.getGatherMap(), bufferTy, hostBufferTy,
+                                    blockSizeInItems)));
+
+  if (useBlockForm) {
+    upmem::GatherBlocksOp::create(
+        rewriter, op->getLoc(), outputBuf, refToBuffer, blockSizeInItems,
+        keepTaskletDimAffineMapCnmToUpmem(op.getGatherMap(), bufferTy),
+        upmemWgAlloc.getResult(),
+        static_cast<int64_t>(numTasklets) * blocksPerLeaf);
+  } else {
+    upmem::GatherOnArrayOp::create(
+        rewriter, op->getLoc(), outputBuf, refToBuffer,
+        blockSizeInItems * static_cast<int64_t>(numTasklets),
+        adaptAffineMapCnmToUpmem(op.getGatherMap(), bufferTy),
+        upmemWgAlloc.getResult());
+  }
 
   if (!isBufferized) {
     Value outputAsTensor = createOrFoldUnrealizedConversionCast(
@@ -309,7 +301,7 @@ static LogicalResult convertCnmScatterToUpmem(RewriterBase &rewriter,
   if (useTaskletForm) {
     AffineMap upmemMap =
         keepTaskletDimAffineMapCnmToUpmem(op.getScatterMap(), bufferTy);
-    upmem::ScatterOnTaskletsOp::create(
+    upmem::ScatterBlocksOp::create(
         rewriter, op->getLoc(), inputAsMemref, refToBuffer, blockSizeInItems,
         upmemMap, upmemWgAlloc.getResult(),
         static_cast<int64_t>(numTasklets) * blocksPerLeaf);
@@ -320,7 +312,7 @@ static LogicalResult convertCnmScatterToUpmem(RewriterBase &rewriter,
     AffineMap upmemMap = adaptAffineMapCnmToUpmem(op.getScatterMap(), bufferTy);
     int64_t transferCount =
         isBroadcast ? blockSizeInItems : blockSizeInItems * numTasklets;
-    upmem::ScatterOp::create(rewriter, op->getLoc(), inputAsMemref,
+    upmem::ScatterOnArrayOp::create(rewriter, op->getLoc(), inputAsMemref,
                              refToBuffer, transferCount, upmemMap,
                              upmemWgAlloc.getResult());
   }
@@ -651,7 +643,7 @@ static LogicalResult convertCnmLaunchToUpmem(cnm::LaunchOp launch,
       auto alloc = buffersToMramBuf.lookup(gather.getBuffer());
       if (!alloc ||
           failed(convertCnmGatherToUpmem(rewriter, gather, upmemWgAlloc,
-                                         alloc.getSymNameAttr()))) {
+                                         alloc.getSymNameAttr(), opts))) {
         return failure();
       }
     }

@@ -5,22 +5,25 @@
 // buffer (instead of row t), so consecutive tasklets' blocks are not
 // contiguous in the host buffer (there is a gap of one unused row between
 // them). By default (use-sg-xfer-codegen=true, the default) this should be
-// lowered to the upmem.scatter_on_tasklets form -- keeping the tasklet dim
-// in the scatter map and using a transferCount of just one tasklet's block
-// -- instead of forcing a flat, incorrect memcpy.
+// lowered to the upmem.scatter_blocks form -- keeping the block dim in the
+// scatter map and using a transferCount of just one block -- instead of
+// forcing a flat, incorrect memcpy.
 
 // CHECK-DAG: #[[MAPA3:[^ ]*]] = affine_map<(d0, d1, d2) -> (d1, d2 * 2, 0)>
 
 // CHECK-LABEL: func.func @main
-// CHECK: upmem.scatter_on_tasklets %{{.*}}[8 elts, #[[MAPA3]], 2 blocks] onto @buf of %[[DPU:.*]] : memref<4x3x8xi32> onto !upmem.hierarchy<1x4x2>
+// CHECK: upmem.scatter_blocks %{{.*}}[8 elts, #[[MAPA3]], 2 blocks] onto @buf of %[[DPU:.*]] : memref<4x3x8xi32> onto !upmem.hierarchy<1x4x2>
 
 // With use-sg-xfer-codegen=false, the pass falls back to unconditionally
 // collapsing to the (rank, dpu) form (transferCount = 16, both tasklets'
 // worth), matching the pre-existing behavior from before this codegen
-// strategy was added.
+// strategy was added. That collapse reads rows 0 and 1 where the map asks for
+// rows 0 and 2, i.e. the wrong bytes: it is pinned here because it is the
+// CINM 1.0 measurement baseline, and it is what --upmem-specialize-transfers
+// is meant to make unreachable (design K3).
 // NOSG-DAG: #[[MAPA2:[^ ]*]] = affine_map<(d0, d1) -> (d1, 0, 0)>
 // NOSG-LABEL: func.func @main
-// NOSG: upmem.scatter %{{.*}}[16 elts, #[[MAPA2]]] onto @buf of %{{.*}} : memref<4x3x8xi32> onto !upmem.hierarchy<1x4x2>
+// NOSG: upmem.scatter_on_array %{{.*}}[16 elts, #[[MAPA2]]] onto @buf of %{{.*}} : memref<4x3x8xi32> onto !upmem.hierarchy<1x4x2>
 
 #mapA = affine_map<(d0, d1, d2) -> (d1, d2 * 2)>
 

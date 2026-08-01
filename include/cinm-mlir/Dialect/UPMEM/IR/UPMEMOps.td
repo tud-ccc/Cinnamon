@@ -215,6 +215,17 @@ def LocalTransferOp : Upmem_Op<"local_transfer"> {
 
 def DpuResource : Resource<"DpuSetResource">;
 
+// The transfer ops form one family at three levels of specificity, from most
+// to least general:
+//
+//   scatter_blocks / gather_blocks  n blocks per DPU, each from its own place
+//   scatter_on_array / gather_on_array   one block per DPU
+//   broadcast                       the same block to every DPU
+//
+// `transferCount` is the size of one block in every one of them, so the only
+// thing that changes going down the family is how many blocks there are and
+// where they may sit. --upmem-specialize-transfers narrows an op to a lower
+// level when its map permits.
 class ScatterGatherLike<string mnemonic, string kw, MemoryEffect effect, MemoryEffect dpuEffect>
   : Upmem_Op<mnemonic, [MemoryEffects<[effect, dpuEffect]>,
                         DeclareOpInterfaceMethods<SymbolUserOpInterface>]> {
@@ -228,7 +239,8 @@ class ScatterGatherLike<string mnemonic, string kw, MemoryEffect effect, MemoryE
   let results = (outs);
 
   let description = [{
-    Transfers data between a host buffer and the MRAM buffers of a DPU array.
+    Transfers data between a host buffer and the MRAM buffers of a DPU array,
+    one contiguous block per DPU.
 
     `dpuBufRef` is the symbol name of a `upmem.static_alloc` declared inside the
     body of the `upmem.dpu_program` loaded by the `hierarchy`. The verifier checks
@@ -239,6 +251,8 @@ class ScatterGatherLike<string mnemonic, string kw, MemoryEffect effect, MemoryE
     `scatterMap` is an affine map `(rank, dpu) -> (i, ...)` that computes the
     starting index in `hostBuffer` for each DPU. It must have exactly two
     dimensions (rank and dpu) and as many results as the rank of `hostBuffer`.
+    The verifier checks that the block starting there stays inside one
+    contiguous run of `hostBuffer`.
   }];
 
   let extraClassDeclaration = [{
@@ -250,6 +264,10 @@ class ScatterGatherLike<string mnemonic, string kw, MemoryEffect effect, MemoryE
       return getDpuBufferSizeInBits() / 8;
     }
 
+    /// One block per DPU, so always 1. Present so that generic code can treat
+    /// this op and its `_blocks` counterpart alike.
+    int64_t getNumBlocksPerDpu() { return 1; }
+
     /// Return the DpuProgramOp loaded on this hierarchy, or null.
     DpuProgramOp getDpuProgram();
   }];
@@ -260,24 +278,24 @@ class ScatterGatherLike<string mnemonic, string kw, MemoryEffect effect, MemoryE
      # "`:` type($hostBuffer) `" # kw # "` qualified(type($hierarchy))";
 }
 
-def ScatterOp: ScatterGatherLike<"scatter", "onto", MemRead, MemWrite<DpuResource>> {
-  let summary = "copy slices of a host buffer into the MRAM of each DPU";
+def ScatterOnArrayOp: ScatterGatherLike<"scatter_on_array", "onto", MemRead, MemWrite<DpuResource>> {
+  let summary = "copy one contiguous slice of a host buffer into the MRAM of each DPU";
   let description = [{
     For each DPU in `hierarchy`, copies `transferCount` elements from `hostBuffer`
     into the DPU's MRAM buffer named `dpuBufRef`. The slice of `hostBuffer`
     assigned to a given DPU is determined by evaluating `scatterMap(rank, dpu)`,
     which yields the starting multi-dimensional index into `hostBuffer`. The
     copy happens as a single flat transfer per DPU, so the `transferCount`
-    elements must be contiguous in `hostBuffer`.
+    elements must be contiguous in `hostBuffer` -- one block per DPU, spread
+    across the array, which is what the name says.
 
-    See `upmem.scatter_on_tasklets` for the variant that distributes
-    non-contiguous per-tasklet blocks using the UPMEM SDK's scatter transfer
-    API.
+    See `upmem.scatter_blocks` for the general form, which gives a DPU several
+    blocks that need not be contiguous with one another.
 
     ```mlir
     // scatter 1024 elements into @input_buf on each DPU;
     // DPU (r, d) reads from hostBuf[d, 0]
-    upmem.scatter %hostBuf[1024 elts, affine_map<(r, d) -> (d, 0)>] onto @input_buf of %dpus
+    upmem.scatter_on_array %hostBuf[1024 elts, affine_map<(r, d) -> (d, 0)>] onto @input_buf of %dpus
         : memref<128x1024xi32> onto !upmem.hierarchy<1x128x16>
     ```
   }];
@@ -285,64 +303,53 @@ def ScatterOp: ScatterGatherLike<"scatter", "onto", MemRead, MemWrite<DpuResourc
 }
 
 
-def GatherOp: ScatterGatherLike<"gather", "from", MemWrite, MemRead<DpuResource>> {
-  let summary = "collect MRAM results from each DPU into a host buffer";
+def GatherOnArrayOp: ScatterGatherLike<"gather_on_array", "from", MemWrite, MemRead<DpuResource>> {
+  let summary = "collect one contiguous MRAM slice from each DPU into a host buffer";
   let description = [{
     For each DPU in `hierarchy`, copies `transferCount` elements from the DPU's
     MRAM buffer named `dpuBufRef` into `hostBuffer`. The destination slice in
     `hostBuffer` for a given DPU is determined by evaluating `scatterMap(rank, dpu)`.
 
-    This is the inverse of `upmem.scatter` and is typically used to retrieve
-    computation results after `upmem.wait_for` completes.
+    This is the inverse of `upmem.scatter_on_array` and is typically used to
+    retrieve computation results after `upmem.wait_for` completes.
 
     ```mlir
     // gather 128 result elements per DPU back into hostBuf[d, 0]
-    upmem.gather %hostBuf[128 elts, affine_map<(r, d) -> (d, 0)>] from @output_buf of %dpus
+    upmem.gather_on_array %hostBuf[128 elts, affine_map<(r, d) -> (d, 0)>] from @output_buf of %dpus
         : memref<128x128xi32> from !upmem.hierarchy<1x128x16>
     ```
   }];
 
 }
 
-def ScatterOnTaskletsOp: Upmem_Op<"scatter_on_tasklets", [
-      MemoryEffects<[MemRead, MemWrite<DpuResource>]>,
-      DeclareOpInterfaceMethods<SymbolUserOpInterface>]> {
-  let summary = "copy per-tasklet blocks of a host buffer into the MRAM of each DPU using the UPMEM SDK scatter transfer API";
+class BlockTransferLike<string mnemonic, string kw, MemoryEffect effect, MemoryEffect dpuEffect>
+  : Upmem_Op<mnemonic, [MemoryEffects<[effect, dpuEffect]>,
+                        DeclareOpInterfaceMethods<SymbolUserOpInterface>]> {
   let description = [{
-    Like `upmem.scatter`, but for the case where the blocks assigned to a
-    DPU's tasklets are not contiguous with one another in `hostBuffer`. This
-    uses the UPMEM SDK's scatter transfer API, which fetches each tasklet's
-    block from a location computed independently.
+    Transfers `numBlocksPerDpu` blocks of `transferCount` elements each between
+    `hostBuffer` and the MRAM buffer named `dpuBufRef` of every DPU in
+    `hierarchy`, using the UPMEM SDK's scatter/gather transfer API
+    (`dpu_push_sg_xfer`), which locates each block independently.
 
     `dpuBufRef` is the symbol name of a `upmem.static_alloc` declared inside the
     body of the `upmem.dpu_program` loaded by the `hierarchy`. The verifier checks
     that the symbol exists and refers to a `upmem.static_alloc`.
 
-    `transferCount` is the number of elements (not bytes) in a single tasklet's
-    block, and must be the same for every block. Each such block must be
-    contiguous in `hostBuffer`, but blocks belonging to different tasklets need
-    not be contiguous with one another.
+    `transferCount` is the number of elements (not bytes) in a single block,
+    and is the same for every block. Each block must be contiguous in
+    `hostBuffer`, but different blocks need not be contiguous with one another.
 
-    `scatterMap` is an affine map `(rank, dpu, tasklet) -> (i, ...)` that
-    computes the starting index in `hostBuffer` of a specific tasklet's block
-    within a DPU. It must have exactly three dimensions (rank, dpu, tasklet)
-    and as many results as the rank of `hostBuffer`.
+    `scatterMap` is an affine map `(rank, dpu, block) -> (i, ...)` that
+    computes the starting index in `hostBuffer` of one block. It must have
+    exactly three dimensions and as many results as the rank of `hostBuffer`.
 
-    `numBlocksPerDpu` gives the number of blocks (i.e. the extent of the
-    `tasklet` dimension) transferred per DPU. This is independent of the
-    number of tasklets declared by `hierarchy`: blocks are just units of
-    transfer for the UPMEM SDK's scatter API and need not correspond 1:1 to
-    actual DPU tasklets.
-
-    ```mlir
-    // scatter 8-element blocks into @input_buf on each DPU; DPU (r, d)'s
-    // tasklet t reads its block from hostBuf[d, t, 0]
-    upmem.scatter_on_tasklets %hostBuf[8 elts, affine_map<(r, d, t) -> (d, t, 0)>, 4 blocks] onto @input_buf of %dpus
-        : memref<1x4x8xi32> onto !upmem.hierarchy<1x4x4>
-    ```
+    `numBlocksPerDpu` gives the number of blocks transferred per DPU, i.e. the
+    extent of the `block` dimension. This is independent of the number of
+    tasklets declared by `hierarchy`: blocks are units of transfer, and a
+    single tasklet's data may well arrive as several of them.
   }];
 
-  let arguments = (ins Arg<AnyMemRef, "", [MemRead]>:$hostBuffer,
+  let arguments = (ins Arg<AnyMemRef, "", [effect]>:$hostBuffer,
                   FlatSymbolRefAttr:$dpuBufRef,
                   I64Attr:$transferCount,
                   AffineMapAttr:$scatterMap,
@@ -365,9 +372,40 @@ def ScatterOnTaskletsOp: Upmem_Op<"scatter_on_tasklets", [
   }];
 
   let hasVerifier = 1;
-  let assemblyFormat = [{
-    $hostBuffer `[` $transferCount `elts` `,` $scatterMap `,` $numBlocksPerDpu `blocks` `]` `onto` $dpuBufRef `of` $hierarchy attr-dict
-    `:` type($hostBuffer) `onto` qualified(type($hierarchy))
+  let assemblyFormat =
+    "$hostBuffer `[` $transferCount `elts` `,` $scatterMap `,` $numBlocksPerDpu `blocks` `]` `" # kw # "` $dpuBufRef `of` $hierarchy attr-dict"
+    # "`:` type($hostBuffer) `" # kw # "` qualified(type($hierarchy))";
+}
+
+def ScatterBlocksOp: BlockTransferLike<"scatter_blocks", "onto", MemRead, MemWrite<DpuResource>> {
+  let summary = "copy several per-DPU blocks of a host buffer into MRAM using the UPMEM SDK scatter transfer API";
+  let description = [{
+    The general scatter. Unlike `upmem.scatter_on_array`, a DPU's data may
+    come from several places in `hostBuffer` that are not contiguous with one
+    another.
+
+    ```mlir
+    // scatter 8-element blocks into @input_buf on each DPU; DPU (r, d)'s
+    // block b is read from hostBuf[d, b, 0]
+    upmem.scatter_blocks %hostBuf[8 elts, affine_map<(r, d, b) -> (d, b, 0)>, 4 blocks] onto @input_buf of %dpus
+        : memref<1x4x8xi32> onto !upmem.hierarchy<1x4x4>
+    ```
+  }];
+}
+
+def GatherBlocksOp: BlockTransferLike<"gather_blocks", "from", MemWrite, MemRead<DpuResource>> {
+  let summary = "collect several per-DPU MRAM blocks into a host buffer using the UPMEM SDK gather transfer API";
+  let description = [{
+    The general gather, and the inverse of `upmem.scatter_blocks`. Unlike
+    `upmem.gather_on_array`, a DPU's results may be written to several places
+    in `hostBuffer` that are not contiguous with one another.
+
+    ```mlir
+    // gather 8-element blocks from @output_buf on each DPU; DPU (r, d)'s
+    // block b is written to hostBuf[d, b, 0]
+    upmem.gather_blocks %hostBuf[8 elts, affine_map<(r, d, b) -> (d, b, 0)>, 4 blocks] from @output_buf of %dpus
+        : memref<1x4x8xi32> from !upmem.hierarchy<1x4x4>
+    ```
   }];
 }
 
@@ -377,7 +415,7 @@ def BroadcastOp: Upmem_Op<"broadcast", [
   let summary = "copy a host buffer into the MRAM of every DPU, identically";
   let description = [{
     Copies all of `hostBuffer` into the DPU's MRAM buffer named `dpuBufRef`,
-    identically for every DPU in `hierarchy`. Unlike `upmem.scatter`, there is
+    identically for every DPU in `hierarchy`. Unlike `upmem.scatter_on_array`, there is
     no affine map and no per-DPU slicing: every DPU receives the same data, a
     single flat transfer starting at offset zero in `hostBuffer` and covering
     all of its elements. To broadcast a subset of a larger buffer, take a
@@ -449,7 +487,7 @@ def DpuProgramOp : Upmem_Op<"dpu_program",
 
     `upmem.dpu_program` is a `SymbolTable`: named `upmem.static_alloc` ops inside
     its body are registered as symbols and can be referenced by name from
-    `upmem.scatter` and `upmem.gather` ops on the host side.
+    `upmem.scatter_*` and `upmem.gather_*` ops on the host side.
 
     The body must be terminated by `upmem.return`.
 
@@ -522,7 +560,7 @@ def WaitForOp : Upmem_Op<"wait_for", [MemoryEffects<[MemRead<DpuResource>, MemWr
   let description = [{
     Triggers execution of the DPU program previously loaded by `upmem.alloc_dpus`
     on all DPUs in the hierarchy. Blocks the host until every DPU finishes.
-    After this op, the results can be retrieved with `upmem.gather`.
+    After this op, the results can be retrieved with `upmem.gather_on_array`.
 
     ```mlir
     upmem.wait_for %dpus : !upmem.hierarchy<1x64x16>

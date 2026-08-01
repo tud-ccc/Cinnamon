@@ -20,11 +20,11 @@ func.func @gemv(%A: tensor<256x256xi32>, %x: tensor<256xi32>) -> tensor<256xi32>
 
   // Host side.
   // CHECK: upmem.alloc_dpus with program
-  // CHECK: upmem.scatter
-  // CHECK: upmem.gather
+  // CHECK: upmem.scatter_on_array
+  // CHECK: upmem.gather_on_array
   // GENERIC: upmem.alloc_dpus with program
-  // GENERIC: upmem.scatter
-  // GENERIC: upmem.gather
+  // GENERIC: upmem.scatter_on_array
+  // GENERIC: upmem.gather_on_array
 
   // Device side. Both paths produce an MRAM/WRAM split; the generic one gets
   // there through cnm and --upmem-tile-mram-buffers rather than from a

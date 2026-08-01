@@ -26,11 +26,11 @@ module {
         scf.for %arg5 = %c0 to %dim_0 step %c1 {
           %subview_1 = memref.subview %2[%arg4, %arg5] [16, 1] [1, 1]  : memref<?x?xf32> to memref<16x1xf32, strided<[?, 1], offset: ?>>
           %subview_2 = memref.subview %1[%arg5] [1] [1]  : memref<?xf32> to memref<1xf32, strided<[1], offset: ?>>
-          upmem.scatter %subview_1[16 elts, #map] onto @buf of %5  : memref<16x1xf32, strided<[?, 1], offset: ?>> onto !upmem.hierarchy<1x1x16>
-          upmem.scatter %subview_2[1 elts, #map1] onto @buf_1 of %5  : memref<1xf32, strided<[1], offset: ?>> onto !upmem.hierarchy<1x1x16>
-          upmem.scatter %subview[16 elts, #map2] onto @buf_2 of %5  : memref<16xf32, strided<[1], offset: ?>> onto !upmem.hierarchy<1x1x16>
+          upmem.scatter_on_array %subview_1[16 elts, #map] onto @buf of %5  : memref<16x1xf32, strided<[?, 1], offset: ?>> onto !upmem.hierarchy<1x1x16>
+          upmem.scatter_on_array %subview_2[1 elts, #map1] onto @buf_1 of %5  : memref<1xf32, strided<[1], offset: ?>> onto !upmem.hierarchy<1x1x16>
+          upmem.scatter_on_array %subview[16 elts, #map2] onto @buf_2 of %5  : memref<16xf32, strided<[1], offset: ?>> onto !upmem.hierarchy<1x1x16>
           upmem.wait_for %5  : !upmem.hierarchy<1x1x16>
-          upmem.gather %subview[16 elts, #map2] from @buf_2 of %5  : memref<16xf32, strided<[1], offset: ?>> from !upmem.hierarchy<1x1x16>
+          upmem.gather_on_array %subview[16 elts, #map2] from @buf_2 of %5  : memref<16xf32, strided<[1], offset: ?>> from !upmem.hierarchy<1x1x16>
         } 
       } 
       upmem.free_dpus %5  : !upmem.hierarchy<1x1x16>

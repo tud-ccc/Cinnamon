@@ -36,36 +36,46 @@ void upmemrt_dpu_gather(struct dpu_set_t *dpu_set, void *host_buffer,
                         const char *buffer_id, size_t (*base_offset)(size_t),
                         const char *tag);
 
-/// Scatter a tensor on the given DPU set using the UPMEM SDK's scatter/gather
-/// transfer API (dpu_push_sg_xfer), so that the block scattered to each
-/// tasklet of a DPU can come from a location in `host_buffer` that is not
-/// contiguous with the other tasklets' blocks. Each individual block must
-/// still be contiguous in `host_buffer`.
+/// Transfer several blocks per DPU using the UPMEM SDK's scatter/gather
+/// transfer API (dpu_push_sg_xfer), so that a DPU's blocks may come from
+/// locations in `host_buffer` that are not contiguous with one another. Each
+/// individual block must still be contiguous in `host_buffer`.
 ///
-/// For each DPU `x` and each tasklet `t` in `[0, num_tasklets)`, copies
-/// `block_num_elements` elements from `host_buffer`, starting at byte offset
-/// `base_offset(x, t)`, into the `t`-th block of the DPU's MRAM buffer
-/// (i.e. at MRAM byte offset `t * block_num_elements * element_size`).
+/// For each DPU `x` and each block `b` in `[0, num_blocks)`, copies
+/// `block_num_elements` elements between `host_buffer` -- starting at byte
+/// offset `base_offset(x, b)` -- and the `b`-th block of the DPU's MRAM
+/// buffer (i.e. at MRAM byte offset `b * block_num_elements * element_size`).
+/// `upmemrt_dpu_scatter_blocks` copies host to DPU, `upmemrt_dpu_gather_blocks`
+/// the other way round.
+///
+/// Blocks are units of transfer, not tasklets: a single tasklet's data may
+/// well arrive as several of them.
 ///
 /// @param dpu_set              Pointer to DPU structure
-/// @param host_buffer          Input tensor to scatter
+/// @param host_buffer          Host-side tensor
 /// @param element_size         Size of a tensor element in bytes
-/// @param num_blocks           Number of blocks sent per DPU
-/// @param block_num_elements   Number of elements transferred per tasklet's block
+/// @param num_blocks           Number of blocks transferred per DPU
+/// @param block_num_elements   Number of elements in one block
 /// @param buffer_id            Constant string of the buffer ID
-/// @param base_offset          Function mapping (dpu_index, tasklet_index) to
-/// the starting byte offset of that tasklet's block in the host buffer.
+/// @param base_offset          Function mapping (dpu_index, block_index) to
+/// the starting byte offset of that block in the host buffer.
 /// @param tag                  Optional user-supplied label (from the
 /// originating op's `upmem.timing_tag` attribute) recorded alongside the
 /// transfer's stats, or NULL if the op carried no tag. Ignored unless built
 /// with -DUPMEM_RT_STATS.
-void upmemrt_dpu_scatter_to_tasklets(struct dpu_set_t *dpu_set,
-                                     void *host_buffer, size_t element_size,
-                                     size_t num_blocks,
-                                     size_t block_num_elements,
-                                     const char *buffer_id,
-                                     size_t (*base_offset)(size_t, size_t),
-                                     const char *tag);
+void upmemrt_dpu_scatter_blocks(struct dpu_set_t *dpu_set, void *host_buffer,
+                                size_t element_size, size_t num_blocks,
+                                size_t block_num_elements,
+                                const char *buffer_id,
+                                size_t (*base_offset)(size_t, size_t),
+                                const char *tag);
+
+void upmemrt_dpu_gather_blocks(struct dpu_set_t *dpu_set, void *host_buffer,
+                               size_t element_size, size_t num_blocks,
+                               size_t block_num_elements,
+                               const char *buffer_id,
+                               size_t (*base_offset)(size_t, size_t),
+                               const char *tag);
 
 /// Broadcast a buffer to the MRAM of every DPU in the set, identically.
 ///
@@ -87,8 +97,8 @@ void upmemrt_dpu_broadcast(struct dpu_set_t *dpu_set, void *host_buffer,
 /// @param num_dpus             Number of DPUs per rank to allocate
 /// @param dpu_binary_path      Path to the DPU program binary to load
 /// @param max_blocks_per_dpu   Largest number of blocks any
-/// upmemrt_dpu_scatter_to_tasklets call against this DPU set will use, or 0 if
-/// none will. Sets the UPMEM SDK's sgXferMaxBlocksPerDpu profile option
+/// upmemrt_dpu_scatter_blocks/gather_blocks call against this DPU set will
+/// use, or 0 if none will. Sets the UPMEM SDK's sgXferMaxBlocksPerDpu option
 /// (and enables scatter/gather transfers) only when actually needed, so
 /// programs that never use the scatter transfer API don't pay for its
 /// (larger) memory footprint.

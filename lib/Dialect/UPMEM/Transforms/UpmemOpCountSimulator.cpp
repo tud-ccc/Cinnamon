@@ -117,7 +117,7 @@ static SimCost costOfOpCb(Operation &op, bool annotate,
             return SimCost::forTransferBack(transferCost(bytes, numRanks),
                                             "gather");
           })
-          .Case<upmem::ScatterOp>([](upmem::ScatterOp xferOp) -> SimCost {
+          .Case<upmem::ScatterOnArrayOp>([](upmem::ScatterOnArrayOp xferOp) -> SimCost {
             auto hier = llvm::cast<DeviceHierarchyType>(
                 xferOp.getHierarchy().getType());
             int numDpus = hier.getNumRanks() * hier.getNumDpusPerRank();
@@ -126,7 +126,7 @@ static SimCost costOfOpCb(Operation &op, bool annotate,
                                              xferOp.getDpuBufferSizeInBytes()),
                 "scatter");
           })
-          .Case<upmem::GatherOp>([](upmem::GatherOp xferOp) -> SimCost {
+          .Case<upmem::GatherOnArrayOp>([](upmem::GatherOnArrayOp xferOp) -> SimCost {
             auto hier = llvm::cast<DeviceHierarchyType>(
                 xferOp.getHierarchy().getType());
             int numDpus = hier.getNumRanks() * hier.getNumDpusPerRank();
@@ -135,18 +135,30 @@ static SimCost costOfOpCb(Operation &op, bool annotate,
                                        xferOp.getDpuBufferSizeInBytes()),
                 "gather");
           })
-          .Case<upmem::ScatterOnTaskletsOp>([](auto xferOp) -> SimCost {
+          .Case<upmem::ScatterBlocksOp>([](auto xferOp) -> SimCost {
             auto hier = llvm::cast<DeviceHierarchyType>(
                 xferOp.getHierarchy().getType());
             int numDpus = hier.getNumRanks() * hier.getNumDpusPerRank();
-            // getDpuBufferSizeInBytes() is the size of a single tasklet's
-            // block; the actual per-DPU transfer covers numBlocksPerDpu of
-            // them.
+            // getDpuBufferSizeInBytes() is the size of a single block; the
+            // actual per-DPU transfer covers numBlocksPerDpu of them.
             return SimCost::forTransfer(
                 upmem_cm::scatterSgCostMs(numDpus,
                                           xferOp.getDpuBufferSizeInBytes(),
                                           xferOp.getNumBlocksPerDpu()),
-                "scatter_on_tasklets");
+                "scatter_blocks");
+          })
+          .Case<upmem::GatherBlocksOp>([](auto xferOp) -> SimCost {
+            auto hier = llvm::cast<DeviceHierarchyType>(
+                xferOp.getHierarchy().getType());
+            int numDpus = hier.getNumRanks() * hier.getNumDpusPerRank();
+            // No sg-specific gather cost has been characterized yet, so this
+            // charges the flat gather rate for the whole per-DPU volume --
+            // an underestimate whenever the blocks are scattered.
+            return SimCost::forTransferBack(
+                upmem_cm::gatherCostMs(numDpus,
+                                       xferOp.getDpuBufferSizeInBytes() *
+                                           xferOp.getNumBlocksPerDpu()),
+                "gather_blocks");
           })
           .Case<upmem::BroadcastOp>([](auto xferOp) -> SimCost {
             auto hier = llvm::cast<DeviceHierarchyType>(

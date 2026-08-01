@@ -17,8 +17,7 @@ typedef struct {
   size_t   bytes_per_dpu;
   uint32_t num_dpus;
   size_t   num_blocks;
-  // "block"/"sg" for scatter (see upmemrt_record_scatter), "gather" for
-  // gather.
+  // Which transfer op produced this row: see upmemrt_record_scatter.
   const char *kind;
   // User-supplied tag from upmem.timing_tag, or "" if none.
   const char *tag;
@@ -86,12 +85,11 @@ void upmemrt_record_scatter(uint64_t elapsed_ns, size_t bytes_per_dpu,
 }
 
 void upmemrt_record_gather(uint64_t elapsed_ns, size_t bytes_per_dpu,
-                            uint32_t num_dpus, const char *tag) {
-  // No sg-based gather exists in this runtime -- always exactly one
-  // contiguous block per DPU.
+                            uint32_t num_dpus, size_t num_blocks,
+                            const char *kind, const char *tag) {
   XferBuf_push(&g_gather,
                (XferRecord){g_iteration, elapsed_ns, bytes_per_dpu, num_dpus,
-                            /*num_blocks=*/1, "gather", tag ? tag : ""});
+                            num_blocks, kind, tag ? tag : ""});
 }
 
 void upmemrt_record_launch(uint64_t elapsed_ns, uint32_t num_dpus) {

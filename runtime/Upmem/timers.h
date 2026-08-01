@@ -25,17 +25,18 @@ void upmemrt_dump_stats(const char *prefix);
 // Internal: called by upmem_rt.c / memref_rt.cpp ────────────────────────────
 
 uint64_t upmemrt_now_ns(void);
-// `kind` labels which upmem.scatter lowering produced this transfer: "block"
-// for the classic flat per-DPU memcpy, "sg" for the UPMEM SDK scatter
-// transfer API (dpu_push_sg_xfer), and (in the future) "bc" for a broadcast.
-// Must be a string literal (or otherwise live for the process lifetime): it
-// is stored by pointer, not copied.
-// `num_blocks` is the number of per-DPU blocks the transfer was split into
-// -- only "sg" can be >1 ("block"/"bc" always pass 1, one contiguous copy
-// per DPU). Not necessarily the tasklet count: a single tasklet's
-// get_block callback can be invoked for more than one block (see
-// get_scatter_to_tasklets_block in upmem_rt.c), so this must come from the
-// call site's own num_blocks, not be inferred from NR_TASKLETS.
+// `kind` names the transfer op that produced this row, and matches the op's
+// mnemonic: "on_array" for upmem.scatter_on_array/gather_on_array (the flat
+// per-DPU memcpy), "blocks" for upmem.scatter_blocks/gather_blocks (the UPMEM
+// SDK scatter/gather transfer API, dpu_push_sg_xfer), "broadcast" for
+// upmem.broadcast. Must be a string literal (or otherwise live for the
+// process lifetime): it is stored by pointer, not copied.
+// `num_blocks` is the number of per-DPU blocks the transfer was split into --
+// only "blocks" can be >1 (the other two always pass 1, one contiguous copy
+// per DPU). Not necessarily the tasklet count: a single tasklet's get_block
+// callback can be invoked for more than one block (see get_sg_xfer_block in
+// upmem_rt.c), so this must come from the call site's own num_blocks, not be
+// inferred from NR_TASKLETS.
 // `tag` is an optional, user-supplied label (see upmem.timing_tag) identifying
 // which MLIR op produced this transfer; NULL if the op carried no tag. Like
 // `kind`, must be a string literal (or otherwise live for the process
@@ -44,7 +45,8 @@ void upmemrt_record_scatter(uint64_t elapsed_ns, size_t bytes_per_dpu,
                              uint32_t num_dpus, size_t num_blocks,
                              const char *kind, const char *tag);
 void upmemrt_record_gather(uint64_t elapsed_ns, size_t bytes_per_dpu,
-                            uint32_t num_dpus, const char *tag);
+                            uint32_t num_dpus, size_t num_blocks,
+                            const char *kind, const char *tag);
 void upmemrt_record_launch(uint64_t elapsed_ns, uint32_t num_dpus);
 void upmemrt_record_free(uint64_t elapsed_ns, uint32_t num_dpus);
 void upmemrt_record_alloc(uint64_t elapsed_ns, uint32_t num_dpus);

@@ -121,7 +121,7 @@ static Value reifyAsString(ImplicitLocOpBuilder &builder, ModuleOp container,
 }
 
 // Name of the discardable string attribute an upmem.scatter/gather/broadcast/
-// scatter_on_tasklets op may carry to label its transfer's stats rows (see
+// scatter_blocks op may carry to label its transfer's stats rows (see
 // timers.h/upmemrt_record_scatter's `tag` parameter). Absent means untagged.
 constexpr StringLiteral kTimingTagAttrName = "upmem.timing_tag";
 
@@ -244,23 +244,24 @@ getScatterOrGatherFunc(OpBuilder &rewriter, ModuleOp moduleOp,
 }
 
 /*
-void upmemrt_dpu_scatter_to_tasklets(struct dpu_set_t *dpu_set,
-                                     void *host_buffer, size_t element_size,
-                                     size_t num_tasklets,
-                                     size_t block_num_elements,
-                                     const char *buffer_id,
-                                     size_t (*base_offset)(size_t, size_t),
-                                     const char *tag);
+void upmemrt_dpu_scatter_blocks(struct dpu_set_t *dpu_set,
+                                void *host_buffer, size_t element_size,
+                                size_t num_blocks,
+                                size_t block_num_elements,
+                                const char *buffer_id,
+                                size_t (*base_offset)(size_t, size_t),
+                                const char *tag);
+-- and upmemrt_dpu_gather_blocks, with the same signature.
 */
 static FailureOr<LLVM::LLVMFuncOp>
-getScatterToTaskletsFunc(OpBuilder &rewriter, ModuleOp moduleOp,
-                        LLVMTypeConverter const *tyConverter) {
+getBlockTransferFunc(OpBuilder &rewriter, ModuleOp moduleOp,
+                     LLVMTypeConverter const *tyConverter, StringRef name) {
   auto ctx = moduleOp->getContext();
   auto ptrTy = untypedPtrType(ctx);
   auto sizeTy = tyConverter->getIndexType();
   auto funPtrTy = functionPtrTy(sizeTy, {sizeTy, sizeTy});
   return LLVM::lookupOrCreateFn(
-      rewriter, moduleOp, "upmemrt_dpu_scatter_to_tasklets",
+      rewriter, moduleOp, name,
       {ptrTy, ptrTy, sizeTy, sizeTy, sizeTy, ptrTy, funPtrTy, ptrTy},
       LLVM::LLVMVoidType::get(ctx));
 }
@@ -318,7 +319,7 @@ public:
 
 // Set by ConvertUPMEMToLLVMPass on each upmem.alloc_dpus before conversion
 // starts (see computeMaxBlocksPerDpu): the largest numBlocksPerDpu among the
-// upmem.scatter_on_tasklets ops using that hierarchy, or absent if none use
+// upmem.scatter_blocks/gather_blocks ops using that hierarchy, or absent if none use
 // it. AllocDPUOpToFuncCallLowering reads it back to size the UPMEM SDK's
 // sgXferMaxBlocksPerDpu profile option -- this can't be recomputed from
 // inside the conversion pattern itself, since by the time an individual op is
@@ -542,14 +543,14 @@ computeBareHostBufAndBufferId(Operation *op, Value hostBufferAdaptor,
   return std::make_pair(bareHostBuf, bufferId);
 }
 
+template <class Op>
 static LogicalResult
-lowerScatterOnTasklets(upmem::ScatterOnTaskletsOp op,
-                       upmem::ScatterOnTaskletsOp::Adaptor adaptor,
-                       LLVMTypeConverter const *tyConverter,
-                       ConversionPatternRewriter &rewriter0) {
+lowerBlockTransfer(Op op, typename Op::Adaptor adaptor,
+                   LLVMTypeConverter const *tyConverter,
+                   ConversionPatternRewriter &rewriter0, bool isGather) {
   auto loc = op->getLoc();
   ImplicitLocOpBuilder rewriter(loc, rewriter0);
-  auto moduleOp = op->getParentOfType<ModuleOp>();
+  auto moduleOp = op->template getParentOfType<ModuleOp>();
 
   auto bufsOrFailure = computeBareHostBufAndBufferId(
       op, adaptor.getHostBuffer(), op.getHostBuffer().getType().getElementType(),
@@ -558,16 +559,18 @@ lowerScatterOnTasklets(upmem::ScatterOnTaskletsOp op,
     return failure();
   auto [bareHostBuf, bufferId] = *bufsOrFailure;
 
-  // Use the UPMEM SDK's scatter transfer API (dpu_push_sg_xfer) so each
-  // tasklet's block can come from a location in the host buffer that isn't
-  // contiguous with the other tasklets' blocks.
+  // Use the UPMEM SDK's scatter/gather transfer API (dpu_push_sg_xfer) so each
+  // block can sit at a location in the host buffer that isn't contiguous with
+  // the other blocks'.
   auto affineMapFunOpt = outlineAffineMapForTasklets(
       rewriter, tyConverter, moduleOp, op.getScatterMap(),
       op.getHierarchy().getType(), op.getHostBuffer().getType());
   if (failed(affineMapFunOpt))
     return emitError(loc, "Cannot emit affine map");
 
-  auto runtimeFun = getScatterToTaskletsFunc(rewriter, moduleOp, tyConverter);
+  auto runtimeFun = getBlockTransferFunc(rewriter, moduleOp, tyConverter,
+                                         isGather ? "upmemrt_dpu_gather_blocks"
+                                                  : "upmemrt_dpu_scatter_blocks");
   if (llvm::failed(runtimeFun))
     return failure();
   auto funPtrOp = LLVM::AddressOfOp::create(rewriter0, loc, *affineMapFunOpt);
@@ -582,19 +585,19 @@ lowerScatterOnTasklets(upmem::ScatterOnTaskletsOp op,
   // description) -- so it must come from the required numBlocksPerDpu
   // attribute, not from op.getHierarchy().
   const size_t numBlocksPerDpu = op.getNumBlocksPerDpu();
-  // transferCount is the size of a single tasklet's block, in elements
-  // (see the op description)
+  // transferCount is the size of a single block, in elements (see the op
+  // description)
   const size_t blockNumElements = op.getTransferCount();
 
   /*
-  void upmemrt_dpu_scatter_to_tasklets(struct dpu_set_t *dpu_set,
-                                       void *host_buffer,
-                                       size_t element_size,
-                                       size_t num_tasklets,
-                                       size_t block_num_elements,
-                                       const char *buffer_id,
-                                       size_t (*base_offset)(size_t, size_t),
-                                       const char *tag)
+  void upmemrt_dpu_scatter_blocks(struct dpu_set_t *dpu_set,
+                                  void *host_buffer,
+                                  size_t element_size,
+                                  size_t num_blocks,
+                                  size_t block_num_elements,
+                                  const char *buffer_id,
+                                  size_t (*base_offset)(size_t, size_t),
+                                  const char *tag)
   */
   LLVM::CallOp::create(
       rewriter0, loc, *runtimeFun,
@@ -726,46 +729,61 @@ static LogicalResult lowerScatterOrGather(Op op, typename Op::Adaptor adaptor,
   return success();
 }
 
-struct ScatterOpToFuncCallLowering
-    : public ConvertOpToLLVMPattern<upmem::ScatterOp> {
+struct ScatterOnArrayOpToFuncCallLowering
+    : public ConvertOpToLLVMPattern<upmem::ScatterOnArrayOp> {
 public:
-  explicit ScatterOpToFuncCallLowering(LLVMTypeConverter &lowering)
-      : ConvertOpToLLVMPattern<upmem::ScatterOp>(lowering) {}
+  explicit ScatterOnArrayOpToFuncCallLowering(LLVMTypeConverter &lowering)
+      : ConvertOpToLLVMPattern<upmem::ScatterOnArrayOp>(lowering) {}
 
   LogicalResult
-  matchAndRewrite(upmem::ScatterOp op,
-                  typename upmem::ScatterOp::Adaptor adaptor,
+  matchAndRewrite(upmem::ScatterOnArrayOp op,
+                  typename upmem::ScatterOnArrayOp::Adaptor adaptor,
                   ConversionPatternRewriter &rewriter0) const override {
     return lowerScatterOrGather(op, adaptor, getTypeConverter(), rewriter0,
                                 false);
   }
 };
 
-struct GatherOpToFuncCallLowering
-    : public ConvertOpToLLVMPattern<upmem::GatherOp> {
+struct GatherOnArrayOpToFuncCallLowering
+    : public ConvertOpToLLVMPattern<upmem::GatherOnArrayOp> {
 public:
-  explicit GatherOpToFuncCallLowering(LLVMTypeConverter &lowering)
-      : ConvertOpToLLVMPattern<upmem::GatherOp>(lowering) {}
+  explicit GatherOnArrayOpToFuncCallLowering(LLVMTypeConverter &lowering)
+      : ConvertOpToLLVMPattern<upmem::GatherOnArrayOp>(lowering) {}
 
   LogicalResult
-  matchAndRewrite(upmem::GatherOp op, typename upmem::GatherOp::Adaptor adaptor,
+  matchAndRewrite(upmem::GatherOnArrayOp op, typename upmem::GatherOnArrayOp::Adaptor adaptor,
                   ConversionPatternRewriter &rewriter0) const override {
     return lowerScatterOrGather(op, adaptor, getTypeConverter(), rewriter0,
                                 true);
   }
 };
 
-struct ScatterOnTaskletsOpToFuncCallLowering
-    : public ConvertOpToLLVMPattern<upmem::ScatterOnTaskletsOp> {
+struct ScatterBlocksOpToFuncCallLowering
+    : public ConvertOpToLLVMPattern<upmem::ScatterBlocksOp> {
 public:
-  explicit ScatterOnTaskletsOpToFuncCallLowering(LLVMTypeConverter &lowering)
-      : ConvertOpToLLVMPattern<upmem::ScatterOnTaskletsOp>(lowering) {}
+  explicit ScatterBlocksOpToFuncCallLowering(LLVMTypeConverter &lowering)
+      : ConvertOpToLLVMPattern<upmem::ScatterBlocksOp>(lowering) {}
 
   LogicalResult
-  matchAndRewrite(upmem::ScatterOnTaskletsOp op,
-                  typename upmem::ScatterOnTaskletsOp::Adaptor adaptor,
+  matchAndRewrite(upmem::ScatterBlocksOp op,
+                  typename upmem::ScatterBlocksOp::Adaptor adaptor,
                   ConversionPatternRewriter &rewriter0) const override {
-    return lowerScatterOnTasklets(op, adaptor, getTypeConverter(), rewriter0);
+    return lowerBlockTransfer(op, adaptor, getTypeConverter(), rewriter0,
+                              false);
+  }
+};
+
+struct GatherBlocksOpToFuncCallLowering
+    : public ConvertOpToLLVMPattern<upmem::GatherBlocksOp> {
+public:
+  explicit GatherBlocksOpToFuncCallLowering(LLVMTypeConverter &lowering)
+      : ConvertOpToLLVMPattern<upmem::GatherBlocksOp>(lowering) {}
+
+  LogicalResult
+  matchAndRewrite(upmem::GatherBlocksOp op,
+                  typename upmem::GatherBlocksOp::Adaptor adaptor,
+                  ConversionPatternRewriter &rewriter0) const override {
+    return lowerBlockTransfer(op, adaptor, getTypeConverter(), rewriter0, true);
   }
 };
 
@@ -833,10 +851,11 @@ void populateUPMEMToLLVMFinalTypeConversions(LLVMTypeConverter &typeConverter) {
 void populateUPMEMToLLVMConversionPatterns(LLVMTypeConverter &typeConverter,
                                            RewritePatternSet &patterns) {
   patterns.add<AllocDPUOpToFuncCallLowering>(typeConverter);
-  patterns.add<ScatterOpToFuncCallLowering>(typeConverter);
-  patterns.add<ScatterOnTaskletsOpToFuncCallLowering>(typeConverter);
+  patterns.add<ScatterOnArrayOpToFuncCallLowering>(typeConverter);
+  patterns.add<ScatterBlocksOpToFuncCallLowering>(typeConverter);
   patterns.add<BroadcastOpToFuncCallLowering>(typeConverter);
-  patterns.add<GatherOpToFuncCallLowering>(typeConverter);
+  patterns.add<GatherOnArrayOpToFuncCallLowering>(typeConverter);
+  patterns.add<GatherBlocksOpToFuncCallLowering>(typeConverter);
   patterns.add<WaitForOpToFuncCallLowering>(typeConverter);
   patterns.add<FreeDPUsOpToFuncCallLowering>(typeConverter);
   patterns.add<EraseDpuProgram>(typeConverter);
@@ -846,17 +865,21 @@ struct ConvertUPMEMToLLVMPass
     : public impl::ConvertUPMEMToLLVMPassBase<ConvertUPMEMToLLVMPass> {
   void runOnOperation() final {
     // Stash, on each upmem.alloc_dpus, the largest numBlocksPerDpu among the
-    // upmem.scatter_on_tasklets ops using it (see kMaxBlocksPerDpuAttrName).
-    // This must happen as a plain IR walk before conversion starts: once
-    // conversion is under way, a scatter op may already have been legalized
-    // (and erased) by the time alloc_dpus's own pattern runs, so it can no
-    // longer be found by scanning the hierarchy value's users from inside a
-    // pattern.
+    // upmem.scatter_blocks/gather_blocks ops using it (see
+    // kMaxBlocksPerDpuAttrName). This must happen as a plain IR walk before
+    // conversion starts: once conversion is under way, a transfer op may
+    // already have been legalized (and erased) by the time alloc_dpus's own
+    // pattern runs, so it can no longer be found by scanning the hierarchy
+    // value's users from inside a pattern.
     getOperation()->walk([&](upmem::AllocDPUsOp allocOp) {
       uint64_t maxBlocks = 0;
       for (Operation *user : allocOp.getResult().getUsers())
-        if (auto scatter = dyn_cast<upmem::ScatterOnTaskletsOp>(user))
-          maxBlocks = std::max(maxBlocks, scatter.getNumBlocksPerDpu());
+        maxBlocks = std::max(
+            maxBlocks,
+            llvm::TypeSwitch<Operation *, uint64_t>(user)
+                .Case<upmem::ScatterBlocksOp, upmem::GatherBlocksOp>(
+                    [](auto op) { return op.getNumBlocksPerDpu(); })
+                .Default(uint64_t{0}));
       if (maxBlocks > 0)
         allocOp->setAttr(kMaxBlocksPerDpuAttrName,
                          IntegerAttr::get(IntegerType::get(&getContext(), 64),
