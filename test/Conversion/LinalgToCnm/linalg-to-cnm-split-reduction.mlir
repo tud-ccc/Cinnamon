@@ -47,8 +47,7 @@ func.func @gemv_split_k(%A: tensor<1024x512xi32>, %x: tensor<512xi32>, %y: tenso
 
   // The partials come back with the k-tile as a separate dimension, and the
   // merge accumulates them into the *original* %y, folding it in exactly once.
-  // CHECK: cnm.gather
-  // CHECK: %[[MERGED:.*]] = tensor.reshape %{{.*}} -> tensor<4x1024xi32>
+  // CHECK: %[[MERGED:.*]] = cnm.gather {{.*}} into tensor<4x1024xi32>
   // CHECK: linalg.generic {{.*}} iterator_types = ["reduction", "parallel"]} ins(%[[MERGED]] : tensor<4x1024xi32>) outs(%arg2 : tensor<1024xi32>)
   // CHECK: arith.addi
   %r = cinm.compute on accelerator #acc -> tensor<1024xi32> {

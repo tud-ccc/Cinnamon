@@ -22,17 +22,17 @@ func.func @gemv(%A: tensor<1024x512xi32>, %x: tensor<512xi32>) -> tensor<1024xi3
   // CHECK: %[[WG:.*]] = cnm.workgroup : !cnm.workgroup<
 
   // The buffer shape is the block size of each dimension the operand indexes.
-  // CHECK: %[[BA:.*]] = cnm.alloc() for %[[WG]] : !cnm.buffer<64x512xi32 on
-  // A is presented in tiled layout: [16 tiles, 1 tile] ++ [64, 512]. Only one
-  // of its dimensions is tiled, so this is a pure reshape, not a transpose.
+  // A is scattered as it stands: the map names, for every leaf and every
+  // element of its buffer, the element of A it comes from. No relayout.
   // CHECK-NOT: linalg.transpose
-  // CHECK: %[[TA:.*]] = tensor.reshape %{{.*}} -> tensor<16x1x64x512xi32>
-  // CHECK: cnm.scatter %[[TA]] into %[[BA]][#{{.*}}] of %[[WG]] : tensor<16x1x64x512xi32> into !cnm.buffer<64x512xi32
+  // CHECK-NOT: tensor.reshape
+  // CHECK: %[[BA:.*]] = cnm.alloc() for %[[WG]] : !cnm.buffer<64x512xi32 on
+  // CHECK: cnm.scatter %arg0 into %[[BA]][#{{.*}}] of %[[WG]] : tensor<1024x512xi32> into !cnm.buffer<64x512xi32
 
   // x is indexed only by the reduction dimension, which is not split, so every
   // leaf gets the same slice: a broadcast.
   // CHECK: %[[BX:.*]] = cnm.alloc() for %[[WG]] : !cnm.buffer<512xi32 on
-  // CHECK: cnm.scatter %{{.*}} into %[[BX]][#{{.*}}] of %[[WG]] : tensor<1x512xi32> into !cnm.buffer<512xi32
+  // CHECK: cnm.scatter %arg1 into %[[BX]][#{{.*}}] of %[[WG]] : tensor<512xi32> into !cnm.buffer<512xi32
 
   // The destination is a fresh tensor.empty, so its undefined contents are not
   // scattered: the alloc is followed straight by the launch.
@@ -45,8 +45,7 @@ func.func @gemv(%A: tensor<1024x512xi32>, %x: tensor<512xi32>) -> tensor<1024xi3
   // CHECK: linalg.contract indexing_maps = [#{{.*}}, #{{.*}}, #{{.*}}] ins(%[[A]], %[[X]] : memref<64x512xi32>, memref<512xi32>) outs(%[[Y]] : memref<64xi32>)
   // CHECK-NOT: cnm.tile_sizes
 
-  // CHECK: %[[G:.*]] = cnm.gather %[[BY]][#{{.*}}] of %[[WG]] into %{{.*}} : !cnm.buffer<64xi32{{.*}}> into tensor<16x64xi32>
-  // CHECK: tensor.reshape %[[G]]{{.*}} -> tensor<1024xi32>
+  // CHECK: %[[G:.*]] = cnm.gather %[[BY]][#{{.*}}] of %[[WG]] into %{{.*}} : !cnm.buffer<64xi32{{.*}}> into tensor<1024xi32>
   // CHECK: cnm.free_workgroup %[[WG]]
 
   // With a level requested, it lands on both the buffer type and the launch
@@ -126,15 +125,14 @@ func.func @accumulate(%A: tensor<1024x512xi32>, %y: tensor<1024xi32>) -> tensor<
 // CHECK-LABEL: func.func @elementwise_2d
 func.func @elementwise_2d(%a: tensor<64x64xi32>, %b: tensor<64x64xi32>) -> tensor<64x64xi32> {
   %init = tensor.empty() : tensor<64x64xi32>
-  // Both dimensions are tiled, so the tiled layout needs a real transpose:
-  // [4, 16, 4, 16] -> [4, 4, 16, 16].
-  // CHECK: %[[S:.*]] = tensor.reshape %{{.*}} -> tensor<4x16x4x16xi32>
-  // CHECK: linalg.transpose ins(%[[S]] : tensor<4x16x4x16xi32>) outs(%{{.*}} : tensor<4x4x16x16xi32>) permutation = [0, 2, 1, 3]
+  // Both dimensions are tiled. Under the old shape-suffix contract this
+  // needed a real transpose to present the tiles outermost; the map now says
+  // where each element goes, so nothing moves on the host.
+  // CHECK-NOT: linalg.transpose
+  // CHECK-NOT: tensor.reshape
   // CHECK: cnm.alloc() {{.*}} : !cnm.buffer<16x16xi32 on
-  // CHECK: cnm.scatter %{{.*}} : tensor<4x4x16x16xi32> into !cnm.buffer<16x16xi32
-  // And the gather undoes it.
-  // CHECK: cnm.gather {{.*}} into tensor<4x4x16x16xi32>
-  // CHECK: linalg.transpose {{.*}} permutation = [0, 2, 1, 3]
+  // CHECK: cnm.scatter %{{.*}} : tensor<64x64xi32> into !cnm.buffer<16x16xi32
+  // CHECK: cnm.gather {{.*}} into tensor<64x64xi32>
   %r = cinm.compute on accelerator #acc -> tensor<64x64xi32> {
     %g = linalg.add {cnm.tile_sizes = array<i64: 16, 16>}
       ins(%a, %b : tensor<64x64xi32>, tensor<64x64xi32>)
