@@ -727,6 +727,118 @@ pure optimization over the same parameterization; it can land later
 without changing the parameter set. It is, however, the trigger for
 revisiting G3.
 
+## H. Capacity constraints, and the generic op handler
+
+### H1. What the current constraints encode
+
+`handleGemv` states the MRAM budget by hand
+([UpmemInferAccelerator.cpp:597](../lib/Dialect/UPMEM/Transforms/UpmemInferAccelerator.cpp#L597)):
+
+    mramRow*mramCol + mramCol + mramRow <= MRAM
+
+That expression is not a generic sum of buffer sizes. It encodes a fact
+about the layout the lowering produces: the vector is counted **once**
+because the tasklets of a DPU share it, while `A` and `y` are counted
+per-DPU. It is correct only for that layout.
+
+### H2. A generic handler cannot honestly reproduce it
+
+Deriving the same bound from indexing maps alone leaves two options,
+and both are bad:
+
+- **Duplicate the sharing rule in the constraint.** Whether an operand
+  is shared follows from §G3's ordering rule plus the block sizes, so it
+  *is* computable at space-build time — by restating the lowering's
+  decision in a second place, with nothing checking the two agree. That
+  is exactly the coupling that produced the M7 defect.
+- **Be conservative and count every leaf's buffers.** This over-counts
+  shared operands by a factor of `tasklets`. For gemv_64MB it would
+  charge the vector 1024 elements instead of 128 and reject the
+  autotuner's optimum — a constraint that quietly deletes the best known
+  configuration is worse than none.
+
+### H3. The real problem: occupancy is a property of the lowered program
+
+Sharing is only the first of several things that move occupancy and are
+decided *during lowering*, not by the configuration:
+
+- whether a scatter map ends up independent of the tasklet dimension —
+  which depends on §G3's order **and** on how well the affine simplifier
+  folds the delinearized index;
+- `--upmem-tile-mram-buffers` promoting with `useFullTileBuffers=false`,
+  which can allocate a staging buffer larger than the tile it holds;
+- buffer hoisting, promotion to stack, and where deallocations land;
+- kernel dedup.
+
+This is not hypothetical. Commit `ae698cc` changed only the affine
+simplifier — no parameter, no constraint, no pass ordering — and took
+per-DPU MRAM for gemv_64MB from 9280 to 8384 elements. Any a-priori
+constraint would have been wrong before it, after it, or both.
+
+So an a-priori capacity constraint is necessarily either **unsound**
+(too permissive, and the configuration is discovered to be infeasible
+only when the DPU binary fails to link) or **incomplete** (too strict,
+silently shrinking the space). It cannot be exact, because the quantity
+it constrains does not exist yet.
+
+### H4. Proposal: cheap necessary condition, exact late check
+
+**A priori, keep only what can never over-estimate.** Assume maximal
+sharing. Such a bound is sound as a filter — it prunes configurations
+that cannot fit under *any* layout, and never rejects a feasible one.
+
+**Then measure.** Standing decision 8 already has `evaluate()` run the
+real lowering, so the lowered IR is in hand: sum the
+`upmem.static_alloc` sizes per memory space and reject the trial if it
+exceeds the level's capacity. Exact by construction, and it stays
+correct when the lowering changes — which is the property the current
+scheme lacks.
+
+The cost is that infeasible configurations are no longer excluded from
+the space, so the optimizer spends trials finding them. That is the
+honest trade: an exact late check beats an approximate early one, and
+the necessary condition above keeps the waste bounded. The same
+measurement also gives the cost model real occupancy rather than
+modelled occupancy.
+
+### H5. The generic op handler
+
+Wanted **alongside** the per-op handlers, not replacing them. Its space
+is the one §G2 describes and nothing more:
+
+- one block-size variable per iteration dimension, a divisor of that
+  dimension's extent;
+- `∏(E_i / b_i) == dpus * tasklets`;
+- one leaf block size per dimension, dividing the block size;
+- the maximal-sharing capacity bound from H4.
+
+It records those directly — no projection, because these *are* the
+pass's parameters. It generalizes to any iteration rank and drops
+`dpuRows`/`dpuCols`/`taskletRows`/`taskletCols` entirely, which is the
+interpretable space to land on once the templates go.
+
+**Open decision — how it coexists.** `eval_solution` serialises
+positionally
+([cinmopt.py:214](../experiments/cinm_experiments/cinmopt.py#L214)), so
+the space's variable list is an ABI for everything in `experiments/`.
+Adding generic variables next to the template ones *for the same op*
+shifts positions and silently reinterprets every existing params dict.
+
+1. **Generic handler only for ops that have no template handler** —
+   gemm, elementwise, anything new. Existing benchmarks are untouched,
+   the same-configuration comparison survives where it exists, and
+   coverage extends where there was nothing to compare against.
+   *Recommended.*
+2. **Handler chosen by `lowering=`**, giving the two paths different
+   spaces. Loses the same-configuration comparison that §F makes the
+   quality bar.
+3. **Both sets of variables, always.** Breaks the positional ABI;
+   requires `eval-solution` to accept names instead of positions.
+
+Option 3 has independent merit — named parameters are more robust than
+positional ones, and the positional coupling has already been a hazard
+twice — but it changes the experiment scripts, not just the compiler.
+
 ## Summary of open questions
 
 1. ~~§A1: reuse `CinmLevelDefAttr` for `cnm.buffer`'s `level`, or
@@ -770,15 +882,21 @@ revisiting G3.
    mechanism, or serve a different class of parameters? (Still open —
    §D confirms the *existing* mechanism, reused twice, is sufficient
    for this effort, but doesn't say what these stubs are for.)
-7. §G8: with fusion on the generic branch only, the two paths no longer
+7. §H5: how should the generic handler coexist with the per-op ones,
+   given that `eval-solution` is positional? Recommended: generic
+   handler only for ops with no template handler. (New, open.)
+8. §H4: adopt the "maximal-sharing necessary condition + exact
+   post-lowering occupancy check" scheme, and retire the hand-written
+   per-op capacity constraints? (New, open.)
+9. §G8: with fusion on the generic branch only, the two paths no longer
    share an op set, so §F's same-configuration cost comparison weakens.
    Should the comparison baseline be the *unfused* generic path? (New,
    open.)
-8. §G4: reuse `linalg::splitReduction` for the partial+merge rewrite, or
+10. §G4: reuse `linalg::splitReduction` for the partial+merge rewrite, or
    go through `PartialReductionOpInterface`? Depends on whether
    `splitReduction`'s extra-dim placement matches what the gather needs.
    (New, open — resolve empirically during M8.)
-9. §E: merge with `UpmemGenericLoweringNotes.md` once §A3 is settled,
+11. §E: merge with `UpmemGenericLoweringNotes.md` once §A3 is settled,
    or keep the direct `linalg.generic → upmem` path as a permanent
    parallel option? (§A3 being settled now makes this more concrete:
    the note's points 1-3 map onto the two `--cinm-tiling` passes'
