@@ -1,16 +1,12 @@
 // RUN: cinm-opt %s --cinm-isolate-compute-blocks \
-// RUN:   --upmem-infer-accelerator="lowering=generic simulator=op-count eval-solution=2048,8,1,8,64,32,64,128" \
+// RUN:   --upmem-infer-accelerator="lowering=generic simulator=op-count eval-solution=dpus=2048,tasklets=8,taskletCols=1,wramRow=8,wramCol=64,dpuCols=32,mramRow=64,mramCol=128" \
 // RUN: | FileCheck %s
 
 // The configuration that motivated the whole §G redesign, lowered end to end
 // by the plugin rather than by pass flags.
 //
 // It is the gemv_64MB optimum an independent autotuner found
-// (experiments/gemv_microbenchmark/dodo.py), passed positionally to
-// `eval-solution` in the order the space declares its variables:
-//
-//   dpus=2048 tasklets=8 taskletCols=1 wramRow=8 wramCol=64
-//   dpuCols=32 mramRow=64 mramCol=128
+// (experiments/gemv_microbenchmark/dodo.py).
 //
 // Before §G this failed in --convert-cinm-to-cnm with
 // "numParallelElts (64) % numWgItems (16384) != 0": the plugin fed per-DPU

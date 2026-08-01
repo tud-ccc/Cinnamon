@@ -7,6 +7,7 @@
 #include <functional>
 #include <initializer_list>
 #include <llvm/ADT/SmallVector.h>
+#include <llvm/ADT/StringMap.h>
 #include <llvm/ADT/StringRef.h>
 #include <llvm/Support/raw_ostream.h>
 #include <mlir/IR/BuiltinOps.h>
@@ -383,7 +384,12 @@ struct InferenceOptions {
   /// configuration. The values are in the same order as the ConfigSpace params
   /// populated by the plugin's initializeSpace(). Acts as a third mode
   /// alongside exhaustiveSearch and Bayesian optimisation.
-  std::optional<Configuration> evalSingleSolution;
+  /// Evaluate exactly this configuration and commit it, bypassing search.
+  /// Keyed by parameter name rather than by position: the space's variable
+  /// order is an implementation detail of the handlers, and a positional
+  /// encoding silently reinterprets every stored configuration when it
+  /// changes. Resolved against the space once it has been built.
+  std::optional<llvm::StringMap<int64_t>> evalSingleSolution;
 };
 
 /// Entry point for Bayesian inference.

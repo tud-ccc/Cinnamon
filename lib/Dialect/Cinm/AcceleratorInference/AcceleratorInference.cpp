@@ -1320,7 +1320,44 @@ inferAcceleratorConfig(cinm::ComputeBlockOp computeOp, InferencePlugin &plugin,
 
   TrialInfo bestResult;
   if (opts.evalSingleSolution) {
-    Configuration conf = *opts.evalSingleSolution;
+    // Resolve the named parameters against the space that was just built.
+    // Every parameter must be given: a missing one has no defensible default,
+    // and silently picking one would produce a configuration the caller did
+    // not ask for.
+    const llvm::StringMap<int64_t> &named = *opts.evalSingleSolution;
+    Configuration conf;
+    conf.reserve(task.space.params.size());
+    SmallVector<std::string> missing;
+    for (const SearchParam &param : task.space.params) {
+      auto it = named.find(param.name);
+      if (it == named.end())
+        missing.push_back(param.name);
+      else
+        conf.push_back(it->second);
+    }
+    if (!missing.empty())
+      return emitDefiniteFailure(computeOp->getLoc(),
+                                 "eval-solution is missing a value for: ")
+             << llvm::join(missing, ", ");
+
+    SmallVector<std::string> unknown;
+    for (const auto &entry : named)
+      if (!llvm::any_of(task.space.params, [&](const SearchParam &p) {
+            return p.name == entry.first();
+          }))
+        unknown.push_back(entry.first().str());
+    if (!unknown.empty()) {
+      llvm::sort(unknown);
+      SmallVector<std::string> known;
+      for (const SearchParam &param : task.space.params)
+        known.push_back(param.name);
+      return emitDefiniteFailure(computeOp->getLoc(),
+                                 "eval-solution names parameters this space "
+                                 "does not have: ")
+             << llvm::join(unknown, ", ") << "; the space declares "
+             << llvm::join(known, ", ");
+    }
+
     if (!task.space.isValid(conf)) {
       std::string details;
       llvm::raw_string_ostream detailsOs(details);
