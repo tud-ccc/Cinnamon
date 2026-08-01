@@ -25,8 +25,6 @@
 
 #include <mlir/IR/AffineMap.h>
 
-#include <optional>
-
 namespace mlir::cnm {
 
 /// How many of `buffer`'s own dimensions `map` retains in its domain.
@@ -71,21 +69,10 @@ SmallVector<int64_t> getScatterMapDomain(AffineMap map, BufferType buffer);
 /// `map` composed with the row-major linearization of `hostShape`, giving one
 /// expression for the element offset each buffer element reads or writes.
 /// Fails if the result count does not match `hostShape`.
+///
+/// `getAffineUpperBound` and `isAffineExprInjective` (Utils/CinmUtils.h) are
+/// what the verifier then asks about the result.
 FailureOr<AffineExpr> linearizeScatterMap(AffineMap map,
                                           ArrayRef<int64_t> hostShape);
-
-/// The exact largest value `expr` takes over the box `[0, extents)`, or
-/// nullopt when that cannot be computed. Floordiv and mod by a constant are
-/// handled, but no dimension may appear twice: interval arithmetic treats
-/// occurrences as independent, and a bound that is merely an
-/// over-approximation is no grounds for rejecting anything.
-std::optional<int64_t> getAffineUpperBound(AffineExpr expr,
-                                           ArrayRef<int64_t> extents);
-
-/// Whether `expr` takes a different value at every point of the box
-/// `[0, extents)`, or nullopt when that cannot be decided. Both answers are
-/// conclusive; the undecided case is common.
-std::optional<bool> isAffineExprInjective(AffineExpr expr,
-                                          ArrayRef<int64_t> extents);
 
 } // namespace mlir::cnm
