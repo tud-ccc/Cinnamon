@@ -61,6 +61,13 @@ SmallVector<int64_t> mlir::cnm::getScatterIndexSpace(BufferType buffer) {
   return extents;
 }
 
+SmallVector<int64_t> mlir::cnm::getScatterMapDomain(AffineMap map,
+                                                    BufferType buffer) {
+  SmallVector<int64_t> extents = getScatterIndexSpace(buffer);
+  extents.truncate(map.getNumDims());
+  return extents;
+}
+
 FailureOr<AffineExpr>
 mlir::cnm::linearizeScatterMap(AffineMap map, ArrayRef<int64_t> hostShape) {
   if (map.getNumResults() != hostShape.size())
