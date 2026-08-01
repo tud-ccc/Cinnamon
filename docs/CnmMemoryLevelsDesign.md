@@ -839,6 +839,64 @@ Option 3 has independent merit — named parameters are more robust than
 positional ones, and the positional coupling has already been a hazard
 twice — but it changes the experiment scripts, not just the compiler.
 
+## I. Sequential trips
+
+§G2 required the tile counts to fill the workgroup *exactly*, and parked
+sequential passes over a larger problem in `--cinm-tiling`, upstream.
+M10 then removed `--cinm-tiling` from the generic pipeline, because
+`cnm.tile_sizes` are block sizes and the workgroup takes the whole tile
+space at once. Nothing has expressed trips since.
+
+That is not hypothetical: the `cinm2` gemv_64MB configuration needs them.
+With `dpus=256, tasklets=4` (1024 leaves) it covers 4096x4096 in 4 passes
+over M and 4 over K.
+
+**Decided (option 2 of three):** derive the trips rather than
+parameterize them. The space keeps exactly the parameters §H5 gives it,
+and the requirement relaxes from
+
+    prod(E_i / b_i) == leaves          to          prod(E_i / b_i) == leaves * trips
+
+with the distribution emitting a host loop of `trips` iterations. The
+alternative -- an outer block size per dimension, consumed by a host-side
+tiling pass -- is more faithful to §G2 but adds *n* parameters per op for
+something the tile counts already determine.
+
+The cost is a second implicit rule alongside §G3: the tile space is
+linearized in the §G3 order, the low-order digits index the workgroup and
+the high-order digits index the trip loop. Same trade as §G3 -- no new
+parameters, at the price of a fixed factorization -- and the same revisit
+trigger.
+
+Two consequences that are *not* obvious, both forced by that same
+configuration:
+
+### I1. A trip boundary can fall inside a dimension
+
+After the reduction split its §G3-ordered tile counts are `[4, 4096, 1]`
+against 1024 leaves. No suffix of that product equals 1024, so the trip
+boundary cannot be placed between two dimensions: `m`'s 4096 tiles have
+to split into 4 outer and 1024 inner.
+
+So the "trips consume whole outermost dimensions" simplification does not
+survive contact with a real configuration. The tiled layout's tile
+dimension is instead `tensor.expand_shape`d into `[tripPart, leafPart]`,
+the trip parts are permuted to the front, and each trip
+`tensor.extract_slice`s its own chunk before scattering.
+
+### I2. Trips over a reduction dimension accumulate across launches
+
+4 of those 16 trips come from `k_outer` -- a reduction-derived dimension.
+Each trip's leaves are seeded with the combiner's identity and merged by
+the gather (§G5), but that merge must then accumulate into the *running*
+total rather than overwrite it.
+
+So the host loop carries the output as an `scf.for` iteration argument,
+and the original `outs` is folded in exactly once at the end -- the same
+rule as §G5, one level up. A trip loop whose dimensions are all parallel
+needs none of this, and is the easy case; it is not the case the
+benchmarks need.
+
 ## Summary of open questions
 
 1. ~~§A1: reuse `CinmLevelDefAttr` for `cnm.buffer`'s `level`, or
@@ -882,21 +940,24 @@ twice — but it changes the experiment scripts, not just the compiler.
    mechanism, or serve a different class of parameters? (Still open —
    §D confirms the *existing* mechanism, reused twice, is sufficient
    for this effort, but doesn't say what these stubs are for.)
-7. §H5: how should the generic handler coexist with the per-op ones,
+7. §I: trips are derived from the tile counts by a fixed rule, which is
+   now the second such rule after §G3. Worth revisiting both together if
+   either turns out to cost real performance. (New, open.)
+8. §H5: how should the generic handler coexist with the per-op ones,
    given that `eval-solution` is positional? Recommended: generic
    handler only for ops with no template handler. (New, open.)
-8. §H4: adopt the "maximal-sharing necessary condition + exact
+9. §H4: adopt the "maximal-sharing necessary condition + exact
    post-lowering occupancy check" scheme, and retire the hand-written
    per-op capacity constraints? (New, open.)
-9. §G8: with fusion on the generic branch only, the two paths no longer
+10. §G8: with fusion on the generic branch only, the two paths no longer
    share an op set, so §F's same-configuration cost comparison weakens.
    Should the comparison baseline be the *unfused* generic path? (New,
    open.)
-10. §G4: reuse `linalg::splitReduction` for the partial+merge rewrite, or
+11. §G4: reuse `linalg::splitReduction` for the partial+merge rewrite, or
    go through `PartialReductionOpInterface`? Depends on whether
    `splitReduction`'s extra-dim placement matches what the gather needs.
    (New, open — resolve empirically during M8.)
-11. §E: merge with `UpmemGenericLoweringNotes.md` once §A3 is settled,
+12. §E: merge with `UpmemGenericLoweringNotes.md` once §A3 is settled,
    or keep the direct `linalg.generic → upmem` path as a permanent
    parallel option? (§A3 being settled now makes this more concrete:
    the note's points 1-3 map onto the two `--cinm-tiling` passes'
