@@ -1,9 +1,13 @@
 //===- UPMEMOccupancy.cpp - Per-DPU memory footprint of a kernel ---------===//
 
 #include "cinm-mlir/Dialect/UPMEM/IR/UPMEMOccupancy.h"
+#include "cinm-mlir/Dialect/UPMEM/IR/UPMEMOps.h"
 
+#include <llvm/ADT/TypeSwitch.h>
 #include <llvm/Support/MathExtras.h>
+#include <mlir/Dialect/MemRef/IR/MemRef.h>
 #include <mlir/IR/BuiltinTypes.h>
+#include <variant>
 
 namespace mlir::upmem {
 
@@ -26,8 +30,12 @@ constexpr int64_t kStackReserveBytes = 1024;
 
 int64_t taskletStackBytes(DpuProgramOp program) {
   int64_t bytes = kStackReserveBytes;
-  program->walk(
-      [&](PrivateWRAMAllocOp alloc) { bytes += declaredBytes(alloc.getType()); });
+  program->walk([&](Operation *op) {
+    llvm::TypeSwitch<Operation *, void>(op)
+        .Case<memref::AllocaOp, upmem::PrivateWRAMAllocOp>(
+            [&](auto alloc) { bytes += declaredBytes(alloc.getType()); })
+        .Default([](auto) {});
+  });
   return llvm::alignTo(bytes, int64_t{8});
 }
 
@@ -37,7 +45,8 @@ DpuOccupancy measureOccupancy(DpuProgramOp program) {
   result.wramBytes = result.taskletStackBytes * program.getNumTasklets();
 
   program->walk([&](StaticAllocOp alloc) {
-    int64_t bytes = declaredBytes(cast<MemRefType>(alloc.getBuffer().getType()));
+    int64_t bytes =
+        declaredBytes(cast<MemRefType>(alloc.getBuffer().getType()));
     // Static allocations are file-scope arrays in the generated C: one per
     // DPU, not one per tasklet, in either memory space.
     if (alloc.isMram())

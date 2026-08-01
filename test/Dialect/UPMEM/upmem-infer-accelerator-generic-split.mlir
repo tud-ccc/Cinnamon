@@ -38,11 +38,11 @@ func.func @gemv_64MB(%A: tensor<4096x4096xi32>, %x: tensor<4096xi32>) -> tensor<
   // once outside the loop. This is also what checks that the leaf tile sizes
   // survived the reduction split: without `per-dim-attrs` they arrive one
   // entry short and there is no loop here at all.
-  // CHECK: %[[WY:.*]] = upmem.pwram_alloc() : memref<1x8xi32, #upmem.wram>
+  // CHECK: %[[WY:.*]] = memref.alloca() : memref<1x8xi32, #upmem.wram>
   // CHECK: upmem.local_transfer %{{.*}} into %[[WY]]
   // CHECK: scf.for %{{.*}} = %{{.*}} to %{{.*}} step %{{.*}} {
-  // CHECK-DAG: upmem.pwram_alloc() : memref<8x1x64xi32, #upmem.wram>
-  // CHECK-DAG: upmem.pwram_alloc() : memref<1x64xi32, #upmem.wram>
+  // CHECK-DAG: memref.alloca() : memref<8x1x64xi32, #upmem.wram>
+  // CHECK-DAG: memref.alloca() : memref<1x64xi32, #upmem.wram>
   // CHECK: }
   // CHECK: upmem.local_transfer %[[WY]] into
   // CHECK: upmem.return

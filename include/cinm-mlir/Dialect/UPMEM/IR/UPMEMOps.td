@@ -474,7 +474,8 @@ def DpuProgramOp : Upmem_Op<"dpu_program",
   IsolatedFromAbove,
   SymbolTable,
   Symbol,
-  AffineScope
+  AffineScope,
+  AutomaticAllocationScope
 ]> {
   let summary = "the DPU-side kernel program";
   let description = [{

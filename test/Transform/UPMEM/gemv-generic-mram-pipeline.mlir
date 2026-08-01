@@ -25,7 +25,7 @@ func.func @gemv(%A: tensor<1024x512xi32>, %x: tensor<512xi32>) -> tensor<1024xi3
   // CHECK: %[[DPU:.*]] = upmem.alloc_dpus with program @dpu_kernels::@program : !upmem.hierarchy<1x16x1>
   // CHECK: upmem.scatter_on_array %{{.*}} onto @{{.*}} of %[[DPU]]
   // CHECK: upmem.wait_for %[[DPU]]
-  // CHECK: upmem.gather_on_array %{{.*}} from @{{.*}} of %[[DPU]]
+  // CHECK: upmem.gather_from_array %{{.*}} from @{{.*}} of %[[DPU]]
   // CHECK: upmem.free_dpus %[[DPU]]
 
   // Device side.
@@ -43,11 +43,11 @@ func.func @gemv(%A: tensor<1024x512xi32>, %x: tensor<512xi32>) -> tensor<1024xi3
   // The 64x512 tile does not fit WRAM, so the body walks it in 16x128 tiles.
   // The output tile is staged once outside the reduction loop.
   // CHECK: scf.for
-  // CHECK: %[[WY:.*]] = upmem.pwram_alloc() : memref<16xi32, #upmem.wram>
+  // CHECK: %[[WY:.*]] = memref.alloca() : memref<16xi32, #upmem.wram>
   // CHECK: upmem.local_transfer %{{.*}} into %[[WY]]
   // CHECK: scf.for
-  // CHECK: %[[WA:.*]] = upmem.pwram_alloc() : memref<16x128xi32, #upmem.wram>
-  // CHECK: %[[WX:.*]] = upmem.pwram_alloc() : memref<128xi32, #upmem.wram>
+  // CHECK: %[[WA:.*]] = memref.alloca() : memref<16x128xi32, #upmem.wram>
+  // CHECK: %[[WX:.*]] = memref.alloca() : memref<128xi32, #upmem.wram>
   // CHECK: upmem.local_transfer %{{.*}} into %[[WA]]
   // CHECK: upmem.local_transfer %{{.*}} into %[[WX]]
   // CHECK: linalg.contract {{.*}} ins(%[[WA]], %[[WX]] : memref<16x128xi32, #upmem.wram>, memref<128xi32, #upmem.wram>) outs(%[[WY]] : memref<16xi32, #upmem.wram>)

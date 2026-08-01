@@ -7,8 +7,8 @@
 //===----------------------------------------------------------------------===//
 #include "cinm-mlir/Dialect/UPMEM/IR/UPMEMAttributes.h"
 #include "cinm-mlir/Dialect/UPMEM/IR/UPMEMDialect.h"
-#include "cinm-mlir/Dialect/UPMEM/IR/UPMEMOps.h"
 #include "cinm-mlir/Dialect/UPMEM/IR/UPMEMOccupancy.h"
+#include "cinm-mlir/Dialect/UPMEM/IR/UPMEMOps.h"
 #include "cinm-mlir/Target/UPMEMCpp/UPMEMCppEmitter.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
@@ -269,6 +269,25 @@ static LogicalResult printOperation(CppEmitter &emitter,
 }
 
 static LogicalResult printOperation(CppEmitter &emitter,
+                                    memref::AllocaOp wramAllocOp) {
+  raw_ostream &os = emitter.ostream();
+  MemRefType res_type = wramAllocOp.getType();
+  Type elementType = res_type.getElementType();
+
+  os << "__dma_aligned ";
+  if (emitter.emitType(wramAllocOp.getLoc(), elementType).failed()) {
+    return failure();
+  }
+
+  size_t size = res_type.getNumElements();
+  size = llvm::alignTo(size, 8);
+  os << " " << emitter.getOrCreateName(wramAllocOp.getResult()) << "[" << size
+     << "]";
+
+  return success();
+}
+
+static LogicalResult printOperation(CppEmitter &emitter,
                                     upmem::PrivateWRAMAllocOp wramAllocOp) {
   raw_ostream &os = emitter.ostream();
   MemRefType res_type = wramAllocOp.getBuffer().getType();
@@ -377,17 +396,20 @@ static Value skipIgnorableOps(Value v) {
 }
 
 static LogicalResult getBasePtrOfAlloc(Operation *op, Value &basePtr) {
-  if (auto pwramAlloc = llvm::dyn_cast_or_null<upmem::PrivateWRAMAllocOp>(op)) {
-    basePtr = pwramAlloc.getBuffer();
-    return success();
-  }
-  if (auto staticAlloc = llvm::dyn_cast_or_null<upmem::StaticAllocOp>(op)) {
-    basePtr = staticAlloc.getBuffer();
-    return success();
-  }
   if (!op)
     return emitError(UnknownLoc(), "unknown error during translation");
-  return op->emitOpError("Expected upmem allocation op");
+  return TypeSwitch<Operation *, LogicalResult>(op)
+      .Case<upmem::PrivateWRAMAllocOp, upmem::StaticAllocOp>([&](auto op) {
+        basePtr = op.getBuffer();
+        return success();
+      })
+      .Case<memref::AllocaOp>([&](auto op) {
+        basePtr = op->getResult(0);
+        return success();
+      })
+      .Default([&](auto op) {
+        return op->emitOpError("Expected upmem allocation op");
+      });
 }
 
 static LogicalResult getBasePtrAndOffset(CppEmitter &emitter, Value v,
@@ -1788,6 +1810,8 @@ LogicalResult CppEmitter::emitOperation(Operation &op, bool trailingSemicolon) {
               [&](auto op) { return printOperation(*this, op); })
           .Case<LLVM::ExpOp>([&](auto op) { return printOperation(*this, op); })
           .Case<upmem::TaskletDimOp>(
+              [&](auto op) { return printOperation(*this, op); })
+          .Case<memref::AllocaOp>(
               [&](auto op) { return printOperation(*this, op); })
           .Case<upmem::PrivateWRAMAllocOp>(
               [&](auto op) { return printOperation(*this, op); })
