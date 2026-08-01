@@ -139,8 +139,9 @@ bufferization / hoisting / CSE
   [todo] scatter specializations  broadcast, constant-scatter
 --convert-cnm-to-upmem            level-aware: MRAM buffers bind straight
                                   to the static allocation
-  [todo] occupancy check          exact, measured on the lowered IR
 --lower-affine, --fold-memref-alias-ops, --upmem-dedup-kernels
+--upmem-check-occupancy           last: reject the program if its buffers
+                                  do not fit a DPU -- measured, not modelled
 ```
 
 ### 2.1 Memory levels are explicit
@@ -270,11 +271,21 @@ with the affine simplifier, since one commit that changed nothing but that
 moved per-DPU MRAM for a fixed configuration from 9280 to 8384 elements.
 Any a-priori bound is therefore either too permissive (and the
 configuration is discovered infeasible only when the DPU binary fails to
-link) or too strict (and it silently deletes good configurations). The
-scheme instead is: keep only a bound that can never over-estimate (assume
-maximal sharing), and check exactly by summing the real `upmem.static_alloc`
-sizes on the lowered IR. **[todo — the a-priori bound exists, the exact
-check does not]**
+link) or too strict (and it silently deletes good configurations).
+
+So the search space carries only a bound that can never over-estimate — it
+assumes maximal sharing — and feasibility is decided by *measuring* the
+lowered program. `--upmem-check-occupancy` runs last in the pipeline, after
+every memory optimization, and sums what each DPU program actually
+allocates: static MRAM and WRAM once per DPU, private WRAM once per tasklet
+plus the runtime's stack reserve. A configuration that does not fit fails
+its evaluation and the search moves on.
+
+The two halves are deliberately far apart in accuracy. On the 64 MB gemv,
+a leaf tile of 8×256 charges the cheap bound 2312 elements against the
+14336 a DPU has, and the real program 82176 bytes against 57344 — because
+the tasklets end up replicating the staging buffers rather than sharing
+them, which is a fact about the lowering, not about the configuration.
 
 ### 2.4 Where the templates fit
 
@@ -288,6 +299,10 @@ projection, for example:
 
 so one configuration can be lowered and costed both ways. That comparison
 is the criterion for deleting the templates; §4.1 has the schedule.
+
+The templates generate their module directly, without the pipeline, so the
+occupancy check above does not see them; they keep the hand-written per-op
+capacity constraints they have always had.
 
 ## 3. Bugs found and fixed
 
@@ -388,9 +403,6 @@ against the templates (§5).
   trips run over a reduction dimension. This blocks two baseline
   configurations, currently commented out in
   [dodo.py](../experiments/gemv_microbenchmark/dodo.py).
-- **Exact post-lowering occupancy check** (§2.3). Until it exists,
-  infeasible configurations are discovered only when the DPU binary fails
-  to link.
 - **Constant-scatter simplification.** The general form of a specific
   cost: the reduction identity seed is a constant buffer scattered to
   every leaf on every launch. A `cnm.set_zero` op exists, but only the GPU
@@ -439,7 +451,7 @@ against the templates (§5).
 
 ## 5. Current state
 
-Test suite: 54 of 61 lit tests pass. The seven failures predate this work
+Test suite: 57 of 64 lit tests pass. The seven failures predate this work
 and are unrelated to it (`CimToMemristor` ×2, `TorchToCinm`,
 `Transform/Cim` ×2, `upmem-to-c`, `simulate-python`).
 

@@ -781,18 +781,33 @@ only when the DPU binary fails to link) or **incomplete** (too strict,
 silently shrinking the space). It cannot be exact, because the quantity
 it constrains does not exist yet.
 
-### H4. Proposal: cheap necessary condition, exact late check
+### H4. Cheap necessary condition, exact late check
+
+**Implemented** as milestone M14. The proposal follows, with one
+correction from implementing it.
 
 **A priori, keep only what can never over-estimate.** Assume maximal
 sharing. Such a bound is sound as a filter — it prunes configurations
 that cannot fit under *any* layout, and never rejects a feasible one.
 
 **Then measure.** Standing decision 8 already has `evaluate()` run the
-real lowering, so the lowered IR is in hand: sum the
-`upmem.static_alloc` sizes per memory space and reject the trial if it
-exceeds the level's capacity. Exact by construction, and it stays
-correct when the lowering changes — which is the property the current
-scheme lacks.
+real lowering, so the lowered IR is in hand: sum what the program
+allocates per memory space and reject the trial if it exceeds the level's
+capacity. Exact by construction, and it stays correct when the lowering
+changes — which is the property the current scheme lacks. This is
+`--upmem-check-occupancy`, run last in the back pipeline.
+
+**Correction: "sum the `upmem.static_alloc` sizes" is not the
+measurement.** Private WRAM is `upmem.pwram_alloc`, which the translator
+emits as a *stack* array, so WRAM costs
+`numTasklets * (runtime reserve + Σ private allocs)` on top of the static
+buffers, which are shared by the DPU's tasklets. Counting allocations
+alone under-counts by a factor of `tasklets` — the opposite error to the
+one H2 warns about, and in practice the binding one: the case that
+motivated the check is a configuration whose leaf tiles fit WRAM once and
+overflow it eight times over. The same computation sizes the stack the SDK
+compiles the kernel with, so the two now share one definition
+(`UPMEMOccupancy.h`) rather than agreeing by coincidence.
 
 The cost is that infeasible configurations are no longer excluded from
 the space, so the optimizer spends trials finding them. That is the
@@ -957,10 +972,11 @@ benchmarks need.
    back through §H5's projection. Milestone M11b.
 9. ~~§H4: adopt the "maximal-sharing necessary condition + exact
    post-lowering occupancy check" scheme, and retire the hand-written
-   per-op capacity constraints?~~ **Decided: yes.** The necessary
-   condition is in; the exact post-lowering check is milestone M14 and is
-   not implemented yet, so infeasible configurations are currently only
-   discovered when the DPU binary fails to link.
+   per-op capacity constraints?~~ **Decided: yes, and done** (M14). The
+   necessary condition is in the space and `--upmem-check-occupancy`
+   measures the lowered program. The hand-written per-op constraints
+   survive only on the templates path, which does not run the pipeline and
+   is scheduled for removal.
 10. §G8: with fusion on the generic branch only, the two paths no longer
    share an op set, so §F's same-configuration cost comparison weakens.
    Should the comparison baseline be the *unfused* generic path? (New,

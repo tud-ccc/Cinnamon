@@ -60,11 +60,12 @@ been folded back into [CnmMemoryLevelsDesign.md](CnmMemoryLevelsDesign.md).
 **M0–M11 are implemented and M12 is settled as not-doing.** The generic
 path lowers `cinm → linalg → cnm → upmem` end to end, driven entirely by
 a search space derived from the linalg op's iteration space, and it runs
-on real hardware. Three milestones were added after the original plan and
-are outstanding: **M13** (sequential trips), **M14** (exact post-lowering
-occupancy check) and **M15** (the host repack), all in §3 below.
+on real hardware. Three milestones were added after the original plan:
+**M13** (sequential trips) and **M15** (the host repack), both still
+outstanding, and **M14** (exact post-lowering occupancy check), since
+implemented. All three are in §3 below.
 
-Test baseline: **54/61 passing**, 7 failing. All seven are unrelated to
+Test baseline: **57/64 passing**, 7 failing. All seven are unrelated to
 this work and were failing before it — `CimToMemristor` ×2,
 `TorchToCinm`, `Transform/Cim` ×2, `Dialect/UPMEM/upmem-to-c.mlir`,
 `Transform/UPMEM/simulate-python.mlir`.
@@ -314,7 +315,7 @@ M12 (not doing: --convert-cinm-to-cnm is the CINM 1.0 baseline's lowering)
 --- added after the original plan, all outstanding ---
 
 M13 sequential trips in --convert-linalg-to-cnm         (needs M11b, design §I)
-M14 exact post-lowering occupancy check                 (needs M11b, design §H4)
+M14 exact post-lowering occupancy check   DONE          (needs M11b, design §H4)
 M15 stop materializing the tiled layout on the host     (needs M11b)
 ```
 
@@ -1005,7 +1006,8 @@ Three supporting changes made that possible:
   `cast<ShapedType>`. Only computation-carrying ops get parameters.
 
 **Capacity stays a cheap necessary condition** — the maximal-sharing
-bound of §H4, which can never over-estimate. The exact check is M14.
+bound of §H4, which can never over-estimate. The exact check is M14,
+since implemented.
 
 **Benchmarks moved with it** (`ffaa9a9`): `experiments/` configs are
 written in the generic names, and the `atim` optimum is spelled
@@ -1076,26 +1078,59 @@ loop, (b) the §I1 shape where the boundary falls inside a dimension, and
 (c) the §I2 shape where a reduction dimension trips. Re-enabling `cinm2`
 and `cinm2_partial_reduction` in `dodo.py` is the end-to-end signal.
 
-### M14 — Exact post-lowering occupancy check — **TODO**
+### M14 — Exact post-lowering occupancy check — **DONE**
 
-Design §H4. Occupancy is a property of the lowered program (§H3), so the
-a-priori constraint keeps only what can never over-estimate — assume
-maximal sharing — and the exact check runs on the lowered IR.
+Design §H4. Landed as `93dab09`, `e30a45a`, `97890e3`.
 
-Standing decision 8 already has `evaluate()` run the real lowering, so the
-UPMEM-dialect IR is in hand: sum the `upmem.static_alloc` sizes per memory
-space and compare against the level's capacity. Shaped as a transform
-returning `DiagnosedSilenceableFailure::silenceableFailure` so an
-infeasible trial is rejected rather than crashing the search.
+`--upmem-check-occupancy` sums what each `upmem.dpu_program` allocates and
+fails if it exceeds the level's capacity. It runs **last** in the back
+pipeline, after every memory optimization, because that is the earliest
+point at which the quantity exists (§H3). A failed pass makes
+`runPipeline` return a silenceable failure, which `tryEval` already
+handles the way this needs: the candidate is marked failed and the budget
+is not decremented, so the search moves on.
 
-The cost is that infeasible configurations stay in the space and the
-optimizer spends trials on them; the maximal-sharing filter keeps that
-bounded. The same measurement also hands the cost model *real* occupancy
-instead of modelled occupancy.
+Three things the plan did not anticipate:
 
-**Tests:** a configuration that fits and one that does not, both pinned
-with `eval-solution`, checking the second is reported as silenceable
-rather than hard-failing.
+- **The accounting is per-tasklet for private WRAM.** `upmem.pwram_alloc`
+  is a stack array in the generated C, so WRAM costs
+  `numTasklets * (reserve + Σ private allocs)` plus the static WRAM
+  buffers, which are shared. Summing allocation sizes alone would
+  under-count by a factor of `tasklets` — the opposite error to the one
+  §H2 warned about, and the one that actually bites.
+- **The translator already had this computation, and it was wrong.** Its
+  `getMinStackSize` used unpadded element counts while printing the arrays
+  padded to 8 bytes, so the stack size handed to the SDK was smaller than
+  the stack the kernel uses. Both now share `UPMEMOccupancy.h`; a second
+  definition would eventually accept a program the translator then emits
+  too large.
+- **Pinned configurations needed a reason.** Trial diagnostics are
+  swallowed because rejection is ordinary during a search, so every
+  `eval-solution` failure read "Pipeline failed". `runPipeline` now keeps
+  the first error and reports it.
+
+Capacities come from the accelerator of the compute block whose
+`upmem.alloc_dpus` loads the program, or from the `mram-size`/`wram-size`
+options. Given neither, the pass fails rather than checking nothing. A
+program no `alloc_dpus` refers to is dead and is not charged for.
+
+The cost §H4 predicted stands: infeasible configurations remain in the
+space and the optimizer spends trials discovering them, bounded by the
+maximal-sharing filter. The measurement also makes *real* occupancy
+available to the cost model, should it want it.
+
+**Not covered:** the templates path, which generates its module without
+the back pipeline and keeps its hand-written per-op capacity constraints.
+It is scheduled for removal (overview §4.1) rather than for this check.
+
+**Tests:** `Transform/UPMEM/upmem-check-occupancy.mlir` (fits;
+private-WRAM × tasklets; static WRAM shared but counted; MRAM overflow;
+unloaded program not charged), `upmem-check-occupancy-sizes.mlir` (the
+size options, and the diagnostic when neither they nor an accelerator
+supply a capacity), and
+`Dialect/UPMEM/upmem-infer-accelerator-occupancy.mlir`, which pins a
+configuration the a-priori bound accepts (2312 i32 of leaf tiles against
+14336) and the lowered program refutes (8 × 10272 bytes against 57344).
 
 ### M15 — Stop materializing the tiled layout on the host — **TODO**
 
@@ -1147,7 +1182,7 @@ signal.
 | M11b ✅ | one generic space for every op; named `eval-solution` parameters | `upmem-infer-accelerator-generic-split.mlir` (re-expressed in `gemv.M0`/`gemv.K0`/…); `experiments/` configs moved to the same names |
 | M12 ⊘ | not doing: `--convert-cinm-to-cnm` is the CINM 1.0 baseline's lowering | — |
 | M13 ☐ | sequential trips (§I) | `linalg-to-cnm-trips.mlir` (all-parallel, boundary inside a dim, reduction trip); `cinm2` + `cinm2_partial_reduction` re-enabled in `dodo.py` |
-| M14 ☐ | exact post-lowering occupancy check (§H4) | fitting vs. non-fitting configuration under `eval-solution`, the second reported as silenceable |
+| M14 ✅ | `--upmem-check-occupancy`, run last in the back pipeline | `Transform/UPMEM/upmem-check-occupancy.mlir` (new, 5 cases); `upmem-check-occupancy-sizes.mlir` (new); `Dialect/UPMEM/upmem-infer-accelerator-occupancy.mlir` (new, a configuration the cheap bound accepts and the lowered program refutes) |
 | M15 ☐ | stop materializing the tiled layout on the host | `gemv-linalg-generic-pipeline.mlir` CHECK-NOT on the full-size host alloc; the hardware number is the real signal |
 
 ---
