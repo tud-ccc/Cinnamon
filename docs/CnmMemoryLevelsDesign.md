@@ -817,27 +817,33 @@ pass's parameters. It generalizes to any iteration rank and drops
 `dpuRows`/`dpuCols`/`taskletRows`/`taskletCols` entirely, which is the
 interpretable space to land on once the templates go.
 
-**Open decision — how it coexists.** `eval_solution` serialises
-positionally
+**Decided (option 3).** `eval_solution` used to serialise positionally
 ([cinmopt.py:214](../experiments/cinm_experiments/cinmopt.py#L214)), so
-the space's variable list is an ABI for everything in `experiments/`.
-Adding generic variables next to the template ones *for the same op*
-shifts positions and silently reinterprets every existing params dict.
+the space's variable list was an ABI for everything in `experiments/`:
+adding generic variables next to the template ones *for the same op*
+would shift positions and silently reinterpret every existing params
+dict. The three options were:
 
 1. **Generic handler only for ops that have no template handler** —
-   gemm, elementwise, anything new. Existing benchmarks are untouched,
-   the same-configuration comparison survives where it exists, and
-   coverage extends where there was nothing to compare against.
-   *Recommended.*
+   gemm, elementwise, anything new. Existing benchmarks untouched.
 2. **Handler chosen by `lowering=`**, giving the two paths different
    spaces. Loses the same-configuration comparison that §F makes the
    quality bar.
-3. **Both sets of variables, always.** Breaks the positional ABI;
-   requires `eval-solution` to accept names instead of positions.
+3. **One space, named rather than positional.** Breaks the positional
+   ABI; requires `eval-solution` to accept names.
 
-Option 3 has independent merit — named parameters are more robust than
-positional ones, and the positional coupling has already been a hazard
-twice — but it changes the experiment scripts, not just the compiler.
+**Option 3 is what landed**, and it went further than "both sets of
+variables": the generic space is the *only* space, and the templates read
+its numbers back through the projection above. The reasoning is that the
+templates are meant to go, so preserving compatibility with code that
+will be removed — for the sake of benchmarks that can simply be rerun —
+buys nothing. Named parameters were independently worth it: the
+positional coupling had already been a hazard twice.
+
+The variables are named `<op>.<dim><level>` — `gemv.M0`, `gemv.K0`,
+`gemv.M1`, `gemv.K1` — with the dimension names taken from the
+originating `cinm` op through a `cinm.lowered_from` marker, and op kinds
+counted first so a block with two gemvs gets `gemv0`/`gemv1`.
 
 ## I. Sequential trips
 
@@ -942,21 +948,31 @@ benchmarks need.
    for this effort, but doesn't say what these stubs are for.)
 7. §I: trips are derived from the tile counts by a fixed rule, which is
    now the second such rule after §G3. Worth revisiting both together if
-   either turns out to cost real performance. (New, open.)
-8. §H5: how should the generic handler coexist with the per-op ones,
-   given that `eval-solution` is positional? Recommended: generic
-   handler only for ops with no template handler. (New, open.)
-9. §H4: adopt the "maximal-sharing necessary condition + exact
+   either turns out to cost real performance. (Open; the rule itself is
+   decided and is implementation milestone M13.)
+8. ~~§H5: how should the generic handler coexist with the per-op ones,
+   given that `eval-solution` is positional?~~ **Decided:** option 3, and
+   further than stated — the generic space is the *only* space,
+   `eval-solution` takes names, and the templates read the same numbers
+   back through §H5's projection. Milestone M11b.
+9. ~~§H4: adopt the "maximal-sharing necessary condition + exact
    post-lowering occupancy check" scheme, and retire the hand-written
-   per-op capacity constraints? (New, open.)
+   per-op capacity constraints?~~ **Decided: yes.** The necessary
+   condition is in; the exact post-lowering check is milestone M14 and is
+   not implemented yet, so infeasible configurations are currently only
+   discovered when the DPU binary fails to link.
 10. §G8: with fusion on the generic branch only, the two paths no longer
    share an op set, so §F's same-configuration cost comparison weakens.
    Should the comparison baseline be the *unfused* generic path? (New,
    open.)
-11. §G4: reuse `linalg::splitReduction` for the partial+merge rewrite, or
-   go through `PartialReductionOpInterface`? Depends on whether
-   `splitReduction`'s extra-dim placement matches what the gather needs.
-   (New, open — resolve empirically during M8.)
+11. ~~§G4: reuse `linalg::splitReduction` for the partial+merge rewrite,
+   or go through `PartialReductionOpInterface`?~~ **Decided:**
+   `linalg::splitReduction`. It turns the reduction tile index into an
+   extra *parallel* dimension and leaves every indexing map a projected
+   permutation, so §G1's distribution applies unchanged and no
+   `PartialReductionOpInterface` is needed. It covers §G5 for free
+   (neutral-element fill, merge accumulating into the original `outs`).
+   Its extra-dim placement is controllable and §G3 pins it outermost.
 12. §E: merge with `UpmemGenericLoweringNotes.md` once §A3 is settled,
    or keep the direct `linalg.generic → upmem` path as a permanent
    parallel option? (§A3 being settled now makes this more concrete:

@@ -4,6 +4,10 @@ Code-level plan for [CnmMemoryLevelsDesign.md](CnmMemoryLevelsDesign.md) §A.
 Everything in §0 below is settled context to keep in mind while
 implementing; the per-milestone sections (§3) carry the actual work.
 
+For a one-page map of the whole effort — what changed, what was broken,
+and what is deliberately left for later — see
+[CnmRefactoringOverview.md](CnmRefactoringOverview.md).
+
 ## 0. Standing decisions
 
 **Goal.** `cinm.op.gemv`/`cinm.op.reduce` should reach UPMEM through the
@@ -53,12 +57,22 @@ descriptor and does *not* implement the level interface) and §F (the
 templates stay indefinitely, not just as a development oracle) — have
 been folded back into [CnmMemoryLevelsDesign.md](CnmMemoryLevelsDesign.md).
 
-**All milestones are implemented**, with one piece of M7 outstanding: the
-templates-vs-generic cost comparison. Both paths are selectable
-(`lowering=templates|generic`) and both are under test, but nothing yet
-*measures* the gap, and the cheap `op-count` simulator cannot ---
-it does not report time. That comparison is the milestone's real success
-criterion and needs a working cycle-accurate simulator run.
+**M0–M11 are implemented and M12 is settled as not-doing.** The generic
+path lowers `cinm → linalg → cnm → upmem` end to end, driven entirely by
+a search space derived from the linalg op's iteration space, and it runs
+on real hardware. Three milestones were added after the original plan and
+are outstanding: **M13** (sequential trips), **M14** (exact post-lowering
+occupancy check) and **M15** (the host repack), all in §3 below.
+
+Test baseline: **54/61 passing**, 7 failing. All seven are unrelated to
+this work and were failing before it — `CimToMemristor` ×2,
+`TorchToCinm`, `Transform/Cim` ×2, `Dialect/UPMEM/upmem-to-c.mlir`,
+`Transform/UPMEM/simulate-python.mlir`.
+
+The measured state, `gemv_64MB` on hardware, same configuration through
+both lowerings: `atim_templateflow` 10.782 ms net, `atim_genericflow`
+103.433 ms. **Device time already matches** (launch 0.390 vs 0.434 ms) —
+the whole gap is host-side data movement, and 77.9 ms of it is M15.
 
 Known gaps worth carrying forward:
 - `--upmem-tile-mram-buffers` promotes with `useFullTileBuffers=false`, so
@@ -66,10 +80,17 @@ Known gaps worth carrying forward:
   and a partial view of it. Correct, but the buffer is larger than the
   tile; observed in the plugin test, where a 16-row WRAM buffer holds a
   2-row tile.
-- The positional launch/op correspondence in `stampLeafTileSizes` holds
-  for one launch per converted op. It is checked, not assumed, so a
-  future pass that fuses or splits launches will fail loudly rather than
-  silently mis-tile.
+- M7's templates-vs-generic **cost comparison is still unmeasured**. Both
+  paths are selectable (`lowering=templates|generic`) on one space, so the
+  same configuration can be costed both ways, but the cheap `op-count`
+  simulator models neither loads nor stores and does not report time. That
+  comparison is the criterion for deleting the templates, and it needs a
+  cycle-accurate simulator run.
+- The remaining deferred optimizations (broadcast detection, constant
+  scatter, transfer coalescing, WRAM sharing, device-side tree reduction)
+  are catalogued in
+  [CnmRefactoringOverview.md](CnmRefactoringOverview.md) §3 rather than
+  here — they are follow-on work, not milestones of this plan.
 
 Two decisions were added along the way that the plan did not anticipate.
 
@@ -286,11 +307,20 @@ M10 linalg-first pipeline: refresh --convert-cinm-to-linalg, add fusion
  |
 M11 plugin: generic space builder from linalg indexing maps  (needs M9, M10)
  |
+M11b one generic space for every op; named eval-solution params  (needs M11)
+ |
 M12 (not doing: --convert-cinm-to-cnm is the CINM 1.0 baseline's lowering)
+
+--- added after the original plan, all outstanding ---
+
+M13 sequential trips in --convert-linalg-to-cnm         (needs M11b, design §I)
+M14 exact post-lowering occupancy check                 (needs M11b, design §H4)
+M15 stop materializing the tiled layout on the host     (needs M11b)
 ```
 
 M1, M2, M3 are mutually independent once M0 lands. M9 and M10 are
-mutually independent once M8 lands.
+mutually independent once M8 lands. M13, M14 and M15 are mutually
+independent.
 
 ## 3. Milestones
 
@@ -924,12 +954,13 @@ workgroup exactly — *follows* from those constraints rather than adding
 one. This is the M7 defect fixed at its root: it fed `mramRow` straight
 through, which is the per-DPU tile, not the per-leaf one.
 
-**No new `SpaceVar`, by design.** `eval_solution` serialises
-positionally ([cinmopt.py:214](../experiments/cinm_experiments/cinmopt.py#L214)),
-so inserting a variable would silently reinterpret every params dict in
-`experiments/`. Parameter names and their order are unchanged and
-nothing outside the compiler needs updating. Recording a *derived
-expression* rather than a variable is what `SpaceValue` is for.
+**No new `SpaceVar`, by design.** `eval_solution` serialised
+positionally, so inserting a variable would silently reinterpret every
+params dict in `experiments/`. Parameter names and their order were left
+unchanged; recording a *derived expression* rather than a variable is
+what `SpaceValue` is for.
+
+**Superseded by M11b below**, which removed that constraint at its root.
 
 **Tests:** `Dialect/UPMEM/upmem-infer-accelerator-generic-split.mlir`
 (new) pins the autotuner's gemv_64MB configuration end to end — the one
@@ -937,6 +968,52 @@ that used to fail with `numParallelElts (64) % numWgItems (16384)`. The
 per-DPU MRAM footprint it produces (`8192 + 128 + 64` elements) is
 exactly the template's own constraint `mramRow*mramCol + mramCol +
 mramRow`.
+
+### M11b — One generic space for every op — **DONE**
+
+Design §H5, and the resolution of its "open decision — how it coexists".
+M11 kept the per-op template handlers owning the space and *projected*
+their variables onto the generic path's parameters. That was the right
+first move but the wrong end state: the templates are meant to go, and
+preserving a positional ABI for benchmarks that can simply be rerun is
+not worth the coupling. Landed as `944135a`, `8481f33`, `fa2e72c`,
+`ffaa9a9`, `73e6629`.
+
+The direction is reversed. **The generic space is the only space**, built
+by walking the linalg ops of the converted compute block — one block size
+per iteration dimension per level, `∏(E_i/b_i) == dpus*tasklets`, leaf
+block dividing the block. The *templates* now read those numbers back
+through the §H5 projection, which is the inverse of what M11 did.
+
+Three supporting changes made that possible:
+
+- **`eval-solution` takes names** (`944135a`). `dpus=2048,tasklets=8,
+  gemv.M0=8,…` instead of a positional list; unknown and missing names are
+  both reported. This is design §H5's option 3, which the design doc
+  called out as having independent merit — the positional coupling had
+  already been a hazard twice.
+- **Names are `<op>.<dim><level>`** (`73e6629`). `op0.block0` said where a
+  parameter sat in a walk, not what it meant. Dimension names come from
+  the originating `cinm` op — M/K for gemv, M/N/K for gemm, B/M/N/K for
+  batch_gemm, leading parallel dims plus K for a trailing reduction —
+  falling back to `D0, D1, …`. Op kinds are counted first, so a block with
+  two gemvs gets `gemv0`/`gemv1` while the ordinary single-op case stays
+  unadorned.
+- **`cinm.lowered_from`** (`8481f33`) marks which `cinm` op a linalg op
+  came from, which is what supplies those dimension names. It also fixed a
+  crash: without it the walk handed `linalg.fill`'s scalar operand to
+  `cast<ShapedType>`. Only computation-carrying ops get parameters.
+
+**Capacity stays a cheap necessary condition** — the maximal-sharing
+bound of §H4, which can never over-estimate. The exact check is M14.
+
+**Benchmarks moved with it** (`ffaa9a9`): `experiments/` configs are
+written in the generic names, and the `atim` optimum is spelled
+`gemv.M0=8 gemv.K0=128 gemv.M1=8 gemv.K1=64` on both paths.
+
+**Tests:** `upmem-infer-accelerator-generic-split.mlir` re-expressed in
+the named space; the two `dodo.py` `atim` configs differ only in
+`lowering=`, which is what makes them a same-configuration comparison.
 
 ### M12 — Delete the distribution heuristics — **NOT DOING**
 
@@ -957,6 +1034,99 @@ where it is, serving the flow it was written for.
 **Revisit when** the CINM 1.0 baseline is retired, or if the GPU backend
 moves to `--convert-linalg-to-cnm`. Neither is on the critical path.
 
+### M13 — Sequential trips — **TODO**
+
+Design §I. §G2 requires the tile counts to fill the workgroup exactly and
+parked sequential passes over a larger problem in `--cinm-tiling`, which
+M10 then removed from the generic pipeline. Nothing has expressed trips
+since, and the `cinm2` gemv_64MB baselines need them: with `dpus=256
+tasklets=4` (1024 leaves) they cover 4096x4096 in 4 passes over M and 4
+over K. Those two configs are **commented out** in
+`experiments/gemv_microbenchmark/dodo.py` until this lands, deliberately
+still spelling their old parameter names so they fail loudly rather than
+being silently reinterpreted.
+
+**Decided** (design §I, option 2 of three): derive the trips from the tile
+counts rather than parameterize them. The space keeps exactly the
+parameters §H5 gives it and the requirement relaxes from
+`∏(E_i/b_i) == leaves` to `∏(E_i/b_i) == leaves * trips`, with the tile
+space linearized in the §G3 order — low-order digits index the workgroup,
+high-order digits index the trip loop.
+
+**Changes:**
+- Relax the count check in `--convert-linalg-to-cnm` and derive `trips`.
+- **A trip boundary can fall inside a dimension** (§I1). The `cinm2`
+  configuration's §G3-ordered counts are `[4, 4096, 1]` against 1024
+  leaves, and no suffix of that product is 1024 — `m`'s 4096 tiles split
+  4 outer × 1024 inner. So the tiled layout's tile dimension is
+  `tensor.expand_shape`d into `[tripPart, leafPart]`, the trip parts are
+  permuted to the front, and each trip `tensor.extract_slice`s its own
+  chunk before scattering. The tidy "trips consume whole outermost
+  dimensions" rule does not survive contact with a real configuration.
+- **Trips over a reduction dimension accumulate across launches** (§I2).
+  4 of those 16 trips come from `k_outer`. Each trip's leaves are seeded
+  with the identity and merged by the gather (§G5), but that merge has to
+  accumulate into the *running* total: the host loop carries the output as
+  an `scf.for` iter_arg and folds the original `outs` in exactly once at
+  the end — §G5's rule, one level up. An all-parallel trip loop needs none
+  of this and is the easy case; it is not the case the benchmarks need.
+
+**Tests:** a `linalg-to-cnm-trips.mlir` with (a) an all-parallel trip
+loop, (b) the §I1 shape where the boundary falls inside a dimension, and
+(c) the §I2 shape where a reduction dimension trips. Re-enabling `cinm2`
+and `cinm2_partial_reduction` in `dodo.py` is the end-to-end signal.
+
+### M14 — Exact post-lowering occupancy check — **TODO**
+
+Design §H4. Occupancy is a property of the lowered program (§H3), so the
+a-priori constraint keeps only what can never over-estimate — assume
+maximal sharing — and the exact check runs on the lowered IR.
+
+Standing decision 8 already has `evaluate()` run the real lowering, so the
+UPMEM-dialect IR is in hand: sum the `upmem.static_alloc` sizes per memory
+space and compare against the level's capacity. Shaped as a transform
+returning `DiagnosedSilenceableFailure::silenceableFailure` so an
+infeasible trial is rejected rather than crashing the search.
+
+The cost is that infeasible configurations stay in the space and the
+optimizer spends trials on them; the maximal-sharing filter keeps that
+bounded. The same measurement also hands the cost model *real* occupancy
+instead of modelled occupancy.
+
+**Tests:** a configuration that fits and one that does not, both pinned
+with `eval-solution`, checking the second is reported as silenceable
+rather than hard-failing.
+
+### M15 — Stop materializing the tiled layout on the host — **TODO**
+
+`cnm.scatter` requires the host value's shape to *end with* the buffer
+shape ([CnmOps.cpp:292-375](../lib/Dialect/Cnm/IR/CnmOps.cpp#L292-L375)),
+so `--convert-linalg-to-cnm`'s `toTiledLayout` emits a real permuted copy
+for any operand tiled in ≥2 dimensions. On gemv_64MB that is
+`memref.alloc() : memref<512x32x1x8x1x128xi32>` — 16 M elements, a full
+64 MB copy of `A` filled by a 4-deep `scf.for` nest — and it is **77.9 ms
+of the generic path's 103.4 ms**. It is the single largest item between
+the generic path and the templates, and therefore the gate on §F's
+"equivalent code quality".
+
+**Two candidate fixes, not yet chosen:**
+1. **Give `cnm.scatter` a general affine map into the host buffer**
+   instead of the shape-suffix requirement, so a strided DMA falls out of
+   the map rather than out of a copy. The real answer, and the larger
+   change — it touches the op's verifier, `--convert-cnm-to-upmem` and
+   `--cnm-ensure-scatter-gather-contiguous`.
+2. **Emit the permuted view as a strided `memref`** (no copy) and let
+   `--cnm-ensure-scatter-gather-contiguous` decide where packing is
+   genuinely required. Cheap to try and it measures how much of the repack
+   is actually necessary, which informs (1).
+
+Worth measuring (2) first; expect (1) to be what lands.
+
+**Tests:** the existing `Transform/UPMEM/gemv-linalg-generic-pipeline.mlir`
+gains a CHECK-NOT for a host-side `memref.alloc` of the operand's full
+size; the hardware number in `experiments/gemv_microbenchmark` is the real
+signal.
+
 ## 4. Test summary
 
 | Milestone | Subject | Tests |
@@ -974,7 +1144,11 @@ moves to `--convert-linalg-to-cnm`. Neither is on the critical path.
 | M9 ✅ | reduction splitting via `linalg::splitReduction` | `linalg-to-cnm-split-reduction.mlir` (new: K-split gemv, `max` neutral element, float opt-in); `linalg-to-cnm-invalid.mlir` (extended: float without opt-in, non-associative combiner) |
 | M10 ✅ | linalg-first pipeline (fusion deferred) | `Transform/UPMEM/gemv-linalg-generic-pipeline.mlir` (new); `gemv-split-k-grouping.mlir` (new) |
 | M11 ✅ | projected search space for the generic path | `Dialect/UPMEM/upmem-infer-accelerator-generic-split.mlir` (new, the autotuner's gemv_64MB configuration) |
+| M11b ✅ | one generic space for every op; named `eval-solution` parameters | `upmem-infer-accelerator-generic-split.mlir` (re-expressed in `gemv.M0`/`gemv.K0`/…); `experiments/` configs moved to the same names |
 | M12 ⊘ | not doing: `--convert-cinm-to-cnm` is the CINM 1.0 baseline's lowering | — |
+| M13 ☐ | sequential trips (§I) | `linalg-to-cnm-trips.mlir` (all-parallel, boundary inside a dim, reduction trip); `cinm2` + `cinm2_partial_reduction` re-enabled in `dodo.py` |
+| M14 ☐ | exact post-lowering occupancy check (§H4) | fitting vs. non-fitting configuration under `eval-solution`, the second reported as silenceable |
+| M15 ☐ | stop materializing the tiled layout on the host | `gemv-linalg-generic-pipeline.mlir` CHECK-NOT on the full-size host alloc; the hardware number is the real signal |
 
 ---
 
