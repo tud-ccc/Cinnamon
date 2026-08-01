@@ -385,10 +385,9 @@ happen after §A:
   uniform per-DPU block transfer and a per-DPU arbitrary-block-count
   transfer; choosing between them is a codegen decision that (per the
   draft) should be "implemented generically at the CNM level" using
-  the scatter map as infrastructure. Needs its own design pass once
-  §A's `cnm.local_transfer`/buffer-level story is settled, since
-  MRAM-level scatters and WRAM-level scatters may want different
-  answers.
+  the scatter map as infrastructure. **Answered by §J**: the number of
+  device dimensions the map retains *is* the block count, so the
+  selection is a reading of the map rather than a separate decision.
 
 ## C. On-device transfer coalescing (later)
 
@@ -720,6 +719,10 @@ the scatter map is `indexingMap ∘ (workgroup → tile)`, computed
 directly, and contiguity is already somebody else's job
 (`--cnm-ensure-scatter-gather-contiguous`).
 
+That last clause was aspirational as first implemented: `cnm.scatter`'s
+shape rule still forced this pass to materialize a tiled layout of its
+own. §J removes the rule and makes it literally true.
+
 ### G10. Deferred
 
 Device-side tree reduction of partials — host merge only for now. A
@@ -905,6 +908,14 @@ dimension is instead `tensor.expand_shape`d into `[tripPart, leafPart]`,
 the trip parts are permuted to the front, and each trip
 `tensor.extract_slice`s its own chunk before scattering.
 
+**Superseded by §J4.** That mechanism is built on the tiled-layout
+machinery §J deletes. With a pointwise map a trip is simply an offset:
+`extract_slice`/`subview` the host operand per trip and keep the map.
+The boundary can still fall inside a dimension — that fact is about the
+tile counts, not about the representation — but it no longer needs a
+reshape or a permutation to express. M13 therefore depends on the §J
+milestone.
+
 ### I2. Trips over a reduction dimension accumulate across launches
 
 4 of those 16 trips come from `k_outer` -- a reduction-derived dimension.
@@ -917,6 +928,207 @@ and the original `outs` is folded in exactly once at the end -- the same
 rule as §G5, one level up. A trip loop whose dimensions are all parallel
 needs none of this, and is the easy case; it is not the case the
 benchmarks need.
+
+## J. Scatter/gather maps: pointwise into the host buffer
+
+`cnm.scatter`/`cnm.gather` currently require the host value's shape to
+*end with* the per-leaf buffer shape, with the map naming only the
+leading tile coordinates
+([CnmOps.cpp:335-349](../lib/Dialect/Cnm/IR/CnmOps.cpp#L335-L349)). That
+one line of the verifier is doing more work than it looks: it hard-codes
+a transfer model in which each leaf receives exactly one contiguous run
+of `∏B` elements. Three costs follow.
+
+1. **It forces data movement to satisfy a type rule.** An operand tiled
+   in two or more dimensions has to be physically permuted into
+   tiles-outermost order before it can be scattered, because a `tensor`
+   has no layout and the only way to change a tensor's layout is to copy
+   it. On gemv_64MB that is a 64 MB allocation plus a 64 MB strided
+   copy — see M15.
+2. **It understates what the hardware can do.** The UPMEM SDK's scatter
+   transfer API takes an arbitrary number of blocks per DPU, and
+   `upmem.scatter_on_tasklets` already exposes it: `numBlocksPerDpu` is
+   documented as "independent of the number of tasklets declared by
+   `hierarchy`: blocks are just units of transfer"
+   ([UPMEMOps.td:331-335](../include/cinm-mlir/Dialect/UPMEM/IR/UPMEMOps.td#L331-L335)).
+   A leaf whose tile is *k* contiguous runs is perfectly transferable as
+   *k* blocks. The CNM contract cannot say so, so a copy happens instead.
+3. **It is a backend assumption stated at the device-independent
+   level.** §G9 already assigns contiguity to
+   `--cnm-ensure-scatter-gather-contiguous`; the shape rule pre-empts
+   that pass by making non-contiguity unrepresentable.
+
+The templates avoid the copy by hand: `scatterATile` builds a permuted
+`memref.reinterpret_cast` view of `A` and picks between a flat
+`upmem.scatter` and `upmem.scatter_on_tasklets`
+([SimulationTemplates.cpp:164-231](../lib/Dialect/UPMEM/Transforms/SimulationTemplates.cpp#L164-L231)).
+That is sound as far as addressing goes — the lowering composes the
+scatter map with the memref's `StridedLayoutAttr` and applies the offset
+by GEP
+([UPMEMToLLVM.cpp:142-158](../lib/Conversion/UPMEMToLLVM/UPMEMToLLVM.cpp#L142-L158),
+[:529-536](../lib/Conversion/UPMEMToLLVM/UPMEMToLLVM.cpp#L529-L536)) — but
+it is sound *by argument, not by construction*: building the view on
+`extract_strided_metadata`'s base buffer severs provenance, so alias
+analysis and buffer deallocation see no link back to `A`. It works only
+because `A` is read-only for the lifetime of the nest. It is not a trick
+the generic flow should imitate.
+
+### J1. The decision
+
+**The map becomes pointwise into the host buffer**, with a block form
+that leaves a suffix of the buffer's dimensions implicit.
+
+Let the workgroup shape be `W` (`n` dims), the `cnm.buffer` shape `B`
+(`m` dims) and the host value's shape `H` (`k` dims). The map's domain is
+the workgroup dimensions followed by the first `p` of the buffer's own,
+for any `0 <= p <= m`. The `m - p` dimensions left out of the domain are
+transferred as a **block**, and the same number of host dimensions are
+left out of the results — they are the block's own shape, so they have to
+match extent for extent:
+
+    (w_0..w_{n-1}, i_0..i_{p-1}) -> (h_0..h_{k-(m-p)-1})
+
+    buf[w][i_0..i_{p-1}, rest] = host[map(w, i_0..i_{p-1}) ++ rest]
+
+`p = m` is the **pointwise form**, naming a host element for every buffer
+element and leaving nothing implicit. `p = 0` is one whole-buffer block
+per leaf — which spelled out is `numResults == k - m` and `H[k-m..] == B`,
+i.e. **today's contract exactly**. The change is therefore purely
+additive: existing IR is already well-formed under it, and no migration
+shim is needed.
+
+The transfer unit falls out: **one block of shape `B[p..m)` per (leaf,
+retained index) pair**, so blocks per DPU = `tasklets * ∏B[0..p)`.
+Choosing the transfer API stops being a codegen guess and becomes a
+reading of `p`: `p = 0` is a flat `upmem.scatter`, `p > 0` is
+`upmem.scatter_on_tasklets` with that block count. This answers §B's
+third bullet.
+
+**Why the block is index-structured rather than linear.** The tempting
+alternative keeps all `k` results as the *origin* of a run of `∏B[p..m)`
+consecutive elements. That is strictly more expressive — it describes a
+contiguous run at an arbitrary offset inside a dimension, where the form
+above needs the block to cover whole dimensions — but the meaning of such
+an op depends on the host value's strides, so the same IR denotes
+different transfers under different layouts. That is exactly the kind of
+backend assumption this section exists to remove from a
+device-independent dialect. Where a maximal contiguous run does not align
+with dimension boundaries, a free `memref.expand_shape` makes it align,
+with the side benefit of putting the block's shape in the type.
+
+What is and is not a well-formedness condition follows from that choice.
+The block is a sub-array named by indices, so nothing about contiguity is
+checkable — or needs to be — at this level. Contiguity is a question only
+when *deriving* a larger block from a pointwise map, and that is an
+analysis (§J2). What the verifier does owe is bounds: the old shape rule
+gave them away for free, and they now have to be computed.
+
+### J2. Deriving the block form
+
+`--convert-linalg-to-cnm` emits the pointwise form and nothing else:
+choosing a transfer shape is a layout question, and it runs before layouts
+exist. After bufferization,
+`--cnm-ensure-scatter-gather-contiguous` becomes the pass that earns its
+name — for each scatter/gather it computes the **largest implicit
+block**, i.e. the largest `m - p` such that composing the map with the
+host memref's layout makes those `m - p` dimensions one contiguous run.
+Where the run does not align with host dimension boundaries, a
+`memref.expand_shape` makes it align at no cost. That is `linearizeToElementOffset` +
+`taskletBlocksAreContiguous`
+([CnmToUPMEM.cpp:114-180](../lib/Conversion/CnmToUPMEM/CnmToUPMEM.cpp#L114-L180))
+generalized from a yes/no answer to a count, in the same spirit as
+`getContiguousSuffixSize`. Only if the resulting block count exceeds
+what the backend will accept does it fall back to inserting a packing
+buffer — which is what it does unconditionally today.
+
+**Normalize before analyzing.** Fold `memref.subview` / `expand_shape` /
+`collapse_shape` chains into the map and point the scatter at the base
+memref, so the analysis sees one identity-layout buffer and one map
+rather than a composition over a chain of views. This makes the
+criterion a property of the map alone, and it is what lets the pointwise
+map *subsume* `memref.reinterpret_cast`: any strided view of the host
+buffer is expressible as an affine map into the unviewed buffer, with
+the stride arithmetic living in an attribute instead of in a forged
+memref type. The provenance problem in `scatterATile` disappears rather
+than being reproduced.
+
+One boundary, and the existing lowering already draws it in the right
+place: **static structure folds into the map, dynamic offsets do not.**
+The map is outlined as a function of the DPU (and block) index alone
+([UPMEMToLLVM.cpp:410-446](../lib/Conversion/UPMEMToLLVM/UPMEMToLLVM.cpp#L410-L446)),
+with the base offset applied by GEP — that is what "offset is calculated
+outside of the affine map" means. A subview with a loop-variant offset
+therefore keeps its offset in the memref's dynamic offset field. Putting
+dynamic values *inside* the map would need symbol operands on the op and
+a wider runtime callback signature; stay on the near side of that line.
+
+### J3. Scatter and gather are not symmetric
+
+Under the shape rule this was implicit. Stated explicitly:
+
+- A **scatter** map may be non-injective. Two leaves reading the same
+  host element is a broadcast, which is the point.
+- A **gather** map must be **injective** over the workgroup × buffer
+  index box, or two leaves race to write the same host element.
+
+Verified where it can be. Linearize the host index so the map becomes one
+expression over the box of workgroup × retained-device dimensions, with
+the block sweep folded in as one more dimension of stride 1 — then both
+this obligation and the bounds one below are questions about a single
+expression.
+
+**Injectivity** is decided when that expression is a plain `Σ c_j·d_j +
+c`: any dimension of extent > 1 with a zero coefficient is a collision
+outright, and otherwise, sorted by `|c_j|`, each term must clear the
+previous ones' reach (`c_{j+1} > Σ_{j' <= j} |c_{j'}|·(extent_{j'} - 1)`)
+— the mixed-radix non-overlap condition, `O(n log n)`.
+
+**Bounds** are computed by interval arithmetic instead, which also copes
+with floordiv and mod. That matters: §G3's tile linearization puts a
+`floordiv`/`mod` pair in essentially every map this flow produces, so a
+plain-sum matcher would decline on exactly the maps that occur. The
+requirement is `upperBound(origin + sweep) < hostElementCount`.
+
+Both checks decline rather than reject when they cannot analyze the
+expression — the same stance `getContiguousSuffixSize` takes for
+unsupported layouts. **The consequence is that injectivity is usually
+*not* checked in practice**, since the maps that occur carry floordiv/mod.
+That is tolerable because injectivity there is a property of how
+`--convert-linalg-to-cnm` builds the map (§G3's mixed-radix
+decomposition of the leaf index is a bijection by construction); the
+verifier check is a safety net for hand-written IR and for the simpler
+maps the specializations produce. If it ever needs to be exact, the
+route is to inflate the tile linearization back into per-dimension
+coordinates before matching, not to teach the matcher about floordiv.
+
+### J4. What this changes elsewhere
+
+- **`--convert-linalg-to-cnm` shrinks.** `toTiledLayout`,
+  `fromTiledLayout`, `tiledLayoutShapes` and `isLayoutPreserving`
+  ([LinalgToCnm.cpp:64-151](../lib/Conversion/LinalgToCnm/LinalgToCnm.cpp#L64-L151))
+  exist only to satisfy the shape rule and all delete. The map it emits
+  becomes the composition §G9 already describes, extended with `+ i` on
+  the intra-tile dimensions.
+- **§I1 simplifies, and M13 must come after this.** §I1's mechanism —
+  `expand_shape` the tile dimension into `[tripPart, leafPart]`, permute
+  the trip parts to the front, `extract_slice` per trip — is built on
+  exactly the machinery this section deletes. Under a pointwise map a
+  trip is an offset: `extract_slice`/`subview` the host operand per trip
+  and keep the map, with the dynamic trip offset riding in the memref's
+  offset field, the same way `mOff`/`kOff` do in the templates. No
+  expand_shape, no permutation. **Sequence M13 after this milestone** or
+  it will be written against machinery that is about to disappear.
+- **`--convert-cinm-to-cnm` is adapted, not rewritten.** A helper
+  inflates an old-style map into the block form (it is the `p = 0` case),
+  so only one representation exists in the IR and the compatibility lives
+  in a function rather than in the verifier.
+- **The uniform-scatter rewrite is reformulated.** "Shrink the value and
+  empty the map" becomes "replace the host-index results with
+  constants". Note that on tensors it detaches the scattered value from
+  the buffer a later gather writes into, which is precisely the
+  split-reduction accumulator case — so it is likely to end up as a
+  memref-level rewrite, where that identity is explicit, or to be
+  superseded by a device-side fill.
 
 ## Summary of open questions
 
@@ -995,6 +1207,14 @@ benchmarks need.
    the note's points 1-3 map onto the two `--cinm-tiling` passes'
    role-assignment/reduction-split policy — worth a pass to check how
    much of the note is now answered.)
+13. ~~§J: keep `cnm.scatter`'s shape-suffix contract, or give the map a
+   general index into the host buffer?~~ **Decided:** pointwise maps
+   `(*wgDims, *bufferDims) -> (*hostDims)`, with a block form that leaves
+   a suffix of the buffer dimensions — and the host dimensions they cover
+   — implicit. Today's contract is the `p = 0` case, so the change is
+   additive. §B's third bullet (transfer API selection) falls out of how
+   many buffer dimensions the map retains. Milestone M16, and M13 is now
+   sequenced behind it.
 
 ---
 

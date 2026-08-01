@@ -60,10 +60,11 @@ been folded back into [CnmMemoryLevelsDesign.md](CnmMemoryLevelsDesign.md).
 **M0–M11 are implemented and M12 is settled as not-doing.** The generic
 path lowers `cinm → linalg → cnm → upmem` end to end, driven entirely by
 a search space derived from the linalg op's iteration space, and it runs
-on real hardware. Three milestones were added after the original plan:
-**M13** (sequential trips) and **M15** (the host repack), both still
-outstanding, and **M14** (exact post-lowering occupancy check), since
-implemented. All three are in §3 below.
+on real hardware. Four milestones were added after the original plan:
+**M13** (sequential trips) and **M16** (pointwise scatter/gather maps),
+both outstanding; **M14** (exact post-lowering occupancy check), since
+implemented; and **M15** (the host repack), now superseded by M16, which
+carries the decided design. All four are in §3 below.
 
 Test baseline: **57/64 passing**, 7 failing. All seven are unrelated to
 this work and were failing before it — `CimToMemristor` ×2,
@@ -314,14 +315,24 @@ M12 (not doing: --convert-cinm-to-cnm is the CINM 1.0 baseline's lowering)
 
 --- added after the original plan, all outstanding ---
 
-M13 sequential trips in --convert-linalg-to-cnm         (needs M11b, design §I)
 M14 exact post-lowering occupancy check   DONE          (needs M11b, design §H4)
-M15 stop materializing the tiled layout on the host     (needs M11b)
+M15 stop materializing the tiled layout on the host     SUPERSEDED by M16
+ |
+M16 pointwise scatter/gather maps                       (needs M11b, design §J)
+ |
+M13 sequential trips in --convert-linalg-to-cnm         (needs M16, design §I)
 ```
 
 M1, M2, M3 are mutually independent once M0 lands. M9 and M10 are
-mutually independent once M8 lands. M13, M14 and M15 are mutually
-independent.
+mutually independent once M8 lands. M14 is independent of everything
+after M11b.
+
+**M13 is sequenced behind M16, not beside it.** §I1's mechanism — expand
+the tile dimension into `[tripPart, leafPart]`, permute the trip parts to
+the front, `extract_slice` per trip — is written against the tiled-layout
+machinery M16 deletes. After M16 a trip is an offset on the host operand
+and needs neither reshape nor permutation (design §J4). Doing M13 first
+would mean writing it twice.
 
 ## 3. Milestones
 
@@ -1048,6 +1059,10 @@ over K. Those two configs are **commented out** in
 still spelling their old parameter names so they fail loudly rather than
 being silently reinterpreted.
 
+**Sequenced behind M16** — see the dependency graph and design §J4. The
+mechanism below is restated there; the shape of the parameter decision is
+unaffected.
+
 **Decided** (design §I, option 2 of three): derive the trips from the tile
 counts rather than parameterize them. The space keeps exactly the
 parameters §H5 gives it and the requirement relaxes from
@@ -1060,11 +1075,12 @@ high-order digits index the trip loop.
 - **A trip boundary can fall inside a dimension** (§I1). The `cinm2`
   configuration's §G3-ordered counts are `[4, 4096, 1]` against 1024
   leaves, and no suffix of that product is 1024 — `m`'s 4096 tiles split
-  4 outer × 1024 inner. So the tiled layout's tile dimension is
-  `tensor.expand_shape`d into `[tripPart, leafPart]`, the trip parts are
-  permuted to the front, and each trip `tensor.extract_slice`s its own
-  chunk before scattering. The tidy "trips consume whole outermost
+  4 outer × 1024 inner. The tidy "trips consume whole outermost
   dimensions" rule does not survive contact with a real configuration.
+  After M16 this costs nothing structural: each trip
+  `tensor.extract_slice`s (or `memref.subview`s) its own chunk of the
+  host operand and reuses the same pointwise map, with the trip offset
+  riding in the value's own offset rather than in a reshape.
 - **Trips over a reduction dimension accumulate across launches** (§I2).
   4 of those 16 trips come from `k_outer`. Each trip's leaves are seeded
   with the identity and merged by the gather (§G5), but that merge has to
@@ -1132,7 +1148,11 @@ supply a capacity), and
 configuration the a-priori bound accepts (2312 i32 of leaf tiles against
 14336) and the lowered program refutes (8 × 10272 bytes against 57344).
 
-### M15 — Stop materializing the tiled layout on the host — **TODO**
+### M15 — Stop materializing the tiled layout on the host — **SUPERSEDED by M16**
+
+Kept for the problem statement and the measurement. Candidate (1) below
+is what was chosen, generalized further; the design is §J and the work is
+M16.
 
 `cnm.scatter` requires the host value's shape to *end with* the buffer
 shape ([CnmOps.cpp:292-375](../lib/Dialect/Cnm/IR/CnmOps.cpp#L292-L375)),
@@ -1157,10 +1177,80 @@ the generic path and the templates, and therefore the gate on §F's
 
 Worth measuring (2) first; expect (1) to be what lands.
 
+**Outcome:** (1), and further than stated. The shape-suffix rule is not
+merely inconvenient — it encodes a transfer model (one contiguous run per
+leaf) that is narrower than the hardware's, and it states that model at
+the device-independent level. See design §J and M16.
+
 **Tests:** the existing `Transform/UPMEM/gemv-linalg-generic-pipeline.mlir`
 gains a CHECK-NOT for a host-side `memref.alloc` of the operand's full
 size; the hardware number in `experiments/gemv_microbenchmark` is the real
 signal.
+
+### M16 — Pointwise scatter/gather maps — **TODO**
+
+Design §J. Generalizes `cnm.scatter`/`cnm.gather`'s shape-suffix contract
+to a map `(*wgDims, *bufferDims) -> (*hostDims)` that sends each element
+of each leaf's buffer to a host element, with a block form that leaves a
+suffix of the buffer dimensions — and the host dimensions they cover —
+implicit. Today's contract is the `p = 0` case of that, so existing IR
+stays well-formed and there is no migration shim.
+
+Three things this buys beyond deleting the 64 MB repack:
+
+- The **transfer API selection** stops being a codegen decision. Blocks
+  per DPU = `tasklets * ∏B[0..p)`, read off the map. This is §B's third
+  bullet and the last row but one of the overview's §4.2.
+- **`memref.reinterpret_cast` becomes unnecessary.** Any strided view of
+  the host buffer is expressible as a map into the unviewed buffer, so
+  the generic flow gets `scatterATile`'s capability without its severed
+  provenance (§J2).
+- **M13 gets cheaper** — a trip becomes an offset rather than a reshape
+  plus a permutation (§J4).
+
+**Changes, in dependency order:**
+
+1. **Dialect.** Relax `ScatterOp::verify`/`GatherOp::verify` to the §J1
+   invariants, and add the bounds and (gather-only) injectivity checks the
+   shape rule used to give for free. **Done**, with the map-interpretation
+   and analysis helpers in `CnmScatterMap.h`. Still to do: extend
+   `SimplifyScatterMap` to bound the retained buffer dimensions too, not
+   just the workgroup ones.
+2. ~~**Helper** to inflate the legacy form~~ — not needed, the legacy form
+   *is* the `p = 0` case.
+3. **`--convert-linalg-to-cnm`.** Emit pointwise maps; delete
+   `toTiledLayout`, `fromTiledLayout`, `tiledLayoutShapes`,
+   `isLayoutPreserving`.
+4. **`--cnm-ensure-scatter-gather-contiguous`.** Fold view chains into
+   the map, then compute the largest droppable suffix and rewrite to the
+   block form; insert a packing buffer only when the residual block count
+   is unacceptable.
+5. **`--convert-cnm-to-upmem`.** Select `upmem.scatter` vs
+   `upmem.scatter_on_tasklets` from `p`, with `numBlocksPerDpu` derived
+   rather than pinned to the tasklet count. `isGloballyBroadcast` and
+   `isMramBroadcastOverThreads` restated on the new map shape.
+6. **GPU path** (`CommonPatterns.cpp`): a pointwise map is *easier* for
+   the affine-loop lowering than the shape rule, since the loop nest
+   already enumerates the buffer index.
+
+**Tests:** `Dialect/Cnm/cnm-verifier.mlir` gains the well-formedness
+cases of both forms and a rejected non-injective gather;
+`Conversion/LinalgToCnm/linalg-to-cnm.mlir` pins the emitted pointwise
+maps and gains a CHECK-NOT for `linalg.transpose`;
+`Dialect/Cnm/ensure-scatter-gather-contiguous.mlir` gains a case whose
+maximal droppable suffix is shorter than the buffer, and one where view
+folding removes an intermediate; `Conversion/CnmToUpmem/` gains a
+multi-block scatter. End-to-end, `gemv-linalg-generic-pipeline.mlir`
+takes M15's CHECK-NOT on the full-size host alloc, and the
+`gemv_64MB` hardware number is the real signal.
+
+**Open, to measure during the work:** how often the maximal droppable
+suffix comes out shorter than the whole buffer in the configurations the
+search actually picks. If it is usually the whole buffer, the SG path
+stays a fallback and this is mostly a deletion; if it is usually short,
+blocks per DPU rise and SG-transfer throughput becomes the thing to
+characterize — the question `experiments/upmemcm/scatter_cost` was
+already poking at.
 
 ## 4. Test summary
 
@@ -1183,7 +1273,8 @@ signal.
 | M12 ⊘ | not doing: `--convert-cinm-to-cnm` is the CINM 1.0 baseline's lowering | — |
 | M13 ☐ | sequential trips (§I) | `linalg-to-cnm-trips.mlir` (all-parallel, boundary inside a dim, reduction trip); `cinm2` + `cinm2_partial_reduction` re-enabled in `dodo.py` |
 | M14 ✅ | `--upmem-check-occupancy`, run last in the back pipeline | `Transform/UPMEM/upmem-check-occupancy.mlir` (new, 5 cases); `upmem-check-occupancy-sizes.mlir` (new); `Dialect/UPMEM/upmem-infer-accelerator-occupancy.mlir` (new, a configuration the cheap bound accepts and the lowered program refutes) |
-| M15 ☐ | stop materializing the tiled layout on the host | `gemv-linalg-generic-pipeline.mlir` CHECK-NOT on the full-size host alloc; the hardware number is the real signal |
+| M15 ⊘ | superseded by M16 | — |
+| M16 ☐ | pointwise scatter/gather maps (§J) | `cnm-verifier.mlir` (both forms, rejected non-injective gather); `linalg-to-cnm.mlir` (pointwise maps, CHECK-NOT `linalg.transpose`); `ensure-scatter-gather-contiguous.mlir` (short droppable suffix, view folding); `CnmToUpmem/` multi-block scatter; `gemv-linalg-generic-pipeline.mlir` CHECK-NOT on the full-size host alloc; the hardware number is the real signal |
 
 ---
 

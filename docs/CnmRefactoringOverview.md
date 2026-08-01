@@ -136,6 +136,9 @@ bufferization / hoisting / CSE
                                   with cnm.local_transfer
 --convert-linalg-to-affine-loops, --affine-scalrep
 --cnm-ensure-scatter-gather-contiguous
+  [todo] derive the transfer shape  fold views into the scatter map, then
+                                  find the largest contiguous run each
+                                  leaf can receive; pack only if needed
   [todo] scatter specializations  broadcast, constant-scatter
 --convert-cnm-to-upmem            level-aware: MRAM buffers bind straight
                                   to the static allocation
@@ -196,8 +199,10 @@ derived:
   fill the workgroup exactly (`E_i` = dimension extent, `b_i` = block
   size). Failure reports both numbers.
 - **scatter map** = `indexingMap ∘ (workgroup → tile)`. Computed by
-  composition, not guessed. Contiguity is left to a later pass,
-  `--cnm-ensure-scatter-gather-contiguous`.
+  composition, not guessed. It is *pointwise*: it sends each element of
+  each leaf's buffer to the host element it comes from, and says nothing
+  about how the transfer is shaped. Turning that into contiguous blocks
+  is a later pass's job, `--cnm-ensure-scatter-gather-contiguous`. **[todo]**
 - **per-leaf buffer shape** = the block sizes of the dimensions appearing
   in that operand's own indexing map. An operand that *drops* a dimension
   is a broadcast, and needs no special case to be one.
@@ -382,27 +387,40 @@ depends.
 Roughly in value order. The first two account for the entire measured gap
 against the templates (§5).
 
-- **Stop materializing the tiled layout on the host.** `cnm.scatter`
-  requires the host value's shape to *end with* the per-leaf buffer
-  shape, so the distribution pass emits a real permuted copy for any
-  operand tiled in two or more dimensions. On the 64 MB gemv that is a
-  full 64 MB copy of the matrix — **77.9 ms of the new pipeline's
-  103.4 ms**. Two candidate fixes: give `cnm.scatter` a general affine map
-  into the host buffer, so a strided DMA falls out of the map instead of a
-  copy (the real answer, and the larger change); or emit a strided memref
-  view with no copy and let `--cnm-ensure-scatter-gather-contiguous`
-  decide where packing is genuinely required (cheap to try, and it
-  measures how much of the repack is actually necessary).
+- **Pointwise scatter/gather maps.** `cnm.scatter` currently requires the
+  host value's shape to *end with* the per-leaf buffer shape. That one
+  rule encodes a transfer model — each leaf receives exactly one
+  contiguous run — which is both narrower than the hardware's (the UPMEM
+  SDK takes an arbitrary number of blocks per DPU) and a backend
+  assumption stated at the device-independent level. Its immediate cost
+  is that the distribution pass has to *physically permute* any operand
+  tiled in two or more dimensions, because a tensor has no layout and the
+  only way to change a tensor's layout is to copy it. On the 64 MB gemv
+  that is a full 64 MB copy of the matrix — **77.9 ms of the new
+  pipeline's 103.4 ms**.
+
+  The fix is to make the map pointwise: one host index per element of
+  each leaf's buffer, with a block form that leaves a suffix of the
+  buffer's dimensions implicit and transfers them as a block. The
+  distribution pass
+  then emits no copies at all, and the transfer shape is derived after
+  bufferization by `--cnm-ensure-scatter-gather-contiguous`, which is
+  where the layout information lives. The number of blocks per DPU falls
+  out of the map, so the row about transfer-API selection below is
+  answered by the same change.
 - **Broadcast detection.** A scatter map that does not depend on the
   processing-element coordinate should specialize into a broadcast
   transfer. Concretely: the template path uses one for the gemv vector and
   the new pipeline does not, so it pays a full scatter for the same data.
-- **Sequential trips.** Decided but unimplemented (§2.2). Needs an
-  `expand_shape` where the trip boundary falls *inside* a dimension — it
-  does not always fall between two — and a loop-carried accumulator where
-  trips run over a reduction dimension. This blocks two baseline
-  configurations, currently commented out in
-  [dodo.py](../experiments/gemv_microbenchmark/dodo.py).
+- **Sequential trips.** Decided but unimplemented (§2.2). The trip
+  boundary does not always fall between two dimensions — it can fall
+  inside one — and trips over a reduction dimension need a loop-carried
+  accumulator. This blocks two baseline configurations, currently
+  commented out in
+  [dodo.py](../experiments/gemv_microbenchmark/dodo.py). **Sequence it
+  after the pointwise maps above**: with those, a trip is an offset on
+  the host operand; without them it needs a reshape and a permutation of
+  machinery that is about to be deleted.
 - **Constant-scatter simplification.** The general form of a specific
   cost: the reduction identity seed is a constant buffer scattered to
   every leaf on every launch. A `cnm.set_zero` op exists, but only the GPU
@@ -428,7 +446,9 @@ against the templates (§5).
   them on the host. Same parameters, but it is the trigger for revisiting
   the ordering rule of §2.2.
 - **Blocked vs. multi-block transfer API selection** decided generically
-  from the scatter map, rather than by pass flags as today.
+  from the scatter map, rather than by pass flags as today. Subsumed by
+  the pointwise maps above: the number of device dimensions the map
+  retains *is* the block count.
 - Smaller: `--upmem-tile-mram-buffers` promotes without full tile
   buffers, so a tile that does not divide its extent gets a staging
   buffer larger than the tile it holds. Correct, just wasteful.
