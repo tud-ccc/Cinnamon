@@ -325,6 +325,12 @@ struct UpmemInferencePlugin : cinm::InferencePlugin {
     pm->addPass(memref::createFoldMemRefAliasOpsPass());
     pm->addPass(createCanonicalizerPass());
     pm->addPass(createCSEPass());
+    // Last, deliberately: what a configuration occupies is a property of the
+    // program every pass above has finished optimizing, not of the
+    // configuration itself (design §H3). A trial that does not fit fails here
+    // and the search moves on, rather than being discovered when the DPU
+    // binary fails to link.
+    pm->addPass(createUpmemCheckOccupancyPass());
     return pm;
   }
 
@@ -493,8 +499,15 @@ struct UpmemInferencePlugin : cinm::InferencePlugin {
   }
   static DiagnosedSilenceableFailure
   runPipeline(PassManager *pipeline, Location loc, ModuleOp module) {
+    // Diagnostics are swallowed because a rejected trial is ordinary during a
+    // search -- but the first error is kept, so that the reason surfaces in
+    // the failure a pinned `eval-solution` reports. Without it every rejection
+    // reads "Pipeline failed", including the occupancy check's.
+    std::string reason;
     ScopedDiagnosticHandler scopedHandler(
-        pipeline->getContext(), [](Diagnostic &diag) {
+        pipeline->getContext(), [&reason](Diagnostic &diag) {
+          if (reason.empty() && diag.getSeverity() == DiagnosticSeverity::Error)
+            reason = diag.str();
           LLVM_DEBUG(llvm::dbgs()
                          << "[cinm-inference]   pipeline failed:\n      ";
                      diag.print(llvm::dbgs()); llvm::dbgs() << "\n";);
@@ -502,7 +515,9 @@ struct UpmemInferencePlugin : cinm::InferencePlugin {
         });
     if (mlir::failed(pipeline->run(module))) {
       LLVM_DEBUG(module->print(llvm::dbgs()); llvm::dbgs() << "\n========\n";);
-      return mlir::emitSilenceableFailure(loc, "Pipeline failed");
+      if (reason.empty())
+        return mlir::emitSilenceableFailure(loc, "Pipeline failed");
+      return mlir::emitSilenceableFailure(loc, "Pipeline failed: " + reason);
     }
     return DiagnosedSilenceableFailure::success();
   }
