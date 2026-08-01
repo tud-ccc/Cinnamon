@@ -3,6 +3,7 @@ add_mlir_dialect_library(UPMEMIR
         UPMEMOps.cpp
         UPMEMTypes.cpp
         UPMEMAttributes.cpp
+        UPMEMOccupancy.cpp
         InferIntRangeInterfaceImpls.cpp
         
     DEPENDS
