@@ -60,11 +60,10 @@ been folded back into [CnmMemoryLevelsDesign.md](CnmMemoryLevelsDesign.md).
 **M0–M11 are implemented and M12 is settled as not-doing.** The generic
 path lowers `cinm → linalg → cnm → upmem` end to end, driven entirely by
 a search space derived from the linalg op's iteration space, and it runs
-on real hardware. Four milestones were added after the original plan:
-**M13** (sequential trips) and **M16** (pointwise scatter/gather maps),
-both outstanding; **M14** (exact post-lowering occupancy check), since
-implemented; and **M15** (the host repack), now superseded by M16, which
-carries the decided design. All four are in §3 below.
+on real hardware. Four milestones were added after the original plan: **M13** (sequential
+trips), still outstanding; **M14** (exact post-lowering occupancy check)
+and **M16** (pointwise scatter/gather maps), both implemented; and **M15**
+(the host repack), superseded by M16. All four are in §3 below.
 
 Test baseline: **57/64 passing**, 7 failing. All seven are unrelated to
 this work and were failing before it — `CimToMemristor` ×2,
@@ -318,7 +317,7 @@ M12 (not doing: --convert-cinm-to-cnm is the CINM 1.0 baseline's lowering)
 M14 exact post-lowering occupancy check   DONE          (needs M11b, design §H4)
 M15 stop materializing the tiled layout on the host     SUPERSEDED by M16
  |
-M16 pointwise scatter/gather maps                       (needs M11b, design §J)
+M16 pointwise scatter/gather maps         DONE         (needs M11b, design §J)
  |
 M13 sequential trips in --convert-linalg-to-cnm         (needs M16, design §I)
 ```
@@ -1187,7 +1186,7 @@ gains a CHECK-NOT for a host-side `memref.alloc` of the operand's full
 size; the hardware number in `experiments/gemv_microbenchmark` is the real
 signal.
 
-### M16 — Pointwise scatter/gather maps — **TODO**
+### M16 — Pointwise scatter/gather maps — **DONE**
 
 Design §J. Generalizes `cnm.scatter`/`cnm.gather`'s shape-suffix contract
 to a map `(*wgDims, *bufferDims) -> (*hostDims)` that sends each element
@@ -1208,30 +1207,29 @@ Three things this buys beyond deleting the 64 MB repack:
 - **M13 gets cheaper** — a trip becomes an offset rather than a reshape
   plus a permutation (§J4).
 
-**Changes, in dependency order:**
+**Changes, as landed:**
 
-1. **Dialect.** Relax `ScatterOp::verify`/`GatherOp::verify` to the §J1
-   invariants, and add the bounds and (gather-only) injectivity checks the
-   shape rule used to give for free. **Done**, with the map-interpretation
-   and analysis helpers in `CnmScatterMap.h`. Still to do: extend
-   `SimplifyScatterMap` to bound the retained buffer dimensions too, not
-   just the workgroup ones.
-2. ~~**Helper** to inflate the legacy form~~ — not needed, the legacy form
-   *is* the `p = 0` case.
-3. **`--convert-linalg-to-cnm`.** Emit pointwise maps; delete
-   `toTiledLayout`, `fromTiledLayout`, `tiledLayoutShapes`,
-   `isLayoutPreserving`.
-4. **`--cnm-ensure-scatter-gather-contiguous`.** Fold view chains into
-   the map, then compute the largest droppable suffix and rewrite to the
-   block form; insert a packing buffer only when the residual block count
-   is unacceptable.
-5. **`--convert-cnm-to-upmem`.** Select `upmem.scatter` vs
-   `upmem.scatter_on_tasklets` from `p`, with `numBlocksPerDpu` derived
-   rather than pinned to the tasklet count. `isGloballyBroadcast` and
-   `isMramBroadcastOverThreads` restated on the new map shape.
-6. **GPU path** (`CommonPatterns.cpp`): a pointwise map is *easier* for
-   the affine-loop lowering than the shape rule, since the loop nest
-   already enumerates the buffer index.
+1. **Dialect.** `ScatterOp`/`GatherOp` verify the §J1 invariants, plus the
+   bounds and (gather-only) injectivity checks the shape rule used to give
+   for free. Map interpretation and both analyses live in
+   `CnmScatterMap.h`. `SimplifyScatterMap` bounds the retained buffer
+   dimensions too.
+2. ~~Helper to inflate the legacy form~~ — not needed, the legacy form *is*
+   the `p = 0` case, so `--convert-cinm-to-cnm` was untouched.
+3. **`--convert-linalg-to-cnm`** emits pointwise maps. `toTiledLayout`,
+   `fromTiledLayout`, `tiledLayoutShapes` and `isLayoutPreserving` deleted.
+4. **`--cnm-ensure-scatter-gather-contiguous`** derives the largest block,
+   splitting a host dimension with `memref.expand_shape` when a contiguous
+   run does not line up with a dimension boundary. Folding whole view
+   chains into the map (§J2) is *not* done: nothing needed it yet.
+5. **`--convert-cnm-to-upmem`** picks the transfer form from the block
+   count rather than from `taskletBlocksAreContiguous` alone, and derives
+   `numBlocksPerDpu` instead of pinning it to the tasklet count.
+6. **GPU path** iterates the map's domain and copies its block.
+
+**Not done, and worth a look before this is called finished:** the
+injectivity check declines on any map carrying floordiv/mod, which is most
+of them (§J3 explains why that is tolerable); and view folding, above.
 
 **Tests:** `Dialect/Cnm/cnm-verifier.mlir` gains the well-formedness
 cases of both forms and a rejected non-injective gather;
@@ -1274,7 +1272,7 @@ already poking at.
 | M13 ☐ | sequential trips (§I) | `linalg-to-cnm-trips.mlir` (all-parallel, boundary inside a dim, reduction trip); `cinm2` + `cinm2_partial_reduction` re-enabled in `dodo.py` |
 | M14 ✅ | `--upmem-check-occupancy`, run last in the back pipeline | `Transform/UPMEM/upmem-check-occupancy.mlir` (new, 5 cases); `upmem-check-occupancy-sizes.mlir` (new); `Dialect/UPMEM/upmem-infer-accelerator-occupancy.mlir` (new, a configuration the cheap bound accepts and the lowered program refutes) |
 | M15 ⊘ | superseded by M16 | — |
-| M16 ☐ | pointwise scatter/gather maps (§J) | `cnm-verifier.mlir` (both forms, rejected non-injective gather); `linalg-to-cnm.mlir` (pointwise maps, CHECK-NOT `linalg.transpose`); `ensure-scatter-gather-contiguous.mlir` (short droppable suffix, view folding); `CnmToUpmem/` multi-block scatter; `gemv-linalg-generic-pipeline.mlir` CHECK-NOT on the full-size host alloc; the hardware number is the real signal |
+| M16 ✅ | pointwise scatter/gather maps (§J) | `cnm-verifier.mlir` (both forms, rejected non-injective gather); `linalg-to-cnm.mlir` (pointwise maps, CHECK-NOT `linalg.transpose`); `ensure-scatter-gather-contiguous.mlir` (short droppable suffix, view folding); `CnmToUpmem/` multi-block scatter; `gemv-linalg-generic-pipeline.mlir` CHECK-NOT on the full-size host alloc; the hardware number is the real signal |
 
 ---
 

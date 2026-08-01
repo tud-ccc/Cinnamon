@@ -136,9 +136,10 @@ bufferization / hoisting / CSE
                                   with cnm.local_transfer
 --convert-linalg-to-affine-loops, --affine-scalrep
 --cnm-ensure-scatter-gather-contiguous
-  [todo] derive the transfer shape  fold views into the scatter map, then
-                                  find the largest contiguous run each
-                                  leaf can receive; pack only if needed
+                                  turn each leaf's tile into whole blocks,
+                                  splitting a host dimension where a
+                                  contiguous run does not line up; pack
+                                  only what is left over
   [todo] scatter specializations  broadcast, constant-scatter
 --convert-cnm-to-upmem            level-aware: MRAM buffers bind straight
                                   to the static allocation
@@ -202,7 +203,7 @@ derived:
   composition, not guessed. It is *pointwise*: it sends each element of
   each leaf's buffer to the host element it comes from, and says nothing
   about how the transfer is shaped. Turning that into contiguous blocks
-  is a later pass's job, `--cnm-ensure-scatter-gather-contiguous`. **[todo]**
+  is a later pass's job, `--cnm-ensure-scatter-gather-contiguous`.
 - **per-leaf buffer shape** = the block sizes of the dimensions appearing
   in that operand's own indexing map. An operand that *drops* a dimension
   is a broadcast, and needs no special case to be one.
@@ -384,30 +385,12 @@ depends.
 
 ### 4.2 Optimizations to implement
 
-Roughly in value order. The first two account for the entire measured gap
-against the templates (§5).
+Roughly in value order. Pointwise scatter/gather maps, which accounted for
+most of the measured gap against the templates, have landed — the operand
+is now scattered where it lies instead of being permuted into a
+tiles-outermost copy, and the transfer's block structure is derived after
+bufferization rather than assumed by the dialect.
 
-- **Pointwise scatter/gather maps.** `cnm.scatter` currently requires the
-  host value's shape to *end with* the per-leaf buffer shape. That one
-  rule encodes a transfer model — each leaf receives exactly one
-  contiguous run — which is both narrower than the hardware's (the UPMEM
-  SDK takes an arbitrary number of blocks per DPU) and a backend
-  assumption stated at the device-independent level. Its immediate cost
-  is that the distribution pass has to *physically permute* any operand
-  tiled in two or more dimensions, because a tensor has no layout and the
-  only way to change a tensor's layout is to copy it. On the 64 MB gemv
-  that is a full 64 MB copy of the matrix — **77.9 ms of the new
-  pipeline's 103.4 ms**.
-
-  The fix is to make the map pointwise: one host index per element of
-  each leaf's buffer, with a block form that leaves a suffix of the
-  buffer's dimensions implicit and transfers them as a block. The
-  distribution pass
-  then emits no copies at all, and the transfer shape is derived after
-  bufferization by `--cnm-ensure-scatter-gather-contiguous`, which is
-  where the layout information lives. The number of blocks per DPU falls
-  out of the map, so the row about transfer-API selection below is
-  answered by the same change.
 - **Broadcast detection.** A scatter map that does not depend on the
   processing-element coordinate should specialize into a broadcast
   transfer. Concretely: the template path uses one for the gemv vector and
@@ -417,10 +400,9 @@ against the templates (§5).
   inside one — and trips over a reduction dimension need a loop-carried
   accumulator. This blocks two baseline configurations, currently
   commented out in
-  [dodo.py](../experiments/gemv_microbenchmark/dodo.py). **Sequence it
-  after the pointwise maps above**: with those, a trip is an offset on
-  the host operand; without them it needs a reshape and a permutation of
-  machinery that is about to be deleted.
+  [dodo.py](../experiments/gemv_microbenchmark/dodo.py). Now that the
+  scatter map is pointwise, a trip is an offset on the host operand rather
+  than a reshape and a permutation.
 - **Constant-scatter simplification.** The general form of a specific
   cost: the reduction identity seed is a constant buffer scattered to
   every leaf on every launch. A `cnm.set_zero` op exists, but only the GPU
@@ -483,8 +465,10 @@ lowered both ways.
 | templates | 10.782 | 9.428 | 0.555 | 0.434 | 0.365 |
 | new pipeline | 103.433 | 24.557 | 0.609 | 0.390 | 77.877 |
 
-All figures in milliseconds. **Device time already matches** — `launch` is
-0.390 ms against the template's 0.434 ms, so the DPU program the new
-pipeline generates is as good as the hand-written one. The entire gap is
-host-side data movement: the 64 MB repack and the missing broadcast, the
-first two items of §4.2.
+All figures in milliseconds, **measured before the scatter maps became
+pointwise** — the 77.9 ms of unaccounted time was the 64 MB host repack
+that change removes, and the table needs re-measuring. **Device time
+already matched** — `launch` is 0.390 ms against the template's 0.434 ms,
+so the DPU program the new pipeline generates is as good as the
+hand-written one. What is left of the gap is host-side data movement: the
+missing broadcast, and whatever re-measuring turns up.

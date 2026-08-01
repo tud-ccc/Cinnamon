@@ -288,9 +288,9 @@ struct UpmemInferencePlugin : cinm::InferencePlugin {
     // Staging has to see linalg on memrefs, so it runs after bufferization and
     // before linalg is lowered to loops.
     pm->addPass(createUpmemTileMRAMBuffersPass());
-    pm->addPass(createPrintIRPass({.label = "after-tile-mram-buffers"}));
     pm->addPass(createCanonicalizerPass());
     pm->addPass(createCSEPass());
+    pm->addPass(createPrintIRPass({.label = "after-tile-mram-buffers"}));
     pm->addPass(createConvertLinalgToAffineLoopsPass());
     // Keep the reduction accumulator in a register. Straight out of linalg the
     // innermost loop reloads and restores the output element on every
