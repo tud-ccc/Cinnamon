@@ -17,9 +17,35 @@ bool scatteredMemrefIsContiguous(TypedValue<ShapedType> value,
 /// be laid out contiguously in memory (i.e. the largest suffix of dimensions
 /// that is packed row-major), or -1 if this cannot be determined statically
 /// (dynamic shape/strides, or an unsupported layout). This is the same
-/// criterion upmem::ScatterOp/GatherOp::verify() uses to reject transfers
-/// that wouldn't be safe as a single flat memcpy per DPU.
+/// criterion the upmem transfer ops' verifiers use to reject transfers that
+/// wouldn't be safe as a flat memcpy.
 int64_t getContiguousSuffixSize(MemRefType type);
+
+/// How many trailing dimensions of `type` make up that contiguous suffix, or
+/// -1 in the cases getContiguousSuffixSize returns -1. The memref is then a
+/// regular grid of contiguous runs, one per index of the leading dimensions.
+int64_t getContiguousSuffixRank(MemRefType type);
+
+/// Linearizes `map` -- which must have one result per dimension of `type` --
+/// into a single element-offset expression over the map's own dimensions,
+/// using `type`'s layout. A strided layout's base offset is dropped: only
+/// relative positions matter to the callers. Fails if the layout is neither
+/// the identity nor a static StridedLayoutAttr.
+FailureOr<AffineExpr> linearizeToElementOffset(AffineMap map, MemRefType type);
+
+/// The exact largest value `expr` takes over the box `[0, extents)`, or
+/// nullopt when that cannot be computed. Floordiv and mod by a constant are
+/// handled, but no dimension may appear twice: interval arithmetic treats
+/// occurrences as independent, and a bound that is merely an
+/// over-approximation is no grounds for rejecting anything.
+std::optional<int64_t> getAffineUpperBound(AffineExpr expr,
+                                           ArrayRef<int64_t> extents);
+
+/// Whether `expr` takes a different value at every point of the box
+/// `[0, extents)`, or nullopt when that cannot be decided. Both answers are
+/// conclusive; the undecided case is common.
+std::optional<bool> isAffineExprInjective(AffineExpr expr,
+                                          ArrayRef<int64_t> extents);
 
 /// Simplify an affine map given static upper bounds on the inputs.
 /// This is used to simplify even more the affine maps on the CNM and UPMEM

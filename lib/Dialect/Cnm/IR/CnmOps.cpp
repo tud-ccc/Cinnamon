@@ -376,14 +376,14 @@ static LogicalResult verifyScatterGatherMap(Operation *op, ShapedType hostTy,
 
   int64_t hostElements = computeProduct(hostShape);
   if (std::optional<int64_t> highest =
-          cnm::getAffineUpperBound(*offset, extents))
+          mlir::getAffineUpperBound(*offset, extents))
     if (*highest >= hostElements)
       return op->emitOpError("transfer reaches element ")
              << *highest << " of a host value that has only " << hostElements;
 
   if (requireInjective)
     if (std::optional<bool> injective =
-            cnm::isAffineExprInjective(*offset, extents))
+            mlir::isAffineExprInjective(*offset, extents))
       if (!*injective)
         return op->emitOpError(
             "map is not injective: two leaves would write the same host "
