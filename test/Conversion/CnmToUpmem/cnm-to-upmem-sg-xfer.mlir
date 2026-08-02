@@ -1,29 +1,27 @@
-// RUN: cinm-opt %s --eliminate-empty-tensors --one-shot-bufferize="bufferize-function-boundaries function-boundary-type-conversion=identity-layout-map" --cse --canonicalize --convert-cnm-to-upmem | FileCheck %s
-// RUN: cinm-opt %s --eliminate-empty-tensors --one-shot-bufferize="bufferize-function-boundaries function-boundary-type-conversion=identity-layout-map" --cse --canonicalize --convert-cnm-to-upmem=use-sg-xfer-codegen=false | FileCheck %s --check-prefix=NOSG
+// RUN: cinm-opt %s --eliminate-empty-tensors --one-shot-bufferize="bufferize-function-boundaries function-boundary-type-conversion=identity-layout-map" --cse --canonicalize --convert-cnm-to-upmem --upmem-specialize-transfers | FileCheck %s
+// RUN: not cinm-opt %s --eliminate-empty-tensors --one-shot-bufferize="bufferize-function-boundaries function-boundary-type-conversion=identity-layout-map" --cse --canonicalize --convert-cnm-to-upmem --upmem-specialize-transfers=use-sg-xfer-codegen=false 2>&1 | FileCheck %s --check-prefix=NOSG
 
 // %a's scatter map addresses tasklet t's block at row 2*t of the host
 // buffer (instead of row t), so consecutive tasklets' blocks are not
 // contiguous in the host buffer (there is a gap of one unused row between
-// them). By default (use-sg-xfer-codegen=true, the default) this should be
-// lowered to the upmem.scatter_blocks form -- keeping the block dim in the
-// scatter map and using a transferCount of just one block -- instead of
-// forcing a flat, incorrect memcpy.
+// them). The conversion emits the general block form and
+// --upmem-specialize-transfers cannot narrow it: the two blocks are not one
+// run, so it stays upmem.scatter_blocks and each block is fetched from where
+// it really is.
 
 // CHECK-DAG: #[[MAPA3:[^ ]*]] = affine_map<(d0, d1, d2) -> (d1, d2 * 2, 0)>
 
 // CHECK-LABEL: func.func @main
 // CHECK: upmem.scatter_blocks %{{.*}}[8 elts, #[[MAPA3]], 2 blocks] onto @buf of %[[DPU:.*]] : memref<4x3x8xi32> onto !upmem.hierarchy<1x4x2>
 
-// With use-sg-xfer-codegen=false, the pass falls back to unconditionally
-// collapsing to the (rank, dpu) form (transferCount = 16, both tasklets'
-// worth), matching the pre-existing behavior from before this codegen
-// strategy was added. That collapse reads rows 0 and 1 where the map asks for
-// rows 0 and 2, i.e. the wrong bytes: it is pinned here because it is the
-// CINM 1.0 measurement baseline, and it is what --upmem-specialize-transfers
-// is meant to make unreachable (design K3).
-// NOSG-DAG: #[[MAPA2:[^ ]*]] = affine_map<(d0, d1) -> (d1, 0, 0)>
-// NOSG-LABEL: func.func @main
-// NOSG: upmem.scatter_on_array %{{.*}}[16 elts, #[[MAPA2]]] onto @buf of %{{.*}} : memref<4x3x8xi32> onto !upmem.hierarchy<1x4x2>
+// With use-sg-xfer-codegen=false the SDK's scatter transfer API is off, so
+// this transfer has no legal form: the packing that would have made the two
+// blocks one run was supposed to happen upstream
+// (--cnm-ensure-scatter-gather-contiguous, which cinm1.py runs exactly when
+// the flag is off). Before this was a separate pass, the conversion collapsed
+// it anyway -- reading rows 0 and 1 where the map asks for rows 0 and 2 --
+// and the wrong bytes went to the DPUs silently.
+// NOSG: error: {{.*}}cannot be narrowed to a single per-DPU block
 
 #mapA = affine_map<(d0, d1, d2) -> (d1, d2 * 2)>
 

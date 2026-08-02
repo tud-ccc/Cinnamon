@@ -1,10 +1,12 @@
-// RUN: cinm-opt %s --eliminate-empty-tensors --one-shot-bufferize --cse --canonicalize --convert-cnm-to-upmem | FileCheck %s
+// RUN: cinm-opt %s --eliminate-empty-tensors --one-shot-bufferize --cse --canonicalize --convert-cnm-to-upmem --upmem-specialize-transfers | FileCheck %s
 
 // CHECK-DAG: #[[MAP:[^ ]*]] = affine_map<(d0, d1) -> (d1, 0)>
 
-// CHECK: memref.global "private" constant @__constant_16x1xi32 : memref<16x1xi32> = dense<0>
+// The zero seed of @buf is one repeated constant, so it reaches every DPU as
+// a broadcast of a tile the size of the target MRAM buffer rather than as a
+// per-DPU slice of the 16x1 host constant, which is left unused.
+// CHECK: memref.global "private" constant @[[SEEDTILE:[^ ]*]] : memref<1xi32> = dense<0>
 // CHECK-LABEL: func.func @main
-// CHECK: %[[CST:.*]] = memref.get_global @__constant_16x1xi32 : memref<16x1xi32>
 // CHECK: %[[ALLOC:.*]] = memref.alloc() {{.*}} : memref<64x64xi32>
 // CHECK: %[[DPU:.*]] = upmem.alloc_dpus with program @dpu_kernels::@program : !upmem.hierarchy<1x16x1>
 // CHECK: affine.for %[[I:.*]] = 0 to 64 step 16 {
@@ -15,9 +17,10 @@
 // CHECK: linalg.transpose ins(%[[SV_B]] : memref<64x1xi32, {{.*}}>) outs(%[[ALLOC_T]] : memref<1x64xi32>) permutation = [1, 0]
 // CHECK: upmem.scatter_on_array %[[SV_A]][64 elts, #[[MAP]]] onto @buf_3 of %[[DPU]] : memref<16x64xi32, {{.*}}> onto !upmem.hierarchy<1x16x1>
 // The scatter map for this operand does not depend on the processing element,
-// so the conversion specializes it into a broadcast.
+// so --upmem-specialize-transfers narrows it to a broadcast.
 // CHECK: upmem.broadcast %[[ALLOC_T]] onto @buf_1 of %[[DPU]] : memref<1x64xi32> onto !upmem.hierarchy<1x16x1>
-// CHECK: upmem.scatter_on_array %[[CST]][1 elts, #[[MAP]]] onto @buf of %[[DPU]] : memref<16x1xi32> onto !upmem.hierarchy<1x16x1>
+// CHECK: %[[SEED:.*]] = memref.get_global @[[SEEDTILE]] : memref<1xi32>
+// CHECK: upmem.broadcast %[[SEED]] onto @buf of %[[DPU]] : memref<1xi32> onto !upmem.hierarchy<1x16x1>
 // CHECK: upmem.wait_for %[[DPU]] : !upmem.hierarchy<1x16x1>
 // CHECK: %[[SV_OUT:.*]] = memref.subview %[[ALLOC]][%[[I]], %[[J]]] [16, 1] [1, 1] : memref<64x64xi32> to memref<16x1xi32, {{.*}}>
 // CHECK: upmem.gather_from_array %[[SV_OUT]][1 elts, #[[MAP]]] from @buf of %[[DPU]] : memref<16x1xi32, {{.*}}> from !upmem.hierarchy<1x16x1>

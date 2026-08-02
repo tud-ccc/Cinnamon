@@ -1,4 +1,4 @@
-// RUN: cinm-opt %s --eliminate-empty-tensors --one-shot-bufferize="bufferize-function-boundaries function-boundary-type-conversion=identity-layout-map" --cse --canonicalize --convert-cnm-to-upmem=cinm1-codegen=true | FileCheck %s
+// RUN: cinm-opt %s --eliminate-empty-tensors --one-shot-bufferize="bufferize-function-boundaries function-boundary-type-conversion=identity-layout-map" --cse --canonicalize --convert-cnm-to-upmem=cinm1-codegen=true --upmem-specialize-transfers | FileCheck %s
 
 // Under cinm1-codegen, WRAM is never shared across tasklets (each tasklet
 // gets a private buffer). But %b's scatter map doesn't depend on the thread

@@ -51,8 +51,6 @@ namespace {
 
 struct Opts {
   bool cinm1codegen = false;
-  bool useSgXferCodegen = true;
-  bool useBcXferCodegen = true;
   bool useMramNoInit = true;
 };
 
@@ -92,18 +90,6 @@ static AffineMap rewriteMapForUpmem(AffineMap map, cnm::BufferType bufTy,
   return AffineMap::get(numDims, 0, std::move(exprs), map.getContext());
 }
 
-// The (rank, dpu) form: one flat memcpy per DPU, so neither the tasklet nor
-// any buffer dimension survives.
-static AffineMap adaptAffineMapCnmToUpmem(AffineMap map,
-                                          cnm::BufferType bufTy) {
-  MLIRContext *ctx = map.getContext();
-  auto cst0 = getAffineConstantExpr(0, ctx);
-  SmallVector<AffineExpr> substitutions{getAffineDimExpr(0, ctx),
-                                        getAffineDimExpr(1, ctx), cst0};
-  substitutions.resize(map.getNumDims(), cst0);
-  return rewriteMapForUpmem(map, bufTy, substitutions, 2);
-}
-
 // The (rank, dpu, block) form, whose block dimension the UPMEM SDK's scatter
 // transfer API evaluates once per block. A leaf's blocks vary fastest, so
 // block index `b` is tasklet `b / blocksPerLeaf` at buffer position
@@ -127,75 +113,21 @@ static AffineMap keepTaskletDimAffineMapCnmToUpmem(AffineMap map,
   return rewriteMapForUpmem(map, bufTy, substitutions, 3);
 }
 
-// Returns the constant coefficient of `dim` in `expr`, or nullopt if `expr`
-// doesn't vary with `dim` in a simple affine (constant-coefficient) way.
-static std::optional<int64_t>
-getAffineExprDimCoefficient(AffineExpr expr, unsigned dim, unsigned numDims) {
-  MLIRContext *ctx = expr.getContext();
-  SmallVector<AffineExpr> substAt0, substAt1;
-  for (unsigned i = 0; i < numDims; ++i) {
-    substAt0.push_back(getAffineDimExpr(i, ctx));
-    substAt1.push_back(getAffineDimExpr(i, ctx));
-  }
-  substAt0[dim] = getAffineConstantExpr(0, ctx);
-  substAt1[dim] = getAffineConstantExpr(1, ctx);
-
-  AffineExpr diff =
-      expr.replaceDims(substAt1) - expr.replaceDims(substAt0);
-  diff = simplifyAffineExpr(diff, numDims, 0);
-  if (auto cst = dyn_cast<AffineConstantExpr>(diff))
-    return cst.getValue();
-  return std::nullopt;
-}
-
-// Whether, for every (rank, dpu), the per-tasklet blocks addressed by
-// `scatterMap(rank, dpu, tasklet)` -- each `blockSizeInItems` elements long
-// -- are laid out back-to-back in `hostBufferTy`, in tasklet order, forming
-// one contiguous run of `numTasklets * blockSizeInItems` elements. This is
-// exactly the condition under which collapsing to the classic (rank, dpu)
-// upmem.scatter form (a single flat memcpy per DPU) is correct. We check
-// this by verifying that the element offset (linearized using the host
-// buffer's actual layout) is affine in the tasklet dim with a coefficient of
-// exactly `blockSizeInItems`.
-static bool taskletBlocksAreContiguous(AffineMap scatterMap,
-                                       cnm::BufferType bufTy,
-                                       MemRefType hostBufferTy,
-                                       int64_t blockSizeInItems) {
-  AffineMap extended = keepTaskletDimAffineMapCnmToUpmem(scatterMap, bufTy);
-  FailureOr<AffineExpr> offset =
-      linearizeToElementOffset(extended, hostBufferTy);
-  if (failed(offset))
-    return false;
-  std::optional<int64_t> coeff =
-      getAffineExprDimCoefficient(*offset, /*dim=*/2, /*numDims=*/3);
-  return coeff.has_value() && *coeff == blockSizeInItems;
-}
-
-// Whether `scatterMap` (the CNM (rank, dpu, tasklet) -> host index map) does
-// not depend on any of its three dimensions and evaluates to the origin --
-// i.e. every DPU's tasklets all read the exact same region of the host
-// buffer, starting at its very first element. This is strictly stronger than
-// the tasklet-only broadcast used to decide MRAM layout (see
-// isMramBroadcastOverThreads), which only requires the tasklet dim to be
-// unused: `upmem.broadcast` (unlike `upmem.scatter`) has no affine map at
-// all, so every DPU in the hierarchy must get byte-for-byte identical data
-// straight from the start of the host buffer.
-static bool isGloballyBroadcast(AffineMap scatterMap) {
-  auto unusedDims = getUnusedDimsBitVector({scatterMap});
-  if (!unusedDims[0] || !unusedDims[1] || !unusedDims[2])
-    return false;
-  if (!scatterMap.isConstant())
-    return false;
-  // todo in the future detect offset != 0 and turn it into a subview then broadcast
-  return llvm::all_of(scatterMap.getConstantResults(),
-                      [](int64_t v) { return v == 0; });
+// How many blocks of the CNM map's implicit shape reach one DPU. A leaf may
+// take several, and a DPU has `numTasklets` leaves -- unless the MRAM buffer
+// is shared across them (isMramBroadcastOverThreads), in which case one
+// leaf's worth is all that is stored.
+static int64_t blocksPerDpu(AffineMap map, cnm::BufferType bufferTy,
+                            size_t numTasklets, bool sharedAcrossTasklets) {
+  int64_t perLeaf = cnm::getScatterBlocksPerLeaf(map, bufferTy);
+  return sharedAcrossTasklets ? perLeaf
+                              : static_cast<int64_t>(numTasklets) * perLeaf;
 }
 
 static LogicalResult convertCnmGatherToUpmem(RewriterBase &rewriter,
                                              cnm::GatherOp op,
                                              upmem::AllocDPUsOp upmemWgAlloc,
-                                             StringAttr refToBuffer,
-                                             const Opts &opts) {
+                                             StringAttr refToBuffer) {
 
   rewriter.setInsertionPoint(op);
   Value outputBuf = op.getOutputBuf();
@@ -208,35 +140,18 @@ static LogicalResult convertCnmGatherToUpmem(RewriterBase &rewriter,
 
   const size_t numTasklets = upmemWgAlloc.getType().getNumTaskletsPerDpu();
   const cnm::BufferType bufferTy = op.getBuffer().getType();
-  const MemRefType hostBufferTy = cast<MemRefType>(outputBuf.getType());
-  const int64_t blocksPerLeaf =
+  const int64_t perLeaf =
       cnm::getScatterBlocksPerLeaf(op.getGatherMap(), bufferTy);
-  const int64_t blockSizeInItems =
-      op.getTransferCountInItems() / blocksPerLeaf;
 
-  // Same reading as the scatter direction: a leaf's results only come back as
-  // one flat run per DPU if it produces a single block and those blocks sit
-  // one tasklet after another in the host buffer.
-  bool useBlockForm =
-      opts.useSgXferCodegen &&
-      (blocksPerLeaf > 1 ||
-       (numTasklets > 1 &&
-        !taskletBlocksAreContiguous(op.getGatherMap(), bufferTy, hostBufferTy,
-                                    blockSizeInItems)));
-
-  if (useBlockForm) {
-    upmem::GatherBlocksOp::create(
-        rewriter, op->getLoc(), outputBuf, refToBuffer, blockSizeInItems,
-        keepTaskletDimAffineMapCnmToUpmem(op.getGatherMap(), bufferTy),
-        upmemWgAlloc.getResult(),
-        static_cast<int64_t>(numTasklets) * blocksPerLeaf);
-  } else {
-    upmem::GatherFromArrayOp::create(
-        rewriter, op->getLoc(), outputBuf, refToBuffer,
-        blockSizeInItems * static_cast<int64_t>(numTasklets),
-        adaptAffineMapCnmToUpmem(op.getGatherMap(), bufferTy),
-        upmemWgAlloc.getResult());
-  }
+  // A gathered buffer always has a per-tasklet dimension: results the
+  // tasklets could not tell apart would race.
+  upmem::GatherBlocksOp::create(
+      rewriter, op->getLoc(), outputBuf, refToBuffer,
+      op.getTransferCountInItems() / perLeaf,
+      keepTaskletDimAffineMapCnmToUpmem(op.getGatherMap(), bufferTy),
+      upmemWgAlloc.getResult(),
+      blocksPerDpu(op.getGatherMap(), bufferTy, numTasklets,
+                   /*sharedAcrossTasklets=*/false));
 
   if (!isBufferized) {
     Value outputAsTensor = createOrFoldUnrealizedConversionCast(
@@ -250,10 +165,9 @@ static LogicalResult convertCnmGatherToUpmem(RewriterBase &rewriter,
 
 static LogicalResult convertCnmScatterToUpmem(RewriterBase &rewriter,
                                               cnm::ScatterOp op,
-                                              bool isBroadcast,
+                                              bool sharedAcrossTasklets,
                                               upmem::AllocDPUsOp upmemWgAlloc,
-                                              StringAttr refToBuffer,
-                                              const Opts &opts) {
+                                              StringAttr refToBuffer) {
 
   rewriter.setInsertionPoint(op);
   const Value tensor = op.getInput();
@@ -267,55 +181,16 @@ static LogicalResult convertCnmScatterToUpmem(RewriterBase &rewriter,
   const cnm::BufferType bufferTy = op.getBuffer().getType();
   // What the CNM map leaves implicit is one contiguous run; a leaf may receive
   // several of them.
-  const int64_t blocksPerLeaf =
+  const int64_t perLeaf =
       cnm::getScatterBlocksPerLeaf(op.getScatterMap(), bufferTy);
-  const int64_t blockSizeInItems =
-      op.getTransferCountInItems() / blocksPerLeaf;
 
-  // The classic upmem.scatter (rank, dpu) form performs a single flat memcpy
-  // per DPU: correct only when a leaf receives one block and those blocks are
-  // contiguous in the host buffer, one tasklet after another. Otherwise use
-  // the (rank, dpu, block) form, which drives the UPMEM SDK's scatter
-  // transfer API (dpu_push_sg_xfer) and fetches each block from wherever it
-  // really is -- rather than forcing a staging copy upstream.
-  bool useTaskletForm =
-      !isBroadcast && opts.useSgXferCodegen &&
-      (blocksPerLeaf > 1 ||
-       (numTasklets > 1 &&
-        !taskletBlocksAreContiguous(op.getScatterMap(), bufferTy, hostBufferTy,
-                                    blockSizeInItems)));
-
-  // When every DPU's tasklets read byte-for-byte identical data straight
-  // from the start of the host buffer (isGloballyBroadcast), and that data
-  // is already exactly `hostBuffer`'s own contents (no slicing needed), we
-  // can skip the affine map entirely and use upmem.broadcast -- one runtime
-  // call broadcasting the whole buffer to every DPU, rather than a per-DPU
-  // scatter transfer that happens to always fetch the same bytes. The two
-  // forms deliver identical bytes to identical MRAM symbols, so this is
-  // independent of cinm1codegen and is gated only on its own option.
-  bool useBroadcastOp = isBroadcast && opts.useBcXferCodegen &&
-                       hostBufferTy.hasStaticShape() &&
-                       hostBufferTy.getNumElements() == blockSizeInItems &&
-                       isGloballyBroadcast(op.getScatterMap());
-
-  if (useTaskletForm) {
-    AffineMap upmemMap =
-        keepTaskletDimAffineMapCnmToUpmem(op.getScatterMap(), bufferTy);
-    upmem::ScatterBlocksOp::create(
-        rewriter, op->getLoc(), inputAsMemref, refToBuffer, blockSizeInItems,
-        upmemMap, upmemWgAlloc.getResult(),
-        static_cast<int64_t>(numTasklets) * blocksPerLeaf);
-  } else if (useBroadcastOp) {
-    upmem::BroadcastOp::create(rewriter, op->getLoc(), inputAsMemref,
-                               refToBuffer, upmemWgAlloc.getResult());
-  } else {
-    AffineMap upmemMap = adaptAffineMapCnmToUpmem(op.getScatterMap(), bufferTy);
-    int64_t transferCount =
-        isBroadcast ? blockSizeInItems : blockSizeInItems * numTasklets;
-    upmem::ScatterOnArrayOp::create(rewriter, op->getLoc(), inputAsMemref,
-                             refToBuffer, transferCount, upmemMap,
-                             upmemWgAlloc.getResult());
-  }
+  upmem::ScatterBlocksOp::create(
+      rewriter, op->getLoc(), inputAsMemref, refToBuffer,
+      op.getTransferCountInItems() / perLeaf,
+      keepTaskletDimAffineMapCnmToUpmem(op.getScatterMap(), bufferTy),
+      upmemWgAlloc.getResult(),
+      blocksPerDpu(op.getScatterMap(), bufferTy, numTasklets,
+                   sharedAcrossTasklets));
 
   rewriter.eraseOp(op);
   return success();
@@ -625,17 +500,17 @@ static LogicalResult convertCnmLaunchToUpmem(cnm::LaunchOp launch,
 
     if (auto scatter = llvm::dyn_cast_or_null<cnm::ScatterOp>(user)) {
       upmem::StaticAllocOp alloc = buffersToMramBuf.lookup(scatter.getBuffer());
-      // transferCount only needs the numTasklets multiplier when the MRAM
-      // buffer itself has a per-tasklet leading dimension, i.e. isn't
-      // broadcast -- this is independent of whether WRAM ends up shared.
-      bool isBroadcast =
+      // A DPU only stores one leaf's worth when the MRAM buffer has no
+      // per-tasklet leading dimension (isMramBroadcastOverThreads). This is
+      // independent of whether WRAM ends up shared.
+      bool sharedAcrossTasklets =
           alloc && alloc.getBuffer().getType().getRank() ==
                        static_cast<int64_t>(
                            scatter.getBuffer().getType().getShape().size());
 
       if (!alloc || failed(convertCnmScatterToUpmem(
-                        rewriter, scatter, isBroadcast, upmemWgAlloc,
-                        alloc.getSymNameAttr(), opts))) {
+                        rewriter, scatter, sharedAcrossTasklets, upmemWgAlloc,
+                        alloc.getSymNameAttr()))) {
         return failure();
       }
     }
@@ -643,7 +518,7 @@ static LogicalResult convertCnmLaunchToUpmem(cnm::LaunchOp launch,
       auto alloc = buffersToMramBuf.lookup(gather.getBuffer());
       if (!alloc ||
           failed(convertCnmGatherToUpmem(rewriter, gather, upmemWgAlloc,
-                                         alloc.getSymNameAttr(), opts))) {
+                                         alloc.getSymNameAttr()))) {
         return failure();
       }
     }
@@ -756,10 +631,7 @@ struct ConvertCnmToUPMEMPass
 
   void runOnOperation() final {
     Operation *rootOp = getOperation();
-    Opts opts{.cinm1codegen = cinm1Codegen,
-              .useSgXferCodegen = useSgXferCodegen,
-              .useBcXferCodegen = useBcXferCodegen,
-              .useMramNoInit = !cinm1Codegen};
+    Opts opts{.cinm1codegen = cinm1Codegen, .useMramNoInit = !cinm1Codegen};
 
     // Determine kernel module name: prefer per-op annotation, else option.
     std::string kmName = kernelModuleName;

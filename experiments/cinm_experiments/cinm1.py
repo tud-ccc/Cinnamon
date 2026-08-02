@@ -119,15 +119,22 @@ def _step5(use_upmem_scatter_api: bool):
 
 
 def _step6(use_upmem_scatter_api: bool):
-    options = {
-        "cinm1-codegen": "true",
-        "use-sg-xfer-codegen": str(use_upmem_scatter_api).lower(),
-        "use-bc-xfer-codegen": str(use_upmem_scatter_api).lower(),
-    }
-    pass_opts = _infer_opts_str(options)
+    pass_opts = _infer_opts_str({"cinm1-codegen": "true"})
+    # The conversion emits only the general block form; which transfer op
+    # actually comes out is decided by --upmem-specialize-transfers. With the
+    # scatter/gather API off, every transfer has to narrow out of that form --
+    # step 5 packs the host buffers so that it can -- and the pass reports an
+    # error rather than silently moving the wrong bytes if one cannot.
+    specialize_opts = _infer_opts_str(
+        {
+            "use-sg-xfer-codegen": str(use_upmem_scatter_api).lower(),
+            "use-bc-xfer-codegen": str(use_upmem_scatter_api).lower(),
+        }
+    )
 
     return [
         f"--convert-cnm-to-upmem={pass_opts}",
+        f"--upmem-specialize-transfers={specialize_opts}",
         "--cse",
         "--buffer-loop-hoisting",
         "--buffer-deallocation-pipeline",

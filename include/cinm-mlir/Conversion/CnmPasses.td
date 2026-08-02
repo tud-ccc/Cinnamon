@@ -82,11 +82,7 @@ def ConvertCnmToUPMEMPass : Pass<"convert-cnm-to-upmem"> {
              [{"dpu_kernels"}],
              "Name of the submodule to create DPU kernels in">,
       Option<"cinm1Codegen", "cinm1-codegen", "bool", "false",
-             "Whether to match CINM 1 code generation (no barriers, tasklets don't share buffers)">,
-      Option<"useBcXferCodegen", "use-bc-xfer-codegen", "bool", "true",
-             "Whether cnm.scatter may lower to upmem.broadcast">,
-      Option<"useSgXferCodegen", "use-sg-xfer-codegen", "bool", "true",
-             "Whether cnm.scatter may lower to upmem.scatter_to_tasklets">
+             "Whether to match CINM 1 code generation (no barriers, tasklets don't share buffers)">
     ];
     let dependentDialects = [
         "mlir::affine::AffineDialect",
