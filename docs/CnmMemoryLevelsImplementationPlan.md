@@ -924,12 +924,7 @@ the original `outs`).
 
 **Known cost, deliberately not fixed here** (`0d9413d`): the identity
 seed is a constant-zero buffer that gets scattered to every leaf on
-every launch. `cnm.set_zero` is the right answer but only
-`--convert-cnm-to-gpu` lowers it; `--convert-cnm-to-upmem` has no
-pattern, and emitting it makes the backend conversion fail *silently*.
-Fixing this needs device-side zeroing of an MRAM buffer — worth its own
-milestone, and worth also giving `--convert-cnm-to-upmem` a diagnostic
-for ops it cannot legalise.
+every launch. We can optimize that out later. 
 
 ### M10 — Linalg-first pipeline — **DONE (fusion deferred)**
 

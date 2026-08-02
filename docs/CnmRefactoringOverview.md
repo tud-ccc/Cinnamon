@@ -457,10 +457,6 @@ API each transfer uses follows from the map instead of from a pass flag.
   about to overwrite. The narrow case — a broadcast of zero into a buffer
   written once per `dpu_load` — is the `zeroinit` flag `upmem.static_alloc`
   already has; establishing that launch-count condition is the work.
-  A `cnm.set_zero` op exists for the general case, but only the GPU
-  backend lowers it — emitting it makes `--convert-cnm-to-upmem` fail
-  *silently*, so this work also owes that pass a diagnostic for ops it
-  cannot legalize.
 - **Operator fusion on `linalg`.** A no-op for today's single-operation
   benchmarks, and enabling it forces search-space construction to move
   after the conversion, since fusion changes the operation count, the walk
