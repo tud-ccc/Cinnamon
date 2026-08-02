@@ -1,6 +1,6 @@
-// RUN: cinm-opt %s --eliminate-empty-tensors --one-shot-bufferize="bufferize-function-boundaries function-boundary-type-conversion=identity-layout-map" --cse --canonicalize --convert-cnm-to-upmem | FileCheck %s
-// RUN: cinm-opt %s --eliminate-empty-tensors --one-shot-bufferize="bufferize-function-boundaries function-boundary-type-conversion=identity-layout-map" --cse --canonicalize --convert-cnm-to-upmem=use-bc-xfer-codegen=false | FileCheck %s --check-prefix=NOBC
-// RUN: cinm-opt %s --eliminate-empty-tensors --one-shot-bufferize="bufferize-function-boundaries function-boundary-type-conversion=identity-layout-map" --cse --canonicalize --convert-cnm-to-upmem=cinm1-codegen=true | FileCheck %s --check-prefix=CINM1
+// RUN: cinm-opt %s --eliminate-empty-tensors --one-shot-bufferize="bufferize-function-boundaries function-boundary-type-conversion=identity-layout-map" --cse --canonicalize --convert-cnm-to-upmem --upmem-specialize-transfers | FileCheck %s
+// RUN: cinm-opt %s --eliminate-empty-tensors --one-shot-bufferize="bufferize-function-boundaries function-boundary-type-conversion=identity-layout-map" --cse --canonicalize --convert-cnm-to-upmem --upmem-specialize-transfers=use-bc-xfer-codegen=false | FileCheck %s --check-prefix=NOBC
+// RUN: cinm-opt %s --eliminate-empty-tensors --one-shot-bufferize="bufferize-function-boundaries function-boundary-type-conversion=identity-layout-map" --cse --canonicalize --convert-cnm-to-upmem=cinm1-codegen=true --upmem-specialize-transfers | FileCheck %s --check-prefix=CINM1
 
 // %c's scatter map is the empty map: it doesn't depend on (rank, dpu,
 // tasklet) at all, so every DPU's tasklets all read byte-for-byte identical

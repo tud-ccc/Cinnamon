@@ -3,7 +3,7 @@
 // RUN:   --eliminate-empty-tensors --one-shot-bufferize --cse --canonicalize \
 // RUN:   --upmem-tile-mram-buffers --canonicalize --cse \
 // RUN:   --cnm-ensure-scatter-gather-contiguous \
-// RUN:   --convert-cnm-to-upmem \
+// RUN:   --convert-cnm-to-upmem --upmem-specialize-transfers \
 // RUN: | FileCheck %s
 
 // The generic path starting from a `linalg` op rather than a `cinm` op, which

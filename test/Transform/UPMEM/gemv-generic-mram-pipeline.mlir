@@ -3,7 +3,7 @@
 // RUN:   --eliminate-empty-tensors --one-shot-bufferize --cse --canonicalize \
 // RUN:   --upmem-tile-mram-buffers=tile-sizes=16,128 --canonicalize --cse \
 // RUN:   --cnm-ensure-scatter-gather-contiguous \
-// RUN:   --convert-cnm-to-upmem \
+// RUN:   --convert-cnm-to-upmem --upmem-specialize-transfers \
 // RUN: | FileCheck %s
 
 // The whole generic path from a cinm op to an UPMEM DPU program with an
