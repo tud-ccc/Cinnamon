@@ -744,14 +744,14 @@ public:
   }
 };
 
-struct GatherOnArrayOpToFuncCallLowering
-    : public ConvertOpToLLVMPattern<upmem::GatherOnArrayOp> {
+struct GatherFromArrayOpToFuncCallLowering
+    : public ConvertOpToLLVMPattern<upmem::GatherFromArrayOp> {
 public:
-  explicit GatherOnArrayOpToFuncCallLowering(LLVMTypeConverter &lowering)
-      : ConvertOpToLLVMPattern<upmem::GatherOnArrayOp>(lowering) {}
+  explicit GatherFromArrayOpToFuncCallLowering(LLVMTypeConverter &lowering)
+      : ConvertOpToLLVMPattern<upmem::GatherFromArrayOp>(lowering) {}
 
   LogicalResult
-  matchAndRewrite(upmem::GatherOnArrayOp op, typename upmem::GatherOnArrayOp::Adaptor adaptor,
+  matchAndRewrite(upmem::GatherFromArrayOp op, typename upmem::GatherFromArrayOp::Adaptor adaptor,
                   ConversionPatternRewriter &rewriter0) const override {
     return lowerScatterOrGather(op, adaptor, getTypeConverter(), rewriter0,
                                 true);
@@ -854,7 +854,7 @@ void populateUPMEMToLLVMConversionPatterns(LLVMTypeConverter &typeConverter,
   patterns.add<ScatterOnArrayOpToFuncCallLowering>(typeConverter);
   patterns.add<ScatterBlocksOpToFuncCallLowering>(typeConverter);
   patterns.add<BroadcastOpToFuncCallLowering>(typeConverter);
-  patterns.add<GatherOnArrayOpToFuncCallLowering>(typeConverter);
+  patterns.add<GatherFromArrayOpToFuncCallLowering>(typeConverter);
   patterns.add<GatherBlocksOpToFuncCallLowering>(typeConverter);
   patterns.add<WaitForOpToFuncCallLowering>(typeConverter);
   patterns.add<FreeDPUsOpToFuncCallLowering>(typeConverter);

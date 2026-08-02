@@ -68,7 +68,7 @@ upmem::DpuProgramOp upmem::ScatterOnArrayOp::getDpuProgram() {
   return alloc ? alloc.getDpuProgram() : upmem::DpuProgramOp{};
 }
 
-upmem::DpuProgramOp upmem::GatherOnArrayOp::getDpuProgram() {
+upmem::DpuProgramOp upmem::GatherFromArrayOp::getDpuProgram() {
   auto alloc =
       dyn_cast_or_null<upmem::AllocDPUsOp>(getHierarchy().getDefiningOp());
   return alloc ? alloc.getDpuProgram() : upmem::DpuProgramOp{};
@@ -210,7 +210,7 @@ static SmallVector<int64_t> arrayBox(upmem::DeviceHierarchyType hierarchy) {
   return {hierarchy.getNumRanks(), hierarchy.getNumDpusPerRank()};
 }
 
-LogicalResult upmem::GatherOnArrayOp::verify() {
+LogicalResult upmem::GatherFromArrayOp::verify() {
   if (getScatterMap().getNumResults() !=
           getHostBuffer().getType().getShape().size() ||
       getScatterMap().getNumDims() != 2)
@@ -332,7 +332,7 @@ upmem::ScatterOnArrayOp::verifySymbolUses(SymbolTableCollection &symbolTable) {
 }
 
 LogicalResult
-upmem::GatherOnArrayOp::verifySymbolUses(SymbolTableCollection &symbolTable) {
+upmem::GatherFromArrayOp::verifySymbolUses(SymbolTableCollection &symbolTable) {
   return verifyScatterGatherSymbolUses(*this, getHierarchy(),
                                        getDpuBufRefAttr(), symbolTable);
 }
@@ -385,10 +385,6 @@ upmem::BroadcastOp::verifySymbolUses(SymbolTableCollection &symbolTable) {
   // TODO verify that tasklet count of the dpu_program matches the last item of
   // the hierarchy (result type)
   return success();
-}
-void upmem::PrivateWRAMAllocOp::getAsmResultNames(
-    ::mlir::OpAsmSetValueNameFn fn) {
-  fn(getBuffer(), "pwram_buf");
 }
 
 void upmem::StaticAllocOp::getAsmResultNames(::mlir::OpAsmSetValueNameFn fn) {

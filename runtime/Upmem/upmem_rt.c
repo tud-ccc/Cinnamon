@@ -81,7 +81,7 @@ void upmemrt_dpu_gather(struct dpu_set_t *dpu_set, void *host_buffer,
   uint32_t nr_dpus = 0;
   dpu_get_nr_dpus(*dpu_set, &nr_dpus);
   upmemrt_record_gather(upmemrt_now_ns() - t0, copy_bytes, nr_dpus,
-                        /*num_blocks=*/1, "on_array", tag);
+                        /*num_blocks=*/1, "from_array", tag);
 #endif
 }
 

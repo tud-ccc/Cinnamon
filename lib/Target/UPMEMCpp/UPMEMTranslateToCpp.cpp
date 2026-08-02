@@ -288,26 +288,6 @@ static LogicalResult printOperation(CppEmitter &emitter,
 }
 
 static LogicalResult printOperation(CppEmitter &emitter,
-                                    upmem::PrivateWRAMAllocOp wramAllocOp) {
-  raw_ostream &os = emitter.ostream();
-  MemRefType res_type = wramAllocOp.getBuffer().getType();
-  Type elementType = res_type.getElementType();
-
-  os << "__dma_aligned ";
-  if (emitter.emitType(wramAllocOp.getLoc(), elementType).failed()) {
-    return failure();
-  }
-
-  size_t size = res_type.getNumElements();
-  const size_t elementSize = elementType.getIntOrFloatBitWidth() / 8;
-  size = llvm::alignTo(size, 8);
-  os << " " << emitter.getOrCreateName(wramAllocOp.getBuffer()) << "[" << size
-     << "]";
-
-  return success();
-}
-
-static LogicalResult printOperation(CppEmitter &emitter,
                                     memref::LoadOp loadOp) {
   raw_ostream &os = emitter.ostream();
   if (failed(emitter.emitAssignPrefix(*loadOp)))
@@ -399,7 +379,7 @@ static LogicalResult getBasePtrOfAlloc(Operation *op, Value &basePtr) {
   if (!op)
     return emitError(UnknownLoc(), "unknown error during translation");
   return TypeSwitch<Operation *, LogicalResult>(op)
-      .Case<upmem::PrivateWRAMAllocOp, upmem::StaticAllocOp>([&](auto op) {
+      .Case<upmem::StaticAllocOp>([&](auto op) {
         basePtr = op.getBuffer();
         return success();
       })
@@ -1365,7 +1345,7 @@ static void printCompilationVar(upmem::DpuProgramOp kernel, raw_ostream &os) {
   --upmem-check-occupancy: that pass decides whether a program fits the device
   using this same number, so the two must not drift. It used to be computed
   here from unpadded element counts, which under-estimated the arrays printed
-  by printOperation(PrivateWRAMAllocOp) below -- those are padded.
+  by printOperation(AllocaOp) below -- those are padded.
 */
 
 static LogicalResult printOperation(CppEmitter &emitter, ModuleOp moduleOp) {
@@ -1812,8 +1792,6 @@ LogicalResult CppEmitter::emitOperation(Operation &op, bool trailingSemicolon) {
           .Case<upmem::TaskletDimOp>(
               [&](auto op) { return printOperation(*this, op); })
           .Case<memref::AllocaOp>(
-              [&](auto op) { return printOperation(*this, op); })
-          .Case<upmem::PrivateWRAMAllocOp>(
               [&](auto op) { return printOperation(*this, op); })
           .Case<upmem::LocalTransferOp>(
               [&](auto op) { return printLocalTransfer(*this, op); })

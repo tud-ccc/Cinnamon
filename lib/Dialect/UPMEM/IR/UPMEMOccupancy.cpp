@@ -32,7 +32,7 @@ int64_t taskletStackBytes(DpuProgramOp program) {
   int64_t bytes = kStackReserveBytes;
   program->walk([&](Operation *op) {
     llvm::TypeSwitch<Operation *, void>(op)
-        .Case<memref::AllocaOp, upmem::PrivateWRAMAllocOp>(
+        .Case<memref::AllocaOp>(
             [&](auto alloc) { bytes += declaredBytes(alloc.getType()); })
         .Default([](auto) {});
   });
