@@ -28,7 +28,7 @@ sys.path.insert(0, str(EXPERIMENTS_DIR))
 
 from doit.tools import check_timestamp_unchanged
 from doit.reporter import ProgressBarReporter  # noqa: E402
-from cinm_experiments import compile_run, cinmopt, measurements  # noqa: E402
+from cinm_experiments import compile_run, cinmopt, measurements, cinm1  # noqa: E402
 from cinm_experiments.paths import DEFAULT_CINM_OPT
 
 DOIT_CONFIG = {
@@ -72,56 +72,33 @@ CONFIGS = [
     # prim="gemv",
     # lower=cinmopt.eval_solution_lowerer(),
     # ),
-    # compile_run.Config(
-    #     system="atim3",
-    #     fn_name="gemv_64MB",
-    #     label="default",
-    #     params={
-    #         "dpus": 2048,
-    #         "tasklets": 8,
-    #         "wramRow": 8,
-    #         "wramCol": 64,
-    #         "dpuCols": 1, # 64 rows
-    #         "mramRow": 8,
-    #         "mramCol": 4096,
-    #     },
-    #     fn_module=source,
-    #     prim="gemv",
-    #     lower=cinmopt.eval_solution_lowerer(),
-    # ),
-    # compile_run.Config(
-    #     system="atim2",
-    #     fn_name="gemv_64MB",
-    #     label="default",
-    #     params={
-    #         "dpus": 2048,
-    #         "tasklets": 8,
-    #         "taskletCols": 8,
-    #         "wramRow": 1,
-    #         "wramCol": 256,
-    #         "dpuCols": 1,
-    #         "mramRow": 1,
-    #         "mramCol": 4096,
-    #     },
-    #     fn_module=source,
-    #     prim="gemv",
-    #     lower=cinmopt.eval_solution_lowerer(),
-    # ),
     compile_run.Config(
-        system="templateflow512",
+        system="cinm2",
         fn_name="gemv_64MB",
-        label="default",
+        # An ad-hoc configuration using only 512 DPUs,
+        # I use this for comparing the templates vs
+        # generic flow bc other researchers are using
+        # the DPU array and won't let me allocate 2048 DPUs.
+        label="dpu512",
         params={
             "dpus": 512,
             "tasklets": 8,
-            # The tile counts have to fill the workgroup exactly, so
-            # (4096/M0) * (4096/K0) == dpus * tasklets, i.e. M0 * K0 == 4096.
-            # Of the choices that satisfy it, this one keeps M0 at the
-            # 2048-DPU optimum and puts the 4x extra work per leaf into K0.
-            # That matters because A reaches a leaf as M0 runs of K0 elements:
-            # 8 runs of 2 KB here, against 64 runs of 256 B at M0=64. A is the
-            # 64 MB operand; all that grows in exchange is the vector scatter,
-            # at 1 MB.
+            "gemv.M0": 8,  # mramRow * taskletCols / tasklets
+            "gemv.K0": 512,  # mramCol / taskletCols
+            "gemv.M1": 8,  # wramRow
+            "gemv.K1": 64,  # wramCol
+        },
+        fn_module=source,
+        prim="gemv",
+        lower=cinmopt.eval_solution_lowerer(),
+    ),
+    compile_run.Config(
+        system="cinm2_template",
+        fn_name="gemv_64MB",
+        label="dpu512",
+        params={
+            "dpus": 512,
+            "tasklets": 8,
             "gemv.M0": 8,  # mramRow * taskletCols / tasklets
             "gemv.K0": 512,  # mramCol / taskletCols
             "gemv.M1": 8,  # wramRow
@@ -136,22 +113,38 @@ CONFIGS = [
         ),
     ),
     compile_run.Config(
-        system="genericflow512",
+        system="cinm2",
         fn_name="gemv_64MB",
-        label="default",
+        # This one is the atim2048 optimum,
+        # expressed as a point in the cinm2
+        # search space. The fact it corresponds
+        # precisely to the ATiM optimum is
+        # due to the specific workgroup mapping
+        # strategy CINM2 assumes - that isn't a
+        # parameter of the search space yet.
+        label="atim2048optimum",
         params={
-            "dpus": 512,
+            "dpus": 2048,
             "tasklets": 8,
-            # The tile counts have to fill the workgroup exactly, so
-            # (4096/M0) * (4096/K0) == dpus * tasklets, i.e. M0 * K0 == 4096.
-            # Of the choices that satisfy it, this one keeps M0 at the
-            # 2048-DPU optimum and puts the 4x extra work per leaf into K0.
-            # That matters because A reaches a leaf as M0 runs of K0 elements:
-            # 8 runs of 2 KB here, against 64 runs of 256 B at M0=64. A is the
-            # 64 MB operand; all that grows in exchange is the vector scatter,
-            # at 1 MB.
             "gemv.M0": 8,  # mramRow * taskletCols / tasklets
-            "gemv.K0": 512,  # mramCol / taskletCols
+            "gemv.K0": 128,  # mramCol / taskletCols
+            "gemv.M1": 8,  # wramRow
+            "gemv.K1": 64,  # wramCol
+        },
+        fn_module=source,
+        prim="gemv",
+        lower=cinmopt.eval_solution_lowerer(),
+    ),
+    compile_run.Config(
+        system="cinm2_template",
+        fn_name="gemv_64MB",
+        label="atim2048optimum",
+        # Same as above, but lowered through the templated flow for comparison.
+        params={
+            "dpus": 2048,
+            "tasklets": 8,
+            "gemv.M0": 8,  # mramRow * taskletCols / tasklets
+            "gemv.K0": 128,  # mramCol / taskletCols
             "gemv.M1": 8,  # wramRow
             "gemv.K1": 64,  # wramCol
         },
@@ -159,98 +152,56 @@ CONFIGS = [
         prim="gemv",
         lower=cinmopt.eval_solution_lowerer(
             extra_infer_opts={
-                "lowering": "generic",
+                "lowering": "templates",
             }
         ),
     ),
-    # compile_run.Config(
-    #     system="atim_templateflow",
-    #     fn_name="gemv_64MB",
-    #     label="default",
-    #     # The atim optimum, in the generic search space: one block size per
-    #     # iteration dimension of the gemv, named <op>.<dim><level> -- level 0
-    #     # is what a workgroup leaf gets, level 1 what it walks that in at the
-    #     # leaf memory level. The template path reads the same
-    #     # numbers back as mramRow=64, mramCol=128, taskletCols=1, wramRow=8,
-    #     # wramCol=64 -- see docs/CnmMemoryLevelsDesign.md §H5.
-    #     params={
-    #         "dpus": 2048,
-    #         "tasklets": 8,
-    #         "gemv.M0": 8,  # mramRow * taskletCols / tasklets
-    #         "gemv.K0": 128,  # mramCol / taskletCols
-    #         "gemv.M1": 8,  # wramRow
-    #         "gemv.K1": 64,  # wramCol
-    #     },
-    #     fn_module=source,
-    #     prim="gemv",
-    #     lower=cinmopt.eval_solution_lowerer(
-    #         extra_infer_opts={
-    #             "lowering": "templates",
-    #         }
-    #     ),
-    # ),
-    # compile_run.Config(
-    #     system="atim_genericflow",
-    #     fn_name="gemv_64MB",
-    #     label="default",
-    #     # The atim optimum, in the generic search space: one block size per
-    #     # iteration dimension of the gemv, named <op>.<dim><level> -- level 0
-    #     # is what a workgroup leaf gets, level 1 what it walks that in at the
-    #     # leaf memory level. The template path reads the same
-    #     # numbers back as mramRow=64, mramCol=128, taskletCols=1, wramRow=8,
-    #     # wramCol=64 -- see docs/CnmMemoryLevelsDesign.md §H5.
-    #     params={
-    #         "dpus": 2048,
-    #         "tasklets": 8,
-    #         "gemv.M0": 8,  # mramRow * taskletCols / tasklets
-    #         "gemv.K0": 128,  # mramCol / taskletCols
-    #         "gemv.M1": 8,  # wramRow
-    #         "gemv.K1": 64,  # wramCol
-    #     },
-    #     fn_module=source,
-    #     prim="gemv",
-    #     lower=cinmopt.eval_solution_lowerer(
-    #         extra_infer_opts={
-    #             "lowering": "generic",
-    #         }
-    #     ),
-    # ),
-    # compile_run.Config(
-    # system="cinm2_partial_reduction",
-    # fn_name="gemv_64MB",
-    # label="default",
-    # params={
-    # "dpus": DPUS,
-    # "tasklets": TASKLETS,
-    # "taskletCols": 1,
-    # "wramRow": 1,
-    # "wramCol": 1024,
-    # "dpuCols": 2,
-    # "mramRow": 4,
-    # "mramCol": 1024,
-    # },
-    # fn_module=source,
-    # prim="gemv",
-    # lower=cinmopt.eval_solution_lowerer(),
-    # ),
-    # compile_run.Config(
-    #     system="cinm1",
-    #     fn_name="gemv_64MB",
-    #     label="default",
-    #     params={"dpus": DPUS, "tasklets": TASKLETS},
-    #     fn_module=source,
-    #     prim="gemv",
-    #     lower=cinm1.lowerer(),
-    # ),
-    # compile_run.Config(
-    #     system="cinm1_with_sg",
-    #     fn_name="gemv_64MB",
-    #     label="default",
-    #     params={"dpus": DPUS, "tasklets": TASKLETS},
-    #     fn_module=source,
-    #     prim="gemv",
-    #     lower=cinm1.lowerer(use_upmem_scatter_api=True),
-    # ),
+    compile_run.Config(
+        system="cinm2",
+        fn_name="gemv_64MB",
+        # This is just another CINM2 config that gives rise
+        # to a partial reduction on the host. Not directly
+        # comparable to the atim2048 optimum.
+        label="partialred2048",
+        params={
+            "dpus": 2048,
+            "tasklets": 8,
+            "taskletCols": 1,
+            "wramRow": 1,
+            "wramCol": 1024,
+            "dpuCols": 2,
+            "mramRow": 4,
+            "mramCol": 1024,
+        },
+        fn_module=source,
+        prim="gemv",
+        lower=cinmopt.eval_solution_lowerer(),
+    ),
+    # These two are the config picked by cinm1 when
+    # looking with the parameters of the atim2048
+    # optimum. They are comparable to the atim2048
+    # optimum but may find different tile sizes and
+    # workgroup mapping. CINM2 optimizations are
+    # disabled for them, and they use a CINM1-like
+    # lowering flow.
+    compile_run.Config(
+        system="cinm1",
+        fn_name="gemv_64MB",
+        label="atim2048optimum",
+        params={"dpus": 2048, "tasklets": 8},
+        fn_module=source,
+        prim="gemv",
+        lower=cinm1.lowerer(),
+    ),
+    compile_run.Config(
+        system="cinm1_with_sg",
+        fn_name="gemv_64MB",
+        label="atim2048optimum",
+        params={"dpus": 2048, "tasklets": 8},
+        fn_module=source,
+        prim="gemv",
+        lower=cinm1.lowerer(use_upmem_scatter_api=True),
+    ),
 ]
 
 

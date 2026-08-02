@@ -159,7 +159,7 @@ def UpmemInferAcceleratorPass : Pass<"upmem-infer-accelerator", "ModuleOp"> {
            "Cost transform before surrogate training: linear, log2, log10, ln, sqrt, cbrt">,
     Option<"useMRAMTiling", "use-mram-tiling", "bool", "true",
            "Enable MRAM tiling in the UPMEM lowering">,
-    Option<"lowering", "lowering", "UpmemLoweringPath", "UpmemLoweringPath::TEMPLATES",
+    Option<"lowering", "lowering", "UpmemLoweringPath", "UpmemLoweringPath::GENERIC",
            "Which lowering to evaluate a configuration through. Independent of "
            "use-mram-tiling, which says whether the MRAM and WRAM tiles may "
            "differ -- single-level tiling through the generic pipeline is a "
