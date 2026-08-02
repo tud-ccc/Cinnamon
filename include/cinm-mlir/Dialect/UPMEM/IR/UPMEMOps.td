@@ -90,6 +90,7 @@ def TaskletDimOp : IndexOp<"tasklet_dim", [DeclareOpInterfaceMethods<InferIntRan
 
 
 def StaticAllocOp : Upmem_Op<"static_alloc", [//Symbol,
+        DeclareOpInterfaceMethods<MemoryEffectsOpInterface>,
         DeclareOpInterfaceMethods<OpAsmOpInterface, ["getAsmResultNames"]>
 ]> {
   let summary = "static buffer allocation in wram or mram";
@@ -117,8 +118,11 @@ def StaticAllocOp : Upmem_Op<"static_alloc", [//Symbol,
         DefaultValuedAttr<UnitAttr, "false">:$zeroinit,
         OptionalAttr<SymbolNameAttr>:$sym_name);
 
-  let results = (outs Res<AnyMemRef, "structured view of the source buffer",
-                          [MemAlloc<DefaultResource, 0, FullEffect>]>:$buffer);
+  // Effects are hand-written (see UPMEMOps.cpp): a named allocation is one the
+  // host addresses through its symbol, which no SSA use records, so it needs
+  // more than the allocation effect to survive DCE.
+  let results = (outs Res<AnyMemRef,
+                          "structured view of the source buffer">:$buffer);
 
   let skipDefaultBuilders = 1;
   let builders = [
