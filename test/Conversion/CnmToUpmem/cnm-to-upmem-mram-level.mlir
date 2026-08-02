@@ -52,9 +52,6 @@ func.func @gemv(%hostA: memref<8x16x64xi32>, %hostY: memref<8x16xi32>) {
       ins(%wa, %wx : memref<16x64xi32, #upmem.wram>, memref<64xi32, #upmem.wram>)
       outs(%w : memref<16xi32, #upmem.wram>)
     cnm.local_transfer %w into %Y : memref<16xi32, #upmem.wram> to memref<16xi32, #upmem.mram>
-    memref.dealloc %wa : memref<16x64xi32, #upmem.wram>
-    memref.dealloc %wx : memref<64xi32, #upmem.wram>
-    memref.dealloc %w : memref<16xi32, #upmem.wram>
   }
   cnm.gather %y[#scatterY] of %wg into %hostY : !cnm.buffer<16xi32 on #acc, #upmem.mram> into memref<8x16xi32>
   cnm.free_workgroup %wg : !cnm.workgroup<#acc>

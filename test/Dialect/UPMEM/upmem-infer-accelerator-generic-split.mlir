@@ -30,19 +30,25 @@ func.func @gemv_64MB(%A: tensor<4096x4096xi32>, %x: tensor<4096xi32>) -> tensor<
   //   A  8 tasklets x (8 x 1 x 128) = 8192
   //   x                    1 x 128  =  128   <- shared across the tasklets
   //   y  8 tasklets x (1 x 8)       =   64
+  // The WRAM tiles A and x are staged into hold one wramCol=64 chunk each.
+  // They are allocas, so they hoist to the top of the kernel instead of being
+  // allocated once per trip of the K loop -- which is why they are checked
+  // here, in one order-free group with the MRAM buffers, rather than inside
+  // the loop below.
   // CHECK-DAG: upmem.static_alloc @{{.*}}(mram) {{.*}} : memref<8x8x1x128xi32, #upmem.mram>
   // CHECK-DAG: upmem.static_alloc @{{.*}}(mram) {{.*}} : memref<1x128xi32, #upmem.mram>
   // CHECK-DAG: upmem.static_alloc @{{.*}}(mram) {{.*}} : memref<8x1x8xi32, #upmem.mram>
+  // CHECK-DAG: memref.alloca() : memref<8x1x64xi32, #upmem.wram>
+  // CHECK-DAG: memref.alloca() : memref<1x64xi32, #upmem.wram>
 
-  // The 128-wide K tile is walked in wramCol=64 chunks, with the output staged
+  // The 128-wide K tile is walked in those chunks, with the output staged
   // once outside the loop. This is also what checks that the leaf tile sizes
   // survived the reduction split: without `per-dim-attrs` they arrive one
   // entry short and there is no loop here at all.
   // CHECK: %[[WY:.*]] = memref.alloca() : memref<1x8xi32, #upmem.wram>
   // CHECK: upmem.local_transfer %{{.*}} into %[[WY]]
   // CHECK: scf.for %{{.*}} = %{{.*}} to %{{.*}} step %{{.*}} {
-  // CHECK-DAG: memref.alloca() : memref<8x1x64xi32, #upmem.wram>
-  // CHECK-DAG: memref.alloca() : memref<1x64xi32, #upmem.wram>
+  // CHECK: upmem.local_transfer %{{.*}} into %{{.*}} : memref<8x1x64xi32, {{.*}}#upmem.mram> to memref<8x1x64xi32, #upmem.wram>
   // CHECK: }
   // CHECK: upmem.local_transfer %[[WY]] into
   // CHECK: upmem.return
