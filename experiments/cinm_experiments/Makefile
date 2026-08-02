@@ -35,7 +35,7 @@ LOWER_PIPELINE = \
     --buffer-results-to-out-params=hoist-static-allocs \
 		--affine-scalrep --affine-super-vectorize=vectorize-reductions\ virtual-vector-size=8 --affine-expand-index-ops-as-affine \
 		--convert-vector-to-amx --convert-vector-to-scf --convert-vector-to-llvm \
-    --canonicalize --cse 
+    --canonicalize --cse
 #     --cinm-unwrap-compute-blocks
 
 TO_LLVM_PIPELINE = \
@@ -87,7 +87,7 @@ $(IR_DIR)/%.o: $(IR_DIR)/%.opt.ll
 # ─── DPU kernel compilation ──────────────────────────────────────────────────
 
 $(IR_DIR)/%.kernels.mlir: $(IR_DIR)/%.mlir
-	$(CINM_OPT) --upmem-legalize-for-translation $< -o $@
+	$(CINM_OPT) --upmem-legalize-for-translation --lower-affine --cse --canonicalize $< -o $@
 
 $(IR_DIR)/%.dpu.c: $(IR_DIR)/%.kernels.mlir
 	$(CINM_TRANS) --allow-unregistered-dialect --mlir-to-upmem-cpp $< -o $@
