@@ -1162,8 +1162,8 @@ and independently again by hand in the simulation templates
 and [1229-1232](../lib/Dialect/UPMEM/Transforms/SimulationTemplates.cpp#L1229-L1232)).
 Two emitters, one rule, no shared code.
 
-**Decision: the conversion emits only the general form, and the UPMEM
-dialect specializes it.** The conversion then has no branch: block size
+**Decision, and as landed: the conversion emits only the general form, and
+the UPMEM dialect specializes it.** The conversion has no branch: block size
 and block count both come straight off the CNM map, and
 `taskletBlocksAreContiguous`, `getAffineExprDimCoefficient` and
 `isGloballyBroadcast` move into the dialect, where they get *shorter* —
