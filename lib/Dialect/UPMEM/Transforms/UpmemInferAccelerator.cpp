@@ -309,6 +309,10 @@ struct UpmemInferencePlugin : cinm::InferencePlugin {
     // Step 6: cnm → upmem
     pm->addPass(cnm::createCnmEnsureScatterGatherContiguousPass());
     pm->addPass(cnm::createConvertCnmToUPMEMPass({}));
+    // Right after the conversion, so the rest of the back pipeline sees the
+    // narrowest transfer form each map allows -- in particular the occupancy
+    // check and the cost model, which read the ops' shapes.
+    pm->addPass(createUpmemSpecializeTransfersPass());
     pm->addPass(bufferization::createBufferLoopHoistingPass());
     auto nested = pm->nestAny();
     bufferization::buildBufferDeallocationPipeline(nested); // fixme
