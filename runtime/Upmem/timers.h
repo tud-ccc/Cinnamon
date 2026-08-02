@@ -26,8 +26,9 @@ void upmemrt_dump_stats(const char *prefix);
 
 uint64_t upmemrt_now_ns(void);
 // `kind` names the transfer op that produced this row, and matches the op's
-// mnemonic: "on_array" for upmem.scatter_on_array/gather_on_array (the flat
-// per-DPU memcpy), "blocks" for upmem.scatter_blocks/gather_blocks (the UPMEM
+// mnemonic: "on_array"/"from_array" for upmem.scatter_on_array and
+// upmem.gather_from_array (the flat per-DPU memcpy), "blocks" for
+// upmem.scatter_blocks/gather_blocks (the UPMEM
 // SDK scatter/gather transfer API, dpu_push_sg_xfer), "broadcast" for
 // upmem.broadcast. Must be a string literal (or otherwise live for the
 // process lifetime): it is stored by pointer, not copied.

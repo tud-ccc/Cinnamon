@@ -89,46 +89,6 @@ def TaskletDimOp : IndexOp<"tasklet_dim", [DeclareOpInterfaceMethods<InferIntRan
 }
 
 
-def PrivateWRAMAllocOp : Upmem_Op<"pwram_alloc", [
-        DeclareOpInterfaceMethods<OpAsmOpInterface, ["getAsmResultNames"]>
-  ]> {
-
-  let summary = "allocate private WRAM scratch space for the current tasklet";
-  let description = [{
-    Allocates a region of WRAM (fast on-chip scratchpad) for use by the current
-    tasklet. Each tasklet gets its own address range: the allocator partitions WRAM
-    across tasklets automatically. No hardware enforcement prevents cross-tasklet
-    access, but the intent is that each tasklet only uses its own allocation.
-
-    This op is the UPMEM analogue of `memref.alloc`, and produces a memref with
-    the `"wram"` memory space.
-
-    ```mlir
-    %buf = upmem.pwram_alloc() : memref<64xf32, "wram">
-    ```
-  }];
-
-  let results = (outs Res<AnyMemRef, "", [MemAlloc]>:$buffer);
-  let skipDefaultBuilders = 1;
-  let builders = [
-    OpBuilder<(ins "MemRefType":$bufferTy), [{
-      $_state.addTypes({
-        bufferTy
-      });
-    }]>
-  ];
-
-  let extraClassDeclaration = [{
-    MemRefType getType() { return ::llvm::cast<MemRefType>(getBuffer().getType()); }
-
-  }];
-
-  let assemblyFormat = [{
-     `(` `)` attr-dict `:` type($buffer)
-  }];
-}
-
-
 def StaticAllocOp : Upmem_Op<"static_alloc", [//Symbol,
         DeclareOpInterfaceMethods<OpAsmOpInterface, ["getAsmResultNames"]>
 ]> {
@@ -141,11 +101,13 @@ def StaticAllocOp : Upmem_Op<"static_alloc", [//Symbol,
     in a scatter or gather operation.
     These allocations need to happen within a dpu_program scope.
 
+    Non-static (tasklet-local) allocations can be done in WRAM with `memref.alloca`.
+
     Example 1:
 
     ```mlir
-    upmem.static_alloc(wram) : memref<100x100xf32, "wram">
-    upmem.static_alloc @bufname(mram) : memref<100x100xf32, "mram">
+    %buf = upmem.static_alloc(wram) : memref<100x100xf32, "wram">
+    %buf = upmem.static_alloc @bufname(mram) : memref<100x100xf32, "mram">
     ```
   }];
 
@@ -219,7 +181,7 @@ def DpuResource : Resource<"DpuSetResource">;
 // to least general:
 //
 //   scatter_blocks / gather_blocks  n blocks per DPU, each from its own place
-//   scatter_on_array / gather_on_array   one block per DPU
+//   scatter_on_array / gather_from_array   one block per DPU
 //   broadcast                       the same block to every DPU
 //
 // `transferCount` is the size of one block in every one of them, so the only
@@ -303,7 +265,7 @@ def ScatterOnArrayOp: ScatterGatherLike<"scatter_on_array", "onto", MemRead, Mem
 }
 
 
-def GatherOnArrayOp: ScatterGatherLike<"gather_on_array", "from", MemWrite, MemRead<DpuResource>> {
+def GatherFromArrayOp: ScatterGatherLike<"gather_from_array", "from", MemWrite, MemRead<DpuResource>> {
   let summary = "collect one contiguous MRAM slice from each DPU into a host buffer";
   let description = [{
     For each DPU in `hierarchy`, copies `transferCount` elements from the DPU's
@@ -315,7 +277,7 @@ def GatherOnArrayOp: ScatterGatherLike<"gather_on_array", "from", MemWrite, MemR
 
     ```mlir
     // gather 128 result elements per DPU back into hostBuf[d, 0]
-    upmem.gather_on_array %hostBuf[128 elts, affine_map<(r, d) -> (d, 0)>] from @output_buf of %dpus
+    upmem.gather_from_array %hostBuf[128 elts, affine_map<(r, d) -> (d, 0)>] from @output_buf of %dpus
         : memref<128x128xi32> from !upmem.hierarchy<1x128x16>
     ```
   }];
@@ -397,7 +359,7 @@ def GatherBlocksOp: BlockTransferLike<"gather_blocks", "from", MemWrite, MemRead
   let summary = "collect several per-DPU MRAM blocks into a host buffer using the UPMEM SDK gather transfer API";
   let description = [{
     The general gather, and the inverse of `upmem.scatter_blocks`. Unlike
-    `upmem.gather_on_array`, a DPU's results may be written to several places
+    `upmem.gather_from_array`, a DPU's results may be written to several places
     in `hostBuffer` that are not contiguous with one another.
 
     ```mlir
@@ -480,7 +442,7 @@ def DpuProgramOp : Upmem_Op<"dpu_program",
   let summary = "the DPU-side kernel program";
   let description = [{
     Defines the program that runs on each DPU. The body region contains the
-    computation and may use `upmem.static_alloc`, `upmem.pwram_alloc`,
+    computation and may use `upmem.static_alloc`, `memref.alloca`,
     `upmem.local_transfer`, and standard arithmetic/control-flow ops.
 
     `numTasklets` specifies how many tasklets execute the program concurrently on
@@ -494,9 +456,9 @@ def DpuProgramOp : Upmem_Op<"dpu_program",
 
     ```mlir
     upmem.dpu_program @my_kernel() tasklets(16) {
-      %input  = static_alloc @input(mram)  : memref<1024xi32, "mram">
-      %output = static_alloc @output(mram) : memref<1xi32, "mram">
-      %tmp    = pwram_alloc() : memref<1024xi32, "wram">
+      %input  = upmem.static_alloc @input(mram)  : memref<1024xi32, "mram">
+      %output = upmem.static_alloc @output(mram) : memref<1xi32, "mram">
+      %tmp    = memref.alloca() : memref<1024xi32, "wram">
       // ... computation ...
       return
     }
@@ -561,7 +523,7 @@ def WaitForOp : Upmem_Op<"wait_for", [MemoryEffects<[MemRead<DpuResource>, MemWr
   let description = [{
     Triggers execution of the DPU program previously loaded by `upmem.alloc_dpus`
     on all DPUs in the hierarchy. Blocks the host until every DPU finishes.
-    After this op, the results can be retrieved with `upmem.gather_on_array`.
+    After this op, the results can be retrieved with `upmem.gather_from_array`.
 
     ```mlir
     upmem.wait_for %dpus : !upmem.hierarchy<1x64x16>

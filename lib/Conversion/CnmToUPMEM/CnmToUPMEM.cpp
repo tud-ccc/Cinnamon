@@ -231,7 +231,7 @@ static LogicalResult convertCnmGatherToUpmem(RewriterBase &rewriter,
         upmemWgAlloc.getResult(),
         static_cast<int64_t>(numTasklets) * blocksPerLeaf);
   } else {
-    upmem::GatherOnArrayOp::create(
+    upmem::GatherFromArrayOp::create(
         rewriter, op->getLoc(), outputBuf, refToBuffer,
         blockSizeInItems * static_cast<int64_t>(numTasklets),
         adaptAffineMapCnmToUpmem(op.getGatherMap(), bufferTy),
@@ -498,7 +498,7 @@ static LogicalResult lowerBodyStagingOps(RewriterBase &rewriter,
                                   "body");
       // WRAM scratch is a per-tasklet allocation carved out of the WRAM
       // partition, which is what upmem.pwram_alloc denotes.
-      rewriter.replaceOpWithNewOp<upmem::PrivateWRAMAllocOp>(alloc, type);
+      rewriter.replaceOpWithNewOp<memref::AllocaOp>(alloc, type);
       continue;
     }
 
@@ -595,10 +595,10 @@ static LogicalResult convertCnmLaunchToUpmem(cnm::LaunchOp launch,
         buffersToWramBufValue[alloc.getResult()] = wrambuf.getBuffer();
       } else {
         // WRAM is private - each tasklet gets its own buffer.
-        auto pwramBuf = upmem::PrivateWRAMAllocOp::create(
+        auto pwramBuf = memref::AllocaOp::create(
             rewriter, alloc.getLoc(), memrefTy);
 
-        buffersToWramBufValue[alloc.getResult()] = pwramBuf.getBuffer();
+        buffersToWramBufValue[alloc.getResult()] = pwramBuf.getResult();
       }
 
       if (!mramIsBroadcast) {

@@ -1142,7 +1142,7 @@ should be spelled with, and where that choice is made.
 
 ### K1. The general form is the only form the conversion emits
 
-`upmem.scatter_on_array`, `upmem.gather_on_array`, `upmem.scatter_blocks`,
+`upmem.scatter_on_array`, `upmem.gather_from_array`, `upmem.scatter_blocks`,
 `upmem.gather_blocks` and `upmem.broadcast` are not five capabilities, they
 are one capability at three levels of specificity:
 
@@ -1188,10 +1188,10 @@ candidate; it names the SDK call, `dpu_push_sg_xfer`, but reads as
 `gather`. The SDK call belongs in the op description.)
 
 The one-block-per-DPU pair is `upmem.scatter_on_array` /
-`upmem.gather_on_array`: it spreads one block across the array, and its
+`upmem.gather_from_array`: it spreads one block across the array, and its
 plain name would otherwise suggest it was the general case. The runtime's
-`kind` column (timers.h) uses the same three words -- `on_array`, `blocks`,
-`broadcast` -- so a CSV row names the op that produced it.
+`kind` column (timers.h) uses the same words -- `on_array`/`from_array`,
+`blocks`, `broadcast` -- so a CSV row names the op that produced it.
 
 **Gather needs the general form too.** There was no counterpart to
 `scatter_blocks` on the gather side, so
@@ -1282,11 +1282,42 @@ whose shape-suffix distribution packs upstream anyway — worth confirming
 by running them, since it is the one behavioural change visible to the
 baseline.
 
-### K4. What this changes elsewhere
+### K4. Uniform values: widen the constant, then stop transferring
 
-- **The simulation templates stop choosing.** Both hand-written branches
-  emit the general form and let the pass specialize. They were the
-  second, uncoordinated copy of the rule.
+A DPU's blocks land back to back in MRAM, so when the transferred value is
+one repeated constant it stops mattering where each block came from: a
+constant shaped like the target buffer, broadcast once, puts the same bytes
+there. This is the only rewrite that grows the host side, and it only ever
+grows a constant -- a splat `DenseElementsAttr` stores one element whatever
+its shape.
+
+It is what the split-reduction zero seed needs. That seed reaches a DPU as
+`numTasklets` scatter-gather descriptors reading the same tiny tile, because
+the accumulator is gathered back and so `isMramBroadcastOverThreads` will not
+let the tasklets share one MRAM copy. The transfer is 128 KB of zeros across
+512 DPUs; one `dpu_broadcast_to` replaces it.
+
+Two further steps, in increasing order of what they save and of work:
+
+1. **A broadcast of zero executed once is `zeroinit`.** `upmem.static_alloc`
+   already carries the attribute and the C emitter turns it into
+   `char __mram __dma_aligned buf[N] {0};`. The catch is that the loader
+   writes it once per `dpu_load`, so this is only a replacement for the
+   transfer when the kernel is launched once per load -- a launch loop
+   reusing one hierarchy needs the seed rewritten each trip. The rewrite has
+   to establish that, and clear `noinit`, which is mutually exclusive with it.
+2. **In general, initialize on the device.** Telling each tasklet to fill its
+   own output elements is better than any transfer: the tasklets do it in
+   parallel, it costs no host bandwidth, and it removes the MRAM round trip
+   as well -- a tasklet can initialize its WRAM buffer directly instead of
+   loading MRAM it is about to overwrite. This subsumes both of the above and
+   is not restricted to zero, or to a single launch.
+
+### K5. What this changes elsewhere
+
+- **The simulation templates are left alone.** They are a temporary
+  baseline scheduled for deletion, so the second copy of the rule stays
+  where it is rather than being migrated.
 - **`--cnm-scatter-optimizations` composes.** Its broadcast rewrite
   (§B, second bullet) can rewrite CNM-level scatters freely without
   reasoning about which UPMEM op will result; whether a

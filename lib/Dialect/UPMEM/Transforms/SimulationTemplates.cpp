@@ -49,7 +49,7 @@ namespace mlir::upmem {
 
 /// Estimate the cost of the host side of a tiled GEMV (mv2) kernel.
 ///
-/// Transfer costs use the same formula as OpCountSimulator's ScatterOnArrayOp/GatherOnArrayOp
+/// Transfer costs use the same formula as OpCountSimulator's ScatterOnArrayOp/GatherFromArrayOp
 /// case via scatterGatherCost().
 SimCost UpmemSimulator::simulateFullGemv(std::chrono::milliseconds timeout,
                                          int64_t M, int64_t K, int64_t mramRows,
@@ -632,7 +632,7 @@ void upmem::generateTailReduction(cinm::ReduceOp op, RewriterBase &rewriter,
 
         // Once we're done with a set of rows, we gather their results.
         // We still need to reduce over dpuCols.
-        upmem::GatherOnArrayOp::create(b, loc, yStage, yBufSym,
+        upmem::GatherFromArrayOp::create(b, loc, yStage, yBufSym,
                                 static_cast<uint64_t>(mramRows), yMap, dpus);
         // Subview of output for this row tile, shaped to match yStage after
         // reducing dpuCols: output[mOff .. mOff + dpuRows*mramRows).
@@ -1258,7 +1258,7 @@ void upmem::generateGemv(cinm::GemvOp op, RewriterBase &rewriter,
               outRows, ArrayRef<ReassociationIndices>{{0, 1, 2}});
         }
 
-        upmem::GatherOnArrayOp::create(b, loc, yBuf, yBufSym,
+        upmem::GatherFromArrayOp::create(b, loc, yBuf, yBufSym,
                                 static_cast<uint64_t>(mramRows), yMap, dpus);
 
         if (needsPartialReduction) {

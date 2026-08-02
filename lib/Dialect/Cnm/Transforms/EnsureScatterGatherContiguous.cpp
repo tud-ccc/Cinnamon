@@ -3,7 +3,7 @@
 // Lowering cnm.scatter/cnm.gather to upmem.scatter/upmem.gather performs a
 // single flat memcpy per DPU. This is only correct if the transferred
 // elements are actually contiguous in the host memref (see
-// upmem::ScatterOnArrayOp::verify / upmem::GatherOnArrayOp::verify and the runtime's
+// upmem::ScatterOnArrayOp::verify / upmem::GatherFromArrayOp::verify and the runtime's
 // do_dpu_transfer). This pass detects host memrefs that aren't contiguous
 // (e.g. subviews of a larger tensor) and inserts an intermediate contiguous
 // buffer, similar to what packATile does for the tiled GEMV/reduction

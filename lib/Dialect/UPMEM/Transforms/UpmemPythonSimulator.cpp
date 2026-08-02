@@ -113,7 +113,7 @@ struct DpuTranslator {
 
   // ── Per-op translation ────────────────────────────────────────────────────
 
-  void translatePwramAlloc(PrivateWRAMAllocOp op) {
+  void translatePwramAlloc(memref::AllocaOp op) {
     auto mrt = op.getType();
     std::string name = "wram_" + std::to_string(buf_ctr++);
     buf_map[op.getResult()] = builder.addBuffer(
@@ -393,7 +393,7 @@ struct DpuTranslator {
   }
 
   void translateOp(Operation &op) {
-    if (auto o = dyn_cast<PrivateWRAMAllocOp>(&op))
+    if (auto o = dyn_cast<memref::AllocaOp>(&op))
       translatePwramAlloc(o);
     else if (auto o = dyn_cast<StaticAllocOp>(&op))
       translateStaticAlloc(o);

@@ -126,7 +126,7 @@ static SimCost costOfOpCb(Operation &op, bool annotate,
                                              xferOp.getDpuBufferSizeInBytes()),
                 "scatter");
           })
-          .Case<upmem::GatherOnArrayOp>([](upmem::GatherOnArrayOp xferOp) -> SimCost {
+          .Case<upmem::GatherFromArrayOp>([](upmem::GatherFromArrayOp xferOp) -> SimCost {
             auto hier = llvm::cast<DeviceHierarchyType>(
                 xferOp.getHierarchy().getType());
             int numDpus = hier.getNumRanks() * hier.getNumDpusPerRank();

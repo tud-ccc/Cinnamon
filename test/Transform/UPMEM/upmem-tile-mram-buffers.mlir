@@ -28,15 +28,15 @@ func.func @gemv() {
   // CHECK: %[[SY:.*]] = memref.subview %{{.*}}[%[[I]]] [16] [1] : memref<64xi32, #upmem.mram>
   // Statically shaped WRAM buffers, not the flat i8 buffer + memref.view the
   // default promotion allocator would produce.
-  // CHECK: %[[WY:.*]] = memref.alloc() : memref<16xi32, #upmem.wram>
+  // CHECK: %[[WY:.*]] = memref.alloca() : memref<16xi32, #upmem.wram>
   // The output is read as well as written: the contract accumulates into it.
   // CHECK: cnm.local_transfer %[[SY]] into %[[WY]]
 
   // CHECK: scf.for %[[K:.*]] = %{{.*}} to %{{.*}} step %{{.*}} {
   // CHECK: %[[SA:.*]] = memref.subview %{{.*}}[0, %[[K]]] [16, 128] [1, 1]
   // CHECK: %[[SX:.*]] = memref.subview %{{.*}}[%[[K]]] [128] [1] : memref<512xi32, #upmem.mram>
-  // CHECK: %[[WA:.*]] = memref.alloc() : memref<16x128xi32, #upmem.wram>
-  // CHECK: %[[WX:.*]] = memref.alloc() : memref<128xi32, #upmem.wram>
+  // CHECK: %[[WA:.*]] = memref.alloca() : memref<16x128xi32, #upmem.wram>
+  // CHECK: %[[WX:.*]] = memref.alloca() : memref<128xi32, #upmem.wram>
   // CHECK: cnm.local_transfer %[[SA]] into %[[WA]]
   // CHECK: cnm.local_transfer %[[SX]] into %[[WX]]
   // CHECK: linalg.contract {{.*}} ins(%[[WA]], %[[WX]] : memref<16x128xi32, #upmem.wram>, memref<128xi32, #upmem.wram>) outs(%[[WY]] : memref<16xi32, #upmem.wram>)
@@ -51,7 +51,7 @@ func.func @gemv() {
   // NOHOIST: scf.for
   // NOHOIST: scf.for
   // NOHOIST: %[[NSY:.*]] = memref.subview %{{.*}}[%{{.*}}] [16] [1] : memref<64xi32, #upmem.mram>
-  // NOHOIST: %[[NWY:.*]] = memref.alloc() : memref<16xi32, #upmem.wram>
+  // NOHOIST: %[[NWY:.*]] = memref.alloca() : memref<16xi32, #upmem.wram>
   // NOHOIST: cnm.local_transfer %[[NSY]] into %[[NWY]]
   // NOHOIST: linalg.contract
   // NOHOIST: cnm.local_transfer %[[NWY]] into %[[NSY]]
@@ -80,10 +80,10 @@ func.func @reduce() {
   // Same two-stage staging as the contract: the output tile is hoisted out of
   // the reduction loop.
   // CHECK: scf.for
-  // CHECK: %[[WO:.*]] = memref.alloc() : memref<16xi32, #upmem.wram>
+  // CHECK: %[[WO:.*]] = memref.alloca() : memref<16xi32, #upmem.wram>
   // CHECK: cnm.local_transfer %{{.*}} into %[[WO]]
   // CHECK: scf.for
-  // CHECK: %[[WI:.*]] = memref.alloc() : memref<16x128xi32, #upmem.wram>
+  // CHECK: %[[WI:.*]] = memref.alloca() : memref<16x128xi32, #upmem.wram>
   // CHECK: cnm.local_transfer %{{.*}} into %[[WI]]
   // CHECK: linalg.reduce ins(%[[WI]] : memref<16x128xi32, #upmem.wram>) outs(%[[WO]] : memref<16xi32, #upmem.wram>)
   cnm.launch %wg ins(%A = %a : <64x512xi32, #upmem.mram>)
@@ -118,7 +118,7 @@ func.func @no_tiling() {
   %x = cnm.alloc() for %wg : !cnm.buffer<128xi32 on #acc, #upmem.mram>
   %y = cnm.alloc() for %wg : !cnm.buffer<16xi32 on #acc, #upmem.mram>
   // CHECK-NOT: scf.for
-  // CHECK: memref.alloc() : memref<16x128xi32, #upmem.wram>
+  // CHECK: memref.alloca() : memref<16x128xi32, #upmem.wram>
   // CHECK: cnm.local_transfer %{{.*}} : memref<16x128xi32, #upmem.mram> to memref<16x128xi32, #upmem.wram>
   // CHECK: linalg.contract {{.*}} : memref<16x128xi32, #upmem.wram>, memref<128xi32, #upmem.wram>) outs(%{{.*}} : memref<16xi32, #upmem.wram>)
   cnm.launch %wg ins(%A = %a : <16x128xi32, #upmem.mram>, %X = %x : <128xi32, #upmem.mram>)

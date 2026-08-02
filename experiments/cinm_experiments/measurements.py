@@ -255,7 +255,7 @@ PREDICTED_TO_MEASURED = {
     ("transfer", "scatter"): "scatter:on_array",
     ("transfer", "scatter_blocks"): "scatter:blocks",
     ("transfer", "broadcast"): "scatter:broadcast",
-    ("transfer_back", "gather"): "gather",
+    ("transfer_back", "gather"): "gather",  # kind=from_array
     ("transfer_back", "gather_blocks"): "gather",
     ("cpu", "other"): "unaccounted",
 }

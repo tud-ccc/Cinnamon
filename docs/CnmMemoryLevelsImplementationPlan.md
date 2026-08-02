@@ -62,8 +62,9 @@ path lowers `cinm → linalg → cnm → upmem` end to end, driven entirely by
 a search space derived from the linalg op's iteration space, and it runs
 on real hardware. Five milestones were added after the original plan:
 **M13** (sequential trips), outstanding; **M17** (one general UPMEM
-transfer op, specialized late), half done -- the op family and the shared
-contiguity contract landed, the specialization pass has not; **M14** (exact post-lowering
+transfer op, specialized late), in progress -- the op family, the shared
+contiguity contract and the specialization pass have landed; the emitters
+still choose a form themselves, and uniform seeds are still transferred; **M14** (exact post-lowering
 occupancy check) and **M16** (pointwise scatter/gather maps), both
 implemented; and **M15** (the host repack), superseded by M16. All five
 are in §3 below.
@@ -335,7 +336,9 @@ M16 pointwise scatter/gather maps         DONE         (needs M11b, design §J)
  |
  └─ M17 one general UPMEM transfer op, specialized late (needs M16, design §K)
       M17a op family + shared contiguity contract   DONE
-      M17b --upmem-specialize-transfers
+      M17b --upmem-specialize-transfers             DONE
+      M17c emitters emit only the general form
+      M17d device-side init of uniform seeds
 ```
 
 M1, M2, M3 are mutually independent once M0 lands. M9 and M10 are
@@ -1281,7 +1284,7 @@ templates.
    its map's third dimension renamed `tasklet` → `block`: the op never
    required one block per tasklet and under §J routinely has several. The
    one-block-per-DPU pair became `upmem.scatter_on_array` /
-   `upmem.gather_on_array`, so the plain names no longer suggest they are
+   `upmem.gather_from_array`, so the plain names no longer suggest they are
    the general case.
 2. **Added `upmem.gather_blocks`**, the missing symmetric op, lowering to
    `dpu_push_sg_xfer` in the gather direction (`upmemrt_dpu_gather_blocks`;
@@ -1297,32 +1300,48 @@ templates.
    `isAffineExprInjective` (from `CnmScatterMap.cpp`) and
    `linearizeToElementOffset` (from `CnmToUPMEM.cpp`) moved to `Utils/` —
    both are dialect-neutral and the UPMEM dialect must not depend on CNM.
-4. **Runtime `kind` tags match the mnemonics**: `on_array` / `blocks` /
-   `broadcast`, replacing `block` / `sg` / `bc`. `gather.csv` gains the
+4. **Runtime `kind` tags match the mnemonics**: `on_array`/`from_array`,
+   `blocks`, `broadcast`, replacing `block` / `sg` / `bc`. `gather.csv` gains the
    `kind` and `num_blocks` columns the scatter side already had.
    `measurements.py` maps the old spellings onto the new ones so recorded
    runs still plot.
 
-**M17b — the specialization pass. TODO.**
+**M17b — the specialization pass. DONE.**
 
 5. **`--upmem-specialize-transfers`**, carrying the existing
-   `use-sg-xfer-codegen` / `use-bc-xfer-codegen` option names, with two
-   patterns: `*_blocks → *_on_array` when the blocks are adjacent and in
-   order, and `scatter_on_array → broadcast` when the map is constant zero
-   and the transfer covers the whole host buffer.
+   `use-sg-xfer-codegen` / `use-bc-xfer-codegen` option names, with three
+   patterns: `*_blocks → *_on_array`/`*_from_array` when the blocks are
+   adjacent and in order; `scatter_on_array → broadcast` when the map is
+   constant zero and the transfer covers the whole host buffer; and
+   `scatter_* → broadcast` of a widened constant when the transferred value
+   is uniform (§K4). Runs straight after `--convert-cnm-to-upmem`, so the
+   occupancy check and the cost model see the narrowed forms. Gathers never
+   narrow to a broadcast.
+
+**M17c — the emitters. TODO.**
+
 6. **`--convert-cnm-to-upmem` loses the branch.**
    `taskletBlocksAreContiguous`, `getAffineExprDimCoefficient` and
    `isGloballyBroadcast` move to the dialect and shorten (they no longer
    rebuild the `(r, d, b)` map first — it is the op's attribute).
    `isBroadcast` survives only as an input to the block *count*.
-7. **The simulation templates emit the general form** at both sites.
-8. **Fix the `use-sg-xfer-codegen=false` miscompile** (§K3). Today "off"
+   ~~The simulation templates too~~ — left alone deliberately: they are a
+   temporary baseline scheduled for deletion.
+7. **Fix the `use-sg-xfer-codegen=false` miscompile** (§K3). Today "off"
    collapses to a flat transfer whether or not that is correct. Under
    this structure a pattern can only fire when legal, so "off" means the
    sg call is unavailable and the packing had to happen upstream —
    `cinm1.py` already runs `--cnm-ensure-scatter-gather-contiguous`
-   exactly then. When it did not, the pass emits a diagnostic instead of
-   a wrong transfer.
+   exactly then. The pass already emits that diagnostic; what remains is
+   for the conversion to stop collapsing on its own, so the flag reaches
+   the pass at all.
+
+**M17d — stop transferring uniform seeds at all. TODO.** §K4's two further
+steps: a broadcast of zero that runs once per `dpu_load` is `zeroinit` on
+the `static_alloc`; and, generally and better, a device-side init in which
+each tasklet fills its own output elements — in parallel, with no host
+bandwidth, and skipping the MRAM round trip a WRAM staging load would
+otherwise pay.
 
 **Post-paper cleanup this creates:** the flags exist only to reproduce
 the CINM 1.0 baseline. Once that measurement is locked,
@@ -1360,7 +1379,9 @@ them, since it is the only behavioural change the baseline can see.
 | M14 ✅ | `--upmem-check-occupancy`, run last in the back pipeline | `Transform/UPMEM/upmem-check-occupancy.mlir` (new, 5 cases); `upmem-check-occupancy-sizes.mlir` (new); `Dialect/UPMEM/upmem-infer-accelerator-occupancy.mlir` (new, a configuration the cheap bound accepts and the lowered program refutes) |
 | M15 ⊘ | superseded by M16 | — |
 | M17a ✅ | UPMEM transfer op family + one contiguity contract (§K1-K2) | `Dialect/UPMEM/verifier.mlir` (a valid `gather_blocks`; a block starting mid-run, which the type-only check accepted; the same map at column 0, which is fine); every `upmem.scatter`/`gather` spelling in the suite renamed |
-| M17b ☐ | `--upmem-specialize-transfers` (§K3) | `Dialect/UPMEM/upmem-specialize-transfers.mlir` (new: blocks→on_array, on_array→broadcast, and a case of each that must *not* fire); `Conversion/CnmToUpmem/cnm-to-upmem-sg-xfer.mlir` (`NOSG` rewritten from the miscompile to a diagnostic); `cnm-to-upmem-broadcast.mlir` and `cnm-to-upmem.mlir` re-pinned on the general form + specialization pass; `cinm1.py` configurations re-run unchanged |
+| M17b ✅ | `--upmem-specialize-transfers` (§K3-K4) | `Dialect/UPMEM/upmem-specialize-transfers.mlir` (new: widened-constant broadcast, blocks→on_array, whole-buffer broadcast, and three cases that must *not* fire, incl. a gather); the `gemv_64MB` seed becomes one `upmem.broadcast` |
+| M17c ☐ | emitters emit only the general form (§K1) | `Conversion/CnmToUpmem/cnm-to-upmem-sg-xfer.mlir` (`NOSG` rewritten from the miscompile to a diagnostic); `cnm-to-upmem-broadcast.mlir` and `cnm-to-upmem.mlir` re-pinned on the general form + specialization pass; `cinm1.py` configurations re-run unchanged |
+| M17d ☐ | device-side init of uniform seeds (§K4) | the seed transfer disappears from `gemv_64MB_scatter.csv` rather than changing kind |
 | M16 ✅ | pointwise scatter/gather maps (§J) | `cnm-verifier.mlir` (both forms, rejected non-injective gather); `linalg-to-cnm.mlir` (pointwise maps, CHECK-NOT `linalg.transpose`); `ensure-scatter-gather-contiguous.mlir` (short droppable suffix, view folding); `CnmToUpmem/` multi-block scatter; `gemv-linalg-generic-pipeline.mlir` CHECK-NOT on the full-size host alloc; the hardware number is the real signal |
 
 ---

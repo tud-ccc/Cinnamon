@@ -38,16 +38,16 @@ func.func @gemv(%hostA: memref<8x16x64xi32>, %hostY: memref<8x16xi32>) {
   // CHECK: %[[W:.*]] = memref.alloca() : memref<16xi32, #upmem.wram>
   // CHECK: upmem.local_transfer %[[VY]] into %[[W]]
   // CHECK: upmem.local_transfer %[[VA]] into %{{.*}}
-  // CHECK-NOT: memref.alloc
+  // CHECK-NOT: memref.alloc()
   // CHECK-NOT: memref.dealloc
   // CHECK-NOT: cnm.local_transfer
   cnm.launch %wg ins(%A = %a : <16x64xi32, #upmem.mram>)
                  outs(%Y = %y : <16xi32, #upmem.mram>) on !cnm.workgroup<#acc> {
-    %w = memref.alloc() : memref<16xi32, #upmem.wram>
+    %w = memref.alloca() : memref<16xi32, #upmem.wram>
     cnm.local_transfer %Y into %w : memref<16xi32, #upmem.mram> to memref<16xi32, #upmem.wram>
-    %wa = memref.alloc() : memref<16x64xi32, #upmem.wram>
+    %wa = memref.alloca() : memref<16x64xi32, #upmem.wram>
     cnm.local_transfer %A into %wa : memref<16x64xi32, #upmem.mram> to memref<16x64xi32, #upmem.wram>
-    %wx = memref.alloc() : memref<64xi32, #upmem.wram>
+    %wx = memref.alloca() : memref<64xi32, #upmem.wram>
     linalg.contract indexing_maps = [#m, #v, #r]
       ins(%wa, %wx : memref<16x64xi32, #upmem.wram>, memref<64xi32, #upmem.wram>)
       outs(%w : memref<16xi32, #upmem.wram>)
@@ -79,7 +79,7 @@ func.func @broadcast(%host: memref<4x64xi32>) {
   // CHECK: %[[W:.*]] = memref.alloca() : memref<64xi32, #upmem.wram>
   // CHECK: upmem.local_transfer %[[MB]] into %[[W]]
   cnm.launch %wg ins(%B = %b : <64xi32, #upmem.mram>) on !cnm.workgroup<#acc> {
-    %w = memref.alloc() : memref<64xi32, #upmem.wram>
+    %w = memref.alloca() : memref<64xi32, #upmem.wram>
     cnm.local_transfer %B into %w : memref<64xi32, #upmem.mram> to memref<64xi32, #upmem.wram>
     memref.dealloc %w : memref<64xi32, #upmem.wram>
   }
