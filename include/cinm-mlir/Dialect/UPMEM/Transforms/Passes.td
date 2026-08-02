@@ -255,6 +255,50 @@ def UpmemCheckOccupancyPass
   ];
 }
 
+def UpmemSpecializeTransfersPass
+    : Pass<"upmem-specialize-transfers", "ModuleOp"> {
+  let summary = "Narrow each transfer op to the cheapest form its map allows";
+  let description = [{
+    The transfer ops are one capability at three levels of specificity:
+    `scatter_blocks`/`gather_blocks` give each DPU several blocks fetched
+    independently (`dpu_push_sg_xfer`), `scatter_on_array`/`gather_from_array`
+    give it one contiguous block (a flat memcpy), and `broadcast` gives every
+    DPU the same bytes (one `dpu_broadcast_to`). Emitters produce the general
+    form; this pass reads each op's map and narrows it where that is legal, so
+    the rule lives in one place instead of in every emitter.
+
+    Three rewrites, and they chain:
+
+    - **blocks to one block.** When a DPU's blocks turn out to be adjacent and
+      in order in the host buffer, they are one run, so one flat transfer
+      moves them.
+    - **the same bytes everywhere.** A map that does not depend on rank, DPU
+      or block sends every DPU the same region. If that region also *is* the
+      whole host buffer, `broadcast` delivers it.
+    - **a uniform value, widened.** A DPU's blocks land back to back in MRAM,
+      so when the transferred value is one repeated constant it does not
+      matter where each block came from: a constant of the target buffer's own
+      shape, broadcast once, puts the same bytes there. This is the only
+      rewrite that grows the host side, and it only ever grows a constant.
+
+    Gathers are never narrowed to a broadcast: two DPUs writing one host
+    region is a race, not a broadcast.
+  }];
+  let options = [
+    Option<"useSgXferCodegen", "use-sg-xfer-codegen", "bool", "true",
+           "Allow the scatter/gather transfer API. When false, an op that "
+           "cannot be narrowed out of the block form is an error: the "
+           "packing that would have made it flat was supposed to happen "
+           "upstream.">,
+    Option<"useBcXferCodegen", "use-bc-xfer-codegen", "bool", "true",
+           "Allow narrowing to upmem.broadcast.">,
+  ];
+  let dependentDialects = [
+    "::mlir::upmem::UPMEMDialect",
+    "::mlir::memref::MemRefDialect"
+  ];
+}
+
 def UpmemLegalizeForTranslationPass
     : Pass<"upmem-legalize-for-translation", "ModuleOp"> {
   let summary = "Strip all ops except upmem.dpu_program for DPU translation";
