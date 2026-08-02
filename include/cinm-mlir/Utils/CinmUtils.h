@@ -1,6 +1,8 @@
 
 #include <llvm/ADT/StringRef.h>
+#include <mlir/Dialect/SCF/Transforms/TileUsingInterface.h>
 #include <mlir/IR/BuiltinOps.h>
+#include <mlir/Interfaces/TilingInterface.h>
 
 #include <optional>
 
@@ -89,5 +91,28 @@ TypedValue<ShapedType> reshapeStatic(OpBuilder &, Location loc, Value value,
 TypedValue<ShapedType> reshapeStatic(OpBuilder &b, Location loc,
                                      TypedValue<ShapedType> value,
                                      llvm::ArrayRef<int64_t> newShape);
+
+/// Tile \p op with `scf::tileUsingSCF`, but build the inter-tile loops with
+/// `affine.for` instead of `scf.for`.
+///
+/// Worth doing whenever affine passes run on the result: the tile is addressed
+/// through the loop induction variables, and only an `affine.for`'s is a valid
+/// affine dimension. With `scf.for` the offsets inside the nest stay opaque, so
+/// --affine-raise-from-memref, scalar replacement and affine LICM see nothing
+/// to work with there.
+///
+/// \p options is used as given except for its loop type, which is overridden.
+/// Fails if \p op is not one `canTileUsingAffineFor` accepts.
+FailureOr<scf::SCFTilingResult>
+tileUsingAffineFor(RewriterBase &rewriter, TilingInterface op,
+                   scf::SCFTilingOptions options,
+                   llvm::ArrayRef<int64_t> tileSizes);
+
+/// Whether `tileUsingAffineFor` can tile \p op with \p tileSizes, i.e. whether
+/// the op has buffer semantics -- an `affine.for` nest yields no tile back --
+/// and every dimension being tiled has a static extent to use as a loop bound.
+/// Callers that cannot guarantee this should fall back to `scf::tileUsingSCF`.
+bool canTileUsingAffineFor(TilingInterface op,
+                           llvm::ArrayRef<int64_t> tileSizes);
 
 } // namespace mlir

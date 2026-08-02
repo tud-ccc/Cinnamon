@@ -43,6 +43,7 @@ def UpmemTileMRAMBuffersPass: Pass<"upmem-tile-mram-buffers"> {
   let dependentDialects = [
     "::mlir::cnm::CnmDialect",
     "::mlir::upmem::UPMEMDialect",
+    "mlir::affine::AffineDialect",
     "mlir::arith::ArithDialect",
     "mlir::linalg::LinalgDialect",
     "mlir::memref::MemRefDialect",

@@ -24,7 +24,7 @@ func.func @gemv() {
   // once outside the reduction loop and accumulated into in WRAM across every
   // trip -- the structure the hand-written templates use. Staging it around
   // the op instead would move it to and from MRAM on each of the 4 trips.
-  // CHECK: scf.for %[[I:.*]] = %{{.*}} to %{{.*}} step %{{.*}} {
+  // CHECK: affine.for %[[I:.*]] = 0 to 64 step 16 {
   // CHECK: %[[SY:.*]] = memref.subview %{{.*}}[%[[I]]] [16] [1] : memref<64xi32, #upmem.mram>
   // Statically shaped WRAM buffers, not the flat i8 buffer + memref.view the
   // default promotion allocator would produce.
@@ -32,7 +32,7 @@ func.func @gemv() {
   // The output is read as well as written: the contract accumulates into it.
   // CHECK: cnm.local_transfer %[[SY]] into %[[WY]]
 
-  // CHECK: scf.for %[[K:.*]] = %{{.*}} to %{{.*}} step %{{.*}} {
+  // CHECK: affine.for %[[K:.*]] = 0 to 512 step 128 {
   // CHECK: %[[SA:.*]] = memref.subview %{{.*}}[0, %[[K]]] [16, 128] [1, 1]
   // CHECK: %[[SX:.*]] = memref.subview %{{.*}}[%[[K]]] [128] [1] : memref<512xi32, #upmem.mram>
   // CHECK: %[[WA:.*]] = memref.alloca() : memref<16x128xi32, #upmem.wram>
@@ -40,7 +40,6 @@ func.func @gemv() {
   // CHECK: cnm.local_transfer %[[SA]] into %[[WA]]
   // CHECK: cnm.local_transfer %[[SX]] into %[[WX]]
   // CHECK: linalg.contract {{.*}} ins(%[[WA]], %[[WX]] : memref<16x128xi32, #upmem.wram>, memref<128xi32, #upmem.wram>) outs(%[[WY]] : memref<16xi32, #upmem.wram>)
-  // CHECK: memref.dealloc %[[WA]]
   // CHECK: }
   // CHECK: cnm.local_transfer %[[WY]] into %[[SY]] : memref<16xi32, #upmem.wram> to memref<16xi32, strided<[1], offset: ?>, #upmem.mram>
 
@@ -48,8 +47,8 @@ func.func @gemv() {
   // CHECK-NOT: upmem.leaf_tile_sizes
 
   // Without hoisting, everything is staged around the op, inside both loops.
-  // NOHOIST: scf.for
-  // NOHOIST: scf.for
+  // NOHOIST: affine.for
+  // NOHOIST: affine.for
   // NOHOIST: %[[NSY:.*]] = memref.subview %{{.*}}[%{{.*}}] [16] [1] : memref<64xi32, #upmem.mram>
   // NOHOIST: %[[NWY:.*]] = memref.alloca() : memref<16xi32, #upmem.wram>
   // NOHOIST: cnm.local_transfer %[[NSY]] into %[[NWY]]
@@ -79,10 +78,10 @@ func.func @reduce() {
   %o = cnm.alloc() for %wg : !cnm.buffer<64xi32 on #acc, #upmem.mram>
   // Same two-stage staging as the contract: the output tile is hoisted out of
   // the reduction loop.
-  // CHECK: scf.for
+  // CHECK: affine.for
   // CHECK: %[[WO:.*]] = memref.alloca() : memref<16xi32, #upmem.wram>
   // CHECK: cnm.local_transfer %{{.*}} into %[[WO]]
-  // CHECK: scf.for
+  // CHECK: affine.for
   // CHECK: %[[WI:.*]] = memref.alloca() : memref<16x128xi32, #upmem.wram>
   // CHECK: cnm.local_transfer %{{.*}} into %[[WI]]
   // CHECK: linalg.reduce ins(%[[WI]] : memref<16x128xi32, #upmem.wram>) outs(%[[WO]] : memref<16xi32, #upmem.wram>)
@@ -117,7 +116,7 @@ func.func @no_tiling() {
   %a = cnm.alloc() for %wg : !cnm.buffer<16x128xi32 on #acc, #upmem.mram>
   %x = cnm.alloc() for %wg : !cnm.buffer<128xi32 on #acc, #upmem.mram>
   %y = cnm.alloc() for %wg : !cnm.buffer<16xi32 on #acc, #upmem.mram>
-  // CHECK-NOT: scf.for
+  // CHECK-NOT: affine.for
   // CHECK: memref.alloca() : memref<16x128xi32, #upmem.wram>
   // CHECK: cnm.local_transfer %{{.*}} : memref<16x128xi32, #upmem.mram> to memref<16x128xi32, #upmem.wram>
   // CHECK: linalg.contract {{.*}} : memref<16x128xi32, #upmem.wram>, memref<128xi32, #upmem.wram>) outs(%{{.*}} : memref<16xi32, #upmem.wram>)

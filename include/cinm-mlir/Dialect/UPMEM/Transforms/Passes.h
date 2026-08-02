@@ -6,6 +6,7 @@
 
 #include <cinm-mlir/Dialect/UPMEM/Transforms/UpmemSimulator.h>
 
+#include <mlir/Dialect/Affine/IR/AffineOps.h>
 #include <mlir/Dialect/Func/IR/FuncOps.h>
 #include <mlir/IR/BuiltinOps.h>
 #include <mlir/Pass/Pass.h>

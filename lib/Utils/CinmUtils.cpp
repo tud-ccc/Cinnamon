@@ -6,6 +6,7 @@
 #include <llvm/ADT/SmallString.h>
 #include <llvm/ADT/SmallVector.h>
 #include <llvm/Support/Casting.h>
+#include <mlir/Dialect/Affine/IR/AffineOps.h>
 #include <mlir/Dialect/Arith/IR/Arith.h>
 #include <mlir/Dialect/Linalg/IR/Linalg.h>
 #include <mlir/Dialect/MemRef/IR/MemRef.h>
@@ -666,6 +667,128 @@ TypedValue<ShapedType> reshapeStatic(OpBuilder &builder, Location loc,
   return dyn_cast<TypedValue<ShapedType>>(
       tensor::ReshapeOp::create(builder, loc, newTy, value, reifiedShape)
           .getResult());
+}
+
+//===--------------------------------------------------------------------===//
+// Tiling into affine.for loops
+//===--------------------------------------------------------------------===//
+
+/// `min(tileSize, ub - offset)`: the last tile is short when the tile size does
+/// not divide the loop range. Mirrors what `scf::tileUsingSCF` computes for its
+/// own loops -- the tiled op is built from these, so it has to agree.
+static OpFoldResult boundedTileSize(OpBuilder &b, Location loc, Range range,
+                                    OpFoldResult offset,
+                                    OpFoldResult tileSize) {
+  std::optional<int64_t> size = getConstantIntValue(tileSize);
+  if (size && *size == 1)
+    return tileSize;
+
+  std::optional<int64_t> lb = getConstantIntValue(range.offset);
+  std::optional<int64_t> ub = getConstantIntValue(range.size);
+  if (lb && ub && size && (*ub - *lb) % *size == 0)
+    return tileSize;
+
+  AffineExpr d0, s0, s1;
+  bindDims(b.getContext(), d0);
+  bindSymbols(b.getContext(), s0, s1);
+  AffineMap minMap = AffineMap::get(1, 2, {s0 - d0, s1}, b.getContext());
+  return affine::makeComposedFoldedAffineMin(
+      b, loc, minMap, SmallVector<OpFoldResult>{offset, range.size, tileSize});
+}
+
+/// Build the inter-tile loops as an `affine.for` nest and leave the rewriter
+/// pointing inside the innermost one, where the tiled body goes.
+static FailureOr<scf::SCFTilingOptions::CustomLoopHeaderInfo>
+generateAffineTileLoops(RewriterBase &rewriter, Location loc,
+                        ArrayRef<Range> loopRanges,
+                        ArrayRef<OpFoldResult> tileSizes,
+                        ValueRange destinationTensors) {
+  SmallVector<LoopLikeOpInterface> loops;
+  SmallVector<Value> ivs;
+  for (auto [range, tileSize] : llvm::zip_equal(loopRanges, tileSizes)) {
+    if (isZeroInteger(tileSize))
+      continue; // dimension not tiled, so no loop over it
+
+    // An affine.for takes its bounds as affine maps over valid dims and
+    // symbols. Constants are the only form guaranteed to be valid wherever
+    // this runs, hence the check in `canTileUsingAffineFor`.
+    std::optional<int64_t> lb = getConstantIntValue(range.offset);
+    std::optional<int64_t> ub = getConstantIntValue(range.size);
+    std::optional<int64_t> step = getConstantIntValue(tileSize);
+    if (!lb || !ub || !step)
+      return rewriter.notifyMatchFailure(
+          loc, "cannot tile a dimension of non-constant bounds into affine.for");
+
+    auto loop = affine::AffineForOp::create(rewriter, loc, *lb, *ub, *step);
+    loops.push_back(loop);
+    ivs.push_back(loop.getInductionVar());
+    rewriter.setInsertionPoint(loop.getBody()->getTerminator());
+  }
+
+  // The tile the innermost body covers, in iteration-space coordinates.
+  SmallVector<OpFoldResult> offsets, sizes;
+  unsigned ivIdx = 0;
+  for (auto [range, tileSize] : llvm::zip_equal(loopRanges, tileSizes)) {
+    if (isZeroInteger(tileSize)) {
+      offsets.push_back(range.offset);
+      sizes.push_back(range.size);
+      continue;
+    }
+    OpFoldResult offset = getAsOpFoldResult(ivs[ivIdx++]);
+    offsets.push_back(offset);
+    sizes.push_back(boundedTileSize(rewriter, loc, range, offset, tileSize));
+  }
+
+  return scf::SCFTilingOptions::CustomLoopHeaderInfo{
+      loops, offsets, sizes, llvm::to_vector(destinationTensors)};
+}
+
+/// Terminate the loops built by `generateAffineTileLoops`. Nothing to do for
+/// the ops we accept: they have pure buffer semantics, so no tile is yielded
+/// back, and an `affine.for` without iter_args is created already terminated.
+static LogicalResult
+finishAffineTileLoops(RewriterBase &, Location loc,
+                      ArrayRef<LoopLikeOpInterface>, ValueRange tiledResults,
+                      ArrayRef<SmallVector<OpFoldResult>>,
+                      ArrayRef<SmallVector<OpFoldResult>>, ValueRange) {
+  if (!tiledResults.empty())
+    return emitError(loc) << "cannot tile an op with " << tiledResults.size()
+                          << " results into affine.for loops: only buffer "
+                             "semantics are supported";
+  return success();
+}
+
+bool canTileUsingAffineFor(TilingInterface op, ArrayRef<int64_t> tileSizes) {
+  if (op->getNumResults() != 0)
+    return false;
+
+  // The iteration domain is only available as IR, which we are in no position
+  // to build here; take the static ranges off the op instead.
+  auto indexed = dyn_cast<IndexingMapOpInterface>(op.getOperation());
+  if (!indexed)
+    return false;
+
+  SmallVector<int64_t> ranges = indexed.getStaticLoopRanges();
+  if (ranges.size() != tileSizes.size())
+    return false;
+  for (auto [range, tileSize] : llvm::zip_equal(ranges, tileSizes))
+    if (tileSize != 0 && ShapedType::isDynamic(range))
+      return false;
+  return true;
+}
+
+FailureOr<scf::SCFTilingResult>
+tileUsingAffineFor(RewriterBase &rewriter, TilingInterface op,
+                   scf::SCFTilingOptions options, ArrayRef<int64_t> tileSizes) {
+  if (!canTileUsingAffineFor(op, tileSizes))
+    return rewriter.notifyMatchFailure(op,
+                                       "cannot be tiled into affine.for loops");
+
+  options.setTileSizes(getAsIndexOpFoldResult(rewriter.getContext(), tileSizes))
+      .setLoopType(scf::SCFTilingOptions::LoopType::CustomOp)
+      .setCustomLoopGenerationFns(generateAffineTileLoops,
+                                  finishAffineTileLoops);
+  return scf::tileUsingSCF(rewriter, op, options);
 }
 
 } // namespace mlir
