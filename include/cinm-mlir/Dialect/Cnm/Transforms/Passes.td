@@ -106,11 +106,41 @@ def CnmScatterOptimizationsPass : Pass<"cnm-scatter-optimizations"> {
     realizes the transfer, only that the data it has to move shrinks from the
     whole workgroup's worth to one tile.
 
+    Also implemented: *device-side initialization*. A uniform source is a
+    constant every leaf could write for itself, so when the buffer feeds a
+    single `cnm.launch` the transfer is dropped altogether and a `linalg.fill`
+    of that constant is prepended to the launch body:
+
+    ```mlir
+    cnm.scatter %tile into %buf[(d0, d1, d2) -> ()] of %wg
+    cnm.launch %wg outs(%arg0 = %buf : <1x8xi32, #upmem.mram>) { ... }
+    // becomes
+    cnm.launch %wg outs(%arg0 = %buf : <1x8xi32, #upmem.mram>) {
+      %c0 = arith.constant 0 : i32
+      linalg.fill ins(%c0 : i32) outs(%arg0 : memref<1x8xi32, #upmem.mram>)
+      ...
+    }
+    ```
+
+    The leaves write in parallel and no host bandwidth is spent. The fill is
+    emitted on the launch parameter, wherever that lives, so the rewrite stands
+    on its own; a backend that stages the parameter into a faster level can
+    additionally fold the fill into the staging buffer and stop loading a
+    buffer it is about to overwrite, which is what `--upmem-tile-mram-buffers`
+    does.
+
+    The rewrite is dropped when the buffer reaches more than one launch, when
+    the scatter and the launch are in different blocks -- a scatter hoisted out
+    of a loop around the launch seeds an accumulator once, and re-seeding it
+    per launch is a different program -- or when anything reads the buffer in
+    between.
+
     The recognition is purely SSA-based, so a memref that some earlier op
     filled in place is *not* matched (that would need alias and effect
     analysis). Run the pass before bufferization to catch those.
   }];
-  let dependentDialects = ["arith::ArithDialect", "memref::MemRefDialect"];
+  let dependentDialects = ["arith::ArithDialect", "linalg::LinalgDialect",
+                           "memref::MemRefDialect"];
 }
 
 #endif // CNM_TRANSFORM_PASSES

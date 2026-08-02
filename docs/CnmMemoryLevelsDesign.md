@@ -1297,21 +1297,46 @@ the accumulator is gathered back and so `isMramBroadcastOverThreads` will not
 let the tasklets share one MRAM copy. The transfer is 128 KB of zeros across
 512 DPUs; one `dpu_broadcast_to` replaces it.
 
-Two further steps, in increasing order of what they save and of work:
+**Better than any transfer: initialize on the device.** Telling each leaf to
+fill its own elements costs no host bandwidth, happens in parallel, and
+removes the MRAM round trip too -- a tasklet can write its WRAM buffer
+directly instead of loading MRAM it is about to overwrite. It is not
+restricted to zero, nor to a single launch. This is implemented, in two
+halves that are deliberately independent.
 
-1. **A broadcast of zero executed once is `zeroinit`.** `upmem.static_alloc`
-   already carries the attribute and the C emitter turns it into
-   `char __mram __dma_aligned buf[N] {0};`. The catch is that the loader
-   writes it once per `dpu_load`, so this is only a replacement for the
-   transfer when the kernel is launched once per load -- a launch loop
-   reusing one hierarchy needs the seed rewritten each trip. The rewrite has
-   to establish that, and clear `noinit`, which is mutually exclusive with it.
-2. **In general, initialize on the device.** Telling each tasklet to fill its
-   own output elements is better than any transfer: the tasklets do it in
-   parallel, it costs no host bandwidth, and it removes the MRAM round trip
-   as well -- a tasklet can initialize its WRAM buffer directly instead of
-   loading MRAM it is about to overwrite. This subsumes both of the above and
-   is not restricted to zero, or to a single launch.
+**The CNM half decides.** `--cnm-scatter-optimizations` drops the transfer
+and prepends a `linalg.fill` of the constant to the launch body, on the
+parameter itself. Three things disqualify a scatter: the buffer reaching
+more than one launch, so there is no single body to fill it in; the scatter
+and the launch sitting in different blocks, because a scatter hoisted out of
+a loop around the launch seeds an accumulator *once* and re-seeding it per
+launch is a different program; and anything reading the buffer in between,
+which after the rewrite would read a buffer nothing has written.
+
+The fill lands on the parameter wherever that lives, which is what makes
+this half correct on its own: a backend that does not fold it pays an
+on-device round trip instead of a host transfer, and that is the cheaper of
+the two anyway.
+
+**The UPMEM half folds.** `--upmem-tile-mram-buffers` already stages every
+non-leaf operand through a copy it synthesizes itself, so it fills the
+staging buffer instead of copying into it, and erases the MRAM fill. It
+commits to both halves at once or to neither: it folds only when exactly one
+op consumes the filled parameter, since with two the second reads what the
+first wrote back, and handing it the constant instead would be wrong. When
+it declines, the fill is staged like any other op and the program is merely
+slower.
+
+Correct for a partial tile without a special case: the whole far-level buffer
+is that one constant, so writing it into any sub-tile of the staging buffer
+is the same bytes the copy would have fetched.
+
+One narrower rewrite is *not* worth doing. **A broadcast of zero executed
+once could be `zeroinit`** on `upmem.static_alloc`, which the C emitter turns
+into `char __mram __dma_aligned buf[N] {0};`. But the loader writes it once
+per `dpu_load`, so it only replaces the transfer when the kernel is launched
+once per load; it only handles zero; and it initializes MRAM, so the leaves
+still load it. Device-side init subsumes it on every axis.
 
 ### K5. What this changes elsewhere
 

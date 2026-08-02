@@ -12,6 +12,7 @@
 #include <cinm-mlir/Utils/CinmUtils.h>
 
 #include <mlir/Dialect/Arith/IR/Arith.h>
+#include <mlir/Dialect/Linalg/IR/Linalg.h>
 #include <mlir/Dialect/MemRef/IR/MemRef.h>
 #include <mlir/IR/BuiltinTypes.h>
 #include <mlir/IR/PatternMatch.h>
@@ -96,6 +97,88 @@ struct BroadcastUniformScatter : OpRewritePattern<cnm::ScatterOp> {
   }
 };
 
+/// The launch that consumes `buffer`, when replacing a scatter into it by an
+/// initialization inside that launch's body is sound. Null otherwise.
+///
+/// Three things have to hold. The buffer must reach exactly one launch, or
+/// there is no single body to initialize it in. That launch must be in the
+/// same block as the scatter, so that it runs exactly as often -- a scatter
+/// hoisted out of a loop around the launch seeds an accumulator once, and
+/// re-seeding it on every launch would be a different program. And nothing
+/// may read the buffer between the two, since after the rewrite it holds
+/// nothing until the body fills it.
+cnm::LaunchOp getSoleLaunchConsumer(cnm::ScatterOp scatter) {
+  Value buffer = scatter.getBuffer();
+  Block *block = scatter->getBlock();
+
+  cnm::LaunchOp launch;
+  for (Operation *user : buffer.getUsers()) {
+    auto candidate = dyn_cast<cnm::LaunchOp>(user);
+    if (!candidate)
+      continue;
+    if (launch)
+      return {}; // more than one launch: no single body to fill in
+    launch = candidate;
+  }
+  if (!launch || launch->getBlock() != block ||
+      !scatter->isBeforeInBlock(launch))
+    return {};
+
+  for (Operation *user : buffer.getUsers())
+    if (user != scatter && user != launch &&
+        (user->getBlock() != block || user->isBeforeInBlock(launch)))
+      return {};
+  return launch;
+}
+
+/// Which of `launch`'s block arguments carries `buffer`.
+std::optional<unsigned> getParamIndex(cnm::LaunchOp launch, Value buffer) {
+  for (auto [index, param] : llvm::enumerate(launch.getParams()))
+    if (param == buffer)
+      return index;
+  return std::nullopt;
+}
+
+/// Scattering a uniform value hands every leaf a constant it could just as
+/// well write itself. Doing so is strictly better than transferring it: the
+/// leaves write in parallel, no host bandwidth is spent, and -- once
+/// `--upmem-tile-mram-buffers` has folded the fill into the staging buffer --
+/// the leaves also stop loading a buffer they are about to overwrite.
+///
+/// The fill is emitted on the launch parameter, which still lives in the far
+/// memory level, so this is correct on its own: a backend that does not fold
+/// it pays an on-device round trip instead of a host transfer, which is the
+/// cheaper of the two either way.
+struct InitUniformBufferOnDevice : OpRewritePattern<cnm::ScatterOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(cnm::ScatterOp op,
+                                PatternRewriter &rewriter) const override {
+    std::optional<TypedAttr> uniform = getUniformValue(op.getInput());
+    if (!uniform ||
+        uniform->getType() != op.getBuffer().getType().getElementType())
+      return failure();
+
+    cnm::LaunchOp launch = getSoleLaunchConsumer(op);
+    if (!launch)
+      return failure();
+    std::optional<unsigned> index = getParamIndex(launch, op.getBuffer());
+    if (!index)
+      return failure();
+
+    // The body is IsolatedFromAbove, so the scalar has to be materialized
+    // inside it rather than reused from around the scatter.
+    Block &body = launch.getBody().front();
+    OpBuilder::InsertionGuard guard(rewriter);
+    rewriter.setInsertionPointToStart(&body);
+    Value scalar = arith::ConstantOp::create(rewriter, op.getLoc(), *uniform);
+    linalg::FillOp::create(rewriter, op.getLoc(), ValueRange{scalar},
+                           ValueRange{body.getArgument(*index)});
+    rewriter.eraseOp(op);
+    return success();
+  }
+};
+
 } // namespace
 
 struct CnmScatterOptimizationsPass
@@ -103,7 +186,8 @@ struct CnmScatterOptimizationsPass
           CnmScatterOptimizationsPass> {
   void runOnOperation() override {
     RewritePatternSet patterns(&getContext());
-    patterns.add<BroadcastUniformScatter>(&getContext());
+    patterns.add<InitUniformBufferOnDevice, BroadcastUniformScatter>(
+        &getContext());
     if (failed(applyPatternsGreedily(getOperation(), std::move(patterns))))
       signalPassFailure();
   }

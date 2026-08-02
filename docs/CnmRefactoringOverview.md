@@ -130,10 +130,13 @@ The full picture, including parts not yet implemented — those are marked
 --convert-linalg-to-cnm           distribute onto the workgroup
     cnm-buffer-level=mram           -> buffers live in MRAM
     per-dim-attrs=...               -> attributes that must survive a split
+--cnm-scatter-optimizations       shrink a uniform scatter to one tile, or
+                                  drop it for a fill in the launch body
 bufferization / hoisting / CSE
 --upmem-tile-mram-buffers         tile the launch body and promote its
                                   operands MRAM -> WRAM, staging them
-                                  with cnm.local_transfer
+                                  with cnm.local_transfer; a filled operand
+                                  is written in place, not staged
 --convert-linalg-to-affine-loops, --affine-scalrep
 --cnm-ensure-scatter-gather-contiguous
                                   turn each leaf's tile into whole blocks,
@@ -429,7 +432,7 @@ depends.
 
 ### 4.2 Optimizations to implement
 
-Roughly in value order. Two of the items that used to head this list have
+Roughly in value order. Three of the items that used to head this list have
 landed. **Pointwise scatter/gather maps**, which accounted for most of the
 measured gap against the templates: the operand is now scattered where it
 lies instead of being permuted into a tiles-outermost copy, and the
@@ -438,6 +441,12 @@ assumed by the dialect. **Broadcast detection and transfer-API selection**
 (§2.4): a scatter map that does not depend on the processing-element
 coordinate now narrows to a broadcast, the gemv vector included, and which
 API each transfer uses follows from the map instead of from a pass flag.
+**Constant scatter**: a uniform value is not transferred at all. Each leaf
+writes its own elements instead — in parallel, with no host bandwidth, and
+without the MRAM round trip, since a tasklet initializes its WRAM tile
+directly rather than loading MRAM it is about to overwrite. That is the
+reduction identity seed gone entirely: on the 64 MB gemv the kernel now
+opens by zeroing eight WRAM words, and `@buf` is read by nothing.
 
 - **Sequential trips.** Decided but unimplemented (§2.2). The trip
   boundary does not always fall between two dimensions — it can fall
@@ -447,16 +456,6 @@ API each transfer uses follows from the map instead of from a pass flag.
   [dodo.py](../experiments/gemv_microbenchmark/dodo.py). Now that the
   scatter map is pointwise, a trip is an offset on the host operand rather
   than a reshape and a permutation.
-- **Device-side init of uniform seeds.** The reduction identity seed is a
-  constant buffer sent to every leaf on every launch. It is now one
-  broadcast rather than a scatter (§2.4), which took it from 0.284 ms per
-  iteration on the 64 MB gemv to a single 128 KB call, but the right
-  answer is not to transfer it at all: each tasklet can fill its own
-  output elements, in parallel, and skip even the MRAM round trip, since
-  it can initialize its WRAM tile directly instead of loading MRAM it is
-  about to overwrite. The narrow case — a broadcast of zero into a buffer
-  written once per `dpu_load` — is the `zeroinit` flag `upmem.static_alloc`
-  already has; establishing that launch-count condition is the work.
 - **Operator fusion on `linalg`.** A no-op for today's single-operation
   benchmarks, and enabling it forces search-space construction to move
   after the conversion, since fusion changes the operation count, the walk
@@ -497,7 +496,7 @@ API each transfer uses follows from the map instead of from a pass flag.
 
 ## 5. Current state
 
-Test suite: 59 of 66 lit tests pass. The seven failures predate this work
+Test suite: 60 of 67 lit tests pass. The seven failures predate this work
 and are unrelated to it (`CimToMemristor` ×2, `TorchToCinm`,
 `Transform/Cim` ×2, `upmem-to-c`, `simulate-python`).
 

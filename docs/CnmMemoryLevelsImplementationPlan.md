@@ -62,13 +62,12 @@ path lowers `cinm → linalg → cnm → upmem` end to end, driven entirely by
 a search space derived from the linalg op's iteration space, and it runs
 on real hardware. Five milestones were added after the original plan:
 **M13** (sequential trips), outstanding; **M17** (one general UPMEM
-transfer op, specialized late), all but its last step -- only the
-device-side init of uniform seeds (M17d) is outstanding; **M14** (exact post-lowering
+transfer op, specialized late), implemented; **M14** (exact post-lowering
 occupancy check) and **M16** (pointwise scatter/gather maps), both
 implemented; and **M15** (the host repack), superseded by M16. All five
 are in §3 below.
 
-Test baseline: **59/66 passing**, 7 failing. All seven are unrelated to
+Test baseline: **60/67 passing**, 7 failing. All seven are unrelated to
 this work and were failing before it — `CimToMemristor` ×2,
 `TorchToCinm`, `Transform/Cim` ×2, `Dialect/UPMEM/upmem-to-c.mlir`,
 `Transform/UPMEM/simulate-python.mlir`.
@@ -94,8 +93,8 @@ Known gaps worth carrying forward:
   sharing, device-side tree reduction) are catalogued in
   [CnmRefactoringOverview.md](CnmRefactoringOverview.md) §4.2 rather than
   here — they are follow-on work, not milestones of this plan. Broadcast
-  detection and transfer-API selection came off that list with M17b/M17c;
-  what is left of the constant-scatter item is M17d.
+  detection and transfer-API selection came off that list with M17b/M17c,
+  and constant scatter with M17d.
 
 **Cleanups deferred until the paper's measurements are locked**, because
 each one removes a switch that exists only to reproduce the CINM 1.0
@@ -338,7 +337,7 @@ M16 pointwise scatter/gather maps         DONE         (needs M11b, design §J)
       M17a op family + shared contiguity contract   DONE
       M17b --upmem-specialize-transfers             DONE
       M17c emitters emit only the general form            DONE
-      M17d device-side init of uniform seeds
+      M17d device-side init of uniform seeds           DONE
 ```
 
 M1, M2, M3 are mutually independent once M0 lands. M9 and M10 are
@@ -1333,12 +1332,33 @@ templates.
    CINM 1.0 configurations: with both flags off every transfer in
    `Conversion/CnmToUpmem/` narrows to the flat form.
 
-**M17d — stop transferring uniform seeds at all. TODO.** §K4's two further
-steps: a broadcast of zero that runs once per `dpu_load` is `zeroinit` on
-the `static_alloc`; and, generally and better, a device-side init in which
-each tasklet fills its own output elements — in parallel, with no host
-bandwidth, and skipping the MRAM round trip a WRAM staging load would
-otherwise pay.
+**M17d — stop transferring uniform seeds at all. DONE.** A uniform scatter
+becomes a device-side init: each leaf writes its own elements, in parallel,
+with no host bandwidth and no MRAM round trip. §K4 has the argument; the
+narrower `zeroinit` rewrite was considered and dropped, since it only
+replaces a transfer when the kernel is launched once per `dpu_load`, only
+handles zero, and still initializes MRAM the leaves then load.
+
+Two independent halves. `--cnm-scatter-optimizations` gained a second
+pattern that drops the scatter and prepends a `linalg.fill` on the launch
+parameter, guarded against the buffer reaching several launches, against the
+scatter and launch being in different blocks (a seed hoisted out of a loop
+around the launch must not be re-applied per trip), and against a reader in
+between. That is a complete rewrite on its own: the fill lands wherever the
+parameter lives, so at worst it trades a host transfer for an on-device round
+trip, which is already cheaper.
+
+`--upmem-tile-mram-buffers` then folds it: since the pass synthesizes every
+staging copy itself, the copy-in for a filled parameter becomes a fill of the
+staging buffer and the MRAM fill is erased. It folds only when exactly one op
+consumes the parameter — with two, the second reads what the first wrote
+back, and giving it the constant would be wrong — and otherwise stages the
+fill like any other op.
+
+On `gemv_64MB` the seed's `upmem.broadcast` disappears entirely and the
+kernel opens by zeroing its eight WRAM accumulator elements, with no
+`local_transfer` reading `@buf`. The one remaining transfer of that buffer is
+the write-back, which the gather needs.
 
 **Post-paper cleanup this creates:** the flags exist only to reproduce
 the CINM 1.0 baseline. Once that measurement is locked,
@@ -1377,7 +1397,7 @@ legal" removes it.
 | M17a ✅ | UPMEM transfer op family + one contiguity contract (§K1-K2) | `Dialect/UPMEM/verifier.mlir` (a valid `gather_blocks`; a block starting mid-run, which the type-only check accepted; the same map at column 0, which is fine); every `upmem.scatter`/`gather` spelling in the suite renamed |
 | M17b ✅ | `--upmem-specialize-transfers` (§K3-K4) | `Dialect/UPMEM/upmem-specialize-transfers.mlir` (new: widened-constant broadcast, blocks→on_array, whole-buffer broadcast, and three cases that must *not* fire, incl. a gather); the `gemv_64MB` seed becomes one `upmem.broadcast` |
 | M17c ✅ | emitters emit only the general form (§K1) | `Conversion/CnmToUpmem/cnm-to-upmem-sg-xfer.mlir` (`NOSG` rewritten from the miscompile to a diagnostic); `cnm-to-upmem-broadcast.mlir` and `cnm-to-upmem.mlir` re-pinned on the general form + specialization pass; `cinm1.py` configurations re-run unchanged |
-| M17d ☐ | device-side init of uniform seeds (§K4) | the seed transfer disappears from `gemv_64MB_scatter.csv` rather than changing kind |
+| M17d ✅ | device-side init of uniform seeds (§K4) | `Dialect/Cnm/scatter-optimizations.mlir` (the rewrite, plus a seed hoisted out of a launch loop and a host read in between, neither of which may fire); `Dialect/UPMEM/upmem-tile-mram-buffers.mlir` (new: the fold, and two consumers which must not fold); `gemv_64MB`'s seed transfer disappears rather than changing kind |
 | M16 ✅ | pointwise scatter/gather maps (§J) | `cnm-verifier.mlir` (both forms, rejected non-injective gather); `linalg-to-cnm.mlir` (pointwise maps, CHECK-NOT `linalg.transpose`); `ensure-scatter-gather-contiguous.mlir` (short droppable suffix, view folding); `CnmToUpmem/` multi-block scatter; `gemv-linalg-generic-pipeline.mlir` CHECK-NOT on the full-size host alloc; the hardware number is the real signal |
 
 ---
