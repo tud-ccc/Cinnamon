@@ -293,8 +293,6 @@ struct UpmemInferencePlugin : cinm::InferencePlugin {
     pm->addPass(createCanonicalizerPass());
     pm->addPass(createCSEPass());
     pm->addPass(createPrintIRPass({.label = "after-tile-mram-buffers"}));
-    pm->addPass(cnm::createCnmScatterOptimizationsPass());
-    pm->addPass(createPrintIRPass({.label = "after-scatter-opts"}));
     pm->addPass(createConvertLinalgToAffineLoopsPass());
     // Keep the reduction accumulator in a register. Straight out of linalg the
     // innermost loop reloads and restores the output element on every

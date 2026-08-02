@@ -22,8 +22,10 @@
 #include <mlir/Dialect/SCF/IR/SCF.h>
 #include <mlir/Dialect/SCF/Transforms/TileUsingInterface.h>
 #include <mlir/IR/BuiltinAttributes.h>
+#include <mlir/IR/Matchers.h>
 #include <mlir/IR/PatternMatch.h>
 #include <mlir/Interfaces/TilingInterface.h>
+#include <mlir/Interfaces/ViewLikeInterface.h>
 
 namespace mlir::upmem {
 
@@ -80,6 +82,83 @@ std::optional<LevelHierarchy> getLevelHierarchy(Operation *op) {
     return std::nullopt;
 
   return LevelHierarchy{leaf, leafSpace, accelerator};
+}
+
+/// Launch parameters that a `linalg.fill` in the body sets to a constant --
+/// what `--cnm-scatter-optimizations` leaves behind when it turns a uniform
+/// scatter into a device-side initialization.
+///
+/// Staging such a parameter fetches bytes the compute elements could write
+/// themselves, and for an output it loads a buffer that is about to be
+/// overwritten. So the staging buffer is filled in place instead and the
+/// far-level fill goes away, taking the round trip through the far level with
+/// it. Registering a parameter here commits the pass to both halves.
+struct DeviceInits {
+  DenseMap<Value, TypedAttr> constants;
+  SmallVector<linalg::FillOp> fills;
+
+  bool isRegisteredFill(Operation *op) const {
+    return llvm::is_contained(fills, op);
+  }
+
+  /// The constant `staged` holds, if it is a view of a registered parameter.
+  /// Tiling addresses a parameter through subviews, so the value a copy is
+  /// asked to read is generally not the parameter itself.
+  std::optional<TypedAttr> lookup(Value staged) const {
+    while (auto view = staged.getDefiningOp<ViewLikeOpInterface>())
+      staged = view.getViewSource();
+    auto it = constants.find(staged);
+    if (it == constants.end())
+      return std::nullopt;
+    return it->second;
+  }
+};
+
+DeviceInits collectDeviceInits(Operation *root) {
+  DeviceInits result;
+  root->walk([&](linalg::FillOp fill) {
+    // Only a fill of the whole parameter: a partial one leaves bytes that a
+    // staging copy would still have to fetch.
+    if (fill.getOutputs().size() != 1)
+      return;
+    auto param = dyn_cast<BlockArgument>(fill.getOutputs()[0]);
+    if (!param || !isa<cnm::LaunchOp>(param.getOwner()->getParentOp()))
+      return;
+
+    Attribute constant;
+    if (!matchPattern(fill.getInputs()[0], m_Constant(&constant)))
+      return;
+    auto typed = dyn_cast<TypedAttr>(constant);
+    if (!typed)
+      return;
+
+    // Nothing to gain if the parameter is already where the compute elements
+    // can reach it -- and nothing would call the copy hook either.
+    std::optional<LevelHierarchy> levels = getLevelHierarchy(fill);
+    auto memrefTy = dyn_cast<MemRefType>(param.getType());
+    if (!levels || !memrefTy || !levels->isNonLeaf(memrefTy.getMemorySpace()))
+      return;
+
+    // Exactly one op may consume the parameter, and only after the fill.
+    // Were there two, folding the second one's copy would hand it the
+    // constant instead of what the first wrote back.
+    Operation *consumer = nullptr;
+    for (Operation *user : param.getUsers()) {
+      if (user == fill.getOperation())
+        continue;
+      if (consumer)
+        return;
+      consumer = user;
+    }
+    auto linalgConsumer = dyn_cast_or_null<linalg::LinalgOp>(consumer);
+    if (!linalgConsumer || !linalgConsumer.hasPureBufferSemantics() ||
+        !fill->isBeforeInBlock(consumer))
+      return;
+
+    if (result.constants.insert({param, typed}).second)
+      result.fills.push_back(fill);
+  });
+  return result;
 }
 
 /// Operand indices whose buffers are in a non-leaf level, i.e. the ones that
@@ -207,20 +286,28 @@ struct UpmemTileMRAMBuffersPass
   using Base::Base;
 
   void runOnOperation() override {
+    DeviceInits inits = collectDeviceInits(getOperation());
+
     // Collect first: tiling and promotion both rewrite the ops in place.
     SmallVector<linalg::LinalgOp> candidates;
     getOperation()->walk([&](linalg::LinalgOp op) {
-      if (op.hasPureBufferSemantics())
+      if (op.hasPureBufferSemantics() && !inits.isRegisteredFill(op))
         candidates.push_back(op);
     });
 
     IRRewriter rewriter(&getContext());
     for (linalg::LinalgOp op : candidates)
-      if (failed(stageOp(rewriter, op)))
+      if (failed(stageOp(rewriter, op, inits)))
         return signalPassFailure();
+
+    // Their one consumer now fills its own staging buffer, so the parameters
+    // are written only on the way back out.
+    for (linalg::FillOp fill : inits.fills)
+      rewriter.eraseOp(fill);
   }
 
-  LogicalResult stageOp(IRRewriter &rewriter, linalg::LinalgOp op) {
+  LogicalResult stageOp(IRRewriter &rewriter, linalg::LinalgOp op,
+                        const DeviceInits &inits) {
     std::optional<LevelHierarchy> levels = getLevelHierarchy(op);
     if (!levels)
       return success(); // not in a launch we know the memory hierarchy of
@@ -229,7 +316,7 @@ struct UpmemTileMRAMBuffersPass
 
     SmallVector<int64_t> sizes = getTileSizes(op, tileSizes);
     if (sizes.empty())
-      return promote(rewriter, op, *levels);
+      return promote(rewriter, op, *levels, inits);
 
     auto tileable = cast<TilingInterface>(op.getOperation());
     if (sizes.size() != tileable.getLoopIteratorTypes().size())
@@ -258,14 +345,14 @@ struct UpmemTileMRAMBuffersPass
       FailureOr<linalg::LinalgOp> tiled = tile(rewriter, op, sizes);
       if (failed(tiled))
         return failure();
-      return promote(rewriter, *tiled, *levels);
+      return promote(rewriter, *tiled, *levels, inits);
     }
 
     // Outer loops over the parallel dimensions, with the outputs staged there.
     FailureOr<linalg::LinalgOp> outer = tile(rewriter, op, parallelSizes);
     if (failed(outer))
       return failure();
-    if (failed(promote(rewriter, *outer, *levels, /*initsOnly=*/true)))
+    if (failed(promote(rewriter, *outer, *levels, inits, /*initsOnly=*/true)))
       return failure();
 
     // Inner loops over the reduction dimensions. The outputs are already in
@@ -273,7 +360,7 @@ struct UpmemTileMRAMBuffersPass
     FailureOr<linalg::LinalgOp> inner = tile(rewriter, *outer, reductionSizes);
     if (failed(inner))
       return failure();
-    return promote(rewriter, *inner, *levels);
+    return promote(rewriter, *inner, *levels, inits);
   }
 
   /// Tile `op`, or return it unchanged when every tile size is 0.
@@ -297,7 +384,8 @@ struct UpmemTileMRAMBuffersPass
   }
 
   LogicalResult promote(IRRewriter &rewriter, linalg::LinalgOp op,
-                        const LevelHierarchy &levels, bool initsOnly = false) {
+                        const LevelHierarchy &levels, const DeviceInits &inits,
+                        bool initsOnly = false) {
     SmallVector<int64_t> toStage = operandsToStage(op, levels);
     if (initsOnly)
       llvm::erase_if(toStage, [&](int64_t idx) {
@@ -323,7 +411,16 @@ struct UpmemTileMRAMBuffersPass
               return success();
             })
         .setCopyInOutFns(
-            [](OpBuilder &b, Value src, Value dst) -> LogicalResult {
+            [&inits](OpBuilder &b, Value src, Value dst) -> LogicalResult {
+              // A parameter holding nothing but a constant is cheaper to
+              // rewrite than to fetch, whatever part of it this copy covers.
+              if (std::optional<TypedAttr> constant = inits.lookup(src)) {
+                Value scalar =
+                    arith::ConstantOp::create(b, dst.getLoc(), *constant);
+                linalg::FillOp::create(b, dst.getLoc(), ValueRange{scalar},
+                                       ValueRange{dst});
+                return success();
+              }
               cnm::LocalTransferOp::create(b, src.getLoc(), src, dst);
               return success();
             },

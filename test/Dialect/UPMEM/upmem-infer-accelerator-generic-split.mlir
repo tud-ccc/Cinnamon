@@ -45,8 +45,17 @@ func.func @gemv_64MB(%A: tensor<4096x4096xi32>, %x: tensor<4096xi32>) -> tensor<
   // once outside the loop. This is also what checks that the leaf tile sizes
   // survived the reduction split: without `per-dim-attrs` they arrive one
   // entry short and there is no loop here at all.
+  //
+  // The accumulator arrives zeroed rather than loaded: its seed is a uniform
+  // constant, so --cnm-scatter-optimizations dropped the host transfer for a
+  // fill on the launch parameter and --upmem-tile-mram-buffers folded that
+  // into the staging buffer. A tasklet writes its own 8 elements instead of
+  // reading MRAM it is about to overwrite.
   // CHECK: %[[WY:.*]] = memref.alloca() : memref<1x8xi32, #upmem.wram>
-  // CHECK: upmem.local_transfer %{{.*}} into %[[WY]]
+  // CHECK: scf.for %[[Z:.*]] = %{{.*}} to %{{.*}} step %{{.*}} {
+  // CHECK: memref.store %{{.*}}, %[[WY]][%{{.*}}, %[[Z]]]
+  // CHECK: }
+  // CHECK-NOT: upmem.local_transfer %{{.*}} into %[[WY]]
   // CHECK: scf.for %{{.*}} = %{{.*}} to %{{.*}} step %{{.*}} {
   // CHECK: upmem.local_transfer %{{.*}} into %{{.*}} : memref<8x1x64xi32, {{.*}}#upmem.mram> to memref<8x1x64xi32, #upmem.wram>
   // CHECK: }

@@ -145,3 +145,95 @@ func.func @seed_same_rank_as_buffer() {
   cnm.free_workgroup %wg : !cnm.workgroup<#wg>
   return
 }
+
+// -----
+
+#map = affine_map<(d0, d1, d2) -> (d1, d2)>
+#wg = #upmem.array<1x4x2, <type = v1A, dimensions = 32x128x1>>
+
+// The buffer feeds a launch, so the constant does not have to be transferred
+// at all: the leaves write it themselves, in parallel, and the host keeps its
+// bandwidth. The scatter disappears rather than shrinking to a broadcast.
+
+// CHECK-LABEL: func.func @device_init
+// CHECK-NOT:   cnm.scatter
+// CHECK:       cnm.launch %{{.*}} ins(%[[A:.*]] = %{{.*}}) outs(%[[B:.*]] = %{{.*}})
+// CHECK-NEXT:    %[[C:.*]] = arith.constant 0 : i32
+// CHECK-NEXT:    linalg.fill ins(%[[C]] : i32) outs(%[[B]] : memref<1x8xi32>)
+// CHECK:         linalg.add
+// CHECK-NOT:   cnm.scatter
+func.func @device_init() {
+  %wg = cnm.workgroup : !cnm.workgroup<#wg>
+  %in = cnm.alloc() for %wg : !cnm.buffer<1x8xi32 on #wg>
+  %acc = cnm.alloc() for %wg : !cnm.buffer<1x8xi32 on #wg>
+  %cst = arith.constant dense<0> : tensor<4x2x1x8xi32>
+  cnm.scatter %cst into %acc[#map] of %wg
+      : tensor<4x2x1x8xi32> into !cnm.buffer<1x8xi32 on #wg>
+  cnm.launch %wg ins(%a = %in : <1x8xi32>) outs(%b = %acc : <1x8xi32>) on !cnm.workgroup<#wg> {
+    linalg.add ins(%a, %b : memref<1x8xi32>, memref<1x8xi32>) outs(%b : memref<1x8xi32>)
+  }
+  cnm.free_workgroup %wg : !cnm.workgroup<#wg>
+  return
+}
+
+// -----
+
+#map = affine_map<(d0, d1, d2) -> (d1, d2)>
+#wg = #upmem.array<1x4x2, <type = v1A, dimensions = 32x128x1>>
+
+// The scatter seeds an accumulator once and the launch runs many times, so
+// filling in the body would reset it on every trip. Only the broadcast fires.
+
+// CHECK-LABEL: func.func @seed_outside_loop
+// CHECK:       cnm.scatter %{{.*}} : tensor<1x8xi32> into
+// CHECK:       scf.for
+// CHECK-NOT:     linalg.fill
+// CHECK:         cnm.launch
+func.func @seed_outside_loop() {
+  %c0 = arith.constant 0 : index
+  %c1 = arith.constant 1 : index
+  %c4 = arith.constant 4 : index
+  %wg = cnm.workgroup : !cnm.workgroup<#wg>
+  %in = cnm.alloc() for %wg : !cnm.buffer<1x8xi32 on #wg>
+  %acc = cnm.alloc() for %wg : !cnm.buffer<1x8xi32 on #wg>
+  %cst = arith.constant dense<0> : tensor<4x2x1x8xi32>
+  cnm.scatter %cst into %acc[#map] of %wg
+      : tensor<4x2x1x8xi32> into !cnm.buffer<1x8xi32 on #wg>
+  scf.for %i = %c0 to %c4 step %c1 {
+    cnm.launch %wg ins(%a = %in : <1x8xi32>) outs(%b = %acc : <1x8xi32>) on !cnm.workgroup<#wg> {
+      linalg.add ins(%a, %b : memref<1x8xi32>, memref<1x8xi32>) outs(%b : memref<1x8xi32>)
+    }
+  }
+  cnm.free_workgroup %wg : !cnm.workgroup<#wg>
+  return
+}
+
+// -----
+
+#map = affine_map<(d0, d1, d2) -> (d1, d2)>
+#gmap = affine_map<(d0, d1, d2, d3) -> (d1, d2, d3)>
+#wg = #upmem.array<1x4x2, <type = v1A, dimensions = 32x128x1>>
+
+// The host reads the buffer before the launch does, so it would observe an
+// uninitialized buffer if the fill moved into the body.
+
+// CHECK-LABEL: func.func @read_before_launch
+// CHECK:       cnm.scatter %{{.*}} : tensor<1x8xi32> into
+// CHECK:       cnm.gather
+// CHECK:       cnm.launch
+// CHECK-NOT:     linalg.fill
+func.func @read_before_launch(%out: tensor<4x2x1x8xi32>) {
+  %wg = cnm.workgroup : !cnm.workgroup<#wg>
+  %in = cnm.alloc() for %wg : !cnm.buffer<1x8xi32 on #wg>
+  %acc = cnm.alloc() for %wg : !cnm.buffer<1x8xi32 on #wg>
+  %cst = arith.constant dense<0> : tensor<4x2x1x8xi32>
+  cnm.scatter %cst into %acc[#map] of %wg
+      : tensor<4x2x1x8xi32> into !cnm.buffer<1x8xi32 on #wg>
+  %g = cnm.gather %acc[#gmap] of %wg into %out
+      : !cnm.buffer<1x8xi32 on #wg> into tensor<4x2x1x8xi32>
+  cnm.launch %wg ins(%a = %in : <1x8xi32>) outs(%b = %acc : <1x8xi32>) on !cnm.workgroup<#wg> {
+    linalg.add ins(%a, %b : memref<1x8xi32>, memref<1x8xi32>) outs(%b : memref<1x8xi32>)
+  }
+  cnm.free_workgroup %wg : !cnm.workgroup<#wg>
+  return
+}
