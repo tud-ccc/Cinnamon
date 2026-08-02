@@ -5,6 +5,8 @@ add_mlir_dialect_library(CinmUtils
 
     LINK_LIBS PUBLIC
         MLIRIR
+        MLIRAffineDialect
+        MLIRSCFTransforms
         MLIRDialectUtils
         MLIRLinalgDialect
         MLIRTensorDialect

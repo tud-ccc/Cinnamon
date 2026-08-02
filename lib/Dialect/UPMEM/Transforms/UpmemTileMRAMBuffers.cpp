@@ -11,6 +11,7 @@
 #include "cinm-mlir/Dialect/Cnm/IR/CnmOps.h"
 #include "cinm-mlir/Dialect/UPMEM/IR/UPMEMDialect.h"
 #include "cinm-mlir/Dialect/UPMEM/Transforms/Passes.h"
+#include "cinm-mlir/Utils/CinmUtils.h"
 
 #include <llvm/ADT/STLExtras.h>
 #include <llvm/ADT/SmallVector.h>
@@ -70,8 +71,7 @@ std::optional<LevelHierarchy> getLevelHierarchy(Operation *op) {
     return std::nullopt;
 
   cinm::CinmLevelDefAttr leaf;
-  for (cinm::CinmLevelArrayAttr levels :
-       accelerator.getWorkgroupMemoryLevels())
+  for (cinm::CinmLevelArrayAttr levels : accelerator.getWorkgroupMemoryLevels())
     if (!levels.empty())
       leaf = levels.back();
   if (!leaf)
@@ -235,9 +235,8 @@ LogicalResult materializeIdentitySubviews(IRRewriter &rewriter,
     for (int64_t dim : type.getShape())
       sizes.push_back(rewriter.getIndexAttr(dim));
 
-    Value subview = memref::SubViewOp::create(rewriter, op.getLoc(),
-                                              operand.get(), offsets, sizes,
-                                              strides);
+    Value subview = memref::SubViewOp::create(
+        rewriter, op.getLoc(), operand.get(), offsets, sizes, strides);
     rewriter.modifyOpInPlace(op, [&] { operand.set(subview); });
   }
   return success();
@@ -332,7 +331,8 @@ struct UpmemTileMRAMBuffersPass
     // once, outside them, instead of round-tripping on every trip.
     SmallVector<int64_t> parallelSizes(sizes), reductionSizes(sizes);
     bool anyReduction = false;
-    for (auto [i, iterType] : llvm::enumerate(tileable.getLoopIteratorTypes())) {
+    for (auto [i, iterType] :
+         llvm::enumerate(tileable.getLoopIteratorTypes())) {
       if (iterType == utils::IteratorType::reduction) {
         parallelSizes[i] = 0;
         anyReduction |= sizes[i] != 0;
@@ -369,11 +369,20 @@ struct UpmemTileMRAMBuffersPass
     if (llvm::all_of(sizes, [](int64_t s) { return s == 0; }))
       return op;
 
-    scf::SCFTilingOptions options;
-    options.setTileSizes(getAsIndexOpFoldResult(&getContext(), sizes));
+    auto tileable = cast<TilingInterface>(op.getOperation());
     rewriter.setInsertionPoint(op);
-    FailureOr<scf::SCFTilingResult> tiled = scf::tileUsingSCF(
-        rewriter, cast<TilingInterface>(op.getOperation()), options);
+
+    // In affine.for where we can: the affine passes that run on the launch
+    // body after this one only see through the nest if its induction variables
+    // are affine dimensions, which an scf.for's is not.
+    scf::SCFTilingOptions options;
+    FailureOr<scf::SCFTilingResult> tiled =
+        canTileUsingAffineFor(tileable, sizes)
+            ? tileUsingAffineFor(rewriter, tileable, options, sizes)
+            : scf::tileUsingSCF(
+                  rewriter, tileable,
+                  options.setTileSizes(
+                      getAsIndexOpFoldResult(&getContext(), sizes)));
     if (failed(tiled))
       return op->emitOpError("failed to tile for the leaf memory level");
 
@@ -406,8 +415,8 @@ struct UpmemTileMRAMBuffersPass
                       DataLayout &) -> std::optional<Value> {
               return allocateInLeaf(b, subView, sizes, levels);
             },
-            [](OpBuilder &b, Value buffer) -> LogicalResult {
-              memref::DeallocOp::create(b, buffer.getLoc(), buffer);
+            [](OpBuilder &, Value) -> LogicalResult {
+              // Alloca doesn't need a dealloc
               return success();
             })
         .setCopyInOutFns(

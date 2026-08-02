@@ -12,7 +12,7 @@
 // CHECK:       %[[WY:.*]] = memref.alloca() : memref<1x8xi32, #upmem.wram>
 // CHECK:       linalg.fill ins(%{{.*}} : i32) outs(%[[WY]] : memref<1x8xi32, #upmem.wram>)
 // CHECK-NOT:   cnm.local_transfer %{{.*}} into %[[WY]]
-// CHECK:       scf.for
+// CHECK:       affine.for
 // CHECK:         linalg.generic {{.*}} outs(%[[WY]]
 // CHECK:       cnm.local_transfer %[[WY]] into %{{.*}} : memref<1x8xi32, #upmem.wram> to memref<1x8xi32, #upmem.mram>
 // CHECK-NOT:   linalg.fill {{.*}}#upmem.mram

@@ -42,10 +42,10 @@ func.func @gemv(%A: tensor<1024x512xi32>, %x: tensor<512xi32>) -> tensor<1024xi3
   // CHECK-DAG: upmem.static_alloc @{{.*}}(mram) {{.*}} : memref<512xi32, #upmem.mram>
   // CHECK-DAG: upmem.static_alloc @{{.*}}(mram) {{.*}} : memref<64x512xi32, #upmem.mram>
 
-  // CHECK: scf.for
+  // CHECK: affine.for
   // CHECK: %[[WY:.*]] = memref.alloca() : memref<16xi32, #upmem.wram>
   // CHECK: upmem.local_transfer %{{.*}} into %[[WY]]
-  // CHECK: scf.for
+  // CHECK: affine.for
   // CHECK: %[[WA:.*]] = memref.alloca() : memref<16x128xi32, #upmem.wram>
   // CHECK: %[[WX:.*]] = memref.alloca() : memref<128xi32, #upmem.wram>
   // CHECK: upmem.local_transfer %{{.*}} into %[[WA]]

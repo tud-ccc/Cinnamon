@@ -42,10 +42,10 @@ func.func @gemv(%A: tensor<1024x512xi32>, %x: tensor<512xi32>) -> tensor<1024xi3
 
   // The 64x512 tile does not fit WRAM, so the body walks it in 16x128 tiles.
   // The output tile is staged once outside the reduction loop.
-  // CHECK: scf.for
+  // CHECK: affine.for
   // CHECK: %[[WY:.*]] = memref.alloca() : memref<16xi32, #upmem.wram>
   // CHECK: upmem.local_transfer %{{.*}} into %[[WY]]
-  // CHECK: scf.for
+  // CHECK: affine.for
   // CHECK: %[[WA:.*]] = memref.alloca() : memref<16x128xi32, #upmem.wram>
   // CHECK: %[[WX:.*]] = memref.alloca() : memref<128xi32, #upmem.wram>
   // CHECK: upmem.local_transfer %{{.*}} into %[[WA]]
