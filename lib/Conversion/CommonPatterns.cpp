@@ -59,28 +59,6 @@ Value createOrFoldUnrealizedConversionCast(Location loc, OpBuilder &builder,
   return tmp[0];
 }
 
-LogicalResult ConvertCnmSetZeroToAffine::matchAndRewrite(
-    cnm::SetZeroOp op, OpAdaptor, ConversionPatternRewriter &rewriter) const {
-  const Value dst = rewriter.getRemappedValue(op.getOperand());
-
-  const MemRefType type = cast<MemRefType>(dst.getType());
-  const SmallVector<int64_t> loopSizes{type.getShape()};
-  const SmallVector<int64_t> loopSteps(loopSizes.size(), 1);
-
-  cinm::createNestedAffineForLoops(
-      rewriter, op.getLoc(), loopSizes, loopSteps, ValueRange{},
-      [&](OpBuilder &builder, Location loc, ValueRange indices,
-          ValueRange) -> SmallVector<Value> {
-        const Value zero = arith::ConstantOp::create(builder, 
-            loc, builder.getZeroAttr(op.getType().getElementType()));
-        memref::StoreOp::create(rewriter, loc, zero, dst, indices);
-        return {};
-      });
-
-  rewriter.replaceOp(op, {dst});
-  return success();
-}
-
 SmallVector<Value> createAffineApply(OpBuilder &builder, Location loc,
                                      AffineMap map, ValueRange values) {
   SmallVector<Value> result;

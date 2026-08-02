@@ -77,8 +77,8 @@ void convertLaunchParameter(ConversionPatternRewriter &rewriter, Location loc,
 
   const Value subview =
       memref::SubViewOp::create(rewriter, loc, resultType, source, threadIds,
-                                     ValueRange{}, ValueRange{}, staticOffsets,
-                                     staticSizes, staticStrides)
+                                ValueRange{}, ValueRange{}, staticOffsets,
+                                staticSizes, staticStrides)
           .getResult();
 
   arg.replaceAllUsesWith(subview);
@@ -198,8 +198,8 @@ struct ConvertCnmLaunchToGPU : public OpConversionPattern<cnm::LaunchOp> {
     const Value one = arith::ConstantIndexOp::create(rewriter, op.getLoc(), 1);
     SmallVector<Value, 6> launchDimensions(6, one);
     for (size_t i = 0; i < workgroupShape.size(); i++) {
-      launchDimensions[i] = arith::ConstantIndexOp::create(rewriter, 
-          op.getLoc(), workgroupShape[i]);
+      launchDimensions[i] = arith::ConstantIndexOp::create(
+          rewriter, op.getLoc(), workgroupShape[i]);
     }
 
     const Value dynamicSharedMemorySize;
@@ -208,8 +208,8 @@ struct ConvertCnmLaunchToGPU : public OpConversionPattern<cnm::LaunchOp> {
     const TypeRange workgroupAttributions;
     const TypeRange privateAttributions;
 
-    gpu::LaunchOp launchOp = gpu::LaunchOp::create(rewriter, 
-        op.getLoc(), launchDimensions[0], launchDimensions[1],
+    gpu::LaunchOp launchOp = gpu::LaunchOp::create(
+        rewriter, op.getLoc(), launchDimensions[0], launchDimensions[1],
         launchDimensions[2], launchDimensions[3], launchDimensions[4],
         launchDimensions[5], dynamicSharedMemorySize, asyncTokenType,
         asyncDependencies, workgroupAttributions, privateAttributions);
@@ -266,11 +266,10 @@ void populateCnmToGPUFinalTypeConversions(TypeConverter &typeConverter) {
 
 void populateCnmToGPUConversionPatterns(RewritePatternSet &patterns,
                                         MLIRContext *ctx) {
-  patterns
-      .add<cnmtogpu::ConvertCnmWorkgroupToGPU, cnmtogpu::ConvertCnmAllocToGPU,
-           ConvertCnmSetZeroToAffine, cnmtogpu::ConvertCnmScatterToGPU,
-           cnmtogpu::ConvertCnmGatherToGPU, cnmtogpu::ConvertCnmLaunchToGPU,
-           cnmtogpu::ConvertCnmTerminatorToGPU>(ctx);
+  patterns.add<cnmtogpu::ConvertCnmWorkgroupToGPU,
+               cnmtogpu::ConvertCnmAllocToGPU, cnmtogpu::ConvertCnmScatterToGPU,
+               cnmtogpu::ConvertCnmGatherToGPU, cnmtogpu::ConvertCnmLaunchToGPU,
+               cnmtogpu::ConvertCnmTerminatorToGPU>(ctx);
 }
 
 struct ConvertCnmToGPUPass

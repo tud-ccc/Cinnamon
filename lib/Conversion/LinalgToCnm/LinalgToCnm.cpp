@@ -398,15 +398,9 @@ LogicalResult distribute(RewriterBase &rewriter, linalg::LinalgOp op,
       // A freshly allocated destination has undefined contents, so there is
       // nothing to bring over.
     } else {
-      // NOTE: when the destination is a constant zero -- which is exactly what
-      // a split reduction's identity seed is -- this transfers a buffer of
-      // zeros per launch. On UPMEM that costs one broadcast, since
-      // --upmem-specialize-transfers narrows a uniform scatter to one, but the
-      // transfer should not be needed at all. `cnm.set_zero` exists for this,
-      // but `--convert-cnm-to-upmem` has no pattern for it (only the GPU path
-      // does), so emitting it here makes the backend conversion fail. Fixing
-      // that needs a device-side zeroing of the buffer, which is its own piece
-      // of work.
+      // This scatter can then be optimized into a broadcast.
+      // For now this happens in the backend dialect, which has knowledge of
+      // the constraints on the scatter calls.
       cnm::ScatterOp::create(b, operand.get(), alloc, workgroup,
                              tiling.scatterMap);
     }

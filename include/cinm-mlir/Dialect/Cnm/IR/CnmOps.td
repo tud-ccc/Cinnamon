@@ -64,15 +64,6 @@ def AllocOp : Cnm_Op<"alloc", [InferWorkgroupTypeFromBuffer<"result", "wg">, Dec
     let assemblyFormat = "`(` `)` `for` $wg attr-dict `:` qualified(type($result))";
 }
 
-def SetZeroOp: Cnm_Op<"set_zero", [SameOperandsAndResultType]> {
-    let summary = "";
-    let description = [{}];
-
-    let arguments = (ins BufferType:$buffer);
-    let results = (outs BufferType:$result);
-
-    let assemblyFormat = "$buffer attr-dict `:` qualified(type($buffer))";
-}
 
 def ScatterOp: Cnm_Op<"scatter", [InferWorkgroupTypeFromBuffer<"buffer", "wg">]> {
     let summary = "";
