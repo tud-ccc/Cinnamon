@@ -390,6 +390,28 @@ upmem::BroadcastOp::verifySymbolUses(SymbolTableCollection &symbolTable) {
 void upmem::StaticAllocOp::getAsmResultNames(::mlir::OpAsmSetValueNameFn fn) {
   fn(getBuffer(), isWram() ? "wram_buf" : "mram_buf");
 }
+
+void upmem::StaticAllocOp::getEffects(
+    SmallVectorImpl<MemoryEffects::EffectInstance> &effects) {
+  effects.emplace_back(MemoryEffects::Allocate::get(),
+                       getOperation()->getOpResult(0),
+                       SideEffects::DefaultResource::get());
+  if (!getSymName())
+    return;
+
+  // A named allocation is the one thing the host can address on the device: it
+  // scatters into and gathers from the symbol. That reference is a
+  // SymbolRefAttr in another module, not an SSA use, so to DCE the buffer looks
+  // like an allocation nobody reads -- exactly the shape it removes. The write
+  // effect below states what is true of it and stops that.
+  //
+  // It deliberately names no value: `wouldOpBeTriviallyDead` drops any effect
+  // that lands on a result the same op allocates, so a write attached to the
+  // buffer would count for nothing. Unattached is also the more honest
+  // reading -- the writer is the host, not this op.
+  effects.emplace_back(MemoryEffects::Write::get(),
+                       SideEffects::DefaultResource::get());
+}
 namespace {
 
 struct FoldCastForLocalTransfer
