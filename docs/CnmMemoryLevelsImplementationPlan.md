@@ -68,7 +68,7 @@ occupancy check) and **M16** (pointwise scatter/gather maps), both
 implemented; and **M15** (the host repack), superseded by M16. All five
 are in §3 below.
 
-Test baseline: **57/64 passing**, 7 failing. All seven are unrelated to
+Test baseline: **59/66 passing**, 7 failing. All seven are unrelated to
 this work and were failing before it — `CimToMemristor` ×2,
 `TorchToCinm`, `Transform/Cim` ×2, `Dialect/UPMEM/upmem-to-c.mlir`,
 `Transform/UPMEM/simulate-python.mlir`.
@@ -90,11 +90,12 @@ Known gaps worth carrying forward:
   simulator models neither loads nor stores and does not report time. That
   comparison is the criterion for deleting the templates, and it needs a
   cycle-accurate simulator run.
-- The remaining deferred optimizations (broadcast detection, constant
-  scatter, transfer coalescing, WRAM sharing, device-side tree reduction)
-  are catalogued in
-  [CnmRefactoringOverview.md](CnmRefactoringOverview.md) §3 rather than
-  here — they are follow-on work, not milestones of this plan.
+- The remaining deferred optimizations (transfer coalescing, WRAM
+  sharing, device-side tree reduction) are catalogued in
+  [CnmRefactoringOverview.md](CnmRefactoringOverview.md) §4.2 rather than
+  here — they are follow-on work, not milestones of this plan. Broadcast
+  detection and transfer-API selection came off that list with M17b/M17c;
+  what is left of the constant-scatter item is M17d.
 
 **Cleanups deferred until the paper's measurements are locked**, because
 each one removes a switch that exists only to reproduce the CINM 1.0

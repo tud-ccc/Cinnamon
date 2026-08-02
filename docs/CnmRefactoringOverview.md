@@ -88,7 +88,7 @@ into [cinm1.py](../experiments/cinm_experiments/cinm1.py) from
 | 1a | `--cinm-tiling` | Emits the host-side loop nest over tiles, through `CinmTilingInterface`, implemented once per op kind. |
 | 2 | `--convert-cinm-to-cnm` | **Everything about the distribution**: how a tile's elements map onto leaves, whether an operand is broadcast / chunked / transposed, the per-leaf buffer shape, and what the launch body computes. |
 | 3–5 | bufferization, hoisting, `--cnm-ensure-scatter-gather-contiguous` | Mechanical. |
-| 6 | `--convert-cnm-to-upmem` | Allocates MRAM and stages MRAM→WRAM around *every* launch, identically for every program. Transfer API chosen by pass flags (`use-sg-xfer-codegen`, `use-bc-xfer-codegen`). |
+| 6 | `--convert-cnm-to-upmem` | Allocates MRAM and stages MRAM→WRAM around *every* launch, identically for every program. Which transfer API each operand got was chosen here, by case analysis on the scatter map gated on the pass flags `use-sg-xfer-codegen` / `use-bc-xfer-codegen`; that choice has since moved to `--upmem-specialize-transfers`, and the flags with it. |
 
 The weight is all in stage 2. Its core routine, `computeShapeOfTensors`,
 is roughly 200 lines of case analysis — "this tensor has exactly one
@@ -140,12 +140,10 @@ bufferization / hoisting / CSE
                                   splitting a host dimension where a
                                   contiguous run does not line up; pack
                                   only what is left over
-  [todo] scatter specializations  broadcast, constant-scatter
 --convert-cnm-to-upmem            level-aware: MRAM buffers bind straight
                                   to the static allocation; emits only the
                                   general block transfer form
-  [todo] --upmem-specialize-transfers
-                                  blocks -> flat -> broadcast, where legal
+--upmem-specialize-transfers      blocks -> flat -> broadcast, where legal
 --lower-affine, --fold-memref-alias-ops, --upmem-dedup-kernels
 --upmem-check-occupancy           last: reject the program if its buffers
                                   do not fit a DPU -- measured, not modelled
@@ -296,7 +294,39 @@ a leaf tile of 8×256 charges the cheap bound 2312 elements against the
 the tasklets end up replicating the staging buffers rather than sharing
 them, which is a fact about the lowering, not about the configuration.
 
-### 2.4 Where the templates fit
+### 2.4 Transfers are emitted general and narrowed afterwards
+
+UPMEM offers three ways to get a host buffer onto the DPUs, and they are
+the same capability at three levels of specificity: a **blocked** transfer
+(`dpu_push_sg_xfer`, any number of blocks per DPU, gathered from anywhere
+in the host buffer), a **flat** one (one contiguous block per DPU), and a
+**broadcast** (the same block to every DPU). The dialect has an op per
+level — `scatter_blocks` / `scatter_on_array` / `broadcast`, and the two
+gather counterparts — and `transferCount` means "one block" in all of
+them, with a DPU's blocks landing back to back in MRAM.
+
+`--convert-cnm-to-upmem` emits **only the general form**, reading the
+block count off the scatter map, and **`--upmem-specialize-transfers`**
+narrows it: adjacent in-order blocks collapse to a flat transfer, and a
+host buffer whose elements are all the same constant becomes a broadcast
+of a constant the size of the target MRAM buffer — widening the host
+constant is free (a splat attribute stores one element) and is what lets
+the reduction identity seed reach the DPUs in one call. Gathers never
+narrow to a broadcast: two DPUs writing one host region is a race.
+
+The point of the split is that the emitter no longer decides. It used to
+pick the API by case analysis on the map, and getting that wrong was
+silent — with `use-sg-xfer-codegen=false` a map asking for host rows 0 and
+2 was collapsed into a flat transfer that read rows 0 and 1. Narrowing is
+now one place, guarded by one contiguity contract that all five ops'
+verifiers share, and a block form that *cannot* be narrowed with the
+scatter/gather API disabled is a diagnostic rather than a wrong transfer.
+
+It is a pass rather than a canonicalization only because it has to be
+disable-able while the paper's baselines are being measured; §4.1 has the
+cleanup.
+
+### 2.5 Where the templates fit
 
 Both lowerings are selectable — `lowering=templates|generic` — against
 the *same* search space. The templates read its numbers back through a
@@ -357,6 +387,16 @@ exercised. They are worth recording because most were silent.
   cannot consume. (`85371ca`)
 - **The zero-splat fold could not see through `linalg.fill`**, so the
   reduction identity seed defeated it. (`eececea`)
+- **`use-sg-xfer-codegen=false` moved the wrong bytes.** It was read as
+  "collapse this transfer to one flat block per DPU" rather than "this
+  transfer must already be one flat block", so a map addressing host rows
+  0 and 2 produced a transfer of rows 0 and 1 — no diagnostic, wrong
+  results. The narrowing is now conditional and the flag only says whether
+  the blocked API may be used; a transfer that needs it while it is off is
+  an error naming the operand. Worth noting that the aligned contiguity
+  verifier could not have caught this: the collapsed transfer is perfectly
+  in bounds and contiguous, and the block dimension was thrown away before
+  the op it would have checked ever existed. (`1d7e448`)
 - **A test asserted gating that never existed.** A code comment claimed
   the `cinm1-codegen` option disabled the broadcast-transfer shortcut,
   which is in fact gated on `use-bc-xfer-codegen` alone. The comment was
@@ -369,9 +409,10 @@ exercised. They are worth recording because most were silent.
 | What | When | Blocked on |
 |---|---|---|
 | The `cnm-buffer-level` option on `--convert-cinm-to-cnm`, and the two tests exercising it | **now** | nothing — see below |
-| The templates path: `SimulationTemplates.cpp`, the simulator bypass, the projection of §2.4, the `lowering=` option | **before the artifact** | demonstrated cost parity on a cycle-accurate simulator, which needs the first two items of §4.2 |
+| The templates path: `SimulationTemplates.cpp`, the simulator bypass, the projection of §2.5, the `lowering=` option | **before the artifact** | demonstrated cost parity on a cycle-accurate simulator, which needs the first two items of §4.2 |
 | `--convert-cinm-to-cnm` itself, its `computeShapeOfTensors` case analysis, and `--cinm-infer-tile-sizes` / `--cinm-tiling` on the UPMEM path | **after the artifact** | it is the CINM 1.0 baseline's lowering *and* the only `cinm`→`cnm` route for the GPU backend; needs the baseline retired or the GPU backend moved to `--convert-linalg-to-cnm` |
 | `cinm.op.reduce`'s memref (destination-passing) mode | opportunistic | built for a milestone that was withdrawn; its only remaining consumer is its own tiling model, though it does fill a real gap for memref-mode input programs |
+| `--upmem-specialize-transfers` as a *pass*: the two narrowings become `hasCanonicalizer = 1` on the two `_blocks` ops, and `use-sg-xfer-codegen` / `use-bc-xfer-codegen` go with it | **after the artifact** | the flags exist only so the CINM 1.0 baseline can be measured with each transfer API in turn; nothing else reads them |
 | `CinmLevelDefAttr`'s unused `arity` parameter; the unexplained `getDesignParams`/`instantiateDesignParams` stubs; `CostModel.cpp`, superseded by the Bayesian search | opportunistic | — |
 
 **On the first row: `--convert-cinm-to-cnm` does not need to keep handling
@@ -388,16 +429,16 @@ depends.
 
 ### 4.2 Optimizations to implement
 
-Roughly in value order. Pointwise scatter/gather maps, which accounted for
-most of the measured gap against the templates, have landed — the operand
-is now scattered where it lies instead of being permuted into a
-tiles-outermost copy, and the transfer's block structure is derived after
-bufferization rather than assumed by the dialect.
+Roughly in value order. Two of the items that used to head this list have
+landed. **Pointwise scatter/gather maps**, which accounted for most of the
+measured gap against the templates: the operand is now scattered where it
+lies instead of being permuted into a tiles-outermost copy, and the
+transfer's block structure is derived after bufferization rather than
+assumed by the dialect. **Broadcast detection and transfer-API selection**
+(§2.4): a scatter map that does not depend on the processing-element
+coordinate now narrows to a broadcast, the gemv vector included, and which
+API each transfer uses follows from the map instead of from a pass flag.
 
-- **Broadcast detection.** A scatter map that does not depend on the
-  processing-element coordinate should specialize into a broadcast
-  transfer. Concretely: the template path uses one for the gemv vector and
-  the new pipeline does not, so it pays a full scatter for the same data.
 - **Sequential trips.** Decided but unimplemented (§2.2). The trip
   boundary does not always fall between two dimensions — it can fall
   inside one — and trips over a reduction dimension need a loop-carried
@@ -406,9 +447,17 @@ bufferization rather than assumed by the dialect.
   [dodo.py](../experiments/gemv_microbenchmark/dodo.py). Now that the
   scatter map is pointwise, a trip is an offset on the host operand rather
   than a reshape and a permutation.
-- **Constant-scatter simplification.** The general form of a specific
-  cost: the reduction identity seed is a constant buffer scattered to
-  every leaf on every launch. A `cnm.set_zero` op exists, but only the GPU
+- **Device-side init of uniform seeds.** The reduction identity seed is a
+  constant buffer sent to every leaf on every launch. It is now one
+  broadcast rather than a scatter (§2.4), which took it from 0.284 ms per
+  iteration on the 64 MB gemv to a single 128 KB call, but the right
+  answer is not to transfer it at all: each tasklet can fill its own
+  output elements, in parallel, and skip even the MRAM round trip, since
+  it can initialize its WRAM tile directly instead of loading MRAM it is
+  about to overwrite. The narrow case — a broadcast of zero into a buffer
+  written once per `dpu_load` — is the `zeroinit` flag `upmem.static_alloc`
+  already has; establishing that launch-count condition is the work.
+  A `cnm.set_zero` op exists for the general case, but only the GPU
   backend lowers it — emitting it makes `--convert-cnm-to-upmem` fail
   *silently*, so this work also owes that pass a diagnostic for ops it
   cannot legalize.
@@ -417,7 +466,7 @@ bufferization rather than assumed by the dialect.
   after the conversion, since fusion changes the operation count, the walk
   indices, and the iteration space. The pipeline is arranged so it slots
   in right after the `linalg` conversion. It also weakens the
-  same-configuration comparison of §2.4, because the two paths would no
+  same-configuration comparison of §2.5, because the two paths would no
   longer share an operation set.
 - **On-device transfer coalescing.** Transfers performed concurrently by
   sibling tasklets can be merged into one blocked transfer by a leader
@@ -430,10 +479,6 @@ bufferization rather than assumed by the dialect.
 - **Device-side tree reduction of partial results**, instead of merging
   them on the host. Same parameters, but it is the trigger for revisiting
   the ordering rule of §2.2.
-- **Blocked vs. multi-block transfer API selection** decided generically
-  from the scatter map, rather than by pass flags as today. Subsumed by
-  the pointwise maps above: the number of device dimensions the map
-  retains *is* the block count.
 - Smaller: `--upmem-tile-mram-buffers` promotes without full tile
   buffers, so a tile that does not divide its extent gets a staging
   buffer larger than the tile it holds. Correct, just wasteful.
@@ -456,7 +501,7 @@ bufferization rather than assumed by the dialect.
 
 ## 5. Current state
 
-Test suite: 57 of 64 lit tests pass. The seven failures predate this work
+Test suite: 59 of 66 lit tests pass. The seven failures predate this work
 and are unrelated to it (`CimToMemristor` ×2, `TorchToCinm`,
 `Transform/Cim` ×2, `upmem-to-c`, `simulate-python`).
 
@@ -468,10 +513,12 @@ lowered both ways.
 | templates | 10.782 | 9.428 | 0.555 | 0.434 | 0.365 |
 | new pipeline | 103.433 | 24.557 | 0.609 | 0.390 | 77.877 |
 
-All figures in milliseconds, **measured before the scatter maps became
-pointwise** — the 77.9 ms of unaccounted time was the 64 MB host repack
-that change removes, and the table needs re-measuring. **Device time
-already matched** — `launch` is 0.390 ms against the template's 0.434 ms,
-so the DPU program the new pipeline generates is as good as the
-hand-written one. What is left of the gap is host-side data movement: the
-missing broadcast, and whatever re-measuring turns up.
+All figures in milliseconds, and **the table is stale in both directions
+that mattered**: it was measured before the scatter maps became pointwise
+— the 77.9 ms of unaccounted time was the 64 MB host repack that change
+removes — and before transfers were specialized, which was the other
+named cause of the gap. **Device time already matched** — `launch` is
+0.390 ms against the template's 0.434 ms, so the DPU program the new
+pipeline generates is as good as the hand-written one. Re-measuring on
+hardware is the outstanding item; nothing in §4.2 above is expected to
+move `launch`.
