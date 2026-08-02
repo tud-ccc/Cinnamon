@@ -236,7 +236,7 @@ def task_compile():
     for config in CONFIGS:
         compile_marker = config.dir(DATA_ROOT) / "compile.done"
         yield {
-            "name": config.system,
+            "name": config.label + ":" + config.system,
             # todo add directory check?
             # "uptodate": [check_timestamp_unchanged(compile_marker)],
             "file_dep": [config.fn_module, DEFAULT_CINM_OPT],
@@ -254,7 +254,7 @@ def task_bench():
         compile_marker = config.dir(DATA_ROOT) / "compile.done"
         run_marker = config.dir(DATA_ROOT) / "bench.done"
         yield {
-            "name": config.system,
+            "name": config.label + ":" + config.system,
             "uptodate": [check_timestamp_unchanged(compile_marker)],
             "file_dep": [compile_marker],
             "targets": [run_marker],
@@ -266,11 +266,10 @@ def task_plot():
     """Print + plot the net-time breakdown (scatter/gather/copy/launch/
     unaccounted) for both systems."""
 
-    def action(out_path, by_kind):
+    def action(out_path, label, confs, by_kind):
+        out_path.parent.mkdir(parents=True, exist_ok=True)
         breakdowns = {}
-        for config in CONFIGS:
-            # if not config.system.startswith("atim"):
-            #     continue
+        for config in confs:
             output_dir = config.dir(DATA_ROOT) / "output"
             net_ms = measurements.net_time_ms(output_dir)
             if net_ms is None:
@@ -328,7 +327,7 @@ def task_plot():
             bottoms = [b + v for b, v in zip(bottoms, values)]
 
         ax.set_ylabel("time (ms)")
-        ax.set_title("gemv_64MB net-time breakdown")
+        ax.set_title(f"gemv_64MB net-time breakdown ({label})")
         ax.legend(loc="upper left", bbox_to_anchor=(1.0, 1.0))
         ax.set_xticks(range(len(systems)))
         ax.set_xticklabels(systems, rotation=45, ha="right")
@@ -336,15 +335,24 @@ def task_plot():
         fig.savefig(out_path, dpi=150)
         print(f"wrote {out_path}")
 
-    out_path = HERE / "breakdown.png"
-    out_path_by_kind = HERE / "breakdown_by_kind.png"
-    return {
-        "uptodate": [
-            check_timestamp_unchanged(c.dir(DATA_ROOT) / "bench.done", "ctime")
-            for c in CONFIGS
-        ],
-        # "task_dep": [f"bench:{c.system}" for c in CONFIGS],
-        "file_dep": [c.dir(DATA_ROOT) / "bench.done" for c in CONFIGS],
-        "targets": [out_path, out_path_by_kind],
-        "actions": [(action, [out_path, False]), (action, [out_path_by_kind, True])],
-    }
+    by_label: dict[str, list[compile_run.Config]] = {}
+    for c in CONFIGS:
+        by_label.setdefault(c.label, []).append(c)
+
+    # print({label: [c.system for c in confs] for label, confs in by_label.items()})
+    for label, confs in by_label.items():
+        out_path = HERE / "plots" / label / "breakdown.png"
+        out_path_by_kind = HERE / "plots" / label / "breakdown_by_kind.png"
+        yield {
+            "name": label,
+            "uptodate": [
+                check_timestamp_unchanged(c.dir(DATA_ROOT) / "bench.done", "ctime")
+                for c in confs
+            ],
+            "file_dep": [c.dir(DATA_ROOT) / "bench.done" for c in confs],
+            "targets": [out_path, out_path_by_kind],
+            "actions": [
+                (action, [out_path, label, confs, False]),
+                (action, [out_path_by_kind, label, confs, True]),
+            ],
+        }
