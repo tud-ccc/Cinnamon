@@ -114,6 +114,7 @@ struct UpmemInferenceOptions {
   cinm::InferenceOptions inference;
   bool annotateOpCosts = false;
   bool useMRAMTiling = true;
+  bool debugPrintsInPipeline = false;
   UpmemLoweringPath lowering = UpmemLoweringPath::TEMPLATES;
   UpmemSimulatorId simulator = UpmemSimulatorId::CYCLE_ACCURATE;
   std::chrono::milliseconds evalTimeoutMs = std::chrono::milliseconds(2000);
@@ -155,6 +156,50 @@ static void addAffineOpts(OpPassManager &pm) {
 static std::string shortOpName(StringRef opName) {
   auto [prefix, last] = opName.rsplit('.');
   return (last.empty() ? opName : last).str();
+}
+
+/// Whether the space declares parameters for `op` -- whether, in other words,
+/// it is an op the pipeline will distribute onto the workgroup.
+///
+/// This used to be "carries a `cinm.lowered_from` marker", which
+/// `--convert-cinm-ops-to-linalg` sets on exactly the ops that inherit a cinm
+/// op's computation. That premise does not survive the pipeline: elementwise
+/// fusion builds a fresh `linalg.generic` from several ops and, like upstream
+/// rewrites generally, does not carry discardable attributes onto it. A fused
+/// body then looked like nothing but ops produced *alongside* a computation:
+/// the space declared no parameters, nothing was stamped, and
+/// `--convert-linalg-to-cnm` skipped an op with no tile sizes -- so the block
+/// lowered to a host-side loop nest with no diagnostic at all.
+///
+/// The test is structural instead, which no future rewrite can invalidate by
+/// dropping an attribute. The marker keeps the one job it can still do: naming
+/// the parameters.
+static bool isDistributionCandidate(Operation *op) {
+  auto linalgOp = llvm::dyn_cast<linalg::LinalgOp>(op);
+  if (!linalgOp || !linalgOp.hasPureTensorSemantics())
+    return false;
+  // What the marker was really distinguishing: an op whose result only ever
+  // lands in another linalg op's `outs` is that op's *init* -- a `linalg.fill`
+  // seeding an accumulator, typically. Distributing it would spread the
+  // initialization as though it were the computation.
+  for (Value result : op->getResults())
+    for (OpOperand &use : result.getUses()) {
+      auto consumer = llvm::dyn_cast<linalg::LinalgOp>(use.getOwner());
+      if (!consumer || !consumer.isDpsInit(&use))
+        return true;
+    }
+  return false;
+}
+
+/// What to call `op`'s parameters: the cinm op it was lowered from while that
+/// is still recorded, and otherwise the linalg op it *is*. A fused op comes
+/// from several cinm ops, so naming it after any one of them would be a guess;
+/// `generic.D00` at least says what it is.
+static std::string searchNameFor(Operation *op) {
+  if (auto origin =
+          op->getAttrOfType<StringAttr>(cinm::CinmDialect::LOWERED_FROM_NAME))
+    return shortOpName(origin.getValue());
+  return shortOpName(op->getName().getStringRef());
 }
 
 struct UpmemInferencePlugin : cinm::InferencePlugin {
@@ -202,14 +247,31 @@ struct UpmemInferencePlugin : cinm::InferencePlugin {
   /// built therefore address the converted ops, not the cinm ops. This is also
   /// where fusion will go (design §G8), which is why it is on the generic
   /// branch only.
-  static std::unique_ptr<PassManager> buildConvertPipeline(MLIRContext *ctx) {
+  static std::unique_ptr<PassManager> buildConvertPipeline(MLIRContext *ctx,
+                                                           bool debug) {
     auto pm = std::make_unique<PassManager>(ctx);
     pm->addPass(cinm::createConvertCinmOpsToLinalgPass());
+    pm->addPass(mlir::createConvertTensorToLinalgPass());
     pm->addPass(createCanonicalizerPass());
+    if (debug)
+      pm->addPass(createPrintIRPass({.label = "after-cinm-to-linalg"}));
+    // pm->addPass(linalg::createLinalgGeneralizeNamedOpsPass());
+    pm->addPass(createLinalgElementwiseOpFusionPass());
+    pm->addPass(createCanonicalizerPass());
+    if (debug)
+      pm->addPass(createPrintIRPass({.label = "after-fusion"}));
+    // Scalar values used directly inside a linalg op need to be
+    // promoted to operands of the linalg op, so that the body
+    // of the generic op becomes IsolatedFromAbove. 
+    pm->addPass(cnm::createCnmIsolateLinalgCapturesPass());
+    pm->addPass(createCanonicalizerPass());
+    if (debug)
+      pm->addPass(createPrintIRPass({.label = "after-isolate-captures"}));
     return pm;
   }
 
-  static std::unique_ptr<PassManager> buildFrontPipeline(MLIRContext *ctx) {
+  static std::unique_ptr<PassManager> buildFrontPipeline(MLIRContext *ctx,
+                                                         bool debug) {
     auto pm = std::make_unique<PassManager>(ctx);
 
     // Step 2: distribute onto the workgroup, with the buffers in MRAM. The
@@ -217,7 +279,8 @@ struct UpmemInferencePlugin : cinm::InferencePlugin {
     // them down to WRAM. No separate tiling round: `cnm.tile_sizes` is a block
     // size per iteration dimension and the workgroup takes the whole tile
     // space at once.
-    pm->addPass(createPrintIRPass({.label = "before-linalg-to-cnm"}));
+    if (debug)
+      pm->addPass(createPrintIRPass({.label = "before-linalg-to-cnm"}));
     {
       mlir::ConvertLinalgToCnmPassOptions cnmOpts;
       cnmOpts.bufferLevel = "mram";
@@ -227,9 +290,9 @@ struct UpmemInferencePlugin : cinm::InferencePlugin {
       cnmOpts.perDimAttrs = {UPMEMDialect::LEAF_TILE_SIZES_NAME.str()};
       pm->addPass(cnm::createConvertLinalgToCnmPass(cnmOpts));
     }
-    pm->addPass(createPrintIRPass({.label = "after-linalg-to-cnm"}));
     pm->addPass(createCanonicalizerPass());
-    pm->addPass(createPrintIRPass({.label = "after-canonicalization"}));
+    if (debug)
+      pm->addPass(createPrintIRPass({.label = "after-linalg-to-cnm"}));
     pm->addPass(cnm::createCnmHoistWorkgroupsPass());
     pm->addPass(createCanonicalizerPass());
     pm->addPass(createCSEPass());
@@ -239,7 +302,8 @@ struct UpmemInferencePlugin : cinm::InferencePlugin {
     pm->addPass(cnm::createCnmScatterOptimizationsPass());
     pm->addPass(createCSEPass());
     pm->addPass(createCanonicalizerPass());
-    pm->addPass(createPrintIRPass({.label = "before-bufferization"}));
+    if (debug)
+      pm->addPass(createPrintIRPass({.label = "before-bufferization"}));
     {
       bufferization::OneShotBufferizePassOptions opts;
       opts.unknownTypeConversion =
@@ -294,7 +358,8 @@ struct UpmemInferencePlugin : cinm::InferencePlugin {
 
   /// Everything after the launch bodies have been staged down to the leaf
   /// level.
-  static std::unique_ptr<PassManager> buildBackPipeline(MLIRContext *ctx) {
+  static std::unique_ptr<PassManager> buildBackPipeline(MLIRContext *ctx,
+                                                        bool debug) {
     auto pm = std::make_unique<PassManager>(ctx);
 
     // Staging has to see linalg on memrefs, so it runs after bufferization and
@@ -302,7 +367,8 @@ struct UpmemInferencePlugin : cinm::InferencePlugin {
     pm->addPass(createUpmemTileMRAMBuffersPass());
     pm->addPass(createCanonicalizerPass());
     pm->addPass(createCSEPass());
-    pm->addPass(createPrintIRPass({.label = "after-tile-mram-buffers"}));
+    if (debug)
+      pm->addPass(createPrintIRPass({.label = "after-tile-mram-buffers"}));
     pm->addPass(createConvertLinalgToAffineLoopsPass());
     // Keep the reduction accumulator in a register. Straight out of linalg the
     // innermost loop reloads and restores the output element on every
@@ -377,9 +443,9 @@ struct UpmemInferencePlugin : cinm::InferencePlugin {
 
   void warmUp(mlir::MLIRContext *ctx) override {
     if (!frontPipeline) {
-      convertPipeline = buildConvertPipeline(ctx);
-      frontPipeline = buildFrontPipeline(ctx);
-      backPipeline = buildBackPipeline(ctx);
+      convertPipeline = buildConvertPipeline(ctx, opts.debugPrintsInPipeline);
+      frontPipeline = buildFrontPipeline(ctx, opts.debugPrintsInPipeline);
+      backPipeline = buildBackPipeline(ctx, opts.debugPrintsInPipeline);
     }
     simulator->warmUp();
   }
@@ -449,7 +515,8 @@ struct UpmemInferencePlugin : cinm::InferencePlugin {
     OwningOpRef<ModuleOp> converted(
         llvm::cast<ModuleOp>(refClone->getParentOfType<ModuleOp>()->clone()));
     {
-      auto pm = buildConvertPipeline(refClone->getContext());
+      auto pm = buildConvertPipeline(refClone->getContext(),
+                                     opts.debugPrintsInPipeline);
       if (failed(pm->run(converted.get()))) {
         refClone->emitError("could not convert the compute block to linalg, "
                             "so no search space can be derived from it");
@@ -469,9 +536,8 @@ struct UpmemInferencePlugin : cinm::InferencePlugin {
     // `gemv0`/`gemv1` while the common single-op case stays unadorned.
     llvm::StringMap<unsigned> kindCount;
     convertedBlock.getBody().walk([&](Operation *op) {
-      if (auto origin = op->getAttrOfType<StringAttr>(
-              cinm::CinmDialect::LOWERED_FROM_NAME))
-        ++kindCount[shortOpName(origin.getValue())];
+      if (isDistributionCandidate(op))
+        ++kindCount[searchNameFor(op)];
     });
 
     // Walk the *body*, which is exactly what stampSearchParams walks in a
@@ -480,19 +546,12 @@ struct UpmemInferencePlugin : cinm::InferencePlugin {
     unsigned walkIndex = 0;
     convertedBlock.getBody().walk([&](Operation *op) {
       unsigned here = walkIndex++;
-      // Only the ops carrying a cinm op's computation are distributed; the
-      // inits produced alongside them are LinalgOps too and must be left out.
-      auto origin =
-          op->getAttrOfType<StringAttr>(cinm::CinmDialect::LOWERED_FROM_NAME);
-      if (!origin)
+      if (!isDistributionCandidate(op))
         return;
-      auto linalgOp = llvm::dyn_cast<linalg::LinalgOp>(op);
-      if (!linalgOp)
-        return;
-      std::string kind = shortOpName(origin.getValue());
+      std::string kind = searchNameFor(op);
       std::string prefix =
           kindCount[kind] > 1 ? kind + std::to_string(kindSeen[kind]++) : kind;
-      handleLinalgOp(linalgOp, prefix, here, b);
+      handleLinalgOp(llvm::cast<linalg::LinalgOp>(op), prefix, here, b);
     });
 
     b.buildInto(space);
@@ -581,9 +640,9 @@ struct UpmemInferencePlugin : cinm::InferencePlugin {
     mlir::Location loc = trial.computeBlock->getLoc();
     MLIRContext *ctx = trial.computeBlock->getContext();
     if (!frontPipeline) {
-      convertPipeline = buildConvertPipeline(ctx);
-      frontPipeline = buildFrontPipeline(ctx);
-      backPipeline = buildBackPipeline(ctx);
+      convertPipeline = buildConvertPipeline(ctx, opts.debugPrintsInPipeline);
+      frontPipeline = buildFrontPipeline(ctx, opts.debugPrintsInPipeline);
+      backPipeline = buildBackPipeline(ctx, opts.debugPrintsInPipeline);
     }
 
     // Convert first, then stamp: the recorded walk positions address the
@@ -794,9 +853,15 @@ void UpmemInferencePlugin::handleLinalgOp(linalg::LinalgOp op,
   // the block it walks that in at the leaf memory level. So a gemv declares
   // gemv.M0, gemv.K0, gemv.M1, gemv.K1. These are the user-facing names that
   // eval-solution refers to.
-  StringRef origin =
-      op->getAttrOfType<StringAttr>(cinm::CinmDialect::LOWERED_FROM_NAME)
-          .getValue();
+  //
+  // The marker is gone on anything a rewrite rebuilt -- a fused op, above all
+  // -- and both readers of it degrade rather than fail: the dimensions fall
+  // back to `D0, D1, ...`, and no template claims an op whose origin is not
+  // recorded, which is right, since the templates implement particular cinm
+  // ops and a fused op is no longer one of them.
+  auto originAttr =
+      op->getAttrOfType<StringAttr>(cinm::CinmDialect::LOWERED_FROM_NAME);
+  StringRef origin = originAttr ? originAttr.getValue() : StringRef();
   SmallVector<std::string> dimNames =
       iterationDimNames(origin, extents->size());
 
