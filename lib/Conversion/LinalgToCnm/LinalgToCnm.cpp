@@ -9,7 +9,8 @@
 // never emitted -- they *are* the workgroup, and they determine the
 // scatter/gather maps.
 //
-// Everything follows from one block-size vector, so unlike
+// Everything follows from one block-size vector plus, for the one thing block
+// sizes cannot state, an order over the tile dimensions -- so unlike
 // `--convert-cinm-to-cnm` this pass takes no decisions of its own.
 //
 //===----------------------------------------------------------------------===//
@@ -53,6 +54,16 @@ struct OperandTiling {
   SmallVector<int64_t> blocks;
   /// (workgroup coordinates, buffer coordinates) -> host element.
   AffineMap scatterMap;
+};
+
+/// The pass options `distribute` reads, in one struct so that adding an option
+/// does not mean threading another argument through every helper.
+struct DistributionOptions {
+  StringRef bufferLevel;
+  bool allowFloatReassociation;
+  ArrayRef<std::string> perDimAttrs;
+  ArrayRef<int64_t> workgroupDimOrder;
+  int64_t workgroupDimOrderIndex;
 };
 
 //===----------------------------------------------------------------------===//
@@ -154,21 +165,21 @@ static FailureOr<SmallVector<int64_t>> getTileCounts(linalg::LinalgOp op,
 /// accumulates into the *original* `outs`, so an incoming accumulator is
 /// folded in exactly once rather than once per leaf.
 ///
-/// The split dimension is inserted *before* the parallel dimensions, making it
-/// the outermost one. Under §G3's linearization the original parallel
-/// dimensions then vary fastest across leaves, so the leaves sharing one node
-/// of the workgroup (tasklets within a DPU, on UPMEM) differ in their parallel
-/// tile and share their reduction tile. That is what lets a broadcast operand
-/// indexed only by reduction dimensions -- gemv's vector -- be stored once per
-/// node instead of replicated per leaf. See §G3 for the evidence and for what
-/// it costs.
+/// The split dimension is inserted *before* the parallel dimensions, so under
+/// the default order of `getWorkgroupAxisOrder` it is the outermost one and the
+/// original parallel dimensions vary fastest across leaves. The leaves sharing
+/// one node of the workgroup (tasklets within a DPU, on UPMEM) then differ in
+/// their parallel tile and share their reduction tile, which is what lets a
+/// broadcast operand indexed only by reduction dimensions -- gemv's vector --
+/// be stored once per node instead of replicated per leaf. See §G3 for the
+/// evidence and for what it costs; the order is a parameter, so the opposite
+/// trade is reachable without touching this rewrite.
 ///
 /// `blocks` is updated to describe the rewritten op.
 static FailureOr<linalg::LinalgOp>
 splitDistributedReductions(RewriterBase &rewriter, linalg::LinalgOp op,
                            SmallVector<int64_t> &blocks,
-                           bool allowFloatReassociation,
-                           ArrayRef<std::string> perDimAttrs) {
+                           const DistributionOptions &options) {
   while (true) {
     FailureOr<SmallVector<int64_t>> extents = getLoopExtents(op);
     if (failed(extents))
@@ -198,7 +209,7 @@ splitDistributedReductions(RewriterBase &rewriter, linalg::LinalgOp op,
     // rather than something the search does behind the user's back (§G6).
     Type elementType =
         cast<ShapedType>(op.getDpsInits()[0].getType()).getElementType();
-    if (isa<FloatType>(elementType) && !allowFloatReassociation)
+    if (isa<FloatType>(elementType) && !options.allowFloatReassociation)
       return op->emitOpError("splitting reduction dimension ")
              << *target << " " << ratio
              << " ways reassociates a floating-point reduction, which changes "
@@ -231,7 +242,7 @@ splitDistributedReductions(RewriterBase &rewriter, linalg::LinalgOp op,
     op->setDiscardableAttrs(carried);
     for (StringRef name : llvm::concat<const std::string>(
              SmallVector<std::string>{cnm::CnmDialect::TILE_SIZES_NAME.str()},
-             perDimAttrs)) {
+             options.perDimAttrs)) {
       auto attr = op->getAttrOfType<DenseI64ArrayAttr>(name);
       if (!attr || attr.size() != static_cast<int64_t>(oldNumLoops))
         continue;
@@ -249,10 +260,142 @@ splitDistributedReductions(RewriterBase &rewriter, linalg::LinalgOp op,
   }
 }
 
+//===----------------------------------------------------------------------===//
+// Tile-dimension -> workgroup-axis order
+//===----------------------------------------------------------------------===//
+
+/// `n!`, or failure if it does not fit in an `int64_t` (n > 20).
+static FailureOr<int64_t> factorial(unsigned n) {
+  if (n > 20)
+    return failure();
+  int64_t result = 1;
+  for (unsigned i = 2; i <= n; ++i)
+    result *= i;
+  return result;
+}
+
+/// The `index`-th permutation of `[0, n)` in lexicographic order, decoded from
+/// the factorial number system. `index` must be in `[0, n!)`. Index 0 is the
+/// identity, which is what puts the default rule at the origin of the search
+/// space.
+static SmallVector<unsigned> unrankPermutation(int64_t index, unsigned n) {
+  SmallVector<unsigned> available(n);
+  std::iota(available.begin(), available.end(), 0u);
+
+  SmallVector<unsigned> permutation;
+  permutation.reserve(n);
+  for (unsigned remaining = n; remaining > 0; --remaining) {
+    // The digit's weight is the number of permutations of the tail it leaves,
+    // i.e. (remaining - 1)!.
+    int64_t weight = 1;
+    for (unsigned i = 2; i < remaining; ++i)
+      weight *= i;
+    auto digit = static_cast<size_t>(index / weight);
+    index %= weight;
+    permutation.push_back(available[digit]);
+    available.erase(available.begin() + digit);
+  }
+  return permutation;
+}
+
+/// Which iteration dimension occupies which workgroup axis, outermost (that
+/// is, slowest-varying across leaves) first.
+///
+/// The default is the rule of design §G3: parallel dimensions outer, reduction
+/// dimensions inner, op order within each group. It is only a default now --
+/// which dimension varies fastest decides which operands the leaves sharing a
+/// hardware node replicate rather than share, and that is worth searching.
+///
+/// Two ways to override it, because two callers want different things:
+///
+/// - `workgroup-dim-order` states the permutation outright, over all iteration
+///   dimensions the op has *here*, i.e. after any reduction split has prepended
+///   one. Readable, and the right form for a lit test.
+/// - `workgroup-dim-order-index` picks the `index`-th order in lexicographic
+///   order, so the parameter is an integer a search can enumerate.
+///
+/// The index deliberately ranks over *only* the dimensions whose tile count is
+/// greater than one. A dimension tiled once occupies no workgroup axis -- its
+/// tile coordinate is the constant 0 -- so moving it changes nothing, and
+/// ranking over all dimensions would hand a search a space that is mostly
+/// duplicates (a split gemv: 6 orders, 2 of them distinct). Note that by the
+/// time we get here every reduction spread across the workgroup has been split
+/// away, so the reduction dimensions that remain always have count 1: what the
+/// index permutes is exactly the distributed parallel dimensions, in op order.
+/// Index 0 is therefore the identity *and* the rule above.
+static FailureOr<SmallVector<unsigned>>
+getWorkgroupAxisOrder(linalg::LinalgOp op, ArrayRef<int64_t> counts,
+                      const DistributionOptions &options) {
+  auto numLoops = static_cast<int64_t>(op.getNumLoops());
+
+  if (!options.workgroupDimOrder.empty()) {
+    if (options.workgroupDimOrderIndex >= 0)
+      return op->emitOpError(
+          "'workgroup-dim-order' and 'workgroup-dim-order-index' are two ways "
+          "of stating the same thing; pass at most one");
+    if (static_cast<int64_t>(options.workgroupDimOrder.size()) != numLoops)
+      return op->emitOpError("'workgroup-dim-order' has ")
+             << options.workgroupDimOrder.size()
+             << " entries but this op has " << numLoops
+             << " iteration dimension(s) (splitting a reduction across the "
+                "workgroup prepends one, so this is the count *after* the "
+                "split, not the one the source op had)";
+
+    SmallVector<unsigned> order;
+    SmallVector<bool> seen(numLoops, false);
+    for (int64_t dim : options.workgroupDimOrder) {
+      if (dim < 0 || dim >= numLoops || seen[dim])
+        return op->emitOpError("'workgroup-dim-order' must be a permutation "
+                               "of [0, ")
+               << numLoops << "), but " << dim
+               << " is out of range or repeated";
+      seen[dim] = true;
+      order.push_back(dim);
+    }
+    return order;
+  }
+
+  auto iteratorTypes = op.getIteratorTypesArray();
+  SmallVector<unsigned> order;
+  for (auto [dim, kind] : llvm::enumerate(iteratorTypes))
+    if (kind == utils::IteratorType::parallel)
+      order.push_back(dim);
+  for (auto [dim, kind] : llvm::enumerate(iteratorTypes))
+    if (kind != utils::IteratorType::parallel)
+      order.push_back(dim);
+
+  if (options.workgroupDimOrderIndex < 0)
+    return order;
+
+  SmallVector<unsigned> distributed, single;
+  for (unsigned dim : order)
+    (counts[dim] == 1 ? single : distributed).push_back(dim);
+
+  FailureOr<int64_t> numOrders = factorial(distributed.size());
+  if (failed(numOrders))
+    return op->emitOpError("spreads ")
+           << distributed.size()
+           << " iteration dimensions over the workgroup, too many to index "
+              "their orders";
+  if (options.workgroupDimOrderIndex >= *numOrders)
+    return op->emitOpError("'workgroup-dim-order-index' is ")
+           << options.workgroupDimOrderIndex << ", but this op spreads "
+           << distributed.size()
+           << " iteration dimension(s) over the workgroup, so it has "
+           << *numOrders << " distinct order(s)";
+
+  SmallVector<unsigned> ranked;
+  for (unsigned position :
+       unrankPermutation(options.workgroupDimOrderIndex, distributed.size()))
+    ranked.push_back(distributed[position]);
+  // The dimensions tiled once take no workgroup axis, so they can go anywhere;
+  // keeping them last keeps the printed order readable.
+  llvm::append_range(ranked, single);
+  return ranked;
+}
+
 LogicalResult distribute(RewriterBase &rewriter, linalg::LinalgOp op,
-                         StringRef bufferLevelName,
-                         bool allowFloatReassociation,
-                         ArrayRef<std::string> perDimAttrs) {
+                         const DistributionOptions &options) {
   auto tileAttr =
       op->getAttrOfType<DenseI64ArrayAttr>(cnm::CnmDialect::TILE_SIZES_NAME);
   assert(tileAttr && "caller filters on the attribute");
@@ -269,7 +412,7 @@ LogicalResult distribute(RewriterBase &rewriter, linalg::LinalgOp op,
                            "so there is no workgroup to distribute onto");
 
   FailureOr<cnm::BufferLevel> level =
-      cnm::resolveBufferLevel(bufferLevelName, accelerator, op);
+      cnm::resolveBufferLevel(options.bufferLevel, accelerator, op);
   if (failed(level))
     return failure();
 
@@ -300,8 +443,8 @@ LogicalResult distribute(RewriterBase &rewriter, linalg::LinalgOp op,
   // Any reduction dimension the block sizes spread over the workgroup becomes
   // a parallel dimension over partial results, plus a merge left on the host.
   // Everything below therefore only ever sees unsplit reductions.
-  FailureOr<linalg::LinalgOp> split = splitDistributedReductions(
-      rewriter, op, blocks, allowFloatReassociation, perDimAttrs);
+  FailureOr<linalg::LinalgOp> split =
+      splitDistributedReductions(rewriter, op, blocks, options);
   if (failed(split))
     return failure();
   op = *split;
@@ -319,24 +462,18 @@ LogicalResult distribute(RewriterBase &rewriter, linalg::LinalgOp op,
   SmallVector<int64_t> counts = *tileCounts;
   ArrayRef<int64_t> wgShape = accelerator.getWorkgroupShape();
 
-  // Tile-space -> workgroup mapping. Both sides are linearized, and the
-  // tile-side order is fixed by rule rather than searched: parallel
-  // dimensions outer, reduction dimensions inner, op order within each group
-  // (design §G3). Reduction dimensions innermost means the partials of one
-  // output region occupy consecutive leaves, which is what makes them
-  // mergeable locally once device-side merging exists (§G10).
-  auto iteratorTypes = op.getIteratorTypesArray();
-  SmallVector<unsigned> order;
-  for (auto [dim, kind] : llvm::enumerate(iteratorTypes))
-    if (kind == utils::IteratorType::parallel)
-      order.push_back(dim);
-  for (auto [dim, kind] : llvm::enumerate(iteratorTypes))
-    if (kind != utils::IteratorType::parallel)
-      order.push_back(dim);
+  // Tile-space -> workgroup mapping. Both sides are linearized; the tile-side
+  // order defaults to the rule of design §G3 and is otherwise whatever the
+  // options ask for. It is a real choice: the dimension that varies fastest
+  // across leaves is the one the leaves sharing a hardware node differ in.
+  FailureOr<SmallVector<unsigned>> order =
+      getWorkgroupAxisOrder(op, counts, options);
+  if (failed(order))
+    return failure();
 
   SmallVector<int64_t> strides(numLoops);
   int64_t stride = 1;
-  for (unsigned dim : llvm::reverse(order)) {
+  for (unsigned dim : llvm::reverse(*order)) {
     strides[dim] = stride;
     stride *= counts[dim];
   }
@@ -461,10 +598,13 @@ struct ConvertLinalgToCnmPass
         targets.push_back(op);
     });
 
+    DistributionOptions options{bufferLevel, allowFloatReassociation,
+                                perDimAttrs, workgroupDimOrder,
+                                workgroupDimOrderIndex};
+
     IRRewriter rewriter(&getContext());
     for (linalg::LinalgOp op : targets)
-      if (failed(distribute(rewriter, op, bufferLevel,
-                            allowFloatReassociation, perDimAttrs)))
+      if (failed(distribute(rewriter, op, options)))
         return signalPassFailure();
   }
 };

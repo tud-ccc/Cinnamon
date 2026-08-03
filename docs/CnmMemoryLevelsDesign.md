@@ -543,17 +543,21 @@ This lines up term-for-term with the template constraints: M-tiles ↔
 failure class disappears — the constraint is stated in the parameters
 and checked in `SpaceBuilder` rather than discovered mid-conversion.
 
-### G3. Tile-space → workgroup order: fixed by rule, not searched
+### G3. Tile-space → workgroup order: a rule by default, a parameter when asked
 
 Mapping tile coordinates to workgroup coordinates needs an *order*, not
 just sizes, and the order is not neutral: it decides which dim varies
 fastest across tasklets vs DPUs, hence scatter contiguity.
 
 **Decided:** linearize both sides (the workgroup already is —
-`mlir::linearizeIndices(ctx, wgShape)`) and fix the tile-side order by
-rule: **reduction-derived (split) dimensions outermost, then the
-original parallel dimensions, then the unsplit reduction remainder**,
-op dim order within each group. No search variable.
+`mlir::linearizeIndices(ctx, wgShape)`) and default the tile-side order
+to the rule below: **reduction-derived (split) dimensions outermost,
+then the original parallel dimensions, then the unsplit reduction
+remainder**, op dim order within each group.
+
+The rule is the default rather than the only option; see *Stating a
+different order* at the end of this section for the two ways to override
+it, and the rest of the section for why the default is what it is.
 
 Under this formulation the template's `dpuCols` and `taskletCols`
 collapse into a single `k_tiles = K / b_k`: the DSE picks how many
@@ -596,10 +600,10 @@ ordering decision above has no observable effect.
 **What is given up.** Partials of one output region are no longer
 adjacent in the leaf index — they are `m_tiles` apart — so device-side
 merging (§G10) will have nothing local to merge. That costs nothing
-while merging is host-side, and it is precisely the point at which this
-order should stop being a rule and become a parameter. Note the
-symmetry: the two orders trade broadcast-operand sharing against merge
-locality, and only one of the two is currently exploitable.
+while merging is host-side. Note the symmetry: the two orders trade
+broadcast-operand sharing against merge locality, and only one of the
+two is currently exploitable — which is why the *default* is settled by
+evidence even though the order itself is now stateable.
 
 The general loss remains the *ratio*: linearization is greedy, so it
 cannot independently choose how a hardware level splits between two tile
@@ -614,21 +618,56 @@ factorization `(m_tiles, k_tiles)` stays reachable, but under the wrong
 order not every one stays *fittable*. That is why the rule above is
 settled by evidence rather than by taste.
 
-**When to revisit.** Two triggers, either of which makes the order a
-parameter rather than a rule:
+**Stating a different order.** Two triggers were named for making the
+order a parameter rather than a rule — **device-side merging (§G10)**,
+which is what the default order gives up, and **an op where both trades
+bite at once**, one large broadcast operand *and* a reduction worth
+merging locally, gemm with a shared operand being the likely first case.
+Rather than wait for either, `--convert-linalg-to-cnm` takes the order
+as an option in two forms:
 
-- **Device-side merging (§G10)**, which is what the current order gives
-  up.
-- **An op where both trades bite at once** — one large broadcast operand
-  *and* a reduction worth merging locally. gemm with a shared operand is
-  the likely first case.
+- `workgroup-dim-order=1,0,2` states the permutation outright, over all
+  iteration dimensions of the op *after* any reduction split (which
+  prepends one). This is the readable form: it is what the lit tests use
+  and what a manual experiment should use.
+- `workgroup-dim-order-index=N` names the same thing by rank, so the
+  parameter is an integer a search can enumerate.
 
-Note the scale when revisiting: iteration rank is 1 (elementwise), 2
-(gemv), 3 (gemm), so there are at most `3! = 6` orders. Enumerate them
-(a small categorical variable, or one space instance per order); a
-first-class permutation representation with a permutation-aware
-distance function, BACO-style, is not warranted at this size and
-probably never will be.
+The index ranks the orders **lexicographically**, which puts the
+identity — and hence the default rule — at index 0. It ranks only the
+dimensions whose tile count is greater than 1: a dimension tiled once
+occupies no workgroup axis at all (its tile coordinate is the constant
+0), so permuting it produces a duplicate rather than a new
+configuration. Since a distributed reduction has been split away by the
+time the order is applied, the reduction dimensions that survive always
+have count 1, and what the index permutes is exactly the distributed
+parallel dimensions in op order.
+
+That distinction is worth the small loss of predictability. Over all
+dimensions the split gemv would offer `3! = 6` indices for 2 distinct
+lowerings and a split gemm `4! = 24` for 6; over the distributed ones
+the space is exactly the distinct orders, at the cost of its *size*
+depending on the block sizes — which the search already chose, so it can
+compute `k!` for itself. Pinned by
+[linalg-to-cnm-wg-dim-order.mlir](../test/Conversion/LinalgToCnm/linalg-to-cnm-wg-dim-order.mlir),
+which checks both forms agree, that index 0 is the default, and that
+moving a count-1 dimension changes nothing.
+
+The scale bears out the original reading: iteration rank is 1
+(elementwise), 2 (gemv), 3 (gemm), so a small categorical variable is
+enough. A first-class permutation representation with a
+permutation-aware distance function, BACO-style, is not warranted at
+this size and probably never will be.
+
+**Still a pass option, not yet a per-op attribute.** The block sizes
+reach the pass as `cnm.tile_sizes` *per op*, stamped by
+`UpmemInferAccelerator`'s `stampSearchParams`; the order reaches it as a
+pass option, so a compute block holding two ops cannot yet give them
+different orders. That is enough to measure the trade and to state it in
+a test, and it is the wrong shape for the search space: making it a
+`cnm.workgroup_dim_order` attribute alongside the tile sizes is the
+follow-up, at which point the option becomes the default for ops that
+carry no attribute.
 
 ### G4. Reduction splitting: the one structural addition
 
@@ -731,8 +770,9 @@ own. §J removes the rule and makes it literally true.
 
 Device-side tree reduction of partials — host merge only for now. A
 pure optimization over the same parameterization; it can land later
-without changing the parameter set. It is, however, the trigger for
-revisiting G3.
+without changing the parameter set. It is the reason §G3's order is
+stateable rather than fixed: with device-side merging the other order
+becomes worth having, and the option to ask for it is already there.
 
 ## H. Capacity constraints, and the generic op handler
 
@@ -1394,10 +1434,11 @@ still load it. Device-side init subsumes it on every axis.
    mechanism, or serve a different class of parameters? (Still open —
    §D confirms the *existing* mechanism, reused twice, is sufficient
    for this effort, but doesn't say what these stubs are for.)
-7. §I: trips are derived from the tile counts by a fixed rule, which is
-   now the second such rule after §G3. Worth revisiting both together if
-   either turns out to cost real performance. (Open; the rule itself is
-   decided and is implementation milestone M13.)
+7. §I: trips are derived from the tile counts by a fixed rule, which was
+   the second such rule after §G3. §G3's is now an overridable default
+   rather than a rule, so this is the only one left; worth doing the
+   same to it if it turns out to cost real performance. (Open; the rule
+   itself is decided and is implementation milestone M13.)
 8. ~~§H5: how should the generic handler coexist with the per-op ones,
    given that `eval-solution` is positional?~~ **Decided:** option 3, and
    further than stated — the generic space is the *only* space,

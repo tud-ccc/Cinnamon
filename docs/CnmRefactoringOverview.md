@@ -231,10 +231,10 @@ commutative, and floating-point reductions require the explicit
 `allow-float-reassociation` flag, since splitting them reassociates the
 arithmetic and changes results.
 
-Two things are fixed **by rule** rather than searched. Both are
-permutations rather than integer factors, and a search space cannot hold
-a permutation without a first-class representation and a distance
-function over it:
+Two things are decided **by rule** rather than searched. Both are
+permutations rather than integer factors, which is why neither is an
+ordinary space variable — a search space cannot hold a permutation
+without a first-class representation and a distance function over it:
 
 - **Tile-dimension → workgroup-axis order.** The rule: split
   reduction-derived dimensions outermost, then the original parallel
@@ -242,8 +242,14 @@ function over it:
   Which tile dimension varies fastest determines which operands the
   tasklets of one DPU *share* versus replicate, and
   `--convert-cnm-to-upmem` reads that off the scatter map syntactically.
-  The current rule reproduces the grouping the independent autotuner
-  found best.
+  The rule reproduces the grouping the independent autotuner found best,
+  and it is a *default*: `--convert-linalg-to-cnm` also takes the order
+  outright (`workgroup-dim-order=1,0,2`) or by lexicographic rank
+  (`workgroup-dim-order-index=N`, index 0 being the rule). The rank
+  counts only the dimensions actually spread over the workgroup, so it
+  enumerates the distinct orders and nothing else — that is the
+  first-class representation the paragraph above says is missing, and at
+  this scale (`k ≤ 3`) enumerating it outright is the whole story.
 - **Sequential trips.** When the tile counts exceed the workgroup size,
   the tile space is linearized in the order above; the low-order digits
   index the workgroup and the high-order digits index a host-side trip

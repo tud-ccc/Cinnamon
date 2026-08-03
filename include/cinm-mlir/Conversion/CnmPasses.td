@@ -43,6 +43,12 @@ def ConvertLinalgToCnmPass : Pass<"convert-linalg-to-cnm"> {
       that reduction across the workgroup: each leaf computes a partial
       result from the reduction identity, and a merge is left on the host.
       See docs/CnmMemoryLevelsDesign.md §G4.
+
+      The one thing the block sizes cannot state is which tile dimension
+      varies fastest across the leaves, which decides what the leaves sharing
+      a hardware node share rather than replicate. That defaults to the rule
+      of §G3 and is otherwise given by `workgroup-dim-order` or
+      `workgroup-dim-order-index`.
     }];
     let constructor = "mlir::cnm::createConvertLinalgToCnmPass()";
     let dependentDialects = [
@@ -70,7 +76,24 @@ def ConvertLinalgToCnmPass : Pass<"convert-linalg-to-cnm"> {
              "dimension of the op (e.g. `upmem.leaf_tile_sizes`). Splitting a "
              "reduction rewrites the op and adds a dimension, so these are "
              "carried onto the new op with a 1 inserted for it. Without this "
-             "a later pass would silently read a stale or missing list.">
+             "a later pass would silently read a stale or missing list.">,
+      ListOption<"workgroupDimOrder", "workgroup-dim-order", "int64_t",
+             "Which iteration dimension occupies which workgroup axis, "
+             "outermost (slowest-varying across leaves) first. A permutation "
+             "of all the op's iteration dimensions *after* any reduction "
+             "split, which prepends one. Empty means the default rule: "
+             "parallel dimensions outer, reduction dimensions inner, op order "
+             "within each group. Cannot be combined with "
+             "`workgroup-dim-order-index`.">,
+      Option<"workgroupDimOrderIndex", "workgroup-dim-order-index", "int64_t",
+             "-1",
+             "The same choice as `workgroup-dim-order`, stated as an integer "
+             "a search can enumerate: the index-th order in lexicographic "
+             "order, counting only the dimensions actually spread over the "
+             "workgroup (a dimension tiled once takes no workgroup axis, so "
+             "permuting it would only produce duplicates). Index 0 is the "
+             "default rule; the op reports how many orders it has if this is "
+             "out of range. Negative means unset.">
     ];
 }
 
