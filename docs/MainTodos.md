@@ -6,12 +6,12 @@
 - [ ] Implement the rest of the prim benchmark files
   - [x] MTV (our gemv)
   - [x] GEMV (c * gemv)
-  - [ ] VA
-  - [ ] GEVA (a * b + c * d)
-  - [ ] TTV (batch gemv)
-  - [ ] MMTV (not sure how to implement this)
+  - [x] VA
+  - [x] GEVA (a * b + c * d)
+  - [ ] TTV (TODO)
+  - [ ] MMTV (batch gemv)
 - [ ] Tag transfers in the generic flow for processing benchmark data
-- [ ] Implement linalg fusion (for GEVA benchmark)
+- [ ] Implement linalg fusion (for GEVA, TTV benchmark)
 - [ ] Implement launch fusion (for GEMV benchmark)
 
 ## Cost model (UPMEM)
