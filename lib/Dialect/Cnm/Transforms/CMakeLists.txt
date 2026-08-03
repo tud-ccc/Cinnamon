@@ -4,6 +4,7 @@ add_mlir_dialect_library(CnmTransforms
     HoistWorkgroups.cpp
     EnsureScatterGatherContiguous.cpp
     ScatterOptimizations.cpp
+    IsolateLinalgCaptures.cpp
 
 DEPENDS
     CnmIncGen
@@ -17,6 +18,7 @@ LINK_LIBS PUBLIC
     MLIRLLVMDialect
     MLIRAffineDialect
     MLIRLinalgDialect
+    MLIRTensorDialect
     MLIRSPIRVTarget
     MLIRTransformUtils
     CnmIR

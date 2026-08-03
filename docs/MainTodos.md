@@ -8,7 +8,7 @@
   - [x] GEMV (c * gemv)
   - [x] VA
   - [x] GEVA (a * b + c * d)
-  - [ ] TTV (TODO)
+  - [x] TTV (batch gemv with broadcast tensor (needs linalg))
   - [x] MMTV (batch gemv)
 - [ ] Tag transfers in the generic flow for processing benchmark data
 - [ ] Implement linalg fusion (for GEVA, TTV benchmark)

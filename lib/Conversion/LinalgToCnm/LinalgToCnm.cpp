@@ -33,8 +33,10 @@
 #include <mlir/IR/AffineMap.h>
 #include <mlir/IR/IRMapping.h>
 #include <mlir/IR/ImplicitLocOpBuilder.h>
+#include <mlir/IR/OpDefinition.h>
 #include <mlir/IR/PatternMatch.h>
 #include <mlir/Support/LLVM.h>
+#include <mlir/Transforms/RegionUtils.h>
 
 #include <numeric>
 
@@ -127,16 +129,17 @@ static FailureOr<SmallVector<int64_t>> getLoopExtents(linalg::LinalgOp op) {
   for (auto [dim, extent] : llvm::enumerate(extents))
     if (ShapedType::isDynamic(extent))
       return op->emitOpError("iteration dimension ")
-             << dim << " has a dynamic extent; the distribution is computed "
-                       "from static sizes";
+             << dim
+             << " has a dynamic extent; the distribution is computed "
+                "from static sizes";
   return extents;
 }
 
 /// Tile counts `extent / block`, checking that the block sizes make sense for
 /// this op.
-static FailureOr<SmallVector<int64_t>> getTileCounts(linalg::LinalgOp op,
-                                                     ArrayRef<int64_t> blocks,
-                                                     ArrayRef<int64_t> extents) {
+static FailureOr<SmallVector<int64_t>>
+getTileCounts(linalg::LinalgOp op, ArrayRef<int64_t> blocks,
+              ArrayRef<int64_t> extents) {
   if (blocks.size() != op.getNumLoops())
     return op->emitOpError("expected ")
            << op.getNumLoops() << " block size(s) in '"
@@ -487,7 +490,8 @@ LogicalResult distribute(RewriterBase &rewriter, linalg::LinalgOp op,
     FailureOr<SmallVector<int64_t>> extents = getLoopExtents(op);
     if (failed(extents))
       return failure();
-    FailureOr<SmallVector<int64_t>> counts = getTileCounts(op, blocks, *extents);
+    FailureOr<SmallVector<int64_t>> counts =
+        getTileCounts(op, blocks, *extents);
     if (failed(counts))
       return failure();
 
@@ -560,8 +564,7 @@ LogicalResult distribute(RewriterBase &rewriter, linalg::LinalgOp op,
     for (auto [position, expr] : llvm::enumerate(map.getResults())) {
       unsigned dim = cast<AffineDimExpr>(expr).getPosition();
       tiling.blocks.push_back(blocks[dim]);
-      AffineExpr within =
-          getAffineDimExpr(wgShape.size() + position, ctx);
+      AffineExpr within = getAffineDimExpr(wgShape.size() + position, ctx);
       scatterResults.push_back(tileCoords[dim] * blocks[dim] + within);
     }
     SmallVector<int64_t> bounds(wgShape);
@@ -587,9 +590,8 @@ LogicalResult distribute(RewriterBase &rewriter, linalg::LinalgOp op,
   SmallVector<Value> launchInputs, launchOutputs;
   for (auto [operand, tiling] : llvm::zip(op->getOpOperands(), tilings)) {
     auto operandTy = cast<ShapedType>(operand.get().getType());
-    auto bufferTy = cnm::BufferType::get(tiling.blocks,
-                                         operandTy.getElementType(),
-                                         accelerator, level->space);
+    auto bufferTy = cnm::BufferType::get(
+        tiling.blocks, operandTy.getElementType(), accelerator, level->space);
     Value alloc = cnm::AllocOp::create(b, bufferTy, workgroup);
     bool isDestination = operand.getOperandNumber() >= numInputs;
 
@@ -608,8 +610,8 @@ LogicalResult distribute(RewriterBase &rewriter, linalg::LinalgOp op,
     (isDestination ? launchOutputs : launchInputs).push_back(alloc);
   }
 
-  auto launch = cnm::LaunchOp::create(b, workgroup, launchInputs,
-                                      launchOutputs);
+  auto launch =
+      cnm::LaunchOp::create(b, workgroup, launchInputs, launchOutputs);
   {
     Block &body = launch.getBody().emplaceBlock();
     for (Value param : launch.getParams()) {
@@ -617,11 +619,10 @@ LogicalResult distribute(RewriterBase &rewriter, linalg::LinalgOp op,
       // The buffer's level becomes the memref's memory space; that is what
       // LaunchOp::verify requires, and it is how the body learns which
       // memory it computes on.
-      body.addArgument(MemRefType::get(bufferTy.getShape(),
-                                       bufferTy.getElementType(),
-                                       MemRefLayoutAttrInterface{},
-                                       bufferTy.getLevel()),
-                       param.getLoc());
+      body.addArgument(
+          MemRefType::get(bufferTy.getShape(), bufferTy.getElementType(),
+                          MemRefLayoutAttrInterface{}, bufferTy.getLevel()),
+          param.getLoc());
     }
     OpBuilder::InsertionGuard bodyGuard(b);
     b.setInsertionPointToStart(&body);
@@ -635,8 +636,8 @@ LogicalResult distribute(RewriterBase &rewriter, linalg::LinalgOp op,
   for (auto [index, init] : llvm::enumerate(op.getDpsInits())) {
     const OperandTiling &tiling = tilings[numInputs + index];
     auto initTy = cast<ShapedType>(init.getType());
-    Value destination = tensor::EmptyOp::create(b, initTy.getShape(),
-                                                initTy.getElementType());
+    Value destination =
+        tensor::EmptyOp::create(b, initTy.getShape(), initTy.getElementType());
     results.push_back(cnm::GatherOp::create(b, launchOutputs[index], workgroup,
                                             tiling.scatterMap, destination)
                           .getOutput());
@@ -645,6 +646,12 @@ LogicalResult distribute(RewriterBase &rewriter, linalg::LinalgOp op,
   cnm::FreeWorkgroupOp::create(b, workgroup);
   rewriter.replaceOp(op, results);
   return success();
+}
+
+static bool isIsolatedFromAbove(Region &region) {
+  bool result = true;
+  mlir::visitUsedValuesDefinedAbove({region}, [&](auto *) { result = false; });
+  return result;
 }
 
 struct ConvertLinalgToCnmPass
@@ -657,8 +664,14 @@ struct ConvertLinalgToCnmPass
     // (they have no tile sizes and no longer have tensor semantics).
     SmallVector<linalg::LinalgOp> targets;
     getOperation()->walk([&](linalg::LinalgOp op) {
-      if (op->hasAttr(cnm::CnmDialect::TILE_SIZES_NAME))
-        targets.push_back(op);
+      if (op->hasAttr(cnm::CnmDialect::TILE_SIZES_NAME)) {
+        if (isIsolatedFromAbove(op->getRegion(0))) {
+          targets.push_back(op);
+        } else {
+          op.emitWarning("Cannot be converted to CNM as the body is not "
+                         "IsolatedFromAbove");
+        }
+      }
     });
 
     DistributionOptions options{bufferLevel, allowFloatReassociation,

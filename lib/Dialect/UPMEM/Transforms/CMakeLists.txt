@@ -27,6 +27,7 @@ LINK_LIBS PUBLIC
     MLIRFuncDialect
     MLIRAffineDialect
     MLIRCinmToCnm
+    MLIRTensorToLinalg
     MLIRCinmToLinalg
     MLIRLinalgToCnm
     MLIRCnmToUPMEM

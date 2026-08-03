@@ -143,4 +143,60 @@ def CnmScatterOptimizationsPass : Pass<"cnm-scatter-optimizations"> {
                            "memref::MemRefDialect"];
 }
 
+def CnmIsolateLinalgCapturesPass
+    : Pass<"cnm-isolate-linalg-captures"> {
+  let summary = "Turn a linalg op's captured scalars into explicit operands";
+  let description = [{
+    `cnm.launch`'s body is `IsolatedFromAbove`, and `--convert-linalg-to-cnm`
+    clones a distributed op's region into it verbatim -- so an op that reads a
+    value defined outside itself cannot be distributed at all, silently: it
+    has no tile sizes to reject, so it is simply skipped, and the enclosing
+    compute block falls back to a host loop nest with no diagnostic.
+
+    Such a capture is not exotic. Upstream's `tensor.splat` lowers to a
+    `linalg.generic` with no `ins` at all -- the splatted scalar stays a
+    captured value inside the body rather than becoming an operand, since
+    nothing about a lone splat needs it to be one. Fusing that generic into a
+    consumer (`--linalg-fuse-elementwise-ops`) carries the capture into the
+    fused body unchanged, because upstream fusion has no reason to expect
+    `IsolatedFromAbove` downstream.
+
+    This pass closes exactly that gap. For each capture -- a value used inside
+    the op's region but defined outside it -- it materializes a rank-0 tensor
+    (`tensor.from_elements`), appends it as a new `ins` operand with a
+    zero-result indexing map, and replaces the capture inside the region with
+    the new block argument:
+
+    ```mlir
+    linalg.generic {indexing_maps = [#map, #map], iterator_types = ["parallel"]}
+      ins(%x : tensor<1024xi32>) outs(%e : tensor<1024xi32>) {
+    ^bb0(%in: i32, %out: i32):
+      %r = arith.muli %in, %c : i32   // %c defined outside
+      linalg.yield %r : i32
+    }
+    // becomes
+    %c_t = tensor.from_elements %c : tensor<i32>
+    linalg.generic {indexing_maps = [#map, #map0, #map], iterator_types = ["parallel"]}
+      ins(%x, %c_t : tensor<1024xi32>, tensor<i32>) outs(%e : tensor<1024xi32>) {
+    ^bb0(%in: i32, %c_arg: i32, %out: i32):
+      %r = arith.muli %in, %c_arg : i32
+      linalg.yield %r : i32
+    }
+    ```
+
+    A zero-result map ties the new operand to none of the loop dimensions, so
+    `--convert-linalg-to-cnm` reads it exactly like any other operand: rank 0
+    means a `cnm.buffer` of one element, and a scatter map with no results
+    sends that one host element to every leaf -- the same shape
+    `--cnm-scatter-optimizations` already produces when it shrinks a
+    uniform-valued scatter to a broadcast.
+
+    Only scalar (non-shaped) captures are handled; a captured tensor or memref
+    is reported as an error rather than silently left in place, since
+    upstream fusion is not expected to produce one and a silent miss here is
+    exactly the failure mode this pass exists to close.
+  }];
+  let dependentDialects = ["linalg::LinalgDialect", "tensor::TensorDialect"];
+}
+
 #endif // CNM_TRANSFORM_PASSES

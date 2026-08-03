@@ -41,8 +41,6 @@ DATA_ROOT = HERE / "data"
 ITERS = 10
 
 # GEMV 64MB: 4096x4096
-DPUS = 256
-TASKLETS = 4
 
 source = "/home/clement.fournier/Work/cinm-mlir/experiments/cinm1comparison/data/prim_gemv/_split/gemv_64MB.mlir"
 CONFIGS = [
