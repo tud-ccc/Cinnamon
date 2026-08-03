@@ -1,5 +1,5 @@
 // RUN: cinm-opt %s --cinm-isolate-compute-blocks --verify-diagnostics \
-// RUN:   --upmem-infer-accelerator="lowering=generic simulator=op-count eval-solution=dpus=1024,tasklets=8,gemv.M0=8,gemv.K0=256,gemv.M1=8,gemv.K1=256"
+// RUN:   --upmem-infer-accelerator="lowering=generic simulator=op-count eval-solution=dpus=1024,tasklets=8,gemv.M0=8,gemv.K0=256,gemv.M1=8,gemv.K1=256,gemv.order=0"
 
 // A configuration the search space accepts and the lowered program refutes.
 //

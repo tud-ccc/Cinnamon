@@ -157,3 +157,75 @@ func.func @no_accelerator(%A: tensor<1024x512xi32>, %x: tensor<512xi32>) -> tens
     outs(%init : tensor<1024xi32>) -> tensor<1024xi32>
   func.return %g : tensor<1024xi32>
 }
+
+// -----
+
+#m = affine_map<(m, k) -> (m, k)>
+#v = affine_map<(m, k) -> (k)>
+#r = affine_map<(m, k) -> (m)>
+#pf = #upmem.platform<type=v1A, dimensions = 4x16>
+#acc = #upmem.array<1x16x1, #pf>
+
+// The two forms of the workgroup dim order (design §G3) say the same thing, so
+// an op carrying both has not been given a choice, it has been given two.
+func.func @order_stated_twice(%A: tensor<1024x512xi32>, %x: tensor<512xi32>, %y: tensor<1024xi32>) -> tensor<1024xi32> {
+  %r = cinm.compute on accelerator #acc -> tensor<1024xi32> {
+    // expected-error @below {{carries both 'cnm.workgroup_dim_order' and 'cnm.workgroup_dim_order_index', which are two ways of stating the same thing; keep one}}
+    %g = linalg.contract indexing_maps = [#m, #v, #r]
+      {cnm.tile_sizes = array<i64: 256, 128>,
+       cnm.workgroup_dim_order = array<i64: 1, 0, 2>,
+       cnm.workgroup_dim_order_index = 1 : i64}
+      ins(%A, %x : tensor<1024x512xi32>, tensor<512xi32>)
+      outs(%y : tensor<1024xi32>) -> tensor<1024xi32>
+    cinm.yield %g : tensor<1024xi32>
+  }
+  func.return %r : tensor<1024xi32>
+}
+
+// -----
+
+#m = affine_map<(m, k) -> (m, k)>
+#v = affine_map<(m, k) -> (k)>
+#r = affine_map<(m, k) -> (m)>
+#pf = #upmem.platform<type=v1A, dimensions = 4x16>
+#acc = #upmem.array<1x16x1, #pf>
+
+// A discardable attribute of the wrong type is silently invisible to
+// getAttrOfType, so it is checked for rather than ignored: a permutation
+// written as an array of anything else would otherwise fall back to the
+// default rule without a word.
+func.func @order_wrong_type(%A: tensor<1024x512xi32>, %x: tensor<512xi32>, %y: tensor<1024xi32>) -> tensor<1024xi32> {
+  %r = cinm.compute on accelerator #acc -> tensor<1024xi32> {
+    // expected-error @below {{'cnm.workgroup_dim_order' must be a dense i64 array giving a permutation of the iteration dimensions}}
+    %g = linalg.contract indexing_maps = [#m, #v, #r]
+      {cnm.tile_sizes = array<i64: 256, 128>,
+       cnm.workgroup_dim_order = [1, 0, 2]}
+      ins(%A, %x : tensor<1024x512xi32>, tensor<512xi32>)
+      outs(%y : tensor<1024xi32>) -> tensor<1024xi32>
+    cinm.yield %g : tensor<1024xi32>
+  }
+  func.return %r : tensor<1024xi32>
+}
+
+// -----
+
+#m = affine_map<(m, k) -> (m, k)>
+#v = affine_map<(m, k) -> (k)>
+#r = affine_map<(m, k) -> (m)>
+#pf = #upmem.platform<type=v1A, dimensions = 4x16>
+#acc = #upmem.array<1x16x1, #pf>
+
+// The number of distinct orders depends on how many dimensions the block sizes
+// actually spread over the workgroup, so the diagnostic reports both.
+func.func @order_index_out_of_range(%A: tensor<1024x512xi32>, %x: tensor<512xi32>, %y: tensor<1024xi32>) -> tensor<1024xi32> {
+  %r = cinm.compute on accelerator #acc -> tensor<1024xi32> {
+    // expected-error @below {{'cnm.workgroup_dim_order_index' is 5, but this op spreads 2 iteration dimension(s) over the workgroup, so it has 2 distinct order(s)}}
+    %g = linalg.contract indexing_maps = [#m, #v, #r]
+      {cnm.tile_sizes = array<i64: 256, 128>,
+       cnm.workgroup_dim_order_index = 5 : i64}
+      ins(%A, %x : tensor<1024x512xi32>, tensor<512xi32>)
+      outs(%y : tensor<1024xi32>) -> tensor<1024xi32>
+    cinm.yield %g : tensor<1024xi32>
+  }
+  func.return %r : tensor<1024xi32>
+}
