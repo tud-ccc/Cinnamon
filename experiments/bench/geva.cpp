@@ -25,7 +25,7 @@
 #define STRINGIFY(x) #x
 #define TOSTR(x) STRINGIFY(x)
 
-extern "C" void BENCH_FN(DTY *, DTY *, DTY *);
+extern "C" void BENCH_FN(DTY *, DTY *, DTY, DTY, DTY *);
 
 extern "C" {
 void upmemrt_start_stat_collection(int iter);
@@ -64,6 +64,8 @@ int main(int argc, char *argv[]) {
   srand(0);
   DTY *A = alloc_mat(m);
   DTY *x = alloc_mat(m);
+  DTY c = rand() % 2046;
+  DTY d = rand() % 2476;
   DTY *out = alloc_mat(m); // output buffer; reused across iters
 
   printf("%s  M=%zu iters=%d\n", TOSTR(BENCH_FN), m, iters);
@@ -76,7 +78,7 @@ int main(int argc, char *argv[]) {
     upmemrt_start_stat_collection(iter);
     struct timespec t0, t1;
     clock_gettime(CLOCK_MONOTONIC, &t0);
-    BENCH_FN(A, x, out);
+    BENCH_FN(A, x, c, d, out);
     clock_gettime(CLOCK_MONOTONIC, &t1);
     elapsed_ns[iter] = (uint64_t)(t1.tv_sec - t0.tv_sec) * 1000000000ULL +
                        (uint64_t)(t1.tv_nsec - t0.tv_nsec);
