@@ -3,7 +3,7 @@
 // -----
 #upmem = #upmem.platform<type = v1A, dimensions = 32x64x24>
 
-func.func @mmtv_4MB(%A: tensor<32x64x512xi32>, %x: tensor<32x512xi32>) -> tensor<32x64xi32> 
+func.func @mmtv_4MB(%A: tensor<32x64x512xi32>, %x: tensor<512xi32>) -> tensor<32x64xi32> 
   attributes {cinm.available_platforms = [#upmem]} {
   %4 = cinm.op.batch_gemv %A, %x : tensor<32x64x512xi32>, tensor<32x512xi32> -> tensor<32x64xi32>
   return %4 : tensor<32x64xi32>

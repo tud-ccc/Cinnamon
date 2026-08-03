@@ -9,7 +9,7 @@
   - [x] VA
   - [x] GEVA (a * b + c * d)
   - [ ] TTV (TODO)
-  - [ ] MMTV (batch gemv)
+  - [x] MMTV (batch gemv)
 - [ ] Tag transfers in the generic flow for processing benchmark data
 - [ ] Implement linalg fusion (for GEVA, TTV benchmark)
 - [ ] Implement launch fusion (for GEMV benchmark)
