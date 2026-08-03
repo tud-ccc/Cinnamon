@@ -1463,13 +1463,7 @@ still load it. Device-side init subsumes it on every axis.
    `PartialReductionOpInterface` is needed. It covers §G5 for free
    (neutral-element fill, merge accumulating into the original `outs`).
    Its extra-dim placement is controllable and §G3 pins it outermost.
-12. §E: merge with `UpmemGenericLoweringNotes.md` once §A3 is settled,
-   or keep the direct `linalg.generic → upmem` path as a permanent
-   parallel option? (§A3 being settled now makes this more concrete:
-   the note's points 1-3 map onto the two `--cinm-tiling` passes'
-   role-assignment/reduction-split policy — worth a pass to check how
-   much of the note is now answered.)
-13. ~~§J: keep `cnm.scatter`'s shape-suffix contract, or give the map a
+12. ~~§J: keep `cnm.scatter`'s shape-suffix contract, or give the map a
    general index into the host buffer?~~ **Decided:** pointwise maps
    `(*wgDims, *bufferDims) -> (*hostDims)`, with a block form that leaves
    a suffix of the buffer dimensions — and the host dimensions they cover

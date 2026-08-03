@@ -20,10 +20,11 @@
 #error "BENCH_FN must be defined at compile time (-DBENCH_FN=<function_name>)"
 #endif
 
+#define DTY int32_t
 #define STRINGIFY(x) #x
 #define TOSTR(x)     STRINGIFY(x)
 
-extern "C" int32_t BENCH_FN(int32_t *);
+extern "C" DTY BENCH_FN(DTY *);
 
 extern "C" {
   void upmemrt_start_stat_collection(int iter);
@@ -49,11 +50,11 @@ int main(int argc, char *argv[]) {
     int iters           = argc > 2 ? atoi(argv[2]) : 5;
 
     size_t n    = n_elements();
-    int32_t *buf = (int32_t *)malloc(n * sizeof(int32_t));
+    DTY *buf = (DTY *)malloc(n * sizeof(DTY));
     assert(buf && "malloc failed");
     srand(0);
     for (size_t i = 0; i < n; i++)
-        buf[i] = (int32_t)(rand() % 100 + 1);
+        buf[i] = (DTY)(rand() % 100 + 1);
 
     printf("%s  n=%zu  iters=%d\n", TOSTR(BENCH_FN), n, iters);
     fflush(stdout);
@@ -65,7 +66,7 @@ int main(int argc, char *argv[]) {
         upmemrt_start_stat_collection(iter);
         struct timespec t0, t1;
         clock_gettime(CLOCK_MONOTONIC, &t0);
-        volatile int32_t result = BENCH_FN(buf);
+        volatile DTY result = BENCH_FN(buf);
         clock_gettime(CLOCK_MONOTONIC, &t1);
         (void)result;
         elapsed_ns[iter] = (uint64_t)(t1.tv_sec - t0.tv_sec) * 1000000000ULL

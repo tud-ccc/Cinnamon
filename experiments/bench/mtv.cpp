@@ -25,7 +25,7 @@
 #define STRINGIFY(x) #x
 #define TOSTR(x)     STRINGIFY(x)
 
-extern "C" void BENCH_FN(DTY *, DTY *, DTY *);
+extern "C" void BENCH_FN(DTY *, DTY *, DTY, DTY *);
 
 extern "C" {
   void upmemrt_start_stat_collection(int iter);
@@ -36,11 +36,11 @@ struct GemvSpec { size_t m, n; };
 
 static GemvSpec spec() {
     const char *fn = TOSTR(BENCH_FN);
-    if (!strcmp(fn, "gemv_4MB"))   return {1024,  1024};
-    if (!strcmp(fn, "gemv_64MB"))  return {4096,  4096};
-    if (!strcmp(fn, "gemv_256MB")) return {8192,  8192};
-    if (!strcmp(fn, "gemv_512MB")) return {8192, 16384};
-    fprintf(stderr, "gemv.cpp: unknown function '%s' — add it to spec()\n", fn);
+    if (!strcmp(fn, "mtv_4MB"))   return {1024,  1024};
+    if (!strcmp(fn, "mtv_64MB"))  return {4096,  4096};
+    if (!strcmp(fn, "mtv_256MB")) return {8192,  8192};
+    if (!strcmp(fn, "mtv_512MB")) return {8192, 16384};
+    fprintf(stderr, "mtv.cpp: unknown function '%s' — add it to spec()\n", fn);
     exit(1);
 }
 
@@ -64,6 +64,7 @@ int main(int argc, char *argv[]) {
     srand(0);
     DTY *A   = alloc_mat(s.m * s.n);
     DTY *x   = alloc_mat(s.n);
+    DTY c    = rand() % 2024;
     DTY *out = alloc_mat(s.m);   // output buffer; reused across iters
 
     printf("%s  M=%zu N=%zu  iters=%d\n", TOSTR(BENCH_FN), s.m, s.n, iters);
@@ -76,7 +77,7 @@ int main(int argc, char *argv[]) {
         upmemrt_start_stat_collection(iter);
         struct timespec t0, t1;
         clock_gettime(CLOCK_MONOTONIC, &t0);
-        BENCH_FN(A, x, out);
+        BENCH_FN(A, x, c, out);
         clock_gettime(CLOCK_MONOTONIC, &t1);
         elapsed_ns[iter] = (uint64_t)(t1.tv_sec - t0.tv_sec) * 1000000000ULL
                          + (uint64_t)(t1.tv_nsec - t0.tv_nsec);
