@@ -86,7 +86,9 @@ static Operation *cloneOnBuffers(ImplicitLocOpBuilder &b, linalg::LinalgOp op,
   state.addOperands(outs);
   state.propertiesAttr = op->getPropertiesAsAttribute();
   for (NamedAttribute attr : op->getDiscardableAttrs())
-    if (attr.getName() != cnm::CnmDialect::TILE_SIZES_NAME)
+    if (attr.getName() != cnm::CnmDialect::TILE_SIZES_NAME &&
+        attr.getName() != cnm::CnmDialect::WORKGROUP_DIM_ORDER_NAME &&
+        attr.getName() != cnm::CnmDialect::WORKGROUP_DIM_ORDER_INDEX_NAME)
       state.addAttribute(attr.getName(), attr.getValue());
   for (Region &region : op->getRegions()) {
     auto cloned = std::make_unique<Region>();
@@ -298,6 +300,66 @@ static SmallVector<unsigned> unrankPermutation(int64_t index, unsigned n) {
   return permutation;
 }
 
+/// The order asked for, and where it was asked for. Both forms are empty when
+/// nothing was asked for, in which case the default rule applies.
+struct OrderRequest {
+  /// A permutation of the op's iteration dimensions.
+  ArrayRef<int64_t> permutation;
+  /// The same choice by lexicographic rank; negative means unset.
+  int64_t index = -1;
+  /// How each was spelled, so a diagnostic can point at what to change.
+  StringRef permutationName, indexName;
+};
+
+/// Where the order comes from: the op's own attributes if it carries any,
+/// otherwise the pass options.
+///
+/// Attributes win rather than conflict. The block sizes already arrive per op
+/// as `cnm.tile_sizes`, stamped by the search; the order is stamped the same
+/// way, and a pass option is then a default for the ops the search said
+/// nothing about.
+static FailureOr<OrderRequest>
+getOrderRequest(linalg::LinalgOp op, const DistributionOptions &options) {
+  StringRef permutationAttrName = cnm::CnmDialect::WORKGROUP_DIM_ORDER_NAME;
+  StringRef indexAttrName = cnm::CnmDialect::WORKGROUP_DIM_ORDER_INDEX_NAME;
+  auto permutationAttr =
+      op->getAttrOfType<DenseI64ArrayAttr>(permutationAttrName);
+  auto indexAttr = op->getAttrOfType<IntegerAttr>(indexAttrName);
+
+  if (op->hasAttr(permutationAttrName) && !permutationAttr)
+    return op->emitOpError("'")
+           << permutationAttrName << "' must be a dense i64 array giving a "
+           << "permutation of the iteration dimensions";
+  if (op->hasAttr(indexAttrName) && !indexAttr)
+    return op->emitOpError("'")
+           << indexAttrName << "' must be an integer attribute";
+
+  OrderRequest request;
+  if (permutationAttr || indexAttr) {
+    if (permutationAttr && indexAttr)
+      return op->emitOpError("carries both '")
+             << permutationAttrName << "' and '" << indexAttrName
+             << "', which are two ways of stating the same thing; keep one";
+    request.permutationName = permutationAttrName;
+    request.indexName = indexAttrName;
+    if (permutationAttr)
+      request.permutation = permutationAttr.asArrayRef();
+    if (indexAttr)
+      request.index = indexAttr.getInt();
+    return request;
+  }
+
+  if (!options.workgroupDimOrder.empty() && options.workgroupDimOrderIndex >= 0)
+    return op->emitOpError(
+        "'workgroup-dim-order' and 'workgroup-dim-order-index' are two ways of "
+        "stating the same thing; pass at most one");
+  request.permutationName = "workgroup-dim-order";
+  request.indexName = "workgroup-dim-order-index";
+  request.permutation = options.workgroupDimOrder;
+  request.index = options.workgroupDimOrderIndex;
+  return request;
+}
+
 /// Which iteration dimension occupies which workgroup axis, outermost (that
 /// is, slowest-varying across leaves) first.
 ///
@@ -308,11 +370,11 @@ static SmallVector<unsigned> unrankPermutation(int64_t index, unsigned n) {
 ///
 /// Two ways to override it, because two callers want different things:
 ///
-/// - `workgroup-dim-order` states the permutation outright, over all iteration
-///   dimensions the op has *here*, i.e. after any reduction split has prepended
-///   one. Readable, and the right form for a lit test.
-/// - `workgroup-dim-order-index` picks the `index`-th order in lexicographic
-///   order, so the parameter is an integer a search can enumerate.
+/// - a permutation stated outright, over all iteration dimensions the op has
+///   *here*, i.e. after any reduction split has prepended one. Readable, and
+///   the right form for a lit test.
+/// - the `index`-th order in lexicographic order, so the parameter is an
+///   integer a search can enumerate. This is what the search stamps.
 ///
 /// The index deliberately ranks over *only* the dimensions whose tile count is
 /// greater than one. A dimension tiled once occupies no workgroup axis -- its
@@ -328,25 +390,26 @@ getWorkgroupAxisOrder(linalg::LinalgOp op, ArrayRef<int64_t> counts,
                       const DistributionOptions &options) {
   auto numLoops = static_cast<int64_t>(op.getNumLoops());
 
-  if (!options.workgroupDimOrder.empty()) {
-    if (options.workgroupDimOrderIndex >= 0)
-      return op->emitOpError(
-          "'workgroup-dim-order' and 'workgroup-dim-order-index' are two ways "
-          "of stating the same thing; pass at most one");
-    if (static_cast<int64_t>(options.workgroupDimOrder.size()) != numLoops)
-      return op->emitOpError("'workgroup-dim-order' has ")
-             << options.workgroupDimOrder.size()
-             << " entries but this op has " << numLoops
+  FailureOr<OrderRequest> request = getOrderRequest(op, options);
+  if (failed(request))
+    return failure();
+
+  if (!request->permutation.empty()) {
+    if (static_cast<int64_t>(request->permutation.size()) != numLoops)
+      return op->emitOpError("'")
+             << request->permutationName << "' has "
+             << request->permutation.size() << " entries but this op has "
+             << numLoops
              << " iteration dimension(s) (splitting a reduction across the "
                 "workgroup prepends one, so this is the count *after* the "
                 "split, not the one the source op had)";
 
     SmallVector<unsigned> order;
     SmallVector<bool> seen(numLoops, false);
-    for (int64_t dim : options.workgroupDimOrder) {
+    for (int64_t dim : request->permutation) {
       if (dim < 0 || dim >= numLoops || seen[dim])
-        return op->emitOpError("'workgroup-dim-order' must be a permutation "
-                               "of [0, ")
+        return op->emitOpError("'")
+               << request->permutationName << "' must be a permutation of [0, "
                << numLoops << "), but " << dim
                << " is out of range or repeated";
       seen[dim] = true;
@@ -364,7 +427,7 @@ getWorkgroupAxisOrder(linalg::LinalgOp op, ArrayRef<int64_t> counts,
     if (kind != utils::IteratorType::parallel)
       order.push_back(dim);
 
-  if (options.workgroupDimOrderIndex < 0)
+  if (request->index < 0)
     return order;
 
   SmallVector<unsigned> distributed, single;
@@ -377,16 +440,16 @@ getWorkgroupAxisOrder(linalg::LinalgOp op, ArrayRef<int64_t> counts,
            << distributed.size()
            << " iteration dimensions over the workgroup, too many to index "
               "their orders";
-  if (options.workgroupDimOrderIndex >= *numOrders)
-    return op->emitOpError("'workgroup-dim-order-index' is ")
-           << options.workgroupDimOrderIndex << ", but this op spreads "
-           << distributed.size()
+  if (request->index >= *numOrders)
+    return op->emitOpError("'")
+           << request->indexName << "' is " << request->index
+           << ", but this op spreads " << distributed.size()
            << " iteration dimension(s) over the workgroup, so it has "
            << *numOrders << " distinct order(s)";
 
   SmallVector<unsigned> ranked;
   for (unsigned position :
-       unrankPermutation(options.workgroupDimOrderIndex, distributed.size()))
+       unrankPermutation(request->index, distributed.size()))
     ranked.push_back(distributed[position]);
   // The dimensions tiled once take no workgroup axis, so they can go anywhere;
   // keeping them last keeps the printed order readable.

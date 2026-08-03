@@ -623,15 +623,23 @@ order a parameter rather than a rule — **device-side merging (§G10)**,
 which is what the default order gives up, and **an op where both trades
 bite at once**, one large broadcast operand *and* a reduction worth
 merging locally, gemm with a shared operand being the likely first case.
-Rather than wait for either, `--convert-linalg-to-cnm` takes the order
-as an option in two forms:
+Rather than wait for either, the order is stated in two forms, each
+available as a `--convert-linalg-to-cnm` option and as a discardable
+attribute on the op:
 
-- `workgroup-dim-order=1,0,2` states the permutation outright, over all
-  iteration dimensions of the op *after* any reduction split (which
-  prepends one). This is the readable form: it is what the lit tests use
-  and what a manual experiment should use.
-- `workgroup-dim-order-index=N` names the same thing by rank, so the
-  parameter is an integer a search can enumerate.
+- `workgroup-dim-order=1,0,2` / `cnm.workgroup_dim_order = array<i64: 1,
+  0, 2>` states the permutation outright, over all iteration dimensions
+  of the op *after* any reduction split (which prepends one). This is the
+  readable form: it is what the lit tests use and what a manual
+  experiment should use.
+- `workgroup-dim-order-index=N` / `cnm.workgroup_dim_order_index = N`
+  names the same thing by rank, so the parameter is an integer a search
+  can enumerate.
+
+An op carrying either attribute ignores both options; carrying both
+attributes is an error. The attribute is what the search stamps, for the
+same reason `cnm.tile_sizes` is: a compute block holds more than one op,
+and each gets its own configuration.
 
 The index ranks the orders **lexicographically**, which puts the
 identity — and hence the default rule — at index 0. It ranks only the
@@ -659,15 +667,38 @@ enough. A first-class permutation representation with a
 permutation-aware distance function, BACO-style, is not warranted at
 this size and probably never will be.
 
-**Still a pass option, not yet a per-op attribute.** The block sizes
-reach the pass as `cnm.tile_sizes` *per op*, stamped by
-`UpmemInferAccelerator`'s `stampSearchParams`; the order reaches it as a
-pass option, so a compute block holding two ops cannot yet give them
-different orders. That is enough to measure the trade and to state it in
-a test, and it is the wrong shape for the search space: making it a
-`cnm.workgroup_dim_order` attribute alongside the tile sizes is the
-follow-up, at which point the option becomes the default for ops that
-carry no attribute.
+**In the search space.** The plugin declares one `<op>.order` variable
+per distributable op with two or more iteration dimensions, and
+`stampSearchParams` writes the resolved rank onto the op as
+`cnm.workgroup_dim_order_index` — the index form rather than the
+permutation, because the permutation is stated over dimensions the
+reduction split has not created yet, while the rank is the same number
+before and after.
+
+Its domain is `numLoops!`, which is the most orders the op can ever have:
+the split leaves at most one distributed dimension per iteration
+dimension, since a split dimension takes the tile count and its remainder
+is left with 1. How many there *actually* are depends on the block sizes,
+so the rest of the range is cut by a predicate,
+`order < (number of dimensions spread over the workgroup)!`. An index the
+op has no order for is therefore a configuration the search is never
+offered, rather than a trial that fails — which is the same treatment the
+`∏(E_i / b_i) == |WG|` constraint gets, and for the same reason.
+
+The template path declares the variable too, pinned to `[0, 0]`. It
+implements one fixed mapping and reads the rest of this space through
+§H5's projection, so a real range there would buy duplicate trials; but
+dropping the variable would make the two paths disagree about what the
+space *is*, and configurations recorded under `experiments/` are handed
+to both.
+
+Pinned by
+[upmem-infer-accelerator-wg-dim-order.mlir](../test/Dialect/UPMEM/upmem-infer-accelerator-wg-dim-order.mlir),
+end to end on the gemv_64MB optimum: at `gemv.order=0` the vector's MRAM
+buffer is `memref<1x128xi32>`, one per DPU; at `gemv.order=1` it is
+`memref<8x1x128xi32>`, one per tasklet. Nothing else about the
+configuration changes. That is the *feasibility* effect described above,
+now readable off a single parameter.
 
 ### G4. Reduction splitting: the one structural addition
 

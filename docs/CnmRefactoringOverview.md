@@ -231,10 +231,11 @@ commutative, and floating-point reductions require the explicit
 `allow-float-reassociation` flag, since splitting them reassociates the
 arithmetic and changes results.
 
-Two things are decided **by rule** rather than searched. Both are
-permutations rather than integer factors, which is why neither is an
-ordinary space variable — a search space cannot hold a permutation
-without a first-class representation and a distance function over it:
+Two things are decided **by rule** rather than derived. Both are
+permutations rather than integer factors, and a search space cannot hold
+a permutation without a first-class representation and a distance
+function over it — so where one of them *is* searched, it is searched by
+rank rather than as a permutation:
 
 - **Tile-dimension → workgroup-axis order.** The rule: split
   reduction-derived dimensions outermost, then the original parallel
@@ -243,13 +244,14 @@ without a first-class representation and a distance function over it:
   tasklets of one DPU *share* versus replicate, and
   `--convert-cnm-to-upmem` reads that off the scatter map syntactically.
   The rule reproduces the grouping the independent autotuner found best,
-  and it is a *default*: `--convert-linalg-to-cnm` also takes the order
-  outright (`workgroup-dim-order=1,0,2`) or by lexicographic rank
-  (`workgroup-dim-order-index=N`, index 0 being the rule). The rank
-  counts only the dimensions actually spread over the workgroup, so it
-  enumerates the distinct orders and nothing else — that is the
-  first-class representation the paragraph above says is missing, and at
-  this scale (`k ≤ 3`) enumerating it outright is the whole story.
+  and it is now the *default* rather than the only option: the order can
+  be stated outright (`cnm.workgroup_dim_order = array<i64: 1, 0, 2>`) or
+  by lexicographic rank (`cnm.workgroup_dim_order_index = N`, index 0
+  being the rule), as an attribute per op or as a pass option for all of
+  them. The rank counts only the dimensions actually spread over the
+  workgroup, so it enumerates the distinct orders and nothing else —
+  which is what makes it a space variable, `<op>.order`, at a scale
+  (`k ≤ 3`) where enumerating it outright is the whole story.
 - **Sequential trips.** When the tile counts exceed the workgroup size,
   the tile space is linearized in the order above; the low-order digits
   index the workgroup and the high-order digits index a host-side trip
@@ -262,7 +264,8 @@ block. Per operation it declares one block size per iteration dimension
 per memory level — **level 0** being what a leaf gets (its MRAM tile),
 **level 1** what the leaf walks that in at the fast level (its WRAM tile)
 — constrained by `∏(E_i / b_i) == dpus × tasklets` and by each level-1
-block dividing its level-0 block.
+block dividing its level-0 block. Plus, for ops with more than one
+iteration dimension, the workgroup-axis order above as a single rank.
 
 Notably absent: `dpuRows`, `dpuCols`, `taskletRows`, `taskletCols`. Those
 are a *reading* of the block sizes, not independent parameters. Dropping
@@ -270,7 +273,8 @@ them is what lets the space generalize to any iteration rank instead of
 being written out per operation.
 
 Variables are named `<op>.<dim><level>`, so a `gemv` declares `gemv.M0`,
-`gemv.K0`, `gemv.M1`, `gemv.K1`. Dimension names come from the originating
+`gemv.K0`, `gemv.M1`, `gemv.K1`, and `gemv.order`. Dimension names come
+from the originating
 `cinm` op — M/K for gemv, M/N/K for gemm, and so on — recovered through a
 `cinm.lowered_from` marker attribute, falling back to `D0, D1, …` for ops
 with no established convention. Operation kinds are counted first, so a

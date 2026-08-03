@@ -87,6 +87,9 @@ CONFIGS = [
             "gemv.K0": 512,  # mramCol / taskletCols
             "gemv.M1": 8,  # wramRow
             "gemv.K1": 64,  # wramCol
+            # The workgroup mapping: k-tile index outermost, so the tasklets of
+            # a DPU split rows and share the vector (taskletCols = 1).
+            "gemv.order": 0,
         },
         fn_module=source,
         prim="gemv",
@@ -103,6 +106,9 @@ CONFIGS = [
             "gemv.K0": 512,  # mramCol / taskletCols
             "gemv.M1": 8,  # wramRow
             "gemv.K1": 64,  # wramCol
+            # The workgroup mapping: k-tile index outermost, so the tasklets of
+            # a DPU split rows and share the vector (taskletCols = 1).
+            "gemv.order": 0,
         },
         fn_module=source,
         prim="gemv",
@@ -117,11 +123,11 @@ CONFIGS = [
         fn_name="gemv_64MB",
         # This one is the atim2048 optimum,
         # expressed as a point in the cinm2
-        # search space. The fact it corresponds
-        # precisely to the ATiM optimum is
-        # due to the specific workgroup mapping
-        # strategy CINM2 assumes - that isn't a
-        # parameter of the search space yet.
+        # search space. It corresponds precisely
+        # to the ATiM optimum because of the
+        # workgroup mapping strategy, which is
+        # now the gemv.order parameter below;
+        # 0 is the strategy CINM2 used to assume.
         label="atim2048optimum",
         params={
             "dpus": 2048,
@@ -130,6 +136,9 @@ CONFIGS = [
             "gemv.K0": 128,  # mramCol / taskletCols
             "gemv.M1": 8,  # wramRow
             "gemv.K1": 64,  # wramCol
+            # The workgroup mapping: k-tile index outermost, so the tasklets of
+            # a DPU split rows and share the vector (taskletCols = 1).
+            "gemv.order": 0,
         },
         fn_module=source,
         prim="gemv",
@@ -147,6 +156,9 @@ CONFIGS = [
             "gemv.K0": 128,  # mramCol / taskletCols
             "gemv.M1": 8,  # wramRow
             "gemv.K1": 64,  # wramCol
+            # The workgroup mapping: k-tile index outermost, so the tasklets of
+            # a DPU split rows and share the vector (taskletCols = 1).
+            "gemv.order": 0,
         },
         fn_module=source,
         prim="gemv",

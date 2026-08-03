@@ -48,7 +48,9 @@ def ConvertLinalgToCnmPass : Pass<"convert-linalg-to-cnm"> {
       varies fastest across the leaves, which decides what the leaves sharing
       a hardware node share rather than replicate. That defaults to the rule
       of §G3 and is otherwise given by `workgroup-dim-order` or
-      `workgroup-dim-order-index`.
+      `workgroup-dim-order-index` — or, per op, by the `cnm.workgroup_dim_order`
+      / `cnm.workgroup_dim_order_index` attributes, which take precedence over
+      both options.
     }];
     let constructor = "mlir::cnm::createConvertLinalgToCnmPass()";
     let dependentDialects = [

@@ -98,6 +98,16 @@ static SpaceValue spaceValue(const cinm::SpaceExprBase<E> &expr) {
   return [copy](const cinm::ConfWrapper &c) { return copy.eval(c); };
 }
 
+/// `n!`. Only ever called on an iteration rank, which is 1 (elementwise), 2
+/// (gemv) or 3 (gemm) in everything we lower today.
+static int64_t factorial(unsigned n) {
+  assert(n <= 20 && "factorial would overflow");
+  int64_t result = 1;
+  for (unsigned i = 2; i <= n; ++i)
+    result *= i;
+  return result;
+}
+
 /// UPMEM-specific inference options. Wraps the generic InferenceOptions and
 /// provides a place to add UPMEM-specific knobs in the future.
 struct UpmemInferenceOptions {
@@ -400,10 +410,11 @@ struct UpmemInferencePlugin : cinm::InferencePlugin {
   /// Record the search parameters `op`'s lowering needs. `op` belongs to the
   /// reference clone; see opParams_ for how it is found again in a trial.
   void recordParams(unsigned walkIndex, ArrayRef<SpaceValue> outerTile,
-                    ArrayRef<SpaceValue> leafTile) {
+                    ArrayRef<SpaceValue> leafTile, SpaceValue order = {}) {
     OpSearchParams params;
     params.outerTile.assign(outerTile.begin(), outerTile.end());
     params.leafTile.assign(leafTile.begin(), leafTile.end());
+    params.order = std::move(order);
     opParams_.push_back({walkIndex, std::move(params)});
   }
 
@@ -603,6 +614,9 @@ private:
     /// decides how the launch body walks its buffers through the leaf memory
     /// level.
     SmallVector<SpaceValue> leafTile;
+    /// Which tile dimension varies fastest across the leaves, as a rank among
+    /// the distinct orders (design §G3). Empty for ops with nothing to order.
+    SpaceValue order;
   };
 
   /// Search parameters per op, keyed by the op's position in a pre-order walk
@@ -647,6 +661,14 @@ private:
       if (!it->second->leafTile.empty())
         op->setAttr(UPMEMDialect::LEAF_TILE_SIZES_NAME,
                     DenseI64ArrayAttr::get(ctx, resolve(it->second->leafTile)));
+      // The index form rather than the permutation: the order is stated over
+      // the dimensions the op has *after* --convert-linalg-to-cnm splits its
+      // reductions, which have not been created yet, whereas the rank is the
+      // same number here and there.
+      if (it->second->order)
+        op->setAttr(cnm::CnmDialect::WORKGROUP_DIM_ORDER_INDEX_NAME,
+                    IntegerAttr::get(IntegerType::get(ctx, 64),
+                                     it->second->order(trial.conf())));
       ++stamped;
     });
 
@@ -834,12 +856,51 @@ void UpmemInferencePlugin::handleLinalgOp(linalg::LinalgOp op,
       },
       "sum of leaf tiles <= WRAM (assuming maximal sharing)");
 
+  // Which tile dimension varies fastest across the leaves (design §G3). The
+  // one parameter here that is not a size: it decides what the leaves sharing
+  // a hardware node share rather than replicate, which the block sizes cannot
+  // state. `<op>.order` ranks the distinct orders lexicographically, with the
+  // default rule at 0.
+  //
+  // The domain is `numLoops!` because the reduction split leaves at most one
+  // distributed dimension per iteration dimension: a split dimension carries
+  // the tile count and its remainder is left with 1. How many there actually
+  // are depends on the block sizes, so the rest of the range is pruned by a
+  // predicate -- an index the op has no order for is a configuration the space
+  // does not offer, not a trial that fails.
+  SpaceValue order;
+  if (extents->size() >= 2) {
+    // The templates implement one fixed mapping and read the rest of this
+    // space through a projection (§H5). Declaring the variable for them too
+    // keeps one space and one set of parameter names across both paths;
+    // pinning it to 0 keeps the search from spending trials on a parameter
+    // that path ignores.
+    int64_t numOrders = opts.lowering == UpmemLoweringPath::TEMPLATES
+                            ? 1
+                            : factorial(extents->size());
+    SpaceVar orderVar =
+        b.intRange((namePrefix + ".order").str(), 0, numOrders - 1);
+    b.require(
+        [=](const cinm::ConfWrapper &c) -> bool {
+          unsigned distributed = 0;
+          for (auto [extent, block] : llvm::zip_equal(extentsCopy, blocks)) {
+            int64_t blockValue = block[c];
+            if (blockValue > 0 && extent % blockValue == 0 &&
+                extent / blockValue > 1)
+              ++distributed;
+          }
+          return orderVar[c] < factorial(distributed);
+        },
+        "order < (number of dimensions spread over the workgroup)!");
+    order = spaceValue(orderVar);
+  }
+
   SmallVector<SpaceValue> outerTile, leafTile;
   for (const SpaceVar &var : blocks)
     outerTile.push_back(spaceValue(var));
   for (const SpaceVar &var : leaves)
     leafTile.push_back(spaceValue(var));
-  recordParams(walkIndex, outerTile, leafTile);
+  recordParams(walkIndex, outerTile, leafTile, order);
 
   // The hand-written templates read this same space through a projection.
   // Dispatch on which cinm op this came from rather than on the linalg op's

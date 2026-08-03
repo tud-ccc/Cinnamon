@@ -1,5 +1,5 @@
 // RUN: cinm-opt %s --cinm-isolate-compute-blocks \
-// RUN:   --upmem-infer-accelerator="lowering=generic simulator=op-count eval-solution=dpus=2048,tasklets=8,gemv.M0=8,gemv.K0=128,gemv.M1=8,gemv.K1=64" \
+// RUN:   --upmem-infer-accelerator="lowering=generic simulator=op-count eval-solution=dpus=2048,tasklets=8,gemv.M0=8,gemv.K0=128,gemv.M1=8,gemv.K1=64,gemv.order=0" \
 // RUN: | FileCheck %s
 
 // The configuration that motivated the whole §G redesign, lowered end to end
