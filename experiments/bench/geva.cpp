@@ -34,11 +34,11 @@ void upmemrt_dump_stats(const char *prefix);
 
 static size_t M() {
   const char *fn = TOSTR(BENCH_FN);
-  if (!strcmp(fn, "va_4MB"))
+  if (!strcmp(fn, "geva_4MB"))
     return 1048576;
-  if (!strcmp(fn, "va_64MB"))
+  if (!strcmp(fn, "geva_64MB"))
     return 16777216;
-  if (!strcmp(fn, "va_256MB"))
+  if (!strcmp(fn, "geva_256MB"))
     return 67108864;
   fprintf(stderr, "mtv.cpp: unknown function '%s' — add it to spec()\n", fn);
   exit(1);

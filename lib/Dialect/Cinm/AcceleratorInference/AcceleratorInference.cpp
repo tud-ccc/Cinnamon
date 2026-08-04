@@ -230,6 +230,14 @@ bool ConfigSpace::isValid(const Configuration &config) const {
   return true;
 }
 
+arma::urowvec
+ConfigSpace::evalVecConstraintsMask(const ConfigurationVector &cv) const {
+  arma::urowvec mask(cv.size(), arma::fill::ones);
+  for (auto &[desc, c] : vecConstraints)
+    mask %= c(cv); // elementwise AND (both operands are 0/1)
+  return mask;
+}
+
 bool ConfigSpace::debugIsValid(const Configuration &config,
                                raw_ostream &os) const {
   if (config.size() != params.size()) {

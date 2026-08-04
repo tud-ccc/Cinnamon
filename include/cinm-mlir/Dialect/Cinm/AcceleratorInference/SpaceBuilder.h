@@ -46,6 +46,11 @@ public:
   int64_t idx() const { return *idx_; }
   int64_t get(const ConfWrapper &c) const { return c[*idx_]; }
   int64_t operator[](const ConfWrapper &c) const { return get(c); }
+  /// Vectorized form: the contiguous row of this dimension's values across
+  /// every configuration in the batch.
+  const arma::Row<int64_t> &operator[](const ConfigurationVector &c) const {
+    return c[*idx_];
+  }
   /// Upper bound of this variable's domain. Used by divisorsOf(name, SpaceVar).
   int64_t maxVal() const { return maxVal_; }
 
@@ -356,6 +361,11 @@ public:
   /// `description` is optional; it is reported by ConfigSpace::debugIsValid()
   /// when the predicate rejects a configuration.
   void require(Constraint pred, llvm::StringRef description = "");
+  /// Register a vectorized pre-filter alongside the (still authoritative)
+  /// per-configuration constraints. Purely additive: it never replaces a
+  /// require() call, it only lets the search skip the scalar isValid() check
+  /// for configurations it can already reject in bulk. See VecConstraint.
+  void requireVec(VecConstraint pred, llvm::StringRef description = "");
 
   /// Walk expr for / nodes; each one is extracted as a static, structural, or
   /// dynamic divisibility constraint (see addDivConstraint).
@@ -415,6 +425,7 @@ private:
   std::vector<DimEntry> dims_;
   std::vector<MultiplesEntry> multiples_;
   std::vector<std::pair<std::string, Constraint>> predicates_;
+  std::vector<std::pair<std::string, VecConstraint>> vecPredicates_;
 
   DimEntry &findEntry(const SpaceVar &v);
   SpaceVar findVarByName(llvm::StringRef name) const;

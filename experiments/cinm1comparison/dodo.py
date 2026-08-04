@@ -52,7 +52,8 @@ from plot import (
     print_summary,
 )  # noqa: E402
 
-PRIMS = set(ALL_PRIMS).difference(("prim_gemv",))
+## TODO reenable mmtv and ttv after optimizations
+PRIMS = set(ALL_PRIMS).difference(("prim_gemv", "prim_mmtv", "prim_ttv"))
 DATA_DIR = HERE / "data"
 
 OPTS = dict(

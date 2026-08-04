@@ -77,6 +77,10 @@ void SpaceBuilder::require(Constraint pred, llvm::StringRef description) {
   predicates_.push_back({description.str(), std::move(pred)});
 }
 
+void SpaceBuilder::requireVec(VecConstraint pred, llvm::StringRef description) {
+  vecPredicates_.push_back({description.str(), std::move(pred)});
+}
+
 // ===----------------------------------------------------------------------===//
 // SpaceBuilder::buildInto
 // ===----------------------------------------------------------------------===//
@@ -213,6 +217,11 @@ void SpaceBuilder::buildInto(ConfigSpace &space) {
                           << predicates_.size() << "\n");
   for (auto &[desc, pred] : predicates_)
     space.addConstraint(Constraint(pred), desc);
+
+  LLVM_DEBUG(llvm::dbgs() << "[cinm-space]   vectorized predicates: "
+                          << vecPredicates_.size() << "\n");
+  for (auto &[desc, pred] : vecPredicates_)
+    space.addVecConstraint(VecConstraint(pred), desc);
 }
 
 } // namespace mlir::cinm
