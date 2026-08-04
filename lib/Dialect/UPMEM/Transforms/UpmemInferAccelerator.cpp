@@ -603,24 +603,45 @@ struct UpmemInferencePlugin : cinm::InferencePlugin {
       return DType::I64;
     assert(false && "unsuported datatye");
   }
-  static DiagnosedSilenceableFailure
-  runPipeline(PassManager *pipeline, Location loc, ModuleOp module) {
+  /// Whether to print why an individual trial's pipeline failed.
+  ///
+  /// During a search a rejected trial is ordinary, not an event: exhaustive
+  /// and sampling runs reject thousands of them, and evaluate them on many
+  /// threads at once. llvm::dbgs() offers no atomicity beyond a single write,
+  /// so these multi-part messages (a prefix, the diagnostic, then a whole
+  /// module dump) interleave mid-line across threads and shred the log --
+  /// including the parts of it that are worth reading.
+  ///
+  /// They are wanted in exactly one case: a configuration pinned with
+  /// eval-solution, where "why was this rejected" is the question being asked.
+  /// Everywhere else the reason still reaches the caller through the
+  /// silenceable failure below, it is just not printed per trial.
+  bool logTrialDiagnostics() const {
+    return opts.inference.evalSingleSolution.has_value();
+  }
+
+  DiagnosedSilenceableFailure runPipeline(PassManager *pipeline, Location loc,
+                                          ModuleOp module) const {
     // Diagnostics are swallowed because a rejected trial is ordinary during a
     // search -- but the first error is kept, so that the reason surfaces in
     // the failure a pinned `eval-solution` reports. Without it every rejection
     // reads "Pipeline failed", including the occupancy check's.
     std::string reason;
+    const bool verbose = logTrialDiagnostics();
     ScopedDiagnosticHandler scopedHandler(
-        pipeline->getContext(), [&reason](Diagnostic &diag) {
+        pipeline->getContext(), [&reason, verbose](Diagnostic &diag) {
           if (reason.empty() && diag.getSeverity() == DiagnosticSeverity::Error)
             reason = diag.str();
-          LLVM_DEBUG(llvm::dbgs()
-                         << "[cinm-inference]   pipeline failed:\n      ";
-                     diag.print(llvm::dbgs()); llvm::dbgs() << "\n";);
+          if (verbose)
+            LLVM_DEBUG(llvm::dbgs()
+                           << "[cinm-inference]   pipeline failed:\n      ";
+                       diag.print(llvm::dbgs()); llvm::dbgs() << "\n";);
           return success();
         });
     if (mlir::failed(pipeline->run(module))) {
-      LLVM_DEBUG(module->print(llvm::dbgs()); llvm::dbgs() << "\n========\n";);
+      if (verbose)
+        LLVM_DEBUG(module->print(llvm::dbgs());
+                   llvm::dbgs() << "\n========\n";);
       if (reason.empty())
         return mlir::emitSilenceableFailure(loc, "Pipeline failed");
       return mlir::emitSilenceableFailure(loc, "Pipeline failed: " + reason);
@@ -774,8 +795,12 @@ private:
             trial.conf()[llvm::cast<StringAttr>(nameAttr).strref()]);
 
       auto tileSizesAttr = DenseI64ArrayAttr::get(op->getContext(), tileSizes);
-      LLVM_DEBUG(llvm::dbgs() << "[cinm-inference]   tiling " << op->getName()
-                              << " with " << tileSizesAttr << "\n");
+      // Per-trial and per-op: on a search this is one line per tiled op per
+      // configuration, emitted from every worker thread. See
+      // logTrialDiagnostics().
+      if (logTrialDiagnostics())
+        LLVM_DEBUG(llvm::dbgs() << "[cinm-inference]   tiling " << op->getName()
+                                << " with " << tileSizesAttr << "\n");
       op->setAttr(cinm::CinmDialect::TILING_FACTORS_NAME, tileSizesAttr);
     });
   }
@@ -986,15 +1011,6 @@ void UpmemInferencePlugin::handleLinalgOp(linalg::LinalgOp op,
             distributed += dimDistributed;
           }
 
-          // factorial() has no simple vectorized form, but `distributed`
-          // counts dimensions spread over the workgroup, so it is bounded by
-          // the number of iteration dimensions -- a handful at most. Walk
-          // that range directly, carrying the factorial forward from the
-          // previous stop, and settle every lane at a stop in one shot,
-          // instead of recomputing factorial(distributed[i]) per lane.
-          // Enumerating the bound also beats discovering the distinct values
-          // with arma::unique, which would sort the whole row (O(n log n)) to
-          // recover at most numDims+1 stops.
           const cinm::ParmVector &orderRow = orderVar[c];
           const uint64_t maxDistributed =
               static_cast<uint64_t>(extentsCopy.size());
