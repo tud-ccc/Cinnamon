@@ -91,6 +91,69 @@ void SpaceBuilder::require(Expr expr, llvm::StringRef description) {
   std::string desc =
       description.empty() ? describeNode(*node) : description.str();
   require(toVecConstraint(node), desc);
+  // Keep the tree so buildInto can analyse it; require(VecConstraint) has
+  // just pushed the entry.
+  predicates_.back().node = node;
+}
+
+void SpaceBuilder::reportConstraintAnalysis(const ConfigSpace &space) const {
+  std::vector<std::string> names;
+  for (const auto &p : space.params)
+    names.push_back(p.name);
+
+  // Joint number of values the variables of a monomial can take together --
+  // the size of the sub-space the encoding would have to enumerate for it.
+  auto jointCardinality = [&](const Monomial &m) -> size_t {
+    std::set<size_t> distinct(m.vars.begin(), m.vars.end());
+    size_t n = 1;
+    for (size_t v : distinct)
+      n *= space[v].cardinality();
+    return n;
+  };
+
+  for (const auto &entry : predicates_) {
+    if (!entry.node)
+      continue; // opaque predicate, nothing to analyse
+    auto eq = matchProductEquality(*entry.node);
+    if (!eq) {
+      llvm::dbgs() << "[cinm-analysis]   not Form A: " << entry.description
+                   << "\n";
+      continue;
+    }
+
+    const size_t lhsCard = jointCardinality(eq->lhs);
+    const size_t rhsCard = jointCardinality(eq->rhs);
+    llvm::dbgs() << "[cinm-analysis]   Form A: "
+                 << describeMonomial(eq->lhs, names)
+                 << " == " << describeMonomial(eq->rhs, names) << "\n";
+    llvm::dbgs() << "[cinm-analysis]     joint cardinality: lhs=" << lhsCard
+                 << " rhs=" << rhsCard << "\n";
+
+    // Overlapping variables mean neither side determines the other.
+    std::set<size_t> lhsVars(eq->lhs.vars.begin(), eq->lhs.vars.end());
+    bool overlap = llvm::any_of(
+        eq->rhs.vars, [&](size_t v) { return lhsVars.count(v) != 0; });
+    if (overlap) {
+      llvm::dbgs() << "[cinm-analysis]     -> not solvable: a variable occurs "
+                      "on both sides\n";
+      continue;
+    }
+    if (eq->lhs.vars.empty() && eq->rhs.vars.empty()) {
+      llvm::dbgs() << "[cinm-analysis]     -> constant equality\n";
+      continue;
+    }
+
+    // Enumerate the smaller side, solve for the larger (see the direction rule
+    // in docs/ConstraintAnalysisDesign.md).
+    const bool solveRhs = rhsCard >= lhsCard;
+    const Monomial &key = solveRhs ? eq->lhs : eq->rhs;
+    const Monomial &solved = solveRhs ? eq->rhs : eq->lhs;
+    llvm::dbgs() << "[cinm-analysis]     -> enumerate {"
+                 << describeMonomial(key, names) << "} ("
+                 << (solveRhs ? lhsCard : rhsCard) << " combos), solve for {"
+                 << describeMonomial(solved, names) << "} (removes "
+                 << (solveRhs ? rhsCard : lhsCard) << "x enumeration)\n";
+  }
 }
 
 void SpaceBuilder::extractDivConstraints(const ConstraintNodePtr &node) {
@@ -274,6 +337,11 @@ void SpaceBuilder::buildInto(ConfigSpace &space) {
           valid %= vecDivides(parent[c], child[c]);
         },
         parent.name().str() + " | " + child.name().str());
+
+  // Analysis pass: variable indices are assigned by now, so DSL-registered
+  // constraints can be matched against the forms the encoding knows how to
+  // exploit. Reporting only -- see docs/ConstraintAnalysisDesign.md, stage 4.
+  LLVM_DEBUG(reportConstraintAnalysis(space));
 
   // Phase 3: dynamic predicates. Each entry holds exactly one form; the
   // scalar overload of addConstraint vectorizes it per lane.
