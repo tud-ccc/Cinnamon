@@ -56,7 +56,11 @@ CandidatePool::CandidatePool(const ConfigSpace &space, size_t evalBudget,
                              std::shared_ptr<SharedState> shared,
                              bool exhaustive)
     : space_(&space), N(space.totalSize()), shared(std::move(shared)),
-      Xo(space.size(), evalBudget), yo(1, evalBudget), exhaustive(exhaustive) {}
+      // Exhaustive search never reads/writes Xo/yo (see recordObservation);
+      // its evalBudget is the full totalSize(), which would otherwise try to
+      // allocate a dense D×N matrix for a matrix that's never used.
+      Xo(space.size(), exhaustive ? 0 : evalBudget),
+      yo(1, exhaustive ? 0 : evalBudget), exhaustive(exhaustive) {}
 
 CandidatePool::~CandidatePool() = default;
 
@@ -72,12 +76,12 @@ void CandidatePool::recordObservation(size_t idx, double cost, size_t iter,
                                       std::chrono::milliseconds evalTime,
                                       uint64_t cpuTimeMs) {
   // assert(!std::isnan(cost));
-  if (nObs >= Xo.n_cols) {
-    const size_t newCols = Xo.n_cols + 32;
-    Xo.resize(Xo.n_rows, newCols);
-    yo.resize(1, newCols);
-  }
   if (!exhaustive) {
+    if (nObs >= Xo.n_cols) {
+      const size_t newCols = Xo.n_cols + 32;
+      Xo.resize(Xo.n_rows, newCols);
+      yo.resize(1, newCols);
+    }
     Configuration conf;
     space_->at(idx, conf);
     for (size_t d = 0; d < space_->size(); ++d)
