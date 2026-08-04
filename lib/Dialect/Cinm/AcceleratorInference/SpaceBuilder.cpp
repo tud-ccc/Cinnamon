@@ -14,19 +14,19 @@ namespace mlir::cinm {
 // SpaceBuilder — dimension declaration
 // ===----------------------------------------------------------------------===//
 
-SpaceVar SpaceBuilder::intRange(llvm::StringRef name, int64_t lo, int64_t hi) {
+SpaceVar SpaceBuilder::intRange(llvm::StringRef name, ParmValue lo, ParmValue hi) {
   SpaceVar v(name, hi);
   dims_.push_back({v, DimEntry::IntRange, lo, hi, {}});
   return v;
 }
 
-SpaceVar SpaceBuilder::pow2Range(llvm::StringRef name, int expLo, int expHi) {
-  SpaceVar v(name, int64_t{1} << expHi);
+SpaceVar SpaceBuilder::pow2Range(llvm::StringRef name, ParmValue expLo, ParmValue expHi) {
+  SpaceVar v(name, ParmValue{1} << expHi);
   dims_.push_back({v, DimEntry::Pow2, expLo, expHi, {}});
   return v;
 }
 
-SpaceVar SpaceBuilder::divisorsOf(llvm::StringRef name, int64_t n) {
+SpaceVar SpaceBuilder::divisorsOf(llvm::StringRef name, ParmValue n) {
   SpaceVar v(name, n);
   dims_.push_back({v, DimEntry::DivisorsOfConst, 1, n, {n}});
   return v;
@@ -64,7 +64,7 @@ int SpaceBuilder::dimIndexByName(llvm::StringRef name) const {
 // SpaceBuilder — constraint declaration
 // ===----------------------------------------------------------------------===//
 
-void SpaceBuilder::mustDivide(SpaceVar v, int64_t n) {
+void SpaceBuilder::mustDivide(SpaceVar v, ParmValue n) {
   if (!ShapedType::isDynamic(n))
     findEntry(v).divisorFilters.push_back(n);
 }
@@ -73,12 +73,12 @@ void SpaceBuilder::mustDivide(SpaceVar parent, SpaceVar child) {
   multiples_.push_back({parent.name_, child.name_});
 }
 
-void SpaceBuilder::require(Constraint pred, llvm::StringRef description) {
+void SpaceBuilder::require(VecConstraint pred, llvm::StringRef description) {
   predicates_.push_back({description.str(), std::move(pred)});
 }
 
-void SpaceBuilder::requireVec(VecConstraint pred, llvm::StringRef description) {
-  vecPredicates_.push_back({description.str(), std::move(pred)});
+void SpaceBuilder::require(Constraint pred, llvm::StringRef description) {
+  predicates_.push_back({description.str(), std::move(pred)});
 }
 
 // ===----------------------------------------------------------------------===//
@@ -88,7 +88,8 @@ void SpaceBuilder::requireVec(VecConstraint pred, llvm::StringRef description) {
 void SpaceBuilder::buildInto(ConfigSpace &space) {
   LLVM_DEBUG(llvm::dbgs() << "[cinm-space] building config space:\n");
 
-  // Phase 1: build each SearchParam, deduplicate + apply static filters, addDim.
+  // Phase 1: build each SearchParam, deduplicate + apply static filters,
+  // addDim.
   for (auto &entry : dims_) {
     SearchParam param = [&]() -> SearchParam {
       switch (entry.kind) {
@@ -105,7 +106,7 @@ void SpaceBuilder::buildInto(ConfigSpace &space) {
     entry.divisorFilters.erase(
         std::unique(entry.divisorFilters.begin(), entry.divisorFilters.end()),
         entry.divisorFilters.end());
-    for (int64_t n : entry.divisorFilters)
+    for (ParmValue n : entry.divisorFilters)
       param.keepDivisorsOf(n);
 
     LLVM_DEBUG({
@@ -169,11 +170,11 @@ void SpaceBuilder::buildInto(ConfigSpace &space) {
 
     // Detect mutual divisibility: A|B AND B|A → implies A == B.
     if (multsSet.count({m.child, m.parent})) {
-      LLVM_DEBUG(llvm::dbgs()
-                 << "[cinm-space]   WARNING: mutual divisibility '" << m.parent
-                 << "' | '" << m.child << "' AND '" << m.child << "' | '"
-                 << m.parent
-                 << "'  (implies equality; replacing both with dynamic A==B)\n");
+      LLVM_DEBUG(
+          llvm::dbgs()
+          << "[cinm-space]   WARNING: mutual divisibility '" << m.parent
+          << "' | '" << m.child << "' AND '" << m.child << "' | '" << m.parent
+          << "'  (implies equality; replacing both with dynamic A==B)\n");
       handled.insert({m.parent, m.child});
       handled.insert({m.child, m.parent});
       equalityFallbacks.push_back(
@@ -203,25 +204,27 @@ void SpaceBuilder::buildInto(ConfigSpace &space) {
   // Add fallback dynamic predicates.
   for (auto [va, vb] : equalityFallbacks)
     space.addConstraint(
-        [va, vb](const ConfWrapper &c) { return va[c] == vb[c]; },
+        [va, vb](const ConfigurationVector &c, arma::urowvec &valid) {
+          valid %= va[c] == vb[c];
+        },
         va.name().str() + " == " + vb.name().str());
   for (auto [parent, child] : dynamicDivFallbacks)
     space.addConstraint(
-        [parent, child](const ConfWrapper &c) {
-          return child[c] % parent[c] == 0;
+        [parent, child](const ConfigurationVector &c, arma::urowvec &valid) {
+          valid %= vecDivides(parent[c], child[c]);
         },
         parent.name().str() + " | " + child.name().str());
 
-  // Phase 3: dynamic predicates.
+  // Phase 3: dynamic predicates. Each entry holds exactly one form; the
+  // scalar overload of addConstraint vectorizes it per lane.
   LLVM_DEBUG(llvm::dbgs() << "[cinm-space]   dynamic predicates: "
                           << predicates_.size() << "\n");
-  for (auto &[desc, pred] : predicates_)
-    space.addConstraint(Constraint(pred), desc);
-
-  LLVM_DEBUG(llvm::dbgs() << "[cinm-space]   vectorized predicates: "
-                          << vecPredicates_.size() << "\n");
-  for (auto &[desc, pred] : vecPredicates_)
-    space.addVecConstraint(VecConstraint(pred), desc);
+  for (auto &entry : predicates_)
+    std::visit(
+        [&](auto &pred) {
+          space.addConstraint(std::move(pred), entry.description);
+        },
+        entry.pred);
 }
 
 } // namespace mlir::cinm

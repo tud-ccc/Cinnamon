@@ -97,10 +97,11 @@ void CandidatePool::computeValidMask(const ConfigSpace &space,
       [](const ConfigSpace &space, size_t lo, size_t hi) -> SharedState {
         SharedState s;
         const size_t n = hi - lo;
-        // Materialize the whole chunk as a batch, so any registered
-        // VecConstraints can reject most of it in one vectorized pass before
-        // paying the per-configuration cost of the (always authoritative)
-        // scalar isValid() below.
+        // Materialize the whole chunk as a batch and evaluate every
+        // constraint's vectorized form once over it. This mask is already
+        // authoritative -- isValid() is itself defined in terms of the same
+        // vectorized constraints (see ConfigSpace::isValid) -- so there is no
+        // separate scalar re-check to run afterwards.
         ConfigurationVector cv(space.size(), n);
         size_t col = 0;
         space.forEachChunk(lo, hi, [&](const Configuration &conf, size_t) {
@@ -109,16 +110,12 @@ void CandidatePool::computeValidMask(const ConfigSpace &space,
         });
         arma::urowvec mask = space.evalVecConstraintsMask(cv);
 
-        Configuration conf;
         for (size_t j = 0; j < n; ++j) {
           if (!mask[j])
             continue;
           size_t i = lo + j;
-          space.at(i, conf);
-          if (space.isValid(conf)) {
-            s.validMask.insert(i);
-            s.validIndices.push_back(i);
-          }
+          s.validMask.insert(i);
+          s.validIndices.push_back(i);
         }
         return s;
       });
@@ -626,7 +623,7 @@ void CandidatePool::dumpToCSV(const ConfigSpace &space,
     if (!isValid(i) || (!opts.dumpFullPool && !isVisited(i)))
       return true;
 
-    for (int64_t v : conf)
+    for (ParmValue v : conf)
       out << v << ",";
     out << (visited.count(i) ? 1 : 0) << ",1,";
     auto cit = costByIdx.find(i);
@@ -741,7 +738,7 @@ void ValidationSet::dumpToCSV(std::filesystem::path path) const {
   for (const auto &snap : snapshots) {
     for (size_t j = 0; j < snap.mu.n_elem; ++j) {
       space_->at(indices[j], conf);
-      for (int64_t v : conf)
+      for (ParmValue v : conf)
         out << v << ",";
       out << trueCosts[j] << "," << snap.iter << "," << snap.mu(j) << ","
           << snap.sigma(j) << "\n";

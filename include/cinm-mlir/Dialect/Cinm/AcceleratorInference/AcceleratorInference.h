@@ -2,8 +2,8 @@
 
 #include "cinm-mlir/Dialect/Cinm/IR/CinmAttributes.h"
 #include "cinm-mlir/Dialect/Cinm/IR/CinmOps.h"
-#include <cinm-mlir/Utils/Scheduling/SchedulingSupport.h>
 #include <armadillo>
+#include <cinm-mlir/Utils/Scheduling/SchedulingSupport.h>
 #include <cstdint>
 #include <functional>
 #include <initializer_list>
@@ -25,19 +25,23 @@ class Operation;
 
 namespace mlir::cinm {
 
+  using ParmValue = int32_t;
+  using ParmVector = arma::Row<ParmValue>;
+
+
 // ===----------------------------------------------------------------------===//
 // Configuration space types
 // ===----------------------------------------------------------------------===//
 
 /// Contiguous integer range [lo, hi] sampled at multiples of step.
 struct IntRange {
-  int64_t lo, hi;
-  int64_t step = 1;
+  ParmValue lo, hi;
+  ParmValue step = 1;
 };
 
 /// Explicit discrete value set.
 struct ValueList {
-  std::vector<int64_t> values;
+  std::vector<ParmValue> values;
 };
 
 /// One dimension of the search space.
@@ -56,30 +60,30 @@ struct SearchParam {
   double dlo() const;
   double dhi() const;
   /// Number of distinct values this parameter can take.
-  int64_t cardinality() const;
+  size_t cardinality() const;
   /// Map a continuous sample in [dlo, dhi] to the nearest valid discrete value.
-  int64_t discretize(double v) const;
+  ParmValue discretize(double v) const;
   /// Map a value to its feature
-  double featurize(int64_t n) const;
+  double featurize(ParmValue n) const;
 
   /// Return the i-th distinct value of this parameter (0-indexed).
-  int64_t valueAt(size_t subIdx) const;
+  ParmValue valueAt(size_t subIdx) const;
   /// Return the sub-index of value within this parameter's domain (inverse of
   /// valueAt).
-  size_t subIndexOf(int64_t value) const;
+  size_t subIndexOf(ParmValue value) const;
 
   /// Retain only values that evenly divide n; converts a range to a ValueList.
-  SearchParam &keepDivisorsOf(int64_t n);
+  SearchParam &keepDivisorsOf(ParmValue n);
 };
 
 /// Factory functions — build a SearchParam without adding it to a space yet.
 /// Use ConfigSpace::addDim to register the result.
-SearchParam makeRange(StringRef name, int64_t lo, int64_t hi, int64_t step = 1);
-SearchParam makePow2Range(StringRef name, int64_t loExp, int64_t hiExp);
-SearchParam makeValues(StringRef name, std::vector<int64_t> values);
+SearchParam makeRange(StringRef name, ParmValue lo, ParmValue hi, ParmValue step = 1);
+SearchParam makePow2Range(StringRef name, ParmValue loExp, ParmValue hiExp);
+SearchParam makeValues(StringRef name, std::vector<ParmValue> values);
 
 /// A concrete assignment — one int64_t per SearchParam, in ConfigSpace order.
-using Configuration = std::vector<int64_t>;
+using Configuration = std::vector<ParmValue>;
 
 struct ConfigSpace;
 struct ConfWrapper;
@@ -96,7 +100,7 @@ using Constraint = std::function<bool(const ConfWrapper)>;
 /// Storing one contiguous arma::Row per dimension instead means every slice a
 /// constraint operates on is a real contiguous SIMD-friendly buffer.
 struct ConfigurationVector {
-  std::vector<arma::Row<int64_t>> dims;
+  std::vector<ParmVector> dims;
 
   ConfigurationVector(size_t numDims, size_t n) : dims(numDims) {
     for (auto &row : dims)
@@ -112,17 +116,53 @@ struct ConfigurationVector {
       dims[d][col] = conf[d];
   }
 
-  const arma::Row<int64_t> &operator[](size_t dimIdx) const {
+  const ParmVector &operator[](size_t dimIdx) const {
     return dims[dimIdx];
+  }
+
+  ParmVector ones() const {
+    return ParmVector(size(), arma::fill::ones);
+  }
+  ParmVector zeros() const {
+    return ParmVector(size(), arma::fill::zeros);
   }
 };
 
 /// Vectorized predicate: evaluates a constraint over a whole batch of
-/// configurations at once, returning a 0/1 mask (1 = passes) with one entry
-/// per column of the batch. Used as a fast pre-filter ahead of the
-/// authoritative per-configuration Constraint — see
-/// ConfigSpace::evalVecConstraintsMask.
-using VecConstraint = std::function<arma::urowvec(const ConfigurationVector &)>;
+/// configurations at once, AND-ing the second parameter with this
+/// constraint's validity result. A constraint is allowed to short
+/// circuit and avoid performing configuration for
+/// entries of that are already set to zero.
+using VecConstraint =
+    std::function<void(const ConfigurationVector &c, arma::urowvec &valid)>;
+
+/// Elementwise a / b, yielding 0 where b == 0. Matches the scalar OpDiv
+/// (`b ? a / b : 0`) and, more importantly, avoids the UB that plain
+/// elementwise division would hit — a vectorized constraint evaluates every
+/// lane, so it cannot short-circuit past a zero divisor the way the
+/// equivalent scalar predicate does.
+inline ParmVector vecSafeDiv(const ParmVector &a,
+                                     const ParmVector &b) {
+  arma::uvec zeros = arma::find(b == 0);
+  ParmVector safeB = b;
+  safeB.elem(zeros).ones();
+  ParmVector q = a / safeB;
+  q.elem(zeros).zeros();
+  return q;
+}
+
+/// Elementwise `b != 0 && a % b == 0` ("b divides a"), zero-safe as above.
+inline arma::urowvec vecDivides(const ParmVector &b,
+                                const ParmVector &a) {
+  arma::uvec zeros = arma::find(b == 0);
+  ParmVector safeB = b;
+  safeB.elem(zeros).ones();
+  // `%` is Armadillo's elementwise multiply, so this is a - (a / b) * b.
+  ParmVector rem = a - (a / safeB) % safeB;
+  arma::urowvec ok = (rem == 0);
+  ok.elem(zeros).zeros();
+  return ok;
+}
 
 /// Ordered collection of SearchParams that defines the search space.
 struct ConfigSpace {
@@ -130,9 +170,10 @@ struct ConfigSpace {
   /// Each constraint paired with a human-readable description of what it
   /// checks (e.g. "wramRow | mramRow"); empty if the constraint was added
   /// without one. Used by debugIsValid() to report violations.
-  std::vector<std::pair<std::string, Constraint>> constraints;
-  /// Vectorized twins of a subset of `constraints`; see addVecConstraint().
-  std::vector<std::pair<std::string, VecConstraint>> vecConstraints;
+  /// Constraints, stored as their vectorized form only (see VecConstraint and
+  /// addConstraint()) -- there is exactly one predicate per constraint, never
+  /// a separate scalar/vector pair.
+  std::vector<std::pair<std::string, VecConstraint>> constraints;
 
   /// A (parent, child) divisibility pair baked into the encoding.
   /// Every flat index produced by at() satisfies child_value % parent_value ==
@@ -141,7 +182,7 @@ struct ConfigSpace {
     size_t parentIdx;
     size_t childIdx;
     /// childValues[k] = sorted valid child values when parent has sub-index k.
-    std::vector<std::vector<int64_t>> childValues;
+    std::vector<std::vector<ParmValue>> childValues;
     /// cumCount[k] = sum of childValues[0..k-1].size(); cumCount.back() =
     /// total.
     std::vector<size_t> cumCount;
@@ -153,39 +194,38 @@ struct ConfigSpace {
   ConfigSpace(const ConfigSpace &) = delete;
 
   /// Add a fully-constructed SearchParam; returns its index in the space.
-  int64_t addDim(SearchParam &&param) {
-    int64_t idx = params.size();
+  size_t addDim(SearchParam &&param) {
+    size_t idx = params.size();
     params.push_back(std::move(param));
     encodingValid_ = false;
     return idx;
   }
 
-  std::pair<int64_t, int64_t> addDims(SmallVector<SearchParam> &&dims) {
-    int64_t start = params.size();
+  std::pair<size_t, size_t> addDims(SmallVector<SearchParam> &&dims) {
+    size_t start = params.size();
     for (auto &dim : dims)
       params.push_back(std::move(dim));
     encodingValid_ = false;
     return {start, (int64_t)params.size()};
   }
 
-  /// Register a predicate; configurations for which any constraint returns
-  /// false are skipped and never passed to the plugin for evaluation.
-  /// `description` is an optional human-readable label for the constraint,
-  /// reported by debugIsValid() when it is violated.
-  void addConstraint(Constraint &&constraint, std::string description = "") {
-    constraints.emplace_back(std::move(description), std::move(constraint));
-  }
-
-  /// Register a vectorized pre-filter; see VecConstraint. Purely an
-  /// optimization — isValid() remains the authoritative check, so a space
-  /// with no vectorized constraints (or a buggy one) is still correct, just
-  /// not faster.
-  void addVecConstraint(VecConstraint &&constraint,
-                        std::string description = "") {
-    vecConstraints.emplace_back(std::move(description), std::move(constraint));
-  }
-  /// AND every registered vecConstraint's mask together (all-ones, i.e. no
-  /// filtering, if none are registered).
+  /// Register a vectorized predicate; configurations whose lane any
+  /// constraint clears to 0 are skipped and never passed to the plugin for
+  /// evaluation. `description` is an optional human-readable label, reported
+  /// by debugIsValid() when the constraint rejects a configuration.
+  ///
+  /// Constraints are stored and evaluated only in this vectorized form; the
+  /// single-configuration check (isValid) is derived from it by evaluating a
+  /// one-lane batch. Prefer this overload — it is the one the search actually
+  /// runs, and the scalar view of it is free.
+  void addConstraint(VecConstraint &&constraint, std::string description = "");
+  /// Register a scalar predicate, vectorized automatically by evaluating it
+  /// once per lane of the batch. Convenience for constraints not worth
+  /// hand-vectorizing; there is still exactly one predicate registered, never
+  /// a scalar/vector pair that could drift out of sync.
+  void addConstraint(Constraint &&constraint, std::string description = "");
+  /// AND every registered constraint's vectorized mask together (all-ones,
+  /// i.e. everything passes, if none are registered).
   arma::urowvec evalVecConstraintsMask(const ConfigurationVector &cv) const;
 
   /// Register that params[childIdx] must be a multiple of params[parentIdx].
@@ -201,7 +241,7 @@ struct ConfigSpace {
   /// Index of param with the given name, or -1.
   int findIndex(llvm::StringRef name) const;
   /// Value of the named param in a configuration, or 0 if not found.
-  int64_t get(const Configuration &config, llvm::StringRef name) const;
+  ParmValue get(const Configuration &config, llvm::StringRef name) const;
   /// Return true iff all registered constraints accept this configuration.
   bool isValid(const Configuration &config) const;
   /// Like isValid(), but also prints the configuration and the description
@@ -227,8 +267,9 @@ struct ConfigSpace {
   /// parallelise a scan over the full space while keeping each chunk's
   /// per-step cost O(1) amortised (only the initial config at `lo` costs
   /// O(S), same as at()).
-  void forEachChunk(size_t lo, size_t hi,
-                    std::function<bool(const Configuration &, size_t)> fn) const;
+  void
+  forEachChunk(size_t lo, size_t hi,
+               std::function<bool(const Configuration &, size_t)> fn) const;
   /// Append to result all flat indices one discrete step away in any dimension.
   void neighborIndices(size_t idx, llvm::SmallVectorImpl<size_t> &result) const;
 
@@ -266,8 +307,8 @@ struct ConfWrapper {
       : space(space), conf(conf) {}
 
   /// Get the value of a variable
-  int64_t operator[](StringRef name) const { return space.get(conf, name); }
-  int64_t operator[](int64_t ix) const { return conf[ix]; }
+  ParmValue operator[](StringRef name) const { return space.get(conf, name); }
+  ParmValue operator[](size_t ix) const { return conf[ix]; }
 };
 
 inline raw_ostream &operator<<(raw_ostream &os, const ConfWrapper &wrapper) {
@@ -447,7 +488,7 @@ struct InferenceOptions {
   /// order is an implementation detail of the handlers, and a positional
   /// encoding silently reinterprets every stored configuration when it
   /// changes. Resolved against the space once it has been built.
-  std::optional<llvm::StringMap<int64_t>> evalSingleSolution;
+  std::optional<llvm::StringMap<ParmValue>> evalSingleSolution;
 };
 
 /// Entry point for Bayesian inference.
