@@ -120,8 +120,8 @@ func.func @forward(%token : index, %pos : index,
 
 		// SwiGLU non-linearity
     // hb[i] = hb2[i] * hb[i] * (1 / (1 + exp(-hb[i])))
-    %hb11 = linalg.map ins(%hb1, %hb2 : tensor<2048xf32>, tensor<2048xf32>) outs(%hb1 : tensor<2048xf32>)
-    (%hbi : f32, %hb2i : f32) {
+    %hb11 = linalg.map ins(%hb2 : tensor<2048xf32>) outs(%hb1 : tensor<2048xf32>)
+    (%hb2i : f32, %hbi: f32) {
 			%2 = arith.negf %hbi : f32
 			%3 = math.exp %2 : f32
 			%4 = arith.addf %c1f, %3 : f32

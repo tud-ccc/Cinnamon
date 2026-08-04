@@ -130,6 +130,8 @@ def UpmemInferAcceleratorPass : Pass<"upmem-infer-accelerator", "ModuleOp"> {
            "When true, only add candidates at exactly neighbor-depth steps away; "
            "otherwise add all points within that distance">,
     // UPMEM-specific options
+    Option<"debugPipeline", "debug-pipeline", "bool", "",
+           "Print debug info about the internal pipelines">,
     Option<"annotateOpCosts", "annotate-op-costs", "bool", "false",
            "Annotate each op in the committed region with its simulated cost "
            "via the 'upmem.sim_cost' attribute">,

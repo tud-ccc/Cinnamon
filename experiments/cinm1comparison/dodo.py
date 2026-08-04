@@ -41,7 +41,7 @@ EXPERIMENTS_DIR = HERE.parent
 sys.path.insert(0, str(EXPERIMENTS_DIR))
 
 
-from cinm_experiments import cinm1, cinmopt, compile_run, measurements, pools  # noqa: E402
+from cinm_experiments import cinm1, cinmopt, compile_run, measurements, pools, ALL_PRIMS  # noqa: E402
 from cinm_experiments.split_source import list_functions, split_source  # noqa: E402
 
 from plot import (
@@ -52,7 +52,7 @@ from plot import (
     print_summary,
 )  # noqa: E402
 
-PRIMS = ["prim_gemv", "prim_red"]
+PRIMS = set(ALL_PRIMS).difference(("prim_gemv",))
 DATA_DIR = HERE / "data"
 
 OPTS = dict(
@@ -220,7 +220,11 @@ def _screen_one(prim: str, fn_name: str, fn_module: pathlib.Path) -> bool:
         fn_module,
         screen_dir,
         workers=OPTS["workers"],
-        infer_opts={"use-mram-tiling": False, "simulator": OPTS["screen_sim"]},
+        infer_opts={
+            "use-mram-tiling": False,
+            "dump-full-pool": False,
+            "simulator": OPTS["screen_sim"],
+        },
     )
 
     # exhaustive_search names the dump dir after its own NameInventor

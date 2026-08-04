@@ -7,3 +7,13 @@ Experiments (e.g. experiments/cinm1comparison/dodo.py) import this package
 and define their pipeline as plain Python function calls / doit tasks; there
 is no CLI or Makefile glue layer between the steps.
 """
+
+ALL_PRIMS = (
+    "prim_gemv",
+    "prim_geva",
+    "prim_red",
+    "prim_mmtv",
+    "prim_mtv",
+    "prim_ttv",
+    "prim_va",
+)
