@@ -2,6 +2,7 @@ add_mlir_dialect_library(CinmAcceleratorInference
     AcceleratorInference.cpp
     BananasSearch.cpp
     Progress.cpp
+    ConstraintIR.cpp
     SpaceBuilder.cpp
 
 DEPENDS

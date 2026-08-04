@@ -1,8 +1,10 @@
 #pragma once
 
 #include "cinm-mlir/Dialect/Cinm/AcceleratorInference/AcceleratorInference.h"
+#include "cinm-mlir/Dialect/Cinm/AcceleratorInference/ConstraintIR.h"
 #include <armadillo>
 #include <cstdint>
+#include <llvm/ADT/ArrayRef.h>
 #include <llvm/ADT/StringRef.h>
 #include <llvm/Support/ErrorHandling.h>
 #include <llvm/Support/raw_ostream.h>
@@ -15,36 +17,15 @@
 namespace mlir::cinm {
 
 // ===----------------------------------------------------------------------===//
-// SpaceExprBase — CRTP base for all space expressions
-// ===----------------------------------------------------------------------===//
-
-template <typename Derived> struct SpaceExprBase {
-  ParmValue eval(const ConfWrapper &c) const {
-    return static_cast<const Derived &>(*this).evalImpl(c);
-  }
-  /// Vectorized eval: one value per configuration in the batch. `decltype`d
-  /// so leaf nodes can hand back a reference to the batch's existing row
-  /// instead of copying it; interior nodes return a fresh row by value.
-  decltype(auto) evalVec(const ConfigurationVector &c) const {
-    return static_cast<const Derived &>(*this).evalVecImpl(c);
-  }
-  /// Human-readable rendering of this expression, e.g. "(wramRow * tasklets)".
-  /// Used to give debugIsValid() a description of violated constraints.
-  std::string describe() const {
-    return static_cast<const Derived &>(*this).describeImpl();
-  }
-};
-
-// ===----------------------------------------------------------------------===//
 // SpaceVar — lazy handle to a named search-space dimension
 // ===----------------------------------------------------------------------===//
 
 /// A handle to a named search-space dimension created by SpaceBuilder.
 /// The index into ConfigSpace is written lazily when buildInto() is called;
 /// all handles remain valid and return the correct index after that point.
-/// SpaceVar is also a SpaceExprBase<SpaceVar>, so it can be used directly
-/// in arithmetic and comparison expressions.
-class SpaceVar : public SpaceExprBase<SpaceVar> {
+/// A SpaceVar converts to an Expr, so it can be used directly in arithmetic
+/// and comparison expressions.
+class SpaceVar {
 public:
   /// The cell must be allocated up front, even though the index is not known
   /// until buildInto(): every copy of this handle shares it (that is how they
@@ -65,11 +46,8 @@ public:
   /// Upper bound of this variable's domain. Used by divisorsOf(name, SpaceVar).
   ParmValue maxVal() const { return maxVal_; }
 
-  ParmValue evalImpl(const ConfWrapper &c) const { return get(c); }
-  const ParmVector &evalVecImpl(const ConfigurationVector &c) const {
-    return c[*idx_];
-  }
-  std::string describeImpl() const { return name_; }
+  /// This dimension as a constraint-IR node.
+  ConstraintNodePtr node() const { return makeVarNode(idx_, name_); }
 
 private:
   friend class SpaceBuilder;
@@ -86,265 +64,108 @@ private:
 };
 
 // ===----------------------------------------------------------------------===//
-// ConstExpr — compile-time integer constant
+// Expr — DSL handle wrapping a constraint-IR node
 // ===----------------------------------------------------------------------===//
 
-struct ConstExpr : SpaceExprBase<ConstExpr> {
-  ParmValue value;
-  explicit ConstExpr(ParmValue v) : value(v) {}
-  ParmValue evalImpl(const ConfWrapper &) const { return value; }
-  ParmVector evalVecImpl(const ConfigurationVector &c) const {
-    ParmVector r(c.size());
-    r.fill(value);
-    return r;
-  }
-  std::string describeImpl() const { return std::to_string(value); }
+/// Thin wrapper around a ConstraintNodePtr. It exists so the DSL operators can
+/// be defined without colliding with the ones std::shared_ptr already has
+/// (notably operator==, which would otherwise mean pointer comparison).
+class Expr {
+public:
+  Expr(ConstraintNodePtr node) : node_(std::move(node)) {}
+  Expr(const SpaceVar &v) : node_(v.node()) {}
+  Expr(ParmValue v) : node_(makeConstNode(v)) {}
+
+  const ConstraintNodePtr &node() const { return node_; }
+  std::string describe() const { return describeNode(*node_); }
+
+private:
+  ConstraintNodePtr node_;
 };
-
-// ===----------------------------------------------------------------------===//
-// BinExpr — binary arithmetic node
-// ===----------------------------------------------------------------------===//
 
 namespace detail {
-struct OpAdd {
-  static ParmValue apply(ParmValue a, ParmValue b) { return a + b; }
-  static ParmVector applyVec(const ParmVector &a,
-                                     const ParmVector &b) {
-    return a + b;
-  }
-  static const char *symbol() { return " + "; }
-};
-struct OpSub {
-  static ParmValue apply(ParmValue a, ParmValue b) { return a - b; }
-  static ParmVector applyVec(const ParmVector &a,
-                                     const ParmVector &b) {
-    return a - b;
-  }
-  static const char *symbol() { return " - "; }
-};
-struct OpMul {
-  static ParmValue apply(ParmValue a, ParmValue b) { return a * b; }
-  static ParmVector applyVec(const ParmVector &a,
-                                     const ParmVector &b) {
-    return a % b; // `%` is Armadillo's elementwise multiply.
-  }
-  static const char *symbol() { return " * "; }
-};
-struct OpDiv {
-  static ParmValue apply(ParmValue a, ParmValue b) { return b ? a / b : 0; }
-  static ParmVector applyVec(const ParmVector &a,
-                                     const ParmVector &b) {
-    return vecSafeDiv(a, b);
-  }
-  static const char *symbol() { return " / "; }
-};
-} // namespace detail
+/// Enables the operators below only when at least one side is a search-space
+/// expression, so they never hijack plain integer arithmetic.
+template <class T>
+inline constexpr bool isExprLike =
+    std::is_same_v<std::decay_t<T>, Expr> ||
+    std::is_same_v<std::decay_t<T>, SpaceVar> ||
+    std::is_same_v<std::decay_t<T>, ConstraintNodePtr>;
 
-template <typename L, typename R, typename Op>
-struct BinExpr : SpaceExprBase<BinExpr<L, R, Op>> {
-  L lhs;
-  R rhs;
-  BinExpr(L l, R r) : lhs(std::move(l)), rhs(std::move(r)) {}
-  ParmValue evalImpl(const ConfWrapper &c) const {
-    return Op::apply(lhs.eval(c), rhs.eval(c));
-  }
-  ParmVector evalVecImpl(const ConfigurationVector &c) const {
-    return Op::applyVec(lhs.evalVec(c), rhs.evalVec(c));
-  }
-  std::string describeImpl() const {
-    return "(" + lhs.describe() + Op::symbol() + rhs.describe() + ")";
-  }
-};
-
-template <typename L, typename R> using AddExpr = BinExpr<L, R, detail::OpAdd>;
-template <typename L, typename R> using SubExpr = BinExpr<L, R, detail::OpSub>;
-template <typename L, typename R> using MulExpr = BinExpr<L, R, detail::OpMul>;
-template <typename L, typename R> using DivExpr = BinExpr<L, R, detail::OpDiv>;
-
-namespace detail {
-template <typename T> struct is_div_expr : std::false_type {};
-template <typename L, typename R>
-struct is_div_expr<DivExpr<L, R>> : std::true_type {};
-template <typename T> constexpr bool is_div_expr_v = is_div_expr<T>::value;
-
-template <typename T> struct is_bin_expr : std::false_type {};
-template <typename L, typename R, typename Op>
-struct is_bin_expr<BinExpr<L, R, Op>> : std::true_type {};
-template <typename T> constexpr bool is_bin_expr_v = is_bin_expr<T>::value;
-
-template <typename T> struct is_mul_expr : std::false_type {};
-template <typename L, typename R>
-struct is_mul_expr<MulExpr<L, R>> : std::true_type {};
-template <typename T> constexpr bool is_mul_expr_v = is_mul_expr<T>::value;
+template <class A, class B>
+inline constexpr bool eitherIsExpr = isExprLike<A> || isExprLike<B>;
 } // namespace detail
 
 // ===----------------------------------------------------------------------===//
-// Arithmetic operators
+// Arithmetic and comparison operators
 // ===----------------------------------------------------------------------===//
 
-// Expr op Expr
-template <typename L, typename R>
-auto operator+(const SpaceExprBase<L> &l, const SpaceExprBase<R> &r) {
-  return AddExpr<L, R>(static_cast<const L &>(l), static_cast<const R &>(r));
-}
-template <typename L, typename R>
-auto operator-(const SpaceExprBase<L> &l, const SpaceExprBase<R> &r) {
-  return SubExpr<L, R>(static_cast<const L &>(l), static_cast<const R &>(r));
-}
-template <typename L, typename R>
-auto operator*(const SpaceExprBase<L> &l, const SpaceExprBase<R> &r) {
-  return MulExpr<L, R>(static_cast<const L &>(l), static_cast<const R &>(r));
-}
-/// Division: signals that lhs must be exactly divisible by rhs.
-/// SpaceBuilder::require() extracts this as a constraint automatically.
-template <typename L, typename R>
-auto operator/(const SpaceExprBase<L> &l, const SpaceExprBase<R> &r) {
-  return DivExpr<L, R>(static_cast<const L &>(l), static_cast<const R &>(r));
-}
-
-// ParmValue op Expr
-template <typename R> auto operator+(ParmValue l, const SpaceExprBase<R> &r) {
-  return AddExpr<ConstExpr, R>(ConstExpr{l}, static_cast<const R &>(r));
-}
-template <typename R> auto operator-(ParmValue l, const SpaceExprBase<R> &r) {
-  return SubExpr<ConstExpr, R>(ConstExpr{l}, static_cast<const R &>(r));
-}
-template <typename R> auto operator*(ParmValue l, const SpaceExprBase<R> &r) {
-  return MulExpr<ConstExpr, R>(ConstExpr{l}, static_cast<const R &>(r));
-}
-template <typename R> auto operator/(ParmValue l, const SpaceExprBase<R> &r) {
-  return DivExpr<ConstExpr, R>(ConstExpr{l}, static_cast<const R &>(r));
-}
-
-// Expr op ParmValue
-template <typename L> auto operator+(const SpaceExprBase<L> &l, ParmValue r) {
-  return AddExpr<L, ConstExpr>(static_cast<const L &>(l), ConstExpr{r});
-}
-template <typename L> auto operator-(const SpaceExprBase<L> &l, ParmValue r) {
-  return SubExpr<L, ConstExpr>(static_cast<const L &>(l), ConstExpr{r});
-}
-template <typename L> auto operator*(const SpaceExprBase<L> &l, ParmValue r) {
-  return MulExpr<L, ConstExpr>(static_cast<const L &>(l), ConstExpr{r});
-}
-template <typename L> auto operator/(const SpaceExprBase<L> &l, ParmValue r) {
-  return DivExpr<L, ConstExpr>(static_cast<const L &>(l), ConstExpr{r});
-}
-
-// ===----------------------------------------------------------------------===//
-// ConstraintExpr — typed comparison between two expressions
-// ===----------------------------------------------------------------------===//
-
-enum class CmpKind { Le, Ge, Lt, Gt, Eq, Ne };
-
-inline const char *cmpSymbol(CmpKind k) {
-  switch (k) {
-  case CmpKind::Le:
-    return " <= ";
-  case CmpKind::Ge:
-    return " >= ";
-  case CmpKind::Lt:
-    return " < ";
-  case CmpKind::Gt:
-    return " > ";
-  case CmpKind::Eq:
-    return " == ";
-  case CmpKind::Ne:
-    return " != ";
+#define CINM_DEFINE_BIN_OP(SYM, KIND)                                          \
+  template <class A, class B,                                                  \
+            std::enable_if_t<detail::eitherIsExpr<A, B>, int> = 0>             \
+  Expr operator SYM(const A &a, const B &b) {                                  \
+    return Expr(makeBinNode(ConstraintNode::Kind::KIND, Expr(a).node(),        \
+                            Expr(b).node()));                                  \
   }
-  llvm_unreachable("unknown CmpKind");
+
+/// Division also *asserts* that the divisor divides the dividend exactly:
+/// SpaceBuilder::require() extracts every `/` as a static, structural, or
+/// dynamic divisibility constraint.
+CINM_DEFINE_BIN_OP(/, Div)
+CINM_DEFINE_BIN_OP(-, Sub)
+#undef CINM_DEFINE_BIN_OP
+
+/// Add and Mul are n-ary in the IR; the binary operators build a two-operand
+/// node, and prod()/sum() build a flat one.
+template <class A, class B,
+          std::enable_if_t<detail::eitherIsExpr<A, B>, int> = 0>
+Expr operator*(const A &a, const B &b) {
+  return Expr(makeNaryNode(ConstraintNode::Kind::Mul,
+                           {Expr(a).node(), Expr(b).node()}));
+}
+template <class A, class B,
+          std::enable_if_t<detail::eitherIsExpr<A, B>, int> = 0>
+Expr operator+(const A &a, const B &b) {
+  return Expr(makeNaryNode(ConstraintNode::Kind::Add,
+                           {Expr(a).node(), Expr(b).node()}));
 }
 
-template <typename L, typename R, CmpKind K> struct ConstraintExpr {
-  L lhs;
-  R rhs;
-  ConstraintExpr(L l, R r) : lhs(std::move(l)), rhs(std::move(r)) {}
-  std::string describe() const {
-    return lhs.describe() + cmpSymbol(K) + rhs.describe();
+#define CINM_DEFINE_CMP_OP(SYM, KIND)                                          \
+  template <class A, class B,                                                  \
+            std::enable_if_t<detail::eitherIsExpr<A, B>, int> = 0>             \
+  Expr operator SYM(const A &a, const B &b) {                                  \
+    return Expr(makeCmpNode(CmpKind::KIND, Expr(a).node(), Expr(b).node()));   \
   }
-};
 
-// Expr cmp Expr
-template <typename L, typename R>
-auto operator<=(const SpaceExprBase<L> &l, const SpaceExprBase<R> &r) {
-  return ConstraintExpr<L, R, CmpKind::Le>(static_cast<const L &>(l),
-                                           static_cast<const R &>(r));
-}
-template <typename L, typename R>
-auto operator>=(const SpaceExprBase<L> &l, const SpaceExprBase<R> &r) {
-  return ConstraintExpr<L, R, CmpKind::Ge>(static_cast<const L &>(l),
-                                           static_cast<const R &>(r));
-}
-template <typename L, typename R>
-auto operator<(const SpaceExprBase<L> &l, const SpaceExprBase<R> &r) {
-  return ConstraintExpr<L, R, CmpKind::Lt>(static_cast<const L &>(l),
-                                           static_cast<const R &>(r));
-}
-template <typename L, typename R>
-auto operator>(const SpaceExprBase<L> &l, const SpaceExprBase<R> &r) {
-  return ConstraintExpr<L, R, CmpKind::Gt>(static_cast<const L &>(l),
-                                           static_cast<const R &>(r));
-}
-template <typename L, typename R>
-auto operator==(const SpaceExprBase<L> &l, const SpaceExprBase<R> &r) {
-  return ConstraintExpr<L, R, CmpKind::Eq>(static_cast<const L &>(l),
-                                           static_cast<const R &>(r));
-}
-template <typename L, typename R>
-auto operator!=(const SpaceExprBase<L> &l, const SpaceExprBase<R> &r) {
-  return ConstraintExpr<L, R, CmpKind::Ne>(static_cast<const L &>(l),
-                                           static_cast<const R &>(r));
+CINM_DEFINE_CMP_OP(<=, Le)
+CINM_DEFINE_CMP_OP(>=, Ge)
+CINM_DEFINE_CMP_OP(<, Lt)
+CINM_DEFINE_CMP_OP(>, Gt)
+CINM_DEFINE_CMP_OP(==, Eq)
+CINM_DEFINE_CMP_OP(!=, Ne)
+#undef CINM_DEFINE_CMP_OP
+
+/// Flat n-ary product. This is the shape the analyser wants: one node with a
+/// child per factor, rather than a left-leaning tree it would have to
+/// re-flatten. Arity is a runtime value (e.g. the number of iteration
+/// dimensions), which is exactly what a type-level encoding could not express.
+inline Expr prod(llvm::ArrayRef<Expr> factors) {
+  if (factors.empty())
+    return Expr(makeConstNode(1));
+  llvm::SmallVector<ConstraintNodePtr, 2> ops;
+  for (const Expr &f : factors)
+    ops.push_back(f.node());
+  return Expr(makeNaryNode(ConstraintNode::Kind::Mul, std::move(ops)));
 }
 
-// Expr cmp ParmValue
-template <typename L> auto operator<=(const SpaceExprBase<L> &l, ParmValue r) {
-  return ConstraintExpr<L, ConstExpr, CmpKind::Le>(static_cast<const L &>(l),
-                                                   ConstExpr{r});
-}
-template <typename L> auto operator>=(const SpaceExprBase<L> &l, ParmValue r) {
-  return ConstraintExpr<L, ConstExpr, CmpKind::Ge>(static_cast<const L &>(l),
-                                                   ConstExpr{r});
-}
-template <typename L> auto operator<(const SpaceExprBase<L> &l, ParmValue r) {
-  return ConstraintExpr<L, ConstExpr, CmpKind::Lt>(static_cast<const L &>(l),
-                                                   ConstExpr{r});
-}
-template <typename L> auto operator>(const SpaceExprBase<L> &l, ParmValue r) {
-  return ConstraintExpr<L, ConstExpr, CmpKind::Gt>(static_cast<const L &>(l),
-                                                   ConstExpr{r});
-}
-template <typename L> auto operator==(const SpaceExprBase<L> &l, ParmValue r) {
-  return ConstraintExpr<L, ConstExpr, CmpKind::Eq>(static_cast<const L &>(l),
-                                                   ConstExpr{r});
-}
-template <typename L> auto operator!=(const SpaceExprBase<L> &l, ParmValue r) {
-  return ConstraintExpr<L, ConstExpr, CmpKind::Ne>(static_cast<const L &>(l),
-                                                   ConstExpr{r});
-}
-
-// ParmValue cmp Expr
-template <typename R> auto operator<=(ParmValue l, const SpaceExprBase<R> &r) {
-  return ConstraintExpr<ConstExpr, R, CmpKind::Le>(ConstExpr{l},
-                                                   static_cast<const R &>(r));
-}
-template <typename R> auto operator>=(ParmValue l, const SpaceExprBase<R> &r) {
-  return ConstraintExpr<ConstExpr, R, CmpKind::Ge>(ConstExpr{l},
-                                                   static_cast<const R &>(r));
-}
-template <typename R> auto operator<(ParmValue l, const SpaceExprBase<R> &r) {
-  return ConstraintExpr<ConstExpr, R, CmpKind::Lt>(ConstExpr{l},
-                                                   static_cast<const R &>(r));
-}
-template <typename R> auto operator>(ParmValue l, const SpaceExprBase<R> &r) {
-  return ConstraintExpr<ConstExpr, R, CmpKind::Gt>(ConstExpr{l},
-                                                   static_cast<const R &>(r));
-}
-template <typename R> auto operator==(ParmValue l, const SpaceExprBase<R> &r) {
-  return ConstraintExpr<ConstExpr, R, CmpKind::Eq>(ConstExpr{l},
-                                                   static_cast<const R &>(r));
-}
-template <typename R> auto operator!=(ParmValue l, const SpaceExprBase<R> &r) {
-  return ConstraintExpr<ConstExpr, R, CmpKind::Ne>(ConstExpr{l},
-                                                   static_cast<const R &>(r));
+/// Flat n-ary sum; see prod().
+inline Expr sum(llvm::ArrayRef<Expr> terms) {
+  if (terms.empty())
+    return Expr(makeConstNode(0));
+  llvm::SmallVector<ConstraintNodePtr, 2> ops;
+  for (const Expr &t : terms)
+    ops.push_back(t.node());
+  return Expr(makeNaryNode(ConstraintNode::Kind::Add, std::move(ops)));
 }
 
 // ===----------------------------------------------------------------------===//
@@ -380,48 +201,25 @@ public:
   /// Arbitrary vectorized predicate; configurations whose lane it clears to 0
   /// are skipped by the framework. `description` is optional; it is reported
   /// by ConfigSpace::debugIsValid() when the predicate rejects a
-  /// configuration. Prefer this overload: constraints are evaluated in
-  /// vectorized form, and the single-configuration check is derived from it
-  /// for free (see ConfigSpace::addConstraint).
+  /// configuration. Prefer the Expr overload where the constraint can be
+  /// written in the DSL — only that form is analysable.
   void require(VecConstraint pred, llvm::StringRef description = "");
   /// Same, for a scalar predicate — vectorized automatically by evaluating it
   /// once per configuration in the batch. Convenience for predicates not
-  /// worth hand-vectorizing; pass a VecConstraint instead when it is.
+  /// worth hand-vectorizing.
   void require(Constraint pred, llvm::StringRef description = "");
 
-  /// Walk expr for / nodes; each one is extracted as a static, structural, or
-  /// dynamic divisibility constraint (see addDivConstraint).
-  template <typename E> void require(const SpaceExprBase<E> &expr) {
-    extractDivConstraints(static_cast<const E &>(expr));
-  }
-
-  /// Same as require(SpaceExpr) on both sub-expressions, plus register the
-  /// comparison as a dynamic predicate (with a specialized, inlined eval).
-  template <typename L, typename R, CmpKind K>
-  void require(ConstraintExpr<L, R, K> expr) {
-    extractDivConstraints(expr.lhs);
-    extractDivConstraints(expr.rhs);
-    std::string desc = expr.describe();
-    require(
-        VecConstraint([lhs = std::move(expr.lhs), rhs = std::move(expr.rhs)](
-                          const ConfigurationVector &c) -> arma::urowvec {
-          const auto &lv = lhs.evalVec(c);
-          const auto &rv = rhs.evalVec(c);
-          if constexpr (K == CmpKind::Le)
-            return lv <= rv;
-          else if constexpr (K == CmpKind::Ge)
-            return lv >= rv;
-          else if constexpr (K == CmpKind::Lt)
-            return lv < rv;
-          else if constexpr (K == CmpKind::Gt)
-            return lv > rv;
-          else if constexpr (K == CmpKind::Eq)
-            return lv == rv;
-          else
-            return lv != rv;
-        }),
-        desc);
-  }
+  /// Register a constraint written in the DSL.
+  ///
+  /// Every `/` in the expression is extracted as a divisibility constraint —
+  /// static filter, structural multiples constraint, or dynamic predicate,
+  /// whichever the operand shapes allow (see addDivConstraint). If the
+  /// expression is a comparison it is additionally registered as a predicate,
+  /// evaluated by the constraint-IR interpreter; a bare arithmetic expression
+  /// contributes only its divisibility conditions.
+  ///
+  /// `description` defaults to the rendered expression.
+  void require(Expr expr, llvm::StringRef description = "");
 
   /// Commit all declarations and constraints into space in the correct order.
   void buildInto(ConfigSpace &space);
@@ -461,55 +259,14 @@ private:
   SpaceVar findVarByName(llvm::StringRef name) const;
   int dimIndexByName(llvm::StringRef name) const;
 
-  /// Reify a single A/B divisibility constraint detected from a DivExpr node.
-  /// - ConstExpr/SpaceVar  → static filter on den's values
-  /// - SpaceVar/SpaceVar   → structural mustDivide
-  /// - everything else     → dynamic predicate
-  template <typename Num, typename Den>
-  void addDivConstraint(const Num &num, const Den &den) {
-    if constexpr (std::is_same_v<Num, ConstExpr> &&
-                  std::is_same_v<Den, SpaceVar>) {
-      mustDivide(den, num.value);
-    } else if constexpr (std::is_same_v<Num, SpaceVar> &&
-                         std::is_same_v<Den, SpaceVar>) {
-      mustDivide(den, num);
-    } else if constexpr (detail::is_mul_expr_v<Den>) {
-      // (B * C) | A  ⟺  B | A  ∧  C | A  ∧  B * C ≤ A
-      // addDivConstraint(num, den.lhs);
-      // addDivConstraint(num, den.rhs);
-      std::string desc = den.describe() + " | " + num.describe();
-      require(
-          [num, den](const ConfigurationVector &c, arma::urowvec &valid) {
-            const auto &nv = num.evalVec(c);
-            const auto &dv = den.evalVec(c);
-            // `%` is elementwise multiply = AND.
-            valid %= vecDivides(dv, nv);
-            valid %= (dv <= nv);
-          },
-          desc);
-    } else {
-      std::string desc = den.describe() + " | " + num.describe();
-      require(
-          [num, den](const ConfigurationVector &c, arma::urowvec &valid) {
-            valid %= vecDivides(den.evalVec(c), num.evalVec(c));
-          },
-          desc);
-    }
-  }
-
-  /// Recursively walk expr at compile time; for each DivExpr node, call
-  /// addDivConstraint on its children.
-  template <typename E> void extractDivConstraints(const E &expr) {
-    if constexpr (detail::is_div_expr_v<E>) {
-      addDivConstraint(expr.lhs, expr.rhs);
-      extractDivConstraints(expr.lhs);
-      extractDivConstraints(expr.rhs);
-    } else if constexpr (detail::is_bin_expr_v<E>) {
-      extractDivConstraints(expr.lhs);
-      extractDivConstraints(expr.rhs);
-    }
-    // SpaceVar and ConstExpr are leaf nodes — nothing to recurse into.
-  }
+  /// Walk `node` and reify every Div as a divisibility constraint.
+  void extractDivConstraints(const ConstraintNodePtr &node);
+  /// Reify a single num/den divisibility constraint found on a Div node:
+  ///  - const / var   → static filter on den's values
+  ///  - var / var     → structural mustDivide
+  ///  - everything else → dynamic predicate
+  void addDivConstraint(const ConstraintNodePtr &num,
+                        const ConstraintNodePtr &den);
 };
 
 } // namespace mlir::cinm

@@ -86,18 +86,31 @@ using mlir::cinm::SpaceBuilder;
 using mlir::cinm::SpaceVar;
 using mlir::cinm::utils::Maybe;
 
+/// The vectorized constraints below divide by block/leaf values with no zero
+/// guard. That is sound only because those domains start at 1 (see
+/// SpaceBuilder::divisorsOf) -- an invariant that lives in another file and is
+/// invisible here, so check it in debug builds instead of trusting it. A
+/// vectorized constraint evaluates every lane and cannot short-circuit past a
+/// zero divisor the way the equivalent scalar predicate would, so a domain
+/// that ever included 0 would be undefined behaviour rather than a wrong
+/// answer.
+static void assertNonZeroDivisor([[maybe_unused]] const cinm::ParmVector &d) {
+  assert(!arma::any(d == 0) &&
+         "constraint divides by a search parameter whose domain contains 0");
+}
+
 /// A search-space quantity resolved against a configuration. Type-erased so a
 /// recorded parameter can be a derived expression rather than a bare variable
 /// -- what a pass consumes is rarely what the search declares.
 using SpaceValue = std::function<int64_t(const cinm::ConfWrapper &)>;
 
-/// Type-erase any space expression into a SpaceValue. Handles copy the
-/// variables' shared index cells, so this stays valid across
+/// Type-erase any space expression into a SpaceValue. The captured IR node
+/// holds the variables' shared index cells, so this stays valid across
 /// SpaceBuilder::buildInto().
-template <typename E>
-static SpaceValue spaceValue(const cinm::SpaceExprBase<E> &expr) {
-  E copy = static_cast<const E &>(expr);
-  return [copy](const cinm::ConfWrapper &c) { return copy.eval(c); };
+static SpaceValue spaceValue(cinm::Expr expr) {
+  return [node = expr.node()](const cinm::ConfWrapper &c) -> int64_t {
+    return cinm::evalNodeScalar(*node, c);
+  };
 }
 
 /// `n!`. Only ever called on an iteration rank, which is 1 (elementwise), 2
@@ -882,25 +895,20 @@ void UpmemInferencePlugin::handleLinalgOp(linalg::LinalgOp op,
   // The tile counts must fill the workgroup exactly (design §G2). This is the
   // one structural constraint; everything else about the distribution follows
   // from the block sizes and the op's own indexing maps.
+  //
+  // Written in the DSL rather than as a hand-vectorized predicate so the
+  // framework can see its shape: this is the `prod(vars) == prod(vars)` form
+  // that lets the tile counts be *solved* for rather than filtered, which is
+  // where the enumeration blow-up comes from (see
+  // docs/ConstraintAnalysisDesign.md). Each `extent / block` also declares
+  // that block divides extent -- already true by construction, since the
+  // block domains are the divisors of extent, so it costs nothing here.
   SmallVector<int64_t> extentsCopy(*extents);
-  b.require(
-      [=](auto &c, auto &valid) {
-        auto tiles = c.ones();
-        cinm::ParmVector extentRow(c.size());
-        for (auto [extent, block] : llvm::zip_equal(extentsCopy, blocks)) {
-          extentRow.fill(extent);
-          // Every block domain is a subset of [1, extent] (SpaceBuilder::
-          // divisorsOf), so the divisor is never zero and the division needs
-          // no guard. `%` is arma's elementwise multiply throughout, so the
-          // test below is `quotient * block == extent`, i.e. exact division.
-          const cinm::ParmVector &blockRow = block[c];
-          cinm::ParmVector quotient = extentRow / blockRow;
-          valid %= (quotient % blockRow == extentRow);
-          tiles %= quotient;
-        }
-        valid %= (tiles == (dpus[c] % tasklets[c]));
-      },
-      "prod(extent / block) == dpus * tasklets");
+  SmallVector<cinm::Expr> tilesPerDim;
+  for (auto [extent, block] : llvm::zip_equal(extentsCopy, blocks))
+    tilesPerDim.push_back(cinm::Expr(extent) / block);
+  b.require(cinm::prod(tilesPerDim) == dpus * tasklets,
+            "prod(extent / block) == dpus * tasklets");
 
   // Capacity, as a *necessary* condition only (design §H4). Assume maximal
   // sharing -- every operand stored once per DPU -- so the bound can never
@@ -972,6 +980,7 @@ void UpmemInferencePlugin::handleLinalgOp(linalg::LinalgOp op,
             extentRow.fill(extent);
             // Divisor is never zero -- see the tile-count constraint above.
             const cinm::ParmVector &blockRow = block[c];
+            assertNonZeroDivisor(blockRow);
             cinm::ParmVector quotient = extentRow / blockRow;
             arma::urowvec dimDistributed =
                 (quotient % blockRow == extentRow) % (quotient > 1);

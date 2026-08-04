@@ -47,11 +47,14 @@ ResultTy parallelTransformReduceChunked(const ConfigSpace &space, ResultTy init,
     return init;
 
   const size_t numThreads = llvm::parallel::strategy.compute_thread_count();
-  constexpr size_t kChunksPerThread = 8;
-  constexpr size_t kMinChunkSize = 4096;
+  constexpr size_t kChunksPerThread = 128;
+  constexpr size_t kMinChunkSize = 256;
   size_t numChunks = std::max<size_t>(1, numThreads * kChunksPerThread);
   numChunks = std::min(numChunks, std::max<size_t>(1, N / kMinChunkSize));
   numChunks = std::min(numChunks, N);
+
+  LLVM_DEBUG(llvm::dbgs() << "- Chunks: " << numChunks
+                          << ", Threads: " << numThreads << "\n");
 
   std::vector<ResultTy> results(numChunks, init);
   {
@@ -84,7 +87,8 @@ ResultTy parallelTransformReduceChunked(const ConfigSpace &space, ResultTy init,
 void CandidatePool::computeValidMask(const ConfigSpace &space,
                                      SharedState &shared) {
   LLVM_DEBUG(llvm::dbgs() << "Screening " << space.totalSize()
-                          << " configs in parallel");
+                          << " configs in parallel\n");
+  auto t0 = std::chrono::steady_clock::now();
   shared = parallelTransformReduceChunked(
       space, SharedState{},
       [](SharedState lhs, SharedState rhs) -> SharedState {
@@ -119,6 +123,9 @@ void CandidatePool::computeValidMask(const ConfigSpace &space,
         }
         return s;
       });
+  auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+      std::chrono::steady_clock::now() - t0);
+  LLVM_DEBUG(llvm::dbgs() << "- Done in " << elapsed.count() << " ms\n");
 }
 
 CandidatePool CandidatePool::build(const ConfigSpace &space, size_t evalBudget,
@@ -199,25 +206,12 @@ static arma::mat encodeSubset(const ConfigSpace &space,
   }
   return enc;
 }
-static arma::mat encodeValidSpace(const ConfigSpace &space,
-                                  const CandidatePool &pool) {
-  const size_t D = space.size();
-  // Only valid configs get a column; sizing to pool.N (the full Cartesian
-  // product) would waste — and can fail to allocate — many GB for large spaces.
-  arma::mat enc(D, pool.size());
-
-  size_t ix = 0;
-  space.forEach([&](const Configuration &conf, size_t i) {
-    if (!pool.isValid(i))
-      return true;
-
-    for (size_t d = 0; d < D; ++d)
-      enc(d, ix) = space[d].featurize(conf[d]);
-    ix++;
-    return true;
-  });
-  return enc;
-}
+// NOTE: encoding the valid space is just encodeSubset over shared->validIndices.
+// It used to walk the whole Cartesian product with forEach() and test each flat
+// index against the valid mask, which costs O(totalSize()) hash lookups on one
+// thread to select O(nValid) columns -- 1.2e9 steps to find 3e3 configs on a
+// real gemv space, i.e. tens of seconds before any parallel work begins.
+// validIndices already holds exactly those indices, in ascending order.
 // ===----------------------------------------------------------------------===//
 // Latin Hypercube Sampling
 // ===----------------------------------------------------------------------===//
@@ -245,8 +239,8 @@ void CandidatePool::sampleInitialSet(size_t n, std::mt19937 &rng,
   if (n == 0 || M == 0)
     return;
 
-  // DxM matrix
-  arma::mat enc = encodeValidSpace(*space_, *this);
+  // DxM matrix, one column per valid config (see the note on encodeSubset).
+  arma::mat enc = encodeSubset(*space_, shared->validIndices);
 
   // Per-dimension [0,1] normalisation.
   for (size_t d = 0; d < D; ++d) {
@@ -595,14 +589,18 @@ void CandidatePool::dumpToCSV(const ConfigSpace &space,
         opts.dumpFullPool ? this->size() : visited.size();
     arma::mat encoded(D, confsToEncode);
     size_t ix = 0;
-    space_->forEach([&](const Configuration &conf, size_t i) {
-      if (!isValid(i) || !isVisited(i))
-        return true;
+    // validIndices is exactly the valid flat indices in ascending order, so
+    // this visits nValid configs rather than walking all totalSize() of them
+    // (see the note on encodeSubset).
+    Configuration conf;
+    for (size_t i : shared->validIndices) {
+      if (!isVisited(i))
+        continue;
+      space_->at(i, conf);
       for (size_t d = 0; d < D; ++d)
         encoded(d, ix) = (*space_)[d].featurize(conf[d]);
       ix++;
-      return true;
-    });
+    }
     auto [m, s] = ensemble_->predict(encoded);
     mu_v = m;
     sigma_v = s;
@@ -617,11 +615,14 @@ void CandidatePool::dumpToCSV(const ConfigSpace &space,
     out << ",mu,sigma,acq";
   out << "\n";
 
-  // One row per valid pool member, in flat-index order.
+  // One row per valid pool member, in flat-index order -- which is the order
+  // validIndices is already in, so there is no need to walk the whole space.
   size_t j = 0;
-  space.forEach([&](auto &conf, size_t i) -> bool {
-    if (!isValid(i) || (!opts.dumpFullPool && !isVisited(i)))
-      return true;
+  Configuration conf;
+  for (size_t i : shared->validIndices) {
+    if (!opts.dumpFullPool && !isVisited(i))
+      continue;
+    space.at(i, conf);
 
     for (ParmValue v : conf)
       out << v << ",";
@@ -646,8 +647,7 @@ void CandidatePool::dumpToCSV(const ConfigSpace &space,
       out << "," << mu_v(j) << "," << sigma_v(j) << "," << acq_v(j);
     out << "\n";
     j++;
-    return true;
-  });
+  }
 }
 
 void CandidatePool::dumpMetadataJSON(const ConfigSpace &space,
