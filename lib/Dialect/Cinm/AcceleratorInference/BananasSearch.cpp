@@ -31,14 +31,12 @@ namespace mlir::cinm {
 // ===----------------------------------------------------------------------===//
 
 void CandidatePool::computeValidMask(const ConfigSpace &space,
-                                     llvm::BitVector &validMask,
-                                     std::vector<size_t> &validIndices) {
-  validMask.clear();
-  validMask.resize(space.totalSize());
+                                     SharedState &shared) {
+  shared.validMask.clear();
   space.forEach([&](const Configuration &conf, size_t i) {
     if (space.isValid(conf)) {
-      validMask.set(static_cast<unsigned>(i));
-      validIndices.push_back(i);
+      shared.validMask.insert(i);
+      shared.validIndices.push_back(i);
     }
     return true;
   });
@@ -47,23 +45,18 @@ void CandidatePool::computeValidMask(const ConfigSpace &space,
 CandidatePool CandidatePool::build(const ConfigSpace &space, size_t evalBudget,
                                    bool exhaustive) {
 
-  auto validMask = std::make_shared<llvm::BitVector>();
-  auto validIndices = std::make_shared<std::vector<size_t>>();
+  auto shared = std::make_shared<SharedState>();
 
-  computeValidMask(space, *validMask, *validIndices);
+  computeValidMask(space, *shared);
 
-  return CandidatePool(space, evalBudget, std::move(validMask),
-                       std::move(validIndices), exhaustive);
+  return CandidatePool(space, evalBudget, std::move(shared), exhaustive);
 }
 
 CandidatePool::CandidatePool(const ConfigSpace &space, size_t evalBudget,
-                             std::shared_ptr<llvm::BitVector> validMask,
-
-                             std::shared_ptr<std::vector<size_t>> validIndices,
+                             std::shared_ptr<SharedState> shared,
                              bool exhaustive)
-    : space_(&space), N(space.totalSize()), validMask_(std::move(validMask)),
-      validIndices_(std::move(validIndices)), Xo(space.size(), evalBudget),
-      yo(1, evalBudget), exhaustive(exhaustive) {}
+    : space_(&space), N(space.totalSize()), shared(std::move(shared)),
+      Xo(space.size(), evalBudget), yo(1, evalBudget), exhaustive(exhaustive) {}
 
 CandidatePool::~CandidatePool() = default;
 
@@ -237,7 +230,7 @@ void CandidatePool::sampleInitialSet(size_t n, std::mt19937 &rng,
         break;
       used.insert(bestPos);
       ++nDispatched;
-      size_t idx = (*validIndices_)[bestPos];
+      size_t idx = shared->validIndex(bestPos);
       threadPool.async([&accept, &accepted, idx, n]() {
         if (accepted.load(std::memory_order_relaxed) >= n)
           return;
@@ -373,7 +366,7 @@ void CandidatePool::fillRandom(std::unordered_set<size_t> &result,
   size_t numAttempts = 0;
   while (result.size() < std::min(target, numValid - numVisited) &&
          numAttempts++ <= target * 5) {
-    tryInsert(result, (*validIndices_)[dist(rng)]);
+    tryInsert(result, shared->validIndex(dist(rng)));
   }
 }
 

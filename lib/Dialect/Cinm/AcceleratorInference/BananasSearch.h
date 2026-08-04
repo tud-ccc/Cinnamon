@@ -5,11 +5,11 @@
 #include <filesystem>
 #include <memory>
 #include <random>
+#include <set>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
 
-#include <llvm/ADT/BitVector.h>
 #include <llvm/ADT/SmallVector.h>
 #include <llvm/ADT/StringRef.h>
 
@@ -64,13 +64,29 @@ struct ValidationSet {
 /// than the full [0, N) range. Xo/yo are pre-allocated to evalBudget, not
 /// totalSize().
 struct CandidatePool {
+  using MaskType = std::unordered_set<size_t>;
+  struct SharedState {
+    // Stores indices of valid configs in a set.
+    MaskType validMask;
+    // Stores indices of valid configs in a vector for random access.
+    std::vector<size_t> validIndices;
+
+    size_t validIndex(size_t i) { return validIndices[i]; }
+    bool empty() {
+      return validIndices.empty();
+    }
+    size_t size() {
+      return validIndices.size();
+    }
+    bool isValid(size_t i) {
+      return validMask.count(i);
+    }
+  };
+
   const ConfigSpace *space_;
-  size_t N;                           // = space_->totalSize(), cached
-  std::unordered_set<size_t> visited; // flat indices of evaluated configs
-  std::shared_ptr<llvm::BitVector>
-      validMask_; // bit i set iff config at flat index i is valid
-  std::shared_ptr<std::vector<size_t>>
-      validIndices_;         // flat indices of all valid configs, built once
+  size_t N;         // = space_->totalSize(), cached
+  MaskType visited; // flat indices of evaluated configs
+  std::shared_ptr<SharedState> shared;
   size_t nValidVisited_ = 0; // count of valid configs that have been visited
 
   // Incrementally maintained observation matrices.
@@ -105,37 +121,32 @@ struct CandidatePool {
   /// same ConfigSpace. Used to share the (expensive) scan across seeds while
   /// each seed keeps its own mutable pool state.
   CandidatePool(const ConfigSpace &space, size_t evalBudget,
-                std::shared_ptr<llvm::BitVector> validMask,
-                std::shared_ptr<std::vector<size_t>> validIndices,
-                bool exhaustive = false);
+                std::shared_ptr<SharedState> state, bool exhaustive = false);
   ~CandidatePool();
 
   /// Scan the whole Cartesian product once and return a bitmask over [0, N)
   /// with bit i set iff the config at flat index i passes all constraints.
-  static void computeValidMask(const ConfigSpace &space,
-                               llvm::BitVector &validMask,
-                               std::vector<size_t> &validIndices);
+  static void computeValidMask(const ConfigSpace &space, SharedState &shared);
 
   /// Number of valid (constraint-passing) configs in the pool.
-  size_t size() const { return validIndices_->size(); }
+  size_t size() const { return shared->size(); }
   size_t nDims() const;
-  bool empty() const { return validMask_->none(); }
+  bool empty() const { return shared->empty(); }
 
   /// Return the configuration at flat pool index i (allocated by value).
   Configuration operator[](size_t i) const;
 
   void markVisited(size_t idx) {
-    if (visited.insert(idx).second &&
-        validMask_->test(static_cast<unsigned>(idx)))
+    if (visited.insert(idx).second && shared->isValid(idx))
       ++nValidVisited_;
   }
   bool isVisited(size_t idx) const { return visited.count(idx); }
-  bool isValid(size_t idx) const { return validMask_->test(idx); }
+  bool isValid(size_t idx) const { return shared->isValid(idx); }
   /// Number of valid configs that have been evaluated (or marked visited).
   size_t numVisited() const { return nValidVisited_; }
   /// Flat index of the first valid unvisited config, or N if all visited.
   size_t firstUnvisited() const {
-    for (size_t i : *validIndices_)
+    for (size_t i : shared->validIndices)
       if (!visited.count(i))
         return i;
     return N;
