@@ -242,25 +242,23 @@ public:
                       llvm::ArrayRef<DivRel> divs, llvm::ArrayRef<ProdEq> prods,
                       size_t cap)
       : dims_(dims), domains_(domains), divs_(divs), prods_(prods), cap_(cap),
-        assigned_(dims.size(), false), values_(dims.size(), 0) {
-    // Resolve the least-constrained-last ordering once: smaller domains first
-    // both prunes earlier and, for a divisibility pair, naturally puts the
-    // dividend (a divisor-filtered domain) ahead of the divisor (typically a
-    // full range), which is what makes the divisor enumerable from it.
-    order_.resize(dims.size());
-    std::iota(order_.begin(), order_.end(), 0);
-    llvm::stable_sort(order_, [&](size_t a, size_t b) {
-      return domains_[a].values.size() < domains_[b].values.size();
-    });
+        assigned_(dims.size(), false), values_(dims.size(), 0),
+        inProdEq_(dims.size(), false) {
     for (size_t pos = 0; pos < dims.size(); ++pos)
       posOfDim_[dims[pos]] = pos;
+    for (const ProdEq &e : prods_)
+      for (llvm::ArrayRef<size_t> side : {llvm::ArrayRef<size_t>(e.lhsVars),
+                                          llvm::ArrayRef<size_t>(e.rhsVars)})
+        for (size_t v : side)
+          if (auto it = posOfDim_.find(v); it != posOfDim_.end())
+            inProdEq_[it->second] = true;
   }
 
-  /// Enumerate every satisfying tuple. False if the cap was exceeded, in which
-  /// case `out` is meaningless and the caller must fall back.
+  /// Enumerate every satisfying tuple. False if a budget was exceeded, in
+  /// which case `out` is meaningless and the caller must fall back.
   bool run(std::vector<std::vector<ParmValue>> &out) {
     out_ = &out;
-    return recurse(0);
+    return recurse();
   }
 
 private:
@@ -372,8 +370,50 @@ private:
     return out;
   }
 
-  bool recurse(size_t level) {
-    if (level == order_.size()) {
+  /// Which dimension to assign next, chosen against the *current* partial
+  /// assignment rather than a fixed order. Ordering statically by domain size
+  /// is a trap: it puts the variable a product equality determines (typically
+  /// the one with the widest domain, e.g. `dpus`) last, so variables that
+  /// appear in no product equality get enumerated before the equality can
+  /// reject the prefix. On a batch_gemv space that is 4.2M dead leaves instead
+  /// of 1.6k feasible prefixes.
+  size_t selectNext() const {
+    // 1. Unit propagation: a variable some equality already pins down. Taking
+    //    it now is free and prunes immediately.
+    for (size_t pos = 0; pos < dims_.size(); ++pos) {
+      if (assigned_[pos])
+        continue;
+      for (const ProdEq &e : prods_)
+        if (solveFor(e, dims_[pos]))
+          return pos;
+    }
+    // 2. Otherwise drive towards (1): assign a variable that participates in
+    //    an equality, narrowest domain first. 3. Only once none are left do
+    //    the purely divisibility-constrained variables get enumerated.
+    for (bool wantProdEq : {true, false}) {
+      size_t best = SIZE_MAX, bestSize = SIZE_MAX;
+      for (size_t pos = 0; pos < dims_.size(); ++pos) {
+        if (assigned_[pos] || inProdEq_[pos] != wantProdEq)
+          continue;
+        if (domains_[pos].values.size() < bestSize) {
+          bestSize = domains_[pos].values.size();
+          best = pos;
+        }
+      }
+      if (best != SIZE_MAX)
+        return best;
+    }
+    return SIZE_MAX; // everything assigned
+  }
+
+  bool recurse() {
+    // A node budget bounds the work even when the heuristic picks badly, so a
+    // pathological space falls back to predicates instead of hanging.
+    if (++nodes_ > kNodeBudget)
+      return false;
+
+    const size_t pos = selectNext();
+    if (pos == SIZE_MAX) {
       if (out_->size() >= cap_)
         return false;
       std::vector<ParmValue> tuple(dims_.size());
@@ -382,17 +422,21 @@ private:
       out_->push_back(std::move(tuple));
       return true;
     }
-    const size_t pos = order_[level];
     for (ParmValue v : candidatesFor(pos)) {
       values_[pos] = v;
       assigned_[pos] = true;
-      bool ok = checkComplete() ? recurse(level + 1) : true;
+      bool ok = checkComplete() ? recurse() : true;
       assigned_[pos] = false;
       if (!ok)
-        return false; // cap exceeded, abort the whole enumeration
+        return false; // budget exceeded, abort the whole enumeration
     }
     return true;
   }
+
+  /// Search nodes visited before giving up. Generous enough that any space
+  /// the heuristic handles well finishes far below it, small enough that a
+  /// space it handles badly fails in seconds rather than hanging.
+  static constexpr size_t kNodeBudget = 50'000'000;
 
   llvm::ArrayRef<size_t> dims_;
   llvm::ArrayRef<Domain> domains_;
@@ -401,7 +445,9 @@ private:
   size_t cap_;
   std::vector<bool> assigned_;
   std::vector<ParmValue> values_;
-  std::vector<size_t> order_;
+  /// Whether dims_[pos] appears in any product equality; drives selectNext().
+  std::vector<bool> inProdEq_;
+  size_t nodes_ = 0;
   llvm::DenseMap<size_t, size_t> posOfDim_;
   std::vector<std::vector<ParmValue>> *out_ = nullptr;
 };
