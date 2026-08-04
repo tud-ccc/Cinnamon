@@ -74,6 +74,11 @@ def compute_measured_cost(
     than summed. measured_cost is the mean of net_cost over iterations, per
     config.
     """
+    for csv in ("total", "free", "alloc"):
+        path = agg_dir / f"{csv}.csv"
+        if not path.exists():
+            print(f"Missing {path}.csv")
+            return pd.DataFrame()
     total = pd.read_csv(agg_dir / "total.csv").rename(columns={"iter": "iteration"})
     free = pd.read_csv(agg_dir / "free.csv")
     alloc = pd.read_csv(agg_dir / "alloc.csv")
@@ -232,10 +237,11 @@ _PREDICTED_NON_PARAM_COLS = frozenset(
 
 _BUCKET_ORDER = [
     "launch",
-    "scatter:block",
-    "scatter:sg",
-    "scatter:bc",
-    "gather",
+    "scatter:blocks",
+    "scatter:array",
+    "scatter:broadcast",
+    "gather:blocks",
+    "gather:array",
     "copy",
     "unaccounted",
 ]
@@ -335,19 +341,22 @@ def compute_measured_breakdown_long(
     net_ms = (joined.groupby("label")["net"].mean() / 1e6).rename("net_ms")
 
     wide = pd.DataFrame({"net_ms": net_ms})
-    scatter_bucket_cols = []
-    for kind, per_iter in sum_by_iter_and_kind("scatter").items():
-        bucket = f"scatter:{kind}"
-        scatter_bucket_cols.append(bucket)
-        wide[bucket] = (
-            (per_iter.groupby("label").mean() / 1e6).reindex(wide.index).fillna(0.0)
-        )
-    for bucket in ["scatter:block", "scatter:sg", "scatter:bc"]:
-        if bucket not in wide.columns:
+    transfer_bucket_cols = []
+    for direction in ("scatter", "gather"):
+        for kind, per_iter in sum_by_iter_and_kind(direction).items():
+            bucket = f"{direction}:{kind}"
+            transfer_bucket_cols.append(bucket)
+            wide[bucket] = (
+                (per_iter.groupby("label").mean() / 1e6).reindex(wide.index).fillna(0.0)
+            )
+    # A function that never broadcasts (or never scatters blocks) has no rows
+    # of that kind at all, hence no such column above -- give it an explicit
+    # zero so every function melts to the same bucket set and plots line up.
+    for bucket in _BUCKET_ORDER:
+        if bucket.split(":")[0] in ("scatter", "gather") and bucket not in wide.columns:
             wide[bucket] = 0.0
-            scatter_bucket_cols.append(bucket)
+            transfer_bucket_cols.append(bucket)
     for bucket, csv_type in [
-        ("gather", "gather"),
         ("copy", "copy"),
         ("launch", "launch"),
     ]:
@@ -359,13 +368,19 @@ def compute_measured_breakdown_long(
         )
         wide[bucket] = per_label.reindex(wide.index).fillna(0.0)
     wide["unaccounted"] = wide["net_ms"] - wide[
-        scatter_bucket_cols + ["gather", "copy", "launch"]
+        transfer_bucket_cols + ["copy", "launch"]
     ].sum(axis=1)
     wide = wide.drop(columns=["net_ms"]).reset_index()
 
+    # _BUCKET_ORDER first (so plots keep their canonical bucket order), then
+    # any kind the CSVs carry that it doesn't know about -- those are already
+    # netted out of "unaccounted" above, so dropping them here would make
+    # their time vanish from the breakdown entirely.
+    value_vars = [c for c in _BUCKET_ORDER if c in wide.columns]
+    value_vars += [c for c in wide.columns if c != "label" and c not in value_vars]
     long = wide.melt(
         id_vars=["label"],
-        value_vars=_BUCKET_ORDER,
+        value_vars=value_vars,
         var_name="bucket",
         value_name="measured_ms",
     )

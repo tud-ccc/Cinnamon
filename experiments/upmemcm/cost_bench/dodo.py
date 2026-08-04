@@ -392,6 +392,7 @@ def task_cost():
                 "name": f"{name}:{fn_name}",
                 "task_dep": [f"search:{name}:{fn_name}"],
                 "file_dep": [str(PATHS.split_module(name, fn_name))],
+                "uptodate": [False],
                 "targets": [str(marker)],
                 # PythonInteractiveAction -- see task_compile's comment.
                 "actions": [PythonInteractiveAction(_cost_fn, [name, fn_name, marker])],

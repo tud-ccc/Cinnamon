@@ -116,6 +116,10 @@ def collect_run_failures(
     even creates a run_dir entry for them (compile_run.py:200-201)."""
     run_dir = pathlib.Path(run_dir)
     compile_dir = pathlib.Path(compile_dir)
+
+    run_dir.parent.mkdir(parents=True, exist_ok=True)
+    compile_dir.parent.mkdir(parents=True, exist_ok=True)
+
     rows = []
     for fn_name, config_dir in iter_config_dirs(run_dir):
         if only_fn and fn_name != only_fn:

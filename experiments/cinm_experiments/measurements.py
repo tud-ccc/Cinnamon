@@ -252,11 +252,11 @@ def net_breakdown_ms(
 PREDICTED_TO_MEASURED = {
     ("kernel", "kernel"): "launch",
     ("kernel", "launchOverhead"): "launch",
-    ("transfer", "scatter"): "scatter:on_array",
-    ("transfer", "scatter_blocks"): "scatter:blocks",
+    ("transfer", "array"): "scatter:array",
+    ("transfer", "blocks"): "scatter:blocks",
     ("transfer", "broadcast"): "scatter:broadcast",
-    ("transfer_back", "gather"): "gather",  # kind=from_array
-    ("transfer_back", "gather_blocks"): "gather",
+    ("transfer_back", "array"): "gather:array",
+    ("transfer_back", "blocks"): "gather:blocks",
     ("cpu", "other"): "unaccounted",
 }
 

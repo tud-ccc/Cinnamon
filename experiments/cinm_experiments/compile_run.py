@@ -7,6 +7,7 @@ the cost model's predicted breakdown is needed, not an actual binary."""
 
 from __future__ import annotations
 
+import traceback
 import csv
 import dataclasses
 import pathlib
@@ -185,19 +186,24 @@ def run_config(
     )
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    r = subprocess.run(
-        [str(bench_bin), str(output_dir), str(iters)],
-        capture_output=True,
-        text=True,
-        cwd=str(bin_dir / cfg.fn_name),
-    )
-    if r.returncode != 0:
-        # Persisted next to (not inside) output/ -- same config_dir level as
-        # compile's own cinm-opt.log/make_stderr.txt -- so a failure survives
-        # past this process for later triage (see cinm_experiments.failures),
-        # not just the truncated in-memory RunResult.error below.
-        (output_dir.parent / "error.txt").write_text(r.stderr)
-        return RunResult(compiled, False, output_dir, r.stderr[-1000:])
+    err = None
+    try:
+        r = subprocess.run(
+            [str(bench_bin), str(output_dir), str(iters)],
+            capture_output=True,
+            text=True,
+            cwd=str(bin_dir / cfg.fn_name),
+        )
+        if r.returncode != 0:
+            err = r.stderr
+    except Exception:
+        traceback.print_exc()
+        err = traceback.format_exc()
+
+    if err:
+        (output_dir.parent / "error.txt").write_text(err)
+        return RunResult(compiled, False, output_dir, err[-1000:])
+
     return RunResult(compiled, True, output_dir)
 
 

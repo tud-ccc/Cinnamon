@@ -1,4 +1,4 @@
-"""doit tasks for the gemv_64MB CINM 1.0 vs CINM 2.0 comparison: one compile
+"""doit tasks for the mtv_64MB CINM 1.0 vs CINM 2.0 comparison: one compile
 task per config, one run task per config (each depending on its own
 compile), then a plot task depending on both runs.
 
@@ -28,7 +28,7 @@ sys.path.insert(0, str(EXPERIMENTS_DIR))
 
 from doit.tools import check_timestamp_unchanged
 from doit.reporter import ProgressBarReporter  # noqa: E402
-from cinm_experiments import compile_run, cinmopt, measurements, cinm1  # noqa: E402
+from cinm_experiments import compile_run, cinmopt, measurements  # noqa: E402
 from cinm_experiments.paths import DEFAULT_CINM_OPT
 
 DOIT_CONFIG = {
@@ -40,13 +40,13 @@ DOIT_CONFIG = {
 DATA_ROOT = HERE / "data"
 ITERS = 10
 
-# GEMV 64MB: 4096x4096
+# mtv 64MB: 4096x4096
 
-source = "/home/clement.fournier/Work/cinm-mlir/experiments/cinm1comparison/data/prim_gemv/_split/gemv_64MB.mlir"
+source = "/home/clement.fournier/Work/cinm-mlir/experiments/cinm1comparison/data/prim_mtv/_split/mtv_64MB.mlir"
 CONFIGS = [
     # compile_run.Config(
     # system="cinm2",
-    # fn_name="gemv_64MB",
+    # fn_name="mtv_64MB",
     # label="default",
     # # FIXME: not expressible in the generic search space yet.
     # # This configuration relies on *sequential outer trips*: with
@@ -67,12 +67,12 @@ CONFIGS = [
     # "mramCol": 1024,
     # },
     # fn_module=source,
-    # prim="gemv",
+    # prim="mtv",
     # lower=cinmopt.eval_solution_lowerer(),
     # ),
     compile_run.Config(
         system="cinm2",
-        fn_name="gemv_64MB",
+        fn_name="mtv_64MB",
         # An ad-hoc configuration using only 512 DPUs,
         # I use this for comparing the templates vs
         # generic flow bc other researchers are using
@@ -90,12 +90,12 @@ CONFIGS = [
             "gemv.order": 0,
         },
         fn_module=source,
-        prim="gemv",
+        prim="mtv",
         lower=cinmopt.eval_solution_lowerer(),
     ),
     compile_run.Config(
         system="cinm2_template",
-        fn_name="gemv_64MB",
+        fn_name="mtv_64MB",
         label="dpu512",
         params={
             "dpus": 512,
@@ -109,7 +109,7 @@ CONFIGS = [
             "gemv.order": 0,
         },
         fn_module=source,
-        prim="gemv",
+        prim="mtv",
         lower=cinmopt.eval_solution_lowerer(
             extra_infer_opts={
                 "lowering": "templates",
@@ -118,7 +118,7 @@ CONFIGS = [
     ),
     compile_run.Config(
         system="cinm2",
-        fn_name="gemv_64MB",
+        fn_name="mtv_64MB",
         # This one is the atim2048 optimum,
         # expressed as a point in the cinm2
         # search space. It corresponds precisely
@@ -139,12 +139,12 @@ CONFIGS = [
             "gemv.order": 0,
         },
         fn_module=source,
-        prim="gemv",
+        prim="mtv",
         lower=cinmopt.eval_solution_lowerer(),
     ),
     compile_run.Config(
         system="cinm2_template",
-        fn_name="gemv_64MB",
+        fn_name="mtv_64MB",
         label="atim2048optimum",
         # Same as above, but lowered through the templated flow for comparison.
         params={
@@ -159,7 +159,7 @@ CONFIGS = [
             "gemv.order": 0,
         },
         fn_module=source,
-        prim="gemv",
+        prim="mtv",
         lower=cinmopt.eval_solution_lowerer(
             extra_infer_opts={
                 "lowering": "templates",
@@ -168,7 +168,7 @@ CONFIGS = [
     ),
     compile_run.Config(
         system="cinm2",
-        fn_name="gemv_64MB",
+        fn_name="mtv_64MB",
         # This is just another CINM2 config that gives rise
         # to a partial reduction on the host. Not directly
         # comparable to the atim2048 optimum.
@@ -184,7 +184,7 @@ CONFIGS = [
             "mramCol": 1024,
         },
         fn_module=source,
-        prim="gemv",
+        prim="mtv",
         lower=cinmopt.eval_solution_lowerer(),
     ),
     # These two are the config picked by cinm1 when
@@ -194,24 +194,24 @@ CONFIGS = [
     # workgroup mapping. CINM2 optimizations are
     # disabled for them, and they use a CINM1-like
     # lowering flow.
-    compile_run.Config(
-        system="cinm1",
-        fn_name="gemv_64MB",
-        label="atim2048optimum",
-        params={"dpus": 2048, "tasklets": 8},
-        fn_module=source,
-        prim="gemv",
-        lower=cinm1.lowerer(),
-    ),
-    compile_run.Config(
-        system="cinm1_with_sg",
-        fn_name="gemv_64MB",
-        label="atim2048optimum",
-        params={"dpus": 2048, "tasklets": 8},
-        fn_module=source,
-        prim="gemv",
-        lower=cinm1.lowerer(use_upmem_scatter_api=True),
-    ),
+    # compile_run.Config(
+    #     system="cinm1",
+    #     fn_name="mtv_64MB",
+    #     label="atim2048optimum",
+    #     params={"dpus": 2048, "tasklets": 8},
+    #     fn_module=source,
+    #     prim="mtv",
+    #     lower=cinm1.lowerer(),
+    # ),
+    # compile_run.Config(
+    #     system="cinm1_with_sg",
+    #     fn_name="mtv_64MB",
+    #     label="atim2048optimum",
+    #     params={"dpus": 2048, "tasklets": 8},
+    #     fn_module=source,
+    #     prim="mtv",
+    #     lower=cinm1.lowerer(use_upmem_scatter_api=True),
+    # ),
 ]
 
 
@@ -337,7 +337,7 @@ def task_plot():
             bottoms = [b + v for b, v in zip(bottoms, values)]
 
         ax.set_ylabel("time (ms)")
-        ax.set_title(f"gemv_64MB net-time breakdown ({label})")
+        ax.set_title(f"mtv_64MB net-time breakdown ({label})")
         ax.legend(loc="upper left", bbox_to_anchor=(1.0, 1.0))
         ax.set_xticks(range(len(systems)))
         ax.set_xticklabels(systems, rotation=45, ha="right")

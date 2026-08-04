@@ -22,6 +22,8 @@ def iter_config_dirs(run_dir: pathlib.Path):
     (run_dir/{fn_name}/{config_id}/), skipping non-directories and any
     fn_name starting with "_" (e.g. a stray _split/)."""
     run_dir = pathlib.Path(run_dir)
+    run_dir.mkdir(parents=True, exist_ok=True)
+
     for fn_dir in sorted(run_dir.iterdir()):
         if not fn_dir.is_dir() or fn_dir.name.startswith("_"):
             continue

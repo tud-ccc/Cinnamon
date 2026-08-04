@@ -45,8 +45,8 @@ ResultTy parallelTransformReduceChunked(const ConfigSpace &space, ResultTy init,
     return init;
 
   const size_t numThreads = llvm::parallel::strategy.compute_thread_count();
-  constexpr size_t kChunksPerThread = 128;
-  constexpr size_t kMinChunkSize = 256;
+  constexpr size_t kChunksPerThread = 8;
+  constexpr size_t kMinChunkSize = 1024;
   size_t numChunks = std::max<size_t>(1, numThreads * kChunksPerThread);
   numChunks = std::min(numChunks, std::max<size_t>(1, N / kMinChunkSize));
   numChunks = std::min(numChunks, N);

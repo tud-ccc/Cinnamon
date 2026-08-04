@@ -34,7 +34,15 @@ def spearman_topk(predicted, measured, top_quantile: float) -> float:
     measured = np.asarray(measured, dtype=float)
     k = max(2, int(np.ceil(top_quantile * len(predicted))))
     idx = np.argsort(predicted)[:k]
-    rho, _ = spearmanr(predicted[idx], measured[idx])
+    top_p, top_m = predicted[idx], measured[idx]
+    # A side with no spread has no ranking to correlate, so spearmanr returns
+    # nan (after a ConstantInputWarning). Common for a coarse-grained bucket:
+    # "unaccounted" predicts only a handful of distinct values, so its whole
+    # top-k slice can be one number. Same 0.0 as any other degenerate input,
+    # minus the warning.
+    if top_p.min() == top_p.max() or top_m.min() == top_m.max():
+        return 0.0
+    rho, _ = spearmanr(top_p, top_m)
     return float(rho) if np.isfinite(rho) else 0.0
 
 

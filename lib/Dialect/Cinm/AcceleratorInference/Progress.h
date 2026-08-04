@@ -44,7 +44,7 @@ struct SimpleProgressBar {
         std::cout << "\033[?2026h";
         bar->set_progress(done_.load(std::memory_order_relaxed));
         std::cout << "\033[?2026l" << std::flush;
-        std::this_thread::sleep_for(std::chrono::milliseconds(150));
+        std::this_thread::sleep_for(std::chrono::seconds(2));
       }
     });
   }
