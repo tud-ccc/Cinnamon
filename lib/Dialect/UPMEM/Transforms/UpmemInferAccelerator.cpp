@@ -916,36 +916,35 @@ void UpmemInferencePlugin::handleLinalgOp(linalg::LinalgOp op,
   // on decisions taken during lowering (which operands end up shared, how
   // promotion sizes its staging buffers, where buffers are hoisted), so the
   // exact test is done on the lowered program instead.
+  //
+  // Written in the DSL so the enumerator can see the shape: a sum of products
+  // of tile sizes is monotone in every variable, so a partial assignment whose
+  // smallest completion already exceeds the capacity can have its whole
+  // subtree cut rather than being filtered afterwards.
   auto operandDims = linalgOperandDims(op);
-  auto footprint =
-      [operandDims](ArrayRef<SpaceVar> sizes,
-                    const ConfigurationVector &c) -> cinm::ParmVector {
-    cinm::ParmVector total = c.zeros();
+  auto footprint = [operandDims](ArrayRef<SpaceVar> sizes) -> cinm::Expr {
+    SmallVector<cinm::Expr> operands;
     for (const auto &dims : operandDims) {
-      auto elements = c.ones();
+      SmallVector<cinm::Expr> factors;
       for (unsigned dim : dims)
-        elements %= sizes[dim][c]; // elementwise multiply.
-      total += elements;
+        factors.push_back(sizes[dim]);
+      operands.push_back(cinm::prod(std::move(factors)));
     }
-    return total;
+    return cinm::sum(std::move(operands));
   };
 
   const int64_t mramElements = platform.getMramLevel().getSizeInElements(eltTy);
   const int64_t wramElements = platform.getWramLevel().getSizeInElements(eltTy);
-  b.require([=](auto &c,
-                auto &valid) { valid %= footprint(blocks, c) <= mramElements; },
+
+  b.require(footprint(blocks) <= mramElements,
             "sum of per-leaf operand tiles <= MRAM (assuming maximal sharing)");
-  b.require([=](auto &c,
-                auto &valid) { valid %= footprint(leaves, c) <= wramElements; },
+  b.require(footprint(leaves) <= wramElements,
             "sum of leaf tiles <= WRAM (assuming maximal sharing)");
   if (!opts.useMRAMTiling) {
     // Note: this is only required for benchmarks that compare
     // against CINM1 codegen. To be removed.
-    b.require(
-        [=](auto &c, auto &valid) {
-          valid %= footprint(blocks, c) <= wramElements;
-        },
-        "MRAM tile should be equal to WRAM tile (no tiling in MRAM)");
+    b.require(footprint(blocks) <= wramElements,
+              "MRAM tile should be equal to WRAM tile (no tiling in MRAM)");
   }
 
   // Which tile dimension varies fastest across the leaves (design §G3). The
