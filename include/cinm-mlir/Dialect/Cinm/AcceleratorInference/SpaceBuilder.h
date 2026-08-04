@@ -9,6 +9,7 @@
 #include <llvm/Support/ErrorHandling.h>
 #include <llvm/Support/raw_ostream.h>
 #include <memory>
+#include <set>
 #include <string>
 #include <type_traits>
 #include <variant>
@@ -261,6 +262,19 @@ private:
   DimEntry &findEntry(const SpaceVar &v);
   SpaceVar findVarByName(llvm::StringRef name) const;
   int dimIndexByName(llvm::StringRef name) const;
+
+  /// Fold structural constraints into the index encoding: group variables
+  /// linked by divisibility or product relations into connected components,
+  /// enumerate each component's satisfying tuples, and register them with
+  /// `space` so those configurations are never offered in the first place.
+  ///
+  /// Relations a component absorbs are reported back through the two output
+  /// sets, so the pairwise handling and the dynamic-predicate phase skip them.
+  /// A component whose enumeration exceeds the cap absorbs nothing and leaves
+  /// its relations to the existing paths.
+  void planComponents(ConfigSpace &space,
+                      std::set<std::pair<std::string, std::string>> &absorbedMultiples,
+                      std::set<const ConstraintNode *> &absorbedPredicates);
 
   /// Report what the Form A recogniser makes of each DSL-registered constraint.
   /// Analysis only — it does not change the space. Runs after phase 1 of

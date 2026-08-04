@@ -205,6 +205,366 @@ void SpaceBuilder::addDivConstraint(const ConstraintNodePtr &num,
 }
 
 // ===----------------------------------------------------------------------===//
+// Component planning
+// ===----------------------------------------------------------------------===//
+//
+// Structural constraints are folded into the flat index rather than filtered
+// afterwards. Variables linked by a divisibility or product relation form a
+// connected component; every satisfying tuple of that component is enumerated
+// once, and the component then occupies a single slot sized by the solution
+// count. See docs/ConstraintAnalysisDesign.md.
+
+namespace {
+
+/// `dividend % divisor == 0`.
+struct DivRel {
+  size_t divisor, dividend;
+};
+
+/// `lhsCoeff * prod(lhsVars) == rhsCoeff * prod(rhsVars)`.
+struct ProdEq {
+  int64_t lhsCoeff, rhsCoeff;
+  llvm::SmallVector<size_t, 4> lhsVars, rhsVars;
+};
+
+/// The distinct values a dimension can take, sorted, for membership tests.
+struct Domain {
+  std::vector<ParmValue> values; ///< ascending
+  bool contains(ParmValue v) const {
+    return std::binary_search(values.begin(), values.end(), v);
+  }
+};
+
+class ComponentEnumerator {
+public:
+  ComponentEnumerator(llvm::ArrayRef<size_t> dims,
+                      llvm::ArrayRef<Domain> domains,
+                      llvm::ArrayRef<DivRel> divs, llvm::ArrayRef<ProdEq> prods,
+                      size_t cap)
+      : dims_(dims), domains_(domains), divs_(divs), prods_(prods), cap_(cap),
+        assigned_(dims.size(), false), values_(dims.size(), 0) {
+    // Resolve the least-constrained-last ordering once: smaller domains first
+    // both prunes earlier and, for a divisibility pair, naturally puts the
+    // dividend (a divisor-filtered domain) ahead of the divisor (typically a
+    // full range), which is what makes the divisor enumerable from it.
+    order_.resize(dims.size());
+    std::iota(order_.begin(), order_.end(), 0);
+    llvm::stable_sort(order_, [&](size_t a, size_t b) {
+      return domains_[a].values.size() < domains_[b].values.size();
+    });
+    for (size_t pos = 0; pos < dims.size(); ++pos)
+      posOfDim_[dims[pos]] = pos;
+  }
+
+  /// Enumerate every satisfying tuple. False if the cap was exceeded, in which
+  /// case `out` is meaningless and the caller must fall back.
+  bool run(std::vector<std::vector<ParmValue>> &out) {
+    out_ = &out;
+    return recurse(0);
+  }
+
+private:
+  size_t posOf(size_t dim) const { return posOfDim_.lookup(dim); }
+  bool isAssigned(size_t dim) const { return assigned_[posOf(dim)]; }
+  int64_t valueOf(size_t dim) const { return values_[posOf(dim)]; }
+
+  /// Product of the assigned variables on one side, or nullopt if any is still
+  /// unassigned. `skip` excludes the variable being solved for.
+  std::optional<int64_t> sideProduct(llvm::ArrayRef<size_t> vars, int64_t coeff,
+                                     size_t skip, bool skipOne) const {
+    int64_t acc = coeff;
+    bool skipped = false;
+    for (size_t v : vars) {
+      if (skipOne && v == skip && !skipped) {
+        skipped = true;
+        continue;
+      }
+      if (!isAssigned(v))
+        return std::nullopt;
+      acc *= valueOf(v);
+    }
+    return acc;
+  }
+
+  /// If exactly one variable of `eq` is unassigned and it is `dim`, compute the
+  /// only value it can take. Returns nullopt when `dim` is not determined.
+  std::optional<int64_t> solveFor(const ProdEq &eq, size_t dim) const {
+    size_t occurrences = 0, unassignedCount = 0;
+    for (llvm::ArrayRef<size_t> side : {llvm::ArrayRef<size_t>(eq.lhsVars),
+                                        llvm::ArrayRef<size_t>(eq.rhsVars)})
+      for (size_t v : side) {
+        if (v == dim)
+          ++occurrences;
+        if (!isAssigned(v))
+          ++unassignedCount;
+      }
+    // Solving needs the target to appear linearly and be the only unknown.
+    if (occurrences != 1 || unassignedCount != 1)
+      return std::nullopt;
+
+    const bool onLhs = llvm::is_contained(eq.lhsVars, dim);
+    auto known = sideProduct(onLhs ? eq.lhsVars : eq.rhsVars,
+                             onLhs ? eq.lhsCoeff : eq.rhsCoeff, dim, true);
+    auto other = sideProduct(onLhs ? eq.rhsVars : eq.lhsVars,
+                             onLhs ? eq.rhsCoeff : eq.lhsCoeff, dim, false);
+    if (!known || !other || *known == 0 || *other % *known != 0)
+      return std::nullopt;
+    return *other / *known;
+  }
+
+  /// Every relation whose variables are all assigned must hold.
+  bool checkComplete() const {
+    for (const DivRel &d : divs_) {
+      if (!isAssigned(d.divisor) || !isAssigned(d.dividend))
+        continue;
+      int64_t div = valueOf(d.divisor);
+      if (div == 0 || valueOf(d.dividend) % div != 0)
+        return false;
+    }
+    for (const ProdEq &e : prods_) {
+      auto l = sideProduct(e.lhsVars, e.lhsCoeff, 0, false);
+      auto r = sideProduct(e.rhsVars, e.rhsCoeff, 0, false);
+      if (l && r && *l != *r)
+        return false;
+    }
+    return true;
+  }
+
+  /// Candidate values for the next dimension, narrowed by whatever is already
+  /// known. Narrowing is what keeps this linear in the solution count instead
+  /// of the product of the domains.
+  llvm::SmallVector<ParmValue, 16> candidatesFor(size_t pos) const {
+    const size_t dim = dims_[pos];
+    const Domain &dom = domains_[pos];
+    llvm::SmallVector<ParmValue, 16> out;
+
+    // Determined by a product equality: exactly one value can work.
+    for (const ProdEq &e : prods_) {
+      if (auto v = solveFor(e, dim)) {
+        if (*v >= std::numeric_limits<ParmValue>::min() &&
+            *v <= std::numeric_limits<ParmValue>::max() &&
+            dom.contains(static_cast<ParmValue>(*v)))
+          out.push_back(static_cast<ParmValue>(*v));
+        return out;
+      }
+    }
+    // Constrained to divide an already-known dividend: walk its divisors
+    // rather than the (often much larger) declared domain.
+    for (const DivRel &d : divs_) {
+      if (d.divisor != dim || !isAssigned(d.dividend))
+        continue;
+      const int64_t n = valueOf(d.dividend);
+      if (n <= 0)
+        return out;
+      for (int64_t i = 1; i * i <= n; ++i) {
+        if (n % i)
+          continue;
+        for (int64_t cand : {i, n / i})
+          if (cand <= std::numeric_limits<ParmValue>::max() &&
+              dom.contains(static_cast<ParmValue>(cand)))
+            out.push_back(static_cast<ParmValue>(cand));
+      }
+      llvm::sort(out);
+      out.erase(std::unique(out.begin(), out.end()), out.end());
+      return out;
+    }
+    out.assign(dom.values.begin(), dom.values.end());
+    return out;
+  }
+
+  bool recurse(size_t level) {
+    if (level == order_.size()) {
+      if (out_->size() >= cap_)
+        return false;
+      std::vector<ParmValue> tuple(dims_.size());
+      for (size_t i = 0; i < dims_.size(); ++i)
+        tuple[i] = values_[i];
+      out_->push_back(std::move(tuple));
+      return true;
+    }
+    const size_t pos = order_[level];
+    for (ParmValue v : candidatesFor(pos)) {
+      values_[pos] = v;
+      assigned_[pos] = true;
+      bool ok = checkComplete() ? recurse(level + 1) : true;
+      assigned_[pos] = false;
+      if (!ok)
+        return false; // cap exceeded, abort the whole enumeration
+    }
+    return true;
+  }
+
+  llvm::ArrayRef<size_t> dims_;
+  llvm::ArrayRef<Domain> domains_;
+  llvm::ArrayRef<DivRel> divs_;
+  llvm::ArrayRef<ProdEq> prods_;
+  size_t cap_;
+  std::vector<bool> assigned_;
+  std::vector<ParmValue> values_;
+  std::vector<size_t> order_;
+  llvm::DenseMap<size_t, size_t> posOfDim_;
+  std::vector<std::vector<ParmValue>> *out_ = nullptr;
+};
+
+/// Union-find over dimension indices.
+class DisjointSets {
+public:
+  explicit DisjointSets(size_t n) : parent_(n) {
+    std::iota(parent_.begin(), parent_.end(), 0);
+  }
+  size_t find(size_t x) {
+    while (parent_[x] != x)
+      x = parent_[x] = parent_[parent_[x]];
+    return x;
+  }
+  void unite(size_t a, size_t b) { parent_[find(a)] = find(b); }
+
+private:
+  std::vector<size_t> parent_;
+};
+
+} // namespace
+
+void SpaceBuilder::planComponents(
+    ConfigSpace &space,
+    std::set<std::pair<std::string, std::string>> &absorbedMultiples,
+    std::set<const ConstraintNode *> &absorbedPredicates) {
+  /// Enumerating more tuples than this is taken as evidence that the component
+  /// is not actually pruning, and the relations are left to the old paths.
+  constexpr size_t kSolutionCap = 4'000'000;
+
+  const size_t nDims = space.params.size();
+  if (nDims == 0)
+    return;
+
+  // Collect the relations that can be folded into the encoding.
+  std::vector<DivRel> divs;
+  std::vector<std::pair<std::string, std::string>> divNames;
+  for (const auto &m : multiples_) {
+    int p = dimIndexByName(m.parent), c = dimIndexByName(m.child);
+    if (p < 0 || c < 0)
+      continue;
+    divs.push_back({static_cast<size_t>(p), static_cast<size_t>(c)});
+    divNames.push_back({m.parent, m.child});
+  }
+
+  std::vector<ProdEq> prods;
+  std::vector<const ConstraintNode *> prodNodes;
+  for (const auto &entry : predicates_) {
+    if (!entry.node)
+      continue;
+    auto eq = matchProductEquality(*entry.node);
+    if (!eq)
+      continue;
+    // A variable on both sides determines nothing, and repeated variables are
+    // not solvable linearly; leave those as ordinary predicates.
+    std::set<size_t> lhsSet(eq->lhs.vars.begin(), eq->lhs.vars.end());
+    if (llvm::any_of(eq->rhs.vars,
+                     [&](size_t v) { return lhsSet.count(v) != 0; }))
+      continue;
+    ProdEq p;
+    p.lhsCoeff = eq->lhs.coeff;
+    p.rhsCoeff = eq->rhs.coeff;
+    p.lhsVars.assign(eq->lhs.vars.begin(), eq->lhs.vars.end());
+    p.rhsVars.assign(eq->rhs.vars.begin(), eq->rhs.vars.end());
+    prods.push_back(std::move(p));
+    prodNodes.push_back(entry.node.get());
+  }
+
+  if (divs.empty() && prods.empty())
+    return;
+
+  // Connected components over the variables the relations link.
+  DisjointSets sets(nDims);
+  for (const DivRel &d : divs)
+    sets.unite(d.divisor, d.dividend);
+  for (const ProdEq &p : prods) {
+    llvm::SmallVector<size_t, 8> all(p.lhsVars.begin(), p.lhsVars.end());
+    all.append(p.rhsVars.begin(), p.rhsVars.end());
+    for (size_t i = 1; i < all.size(); ++i)
+      sets.unite(all[0], all[i]);
+  }
+
+  // Precompute each dimension's distinct values once.
+  std::vector<Domain> allDomains(nDims);
+  for (size_t d = 0; d < nDims; ++d) {
+    const size_t card = space[d].cardinality();
+    allDomains[d].values.reserve(card);
+    for (size_t i = 0; i < card; ++i)
+      allDomains[d].values.push_back(space[d].valueAt(i));
+    llvm::sort(allDomains[d].values);
+  }
+
+  // Group dimensions by component root, keeping dims ascending so the slot
+  // order and the tuple layout are both deterministic.
+  std::map<size_t, std::vector<size_t>> byRoot;
+  for (size_t d = 0; d < nDims; ++d)
+    byRoot[sets.find(d)].push_back(d);
+
+  for (auto &[root, dims] : byRoot) {
+    if (dims.size() < 2)
+      continue; // nothing linked it to anything
+
+    // The relations wholly inside this component.
+    std::vector<DivRel> myDivs;
+    std::vector<size_t> myDivIdx;
+    for (size_t i = 0; i < divs.size(); ++i)
+      if (sets.find(divs[i].divisor) == root) {
+        myDivs.push_back(divs[i]);
+        myDivIdx.push_back(i);
+      }
+    std::vector<ProdEq> myProds;
+    std::vector<size_t> myProdIdx;
+    for (size_t i = 0; i < prods.size(); ++i) {
+      const auto &p = prods[i];
+      size_t any = p.lhsVars.empty() ? p.rhsVars.front() : p.lhsVars.front();
+      if (sets.find(any) == root) {
+        myProds.push_back(p);
+        myProdIdx.push_back(i);
+      }
+    }
+
+    std::vector<Domain> myDomains;
+    for (size_t d : dims)
+      myDomains.push_back(allDomains[d]);
+
+    std::vector<std::vector<ParmValue>> solutions;
+    ComponentEnumerator enumerator(dims, myDomains, myDivs, myProds,
+                                   kSolutionCap);
+    if (!enumerator.run(solutions)) {
+      LLVM_DEBUG(llvm::dbgs()
+                 << "[cinm-space]   component of " << dims.size()
+                 << " dims exceeded the solution cap; left to predicates\n");
+      continue;
+    }
+
+    LLVM_DEBUG({
+      size_t product = 1;
+      for (size_t d : dims)
+        product *= space[d].cardinality();
+      llvm::dbgs() << "[cinm-space]   component {";
+      for (size_t i = 0; i < dims.size(); ++i)
+        llvm::dbgs() << (i ? ", " : "") << space[dims[i]].name;
+      llvm::dbgs() << "}: " << solutions.size() << " tuples (was " << product
+                   << ", " << (solutions.empty()
+                                   ? 0.0
+                                   : double(product) / double(solutions.size()))
+                   << "x fewer)\n";
+    });
+
+    ConfigSpace::SolvedComponent comp;
+    comp.dims = dims;
+    comp.solutions = std::move(solutions);
+    space.addSolvedComponent(std::move(comp));
+
+    for (size_t i : myDivIdx)
+      absorbedMultiples.insert(divNames[i]);
+    for (size_t i : myProdIdx)
+      absorbedPredicates.insert(prodNodes[i]);
+  }
+}
+
+// ===----------------------------------------------------------------------===//
 // SpaceBuilder::buildInto
 // ===----------------------------------------------------------------------===//
 
@@ -266,6 +626,13 @@ void SpaceBuilder::buildInto(ConfigSpace &space) {
   multiples_.erase(std::unique(multiples_.begin(), multiples_.end()),
                    multiples_.end());
 
+  // Phase 2a: plan components. Anything a component absorbs is skipped by the
+  // pairwise handling below and by phase 3, because the encoding will never
+  // offer a configuration that violates it.
+  std::set<std::pair<std::string, std::string>> absorbedMultiples;
+  std::set<const ConstraintNode *> absorbedPredicates;
+  planComponents(space, absorbedMultiples, absorbedPredicates);
+
   // Build lookup for the full set.
   std::set<std::pair<std::string, std::string>> multsSet;
   for (auto &m : multiples_)
@@ -281,6 +648,9 @@ void SpaceBuilder::buildInto(ConfigSpace &space) {
 
   for (auto &m : multiples_) {
     if (handled.count({m.parent, m.child}))
+      continue;
+    // Already guaranteed by a component's enumeration.
+    if (absorbedMultiples.count({m.parent, m.child}))
       continue;
 
     LLVM_DEBUG({
@@ -347,12 +717,20 @@ void SpaceBuilder::buildInto(ConfigSpace &space) {
   // scalar overload of addConstraint vectorizes it per lane.
   LLVM_DEBUG(llvm::dbgs() << "[cinm-space]   dynamic predicates: "
                           << predicates_.size() << "\n");
-  for (auto &entry : predicates_)
+  for (auto &entry : predicates_) {
+    // A constraint a component absorbed is guaranteed by the encoding; keeping
+    // it as a predicate would only re-test what can no longer be violated.
+    if (entry.node && absorbedPredicates.count(entry.node.get())) {
+      LLVM_DEBUG(llvm::dbgs() << "[cinm-space]   absorbed into encoding: "
+                              << entry.description << "\n");
+      continue;
+    }
     std::visit(
         [&](auto &pred) {
           space.addConstraint(std::move(pred), entry.description);
         },
         entry.pred);
+  }
 }
 
 } // namespace mlir::cinm
