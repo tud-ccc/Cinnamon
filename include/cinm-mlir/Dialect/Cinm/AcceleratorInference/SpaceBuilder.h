@@ -249,6 +249,9 @@ private:
     /// time rather than here, because wrapping it needs a ConfWrapper and so
     /// the ConfigSpace, which does not exist yet when require() runs.
     std::variant<Constraint, VecConstraint> pred;
+    /// The source expression, for constraints registered through the DSL;
+    /// null for opaque predicates. Only these can be analysed.
+    ConstraintNodePtr node;
   };
 
   std::vector<DimEntry> dims_;
@@ -258,6 +261,11 @@ private:
   DimEntry &findEntry(const SpaceVar &v);
   SpaceVar findVarByName(llvm::StringRef name) const;
   int dimIndexByName(llvm::StringRef name) const;
+
+  /// Report what the Form A recogniser makes of each DSL-registered constraint.
+  /// Analysis only — it does not change the space. Runs after phase 1 of
+  /// buildInto, since variable indices are unassigned before that.
+  void reportConstraintAnalysis(const ConfigSpace &space) const;
 
   /// Walk `node` and reify every Div as a divisibility constraint.
   void extractDivConstraints(const ConstraintNodePtr &node);

@@ -2,10 +2,13 @@
 
 #include "cinm-mlir/Dialect/Cinm/AcceleratorInference/AcceleratorInference.h"
 
+#include <llvm/ADT/ArrayRef.h>
 #include <llvm/ADT/SmallVector.h>
 #include <llvm/ADT/StringRef.h>
 #include <memory>
+#include <optional>
 #include <string>
+#include <utility>
 
 namespace mlir::cinm {
 
@@ -94,5 +97,45 @@ VecConstraint toVecConstraint(ConstraintNodePtr node);
 /// (dpus * tasklets)". Used for the constraint descriptions debugIsValid()
 /// reports.
 std::string describeNode(const ConstraintNode &node);
+
+// ===----------------------------------------------------------------------===//
+// Analysis — Form A (product equality)
+// ===----------------------------------------------------------------------===//
+
+/// A product of search parameters with a constant coefficient:
+/// `coeff * prod(vars)`. `vars` holds ConfigSpace parameter indices and may
+/// repeat (a variable squared is the same index twice); it is kept sorted so
+/// that two spellings of the same monomial compare equal.
+struct Monomial {
+  ParmValue coeff = 1;
+  llvm::SmallVector<size_t, 4> vars;
+
+  bool operator==(const Monomial &o) const {
+    return coeff == o.coeff && vars == o.vars;
+  }
+};
+
+/// `lhs == rhs`, with all division cleared by cross-multiplication. This is the
+/// canonical form of a Form A constraint; see docs/ConstraintAnalysisDesign.md.
+struct ProductEquality {
+  Monomial lhs, rhs;
+};
+
+/// Reduce an arithmetic node to `(numer) / (denom)` as monomials. Fails (returns
+/// nullopt) on anything that is not a rational monomial — in particular on any
+/// Add or Sub, which is why capacity bounds (Form C) are not matched here.
+///
+/// Variable indices are read from the shared cells, so this is only meaningful
+/// after SpaceBuilder::buildInto() has assigned them.
+std::optional<std::pair<Monomial, Monomial>>
+normalizeRationalMonomial(const ConstraintNode &node);
+
+/// Match a Cmp node as a product equality, clearing denominators. Returns
+/// nullopt unless the comparison is `==` and both sides are rational monomials.
+std::optional<ProductEquality>
+matchProductEquality(const ConstraintNode &node);
+
+std::string describeMonomial(const Monomial &m,
+                             llvm::ArrayRef<std::string> paramNames);
 
 } // namespace mlir::cinm

@@ -332,36 +332,236 @@ template lowering paths, `eval-solution` (which exercises the scalar
 `isValid`/`debugIsValid` path), and constraint *rejection* — run them at every
 stage.
 
-**Stage 1 — n-ary product node, existing DSL.**
-Add `NAryExpr<Op, Elem>` holding `std::vector<Elem>` plus a `prod(range)` helper,
-and give each `Op` an `identity()`. Rewrite A1 in the DSL and delete the
-hand-written `VecConstraint` for it. No analysis yet — it still becomes a dynamic
-predicate, but an auto-vectorised one. *Validates the surface syntax and proves
-the auto-vectorisation goal on a real constraint.*
+### Validation baselines
 
-**Stage 2 — introduce the runtime IR.**
-Add `ConstraintNode`; make the DSL operators build nodes; replace the typed
-`evalVec` with a tree interpreter. All constraints stay dynamic. *Pure
-refactor — the valid-configuration count must not change. Assert that against a
-recorded baseline.*
+Recorded on `experiments/cinm1comparison/data/prim_mtv/_split/`, comparing the
+sorted parameter columns of `pool.csv` (`dump-full-pool=true`), so costs do not
+pollute the diff. Any stage that is meant to be behaviour-preserving must
+reproduce these sets *exactly*, not merely the counts.
 
-**Stage 3 — scratch-buffer pool in the interpreter.**
-Expected to recover most of the page-fault overhead. *Measure against the
-profile that motivated it; no functional change.*
+| input | enumerated | valid | sha256 (first 16) |
+|---|---|---|---|
+| `mtv_4MB`   | 428,212,224   | 17,738 | `d53f483d9ff22f23` |
+| `mtv_64MB`  | 814,055,424   | 12,364 | `268031464cd7ea88` |
+| `mtv_512MB` | 1,238,630,400 |  3,038 | `685bcdde4ba0f4c1` |
 
-**Stage 4 — normaliser + Form A recogniser.**
-Canonicalise to product-of-factors, detect `prod == prod`, apply the direction
-rule, and report what it found under `--debug-only=cinm-inference` — without
-acting on it yet. *Lets the analysis be validated on real spaces before it can
-change any results.*
+### Stage 1 — n-ary product node — **DONE**
 
-**Stage 5 — `SolvedGroup` encoding.**
-Precompute solution tables, wire into `ensureEncoding`/`at()`/`indexOf()`, add
-the fallbacks. *This is where the 1.24e9 → ~1e5 reduction lands. Verify the set
-of valid configurations is unchanged: for a small space, enumerate both ways and
-compare.*
+Folded into Stage 2: a type-level `NAryExpr` would have been deleted immediately
+by the IR migration, so the n-ary product was built directly into the IR and
+exposed as `prod()` / `sum()`. A1 is now written in the DSL
+(`prod(tilesPerDim) == dpus * tasklets`) and its hand-written `VecConstraint` is
+gone — the vectorised implementation is generated from the tree.
 
-**Stage 6 (optional) — Form B beyond parent/child, and Form C domain narrowing.**
+### Stage 2 — runtime IR — **DONE**
+
+`ConstraintIR.h`/`.cpp` hold the node set; the DSL operators build nodes;
+`SpaceBuilder`'s CRTP templates (`SpaceExprBase`, `BinExpr`, `ConstraintExpr`,
+the `Op` structs and ~30 operator overloads) are gone. `extractDivConstraints` /
+`addDivConstraint` migrated from `if constexpr` dispatch to switches on node
+kind, preserving all three cases. All three baselines reproduce byte-identically.
+
+### Stage 3 — scratch-buffer pool in the interpreter — *deferred*
+
+`evalNodeVec` allocates a fresh `ParmVector` per node, which is the allocation
+churn behind the page-fault profile. Treated as an optimisation to apply after
+the encoding work, since the encoding change removes most of the work being
+done in the first place. *Measure against the profile that motivated it; no
+functional change.*
+
+### Stage 4 — normaliser + Form A recogniser — **DONE**
+
+`normalizeRationalMonomial` reduces an arithmetic node to
+`(coeff * prod(vars)) / (coeff * prod(vars))`, failing on anything containing
+`Add`/`Sub` — which is precisely what keeps capacity bounds (Form C) out of Form
+A instead of silently mis-analysing them. `matchProductEquality` cross-multiplies
+an `Eq` to clear denominators:
+
+```
+lhsNum * rhsDen  ==  rhsNum * lhsDen
+```
+
+`SpaceBuilder::reportConstraintAnalysis` runs after phase 1 of `buildInto` (when
+variable indices exist) and reports under `--debug-only=cinm-inference`. It does
+not change the space; all three baselines reproduce exactly.
+
+**What it finds on `mtv_512MB`:**
+
+```
+[cinm-analysis]   Form A: 134217728 == dpus * tasklets * gemv.M0 * gemv.K0
+[cinm-analysis]     joint cardinality: lhs=1 rhs=10321920
+```
+
+`134217728 = 8192 * 16384 = 2^27`. This is a sharper result than assumed when
+this document was first written: after normalisation A1 is not
+*variables == variables* but **constant == product of all four variables**. The
+consequences for Stage 5:
+
+- There is no "enumerate one side, derive the other" split imposed by the
+  equation itself. All four dimensions are *jointly* constrained, and any
+  partition into key/solved enumerates the same solution set `S`. The choice is
+  therefore about precomputation cost and wasted key combinations, not about the
+  size of the result.
+- The degenerate partition — empty key, one solution list holding all of `S` —
+  is optimal in table size and simplest to build. `S` is exactly the tuples the
+  encoding should offer.
+- The four dimensions contribute `2048 * 24 * 14 * 15 = 10,321,920` to the flat
+  product today. Replacing that factor with `|S|` is the whole win.
+
+The direction rule in the section above still applies to the general
+*variables == variables* case (Form A2, `dpus == dpuRows * dpuCols`), but is not
+what drives A1.
+
+### Stage 5 — component enumeration
+
+**The encoding is a planning problem, not a pattern rewrite.** The original
+sketch here — recognise one constraint, form a group keyed on one side — is too
+local. `SpaceBuilder::divisorsOf(name, SpaceVar)` commits to a pairwise
+`DependentGroup` the moment a leaf is declared, before the product equality that
+also constrains those variables has even been registered. Encoding decisions
+must be made once, over the whole constraint set.
+
+The replacement:
+
+1. Collect every structural constraint (divisibility and product equality)
+   without acting on it.
+2. Build a graph over search variables, with an edge for every constraint that
+   mentions two variables.
+3. Take connected components. Variables in different components are
+   independent and keep their own slots.
+4. Enumerate each component's solution set `S` — the tuples satisfying all of
+   its constraints — and give the component **one slot of size `|S|`**.
+
+This subsumes `DependentGroup`, which is exactly the two-variable case
+(`|S|` = number of valid parent/child pairs).
+
+The flat index stays mixed-radix, so every slot must keep a fixed size; one slot
+per component satisfies that by construction, since `|S|` is a constant once
+enumerated.
+
+**The flat index is an identity, not a representation.** Its job is to let a
+configuration be referenced as a `size_t` — in `validIndices`, `visited`, the
+per-index cost maps — without passing `Configuration` objects around. The
+mixed-radix arithmetic is an implementation detail of that, not something worth
+preserving for its own sake: encoding and decoding on every access is fine.
+
+Two things follow, both simplifications:
+
+- `at()` over a materialised component is a list lookup and `indexOf()` a hash
+  lookup, both cheaper than the mixed-radix decode they replace. The
+  `forEachChunk` incremental-suffix walk exists specifically because `at()` is
+  `O(slots)` today; that motivation largely disappears.
+- Any operation that wants *semantic* structure (neighbourhood, perturbation)
+  should decode, work on the `Configuration`, and re-encode — rather than doing
+  arithmetic on the index and hoping it corresponds. See `neighborIndices()`
+  below for what happens when it does not.
+
+The one property the index must keep is **stability**: enumeration order has to
+be deterministic across runs, or seeded sampling stops being reproducible.
+
+**Enumeration is a tree; storage is a list.** These are separate concerns and
+conflating them makes the design look harder than it is:
+
+- *Enumerating* `S` is a backtracking walk with variable elimination. Resolving
+  `C == v1 * v2 * ... * vk`, each level offers only the divisors of what
+  remains: pick `M0 | C`, then `K0 | C/M0`, then `tasklets | C/(M0*K0)`
+  intersected with its declared domain, at which point `dpus` is *determined*;
+  then `M1 | M0` and `K1 | K0`. No level can offer a value that fails to
+  complete, so the cost is `O(|S| * k)` rather than the product of the domains.
+- *Storing* `S` needs no tree at all. A flat list of tuples makes `at()` an O(1)
+  lookup, and a tuple→index hash map alongside gives `indexOf()` as its exact
+  inverse. At `|S| = 46,820` over 6 variables that is ~1.1 MB.
+
+**Bonus: Form C prunes during enumeration.** Capacity bounds cannot determine a
+variable, but they can kill a subtree — if a partial assignment already busts
+MRAM, no completion of it will fit. That turns them from post-filters into
+enumeration cutoffs, which is where the gap between `|S|` and the final valid
+count gets closed cheaply.
+
+#### Worked example: `mtv_512MB`
+
+Current slots, confirmed against the reported enumeration
+(`2048 * 24 * 105 * 120 * 2 = 1,238,630,400`):
+`dpus(2048)`, `tasklets(24)`, `[M1,M0](105)`, `[K1,K0](120)`, `order(2)`, where
+105 and 120 are the divisibility pair counts `sum(i+1 for i in 0..13)` and
+`sum(i+1 for i in 0..14)`.
+
+The constraint graph has edges `M1—M0`, `K1—K0` (divisibility) and
+`dpus—tasklets—M0—K0` (the product equality), giving **one component of six
+variables**, plus `order` standalone. Enumerating that component:
+
+| | |
+|---|---|
+| `\|S\|` over `{M1, M0, K1, K0, dpus, tasklets}` | **46,820** |
+| times `order(2)` | **93,640** |
+| currently enumerated | 1,238,630,400 |
+| **reduction** | **13,228x** |
+| valid after the remaining (capacity, order) constraints | 3,038 |
+
+So the structural encoding leaves 93,640 configurations for `computeValidMask`
+to filter instead of 1.24e9 — at which point the vectorised constraint
+evaluation stops being on the critical path at all.
+
+#### Implementation shape
+
+1. Make constraint collection lazy: `divisorsOf(name, SpaceVar)` records a
+   relation, it does not commit to a group.
+2. Build the variable graph, take connected components.
+3. Per component, choose an elimination order and enumerate `S` by backtracking,
+   applying Form C bounds as subtree cutoffs.
+4. Store `S` as a flat tuple list plus a tuple→index map; the component becomes
+   one slot of size `|S|`.
+5. Wire through `ensureEncoding` / `at()` / `indexOf()` / `neighborIndices()` —
+   all four must agree, and `indexOf` is the inverse `eval-solution` depends on.
+
+**Guards** (each falls back to dynamic predicates, never to a wrong answer):
+
+- `|S|` cannot be checked before enumerating it, so enumerate under a hard cap
+  and abandon the component if exceeded.
+- Ordering is a heuristic — optimal elimination order is NP-hard in general.
+  Dead-end-free enumeration is achievable when every constraint in the component
+  is a divisibility or product relation, which is the case here, but the
+  enumerator must not assume it.
+- A variable appearing on both sides of an equality determines nothing.
+
+**`neighborIndices()` needs rewriting — but it is already wrong.** It is
+documented as returning "all flat indices one discrete step away in any
+dimension", and implemented as ±1 on each *slot* sub-index using stride
+arithmetic:
+
+```cpp
+size_t stride = suffixProd_[si + 1];
+size_t subIdx = (idx / stride) % slots_[si].slotSize;
+if (subIdx > 0)                        result.push_back(idx - stride);
+if (subIdx + 1 < slots_[si].slotSize)  result.push_back(idx + stride);
+```
+
+For an ungrouped dimension a slot step *is* a dimension step. For a
+`DependentGroup` slot it is not: `at()` decodes the sub-index into
+`(parentSubIdx, childLocalIdx)`, so `subIdx + 1` normally advances the child,
+but at a `cumCount` boundary it advances the parent and resets the child —
+changing two dimensions at once. So the documented invariant already does not
+hold for grouped dimensions.
+
+Component enumeration therefore does not break an invariant; it degrades an
+approximation that is already approximate. What does get worse is neighbourhood
+*quality*: a `[M1,M0]` slot of size 105 makes ±1 "usually one step in M0",
+whereas a component slot of size 46,820 makes it an arbitrary jump through a
+six-dimensional subspace determined by enumeration order. That matters to BO's
+`fillNeighbors`, which is trying to sample locally.
+
+The fix is independent of this work and would improve things today: implement
+`neighborIndices` as *decode → perturb one dimension → `indexOf`* rather than
+stride arithmetic. That is encoding-agnostic, makes the function mean what its
+comment says, and costs one `indexOf` per neighbour — cheap once the
+tuple→index map exists. Exhaustive and random-sample paths never call it.
+
+*Verification: the three baselines above must be reproduced exactly. A space
+this size cannot be enumerated both ways, so the check is the valid-set diff,
+plus `indexOf(at(i)) == i` over a sample of indices.*
+
+### Stage 6 (optional) — Form B beyond parent/child, Form C domain narrowing
+
 Only if measurement says they matter after Stage 5.
 
 ## Open questions
