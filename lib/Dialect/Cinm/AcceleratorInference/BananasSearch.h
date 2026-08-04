@@ -5,10 +5,11 @@
 #include <filesystem>
 #include <memory>
 #include <random>
-#include <set>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
+
+#include <cinm-mlir/Dialect/Cinm/AcceleratorInference/AcceleratorInference.h>
 
 #include <llvm/ADT/SmallVector.h>
 #include <llvm/ADT/StringRef.h>
@@ -24,7 +25,6 @@ namespace mlir::cinm {
 struct ConfigSpace;
 struct InferenceOptions;
 struct BananasEnsemble; // defined in BananasSearch.cpp
-using Configuration = std::vector<int64_t>;
 
 /// Holds a set of configurations, their true costs, and per-iteration surrogate
 /// predictions (mu/sigma). This is used to hold a validation set and evaluate

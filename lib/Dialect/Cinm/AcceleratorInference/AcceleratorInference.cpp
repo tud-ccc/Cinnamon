@@ -93,25 +93,25 @@ double SearchParam::dhi() const {
       domain);
 }
 
-int64_t SearchParam::cardinality() const {
+size_t SearchParam::cardinality() const {
   return std::visit(
-      [](auto &&d) -> int64_t {
+      [](auto &&d) -> size_t {
         using T = std::decay_t<decltype(d)>;
         if constexpr (std::is_same_v<T, IntRange>)
           return (d.hi - d.lo) / d.step + 1;
         else
-          return static_cast<int64_t>(d.values.size());
+          return d.values.size();
       },
       domain);
 }
 
-int64_t SearchParam::discretize(double v) const {
+ParmValue SearchParam::discretize(double v) const {
   return std::visit(
-      [v](auto &&d) -> int64_t {
+      [v](auto &&d) -> ParmValue {
         using T = std::decay_t<decltype(d)>;
         if constexpr (std::is_same_v<T, IntRange>) {
-          int64_t rounded =
-              static_cast<int64_t>(std::round(v / d.step)) * d.step;
+          ParmValue rounded =
+              static_cast<ParmValue>(std::round(v / d.step)) * d.step;
           return std::clamp(rounded, d.lo, d.hi);
         } else {
           size_t idx = static_cast<size_t>(
@@ -123,7 +123,7 @@ int64_t SearchParam::discretize(double v) const {
       domain);
 }
 
-double SearchParam::featurize(int64_t v) const {
+double SearchParam::featurize(ParmValue v) const {
   return std::visit(
       [v](auto &&d) -> double {
         using T = std::decay_t<decltype(d)>;
@@ -140,10 +140,10 @@ double SearchParam::featurize(int64_t v) const {
       domain);
 }
 
-SearchParam &SearchParam::keepDivisorsOf(int64_t n) {
+SearchParam &SearchParam::keepDivisorsOf(ParmValue n) {
   if (auto *range = std::get_if<IntRange>(&domain)) {
-    std::vector<int64_t> kept;
-    for (int64_t v = range->lo; v <= range->hi; v += range->step)
+    std::vector<ParmValue> kept;
+    for (ParmValue v = range->lo; v <= range->hi; v += range->step)
       if (v > 0 && n % v == 0)
         kept.push_back(v);
     domain = ValueList{std::move(kept)};
@@ -156,7 +156,7 @@ SearchParam &SearchParam::keepDivisorsOf(int64_t n) {
   return *this;
 }
 
-int64_t SearchParam::valueAt(size_t subIdx) const {
+ParmValue SearchParam::valueAt(size_t subIdx) const {
   return std::visit(
       [subIdx](auto &&d) -> int64_t {
         using T = std::decay_t<decltype(d)>;
@@ -168,7 +168,7 @@ int64_t SearchParam::valueAt(size_t subIdx) const {
       domain);
 }
 
-size_t SearchParam::subIndexOf(int64_t value) const {
+size_t SearchParam::subIndexOf(ParmValue value) const {
   return std::visit(
       [value](auto &&d) -> size_t {
         using T = std::decay_t<decltype(d)>;
@@ -186,19 +186,20 @@ size_t SearchParam::subIndexOf(int64_t value) const {
 // SearchParam factories
 // ===----------------------------------------------------------------------===//
 
-SearchParam makeRange(llvm::StringRef name, int64_t lo, int64_t hi,
-                      int64_t step) {
+SearchParam makeRange(llvm::StringRef name, ParmValue lo, ParmValue hi,
+                      ParmValue step) {
   return SearchParam(name, IntRange{lo, hi, step});
 }
 
-SearchParam makePow2Range(llvm::StringRef name, int64_t loExp, int64_t hiExp) {
-  std::vector<int64_t> vals;
+SearchParam makePow2Range(llvm::StringRef name, ParmValue loExp,
+                          ParmValue hiExp) {
+  std::vector<ParmValue> vals;
   for (int64_t e = loExp; e <= hiExp; ++e)
-    vals.push_back(int64_t(1) << e);
+    vals.push_back(ParmValue(1) << e);
   return SearchParam(name, ValueList{std::move(vals)});
 }
 
-SearchParam makeValues(llvm::StringRef name, std::vector<int64_t> values) {
+SearchParam makeValues(llvm::StringRef name, std::vector<ParmValue> values) {
   return SearchParam(name, ValueList{std::move(values)});
 }
 
@@ -212,30 +213,63 @@ int ConfigSpace::findIndex(llvm::StringRef name) const {
   return -1;
 }
 
-int64_t ConfigSpace::get(const Configuration &config,
-                         llvm::StringRef name) const {
+ParmValue ConfigSpace::get(const Configuration &config,
+                           llvm::StringRef name) const {
   int idx = findIndex(name);
   if (idx < 0 || idx >= static_cast<int>(config.size()))
     return 0;
   return config[idx];
 }
 
-bool ConfigSpace::isValid(const Configuration &config) const {
-  if (config.size() != params.size())
-    return false;
-  auto wrapper = ConfWrapper(*this, config);
-  for (auto &[desc, c] : constraints)
-    if (!c(wrapper))
-      return false;
-  return true;
+void ConfigSpace::addConstraint(VecConstraint &&constraint,
+                                std::string description) {
+  constraints.emplace_back(std::move(description), std::move(constraint));
+}
+
+void ConfigSpace::addConstraint(Constraint &&constraint,
+                                std::string description) {
+  // Vectorize by evaluating the scalar predicate once per lane. Captures
+  // `this` rather than copying anything about the space -- safe since
+  // ConfigSpace can be neither copied nor moved (its copy constructor is
+  // deleted), so the address stays valid for the space's lifetime.
+  addConstraint(
+      [this, scalar = std::move(constraint)](const ConfigurationVector &cv,
+                                             arma::urowvec &valid) {
+        Configuration conf(cv.numDims());
+        for (size_t j = 0; j < cv.size(); ++j) {
+
+          // short circuit - this means we don't necessarily
+          // collect all failed constraints
+          if (!valid[j])
+            continue;
+
+          for (size_t d = 0; d < cv.numDims(); ++d)
+            conf[d] = cv[d][j];
+          // Plain assignment, not `%=`: `%` is Armadillo's elementwise
+          // multiply for arma *objects*, but valid[j] is a bare uword, where
+          // `%=` would be integer modulo (`x % 1 == 0` clears a passing lane,
+          // and `% 0` is UB). The lane is known live thanks to the check
+          // above, so overwriting it is the same as AND-ing into it.
+          valid[j] = scalar(ConfWrapper(*this, conf)) ? 1u : 0u;
+        }
+      },
+      std::move(description));
 }
 
 arma::urowvec
 ConfigSpace::evalVecConstraintsMask(const ConfigurationVector &cv) const {
   arma::urowvec mask(cv.size(), arma::fill::ones);
-  for (auto &[desc, c] : vecConstraints)
-    mask %= c(cv); // elementwise AND (both operands are 0/1)
+  for (auto &[desc, c] : constraints)
+    c(cv, mask);
   return mask;
+}
+
+bool ConfigSpace::isValid(const Configuration &config) const {
+  if (config.size() != params.size())
+    return false;
+  ConfigurationVector cv(params.size(), 1);
+  cv.setColumn(0, config);
+  return evalVecConstraintsMask(cv)[0] != 0;
 }
 
 bool ConfigSpace::debugIsValid(const Configuration &config,
@@ -248,18 +282,25 @@ bool ConfigSpace::debugIsValid(const Configuration &config,
     os << "}\n";
     return false;
   }
+  ConfigurationVector cv(params.size(), 1);
+  cv.setColumn(0, config);
+
   auto wrapper = ConfWrapper(*this, config);
-  bool valid = true;
+  bool fullyValid = true;
   for (auto &[desc, c] : constraints) {
-    if (!c(wrapper)) {
-      if (valid) {
+    // Use a fresh valid mask each time so that the constraint
+    // doesn't short-circuit.
+    arma::urowvec valid(cv.size(), arma::fill::ones);
+    c(cv, valid);
+    if (!valid[0]) {
+      if (fullyValid) {
         os << "Configuration " << wrapper << " violates:\n";
-        valid = false;
+        fullyValid = false;
       }
       os << "  - " << (desc.empty() ? "<unnamed constraint>" : desc) << "\n";
     }
   }
-  return valid;
+  return fullyValid;
 }
 
 void ConfigSpace::ensureEncoding() const {
@@ -303,25 +344,22 @@ void ConfigSpace::addMultiplesConstraint(StringRef parentName,
   assert(childIdx >= 0);
   const SearchParam &parent = params[parentIdx];
   const SearchParam &child = params[childIdx];
-  int64_t parentCard = parent.cardinality();
+  size_t parentCard = parent.cardinality();
 
-  std::vector<std::vector<int64_t>> childValues(
-      static_cast<size_t>(parentCard));
-  for (int64_t pi = 0; pi < parentCard; ++pi) {
-    int64_t parentVal = parent.valueAt(static_cast<size_t>(pi));
-    for (int64_t ci = 0, cc = child.cardinality(); ci < cc; ++ci) {
-      int64_t childVal = child.valueAt(static_cast<size_t>(ci));
+  std::vector<std::vector<ParmValue>> childValues(parentCard);
+  for (size_t pi = 0; pi < parentCard; ++pi) {
+    ParmValue parentVal = parent.valueAt(pi);
+    for (size_t ci = 0, cc = child.cardinality(); ci < cc; ++ci) {
+      ParmValue childVal = child.valueAt(ci);
       if (childVal % parentVal == 0)
-        childValues[static_cast<size_t>(pi)].push_back(childVal);
+        childValues[pi].push_back(childVal);
     }
   }
 
-  std::vector<size_t> cumCount(static_cast<size_t>(parentCard) + 1);
+  std::vector<size_t> cumCount(parentCard + 1);
   cumCount[0] = 0;
-  for (int64_t pi = 0; pi < parentCard; ++pi)
-    cumCount[static_cast<size_t>(pi) + 1] =
-        cumCount[static_cast<size_t>(pi)] +
-        childValues[static_cast<size_t>(pi)].size();
+  for (size_t pi = 0; pi < parentCard; ++pi)
+    cumCount[pi + 1] = cumCount[pi] + childValues[pi].size();
 
   groups.push_back({static_cast<size_t>(parentIdx),
                     static_cast<size_t>(childIdx), std::move(childValues),
@@ -631,6 +669,58 @@ struct InferenceTask {
 
   ConfWrapper wrap(const Configuration &conf) {
     return ConfWrapper(space, conf);
+  }
+
+  /// Resolve the named parameters of `named` into a positional Configuration
+  /// of this task's space, checking that it is complete, mentions no unknown
+  /// parameter, and satisfies the space's validity constraints.
+  ///
+  /// Every parameter must be given: a missing one has no defensible default,
+  /// and silently picking one would produce a configuration the caller did
+  /// not ask for.
+  Maybe<Configuration>
+  resolveNamedConfig(const llvm::StringMap<ParmValue> &named, Location loc) {
+    Configuration conf;
+    conf.reserve(space.params.size());
+    SmallVector<std::string> missing;
+    for (const SearchParam &param : space.params) {
+      auto it = named.find(param.name);
+      if (it == named.end())
+        missing.push_back(param.name);
+      else
+        conf.push_back(it->second);
+    }
+    if (!missing.empty())
+      return emitDefiniteFailure(loc,
+                                 "eval-solution is missing a value for: ")
+             << llvm::join(missing, ", ");
+
+    SmallVector<std::string> unknown;
+    for (const auto &entry : named)
+      if (!llvm::any_of(space.params, [&](const SearchParam &p) {
+            return p.name == entry.first();
+          }))
+        unknown.push_back(entry.first().str());
+    if (!unknown.empty()) {
+      llvm::sort(unknown);
+      SmallVector<std::string> known;
+      for (const SearchParam &param : space.params)
+        known.push_back(param.name);
+      return emitDefiniteFailure(loc, "eval-solution names parameters this "
+                                      "space does not have: ")
+             << llvm::join(unknown, ", ") << "; the space declares "
+             << llvm::join(known, ", ");
+    }
+
+    if (!space.isValid(conf)) {
+      std::string details;
+      llvm::raw_string_ostream detailsOs(details);
+      space.debugIsValid(conf, detailsOs);
+      return emitDefiniteFailure(loc, "Configuration is invalid: ")
+             << wrap(conf) << "\n"
+             << details;
+    }
+    return conf;
   }
 
   /// Shared state produced by prepareBO() and consumed by both runInference and
@@ -1337,52 +1427,8 @@ inferAcceleratorConfig(cinm::ComputeBlockOp computeOp, InferencePlugin &plugin,
   TrialInfo bestResult;
   if (opts.evalSingleSolution) {
     // Resolve the named parameters against the space that was just built.
-    // Every parameter must be given: a missing one has no defensible default,
-    // and silently picking one would produce a configuration the caller did
-    // not ask for.
-    const llvm::StringMap<int64_t> &named = *opts.evalSingleSolution;
-    Configuration conf;
-    conf.reserve(task.space.params.size());
-    SmallVector<std::string> missing;
-    for (const SearchParam &param : task.space.params) {
-      auto it = named.find(param.name);
-      if (it == named.end())
-        missing.push_back(param.name);
-      else
-        conf.push_back(it->second);
-    }
-    if (!missing.empty())
-      return emitDefiniteFailure(computeOp->getLoc(),
-                                 "eval-solution is missing a value for: ")
-             << llvm::join(missing, ", ");
-
-    SmallVector<std::string> unknown;
-    for (const auto &entry : named)
-      if (!llvm::any_of(task.space.params, [&](const SearchParam &p) {
-            return p.name == entry.first();
-          }))
-        unknown.push_back(entry.first().str());
-    if (!unknown.empty()) {
-      llvm::sort(unknown);
-      SmallVector<std::string> known;
-      for (const SearchParam &param : task.space.params)
-        known.push_back(param.name);
-      return emitDefiniteFailure(computeOp->getLoc(),
-                                 "eval-solution names parameters this space "
-                                 "does not have: ")
-             << llvm::join(unknown, ", ") << "; the space declares "
-             << llvm::join(known, ", ");
-    }
-
-    if (!task.space.isValid(conf)) {
-      std::string details;
-      llvm::raw_string_ostream detailsOs(details);
-      task.space.debugIsValid(conf, detailsOs);
-      return emitDefiniteFailure(computeOp->getLoc(),
-                                 "Configuration is invalid: ")
-             << task.wrap(conf) << "\n"
-             << details;
-    }
+    Configuration conf = TRY_GET(task.resolveNamedConfig(
+        *opts.evalSingleSolution, computeOp->getLoc()));
     bestResult = task.makeTrialInfo(std::move(conf));
     plugin.warmUp(computeOp->getContext());
     auto estimate = TRY_GET(plugin.evaluate(bestResult)); // may return early
