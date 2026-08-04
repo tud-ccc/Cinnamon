@@ -239,6 +239,7 @@ class ScatterGatherLike<string mnemonic, string kw, MemoryEffect effect, MemoryE
   }];
 
   let hasVerifier = 1;
+  let hasCanonicalizer = 1;
   let assemblyFormat =
      "$hostBuffer `[` $transferCount `elts` `,` $scatterMap `]` `" # kw # "` $dpuBufRef `of` $hierarchy attr-dict"
      # "`:` type($hostBuffer) `" # kw # "` qualified(type($hierarchy))";
@@ -338,6 +339,7 @@ class BlockTransferLike<string mnemonic, string kw, MemoryEffect effect, MemoryE
   }];
 
   let hasVerifier = 1;
+  let hasCanonicalizer = 1;
   let assemblyFormat =
     "$hostBuffer `[` $transferCount `elts` `,` $scatterMap `,` $numBlocksPerDpu `blocks` `]` `" # kw # "` $dpuBufRef `of` $hierarchy attr-dict"
     # "`:` type($hostBuffer) `" # kw # "` qualified(type($hierarchy))";

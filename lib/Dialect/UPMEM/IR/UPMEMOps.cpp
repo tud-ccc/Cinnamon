@@ -162,9 +162,8 @@ static LogicalResult verifyTransferBlocks(Operation *op, MemRefType hostTy,
   MLIRContext *ctx = op->getContext();
   int64_t runRank = getContiguousSuffixRank(hostTy);
   if (runRank > 0) {
-    AffineMap runLayout =
-        AffineMap::get(runRank, 0,
-                       linearizeIndices(ctx, shape.take_back(runRank)), ctx);
+    AffineMap runLayout = AffineMap::get(
+        runRank, 0, linearizeIndices(ctx, shape.take_back(runRank)), ctx);
     AffineMap trailing =
         AffineMap::get(map.getNumDims(), map.getNumSymbols(),
                        map.getResults().take_back(runRank), ctx);
@@ -173,8 +172,7 @@ static LogicalResult verifyTransferBlocks(Operation *op, MemRefType hostTy,
     if (start && *start + blockSize > runSize)
       return op->emitOpError("a transferred block starts at offset ")
              << *start << " of a contiguous run of " << runSize
-             << " elements in host buffer " << hostTy << " and is "
-             << blockSize
+             << " elements in host buffer " << hostTy << " and is " << blockSize
              << " elements long, so it runs past the end of the run";
   }
 
@@ -183,8 +181,8 @@ static LogicalResult verifyTransferBlocks(Operation *op, MemRefType hostTy,
   FailureOr<AffineExpr> offset = linearizeToElementOffset(map, hostTy);
   if (succeeded(offset)) {
     if (std::optional<int64_t> highest = getAffineUpperBound(*offset, box)) {
-      SmallVector<int64_t> last(llvm::map_range(
-          shape, [](int64_t extent) { return extent - 1; }));
+      SmallVector<int64_t> last(
+          llvm::map_range(shape, [](int64_t extent) { return extent - 1; }));
       AffineMap lastIndex = AffineMap::get(
           0, 0,
           llvm::to_vector(llvm::map_range(
@@ -267,8 +265,7 @@ LogicalResult upmem::BroadcastOp::verify() {
   MLIRContext *ctx = getContext();
   SmallVector<AffineExpr> origin(hostTy.getRank(),
                                  getAffineConstantExpr(0, ctx));
-  return verifyTransferBlocks(*this, hostTy,
-                              AffineMap::get(1, 0, origin, ctx),
+  return verifyTransferBlocks(*this, hostTy, AffineMap::get(1, 0, origin, ctx),
                               hostTy.getNumElements(), /*box=*/{1});
 }
 
@@ -319,7 +316,7 @@ static bool shapesCompatibleUpToUnitDims(ArrayRef<int64_t> a,
   auto dropUnitDims = [](ArrayRef<int64_t> shape) {
     SmallVector<int64_t> result;
     llvm::copy_if(shape, std::back_inserter(result),
-                 [](int64_t d) { return d != 1; });
+                  [](int64_t d) { return d != 1; });
     return result;
   };
   return dropUnitDims(a) == dropUnitDims(b);
@@ -363,8 +360,7 @@ upmem::BroadcastOp::verifySymbolUses(SymbolTableCollection &symbolTable) {
                                     staticAlloc.getType().getShape()))
     return emitOpError("host buffer shape ")
            << getHostBuffer().getType()
-           << " is not compatible with target buffer "
-           << staticAlloc.getType()
+           << " is not compatible with target buffer " << staticAlloc.getType()
            << " (shapes must be equal up to extent-1 dimensions)";
 
   return success();
@@ -445,4 +441,43 @@ public:
 void upmem::LocalTransferOp::getCanonicalizationPatterns(
     RewritePatternSet &results, MLIRContext *context) {
   results.add<FoldCastForLocalTransfer>(context);
+}
+
+namespace {
+
+template <class Op, int NUM_DIMS>
+class SimplifyScatterMap : public OpRewritePattern<Op> {
+  using OpRewritePattern<Op>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(Op op,
+                                PatternRewriter &rewriter) const override {
+    auto map = op.getScatterMap();
+    auto shape = op.getHierarchy().getType().getWgShape();
+    auto simplified = simplifyAffineMapWithBounds(
+
+        map, ArrayRef<int64_t>(shape).drop_back(3 - NUM_DIMS));
+    if (simplified == map)
+      return failure();
+
+    rewriter.modifyOpInPlace(op, [&] { op.setScatterMap(simplified); });
+    return success();
+  }
+};
+} // namespace
+
+void upmem::ScatterBlocksOp::getCanonicalizationPatterns(
+    ::mlir::RewritePatternSet &results, ::mlir::MLIRContext *context) {
+  results.insert<SimplifyScatterMap<ScatterBlocksOp, 3>>(context);
+}
+void upmem::ScatterOnArrayOp::getCanonicalizationPatterns(
+    ::mlir::RewritePatternSet &results, ::mlir::MLIRContext *context) {
+  results.insert<SimplifyScatterMap<ScatterOnArrayOp, 2>>(context);
+}
+void upmem::GatherBlocksOp::getCanonicalizationPatterns(
+    ::mlir::RewritePatternSet &results, ::mlir::MLIRContext *context) {
+  results.insert<SimplifyScatterMap<GatherBlocksOp, 3>>(context);
+}
+void upmem::GatherFromArrayOp::getCanonicalizationPatterns(
+    ::mlir::RewritePatternSet &results, ::mlir::MLIRContext *context) {
+  results.insert<SimplifyScatterMap<GatherFromArrayOp, 2>>(context);
 }

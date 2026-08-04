@@ -52,7 +52,7 @@ void upmemrt_dpu_scatter(struct dpu_set_t *dpu_set, void *hostBuffer,
   uint32_t nr_dpus = 0;
   dpu_get_nr_dpus(*dpu_set, &nr_dpus);
   upmemrt_record_scatter(upmemrt_now_ns() - t0, copy_bytes, nr_dpus,
-                         /*num_blocks=*/1, "on_array", tag);
+                         /*num_blocks=*/1, "array", tag);
 #endif
 }
 
@@ -81,7 +81,7 @@ void upmemrt_dpu_gather(struct dpu_set_t *dpu_set, void *host_buffer,
   uint32_t nr_dpus = 0;
   dpu_get_nr_dpus(*dpu_set, &nr_dpus);
   upmemrt_record_gather(upmemrt_now_ns() - t0, copy_bytes, nr_dpus,
-                        /*num_blocks=*/1, "from_array", tag);
+                        /*num_blocks=*/1, "array", tag);
 #endif
 }
 
@@ -230,6 +230,7 @@ void upmemrt_dpu_launch(struct dpu_set_t *void_dpu_set) {
 #ifdef UPMEM_RT_STATS
   uint64_t t0 = upmemrt_now_ns();
 #endif
+
 #ifdef ASYNC_TRANSFERS
   dpu_sync(*dpu_set); // Wait for asynchronous transfers to finish. 
   // This is fucking up our time measurements so I don't include it by default

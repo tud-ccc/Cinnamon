@@ -205,12 +205,16 @@ factor is already fixed.
 sum of products  <=  constant
 ```
 
-**Example C1** — `handleLinalgOp`, the MRAM/WRAM footprint checks, currently
-written as the hand-vectorised `footprintFits` lambda:
+**Example C1** — `handleLinalgOp`, the MRAM/WRAM footprint checks, now built
+from the DSL by the `footprint` lambda:
 
 ```cpp
-sum over operands of (prod over that operand's dims of block[d])  <=  mramElements
+sum over operands of (r_O * prod over that operand's dims of block[d])
+    <=  mramElements
 ```
+
+where `r_O` is the operand's replication factor — see §H5 below, which is the
+whole subject of how tight this bound can be made.
 
 **Example C2** — `registerGemvTemplate`, "the gemv template's WRAM working set
 fits":
@@ -230,6 +234,74 @@ time.
 
 Worth treating as a second-phase optimisation: it is strictly weaker than Form A
 and only pays when domains are wide.
+
+#### §H5 — tightening the capacity bounds: replication factors
+
+A capacity bound is only useful in proportion to how tight it is, and the
+version above is loose in a specific, fixable way. It charges each operand
+*one* tile per DPU — maximal sharing, every leaf on a DPU reading the same
+tile. That is the most optimistic assumption, which is what makes the bound
+sound, but it can be far from what any lowering could achieve.
+
+The quantity being approximated is the **replication factor** `r_O`: how many
+distinct tiles of operand `O` one DPU must hold at once. The footprint is
+`sum over operands of r_O * tileSize_O`, and maximal sharing is just `r_O = 1`.
+
+**The general bound.** Let `S_O` be the iteration dimensions that index `O`, and
+
+```
+T_O = prod over d in S_O of (extent[d] / block[d])
+```
+
+the number of *distinct* tiles of `O` across the whole workgroup. Two leaves can
+share a tile of `O` only if they agree on every coordinate in `S_O`. Those `T_O`
+tiles are spread over `dpus` DPUs, so by pigeonhole some DPU holds at least
+`T_O / dpus` of them:
+
+```
+r_O  >=  max(1, T_O / dpus)
+```
+
+This is **independent of the workgroup order**, which is what makes it usable
+at space-construction time: it holds for every assignment of leaves to DPUs, so
+it never has to know which dimension varies fastest.
+
+**The exact special case — implemented.** When `S_O` is *all* iteration
+dimensions, no two distinct leaves can share `O` at all: they differ somewhere,
+and that dimension selects a different tile. So `r_O = tasklets`, exactly, not
+merely as a bound — a DPU has exactly `tasklets` leaves and each needs its own
+tile. This is a syntactic test on the indexing map (`dims.size() == numLoops`
+for a projected permutation) and needs no new IR machinery, so it is what
+`handleLinalgOp` implements today, for both the MRAM and the WRAM bound.
+
+It is also the case that matters most: in a matvec it is the matrix, and in a
+matmul both inputs, i.e. the terms that dominate the footprint. Cross-checked
+against `registerGemvTemplate`, which models its own fixed layout by hand and
+charges `mramRow * mramCol == tasklets * blockM * blockK` for A in MRAM and
+`t * wramRow * wramCol` in WRAM. The formula reproduces both exactly.
+
+**Where the general bound stays loose.** For `x[k]` in a gemv, the pigeonhole
+term is `max(b_k, (K/b_k)/dpus * b_k)` while the template actually charges
+`blockK * taskletCols`. The gap is the DPU-level *replication* of `x` across
+DPU-rows, which no counting argument can see — pigeonhole bounds distinct
+tiles, not copies. Closing it requires knowing `order`, since it is the order
+that decides whether the tasklets on a DPU span the `m` fibre or the `k` fibre.
+So the refinement is deliberately uneven: exact where the footprint is
+dominated, `r_O = 1` elsewhere.
+
+**Fitting the general form in the IR**, if it is ever implemented:
+
+- `max` is not in the node set, but `sum_O max(a_O, b_O) <= C` is equivalent to
+  the conjunction of the `2^|operands|` constraints obtained by picking one side
+  per operand — the max selection is among them and is the strongest. Three
+  operands is 8 sum-of-monomial constraints, each monotone, so `evalNodeBounds`
+  and `cmpMayHold` prune them with no new machinery.
+- `T_O / dpus` truncates downward in integer arithmetic, which only weakens the
+  constraint. Truncation is in the sound direction here.
+- For the WRAM bound the two levels mix: `r_O` is still driven by the *block*-
+  level tile counts (blocks define leaf identity) while the size term is the
+  *leaf* tile, so the result is a genuine mixed monomial rather than collapsing
+  to a constant.
 
 ### Form D — not analysable, stays a predicate
 
