@@ -39,8 +39,8 @@ namespace {
 /// next pending chunk (LLVM's TaskGroup dispatches spawned chunks onto a
 /// shared work stack, giving the same load-balancing as work stealing).
 template <class ResultTy, class ReduceFuncTy, class ChunkFuncTy>
-ResultTy parallelTransformReduceChunked(const ConfigSpace &space,
-                                        ResultTy init, ReduceFuncTy reduce,
+ResultTy parallelTransformReduceChunked(const ConfigSpace &space, ResultTy init,
+                                        ReduceFuncTy reduce,
                                         ChunkFuncTy transformChunk) {
   const size_t N = space.totalSize();
   if (N == 0)
@@ -83,6 +83,8 @@ ResultTy parallelTransformReduceChunked(const ConfigSpace &space,
 
 void CandidatePool::computeValidMask(const ConfigSpace &space,
                                      SharedState &shared) {
+  LLVM_DEBUG(llvm::dbgs() << "Screening " << space.totalSize()
+                          << " configs in parallel");
   shared = parallelTransformReduceChunked(
       space, SharedState{},
       [](SharedState lhs, SharedState rhs) -> SharedState {
@@ -94,14 +96,30 @@ void CandidatePool::computeValidMask(const ConfigSpace &space,
       },
       [](const ConfigSpace &space, size_t lo, size_t hi) -> SharedState {
         SharedState s;
-        space.forEachChunk(lo, hi,
-                           [&](const Configuration &conf, size_t i) {
-                             if (space.isValid(conf)) {
-                               s.validMask.insert(i);
-                               s.validIndices.push_back(i);
-                             }
-                             return true;
-                           });
+        const size_t n = hi - lo;
+        // Materialize the whole chunk as a batch, so any registered
+        // VecConstraints can reject most of it in one vectorized pass before
+        // paying the per-configuration cost of the (always authoritative)
+        // scalar isValid() below.
+        ConfigurationVector cv(space.size(), n);
+        size_t col = 0;
+        space.forEachChunk(lo, hi, [&](const Configuration &conf, size_t) {
+          cv.setColumn(col++, conf);
+          return true;
+        });
+        arma::urowvec mask = space.evalVecConstraintsMask(cv);
+
+        Configuration conf;
+        for (size_t j = 0; j < n; ++j) {
+          if (!mask[j])
+            continue;
+          size_t i = lo + j;
+          space.at(i, conf);
+          if (space.isValid(conf)) {
+            s.validMask.insert(i);
+            s.validIndices.push_back(i);
+          }
+        }
         return s;
       });
 }

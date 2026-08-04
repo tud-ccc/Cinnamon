@@ -80,9 +80,31 @@ namespace mlir::upmem {
 #include <cinm-mlir/Dialect/UPMEM/Transforms/Passes.h.inc>
 
 namespace {
+using mlir::cinm::ConfigurationVector;
 using mlir::cinm::SpaceBuilder;
 using mlir::cinm::SpaceVar;
 using mlir::cinm::utils::Maybe;
+
+/// Elementwise `a / b` and `a % b`, guarding against b <= 0: scalar integer
+/// division/modulo by a non-positive divisor is undefined behaviour, and
+/// vectorized constraints can't rely on short-circuiting to avoid it the way
+/// the equivalent scalar predicate does (`if (b <= 0) return false;`).
+/// `valid` marks the lanes where b > 0; quotient/remainder are unspecified
+/// (but well-defined, no UB) on the other lanes -- callers must fold `valid`
+/// into their own result mask.
+struct SafeDivMod {
+  arma::Row<int64_t> quotient, remainder;
+  arma::urowvec valid;
+};
+static SafeDivMod safeDivMod(const arma::Row<int64_t> &a,
+                             const arma::Row<int64_t> &b) {
+  arma::urowvec valid = (b > 0);
+  arma::Row<int64_t> safeB = b;
+  safeB.elem(arma::find(b <= 0)).fill(1);
+  arma::Row<int64_t> q = a / safeB;
+  arma::Row<int64_t> r = a - q % safeB; // `%` is arma's elementwise multiply.
+  return {std::move(q), std::move(r), std::move(valid)};
+}
 
 /// A search-space quantity resolved against a configuration. Type-erased so a
 /// recorded parameter can be a derived expression rather than a bare variable
@@ -893,6 +915,20 @@ void UpmemInferencePlugin::handleLinalgOp(linalg::LinalgOp op,
         return tiles == dpus[c] * tasklets[c];
       },
       "prod(extent / block) == dpus * tasklets");
+  b.requireVec([=](const ConfigurationVector &c) -> arma::urowvec {
+    arma::urowvec valid(c.size(), arma::fill::ones);
+    arma::Row<int64_t> tiles(c.size(), arma::fill::ones);
+    arma::Row<int64_t> extentRow(c.size());
+    for (auto [extent, block] : llvm::zip_equal(extentsCopy, blocks)) {
+      extentRow.fill(extent);
+      SafeDivMod dm = safeDivMod(extentRow, block[c]);
+      valid %= dm.valid;
+      valid %= (dm.remainder == 0);
+      tiles %= dm.quotient; // `%=` is arma's elementwise multiply.
+    }
+    valid %= (tiles == (dpus[c] % tasklets[c]));
+    return valid;
+  });
 
   // Capacity, as a *necessary* condition only (design §H4). Assume maximal
   // sharing -- every operand stored once per DPU -- so the bound can never
@@ -912,6 +948,18 @@ void UpmemInferencePlugin::handleLinalgOp(linalg::LinalgOp op,
     }
     return total;
   };
+  auto footprintVec =
+      [operandDims](ArrayRef<SpaceVar> sizes,
+                    const ConfigurationVector &c) -> arma::Row<int64_t> {
+    arma::Row<int64_t> total(c.size(), arma::fill::zeros);
+    for (const auto &dims : operandDims) {
+      arma::Row<int64_t> elements(c.size(), arma::fill::ones);
+      for (unsigned dim : dims)
+        elements %= sizes[dim][c]; // elementwise multiply.
+      total += elements;
+    }
+    return total;
+  };
 
   const int64_t mramElements = platform.getMramLevel().getSizeInElements(eltTy);
   const int64_t wramElements = platform.getWramLevel().getSizeInElements(eltTy);
@@ -920,11 +968,17 @@ void UpmemInferencePlugin::handleLinalgOp(linalg::LinalgOp op,
         return footprint(blocks, c) <= mramElements;
       },
       "sum of per-leaf operand tiles <= MRAM (assuming maximal sharing)");
+  b.requireVec([=](const ConfigurationVector &c) -> arma::urowvec {
+    return footprintVec(blocks, c) <= mramElements;
+  });
   b.require(
       [=](const cinm::ConfWrapper &c) -> bool {
         return footprint(leaves, c) <= wramElements;
       },
       "sum of leaf tiles <= WRAM (assuming maximal sharing)");
+  b.requireVec([=](const ConfigurationVector &c) -> arma::urowvec {
+    return footprintVec(leaves, c) <= wramElements;
+  });
   if (!opts.useMRAMTiling) {
     // Note: this is only required for benchmarks that compare
     // against CINM1 codegen. To be removed.
@@ -933,6 +987,9 @@ void UpmemInferencePlugin::handleLinalgOp(linalg::LinalgOp op,
           return footprint(blocks, c) <= wramElements;
         },
         "MRAM tile should be equal to WRAM tile (no tiling in MRAM)");
+    b.requireVec([=](const ConfigurationVector &c) -> arma::urowvec {
+      return footprintVec(blocks, c) <= wramElements;
+    });
   }
 
   // Which tile dimension varies fastest across the leaves (design §G3). The
@@ -969,6 +1026,53 @@ void UpmemInferencePlugin::handleLinalgOp(linalg::LinalgOp op,
               ++distributed;
           }
           return orderVar[c] < factorial(distributed);
+        },
+        "order < (number of dimensions spread over the workgroup)!");
+    b.requireVec(
+        [=](const ConfigurationVector &c) -> arma::urowvec {
+          /*
+          Scalar version:
+
+          unsigned distributed = 0;
+          for (auto [extent, block] : llvm::zip_equal(extentsCopy, blocks)) {
+            int64_t blockValue = block[c];
+            if (blockValue > 0 && extent % blockValue == 0 &&
+                extent / blockValue > 1)
+              ++distributed;
+          }
+          return orderVar[c] < factorial(distributed);
+          },
+          */
+          arma::Row<int64_t> distributed(c.size(), arma::fill::zeros);
+          arma::Row<int64_t> extentRow(c.size());
+          for (auto [extent, block] : llvm::zip_equal(extentsCopy, blocks)) {
+            extentRow.fill(extent);
+            SafeDivMod dm = safeDivMod(extentRow, block[c]);
+            arma::urowvec dimDistributed =
+                dm.valid % (dm.remainder == 0) % (dm.quotient > 1);
+            distributed +=
+                arma::conv_to<arma::Row<int64_t>>::from(dimDistributed);
+          }
+          // factorial() has no simple vectorized form, but `distributed` only
+          // takes a handful of distinct small values (<= number of iteration
+          // dims). Walk its sorted distinct values once, computing each
+          // stop's factorial incrementally from the previous stop, and
+          // assign every lane at that stop in one shot -- instead of
+          // recomputing factorial(distributed[i]) from scratch per lane.
+          const arma::Row<int64_t> &orderRow = orderVar[c];
+          arma::urowvec valid(c.size(), arma::fill::zeros);
+          arma::Row<int64_t> stops = arma::unique(distributed); // returns sorted
+          int64_t cur = 0;
+          int64_t runningFactorial = 1; // == cur!
+          for (int64_t stop : stops) {
+            while (cur < stop) {
+              ++cur;
+              runningFactorial *= cur;
+            }
+            arma::uvec lanes = arma::find(distributed == stop);
+            valid.elem(lanes) = (orderRow.elem(lanes) < runningFactorial);
+          }
+          return valid;
         },
         "order < (number of dimensions spread over the workgroup)!");
     order = spaceValue(orderVar);
