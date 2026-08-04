@@ -7,6 +7,7 @@
 #include <cstdint>
 #include <functional>
 #include <initializer_list>
+#include <map>
 #include <llvm/ADT/SmallVector.h>
 #include <llvm/ADT/StringMap.h>
 #include <llvm/ADT/StringRef.h>
@@ -175,6 +176,33 @@ struct ConfigSpace {
   /// a separate scalar/vector pair.
   std::vector<std::pair<std::string, VecConstraint>> constraints;
 
+  /// A set of dimensions whose joint valuation is constrained, with every
+  /// satisfying tuple enumerated ahead of time. The component occupies one
+  /// slot of the flat index, sized by the number of solutions -- so the
+  /// mixed-radix encoding keeps its fixed-size-slot invariant while the
+  /// dimensions inside it are never enumerated independently.
+  ///
+  /// This is what turns a structural constraint from something the search
+  /// filters into something it never offers: see
+  /// docs/ConstraintAnalysisDesign.md.
+  struct SolvedComponent {
+    /// Dimensions covered, in the order the tuples store them.
+    std::vector<size_t> dims;
+    /// Every valid assignment. Order is deterministic (it is the enumeration
+    /// order), which is what makes flat indices reproducible across runs.
+    std::vector<std::vector<ParmValue>> solutions;
+    /// Inverse of `solutions`, for indexOf(). std::map rather than a hash map
+    /// so no tuple hash is needed; indexOf is not on a hot path.
+    std::map<std::vector<ParmValue>, size_t> indexOfSolution;
+
+    size_t size() const { return solutions.size(); }
+  };
+  std::vector<SolvedComponent> components;
+
+  /// Register a pre-enumerated component. Dimensions it covers must not be
+  /// claimed by any other component or DependentGroup.
+  void addSolvedComponent(SolvedComponent &&component);
+
   /// A (parent, child) divisibility pair baked into the encoding.
   /// Every flat index produced by at() satisfies child_value % parent_value ==
   /// 0.
@@ -270,8 +298,15 @@ struct ConfigSpace {
   void
   forEachChunk(size_t lo, size_t hi,
                std::function<bool(const Configuration &, size_t)> fn) const;
-  /// Append to result all flat indices one discrete step away in any dimension.
+  /// Append to result all flat indices one discrete step away in any
+  /// dimension. Steps that land on a configuration the encoding does not
+  /// offer (because a structural constraint rules it out) are skipped, so a
+  /// configuration near the edge of a component has fewer neighbours.
   void neighborIndices(size_t idx, llvm::SmallVectorImpl<size_t> &result) const;
+  /// True if `conf` satisfies every structurally-encoded constraint, i.e. if
+  /// at()/indexOf() can round-trip it. Configurations produced by at() always
+  /// satisfy this; hand-built ones need not.
+  bool isEncodable(const Configuration &conf) const;
 
   template <class Out> void dump(Out &out, const Configuration &config) const {
     out << " {";
@@ -284,9 +319,13 @@ struct ConfigSpace {
 private:
   /// One slot in the flat-index encoding. Child dims are merged into their
   /// parent's slot and do not appear as separate slots.
+  /// One slot of the flat index. Exactly one of the three forms applies:
+  /// an independent dimension (`groupIdx` and `componentIdx` both SIZE_MAX),
+  /// a parent/child DependentGroup, or a SolvedComponent.
   struct EncodingSlot {
     size_t dimIdx;   ///< index into params[] (the independent or parent dim)
-    size_t groupIdx; ///< index into groups[], or SIZE_MAX for independent dims
+    size_t groupIdx; ///< index into groups[], or SIZE_MAX
+    size_t componentIdx = SIZE_MAX; ///< index into components[], or SIZE_MAX
     size_t slotSize; ///< number of distinct sub-indices this slot contributes
   };
 
