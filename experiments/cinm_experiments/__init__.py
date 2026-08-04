@@ -8,12 +8,9 @@ and define their pipeline as plain Python function calls / doit tasks; there
 is no CLI or Makefile glue layer between the steps.
 """
 
-ALL_PRIMS = (
-    "prim_gemv",
-    "prim_geva",
-    "prim_red",
-    "prim_mmtv",
-    "prim_mtv",
-    "prim_ttv",
-    "prim_va",
-)
+from .prims import PRIMS, Prim  # noqa: F401
+
+# The prim_<name>.mlir stems, for pipelines that key off source-module names
+# rather than Prim objects. Derived from PRIMS so there is one list of
+# primitives, not two.
+ALL_PRIMS = tuple(f"prim_{name}" for name in PRIMS)
