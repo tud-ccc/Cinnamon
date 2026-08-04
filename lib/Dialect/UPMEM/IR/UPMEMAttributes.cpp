@@ -147,8 +147,9 @@ static cinm::CinmLevelArrayAttr upmemLevels(mlir::MLIRContext *ctx,
   int indices = 2;
   int wramSize = isV1A ? 65536 : 63488;
   // Don't let the whole wram be partitioned
-  // for the application, some of it is required for data structures such as the barrier. Let's estimate this as 8192 bytes
-  wramSize -= 8192; 
+  // for the application, some of it is required for data structures such as the
+  // barrier. Let's estimate this as 8192 bytes
+  wramSize -= 8192;
 
   Builder builder(ctx);
   cinm::CinmLevelDefAttr mram =
@@ -264,5 +265,6 @@ int64_t UpmemAcceleratorAttr::bufferSizeOfLeaf() const {
 }
 
 bool UpmemPlatformAttr::isOffloadingTarget(Operation *op) const {
-  return isa<cinm::GemmOp, cinm::GemvOp, cinm::ReduceOp, cinm::ElementwiseOp>(op);
+  return isa<cinm::BatchGemmOp, cinm::BatchGemvOp, cinm::GemmOp, cinm::GemvOp,
+             cinm::ReduceOp, cinm::ElementwiseOp>(op);
 }

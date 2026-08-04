@@ -137,6 +137,7 @@ static void addAffineOpts(OpPassManager &pm) {
   pm.addPass(createSROA());
   pm.addPass(createCanonicalizerPass());
   pm.addPass(affine::createRaiseMemrefToAffine());
+  pm.addPass(affine::createAffineLoopInvariantCodeMotionPass());
   pm.addPass(affine::createAffineScalarReplacementPass());
   pm.addPass(createLoopInvariantCodeMotionPass());
   pm.addPass(affine::createAffineLoopInvariantCodeMotionPass());
@@ -262,7 +263,7 @@ struct UpmemInferencePlugin : cinm::InferencePlugin {
       pm->addPass(createPrintIRPass({.label = "after-fusion"}));
     // Scalar values used directly inside a linalg op need to be
     // promoted to operands of the linalg op, so that the body
-    // of the generic op becomes IsolatedFromAbove. 
+    // of the generic op becomes IsolatedFromAbove.
     pm->addPass(cnm::createCnmIsolateLinalgCapturesPass());
     pm->addPass(createCanonicalizerPass());
     if (debug)
@@ -377,7 +378,7 @@ struct UpmemInferencePlugin : cinm::InferencePlugin {
     // per multiply-accumulate.
     pm->addNestedPass<func::FuncOp>(
         affine::createAffineScalarReplacementPass());
-    auto funcPm = pm->nest<func::FuncOp>();
+    auto &funcPm = pm->nest<func::FuncOp>();
     addAffineOpts(funcPm);
     pm->addPass(createCanonicalizerPass());
     pm->addPass(createCSEPass());
@@ -390,8 +391,10 @@ struct UpmemInferencePlugin : cinm::InferencePlugin {
     // check and the cost model, which read the ops' shapes.
     pm->addPass(createUpmemSpecializeTransfersPass());
     pm->addPass(bufferization::createBufferLoopHoistingPass());
-    auto nested = pm->nestAny();
-    bufferization::buildBufferDeallocationPipeline(nested); // fixme
+    {
+      // auto &nested = pm->nestAny();
+      // bufferization::buildBufferDeallocationPipeline(nested); // fixme
+    }
     pm->addPass(createCSEPass());
     pm->addPass(createUPMEMDedupKernelsPass());
     pm->addPass(createCSEPass());
@@ -407,7 +410,7 @@ struct UpmemInferencePlugin : cinm::InferencePlugin {
     // scf directly, so this only bites the generic path). Last, so the affine
     // passes above still see affine loops.
     {
-      auto dpuPm = pm->nest<ModuleOp>().nest<DpuProgramOp>();
+      auto &dpuPm = pm->nest<ModuleOp>().nest<DpuProgramOp>();
       addAffineOpts(dpuPm);
       dpuPm.addPass(createLowerAffinePass());
     }
@@ -423,6 +426,8 @@ struct UpmemInferencePlugin : cinm::InferencePlugin {
     // and the search moves on, rather than being discovered when the DPU
     // binary fails to link.
     pm->addPass(createUpmemCheckOccupancyPass());
+    if (debug)
+      LLVM_DEBUG(pm->dump(););
     return pm;
   }
 
@@ -920,6 +925,21 @@ void UpmemInferencePlugin::handleLinalgOp(linalg::LinalgOp op,
         return footprint(leaves, c) <= wramElements;
       },
       "sum of leaf tiles <= WRAM (assuming maximal sharing)");
+  if (!opts.useMRAMTiling) {
+    // Note: this is only required for benchmarks that compare
+    // against CINM1 codegen. To be removed.
+    b.require(
+        [=](const cinm::ConfWrapper &c) -> bool {
+          if (footprint(blocks, c) > wramElements)
+            return false;
+          // for (auto [b, l] : zip_equal(blocks, leaves)) {
+          //   if (b[c] != l[c])
+          //     return false;
+          // }
+          return true;
+        },
+        "MRAM tile should be equal to WRAM tile (no tiling in MRAM)");
+  }
 
   // Which tile dimension varies fastest across the leaves (design §G3). The
   // one parameter here that is not a size: it decides what the leaves sharing
@@ -1284,6 +1304,7 @@ struct UpmemInferAcceleratorPass
     o.objectiveScale = objectiveScale;
     o.numWorkers = numWorkers;
     o.dumpFullPool = dumpFullPool;
+    o.dumpDir = dumpDir;
     upmemOpts.annotateOpCosts = annotateOpCosts;
     upmemOpts.useMRAMTiling = useMRAMTiling;
     upmemOpts.lowering = lowering;
@@ -1291,7 +1312,7 @@ struct UpmemInferAcceleratorPass
     upmemOpts.fixedTasklets = fixedTasklets;
     upmemOpts.simulator = simulator;
     upmemOpts.evalTimeoutMs = std::chrono::milliseconds(evalTimeoutMs);
-    o.dumpDir = dumpDir;
+    upmemOpts.debugPrintsInPipeline = debugPipeline;
     if (!evalSolution.empty()) {
       llvm::StringMap<int64_t> named;
       for (StringRef entry : evalSolution) {
