@@ -81,6 +81,66 @@ void SpaceBuilder::require(Constraint pred, llvm::StringRef description) {
   predicates_.push_back({description.str(), std::move(pred)});
 }
 
+void SpaceBuilder::require(Expr expr, llvm::StringRef description) {
+  const ConstraintNodePtr &node = expr.node();
+  extractDivConstraints(node);
+  // A bare arithmetic expression contributes only its divisibility conditions
+  // (that is the `require(a / b)` spelling); only a comparison is a predicate.
+  if (node->kind != ConstraintNode::Kind::Cmp)
+    return;
+  std::string desc =
+      description.empty() ? describeNode(*node) : description.str();
+  require(toVecConstraint(node), desc);
+}
+
+void SpaceBuilder::extractDivConstraints(const ConstraintNodePtr &node) {
+  if (!node)
+    return;
+  if (node->kind == ConstraintNode::Kind::Div)
+    addDivConstraint(node->operands[0], node->operands[1]);
+  for (const auto &child : node->operands)
+    extractDivConstraints(child);
+}
+
+void SpaceBuilder::addDivConstraint(const ConstraintNodePtr &num,
+                                    const ConstraintNodePtr &den) {
+  using Kind = ConstraintNode::Kind;
+
+  // const / var: the divisor can only ever take values dividing the constant,
+  // so this is a static domain filter rather than a runtime check.
+  if (num->kind == Kind::Const && den->kind == Kind::Var) {
+    mustDivide(findVarByName(den->varName), num->value);
+    return;
+  }
+  // var / var: structural, folded into the flat index encoding by
+  // ConfigSpace::addMultiplesConstraint.
+  if (num->kind == Kind::Var && den->kind == Kind::Var) {
+    mustDivide(findVarByName(den->varName), findVarByName(num->varName));
+    return;
+  }
+
+  std::string desc = describeNode(*den) + " | " + describeNode(*num);
+  if (den->kind == Kind::Mul) {
+    // (B * C) | A  ⟹  B * C <= A as well; keeping the bound makes the
+    // predicate reject the degenerate cases the divisibility test alone lets
+    // through.
+    require(VecConstraint([num, den](const ConfigurationVector &c,
+                                     arma::urowvec &valid) {
+              const ParmVector nv = evalNodeVec(*num, c);
+              const ParmVector dv = evalNodeVec(*den, c);
+              valid %= vecDivides(dv, nv);
+              valid %= (dv <= nv);
+            }),
+            desc);
+    return;
+  }
+  require(VecConstraint([num, den](const ConfigurationVector &c,
+                                   arma::urowvec &valid) {
+            valid %= vecDivides(evalNodeVec(*den, c), evalNodeVec(*num, c));
+          }),
+          desc);
+}
+
 // ===----------------------------------------------------------------------===//
 // SpaceBuilder::buildInto
 // ===----------------------------------------------------------------------===//
