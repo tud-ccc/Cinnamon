@@ -240,8 +240,9 @@ public:
   ComponentEnumerator(llvm::ArrayRef<size_t> dims,
                       llvm::ArrayRef<Domain> domains,
                       llvm::ArrayRef<DivRel> divs, llvm::ArrayRef<ProdEq> prods,
-                      size_t cap)
-      : dims_(dims), domains_(domains), divs_(divs), prods_(prods), cap_(cap),
+                      llvm::ArrayRef<const ConstraintNode *> bounds, size_t cap)
+      : dims_(dims), domains_(domains), divs_(divs), prods_(prods),
+        bounds_(bounds), cap_(cap),
         assigned_(dims.size(), false), values_(dims.size(), 0),
         inProdEq_(dims.size(), false) {
     for (size_t pos = 0; pos < dims.size(); ++pos)
@@ -308,6 +309,37 @@ private:
     if (!known || !other || *known == 0 || *other % *known != 0)
       return std::nullopt;
     return *other / *known;
+  }
+
+  /// Bounds for a variable given the current partial assignment: a point once
+  /// assigned, otherwise its whole domain. Variables outside this component
+  /// are unknown, which disables pruning for any expression mentioning them.
+  VarBounds varBounds() const {
+    return [this](size_t v) -> Interval {
+      auto it = posOfDim_.find(v);
+      if (it == posOfDim_.end())
+        return {0, 0, false};
+      const size_t pos = it->second;
+      if (assigned_[pos])
+        return {values_[pos], values_[pos], true};
+      const auto &vals = domains_[pos].values;
+      if (vals.empty())
+        return {0, 0, false};
+      return {vals.front(), vals.back(), true};
+    };
+  }
+
+  /// True unless some inequality is already unsatisfiable for every completion
+  /// of the current partial assignment -- in which case the whole subtree is
+  /// dead and need not be walked.
+  bool boundsMayHold() const {
+    if (bounds_.empty())
+      return true;
+    VarBounds vb = varBounds();
+    for (const ConstraintNode *c : bounds_)
+      if (!cmpMayHold(*c, vb))
+        return false;
+    return true;
   }
 
   /// Every relation whose variables are all assigned must hold.
@@ -425,7 +457,8 @@ private:
     for (ParmValue v : candidatesFor(pos)) {
       values_[pos] = v;
       assigned_[pos] = true;
-      bool ok = checkComplete() ? recurse() : true;
+      bool feasible = checkComplete() && boundsMayHold();
+      bool ok = feasible ? recurse() : true;
       assigned_[pos] = false;
       if (!ok)
         return false; // budget exceeded, abort the whole enumeration
@@ -442,6 +475,10 @@ private:
   llvm::ArrayRef<Domain> domains_;
   llvm::ArrayRef<DivRel> divs_;
   llvm::ArrayRef<ProdEq> prods_;
+  /// Inequalities over this component's variables, used only to prune. They
+  /// are also checked at full assignment, so a component enforces them
+  /// outright rather than leaving them to be filtered later.
+  llvm::ArrayRef<const ConstraintNode *> bounds_;
   size_t cap_;
   std::vector<bool> assigned_;
   std::vector<ParmValue> values_;
@@ -451,6 +488,16 @@ private:
   llvm::DenseMap<size_t, size_t> posOfDim_;
   std::vector<std::vector<ParmValue>> *out_ = nullptr;
 };
+
+/// Every search parameter mentioned anywhere in `node`.
+void collectVars(const ConstraintNode &node, std::set<size_t> &out) {
+  if (node.kind == ConstraintNode::Kind::Var) {
+    out.insert(*node.varIdx);
+    return;
+  }
+  for (const auto &child : node.operands)
+    collectVars(*child, out);
+}
 
 /// Union-find over dimension indices.
 class DisjointSets {
@@ -570,12 +617,35 @@ void SpaceBuilder::planComponents(
       }
     }
 
+    // Inequalities entirely inside this component. They cannot determine a
+    // variable, but they are monotone in the tile sizes, so a prefix whose
+    // smallest completion already busts a capacity kills its subtree. Checked
+    // again at full assignment, where the bounds are exact -- so the component
+    // enforces them outright and they need not stay as predicates.
+    const std::set<size_t> dimSet(dims.begin(), dims.end());
+    std::vector<const ConstraintNode *> myBounds;
+    std::vector<const ConstraintNode *> myBoundNodes;
+    for (const auto &entry : predicates_) {
+      if (!entry.node || entry.node->kind != ConstraintNode::Kind::Cmp)
+        continue;
+      if (llvm::is_contained(prodNodes, entry.node.get()))
+        continue; // already handled as a product equality
+      std::set<size_t> vars;
+      collectVars(*entry.node, vars);
+      if (vars.empty())
+        continue;
+      if (!llvm::all_of(vars, [&](size_t v) { return dimSet.count(v) != 0; }))
+        continue;
+      myBounds.push_back(entry.node.get());
+      myBoundNodes.push_back(entry.node.get());
+    }
+
     std::vector<Domain> myDomains;
     for (size_t d : dims)
       myDomains.push_back(allDomains[d]);
 
     std::vector<std::vector<ParmValue>> solutions;
-    ComponentEnumerator enumerator(dims, myDomains, myDivs, myProds,
+    ComponentEnumerator enumerator(dims, myDomains, myDivs, myProds, myBounds,
                                    kSolutionCap);
     if (!enumerator.run(solutions)) {
       LLVM_DEBUG(llvm::dbgs()
@@ -607,6 +677,8 @@ void SpaceBuilder::planComponents(
       absorbedMultiples.insert(divNames[i]);
     for (size_t i : myProdIdx)
       absorbedPredicates.insert(prodNodes[i]);
+    for (const ConstraintNode *n : myBoundNodes)
+      absorbedPredicates.insert(n);
   }
 }
 

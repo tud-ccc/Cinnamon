@@ -319,6 +319,90 @@ matchProductEquality(const ConstraintNode &node) {
   return eq;
 }
 
+// ===----------------------------------------------------------------------===//
+// Analysis — interval bounds
+// ===----------------------------------------------------------------------===//
+
+static const Interval kUnbounded = {0, 0, false};
+
+Interval evalNodeBounds(const ConstraintNode &node, const VarBounds &bounds) {
+  using Kind = ConstraintNode::Kind;
+  switch (node.kind) {
+  case Kind::Const:
+    return {node.value, node.value, true};
+  case Kind::Var:
+    return bounds(*node.varIdx);
+  case Kind::Add: {
+    Interval acc{0, 0, true};
+    for (const auto &op : node.operands) {
+      Interval s = evalNodeBounds(*op, bounds);
+      if (!s.valid)
+        return kUnbounded;
+      acc.lo += s.lo;
+      acc.hi += s.hi;
+    }
+    return acc;
+  }
+  case Kind::Mul: {
+    // Only sound for non-negative operands; every search parameter here is a
+    // size or a count, but check rather than assume.
+    Interval acc{1, 1, true};
+    for (const auto &op : node.operands) {
+      Interval s = evalNodeBounds(*op, bounds);
+      if (!s.valid || s.lo < 0)
+        return kUnbounded;
+      acc.lo *= s.lo;
+      acc.hi *= s.hi;
+    }
+    return acc;
+  }
+  case Kind::Sub: {
+    Interval a = evalNodeBounds(*node.operands[0], bounds);
+    Interval b = evalNodeBounds(*node.operands[1], bounds);
+    if (!a.valid || !b.valid)
+      return kUnbounded;
+    return {a.lo - b.hi, a.hi - b.lo, true};
+  }
+  case Kind::Div: {
+    // Decreasing in the divisor, so the bounds cross over. A divisor whose
+    // range includes zero yields nothing usable.
+    Interval a = evalNodeBounds(*node.operands[0], bounds);
+    Interval b = evalNodeBounds(*node.operands[1], bounds);
+    if (!a.valid || !b.valid || a.lo < 0 || b.lo <= 0)
+      return kUnbounded;
+    return {a.lo / b.hi, a.hi / b.lo, true};
+  }
+  case Kind::Cmp:
+    return kUnbounded;
+  }
+  llvm_unreachable("unknown ConstraintNode::Kind");
+}
+
+bool cmpMayHold(const ConstraintNode &node, const VarBounds &bounds) {
+  assert(node.kind == ConstraintNode::Kind::Cmp && "expected a Cmp node");
+  Interval l = evalNodeBounds(*node.operands[0], bounds);
+  Interval r = evalNodeBounds(*node.operands[1], bounds);
+  if (!l.valid || !r.valid)
+    return true; // no information; never prune on a guess
+
+  switch (node.cmp) {
+  case CmpKind::Le:
+    return l.lo <= r.hi;
+  case CmpKind::Lt:
+    return l.lo < r.hi;
+  case CmpKind::Ge:
+    return l.hi >= r.lo;
+  case CmpKind::Gt:
+    return l.hi > r.lo;
+  case CmpKind::Eq:
+    return l.lo <= r.hi && r.lo <= l.hi; // the ranges must overlap
+  case CmpKind::Ne:
+    // Only unsatisfiable when both sides are pinned to the same value.
+    return !(l.lo == l.hi && r.lo == r.hi && l.lo == r.lo);
+  }
+  llvm_unreachable("unknown CmpKind");
+}
+
 std::string describeMonomial(const Monomial &m,
                              llvm::ArrayRef<std::string> paramNames) {
   std::string s;

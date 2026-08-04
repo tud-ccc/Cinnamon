@@ -138,4 +138,36 @@ matchProductEquality(const ConstraintNode &node);
 std::string describeMonomial(const Monomial &m,
                              llvm::ArrayRef<std::string> paramNames);
 
+// ===----------------------------------------------------------------------===//
+// Analysis — interval bounds (Form C)
+// ===----------------------------------------------------------------------===//
+
+/// The range a subexpression can span. `valid` is false when no useful bound
+/// could be derived, in which case the interval must be ignored rather than
+/// trusted.
+struct Interval {
+  int64_t lo = 0, hi = 0;
+  bool valid = true;
+};
+
+/// Range a variable can still take: a fixed value once assigned, otherwise its
+/// domain's extent. Returning an invalid Interval disables pruning for any
+/// expression mentioning that variable.
+using VarBounds = std::function<Interval(size_t varIdx)>;
+
+/// Bound an arithmetic node given partial knowledge of its variables. Products
+/// are bounded assuming non-negative operands -- true of every search
+/// parameter here, and checked rather than assumed.
+Interval evalNodeBounds(const ConstraintNode &node, const VarBounds &bounds);
+
+/// Whether a comparison can still be satisfied by some completion of the
+/// current partial assignment. False means every completion violates it, so
+/// the caller may prune. True is the safe answer: it never prunes a subtree
+/// that might contain a solution.
+///
+/// This is what lets a capacity bound cut the search rather than filter it
+/// afterwards: `sum of tile products <= MRAM` is monotone, so once the
+/// smallest possible completion exceeds the limit the subtree is dead.
+bool cmpMayHold(const ConstraintNode &node, const VarBounds &bounds);
+
 } // namespace mlir::cinm
