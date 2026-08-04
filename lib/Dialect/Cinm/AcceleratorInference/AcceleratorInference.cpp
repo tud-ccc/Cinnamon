@@ -350,12 +350,19 @@ void ConfigSpace::at(size_t idx, Configuration &conf) const {
 void ConfigSpace::forEach(
     std::function<bool(const Configuration &, size_t)> fn) const {
   ensureEncoding();
-  const size_t S = slots_.size();
   // Use suffixProd_[0] directly — avoids a redundant ensureEncoding() call
   // inside totalSize() after we already ensured encoding above.
-  const size_t total = S == 0 ? 1 : suffixProd_[0];
-  if (total == 0)
+  const size_t total = slots_.empty() ? 1 : suffixProd_[0];
+  forEachChunk(0, total, std::move(fn));
+}
+
+void ConfigSpace::forEachChunk(
+    size_t lo, size_t hi,
+    std::function<bool(const Configuration &, size_t)> fn) const {
+  ensureEncoding();
+  if (lo >= hi)
     return;
+  const size_t S = slots_.size();
 
   // Per-slot combined sub-index in [0, slot.slotSize).
   std::vector<size_t> subIdx(S, 0);
@@ -380,15 +387,21 @@ void ConfigSpace::forEach(
     }
   };
 
-  // Initialise conf at sub-index 0 for every slot.
-  for (size_t si = 0; si < S; ++si)
-    applySubIdx(si, 0);
+  // Decompose lo into per-slot sub-indices (same mixed-radix decoding as
+  // at()) and initialise conf at flat index lo. This is the only O(S) step;
+  // every subsequent step below is O(1) amortised.
+  size_t rem = lo;
+  for (size_t si = S; si-- > 0;) {
+    subIdx[si] = rem % slots_[si].slotSize;
+    rem /= slots_[si].slotSize;
+    applySubIdx(si, subIdx[si]);
+  }
 
-  for (size_t flat = 0; flat < total; ++flat) {
+  for (size_t flat = lo; flat < hi; ++flat) {
     if (!fn(conf, flat))
       return;
 
-    if (flat + 1 == total)
+    if (flat + 1 == hi)
       break;
 
     // Mixed-radix increment from the least-significant slot.

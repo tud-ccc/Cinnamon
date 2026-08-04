@@ -13,6 +13,7 @@
 #include <llvm/ADT/BitVector.h>
 #include <llvm/ADT/STLExtras.h>
 #include <llvm/Support/Debug.h>
+#include <llvm/Support/Parallel.h>
 #include <llvm/Support/ThreadPool.h>
 #include <llvm/Support/Threading.h>
 #include <memory>
@@ -26,20 +27,83 @@
 
 namespace mlir::cinm {
 
+namespace {
+
+/// Chunked parallel transform-reduce over a ConfigSpace's flat index range
+/// [0, N). Unlike llvm::parallelTransformReduce (which calls Transform once
+/// per flat index via ConfigSpace::at(), an O(S) rebuild each time), each
+/// chunk here is walked with ConfigSpace::forEachChunk, so successive configs
+/// within a chunk reuse most of the previous one (O(1) amortised per step,
+/// same as the serial forEach) — only the first config of each chunk costs
+/// O(S). Chunks outnumber worker threads so that idle threads can pick up the
+/// next pending chunk (LLVM's TaskGroup dispatches spawned chunks onto a
+/// shared work stack, giving the same load-balancing as work stealing).
+template <class ResultTy, class ReduceFuncTy, class ChunkFuncTy>
+ResultTy parallelTransformReduceChunked(const ConfigSpace &space,
+                                        ResultTy init, ReduceFuncTy reduce,
+                                        ChunkFuncTy transformChunk) {
+  const size_t N = space.totalSize();
+  if (N == 0)
+    return init;
+
+  const size_t numThreads = llvm::parallel::strategy.compute_thread_count();
+  constexpr size_t kChunksPerThread = 8;
+  constexpr size_t kMinChunkSize = 4096;
+  size_t numChunks = std::max<size_t>(1, numThreads * kChunksPerThread);
+  numChunks = std::min(numChunks, std::max<size_t>(1, N / kMinChunkSize));
+  numChunks = std::min(numChunks, N);
+
+  std::vector<ResultTy> results(numChunks, init);
+  {
+    llvm::parallel::TaskGroup tg;
+    size_t chunkSize = N / numChunks;
+    size_t remainder = N % numChunks;
+    size_t lo = 0;
+    for (size_t c = 0; c < numChunks; ++c) {
+      size_t hi = lo + chunkSize + (c < remainder ? 1 : 0);
+      tg.spawn([&space, &results, &transformChunk, c, lo, hi] {
+        results[c] = transformChunk(space, lo, hi);
+      });
+      lo = hi;
+    }
+  }
+
+  // Merge in chunk order (ascending flat index), same as the old serial scan.
+  ResultTy final = std::move(results.front());
+  for (size_t c = 1; c < numChunks; ++c)
+    final = reduce(std::move(final), std::move(results[c]));
+  return final;
+}
+
+} // namespace
+
 // ===----------------------------------------------------------------------===//
 // CandidatePool construction
 // ===----------------------------------------------------------------------===//
 
 void CandidatePool::computeValidMask(const ConfigSpace &space,
                                      SharedState &shared) {
-  shared.validMask.clear();
-  space.forEach([&](const Configuration &conf, size_t i) {
-    if (space.isValid(conf)) {
-      shared.validMask.insert(i);
-      shared.validIndices.push_back(i);
-    }
-    return true;
-  });
+  shared = parallelTransformReduceChunked(
+      space, SharedState{},
+      [](SharedState lhs, SharedState rhs) -> SharedState {
+        lhs.validIndices.insert(lhs.validIndices.end(),
+                                rhs.validIndices.begin(),
+                                rhs.validIndices.end());
+        lhs.validMask.merge(rhs.validMask);
+        return lhs;
+      },
+      [](const ConfigSpace &space, size_t lo, size_t hi) -> SharedState {
+        SharedState s;
+        space.forEachChunk(lo, hi,
+                           [&](const Configuration &conf, size_t i) {
+                             if (space.isValid(conf)) {
+                               s.validMask.insert(i);
+                               s.validIndices.push_back(i);
+                             }
+                             return true;
+                           });
+        return s;
+      });
 }
 
 CandidatePool CandidatePool::build(const ConfigSpace &space, size_t evalBudget,

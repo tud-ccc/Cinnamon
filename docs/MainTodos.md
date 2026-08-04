@@ -62,14 +62,3 @@ The current cost model in `UpmemSimulator.cpp` uses rough estimates. It needs to
 - 
 
 ### Parallel work
-
-It would be really good if we could parallelize this function (CandidatePool::computeValidMask). The thing is space.forEach is not parallel... Maybe we could split the index space into chunks that are given to workers. Ideally there would be more than 1 chunk per worker, so that they can do work stealing. Maybe let's create a forEachParallel? Conceptually, it's a generic function of a template parameter State. It takes a callback `(const Configuration&, size_t, State& out) -> void`. The State type must support the following interface:
-
-It would have an interface like:
-- `static State create(size_t) -> State` Create a state instance for chunk of the given size
-- `void reset();`
-- `void append(State other)` (associative merger, appends the right state onto this one)
-(or maybe these are just provided as callbacks?)
-
-Each thread has its own State instance.
-

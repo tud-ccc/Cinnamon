@@ -930,13 +930,7 @@ void UpmemInferencePlugin::handleLinalgOp(linalg::LinalgOp op,
     // against CINM1 codegen. To be removed.
     b.require(
         [=](const cinm::ConfWrapper &c) -> bool {
-          if (footprint(blocks, c) > wramElements)
-            return false;
-          // for (auto [b, l] : zip_equal(blocks, leaves)) {
-          //   if (b[c] != l[c])
-          //     return false;
-          // }
-          return true;
+          return footprint(blocks, c) <= wramElements;
         },
         "MRAM tile should be equal to WRAM tile (no tiling in MRAM)");
   }

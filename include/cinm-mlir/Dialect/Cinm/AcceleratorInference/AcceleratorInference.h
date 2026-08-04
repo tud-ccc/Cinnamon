@@ -171,6 +171,12 @@ struct ConfigSpace {
   /// the suffix of conf that changed (O(1) amortised per step vs O(S) for
   /// at()).
   void forEach(std::function<bool(const Configuration &, size_t)> fn) const;
+  /// Like forEach(), but restricted to the flat-index range [lo, hi). Used to
+  /// parallelise a scan over the full space while keeping each chunk's
+  /// per-step cost O(1) amortised (only the initial config at `lo` costs
+  /// O(S), same as at()).
+  void forEachChunk(size_t lo, size_t hi,
+                    std::function<bool(const Configuration &, size_t)> fn) const;
   /// Append to result all flat indices one discrete step away in any dimension.
   void neighborIndices(size_t idx, llvm::SmallVectorImpl<size_t> &result) const;
 
