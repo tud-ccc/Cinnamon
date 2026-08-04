@@ -615,8 +615,7 @@ struct InferenceTask {
   /// Shared state produced by prepareBO() and consumed by both runInference and
   /// runMultiSeed.
   struct BOSetup {
-    std::shared_ptr<llvm::BitVector> validMask;
-    std::shared_ptr<std::vector<size_t>> validIndices;
+    std::shared_ptr<CandidatePool::SharedState> poolState;
     ValidationSet validSet;
   };
 
@@ -627,39 +626,35 @@ struct InferenceTask {
   /// validation is never artificially throttled.
   Maybe<BOSetup> prepareBO(unsigned nWorkers) {
 
-    auto validMask = std::make_shared<llvm::BitVector>();
-    auto validIndices = std::make_shared<std::vector<size_t>>();
+    auto poolState = std::make_shared<CandidatePool::SharedState>();
 
-    CandidatePool::computeValidMask(space, *validMask, *validIndices);
-    if (validIndices->empty())
+    CandidatePool::computeValidMask(space, *poolState);
+    if (poolState->empty())
       return emitSilenceableFailure(
           refClone.getLoc(), "No valid configurations found in search space");
-    LLVM_DEBUG(llvm::dbgs() << "[cinm-inference] " << validIndices->size()
+    LLVM_DEBUG(llvm::dbgs() << "[cinm-inference] " << poolState->size()
                             << " valid configs\n");
     ValidationSet validSet = [&] {
       // Scoped pool: freed before the caller creates its BO-sized pool,
       // so nWorkers clones never overlap with per-seed CandidatePool allocs.
       EvaluatorPool validationPool(plugin, *refModule, refClone->getContext(),
                                    nWorkers);
-      return buildValidationSet(validMask, validIndices, validationPool);
+      return buildValidationSet(poolState, validationPool);
     }();
-    return BOSetup{std::move(validMask), std::move(validIndices),
-                   std::move(validSet)};
+    return BOSetup{std::move(poolState), std::move(validSet)};
   }
 
   /// Sample `options.nValidation` configs via LHS and evaluate them in
   /// parallel across `evalPool`, returning the resulting ValidationSet.
   ValidationSet
-  buildValidationSet(std::shared_ptr<llvm::BitVector> validMask,
-                     std::shared_ptr<std::vector<size_t>> validIndices,
+  buildValidationSet(std::shared_ptr<CandidatePool::SharedState> poolState,
                      EvaluatorPool &evalPool) {
     ValidationSet result(space);
     if (options.nValidation <= 0)
       return result;
 
     unsigned nWorkers = evalPool.size();
-    CandidatePool samplePool(space, options.nValidation, std::move(validMask),
-                             std::move(validIndices));
+    CandidatePool samplePool(space, options.nValidation, std::move(poolState));
     std::mt19937 vrng(options.rngSeed);
     LLVM_DEBUG(llvm::dbgs() << "[cinm-inference] Sampling validation set: "
                             << options.nValidation << " points\n");
@@ -871,7 +866,7 @@ struct InferenceTask {
 
     unsigned nWorkers = resolveWorkers();
     // Validation uses a temporary nWorkers-wide pool (freed before BO starts).
-    auto [validMask, validIndices, validSet] = TRY_GET(prepareBO(nWorkers));
+    auto [poolState, validSet] = TRY_GET(prepareBO(nWorkers));
 
     // Single-seed fast path: behaves exactly like the old runInference.
     // seedValue(0) = 0 * 31 + rngSeed = rngSeed. Uses full nWorkers for LHS.
@@ -880,7 +875,7 @@ struct InferenceTask {
           plugin, *refModule, refClone->getContext(), nWorkers);
       EvalLease withEval = [&](auto &fn) { return evalPool->withWorker(fn); };
       CandidatePool pool(space, static_cast<size_t>(options.maxEvals),
-                         std::move(validMask), std::move(validIndices));
+                         std::move(poolState));
       std::mutex stateMx;
       llvm::raw_ostream *log = nullptr;
       LLVM_DEBUG(log = &llvm::dbgs());
@@ -924,7 +919,7 @@ struct InferenceTask {
 
         std::mt19937 seedRng(static_cast<unsigned>(sv));
         CandidatePool pool(space, static_cast<size_t>(options.maxEvals),
-                           validMask, validIndices);
+                           poolState);
         ValidationSet vs = validSet; // copy of shared contents
         std::string dir = baseDumpDir.empty()
                               ? std::string()
@@ -1235,10 +1230,10 @@ struct InferenceTask {
 
     LLVM_DEBUG(llvm::dbgs()
                << "[cinm-inference] Random sample: " << pool.numVisited()
-               << " / " << sampleN << " accepted (<= " << maxCostMs
-               << " ms), " << nRejected.load() << " rejected / "
-               << nAttempted.load() << " attempted, across " << nThreads
-               << " threads in " << elapsed.count() << " ms\n");
+               << " / " << sampleN << " accepted (<= " << maxCostMs << " ms), "
+               << nRejected.load() << " rejected / " << nAttempted.load()
+               << " attempted, across " << nThreads << " threads in "
+               << elapsed.count() << " ms\n");
     plugin.printStats();
 
     if (!options.dumpDir.empty()) {
@@ -1372,13 +1367,13 @@ inferAcceleratorConfig(cinm::ComputeBlockOp computeOp, InferencePlugin &plugin,
     auto estimate = TRY_GET(plugin.evaluate(bestResult)); // may return early
     llvm::errs() << "Estimated cost: " << llvm::format("%.3f", estimate.total())
                  << " ms\n";
-    estimate.forEachEntry([&](utils::CostCategory category, StringRef label,
-                              double value) {
-      llvm::errs() << "  " << utils::costCategoryName(category);
-      if (!label.empty())
-        llvm::errs() << "." << label;
-      llvm::errs() << ": " << llvm::format("%.3f", value) << " ms\n";
-    });
+    estimate.forEachEntry(
+        [&](utils::CostCategory category, StringRef label, double value) {
+          llvm::errs() << "  " << utils::costCategoryName(category);
+          if (!label.empty())
+            llvm::errs() << "." << label;
+          llvm::errs() << ": " << llvm::format("%.3f", value) << " ms\n";
+        });
 
   } else if (opts.sampleN > 0) {
     bestResult = TRY_GET(task.runRandomSample(opts.sampleN));
