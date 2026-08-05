@@ -72,14 +72,6 @@ def simulatorClValues {
     )}];
 }
 
-def loweringClValues {
-  string values = [{
-  ::llvm::cl::values(
-    clEnumValN(UpmemLoweringPath::TEMPLATES, "templates", "Hand-written per-op generators in SimulationTemplates.cpp"),
-    clEnumValN(UpmemLoweringPath::GENERIC, "generic", "The real pass pipeline, via CNM")
-    )}];
-}
-
 def UpmemInferAcceleratorPass : Pass<"upmem-infer-accelerator", "ModuleOp"> {
   let summary = "Infer UPMEM accelerator parameters for cinm.compute ops";
   let description = [{
@@ -162,12 +154,6 @@ def UpmemInferAcceleratorPass : Pass<"upmem-infer-accelerator", "ModuleOp"> {
            "Cost transform before surrogate training: linear, log2, log10, ln, sqrt, cbrt">,
     Option<"useMRAMTiling", "use-mram-tiling", "bool", "true",
            "Enable MRAM tiling in the UPMEM lowering">,
-    Option<"lowering", "lowering", "UpmemLoweringPath", "UpmemLoweringPath::GENERIC",
-           "Which lowering to evaluate a configuration through. Independent of "
-           "use-mram-tiling, which says whether the MRAM and WRAM tiles may "
-           "differ -- single-level tiling through the generic pipeline is a "
-           "combination worth being able to ask for.",
-           loweringClValues.values>,
     Option<"simulator", "simulator", "UpmemSimulatorId", "UpmemSimulatorId::CYCLE_ACCURATE",
            "Simulator backend",
            simulatorClValues.values>,

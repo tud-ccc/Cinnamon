@@ -94,29 +94,6 @@ CONFIGS = [
         lower=cinmopt.eval_solution_lowerer(),
     ),
     compile_run.Config(
-        system="cinm2_template",
-        fn_name="mtv_64MB",
-        label="dpu512",
-        params={
-            "dpus": 512,
-            "tasklets": 8,
-            "gemv.M0": 8,  # mramRow * taskletCols / tasklets
-            "gemv.K0": 512,  # mramCol / taskletCols
-            "gemv.M1": 8,  # wramRow
-            "gemv.K1": 64,  # wramCol
-            # The workgroup mapping: k-tile index outermost, so the tasklets of
-            # a DPU split rows and share the vector (taskletCols = 1).
-            "gemv.order": 0,
-        },
-        fn_module=source,
-        prim="mtv",
-        lower=cinmopt.eval_solution_lowerer(
-            extra_infer_opts={
-                "lowering": "templates",
-            }
-        ),
-    ),
-    compile_run.Config(
         system="cinm2",
         fn_name="mtv_64MB",
         # This one is the atim2048 optimum,
@@ -141,30 +118,6 @@ CONFIGS = [
         fn_module=source,
         prim="mtv",
         lower=cinmopt.eval_solution_lowerer(),
-    ),
-    compile_run.Config(
-        system="cinm2_template",
-        fn_name="mtv_64MB",
-        label="atim2048optimum",
-        # Same as above, but lowered through the templated flow for comparison.
-        params={
-            "dpus": 2048,
-            "tasklets": 8,
-            "gemv.M0": 8,  # mramRow * taskletCols / tasklets
-            "gemv.K0": 128,  # mramCol / taskletCols
-            "gemv.M1": 8,  # wramRow
-            "gemv.K1": 64,  # wramCol
-            # The workgroup mapping: k-tile index outermost, so the tasklets of
-            # a DPU split rows and share the vector (taskletCols = 1).
-            "gemv.order": 0,
-        },
-        fn_module=source,
-        prim="mtv",
-        lower=cinmopt.eval_solution_lowerer(
-            extra_infer_opts={
-                "lowering": "templates",
-            }
-        ),
     ),
     compile_run.Config(
         system="cinm2",
