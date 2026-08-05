@@ -475,6 +475,22 @@ struct UpmemInferencePlugin : cinm::InferencePlugin {
             ? b.intRange("tasklets", opts.fixedTasklets, opts.fixedTasklets)
             : b.intRange("tasklets", 1, maxTasklets);
 
+    // handleLinalgOp declares a tiling factor per iteration dimension per
+    // level the platform reports, but only two of them have a consumer: the
+    // outermost feeds `cnm.tile_sizes` and the innermost
+    // `upmem.leaf_tile_sizes`. A level in between would get search parameters
+    // no pass ever reads -- dimensions that multiply the space and change
+    // nothing about the program -- so refuse the platform rather than
+    // silently offer them.
+    if (platform.getLevels().size() != 2) {
+      emitError(refClone->getLoc(), "this platform declares ")
+          << platform.getLevels().size()
+          << " memory level(s); the UPMEM inference plugin can only supply "
+             "tiling factors for two of them (the workgroup distribution and "
+             "the leaf level)";
+      return;
+    }
+
     // The space is derived from the *linalg* form of the block. Block sizes
     // are indexed by iteration dimension and only linalg states an iteration
     // space; deriving them from cinm ops instead would mean maintaining a
@@ -763,19 +779,43 @@ void UpmemInferencePlugin::handleLinalgOp(linalg::LinalgOp op,
   Type eltTy = cast<ShapedType>(op.getDpsInits()[0].getType()).getElementType();
 
   // Determine the names of the search params. Each dimension gets one
-  // parameter per memory level (a tiling factor). 
+  // parameter per memory level (a tiling factor).
   auto originAttr =
       op->getAttrOfType<StringAttr>(cinm::CinmDialect::DEBUG_TAG_NAME);
   StringRef origin = originAttr ? originAttr.getValue() : StringRef();
   SmallVector<std::string> dimNames =
       iterationDimNames(origin, extents->size());
 
-  SmallVector<SpaceVar> blocks, leaves;
+  // The levels come from the platform rather than from a pair of hardcoded
+  // names, so that "which memory level" is an index into a list the target
+  // owns -- which is what lets anything downstream (a fusion level, say) talk
+  // about levels without knowing they are called mram and wram. Ordered from
+  // farthest to closest to the compute elements, so each level's tile is cut
+  // out of the enclosing one and the factors chain by divisibility.
+  //
+  // Names are unchanged by this: the level *is* called "mram", so
+  // `gemv.M.mram` stays `gemv.M.mram` and configurations recorded under
+  // experiments/ keep resolving. Declaration order is unchanged too
+  // (dimension outer, level inner), which keeps the flat index encoding --
+  // and hence seeded sampling -- reproducible against earlier runs.
+  ArrayRef<cinm::CinmLevelDefAttr> levels = platform.getLevels();
+  SmallVector<SmallVector<SpaceVar>> perLevel(levels.size());
   for (auto [dim, extent] : llvm::enumerate(*extents)) {
     std::string base = (namePrefix + "." + dimNames[dim]).str();
-    blocks.push_back(b.divisorsOf(base + ".mram", extent));
-    leaves.push_back(b.divisorsOf(base + ".wram", blocks.back()));
+    for (auto [levelIdx, level] : llvm::enumerate(levels)) {
+      std::string name = base + "." + level.getName().getValue().str();
+      perLevel[levelIdx].push_back(
+          levelIdx == 0
+              ? b.divisorsOf(name, extent)
+              : b.divisorsOf(name, perLevel[levelIdx - 1].back()));
+    }
   }
+  // The distribution level -- what --convert-linalg-to-cnm spreads over the
+  // workgroup -- and the leaf level, which --upmem-tile-mram-buffers stages
+  // into. initializeSpace has already refused a platform with a level in
+  // between, because nothing would read its factors.
+  SmallVector<SpaceVar> blocks = perLevel.front();
+  SmallVector<SpaceVar> leaves = perLevel.back();
 
   // The tile counts must fill the workgroup exactly (design §G2). This is the
   // one structural constraint; everything else about the distribution follows
@@ -805,17 +845,16 @@ void UpmemInferencePlugin::handleLinalgOp(linalg::LinalgOp op,
     return cinm::sum(std::move(operands));
   };
 
-  const int64_t mramElements = platform.getMramLevel().getSizeInElements(eltTy);
-  const int64_t wramElements = platform.getWramLevel().getSizeInElements(eltTy);
-
-  b.require(footprint(blocks) <= mramElements,
-            "sum of per-leaf operand tiles <= MRAM (assuming maximal sharing)");
-  b.require(footprint(leaves) <= wramElements,
-            "sum of leaf tiles <= WRAM (assuming maximal sharing)");
+  // One bound per level, against the capacity the platform declares for it.
+  for (auto [levelIdx, level] : llvm::enumerate(levels))
+    b.require(footprint(perLevel[levelIdx]) <= level.getSizeInElements(eltTy),
+              ("sum of operand tiles <= " + level.getName().getValue() +
+               " (assuming maximal sharing)")
+                  .str());
   if (!opts.useMRAMTiling) {
     // Note: this is only required for benchmarks that compare
     // against CINM1 codegen. To be removed.
-    b.require(footprint(blocks) <= wramElements,
+    b.require(footprint(blocks) <= levels.back().getSizeInElements(eltTy),
               "MRAM tile should be equal to WRAM tile (no tiling in MRAM)");
   }
 
