@@ -19,7 +19,7 @@ LINK_LIBS PUBLIC
     MLIRLLVMDialect
     CinmIR
     CinmUtils
-    mlpack::mlpack 
+    mlpack::mlpack
     indicators::indicators
 )
 

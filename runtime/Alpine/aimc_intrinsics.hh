@@ -1,7 +1,7 @@
-/* 
+/*
  * Copyright EPFL 2021
  * Joshua Klein
- * 
+ *
  * This file contains wrappers for in-line assembly access to the AIMC core via
  * custom instructions.  The custom instruction definitions are included and
  * match those found in the gem5 model.
@@ -22,17 +22,10 @@
  *
  * Arguments: None.
  */
-inline void
-aimcProcess(int tid = 0)
-{
-    __asm__ volatile(
-        ".long 0x01000000;"
-        :
-        :
-        :
-    );
+inline void aimcProcess(int tid = 0) {
+  __asm__ volatile(".long 0x01000000;" : : :);
 
-    return;
+  return;
 }
 
 /* CM Core Input Memory Queue
@@ -46,18 +39,14 @@ aimcProcess(int tid = 0)
  * -- rm = QUEUE_MAX input values packed as <val7, val6, ..., val0> for
  *         queueing.
  */
-inline void
-aimcQueue(uint64_t rm, int tid = 0)
-{
-    __asm__ volatile(
-        "MOV X9, %[input_j];"
-        ".long 0x21088000;"
-        :
-        : [input_j] "r" (rm)
-        : "x9"
-    );
+inline void aimcQueue(uint64_t rm, int tid = 0) {
+  __asm__ volatile("MOV X9, %[input_j];"
+                   ".long 0x21088000;"
+                   :
+                   : [input_j] "r"(rm)
+                   : "x9");
 
-    return;
+  return;
 }
 
 /* CM Core Output Memory Dequeue
@@ -70,20 +59,16 @@ aimcQueue(uint64_t rm, int tid = 0)
  * Queueing arguments:
  * -- rd = QUEUE_MAX output values packed as <val7, val6, ..., val0>.
  */
-inline uint64_t
-aimcDequeue(int tid = 0)
-{
-    uint64_t res;
+inline uint64_t aimcDequeue(int tid = 0) {
+  uint64_t res;
 
-    __asm__ volatile(
-        ".long 0x2100000A;"
-        "MOV %[output], X10;"
-        : [output] "=r" (res)
-        :
-        : "x10"
-    );
+  __asm__ volatile(".long 0x2100000A;"
+                   "MOV %[output], X10;"
+                   : [output] "=r"(res)
+                   :
+                   : "x10");
 
-    return res;
+  return res;
 }
 
 /* CM Core Parameter Read
@@ -98,22 +83,19 @@ aimcDequeue(int tid = 0)
  * -- rm = Parameter x index.
  * -- rn = Parameter y index.
  */
-inline uint64_t
-aimcParamRead(uint64_t rm, uint64_t rn, uint64_t ra, int tid = 0)
-{
-    uint64_t res;
+inline uint64_t aimcParamRead(uint64_t rm, uint64_t rn, uint64_t ra,
+                              int tid = 0) {
+  uint64_t res;
 
-    __asm__ volatile(
-        "MOV X9, %[input_j];"
-        "MOV X7, %[input_k];"
-        ".long 0x4108812A;"
-        "MOV %[output], X10;"
-        : [output] "=r" (res)
-        : [input_j] "r" (rm), [input_k] "r" (rn)
-        : "x7", "x9", "x10"
-    );
+  __asm__ volatile("MOV X9, %[input_j];"
+                   "MOV X7, %[input_k];"
+                   ".long 0x4108812A;"
+                   "MOV %[output], X10;"
+                   : [output] "=r"(res)
+                   : [input_j] "r"(rm), [input_k] "r"(rn)
+                   : "x7", "x9", "x10");
 
-    return res;
+  return res;
 }
 
 /* CM Core Parameter Write
@@ -129,23 +111,20 @@ aimcParamRead(uint64_t rm, uint64_t rn, uint64_t ra, int tid = 0)
  * -- ra = Parameter value.
  * -- rn = Parameter y index.
  */
-inline uint64_t
-aimcParamWrite(uint64_t rm, uint64_t rn, uint64_t ra, int tid = 0)
-{
-    uint64_t res;
+inline uint64_t aimcParamWrite(uint64_t rm, uint64_t rn, uint64_t ra,
+                               int tid = 0) {
+  uint64_t res;
 
-    __asm__ volatile(
-        "MOV X8, %[input_i];"
-        "MOV X9, %[input_j];"
-        "MOV X7, %[input_k];"
-        ".long 0x41081D2A;"
-        "MOV %[output], X10;"
-        : [output] "=r" (res)
-        : [input_i] "r" (ra), [input_j] "r" (rm), [input_k] "r" (rn)
-        : "x7", "x8", "x9", "x10"
-    );
+  __asm__ volatile("MOV X8, %[input_i];"
+                   "MOV X9, %[input_j];"
+                   "MOV X7, %[input_k];"
+                   ".long 0x41081D2A;"
+                   "MOV %[output], X10;"
+                   : [output] "=r"(res)
+                   : [input_i] "r"(ra), [input_j] "r"(rm), [input_k] "r"(rn)
+                   : "x7", "x8", "x9", "x10");
 
-    return res;
+  return res;
 }
 
 #endif // __AIMC_INTRINSICS_HH__

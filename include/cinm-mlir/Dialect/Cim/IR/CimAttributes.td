@@ -11,7 +11,7 @@ include "cinm-mlir/Dialect/Cim/IR/CimBase.td"
 include "mlir/IR/EnumAttr.td"
 include "mlir/IR/CommonAttrConstraints.td"
 
-// Quantization rounding mode 
+// Quantization rounding mode
 def Cim_RoundingMode : I32EnumAttr<
     "RoundingMode", "quantization rounding mode", [
   I32EnumAttrCase<"Nearest",     0, "nearest">,

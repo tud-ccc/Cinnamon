@@ -30,7 +30,8 @@ inline int write_int(long v, char *out) {
   char tmp[32];
   int idx = 0;
   bool neg = v < 0;
-  unsigned long x = neg ? static_cast<unsigned long>(-v) : static_cast<unsigned long>(v);
+  unsigned long x =
+      neg ? static_cast<unsigned long>(-v) : static_cast<unsigned long>(v);
   if (x == 0)
     tmp[idx++] = '0';
   while (x) {
@@ -141,7 +142,8 @@ int main(int argc, char *argv[]) {
                        /*reserved=*/0);
   }
 
-  aimc_dequantize_vector(kInputDim, output_q.get(), output_f.get(), scale_y, zp_y);
+  aimc_dequantize_vector(kInputDim, output_q.get(), output_f.get(), scale_y,
+                         zp_y);
 
   for (int j = 0; j < kInputDim; ++j) {
     char buf[32];

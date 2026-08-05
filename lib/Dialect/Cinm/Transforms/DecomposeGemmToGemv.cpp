@@ -30,7 +30,8 @@ struct GemmToLoopedGemv final : OpRewritePattern<cinm::GemmOp> {
                                 PatternRewriter &rewriter) const override {
     Location loc = op.getLoc();
 
-    cinm::ComputeBlockOp parentCompute = op->getParentOfType<cinm::ComputeBlockOp>();
+    cinm::ComputeBlockOp parentCompute =
+        op->getParentOfType<cinm::ComputeBlockOp>();
 
     auto aTy = dyn_cast<RankedTensorType>(op.getLhs().getType());
     auto bTy = dyn_cast<RankedTensorType>(op.getRhs().getType());
@@ -426,7 +427,8 @@ struct BatchGemvToLoopedGemv final : OpRewritePattern<cinm::BatchGemvOp> {
 
     auto parentCompute = op->getParentOfType<cinm::ComputeBlockOp>();
     if (!parentCompute)
-      return rewriter.notifyMatchFailure(op, "requires enclosing cinm.compute_block");
+      return rewriter.notifyMatchFailure(
+          op, "requires enclosing cinm.compute_block");
 
     const int64_t B = aTy.getDimSize(0);
     const int64_t M = aTy.getDimSize(1);

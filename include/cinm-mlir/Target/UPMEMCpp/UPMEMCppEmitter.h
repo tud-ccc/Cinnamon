@@ -18,8 +18,8 @@ namespace upmem_emitc {
 /// 'declareVariablesAtTop' enforces that all variables for op results and block
 /// arguments are declared at the beginning of the function.
 LogicalResult UPMEMtranslateToCpp(Operation *op, raw_ostream &os,
-                             bool declareVariablesAtTop = false);
+                                  bool declareVariablesAtTop = false);
 
 void registerUPMEMCppTranslation();
-} // namespace emitc
+} // namespace upmem_emitc
 } // namespace mlir

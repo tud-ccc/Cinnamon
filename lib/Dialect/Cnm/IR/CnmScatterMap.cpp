@@ -124,8 +124,8 @@ mlir::cnm::linearizeScatterMap(AffineMap map, ArrayRef<int64_t> hostShape) {
   if (map.getNumResults() != hostShape.size())
     return failure();
   MLIRContext *ctx = map.getContext();
-  AffineMap layout =
-      AffineMap::get(hostShape.size(), 0, linearizeIndices(ctx, hostShape), ctx);
+  AffineMap layout = AffineMap::get(hostShape.size(), 0,
+                                    linearizeIndices(ctx, hostShape), ctx);
   // Deliberately not simplified: simplification rewrites `x mod c` as
   // `x - (x floordiv c) * c`, which is the same value but splits one
   // dimension across two correlated terms, and getAffineUpperBound reasons

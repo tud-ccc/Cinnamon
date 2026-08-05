@@ -65,12 +65,12 @@ SmallVector<Value> createNestedAffineForLoops(OpBuilder &builder, Location loc,
     affine::AffineForOp current;
     if (auto staticSize = mlir::getConstantIntValue(sizeOfr)) {
       current = affine::AffineForOp::create(builder, loc, 0, *staticSize, step,
-                                                    iterArgs);
+                                            iterArgs);
     } else {
       Value dynSize = cast<Value>(sizeOfr);
-      current = affine::AffineForOp::create(builder, 
-          loc, ValueRange{}, zeroMap, ValueRange{dynSize}, dynUbMap, step,
-          iterArgs);
+      current = affine::AffineForOp::create(builder, loc, ValueRange{}, zeroMap,
+                                            ValueRange{dynSize}, dynUbMap, step,
+                                            iterArgs);
     }
     if (!loops.empty() && !iterArgs.empty()) {
       affine::AffineYieldOp::create(builder, loc, current.getResults());

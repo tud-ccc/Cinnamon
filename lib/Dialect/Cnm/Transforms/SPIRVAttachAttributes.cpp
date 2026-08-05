@@ -20,96 +20,102 @@ namespace mlir::cnm {
 
 //===----------------------------------------------------------------------===//
 
-struct CnmSPIRVAttachKernelEntryPointAttributePass : public impl::CnmSPIRVAttachKernelEntryPointAttributePassBase<CnmSPIRVAttachKernelEntryPointAttributePass> {
-    using Base::Base;
+struct CnmSPIRVAttachKernelEntryPointAttributePass
+    : public impl::CnmSPIRVAttachKernelEntryPointAttributePassBase<
+          CnmSPIRVAttachKernelEntryPointAttributePass> {
+  using Base::Base;
 
-    void runOnOperation() final;
+  void runOnOperation() final;
 
-    void getDependentDialects(DialectRegistry &registry) const override {
-        registry.insert<spirv::SPIRVDialect>();
-    }
+  void getDependentDialects(DialectRegistry &registry) const override {
+    registry.insert<spirv::SPIRVDialect>();
+  }
 };
 
-struct CnmSPIRVAttachTargetAttributePass : public impl::CnmSPIRVAttachTargetAttributePassBase<CnmSPIRVAttachTargetAttributePass> {
-    using Base::Base;
+struct CnmSPIRVAttachTargetAttributePass
+    : public impl::CnmSPIRVAttachTargetAttributePassBase<
+          CnmSPIRVAttachTargetAttributePass> {
+  using Base::Base;
 
-    void runOnOperation() final;
+  void runOnOperation() final;
 
-    void getDependentDialects(DialectRegistry &registry) const override {
-        registry.insert<spirv::SPIRVDialect>();
-    }
+  void getDependentDialects(DialectRegistry &registry) const override {
+    registry.insert<spirv::SPIRVDialect>();
+  }
 };
 
 void CnmSPIRVAttachKernelEntryPointAttributePass::runOnOperation() {
-    const llvm::Regex matcher(kernelMatcher);
-    getOperation()->walk([&](gpu::GPUFuncOp gpuFunc) {
-        if (!kernelMatcher.empty() && !matcher.match(gpuFunc.getName())) {
-            return;
-        }
+  const llvm::Regex matcher(kernelMatcher);
+  getOperation()->walk([&](gpu::GPUFuncOp gpuFunc) {
+    if (!kernelMatcher.empty() && !matcher.match(gpuFunc.getName())) {
+      return;
+    }
 
-        // todo: calculate based on block/grid size
-        const DenseI32ArrayAttr workgroup_size = DenseI32ArrayAttr::get(&getContext(), {1, 1, 1});
-        const std::optional<int> subgroup_size;
+    // todo: calculate based on block/grid size
+    const DenseI32ArrayAttr workgroup_size =
+        DenseI32ArrayAttr::get(&getContext(), {1, 1, 1});
+    const std::optional<int> subgroup_size;
 
-        gpuFunc->setAttr("spirv.entry_point_abi", spirv::EntryPointABIAttr::get(&getContext(), workgroup_size, subgroup_size, {}));
-    });
+    gpuFunc->setAttr("spirv.entry_point_abi",
+                     spirv::EntryPointABIAttr::get(
+                         &getContext(), workgroup_size, subgroup_size, {}));
+  });
 }
 
 void CnmSPIRVAttachTargetAttributePass::runOnOperation() {
-    const auto versionSymbol = spirv::symbolizeVersion(spirvVersion);
-    if (!versionSymbol) {
-        return signalPassFailure();
+  const auto versionSymbol = spirv::symbolizeVersion(spirvVersion);
+  if (!versionSymbol) {
+    return signalPassFailure();
+  }
+
+  const auto apiSymbol = spirv::symbolizeClientAPI(clientApi);
+  if (!apiSymbol) {
+    return signalPassFailure();
+  }
+
+  const auto vendorSymbol = spirv::symbolizeVendor(deviceVendor);
+  if (!vendorSymbol) {
+    return signalPassFailure();
+  }
+
+  const auto deviceTypeSymbol = spirv::symbolizeDeviceType(deviceType);
+  if (!deviceTypeSymbol) {
+    return signalPassFailure();
+  }
+
+  // Set the default device ID if none was given
+  if (!deviceId.hasValue()) {
+    deviceId = mlir::spirv::TargetEnvAttr::kUnknownDeviceID;
+  }
+
+  const spirv::Version version = versionSymbol.value();
+
+  SmallVector<spirv::Capability, 4> capabilities;
+  for (const auto &cap : spirvCapabilities) {
+    if (const auto capSymbol = spirv::symbolizeCapability(cap)) {
+      capabilities.push_back(capSymbol.value());
     }
+  }
 
-    const auto apiSymbol = spirv::symbolizeClientAPI(clientApi);
-    if (!apiSymbol) {
-        return signalPassFailure();
+  SmallVector<spirv::Extension, 8> extensions;
+  for (const auto &ext : spirvExtensions) {
+    if (const auto extSymbol = spirv::symbolizeExtension(ext)) {
+      extensions.push_back(extSymbol.value());
     }
+  }
 
-    const auto vendorSymbol = spirv::symbolizeVendor(deviceVendor);
-    if (!vendorSymbol) {
-        return signalPassFailure();
+  const spirv::VerCapExtAttr vce = spirv::VerCapExtAttr::get(
+      version, capabilities, extensions, &getContext());
+  const auto target = spirv::TargetEnvAttr::get(
+      vce, spirv::getDefaultResourceLimits(&getContext()), apiSymbol.value(),
+      vendorSymbol.value(), deviceTypeSymbol.value(), deviceId);
+
+  const llvm::Regex matcher(moduleMatcher);
+  getOperation()->walk([&](gpu::GPUModuleOp gpuModule) {
+    if (moduleMatcher.empty() || matcher.match(gpuModule.getName())) {
+      gpuModule->setAttr("spirv.target_env", target);
     }
-
-    const auto deviceTypeSymbol = spirv::symbolizeDeviceType(deviceType);
-    if (!deviceTypeSymbol) {
-        return signalPassFailure();
-    }
-
-    // Set the default device ID if none was given
-    if (!deviceId.hasValue()) {
-        deviceId = mlir::spirv::TargetEnvAttr::kUnknownDeviceID;
-    }
-
-    const spirv::Version version = versionSymbol.value();
-
-    SmallVector<spirv::Capability, 4> capabilities;
-    for (const auto &cap : spirvCapabilities) {
-        if (const auto capSymbol = spirv::symbolizeCapability(cap)) {
-            capabilities.push_back(capSymbol.value());
-        }
-    }
-
-    SmallVector<spirv::Extension, 8> extensions;
-    for (const auto &ext : spirvExtensions) {
-        if (const auto extSymbol = spirv::symbolizeExtension(ext)) {
-            extensions.push_back(extSymbol.value());
-        }
-    }
-
-    const spirv::VerCapExtAttr vce = spirv::VerCapExtAttr::get(version, capabilities, extensions, &getContext());
-    const auto target = spirv::TargetEnvAttr::get(
-        vce, spirv::getDefaultResourceLimits(&getContext()),
-        apiSymbol.value(), vendorSymbol.value(),
-        deviceTypeSymbol.value(), deviceId
-    );
-
-    const llvm::Regex matcher(moduleMatcher);
-    getOperation()->walk([&](gpu::GPUModuleOp gpuModule) {
-        if (moduleMatcher.empty() || matcher.match(gpuModule.getName())) {
-            gpuModule->setAttr("spirv.target_env", target);
-        }
-    });
+  });
 }
 
-} // namespace mlir
+} // namespace mlir::cnm

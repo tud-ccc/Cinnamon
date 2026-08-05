@@ -12,7 +12,7 @@ namespace cnm {
 
 std::unique_ptr<Pass> createConvertLinalgToCnmPass();
 std::unique_ptr<Pass>
-createConvertLinalgToCnmPass(ConvertLinalgToCnmPassOptions);
+    createConvertLinalgToCnmPass(ConvertLinalgToCnmPassOptions);
 
 } // namespace cnm
 } // namespace mlir

@@ -72,7 +72,7 @@ test: (doNinja "check-cinm-mlir")
 
 runTest PAT:
   #!/bin/bash
-  find build/test -iname '*{{PAT}}*' -exec bash \{\} \; 
+  find build/test -iname '*{{PAT}}*' -exec bash \{\} \;
 
 
 

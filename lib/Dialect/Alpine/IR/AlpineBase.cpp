@@ -7,9 +7,6 @@
 using namespace mlir;
 using namespace mlir::alpine;
 
-
 #include "cinm-mlir/Dialect/Alpine/IR/AlpineBase.cpp.inc"
-
-
 
 void AlpineDialect::initialize() { registerOps(); }

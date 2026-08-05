@@ -19,5 +19,5 @@ static bool resultGoesToFile() {
 }
 
 bool canRenderProgress() {
-  return resultGoesToFile();// && ::isatty(fileno(stdout));
+  return resultGoesToFile(); // && ::isatty(fileno(stdout));
 }

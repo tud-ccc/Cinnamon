@@ -1900,8 +1900,7 @@ module {
       %1 = transform.structured.match ops{["scf.for"]} in %0 : (!transform.any_op) -> !transform.any_op
       %2:2 = transform.split_handle %1 {overflow_result = 1 : i64} : (!transform.any_op) -> (!transform.any_op, !transform.any_op)
       transform.loop.unroll %2#1 {factor = 6 : i64} : !transform.any_op
-      transform.yield 
+      transform.yield
     }
   }
 }
-

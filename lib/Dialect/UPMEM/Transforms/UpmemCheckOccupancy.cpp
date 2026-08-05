@@ -44,11 +44,10 @@ std::optional<Capacities> capacitiesOf(AllocDPUsOp alloc) {
 
   MLIRContext *ctx = alloc->getContext();
   Capacities result;
-  for (auto [space, out] :
-       {std::pair{DpuMemSpace::MRAM, &result.mram},
-        std::pair{DpuMemSpace::WRAM, &result.wram}}) {
-    cinm::CinmLevelDefAttr level = platform.getLevelOfMemspace(
-        DpuMemSpaceAttr::get(ctx, space));
+  for (auto [space, out] : {std::pair{DpuMemSpace::MRAM, &result.mram},
+                            std::pair{DpuMemSpace::WRAM, &result.wram}}) {
+    cinm::CinmLevelDefAttr level =
+        platform.getLevelOfMemspace(DpuMemSpaceAttr::get(ctx, space));
     if (!level)
       return std::nullopt;
     *out = level.getSizeInBytes();

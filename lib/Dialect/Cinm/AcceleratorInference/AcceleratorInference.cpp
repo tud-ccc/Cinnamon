@@ -788,8 +788,7 @@ struct InferenceTask {
         conf.push_back(it->second);
     }
     if (!missing.empty())
-      return emitDefiniteFailure(loc,
-                                 "eval-solution is missing a value for: ")
+      return emitDefiniteFailure(loc, "eval-solution is missing a value for: ")
              << llvm::join(missing, ", ");
 
     SmallVector<std::string> unknown;
@@ -1524,8 +1523,8 @@ inferAcceleratorConfig(cinm::ComputeBlockOp computeOp, InferencePlugin &plugin,
   TrialInfo bestResult;
   if (opts.evalSingleSolution) {
     // Resolve the named parameters against the space that was just built.
-    Configuration conf = TRY_GET(task.resolveNamedConfig(
-        *opts.evalSingleSolution, computeOp->getLoc()));
+    Configuration conf = TRY_GET(
+        task.resolveNamedConfig(*opts.evalSingleSolution, computeOp->getLoc()));
     bestResult = task.makeTrialInfo(std::move(conf));
     plugin.warmUp(computeOp->getContext());
     auto estimate = TRY_GET(plugin.evaluate(bestResult)); // may return early

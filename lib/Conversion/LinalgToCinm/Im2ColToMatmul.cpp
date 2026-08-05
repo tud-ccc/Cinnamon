@@ -44,8 +44,8 @@ static Value transposeTensor(PatternRewriter &rewriter, Location loc,
   for (int64_t idx : permutation)
     resultShape.push_back(type.getShape()[idx]);
 
-  Value empty =
-      tensor::EmptyOp::create(rewriter, loc, resultShape, type.getElementType());
+  Value empty = tensor::EmptyOp::create(rewriter, loc, resultShape,
+                                        type.getElementType());
 
   SmallVector<AffineExpr> exprs;
   exprs.reserve(permutation.size());
@@ -62,9 +62,9 @@ static Value transposeTensor(PatternRewriter &rewriter, Location loc,
   SmallVector<utils::IteratorType> iteratorTypes(permutation.size(),
                                                  utils::IteratorType::parallel);
 
-  auto generic = linalg::GenericOp::create(rewriter, 
-      loc, empty.getType(), ValueRange{value}, ValueRange{empty}, maps,
-      iteratorTypes,
+  auto generic = linalg::GenericOp::create(
+      rewriter, loc, empty.getType(), ValueRange{value}, ValueRange{empty},
+      maps, iteratorTypes,
       [&](OpBuilder &nestedBuilder, Location nestedLoc, ValueRange args) {
         linalg::YieldOp::create(nestedBuilder, nestedLoc, args[0]);
       });
@@ -103,11 +103,11 @@ struct ConvertDepthwiseConv2DNchwChw
     auto nhwcType =
         RankedTensorType::get(nhwcShape, resultType.getElementType());
     Value init = tensor::EmptyOp::create(rewriter, loc, nhwcShape,
-                                                  nhwcType.getElementType());
+                                         nhwcType.getElementType());
 
-    auto conv = linalg::DepthwiseConv2DNhwcHwcOp::create(rewriter, 
-        loc, nhwcType, ValueRange{inputNHWC, filterHWC}, ValueRange{init},
-        op.getStridesAttr(), op.getDilationsAttr());
+    auto conv = linalg::DepthwiseConv2DNhwcHwcOp::create(
+        rewriter, loc, nhwcType, ValueRange{inputNHWC, filterHWC},
+        ValueRange{init}, op.getStridesAttr(), op.getDilationsAttr());
 
     Value resultNHWC = conv.getResult(0);
     Value resultNCHW = transposeTensor(rewriter, loc, resultNHWC, {0, 3, 1, 2});
@@ -269,13 +269,13 @@ struct GenericIm2ColMatmulToBatchMatmul
       reassoc.push_back(ReassociationIndices{0, 1});
       reassoc.push_back(ReassociationIndices{2});
       lhsExpanded = tensor::ExpandShapeOp::create(rewriter, loc, expandedType,
-                                                           lhs, reassoc);
+                                                  lhs, reassoc);
     } else if (lhsType.getRank() != 3) {
       return failure();
     }
 
-    auto batchMatmul = linalg::BatchMatmulOp::create(rewriter, 
-        loc, ValueRange{lhsExpanded, rhs}, ValueRange{init});
+    auto batchMatmul = linalg::BatchMatmulOp::create(
+        rewriter, loc, ValueRange{lhsExpanded, rhs}, ValueRange{init});
 
     rewriter.replaceOp(op, batchMatmul->getResults());
     return success();
@@ -288,7 +288,7 @@ struct Im2ColToMatmulPass
   using Base::Base;
 
   void runOnOperation() override {
-    Operation* func = getOperation();
+    Operation *func = getOperation();
     RewritePatternSet patterns(func->getContext());
     cinm::populateIm2ColToMatmulPatterns(patterns, func->getContext());
     if (failed(applyPatternsGreedily(func, std::move(patterns))))

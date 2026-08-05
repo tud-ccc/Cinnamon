@@ -379,10 +379,9 @@ struct UpmemTileMRAMBuffersPass
     FailureOr<scf::SCFTilingResult> tiled =
         canTileUsingAffineFor(tileable, sizes)
             ? tileUsingAffineFor(rewriter, tileable, options, sizes)
-            : scf::tileUsingSCF(
-                  rewriter, tileable,
-                  options.setTileSizes(
-                      getAsIndexOpFoldResult(&getContext(), sizes)));
+            : scf::tileUsingSCF(rewriter, tileable,
+                                options.setTileSizes(getAsIndexOpFoldResult(
+                                    &getContext(), sizes)));
     if (failed(tiled))
       return op->emitOpError("failed to tile for the leaf memory level");
 

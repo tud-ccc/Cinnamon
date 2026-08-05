@@ -272,9 +272,10 @@ private:
   /// sets, so the pairwise handling and the dynamic-predicate phase skip them.
   /// A component whose enumeration exceeds the cap absorbs nothing and leaves
   /// its relations to the existing paths.
-  void planComponents(ConfigSpace &space,
-                      std::set<std::pair<std::string, std::string>> &absorbedMultiples,
-                      std::set<const ConstraintNode *> &absorbedPredicates);
+  void planComponents(
+      ConfigSpace &space,
+      std::set<std::pair<std::string, std::string>> &absorbedMultiples,
+      std::set<const ConstraintNode *> &absorbedPredicates);
 
   /// Report what the Form A recogniser makes of each DSL-registered constraint.
   /// Analysis only — it does not change the space. Runs after phase 1 of

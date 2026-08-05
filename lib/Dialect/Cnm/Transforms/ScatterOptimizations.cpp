@@ -86,9 +86,9 @@ struct BroadcastUniformScatter : OpRewritePattern<cnm::ScatterOp> {
     // Every leaf now takes the whole of `tile` as one block, so the map has
     // nothing left to name: no buffer dimension is retained, and the host
     // dimensions they cover are all of them.
-    AffineMap broadcast = AffineMap::get(
-        op.getBuffer().getType().getWorkgroupShape().size(), 0, {},
-        getContext());
+    AffineMap broadcast =
+        AffineMap::get(op.getBuffer().getType().getWorkgroupShape().size(), 0,
+                       {}, getContext());
     rewriter.modifyOpInPlace(op, [&] {
       op.getInputMutable().assign(tile);
       op.setScatterMap(broadcast);

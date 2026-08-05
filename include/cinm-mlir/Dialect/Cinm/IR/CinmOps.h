@@ -33,12 +33,14 @@ namespace mlir::cinm {
 Type inferGemmReturnType(Type lhsType, Type rhsType);
 
 /// Map the CINM reduce method to the arith AtomicRMWKind, which allows
-/// using some utility functions in arith (eg to generate the corresponding reduction op).
+/// using some utility functions in arith (eg to generate the corresponding
+/// reduction op).
 arith::AtomicRMWKind getArithConstant(ReduceMethod r, Type ty);
 
 cinm::ComputeOpInterface getEnclosingComputeBlock(Operation *op);
 
-inline cinm::CinmAcceleratorAttrInterface getEnclosingAccelerator(Operation *op) {
+inline cinm::CinmAcceleratorAttrInterface
+getEnclosingAccelerator(Operation *op) {
   if (auto compute = getEnclosingComputeBlock(op)) {
     if (compute.getAccelerator())
       return *compute.getAccelerator();

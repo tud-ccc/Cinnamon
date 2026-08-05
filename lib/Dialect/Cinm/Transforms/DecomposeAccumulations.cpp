@@ -12,7 +12,6 @@
 
 using namespace mlir;
 
-
 namespace mlir::cinm {
 
 #define GEN_PASS_DEF_CINMDECOMPOSEACCUMULATIONPASS
@@ -47,10 +46,11 @@ static LogicalResult rewriteGemmTensorBias(GemmLikeOp op, RewriterBase &b) {
 }
 
 struct DecomposeCinmAccumulationsPass
-    : public impl::CinmDecomposeAccumulationPassBase<DecomposeCinmAccumulationsPass> {
+    : public impl::CinmDecomposeAccumulationPassBase<
+          DecomposeCinmAccumulationsPass> {
 
   void runOnOperation() override {
-    Operation* func = getOperation();
+    Operation *func = getOperation();
     IRRewriter b(func->getContext());
 
     auto res = func->walk([&](Operation *op) {
@@ -69,7 +69,6 @@ struct DecomposeCinmAccumulationsPass
 };
 
 } // namespace
-
 
 void registerDecomposeCinmAccumulationPass() {
   PassRegistration<DecomposeCinmAccumulationsPass>(

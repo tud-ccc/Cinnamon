@@ -59,9 +59,9 @@ func.func @forward(%token : index, %pos : index,
     %q = cinm.op.gemv %wqs, %xb : tensor<768x768xf32>, tensor<768xf32> -> tensor<768xf32>
     %k = cinm.op.gemv %wks, %xb : tensor<768x768xf32>, tensor<768xf32> -> tensor<768xf32>
     %v = cinm.op.gemv %wvs, %xb : tensor<768x768xf32>, tensor<768xf32> -> tensor<768xf32>
-    %kc1 = tensor.insert_slice %k into %kc0[%layer, %pos, 0] [1, 1, 768] [1, 1, 1] :  tensor<768xf32> into tensor<6x1024x768xf32> 
+    %kc1 = tensor.insert_slice %k into %kc0[%layer, %pos, 0] [1, 1, 768] [1, 1, 1] :  tensor<768xf32> into tensor<6x1024x768xf32>
     //%k0 = bufferization.materialize_in_destination %k in %kdest : (tensor<768xf32>, tensor<768xf32>) -> tensor<768xf32>
-    %vc1 = tensor.insert_slice %v into %vc0[%layer, %pos, 0] [1, 1, 768] [1, 1, 1] :  tensor<768xf32> into tensor<6x1024x768xf32> 
+    %vc1 = tensor.insert_slice %v into %vc0[%layer, %pos, 0] [1, 1, 768] [1, 1, 1] :  tensor<768xf32> into tensor<6x1024x768xf32>
 
 		// RoPE relative positional encoding: complex-valued rotate q and k in each head
 		%posi = arith.index_cast %pos : index to i64
@@ -133,7 +133,7 @@ func.func @forward(%token : index, %pos : index,
 
 		%w2_slice = tensor.extract_slice %w2 [%layer, 0, 0] [1, 768, 2048] [1, 1, 1] : tensor<6x768x2048xf32> to tensor<768x2048xf32>
     // final matmul to get the output of the ffn
-    %xb7 = cinm.op.gemv %w2_slice, %hb11 plus %xb5 into %xb5 : tensor<768x2048xf32>, tensor<2048xf32> plus tensor<768xf32> into tensor<768xf32> -> tensor<768xf32> 
+    %xb7 = cinm.op.gemv %w2_slice, %hb11 plus %xb5 into %xb5 : tensor<768x2048xf32>, tensor<2048xf32> plus tensor<768xf32> into tensor<768xf32> -> tensor<768xf32>
 
 		scf.yield %xb7, %kc2, %vc1 : tensor<768xf32>, tensor<6x1024x768xf32>, tensor<6x1024x768xf32>
 	}
@@ -182,7 +182,7 @@ func.func @mha(%q: tensor<768xf32>, %kc: tensor<1024x768xf32>, %vc: tensor<1024x
 	%xb = scf.for %head = %c0 to %c6 step %c1 iter_args(%xbi = %xb_init) -> (tensor<768xf32>) {
 		%hoff = arith.muli %head, %c48 : index
 
-    %attn_init = tensor.empty() : tensor<1024xf32> 
+    %attn_init = tensor.empty() : tensor<1024xf32>
     // %attn_init_zeroed = linalg.fill ins(%ninf : f32) outs(%attn_init: tensor<1024xf32>) -> tensor<1024xf32>
 
 		%attn0 = scf.for %i = %c0 to %pos2 step %c1 iter_args(%attn_i = %attn_init) -> (tensor<1024xf32>) {
@@ -205,7 +205,7 @@ func.func @mha(%q: tensor<768xf32>, %kc: tensor<1024x768xf32>, %vc: tensor<1024x
 
 		%xb_slice_init =  tensor.extract_slice %xbi [%hoff] [48] [1] : tensor<768xf32> to tensor<48xf32>
     %init_zeroed = linalg.fill ins(%c0f : f32) outs(%xb_slice_init: tensor<48xf32>) -> tensor<48xf32>
-		%xbi0 = tensor.insert_slice %init_zeroed into %xbi [%hoff] [48] [1] : tensor<48xf32> into tensor<768xf32>  
+		%xbi0 = tensor.insert_slice %init_zeroed into %xbi [%hoff] [48] [1] : tensor<48xf32> into tensor<768xf32>
 
 		%xb1 = scf.for %i = %c0 to %pos2 step %c1 iter_args(%xbi1 = %xbi0) -> (tensor<768xf32>) {
       %xb_slice_i =  tensor.extract_slice %xbi1 [%hoff] [48] [1] : tensor<768xf32> to tensor<48xf32>

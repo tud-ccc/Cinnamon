@@ -204,12 +204,13 @@ static arma::mat encodeSubset(const ConfigSpace &space,
   }
   return enc;
 }
-// NOTE: encoding the valid space is just encodeSubset over shared->validIndices.
-// It used to walk the whole Cartesian product with forEach() and test each flat
-// index against the valid mask, which costs O(totalSize()) hash lookups on one
-// thread to select O(nValid) columns -- 1.2e9 steps to find 3e3 configs on a
-// real gemv space, i.e. tens of seconds before any parallel work begins.
-// validIndices already holds exactly those indices, in ascending order.
+// NOTE: encoding the valid space is just encodeSubset over
+// shared->validIndices. It used to walk the whole Cartesian product with
+// forEach() and test each flat index against the valid mask, which costs
+// O(totalSize()) hash lookups on one thread to select O(nValid) columns
+// -- 1.2e9 steps to find 3e3 configs on a real gemv space, i.e. tens of seconds
+// before any parallel work begins. validIndices already holds exactly those
+// indices, in ascending order.
 // ===----------------------------------------------------------------------===//
 // Latin Hypercube Sampling
 // ===----------------------------------------------------------------------===//

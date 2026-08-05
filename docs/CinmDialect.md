@@ -45,16 +45,16 @@ The `--cinm-assign-platforms` pass automates the wrapping of `cinm.op.*` operati
 #### Accelerator inference
 
 Once you have a platform assigned, you want to turn that into an accelerator.
-This entails inferring accelerator parameters and other program parameters, such as tiling factors for a tiled program. CINM provides a framework to 
+This entails inferring accelerator parameters and other program parameters, such as tiling factors for a tiled program. CINM provides a framework to
 perform this inference using Bayesian optimization.
 
 The implementation is split into two:
 - A framework component in CINM sources (Dialect/Cinm/AcceleratorInference),
 which handles the core exploration logic
-- A number of plugins implemented by individual backend dialects. Plugins must implement hooks to describe the configuration space and evaluate individual configurations. See interface `InferencePlugin`. 
+- A number of plugins implemented by individual backend dialects. Plugins must implement hooks to describe the configuration space and evaluate individual configurations. See interface `InferencePlugin`.
 
-For now, inference is only implemented for UPMEM. You can call it with `--upmem-infer-accelerator`. 
-- TODO for now the pass is is the upmem transforms dir, the goal is more to make it a core pass and provide the inference plugin through an optional method of the platform interface. 
+For now, inference is only implemented for UPMEM. You can call it with `--upmem-infer-accelerator`.
+- TODO for now the pass is is the upmem transforms dir, the goal is more to make it a core pass and provide the inference plugin through an optional method of the platform interface.
 
 #### Other CINM passes
 
@@ -65,23 +65,7 @@ TODO Georg: document bufferization cleanups and such.
 
 ## CNM dialect
 
-CNM is a 
+CNM is a
 
 
 ## UPMEM dialect
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-

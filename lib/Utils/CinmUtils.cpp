@@ -1,6 +1,7 @@
 
 #include <cinm-mlir/Utils/CinmUtils.h>
 #include <cstdint>
+#include <functional>
 #include <llvm/ADT/ArrayRef.h>
 #include <llvm/ADT/STLExtras.h>
 #include <llvm/ADT/SmallString.h>
@@ -18,7 +19,6 @@
 #include <mlir/IR/BuiltinOps.h>
 #include <mlir/IR/BuiltinTypeInterfaces.h>
 #include <mlir/IR/Matchers.h>
-#include <functional>
 #include <optional>
 
 namespace mlir {
@@ -96,8 +96,8 @@ bool isZeroSplatFoldable(Value v) {
   if (failed(defOp->fold(foldOperands, foldResults)) || foldResults.size() != 1)
     return false;
 
-  auto splat = getSplatElement(
-      dyn_cast_or_null<DenseElementsAttr>(foldResults[0].dyn_cast<Attribute>()));
+  auto splat = getSplatElement(dyn_cast_or_null<DenseElementsAttr>(
+      foldResults[0].dyn_cast<Attribute>()));
   return splat && isZeroAttr(*splat);
 }
 
@@ -303,8 +303,8 @@ std::optional<AffineSum> matchAffineSum(AffineExpr expr, unsigned numDims) {
 std::optional<std::pair<int64_t, int64_t>>
 evaluateInterval(AffineExpr expr, ArrayRef<int64_t> extents) {
   auto operands = [&](AffineExpr e)
-      -> std::optional<std::pair<std::pair<int64_t, int64_t>,
-                                 std::pair<int64_t, int64_t>>> {
+      -> std::optional<
+          std::pair<std::pair<int64_t, int64_t>, std::pair<int64_t, int64_t>>> {
     auto binary = cast<AffineBinaryOpExpr>(e);
     auto lhs = evaluateInterval(binary.getLHS(), extents);
     auto rhs = evaluateInterval(binary.getRHS(), extents);
@@ -548,9 +548,9 @@ static AffineExpr simplifyAffineExprWithBounds(
               big = big ? big + term : term;
               continue;
             }
-            auto ub = getBoundForAffineExpr(term, numDims, numSymbols,
-                                            dimLowerBounds, dimUpperBounds,
-                                            true);
+            auto ub =
+                getBoundForAffineExpr(term, numDims, numSymbols, dimLowerBounds,
+                                      dimUpperBounds, true);
             if (!ub || *ub < 0) {
               usable = false;
               break;
@@ -642,9 +642,9 @@ TypedValue<ShapedType> reshapeStatic(OpBuilder &builder, Location loc,
     // Use identity (null) layout for the target type: cloneWith would preserve
     // any strided layout from the source, which causes a rank mismatch when the
     // new shape has a different rank than the strides count.
-    auto newTy = MemRefType::get(newShape, memrefTy.getElementType(),
-                                 MemRefLayoutAttrInterface{},
-                                 memrefTy.getMemorySpace());
+    auto newTy =
+        MemRefType::get(newShape, memrefTy.getElementType(),
+                        MemRefLayoutAttrInterface{}, memrefTy.getMemorySpace());
     auto shapeBuf = memref::AllocaOp::create(
         builder, loc, MemRefType::get({newTy.getRank()}, builder.getI64Type()));
     for (auto [i, dim] : llvm::enumerate(newShape)) {
@@ -717,7 +717,8 @@ generateAffineTileLoops(RewriterBase &rewriter, Location loc,
     std::optional<int64_t> step = getConstantIntValue(tileSize);
     if (!lb || !ub || !step)
       return rewriter.notifyMatchFailure(
-          loc, "cannot tile a dimension of non-constant bounds into affine.for");
+          loc,
+          "cannot tile a dimension of non-constant bounds into affine.for");
 
     auto loop = affine::AffineForOp::create(rewriter, loc, *lb, *ub, *step);
     loops.push_back(loop);
@@ -746,11 +747,12 @@ generateAffineTileLoops(RewriterBase &rewriter, Location loc,
 /// Terminate the loops built by `generateAffineTileLoops`. Nothing to do for
 /// the ops we accept: they have pure buffer semantics, so no tile is yielded
 /// back, and an `affine.for` without iter_args is created already terminated.
-static LogicalResult
-finishAffineTileLoops(RewriterBase &, Location loc,
-                      ArrayRef<LoopLikeOpInterface>, ValueRange tiledResults,
-                      ArrayRef<SmallVector<OpFoldResult>>,
-                      ArrayRef<SmallVector<OpFoldResult>>, ValueRange) {
+static LogicalResult finishAffineTileLoops(RewriterBase &, Location loc,
+                                           ArrayRef<LoopLikeOpInterface>,
+                                           ValueRange tiledResults,
+                                           ArrayRef<SmallVector<OpFoldResult>>,
+                                           ArrayRef<SmallVector<OpFoldResult>>,
+                                           ValueRange) {
   if (!tiledResults.empty())
     return emitError(loc) << "cannot tile an op with " << tiledResults.size()
                           << " results into affine.for loops: only buffer "

@@ -72,15 +72,9 @@ struct CandidatePool {
     std::vector<size_t> validIndices;
 
     size_t validIndex(size_t i) { return validIndices[i]; }
-    bool empty() {
-      return validIndices.empty();
-    }
-    size_t size() {
-      return validIndices.size();
-    }
-    bool isValid(size_t i) {
-      return validMask.count(i);
-    }
+    bool empty() { return validIndices.empty(); }
+    size_t size() { return validIndices.size(); }
+    bool isValid(size_t i) { return validMask.count(i); }
   };
 
   const ConfigSpace *space_;

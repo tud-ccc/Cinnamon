@@ -417,9 +417,10 @@ void ReduceOp::print(::mlir::OpAsmPrinter &out) {
   if (getOut())
     out << " into " << getOut();
 
-  out.printOptionalAttrDict(
-      (*this)->getAttrs(),
-      /*elidedAttrs=*/{getMethodAttrName(), getDimensionAttrName(), getRankReduceAttrName()});
+  out.printOptionalAttrDict((*this)->getAttrs(),
+                            /*elidedAttrs=*/{getMethodAttrName(),
+                                             getDimensionAttrName(),
+                                             getRankReduceAttrName()});
   out << " : " << getInput().getType();
   if (getOut())
     out << " into " << getOut().getType();

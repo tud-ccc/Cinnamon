@@ -74,4 +74,3 @@ module {
 //     return %0 : tensor<1024xf32>
 //   }
 }
-

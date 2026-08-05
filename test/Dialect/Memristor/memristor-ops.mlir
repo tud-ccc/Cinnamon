@@ -19,4 +19,3 @@ func.func @simple(%t0: memref<6x6xi32>, %t1 : memref<6x6xi32>, %t2 : memref<6xi3
 
     return
 }
-

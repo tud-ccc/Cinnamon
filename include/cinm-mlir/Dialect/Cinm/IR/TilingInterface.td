@@ -17,7 +17,7 @@ def CinmTilingInterface : OpInterface<"CinmTilingInterface"> {
       around a smaller instance of the op.
 
       Tiling can be applied by the `--cinm-tiling` pass. For that to work it
-      needs tileable ops to be tagged with an appropriate `cinm.tile_sizes` 
+      needs tileable ops to be tagged with an appropriate `cinm.tile_sizes`
       attribute. Tile sizes can be computed automatically in some cases, using
       the `--cinm-infer-tile-sizes` pass. This requires information about the
       hardware backend in the form of an accelerator attribute on an enclosing

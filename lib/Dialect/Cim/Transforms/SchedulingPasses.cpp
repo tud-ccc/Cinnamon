@@ -156,13 +156,13 @@ prepareForScheduling(AcquireDeviceOp acquireDeviceOp,
   // crossbars is reached
   while (crossbarIds.size() != acquireDeviceOp.getAvailableCrossbarCount()) {
     rewriter.setInsertionPointAfter(acquireDeviceOp.getOperation());
-    auto acquireCrossbarOp = AcquireCrossbarOp::create(rewriter, 
-        acquireDeviceOp->getLoc(), acquireDeviceOp.getResult());
+    auto acquireCrossbarOp = AcquireCrossbarOp::create(
+        rewriter, acquireDeviceOp->getLoc(), acquireDeviceOp.getResult());
     crossbarIds.push_back(acquireCrossbarOp.getResult());
 
     rewriter.setInsertionPoint(releaseDeviceOp);
     ReleaseCrossbarOp::create(rewriter, releaseDeviceOp->getLoc(),
-                                       acquireCrossbarOp.getResult());
+                              acquireCrossbarOp.getResult());
   }
 
   // find all roots for scheduling

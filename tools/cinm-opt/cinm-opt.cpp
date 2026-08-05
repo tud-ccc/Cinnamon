@@ -34,8 +34,8 @@
 #include "torch-mlir/RefBackend/Passes.h"
 #endif
 
-#include <mlir/IR/DialectRegistry.h>
 #include <mlir/Dialect/Bufferization/Transforms/Passes.h>
+#include <mlir/IR/DialectRegistry.h>
 #include <mlir/InitAllExtensions.h>
 
 #include "mlir/IR/MLIRContext.h"

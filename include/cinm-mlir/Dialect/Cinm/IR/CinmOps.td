@@ -78,7 +78,7 @@ class Cinm_GemmlikeOp<string name, string cppClassName> : Cinm_Op<name,
   let description = [{
     CINM GEMM-like ops (batch/non-batch gemm/gemv) semantics depend on whether they operate
     on memrefs or tensors.
-    
+
     If the operands are tensors:
     ```mlir
         %C = cinm.op.gemm %A, %B                      // %C = %A * %B
@@ -400,7 +400,7 @@ def Cinm_ComputeOp : Cinm_Base_Op<"compute", [
     which the computation is to be done. If none of those are provided,
     CINM's DSE will first assign a platform. The full lowering flow
     requires concretizing a platform into a compatible accelerator,
-    which can be used for further lowerings.  
+    which can be used for further lowerings.
 
     An accelerator is required for instance to run --cinm-infer-tile-sizes
     or --convert-cinm-to-cnm.
@@ -450,8 +450,8 @@ def Cinm_ComputeBlockOp : Cinm_Base_Op<"compute_block", [
   let summary = "Delimits a region of code for offloading - IsolatedFromAbove";
   let description = [{
     Delimits a region of code for offloading. See `cinm.compute` as well. This
-    version is isolated from above to parallelize passes that operate 
-    only on the nested IR. 
+    version is isolated from above to parallelize passes that operate
+    only on the nested IR.
 
     ```
     %rbuf = cinm.compute_block (%a = %v : tensor<...>) -> tensor<...>  attributes { ... } {

@@ -9,8 +9,5 @@
 using namespace mlir;
 using namespace mlir::alpine;
 
-
 #define GET_TYPEDEF_CLASSES
 #include "cinm-mlir/Dialect/Alpine/IR/AlpineTypes.cpp.inc"
-
-

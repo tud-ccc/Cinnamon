@@ -62,13 +62,13 @@ def CnmAcceleratorAttrInterface : AttrInterface<"CnmAcceleratorAttrInterface", [
 
     // /// Return whether a given memory space belongs to this accelerator.
     // bool ownsMemSpace(::mlir::cinm::CinmMemSpaceAttr space) const {
-    //   if (space.isAbsentMemspace() || space.isHostMemspace()) 
+    //   if (space.isAbsentMemspace() || space.isHostMemspace())
     //       return false;
 
     //   auto level = getPlatform().getLevel(space.getName());
     //   if (!level)
     //     return false;
-    
+
     //   return space == getGenericMemSpace(level);
     // }
 

@@ -32,13 +32,13 @@ struct SimpleProgressBar {
       : active(canRenderProgress()) {
     if (!active)
       return;
-    bar = std::make_unique<Bar>(
-        indicators::option::BarWidth{30},
-        indicators::option::MaxProgress{maxProgress},
-        indicators::option::PrefixText{std::move(prefix)},
-        indicators::option::ShowPercentage{true},
-        indicators::option::ShowElapsedTime{true},
-        indicators::option::ShowRemainingTime{true});
+    bar =
+        std::make_unique<Bar>(indicators::option::BarWidth{30},
+                              indicators::option::MaxProgress{maxProgress},
+                              indicators::option::PrefixText{std::move(prefix)},
+                              indicators::option::ShowPercentage{true},
+                              indicators::option::ShowElapsedTime{true},
+                              indicators::option::ShowRemainingTime{true});
     printer_ = std::thread([this] {
       while (!stop_.load(std::memory_order_relaxed)) {
         std::cout << "\033[?2026h";
@@ -135,7 +135,8 @@ struct MultiSeedProgress {
           bars[i + 1]->set_progress(static_cast<size_t>(
               std::max(0, slotProgress_[i].load(std::memory_order_relaxed))));
         }
-        // Flush all bar updates to the terminal in one pass (cursor-up + reprint).
+        // Flush all bar updates to the terminal in one pass (cursor-up +
+        // reprint).
         std::cout << "\033[?2026h";
         dyn->print_progress();
         std::cout << "\033[?2026l" << std::flush;

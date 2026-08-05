@@ -30,7 +30,7 @@ def Cinm_Dialect : Dialect {
     Attribute parseAttribute(DialectAsmParser &parser, Type type) const override;
 
     /// A debug metadata tag that can be attached by any pass,
-    /// must be interpreted or ignored by the specific backend. 
+    /// must be interpreted or ignored by the specific backend.
     constexpr static StringRef DEBUG_TAG_NAME = "cinm.debug_tag";
     /// Used by the --cinm-tiling pass.
     constexpr static StringRef TILING_FACTORS_NAME = "cinm.tile_sizes";

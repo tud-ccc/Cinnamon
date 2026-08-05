@@ -1,7 +1,7 @@
 /// Main entry point for the cinm-mlir MLIR language server.
 
-#include <cinm-mlir/Dialect/Cinm/IR/CinmDialect.h>
 #include <cinm-mlir/Dialect/Cim/IR/CimDialect.h>
+#include <cinm-mlir/Dialect/Cinm/IR/CinmDialect.h>
 #include <cinm-mlir/Dialect/Cnm/IR/CnmDialect.h>
 #include <cinm-mlir/Dialect/Memristor/IR/MemristorDialect.h>
 #include <cinm-mlir/Dialect/UPMEM/IR/UPMEMDialect.h>

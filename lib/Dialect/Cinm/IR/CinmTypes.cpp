@@ -26,10 +26,9 @@ using namespace mlir::cinm;
 // CinmDialect
 //===----------------------------------------------------------------------===//
 
-void CinmDialect::registerTypes()
-{
-    addTypes<
+void CinmDialect::registerTypes() {
+  addTypes<
 #define GET_TYPEDEF_LIST
 #include "cinm-mlir/Dialect/Cinm/IR/CinmTypes.cpp.inc"
-        >();
+      >();
 }

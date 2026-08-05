@@ -239,8 +239,7 @@ struct ConvertCnmLaunchToGPU : public OpConversionPattern<cnm::LaunchOp> {
   }
 };
 
-struct ConvertCnmTerminatorToGPU
-    : public OpConversionPattern<cnm::ReturnOp> {
+struct ConvertCnmTerminatorToGPU : public OpConversionPattern<cnm::ReturnOp> {
   using OpConversionPattern<cnm::ReturnOp>::OpConversionPattern;
 
   LogicalResult

@@ -102,7 +102,7 @@ static Value buildQuantize(IRRewriter &rewriter, Location loc, Value src,
   auto nAttr = rewriter.getBoolAttr(narrow);
 
   auto q = cinm::QuantizeOp::create(rewriter, loc, qTy, src, Value(), fScale,
-                                             iZp, IntegerAttr{}, rAttr, nAttr);
+                                    iZp, IntegerAttr{}, rAttr, nAttr);
   return q.getResult();
 }
 
@@ -114,7 +114,7 @@ static Value buildDequantize(IRRewriter &rewriter, Location loc, Value srcQ,
   auto iZp = rewriter.getI64IntegerAttr(zp);
 
   auto dq = cinm::DequantizeOp::create(rewriter, loc, outTy, srcQ, Value(),
-                                                fScale, iZp, IntegerAttr{});
+                                       fScale, iZp, IntegerAttr{});
   return dq.getResult();
 }
 
@@ -140,8 +140,7 @@ static LogicalResult rewriteGemmTensor(GemmOp op, Type qElem, float scale,
   Value Bq =
       buildQuantize(rewriter, loc, B, qElem, scale, zp, rounding, narrow);
 
-  auto qGemm =
-      cinm::GemmOp::create(rewriter, loc, Aq, Bq, Value(), Value());
+  auto qGemm = cinm::GemmOp::create(rewriter, loc, Aq, Bq, Value(), Value());
   Value dq = buildDequantize(rewriter, loc, qGemm.getResult(),
                              outTy.getElementType(), scale, zp);
 
@@ -171,8 +170,7 @@ static LogicalResult rewriteGemvTensor(GemvOp op, Type qElem, float scale,
   Value xq =
       buildQuantize(rewriter, loc, x, qElem, scale, zp, rounding, narrow);
 
-  auto qGemv =
-      cinm::GemvOp::create(rewriter, loc, Aq, xq, Value(), Value());
+  auto qGemv = cinm::GemvOp::create(rewriter, loc, Aq, xq, Value(), Value());
   Value dq = buildDequantize(rewriter, loc, qGemv.getResult(),
                              outTy.getElementType(), scale, zp);
 
@@ -200,7 +198,7 @@ static void emitQuantizeMemRef(IRRewriter &rewriter, Location loc, Value src,
   auto rAttr = cinm::RoundingModeAttr::get(rewriter.getContext(), rounding);
   auto nAttr = rewriter.getBoolAttr(narrow);
   cinm::QuantizeOp::create(rewriter, loc, Type(), src, dst, fScale, iZp,
-                                    IntegerAttr{}, rAttr, nAttr);
+                           IntegerAttr{}, rAttr, nAttr);
 }
 
 static void emitDequantizeMemRef(IRRewriter &rewriter, Location loc, Value src,
@@ -208,7 +206,7 @@ static void emitDequantizeMemRef(IRRewriter &rewriter, Location loc, Value src,
   auto fScale = rewriter.getF32FloatAttr(scale);
   auto iZp = rewriter.getI64IntegerAttr(zp);
   cinm::DequantizeOp::create(rewriter, loc, Type(), src, dst, fScale, iZp,
-                                      IntegerAttr{});
+                             IntegerAttr{});
 }
 
 static LogicalResult rewriteGemmMemRef(GemmOp op, Type qElem, float scale,

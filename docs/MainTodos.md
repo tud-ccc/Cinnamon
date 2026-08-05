@@ -26,7 +26,7 @@ The current cost model in `UpmemSimulator.cpp` uses rough estimates. It needs to
   - [x] bring it in as an external C++ or Rust library linked into cinm-mlir
   - ~~bind via its Python interface if that is easier to maintain~~
 - [x] Remove `CostModel.cpp` and its associated pass — this is superseded by the Bayesian approach
-- [ ] Accuracy benchmarks: once the new model is in place, benchmark predicted vs. measured latency on real UPMEM hardware 
+- [ ] Accuracy benchmarks: once the new model is in place, benchmark predicted vs. measured latency on real UPMEM hardware
 
 ## Bayesian optimization
 
@@ -41,9 +41,9 @@ The current cost model in `UpmemSimulator.cpp` uses rough estimates. It needs to
 - [x] Add some evaluation of the surrogate and make sure its learning parameters are adapted for the task
   - Add an evaluation metric, like recall for the best kernels
 
-- [x] Bayesian is working ok but doesn't outperform random search significantly on small spaces. We need to make the space larger. 
+- [x] Bayesian is working ok but doesn't outperform random search significantly on small spaces. We need to make the space larger.
 
-## CINM 
+## CINM
 
 - [ ] Better tiling for dynamic dimensions: for now we use tiling factors that assume the dynamic dimensions are divisible by the tiling factors. This needs support in CNM at least, see below
 
@@ -62,6 +62,6 @@ The current cost model in `UpmemSimulator.cpp` uses rough estimates. It needs to
 ## Cleanups
 
 - Do we still need the LinalgCleanup pass? I improved the bufferization pipeline for CINM->CNM a lot and do not need it at least for the benchmarks in ./testbench
-- 
+-
 
 ### Parallel work

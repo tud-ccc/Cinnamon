@@ -184,7 +184,7 @@ func.func @mha(%q: tensor<288xf32>, %kc: tensor<256x288xf32>, %vc: tensor<256x28
 	%xb = scf.for %head = %c0 to %c6 step %c1 iter_args(%xbi = %xb_init) -> (tensor<288xf32>) {
 		%hoff = arith.muli %head, %c48 : index
 
-    %attn_init = tensor.empty() : tensor<256xf32> 
+    %attn_init = tensor.empty() : tensor<256xf32>
     %attn_init_zeroed = linalg.fill ins(%ninf : f32) outs(%attn_init: tensor<256xf32>) -> tensor<256xf32>
 
 		%attn = scf.for %i = %c0 to %pos2 step %c1 iter_args(%attn_i = %attn_init_zeroed) -> (tensor<256xf32>) {
@@ -212,7 +212,7 @@ func.func @mha(%q: tensor<288xf32>, %kc: tensor<256x288xf32>, %vc: tensor<256x28
 
 		%xb_slice_init =  tensor.extract_slice %xbi [%hoff] [48] [1] : tensor<288xf32> to tensor<48xf32>
     %init_zeroed = linalg.fill ins(%c0f : f32) outs(%xb_slice_init: tensor<48xf32>) -> tensor<48xf32>
-		%xbi0 = tensor.insert_slice %init_zeroed into %xbi [%hoff] [48] [1] : tensor<48xf32> into tensor<288xf32>  
+		%xbi0 = tensor.insert_slice %init_zeroed into %xbi [%hoff] [48] [1] : tensor<48xf32> into tensor<288xf32>
 
 		%xb1 = scf.for %i = %c0 to %pos2 step %c1 iter_args(%xbi1 = %xbi0) -> (tensor<288xf32>) {
       %xb_slice_i =  tensor.extract_slice %xbi1 [%hoff] [48] [1] : tensor<288xf32> to tensor<48xf32>

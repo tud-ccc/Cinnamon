@@ -42,5 +42,3 @@ mlir_tablegen(UPMEMPasses.h.inc -gen-pass-decls -name UPMEMConversion ${TBLGEN_E
 add_public_tablegen_target(UPMEMConversionPassIncGen)
 
 add_mlir_doc(UPMEMPasses UPMEMConversionPasses ./ -gen-pass-doc)
-
-

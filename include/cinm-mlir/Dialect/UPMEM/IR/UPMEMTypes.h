@@ -20,14 +20,9 @@
 #include "llvm/ADT/STLExtras.h"
 #include <numeric>
 
-
 namespace mlir {
-namespace upmem {
-
-
-} // namespace upmem
+namespace upmem {} // namespace upmem
 } // namespace mlir
-
 
 //===- Generated includes -------------------------------------------------===//
 
@@ -35,4 +30,3 @@ namespace upmem {
 #include "cinm-mlir/Dialect/UPMEM/IR/UPMEMTypes.h.inc"
 
 //===----------------------------------------------------------------------===//
-

@@ -63,8 +63,8 @@ SmallVector<Value> createAffineApply(OpBuilder &builder, Location loc,
                                      AffineMap map, ValueRange values) {
   SmallVector<Value> result;
   for (unsigned i = 0; i < map.getNumResults(); i++) {
-    result.push_back(
-        affine::AffineApplyOp::create(builder, loc, map.getSubMap({i}), values));
+    result.push_back(affine::AffineApplyOp::create(builder, loc,
+                                                   map.getSubMap({i}), values));
   }
   return result;
 }
@@ -94,11 +94,11 @@ void createMemrefSubviewCopy(OpBuilder &builder, Location loc, Value src,
   const Type sliceType = memref::SubViewOp::inferRankReducedResultType(
       sliceShape, dstType, dstStaticOffsets, dstStaticSizes, dstStaticStrides);
 
-  const Value src_slice = memref::SubViewOp::create(builder, 
-      loc, sliceType, src, srcOffsets, ValueRange{}, ValueRange{},
+  const Value src_slice = memref::SubViewOp::create(
+      builder, loc, sliceType, src, srcOffsets, ValueRange{}, ValueRange{},
       srcStaticOffsets, srcStaticSizes, srcStaticStrides);
-  const Value dst_slice = memref::SubViewOp::create(builder, 
-      loc, sliceType, dst, dstOffsets, ValueRange{}, ValueRange{},
+  const Value dst_slice = memref::SubViewOp::create(
+      builder, loc, sliceType, dst, dstOffsets, ValueRange{}, ValueRange{},
       dstStaticOffsets, dstStaticSizes, dstStaticStrides);
 
   memref::CopyOp::create(builder, loc, src_slice, dst_slice);

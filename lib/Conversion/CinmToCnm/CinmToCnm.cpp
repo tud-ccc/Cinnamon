@@ -269,13 +269,11 @@ computeShapeOfTensors(Location loc, llvm::ArrayRef<int64_t> shape,
   return success();
 }
 
-LogicalResult convertInputIntoAlloc(Value &inputBuf, Value workGroup,
-                                    cnm::WorkgroupType wgTy,
-                                    int64_t maxBlockSizeBytes,
-                                    ArrayRef<int64_t> reduceDims,
-                                    const BufferLevel &level,
-                                    AffineMap &scatterMap, Value &result,
-                                    ImplicitLocOpBuilder &rewriter) {
+LogicalResult
+convertInputIntoAlloc(Value &inputBuf, Value workGroup, cnm::WorkgroupType wgTy,
+                      int64_t maxBlockSizeBytes, ArrayRef<int64_t> reduceDims,
+                      const BufferLevel &level, AffineMap &scatterMap,
+                      Value &result, ImplicitLocOpBuilder &rewriter) {
   // For each input of the reduce, we need to
 
   // convert single element to tensor<numTasklets x leafSize x ElementTy>
@@ -343,10 +341,9 @@ cnm::LaunchOp createLaunchOp(
         // The buffer's level becomes the memref's memory space -- this is what
         // LaunchOp::verify requires, and it is how the launch body learns
         // which memory it is computing on.
-        auto mappedTy = MemRefType::get(inputTy.getShape(),
-                                        inputTy.getElementType(),
-                                        MemRefLayoutAttrInterface{},
-                                        inputTy.getLevel());
+        auto mappedTy =
+            MemRefType::get(inputTy.getShape(), inputTy.getElementType(),
+                            MemRefLayoutAttrInterface{}, inputTy.getLevel());
         launchBlock.addArgument(mappedTy, input.getLoc());
       } else {
         launchBlock.addArgument(input.getType(), input.getLoc());
@@ -471,10 +468,10 @@ LogicalResult convertCinmToCnm(
       auto correspondingResult = results[i];
       if (auto resultShapedTy =
               dyn_cast<ShapedType>(correspondingResult.getType())) {
-        Value shapedBack = mlir::reshapeStatic(
-            builder, builder.getLoc(),
-            cast<TypedValue<ShapedType>>(res.getOutput()),
-            resultShapedTy.getShape());
+        Value shapedBack =
+            mlir::reshapeStatic(builder, builder.getLoc(),
+                                cast<TypedValue<ShapedType>>(res.getOutput()),
+                                resultShapedTy.getShape());
         // If an explicit destination was provided, tell the bufferizer that
         // the result should alias it so the copy can be folded away.
         if (gatherBuf && !matchPattern(gatherBuf, m_Constant()))
@@ -489,8 +486,8 @@ LogicalResult convertCinmToCnm(
         // scatterScalar handling), so unwrap it back to the scalar the op
         // actually returns.
         auto outTy = cast<ShapedType>(res.getOutput().getType());
-        SmallVector<Value> indices(
-            outTy.getRank(), arith::ConstantIndexOp::create(builder, 0));
+        SmallVector<Value> indices(outTy.getRank(),
+                                   arith::ConstantIndexOp::create(builder, 0));
         Value scalar =
             tensor::ExtractOp::create(builder, res.getOutput(), indices);
         resultValues.push_back(scalar);
@@ -916,16 +913,18 @@ struct ConvertCinmGemmToCnm : public CinmToCnmPattern<cinm::GemmOp> {
     }
     auto eltTy = lhs.getType().getElementType();
     // buffer type for A and B
-    cnm::BufferType bufferType =
-        cnm::BufferType::get({reductionSize}, eltTy, cnmAccelerator,
-                             level->space);
-    Value bufferA = cnm::DeclareBufferOp::create(builder, bufferType, workgroup);
-    Value bufferB = cnm::DeclareBufferOp::create(builder, bufferType, workgroup);
+    cnm::BufferType bufferType = cnm::BufferType::get(
+        {reductionSize}, eltTy, cnmAccelerator, level->space);
+    Value bufferA =
+        cnm::DeclareBufferOp::create(builder, bufferType, workgroup);
+    Value bufferB =
+        cnm::DeclareBufferOp::create(builder, bufferType, workgroup);
 
     // C has a single element and no dimensions
     cnm::BufferType bufferCType =
         cnm::BufferType::get({}, eltTy, cnmAccelerator, level->space);
-    Value bufferC = cnm::DeclareBufferOp::create(builder, bufferCType, workgroup);
+    Value bufferC =
+        cnm::DeclareBufferOp::create(builder, bufferCType, workgroup);
 
     //::mlir::Value input, ::mlir::Value buffer, ::mlir::Value wg,
     //:::mlir::AffineMap scatterMap);
@@ -1045,8 +1044,8 @@ struct ConvertCinmGemvToCnm : public CinmToCnmPattern<cinm::GemvOp> {
     if (convertCinmToCnm(
             builder, op, workgroup.getResult(), {{1}, {0}},
             ValueRange{adaptor.getLhs(), adaptor.getRhs()},
-            ValueRange{outputInit},
-            ValueRange{op.getOut()}, op->getResults(), *level, newResults,
+            ValueRange{outputInit}, ValueRange{op.getOut()}, op->getResults(),
+            *level, newResults,
             [&](ImplicitLocOpBuilder &builder, ValueRange inputs,
                 ValueRange outputs) {
               int outputRank =
@@ -1059,8 +1058,7 @@ struct ConvertCinmGemvToCnm : public CinmToCnmPattern<cinm::GemvOp> {
                                                          builder.getContext());
 
               // (m, k) -> (k)
-              auto vMap =
-                  AffineMap::getMinorIdentityMap(numLoops, 1, ctx);
+              auto vMap = AffineMap::getMinorIdentityMap(numLoops, 1, ctx);
 
               // (m, k) -> (m)
               auto resMap = aMap.dropResult(numLoops - 1);

@@ -81,8 +81,8 @@ def BufferType : Cnm_Type<"Buffer", [ShapedTypeInterface]> {
   let hasCustomAssemblyFormat = 1;
 
   let builders = [
-    TypeBuilderWithInferredContext<(ins   
-    "ArrayRef<int64_t>":$shape, 
+    TypeBuilderWithInferredContext<(ins
+    "ArrayRef<int64_t>":$shape,
     "Type": $elementType,
     "::mlir::cnm::CnmAcceleratorAttrInterface":$accelerator,
     CArg<"Attribute", "{}">:$level

@@ -16,7 +16,7 @@ The goal of this idea is to allow efficient offloading of the QKV matvecs in the
     %q = cinm.op.gemv %wqs, %xb : tensor<768x768xf32>, tensor<768xf32> -> tensor<768xf32>
     %k = cinm.op.gemv %wks, %xb : tensor<768x768xf32>, tensor<768xf32> -> tensor<768xf32>
     %v = cinm.op.gemv %wvs, %xb : tensor<768x768xf32>, tensor<768xf32> -> tensor<768xf32>
-    %kc1 = tensor.insert_slice %k into %kc0[%layer, %pos, 0] [1, 1, 768] [1, 1, 1] :  tensor<768xf32> into tensor<6x1024x768xf32> 
+    %kc1 = tensor.insert_slice %k into %kc0[%layer, %pos, 0] [1, 1, 768] [1, 1, 1] :  tensor<768xf32> into tensor<6x1024x768xf32>
   }
 ```
 
@@ -33,7 +33,7 @@ With N DPUs available, the full optimization objective becomes:
   - And as a stretch goal, the MRAM of D dpus can fit 6 times the weight tensor. This is what allows eliminating weight transfers throughout the different iterations.
 
 Honestly the pain points here are mostly:
-- are the QKV matmuls even the hotspot in this network?  
+- are the QKV matmuls even the hotspot in this network?
 
 
 How would the IR look like
@@ -53,15 +53,15 @@ How would the IR look like
     cnm.scatter %layer // scatter layer count into workgroup
     cnm.launch {
       ^bb0(%wq: memref<6x768x768xf32>, %layer: index):
-        
+
         %wqs = memref.subview %wq [%layer, 0, 0] [1, 768, 768] [1, 1, 1]
 
-        // 
+        //
 
     }
     %q = cinm.op.gemv %wqs, %xb : tensor<768x768xf32>, tensor<768xf32> -> tensor<768xf32>
     %k = cinm.op.gemv %wks, %xb : tensor<768x768xf32>, tensor<768xf32> -> tensor<768xf32>
     %v = cinm.op.gemv %wvs, %xb : tensor<768x768xf32>, tensor<768xf32> -> tensor<768xf32>
-    %kc1 = tensor.insert_slice %k into %kc0[%layer, %pos, 0] [1, 1, 768] [1, 1, 1] :  tensor<768xf32> into tensor<6x1024x768xf32> 
+    %kc1 = tensor.insert_slice %k into %kc0[%layer, %pos, 0] [1, 1, 768] [1, 1, 1] :  tensor<768xf32> into tensor<6x1024x768xf32>
   }
 ```

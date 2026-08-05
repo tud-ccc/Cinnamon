@@ -113,7 +113,7 @@ def StaticAllocOp : Upmem_Op<"static_alloc", [//Symbol,
   }];
 
   let arguments = (ins
-        UPMEM_DpuMemSpaceAttr:$memSpace, 
+        UPMEM_DpuMemSpaceAttr:$memSpace,
         DefaultValuedAttr<UnitAttr, "false">:$noinit,
         DefaultValuedAttr<UnitAttr, "false">:$zeroinit,
         OptionalAttr<SymbolNameAttr>:$sym_name);
@@ -139,7 +139,7 @@ def StaticAllocOp : Upmem_Op<"static_alloc", [//Symbol,
   let extraClassDeclaration = [{
 
     bool isOptionalSymbol() { return true; }
-  
+
     bool isMram() {
       return getMemSpace() == DpuMemSpace::MRAM;
     }

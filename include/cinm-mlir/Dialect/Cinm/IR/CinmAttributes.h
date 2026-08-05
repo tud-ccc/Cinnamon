@@ -6,8 +6,8 @@
 
 #include <cinm-mlir/Dialect/Cinm/IR/CinmBase.h>
 #include <mlir/Dialect/Linalg/IR/Linalg.h>
-#include <mlir/IR/Attributes.h>
 #include <mlir/Dialect/Transform/Utils/DiagnosedSilenceableFailure.h>
+#include <mlir/IR/Attributes.h>
 
 //===- Generated includes -------------------------------------------------===//
 

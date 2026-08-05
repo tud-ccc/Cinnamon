@@ -211,8 +211,7 @@ public:
 
   /// Invokes `fn(CostCategory, StringRef label, double value)` for every
   /// entry, for reporting/debugging.
-  template <typename Fn>
-  void forEachEntry(Fn &&fn) const {
+  template <typename Fn> void forEachEntry(Fn &&fn) const {
     for (size_t i = 0; i < kNumCostCategories; ++i)
       for (auto &e : buckets[i])
         fn(static_cast<CostCategory>(i), llvm::StringRef(e.first), e.second);

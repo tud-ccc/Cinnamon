@@ -117,24 +117,26 @@ static SimCost costOfOpCb(Operation &op, bool annotate,
             return SimCost::forTransferBack(transferCost(bytes, numRanks),
                                             "gather");
           })
-          .Case<upmem::ScatterOnArrayOp>([](upmem::ScatterOnArrayOp xferOp) -> SimCost {
-            auto hier = llvm::cast<DeviceHierarchyType>(
-                xferOp.getHierarchy().getType());
-            int numDpus = hier.getNumRanks() * hier.getNumDpusPerRank();
-            return SimCost::forTransfer(
-                upmem_cm::scatterBlockCostMs(numDpus,
-                                             xferOp.getDpuBufferSizeInBytes()),
-                "array");
-          })
-          .Case<upmem::GatherFromArrayOp>([](upmem::GatherFromArrayOp xferOp) -> SimCost {
-            auto hier = llvm::cast<DeviceHierarchyType>(
-                xferOp.getHierarchy().getType());
-            int numDpus = hier.getNumRanks() * hier.getNumDpusPerRank();
-            return SimCost::forTransferBack(
-                upmem_cm::gatherCostMs(numDpus,
-                                       xferOp.getDpuBufferSizeInBytes()),
-                "array");
-          })
+          .Case<upmem::ScatterOnArrayOp>(
+              [](upmem::ScatterOnArrayOp xferOp) -> SimCost {
+                auto hier = llvm::cast<DeviceHierarchyType>(
+                    xferOp.getHierarchy().getType());
+                int numDpus = hier.getNumRanks() * hier.getNumDpusPerRank();
+                return SimCost::forTransfer(
+                    upmem_cm::scatterBlockCostMs(
+                        numDpus, xferOp.getDpuBufferSizeInBytes()),
+                    "array");
+              })
+          .Case<upmem::GatherFromArrayOp>(
+              [](upmem::GatherFromArrayOp xferOp) -> SimCost {
+                auto hier = llvm::cast<DeviceHierarchyType>(
+                    xferOp.getHierarchy().getType());
+                int numDpus = hier.getNumRanks() * hier.getNumDpusPerRank();
+                return SimCost::forTransferBack(
+                    upmem_cm::gatherCostMs(numDpus,
+                                           xferOp.getDpuBufferSizeInBytes()),
+                    "array");
+              })
           .Case<upmem::ScatterBlocksOp>([](auto xferOp) -> SimCost {
             auto hier = llvm::cast<DeviceHierarchyType>(
                 xferOp.getHierarchy().getType());

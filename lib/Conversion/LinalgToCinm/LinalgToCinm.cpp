@@ -1658,7 +1658,7 @@ struct ConvertLinalgToCinmPass
   void runOnOperation() override {
     MLIRContext &ctx = getContext();
 
-    Operation* func = getOperation();
+    Operation *func = getOperation();
     IRRewriter rewriter(&ctx);
 
     SmallVector<linalg::GenericOp> genericOps;

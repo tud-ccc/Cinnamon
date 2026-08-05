@@ -113,8 +113,7 @@ static void do_sg_xfer(dpu_xfer_t xfer_type, struct dpu_set_t *dpu_set,
                        void *host_buffer, size_t element_size,
                        size_t num_blocks, size_t block_num_elements,
                        const char *buffer_id,
-                       size_t (*base_offset)(size_t, size_t),
-                       const char *tag) {
+                       size_t (*base_offset)(size_t, size_t), const char *tag) {
 #ifdef UPMEM_RT_STATS
   uint64_t t0 = upmemrt_now_ns();
 #endif
@@ -157,8 +156,7 @@ void upmemrt_dpu_scatter_blocks(struct dpu_set_t *dpu_set, void *host_buffer,
 
 void upmemrt_dpu_gather_blocks(struct dpu_set_t *dpu_set, void *host_buffer,
                                size_t element_size, size_t num_blocks,
-                               size_t block_num_elements,
-                               const char *buffer_id,
+                               size_t block_num_elements, const char *buffer_id,
                                size_t (*base_offset)(size_t, size_t),
                                const char *tag) {
   do_sg_xfer(DPU_XFER_FROM_DPU, dpu_set, host_buffer, element_size, num_blocks,
@@ -172,7 +170,7 @@ void upmemrt_dpu_broadcast(struct dpu_set_t *dpu_set, void *host_buffer,
   uint64_t t0 = upmemrt_now_ns();
 #endif
   DPU_ASSERT(dpu_broadcast_to(*dpu_set, buffer_id, 0, host_buffer, copy_bytes,
-                               TRANSFER_FLAGS));
+                              TRANSFER_FLAGS));
 #ifdef UPMEM_RT_STATS
   uint32_t nr_dpus = 0;
   dpu_get_nr_dpus(*dpu_set, &nr_dpus);
@@ -194,10 +192,10 @@ struct dpu_set_t *upmemrt_dpu_alloc(int32_t num_ranks, int32_t num_dpus,
   char profile[256];
   if (max_blocks_per_dpu > 0) {
     // sgXferEnable/sgXferMaxBlocksPerDpu are required for
-    // upmemrt_dpu_scatter_blocks/gather_blocks (dpu_push_sg_xfer): scatter/gather
-    // transfers are disabled by default, and the max number of blocks per
-    // DPU otherwise defaults to the number of DPUs in the set, which is too
-    // low once we're scattering one block per tasklet/mram-row. Only set
+    // upmemrt_dpu_scatter_blocks/gather_blocks (dpu_push_sg_xfer):
+    // scatter/gather transfers are disabled by default, and the max number of
+    // blocks per DPU otherwise defaults to the number of DPUs in the set, which
+    // is too low once we're scattering one block per tasklet/mram-row. Only set
     // this when actually needed: a larger sgXferMaxBlocksPerDpu increases
     // the SDK's memory footprint.
     if (userProfile && userProfile[0] != '\0') {
@@ -214,8 +212,7 @@ struct dpu_set_t *upmemrt_dpu_alloc(int32_t num_ranks, int32_t num_dpus,
   } else {
     profile[0] = '\0';
   }
-  DPU_ASSERT(
-      dpu_alloc(num_alloc_dpu, profile[0] ? profile : NULL, dpu_set));
+  DPU_ASSERT(dpu_alloc(num_alloc_dpu, profile[0] ? profile : NULL, dpu_set));
   DPU_ASSERT(dpu_load(*dpu_set, dpu_binary_path, NULL));
 #ifdef UPMEM_RT_STATS
   uint32_t nr_dpus = 0;
@@ -232,7 +229,7 @@ void upmemrt_dpu_launch(struct dpu_set_t *void_dpu_set) {
 #endif
 
 #ifdef ASYNC_TRANSFERS
-  dpu_sync(*dpu_set); // Wait for asynchronous transfers to finish. 
+  dpu_sync(*dpu_set); // Wait for asynchronous transfers to finish.
   // This is fucking up our time measurements so I don't include it by default
 #endif
   dpu_error_t error = dpu_launch(*dpu_set, DPU_SYNCHRONOUS);

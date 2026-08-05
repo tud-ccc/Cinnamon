@@ -321,8 +321,8 @@ struct ReduceTilingModel
           builder, reduce.getLoc(), inputType.getShape(), tileSizes, {},
           [&](OpBuilder &b, Location loc, ValueRange tileIndex,
               ValueRange) -> SmallVector<Value> {
-            Value sliceIn = extractSliceND(b, loc, reduce.getInput(), tileSizes,
-                                           tileIndex);
+            Value sliceIn =
+                extractSliceND(b, loc, reduce.getInput(), tileSizes, tileIndex);
             SmallVector<int64_t> parTileSize;
             SmallVector<Value> parTileIndex;
             splitTileIndex(tileIndex, parTileSize, parTileIndex);
@@ -388,8 +388,8 @@ struct ReduceTilingModel
             // The reduction dimension may be split into several trips, each
             // producing a partial result for the same accumulator slice, so
             // the slice has to be combined rather than overwritten.
-            Value accSlice = extractSliceND(b, loc, shapedResult, resultTileSize,
-                                            resultTileIndex);
+            Value accSlice = extractSliceND(b, loc, shapedResult,
+                                            resultTileSize, resultTileIndex);
             Value combined =
                 combineElementwise(b, loc, method, accSlice, shapedResultTile);
             return {insertSliceND(b, loc, combined, shapedResult,

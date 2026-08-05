@@ -16,11 +16,11 @@ def UpmemPlatformAttr: UPMEM_Attr<"UpmemPlatform", [
     OpAsmAttrInterface,
     DeclareAttrInterfaceMethods<CinmPlatformAttrInterface, ["isOffloadingTarget"]>
   ]> {
-  
+
   let summary = "Platform description for upmem";
   let mnemonic = "platform";
   let hasCustomAssemblyFormat = 1;
-  let parameters = (ins 
+  let parameters = (ins
     "::mlir::cinm::CinmLevelArrayAttr":$levels,
     "bool":$isV1a,
     "int":$maxNumRanks,
@@ -36,7 +36,7 @@ def UpmemPlatformAttr: UPMEM_Attr<"UpmemPlatform", [
 
     ::mlir::cinm::CinmLevelAttrInterface getMemrefMemspace(mlir::cinm::CinmLevelDefAttr level) const;
 
-   
+
     ::mlir::cinm::CinmLevelDefAttr getMramLevel() const {
       return getLevels()[0];
     }
@@ -64,7 +64,7 @@ def UpmemAcceleratorAttr: UPMEM_Attr<"UpmemAccelerator", [
   let mnemonic = "array";
 
   // let skipDefaultBuilders = 1;
-  let parameters = (ins 
+  let parameters = (ins
     "UpmemPlatformAttr":$platform,
     ArrayRefParameter<"int64_t">:$workgroupShape
     // "::mlir::cinm::CinmVarDefArrayAttr":$designParams,
@@ -90,7 +90,7 @@ def UpmemAcceleratorAttr: UPMEM_Attr<"UpmemAccelerator", [
   ];
 
   let extraClassDeclaration = [{
-   
+
     ::mlir::cinm::CinmLevelDefAttr getMramLevel() const {
       return getPlatform().getMramLevel();
     }

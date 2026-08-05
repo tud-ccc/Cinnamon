@@ -1,6 +1,6 @@
 name: Build and test cinnamon
 run-name: 'Build and Test: ${{ github.event.head_commit.message }}'
-on: 
+on:
   workflow_dispatch:
   push:
   pull_request:
@@ -15,7 +15,7 @@ jobs:
       LDFLAGS: -fuse-ld=mold
       CMAKE_GENERATOR: Ninja
 
-    steps: 
+    steps:
       - name: Check out repository
         uses: actions/checkout@v3
 
@@ -45,7 +45,7 @@ jobs:
         with:
           path: third-party/torch-mlir
           key: cinnamon-torch-mlir-${{ runner.os }}
-      
+
       - name: Checkout LLVM if needed
         run: .github/workflows/checkout-llvm.sh -verbose
 

@@ -3,11 +3,11 @@
 // Lowering cnm.scatter/cnm.gather to upmem.scatter/upmem.gather performs a
 // single flat memcpy per DPU. This is only correct if the transferred
 // elements are actually contiguous in the host memref (see
-// upmem::ScatterOnArrayOp::verify / upmem::GatherFromArrayOp::verify and the runtime's
-// do_dpu_transfer). This pass detects host memrefs that aren't contiguous
-// (e.g. subviews of a larger tensor) and inserts an intermediate contiguous
-// buffer, similar to what packATile does for the tiled GEMV/reduction
-// templates, but generically for any cnm.scatter/cnm.gather.
+// upmem::ScatterOnArrayOp::verify / upmem::GatherFromArrayOp::verify and the
+// runtime's do_dpu_transfer). This pass detects host memrefs that aren't
+// contiguous (e.g. subviews of a larger tensor) and inserts an intermediate
+// contiguous buffer, similar to what packATile does for the tiled
+// GEMV/reduction templates, but generically for any cnm.scatter/cnm.gather.
 //
 //===----------------------------------------------------------------------===//
 
@@ -107,8 +107,7 @@ struct BlockForm {
 
 // Whether `expr` is `q * factor + dim`, and `q` if so.
 std::optional<AffineExpr> matchScaledPlusDim(AffineExpr expr, unsigned dim,
-                                             int64_t factor,
-                                             unsigned numDims) {
+                                             int64_t factor, unsigned numDims) {
   MLIRContext *ctx = expr.getContext();
   SmallVector<AffineExpr> substitution;
   for (unsigned i = 0; i < numDims; ++i)
