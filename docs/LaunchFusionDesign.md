@@ -244,44 +244,66 @@ one `upmem.dpu_program`, at `gemv.K.mram=256` as two, with the partials gathered
 into a `memref<4x4x256xi32>`. One scatter and one gather of the 1024-element
 intermediate disappear, along with a kernel dispatch.
 
-## F. Step 3 — implication in the constraint IR
+## F. Step 3 — implication in the constraint IR — **DONE**
 
-[ConstraintNode](../include/cinm-mlir/Dialect/Cinm/AcceleratorInference/ConstraintIR.h#L36-L46)
-has `Const, Var, Add, Mul, Sub, Div, Cmp` and no boolean connective. Conjunction
-needs none — two `require` calls. Implication does.
+`ConstraintNode` had `Const, Var, Add, Mul, Sub, Div, Cmp` and no boolean
+connective. Conjunction needs none — two `require` calls. Implication does.
 
-Add one node kind, `Implies`, binary, both children `Cmp`-rooted. Surface
-syntax: a free function, `b.require(implies(fuse >= 1, lhs == rhs))`, rather
-than an operator.
+One node kind, `Implies`, binary, both children boolean. Disjunction stays out:
+no caller, and no story for the analyser. Surface syntax is a free function,
+`b.require(implies(fuse >= 1, lhs == rhs))`, because no C++ operator's
+precedence reads correctly for implication; the `Expr<Type::BOOL>` /
+`Expr<Type::INT>` split added in `d5495e1` makes it type-check.
 
-The consequents this needs are `a == b` between two variables, which
-`matchProductEquality` already recognises as a `ProdEq` with one variable per
-side — so `solveFor` determines one from the other, and an *unconditional*
-equality is already absorbed into the encoding today. Only the gating is new.
+`evalCmpNodeInto` became `evalBoolNodeVec` / `evalBoolNodeInto` (`a => b` is
+`!a | b`, both sides evaluated for every lane since a vectorized evaluation has
+no short-circuit), and `cmpMayHold` became `boolMayHold` plus a new
+`boolMustHold`. The dual matters: a consequent may only be acted on once its
+antecedent *must* hold, since believing one that merely *might* would impose the
+consequent on completions the constraint says nothing about.
 
-In [planComponents](../lib/Dialect/Cinm/AcceleratorInference/SpaceBuilder.cpp#L521):
+**No `/` inside an implication** — asserted rather than supported. Everything
+`extractDivConstraints` reifies is unconditional, so a division under a guard
+would impose its divisibility on the configurations the guard exists to exclude.
+Not reifying it is worse still: integer division truncates, so
+`implies(g, extent / block == 1)` would quietly accept a block that does not
+divide the extent (`1024 / 768` is `1`). Write the multiplied-out form,
+`implies(g, block == extent)` — which is what the analyser wants anyway, since
+that is a product equality and a division is not.
 
-- **Connectivity.** Union the antecedent's variables with the consequent's, so
-  `fuse` lands in the same component as the tile variables it gates. Without
-  this `fuse` keeps its own slot and the equalities are never absorbed.
-- **Scheduling.** `ComponentEnumerator::selectNext`
-  ([SpaceBuilder.cpp:412-439](../lib/Dialect/Cinm/AcceleratorInference/SpaceBuilder.cpp#L412-L439))
-  tiers variables as: unit-propagated → participates in a product equality →
-  everything else. `fuse` appears in no product equality and no divisibility
-  relation, so it would be enumerated *last*, at which point its consequent can
-  prune nothing. It needs a tier of its own, ahead of the divisibility-only
-  variables: **assign antecedent variables early, so the consequent becomes a
-  live relation for the rest of the subtree.**
-- **Activation.** Once the antecedent is decided by the partial assignment, the
-  consequent either joins the live `ProdEq` set for `candidatesFor` /
-  `checkComplete`, or vanishes. When the antecedent is still undecided the
-  implication contributes nothing — which is correct, and is why the scheduling
-  change is what makes this pay.
+In `planComponents`:
 
-*Done when:* a synthetic space with `fuse ∈ {0,1,2}` and two gated equalities
-enumerates `|S|` equal to (unfused count) + (fused count) rather than the
-product, and the debug line from `planComponents` reports the component
-absorbing the implications.
+- **Connectivity.** The antecedent's variables are unioned with the
+  consequent's, so `fuse` lands in the same component as the tile variables it
+  gates. Without this it keeps a slot of its own and the equalities are never
+  absorbed.
+- **Enforcement is free.** An implication goes into the enumerator's `bounds_`
+  like any other comparison, and `boolMayHold(Implies)` is already exactly the
+  right test: it prunes only once the guard is settled true and the consequent
+  impossible. At full assignment every interval is a point, so it is exact.
+- **Solving is not.** That only rejects; it never *determines*. So an
+  implication whose consequent is a product equality is additionally recorded as
+  a `GatedProdEq`, and `candidatesFor` / the unit-propagation tier consult it
+  once `boolMustHold` settles the guard.
+- **Scheduling.** `ComponentEnumerator::selectNext` tiered variables as
+  unit-propagated → in a product equality → everything else. A guard variable is
+  in neither of the first two, so it would be enumerated *last*, at which point
+  its consequent can prune nothing. Guards now get their own tier, right after
+  unit propagation: their domains are tiny (a mode switch) and until one is
+  settled every equality hanging off it is inert.
+
+*Verified* against brute force on four synthetic spaces (gated equality; two
+nested gates; a gate alongside an unconditional product equality; a gate on an
+inequality). The first three come out fully absorbed — the encoding offers
+exactly the valid set and nothing else — with `fuse ∈ {0,1,2}` over two
+7-divisor variables giving 63 = 49 unfused + 14 fused rather than the 147-point
+product. The fourth is correct but unabsorbed, since an inequality consequent is
+not a `ProdEq` and that space has no other structural relation to form a
+component around.
+
+There is no C++ unit-test target in this repo, so that check was a scratch
+driver rather than a committed test. The committed regression test arrives with
+§G, which is the first caller.
 
 ## G. Step 4 — declare the edges
 
@@ -343,7 +365,7 @@ The order matters, because two of these produce a measurable win on their own:
 | §B one compute block | **done** | — | no (unblocks everything) |
 | §D levels from platform | **done** | — | no (prerequisite for §G) |
 | §E `--cnm-fuse-launches` | **done** | §B | **yes** — search finds K-tiles=1 configs and they fuse, with no space change at all |
-| §F implication | | — | no |
+| §F implication | **done** | — | no |
 | §G edge constraints | | §D, §F | yes — makes the fusable corner reachable rather than lucky |
 | §H leaf fusion | | §E, §G | **yes** |
 
