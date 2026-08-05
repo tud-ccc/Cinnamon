@@ -10,7 +10,7 @@
 #include <string>
 #include <utility>
 
-namespace mlir::cinm {
+namespace mlir::cinm::constraints {
 
 // ===----------------------------------------------------------------------===//
 // Constraint IR
@@ -59,6 +59,8 @@ struct ConstraintNode {
   /// instead of a left-leaning tree the analyser would have to re-flatten.
   llvm::SmallVector<ConstraintNodePtr, 2> operands;
 };
+
+enum class Type { BOOL, INT };
 
 // ===----------------------------------------------------------------------===//
 // Node construction
@@ -173,4 +175,4 @@ Interval evalNodeBounds(const ConstraintNode &node, const VarBounds &bounds);
 /// smallest possible completion exceeds the limit the subtree is dead.
 bool cmpMayHold(const ConstraintNode &node, const VarBounds &bounds);
 
-} // namespace mlir::cinm
+} // namespace mlir::cinm::constraints

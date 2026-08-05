@@ -2,7 +2,7 @@
 
 #include <llvm/Support/ErrorHandling.h>
 
-namespace mlir::cinm {
+namespace mlir::cinm::constraints {
 
 const char *cmpSymbol(CmpKind k) {
   switch (k) {
@@ -422,4 +422,4 @@ std::string describeMonomial(const Monomial &m,
   return s;
 }
 
-} // namespace mlir::cinm
+} // namespace mlir::cinm::constraints
