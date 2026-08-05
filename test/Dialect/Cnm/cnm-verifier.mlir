@@ -27,7 +27,7 @@ func.func @launch_arg_level_mismatch() {
   // expected-error @below {{Mismatched type for launch argument, expected 'memref<64xi32, #upmem.mram>', got 'memref<64xi32, #upmem.wram>'}}
   "cnm.launch"(%wg, %buf) <{operandSegmentSizes = array<i32: 1, 1, 0>}> ({
   ^bb0(%a: memref<64xi32, #upmem.wram>):
-    "cnm.terminator"() : () -> ()
+    "cnm.return"() : () -> ()
   }) : (!cnm.workgroup<#upmem_1_16_1>, !cnm.buffer<64xi32 on #upmem_1_16_1, #upmem.mram>) -> ()
   cnm.free_workgroup %wg : !cnm.workgroup<#upmem_1_16_1>
   return

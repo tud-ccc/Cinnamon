@@ -633,7 +633,7 @@ LogicalResult distribute(RewriterBase &rewriter, linalg::LinalgOp op,
     b.setInsertionPointToStart(&body);
     cloneOnBuffers(b, op, body.getArguments().take_front(numInputs),
                    body.getArguments().drop_front(numInputs));
-    cnm::TerminatorOp::create(b);
+    cnm::ReturnOp::create(b);
   }
 
   // Gather each result straight back into a value of the op's own shape.

@@ -240,11 +240,11 @@ struct ConvertCnmLaunchToGPU : public OpConversionPattern<cnm::LaunchOp> {
 };
 
 struct ConvertCnmTerminatorToGPU
-    : public OpConversionPattern<cnm::TerminatorOp> {
-  using OpConversionPattern<cnm::TerminatorOp>::OpConversionPattern;
+    : public OpConversionPattern<cnm::ReturnOp> {
+  using OpConversionPattern<cnm::ReturnOp>::OpConversionPattern;
 
   LogicalResult
-  matchAndRewrite(cnm::TerminatorOp op, OpAdaptor,
+  matchAndRewrite(cnm::ReturnOp op, OpAdaptor,
                   ConversionPatternRewriter &rewriter) const override {
     const ValueRange values;
     rewriter.replaceOpWithNewOp<gpu::TerminatorOp>(op, values);
