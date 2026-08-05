@@ -262,14 +262,17 @@ no short-circuit), and `cmpMayHold` became `boolMayHold` plus a new
 antecedent *must* hold, since believing one that merely *might* would impose the
 consequent on completions the constraint says nothing about.
 
-**No `/` inside an implication** — asserted rather than supported. Everything
-`extractDivConstraints` reifies is unconditional, so a division under a guard
-would impose its divisibility on the configurations the guard exists to exclude.
-Not reifying it is worse still: integer division truncates, so
-`implies(g, extent / block == 1)` would quietly accept a block that does not
-divide the extent (`1024 / 768` is `1`). Write the multiplied-out form,
-`implies(g, block == extent)` — which is what the analyser wants anyway, since
-that is a product equality and a division is not.
+**No `/` inside an implication** — asserted rather than supported. A `Div` in
+the DSL means "divides exactly", but the *tree* does not say so: the assertion
+is a side condition `require()` extracts alongside it, and every such extraction
+is unconditional. Under a guard it would therefore constrain exactly the
+configurations the guard exists to exclude — and dropping it instead leaves the
+truncating reading of the tree in force, which silently accepts a block that
+does not divide the extent. Write the multiplied-out form,
+`implies(g, block == extent)`, which is what the analyser was going to read
+anyway. The full contract is
+[ConstraintAnalysisDesign.md § The division contract](ConstraintAnalysisDesign.md#the-division-contract);
+it is worth reading before writing §G's condition 1.
 
 In `planComponents`:
 
