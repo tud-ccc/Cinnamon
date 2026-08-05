@@ -75,6 +75,14 @@ ConstraintNodePtr makeCmpNode(CmpKind cmp, ConstraintNodePtr lhs,
   return make(std::move(n));
 }
 
+ConstraintNodePtr makeDividesNode(ConstraintNodePtr divisor,
+                                  ConstraintNodePtr dividend) {
+  ConstraintNode n;
+  n.kind = ConstraintNode::Kind::Divides;
+  n.operands = {std::move(divisor), std::move(dividend)};
+  return make(std::move(n));
+}
+
 ConstraintNodePtr makeImpliesNode(ConstraintNodePtr antecedent,
                                   ConstraintNodePtr consequent) {
   assert(antecedent && consequent && isBoolKind(antecedent->kind) &&
@@ -139,6 +147,7 @@ ParmVector evalNodeVec(const ConstraintNode &node, const ConfigurationVector &c,
     return vecSafeDiv(num, den);
   }
   case Kind::Cmp:
+  case Kind::Divides:
   case Kind::Implies:
     llvm_unreachable(
         "boolean node evaluated as arithmetic; use evalBoolNodeVec");
@@ -173,6 +182,7 @@ ParmValue evalNodeScalar(const ConstraintNode &node, const ConfWrapper &c) {
     return d ? evalNodeScalar(*node.operands[0], c) / d : 0;
   }
   case Kind::Cmp:
+  case Kind::Divides:
   case Kind::Implies:
     llvm_unreachable("boolean node evaluated as arithmetic");
   }
@@ -188,6 +198,18 @@ arma::urowvec evalBoolNodeVec(const ConstraintNode &node,
     const arma::urowvec ante = evalBoolNodeVec(*node.operands[0], c);
     const arma::urowvec cons = evalBoolNodeVec(*node.operands[1], c);
     return (ante == 0) || (cons != 0);
+  }
+
+  if (node.kind == ConstraintNode::Kind::Divides) {
+    // A test, so it never has to reject a lane for being inexact -- being
+    // inexact is the answer it reports.
+    arma::urowvec exact(c.size(), arma::fill::ones);
+    const ParmVector divisor = evalNodeVec(*node.operands[0], c, &exact);
+    const ParmVector dividend = evalNodeVec(*node.operands[1], c, &exact);
+    arma::urowvec result = vecDivides(divisor, dividend);
+    // ...though a `/` *inside* one of its operands still has to be exact for
+    // the operand to mean anything.
+    return result % exact;
   }
 
   assert(node.kind == ConstraintNode::Kind::Cmp && "expected a boolean node");
@@ -279,6 +301,9 @@ std::string describeNode(const ConstraintNode &node) {
   case Kind::Cmp:
     return describeNode(*node.operands[0]) + cmpSymbol(node.cmp) +
            describeNode(*node.operands[1]);
+  case Kind::Divides:
+    return "(" + describeNode(*node.operands[0]) + " | " +
+           describeNode(*node.operands[1]) + ")";
   case Kind::Implies:
     return "(" + describeNode(*node.operands[0]) + " => " +
            describeNode(*node.operands[1]) + ")";
@@ -346,6 +371,7 @@ static std::optional<Rational> normalizeImpl(const ConstraintNode &node) {
   case Kind::Add:
   case Kind::Sub:
   case Kind::Cmp:
+  case Kind::Divides:
   case Kind::Implies:
     return std::nullopt;
   }
@@ -437,6 +463,7 @@ Interval evalNodeBounds(const ConstraintNode &node, const VarBounds &bounds) {
     return {a.lo / b.hi, a.hi / b.lo, true};
   }
   case Kind::Cmp:
+  case Kind::Divides:
   case Kind::Implies:
     return kUnbounded;
   }
@@ -475,7 +502,25 @@ static std::optional<bool> divisionsExact(const ConstraintNode &node,
   return true;
 }
 
+/// A divisibility test decided by the bounds, or nullopt if they do not decide
+/// it. Only the fully-pinned case is decided -- which is the case that matters,
+/// since at a full assignment every operand is pinned.
+static std::optional<bool> dividesDecided(const ConstraintNode &node,
+                                          const VarBounds &bounds) {
+  Interval d = evalNodeBounds(*node.operands[0], bounds);
+  Interval n = evalNodeBounds(*node.operands[1], bounds);
+  if (!d.valid || !n.valid || d.lo != d.hi || n.lo != n.hi)
+    return std::nullopt;
+  return d.lo != 0 && n.lo % d.lo == 0;
+}
+
 bool boolMayHold(const ConstraintNode &node, const VarBounds &bounds) {
+  if (node.kind == ConstraintNode::Kind::Divides) {
+    if (divisionsExact(node, bounds) == std::optional<bool>(false))
+      return false;
+    std::optional<bool> decided = dividesDecided(node, bounds);
+    return !decided || *decided;
+  }
   if (node.kind == ConstraintNode::Kind::Implies)
     // Satisfiable unless the antecedent is forced and the consequent
     // impossible.
@@ -512,6 +557,12 @@ bool boolMayHold(const ConstraintNode &node, const VarBounds &bounds) {
 }
 
 bool boolMustHold(const ConstraintNode &node, const VarBounds &bounds) {
+  if (node.kind == ConstraintNode::Kind::Divides) {
+    if (divisionsExact(node, bounds) != std::optional<bool>(true))
+      return false;
+    std::optional<bool> decided = dividesDecided(node, bounds);
+    return decided && *decided;
+  }
   if (node.kind == ConstraintNode::Kind::Implies)
     return !boolMayHold(*node.operands[0], bounds) ||
            boolMustHold(*node.operands[1], bounds);

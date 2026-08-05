@@ -275,10 +275,13 @@ comparison, not at the root — an inexact division in an *antecedent* falsifies
 the antecedent, which satisfies the implication. See
 [ConstraintAnalysisDesign.md § Division is exact division](ConstraintAnalysisDesign.md#division-is-exact-division).
 
-The multiplied-out form is still the better spelling — it says what it means
-without relying on that — but it is now a style preference rather than a
-correctness requirement, and either way `matchProductEquality` cross-multiplies
-it to `block == extent` before the enumerator sees it.
+What the exactness fix does *not* fix is the ambiguity of the spelling: `/`
+both produces a quotient and claims the division is exact, and under a guard a
+reader cannot tell which is meant. So there is now `divides(divisor, dividend)`,
+a `BoolExpr` that tests without claiming. For §G's condition 1, prefer either
+that or the multiplied-out `implies(g, block == extent)` — both say what they
+mean, and `matchProductEquality` reduces the second to the same thing the
+enumerator would have solved anyway.
 
 In `planComponents`:
 
