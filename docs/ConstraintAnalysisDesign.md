@@ -83,7 +83,7 @@ because everything here must stay analysable:
 
 ```cpp
 struct ConstraintNode {
-  enum class Kind { Const, Var, Add, Sub, Mul, Div, Cmp };
+  enum class Kind { Const, Var, Add, Sub, Mul, Div, Cmp, Implies };
   Kind kind;
   // Const
   ParmValue value;
@@ -91,7 +91,7 @@ struct ConstraintNode {
   std::shared_ptr<size_t> varIdx;
   // Cmp
   CmpKind cmp;
-  // Children: n-ary for Add/Mul, binary for Sub/Div/Cmp
+  // Children: n-ary for Add/Mul, binary for Sub/Div/Cmp/Implies
   SmallVector<ConstraintNodePtr, 2> operands;
 };
 ```
@@ -104,26 +104,122 @@ Notes on the shape:
   re-flatten. Arity is a runtime value (the number of iteration dimensions),
   which is exactly what the type-level encoding could not express.
 - **`Div` stays binary and keeps its current meaning**: `a / b` asserts `b`
-  divides `a` exactly. `extractDivConstraints` already relies on this; the
-  normaliser inherits it.
+  divides `a` exactly. That assertion is *not* part of the node — it is
+  registered separately by `extractDivConstraints`, which is the subtlety the
+  next section is about.
 - **`Var` holds the same `shared_ptr<size_t>` cell `SpaceVar` uses**, so handles
   keep working across `buildInto()` and node identity is pointer identity.
+- **`Cmp` and `Implies` are the boolean kinds** (`isBoolKind`). `Implies` is the
+  only connective: conjunction needs none, since two `require` calls are an
+  `and`, and disjunction has no caller. The surface DSL splits the two worlds
+  statically as `Expr<Type::INT>` and `Expr<Type::BOOL>`, so a comparison cannot
+  be an operand of `*` and an integer cannot be an operand of `implies`.
 
 ### Normal form
 
-Analysis runs on a canonicalised tree, so the recogniser matches one shape
-rather than many spellings:
+**Nothing rewrites the tree.** This section originally described a
+canonicalisation pass — flatten, constant-fold, sort, rewrite `a / b` — and no
+such pass was built, deliberately. The tree `require()` is handed is the tree
+the interpreter evaluates, verbatim, for the whole life of the space. What
+exists instead is a *reading*: `normalizeImpl` computes a canonical form on
+demand, returns it, and leaves the IR alone.
 
-- Flatten nested `Add`/`Mul` into their parent.
-- Fold constant subtrees.
-- Sort `Mul` operands: constants first, then variables by index. Makes
-  `dpus * tasklets` and `tasklets * dpus` the same node.
-- Rewrite `a / b` inside a `Mul` chain into a *product with a divisibility side
-  condition*, so a product-equality can be read off without division.
+That distinction is not pedantry. A reading can disagree with the tree it reads,
+and here it does; see *The division contract* below, which is the single most
+important thing to know before writing a constraint.
 
-A `Cmp` in normal form is `<product-of-factors> <op> <product-of-factors>`,
-where a factor is a constant or a variable, plus a set of divisibility side
-conditions.
+The reading is defined only for **arithmetic** nodes, and only reaches Form A.
+Every node reduces to a `Rational` — a pair of `Monomial`s, `numer / denom` —
+where a `Monomial` is `coeff * prod(vars)` with `vars` a *sorted multiset* of
+parameter indices (sorted, so `dpus * tasklets` and `tasklets * dpus` are the
+same monomial; a multiset, so `x * x` is representable and simply not solvable):
+
+| node | reading |
+|---|---|
+| `Const v` | `numer.coeff = v` |
+| `Var i` | `numer.vars = {i}` |
+| `Mul(a…)` | multiply the numerators, multiply the denominators |
+| `Div(a, b)` | cross over: `numer = a.numer * b.denom`, `denom = a.denom * b.numer` |
+| `Add`, `Sub`, `Cmp`, `Implies` | **no reading** — analysis fails |
+
+That last row is load-bearing: a sum is not a monomial, and refusing it is
+exactly what keeps capacity bounds (Form C) out of Form A rather than silently
+mis-analysed as one.
+
+`matchProductEquality` then reads a `Cmp` whose `cmp` is `Eq` and whose sides
+both have readings, and clears the denominators by cross-multiplying:
+
+```
+lhsNum/lhsDen == rhsNum/rhsDen    ⟿    lhsNum * rhsDen == rhsNum * lhsDen
+```
+
+So **yes**: `extent / block == 1` reads as `extent == block`. And the tile-count
+constraint, which is written
+
+```cpp
+prod over dims of (extent[d] / block[d])  ==  dpus * tasklets
+```
+
+reads, on `prim_gemv`'s 4MB gemv, as
+
+```
+1048576 == dpus * tasklets * gemv.M.mram * gemv.K.mram
+```
+
+— every constant folded into one coefficient, every block size moved to the
+other side by cross-multiplication, the variables sorted. That is the form
+`ComponentEnumerator::solveFor` consumes.
+
+Form C never has a normal form at all. `boolMayHold` / `boolMustHold` walk the
+raw tree with interval arithmetic (`evalNodeBounds`), which is why they handle
+the `Add` and `Sub` that the reading refuses.
+
+### The division contract
+
+**The reading of a `Div` is not what the interpreter computes.** `evalNodeVec`
+lowers `Div` to truncating integer division, guarded against a zero divisor
+(`vecSafeDiv`, matching the old `b ? a / b : 0`). So for `extent = 1024`,
+`block = 768`:
+
+| | verdict |
+|---|---|
+| the tree, evaluated: `1024 / 768 == 1` | **true** — accepts |
+| its reading: `1024 == 768` | **false** — rejects |
+
+The reading is *strictly stronger*. The two agree only because `require()` walks
+every tree it is given and reifies each `Div` it finds as a separate
+divisibility constraint — `extractDivConstraints` → `addDivConstraint`, landing
+as a static domain filter, a structural `mustDivide`, or a dynamic predicate,
+whichever the operand shapes allow. With `block | extent` also enforced, the
+truncating case cannot arise and the disagreement is unreachable.
+
+So the contract is:
+
+> A `Div` in the DSL means "divides exactly". The tree alone does not say that;
+> the side condition extracted alongside it does. **Both must be enforced, or
+> the reading and the evaluation part ways** — and they part ways silently,
+> because each is individually plausible.
+
+This matters because the two are *not* enforced by the same machinery. The
+component enumerator absorbs the Form A reading and drops the predicate; the
+unabsorbed path evaluates the tree. Neither is wrong so long as the side
+condition survives.
+
+**Which is why an implication may not divide.** Everything
+`extractDivConstraints` reifies is unconditional, so a `Div` under a guard would
+impose its divisibility on precisely the configurations the guard exists to
+exclude — and *not* extracting it leaves the truncating reading of the tree in
+force, which is the silent-wrong-answer case above. `extractDivConstraints`
+therefore refuses to descend into an `Implies` and asserts that neither side
+divides. Write the multiplied-out form:
+
+```cpp
+b.require(implies(fuse >= 1, extent / block == 1));  // rejected
+b.require(implies(fuse >= 1, block == extent));      // say this
+```
+
+which costs nothing, since the multiplied-out form is what the analyser was
+going to read anyway. See [LaunchFusionDesign.md](LaunchFusionDesign.md) §F.
 
 ## Constraint forms to handle
 

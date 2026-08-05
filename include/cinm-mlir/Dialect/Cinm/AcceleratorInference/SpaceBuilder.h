@@ -246,7 +246,7 @@ public:
     require(expr.node(), description);
   }
 
-  /// Require that the given integer expression be valid at runtime.
+  /// Require that the given integer expression be well-formed at runtime.
   /// This recurses to find all division expressions and add a constraint
   /// that the numerator be divisible by the denominator at runtime.
   ///

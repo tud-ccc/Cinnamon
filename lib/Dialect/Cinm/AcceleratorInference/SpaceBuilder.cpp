@@ -237,8 +237,7 @@ void SpaceBuilder::addDivConstraint(const ConstraintNodePtr &num,
                 [num, den](const ConfigurationVector &c, arma::urowvec &valid) {
                   const ParmVector nv = evalNodeVec(*num, c);
                   const ParmVector dv = evalNodeVec(*den, c);
-                  valid %= vecDivides(dv, nv);
-                  valid %= (dv <= nv);
+                  valid %= (dv <= nv) % vecDivides(dv, nv);
                 }),
             desc);
     return;
@@ -653,8 +652,14 @@ void SpaceBuilder::planComponents(
     divNames.push_back({m.parent, m.child});
   }
 
-  /// A product equality is only solvable when no variable occurs on both
-  /// sides (it would determine nothing) and none repeats (not linear).
+  /// The Form A reading of a comparison, if it has one and it is worth
+  /// keeping: a variable occurring on both sides determines nothing, so such
+  /// an equality is left to the ordinary predicate path.
+  ///
+  /// A variable repeated *within* one side is kept. It cannot be solved for
+  /// -- solveFor requires a single occurrence -- but sideProduct still
+  /// evaluates it correctly, so the relation prunes even where it cannot
+  /// determine.
   auto asSolvableProdEq =
       [](const ConstraintNode &node) -> std::optional<ProdEq> {
     auto eq = matchProductEquality(node);

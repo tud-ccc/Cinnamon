@@ -171,7 +171,7 @@ arma::urowvec evalBoolNodeVec(const ConstraintNode &node,
     // operands are arithmetic, so there is nothing unsafe to guard against.
     const arma::urowvec ante = evalBoolNodeVec(*node.operands[0], c);
     const arma::urowvec cons = evalBoolNodeVec(*node.operands[1], c);
-    return arma::conv_to<arma::urowvec>::from((ante == 0) || (cons != 0));
+    return (ante == 0) || (cons != 0);
   }
 
   assert(node.kind == ConstraintNode::Kind::Cmp && "expected a boolean node");
