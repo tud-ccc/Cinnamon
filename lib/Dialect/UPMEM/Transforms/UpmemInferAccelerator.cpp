@@ -300,6 +300,18 @@ struct UpmemInferencePlugin : cinm::InferencePlugin {
     pm->addPass(createCanonicalizerPass());
     pm->addPass(createCSEPass());
 
+    // Two ops the configuration distributes the same way send the value
+    // between them through the host and back to the leaf it came from. Cancel
+    // that round trip and run the two as one launch, which is also what makes
+    // the leaf level able to fuse them later (docs/LaunchFusionDesign.md).
+    // Opportunistic: a configuration whose schedules do not agree -- one that
+    // splits the producer's reduction across the workgroup, in particular --
+    // presents no round trip and is left alone. Before bufferization, so that
+    // --cnm-scatter-optimizations and the bufferizer see the merged form.
+    pm->addPass(cnm::createCnmFuseLaunchesPass());
+    pm->addPass(createCanonicalizerPass());
+    pm->addPass(createCSEPass());
+
     // Step 3: bufferize
     pm->addPass(bufferization::createEmptyTensorEliminationPass());
     pm->addPass(cnm::createCnmScatterOptimizationsPass());
@@ -805,9 +817,8 @@ void UpmemInferencePlugin::handleLinalgOp(linalg::LinalgOp op,
     for (auto [levelIdx, level] : llvm::enumerate(levels)) {
       std::string name = base + "." + level.getName().getValue().str();
       perLevel[levelIdx].push_back(
-          levelIdx == 0
-              ? b.divisorsOf(name, extent)
-              : b.divisorsOf(name, perLevel[levelIdx - 1].back()));
+          levelIdx == 0 ? b.divisorsOf(name, extent)
+                        : b.divisorsOf(name, perLevel[levelIdx - 1].back()));
     }
   }
   // The distribution level -- what --convert-linalg-to-cnm spreads over the
