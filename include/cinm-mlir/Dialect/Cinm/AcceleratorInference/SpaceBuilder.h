@@ -17,8 +17,6 @@
 
 namespace mlir::cinm {
 
-using namespace mlir::cinm::constraints;
-
 // ===----------------------------------------------------------------------===//
 // SpaceVar — lazy handle to a named search-space dimension
 // ===----------------------------------------------------------------------===//
@@ -50,7 +48,9 @@ public:
   ParmValue maxVal() const { return maxVal_; }
 
   /// This dimension as a constraint-IR node.
-  ConstraintNodePtr node() const { return makeVarNode(idx_, name_); }
+  constraints::ConstraintNodePtr node() const {
+    return constraints::makeVarNode(idx_, name_);
+  }
 
 private:
   friend class SpaceBuilder;
@@ -77,15 +77,15 @@ private:
 /// It also adds compile-time type-checking to the expression system.
 template <constraints::Type Ty> class Expr {
 public:
-  Expr(ConstraintNodePtr node) : node_(std::move(node)) {}
+  Expr(constraints::ConstraintNodePtr node) : node_(std::move(node)) {}
   Expr(const SpaceVar &v) : node_(v.node()) {}
-  Expr(ParmValue v) : node_(makeConstNode(v)) {}
+  Expr(ParmValue v) : node_(constraints::makeConstNode(v)) {}
 
-  const ConstraintNodePtr &node() const { return node_; }
+  const constraints::ConstraintNodePtr &node() const { return node_; }
   std::string describe() const { return describeNode(*node_); }
 
 private:
-  ConstraintNodePtr node_;
+  constraints::ConstraintNodePtr node_;
 };
 
 using IntExpr = Expr<constraints::Type::INT>;
@@ -98,7 +98,7 @@ template <class T, constraints::Type Ty>
 inline constexpr bool isExprLike =
     std::is_same_v<std::decay_t<T>, Expr<Ty>> ||
     std::is_same_v<std::decay_t<T>, SpaceVar> ||
-    std::is_same_v<std::decay_t<T>, ConstraintNodePtr>;
+    std::is_same_v<std::decay_t<T>, constraints::ConstraintNodePtr>;
 
 template <class A, class B, constraints::Type Ty>
 inline constexpr bool eitherIsExpr = isExprLike<A, Ty> || isExprLike<B, Ty>;
@@ -112,29 +112,32 @@ inline constexpr bool eitherIsExpr = isExprLike<A, Ty> || isExprLike<B, Ty>;
   template <class A, class B,                                                  \
             std::enable_if_t<detail::eitherIsExpr<A, B, TY>, int> = 0>         \
   Expr<TY> operator SYM(const A &a, const B &b) {                              \
-    return Expr<TY>(makeBinNode(ConstraintNode::Kind::KIND,                    \
-                                Expr<TY>(a).node(), Expr<TY>(b).node()));      \
+    return Expr<TY>(                                                           \
+        constraints::makeBinNode(constraints::ConstraintNode::Kind::KIND,      \
+                                 Expr<TY>(a).node(), Expr<TY>(b).node()));     \
   }
 
 /// Division also *asserts* that the divisor divides the dividend exactly:
 /// SpaceBuilder::require() extracts every `/` as a static, structural, or
 /// dynamic divisibility constraint.
-CINM_DEFINE_BIN_OP(/, Div, Type::INT)
-CINM_DEFINE_BIN_OP(-, Sub, Type::INT)
+CINM_DEFINE_BIN_OP(/, Div, constraints::Type::INT)
+CINM_DEFINE_BIN_OP(-, Sub, constraints::Type::INT)
 #undef CINM_DEFINE_BIN_OP
 
 /// Add and Mul are n-ary in the IR; the binary operators build a two-operand
 /// node, and prod()/sum() build a flat one.
 template <class A, class B,
-          std::enable_if_t<detail::eitherIsExpr<A, B, Type::INT>, int> = 0>
+          std::enable_if_t<detail::eitherIsExpr<A, B, constraints::Type::INT>,
+                           int> = 0>
 IntExpr operator*(const A &a, const B &b) {
-  return IntExpr(makeNaryNode(ConstraintNode::Kind::Mul,
+  return IntExpr(makeNaryNode(constraints::ConstraintNode::Kind::Mul,
                               {IntExpr(a).node(), IntExpr(b).node()}));
 }
 template <class A, class B,
-          std::enable_if_t<detail::eitherIsExpr<A, B, Type::INT>, int> = 0>
+          std::enable_if_t<detail::eitherIsExpr<A, B, constraints::Type::INT>,
+                           int> = 0>
 IntExpr operator+(const A &a, const B &b) {
-  return IntExpr(makeNaryNode(ConstraintNode::Kind::Add,
+  return IntExpr(makeNaryNode(constraints::ConstraintNode::Kind::Add,
                               {IntExpr(a).node(), IntExpr(b).node()}));
 }
 
@@ -143,8 +146,8 @@ IntExpr operator+(const A &a, const B &b) {
             std::enable_if_t<                                                  \
                 detail::eitherIsExpr<A, B, constraints::Type::INT>, int> = 0>  \
   BoolExpr operator SYM(const A &a, const B &b) {                              \
-    return BoolExpr(                                                           \
-        makeCmpNode(CmpKind::KIND, IntExpr(a).node(), IntExpr(b).node()));     \
+    return BoolExpr(constraints::makeCmpNode(                                  \
+        constraints::CmpKind::KIND, IntExpr(a).node(), IntExpr(b).node()));    \
   }
 
 CINM_DEFINE_CMP_OP(<=, Le)
@@ -161,21 +164,23 @@ CINM_DEFINE_CMP_OP(!=, Ne)
 /// dimensions), which is exactly what a type-level encoding could not express.
 inline IntExpr prod(llvm::ArrayRef<IntExpr> factors) {
   if (factors.empty())
-    return IntExpr(makeConstNode(1));
-  llvm::SmallVector<ConstraintNodePtr, 2> ops;
+    return IntExpr(constraints::makeConstNode(1));
+  llvm::SmallVector<constraints::ConstraintNodePtr, 2> ops;
   for (const IntExpr &f : factors)
     ops.push_back(f.node());
-  return IntExpr(makeNaryNode(ConstraintNode::Kind::Mul, std::move(ops)));
+  return IntExpr(constraints::makeNaryNode(
+      constraints::ConstraintNode::Kind::Mul, std::move(ops)));
 }
 
 /// Flat n-ary sum; see prod().
 inline IntExpr sum(llvm::ArrayRef<IntExpr> terms) {
   if (terms.empty())
-    return IntExpr(makeConstNode(0));
-  llvm::SmallVector<ConstraintNodePtr, 2> ops;
+    return IntExpr(constraints::makeConstNode(0));
+  llvm::SmallVector<constraints::ConstraintNodePtr, 2> ops;
   for (const IntExpr &t : terms)
     ops.push_back(t.node());
-  return IntExpr(makeNaryNode(ConstraintNode::Kind::Add, std::move(ops)));
+  return IntExpr(constraints::makeNaryNode(
+      constraints::ConstraintNode::Kind::Add, std::move(ops)));
 }
 
 /// Evaluates to the truth value of "`divisor` divides `dividend`".
@@ -278,7 +283,8 @@ public:
   void buildInto(ConfigSpace &space);
 
 private:
-  void require(const ConstraintNodePtr &expr, llvm::StringRef description = "");
+  void require(const constraints::ConstraintNodePtr &expr,
+               llvm::StringRef description = "");
 
   struct DimEntry {
     SpaceVar var;
@@ -306,7 +312,7 @@ private:
     std::variant<Constraint, VecConstraint> pred;
     /// The source expression, for constraints registered through the DSL;
     /// null for opaque predicates. Only these can be analysed.
-    ConstraintNodePtr node;
+    constraints::ConstraintNodePtr node;
   };
 
   std::vector<DimEntry> dims_;
@@ -329,7 +335,7 @@ private:
   void planComponents(
       ConfigSpace &space,
       std::set<std::pair<std::string, std::string>> &absorbedMultiples,
-      std::set<const ConstraintNode *> &absorbedPredicates);
+      std::set<const constraints::ConstraintNode *> &absorbedPredicates);
 
   /// Report what the Form A recogniser makes of each DSL-registered constraint.
   /// Analysis only — it does not change the space. Runs after phase 1 of
@@ -337,13 +343,13 @@ private:
   void reportConstraintAnalysis(const ConfigSpace &space) const;
 
   /// Walk `node` and reify every Div as a divisibility constraint.
-  void extractDivConstraints(const ConstraintNodePtr &node);
+  void extractDivConstraints(const constraints::ConstraintNodePtr &node);
   /// Reify a single num/den divisibility constraint found on a Div node:
   ///  - const / var   → static filter on den's values
   ///  - var / var     → structural mustDivide
   ///  - everything else → dynamic predicate
-  void addDivConstraint(const ConstraintNodePtr &num,
-                        const ConstraintNodePtr &den);
+  void addDivConstraint(const constraints::ConstraintNodePtr &num,
+                        const constraints::ConstraintNodePtr &den);
 };
 
 } // namespace mlir::cinm

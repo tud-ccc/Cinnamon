@@ -67,10 +67,13 @@ buildDependencies:
   pip install -e packages/cinm_integration
 
 
-# run tests
-test: (doNinja "check-cinm-mlir")
+# run all tests
+test: (doNinja "check-cinm-mlir" "check-unit-tests")
+# Run only c++ unit tests
+testUnit: (doNinja "check-unit-tests")
 
-runTest PAT:
+# Run all LIT tests that match a partial substring.
+testRun PAT:
   #!/bin/bash
   find build/test -iname '*{{PAT}}*' -exec bash \{\} \;
 

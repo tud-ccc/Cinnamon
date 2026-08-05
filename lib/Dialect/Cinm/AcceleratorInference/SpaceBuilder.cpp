@@ -9,6 +9,7 @@
 
 #define DEBUG_TYPE "cinm-inference"
 
+using namespace mlir::cinm::constraints;
 namespace mlir::cinm {
 
 // ===----------------------------------------------------------------------===//
