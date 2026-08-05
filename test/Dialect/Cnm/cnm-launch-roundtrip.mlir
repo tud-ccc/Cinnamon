@@ -11,9 +11,9 @@
 // CHECK-LABEL: @launch_mram_level
 func.func @launch_mram_level() {
   %wg = cnm.workgroup : !cnm.workgroup<#upmem_1_16_1>
-  // CHECK: cnm.alloc() for %{{.*}} : !cnm.buffer<64xi32 on #{{.*}}, #upmem.mram>
-  %in = cnm.alloc() for %wg : !cnm.buffer<64xi32 on #upmem_1_16_1, #upmem.mram>
-  %out = cnm.alloc() for %wg : !cnm.buffer<i32 on #upmem_1_16_1, #upmem.mram>
+  // CHECK: cnm.declare_buffer() for %{{.*}} : !cnm.buffer<64xi32 on #{{.*}}, #upmem.mram>
+  %in = cnm.declare_buffer() for %wg : !cnm.buffer<64xi32 on #upmem_1_16_1, #upmem.mram>
+  %out = cnm.declare_buffer() for %wg : !cnm.buffer<i32 on #upmem_1_16_1, #upmem.mram>
   // CHECK: cnm.launch %{{.*}} ins(%{{.*}} = %{{.*}} : <64xi32, #upmem.mram>) outs(%{{.*}} = %{{.*}} : <i32, #upmem.mram>)
   cnm.launch %wg ins(%a = %in : <64xi32, #upmem.mram>)
                  outs(%b = %out : <i32, #upmem.mram>)
@@ -33,8 +33,8 @@ func.func @launch_mram_level() {
 // CHECK-LABEL: @launch_no_level
 func.func @launch_no_level() {
   %wg = cnm.workgroup : !cnm.workgroup<#upmem_1_16_1>
-  %in = cnm.alloc() for %wg : !cnm.buffer<64xi32 on #upmem_1_16_1>
-  %out = cnm.alloc() for %wg : !cnm.buffer<i32 on #upmem_1_16_1>
+  %in = cnm.declare_buffer() for %wg : !cnm.buffer<64xi32 on #upmem_1_16_1>
+  %out = cnm.declare_buffer() for %wg : !cnm.buffer<i32 on #upmem_1_16_1>
   // A level-less buffer must keep printing without a trailing comma.
   // CHECK: cnm.launch %{{.*}} ins(%{{.*}} = %{{.*}} : <64xi32>) outs(%{{.*}} = %{{.*}} : <i32>)
   cnm.launch %wg ins(%a = %in : <64xi32>)

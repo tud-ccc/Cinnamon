@@ -15,7 +15,7 @@
 func.func @fill() {
   %c0 = arith.constant 0 : i32
   %wg = cnm.workgroup : !cnm.workgroup<#wg>
-  %buf = cnm.alloc() for %wg : !cnm.buffer<1x8xi32 on #wg>
+  %buf = cnm.declare_buffer() for %wg : !cnm.buffer<1x8xi32 on #wg>
   %empty = tensor.empty() : tensor<4x2x1x8xi32>
   %filled = linalg.fill ins(%c0 : i32) outs(%empty : tensor<4x2x1x8xi32>) -> tensor<4x2x1x8xi32>
   cnm.scatter %filled into %buf[#map] of %wg
@@ -37,7 +37,7 @@ func.func @fill() {
 // CHECK:       cnm.scatter %[[TILE]] into %{{.*}}[#[[BC]]] of %{{.*}} : tensor<1x8xi32> into
 func.func @splat_constant() {
   %wg = cnm.workgroup : !cnm.workgroup<#wg>
-  %buf = cnm.alloc() for %wg : !cnm.buffer<1x8xi32 on #wg>
+  %buf = cnm.declare_buffer() for %wg : !cnm.buffer<1x8xi32 on #wg>
   %cst = arith.constant dense<7> : tensor<4x2x1x8xi32>
   cnm.scatter %cst into %buf[#map] of %wg
       : tensor<4x2x1x8xi32> into !cnm.buffer<1x8xi32 on #wg>
@@ -62,7 +62,7 @@ func.func @splat_constant() {
 memref.global "private" constant @ones : memref<4x2x1x8xf32> = dense<1.000000e+00>
 func.func @get_global() {
   %wg = cnm.workgroup : !cnm.workgroup<#wg>
-  %buf = cnm.alloc() for %wg : !cnm.buffer<1x8xf32 on #wg>
+  %buf = cnm.declare_buffer() for %wg : !cnm.buffer<1x8xf32 on #wg>
   %g = memref.get_global @ones : memref<4x2x1x8xf32>
   cnm.scatter %g into %buf[#map] of %wg
       : memref<4x2x1x8xf32> into !cnm.buffer<1x8xf32 on #wg>
@@ -84,13 +84,13 @@ func.func @get_global() {
 func.func @not_uniform() {
   %wg = cnm.workgroup : !cnm.workgroup<#wg>
 
-  %buf = cnm.alloc() for %wg : !cnm.buffer<2xi32 on #wg>
+  %buf = cnm.declare_buffer() for %wg : !cnm.buffer<2xi32 on #wg>
   %cst = arith.constant dense<[[[0, 1], [2, 3]], [[4, 5], [6, 7]],
                               [[8, 9], [10, 11]], [[12, 13], [14, 15]]]> : tensor<4x2x2xi32>
   cnm.scatter %cst into %buf[#map] of %wg
       : tensor<4x2x2xi32> into !cnm.buffer<2xi32 on #wg>
 
-  %buf2 = cnm.alloc() for %wg : !cnm.buffer<1x8xi32 on #wg>
+  %buf2 = cnm.declare_buffer() for %wg : !cnm.buffer<1x8xi32 on #wg>
   %opaque = memref.alloc() : memref<4x2x1x8xi32>
   cnm.scatter %opaque into %buf2[#map] of %wg
       : memref<4x2x1x8xi32> into !cnm.buffer<1x8xi32 on #wg>
@@ -111,7 +111,7 @@ func.func @not_uniform() {
 // CHECK:       cnm.scatter %[[TILE]] into
 func.func @already_broadcast() {
   %wg = cnm.workgroup : !cnm.workgroup<#wg>
-  %buf = cnm.alloc() for %wg : !cnm.buffer<1x8xi32 on #wg>
+  %buf = cnm.declare_buffer() for %wg : !cnm.buffer<1x8xi32 on #wg>
   %cst = arith.constant dense<0> : tensor<1x8xi32>
   cnm.scatter %cst into %buf[#bc] of %wg
       : tensor<1x8xi32> into !cnm.buffer<1x8xi32 on #wg>
@@ -137,7 +137,7 @@ func.func @already_broadcast() {
 func.func @seed_same_rank_as_buffer() {
   %c0 = arith.constant 0 : i32
   %wg = cnm.workgroup : !cnm.workgroup<#wg>
-  %buf = cnm.alloc() for %wg : !cnm.buffer<1x32xi32 on #wg>
+  %buf = cnm.declare_buffer() for %wg : !cnm.buffer<1x32xi32 on #wg>
   %empty = tensor.empty() : tensor<32x4096xi32>
   %seed = linalg.fill ins(%c0 : i32) outs(%empty : tensor<32x4096xi32>) -> tensor<32x4096xi32>
   cnm.scatter %seed into %buf[#map] of %wg
@@ -164,8 +164,8 @@ func.func @seed_same_rank_as_buffer() {
 // CHECK-NOT:   cnm.scatter
 func.func @device_init() {
   %wg = cnm.workgroup : !cnm.workgroup<#wg>
-  %in = cnm.alloc() for %wg : !cnm.buffer<1x8xi32 on #wg>
-  %acc = cnm.alloc() for %wg : !cnm.buffer<1x8xi32 on #wg>
+  %in = cnm.declare_buffer() for %wg : !cnm.buffer<1x8xi32 on #wg>
+  %acc = cnm.declare_buffer() for %wg : !cnm.buffer<1x8xi32 on #wg>
   %cst = arith.constant dense<0> : tensor<4x2x1x8xi32>
   cnm.scatter %cst into %acc[#map] of %wg
       : tensor<4x2x1x8xi32> into !cnm.buffer<1x8xi32 on #wg>
@@ -194,8 +194,8 @@ func.func @seed_outside_loop() {
   %c1 = arith.constant 1 : index
   %c4 = arith.constant 4 : index
   %wg = cnm.workgroup : !cnm.workgroup<#wg>
-  %in = cnm.alloc() for %wg : !cnm.buffer<1x8xi32 on #wg>
-  %acc = cnm.alloc() for %wg : !cnm.buffer<1x8xi32 on #wg>
+  %in = cnm.declare_buffer() for %wg : !cnm.buffer<1x8xi32 on #wg>
+  %acc = cnm.declare_buffer() for %wg : !cnm.buffer<1x8xi32 on #wg>
   %cst = arith.constant dense<0> : tensor<4x2x1x8xi32>
   cnm.scatter %cst into %acc[#map] of %wg
       : tensor<4x2x1x8xi32> into !cnm.buffer<1x8xi32 on #wg>
@@ -224,8 +224,8 @@ func.func @seed_outside_loop() {
 // CHECK-NOT:     linalg.fill
 func.func @read_before_launch(%out: tensor<4x2x1x8xi32>) {
   %wg = cnm.workgroup : !cnm.workgroup<#wg>
-  %in = cnm.alloc() for %wg : !cnm.buffer<1x8xi32 on #wg>
-  %acc = cnm.alloc() for %wg : !cnm.buffer<1x8xi32 on #wg>
+  %in = cnm.declare_buffer() for %wg : !cnm.buffer<1x8xi32 on #wg>
+  %acc = cnm.declare_buffer() for %wg : !cnm.buffer<1x8xi32 on #wg>
   %cst = arith.constant dense<0> : tensor<4x2x1x8xi32>
   cnm.scatter %cst into %acc[#map] of %wg
       : tensor<4x2x1x8xi32> into !cnm.buffer<1x8xi32 on #wg>

@@ -38,8 +38,8 @@
 module {
   func.func @main(%a: tensor<4x2x8xi32>, %b: tensor<4x8xi32>) {
     %wg = cnm.workgroup : !cnm.workgroup<#upmem_1_4_2>
-    %bufA = cnm.alloc() for %wg : !cnm.buffer<8xi32 on #upmem_1_4_2>
-    %bufB = cnm.alloc() for %wg : !cnm.buffer<8xi32 on #upmem_1_4_2>
+    %bufA = cnm.declare_buffer() for %wg : !cnm.buffer<8xi32 on #upmem_1_4_2>
+    %bufB = cnm.declare_buffer() for %wg : !cnm.buffer<8xi32 on #upmem_1_4_2>
     cnm.scatter %a into %bufA[#mapA] of %wg : tensor<4x2x8xi32> into !cnm.buffer<8xi32 on #upmem_1_4_2>
     cnm.scatter %b into %bufB[#mapB] of %wg : tensor<4x8xi32> into !cnm.buffer<8xi32 on #upmem_1_4_2>
     cnm.launch %wg ins(%arg0 = %bufA : <8xi32>, %arg1 = %bufB : <8xi32>) on !cnm.workgroup<#upmem_1_4_2> {

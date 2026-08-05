@@ -73,9 +73,9 @@ module {
         %extracted_slice_0 = tensor.extract_slice %0[0, %arg2] [64, 1] [1, 1] : tensor<64x64xi32> to tensor<64x1xi32>
         %4 = tensor.empty() : tensor<1x64xi32>
         %transposed = linalg.transpose ins(%extracted_slice_0 : tensor<64x1xi32>) outs(%4 : tensor<1x64xi32>) permutation = [1, 0]
-        %5 = cnm.alloc() for %1 : !cnm.buffer<64xi32 on #upmem_1_16_1, #upmem.wram>
-        %6 = cnm.alloc() for %1 : !cnm.buffer<64xi32 on #upmem_1_16_1, #upmem.wram>
-        %7 = cnm.alloc() for %1 : !cnm.buffer<i32 on #upmem_1_16_1, #upmem.wram>
+        %5 = cnm.declare_buffer() for %1 : !cnm.buffer<64xi32 on #upmem_1_16_1, #upmem.wram>
+        %6 = cnm.declare_buffer() for %1 : !cnm.buffer<64xi32 on #upmem_1_16_1, #upmem.wram>
+        %7 = cnm.declare_buffer() for %1 : !cnm.buffer<i32 on #upmem_1_16_1, #upmem.wram>
         cnm.scatter %extracted_slice into %5[#map] of %1 : tensor<16x64xi32> into !cnm.buffer<64xi32 on #upmem_1_16_1, #upmem.wram>
         cnm.scatter %transposed into %6[#map1] of %1 : tensor<1x64xi32> into !cnm.buffer<64xi32 on #upmem_1_16_1, #upmem.wram>
         cnm.scatter %cst into %7[#map2] of %1 : tensor<16x1xi32> into !cnm.buffer<i32 on #upmem_1_16_1, #upmem.wram>

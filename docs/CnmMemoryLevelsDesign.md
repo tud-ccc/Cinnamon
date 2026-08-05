@@ -64,14 +64,14 @@ There is more scaffolding for this than it looks like at first glance
   in `handleGemv`/`handleReduce`, not by any pass.
 - `--convert-cnm-to-upmem` already does an MRAM↔WRAM split, but as one
   fixed, hardcoded strategy, not driven by `level` at all: every
-  `cnm.alloc` unconditionally gets an MRAM buffer
+  `cnm.declare_buffer` unconditionally gets an MRAM buffer
   (`upmem::StaticAllocOp`) plus a WRAM buffer (private
   `upmem.pwram_alloc`, or a single shared static alloc if
   `isMramBroadcastOverThreads` holds), wired together with explicit
   `upmem.local_transfer` ops inserted right before/after `cnm.launch`
   ([CnmToUPMEM.cpp:424-602](../lib/Conversion/CnmToUPMEM/CnmToUPMEM.cpp#L424-L602)).
   There's no type converter for `cnm.buffer` in this pass at all — it
-  pattern-matches `cnm.alloc`/`scatter`/`gather`/`launch` directly and
+  pattern-matches `cnm.declare_buffer`/`scatter`/`gather`/`launch` directly and
   builds the memrefs itself via an `IRMapping`, so `getLevel()` is
   never even read here. Crucially, **the `cnm.launch` body always
   computes over WRAM**; there is no way today to have a launch body
@@ -1243,7 +1243,7 @@ they currently have to rebuild the `(r, d, t)` map with
 and after the move that map is the op's own attribute.
 
 The `scatter → broadcast` step gets cheaper in the same way. It is
-currently gated on `isBroadcast`, a fact about the `cnm.alloc`'s users
+currently gated on `isBroadcast`, a fact about the `cnm.declare_buffer`'s users
 (does the MRAM buffer have a per-tasklet leading dimension). By the time
 there is a `upmem.scatter`, that fact is already baked into
 `transferCount`, so the condition is local: constant-zero map, and

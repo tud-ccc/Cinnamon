@@ -17,9 +17,9 @@
 // CHECK-LABEL: @gemv
 func.func @gemv() {
   %wg = cnm.workgroup : !cnm.workgroup<#acc>
-  %a = cnm.alloc() for %wg : !cnm.buffer<64x512xi32 on #acc, #upmem.mram>
-  %x = cnm.alloc() for %wg : !cnm.buffer<512xi32 on #acc, #upmem.mram>
-  %y = cnm.alloc() for %wg : !cnm.buffer<64xi32 on #acc, #upmem.mram>
+  %a = cnm.declare_buffer() for %wg : !cnm.buffer<64x512xi32 on #acc, #upmem.mram>
+  %x = cnm.declare_buffer() for %wg : !cnm.buffer<512xi32 on #acc, #upmem.mram>
+  %y = cnm.declare_buffer() for %wg : !cnm.buffer<64xi32 on #acc, #upmem.mram>
   // The output tile is indexed only by the parallel dimension, so it is staged
   // once outside the reduction loop and accumulated into in WRAM across every
   // trip -- the structure the hand-written templates use. Staging it around
@@ -74,8 +74,8 @@ func.func @gemv() {
 // CHECK-LABEL: @reduce
 func.func @reduce() {
   %wg = cnm.workgroup : !cnm.workgroup<#acc>
-  %a = cnm.alloc() for %wg : !cnm.buffer<64x512xi32 on #acc, #upmem.mram>
-  %o = cnm.alloc() for %wg : !cnm.buffer<64xi32 on #acc, #upmem.mram>
+  %a = cnm.declare_buffer() for %wg : !cnm.buffer<64x512xi32 on #acc, #upmem.mram>
+  %o = cnm.declare_buffer() for %wg : !cnm.buffer<64xi32 on #acc, #upmem.mram>
   // Same two-stage staging as the contract: the output tile is hoisted out of
   // the reduction loop.
   // CHECK: affine.for
@@ -113,9 +113,9 @@ func.func @reduce() {
 // CHECK-LABEL: @no_tiling
 func.func @no_tiling() {
   %wg = cnm.workgroup : !cnm.workgroup<#acc>
-  %a = cnm.alloc() for %wg : !cnm.buffer<16x128xi32 on #acc, #upmem.mram>
-  %x = cnm.alloc() for %wg : !cnm.buffer<128xi32 on #acc, #upmem.mram>
-  %y = cnm.alloc() for %wg : !cnm.buffer<16xi32 on #acc, #upmem.mram>
+  %a = cnm.declare_buffer() for %wg : !cnm.buffer<16x128xi32 on #acc, #upmem.mram>
+  %x = cnm.declare_buffer() for %wg : !cnm.buffer<128xi32 on #acc, #upmem.mram>
+  %y = cnm.declare_buffer() for %wg : !cnm.buffer<16xi32 on #acc, #upmem.mram>
   // CHECK-NOT: affine.for
   // CHECK: memref.alloca() : memref<16x128xi32, #upmem.wram>
   // CHECK: cnm.local_transfer %{{.*}} : memref<16x128xi32, #upmem.mram> to memref<16x128xi32, #upmem.wram>
@@ -142,9 +142,9 @@ func.func @no_tiling() {
 // CHECK-LABEL: @already_leaf
 func.func @already_leaf() {
   %wg = cnm.workgroup : !cnm.workgroup<#acc>
-  %a = cnm.alloc() for %wg : !cnm.buffer<16x128xi32 on #acc, #upmem.wram>
-  %x = cnm.alloc() for %wg : !cnm.buffer<128xi32 on #acc, #upmem.wram>
-  %y = cnm.alloc() for %wg : !cnm.buffer<16xi32 on #acc, #upmem.wram>
+  %a = cnm.declare_buffer() for %wg : !cnm.buffer<16x128xi32 on #acc, #upmem.wram>
+  %x = cnm.declare_buffer() for %wg : !cnm.buffer<128xi32 on #acc, #upmem.wram>
+  %y = cnm.declare_buffer() for %wg : !cnm.buffer<16xi32 on #acc, #upmem.wram>
   // CHECK-NOT: memref.alloc
   // CHECK-NOT: cnm.local_transfer
   // CHECK: linalg.contract

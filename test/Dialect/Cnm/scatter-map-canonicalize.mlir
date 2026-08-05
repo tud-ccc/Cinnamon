@@ -18,7 +18,7 @@
 // STORED:      "cnm.scatter"{{.*}}<{scatterMap = affine_map<(d0, d1, d2, d3) -> (d1, d2 * 2, d3)>}> : (tensor<4x3x8xi32>
 func.func @block_is_implicit(%a: tensor<4x3x8xi32>) {
   %wg = cnm.workgroup : !cnm.workgroup<#wg>
-  %buf = cnm.alloc() for %wg : !cnm.buffer<8xi32 on #wg>
+  %buf = cnm.declare_buffer() for %wg : !cnm.buffer<8xi32 on #wg>
   cnm.scatter %a into %buf[affine_map<(d0, d1, d2) -> (d1, d2 * 2)>] of %wg
       : tensor<4x3x8xi32> into !cnm.buffer<8xi32 on #wg>
   cnm.free_workgroup %wg : !cnm.workgroup<#wg>
@@ -36,7 +36,7 @@ func.func @block_is_implicit(%a: tensor<4x3x8xi32>) {
 // CHECK:       cnm.gather %{{.*}}[affine_map<(d0, d1, d2) -> (d1, d2)>]
 func.func @explicit_is_the_same_op(%out: tensor<4x2x8xi32>) {
   %wg = cnm.workgroup : !cnm.workgroup<#wg>
-  %buf = cnm.alloc() for %wg : !cnm.buffer<8xi32 on #wg>
+  %buf = cnm.declare_buffer() for %wg : !cnm.buffer<8xi32 on #wg>
   %g = cnm.gather %buf[affine_map<(d0, d1, d2, d3) -> (d1, d2, d3)>] of %wg
       into %out : !cnm.buffer<8xi32 on #wg> into tensor<4x2x8xi32>
   cnm.free_workgroup %wg : !cnm.workgroup<#wg>
@@ -55,7 +55,7 @@ func.func @explicit_is_the_same_op(%out: tensor<4x2x8xi32>) {
 // CHECK:       cnm.scatter %{{.*}}[affine_map<(d0, d1, d2, d3) -> (d1, d2, d3)>]
 func.func @host_dimension_is_longer(%a: tensor<4x2x8xi32>) {
   %wg = cnm.workgroup : !cnm.workgroup<#wg>
-  %buf = cnm.alloc() for %wg : !cnm.buffer<2xi32 on #wg>
+  %buf = cnm.declare_buffer() for %wg : !cnm.buffer<2xi32 on #wg>
   cnm.scatter %a into %buf[affine_map<(d0, d1, d2, d3) -> (d1, d2, d3)>] of %wg
       : tensor<4x2x8xi32> into !cnm.buffer<2xi32 on #wg>
   cnm.free_workgroup %wg : !cnm.workgroup<#wg>
@@ -78,7 +78,7 @@ func.func @host_dimension_is_longer(%a: tensor<4x2x8xi32>) {
 func.func @layout_bounds_the_block(%packed: memref<4x2x8xi32>,
                                    %strided: memref<4x2x8xi32, strided<[64, 16, 1]>>) {
   %wg = cnm.workgroup : !cnm.workgroup<#wg>
-  %buf = cnm.alloc() for %wg : !cnm.buffer<2x8xi32 on #wg>
+  %buf = cnm.declare_buffer() for %wg : !cnm.buffer<2x8xi32 on #wg>
   cnm.scatter %packed into %buf[affine_map<(d0, d1, d2, d3, d4) -> (d1, d3, d4)>] of %wg
       : memref<4x2x8xi32> into !cnm.buffer<2x8xi32 on #wg>
   cnm.scatter %strided into %buf[affine_map<(d0, d1, d2, d3, d4) -> (d1, d3, d4)>] of %wg

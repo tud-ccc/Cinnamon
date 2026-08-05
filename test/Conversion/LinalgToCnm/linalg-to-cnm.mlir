@@ -26,17 +26,17 @@ func.func @gemv(%A: tensor<1024x512xi32>, %x: tensor<512xi32>) -> tensor<1024xi3
   // element of its buffer, the element of A it comes from. No relayout.
   // CHECK-NOT: linalg.transpose
   // CHECK-NOT: tensor.reshape
-  // CHECK: %[[BA:.*]] = cnm.alloc() for %[[WG]] : !cnm.buffer<64x512xi32 on
+  // CHECK: %[[BA:.*]] = cnm.declare_buffer() for %[[WG]] : !cnm.buffer<64x512xi32 on
   // CHECK: cnm.scatter %arg0 into %[[BA]][#{{.*}}] of %[[WG]] {cinm.debug_tag = "linalg_operand0"} : tensor<1024x512xi32> into !cnm.buffer<64x512xi32
 
   // x is indexed only by the reduction dimension, which is not split, so every
   // leaf gets the same slice: a broadcast.
-  // CHECK: %[[BX:.*]] = cnm.alloc() for %[[WG]] : !cnm.buffer<512xi32 on
+  // CHECK: %[[BX:.*]] = cnm.declare_buffer() for %[[WG]] : !cnm.buffer<512xi32 on
   // CHECK: cnm.scatter %arg1 into %[[BX]][#{{.*}}] of %[[WG]] {cinm.debug_tag = "linalg_operand1"} : tensor<512xi32> into !cnm.buffer<512xi32
 
   // The destination is a fresh tensor.empty, so its undefined contents are not
   // scattered: the alloc is followed straight by the launch.
-  // CHECK: %[[BY:.*]] = cnm.alloc() for %[[WG]] : !cnm.buffer<64xi32 on
+  // CHECK: %[[BY:.*]] = cnm.declare_buffer() for %[[WG]] : !cnm.buffer<64xi32 on
   // CHECK-NOT: cnm.scatter
 
   // The body is the same op on leaf-sized memrefs, with its indexing maps
@@ -50,7 +50,7 @@ func.func @gemv(%A: tensor<1024x512xi32>, %x: tensor<512xi32>) -> tensor<1024xi3
 
   // With a level requested, it lands on both the buffer type and the launch
   // body's memrefs.
-  // MRAM: cnm.alloc() for %{{.*}} : !cnm.buffer<64x512xi32 on {{.*}}, #upmem.mram>
+  // MRAM: cnm.declare_buffer() for %{{.*}} : !cnm.buffer<64x512xi32 on {{.*}}, #upmem.mram>
   // MRAM: linalg.contract {{.*}} ins(%{{.*}}, %{{.*}} : memref<64x512xi32, #upmem.mram>, memref<512xi32, #upmem.mram>) outs(%{{.*}} : memref<64xi32, #upmem.mram>)
   %r = cinm.compute on accelerator #acc -> tensor<1024xi32> {
     %g = linalg.contract indexing_maps = [#m, #v, #r]
@@ -72,8 +72,8 @@ func.func @gemv(%A: tensor<1024x512xi32>, %x: tensor<512xi32>) -> tensor<1024xi3
 // CHECK-LABEL: func.func @reduce
 func.func @reduce(%A: tensor<1024x512xi32>) -> tensor<1024xi32> {
   %init = tensor.empty() : tensor<1024xi32>
-  // CHECK-DAG: cnm.alloc() {{.*}} : !cnm.buffer<64x512xi32 on
-  // CHECK-DAG: cnm.alloc() {{.*}} : !cnm.buffer<64xi32 on
+  // CHECK-DAG: cnm.declare_buffer() {{.*}} : !cnm.buffer<64x512xi32 on
+  // CHECK-DAG: cnm.declare_buffer() {{.*}} : !cnm.buffer<64xi32 on
   // The payload region comes along.
   // CHECK: linalg.reduce ins(%{{.*}} : memref<64x512xi32>) outs(%{{.*}} : memref<64xi32>) dimensions = [1]
   // CHECK: arith.addi
@@ -99,7 +99,7 @@ func.func @reduce(%A: tensor<1024x512xi32>) -> tensor<1024xi32> {
 // be scattered in.
 // CHECK-LABEL: func.func @accumulate
 func.func @accumulate(%A: tensor<1024x512xi32>, %y: tensor<1024xi32>) -> tensor<1024xi32> {
-  // CHECK: %[[BY:.*]] = cnm.alloc() {{.*}} : !cnm.buffer<64xi32 on
+  // CHECK: %[[BY:.*]] = cnm.declare_buffer() {{.*}} : !cnm.buffer<64xi32 on
   // CHECK: cnm.scatter %{{.*}} into %[[BY]]
   %r = cinm.compute on accelerator #acc -> tensor<1024xi32> {
     %g = linalg.reduce ins(%A : tensor<1024x512xi32>) outs(%y : tensor<1024xi32>)
@@ -130,7 +130,7 @@ func.func @elementwise_2d(%a: tensor<64x64xi32>, %b: tensor<64x64xi32>) -> tenso
   // where each element goes, so nothing moves on the host.
   // CHECK-NOT: linalg.transpose
   // CHECK-NOT: tensor.reshape
-  // CHECK: cnm.alloc() {{.*}} : !cnm.buffer<16x16xi32 on
+  // CHECK: cnm.declare_buffer() {{.*}} : !cnm.buffer<16x16xi32 on
   // CHECK: cnm.scatter %{{.*}} : tensor<64x64xi32> into !cnm.buffer<16x16xi32
   // CHECK: cnm.gather {{.*}} into tensor<64x64xi32>
   %r = cinm.compute on accelerator #acc -> tensor<64x64xi32> {

@@ -8,11 +8,11 @@
 
 // CHECK: %[[cst0:.*]] = arith.constant dense<0> : tensor<8xi32>
 // CHECK: %[[wg:.*]] = cnm.workgroup : !cnm.workgroup<{{.*}}>
-// CHECK: %[[ba:.*]] = cnm.alloc() for %[[wg]] : !cnm.buffer<1024xi32 on {{.*}}>
+// CHECK: %[[ba:.*]] = cnm.declare_buffer() for %[[wg]] : !cnm.buffer<1024xi32 on {{.*}}>
 // CHECK: cnm.scatter %arg0 into %[[ba]][{{.*}}] of %[[wg]] : tensor<8x1024xi32> into !cnm.buffer<1024xi32 on {{.*}}>
-// CHECK: %[[bb:.*]] = cnm.alloc() for %[[wg]] : !cnm.buffer<1024xi32 on {{.*}}>
+// CHECK: %[[bb:.*]] = cnm.declare_buffer() for %[[wg]] : !cnm.buffer<1024xi32 on {{.*}}>
 // CHECK: cnm.scatter %arg1 into %[[bb]][{{.*}}] of %[[wg]] : tensor<1024xi32> into !cnm.buffer<1024xi32 on {{.*}}>
-// CHECK: %[[bc:.*]] = cnm.alloc() for %[[wg]] : !cnm.buffer<i32 on {{.*}}>
+// CHECK: %[[bc:.*]] = cnm.declare_buffer() for %[[wg]] : !cnm.buffer<i32 on {{.*}}>
 // CHECK: cnm.scatter %[[cst0]] into %[[bc]][{{.*}}] of %[[wg]] : tensor<8xi32> into !cnm.buffer<i32 on {{.*}}>
 // CHECK: cnm.launch %[[wg]] ins(%{{.*}} = %[[ba]] : <1024xi32>, %{{.*}} = %[[bb]] : <1024xi32>) outs(%{{.*}} = %[[bc]] : <i32>) on {{.*}} {
 // CHECK:    linalg.contract

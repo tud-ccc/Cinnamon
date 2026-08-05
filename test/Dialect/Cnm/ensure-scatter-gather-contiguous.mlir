@@ -19,7 +19,7 @@
 // CHECK-NEXT:  cnm.scatter %[[PACK]] into %{{.*}}[#map] of %{{.*}} : memref<8x256xi32> into
 func.func @scatter_noncontiguous() {
   %wg = cnm.workgroup : !cnm.workgroup<#upmem_2_4_16>
-  %buf = cnm.alloc() for %wg : !cnm.buffer<256xi32 on #upmem_2_4_16>
+  %buf = cnm.declare_buffer() for %wg : !cnm.buffer<256xi32 on #upmem_2_4_16>
   %big = memref.alloc() : memref<8x512xi32>
   %view = memref.subview %big[0, 0] [8, 256] [1, 1]
       : memref<8x512xi32> to memref<8x256xi32, strided<[512, 1], offset: 0>>
@@ -37,7 +37,7 @@ func.func @scatter_noncontiguous() {
 // CHECK-NOT:   memref.copy
 func.func @scatter_already_contiguous() {
   %wg = cnm.workgroup : !cnm.workgroup<#upmem_2_4_16>
-  %buf = cnm.alloc() for %wg : !cnm.buffer<256xi32 on #upmem_2_4_16>
+  %buf = cnm.declare_buffer() for %wg : !cnm.buffer<256xi32 on #upmem_2_4_16>
   %input = memref.alloc() : memref<8x256xi32>
   cnm.scatter %input into %buf[#map] of %wg
       : memref<8x256xi32> into !cnm.buffer<256xi32 on #upmem_2_4_16>
@@ -58,7 +58,7 @@ func.func @scatter_already_contiguous() {
 // CHECK-NEXT:  memref.dealloc %[[PACK]]
 func.func @gather_noncontiguous() {
   %wg = cnm.workgroup : !cnm.workgroup<#upmem_2_4_16>
-  %buf = cnm.alloc() for %wg : !cnm.buffer<256xi32 on #upmem_2_4_16>
+  %buf = cnm.declare_buffer() for %wg : !cnm.buffer<256xi32 on #upmem_2_4_16>
   %big = memref.alloc() : memref<128x512xi32>
   %view = memref.subview %big[0, 0] [128, 256] [1, 1]
       : memref<128x512xi32> to memref<128x256xi32, strided<[512, 1], offset: 0>>
@@ -76,7 +76,7 @@ func.func @gather_noncontiguous() {
 // CHECK-NOT:   memref.copy
 func.func @gather_already_contiguous() {
   %wg = cnm.workgroup : !cnm.workgroup<#upmem_2_4_16>
-  %buf = cnm.alloc() for %wg : !cnm.buffer<256xi32 on #upmem_2_4_16>
+  %buf = cnm.declare_buffer() for %wg : !cnm.buffer<256xi32 on #upmem_2_4_16>
   %out = memref.alloc() : memref<128x256xi32>
   cnm.gather %buf[#gmap] of %wg into %out
       : !cnm.buffer<256xi32 on #upmem_2_4_16> into memref<128x256xi32>
@@ -92,7 +92,7 @@ func.func @gather_already_contiguous() {
 // CHECK: cnm.scatter
 func.func @scatter_tensor_untouched(%arg0: tensor<8x256xi32>) {
   %wg = cnm.workgroup : !cnm.workgroup<#upmem_2_4_16>
-  %buf = cnm.alloc() for %wg : !cnm.buffer<256xi32 on #upmem_2_4_16>
+  %buf = cnm.declare_buffer() for %wg : !cnm.buffer<256xi32 on #upmem_2_4_16>
   cnm.scatter %arg0 into %buf[#map] of %wg
       : tensor<8x256xi32> into !cnm.buffer<256xi32 on #upmem_2_4_16>
   cnm.free_workgroup %wg : !cnm.workgroup<#upmem_2_4_16>

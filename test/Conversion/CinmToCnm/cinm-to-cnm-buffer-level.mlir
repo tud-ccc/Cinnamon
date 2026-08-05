@@ -13,20 +13,20 @@
 // WRAM-LABEL: @gemv
 // NONE-LABEL: @gemv
 func.func @gemv(%A: tensor<16x1024xi32>, %x: tensor<1024xi32>) -> tensor<16xi32> {
-  // MRAM: cnm.alloc() for %{{.*}} : !cnm.buffer<1024xi32 on #{{.*}}, #upmem.mram>
-  // MRAM: cnm.alloc() for %{{.*}} : !cnm.buffer<i32 on #{{.*}}, #upmem.mram>
+  // MRAM: cnm.declare_buffer() for %{{.*}} : !cnm.buffer<1024xi32 on #{{.*}}, #upmem.mram>
+  // MRAM: cnm.declare_buffer() for %{{.*}} : !cnm.buffer<i32 on #{{.*}}, #upmem.mram>
   // MRAM: cnm.launch %{{.*}} ins(%{{.*}} : <1024xi32, #upmem.mram>, %{{.*}} : <1024xi32, #upmem.mram>) outs(%{{.*}} : <i32, #upmem.mram>)
   // The level changes where the buffers live, not what the body is.
   // MRAM: linalg.contract {{.*}} ins(%{{.*}}, %{{.*}} : memref<1024xi32, #upmem.mram>, memref<1024xi32, #upmem.mram>) outs(%{{.*}} : memref<i32, #upmem.mram>)
 
   // Same shapes, different level: the option is really consulted rather than
   // the level being hardcoded.
-  // WRAM: cnm.alloc() for %{{.*}} : !cnm.buffer<1024xi32 on #{{.*}}, #upmem.wram>
+  // WRAM: cnm.declare_buffer() for %{{.*}} : !cnm.buffer<1024xi32 on #{{.*}}, #upmem.wram>
   // WRAM: cnm.launch %{{.*}} ins(%{{.*}} : <1024xi32, #upmem.wram>, %{{.*}} : <1024xi32, #upmem.wram>) outs(%{{.*}} : <i32, #upmem.wram>)
   // WRAM: memref<1024xi32, #upmem.wram>
 
   // No flag: unlevelled buffers and plain memrefs, exactly as before.
-  // NONE: cnm.alloc() for %{{.*}} : !cnm.buffer<1024xi32 on #{{.*}}>
+  // NONE: cnm.declare_buffer() for %{{.*}} : !cnm.buffer<1024xi32 on #{{.*}}>
   // NONE: cnm.launch %{{.*}} ins(%{{.*}} : <1024xi32>, %{{.*}} : <1024xi32>) outs(%{{.*}} : <i32>)
   // NONE: memref<1024xi32>
   // NONE-NOT: #upmem.mram
@@ -50,11 +50,11 @@ func.func @gemv(%A: tensor<16x1024xi32>, %x: tensor<1024xi32>) -> tensor<16xi32>
 // WRAM-LABEL: @gemm
 // NONE-LABEL: @gemm
 func.func @gemm(%A: tensor<8x1024xi32>, %B: tensor<1024x128xi32>) -> tensor<8x128xi32> {
-  // MRAM: cnm.alloc() for %{{.*}} : !cnm.buffer<1024xi32 on #{{.*}}, #upmem.mram>
-  // MRAM: cnm.alloc() for %{{.*}} : !cnm.buffer<i32 on #{{.*}}, #upmem.mram>
+  // MRAM: cnm.declare_buffer() for %{{.*}} : !cnm.buffer<1024xi32 on #{{.*}}, #upmem.mram>
+  // MRAM: cnm.declare_buffer() for %{{.*}} : !cnm.buffer<i32 on #{{.*}}, #upmem.mram>
   // MRAM: linalg.contract {{.*}} : memref<1024xi32, #upmem.mram>, memref<1024xi32, #upmem.mram>) outs(%{{.*}} : memref<i32, #upmem.mram>)
-  // WRAM: cnm.alloc() for %{{.*}} : !cnm.buffer<1024xi32 on #{{.*}}, #upmem.wram>
-  // NONE: cnm.alloc() for %{{.*}} : !cnm.buffer<1024xi32 on #{{.*}}>
+  // WRAM: cnm.declare_buffer() for %{{.*}} : !cnm.buffer<1024xi32 on #{{.*}}, #upmem.wram>
+  // NONE: cnm.declare_buffer() for %{{.*}} : !cnm.buffer<1024xi32 on #{{.*}}>
   %r0 = cinm.compute on accelerator #upmem -> tensor<8x128xi32> {
     %r = cinm.op.gemm %A, %B : tensor<8x1024xi32>, tensor<1024x128xi32> -> tensor<8x128xi32>
     cinm.yield %r : tensor<8x128xi32>

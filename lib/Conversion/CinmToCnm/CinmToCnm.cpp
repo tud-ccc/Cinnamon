@@ -315,7 +315,7 @@ LogicalResult convertInputIntoAlloc(Value &inputBuf, Value workGroup,
       cnm::BufferType::get(shapeOfBuffer, inputType.getElementType(),
                            wgTy.getAccelerator(), level.space);
 
-  Value alloc = cnm::AllocOp::create(rewriter, bufTy, workGroup);
+  Value alloc = cnm::DeclareBufferOp::create(rewriter, bufTy, workGroup);
 
   // Scatter into buffer
   if (needScatter) {
@@ -411,8 +411,8 @@ LogicalResult convertCinmToCnm(
   // ^bb0(%a, %b, %c): // MRAM buffers
   //    Here we have another "accelerator" that allows scattering on
   //    %2 = cnm.workgroup #upmem.on_dpu<8 tasklets>
-  //    %awram = cnm.alloc() for %2: !cnm.buffer<128xi32 on 8, "wram">
-  //    %bwram = cnm.alloc() for %2: !cnm.buffer<128xi32 on 8, "wram">
+  //    %awram = cnm.declare_buffer() for %2: !cnm.buffer<128xi32 on 8, "wram">
+  //    %bwram = cnm.declare_buffer() for %2: !cnm.buffer<128xi32 on 8, "wram">
   //    cnm.scatter %a into %awram[(tid) -> (tid)] of %2 :  // each tasklet gets
   //    its own buffer cnm.scatter %b into %bwram[(tid) -> ()] of %2 :     //
   //    all tasklets share the same buffer cnm.launch (%awram, %bwram) {
@@ -919,13 +919,13 @@ struct ConvertCinmGemmToCnm : public CinmToCnmPattern<cinm::GemmOp> {
     cnm::BufferType bufferType =
         cnm::BufferType::get({reductionSize}, eltTy, cnmAccelerator,
                              level->space);
-    Value bufferA = cnm::AllocOp::create(builder, bufferType, workgroup);
-    Value bufferB = cnm::AllocOp::create(builder, bufferType, workgroup);
+    Value bufferA = cnm::DeclareBufferOp::create(builder, bufferType, workgroup);
+    Value bufferB = cnm::DeclareBufferOp::create(builder, bufferType, workgroup);
 
     // C has a single element and no dimensions
     cnm::BufferType bufferCType =
         cnm::BufferType::get({}, eltTy, cnmAccelerator, level->space);
-    Value bufferC = cnm::AllocOp::create(builder, bufferCType, workgroup);
+    Value bufferC = cnm::DeclareBufferOp::create(builder, bufferCType, workgroup);
 
     //::mlir::Value input, ::mlir::Value buffer, ::mlir::Value wg,
     //:::mlir::AffineMap scatterMap);

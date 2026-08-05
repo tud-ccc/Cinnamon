@@ -10,8 +10,8 @@
 // CHECK-LABEL: @stage_through_wram
 func.func @stage_through_wram() {
   %wg = cnm.workgroup : !cnm.workgroup<#upmem_1_16_1>
-  %in = cnm.alloc() for %wg : !cnm.buffer<64xi32 on #upmem_1_16_1, #upmem.mram>
-  %out = cnm.alloc() for %wg : !cnm.buffer<64xi32 on #upmem_1_16_1, #upmem.mram>
+  %in = cnm.declare_buffer() for %wg : !cnm.buffer<64xi32 on #upmem_1_16_1, #upmem.mram>
+  %out = cnm.declare_buffer() for %wg : !cnm.buffer<64xi32 on #upmem_1_16_1, #upmem.mram>
   cnm.launch %wg ins(%a = %in : <64xi32, #upmem.mram>)
                  outs(%b = %out : <64xi32, #upmem.mram>)
                  on !cnm.workgroup<#upmem_1_16_1> {

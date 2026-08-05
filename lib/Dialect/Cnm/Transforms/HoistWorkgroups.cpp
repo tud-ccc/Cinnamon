@@ -71,8 +71,8 @@ struct CnmHoistWorkgroupsPass
       }
     }
 
-    llvm::SmallVector<cnm::AllocOp> bufAllocs;
-    root->walk([&](cnm::AllocOp op) { bufAllocs.push_back(op); });
+    llvm::SmallVector<cnm::DeclareBufferOp> bufAllocs;
+    root->walk([&](cnm::DeclareBufferOp op) { bufAllocs.push_back(op); });
 
     for (auto bufAlloc : bufAllocs) {
       Operation *scope = findScope(bufAlloc);

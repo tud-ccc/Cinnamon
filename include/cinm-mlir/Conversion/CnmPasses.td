@@ -29,7 +29,7 @@ def ConvertLinalgToCnmPass : Pass<"convert-linalg-to-cnm"> {
     let summary = "Distribute a linalg op onto a cnm workgroup";
     let description = [{
       Rewrites a `linalg` op with pure tensor semantics into
-      `cnm.workgroup` / `cnm.alloc` / `cnm.scatter` / `cnm.launch` /
+      `cnm.workgroup` / `cnm.declare_buffer` / `cnm.scatter` / `cnm.launch` /
       `cnm.gather`, driven entirely by a `cnm.tile_sizes` attribute giving
       one block size per iteration dimension.
 

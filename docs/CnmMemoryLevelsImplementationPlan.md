@@ -755,7 +755,7 @@ On a K-split gemv that is the difference between one output transfer and
 **Goal:** decisions 4 and 6, backend side.
 
 Today this pass ignores `getLevel()` and unconditionally gives every
-`cnm.alloc` an MRAM static alloc *plus* a WRAM alloc with transfers
+`cnm.declare_buffer` an MRAM static alloc *plus* a WRAM alloc with transfers
 around the launch
 ([CnmToUPMEM.cpp:471-602](../lib/Conversion/CnmToUPMEM/CnmToUPMEM.cpp#L471-L602)).
 That is exactly right for WRAM-level buffers and exactly wrong for
