@@ -19,17 +19,12 @@
 
 #include "SimulatorBase.h"
 
-#include <algorithm>
 #include <chrono>
-#include <cstddef>
 #include <cstdint>
 #include <filesystem>
-#include <functional>
-#include <limits>
 #include <memory>
 #include <string>
 #include <utility>
-#include <vector>
 
 #include <llvm/ADT/ArrayRef.h>
 #include <llvm/ADT/SmallVector.h>
@@ -832,9 +827,9 @@ void UpmemInferencePlugin::handleLinalgOp(linalg::LinalgOp op,
   // one structural constraint; everything else about the distribution follows
   // from the block sizes and the op's own indexing maps.
   SmallVector<int64_t> extentsCopy(*extents);
-  SmallVector<cinm::Expr> tilesPerDim;
+  SmallVector<cinm::IntExpr> tilesPerDim;
   for (auto [extent, block] : llvm::zip_equal(extentsCopy, blocks))
-    tilesPerDim.push_back(cinm::Expr(extent) / block);
+    tilesPerDim.push_back(extent / block);
   b.require(cinm::prod(tilesPerDim) == dpus * tasklets,
             "prod(extent / block) == dpus * tasklets");
 
@@ -845,10 +840,10 @@ void UpmemInferencePlugin::handleLinalgOp(linalg::LinalgOp op,
   // promotion sizes its staging buffers, where buffers are hoisted), so the
   // exact test is done on the lowered program instead.
   auto operandDims = linalgOperandDims(op);
-  auto footprint = [operandDims](ArrayRef<SpaceVar> sizes) -> cinm::Expr {
-    SmallVector<cinm::Expr> operands;
+  auto footprint = [operandDims](ArrayRef<SpaceVar> sizes) -> cinm::IntExpr {
+    SmallVector<cinm::IntExpr> operands;
     for (const auto &dims : operandDims) {
-      SmallVector<cinm::Expr> factors;
+      SmallVector<cinm::IntExpr> factors;
       for (unsigned dim : dims)
         factors.push_back(sizes[dim]);
       operands.push_back(cinm::prod(std::move(factors)));

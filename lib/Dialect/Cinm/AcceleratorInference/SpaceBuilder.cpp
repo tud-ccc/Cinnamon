@@ -1,4 +1,5 @@
 #include "cinm-mlir/Dialect/Cinm/AcceleratorInference/SpaceBuilder.h"
+#include "cinm-mlir/Dialect/Cinm/AcceleratorInference/ConstraintIR.h"
 
 #include <algorithm>
 #include <llvm/Support/Debug.h>
@@ -76,15 +77,19 @@ void SpaceBuilder::mustDivide(SpaceVar parent, SpaceVar child) {
 }
 
 void SpaceBuilder::require(VecConstraint pred, llvm::StringRef description) {
-  predicates_.push_back({description.str(), std::move(pred)});
+  predicates_.push_back({.description = description.str(),
+                         .pred = std::move(pred),
+                         .node = nullptr});
 }
 
 void SpaceBuilder::require(Constraint pred, llvm::StringRef description) {
-  predicates_.push_back({description.str(), std::move(pred)});
+  predicates_.push_back({.description = description.str(),
+                         .pred = std::move(pred),
+                         .node = nullptr});
 }
 
-void SpaceBuilder::require(Expr expr, llvm::StringRef description) {
-  const ConstraintNodePtr &node = expr.node();
+void SpaceBuilder::require(const ConstraintNodePtr &node,
+                           llvm::StringRef description) {
   extractDivConstraints(node);
   // A bare arithmetic expression contributes only its divisibility conditions
   // (that is the `require(a / b)` spelling); only a comparison is a predicate.
