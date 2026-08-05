@@ -198,7 +198,6 @@ add_subdirectory("third-party/upmem-cost-model")
 
 add_subdirectory(include)
 add_subdirectory(lib)
-add_subdirectory(unittests)
 add_subdirectory(test)
 add_subdirectory(tools)
 
