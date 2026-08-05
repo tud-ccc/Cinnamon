@@ -43,6 +43,10 @@ struct ConstraintNode {
     Sub,   ///< binary difference
     Div,   ///< binary quotient; also *asserts* exact divisibility (see below)
     Cmp,   ///< binary comparison; `cmp`
+    /// binary divisibility *test*; `operands[0]` divides `operands[1]`. Unlike
+    /// `Div` it produces a truth value and claims nothing: see the DSL's
+    /// `divides()`.
+    Divides,
     /// binary implication; both operands are boolean. The only connective:
     /// conjunction needs no node (two `require` calls), and disjunction has no
     /// caller and no story for the analyser, so it stays out until one exists.
@@ -71,6 +75,7 @@ enum class Type { BOOL, INT };
 /// works on bare nodes, has to ask.
 inline bool isBoolKind(ConstraintNode::Kind kind) {
   return kind == ConstraintNode::Kind::Cmp ||
+         kind == ConstraintNode::Kind::Divides ||
          kind == ConstraintNode::Kind::Implies;
 }
 
@@ -88,6 +93,9 @@ ConstraintNodePtr makeBinNode(ConstraintNode::Kind kind, ConstraintNodePtr lhs,
                               ConstraintNodePtr rhs);
 ConstraintNodePtr makeCmpNode(CmpKind cmp, ConstraintNodePtr lhs,
                               ConstraintNodePtr rhs);
+/// `divisor` divides `dividend`, as a truth value.
+ConstraintNodePtr makeDividesNode(ConstraintNodePtr divisor,
+                                  ConstraintNodePtr dividend);
 /// `antecedent => consequent`. Both must be boolean nodes.
 ConstraintNodePtr makeImpliesNode(ConstraintNodePtr antecedent,
                                   ConstraintNodePtr consequent);

@@ -96,6 +96,16 @@ void SpaceBuilder::require(const ConstraintNodePtr &node,
   // predicate.
   if (!isBoolKind(node->kind))
     return;
+  // A divisibility test *at the top* of a require is unconditional, so it can
+  // be reified like the one `/` asserts -- as a domain filter or a structural
+  // relation, rather than a predicate that filters after the fact. Only here:
+  // nested under a guard (or anywhere else) it stays a test, which is the whole
+  // point of having it. addDivConstraint registers whatever it settles on,
+  // including a predicate when the shapes allow nothing better.
+  if (node->kind == ConstraintNode::Kind::Divides) {
+    addDivConstraint(/*num=*/node->operands[1], /*den=*/node->operands[0]);
+    return;
+  }
   std::string desc =
       description.empty() ? describeNode(*node) : description.str();
   require(toVecConstraint(node), desc);

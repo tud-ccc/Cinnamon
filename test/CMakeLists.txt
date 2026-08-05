@@ -16,6 +16,7 @@ configure_lit_site_cfg(
 set(TEST_DEPENDS
     FileCheck count not
     cinm-opt
+    cinm-constraint-tests
 )
 
 # Create the test suite.

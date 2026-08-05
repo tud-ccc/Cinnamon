@@ -83,7 +83,7 @@ because everything here must stay analysable:
 
 ```cpp
 struct ConstraintNode {
-  enum class Kind { Const, Var, Add, Sub, Mul, Div, Cmp, Implies };
+  enum class Kind { Const, Var, Add, Sub, Mul, Div, Cmp, Divides, Implies };
   Kind kind;
   // Const
   ParmValue value;
@@ -109,11 +109,16 @@ Notes on the shape:
   next section is about.
 - **`Var` holds the same `shared_ptr<size_t>` cell `SpaceVar` uses**, so handles
   keep working across `buildInto()` and node identity is pointer identity.
-- **`Cmp` and `Implies` are the boolean kinds** (`isBoolKind`). `Implies` is the
-  only connective: conjunction needs none, since two `require` calls are an
-  `and`, and disjunction has no caller. The surface DSL splits the two worlds
-  statically as `Expr<Type::INT>` and `Expr<Type::BOOL>`, so a comparison cannot
-  be an operand of `*` and an integer cannot be an operand of `implies`.
+- **`Cmp`, `Divides` and `Implies` are the boolean kinds** (`isBoolKind`).
+  `Implies` is the only connective: conjunction needs none, since two `require`
+  calls are an `and`, and disjunction has no caller. The surface DSL splits the
+  two worlds statically as `Expr<Type::INT>` and `Expr<Type::BOOL>`, so a
+  comparison cannot be an operand of `*` and an integer cannot be an operand of
+  `implies`.
+- **`Divides` tests what `Div` asserts.** `divides(b, a)` is the proposition
+  "`b` divides `a`"; `a / b` is a *value* whose use claims the same thing. The
+  distinction is invisible at the top of a `require`, where both end up
+  enforced, and load-bearing under a guard — see below.
 
 ### Normal form
 
@@ -217,6 +222,41 @@ exactly the configurations the guard exists to exclude. Nothing is lost but
 pruning — and not even all of it, since `matchProductEquality` cross-multiplies
 the consequent anyway, so `implies(g, extent / block == 1)` still reaches the
 enumerator as the gated equality `extent == block` and is still solved for.
+
+### Testing divisibility versus asserting it
+
+`/` does two jobs. It produces a quotient, *and* using it claims that the
+division is exact — a claim `require()` reifies separately and folds into the
+encoding. At the top of a `require` the two coincide and nobody has to think
+about it. Under a guard they come apart, and the spelling stops saying which is
+meant:
+
+```cpp
+b.require(implies(a / b == 1, X));   // "b must divide a, and then X"?
+                                     // or "whenever b happens to divide a, X"?
+```
+
+Only the second is implementable — the first would constrain the configurations
+the guard exists to exclude — and that is what it does. But a reader cannot tell
+that from the source, so there is a second spelling that means the test and
+nothing else:
+
+```cpp
+BoolExpr divides(IntExpr divisor, IntExpr dividend);
+
+b.require(implies(divides(block, extent), X));   // unambiguous
+```
+
+`divides` claims nothing by being written. Position still decides how it is
+*implemented* — at the top of a `require` it is unconditional, so it is reified
+through `addDivConstraint` exactly as `/` would be, and folded into the encoding
+as a domain filter or a structural relation; under a guard it stays a predicate.
+But that is now a matter of how the same meaning is enforced, rather than the
+operator meaning two different things in two places.
+
+Prefer `divides` wherever the intent is a test, and prefer the multiplied-out
+form (`block == extent`) over a guarded `/` wherever a quotient is not actually
+wanted.
 
 The interval analysis needs the same care, and gets it through
 `divisionsExact`, which decides a division's exactness whenever both operands
