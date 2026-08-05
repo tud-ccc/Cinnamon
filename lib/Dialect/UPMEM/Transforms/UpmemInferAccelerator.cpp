@@ -16,7 +16,6 @@
 #include <cinm-mlir/Dialect/UPMEM/Transforms/Passes.h>
 #include <cinm-mlir/Dialect/UPMEM/Transforms/UpmemSimulator.h>
 #include <cinm-mlir/Utils/Scheduling/SchedulingSupport.h>
-#include <upmem_cost_model/Types.h>
 
 #include "SimulatorBase.h"
 
@@ -99,20 +98,6 @@ static void assertNonZeroDivisor([[maybe_unused]] const cinm::ParmVector &d) {
          "constraint divides by a search parameter whose domain contains 0");
 }
 
-/// A search-space quantity resolved against a configuration. Type-erased so a
-/// recorded parameter can be a derived expression rather than a bare variable
-/// -- what a pass consumes is rarely what the search declares.
-using SpaceValue = std::function<cinm::ParmValue(const cinm::ConfWrapper &)>;
-
-/// Type-erase any space expression into a SpaceValue. The captured IR node
-/// holds the variables' shared index cells, so this stays valid across
-/// SpaceBuilder::buildInto().
-static SpaceValue spaceValue(cinm::Expr expr) {
-  return [node = expr.node()](const cinm::ConfWrapper &c) -> cinm::ParmValue {
-    return cinm::evalNodeScalar(*node, c);
-  };
-}
-
 /// `n!`. Only ever called on an iteration rank, which is 1 (elementwise), 2
 /// (gemv) or 3 (gemm) in everything we lower today.
 static int64_t factorial(unsigned n) {
@@ -130,7 +115,6 @@ struct UpmemInferenceOptions {
   bool annotateOpCosts = false;
   bool useMRAMTiling = true;
   bool debugPrintsInPipeline = false;
-  UpmemLoweringPath lowering = UpmemLoweringPath::TEMPLATES;
   UpmemSimulatorId simulator = UpmemSimulatorId::CYCLE_ACCURATE;
   std::chrono::milliseconds evalTimeoutMs = std::chrono::milliseconds(2000);
   // Pin dpus/tasklets to a fixed value instead of searching over them.
@@ -226,43 +210,43 @@ struct UpmemInferencePlugin : cinm::InferencePlugin {
   // SpaceVars for dpus and tasklets, assigned during initializeSpace.
   SpaceVar dpusVar_, taskletsVar_;
 
-  // Simulation callbacks registered by per-op handlers. Each receives the
-  // current configuration and the (per-thread) simulator; evaluate() sums
-  // their return values. The simulator is passed at call time so that clones
-  // (which have their own simulator) work without lambda modification.
-  using SimFn = std::function<Maybe<SimCost>(
-      const cinm::ConfWrapper &, UpmemSimulator &, cinm::TrialInfo &)>;
-  std::vector<SimFn> simulators_;
-
-  std::unique_ptr<PassManager> convertPipeline;
   std::unique_ptr<PassManager> frontPipeline;
   std::unique_ptr<PassManager> backPipeline;
 
-  static constexpr llvm::StringLiteral kTileParamNamesAttr =
-      "upmem.tile_param_names";
+  /// Names of the search parameters an op's lowering consumes, stamped on the
+  /// op itself when the space is built (see initializeSpace). The reference is
+  /// what every trial is cloned from, so a trial inherits them and
+  /// stampSearchParams only has to resolve each name against the trial's
+  /// configuration -- no correspondence between reference ops and trial ops
+  /// has to be maintained on the side.
+  /// @{
+  /// One parameter name per iteration dimension, resolving to
+  /// `cnm.tile_sizes`.
+  static constexpr llvm::StringLiteral kOuterTileParamsAttr =
+      "upmem.outer_tile_params";
+  /// One parameter name per iteration dimension, resolving to
+  /// `upmem.leaf_tile_sizes`.
+  static constexpr llvm::StringLiteral kLeafTileParamsAttr =
+      "upmem.leaf_tile_params";
+  /// Single parameter name, resolving to the workgroup dimension order index.
+  static constexpr llvm::StringLiteral kOrderParamAttr = "upmem.order_param";
+  /// @}
 
   UpmemInferencePlugin(upmem::UpmemPlatformAttr platform,
                        const UpmemInferenceOptions &opts,
                        std::unique_ptr<UpmemSimulator> sim)
       : platform(platform), opts(opts), simulator(std::move(sim)) {}
 
-  void registerSimulator(SimFn &&fn) { simulators_.push_back(std::move(fn)); }
-
   bool supportsMultithreading() const override {
     return simulator && simulator->supportsMultithreading();
   }
 
-  // Full lowering pipeline (steps 1-6): cinm → cnm → bufferize → upmem.
-  /// Everything up to and including bufferization. Split from the rest so the
-  /// leaf tile sizes can be stamped on the launch bodies in between: those ops
-  /// are created by --convert-cinm-to-cnm and so do not exist yet when the
-  /// search space is built.
-  /// cinm -> linalg, run on its own so the search parameters can be stamped
-  /// in between. The space is stated in terms of an *iteration space*, and
-  /// only linalg carries one; the walk positions recorded when the space was
-  /// built therefore address the converted ops, not the cinm ops. This is also
-  /// where fusion will go (design §G8), which is why it is on the generic
-  /// branch only.
+  /// cinm -> linalg. Run once, on the reference the trials are cloned from,
+  /// because its result does not depend on the configuration: the space is
+  /// stated in terms of an *iteration space*, and only linalg carries one, so
+  /// the search has to see the converted form anyway. This is also where
+  /// fusion happens (design §G8), which is what makes the iteration spaces the
+  /// space is built from the ones the pipeline will actually distribute.
   static std::unique_ptr<PassManager> buildConvertPipeline(MLIRContext *ctx,
                                                            bool debug) {
     auto pm = std::make_unique<PassManager>(ctx);
@@ -286,6 +270,9 @@ struct UpmemInferencePlugin : cinm::InferencePlugin {
     return pm;
   }
 
+  /// linalg -> cnm -> bufferized, everything up to and including
+  /// bufferization. Split from the back pipeline only because the latter has
+  /// to see the launch bodies as linalg on memrefs.
   static std::unique_ptr<PassManager> buildFrontPipeline(MLIRContext *ctx,
                                                          bool debug) {
     auto pm = std::make_unique<PassManager>(ctx);
@@ -453,17 +440,11 @@ struct UpmemInferencePlugin : cinm::InferencePlugin {
                                                     simulator->clone());
     c->dpusVar_ = dpusVar_;
     c->taskletsVar_ = taskletsVar_;
-    c->simulators_ = simulators_;
-    // A clone evaluates trials, so it needs the search parameters recorded
-    // when the space was built.
-    c->opParams_ = opParams_;
-    c->refBlock_ = refBlock_;
     return c;
   }
 
   void warmUp(mlir::MLIRContext *ctx) override {
     if (!frontPipeline) {
-      convertPipeline = buildConvertPipeline(ctx, opts.debugPrintsInPipeline);
       frontPipeline = buildFrontPipeline(ctx, opts.debugPrintsInPipeline);
       backPipeline = buildBackPipeline(ctx, opts.debugPrintsInPipeline);
     }
@@ -472,44 +453,17 @@ struct UpmemInferencePlugin : cinm::InferencePlugin {
 
   void printStats() const override { simulator->printStats(); }
 
-  /// Register the hand-written template for an op, deriving the generator's
-  /// arguments from the generic block sizes (design §H5). Only called when
-  /// the template path is selected; the templates declare no variables of
-  /// their own.
-  void registerGemvTemplate(SpaceBuilder &b, ArrayRef<SpaceVar> blocks,
-                            ArrayRef<SpaceVar> leaves,
-                            ArrayRef<int64_t> extents, Type eltTy);
-  void registerReduceTemplate(SpaceBuilder &b, ArrayRef<SpaceVar> blocks,
-                              ArrayRef<SpaceVar> leaves,
-                              ArrayRef<int64_t> extents, Type eltTy);
-
   /// The search space for one op, stated in the parameters the passes
   /// actually consume (design §G2, §H5): one block size per iteration
   /// dimension for the workgroup distribution, and one for the leaf level.
-  ///
-  /// This is the whole space. `dpuRows`/`dpuCols`/`taskletRows`/`taskletCols`
-  /// and the MRAM/WRAM tile pairs are not parameters -- they are a *reading*
-  /// of these numbers that the template path derives when it needs them.
+  /// Also stamps the parameter names on `op` itself, see
+  /// kOuterTileParamsAttr.
   void handleLinalgOp(linalg::LinalgOp op, StringRef namePrefix,
-                      unsigned walkIndex, SpaceBuilder &b);
-
-  /// Record the search parameters `op`'s lowering needs. `op` belongs to the
-  /// reference clone; see opParams_ for how it is found again in a trial.
-  void recordParams(unsigned walkIndex, ArrayRef<SpaceValue> outerTile,
-                    ArrayRef<SpaceValue> leafTile, SpaceValue order = {}) {
-    OpSearchParams params;
-    params.outerTile.assign(outerTile.begin(), outerTile.end());
-    params.leafTile.assign(leafTile.begin(), leafTile.end());
-    params.order = std::move(order);
-    opParams_.push_back({walkIndex, std::move(params)});
-  }
+                      SpaceBuilder &b);
 
   void initializeSpace(cinm::ComputeBlockOp refClone,
                        cinm::ConfigSpace &space) override {
     SpaceBuilder b;
-    simulators_.clear();
-    opParams_.clear();
-    refBlock_ = refClone;
     const int64_t maxDpus =
         platform.getMaxNumRanks() * platform.getMaxNumDpusPerRank();
     const int64_t maxTasklets = platform.getMaxNumTasklets();
@@ -528,26 +482,31 @@ struct UpmemInferencePlugin : cinm::InferencePlugin {
     // already disagrees: `getTilableDimSizes` reports one flattened dimension
     // for an elementwise op where its linalg form has one per rank.
     //
-    // A throwaway copy is converted here purely to read those iteration
-    // spaces. Trials are clones of the *unconverted* reference and run the
-    // same conversion as their first pipeline step, so a walk position in
-    // this copy addresses the same op in a trial.
-    OwningOpRef<ModuleOp> converted(
-        llvm::cast<ModuleOp>(refClone->getParentOfType<ModuleOp>()->clone()));
+    // The reference itself is converted, not a throwaway copy of it: the
+    // conversion does not depend on the configuration, so doing it once here
+    // both saves every trial from repeating it and lets the parameters be
+    // stamped straight onto the ops the space was read from. Trials are clones
+    // of what this leaves behind, so they inherit the annotations and start
+    // where the search space starts.
+    MLIRContext *ctx = refClone->getContext();
+    Location loc = refClone->getLoc();
+    ModuleOp refModule = refClone->getParentOfType<ModuleOp>();
     {
-      auto pm = buildConvertPipeline(refClone->getContext(),
-                                     opts.debugPrintsInPipeline);
-      if (failed(pm->run(converted.get()))) {
-        refClone->emitError("could not convert the compute block to linalg, "
-                            "so no search space can be derived from it");
+      auto pm = buildConvertPipeline(ctx, opts.debugPrintsInPipeline);
+      if (failed(pm->run(refModule))) {
+        emitError(loc, "could not convert the compute block to linalg, "
+                       "so no search space can be derived from it");
         return;
       }
     }
 
-    cinm::ComputeBlockOp convertedBlock;
-    converted->walk([&](cinm::ComputeBlockOp op) { convertedBlock = op; });
-    if (!convertedBlock) {
-      refClone->emitError("the converted reference has no compute block");
+    // Not `refClone`: the pipeline above may have replaced the compute block
+    // op (canonicalization rebuilds it to drop an unused block argument), so
+    // the handle the framework passed in can be dangling by now.
+    cinm::ComputeBlockOp block;
+    refModule.walk([&](cinm::ComputeBlockOp op) { block = op; });
+    if (!block) {
+      emitError(loc, "the converted reference has no compute block");
       return;
     }
 
@@ -555,54 +514,24 @@ struct UpmemInferencePlugin : cinm::InferencePlugin {
     // `gemv.M0`. Count the kinds first so that a block with two gemvs gets
     // `gemv0`/`gemv1` while the common single-op case stays unadorned.
     llvm::StringMap<unsigned> kindCount;
-    convertedBlock.getBody().walk([&](Operation *op) {
+    block.getBody().walk([&](Operation *op) {
       if (isDistributionCandidate(op))
         ++kindCount[searchNameFor(op)];
     });
 
-    // Walk the *body*, which is exactly what stampSearchParams walks in a
-    // trial, so the recorded positions mean the same thing on both sides.
     llvm::StringMap<unsigned> kindSeen;
-    unsigned walkIndex = 0;
-    convertedBlock.getBody().walk([&](Operation *op) {
-      unsigned here = walkIndex++;
+    block.getBody().walk([&](Operation *op) {
       if (!isDistributionCandidate(op))
         return;
       std::string kind = searchNameFor(op);
       std::string prefix =
           kindCount[kind] > 1 ? kind + std::to_string(kindSeen[kind]++) : kind;
-      handleLinalgOp(llvm::cast<linalg::LinalgOp>(op), prefix, here, b);
+      handleLinalgOp(llvm::cast<linalg::LinalgOp>(op), prefix, b);
     });
 
     b.buildInto(space);
   }
 
-  /// Position of `op` in a pre-order walk of the reference compute block.
-  unsigned walkIndexOf(Operation *op) {
-    unsigned index = 0, found = 0;
-    refBlock_.getBody().walk([&](Operation *candidate) {
-      if (candidate == op)
-        found = index;
-      ++index;
-    });
-    return found;
-  }
-
-  static DType cmDtyFromMlirDty(Type ty) {
-    if (ty.isF32())
-      return DType::F32;
-    if (ty.isF64())
-      return DType::F64;
-    if (ty.isInteger(8))
-      return DType::I8;
-    if (ty.isInteger(16))
-      return DType::I16;
-    if (ty.isInteger(32))
-      return DType::I32;
-    if (ty.isInteger(64))
-      return DType::I64;
-    assert(false && "unsuported datatye");
-  }
   /// Whether to print why an individual trial's pipeline failed.
   ///
   /// During a search a rejected trial is ordinary, not an event: exhaustive
@@ -655,53 +584,35 @@ struct UpmemInferencePlugin : cinm::InferencePlugin {
     int64_t tasklets = taskletsVar_[conf];
 
     MLIRContext *ctx = trial.computeBlock->getContext();
-    // mlir::Location loc = trial.computeBlock->getLoc();
     trial.computeBlock.setPlatformAttr({});
     trial.computeBlock.setAcceleratorAttr(
         upmem::UpmemAcceleratorAttr::get(platform, 1, dpus, tasklets));
 
-    if (opts.lowering == UpmemLoweringPath::TEMPLATES) {
-      // Each op's hand-written generator produces the program directly.
-      SimCost total;
-      for (auto &sim : simulators_)
-        total += TRY_GET(sim(conf, *simulator, trial));
-      annotateCost(ctx, trial, total.total());
-      return total;
-    }
-
-    TRY(runGenericLowering(trial));
+    TRY(runLowering(trial));
     SimCost total = TRY_GET(simulator->simulate(trial.computeBlock.getBody()));
     annotateCost(ctx, trial, total.total());
     return total;
   }
 
-  /// Lower `trial` through the real pass pipeline, stamping each stage's
-  /// search parameters immediately before the pass that reads them.
-  DiagnosedSilenceableFailure runGenericLowering(cinm::TrialInfo &trial) {
+  /// Lower `trial` through the real pass pipeline. The trial starts in the
+  /// linalg form the search space was built from (see initializeSpace), so
+  /// only the configuration-dependent stages are left.
+  DiagnosedSilenceableFailure runLowering(cinm::TrialInfo &trial) {
     mlir::Location loc = trial.computeBlock->getLoc();
     MLIRContext *ctx = trial.computeBlock->getContext();
     if (!frontPipeline) {
-      convertPipeline = buildConvertPipeline(ctx, opts.debugPrintsInPipeline);
       frontPipeline = buildFrontPipeline(ctx, opts.debugPrintsInPipeline);
       backPipeline = buildBackPipeline(ctx, opts.debugPrintsInPipeline);
     }
 
-    // The lowering works in stages:
-    // 1. convert the program to linalg, perform fusion of linalg generic ops.
-    // This only does producer-consumer fusion, which is fine for elementwise
-    // producers, but isn't enough to fuse eg a gemv followed by an elementwise
-    // operation.
-    TRY(runPipeline(convertPipeline.get(), loc, trial.module.get()));
-    // 2. On the linalg IR, stamp attributes that describe the parameters of
-    // future passes. The parameters are eg tiling factors gotten from the
-    // search space.
-    if (failed(stampSearchParams(trial)))
-      return DiagnosedSilenceableFailure::definiteFailure();
-    // 3. Convert linalg to CNM (using the workgroup tiling factors 
-    // and iteration order parameters), bufferize, perform affine 
+    // 1. Resolve this configuration's tiling factors and iteration orders onto
+    // the ops the space named when it was built.
+    stampSearchParams(trial);
+    // 2. Convert linalg to CNM (using the workgroup tiling factors
+    // and iteration order parameters), bufferize, perform affine
     // optimizations and canonicalizations.
     TRY(runPipeline(frontPipeline.get(), loc, trial.module.get()));
-    // 4. Perform tiling of the MRAM kernel into a WRAM program. This uses
+    // 3. Perform tiling of the MRAM kernel into a WRAM program. This uses
     // other tiling factors. Convert the CNM IR to upmem, perform more
     // canonicalizations and transfer op specializations. Finally lower the
     // kernel from affine to SCF.
@@ -718,103 +629,47 @@ struct UpmemInferencePlugin : cinm::InferencePlugin {
   }
 
 private:
-  /// The search parameters one op's lowering needs.
-  struct OpSearchParams {
-    /// Block size per iteration dimension for --convert-linalg-to-cnm, which
-    /// decides how much of the iteration space each workgroup leaf gets.
-    SmallVector<SpaceValue> outerTile;
-    /// Block size per iteration dimension for --upmem-tile-mram-buffers, which
-    /// decides how the launch body walks its buffers through the leaf memory
-    /// level.
-    SmallVector<SpaceValue> leafTile;
-    /// Which tile dimension varies fastest across the leaves, as a rank among
-    /// the distinct orders (design §G3). Empty for ops with nothing to order.
-    SpaceValue order;
-  };
-
-  /// Search parameters per op, keyed by the op's position in a pre-order walk
-  /// of the compute block rather than by Operation*: makeTrialInfo deep-clones
-  /// the module without retaining an IRMapping, so a trial's ops are different
-  /// pointers. The clone is structurally identical, so walk position is a
-  /// stable correspondence.
-  SmallVector<std::pair<unsigned, OpSearchParams>> opParams_;
-  cinm::ComputeBlockOp refBlock_;
-
-  /// Resolve the recorded parameters against this trial's configuration and
-  /// stamp them on the ops that consume them.
+  /// Resolve the parameter names stamped on the reference (see
+  /// kOuterTileParamsAttr) against this trial's configuration, and replace
+  /// them with the values the passes read.
   ///
-  /// Both levels are stamped here, before anything runs, because
-  /// --convert-cinm-ops-to-linalg carries discardable attributes onto the
-  /// linalg op it produces and --convert-linalg-to-cnm carries them again into
-  /// the launch body. Nothing has to find the op again half way down the
+  /// Both levels are resolved here, before anything runs, because
+  /// --convert-linalg-to-cnm carries discardable attributes into the launch
+  /// body it creates. Nothing has to find the op again half way down the
   /// pipeline.
-  LogicalResult stampSearchParams(cinm::TrialInfo &trial) const {
-    llvm::DenseMap<unsigned, const OpSearchParams *> byIndex;
-    for (auto &[index, params] : opParams_)
-      byIndex[index] = &params;
-
-    auto resolve = [&](ArrayRef<SpaceValue> exprs) {
+  void stampSearchParams(cinm::TrialInfo &trial) const {
+    cinm::ConfWrapper conf = trial.conf();
+    // A name the space does not have reads as 0, which would stamp a tile size
+    // of 0 and mis-tile silently. It cannot happen -- every name stamped below
+    // was declared on the same SpaceBuilder -- so assert rather than handle it.
+    auto value = [&](StringRef name) {
+      assert(trial.space->findIndex(name) >= 0 &&
+             "op names a search parameter the space does not declare");
+      return conf[name];
+    };
+    auto resolve = [&](ArrayAttr names) {
       SmallVector<int64_t> sizes;
-      for (const SpaceValue &expr : exprs)
-        sizes.push_back(expr(trial.conf()));
+      for (Attribute name : names)
+        sizes.push_back(value(llvm::cast<StringAttr>(name).getValue()));
       return sizes;
     };
 
-    unsigned index = 0;
-    size_t stamped = 0;
     trial.computeBlock.getBody().walk([&](Operation *op) {
-      auto it = byIndex.find(index++);
-      if (it == byIndex.end())
-        return;
       MLIRContext *ctx = op->getContext();
-      if (!it->second->outerTile.empty())
-        op->setAttr(
-            cnm::CnmDialect::TILE_SIZES_NAME,
-            DenseI64ArrayAttr::get(ctx, resolve(it->second->outerTile)));
-      if (!it->second->leafTile.empty())
+      if (auto names = op->getAttrOfType<ArrayAttr>(kOuterTileParamsAttr))
+        op->setAttr(cnm::CnmDialect::TILE_SIZES_NAME,
+                    DenseI64ArrayAttr::get(ctx, resolve(names)));
+      if (auto names = op->getAttrOfType<ArrayAttr>(kLeafTileParamsAttr))
         op->setAttr(UPMEMDialect::LEAF_TILE_SIZES_NAME,
-                    DenseI64ArrayAttr::get(ctx, resolve(it->second->leafTile)));
+                    DenseI64ArrayAttr::get(ctx, resolve(names)));
       // The index form rather than the permutation: the order is stated over
       // the dimensions the op has *after* --convert-linalg-to-cnm splits its
       // reductions, which have not been created yet, whereas the rank is the
       // same number here and there.
-      if (it->second->order)
+      if (auto name = op->getAttrOfType<StringAttr>(kOrderParamAttr))
         op->setAttr(cnm::CnmDialect::WORKGROUP_DIM_ORDER_INDEX_NAME,
                     IntegerAttr::get(IntegerType::get(ctx, 64),
-                                     it->second->order(trial.conf())));
-      ++stamped;
-    });
-
-    // The trial is a clone of the reference, converted by the same pipeline,
-    // so every recorded position must have been found. If not, the two have
-    // drifted apart and stamping the wrong ops would mis-tile silently.
-    if (stamped != opParams_.size())
-      return trial.computeBlock->emitOpError()
-             << "stamped " << stamped << " of " << opParams_.size()
-             << " recorded ops; the trial no longer matches the reference the "
-                "search space was built from";
-    return success();
-  }
-
-  void applyTileSizes(cinm::TrialInfo &trial) const {
-    trial.computeBlock.getBody().walk([&](mlir::Operation *op) {
-      auto paramNamesAttr = op->getAttrOfType<ArrayAttr>(kTileParamNamesAttr);
-      if (!paramNamesAttr)
-        return;
-
-      llvm::SmallVector<int64_t> tileSizes;
-      for (auto nameAttr : paramNamesAttr)
-        tileSizes.push_back(
-            trial.conf()[llvm::cast<StringAttr>(nameAttr).strref()]);
-
-      auto tileSizesAttr = DenseI64ArrayAttr::get(op->getContext(), tileSizes);
-      // Per-trial and per-op: on a search this is one line per tiled op per
-      // configuration, emitted from every worker thread. See
-      // logTrialDiagnostics().
-      if (logTrialDiagnostics())
-        LLVM_DEBUG(llvm::dbgs() << "[cinm-inference]   tiling " << op->getName()
-                                << " with " << tileSizesAttr << "\n");
-      op->setAttr(cinm::CinmDialect::TILING_FACTORS_NAME, tileSizesAttr);
+                                     value(name.getValue())));
     });
   }
 };
@@ -898,7 +753,7 @@ linalgOperandDims(linalg::LinalgOp op) {
 
 void UpmemInferencePlugin::handleLinalgOp(linalg::LinalgOp op,
                                           StringRef namePrefix,
-                                          unsigned walkIndex, SpaceBuilder &b) {
+                                          SpaceBuilder &b) {
   FailureOr<SmallVector<int64_t>> extents = linalgLoopExtents(op);
   if (failed(extents))
     return; // Not distributable; contributes no parameters.
@@ -913,10 +768,8 @@ void UpmemInferencePlugin::handleLinalgOp(linalg::LinalgOp op,
   // eval-solution refers to.
   //
   // The marker is gone on anything a rewrite rebuilt -- a fused op, above all
-  // -- and both readers of it degrade rather than fail: the dimensions fall
-  // back to `D0, D1, ...`, and no template claims an op whose origin is not
-  // recorded, which is right, since the templates implement particular cinm
-  // ops and a fused op is no longer one of them.
+  // -- and its reader degrades rather than fails: the dimensions fall back to
+  // `D0, D1, ...`.
   auto originAttr =
       op->getAttrOfType<StringAttr>(cinm::CinmDialect::LOWERED_FROM_NAME);
   StringRef origin = originAttr ? originAttr.getValue() : StringRef();
@@ -997,18 +850,10 @@ void UpmemInferencePlugin::handleLinalgOp(linalg::LinalgOp op,
   // are depends on the block sizes, so the rest of the range is pruned by a
   // predicate -- an index the op has no order for is a configuration the space
   // does not offer, not a trial that fails.
-  SpaceValue order;
+  std::optional<SpaceVar> order;
   if (extents->size() >= 2) {
-    // The templates implement one fixed mapping and read the rest of this
-    // space through a projection (§H5). Declaring the variable for them too
-    // keeps one space and one set of parameter names across both paths;
-    // pinning it to 0 keeps the search from spending trials on a parameter
-    // that path ignores.
-    int64_t numOrders = opts.lowering == UpmemLoweringPath::TEMPLATES
-                            ? 1
-                            : factorial(extents->size());
-    SpaceVar orderVar =
-        b.intRange((namePrefix + ".order").str(), 0, numOrders - 1);
+    SpaceVar orderVar = b.intRange((namePrefix + ".order").str(), 0,
+                                   factorial(extents->size()) - 1);
     b.require(
         [=](const ConfigurationVector &c, arma::urowvec &valid) {
           arma::urowvec distributed(c.size(), arma::fill::zeros);
@@ -1038,300 +883,24 @@ void UpmemInferencePlugin::handleLinalgOp(linalg::LinalgOp op,
           }
         },
         "order < (number of dimensions spread over the workgroup)!");
-    order = spaceValue(orderVar);
+    order = orderVar;
   }
 
-  SmallVector<SpaceValue> outerTile, leafTile;
-  for (const SpaceVar &var : blocks)
-    outerTile.push_back(spaceValue(var));
-  for (const SpaceVar &var : leaves)
-    leafTile.push_back(spaceValue(var));
-  recordParams(walkIndex, outerTile, leafTile, order);
-
-  // The hand-written templates read this same space through a projection.
-  // Dispatch on which cinm op this came from rather than on the linalg op's
-  // type: the generators still rewrite the cinm op in the trial, so the two
-  // must agree on what they are looking at.
-  if (opts.lowering == UpmemLoweringPath::TEMPLATES) {
-    if (origin == cinm::GemvOp::getOperationName())
-      registerGemvTemplate(b, blocks, leaves, *extents, eltTy);
-    else if (origin == cinm::ReduceOp::getOperationName())
-      registerReduceTemplate(b, blocks, leaves, *extents, eltTy);
-  }
-}
-
-/// Read the generic block sizes as the gemv template generator's arguments
-/// (design §H5). §G3 fixes the layout -- the tasklets of a DPU split the
-/// parallel dimension -- which pins the reading exactly:
-///
-///   taskletRows = min(tasklets, mTiles)   taskletCols = tasklets/taskletRows
-///   mramRow     = blockM * taskletRows    mramCol     = blockK * taskletCols
-///   dpuRows     = mTiles / taskletRows    dpuCols     = kTiles / taskletCols
-///   wramRow     = leafM                   wramCol     = leafK
-struct GemvTemplateArgs {
-  int64_t dpuRows, dpuCols, taskletRows, taskletCols;
-  int64_t mramRow, mramCol, wramRow, wramCol;
-};
-
-static std::optional<GemvTemplateArgs>
-readAsGemvTemplate(int64_t M, int64_t K, int64_t dpus, int64_t tasklets,
-                   int64_t blockM, int64_t blockK, int64_t leafM,
-                   int64_t leafK) {
-  if (blockM <= 0 || blockK <= 0 || M % blockM || K % blockK)
-    return std::nullopt;
-  const int64_t mTiles = M / blockM, kTiles = K / blockK;
-  const int64_t taskletRows = std::min<int64_t>(tasklets, mTiles);
-  if (taskletRows <= 0 || tasklets % taskletRows)
-    return std::nullopt;
-  const int64_t taskletCols = tasklets / taskletRows;
-  if (mTiles % taskletRows || kTiles % taskletCols)
-    return std::nullopt;
-  const int64_t dpuRows = mTiles / taskletRows, dpuCols = kTiles / taskletCols;
-  if (dpus != dpuRows * dpuCols)
-    return std::nullopt;
-  return GemvTemplateArgs{dpuRows,
-                          dpuCols,
-                          taskletRows,
-                          taskletCols,
-                          blockM * taskletRows,
-                          blockK * taskletCols,
-                          leafM,
-                          leafK};
-}
-
-void UpmemInferencePlugin::registerGemvTemplate(SpaceBuilder &b,
-                                                ArrayRef<SpaceVar> blocks,
-                                                ArrayRef<SpaceVar> leaves,
-                                                ArrayRef<int64_t> extents,
-                                                Type eltTy) {
-  // linalg.matvec iterates (m, k).
-  const int64_t M = extents[0], K = extents[1];
-  auto dpus = dpusVar_;
-  auto tasklets = taskletsVar_;
-  SpaceVar blockM = blocks[0], blockK = blocks[1];
-  SpaceVar leafM = leaves[0], leafK = leaves[1];
-  const int64_t wramElements = platform.getWramLevel().getSizeInElements(eltTy);
-  const int64_t mramElements = platform.getMramLevel().getSizeInElements(eltTy);
-
-  auto derive = [=](const cinm::ConfWrapper &c) {
-    return readAsGemvTemplate(M, K, dpus[c], tasklets[c], blockM[c], blockK[c],
-                              leafM[c], leafK[c]);
+  // Record which parameters this op's lowering consumes, on the op itself.
+  // Every trial is cloned from this reference, so the association survives
+  // into each trial without a side table keyed on anything a rewrite could
+  // invalidate; stampSearchParams only resolves the names.
+  OpBuilder builder(op.getContext());
+  auto paramNames = [&](ArrayRef<SpaceVar> vars) {
+    SmallVector<Attribute> names;
+    for (const SpaceVar &var : vars)
+      names.push_back(builder.getStringAttr(var.name()));
+    return builder.getArrayAttr(names);
   };
-
-  // Under `lowering=templates` there is nothing else to run, so restricting
-  // the space to what the template layout can express is right here -- unlike
-  // the capacity bounds in handleLinalgOp, which must stay necessary-only.
-  b.require([=](const cinm::ConfWrapper &c) { return derive(c).has_value(); },
-            "the gemv template layout can express this configuration");
-  b.require(
-      [=](const cinm::ConfWrapper &c) -> bool {
-        auto d = derive(c);
-        return d && d->wramRow > 0 && d->wramCol > 0 &&
-               d->mramRow % (d->taskletRows * d->wramRow) == 0 &&
-               d->mramCol % (d->taskletCols * d->wramCol) == 0;
-      },
-      "the WRAM tile divides the MRAM tile");
-  b.require(
-      [=](const cinm::ConfWrapper &c) -> bool {
-        auto d = derive(c);
-        if (!d)
-          return false;
-        // Per-tasklet WRAM: A tile + the column-split x slice + y slots +
-        // merge scratch for the MRAM-resident running total.
-        const int64_t t = tasklets[c];
-        return t * d->wramRow * d->wramCol + d->taskletCols * d->wramCol +
-                   t * d->wramRow + (t / d->taskletCols) * d->wramRow <=
-               wramElements;
-      },
-      "the gemv template's WRAM working set fits");
-  b.require(
-      [=](const cinm::ConfWrapper &c) -> bool {
-        auto d = derive(c);
-        // Per-DPU MRAM: A (mr x mc) + x (mc) + y (mr).
-        return d && d->mramRow * d->mramCol + d->mramCol + d->mramRow <=
-                        mramElements;
-      },
-      "the gemv template's MRAM working set fits");
-
-  // Simulation template for the MRAM fast path (bypasses the lowering
-  // pipeline).
-  registerSimulator([=](const cinm::ConfWrapper &c, UpmemSimulator &sim,
-                        cinm::TrialInfo &trial) -> Maybe<SimCost> {
-    auto bufferizePm =
-        std::make_unique<PassManager>(trial.computeBlock.getContext());
-    {
-      bufferization::OneShotBufferizePassOptions opts;
-      opts.unknownTypeConversion =
-          bufferization::LayoutMapOption::IdentityLayoutMap;
-      bufferizePm->addPass(bufferization::createOneShotBufferizePass(opts));
-    }
-    TRY(runPipeline(bufferizePm.get(), trial.computeBlock->getLoc(),
-                    trial.module.get()));
-
-    IRRewriter rewriter(trial.module->getContext());
-    rewriter.setInsertionPointToStart(&trial.computeBlock.getBody().front());
-
-    auto args = derive(c);
-    if (!args)
-      return Maybe<SimCost>(emitSilenceableFailure(
-          trial.computeBlock->getLoc(),
-          "the gemv template cannot express this configuration"));
-    trial.computeBlock->walk([&](cinm::GemvOp op) {
-      generateGemv(op, rewriter, args->dpuRows, args->dpuCols, args->mramRow,
-                   args->mramCol, args->wramRow, args->wramCol,
-                   args->taskletRows, args->taskletCols);
-    });
-
-    auto cleanupPm =
-        std::make_unique<PassManager>(trial.computeBlock.getContext());
-    {
-      auto &dpuPm = cleanupPm->nest<upmem::DpuProgramOp>();
-      addAffineOpts(dpuPm);
-      dpuPm.addPass(createLowerAffinePass());
-      dpuPm.addPass(createCanonicalizerPass());
-      dpuPm.addPass(createCSEPass());
-    }
-    {
-      auto &funcs = cleanupPm->nest<func::FuncOp>();
-      funcs.addPass(createConvertLinalgToAffineLoopsPass());
-      addAffineOpts(funcs);
-    }
-
-    TRY(runPipeline(cleanupPm.get(), trial.computeBlock->getLoc(),
-                    trial.module.get()));
-
-    return TRY_GET(sim.simulate(trial.computeBlock.getBody()));
-  });
-}
-
-void UpmemInferencePlugin::registerReduceTemplate(SpaceBuilder &b,
-                                                  ArrayRef<SpaceVar> blocks,
-                                                  ArrayRef<SpaceVar> leaves,
-                                                  ArrayRef<int64_t> extents,
-                                                  Type eltTy) {
-  // The template treats a reduction as a 2-D (M, K) problem: M is the product
-  // of the parallel extents, K the reduction extent. linalg.reduce iterates
-  // the input's dimensions in order, and this generator only handles a
-  // trailing reduction, so the parallel dimensions are the leading ones.
-  if (extents.size() < 2)
-    return;
-  const int64_t M = computeProduct(extents.drop_back());
-  const int64_t K = extents.back();
-  auto dpus = dpusVar_;
-  auto tasklets = taskletsVar_;
-  SmallVector<SpaceVar> parBlocks(blocks.drop_back());
-  SmallVector<SpaceVar> parLeaves(leaves.drop_back());
-  SpaceVar blockK = blocks.back(), leafK = leaves.back();
-  const int64_t wramElements = platform.getWramLevel().getSizeInElements(eltTy);
-  const int64_t mramElements = platform.getMramLevel().getSizeInElements(eltTy);
-
-  auto derive = [=](const cinm::ConfWrapper &c) {
-    int64_t blockM = 1, leafM = 1;
-    for (const SpaceVar &var : parBlocks)
-      blockM *= var[c];
-    for (const SpaceVar &var : parLeaves)
-      leafM *= var[c];
-    return readAsGemvTemplate(M, K, dpus[c], tasklets[c], blockM, blockK[c],
-                              leafM, leafK[c]);
-  };
-
-  b.require([=](const cinm::ConfWrapper &c) { return derive(c).has_value(); },
-            "the reduction template layout can express this configuration");
-  b.require(
-      [=](const cinm::ConfWrapper &c) -> bool {
-        auto d = derive(c);
-        return d && d->wramRow > 0 && d->wramCol > 0 &&
-               d->mramRow % (d->taskletRows * d->wramRow) == 0 &&
-               d->mramCol % (d->taskletCols * d->wramCol) == 0;
-      },
-      "the WRAM tile divides the MRAM tile");
-  b.require(
-      [=](const cinm::ConfWrapper &c) -> bool {
-        auto d = derive(c);
-        return d && d->wramCol * d->wramRow * tasklets[c] + tasklets[c] <=
-                        wramElements;
-      },
-      "the reduction template's WRAM working set fits");
-  b.require(
-      [=](const cinm::ConfWrapper &c) -> bool {
-        auto d = derive(c);
-        // Per-DPU MRAM: input (mr x mc) + output (mr).
-        return d && d->mramRow * d->mramCol + d->mramRow <= mramElements;
-      },
-      "the reduction template's MRAM working set fits");
-
-  {
-
-    // todo register simulator for specific op, here we assume
-    //  that there is a single op in the compute block
-    registerSimulator([=](const cinm::ConfWrapper &c, UpmemSimulator &sim,
-                          cinm::TrialInfo &trial) -> Maybe<SimCost> {
-      auto bufferizePm =
-          std::make_unique<PassManager>(trial.computeBlock.getContext());
-      {
-        bufferization::OneShotBufferizePassOptions opts;
-        opts.unknownTypeConversion =
-            bufferization::LayoutMapOption::IdentityLayoutMap;
-        // opts.bufferizeFunctionBoundaries = true;
-        // opts.functionBoundaryTypeConversion =
-        //     bufferization::LayoutMapOption::IdentityLayoutMap;
-        bufferizePm->addPass(bufferization::createOneShotBufferizePass(opts));
-      }
-      TRY(runPipeline(bufferizePm.get(), trial.computeBlock->getLoc(),
-                      trial.module.get()));
-
-      IRRewriter rewriter(trial.module->getContext());
-      rewriter.setInsertionPointToStart(&trial.computeBlock.getBody().front());
-
-      auto args = derive(c);
-      if (!args)
-        return Maybe<SimCost>(emitSilenceableFailure(
-            trial.computeBlock->getLoc(),
-            "the reduction template cannot express this configuration"));
-      trial.computeBlock->walk([&](cinm::ReduceOp op) {
-        generateTailReduction(op, rewriter, args->dpuRows, args->dpuCols,
-                              args->mramRow, args->mramCol, args->wramRow,
-                              args->wramCol, args->taskletRows,
-                              args->taskletCols);
-      });
-      auto cleanupPm =
-          std::make_unique<PassManager>(trial.computeBlock.getContext());
-      {
-        auto &dpuPm = cleanupPm->nest<upmem::DpuProgramOp>();
-        addAffineOpts(dpuPm);
-        // dpuPm.addPass(affine::createLoopUnrollPass(
-        //     -1, false, [](affine::AffineForOp forOp) -> unsigned int {
-        //       auto tc =
-        //       dyn_cast<LoopLikeOpInterface>(*forOp).getStaticTripCount(); if
-        //       (tc && tc->getZExtValue() <= 4) {
-        //         // In an upmem DPU program, we want to either unroll in
-        //         // full and have static (immediate) index patterns, or not
-        //         // unroll. This is because the IRAM is shared with the WRAM.
-        //         return tc->getZExtValue();
-        //       }
-        //       return 1; // do not unroll
-        //     }));
-
-        dpuPm.addPass(createLowerAffinePass());
-        dpuPm.addPass(createCanonicalizerPass());
-        dpuPm.addPass(createCSEPass());
-      }
-      {
-        auto &funcs = cleanupPm->nest<func::FuncOp>();
-        funcs.addPass(createConvertLinalgToAffineLoopsPass());
-        addAffineOpts(funcs);
-        // funcs.addPass(affine::createAffineVectorize(
-        //     affine::AffineVectorizeOptions{.vectorSizes = {8},
-        //                                    .fastestVaryingPattern = {},
-        //                                    .vectorizeReductions = true}));
-      }
-
-      TRY(runPipeline(cleanupPm.get(), trial.computeBlock->getLoc(),
-                      trial.module.get()));
-
-      return TRY_GET(sim.simulate(trial.computeBlock.getBody()));
-    });
-  }
+  op->setAttr(kOuterTileParamsAttr, paramNames(blocks));
+  op->setAttr(kLeafTileParamsAttr, paramNames(leaves));
+  if (order)
+    op->setAttr(kOrderParamAttr, builder.getStringAttr(order->name()));
 }
 
 // ===----------------------------------------------------------------------===//
@@ -1368,7 +937,6 @@ struct UpmemInferAcceleratorPass
     o.dumpDir = dumpDir;
     upmemOpts.annotateOpCosts = annotateOpCosts;
     upmemOpts.useMRAMTiling = useMRAMTiling;
-    upmemOpts.lowering = lowering;
     upmemOpts.fixedDpus = fixedDpus;
     upmemOpts.fixedTasklets = fixedTasklets;
     upmemOpts.simulator = simulator;

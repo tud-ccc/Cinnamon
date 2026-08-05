@@ -385,6 +385,12 @@ struct InferencePlugin {
   /// The plugin decides what to add and how to explore the IR — it may walk
   /// the compute body, inspect op shapes, attach attributes to nodes, etc.
   /// Annotations left on the clone are inherited by every per-evaluation clone.
+  ///
+  /// The reference may also be *rewritten* here, and every trial then starts
+  /// from the rewritten form: a plugin whose space is stated over some lowered
+  /// form of the block can lower it once here instead of once per trial. The
+  /// framework re-finds the compute block afterwards, so `refClone` itself
+  /// need not survive.
   virtual void initializeSpace(cinm::ComputeBlockOp refClone,
                                ConfigSpace &space) = 0;
 

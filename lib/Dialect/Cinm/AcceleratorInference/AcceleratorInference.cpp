@@ -742,6 +742,14 @@ struct InferenceTask {
     this->refClone = refClone;
     this->refModule = std::move(refModule);
     buildConfigSpace(refClone, plugin, space);
+    // initializeSpace is allowed to rewrite the reference in place (the UPMEM
+    // plugin lowers it to linalg, so that every trial starts from the form the
+    // space was read off), and a rewrite can replace the compute block op
+    // itself -- canonicalization rebuilds it to drop an unused block argument.
+    // Find it again rather than keeping a handle that may have been erased.
+    this->refClone = nullptr;
+    this->refModule->walk([&](ComputeBlockOp op) { this->refClone = op; });
+    assert(this->refClone && "initializeSpace erased the reference block");
   }
 
   // Clone refModule to produce a fresh isolated trial module per evaluation.
