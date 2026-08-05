@@ -9,6 +9,7 @@
 #include <mlir/IR/AffineExpr.h>
 
 #include <algorithm>
+#include <limits>
 
 using namespace mlir;
 using namespace mlir::cnm;
@@ -53,6 +54,56 @@ AffineMap mlir::cnm::inflateScatterMapToPointwise(AffineMap map,
     results.push_back(getAffineDimExpr(map.getNumDims() + i, ctx));
   return AffineMap::get(map.getNumDims() + implicit, map.getNumSymbols(),
                         results, ctx);
+}
+
+AffineMap mlir::cnm::deflateScatterMap(AffineMap map, BufferType buffer,
+                                       ShapedType hostTy) {
+  ArrayRef<int64_t> bufShape = buffer.getShape();
+  ArrayRef<int64_t> hostShape = hostTy.getShape();
+  int64_t wgRank = buffer.getWorkgroupShape().size();
+  int64_t numDims = map.getNumDims();
+  // The printer calls this, so it has to cope with IR that does not verify.
+  if (numDims < wgRank ||
+      numDims - wgRank > static_cast<int64_t>(bufShape.size()))
+    return map;
+  int64_t retained = numDims - wgRank;
+  if (static_cast<int64_t>(map.getNumResults()) +
+          static_cast<int64_t>(bufShape.size()) - retained !=
+      static_cast<int64_t>(hostShape.size()))
+    return map;
+
+  // A memref may store a sub-array with gaps in it, and a block that spans a
+  // gap is not one run; a tensor has no such thing.
+  int64_t contiguous = std::numeric_limits<int64_t>::max();
+  if (auto memrefTy = dyn_cast<MemRefType>(hostTy)) {
+    contiguous = getContiguousSuffixSize(memrefTy);
+    if (contiguous < 0)
+      return map;
+  }
+  int64_t blockElements = computeProduct(getScatterBlockShape(map, buffer));
+
+  SmallVector<AffineExpr> results(map.getResults());
+  while (retained > 0 && !results.empty()) {
+    int64_t extent = bufShape[retained - 1];
+    if (extent != hostShape[results.size() - 1])
+      break;
+    if (blockElements * extent > contiguous)
+      break;
+    unsigned dim = wgRank + retained - 1;
+    if (results.back() != getAffineDimExpr(dim, map.getContext()))
+      break;
+    // Dropping the dimension from the domain is only sound if nothing else
+    // names it.
+    if (llvm::any_of(ArrayRef(results).drop_back(), [&](AffineExpr expr) {
+          return expr.isFunctionOfDim(dim);
+        }))
+      break;
+    results.pop_back();
+    blockElements *= extent;
+    --retained;
+  }
+  return AffineMap::get(wgRank + retained, map.getNumSymbols(), results,
+                        map.getContext());
 }
 
 SmallVector<int64_t> mlir::cnm::getScatterIndexSpace(BufferType buffer) {

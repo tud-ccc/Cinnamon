@@ -91,7 +91,7 @@ def ScatterOp: Cnm_Op<"scatter", [InferWorkgroupTypeFromBuffer<"buffer", "wg">]>
     let hasVerifier = 1;
     let hasCanonicalizer = 1;
 
-    let assemblyFormat = "$input `into` $buffer `[` $scatterMap `]` `of` $wg attr-dict `:` type($input) `into` qualified(type($buffer))";
+    let assemblyFormat = "$input `into` $buffer `[` custom<ScatterMap>($scatterMap) `]` `of` $wg attr-dict `:` type($input) `into` qualified(type($buffer))";
 }
 
 def GatherOp: Cnm_Op<"gather", [InferWorkgroupTypeFromBuffer<"buffer", "wg">, InferTensorTypeAdaptor, DestinationStyleOpInterface]> {
@@ -131,7 +131,7 @@ def GatherOp: Cnm_Op<"gather", [InferWorkgroupTypeFromBuffer<"buffer", "wg">, In
 
     let hasVerifier = 1;
     let hasCanonicalizer = 1;
-    let assemblyFormat = "$buffer `[` $gatherMap `]` `of` $wg attr-dict `into` $outputBuf `:` qualified(type($buffer)) `into` type($outputBuf)";
+    let assemblyFormat = "$buffer `[` custom<ScatterMap>($gatherMap) `]` `of` $wg attr-dict `into` $outputBuf `:` qualified(type($buffer)) `into` type($outputBuf)";
 }
 
 def LaunchOp: Cnm_Op<"launch", [AffineScope, AttrSizedOperandSegments, AutomaticAllocationScope, IsolatedFromAbove, SingleBlockImplicitTerminator<"TerminatorOp">]> {

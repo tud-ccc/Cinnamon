@@ -140,17 +140,21 @@ static LogicalResult convertCnmGatherToUpmem(RewriterBase &rewriter,
 
   const size_t numTasklets = upmemWgAlloc.getType().getNumTaskletsPerDpu();
   const cnm::BufferType bufferTy = op.getBuffer().getType();
-  const int64_t perLeaf =
-      cnm::getScatterBlocksPerLeaf(op.getGatherMap(), bufferTy);
+  // A DMA moves whole blocks, and the canonical map carries none, so derive
+  // the widest one it allows. Anything the host layout leaves non-contiguous
+  // stays a separate block.
+  const AffineMap map =
+      cnm::deflateScatterMap(op.getGatherMap(), bufferTy, op.getHostType());
+  const int64_t perLeaf = cnm::getScatterBlocksPerLeaf(map, bufferTy);
 
   // A gathered buffer always has a per-tasklet dimension: results the
   // tasklets could not tell apart would race.
   upmem::GatherBlocksOp::create(
       rewriter, op->getLoc(), outputBuf, refToBuffer,
       op.getTransferCountInItems() / perLeaf,
-      keepTaskletDimAffineMapCnmToUpmem(op.getGatherMap(), bufferTy),
+      keepTaskletDimAffineMapCnmToUpmem(map, bufferTy),
       upmemWgAlloc.getResult(),
-      blocksPerDpu(op.getGatherMap(), bufferTy, numTasklets,
+      blocksPerDpu(map, bufferTy, numTasklets,
                    /*sharedAcrossTasklets=*/false));
 
   if (!isBufferized) {
@@ -179,18 +183,19 @@ static LogicalResult convertCnmScatterToUpmem(RewriterBase &rewriter,
 
   const size_t numTasklets = upmemWgAlloc.getType().getNumTaskletsPerDpu();
   const cnm::BufferType bufferTy = op.getBuffer().getType();
-  // What the CNM map leaves implicit is one contiguous run; a leaf may receive
-  // several of them.
-  const int64_t perLeaf =
-      cnm::getScatterBlocksPerLeaf(op.getScatterMap(), bufferTy);
+  // What the map leaves implicit is one contiguous run; a leaf may receive
+  // several of them. The canonical map leaves nothing implicit, so derive the
+  // widest block the map and the host layout allow.
+  const AffineMap map =
+      cnm::deflateScatterMap(op.getScatterMap(), bufferTy, inputTy);
+  const int64_t perLeaf = cnm::getScatterBlocksPerLeaf(map, bufferTy);
 
   upmem::ScatterBlocksOp::create(
       rewriter, op->getLoc(), inputAsMemref, refToBuffer,
       op.getTransferCountInItems() / perLeaf,
-      keepTaskletDimAffineMapCnmToUpmem(op.getScatterMap(), bufferTy),
+      keepTaskletDimAffineMapCnmToUpmem(map, bufferTy),
       upmemWgAlloc.getResult(),
-      blocksPerDpu(op.getScatterMap(), bufferTy, numTasklets,
-                   sharedAcrossTasklets));
+      blocksPerDpu(map, bufferTy, numTasklets, sharedAcrossTasklets));
 
   rewriter.eraseOp(op);
   return success();

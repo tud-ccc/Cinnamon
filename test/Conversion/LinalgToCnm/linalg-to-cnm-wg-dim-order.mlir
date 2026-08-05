@@ -40,16 +40,21 @@
 // The vector is indexed by the reduction dimension alone, so its scatter map
 // is where the two orders differ visibly.
 //
+// The maps are printed in shorthand: a trailing buffer dimension whose host
+// dimension it names one-for-one is left implicit, since the shapes already
+// say the two are one block. That is why the maps below have fewer dimensions
+// than the buffers they scatter into.
+//
 // k-tile outermost: `leaf floordiv 4`, constant over each run of four
 // consecutive leaves, which share their k-tile and differ in m.
-// RULE-DAG: #[[VEC:.+]] = affine_map<(d0, d1, d2, d3, d4) -> (d1 floordiv 4, d4)>
-// RULE-DAG: #[[MAT:.+]] = affine_map<(d0, d1, d2, d3, d4, d5) -> (d1 * 256 + d3 - (d1 floordiv 4) * 1024, d1 floordiv 4, d5)>
+// RULE-DAG: #[[VEC:.+]] = affine_map<(d0, d1, d2, d3) -> (d1 floordiv 4)>
+// RULE-DAG: #[[MAT:.+]] = affine_map<(d0, d1, d2, d3, d4) -> (d1 * 256 + d3 - (d1 floordiv 4) * 1024, d1 floordiv 4)>
 // RULE-DAG: #[[OUT:.+]] = affine_map<(d0, d1, d2, d3, d4) -> (d1 floordiv 4, d1 * 256 + d4 - (d1 floordiv 4) * 1024)>
 //
 // k-tile innermost: `leaf mod 4`, so adjacent leaves differ in their k-tile and
 // the vector is replicated across each run of four instead.
-// FLIP-DAG: #[[VEC:.+]] = affine_map<(d0, d1, d2, d3, d4) -> (d1 mod 4, d4)>
-// FLIP-DAG: #[[MAT:.+]] = affine_map<(d0, d1, d2, d3, d4, d5) -> (d3 + (d1 floordiv 4) * 256, d1 mod 4, d5)>
+// FLIP-DAG: #[[VEC:.+]] = affine_map<(d0, d1, d2, d3) -> (d1 mod 4)>
+// FLIP-DAG: #[[MAT:.+]] = affine_map<(d0, d1, d2, d3, d4) -> (d3 + (d1 floordiv 4) * 256, d1 mod 4)>
 // FLIP-DAG: #[[OUT:.+]] = affine_map<(d0, d1, d2, d3, d4) -> (d1 mod 4, d4 + (d1 floordiv 4) * 256)>
 
 // CHECK-LABEL: func.func @gemv_split_k
