@@ -262,17 +262,23 @@ no short-circuit), and `cmpMayHold` became `boolMayHold` plus a new
 antecedent *must* hold, since believing one that merely *might* would impose the
 consequent on completions the constraint says nothing about.
 
-**No `/` inside an implication** — asserted rather than supported. A `Div` in
-the DSL means "divides exactly", but the *tree* does not say so: the assertion
-is a side condition `require()` extracts alongside it, and every such extraction
-is unconditional. Under a guard it would therefore constrain exactly the
-configurations the guard exists to exclude — and dropping it instead leaves the
-truncating reading of the tree in force, which silently accepts a block that
-does not divide the extent. Write the multiplied-out form,
-`implies(g, block == extent)`, which is what the analyser was going to read
-anyway. The full contract is
-[ConstraintAnalysisDesign.md § The division contract](ConstraintAnalysisDesign.md#the-division-contract);
-it is worth reading before writing §G's condition 1.
+**Division inside an implication** works, and getting there fixed a bug that
+predates this. `a / b` in the DSL means "b divides a exactly", but the
+interpreter used to compute a truncating quotient and rely on a divisibility
+side condition being enforced separately — and `extractDivConstraints` cannot
+extract one from under a guard, since what it reifies is unconditional. So
+`implies(g, extent / block == 1)` would have silently accepted `block = 768`
+against `extent = 1024`. Rather than ban the spelling, the evaluation was made
+exact: each `Div` clears the lanes where it did not divide, and each comparison
+ANDs that in, so an inexact division simply makes its comparison false. Per
+comparison, not at the root — an inexact division in an *antecedent* falsifies
+the antecedent, which satisfies the implication. See
+[ConstraintAnalysisDesign.md § Division is exact division](ConstraintAnalysisDesign.md#division-is-exact-division).
+
+The multiplied-out form is still the better spelling — it says what it means
+without relying on that — but it is now a style preference rather than a
+correctness requirement, and either way `matchProductEquality` cross-multiplies
+it to `block == extent` before the enumerator sees it.
 
 In `planComponents`:
 

@@ -178,33 +178,22 @@ void SpaceBuilder::reportConstraintAnalysis(const ConfigSpace &space) const {
   }
 }
 
-/// Whether `node` divides anywhere below it.
-static bool containsDiv(const ConstraintNode &node) {
-  if (node.kind == ConstraintNode::Kind::Div)
-    return true;
-  return llvm::any_of(node.operands, [](const ConstraintNodePtr &child) {
-    return containsDiv(*child);
-  });
-}
-
 void SpaceBuilder::extractDivConstraints(const ConstraintNodePtr &node) {
   if (!node)
     return;
-  // Not under a guard. Everything this function reifies is unconditional, so a
-  // `/` inside an implication would impose its divisibility on the very
+  // Not under a guard. What this function reifies is unconditional, so a `/`
+  // inside an implication would impose its divisibility on the very
   // configurations the guard exists to exclude.
   //
-  // Leaving it unreified would be worse than refusing: integer division
-  // truncates, so `implies(g, extent / block == 1)` would quietly accept a
-  // block that does not divide the extent (1024/768 is 1). Reifying it
-  // conditionally is possible and has no caller. So: write the multiplied-out
-  // form, `implies(g, block == extent)`, which is what the analyser wants
-  // anyway -- it is a product equality, and a division is not.
-  if (node->kind == ConstraintNode::Kind::Implies) {
-    assert(!containsDiv(*node) &&
-           "an implication may not divide; state the multiplied-out form");
+  // Nothing is lost but pruning, and not even all of that. `a / b` is exact by
+  // evaluation -- a lane whose division does not come out exact makes the
+  // enclosing comparison false, see evalBoolNodeVec -- so a guarded division
+  // still means what it says. And matchProductEquality cross-multiplies the
+  // consequent anyway, so `implies(g, extent / block == 1)` still reaches the
+  // enumerator as the gated equality `extent == block`. What goes is the static
+  // domain filter, which is exactly the part that would have been wrong.
+  if (node->kind == ConstraintNode::Kind::Implies)
     return;
-  }
   if (node->kind == ConstraintNode::Kind::Div)
     addDivConstraint(node->operands[0], node->operands[1]);
   for (const auto &child : node->operands)

@@ -174,52 +174,64 @@ Form C never has a normal form at all. `boolMayHold` / `boolMustHold` walk the
 raw tree with interval arithmetic (`evalNodeBounds`), which is why they handle
 the `Add` and `Sub` that the reading refuses.
 
-### The division contract
+### Division is exact division
 
-**The reading of a `Div` is not what the interpreter computes.** `evalNodeVec`
-lowers `Div` to truncating integer division, guarded against a zero divisor
-(`vecSafeDiv`, matching the old `b ? a / b : 0`). So for `extent = 1024`,
-`block = 768`:
+**`a / b` means "b divides a, and the quotient is".** Not "the truncated
+quotient". That is the meaning the reading above assumes when it
+cross-multiplies, and it is the meaning the interpreter implements: for
+`extent = 1024, block = 768`, `extent / block == 1` is **false**, because 768
+does not divide 1024. The truncated quotient happens to be 1, and that is not
+relevant to anything.
 
-| | verdict |
-|---|---|
-| the tree, evaluated: `1024 / 768 == 1` | **true** — accepts |
-| its reading: `1024 == 768` | **false** — rejects |
+This was not always so, and the way it is arranged is worth knowing.
 
-The reading is *strictly stronger*. The two agree only because `require()` walks
-every tree it is given and reifies each `Div` it finds as a separate
-divisibility constraint — `extractDivConstraints` → `addDivConstraint`, landing
-as a static domain filter, a structural `mustDivide`, or a dynamic predicate,
-whichever the operand shapes allow. With `block | extent` also enforced, the
-truncating case cannot arise and the disagreement is unreachable.
+The quotient itself is still computed by truncation — `vecSafeDiv`, zero-guarded,
+because a vectorized evaluation touches every lane and cannot short-circuit past
+a bad one the way a scalar predicate would. What makes the *semantics* exact is
+that `evalNodeVec` also threads an **exactness mask**: each `Div` clears the
+lanes where its divisor did not divide its dividend, and `evalBoolNodeVec` ANDs
+that mask into the comparison's result. So a lane with an inexact division makes
+the comparison false, whatever the truncated quotient would have compared to.
 
-So the contract is:
+**The mask is applied per `Cmp`, not once at the root.** That is what makes the
+answer right under an implication: an inexact division in an *antecedent*
+falsifies the antecedent, which **satisfies** the implication. Clearing the lane
+at the root would have rejected it instead — the opposite verdict.
 
-> A `Div` in the DSL means "divides exactly". The tree alone does not say that;
-> the side condition extracted alongside it does. **Both must be enforced, or
-> the reading and the evaluation part ways** — and they part ways silently,
-> because each is individually plausible.
+Two consequences worth stating outright:
 
-This matters because the two are *not* enforced by the same machinery. The
-component enumerator absorbs the Form A reading and drops the predicate; the
-unabsorbed path evaluates the tree. Neither is wrong so long as the side
-condition survives.
+- **The reading and the evaluation now agree unconditionally.** For an equality
+  they are the same proposition: `a / b == c` holds iff `b | a` and `a/b == c`,
+  iff `a == c * b`, which is exactly the cross-multiplied form. Nothing has to
+  be enforced on the side for that to be true.
+- **The extracted divisibility constraints are an optimization, not a
+  correctness requirement.** `require()` still walks every tree and reifies each
+  `Div` through `extractDivConstraints` → `addDivConstraint`, as a static domain
+  filter, a structural `mustDivide`, or a dynamic predicate. That moves the
+  check out of per-configuration filtering and into the encoding, where it
+  prunes instead of rejecting. Dropping it would cost speed, never correctness.
 
-**Which is why an implication may not divide.** Everything
-`extractDivConstraints` reifies is unconditional, so a `Div` under a guard would
-impose its divisibility on precisely the configurations the guard exists to
-exclude — and *not* extracting it leaves the truncating reading of the tree in
-force, which is the silent-wrong-answer case above. `extractDivConstraints`
-therefore refuses to descend into an `Implies` and asserts that neither side
-divides. Write the multiplied-out form:
+Which is why `extractDivConstraints` does not descend into an `Implies`: what it
+reifies is unconditional, so a guarded division's side condition would constrain
+exactly the configurations the guard exists to exclude. Nothing is lost but
+pruning — and not even all of it, since `matchProductEquality` cross-multiplies
+the consequent anyway, so `implies(g, extent / block == 1)` still reaches the
+enumerator as the gated equality `extent == block` and is still solved for.
 
-```cpp
-b.require(implies(fuse >= 1, extent / block == 1));  // rejected
-b.require(implies(fuse >= 1, block == extent));      // say this
-```
+The interval analysis needs the same care, and gets it through
+`divisionsExact`, which decides a division's exactness whenever both operands
+are pinned to a single value:
 
-which costs nothing, since the multiplied-out form is what the analyser was
-going to read anyway. See [LaunchFusionDesign.md](LaunchFusionDesign.md) §F.
+- `boolMayHold` returns false when a division is *known* inexact. It is
+  otherwise free to use the truncated interval, which is a superset of the
+  exactly-divisible values and therefore never prunes a live subtree.
+- `boolMustHold` requires every division to be *known* exact before its
+  intervals mean anything, since a truncated bound covers quotients the
+  comparison rejects.
+
+At a full assignment every operand is pinned, so both are exact there — which is
+the invariant that lets a component absorb a dividing comparison and drop the
+predicate rather than leaving it to be filtered later.
 
 ## Constraint forms to handle
 
