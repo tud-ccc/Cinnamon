@@ -38,6 +38,33 @@
 using namespace mlir;
 using namespace mlir::cnm;
 
+//===----------------------------------------------------------------------===//
+// Scatter/gather map assembly
+//
+// The canonical form of a scatter map is the fully explicit one (see the
+// canonicalization below), but the form that reads best is the one that only
+// names the host dimensions the map actually chooses -- the rest are a block,
+// and the shapes already say which. So the map is printed with as much left
+// implicit as the buffer and host shapes allow, and parsed back verbatim: the
+// two forms denote the same transfer, and canonicalization puts the parsed
+// one back into explicit form.
+//
+// These are the `custom<ScatterMap>` directive of cnm.scatter and cnm.gather,
+// so they have to be declared before the generated assembly formats use them.
+//===----------------------------------------------------------------------===//
+
+template <class Op>
+static void printScatterMap(OpAsmPrinter &p, Op op, AffineMapAttr mapAttr) {
+  AffineMap deflated = cnm::deflateScatterMap(
+      mapAttr.getValue(), op.getBuffer().getType(), op.getHostType());
+  p.printAttribute(AffineMapAttr::get(deflated));
+}
+
+static ParseResult parseScatterMap(OpAsmParser &parser,
+                                   AffineMapAttr &mapAttr) {
+  return parser.parseAttribute(mapAttr);
+}
+
 //===- Generated implementation -------------------------------------------===//
 
 #define GET_OP_CLASSES
@@ -293,14 +320,25 @@ LogicalResult LocalTransferOp::fold(FoldAdaptor,
 }
 namespace {
 
+/// Puts the map in canonical form: fully explicit, then simplified over its
+/// domain. Inflating first means an analysis never has to tell two spellings
+/// of the same transfer apart, and that how a map happens to be written says
+/// nothing -- a consumer that cares about the block form derives it with
+/// cnm::deflateScatterMap, from the map and the host layout.
+///
+/// So this loses no information that --cnm-ensure-scatter-gather-contiguous
+/// puts there: what that pass contributes and canonicalization cannot undo is
+/// on the host value, whose shape and layout the derivation reads.
 template <class Op> class SimplifyScatterMap : public OpRewritePattern<Op> {
   using OpRewritePattern<Op>::OpRewritePattern;
 
   LogicalResult matchAndRewrite(Op op,
                                 PatternRewriter &rewriter) const override {
+    auto bufferTy = op.getBuffer().getType();
     auto map = op.getScatterMap();
-    auto simplified = simplifyAffineMapWithBounds(
-        map, getScatterMapDomain(map, op.getBuffer().getType()));
+    auto simplified =
+        simplifyAffineMapWithBounds(inflateScatterMapToPointwise(map, bufferTy),
+                                    getScatterIndexSpace(bufferTy));
     if (simplified == map)
       return failure();
 

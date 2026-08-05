@@ -27,7 +27,7 @@
 
 // CHECK-LABEL: func.func @by_index
 func.func @by_index(%A: tensor<1024x512xi32>, %x: tensor<512xi32>, %y: tensor<1024xi32>) -> tensor<1024xi32> {
-  // CHECK: cnm.scatter %{{.*}}[affine_map<(d0, d1, d2, d3, d4) -> (d1 mod 4, d4)>] {{.*}} : tensor<4x128xi32> into !cnm.buffer<1x128xi32 on
+  // CHECK: cnm.scatter %{{.*}}[affine_map<(d0, d1, d2, d3) -> (d1 mod 4)>] {{.*}} : tensor<4x128xi32> into !cnm.buffer<1x128xi32 on
   %r = cinm.compute on accelerator #acc -> tensor<1024xi32> {
     %g = linalg.contract indexing_maps = [#m, #v, #r]
       {cnm.tile_sizes = array<i64: 256, 128>,
@@ -44,7 +44,7 @@ func.func @by_index(%A: tensor<1024x512xi32>, %x: tensor<512xi32>, %y: tensor<10
 // iteration dimensions takes three entries.
 // CHECK-LABEL: func.func @by_permutation
 func.func @by_permutation(%A: tensor<1024x512xi32>, %x: tensor<512xi32>, %y: tensor<1024xi32>) -> tensor<1024xi32> {
-  // CHECK: cnm.scatter %{{.*}}[affine_map<(d0, d1, d2, d3, d4) -> (d1 mod 4, d4)>] {{.*}} : tensor<4x128xi32> into !cnm.buffer<1x128xi32 on
+  // CHECK: cnm.scatter %{{.*}}[affine_map<(d0, d1, d2, d3) -> (d1 mod 4)>] {{.*}} : tensor<4x128xi32> into !cnm.buffer<1x128xi32 on
   %r = cinm.compute on accelerator #acc -> tensor<1024xi32> {
     %g = linalg.contract indexing_maps = [#m, #v, #r]
       {cnm.tile_sizes = array<i64: 256, 128>,

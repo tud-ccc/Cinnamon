@@ -47,8 +47,27 @@ int64_t getNumImplicitHostDims(AffineMap map, BufferType buffer);
 
 /// `map` with its implicit dimensions written out, so that it names one host
 /// index per host dimension over the whole workgroup x buffer index space.
-/// The identity on a map that is already pointwise.
+/// The identity on a map that is already pointwise. This is the canonical
+/// form: see the `cnm.scatter` canonicalization.
 AffineMap inflateScatterMapToPointwise(AffineMap map, BufferType buffer);
+
+/// The inverse: `map` with as many trailing buffer dimensions as possible
+/// left implicit again, over a host value of type `hostTy`. This is how the
+/// block form is *derived* rather than remembered -- the canonical map does
+/// not carry one, and a consumer that moves whole blocks (the UPMEM
+/// conversion) asks for the widest one the map allows.
+///
+/// A trailing result can be dropped only if it names its own buffer dimension
+/// and nothing else does, and if the host dimension it covers has exactly
+/// that dimension's extent: otherwise the dimensions left over would not be a
+/// block. A block also has to be one run in memory, so for a memref the
+/// widening stops at the contiguous suffix of its layout.
+///
+/// Returns `map` unchanged when nothing can be dropped, and when `map` and
+/// the shapes do not fit together at all, so this is safe to call on IR that
+/// does not verify (the printer does).
+AffineMap deflateScatterMap(AffineMap map, BufferType buffer,
+                            ShapedType hostTy);
 
 /// Extents of the inflated map's domain: the workgroup shape followed by the
 /// buffer shape.
