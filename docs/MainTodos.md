@@ -14,16 +14,8 @@
   - [x] Use cinm.debug_tag for this.
   - [ ] Recognize cinm.debug_tag in the upmem to llvm lowering
 - [x] Implement linalg fusion (for GEVA, TTV benchmark)
-- [ ] Implement launch fusion (for GEMV benchmark)
+- [ ] Implement launch fusion (for GEMV benchmark) — see [LaunchFusionDesign.md](LaunchFusionDesign.md)
 
-### Extras
-
-- [x] Canonicalize the CNM scatter maps by inflating the maps to add the dropped dimensions. The fully explicit form is the canonical form. Add a
-custom printer to print the shorthand form even when canonical (sound only
-if the op verifies).
-- [x] Rename cnm.terminator to cnm.return
-- [x] Rename cnm.alloc to cnm.declare_buffer
-- [x] Add doc to the CnmOps.td
 
 ## Cost model (UPMEM)
 
