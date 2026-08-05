@@ -762,14 +762,8 @@ void UpmemInferencePlugin::handleLinalgOp(linalg::LinalgOp op,
   auto tasklets = taskletsVar_;
   Type eltTy = cast<ShapedType>(op.getDpsInits()[0].getType()).getElementType();
 
-  // `<op>.<dim><level>`: level 0 is the block a workgroup leaf gets, level 1
-  // the block it walks that in at the leaf memory level. So a gemv declares
-  // gemv.M0, gemv.K0, gemv.M1, gemv.K1. These are the user-facing names that
-  // eval-solution refers to.
-  //
-  // The marker is gone on anything a rewrite rebuilt -- a fused op, above all
-  // -- and its reader degrades rather than fails: the dimensions fall back to
-  // `D0, D1, ...`.
+  // Determine the names of the search params. Each dimension gets one
+  // parameter per memory level (a tiling factor). 
   auto originAttr =
       op->getAttrOfType<StringAttr>(cinm::CinmDialect::DEBUG_TAG_NAME);
   StringRef origin = originAttr ? originAttr.getValue() : StringRef();
@@ -786,14 +780,6 @@ void UpmemInferencePlugin::handleLinalgOp(linalg::LinalgOp op,
   // The tile counts must fill the workgroup exactly (design §G2). This is the
   // one structural constraint; everything else about the distribution follows
   // from the block sizes and the op's own indexing maps.
-  //
-  // Written in the DSL rather than as a hand-vectorized predicate so the
-  // framework can see its shape: this is the `prod(vars) == prod(vars)` form
-  // that lets the tile counts be *solved* for rather than filtered, which is
-  // where the enumeration blow-up comes from (see
-  // docs/ConstraintAnalysisDesign.md). Each `extent / block` also declares
-  // that block divides extent -- already true by construction, since the
-  // block domains are the divisors of extent, so it costs nothing here.
   SmallVector<int64_t> extentsCopy(*extents);
   SmallVector<cinm::Expr> tilesPerDim;
   for (auto [extent, block] : llvm::zip_equal(extentsCopy, blocks))
@@ -807,11 +793,6 @@ void UpmemInferencePlugin::handleLinalgOp(linalg::LinalgOp op,
   // on decisions taken during lowering (which operands end up shared, how
   // promotion sizes its staging buffers, where buffers are hoisted), so the
   // exact test is done on the lowered program instead.
-  //
-  // Written in the DSL so the enumerator can see the shape: a sum of products
-  // of tile sizes is monotone in every variable, so a partial assignment whose
-  // smallest completion already exceeds the capacity can have its whole
-  // subtree cut rather than being filtered afterwards.
   auto operandDims = linalgOperandDims(op);
   auto footprint = [operandDims](ArrayRef<SpaceVar> sizes) -> cinm::Expr {
     SmallVector<cinm::Expr> operands;
