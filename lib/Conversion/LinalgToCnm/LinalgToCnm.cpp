@@ -17,6 +17,7 @@
 
 #include "cinm-mlir/Conversion/CnmBufferLevel.h"
 #include "cinm-mlir/Conversion/CnmPasses.h"
+#include "cinm-mlir/Dialect/Cinm/IR/CinmBase.h"
 #include "cinm-mlir/Dialect/Cinm/IR/CinmOps.h"
 #include "cinm-mlir/Dialect/Cnm/IR/CnmBase.h"
 #include "cinm-mlir/Dialect/Cnm/IR/CnmOps.h"
@@ -588,7 +589,8 @@ LogicalResult distribute(RewriterBase &rewriter, linalg::LinalgOp op,
 
   unsigned numInputs = op.getDpsInputs().size();
   SmallVector<Value> launchInputs, launchOutputs;
-  for (auto [operand, tiling] : llvm::zip(op->getOpOperands(), tilings)) {
+  for (auto [i, operand, tiling] :
+       llvm::enumerate(op->getOpOperands(), tilings)) {
     auto operandTy = cast<ShapedType>(operand.get().getType());
     auto bufferTy = cnm::BufferType::get(
         tiling.blocks, operandTy.getElementType(), accelerator, level->space);
@@ -603,8 +605,11 @@ LogicalResult distribute(RewriterBase &rewriter, linalg::LinalgOp op,
       // This scatter can then be optimized into a broadcast.
       // For now this happens in the backend dialect, which has knowledge of
       // the constraints on the scatter calls.
-      cnm::ScatterOp::create(b, operand.get(), alloc, workgroup,
-                             tiling.scatterMap);
+      auto scatter = cnm::ScatterOp::create(b, operand.get(), alloc, workgroup,
+                                            tiling.scatterMap);
+      scatter->setAttr(
+          cinm::CinmDialect::DEBUG_TAG_NAME,
+          b.getStringAttr(Twine("linalg_operand", std::to_string(i))));
     }
 
     (isDestination ? launchOutputs : launchInputs).push_back(alloc);

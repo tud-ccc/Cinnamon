@@ -5,7 +5,7 @@
 #map = affine_map<(d0) -> (d0)>
 func.func @capture_scalar(%x: tensor<8xi32>, %c: i32) -> tensor<8xi32> {
   %e = tensor.empty() : tensor<8xi32>
-// CHECK: ins(%{{.*}}, %{{.*}}: tensor<8xi32>, i32)
+// CHECK: ins(%{{.*}}, %{{.*}}: tensor<8xi32>, tensor<i32>)
   %r = linalg.generic {indexing_maps = [#map, #map], iterator_types = ["parallel"]}
     ins(%x : tensor<8xi32>) outs(%e : tensor<8xi32>) {
   ^bb0(%in: i32, %out: i32):

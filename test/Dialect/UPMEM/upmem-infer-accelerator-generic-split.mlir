@@ -1,5 +1,5 @@
 // RUN: cinm-opt %s --cinm-isolate-compute-blocks \
-// RUN:   --upmem-infer-accelerator="simulator=op-count eval-solution=dpus=2048,tasklets=8,gemv.M0=8,gemv.K0=128,gemv.M1=8,gemv.K1=64,gemv.order=0" \
+// RUN:   --upmem-infer-accelerator="simulator=op-count eval-solution=dpus=2048,tasklets=8,gemv.M.mram=8,gemv.K.mram=128,gemv.M.wram=8,gemv.K.wram=64,gemv.order=0" \
 // RUN: | FileCheck %s
 
 // The configuration that motivated the whole §G redesign, lowered end to end
@@ -8,7 +8,7 @@
 // It is the gemv_64MB optimum an independent autotuner found
 // (experiments/gemv_microbenchmark/dodo.py), expressed in the generic space:
 // its mramRow=64, mramCol=128, taskletCols=1, wramRow=8, wramCol=64 read as
-// gemv.M0 = mramRow*taskletCols/tasklets = 8, gemv.K0 = mramCol/taskletCols =
+// gemv.M.mram = mramRow*taskletCols/tasklets = 8, gemv.K.mram = mramCol/taskletCols =
 // 128, and the leaf tile (level 1) straight from the WRAM tile (design §H5).
 //
 // Before §G this failed in --convert-cinm-to-cnm with
