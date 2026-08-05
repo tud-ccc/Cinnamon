@@ -197,7 +197,7 @@ static bool isDistributionCandidate(Operation *op) {
 /// `generic.D00` at least says what it is.
 static std::string searchNameFor(Operation *op) {
   if (auto origin =
-          op->getAttrOfType<StringAttr>(cinm::CinmDialect::LOWERED_FROM_NAME))
+          op->getAttrOfType<StringAttr>(cinm::CinmDialect::DEBUG_TAG_NAME))
     return shortOpName(origin.getValue());
   return shortOpName(op->getName().getStringRef());
 }
@@ -771,7 +771,7 @@ void UpmemInferencePlugin::handleLinalgOp(linalg::LinalgOp op,
   // -- and its reader degrades rather than fails: the dimensions fall back to
   // `D0, D1, ...`.
   auto originAttr =
-      op->getAttrOfType<StringAttr>(cinm::CinmDialect::LOWERED_FROM_NAME);
+      op->getAttrOfType<StringAttr>(cinm::CinmDialect::DEBUG_TAG_NAME);
   StringRef origin = originAttr ? originAttr.getValue() : StringRef();
   SmallVector<std::string> dimNames =
       iterationDimNames(origin, extents->size());
@@ -779,8 +779,8 @@ void UpmemInferencePlugin::handleLinalgOp(linalg::LinalgOp op,
   SmallVector<SpaceVar> blocks, leaves;
   for (auto [dim, extent] : llvm::enumerate(*extents)) {
     std::string base = (namePrefix + "." + dimNames[dim]).str();
-    blocks.push_back(b.divisorsOf(base + "0", extent));
-    leaves.push_back(b.divisorsOf(base + "1", blocks.back()));
+    blocks.push_back(b.divisorsOf(base + ".mram", extent));
+    leaves.push_back(b.divisorsOf(base + ".wram", blocks.back()));
   }
 
   // The tile counts must fill the workgroup exactly (design §G2). This is the

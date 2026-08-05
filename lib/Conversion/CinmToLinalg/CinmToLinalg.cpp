@@ -127,7 +127,7 @@ static void replaceWithLinalgOp(ConversionPatternRewriter &rewriter,
       // carrying the computation apart from the ops produced around it -- an
       // init `linalg.fill` is a LinalgOp too, and giving it tile sizes or
       // search parameters would be nonsense.
-      producer->setAttr(cinm::CinmDialect::LOWERED_FROM_NAME,
+      producer->setAttr(cinm::CinmDialect::DEBUG_TAG_NAME,
                         rewriter.getStringAttr(op->getName().getStringRef()));
     }
   rewriter.replaceOp(op, result);

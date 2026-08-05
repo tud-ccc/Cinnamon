@@ -3,7 +3,7 @@
 
 ## Paper
 
-- [ ] Implement the rest of the prim benchmark files
+- [x] Implement the rest of the prim benchmark files
   - [x] MTV (our gemv)
   - [x] GEMV (c * gemv)
   - [x] VA
@@ -11,8 +11,18 @@
   - [x] TTV (batch gemv with broadcast tensor (needs linalg))
   - [x] MMTV (batch gemv)
 - [ ] Tag transfers in the generic flow for processing benchmark data
-- [ ] Implement linalg fusion (for GEVA, TTV benchmark)
+  - [x] Use cinm.debug_tag for this.
+  - [ ] Recognize cinm.debug_tag in the upmem to llvm lowering
+- [x] Implement linalg fusion (for GEVA, TTV benchmark)
 - [ ] Implement launch fusion (for GEMV benchmark)
+
+### Extras
+
+- [ ] Canonicalize the CNM scatter maps by inflating the maps to add the dropped dimensions. The fully explicit form is the canonical form. Add a
+custom printer to print the shorthand form even when canonical (sound only
+if the op verifies).
+- [ ] Rename cnm.terminator to cnm.return
+- [ ] Add doc to the CnmOps.td
 
 ## Cost model (UPMEM)
 

@@ -29,12 +29,12 @@ def Cinm_Dialect : Dialect {
     void printAttribute(Attribute attr, DialectAsmPrinter &printer) const override;
     Attribute parseAttribute(DialectAsmParser &parser, Type type) const override;
 
+    /// A debug metadata tag that can be attached by any pass,
+    /// must be interpreted or ignored by the specific backend. 
+    constexpr static StringRef DEBUG_TAG_NAME = "cinm.debug_tag";
+    /// Used by the --cinm-tiling pass.
     constexpr static StringRef TILING_FACTORS_NAME = "cinm.tile_sizes";
-    /// Set by `--convert-cinm-ops-to-linalg` on the linalg op that inherits a
-    /// cinm op's computation, holding that op's name. Distinguishes it from
-    /// the ops produced alongside it (an init `linalg.fill`, a
-    /// `tensor.empty`), which must not inherit its parameters.
-    constexpr static StringRef LOWERED_FROM_NAME = "cinm.lowered_from";
+
     constexpr static StringRef AVAILABLE_PLATFORMS_NAME = "cinm.available_platforms";
     private:
         void registerOps();
