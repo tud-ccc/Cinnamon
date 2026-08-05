@@ -361,7 +361,7 @@ cnm::LaunchOp createLaunchOp(
     OpBuilder::InsertionGuard guard(builder);
     builder.setInsertionPointToStart(&launchBlock);
     createCnmLaunchBlock(builder, reduceInpts, reduceInits);
-    cnm::TerminatorOp::create(builder);
+    cnm::ReturnOp::create(builder);
   }
   return launchOp;
 }

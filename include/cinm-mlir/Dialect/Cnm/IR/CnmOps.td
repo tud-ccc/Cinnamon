@@ -134,7 +134,7 @@ def GatherOp: Cnm_Op<"gather", [InferWorkgroupTypeFromBuffer<"buffer", "wg">, In
     let assemblyFormat = "$buffer `[` custom<ScatterMap>($gatherMap) `]` `of` $wg attr-dict `into` $outputBuf `:` qualified(type($buffer)) `into` type($outputBuf)";
 }
 
-def LaunchOp: Cnm_Op<"launch", [AffineScope, AttrSizedOperandSegments, AutomaticAllocationScope, IsolatedFromAbove, SingleBlockImplicitTerminator<"TerminatorOp">]> {
+def LaunchOp: Cnm_Op<"launch", [AffineScope, AttrSizedOperandSegments, AutomaticAllocationScope, IsolatedFromAbove, SingleBlockImplicitTerminator<"ReturnOp">]> {
     let summary = "Launch a code kernel on a given workgroup. Input buffers should have been scattered beforehand.";
     let description = [{}];
 
@@ -195,8 +195,8 @@ def LocalTransferOp: Cnm_Op<"local_transfer"> {
     }];
 }
 
-def TerminatorOp: Cnm_Op<"terminator", [Terminator]> {
-    let summary = "Terminates an `upmem.launch` operator region.";
+def ReturnOp: Cnm_Op<"return", [Terminator]> {
+    let summary = "Terminates a `cnm.launch` region.";
     let description = [{}];
 
     let arguments = (ins);
