@@ -102,13 +102,13 @@ static void assertNonZeroDivisor([[maybe_unused]] const cinm::ParmVector &d) {
 /// A search-space quantity resolved against a configuration. Type-erased so a
 /// recorded parameter can be a derived expression rather than a bare variable
 /// -- what a pass consumes is rarely what the search declares.
-using SpaceValue = std::function<int64_t(const cinm::ConfWrapper &)>;
+using SpaceValue = std::function<cinm::ParmValue(const cinm::ConfWrapper &)>;
 
 /// Type-erase any space expression into a SpaceValue. The captured IR node
 /// holds the variables' shared index cells, so this stays valid across
 /// SpaceBuilder::buildInto().
 static SpaceValue spaceValue(cinm::Expr expr) {
-  return [node = expr.node()](const cinm::ConfWrapper &c) -> int64_t {
+  return [node = expr.node()](const cinm::ConfWrapper &c) -> cinm::ParmValue {
     return cinm::evalNodeScalar(*node, c);
   };
 }
@@ -686,12 +686,25 @@ struct UpmemInferencePlugin : cinm::InferencePlugin {
       backPipeline = buildBackPipeline(ctx, opts.debugPrintsInPipeline);
     }
 
-    // Convert first, then stamp: the recorded walk positions address the
-    // linalg ops, which is the form the space was derived from.
+    // The lowering works in stages:
+    // 1. convert the program to linalg, perform fusion of linalg generic ops.
+    // This only does producer-consumer fusion, which is fine for elementwise
+    // producers, but isn't enough to fuse eg a gemv followed by an elementwise
+    // operation.
     TRY(runPipeline(convertPipeline.get(), loc, trial.module.get()));
+    // 2. On the linalg IR, stamp attributes that describe the parameters of
+    // future passes. The parameters are eg tiling factors gotten from the
+    // search space.
     if (failed(stampSearchParams(trial)))
       return DiagnosedSilenceableFailure::definiteFailure();
+    // 3. Convert linalg to CNM (using the workgroup tiling factors 
+    // and iteration order parameters), bufferize, perform affine 
+    // optimizations and canonicalizations.
     TRY(runPipeline(frontPipeline.get(), loc, trial.module.get()));
+    // 4. Perform tiling of the MRAM kernel into a WRAM program. This uses
+    // other tiling factors. Convert the CNM IR to upmem, perform more
+    // canonicalizations and transfer op specializations. Finally lower the
+    // kernel from affine to SCF.
     TRY(runPipeline(backPipeline.get(), loc, trial.module.get()));
     return DiagnosedSilenceableFailure::success();
   }
