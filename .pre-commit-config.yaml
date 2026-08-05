@@ -1,7 +1,17 @@
 repos:
-  - repo: https://github.com/astral-sh/ruff-pre-commit
+  - repo: ssh://git@github.com/astral-sh/ruff-pre-commit
     rev: v0.16.0
     hooks:
       - id: ruff-check
         args: [--fix]
       - id: ruff-format
+  - repo: ssh://git@github.com/pre-commit/pre-commit-hooks
+    rev: v6.0.0
+    hooks:
+    -   id: check-yaml
+    -   id: end-of-file-fixer
+    -   id: trailing-whitespace
+  - repo: ssh://git@github.com/pre-commit/mirrors-clang-format
+    rev: v22.1.8
+    hooks:
+    -   id: clang-format
