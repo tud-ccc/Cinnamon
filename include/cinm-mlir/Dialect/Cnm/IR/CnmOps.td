@@ -25,8 +25,23 @@ include "mlir/IR/CommonAttrConstraints.td"
 
 
 def WorkgroupOp : Cnm_Op<"workgroup", []> {
-    let summary = "Allocate a workgroup.";
-    let description = [{}];
+    let summary = "Acquire a workgroup of the accelerator.";
+    let description = [{
+        Acquires the part of the accelerator described by the result type's
+        accelerator attribute, and produces the handle that `cnm.declare_buffer`
+        and `cnm.launch` take. Every op that names a workgroup names this
+        value, so the handle is what ties a program's buffers and launches to
+        one another.
+
+        Acquiring is not free -- on UPMEM it allocates DPUs and loads a
+        program onto them -- which is why it is an op with a result rather
+        than a property of the launch, and why `--cnm-hoist-workgroups` moves
+        it out of loops.
+
+        ```mlir
+        %wg = cnm.workgroup : !cnm.workgroup<#upmem.array<1x16x1, #platform>>
+        ```
+    }];
 
     let arguments = (ins);
     let results = (outs WorkgroupType:$result);
@@ -35,8 +50,11 @@ def WorkgroupOp : Cnm_Op<"workgroup", []> {
 }
 
 def FreeWorkgroupOp : Cnm_Op<"free_workgroup", []> {
-    let summary = "Deallocate a workgroup.";
-    let description = [{}];
+    let summary = "Release a workgroup.";
+    let description = [{
+        Releases what `cnm.workgroup` acquired. Nothing may use the workgroup
+        afterwards, and neither may the buffers declared for it.
+    }];
 
     let arguments = (ins WorkgroupType:$workgroup);
     let results = (outs);
@@ -51,7 +69,24 @@ class InferWorkgroupTypeFromBuffer<string buffer, string wg>
 
 def DeclareBufferOp : Cnm_Op<"declare_buffer", [InferWorkgroupTypeFromBuffer<"result", "wg">, DeclareOpInterfaceMethods<OpAsmOpInterface, ["getAsmResultNames"]>]> {
     let summary = "Name a buffer distributed over a workgroup.";
-    let description = [{}];
+    let description = [{
+        Introduces a `!cnm.buffer`: one block of the given shape and element
+        type *per leaf* of the workgroup. A buffer is therefore
+        `workgroupShape x bufferShape` elements in total, of which a leaf sees
+        only its own `bufferShape`, as the memref it receives in a
+        `cnm.launch` body.
+
+        It declares rather than allocates: the storage is the accelerator's,
+        it exists for as long as the workgroup does, and where in the memory
+        hierarchy it lands is the type's `level` and the backend's business.
+        So there is no matching free, and no allocation the op could be
+        eliminated as dead against -- a buffer that nothing scatters into,
+        gathers from or launches over simply disappears.
+
+        ```mlir
+        %buf = cnm.declare_buffer() for %wg : !cnm.buffer<1024xi32 on #acc>
+        ```
+    }];
 
     let arguments = (ins WorkgroupType:$wg);
     let results = (outs BufferType:$result);
@@ -61,8 +96,39 @@ def DeclareBufferOp : Cnm_Op<"declare_buffer", [InferWorkgroupTypeFromBuffer<"re
 
 
 def ScatterOp: Cnm_Op<"scatter", [InferWorkgroupTypeFromBuffer<"buffer", "wg">]> {
-    let summary = "";
-    let description = [{}];
+    let summary = "Distribute a host value into a workgroup's buffer.";
+    let description = [{
+        Fills every leaf's block of `buffer` from `input`, which lives on the
+        host. Which host elements a leaf receives is `scatterMap`'s to say:
+
+        ```
+        buf[w][i_0..i_{p-1}, rest] = input[map(w, i_0..i_{p-1}) ++ rest]
+        ```
+
+        The map's domain is the workgroup shape `w_0..w_{n-1}` followed by the
+        first `p` of the buffer's own dimensions, for any `p`. The
+        `bufferRank - p` dimensions it leaves out are transferred as a block,
+        and the same number of trailing host dimensions are left out of the
+        results: they are that block's own shape and must match extent for
+        extent. `p = bufferRank` names a host element per buffer element;
+        `p = 0` sends one whole-buffer block to each leaf.
+
+        Both spellings denote the same transfer. The explicit one is
+        canonical, and the shorthand is what is printed -- see
+        CnmScatterMap.h, which is also where the block form is derived by
+        consumers that move whole blocks.
+
+        A scatter need not be injective: two leaves reading the same host
+        element is a broadcast, which is how an operand shared across a
+        workgroup axis is expressed. It must, however, stay inside the host
+        value; the verifier checks this on the map's whole index space.
+
+        ```mlir
+        // Leaf (_, d1, d2) receives row d1 of a 16x1024 host matrix.
+        cnm.scatter %a into %buf[affine_map<(d0, d1, d2) -> (d1)>] of %wg
+            : tensor<16x1024xi32> into !cnm.buffer<1024xi32 on #acc>
+        ```
+    }];
 
     let arguments = (ins AnyShaped:$input, BufferType:$buffer, WorkgroupType:$wg, AffineMapAttr:$scatterMap);
     let results = (outs);
@@ -90,8 +156,26 @@ def ScatterOp: Cnm_Op<"scatter", [InferWorkgroupTypeFromBuffer<"buffer", "wg">]>
 }
 
 def GatherOp: Cnm_Op<"gather", [InferWorkgroupTypeFromBuffer<"buffer", "wg">, InferTensorTypeAdaptor, DestinationStyleOpInterface]> {
-    let summary = "";
-    let description = [{}];
+    let summary = "Collect a workgroup's buffer back into a host value.";
+    let description = [{
+        The inverse of `cnm.scatter`: `gatherMap` is read the same way, and
+        the same shorthand applies, but the elements travel from the leaves to
+        `outputBuf`.
+
+        The one asymmetry is that a gather map must be injective. Two leaves
+        reading the same host element is a broadcast; two leaves *writing* it
+        is a race, so a gather has to partition the host value rather than
+        cover it. The verifier rejects a map that does not.
+
+        This op is in destination-passing style, so `outputBuf` is both where
+        the result goes and what its type is taken from. On tensors it also
+        produces a result; on memrefs it writes in place and produces nothing.
+
+        ```mlir
+        %y = cnm.gather %buf[affine_map<(d0, d1, d2) -> (d1)>] of %wg into %init
+            : !cnm.buffer<64xi32 on #acc> into tensor<16x64xi32>
+        ```
+    }];
 
     let arguments = (ins BufferType:$buffer, WorkgroupType:$wg, AffineMapAttr:$gatherMap, AnyShaped:$outputBuf);
     let results = (outs Optional<AnyRankedTensor>:$output);
@@ -130,8 +214,34 @@ def GatherOp: Cnm_Op<"gather", [InferWorkgroupTypeFromBuffer<"buffer", "wg">, In
 }
 
 def LaunchOp: Cnm_Op<"launch", [AffineScope, AttrSizedOperandSegments, AutomaticAllocationScope, IsolatedFromAbove, SingleBlockImplicitTerminator<"ReturnOp">]> {
-    let summary = "Launch a code kernel on a given workgroup. Input buffers should have been scattered beforehand.";
-    let description = [{}];
+    let summary = "Run a kernel on every leaf of a workgroup.";
+    let description = [{
+        Runs the body once per leaf of `wg`, on that leaf's own blocks of the
+        buffers passed in `ins` and `outs`. The body sees each `!cnm.buffer`
+        as a plain `memref<bufferShape x elt, level>` -- one leaf's block, not
+        the distributed whole -- so it is written as if it were a single
+        sequential kernel, and the workgroup axes appear nowhere in it. Scalar
+        operands are passed through unchanged.
+
+        The leaves run concurrently and do not communicate: the body may not
+        refer to another leaf's block, and the region is IsolatedFromAbove so
+        that it cannot reach anything but its arguments. Inputs must have been
+        filled by `cnm.scatter` beforehand, and `outs` buffers are read back
+        with `cnm.gather` -- there is no other way in or out.
+
+        A launch over a buffer whose level is not the innermost one (MRAM on
+        UPMEM) tiles into faster memory inside the body, with
+        `cnm.local_transfer`.
+
+        ```mlir
+        cnm.launch %wg ins(%a = %bufA : <1024xi32>, %b = %bufB : <1024xi32>)
+                       outs(%c = %bufC : <i32>) on !cnm.workgroup<#acc> {
+          linalg.contract indexing_maps = [#id, #id, #scalar]
+            ins(%a, %b : memref<1024xi32>, memref<1024xi32>)
+            outs(%c : memref<i32>)
+        }
+        ```
+    }];
 
     let arguments = (ins WorkgroupType:$wg, Variadic<AnyType>:$inputs, Variadic<BufferType>:$outBuffers);
     let results = (outs);
@@ -192,7 +302,11 @@ def LocalTransferOp: Cnm_Op<"local_transfer"> {
 
 def ReturnOp: Cnm_Op<"return", [Terminator]> {
     let summary = "Terminates a `cnm.launch` region.";
-    let description = [{}];
+    let description = [{
+        Carries no operands: a launch body communicates through its `outs`
+        buffers, not through returned values. It is inserted implicitly, so
+        it rarely appears in written IR.
+    }];
 
     let arguments = (ins);
     let results = (outs);
