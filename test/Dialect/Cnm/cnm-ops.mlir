@@ -23,9 +23,9 @@
 func.func @mm_dimm4_nopt(%arg0: tensor<8x1024xi32>, %arg1: tensor<1024x256xi32>) -> tensor<8x256xi32> {
     %cst = arith.constant dense<0> : tensor<4x128xi32>
     %0 = cnm.workgroup : !cnm.workgroup<#upmem_4_128_1>
-    %cnm_buf = cnm.alloc() for %0 : !cnm.buffer<i32 on #upmem_4_128_1>
-    %cnm_buf_0 = cnm.alloc() for %0 : !cnm.buffer<1024xi32 on #upmem_4_128_1>
-    %cnm_buf_1 = cnm.alloc() for %0 : !cnm.buffer<1024xi32 on #upmem_4_128_1>
+    %cnm_buf = cnm.declare_buffer() for %0 : !cnm.buffer<i32 on #upmem_4_128_1>
+    %cnm_buf_0 = cnm.declare_buffer() for %0 : !cnm.buffer<1024xi32 on #upmem_4_128_1>
+    %cnm_buf_1 = cnm.declare_buffer() for %0 : !cnm.buffer<1024xi32 on #upmem_4_128_1>
     %1 = cinm.compute on accelerator #upmem.array<4x128x1, <type = v1A, dimensions = 32x128x1>> -> tensor<8x256xi32> {
       %2 = tensor.empty() : tensor<8x256xi32>
       %3 = affine.for %i = 0 to 8 step 4 iter_args(%acc = %2) -> (tensor<8x256xi32>) {
@@ -64,9 +64,9 @@ func.func @mm_dimm4_nopt(%arg0: tensor<8x1024xi32>, %arg1: tensor<1024x256xi32>)
   func.func @mm_dimm4_opt(%arg0: memref<16x1024xi32>, %arg1: memref<1024x128xi32>, %arg2: memref<16x128xi32>) {
     %0 = memref.get_global @__constant_4x128xi32 : memref<4x128xi32>
     %1 = cnm.workgroup : !cnm.workgroup<#upmem_4_128_1>
-    %cnm_buf = cnm.alloc() for %1 : !cnm.buffer<i32 on #upmem_4_128_1>
-    %cnm_buf_0 = cnm.alloc() for %1 : !cnm.buffer<1024xi32 on #upmem_4_128_1>
-    %cnm_buf_1 = cnm.alloc() for %1 : !cnm.buffer<1024xi32 on #upmem_4_128_1>
+    %cnm_buf = cnm.declare_buffer() for %1 : !cnm.buffer<i32 on #upmem_4_128_1>
+    %cnm_buf_0 = cnm.declare_buffer() for %1 : !cnm.buffer<1024xi32 on #upmem_4_128_1>
+    %cnm_buf_1 = cnm.declare_buffer() for %1 : !cnm.buffer<1024xi32 on #upmem_4_128_1>
     cinm.compute on accelerator #upmem.array<4x128x1, <type = v1A, dimensions = 32x128x1>> {
       %alloc = memref.alloc() {alignment = 64 : i64} : memref<128x1024xi32>
       affine.for %i = 0 to 16 step 4 {

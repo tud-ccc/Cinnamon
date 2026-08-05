@@ -15,9 +15,9 @@ xf32> {
 -> memref<768xf32> attributes {cinm.available_platforms = [#upmem]} {
       %4 = memref.get_global @__constant_768xf32 : memref<768xf32>
       %5 = cnm.workgroup : !cnm.workgroup<#upmem_24_4_4>
-      %cnm_buf = cnm.alloc() for %5 : !cnm.buffer<2xf32 on #upmem_24_4_4>
-      %cnm_buf_0 = cnm.alloc() for %5 : !cnm.buffer<96xf32 on #upmem_24_4_4>
-      %cnm_buf_1 = cnm.alloc() for %5 : !cnm.buffer<2x96xf32 on #upmem_24_4_4>
+      %cnm_buf = cnm.declare_buffer() for %5 : !cnm.buffer<2xf32 on #upmem_24_4_4>
+      %cnm_buf_0 = cnm.declare_buffer() for %5 : !cnm.buffer<96xf32 on #upmem_24_4_4>
+      %cnm_buf_1 = cnm.declare_buffer() for %5 : !cnm.buffer<2x96xf32 on #upmem_24_4_4>
       %alloc = memref.alloc() {alignment = 64 : i64} : memref<768xf32>
       memref.copy %4, %alloc : memref<768xf32> to memref<768xf32>
       %6 = affine.for %i = 0 to 768 step 96 iter_args(%acc = %alloc) -> (memref<768xf32>) {

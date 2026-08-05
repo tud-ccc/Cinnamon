@@ -81,7 +81,7 @@ void CnmDialect::registerOps() {
       >();
 }
 
-void AllocOp::getAsmResultNames(::mlir::OpAsmSetValueNameFn setNameFn) {
+void DeclareBufferOp::getAsmResultNames(::mlir::OpAsmSetValueNameFn setNameFn) {
   setNameFn(getResult(), "cnm_buf");
 }
 

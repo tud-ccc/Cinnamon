@@ -46,7 +46,7 @@
 module {
   func.func @main(%c: tensor<8xi32>) {
     %wg = cnm.workgroup : !cnm.workgroup<#upmem_1_4_2>
-    %bufC = cnm.alloc() for %wg : !cnm.buffer<8xi32 on #upmem_1_4_2>
+    %bufC = cnm.declare_buffer() for %wg : !cnm.buffer<8xi32 on #upmem_1_4_2>
     cnm.scatter %c into %bufC[#mapC] of %wg : tensor<8xi32> into !cnm.buffer<8xi32 on #upmem_1_4_2>
     cnm.launch %wg ins(%arg0 = %bufC : <8xi32>) on !cnm.workgroup<#upmem_1_4_2> {
     }
@@ -56,7 +56,7 @@ module {
 
   func.func @dpu_varying(%d: tensor<4x8xi32>) {
     %wg = cnm.workgroup : !cnm.workgroup<#upmem_1_4_2>
-    %bufD = cnm.alloc() for %wg : !cnm.buffer<8xi32 on #upmem_1_4_2>
+    %bufD = cnm.declare_buffer() for %wg : !cnm.buffer<8xi32 on #upmem_1_4_2>
     cnm.scatter %d into %bufD[#mapD] of %wg : tensor<4x8xi32> into !cnm.buffer<8xi32 on #upmem_1_4_2>
     cnm.launch %wg ins(%arg0 = %bufD : <8xi32>) on !cnm.workgroup<#upmem_1_4_2> {
     }

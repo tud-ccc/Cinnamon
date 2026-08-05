@@ -594,7 +594,7 @@ LogicalResult distribute(RewriterBase &rewriter, linalg::LinalgOp op,
     auto operandTy = cast<ShapedType>(operand.get().getType());
     auto bufferTy = cnm::BufferType::get(
         tiling.blocks, operandTy.getElementType(), accelerator, level->space);
-    Value alloc = cnm::AllocOp::create(b, bufferTy, workgroup);
+    Value alloc = cnm::DeclareBufferOp::create(b, bufferTy, workgroup);
     bool isDestination = operand.getOperandNumber() >= numInputs;
 
     if (isDestination &&

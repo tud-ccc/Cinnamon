@@ -95,11 +95,11 @@ struct ConvertCnmWorkgroupToGPU : public OpConversionPattern<cnm::WorkgroupOp> {
   }
 };
 
-struct ConvertCnmAllocToGPU : public OpConversionPattern<cnm::AllocOp> {
-  using OpConversionPattern<cnm::AllocOp>::OpConversionPattern;
+struct ConvertCnmAllocToGPU : public OpConversionPattern<cnm::DeclareBufferOp> {
+  using OpConversionPattern<cnm::DeclareBufferOp>::OpConversionPattern;
 
   LogicalResult
-  matchAndRewrite(cnm::AllocOp op, OpAdaptor,
+  matchAndRewrite(cnm::DeclareBufferOp op, OpAdaptor,
                   ConversionPatternRewriter &rewriter) const override {
     Type asyncToken;
     ValueRange asyncDependencies;

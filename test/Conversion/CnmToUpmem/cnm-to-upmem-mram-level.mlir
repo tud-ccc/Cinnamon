@@ -17,8 +17,8 @@
 // CHECK-LABEL: func.func @gemv
 func.func @gemv(%hostA: memref<8x16x64xi32>, %hostY: memref<8x16xi32>) {
   %wg = cnm.workgroup : !cnm.workgroup<#acc>
-  %a = cnm.alloc() for %wg : !cnm.buffer<16x64xi32 on #acc, #upmem.mram>
-  %y = cnm.alloc() for %wg : !cnm.buffer<16xi32 on #acc, #upmem.mram>
+  %a = cnm.declare_buffer() for %wg : !cnm.buffer<16x64xi32 on #acc, #upmem.mram>
+  %y = cnm.declare_buffer() for %wg : !cnm.buffer<16xi32 on #acc, #upmem.mram>
   cnm.scatter %hostA into %a[#scatterA] of %wg : memref<8x16x64xi32> into !cnm.buffer<16x64xi32 on #acc, #upmem.mram>
   cnm.scatter %hostY into %y[#scatterY] of %wg : memref<8x16xi32> into !cnm.buffer<16xi32 on #acc, #upmem.mram>
 
@@ -69,7 +69,7 @@ func.func @gemv(%hostA: memref<8x16x64xi32>, %hostY: memref<8x16xi32>) {
 // CHECK-LABEL: func.func @broadcast
 func.func @broadcast(%host: memref<4x64xi32>) {
   %wg = cnm.workgroup : !cnm.workgroup<#acc>
-  %b = cnm.alloc() for %wg : !cnm.buffer<64xi32 on #acc, #upmem.mram>
+  %b = cnm.declare_buffer() for %wg : !cnm.buffer<64xi32 on #acc, #upmem.mram>
   cnm.scatter %host into %b[#bcast] of %wg : memref<4x64xi32> into !cnm.buffer<64xi32 on #acc, #upmem.mram>
   // CHECK: %[[MB:.*]] = upmem.static_alloc @{{.*}}(mram) {{.*}} : memref<64xi32, #upmem.mram>
   // CHECK-NOT: memref.subview

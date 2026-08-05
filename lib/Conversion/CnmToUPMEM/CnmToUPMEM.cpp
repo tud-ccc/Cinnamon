@@ -326,7 +326,7 @@ static void createTransfer(RewriterBase &rewriter, bool toWram, Location loc,
 // ends up shared or private for this buffer: even when WRAM is private per
 // tasklet (cinm1-codegen), a single shared MRAM copy is enough, since every
 // tasklet can load the same MRAM location into its own private WRAM buffer.
-static bool isMramBroadcastOverThreads(cnm::AllocOp alloc) {
+static bool isMramBroadcastOverThreads(cnm::DeclareBufferOp alloc) {
   for (auto user : alloc->getUsers()) {
     if (llvm::isa<cnm::GatherOp>(user))
       return false;
@@ -430,9 +430,9 @@ static LogicalResult convertCnmLaunchToUpmem(cnm::LaunchOp launch,
 
   rewriter.setInsertionPointToStart(&dpuProgram.getBody().front());
 
-  // create named static MRAM buffers for each cnm.alloc operation, put them in
+  // create named static MRAM buffers for each cnm.declare_buffer operation, put them in
   // the dpu program
-  SmallVector<AllocOp> allocsToDelete;
+  SmallVector<DeclareBufferOp> allocsToDelete;
 
   SymbolTable dpuProgramSymTable(dpuProgram);
   auto mramMemspaceAttr =
@@ -441,7 +441,7 @@ static LogicalResult convertCnmLaunchToUpmem(cnm::LaunchOp launch,
       rewriter.getAttr<upmem::DpuMemSpaceAttr>(upmem::DpuMemSpace::WRAM);
 
   for (auto user : launch.getWg().getUsers()) {
-    if (auto alloc = llvm::dyn_cast_or_null<cnm::AllocOp>(user)) {
+    if (auto alloc = llvm::dyn_cast_or_null<cnm::DeclareBufferOp>(user)) {
       allocsToDelete.push_back(alloc);
 
       auto bufferType = alloc.getType();

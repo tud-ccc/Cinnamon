@@ -35,9 +35,9 @@ func.func @gemv_split_k(%A: tensor<1024x512xi32>, %x: tensor<512xi32>, %y: tenso
 
   // The leaf buffers carry the split dimension with extent 1: one k-tile each.
   // CHECK: cnm.workgroup
-  // CHECK-DAG: cnm.alloc() {{.*}} : !cnm.buffer<256x1x128xi32 on
-  // CHECK-DAG: cnm.alloc() {{.*}} : !cnm.buffer<1x128xi32 on
-  // CHECK-DAG: cnm.alloc() {{.*}} : !cnm.buffer<1x256xi32 on
+  // CHECK-DAG: cnm.declare_buffer() {{.*}} : !cnm.buffer<256x1x128xi32 on
+  // CHECK-DAG: cnm.declare_buffer() {{.*}} : !cnm.buffer<1x128xi32 on
+  // CHECK-DAG: cnm.declare_buffer() {{.*}} : !cnm.buffer<1x256xi32 on
 
   // The launch body is the partial op: the split dimension is parallel, only
   // the 128-wide remainder is still a reduction.
@@ -100,7 +100,7 @@ func.func @reduce_max_split_k(%A: tensor<1024x512xi32>, %o: tensor<1024xi32>) ->
 // CHECK-LABEL: func.func @gemv_split_k_f32
 func.func @gemv_split_k_f32(%A: tensor<1024x512xf32>, %x: tensor<512xf32>, %y: tensor<1024xf32>) -> tensor<1024xf32> {
   // CHECK: linalg.fill ins(%{{.*}} : f32)
-  // CHECK: cnm.alloc() {{.*}} : !cnm.buffer<256x1x128xf32 on
+  // CHECK: cnm.declare_buffer() {{.*}} : !cnm.buffer<256x1x128xf32 on
   // CHECK: cnm.launch
   %r = cinm.compute on accelerator #acc -> tensor<1024xf32> {
     %g = linalg.contract indexing_maps = [#m, #v, #r]

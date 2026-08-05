@@ -49,17 +49,12 @@ class InferWorkgroupTypeFromBuffer<string buffer, string wg>
 : TypesMatchWith<"workgroup shape matches buffer shape", buffer, wg,
                                "cnm::WorkgroupType::get($_self.getContext(), ::llvm::cast<cnm::BufferType>($_self).getAccelerator())">;
 
-def AllocOp : Cnm_Op<"alloc", [InferWorkgroupTypeFromBuffer<"result", "wg">, DeclareOpInterfaceMethods<OpAsmOpInterface, ["getAsmResultNames"]>]> {
-    let summary = "Allocate a buffer for a given workgroup.";
+def DeclareBufferOp : Cnm_Op<"declare_buffer", [InferWorkgroupTypeFromBuffer<"result", "wg">, DeclareOpInterfaceMethods<OpAsmOpInterface, ["getAsmResultNames"]>]> {
+    let summary = "Name a buffer distributed over a workgroup.";
     let description = [{}];
 
     let arguments = (ins WorkgroupType:$wg);
     let results = (outs BufferType:$result);
-
-
-    let extraClassDeclaration = [{
-
-    }];
 
     let assemblyFormat = "`(` `)` `for` $wg attr-dict `:` qualified(type($result))";
 }

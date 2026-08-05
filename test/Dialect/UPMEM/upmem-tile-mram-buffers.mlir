@@ -19,11 +19,11 @@
 func.func @fold_device_init(%A: memref<4096x32x128xi32>, %x: memref<32x128xi32>,
                             %out: memref<32x4096xi32>) {
   %wg = cnm.workgroup : !cnm.workgroup<#acc>
-  %ba = cnm.alloc() for %wg : !cnm.buffer<8x1x128xi32 on #acc, #upmem.mram>
+  %ba = cnm.declare_buffer() for %wg : !cnm.buffer<8x1x128xi32 on #acc, #upmem.mram>
   cnm.scatter %A into %ba[affine_map<(d0, d1, d2, d3, d4, d5) -> (d1 * 64 + d2 * 8 + d3 - (d1 floordiv 64) * 4096, d1 floordiv 64, d5)>] of %wg : memref<4096x32x128xi32> into !cnm.buffer<8x1x128xi32 on #acc, #upmem.mram>
-  %bx = cnm.alloc() for %wg : !cnm.buffer<1x128xi32 on #acc, #upmem.mram>
+  %bx = cnm.declare_buffer() for %wg : !cnm.buffer<1x128xi32 on #acc, #upmem.mram>
   cnm.scatter %x into %bx[affine_map<(d0, d1, d2, d3, d4) -> (d1 floordiv 64, d4)>] of %wg : memref<32x128xi32> into !cnm.buffer<1x128xi32 on #acc, #upmem.mram>
-  %by = cnm.alloc() for %wg : !cnm.buffer<1x8xi32 on #acc, #upmem.mram>
+  %by = cnm.declare_buffer() for %wg : !cnm.buffer<1x8xi32 on #acc, #upmem.mram>
   cnm.launch %wg ins(%a = %ba : <8x1x128xi32, #upmem.mram>, %xx = %bx : <1x128xi32, #upmem.mram>) outs(%y = %by : <1x8xi32, #upmem.mram>) on !cnm.workgroup<#acc> {
     %z = arith.constant 0 : i32
     linalg.fill ins(%z : i32) outs(%y : memref<1x8xi32, #upmem.mram>)
@@ -55,9 +55,9 @@ func.func @fold_device_init(%A: memref<4096x32x128xi32>, %x: memref<32x128xi32>,
 // CHECK:       linalg.fill ins(%{{.*}} : i32) outs(%[[WF]] : memref<1x8xi32, #upmem.wram>)
 func.func @two_consumers(%in: memref<32x8xi32>, %out: memref<32x8xi32>) {
   %wg = cnm.workgroup : !cnm.workgroup<#acc>
-  %bi = cnm.alloc() for %wg : !cnm.buffer<1x8xi32 on #acc, #upmem.mram>
+  %bi = cnm.declare_buffer() for %wg : !cnm.buffer<1x8xi32 on #acc, #upmem.mram>
   cnm.scatter %in into %bi[affine_map<(d0, d1, d2, d3, d4) -> (d1 floordiv 64, d4)>] of %wg : memref<32x8xi32> into !cnm.buffer<1x8xi32 on #acc, #upmem.mram>
-  %by = cnm.alloc() for %wg : !cnm.buffer<1x8xi32 on #acc, #upmem.mram>
+  %by = cnm.declare_buffer() for %wg : !cnm.buffer<1x8xi32 on #acc, #upmem.mram>
   cnm.launch %wg ins(%a = %bi : <1x8xi32, #upmem.mram>) outs(%y = %by : <1x8xi32, #upmem.mram>) on !cnm.workgroup<#acc> {
     %z = arith.constant 0 : i32
     linalg.fill ins(%z : i32) outs(%y : memref<1x8xi32, #upmem.mram>)
