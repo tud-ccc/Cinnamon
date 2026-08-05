@@ -18,11 +18,12 @@
 
 ### Extras
 
-- [ ] Canonicalize the CNM scatter maps by inflating the maps to add the dropped dimensions. The fully explicit form is the canonical form. Add a
+- [x] Canonicalize the CNM scatter maps by inflating the maps to add the dropped dimensions. The fully explicit form is the canonical form. Add a
 custom printer to print the shorthand form even when canonical (sound only
 if the op verifies).
-- [ ] Rename cnm.terminator to cnm.return
-- [ ] Add doc to the CnmOps.td
+- [x] Rename cnm.terminator to cnm.return
+- [x] Rename cnm.alloc to cnm.declare_buffer
+- [x] Add doc to the CnmOps.td
 
 ## Cost model (UPMEM)
 
