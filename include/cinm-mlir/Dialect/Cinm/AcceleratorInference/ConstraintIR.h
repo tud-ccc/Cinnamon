@@ -43,6 +43,10 @@ struct ConstraintNode {
     Sub,   ///< binary difference
     Div,   ///< binary quotient; also *asserts* exact divisibility (see below)
     Cmp,   ///< binary comparison; `cmp`
+    /// binary implication; both operands are boolean. The only connective:
+    /// conjunction needs no node (two `require` calls), and disjunction has no
+    /// caller and no story for the analyser, so it stays out until one exists.
+    Implies,
   };
 
   Kind kind;
@@ -62,6 +66,14 @@ struct ConstraintNode {
 
 enum class Type { BOOL, INT };
 
+/// Whether a node of this kind evaluates to a truth value rather than a number.
+/// The DSL's `Expr<Type::BOOL>` guarantees this statically; the analyser, which
+/// works on bare nodes, has to ask.
+inline bool isBoolKind(ConstraintNode::Kind kind) {
+  return kind == ConstraintNode::Kind::Cmp ||
+         kind == ConstraintNode::Kind::Implies;
+}
+
 // ===----------------------------------------------------------------------===//
 // Node construction
 // ===----------------------------------------------------------------------===//
@@ -76,6 +88,9 @@ ConstraintNodePtr makeBinNode(ConstraintNode::Kind kind, ConstraintNodePtr lhs,
                               ConstraintNodePtr rhs);
 ConstraintNodePtr makeCmpNode(CmpKind cmp, ConstraintNodePtr lhs,
                               ConstraintNodePtr rhs);
+/// `antecedent => consequent`. Both must be boolean nodes.
+ConstraintNodePtr makeImpliesNode(ConstraintNodePtr antecedent,
+                                  ConstraintNodePtr consequent);
 
 // ===----------------------------------------------------------------------===//
 // Evaluation
@@ -90,11 +105,15 @@ ParmVector evalNodeVec(const ConstraintNode &node,
 /// predicate (see SpaceValue in the UPMEM plugin).
 ParmValue evalNodeScalar(const ConstraintNode &node, const ConfWrapper &c);
 
-/// Evaluate a Cmp node over a batch, AND-ing the result into `valid`.
-void evalCmpNodeInto(const ConstraintNode &node, const ConfigurationVector &c,
-                     arma::urowvec &valid);
+/// Evaluate a boolean node over a batch, as a 0/1 mask per lane.
+arma::urowvec evalBoolNodeVec(const ConstraintNode &node,
+                              const ConfigurationVector &c);
 
-/// Wrap a Cmp node as a VecConstraint, so a tree can be registered with
+/// Evaluate a boolean node over a batch, AND-ing the result into `valid`.
+void evalBoolNodeInto(const ConstraintNode &node, const ConfigurationVector &c,
+                      arma::urowvec &valid);
+
+/// Wrap a boolean node as a VecConstraint, so a tree can be registered with
 /// ConfigSpace::addConstraint like any other predicate.
 VecConstraint toVecConstraint(ConstraintNodePtr node);
 
@@ -165,7 +184,7 @@ using VarBounds = std::function<Interval(size_t varIdx)>;
 /// parameter here, and checked rather than assumed.
 Interval evalNodeBounds(const ConstraintNode &node, const VarBounds &bounds);
 
-/// Whether a comparison can still be satisfied by some completion of the
+/// Whether a boolean node can still be satisfied by some completion of the
 /// current partial assignment. False means every completion violates it, so
 /// the caller may prune. True is the safe answer: it never prunes a subtree
 /// that might contain a solution.
@@ -173,6 +192,14 @@ Interval evalNodeBounds(const ConstraintNode &node, const VarBounds &bounds);
 /// This is what lets a capacity bound cut the search rather than filter it
 /// afterwards: `sum of tile products <= MRAM` is monotone, so once the
 /// smallest possible completion exceeds the limit the subtree is dead.
-bool cmpMayHold(const ConstraintNode &node, const VarBounds &bounds);
+bool boolMayHold(const ConstraintNode &node, const VarBounds &bounds);
+
+/// Whether a boolean node holds under *every* completion of the current
+/// partial assignment. The dual of boolMayHold, and false is its safe answer.
+///
+/// An implication's consequent may only be acted on once its antecedent is
+/// settled this way -- believing an antecedent that merely *might* hold would
+/// impose the consequent on completions the constraint says nothing about.
+bool boolMustHold(const ConstraintNode &node, const VarBounds &bounds);
 
 } // namespace mlir::cinm::constraints

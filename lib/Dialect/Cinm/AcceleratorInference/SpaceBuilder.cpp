@@ -92,8 +92,9 @@ void SpaceBuilder::require(const ConstraintNodePtr &node,
                            llvm::StringRef description) {
   extractDivConstraints(node);
   // A bare arithmetic expression contributes only its divisibility conditions
-  // (that is the `require(a / b)` spelling); only a comparison is a predicate.
-  if (node->kind != ConstraintNode::Kind::Cmp)
+  // (that is the `require(a / b)` spelling); only a boolean node is a
+  // predicate.
+  if (!isBoolKind(node->kind))
     return;
   std::string desc =
       description.empty() ? describeNode(*node) : description.str();
@@ -121,6 +122,20 @@ void SpaceBuilder::reportConstraintAnalysis(const ConfigSpace &space) const {
   for (const auto &entry : predicates_) {
     if (!entry.node)
       continue; // opaque predicate, nothing to analyse
+    if (entry.node->kind == ConstraintNode::Kind::Implies) {
+      // The guard is what decides whether the consequent is in force, so
+      // report the consequent's own shape: a product equality there is one the
+      // enumerator can solve, once the guard is settled.
+      const bool solvable =
+          matchProductEquality(*entry.node->operands[1]).has_value();
+      llvm::dbgs() << "[cinm-analysis]   gated by "
+                   << describeNode(*entry.node->operands[0]) << ": "
+                   << describeNode(*entry.node->operands[1]) << " ("
+                   << (solvable ? "Form A once the guard is settled"
+                                : "not Form A")
+                   << ")\n";
+      continue;
+    }
     auto eq = matchProductEquality(*entry.node);
     if (!eq) {
       llvm::dbgs() << "[cinm-analysis]   not Form A: " << entry.description
@@ -163,9 +178,33 @@ void SpaceBuilder::reportConstraintAnalysis(const ConfigSpace &space) const {
   }
 }
 
+/// Whether `node` divides anywhere below it.
+static bool containsDiv(const ConstraintNode &node) {
+  if (node.kind == ConstraintNode::Kind::Div)
+    return true;
+  return llvm::any_of(node.operands, [](const ConstraintNodePtr &child) {
+    return containsDiv(*child);
+  });
+}
+
 void SpaceBuilder::extractDivConstraints(const ConstraintNodePtr &node) {
   if (!node)
     return;
+  // Not under a guard. Everything this function reifies is unconditional, so a
+  // `/` inside an implication would impose its divisibility on the very
+  // configurations the guard exists to exclude.
+  //
+  // Leaving it unreified would be worse than refusing: integer division
+  // truncates, so `implies(g, extent / block == 1)` would quietly accept a
+  // block that does not divide the extent (1024/768 is 1). Reifying it
+  // conditionally is possible and has no caller. So: write the multiplied-out
+  // form, `implies(g, block == extent)`, which is what the analyser wants
+  // anyway -- it is a product equality, and a division is not.
+  if (node->kind == ConstraintNode::Kind::Implies) {
+    assert(!containsDiv(*node) &&
+           "an implication may not divide; state the multiplied-out form");
+    return;
+  }
   if (node->kind == ConstraintNode::Kind::Div)
     addDivConstraint(node->operands[0], node->operands[1]);
   for (const auto &child : node->operands)
@@ -234,6 +273,19 @@ struct ProdEq {
   llvm::SmallVector<size_t, 4> lhsVars, rhsVars;
 };
 
+/// A product equality that only holds when its guard does — the consequent of
+/// an `implies(...)`, kept alongside the antecedent it hangs off.
+///
+/// The implication as a whole is enforced through `bounds_` like any other
+/// comparison, and that alone is already correct. This exists for the other
+/// half: once the guard is *settled* true, the consequent can determine a
+/// variable outright, exactly as an unconditional equality does. Without it a
+/// gated equality could only ever reject an assignment after the fact.
+struct GatedProdEq {
+  const ConstraintNode *guard;
+  ProdEq eq;
+};
+
 /// The distinct values a dimension can take, sorted, for membership tests.
 struct Domain {
   std::vector<ParmValue> values; ///< ascending
@@ -242,23 +294,39 @@ struct Domain {
   }
 };
 
+/// Every search parameter mentioned anywhere in `node`.
+void collectVars(const ConstraintNode &node, std::set<size_t> &out) {
+  if (node.kind == ConstraintNode::Kind::Var) {
+    out.insert(*node.varIdx);
+    return;
+  }
+  for (const auto &child : node.operands)
+    collectVars(*child, out);
+}
+
 class ComponentEnumerator {
 public:
   ComponentEnumerator(llvm::ArrayRef<size_t> dims,
                       llvm::ArrayRef<Domain> domains,
                       llvm::ArrayRef<DivRel> divs, llvm::ArrayRef<ProdEq> prods,
+                      llvm::ArrayRef<GatedProdEq> gated,
                       llvm::ArrayRef<const ConstraintNode *> bounds, size_t cap)
       : dims_(dims), domains_(domains), divs_(divs), prods_(prods),
-        bounds_(bounds), cap_(cap), assigned_(dims.size(), false),
-        values_(dims.size(), 0), inProdEq_(dims.size(), false) {
+        gated_(gated), bounds_(bounds), cap_(cap),
+        assigned_(dims.size(), false), values_(dims.size(), 0),
+        inProdEq_(dims.size(), false), isGuardVar_(dims.size(), false) {
     for (size_t pos = 0; pos < dims.size(); ++pos)
       posOfDim_[dims[pos]] = pos;
     for (const ProdEq &e : prods_)
-      for (llvm::ArrayRef<size_t> side : {llvm::ArrayRef<size_t>(e.lhsVars),
-                                          llvm::ArrayRef<size_t>(e.rhsVars)})
-        for (size_t v : side)
-          if (auto it = posOfDim_.find(v); it != posOfDim_.end())
-            inProdEq_[it->second] = true;
+      markProdEqVars(e);
+    for (const GatedProdEq &g : gated_) {
+      markProdEqVars(g.eq);
+      std::set<size_t> guardVars;
+      collectVars(*g.guard, guardVars);
+      for (size_t v : guardVars)
+        if (auto it = posOfDim_.find(v); it != posOfDim_.end())
+          isGuardVar_[it->second] = true;
+    }
   }
 
   /// Enumerate every satisfying tuple. False if a budget was exceeded, in
@@ -272,6 +340,35 @@ private:
   size_t posOf(size_t dim) const { return posOfDim_.lookup(dim); }
   bool isAssigned(size_t dim) const { return assigned_[posOf(dim)]; }
   int64_t valueOf(size_t dim) const { return values_[posOf(dim)]; }
+
+  void markProdEqVars(const ProdEq &e) {
+    for (llvm::ArrayRef<size_t> side :
+         {llvm::ArrayRef<size_t>(e.lhsVars), llvm::ArrayRef<size_t>(e.rhsVars)})
+      for (size_t v : side)
+        if (auto it = posOfDim_.find(v); it != posOfDim_.end())
+          inProdEq_[it->second] = true;
+  }
+
+  /// Run `fn` over the product equalities in force under the current partial
+  /// assignment -- the unconditional ones, plus every gated one whose guard is
+  /// settled true -- stopping at the first that returns true.
+  ///
+  /// "Settled" is boolMustHold, not boolMayHold: acting on a guard that merely
+  /// *might* hold would impose its consequent on the completions where it does
+  /// not, which is the one way this could produce a wrong answer rather than a
+  /// slow one.
+  template <class Fn> bool anyActiveProdEq(Fn fn) const {
+    for (const ProdEq &e : prods_)
+      if (fn(e))
+        return true;
+    if (gated_.empty())
+      return false;
+    VarBounds vb = varBounds();
+    for (const GatedProdEq &g : gated_)
+      if (boolMustHold(*g.guard, vb) && fn(g.eq))
+        return true;
+    return false;
+  }
 
   /// Product of the assigned variables on one side, or nullopt if any is still
   /// unassigned. `skip` excludes the variable being solved for.
@@ -343,7 +440,7 @@ private:
       return true;
     VarBounds vb = varBounds();
     for (const ConstraintNode *c : bounds_)
-      if (!cmpMayHold(*c, vb))
+      if (!boolMayHold(*c, vb))
         return false;
     return true;
   }
@@ -375,15 +472,17 @@ private:
     llvm::SmallVector<ParmValue, 16> out;
 
     // Determined by a product equality: exactly one value can work.
-    for (const ProdEq &e : prods_) {
-      if (auto v = solveFor(e, dim)) {
-        if (*v >= std::numeric_limits<ParmValue>::min() &&
-            *v <= std::numeric_limits<ParmValue>::max() &&
-            dom.contains(static_cast<ParmValue>(*v)))
-          out.push_back(static_cast<ParmValue>(*v));
-        return out;
-      }
-    }
+    if (anyActiveProdEq([&](const ProdEq &e) {
+          auto v = solveFor(e, dim);
+          if (!v)
+            return false;
+          if (*v >= std::numeric_limits<ParmValue>::min() &&
+              *v <= std::numeric_limits<ParmValue>::max() &&
+              dom.contains(static_cast<ParmValue>(*v)))
+            out.push_back(static_cast<ParmValue>(*v));
+          return true;
+        }))
+      return out;
     // Constrained to divide an already-known dividend: walk its divisors
     // rather than the (often much larger) declared domain.
     for (const DivRel &d : divs_) {
@@ -421,17 +520,28 @@ private:
     for (size_t pos = 0; pos < dims_.size(); ++pos) {
       if (assigned_[pos])
         continue;
-      for (const ProdEq &e : prods_)
-        if (solveFor(e, dims_[pos]))
-          return pos;
+      if (anyActiveProdEq([&](const ProdEq &e) {
+            return solveFor(e, dims_[pos]).has_value();
+          }))
+        return pos;
     }
-    // 2. Otherwise drive towards (1): assign a variable that participates in
-    //    an equality, narrowest domain first. 3. Only once none are left do
-    //    the purely divisibility-constrained variables get enumerated.
-    for (bool wantProdEq : {true, false}) {
+    // 2. A variable some implication is guarded on. Its own domain is
+    //    typically tiny (a mode switch), and until it is settled every
+    //    equality hanging off it is inert -- so deferring it wastes the whole
+    //    subtree, in the same way that deferring the variable an equality
+    //    determines wastes it (see the note above).
+    // 3. Then drive towards (1): a variable that participates in an equality,
+    //    narrowest domain first. 4. Only once none are left do the purely
+    //    divisibility-constrained variables get enumerated.
+    for (int tier = 0; tier < 3; ++tier) {
       size_t best = SIZE_MAX, bestSize = SIZE_MAX;
       for (size_t pos = 0; pos < dims_.size(); ++pos) {
-        if (assigned_[pos] || inProdEq_[pos] != wantProdEq)
+        if (assigned_[pos])
+          continue;
+        const bool wanted = tier == 0   ? isGuardVar_[pos]
+                            : tier == 1 ? !isGuardVar_[pos] && inProdEq_[pos]
+                                        : !isGuardVar_[pos] && !inProdEq_[pos];
+        if (!wanted)
           continue;
         if (domains_[pos].values.size() < bestSize) {
           bestSize = domains_[pos].values.size();
@@ -481,8 +591,12 @@ private:
   llvm::ArrayRef<Domain> domains_;
   llvm::ArrayRef<DivRel> divs_;
   llvm::ArrayRef<ProdEq> prods_;
-  /// Inequalities over this component's variables, used only to prune. They
-  /// are also checked at full assignment, so a component enforces them
+  /// The subset of `bounds_` that is an implication whose consequent is a
+  /// product equality, pre-matched so a settled guard can determine a variable.
+  llvm::ArrayRef<GatedProdEq> gated_;
+  /// Comparisons and implications over this component's variables, used to
+  /// prune. They are also checked at full assignment -- where every interval
+  /// is a point, so the check is exact -- so a component enforces them
   /// outright rather than leaving them to be filtered later.
   llvm::ArrayRef<const ConstraintNode *> bounds_;
   size_t cap_;
@@ -490,20 +604,12 @@ private:
   std::vector<ParmValue> values_;
   /// Whether dims_[pos] appears in any product equality; drives selectNext().
   std::vector<bool> inProdEq_;
+  /// Whether dims_[pos] appears in some implication's antecedent; likewise.
+  std::vector<bool> isGuardVar_;
   size_t nodes_ = 0;
   llvm::DenseMap<size_t, size_t> posOfDim_;
   std::vector<std::vector<ParmValue>> *out_ = nullptr;
 };
-
-/// Every search parameter mentioned anywhere in `node`.
-void collectVars(const ConstraintNode &node, std::set<size_t> &out) {
-  if (node.kind == ConstraintNode::Kind::Var) {
-    out.insert(*node.varIdx);
-    return;
-  }
-  for (const auto &child : node.operands)
-    collectVars(*child, out);
-}
 
 /// Union-find over dimension indices.
 class DisjointSets {
@@ -547,41 +653,72 @@ void SpaceBuilder::planComponents(
     divNames.push_back({m.parent, m.child});
   }
 
-  std::vector<ProdEq> prods;
-  std::vector<const ConstraintNode *> prodNodes;
-  for (const auto &entry : predicates_) {
-    if (!entry.node)
-      continue;
-    auto eq = matchProductEquality(*entry.node);
+  /// A product equality is only solvable when no variable occurs on both
+  /// sides (it would determine nothing) and none repeats (not linear).
+  auto asSolvableProdEq =
+      [](const ConstraintNode &node) -> std::optional<ProdEq> {
+    auto eq = matchProductEquality(node);
     if (!eq)
-      continue;
-    // A variable on both sides determines nothing, and repeated variables are
-    // not solvable linearly; leave those as ordinary predicates.
+      return std::nullopt;
     std::set<size_t> lhsSet(eq->lhs.vars.begin(), eq->lhs.vars.end());
     if (llvm::any_of(eq->rhs.vars,
                      [&](size_t v) { return lhsSet.count(v) != 0; }))
-      continue;
+      return std::nullopt;
     ProdEq p;
     p.lhsCoeff = eq->lhs.coeff;
     p.rhsCoeff = eq->rhs.coeff;
     p.lhsVars.assign(eq->lhs.vars.begin(), eq->lhs.vars.end());
     p.rhsVars.assign(eq->rhs.vars.begin(), eq->rhs.vars.end());
-    prods.push_back(std::move(p));
-    prodNodes.push_back(entry.node.get());
+    return p;
+  };
+
+  std::vector<ProdEq> prods;
+  std::vector<const ConstraintNode *> prodNodes;
+  std::vector<GatedProdEq> gated;
+  for (const auto &entry : predicates_) {
+    if (!entry.node)
+      continue;
+    if (entry.node->kind == ConstraintNode::Kind::Implies) {
+      // The implication itself is enforced as a bound below, like any other
+      // comparison. What is recorded here is the extra power a settled guard
+      // buys: its consequent can then determine a variable.
+      if (auto eq = asSolvableProdEq(*entry.node->operands[1]))
+        gated.push_back({entry.node->operands[0].get(), std::move(*eq)});
+      continue;
+    }
+    if (auto eq = asSolvableProdEq(*entry.node)) {
+      prods.push_back(std::move(*eq));
+      prodNodes.push_back(entry.node.get());
+    }
   }
 
-  if (divs.empty() && prods.empty())
+  if (divs.empty() && prods.empty() && gated.empty())
     return;
 
   // Connected components over the variables the relations link.
   DisjointSets sets(nDims);
+  auto uniteAll = [&](llvm::ArrayRef<size_t> vars) {
+    for (size_t i = 1; i < vars.size(); ++i)
+      sets.unite(vars[0], vars[i]);
+  };
   for (const DivRel &d : divs)
     sets.unite(d.divisor, d.dividend);
   for (const ProdEq &p : prods) {
     llvm::SmallVector<size_t, 8> all(p.lhsVars.begin(), p.lhsVars.end());
     all.append(p.rhsVars.begin(), p.rhsVars.end());
-    for (size_t i = 1; i < all.size(); ++i)
-      sets.unite(all[0], all[i]);
+    uniteAll(all);
+  }
+  // An implication links its guard's variables to its consequent's. Without
+  // this the guard keeps a slot of its own and the equalities it switches on
+  // are never absorbed -- the component would enumerate them as if they always
+  // held, or not at all.
+  for (const auto &entry : predicates_) {
+    if (!entry.node || entry.node->kind != ConstraintNode::Kind::Implies)
+      continue;
+    std::set<size_t> vars;
+    collectVars(*entry.node, vars);
+    llvm::SmallVector<size_t, 8> all(vars.begin(), vars.end());
+    uniteAll(all);
   }
 
   // Precompute each dimension's distinct values once.
@@ -623,16 +760,19 @@ void SpaceBuilder::planComponents(
       }
     }
 
-    // Inequalities entirely inside this component. They cannot determine a
-    // variable, but they are monotone in the tile sizes, so a prefix whose
-    // smallest completion already busts a capacity kills its subtree. Checked
-    // again at full assignment, where the bounds are exact -- so the component
-    // enforces them outright and they need not stay as predicates.
+    // Inequalities and implications entirely inside this component. Neither
+    // can determine a variable on its own, but both cut subtrees: an
+    // inequality is monotone in the tile sizes, so a prefix whose smallest
+    // completion already busts a capacity is dead, and an implication is
+    // violated as soon as its guard is settled and its consequent impossible.
+    // Both are checked again at full assignment, where every interval is a
+    // point and the check is therefore exact -- so the component enforces them
+    // outright and they need not stay as predicates.
     const std::set<size_t> dimSet(dims.begin(), dims.end());
     std::vector<const ConstraintNode *> myBounds;
     std::vector<const ConstraintNode *> myBoundNodes;
     for (const auto &entry : predicates_) {
-      if (!entry.node || entry.node->kind != ConstraintNode::Kind::Cmp)
+      if (!entry.node || !isBoolKind(entry.node->kind))
         continue;
       if (llvm::is_contained(prodNodes, entry.node.get()))
         continue; // already handled as a product equality
@@ -646,13 +786,28 @@ void SpaceBuilder::planComponents(
       myBoundNodes.push_back(entry.node.get());
     }
 
+    // The pre-matched consequents belonging to the implications just picked
+    // up, so a settled guard can determine a variable rather than only reject
+    // one.
+    std::vector<GatedProdEq> myGated;
+    for (const GatedProdEq &g : gated) {
+      std::set<size_t> vars;
+      collectVars(*g.guard, vars);
+      for (llvm::ArrayRef<size_t> side : {llvm::ArrayRef<size_t>(g.eq.lhsVars),
+                                          llvm::ArrayRef<size_t>(g.eq.rhsVars)})
+        vars.insert(side.begin(), side.end());
+      if (!vars.empty() &&
+          llvm::all_of(vars, [&](size_t v) { return dimSet.count(v) != 0; }))
+        myGated.push_back(g);
+    }
+
     std::vector<Domain> myDomains;
     for (size_t d : dims)
       myDomains.push_back(allDomains[d]);
 
     std::vector<std::vector<ParmValue>> solutions;
-    ComponentEnumerator enumerator(dims, myDomains, myDivs, myProds, myBounds,
-                                   kSolutionCap);
+    ComponentEnumerator enumerator(dims, myDomains, myDivs, myProds, myGated,
+                                   myBounds, kSolutionCap);
     if (!enumerator.run(solutions)) {
       LLVM_DEBUG(llvm::dbgs()
                  << "[cinm-space]   component of " << dims.size()
@@ -673,6 +828,10 @@ void SpaceBuilder::planComponents(
                            ? 0.0
                            : double(product) / double(solutions.size()))
                    << "x fewer)\n";
+      if (!myGated.empty())
+        llvm::dbgs() << "[cinm-space]     including " << myGated.size()
+                     << " gated equalit" << (myGated.size() == 1 ? "y" : "ies")
+                     << ", solvable once the guard is settled\n";
     });
 
     ConfigSpace::SolvedComponent comp;

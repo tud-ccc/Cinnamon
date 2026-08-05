@@ -178,6 +178,24 @@ inline IntExpr sum(llvm::ArrayRef<IntExpr> terms) {
   return IntExpr(makeNaryNode(ConstraintNode::Kind::Add, std::move(ops)));
 }
 
+/// `antecedent => consequent`: the consequent is required only of the
+/// configurations the antecedent selects.
+///
+/// A free function rather than an operator, because there is no C++ operator
+/// whose precedence reads correctly for implication. Conjunction has no
+/// spelling at all and needs none — two `require` calls are an `and`.
+///
+/// This is what lets one parameter switch a whole set of relations on. The
+/// motivating case is a fusion level (docs/LaunchFusionDesign.md §G): what two
+/// ops must agree about depends on how far they fuse, and stating those
+/// agreements unconditionally would forbid the schedules that decline to fuse.
+///
+/// A `/` inside either side is rejected — see SpaceBuilder::require, which
+/// explains why.
+inline BoolExpr implies(BoolExpr antecedent, BoolExpr consequent) {
+  return BoolExpr(makeImpliesNode(antecedent.node(), consequent.node()));
+}
+
 // ===----------------------------------------------------------------------===//
 // SpaceBuilder
 // ===----------------------------------------------------------------------===//

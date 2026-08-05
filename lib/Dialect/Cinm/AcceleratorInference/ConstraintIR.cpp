@@ -75,6 +75,17 @@ ConstraintNodePtr makeCmpNode(CmpKind cmp, ConstraintNodePtr lhs,
   return make(std::move(n));
 }
 
+ConstraintNodePtr makeImpliesNode(ConstraintNodePtr antecedent,
+                                  ConstraintNodePtr consequent) {
+  assert(antecedent && consequent && isBoolKind(antecedent->kind) &&
+         isBoolKind(consequent->kind) &&
+         "an implication relates two boolean nodes");
+  ConstraintNode n;
+  n.kind = ConstraintNode::Kind::Implies;
+  n.operands = {std::move(antecedent), std::move(consequent)};
+  return make(std::move(n));
+}
+
 // ===----------------------------------------------------------------------===//
 // Evaluation
 // ===----------------------------------------------------------------------===//
@@ -112,7 +123,9 @@ ParmVector evalNodeVec(const ConstraintNode &node,
     return vecSafeDiv(evalNodeVec(*node.operands[0], c),
                       evalNodeVec(*node.operands[1], c));
   case Kind::Cmp:
-    llvm_unreachable("Cmp is not an arithmetic node; use evalCmpNodeInto");
+  case Kind::Implies:
+    llvm_unreachable(
+        "boolean node evaluated as arithmetic; use evalBoolNodeVec");
   }
   llvm_unreachable("unknown ConstraintNode::Kind");
 }
@@ -144,47 +157,56 @@ ParmValue evalNodeScalar(const ConstraintNode &node, const ConfWrapper &c) {
     return d ? evalNodeScalar(*node.operands[0], c) / d : 0;
   }
   case Kind::Cmp:
-    llvm_unreachable("Cmp is not an arithmetic node");
+  case Kind::Implies:
+    llvm_unreachable("boolean node evaluated as arithmetic");
   }
   llvm_unreachable("unknown ConstraintNode::Kind");
 }
 
-void evalCmpNodeInto(const ConstraintNode &node, const ConfigurationVector &c,
-                     arma::urowvec &valid) {
-  assert(node.kind == ConstraintNode::Kind::Cmp && "expected a Cmp node");
+arma::urowvec evalBoolNodeVec(const ConstraintNode &node,
+                              const ConfigurationVector &c) {
+  if (node.kind == ConstraintNode::Kind::Implies) {
+    // `a => b` is `!a | b`. Both sides are evaluated for every lane: a
+    // vectorized evaluation has no short-circuit, and the antecedent's own
+    // operands are arithmetic, so there is nothing unsafe to guard against.
+    const arma::urowvec ante = evalBoolNodeVec(*node.operands[0], c);
+    const arma::urowvec cons = evalBoolNodeVec(*node.operands[1], c);
+    return arma::conv_to<arma::urowvec>::from((ante == 0) || (cons != 0));
+  }
+
+  assert(node.kind == ConstraintNode::Kind::Cmp && "expected a boolean node");
   const ParmVector lhs = evalNodeVec(*node.operands[0], c);
   const ParmVector rhs = evalNodeVec(*node.operands[1], c);
-  // `%=` is Armadillo's elementwise multiply, i.e. AND over 0/1 masks: a lane
-  // already cleared by an earlier constraint stays cleared.
   switch (node.cmp) {
   case CmpKind::Le:
-    valid %= (lhs <= rhs);
-    return;
+    return lhs <= rhs;
   case CmpKind::Ge:
-    valid %= (lhs >= rhs);
-    return;
+    return lhs >= rhs;
   case CmpKind::Lt:
-    valid %= (lhs < rhs);
-    return;
+    return lhs < rhs;
   case CmpKind::Gt:
-    valid %= (lhs > rhs);
-    return;
+    return lhs > rhs;
   case CmpKind::Eq:
-    valid %= (lhs == rhs);
-    return;
+    return lhs == rhs;
   case CmpKind::Ne:
-    valid %= (lhs != rhs);
-    return;
+    return lhs != rhs;
   }
   llvm_unreachable("unknown CmpKind");
 }
 
+void evalBoolNodeInto(const ConstraintNode &node, const ConfigurationVector &c,
+                      arma::urowvec &valid) {
+  // `%=` is Armadillo's elementwise multiply, i.e. AND over 0/1 masks: a lane
+  // already cleared by an earlier constraint stays cleared.
+  valid %= evalBoolNodeVec(node, c);
+}
+
 VecConstraint toVecConstraint(ConstraintNodePtr node) {
-  assert(node && node->kind == ConstraintNode::Kind::Cmp &&
-         "a constraint must be a comparison");
+  assert(node && isBoolKind(node->kind) &&
+         "a constraint must be a boolean expression");
   return [node = std::move(node)](const ConfigurationVector &c,
                                   arma::urowvec &valid) {
-    evalCmpNodeInto(*node, c, valid);
+    evalBoolNodeInto(*node, c, valid);
   };
 }
 
@@ -220,6 +242,9 @@ std::string describeNode(const ConstraintNode &node) {
   case Kind::Cmp:
     return describeNode(*node.operands[0]) + cmpSymbol(node.cmp) +
            describeNode(*node.operands[1]);
+  case Kind::Implies:
+    return "(" + describeNode(*node.operands[0]) + " => " +
+           describeNode(*node.operands[1]) + ")";
   }
   llvm_unreachable("unknown ConstraintNode::Kind");
 }
@@ -284,6 +309,7 @@ static std::optional<Rational> normalizeImpl(const ConstraintNode &node) {
   case Kind::Add:
   case Kind::Sub:
   case Kind::Cmp:
+  case Kind::Implies:
     return std::nullopt;
   }
   llvm_unreachable("unknown ConstraintNode::Kind");
@@ -374,13 +400,20 @@ Interval evalNodeBounds(const ConstraintNode &node, const VarBounds &bounds) {
     return {a.lo / b.hi, a.hi / b.lo, true};
   }
   case Kind::Cmp:
+  case Kind::Implies:
     return kUnbounded;
   }
   llvm_unreachable("unknown ConstraintNode::Kind");
 }
 
-bool cmpMayHold(const ConstraintNode &node, const VarBounds &bounds) {
-  assert(node.kind == ConstraintNode::Kind::Cmp && "expected a Cmp node");
+bool boolMayHold(const ConstraintNode &node, const VarBounds &bounds) {
+  if (node.kind == ConstraintNode::Kind::Implies)
+    // Satisfiable unless the antecedent is forced and the consequent
+    // impossible.
+    return !boolMustHold(*node.operands[0], bounds) ||
+           boolMayHold(*node.operands[1], bounds);
+
+  assert(node.kind == ConstraintNode::Kind::Cmp && "expected a boolean node");
   Interval l = evalNodeBounds(*node.operands[0], bounds);
   Interval r = evalNodeBounds(*node.operands[1], bounds);
   if (!l.valid || !r.valid)
@@ -400,6 +433,36 @@ bool cmpMayHold(const ConstraintNode &node, const VarBounds &bounds) {
   case CmpKind::Ne:
     // Only unsatisfiable when both sides are pinned to the same value.
     return !(l.lo == l.hi && r.lo == r.hi && l.lo == r.lo);
+  }
+  llvm_unreachable("unknown CmpKind");
+}
+
+bool boolMustHold(const ConstraintNode &node, const VarBounds &bounds) {
+  if (node.kind == ConstraintNode::Kind::Implies)
+    return !boolMayHold(*node.operands[0], bounds) ||
+           boolMustHold(*node.operands[1], bounds);
+
+  assert(node.kind == ConstraintNode::Kind::Cmp && "expected a boolean node");
+  Interval l = evalNodeBounds(*node.operands[0], bounds);
+  Interval r = evalNodeBounds(*node.operands[1], bounds);
+  if (!l.valid || !r.valid)
+    return false; // no information; never claim more than is known
+
+  switch (node.cmp) {
+  case CmpKind::Le:
+    return l.hi <= r.lo;
+  case CmpKind::Lt:
+    return l.hi < r.lo;
+  case CmpKind::Ge:
+    return l.lo >= r.hi;
+  case CmpKind::Gt:
+    return l.lo > r.hi;
+  case CmpKind::Eq:
+    // Both sides pinned to one value, and the same one.
+    return l.lo == l.hi && r.lo == r.hi && l.lo == r.lo;
+  case CmpKind::Ne:
+    // The ranges must not overlap at all.
+    return l.hi < r.lo || r.hi < l.lo;
   }
   llvm_unreachable("unknown CmpKind");
 }
