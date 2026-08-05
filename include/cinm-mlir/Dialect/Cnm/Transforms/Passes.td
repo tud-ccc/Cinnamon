@@ -62,6 +62,40 @@ def CnmHoistWorkgroupsPass : Pass<"cnm-hoist-workgroups"> {
   let dependentDialects = [];
 }
 
+def CnmFuseLaunchesPass : Pass<"cnm-fuse-launches"> {
+  let summary = "Drop a gather/scatter round trip and merge the launches";
+  let description = [{
+    When a distributed op's consumer is distributed the same way, the value
+    leaves the workgroup and comes straight back to the leaf it left: a
+    `cnm.gather` whose result feeds a `cnm.scatter` with the same map into a
+    buffer of the same type. Both transfers are redundant, so the consumer is
+    pointed at the producer's buffer and they are dropped; the two launches
+    then run on one workgroup and are merged into one.
+
+    Whether the two schedules line up that way is decided by whoever chose the
+    tile sizes -- see docs/LaunchFusionDesign.md. This pass only recognises
+    that they did, syntactically, and leaves everything else alone. In
+    particular a producer whose reduction was split across the workgroup
+    gathers partial results and merges them on the host, so its map and buffer
+    shape do not match the consumer's and nothing here fires.
+
+    ```mlir
+    cnm.launch %wg ins(...) outs(%p : <64xi32>) { ... }
+    %h = cnm.gather %p[#m] of %wg into %e : <64xi32> into tensor<1024xi32>
+    cnm.scatter %h into %c[#m] of %wg : tensor<1024xi32> into <64xi32>
+    cnm.launch %wg ins(%c : <64xi32>) outs(...) { ... }
+    // becomes one launch reading %p directly
+    ```
+  }];
+  let options = [
+    Option<"mergeLaunchBodies", "merge-launch-bodies", "bool", /*default=*/"true",
+           "Also splice the two launch bodies into a single launch. Turning "
+           "this off keeps the transfers elided but leaves two kernels, which "
+           "is useful for isolating the two effects when measuring.">,
+  ];
+  let dependentDialects = [];
+}
+
 def CnmEnsureScatterGatherContiguousPass : Pass<"cnm-ensure-scatter-gather-contiguous"> {
   let summary = "Ensure cnm.scatter/cnm.gather transfer contiguous host memrefs";
   let description = [{

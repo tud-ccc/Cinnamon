@@ -66,8 +66,8 @@ fuse.
 GEVA and TTV work today because they are hand-written with an explicit
 `cinm.compute` around several ops. `prim_gemv.mlir` is not.
 
-**Decided:** step 0 is to put them in one block. Rewriting the benchmark by hand
-is enough to unblock everything else and is what §H's staging assumes; a
+**Decided:** step 0 is to put them in one block. **Done** — `prim_gemv.mlir`
+now wraps both ops in an explicit `cinm.compute`. A
 `--cinm-merge-compute-blocks` pass (merge adjacent blocks with a common
 platform, no intervening op that reads a result) is the general fix and is
 tracked separately.
@@ -187,9 +187,10 @@ doing this first rather than alongside a rename.
 `--upmem-infer-accelerator=eval-solution=...` accepts an existing pinned
 configuration unchanged.
 
-## E. Step 2 — `--cnm-fuse-launches`
+## E. Step 2 — `--cnm-fuse-launches` — **DONE**
 
-A CNM-level pass, no UPMEM dependency. Two patterns, in order:
+[FuseLaunches.cpp](../lib/Dialect/Cnm/Transforms/FuseLaunches.cpp). A CNM-level
+pass, no UPMEM dependency. Two patterns, in order:
 
 1. **Cancel the round trip.** `cnm.scatter %v into %b2[#m] of %wg2` where `%v`
    is `cnm.gather %b1[#m'] of %wg1`, with `#m == #m'`, `b1`/`b2` of the same
@@ -204,24 +205,44 @@ A CNM-level pass, no UPMEM dependency. Two patterns, in order:
 Both are checkable syntactically, so the pass is safe irrespective of what the
 search does — it is a peephole, not a scheduler.
 
-One wrinkle found while producing §A: `--cnm-hoist-workgroups` followed by
-`--canonicalize --cse` leaves **two distinct `cnm.workgroup` values** of the
-same type, plus two `cnm.free_workgroup`s. `cnm.workgroup` is not CSE-able as
-things stand. Pattern 2 therefore has to accept same-*type* workgroups and
-unify them (RAUW the second onto the first, drop the redundant free), or a
-preceding CSE-like pattern must do it. Worth deciding deliberately: unifying
-workgroups is meaningful beyond fusion.
+Two things came out of building it.
+
+**The two launches are on two different workgroups.** `--cnm-hoist-workgroups`
+followed by `--canonicalize --cse` leaves two distinct `cnm.workgroup` values of
+the same type, plus two `cnm.free_workgroup`s; `cnm.workgroup` is not CSE-able,
+and coalescing them is not obviously sound in general — acquiring a workgroup
+twice asks for two sets of leaves. So `unifyWorkgroups` is *not* a
+canonicalization: it runs only as part of cancelling a round trip, which is
+exactly the event that establishes that the two halves want to be co-located.
+It keeps the last release and refuses if any surviving use would outlive it.
+Whether both halves' buffers still fit once they share leaves is a capacity
+question, and §I leaves it to the occupancy check.
+
+**Ordering has to be dominance, not block order.** Whether the workgroups end up
+inside or outside the compute block depends on which one it is — `cinm.compute`
+is not `IsolatedFromAbove` and its workgroups get hoisted out; `cinm.compute_block`
+is, and they stay in. Either way the ops this pass compares routinely sit at
+different region depths, and `DominanceInfo::properlyDominates` answers only
+when the second op lies inside the first's region (it normalises that way and
+gives up otherwise). Hence the `happensBefore` helper, which lifts whichever op
+is deeper until the two are siblings.
 
 *Placement:* in `buildFrontPipeline`, after `--cnm-hoist-workgroups` and before
 bufferization, so `--cnm-scatter-optimizations` and the bufferizer see the
 merged form.
 
-*Tests:* `test/Dialect/Cnm/fuse-launches.mlir` — the §A no-split IR fuses to one
-launch; the §A K-split IR is left alone; a gather with a second use keeps its
-gather; unequal maps are left alone. Plus an end-to-end
-`test/Transform/UPMEM/gemv-elementwise-fusion.mlir` pinned with
-`eval-solution`, checking one `upmem.launch` and the disappearance of the
-intermediate `upmem.gather`/`upmem.scatter` pair.
+*Tests:*
+[fuse-launches.mlir](../test/Transform/Cnm/fuse-launches.mlir) — the §A no-split
+IR fuses to one launch and one workgroup; the §A K-split IR is left alone; a map
+mismatch is left alone; a gather with a second use keeps its gather but still
+loses the scatter; `merge-launch-bodies=false` elides the transfers and keeps
+two kernels. End to end,
+[gemv-elementwise-fusion.mlir](../test/Transform/UPMEM/gemv-elementwise-fusion.mlir)
+runs the 4MB `prim_gemv` case through the whole pipeline on two pinned
+configurations: at `gemv.K.mram=1024` it comes out as one `upmem.alloc_dpus` and
+one `upmem.dpu_program`, at `gemv.K.mram=256` as two, with the partials gathered
+into a `memref<4x4x256xi32>`. One scatter and one gather of the 1024-element
+intermediate disappear, along with a kernel dispatch.
 
 ## F. Step 3 — implication in the constraint IR
 
@@ -317,19 +338,21 @@ that fuses and then does not fit is rejected late, like every other one.
 
 The order matters, because two of these produce a measurable win on their own:
 
-| | depends on | independently valuable |
-|---|---|---|
-| §B one compute block | — | no (unblocks everything) |
-| §E `--cnm-fuse-launches` | §B | **yes** — search finds K-tiles=1 configs and they fuse, with no space change at all |
-| §D levels from platform | — | no (prerequisite for §G) |
-| §F implication | — | no |
-| §G edge constraints | §D, §F | yes — makes the fusable corner reachable rather than lucky |
-| §H leaf fusion | §E, §G | **yes** |
+| | status | depends on | independently valuable |
+|---|---|---|---|
+| §B one compute block | **done** | — | no (unblocks everything) |
+| §D levels from platform | **done** | — | no (prerequisite for §G) |
+| §E `--cnm-fuse-launches` | **done** | §B | **yes** — search finds K-tiles=1 configs and they fuse, with no space change at all |
+| §F implication | | — | no |
+| §G edge constraints | | §D, §F | yes — makes the fusable corner reachable rather than lucky |
+| §H leaf fusion | | §E, §G | **yes** |
 
-So: §B, §E, measure. The search will already prefer fusable schedules if fusion
-is worth what we think it is worth, and that measurement is the justification
-for §D/§F/§G. If it turns out not to pay at the workgroup level, the leaf level
-almost certainly does not either, and the constraint work is not worth doing.
+**Next: measure.** §B, §D and §E are in, so the search is already free to find
+fusable schedules and the pipeline already fuses them — with no change to the
+space. What that costs and buys on the `prim_gemv` sizes is the justification
+for §F/§G, and there is no point writing conditional constraints before seeing
+it. If it turns out not to pay at the workgroup level, the leaf level almost
+certainly does not either, and the constraint work is not worth doing.
 
 ## K. Open questions
 
