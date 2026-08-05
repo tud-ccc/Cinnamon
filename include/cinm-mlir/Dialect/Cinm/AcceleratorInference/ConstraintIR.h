@@ -96,9 +96,19 @@ ConstraintNodePtr makeImpliesNode(ConstraintNodePtr antecedent,
 // Evaluation
 // ===----------------------------------------------------------------------===//
 
-/// Evaluate an arithmetic (non-Cmp) node over a whole batch.
-ParmVector evalNodeVec(const ConstraintNode &node,
-                       const ConfigurationVector &c);
+/// Whether `node` divides anywhere below it.
+bool containsDivision(const ConstraintNode &node);
+
+/// Evaluate an arithmetic (non-boolean) node over a whole batch.
+///
+/// `a / b` in this IR means *exact* division, so when `exact` is given, the
+/// lanes where some division below `node` did not come out exact are cleared
+/// in it. The quotient returned for those lanes is the truncated one and is
+/// meaningless; a boolean context must consult `exact` rather than trust it
+/// (evalBoolNodeVec does). Passing null asks only for the quotient, which is
+/// what a caller wanting a plain number out of a space expression wants.
+ParmVector evalNodeVec(const ConstraintNode &node, const ConfigurationVector &c,
+                       arma::urowvec *exact = nullptr);
 
 /// Evaluate an arithmetic (non-Cmp) node for a single configuration. Used by
 /// callers that need a plain number out of a space expression rather than a

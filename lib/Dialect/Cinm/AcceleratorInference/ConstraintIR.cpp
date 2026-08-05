@@ -90,8 +90,16 @@ ConstraintNodePtr makeImpliesNode(ConstraintNodePtr antecedent,
 // Evaluation
 // ===----------------------------------------------------------------------===//
 
-ParmVector evalNodeVec(const ConstraintNode &node,
-                       const ConfigurationVector &c) {
+bool containsDivision(const ConstraintNode &node) {
+  if (node.kind == ConstraintNode::Kind::Div)
+    return true;
+  return llvm::any_of(node.operands, [](const ConstraintNodePtr &child) {
+    return containsDivision(*child);
+  });
+}
+
+ParmVector evalNodeVec(const ConstraintNode &node, const ConfigurationVector &c,
+                       arma::urowvec *exact) {
   using Kind = ConstraintNode::Kind;
   switch (node.kind) {
   case Kind::Const: {
@@ -104,24 +112,32 @@ ParmVector evalNodeVec(const ConstraintNode &node,
   case Kind::Add: {
     ParmVector acc = c.zeros();
     for (const auto &op : node.operands)
-      acc += evalNodeVec(*op, c);
+      acc += evalNodeVec(*op, c, exact);
     return acc;
   }
   case Kind::Mul: {
     ParmVector acc = c.ones();
     for (const auto &op : node.operands)
-      acc %= evalNodeVec(*op, c); // `%` is Armadillo's elementwise multiply
+      acc %=
+          evalNodeVec(*op, c, exact); // `%` is Armadillo's elementwise multiply
     return acc;
   }
   case Kind::Sub:
-    return evalNodeVec(*node.operands[0], c) -
-           evalNodeVec(*node.operands[1], c);
-  case Kind::Div:
-    // Matches the old OpDiv (`b ? a / b : 0`). A vectorized evaluation touches
-    // every lane and cannot short-circuit past a zero divisor the way a scalar
-    // predicate would, so the guard is not optional.
-    return vecSafeDiv(evalNodeVec(*node.operands[0], c),
-                      evalNodeVec(*node.operands[1], c));
+    return evalNodeVec(*node.operands[0], c, exact) -
+           evalNodeVec(*node.operands[1], c, exact);
+  case Kind::Div: {
+    const ParmVector num = evalNodeVec(*node.operands[0], c, exact);
+    const ParmVector den = evalNodeVec(*node.operands[1], c, exact);
+    // `a / b` asserts that b divides a. Record where it does not, so the
+    // enclosing comparison can come out false rather than compare a truncated
+    // quotient -- 1024 / 768 is not 1.
+    if (exact)
+      *exact %= vecDivides(den, num);
+    // The quotient still has to be computed for every lane: a vectorized
+    // evaluation cannot short-circuit past the bad ones, and a plain
+    // elementwise division would be UB on a zero divisor.
+    return vecSafeDiv(num, den);
+  }
   case Kind::Cmp:
   case Kind::Implies:
     llvm_unreachable(
@@ -175,23 +191,44 @@ arma::urowvec evalBoolNodeVec(const ConstraintNode &node,
   }
 
   assert(node.kind == ConstraintNode::Kind::Cmp && "expected a boolean node");
-  const ParmVector lhs = evalNodeVec(*node.operands[0], c);
-  const ParmVector rhs = evalNodeVec(*node.operands[1], c);
-  switch (node.cmp) {
-  case CmpKind::Le:
-    return lhs <= rhs;
-  case CmpKind::Ge:
-    return lhs >= rhs;
-  case CmpKind::Lt:
-    return lhs < rhs;
-  case CmpKind::Gt:
-    return lhs > rhs;
-  case CmpKind::Eq:
-    return lhs == rhs;
-  case CmpKind::Ne:
-    return lhs != rhs;
-  }
-  llvm_unreachable("unknown CmpKind");
+
+  // A comparison is where an inexact division becomes observable, and where it
+  // is discharged: `a / b` means "b divides a and the quotient is", so a lane
+  // whose division does not come out exact makes the comparison *false*,
+  // whatever the truncated quotient happens to compare to.
+  //
+  // Doing it here rather than at the root is what makes the answer right under
+  // an implication: an inexact division in the antecedent falsifies the
+  // antecedent, which satisfies the implication, and clearing the lane at the
+  // root would have rejected it instead.
+  const bool hasDiv = containsDivision(node);
+  arma::urowvec exact;
+  if (hasDiv)
+    exact = arma::urowvec(c.size(), arma::fill::ones);
+  arma::urowvec *exactPtr = hasDiv ? &exact : nullptr;
+
+  const ParmVector lhs = evalNodeVec(*node.operands[0], c, exactPtr);
+  const ParmVector rhs = evalNodeVec(*node.operands[1], c, exactPtr);
+  arma::urowvec result = [&]() -> arma::urowvec {
+    switch (node.cmp) {
+    case CmpKind::Le:
+      return lhs <= rhs;
+    case CmpKind::Ge:
+      return lhs >= rhs;
+    case CmpKind::Lt:
+      return lhs < rhs;
+    case CmpKind::Gt:
+      return lhs > rhs;
+    case CmpKind::Eq:
+      return lhs == rhs;
+    case CmpKind::Ne:
+      return lhs != rhs;
+    }
+    llvm_unreachable("unknown CmpKind");
+  }();
+  if (hasDiv)
+    result %= exact; // `%=` is elementwise multiply, i.e. AND over 0/1 masks
+  return result;
 }
 
 void evalBoolNodeInto(const ConstraintNode &node, const ConfigurationVector &c,
@@ -406,6 +443,38 @@ Interval evalNodeBounds(const ConstraintNode &node, const VarBounds &bounds) {
   llvm_unreachable("unknown ConstraintNode::Kind");
 }
 
+/// Whether every division below `node` comes out exact, as far as `bounds`
+/// can tell: true/false when decided, nullopt when not.
+///
+/// Only a division whose two operands are both pinned to a single value can be
+/// decided this way -- but that is the case that matters, because at a full
+/// assignment every operand is pinned, which is what lets a component enforce a
+/// dividing comparison outright instead of leaving it to be filtered later.
+static std::optional<bool> divisionsExact(const ConstraintNode &node,
+                                          const VarBounds &bounds) {
+  bool allKnown = true;
+  if (node.kind == ConstraintNode::Kind::Div) {
+    Interval num = evalNodeBounds(*node.operands[0], bounds);
+    Interval den = evalNodeBounds(*node.operands[1], bounds);
+    if (num.valid && den.valid && num.lo == num.hi && den.lo == den.hi) {
+      if (den.lo == 0 || num.lo % den.lo != 0)
+        return false;
+    } else {
+      allKnown = false;
+    }
+  }
+  for (const auto &child : node.operands) {
+    std::optional<bool> sub = divisionsExact(*child, bounds);
+    if (sub && !*sub)
+      return false;
+    if (!sub)
+      allKnown = false;
+  }
+  if (!allKnown)
+    return std::nullopt;
+  return true;
+}
+
 bool boolMayHold(const ConstraintNode &node, const VarBounds &bounds) {
   if (node.kind == ConstraintNode::Kind::Implies)
     // Satisfiable unless the antecedent is forced and the consequent
@@ -414,6 +483,11 @@ bool boolMayHold(const ConstraintNode &node, const VarBounds &bounds) {
            boolMayHold(*node.operands[1], bounds);
 
   assert(node.kind == ConstraintNode::Kind::Cmp && "expected a boolean node");
+  // A division known not to come out exact makes the comparison false outright,
+  // whatever the truncated quotient compares to (see evalBoolNodeVec).
+  if (divisionsExact(node, bounds) == std::optional<bool>(false))
+    return false;
+
   Interval l = evalNodeBounds(*node.operands[0], bounds);
   Interval r = evalNodeBounds(*node.operands[1], bounds);
   if (!l.valid || !r.valid)
@@ -443,6 +517,14 @@ bool boolMustHold(const ConstraintNode &node, const VarBounds &bounds) {
            boolMustHold(*node.operands[1], bounds);
 
   assert(node.kind == ConstraintNode::Kind::Cmp && "expected a boolean node");
+  // evalNodeBounds divides by truncation, so the interval it gives for a
+  // quotient covers values the comparison would reject as inexact. Harmless for
+  // boolMayHold, whose intervals only need to be a superset; here it would
+  // claim a comparison holds on lanes where it does not. So every division has
+  // to be known exact before the intervals mean anything.
+  if (divisionsExact(node, bounds) != std::optional<bool>(true))
+    return false;
+
   Interval l = evalNodeBounds(*node.operands[0], bounds);
   Interval r = evalNodeBounds(*node.operands[1], bounds);
   if (!l.valid || !r.valid)
