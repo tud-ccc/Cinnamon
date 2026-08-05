@@ -63,9 +63,10 @@ tests and benchmarks work.
 
 Historically the plugin had a second, faster route: **templates**, in
 `SimulationTemplates.cpp` — hand-written generators that emit UPMEM code
-for `gemv` and `reduce` directly, bypassing the real pipeline. They exist
-because the real pipeline could not express the configurations the
-templates could. Removing them is a goal of this work; §4.1 says when.
+for `gemv` and `reduce` directly, bypassing the real pipeline. They
+existed because the real pipeline could not express the configurations the
+templates could. That is no longer true: the route, the `lowering=` option
+that selected it and the file itself are gone (§4.1).
 
 ### The thesis of the refactoring
 
@@ -341,20 +342,18 @@ cleanup.
 
 ### 2.5 Where the templates fit
 
-Both lowerings are selectable — `lowering=templates|generic` — against
-the *same* search space. The templates read its numbers back through a
-projection, for example:
+They no longer do. While both lowerings were selectable — `lowering=templates
+|generic` — they read the *same* search space, the templates through a
+projection:
 
     taskletRows = min(tasklets, mTiles)   taskletCols = tasklets / taskletRows
     mramRow     = blockM * taskletRows    mramCol     = blockK * taskletCols
     wramRow     = leafM                   wramCol     = leafK
 
-so one configuration can be lowered and costed both ways. That comparison
-is the criterion for deleting the templates; §4.1 has the schedule.
-
-The templates generate their module directly, without the pipeline, so the
-occupancy check above does not see them; they keep the hand-written per-op
-capacity constraints they have always had.
+so one configuration could be lowered and costed both ways, which is the
+comparison §5 reports. The plugin now has one path: it lowers the reference
+to linalg once, when the space is built, and every trial runs the pipeline
+from there.
 
 ## 3. Bugs found and fixed
 
@@ -422,7 +421,7 @@ exercised. They are worth recording because most were silent.
 | What | When | Blocked on |
 |---|---|---|
 | The `cnm-buffer-level` option on `--convert-cinm-to-cnm`, and the two tests exercising it | **now** | nothing — see below |
-| The templates path: `SimulationTemplates.cpp`, the simulator bypass, the projection of §2.5, the `lowering=` option | **before the artifact** | demonstrated cost parity on a cycle-accurate simulator, which needs the first two items of §4.2 |
+| ~~The templates path: `SimulationTemplates.cpp`, the simulator bypass, the projection of §2.5, the `lowering=` option~~ — **done**, along with the analytical per-shape cost estimators that only it called (`UpmemSimulator::simulateGemv`/`simulateReduction` and the two whole-program wrappers) | — | — |
 | `--convert-cinm-to-cnm` itself, its `computeShapeOfTensors` case analysis, and `--cinm-infer-tile-sizes` / `--cinm-tiling` on the UPMEM path | **after the artifact** | it is the CINM 1.0 baseline's lowering *and* the only `cinm`→`cnm` route for the GPU backend; needs the baseline retired or the GPU backend moved to `--convert-linalg-to-cnm` |
 | `cinm.op.reduce`'s memref (destination-passing) mode | opportunistic | built for a milestone that was withdrawn; its only remaining consumer is its own tiling model, though it does fill a real gap for memref-mode input programs |
 | `--upmem-specialize-transfers` as a *pass*: the two narrowings become `hasCanonicalizer = 1` on the two `_blocks` ops, and `use-sg-xfer-codegen` / `use-bc-xfer-codegen` go with it | **after the artifact** | the flags exist only so the CINM 1.0 baseline can be measured with each transfer API in turn; nothing else reads them |

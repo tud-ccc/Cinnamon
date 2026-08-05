@@ -8,7 +8,6 @@ add_mlir_dialect_library(UPMEMTransforms
     UpmemPythonSimulator.cpp
     UpmemTileMRAMBuffers.cpp
     SpecializeTransfers.cpp
-    SimulationTemplates.cpp
 
 DEPENDS
     UPMEMIncGen
