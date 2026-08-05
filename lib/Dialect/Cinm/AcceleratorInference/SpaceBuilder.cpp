@@ -95,7 +95,7 @@ void SpaceBuilder::require(const ConstraintNodePtr &node,
   // A bare arithmetic expression contributes only its divisibility conditions
   // (that is the `require(a / b)` spelling); only a boolean node is a
   // predicate.
-  if (!isBoolKind(node->kind))
+  if (!ConstraintNode::isBoolKind(node->kind))
     return;
   // A divisibility test *at the top* of a require is unconditional, so it can
   // be reified like the one `/` asserts -- as a domain filter or a structural
@@ -104,7 +104,7 @@ void SpaceBuilder::require(const ConstraintNodePtr &node,
   // point of having it. addDivConstraint registers whatever it settles on,
   // including a predicate when the shapes allow nothing better.
   if (node->kind == ConstraintNode::Kind::Divides) {
-    addDivConstraint(/*num=*/node->operands[1], /*den=*/node->operands[0]);
+    addDivConstraint(/*num=*/node->operands()[1], /*den=*/node->operands()[0]);
     return;
   }
   std::string desc =
@@ -138,10 +138,10 @@ void SpaceBuilder::reportConstraintAnalysis(const ConfigSpace &space) const {
       // report the consequent's own shape: a product equality there is one the
       // enumerator can solve, once the guard is settled.
       const bool solvable =
-          matchProductEquality(*entry.node->operands[1]).has_value();
+          matchProductEquality(*entry.node->operands()[1]).has_value();
       llvm::dbgs() << "[cinm-analysis]   gated by "
-                   << describeNode(*entry.node->operands[0]) << ": "
-                   << describeNode(*entry.node->operands[1]) << " ("
+                   << describeNode(*entry.node->operands()[0]) << ": "
+                   << describeNode(*entry.node->operands()[1]) << " ("
                    << (solvable ? "Form A once the guard is settled"
                                 : "not Form A")
                    << ")\n";
@@ -206,8 +206,8 @@ void SpaceBuilder::extractDivConstraints(const ConstraintNodePtr &node) {
   if (node->kind == ConstraintNode::Kind::Implies)
     return;
   if (node->kind == ConstraintNode::Kind::Div)
-    addDivConstraint(node->operands[0], node->operands[1]);
-  for (const auto &child : node->operands)
+    addDivConstraint(node->operands()[0], node->operands()[1]);
+  for (const auto &child : node->operands())
     extractDivConstraints(child);
 }
 
@@ -218,13 +218,13 @@ void SpaceBuilder::addDivConstraint(const ConstraintNodePtr &num,
   // const / var: the divisor can only ever take values dividing the constant,
   // so this is a static domain filter rather than a runtime check.
   if (num->kind == Kind::Const && den->kind == Kind::Var) {
-    mustDivide(findVarByName(den->varName), num->value);
+    mustDivide(findVarByName(den->varName()), num->constValue());
     return;
   }
   // var / var: structural, folded into the flat index encoding by
   // ConfigSpace::addMultiplesConstraint.
   if (num->kind == Kind::Var && den->kind == Kind::Var) {
-    mustDivide(findVarByName(den->varName), findVarByName(num->varName));
+    mustDivide(findVarByName(den->varName()), findVarByName(num->varName()));
     return;
   }
 
@@ -296,10 +296,10 @@ struct Domain {
 /// Every search parameter mentioned anywhere in `node`.
 void collectVars(const ConstraintNode &node, std::set<size_t> &out) {
   if (node.kind == ConstraintNode::Kind::Var) {
-    out.insert(*node.varIdx);
+    out.insert(node.varIdx());
     return;
   }
-  for (const auto &child : node.operands)
+  for (const auto &child : node.operands())
     collectVars(*child, out);
 }
 
@@ -687,8 +687,8 @@ void SpaceBuilder::planComponents(
       // The implication itself is enforced as a bound below, like any other
       // comparison. What is recorded here is the extra power a settled guard
       // buys: its consequent can then determine a variable.
-      if (auto eq = asSolvableProdEq(*entry.node->operands[1]))
-        gated.push_back({entry.node->operands[0].get(), std::move(*eq)});
+      if (auto eq = asSolvableProdEq(*entry.node->operands()[1]))
+        gated.push_back({entry.node->operands()[0].get(), std::move(*eq)});
       continue;
     }
     if (auto eq = asSolvableProdEq(*entry.node)) {
@@ -777,7 +777,7 @@ void SpaceBuilder::planComponents(
     std::vector<const ConstraintNode *> myBounds;
     std::vector<const ConstraintNode *> myBoundNodes;
     for (const auto &entry : predicates_) {
-      if (!entry.node || !isBoolKind(entry.node->kind))
+      if (!entry.node || !ConstraintNode::isBoolKind(entry.node->kind))
         continue;
       if (llvm::is_contained(prodNodes, entry.node.get()))
         continue; // already handled as a product equality

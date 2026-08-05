@@ -49,7 +49,7 @@ public:
 
   /// This dimension as a constraint-IR node.
   constraints::ConstraintNodePtr node() const {
-    return constraints::makeVarNode(idx_, name_);
+    return std::make_shared<constraints::ConstraintNode>(name_, idx_);
   }
 
 private:
@@ -79,7 +79,7 @@ template <constraints::Type Ty> class Expr {
 public:
   Expr(constraints::ConstraintNodePtr node) : node_(std::move(node)) {}
   Expr(const SpaceVar &v) : node_(v.node()) {}
-  Expr(ParmValue v) : node_(constraints::makeConstNode(v)) {}
+  Expr(ParmValue v) : node_(std::make_shared<constraints::ConstraintNode>(v)) {}
 
   const constraints::ConstraintNodePtr &node() const { return node_; }
   std::string describe() const { return describeNode(*node_); }
@@ -112,16 +112,15 @@ inline constexpr bool eitherIsExpr = isExprLike<A, Ty> || isExprLike<B, Ty>;
   template <class A, class B,                                                  \
             std::enable_if_t<detail::eitherIsExpr<A, B, TY>, int> = 0>         \
   Expr<TY> operator SYM(const A &a, const B &b) {                              \
-    return Expr<TY>(                                                           \
-        constraints::makeBinNode(constraints::ConstraintNode::Kind::KIND,      \
-                                 Expr<TY>(a).node(), Expr<TY>(b).node()));     \
+    return Expr<TY>(std::make_shared<constraints::ConstraintNode>(             \
+        constraints::ConstraintNode::Kind::KIND, Expr<TY>(a).node(),           \
+        Expr<TY>(b).node()));                                                  \
   }
 
 /// Division also *asserts* that the divisor divides the dividend exactly:
 /// SpaceBuilder::require() extracts every `/` as a static, structural, or
 /// dynamic divisibility constraint.
 CINM_DEFINE_BIN_OP(/, Div, constraints::Type::INT)
-CINM_DEFINE_BIN_OP(-, Sub, constraints::Type::INT)
 #undef CINM_DEFINE_BIN_OP
 
 /// Add and Mul are n-ary in the IR; the binary operators build a two-operand
@@ -130,15 +129,17 @@ template <class A, class B,
           std::enable_if_t<detail::eitherIsExpr<A, B, constraints::Type::INT>,
                            int> = 0>
 IntExpr operator*(const A &a, const B &b) {
-  return IntExpr(makeNaryNode(constraints::ConstraintNode::Kind::Mul,
-                              {IntExpr(a).node(), IntExpr(b).node()}));
+  return IntExpr(std::make_shared<constraints::ConstraintNode>(
+      constraints::ConstraintNode::Kind::Mul, IntExpr(a).node(),
+      IntExpr(b).node()));
 }
 template <class A, class B,
           std::enable_if_t<detail::eitherIsExpr<A, B, constraints::Type::INT>,
                            int> = 0>
 IntExpr operator+(const A &a, const B &b) {
-  return IntExpr(makeNaryNode(constraints::ConstraintNode::Kind::Add,
-                              {IntExpr(a).node(), IntExpr(b).node()}));
+  return IntExpr(std::make_shared<constraints::ConstraintNode>(
+      constraints::ConstraintNode::Kind::Add, IntExpr(a).node(),
+      IntExpr(b).node()));
 }
 
 #define CINM_DEFINE_CMP_OP(SYM, KIND)                                          \
@@ -146,8 +147,9 @@ IntExpr operator+(const A &a, const B &b) {
             std::enable_if_t<                                                  \
                 detail::eitherIsExpr<A, B, constraints::Type::INT>, int> = 0>  \
   BoolExpr operator SYM(const A &a, const B &b) {                              \
-    return BoolExpr(constraints::makeCmpNode(                                  \
-        constraints::CmpKind::KIND, IntExpr(a).node(), IntExpr(b).node()));    \
+    return BoolExpr(std::make_shared<constraints::ConstraintNode>(             \
+        constraints::ConstraintNode::Kind::KIND, IntExpr(a).node(),            \
+        IntExpr(b).node()));                                                   \
   }
 
 CINM_DEFINE_CMP_OP(<=, Le)
@@ -164,22 +166,22 @@ CINM_DEFINE_CMP_OP(!=, Ne)
 /// dimensions), which is exactly what a type-level encoding could not express.
 inline IntExpr prod(llvm::ArrayRef<IntExpr> factors) {
   if (factors.empty())
-    return IntExpr(constraints::makeConstNode(1));
+    return IntExpr(std::make_shared<constraints::ConstraintNode>(1));
   llvm::SmallVector<constraints::ConstraintNodePtr, 2> ops;
   for (const IntExpr &f : factors)
     ops.push_back(f.node());
-  return IntExpr(constraints::makeNaryNode(
+  return IntExpr(std::make_shared<constraints::ConstraintNode>(
       constraints::ConstraintNode::Kind::Mul, std::move(ops)));
 }
 
 /// Flat n-ary sum; see prod().
 inline IntExpr sum(llvm::ArrayRef<IntExpr> terms) {
   if (terms.empty())
-    return IntExpr(constraints::makeConstNode(0));
+    return IntExpr(std::make_shared<constraints::ConstraintNode>(0));
   llvm::SmallVector<constraints::ConstraintNodePtr, 2> ops;
   for (const IntExpr &t : terms)
     ops.push_back(t.node());
-  return IntExpr(constraints::makeNaryNode(
+  return IntExpr(std::make_shared<constraints::ConstraintNode>(
       constraints::ConstraintNode::Kind::Add, std::move(ops)));
 }
 
@@ -202,7 +204,9 @@ inline IntExpr sum(llvm::ArrayRef<IntExpr> terms) {
 /// b.require(implies(a == b, X));
 /// ```
 inline BoolExpr divides(IntExpr divisor, IntExpr dividend) {
-  return BoolExpr(makeDividesNode(divisor.node(), dividend.node()));
+  return BoolExpr(std::make_shared<constraints::ConstraintNode>(
+      constraints::ConstraintNode::Kind::Divides, divisor.node(),
+      dividend.node()));
 }
 
 /// `antecedent => consequent`: the consequent is required only of the
@@ -217,7 +221,9 @@ inline BoolExpr divides(IntExpr divisor, IntExpr dividend) {
 /// implies(divides(a, b), implies(a / b == 2, X))
 /// ```
 inline BoolExpr implies(BoolExpr antecedent, BoolExpr consequent) {
-  return BoolExpr(makeImpliesNode(antecedent.node(), consequent.node()));
+  return BoolExpr(std::make_shared<constraints::ConstraintNode>(
+      constraints::ConstraintNode::Kind::Implies, antecedent.node(),
+      consequent.node()));
 }
 
 // ===----------------------------------------------------------------------===//
@@ -262,20 +268,12 @@ public:
   void require(Constraint pred, llvm::StringRef description = "");
 
   /// Require that the given boolean expression evaluate to true.
-  /// Implicit divisibility constraints are still recursively found
-  /// and registered.
+  /// Note that all division expressions are recursively found and
+  /// structurally assert that the division is exact. The only
+  /// exception is on the right-hand-side of an [implies] node.
   ///
   /// `description` defaults to the rendered expression.
   void require(BoolExpr expr, llvm::StringRef description = "") {
-    require(expr.node(), description);
-  }
-
-  /// Require that the given integer expression be well-formed at runtime.
-  /// This recurses to find all division expressions and add a constraint
-  /// that the numerator be divisible by the denominator at runtime.
-  ///
-  /// `description` defaults to the rendered expression.
-  void requirePossible(IntExpr expr, llvm::StringRef description = "") {
     require(expr.node(), description);
   }
 

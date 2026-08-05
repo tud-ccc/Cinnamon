@@ -101,24 +101,17 @@ Notes on the shape:
 - **`Add` and `Mul` are n-ary, not binary.** This is what makes
   `prod(extent/block)` a single node with one child per iteration dimension,
   rather than a left-leaning binary tree that the analyser would have to
-  re-flatten. Arity is a runtime value (the number of iteration dimensions),
-  which is exactly what the type-level encoding could not express.
-- **`Div` stays binary and keeps its current meaning**: `a / b` asserts `b`
-  divides `a` exactly. That assertion is *not* part of the node — it is
-  registered separately by `extractDivConstraints`, which is the subtlety the
-  next section is about.
-- **`Var` holds the same `shared_ptr<size_t>` cell `SpaceVar` uses**, so handles
+  re-flatten.
+- **`Div` represents exact division**: `a / b` asserts `b`
+  divides `a` exactly. That assertion may be pulled into the structure of the design space.
+- **`Var`'s shared_ptr is compatible with the user-facing `SpaceVar`**, so handles
   keep working across `buildInto()` and node identity is pointer identity.
-- **`Cmp`, `Divides` and `Implies` are the boolean kinds** (`isBoolKind`).
+- **`Cmp`, `Divides` and `Implies` are boolean expressions**.
   `Implies` is the only connective: conjunction needs none, since two `require`
-  calls are an `and`, and disjunction has no caller. The surface DSL splits the
-  two worlds statically as `Expr<Type::INT>` and `Expr<Type::BOOL>`, so a
-  comparison cannot be an operand of `*` and an integer cannot be an operand of
-  `implies`.
+  calls are an `and`, and disjunction has no use case yet.
 - **`Divides` tests what `Div` asserts.** `divides(b, a)` is the proposition
-  "`b` divides `a`"; `a / b` is a *value* whose use claims the same thing. The
-  distinction is invisible at the top of a `require`, where both end up
-  enforced, and load-bearing under a guard — see below.
+  "`b` divides `a`"; `a / b` is a *value* whose use claims the same thing.
+  The distinction is important under an Implies guard.
 
 ### Normal form
 
