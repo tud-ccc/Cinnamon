@@ -92,7 +92,8 @@ struct ConvertTorchTensorOpToCinm : OpConversionPattern<SourceOp> {
   }
 };
 
-struct ConvertTorchToCinm : public mlir::impl::ConvertTorchToCinmBase<ConvertTorchToCinm> {
+struct ConvertTorchToCinm
+    : public mlir::impl::ConvertTorchToCinmBase<ConvertTorchToCinm> {
 
   void runOnOperation() override {
     auto &ctx = getContext();

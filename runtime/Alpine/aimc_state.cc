@@ -8,17 +8,20 @@ static AnalogComputationalMemory *g_aimc_ptr = nullptr;
 
 AnalogComputationalMemory &getAimc() {
   if (!g_aimc_ptr) {
-    g_aimc_ptr = new AnalogComputationalMemory(8, gAimcCfgHeight, gAimcCfgWidth);
+    g_aimc_ptr =
+        new AnalogComputationalMemory(8, gAimcCfgHeight, gAimcCfgWidth);
   }
   return *g_aimc_ptr;
 }
 
 void aimcSetArrayDimsRuntime(int height, int width) {
-  if (height > 0) gAimcCfgHeight = height;
-  if (width > 0) gAimcCfgWidth = width;
+  if (height > 0)
+    gAimcCfgHeight = height;
+  if (width > 0)
+    gAimcCfgWidth = width;
   if (g_aimc_ptr) {
     delete g_aimc_ptr;
-    g_aimc_ptr = new AnalogComputationalMemory(8, gAimcCfgHeight, gAimcCfgWidth);
+    g_aimc_ptr =
+        new AnalogComputationalMemory(8, gAimcCfgHeight, gAimcCfgWidth);
   }
 }
-

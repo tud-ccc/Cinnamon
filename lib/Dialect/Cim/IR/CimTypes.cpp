@@ -37,9 +37,10 @@ Type mlir::cim::FutureType::parse(mlir::AsmParser &parser) {
   SmallVector<int64_t> shape;
   Type elementType;
 
-  if (parser.parseLess() ||                            //
-      parser.parseDimensionList(shape, /*allowDynamic=*/true, /*withTrailingX=*/true) || //
-      parser.parseType(elementType) ||                 //
+  if (parser.parseLess() || //
+      parser.parseDimensionList(shape, /*allowDynamic=*/true,
+                                /*withTrailingX=*/true) || //
+      parser.parseType(elementType) ||                     //
       parser.parseGreater()) {
     return Type();
   }

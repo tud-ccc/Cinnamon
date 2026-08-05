@@ -39,4 +39,3 @@ module {
     return %0 : tensor<768xf32>
   }
 }
-

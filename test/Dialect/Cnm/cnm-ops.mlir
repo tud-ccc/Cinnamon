@@ -36,7 +36,7 @@ func.func @mm_dimm4_nopt(%arg0: tensor<8x1024xi32>, %arg1: tensor<1024x256xi32>)
             %extracted_slice_6 = tensor.extract_slice %arg1[%i_4, %i_2] [1024, 128] [1, 1] : tensor<1024x256xi32> to tensor<1024x128xi32>
             %extracted_slice_7 = tensor.extract_slice %acc_5[%i, %i_2] [4, 128] [1, 1] : tensor<8x256xi32> to tensor<4x128xi32>
             %6 = tensor.empty() : tensor<128x1024xi32>
-            %transposed = linalg.transpose ins(%extracted_slice_6 : tensor<1024x128xi32>) outs(%6 : tensor<128x1024xi32>) permutation = [1, 0] 
+            %transposed = linalg.transpose ins(%extracted_slice_6 : tensor<1024x128xi32>) outs(%6 : tensor<128x1024xi32>) permutation = [1, 0]
             cnm.scatter %extracted_slice into %cnm_buf_1[#map] of %0 : tensor<4x1024xi32> into !cnm.buffer<1024xi32 on #upmem_4_128_1>
             cnm.scatter %transposed into %cnm_buf_0[#map1] of %0 : tensor<128x1024xi32> into !cnm.buffer<1024xi32 on #upmem_4_128_1>
             cnm.scatter %extracted_slice_7 into %cnm_buf[#map2] of %0 : tensor<4x128xi32> into !cnm.buffer<i32 on #upmem_4_128_1>

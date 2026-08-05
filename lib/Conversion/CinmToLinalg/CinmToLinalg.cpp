@@ -38,15 +38,16 @@ static Value buildEmpty(OpBuilder &b, Location loc, RankedTensorType type,
     if (type.isDynamicDim(i))
       dynDims.push_back(tensor::DimOp::create(b, loc, exemplar, i));
   return tensor::EmptyOp::create(b, loc, type.getShape(), type.getElementType(),
-                                   dynDims);
+                                 dynDims);
 }
 
 static Value buildZero(OpBuilder &b, Location loc, Type elemType) {
   if (isa<FloatType>(elemType))
-    return arith::ConstantOp::create(b, 
-        loc, FloatAttr::get(
-                 elemType, APFloat::getZero(
-                               cast<FloatType>(elemType).getFloatSemantics())));
+    return arith::ConstantOp::create(
+        b, loc,
+        FloatAttr::get(
+            elemType,
+            APFloat::getZero(cast<FloatType>(elemType).getFloatSemantics())));
   return arith::ConstantIntOp::create(b, loc, elemType, 0);
 }
 
@@ -73,9 +74,9 @@ static Value buildGemmInit(OpBuilder &b, Location loc, Value out, Value bias,
   if (bias)
     return bias;
   Value empty = tensor::EmptyOp::create(b, loc, resultTy.getShape(),
-                                          resultTy.getElementType());
-  return linalg::FillOp::create(b, loc, buildZero(b, loc, resultTy.getElementType()),
-                              empty)
+                                        resultTy.getElementType());
+  return linalg::FillOp::create(
+             b, loc, buildZero(b, loc, resultTy.getElementType()), empty)
       .getResult(0);
 }
 
@@ -98,8 +99,8 @@ static Value buildElementwiseGeneric(
   auto mapsAttr = b.getAffineMapArrayAttr(maps);
 
   Value init = tensorOut ? tensorOut : buildEmpty(b, loc, resultTy, inputs[0]);
-  auto generic = linalg::GenericOp::create(b, 
-      loc, TypeRange{resultTy}, inputs, ValueRange{init}, mapsAttr, iterAttr,
+  auto generic = linalg::GenericOp::create(
+      b, loc, TypeRange{resultTy}, inputs, ValueRange{init}, mapsAttr, iterAttr,
       StringAttr{}, StringAttr{},
       [&](OpBuilder &nb, Location nloc, ValueRange args) {
         Value out = bodyBuilder(nb, nloc, args.drop_back());
@@ -233,7 +234,8 @@ static FailureOr<Value> emitElementwiseScalar(OpBuilder &b, Location loc,
     break;
   case ElementwiseKind::Reciprocal: {
     if (isFloat) {
-      Value one = arith::ConstantOp::create(b, loc, FloatAttr::get(elemTy, 1.0));
+      Value one =
+          arith::ConstantOp::create(b, loc, FloatAttr::get(elemTy, 1.0));
       return arith::DivFOp::create(b, loc, one, lhs).getResult();
     }
     break;
@@ -279,7 +281,8 @@ static FailureOr<Value> emitElementwiseScalar(OpBuilder &b, Location loc,
       // 1 / (1 + exp(-x))
       Value neg = arith::NegFOp::create(b, loc, lhs);
       Value e = math::ExpOp::create(b, loc, neg);
-      Value one = arith::ConstantOp::create(b, loc, FloatAttr::get(elemTy, 1.0));
+      Value one =
+          arith::ConstantOp::create(b, loc, FloatAttr::get(elemTy, 1.0));
       Value denom = arith::AddFOp::create(b, loc, one, e);
       return arith::DivFOp::create(b, loc, one, denom).getResult();
     }
@@ -292,19 +295,20 @@ static FailureOr<Value> emitElementwiseScalar(OpBuilder &b, Location loc,
           arith::ConstantOp::create(b, loc, FloatAttr::get(elemTy, 0.5));
       Value c =
           arith::ConstantOp::create(b, loc, FloatAttr::get(elemTy, 0.044715));
-      Value s2pi = arith::ConstantOp::create(b, 
-          loc, FloatAttr::get(elemTy, 0.7978845608));
-      Value one = arith::ConstantOp::create(b, loc, FloatAttr::get(elemTy, 1.0));
+      Value s2pi = arith::ConstantOp::create(
+          b, loc, FloatAttr::get(elemTy, 0.7978845608));
+      Value one =
+          arith::ConstantOp::create(b, loc, FloatAttr::get(elemTy, 1.0));
       Value v2 = arith::MulFOp::create(b, loc, lhs, lhs);
       Value v3 = arith::MulFOp::create(b, loc, v2, lhs);
-      Value inner = arith::AddFOp::create(b, 
-          loc, lhs, arith::MulFOp::create(b, loc, c, v3));
-      Value t = math::TanhOp::create(b, 
-          loc, arith::MulFOp::create(b, loc, s2pi, inner));
-      return arith::MulFOp::create(b, 
-              loc, half,
-              arith::MulFOp::create(b, loc, lhs,
-                                      arith::AddFOp::create(b, loc, one, t)))
+      Value inner = arith::AddFOp::create(b, loc, lhs,
+                                          arith::MulFOp::create(b, loc, c, v3));
+      Value t = math::TanhOp::create(
+          b, loc, arith::MulFOp::create(b, loc, s2pi, inner));
+      return arith::MulFOp::create(
+                 b, loc, half,
+                 arith::MulFOp::create(b, loc, lhs,
+                                       arith::AddFOp::create(b, loc, one, t)))
           .getResult();
     }
     break;
@@ -399,11 +403,12 @@ struct ConvertReduceToLinalg : public OpConversionPattern<cinm::ReduceOp> {
     Value initTensor =
         tensor::EmptyOp::create(rewriter, loc, outputShape, elemTy);
     Value filledInit =
-        linalg::FillOp::create(rewriter, loc, identity, initTensor).getResult(0);
+        linalg::FillOp::create(rewriter, loc, identity, initTensor)
+            .getResult(0);
 
-    auto reduceOp = linalg::ReduceOp::create(rewriter, 
-        loc, ValueRange{adaptor.getInput()}, ValueRange{filledInit}, dims,
-        [&](OpBuilder &b, Location loc, ValueRange args) {
+    auto reduceOp = linalg::ReduceOp::create(
+        rewriter, loc, ValueRange{adaptor.getInput()}, ValueRange{filledInit},
+        dims, [&](OpBuilder &b, Location loc, ValueRange args) {
           // args[0] = element, args[1] = accumulator
           Value combined = emitReduceCombine(b, loc, op.getMethod(), args[0],
                                              args[1], elemTy);
@@ -437,11 +442,11 @@ struct ConvertGemvToLinalg : public OpConversionPattern<cinm::GemvOp> {
     Value init = buildGemmInit(rewriter, loc, adaptor.getOut(),
                                adaptor.getBias(), resultTy);
 
-    Value result = linalg::MatvecOp::create(rewriter, 
-                           loc, TypeRange{resultTy},
-                           ValueRange{adaptor.getLhs(), adaptor.getRhs()},
-                           ValueRange{init})
-                       .getResult(0);
+    Value result =
+        linalg::MatvecOp::create(rewriter, loc, TypeRange{resultTy},
+                                 ValueRange{adaptor.getLhs(), adaptor.getRhs()},
+                                 ValueRange{init})
+            .getResult(0);
     replaceWithLinalgOp(rewriter, op, result);
     return success();
   }
@@ -465,11 +470,11 @@ struct ConvertGemmToLinalg : public OpConversionPattern<cinm::GemmOp> {
     Value init = buildGemmInit(rewriter, loc, adaptor.getOut(),
                                adaptor.getBias(), resultTy);
 
-    Value result = linalg::MatmulOp::create(rewriter, 
-                           loc, TypeRange{resultTy},
-                           ValueRange{adaptor.getLhs(), adaptor.getRhs()},
-                           ValueRange{init})
-                       .getResult(0);
+    Value result =
+        linalg::MatmulOp::create(rewriter, loc, TypeRange{resultTy},
+                                 ValueRange{adaptor.getLhs(), adaptor.getRhs()},
+                                 ValueRange{init})
+            .getResult(0);
     replaceWithLinalgOp(rewriter, op, result);
     return success();
   }
@@ -494,11 +499,11 @@ struct ConvertBatchGemmToLinalg
     Value init = buildGemmInit(rewriter, loc, adaptor.getOut(),
                                adaptor.getBias(), resultTy);
 
-    Value result = linalg::BatchMatmulOp::create(rewriter, 
-                           loc, TypeRange{resultTy},
-                           ValueRange{adaptor.getLhs(), adaptor.getRhs()},
-                           ValueRange{init})
-                       .getResult(0);
+    Value result =
+        linalg::BatchMatmulOp::create(
+            rewriter, loc, TypeRange{resultTy},
+            ValueRange{adaptor.getLhs(), adaptor.getRhs()}, ValueRange{init})
+            .getResult(0);
     replaceWithLinalgOp(rewriter, op, result);
     return success();
   }
@@ -540,17 +545,17 @@ struct ConvertBatchGemvToLinalg
 
     Value init = buildGemmInit(rewriter, loc, adaptor.getOut(),
                                adaptor.getBias(), resultTy);
-    auto generic = linalg::GenericOp::create(rewriter, 
-        loc, TypeRange{resultTy},
+    auto generic = linalg::GenericOp::create(
+        rewriter, loc, TypeRange{resultTy},
         ValueRange{adaptor.getLhs(), adaptor.getRhs()}, ValueRange{init},
         rewriter.getAffineMapArrayAttr(maps), rewriter.getArrayAttr(iterAttrs),
         StringAttr{}, StringAttr{},
         [&](OpBuilder &nb, Location nloc, ValueRange args) {
-          Value mul =
-              isFloat
-                  ? arith::MulFOp::create(nb, nloc, args[0], args[1]).getResult()
-                  : arith::MulIOp::create(nb, nloc, args[0], args[1])
-                        .getResult();
+          Value mul = isFloat
+                          ? arith::MulFOp::create(nb, nloc, args[0], args[1])
+                                .getResult()
+                          : arith::MulIOp::create(nb, nloc, args[0], args[1])
+                                .getResult();
           Value acc =
               isFloat
                   ? arith::AddFOp::create(nb, nloc, mul, args[2]).getResult()
@@ -584,10 +589,10 @@ struct ConvertTransposeToLinalg
       outputShape.push_back(inputTy.getDimSize(p));
 
     Value init = tensor::EmptyOp::create(rewriter, loc, outputShape,
-                                                  inputTy.getElementType());
-    Value result =
-        linalg::TransposeOp::create(rewriter, loc, adaptor.getInput1(), init, perms)
-            .getResults()[0];
+                                         inputTy.getElementType());
+    Value result = linalg::TransposeOp::create(rewriter, loc,
+                                               adaptor.getInput1(), init, perms)
+                       .getResults()[0];
     replaceWithLinalgOp(rewriter, op, result);
     return success();
   }

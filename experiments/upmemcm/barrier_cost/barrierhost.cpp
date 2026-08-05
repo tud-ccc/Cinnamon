@@ -12,7 +12,7 @@ extern "C" {
   do {                                                                         \
     dpu_error_t _e = (x);                                                      \
     if (_e != DPU_OK) {                                                        \
-      fprintf(stderr, "DPU error %d at %s:%d\n", _e, __FILE__, __LINE__);     \
+      fprintf(stderr, "DPU error %d at %s:%d\n", _e, __FILE__, __LINE__);      \
       exit(1);                                                                 \
     }                                                                          \
   } while (0)
@@ -61,7 +61,8 @@ int main(int argc, char **argv) {
   for (int T = 1; T <= 24; T++) {
     for (int i = 0; i < N; i++) {
       double overhead = (barrier_ns[T][i] - control_ns[T][i]) / BARRIER_ITERS;
-      printf("%d,%d,%.1f,%.1f,%.2f\n", T, i, barrier_ns[T][i], control_ns[T][i], overhead);
+      printf("%d,%d,%.1f,%.1f,%.2f\n", T, i, barrier_ns[T][i], control_ns[T][i],
+             overhead);
     }
   }
 

@@ -21,6 +21,6 @@ inline double transferCost(double numBytes, int numRanks) {
 /// WaitForOp cost is delegated to `waitForCb`; all other op costs use the
 /// built-in weighted heuristics (same as OpCountSimulator).
 SimCost simulateHostRegion(mlir::Region &region, bool annotate,
-                          const WaitForCostFn &waitForCb);
+                           const WaitForCostFn &waitForCb);
 
 } // namespace mlir::upmem

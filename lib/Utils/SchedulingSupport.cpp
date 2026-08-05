@@ -36,8 +36,7 @@ NameInventor NameInventor::getNameInventor(Operation *loc,
     for (auto &op : *block) {
       op.walk([&](Operation *inner) {
         for (auto namedAttr : inner->getAttrDictionary()) {
-          if (auto strAttr =
-                  llvm::dyn_cast<StringAttr>(namedAttr.getValue())) {
+          if (auto strAttr = llvm::dyn_cast<StringAttr>(namedAttr.getValue())) {
             if (strAttr.getValue().starts_with(hint))
               existingNames.insert(strAttr.getValue());
           }

@@ -33,7 +33,7 @@ static Value buildEmptyLike(IRRewriter &rewriter, Location loc,
     if (type.isDynamicDim(i))
       dynDims.push_back(tensor::DimOp::create(rewriter, loc, exemplar, i));
   return tensor::EmptyOp::create(rewriter, loc, type.getShape(),
-                                          type.getElementType(), dynDims);
+                                 type.getElementType(), dynDims);
 }
 
 static FailureOr<Value> buildBinaryElementwise(
@@ -53,9 +53,10 @@ static FailureOr<Value> buildBinaryElementwise(
   auto iteratorTypesAttr = rewriter.getArrayAttr(iterTypeAttrs);
 
   bool combineFailed = false;
-  auto generic = linalg::GenericOp::create(rewriter, 
-      loc, TypeRange{resultType}, ValueRange{lhs, rhs}, ValueRange{init},
-      indexingMaps, iteratorTypesAttr, StringAttr(), StringAttr(),
+  auto generic = linalg::GenericOp::create(
+      rewriter, loc, TypeRange{resultType}, ValueRange{lhs, rhs},
+      ValueRange{init}, indexingMaps, iteratorTypesAttr, StringAttr(),
+      StringAttr(),
       [&](OpBuilder &nestedBuilder, Location nestedLoc, ValueRange args) {
         FailureOr<Value> combined = emitCombine(args[0], args[1]);
         if (failed(combined)) {

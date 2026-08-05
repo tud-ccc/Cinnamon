@@ -65,9 +65,11 @@ struct ConstraintNode {
 // ===----------------------------------------------------------------------===//
 
 ConstraintNodePtr makeConstNode(ParmValue v);
-ConstraintNodePtr makeVarNode(std::shared_ptr<size_t> idx, llvm::StringRef name);
-ConstraintNodePtr makeNaryNode(ConstraintNode::Kind kind,
-                               llvm::SmallVector<ConstraintNodePtr, 2> operands);
+ConstraintNodePtr makeVarNode(std::shared_ptr<size_t> idx,
+                              llvm::StringRef name);
+ConstraintNodePtr
+makeNaryNode(ConstraintNode::Kind kind,
+             llvm::SmallVector<ConstraintNodePtr, 2> operands);
 ConstraintNodePtr makeBinNode(ConstraintNode::Kind kind, ConstraintNodePtr lhs,
                               ConstraintNodePtr rhs);
 ConstraintNodePtr makeCmpNode(CmpKind cmp, ConstraintNodePtr lhs,
@@ -78,7 +80,8 @@ ConstraintNodePtr makeCmpNode(CmpKind cmp, ConstraintNodePtr lhs,
 // ===----------------------------------------------------------------------===//
 
 /// Evaluate an arithmetic (non-Cmp) node over a whole batch.
-ParmVector evalNodeVec(const ConstraintNode &node, const ConfigurationVector &c);
+ParmVector evalNodeVec(const ConstraintNode &node,
+                       const ConfigurationVector &c);
 
 /// Evaluate an arithmetic (non-Cmp) node for a single configuration. Used by
 /// callers that need a plain number out of a space expression rather than a
@@ -121,9 +124,10 @@ struct ProductEquality {
   Monomial lhs, rhs;
 };
 
-/// Reduce an arithmetic node to `(numer) / (denom)` as monomials. Fails (returns
-/// nullopt) on anything that is not a rational monomial — in particular on any
-/// Add or Sub, which is why capacity bounds (Form C) are not matched here.
+/// Reduce an arithmetic node to `(numer) / (denom)` as monomials. Fails
+/// (returns nullopt) on anything that is not a rational monomial — in
+/// particular on any Add or Sub, which is why capacity bounds (Form C) are not
+/// matched here.
 ///
 /// Variable indices are read from the shared cells, so this is only meaningful
 /// after SpaceBuilder::buildInto() has assigned them.
@@ -132,8 +136,7 @@ normalizeRationalMonomial(const ConstraintNode &node);
 
 /// Match a Cmp node as a product equality, clearing denominators. Returns
 /// nullopt unless the comparison is `==` and both sides are rational monomials.
-std::optional<ProductEquality>
-matchProductEquality(const ConstraintNode &node);
+std::optional<ProductEquality> matchProductEquality(const ConstraintNode &node);
 
 std::string describeMonomial(const Monomial &m,
                              llvm::ArrayRef<std::string> paramNames);

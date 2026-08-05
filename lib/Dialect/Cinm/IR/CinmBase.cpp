@@ -127,8 +127,7 @@ CinmDialect::verifyOperationAttribute(::mlir::Operation *op,
   if (attribute.getName() == CinmDialect::DEBUG_TAG_NAME) {
     if (!llvm::isa<StringAttr>(attribute.getValue()))
       return op->emitOpError("Attribute ")
-             << CinmDialect::DEBUG_TAG_NAME
-             << " must be a string attribute";
+             << CinmDialect::DEBUG_TAG_NAME << " must be a string attribute";
     return success();
   }
   return op->emitOpError("unknown attribute ") << attribute.getName();

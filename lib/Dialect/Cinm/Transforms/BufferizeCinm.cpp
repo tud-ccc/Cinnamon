@@ -105,8 +105,8 @@ struct ComputeBufferizableInterface
 
   bool bufferizesToMemoryRead(Operation *op, OpOperand &opnd,
                               const bufferization::AnalysisState &state) const {
-    auto bbarg =
-        cast<cinm::ComputeBlockOp>(op).getBodyArguments()[opnd.getOperandNumber()];
+    auto bbarg = cast<cinm::ComputeBlockOp>(op)
+                     .getBodyArguments()[opnd.getOperandNumber()];
     return state.isValueRead(bbarg);
   }
 
@@ -599,8 +599,8 @@ void mlir::cinm::registerCinmBufferizableOpInterfaces(
                                                            *) {
     ::mlir::cinm::ComputeBlockOp::attachInterface<ComputeBufferizableInterface>(
         *ctx);
-    ::mlir::cinm::ComputeOp::attachInterface<
-        FlexComputeBufferizableInterface>(*ctx);
+    ::mlir::cinm::ComputeOp::attachInterface<FlexComputeBufferizableInterface>(
+        *ctx);
     ::mlir::cinm::GemmOp::attachInterface<GemmBufferizableInterface>(*ctx);
     ::mlir::cinm::GemvOp::attachInterface<GemvBufferizableInterface>(*ctx);
     ::mlir::cinm::ReduceOp::attachInterface<ReduceBufferizableInterface>(*ctx);

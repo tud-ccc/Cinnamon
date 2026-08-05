@@ -73,13 +73,13 @@ int main(int argc, char *argv[]) {
   DTY *out = alloc_mat(s.b * s.m); // output buffer; reused across iters
 
 #if FUNCTIONAL_CHECK
-  // todo 
+  // todo
   DTY *C = alloc_mat(s.b * s.m);
   for (int b = 0; b < s.b; b++)
     for (int m = 0; m < s.m; m++)
       C[b * s.m + m] = 0;
-      for (int k = 0; k < s.k; k++)
-        C[b * s.m + m] += A[b * s.m * s.k + m * s.k + k] * x[k];
+  for (int k = 0; k < s.k; k++)
+    C[b * s.m + m] += A[b * s.m * s.k + m * s.k + k] * x[k];
 #endif
 
   printf("%s  M=%zu N=%zu  iters=%d\n", TOSTR(BENCH_FN), s.m, s.k, iters);

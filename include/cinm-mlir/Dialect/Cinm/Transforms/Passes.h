@@ -6,8 +6,8 @@
 
 #include "mlir/Pass/Pass.h"
 
-#include <mlir/Dialect/Affine/IR/AffineOps.h>
 #include <cinm-mlir/Dialect/Cinm/IR/CinmOps.h>
+#include <mlir/Dialect/Affine/IR/AffineOps.h>
 #include <mlir/Dialect/Bufferization/IR/Bufferization.h>
 #include <mlir/Dialect/LLVMIR/LLVMDialect.h>
 #include <mlir/Dialect/Linalg/IR/Linalg.h>
@@ -20,7 +20,6 @@ namespace mlir::cinm {
 #define GEN_PASS_DECL
 #define GEN_PASS_REGISTRATION
 #include "cinm-mlir/Dialect/Cinm/Transforms/Passes.h.inc"
-
 
 //===----------------------------------------------------------------------===//
 

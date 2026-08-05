@@ -18,4 +18,3 @@ func.func @simple(%t0: tensor<6x6xi32>, %t1: tensor<6x6xi32>, %t2 : tensor<6xi32
 
     return
 }
-

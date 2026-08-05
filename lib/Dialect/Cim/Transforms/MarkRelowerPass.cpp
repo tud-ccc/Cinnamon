@@ -91,5 +91,5 @@ struct CimMarkRelowerPass
   }
 };
 
-}
-}
+} // namespace
+} // namespace mlir::cim

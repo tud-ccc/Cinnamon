@@ -22,8 +22,9 @@ namespace {}
 struct CnmHoistWorkgroupsPass
     : public cnm::impl::CnmHoistWorkgroupsPassBase<CnmHoistWorkgroupsPass> {
   void runOnOperation() override {
-    auto* root = getOperation();
-    if (root->getNumRegions() == 0) return;
+    auto *root = getOperation();
+    if (root->getNumRegions() == 0)
+      return;
 
     // Find the nearest IsolatedFromAbove ancestor of `op` that is still
     // a descendant of (or equal to) `root`. Returns nullptr if none found.

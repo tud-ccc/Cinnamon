@@ -107,4 +107,3 @@ module {
     return %2 : tensor<768xf32>
   }
 }
-

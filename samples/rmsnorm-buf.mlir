@@ -35,4 +35,3 @@ module {
     return %0 : memref<768xf32>
   }
 }
-

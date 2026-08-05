@@ -3,7 +3,7 @@
 #include <defs.h>
 #include <stdint.h>
 
-#define NITER      100
+#define NITER 100
 #define WARM_ITERS 60
 
 BARRIER_INIT(my_barrier, NR_TASKLETS);
@@ -20,7 +20,7 @@ int main(void) {
   // buf[tid] = x;
 
   for (int i = 0; i < NITER; i++) {
-  //   buf[tid] += 1;
+    //   buf[tid] += 1;
 #ifdef BENCH
     barrier_wait(&my_barrier);
 #endif

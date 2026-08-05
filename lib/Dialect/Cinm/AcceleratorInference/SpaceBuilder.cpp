@@ -14,13 +14,15 @@ namespace mlir::cinm {
 // SpaceBuilder — dimension declaration
 // ===----------------------------------------------------------------------===//
 
-SpaceVar SpaceBuilder::intRange(llvm::StringRef name, ParmValue lo, ParmValue hi) {
+SpaceVar SpaceBuilder::intRange(llvm::StringRef name, ParmValue lo,
+                                ParmValue hi) {
   SpaceVar v(name, hi);
   dims_.push_back({v, DimEntry::IntRange, lo, hi, {}});
   return v;
 }
 
-SpaceVar SpaceBuilder::pow2Range(llvm::StringRef name, ParmValue expLo, ParmValue expHi) {
+SpaceVar SpaceBuilder::pow2Range(llvm::StringRef name, ParmValue expLo,
+                                 ParmValue expHi) {
   SpaceVar v(name, ParmValue{1} << expHi);
   dims_.push_back({v, DimEntry::Pow2, expLo, expHi, {}});
   return v;
@@ -187,20 +189,20 @@ void SpaceBuilder::addDivConstraint(const ConstraintNodePtr &num,
     // (B * C) | A  ⟹  B * C <= A as well; keeping the bound makes the
     // predicate reject the degenerate cases the divisibility test alone lets
     // through.
-    require(VecConstraint([num, den](const ConfigurationVector &c,
-                                     arma::urowvec &valid) {
-              const ParmVector nv = evalNodeVec(*num, c);
-              const ParmVector dv = evalNodeVec(*den, c);
-              valid %= vecDivides(dv, nv);
-              valid %= (dv <= nv);
-            }),
+    require(VecConstraint(
+                [num, den](const ConfigurationVector &c, arma::urowvec &valid) {
+                  const ParmVector nv = evalNodeVec(*num, c);
+                  const ParmVector dv = evalNodeVec(*den, c);
+                  valid %= vecDivides(dv, nv);
+                  valid %= (dv <= nv);
+                }),
             desc);
     return;
   }
-  require(VecConstraint([num, den](const ConfigurationVector &c,
-                                   arma::urowvec &valid) {
-            valid %= vecDivides(evalNodeVec(*den, c), evalNodeVec(*num, c));
-          }),
+  require(VecConstraint(
+              [num, den](const ConfigurationVector &c, arma::urowvec &valid) {
+                valid %= vecDivides(evalNodeVec(*den, c), evalNodeVec(*num, c));
+              }),
           desc);
 }
 
@@ -242,9 +244,8 @@ public:
                       llvm::ArrayRef<DivRel> divs, llvm::ArrayRef<ProdEq> prods,
                       llvm::ArrayRef<const ConstraintNode *> bounds, size_t cap)
       : dims_(dims), domains_(domains), divs_(divs), prods_(prods),
-        bounds_(bounds), cap_(cap),
-        assigned_(dims.size(), false), values_(dims.size(), 0),
-        inProdEq_(dims.size(), false) {
+        bounds_(bounds), cap_(cap), assigned_(dims.size(), false),
+        values_(dims.size(), 0), inProdEq_(dims.size(), false) {
     for (size_t pos = 0; pos < dims.size(); ++pos)
       posOfDim_[dims[pos]] = pos;
     for (const ProdEq &e : prods_)
@@ -662,9 +663,10 @@ void SpaceBuilder::planComponents(
       for (size_t i = 0; i < dims.size(); ++i)
         llvm::dbgs() << (i ? ", " : "") << space[dims[i]].name;
       llvm::dbgs() << "}: " << solutions.size() << " tuples (was " << product
-                   << ", " << (solutions.empty()
-                                   ? 0.0
-                                   : double(product) / double(solutions.size()))
+                   << ", "
+                   << (solutions.empty()
+                           ? 0.0
+                           : double(product) / double(solutions.size()))
                    << "x fewer)\n";
     });
 

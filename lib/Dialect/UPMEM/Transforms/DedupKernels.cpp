@@ -131,4 +131,4 @@ struct UPMEMDedupKernelsPass
   }
 };
 
-} // namespace mlir
+} // namespace mlir::upmem

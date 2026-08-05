@@ -16,7 +16,7 @@ def AcceleratorRefType : Cinm_Type<"AcceleratorRef"> {
   let summary = "A type to represent an accelerator as a value";
 
   let extraClassDeclaration = [{
-    
+
   }];
 }
 

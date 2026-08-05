@@ -13,13 +13,25 @@ static inline void dbg_write(const char *s, unsigned long n) {
   __asm__ volatile("svc #0" ::"r"(x0), "r"(x1), "r"(x2), "r"(x8) : "memory");
 }
 static int dbg_itoa(long v, char *out) {
-  char tmp[32]; int t=0; unsigned long x;
-  if (v < 0) { *out++='-'; x=(unsigned long)(-v); }
-  else x=(unsigned long)v;
-  if (x==0) { *out++='0'; return (int)1 + (v<0); }
-  while (x && t < 32) { tmp[t++] = (char)('0' + (x % 10)); x/=10; }
-  for (int i=t-1;i>=0;--i) *out++=tmp[i];
-  return (int)t + (v<0);
+  char tmp[32];
+  int t = 0;
+  unsigned long x;
+  if (v < 0) {
+    *out++ = '-';
+    x = (unsigned long)(-v);
+  } else
+    x = (unsigned long)v;
+  if (x == 0) {
+    *out++ = '0';
+    return (int)1 + (v < 0);
+  }
+  while (x && t < 32) {
+    tmp[t++] = (char)('0' + (x % 10));
+    x /= 10;
+  }
+  for (int i = t - 1; i >= 0; --i)
+    *out++ = tmp[i];
+  return (int)t + (v < 0);
 }
 
 static inline int64_t normalize_stride(int64_t stride, int64_t fallback) {
@@ -41,9 +53,9 @@ int32_t alpine_alloc_tile(uint64_t height, uint64_t width) {
 
 // Expanded-ABI variant as declared in IR (extra mask and reserved args exist).
 extern "C" void alpine_write_weights(uint64_t tile, void *alloc, void *aligned,
-                                     int64_t offset, int64_t rows,
-                                     int64_t cols, int64_t stride0,
-                                     int64_t stride1, int64_t /*reserved*/) {
+                                     int64_t offset, int64_t rows, int64_t cols,
+                                     int64_t stride0, int64_t stride1,
+                                     int64_t /*reserved*/) {
   (void)alloc;
   if (rows <= 0 || cols <= 0)
     return;
@@ -61,15 +73,15 @@ extern "C" void alpine_write_weights(uint64_t tile, void *alloc, void *aligned,
     for (int64_t c = 0; c < cols; ++c) {
       const int64_t idx = r * rowStride + c * colStride;
       const int8_t val = base[idx];
-      getAimc().aimcParamWrite(tid, static_cast<int>(c),
-                               static_cast<int>(r), val);
+      getAimc().aimcParamWrite(tid, static_cast<int>(c), static_cast<int>(r),
+                               val);
     }
   }
 }
 
-void alpine_enqueue_vec(uint64_t tile, const void *alloc, const void * /*unused*/,
-                        uint64_t offset, uint64_t size, uint64_t stride,
-                        uint64_t /*reserved*/) {
+void alpine_enqueue_vec(uint64_t tile, const void *alloc,
+                        const void * /*unused*/, uint64_t offset, uint64_t size,
+                        uint64_t stride, uint64_t /*reserved*/) {
   if (size == 0)
     return;
 
@@ -217,10 +229,9 @@ void alpine_quantize_r2(void *srcAlloc, void *srcAlign, int64_t srcOff,
 
 // Expanded memref ABI: deq r1
 void alpine_dequantize_r1(void *srcAlloc, void *srcAlign, int64_t srcOff,
-                          int64_t srcSize, int64_t srcStride,
-                          void *dstAlloc, void *dstAlign, int64_t dstOff,
-                          int64_t dstSize, int64_t dstStride, float scale,
-                          int32_t zero) {
+                          int64_t srcSize, int64_t srcStride, void *dstAlloc,
+                          void *dstAlign, int64_t dstOff, int64_t dstSize,
+                          int64_t dstStride, float scale, int32_t zero) {
   (void)srcAlloc;
   (void)dstAlloc;
   if (srcSize <= 0 || dstSize <= 0)
@@ -283,6 +294,5 @@ int8_t alpine_read_param(int x, int y) {
 }
 int8_t alpine_read_input_at(int idx) { return getAimc().peekInput(0, idx); }
 int8_t alpine_read_output_at(int idx) { return getAimc().peekOutput(0, idx); }
-
 
 } // extern "C"

@@ -10,15 +10,15 @@
 //
 //===----------------------------------------------------------------------===//
 
-#include "mlir/Dialect/Bufferization/Transforms/Bufferize.h"
 #include "cinm-mlir/Dialect/Cnm/IR/CnmBase.h"
 #include "cinm-mlir/Dialect/Cnm/IR/CnmOps.h"
 #include "cinm-mlir/Dialect/Cnm/Transforms/Passes.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Bufferization/IR/AllocationOpInterface.h"
 #include "mlir/Dialect/Bufferization/IR/BufferizableOpInterface.h"
-#include "mlir/Dialect/Bufferization/IR/DstBufferizableOpInterfaceImpl.h"
 #include "mlir/Dialect/Bufferization/IR/Bufferization.h"
+#include "mlir/Dialect/Bufferization/IR/DstBufferizableOpInterfaceImpl.h"
+#include "mlir/Dialect/Bufferization/Transforms/Bufferize.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
@@ -79,7 +79,7 @@ struct ScatterOpInterface
 
 struct GatherOpInterface
     : public DstBufferizableOpInterfaceExternalModel<GatherOpInterface,
-                                                    cnm::GatherOp> {
+                                                     cnm::GatherOp> {
 
   bool bufferizesToMemoryRead(Operation *, OpOperand &,
                               const AnalysisState &) const {
@@ -97,7 +97,7 @@ struct GatherOpInterface
       return failure();
 
     cnm::GatherOp::create(rewriter, op->getLoc(), gather.getBuffer(),
-                                   gather.getWg(), gather.getGatherMap(), *v);
+                          gather.getWg(), gather.getGatherMap(), *v);
     replaceOpWithBufferizedValues(rewriter, op, ValueRange{*v});
     return success();
   }

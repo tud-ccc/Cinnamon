@@ -72,8 +72,7 @@ void upmemrt_dpu_scatter_blocks(struct dpu_set_t *dpu_set, void *host_buffer,
 
 void upmemrt_dpu_gather_blocks(struct dpu_set_t *dpu_set, void *host_buffer,
                                size_t element_size, size_t num_blocks,
-                               size_t block_num_elements,
-                               const char *buffer_id,
+                               size_t block_num_elements, const char *buffer_id,
                                size_t (*base_offset)(size_t, size_t),
                                const char *tag);
 

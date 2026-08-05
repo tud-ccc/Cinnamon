@@ -65,16 +65,3 @@ The next steps to be able to use this experiment is describe the scientific prot
 I also need to do the same kind of study for broadcast, and maybe for the regular scatter and gather. The good thing is that the data I have here is very fast to collect (not 2 days like Georg's experiment) and process. But this still needs lots of work.
 
 I also need to review the literature for existing cost models for the scatter/gather overhead. Maybe we're the first to model the UPMEM scatter API?
-
-
-
-
-
-
-
-
-
-
-
-
-

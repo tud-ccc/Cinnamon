@@ -21,9 +21,7 @@ using namespace mlir::cnm;
 // CnmDialect
 //===----------------------------------------------------------------------===//
 
-void CnmDialect::initialize()
-{
-    registerOps();
-    registerTypes();
+void CnmDialect::initialize() {
+  registerOps();
+  registerTypes();
 }
-

@@ -1,7 +1,7 @@
 # BO Seed Synopsis — ${problem_name} / ${seed_name}
 
-**Search space:** ${n_total} configs (${n_valid} valid) — **${n_obs} evaluated** (${n_failed} failed) over ${n_iters} iterations  
-**Best cost found:** ${best_cost} (oracle best: ${oracle_best}, gap: ${gap_pct}%)  
+**Search space:** ${n_total} configs (${n_valid} valid) — **${n_obs} evaluated** (${n_failed} failed) over ${n_iters} iterations
+**Best cost found:** ${best_cost} (oracle best: ${oracle_best}, gap: ${gap_pct}%)
 **Objective scale:** ${scale}
 
 ---
@@ -16,7 +16,7 @@ The other dimensions of the search space are aggregated with an aggregation meth
 - cost, mu, acq: min
 - sigma: mean
 
-**Colour legend (all heatmaps):** 
+**Colour legend (all heatmaps):**
 - white = unsampled
 - light gray = constraint-violated (invalid configuration)
 - dark gray = evaluated but failed
@@ -32,7 +32,7 @@ Samples that we tried to take but that failed (and were valid) are dark gray.
 Those points do not count towards the evaluation budget, even though they might cost evaluation time.
 
 A contiguous colored region means BO focused its interest on this region.
-It better be a region with low cost value. If it isn't, then acquisition is probably miscalibrated. 
+It better be a region with low cost value. If it isn't, then acquisition is probably miscalibrated.
 
 If the cheapest cell is isolated and surrounded by white, BO may have found it by luck rather than
 guided search — check recall_pcts in the [problem synopsis](../README_bo_synopsis.md).

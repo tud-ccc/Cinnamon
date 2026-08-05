@@ -25,7 +25,7 @@
 // CHECK-LABEL: gemv
     func.func @gemv(%A: tensor<8x1024xi32>, %B: tensor<1024xi32>) -> tensor<8xi32> {
 
-    // CHECK:  cinm.compute_block ({{.*}}) -> memref<8xi32> 
+    // CHECK:  cinm.compute_block ({{.*}}) -> memref<8xi32>
     // CHECK:   %[[res:.*]] = memref.alloc() : memref<8xi32>
     // CHECK:   %[[c0:.*]] = arith.constant 0 : i32
     // CHECK:   linalg.fill ins(%[[c0]] : i32) outs(%[[res]] : memref<8xi32>)

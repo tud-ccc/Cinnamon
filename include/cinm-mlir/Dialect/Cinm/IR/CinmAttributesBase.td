@@ -16,10 +16,10 @@ def Cinm_VarDefAttr: Cinm_Attr<"CinmVarDef", []> {
     - An _index variable_, eg `s`, that represents a specific index within the range 0..S.
 
     Index variables are given special treatment in the context of memory space handling. Only
-    index variables may appear in the indexing tuple of a MemSpaceAttr. Index variables are 
+    index variables may appear in the indexing tuple of a MemSpaceAttr. Index variables are
     expected to be bound to the iteration variables of a tiled loop.
   }];
-  let parameters = (ins 
+  let parameters = (ins
     "StringAttr":$indexVarName,
     "StringAttr":$boundVarName,
     "long":$lower_bound_inclusive,
@@ -27,7 +27,7 @@ def Cinm_VarDefAttr: Cinm_Attr<"CinmVarDef", []> {
   );
   let builders = [
     AttrBuilderWithInferredContext<
-      (ins 
+      (ins
         "StringAttr":$indexVarName,
         "StringAttr":$boundVarName,
         "long":$lower,
@@ -81,16 +81,16 @@ def Cinm_LevelDefAttr: Cinm_Attr<"CinmLevelDef", [OpAsmAttrInterface]> {
 
     The indexing strategy is a way to define parametric levels. A grid platform
     that has a 2D structure may define a level with a 2D indexing scheme, to designate
-    the level of a specific tile. These coordinates must be specified explicitly in 
-    a given instance of a CinmMemSpace. 
-    
+    the level of a specific tile. These coordinates must be specified explicitly in
+    a given instance of a CinmMemSpace.
+
     For instance upmem is a 2D grid platform of (ranks * dpu). Each tile defines two memory
     levels that are not shared between tiles. Each of those levels therefore has a 2D indexing
     scheme. If the platform supported a memory level shared between all the DPUs in a rank, that would
     likely have a 1D indexing scheme, that only uses the rank index variable of the accelerator.
   }];
   let mnemonic = "level";
-  let parameters = (ins 
+  let parameters = (ins
     "StringAttr":$name,
     "int64_t":$size_in_bytes,
     "int64_t":$alignment,

@@ -58,7 +58,7 @@ if [[ "$setup_python_venv" -eq 1 ]]; then
     # Note this needs to be done after LLVM has been cloned.
     verbose_cmd python -m pip install -r third-party/llvm/mlir/python/requirements.txt
     verbose_cmd python -m pip install -r experiments/requirements.txt
-    verbose_cmd conan export third-party/conan-recipes/mlpack --name mlpack --version 4.8.0 
+    verbose_cmd conan export third-party/conan-recipes/mlpack --name mlpack --version 4.8.0
   fi
 
   # Ensure CMake will use this venv's Python and find pybind11's CMake config
@@ -72,7 +72,7 @@ except Exception as e:
     sys.exit(1)
 PY
 )"; then
-    # If import failed (e.g., user skipped reconfigure) warn and 
+    # If import failed (e.g., user skipped reconfigure) warn and
     error "pybind11 not found in venv; Run with -reconfigure or install MLIR dependencies manually"
     exit 1
   fi

@@ -3,7 +3,7 @@
 // -----
 #upmem = #upmem.platform<type = v1A, dimensions = 32x64x24>
 
-func.func @geva_4MB(%x: tensor<1048576xi32>, %y: tensor<1048576xi32>, %c: i32, %d: i32) -> tensor<1048576xi32> 
+func.func @geva_4MB(%x: tensor<1048576xi32>, %y: tensor<1048576xi32>, %c: i32, %d: i32) -> tensor<1048576xi32>
   attributes {cinm.available_platforms = [#upmem]} {
   %3 = cinm.compute -> tensor<1048576xi32> attributes {cinm.available_platforms = [#upmem]} {
     %cs = tensor.splat %c : tensor<1048576xi32>
@@ -19,7 +19,7 @@ func.func @geva_4MB(%x: tensor<1048576xi32>, %y: tensor<1048576xi32>, %c: i32, %
 // -----
 #upmem = #upmem.platform<type = v1A, dimensions = 32x64x24>
 
-func.func @geva_64MB(%x: tensor<16777216xi32>, %y: tensor<16777216xi32>, %c: i32, %d: i32) -> tensor<16777216xi32> 
+func.func @geva_64MB(%x: tensor<16777216xi32>, %y: tensor<16777216xi32>, %c: i32, %d: i32) -> tensor<16777216xi32>
   attributes {cinm.available_platforms = [#upmem]} {
   %3 = cinm.compute -> tensor<16777216xi32> attributes {cinm.available_platforms = [#upmem]} {
     %cs = tensor.splat %c : tensor<16777216xi32>
@@ -35,7 +35,7 @@ func.func @geva_64MB(%x: tensor<16777216xi32>, %y: tensor<16777216xi32>, %c: i32
 // -----
 #upmem = #upmem.platform<type = v1A, dimensions = 32x64x24>
 
-func.func @geva_256MB(%x: tensor<67108864xi32>, %y: tensor<67108864xi32>, %c: i32, %d: i32) -> tensor<67108864xi32> 
+func.func @geva_256MB(%x: tensor<67108864xi32>, %y: tensor<67108864xi32>, %c: i32, %d: i32) -> tensor<67108864xi32>
   attributes {cinm.available_platforms = [#upmem]} {
   %3 = cinm.compute -> tensor<67108864xi32> attributes {cinm.available_platforms = [#upmem]} {
     %cs = tensor.splat %c : tensor<67108864xi32>

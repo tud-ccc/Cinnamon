@@ -56,9 +56,12 @@ extern "C" void memrefCopy(int64_t elemSize, UnrankedMemRefType<char> *srcArg,
     return;
   }
 
-  int64_t *indices = static_cast<int64_t *>(alloca(sizeof(int64_t) * chunkAxis));
-  int64_t *srcStrides = static_cast<int64_t *>(alloca(sizeof(int64_t) * chunkAxis));
-  int64_t *dstStrides = static_cast<int64_t *>(alloca(sizeof(int64_t) * chunkAxis));
+  int64_t *indices =
+      static_cast<int64_t *>(alloca(sizeof(int64_t) * chunkAxis));
+  int64_t *srcStrides =
+      static_cast<int64_t *>(alloca(sizeof(int64_t) * chunkAxis));
+  int64_t *dstStrides =
+      static_cast<int64_t *>(alloca(sizeof(int64_t) * chunkAxis));
 
   // Initialize index and scale strides for the remaining (non-contiguous)
   // outer axes.

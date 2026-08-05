@@ -12,53 +12,52 @@
 
 namespace mlir::cinm::utils::scheduling {
 
-  template<typename ComputeResource>
-  class AsapScheduler {
-   public:
-    AsapScheduler(llvm::ArrayRef<ComputeResource> resources)
-        : computeResources(std::move(resources)) {}
+template <typename ComputeResource> class AsapScheduler {
+public:
+  AsapScheduler(llvm::ArrayRef<ComputeResource> resources)
+      : computeResources(std::move(resources)) {}
 
-    OperationScheduling<ComputeResource> schedule(DependencyGraphView graph) {
-      OperationScheduling<ComputeResource> schedule;
+  OperationScheduling<ComputeResource> schedule(DependencyGraphView graph) {
+    OperationScheduling<ComputeResource> schedule;
 
-      bool doneScheduling = false;
+    bool doneScheduling = false;
 
-      for (size_t time = 0; !doneScheduling; ++time) {
-        doneScheduling = true;
+    for (size_t time = 0; !doneScheduling; ++time) {
+      doneScheduling = true;
 
-        size_t nextFreeResource = 0;
-        std::vector<DependencyGraphNode *> scheduledThisTime{};
+      size_t nextFreeResource = 0;
+      std::vector<DependencyGraphNode *> scheduledThisTime{};
 
-        for (auto &node : graph) {
-          if (node.scheduled)
-            continue;
+      for (auto &node : graph) {
+        if (node.scheduled)
+          continue;
 
-          if (!llvm::all_of(node.dependencies, isScheduled))
-            continue;
+        if (!llvm::all_of(node.dependencies, isScheduled))
+          continue;
 
-          if (nextFreeResource < computeResources.size()) {
-            schedule.push_back(ScheduledOperation<ComputeResource>{
-                .operation = &node.operation,
-                .resource = computeResources[nextFreeResource++],
-                .dispatchTime = time,
-                .barrierTime = time});
+        if (nextFreeResource < computeResources.size()) {
+          schedule.push_back(ScheduledOperation<ComputeResource>{
+              .operation = &node.operation,
+              .resource = computeResources[nextFreeResource++],
+              .dispatchTime = time,
+              .barrierTime = time});
 
-            scheduledThisTime.push_back(&node);
-          }
-
-          doneScheduling = false;
+          scheduledThisTime.push_back(&node);
         }
 
-        for (auto *node : scheduledThisTime)
-          node->scheduled = true;
+        doneScheduling = false;
       }
 
-      return schedule;
+      for (auto *node : scheduledThisTime)
+        node->scheduled = true;
     }
 
-   private:
-    static bool isScheduled(DependencyGraphNode const *n) { return n->scheduled; }
+    return schedule;
+  }
 
-    llvm::ArrayRef<ComputeResource> computeResources;
-  };
-}  // namespace mlir::cinm::utils::scheduling
+private:
+  static bool isScheduled(DependencyGraphNode const *n) { return n->scheduled; }
+
+  llvm::ArrayRef<ComputeResource> computeResources;
+};
+} // namespace mlir::cinm::utils::scheduling

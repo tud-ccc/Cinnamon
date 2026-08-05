@@ -14,7 +14,7 @@ func.func @simple(%t0: tensor<6x3xi32>, %t1: tensor<3x6xi32>, %t2 : tensor<6xi32
 // CHECK: memristor.write_to_crossbar %c0_i32, %2 : i32, memref<3x6xi32>
 // CHECK: memristor.gemm %c0_i32, %1, %3 : i32, memref<6x3xi32>, memref<6x6xi32>
     %f0 = cim.op.gemm %crossbar, %t0, %t1 : !cim.crossbarId, tensor<6x3xi32>, tensor<3x6xi32> -> !cim.future<6x6xi32>
-    
+
 // CHECK: memristor.barrier %c0_i32 : i32
     %r0 = cim.barrier %f0 : !cim.future<6x6xi32> -> tensor<6x6xi32>
 

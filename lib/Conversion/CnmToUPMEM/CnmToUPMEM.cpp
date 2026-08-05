@@ -103,8 +103,8 @@ static AffineMap keepTaskletDimAffineMapCnmToUpmem(AffineMap map,
   SmallVector<AffineExpr> substitutions{getAffineDimExpr(0, ctx),
                                         getAffineDimExpr(1, ctx),
                                         block.floorDiv(blocksPerLeaf)};
-  ArrayRef<int64_t> retained = bufTy.getShape().take_front(
-      cnm::getNumRetainedBufferDims(map, bufTy));
+  ArrayRef<int64_t> retained =
+      bufTy.getShape().take_front(cnm::getNumRetainedBufferDims(map, bufTy));
   if (!retained.empty()) {
     SmallVector<AffineExpr> coords;
     structureIndex(block % blocksPerLeaf, retained, coords);
@@ -250,9 +250,8 @@ static Value getTaskletSlice(RewriterBase &rewriter, Location loc,
           ShapedType::kDynamic, ArrayRef<long>(baseStrides).drop_front()),
       mramBufTy.getMemorySpace());
 
-  return memref::SubViewOp::create(rewriter, loc, viewType,
-                                   mramBuf.getBuffer(), offsets, sizes,
-                                   strides);
+  return memref::SubViewOp::create(rewriter, loc, viewType, mramBuf.getBuffer(),
+                                   offsets, sizes, strides);
 }
 
 static void createTransfer(RewriterBase &rewriter, bool toWram, Location loc,
@@ -430,8 +429,8 @@ static LogicalResult convertCnmLaunchToUpmem(cnm::LaunchOp launch,
 
   rewriter.setInsertionPointToStart(&dpuProgram.getBody().front());
 
-  // create named static MRAM buffers for each cnm.declare_buffer operation, put them in
-  // the dpu program
+  // create named static MRAM buffers for each cnm.declare_buffer operation, put
+  // them in the dpu program
   SmallVector<DeclareBufferOp> allocsToDelete;
 
   SymbolTable dpuProgramSymTable(dpuProgram);
@@ -453,9 +452,9 @@ static LogicalResult convertCnmLaunchToUpmem(cnm::LaunchOp launch,
           MemRefType::get(bufShape, bufferType.getElementType(),
                           MemRefLayoutAttrInterface{}, wramMemspaceAttr);
 
-      // MRAM sharing only depends on the scatter maps (isMramBroadcastOverThreads);
-      // WRAM sharing additionally requires that cinm1-codegen isn't forcing
-      // private per-tasklet WRAM buffers.
+      // MRAM sharing only depends on the scatter maps
+      // (isMramBroadcastOverThreads); WRAM sharing additionally requires that
+      // cinm1-codegen isn't forcing private per-tasklet WRAM buffers.
       bool mramIsBroadcast = isMramBroadcastOverThreads(alloc);
       bool wramIsShared = !opts.cinm1codegen && mramIsBroadcast;
       bool stagedInBody = bufferType.getLevel() == mramMemspaceAttr;
@@ -475,8 +474,8 @@ static LogicalResult convertCnmLaunchToUpmem(cnm::LaunchOp launch,
         buffersToWramBufValue[alloc.getResult()] = wrambuf.getBuffer();
       } else {
         // WRAM is private - each tasklet gets its own buffer.
-        auto pwramBuf = memref::AllocaOp::create(
-            rewriter, alloc.getLoc(), memrefTy);
+        auto pwramBuf =
+            memref::AllocaOp::create(rewriter, alloc.getLoc(), memrefTy);
 
         buffersToWramBufValue[alloc.getResult()] = pwramBuf.getResult();
       }
@@ -491,9 +490,9 @@ static LogicalResult convertCnmLaunchToUpmem(cnm::LaunchOp launch,
       memrefTy = MemRefType::get(bufShape, bufferType.getElementType(),
                                  MemRefLayoutAttrInterface{}, mramMemspaceAttr);
 
-      auto mrambuf =
-          upmem::StaticAllocOp::create(rewriter, alloc->getLoc(), memrefTy,
-                                       upmem::DpuMemSpace::MRAM, "buf", opts.useMramNoInit);
+      auto mrambuf = upmem::StaticAllocOp::create(
+          rewriter, alloc->getLoc(), memrefTy, upmem::DpuMemSpace::MRAM, "buf",
+          opts.useMramNoInit);
       dpuProgramSymTable.insert(mrambuf); // this renames it to a unique name
       buffersToMramBuf[alloc.getResult()] = mrambuf;
     }
@@ -616,8 +615,7 @@ static LogicalResult convertCnmLaunchToUpmem(cnm::LaunchOp launch,
   }
 }
 
-struct ConvertCnmTerminatorToUPMEM
-    : public OpConversionPattern<cnm::ReturnOp> {
+struct ConvertCnmTerminatorToUPMEM : public OpConversionPattern<cnm::ReturnOp> {
   using OpConversionPattern<cnm::ReturnOp>::OpConversionPattern;
 
   LogicalResult

@@ -103,7 +103,8 @@ ParmVector evalNodeVec(const ConstraintNode &node,
     return acc;
   }
   case Kind::Sub:
-    return evalNodeVec(*node.operands[0], c) - evalNodeVec(*node.operands[1], c);
+    return evalNodeVec(*node.operands[0], c) -
+           evalNodeVec(*node.operands[1], c);
   case Kind::Div:
     // Matches the old OpDiv (`b ? a / b : 0`). A vectorized evaluation touches
     // every lane and cannot short-circuit past a zero divisor the way a scalar
@@ -414,7 +415,8 @@ std::string describeMonomial(const Monomial &m,
   for (size_t v : m.vars) {
     if (!first)
       s += " * ";
-    s += v < paramNames.size() ? paramNames[v] : ("<" + std::to_string(v) + ">");
+    s +=
+        v < paramNames.size() ? paramNames[v] : ("<" + std::to_string(v) + ">");
     first = false;
   }
   return s;

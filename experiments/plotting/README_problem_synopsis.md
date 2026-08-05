@@ -1,7 +1,7 @@
 # BO Problem Synopsis — ${problem_name}
 
-**Search space:** ${n_total} configs (${n_valid} valid) — **${n_seeds} seeds**, up to ${n_iters} iterations each  
-**Oracle best:** ${oracle_best} — **Mean best found:** ${best_cost_mean} (gap: ${gap_pct_mean}%),  best seed: ${best_cost_best} (gap: ${gap_pct_best}%)  
+**Search space:** ${n_total} configs (${n_valid} valid) — **${n_seeds} seeds**, up to ${n_iters} iterations each
+**Oracle best:** ${oracle_best} — **Mean best found:** ${best_cost_mean} (gap: ${gap_pct_mean}%),  best seed: ${best_cost_best} (gap: ${gap_pct_best}%)
 **Objective scale:** ${scale}
 
 Seed-level details: see each `seed_*/README_bo_synopsis.md`.

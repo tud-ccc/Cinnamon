@@ -12,11 +12,11 @@
 // ─────────────────────────────────────────────────────────────────────────────
 
 typedef struct {
-  int      iteration;
+  int iteration;
   uint64_t elapsed_ns;
-  size_t   bytes_per_dpu;
+  size_t bytes_per_dpu;
   uint32_t num_dpus;
-  size_t   num_blocks;
+  size_t num_blocks;
   // Which transfer op produced this row: see upmemrt_record_scatter.
   const char *kind;
   // User-supplied tag from upmem.timing_tag, or "" if none.
@@ -24,15 +24,15 @@ typedef struct {
 } XferRecord;
 
 typedef struct {
-  int      iteration;
+  int iteration;
   uint64_t elapsed_ns;
   uint32_t num_dpus;
 } LaunchRecord;
 
 typedef struct {
-  int      iteration;
+  int iteration;
   uint64_t elapsed_ns;
-  size_t   bytes;
+  size_t bytes;
 } CopyRecord;
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -40,15 +40,15 @@ typedef struct {
 // ─────────────────────────────────────────────────────────────────────────────
 
 #define DEFINE_BUF(Name, T)                                                    \
-  typedef struct {                                                              \
-    T     *data;                                                                \
-    size_t size, cap;                                                           \
+  typedef struct {                                                             \
+    T *data;                                                                   \
+    size_t size, cap;                                                          \
   } Name;                                                                      \
   static void Name##_push(Name *b, T r) {                                      \
-    if (b->size == b->cap) {                                                    \
-      b->cap  = b->cap ? b->cap * 2 : 64;                                      \
+    if (b->size == b->cap) {                                                   \
+      b->cap = b->cap ? b->cap * 2 : 64;                                       \
       b->data = realloc(b->data, b->cap * sizeof(T));                          \
-    }                                                                           \
+    }                                                                          \
     b->data[b->size++] = r;                                                    \
   }
 
@@ -56,13 +56,13 @@ DEFINE_BUF(XferBuf, XferRecord)
 DEFINE_BUF(LaunchBuf, LaunchRecord)
 DEFINE_BUF(CopyBuf, CopyRecord)
 
-static XferBuf   g_scatter   = {NULL, 0, 0};
-static XferBuf   g_gather    = {NULL, 0, 0};
-static LaunchBuf g_launch    = {NULL, 0, 0};
-static LaunchBuf g_free      = {NULL, 0, 0};
-static LaunchBuf g_alloc     = {NULL, 0, 0};
-static CopyBuf   g_copy      = {NULL, 0, 0};
-static int       g_iteration = 0;
+static XferBuf g_scatter = {NULL, 0, 0};
+static XferBuf g_gather = {NULL, 0, 0};
+static LaunchBuf g_launch = {NULL, 0, 0};
+static LaunchBuf g_free = {NULL, 0, 0};
+static LaunchBuf g_alloc = {NULL, 0, 0};
+static CopyBuf g_copy = {NULL, 0, 0};
+static int g_iteration = 0;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Public API
@@ -77,16 +77,16 @@ uint64_t upmemrt_now_ns(void) {
 void upmemrt_start_stat_collection(int iter) { g_iteration = iter; }
 
 void upmemrt_record_scatter(uint64_t elapsed_ns, size_t bytes_per_dpu,
-                             uint32_t num_dpus, size_t num_blocks,
-                             const char *kind, const char *tag) {
+                            uint32_t num_dpus, size_t num_blocks,
+                            const char *kind, const char *tag) {
   XferBuf_push(&g_scatter,
                (XferRecord){g_iteration, elapsed_ns, bytes_per_dpu, num_dpus,
                             num_blocks, kind, tag ? tag : ""});
 }
 
 void upmemrt_record_gather(uint64_t elapsed_ns, size_t bytes_per_dpu,
-                            uint32_t num_dpus, size_t num_blocks,
-                            const char *kind, const char *tag) {
+                           uint32_t num_dpus, size_t num_blocks,
+                           const char *kind, const char *tag) {
   XferBuf_push(&g_gather,
                (XferRecord){g_iteration, elapsed_ns, bytes_per_dpu, num_dpus,
                             num_blocks, kind, tag ? tag : ""});
@@ -122,9 +122,8 @@ static void dump_xfer(const XferBuf *buf, const char *path) {
           "iteration,elapsed_ns,bytes_per_dpu,num_dpus,num_blocks,kind,tag\n");
   for (size_t i = 0; i < buf->size; i++) {
     const XferRecord *r = &buf->data[i];
-    fprintf(f, "%d,%" PRIu64 ",%zu,%u,%zu,%s,%s\n", r->iteration,
-            r->elapsed_ns, r->bytes_per_dpu, r->num_dpus, r->num_blocks,
-            r->kind, r->tag);
+    fprintf(f, "%d,%" PRIu64 ",%zu,%u,%zu,%s,%s\n", r->iteration, r->elapsed_ns,
+            r->bytes_per_dpu, r->num_dpus, r->num_blocks, r->kind, r->tag);
   }
   fclose(f);
 }
@@ -138,8 +137,7 @@ static void dump_launch(const LaunchBuf *buf, const char *path) {
   fprintf(f, "iteration,elapsed_ns,num_dpus\n");
   for (size_t i = 0; i < buf->size; i++) {
     const LaunchRecord *r = &buf->data[i];
-    fprintf(f, "%d,%" PRIu64 ",%u\n", r->iteration, r->elapsed_ns,
-            r->num_dpus);
+    fprintf(f, "%d,%" PRIu64 ",%u\n", r->iteration, r->elapsed_ns, r->num_dpus);
   }
   fclose(f);
 }

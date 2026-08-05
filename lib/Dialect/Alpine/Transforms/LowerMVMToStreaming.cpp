@@ -53,9 +53,9 @@ struct LowerMVMToStreamingPattern : OpRewritePattern<MVMOp> {
     // alpine.process %tile { count = 1 }
     IntegerAttr one = rewriter.getI64IntegerAttr(1);
     ProcessOp::create(rewriter, loc, tile,
-                               /*activation=*/StringAttr(),
-                               /*accumulate=*/rewriter.getBoolAttr(false),
-                               /*count=*/one);
+                      /*activation=*/StringAttr(),
+                      /*accumulate=*/rewriter.getBoolAttr(false),
+                      /*count=*/one);
 
     // alpine.dequeue_vec %tile, %y
     DequeueVecOp::create(rewriter, loc, tile, op.getY());

@@ -3,7 +3,7 @@
 Exhaustive search over **${n_obs} observed configs**
 (${n_valid} valid / ${n_total} total in Cartesian product).
 
-**Dimensions (${n_dims}):** ${dim_list}  
+**Dimensions (${n_dims}):** ${dim_list}
 **Cost range:** [${cost_min}, ${cost_max}] — log₁₀: [${logcost_min}, ${logcost_max}]
 
 ---

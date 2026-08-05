@@ -923,7 +923,7 @@ the original `outs`).
 
 **Known cost, deliberately not fixed here** (`0d9413d`): the identity
 seed is a constant-zero buffer that gets scattered to every leaf on
-every launch. We can optimize that out later. 
+every launch. We can optimize that out later.
 
 ### M10 — Linalg-first pipeline — **DONE (fusion deferred)**
 

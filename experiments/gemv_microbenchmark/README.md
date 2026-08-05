@@ -11,11 +11,11 @@ After these steps I ended up here:
 
 ![image](0_gemv_breakdown_after_fix_launch.png)
 
-The main things we can see here is that we have improved significantly the quality of the kernel code, mostly by batching transfers. The gather and scatter are also reduced, mostly because we avoid gathering and scattering again the partial results - they stay where they are. The copy overhead I'm not sure why it's that much lower tbh. 
+The main things we can see here is that we have improved significantly the quality of the kernel code, mostly by batching transfers. The gather and scatter are also reduced, mostly because we avoid gathering and scattering again the partial results - they stay where they are. The copy overhead I'm not sure why it's that much lower tbh.
 
 Here we can see that there is a huge portion of unaccounted time in CINM1. This is due to a partial reduction which should not be there, and (I think) some buffer copies that were done with affine loops (so no time tracking there).
 
-A big chunk of the time is also taken by memrefCopy, equivalent in both cases. But most memref copies are just copying tiles into a compact buffer as input for the scatters. If we can change how we use the UPMEM API to avoid these copies, we may claim a big improvement.  
+A big chunk of the time is also taken by memrefCopy, equivalent in both cases. But most memref copies are just copying tiles into a compact buffer as input for the scatters. If we can change how we use the UPMEM API to avoid these copies, we may claim a big improvement.
 
 The unaccounted time I'm still not sure what it is but I think it's about the partial result reduction on the host that doesn't need to be there, and maybe the zero-initialization of some buffers which was done with loops instead of memcpying a constant memref.
 
@@ -46,5 +46,3 @@ Finally
 Final: also use the broadcast API. This is very beneficial to reduce the latency of the scatter of the x buffer in gemv. This specific broadcast cannot be used in the form that has a partial reduction.
 
 ![image](5_final_with_bc.png)
-
-

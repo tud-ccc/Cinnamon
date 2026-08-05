@@ -1,6 +1,6 @@
 // RUN: cinm-opt --upmem-annotate-costs=simulator=cycle-accurate %s | FileCheck %s
 
-// CHECK: upmem.wait_for %{{.*}} {upmem.sim_cost = 
+// CHECK: upmem.wait_for %{{.*}} {upmem.sim_cost =
 
 #map = affine_map<(d0, d1) -> (d0 * 16 + d1 * 16, 0)>
 #map1 = affine_map<(d0, d1) -> (0)>
@@ -14,7 +14,7 @@ module {
       %c16 = arith.constant  16 : index
       %c0 = arith.constant  0 : index
       %c1 = arith.constant  1 : index
-      %3 = memref.get_global @__constant_16xf32_0 : memref<16xf32> 
+      %3 = memref.get_global @__constant_16xf32_0 : memref<16xf32>
       %dim = memref.dim  %2, %c0 : memref<?x?xf32>
       %dim_0 = memref.dim  %2, %c1 : memref<?x?xf32>
       %alloc = memref.alloc(%dim) {alignment = 64 : i64, upmem.sim_cost = 1.000000e+00 : f64} : memref<?xf32>
@@ -31,8 +31,8 @@ module {
           upmem.scatter_on_array %subview[16 elts, #map2] onto @buf_2 of %5  : memref<16xf32, strided<[1], offset: ?>> onto !upmem.hierarchy<1x1x16>
           upmem.wait_for %5  : !upmem.hierarchy<1x1x16>
           upmem.gather_from_array %subview[16 elts, #map2] from @buf_2 of %5  : memref<16xf32, strided<[1], offset: ?>> from !upmem.hierarchy<1x1x16>
-        } 
-      } 
+        }
+      }
       upmem.free_dpus %5  : !upmem.hierarchy<1x1x16>
       cinm.yield  %4 : tensor<?xf32>
     }
@@ -47,15 +47,15 @@ module {
       %mram_buf_0 = upmem.static_alloc @buf_1(mram)  : memref<1xf32, #upmem.mram>
       %pwram_buf_1 = memref.alloca()  : memref<f32, #upmem.wram>
       %mram_buf_2 = upmem.static_alloc @buf_2(mram)  : memref<16xf32, #upmem.mram>
-      %0 = upmem.tasklet_dim() 
+      %0 = upmem.tasklet_dim()
       %subview = memref.subview %mram_buf[%0, 0] [1, 1] [1, 1]  : memref<16x1xf32, #upmem.mram> to memref<1xf32, strided<[1], offset: ?>, #upmem.mram>
       upmem.local_transfer %subview into %pwram_buf  : memref<1xf32, strided<[1], offset: ?>, #upmem.mram> to memref<1xf32, #upmem.wram>
       %c0 = arith.constant  0 : index
       %1 = arith.cmpi eq, %0, %c0  : index
       scf.if %1 {
         upmem.local_transfer %mram_buf_0 into %wram_buf  : memref<1xf32, #upmem.mram> to memref<1xf32, #upmem.wram>
-      } 
-      upmem.barrier() 
+      }
+      upmem.barrier()
       %subview_3 = memref.subview %mram_buf_2[%0] [1] [1]  : memref<16xf32, #upmem.mram> to memref<f32, strided<[], offset: ?>, #upmem.mram>
       upmem.local_transfer %subview_3 into %pwram_buf_1  : memref<f32, strided<[], offset: ?>, #upmem.mram> to memref<f32, #upmem.wram>
       %2 = memref.load %pwram_buf[%c0]  : memref<1xf32, #upmem.wram>
@@ -65,7 +65,7 @@ module {
       %6 = arith.addf %4, %5  : f32
       memref.store %6, %pwram_buf_1[]  : memref<f32, #upmem.wram>
       upmem.local_transfer %pwram_buf_1 into %subview_3  : memref<f32, #upmem.wram> to memref<f32, strided<[], offset: ?>, #upmem.mram>
-      upmem.return 
+      upmem.return
     }
   }
 }

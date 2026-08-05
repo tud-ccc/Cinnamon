@@ -6,8 +6,8 @@
 
 #include <llvm/ADT/ArrayRef.h>
 #include <llvm/ADT/SmallVector.h>
-#include <mlir/IR/BuiltinTypeInterfaces.h>
 #include <mlir/Dialect/Transform/Utils/DiagnosedSilenceableFailure.h>
+#include <mlir/IR/BuiltinTypeInterfaces.h>
 #include <mlir/IR/BuiltinTypes.h>
 #include <mlir/IR/Location.h>
 #include <mlir/IR/Value.h>

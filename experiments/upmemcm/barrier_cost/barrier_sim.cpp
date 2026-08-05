@@ -8,21 +8,22 @@
 
 using namespace upmem_cm;
 
-static const int NITER      = 100;
+static const int NITER = 100;
 static const int WARM_ITERS = 10;
 
-// Mirrors barrier.c: pre-work loop, main loop (with/without barrier), post-work loop.
+// Mirrors barrier.c: pre-work loop, main loop (with/without barrier), post-work
+// loop.
 static void buildProgram(ProgramBuilder &b, bool withBarrier) {
   auto buf = b.addBuffer("buf", MemSpace::WRAM, DType::I32);
 
   // Pre-work: x = x*2 + 1, WARM_ITERS times, stored to buf.
   b.beginLoop(0, WARM_ITERS);
   {
-    auto v   = b.createLoad(buf);
+    auto v = b.createLoad(buf);
     auto two = b.createConst(2, DType::I32);
-    auto v2  = b.createArith(ArithOp::MUL, DType::I32, v, two);
+    auto v2 = b.createArith(ArithOp::MUL, DType::I32, v, two);
     auto one = b.createConst(1, DType::I32);
-    auto v3  = b.createArith(ArithOp::ADD, DType::I32, v2, one);
+    auto v3 = b.createArith(ArithOp::ADD, DType::I32, v2, one);
     b.createStore(buf, v3);
   }
   b.endLoop();
@@ -30,9 +31,9 @@ static void buildProgram(ProgramBuilder &b, bool withBarrier) {
   // Main loop: buf += 1, optional barrier.
   b.beginLoop(0, NITER);
   {
-    auto v   = b.createLoad(buf);
+    auto v = b.createLoad(buf);
     auto one = b.createConst(1, DType::I32);
-    auto v2  = b.createArith(ArithOp::ADD, DType::I32, v, one);
+    auto v2 = b.createArith(ArithOp::ADD, DType::I32, v, one);
     b.createStore(buf, v2);
     if (withBarrier)
       b.createBarrier();
@@ -42,11 +43,11 @@ static void buildProgram(ProgramBuilder &b, bool withBarrier) {
   // Post-work: same as pre.
   b.beginLoop(0, WARM_ITERS);
   {
-    auto v   = b.createLoad(buf);
+    auto v = b.createLoad(buf);
     auto two = b.createConst(2, DType::I32);
-    auto v2  = b.createArith(ArithOp::MUL, DType::I32, v, two);
+    auto v2 = b.createArith(ArithOp::MUL, DType::I32, v, two);
     auto one = b.createConst(1, DType::I32);
-    auto v3  = b.createArith(ArithOp::ADD, DType::I32, v2, one);
+    auto v3 = b.createArith(ArithOp::ADD, DType::I32, v2, one);
     b.createStore(buf, v3);
   }
   b.endLoop();
@@ -55,7 +56,7 @@ static void buildProgram(ProgramBuilder &b, bool withBarrier) {
 struct SimResult {
   double barrier_ns;
   double control_ns;
-  bool   timed_out;
+  bool timed_out;
 };
 
 static SimResult run_one(int T) {

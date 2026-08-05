@@ -91,7 +91,7 @@ else if (block_size > 1023 && 24 < num_dpus && num_dpus <= 64) ix = 7;
 else if (block_size > 1023 && 64 < num_dpus && num_dpus <= 128) ix = 8;
 else if (block_size > 1023 && num_dpus > 128) ix = 9;
 else assert(false);
-return lut[ix][0] + 
+return lut[ix][0] +
 num_dpus * lut[ix][1] + block_size * lut[ix][2] + num_dpus*block_size * lut[ix][3];
 
 Plots written to plots/gather/

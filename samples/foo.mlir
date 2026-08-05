@@ -11,7 +11,7 @@ module {
 xf32> {
     %0 = bufferization.to_buffer %arg1 : tensor<768xf32> to memref<768xf32>
     %1 = bufferization.to_buffer %arg0 : tensor<768x768xf32> to memref<768x768xf32>
-    %2 = cinm.compute_block on accelerator #upmem.array<24x4x4, <type = v1A, dimensions = 40x64x24>> (%arg2 = %1 : memref<768x768xf32>, %arg3 = %0 : memref<768xf32>) 
+    %2 = cinm.compute_block on accelerator #upmem.array<24x4x4, <type = v1A, dimensions = 40x64x24>> (%arg2 = %1 : memref<768x768xf32>, %arg3 = %0 : memref<768xf32>)
 -> memref<768xf32> attributes {cinm.available_platforms = [#upmem]} {
       %4 = memref.get_global @__constant_768xf32 : memref<768xf32>
       %5 = cnm.workgroup : !cnm.workgroup<#upmem_24_4_4>

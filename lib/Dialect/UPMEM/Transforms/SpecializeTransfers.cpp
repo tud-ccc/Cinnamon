@@ -123,8 +123,8 @@ Operation *broadcastWholeBuffer(upmem::ScatterOnArrayOp op,
       hostTy.getNumElements() != static_cast<int64_t>(op.getTransferCount()))
     return nullptr;
   AffineMap map = op.getScatterMap();
-  if (!map.isConstant() || !llvm::all_of(map.getConstantResults(),
-                                         [](int64_t v) { return v == 0; }))
+  if (!map.isConstant() ||
+      !llvm::all_of(map.getConstantResults(), [](int64_t v) { return v == 0; }))
     return nullptr;
 
   rewriter.setInsertionPoint(op);
@@ -153,9 +153,9 @@ bool blocksAreOneRun(AffineMap map, MemRefType hostTy, int64_t blockSize) {
   atZero[2] = getAffineConstantExpr(0, ctx);
   atOne[2] = getAffineConstantExpr(1, ctx);
 
-  AffineExpr step = simplifyAffineExpr(
-      offset->replaceDims(atOne) - offset->replaceDims(atZero),
-      map.getNumDims(), 0);
+  AffineExpr step = simplifyAffineExpr(offset->replaceDims(atOne) -
+                                           offset->replaceDims(atZero),
+                                       map.getNumDims(), 0);
   auto stride = dyn_cast<AffineConstantExpr>(step);
   return stride && stride.getValue() == blockSize;
 }
@@ -190,11 +190,10 @@ Operation *collapseBlocksToOneRun(BlockOp op, RewriterBase &rewriter) {
     return nullptr;
 
   rewriter.setInsertionPoint(op);
-  auto flat = FlatOp::create(rewriter, op.getLoc(), op.getHostBuffer(),
-                             op.getDpuBufRefAttr(),
-                             rewriter.getI64IntegerAttr(total),
-                             AffineMapAttr::get(dropBlockDim(op.getScatterMap())),
-                             op.getHierarchy());
+  auto flat = FlatOp::create(
+      rewriter, op.getLoc(), op.getHostBuffer(), op.getDpuBufRefAttr(),
+      rewriter.getI64IntegerAttr(total),
+      AffineMapAttr::get(dropBlockDim(op.getScatterMap())), op.getHierarchy());
   inheritLabels(flat, op);
   rewriter.eraseOp(op);
   return flat;
@@ -242,10 +241,10 @@ struct UpmemSpecializeTransfersPass
     RewritePatternSet patterns(&getContext());
     // Gathers never narrow to a broadcast: two DPUs writing one host region
     // is a race, not a broadcast.
-    patterns.add<CollapseBlocksToOneRun<upmem::ScatterOnArrayOp,
-                                        upmem::ScatterBlocksOp>,
-                 CollapseBlocksToOneRun<upmem::GatherFromArrayOp,
-                                        upmem::GatherBlocksOp>>(&getContext());
+    patterns.add<
+        CollapseBlocksToOneRun<upmem::ScatterOnArrayOp, upmem::ScatterBlocksOp>,
+        CollapseBlocksToOneRun<upmem::GatherFromArrayOp,
+                               upmem::GatherBlocksOp>>(&getContext());
     if (useBcXferCodegen)
       patterns.add<BroadcastUniformValue<upmem::ScatterBlocksOp>,
                    BroadcastUniformValue<upmem::ScatterOnArrayOp>,

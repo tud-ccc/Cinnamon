@@ -7,11 +7,11 @@
 #include <cstdint>
 #include <functional>
 #include <initializer_list>
-#include <map>
 #include <llvm/ADT/SmallVector.h>
 #include <llvm/ADT/StringMap.h>
 #include <llvm/ADT/StringRef.h>
 #include <llvm/Support/raw_ostream.h>
+#include <map>
 #include <mlir/IR/BuiltinOps.h>
 #include <mlir/IR/Diagnostics.h>
 #include <mlir/IR/OwningOpRef.h>
@@ -26,9 +26,8 @@ class Operation;
 
 namespace mlir::cinm {
 
-  using ParmValue = int32_t;
-  using ParmVector = arma::Row<ParmValue>;
-
+using ParmValue = int32_t;
+using ParmVector = arma::Row<ParmValue>;
 
 // ===----------------------------------------------------------------------===//
 // Configuration space types
@@ -79,7 +78,8 @@ struct SearchParam {
 
 /// Factory functions — build a SearchParam without adding it to a space yet.
 /// Use ConfigSpace::addDim to register the result.
-SearchParam makeRange(StringRef name, ParmValue lo, ParmValue hi, ParmValue step = 1);
+SearchParam makeRange(StringRef name, ParmValue lo, ParmValue hi,
+                      ParmValue step = 1);
 SearchParam makePow2Range(StringRef name, ParmValue loExp, ParmValue hiExp);
 SearchParam makeValues(StringRef name, std::vector<ParmValue> values);
 
@@ -117,16 +117,10 @@ struct ConfigurationVector {
       dims[d][col] = conf[d];
   }
 
-  const ParmVector &operator[](size_t dimIdx) const {
-    return dims[dimIdx];
-  }
+  const ParmVector &operator[](size_t dimIdx) const { return dims[dimIdx]; }
 
-  ParmVector ones() const {
-    return ParmVector(size(), arma::fill::ones);
-  }
-  ParmVector zeros() const {
-    return ParmVector(size(), arma::fill::zeros);
-  }
+  ParmVector ones() const { return ParmVector(size(), arma::fill::ones); }
+  ParmVector zeros() const { return ParmVector(size(), arma::fill::zeros); }
 };
 
 /// Vectorized predicate: evaluates a constraint over a whole batch of
@@ -142,8 +136,7 @@ using VecConstraint =
 /// elementwise division would hit — a vectorized constraint evaluates every
 /// lane, so it cannot short-circuit past a zero divisor the way the
 /// equivalent scalar predicate does.
-inline ParmVector vecSafeDiv(const ParmVector &a,
-                                     const ParmVector &b) {
+inline ParmVector vecSafeDiv(const ParmVector &a, const ParmVector &b) {
   arma::uvec zeros = arma::find(b == 0);
   ParmVector safeB = b;
   safeB.elem(zeros).ones();
@@ -153,8 +146,7 @@ inline ParmVector vecSafeDiv(const ParmVector &a,
 }
 
 /// Elementwise `b != 0 && a % b == 0` ("b divides a"), zero-safe as above.
-inline arma::urowvec vecDivides(const ParmVector &b,
-                                const ParmVector &a) {
+inline arma::urowvec vecDivides(const ParmVector &b, const ParmVector &a) {
   arma::uvec zeros = arma::find(b == 0);
   ParmVector safeB = b;
   safeB.elem(zeros).ones();

@@ -32,7 +32,7 @@ func.func @softie(%arg17 : index, %arg1: index, %arg2 : memref<6x1024x768xf32> {
         ^bb0(%out: f32):
           linalg.yield %cst : f32
         } -> tensor<768xf32>
-      
+
         %16 = linalg.generic {indexing_maps = [#map1, #map2, #map3], iterator_types = ["parallel", "reduction"]} ins(%extracted_slice_5, %3 : tensor<768x768xf32>, tensor<768xf32>) outs(%14 : tensor<768xf32>) {
         ^bb0(%in: f32, %in_17: f32, %out: f32):
           %20 = arith.mulf %in, %in_17 : f32
@@ -67,7 +67,7 @@ func.func @softie(%arg17 : index, %arg1: index, %arg2 : memref<6x1024x768xf32> {
 
   memref.copy %alloc_9, %subview_16 : memref<768xf32> to memref<768xf32, strided<[1], offset: ?>>
 
-	return 
+	return
 }
 
 // func.func @softmax(%vec : tensor<1024xf32>{bufferization.writable=true}) -> tensor<1024xf32> {

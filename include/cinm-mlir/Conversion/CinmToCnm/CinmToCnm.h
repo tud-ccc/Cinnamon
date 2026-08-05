@@ -9,12 +9,12 @@ namespace mlir {
 
 namespace cinm {
 
-    /// Full pipeline
-    void registerCinmToCnmPipeline();
+/// Full pipeline
+void registerCinmToCnmPipeline();
 
-    /// Just the pass after --cinm-tiling
-    std::unique_ptr<Pass> createConvertTiledCinmToCnmPass();
-    std::unique_ptr<Pass>
+/// Just the pass after --cinm-tiling
+std::unique_ptr<Pass> createConvertTiledCinmToCnmPass();
+std::unique_ptr<Pass>
     createConvertTiledCinmToCnmPass(ConvertTiledCinmToCnmOptions);
 } // namespace cinm
 } // namespace mlir
