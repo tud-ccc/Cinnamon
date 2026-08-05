@@ -9,6 +9,7 @@
 #include <optional>
 #include <string>
 #include <utility>
+#include <variant>
 
 namespace mlir::cinm::constraints {
 
@@ -27,10 +28,6 @@ namespace mlir::cinm::constraints {
 // The node set is deliberately closed and small: everything here has to stay
 // analysable. See docs/ConstraintAnalysisDesign.md.
 
-enum class CmpKind { Le, Ge, Lt, Gt, Eq, Ne };
-
-const char *cmpSymbol(CmpKind k);
-
 struct ConstraintNode;
 using ConstraintNodePtr = std::shared_ptr<const ConstraintNode>;
 
@@ -40,9 +37,18 @@ struct ConstraintNode {
     Var,   ///< search parameter; `varIdx` / `varName`
     Add,   ///< n-ary sum
     Mul,   ///< n-ary product
-    Sub,   ///< binary difference
     Div,   ///< binary quotient; also *asserts* exact divisibility (see below)
-    Cmp,   ///< binary comparison; `cmp`
+
+    // Boolean predicates
+
+    Le,
+    FirstBooleanKind = Le,
+    Ge,
+    Lt,
+    Gt,
+    Eq,
+    Ne,
+
     /// binary divisibility *test*; `operands[0]` divides `operands[1]`. Unlike
     /// `Div` it produces a truth value and claims nothing: see the DSL's
     /// `divides()`.
@@ -54,51 +60,82 @@ struct ConstraintNode {
   };
 
   Kind kind;
-  /// Kind::Const
-  ParmValue value = 0;
-  /// Kind::Var — the same cell SpaceVar holds, so the index resolves once
-  /// SpaceBuilder::buildInto() has run and every handle sees it.
-  std::shared_ptr<size_t> varIdx;
-  std::string varName;
-  /// Kind::Cmp
-  CmpKind cmp = CmpKind::Eq;
-  /// Add/Mul are n-ary; Sub/Div/Cmp are binary. n-ary matters: it is what lets
-  /// prod(extent/block) be one node with a child per iteration dimension
-  /// instead of a left-leaning tree the analyser would have to re-flatten.
-  llvm::SmallVector<ConstraintNodePtr, 2> operands;
+
+private:
+  using VarState = std::pair<std::shared_ptr<size_t>, std::string>;
+  using OpndState = SmallVector<ConstraintNodePtr, 2>;
+
+public:
+  // const
+  ConstraintNode(ParmValue v) : kind(Kind::Const), state(v) {}
+  // var
+  ConstraintNode(llvm::StringRef v, std::shared_ptr<size_t> idx)
+      : kind(Kind::Var), state(VarState(std::move(idx), v)) {}
+  // binary
+  ConstraintNode(ConstraintNode::Kind kind, ConstraintNodePtr lhs,
+                 ConstraintNodePtr rhs)
+      : kind(kind), state(OpndState{lhs, rhs}) {
+    switch (kind) {
+    case Kind::Const:
+    case Kind::Var:
+      assert(false && "Not a binary kind");
+      break;
+    case Kind::Implies:
+      assert(isBoolKind(lhs->kind) && isBoolKind(rhs->kind));
+      break;
+    default:
+      break;
+    }
+  }
+  // n-ary
+  ConstraintNode(ConstraintNode::Kind kind, ArrayRef<ConstraintNodePtr> nodes)
+      : kind(kind), state{OpndState(nodes)} {
+    assert(nodes.size() == 2 || kind == Kind::Mul || kind == Kind::Add);
+  }
+
+  /// Whether a node of this kind evaluates to a truth value rather than a
+  /// number. The DSL's `Expr<Type::BOOL>` guarantees this statically; the
+  /// analyser, which works on bare nodes, has to ask.
+  inline static bool isBoolKind(ConstraintNode::Kind kind) {
+    return kind >= ConstraintNode::Kind::FirstBooleanKind;
+  }
+
+  ParmValue constValue() const {
+    assert(kind == Kind::Const);
+    return std::get<ParmValue>(state);
+  }
+  llvm::StringRef varName() const {
+    assert(kind == Kind::Var);
+    return std::get<VarState>(state).second;
+  }
+  size_t varIdx() const {
+    assert(kind == Kind::Var);
+    return *std::get<VarState>(state).first;
+  }
+  std::shared_ptr<size_t> varIdxPtr() const {
+    assert(kind == Kind::Var);
+    return std::get<VarState>(state).first;
+  }
+  ArrayRef<ConstraintNodePtr> operands() const {
+    if (std::holds_alternative<OpndState>(state))
+      return std::get<OpndState>(state);
+    return {};
+  }
+
+private:
+  std::variant<
+      /// Kind::Const
+      ParmValue,
+      /// Kind::Var — the shared ptr is the same cell SpaceVar holds, so the
+      /// index resolves once SpaceBuilder::buildInto() has run and every handle
+      /// sees it.
+      VarState,
+      /// Add/Mul are n-ary; others are binary.
+      OpndState>
+      state;
 };
 
 enum class Type { BOOL, INT };
-
-/// Whether a node of this kind evaluates to a truth value rather than a number.
-/// The DSL's `Expr<Type::BOOL>` guarantees this statically; the analyser, which
-/// works on bare nodes, has to ask.
-inline bool isBoolKind(ConstraintNode::Kind kind) {
-  return kind == ConstraintNode::Kind::Cmp ||
-         kind == ConstraintNode::Kind::Divides ||
-         kind == ConstraintNode::Kind::Implies;
-}
-
-// ===----------------------------------------------------------------------===//
-// Node construction
-// ===----------------------------------------------------------------------===//
-
-ConstraintNodePtr makeConstNode(ParmValue v);
-ConstraintNodePtr makeVarNode(std::shared_ptr<size_t> idx,
-                              llvm::StringRef name);
-ConstraintNodePtr
-makeNaryNode(ConstraintNode::Kind kind,
-             llvm::SmallVector<ConstraintNodePtr, 2> operands);
-ConstraintNodePtr makeBinNode(ConstraintNode::Kind kind, ConstraintNodePtr lhs,
-                              ConstraintNodePtr rhs);
-ConstraintNodePtr makeCmpNode(CmpKind cmp, ConstraintNodePtr lhs,
-                              ConstraintNodePtr rhs);
-/// `divisor` divides `dividend`, as a truth value.
-ConstraintNodePtr makeDividesNode(ConstraintNodePtr divisor,
-                                  ConstraintNodePtr dividend);
-/// `antecedent => consequent`. Both must be boolean nodes.
-ConstraintNodePtr makeImpliesNode(ConstraintNodePtr antecedent,
-                                  ConstraintNodePtr consequent);
 
 // ===----------------------------------------------------------------------===//
 // Evaluation
