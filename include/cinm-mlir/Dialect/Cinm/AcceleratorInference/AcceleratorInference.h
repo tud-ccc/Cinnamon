@@ -128,6 +128,13 @@ struct SearchParam {
   /// domain has no sub-index, so subIndexOf() cannot report this itself.
   bool contains(ParmValue value) const;
 
+  /// Append the values one step from `value`, for whatever "one step" means
+  /// for this parameter: the adjacent values of a quantity, and the adjacent
+  /// transpositions of a permutation. Stepping a permutation's *rank* would
+  /// land on an unrelated permutation, so the kind decides this too.
+  void appendNeighbourValues(ParmValue value,
+                             llvm::SmallVectorImpl<ParmValue> &out) const;
+
   /// Retain only values that evenly divide n; converts a range to a ValueList.
   SearchParam &keepDivisorsOf(ParmValue n);
 };
