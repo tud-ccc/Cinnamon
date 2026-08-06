@@ -24,70 +24,37 @@ Everything below is stated as: **what is said**, **what is**, **what it costs**.
 
 ---
 
-## 1. Planning results are not observable
-
-**Said.** Nothing, in either source — this is a gap in the design as much as in
-the code.
-
-**Is.** `SpaceBuilder::planComponents` decides the entire shape of the space:
-which parameters were merged, which relations were folded in, which fell back
-to a pairwise group, which survived as filters, and which components blew a
-budget and absorbed nothing. All of it is `LLVM_DEBUG` text, lost the moment
-`buildInto` returns, and none of it reaches `dumpMetadataJSON`.
-
-**Costs.** The space cannot be characterised from an experiment's artefacts:
-"why is this space 3M points" is answerable only by re-running with
-`--debug-only=cinm-inference` and reading prose.
-
-**Proposed.** `SpaceBuilder` builds a metadata record and hands it to the
-`ConfigSpace` as an opaque owned pointer, which the dump serialises: per
-component, its parameters and its tuple count; per constraint, its rendered
-form and its disposition (static filter, structural pair, folded into
-component *k*, surviving filter, opaque). The constraint IR already renders
-itself (`describeNode`), so the content exists — it is only ever printed.
-
-## 2. Density is defined but never measured
+## 1. Density never drives a merging decision
 
 **Said.** The paper makes density — "the fraction of the enumerated product
 that is feasible" — the metric the partition is judged by: "we merge subspaces
 as long as doing so lets a constraint be folded into the merged enumeration",
 with density one at the coarse extreme and the full Cartesian product at the
-fine one.
+fine one. Merging is presented as a decision, justified per constraint.
 
-**Is.** The implementation reports, per component, `tuples (was P, Nx fewer)`
-where `P` is the product of that component's *declared* domains. That is a
-compression ratio against the Cartesian product, not a density: it says nothing
-about how many of the enumerated tuples are feasible. Density (`feasible /
-addressable`) is computable — both numbers are now printed — but is never
-formed, and in particular is never attributed to the partition that produced
-it.
+**Is.** Density is measured and reported — `space.json` carries the three
+sizes, both ratios, and now the components and each constraint's disposition —
+but nothing reads it back. Merging is unconditional: every structural relation
+contributes an edge to a union-find, and connected components fall out, so a
+relation between two parameters merges them whether or not folding it pays.
 
-**Costs.** The one number that would say whether a partition is good is
-missing, so there is no evidence for or against the merging policy in §3.
+The only feedback is after the fact and all-or-nothing: if a component's
+enumeration exceeds `kSolutionCap` (4e6 tuples) or `kNodeBudget` (5e7 nodes) it
+is abandoned *entirely*, and every relation in it falls back to pairwise groups
+and predicates. There is no finer partition tried in between, and no cost model
+anywhere.
 
-## 3. The merging policy is not the one described
-
-**Said.** "We merge subspaces as long as doing so lets a constraint be folded
-into the merged enumeration" — merging is a decision, justified per constraint.
-
-**Is.** Merging is unconditional. Every structural relation contributes an edge
-to a union-find, and connected components fall out; a relation between two
-parameters merges them whether or not folding it pays. The only feedback is
-after the fact and all-or-nothing: if the component's enumeration exceeds
-`kSolutionCap` (4e6 tuples) or `kNodeBudget` (5e7 nodes), it is abandoned
-*entirely* and every relation in it falls back to pairwise groups and
-predicates. There is no finer partition tried in between, and no cost model.
-
-**Costs.** Fine on the spaces measured so far, because the relations really do
-all interlock. It degrades badly the moment one weak relation bridges two
+**Costs.** Fine on the spaces measured so far, because their relations really
+do all interlock. It degrades badly the moment one weak relation bridges two
 otherwise separate clusters: a single edge can merge two components, blow the
 budget, and lose the folding of *both*, which is the worst outcome available.
 
-**Proposed.** Nothing yet — the failure mode has not been observed. Worth
-recording because the paper claims a policy the code does not implement, and
-because §4 makes it likelier to be hit.
+**Proposed.** Nothing concrete — the failure mode has not been observed, and
+the reporting to detect it now exists. Worth recording because the paper claims
+a policy the code does not implement, and because §2 makes it likelier to be
+hit.
 
-## 4. Guard variables multiply enumeration cost
+## 2. Guard variables multiply enumeration cost
 
 **Said.** LaunchFusionDesign §F: implication support is "free" in the
 enumerator — "an implication goes into the enumerator's `bounds_` like any
@@ -115,10 +82,10 @@ enumeration, so it could be enumerated once and the fused branches computed as
 a refinement rather than from scratch; that is a real change to the
 enumerator's shape. Alternatively a guard could be kept out of the component
 (its own slot) and its implications left as filters, trading density for
-construction time — which is precisely the merging decision §3 says should
+construction time — which is precisely the merging decision §1 says should
 exist and does not.
 
-## 5. `DependentGroup` was supposed to disappear
+## 3. `DependentGroup` was supposed to disappear
 
 **Said.** ConstraintAnalysisDesign Stage 5: component enumeration "subsumes
 `DependentGroup`, which is exactly the two-variable case".
@@ -138,7 +105,7 @@ which they do; a two-variable divisibility component is trivially small — a
 `DependentGroup` is a `SolvedComponent` whose enumeration happens to be a pair
 list. Deleting the kind is a contained cleanup.
 
-## 6. A permutation's *neighbours* are still its rank ±1
+## 4. A permutation's *neighbours* are still its rank ±1
 
 **Said.** The paper: "Categorical and permutation-valued parameters are also
 supported, by modifying the distance function for those variables as proposed
@@ -165,7 +132,7 @@ swap a pair, re-rank. Independent of everything else here.
 
 *(A categorical kind has no caller yet, so it is not declared.)*
 
-## 7. Declared domains are much wider than reachable ones
+## 5. Declared domains are much wider than reachable ones
 
 **Said.** Implicit in the paper's model: a subspace enumerates "the tuples that
 satisfy the constraints mentioning only its parameters", so a parameter's
@@ -187,7 +154,7 @@ so `keepDivisorsOf(extent)` is sound for the inner levels too and is a
 one-line change at the declaration site. It narrows the declared domain to the
 reachable one without touching the encoding.
 
-## 8. Statements in ConstraintAnalysisDesign that are now stale
+## 6. Statements in ConstraintAnalysisDesign that are now stale
 
 Not gaps — the document simply predates the code and should be corrected or
 retired.
@@ -201,21 +168,22 @@ retired.
 | Stage 6, Form C domain narrowing | not implemented |
 | Form A2, `dpus == dpuRows * dpuCols` inside `readAsGemvTemplate` | still invisible to the analyser, still behind an opaque predicate |
 
-## 9. Opaque predicates bound density from above
+## 7. Opaque predicates bound density from above
 
 **Said.** The paper: a subspace enumeration produces "exactly the tuples that
 satisfy the constraints mentioning only its parameters".
 
 **Is.** Only the constraints it can *read*. An opaque predicate over parameters
 that all lie inside one component is still evaluated after the fact, so the
-component offers tuples that are then filtered out. Two exist today: the
+component offers tuples that are then filtered out. Exactly two survive as
+filters on the `prim_gemv` space, and `space.json` now names them both: the
 workgroup order domain (`order <= (number of distributed dimensions)!`) and the
-fusion order agreement. Both mention only one component's parameters.
+fusion order agreement, each marked `"analysable": false`.
 
 **Costs.** Density is capped below 1 by construction on any space with an
-opaque predicate, and the cap is invisible (§2). At 64², 10,852 tuples become
-14,557 valid points out of 21,704 addressable — a density of 0.67, essentially
-all of it the order predicate.
+opaque predicate. At 64², 10,852 tuples become 14,557 valid points out of
+21,704 addressable — a density of 0.67, essentially all of it the order
+predicate.
 
 **Proposed.** A component could accept an opaque predicate as a full-assignment
 filter, evaluated at the leaves of the backtracking walk. It cannot prune

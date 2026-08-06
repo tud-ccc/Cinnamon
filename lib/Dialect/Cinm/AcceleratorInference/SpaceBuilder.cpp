@@ -33,6 +33,113 @@ void assertArithmeticOperands(const ConstraintNodePtr &lhs,
 } // namespace detail
 
 // ===----------------------------------------------------------------------===//
+// Planning report
+// ===----------------------------------------------------------------------===//
+
+/// What planning decided, in the form the space carries away with it.
+///
+/// A space that reports 3M points is the product of a series of decisions --
+/// which parameters were enumerated jointly, which constraints that let it drop
+/// as predicates, which grouping was attempted and abandoned -- and none of
+/// them are recoverable from the result. Recording them is the difference
+/// between an experiment's artefacts describing a space and merely sizing it.
+struct SpaceBuilder::PlanMetadata final : SpaceMetadata {
+  /// A set of parameters enumerated jointly.
+  struct Component {
+    std::vector<std::string> params;
+    /// Tuples enumerated, against the product of the parameters' domains.
+    /// Their ratio is what the component bought.
+    size_t solutions = 0;
+    size_t cartesian = 1;
+    /// Set when the enumeration hit a budget: the component absorbed nothing
+    /// and every relation in it fell back to the pairwise and predicate paths.
+    /// `solutions` is meaningless then.
+    bool abandoned = false;
+  };
+
+  /// Where a constraint ended up. What matters is whether it still costs a
+  /// test per configuration, and if not, what absorbed it.
+  struct Constraint {
+    std::string description;
+    /// "folded", "filter", "static-filter", "structural-pair".
+    std::string disposition;
+    /// Index into `components` for a folded constraint, -1 otherwise.
+    int component = -1;
+    /// False for a predicate registered as an opaque lambda, which planning
+    /// cannot read and therefore can never fold.
+    bool analysable = true;
+  };
+
+  std::vector<Component> components;
+  std::vector<Constraint> constraints;
+  /// Which component absorbed a given predicate tree, so that buildInto can
+  /// pair it with the description the predicate was registered under.
+  llvm::DenseMap<const constraints::ConstraintNode *, int> foldedInto;
+
+  void printJSONMembers(std::ostream &os) const override;
+
+  int componentOf(llvm::ArrayRef<size_t> dims, const ConfigSpace &space);
+};
+
+namespace {
+void printJSONString(std::ostream &os, llvm::StringRef s) {
+  os << '"';
+  for (char c : s) {
+    if (c == '"' || c == '\\')
+      os << '\\';
+    os << c;
+  }
+  os << '"';
+}
+} // namespace
+
+int SpaceBuilder::PlanMetadata::componentOf(llvm::ArrayRef<size_t> dims,
+                                            const ConfigSpace &space) {
+  Component comp;
+  for (size_t d : dims) {
+    comp.params.push_back(space[d].name);
+    comp.cartesian *= space[d].cardinality();
+  }
+  components.push_back(std::move(comp));
+  return static_cast<int>(components.size()) - 1;
+}
+
+void SpaceBuilder::PlanMetadata::printJSONMembers(std::ostream &os) const {
+  os << "  \"components\": [\n";
+  for (size_t i = 0; i < components.size(); ++i) {
+    const Component &c = components[i];
+    os << "    {\"params\": [";
+    for (size_t j = 0; j < c.params.size(); ++j) {
+      if (j)
+        os << ", ";
+      printJSONString(os, c.params[j]);
+    }
+    os << "], \"cartesian\": " << c.cartesian;
+    if (c.abandoned)
+      os << ", \"abandoned\": true";
+    else
+      os << ", \"solutions\": " << c.solutions;
+    os << "}" << (i + 1 < components.size() ? "," : "") << "\n";
+  }
+  os << "  ],\n";
+
+  os << "  \"constraints\": [\n";
+  for (size_t i = 0; i < constraints.size(); ++i) {
+    const Constraint &c = constraints[i];
+    os << "    {\"constraint\": ";
+    printJSONString(os, c.description);
+    os << ", \"disposition\": ";
+    printJSONString(os, c.disposition);
+    if (c.component >= 0)
+      os << ", \"component\": " << c.component;
+    if (!c.analysable)
+      os << ", \"analysable\": false";
+    os << "}" << (i + 1 < constraints.size() ? "," : "") << "\n";
+  }
+  os << "  ],\n";
+}
+
+// ===----------------------------------------------------------------------===//
 // SpaceBuilder — dimension declaration
 // ===----------------------------------------------------------------------===//
 
@@ -683,7 +790,7 @@ private:
 } // namespace
 
 void SpaceBuilder::planComponents(
-    ConfigSpace &space,
+    ConfigSpace &space, PlanMetadata &report,
     std::set<std::pair<std::string, std::string>> &absorbedMultiples,
     std::set<const ConstraintNode *> &absorbedPredicates) {
   /// Enumerating more tuples than this is taken as evidence that the component
@@ -870,6 +977,7 @@ void SpaceBuilder::planComponents(
       LLVM_DEBUG(llvm::dbgs()
                  << "[cinm-space]   component of " << dims.size()
                  << " dims exceeded the solution cap; left to predicates\n");
+      report.components[report.componentOf(dims, space)].abandoned = true;
       continue;
     }
 
@@ -892,17 +1000,30 @@ void SpaceBuilder::planComponents(
                      << ", solvable once the guard is settled\n";
     });
 
+    const int reportIdx = report.componentOf(dims, space);
+    report.components[reportIdx].solutions = solutions.size();
+
     ConfigSpace::SolvedComponent comp;
     comp.dims = dims;
     comp.solutions = std::move(solutions);
     space.addSolvedComponent(std::move(comp));
 
-    for (size_t i : myDivIdx)
+    for (size_t i : myDivIdx) {
       absorbedMultiples.insert(divNames[i]);
+      report.constraints.push_back(
+          {divNames[i].first + " | " + divNames[i].second, "folded", reportIdx,
+           true});
+    }
     for (size_t i : myProdIdx)
       absorbedPredicates.insert(prodNodes[i]);
     for (const ConstraintNode *n : myBoundNodes)
       absorbedPredicates.insert(n);
+    // Which predicate each folded node came from is resolved in buildInto,
+    // where the descriptions live; here only the component is known.
+    for (const ConstraintNode *n : myBoundNodes)
+      report.foldedInto[n] = reportIdx;
+    for (size_t i : myProdIdx)
+      report.foldedInto[prodNodes[i]] = reportIdx;
   }
 }
 
@@ -912,6 +1033,8 @@ void SpaceBuilder::planComponents(
 
 void SpaceBuilder::buildInto(ConfigSpace &space) {
   LLVM_DEBUG(llvm::dbgs() << "[cinm-space] building config space:\n");
+
+  auto report = std::make_unique<PlanMetadata>();
 
   // Phase 1: build each SearchParam, deduplicate + apply static filters,
   // addDim.
@@ -936,8 +1059,12 @@ void SpaceBuilder::buildInto(ConfigSpace &space) {
     entry.divisorFilters.erase(
         std::unique(entry.divisorFilters.begin(), entry.divisorFilters.end()),
         entry.divisorFilters.end());
-    for (ParmValue n : entry.divisorFilters)
+    for (ParmValue n : entry.divisorFilters) {
       param.keepDivisorsOf(n);
+      report->constraints.push_back(
+          {std::to_string(n) + " % " + entry.var.name_ + " == 0",
+           "static-filter", -1, true});
+    }
 
     LLVM_DEBUG({
       llvm::dbgs() << "[cinm-space]   dim '" << entry.var.name_ << "': ";
@@ -982,7 +1109,7 @@ void SpaceBuilder::buildInto(ConfigSpace &space) {
   // offer a configuration that violates it.
   std::set<std::pair<std::string, std::string>> absorbedMultiples;
   std::set<const ConstraintNode *> absorbedPredicates;
-  planComponents(space, absorbedMultiples, absorbedPredicates);
+  planComponents(space, *report, absorbedMultiples, absorbedPredicates);
 
   // Build lookup for the full set.
   std::set<std::pair<std::string, std::string>> multsSet;
@@ -1023,6 +1150,8 @@ void SpaceBuilder::buildInto(ConfigSpace &space) {
       handled.insert({m.child, m.parent});
       equalityFallbacks.push_back(
           {findVarByName(m.parent), findVarByName(m.child)});
+      report->constraints.push_back(
+          {m.parent + " | " + m.child + " (mutual)", "filter", -1, true});
       continue;
     }
 
@@ -1036,6 +1165,8 @@ void SpaceBuilder::buildInto(ConfigSpace &space) {
       handled.insert({m.parent, m.child});
       dynamicDivFallbacks.push_back(
           {findVarByName(m.parent), findVarByName(m.child)});
+      report->constraints.push_back(
+          {m.parent + " | " + m.child + " (chained)", "filter", -1, true});
       continue;
     }
 
@@ -1043,6 +1174,8 @@ void SpaceBuilder::buildInto(ConfigSpace &space) {
                             << "' | '" << m.child << "'\n");
     space.addMultiplesConstraint(m.parent, m.child);
     childSet.insert(m.child);
+    report->constraints.push_back(
+        {m.parent + " | " + m.child, "structural-pair", -1, true});
   }
 
   // Add fallback dynamic predicates.
@@ -1074,14 +1207,22 @@ void SpaceBuilder::buildInto(ConfigSpace &space) {
     if (entry.node && absorbedPredicates.count(entry.node.get())) {
       LLVM_DEBUG(llvm::dbgs() << "[cinm-space]   absorbed into encoding: "
                               << entry.description << "\n");
+      auto it = report->foldedInto.find(entry.node.get());
+      report->constraints.push_back(
+          {entry.description, "folded",
+           it == report->foldedInto.end() ? -1 : it->second, true});
       continue;
     }
+    report->constraints.push_back(
+        {entry.description, "filter", -1, entry.node != nullptr});
     std::visit(
         [&](auto &pred) {
           space.addConstraint(std::move(pred), entry.description);
         },
         entry.pred);
   }
+
+  space.metadata = std::move(report);
 }
 
 } // namespace mlir::cinm

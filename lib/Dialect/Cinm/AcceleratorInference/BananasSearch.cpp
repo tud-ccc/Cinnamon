@@ -696,6 +696,12 @@ void CandidatePool::dumpMetadataJSON(const ConfigSpace &space,
       << (static_cast<double>(size()) / cartesian) << ",\n";
   out << "  \"encoding_density\": " << (static_cast<double>(size()) / N)
       << ",\n";
+  // Whatever the builder recorded about how it planned the space -- which
+  // parameters it enumerated jointly, and where each constraint ended up. The
+  // sizes above are the outcome of those decisions and do not explain them.
+  if (space.metadata)
+    space.metadata->printJSONMembers(out);
+
   out << "  \"params\": [\n";
   for (size_t i = 0; i < space.params.size(); ++i) {
     const auto &p = space.params[i];
