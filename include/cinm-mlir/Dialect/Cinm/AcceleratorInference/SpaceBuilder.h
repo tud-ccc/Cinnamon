@@ -1,6 +1,6 @@
 #pragma once
 
-#include "cinm-mlir/Dialect/Cinm/AcceleratorInference/AcceleratorInference.h"
+#include "cinm-mlir/Dialect/Cinm/AcceleratorInference/ConfigSpace.h"
 #include "cinm-mlir/Dialect/Cinm/AcceleratorInference/ConstraintIR.h"
 #include <armadillo>
 #include <cstdint>
@@ -21,9 +21,13 @@ namespace mlir::cinm {
 // The design space
 // ===----------------------------------------------------------------------===//
 //
-// This file is the reference for how a design space is described, planned and
+// This is the reference for how a design space is described, planned and
 // encoded. It documents the state of the implementation, not a target to build
 // towards.
+//
+// The space itself is three files: `ConfigSpace.h` is what a space *is* --
+// parameters, encoding, predicates -- this one is how one is *built*, and
+// `AcceleratorInference.h` is what is done with one.
 //
 // # 1. What a design space is
 //
