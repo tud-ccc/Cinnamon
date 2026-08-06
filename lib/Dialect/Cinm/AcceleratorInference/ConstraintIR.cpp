@@ -217,7 +217,7 @@ std::string describeNode(const ConstraintNode &node) {
 }
 
 // ===----------------------------------------------------------------------===//
-// Analysis — Form A
+// Analysis — identities (product equalities)
 // ===----------------------------------------------------------------------===//
 
 namespace {
@@ -272,7 +272,8 @@ static std::optional<Rational> normalizeImpl(const ConstraintNode &node) {
     return r;
   }
   // A sum is not a monomial. This is the line that keeps capacity bounds
-  // (Form C) out of Form A rather than silently mis-analysing them.
+  // (inequalities) out of identity matching rather than silently
+  // mis-analysing them.
   default:
     return std::nullopt;
   }
