@@ -365,14 +365,6 @@ void ConfigSpace::ensureEncoding() const {
 
   slots_.clear();
 
-  std::vector<bool> isChild(params.size(), false);
-  for (const auto &g : groups)
-    isChild[g.childIdx] = true;
-
-  std::vector<size_t> parentToGroup(params.size(), SIZE_MAX);
-  for (size_t gi = 0; gi < groups.size(); ++gi)
-    parentToGroup[groups[gi].parentIdx] = gi;
-
   // A component owns every dimension it covers: those dimensions get no slot
   // of their own, and the component contributes a single slot sized by its
   // enumerated solution count. The first dimension of each component acts as
@@ -384,20 +376,13 @@ void ConfigSpace::ensureEncoding() const {
 
   for (size_t i = 0; i < params.size(); ++i) {
     size_t ci = dimToComponent[i];
-    if (ci != SIZE_MAX) {
-      // Emit the component's slot once, at its first (lowest-index) dimension.
-      if (components[ci].dims.empty() || components[ci].dims[0] != i)
-        continue;
-      slots_.push_back({i, SIZE_MAX, ci, components[ci].size()});
+    if (ci == SIZE_MAX) {
+      slots_.push_back({i, SIZE_MAX, params[i].cardinality()});
       continue;
     }
-    if (isChild[i])
-      continue;
-    size_t gi = parentToGroup[i];
-    size_t slotSize = (gi == SIZE_MAX)
-                          ? static_cast<size_t>(params[i].cardinality())
-                          : groups[gi].totalCount();
-    slots_.push_back({i, gi, SIZE_MAX, slotSize});
+    // Emit the component's slot once, at its first (lowest-index) dimension.
+    if (!components[ci].dims.empty() && components[ci].dims[0] == i)
+      slots_.push_back({i, ci, components[ci].size()});
   }
 
   const size_t S = slots_.size();
@@ -407,37 +392,6 @@ void ConfigSpace::ensureEncoding() const {
     suffixProd_[i] = suffixProd_[i + 1] * slots_[i].slotSize;
 
   encodingValid_ = true;
-}
-
-void ConfigSpace::addMultiplesConstraint(StringRef parentName,
-                                         StringRef childName) {
-  int parentIdx = findIndex(parentName);
-  int childIdx = findIndex(childName);
-  assert(parentIdx >= 0);
-  assert(childIdx >= 0);
-  const SearchParam &parent = params[parentIdx];
-  const SearchParam &child = params[childIdx];
-  size_t parentCard = parent.cardinality();
-
-  std::vector<std::vector<ParmValue>> childValues(parentCard);
-  for (size_t pi = 0; pi < parentCard; ++pi) {
-    ParmValue parentVal = parent.valueAt(pi);
-    for (size_t ci = 0, cc = child.cardinality(); ci < cc; ++ci) {
-      ParmValue childVal = child.valueAt(ci);
-      if (childVal % parentVal == 0)
-        childValues[pi].push_back(childVal);
-    }
-  }
-
-  std::vector<size_t> cumCount(parentCard + 1);
-  cumCount[0] = 0;
-  for (size_t pi = 0; pi < parentCard; ++pi)
-    cumCount[pi + 1] = cumCount[pi] + childValues[pi].size();
-
-  groups.push_back({static_cast<size_t>(parentIdx),
-                    static_cast<size_t>(childIdx), std::move(childValues),
-                    std::move(cumCount)});
-  encodingValid_ = false;
 }
 
 size_t ConfigSpace::totalSize() const {
@@ -452,22 +406,14 @@ void ConfigSpace::at(size_t idx, Configuration &conf) const {
     const auto &slot = slots_[si];
     size_t subIdx = idx % slot.slotSize;
     idx /= slot.slotSize;
-    if (slot.componentIdx != SIZE_MAX) {
-      const auto &comp = components[slot.componentIdx];
-      const auto &tuple = comp.solutions[subIdx];
-      for (size_t k = 0; k < comp.dims.size(); ++k)
-        conf[comp.dims[k]] = tuple[k];
-    } else if (slot.groupIdx == SIZE_MAX) {
+    if (slot.componentIdx == SIZE_MAX) {
       conf[slot.dimIdx] = params[slot.dimIdx].valueAt(subIdx);
-    } else {
-      const auto &g = groups[slot.groupIdx];
-      auto it = std::upper_bound(g.cumCount.begin(), g.cumCount.end(), subIdx);
-      --it;
-      size_t parentSubIdx = static_cast<size_t>(it - g.cumCount.begin());
-      size_t childLocalIdx = subIdx - g.cumCount[parentSubIdx];
-      conf[g.parentIdx] = params[g.parentIdx].valueAt(parentSubIdx);
-      conf[g.childIdx] = g.childValues[parentSubIdx][childLocalIdx];
+      continue;
     }
+    const auto &comp = components[slot.componentIdx];
+    const auto &tuple = comp.solutions[subIdx];
+    for (size_t k = 0; k < comp.dims.size(); ++k)
+      conf[comp.dims[k]] = tuple[k];
   }
 }
 
@@ -493,27 +439,17 @@ void ConfigSpace::forEachChunk(
   Configuration conf(params.size());
 
   // Decode sub-index k for slot si and write the corresponding parameter
-  // values into conf.  For grouped slots this uses the same upper_bound logic
-  // as ConfigSpace::at(), which correctly handles parents that have no valid
-  // children (their cumCount entries are equal and are never selected).
+  // values into conf, exactly as ConfigSpace::at() does for one slot.
   auto applySubIdx = [&](size_t si, size_t k) {
     const auto &slot = slots_[si];
-    if (slot.componentIdx != SIZE_MAX) {
-      const auto &comp = components[slot.componentIdx];
-      const auto &tuple = comp.solutions[k];
-      for (size_t j = 0; j < comp.dims.size(); ++j)
-        conf[comp.dims[j]] = tuple[j];
-    } else if (slot.groupIdx == SIZE_MAX) {
+    if (slot.componentIdx == SIZE_MAX) {
       conf[slot.dimIdx] = params[slot.dimIdx].valueAt(k);
-    } else {
-      const auto &g = groups[slot.groupIdx];
-      auto it = std::upper_bound(g.cumCount.begin(), g.cumCount.end(), k);
-      --it; // it now points to the last cumCount entry ≤ k
-      size_t psi = static_cast<size_t>(it - g.cumCount.begin());
-      size_t cli = k - g.cumCount[psi];
-      conf[g.parentIdx] = params[g.parentIdx].valueAt(psi);
-      conf[g.childIdx] = g.childValues[psi][cli];
+      return;
     }
+    const auto &comp = components[slot.componentIdx];
+    const auto &tuple = comp.solutions[k];
+    for (size_t j = 0; j < comp.dims.size(); ++j)
+      conf[comp.dims[j]] = tuple[j];
   };
 
   // Decompose lo into per-slot sub-indices (same mixed-radix decoding as
@@ -552,7 +488,9 @@ size_t ConfigSpace::indexOf(const Configuration &conf) const {
   for (size_t si = 0; si < slots_.size(); ++si) {
     const auto &slot = slots_[si];
     size_t subIdx;
-    if (slot.componentIdx != SIZE_MAX) {
+    if (slot.componentIdx == SIZE_MAX) {
+      subIdx = params[slot.dimIdx].subIndexOf(conf[slot.dimIdx]);
+    } else {
       const auto &comp = components[slot.componentIdx];
       std::vector<ParmValue> tuple(comp.dims.size());
       for (size_t k = 0; k < comp.dims.size(); ++k)
@@ -564,14 +502,6 @@ size_t ConfigSpace::indexOf(const Configuration &conf) const {
       assert(it != comp.indexOfSolution.end() &&
              "configuration violates a structural constraint");
       subIdx = it == comp.indexOfSolution.end() ? 0 : it->second;
-    } else if (slot.groupIdx == SIZE_MAX) {
-      subIdx = params[slot.dimIdx].subIndexOf(conf[slot.dimIdx]);
-    } else {
-      const auto &g = groups[slot.groupIdx];
-      size_t parentSubIdx = params[g.parentIdx].subIndexOf(conf[g.parentIdx]);
-      const auto &cv = g.childValues[parentSubIdx];
-      auto it = std::find(cv.begin(), cv.end(), conf[g.childIdx]);
-      subIdx = g.cumCount[parentSubIdx] + static_cast<size_t>(it - cv.begin());
     }
     idx = idx * slot.slotSize + subIdx;
   }
@@ -584,10 +514,9 @@ void ConfigSpace::neighborIndices(size_t idx,
 
   // Decode, step one dimension, re-encode. The obvious alternative -- stride
   // arithmetic on the flat index -- only coincides with "one step in one
-  // dimension" for slots holding a single dimension. For a DependentGroup or
-  // a SolvedComponent a slot step can change several dimensions at once (at a
-  // cumCount boundary it advances the parent and resets the child), so it does
-  // not mean what this function claims to return.
+  // dimension" for slots holding a single dimension. Stepping a component's
+  // slot moves to the next enumerated tuple, which can differ in several
+  // dimensions at once, so it does not mean what this function claims.
   Configuration conf;
   at(idx, conf);
   Configuration probe = conf;
@@ -618,22 +547,14 @@ bool ConfigSpace::isEncodable(const Configuration &conf) const {
     if (!params[d].contains(conf[d]))
       return false;
   for (const auto &slot : slots_) {
-    if (slot.componentIdx != SIZE_MAX) {
-      const auto &comp = components[slot.componentIdx];
-      std::vector<ParmValue> tuple(comp.dims.size());
-      for (size_t k = 0; k < comp.dims.size(); ++k)
-        tuple[k] = conf[comp.dims[k]];
-      if (!comp.indexOfSolution.count(tuple))
-        return false;
-    } else if (slot.groupIdx != SIZE_MAX) {
-      const auto &g = groups[slot.groupIdx];
-      size_t psi = params[g.parentIdx].subIndexOf(conf[g.parentIdx]);
-      if (psi >= g.childValues.size())
-        return false;
-      const auto &cv = g.childValues[psi];
-      if (std::find(cv.begin(), cv.end(), conf[g.childIdx]) == cv.end())
-        return false;
-    }
+    if (slot.componentIdx == SIZE_MAX)
+      continue;
+    const auto &comp = components[slot.componentIdx];
+    std::vector<ParmValue> tuple(comp.dims.size());
+    for (size_t k = 0; k < comp.dims.size(); ++k)
+      tuple[k] = conf[comp.dims[k]];
+    if (!comp.indexOfSolution.count(tuple))
+      return false;
   }
   return true;
 }
@@ -657,37 +578,23 @@ bool ConfigSpace::debugIsEncodable(const Configuration &conf,
   }
 
   for (const auto &slot : slots_) {
-    if (slot.componentIdx != SIZE_MAX) {
-      const auto &comp = components[slot.componentIdx];
-      std::vector<ParmValue> tuple(comp.dims.size());
-      for (size_t k = 0; k < comp.dims.size(); ++k)
-        tuple[k] = conf[comp.dims[k]];
-      if (comp.indexOfSolution.count(tuple))
-        continue;
-      // Which relation is broken is not recoverable here -- the component
-      // holds the tuples it enumerated, not the constraints it enumerated
-      // them from -- so name the parameters and leave the reader to look at
-      // the constraints over them.
-      os << "  - no configuration in this space assigns {";
-      for (size_t k = 0; k < comp.dims.size(); ++k)
-        os << (k ? ", " : "") << params[comp.dims[k]].name << "=" << tuple[k];
-      os << "} together\n";
-      ok = false;
-    } else if (slot.groupIdx != SIZE_MAX) {
-      const auto &g = groups[slot.groupIdx];
-      const std::string &parentName = params[g.parentIdx].name;
-      const std::string &childName = params[g.childIdx].name;
-      size_t psi = params[g.parentIdx].subIndexOf(conf[g.parentIdx]);
-      if (psi >= g.childValues.size())
-        continue; // already reported as an out-of-domain parent value
-      const auto &cv = g.childValues[psi];
-      if (llvm::is_contained(cv, conf[g.childIdx]))
-        continue;
-      os << "  - " << childName << "=" << conf[g.childIdx]
-         << " is not a multiple of " << parentName << "=" << conf[g.parentIdx]
-         << "\n";
-      ok = false;
-    }
+    if (slot.componentIdx == SIZE_MAX)
+      continue;
+    const auto &comp = components[slot.componentIdx];
+    std::vector<ParmValue> tuple(comp.dims.size());
+    for (size_t k = 0; k < comp.dims.size(); ++k)
+      tuple[k] = conf[comp.dims[k]];
+    if (comp.indexOfSolution.count(tuple))
+      continue;
+    // Which relation is broken is not recoverable here -- the component holds
+    // the tuples it enumerated, not the constraints it enumerated them from --
+    // so name the parameters and leave the reader to look at the constraints
+    // over them.
+    os << "  - no configuration in this space assigns {";
+    for (size_t k = 0; k < comp.dims.size(); ++k)
+      os << (k ? ", " : "") << params[comp.dims[k]].name << "=" << tuple[k];
+    os << "} together\n";
+    ok = false;
   }
   return ok;
 }

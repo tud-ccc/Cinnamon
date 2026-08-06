@@ -250,8 +250,7 @@ struct ConfigSpace {
   /// dimensions inside it are never enumerated independently.
   ///
   /// This is what turns a structural constraint from something the search
-  /// filters into something it never offers: see
-  /// docs/ConstraintAnalysisDesign.md.
+  /// filters into something it never offers.
   struct SolvedComponent {
     /// Dimensions covered, in the order the tuples store them.
     std::vector<size_t> dims;
@@ -267,23 +266,8 @@ struct ConfigSpace {
   std::vector<SolvedComponent> components;
 
   /// Register a pre-enumerated component. Dimensions it covers must not be
-  /// claimed by any other component or DependentGroup.
+  /// claimed by any other component.
   void addSolvedComponent(SolvedComponent &&component);
-
-  /// A (parent, child) divisibility pair baked into the encoding.
-  /// Every flat index produced by at() satisfies child_value % parent_value ==
-  /// 0.
-  struct DependentGroup {
-    size_t parentIdx;
-    size_t childIdx;
-    /// childValues[k] = sorted valid child values when parent has sub-index k.
-    std::vector<std::vector<ParmValue>> childValues;
-    /// cumCount[k] = sum of childValues[0..k-1].size(); cumCount.back() =
-    /// total.
-    std::vector<size_t> cumCount;
-    size_t totalCount() const { return cumCount.back(); }
-  };
-  std::vector<DependentGroup> groups;
 
   /// How this space was planned, for reporting. Null unless whoever built it
   /// attached one.
@@ -327,12 +311,6 @@ struct ConfigSpace {
   /// i.e. everything passes, if none are registered).
   arma::urowvec evalVecConstraintsMask(const ConfigurationVector &cv) const;
 
-  /// Register that params[childIdx] must be a multiple of params[parentIdx].
-  /// This eliminates invalid (parent, child) pairs from the flat index space —
-  /// at() never produces a config violating this constraint.
-  /// parentIdx must be < childIdx and both params must already be in params[].
-  void addMultiplesConstraint(StringRef parent, StringRef child);
-
   size_t size() const { return params.size(); }
   const SearchParam &operator[](size_t i) const { return params[i]; }
   SearchParam &operator[](size_t i) { return params[i]; }
@@ -357,9 +335,9 @@ struct ConfigSpace {
   /// configuration is valid). Returns the same result as isValid().
   bool debugIsValid(const Configuration &config, raw_ostream &os) const;
 
-  /// Total number of configurations reachable by at() (excludes pairs
-  /// eliminated by addMultiplesConstraint, includes remaining invalid configs
-  /// that are filtered by isValid()).
+  /// Total number of configurations reachable by at() -- excludes everything a
+  /// component's enumeration ruled out, includes the configurations that are
+  /// still to be filtered by isValid().
   size_t totalSize() const;
   /// Fill conf with the configuration at flat index idx.
   /// idx must be in [0, totalSize()). Constraints are NOT checked.
@@ -406,16 +384,13 @@ struct ConfigSpace {
   }
 
 private:
-  /// One slot in the flat-index encoding. Child dims are merged into their
-  /// parent's slot and do not appear as separate slots.
-  /// One slot of the flat index. Exactly one of the three forms applies:
-  /// an independent dimension (`groupIdx` and `componentIdx` both SIZE_MAX),
-  /// a parent/child DependentGroup, or a SolvedComponent.
+  /// One slot of the flat index: either a single dimension, or a whole
+  /// SolvedComponent whose dimensions are enumerated jointly and therefore
+  /// share one slot.
   struct EncodingSlot {
-    size_t dimIdx;   ///< index into params[] (the independent or parent dim)
-    size_t groupIdx; ///< index into groups[], or SIZE_MAX
-    size_t componentIdx = SIZE_MAX; ///< index into components[], or SIZE_MAX
-    size_t slotSize; ///< number of distinct sub-indices this slot contributes
+    size_t dimIdx; ///< index into params[]; the component's first dim if any
+    size_t componentIdx; ///< index into components[], or SIZE_MAX
+    size_t slotSize;     ///< number of distinct sub-indices this slot has
   };
 
   mutable bool encodingValid_ = false;

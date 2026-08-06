@@ -131,14 +131,11 @@ namespace mlir::cinm {
 // the space deterministically; it is not a representation, and code wanting
 // structure should decode, work on the Configuration, and re-encode.
 //
-// The index is mixed-radix over *slots*, each of a fixed size. A slot is one
-// of:
-//
-//   independent      one parameter; slot size is its cardinality.
-//   DependentGroup   a (parent, child) divisibility pair; slot size is the
-//                    number of valid pairs.
-//   SolvedComponent  a set of parameters with every satisfying tuple
-//                    enumerated ahead of time; slot size is the tuple count.
+// The index is mixed-radix over *slots*, each of a fixed size. A slot is
+// either one parameter, sized by its cardinality, or a whole SolvedComponent
+// -- a set of parameters with every satisfying tuple enumerated ahead of time
+// -- sized by the tuple count. There is no third form: a divisibility pair is
+// a component of two parameters, not a case of its own.
 //
 // So `ConfigSpace::totalSize()` is the number of *addressable* configurations,
 // which is the product of the slot sizes — not the Cartesian product of the
@@ -160,11 +157,11 @@ namespace mlir::cinm {
 //   2. Partition the parameters and enumerate the components (below). Anything
 //      a component absorbs is dropped from the later phases: the encoding can
 //      no longer offer a configuration violating it.
-//   3. Commit the structural relations no component absorbed, as pairwise
-//      DependentGroups where the shapes allow and as dynamic predicates where
-//      they do not (mutual divisibility, or a chain whose parent is already
-//      some other pair's child).
-//   4. Register the surviving predicates on the space.
+//   3. Register the surviving predicates on the space -- the constraints no
+//      component could absorb, plus every opaque lambda.
+//
+// The space also comes away with a record of what was decided (SpaceMetadata),
+// since the encoding shows what a space is and not why.
 //
 // The partition is connected components over the parameters, with an edge for
 // every structural relation, plus an edge between an implication's guard and
@@ -562,9 +559,10 @@ private:
   /// `space` so those configurations are never offered in the first place.
   ///
   /// Relations a component absorbs are reported back through the two output
-  /// sets, so the pairwise handling and the dynamic-predicate phase skip them.
-  /// A component whose enumeration exceeds the cap absorbs nothing and leaves
-  /// its relations to the existing paths.
+  /// sets, so the dynamic-predicate phase skips them. A component whose
+  /// enumeration exceeds a budget absorbs nothing; its divisibility relations
+  /// are then retried one at a time, as components of two parameters, and only
+  /// what fails that too is left to a predicate.
   void planComponents(
       ConfigSpace &space, PlanMetadata &report,
       std::set<std::pair<std::string, std::string>> &absorbedMultiples,
