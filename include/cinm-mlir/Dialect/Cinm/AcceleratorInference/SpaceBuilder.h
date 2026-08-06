@@ -18,6 +18,170 @@
 namespace mlir::cinm {
 
 // ===----------------------------------------------------------------------===//
+// The design space
+// ===----------------------------------------------------------------------===//
+//
+// This file is the reference for how a design space is described, planned and
+// encoded. It documents the state of the implementation, not a target to build
+// towards.
+//
+// # 1. What a design space is
+//
+// A *search parameter* is a named integer variable with a finite domain. A
+// *configuration* is one value per parameter, in declaration order. The design
+// space is the set of configurations that satisfy every registered
+// *constraint*.
+//
+// Parameters and constraints are not written by hand per kernel: an
+// InferencePlugin derives them from the IR of one compute block, so the space
+// describes the lowerings that block admits. `SpaceBuilder` is the interface it
+// derives them through.
+//
+// Two objects, with different jobs:
+//
+//   SpaceBuilder   declaration and planning. Collects parameters and
+//                  constraints, decides how each constraint is enforced, and
+//                  commits the result exactly once, in buildInto().
+//   ConfigSpace    encoding and filtering. Holds the parameters, the flat
+//                  index, and the predicates that survived planning.
+//
+// Nothing is committed until buildInto(): declaration order does not have to
+// match dependency order, and a constraint may mention a parameter declared
+// after it.
+//
+// # 2. Parameters
+//
+// **Every domain is a set of strictly positive integers**, which is checked at
+// declaration. Several things depend on it: the interval reasoning treats
+// products as monotone in every factor, division is meaningful, and assigning
+// a variable always tightens what the unassigned ones can contribute to a
+// capacity bound. A parameter that is naturally an index — the rank of a
+// permutation, a mode selector — is declared one-based, and converted where it
+// is consumed.
+//
+// | declaration                  | domain                                    |
+// |------------------------------|-------------------------------------------|
+// | intRange(n, lo, hi)          | lo, lo+1, ..., hi                         |
+// | pow2Range(n, a, b)           | 2^a, ..., 2^b                             |
+// | divisorsOf(n, k)             | the divisors of the constant k            |
+// | divisorsOf(n, v)             | [1, v.maxVal()], plus `v % result == 0`   |
+//
+// A domain is either a contiguous range or an explicit value list; a range
+// becomes a list as soon as a static filter narrows it (SearchParam::
+// keepDivisorsOf). Note the asymmetry in the last two rows: `divisorsOf` of a
+// *constant* narrows the domain at declaration time, while `divisorsOf` of
+// another *parameter* cannot — the divisibility depends on a value not known
+// until enumeration — so it declares the full range and records a constraint
+// instead. A parameter's declared cardinality is therefore an upper bound on
+// how many values it can actually take.
+//
+// # 3. Constraints
+//
+// Constraints are written in an embedded DSL (see Expr below) that builds a
+// constraint-IR tree: constants, parameters, n-ary sums and products, exact
+// division, the six comparisons, `divides`, and `implies`. There is no
+// subtraction and no disjunction. Everything the DSL can build is analysable;
+// a predicate that cannot be expressed in it can still be registered as an
+// opaque C++ lambda, which is then enforced but never reasoned about.
+//
+// `a / b` means *exact* division: it denotes the quotient and asserts that `b`
+// divides `a`. A comparison containing an inexact division evaluates to false
+// rather than comparing a truncated quotient. `divides(b, a)` tests the same
+// property without asserting it, which is the spelling to use under a guard.
+//
+// require() classifies each tree by shape and enforces it in the strongest
+// form available:
+//
+//   const / var       static domain filter (drop the values that cannot work)
+//   var / var         structural relation (recorded, resolved by planning)
+//   product equality  structural relation
+//   anything else     dynamic predicate over the whole space
+//
+// Every `/` in a tree also contributes its divisibility assertion, except
+// under an `implies` — what is reified there is unconditional, so it would
+// constrain the configurations the guard exists to exclude.
+//
+// # 4. The encoding
+//
+// A configuration has an integer index. The index is an identity, used to
+// cache costs, communicate points between threads, sample uniformly, and walk
+// the space deterministically; it is not a representation, and code wanting
+// structure should decode, work on the Configuration, and re-encode.
+//
+// The index is mixed-radix over *slots*, each of a fixed size. A slot is one
+// of:
+//
+//   independent      one parameter; slot size is its cardinality.
+//   DependentGroup   a (parent, child) divisibility pair; slot size is the
+//                    number of valid pairs.
+//   SolvedComponent  a set of parameters with every satisfying tuple
+//                    enumerated ahead of time; slot size is the tuple count.
+//
+// So `ConfigSpace::totalSize()` is the number of *addressable* configurations,
+// which is the product of the slot sizes — not the Cartesian product of the
+// parameter domains. The two differ by whatever the structural constraints
+// removed, which is several orders of magnitude in practice. A configuration
+// that no slot offers has no index at all (isEncodable() is the test).
+//
+// Enumeration order inside a component is deterministic, which is what makes
+// indices reproducible across runs, and therefore seeded sampling
+// reproducible.
+//
+// # 5. Planning
+//
+// buildInto() runs in phases:
+//
+//   1. Materialise each parameter, apply its static filters, add it to the
+//      space. Only now does a parameter have an index, so analysis cannot run
+//      before this point.
+//   2. Partition the parameters and enumerate the components (below). Anything
+//      a component absorbs is dropped from the later phases: the encoding can
+//      no longer offer a configuration violating it.
+//   3. Commit the structural relations no component absorbed, as pairwise
+//      DependentGroups where the shapes allow and as dynamic predicates where
+//      they do not (mutual divisibility, or a chain whose parent is already
+//      some other pair's child).
+//   4. Register the surviving predicates on the space.
+//
+// The partition is connected components over the parameters, with an edge for
+// every structural relation, plus an edge between an implication's guard and
+// its consequent so that a guard does not keep a slot of its own. Each
+// component is then enumerated by backtracking:
+//
+//   - The variable order is chosen against the current partial assignment, not
+//     fixed: a variable some equality already determines, then a variable some
+//     implication is guarded on, then a variable participating in an equality
+//     (narrowest domain first), then the rest. A static order by domain size
+//     defers exactly the variables that prune.
+//   - Candidates are narrowed before they are tried: a determined variable
+//     offers one value, a variable dividing an assigned dividend offers that
+//     dividend's divisors, everything else offers its domain.
+//   - Comparisons and implications over the component's variables prune
+//     subtrees by interval arithmetic, and are exact at a full assignment
+//     (every interval is a point), so the component enforces them outright
+//     rather than leaving them as filters. A gated equality determines a
+//     variable only once its guard *must* hold; acting on one that merely
+//     *may* hold would impose the consequent on completions the constraint
+//     says nothing about.
+//
+// Two budgets bound the work: a cap on the number of tuples and a cap on the
+// number of search nodes. Exceeding either abandons the component entirely —
+// it absorbs nothing, and every relation in it falls back to the paths above.
+// There is no intermediate outcome, and no cost model deciding whether merging
+// two parameters into a component is worth it.
+//
+// # 6. What is left over
+//
+// The encoding offers a superset of the feasible set. What remains is
+// filtered, once per configuration, by the predicates registered in phase 4:
+// constraints spanning two components, shapes planning could not use, and
+// every opaque lambda. `CandidatePool::computeValidMask` evaluates them over
+// the whole space in vectorized batches; the result is the feasible set the
+// search actually explores.
+//
+// ===----------------------------------------------------------------------===//
+
+// ===----------------------------------------------------------------------===//
 // SpaceVar — lazy handle to a named search-space dimension
 // ===----------------------------------------------------------------------===//
 

@@ -9,6 +9,7 @@
 #include <filesystem>
 #include <fstream>
 #include <limits>
+#include <llvm/ADT/APInt.h>
 #include <llvm/ADT/BitVector.h>
 #include <llvm/ADT/STLExtras.h>
 #include <llvm/Support/Debug.h>
@@ -123,7 +124,8 @@ void CandidatePool::computeValidMask(const ConfigSpace &space,
       });
   auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
       std::chrono::steady_clock::now() - t0);
-  LLVM_DEBUG(llvm::dbgs() << "- Done in " << elapsed.count() << " ms\n");
+  LLVM_DEBUG(llvm::dbgs() << "- Done in " << elapsed.count() << " ms, "
+                          << shared.size() << " valid solutions\n");
 }
 
 CandidatePool CandidatePool::build(const ConfigSpace &space, size_t evalBudget,
@@ -666,9 +668,25 @@ void CandidatePool::dumpMetadataJSON(const ConfigSpace &space,
     out << '"';
   };
 
+  // Three sizes, because "total" is ambiguous: the Cartesian product of the
+  // declared domains, what the encoding can address once the structural
+  // constraints are folded into it, and what survives the remaining
+  // predicates. The first two ratios characterise the space; neither alone
+  // does.
+  long long cartesian = 1;
+  for (const auto &p : space.params)
+    cartesian *= p.cardinality();
+
   out << "{\n";
-  out << "  \"total_size\": " << N << ",\n";
-  out << "  \"n_valid\": " << size() << ",\n";
+  out << "  \"cartesian_size\": " << cartesian << ",\n";
+  out << "  \"addressable_size\": " << N << ",\n";
+  out << "  \"feasible_size\": " << size() << ",\n";
+  out << "  \"encoding_compression\": " << (cartesian / static_cast<double>(N))
+      << ",\n";
+  out << "  \"space_feasible_density\": "
+      << (static_cast<double>(size()) / cartesian) << ",\n";
+  out << "  \"encoding_density\": " << (static_cast<double>(size()) / N)
+      << ",\n";
   out << "  \"params\": [\n";
   for (size_t i = 0; i < space.params.size(); ++i) {
     const auto &p = space.params[i];

@@ -168,6 +168,14 @@ ParmValue SearchParam::valueAt(size_t subIdx) const {
       domain);
 }
 
+bool SearchParam::contains(ParmValue value) const {
+  const size_t sub = subIndexOf(value);
+  // subIndexOf is arithmetic for a range, so an out-of-domain value gives an
+  // out-of-range (or wrapped) sub-index, and a value between two steps gives
+  // one that decodes back to a different value. Both checks are needed.
+  return sub < cardinality() && valueAt(sub) == value;
+}
+
 size_t SearchParam::subIndexOf(ParmValue value) const {
   return std::visit(
       [value](auto &&d) -> size_t {
@@ -564,6 +572,11 @@ void ConfigSpace::neighborIndices(size_t idx,
 
 bool ConfigSpace::isEncodable(const Configuration &conf) const {
   ensureEncoding();
+  if (conf.size() != params.size())
+    return false;
+  for (size_t d = 0; d < params.size(); ++d)
+    if (!params[d].contains(conf[d]))
+      return false;
   for (const auto &slot : slots_) {
     if (slot.componentIdx != SIZE_MAX) {
       const auto &comp = components[slot.componentIdx];
@@ -583,6 +596,60 @@ bool ConfigSpace::isEncodable(const Configuration &conf) const {
     }
   }
   return true;
+}
+
+bool ConfigSpace::debugIsEncodable(const Configuration &conf,
+                                   raw_ostream &os) const {
+  ensureEncoding();
+  if (conf.size() != params.size()) {
+    os << "  - has " << conf.size() << " value(s) but this space has "
+       << params.size() << " parameter(s)\n";
+    return false;
+  }
+
+  bool ok = true;
+  for (size_t d = 0; d < params.size(); ++d) {
+    if (params[d].contains(conf[d]))
+      continue;
+    os << "  - " << params[d].name << "=" << conf[d]
+       << " is not a value this parameter can take\n";
+    ok = false;
+  }
+
+  for (const auto &slot : slots_) {
+    if (slot.componentIdx != SIZE_MAX) {
+      const auto &comp = components[slot.componentIdx];
+      std::vector<ParmValue> tuple(comp.dims.size());
+      for (size_t k = 0; k < comp.dims.size(); ++k)
+        tuple[k] = conf[comp.dims[k]];
+      if (comp.indexOfSolution.count(tuple))
+        continue;
+      // Which relation is broken is not recoverable here -- the component
+      // holds the tuples it enumerated, not the constraints it enumerated
+      // them from -- so name the parameters and leave the reader to look at
+      // the constraints over them.
+      os << "  - no configuration in this space assigns {";
+      for (size_t k = 0; k < comp.dims.size(); ++k)
+        os << (k ? ", " : "") << params[comp.dims[k]].name << "=" << tuple[k];
+      os << "} together\n";
+      ok = false;
+    } else if (slot.groupIdx != SIZE_MAX) {
+      const auto &g = groups[slot.groupIdx];
+      const std::string &parentName = params[g.parentIdx].name;
+      const std::string &childName = params[g.childIdx].name;
+      size_t psi = params[g.parentIdx].subIndexOf(conf[g.parentIdx]);
+      if (psi >= g.childValues.size())
+        continue; // already reported as an out-of-domain parent value
+      const auto &cv = g.childValues[psi];
+      if (llvm::is_contained(cv, conf[g.childIdx]))
+        continue;
+      os << "  - " << childName << "=" << conf[g.childIdx]
+         << " is not a multiple of " << parentName << "=" << conf[g.parentIdx]
+         << "\n";
+      ok = false;
+    }
+  }
+  return ok;
 }
 
 // ===----------------------------------------------------------------------===//
@@ -626,11 +693,21 @@ void buildConfigSpace(cinm::ComputeBlockOp refClone, InferencePlugin &plugin,
                       ConfigSpace &space) {
   plugin.initializeSpace(refClone, space);
   LLVM_DEBUG({
-    int64_t totalPoints = 1;
+    // Two different sizes, and the interesting thing about a space is the
+    // ratio between them: the Cartesian product of the declared domains,
+    // against what the encoding can actually address once the structural
+    // constraints are folded in. The feasible count is a third number again,
+    // and is only known once the predicates have been screened.
+    int64_t cartesian = 1;
     for (auto &p : space.params)
-      totalPoints *= p.cardinality();
+      cartesian *= p.cardinality();
+    const size_t addressable = space.totalSize();
     llvm::dbgs() << "[cinm-inference] Config space (" << space.size()
-                 << " params, " << totalPoints << " total points):\n";
+                 << " params, " << addressable << " addressable of "
+                 << cartesian << " Cartesian, "
+                 << (addressable ? double(cartesian) / double(addressable)
+                                 : 0.0)
+                 << "x folded):\n";
     for (auto &p : space.params)
       llvm::dbgs() << "  " << p.name << " in [" << p.dlo() << ", " << p.dhi()
                    << "] (" << p.cardinality() << " points)\n";
@@ -806,6 +883,21 @@ struct InferenceTask {
                                       "space does not have: ")
              << llvm::join(unknown, ", ") << "; the space declares "
              << llvm::join(known, ", ");
+    }
+
+    // Encodability first, and separately from validity: a constraint folded
+    // into the encoding is not registered as a predicate, so isValid() accepts
+    // a configuration that violates one. Checking only that would let a point
+    // the space does not contain through to the pipeline, which then rejects
+    // it much further down for a reason that reads like a lowering bug.
+    if (!space.isEncodable(conf)) {
+      std::string details;
+      llvm::raw_string_ostream detailsOs(details);
+      space.debugIsEncodable(conf, detailsOs);
+      return emitDefiniteFailure(loc, "Configuration is not one this space "
+                                      "contains: ")
+             << wrap(conf) << "\n"
+             << details;
     }
 
     if (!space.isValid(conf)) {
@@ -1444,10 +1536,10 @@ struct InferenceTask {
     plugin.printStats();
 
     if (!options.dumpDir.empty()) {
-      auto path = options.dumpDir + "/pool.csv";
-      pool.dumpToCSV(space, options, path);
-      LLVM_DEBUG(llvm::dbgs()
-                 << "[cinm-inference] Pool dumped to " << path << "\n");
+      pool.dumpToCSV(space, options, options.dumpDir + "/pool.csv");
+      pool.dumpMetadataJSON(space, options.dumpDir + "/space.json");
+      LLVM_DEBUG(llvm::dbgs() << "[cinm-inference] Pool and metadata dumped to "
+                              << options.dumpDir << "\n");
     }
 
     return DiagnosedSilenceableFailure::success();
