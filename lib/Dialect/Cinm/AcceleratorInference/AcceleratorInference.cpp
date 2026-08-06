@@ -3,6 +3,7 @@
 #include "Progress.h"
 #include "cinm-mlir/Dialect/Cinm/IR/CinmAttributes.h"
 #include "cinm-mlir/Dialect/Cinm/IR/CinmOps.h"
+#include "cinm-mlir/Utils/Permutation.h"
 
 #include <chrono>
 #include <cstddef>
@@ -123,21 +124,45 @@ ParmValue SearchParam::discretize(double v) const {
       domain);
 }
 
-double SearchParam::featurize(ParmValue v) const {
-  return std::visit(
-      [v](auto &&d) -> double {
-        using T = std::decay_t<decltype(d)>;
-        if constexpr (std::is_same_v<T, IntRange>) {
-          return v;
-        } else {
-          // return v;
-          return log2(v);
-          // auto idx = std::find(d.values.begin(), d.values.end(), v);
-          // assert(idx != d.values.end());
-          // return std::distance(d.values.begin(), idx);
-        }
-      },
-      domain);
+size_t SearchParam::numFeatures() const {
+  switch (kind) {
+  case ParamKind::Integer:
+    return 1;
+  case ParamKind::Permutation:
+    assert(permutationSize > 0 && "permutation parameter has no size");
+    return permutationSize;
+  }
+  llvm_unreachable("unknown ParamKind");
+}
+
+void SearchParam::appendFeatures(ParmValue value,
+                                 llvm::SmallVectorImpl<double> &out) const {
+  if (kind == ParamKind::Permutation) {
+    // The rank is one-based, the encoding zero-based.
+    llvm::SmallVector<unsigned> order =
+        unrankPermutation(value - 1, permutationSize);
+    llvm::SmallVector<unsigned> position(permutationSize);
+    for (auto [axis, dim] : llvm::enumerate(order))
+      position[dim] = axis;
+    const double scale = permutationSize > 1 ? permutationSize - 1 : 1;
+    for (unsigned p : position)
+      out.push_back(p / scale);
+    return;
+  }
+
+  // A value list is the divisors of an extent or a power-of-two range, so its
+  // values span orders of magnitude and are spaced multiplicatively; a
+  // contiguous range is not, and is scaled as it stands.
+  const size_t card = cardinality();
+  const double lo = valueAt(0);
+  const double hi = valueAt(card ? card - 1 : 0);
+  double v = value, from = lo, to = hi;
+  if (std::holds_alternative<ValueList>(domain)) {
+    v = std::log2(v);
+    from = std::log2(lo);
+    to = std::log2(hi);
+  }
+  out.push_back(to > from ? (v - from) / (to - from) : 0.0);
 }
 
 SearchParam &SearchParam::keepDivisorsOf(ParmValue n) {
@@ -209,6 +234,25 @@ SearchParam makePow2Range(llvm::StringRef name, ParmValue loExp,
 
 SearchParam makeValues(llvm::StringRef name, std::vector<ParmValue> values) {
   return SearchParam(name, ValueList{std::move(values)});
+}
+
+SearchParam makePermutation(llvm::StringRef name, unsigned n) {
+  std::optional<int64_t> count = factorial(n);
+  assert(count && "too many dimensions to enumerate their permutations");
+  SearchParam param(name, IntRange{1, static_cast<ParmValue>(*count)},
+                    ParamKind::Permutation);
+  param.permutationSize = n;
+  return param;
+}
+
+llvm::StringRef paramKindName(ParamKind kind) {
+  switch (kind) {
+  case ParamKind::Integer:
+    return "integer";
+  case ParamKind::Permutation:
+    return "permutation";
+  }
+  llvm_unreachable("unknown ParamKind");
 }
 
 // ===----------------------------------------------------------------------===//
@@ -309,6 +353,20 @@ bool ConfigSpace::debugIsValid(const Configuration &config,
     }
   }
   return fullyValid;
+}
+
+size_t ConfigSpace::numFeatures() const {
+  size_t n = 0;
+  for (const SearchParam &param : params)
+    n += param.numFeatures();
+  return n;
+}
+
+void ConfigSpace::encode(const Configuration &conf,
+                         llvm::SmallVectorImpl<double> &out) const {
+  assert(conf.size() == params.size());
+  for (auto [param, value] : llvm::zip_equal(params, conf))
+    param.appendFeatures(value, out);
 }
 
 void ConfigSpace::addSolvedComponent(SolvedComponent &&component) {

@@ -1,5 +1,7 @@
 #include "cinm-mlir/Dialect/Cinm/AcceleratorInference/SpaceBuilder.h"
+#include "cinm-mlir/Dialect/Cinm/AcceleratorInference/AcceleratorInference.h"
 #include "cinm-mlir/Dialect/Cinm/AcceleratorInference/ConstraintIR.h"
+#include "cinm-mlir/Utils/Permutation.h"
 
 #include <algorithm>
 #include <llvm/Support/Debug.h>
@@ -11,6 +13,24 @@
 
 using namespace mlir::cinm::constraints;
 namespace mlir::cinm {
+
+namespace detail {
+void assertArithmeticOperands(const ConstraintNodePtr &lhs,
+                              const ConstraintNodePtr &rhs,
+                              llvm::StringRef op) {
+  for (const ConstraintNodePtr &side : {lhs, rhs}) {
+    auto found = findNonArithmeticVar(*side);
+    if (!found)
+      continue;
+    llvm::report_fatal_error(llvm::Twine("search parameter '") + found->second +
+                             "' is a " + paramKindName(found->first) +
+                             ", whose values are a numbering rather than a "
+                             "quantity; it cannot appear under '" +
+                             op +
+                             "' (only '==' and '!=' are meaningful on it)");
+  }
+}
+} // namespace detail
 
 // ===----------------------------------------------------------------------===//
 // SpaceBuilder — dimension declaration
@@ -29,6 +49,17 @@ SpaceVar SpaceBuilder::pow2Range(llvm::StringRef name, ParmValue expLo,
   assert(expLo >= 0 && "search parameters are positive integers");
   SpaceVar v(name, ParmValue{1} << expHi);
   dims_.push_back({v, DimEntry::Pow2, expLo, expHi, {}});
+  return v;
+}
+
+SpaceVar SpaceBuilder::permutation(llvm::StringRef name, unsigned n) {
+  std::optional<int64_t> count = factorial(n);
+  assert(count && "too many dimensions to enumerate their permutations");
+  // The rank is one-based like every other parameter; the decoder is
+  // zero-based. Which end converts is stated where the value is consumed.
+  auto hi = static_cast<ParmValue>(*count);
+  SpaceVar v(name, hi, ParamKind::Permutation);
+  dims_.push_back({v, DimEntry::Permutation, 1, hi, {}, n});
   return v;
 }
 
@@ -892,9 +923,14 @@ void SpaceBuilder::buildInto(ConfigSpace &space) {
         return makeRange(entry.var.name_, entry.lo, entry.hi);
       case DimEntry::Pow2:
         return makePow2Range(entry.var.name_, entry.lo, entry.hi);
+      case DimEntry::Permutation:
+        return makePermutation(entry.var.name_, entry.permutationSize);
       }
       llvm_unreachable("unknown DimKind");
     }();
+    // How the domain is stored and how its values are meant are independent;
+    // the declaration carries the second on the handle.
+    param.kind = entry.var.kind();
 
     std::sort(entry.divisorFilters.begin(), entry.divisorFilters.end());
     entry.divisorFilters.erase(
@@ -914,6 +950,10 @@ void SpaceBuilder::buildInto(ConfigSpace &space) {
         break;
       case DimEntry::Pow2:
         llvm::dbgs() << "pow2[2^" << entry.lo << "..2^" << entry.hi << "]";
+        break;
+      case DimEntry::Permutation:
+        llvm::dbgs() << "permutations of " << entry.permutationSize
+                     << " (ranks 1.." << entry.hi << ")";
         break;
       }
       if (!entry.divisorFilters.empty()) {

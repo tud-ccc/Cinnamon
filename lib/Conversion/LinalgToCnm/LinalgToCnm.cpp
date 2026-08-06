@@ -23,6 +23,7 @@
 #include "cinm-mlir/Dialect/Cnm/IR/CnmOps.h"
 #include "cinm-mlir/Dialect/Cnm/IR/CnmTypes.h"
 #include "cinm-mlir/Utils/CinmUtils.h"
+#include "cinm-mlir/Utils/Permutation.h"
 
 #include <llvm/ADT/STLExtras.h>
 #include <llvm/ADT/SmallVector.h>
@@ -270,40 +271,6 @@ splitDistributedReductions(RewriterBase &rewriter, linalg::LinalgOp op,
 // Tile-dimension -> workgroup-axis order
 //===----------------------------------------------------------------------===//
 
-/// `n!`, or failure if it does not fit in an `int64_t` (n > 20).
-static FailureOr<int64_t> factorial(unsigned n) {
-  if (n > 20)
-    return failure();
-  int64_t result = 1;
-  for (unsigned i = 2; i <= n; ++i)
-    result *= i;
-  return result;
-}
-
-/// The `index`-th permutation of `[0, n)` in lexicographic order, decoded from
-/// the factorial number system. `index` must be in `[0, n!)`. Index 0 is the
-/// identity, which is what puts the default rule at the origin of the search
-/// space.
-static SmallVector<unsigned> unrankPermutation(int64_t index, unsigned n) {
-  SmallVector<unsigned> available(n);
-  std::iota(available.begin(), available.end(), 0u);
-
-  SmallVector<unsigned> permutation;
-  permutation.reserve(n);
-  for (unsigned remaining = n; remaining > 0; --remaining) {
-    // The digit's weight is the number of permutations of the tail it leaves,
-    // i.e. (remaining - 1)!.
-    int64_t weight = 1;
-    for (unsigned i = 2; i < remaining; ++i)
-      weight *= i;
-    auto digit = static_cast<size_t>(index / weight);
-    index %= weight;
-    permutation.push_back(available[digit]);
-    available.erase(available.begin() + digit);
-  }
-  return permutation;
-}
-
 /// The order asked for, and where it was asked for. Both forms are empty when
 /// nothing was asked for, in which case the default rule applies.
 struct OrderRequest {
@@ -438,8 +405,8 @@ getWorkgroupAxisOrder(linalg::LinalgOp op, ArrayRef<int64_t> counts,
   for (unsigned dim : order)
     (counts[dim] == 1 ? single : distributed).push_back(dim);
 
-  FailureOr<int64_t> numOrders = factorial(distributed.size());
-  if (failed(numOrders))
+  std::optional<int64_t> numOrders = cinm::factorial(distributed.size());
+  if (!numOrders)
     return op->emitOpError("spreads ")
            << distributed.size()
            << " iteration dimensions over the workgroup, too many to index "
@@ -453,7 +420,7 @@ getWorkgroupAxisOrder(linalg::LinalgOp op, ArrayRef<int64_t> counts,
 
   SmallVector<unsigned> ranked;
   for (unsigned position :
-       unrankPermutation(request->index, distributed.size()))
+       cinm::unrankPermutation(request->index, distributed.size()))
     ranked.push_back(distributed[position]);
   // The dimensions tiled once take no workgroup axis, so they can go anywhere;
   // keeping them last keeps the printed order readable.

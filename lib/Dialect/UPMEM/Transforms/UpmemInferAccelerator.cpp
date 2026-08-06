@@ -94,16 +94,6 @@ static void assertNonZeroDivisor([[maybe_unused]] const cinm::ParmVector &d) {
          "constraint divides by a search parameter whose domain contains 0");
 }
 
-/// `n!`. Only ever called on an iteration rank, which is 1 (elementwise), 2
-/// (gemv) or 3 (gemm) in everything we lower today.
-static int64_t factorial(unsigned n) {
-  assert(n <= 20 && "factorial would overflow");
-  int64_t result = 1;
-  for (unsigned i = 2; i <= n; ++i)
-    result *= i;
-  return result;
-}
-
 /// UPMEM-specific inference options. Wraps the generic InferenceOptions and
 /// provides a place to add UPMEM-specific knobs in the future.
 struct UpmemInferenceOptions {
@@ -886,21 +876,19 @@ UpmemInferencePlugin::handleLinalgOp(linalg::LinalgOp op, StringRef namePrefix,
   // Which tile dimension varies fastest across the leaves (design §G3). The
   // one parameter here that is not a size: it decides what the leaves sharing
   // a hardware node share rather than replicate, which the block sizes cannot
-  // state. `<op>.order` ranks the distinct orders lexicographically, one-based,
-  // so the default rule is 1 and every search parameter stays positive. The
-  // attribute the lowering reads is the zero-based rank; stampSearchParams
-  // converts.
+  // state. It is declared as a permutation of the iteration dimensions, so the
+  // DSL knows its values are a numbering and refuses to do arithmetic on them.
   //
-  // The domain is `numLoops!` because the reduction split leaves at most one
-  // distributed dimension per iteration dimension: a split dimension carries
-  // the tile count and its remainder is left with 1. How many there actually
-  // are depends on the block sizes, so the rest of the range is pruned by a
-  // predicate -- an index the op has no order for is a configuration the space
-  // does not offer, not a trial that fails.
+  // The permutation is over `numLoops` dimensions because the reduction split
+  // leaves at most one distributed dimension per iteration dimension: a split
+  // dimension carries the tile count and its remainder is left with 1. How many
+  // there actually are depends on the block sizes, so the rest of the range is
+  // pruned by a predicate -- an index the op has no order for is a
+  // configuration the space does not offer, not a trial that fails.
   std::optional<SpaceVar> order;
   if (extents->size() >= 2) {
-    SpaceVar orderVar = b.intRange((namePrefix + ".order").str(), 1,
-                                   factorial(extents->size()));
+    SpaceVar orderVar =
+        b.permutation((namePrefix + ".order").str(), extents->size());
     b.require(
         [=](const ConfigurationVector &c, arma::urowvec &valid) {
           arma::urowvec distributed(c.size(), arma::fill::zeros);

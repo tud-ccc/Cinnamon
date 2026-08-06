@@ -138,48 +138,53 @@ which they do; a two-variable divisibility component is trivially small — a
 `DependentGroup` is a `SolvedComponent` whose enumeration happens to be a pair
 list. Deleting the kind is a contained cleanup.
 
-## 6. Permutation parameters are not modelled as such
+## 6. A permutation's *neighbours* are still its rank ±1
 
 **Said.** The paper: "Categorical and permutation-valued parameters are also
 supported, by modifying the distance function for those variables as proposed
 by BACO."
 
-**Is.** There is no such parameter kind. `SearchParam` is `IntRange |
-ValueList` of integers, and a permutation is encoded by hand as the *rank* of a
-lexicographic ordering, decoded downstream by `unrankPermutation`. No distance
-function is modified anywhere: the surrogate sees a rank as an ordinary number,
-so orders 1 and 2 are "close" and 1 and 6 are "far", which is meaningless for a
-permutation.
+**Is.** The surrogate side is done. `SearchParam` carries a `ParamKind`
+(`Integer`/`Permutation`), the rank/unrank encoding is shared
+(`cinm-mlir/Utils/Permutation.h`), the DSL rejects arithmetic and ordering on a
+rank, and `appendFeatures` presents a permutation as its position vector, so
+distance between feature vectors is Spearman's rank distance rather than
+distance between two arbitrary numberings.
 
-**Costs.** The BO surrogate models the order parameter as if it were a
-magnitude. On spaces where the order matters this is a silent modelling error,
-not a crash.
+What still treats a rank as a magnitude is **`neighborIndices`**, which steps
+±1 on every parameter's sub-index. For a permutation that lands on an unrelated
+permutation, so BO's local candidate generation (`fillNeighbors`) explores a
+neighbourhood that is not one.
 
-*(The other half of the paper's sentence — "we restrict search parameters to
-positive integers" — now holds: `<op>.order` and `fuse.<p>-><c>` are declared
-one-based and converted where they are consumed, and `SpaceBuilder` asserts
-that no declared domain contains zero.)*
+**Costs.** Bounded: it degrades candidate *proposal*, not the model. The
+acquisition function still ranks whatever is proposed correctly.
 
-## 7. `featurize` and `discretize` are not inverse
+**Proposed.** `neighborIndices` dispatches on the kind, and a permutation's
+neighbours are the ranks reachable by one adjacent transposition — decode,
+swap a pair, re-rank. Independent of everything else here.
+
+*(A categorical kind has no caller yet, so it is not declared.)*
+
+## 7. `discretize` is dead, and its contract disagrees with the encoding
 
 **Said.** Nothing explicit; the paper assumes a well-defined continuous
 relaxation for the surrogate.
 
-**Is.** For a `ValueList` parameter, `dlo()/dhi()` span `[0, n-1]` — index
-space — and `discretize(v)` reads `v` as an index. But `featurize(v)` returns
-`log2(value)`. The two agree only when the value list is exactly the powers of
-two, which is what the divisor lists of the power-of-two extents in every
-current benchmark happen to be. For `divisorsOf(12) = [1,2,3,4,6,12]`,
-`featurize(6) = 2.58` and `discretize(2.58) = 4`.
+**Is.** `SearchParam::discretize` — "map a continuous sample in `[dlo, dhi]` to
+the nearest valid discrete value" — **has no callers**. Nor do `dlo()/dhi()`
+outside one debug print. That matters because the contract they describe is not
+the one the encoding implements: `discretize` reads its argument as an index
+into the value list, while features are now the value scaled to `[0, 1]` (and
+log-scaled first for a value list). Anyone who wired the continuous relaxation
+back up by following these signatures would get silently wrong values.
 
-For an `IntRange` parameter `featurize` is the identity, so two parameters with
-identical meaning — `gemv.M.mram` (a value list, because `divisorsOf` of a
-constant filters the domain) and `gemv.M.wram` (a range, because `divisorsOf`
-of a parameter cannot) — are handed to the surrogate on scales that differ by
-an exponential.
+**Costs.** None today, since nothing calls them. The risk is that they read
+like a supported inverse of the encoding.
 
-**Costs.** Latent. Every benchmark in `experiments/` uses power-of-two extents,
-which is exactly the case where it cancels.
+**Proposed.** Delete `discretize`, or reimplement it as the actual inverse of
+`appendFeatures` if a caller appears. `dlo/dhi` should report the value range
+for a value list rather than the index range, since a debug print is all they
+feed.
 
 ## 8. Declared domains are much wider than reachable ones
 
