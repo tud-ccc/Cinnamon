@@ -77,7 +77,7 @@ double SearchParam::dlo() const {
         if constexpr (std::is_same_v<T, IntRange>)
           return static_cast<double>(d.lo);
         else
-          return 0.0;
+          return d.values.empty() ? 0.0 : static_cast<double>(d.values.front());
       },
       domain);
 }
@@ -89,7 +89,7 @@ double SearchParam::dhi() const {
         if constexpr (std::is_same_v<T, IntRange>)
           return static_cast<double>(d.hi);
         else
-          return static_cast<double>(d.values.size() - 1);
+          return d.values.empty() ? 0.0 : static_cast<double>(d.values.back());
       },
       domain);
 }
@@ -102,24 +102,6 @@ size_t SearchParam::cardinality() const {
           return (d.hi - d.lo) / d.step + 1;
         else
           return d.values.size();
-      },
-      domain);
-}
-
-ParmValue SearchParam::discretize(double v) const {
-  return std::visit(
-      [v](auto &&d) -> ParmValue {
-        using T = std::decay_t<decltype(d)>;
-        if constexpr (std::is_same_v<T, IntRange>) {
-          ParmValue rounded =
-              static_cast<ParmValue>(std::round(v / d.step)) * d.step;
-          return std::clamp(rounded, d.lo, d.hi);
-        } else {
-          size_t idx = static_cast<size_t>(
-              std::clamp(static_cast<int64_t>(std::round(v)), int64_t(0),
-                         static_cast<int64_t>(d.values.size() - 1)));
-          return d.values[idx];
-        }
       },
       domain);
 }

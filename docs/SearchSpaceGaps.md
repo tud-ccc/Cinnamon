@@ -165,28 +165,7 @@ swap a pair, re-rank. Independent of everything else here.
 
 *(A categorical kind has no caller yet, so it is not declared.)*
 
-## 7. `discretize` is dead, and its contract disagrees with the encoding
-
-**Said.** Nothing explicit; the paper assumes a well-defined continuous
-relaxation for the surrogate.
-
-**Is.** `SearchParam::discretize` — "map a continuous sample in `[dlo, dhi]` to
-the nearest valid discrete value" — **has no callers**. Nor do `dlo()/dhi()`
-outside one debug print. That matters because the contract they describe is not
-the one the encoding implements: `discretize` reads its argument as an index
-into the value list, while features are now the value scaled to `[0, 1]` (and
-log-scaled first for a value list). Anyone who wired the continuous relaxation
-back up by following these signatures would get silently wrong values.
-
-**Costs.** None today, since nothing calls them. The risk is that they read
-like a supported inverse of the encoding.
-
-**Proposed.** Delete `discretize`, or reimplement it as the actual inverse of
-`appendFeatures` if a caller appears. `dlo/dhi` should report the value range
-for a value list rather than the index range, since a debug print is all they
-feed.
-
-## 8. Declared domains are much wider than reachable ones
+## 7. Declared domains are much wider than reachable ones
 
 **Said.** Implicit in the paper's model: a subspace enumerates "the tuples that
 satisfy the constraints mentioning only its parameters", so a parameter's
@@ -208,7 +187,7 @@ so `keepDivisorsOf(extent)` is sound for the inner levels too and is a
 one-line change at the declaration site. It narrows the declared domain to the
 reachable one without touching the encoding.
 
-## 9. Statements in ConstraintAnalysisDesign that are now stale
+## 8. Statements in ConstraintAnalysisDesign that are now stale
 
 Not gaps — the document simply predates the code and should be corrected or
 retired.
@@ -222,7 +201,7 @@ retired.
 | Stage 6, Form C domain narrowing | not implemented |
 | Form A2, `dpus == dpuRows * dpuCols` inside `readAsGemvTemplate` | still invisible to the analyser, still behind an opaque predicate |
 
-## 10. Opaque predicates bound density from above
+## 9. Opaque predicates bound density from above
 
 **Said.** The paper: a subspace enumeration produces "exactly the tuples that
 satisfy the constraints mentioning only its parameters".
