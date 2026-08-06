@@ -142,21 +142,21 @@ void SpaceBuilder::reportConstraintAnalysis(const ConfigSpace &space) const {
       llvm::dbgs() << "[cinm-analysis]   gated by "
                    << describeNode(*entry.node->operands()[0]) << ": "
                    << describeNode(*entry.node->operands()[1]) << " ("
-                   << (solvable ? "Form A once the guard is settled"
-                                : "not Form A")
+                   << (solvable ? "identity once the guard is settled"
+                                : "not an identity")
                    << ")\n";
       continue;
     }
     auto eq = matchProductEquality(*entry.node);
     if (!eq) {
-      llvm::dbgs() << "[cinm-analysis]   not Form A: " << entry.description
+      llvm::dbgs() << "[cinm-analysis]   not an identity: " << entry.description
                    << "\n";
       continue;
     }
 
     const size_t lhsCard = jointCardinality(eq->lhs);
     const size_t rhsCard = jointCardinality(eq->rhs);
-    llvm::dbgs() << "[cinm-analysis]   Form A: "
+    llvm::dbgs() << "[cinm-analysis]   identity: "
                  << describeMonomial(eq->lhs, names)
                  << " == " << describeMonomial(eq->rhs, names) << "\n";
     llvm::dbgs() << "[cinm-analysis]     joint cardinality: lhs=" << lhsCard
@@ -652,7 +652,7 @@ void SpaceBuilder::planComponents(
     divNames.push_back({m.parent, m.child});
   }
 
-  /// The Form A reading of a comparison, if it has one and it is worth
+  /// The identity reading of a comparison, if it has one and it is worth
   /// keeping: a variable occurring on both sides determines nothing, so such
   /// an equality is left to the ordinary predicate path.
   ///

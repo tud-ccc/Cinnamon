@@ -178,7 +178,7 @@ VecConstraint toVecConstraint(ConstraintNodePtr node);
 std::string describeNode(const ConstraintNode &node);
 
 // ===----------------------------------------------------------------------===//
-// Analysis — Form A (product equality)
+// Analysis — identities (product equalities)
 // ===----------------------------------------------------------------------===//
 
 /// A product of search parameters with a constant coefficient:
@@ -195,15 +195,16 @@ struct Monomial {
 };
 
 /// `lhs == rhs`, with all division cleared by cross-multiplication. This is the
-/// canonical form of a Form A constraint; see docs/ConstraintAnalysisDesign.md.
+/// canonical form of an identity constraint; see
+/// docs/ConstraintAnalysisDesign.md.
 struct ProductEquality {
   Monomial lhs, rhs;
 };
 
 /// Reduce an arithmetic node to `(numer) / (denom)` as monomials. Fails
 /// (returns nullopt) on anything that is not a rational monomial — in
-/// particular on any Add or Sub, which is why capacity bounds (Form C) are not
-/// matched here.
+/// particular on any Add or Sub, which is why capacity bounds (inequalities)
+/// are not matched here.
 ///
 /// Variable indices are read from the shared cells, so this is only meaningful
 /// after SpaceBuilder::buildInto() has assigned them.
@@ -218,7 +219,7 @@ std::string describeMonomial(const Monomial &m,
                              llvm::ArrayRef<std::string> paramNames);
 
 // ===----------------------------------------------------------------------===//
-// Analysis — interval bounds (Form C)
+// Analysis — interval bounds (inequalities)
 // ===----------------------------------------------------------------------===//
 
 /// The range a subexpression can span. `valid` is false when no useful bound

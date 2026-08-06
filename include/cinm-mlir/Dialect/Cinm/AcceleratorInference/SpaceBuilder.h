@@ -335,9 +335,9 @@ private:
       std::set<std::pair<std::string, std::string>> &absorbedMultiples,
       std::set<const constraints::ConstraintNode *> &absorbedPredicates);
 
-  /// Report what the Form A recogniser makes of each DSL-registered constraint.
-  /// Analysis only — it does not change the space. Runs after phase 1 of
-  /// buildInto, since variable indices are unassigned before that.
+  /// Report what the identity recogniser makes of each DSL-registered
+  /// constraint. Analysis only — it does not change the space. Runs after phase
+  /// 1 of buildInto, since variable indices are unassigned before that.
   void reportConstraintAnalysis(const ConfigSpace &space) const;
 
   /// Walk `node` and reify every Div as a divisibility constraint.
