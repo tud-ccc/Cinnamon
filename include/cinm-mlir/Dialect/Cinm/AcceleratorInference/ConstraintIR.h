@@ -62,15 +62,20 @@ struct ConstraintNode {
   Kind kind;
 
 private:
-  using VarState = std::pair<std::shared_ptr<size_t>, std::string>;
+  struct VarState {
+    std::shared_ptr<size_t> idx;
+    std::string name;
+    ParamKind kind;
+  };
   using OpndState = SmallVector<ConstraintNodePtr, 2>;
 
 public:
   // const
   ConstraintNode(ParmValue v) : kind(Kind::Const), state(v) {}
   // var
-  ConstraintNode(llvm::StringRef v, std::shared_ptr<size_t> idx)
-      : kind(Kind::Var), state(VarState(std::move(idx), v)) {}
+  ConstraintNode(llvm::StringRef v, std::shared_ptr<size_t> idx,
+                 ParamKind paramKind = ParamKind::Integer)
+      : kind(Kind::Var), state(VarState{std::move(idx), v.str(), paramKind}) {}
   // binary
   ConstraintNode(ConstraintNode::Kind kind, ConstraintNodePtr lhs,
                  ConstraintNodePtr rhs)
@@ -106,15 +111,19 @@ public:
   }
   llvm::StringRef varName() const {
     assert(kind == Kind::Var);
-    return std::get<VarState>(state).second;
+    return std::get<VarState>(state).name;
   }
   size_t varIdx() const {
     assert(kind == Kind::Var);
-    return *std::get<VarState>(state).first;
+    return *std::get<VarState>(state).idx;
   }
   std::shared_ptr<size_t> varIdxPtr() const {
     assert(kind == Kind::Var);
-    return std::get<VarState>(state).first;
+    return std::get<VarState>(state).idx;
+  }
+  ParamKind varKind() const {
+    assert(kind == Kind::Var);
+    return std::get<VarState>(state).kind;
   }
   ArrayRef<ConstraintNodePtr> operands() const {
     if (std::holds_alternative<OpndState>(state))
@@ -143,6 +152,16 @@ enum class Type { BOOL, INT };
 
 /// Whether `node` divides anywhere below it.
 bool containsDivision(const ConstraintNode &node);
+
+/// The kind of the first parameter below `node` that is not `ParamKind::
+/// Integer`, with its name, or nullopt if there is none.
+///
+/// Values of such a parameter are a numbering, not a quantity: only equality
+/// and inequality mean anything on them, and even that only against another
+/// value of the same parameter. The DSL uses this to reject the rest at the
+/// point the expression is built, which is where the mistake is.
+std::optional<std::pair<ParamKind, llvm::StringRef>>
+findNonArithmeticVar(const ConstraintNode &node);
 
 /// Evaluate an arithmetic (non-boolean) node over a whole batch.
 ///

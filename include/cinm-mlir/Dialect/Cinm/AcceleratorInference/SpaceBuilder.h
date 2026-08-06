@@ -65,15 +65,32 @@ namespace mlir::cinm {
 // | pow2Range(n, a, b)           | 2^a, ..., 2^b                             |
 // | divisorsOf(n, k)             | the divisors of the constant k            |
 // | divisorsOf(n, v)             | [1, v.maxVal()], plus `v % result == 0`   |
+// | permutation(n, k)            | 1, ..., k! — a rank, see below            |
 //
 // A domain is either a contiguous range or an explicit value list; a range
 // becomes a list as soon as a static filter narrows it (SearchParam::
-// keepDivisorsOf). Note the asymmetry in the last two rows: `divisorsOf` of a
-// *constant* narrows the domain at declaration time, while `divisorsOf` of
-// another *parameter* cannot — the divisibility depends on a value not known
-// until enumeration — so it declares the full range and records a constraint
+// keepDivisorsOf). Note the asymmetry in the `divisorsOf` rows: of a
+// *constant* it narrows the domain at declaration time, while of another
+// *parameter* it cannot — the divisibility depends on a value not known until
+// enumeration — so it declares the full range and records a constraint
 // instead. A parameter's declared cardinality is therefore an upper bound on
 // how many values it can actually take.
+//
+// Independently of how its domain is stored, a parameter has a *kind* saying
+// how its values are to be read (`ParamKind`). `Integer` is a quantity.
+// `Permutation` is the lexicographic rank of a permutation, which is a
+// numbering: arithmetic and ordering on it are arithmetic and ordering on an
+// arbitrary enumeration, so the DSL rejects them (§3) and only `==` and `!=`
+// are available. The encoding itself is in cinm-mlir/Utils/Permutation.h,
+// shared with the lowering that reads what the search stamped — note that the
+// parameter is one-based and the encoding is zero-based, so whoever consumes a
+// rank converts.
+//
+// The kind also decides how the surrogate sees a value: a parameter
+// contributes `numFeatures()` features, scaled to [0, 1], and a permutation
+// contributes its position vector rather than its rank, so that distance
+// between feature vectors is Spearman's rank distance. See
+// SearchParam::appendFeatures.
 //
 // # 3. Constraints
 //
@@ -88,6 +105,12 @@ namespace mlir::cinm {
 // divides `a`. A comparison containing an inexact division evaluates to false
 // rather than comparing a truncated quotient. `divides(b, a)` tests the same
 // property without asserting it, which is the spelling to use under a guard.
+//
+// Every operator except `==` and `!=` requires operands of kind `Integer`, and
+// aborts otherwise. The check runs where the expression is built — while the
+// space is being declared, at the line that wrote it — because a rank compared
+// with `<` is a mistake about what the parameter means, not a configuration
+// that fails.
 //
 // require() classifies each tree by shape and enforces it in the strongest
 // form available:
@@ -199,6 +222,9 @@ public:
   SpaceVar() : idx_(std::make_shared<size_t>(kUnassigned)), maxVal_(0) {}
 
   llvm::StringRef name() const { return name_; }
+  /// How this dimension's values are to be read -- which decides what the DSL
+  /// lets them be written into.
+  ParamKind kind() const { return kind_; }
   /// Index in the ConfigSpace — valid only after SpaceBuilder::buildInto().
   size_t idx() const { return *idx_; }
   ParmValue get(const ConfWrapper &c) const { return c[*idx_]; }
@@ -213,14 +239,15 @@ public:
 
   /// This dimension as a constraint-IR node.
   constraints::ConstraintNodePtr node() const {
-    return std::make_shared<constraints::ConstraintNode>(name_, idx_);
+    return std::make_shared<constraints::ConstraintNode>(name_, idx_, kind_);
   }
 
 private:
   friend class SpaceBuilder;
-  explicit SpaceVar(llvm::StringRef name, ParmValue maxVal)
+  explicit SpaceVar(llvm::StringRef name, ParmValue maxVal,
+                    ParamKind kind = ParamKind::Integer)
       : name_(name.str()), idx_(std::make_shared<size_t>(kUnassigned)),
-        maxVal_(maxVal) {}
+        maxVal_(maxVal), kind_(kind) {}
 
   /// Sentinel held by idx_ until buildInto() writes the real index.
   static constexpr size_t kUnassigned = SIZE_MAX;
@@ -228,6 +255,7 @@ private:
   std::string name_;
   std::shared_ptr<size_t> idx_;
   ParmValue maxVal_;
+  ParamKind kind_ = ParamKind::Integer;
 };
 
 // ===----------------------------------------------------------------------===//
@@ -266,6 +294,21 @@ inline constexpr bool isExprLike =
 
 template <class A, class B, constraints::Type Ty>
 inline constexpr bool eitherIsExpr = isExprLike<A, Ty> || isExprLike<B, Ty>;
+
+/// Abort if either operand mentions a parameter whose values are a numbering
+/// rather than a quantity. `op` names the operation for the message.
+///
+/// A permutation rank is the clear case: `order * 2` and `order < 3` are both
+/// arithmetic on an arbitrary enumeration order, and mean nothing about the
+/// permutations they name. Only `==` and `!=` survive, which is why they are
+/// the only two operators that do not call this.
+///
+/// The check is at expression-construction time, so it fires while the space
+/// is being declared -- at the line that wrote the expression, before any
+/// configuration exists.
+void assertArithmeticOperands(const constraints::ConstraintNodePtr &lhs,
+                              const constraints::ConstraintNodePtr &rhs,
+                              llvm::StringRef op);
 } // namespace detail
 
 // ===----------------------------------------------------------------------===//
@@ -276,9 +319,11 @@ inline constexpr bool eitherIsExpr = isExprLike<A, Ty> || isExprLike<B, Ty>;
   template <class A, class B,                                                  \
             std::enable_if_t<detail::eitherIsExpr<A, B, TY>, int> = 0>         \
   Expr<TY> operator SYM(const A &a, const B &b) {                              \
+    auto lhs = Expr<TY>(a).node();                                             \
+    auto rhs = Expr<TY>(b).node();                                             \
+    detail::assertArithmeticOperands(lhs, rhs, #SYM);                          \
     return Expr<TY>(std::make_shared<constraints::ConstraintNode>(             \
-        constraints::ConstraintNode::Kind::KIND, Expr<TY>(a).node(),           \
-        Expr<TY>(b).node()));                                                  \
+        constraints::ConstraintNode::Kind::KIND, lhs, rhs));                   \
   }
 
 /// Division also *asserts* that the divisor divides the dividend exactly:
@@ -293,35 +338,45 @@ template <class A, class B,
           std::enable_if_t<detail::eitherIsExpr<A, B, constraints::Type::INT>,
                            int> = 0>
 IntExpr operator*(const A &a, const B &b) {
+  auto lhs = IntExpr(a).node();
+  auto rhs = IntExpr(b).node();
+  detail::assertArithmeticOperands(lhs, rhs, "*");
   return IntExpr(std::make_shared<constraints::ConstraintNode>(
-      constraints::ConstraintNode::Kind::Mul, IntExpr(a).node(),
-      IntExpr(b).node()));
+      constraints::ConstraintNode::Kind::Mul, lhs, rhs));
 }
 template <class A, class B,
           std::enable_if_t<detail::eitherIsExpr<A, B, constraints::Type::INT>,
                            int> = 0>
 IntExpr operator+(const A &a, const B &b) {
+  auto lhs = IntExpr(a).node();
+  auto rhs = IntExpr(b).node();
+  detail::assertArithmeticOperands(lhs, rhs, "+");
   return IntExpr(std::make_shared<constraints::ConstraintNode>(
-      constraints::ConstraintNode::Kind::Add, IntExpr(a).node(),
-      IntExpr(b).node()));
+      constraints::ConstraintNode::Kind::Add, lhs, rhs));
 }
 
-#define CINM_DEFINE_CMP_OP(SYM, KIND)                                          \
+/// `CHECKED` selects whether the comparison is one a numbering supports.
+/// Equality and inequality are; ordering is not, since the order of the ranks
+/// is not an order on what they name.
+#define CINM_DEFINE_CMP_OP(SYM, KIND, CHECKED)                                 \
   template <class A, class B,                                                  \
             std::enable_if_t<                                                  \
                 detail::eitherIsExpr<A, B, constraints::Type::INT>, int> = 0>  \
   BoolExpr operator SYM(const A &a, const B &b) {                              \
+    auto lhs = IntExpr(a).node();                                              \
+    auto rhs = IntExpr(b).node();                                              \
+    if (CHECKED)                                                               \
+      detail::assertArithmeticOperands(lhs, rhs, #SYM);                        \
     return BoolExpr(std::make_shared<constraints::ConstraintNode>(             \
-        constraints::ConstraintNode::Kind::KIND, IntExpr(a).node(),            \
-        IntExpr(b).node()));                                                   \
+        constraints::ConstraintNode::Kind::KIND, lhs, rhs));                   \
   }
 
-CINM_DEFINE_CMP_OP(<=, Le)
-CINM_DEFINE_CMP_OP(>=, Ge)
-CINM_DEFINE_CMP_OP(<, Lt)
-CINM_DEFINE_CMP_OP(>, Gt)
-CINM_DEFINE_CMP_OP(==, Eq)
-CINM_DEFINE_CMP_OP(!=, Ne)
+CINM_DEFINE_CMP_OP(<=, Le, true)
+CINM_DEFINE_CMP_OP(>=, Ge, true)
+CINM_DEFINE_CMP_OP(<, Lt, true)
+CINM_DEFINE_CMP_OP(>, Gt, true)
+CINM_DEFINE_CMP_OP(==, Eq, false)
+CINM_DEFINE_CMP_OP(!=, Ne, false)
 #undef CINM_DEFINE_CMP_OP
 
 /// Flat n-ary product. This is the shape the analyser wants: one node with a
@@ -332,8 +387,10 @@ inline IntExpr prod(llvm::ArrayRef<IntExpr> factors) {
   if (factors.empty())
     return IntExpr(std::make_shared<constraints::ConstraintNode>(1));
   llvm::SmallVector<constraints::ConstraintNodePtr, 2> ops;
-  for (const IntExpr &f : factors)
+  for (const IntExpr &f : factors) {
+    detail::assertArithmeticOperands(f.node(), f.node(), "prod");
     ops.push_back(f.node());
+  }
   return IntExpr(std::make_shared<constraints::ConstraintNode>(
       constraints::ConstraintNode::Kind::Mul, std::move(ops)));
 }
@@ -343,8 +400,10 @@ inline IntExpr sum(llvm::ArrayRef<IntExpr> terms) {
   if (terms.empty())
     return IntExpr(std::make_shared<constraints::ConstraintNode>(0));
   llvm::SmallVector<constraints::ConstraintNodePtr, 2> ops;
-  for (const IntExpr &t : terms)
+  for (const IntExpr &t : terms) {
+    detail::assertArithmeticOperands(t.node(), t.node(), "sum");
     ops.push_back(t.node());
+  }
   return IntExpr(std::make_shared<constraints::ConstraintNode>(
       constraints::ConstraintNode::Kind::Add, std::move(ops)));
 }
@@ -368,6 +427,7 @@ inline IntExpr sum(llvm::ArrayRef<IntExpr> terms) {
 /// b.require(implies(a == b, X));
 /// ```
 inline BoolExpr divides(IntExpr divisor, IntExpr dividend) {
+  detail::assertArithmeticOperands(divisor.node(), dividend.node(), "divides");
   return BoolExpr(std::make_shared<constraints::ConstraintNode>(
       constraints::ConstraintNode::Kind::Divides, divisor.node(),
       dividend.node()));
@@ -409,6 +469,11 @@ public:
   SpaceVar intRange(llvm::StringRef name, ParmValue lo, ParmValue hi);
   /// Declare a dimension with values 2^expLo, ..., 2^expHi.
   SpaceVar pow2Range(llvm::StringRef name, ParmValue expLo, ParmValue expHi);
+  /// Declare a dimension ranging over the permutations of `[0, n)`, valued by
+  /// one-based lexicographic rank (so 1 is the identity). The DSL rejects
+  /// arithmetic and ordering on the result; decode it with
+  /// cinm-mlir/Utils/Permutation.h, remembering the offset.
+  SpaceVar permutation(llvm::StringRef name, unsigned n);
   /// Declare a dimension whose values are exactly the divisors of n.
   SpaceVar divisorsOf(llvm::StringRef name, ParmValue n);
   /// Declare a dimension in [1, v.maxVal()] with the constraint that its
@@ -450,9 +515,10 @@ private:
 
   struct DimEntry {
     SpaceVar var;
-    enum Kind { IntRange, Pow2, DivisorsOfConst } kind;
+    enum Kind { IntRange, Pow2, DivisorsOfConst, Permutation } kind;
     ParmValue lo, hi;
     std::vector<ParmValue> divisorFilters; ///< keepDivisorsOf(n) for each n
+    unsigned permutationSize = 0;          ///< for Kind::Permutation
   };
 
   struct MultiplesEntry {

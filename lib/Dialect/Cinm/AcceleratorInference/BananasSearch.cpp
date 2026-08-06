@@ -145,12 +145,12 @@ CandidatePool::CandidatePool(const ConfigSpace &space, size_t evalBudget,
       // Exhaustive search never reads/writes Xo/yo (see recordObservation);
       // its evalBudget is the full totalSize(), which would otherwise try to
       // allocate a dense D×N matrix for a matrix that's never used.
-      Xo(space.size(), exhaustive ? 0 : evalBudget),
+      Xo(space.numFeatures(), exhaustive ? 0 : evalBudget),
       yo(1, exhaustive ? 0 : evalBudget), exhaustive(exhaustive) {}
 
 CandidatePool::~CandidatePool() = default;
 
-size_t CandidatePool::nDims() const { return space_->size(); }
+size_t CandidatePool::numFeatures() const { return space_->numFeatures(); }
 
 Configuration CandidatePool::operator[](size_t i) const {
   Configuration conf;
@@ -170,8 +170,10 @@ void CandidatePool::recordObservation(size_t idx, double cost, size_t iter,
     }
     Configuration conf;
     space_->at(idx, conf);
-    for (size_t d = 0; d < space_->size(); ++d)
-      Xo(d, nObs) = (*space_)[d].featurize(conf[d]);
+    llvm::SmallVector<double, 16> features;
+    space_->encode(conf, features);
+    for (size_t d = 0; d < features.size(); ++d)
+      Xo(d, nObs) = features[d];
     yo(0, nObs) = cost;
   }
   costByIdx[idx] = cost;
@@ -189,19 +191,23 @@ void CandidatePool::recordFailedEvaluation(size_t idx, size_t iter) {
   iterByIdx[idx] = iter;
 }
 
-// Build a temporary D×M encoded matrix for a set of candidate pool indices.
+// Build a temporary D×M encoded matrix for a set of candidate pool indices,
+// where D is the feature count rather than the parameter count.
 template <class Collection>
 static arma::mat encodeSubset(const ConfigSpace &space,
                               const Collection &indices) {
-  const size_t D = space.size();
+  const size_t D = space.numFeatures();
   const size_t M = indices.size();
   arma::mat enc(D, M);
   Configuration conf;
+  llvm::SmallVector<double, 16> features;
   size_t j = 0;
   for (auto ix : indices) {
     space.at(ix, conf);
+    features.clear();
+    space.encode(conf, features);
     for (size_t d = 0; d < D; ++d)
-      enc(d, j) = space[d].featurize(conf[d]);
+      enc(d, j) = features[d];
     j++;
   }
   return enc;
@@ -235,7 +241,7 @@ void CandidatePool::sampleInitialSet(size_t n, std::mt19937 &rng,
   // }
   // return;
 
-  const size_t D = nDims();
+  const size_t D = numFeatures();
   const size_t M = size();
   if (n == 0 || M == 0)
     return;
@@ -585,7 +591,7 @@ void CandidatePool::dumpToCSV(const ConfigSpace &space,
   // Per-valid-index predictions; indexed by position in validIdx.
   arma::rowvec mu_v, sigma_v, acq_v;
   if (hasModel) {
-    const size_t D = space_->size();
+    const size_t D = space_->numFeatures();
     const size_t confsToEncode =
         opts.dumpFullPool ? this->size() : visited.size();
     arma::mat encoded(D, confsToEncode);
@@ -594,12 +600,15 @@ void CandidatePool::dumpToCSV(const ConfigSpace &space,
     // this visits nValid configs rather than walking all totalSize() of them
     // (see the note on encodeSubset).
     Configuration conf;
+    llvm::SmallVector<double, 16> features;
     for (size_t i : shared->validIndices) {
       if (!isVisited(i))
         continue;
       space_->at(i, conf);
+      features.clear();
+      space_->encode(conf, features);
       for (size_t d = 0; d < D; ++d)
-        encoded(d, ix) = (*space_)[d].featurize(conf[d]);
+        encoded(d, ix) = features[d];
       ix++;
     }
     auto [m, s] = ensemble_->predict(encoded);
@@ -695,6 +704,9 @@ void CandidatePool::dumpMetadataJSON(const ConfigSpace &space,
     jsonStr(p.name);
     out << ", ";
     out << "\"cardinality\": " << p.cardinality() << ", ";
+    out << "\"kind\": ";
+    jsonStr(paramKindName(p.kind).str());
+    out << ", ";
     if (auto *r = std::get_if<IntRange>(&p.domain)) {
       out << "\"type\": \"range\", ";
       out << "\"lo\": " << r->lo << ", ";
@@ -724,14 +736,16 @@ void CandidatePool::dumpMetadataJSON(const ConfigSpace &space,
 void ValidationSet::record(size_t idx, double cost) {
   indices.push_back(idx);
   trueCosts.push_back(cost);
-  const size_t D = space_->size();
+  const size_t D = space_->numFeatures();
   Configuration conf;
   space_->at(idx, conf);
+  llvm::SmallVector<double, 16> features;
+  space_->encode(conf, features);
   if (encoded.is_empty())
     encoded.set_size(D, 0);
   encoded.insert_cols(encoded.n_cols, 1);
   for (size_t d = 0; d < D; ++d)
-    encoded(d, encoded.n_cols - 1) = (*space_)[d].featurize(conf[d]);
+    encoded(d, encoded.n_cols - 1) = features[d];
 }
 
 void ValidationSet::recordSnapshot(int iter, arma::rowvec mu,

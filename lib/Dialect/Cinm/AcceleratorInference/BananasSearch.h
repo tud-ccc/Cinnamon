@@ -124,7 +124,8 @@ struct CandidatePool {
 
   /// Number of valid (constraint-passing) configs in the pool.
   size_t size() const { return shared->size(); }
-  size_t nDims() const;
+  /// Width of the surrogate's input vector (not the parameter count).
+  size_t numFeatures() const;
   bool empty() const { return shared->empty(); }
 
   /// Return the configuration at flat pool index i (allocated by value).

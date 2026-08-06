@@ -1,4 +1,5 @@
 #include "cinm-mlir/Dialect/Cinm/AcceleratorInference/FusionEdges.h"
+#include "cinm-mlir/Utils/Permutation.h"
 
 #include <llvm/ADT/DenseMap.h>
 #include <llvm/ADT/STLExtras.h>
@@ -21,35 +22,6 @@ namespace {
 // equality between order parameters: an order index ranks only the dimensions
 // the configuration actually distributes, so what it means depends on the tile
 // sizes. Hence an opaque predicate, decoding both indices per configuration.
-
-/// `n!` for the small `n` an iteration space has.
-int64_t factorialOf(unsigned n) {
-  int64_t result = 1;
-  for (unsigned i = 2; i <= n; ++i)
-    result *= i;
-  return result;
-}
-
-/// The `index`-th permutation of `[0, n)` in lexicographic order, decoded from
-/// the factorial number system -- the same encoding `--convert-linalg-to-cnm`
-/// decodes the stamped order index with (getWorkgroupAxisOrder).
-SmallVector<unsigned> unrankPermutation(int64_t index, unsigned n) {
-  SmallVector<unsigned> available(n);
-  std::iota(available.begin(), available.end(), 0u);
-
-  SmallVector<unsigned> permutation;
-  permutation.reserve(n);
-  for (unsigned remaining = n; remaining > 0; --remaining) {
-    int64_t weight = 1;
-    for (unsigned i = 2; i < remaining; ++i)
-      weight *= i;
-    auto digit = static_cast<size_t>(index / weight);
-    index %= weight;
-    permutation.push_back(available[digit]);
-    available.erase(available.begin() + digit);
-  }
-  return permutation;
-}
 
 /// Everything the axis decoding needs about one side of an edge, resolved once
 /// at declaration time so the per-configuration predicate is arithmetic only.
@@ -92,7 +64,8 @@ std::optional<SmallVector<int>> axisValueDims(const AxisModel &m,
     if (counts[dim] > 1)
       distributed.push_back(dim);
 
-  if (orderIndex < 0 || orderIndex >= factorialOf(distributed.size()))
+  std::optional<int64_t> numOrders = factorial(distributed.size());
+  if (!numOrders || orderIndex < 0 || orderIndex >= *numOrders)
     return std::nullopt;
 
   SmallVector<int> axes;

@@ -17,6 +17,19 @@ bool containsDivision(const ConstraintNode &node) {
   });
 }
 
+std::optional<std::pair<ParamKind, llvm::StringRef>>
+findNonArithmeticVar(const ConstraintNode &node) {
+  if (node.kind == Kind::Var) {
+    if (node.varKind() == ParamKind::Integer)
+      return std::nullopt;
+    return std::make_pair(node.varKind(), node.varName());
+  }
+  for (const ConstraintNodePtr &child : node.operands())
+    if (auto found = findNonArithmeticVar(*child))
+      return found;
+  return std::nullopt;
+}
+
 ParmVector evalNodeVec(const ConstraintNode &node, const ConfigurationVector &c,
                        arma::urowvec *exact) {
   using Kind = Kind;

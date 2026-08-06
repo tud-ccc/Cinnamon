@@ -44,17 +44,45 @@ struct ValueList {
   std::vector<ParmValue> values;
 };
 
+/// What a parameter's values *mean*, as opposed to how its domain is stored.
+///
+/// Every parameter is a positive integer either way; the kind says how those
+/// integers are to be read, and therefore what may be done with them. A
+/// magnitude can be added, multiplied, divided and ordered; the rank of a
+/// permutation can only be compared for equality, since arithmetic on a rank
+/// is arithmetic on an arbitrary numbering. The constraint DSL enforces this.
+///
+/// The kind also decides how a value is presented to the surrogate, which is
+/// the same question one level down: two ranks one apart are not two similar
+/// permutations, so a model fed a rank as a magnitude is fitting something that
+/// does not exist. See appendFeatures.
+enum class ParamKind {
+  /// A quantity. Tile sizes, counts, capacities.
+  Integer,
+  /// The lexicographic rank of a permutation, one-based -- see
+  /// cinm-mlir/Utils/Permutation.h for the encoding, and note the offset.
+  Permutation,
+};
+
+llvm::StringRef paramKindName(ParamKind kind);
+
 /// One dimension of the search space.
 struct SearchParam {
   std::string name;
   std::variant<IntRange, ValueList> domain;
+  ParamKind kind = ParamKind::Integer;
+  /// For ParamKind::Permutation: how many items are permuted. The domain then
+  /// holds the ranks 1..n!, which is not something to recover n from.
+  unsigned permutationSize = 0;
 
   SearchParam(const SearchParam &) = delete;
   SearchParam(SearchParam &&) = default;
-  SearchParam(StringRef name, IntRange &&range)
-      : name(name.str()), domain(std::move(range)) {}
-  SearchParam(StringRef name, ValueList &&list)
-      : name(name.str()), domain(std::move(list)) {}
+  SearchParam(StringRef name, IntRange &&range,
+              ParamKind kind = ParamKind::Integer)
+      : name(name.str()), domain(std::move(range)), kind(kind) {}
+  SearchParam(StringRef name, ValueList &&list,
+              ParamKind kind = ParamKind::Integer)
+      : name(name.str()), domain(std::move(list)), kind(kind) {}
   SearchParam &operator=(SearchParam &&o) = default;
 
   double dlo() const;
@@ -63,8 +91,30 @@ struct SearchParam {
   size_t cardinality() const;
   /// Map a continuous sample in [dlo, dhi] to the nearest valid discrete value.
   ParmValue discretize(double v) const;
-  /// Map a value to its feature
-  double featurize(ParmValue n) const;
+
+  /// How many surrogate features this parameter contributes. One for a
+  /// quantity; a permutation of n items contributes n.
+  size_t numFeatures() const;
+  /// Append this parameter's features for `value` to `out`.
+  ///
+  /// Two things are going on, and they are both about what the surrogate can
+  /// learn rather than about the parameter itself.
+  ///
+  /// **A permutation contributes its position vector**: feature `i` is the
+  /// axis that iteration dimension `i` occupies. Euclidean distance between
+  /// two such vectors is Spearman's rank distance, so two orders that agree
+  /// about most dimensions land near each other and the network can generalise
+  /// between them. Its rank cannot do that -- consecutive ranks are unrelated
+  /// permutations -- and one feature per permutation could not either, since
+  /// no single number carries the structure.
+  ///
+  /// **Every feature is scaled to [0, 1]** against the parameter's declared
+  /// domain, so that features are comparable to each other. The scaling has to
+  /// come from the domain rather than from the sample, because training and
+  /// prediction encode different sets of configurations and a model fitted on
+  /// one scale cannot be asked about another.
+  void appendFeatures(ParmValue value,
+                      llvm::SmallVectorImpl<double> &out) const;
 
   /// Return the i-th distinct value of this parameter (0-indexed).
   ParmValue valueAt(size_t subIdx) const;
@@ -86,6 +136,9 @@ SearchParam makeRange(StringRef name, ParmValue lo, ParmValue hi,
                       ParmValue step = 1);
 SearchParam makePow2Range(StringRef name, ParmValue loExp, ParmValue hiExp);
 SearchParam makeValues(StringRef name, std::vector<ParmValue> values);
+/// A parameter ranging over the permutations of `[0, n)`, valued by
+/// one-based lexicographic rank -- so 1 is the identity and n! the reverse.
+SearchParam makePermutation(StringRef name, unsigned n);
 
 /// A concrete assignment — one int64_t per SearchParam, in ConfigSpace order.
 using Configuration = std::vector<ParmValue>;
@@ -261,6 +314,15 @@ struct ConfigSpace {
   size_t size() const { return params.size(); }
   const SearchParam &operator[](size_t i) const { return params[i]; }
   SearchParam &operator[](size_t i) { return params[i]; }
+
+  /// Width of the surrogate's input vector. Not size(): a parameter may
+  /// contribute more than one feature (see SearchParam::appendFeatures).
+  size_t numFeatures() const;
+  /// The surrogate's input vector for `conf`, appended to `out`. Every path
+  /// that hands a configuration to the model goes through here, so training
+  /// and prediction cannot disagree about the encoding.
+  void encode(const Configuration &conf,
+              llvm::SmallVectorImpl<double> &out) const;
 
   /// Index of param with the given name, or -1.
   int findIndex(llvm::StringRef name) const;
