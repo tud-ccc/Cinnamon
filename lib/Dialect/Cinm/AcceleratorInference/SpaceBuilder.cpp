@@ -316,8 +316,9 @@ void SpaceBuilder::reportConstraintAnalysis(const ConfigSpace &space) const {
       continue;
     }
 
-    // Enumerate the smaller side, solve for the larger (see the direction rule
-    // in docs/ConstraintAnalysisDesign.md).
+    // Enumerate the smaller side, solve for the larger. Reporting only: what
+    // the enumerator actually does is pick a variable against the current
+    // partial assignment, see ComponentEnumerator::selectNext.
     const bool solveRhs = rhsCard >= lhsCard;
     const Monomial &key = solveRhs ? eq->lhs : eq->rhs;
     const Monomial &solved = solveRhs ? eq->rhs : eq->lhs;
@@ -361,8 +362,7 @@ void SpaceBuilder::addDivConstraint(const ConstraintNodePtr &num,
     mustDivide(findVarByName(den->varName()), num->constValue());
     return;
   }
-  // var / var: structural, folded into the flat index encoding by
-  // ConfigSpace::addMultiplesConstraint.
+  // var / var: structural, recorded for planning to fold into a component.
   if (num->kind == Kind::Var && den->kind == Kind::Var) {
     mustDivide(findVarByName(den->varName()), findVarByName(num->varName()));
     return;
@@ -397,7 +397,7 @@ void SpaceBuilder::addDivConstraint(const ConstraintNodePtr &num,
 // afterwards. Variables linked by a divisibility or product relation form a
 // connected component; every satisfying tuple of that component is enumerated
 // once, and the component then occupies a single slot sized by the solution
-// count. See docs/ConstraintAnalysisDesign.md.
+// count.
 
 namespace {
 
@@ -1025,6 +1025,49 @@ void SpaceBuilder::planComponents(
     for (size_t i : myProdIdx)
       report.foldedInto[prodNodes[i]] = reportIdx;
   }
+
+  // A divisibility relation whose component was abandoned is still worth
+  // folding on its own: two variables and one relation enumerate in no time,
+  // and leaving it to a predicate would put the whole cross product of the two
+  // domains back into the space. So each is retried as a component of its own,
+  // which is all a parent/child pair ever was.
+  //
+  // A dimension can only belong to one component, so the first relation to
+  // claim a dimension wins and the rest fall through to predicates. Which
+  // relation that is depends on declaration order, which is deterministic.
+  std::set<size_t> claimed;
+  for (const ConfigSpace::SolvedComponent &comp : space.components)
+    claimed.insert(comp.dims.begin(), comp.dims.end());
+
+  for (size_t i = 0; i < divs.size(); ++i) {
+    if (absorbedMultiples.count(divNames[i]))
+      continue;
+    const std::vector<size_t> pair = {
+        std::min(divs[i].divisor, divs[i].dividend),
+        std::max(divs[i].divisor, divs[i].dividend)};
+    if (claimed.count(pair[0]) || claimed.count(pair[1]))
+      continue;
+
+    std::vector<Domain> pairDomains{allDomains[pair[0]], allDomains[pair[1]]};
+    std::vector<std::vector<ParmValue>> solutions;
+    ComponentEnumerator enumerator(pair, pairDomains, divs[i], {}, {}, {},
+                                   kSolutionCap);
+    if (!enumerator.run(solutions))
+      continue;
+
+    const int reportIdx = report.componentOf(pair, space);
+    report.components[reportIdx].solutions = solutions.size();
+    report.constraints.push_back(
+        {divNames[i].first + " | " + divNames[i].second, "folded", reportIdx,
+         true});
+
+    ConfigSpace::SolvedComponent comp;
+    comp.dims = pair;
+    comp.solutions = std::move(solutions);
+    space.addSolvedComponent(std::move(comp));
+    absorbedMultiples.insert(divNames[i]);
+    claimed.insert(pair.begin(), pair.end());
+  }
 }
 
 // ===----------------------------------------------------------------------===//
@@ -1105,96 +1148,34 @@ void SpaceBuilder::buildInto(ConfigSpace &space) {
                    multiples_.end());
 
   // Phase 2a: plan components. Anything a component absorbs is skipped by the
-  // pairwise handling below and by phase 3, because the encoding will never
-  // offer a configuration that violates it.
+  // fallback below and by phase 3, because the encoding will never offer a
+  // configuration that violates it.
   std::set<std::pair<std::string, std::string>> absorbedMultiples;
   std::set<const ConstraintNode *> absorbedPredicates;
   planComponents(space, *report, absorbedMultiples, absorbedPredicates);
 
-  // Build lookup for the full set.
-  std::set<std::pair<std::string, std::string>> multsSet;
-  for (auto &m : multiples_)
-    multsSet.insert({m.parent, m.child});
-
-  // childSet tracks dims already committed as structural children.
-  std::set<std::string> childSet;
-
-  std::vector<std::pair<SpaceVar, SpaceVar>> equalityFallbacks;
-  std::vector<std::pair<SpaceVar, SpaceVar>> dynamicDivFallbacks;
-
-  std::set<std::pair<std::string, std::string>> handled;
-
-  for (auto &m : multiples_) {
-    if (handled.count({m.parent, m.child}))
-      continue;
-    // Already guaranteed by a component's enumeration.
+  // Phase 2b: whatever planning could not fold stays a predicate. A relation
+  // ends up here only when both of its variables were already claimed by other
+  // components, or when the enumeration that would have absorbed it exceeded a
+  // budget -- so this is a fallback, not a path the common case takes.
+  for (const auto &m : multiples_) {
     if (absorbedMultiples.count({m.parent, m.child}))
       continue;
-
-    LLVM_DEBUG({
-      int pi = dimIndexByName(m.parent), ci = dimIndexByName(m.child);
-      if (pi > ci)
-        llvm::dbgs() << "[cinm-space]   note: '" << m.parent << "' (dim " << pi
-                     << ") declared after child '" << m.child << "' (dim " << ci
-                     << ") — OK for encoding\n";
-    });
-
-    // Detect mutual divisibility: A|B AND B|A → implies A == B.
-    if (multsSet.count({m.child, m.parent})) {
-      LLVM_DEBUG(
-          llvm::dbgs()
-          << "[cinm-space]   WARNING: mutual divisibility '" << m.parent
-          << "' | '" << m.child << "' AND '" << m.child << "' | '" << m.parent
-          << "'  (implies equality; replacing both with dynamic A==B)\n");
-      handled.insert({m.parent, m.child});
-      handled.insert({m.child, m.parent});
-      equalityFallbacks.push_back(
-          {findVarByName(m.parent), findVarByName(m.child)});
-      report->constraints.push_back(
-          {m.parent + " | " + m.child + " (mutual)", "filter", -1, true});
-      continue;
-    }
-
-    // Detect chains: parent is already a structural child.
-    if (childSet.count(m.parent)) {
-      LLVM_DEBUG(llvm::dbgs()
-                 << "[cinm-space]   WARNING: chained divisibility '" << m.parent
-                 << "' | '" << m.child << "' where '" << m.parent
-                 << "' is already a structural child"
-                 << "  (converting to dynamic predicate)\n");
-      handled.insert({m.parent, m.child});
-      dynamicDivFallbacks.push_back(
-          {findVarByName(m.parent), findVarByName(m.child)});
-      report->constraints.push_back(
-          {m.parent + " | " + m.child + " (chained)", "filter", -1, true});
-      continue;
-    }
-
-    LLVM_DEBUG(llvm::dbgs() << "[cinm-space]   structural: '" << m.parent
-                            << "' | '" << m.child << "'\n");
-    space.addMultiplesConstraint(m.parent, m.child);
-    childSet.insert(m.child);
+    LLVM_DEBUG(llvm::dbgs() << "[cinm-space]   left to a predicate: '"
+                            << m.parent << "' | '" << m.child << "'\n");
     report->constraints.push_back(
-        {m.parent + " | " + m.child, "structural-pair", -1, true});
-  }
-
-  // Add fallback dynamic predicates.
-  for (auto [va, vb] : equalityFallbacks)
-    space.addConstraint(
-        [va, vb](const ConfigurationVector &c, arma::urowvec &valid) {
-          valid %= va[c] == vb[c];
-        },
-        va.name().str() + " == " + vb.name().str());
-  for (auto [parent, child] : dynamicDivFallbacks)
+        {m.parent + " | " + m.child, "filter", -1, true});
+    SpaceVar parent = findVarByName(m.parent), child = findVarByName(m.child);
     space.addConstraint(
         [parent, child](const ConfigurationVector &c, arma::urowvec &valid) {
           valid %= vecDivides(parent[c], child[c]);
         },
-        parent.name().str() + " | " + child.name().str());
+        m.parent + " | " + m.child);
+  }
 
   // Analysis pass: variable indices are assigned by now, so DSL-registered
   // constraints can be matched against the forms the encoding knows how to
-  // exploit. Reporting only -- see docs/ConstraintAnalysisDesign.md, stage 4.
+  // exploit. Reporting only: it does not change the space.
   LLVM_DEBUG(reportConstraintAnalysis(space));
 
   // Phase 3: dynamic predicates. Each entry holds exactly one form; the

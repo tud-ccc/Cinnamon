@@ -40,9 +40,9 @@ relation between two parameters merges them whether or not folding it pays.
 
 The only feedback is after the fact and all-or-nothing: if a component's
 enumeration exceeds `kSolutionCap` (4e6 tuples) or `kNodeBudget` (5e7 nodes) it
-is abandoned *entirely*, and every relation in it falls back to pairwise groups
-and predicates. There is no finer partition tried in between, and no cost model
-anywhere.
+is abandoned *entirely*, and its divisibility relations are retried one at a
+time as two-parameter components, with whatever fails that left to predicates.
+There is no finer partition tried in between, and no cost model anywhere.
 
 **Costs.** Fine on the spaces measured so far, because their relations really
 do all interlock. It degrades badly the moment one weak relation bridges two
@@ -85,27 +85,7 @@ enumerator's shape. Alternatively a guard could be kept out of the component
 construction time — which is precisely the merging decision §1 says should
 exist and does not.
 
-## 3. `DependentGroup` was supposed to disappear
-
-**Said.** ConstraintAnalysisDesign Stage 5: component enumeration "subsumes
-`DependentGroup`, which is exactly the two-variable case".
-
-**Is.** Both encodings exist and both are live. `planComponents` absorbs the
-divisibility relations it can, and `buildInto` then commits the rest through
-`addMultiplesConstraint`, with two further fallbacks (mutual divisibility, and
-a chain whose parent is already another pair's child) that degrade to dynamic
-predicates. `ConfigSpace` therefore carries three slot kinds, and `at()`,
-`indexOf()`, `forEachChunk()` and `isEncodable()` each branch on all three.
-
-**Costs.** Duplicated decode logic in four places, and two representations to
-keep in step for anything that touches the encoding. Not incorrect.
-
-**Proposed.** Once components handle the pairwise case with no budget risk —
-which they do; a two-variable divisibility component is trivially small — a
-`DependentGroup` is a `SolvedComponent` whose enumeration happens to be a pair
-list. Deleting the kind is a contained cleanup.
-
-## 4. A permutation's *neighbours* are still its rank ±1
+## 3. A permutation's *neighbours* are still its rank ±1
 
 **Said.** The paper: "Categorical and permutation-valued parameters are also
 supported, by modifying the distance function for those variables as proposed
@@ -132,7 +112,7 @@ swap a pair, re-rank. Independent of everything else here.
 
 *(A categorical kind has no caller yet, so it is not declared.)*
 
-## 5. Declared domains are much wider than reachable ones
+## 4. Declared domains are much wider than reachable ones
 
 **Said.** Implicit in the paper's model: a subspace enumerates "the tuples that
 satisfy the constraints mentioning only its parameters", so a parameter's
@@ -142,8 +122,7 @@ domain is expected to be the values it can take.
 and records the divisibility as a relation. At 1024², `gemv.M.wram` is declared
 with 1024 values where at most 11 are reachable. The component enumeration
 never offers the other 1013, so the space is right; but the *declared* domain
-is what feeds the Cartesian-product figure, `neighborIndices`, `discretize`,
-and `dlo/dhi`.
+is what feeds the Cartesian-product figure, `neighborIndices`, and `dlo/dhi`.
 
 **Costs.** Inflates the Cartesian figure by orders of magnitude (4.2e17 against
 an addressable 185k at 1024²). Makes BO's continuous relaxation mostly-invalid
@@ -154,7 +133,7 @@ so `keepDivisorsOf(extent)` is sound for the inner levels too and is a
 one-line change at the declaration site. It narrows the declared domain to the
 reachable one without touching the encoding.
 
-## 6. Statements in ConstraintAnalysisDesign that are now stale
+## 5. Statements in ConstraintAnalysisDesign that are now stale
 
 Not gaps — the document simply predates the code and should be corrected or
 retired.
@@ -168,7 +147,7 @@ retired.
 | Stage 6, Form C domain narrowing | not implemented |
 | Form A2, `dpus == dpuRows * dpuCols` inside `readAsGemvTemplate` | still invisible to the analyser, still behind an opaque predicate |
 
-## 7. Opaque predicates bound density from above
+## 6. Opaque predicates bound density from above
 
 **Said.** The paper: a subspace enumeration produces "exactly the tuples that
 satisfy the constraints mentioning only its parameters".

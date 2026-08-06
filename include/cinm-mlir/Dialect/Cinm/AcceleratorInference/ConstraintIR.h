@@ -26,7 +26,7 @@ namespace mlir::cinm::constraints {
 // over a runtime tree and template metaprogramming over a type.
 //
 // The node set is deliberately closed and small: everything here has to stay
-// analysable. See docs/ConstraintAnalysisDesign.md.
+// analysable.
 
 struct ConstraintNode;
 using ConstraintNodePtr = std::shared_ptr<const ConstraintNode>;
@@ -214,8 +214,8 @@ struct Monomial {
 };
 
 /// `lhs == rhs`, with all division cleared by cross-multiplication. This is the
-/// canonical form of an identity constraint; see
-/// docs/ConstraintAnalysisDesign.md.
+/// canonical form of an identity constraint, and the form
+/// ComponentEnumerator::solveFor consumes.
 struct ProductEquality {
   Monomial lhs, rhs;
 };
