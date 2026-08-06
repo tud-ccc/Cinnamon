@@ -12,8 +12,8 @@
 //    enforced at all.
 //  - **Absorption.** For the cases marked so, the encoding must offer *only*
 //    the valid configurations -- `totalSize() == |valid|`. That is the whole
-//    point of docs/ConstraintAnalysisDesign.md's component enumeration, and it
-//    is where a constraint the enumerator silently stops enforcing shows up: it
+//    point of the component enumeration, and it is where a constraint the
+//    enumerator silently stops enforcing shows up: it
 //    is absorbed (so the predicate is dropped) while no longer pruning, which
 //    correctness alone would catch only if the predicate had been kept.
 //
@@ -107,75 +107,75 @@ void check(const ConfigSpace &space, const PointSet &expected,
 
 TEST(ConstraintIRTest, GatedEquality) {
   SpaceBuilder b;
-  auto fuse = b.intRange("fuse", 0, 2);
+  auto fuse = b.intRange("fuse", 1, 3);
   auto a = b.divisorsOf("a", 64);
   auto c = b.divisorsOf("c", 64);
-  b.require(implies(fuse >= 1, a == c));
+  b.require(implies(fuse >= 2, a == c));
 
   ConfigSpace space;
   b.buildInto(space);
 
   check(space,
-        bruteForce({range(0, 2), divisorsOfN(64), divisorsOfN(64)},
-                   [](const Point &p) { return p[0] < 1 || p[1] == p[2]; }),
+        bruteForce({range(1, 3), divisorsOfN(64), divisorsOfN(64)},
+                   [](const Point &p) { return p[0] < 2 || p[1] == p[2]; }),
         Absorbed);
 }
 
 TEST(ConstraintIRTest, NestedGates) {
   SpaceBuilder b;
-  auto fuse = b.intRange("fuse", 0, 2);
+  auto fuse = b.intRange("fuse", 1, 3);
   auto a = b.divisorsOf("a", 64);
   auto c = b.divisorsOf("c", 64);
   auto aw = b.divisorsOf("aw", a);
   auto cw = b.divisorsOf("cw", c);
 
-  b.require(implies(fuse >= 1, a == c));
-  b.require(implies(fuse >= 2, aw == cw));
+  b.require(implies(fuse >= 2, a == c));
+  b.require(implies(fuse >= 3, aw == cw));
 
   ConfigSpace space;
   b.buildInto(space);
 
   check(space,
-        bruteForce({range(0, 2), divisorsOfN(64), divisorsOfN(64),
+        bruteForce({range(1, 3), divisorsOfN(64), divisorsOfN(64),
                     divisorsOfN(64), divisorsOfN(64)},
                    [](const Point &p) {
                      if (p[1] % p[3] || p[2] % p[4])
                        return false;
-                     if (p[0] >= 1 && p[1] != p[2])
+                     if (p[0] >= 2 && p[1] != p[2])
                        return false;
-                     return !(p[0] >= 2 && p[3] != p[4]);
+                     return !(p[0] >= 3 && p[3] != p[4]);
                    }),
         Absorbed);
 }
 
 TEST(ConstraintIRTest, GateWithProductEquality) {
   SpaceBuilder b;
-  auto fuse = b.intRange("fuse", 0, 1);
+  auto fuse = b.intRange("fuse", 1, 2);
   auto a = b.divisorsOf("a", 64);
   auto c = b.divisorsOf("c", 64);
   auto n = b.intRange("n", 1, 64);
   b.require(a * n == 64);
-  b.require(implies(fuse >= 1, a == c));
+  b.require(implies(fuse >= 2, a == c));
   ConfigSpace space;
   b.buildInto(space);
 
   check(
       space,
-      bruteForce({range(0, 1), divisorsOfN(64), divisorsOfN(64), range(1, 64)},
+      bruteForce({range(1, 2), divisorsOfN(64), divisorsOfN(64), range(1, 64)},
                  [](const Point &p) {
                    if (p[1] * p[3] != 64)
                      return false;
-                   return p[0] < 1 || p[1] == p[2];
+                   return p[0] < 2 || p[1] == p[2];
                  }),
       Absorbed);
 }
 
 TEST(ConstraintIRTest, GateOnInequality) {
   SpaceBuilder b;
-  auto fuse = b.intRange("fuse", 0, 1);
+  auto fuse = b.intRange("fuse", 1, 2);
   auto a = b.divisorsOf("a", 64);
   auto c = b.divisorsOf("c", 64);
-  b.require(implies(fuse >= 1, a * c <= 64));
+  b.require(implies(fuse >= 2, a * c <= 64));
   ConfigSpace space;
   b.buildInto(space);
 
@@ -184,8 +184,8 @@ TEST(ConstraintIRTest, GateOnInequality) {
   // just filtered rather than encoded.
   check(
       space,
-      bruteForce({range(0, 1), divisorsOfN(64), divisorsOfN(64)},
-                 [](const Point &p) { return p[0] < 1 || p[1] * p[2] <= 64; }),
+      bruteForce({range(1, 2), divisorsOfN(64), divisorsOfN(64)},
+                 [](const Point &p) { return p[0] < 2 || p[1] * p[2] <= 64; }),
       Filtered);
 }
 
@@ -212,9 +212,9 @@ TEST(ConstraintIRTest, ExactDivision) {
 
 TEST(ConstraintIRTest, ExactDivisionUnderGuard) {
   SpaceBuilder b;
-  auto fuse = b.intRange("fuse", 0, 1);
+  auto fuse = b.intRange("fuse", 1, 2);
   auto v = b.intRange("b", 1, 1024);
-  b.require(implies(fuse >= 1, IntExpr(1024) / v == 1));
+  b.require(implies(fuse >= 2, IntExpr(1024) / v == 1));
   ConfigSpace space;
   b.buildInto(space);
 
@@ -223,9 +223,9 @@ TEST(ConstraintIRTest, ExactDivisionUnderGuard) {
   // absorbed: matchProductEquality cross-multiplies the consequent to
   // `1024 == b`, which the enumerator solves.
   check(space,
-        bruteForce({range(0, 1), range(1, 1024)},
+        bruteForce({range(1, 2), range(1, 1024)},
                    [](const Point &p) {
-                     if (p[0] < 1)
+                     if (p[0] < 2)
                        return true;
                      return 1024 % p[1] == 0 && 1024 / p[1] == 1;
                    }),

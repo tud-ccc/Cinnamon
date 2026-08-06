@@ -106,6 +106,26 @@ size_t SearchParam::cardinality() const {
       domain);
 }
 
+void SearchParam::appendNeighbourValues(
+    ParmValue value, llvm::SmallVectorImpl<ParmValue> &out) const {
+  if (kind == ParamKind::Permutation) {
+    llvm::SmallVector<unsigned> order =
+        unrankPermutation(value - 1, permutationSize);
+    for (unsigned i = 0; i + 1 < permutationSize; ++i) {
+      std::swap(order[i], order[i + 1]);
+      out.push_back(static_cast<ParmValue>(rankPermutation(order) + 1));
+      std::swap(order[i], order[i + 1]);
+    }
+    return;
+  }
+
+  const size_t sub = subIndexOf(value);
+  if (sub > 0)
+    out.push_back(valueAt(sub - 1));
+  if (sub + 1 < cardinality())
+    out.push_back(valueAt(sub + 1));
+}
+
 size_t SearchParam::numFeatures() const {
   switch (kind) {
   case ParamKind::Integer:
@@ -521,15 +541,12 @@ void ConfigSpace::neighborIndices(size_t idx,
   at(idx, conf);
   Configuration probe = conf;
 
+  llvm::SmallVector<ParmValue, 4> steps;
   for (size_t d = 0; d < params.size(); ++d) {
-    const size_t card = params[d].cardinality();
-    const size_t sub = params[d].subIndexOf(conf[d]);
-    for (int delta : {-1, 1}) {
-      if (delta < 0 && sub == 0)
-        continue;
-      if (delta > 0 && sub + 1 >= card)
-        continue;
-      probe[d] = params[d].valueAt(sub + delta);
+    steps.clear();
+    params[d].appendNeighbourValues(conf[d], steps);
+    for (ParmValue step : steps) {
+      probe[d] = step;
       // Stepping a dimension inside a component can land on a tuple the
       // component does not offer -- that neighbour simply does not exist.
       if (isEncodable(probe))

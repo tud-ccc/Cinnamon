@@ -85,34 +85,7 @@ enumerator's shape. Alternatively a guard could be kept out of the component
 construction time — which is precisely the merging decision §1 says should
 exist and does not.
 
-## 3. A permutation's *neighbours* are still its rank ±1
-
-**Said.** The paper: "Categorical and permutation-valued parameters are also
-supported, by modifying the distance function for those variables as proposed
-by BACO."
-
-**Is.** The surrogate side is done. `SearchParam` carries a `ParamKind`
-(`Integer`/`Permutation`), the rank/unrank encoding is shared
-(`cinm-mlir/Utils/Permutation.h`), the DSL rejects arithmetic and ordering on a
-rank, and `appendFeatures` presents a permutation as its position vector, so
-distance between feature vectors is Spearman's rank distance rather than
-distance between two arbitrary numberings.
-
-What still treats a rank as a magnitude is **`neighborIndices`**, which steps
-±1 on every parameter's sub-index. For a permutation that lands on an unrelated
-permutation, so BO's local candidate generation (`fillNeighbors`) explores a
-neighbourhood that is not one.
-
-**Costs.** Bounded: it degrades candidate *proposal*, not the model. The
-acquisition function still ranks whatever is proposed correctly.
-
-**Proposed.** `neighborIndices` dispatches on the kind, and a permutation's
-neighbours are the ranks reachable by one adjacent transposition — decode,
-swap a pair, re-rank. Independent of everything else here.
-
-*(A categorical kind has no caller yet, so it is not declared.)*
-
-## 4. Declared domains are much wider than reachable ones
+## 3. Declared domains are much wider than reachable ones
 
 **Said.** Implicit in the paper's model: a subspace enumerates "the tuples that
 satisfy the constraints mentioning only its parameters", so a parameter's
@@ -122,7 +95,7 @@ domain is expected to be the values it can take.
 and records the divisibility as a relation. At 1024², `gemv.M.wram` is declared
 with 1024 values where at most 11 are reachable. The component enumeration
 never offers the other 1013, so the space is right; but the *declared* domain
-is what feeds the Cartesian-product figure, `neighborIndices`, and `dlo/dhi`.
+is what feeds the Cartesian-product figure and `dlo/dhi`.
 
 **Costs.** Inflates the Cartesian figure by orders of magnitude (4.2e17 against
 an addressable 185k at 1024²). Makes BO's continuous relaxation mostly-invalid
@@ -133,7 +106,7 @@ so `keepDivisorsOf(extent)` is sound for the inner levels too and is a
 one-line change at the declaration site. It narrows the declared domain to the
 reachable one without touching the encoding.
 
-## 5. Statements in ConstraintAnalysisDesign that are now stale
+## 4. Statements in ConstraintAnalysisDesign that are now stale
 
 Not gaps — the document simply predates the code and should be corrected or
 retired.
@@ -141,13 +114,13 @@ retired.
 | says | actually |
 |---|---|
 | `ConstraintNode::Kind` includes `Sub` and a single `Cmp` kind | there is no `Sub`; the six comparisons are six kinds, and `Divides`/`Implies` were added after |
-| "`neighborIndices()` needs rewriting — but it is already wrong" | rewritten: it decodes, steps one dimension, and re-encodes, exactly as the document proposed |
+| "`neighborIndices()` needs rewriting — but it is already wrong" | rewritten: it decodes, steps one dimension, and re-encodes, exactly as the document proposed — and a step is now whatever the parameter's kind says it is |
 | the direction rule, "enumerate the side with smaller joint cardinality, solve for the other" | never implemented as such. `reportConstraintAnalysis` *prints* it; the enumerator uses a dynamic `selectNext` (determined → guard → in-equality, narrowest domain → rest) and `solveFor` fires only on the last unknown of an equality. The print degenerates when one side normalises to a bare constant — "enumerate {1048576} (1 combos), solve for {dpus * tasklets * gemv.M.mram * gemv.K.mram}" describes nothing anyone could do, and nothing the code does. The paper's version of the rule — "pick the variable with the widest domain as the determined one" — is likewise only approximated, by preferring narrow domains among the others |
 | Stage 3, scratch-buffer pool for `evalNodeVec` | still deferred; every node still allocates a fresh `ParmVector` |
 | Stage 6, Form C domain narrowing | not implemented |
 | Form A2, `dpus == dpuRows * dpuCols` inside `readAsGemvTemplate` | still invisible to the analyser, still behind an opaque predicate |
 
-## 6. Opaque predicates bound density from above
+## 5. Opaque predicates bound density from above
 
 **Said.** The paper: a subspace enumeration produces "exactly the tuples that
 satisfy the constraints mentioning only its parameters".
