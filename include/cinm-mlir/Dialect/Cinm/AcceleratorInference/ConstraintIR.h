@@ -1,6 +1,6 @@
 #pragma once
 
-#include "cinm-mlir/Dialect/Cinm/AcceleratorInference/AcceleratorInference.h"
+#include "cinm-mlir/Dialect/Cinm/AcceleratorInference/ConfigSpace.h"
 
 #include <llvm/ADT/ArrayRef.h>
 #include <llvm/ADT/SmallVector.h>
