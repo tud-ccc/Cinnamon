@@ -85,13 +85,13 @@ struct SearchParam {
       : name(name.str()), domain(std::move(list)), kind(kind) {}
   SearchParam &operator=(SearchParam &&o) = default;
 
+  /// Smallest and largest value this parameter can take. For reporting; the
+  /// surrogate sees appendFeatures() instead, and nothing maps back from a
+  /// feature to a value.
   double dlo() const;
   double dhi() const;
   /// Number of distinct values this parameter can take.
   size_t cardinality() const;
-  /// Map a continuous sample in [dlo, dhi] to the nearest valid discrete value.
-  ParmValue discretize(double v) const;
-
   /// How many surrogate features this parameter contributes. One for a
   /// quantity; a permutation of n items contributes n.
   size_t numFeatures() const;
