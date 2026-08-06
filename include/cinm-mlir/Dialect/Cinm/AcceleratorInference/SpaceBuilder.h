@@ -507,9 +507,14 @@ public:
   }
 
   /// Commit all declarations and constraints into space in the correct order.
+  /// The space also comes away with a SpaceMetadata recording what planning
+  /// decided, since none of that is recoverable from the result.
   void buildInto(ConfigSpace &space);
 
 private:
+  /// What planning did, accumulated as it happens. Defined in the .cpp: it is
+  /// a report about this class's decisions and nothing else needs the type.
+  struct PlanMetadata;
   void require(const constraints::ConstraintNodePtr &expr,
                llvm::StringRef description = "");
 
@@ -561,7 +566,7 @@ private:
   /// A component whose enumeration exceeds the cap absorbs nothing and leaves
   /// its relations to the existing paths.
   void planComponents(
-      ConfigSpace &space,
+      ConfigSpace &space, PlanMetadata &report,
       std::set<std::pair<std::string, std::string>> &absorbedMultiples,
       std::set<const constraints::ConstraintNode *> &absorbedPredicates);
 

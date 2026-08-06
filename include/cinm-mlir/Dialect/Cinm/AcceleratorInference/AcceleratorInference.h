@@ -7,11 +7,13 @@
 #include <cstdint>
 #include <functional>
 #include <initializer_list>
+#include <iosfwd>
 #include <llvm/ADT/SmallVector.h>
 #include <llvm/ADT/StringMap.h>
 #include <llvm/ADT/StringRef.h>
 #include <llvm/Support/raw_ostream.h>
 #include <map>
+#include <memory>
 #include <mlir/IR/BuiltinOps.h>
 #include <mlir/IR/Diagnostics.h>
 #include <mlir/IR/OwningOpRef.h>
@@ -214,6 +216,22 @@ inline arma::urowvec vecDivides(const ParmVector &b, const ParmVector &a) {
   return ok;
 }
 
+/// A record of how a space came to have the shape it has, carried by the space
+/// but never interpreted by it.
+///
+/// The decisions are taken during planning and are invisible afterwards: the
+/// encoding shows what a space *is*, not which constraint was folded into it,
+/// which one was left to filter, or which grouping was tried and abandoned. So
+/// whoever plans a space attaches its own account of it, and whoever reports on
+/// a space asks that account to print itself. Neither has to know the other's
+/// vocabulary, which is the point -- planning is the builder's business.
+struct SpaceMetadata {
+  virtual ~SpaceMetadata() = default;
+  /// Print the record as the members of a JSON object -- no enclosing braces,
+  /// and a trailing comma is the caller's problem, not this one's.
+  virtual void printJSONMembers(std::ostream &os) const = 0;
+};
+
 /// Ordered collection of SearchParams that defines the search space.
 struct ConfigSpace {
   std::vector<SearchParam> params;
@@ -266,6 +284,10 @@ struct ConfigSpace {
     size_t totalCount() const { return cumCount.back(); }
   };
   std::vector<DependentGroup> groups;
+
+  /// How this space was planned, for reporting. Null unless whoever built it
+  /// attached one.
+  std::unique_ptr<SpaceMetadata> metadata;
 
   ConfigSpace() = default;
   ConfigSpace(const ConfigSpace &) = delete;
