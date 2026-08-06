@@ -69,8 +69,12 @@ struct SearchParam {
   /// Return the i-th distinct value of this parameter (0-indexed).
   ParmValue valueAt(size_t subIdx) const;
   /// Return the sub-index of value within this parameter's domain (inverse of
-  /// valueAt).
+  /// valueAt). Meaningful only for a value the domain contains -- see
+  /// contains(), which is how a caller holding an arbitrary value checks.
   size_t subIndexOf(ParmValue value) const;
+  /// Whether `value` is one this parameter can take. A value outside the
+  /// domain has no sub-index, so subIndexOf() cannot report this itself.
+  bool contains(ParmValue value) const;
 
   /// Retain only values that evenly divide n; converts a range to a ValueList.
   SearchParam &keepDivisorsOf(ParmValue n);
@@ -298,7 +302,16 @@ struct ConfigSpace {
   /// True if `conf` satisfies every structurally-encoded constraint, i.e. if
   /// at()/indexOf() can round-trip it. Configurations produced by at() always
   /// satisfy this; hand-built ones need not.
+  ///
+  /// This is a different question from isValid(). A constraint folded into the
+  /// encoding is *deregistered* as a predicate -- there is no configuration
+  /// left for it to reject -- so isValid() says nothing about it, and a
+  /// hand-built configuration violating one passes every check while naming a
+  /// point the space does not contain.
   bool isEncodable(const Configuration &conf) const;
+  /// Like isEncodable(), but reports every reason `conf` cannot be encoded to
+  /// `os` (nothing is printed if it can). Returns the same result.
+  bool debugIsEncodable(const Configuration &conf, raw_ostream &os) const;
 
   template <class Out> void dump(Out &out, const Configuration &config) const {
     out << " {";

@@ -154,6 +154,13 @@ def UpmemInferAcceleratorPass : Pass<"upmem-infer-accelerator", "ModuleOp"> {
            "Cost transform before surrogate training: linear, log2, log10, ln, sqrt, cbrt">,
     Option<"useMRAMTiling", "use-mram-tiling", "bool", "true",
            "Enable MRAM tiling in the UPMEM lowering">,
+    Option<"fusionEdges", "fusion-edges", "bool", "true",
+           "Declare a `fuse.<producer>-><consumer>` parameter for each "
+           "producer/consumer pair of distributed ops in the block, coupling "
+           "their tile sizes so that the configurations whose launches can be "
+           "fused are dense in the space. No pass reads the parameter; turning "
+           "this off only makes those configurations rarer, and shrinks the "
+           "space">,
     Option<"simulator", "simulator", "UpmemSimulatorId", "UpmemSimulatorId::CYCLE_ACCURATE",
            "Simulator backend",
            simulatorClValues.values>,

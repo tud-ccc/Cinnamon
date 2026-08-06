@@ -18,6 +18,7 @@ namespace mlir::cinm {
 
 SpaceVar SpaceBuilder::intRange(llvm::StringRef name, ParmValue lo,
                                 ParmValue hi) {
+  assert(lo > 0 && "search parameters are positive integers");
   SpaceVar v(name, hi);
   dims_.push_back({v, DimEntry::IntRange, lo, hi, {}});
   return v;
@@ -25,6 +26,7 @@ SpaceVar SpaceBuilder::intRange(llvm::StringRef name, ParmValue lo,
 
 SpaceVar SpaceBuilder::pow2Range(llvm::StringRef name, ParmValue expLo,
                                  ParmValue expHi) {
+  assert(expLo >= 0 && "search parameters are positive integers");
   SpaceVar v(name, ParmValue{1} << expHi);
   dims_.push_back({v, DimEntry::Pow2, expLo, expHi, {}});
   return v;
@@ -142,21 +144,21 @@ void SpaceBuilder::reportConstraintAnalysis(const ConfigSpace &space) const {
       llvm::dbgs() << "[cinm-analysis]   gated by "
                    << describeNode(*entry.node->operands()[0]) << ": "
                    << describeNode(*entry.node->operands()[1]) << " ("
-                   << (solvable ? "identity once the guard is settled"
-                                : "not an identity")
+                   << (solvable ? "equality once the guard is settled"
+                                : "not an equality")
                    << ")\n";
       continue;
     }
     auto eq = matchProductEquality(*entry.node);
     if (!eq) {
-      llvm::dbgs() << "[cinm-analysis]   not an identity: " << entry.description
+      llvm::dbgs() << "[cinm-analysis]   not an equality: " << entry.description
                    << "\n";
       continue;
     }
 
     const size_t lhsCard = jointCardinality(eq->lhs);
     const size_t rhsCard = jointCardinality(eq->rhs);
-    llvm::dbgs() << "[cinm-analysis]   identity: "
+    llvm::dbgs() << "[cinm-analysis]   equality: "
                  << describeMonomial(eq->lhs, names)
                  << " == " << describeMonomial(eq->rhs, names) << "\n";
     llvm::dbgs() << "[cinm-analysis]     joint cardinality: lhs=" << lhsCard
@@ -326,6 +328,8 @@ public:
         if (auto it = posOfDim_.find(v); it != posOfDim_.end())
           isGuardVar_[it->second] = true;
     }
+    gatedActive_.resize(gated_.size(), false);
+    refreshGatedActive();
   }
 
   /// Enumerate every satisfying tuple. False if a budget was exceeded, in
@@ -348,23 +352,35 @@ private:
           inProdEq_[it->second] = true;
   }
 
-  /// Run `fn` over the product equalities in force under the current partial
-  /// assignment -- the unconditional ones, plus every gated one whose guard is
-  /// settled true -- stopping at the first that returns true.
+  /// Which gated equalities are in force under the current partial assignment.
   ///
-  /// "Settled" is boolMustHold, not boolMayHold: acting on a guard that merely
+  /// "In force" is boolMustHold, not boolMayHold: acting on a guard that merely
   /// *might* hold would impose its consequent on the completions where it does
   /// not, which is the one way this could produce a wrong answer rather than a
   /// slow one.
+  ///
+  /// Recomputed when a guard variable is assigned or unassigned rather than
+  /// when it is read. The answer only depends on those variables, and it is
+  /// read once per candidate value of every remaining dimension -- doing it
+  /// per read costs a full node walk per gated equality per lookup, which is
+  /// most of the enumeration's time once a space has any guards at all.
+  void refreshGatedActive() {
+    if (gated_.empty())
+      return;
+    VarBounds vb = varBounds();
+    for (size_t i = 0; i < gated_.size(); ++i)
+      gatedActive_[i] = boolMustHold(*gated_[i].guard, vb);
+  }
+
+  /// Run `fn` over the product equalities in force under the current partial
+  /// assignment -- the unconditional ones, plus every gated one whose guard is
+  /// settled true -- stopping at the first that returns true.
   template <class Fn> bool anyActiveProdEq(Fn fn) const {
     for (const ProdEq &e : prods_)
       if (fn(e))
         return true;
-    if (gated_.empty())
-      return false;
-    VarBounds vb = varBounds();
-    for (const GatedProdEq &g : gated_)
-      if (boolMustHold(*g.guard, vb) && fn(g.eq))
+    for (size_t i = 0; i < gated_.size(); ++i)
+      if (gatedActive_[i] && fn(gated_[i].eq))
         return true;
     return false;
   }
@@ -572,9 +588,13 @@ private:
     for (ParmValue v : candidatesFor(pos)) {
       values_[pos] = v;
       assigned_[pos] = true;
+      if (isGuardVar_[pos])
+        refreshGatedActive();
       bool feasible = checkComplete() && boundsMayHold();
       bool ok = feasible ? recurse() : true;
       assigned_[pos] = false;
+      if (isGuardVar_[pos])
+        refreshGatedActive();
       if (!ok)
         return false; // budget exceeded, abort the whole enumeration
     }
@@ -605,6 +625,8 @@ private:
   std::vector<bool> inProdEq_;
   /// Whether dims_[pos] appears in some implication's antecedent; likewise.
   std::vector<bool> isGuardVar_;
+  /// Whether gated_[i]'s guard is settled true; see refreshGatedActive().
+  std::vector<bool> gatedActive_;
   size_t nodes_ = 0;
   llvm::DenseMap<size_t, size_t> posOfDim_;
   std::vector<std::vector<ParmValue>> *out_ = nullptr;
@@ -652,7 +674,7 @@ void SpaceBuilder::planComponents(
     divNames.push_back({m.parent, m.child});
   }
 
-  /// The identity reading of a comparison, if it has one and it is worth
+  /// The equality reading of a comparison, if it has one and it is worth
   /// keeping: a variable occurring on both sides determines nothing, so such
   /// an equality is left to the ordinary predicate path.
   ///

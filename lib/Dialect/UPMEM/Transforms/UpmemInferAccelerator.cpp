@@ -4,6 +4,7 @@
 #include <cinm-mlir/Conversion/CommonPatterns.h>
 #include <cinm-mlir/Conversion/LinalgToCnm/LinalgToCnm.h>
 #include <cinm-mlir/Dialect/Cinm/AcceleratorInference/AcceleratorInference.h>
+#include <cinm-mlir/Dialect/Cinm/AcceleratorInference/FusionEdges.h>
 #include <cinm-mlir/Dialect/Cinm/AcceleratorInference/SpaceBuilder.h>
 #include <cinm-mlir/Dialect/Cinm/IR/CinmAttributes.h>
 #include <cinm-mlir/Dialect/Cinm/IR/CinmBase.h>
@@ -109,6 +110,7 @@ struct UpmemInferenceOptions {
   cinm::InferenceOptions inference;
   bool annotateOpCosts = false;
   bool useMRAMTiling = true;
+  bool fusionEdges = true;
   bool debugPrintsInPipeline = false;
   UpmemSimulatorId simulator = UpmemSimulatorId::CYCLE_ACCURATE;
   std::chrono::milliseconds evalTimeoutMs = std::chrono::milliseconds(2000);
@@ -465,8 +467,12 @@ struct UpmemInferencePlugin : cinm::InferencePlugin {
   /// dimension for the workgroup distribution, and one for the leaf level.
   /// Also stamps the parameter names on `op` itself, see
   /// kOuterTileParamsAttr.
-  void handleLinalgOp(linalg::LinalgOp op, StringRef namePrefix,
-                      SpaceBuilder &b);
+  ///
+  /// What it declared is reported back, because the fusion edges between two
+  /// ops are stated over both ops' parameters and so can only be declared once
+  /// every op has been through here.
+  std::optional<cinm::DistributedOpInfo>
+  handleLinalgOp(linalg::LinalgOp op, StringRef namePrefix, SpaceBuilder &b);
 
   void initializeSpace(cinm::ComputeBlockOp refClone,
                        cinm::ConfigSpace &space) override {
@@ -543,14 +549,23 @@ struct UpmemInferencePlugin : cinm::InferencePlugin {
     });
 
     llvm::StringMap<unsigned> kindSeen;
+    SmallVector<cinm::DistributedOpInfo, 2> distributed;
     block.getBody().walk([&](Operation *op) {
       if (!isDistributionCandidate(op))
         return;
       std::string kind = searchNameFor(op);
       std::string prefix =
           kindCount[kind] > 1 ? kind + std::to_string(kindSeen[kind]++) : kind;
-      handleLinalgOp(llvm::cast<linalg::LinalgOp>(op), prefix, b);
+      if (auto info =
+              handleLinalgOp(llvm::cast<linalg::LinalgOp>(op), prefix, b))
+        distributed.push_back(std::move(*info));
     });
+
+    // Whether a consumer can pick its operand up from the leaf the producer
+    // left it on is a joint property of the two ops' tilings, so it is stated
+    // once both have declared theirs. See declareFusionEdges.
+    if (opts.fusionEdges)
+      cinm::declareFusionEdges(distributed, b);
 
     b.buildInto(space);
   }
@@ -689,10 +704,14 @@ private:
       // the dimensions the op has *after* --convert-linalg-to-cnm splits its
       // reductions, which have not been created yet, whereas the rank is the
       // same number here and there.
+      //
+      // Minus one: the parameter is one-based so that no search parameter is
+      // ever zero, while the attribute is the zero-based rank the unranking
+      // expects, with 0 the identity.
       if (auto name = op->getAttrOfType<StringAttr>(kOrderParamAttr))
         op->setAttr(cnm::CnmDialect::WORKGROUP_DIM_ORDER_INDEX_NAME,
                     IntegerAttr::get(IntegerType::get(ctx, 64),
-                                     value(name.getValue())));
+                                     value(name.getValue()) - 1));
     });
   }
 };
@@ -774,12 +793,12 @@ linalgOperandDims(linalg::LinalgOp op) {
   return dims;
 }
 
-void UpmemInferencePlugin::handleLinalgOp(linalg::LinalgOp op,
-                                          StringRef namePrefix,
-                                          SpaceBuilder &b) {
+std::optional<cinm::DistributedOpInfo>
+UpmemInferencePlugin::handleLinalgOp(linalg::LinalgOp op, StringRef namePrefix,
+                                     SpaceBuilder &b) {
   FailureOr<SmallVector<int64_t>> extents = linalgLoopExtents(op);
   if (failed(extents))
-    return; // Not distributable; contributes no parameters.
+    return std::nullopt; // Not distributable; contributes no parameters.
 
   auto dpus = dpusVar_;
   auto tasklets = taskletsVar_;
@@ -867,8 +886,10 @@ void UpmemInferencePlugin::handleLinalgOp(linalg::LinalgOp op,
   // Which tile dimension varies fastest across the leaves (design §G3). The
   // one parameter here that is not a size: it decides what the leaves sharing
   // a hardware node share rather than replicate, which the block sizes cannot
-  // state. `<op>.order` ranks the distinct orders lexicographically, with the
-  // default rule at 0.
+  // state. `<op>.order` ranks the distinct orders lexicographically, one-based,
+  // so the default rule is 1 and every search parameter stays positive. The
+  // attribute the lowering reads is the zero-based rank; stampSearchParams
+  // converts.
   //
   // The domain is `numLoops!` because the reduction split leaves at most one
   // distributed dimension per iteration dimension: a split dimension carries
@@ -878,8 +899,8 @@ void UpmemInferencePlugin::handleLinalgOp(linalg::LinalgOp op,
   // does not offer, not a trial that fails.
   std::optional<SpaceVar> order;
   if (extents->size() >= 2) {
-    SpaceVar orderVar = b.intRange((namePrefix + ".order").str(), 0,
-                                   factorial(extents->size()) - 1);
+    SpaceVar orderVar = b.intRange((namePrefix + ".order").str(), 1,
+                                   factorial(extents->size()));
     b.require(
         [=](const ConfigurationVector &c, arma::urowvec &valid) {
           arma::urowvec distributed(c.size(), arma::fill::zeros);
@@ -905,10 +926,10 @@ void UpmemInferencePlugin::handleLinalgOp(linalg::LinalgOp op,
             // Lanes already cleared by an earlier constraint stay cleared:
             // %= multiplies into the existing 0.
             arma::uvec lanes = arma::find(distributed == stop);
-            valid.elem(lanes) %= (orderRow.elem(lanes) < runningFactorial);
+            valid.elem(lanes) %= (orderRow.elem(lanes) <= runningFactorial);
           }
         },
-        "order < (number of dimensions spread over the workgroup)!");
+        "order <= (number of dimensions spread over the workgroup)!");
     order = orderVar;
   }
 
@@ -927,6 +948,9 @@ void UpmemInferencePlugin::handleLinalgOp(linalg::LinalgOp op,
   op->setAttr(kLeafTileParamsAttr, paramNames(leaves));
   if (order)
     op->setAttr(kOrderParamAttr, builder.getStringAttr(order->name()));
+
+  return cinm::DistributedOpInfo{op, namePrefix.str(), std::move(extentsCopy),
+                                 std::move(perLevel), order};
 }
 
 // ===----------------------------------------------------------------------===//
@@ -963,6 +987,7 @@ struct UpmemInferAcceleratorPass
     o.dumpDir = dumpDir;
     upmemOpts.annotateOpCosts = annotateOpCosts;
     upmemOpts.useMRAMTiling = useMRAMTiling;
+    upmemOpts.fusionEdges = fusionEdges;
     upmemOpts.fixedDpus = fixedDpus;
     upmemOpts.fixedTasklets = fixedTasklets;
     upmemOpts.simulator = simulator;

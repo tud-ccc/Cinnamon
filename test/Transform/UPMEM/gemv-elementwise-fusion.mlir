@@ -1,8 +1,8 @@
 // RUN: cinm-opt %s --cinm-assign-platforms --cinm-isolate-compute-blocks \
-// RUN:   --upmem-infer-accelerator="simulator=op-count eval-solution=dpus=16,tasklets=1,gemv.M.mram=64,gemv.K.mram=1024,gemv.M.wram=64,gemv.K.wram=128,gemv.order=0,elementwise.D0.mram=64,elementwise.D0.wram=64" \
+// RUN:   --upmem-infer-accelerator="simulator=op-count eval-solution=dpus=16,tasklets=1,gemv.M.mram=64,gemv.K.mram=1024,gemv.M.wram=64,gemv.K.wram=128,gemv.order=1,elementwise.D0.mram=64,elementwise.D0.wram=64,fuse.gemv->elementwise=2" \
 // RUN: | FileCheck %s --check-prefix=FUSED
 // RUN: cinm-opt %s --cinm-assign-platforms --cinm-isolate-compute-blocks \
-// RUN:   --upmem-infer-accelerator="simulator=op-count eval-solution=dpus=16,tasklets=1,gemv.M.mram=256,gemv.K.mram=256,gemv.M.wram=64,gemv.K.wram=64,gemv.order=0,elementwise.D0.mram=64,elementwise.D0.wram=64" \
+// RUN:   --upmem-infer-accelerator="simulator=op-count eval-solution=dpus=16,tasklets=1,gemv.M.mram=256,gemv.K.mram=256,gemv.M.wram=64,gemv.K.wram=64,gemv.order=1,elementwise.D0.mram=64,elementwise.D0.wram=64,fuse.gemv->elementwise=1" \
 // RUN: | FileCheck %s --check-prefix=SPLIT
 
 // `gemv` then elementwise, end to end, on the two configurations that decide
@@ -15,7 +15,9 @@
 //
 // Whether that round trip is real is a property of the configuration, not of
 // the program, which is why --cnm-fuse-launches only recognises it and never
-// forces it.
+// forces it. `fuse.gemv->elementwise` is the search parameter that says which
+// of the two a configuration is: 1 is "not fused", and the space accepts a
+// higher value for the first configuration only.
 
 #upmem = #upmem.platform<type = v1A, dimensions = 32x64x24>
 
