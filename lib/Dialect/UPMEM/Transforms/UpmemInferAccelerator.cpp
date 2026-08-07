@@ -797,18 +797,7 @@ UpmemInferencePlugin::handleLinalgOp(linalg::LinalgOp op, StringRef namePrefix,
   SmallVector<std::string> dimNames =
       iterationDimNames(origin, extents->size());
 
-  // The levels come from the platform rather than from a pair of hardcoded
-  // names, so that "which memory level" is an index into a list the target
-  // owns -- which is what lets anything downstream (a fusion level, say) talk
-  // about levels without knowing they are called mram and wram. Ordered from
-  // farthest to closest to the compute elements, so each level's tile is cut
-  // out of the enclosing one and the factors chain by divisibility.
-  //
-  // Names are unchanged by this: the level *is* called "mram", so
-  // `gemv.M.mram` stays `gemv.M.mram` and configurations recorded under
-  // experiments/ keep resolving. Declaration order is unchanged too
-  // (dimension outer, level inner), which keeps the flat index encoding --
-  // and hence seeded sampling -- reproducible against earlier runs.
+  /// One tiling factor per level and dim.
   ArrayRef<cinm::CinmLevelDefAttr> levels = platform.getLevels();
   SmallVector<SmallVector<IntVar>> perLevel(levels.size());
   for (auto [dim, extent] : llvm::enumerate(*extents)) {
@@ -820,14 +809,11 @@ UpmemInferencePlugin::handleLinalgOp(linalg::LinalgOp op, StringRef namePrefix,
                         : b.divisorsOf(name, perLevel[levelIdx - 1].back()));
     }
   }
-  // The distribution level -- what --convert-linalg-to-cnm spreads over the
-  // workgroup -- and the leaf level, which --upmem-tile-mram-buffers stages
-  // into. initializeSpace has already refused a platform with a level in
-  // between, because nothing would read its factors.
+  // todo is this generic enough for CNM? I think so
   SmallVector<IntVar> blocks = perLevel.front();
   SmallVector<IntVar> leaves = perLevel.back();
 
-  // The tile counts must fill the workgroup exactly (design §G2). This is the
+  // The tile counts must fill the workgroup exactly. This is the
   // one structural constraint; everything else about the distribution follows
   // from the block sizes and the op's own indexing maps.
   SmallVector<int64_t> extentsCopy(*extents);
@@ -837,14 +823,17 @@ UpmemInferencePlugin::handleLinalgOp(linalg::LinalgOp op, StringRef namePrefix,
   b.require(cinm::prod(tilesPerDim) == dpus * tasklets,
             "prod(extent / block) == dpus * tasklets");
 
-  // Capacity, as a *necessary* condition only (design §H4). Assume maximal
-  // sharing -- every operand stored once per DPU -- so the bound can never
-  // reject a configuration that would have fitted. What actually fits depends
-  // on decisions taken during lowering (which operands end up shared, how
-  // promotion sizes its staging buffers, where buffers are hoisted), so the
-  // exact test is done on the lowered program instead.
+  // Capacity. A level's size is what one DPU has, and a DPU runs `tasklets`
+  // tiles, so the footprint charged here is one private copy of every operand
+  // tile per tasklet: no sharing. A configuration that passes therefore has
+  // room whatever lowering decides to share.
+  //
+  // Tasklets can in fact share an operand whose dimensions no tasklet index
+  // reaches -- the vector of a gemv, say -- so this rejects configurations
+  // that would have fitted. That is the direction the bound is meant to err
+  // in; the tight test is still done on the lowered program.
   auto operandDims = linalgOperandDims(op);
-  auto footprint = [operandDims](ArrayRef<IntVar> sizes) -> cinm::IntExpr {
+  auto footprint = [operandDims, tasklets](ArrayRef<IntVar> sizes) {
     SmallVector<cinm::IntExpr> operands;
     for (const auto &dims : operandDims) {
       SmallVector<cinm::IntExpr> factors;
@@ -852,14 +841,14 @@ UpmemInferencePlugin::handleLinalgOp(linalg::LinalgOp op, StringRef namePrefix,
         factors.push_back(sizes[dim]);
       operands.push_back(cinm::prod(std::move(factors)));
     }
-    return cinm::sum(std::move(operands));
+    return tasklets * cinm::sum(std::move(operands));
   };
 
   // One bound per level, against the capacity the platform declares for it.
   for (auto [levelIdx, level] : llvm::enumerate(levels))
     b.require(footprint(perLevel[levelIdx]) <= level.getSizeInElements(eltTy),
-              ("sum of operand tiles <= " + level.getName().getValue() +
-               " (assuming maximal sharing)")
+              ("tasklets * sum of operand tiles <= " +
+               level.getName().getValue() + " (assuming no sharing)")
                   .str());
   if (!opts.useMRAMTiling) {
     // Note: this is only required for benchmarks that compare
