@@ -16,24 +16,6 @@
 using namespace mlir::cinm::constraints;
 namespace mlir::cinm {
 
-namespace detail {
-void assertArithmeticOperands(const ConstraintNodePtr &lhs,
-                              const ConstraintNodePtr &rhs,
-                              llvm::StringRef op) {
-  for (const ConstraintNodePtr &side : {lhs, rhs}) {
-    auto found = findNonArithmeticVar(*side);
-    if (!found)
-      continue;
-    llvm::report_fatal_error(llvm::Twine("search parameter '") + found->second +
-                             "' is a " + paramKindName(found->first) +
-                             ", whose values are a numbering rather than a "
-                             "quantity; it cannot appear under '" +
-                             op +
-                             "' (only '==' and '!=' are meaningful on it)");
-  }
-}
-} // namespace detail
-
 // ===----------------------------------------------------------------------===//
 // Planning report
 // ===----------------------------------------------------------------------===//
@@ -114,63 +96,63 @@ void SpaceBuilder::PlanMetadata::printJSONMembers(std::ostream &os) const {
 // SpaceBuilder — dimension declaration
 // ===----------------------------------------------------------------------===//
 
-SpaceVar SpaceBuilder::intRange(llvm::StringRef name, ParmValue lo,
-                                ParmValue hi) {
+IntVar SpaceBuilder::intRange(llvm::StringRef name, ParmValue lo,
+                              ParmValue hi) {
   assert(lo > 0 && "search parameters are positive integers");
-  SpaceVar v(name, hi);
-  dims_.push_back({v, DimEntry::IntRange, lo, hi, {}});
+  IntVar v(name, hi);
+  dims_.push_back({v.name_, v.idx_, DimEntry::IntRange, lo, hi, {}});
   return v;
 }
 
-SpaceVar SpaceBuilder::pow2Range(llvm::StringRef name, ParmValue expLo,
-                                 ParmValue expHi) {
+IntVar SpaceBuilder::pow2Range(llvm::StringRef name, ParmValue expLo,
+                               ParmValue expHi) {
   assert(expLo >= 0 && "search parameters are positive integers");
-  SpaceVar v(name, ParmValue{1} << expHi);
-  dims_.push_back({v, DimEntry::Pow2, expLo, expHi, {}});
+  IntVar v(name, ParmValue{1} << expHi);
+  dims_.push_back({v.name_, v.idx_, DimEntry::Pow2, expLo, expHi, {}});
   return v;
 }
 
-SpaceVar SpaceBuilder::permutation(llvm::StringRef name, unsigned n) {
+PermVar SpaceBuilder::permutation(llvm::StringRef name, unsigned n) {
   std::optional<int64_t> count = factorial(n);
   assert(count && "too many dimensions to enumerate their permutations");
   // The rank is one-based like every other parameter; the decoder is
   // zero-based. Which end converts is stated where the value is consumed.
   auto hi = static_cast<ParmValue>(*count);
-  SpaceVar v(name, hi, ParamKind::Permutation);
-  dims_.push_back({v, DimEntry::Permutation, 1, hi, {}, n});
+  PermVar v(name, hi);
+  dims_.push_back({v.name_, v.idx_, DimEntry::Permutation, 1, hi, {}, n});
   return v;
 }
 
-SpaceVar SpaceBuilder::divisorsOf(llvm::StringRef name, ParmValue n) {
-  SpaceVar v(name, n);
-  dims_.push_back({v, DimEntry::DivisorsOfConst, 1, n, {n}});
+IntVar SpaceBuilder::divisorsOf(llvm::StringRef name, ParmValue n) {
+  IntVar v(name, n);
+  dims_.push_back({v.name_, v.idx_, DimEntry::DivisorsOfConst, 1, n, {n}});
   return v;
 }
 
-SpaceVar SpaceBuilder::divisorsOf(llvm::StringRef name, SpaceVar src) {
-  SpaceVar v(name, src.maxVal());
-  dims_.push_back({v, DimEntry::IntRange, 1, src.maxVal(), {}});
+IntVar SpaceBuilder::divisorsOf(llvm::StringRef name, IntVar src) {
+  IntVar v(name, src.maxVal());
+  dims_.push_back({v.name_, v.idx_, DimEntry::IntRange, 1, src.maxVal(), {}});
   multiples_.push_back({v.name_, src.name_});
   return v;
 }
 
-SpaceBuilder::DimEntry &SpaceBuilder::findEntry(const SpaceVar &v) {
+SpaceBuilder::DimEntry &SpaceBuilder::findEntry(const IntVar &v) {
   for (auto &e : dims_)
-    if (e.var.idx_ == v.idx_)
+    if (e.idx == v.idx_)
       return e;
   llvm_unreachable("SpaceVar not found in SpaceBuilder");
 }
 
-SpaceVar SpaceBuilder::findVarByName(llvm::StringRef name) const {
+IntVar SpaceBuilder::findVarByName(llvm::StringRef name) const {
   for (const auto &e : dims_)
-    if (e.var.name_ == name.str())
-      return e.var;
+    if (e.name == name.str())
+      return IntVar(e.name, e.hi, e.idx);
   llvm_unreachable("dim name not found in SpaceBuilder");
 }
 
 int SpaceBuilder::dimIndexByName(llvm::StringRef name) const {
   for (int i = 0; i < (int)dims_.size(); ++i)
-    if (dims_[i].var.name_ == name.str())
+    if (dims_[i].name == name.str())
       return i;
   return -1;
 }
@@ -179,12 +161,12 @@ int SpaceBuilder::dimIndexByName(llvm::StringRef name) const {
 // SpaceBuilder — constraint declaration
 // ===----------------------------------------------------------------------===//
 
-void SpaceBuilder::mustDivide(SpaceVar v, ParmValue n) {
+void SpaceBuilder::mustDivide(IntVar v, ParmValue n) {
   if (!ShapedType::isDynamic(n))
     findEntry(v).divisorFilters.push_back(n);
 }
 
-void SpaceBuilder::mustDivide(SpaceVar parent, SpaceVar child) {
+void SpaceBuilder::mustDivide(IntVar parent, IntVar child) {
   multiples_.push_back({parent.name_, child.name_});
 }
 
@@ -301,17 +283,16 @@ void SpaceBuilder::buildInto(ConfigSpace &space) {
       switch (entry.kind) {
       case DimEntry::IntRange:
       case DimEntry::DivisorsOfConst:
-        return makeRange(entry.var.name_, entry.lo, entry.hi);
+        return makeRange(entry.name, entry.lo, entry.hi);
       case DimEntry::Pow2:
-        return makePow2Range(entry.var.name_, entry.lo, entry.hi);
+        return makePow2Range(entry.name, entry.lo, entry.hi);
       case DimEntry::Permutation:
-        return makePermutation(entry.var.name_, entry.permutationSize);
+        return makePermutation(entry.name, entry.permutationSize);
       }
       llvm_unreachable("unknown DimKind");
     }();
     // How the domain is stored and how its values are meant are independent;
     // the declaration carries the second on the handle.
-    param.kind = entry.var.kind();
 
     std::sort(entry.divisorFilters.begin(), entry.divisorFilters.end());
     entry.divisorFilters.erase(
@@ -320,12 +301,12 @@ void SpaceBuilder::buildInto(ConfigSpace &space) {
     for (ParmValue n : entry.divisorFilters) {
       param.keepDivisorsOf(n);
       report->constraints.push_back(
-          {std::to_string(n) + " % " + entry.var.name_ + " == 0",
-           "static-filter", true});
+          {std::to_string(n) + " % " + entry.name + " == 0", "static-filter",
+           true});
     }
 
     LLVM_DEBUG({
-      llvm::dbgs() << "[cinm-space]   dim '" << entry.var.name_ << "': ";
+      llvm::dbgs() << "[cinm-space]   dim '" << entry.name << "': ";
       switch (entry.kind) {
       case DimEntry::IntRange:
         llvm::dbgs() << "int[" << entry.lo << ".." << entry.hi << "]";
@@ -353,7 +334,7 @@ void SpaceBuilder::buildInto(ConfigSpace &space) {
       llvm::dbgs() << "\n";
     });
 
-    *entry.var.idx_ = space.addDim(std::move(param));
+    *entry.idx = space.addDim(std::move(param));
   }
 
   for (const SearchParam &param : space.params)

@@ -77,8 +77,9 @@ namespace mlir::upmem {
 
 namespace {
 using mlir::cinm::ConfigurationVector;
+using mlir::cinm::IntVar;
+using mlir::cinm::PermVar;
 using mlir::cinm::SpaceBuilder;
-using mlir::cinm::SpaceVar;
 using mlir::cinm::utils::Maybe;
 
 /// The vectorized constraints below divide by block/leaf values with no zero
@@ -194,8 +195,8 @@ struct UpmemInferencePlugin : cinm::InferencePlugin {
   const UpmemInferenceOptions &opts;
   std::unique_ptr<UpmemSimulator> simulator;
 
-  // SpaceVars for dpus and tasklets, assigned during initializeSpace.
-  SpaceVar dpusVar_, taskletsVar_;
+  // Handles for dpus and tasklets, assigned during initializeSpace.
+  IntVar dpusVar_, taskletsVar_;
 
   std::unique_ptr<PassManager> frontPipeline;
   std::unique_ptr<PassManager> backPipeline;
@@ -815,7 +816,7 @@ UpmemInferencePlugin::handleLinalgOp(linalg::LinalgOp op, StringRef namePrefix,
   // (dimension outer, level inner), which keeps the flat index encoding --
   // and hence seeded sampling -- reproducible against earlier runs.
   ArrayRef<cinm::CinmLevelDefAttr> levels = platform.getLevels();
-  SmallVector<SmallVector<SpaceVar>> perLevel(levels.size());
+  SmallVector<SmallVector<IntVar>> perLevel(levels.size());
   for (auto [dim, extent] : llvm::enumerate(*extents)) {
     std::string base = (namePrefix + "." + dimNames[dim]).str();
     for (auto [levelIdx, level] : llvm::enumerate(levels)) {
@@ -829,8 +830,8 @@ UpmemInferencePlugin::handleLinalgOp(linalg::LinalgOp op, StringRef namePrefix,
   // workgroup -- and the leaf level, which --upmem-tile-mram-buffers stages
   // into. initializeSpace has already refused a platform with a level in
   // between, because nothing would read its factors.
-  SmallVector<SpaceVar> blocks = perLevel.front();
-  SmallVector<SpaceVar> leaves = perLevel.back();
+  SmallVector<IntVar> blocks = perLevel.front();
+  SmallVector<IntVar> leaves = perLevel.back();
 
   // The tile counts must fill the workgroup exactly (design §G2). This is the
   // one structural constraint; everything else about the distribution follows
@@ -849,7 +850,7 @@ UpmemInferencePlugin::handleLinalgOp(linalg::LinalgOp op, StringRef namePrefix,
   // promotion sizes its staging buffers, where buffers are hoisted), so the
   // exact test is done on the lowered program instead.
   auto operandDims = linalgOperandDims(op);
-  auto footprint = [operandDims](ArrayRef<SpaceVar> sizes) -> cinm::IntExpr {
+  auto footprint = [operandDims](ArrayRef<IntVar> sizes) -> cinm::IntExpr {
     SmallVector<cinm::IntExpr> operands;
     for (const auto &dims : operandDims) {
       SmallVector<cinm::IntExpr> factors;
@@ -885,9 +886,9 @@ UpmemInferencePlugin::handleLinalgOp(linalg::LinalgOp op, StringRef namePrefix,
   // there actually are depends on the block sizes, so the rest of the range is
   // pruned by a predicate -- an index the op has no order for is a
   // configuration the space does not offer, not a trial that fails.
-  std::optional<SpaceVar> order;
+  std::optional<PermVar> order;
   if (extents->size() >= 2) {
-    SpaceVar orderVar =
+    PermVar orderVar =
         b.permutation((namePrefix + ".order").str(), extents->size());
     b.require(
         [=](const ConfigurationVector &c, arma::urowvec &valid) {
@@ -904,7 +905,9 @@ UpmemInferencePlugin::handleLinalgOp(linalg::LinalgOp op, StringRef namePrefix,
             distributed += dimDistributed;
           }
 
-          const cinm::ParmVector &orderRow = orderVar[c];
+          // encodedRow: this predicate compares against n!, so it works on
+          // the rank rather than on the ordering it names.
+          const cinm::ParmVector &orderRow = orderVar.encodedRow(c);
           const uint64_t maxDistributed =
               static_cast<uint64_t>(extentsCopy.size());
           uint64_t runningFactorial = 1; // == stop!
@@ -926,9 +929,9 @@ UpmemInferencePlugin::handleLinalgOp(linalg::LinalgOp op, StringRef namePrefix,
   // into each trial without a side table keyed on anything a rewrite could
   // invalidate; stampSearchParams only resolves the names.
   OpBuilder builder(op.getContext());
-  auto paramNames = [&](ArrayRef<SpaceVar> vars) {
+  auto paramNames = [&](ArrayRef<IntVar> vars) {
     SmallVector<Attribute> names;
-    for (const SpaceVar &var : vars)
+    for (const IntVar &var : vars)
       names.push_back(builder.getStringAttr(var.name()));
     return builder.getArrayAttr(names);
   };

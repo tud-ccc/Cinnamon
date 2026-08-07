@@ -70,7 +70,6 @@ private:
   struct VarState {
     std::shared_ptr<size_t> idx;
     std::string name;
-    ParamKind kind;
   };
   using OpndState = SmallVector<ConstraintNodePtr, 2>;
 
@@ -78,9 +77,10 @@ public:
   // const
   ConstraintNode(ParmValue v) : kind(Kind::Const), state(v) {}
   // var
-  ConstraintNode(llvm::StringRef v, std::shared_ptr<size_t> idx,
-                 ParamKind paramKind = ParamKind::Integer)
-      : kind(Kind::Var), state(VarState{std::move(idx), v.str(), paramKind}) {}
+  /// A parameter. There is no kind here: only a quantity ever reaches this
+  /// IR, because only IntVar converts to an Expr.
+  ConstraintNode(llvm::StringRef v, std::shared_ptr<size_t> idx)
+      : kind(Kind::Var), state(VarState{std::move(idx), v.str()}) {}
   // binary
   ConstraintNode(ConstraintNode::Kind kind, ConstraintNodePtr lhs,
                  ConstraintNodePtr rhs)
@@ -104,8 +104,9 @@ public:
   }
 
   /// Whether a node of this kind evaluates to a truth value rather than a
-  /// number. The DSL's `Expr<Type::BOOL>` guarantees this statically; the
-  /// analyser, which works on bare nodes, has to ask.
+  /// number. The DSL's `Expr<Type::BOOL>` guarantees this statically; code
+  /// working on bare nodes -- the Gecode translation, the evaluator -- has to
+  /// ask.
   inline static bool isBoolKind(ConstraintNode::Kind kind) {
     return kind >= ConstraintNode::Kind::FirstBooleanKind;
   }
@@ -125,10 +126,6 @@ public:
   std::shared_ptr<size_t> varIdxPtr() const {
     assert(kind == Kind::Var);
     return std::get<VarState>(state).idx;
-  }
-  ParamKind varKind() const {
-    assert(kind == Kind::Var);
-    return std::get<VarState>(state).kind;
   }
   ArrayRef<ConstraintNodePtr> operands() const {
     if (std::holds_alternative<OpndState>(state))
@@ -154,16 +151,6 @@ enum class Type { BOOL, INT };
 // ===----------------------------------------------------------------------===//
 // Evaluation
 // ===----------------------------------------------------------------------===//
-
-/// The kind of the first parameter below `node` that is not `ParamKind::
-/// Integer`, with its name, or nullopt if there is none.
-///
-/// Values of such a parameter are a numbering, not a quantity: only equality
-/// and inequality mean anything on them, and even that only against another
-/// value of the same parameter. The DSL uses this to reject the rest at the
-/// point the expression is built, which is where the mistake is.
-std::optional<std::pair<ParamKind, llvm::StringRef>>
-findNonArithmeticVar(const ConstraintNode &node);
 
 /// Evaluate an arithmetic (non-boolean) node over a whole batch.
 ///
