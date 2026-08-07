@@ -2,20 +2,26 @@
 //
 // What the search space *contains* is not observable from a pass pipeline --
 // only what the search eventually picks is -- so these check it directly:
-// build a space with SpaceBuilder, enumerate everything the encoding offers,
-// and compare against the same predicate applied by hand to the declared box.
+// build a space with SpaceBuilder, enumerate everything it contains, and
+// compare against the same predicate applied by hand to the declared box.
 //
 // Two properties per case, and the second is the one that has caught bugs:
 //
 //  - **Correctness.** The accepted set must equal the brute-force set. Too few
 //    is a constraint that over-rejects; too many is one that is not being
 //    enforced at all.
-//  - **Absorption.** For the cases marked so, the encoding must offer *only*
-//    the valid configurations -- `totalSize() == |valid|`. That is the whole
-//    point of the component enumeration, and it is where a constraint the
-//    enumerator silently stops enforcing shows up: it
-//    is absorbed (so the predicate is dropped) while no longer pruning, which
-//    correctness alone would catch only if the predicate had been kept.
+//  - **Exactness.** The space must contain *only* the valid configurations --
+//    `totalSize() == |valid|`. Every constraint here is written in the DSL, so
+//    every one of them is posted to the solver, so none of them has anything
+//    left to reject; a case where this fails is one the translation dropped on
+//    the floor and the predicate quietly caught. Correctness alone would not
+//    notice, because the predicate is still registered.
+//
+// The distinction the two used to draw -- whether a constraint was *folded*
+// into the encoding or left to filter -- no longer exists. There is nothing
+// between the two now: a constraint is either expressible in the IR, and then
+// the solver enforces it, or it is an opaque lambda, and no test here builds
+// one.
 //
 //===----------------------------------------------------------------------===//
 //===- ConstraintIRTest.cpp ----------------------------------------------===//
@@ -69,8 +75,6 @@ PointSet accepted(const ConfigSpace &space) {
   return out;
 }
 
-enum Absorption { Absorbed, Filtered };
-
 std::vector<ParmValue> range(ParmValue lo, ParmValue hi) {
   std::vector<ParmValue> out;
   for (ParmValue v = lo; v <= hi; ++v)
@@ -86,14 +90,13 @@ std::vector<ParmValue> divisorsOfN(ParmValue n) {
   return out;
 }
 
-void check(const ConfigSpace &space, const PointSet &expected,
-           Absorption absorption) {
+void check(const ConfigSpace &space, const PointSet &expected) {
   PointSet got = accepted(space);
 
   EXPECT_EQ(got, expected);
-
-  if (absorption == Absorbed)
-    EXPECT_EQ(space.totalSize(), expected.size());
+  EXPECT_EQ(space.totalSize(), expected.size())
+      << "the space contains configurations the constraints reject, so a "
+         "constraint was not posted to the solver";
 
   Configuration conf(space.size());
   for (size_t i = 0; i < space.totalSize(); ++i) {
@@ -117,8 +120,7 @@ TEST(ConstraintIRTest, GatedEquality) {
 
   check(space,
         bruteForce({range(1, 3), divisorsOfN(64), divisorsOfN(64)},
-                   [](const Point &p) { return p[0] < 2 || p[1] == p[2]; }),
-        Absorbed);
+                   [](const Point &p) { return p[0] < 2 || p[1] == p[2]; }));
 }
 
 TEST(ConstraintIRTest, NestedGates) {
@@ -135,17 +137,15 @@ TEST(ConstraintIRTest, NestedGates) {
   ConfigSpace space;
   b.buildInto(space);
 
-  check(space,
-        bruteForce({range(1, 3), divisorsOfN(64), divisorsOfN(64),
-                    divisorsOfN(64), divisorsOfN(64)},
-                   [](const Point &p) {
-                     if (p[1] % p[3] || p[2] % p[4])
-                       return false;
-                     if (p[0] >= 2 && p[1] != p[2])
-                       return false;
-                     return !(p[0] >= 3 && p[3] != p[4]);
-                   }),
-        Absorbed);
+  check(space, bruteForce({range(1, 3), divisorsOfN(64), divisorsOfN(64),
+                           divisorsOfN(64), divisorsOfN(64)},
+                          [](const Point &p) {
+                            if (p[1] % p[3] || p[2] % p[4])
+                              return false;
+                            if (p[0] >= 2 && p[1] != p[2])
+                              return false;
+                            return !(p[0] >= 3 && p[3] != p[4]);
+                          }));
 }
 
 TEST(ConstraintIRTest, GateWithProductEquality) {
@@ -159,15 +159,13 @@ TEST(ConstraintIRTest, GateWithProductEquality) {
   ConfigSpace space;
   b.buildInto(space);
 
-  check(
-      space,
-      bruteForce({range(1, 2), divisorsOfN(64), divisorsOfN(64), range(1, 64)},
-                 [](const Point &p) {
-                   if (p[1] * p[3] != 64)
-                     return false;
-                   return p[0] < 2 || p[1] == p[2];
-                 }),
-      Absorbed);
+  check(space, bruteForce({range(1, 2), divisorsOfN(64), divisorsOfN(64),
+                           range(1, 64)},
+                          [](const Point &p) {
+                            if (p[1] * p[3] != 64)
+                              return false;
+                            return p[0] < 2 || p[1] == p[2];
+                          }));
 }
 
 TEST(ConstraintIRTest, GateOnInequality) {
@@ -179,14 +177,13 @@ TEST(ConstraintIRTest, GateOnInequality) {
   ConfigSpace space;
   b.buildInto(space);
 
-  // An inequality consequent is not a product equality, and nothing else here
-  // links the variables, so there is no component to absorb it into. Correct,
-  // just filtered rather than encoded.
-  check(
-      space,
-      bruteForce({range(1, 2), divisorsOfN(64), divisorsOfN(64)},
-                 [](const Point &p) { return p[0] < 2 || p[1] * p[2] <= 64; }),
-      Filtered);
+  // A guarded inequality. The shape used to matter -- only a product equality
+  // could be folded, so this one was left to filter -- and no longer does: the
+  // solver posts a reified implication whatever the consequent is.
+  check(space, bruteForce({range(1, 2), divisorsOfN(64), divisorsOfN(64)},
+                          [](const Point &p) {
+                            return p[0] < 2 || p[1] * p[2] <= 64;
+                          }));
 }
 
 //===----------------------------------------------------------------------===//
@@ -202,12 +199,9 @@ TEST(ConstraintIRTest, ExactDivision) {
 
   // Only b == 1024. Under a truncating quotient this would also accept every
   // b in (512, 1024], none of which divides 1024.
-  check(space,
-        bruteForce({range(1, 1024)},
-                   [](const Point &p) {
-                     return 1024 % p[0] == 0 && 1024 / p[0] == 1;
-                   }),
-        Filtered);
+  check(space, bruteForce({range(1, 1024)}, [](const Point &p) {
+          return 1024 % p[0] == 0 && 1024 / p[0] == 1;
+        }));
 }
 
 TEST(ConstraintIRTest, ExactDivisionUnderGuard) {
@@ -218,18 +212,15 @@ TEST(ConstraintIRTest, ExactDivisionUnderGuard) {
   ConfigSpace space;
   b.buildInto(space);
 
-  // No divisibility side condition is extracted from under a guard, so the
-  // evaluation is the only thing enforcing exactness here. It is still
-  // absorbed: matchProductEquality cross-multiplies the consequent to
-  // `1024 == b`, which the enumerator solves.
-  check(space,
-        bruteForce({range(1, 2), range(1, 1024)},
-                   [](const Point &p) {
-                     if (p[0] < 2)
-                       return true;
-                     return 1024 % p[1] == 0 && 1024 / p[1] == 1;
-                   }),
-        Absorbed);
+  // No divisibility side condition is reified from under a guard, so what
+  // makes the division exact here is the condition conjoined at the comparison
+  // that contains it -- inside the implication's consequent, where it belongs.
+  // A configuration with fuse < 2 is unaffected by it, which is the point.
+  check(space, bruteForce({range(1, 2), range(1, 1024)}, [](const Point &p) {
+          if (p[0] < 2)
+            return true;
+          return 1024 % p[1] == 0 && 1024 / p[1] == 1;
+        }));
 }
 
 TEST(ConstraintIRTest, InexactDivisionInAntecedent) {
@@ -243,13 +234,10 @@ TEST(ConstraintIRTest, InexactDivisionInAntecedent) {
   // An inexact division in the *antecedent* falsifies the antecedent, which
   // satisfies the implication. Masking at the root instead of per comparison
   // would reject these lanes -- the opposite verdict.
-  check(space,
-        bruteForce({range(1, 16), range(1, 4)},
-                   [](const Point &p) {
-                     const bool ante = 16 % p[0] == 0 && 16 / p[0] == 1;
-                     return !ante || p[1] == 4;
-                   }),
-        Absorbed);
+  check(space, bruteForce({range(1, 16), range(1, 4)}, [](const Point &p) {
+          const bool ante = 16 % p[0] == 0 && 16 / p[0] == 1;
+          return !ante || p[1] == 4;
+        }));
 }
 
 //===----------------------------------------------------------------------===//
@@ -266,10 +254,8 @@ TEST(ConstraintIRTest, DividesIsStructuralAtTheTop) {
 
   // Unconditional, so it is reified exactly as `a / c` would have been: a
   // structural relation folded into the encoding, not a filter.
-  check(space,
-        bruteForce({divisorsOfN(64), range(1, 64)},
-                   [](const Point &p) { return p[0] % p[1] == 0; }),
-        Absorbed);
+  check(space, bruteForce({divisorsOfN(64), range(1, 64)},
+                          [](const Point &p) { return p[0] % p[1] == 0; }));
 }
 
 TEST(ConstraintIRTest, DividesUnderGuardOnlyTests) {
@@ -283,9 +269,8 @@ TEST(ConstraintIRTest, DividesUnderGuardOnlyTests) {
 
   // The point of the operator: `c` is *not* forced to divide `a`. Every pair
   // survives; only the ones where it happens to divide constrain `w`.
-  check(
-      space,
-      bruteForce({divisorsOfN(16), range(1, 16), range(1, 4)},
-                 [](const Point &p) { return p[0] % p[1] != 0 || p[2] == 4; }),
-      Filtered);
+  check(space, bruteForce({divisorsOfN(16), range(1, 16), range(1, 4)},
+                          [](const Point &p) {
+                            return p[0] % p[1] != 0 || p[2] == 4;
+                          }));
 }

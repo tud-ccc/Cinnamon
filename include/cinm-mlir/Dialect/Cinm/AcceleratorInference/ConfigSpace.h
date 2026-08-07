@@ -249,31 +249,12 @@ struct ConfigSpace {
   /// a separate scalar/vector pair.
   std::vector<std::pair<std::string, VecConstraint>> constraints;
 
-  /// A set of dimensions whose joint valuation is constrained, with every
-  /// satisfying tuple enumerated ahead of time. The component occupies one
-  /// slot of the flat index, sized by the number of solutions -- so the
-  /// mixed-radix encoding keeps its fixed-size-slot invariant while the
-  /// dimensions inside it are never enumerated independently.
+  /// Install the configurations this space contains.
   ///
-  /// This is what turns a structural constraint from something the search
-  /// filters into something it never offers.
-  struct SolvedComponent {
-    /// Dimensions covered, in the order the tuples store them.
-    std::vector<size_t> dims;
-    /// Every valid assignment. Order is deterministic (it is the enumeration
-    /// order), which is what makes flat indices reproducible across runs.
-    std::vector<std::vector<ParmValue>> solutions;
-    /// Inverse of `solutions`, for indexOf(). std::map rather than a hash map
-    /// so no tuple hash is needed; indexOf is not on a hot path.
-    std::map<std::vector<ParmValue>, size_t> indexOfSolution;
-
-    size_t size() const { return solutions.size(); }
-  };
-  std::vector<SolvedComponent> components;
-
-  /// Register a pre-enumerated component. Dimensions it covers must not be
-  /// claimed by any other component.
-  void addSolvedComponent(SolvedComponent &&component);
+  /// `solutions` must be sorted lexicographically and hold no duplicates --
+  /// which is what constraints::solveSpace returns -- because the flat index
+  /// *is* a position in it and indexOf() binary-searches it.
+  void setSolutions(std::vector<Configuration> &&solutions);
 
   /// How this space was planned, for reporting. Null unless whoever built it
   /// attached one.
@@ -286,7 +267,6 @@ struct ConfigSpace {
   size_t addDim(SearchParam &&param) {
     size_t idx = params.size();
     params.push_back(std::move(param));
-    encodingValid_ = false;
     return idx;
   }
 
@@ -294,7 +274,6 @@ struct ConfigSpace {
     size_t start = params.size();
     for (auto &dim : dims)
       params.push_back(std::move(dim));
-    encodingValid_ = false;
     return {start, (int64_t)params.size()};
   }
 
@@ -341,44 +320,44 @@ struct ConfigSpace {
   /// configuration is valid). Returns the same result as isValid().
   bool debugIsValid(const Configuration &config, raw_ostream &os) const;
 
-  /// Total number of configurations reachable by at() -- excludes everything a
-  /// component's enumeration ruled out, includes the configurations that are
-  /// still to be filtered by isValid().
+  /// Number of configurations the space contains -- every one the solver
+  /// found, which is every one satisfying the constraints it could be given.
+  /// What is left to filter is whatever was registered as an opaque predicate;
+  /// see isValid().
   size_t totalSize() const;
   /// Fill conf with the configuration at flat index idx.
   /// idx must be in [0, totalSize()). Constraints are NOT checked.
   void at(size_t idx, Configuration &conf) const;
   /// Convert a configuration to its flat index (inverse of at()).
+  ///
+  /// The configurations are sorted, so this is a binary search rather than a
+  /// side table. A configuration the space does not contain has no index; ask
+  /// isEncodable() first if that is in doubt.
   size_t indexOf(const Configuration &conf) const;
   /// Iterate all configurations in flat-index order, calling fn(conf, flatIdx)
-  /// for each. Return false from fn to stop early. Successive calls update only
-  /// the suffix of conf that changed (O(1) amortised per step vs O(S) for
-  /// at()).
+  /// for each. Return false from fn to stop early.
   void forEach(std::function<bool(const Configuration &, size_t)> fn) const;
   /// Like forEach(), but restricted to the flat-index range [lo, hi). Used to
-  /// parallelise a scan over the full space while keeping each chunk's
-  /// per-step cost O(1) amortised (only the initial config at `lo` costs
-  /// O(S), same as at()).
+  /// parallelise a scan over the whole space.
   void
   forEachChunk(size_t lo, size_t hi,
                std::function<bool(const Configuration &, size_t)> fn) const;
   /// Append to result all flat indices one discrete step away in any
-  /// dimension. Steps that land on a configuration the encoding does not
-  /// offer (because a structural constraint rules it out) are skipped, so a
-  /// configuration near the edge of a component has fewer neighbours.
+  /// dimension. A step that lands on a configuration the space does not
+  /// contain is skipped, so a configuration near the edge of the feasible set
+  /// has fewer neighbours.
   void neighborIndices(size_t idx, llvm::SmallVectorImpl<size_t> &result) const;
-  /// True if `conf` satisfies every structurally-encoded constraint, i.e. if
+  /// True if `conf` is one of the configurations this space contains, i.e. if
   /// at()/indexOf() can round-trip it. Configurations produced by at() always
   /// satisfy this; hand-built ones need not.
   ///
-  /// This is a different question from isValid(). A constraint folded into the
-  /// encoding is *deregistered* as a predicate -- there is no configuration
-  /// left for it to reject -- so isValid() says nothing about it, and a
-  /// hand-built configuration violating one passes every check while naming a
-  /// point the space does not contain.
+  /// This is a different question from isValid(). A constraint the solver
+  /// enforced has no configuration left to reject, so isValid() says nothing
+  /// about it, and a hand-built configuration violating one passes every check
+  /// while naming a point the space does not contain.
   bool isEncodable(const Configuration &conf) const;
-  /// Like isEncodable(), but reports every reason `conf` cannot be encoded to
-  /// `os` (nothing is printed if it can). Returns the same result.
+  /// Like isEncodable(), but reports every reason `conf` is not in the space to
+  /// `os` (nothing is printed if it is). Returns the same result.
   bool debugIsEncodable(const Configuration &conf, raw_ostream &os) const;
 
   template <class Out> void dump(Out &out, const Configuration &config) const {
@@ -390,22 +369,10 @@ struct ConfigSpace {
   }
 
 private:
-  /// One slot of the flat index: either a single dimension, or a whole
-  /// SolvedComponent whose dimensions are enumerated jointly and therefore
-  /// share one slot.
-  struct EncodingSlot {
-    size_t dimIdx; ///< index into params[]; the component's first dim if any
-    size_t componentIdx; ///< index into components[], or SIZE_MAX
-    size_t slotSize;     ///< number of distinct sub-indices this slot has
-  };
-
-  mutable bool encodingValid_ = false;
-  mutable std::vector<EncodingSlot> slots_;
-  /// suffixProd_[i] = product of slotSizes[i..end]; suffixProd_[slots_.size()]
-  /// = 1.
-  mutable std::vector<size_t> suffixProd_;
-
-  void ensureEncoding() const;
+  /// Every configuration in the space, sorted lexicographically. The flat
+  /// index is a position in here, which is why this is the one thing the space
+  /// requires to be sorted.
+  std::vector<Configuration> solutions_;
 };
 
 /// Wrap a space and config for nicer interface.

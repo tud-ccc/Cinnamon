@@ -171,6 +171,7 @@ endif()
 #     conan install . --output-folder=build --build=missing
 find_package(indicators REQUIRED)
 find_package(mlpack REQUIRED)
+find_package(Gecode REQUIRED)
 
 # LLVM's llvm_add_library wraps each target in an OBJECT library and
 # re-forwards includes via target_include_directories without SYSTEM
@@ -178,7 +179,7 @@ find_package(mlpack REQUIRED)
 # normally apply to IMPORTED targets. Workaround: add conan include paths
 # as global system includes so the flag reaches every compilation unit.
 string(TOUPPER "${CMAKE_BUILD_TYPE}" _build_type_upper)
-foreach(_pkg mlpack indicators ensmallen cereal armadillo OpenBLAS stb)
+foreach(_pkg mlpack indicators ensmallen cereal armadillo OpenBLAS stb gecode)
   set(_var "${_pkg}_INCLUDE_DIRS_${_build_type_upper}")
   if(DEFINED "${_var}")
     include_directories(SYSTEM "${${_var}}")

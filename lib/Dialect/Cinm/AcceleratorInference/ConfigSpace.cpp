@@ -314,174 +314,54 @@ void ConfigSpace::encode(const Configuration &conf,
     param.appendFeatures(value, out);
 }
 
-void ConfigSpace::addSolvedComponent(SolvedComponent &&component) {
-  component.indexOfSolution.clear();
-  for (size_t i = 0; i < component.solutions.size(); ++i)
-    component.indexOfSolution.emplace(component.solutions[i], i);
-  components.push_back(std::move(component));
-  encodingValid_ = false;
+void ConfigSpace::setSolutions(std::vector<Configuration> &&solutions) {
+  assert(llvm::is_sorted(solutions) &&
+         "the flat index is a position in this list, so it has to be sorted");
+  assert(llvm::all_of(solutions,
+                      [this](const Configuration &c) {
+                        return c.size() == params.size();
+                      }) &&
+         "every configuration must assign every parameter");
+  solutions_ = std::move(solutions);
 }
 
-void ConfigSpace::ensureEncoding() const {
-  if (encodingValid_)
-    return;
-
-  slots_.clear();
-
-  // A component owns every dimension it covers: those dimensions get no slot
-  // of their own, and the component contributes a single slot sized by its
-  // enumerated solution count. The first dimension of each component acts as
-  // its anchor so slot order stays deterministic.
-  std::vector<size_t> dimToComponent(params.size(), SIZE_MAX);
-  for (size_t ci = 0; ci < components.size(); ++ci)
-    for (size_t d : components[ci].dims)
-      dimToComponent[d] = ci;
-
-  for (size_t i = 0; i < params.size(); ++i) {
-    size_t ci = dimToComponent[i];
-    if (ci == SIZE_MAX) {
-      slots_.push_back({i, SIZE_MAX, params[i].cardinality()});
-      continue;
-    }
-    // Emit the component's slot once, at its first (lowest-index) dimension.
-    if (!components[ci].dims.empty() && components[ci].dims[0] == i)
-      slots_.push_back({i, ci, components[ci].size()});
-  }
-
-  const size_t S = slots_.size();
-  suffixProd_.resize(S + 1);
-  suffixProd_[S] = 1;
-  for (size_t i = S; i-- > 0;)
-    suffixProd_[i] = suffixProd_[i + 1] * slots_[i].slotSize;
-
-  encodingValid_ = true;
-}
-
-size_t ConfigSpace::totalSize() const {
-  ensureEncoding();
-  return slots_.empty() ? 1 : suffixProd_[0];
-}
+size_t ConfigSpace::totalSize() const { return solutions_.size(); }
 
 void ConfigSpace::at(size_t idx, Configuration &conf) const {
-  ensureEncoding();
-  conf.resize(params.size());
-  for (size_t si = slots_.size(); si-- > 0;) {
-    const auto &slot = slots_[si];
-    size_t subIdx = idx % slot.slotSize;
-    idx /= slot.slotSize;
-    if (slot.componentIdx == SIZE_MAX) {
-      conf[slot.dimIdx] = params[slot.dimIdx].valueAt(subIdx);
-      continue;
-    }
-    const auto &comp = components[slot.componentIdx];
-    const auto &tuple = comp.solutions[subIdx];
-    for (size_t k = 0; k < comp.dims.size(); ++k)
-      conf[comp.dims[k]] = tuple[k];
-  }
+  assert(idx < solutions_.size() && "flat index out of range");
+  conf = solutions_[idx];
 }
 
 void ConfigSpace::forEach(
     std::function<bool(const Configuration &, size_t)> fn) const {
-  ensureEncoding();
-  // Use suffixProd_[0] directly — avoids a redundant ensureEncoding() call
-  // inside totalSize() after we already ensured encoding above.
-  const size_t total = slots_.empty() ? 1 : suffixProd_[0];
-  forEachChunk(0, total, std::move(fn));
+  forEachChunk(0, solutions_.size(), std::move(fn));
 }
 
 void ConfigSpace::forEachChunk(
     size_t lo, size_t hi,
     std::function<bool(const Configuration &, size_t)> fn) const {
-  ensureEncoding();
-  if (lo >= hi)
-    return;
-  const size_t S = slots_.size();
-
-  // Per-slot combined sub-index in [0, slot.slotSize).
-  std::vector<size_t> subIdx(S, 0);
-  Configuration conf(params.size());
-
-  // Decode sub-index k for slot si and write the corresponding parameter
-  // values into conf, exactly as ConfigSpace::at() does for one slot.
-  auto applySubIdx = [&](size_t si, size_t k) {
-    const auto &slot = slots_[si];
-    if (slot.componentIdx == SIZE_MAX) {
-      conf[slot.dimIdx] = params[slot.dimIdx].valueAt(k);
+  hi = std::min(hi, solutions_.size());
+  for (size_t i = lo; i < hi; ++i)
+    if (!fn(solutions_[i], i))
       return;
-    }
-    const auto &comp = components[slot.componentIdx];
-    const auto &tuple = comp.solutions[k];
-    for (size_t j = 0; j < comp.dims.size(); ++j)
-      conf[comp.dims[j]] = tuple[j];
-  };
-
-  // Decompose lo into per-slot sub-indices (same mixed-radix decoding as
-  // at()) and initialise conf at flat index lo. This is the only O(S) step;
-  // every subsequent step below is O(1) amortised.
-  size_t rem = lo;
-  for (size_t si = S; si-- > 0;) {
-    subIdx[si] = rem % slots_[si].slotSize;
-    rem /= slots_[si].slotSize;
-    applySubIdx(si, subIdx[si]);
-  }
-
-  for (size_t flat = lo; flat < hi; ++flat) {
-    if (!fn(conf, flat))
-      return;
-
-    if (flat + 1 == hi)
-      break;
-
-    // Mixed-radix increment from the least-significant slot.
-    for (size_t si = S; si-- > 0;) {
-      ++subIdx[si];
-      bool carry = (subIdx[si] >= slots_[si].slotSize);
-      if (carry)
-        subIdx[si] = 0;
-      applySubIdx(si, subIdx[si]);
-      if (!carry)
-        break;
-    }
-  }
 }
 
 size_t ConfigSpace::indexOf(const Configuration &conf) const {
-  ensureEncoding();
-  size_t idx = 0;
-  for (size_t si = 0; si < slots_.size(); ++si) {
-    const auto &slot = slots_[si];
-    size_t subIdx;
-    if (slot.componentIdx == SIZE_MAX) {
-      subIdx = params[slot.dimIdx].subIndexOf(conf[slot.dimIdx]);
-    } else {
-      const auto &comp = components[slot.componentIdx];
-      std::vector<ParmValue> tuple(comp.dims.size());
-      for (size_t k = 0; k < comp.dims.size(); ++k)
-        tuple[k] = conf[comp.dims[k]];
-      auto it = comp.indexOfSolution.find(tuple);
-      // A configuration the component does not offer has no flat index. This
-      // is reachable only if a caller invents a configuration by hand; at()
-      // can never produce one.
-      assert(it != comp.indexOfSolution.end() &&
-             "configuration violates a structural constraint");
-      subIdx = it == comp.indexOfSolution.end() ? 0 : it->second;
-    }
-    idx = idx * slot.slotSize + subIdx;
-  }
-  return idx;
+  auto it = std::lower_bound(solutions_.begin(), solutions_.end(), conf);
+  assert(it != solutions_.end() && *it == conf &&
+         "configuration is not in this space; check isEncodable() first");
+  if (it == solutions_.end() || *it != conf)
+    return solutions_.size();
+  return static_cast<size_t>(std::distance(solutions_.begin(), it));
 }
 
 void ConfigSpace::neighborIndices(size_t idx,
                                   llvm::SmallVectorImpl<size_t> &result) const {
-  ensureEncoding();
-
-  // Decode, step one dimension, re-encode. The obvious alternative -- stride
-  // arithmetic on the flat index -- only coincides with "one step in one
-  // dimension" for slots holding a single dimension. Stepping a component's
-  // slot moves to the next enumerated tuple, which can differ in several
-  // dimensions at once, so it does not mean what this function claims.
-  Configuration conf;
-  at(idx, conf);
+  // Step one dimension at a time and look the result up. Arithmetic on the
+  // flat index would be meaningless: consecutive indices are lexicographic
+  // neighbours in the *feasible* set, which says nothing about how far apart
+  // two configurations are.
+  const Configuration &conf = solutions_[idx];
   Configuration probe = conf;
 
   llvm::SmallVector<ParmValue, 4> steps;
@@ -490,38 +370,25 @@ void ConfigSpace::neighborIndices(size_t idx,
     params[d].appendNeighbourValues(conf[d], steps);
     for (ParmValue step : steps) {
       probe[d] = step;
-      // Stepping a dimension inside a component can land on a tuple the
-      // component does not offer -- that neighbour simply does not exist.
-      if (isEncodable(probe))
-        result.push_back(indexOf(probe));
+      // A step that leaves the feasible set is not a neighbour: the space
+      // contains no such configuration, so there is nothing to move to.
+      auto it = std::lower_bound(solutions_.begin(), solutions_.end(), probe);
+      if (it != solutions_.end() && *it == probe)
+        result.push_back(
+            static_cast<size_t>(std::distance(solutions_.begin(), it)));
       probe[d] = conf[d];
     }
   }
 }
 
 bool ConfigSpace::isEncodable(const Configuration &conf) const {
-  ensureEncoding();
   if (conf.size() != params.size())
     return false;
-  for (size_t d = 0; d < params.size(); ++d)
-    if (!params[d].contains(conf[d]))
-      return false;
-  for (const auto &slot : slots_) {
-    if (slot.componentIdx == SIZE_MAX)
-      continue;
-    const auto &comp = components[slot.componentIdx];
-    std::vector<ParmValue> tuple(comp.dims.size());
-    for (size_t k = 0; k < comp.dims.size(); ++k)
-      tuple[k] = conf[comp.dims[k]];
-    if (!comp.indexOfSolution.count(tuple))
-      return false;
-  }
-  return true;
+  return std::binary_search(solutions_.begin(), solutions_.end(), conf);
 }
 
 bool ConfigSpace::debugIsEncodable(const Configuration &conf,
                                    raw_ostream &os) const {
-  ensureEncoding();
   if (conf.size() != params.size()) {
     os << "  - has " << conf.size() << " value(s) but this space has "
        << params.size() << " parameter(s)\n";
@@ -536,27 +403,21 @@ bool ConfigSpace::debugIsEncodable(const Configuration &conf,
        << " is not a value this parameter can take\n";
     ok = false;
   }
+  if (!ok)
+    return false;
 
-  for (const auto &slot : slots_) {
-    if (slot.componentIdx == SIZE_MAX)
-      continue;
-    const auto &comp = components[slot.componentIdx];
-    std::vector<ParmValue> tuple(comp.dims.size());
-    for (size_t k = 0; k < comp.dims.size(); ++k)
-      tuple[k] = conf[comp.dims[k]];
-    if (comp.indexOfSolution.count(tuple))
-      continue;
-    // Which relation is broken is not recoverable here -- the component holds
-    // the tuples it enumerated, not the constraints it enumerated them from --
-    // so name the parameters and leave the reader to look at the constraints
-    // over them.
-    os << "  - no configuration in this space assigns {";
-    for (size_t k = 0; k < comp.dims.size(); ++k)
-      os << (k ? ", " : "") << params[comp.dims[k]].name << "=" << tuple[k];
-    os << "} together\n";
-    ok = false;
-  }
-  return ok;
+  // Every value is one its parameter can take, so what rules the
+  // configuration out is a constraint over several of them at once. Which one
+  // is not recoverable here -- the space holds the configurations the solver
+  // found, not the constraints it found them from -- but the registered
+  // predicates are still evaluated, and those that reject it are worth
+  // naming before falling back to the general statement.
+  if (std::binary_search(solutions_.begin(), solutions_.end(), conf))
+    return true;
+  if (!debugIsValid(conf, os))
+    return false;
+  os << "  - no configuration in this space assigns these values together\n";
+  return false;
 }
 
 } // namespace mlir::cinm
