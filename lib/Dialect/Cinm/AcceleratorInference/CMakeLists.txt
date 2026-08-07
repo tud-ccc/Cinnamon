@@ -4,6 +4,7 @@ add_mlir_dialect_library(CinmAcceleratorInference
     Progress.cpp
     ConfigSpace.cpp
     ConstraintIR.cpp
+    ConstraintGecode.cpp
     FusionEdges.cpp
     SpaceBuilder.cpp
 
@@ -23,6 +24,11 @@ LINK_LIBS PUBLIC
     CinmUtils
     mlpack::mlpack
     indicators::indicators
+    Gecode::gecodeminimodel
+    Gecode::gecodesearch
+    Gecode::gecodeint
+    Gecode::gecodekernel
+    Gecode::gecodesupport
 )
 
 # target_link_libraries(CinmAcceleratorInference PUBLIC mlpack::mlpack indicators::indicators)

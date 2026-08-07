@@ -21,12 +21,17 @@ namespace mlir::cinm::constraints {
 // type system (CRTP expression templates), which bought inlined per-config
 // evaluation -- irrelevant now that predicates run once per chunk over a
 // ConfigurationVector of thousands of lanes -- at the cost of making the
-// framework unable to reason about them. Analysis wants to pattern-match
-// arbitrary shapes, partition variables, and rewrite; that is ordinary code
-// over a runtime tree and template metaprogramming over a type.
+// framework unable to reason about them.
 //
-// The node set is deliberately closed and small: everything here has to stay
-// analysable.
+// What reasons about them now is a finite-domain solver: every node here has
+// an image in Gecode, and ConstraintGecode.cpp is the translation. That is
+// what keeps the node set closed and small -- a node with no propagator is a
+// node that would send its whole constraint back to being filtered.
+//
+// The evaluator below is no longer how a constraint is enforced. It survives
+// because a space still has to be able to say *why* a configuration is not in
+// it (ConfigSpace::debugIsValid), and because agreeing with it is the check on
+// the translation.
 
 struct ConstraintNode;
 using ConstraintNodePtr = std::shared_ptr<const ConstraintNode>;
@@ -150,9 +155,6 @@ enum class Type { BOOL, INT };
 // Evaluation
 // ===----------------------------------------------------------------------===//
 
-/// Whether `node` divides anywhere below it.
-bool containsDivision(const ConstraintNode &node);
-
 /// The kind of the first parameter below `node` that is not `ParamKind::
 /// Integer`, with its name, or nullopt if there is none.
 ///
@@ -174,11 +176,6 @@ findNonArithmeticVar(const ConstraintNode &node);
 ParmVector evalNodeVec(const ConstraintNode &node, const ConfigurationVector &c,
                        arma::urowvec *exact = nullptr);
 
-/// Evaluate an arithmetic (non-Cmp) node for a single configuration. Used by
-/// callers that need a plain number out of a space expression rather than a
-/// predicate (see SpaceValue in the UPMEM plugin).
-ParmValue evalNodeScalar(const ConstraintNode &node, const ConfWrapper &c);
-
 /// Evaluate a boolean node over a batch, as a 0/1 mask per lane.
 arma::urowvec evalBoolNodeVec(const ConstraintNode &node,
                               const ConfigurationVector &c);
@@ -195,86 +192,5 @@ VecConstraint toVecConstraint(ConstraintNodePtr node);
 /// (dpus * tasklets)". Used for the constraint descriptions debugIsValid()
 /// reports.
 std::string describeNode(const ConstraintNode &node);
-
-// ===----------------------------------------------------------------------===//
-// Analysis — identities (product equalities)
-// ===----------------------------------------------------------------------===//
-
-/// A product of search parameters with a constant coefficient:
-/// `coeff * prod(vars)`. `vars` holds ConfigSpace parameter indices and may
-/// repeat (a variable squared is the same index twice); it is kept sorted so
-/// that two spellings of the same monomial compare equal.
-struct Monomial {
-  ParmValue coeff = 1;
-  llvm::SmallVector<size_t, 4> vars;
-
-  bool operator==(const Monomial &o) const {
-    return coeff == o.coeff && vars == o.vars;
-  }
-};
-
-/// `lhs == rhs`, with all division cleared by cross-multiplication. This is the
-/// canonical form of an identity constraint, and the form
-/// ComponentEnumerator::solveFor consumes.
-struct ProductEquality {
-  Monomial lhs, rhs;
-};
-
-/// Reduce an arithmetic node to `(numer) / (denom)` as monomials. Fails
-/// (returns nullopt) on anything that is not a rational monomial — in
-/// particular on any Add or Sub, which is why capacity bounds (inequalities)
-/// are not matched here.
-///
-/// Variable indices are read from the shared cells, so this is only meaningful
-/// after SpaceBuilder::buildInto() has assigned them.
-std::optional<std::pair<Monomial, Monomial>>
-normalizeRationalMonomial(const ConstraintNode &node);
-
-/// Match a Cmp node as a product equality, clearing denominators. Returns
-/// nullopt unless the comparison is `==` and both sides are rational monomials.
-std::optional<ProductEquality> matchProductEquality(const ConstraintNode &node);
-
-std::string describeMonomial(const Monomial &m,
-                             llvm::ArrayRef<std::string> paramNames);
-
-// ===----------------------------------------------------------------------===//
-// Analysis — interval bounds (inequalities)
-// ===----------------------------------------------------------------------===//
-
-/// The range a subexpression can span. `valid` is false when no useful bound
-/// could be derived, in which case the interval must be ignored rather than
-/// trusted.
-struct Interval {
-  int64_t lo = 0, hi = 0;
-  bool valid = true;
-};
-
-/// Range a variable can still take: a fixed value once assigned, otherwise its
-/// domain's extent. Returning an invalid Interval disables pruning for any
-/// expression mentioning that variable.
-using VarBounds = std::function<Interval(size_t varIdx)>;
-
-/// Bound an arithmetic node given partial knowledge of its variables. Products
-/// are bounded assuming non-negative operands -- true of every search
-/// parameter here, and checked rather than assumed.
-Interval evalNodeBounds(const ConstraintNode &node, const VarBounds &bounds);
-
-/// Whether a boolean node can still be satisfied by some completion of the
-/// current partial assignment. False means every completion violates it, so
-/// the caller may prune. True is the safe answer: it never prunes a subtree
-/// that might contain a solution.
-///
-/// This is what lets a capacity bound cut the search rather than filter it
-/// afterwards: `sum of tile products <= MRAM` is monotone, so once the
-/// smallest possible completion exceeds the limit the subtree is dead.
-bool boolMayHold(const ConstraintNode &node, const VarBounds &bounds);
-
-/// Whether a boolean node holds under *every* completion of the current
-/// partial assignment. The dual of boolMayHold, and false is its safe answer.
-///
-/// An implication's consequent may only be acted on once its antecedent is
-/// settled this way -- believing an antecedent that merely *might* hold would
-/// impose the consequent on completions the constraint says nothing about.
-bool boolMustHold(const ConstraintNode &node, const VarBounds &bounds);
 
 } // namespace mlir::cinm::constraints
