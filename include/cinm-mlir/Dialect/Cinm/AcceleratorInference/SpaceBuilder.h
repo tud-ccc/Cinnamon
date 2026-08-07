@@ -405,6 +405,18 @@ inline IntExpr sum(llvm::ArrayRef<IntExpr> terms) {
       constraints::ConstraintNode::Kind::Add, std::move(ops)));
 }
 
+/// A truth value as the number 0 or 1, so that conditions can be counted:
+/// `sum([asInt(c_0), asInt(c_1), ...])` is how many of them hold.
+///
+/// This is the only way back from a truth value to a number, and it is what a
+/// constraint over "how many dimensions satisfy X" is written with. A division
+/// inside `b` is discharged inside `b` -- it makes this expression 0, not the
+/// comparison containing it false.
+inline IntExpr asInt(BoolExpr b) {
+  return IntExpr(std::make_shared<constraints::ConstraintNode>(
+      constraints::ConstraintNode::Kind::BoolAsInt, b.node()));
+}
+
 /// Evaluates to the truth value of "`divisor` divides `dividend`".
 /// This can be used as the guard of an implies() node.
 ///
@@ -471,6 +483,23 @@ public:
   /// encoding; the DSL will not do arithmetic on it, and there is nothing to
   /// decode by hand. How it is stored is ParmKind<Permutation>'s business.
   PermVar permutation(llvm::StringRef name, unsigned n);
+
+  /// Declare a parameter ranging over the orderings of the *active* items --
+  /// those whose expression holds in a given configuration -- with the
+  /// inactive ones taking no place at all.
+  ///
+  /// Which items are active is a property of the configuration, not of the
+  /// declaration: `active[i]` is an expression over other parameters. So the
+  /// number of distinct orderings varies from configuration to configuration,
+  /// and the constraints that make the parameter mean one thing per
+  /// configuration are posted here rather than written by the caller. They are
+  /// stated in terms of the encoding, which is exactly what a caller must not
+  /// have to know: under a rank the parameter is bounded by (number active)!,
+  /// and under a positional encoding it would instead be a distinctness and an
+  /// ordering of the inactive items. Neither is the caller's business.
+  ///
+  /// `active.size()` is the number of items.
+  PermVar permutation(llvm::StringRef name, llvm::ArrayRef<BoolExpr> active);
   /// Declare a parameter whose values are exactly the divisors of n.
   IntVar divisorsOf(llvm::StringRef name, ParmValue n);
   /// Declare a parameter in [1, v.maxVal()] with the constraint that its

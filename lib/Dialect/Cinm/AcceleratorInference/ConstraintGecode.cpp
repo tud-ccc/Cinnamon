@@ -49,6 +49,10 @@ Gecode::IntSet domainOf(const SearchParam &param) {
 /// variable array. Stateless apart from the array; it exists as a struct only
 /// so the two mutually recursive halves can share it.
 struct Translator {
+  /// Needed to reify a BoolAsInt: turning a truth value into a number means
+  /// posting a variable that stands for it, which is a change to the model
+  /// rather than a change to an expression.
+  Gecode::Home home;
   const Gecode::IntVarArgs &vars;
 
   Gecode::LinIntExpr toInt(const ConstraintNode &node) const {
@@ -72,6 +76,11 @@ struct Translator {
         acc = acc * toInt(*op);
       return acc;
     }
+    case Kind::BoolAsInt:
+      // A reified boolean: the variable is 1 exactly when the operand holds.
+      // Its own divisions are discharged inside toBool, which is why
+      // divisibilityOf stops here.
+      return Gecode::expr(home, toBool(*node.operands()[0]));
     case Kind::Div:
       // Truncating quotient. What makes it the *exact* quotient is the side
       // condition divisibilityOf() collects for whichever comparison encloses
@@ -92,6 +101,12 @@ struct Translator {
     auto conjoin = [&acc](Gecode::BoolExpr e) {
       acc = acc ? Gecode::BoolExpr(*acc && e) : e;
     };
+
+    // A division under a BoolAsInt falsifies that boolean, making the node 0;
+    // hoisting it here would falsify the enclosing comparison instead, which
+    // is a different (and wrong) claim.
+    if (node.kind == Kind::BoolAsInt)
+      return acc;
 
     if (node.kind == Kind::Div)
       conjoin(toInt(*node.operands()[0]) % toInt(*node.operands()[1]) == 0);
@@ -174,7 +189,7 @@ public:
                                  vars[static_cast<int>(rel.parent)] ==
                              0);
 
-    Translator translator{vars};
+    Translator translator{*this, vars};
     for (const ConstraintNodePtr &node : constraints)
       Gecode::rel(*this, translator.toBool(*node));
 

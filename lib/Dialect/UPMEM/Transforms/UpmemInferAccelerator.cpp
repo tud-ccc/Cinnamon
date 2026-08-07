@@ -82,19 +82,6 @@ using mlir::cinm::PermVar;
 using mlir::cinm::SpaceBuilder;
 using mlir::cinm::utils::Maybe;
 
-/// The vectorized constraints below divide by block/leaf values with no zero
-/// guard. That is sound only because those domains start at 1 (see
-/// SpaceBuilder::divisorsOf) -- an invariant that lives in another file and is
-/// invisible here, so check it in debug builds instead of trusting it. A
-/// vectorized constraint evaluates every lane and cannot short-circuit past a
-/// zero divisor the way the equivalent scalar predicate would, so a domain
-/// that ever included 0 would be undefined behaviour rather than a wrong
-/// answer.
-static void assertNonZeroDivisor([[maybe_unused]] const cinm::ParmVector &d) {
-  assert(!arma::any(d == 0) &&
-         "constraint divides by a search parameter whose domain contains 0");
-}
-
 /// UPMEM-specific inference options. Wraps the generic InferenceOptions and
 /// provides a place to add UPMEM-specific knobs in the future.
 struct UpmemInferenceOptions {
@@ -877,51 +864,20 @@ UpmemInferencePlugin::handleLinalgOp(linalg::LinalgOp op, StringRef namePrefix,
   // Which tile dimension varies fastest across the leaves (design §G3). The
   // one parameter here that is not a size: it decides what the leaves sharing
   // a hardware node share rather than replicate, which the block sizes cannot
-  // state. It is declared as a permutation of the iteration dimensions, so the
-  // DSL knows its values are a numbering and refuses to do arithmetic on them.
+  // state. Its type is what stops the DSL doing arithmetic on it.
   //
-  // The permutation is over `numLoops` dimensions because the reduction split
-  // leaves at most one distributed dimension per iteration dimension: a split
-  // dimension carries the tile count and its remainder is left with 1. How many
-  // there actually are depends on the block sizes, so the rest of the range is
-  // pruned by a predicate -- an index the op has no order for is a
-  // configuration the space does not offer, not a trial that fails.
+  // The items ordered are the dimensions this configuration actually spreads
+  // over the workgroup, which is not known at declaration: a dimension cut
+  // into one tile takes no workgroup axis. So the activity is handed over as
+  // an expression per dimension and SpaceBuilder posts what follows from it --
+  // an ordering of the active items is a notion the framework has, and what it
+  // costs in the encoding is not this file's business.
   std::optional<PermVar> order;
   if (extents->size() >= 2) {
-    PermVar orderVar =
-        b.permutation((namePrefix + ".order").str(), extents->size());
-    b.require(
-        [=](const ConfigurationVector &c, arma::urowvec &valid) {
-          arma::urowvec distributed(c.size(), arma::fill::zeros);
-          cinm::ParmVector extentRow(c.size());
-          for (auto [extent, block] : llvm::zip_equal(extentsCopy, blocks)) {
-            extentRow.fill(extent);
-            // Divisor is never zero -- see the tile-count constraint above.
-            const cinm::ParmVector &blockRow = block[c];
-            assertNonZeroDivisor(blockRow);
-            cinm::ParmVector quotient = extentRow / blockRow;
-            arma::urowvec dimDistributed =
-                (quotient % blockRow == extentRow) % (quotient > 1);
-            distributed += dimDistributed;
-          }
-
-          // encodedRow: this predicate compares against n!, so it works on
-          // the rank rather than on the ordering it names.
-          const cinm::ParmVector &orderRow = orderVar.encodedRow(c);
-          const uint64_t maxDistributed =
-              static_cast<uint64_t>(extentsCopy.size());
-          uint64_t runningFactorial = 1; // == stop!
-          for (uint64_t stop = 0; stop <= maxDistributed; ++stop) {
-            if (stop > 0)
-              runningFactorial *= stop;
-            // Lanes already cleared by an earlier constraint stay cleared:
-            // %= multiplies into the existing 0.
-            arma::uvec lanes = arma::find(distributed == stop);
-            valid.elem(lanes) %= (orderRow.elem(lanes) <= runningFactorial);
-          }
-        },
-        "order <= (number of dimensions spread over the workgroup)!");
-    order = orderVar;
+    SmallVector<cinm::BoolExpr> distributed;
+    for (auto [extent, block] : llvm::zip_equal(extentsCopy, blocks))
+      distributed.push_back(extent / block > 1);
+    order = b.permutation((namePrefix + ".order").str(), distributed);
   }
 
   // Record which parameters this op's lowering consumes, on the op itself.

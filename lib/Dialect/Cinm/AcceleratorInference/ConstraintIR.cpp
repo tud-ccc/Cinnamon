@@ -12,6 +12,11 @@ using Kind = ConstraintNode::Kind;
 static bool containsDivision(const ConstraintNode &node) {
   if (node.kind == Kind::Div)
     return true;
+  // A division under a BoolAsInt is the boolean operand's business: it makes
+  // that operand false, and the node 0, rather than reaching out to falsify
+  // whatever comparison contains it.
+  if (node.kind == Kind::BoolAsInt)
+    return false;
   return llvm::any_of(node.operands(), [](const ConstraintNodePtr &child) {
     return containsDivision(*child);
   });
@@ -40,6 +45,13 @@ ParmVector evalNodeVec(const ConstraintNode &node, const ConfigurationVector &c,
       acc %=
           evalNodeVec(*op, c, exact); // `%` is Armadillo's elementwise multiply
     return acc;
+  }
+  case Kind::BoolAsInt: {
+    // evalBoolNodeVec applies this subtree's own exactness, so `exact` is
+    // deliberately not threaded through: nothing below here may falsify the
+    // comparison above.
+    arma::urowvec mask = evalBoolNodeVec(*node.operands()[0], c);
+    return arma::conv_to<ParmVector>::from(mask);
   }
   case Kind::Div: {
     const ParmVector num = evalNodeVec(*node.operands()[0], c, exact);
@@ -169,6 +181,8 @@ std::string describeNode(const ConstraintNode &node) {
     return joinOperands(" * ");
   case Kind::Div:
     return joinOperands(" / ");
+  case Kind::BoolAsInt:
+    return "int(" + describeNode(*node.operands()[0]) + ")";
   case ConstraintNode::Kind::Le:
     return joinOperands(" <= ");
   case ConstraintNode::Kind::Ge:

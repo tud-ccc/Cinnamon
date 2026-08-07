@@ -123,6 +123,37 @@ PermVar SpaceBuilder::permutation(llvm::StringRef name, unsigned n) {
   return v;
 }
 
+PermVar SpaceBuilder::permutation(llvm::StringRef name,
+                                  llvm::ArrayRef<BoolExpr> active) {
+  PermVar v = permutation(name, active.size());
+
+  // How many items this configuration actually orders.
+  llvm::SmallVector<IntExpr> flags;
+  for (const BoolExpr &a : active)
+    flags.push_back(asInt(a));
+  IntExpr count = sum(flags);
+
+  // The encoding is a rank over the active items, so a configuration ordering
+  // k of them has k! orderings and every larger rank names nothing. Expanded
+  // over the domain of `count` rather than tabulated against it: there are
+  // `active.size() + 1` cases, and that is a handful.
+  //
+  // This is the constraint the caller does not write. Under a positional
+  // encoding it would be a distinctness plus a rule putting the inactive items
+  // last, posted from this same place -- which is the point of posting it here.
+  IntExpr rank(v.node());
+  for (ParmValue k = 0; static_cast<size_t>(k) <= active.size(); ++k) {
+    std::optional<int64_t> orders = factorial(k);
+    assert(orders && "too many items to enumerate their orderings");
+    auto numOrders = static_cast<ParmValue>(*orders);
+    require(implies(count == k, rank <= numOrders),
+            (name + ": at most " + std::to_string(numOrders) +
+             " ordering(s) when " + std::to_string(k) + " item(s) are active")
+                .str());
+  }
+  return v;
+}
+
 IntVar SpaceBuilder::divisorsOf(llvm::StringRef name, ParmValue n) {
   IntVar v(name, n);
   dims_.push_back({v.name_, v.idx_, DimEntry::DivisorsOfConst, 1, n, {n}});
