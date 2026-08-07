@@ -22,10 +22,10 @@ struct DistributedOpInfo {
   /// Tile size per (level, iteration dimension), outermost level first.
   /// `tiles.front()` is the workgroup distribution, `tiles.back()` the leaf
   /// level.
-  SmallVector<SmallVector<SpaceVar>> tiles;
+  SmallVector<SmallVector<IntVar>> tiles;
   /// The op's tile-to-workgroup order parameter, absent when it has fewer than
   /// two iteration dimensions and so only one order.
-  std::optional<SpaceVar> order;
+  std::optional<PermVar> order;
 };
 
 /// Declare one `fuse.<producer>-><consumer>` variable per producer/consumer

@@ -49,65 +49,79 @@ size_t SearchParam::cardinality() const {
       domain);
 }
 
-void SearchParam::appendNeighbourValues(
-    ParmValue value, llvm::SmallVectorImpl<ParmValue> &out) const {
-  if (kind == ParamKind::Permutation) {
-    llvm::SmallVector<unsigned> order =
-        unrankPermutation(value - 1, permutationSize);
-    for (unsigned i = 0; i + 1 < permutationSize; ++i) {
-      std::swap(order[i], order[i + 1]);
-      out.push_back(static_cast<ParmValue>(rankPermutation(order) + 1));
-      std::swap(order[i], order[i + 1]);
-    }
-    return;
-  }
+// ===----------------------------------------------------------------------===//
+// ParmKind<ParmValue> — a quantity
+// ===----------------------------------------------------------------------===//
 
-  const size_t sub = subIndexOf(value);
-  if (sub > 0)
-    out.push_back(valueAt(sub - 1));
-  if (sub + 1 < cardinality())
-    out.push_back(valueAt(sub + 1));
-}
-
-size_t SearchParam::numFeatures() const {
-  switch (kind) {
-  case ParamKind::Integer:
-    return 1;
-  case ParamKind::Permutation:
-    assert(permutationSize > 0 && "permutation parameter has no size");
-    return permutationSize;
-  }
-  llvm_unreachable("unknown ParamKind");
-}
-
-void SearchParam::appendFeatures(ParmValue value,
-                                 llvm::SmallVectorImpl<double> &out) const {
-  if (kind == ParamKind::Permutation) {
-    // The rank is one-based, the encoding zero-based.
-    llvm::SmallVector<unsigned> order =
-        unrankPermutation(value - 1, permutationSize);
-    llvm::SmallVector<unsigned> position(permutationSize);
-    for (auto [axis, dim] : llvm::enumerate(order))
-      position[dim] = axis;
-    const double scale = permutationSize > 1 ? permutationSize - 1 : 1;
-    for (unsigned p : position)
-      out.push_back(p / scale);
-    return;
-  }
-
+void ParmKind<ParmValue>::appendFeatures(const SearchParam &param,
+                                         llvm::ArrayRef<ParmValue> values,
+                                         llvm::SmallVectorImpl<double> &out) {
   // A value list is the divisors of an extent or a power-of-two range, so its
   // values span orders of magnitude and are spaced multiplicatively; a
   // contiguous range is not, and is scaled as it stands.
-  const size_t card = cardinality();
-  const double lo = valueAt(0);
-  const double hi = valueAt(card ? card - 1 : 0);
-  double v = value, from = lo, to = hi;
-  if (std::holds_alternative<ValueList>(domain)) {
+  const size_t card = param.cardinality();
+  const double lo = param.valueAt(0);
+  const double hi = param.valueAt(card ? card - 1 : 0);
+  double v = values[0], from = lo, to = hi;
+  if (std::holds_alternative<ValueList>(param.domain)) {
     v = std::log2(v);
     from = std::log2(lo);
     to = std::log2(hi);
   }
   out.push_back(to > from ? (v - from) / (to - from) : 0.0);
+}
+
+void ParmKind<ParmValue>::appendNeighbours(
+    const SearchParam &param, llvm::ArrayRef<ParmValue> values,
+    llvm::SmallVectorImpl<llvm::SmallVector<ParmValue, 4>> &out) {
+  const size_t sub = param.subIndexOf(values[0]);
+  if (sub > 0)
+    out.push_back({param.valueAt(sub - 1)});
+  if (sub + 1 < param.cardinality())
+    out.push_back({param.valueAt(sub + 1)});
+}
+
+// ===----------------------------------------------------------------------===//
+// ParmKind<Permutation> — an ordering
+// ===----------------------------------------------------------------------===//
+//
+// These four are the only place that knows the encoding is a one-based
+// lexicographic rank in a single dimension. Note the offset: the parameter is
+// one-based like every other, and unrankPermutation is not.
+
+Permutation ParmKind<Permutation>::decode(const SearchParam &param,
+                                          llvm::ArrayRef<ParmValue> values) {
+  llvm::SmallVector<unsigned> order =
+      unrankPermutation(values[0] - 1, param.permutationSize);
+  Permutation perm;
+  perm.position.resize(param.permutationSize);
+  for (auto [place, item] : llvm::enumerate(order))
+    perm.position[item] = place;
+  return perm;
+}
+
+void ParmKind<Permutation>::appendFeatures(const SearchParam &param,
+                                           llvm::ArrayRef<ParmValue> values,
+                                           llvm::SmallVectorImpl<double> &out) {
+  const Permutation perm = decode(param, values);
+  const double scale =
+      param.permutationSize > 1 ? param.permutationSize - 1 : 1;
+  for (unsigned p : perm.position)
+    out.push_back(p / scale);
+}
+
+void ParmKind<Permutation>::appendNeighbours(
+    const SearchParam &param, llvm::ArrayRef<ParmValue> values,
+    llvm::SmallVectorImpl<llvm::SmallVector<ParmValue, 4>> &out) {
+  // Adjacent transpositions. Stepping the *rank* would land on an unrelated
+  // permutation, which is the whole reason a step is the model's business.
+  llvm::SmallVector<unsigned> order =
+      unrankPermutation(values[0] - 1, param.permutationSize);
+  for (unsigned i = 0; i + 1 < param.permutationSize; ++i) {
+    std::swap(order[i], order[i + 1]);
+    out.push_back({static_cast<ParmValue>(rankPermutation(order) + 1)});
+    std::swap(order[i], order[i + 1]);
+  }
 }
 
 SearchParam &SearchParam::keepDivisorsOf(ParmValue n) {
@@ -166,7 +180,7 @@ size_t SearchParam::subIndexOf(ParmValue value) const {
 
 SearchParam makeRange(llvm::StringRef name, ParmValue lo, ParmValue hi,
                       ParmValue step) {
-  return SearchParam(name, IntRange{lo, hi, step});
+  return SearchParam(name, IntRange{lo, hi, step}, ParmVTable::of<ParmValue>());
 }
 
 SearchParam makePow2Range(llvm::StringRef name, ParmValue loExp,
@@ -174,18 +188,20 @@ SearchParam makePow2Range(llvm::StringRef name, ParmValue loExp,
   std::vector<ParmValue> vals;
   for (int64_t e = loExp; e <= hiExp; ++e)
     vals.push_back(ParmValue(1) << e);
-  return SearchParam(name, ValueList{std::move(vals)});
+  return SearchParam(name, ValueList{std::move(vals)},
+                     ParmVTable::of<ParmValue>());
 }
 
 SearchParam makeValues(llvm::StringRef name, std::vector<ParmValue> values) {
-  return SearchParam(name, ValueList{std::move(values)});
+  return SearchParam(name, ValueList{std::move(values)},
+                     ParmVTable::of<ParmValue>());
 }
 
 SearchParam makePermutation(llvm::StringRef name, unsigned n) {
   std::optional<int64_t> count = factorial(n);
   assert(count && "too many dimensions to enumerate their permutations");
   SearchParam param(name, IntRange{1, static_cast<ParmValue>(*count)},
-                    ParamKind::Permutation);
+                    ParmVTable::of<Permutation>());
   param.permutationSize = n;
   return param;
 }
@@ -310,8 +326,8 @@ size_t ConfigSpace::numFeatures() const {
 void ConfigSpace::encode(const Configuration &conf,
                          llvm::SmallVectorImpl<double> &out) const {
   assert(conf.size() == params.size());
-  for (auto [param, value] : llvm::zip_equal(params, conf))
-    param.appendFeatures(value, out);
+  for (auto [i, param] : llvm::enumerate(params))
+    param.appendFeatures(llvm::ArrayRef(conf).slice(i, param.arity()), out);
 }
 
 void ConfigSpace::setSolutions(std::vector<Configuration> &&solutions) {
@@ -357,27 +373,34 @@ size_t ConfigSpace::indexOf(const Configuration &conf) const {
 
 void ConfigSpace::neighborIndices(size_t idx,
                                   llvm::SmallVectorImpl<size_t> &result) const {
-  // Step one dimension at a time and look the result up. Arithmetic on the
+  // Step one parameter at a time and look the result up. Arithmetic on the
   // flat index would be meaningless: consecutive indices are lexicographic
   // neighbours in the *feasible* set, which says nothing about how far apart
   // two configurations are.
   const Configuration &conf = solutions_[idx];
   Configuration probe = conf;
 
-  llvm::SmallVector<ParmValue, 4> steps;
-  for (size_t d = 0; d < params.size(); ++d) {
+  llvm::SmallVector<llvm::SmallVector<ParmValue, 4>, 4> steps;
+  for (size_t d = 0; d < params.size();) {
+    const SearchParam &param = params[d];
+    const size_t arity = param.arity();
     steps.clear();
-    params[d].appendNeighbourValues(conf[d], steps);
-    for (ParmValue step : steps) {
-      probe[d] = step;
+    // One *parameter*, which is not always one dimension: an ordering is a
+    // single parameter however many dimensions its encoding takes, and moving
+    // one of them alone need not name another ordering at all.
+    param.appendNeighbours(llvm::ArrayRef(conf).slice(d, arity), steps);
+    for (const auto &step : steps) {
+      assert(step.size() == arity && "a step must assign the whole parameter");
+      std::copy(step.begin(), step.end(), probe.begin() + d);
       // A step that leaves the feasible set is not a neighbour: the space
       // contains no such configuration, so there is nothing to move to.
       auto it = std::lower_bound(solutions_.begin(), solutions_.end(), probe);
       if (it != solutions_.end() && *it == probe)
         result.push_back(
             static_cast<size_t>(std::distance(solutions_.begin(), it)));
-      probe[d] = conf[d];
+      std::copy(conf.begin() + d, conf.begin() + d + arity, probe.begin() + d);
     }
+    d += arity;
   }
 }
 

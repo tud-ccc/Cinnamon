@@ -74,13 +74,13 @@ TEST(PermutationTest, FeaturesArePositionsNotRank) {
   // Feature i is where dimension i ended up, scaled to [0, 1]. Rank 1 is the
   // identity, so dimension i sits at axis i.
   llvm::SmallVector<double> features;
-  param.appendFeatures(1, features);
+  param.appendFeatures({1}, features);
   EXPECT_EQ(features, (llvm::SmallVector<double>{0.0, 0.5, 1.0}));
 
   // Rank 2 is [0, 2, 1]: dimension 1 moved to the last axis and dimension 2 to
   // the middle one.
   features.clear();
-  param.appendFeatures(2, features);
+  param.appendFeatures({2}, features);
   EXPECT_EQ(features, (llvm::SmallVector<double>{0.0, 1.0, 0.5}));
 }
 
@@ -96,8 +96,8 @@ TEST(PermutationTest, FeatureDistanceIsSpearman) {
   for (int64_t p = 0; p < count; ++p) {
     for (int64_t q = 0; q < count; ++q) {
       llvm::SmallVector<double> fp, fq;
-      param.appendFeatures(p + 1, fp);
-      param.appendFeatures(q + 1, fq);
+      param.appendFeatures({static_cast<ParmValue>(p + 1)}, fp);
+      param.appendFeatures({static_cast<ParmValue>(q + 1)}, fq);
 
       double squared = 0;
       for (auto [x, y] : llvm::zip_equal(fp, fq))
@@ -128,17 +128,18 @@ TEST(PermutationTest, NeighboursAreAdjacentTranspositions) {
   SearchParam param = makePermutation("order", n);
 
   for (int64_t rank = 0; rank < *factorial(n); ++rank) {
-    llvm::SmallVector<ParmValue, 4> steps;
-    param.appendNeighbourValues(rank + 1, steps);
+    llvm::SmallVector<llvm::SmallVector<ParmValue, 4>, 4> steps;
+    param.appendNeighbours({static_cast<ParmValue>(rank + 1)}, steps);
 
     // One per adjacent pair, and each really is one swap away -- two positions
     // differing, next to each other.
     EXPECT_EQ(steps.size(), n - 1) << "at rank " << rank;
     std::vector<unsigned> from = decode(rank + 1, n);
     std::set<ParmValue> distinct;
-    for (ParmValue step : steps) {
-      distinct.insert(step);
-      std::vector<unsigned> to = decode(step, n);
+    for (const auto &step : steps) {
+      ASSERT_EQ(step.size(), 1u) << "a rank is one dimension";
+      distinct.insert(step[0]);
+      std::vector<unsigned> to = decode(step[0], n);
       EXPECT_EQ(positionsDiffering(from, to), 2u) << "at rank " << rank;
     }
     EXPECT_EQ(distinct.size(), steps.size());
@@ -150,13 +151,16 @@ TEST(PermutationTest, NeighboursOfAQuantityAreAdjacentValues) {
   // holds, and the ends of the domain have one neighbour rather than two.
   SearchParam param = makeValues("tile", {1, 2, 4, 8});
 
-  llvm::SmallVector<ParmValue, 4> steps;
-  param.appendNeighbourValues(4, steps);
-  EXPECT_EQ(steps, (llvm::SmallVector<ParmValue, 4>{2, 8}));
+  llvm::SmallVector<llvm::SmallVector<ParmValue, 4>, 4> steps;
+  param.appendNeighbours({4}, steps);
+  EXPECT_EQ(steps.size(), 2u);
+  EXPECT_EQ(steps[0], (llvm::SmallVector<ParmValue, 4>{2}));
+  EXPECT_EQ(steps[1], (llvm::SmallVector<ParmValue, 4>{8}));
 
   steps.clear();
-  param.appendNeighbourValues(1, steps);
-  EXPECT_EQ(steps, (llvm::SmallVector<ParmValue, 4>{2}));
+  param.appendNeighbours({1}, steps);
+  EXPECT_EQ(steps.size(), 1u);
+  EXPECT_EQ(steps[0], (llvm::SmallVector<ParmValue, 4>{2}));
 }
 
 TEST(PermutationTest, NeighboursInASpaceAreReachableAndDistinct) {

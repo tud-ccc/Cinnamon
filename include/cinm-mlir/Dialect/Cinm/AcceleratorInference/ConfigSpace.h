@@ -47,44 +47,135 @@ struct ValueList {
 
 /// What a parameter's values *mean*, as opposed to how its domain is stored.
 ///
-/// Every parameter is a positive integer either way; the kind says how those
-/// integers are to be read, and therefore what may be done with them. A
-/// magnitude can be added, multiplied, divided and ordered; the rank of a
-/// permutation can only be compared for equality, since arithmetic on a rank
-/// is arithmetic on an arbitrary numbering. The constraint DSL enforces this.
+/// Every parameter is stored as positive integers either way; the kind says
+/// how those integers are to be read, and therefore what may be done with
+/// them. A magnitude can be added, multiplied, divided and ordered; an
+/// ordering can only be compared for equality, since arithmetic on the
+/// encoding of an ordering is arithmetic on an arbitrary numbering.
 ///
-/// The kind also decides how a value is presented to the surrogate, which is
-/// the same question one level down: two ranks one apart are not two similar
-/// permutations, so a model fed a rank as a magnitude is fitting something that
-/// does not exist. See appendFeatures.
+/// This enum is the *erased* form of that distinction -- what a SearchParam
+/// carries so it can be stored next to parameters of other kinds. The unerased
+/// form is the type parameter of SpaceVar, which is where the DSL gets to
+/// enforce it at compile time rather than report it at run time.
 enum class ParamKind {
   /// A quantity. Tile sizes, counts, capacities.
   Integer,
-  /// The lexicographic rank of a permutation, one-based -- see
-  /// cinm-mlir/Utils/Permutation.h for the encoding, and note the offset.
+  /// An ordering of n items. See Permutation, and note that how it is *stored*
+  /// is ParmKind<Permutation>'s business and nothing else's.
   Permutation,
 };
 
 llvm::StringRef paramKindName(ParamKind kind);
 
-/// One dimension of the search space.
+/// An ordering of `[0, n)`: `position[i]` is the place item `i` takes.
+///
+/// This is what a permutation parameter *is*, as opposed to how it is encoded
+/// in a Configuration -- see ParmKind<Permutation>. Callers that read one back
+/// out of a configuration get this, and never the encoding, which is the point
+/// of routing the two through a model.
+struct Permutation {
+  llvm::SmallVector<unsigned, 4> position;
+
+  bool operator==(const Permutation &o) const = default;
+  size_t size() const { return position.size(); }
+  unsigned operator[](size_t item) const { return position[item]; }
+};
+
+struct SearchParam;
+
+// ===----------------------------------------------------------------------===//
+// Parameter models
+// ===----------------------------------------------------------------------===//
+//
+// How a value of some type `T` is stored in a Configuration, shown to the
+// surrogate, and stepped to reach a neighbour. Specialise ParmKind<T> to add a
+// parameter type; there is no other place to touch, which is the reason the
+// trait exists at all -- the alternative is a `switch (kind)` in each of those
+// three operations, drifting apart one operation at a time.
+//
+// Every operation takes the values as a *span*, not a single ParmValue, so
+// that a type occupying several dimensions needs no different signature from
+// one occupying a single dimension.
+
+/// The model for `T`. Undefined for a type that has none, so declaring a
+/// parameter of one is an error at the declaration rather than a link failure.
+template <class T> struct ParmKind;
+
+/// What a parameter model has to provide. `Model` is a separate parameter from
+/// `T` so that the diagnostic names the missing operation instead of
+/// unravelling inside SpaceVar.
+template <class Model, class T>
+concept ParmModel =
+    requires(const SearchParam &param, llvm::ArrayRef<ParmValue> values,
+             llvm::SmallVectorImpl<double> &features,
+             llvm::SmallVectorImpl<llvm::SmallVector<ParmValue, 4>> &steps) {
+      /// The erased kind, for a SearchParam to carry and reporting to print.
+      { Model::kind() } -> std::same_as<ParamKind>;
+      /// How many Configuration entries one value of `T` occupies.
+      { Model::arity(param) } -> std::convertible_to<size_t>;
+      /// The value those entries encode.
+      { Model::decode(param, values) } -> std::convertible_to<T>;
+      /// Width and content of this parameter's slice of the surrogate's input.
+      { Model::numFeatures(param) } -> std::convertible_to<size_t>;
+      Model::appendFeatures(param, values, features);
+      /// The encodings one discrete step away, each a full span.
+      Model::appendNeighbours(param, values, steps);
+    };
+
+/// The model, erased. A SearchParam holds one of these rather than a `T`,
+/// because the space stores parameters of different types side by side; it is
+/// filled in from ParmKind<T> so the two paths cannot disagree.
+struct ParmVTable {
+  ParamKind kind;
+  size_t (*arity)(const SearchParam &);
+  size_t (*numFeatures)(const SearchParam &);
+  void (*appendFeatures)(const SearchParam &, llvm::ArrayRef<ParmValue>,
+                         llvm::SmallVectorImpl<double> &);
+  void (*appendNeighbours)(
+      const SearchParam &, llvm::ArrayRef<ParmValue>,
+      llvm::SmallVectorImpl<llvm::SmallVector<ParmValue, 4>> &);
+
+  template <class T, class Model = ParmKind<T>>
+    requires ParmModel<Model, T>
+  static const ParmVTable *of() {
+    static const ParmVTable table = {
+        Model::kind(), &Model::arity, &Model::numFeatures,
+        &Model::appendFeatures, &Model::appendNeighbours};
+    return &table;
+  }
+};
+
+/// One parameter of the search space, with its type erased.
+///
+/// The type is erased because a space stores parameters of different types in
+/// one vector. Everything that depends on the type goes through `model`, which
+/// is ParmKind<T> for whichever T the parameter was declared with -- so there
+/// is exactly one definition of what a permutation's features are, and the
+/// typed handle (SpaceVar<T>) and the erased storage cannot drift apart.
 struct SearchParam {
   std::string name;
   std::variant<IntRange, ValueList> domain;
-  ParamKind kind = ParamKind::Integer;
-  /// For ParamKind::Permutation: how many items are permuted. The domain then
-  /// holds the ranks 1..n!, which is not something to recover n from.
+  /// Never null: every constructor takes one, so there is no valid state in
+  /// which a parameter does not know what it is.
+  const ParmVTable *model;
+  /// For ParmKind::Permutation: how many items are permuted. What the domain
+  /// holds is the model's business and not something to recover n from.
   unsigned permutationSize = 0;
 
   SearchParam(const SearchParam &) = delete;
   SearchParam(SearchParam &&) = default;
-  SearchParam(StringRef name, IntRange &&range,
-              ParamKind kind = ParamKind::Integer)
-      : name(name.str()), domain(std::move(range)), kind(kind) {}
-  SearchParam(StringRef name, ValueList &&list,
-              ParamKind kind = ParamKind::Integer)
-      : name(name.str()), domain(std::move(list)), kind(kind) {}
+  // The model is not defaulted: the factories below are the way a parameter is
+  // built, and each of them knows its own type. A default would also have to
+  // name ParmKind<ParmValue> before it is defined.
+  SearchParam(StringRef name, IntRange &&range, const ParmVTable *model)
+      : name(name.str()), domain(std::move(range)), model(model) {}
+  SearchParam(StringRef name, ValueList &&list, const ParmVTable *model)
+      : name(name.str()), domain(std::move(list)), model(model) {}
   SearchParam &operator=(SearchParam &&o) = default;
+
+  ParamKind kind() const { return model->kind; }
+  /// How many Configuration entries this parameter occupies.
+  size_t arity() const { return model->arity(*this); }
 
   /// Smallest and largest value this parameter can take. For reporting; the
   /// surrogate sees appendFeatures() instead, and nothing maps back from a
@@ -93,29 +184,43 @@ struct SearchParam {
   double dhi() const;
   /// Number of distinct values this parameter can take.
   size_t cardinality() const;
+
   /// How many surrogate features this parameter contributes. One for a
   /// quantity; a permutation of n items contributes n.
-  size_t numFeatures() const;
-  /// Append this parameter's features for `value` to `out`.
+  size_t numFeatures() const { return model->numFeatures(*this); }
+  /// Append this parameter's features for `values` to `out`.
   ///
   /// Two things are going on, and they are both about what the surrogate can
   /// learn rather than about the parameter itself.
   ///
   /// **A permutation contributes its position vector**: feature `i` is the
-  /// axis that iteration dimension `i` occupies. Euclidean distance between
-  /// two such vectors is Spearman's rank distance, so two orders that agree
-  /// about most dimensions land near each other and the network can generalise
-  /// between them. Its rank cannot do that -- consecutive ranks are unrelated
-  /// permutations -- and one feature per permutation could not either, since
-  /// no single number carries the structure.
+  /// place item `i` takes. Euclidean distance between two such vectors is
+  /// Spearman's rank distance, so two orders that agree about most items land
+  /// near each other and the network can generalise between them. A rank
+  /// cannot do that -- consecutive ranks are unrelated permutations -- and one
+  /// feature per permutation could not either, since no single number carries
+  /// the structure.
   ///
   /// **Every feature is scaled to [0, 1]** against the parameter's declared
   /// domain, so that features are comparable to each other. The scaling has to
   /// come from the domain rather than from the sample, because training and
   /// prediction encode different sets of configurations and a model fitted on
   /// one scale cannot be asked about another.
-  void appendFeatures(ParmValue value,
-                      llvm::SmallVectorImpl<double> &out) const;
+  void appendFeatures(llvm::ArrayRef<ParmValue> values,
+                      llvm::SmallVectorImpl<double> &out) const {
+    model->appendFeatures(*this, values, out);
+  }
+
+  /// Append the encodings one step from `values`, for whatever "one step"
+  /// means for this parameter: the adjacent values of a quantity, and the
+  /// adjacent transpositions of an ordering. Each entry is a full span, so a
+  /// step is allowed to move several dimensions at once -- which it must, for
+  /// a parameter whose encoding spans more than one.
+  void appendNeighbours(
+      llvm::ArrayRef<ParmValue> values,
+      llvm::SmallVectorImpl<llvm::SmallVector<ParmValue, 4>> &out) const {
+    model->appendNeighbours(*this, values, out);
+  }
 
   /// Return the i-th distinct value of this parameter (0-indexed).
   ParmValue valueAt(size_t subIdx) const;
@@ -127,15 +232,51 @@ struct SearchParam {
   /// domain has no sub-index, so subIndexOf() cannot report this itself.
   bool contains(ParmValue value) const;
 
-  /// Append the values one step from `value`, for whatever "one step" means
-  /// for this parameter: the adjacent values of a quantity, and the adjacent
-  /// transpositions of a permutation. Stepping a permutation's *rank* would
-  /// land on an unrelated permutation, so the kind decides this too.
-  void appendNeighbourValues(ParmValue value,
-                             llvm::SmallVectorImpl<ParmValue> &out) const;
-
   /// Retain only values that evenly divide n; converts a range to a ValueList.
   SearchParam &keepDivisorsOf(ParmValue n);
+};
+
+// ===----------------------------------------------------------------------===//
+// The models
+// ===----------------------------------------------------------------------===//
+
+/// A quantity: one dimension, one feature, stepped to its adjacent values.
+template <> struct ParmKind<ParmValue> {
+  static ParamKind kind() { return ParamKind::Integer; }
+  static size_t arity(const SearchParam &) { return 1; }
+  static ParmValue decode(const SearchParam &, llvm::ArrayRef<ParmValue> v) {
+    return v[0];
+  }
+  static size_t numFeatures(const SearchParam &) { return 1; }
+  static void appendFeatures(const SearchParam &param,
+                             llvm::ArrayRef<ParmValue> values,
+                             llvm::SmallVectorImpl<double> &out);
+  static void
+  appendNeighbours(const SearchParam &param, llvm::ArrayRef<ParmValue> values,
+                   llvm::SmallVectorImpl<llvm::SmallVector<ParmValue, 4>> &out);
+};
+
+/// An ordering, currently encoded as its one-based lexicographic rank in a
+/// single dimension (see cinm-mlir/Utils/Permutation.h).
+///
+/// That the encoding is a rank is stated here and nowhere else. A caller reads
+/// a Permutation out and writes constraints about orderings; if this becomes n
+/// dimensions holding the positions themselves, only the four functions below
+/// change.
+template <> struct ParmKind<Permutation> {
+  static ParamKind kind() { return ParamKind::Permutation; }
+  static size_t arity(const SearchParam &) { return 1; }
+  static Permutation decode(const SearchParam &param,
+                            llvm::ArrayRef<ParmValue> values);
+  static size_t numFeatures(const SearchParam &param) {
+    return param.permutationSize;
+  }
+  static void appendFeatures(const SearchParam &param,
+                             llvm::ArrayRef<ParmValue> values,
+                             llvm::SmallVectorImpl<double> &out);
+  static void
+  appendNeighbours(const SearchParam &param, llvm::ArrayRef<ParmValue> values,
+                   llvm::SmallVectorImpl<llvm::SmallVector<ParmValue, 4>> &out);
 };
 
 /// Factory functions — build a SearchParam without adding it to a space yet.

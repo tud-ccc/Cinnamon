@@ -21,20 +21,21 @@ namespace mlir::cinm {
 // The design space
 // ===----------------------------------------------------------------------===//
 //
-// This is the reference for how a design space is described, planned and
-// encoded. It documents the state of the implementation, not a target to build
-// towards.
+// This is the reference for how a design space is described and solved. It
+// documents the state of the implementation, not a target to build towards.
 //
 // The space itself is three files: `ConfigSpace.h` is what a space *is* --
-// parameters, encoding, predicates -- this one is how one is *built*, and
+// parameters, contents, predicates -- this one is how one is *built*, and
 // `AcceleratorInference.h` is what is done with one.
 //
 // # 1. What a design space is
 //
-// A *search parameter* is a named integer variable with a finite domain. A
+// A *search parameter* is a named variable with a finite domain. A
 // *configuration* is one value per parameter, in declaration order. The design
-// space is the set of configurations that satisfy every registered
-// *constraint*.
+// space is the set of configurations that satisfy every constraint -- and it is
+// that set literally: `buildInto()` enumerates it with a finite-domain solver
+// and the space holds the result. There is no superset to filter down from,
+// except for whatever was registered as an opaque predicate (§5).
 //
 // Parameters and constraints are not written by hand per kernel: an
 // InferencePlugin derives them from the IR of one compute block, so the space
@@ -43,11 +44,10 @@ namespace mlir::cinm {
 //
 // Two objects, with different jobs:
 //
-//   SpaceBuilder   declaration and planning. Collects parameters and
-//                  constraints, decides how each constraint is enforced, and
-//                  commits the result exactly once, in buildInto().
-//   ConfigSpace    encoding and filtering. Holds the parameters, the flat
-//                  index, and the predicates that survived planning.
+//   SpaceBuilder   declaration. Collects parameters and constraints, and
+//                  commits them exactly once, in buildInto().
+//   ConfigSpace    contents. Holds the parameters, the configurations, and the
+//                  predicates that could not be given to the solver.
 //
 // Nothing is committed until buildInto(): declaration order does not have to
 // match dependency order, and a constraint may mention a parameter declared
@@ -56,12 +56,8 @@ namespace mlir::cinm {
 // # 2. Parameters
 //
 // **Every domain is a set of strictly positive integers**, which is checked at
-// declaration. Several things depend on it: the interval reasoning treats
-// products as monotone in every factor, division is meaningful, and assigning
-// a variable always tightens what the unassigned ones can contribute to a
-// capacity bound. A parameter that is naturally an index — the rank of a
-// permutation, a mode selector — is declared one-based, and converted where it
-// is consumed.
+// declaration. Division is meaningful on them, products are monotone in every
+// factor, and no propagator has to reason about a sign.
 //
 // | declaration                  | domain                                    |
 // |------------------------------|-------------------------------------------|
@@ -69,31 +65,27 @@ namespace mlir::cinm {
 // | pow2Range(n, a, b)           | 2^a, ..., 2^b                             |
 // | divisorsOf(n, k)             | the divisors of the constant k            |
 // | divisorsOf(n, v)             | [1, v.maxVal()], plus `v % result == 0`   |
-// | permutation(n, k)            | 1, ..., k! — a rank, see below            |
+// | permutation(n, k)            | the orderings of [0, k)                   |
 //
 // A domain is either a contiguous range or an explicit value list; a range
 // becomes a list as soon as a static filter narrows it (SearchParam::
 // keepDivisorsOf). Note the asymmetry in the `divisorsOf` rows: of a
 // *constant* it narrows the domain at declaration time, while of another
-// *parameter* it cannot — the divisibility depends on a value not known until
-// enumeration — so it declares the full range and records a constraint
-// instead. A parameter's declared cardinality is therefore an upper bound on
-// how many values it can actually take.
+// *parameter* it cannot -- the divisibility depends on a value not known until
+// the solve -- so it declares the full range and records a constraint instead.
 //
-// Independently of how its domain is stored, a parameter has a *kind* saying
-// how its values are to be read (`ParamKind`). `Integer` is a quantity.
-// `Permutation` is the lexicographic rank of a permutation, which is a
-// numbering: arithmetic and ordering on it are arithmetic and ordering on an
-// arbitrary enumeration, so the DSL rejects them (§3) and only `==` and `!=`
-// are available. The encoding itself is in cinm-mlir/Utils/Permutation.h,
-// shared with the lowering that reads what the search stamped — note that the
-// parameter is one-based and the encoding is zero-based, so whoever consumes a
-// rank converts.
+// **A parameter is typed.** `intRange` returns an `IntVar` and `permutation` a
+// `PermVar`, and the type is what the value reads back as: an ordering comes
+// back as a `Permutation`, never as whatever integers encode it. The encoding
+// is `ParmKind<T>`'s business and nothing else's -- one specialisation states
+// how a `T` is stored, how it is shown to the surrogate, and what one step from
+// it is. Adding a parameter type is adding a specialisation, and changing how
+// an existing one is stored is changing four functions with no caller affected.
 //
-// The kind also decides how the surrogate sees a value: a parameter
-// contributes `numFeatures()` features, scaled to [0, 1], and a permutation
-// contributes its position vector rather than its rank, so that distance
-// between feature vectors is Spearman's rank distance. See
+// The surrogate consequence is worth naming: a permutation contributes its
+// position vector rather than an index into an enumeration of permutations, so
+// that distance between feature vectors is Spearman's rank distance and two
+// orderings that agree about most items land near each other. See
 // SearchParam::appendFeatures.
 //
 // # 3. Constraints
@@ -101,121 +93,93 @@ namespace mlir::cinm {
 // Constraints are written in an embedded DSL (see Expr below) that builds a
 // constraint-IR tree: constants, parameters, n-ary sums and products, exact
 // division, the six comparisons, `divides`, and `implies`. There is no
-// subtraction and no disjunction. Everything the DSL can build is analysable;
-// a predicate that cannot be expressed in it can still be registered as an
-// opaque C++ lambda, which is then enforced but never reasoned about.
+// subtraction and no disjunction. A predicate that cannot be expressed in it
+// can still be registered as an opaque C++ lambda, which is then enforced but
+// never given to the solver.
 //
 // `a / b` means *exact* division: it denotes the quotient and asserts that `b`
-// divides `a`. A comparison containing an inexact division evaluates to false
-// rather than comparing a truncated quotient. `divides(b, a)` tests the same
-// property without asserting it, which is the spelling to use under a guard.
+// divides `a`. A comparison containing an inexact division is false rather than
+// a comparison of a truncated quotient. `divides(b, a)` tests the same property
+// without asserting it, which is the spelling to use under a guard.
 //
-// Every operator except `==` and `!=` requires operands of kind `Integer`, and
-// aborts otherwise. The check runs where the expression is built — while the
-// space is being declared, at the line that wrote it — because a rank compared
-// with `<` is a mistake about what the parameter means, not a configuration
-// that fails.
+// **The DSL only does arithmetic on quantities, and the type system is what
+// says so.** Only `IntVar` converts to an expression, so `order * 2` and
+// `order < 3` do not compile -- there is no viable operator, reported at the
+// line that wrote them. This used to be a run-time abort during declaration,
+// which was the best a single untyped handle could manage.
 //
-// require() classifies each tree by shape and enforces it in the strongest
-// form available:
+// # 4. Solving
 //
-//   const / var       static domain filter (drop the values that cannot work)
-//   var / var         structural relation (recorded, resolved by planning)
-//   product equality  structural relation
-//   anything else     dynamic predicate over the whole space
-//
-// Every `/` in a tree also contributes its divisibility assertion, except
-// under an `implies` — what is reified there is unconditional, so it would
-// constrain the configurations the guard exists to exclude.
-//
-// # 4. The encoding
-//
-// A configuration has an integer index. The index is an identity, used to
-// cache costs, communicate points between threads, sample uniformly, and walk
-// the space deterministically; it is not a representation, and code wanting
-// structure should decode, work on the Configuration, and re-encode.
-//
-// The index is mixed-radix over *slots*, each of a fixed size. A slot is
-// either one parameter, sized by its cardinality, or a whole SolvedComponent
-// -- a set of parameters with every satisfying tuple enumerated ahead of time
-// -- sized by the tuple count. There is no third form: a divisibility pair is
-// a component of two parameters, not a case of its own.
-//
-// So `ConfigSpace::totalSize()` is the number of *addressable* configurations,
-// which is the product of the slot sizes — not the Cartesian product of the
-// parameter domains. The two differ by whatever the structural constraints
-// removed, which is several orders of magnitude in practice. A configuration
-// that no slot offers has no index at all (isEncodable() is the test).
-//
-// Enumeration order inside a component is deterministic, which is what makes
-// indices reproducible across runs, and therefore seeded sampling
-// reproducible.
-//
-// # 5. Planning
-//
-// buildInto() runs in phases:
+// buildInto() runs in three steps:
 //
 //   1. Materialise each parameter, apply its static filters, add it to the
-//      space. Only now does a parameter have an index, so analysis cannot run
-//      before this point.
-//   2. Partition the parameters and enumerate the components (below). Anything
-//      a component absorbs is dropped from the later phases: the encoding can
-//      no longer offer a configuration violating it.
-//   3. Register the surviving predicates on the space -- the constraints no
-//      component could absorb, plus every opaque lambda.
+//      space. Only now does a parameter have an index.
+//   2. Translate every DSL constraint into a finite-domain model and enumerate
+//      every solution (`ConstraintGecode.h`). The configurations come back
+//      sorted, and the space holds them.
+//   3. Register the predicates on the space.
 //
-// The space also comes away with a record of what was decided (SpaceMetadata),
-// since the encoding shows what a space is and not why.
+// There is no partition to choose, no component to enumerate, no classification
+// of a constraint as static, structural or dynamic, and no budget deciding
+// between them. A constraint is either expressible in the IR, in which case the
+// solver enforces it, or it is an opaque lambda.
 //
-// The partition is connected components over the parameters, with an edge for
-// every structural relation, plus an edge between an implication's guard and
-// its consequent so that a guard does not keep a slot of its own. Each
-// component is then enumerated by backtracking:
+// The space comes away with a record of what happened (SpaceMetadata): what the
+// solver was given, what it cost, and how the result compares to the Cartesian
+// product of the domains.
 //
-//   - The variable order is chosen against the current partial assignment, not
-//     fixed: a variable some equality already determines, then a variable some
-//     implication is guarded on, then a variable participating in an equality
-//     (narrowest domain first), then the rest. A static order by domain size
-//     defers exactly the variables that prune.
-//   - Candidates are narrowed before they are tried: a determined variable
-//     offers one value, a variable dividing an assigned dividend offers that
-//     dividend's divisors, everything else offers its domain.
-//   - Comparisons and implications over the component's variables prune
-//     subtrees by interval arithmetic, and are exact at a full assignment
-//     (every interval is a point), so the component enforces them outright
-//     rather than leaving them as filters. A gated equality determines a
-//     variable only once its guard *must* hold; acting on one that merely
-//     *may* hold would impose the consequent on completions the constraint
-//     says nothing about.
+// A configuration has an integer index, which is its position in the sorted
+// list. The index is an identity -- used to cache costs, communicate points
+// between threads, sample uniformly, and walk the space deterministically --
+// and not a representation: code wanting structure should decode, work on the
+// Configuration, and re-encode. Because the list is sorted rather than in
+// discovery order, the index is a property of the space and not of the search
+// that produced it, so changing the branching heuristic or the thread count
+// renumbers nothing.
 //
-// Two budgets bound the work: a cap on the number of tuples and a cap on the
-// number of search nodes. Exceeding either abandons the component entirely —
-// it absorbs nothing, and every relation in it falls back to the paths above.
-// There is no intermediate outcome, and no cost model deciding whether merging
-// two parameters into a component is worth it.
+// # 5. What is left over
 //
-// # 6. What is left over
-//
-// The encoding offers a superset of the feasible set. What remains is
-// filtered, once per configuration, by the predicates registered in phase 4:
-// constraints spanning two components, shapes planning could not use, and
-// every opaque lambda. `CandidatePool::computeValidMask` evaluates them over
-// the whole space in vectorized batches; the result is the feasible set the
-// search actually explores.
+// Only the opaque lambdas, which `CandidatePool::computeValidMask` evaluates
+// over the space in vectorized batches. The DSL-derived predicates stay
+// registered too, but not because anything is left for them to reject: they are
+// what `ConfigSpace::debugIsValid` uses to say *why* a hand-built configuration
+// is not in the space, and their agreeing with the solver is the standing check
+// on the translation. A space whose valid count is below its size means the two
+// disagree, and that is a bug in ConstraintGecode.cpp.
 //
 // ===----------------------------------------------------------------------===//
 
 // ===----------------------------------------------------------------------===//
-// SpaceVar — lazy handle to a named search-space dimension
+// SpaceVar — lazy typed handle to a named search-space parameter
 // ===----------------------------------------------------------------------===//
 
-/// A handle to a named search-space dimension created by SpaceBuilder.
-/// The index into ConfigSpace is written lazily when buildInto() is called;
-/// all handles remain valid and return the correct index after that point.
-/// A SpaceVar converts to an Expr, so it can be used directly in arithmetic
-/// and comparison expressions.
+/// A handle to a named parameter created by SpaceBuilder, carrying the type of
+/// the value it stands for.
+///
+/// The index into ConfigSpace is written lazily when buildInto() is called; all
+/// handles remain valid and return the correct index after that point.
+///
+/// **`T` is the type read back, not the encoding.** `operator[]` returns a `T`
+/// -- an ordering comes back as a Permutation, whatever the dimensions behind
+/// it hold -- because `Model` decodes it. Nothing outside ParmKind<T> needs to
+/// know how a value is stored, which is what lets the encoding change without
+/// a caller moving.
+///
+/// **`T` is also what the DSL type-checks against.** Only a handle whose values
+/// are a quantity converts to IntExpr, so `order * 2` and `order < 3` do not
+/// compile. They used to abort at run time, at the line that wrote them, which
+/// was the best a single erased handle type could do.
+///
+/// The typed read is for cold paths -- stamping, lowering, reporting. It
+/// returns by value and a Permutation allocates, so a per-lane loop wants the
+/// ConfigurationVector overload, which stays untyped and per-dimension because
+/// that is the shape vectorized evaluation needs.
+template <class T, class Model = ParmKind<T>>
+  requires ParmModel<Model, T>
 class SpaceVar {
 public:
+  using ValueType = T;
+
   /// The cell must be allocated up front, even though the index is not known
   /// until buildInto(): every copy of this handle shares it (that is how they
   /// all see the index once it is written), and findEntry() uses the cell's
@@ -223,32 +187,66 @@ public:
   SpaceVar() : idx_(std::make_shared<size_t>(kUnassigned)), maxVal_(0) {}
 
   llvm::StringRef name() const { return name_; }
-  /// How this dimension's values are to be read -- which decides what the DSL
-  /// lets them be written into.
-  ParamKind kind() const { return kind_; }
-  /// Index in the ConfigSpace — valid only after SpaceBuilder::buildInto().
+  /// The erased kind, for callers that have lost the type -- reporting, mostly.
+  static ParamKind kind() { return Model::kind(); }
+  /// Index of this parameter's first dimension in the ConfigSpace — valid only
+  /// after SpaceBuilder::buildInto().
   size_t idx() const { return *idx_; }
-  ParmValue get(const ConfWrapper &c) const { return c[*idx_]; }
-  ParmValue operator[](const ConfWrapper &c) const { return get(c); }
-  /// Vectorized form: the contiguous row of this dimension's values across
-  /// every configuration in the batch.
-  const ParmVector &operator[](const ConfigurationVector &c) const {
-    return c[*idx_];
+
+  /// The value this parameter takes in `c`.
+  T get(const ConfWrapper &c) const {
+    const SearchParam &param = c.space[*idx_];
+    return Model::decode(
+        param, llvm::ArrayRef(c.conf).slice(*idx_, Model::arity(param)));
   }
+  T operator[](const ConfWrapper &c) const { return get(c); }
+
   /// Upper bound of this variable's domain. Used by divisorsOf(name, SpaceVar).
   ParmValue maxVal() const { return maxVal_; }
 
-  /// This dimension as a constraint-IR node.
+  /// This parameter as a constraint-IR node. Only meaningful for a parameter
+  /// occupying one dimension and read as a number, which is what the DSL's
+  /// conversion to IntExpr already restricts it to.
   constraints::ConstraintNodePtr node() const {
-    return std::make_shared<constraints::ConstraintNode>(name_, idx_, kind_);
+    return std::make_shared<constraints::ConstraintNode>(name_, idx_);
   }
+
+  /// Vectorized form: the contiguous row of this parameter's values across
+  /// every configuration in the batch. Untyped by design -- see the note above
+  /// -- and available only for a quantity, where the encoding *is* the value.
+  const ParmVector &operator[](const ConfigurationVector &c) const
+    requires(std::is_same_v<T, ParmValue>)
+  {
+    return c[*idx_];
+  }
+
+  /// The raw first entry of this parameter's encoding.
+  ///
+  /// These two read the *encoding*, not the value, and are therefore only
+  /// correct for a model of arity one -- which is not something the type says,
+  /// so a caller is on its own.
+  ///
+  /// They exist for a predicate that has to reinterpret the encoding rather
+  /// than read the value it denotes. The order parameters are the case:
+  /// their rank ranks only the dimensions a configuration actually
+  /// distributes, so what it means depends on the tile sizes, and decoding it
+  /// against the parameter's declared size -- which is what get() does -- would
+  /// be decoding a different permutation. Needing this is the signal that the
+  /// parameter wants modelling properly instead.
+  const ParmVector &encodedRow(const ConfigurationVector &c) const {
+    assert(c.numDims() > *idx_ && "parameter index out of range");
+    return c[*idx_];
+  }
+  ParmValue encodedValue(const ConfWrapper &c) const { return c[*idx_]; }
 
 private:
   friend class SpaceBuilder;
-  explicit SpaceVar(llvm::StringRef name, ParmValue maxVal,
-                    ParamKind kind = ParamKind::Integer)
+  explicit SpaceVar(llvm::StringRef name, ParmValue maxVal)
       : name_(name.str()), idx_(std::make_shared<size_t>(kUnassigned)),
-        maxVal_(maxVal), kind_(kind) {}
+        maxVal_(maxVal) {}
+  /// Rebuild a handle onto an already-declared parameter, sharing its cell.
+  SpaceVar(llvm::StringRef name, ParmValue maxVal, std::shared_ptr<size_t> idx)
+      : name_(name.str()), idx_(std::move(idx)), maxVal_(maxVal) {}
 
   /// Sentinel held by idx_ until buildInto() writes the real index.
   static constexpr size_t kUnassigned = SIZE_MAX;
@@ -256,8 +254,13 @@ private:
   std::string name_;
   std::shared_ptr<size_t> idx_;
   ParmValue maxVal_;
-  ParamKind kind_ = ParamKind::Integer;
 };
+
+/// A quantity — a tile size, a count, a capacity. The overwhelmingly common
+/// case, and the only one the DSL does arithmetic on.
+using IntVar = SpaceVar<ParmValue>;
+/// An ordering of n items.
+using PermVar = SpaceVar<Permutation>;
 
 // ===----------------------------------------------------------------------===//
 // Expr — DSL handle wrapping a constraint-IR node
@@ -271,7 +274,10 @@ private:
 template <constraints::Type Ty> class Expr {
 public:
   Expr(constraints::ConstraintNodePtr node) : node_(std::move(node)) {}
-  Expr(const SpaceVar &v) : node_(v.node()) {}
+  /// Only a handle whose values are a quantity becomes an expression. This is
+  /// the constraint that used to be a run-time abort: `order * 2` now fails to
+  /// convert rather than failing to run.
+  Expr(const IntVar &v) : node_(v.node()) {}
   Expr(ParmValue v) : node_(std::make_shared<constraints::ConstraintNode>(v)) {}
 
   const constraints::ConstraintNodePtr &node() const { return node_; }
@@ -287,29 +293,22 @@ using BoolExpr = Expr<constraints::Type::BOOL>;
 namespace detail {
 /// Enables the operators below only when at least one side is a search-space
 /// expression, so they never hijack plain integer arithmetic.
+/// Enables the operators below only when at least one side is a search-space
+/// expression, so they never hijack plain integer arithmetic.
+///
+/// IntVar and not SpaceVar<T>: a handle to something that is not a quantity is
+/// deliberately not expression-like, so an operator over it is not found at
+/// all. That is the whole of the kind checking the DSL used to do at run time
+/// -- `order < 3` reports no viable operator, at the line that wrote it,
+/// without a configuration ever existing.
 template <class T, constraints::Type Ty>
 inline constexpr bool isExprLike =
     std::is_same_v<std::decay_t<T>, Expr<Ty>> ||
-    std::is_same_v<std::decay_t<T>, SpaceVar> ||
+    std::is_same_v<std::decay_t<T>, IntVar> ||
     std::is_same_v<std::decay_t<T>, constraints::ConstraintNodePtr>;
 
 template <class A, class B, constraints::Type Ty>
 inline constexpr bool eitherIsExpr = isExprLike<A, Ty> || isExprLike<B, Ty>;
-
-/// Abort if either operand mentions a parameter whose values are a numbering
-/// rather than a quantity. `op` names the operation for the message.
-///
-/// A permutation rank is the clear case: `order * 2` and `order < 3` are both
-/// arithmetic on an arbitrary enumeration order, and mean nothing about the
-/// permutations they name. Only `==` and `!=` survive, which is why they are
-/// the only two operators that do not call this.
-///
-/// The check is at expression-construction time, so it fires while the space
-/// is being declared -- at the line that wrote the expression, before any
-/// configuration exists.
-void assertArithmeticOperands(const constraints::ConstraintNodePtr &lhs,
-                              const constraints::ConstraintNodePtr &rhs,
-                              llvm::StringRef op);
 } // namespace detail
 
 // ===----------------------------------------------------------------------===//
@@ -322,7 +321,6 @@ void assertArithmeticOperands(const constraints::ConstraintNodePtr &lhs,
   Expr<TY> operator SYM(const A &a, const B &b) {                              \
     auto lhs = Expr<TY>(a).node();                                             \
     auto rhs = Expr<TY>(b).node();                                             \
-    detail::assertArithmeticOperands(lhs, rhs, #SYM);                          \
     return Expr<TY>(std::make_shared<constraints::ConstraintNode>(             \
         constraints::ConstraintNode::Kind::KIND, lhs, rhs));                   \
   }
@@ -341,7 +339,6 @@ template <class A, class B,
 IntExpr operator*(const A &a, const B &b) {
   auto lhs = IntExpr(a).node();
   auto rhs = IntExpr(b).node();
-  detail::assertArithmeticOperands(lhs, rhs, "*");
   return IntExpr(std::make_shared<constraints::ConstraintNode>(
       constraints::ConstraintNode::Kind::Mul, lhs, rhs));
 }
@@ -351,33 +348,34 @@ template <class A, class B,
 IntExpr operator+(const A &a, const B &b) {
   auto lhs = IntExpr(a).node();
   auto rhs = IntExpr(b).node();
-  detail::assertArithmeticOperands(lhs, rhs, "+");
   return IntExpr(std::make_shared<constraints::ConstraintNode>(
       constraints::ConstraintNode::Kind::Add, lhs, rhs));
 }
 
-/// `CHECKED` selects whether the comparison is one a numbering supports.
-/// Equality and inequality are; ordering is not, since the order of the ranks
-/// is not an order on what they name.
-#define CINM_DEFINE_CMP_OP(SYM, KIND, CHECKED)                                 \
+/// Every comparison takes quantities, because only IntVar is expression-like.
+///
+/// `==` and `!=` used to be exempt from the kind check, so that two orderings
+/// could be compared even though `<` on them meant nothing. Nothing writes
+/// that today -- an agreement between two orderings is stated per item, not
+/// between their encodings -- so equality on a non-quantity stays out until a
+/// caller for it exists, and ParmKind<T> is where it would go when one does.
+#define CINM_DEFINE_CMP_OP(SYM, KIND)                                          \
   template <class A, class B,                                                  \
             std::enable_if_t<                                                  \
                 detail::eitherIsExpr<A, B, constraints::Type::INT>, int> = 0>  \
   BoolExpr operator SYM(const A &a, const B &b) {                              \
     auto lhs = IntExpr(a).node();                                              \
     auto rhs = IntExpr(b).node();                                              \
-    if (CHECKED)                                                               \
-      detail::assertArithmeticOperands(lhs, rhs, #SYM);                        \
     return BoolExpr(std::make_shared<constraints::ConstraintNode>(             \
         constraints::ConstraintNode::Kind::KIND, lhs, rhs));                   \
   }
 
-CINM_DEFINE_CMP_OP(<=, Le, true)
-CINM_DEFINE_CMP_OP(>=, Ge, true)
-CINM_DEFINE_CMP_OP(<, Lt, true)
-CINM_DEFINE_CMP_OP(>, Gt, true)
-CINM_DEFINE_CMP_OP(==, Eq, false)
-CINM_DEFINE_CMP_OP(!=, Ne, false)
+CINM_DEFINE_CMP_OP(<=, Le)
+CINM_DEFINE_CMP_OP(>=, Ge)
+CINM_DEFINE_CMP_OP(<, Lt)
+CINM_DEFINE_CMP_OP(>, Gt)
+CINM_DEFINE_CMP_OP(==, Eq)
+CINM_DEFINE_CMP_OP(!=, Ne)
 #undef CINM_DEFINE_CMP_OP
 
 /// Flat n-ary product. This is the shape the analyser wants: one node with a
@@ -389,7 +387,6 @@ inline IntExpr prod(llvm::ArrayRef<IntExpr> factors) {
     return IntExpr(std::make_shared<constraints::ConstraintNode>(1));
   llvm::SmallVector<constraints::ConstraintNodePtr, 2> ops;
   for (const IntExpr &f : factors) {
-    detail::assertArithmeticOperands(f.node(), f.node(), "prod");
     ops.push_back(f.node());
   }
   return IntExpr(std::make_shared<constraints::ConstraintNode>(
@@ -402,7 +399,6 @@ inline IntExpr sum(llvm::ArrayRef<IntExpr> terms) {
     return IntExpr(std::make_shared<constraints::ConstraintNode>(0));
   llvm::SmallVector<constraints::ConstraintNodePtr, 2> ops;
   for (const IntExpr &t : terms) {
-    detail::assertArithmeticOperands(t.node(), t.node(), "sum");
     ops.push_back(t.node());
   }
   return IntExpr(std::make_shared<constraints::ConstraintNode>(
@@ -428,7 +424,6 @@ inline IntExpr sum(llvm::ArrayRef<IntExpr> terms) {
 /// b.require(implies(a == b, X));
 /// ```
 inline BoolExpr divides(IntExpr divisor, IntExpr dividend) {
-  detail::assertArithmeticOperands(divisor.node(), dividend.node(), "divides");
   return BoolExpr(std::make_shared<constraints::ConstraintNode>(
       constraints::ConstraintNode::Kind::Divides, divisor.node(),
       dividend.node()));
@@ -466,26 +461,27 @@ inline BoolExpr implies(BoolExpr antecedent, BoolExpr consequent) {
 ///   "parent divides child" = child % parent == 0.
 class SpaceBuilder {
 public:
-  /// Declare a dimension with integer range [lo, hi] (inclusive, step 1).
-  SpaceVar intRange(llvm::StringRef name, ParmValue lo, ParmValue hi);
-  /// Declare a dimension with values 2^expLo, ..., 2^expHi.
-  SpaceVar pow2Range(llvm::StringRef name, ParmValue expLo, ParmValue expHi);
-  /// Declare a dimension ranging over the permutations of `[0, n)`, valued by
-  /// one-based lexicographic rank (so 1 is the identity). The DSL rejects
-  /// arithmetic and ordering on the result; decode it with
-  /// cinm-mlir/Utils/Permutation.h, remembering the offset.
-  SpaceVar permutation(llvm::StringRef name, unsigned n);
-  /// Declare a dimension whose values are exactly the divisors of n.
-  SpaceVar divisorsOf(llvm::StringRef name, ParmValue n);
-  /// Declare a dimension in [1, v.maxVal()] with the constraint that its
+  /// Declare a parameter with integer range [lo, hi] (inclusive, step 1).
+  IntVar intRange(llvm::StringRef name, ParmValue lo, ParmValue hi);
+  /// Declare a parameter with values 2^expLo, ..., 2^expHi.
+  IntVar pow2Range(llvm::StringRef name, ParmValue expLo, ParmValue expHi);
+  /// Declare a parameter ranging over the orderings of `[0, n)`.
+  ///
+  /// The result reads back as a Permutation, so a caller never sees the
+  /// encoding; the DSL will not do arithmetic on it, and there is nothing to
+  /// decode by hand. How it is stored is ParmKind<Permutation>'s business.
+  PermVar permutation(llvm::StringRef name, unsigned n);
+  /// Declare a parameter whose values are exactly the divisors of n.
+  IntVar divisorsOf(llvm::StringRef name, ParmValue n);
+  /// Declare a parameter in [1, v.maxVal()] with the constraint that its
   /// values must divide the runtime value of v (v % result == 0).
-  SpaceVar divisorsOf(llvm::StringRef name, SpaceVar v);
+  IntVar divisorsOf(llvm::StringRef name, IntVar v);
 
   /// Static filter: retain only values of v that are divisors of n.
-  void mustDivide(SpaceVar v, ParmValue n);
+  void mustDivide(IntVar v, ParmValue n);
   /// Structural constraint: child must be a multiple of parent (parent divides
   /// child; child % parent == 0). Applied after all dims are added.
-  void mustDivide(SpaceVar parent, SpaceVar child);
+  void mustDivide(IntVar parent, IntVar child);
   /// Arbitrary vectorized predicate; configurations whose lane it clears to 0
   /// are skipped by the framework. `description` is optional; it is reported
   /// by ConfigSpace::debugIsValid() when the predicate rejects a
@@ -520,7 +516,10 @@ private:
                llvm::StringRef description = "");
 
   struct DimEntry {
-    SpaceVar var;
+    /// The name and the index cell, not a handle: a declaration is the same
+    /// record whatever type the handle it was returned through has.
+    std::string name;
+    std::shared_ptr<size_t> idx;
     enum Kind { IntRange, Pow2, DivisorsOfConst, Permutation } kind;
     ParmValue lo, hi;
     std::vector<ParmValue> divisorFilters; ///< keepDivisorsOf(n) for each n
@@ -553,8 +552,8 @@ private:
   std::vector<MultiplesEntry> multiples_;
   std::vector<PredicateEntry> predicates_;
 
-  DimEntry &findEntry(const SpaceVar &v);
-  SpaceVar findVarByName(llvm::StringRef name) const;
+  DimEntry &findEntry(const IntVar &v);
+  IntVar findVarByName(llvm::StringRef name) const;
   int dimIndexByName(llvm::StringRef name) const;
 
   /// Walk `node` and reify every Div as a divisibility constraint.

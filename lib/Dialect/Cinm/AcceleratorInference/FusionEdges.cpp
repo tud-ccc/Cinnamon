@@ -28,7 +28,7 @@ namespace {
 struct AxisModel {
   SmallVector<int64_t> extents;
   /// Workgroup block size per iteration dimension.
-  SmallVector<SpaceVar> blocks;
+  SmallVector<IntVar> blocks;
   /// Reduction dimensions, in op order.
   SmallVector<unsigned> reductionDims;
   /// Parallel dimensions, in op order.
@@ -37,7 +37,7 @@ struct AxisModel {
   /// -1 for one that does not index it at all.
   SmallVector<int> valueDim;
   /// Absent when the op has a single order, which is then the identity.
-  std::optional<SpaceVar> order;
+  std::optional<PermVar> order;
 };
 
 /// Which dimension of the shared value each workgroup axis carries, outermost
@@ -111,56 +111,38 @@ AxisModel modelOf(const DistributedOpInfo &info, AffineMap map) {
 /// The workgroup layout agreement described at the top of this file, as a
 /// predicate over the fused configurations.
 void requireOrderAgreement(const AxisModel &producer, const AxisModel &consumer,
-                           SpaceVar fuse, StringRef description,
+                           IntVar fuse, StringRef description,
                            SpaceBuilder &b) {
+
+  // Scalar rather than vectorized. There is nothing to vectorize: the body is
+  // a per-configuration decode of two ranks, so a batched form spends its
+  // length hoisting rows out of the loop and indexing them back per lane, and
+  // says the same thing. SpaceBuilder::require evaluates this once per
+  // configuration, over the feasible set.
   b.require(
-      [=](const ConfigurationVector &c, arma::urowvec &valid) {
-        const ParmVector &fuseRow = fuse[c];
+      [=](const ConfWrapper c) -> bool {
+        if (fuse[c] < 2)
+          return true; // unfused, so the two orders are unconstrained
 
-        auto rows = [&c](const AxisModel &m) {
-          SmallVector<const ParmVector *> out;
-          for (const SpaceVar &block : m.blocks)
-            out.push_back(&block[c]);
-          return out;
-        };
-        SmallVector<const ParmVector *> producerBlocks = rows(producer);
-        SmallVector<const ParmVector *> consumerBlocks = rows(consumer);
-        const ParmVector *producerOrder =
-            producer.order ? &(*producer.order)[c] : nullptr;
-        const ParmVector *consumerOrder =
-            consumer.order ? &(*consumer.order)[c] : nullptr;
-
-        auto countsAt = [](const AxisModel &m,
-                           ArrayRef<const ParmVector *> blocks,
-                           size_t lane) -> SmallVector<int64_t> {
+        auto axesOf = [&c](const AxisModel &m) {
           SmallVector<int64_t> counts;
-          for (auto [extent, block] : llvm::zip_equal(m.extents, blocks)) {
+          for (auto [extent, block] : llvm::zip_equal(m.extents, m.blocks)) {
             // Never zero: the block sizes are divisors of the extent.
-            assert((*block)[lane] > 0 && "block size must be positive");
-            counts.push_back(extent / (*block)[lane]);
+            assert(block[c] > 0 && "block size must be positive");
+            counts.push_back(extent / block[c]);
           }
-          return counts;
+          // encodedValue, not get(): this reinterprets the rank against the
+          // dimensions *this* configuration distributes, which is not the
+          // count the parameter was declared with. The parameter is one-based
+          // and the rank is zero-based, and an op with a single order has no
+          // parameter at all.
+          const int64_t rank = m.order ? m.order->encodedValue(c) - 1 : 0;
+          return axisValueDims(m, counts, rank);
         };
 
-        // The order parameter is one-based; the rank the permutation is
-        // unranked from is zero-based, and an op with a single order has no
-        // parameter at all.
-        auto rankAt = [](const ParmVector *row, size_t lane) -> int64_t {
-          return row ? (*row)[lane] - 1 : 0;
-        };
-
-        for (size_t lane = 0; lane < c.size(); ++lane) {
-          if (!valid[lane] || fuseRow[lane] < 2)
-            continue; // unfused, so the orders are free
-          auto producerAxes =
-              axisValueDims(producer, countsAt(producer, producerBlocks, lane),
-                            rankAt(producerOrder, lane));
-          auto consumerAxes =
-              axisValueDims(consumer, countsAt(consumer, consumerBlocks, lane),
-                            rankAt(consumerOrder, lane));
-          if (!producerAxes || !consumerAxes || *producerAxes != *consumerAxes)
-            valid[lane] = 0;
-        }
+        std::optional<SmallVector<int>> producerAxes = axesOf(producer);
+        std::optional<SmallVector<int>> consumerAxes = axesOf(consumer);
+        return producerAxes && consumerAxes && *producerAxes == *consumerAxes;
       },
       description);
 }
@@ -170,12 +152,12 @@ void requireOrderAgreement(const AxisModel &producer, const AxisModel &consumer,
 void declareEdge(const DistributedOpInfo &producer,
                  const DistributedOpInfo &consumer, AffineMap producerMap,
                  AffineMap consumerMap, StringRef name, SpaceBuilder &b) {
-  const size_t numLevels = producer.tiles.size();
+  const ParmValue numLevels = producer.tiles.size();
 
   // One-based, so that no search parameter is ever zero: 1 is two launches with
   // a host round trip in between, i.e. no constraint at all, and `l + 2` means
   // the two ops additionally agree at memory level `l`.
-  SpaceVar fuse = b.intRange(name, 1, static_cast<ParmValue>(numLevels) + 1);
+  IntVar fuse = b.intRange(name, 1, numLevels + 1);
 
   // The producer has to materialize whole output tiles. A dimension it does not
   // index its result with is a reduction dimension; spreading one over the
@@ -200,11 +182,10 @@ void declareEdge(const DistributedOpInfo &producer,
         cast<AffineDimExpr>(producerMap.getResult(position)).getPosition();
     unsigned consumerDim =
         cast<AffineDimExpr>(consumerMap.getResult(position)).getPosition();
-    for (size_t level = 0; level < numLevels; ++level) {
-      SpaceVar producerTile = producer.tiles[level][producerDim];
-      SpaceVar consumerTile = consumer.tiles[level][consumerDim];
-      b.require(implies(fuse >= static_cast<ParmValue>(level + 2),
-                        producerTile == consumerTile),
+    for (ParmValue level = 0; level < numLevels; ++level) {
+      IntVar producerTile = producer.tiles[level][producerDim];
+      IntVar consumerTile = consumer.tiles[level][consumerDim];
+      b.require(implies(fuse >= level + 2, producerTile == consumerTile),
                 (name + " >= " + std::to_string(level + 2) + " => " +
                  producerTile.name() + " == " + consumerTile.name())
                     .str());

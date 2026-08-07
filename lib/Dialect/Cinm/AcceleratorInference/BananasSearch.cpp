@@ -711,7 +711,7 @@ void CandidatePool::dumpMetadataJSON(const ConfigSpace &space,
     out << ", ";
     out << "\"cardinality\": " << p.cardinality() << ", ";
     out << "\"kind\": ";
-    jsonStr(paramKindName(p.kind).str());
+    jsonStr(paramKindName(p.kind()).str());
     out << ", ";
     if (auto *r = std::get_if<IntRange>(&p.domain)) {
       out << "\"type\": \"range\", ";
