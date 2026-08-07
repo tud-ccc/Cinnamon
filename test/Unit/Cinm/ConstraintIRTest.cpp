@@ -64,13 +64,12 @@ PointSet bruteForce(const std::vector<std::vector<ParmValue>> &domains,
   return out;
 }
 
-PointSet accepted(const ConfigSpace &space) {
+PointSet contents(const ConfigSpace &space) {
   PointSet out;
   Configuration conf(space.numDims());
   for (size_t i = 0; i < space.totalSize(); ++i) {
     space.at(i, conf);
-    if (space.isValid(conf))
-      out.insert(Point(conf.begin(), conf.end()));
+    out.insert(Point(conf.begin(), conf.end()));
   }
   return out;
 }
@@ -91,12 +90,12 @@ std::vector<ParmValue> divisorsOfN(ParmValue n) {
 }
 
 void check(const ConfigSpace &space, const PointSet &expected) {
-  PointSet got = accepted(space);
+  PointSet got = contents(space);
 
   EXPECT_EQ(got, expected);
   EXPECT_EQ(space.totalSize(), expected.size())
-      << "the space contains configurations the constraints reject, so a "
-         "constraint was not posted to the solver";
+      << "the space does not hold exactly the configurations the constraints "
+         "accept";
 
   Configuration conf(space.numDims());
   for (size_t i = 0; i < space.totalSize(); ++i) {

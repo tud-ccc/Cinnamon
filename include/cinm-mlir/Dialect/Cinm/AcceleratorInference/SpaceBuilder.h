@@ -15,134 +15,12 @@
 namespace mlir::cinm {
 
 // ===----------------------------------------------------------------------===//
-// The design space
+// Declaring a design space
 // ===----------------------------------------------------------------------===//
 //
-// This is the reference for how a design space is described and solved. It
-// documents the state of the implementation, not a target to build towards.
-//
-// The space itself is three files: `ConfigSpace.h` is what a space *is* --
-// parameters, contents, predicates -- this one is how one is *built*, and
-// `AcceleratorInference.h` is what is done with one.
-//
-// # 1. What a design space is
-//
-// A *search parameter* is a named variable with a finite domain. A
-// *configuration* is one value per parameter, in declaration order. The design
-// space is the set of configurations that satisfy every constraint -- and it is
-// that set literally: `buildInto()` enumerates it with a finite-domain solver
-// and the space holds the result. There is no superset to filter down from,
-// except for whatever was registered as an opaque predicate (§5).
-//
-// Parameters and constraints are not written by hand per kernel: an
-// InferencePlugin derives them from the IR of one compute block, so the space
-// describes the lowerings that block admits. `SpaceBuilder` is the interface it
-// derives them through.
-//
-// Two objects, with different jobs:
-//
-//   SpaceBuilder   declaration. Collects parameters and constraints, and
-//                  commits them exactly once, in buildInto().
-//   ConfigSpace    contents. Holds the parameters, the configurations, and the
-//                  predicates that could not be given to the solver.
-//
-// Nothing is committed until buildInto(): declaration order does not have to
-// match dependency order, and a constraint may mention a parameter declared
-// after it.
-//
-// # 2. Parameters
-//
-// **Every domain is a set of strictly positive integers**, which is checked at
-// declaration. Division is meaningful on them, products are monotone in every
-// factor, and no propagator has to reason about a sign.
-//
-// | declaration                  | domain                                    |
-// |------------------------------|-------------------------------------------|
-// | intRange(n, lo, hi)          | lo, lo+1, ..., hi                         |
-// | pow2Range(n, a, b)           | 2^a, ..., 2^b                             |
-// | divisorsOf(n, k)             | the divisors of the constant k            |
-// | divisorsOf(n, v)             | [1, v.maxVal()], plus `v % result == 0`   |
-// | permutation(n, k)            | the orderings of [0, k)                   |
-//
-// A domain is either a contiguous range or an explicit value list; a range
-// becomes a list as soon as a static filter narrows it (SearchParam::
-// keepDivisorsOf). Note the asymmetry in the `divisorsOf` rows: of a
-// *constant* it narrows the domain at declaration time, while of another
-// *parameter* it cannot -- the divisibility depends on a value not known until
-// the solve -- so it declares the full range and records a constraint instead.
-//
-// **A parameter is typed.** `intRange` returns an `IntVar` and `permutation` a
-// `PermVar`, and the type is what the value reads back as: an ordering comes
-// back as a `Permutation`, never as whatever integers encode it. The encoding
-// is `ParmKind<T>`'s business and nothing else's -- one specialisation states
-// how a `T` is stored, how it is shown to the surrogate, and what one step from
-// it is. Adding a parameter type is adding a specialisation, and changing how
-// an existing one is stored is changing four functions with no caller affected.
-//
-// The surrogate consequence is worth naming: a permutation contributes its
-// position vector rather than an index into an enumeration of permutations, so
-// that distance between feature vectors is Spearman's rank distance and two
-// orderings that agree about most items land near each other. See
-// SearchParam::appendFeatures.
-//
-// # 3. Constraints
-//
-// Constraints are written in an embedded DSL (see Expr below) that builds a
-// constraint-IR tree: constants, parameters, n-ary sums and products, exact
-// division, the six comparisons, `divides`, and `implies`. There is no
-// subtraction and no disjunction. A predicate that cannot be expressed in it
-// can still be registered as an opaque C++ lambda, which is then enforced but
-// never given to the solver.
-//
-// `a / b` means *exact* division: it denotes the quotient and asserts that `b`
-// divides `a`. A comparison containing an inexact division is false rather than
-// a comparison of a truncated quotient. `divides(b, a)` tests the same property
-// without asserting it, which is the spelling to use under a guard.
-//
-// **The DSL only does arithmetic on quantities, and the type system is what
-// says so.** Only `IntVar` converts to an expression, so `order * 2` and
-// `order < 3` do not compile -- there is no viable operator, reported at the
-// line that wrote them. This used to be a run-time abort during declaration,
-// which was the best a single untyped handle could manage.
-//
-// # 4. Solving
-//
-// buildInto() runs in three steps:
-//
-//   1. Materialise each parameter, apply its static filters, add it to the
-//      space. Only now does a parameter have an index.
-//   2. Translate every DSL constraint into a finite-domain model and enumerate
-//      every solution (`ConstraintGecode.h`). The configurations come back
-//      sorted, and the space holds them.
-//   3. Register the predicates on the space.
-//
-// There is no partition to choose, no component to enumerate, no classification
-// of a constraint as static, structural or dynamic, and no budget deciding
-// between them. A constraint is either expressible in the IR, in which case the
-// solver enforces it, or it is an opaque lambda.
-//
-// The space comes away with a record of what happened (SpaceMetadata): what the
-// solver was given, what it cost, and how the result compares to the Cartesian
-// product of the domains.
-//
-// A configuration has an integer index, which is its position in the sorted
-// list. The index is an identity -- used to cache costs, communicate points
-// between threads, sample uniformly, and walk the space deterministically --
-// and not a representation: code wanting structure should decode, work on the
-// Configuration, and re-encode. Because the list is sorted rather than in
-// discovery order, the index is a property of the space and not of the search
-// that produced it, so changing the branching heuristic or the thread count
-// renumbers nothing.
-//
-// # 5. What is left over
-//
-// Only the opaque lambdas, which `CandidatePool::computeValidMask` evaluates
-// over the space in vectorized batches. The DSL-derived predicates stay
-// registered too, but not because anything is left for them to reject: they are
-// what `ConfigSpace::debugIsValid` uses to say *why* a hand-built configuration
-// is not in the space, and their agreeing with the solver is the standing check
-// on the translation. A space whose valid count is below its size means the two
-// disagree, and that is a bug in ConstraintGecode.cpp.
+// How a space is *built*: parameters are declared, constraints are written in
+// the DSL below, and buildInto() commits both at once. See the top of
+// ConfigSpace.h for what a space is and how the pieces fit together.
 //
 // ===----------------------------------------------------------------------===//
 
@@ -502,11 +380,11 @@ public:
   /// values must divide the runtime value of v (v % result == 0).
   IntVar divisorsOf(llvm::StringRef name, IntVar v);
 
-  /// Arbitrary predicate; configurations it rejects are skipped by the
-  /// framework. `description` is optional; it is reported by
-  /// ConfigSpace::debugIsValid() when the predicate rejects a configuration.
-  /// Prefer the Expr overload where the constraint can be written in the DSL —
-  /// only that form is analysable.
+  /// Arbitrary predicate; configurations it rejects are dropped from the space
+  /// once the solver has enumerated it. `description` is optional; it names the
+  /// predicate in the space's report. Prefer the Expr overload where the
+  /// constraint can be written in the DSL — only that form is analysable, and
+  /// only it prunes the search rather than filtering its output.
   void require(Constraint pred, llvm::StringRef description = "");
 
   /// Require that the given boolean expression evaluate to true.
@@ -541,11 +419,12 @@ private:
     std::vector<ParmValue> divisorFilters; ///< keepDivisorsOf(n) for each n
     unsigned permutationSize = 0;          ///< for Kind::Permutation
   };
+  /// Exactly one of the two is set: a constraint written in the DSL is a tree
+  /// the solver is given, and one registered as a lambda is a filter run over
+  /// its output.
   struct PredicateEntry {
     std::string description;
     Constraint pred;
-    /// The source expression, for constraints registered through the DSL;
-    /// null for opaque predicates. Only these can be analysed.
     constraints::ConstraintNodePtr node;
   };
 

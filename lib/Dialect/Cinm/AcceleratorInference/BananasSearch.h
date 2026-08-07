@@ -56,32 +56,17 @@ struct ValidationSet {
   void dumpToCSV(std::filesystem::path path) const;
 };
 
-/// Addressable candidate pool backed by the full ConfigSpace Cartesian product.
+/// Addressable candidate pool over a ConfigSpace's flat index range [0, N).
 /// Configurations are not pre-stored; index i maps to the config at
-/// ConfigSpace::at(i).
-/// validMask_ is a compact BitVector over [0, N) marking which flat indices
-/// pass all constraints. All O(nValid) operations iterate validMask_ rather
-/// than the full [0, N) range. Xo/yo are pre-allocated to evalBudget, not
-/// totalSize().
+/// ConfigSpace::at(i). Every index is a candidate: a space holds only the
+/// configurations that satisfy its constraints, so the pool has nothing to
+/// screen. Xo/yo are pre-allocated to evalBudget, not totalSize().
 struct CandidatePool {
   using MaskType = std::unordered_set<size_t>;
-  struct SharedState {
-    // Stores indices of valid configs in a set.
-    MaskType validMask;
-    // Stores indices of valid configs in a vector for random access.
-    std::vector<size_t> validIndices;
-
-    size_t validIndex(size_t i) { return validIndices[i]; }
-    bool empty() { return validIndices.empty(); }
-    size_t size() { return validIndices.size(); }
-    bool isValid(size_t i) { return validMask.count(i); }
-  };
 
   const ConfigSpace *space_;
   size_t N;         // = space_->totalSize(), cached
   MaskType visited; // flat indices of evaluated configs
-  std::shared_ptr<SharedState> shared;
-  size_t nValidVisited_ = 0; // count of valid configs that have been visited
 
   // Incrementally maintained observation matrices.
   // Preallocated to D×evalBudget / 1×evalBudget; first nObs columns are valid.
@@ -105,43 +90,27 @@ struct CandidatePool {
 
   bool exhaustive;
 
-  /// Iterate [0, N), pre-mark constraint-violating configs as visited, and
-  /// build validMask_. evalBudget sizes Xo/yo (not N).
-  static CandidatePool build(const ConfigSpace &space, size_t evalBudget,
-                             bool exhaustive = false);
-
-  /// Construct with a precomputed validity mask, skipping the O(N) validity
-  /// scan. `validMask` must have been produced by computeValidMask() for the
-  /// same ConfigSpace. Used to share the (expensive) scan across seeds while
-  /// each seed keeps its own mutable pool state.
+  /// `evalBudget` sizes Xo/yo (not N).
   CandidatePool(const ConfigSpace &space, size_t evalBudget,
-                std::shared_ptr<SharedState> state, bool exhaustive = false);
+                bool exhaustive = false);
   ~CandidatePool();
 
-  /// Scan the whole Cartesian product once and return a bitmask over [0, N)
-  /// with bit i set iff the config at flat index i passes all constraints.
-  static void computeValidMask(const ConfigSpace &space, SharedState &shared);
-
-  /// Number of valid (constraint-passing) configs in the pool.
-  size_t size() const { return shared->size(); }
+  /// Number of configs in the pool.
+  size_t size() const { return N; }
   /// Width of the surrogate's input vector (not the parameter count).
   size_t numFeatures() const;
-  bool empty() const { return shared->empty(); }
+  bool empty() const { return N == 0; }
 
   /// Return the configuration at flat pool index i (allocated by value).
   Configuration operator[](size_t i) const;
 
-  void markVisited(size_t idx) {
-    if (visited.insert(idx).second && shared->isValid(idx))
-      ++nValidVisited_;
-  }
+  void markVisited(size_t idx) { visited.insert(idx); }
   bool isVisited(size_t idx) const { return visited.count(idx); }
-  bool isValid(size_t idx) const { return shared->isValid(idx); }
-  /// Number of valid configs that have been evaluated (or marked visited).
-  size_t numVisited() const { return nValidVisited_; }
-  /// Flat index of the first valid unvisited config, or N if all visited.
+  /// Number of configs that have been evaluated (or marked visited).
+  size_t numVisited() const { return visited.size(); }
+  /// Flat index of the first unvisited config, or N if all visited.
   size_t firstUnvisited() const {
-    for (size_t i : shared->validIndices)
+    for (size_t i = 0; i < N; ++i)
       if (!visited.count(i))
         return i;
     return N;
@@ -176,21 +145,22 @@ struct CandidatePool {
   void dumpToCSV(const ConfigSpace &space, const InferenceOptions &opts,
                  std::filesystem::path path) const;
 
-  /// Write a JSON sidecar at `path` summarising the search space:
-  /// total_size (Cartesian product), n_valid (constraint-passing configs),
-  /// and a per-parameter description (name, type, domain, cardinality).
+  /// Write a JSON sidecar at `path` summarising the search space: the
+  /// Cartesian product of the declared domains, the number of configurations
+  /// the space holds, and a per-parameter description (name, type, domain,
+  /// cardinality).
   void dumpMetadataJSON(const ConfigSpace &space,
                         std::filesystem::path path) const;
 
 private:
-  /// Insert idx into result if it is unvisited, not already present, and valid.
+  /// Insert idx into result if it is unvisited and not already present.
   bool tryInsert(std::unordered_set<size_t> &result, size_t idx);
-  /// Add up to `target` random valid-unvisited indices to `result` (rejection
-  /// sampling over validIndices_, deduplicated via `result`). Used for BO
-  /// candidate generation (nextCandidateIndices).
+  /// Add up to `target` random unvisited indices to `result` (rejection
+  /// sampling over [0, N), deduplicated via `result`). Used for BO candidate
+  /// generation (nextCandidateIndices).
   void fillRandom(std::unordered_set<size_t> &result, size_t target,
                   std::mt19937 &rng);
-  /// Collect valid, unvisited grid-neighbours of all observed configurations,
+  /// Collect unvisited grid-neighbours of all observed configurations,
   /// up to `depth` discrete steps away (BFS). When `frontierOnly` is true,
   /// only nodes at exactly `depth` steps are added; otherwise all reachable
   /// nodes within `depth` steps are added.

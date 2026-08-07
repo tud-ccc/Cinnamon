@@ -256,47 +256,6 @@ ParmValue ConfigSpace::get(const Configuration &config,
   return dim < config.size() ? config[dim] : 0;
 }
 
-void ConfigSpace::addConstraint(Constraint &&constraint,
-                                std::string description) {
-  constraints.emplace_back(std::move(description), std::move(constraint));
-}
-
-bool ConfigSpace::isValid(const Configuration &config) const {
-  if (config.size() != numDims())
-    return false;
-  ConfWrapper wrapper(*this, config);
-  for (const auto &[desc, c] : constraints)
-    if (!c(wrapper))
-      return false;
-  return true;
-}
-
-bool ConfigSpace::debugIsValid(const Configuration &config,
-                               raw_ostream &os) const {
-  if (config.size() != numDims()) {
-    os << "Configuration has " << config.size() << " value(s) but this space "
-       << "has " << numDims() << " dimension(s): {";
-    for (size_t d = 0; d < numDims(); ++d)
-      os << dimName(d) << (d + 1 < numDims() ? ", " : "");
-    os << "}\n";
-    return false;
-  }
-  auto wrapper = ConfWrapper(*this, config);
-  bool fullyValid = true;
-  // Every constraint is evaluated, not just up to the first failure, so the
-  // report names every reason rather than one of them.
-  for (auto &[desc, c] : constraints) {
-    if (c(wrapper))
-      continue;
-    if (fullyValid) {
-      os << "Configuration " << wrapper << " violates:\n";
-      fullyValid = false;
-    }
-    os << "  - " << (desc.empty() ? "<unnamed constraint>" : desc) << "\n";
-  }
-  return fullyValid;
-}
-
 size_t ConfigSpace::numFeatures() const {
   size_t n = 0;
   for (const SearchParam &param : params)
@@ -412,14 +371,10 @@ bool ConfigSpace::debugIsEncodable(const Configuration &conf,
 
   // Every value is one its parameter can take, so what rules the
   // configuration out is a constraint over several of them at once. Which one
-  // is not recoverable here -- the space holds the configurations the solver
-  // found, not the constraints it found them from -- but the registered
-  // predicates are still evaluated, and those that reject it are worth
-  // naming before falling back to the general statement.
+  // is not recoverable here: the space holds the configurations the solver
+  // found, not the constraints it found them from.
   if (std::binary_search(solutions_.begin(), solutions_.end(), conf))
     return true;
-  if (!debugIsValid(conf, os))
-    return false;
   os << "  - no configuration in this space assigns these values together\n";
   return false;
 }
