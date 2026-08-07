@@ -1,8 +1,8 @@
 // RUN: cinm-opt %s --cinm-assign-platforms --cinm-isolate-compute-blocks \
-// RUN:   --upmem-infer-accelerator="simulator=op-count eval-solution=dpus=16,tasklets=1,gemv.M.mram=64,gemv.K.mram=1024,gemv.M.wram=64,gemv.K.wram=128,gemv.order=1,elementwise.D0.mram=64,elementwise.D0.wram=64,fuse.gemv->elementwise=2" \
+// RUN:   --upmem-infer-accelerator="simulator=op-count eval-solution=dpus=16,tasklets=1,gemv.M.mram=64,gemv.K.mram=1024,gemv.M.wram=64,gemv.K.wram=128,gemv.order[0]=1,gemv.order[1]=2,elementwise.D0.mram=64,elementwise.D0.wram=64,fuse.gemv->elementwise=2" \
 // RUN: | FileCheck %s --check-prefix=FUSED
 // RUN: cinm-opt %s --cinm-assign-platforms --cinm-isolate-compute-blocks \
-// RUN:   --upmem-infer-accelerator="simulator=op-count eval-solution=dpus=16,tasklets=1,gemv.M.mram=256,gemv.K.mram=256,gemv.M.wram=64,gemv.K.wram=64,gemv.order=1,elementwise.D0.mram=64,elementwise.D0.wram=64,fuse.gemv->elementwise=1" \
+// RUN:   --upmem-infer-accelerator="simulator=op-count eval-solution=dpus=16,tasklets=1,gemv.M.mram=256,gemv.K.mram=256,gemv.M.wram=64,gemv.K.wram=64,gemv.order[0]=2,gemv.order[1]=1,elementwise.D0.mram=64,elementwise.D0.wram=64,fuse.gemv->elementwise=1" \
 // RUN: | FileCheck %s --check-prefix=SPLIT
 
 // `gemv` then elementwise, end to end, on the two configurations that decide

@@ -113,11 +113,10 @@ IntVar SpaceBuilder::pow2Range(llvm::StringRef name, ParmValue expLo,
 }
 
 PermVar SpaceBuilder::permutation(llvm::StringRef name, unsigned n) {
-  std::optional<int64_t> count = factorial(n);
-  assert(count && "too many dimensions to enumerate their permutations");
-  // The rank is one-based like every other parameter; the decoder is
-  // zero-based. Which end converts is stated where the value is consumed.
-  auto hi = static_cast<ParmValue>(*count);
+  // Every one of the n dimensions holds a place in [1, n]; what stops them
+  // being n independent numbers is the distinctness the solver posts for a
+  // parameter of this kind. See ParmKind<Permutation>.
+  auto hi = static_cast<ParmValue>(n);
   PermVar v(name, hi);
   dims_.push_back({v.name_, v.idx_, DimEntry::Permutation, 1, hi, {}, n});
   return v;
@@ -127,29 +126,37 @@ PermVar SpaceBuilder::permutation(llvm::StringRef name,
                                   llvm::ArrayRef<BoolExpr> active) {
   PermVar v = permutation(name, active.size());
 
-  // How many items this configuration actually orders.
+  // How many items this configuration actually orders. `asInt(a) == 0` is the
+  // negation of `a`, which is why no Not node is needed: there is no other
+  // caller for one.
   llvm::SmallVector<IntExpr> flags;
   for (const BoolExpr &a : active)
     flags.push_back(asInt(a));
   IntExpr count = sum(flags);
 
-  // The encoding is a rank over the active items, so a configuration ordering
-  // k of them has k! orderings and every larger rank names nothing. Expanded
-  // over the domain of `count` rather than tabulated against it: there are
-  // `active.size() + 1` cases, and that is a handful.
+  // The active items take places 1..count and the inactive ones the rest.
+  // With distinctness that is already exactly count! assignments *up to* where
+  // the inactive items go, which is what the third rule then pins: they sit in
+  // index order, so a configuration does not appear once per rearrangement of
+  // items that take no place at all.
   //
-  // This is the constraint the caller does not write. Under a positional
-  // encoding it would be a distinctness plus a rule putting the inactive items
-  // last, posted from this same place -- which is the point of posting it here.
-  IntExpr rank(v.node());
-  for (ParmValue k = 0; static_cast<size_t>(k) <= active.size(); ++k) {
-    std::optional<int64_t> orders = factorial(k);
-    assert(orders && "too many items to enumerate their orderings");
-    auto numOrders = static_cast<ParmValue>(*orders);
-    require(implies(count == k, rank <= numOrders),
-            (name + ": at most " + std::to_string(numOrders) +
-             " ordering(s) when " + std::to_string(k) + " item(s) are active")
+  // These are the constraints the caller does not write. They are about the
+  // encoding, and the encoding is not the caller's business.
+  for (size_t i = 0; i < active.size(); ++i) {
+    require(implies(flags[i] == 1, v.axis(i) <= count),
+            (name + ": item " + std::to_string(i) +
+             " takes one of the first (number active) places when it is active")
                 .str());
+    require(implies(flags[i] == 0, v.axis(i) > count),
+            (name + ": item " + std::to_string(i) +
+             " takes a place past the active ones when it is inactive")
+                .str());
+    for (size_t j = i + 1; j < active.size(); ++j)
+      require(
+          implies(flags[i] == 0, implies(flags[j] == 0, v.axis(i) < v.axis(j))),
+          (name + ": items " + std::to_string(i) + " and " + std::to_string(j) +
+           " keep index order while both are inactive (symmetry)")
+              .str());
   }
   return v;
 }
@@ -201,12 +208,6 @@ void SpaceBuilder::mustDivide(IntVar parent, IntVar child) {
   multiples_.push_back({parent.name_, child.name_});
 }
 
-void SpaceBuilder::require(VecConstraint pred, llvm::StringRef description) {
-  predicates_.push_back({.description = description.str(),
-                         .pred = std::move(pred),
-                         .node = nullptr});
-}
-
 void SpaceBuilder::require(Constraint pred, llvm::StringRef description) {
   predicates_.push_back({.description = description.str(),
                          .pred = std::move(pred),
@@ -233,9 +234,9 @@ void SpaceBuilder::require(const ConstraintNodePtr &node,
   }
   std::string desc =
       description.empty() ? describeNode(*node) : description.str();
-  require(toVecConstraint(node), desc);
-  // Keep the tree so buildInto can analyse it; require(VecConstraint) has
-  // just pushed the entry.
+  require(toConstraint(node), desc);
+  // Keep the tree so buildInto can analyse it; require() has just pushed the
+  // entry.
   predicates_.back().node = node;
 }
 
@@ -247,8 +248,8 @@ void SpaceBuilder::extractDivConstraints(const ConstraintNodePtr &node) {
   // configurations the guard exists to exclude.
   //
   // Nothing is lost but pruning, and not even all of that. `a / b` is exact by
-  // evaluation -- a lane whose division does not come out exact makes the
-  // enclosing comparison false, see evalBoolNodeVec -- so a guarded division
+  // evaluation -- a division that does not come out exact makes the
+  // enclosing comparison false, see evalBoolNode -- so a guarded division
   // still means what it says. And matchProductEquality cross-multiplies the
   // consequent anyway, so `implies(g, extent / block == 1)` still reaches the
   // enumerator as the gated equality `extent == block`. What goes is the static
@@ -282,19 +283,19 @@ void SpaceBuilder::addDivConstraint(const ConstraintNodePtr &num,
     // (B * C) | A  ⟹  B * C <= A as well; keeping the bound makes the
     // predicate reject the degenerate cases the divisibility test alone lets
     // through.
-    require(VecConstraint(
-                [num, den](const ConfigurationVector &c, arma::urowvec &valid) {
-                  const ParmVector nv = evalNodeVec(*num, c);
-                  const ParmVector dv = evalNodeVec(*den, c);
-                  valid %= (dv <= nv) % vecDivides(dv, nv);
-                }),
+    require(Constraint([num, den](const ConfWrapper c) {
+              const ParmValue nv = evalNode(*num, c);
+              const ParmValue dv = evalNode(*den, c);
+              return dv != 0 && dv <= nv && nv % dv == 0;
+            }),
             desc);
     return;
   }
-  require(VecConstraint(
-              [num, den](const ConfigurationVector &c, arma::urowvec &valid) {
-                valid %= vecDivides(evalNodeVec(*den, c), evalNodeVec(*num, c));
-              }),
+  require(Constraint([num, den](const ConfWrapper c) {
+            const ParmValue nv = evalNode(*num, c);
+            const ParmValue dv = evalNode(*den, c);
+            return dv != 0 && nv % dv == 0;
+          }),
           desc);
 }
 
@@ -349,8 +350,8 @@ void SpaceBuilder::buildInto(ConfigSpace &space) {
         llvm::dbgs() << "pow2[2^" << entry.lo << "..2^" << entry.hi << "]";
         break;
       case DimEntry::Permutation:
-        llvm::dbgs() << "permutations of " << entry.permutationSize
-                     << " (ranks 1.." << entry.hi << ")";
+        llvm::dbgs() << "orderings of " << entry.permutationSize
+                     << " (one place in 1.." << entry.hi << " per item)";
         break;
       }
       if (!entry.divisorFilters.empty()) {
@@ -365,11 +366,16 @@ void SpaceBuilder::buildInto(ConfigSpace &space) {
       llvm::dbgs() << "\n";
     });
 
-    *entry.idx = space.addDim(std::move(param));
+    *entry.idx = space.addParam(std::move(param));
   }
 
+  // Per *dimension*: this is the size of the box the solver searches, which is
+  // what the density below is a density of. A parameter of arity n contributes
+  // its domain n times -- an ordering of n items is n^n points of that box, of
+  // which distinctness keeps n!.
   for (const SearchParam &param : space.params)
-    report->cartesian *= static_cast<double>(param.cardinality());
+    for (size_t k = 0, e = param.arity(); k < e; ++k)
+      report->cartesian *= static_cast<double>(param.cardinality());
 
   // Phase 2: collect what the solver is to be given. Divisibility declared
   // through mustDivide never passes through a Div node, so it arrives here as
@@ -383,7 +389,7 @@ void SpaceBuilder::buildInto(ConfigSpace &space) {
   for (const auto &m : multiples_) {
     size_t parent = findVarByName(m.parent).idx();
     size_t child = findVarByName(m.child).idx();
-    assert(parent < space.size() && child < space.size() &&
+    assert(parent < space.numDims() && child < space.numDims() &&
            "mustDivide names a dimension that was never declared");
     divisibility.push_back({parent, child});
     report->constraints.push_back({m.parent + " | " + m.child, "solved", true});
@@ -441,11 +447,7 @@ void SpaceBuilder::buildInto(ConfigSpace &space) {
       report->constraints.push_back({entry.description, "filter", false});
     else
       report->constraints.push_back({entry.description, "solved", true});
-    std::visit(
-        [&](auto &pred) {
-          space.addConstraint(std::move(pred), entry.description);
-        },
-        entry.pred);
+    space.addConstraint(std::move(entry.pred), entry.description);
   }
 
   space.metadata = std::move(report);

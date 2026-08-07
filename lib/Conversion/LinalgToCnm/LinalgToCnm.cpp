@@ -258,6 +258,32 @@ splitDistributedReductions(RewriterBase &rewriter, linalg::LinalgOp op,
       op->setAttr(name, DenseI64ArrayAttr::get(op->getContext(), updated));
     }
 
+    // An order is a permutation of the iteration dimensions, so it does not
+    // get an entry inserted like the size lists above -- it gets rewritten.
+    // Every old dimension has moved up by one; the prepended partial-sum
+    // dimension stands for the reduction that was split, so it takes that
+    // reduction's axis; and the reduction itself now spans a single block, so
+    // it takes no axis at all and goes last.
+    //
+    // This is what lets the order arrive as an explicit permutation over the
+    // dimensions the op had *before* this pass ran. Whoever stamps it does not
+    // have to predict the split, because the split fixes it up -- which is the
+    // alternative to a rank, whose whole reason for existing was to be
+    // invariant to a rewrite it could not see.
+    StringRef orderName = cnm::CnmDialect::WORKGROUP_DIM_ORDER_NAME;
+    if (auto attr = op->getAttrOfType<DenseI64ArrayAttr>(orderName)) {
+      if (attr.size() == static_cast<int64_t>(oldNumLoops)) {
+        auto splitDim = static_cast<int64_t>(*target);
+        SmallVector<int64_t> updated;
+        updated.reserve(oldNumLoops + 1);
+        for (int64_t dim : attr.asArrayRef())
+          updated.push_back(dim == splitDim ? 0 : dim + 1);
+        updated.push_back(splitDim + 1);
+        op->setAttr(orderName,
+                    DenseI64ArrayAttr::get(op->getContext(), updated));
+      }
+    }
+
     FailureOr<SmallVector<int64_t>> newExtents = getLoopExtents(op);
     if (failed(newExtents))
       return failure();

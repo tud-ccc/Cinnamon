@@ -66,7 +66,7 @@ PointSet bruteForce(const std::vector<std::vector<ParmValue>> &domains,
 
 PointSet accepted(const ConfigSpace &space) {
   PointSet out;
-  Configuration conf(space.size());
+  Configuration conf(space.numDims());
   for (size_t i = 0; i < space.totalSize(); ++i) {
     space.at(i, conf);
     if (space.isValid(conf))
@@ -98,7 +98,7 @@ void check(const ConfigSpace &space, const PointSet &expected) {
       << "the space contains configurations the constraints reject, so a "
          "constraint was not posted to the solver";
 
-  Configuration conf(space.size());
+  Configuration conf(space.numDims());
   for (size_t i = 0; i < space.totalSize(); ++i) {
     space.at(i, conf);
     EXPECT_EQ(space.indexOf(conf), i)

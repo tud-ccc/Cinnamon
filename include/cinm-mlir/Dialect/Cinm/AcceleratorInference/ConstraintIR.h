@@ -6,7 +6,6 @@
 #include <llvm/ADT/SmallVector.h>
 #include <llvm/ADT/StringRef.h>
 #include <memory>
-#include <optional>
 #include <string>
 #include <utility>
 #include <variant>
@@ -17,13 +16,9 @@ namespace mlir::cinm::constraints {
 // Constraint IR
 // ===----------------------------------------------------------------------===//
 //
-// A small runtime expression tree. Constraints used to be encoded in the C++
-// type system (CRTP expression templates), which bought inlined per-config
-// evaluation -- irrelevant now that predicates run once per chunk over a
-// ConfigurationVector of thousands of lanes -- at the cost of making the
-// framework unable to reason about them.
+// A small runtime expression tree.
 //
-// What reasons about them now is a finite-domain solver: every node here has
+// What reasons about them is a finite-domain solver: every node here has
 // an image in Gecode, and ConstraintGecode.cpp is the translation. That is
 // what keeps the node set closed and small -- a node with no propagator is a
 // node that would send its whole constraint back to being filtered.
@@ -78,6 +73,7 @@ struct ConstraintNode {
 private:
   struct VarState {
     std::shared_ptr<size_t> idx;
+    size_t offset;
     std::string name;
   };
   using OpndState = SmallVector<ConstraintNodePtr, 2>;
@@ -86,10 +82,15 @@ public:
   // const
   ConstraintNode(ParmValue v) : kind(Kind::Const), state(v) {}
   // var
-  /// A parameter. There is no kind here: only a quantity ever reaches this
-  /// IR, because only IntVar converts to an Expr.
-  ConstraintNode(llvm::StringRef v, std::shared_ptr<size_t> idx)
-      : kind(Kind::Var), state(VarState{std::move(idx), v.str()}) {}
+  /// One dimension of a parameter. There is no kind here: only a quantity ever
+  /// reaches this IR, because only IntVar converts to an Expr.
+  ///
+  /// `offset` is which of the parameter's dimensions this is, since the shared
+  /// cell holds the first one. It is zero for everything occupying a single
+  /// dimension, which is everything except one axis of an ordering.
+  ConstraintNode(llvm::StringRef v, std::shared_ptr<size_t> idx,
+                 size_t offset = 0)
+      : kind(Kind::Var), state(VarState{std::move(idx), offset, v.str()}) {}
   // binary
   ConstraintNode(ConstraintNode::Kind kind, ConstraintNodePtr lhs,
                  ConstraintNodePtr rhs)
@@ -134,13 +135,12 @@ public:
     assert(kind == Kind::Var);
     return std::get<VarState>(state).name;
   }
+  /// The Configuration entry this node reads, which is the parameter's first
+  /// one plus this node's offset into it.
   size_t varIdx() const {
     assert(kind == Kind::Var);
-    return *std::get<VarState>(state).idx;
-  }
-  std::shared_ptr<size_t> varIdxPtr() const {
-    assert(kind == Kind::Var);
-    return std::get<VarState>(state).idx;
+    const VarState &var = std::get<VarState>(state);
+    return *var.idx + var.offset;
   }
   ArrayRef<ConstraintNodePtr> operands() const {
     if (std::holds_alternative<OpndState>(state))
@@ -167,28 +167,23 @@ enum class Type { BOOL, INT };
 // Evaluation
 // ===----------------------------------------------------------------------===//
 
-/// Evaluate an arithmetic (non-boolean) node over a whole batch.
+/// Evaluate an arithmetic (non-boolean) node against one configuration.
 ///
-/// `a / b` in this IR means *exact* division, so when `exact` is given, the
-/// lanes where some division below `node` did not come out exact are cleared
-/// in it. The quotient returned for those lanes is the truncated one and is
-/// meaningless; a boolean context must consult `exact` rather than trust it
-/// (evalBoolNodeVec does). Passing null asks only for the quotient, which is
-/// what a caller wanting a plain number out of a space expression wants.
-ParmVector evalNodeVec(const ConstraintNode &node, const ConfigurationVector &c,
-                       arma::urowvec *exact = nullptr);
+/// `a / b` in this IR means *exact* division, so when `exact` is given, it is
+/// cleared if some division below `node` did not come out exact. The quotient
+/// returned is then the truncated one and is meaningless; a boolean context
+/// must consult `exact` rather than trust it (evalBoolNode does). Passing null
+/// asks only for the quotient, which is what a caller wanting a plain number
+/// out of a space expression wants.
+ParmValue evalNode(const ConstraintNode &node, const ConfWrapper &c,
+                   bool *exact = nullptr);
 
-/// Evaluate a boolean node over a batch, as a 0/1 mask per lane.
-arma::urowvec evalBoolNodeVec(const ConstraintNode &node,
-                              const ConfigurationVector &c);
+/// Evaluate a boolean node against one configuration.
+bool evalBoolNode(const ConstraintNode &node, const ConfWrapper &c);
 
-/// Evaluate a boolean node over a batch, AND-ing the result into `valid`.
-void evalBoolNodeInto(const ConstraintNode &node, const ConfigurationVector &c,
-                      arma::urowvec &valid);
-
-/// Wrap a boolean node as a VecConstraint, so a tree can be registered with
+/// Wrap a boolean node as a Constraint, so a tree can be registered with
 /// ConfigSpace::addConstraint like any other predicate.
-VecConstraint toVecConstraint(ConstraintNodePtr node);
+Constraint toConstraint(ConstraintNodePtr node);
 
 /// Human-readable rendering, e.g. "((8192 / gemv.M0) * (16384 / gemv.K0)) ==
 /// (dpus * tasklets)". Used for the constraint descriptions debugIsValid()

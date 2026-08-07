@@ -1,6 +1,5 @@
 #pragma once
 
-#include <armadillo>
 #include <cstdint>
 #include <functional>
 #include <iosfwd>
@@ -28,7 +27,6 @@ namespace mlir::cinm {
 // fit together.
 
 using ParmValue = int32_t;
-using ParmVector = arma::Row<ParmValue>;
 
 // ===----------------------------------------------------------------------===//
 // Configuration space types
@@ -67,14 +65,15 @@ enum class ParamKind {
 
 llvm::StringRef paramKindName(ParamKind kind);
 
-/// An ordering of `[0, n)`: `position[i]` is the place item `i` takes.
+/// An ordering of `[0, n)`: `position[i]` is the place item `i` takes,
+/// zero-based, so `position` is the inverse of "which item is at place p".
 ///
 /// This is what a permutation parameter *is*, as opposed to how it is encoded
 /// in a Configuration -- see ParmKind<Permutation>. Callers that read one back
 /// out of a configuration get this, and never the encoding, which is the point
 /// of routing the two through a model.
 struct Permutation {
-  llvm::SmallVector<unsigned, 4> position;
+  llvm::SmallVector<int64_t, 4> position;
 
   bool operator==(const Permutation &o) const = default;
   size_t size() const { return position.size(); }
@@ -176,13 +175,21 @@ struct SearchParam {
   ParamKind kind() const { return model->kind; }
   /// How many Configuration entries this parameter occupies.
   size_t arity() const { return model->arity(*this); }
+  /// Name of the `k`-th of them, which is the parameter's own name when there
+  /// is only one. Every per-dimension listing -- a CSV header, a diagnostic
+  /// about an out-of-domain value -- goes through here, so a parameter
+  /// spanning several dimensions names them consistently.
+  std::string dimName(size_t k) const;
 
-  /// Smallest and largest value this parameter can take. For reporting; the
-  /// surrogate sees appendFeatures() instead, and nothing maps back from a
-  /// feature to a value.
+  /// Smallest and largest value one dimension of this parameter can take. For
+  /// reporting; the surrogate sees appendFeatures() instead, and nothing maps
+  /// back from a feature to a value.
   double dlo() const;
   double dhi() const;
-  /// Number of distinct values this parameter can take.
+  /// Number of distinct values *one dimension* of this parameter can take,
+  /// which is the size of `domain`. Not the number of values the parameter
+  /// has: an ordering of n items has n! of those and a domain of n, and the
+  /// difference is exactly what the solver's distinctness constraint removes.
   size_t cardinality() const;
 
   /// How many surrogate features this parameter contributes. One for a
@@ -256,16 +263,28 @@ template <> struct ParmKind<ParmValue> {
                    llvm::SmallVectorImpl<llvm::SmallVector<ParmValue, 4>> &out);
 };
 
-/// An ordering, currently encoded as its one-based lexicographic rank in a
-/// single dimension (see cinm-mlir/Utils/Permutation.h).
+/// An ordering of n items, encoded positionally: n dimensions, dimension `i`
+/// holding the one-based place item `i` takes.
 ///
-/// That the encoding is a rank is stated here and nowhere else. A caller reads
-/// a Permutation out and writes constraints about orderings; if this becomes n
-/// dimensions holding the positions themselves, only the four functions below
-/// change.
+/// One-based because §2 of SpaceBuilder.h has every domain strictly positive.
+/// What makes the n dimensions an ordering rather than n independent numbers
+/// is a distinctness constraint, which the solver posts for every parameter of
+/// this kind (see ConstraintGecode.cpp) -- so it holds by construction and no
+/// caller writes it.
+///
+/// The alternative encoding, a lexicographic rank in a single dimension, is
+/// the one this replaced. A rank is compact but opaque: every constraint about
+/// where an item sits has to be stated about the whole ordering at once, which
+/// in practice means an opaque predicate that decodes it. Positions cost n-1
+/// extra dimensions and make "these two items share an axis" a comparison
+/// between two variables.
+///
+/// That the encoding is positions is stated here and nowhere else.
 template <> struct ParmKind<Permutation> {
   static ParamKind kind() { return ParamKind::Permutation; }
-  static size_t arity(const SearchParam &) { return 1; }
+  static size_t arity(const SearchParam &param) {
+    return param.permutationSize;
+  }
   static Permutation decode(const SearchParam &param,
                             llvm::ArrayRef<ParmValue> values);
   static size_t numFeatures(const SearchParam &param) {
@@ -280,16 +299,19 @@ template <> struct ParmKind<Permutation> {
 };
 
 /// Factory functions — build a SearchParam without adding it to a space yet.
-/// Use ConfigSpace::addDim to register the result.
+/// Use ConfigSpace::addParam to register the result.
 SearchParam makeRange(StringRef name, ParmValue lo, ParmValue hi,
                       ParmValue step = 1);
 SearchParam makePow2Range(StringRef name, ParmValue loExp, ParmValue hiExp);
 SearchParam makeValues(StringRef name, std::vector<ParmValue> values);
-/// A parameter ranging over the permutations of `[0, n)`, valued by
-/// one-based lexicographic rank -- so 1 is the identity and n! the reverse.
+/// A parameter ranging over the orderings of `[0, n)`, occupying n dimensions
+/// of `[1, n]` -- see ParmKind<Permutation>. On its own this describes n
+/// independent numbers; what makes it an ordering is the distinctness the
+/// solver posts for it.
 SearchParam makePermutation(StringRef name, unsigned n);
 
-/// A concrete assignment — one int64_t per SearchParam, in ConfigSpace order.
+/// A concrete assignment — one entry per *dimension*, in ConfigSpace order,
+/// which is one entry per parameter only when every parameter has arity one.
 using Configuration = std::vector<ParmValue>;
 
 struct ConfigSpace;
@@ -297,71 +319,6 @@ struct ConfWrapper;
 
 /// Predicate over a configuration; returns true if the configuration is valid.
 using Constraint = std::function<bool(const ConfWrapper)>;
-
-/// A batch of configurations, laid out for vectorized constraint evaluation.
-/// Conceptually a D (dims) x N (configs) matrix, but stored as D independent
-/// arma::Row buffers — one per dimension — rather than as a single arma::Mat.
-/// This matters because arma::Mat is column-major: a single owned matrix
-/// would make each *dimension's* values (what a constraint actually slices
-/// out via SpaceVar::operator[]) a strided row view, not contiguous memory.
-/// Storing one contiguous arma::Row per dimension instead means every slice a
-/// constraint operates on is a real contiguous SIMD-friendly buffer.
-struct ConfigurationVector {
-  std::vector<ParmVector> dims;
-
-  ConfigurationVector(size_t numDims, size_t n) : dims(numDims) {
-    for (auto &row : dims)
-      row.set_size(n);
-  }
-
-  size_t size() const { return dims.empty() ? 0 : dims[0].n_elem; }
-  size_t numDims() const { return dims.size(); }
-
-  /// Write configuration `conf` into column `col` of every dimension's row.
-  void setColumn(size_t col, const Configuration &conf) {
-    for (size_t d = 0; d < dims.size(); ++d)
-      dims[d][col] = conf[d];
-  }
-
-  const ParmVector &operator[](size_t dimIdx) const { return dims[dimIdx]; }
-
-  ParmVector ones() const { return ParmVector(size(), arma::fill::ones); }
-  ParmVector zeros() const { return ParmVector(size(), arma::fill::zeros); }
-};
-
-/// Vectorized predicate: evaluates a constraint over a whole batch of
-/// configurations at once, AND-ing the second parameter with this
-/// constraint's validity result. A constraint is allowed to short
-/// circuit and avoid performing configuration for
-/// entries of that are already set to zero.
-using VecConstraint =
-    std::function<void(const ConfigurationVector &c, arma::urowvec &valid)>;
-
-/// Elementwise a / b, yielding 0 where b == 0. Matches the scalar OpDiv
-/// (`b ? a / b : 0`) and, more importantly, avoids the UB that plain
-/// elementwise division would hit — a vectorized constraint evaluates every
-/// lane, so it cannot short-circuit past a zero divisor the way the
-/// equivalent scalar predicate does.
-inline ParmVector vecSafeDiv(const ParmVector &a, const ParmVector &b) {
-  arma::uvec zeros = arma::find(b == 0);
-  ParmVector safeB = b;
-  safeB.elem(zeros).ones();
-  ParmVector q = a / safeB;
-  q.elem(zeros).zeros();
-  return q;
-}
-
-/// Elementwise `b != 0 && a % b == 0` ("b divides a"), zero-safe as above.
-inline arma::urowvec vecDivides(const ParmVector &b, const ParmVector &a) {
-  arma::uvec zeros = arma::find(b == 0);
-  ParmVector safeB = b;
-  safeB.elem(zeros).ones();
-  // `%` is Armadillo's elementwise multiply, so this is a - (a / b) * b.
-  ParmVector rem = a - (a / safeB) % safeB;
-  arma::urowvec ok = (rem == 0);
-  ok.elem(zeros).zeros();
-  return ok;
-}
 
 /// A record of how a space came to have the shape it has, carried by the space
 /// but never interpreted by it.
@@ -380,15 +337,19 @@ struct SpaceMetadata {
 };
 
 /// Ordered collection of SearchParams that defines the search space.
+///
+/// **Parameters and dimensions are not the same count.** A parameter occupies
+/// `arity()` consecutive entries of a Configuration, which is one for a
+/// quantity and n for an ordering of n items. Everything indexed by parameter
+/// says `param`; everything indexed by Configuration entry says `dim`; and
+/// `dimOffset()` / `paramAtDim()` are the two ways between them. The two used
+/// to be the same number, and this is the distinction that was implicit then.
 struct ConfigSpace {
   std::vector<SearchParam> params;
   /// Each constraint paired with a human-readable description of what it
   /// checks (e.g. "wramRow | mramRow"); empty if the constraint was added
   /// without one. Used by debugIsValid() to report violations.
-  /// Constraints, stored as their vectorized form only (see VecConstraint and
-  /// addConstraint()) -- there is exactly one predicate per constraint, never
-  /// a separate scalar/vector pair.
-  std::vector<std::pair<std::string, VecConstraint>> constraints;
+  std::vector<std::pair<std::string, Constraint>> constraints;
 
   /// Install the configurations this space contains.
   ///
@@ -404,45 +365,45 @@ struct ConfigSpace {
   ConfigSpace() = default;
   ConfigSpace(const ConfigSpace &) = delete;
 
-  /// Add a fully-constructed SearchParam; returns its index in the space.
-  size_t addDim(SearchParam &&param) {
-    size_t idx = params.size();
-    params.push_back(std::move(param));
-    return idx;
-  }
+  /// Add a fully-constructed SearchParam; returns the index of its *first
+  /// dimension*, which is what a handle onto it has to hold -- that is the
+  /// index a constraint reads.
+  size_t addParam(SearchParam &&param);
 
-  std::pair<size_t, size_t> addDims(SmallVector<SearchParam> &&dims) {
-    size_t start = params.size();
-    for (auto &dim : dims)
-      params.push_back(std::move(dim));
-    return {start, (int64_t)params.size()};
-  }
-
-  /// Register a vectorized predicate; configurations whose lane any
-  /// constraint clears to 0 are skipped and never passed to the plugin for
-  /// evaluation. `description` is an optional human-readable label, reported
-  /// by debugIsValid() when the constraint rejects a configuration.
-  ///
-  /// Constraints are stored and evaluated only in this vectorized form; the
-  /// single-configuration check (isValid) is derived from it by evaluating a
-  /// one-lane batch. Prefer this overload — it is the one the search actually
-  /// runs, and the scalar view of it is free.
-  void addConstraint(VecConstraint &&constraint, std::string description = "");
-  /// Register a scalar predicate, vectorized automatically by evaluating it
-  /// once per lane of the batch. Convenience for constraints not worth
-  /// hand-vectorizing; there is still exactly one predicate registered, never
-  /// a scalar/vector pair that could drift out of sync.
+  /// Register a predicate; configurations it rejects are never passed to the
+  /// plugin for evaluation. `description` is an optional human-readable label,
+  /// reported by debugIsValid() when the constraint rejects a configuration.
   void addConstraint(Constraint &&constraint, std::string description = "");
-  /// AND every registered constraint's vectorized mask together (all-ones,
-  /// i.e. everything passes, if none are registered).
-  arma::urowvec evalVecConstraintsMask(const ConfigurationVector &cv) const;
 
-  size_t size() const { return params.size(); }
-  const SearchParam &operator[](size_t i) const { return params[i]; }
-  SearchParam &operator[](size_t i) { return params[i]; }
+  /// How many parameters were declared.
+  size_t numParams() const { return params.size(); }
+  /// How many entries a Configuration of this space has. Not numParams():
+  /// see the note above the class.
+  size_t numDims() const { return paramOfDim_.size(); }
+  /// First Configuration entry of parameter `param`.
+  size_t dimOffset(size_t param) const { return firstDimOfParam_[param]; }
+  /// The parameter that Configuration entry `dim` belongs to.
+  const SearchParam &paramAtDim(size_t dim) const {
+    return params[paramOfDim_[dim]];
+  }
+  /// Name of Configuration entry `dim`, which is its parameter's name when
+  /// that parameter has only this one.
+  std::string dimName(size_t dim) const {
+    return paramAtDim(dim).dimName(dim - firstDimOfParam_[paramOfDim_[dim]]);
+  }
+  /// The entries of `conf` belonging to parameter `param`.
+  llvm::ArrayRef<ParmValue> paramValues(const Configuration &conf,
+                                        size_t param) const {
+    return llvm::ArrayRef(conf).slice(firstDimOfParam_[param],
+                                      params[param].arity());
+  }
 
-  /// Width of the surrogate's input vector. Not size(): a parameter may
-  /// contribute more than one feature (see SearchParam::appendFeatures).
+  const SearchParam &operator[](size_t param) const { return params[param]; }
+  SearchParam &operator[](size_t param) { return params[param]; }
+
+  /// Width of the surrogate's input vector. Neither numParams() nor numDims():
+  /// a parameter may contribute a different number of features from either
+  /// (see SearchParam::appendFeatures).
   size_t numFeatures() const;
   /// The surrogate's input vector for `conf`, appended to `out`. Every path
   /// that hands a configuration to the model goes through here, so training
@@ -450,10 +411,26 @@ struct ConfigSpace {
   void encode(const Configuration &conf,
               llvm::SmallVectorImpl<double> &out) const;
 
-  /// Index of param with the given name, or -1.
-  int findIndex(llvm::StringRef name) const;
-  /// Value of the named param in a configuration, or 0 if not found.
+  /// Index of the parameter with the given name, or -1.
+  int findParam(llvm::StringRef name) const;
+  /// Value of the named parameter in a configuration, or 0 if it has no
+  /// parameter of that name. Only for a parameter occupying one dimension --
+  /// a value spanning several is not a ParmValue, and asking for one is a
+  /// mistake rather than something to truncate; use getAs<T>() for those.
   ParmValue get(const Configuration &config, llvm::StringRef name) const;
+  /// The value of the named parameter, decoded as a `T`.
+  ///
+  /// This is how a caller that has only the parameter's *name* -- because it
+  /// crossed an interface carrying strings, as a stamped attribute does --
+  /// reads a value whose encoding it must not know.
+  template <class T, class Model = ParmKind<T>>
+    requires ParmModel<Model, T>
+  T getAs(const Configuration &config, llvm::StringRef name) const {
+    int param = findParam(name);
+    assert(param >= 0 && "no parameter of that name");
+    assert(params[param].kind() == Model::kind() && "wrong parameter kind");
+    return Model::decode(params[param], paramValues(config, param));
+  }
   /// Return true iff all registered constraints accept this configuration.
   bool isValid(const Configuration &config) const;
   /// Like isValid(), but also prints the configuration and the description
@@ -503,9 +480,9 @@ struct ConfigSpace {
 
   template <class Out> void dump(Out &out, const Configuration &config) const {
     out << " {";
-    for (auto [i, dim, value] : llvm::enumerate(params, config)) {
-      out << dim.name << "=" << value << (i + 1 < size() ? ", " : "");
-    }
+    for (auto [dim, value] : llvm::enumerate(config))
+      out << dimName(dim) << "=" << value
+          << (dim + 1 < config.size() ? ", " : "");
     out << "}";
   }
 
@@ -514,6 +491,12 @@ private:
   /// index is a position in here, which is why this is the one thing the space
   /// requires to be sorted.
   std::vector<Configuration> solutions_;
+
+  /// The two directions between a parameter index and a Configuration entry.
+  /// Both are maintained by addParam() and neither is derivable from `params`
+  /// without a scan, which is why they are stored rather than computed.
+  std::vector<size_t> firstDimOfParam_;
+  std::vector<size_t> paramOfDim_;
 };
 
 /// Wrap a space and config for nicer interface.
@@ -523,9 +506,10 @@ struct ConfWrapper {
   ConfWrapper(const ConfigSpace &space, const Configuration &conf)
       : space(space), conf(conf) {}
 
-  /// Get the value of a variable
+  /// Get the value of a single-dimension parameter by name.
   ParmValue operator[](StringRef name) const { return space.get(conf, name); }
-  ParmValue operator[](size_t ix) const { return conf[ix]; }
+  /// Get one Configuration entry, by *dimension* index.
+  ParmValue operator[](size_t dim) const { return conf[dim]; }
 };
 
 inline raw_ostream &operator<<(raw_ostream &os, const ConfWrapper &wrapper) {

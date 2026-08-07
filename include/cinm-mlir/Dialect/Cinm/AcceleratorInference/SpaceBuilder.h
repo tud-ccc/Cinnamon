@@ -2,17 +2,14 @@
 
 #include "cinm-mlir/Dialect/Cinm/AcceleratorInference/ConfigSpace.h"
 #include "cinm-mlir/Dialect/Cinm/AcceleratorInference/ConstraintIR.h"
-#include <armadillo>
 #include <cstdint>
 #include <llvm/ADT/ArrayRef.h>
 #include <llvm/ADT/StringRef.h>
 #include <llvm/Support/ErrorHandling.h>
 #include <llvm/Support/raw_ostream.h>
 #include <memory>
-#include <set>
 #include <string>
 #include <type_traits>
-#include <variant>
 #include <vector>
 
 namespace mlir::cinm {
@@ -153,6 +150,8 @@ namespace mlir::cinm {
 // SpaceVar — lazy typed handle to a named search-space parameter
 // ===----------------------------------------------------------------------===//
 
+template <constraints::Type Ty> class Expr;
+
 /// A handle to a named parameter created by SpaceBuilder, carrying the type of
 /// the value it stands for.
 ///
@@ -170,10 +169,9 @@ namespace mlir::cinm {
 /// compile. They used to abort at run time, at the line that wrote them, which
 /// was the best a single erased handle type could do.
 ///
-/// The typed read is for cold paths -- stamping, lowering, reporting. It
-/// returns by value and a Permutation allocates, so a per-lane loop wants the
-/// ConfigurationVector overload, which stays untyped and per-dimension because
-/// that is the shape vectorized evaluation needs.
+/// A read returns by value and a Permutation allocates, so a loop over many
+/// configurations wants `node()` and the constraint evaluator rather than a
+/// typed read per configuration.
 template <class T, class Model = ParmKind<T>>
   requires ParmModel<Model, T>
 class SpaceVar {
@@ -195,7 +193,7 @@ public:
 
   /// The value this parameter takes in `c`.
   T get(const ConfWrapper &c) const {
-    const SearchParam &param = c.space[*idx_];
+    const SearchParam &param = c.space.paramAtDim(*idx_);
     return Model::decode(
         param, llvm::ArrayRef(c.conf).slice(*idx_, Model::arity(param)));
   }
@@ -211,33 +209,23 @@ public:
     return std::make_shared<constraints::ConstraintNode>(name_, idx_);
   }
 
-  /// Vectorized form: the contiguous row of this parameter's values across
-  /// every configuration in the batch. Untyped by design -- see the note above
-  /// -- and available only for a quantity, where the encoding *is* the value.
-  const ParmVector &operator[](const ConfigurationVector &c) const
-    requires(std::is_same_v<T, ParmValue>)
-  {
-    return c[*idx_];
-  }
-
-  /// The raw first entry of this parameter's encoding.
+  /// The place item `item` takes, as a constraint-IR expression: a
+  /// **one-based** workgroup axis, with 1 the outermost.
   ///
-  /// These two read the *encoding*, not the value, and are therefore only
-  /// correct for a model of arity one -- which is not something the type says,
-  /// so a caller is on its own.
+  /// This is the one thing an ordering exposes to the DSL, and it is what
+  /// makes a constraint about orderings writable at all. "These two ops put
+  /// the same value dimension on the same axis" is `a.axis(i) == b.axis(j)`
+  /// -- a comparison between two variables the solver propagates, where under
+  /// a rank encoding it was an opaque predicate decoding both sides per
+  /// configuration.
   ///
-  /// They exist for a predicate that has to reinterpret the encoding rather
-  /// than read the value it denotes. The order parameters are the case:
-  /// their rank ranks only the dimensions a configuration actually
-  /// distributes, so what it means depends on the tile sizes, and decoding it
-  /// against the parameter's declared size -- which is what get() does -- would
-  /// be decoding a different permutation. Needing this is the signal that the
-  /// parameter wants modelling properly instead.
-  const ParmVector &encodedRow(const ConfigurationVector &c) const {
-    assert(c.numDims() > *idx_ && "parameter index out of range");
-    return c[*idx_];
-  }
-  ParmValue encodedValue(const ConfWrapper &c) const { return c[*idx_]; }
+  /// The result is a quantity, deliberately: the places are ordinals, and
+  /// `<` between two of them is exactly what "outer than" means. It is an
+  /// Expr and not a bare node because two bare nodes are two shared_ptrs, and
+  /// `==` between those is pointer comparison -- which compiles, and is never
+  /// what the caller meant.
+  Expr<constraints::Type::INT> axis(unsigned item) const
+    requires(std::is_same_v<T, Permutation>);
 
 private:
   friend class SpaceBuilder;
@@ -289,6 +277,15 @@ private:
 
 using IntExpr = Expr<constraints::Type::INT>;
 using BoolExpr = Expr<constraints::Type::BOOL>;
+
+template <class T, class Model>
+  requires ParmModel<Model, T>
+IntExpr SpaceVar<T, Model>::axis(unsigned item) const
+  requires(std::is_same_v<T, Permutation>)
+{
+  return IntExpr(std::make_shared<constraints::ConstraintNode>(
+      name_ + "[" + std::to_string(item) + "]", idx_, item));
+}
 
 namespace detail {
 /// Enables the operators below only when at least one side is a search-space
@@ -494,9 +491,11 @@ public:
   /// and the constraints that make the parameter mean one thing per
   /// configuration are posted here rather than written by the caller. They are
   /// stated in terms of the encoding, which is exactly what a caller must not
-  /// have to know: under a rank the parameter is bounded by (number active)!,
-  /// and under a positional encoding it would instead be a distinctness and an
-  /// ordering of the inactive items. Neither is the caller's business.
+  /// have to know: the active items take the low places, the inactive ones the
+  /// high places in index order, and the distinctness is the solver's. Between
+  /// them these leave exactly (number active)! assignments per configuration,
+  /// which is the point -- a configuration that orders k items has k! ways to
+  /// do it and no duplicates of any of them.
   ///
   /// `active.size()` is the number of items.
   PermVar permutation(llvm::StringRef name, llvm::ArrayRef<BoolExpr> active);
@@ -511,15 +510,11 @@ public:
   /// Structural constraint: child must be a multiple of parent (parent divides
   /// child; child % parent == 0). Applied after all dims are added.
   void mustDivide(IntVar parent, IntVar child);
-  /// Arbitrary vectorized predicate; configurations whose lane it clears to 0
-  /// are skipped by the framework. `description` is optional; it is reported
-  /// by ConfigSpace::debugIsValid() when the predicate rejects a
-  /// configuration. Prefer the Expr overload where the constraint can be
-  /// written in the DSL — only that form is analysable.
-  void require(VecConstraint pred, llvm::StringRef description = "");
-  /// Same, for a scalar predicate — vectorized automatically by evaluating it
-  /// once per configuration in the batch. Convenience for predicates not
-  /// worth hand-vectorizing.
+  /// Arbitrary predicate; configurations it rejects are skipped by the
+  /// framework. `description` is optional; it is reported by
+  /// ConfigSpace::debugIsValid() when the predicate rejects a configuration.
+  /// Prefer the Expr overload where the constraint can be written in the DSL —
+  /// only that form is analysable.
   void require(Constraint pred, llvm::StringRef description = "");
 
   /// Require that the given boolean expression evaluate to true.
@@ -567,11 +562,7 @@ private:
 
   struct PredicateEntry {
     std::string description;
-    /// Exactly one form — whichever require() overload was called. A scalar
-    /// predicate is vectorized by ConfigSpace::addConstraint at buildInto
-    /// time rather than here, because wrapping it needs a ConfWrapper and so
-    /// the ConfigSpace, which does not exist yet when require() runs.
-    std::variant<Constraint, VecConstraint> pred;
+    Constraint pred;
     /// The source expression, for constraints registered through the DSL;
     /// null for opaque predicates. Only these can be analysed.
     constraints::ConstraintNodePtr node;

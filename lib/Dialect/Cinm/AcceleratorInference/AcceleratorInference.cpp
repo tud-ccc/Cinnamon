@@ -113,10 +113,10 @@ void buildConfigSpace(cinm::ComputeBlockOp refClone, InferencePlugin &plugin,
     // constraints are folded in. The feasible count is a third number again,
     // and is only known once the predicates have been screened.
     int64_t cartesian = 1;
-    for (auto &p : space.params)
-      cartesian *= p.cardinality();
+    for (size_t d = 0; d < space.numDims(); ++d)
+      cartesian *= space.paramAtDim(d).cardinality();
     const size_t addressable = space.totalSize();
-    llvm::dbgs() << "[cinm-inference] Config space (" << space.size()
+    llvm::dbgs() << "[cinm-inference] Config space (" << space.numParams()
                  << " params, " << addressable << " addressable of "
                  << cartesian << " Cartesian, "
                  << (addressable ? double(cartesian) / double(addressable)
@@ -259,22 +259,28 @@ struct InferenceTask {
     return ConfWrapper(space, conf);
   }
 
-  /// Resolve the named parameters of `named` into a positional Configuration
-  /// of this task's space, checking that it is complete, mentions no unknown
-  /// parameter, and satisfies the space's validity constraints.
+  /// Resolve the named values of `named` into a positional Configuration of
+  /// this task's space, checking that it is complete, mentions nothing the
+  /// space does not have, and satisfies the space's validity constraints.
   ///
-  /// Every parameter must be given: a missing one has no defensible default,
-  /// and silently picking one would produce a configuration the caller did
-  /// not ask for.
+  /// The names are the space's *dimensions*, not its parameters, so a
+  /// parameter spanning several is given one value per dimension under the
+  /// names ConfigSpace::dimName reports. Every one must be given: a missing
+  /// one has no defensible default, and silently picking one would produce a
+  /// configuration the caller did not ask for.
   Maybe<Configuration>
   resolveNamedConfig(const llvm::StringMap<ParmValue> &named, Location loc) {
+    SmallVector<std::string> dimNames;
+    for (size_t d = 0; d < space.numDims(); ++d)
+      dimNames.push_back(space.dimName(d));
+
     Configuration conf;
-    conf.reserve(space.params.size());
+    conf.reserve(dimNames.size());
     SmallVector<std::string> missing;
-    for (const SearchParam &param : space.params) {
-      auto it = named.find(param.name);
+    for (const std::string &dimName : dimNames) {
+      auto it = named.find(dimName);
       if (it == named.end())
-        missing.push_back(param.name);
+        missing.push_back(dimName);
       else
         conf.push_back(it->second);
     }
@@ -284,19 +290,14 @@ struct InferenceTask {
 
     SmallVector<std::string> unknown;
     for (const auto &entry : named)
-      if (!llvm::any_of(space.params, [&](const SearchParam &p) {
-            return p.name == entry.first();
-          }))
+      if (!llvm::is_contained(dimNames, entry.first()))
         unknown.push_back(entry.first().str());
     if (!unknown.empty()) {
       llvm::sort(unknown);
-      SmallVector<std::string> known;
-      for (const SearchParam &param : space.params)
-        known.push_back(param.name);
       return emitDefiniteFailure(loc, "eval-solution names parameters this "
                                       "space does not have: ")
              << llvm::join(unknown, ", ") << "; the space declares "
-             << llvm::join(known, ", ");
+             << llvm::join(dimNames, ", ");
     }
 
     // Encodability first, and separately from validity: a constraint folded
@@ -569,7 +570,7 @@ struct InferenceTask {
   /// Seed RNG: seedValue(k) = k * 31 + rngSeed, so k=0 → rngSeed exactly.
   Maybe<TrialInfo> runMultiSeed(const std::string &baseDumpDir) {
     // Trivial: zero-dimensional space → evaluate the single possible config.
-    if (space.size() == 0) {
+    if (space.numParams() == 0) {
       TrialInfo trial = makeTrialInfo({});
       auto cost = plugin.evaluate(trial);
       if (std::holds_alternative<DiagnosedSilenceableFailure>(cost))

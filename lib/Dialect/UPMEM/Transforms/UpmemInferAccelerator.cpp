@@ -1,4 +1,3 @@
-#include <armadillo>
 #include <cinm-mlir/Conversion/CinmPasses.h>
 #include <cinm-mlir/Conversion/CnmToUPMEM/CnmToUPMEM.h>
 #include <cinm-mlir/Conversion/CommonPatterns.h>
@@ -76,7 +75,6 @@ namespace mlir::upmem {
 #include <cinm-mlir/Dialect/UPMEM/Transforms/Passes.h.inc>
 
 namespace {
-using mlir::cinm::ConfigurationVector;
 using mlir::cinm::IntVar;
 using mlir::cinm::PermVar;
 using mlir::cinm::SpaceBuilder;
@@ -659,7 +657,7 @@ private:
     // of 0 and mis-tile silently. It cannot happen -- every name stamped below
     // was declared on the same SpaceBuilder -- so assert rather than handle it.
     auto value = [&](StringRef name) {
-      assert(trial.space->findIndex(name) >= 0 &&
+      assert(trial.space->findParam(name) >= 0 &&
              "op names a search parameter the space does not declare");
       return conf[name];
     };
@@ -672,24 +670,33 @@ private:
 
     trial.computeBlock.getBody().walk([&](Operation *op) {
       MLIRContext *ctx = op->getContext();
+      OpBuilder b(ctx);
       if (auto names = op->getAttrOfType<ArrayAttr>(kOuterTileParamsAttr))
         op->setAttr(cnm::CnmDialect::TILE_SIZES_NAME,
-                    DenseI64ArrayAttr::get(ctx, resolve(names)));
+                    b.getDenseI64ArrayAttr(resolve(names)));
       if (auto names = op->getAttrOfType<ArrayAttr>(kLeafTileParamsAttr))
         op->setAttr(UPMEMDialect::LEAF_TILE_SIZES_NAME,
-                    DenseI64ArrayAttr::get(ctx, resolve(names)));
-      // The index form rather than the permutation: the order is stated over
-      // the dimensions the op has *after* --convert-linalg-to-cnm splits its
-      // reductions, which have not been created yet, whereas the rank is the
-      // same number here and there.
+                    b.getDenseI64ArrayAttr(resolve(names)));
+      // The order, as the permutation it is. Only the inversion happens here:
+      // the space says where each dimension went, and the attribute lists the
+      // dimensions in axis order.
       //
-      // Minus one: the parameter is one-based so that no search parameter is
-      // ever zero, while the attribute is the zero-based rank the unranking
-      // expects, with 0 the identity.
-      if (auto name = op->getAttrOfType<StringAttr>(kOrderParamAttr))
-        op->setAttr(cnm::CnmDialect::WORKGROUP_DIM_ORDER_INDEX_NAME,
-                    IntegerAttr::get(IntegerType::get(ctx, 64),
-                                     value(name.getValue()) - 1));
+      // Over the dimensions the op has *now*, which is not the set
+      // --convert-linalg-to-cnm will tile: splitting a distributed reduction
+      // prepends a dimension. That pass rewrites the attribute as it splits,
+      // so nothing here has to predict it. The rank form the attribute also
+      // accepts exists for exactly that reason and is why this used to have to
+      // reconstruct the post-split dimension order -- the same reconstruction,
+      // written twice, agreeing by inspection.
+      if (auto name = op->getAttrOfType<StringAttr>(kOrderParamAttr)) {
+        cinm::Permutation order =
+            trial.space->getAs<cinm::Permutation>(conf.conf, name.getValue());
+        SmallVector<int64_t> byAxis(order.size());
+        for (size_t dim = 0; dim < order.size(); ++dim)
+          byAxis[order[dim]] = static_cast<int64_t>(dim);
+        op->setAttr(cnm::CnmDialect::WORKGROUP_DIM_ORDER_NAME,
+                    b.getDenseI64ArrayAttr(byAxis));
+      }
     });
   }
 };
