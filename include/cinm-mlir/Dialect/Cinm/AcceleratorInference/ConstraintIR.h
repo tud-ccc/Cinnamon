@@ -43,6 +43,15 @@ struct ConstraintNode {
     Add,   ///< n-ary sum
     Mul,   ///< n-ary product
     Div,   ///< binary quotient; also *asserts* exact divisibility (see below)
+    /// unary; the truth value of its (boolean) operand as 0 or 1. The one node
+    /// that crosses from a truth value back to a number, which is what makes a
+    /// *count* of conditions expressible -- and a count is what a constraint
+    /// over "how many dimensions satisfy X" needs.
+    ///
+    /// A division below it is discharged inside it, by the boolean operand, and
+    /// never escapes to the comparison containing it: an inexact division makes
+    /// this node 0, not the enclosing comparison false.
+    BoolAsInt,
 
     // Boolean predicates
 
@@ -96,6 +105,12 @@ public:
     default:
       break;
     }
+  }
+  // unary
+  ConstraintNode(ConstraintNode::Kind kind, ConstraintNodePtr operand)
+      : kind(kind), state(OpndState{std::move(operand)}) {
+    assert(kind == Kind::BoolAsInt && "the only unary kind");
+    assert(isBoolKind(operands()[0]->kind) && "BoolAsInt takes a truth value");
   }
   // n-ary
   ConstraintNode(ConstraintNode::Kind kind, ArrayRef<ConstraintNodePtr> nodes)
