@@ -23,10 +23,9 @@ namespace mlir::cinm::constraints {
 // what keeps the node set closed and small -- a node with no propagator is a
 // node that would send its whole constraint back to being filtered.
 //
-// The evaluator below is no longer how a constraint is enforced. It survives
-// because a space still has to be able to say *why* a configuration is not in
-// it (ConfigSpace::debugIsValid), and because agreeing with it is the check on
-// the translation.
+// The evaluator below is not how a constraint is enforced -- the solver is --
+// and nothing in the pipeline calls it. It is kept as the reference semantics
+// of a tree, to check the Gecode translation against when one is in doubt.
 
 struct ConstraintNode;
 using ConstraintNodePtr = std::shared_ptr<const ConstraintNode>;
@@ -181,13 +180,12 @@ ParmValue evalNode(const ConstraintNode &node, const ConfWrapper &c,
 /// Evaluate a boolean node against one configuration.
 bool evalBoolNode(const ConstraintNode &node, const ConfWrapper &c);
 
-/// Wrap a boolean node as a Constraint, so a tree can be registered with
-/// ConfigSpace::addConstraint like any other predicate.
+/// Wrap a boolean node as a Constraint, so a tree can be evaluated wherever an
+/// opaque predicate is expected.
 Constraint toConstraint(ConstraintNodePtr node);
 
 /// Human-readable rendering, e.g. "((8192 / gemv.M0) * (16384 / gemv.K0)) ==
-/// (dpus * tasklets)". Used for the constraint descriptions debugIsValid()
-/// reports.
+/// (dpus * tasklets)". Used to describe a constraint in a space's report.
 std::string describeNode(const ConstraintNode &node);
 
 } // namespace mlir::cinm::constraints

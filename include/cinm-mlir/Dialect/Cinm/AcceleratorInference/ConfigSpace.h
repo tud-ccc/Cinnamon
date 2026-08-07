@@ -16,15 +16,132 @@
 namespace mlir::cinm {
 
 // ===----------------------------------------------------------------------===//
-// The configuration space
+// The design space
 // ===----------------------------------------------------------------------===//
 //
-// The data structure a search searches: named integer parameters, an encoding
-// that gives every configuration an index, and the predicates a configuration
-// has to satisfy. Nothing here decides anything -- how a space is *built* is
-// SpaceBuilder's business, and what is done with one is
-// AcceleratorInference.h's. See the top of SpaceBuilder.h for how the pieces
-// fit together.
+// This is the reference for how a design space is described and solved. It
+// documents the state of the implementation, not a target to build towards.
+//
+// The space is three files: this one is what a space *is* -- parameters,
+// contents, and the index that names a point of it -- `SpaceBuilder.h` is how
+// one is *built*, and `AcceleratorInference.h` is what is done with one.
+//
+// # 1. What a design space is
+//
+// A *search parameter* is a named variable with a finite domain. A
+// *configuration* is one value per parameter, in declaration order. The design
+// space is the set of configurations that satisfy every constraint -- and it is
+// that set literally: `buildInto()` enumerates it with a finite-domain solver
+// and the space holds the result. There is no superset to filter down from and
+// nothing to re-check: a ConfigSpace one can walk is already the feasible set.
+//
+// Parameters and constraints are not written by hand per kernel: an
+// InferencePlugin derives them from the IR of one compute block, so the space
+// describes the lowerings that block admits. `SpaceBuilder` is the interface it
+// derives them through.
+//
+// Two objects, with different jobs:
+//
+//   SpaceBuilder   declaration. Collects parameters and constraints, and
+//                  commits them exactly once, in buildInto().
+//   ConfigSpace    contents. Holds the parameters and the configurations.
+//
+// Nothing is committed until buildInto(): declaration order does not have to
+// match dependency order, and a constraint may mention a parameter declared
+// after it.
+//
+// # 2. Parameters
+//
+// **Every domain is a set of strictly positive integers**, which is checked at
+// declaration. Division is meaningful on them, products are monotone in every
+// factor, and no propagator has to reason about a sign.
+//
+// | declaration                  | domain                                    |
+// |------------------------------|-------------------------------------------|
+// | intRange(n, lo, hi)          | lo, lo+1, ..., hi                         |
+// | pow2Range(n, a, b)           | 2^a, ..., 2^b                             |
+// | divisorsOf(n, k)             | the divisors of the constant k            |
+// | divisorsOf(n, v)             | [1, v.maxVal()], plus `v % result == 0`   |
+// | permutation(n, k)            | the orderings of [0, k)                   |
+//
+// A domain is either a contiguous range or an explicit value list; a range
+// becomes a list as soon as a static filter narrows it (SearchParam::
+// keepDivisorsOf). Note the asymmetry in the `divisorsOf` rows: of a
+// *constant* it narrows the domain at declaration time, while of another
+// *parameter* it cannot -- the divisibility depends on a value not known until
+// the solve -- so it declares the full range and records a constraint instead.
+//
+// **A parameter is typed.** `intRange` returns an `IntVar` and `permutation` a
+// `PermVar`, and the type is what the value reads back as: an ordering comes
+// back as a `Permutation`, never as whatever integers encode it. The encoding
+// is `ParmKind<T>`'s business and nothing else's -- one specialisation states
+// how a `T` is stored, how it is shown to the surrogate, and what one step from
+// it is. Adding a parameter type is adding a specialisation, and changing how
+// an existing one is stored is changing four functions with no caller affected.
+//
+// The surrogate consequence is worth naming: a permutation contributes its
+// position vector rather than an index into an enumeration of permutations, so
+// that distance between feature vectors is Spearman's rank distance and two
+// orderings that agree about most items land near each other. See
+// SearchParam::appendFeatures.
+//
+// # 3. Constraints
+//
+// Constraints are written in an embedded DSL (see Expr in SpaceBuilder.h) that
+// builds a constraint-IR tree: constants, parameters, n-ary sums and products,
+// exact division, the six comparisons, `divides`, and `implies`. There is no
+// subtraction and no disjunction. A predicate that cannot be expressed in it
+// can still be registered as an opaque C++ lambda, which is then applied to the
+// enumerated solutions rather than given to the solver.
+//
+// `a / b` means *exact* division: it denotes the quotient and asserts that `b`
+// divides `a`. A comparison containing an inexact division is false rather than
+// a comparison of a truncated quotient. `divides(b, a)` tests the same property
+// without asserting it, which is the spelling to use under a guard.
+//
+// **The DSL only does arithmetic on quantities, and the type system is what
+// says so.** Only `IntVar` converts to an expression, so `order * 2` and
+// `order < 3` do not compile -- there is no viable operator, reported at the
+// line that wrote them. This used to be a run-time abort during declaration,
+// which was the best a single untyped handle could manage.
+//
+// # 4. Solving
+//
+// buildInto() runs in three steps:
+//
+//   1. Materialise each parameter, apply its static filters, add it to the
+//      space. Only now does a parameter have an index.
+//   2. Translate every DSL constraint into a finite-domain model and enumerate
+//      every solution (`ConstraintGecode.h`). The configurations come back
+//      sorted.
+//   3. Drop the solutions any opaque predicate rejects, and hand the rest to
+//      the space.
+//
+// There is no partition to choose, no component to enumerate, no classification
+// of a constraint as static, structural or dynamic, and no budget deciding
+// between them. A constraint is either expressible in the IR, in which case the
+// solver enforces it, or it is an opaque lambda.
+//
+// The space comes away with a record of what happened (SpaceMetadata): what the
+// solver was given, what it cost, and how the result compares to the Cartesian
+// product of the domains.
+//
+// # 5. Indices
+//
+// A configuration has an integer index, which is its position in the sorted
+// list. The index is an identity -- used to cache costs, communicate points
+// between threads, sample uniformly, and walk the space deterministically --
+// and not a representation: code wanting structure should decode, work on the
+// Configuration, and re-encode. Because the list is sorted rather than in
+// discovery order, the index is a property of the space and not of the search
+// that produced it, so changing the branching heuristic or the thread count
+// renumbers nothing.
+//
+// Every index in [0, totalSize()) names a configuration a search may evaluate.
+// There is no validity to test alongside the index, which is why a search's
+// cost is its evaluations and nothing else.
+//
+// ===----------------------------------------------------------------------===//
 
 using ParmValue = int32_t;
 
@@ -342,10 +459,6 @@ struct SpaceMetadata {
 /// to be the same number, and this is the distinction that was implicit then.
 struct ConfigSpace {
   std::vector<SearchParam> params;
-  /// Each constraint paired with a human-readable description of what it
-  /// checks (e.g. "wramRow | mramRow"); empty if the constraint was added
-  /// without one. Used by debugIsValid() to report violations.
-  std::vector<std::pair<std::string, Constraint>> constraints;
 
   /// Install the configurations this space contains.
   ///
@@ -365,11 +478,6 @@ struct ConfigSpace {
   /// dimension*, which is what a handle onto it has to hold -- that is the
   /// index a constraint reads.
   size_t addParam(SearchParam &&param);
-
-  /// Register a predicate; configurations it rejects are never passed to the
-  /// plugin for evaluation. `description` is an optional human-readable label,
-  /// reported by debugIsValid() when the constraint rejects a configuration.
-  void addConstraint(Constraint &&constraint, std::string description = "");
 
   /// How many parameters were declared.
   size_t numParams() const { return params.size(); }
@@ -427,17 +535,9 @@ struct ConfigSpace {
     assert(params[param].kind() == Model::kind() && "wrong parameter kind");
     return Model::decode(params[param], paramValues(config, param));
   }
-  /// Return true iff all registered constraints accept this configuration.
-  bool isValid(const Configuration &config) const;
-  /// Like isValid(), but also prints the configuration and the description
-  /// of every violated constraint to `os` (nothing is printed if the
-  /// configuration is valid). Returns the same result as isValid().
-  bool debugIsValid(const Configuration &config, raw_ostream &os) const;
-
-  /// Number of configurations the space contains -- every one the solver
-  /// found, which is every one satisfying the constraints it could be given.
-  /// What is left to filter is whatever was registered as an opaque predicate;
-  /// see isValid().
+  /// Number of configurations the space contains. Every one of them satisfies
+  /// every constraint the space was built from, so there is nothing left to
+  /// check: enumerating a space is enumerating its feasible set.
   size_t totalSize() const;
   /// Fill conf with the configuration at flat index idx.
   /// idx must be in [0, totalSize()). Constraints are NOT checked.
@@ -464,11 +564,6 @@ struct ConfigSpace {
   /// True if `conf` is one of the configurations this space contains, i.e. if
   /// at()/indexOf() can round-trip it. Configurations produced by at() always
   /// satisfy this; hand-built ones need not.
-  ///
-  /// This is a different question from isValid(). A constraint the solver
-  /// enforced has no configuration left to reject, so isValid() says nothing
-  /// about it, and a hand-built configuration violating one passes every check
-  /// while naming a point the space does not contain.
   bool isEncodable(const Configuration &conf) const;
   /// Like isEncodable(), but reports every reason `conf` is not in the space to
   /// `os` (nothing is printed if it is). Returns the same result.

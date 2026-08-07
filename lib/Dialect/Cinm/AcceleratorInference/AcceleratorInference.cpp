@@ -261,7 +261,7 @@ struct InferenceTask {
 
   /// Resolve the named values of `named` into a positional Configuration of
   /// this task's space, checking that it is complete, mentions nothing the
-  /// space does not have, and satisfies the space's validity constraints.
+  /// space does not have, and names a configuration the space contains.
   ///
   /// The names are the space's *dimensions*, not its parameters, so a
   /// parameter spanning several is given one value per dimension under the
@@ -300,11 +300,10 @@ struct InferenceTask {
              << llvm::join(dimNames, ", ");
     }
 
-    // Encodability first, and separately from validity: a constraint folded
-    // into the encoding is not registered as a predicate, so isValid() accepts
-    // a configuration that violates one. Checking only that would let a point
-    // the space does not contain through to the pipeline, which then rejects
-    // it much further down for a reason that reads like a lowering bug.
+    // Membership is the whole check: the space holds exactly the feasible
+    // configurations, so anything it does not contain violates a constraint.
+    // Letting such a point through would have the pipeline reject it much
+    // further down for a reason that reads like a lowering bug.
     if (!space.isEncodable(conf)) {
       std::string details;
       llvm::raw_string_ostream detailsOs(details);
@@ -314,61 +313,36 @@ struct InferenceTask {
              << wrap(conf) << "\n"
              << details;
     }
-
-    if (!space.isValid(conf)) {
-      std::string details;
-      llvm::raw_string_ostream detailsOs(details);
-      space.debugIsValid(conf, detailsOs);
-      return emitDefiniteFailure(loc, "Configuration is invalid: ")
-             << wrap(conf) << "\n"
-             << details;
-    }
     return conf;
   }
 
-  /// Shared state produced by prepareBO() and consumed by both runInference and
-  /// runMultiSeed.
-  struct BOSetup {
-    std::shared_ptr<CandidatePool::SharedState> poolState;
-    ValidationSet validSet;
-  };
-
-  /// Compute the valid-config mask and pre-evaluate the validation set using a
-  /// temporary `nWorkers`-wide pool. The pool is destroyed before returning so
-  /// callers can create a correctly-sized BO pool without doubling memory.
-  /// `nWorkers` is always resolveWorkers() — independent of nSeeds so
-  /// validation is never artificially throttled.
-  Maybe<BOSetup> prepareBO(unsigned nWorkers) {
-
-    auto poolState = std::make_shared<CandidatePool::SharedState>();
-
-    CandidatePool::computeValidMask(space, *poolState);
-    if (poolState->empty())
+  /// Pre-evaluate the validation set using a temporary `nWorkers`-wide pool.
+  /// The pool is destroyed before returning so callers can create a
+  /// correctly-sized BO pool without doubling memory. `nWorkers` is always
+  /// resolveWorkers() — independent of nSeeds so validation is never
+  /// artificially throttled.
+  Maybe<ValidationSet> prepareBO(unsigned nWorkers) {
+    if (space.totalSize() == 0)
       return emitSilenceableFailure(
           refClone.getLoc(), "No valid configurations found in search space");
-    LLVM_DEBUG(llvm::dbgs() << "[cinm-inference] " << poolState->size()
-                            << " valid configs\n");
-    ValidationSet validSet = [&] {
-      // Scoped pool: freed before the caller creates its BO-sized pool,
-      // so nWorkers clones never overlap with per-seed CandidatePool allocs.
-      EvaluatorPool validationPool(plugin, *refModule, refClone->getContext(),
-                                   nWorkers);
-      return buildValidationSet(poolState, validationPool);
-    }();
-    return BOSetup{std::move(poolState), std::move(validSet)};
+    LLVM_DEBUG(llvm::dbgs()
+               << "[cinm-inference] " << space.totalSize() << " configs\n");
+    // Scoped pool: freed before the caller creates its BO-sized pool, so
+    // nWorkers clones never overlap with per-seed CandidatePool allocs.
+    EvaluatorPool validationPool(plugin, *refModule, refClone->getContext(),
+                                 nWorkers);
+    return buildValidationSet(validationPool);
   }
 
   /// Sample `options.nValidation` configs via LHS and evaluate them in
   /// parallel across `evalPool`, returning the resulting ValidationSet.
-  ValidationSet
-  buildValidationSet(std::shared_ptr<CandidatePool::SharedState> poolState,
-                     EvaluatorPool &evalPool) {
+  ValidationSet buildValidationSet(EvaluatorPool &evalPool) {
     ValidationSet result(space);
     if (options.nValidation <= 0)
       return result;
 
     unsigned nWorkers = evalPool.size();
-    CandidatePool samplePool(space, options.nValidation, std::move(poolState));
+    CandidatePool samplePool(space, options.nValidation);
     std::mt19937 vrng(options.rngSeed);
     LLVM_DEBUG(llvm::dbgs() << "[cinm-inference] Sampling validation set: "
                             << options.nValidation << " points\n");
@@ -580,7 +554,7 @@ struct InferenceTask {
 
     unsigned nWorkers = resolveWorkers();
     // Validation uses a temporary nWorkers-wide pool (freed before BO starts).
-    auto [poolState, validSet] = TRY_GET(prepareBO(nWorkers));
+    ValidationSet validSet = TRY_GET(prepareBO(nWorkers));
 
     // Single-seed fast path: behaves exactly like the old runInference.
     // seedValue(0) = 0 * 31 + rngSeed = rngSeed. Uses full nWorkers for LHS.
@@ -588,8 +562,7 @@ struct InferenceTask {
       auto evalPool = std::make_unique<EvaluatorPool>(
           plugin, *refModule, refClone->getContext(), nWorkers);
       EvalLease withEval = [&](auto &fn) { return evalPool->withWorker(fn); };
-      CandidatePool pool(space, static_cast<size_t>(options.maxEvals),
-                         std::move(poolState));
+      CandidatePool pool(space, static_cast<size_t>(options.maxEvals));
       std::mutex stateMx;
       llvm::raw_ostream *log = nullptr;
       LLVM_DEBUG(log = &llvm::dbgs());
@@ -632,8 +605,7 @@ struct InferenceTask {
         progress.startSeed(slot, sv);
 
         std::mt19937 seedRng(static_cast<unsigned>(sv));
-        CandidatePool pool(space, static_cast<size_t>(options.maxEvals),
-                           poolState);
+        CandidatePool pool(space, static_cast<size_t>(options.maxEvals));
         ValidationSet vs = validSet; // copy of shared contents
         std::string dir = baseDumpDir.empty()
                               ? std::string()
@@ -715,14 +687,10 @@ struct InferenceTask {
       pluginClones.back()->warmUp(ctx);
     }
 
-    // Build pool now: constructor pre-marks invalid configs as visited,
-    // giving us the valid count before spawning threads.
-    auto pool = CandidatePool::build(space, N, true);
-    size_t nValid = pool.size();
+    CandidatePool pool(space, N, /*exhaustive=*/true);
 
-    LLVM_DEBUG(llvm::dbgs() << "[cinm-inference] Exhaustive search: " << nValid
-                            << " valid / " << N << " total configs, "
-                            << nThreads << " threads\n");
+    LLVM_DEBUG(llvm::dbgs() << "[cinm-inference] Exhaustive search: " << N
+                            << " configs, " << nThreads << " threads\n");
 
     indicators::ProgressBar bar{
         indicators::option::BarWidth{40},
@@ -765,8 +733,6 @@ struct InferenceTask {
           break;
         space.at(i, conf);
         barDone.fetch_add(1, std::memory_order_relaxed);
-        if (!space.isValid(conf))
-          continue;
 
         auto trial = makeTrialInfo(conf, *threadRef);
         auto t0 = std::chrono::steady_clock::now();
@@ -844,13 +810,11 @@ struct InferenceTask {
   /// the sampling loop itself: a rejected candidate is immediately replaced
   /// by another LHS draw instead of being sampled once ahead of time.
   ///
-  /// Exhaustive search's cost is entirely the O(n_valid) simulator calls
-  /// (the validity scan itself, CandidatePool::build, is a cheap O(N)
-  /// arithmetic pass) -- so evaluating a bounded random subset instead of
-  /// every valid config turns an O(n_valid) sweep (hours, for spaces with
-  /// hundreds of thousands of valid configs) into roughly an O(sampleN)
-  /// one (seconds to low minutes, depending how much sampleMaxCostMs ends
-  /// up rejecting).
+  /// Exhaustive search's cost is entirely its simulator calls, one per
+  /// configuration in the space -- so evaluating a bounded random subset
+  /// instead turns an O(N) sweep (hours, for spaces with hundreds of thousands
+  /// of configurations) into roughly an O(sampleN) one (seconds to low
+  /// minutes, depending how much sampleMaxCostMs ends up rejecting).
   Maybe<TrialInfo> runRandomSample(size_t sampleN) {
     unsigned nThreads =
         plugin.supportsMultithreading()
@@ -860,14 +824,12 @@ struct InferenceTask {
             : 1u;
     MLIRContext *ctx = refClone->getContext();
 
-    // Build pool (cheap O(N) validity scan, no simulator calls yet).
-    auto pool = CandidatePool::build(space, sampleN, false);
+    CandidatePool pool(space, sampleN);
 
-    LLVM_DEBUG(llvm::dbgs()
-               << "[cinm-inference] Random sample: requesting " << sampleN
-               << " / " << pool.size() << " valid configs (max cost "
-               << options.sampleMaxCostMs << " ms), " << nThreads
-               << " threads\n");
+    LLVM_DEBUG(llvm::dbgs() << "[cinm-inference] Random sample: requesting "
+                            << sampleN << " / " << pool.size()
+                            << " configs (max cost " << options.sampleMaxCostMs
+                            << " ms), " << nThreads << " threads\n");
 
     indicators::ProgressBar bar{
         indicators::option::BarWidth{40},

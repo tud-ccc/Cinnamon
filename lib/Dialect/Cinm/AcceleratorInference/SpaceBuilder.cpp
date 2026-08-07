@@ -1,5 +1,4 @@
 #include "cinm-mlir/Dialect/Cinm/AcceleratorInference/SpaceBuilder.h"
-#include "cinm-mlir/Dialect/Cinm/AcceleratorInference/AcceleratorInference.h"
 #include "cinm-mlir/Dialect/Cinm/AcceleratorInference/ConstraintGecode.h"
 #include "cinm-mlir/Dialect/Cinm/AcceleratorInference/ConstraintIR.h"
 #include "cinm-mlir/Utils/Permutation.h"
@@ -7,9 +6,9 @@
 #include <algorithm>
 #include <llvm/Support/Debug.h>
 #include <llvm/Support/ErrorHandling.h>
+#include <llvm/Support/Parallel.h>
 #include <llvm/Support/raw_ostream.h>
 #include <mlir/IR/BuiltinTypeInterfaces.h>
-#include <set>
 
 #define DEBUG_TYPE "cinm-inference"
 
@@ -218,12 +217,13 @@ void SpaceBuilder::require(const ConstraintNodePtr &node,
   // predicate.
   if (!ConstraintNode::isBoolKind(node->kind))
     return;
-  std::string desc =
-      description.empty() ? describeNode(*node) : description.str();
-  require(toConstraint(node), desc);
-  // Keep the tree so buildInto can analyse it; require() has just pushed the
-  // entry.
-  predicates_.back().node = node;
+  // The tree is the constraint. It carries no lambda: buildInto posts it to the
+  // solver, which is the only thing that ever enforces it.
+  predicates_.push_back({.description = description.empty()
+                                            ? describeNode(*node)
+                                            : description.str(),
+                         .pred = nullptr,
+                         .node = node});
 }
 
 void SpaceBuilder::extractDivConstraints(const ConstraintNodePtr &node) {
@@ -326,10 +326,20 @@ void SpaceBuilder::buildInto(ConfigSpace &space) {
       nodes.push_back(entry.node);
 
   // Phase 3: solve. This is the whole of what used to be planning.
+  constraints::SolveOptions opts;
+  opts.threads = std::max(4u, llvm::parallel::strategy.compute_thread_count());
+
+  auto t0 = std::chrono::steady_clock::now();
+  LLVM_DEBUG(llvm::dbgs() << "Solving " << nodes.size() << " constraints on "
+                          << opts.threads << " threads\n");
   constraints::SolveResult solved =
-      constraints::solveSpace(space.params, nodes);
+      constraints::solveSpace(space.params, nodes, opts);
   if (solved.failed())
     llvm::report_fatal_error(llvm::Twine("cinm search space: ") + solved.error);
+  auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+      std::chrono::steady_clock::now() - t0);
+  LLVM_DEBUG(llvm::dbgs() << "- Done solving constraints in " << elapsed.count()
+                          << " ms\n");
 
   // A truncated space is not a smaller space, it is a different one: the
   // configurations missing from it are missing because the search ran out of
@@ -355,6 +365,9 @@ void SpaceBuilder::buildInto(ConfigSpace &space) {
   report->failures = solved.failures;
   report->complete = solved.complete;
 
+  // Phase 4: apply the predicates the solver was not given. Doing it here and
+  // not on the space is what makes the space's contents exactly its feasible
+  // set, so nothing downstream ever has to re-check a configuration.
   for (auto &entry : predicates_) {
     if (!entry.node) {
       auto &solutions = solved.solutions;
@@ -375,26 +388,6 @@ void SpaceBuilder::buildInto(ConfigSpace &space) {
   }
 
   space.setSolutions(std::move(solved.solutions));
-
-  // Phase 4: register every predicate on the space.
-  //
-  // The ones the solver was given cannot reject anything any more, so this is
-  // not how they are enforced. They are kept because isValid() and
-  // debugIsValid() are the only way to ask *why* a hand-built configuration is
-  // not in the space, and because a disagreement between a posted constraint
-  // and the vectorized evaluator then shows up as configurations the space
-  // contains but reports invalid -- which is a translation bug, and one worth
-  // finding by construction rather than by wondering why a search is small.
-  LLVM_DEBUG(llvm::dbgs() << "[cinm-space]   predicates: " << predicates_.size()
-                          << "\n");
-  for (auto &entry : predicates_) {
-    if (!entry.node)
-      report->constraints.push_back({entry.description, "filter", false});
-    else
-      report->constraints.push_back({entry.description, "solved", true});
-    space.addConstraint(std::move(entry.pred), entry.description);
-  }
-
   space.metadata = std::move(report);
 }
 

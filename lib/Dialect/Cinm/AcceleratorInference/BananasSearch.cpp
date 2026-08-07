@@ -26,108 +26,13 @@
 
 namespace mlir::cinm {
 
-namespace {
-
-/// Chunked parallel transform-reduce over a ConfigSpace's flat index range
-/// [0, N). Unlike llvm::parallelTransformReduce (which calls Transform once
-/// per flat index via ConfigSpace::at(), an O(S) rebuild each time), each
-/// chunk here is walked with ConfigSpace::forEachChunk, so successive configs
-/// within a chunk reuse most of the previous one (O(1) amortised per step,
-/// same as the serial forEach) — only the first config of each chunk costs
-/// O(S). Chunks outnumber worker threads so that idle threads can pick up the
-/// next pending chunk (LLVM's TaskGroup dispatches spawned chunks onto a
-/// shared work stack, giving the same load-balancing as work stealing).
-template <class ResultTy, class ReduceFuncTy, class ChunkFuncTy>
-ResultTy parallelTransformReduceChunked(const ConfigSpace &space, ResultTy init,
-                                        ReduceFuncTy reduce,
-                                        ChunkFuncTy transformChunk) {
-  const size_t N = space.totalSize();
-  if (N == 0)
-    return init;
-
-  const size_t numThreads = llvm::parallel::strategy.compute_thread_count();
-  constexpr size_t kChunksPerThread = 8;
-  constexpr size_t kMinChunkSize = 1024;
-  size_t numChunks = std::max<size_t>(1, numThreads * kChunksPerThread);
-  numChunks = std::min(numChunks, std::max<size_t>(1, N / kMinChunkSize));
-  numChunks = std::min(numChunks, N);
-
-  LLVM_DEBUG(llvm::dbgs() << "- Chunks: " << numChunks
-                          << ", Threads: " << numThreads << "\n");
-
-  std::vector<ResultTy> results(numChunks, init);
-  {
-    llvm::parallel::TaskGroup tg;
-    size_t chunkSize = N / numChunks;
-    size_t remainder = N % numChunks;
-    size_t lo = 0;
-    for (size_t c = 0; c < numChunks; ++c) {
-      size_t hi = lo + chunkSize + (c < remainder ? 1 : 0);
-      tg.spawn([&space, &results, &transformChunk, c, lo, hi] {
-        results[c] = transformChunk(space, lo, hi);
-      });
-      lo = hi;
-    }
-  }
-
-  // Merge in chunk order (ascending flat index), same as the old serial scan.
-  ResultTy final = std::move(results.front());
-  for (size_t c = 1; c < numChunks; ++c)
-    final = reduce(std::move(final), std::move(results[c]));
-  return final;
-}
-
-} // namespace
-
 // ===----------------------------------------------------------------------===//
 // CandidatePool construction
 // ===----------------------------------------------------------------------===//
 
-void CandidatePool::computeValidMask(const ConfigSpace &space,
-                                     SharedState &shared) {
-  LLVM_DEBUG(llvm::dbgs() << "Screening " << space.totalSize()
-                          << " configs in parallel\n");
-  auto t0 = std::chrono::steady_clock::now();
-  shared = parallelTransformReduceChunked(
-      space, SharedState{},
-      [](SharedState lhs, SharedState rhs) -> SharedState {
-        lhs.validIndices.insert(lhs.validIndices.end(),
-                                rhs.validIndices.begin(),
-                                rhs.validIndices.end());
-        lhs.validMask.merge(rhs.validMask);
-        return lhs;
-      },
-      [](const ConfigSpace &space, size_t lo, size_t hi) -> SharedState {
-        SharedState s;
-        space.forEachChunk(lo, hi, [&](const Configuration &conf, size_t i) {
-          if (space.isValid(conf)) {
-            s.validMask.insert(i);
-            s.validIndices.push_back(i);
-          }
-          return true;
-        });
-        return s;
-      });
-  auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
-      std::chrono::steady_clock::now() - t0);
-  LLVM_DEBUG(llvm::dbgs() << "- Done in " << elapsed.count() << " ms, "
-                          << shared.size() << " valid solutions\n");
-}
-
-CandidatePool CandidatePool::build(const ConfigSpace &space, size_t evalBudget,
-                                   bool exhaustive) {
-
-  auto shared = std::make_shared<SharedState>();
-
-  computeValidMask(space, *shared);
-
-  return CandidatePool(space, evalBudget, std::move(shared), exhaustive);
-}
-
 CandidatePool::CandidatePool(const ConfigSpace &space, size_t evalBudget,
-                             std::shared_ptr<SharedState> shared,
                              bool exhaustive)
-    : space_(&space), N(space.totalSize()), shared(std::move(shared)),
+    : space_(&space), N(space.totalSize()),
       // Exhaustive search never reads/writes Xo/yo (see recordObservation);
       // its evalBudget is the full totalSize(), which would otherwise try to
       // allocate a dense D×N matrix for a matrix that's never used.
@@ -198,13 +103,13 @@ static arma::mat encodeSubset(const ConfigSpace &space,
   }
   return enc;
 }
-// NOTE: encoding the valid space is just encodeSubset over
-// shared->validIndices. It used to walk the whole Cartesian product with
-// forEach() and test each flat index against the valid mask, which costs
-// O(totalSize()) hash lookups on one thread to select O(nValid) columns
-// -- 1.2e9 steps to find 3e3 configs on a real gemv space, i.e. tens of seconds
-// before any parallel work begins. validIndices already holds exactly those
-// indices, in ascending order.
+/// The flat indices of the whole pool, [0, N), as encodeSubset wants them.
+static std::vector<size_t> allIndices(size_t n) {
+  std::vector<size_t> out(n);
+  std::iota(out.begin(), out.end(), size_t{0});
+  return out;
+}
+
 // ===----------------------------------------------------------------------===//
 // Latin Hypercube Sampling
 // ===----------------------------------------------------------------------===//
@@ -232,8 +137,8 @@ void CandidatePool::sampleInitialSet(size_t n, std::mt19937 &rng,
   if (n == 0 || M == 0)
     return;
 
-  // DxM matrix, one column per valid config (see the note on encodeSubset).
-  arma::mat enc = encodeSubset(*space_, shared->validIndices);
+  // DxM matrix, one column per config.
+  arma::mat enc = encodeSubset(*space_, allIndices(M));
 
   // Per-dimension [0,1] normalisation.
   for (size_t d = 0; d < D; ++d) {
@@ -300,7 +205,7 @@ void CandidatePool::sampleInitialSet(size_t n, std::mt19937 &rng,
         break;
       used.insert(bestPos);
       ++nDispatched;
-      size_t idx = shared->validIndex(bestPos);
+      size_t idx = bestPos;
       threadPool.async([&accept, &accepted, idx, n]() {
         if (accepted.load(std::memory_order_relaxed) >= n)
           return;
@@ -419,7 +324,7 @@ static arma::rowvec computeAcq(const arma::rowvec &mu,
 // ===----------------------------------------------------------------------===//
 
 bool CandidatePool::tryInsert(std::unordered_set<size_t> &result, size_t idx) {
-  if (isVisited(idx) || !isValid(idx))
+  if (isVisited(idx))
     return false;
   auto res = result.insert(idx);
   return res.second;
@@ -429,14 +334,13 @@ void CandidatePool::fillRandom(std::unordered_set<size_t> &result,
                                size_t target, std::mt19937 &rng) {
   if (result.size() >= target || empty())
     return;
-  size_t numValid = size();
   size_t numVisited = this->numVisited();
-  auto dist = std::uniform_int_distribution<size_t>(0, numValid - 1);
+  auto dist = std::uniform_int_distribution<size_t>(0, N - 1);
 
   size_t numAttempts = 0;
-  while (result.size() < std::min(target, numValid - numVisited) &&
+  while (result.size() < std::min(target, N - numVisited) &&
          numAttempts++ <= target * 5) {
-    tryInsert(result, shared->validIndex(dist(rng)));
+    tryInsert(result, dist(rng));
   }
 }
 
@@ -495,11 +399,6 @@ bool CandidatePool::nextCandidateIndices(const InferenceOptions &opts,
 
   if (candSet.empty())
     return false;
-  assert(llvm::all_of(candSet, [&](auto idx) {
-    Configuration conf;
-    space_->at(idx, conf);
-    return space_->isValid(conf);
-  }));
 
   std::vector<size_t> candIdx(candSet.begin(), candSet.end());
   arma::mat candEncoded = encodeSubset(*space_, candIdx);
@@ -574,7 +473,7 @@ void CandidatePool::dumpToCSV(const ConfigSpace &space,
 
   // Use the warm-started ensemble to get per-candidate statistics.
   const bool hasModel = ensemble_ && nObs >= 2 && !empty();
-  // Per-valid-index predictions; indexed by position in validIdx.
+  // Per-index predictions; indexed by position in the dumped rows.
   arma::rowvec mu_v, sigma_v, acq_v;
   if (hasModel) {
     const size_t D = space_->numFeatures();
@@ -582,12 +481,9 @@ void CandidatePool::dumpToCSV(const ConfigSpace &space,
         opts.dumpFullPool ? this->size() : visited.size();
     arma::mat encoded(D, confsToEncode);
     size_t ix = 0;
-    // validIndices is exactly the valid flat indices in ascending order, so
-    // this visits nValid configs rather than walking all totalSize() of them
-    // (see the note on encodeSubset).
     Configuration conf;
     llvm::SmallVector<double, 16> features;
-    for (size_t i : shared->validIndices) {
+    for (size_t i = 0; i < N; ++i) {
       if (!isVisited(i))
         continue;
       space_->at(i, conf);
@@ -613,11 +509,12 @@ void CandidatePool::dumpToCSV(const ConfigSpace &space,
     out << ",mu,sigma,acq";
   out << "\n";
 
-  // One row per valid pool member, in flat-index order -- which is the order
-  // validIndices is already in, so there is no need to walk the whole space.
+  // One row per pool member, in flat-index order. The `valid` column is always
+  // 1: a space holds nothing else. It is kept because the analysis scripts
+  // select on it.
   size_t j = 0;
   Configuration conf;
-  for (size_t i : shared->validIndices) {
+  for (size_t i = 0; i < N; ++i) {
     if (!opts.dumpFullPool && !isVisited(i))
       continue;
     space.at(i, conf);
@@ -665,25 +562,18 @@ void CandidatePool::dumpMetadataJSON(const ConfigSpace &space,
     out << '"';
   };
 
-  // Three sizes, because "total" is ambiguous: the Cartesian product of the
-  // declared domains, what the encoding can address once the structural
-  // constraints are folded into it, and what survives the remaining
-  // predicates. The first two ratios characterise the space; neither alone
-  // does.
+  // Two sizes, because "total" is ambiguous: the Cartesian product of the
+  // declared domains, and what the constraints leave of it. Their ratio is the
+  // density.
   long long cartesian = 1;
   for (size_t d = 0; d < space.numDims(); ++d)
     cartesian *= space.paramAtDim(d).cardinality();
 
   out << "{\n";
   out << "  \"cartesian_size\": " << cartesian << ",\n";
-  out << "  \"addressable_size\": " << N << ",\n";
-  out << "  \"feasible_size\": " << size() << ",\n";
-  out << "  \"encoding_compression\": " << (cartesian / static_cast<double>(N))
-      << ",\n";
+  out << "  \"feasible_size\": " << N << ",\n";
   out << "  \"space_feasible_density\": "
-      << (static_cast<double>(size()) / cartesian) << ",\n";
-  out << "  \"encoding_density\": " << (static_cast<double>(size()) / N)
-      << ",\n";
+      << (static_cast<double>(N) / cartesian) << ",\n";
   // Whatever the builder recorded about how it planned the space -- which
   // parameters it enumerated jointly, and where each constraint ended up. The
   // sizes above are the outcome of those decisions and do not explain them.

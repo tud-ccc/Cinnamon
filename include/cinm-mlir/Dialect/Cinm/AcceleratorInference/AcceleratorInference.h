@@ -155,17 +155,15 @@ struct InferenceOptions {
   /// since no model is trained).
   bool exhaustiveSearch = false;
 
-  /// When > 0, evaluate a random sample of this many valid configurations
-  /// (drawn via Latin Hypercube Sampling over the valid-config scan
-  /// exhaustive search uses, see CandidatePool::sampleInitialSet) instead of
-  /// every valid config or running Bayesian optimisation. A cheap
-  /// alternative to exhaustiveSearch when only a small ground-truth sample
-  /// is needed -- exhaustive search's cost is entirely the O(n_valid)
-  /// simulator calls, not the O(N) validity scan, so sampling down to
-  /// sampleN evaluations makes this proportionally faster. Takes priority
-  /// over exhaustiveSearch if both are set. Dumped the same way
-  /// (dumpFullPool controls whether pool.csv includes unvisited configs
-  /// too). See also sampleMaxCostMs.
+  /// When > 0, evaluate a random sample of this many configurations (drawn via
+  /// Latin Hypercube Sampling, see CandidatePool::sampleInitialSet) instead of
+  /// the whole space or running Bayesian optimisation. A cheap alternative to
+  /// exhaustiveSearch when only a small ground-truth sample is needed --
+  /// exhaustive search's cost is entirely its one simulator call per
+  /// configuration, so sampling down to sampleN evaluations makes this
+  /// proportionally faster. Takes priority over exhaustiveSearch if both are
+  /// set. Dumped the same way (dumpFullPool controls whether pool.csv includes
+  /// unvisited configs too). See also sampleMaxCostMs.
   unsigned sampleN = 0;
 
   /// When sampleN > 0, a candidate predicted to cost more than this many ms
