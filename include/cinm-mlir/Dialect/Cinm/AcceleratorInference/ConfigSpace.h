@@ -144,13 +144,9 @@ struct ParmVTable {
   }
 };
 
-/// One parameter of the search space, with its type erased.
-///
-/// The type is erased because a space stores parameters of different types in
-/// one vector. Everything that depends on the type goes through `model`, which
-/// is ParmKind<T> for whichever T the parameter was declared with -- so there
-/// is exactly one definition of what a permutation's features are, and the
-/// typed handle (SpaceVar<T>) and the erased storage cannot drift apart.
+/// One parameter of the search space, with its type erased model trait
+/// instance. The generic type SpaceVar<T> has the higher-level API used to
+/// build constraints.
 struct SearchParam {
   std::string name;
   std::variant<IntRange, ValueList> domain;

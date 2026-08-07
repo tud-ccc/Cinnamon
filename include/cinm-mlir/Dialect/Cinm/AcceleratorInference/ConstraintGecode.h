@@ -34,13 +34,6 @@ namespace mlir::cinm::constraints {
 // has to falsify the antecedent -- which *satisfies* the implication -- and
 // posting it globally would reject the configuration instead.
 
-/// `child % parent == 0`, by ConfigSpace parameter index. Divisibility
-/// declared through SpaceBuilder::mustDivide never goes through a Div node, so
-/// it arrives alongside the expression trees rather than inside one.
-struct DivisibilityRelation {
-  size_t parent, child;
-};
-
 struct SolveOptions {
   /// Abandon the search after this many nodes. Zero disables the limit.
   ///
@@ -83,12 +76,10 @@ struct SolveResult {
 
 /// Enumerate every configuration over `params` that satisfies every constraint.
 ///
-/// `params` supplies the domains; `constraints` and `divisibility` are posted.
 /// Opaque predicates are not represented here at all -- they have no IR to post
 /// -- and remain the space's business to filter with.
 SolveResult solveSpace(llvm::ArrayRef<SearchParam> params,
                        llvm::ArrayRef<ConstraintNodePtr> constraints,
-                       llvm::ArrayRef<DivisibilityRelation> divisibility,
                        const SolveOptions &opts = {});
 
 } // namespace mlir::cinm::constraints
