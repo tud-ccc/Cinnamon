@@ -59,6 +59,7 @@ if [[ "$setup_python_venv" -eq 1 ]]; then
     verbose_cmd python -m pip install -r third-party/llvm/mlir/python/requirements.txt
     verbose_cmd python -m pip install -r experiments/requirements.txt
     verbose_cmd conan export third-party/conan-recipes/mlpack --name mlpack --version 4.8.0
+    verbose_cmd conan export third-party/conan-recipes/gecode --name gecode --version 6.4.0
   fi
 
   # Ensure CMake will use this venv's Python and find pybind11's CMake config

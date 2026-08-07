@@ -77,13 +77,113 @@ pruning in the branch that has no constraints.
 smallest of the four `prim_gemv` sizes. It scales with the space, and with the
 number of edges — a three-op block has two guards, i.e. 9 branches.
 
-**Proposed.** Not obvious. The unfused branch is *exactly* the unconstrained
-enumeration, so it could be enumerated once and the fused branches computed as
-a refinement rather than from scratch; that is a real change to the
-enumerator's shape. Alternatively a guard could be kept out of the component
-(its own slot) and its implications left as filters, trading density for
-construction time — which is precisely the merging decision §1 says should
-exist and does not.
+### 2a. The branch count does not account for the magnitude
+
+Three guard values can multiply the work by at most three if nothing else
+changes. The observed factor is 40, so most of it is *not* the extra branches,
+and the account above is incomplete. The other term is per-node constraint
+scanning, which is linear in the number of constraints in the component:
+
+- `selectNext` calls `solveFor` over every equality, unconditional and gated,
+  for every unassigned dimension, at every node.
+- `boundsMayHold` walks every node of every bound for every candidate value,
+  and an implication is a deep node — a comparison wrapping a product equality.
+
+One fusion edge emits roughly one implication per value dimension per level,
+so it adds 6–12 constraints to the component, not one. Multiplying a ~3×
+branching factor by a ~6–12× per-node cost lands in the right neighbourhood.
+
+This is inferred, not measured, and one counter separates the two: `nodes_`
+already exists in `ComponentEnumerator`; print it. If it grows ~3× while wall
+time grows 40×, the cost is scanning, and the fix is to index `bounds_` and
+`gated_` by variable so that assigning a variable rescans only the constraints
+mentioning it. If it grows ~40×, the branch structure is the cause and §2c
+applies. Worth doing before either proposal below is implemented, because they
+address the branching only.
+
+### 2b. Rejected: a profitability test on the antecedent's cardinality
+
+Fold an implication only when the antecedent's joint domain is small and the
+consequent is estimated to cut enough to pay for the branching. For `fuse` the
+antecedent has cardinality 3 and the consequent is an equality, so the test
+would say fold.
+
+It would say fold for the case that regressed, and for four separate reasons
+it is measuring the wrong things.
+
+1. **The antecedent's cardinality is the wrong axis.** What folding costs is
+   (number of antecedent assignments that *falsify* it) × (cost of enumerating
+   the component with the consequent inert). `implies(fuse >= 2, …)` has one
+   falsifying value out of three; narrowing `fuse` to two values would not
+   make it cheaper, and widening it to ten while keeping one falsifying value
+   would not make it dearer.
+2. **It scores solution counts; the pathology is search-tree size.** The table
+   grew 36% and the work grew 40×. Density is likewise a ratio of counts, so
+   §1's "let density drive merging" inherits the blindness: a merging rule
+   needs a *work* model, not only a density model. The two coincide only where
+   the enumerator is output-sensitive, and it is not across a branch in which
+   every gated equality is inert.
+3. **Estimating the cut is the hard part, and the cheap estimate is biased.**
+   `producerTile == consumerTile` cuts by the collision rate over the pairs
+   that are actually *reachable*, not by `1/|dom|` — the tile variables are
+   already correlated through the divisibility chain. §3 records that declared
+   domains run up to ~100× wider than reachable ones (1024 declared against
+   ~11 reachable), and that error lands straight in the estimate, biasing
+   every equality towards "very profitable".
+4. **A per-constraint score for a per-component decision.** Dropping one
+   implication can leave the component split, which changes what every other
+   constraint is worth. Greedy scoring is defensible, but it is greedy and
+   should say so.
+
+What survives is the one quantity it computes both cheaply and correctly: the
+number of falsifying antecedent assignments. That is what §2c needs.
+
+### 2c. Partly viable: enumerate once unguarded, refine per branch
+
+Put the antecedent variables last and evaluate the constraints they switch on
+against the solutions already generated. Stated precisely for one implication
+with antecedent variables `g`, partitioning `dom(g)` into `F` (falsifies) and
+`S` (satisfies): enumerate the component once with the consequent dropped,
+giving `T₀`; the falsifying branches are then `T₀ × F` at no further cost, and
+each satisfying branch is `T₀` filtered by the consequent.
+
+The falsifying half is right and the satisfying half is backwards.
+
+- **Filtering loses exactly where enumerating wins.** A filtering pass costs
+  `|T₀|` per satisfying assignment, while enumerating with the consequent
+  *active* costs about `|T_s|` — and the consequent is an equality, so
+  `|T_s| ≪ |T₀|`. So the hybrid is the one to want: share a single `T₀` across
+  all of `F`, and keep the current pruned enumeration for each `s ∈ S`. Work
+  drops from `|F|` unconstrained enumerations to one.
+- **On this space the saving is nil.** `fuse` ranges over `1..numLevels+1` and
+  the guards are `fuse >= 2`, `fuse >= level+2`, so `|F| = 1` for the level-1
+  implications and 2 for the deepest. The saving factor is `|F|`. It cannot
+  explain the 40× and would not remove it — which is the same conclusion §2a
+  reaches from the other direction.
+- **It does not compose across implications.** Several implications over one
+  guard nest rather than partition: "the unguarded enumeration" is only well
+  defined per *set of simultaneously inert consequents*, so sharing tables
+  across the falsifying region means up to `2^k` tables for `k` implications,
+  not `|F|`. With two edges (a three-op block) the falsifying region is
+  already a union of boxes rather than a slice.
+- **"Antecedent variables last" is the wrong order.** A guard settled late
+  leaves its consequents inert for the whole prefix, which is precisely the
+  branch that prunes nothing. Tier 0 (guards first) is right for the
+  satisfying branches. Under the hybrid the tension disappears: `F` is handled
+  without enumerating `g` at all, and inside a satisfying branch `g` is
+  already fixed before anything else is chosen.
+
+### 2d. Not an option: demoting implications to predicates
+
+Keeping the guard in its own slot and leaving its implications as filters
+would trade density for construction time, which is the merging decision §1
+says should exist. But it is strictly worse than demoting an unconditional
+constraint: the consequent is an equality between tile variables, so leaving
+it out of the encoding widens the addressable space by the entire cross
+product of the tiles it equates, and the filter then rejects all but the
+diagonal. It also removes the only reason for `Implies` to be a constraint
+form rather than an opaque predicate. The path exists as the abandonment
+fallback (§1) and should stay a fallback.
 
 ## 3. Declared domains are much wider than reachable ones
 
