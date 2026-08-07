@@ -465,9 +465,6 @@ inline BoolExpr implies(BoolExpr antecedent, BoolExpr consequent) {
 /// order via buildInto() (static filters → addDim → multiples constraints →
 /// dynamic predicates). All SpaceVar handles remain valid after buildInto().
 /// Duplicate static and structural constraints are silently deduplicated.
-///
-/// Naming convention for mustDivide(parent, child):
-///   "parent divides child" = child % parent == 0.
 class SpaceBuilder {
 public:
   /// Declare a parameter with integer range [lo, hi] (inclusive, step 1).
@@ -505,11 +502,6 @@ public:
   /// values must divide the runtime value of v (v % result == 0).
   IntVar divisorsOf(llvm::StringRef name, IntVar v);
 
-  /// Static filter: retain only values of v that are divisors of n.
-  void mustDivide(IntVar v, ParmValue n);
-  /// Structural constraint: child must be a multiple of parent (parent divides
-  /// child; child % parent == 0). Applied after all dims are added.
-  void mustDivide(IntVar parent, IntVar child);
   /// Arbitrary predicate; configurations it rejects are skipped by the
   /// framework. `description` is optional; it is reported by
   /// ConfigSpace::debugIsValid() when the predicate rejects a configuration.
@@ -549,17 +541,6 @@ private:
     std::vector<ParmValue> divisorFilters; ///< keepDivisorsOf(n) for each n
     unsigned permutationSize = 0;          ///< for Kind::Permutation
   };
-
-  struct MultiplesEntry {
-    std::string parent, child;
-    bool operator==(const MultiplesEntry &o) const {
-      return parent == o.parent && child == o.child;
-    }
-    bool operator<(const MultiplesEntry &o) const {
-      return std::tie(parent, child) < std::tie(o.parent, o.child);
-    }
-  };
-
   struct PredicateEntry {
     std::string description;
     Constraint pred;
@@ -569,7 +550,6 @@ private:
   };
 
   std::vector<DimEntry> dims_;
-  std::vector<MultiplesEntry> multiples_;
   std::vector<PredicateEntry> predicates_;
 
   DimEntry &findEntry(const IntVar &v);
@@ -578,12 +558,6 @@ private:
 
   /// Walk `node` and reify every Div as a divisibility constraint.
   void extractDivConstraints(const constraints::ConstraintNodePtr &node);
-  /// Reify a single num/den divisibility constraint found on a Div node:
-  ///  - const / var   → static filter on den's values
-  ///  - var / var     → structural mustDivide
-  ///  - everything else → dynamic predicate
-  void addDivConstraint(const constraints::ConstraintNodePtr &num,
-                        const constraints::ConstraintNodePtr &den);
 };
 
 } // namespace mlir::cinm

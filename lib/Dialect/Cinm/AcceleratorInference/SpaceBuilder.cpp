@@ -39,6 +39,10 @@ struct SpaceBuilder::PlanMetadata final : SpaceMetadata {
     /// False for a predicate registered as an opaque lambda, which has no IR
     /// to post and therefore can only ever filter.
     bool analysable = true;
+    /// Number of solutions this constraint filtered out.
+    /// This is -1 for solved/static-filter constraints.
+    /// Sensitive to constraint declaration order.
+    int numRemoved = -1;
   };
 
   std::vector<Constraint> constraints;
@@ -87,6 +91,8 @@ void SpaceBuilder::PlanMetadata::printJSONMembers(std::ostream &os) const {
     printJSONString(os, c.disposition);
     if (!c.analysable)
       os << ", \"analysable\": false";
+    if (c.numRemoved != -1)
+      os << ", \"numRemoved\": " << c.numRemoved;
     os << "}" << (i + 1 < constraints.size() ? "," : "") << "\n";
   }
   os << "  ],\n";
@@ -170,7 +176,7 @@ IntVar SpaceBuilder::divisorsOf(llvm::StringRef name, ParmValue n) {
 IntVar SpaceBuilder::divisorsOf(llvm::StringRef name, IntVar src) {
   IntVar v(name, src.maxVal());
   dims_.push_back({v.name_, v.idx_, DimEntry::IntRange, 1, src.maxVal(), {}});
-  multiples_.push_back({v.name_, src.name_});
+  require(divides(v, src));
   return v;
 }
 
@@ -198,16 +204,6 @@ int SpaceBuilder::dimIndexByName(llvm::StringRef name) const {
 // ===----------------------------------------------------------------------===//
 // SpaceBuilder — constraint declaration
 // ===----------------------------------------------------------------------===//
-
-void SpaceBuilder::mustDivide(IntVar v, ParmValue n) {
-  if (!ShapedType::isDynamic(n))
-    findEntry(v).divisorFilters.push_back(n);
-}
-
-void SpaceBuilder::mustDivide(IntVar parent, IntVar child) {
-  multiples_.push_back({parent.name_, child.name_});
-}
-
 void SpaceBuilder::require(Constraint pred, llvm::StringRef description) {
   predicates_.push_back({.description = description.str(),
                          .pred = std::move(pred),
@@ -222,16 +218,6 @@ void SpaceBuilder::require(const ConstraintNodePtr &node,
   // predicate.
   if (!ConstraintNode::isBoolKind(node->kind))
     return;
-  // A divisibility test *at the top* of a require is unconditional, so it can
-  // be reified like the one `/` asserts -- as a domain filter or a structural
-  // relation, rather than a predicate that filters after the fact. Only here:
-  // nested under a guard (or anywhere else) it stays a test, which is the whole
-  // point of having it. addDivConstraint registers whatever it settles on,
-  // including a predicate when the shapes allow nothing better.
-  if (node->kind == ConstraintNode::Kind::Divides) {
-    addDivConstraint(/*num=*/node->operands()[1], /*den=*/node->operands()[0]);
-    return;
-  }
   std::string desc =
       description.empty() ? describeNode(*node) : description.str();
   require(toConstraint(node), desc);
@@ -246,57 +232,12 @@ void SpaceBuilder::extractDivConstraints(const ConstraintNodePtr &node) {
   // Not under a guard. What this function reifies is unconditional, so a `/`
   // inside an implication would impose its divisibility on the very
   // configurations the guard exists to exclude.
-  //
-  // Nothing is lost but pruning, and not even all of that. `a / b` is exact by
-  // evaluation -- a division that does not come out exact makes the
-  // enclosing comparison false, see evalBoolNode -- so a guarded division
-  // still means what it says. And matchProductEquality cross-multiplies the
-  // consequent anyway, so `implies(g, extent / block == 1)` still reaches the
-  // enumerator as the gated equality `extent == block`. What goes is the static
-  // domain filter, which is exactly the part that would have been wrong.
   if (node->kind == ConstraintNode::Kind::Implies)
     return;
   if (node->kind == ConstraintNode::Kind::Div)
-    addDivConstraint(node->operands()[0], node->operands()[1]);
+    require(divides(node->operands()[1], node->operands()[0]));
   for (const auto &child : node->operands())
     extractDivConstraints(child);
-}
-
-void SpaceBuilder::addDivConstraint(const ConstraintNodePtr &num,
-                                    const ConstraintNodePtr &den) {
-  using Kind = ConstraintNode::Kind;
-
-  // const / var: the divisor can only ever take values dividing the constant,
-  // so this is a static domain filter rather than a runtime check.
-  if (num->kind == Kind::Const && den->kind == Kind::Var) {
-    mustDivide(findVarByName(den->varName()), num->constValue());
-    return;
-  }
-  // var / var: structural, recorded for planning to fold into a component.
-  if (num->kind == Kind::Var && den->kind == Kind::Var) {
-    mustDivide(findVarByName(den->varName()), findVarByName(num->varName()));
-    return;
-  }
-
-  std::string desc = describeNode(*den) + " | " + describeNode(*num);
-  if (den->kind == Kind::Mul) {
-    // (B * C) | A  ⟹  B * C <= A as well; keeping the bound makes the
-    // predicate reject the degenerate cases the divisibility test alone lets
-    // through.
-    require(Constraint([num, den](const ConfWrapper c) {
-              const ParmValue nv = evalNode(*num, c);
-              const ParmValue dv = evalNode(*den, c);
-              return dv != 0 && dv <= nv && nv % dv == 0;
-            }),
-            desc);
-    return;
-  }
-  require(Constraint([num, den](const ConfWrapper c) {
-            const ParmValue nv = evalNode(*num, c);
-            const ParmValue dv = evalNode(*den, c);
-            return dv != 0 && nv % dv == 0;
-          }),
-          desc);
 }
 
 // ===----------------------------------------------------------------------===//
@@ -377,23 +318,7 @@ void SpaceBuilder::buildInto(ConfigSpace &space) {
     for (size_t k = 0, e = param.arity(); k < e; ++k)
       report->cartesian *= static_cast<double>(param.cardinality());
 
-  // Phase 2: collect what the solver is to be given. Divisibility declared
-  // through mustDivide never passes through a Div node, so it arrives here as
-  // a relation rather than inside an expression; deduplicate it first, since
-  // the same pair is commonly declared by several callers.
-  std::sort(multiples_.begin(), multiples_.end());
-  multiples_.erase(std::unique(multiples_.begin(), multiples_.end()),
-                   multiples_.end());
-
-  std::vector<constraints::DivisibilityRelation> divisibility;
-  for (const auto &m : multiples_) {
-    size_t parent = findVarByName(m.parent).idx();
-    size_t child = findVarByName(m.child).idx();
-    assert(parent < space.numDims() && child < space.numDims() &&
-           "mustDivide names a dimension that was never declared");
-    divisibility.push_back({parent, child});
-    report->constraints.push_back({m.parent + " | " + m.child, "solved", true});
-  }
+  // Phase 2: collect what the solver is to be given.
 
   std::vector<ConstraintNodePtr> nodes;
   for (const auto &entry : predicates_)
@@ -402,7 +327,7 @@ void SpaceBuilder::buildInto(ConfigSpace &space) {
 
   // Phase 3: solve. This is the whole of what used to be planning.
   constraints::SolveResult solved =
-      constraints::solveSpace(space.params, nodes, divisibility);
+      constraints::solveSpace(space.params, nodes);
   if (solved.failed())
     llvm::report_fatal_error(llvm::Twine("cinm search space: ") + solved.error);
 
@@ -429,6 +354,26 @@ void SpaceBuilder::buildInto(ConfigSpace &space) {
   report->nodes = solved.nodes;
   report->failures = solved.failures;
   report->complete = solved.complete;
+
+  for (auto &entry : predicates_) {
+    if (!entry.node) {
+      auto &solutions = solved.solutions;
+      // this wasn't part of the solve (it's an opaque predicate)
+      auto newEnd = std::remove_if(solutions.begin(), solutions.end(),
+                                   [&](Configuration conf) -> bool {
+                                     ConfWrapper wrapper(space, conf);
+                                     return !entry.pred(wrapper);
+                                   });
+      int numRemoved = solutions.end() - newEnd;
+      solutions.erase(newEnd, solutions.end());
+
+      report->constraints.push_back(
+          {entry.description, "filter", false, numRemoved});
+    } else {
+      report->constraints.push_back({entry.description, "solved", true});
+    }
+  }
+
   space.setSolutions(std::move(solved.solutions));
 
   // Phase 4: register every predicate on the space.

@@ -184,8 +184,7 @@ public:
   Gecode::IntVarArray x;
 
   SpaceModel(llvm::ArrayRef<SearchParam> params,
-             llvm::ArrayRef<ConstraintNodePtr> constraints,
-             llvm::ArrayRef<DivisibilityRelation> divisibility)
+             llvm::ArrayRef<ConstraintNodePtr> constraints)
       : x(*this, static_cast<int>(numDimensions(params))) {
     Gecode::IntVarArgs vars;
     for (const SearchParam &param : params) {
@@ -209,11 +208,6 @@ public:
         Gecode::distinct(*this, own);
     }
 
-    for (const DivisibilityRelation &rel : divisibility)
-      Gecode::rel(*this, vars[static_cast<int>(rel.child)] %
-                                 vars[static_cast<int>(rel.parent)] ==
-                             0);
-
     Translator translator{*this, vars};
     for (const ConstraintNodePtr &node : constraints)
       Gecode::rel(*this, translator.toBool(*node));
@@ -232,7 +226,6 @@ public:
 
 SolveResult solveSpace(llvm::ArrayRef<SearchParam> params,
                        llvm::ArrayRef<ConstraintNodePtr> constraints,
-                       llvm::ArrayRef<DivisibilityRelation> divisibility,
                        const SolveOptions &opts) {
   SolveResult result;
   if (params.empty())
@@ -240,7 +233,7 @@ SolveResult solveSpace(llvm::ArrayRef<SearchParam> params,
 
   std::unique_ptr<SpaceModel> model;
   try {
-    model = std::make_unique<SpaceModel>(params, constraints, divisibility);
+    model = std::make_unique<SpaceModel>(params, constraints);
   } catch (const Gecode::Exception &e) {
     // Overflow is the case that reaches here: the solver has to represent the
     // *bounds* of every subexpression, and a product of several parameters can
