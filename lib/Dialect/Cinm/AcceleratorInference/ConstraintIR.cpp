@@ -9,147 +9,102 @@ using Kind = ConstraintNode::Kind;
 // Evaluation
 // ===----------------------------------------------------------------------===//
 
-static bool containsDivision(const ConstraintNode &node) {
-  if (node.kind == Kind::Div)
-    return true;
-  // A division under a BoolAsInt is the boolean operand's business: it makes
-  // that operand false, and the node 0, rather than reaching out to falsify
-  // whatever comparison contains it.
-  if (node.kind == Kind::BoolAsInt)
-    return false;
-  return llvm::any_of(node.operands(), [](const ConstraintNodePtr &child) {
-    return containsDivision(*child);
-  });
-}
-
-ParmVector evalNodeVec(const ConstraintNode &node, const ConfigurationVector &c,
-                       arma::urowvec *exact) {
+ParmValue evalNode(const ConstraintNode &node, const ConfWrapper &c,
+                   bool *exact) {
   using Kind = Kind;
   switch (node.kind) {
-  case Kind::Const: {
-    ParmVector r(c.size());
-    r.fill(node.constValue());
-    return r;
-  }
+  case Kind::Const:
+    return node.constValue();
   case Kind::Var:
     return c[node.varIdx()];
   case Kind::Add: {
-    ParmVector acc = c.zeros();
+    ParmValue acc = 0;
     for (const auto &op : node.operands())
-      acc += evalNodeVec(*op, c, exact);
+      acc += evalNode(*op, c, exact);
     return acc;
   }
   case Kind::Mul: {
-    ParmVector acc = c.ones();
+    ParmValue acc = 1;
     for (const auto &op : node.operands())
-      acc %=
-          evalNodeVec(*op, c, exact); // `%` is Armadillo's elementwise multiply
+      acc *= evalNode(*op, c, exact);
     return acc;
   }
-  case Kind::BoolAsInt: {
-    // evalBoolNodeVec applies this subtree's own exactness, so `exact` is
+  case Kind::BoolAsInt:
+    // evalBoolNode applies this subtree's own exactness, so `exact` is
     // deliberately not threaded through: nothing below here may falsify the
     // comparison above.
-    arma::urowvec mask = evalBoolNodeVec(*node.operands()[0], c);
-    return arma::conv_to<ParmVector>::from(mask);
-  }
+    return evalBoolNode(*node.operands()[0], c) ? 1 : 0;
   case Kind::Div: {
-    const ParmVector num = evalNodeVec(*node.operands()[0], c, exact);
-    const ParmVector den = evalNodeVec(*node.operands()[1], c, exact);
+    const ParmValue num = evalNode(*node.operands()[0], c, exact);
+    const ParmValue den = evalNode(*node.operands()[1], c, exact);
     // `a / b` asserts that b divides a. Record where it does not, so the
     // enclosing comparison can come out false rather than compare a truncated
     // quotient -- 1024 / 768 is not 1.
-    if (exact)
-      *exact %= vecDivides(den, num);
-    // The quotient still has to be computed for every lane: a vectorized
-    // evaluation cannot short-circuit past the bad ones, and a plain
-    // elementwise division would be UB on a zero divisor.
-    return vecSafeDiv(num, den);
+    if (exact && (den == 0 || num % den != 0))
+      *exact = false;
+    return den ? num / den : 0;
   }
   default:
-    llvm_unreachable(
-        "boolean node evaluated as arithmetic; use evalBoolNodeVec");
+    llvm_unreachable("boolean node evaluated as arithmetic; use evalBoolNode");
   }
 }
 
-arma::urowvec evalBoolNodeVec(const ConstraintNode &node,
-                              const ConfigurationVector &c) {
-  if (node.kind == Kind::Implies) {
-    // `a => b` is `!a | b`. Both sides are evaluated for every lane: a
-    // vectorized evaluation has no short-circuit, and the antecedent's own
-    // operands are arithmetic, so there is nothing unsafe to guard against.
-    const arma::urowvec ante = evalBoolNodeVec(*node.operands()[0], c);
-    const arma::urowvec cons = evalBoolNodeVec(*node.operands()[1], c);
-    return (ante == 0) || (cons != 0);
-  }
+bool evalBoolNode(const ConstraintNode &node, const ConfWrapper &c) {
+  if (node.kind == Kind::Implies)
+    return !evalBoolNode(*node.operands()[0], c) ||
+           evalBoolNode(*node.operands()[1], c);
 
   if (node.kind == Kind::Divides) {
-    // A test, so it never has to reject a lane for being inexact -- being
-    // inexact is the answer it reports.
-    arma::urowvec exact(c.size(), arma::fill::ones);
-    const ParmVector divisor = evalNodeVec(*node.operands()[0], c, &exact);
-    const ParmVector dividend = evalNodeVec(*node.operands()[1], c, &exact);
-    arma::urowvec result = vecDivides(divisor, dividend);
+    // A test, so it never has to reject for being inexact -- being inexact is
+    // the answer it reports.
+    bool exact = true;
+    const ParmValue divisor = evalNode(*node.operands()[0], c, &exact);
+    const ParmValue dividend = evalNode(*node.operands()[1], c, &exact);
     // ...though a `/` *inside* one of its operands still has to be exact for
     // the operand to mean anything.
-    return result % exact;
+    return exact && divisor != 0 && dividend % divisor == 0;
   }
 
   assert(ConstraintNode::isBoolKind(node.kind) && "expected a boolean node");
 
   // A comparison is where an inexact division becomes observable, and where it
-  // is discharged: `a / b` means "b divides a and the quotient is", so a lane
-  // whose division does not come out exact makes the comparison *false*,
-  // whatever the truncated quotient happens to compare to.
+  // is discharged: `a / b` means "b divides a and the quotient is", so an
+  // inexact division makes the comparison *false*, whatever the truncated
+  // quotient happens to compare to.
   //
   // Doing it here rather than at the root is what makes the answer right under
   // an implication: an inexact division in the antecedent falsifies the
-  // antecedent, which satisfies the implication, and clearing the lane at the
-  // root would have rejected it instead.
-  const bool hasDiv = containsDivision(node);
-  arma::urowvec exact;
-  if (hasDiv)
-    exact = arma::urowvec(c.size(), arma::fill::ones);
-  arma::urowvec *exactPtr = hasDiv ? &exact : nullptr;
+  // antecedent, which satisfies the implication, and rejecting at the root
+  // would have thrown the configuration out instead.
+  bool exact = true;
+  const ParmValue lhs = evalNode(*node.operands()[0], c, &exact);
+  const ParmValue rhs = evalNode(*node.operands()[1], c, &exact);
+  if (!exact)
+    return false;
 
-  const ParmVector lhs = evalNodeVec(*node.operands()[0], c, exactPtr);
-  const ParmVector rhs = evalNodeVec(*node.operands()[1], c, exactPtr);
-  arma::urowvec result = [&]() -> arma::urowvec {
-    switch (node.kind) {
-    case Kind::Le:
-      return lhs <= rhs;
-    case Kind::Ge:
-      return lhs >= rhs;
-    case Kind::Lt:
-      return lhs < rhs;
-    case Kind::Gt:
-      return lhs > rhs;
-    case Kind::Eq:
-      return lhs == rhs;
-    case Kind::Ne:
-      return lhs != rhs;
-    default:
-      llvm_unreachable("unknown ConstraintNode::Kind");
-    }
-  }();
-  if (hasDiv)
-    result %= exact; // `%=` is elementwise multiply, i.e. AND over 0/1 masks
-  return result;
+  switch (node.kind) {
+  case Kind::Le:
+    return lhs <= rhs;
+  case Kind::Ge:
+    return lhs >= rhs;
+  case Kind::Lt:
+    return lhs < rhs;
+  case Kind::Gt:
+    return lhs > rhs;
+  case Kind::Eq:
+    return lhs == rhs;
+  case Kind::Ne:
+    return lhs != rhs;
+  default:
+    llvm_unreachable("unknown ConstraintNode::Kind");
+  }
 }
 
-void evalBoolNodeInto(const ConstraintNode &node, const ConfigurationVector &c,
-                      arma::urowvec &valid) {
-  // `%=` is Armadillo's elementwise multiply, i.e. AND over 0/1 masks: a lane
-  // already cleared by an earlier constraint stays cleared.
-  valid %= evalBoolNodeVec(node, c);
-}
-
-VecConstraint toVecConstraint(ConstraintNodePtr node) {
+Constraint toConstraint(ConstraintNodePtr node) {
   assert(node && ConstraintNode::isBoolKind(node->kind) &&
          "a constraint must be a boolean expression");
-  return [node = std::move(node)](const ConfigurationVector &c,
-                                  arma::urowvec &valid) {
-    evalBoolNodeInto(*node, c, valid);
+  return [node = std::move(node)](const ConfWrapper c) {
+    return evalBoolNode(*node, c);
   };
 }
 

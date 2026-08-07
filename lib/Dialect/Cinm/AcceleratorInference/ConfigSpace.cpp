@@ -1,5 +1,4 @@
 #include "cinm-mlir/Dialect/Cinm/AcceleratorInference/ConfigSpace.h"
-#include "cinm-mlir/Utils/Permutation.h"
 
 #include <algorithm>
 #include <cassert>
@@ -35,6 +34,13 @@ double SearchParam::dhi() const {
           return d.values.empty() ? 0.0 : static_cast<double>(d.values.back());
       },
       domain);
+}
+
+std::string SearchParam::dimName(size_t k) const {
+  assert(k < arity() && "dimension index out of range for this parameter");
+  if (arity() == 1)
+    return name;
+  return name + "[" + std::to_string(k) + "]";
 }
 
 size_t SearchParam::cardinality() const {
@@ -85,42 +91,43 @@ void ParmKind<ParmValue>::appendNeighbours(
 // ParmKind<Permutation> — an ordering
 // ===----------------------------------------------------------------------===//
 //
-// These four are the only place that knows the encoding is a one-based
-// lexicographic rank in a single dimension. Note the offset: the parameter is
-// one-based like every other, and unrankPermutation is not.
+// These three are the only place that knows the encoding is one dimension per
+// item holding a one-based place. Note the offset: every domain is strictly
+// positive (SpaceBuilder.h §2) and Permutation::position is not.
 
 Permutation ParmKind<Permutation>::decode(const SearchParam &param,
                                           llvm::ArrayRef<ParmValue> values) {
-  llvm::SmallVector<unsigned> order =
-      unrankPermutation(values[0] - 1, param.permutationSize);
+  assert(values.size() == param.permutationSize);
   Permutation perm;
-  perm.position.resize(param.permutationSize);
-  for (auto [place, item] : llvm::enumerate(order))
-    perm.position[item] = place;
+  perm.position.reserve(values.size());
+  for (ParmValue place : values)
+    perm.position.push_back(static_cast<unsigned>(place) - 1);
   return perm;
 }
 
 void ParmKind<Permutation>::appendFeatures(const SearchParam &param,
                                            llvm::ArrayRef<ParmValue> values,
                                            llvm::SmallVectorImpl<double> &out) {
-  const Permutation perm = decode(param, values);
   const double scale =
       param.permutationSize > 1 ? param.permutationSize - 1 : 1;
-  for (unsigned p : perm.position)
-    out.push_back(p / scale);
+  for (ParmValue place : values)
+    out.push_back((place - 1) / scale);
 }
 
 void ParmKind<Permutation>::appendNeighbours(
     const SearchParam &param, llvm::ArrayRef<ParmValue> values,
     llvm::SmallVectorImpl<llvm::SmallVector<ParmValue, 4>> &out) {
-  // Adjacent transpositions. Stepping the *rank* would land on an unrelated
-  // permutation, which is the whole reason a step is the model's business.
-  llvm::SmallVector<unsigned> order =
-      unrankPermutation(values[0] - 1, param.permutationSize);
-  for (unsigned i = 0; i + 1 < param.permutationSize; ++i) {
-    std::swap(order[i], order[i + 1]);
-    out.push_back({static_cast<ParmValue>(rankPermutation(order) + 1)});
-    std::swap(order[i], order[i + 1]);
+  // Adjacent transpositions: swap the items occupying two consecutive places.
+  // Stepping one *dimension* would name no ordering at all -- two items would
+  // share a place -- which is why a step is the model's business and spans the
+  // whole parameter.
+  llvm::SmallVector<ParmValue, 4> step(values.begin(), values.end());
+  for (ParmValue place = 1; place < static_cast<ParmValue>(values.size());
+       ++place) {
+    for (ParmValue &v : step)
+      v = v == place ? place + 1 : (v == place + 1 ? place : v);
+    out.push_back(step);
+    step.assign(values.begin(), values.end());
   }
 }
 
@@ -198,9 +205,11 @@ SearchParam makeValues(llvm::StringRef name, std::vector<ParmValue> values) {
 }
 
 SearchParam makePermutation(llvm::StringRef name, unsigned n) {
-  std::optional<int64_t> count = factorial(n);
-  assert(count && "too many dimensions to enumerate their permutations");
-  SearchParam param(name, IntRange{1, static_cast<ParmValue>(*count)},
+  assert(n > 0 && "an ordering of nothing is not a parameter");
+  // One domain for all n dimensions: each holds a place in [1, n], and it is
+  // the distinctness the solver posts that makes them an ordering rather than
+  // n independent choices.
+  SearchParam param(name, IntRange{1, static_cast<ParmValue>(n)},
                     ParmVTable::of<Permutation>());
   param.permutationSize = n;
   return param;
@@ -219,7 +228,17 @@ llvm::StringRef paramKindName(ParamKind kind) {
 // ===----------------------------------------------------------------------===//
 // ConfigSpace
 // ===----------------------------------------------------------------------===//
-int ConfigSpace::findIndex(llvm::StringRef name) const {
+size_t ConfigSpace::addParam(SearchParam &&param) {
+  const size_t firstDim = paramOfDim_.size();
+  const size_t arity = param.arity();
+  assert(arity > 0 && "a parameter occupies at least one dimension");
+  firstDimOfParam_.push_back(firstDim);
+  paramOfDim_.insert(paramOfDim_.end(), arity, params.size());
+  params.push_back(std::move(param));
+  return firstDim;
+}
+
+int ConfigSpace::findParam(llvm::StringRef name) const {
   for (int i = 0; i < static_cast<int>(params.size()); ++i)
     if (params[i].name == name)
       return i;
@@ -228,90 +247,52 @@ int ConfigSpace::findIndex(llvm::StringRef name) const {
 
 ParmValue ConfigSpace::get(const Configuration &config,
                            llvm::StringRef name) const {
-  int idx = findIndex(name);
-  if (idx < 0 || idx >= static_cast<int>(config.size()))
+  int param = findParam(name);
+  if (param < 0)
     return 0;
-  return config[idx];
-}
-
-void ConfigSpace::addConstraint(VecConstraint &&constraint,
-                                std::string description) {
-  constraints.emplace_back(std::move(description), std::move(constraint));
+  assert(params[param].arity() == 1 &&
+         "this parameter spans several dimensions; use getAs<T>()");
+  size_t dim = firstDimOfParam_[param];
+  return dim < config.size() ? config[dim] : 0;
 }
 
 void ConfigSpace::addConstraint(Constraint &&constraint,
                                 std::string description) {
-  // Vectorize by evaluating the scalar predicate once per lane. Captures
-  // `this` rather than copying anything about the space -- safe since
-  // ConfigSpace can be neither copied nor moved (its copy constructor is
-  // deleted), so the address stays valid for the space's lifetime.
-  addConstraint(
-      [this, scalar = std::move(constraint)](const ConfigurationVector &cv,
-                                             arma::urowvec &valid) {
-        Configuration conf(cv.numDims());
-        for (size_t j = 0; j < cv.size(); ++j) {
-
-          // short circuit - this means we don't necessarily
-          // collect all failed constraints
-          if (!valid[j])
-            continue;
-
-          for (size_t d = 0; d < cv.numDims(); ++d)
-            conf[d] = cv[d][j];
-          // Plain assignment, not `%=`: `%` is Armadillo's elementwise
-          // multiply for arma *objects*, but valid[j] is a bare uword, where
-          // `%=` would be integer modulo (`x % 1 == 0` clears a passing lane,
-          // and `% 0` is UB). The lane is known live thanks to the check
-          // above, so overwriting it is the same as AND-ing into it.
-          valid[j] = scalar(ConfWrapper(*this, conf)) ? 1u : 0u;
-        }
-      },
-      std::move(description));
-}
-
-arma::urowvec
-ConfigSpace::evalVecConstraintsMask(const ConfigurationVector &cv) const {
-  arma::urowvec mask(cv.size(), arma::fill::ones);
-  for (auto &[desc, c] : constraints)
-    c(cv, mask);
-  return mask;
+  constraints.emplace_back(std::move(description), std::move(constraint));
 }
 
 bool ConfigSpace::isValid(const Configuration &config) const {
-  if (config.size() != params.size())
+  if (config.size() != numDims())
     return false;
-  ConfigurationVector cv(params.size(), 1);
-  cv.setColumn(0, config);
-  return evalVecConstraintsMask(cv)[0] != 0;
+  ConfWrapper wrapper(*this, config);
+  for (const auto &[desc, c] : constraints)
+    if (!c(wrapper))
+      return false;
+  return true;
 }
 
 bool ConfigSpace::debugIsValid(const Configuration &config,
                                raw_ostream &os) const {
-  if (config.size() != params.size()) {
+  if (config.size() != numDims()) {
     os << "Configuration has " << config.size() << " value(s) but this space "
-       << "has " << params.size() << " parameter(s): {";
-    for (size_t i = 0; i < params.size(); ++i)
-      os << params[i].name << (i + 1 < params.size() ? ", " : "");
+       << "has " << numDims() << " dimension(s): {";
+    for (size_t d = 0; d < numDims(); ++d)
+      os << dimName(d) << (d + 1 < numDims() ? ", " : "");
     os << "}\n";
     return false;
   }
-  ConfigurationVector cv(params.size(), 1);
-  cv.setColumn(0, config);
-
   auto wrapper = ConfWrapper(*this, config);
   bool fullyValid = true;
+  // Every constraint is evaluated, not just up to the first failure, so the
+  // report names every reason rather than one of them.
   for (auto &[desc, c] : constraints) {
-    // Use a fresh valid mask each time so that the constraint
-    // doesn't short-circuit.
-    arma::urowvec valid(cv.size(), arma::fill::ones);
-    c(cv, valid);
-    if (!valid[0]) {
-      if (fullyValid) {
-        os << "Configuration " << wrapper << " violates:\n";
-        fullyValid = false;
-      }
-      os << "  - " << (desc.empty() ? "<unnamed constraint>" : desc) << "\n";
+    if (c(wrapper))
+      continue;
+    if (fullyValid) {
+      os << "Configuration " << wrapper << " violates:\n";
+      fullyValid = false;
     }
+    os << "  - " << (desc.empty() ? "<unnamed constraint>" : desc) << "\n";
   }
   return fullyValid;
 }
@@ -325,9 +306,9 @@ size_t ConfigSpace::numFeatures() const {
 
 void ConfigSpace::encode(const Configuration &conf,
                          llvm::SmallVectorImpl<double> &out) const {
-  assert(conf.size() == params.size());
-  for (auto [i, param] : llvm::enumerate(params))
-    param.appendFeatures(llvm::ArrayRef(conf).slice(i, param.arity()), out);
+  assert(conf.size() == numDims());
+  for (size_t p = 0; p < params.size(); ++p)
+    params[p].appendFeatures(paramValues(conf, p), out);
 }
 
 void ConfigSpace::setSolutions(std::vector<Configuration> &&solutions) {
@@ -335,9 +316,9 @@ void ConfigSpace::setSolutions(std::vector<Configuration> &&solutions) {
          "the flat index is a position in this list, so it has to be sorted");
   assert(llvm::all_of(solutions,
                       [this](const Configuration &c) {
-                        return c.size() == params.size();
+                        return c.size() == numDims();
                       }) &&
-         "every configuration must assign every parameter");
+         "every configuration must assign every dimension");
   solutions_ = std::move(solutions);
 }
 
@@ -381,14 +362,15 @@ void ConfigSpace::neighborIndices(size_t idx,
   Configuration probe = conf;
 
   llvm::SmallVector<llvm::SmallVector<ParmValue, 4>, 4> steps;
-  for (size_t d = 0; d < params.size();) {
-    const SearchParam &param = params[d];
+  for (size_t p = 0; p < params.size(); ++p) {
+    const SearchParam &param = params[p];
+    const size_t d = firstDimOfParam_[p];
     const size_t arity = param.arity();
     steps.clear();
     // One *parameter*, which is not always one dimension: an ordering is a
     // single parameter however many dimensions its encoding takes, and moving
     // one of them alone need not name another ordering at all.
-    param.appendNeighbours(llvm::ArrayRef(conf).slice(d, arity), steps);
+    param.appendNeighbours(paramValues(conf, p), steps);
     for (const auto &step : steps) {
       assert(step.size() == arity && "a step must assign the whole parameter");
       std::copy(step.begin(), step.end(), probe.begin() + d);
@@ -400,29 +382,28 @@ void ConfigSpace::neighborIndices(size_t idx,
             static_cast<size_t>(std::distance(solutions_.begin(), it)));
       std::copy(conf.begin() + d, conf.begin() + d + arity, probe.begin() + d);
     }
-    d += arity;
   }
 }
 
 bool ConfigSpace::isEncodable(const Configuration &conf) const {
-  if (conf.size() != params.size())
+  if (conf.size() != numDims())
     return false;
   return std::binary_search(solutions_.begin(), solutions_.end(), conf);
 }
 
 bool ConfigSpace::debugIsEncodable(const Configuration &conf,
                                    raw_ostream &os) const {
-  if (conf.size() != params.size()) {
+  if (conf.size() != numDims()) {
     os << "  - has " << conf.size() << " value(s) but this space has "
-       << params.size() << " parameter(s)\n";
+       << numDims() << " dimension(s)\n";
     return false;
   }
 
   bool ok = true;
-  for (size_t d = 0; d < params.size(); ++d) {
-    if (params[d].contains(conf[d]))
+  for (size_t d = 0; d < numDims(); ++d) {
+    if (paramAtDim(d).contains(conf[d]))
       continue;
-    os << "  - " << params[d].name << "=" << conf[d]
+    os << "  - " << dimName(d) << "=" << conf[d]
        << " is not a value this parameter can take\n";
     ok = false;
   }

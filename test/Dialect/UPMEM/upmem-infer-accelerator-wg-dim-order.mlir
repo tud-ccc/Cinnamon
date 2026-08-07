@@ -1,12 +1,15 @@
 // RUN: cinm-opt %s --cinm-isolate-compute-blocks \
-// RUN:   --upmem-infer-accelerator="simulator=op-count eval-solution=dpus=2048,tasklets=8,gemv.M.mram=8,gemv.K.mram=128,gemv.M.wram=8,gemv.K.wram=64,gemv.order=1" \
+// RUN:   --upmem-infer-accelerator="simulator=op-count eval-solution=dpus=2048,tasklets=8,gemv.M.mram=8,gemv.K.mram=128,gemv.M.wram=8,gemv.K.wram=64,gemv.order[0]=2,gemv.order[1]=1" \
 // RUN: | FileCheck %s --check-prefixes=CHECK,SHARED
 // RUN: cinm-opt %s --cinm-isolate-compute-blocks \
-// RUN:   --upmem-infer-accelerator="simulator=op-count eval-solution=dpus=2048,tasklets=8,gemv.M.mram=8,gemv.K.mram=128,gemv.M.wram=8,gemv.K.wram=64,gemv.order=2" \
+// RUN:   --upmem-infer-accelerator="simulator=op-count eval-solution=dpus=2048,tasklets=8,gemv.M.mram=8,gemv.K.mram=128,gemv.M.wram=8,gemv.K.wram=64,gemv.order[0]=1,gemv.order[1]=2" \
 // RUN: | FileCheck %s --check-prefixes=CHECK,REPLICATED
 // RUN: not cinm-opt %s --cinm-isolate-compute-blocks \
-// RUN:   --upmem-infer-accelerator="simulator=op-count eval-solution=dpus=2048,tasklets=8,gemv.M.mram=8,gemv.K.mram=128,gemv.M.wram=8,gemv.K.wram=64,gemv.order=3" 2>&1 \
+// RUN:   --upmem-infer-accelerator="simulator=op-count eval-solution=dpus=2048,tasklets=8,gemv.M.mram=8,gemv.K.mram=128,gemv.M.wram=8,gemv.K.wram=64,gemv.order[0]=3,gemv.order[1]=1" 2>&1 \
 // RUN: | FileCheck %s --check-prefix=RANGE
+// RUN: not cinm-opt %s --cinm-isolate-compute-blocks \
+// RUN:   --upmem-infer-accelerator="simulator=op-count eval-solution=dpus=2048,tasklets=8,gemv.M.mram=8,gemv.K.mram=128,gemv.M.wram=8,gemv.K.wram=64,gemv.order[0]=1,gemv.order[1]=1" 2>&1 \
+// RUN: | FileCheck %s --check-prefix=REPEATED
 
 // `<op>.order` reaching the device program, on the configuration of
 // upmem-infer-accelerator-generic-split.mlir.
@@ -28,15 +31,18 @@
 func.func @gemv_64MB(%A: tensor<4096x4096xi32>, %x: tensor<4096xi32>) -> tensor<4096xi32> {
   // CHECK: upmem.dpu_program
 
-  // order 1, the default rule: the k-tile index is outermost, so the eight
-  // tasklets of a DPU differ in their m-tile and share one k-tile of the
-  // vector. 128 elements per DPU. This is the grouping the independent
-  // autotuner found best (taskletCols = 1).
+  // The order is one place per iteration dimension: `gemv.order[0]` is where
+  // m goes and `gemv.order[1]` where k goes, place 1 being the outermost
+  // workgroup axis.
+
+  // k outermost (place 1), the default rule: the eight tasklets of a DPU
+  // differ in their m-tile and share one k-tile of the vector. 128 elements
+  // per DPU. This is the grouping the independent autotuner found best
+  // (taskletCols = 1).
   // SHARED-DAG: upmem.static_alloc {{.*}} : memref<1x128xi32, #upmem.mram>
 
-  // order 2: the k-tile index is innermost, so adjacent leaves differ in it and
-  // each tasklet needs its own k-tile. Same configuration otherwise, 8x the
-  // vector storage.
+  // k innermost, so adjacent leaves differ in it and each tasklet needs its
+  // own k-tile. Same configuration otherwise, 8x the vector storage.
   // REPLICATED-DAG: upmem.static_alloc {{.*}} : memref<8x1x128xi32, #upmem.mram>
 
   // The matrix is tiled per tasklet either way, and the accumulator likewise.
@@ -44,12 +50,21 @@ func.func @gemv_64MB(%A: tensor<4096x4096xi32>, %x: tensor<4096xi32>) -> tensor<
   // CHECK-DAG: upmem.static_alloc {{.*}} : memref<8x1x8xi32, #upmem.mram>
 
   // Two dimensions are spread over the workgroup here (4096/8 m-tiles and
-  // 4096/128 k-tiles), so the space offers two orders and no more -- ranked
-  // from 1, like every other parameter. The space rejects the rest rather than
-  // the pass: an index the op has no order for is a configuration the search is
-  // never offered, not a trial that fails.
+  // 4096/128 k-tiles), so there are two places and two orders. The space
+  // rejects everything else rather than the pass: an order the op does not
+  // have is a configuration the search is never offered, not a trial that
+  // fails. Two ways to not have one, and they fail differently --
+  //
+  // a place outside the domain, which is a per-dimension check:
   // RANGE: Configuration is not one this space contains
-  // RANGE: gemv.order=3 is not a value this parameter can take
+  // RANGE: gemv.order[0]=3 is not a value this parameter can take
+  //
+  // ...and two items in the same place, where every value is one its
+  // dimension can take and what rules it out is the distinctness the solver
+  // posts across them. Nothing is left to reject it after the solve, so this
+  // is the general statement rather than a named constraint.
+  // REPEATED: Configuration is not one this space contains
+  // REPEATED: no configuration in this space assigns these values together
   %r = cinm.compute -> tensor<4096xi32> attributes {cinm.available_platforms = [#upmem]} {
     %g = cinm.op.gemv %A, %x : tensor<4096x4096xi32>, tensor<4096xi32> -> tensor<4096xi32>
     cinm.yield %g : tensor<4096xi32>

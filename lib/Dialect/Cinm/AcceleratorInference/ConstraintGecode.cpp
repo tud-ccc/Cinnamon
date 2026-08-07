@@ -41,6 +41,15 @@ Gecode::IntSet domainOf(const SearchParam &param) {
   return Gecode::IntSet(values.data(), static_cast<int>(values.size()));
 }
 
+/// Number of Configuration entries `params` describes, which is not
+/// `params.size()`: see the note above ConfigSpace.
+size_t numDimensions(llvm::ArrayRef<SearchParam> params) {
+  size_t n = 0;
+  for (const SearchParam &param : params)
+    n += param.arity();
+  return n;
+}
+
 // ===----------------------------------------------------------------------===//
 // Translation
 // ===----------------------------------------------------------------------===//
@@ -177,11 +186,27 @@ public:
   SpaceModel(llvm::ArrayRef<SearchParam> params,
              llvm::ArrayRef<ConstraintNodePtr> constraints,
              llvm::ArrayRef<DivisibilityRelation> divisibility)
-      : x(*this, static_cast<int>(params.size())) {
+      : x(*this, static_cast<int>(numDimensions(params))) {
     Gecode::IntVarArgs vars;
-    for (auto [i, param] : llvm::enumerate(params)) {
-      x[static_cast<int>(i)] = Gecode::IntVar(*this, domainOf(param));
-      vars << x[static_cast<int>(i)];
+    for (const SearchParam &param : params) {
+      // One variable per *dimension*, all sharing the parameter's domain: a
+      // parameter of arity n is n entries of a Configuration, and every index
+      // reaching this file -- a Var node's, a divisibility relation's -- is
+      // already an index into those entries rather than into `params`.
+      Gecode::IntVarArgs own;
+      for (size_t k = 0, e = param.arity(); k < e; ++k) {
+        Gecode::IntVar v(*this, domainOf(param));
+        x[vars.size()] = v;
+        vars << v;
+        own << v;
+      }
+      // What makes n places an ordering. Posted here rather than written by
+      // whoever declares the parameter: it follows from the *kind*, holds for
+      // every permutation parameter there will ever be, and stating it in the
+      // DSL would mean a node whose only purpose is to be translated back into
+      // this call.
+      if (param.kind() == ParamKind::Permutation && own.size() > 1)
+        Gecode::distinct(*this, own);
     }
 
     for (const DivisibilityRelation &rel : divisibility)
@@ -237,9 +262,10 @@ SolveResult solveSpace(llvm::ArrayRef<SearchParam> params,
 
   try {
     Gecode::DFS<SpaceModel> engine(model.get(), options);
-    Configuration conf(params.size());
+    const size_t numDims = numDimensions(params);
+    Configuration conf(numDims);
     while (SpaceModel *solution = engine.next()) {
-      for (size_t d = 0; d < params.size(); ++d)
+      for (size_t d = 0; d < numDims; ++d)
         conf[d] =
             static_cast<ParmValue>(solution->x[static_cast<int>(d)].val());
       result.solutions.push_back(conf);

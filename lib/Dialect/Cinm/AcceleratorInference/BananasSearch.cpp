@@ -99,27 +99,13 @@ void CandidatePool::computeValidMask(const ConfigSpace &space,
       },
       [](const ConfigSpace &space, size_t lo, size_t hi) -> SharedState {
         SharedState s;
-        const size_t n = hi - lo;
-        // Materialize the whole chunk as a batch and evaluate every
-        // constraint's vectorized form once over it. This mask is already
-        // authoritative -- isValid() is itself defined in terms of the same
-        // vectorized constraints (see ConfigSpace::isValid) -- so there is no
-        // separate scalar re-check to run afterwards.
-        ConfigurationVector cv(space.size(), n);
-        size_t col = 0;
-        space.forEachChunk(lo, hi, [&](const Configuration &conf, size_t) {
-          cv.setColumn(col++, conf);
+        space.forEachChunk(lo, hi, [&](const Configuration &conf, size_t i) {
+          if (space.isValid(conf)) {
+            s.validMask.insert(i);
+            s.validIndices.push_back(i);
+          }
           return true;
         });
-        arma::urowvec mask = space.evalVecConstraintsMask(cv);
-
-        for (size_t j = 0; j < n; ++j) {
-          if (!mask[j])
-            continue;
-          size_t i = lo + j;
-          s.validMask.insert(i);
-          s.validIndices.push_back(i);
-        }
         return s;
       });
   auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -617,9 +603,11 @@ void CandidatePool::dumpToCSV(const ConfigSpace &space,
     acq_v = computeAcq(mu_v, sigma_v, opts.kappa);
   }
 
-  // Header
-  for (const auto &p : space.params)
-    out << p.name << ",";
+  // Header. One column per *dimension*, since that is what a row holds: a
+  // parameter spanning several contributes one column each, named for the
+  // entry rather than for the parameter.
+  for (size_t d = 0; d < space.numDims(); ++d)
+    out << space.dimName(d) << ",";
   out << "visited,valid,cost,eval_iter,eval_time_ms,cpu_time_ms";
   if (hasModel)
     out << ",mu,sigma,acq";
@@ -683,8 +671,8 @@ void CandidatePool::dumpMetadataJSON(const ConfigSpace &space,
   // predicates. The first two ratios characterise the space; neither alone
   // does.
   long long cartesian = 1;
-  for (const auto &p : space.params)
-    cartesian *= p.cardinality();
+  for (size_t d = 0; d < space.numDims(); ++d)
+    cartesian *= space.paramAtDim(d).cardinality();
 
   out << "{\n";
   out << "  \"cartesian_size\": " << cartesian << ",\n";
@@ -710,6 +698,7 @@ void CandidatePool::dumpMetadataJSON(const ConfigSpace &space,
     jsonStr(p.name);
     out << ", ";
     out << "\"cardinality\": " << p.cardinality() << ", ";
+    out << "\"arity\": " << p.arity() << ", ";
     out << "\"kind\": ";
     jsonStr(paramKindName(p.kind()).str());
     out << ", ";

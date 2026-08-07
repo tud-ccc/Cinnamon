@@ -15,17 +15,22 @@ func.func @gemv(%A: tensor<256x256xi32>, %x: tensor<256xi32>) -> tensor<256xi32>
   // The chosen accelerator is committed on the compute block.
   // CHECK: cinm.compute_block on accelerator #upmem.array<1x16x4
 
-  // Host side.
+  // Host side. Which *form* the result transfer takes -- one block per leaf or
+  // a single array -- follows from the tiling the search happened to pick, so
+  // it is not pinned here: doing so would make this a test of where the search
+  // lands, which the note above says it deliberately is not.
   // CHECK: upmem.alloc_dpus with program
   // CHECK: upmem.scatter_on_array
-  // CHECK: upmem.gather_from_array
+  // CHECK: upmem.gather_{{from_array|blocks}}
 
   // Device side. The MRAM/WRAM split is reached through cnm and
   // --upmem-tile-mram-buffers, so nothing from the middle of the stack may
   // survive.
   // CHECK: upmem.dpu_program @{{.*}}() tasklets(4)
-  // CHECK: upmem.static_alloc @{{.*}}(mram)
-  // CHECK: memref.alloca() : memref<{{.*}}, #upmem.wram>
+  // The two allocations have no order between them, and which comes first
+  // depends on the configuration; what matters is that both levels are there.
+  // CHECK-DAG: upmem.static_alloc @{{.*}}(mram)
+  // CHECK-DAG: memref.alloca() : memref<{{.*}}, #upmem.wram>
   // CHECK: upmem.local_transfer
   // CHECK-NOT: cnm.
   // CHECK-NOT: cinm.op.
