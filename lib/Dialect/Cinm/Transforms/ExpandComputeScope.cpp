@@ -36,9 +36,11 @@ bool isRematerializable(Operation *def) {
     return false;
   // Constants are kept inside blocks by --cinm-isolate-compute-blocks too.
   if (def->hasTrait<OpTrait::ConstantLike>() ||
-      isa<tensor::EmptyOp, tensor::SplatOp, tensor::ExtractSliceOp,
-          linalg::FillOp>(def))
+      isa<tensor::SplatOp, tensor::ExtractSliceOp, linalg::FillOp>(def))
     return true;
+  if (auto empty = dyn_cast_or_null<tensor::EmptyOp>(def)) {
+    return empty.getType().getNumElements() == 1;
+  }
 
   if (auto generic = llvm::dyn_cast_or_null<linalg::GenericOp>(def)) {
     return linalg::isaFillOpInterface(generic).has_value() ||
@@ -222,7 +224,22 @@ cinm::ComputeBlockOp rebuildComputeBlock(
   return newOp;
 }
 
-/// Moves a tensor.insert_slice consuming a result of the block into the block.
+/// Whether `user`, which takes a block result as its first operand, can be
+/// moved into that block. Such an op must be pure and have a single result,
+/// which the block then yields in place of the one it consumes.
+bool isAbsorbableConsumer(Operation *user) {
+  if (isa<tensor::InsertSliceOp>(user))
+    return true;
+  // Extracting the only element of a result turns it into a scalar, which
+  // spares materializing a one-element buffer outside the block.
+  if (auto extract = llvm::dyn_cast<tensor::ExtractOp>(user)) {
+    RankedTensorType tensorTy = extract.getTensor().getType();
+    return tensorTy.hasStaticShape() && tensorTy.getNumElements() == 1;
+  }
+  return false;
+}
+
+/// Moves the op consuming a result of the block into the block.
 ///
 ///   %r = cinm.compute_block (...) -> tensor<8xf32> { ... cinm.yield %v }
 ///   %s = tensor.insert_slice %r into %d[%i] [8] [1]
@@ -232,49 +249,50 @@ cinm::ComputeBlockOp rebuildComputeBlock(
 ///          %w = tensor.insert_slice %v into %bd[%bi] [8] [1]
 ///          cinm.yield %w
 ///        }
-struct AbsorbResultSlice : OpRewritePattern<cinm::ComputeBlockOp> {
+struct AbsorbResultConsumer : OpRewritePattern<cinm::ComputeBlockOp> {
   using OpRewritePattern::OpRewritePattern;
 
   LogicalResult matchAndRewrite(cinm::ComputeBlockOp op,
                                 PatternRewriter &rewriter) const override {
     // Inputs of the rewritten block: everything the block already takes, plus
-    // what the insertion needs.
+    // what the consumer needs.
     std::optional<BlockInputs> inputs;
-    tensor::InsertSliceOp insertOp;
+    Operation *consumer = nullptr;
     unsigned resultIdx = 0;
-    SmallVector<unsigned> insertIds;
+    SmallVector<unsigned> consumerIds;
 
     for (OpResult result : op->getResults()) {
       if (!result.hasOneUse())
         continue;
       OpOperand &use = *result.getUses().begin();
-      auto candidate = llvm::dyn_cast<tensor::InsertSliceOp>(use.getOwner());
-      // The result must be the inserted slice, not the destination.
-      if (!candidate || use.getOperandNumber() != 0)
+      Operation *candidate = use.getOwner();
+      // The result must be the data the consumer works on, e.g. the inserted
+      // slice rather than the destination of a tensor.insert_slice.
+      if (use.getOperandNumber() != 0 || !isAbsorbableConsumer(candidate))
         continue;
-      // Being in the same block guarantees the insertion is executed exactly
+      // Being in the same block guarantees the consumer is executed exactly
       // once, right after the compute block.
       if (candidate->getBlock() != op->getBlock())
         continue;
-      // The destination and the dynamic indices have to be usable from the
-      // position of the compute block. Start from a fresh input set, so that a
-      // rejected candidate leaves nothing behind.
+      // Whatever else the consumer takes, e.g. a destination or an index, has
+      // to be usable from the position of the compute block. Start from a fresh
+      // input set, so that a rejected candidate leaves nothing behind.
       BlockInputs candidateInputs(op, op.getOperands());
       SmallVector<unsigned> ids;
       if (failed(addAll(candidateInputs, candidate->getOperands().drop_front(),
                         ids)))
         continue;
-      insertOp = candidate;
+      consumer = candidate;
       resultIdx = result.getResultNumber();
-      insertIds = std::move(ids);
+      consumerIds = std::move(ids);
       inputs.emplace(std::move(candidateInputs));
       break;
     }
-    if (!insertOp)
+    if (!consumer)
       return failure();
 
     SmallVector<Type> resultTypes(op->getResultTypes());
-    resultTypes[resultIdx] = insertOp.getType();
+    resultTypes[resultIdx] = consumer->getResult(0).getType();
 
     unsigned numOldArgs = op.getBody().front().getNumArguments();
     auto newOp = rebuildComputeBlock(
@@ -286,26 +304,26 @@ struct AbsorbResultSlice : OpRewritePattern<cinm::ComputeBlockOp> {
                              body->getArguments().take_front(numOldArgs));
         });
 
-    // Redo the insertion inside the block, on the yielded value.
+    // Redo the consumer inside the block, on the yielded value.
     Operation *yield = newOp.getBody().front().getTerminator();
     rewriter.setInsertionPoint(yield);
     IRMapping mapping;
-    mapping.map(insertOp.getSource(), yield->getOperand(resultIdx));
+    mapping.map(consumer->getOperand(0), yield->getOperand(resultIdx));
     for (auto [operand, id] :
-         llvm::zip(insertOp->getOperands().drop_front(), insertIds))
+         llvm::zip(consumer->getOperands().drop_front(), consumerIds))
       mapping.map(operand, inputs->getValue(id));
-    Operation *inserted = rewriter.clone(*insertOp, mapping);
+    Operation *absorbed = rewriter.clone(*consumer, mapping);
     rewriter.modifyOpInPlace(
-        yield, [&]() { yield->setOperand(resultIdx, inserted->getResult(0)); });
+        yield, [&]() { yield->setOperand(resultIdx, absorbed->getResult(0)); });
 
     for (auto [idx, result] : llvm::enumerate(op->getResults())) {
       if (idx == resultIdx)
-        rewriter.replaceAllUsesWith(insertOp.getResult(),
+        rewriter.replaceAllUsesWith(consumer->getResult(0),
                                     newOp->getResult(idx));
       else
         rewriter.replaceAllUsesWith(result, newOp->getResult(idx));
     }
-    rewriter.eraseOp(insertOp);
+    rewriter.eraseOp(consumer);
     rewriter.eraseOp(op);
     return success();
   }
@@ -378,7 +396,7 @@ struct ExpandComputeScopePass
     if (absorbOperands)
       patterns.add<AbsorbOperandProducers>(&getContext());
     if (absorbResults)
-      patterns.add<AbsorbResultSlice>(&getContext());
+      patterns.add<AbsorbResultConsumer>(&getContext());
 
     if (failed(applyPatternsGreedily(getOperation(), std::move(patterns))))
       signalPassFailure();
