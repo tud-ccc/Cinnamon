@@ -12,6 +12,7 @@
 add_unittest(CinmUnitTests
   ConstraintIRTest.cpp
   PermutationTest.cpp
+  SplitDerivationTest.cpp
 )
 target_link_libraries(CinmUnitTests
     PRIVATE
