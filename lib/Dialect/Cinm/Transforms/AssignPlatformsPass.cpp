@@ -39,7 +39,8 @@ struct CinmAssignPlatformsPass
 
     SmallVector<Operation *> opsToWrap;
     func.walk([&](Operation *op) {
-      if (!op->getName().getStringRef().starts_with("cinm.op."))
+      if (!op->getName().getStringRef().starts_with("cinm.op.") &&
+          op->getName().getDialectNamespace() != "linalg")
         return;
       if (op->getParentOfType<cinm::ComputeBlockOp>())
         return;

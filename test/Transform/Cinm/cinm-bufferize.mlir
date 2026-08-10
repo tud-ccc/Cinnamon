@@ -56,3 +56,32 @@ func.func @eltwise_into(%t0: tensor<6x6xi32>, %t1 : tensor<6xf32> , %m0: memref<
     cinm.op.elementwise mul %t1, %t1 into %m0: tensor<6xf32> into memref<6xf32>
     return
 }
+
+
+// A block that inserts its result into one of its operands bufferizes in place,
+// even when the destination is carried by an enclosing loop. This is the shape
+// --cinm-expand-compute-scope produces.
+
+// CHECK-LABEL: insert_slice_in_block
+func.func @insert_slice_in_block(%A: tensor<8x1024xi32>, %B: tensor<1024xi32>) -> tensor<64xi32> {
+    %c0 = arith.constant 0 : index
+    %c1 = arith.constant 1 : index
+    %c8 = arith.constant 8 : index
+    %init = tensor.empty() : tensor<64xi32>
+
+    // CHECK:     %[[OUT:.*]] = memref.alloc() {{.*}}: memref<64xi32>
+    // CHECK:     scf.for %{{.*}} = {{.*}} iter_args(%[[ACC:.*]] = %[[OUT]])
+    // CHECK:       cinm.compute_block ({{.*}}%[[D:.*]] = %[[ACC]] : memref<64xi32>) -> memref<64xi32>
+    // CHECK:         %[[SV:.*]] = memref.subview %[[D]][0] [8] [1]
+    // CHECK:         memref.copy %{{.*}}, %[[SV]]
+    // CHECK:         cinm.yield %[[D]] : memref<64xi32>
+    %r = scf.for %i = %c0 to %c8 step %c1 iter_args(%acc = %init) -> tensor<64xi32> {
+      %t = cinm.compute_block (%a = %A : tensor<8x1024xi32>, %b = %B : tensor<1024xi32>, %d = %acc : tensor<64xi32>) -> tensor<64xi32> {
+        %v = cinm.op.gemv %a, %b : tensor<8x1024xi32>, tensor<1024xi32> -> tensor<8xi32>
+        %ins = tensor.insert_slice %v into %d[0] [8] [1] : tensor<8xi32> into tensor<64xi32>
+        cinm.yield %ins : tensor<64xi32>
+      }
+      scf.yield %t : tensor<64xi32>
+    }
+    func.return %r : tensor<64xi32>
+}

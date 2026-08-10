@@ -255,6 +255,47 @@ def CinmAssignPlatformsPass : Pass<"cinm-assign-platforms", "mlir::func::FuncOp"
   ];
 }
 
+def CinmExpandComputeScopePass : Pass<"cinm-expand-compute-scope"> {
+  let summary = "Grow cinm.compute_block regions by absorbing the ops that shape their operands and results";
+  let description = [{
+    Widens the scope of `cinm.compute_block` operations so that the shaping of
+    their inputs and outputs happens inside the offloaded region, which lets
+    bufferization (and the offloading lowerings) see the whole data movement:
+
+      * a `tensor.insert_slice` that consumes a block result is moved into the
+        block. The destination tensor (and any dynamic offset/size/stride)
+        becomes a block operand, and the block now yields the full tensor.
+
+      * the op producing a block operand is rematerialized inside the block, and
+        the block takes what that op needs instead. This is done for the pure
+        ops that only shape or initialize data, namely `tensor.extract_slice`,
+        `tensor.splat`, `tensor.empty`, `linalg.fill`, constants, and the
+        `linalg.generic` ops that are a fill, a broadcast or a transpose.
+        Producers are pulled in transitively, so e.g. a `linalg.fill` of a
+        `tensor.empty` moves in as a whole and only the fill value is passed in.
+        A producer that captures values in its region (a `linalg.generic` in
+        fill form holds the fill value in its body) has those moved in too.
+
+    Only `cinm.compute_block` is handled: the operands of an isolated block are
+    explicit, so the data crossing the offloading boundary is unambiguous. Run
+    `--cinm-isolate-compute-blocks` first to turn `cinm.compute` ops (as
+    produced by `--cinm-assign-platforms`) into `cinm.compute_block` ops.
+  }];
+
+  let options = [
+    Option<"absorbOperands", "absorb-operands", "bool", "true",
+           "Rematerialize the producers of the block operands inside the block">,
+    Option<"absorbResults", "absorb-results", "bool", "true",
+           "Move tensor.insert_slice ops consuming a block result into the block">
+  ];
+
+  let dependentDialects = [
+    "mlir::cinm::CinmDialect",
+    "mlir::linalg::LinalgDialect",
+    "mlir::tensor::TensorDialect"
+  ];
+}
+
 def CinmInferTileSizesPass : Pass<"cinm-infer-tile-sizes"> {
   let summary = "Infer and annotate cinm.tile_sizes on tileable ops using the enclosing accelerator";
   let description = [{

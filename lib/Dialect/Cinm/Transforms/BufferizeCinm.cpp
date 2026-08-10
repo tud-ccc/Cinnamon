@@ -99,6 +99,29 @@ static void getComputeYieldAliasingOpOperands(
   }
 }
 
+/// Whether `value`, or a value aliasing it, is written to. This is the write
+/// counterpart of `AnalysisState::isValueRead`.
+static bool isValueWritten(Value value,
+                           const bufferization::AnalysisState &state) {
+  SmallVector<OpOperand *> workingSet;
+  llvm::SmallDenseSet<OpOperand *> visited;
+  for (OpOperand &use : value.getUses())
+    workingSet.push_back(&use);
+
+  while (!workingSet.empty()) {
+    OpOperand *use = workingSet.pop_back_val();
+    if (!visited.insert(use).second)
+      continue;
+    if (state.bufferizesToMemoryWrite(*use))
+      return true;
+    // Follow the ops that only create an alias of the value.
+    for (bufferization::AliasingValue alias : state.getAliasingValues(*use))
+      for (OpOperand &use : alias.value.getUses())
+        workingSet.push_back(&use);
+  }
+  return false;
+}
+
 struct ComputeBufferizableInterface
     : public bufferization::BufferizableOpInterface::ExternalModel<
           ComputeBufferizableInterface, cinm::ComputeBlockOp> {
@@ -110,9 +133,20 @@ struct ComputeBufferizableInterface
     return state.isValueRead(bbarg);
   }
 
-  bool bufferizesToMemoryWrite(Operation *, OpOperand &,
-                               const bufferization::AnalysisState &) const {
-    return false;
+  bool
+  bufferizesToMemoryWrite(Operation *op, OpOperand &opnd,
+                          const bufferization::AnalysisState &state) const {
+    auto bbarg = cast<cinm::ComputeBlockOp>(op)
+                     .getBodyArguments()[opnd.getOperandNumber()];
+    return isValueWritten(bbarg, state);
+  }
+
+  bool isWritable(Operation *, Value,
+                  const bufferization::AnalysisState &) const {
+    // Like scf.for, the body arguments are the operand buffers themselves:
+    // whether writing to them is allowed is decided when analyzing the
+    // operands.
+    return true;
   }
 
   FailureOr<bufferization::BufferLikeType>
@@ -121,8 +155,11 @@ struct ComputeBufferizableInterface
                 const bufferization::BufferizationState &state,
                 llvm::SmallVector<Value> &invocationStack) const {
     if (auto bbarg = dyn_cast_or_null<BlockArgument>(value)) {
+      // The invocation stack has to be threaded through: the operand may
+      // depend on this block argument again, e.g. when the block is the body
+      // of a loop that passes its own result back in.
       return bufferization::getBufferType(op->getOperand(bbarg.getArgNumber()),
-                                          options, state);
+                                          options, state, invocationStack);
     }
     return bufferization::detail::defaultGetBufferType(value, options, state,
                                                        invocationStack);
@@ -149,7 +186,28 @@ struct ComputeBufferizableInterface
   bufferization::AliasingOpOperandList
   getAliasingOpOperands(Operation *op, Value value,
                         const bufferization::AnalysisState &state) const {
+    auto computeBlockOp = cast<cinm::ComputeBlockOp>(op);
     llvm::SmallVector<bufferization::AliasingOpOperand> result;
+    auto res = llvm::dyn_cast_or_null<OpResult>(value);
+    if (!res || value.getDefiningOp() != op)
+      return std::move(result);
+
+    // When a result holds the value of one of the block arguments, e.g. because
+    // the body ends on a tensor.insert_slice into it, it is the operand behind
+    // that argument that the result is equivalent to. Reporting that operand,
+    // rather than the yield operand nested in the region, is what lets an
+    // enclosing loop see the result as equivalent to its iter_arg.
+    Value yielded =
+        computeBlockOp.getBody().front().getTerminator()->getOperand(
+            res.getResultNumber());
+    for (auto [bbarg, opnd] : computeBlockOp.zipArgsWithOpOperands()) {
+      if (state.areEquivalentBufferizedValues(yielded, bbarg)) {
+        result.emplace_back(&opnd, bufferization::BufferRelation::Equivalent,
+                            true);
+        return std::move(result);
+      }
+    }
+
     getComputeYieldAliasingOpOperands(op, value, state, result);
     return std::move(result);
   }
