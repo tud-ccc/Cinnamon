@@ -10,6 +10,7 @@
 #include <llvm/Support/Casting.h>
 #include <llvm/Support/LogicalResult.h>
 #include <mlir/Dialect/Arith/IR/Arith.h>
+#include <mlir/Dialect/Linalg/IR/Linalg.h>
 #include <mlir/Dialect/MemRef/IR/MemRef.h>
 #include <mlir/Dialect/Transform/Interfaces/TransformInterfaces.h>
 #include <mlir/Dialect/Utils/IndexingUtils.h>
@@ -265,6 +266,14 @@ int64_t UpmemAcceleratorAttr::bufferSizeOfLeaf() const {
 }
 
 bool UpmemPlatformAttr::isOffloadingTarget(Operation *op) const {
-  return isa<cinm::BatchGemmOp, cinm::BatchGemvOp, cinm::GemmOp, cinm::GemvOp,
-             cinm::ReduceOp, cinm::ElementwiseOp>(op);
+  if (isa<cinm::BatchGemmOp, cinm::BatchGemvOp, cinm::GemmOp, cinm::GemvOp,
+          cinm::ReduceOp, cinm::ElementwiseOp>(op))
+    return true;
+
+  if (auto generic = llvm::dyn_cast_or_null<linalg::GenericOp>(op)) {
+    // A fill is just a broadcast of one value into the output, not worth
+    // offloading.
+    return !linalg::isaFillOpInterface(generic).has_value();
+  }
+  return false;
 }

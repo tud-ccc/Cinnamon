@@ -10,6 +10,7 @@ add_mlir_dialect_library(CinmTransforms
     CinmTilingImplementations.cpp
     DecomposeAccumulations.cpp
     DecomposeGemmToGemv.cpp
+    ExpandComputeScope.cpp
     GemvMinWrite.cpp
     RelowerStandaloneOps.cpp
     SoftmaxToCinmPass.cpp

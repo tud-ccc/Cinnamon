@@ -60,6 +60,13 @@ std::optional<TypedAttr> getUniformValue(Value v) {
       return scalar;
     return std::nullopt;
   }
+  if (auto fill = v.getDefiningOp<linalg::FillOp>()) {
+    TypedAttr scalar;
+    if (fill.getInputs().size() == 1 &&
+        matchPattern(fill.getInputs()[0], m_Constant(&scalar)))
+      return scalar;
+    return std::nullopt;
+  }
 
   // A constant global with a splat initializer -- what a splat `arith.constant`
   // becomes after bufferization.
