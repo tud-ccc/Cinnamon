@@ -229,6 +229,10 @@ concept ParmModel =
       { Model::kind() } -> std::same_as<ParamKind>;
       /// How many Configuration entries one value of `T` occupies.
       { Model::arity(param) } -> std::convertible_to<size_t>;
+      /// How many distinct values of `T` the parameter ranges over. Not the
+      /// size of the box its dimensions span: an ordering of n items occupies
+      /// n dimensions of n values each, and is n! values.
+      { Model::numValues(param) } -> std::convertible_to<double>;
       /// The value those entries encode.
       { Model::decode(param, values) } -> std::convertible_to<T>;
       /// Width and content of this parameter's slice of the surrogate's input.
@@ -244,6 +248,7 @@ concept ParmModel =
 struct ParmVTable {
   ParamKind kind;
   size_t (*arity)(const SearchParam &);
+  double (*numValues)(const SearchParam &);
   size_t (*numFeatures)(const SearchParam &);
   void (*appendFeatures)(const SearchParam &, llvm::ArrayRef<ParmValue>,
                          llvm::SmallVectorImpl<double> &);
@@ -255,8 +260,8 @@ struct ParmVTable {
     requires ParmModel<Model, T>
   static const ParmVTable *of() {
     static const ParmVTable table = {
-        Model::kind(), &Model::arity, &Model::numFeatures,
-        &Model::appendFeatures, &Model::appendNeighbours};
+        Model::kind(),       &Model::arity,          &Model::numValues,
+        &Model::numFeatures, &Model::appendFeatures, &Model::appendNeighbours};
     return &table;
   }
 };
@@ -303,7 +308,28 @@ struct SearchParam {
   /// which is the size of `domain`. Not the number of values the parameter
   /// has: an ordering of n items has n! of those and a domain of n, and the
   /// difference is exactly what the solver's distinctness constraint removes.
+  ///
+  /// This is what the solver needs -- one variable per dimension, over this
+  /// domain -- and what a step to a neighbour is taken within. For "how large
+  /// is this space", use numValues().
   size_t cardinality() const;
+
+  /// How many distinct values this parameter ranges over, which for anything
+  /// of arity > 1 is *not* `cardinality()` and not `cardinality()^arity()`
+  /// either: an ordering of n items spans a box of n^n encodings, of which
+  /// distinctness keeps the n! that are orderings.
+  ///
+  /// Reported as a double because n! leaves the range of an integer counter
+  /// sooner than anything else here, and because the only consumers multiply
+  /// these together into a space size.
+  ///
+  /// **An upper bound, not a count, for an ordering declared over *active*
+  /// items** (SpaceBuilder::permutation with a predicate per item). There the
+  /// number of orderings is (number active)!, which is a property of a
+  /// configuration rather than of the declaration -- a dimension cut into one
+  /// tile takes no workgroup axis -- so no static number is exact and this is
+  /// the all-active case.
+  double numValues() const { return model->numValues(*this); }
 
   /// How many surrogate features this parameter contributes. One for a
   /// quantity; a permutation of n items contributes n.
@@ -364,6 +390,10 @@ struct SearchParam {
 template <> struct ParmKind<ParmValue> {
   static ParamKind kind() { return ParamKind::Integer; }
   static size_t arity(const SearchParam &) { return 1; }
+  /// One dimension, so the values *are* the domain.
+  static double numValues(const SearchParam &param) {
+    return static_cast<double>(param.cardinality());
+  }
   static ParmValue decode(const SearchParam &, llvm::ArrayRef<ParmValue> v) {
     return v[0];
   }
@@ -397,6 +427,15 @@ template <> struct ParmKind<Permutation> {
   static ParamKind kind() { return ParamKind::Permutation; }
   static size_t arity(const SearchParam &param) {
     return param.permutationSize;
+  }
+  /// n!, the orderings of n items -- not the n^n encodings the dimensions
+  /// span. Distinctness is what separates the two, and it is posted for every
+  /// parameter of this kind, so the n! are what the space actually contains.
+  static double numValues(const SearchParam &param) {
+    double product = 1;
+    for (unsigned k = 2; k <= param.permutationSize; ++k)
+      product *= k;
+    return product;
   }
   static Permutation decode(const SearchParam &param,
                             llvm::ArrayRef<ParmValue> values);

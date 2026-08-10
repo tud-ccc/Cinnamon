@@ -565,9 +565,9 @@ void CandidatePool::dumpMetadataJSON(const ConfigSpace &space,
   // Two sizes, because "total" is ambiguous: the Cartesian product of the
   // declared domains, and what the constraints leave of it. Their ratio is the
   // density.
-  long long cartesian = 1;
-  for (size_t d = 0; d < space.numDims(); ++d)
-    cartesian *= space.paramAtDim(d).cardinality();
+  double cartesian = 1;
+  for (const SearchParam &param : space.params)
+    cartesian *= param.numValues();
 
   out << "{\n";
   out << "  \"cartesian_size\": " << cartesian << ",\n";
@@ -587,7 +587,11 @@ void CandidatePool::dumpMetadataJSON(const ConfigSpace &space,
     out << "\"name\": ";
     jsonStr(p.name);
     out << ", ";
+    // Both, because they differ for anything of arity > 1 and the difference
+    // is the point: `cardinality` is one dimension's domain, `num_values` is
+    // how many values the parameter has (n vs n! for an ordering of n items).
     out << "\"cardinality\": " << p.cardinality() << ", ";
+    out << "\"num_values\": " << p.numValues() << ", ";
     out << "\"arity\": " << p.arity() << ", ";
     out << "\"kind\": ";
     jsonStr(paramKindName(p.kind()).str());

@@ -1,6 +1,7 @@
 #include "cinm-mlir/Dialect/Cinm/AcceleratorInference/AcceleratorInference.h"
 #include "BananasSearch.h"
 #include "Progress.h"
+#include "cinm-mlir/Dialect/Cinm/AcceleratorInference/SpaceBuilder.h"
 #include "cinm-mlir/Dialect/Cinm/IR/CinmAttributes.h"
 #include "cinm-mlir/Dialect/Cinm/IR/CinmOps.h"
 #include "cinm-mlir/Utils/Permutation.h"
@@ -104,27 +105,26 @@ buildRefModule(cinm::ComputeBlockOp computeOp) {
 }
 
 void buildConfigSpace(cinm::ComputeBlockOp refClone, InferencePlugin &plugin,
-                      ConfigSpace &space) {
-  plugin.initializeSpace(refClone, space);
+                      ConfigSpace &space, const InferenceOptions &opts) {
+  SpaceBuilder builder;
+  plugin.initializeSpace(refClone, builder);
+  builder.buildInto(space, opts.nSolveWorkers);
   LLVM_DEBUG({
     // Two different sizes, and the interesting thing about a space is the
     // ratio between them: the Cartesian product of the declared domains,
     // against what the encoding can actually address once the structural
     // constraints are folded in. The feasible count is a third number again,
     // and is only known once the predicates have been screened.
-    int64_t cartesian = 1;
-    for (size_t d = 0; d < space.numDims(); ++d)
-      cartesian *= space.paramAtDim(d).cardinality();
-    const size_t addressable = space.totalSize();
+    double cartesian = 1;
+    for (const SearchParam &p : space.params)
+      cartesian *= p.numValues();
+    const size_t feasible = space.totalSize();
     llvm::dbgs() << "[cinm-inference] Config space (" << space.numParams()
-                 << " params, " << addressable << " addressable of "
-                 << cartesian << " Cartesian, "
-                 << (addressable ? double(cartesian) / double(addressable)
-                                 : 0.0)
-                 << "x folded):\n";
+                 << " params, " << feasible << " addressable of " << cartesian
+                 << " Cartesian, density" << (feasible / cartesian) << "):\n";
     for (auto &p : space.params)
       llvm::dbgs() << "  " << p.name << " in [" << p.dlo() << ", " << p.dhi()
-                   << "] (" << p.cardinality() << " points)\n";
+                   << "] (" << p.numValues() << " values)\n";
   });
 }
 
@@ -232,7 +232,7 @@ struct InferenceTask {
     auto [refModule, refClone] = buildRefModule(original);
     this->refClone = refClone;
     this->refModule = std::move(refModule);
-    buildConfigSpace(refClone, plugin, space);
+    buildConfigSpace(refClone, plugin, space, options);
     // initializeSpace is allowed to rewrite the reference in place (the UPMEM
     // plugin lowers it to linalg, so that every trial starts from the form the
     // space was read off), and a rewrite can replace the compute block op
@@ -880,7 +880,7 @@ struct InferenceTask {
       auto cpuMs = static_cast<uint64_t>(getThreadCpuTimeMs() - cpuT0);
 
       utils::SimCost *cost = std::get_if<utils::SimCost>(&result);
-      if (!cost || cost->total() > maxCostMs) {
+      if (!cost || (maxCostMs && cost->total() > maxCostMs)) {
         // Rejected (or failed to evaluate): not recorded, so it never shows
         // up in the dump (dumpFullPool is off by default) and doesn't count
         // towards sampleN -- sampleInitialSet's own `used` bookkeeping

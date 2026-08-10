@@ -400,7 +400,7 @@ public:
   /// Commit all declarations and constraints into space in the correct order.
   /// The space also comes away with a SpaceMetadata recording what planning
   /// decided, since none of that is recoverable from the result.
-  void buildInto(ConfigSpace &space);
+  void buildInto(ConfigSpace &space, unsigned nWorkers = 1);
 
 private:
   /// What planning did, accumulated as it happens. Defined in the .cpp: it is

@@ -55,6 +55,14 @@ TEST(PermutationTest, ParameterSpansOneDimensionPerItem) {
   EXPECT_EQ(param.cardinality(), 3u);
   EXPECT_EQ(param.dlo(), 1.0);
   EXPECT_EQ(param.dhi(), 3.0);
+  // ...so the domain is not how many values the parameter has. Three
+  // dimensions of three places span 27 encodings, of which distinctness keeps
+  // the 3! that are orderings. Neither 3 nor 27 is the answer; a space size
+  // built from either is wrong, in opposite directions.
+  EXPECT_EQ(param.numValues(), 6.0);
+  // A quantity occupies one dimension, so for it the two do coincide.
+  EXPECT_EQ(makeRange("tile", 1, 8).numValues(), 8.0);
+  EXPECT_EQ(makeRange("tile", 1, 8).cardinality(), 8u);
   // A parameter of arity one is named for itself; these are not.
   EXPECT_EQ(param.dimName(0), "order[0]");
   EXPECT_EQ(makeRange("tile", 1, 8).dimName(0), "tile");
@@ -195,6 +203,42 @@ TEST(PermutationTest, DistinctnessIsPostedByTheSolver) {
     seen.insert(Places(conf.begin(), conf.end()));
   }
   EXPECT_EQ(seen.size(), 6u);
+}
+
+TEST(PermutationTest, SpaceSizeIsAProductOfValuesNotOfDomains) {
+  // A space is never larger than the values its parameters range over, which
+  // is the invariant a reported "Cartesian size" has to satisfy to be one.
+  // Both ways of building that size out of `cardinality()` break it here, in
+  // opposite directions, which is why numValues() exists.
+  SpaceBuilder b;
+  b.permutation("order", 3);
+  b.intRange("tile", 1, 4);
+
+  ConfigSpace space;
+  b.buildInto(space);
+  EXPECT_EQ(space.totalSize(), 6u * 4u);
+
+  double values = 1, perParamDomain = 1, perDimDomain = 1;
+  for (const SearchParam &p : space.params) {
+    values *= p.numValues();
+    perParamDomain *= static_cast<double>(p.cardinality());
+    for (size_t k = 0, e = p.arity(); k < e; ++k)
+      perDimDomain *= static_cast<double>(p.cardinality());
+  }
+
+  // 3! * 4.
+  EXPECT_EQ(values, 24.0);
+  EXPECT_LE(static_cast<double>(space.totalSize()), values);
+
+  // Per parameter the ordering counts once (3, not 3!), so the "size" comes
+  // out *below* the number of configurations and the density exceeds 1.
+  EXPECT_EQ(perParamDomain, 12.0);
+  EXPECT_LT(perParamDomain, static_cast<double>(space.totalSize()));
+
+  // Per dimension it counts 3^3, so the space looks 27/6 = 4.5x sparser than
+  // the constraints made it -- credit for distinctness, which no caller wrote.
+  EXPECT_EQ(perDimDomain, 108.0);
+  EXPECT_DOUBLE_EQ(perDimDomain / values, 4.5);
 }
 
 TEST(PermutationTest, InactiveItemsTakeTheHighPlacesInIndexOrder) {
