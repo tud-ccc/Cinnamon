@@ -266,6 +266,10 @@ def CinmExpandComputeScopePass : Pass<"cinm-expand-compute-scope"> {
         block. The destination tensor (and any dynamic offset/size/stride)
         becomes a block operand, and the block now yields the full tensor.
 
+      * likewise a `tensor.extract` on a single-element result: it moves into
+        the block, which then returns the scalar directly instead of a
+        one-element tensor that has to be materialized outside.
+
       * the op producing a block operand is rematerialized inside the block, and
         the block takes what that op needs instead. This is done for the pure
         ops that only shape or initialize data, namely `tensor.extract_slice`,
