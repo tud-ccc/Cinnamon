@@ -171,6 +171,8 @@ def UpmemInferAcceleratorPass : Pass<"upmem-infer-accelerator", "ModuleOp"> {
            "Dump the full pool (all valid configurations) into pool.csv, otherwise only the visited configurations are dumped.">,
     Option<"numWorkers", "n-workers", "unsigned", "0u",
            "Worker threads for exhaustive search (0 = hardware_concurrency)">,
+    Option<"nSolveWorkers", "n-solve-workers", "unsigned", "1u",
+           "Worker threads used to solve the constraint system (0 = hardware_concurrency)">,
     Option<"fixedDpus", "fixed-dpus", "int64_t", "-1",
            "Pin the number of DPUs to this value instead of searching over it "
            "(-1 = search normally). Remaining dimensions are still searched, "

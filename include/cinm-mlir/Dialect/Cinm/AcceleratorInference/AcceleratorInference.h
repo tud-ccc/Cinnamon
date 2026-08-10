@@ -20,6 +20,7 @@ class Operation;
 } // namespace mlir
 
 namespace mlir::cinm {
+class SpaceBuilder;
 
 // ===----------------------------------------------------------------------===//
 // Accelerator inference
@@ -62,7 +63,7 @@ struct InferencePlugin {
   /// framework re-finds the compute block afterwards, so `refClone` itself
   /// need not survive.
   virtual void initializeSpace(cinm::ComputeBlockOp refClone,
-                               ConfigSpace &space) = 0;
+                               cinm::SpaceBuilder &space) = 0;
 
   /// Evaluate a configuration. Lower total cost is better.
   /// `trial.computeBlock` is a fresh clone inside a minimal trial module
@@ -173,7 +174,7 @@ struct InferenceOptions {
   /// on-hardware) cost is orders of magnitude above the rest of the sample,
   /// which is wasteful once every sampled config gets compiled and run on
   /// real hardware downstream.
-  double sampleMaxCostMs = 2000.0;
+  double sampleMaxCostMs = 0;
 
   /// Number of held-out validation points sampled (via LHS) before BO begins.
   /// These are evaluated once for their true cost and never used as BO training
@@ -191,6 +192,10 @@ struct InferenceOptions {
   /// Number of worker threads used for exhaustive search.
   /// 0 (default) means use std::thread::hardware_concurrency().
   unsigned numWorkers = 0;
+
+  /// Number of workers used for parallel solving of the constraint system.
+  /// A >1 value may yield slowdowns.
+  unsigned nSolveWorkers = 1;
 
   /// When set, skip search entirely and evaluate only this single
   /// configuration. The values are in the same order as the ConfigSpace params

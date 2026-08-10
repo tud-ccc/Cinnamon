@@ -244,7 +244,7 @@ void SpaceBuilder::extractDivConstraints(const ConstraintNodePtr &node) {
 // SpaceBuilder::buildInto
 // ===----------------------------------------------------------------------===//
 
-void SpaceBuilder::buildInto(ConfigSpace &space) {
+void SpaceBuilder::buildInto(ConfigSpace &space, unsigned nWorkers) {
   LLVM_DEBUG(llvm::dbgs() << "[cinm-space] building config space:\n");
 
   auto report = std::make_unique<PlanMetadata>();
@@ -310,13 +310,14 @@ void SpaceBuilder::buildInto(ConfigSpace &space) {
     *entry.idx = space.addParam(std::move(param));
   }
 
-  // Per *dimension*: this is the size of the box the solver searches, which is
-  // what the density below is a density of. A parameter of arity n contributes
-  // its domain n times -- an ordering of n items is n^n points of that box, of
-  // which distinctness keeps n!.
+  // Per *parameter*, and its values rather than its dimensions: the density
+  // below is meant to say how much the constraints written here cut the space,
+  // so it must not also take credit for distinctness. That constraint is the
+  // encoding's own bookkeeping -- it is what makes n dimensions an ordering in
+  // the first place -- and counting the n^n encodings it rules out would
+  // inflate every density by n^(n-1) per ordering.
   for (const SearchParam &param : space.params)
-    for (size_t k = 0, e = param.arity(); k < e; ++k)
-      report->cartesian *= static_cast<double>(param.cardinality());
+    report->cartesian *= param.numValues();
 
   // Phase 2: collect what the solver is to be given.
 
@@ -327,19 +328,20 @@ void SpaceBuilder::buildInto(ConfigSpace &space) {
 
   // Phase 3: solve. This is the whole of what used to be planning.
   constraints::SolveOptions opts;
-  opts.threads = std::max(4u, llvm::parallel::strategy.compute_thread_count());
+  opts.threads = nWorkers;
 
   auto t0 = std::chrono::steady_clock::now();
-  LLVM_DEBUG(llvm::dbgs() << "Solving " << nodes.size() << " constraints on "
-                          << opts.threads << " threads\n");
+  LLVM_DEBUG(llvm::dbgs() << "[cinm-space] Solving " << nodes.size()
+                          << " constraints on " << opts.threads
+                          << " threads\n");
   constraints::SolveResult solved =
       constraints::solveSpace(space.params, nodes, opts);
   if (solved.failed())
     llvm::report_fatal_error(llvm::Twine("cinm search space: ") + solved.error);
   auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
       std::chrono::steady_clock::now() - t0);
-  LLVM_DEBUG(llvm::dbgs() << "- Done solving constraints in " << elapsed.count()
-                          << " ms\n");
+  LLVM_DEBUG(llvm::dbgs() << "[cinm-space] - Done solving constraints in "
+                          << elapsed.count() << " ms\n");
 
   // A truncated space is not a smaller space, it is a different one: the
   // configurations missing from it are missing because the search ran out of
@@ -356,9 +358,10 @@ void SpaceBuilder::buildInto(ConfigSpace &space) {
         "in constraints::SolveOptions if the space really is this large.");
 
   LLVM_DEBUG(llvm::dbgs() << "[cinm-space]   solved: "
-                          << solved.solutions.size() << " configurations from "
-                          << solved.nodes << " nodes, " << solved.failures
-                          << " failures\n");
+                          << solved.solutions.size()
+                          << " feasible configurations (" << solved.nodes
+                          << " search nodes, " << solved.failures
+                          << " failed nodes)\n");
 
   report->solutions = solved.solutions.size();
   report->nodes = solved.nodes;
@@ -386,6 +389,14 @@ void SpaceBuilder::buildInto(ConfigSpace &space) {
       report->constraints.push_back({entry.description, "solved", true});
     }
   }
+
+  // The feasible set is a subset of the values the parameters range over, so
+  // this holds by construction -- and it is worth asserting because the two
+  // sides are counted by completely different code. It is what caught the
+  // Cartesian size being a product over *dimensions*: distinctness made the
+  // encoding box bigger than the values, and a density came out above 1.
+  assert(static_cast<double>(solved.solutions.size()) <= report->cartesian &&
+         "more feasible configurations than the parameters have values");
 
   space.setSolutions(std::move(solved.solutions));
   space.metadata = std::move(report);

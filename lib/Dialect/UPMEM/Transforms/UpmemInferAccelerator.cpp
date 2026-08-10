@@ -451,8 +451,7 @@ struct UpmemInferencePlugin : cinm::InferencePlugin {
   handleLinalgOp(linalg::LinalgOp op, StringRef namePrefix, SpaceBuilder &b);
 
   void initializeSpace(cinm::ComputeBlockOp refClone,
-                       cinm::ConfigSpace &space) override {
-    SpaceBuilder b;
+                       cinm::SpaceBuilder &b) override {
     const int64_t maxDpus =
         platform.getMaxNumRanks() * platform.getMaxNumDpusPerRank();
     const int64_t maxTasklets = platform.getMaxNumTasklets();
@@ -542,8 +541,6 @@ struct UpmemInferencePlugin : cinm::InferencePlugin {
     // once both have declared theirs. See declareFusionEdges.
     if (opts.fusionEdges)
       cinm::declareFusionEdges(distributed, b);
-
-    b.buildInto(space);
   }
 
   /// Whether to print why an individual trial's pipeline failed.
@@ -928,6 +925,7 @@ struct UpmemInferAcceleratorPass
     o.numWorkers = numWorkers;
     o.dumpFullPool = dumpFullPool;
     o.dumpDir = dumpDir;
+    o.nSolveWorkers = nSolveWorkers;
     upmemOpts.annotateOpCosts = annotateOpCosts;
     upmemOpts.useMRAMTiling = useMRAMTiling;
     upmemOpts.fusionEdges = fusionEdges;
