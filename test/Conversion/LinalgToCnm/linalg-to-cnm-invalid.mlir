@@ -9,8 +9,8 @@
 #m = affine_map<(m, k) -> (m, k)>
 #v = affine_map<(m, k) -> (k)>
 #r = affine_map<(m, k) -> (m)>
-#pf = #upmem.platform<type=v1A, dimensions = 4x16>
-#acc = #upmem.array<1x16x1, #pf>
+#pf = #upmem.platform<type = v1A, dpus = 64, tasklets = 24>
+#acc = #upmem.array<16x1, #pf>
 
 func.func @wrong_arity(%A: tensor<1024x512xi32>, %x: tensor<512xi32>) -> tensor<1024xi32> {
   %init = tensor.empty() : tensor<1024xi32>
@@ -30,8 +30,8 @@ func.func @wrong_arity(%A: tensor<1024x512xi32>, %x: tensor<512xi32>) -> tensor<
 #m = affine_map<(m, k) -> (m, k)>
 #v = affine_map<(m, k) -> (k)>
 #r = affine_map<(m, k) -> (m)>
-#pf = #upmem.platform<type=v1A, dimensions = 4x16>
-#acc = #upmem.array<1x16x1, #pf>
+#pf = #upmem.platform<type = v1A, dpus = 64, tasklets = 24>
+#acc = #upmem.array<16x1, #pf>
 
 func.func @indivisible(%A: tensor<1024x512xi32>, %x: tensor<512xi32>) -> tensor<1024xi32> {
   %init = tensor.empty() : tensor<1024xi32>
@@ -51,8 +51,8 @@ func.func @indivisible(%A: tensor<1024x512xi32>, %x: tensor<512xi32>) -> tensor<
 #m = affine_map<(m, k) -> (m, k)>
 #v = affine_map<(m, k) -> (k)>
 #r = affine_map<(m, k) -> (m)>
-#pf = #upmem.platform<type=v1A, dimensions = 4x16>
-#acc = #upmem.array<1x16x1, #pf>
+#pf = #upmem.platform<type = v1A, dpus = 64, tasklets = 24>
+#acc = #upmem.array<16x1, #pf>
 
 // The tile counts must fill the workgroup exactly. 1024/128 = 8 tiles for 16
 // leaves: half the workgroup would idle, and the scatter map would no longer
@@ -75,8 +75,8 @@ func.func @too_few_tiles(%A: tensor<1024x512xi32>, %x: tensor<512xi32>) -> tenso
 #m = affine_map<(m, k) -> (m, k)>
 #v = affine_map<(m, k) -> (k)>
 #r = affine_map<(m, k) -> (m)>
-#pf = #upmem.platform<type=v1A, dimensions = 4x16>
-#acc = #upmem.array<1x16x1, #pf>
+#pf = #upmem.platform<type = v1A, dpus = 64, tasklets = 24>
+#acc = #upmem.array<16x1, #pf>
 
 // Splitting a float reduction reassociates the sum, so it needs the opt-in.
 // The search would otherwise silently change results.
@@ -94,8 +94,8 @@ func.func @float_split_needs_optin(%A: tensor<1024x512xf32>, %x: tensor<512xf32>
 
 // -----
 
-#pf = #upmem.platform<type=v1A, dimensions = 4x16>
-#acc = #upmem.array<1x16x1, #pf>
+#pf = #upmem.platform<type = v1A, dpus = 64, tasklets = 24>
+#acc = #upmem.array<16x1, #pf>
 
 // Splitting requires an associative combiner with a neutral element.
 // Subtraction has neither, and must not be split into partials.
@@ -116,8 +116,8 @@ func.func @non_associative_split(%A: tensor<1024x512xi32>, %o: tensor<1024xi32>)
 
 // -----
 
-#pf = #upmem.platform<type=v1A, dimensions = 4x16>
-#acc = #upmem.array<1x16x1, #pf>
+#pf = #upmem.platform<type = v1A, dpus = 64, tasklets = 24>
+#acc = #upmem.array<16x1, #pf>
 
 // Dropping a dimension is fine -- that is just a broadcast, and the gemv's
 // vector operand relies on it. Repeating one is not: the tile would be a
@@ -163,8 +163,8 @@ func.func @no_accelerator(%A: tensor<1024x512xi32>, %x: tensor<512xi32>) -> tens
 #m = affine_map<(m, k) -> (m, k)>
 #v = affine_map<(m, k) -> (k)>
 #r = affine_map<(m, k) -> (m)>
-#pf = #upmem.platform<type=v1A, dimensions = 4x16>
-#acc = #upmem.array<1x16x1, #pf>
+#pf = #upmem.platform<type = v1A, dpus = 64, tasklets = 24>
+#acc = #upmem.array<16x1, #pf>
 
 // The two forms of the workgroup dim order (design §G3) say the same thing, so
 // an op carrying both has not been given a choice, it has been given two.
@@ -187,8 +187,8 @@ func.func @order_stated_twice(%A: tensor<1024x512xi32>, %x: tensor<512xi32>, %y:
 #m = affine_map<(m, k) -> (m, k)>
 #v = affine_map<(m, k) -> (k)>
 #r = affine_map<(m, k) -> (m)>
-#pf = #upmem.platform<type=v1A, dimensions = 4x16>
-#acc = #upmem.array<1x16x1, #pf>
+#pf = #upmem.platform<type = v1A, dpus = 64, tasklets = 24>
+#acc = #upmem.array<16x1, #pf>
 
 // A discardable attribute of the wrong type is silently invisible to
 // getAttrOfType, so it is checked for rather than ignored: a permutation
@@ -212,8 +212,8 @@ func.func @order_wrong_type(%A: tensor<1024x512xi32>, %x: tensor<512xi32>, %y: t
 #m = affine_map<(m, k) -> (m, k)>
 #v = affine_map<(m, k) -> (k)>
 #r = affine_map<(m, k) -> (m)>
-#pf = #upmem.platform<type=v1A, dimensions = 4x16>
-#acc = #upmem.array<1x16x1, #pf>
+#pf = #upmem.platform<type = v1A, dpus = 64, tasklets = 24>
+#acc = #upmem.array<16x1, #pf>
 
 // The number of distinct orders depends on how many dimensions the block sizes
 // actually spread over the workgroup, so the diagnostic reports both.

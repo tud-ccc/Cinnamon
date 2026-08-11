@@ -11,8 +11,8 @@
 #m = affine_map<(m, k) -> (m, k)>
 #v = affine_map<(m, k) -> (k)>
 #r = affine_map<(m, k) -> (m)>
-#pf = #upmem.platform<type=v1A, dimensions = 4x16>
-#acc = #upmem.array<1x16x1, #pf>
+#pf = #upmem.platform<type = v1A, dpus = 64, tasklets = 24>
+#acc = #upmem.array<16x1, #pf>
 
 // CHECK-LABEL: @gemv
 func.func @gemv() {
@@ -67,8 +67,8 @@ func.func @gemv() {
 
 // -----
 
-#pf = #upmem.platform<type=v1A, dimensions = 4x16>
-#acc = #upmem.array<1x16x1, #pf>
+#pf = #upmem.platform<type = v1A, dpus = 64, tasklets = 24>
+#acc = #upmem.array<16x1, #pf>
 
 // Not contract-specific: a linalg.reduce gets the same treatment.
 // CHECK-LABEL: @reduce
@@ -104,8 +104,8 @@ func.func @reduce() {
 #m = affine_map<(m, k) -> (m, k)>
 #v = affine_map<(m, k) -> (k)>
 #r = affine_map<(m, k) -> (m)>
-#pf = #upmem.platform<type=v1A, dimensions = 4x16>
-#acc = #upmem.array<1x16x1, #pf>
+#pf = #upmem.platform<type = v1A, dpus = 64, tasklets = 24>
+#acc = #upmem.array<16x1, #pf>
 
 // With no tile sizes the buffer already fits the leaf level, so the op is
 // staged whole and no loop nest appears. This is the shape a single-level
@@ -135,8 +135,8 @@ func.func @no_tiling() {
 #m = affine_map<(m, k) -> (m, k)>
 #v = affine_map<(m, k) -> (k)>
 #r = affine_map<(m, k) -> (m)>
-#pf = #upmem.platform<type=v1A, dimensions = 4x16>
-#acc = #upmem.array<1x16x1, #pf>
+#pf = #upmem.platform<type = v1A, dpus = 64, tasklets = 24>
+#acc = #upmem.array<16x1, #pf>
 
 // A body already entirely in the leaf level is left alone.
 // CHECK-LABEL: @already_leaf

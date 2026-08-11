@@ -1,8 +1,8 @@
-#upmem = #upmem.platform<type=v1A, dimensions = 32x128x1>
-#upmem_2_4_16 = #upmem.array<2x4x16, #upmem>
-#upmem_4_128_1 = #upmem.array<4x128x1, #upmem>
-#upmem_8_128_1 = #upmem.array<8x128x1, #upmem>
-#upmem_16_64_1 = #upmem.array<16x64x1, #upmem>
+#upmem = #upmem.platform<type = v1A, dpus = 4096, tasklets = 1>
+#upmem_2_4_16 = #upmem.array<8x16, #upmem>
+#upmem_4_128_1 = #upmem.array<512x1, #upmem>
+#upmem_8_128_1 = #upmem.array<1024x1, #upmem>
+#upmem_16_64_1 = #upmem.array<1024x1, #upmem>
 
 module {
 
@@ -40,7 +40,7 @@ module {
 
     func.func @mm_dimm8_opt(%A: tensor<8x1024xi32>, %B: tensor<1024x128xi32>, %C: tensor<128x2048xi32>) -> tensor<8x2048xi32> {
 
-        %r0 = cinm.compute on accelerator #upmem.array<8x16x8, #upmem> -> tensor<8x2048xi32> {
+        %r0 = cinm.compute on accelerator #upmem.array<128x8, #upmem> -> tensor<8x2048xi32> {
             %r = cinm.op.gemm %A, %B {cinm.tile_sizes = array<i64: 8, 128, 256>} : tensor<8x1024xi32>, tensor<1024x128xi32> -> tensor<8x128xi32>
             %r2 = cinm.op.gemm %r, %C {cinm.tile_sizes = array<i64: 8, 128, 128>} : tensor<8x128xi32>, tensor<128x2048xi32> -> tensor<8x2048xi32>
             cinm.yield %r2 : tensor<8x2048xi32>

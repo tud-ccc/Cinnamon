@@ -9,8 +9,8 @@
 #m = affine_map<(m, k) -> (m, k)>
 #v = affine_map<(m, k) -> (k)>
 #r = affine_map<(m, k) -> (m)>
-#pf = #upmem.platform<type=v1A, dimensions = 4x16>
-#acc = #upmem.array<1x16x1, #pf>
+#pf = #upmem.platform<type = v1A, dpus = 64, tasklets = 24>
+#acc = #upmem.array<16x1, #pf>
 
 // 1024x512 gemv, blocks 64x512: 16 tiles of m, 1 of k, and the workgroup has
 // 1*16*1 = 16 leaves.
@@ -64,8 +64,8 @@ func.func @gemv(%A: tensor<1024x512xi32>, %x: tensor<512xi32>) -> tensor<1024xi3
 
 // -----
 
-#pf = #upmem.platform<type=v1A, dimensions = 4x16>
-#acc = #upmem.array<1x16x1, #pf>
+#pf = #upmem.platform<type = v1A, dpus = 64, tasklets = 24>
+#acc = #upmem.array<16x1, #pf>
 
 // Not contract-specific: any linalg op with projected-permutation indexing
 // maps distributes the same way, region and all.
@@ -92,8 +92,8 @@ func.func @reduce(%A: tensor<1024x512xi32>) -> tensor<1024xi32> {
 
 // -----
 
-#pf = #upmem.platform<type=v1A, dimensions = 4x16>
-#acc = #upmem.array<1x16x1, #pf>
+#pf = #upmem.platform<type = v1A, dpus = 64, tasklets = 24>
+#acc = #upmem.array<16x1, #pf>
 
 // An `outs` that is not a fresh tensor.empty is a real accumulator and has to
 // be scattered in.
@@ -116,8 +116,8 @@ func.func @accumulate(%A: tensor<1024x512xi32>, %y: tensor<1024xi32>) -> tensor<
 
 // -----
 
-#pf = #upmem.platform<type=v1A, dimensions = 4x16>
-#acc = #upmem.array<1x4x4, #pf>
+#pf = #upmem.platform<type = v1A, dpus = 64, tasklets = 24>
+#acc = #upmem.array<4x4, #pf>
 
 // Two parallel dimensions split across a 2-D workgroup. The tile-space order
 // is parallel-outer/reduction-inner and both sides are linearized, so leaf
@@ -144,8 +144,8 @@ func.func @elementwise_2d(%a: tensor<64x64xi32>, %b: tensor<64x64xi32>) -> tenso
 
 // -----
 
-#pf = #upmem.platform<type=v1A, dimensions = 4x16>
-#acc = #upmem.array<1x16x1, #pf>
+#pf = #upmem.platform<type = v1A, dpus = 64, tasklets = 24>
+#acc = #upmem.array<16x1, #pf>
 
 // An op without the attribute is left alone -- this pass only distributes
 // what it has been given block sizes for.

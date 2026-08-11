@@ -9,7 +9,7 @@
 // lowered -- not what the search converges to, hence the pinned dpus/tasklets
 // and the cheap simulator.
 
-#upmem = #upmem.platform<type = v1A, dimensions = 1x16x16>
+#upmem = #upmem.platform<type = v1A, dpus = 16, tasklets = 16>
 
 // Chained through %r: one graph, two blocks.
 // CHECK-LABEL: func.func @chained

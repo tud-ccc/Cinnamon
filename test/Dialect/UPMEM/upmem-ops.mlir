@@ -3,8 +3,8 @@
 
 #mram = #cinm.level<name = "mram", size_in_bytes = 458, alignment = 8, arity = 2>
 #wram = #cinm.level<name = "wram", size_in_bytes = 64, alignment = 8, arity = 2>
-#upmem = #upmem.platform<type=v1A, dimensions = 30x64x20>
-#upmem2 = #upmem.platform<type=v1B, dimensions = 30x64, levels = [#mram, #wram]>
+#upmem = #upmem.platform<type = v1A, dpus = 1920, tasklets = 20>
+#upmem2 = #upmem.platform<type = v1B, dpus = 1920, tasklets = 16, levels = [#mram, #wram]>
 #map = affine_map<(d0) -> (d0 mod 4, 0)>
 #map1 = affine_map<(d0) -> (d0 mod 128, 0)>
 #map2 = affine_map<(d0) -> (d0 floordiv 128, d0 mod 128)>

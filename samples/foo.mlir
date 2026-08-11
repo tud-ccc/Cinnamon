@@ -3,15 +3,15 @@
 #map2 = affine_map<(d0, d1) -> (d0, d1)>
 #map3 = affine_map<(d0, d1) -> (d1)>
 #map4 = affine_map<(d0, d1) -> (d0)>
-#upmem = #upmem.platform<type = v1A, dimensions = 40x64x24>
-#upmem_24_4_4 = #upmem.array<24x4x4, #upmem>
+#upmem = #upmem.platform<type = v1A, dpus = 2560, tasklets = 24>
+#upmem_24_4_4 = #upmem.array<96x4, #upmem>
 module {
   memref.global "private" constant @__constant_768xf32 : memref<768xf32> = dense<0.000000e+00> {alignment = 64 : i64}
   func.func @host(%arg0: tensor<768x768xf32>, %arg1: tensor<768xf32>) -> tensor<768
 xf32> {
     %0 = bufferization.to_buffer %arg1 : tensor<768xf32> to memref<768xf32>
     %1 = bufferization.to_buffer %arg0 : tensor<768x768xf32> to memref<768x768xf32>
-    %2 = cinm.compute_block on accelerator #upmem.array<24x4x4, <type = v1A, dimensions = 40x64x24>> (%arg2 = %1 : memref<768x768xf32>, %arg3 = %0 : memref<768xf32>)
+    %2 = cinm.compute_block on accelerator #upmem.array<96x4, <type = v1A, dpus = 2560, tasklets = 24>> (%arg2 = %1 : memref<768x768xf32>, %arg3 = %0 : memref<768xf32>)
 -> memref<768xf32> attributes {cinm.available_platforms = [#upmem]} {
       %4 = memref.get_global @__constant_768xf32 : memref<768xf32>
       %5 = cnm.workgroup : !cnm.workgroup<#upmem_24_4_4>

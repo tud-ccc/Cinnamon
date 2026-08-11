@@ -13,8 +13,8 @@
 #m = affine_map<(m, k) -> (m, k)>
 #v = affine_map<(m, k) -> (k)>
 #r = affine_map<(m, k) -> (m)>
-#pf = #upmem.platform<type=v1A, dimensions = 4x16>
-#acc = #upmem.array<1x16x1, #pf>
+#pf = #upmem.platform<type = v1A, dpus = 64, tasklets = 24>
+#acc = #upmem.array<16x1, #pf>
 
 // 1024x512 gemv with blocks 256x128: 4 m-tiles and 4 k-tiles fill the 16
 // leaves, so each leaf computes a partial sum over a quarter of K.
@@ -62,8 +62,8 @@ func.func @gemv_split_k(%A: tensor<1024x512xi32>, %x: tensor<512xi32>, %y: tenso
 
 // -----
 
-#pf = #upmem.platform<type=v1A, dimensions = 4x16>
-#acc = #upmem.array<1x16x1, #pf>
+#pf = #upmem.platform<type = v1A, dpus = 64, tasklets = 24>
+#acc = #upmem.array<16x1, #pf>
 
 // Not contract-specific: the combiner and its neutral element are read off the
 // payload region, so a linalg.reduce with a `max` body seeds the leaves with
@@ -92,8 +92,8 @@ func.func @reduce_max_split_k(%A: tensor<1024x512xi32>, %o: tensor<1024xi32>) ->
 #m = affine_map<(m, k) -> (m, k)>
 #v = affine_map<(m, k) -> (k)>
 #r = affine_map<(m, k) -> (m)>
-#pf = #upmem.platform<type=v1A, dimensions = 4x16>
-#acc = #upmem.array<1x16x1, #pf>
+#pf = #upmem.platform<type = v1A, dpus = 64, tasklets = 24>
+#acc = #upmem.array<16x1, #pf>
 
 // With the opt-in, a float reduction splits too. The result differs from the
 // unsplit one by reassociation, which is the whole reason the flag exists.

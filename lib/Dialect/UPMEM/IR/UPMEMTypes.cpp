@@ -63,19 +63,17 @@ void UPMEMDialect::registerTypes() {
 //===----------------------------------------------------------------------===//
 
 Type mlir::upmem::DeviceHierarchyType::parse(mlir::AsmParser &parser) {
-  SmallVector<int64_t, 3> shape;
+  SmallVector<int64_t, 2> shape;
   if (parser.parseLess() || parser.parseDimensionList(shape, false, false) ||
       parser.parseGreater()) {
     return Type();
   }
-  // The shape is dpus x tasklets. The legacy three-dim form spelled the DPU
-  // count as ranks x dpusPerRank, a split the SDK cannot actually honor;
-  // accept it and collapse the product.
-  if (shape.size() == 3)
-    return upmem::DeviceHierarchyType::get(parser.getContext(),
-                                           shape[0] * shape[1], shape[2]);
-  if (shape.size() != 2)
+  if (shape.size() != 2) {
+    parser.emitError(parser.getNameLoc(),
+                     "expected a dpus x tasklets shape, got ")
+        << shape.size() << " dimensions";
     return {};
+  }
 
   return upmem::DeviceHierarchyType::get(parser.getContext(), shape[0],
                                          shape[1]);

@@ -1,6 +1,6 @@
 // RUN: cinm-opt %s --cinm-assign-platforms | FileCheck %s
 
-#upmem = #upmem.platform<type=v1A, dimensions = 8x64x24>
+#upmem = #upmem.platform<type = v1A, dpus = 512, tasklets = 24>
 
 // CHECK-LABEL: @gemm_gets_wrapped
 // CHECK-SAME:  cinm.available_platforms = [#upmem]

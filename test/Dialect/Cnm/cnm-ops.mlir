@@ -14,10 +14,10 @@
 #map9 = affine_map<(d0, d1) -> (d0 floordiv 512, d0 mod 512)>
 #map10 = affine_map<(d0) -> (d0)>
 #map11 = affine_map<(d0) -> ()>
-#upmem = #upmem.platform<type = v1A, dimensions = 32x128x1>
-#upmem_16_64_1 = #upmem.array<16x64x1, #upmem>
-#upmem_4_128_1 = #upmem.array<4x128x1, #upmem>
-#upmem_8_128_1 = #upmem.array<8x128x1, #upmem>
+#upmem = #upmem.platform<type = v1A, dpus = 4096, tasklets = 1>
+#upmem_16_64_1 = #upmem.array<1024x1, #upmem>
+#upmem_4_128_1 = #upmem.array<512x1, #upmem>
+#upmem_8_128_1 = #upmem.array<1024x1, #upmem>
 
 // CHECK-LABEL: @mm_dimm4_nopt
 func.func @mm_dimm4_nopt(%arg0: tensor<8x1024xi32>, %arg1: tensor<1024x256xi32>) -> tensor<8x256xi32> {
@@ -26,7 +26,7 @@ func.func @mm_dimm4_nopt(%arg0: tensor<8x1024xi32>, %arg1: tensor<1024x256xi32>)
     %cnm_buf = cnm.declare_buffer() for %0 : !cnm.buffer<i32 on #upmem_4_128_1>
     %cnm_buf_0 = cnm.declare_buffer() for %0 : !cnm.buffer<1024xi32 on #upmem_4_128_1>
     %cnm_buf_1 = cnm.declare_buffer() for %0 : !cnm.buffer<1024xi32 on #upmem_4_128_1>
-    %1 = cinm.compute on accelerator #upmem.array<4x128x1, <type = v1A, dimensions = 32x128x1>> -> tensor<8x256xi32> {
+    %1 = cinm.compute on accelerator #upmem.array<512x1, <type = v1A, dpus = 4096, tasklets = 1>> -> tensor<8x256xi32> {
       %2 = tensor.empty() : tensor<8x256xi32>
       %3 = affine.for %i = 0 to 8 step 4 iter_args(%acc = %2) -> (tensor<8x256xi32>) {
         %4 = affine.for %i_2 = 0 to 256 step 128 iter_args(%acc_3 = %acc) -> (tensor<8x256xi32>) {
@@ -67,7 +67,7 @@ func.func @mm_dimm4_nopt(%arg0: tensor<8x1024xi32>, %arg1: tensor<1024x256xi32>)
     %cnm_buf = cnm.declare_buffer() for %1 : !cnm.buffer<i32 on #upmem_4_128_1>
     %cnm_buf_0 = cnm.declare_buffer() for %1 : !cnm.buffer<1024xi32 on #upmem_4_128_1>
     %cnm_buf_1 = cnm.declare_buffer() for %1 : !cnm.buffer<1024xi32 on #upmem_4_128_1>
-    cinm.compute on accelerator #upmem.array<4x128x1, <type = v1A, dimensions = 32x128x1>> {
+    cinm.compute on accelerator #upmem.array<512x1, <type = v1A, dpus = 4096, tasklets = 1>> {
       %alloc = memref.alloc() {alignment = 64 : i64} : memref<128x1024xi32>
       affine.for %i = 0 to 16 step 4 {
         affine.for %i_2 = 0 to 128 step 128 {

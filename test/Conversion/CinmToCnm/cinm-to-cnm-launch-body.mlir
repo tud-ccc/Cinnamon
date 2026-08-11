@@ -10,8 +10,8 @@
 // rejected outright, which is why this file has no no-flag RUN line. The
 // no-flag behavior is covered by cinm-to-cnm-buffer-level.mlir.
 
-#upmem_platform = #upmem.platform<type=v1A, dimensions = 4x16>
-#upmem = #upmem.array<1x16x1, #upmem_platform>
+#upmem_platform = #upmem.platform<type = v1A, dpus = 64, tasklets = 24>
+#upmem = #upmem.array<16x1, #upmem_platform>
 
 // CHECK-LABEL: @gemv
 func.func @gemv(%A: tensor<1024x512xi32>, %x: tensor<512xi32>) -> tensor<1024xi32> {
@@ -28,8 +28,8 @@ func.func @gemv(%A: tensor<1024x512xi32>, %x: tensor<512xi32>) -> tensor<1024xi3
 
 // -----
 
-#upmem_platform = #upmem.platform<type=v1A, dimensions = 4x16>
-#upmem = #upmem.array<1x16x1, #upmem_platform>
+#upmem_platform = #upmem.platform<type = v1A, dpus = 64, tasklets = 24>
+#upmem = #upmem.array<16x1, #upmem_platform>
 
 // CHECK-LABEL: @reduce
 func.func @reduce(%a: tensor<1024x512xi32>) -> tensor<1024xi32> {
@@ -45,8 +45,8 @@ func.func @reduce(%a: tensor<1024x512xi32>) -> tensor<1024xi32> {
 
 // -----
 
-#upmem_platform = #upmem.platform<type=v1A, dimensions = 8x128>
-#upmem = #upmem.array<8x128x1, #upmem_platform>
+#upmem_platform = #upmem.platform<type = v1A, dpus = 1024, tasklets = 24>
+#upmem = #upmem.array<1024x1, #upmem_platform>
 
 // Gemm gives each leaf exactly one output element, so its tile is a dot
 // product rather than a matrix multiply. Nothing special is needed for it:

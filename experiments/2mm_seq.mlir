@@ -1,5 +1,5 @@
 
-#upmem = #upmem.platform<type = v1A, dimensions = 32x64x24>
+#upmem = #upmem.platform<type = v1A, dpus = 2048, tasklets = 24>
 
 func.func @_2mm_seq_d8(%A: tensor<8x1024xi32>{cinm.static}, %B: tensor<1024x256xi32>,  %C: tensor<256x2048xi32>{cinm.static}) -> tensor<8x2048xi32>
 attributes { cinm.available_platforms = [#upmem] } {
@@ -9,7 +9,7 @@ attributes { cinm.available_platforms = [#upmem] } {
 }
 
 // -----
-#upmem = #upmem.platform<type = v1A, dimensions = 32x64x24>
+#upmem = #upmem.platform<type = v1A, dpus = 2048, tasklets = 24>
 
 func.func @_2mm_seq_d16(%A: tensor<16x1024xi32>{cinm.static}, %B: tensor<1024x256xi32>,  %C: tensor<256x2048xi32>{cinm.static}) -> tensor<16x2048xi32>
 attributes { cinm.available_platforms = [#upmem] } {
@@ -19,7 +19,7 @@ attributes { cinm.available_platforms = [#upmem] } {
 }
 
 // -----
-#upmem = #upmem.platform<type = v1A, dimensions = 32x64x24>
+#upmem = #upmem.platform<type = v1A, dpus = 2048, tasklets = 24>
 
 func.func @_2mm_seq_d32(%A: tensor<32x1024xi32>{cinm.static}, %B: tensor<1024x256xi32>,  %C: tensor<256x2048xi32>{cinm.static}) -> tensor<32x2048xi32>
 attributes { cinm.available_platforms = [#upmem] } {
@@ -29,7 +29,7 @@ attributes { cinm.available_platforms = [#upmem] } {
 }
 
 // -----
-#upmem = #upmem.platform<type = v1A, dimensions = 32x64x24>
+#upmem = #upmem.platform<type = v1A, dpus = 2048, tasklets = 24>
 
 func.func @_2mm_seq_d64(%A: tensor<64x1024xi32>{cinm.static}, %B: tensor<1024x256xi32>,  %C: tensor<256x2048xi32>{cinm.static}) -> tensor<64x2048xi32>
 attributes { cinm.available_platforms = [#upmem] } {

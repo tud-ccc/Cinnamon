@@ -1,7 +1,7 @@
 // RUN: cinm-opt --split-input-file --convert-cinm-to-cnm --canonicalize %s | FileCheck %s
 
-#upmem_platform = #upmem.platform<type=v1A, dimensions = 8x128>
-#upmem = #upmem.array<8x128x1, #upmem_platform>
+#upmem_platform = #upmem.platform<type = v1A, dpus = 1024, tasklets = 24>
+#upmem = #upmem.array<1024x1, #upmem_platform>
 
 // CHECK-LABEL: mm_dimm8_nopt
     func.func @mm_dimm8_nopt(%arg0: tensor<8x1024xi32>, %arg1: tensor<1024x128xi32>) -> tensor<8x128xi32> {
@@ -30,8 +30,8 @@
 
 // -----
 // CHECK-LABEL: @gemv
-#upmem_platform = #upmem.platform<type=v1A, dimensions = 4x16>
-#upmem = #upmem.array<2x4x1, #upmem_platform>
+#upmem_platform = #upmem.platform<type = v1A, dpus = 64, tasklets = 24>
+#upmem = #upmem.array<8x1, #upmem_platform>
 
     func.func @gemv(%arg0: tensor<8x1024xi32>, %arg1: tensor<1024xi32>) -> tensor<8xi32> {
 
@@ -57,11 +57,11 @@
 
 
 // -----
-#upmem = #upmem.platform<type = v1A, dimensions = 40x64x24>
+#upmem = #upmem.platform<type = v1A, dpus = 2560, tasklets = 24>
 
 module {
   func.func @simplify_iter_args(%arg0: tensor<768x768xf32>, %arg1: tensor<768xf32>) -> tensor<768xf32> {
-    %0 = cinm.compute on accelerator #upmem.array<1x16x8, <type = v1A, dimensions = 40x64x24>> -> tensor<768xf32> attributes {cinm.available_platforms = [#upmem]} {
+    %0 = cinm.compute on accelerator #upmem.array<16x8, <type = v1A, dpus = 2560, tasklets = 24>> -> tensor<768xf32> attributes {cinm.available_platforms = [#upmem]} {
       %1 = tensor.empty() : tensor<768xf32>
       %2 = affine.for %i = 0 to 768 step 256 iter_args(%acc = %1) -> (tensor<768xf32>) {
         %cst = arith.constant dense<0.000000e+00> : tensor<256xf32>

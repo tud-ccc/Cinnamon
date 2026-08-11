@@ -25,7 +25,7 @@
 // The vector is the operand that shows it: indexed by the reduction dimension
 // alone, it is what the tasklets of one DPU either share or replicate.
 
-#upmem = #upmem.platform<type = v1A, dimensions = 32x64x24>
+#upmem = #upmem.platform<type = v1A, dpus = 2048, tasklets = 24>
 
 // CHECK-LABEL: func.func @gemv_64MB
 func.func @gemv_64MB(%A: tensor<4096x4096xi32>, %x: tensor<4096xi32>) -> tensor<4096xi32> {

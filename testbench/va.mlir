@@ -1,6 +1,6 @@
-#upmem = #upmem.platform<type=v1A, dimensions = 32x128x1>
-#upmem_32_64_8 = #upmem.array<32x64x8, #upmem>
-#upmem_16_64_16 = #upmem.array<16x64x16, #upmem>
+#upmem = #upmem.platform<type = v1A, dpus = 4096, tasklets = 1>
+#upmem_32_64_8 = #upmem.array<2048x8, #upmem>
+#upmem_16_64_16 = #upmem.array<1024x16, #upmem>
 
 module {
 

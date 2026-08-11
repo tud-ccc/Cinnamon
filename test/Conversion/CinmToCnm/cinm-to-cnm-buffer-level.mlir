@@ -6,8 +6,8 @@
 // in the cnm.buffer type and, per LaunchOp's contract, becomes the memory
 // space of the launch body's memref block arguments.
 
-#upmem_platform = #upmem.platform<type=v1A, dimensions = 4x16>
-#upmem = #upmem.array<1x16x1, #upmem_platform>
+#upmem_platform = #upmem.platform<type = v1A, dpus = 64, tasklets = 24>
+#upmem = #upmem.array<16x1, #upmem_platform>
 
 // MRAM-LABEL: @gemv
 // WRAM-LABEL: @gemv
@@ -40,8 +40,8 @@ func.func @gemv(%A: tensor<16x1024xi32>, %x: tensor<1024xi32>) -> tensor<16xi32>
 
 // -----
 
-#upmem_platform = #upmem.platform<type=v1A, dimensions = 8x128>
-#upmem = #upmem.array<8x128x1, #upmem_platform>
+#upmem_platform = #upmem.platform<type = v1A, dpus = 1024, tasklets = 24>
+#upmem = #upmem.array<1024x1, #upmem_platform>
 
 // The gemm pattern builds its buffer types directly rather than going through
 // convertCinmToCnm, so it needs its own coverage.
@@ -64,8 +64,8 @@ func.func @gemm(%A: tensor<8x1024xi32>, %B: tensor<1024x128xi32>) -> tensor<8x12
 
 // -----
 
-#upmem_platform = #upmem.platform<type=v1A, dimensions = 4x16>
-#upmem = #upmem.array<1x16x1, #upmem_platform>
+#upmem_platform = #upmem.platform<type = v1A, dpus = 64, tasklets = 24>
+#upmem = #upmem.array<16x1, #upmem_platform>
 
 // A reduce whose per-leaf tile keeps a parallel dimension: 1024 rows over 16
 // leaves leaves 64 rows each, so the buffer is 64x8 and the reduction is over
@@ -88,8 +88,8 @@ func.func @reduce_multirow(%a: tensor<1024x8xi32>) -> tensor<1024xi32> {
 
 // -----
 
-#upmem_platform = #upmem.platform<type=v1A, dimensions = 4x16>
-#upmem = #upmem.array<1x16x1, #upmem_platform>
+#upmem_platform = #upmem.platform<type = v1A, dpus = 64, tasklets = 24>
+#upmem = #upmem.array<16x1, #upmem_platform>
 
 // The launch body combines into the scattered output init, so that init has to
 // be the reduction's identity. Zero only happens to be right for `add`.

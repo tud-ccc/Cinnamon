@@ -1,6 +1,6 @@
 // RUN: cinm-opt %s --cnm-hoist-workgroups | FileCheck %s
 
-#upmem_2_4_16 = #upmem.array<2x4x16, <type = v1A, dimensions = 32x128x1>>
+#upmem_2_4_16 = #upmem.array<8x16, <type = v1A, dpus = 4096, tasklets = 1>>
 
 // Workgroup and its allocs should be hoisted out of all loops, placed before
 // the outermost loop. Allocs must immediately follow their workgroup.

@@ -25,8 +25,8 @@
 
 #mapA = affine_map<(d0, d1) -> (d0, d1 * 2)>
 
-#upmem_platform = #upmem.platform<type=v1A, dimensions = 4x16>
-#upmem_1_4_2 = #upmem.array<1x4x2, #upmem_platform>
+#upmem_platform = #upmem.platform<type = v1A, dpus = 64, tasklets = 24>
+#upmem_1_4_2 = #upmem.array<4x2, #upmem_platform>
 
 module {
   func.func @main(%a: tensor<4x3x8xi32>) {

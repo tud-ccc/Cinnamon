@@ -1,6 +1,6 @@
 // RUN: cinm-opt %s --upmem-tile-mram-buffers --canonicalize --cse --split-input-file | FileCheck %s
 
-#acc = #upmem.array<1x2048x8, <type = v1A, dimensions = 32x64x24>>
+#acc = #upmem.array<2048x8, <type = v1A, dpus = 2048, tasklets = 24>>
 
 // A launch parameter that a linalg.fill sets to a constant -- what
 // --cnm-scatter-optimizations leaves behind for a uniform scatter. Staging it
@@ -41,7 +41,7 @@ func.func @fold_device_init(%A: memref<4096x32x128xi32>, %x: memref<32x128xi32>,
 
 // -----
 
-#acc = #upmem.array<1x2048x8, <type = v1A, dimensions = 32x64x24>>
+#acc = #upmem.array<2048x8, <type = v1A, dpus = 2048, tasklets = 24>>
 
 // Two ops consume the filled parameter, so the second one reads what the first
 // wrote back rather than the constant. Folding its staging copy into a fill

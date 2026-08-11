@@ -1,8 +1,8 @@
 // RUN: cinm-opt %s | cinm-opt | FileCheck %s
 // RUN: cinm-opt %s --mlir-print-op-generic | cinm-opt | FileCheck %s
 
-#upmem = #upmem.platform<type = v1A, dimensions = 32x128x1>
-#upmem_1_16_1 = #upmem.array<1x16x1, #upmem>
+#upmem = #upmem.platform<type = v1A, dpus = 4096, tasklets = 1>
+#upmem_1_16_1 = #upmem.array<16x1, #upmem>
 
 // cnm.local_transfer moves a block between memory levels of the device, so it
 // lives inside a launch body and works on memrefs rather than !cnm.buffer.

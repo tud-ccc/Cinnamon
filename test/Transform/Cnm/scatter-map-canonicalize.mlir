@@ -11,7 +11,7 @@
 // parser accepts, so the text of a canonicalized op is a fixpoint even though
 // the attribute stored in it is not the one written.
 
-#wg = #upmem.array<1x4x2, <type = v1A, dimensions = 32x128x1>>
+#wg = #upmem.array<4x2, <type = v1A, dpus = 4096, tasklets = 1>>
 
 // CHECK-LABEL: func.func @block_is_implicit
 // CHECK:       cnm.scatter %{{.*}}[affine_map<(d0, d1) -> (d0, d1 * 2)>]
@@ -27,7 +27,7 @@ func.func @block_is_implicit(%a: tensor<4x3x8xi32>) {
 
 // -----
 
-#wg = #upmem.array<1x4x2, <type = v1A, dimensions = 32x128x1>>
+#wg = #upmem.array<4x2, <type = v1A, dpus = 4096, tasklets = 1>>
 
 // Writing the explicit form by hand changes nothing: it is what
 // canonicalization produces anyway, and it prints back the same shorthand.
@@ -45,7 +45,7 @@ func.func @explicit_is_the_same_op(%out: tensor<4x2x8xi32>) {
 
 // -----
 
-#wg = #upmem.array<1x4x2, <type = v1A, dimensions = 32x128x1>>
+#wg = #upmem.array<4x2, <type = v1A, dpus = 4096, tasklets = 1>>
 
 // A host dimension longer than the buffer dimension indexing it is not that
 // dimension's block -- each leaf writes the first two of eight elements -- so
@@ -64,7 +64,7 @@ func.func @host_dimension_is_longer(%a: tensor<4x2x8xi32>) {
 
 // -----
 
-#wg = #upmem.array<1x4x2, <type = v1A, dimensions = 32x128x1>>
+#wg = #upmem.array<4x2, <type = v1A, dpus = 4096, tasklets = 1>>
 
 // A block is one run in memory, so how far the shorthand goes depends on the
 // host value's layout. Both scatters below have the same map and the same
