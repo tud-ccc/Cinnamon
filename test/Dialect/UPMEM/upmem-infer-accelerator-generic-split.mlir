@@ -18,7 +18,7 @@
 // now expressible, so what this test guards is that the projection in
 // handleGemv keeps agreeing with what --convert-linalg-to-cnm does.
 
-#upmem = #upmem.platform<type = v1A, dimensions = 32x64x24>
+#upmem = #upmem.platform<type = v1A, dpus = 2048, tasklets = 24>
 
 // CHECK-LABEL: func.func @gemv_64MB
 func.func @gemv_64MB(%A: tensor<4096x4096xi32>, %x: tensor<4096xi32>) -> tensor<4096xi32> {

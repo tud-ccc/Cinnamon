@@ -5,7 +5,7 @@
 #map4 = affine_map<(d0, d1) -> (d1)>
 #map5 = affine_map<(d0, d1) -> (d0)>
 #map6 = affine_map<(d0, d1) -> ()>
-#upmem = #upmem.platform<type = v1A, dimensions = 40x64x24>
+#upmem = #upmem.platform<type = v1A, dpus = 2560, tasklets = 24>
 module {
   func.func @forward(%arg0: index, %arg1: index, %arg2: memref<6x1024x768xf32>, %arg3: memref<6x1024x768xf32>, %arg4: memref<32000x768xf32> {cinm.static}, %arg5: memref<6x768xf32> {cinm.static}, %arg6: memref<6x768x768xf32> {cinm.static}, %arg7: memref<6x768x768xf32> {cinm.static}, %arg8: memref<6x768x768xf32> {cinm.static}, %arg9: memref<6x768x768xf32> {cinm.static}, %arg10: memref<6x2048x768xf32> {cinm.static}, %arg11: memref<6x768x2048xf32> {cinm.static}, %arg12: memref<6x2048x768xf32> {cinm.static}, %arg13: memref<6x768xf32> {cinm.static}, %arg14: memref<768xf32> {cinm.static}, %arg15: memref<32000x768xf32> {cinm.static}) -> memref<32000xf32> attributes {cinm.available_platforms = [#upmem]} {
     %cst = arith.constant 1.000000e+04 : f32

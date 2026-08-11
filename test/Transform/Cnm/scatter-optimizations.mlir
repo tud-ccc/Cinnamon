@@ -1,7 +1,7 @@
 // RUN: cinm-opt %s --cnm-scatter-optimizations --split-input-file | FileCheck %s
 
 #map = affine_map<(d0, d1) -> (d0, d1)>
-#wg = #upmem.array<1x4x2, <type = v1A, dimensions = 32x128x1>>
+#wg = #upmem.array<4x2, <type = v1A, dpus = 4096, tasklets = 1>>
 
 // A linalg.fill of a constant is uniform, so every workgroup element receives
 // the same bytes whatever the scatter map says. The 4x2 host tiles collapse to
@@ -27,7 +27,7 @@ func.func @fill() {
 // -----
 
 #map = affine_map<(d0, d1) -> (d0, d1)>
-#wg = #upmem.array<1x4x2, <type = v1A, dimensions = 32x128x1>>
+#wg = #upmem.array<4x2, <type = v1A, dpus = 4096, tasklets = 1>>
 
 // Same for a splat constant, with a non-zero value to check it is carried over.
 
@@ -48,7 +48,7 @@ func.func @splat_constant() {
 // -----
 
 #map = affine_map<(d0, d1) -> (d0, d1)>
-#wg = #upmem.array<1x4x2, <type = v1A, dimensions = 32x128x1>>
+#wg = #upmem.array<4x2, <type = v1A, dpus = 4096, tasklets = 1>>
 
 // After bufferization the uniform value is a constant global; the tile has to
 // be one too, so the pass emits a smaller global rather than an
@@ -73,7 +73,7 @@ func.func @get_global() {
 // -----
 
 #map = affine_map<(d0, d1) -> (d0, d1)>
-#wg = #upmem.array<1x4x2, <type = v1A, dimensions = 32x128x1>>
+#wg = #upmem.array<4x2, <type = v1A, dpus = 4096, tasklets = 1>>
 
 // A constant that is not a splat carries data the workgroup elements can tell
 // apart, so it must be left alone. So must a value with no known contents.
@@ -102,7 +102,7 @@ func.func @not_uniform() {
 // -----
 
 #bc = affine_map<(d0, d1) -> ()>
-#wg = #upmem.array<1x4x2, <type = v1A, dimensions = 32x128x1>>
+#wg = #upmem.array<4x2, <type = v1A, dpus = 4096, tasklets = 1>>
 
 // A scatter that is already a single-tile broadcast is a fixpoint.
 
@@ -122,7 +122,7 @@ func.func @already_broadcast() {
 // -----
 
 #map = affine_map<(d0, d1, d2, d3) -> (d0 floordiv 16, d0 * 256 + d1 * 32 + d3 - (d0 floordiv 16) * 4096)>
-#wg = #upmem.array<1x512x8, <type = v1A, dimensions = 1x2048x24>>
+#wg = #upmem.array<512x8, <type = v1A, dpus = 2048, tasklets = 24>>
 
 // The split-reduction identity seed, as --convert-linalg-to-cnm leaves it: a
 // pointwise map, and a host value that has the same rank as the buffer while
@@ -149,7 +149,7 @@ func.func @seed_same_rank_as_buffer() {
 // -----
 
 #map = affine_map<(d0, d1) -> (d0, d1)>
-#wg = #upmem.array<1x4x2, <type = v1A, dimensions = 32x128x1>>
+#wg = #upmem.array<4x2, <type = v1A, dpus = 4096, tasklets = 1>>
 
 // The buffer feeds a launch, so the constant does not have to be transferred
 // at all: the leaves write it themselves, in parallel, and the host keeps its
@@ -179,7 +179,7 @@ func.func @device_init() {
 // -----
 
 #map = affine_map<(d0, d1) -> (d0, d1)>
-#wg = #upmem.array<1x4x2, <type = v1A, dimensions = 32x128x1>>
+#wg = #upmem.array<4x2, <type = v1A, dpus = 4096, tasklets = 1>>
 
 // The scatter seeds an accumulator once and the launch runs many times, so
 // filling in the body would reset it on every trip. Only the broadcast fires.
@@ -212,7 +212,7 @@ func.func @seed_outside_loop() {
 
 #map = affine_map<(d0, d1) -> (d0, d1)>
 #gmap = affine_map<(d0, d1, d2) -> (d0, d1, d2)>
-#wg = #upmem.array<1x4x2, <type = v1A, dimensions = 32x128x1>>
+#wg = #upmem.array<4x2, <type = v1A, dpus = 4096, tasklets = 1>>
 
 // The host reads the buffer before the launch does, so it would observe an
 // uninitialized buffer if the fill moved into the body.

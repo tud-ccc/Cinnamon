@@ -1,7 +1,7 @@
 // RUN: cinm-opt --split-input-file --convert-cinm-to-cnm=cnm-buffer-level=nosuchlevel %s -verify-diagnostics
 
-#upmem_platform = #upmem.platform<type=v1A, dimensions = 4x16>
-#upmem = #upmem.array<1x16x1, #upmem_platform>
+#upmem_platform = #upmem.platform<type = v1A, dpus = 64, tasklets = 24>
+#upmem = #upmem.array<16x1, #upmem_platform>
 
 func.func @unknown_level(%A: tensor<16x1024xi32>, %x: tensor<1024xi32>) -> tensor<16xi32> {
   %r0 = cinm.compute on accelerator #upmem -> tensor<16xi32> {

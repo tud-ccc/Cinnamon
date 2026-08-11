@@ -58,8 +58,8 @@
 #map31 = affine_map<(d0) -> (d0)>
 #map41 = affine_map<(d0) -> ()>
 
-#upmem_platform = #upmem.platform<type=v1A, dimensions = 4x16>
-#upmem_1_16_1 = #upmem.array<1x16x1, #upmem_platform>
+#upmem_platform = #upmem.platform<type = v1A, dpus = 64, tasklets = 24>
+#upmem_1_16_1 = #upmem.array<16x1, #upmem_platform>
 
 module {
   func.func @main() {

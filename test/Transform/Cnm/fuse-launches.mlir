@@ -18,8 +18,8 @@
 #id = affine_map<(d0) -> (d0)>
 #scalar = affine_map<(d0) -> ()>
 
-#pf = #upmem.platform<type = v1A, dimensions = 4x16>
-#acc = #upmem.array<1x16x1, #pf>
+#pf = #upmem.platform<type = v1A, dpus = 64, tasklets = 24>
+#acc = #upmem.array<16x1, #pf>
 
 // CHECK-LABEL: func.func @round_trip
 // One workgroup survives, and one release of it.
@@ -94,8 +94,8 @@ func.func @round_trip(%A: tensor<1024x1024xi32>, %x: tensor<1024xi32>, %c: i32) 
 #merge_in = affine_map<(d0, d1) -> (d0, d1)>
 #merge_out = affine_map<(d0, d1) -> (d1)>
 
-#pf = #upmem.platform<type = v1A, dimensions = 4x16>
-#acc = #upmem.array<1x16x1, #pf>
+#pf = #upmem.platform<type = v1A, dpus = 64, tasklets = 24>
+#acc = #upmem.array<16x1, #pf>
 
 // CHECK-LABEL: func.func @split_reduction_is_left_alone
 // CHECK:       = cnm.workgroup
@@ -150,8 +150,8 @@ func.func @split_reduction_is_left_alone(%partials: tensor<4x1024xi32>, %init: t
 #rev = affine_map<(d0, d1, d2) -> (960 - d0 * 64 + d2)>
 #id = affine_map<(d0) -> (d0)>
 
-#pf = #upmem.platform<type = v1A, dimensions = 4x16>
-#acc = #upmem.array<1x16x1, #pf>
+#pf = #upmem.platform<type = v1A, dpus = 64, tasklets = 24>
+#acc = #upmem.array<16x1, #pf>
 
 // CHECK-LABEL: func.func @map_mismatch
 // CHECK:       cnm.gather
@@ -182,8 +182,8 @@ func.func @map_mismatch(%init: tensor<1024xi32>) -> tensor<1024xi32> {
 #map = affine_map<(d0, d1, d2) -> (d0 * 64 + d2)>
 #id = affine_map<(d0) -> (d0)>
 
-#pf = #upmem.platform<type = v1A, dimensions = 4x16>
-#acc = #upmem.array<1x16x1, #pf>
+#pf = #upmem.platform<type = v1A, dpus = 64, tasklets = 24>
+#acc = #upmem.array<16x1, #pf>
 
 // CHECK-LABEL: func.func @gather_still_used
 // CHECK:       %[[G:.*]] = cnm.gather

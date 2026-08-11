@@ -8,7 +8,7 @@
 // The shapes must be static: the search space is built from the problem
 // dimensions.
 
-#upmem = #upmem.platform<type = v1A, dimensions = 1x16x16>
+#upmem = #upmem.platform<type = v1A, dpus = 16, tasklets = 16>
 
 // CHECK-LABEL: func.func @gemv
 func.func @gemv(%A: tensor<256x256xi32>, %x: tensor<256xi32>) -> tensor<256xi32> {

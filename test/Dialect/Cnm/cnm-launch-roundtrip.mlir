@@ -5,8 +5,8 @@
 // memory level, otherwise the printed IR does not parse back (the operand
 // would be given a level-less buffer type conflicting with its definition).
 
-#upmem = #upmem.platform<type = v1A, dimensions = 32x128x1>
-#upmem_1_16_1 = #upmem.array<1x16x1, #upmem>
+#upmem = #upmem.platform<type = v1A, dpus = 4096, tasklets = 1>
+#upmem_1_16_1 = #upmem.array<16x1, #upmem>
 
 // CHECK-LABEL: @launch_mram_level
 func.func @launch_mram_level() {

@@ -10,7 +10,7 @@
 // configuration, that the grid is not oversubscribed -- not which menu point
 // wins: that is the solver's decision over measured costs.
 
-#upmem = #upmem.platform<type = v1A, dimensions = 2x8x16>
+#upmem = #upmem.platform<type = v1A, dpus = 16, tasklets = 16>
 
 // Two different-shape gemvs: two classes, each a singleton. Both are pinned
 // -- timesharing one of them would pay the 40 ms program reload against

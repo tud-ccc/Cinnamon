@@ -95,15 +95,13 @@ Attribute UpmemAcceleratorAttr::parse(::mlir::AsmParser &p, ::mlir::Type) {
   if (p.parseLess())
     return {};
   SmallVector<int64_t> dims;
-  if (p.parseDimensionList(dims, false, false) ||
-      (dims.size() != 2 && dims.size() != 3)) {
+  if (p.parseDimensionList(dims, false, false))
+    return {};
+  if (dims.size() != 2) {
+    p.emitError(p.getNameLoc(), "expected a dpus x tasklets shape, got ")
+        << dims.size() << " dimensions";
     return {};
   }
-  // The shape is dpus x tasklets. The legacy three-dim form spelled the DPU
-  // count as ranks x dpusPerRank, a split the SDK cannot actually honor;
-  // accept it and collapse the product.
-  if (dims.size() == 3)
-    dims = {dims[0] * dims[1], dims[2]};
 
   UpmemPlatformAttr platform = UpmemPlatformAttr::getDefault(p.getContext());
   if (p.parseOptionalComma().succeeded()) {
@@ -176,7 +174,6 @@ static cinm::CinmLevelArrayAttr upmemLevels(mlir::MLIRContext *ctx,
 }
 
 Attribute UpmemPlatformAttr::parse(::mlir::AsmParser &p, ::mlir::Type) {
-  SmallVector<int64_t> dims;
   if (p.parseLess() || p.parseKeyword("type") || p.parseEqual())
     return {};
   auto typeLoc = p.getCurrentLocation();
@@ -192,27 +189,13 @@ Attribute UpmemPlatformAttr::parse(::mlir::AsmParser &p, ::mlir::Type) {
   bool isV1A = *type;
 
   // The platform is a pool of `dpus` DPUs running up to `tasklets` tasklets
-  // each. The legacy `dimensions = ranks x dpusPerRank (x tasklets)?` form is
-  // still accepted: the DPU count collapses to the product.
+  // each.
   int64_t maxDpus = 0, tasklets = isV1A ? 24 : 16;
   cinm::CinmLevelArrayAttr levels;
   if (p.parseComma())
     return {};
-  if (p.parseOptionalKeyword("dimensions").succeeded()) {
-    if (p.parseEqual() || p.parseDimensionList(dims, false, false))
-      return {};
-    if (dims.size() != 2 && dims.size() != 3) {
-      p.emitError(p.getNameLoc(), "Expected ranks x dpus (x tasklets)?, got ")
-          << dims.size() << " dimensions";
-      return {};
-    }
-    maxDpus = dims[0] * dims[1];
-    if (dims.size() == 3)
-      tasklets = dims[2];
-  } else {
-    if (p.parseKeyword("dpus") || p.parseEqual() || p.parseInteger(maxDpus))
-      return {};
-  }
+  if (p.parseKeyword("dpus") || p.parseEqual() || p.parseInteger(maxDpus))
+    return {};
   while (p.parseOptionalComma().succeeded()) {
     if (p.parseOptionalKeyword("tasklets").succeeded()) {
       if (p.parseEqual() || p.parseInteger(tasklets))

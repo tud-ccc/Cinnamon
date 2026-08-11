@@ -8,7 +8,7 @@
 // Charging one copy per DPU -- assuming the tasklets share every buffer -- put
 // it in the space, and only the occupancy check on the final IR threw it out.
 
-#upmem = #upmem.platform<type = v1A, dimensions = 32x64x24>
+#upmem = #upmem.platform<type = v1A, dpus = 2048, tasklets = 24>
 
 func.func @gemv_leaf_tile_rejected_by_the_space(%A: tensor<4096x4096xi32>, %x: tensor<4096xi32>) -> tensor<4096xi32> {
   // expected-error @below {{Configuration is not one this space contains}}

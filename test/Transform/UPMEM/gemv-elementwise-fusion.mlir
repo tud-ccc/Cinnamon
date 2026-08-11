@@ -19,7 +19,7 @@
 // of the two a configuration is: 1 is "not fused", and the space accepts a
 // higher value for the first configuration only.
 
-#upmem = #upmem.platform<type = v1A, dimensions = 32x64x24>
+#upmem = #upmem.platform<type = v1A, dpus = 2048, tasklets = 24>
 
 // K is not split: 1024/64 = 16 M-tiles fill the 16-leaf workgroup on their own,
 // so every leaf holds a *whole* block of the result, and it is the same block

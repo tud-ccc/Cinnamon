@@ -1,6 +1,6 @@
 // RUN: cinm-opt --split-input-file --convert-cinm-to-cnm %s | FileCheck %s
-#upmem_platform = #upmem.platform<type=v1A, dimensions = 8x128>
-#upmem = #upmem.array<8x128x1, #upmem_platform>
+#upmem_platform = #upmem.platform<type = v1A, dpus = 1024, tasklets = 24>
+#upmem = #upmem.array<1024x1, #upmem_platform>
 
 // Affine maps emitted for scatter/gather index computations.
 // CHECK-DAG: #[[MAP_ROW_MOD8:[^ ]*]] = affine_map<(d0, d1) -> (d0 mod 8)>
@@ -40,8 +40,8 @@ func.func @mm_dimm8_nopt(%arg0: memref<8x1024xi32>, %arg1: memref<1024x128xi32>)
 
 
 // -----
-#upmem_platform = #upmem.platform<type=v1A, dimensions = 4x16>
-#upmem = #upmem.array<2x4x1, #upmem_platform>
+#upmem_platform = #upmem.platform<type = v1A, dpus = 64, tasklets = 24>
+#upmem = #upmem.array<8x1, #upmem_platform>
 
 // CHECK-LABEL: func.func @gemv
 // CHECK: %[[ALLOC:.*]] = memref.alloc() : memref<8xi32>

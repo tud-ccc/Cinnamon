@@ -4,7 +4,7 @@
 // A gather has to partition its destination, so unlike a scatter it cannot
 // leave the tasklet dimension out of its map.
 #gmap = affine_map<(d0, d1) -> (d0 * 16 + d1)>
-#upmem_2_4_16 = #upmem.array<2x4x16, <type = v1A, dimensions = 32x128x1>>
+#upmem_2_4_16 = #upmem.array<8x16, <type = v1A, dpus = 4096, tasklets = 1>>
 
 // A scatter whose input is a strided subview (each of the 8 rows of 256
 // elements sits inside a wider 512-element row) is not safe to transfer with

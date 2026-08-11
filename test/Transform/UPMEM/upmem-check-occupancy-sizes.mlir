@@ -12,8 +12,8 @@
 // CHECK-LABEL: func.func @no_accelerator_in_scope
 func.func @no_accelerator_in_scope() {
   // expected-error @below {{cannot check whether @program fits: no accelerator with an mram and a wram level is in scope, and the mram-size/wram-size options do not supply both capacities}}
-  %d = upmem.alloc_dpus with program @kernels::@program : !upmem.hierarchy<1x64x8>
-  upmem.free_dpus %d : !upmem.hierarchy<1x64x8>
+  %d = upmem.alloc_dpus with program @kernels::@program : !upmem.hierarchy<64x8>
+  upmem.free_dpus %d : !upmem.hierarchy<64x8>
   return
 }
 

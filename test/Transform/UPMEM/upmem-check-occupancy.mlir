@@ -9,9 +9,9 @@
 
 // CHECK-LABEL: func.func @fits
 func.func @fits() {
-  cinm.compute_block on accelerator #upmem.array<1x64x8, <type = v1A, dimensions = 32x64x24>> () {
-    %d = upmem.alloc_dpus with program @kernels::@program : !upmem.hierarchy<1x64x8>
-    upmem.free_dpus %d : !upmem.hierarchy<1x64x8>
+  cinm.compute_block on accelerator #upmem.array<64x8, <type = v1A, dpus = 2048, tasklets = 24>> () {
+    %d = upmem.alloc_dpus with program @kernels::@program : !upmem.hierarchy<64x8>
+    upmem.free_dpus %d : !upmem.hierarchy<64x8>
     cinm.yield
   }
   return
@@ -35,9 +35,9 @@ module @kernels {
 // cannot. This is why the check needs the tasklet count and not just the
 // buffer sizes.
 func.func @private_wram_is_per_tasklet() {
-  cinm.compute_block on accelerator #upmem.array<1x64x16, <type = v1A, dimensions = 32x64x24>> () {
-    %d = upmem.alloc_dpus with program @kernels::@program : !upmem.hierarchy<1x64x16>
-    upmem.free_dpus %d : !upmem.hierarchy<1x64x16>
+  cinm.compute_block on accelerator #upmem.array<64x16, <type = v1A, dpus = 2048, tasklets = 24>> () {
+    %d = upmem.alloc_dpus with program @kernels::@program : !upmem.hierarchy<64x16>
+    upmem.free_dpus %d : !upmem.hierarchy<64x16>
     cinm.yield
   }
   return
@@ -57,9 +57,9 @@ module @kernels {
 // is counted, on top of the per-tasklet stacks. Here the buffer alone exactly
 // fills WRAM and the stacks are what push it over.
 func.func @static_wram_is_shared() {
-  cinm.compute_block on accelerator #upmem.array<1x64x2, <type = v1A, dimensions = 32x64x24>> () {
-    %d = upmem.alloc_dpus with program @kernels::@program : !upmem.hierarchy<1x64x2>
-    upmem.free_dpus %d : !upmem.hierarchy<1x64x2>
+  cinm.compute_block on accelerator #upmem.array<64x2, <type = v1A, dpus = 2048, tasklets = 24>> () {
+    %d = upmem.alloc_dpus with program @kernels::@program : !upmem.hierarchy<64x2>
+    upmem.free_dpus %d : !upmem.hierarchy<64x2>
     cinm.yield
   }
   return
@@ -76,9 +76,9 @@ module @kernels {
 // -----
 
 func.func @mram_overflow() {
-  cinm.compute_block on accelerator #upmem.array<1x64x1, <type = v1A, dimensions = 32x64x24>> () {
-    %d = upmem.alloc_dpus with program @kernels::@program : !upmem.hierarchy<1x64x1>
-    upmem.free_dpus %d : !upmem.hierarchy<1x64x1>
+  cinm.compute_block on accelerator #upmem.array<64x1, <type = v1A, dpus = 2048, tasklets = 24>> () {
+    %d = upmem.alloc_dpus with program @kernels::@program : !upmem.hierarchy<64x1>
+    upmem.free_dpus %d : !upmem.hierarchy<64x1>
     cinm.yield
   }
   return

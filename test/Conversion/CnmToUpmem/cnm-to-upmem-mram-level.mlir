@@ -11,8 +11,8 @@
 #r = affine_map<(m, k) -> (m)>
 #scatterA = affine_map<(d0, d1) -> (d0 * 2 + d1)>
 #scatterY = affine_map<(d0, d1) -> (d0 * 2 + d1)>
-#pf = #upmem.platform<type=v1A, dimensions = 4x16>
-#acc = #upmem.array<1x4x2, #pf>
+#pf = #upmem.platform<type = v1A, dpus = 64, tasklets = 24>
+#acc = #upmem.array<4x2, #pf>
 
 // CHECK-LABEL: func.func @gemv
 func.func @gemv(%hostA: memref<8x16x64xi32>, %hostY: memref<8x16xi32>) {
@@ -60,8 +60,8 @@ func.func @gemv(%hostA: memref<8x16x64xi32>, %hostY: memref<8x16xi32>) {
 
 // -----
 
-#pf = #upmem.platform<type=v1A, dimensions = 4x16>
-#acc = #upmem.array<1x4x2, #pf>
+#pf = #upmem.platform<type = v1A, dpus = 64, tasklets = 24>
+#acc = #upmem.array<4x2, #pf>
 #bcast = affine_map<(d0, d1) -> (d0)>
 
 // When the scatter map does not depend on the tasklet dimension, every tasklet

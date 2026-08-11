@@ -5,10 +5,10 @@
 #map = affine_map<(d0, d1) -> (d0 * 16 + d1 * 16, 0)>
 #map1 = affine_map<(d0, d1) -> (0)>
 #map2 = affine_map<(d0, d1) -> (d0 * 16 + d1 * 16)>
-#upmem = #upmem.platform<type = v1A, dimensions = 16x32x24>
+#upmem = #upmem.platform<type = v1A, dpus = 512, tasklets = 24>
 module {
   func.func @gemv_dynamic(%arg0: tensor<?x?xf32>, %arg1: tensor<?xf32>) -> tensor<?xf32> attributes {cinm.available_platforms = [#upmem]} {
-    %0 = cinm.compute_block on accelerator #upmem.array<1x1x16, <type = v1A, dimensions = 16x32x24>> (%arg2 = %arg0 : tensor<?x?xf32>, %arg3 = %arg1 : tensor<?xf32>) -> tensor<?xf32> attributes {cinm.available_platforms = [#upmem]} {
+    %0 = cinm.compute_block on accelerator #upmem.array<1x16, <type = v1A, dpus = 512, tasklets = 24>> (%arg2 = %arg0 : tensor<?x?xf32>, %arg3 = %arg1 : tensor<?xf32>) -> tensor<?xf32> attributes {cinm.available_platforms = [#upmem]} {
       %1 = bufferization.to_buffer %arg3 : tensor<?xf32> to memref<?xf32>
       %2 = bufferization.to_buffer %arg2 : tensor<?x?xf32> to memref<?x?xf32>
       %c16 = arith.constant  16 : index
@@ -19,21 +19,21 @@ module {
       %dim_0 = memref.dim  %2, %c1 : memref<?x?xf32>
       %alloc = memref.alloc(%dim) {alignment = 64 : i64, upmem.sim_cost = 1.000000e+00 : f64} : memref<?xf32>
       %4 = bufferization.to_tensor %alloc : memref<?xf32> to tensor<?xf32>
-      %5 = upmem.alloc_dpus with program @dpu_kernels_0::@program  : !upmem.hierarchy<1x1x16>
+      %5 = upmem.alloc_dpus with program @dpu_kernels_0::@program  : !upmem.hierarchy<1x16>
       scf.for %arg4 = %c0 to %dim step %c16 {
         %subview = memref.subview %alloc[%arg4] [16] [1]  : memref<?xf32> to memref<16xf32, strided<[1], offset: ?>>
         memref.copy %3, %subview  : memref<16xf32> to memref<16xf32, strided<[1], offset: ?>>
         scf.for %arg5 = %c0 to %dim_0 step %c1 {
           %subview_1 = memref.subview %2[%arg4, %arg5] [16, 1] [1, 1]  : memref<?x?xf32> to memref<16x1xf32, strided<[?, 1], offset: ?>>
           %subview_2 = memref.subview %1[%arg5] [1] [1]  : memref<?xf32> to memref<1xf32, strided<[1], offset: ?>>
-          upmem.scatter_on_array %subview_1[16 elts, #map] onto @buf of %5  : memref<16x1xf32, strided<[?, 1], offset: ?>> onto !upmem.hierarchy<1x1x16>
-          upmem.scatter_on_array %subview_2[1 elts, #map1] onto @buf_1 of %5  : memref<1xf32, strided<[1], offset: ?>> onto !upmem.hierarchy<1x1x16>
-          upmem.scatter_on_array %subview[16 elts, #map2] onto @buf_2 of %5  : memref<16xf32, strided<[1], offset: ?>> onto !upmem.hierarchy<1x1x16>
-          upmem.wait_for %5  : !upmem.hierarchy<1x1x16>
-          upmem.gather_from_array %subview[16 elts, #map2] from @buf_2 of %5  : memref<16xf32, strided<[1], offset: ?>> from !upmem.hierarchy<1x1x16>
+          upmem.scatter_on_array %subview_1[16 elts, #map] onto @buf of %5  : memref<16x1xf32, strided<[?, 1], offset: ?>> onto !upmem.hierarchy<1x16>
+          upmem.scatter_on_array %subview_2[1 elts, #map1] onto @buf_1 of %5  : memref<1xf32, strided<[1], offset: ?>> onto !upmem.hierarchy<1x16>
+          upmem.scatter_on_array %subview[16 elts, #map2] onto @buf_2 of %5  : memref<16xf32, strided<[1], offset: ?>> onto !upmem.hierarchy<1x16>
+          upmem.wait_for %5  : !upmem.hierarchy<1x16>
+          upmem.gather_from_array %subview[16 elts, #map2] from @buf_2 of %5  : memref<16xf32, strided<[1], offset: ?>> from !upmem.hierarchy<1x16>
         }
       }
-      upmem.free_dpus %5  : !upmem.hierarchy<1x1x16>
+      upmem.free_dpus %5  : !upmem.hierarchy<1x16>
       cinm.yield  %4 : tensor<?xf32>
     }
     return %0 : tensor<?xf32>

@@ -20,8 +20,8 @@
 #m = affine_map<(m, k) -> (m, k)>
 #v = affine_map<(m, k) -> (k)>
 #r = affine_map<(m, k) -> (m)>
-#pf = #upmem.platform<type=v1A, dimensions = 4x16>
-#acc = #upmem.array<1x16x1, #pf>
+#pf = #upmem.platform<type = v1A, dpus = 64, tasklets = 24>
+#acc = #upmem.array<16x1, #pf>
 
 // CHECK-LABEL: func.func @gemv
 func.func @gemv(%A: tensor<1024x512xi32>, %x: tensor<512xi32>) -> tensor<1024xi32> {

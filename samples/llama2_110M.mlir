@@ -10,7 +10,7 @@
 // head_size: 48
 // vocab_size: 32000
 // seq_len: 1024
-#upmem = #upmem.platform<type=v1A, dimensions = 40x64>
+#upmem = #upmem.platform<type = v1A, dpus = 2560, tasklets = 24>
 
 func.func @forward(%token : index, %pos : index,
 	// state

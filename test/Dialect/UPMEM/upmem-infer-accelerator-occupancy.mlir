@@ -13,7 +13,7 @@
 // measuring the final IR is what keeps it honest. The margin is 64 bytes: a
 // configuration has to sit against the ceiling to get this far.
 
-#upmem = #upmem.platform<type = v1A, dimensions = 32x64x24>
+#upmem = #upmem.platform<type = v1A, dpus = 2048, tasklets = 24>
 
 func.func @gemv_too_big_a_leaf_tile(%A: tensor<4096x4096xi32>, %x: tensor<4096xi32>) -> tensor<4096xi32> {
   // expected-error @below {{Pipeline failed: WRAM occupancy of 57408 bytes exceeds the 57344 bytes a DPU has (8 tasklets x 7176 bytes of stack, plus 0 bytes of static buffers)}}
