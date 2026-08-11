@@ -233,6 +233,10 @@ struct UpmemInferencePlugin : cinm::InferencePlugin {
     return menu;
   }
 
+  int64_t sharedCapacityBytes() const override {
+    return platform.getMramLevel().getSizeInBytes();
+  }
+
   /// Per-DPU MRAM footprint at a configuration, split by operand staticness,
   /// mirroring exactly the capacity charge P5 posts on the space (see
   /// handleLinalgOp): `tasklets × Σ_operands Π_dims mramTile[d]`, no sharing
@@ -1002,6 +1006,8 @@ struct UpmemInferAcceleratorPass
     o.dumpFullPool = dumpFullPool;
     o.dumpDir = dumpDir;
     o.nSolveWorkers = nSolveWorkers;
+    o.graphAllocation = graphAllocation;
+    o.programReloadMs = programReloadMs;
     upmemOpts.annotateOpCosts = annotateOpCosts;
     upmemOpts.useMRAMTiling = useMRAMTiling;
     upmemOpts.fusionEdges = fusionEdges;

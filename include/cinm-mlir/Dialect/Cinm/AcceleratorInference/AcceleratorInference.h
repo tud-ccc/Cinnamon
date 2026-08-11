@@ -132,6 +132,11 @@ struct InferencePlugin {
   /// Only meaningful when sharedResourceParam() is non-empty.
   virtual SmallVector<int64_t> sharedResourceMenu() const { return {}; }
 
+  /// Per-device-unit capacity bound of the memory the co-residency packing
+  /// (C9) fills: MRAM bytes per DPU for UPMEM. 0 = no capacity model, the
+  /// packing is unconstrained.
+  virtual int64_t sharedCapacityBytes() const { return 0; }
+
   /// Measure what one device unit holds under `trial`'s configuration, for
   /// the co-residency constraint C9 and the timeshare pricing of the design.
   /// `trial` is a fresh, *unlowered* clone annotated with the configuration
@@ -262,6 +267,20 @@ struct InferenceOptions {
   /// an error, not a no-op: a search that ignores a pin measures something
   /// other than what was asked.
   llvm::StringMap<ParmValue> pinnedParams;
+
+  /// Run the graph-level two-level solve (Stage A profiling over the resource
+  /// menu, Stage B allocation, Stage C stamping; docs/GraphOptimizationDesign
+  /// .md) instead of searching every block independently with the whole
+  /// device to itself. Requires a plugin that declares a shared resource;
+  /// incompatible with externally pinning that resource (fixed-dpus), since
+  /// the profiling pins it per menu value itself.
+  bool graphAllocation = false;
+
+  /// Graph allocation only: cost of switching a device set to a different
+  /// program, per op per inference -- what a timeshared (non-pinned)
+  /// placement pays and pinning avoids. The design's measured-risk constant:
+  /// 40 ms until measured on hardware.
+  double programReloadMs = 40.0;
 };
 
 // ===----------------------------------------------------------------------===//
