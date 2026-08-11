@@ -17,18 +17,18 @@ func.func @forward(%token : index, %pos : index,
 	%kc : tensor<6x1024x768xf32> {bufferization.writable = true, bufferization.buffer_layout = affine_map<(i,j,k) -> (i,j,k)>},
 	%vc : tensor<6x1024x768xf32> {bufferization.writable = true, bufferization.buffer_layout = affine_map<(i,j,k) -> (i,j,k)>},
 	// weights
-	%embedding_table : tensor<32000x768xf32> {bufferization.buffer_layout = affine_map<(i,j) -> (i,j)>},
-	%rms_att_weights : tensor<6x768xf32>{bufferization.buffer_layout = affine_map<(i,j) -> (i,j)>},
-	%wq : tensor<6x768x768xf32>{bufferization.buffer_layout = affine_map<(i,j,k) -> (i,j,k)>},
-	%wk : tensor<6x768x768xf32>{bufferization.buffer_layout = affine_map<(i,j,k) -> (i,j,k)>},
-	%wv : tensor<6x768x768xf32>{bufferization.buffer_layout = affine_map<(i,j,k) -> (i,j,k)>},
-	%wo : tensor<6x768x768xf32>{bufferization.buffer_layout = affine_map<(i,j,k) -> (i,j,k)>},
-	%w1 : tensor<6x2048x768xf32>{bufferization.buffer_layout = affine_map<(i,j,k) -> (i,j,k)>},
-	%w2 : tensor<6x768x2048xf32>{bufferization.buffer_layout = affine_map<(i,j,k) -> (i,j,k)>},
-	%w3 : tensor<6x2048x768xf32>{bufferization.buffer_layout = affine_map<(i,j,k) -> (i,j,k)>},
-	%rms_ffn_weights : tensor<6x768xf32>{bufferization.buffer_layout = affine_map<(i,j) -> (i,j)>},
-	%rms_final_weight : tensor<768xf32>{bufferization.buffer_layout = affine_map<(i) -> (i)>},
-	%wcls : tensor<32000x768xf32>{bufferization.buffer_layout = affine_map<(i,j) -> (i,j)>}
+	%embedding_table : tensor<32000x768xf32> {cinm.static, bufferization.buffer_layout = affine_map<(i,j) -> (i,j)>},
+	%rms_att_weights : tensor<6x768xf32>{cinm.static, bufferization.buffer_layout = affine_map<(i,j) -> (i,j)>},
+	%wq : tensor<6x768x768xf32>{cinm.static, bufferization.buffer_layout = affine_map<(i,j,k) -> (i,j,k)>},
+	%wk : tensor<6x768x768xf32>{cinm.static, bufferization.buffer_layout = affine_map<(i,j,k) -> (i,j,k)>},
+	%wv : tensor<6x768x768xf32>{cinm.static, bufferization.buffer_layout = affine_map<(i,j,k) -> (i,j,k)>},
+	%wo : tensor<6x768x768xf32>{cinm.static, bufferization.buffer_layout = affine_map<(i,j,k) -> (i,j,k)>},
+	%w1 : tensor<6x2048x768xf32>{cinm.static, bufferization.buffer_layout = affine_map<(i,j,k) -> (i,j,k)>},
+	%w2 : tensor<6x768x2048xf32>{cinm.static, bufferization.buffer_layout = affine_map<(i,j,k) -> (i,j,k)>},
+	%w3 : tensor<6x2048x768xf32>{cinm.static, bufferization.buffer_layout = affine_map<(i,j,k) -> (i,j,k)>},
+	%rms_ffn_weights : tensor<6x768xf32>{cinm.static, bufferization.buffer_layout = affine_map<(i,j) -> (i,j)>},
+	%rms_final_weight : tensor<768xf32>{cinm.static, bufferization.buffer_layout = affine_map<(i) -> (i)>},
+	%wcls : tensor<32000x768xf32>{cinm.static, bufferization.buffer_layout = affine_map<(i,j) -> (i,j)>}
 ) -> tensor<32000xf32> attributes {cinm.available_platforms = [#upmem]}{
 	%c0 = arith.constant 0 : index
 	%c1 = arith.constant 1 : index
