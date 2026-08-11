@@ -232,11 +232,15 @@ runGraphAllocation(const ComputeGraph &graph, StringRef platformName,
 
   // Allocation: exact solve over the profiles. The budget is the whole
   // device, since each connected component is interpreted as owning the
-  // grid; the per-class menus never exceed it.
+  // grid; the per-class menus never exceed it. The co-residency packing is
+  // bounded by every memory level the platform declares -- levels a
+  // configuration pins nothing in never bind, so there is nothing to select.
   std::unique_ptr<InferencePlugin> plugin = makePlugin(graph.platform);
   AllocationOptions allocOpts;
   allocOpts.resourceBudget = plugin->sharedResourceMax();
-  allocOpts.capacityBytes = plugin->sharedCapacityBytes();
+  for (CinmLevelDefAttr level : graph.platform.getLevels())
+    allocOpts.capacities.push_back(
+        {level.getName().getValue().str(), level.getSizeInBytes()});
   allocOpts.programReloadMs = opts.programReloadMs;
   std::optional<AllocationResult> alloc = allocateGraph(profiles, allocOpts);
   if (!alloc)

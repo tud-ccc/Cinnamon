@@ -35,16 +35,26 @@ struct ClassProfile {
   SmallVector<ProfilePoint> points;
 };
 
+/// Declared capacity of one memory level of the device, in the same
+/// per-instance unit the profiles' LevelResidency entries use. Typically
+/// copied straight off the platform's level declarations.
+struct LevelCapacity {
+  std::string level;
+  int64_t bytes = 0;
+};
+
 struct AllocationOptions {
   /// What the whole graph may pin, in profile-resource units: the total
   /// device size. Sets are carved out of this and never returned, so the sum
   /// over all pinned sets must stay within it.
   int64_t resourceBudget = 0;
-  /// Per-device-unit memory capacity (MRAM bytes per DPU). Bounds how many
-  /// members may be co-resident on one set: their pinned weights all stay in
-  /// memory at once, while their working buffers run sequentially and reuse
-  /// one region. 0 disables the check (targets without a residency model).
-  int64_t capacityBytes = 0;
+  /// Capacity per memory level. Bounds how many members may be co-resident
+  /// on one set: per level, their pinned footprints all stay resident at
+  /// once and sum, while their working buffers run sequentially and reuse
+  /// one region (max). Levels in which a configuration pins nothing never
+  /// bind, so listing every level of the platform is the right default.
+  /// Empty disables the check (targets without a residency model).
+  SmallVector<LevelCapacity> capacities;
   /// Cost of switching a device set to a different program, per inference
   /// per op. Assumed constant (40 ms) until measured on hardware.
   double programReloadMs = 40.0;

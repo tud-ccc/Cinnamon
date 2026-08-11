@@ -19,12 +19,13 @@ constexpr int64_t kNoBudget = std::numeric_limits<int64_t>::max();
 /// One way a group of co-resident members may be provisioned: a profile
 /// point (pinned) or the timeshare pseudo-allocation. `loadPerMember` is the
 /// per-inference cost one member contributes; a group of k costs k times it
-/// (identical programs run sequentially on their set).
+/// (identical programs run sequentially on their set). `kMax` is the
+/// co-residency cap: how many members may share a set at all under this
+/// option's memory footprints.
 struct GroupOption {
   int64_t resource;     // 0 = unpinned
   double loadPerMember; // ms
-  int64_t staticBytes;  // per device unit, per member; co-residents' sum
-  int64_t dynBytes;     // per device unit, shared across members (max)
+  unsigned kMax;        // co-residency cap (<= class multiplicity)
 };
 
 /// All provisioning options of one class.
@@ -33,18 +34,24 @@ struct ClassOptions {
   SmallVector<GroupOption> options;
 };
 
-/// Largest k such that k members may share a set under option `o`: their k
-/// pinned footprints plus the one shared working region must fit the unit,
-/// k * static + dyn <= capacity. Unlimited when the capacity check is off.
-unsigned maxCoResidents(const GroupOption &o, int64_t capacityBytes,
+/// Largest k such that k members may share a set at `point`'s configuration:
+/// in every capacity-bounded memory level, their k pinned footprints plus
+/// the one shared working region must fit, k * static + dyn <= capacity.
+/// Levels the configuration pins nothing in never bind; the check is off
+/// when no capacities are declared.
+unsigned maxCoResidents(const ProfilePoint &point,
+                        ArrayRef<LevelCapacity> capacities,
                         unsigned multiplicity) {
-  if (capacityBytes <= 0 || o.staticBytes <= 0)
-    return multiplicity;
-  int64_t room = capacityBytes - o.dynBytes;
-  if (room < o.staticBytes)
-    return 0;
-  return static_cast<unsigned>(
-      std::min<int64_t>(multiplicity, room / o.staticBytes));
+  int64_t k = multiplicity;
+  for (const LevelCapacity &capacity : capacities) {
+    const LevelResidency *level = point.residency.find(capacity.level);
+    if (!level || level->staticBytes <= 0)
+      continue;
+    int64_t room = capacity.bytes - level->dynBytes;
+    k = std::min<int64_t>(
+        k, room < level->staticBytes ? 0 : room / level->staticBytes);
+  }
+  return static_cast<unsigned>(std::max<int64_t>(0, k));
 }
 
 /// Minimum total pinned resource with which `cls`'s members can all be
@@ -52,7 +59,6 @@ unsigned maxCoResidents(const GroupOption &o, int64_t capacityBytes,
 /// off the front: interchangeability means only counts matter.
 /// Returns kNoBudget when impossible.
 int64_t minBudgetFor(const ClassOptions &cls, double target,
-                     int64_t capacityBytes,
                      SmallVector<GroupAllocation> *outGroups = nullptr) {
   const unsigned n = cls.multiplicity;
   SmallVector<int64_t> dp(n + 1, kNoBudget);
@@ -61,7 +67,7 @@ int64_t minBudgetFor(const ClassOptions &cls, double target,
   dp[0] = 0;
   for (unsigned j = 1; j <= n; ++j) {
     for (auto [oi, o] : llvm::enumerate(cls.options)) {
-      unsigned kMax = maxCoResidents(o, capacityBytes, j);
+      unsigned kMax = std::min(o.kMax, j);
       for (unsigned k = 1; k <= kMax; ++k) {
         if (double(k) * o.loadPerMember > target)
           break; // larger k only increases the load
@@ -101,8 +107,9 @@ std::optional<AllocationResult> allocateGraph(ArrayRef<ClassProfile> classes,
     co.multiplicity = cls.multiplicity;
     double bestPinned = kInf, bestScatter = 0;
     for (const ProfilePoint &p : cls.points) {
-      co.options.push_back({p.resource, p.costMs, p.residency.staticMramBytes,
-                            p.residency.dynMramBytes});
+      co.options.push_back(
+          {p.resource, p.costMs,
+           maxCoResidents(p, opts.capacities, cls.multiplicity)});
       if (p.costMs < bestPinned) {
         bestPinned = p.costMs;
         bestScatter = p.residency.weightScatterMs;
@@ -112,14 +119,12 @@ std::optional<AllocationResult> allocateGraph(ArrayRef<ClassProfile> classes,
       // Unpinned: borrow the best point's device count transiently; pay the
       // program switch and the weight re-scatter every inference. Nothing
       // stays resident, so the capacity check does not constrain it.
-      co.options.push_back(
-          {0, bestPinned + opts.programReloadMs + bestScatter, 0, 0});
+      co.options.push_back({0, bestPinned + opts.programReloadMs + bestScatter,
+                            cls.multiplicity});
     }
-    for (const GroupOption &o : co.options) {
-      unsigned kMax = maxCoResidents(o, opts.capacityBytes, co.multiplicity);
-      for (unsigned k = 1; k <= kMax; ++k)
+    for (const GroupOption &o : co.options)
+      for (unsigned k = 1; k <= o.kMax; ++k)
         candidates.push_back(double(k) * o.loadPerMember);
-    }
     all.push_back(std::move(co));
   }
 
@@ -132,7 +137,7 @@ std::optional<AllocationResult> allocateGraph(ArrayRef<ClassProfile> classes,
   auto feasible = [&](double target) -> bool {
     int64_t total = 0;
     for (const ClassOptions &cls : all) {
-      int64_t need = minBudgetFor(cls, target, opts.capacityBytes);
+      int64_t need = minBudgetFor(cls, target);
       if (need == kNoBudget)
         return false;
       total += need;
@@ -157,7 +162,7 @@ std::optional<AllocationResult> allocateGraph(ArrayRef<ClassProfile> classes,
   AllocationResult result;
   for (const ClassOptions &cls : all) {
     ClassAllocation alloc;
-    int64_t used = minBudgetFor(cls, target, opts.capacityBytes, &alloc.groups);
+    int64_t used = minBudgetFor(cls, target, &alloc.groups);
     (void)used;
     for (const GroupAllocation &g : alloc.groups) {
       result.bottleneckMs = std::max(result.bottleneckMs, g.loadMs);

@@ -329,17 +329,17 @@ struct UpmemInferencePlugin : cinm::InferencePlugin {
     return menu;
   }
 
-  int64_t sharedCapacityBytes() const override {
-    return platform.getMramLevel().getSizeInBytes();
-  }
-
-  /// Per-DPU MRAM footprint at a configuration, split by operand staticness,
-  /// mirroring exactly the MRAM capacity bound the search space posts (see
-  /// handleLinalgOp): `tasklets × Σ_operands Π_dims mramTile[d]`, no sharing
-  /// assumed. The MRAM-level tile sizes are read back through the parameter
-  /// names stamped as kOuterTileParamsAttr; staticness resolves through the
-  /// trial's function-argument attributes (isStaticValue). An operand that is
-  /// not directly a block argument (a `linalg.fill` accumulator, a fused
+  /// Footprint at a configuration, per memory level and split by operand
+  /// staticness, mirroring exactly the capacity bounds the search space
+  /// posts (see handleLinalgOp): per level, `tasklets × Σ_operands
+  /// Π_dims tile[d]` with that level's tile sizes, no sharing assumed. The
+  /// tile sizes are read back through the parameter names stamped as
+  /// kOuterTileParamsAttr (MRAM) and kLeafTileParamsAttr (WRAM); staticness
+  /// resolves through the trial's function-argument attributes
+  /// (isStaticValue). Only MRAM holds anything between inferences -- WRAM
+  /// tiles are re-staged by DMA on every use -- so WRAM footprints are all
+  /// dynamic and never bind the co-residency packing. An operand that is not
+  /// directly a block argument (a `linalg.fill` accumulator, a fused
   /// intermediate) is charged as dynamic, which errs toward under-pinning.
   cinm::ResidencyInfo measureResidency(cinm::TrialInfo &trial) override {
     cinm::ResidencyInfo out;
@@ -354,39 +354,57 @@ struct UpmemInferencePlugin : cinm::InferencePlugin {
     const int64_t ranks =
         std::max<int64_t>(1, dpus / platform.getMaxNumDpusPerRank());
 
+    cinm::LevelResidency mram{
+        platform.getMramLevel().getName().getValue().str(), 0, 0};
+    cinm::LevelResidency wram{
+        platform.getWramLevel().getName().getValue().str(), 0, 0};
+
     cinm::ComputeBlockOp block = trial.computeBlock;
     block.getBody().walk([&](linalg::LinalgOp op) {
-      auto tileParams = op->getAttrOfType<ArrayAttr>(kOuterTileParamsAttr);
-      if (!tileParams)
+      auto mramParams = op->getAttrOfType<ArrayAttr>(kOuterTileParamsAttr);
+      auto wramParams = op->getAttrOfType<ArrayAttr>(kLeafTileParamsAttr);
+      if (!mramParams || !wramParams)
         return;
-      SmallVector<int64_t> mramTile;
-      for (Attribute name : tileParams)
-        mramTile.push_back(valueOf(llvm::cast<StringAttr>(name).getValue()));
+      auto tileSizes = [&](ArrayAttr params) {
+        SmallVector<int64_t> sizes;
+        for (Attribute name : params)
+          sizes.push_back(valueOf(llvm::cast<StringAttr>(name).getValue()));
+        return sizes;
+      };
+      SmallVector<int64_t> mramTile = tileSizes(mramParams);
+      SmallVector<int64_t> wramTile = tileSizes(wramParams);
 
       auto operandDims = linalgOperandDims(op);
       for (auto [opnd, dims] : llvm::zip(op->getOpOperands(), operandDims)) {
         auto shaped = llvm::cast<ShapedType>(opnd.get().getType());
         const int64_t eltBytes =
             std::max<int64_t>(1, shaped.getElementTypeBitWidth() / 8);
-        int64_t tileElts = 1;
-        for (unsigned dim : dims)
-          tileElts *= mramTile[dim];
-        const int64_t perDpuBytes = tasklets * tileElts * eltBytes;
+        int64_t mramElts = 1, wramElts = 1;
+        for (unsigned dim : dims) {
+          mramElts *= mramTile[dim];
+          wramElts *= wramTile[dim];
+        }
+        // WRAM is scratch: every tile there is re-staged per use, so it is
+        // dynamic whatever the operand's staticness.
+        wram.dynBytes += tasklets * wramElts * eltBytes;
 
+        const int64_t perDpuBytes = tasklets * mramElts * eltBytes;
         auto arg = llvm::dyn_cast<BlockArgument>(opnd.get());
         const bool isStatic = arg && arg.getOwner()->getParentOp() == block &&
                               cinm::isStaticValue(arg);
         if (isStatic) {
-          out.staticMramBytes += perDpuBytes;
+          mram.staticBytes += perDpuBytes;
           // What a timeshared placement would pay per inference to restore
           // these weights: the whole tensor through the scatter model.
           out.weightScatterMs +=
               transferCost(double(shaped.getNumElements()) * eltBytes, ranks);
         } else {
-          out.dynMramBytes += perDpuBytes;
+          mram.dynBytes += perDpuBytes;
         }
       }
     });
+    out.levels.push_back(std::move(mram));
+    out.levels.push_back(std::move(wram));
     return out;
   }
 
