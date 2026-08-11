@@ -50,13 +50,13 @@ struct TrialInfo {
 };
 
 /// What one device unit (a DPU) holds under a given configuration, split by
-/// operand staticness (see isStaticValue): the currency of the co-residency
-/// constraint C9 in docs/GraphOptimizationDesign.md. Static (pinned)
-/// footprints of co-resident ops sum; dynamic working sets of sequentially
-/// executing co-residents reuse one region and take the max.
-/// `weightScatterMs` is what scattering the static operands once costs -- the
-/// price a *non*-pinned (timeshared) placement pays per inference, and what
-/// pinning amortizes.
+/// operand staticness (see isStaticValue): the currency of the graph-level
+/// co-residency packing. When several ops share a device set, their static
+/// (pinned) footprints all occupy memory at once and sum, while their
+/// dynamic working sets run sequentially, reuse one region, and take the
+/// max. `weightScatterMs` is what scattering the static operands once costs
+/// -- the price a *non*-pinned (timeshared) placement pays per inference,
+/// and what pinning amortizes.
 struct ResidencyInfo {
   int64_t staticMramBytes = 0;
   int64_t dynMramBytes = 0;
@@ -122,9 +122,9 @@ struct InferencePlugin {
 
   /// The name of the search parameter that counts the shared device resource
   /// the graph level allocates between compute blocks -- the DPU count for
-  /// UPMEM. Cost profiles (Stage A of docs/GraphOptimizationDesign.md) are
-  /// indexed by this parameter's value. Empty when the target has no notion
-  /// of graph-level allocation.
+  /// UPMEM. Cost profiles (profileComputeBlock) are indexed by this
+  /// parameter's value. Empty when the target has no notion of graph-level
+  /// allocation.
   virtual llvm::StringRef sharedResourceParam() const { return {}; }
 
   /// The values the shared resource may take when the graph level hands it
@@ -133,17 +133,18 @@ struct InferencePlugin {
   virtual SmallVector<int64_t> sharedResourceMenu() const { return {}; }
 
   /// Per-device-unit capacity bound of the memory the co-residency packing
-  /// (C9) fills: MRAM bytes per DPU for UPMEM. 0 = no capacity model, the
+  /// fills: MRAM bytes per DPU for UPMEM. 0 = no capacity model, the
   /// packing is unconstrained.
   virtual int64_t sharedCapacityBytes() const { return 0; }
 
   /// Measure what one device unit holds under `trial`'s configuration, for
-  /// the co-residency constraint C9 and the timeshare pricing of the design.
-  /// `trial` is a fresh, *unlowered* clone annotated with the configuration
-  /// to measure; operand staticness is readable through isStaticValue (the
-  /// framework forwards the original operands' staticness onto the trial
-  /// module's function arguments). The default reports empty footprints:
-  /// a target without a residency model pins nothing, and C9 is vacuous.
+  /// the co-residency packing and timeshare pricing of the graph-level
+  /// allocation. `trial` is a fresh, *unlowered* clone annotated with the
+  /// configuration to measure; operand staticness is readable through
+  /// isStaticValue (the framework forwards the original operands' staticness
+  /// onto the trial module's function arguments). The default reports empty
+  /// footprints: a target without a residency model pins nothing, and the
+  /// capacity check never rejects a packing.
   virtual ResidencyInfo measureResidency(TrialInfo &trial) {
     (void)trial;
     return {};
@@ -261,60 +262,60 @@ struct InferenceOptions {
   /// Parameters pinned to a single value when the space is built: each named
   /// parameter is constrained to equal the given value, on top of whatever
   /// the plugin declares. This is how a decision taken above the search is
-  /// imposed on it -- the graph level fixing the device size for a Stage-A
-  /// profiling run, or a Stage-C budgeted re-search
-  /// (docs/GraphOptimizationDesign.md). A name the space does not declare is
-  /// an error, not a no-op: a search that ignores a pin measures something
-  /// other than what was asked.
+  /// imposed on it -- the graph level fixing the device size for a profiling
+  /// run, or re-searching under an allotted budget. A name the space does
+  /// not declare is an error, not a no-op: a search that ignores a pin
+  /// measures something other than what was asked.
   llvm::StringMap<ParmValue> pinnedParams;
 
-  /// Run the graph-level two-level solve (Stage A profiling over the resource
-  /// menu, Stage B allocation, Stage C stamping; docs/GraphOptimizationDesign
-  /// .md) instead of searching every block independently with the whole
-  /// device to itself. Requires a plugin that declares a shared resource;
-  /// incompatible with externally pinning that resource (fixed-dpus), since
-  /// the profiling pins it per menu value itself.
+  /// Run the graph-level two-level solve -- profile each program-identity
+  /// class over the resource menu, allocate the device exactly across the
+  /// graph, stamp each group's winning configuration onto its members --
+  /// instead of searching every block independently with the whole device to
+  /// itself. Requires a plugin that declares a shared resource; incompatible
+  /// with externally pinning that resource (fixed-dpus), since the profiling
+  /// pins it per menu value itself.
   bool graphAllocation = false;
 
   /// Graph allocation only: cost of switching a device set to a different
   /// program, per op per inference -- what a timeshared (non-pinned)
-  /// placement pays and pinning avoids. The design's measured-risk constant:
-  /// 40 ms until measured on hardware.
+  /// placement pays and pinning avoids. Assumed constant (40 ms) until
+  /// measured on hardware.
   double programReloadMs = 40.0;
 };
 
 // ===----------------------------------------------------------------------===//
-// Stage A: cost profiles
+// Cost profiles
 // ===----------------------------------------------------------------------===//
 
-/// One measured point of a compute block's cost profile L(D): the best cost
-/// a search found with the shared resource pinned to `resource`, and the
-/// configuration that achieved it. The profile is the complete summary of the
-/// block that the graph-level allocation consumes (an optimal-value-function
-/// projection; see the design's "Why the interface is exact").
+/// One measured point of a compute block's cost profile: the best cost a
+/// search found with the shared resource pinned to `resource`, and the
+/// configuration that achieved it. The profile is the complete summary of
+/// the block that the graph-level allocation consumes: the only variables a
+/// cross-block constraint ever mentions are the resource and the capacity
+/// footprints, so conditioning on them separates the joint problem exactly.
 struct ProfilePoint {
   /// The shared-resource value (sharedResourceParam) this point measured.
   int64_t resource;
-  /// L(resource): total cost of the best configuration found, in ms.
+  /// Total cost of the best configuration found at this resource, in ms.
   double costMs;
   /// The argmin configuration, keyed by space dimension name in the same
   /// currency as InferenceOptions::evalSingleSolution, so it can be replayed
   /// through a later search or evaluation without reinterpretation.
   llvm::StringMap<ParmValue> config;
   /// The argmin's residency summary (plugin-measured); consumed by the
-  /// graph-level C9 packing and timeshare pricing.
+  /// graph-level co-residency packing and timeshare pricing.
   ResidencyInfo residency;
 };
 
-/// Stage A: measure `computeOp`'s cost profile over the plugin's
-/// shared-resource menu by running one search per menu value with the
-/// resource pinned (P6 pinning). `opts` applies to each per-point search
-/// (maxEvals is per point); dumps, when enabled, go to a `<param>_<value>/`
-/// subdirectory per point. Menu values for which the pinned space has no
-/// valid configuration (divisibility, capacity) yield no point rather than an
-/// error; the profile is measured pointwise and Stage B copes with holes.
-/// Fails only when every menu value is infeasible or a search fails
-/// definitively.
+/// Measure `computeOp`'s cost profile over the plugin's shared-resource menu
+/// by running one search per menu value with the resource pinned. `opts`
+/// applies to each per-point search (maxEvals is per point); dumps, when
+/// enabled, go to a `<param>_<value>/` subdirectory per point. Menu values
+/// for which the pinned space has no valid configuration (divisibility,
+/// capacity) yield no point rather than an error; the profile is measured
+/// pointwise and the allocation copes with holes. Fails only when every menu
+/// value is infeasible or a search fails definitively.
 utils::Maybe<SmallVector<ProfilePoint>>
 profileComputeBlock(cinm::ComputeBlockOp computeOp, InferencePlugin &plugin,
                     const InferenceOptions &opts);

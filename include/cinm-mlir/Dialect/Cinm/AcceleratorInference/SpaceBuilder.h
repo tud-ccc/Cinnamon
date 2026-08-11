@@ -400,11 +400,10 @@ public:
   /// Pin the declared integer parameter `name` to exactly `value`. This is
   /// how a caller *outside* the plugin conditions the space on a decision
   /// taken at a higher level -- the graph level pinning the device size for
-  /// a Stage-A profiling run or a Stage-C budgeted search
-  /// (docs/GraphOptimizationDesign.md) -- without the plugin having to know.
-  /// Returns false if no integer parameter of that name has been declared;
-  /// the caller must treat that as an error, since a search that silently
-  /// ignores a pin measures something other than what was asked.
+  /// a profiling run or a budgeted re-search -- without the plugin having to
+  /// know. Returns false if no integer parameter of that name has been
+  /// declared; the caller must treat that as an error, since a search that
+  /// silently ignores a pin measures something other than what was asked.
   bool pin(llvm::StringRef name, ParmValue value);
 
   /// Commit all declarations and constraints into space in the correct order.

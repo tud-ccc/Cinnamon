@@ -41,8 +41,7 @@ def Cinm_Dialect : Dialect {
     /// is identical on every invocation (model weights baked at deployment,
     /// typically). Pinning such data on an accelerator amortizes its transfer
     /// over the serving lifetime; see isStaticValue (CinmUtils.h) for the
-    /// full staticness derivation and docs/GraphOptimizationDesign.md for
-    /// what consumes it.
+    /// full staticness derivation.
     constexpr static StringRef STATIC_ATTR_NAME = "cinm.static";
     private:
         void registerOps();

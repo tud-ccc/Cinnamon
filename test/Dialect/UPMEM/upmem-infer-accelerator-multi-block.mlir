@@ -1,10 +1,9 @@
 // RUN: cinm-opt %s --cinm-isolate-compute-blocks --upmem-infer-accelerator="simulator=op-count max-evals=2 n-init=2 fixed-dpus=16 fixed-tasklets=4" | FileCheck %s
 
 // Inference is driven over every compute block the platform owns, not over one
-// per function: the graph the whole thing optimizes (see
-// docs/GraphOptimizationDesign.md) is a connected component of the dataflow
-// between blocks, and a component has several blocks in it. Blocks the
-// platform does not own are left untouched.
+// per function: the unit the driver walks is a connected component of the
+// dataflow between blocks, and a component has several blocks in it. Blocks
+// the platform does not own are left untouched.
 //
 // What is checked here is coverage -- every owned block ends up configured and
 // lowered -- not what the search converges to, hence the pinned dpus/tasklets

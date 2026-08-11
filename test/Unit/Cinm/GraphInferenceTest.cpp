@@ -1,10 +1,11 @@
 //===- GraphInferenceTest.cpp - Graph collection & program identity -------===//
 //
 // collectComputeGraphs produces the unit the graph-level optimization
-// operates on: connected components of the block-level dataflow, canonicalized
-// into program-identity classes (C8 of docs/GraphOptimizationDesign.md).
-// These tests pin the two relations: what connects blocks into one graph, and
-// what makes two blocks the same program.
+// operates on: connected components of the block-level dataflow,
+// canonicalized into program-identity classes (only blocks with identical
+// programs may share a device set). These tests pin the two relations: what
+// connects blocks into one graph, and what makes two blocks the same
+// program.
 //
 //===----------------------------------------------------------------------===//
 

@@ -17,8 +17,7 @@ namespace mlir::cinm {
 
 /// Whether `value` is known to hold the same data on every inference, so
 /// that pinning it on an accelerator amortizes its transfer over the serving
-/// lifetime (docs/GraphOptimizationDesign.md, "What counts as static").
-/// A value is static iff it is
+/// lifetime. A value is static iff it is
 ///  - a function argument carrying the `cinm.static` arg attribute
 ///    (CinmDialect::STATIC_ATTR_NAME) -- the serving contract, declared by
 ///    the frontend;

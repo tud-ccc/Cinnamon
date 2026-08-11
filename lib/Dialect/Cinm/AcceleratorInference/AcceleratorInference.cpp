@@ -1084,7 +1084,7 @@ inferAcceleratorConfig(cinm::ComputeBlockOp computeOp, InferencePlugin &plugin,
 }
 
 // ===----------------------------------------------------------------------===//
-// profileComputeBlock (Stage A)
+// profileComputeBlock
 // ===----------------------------------------------------------------------===//
 
 Maybe<SmallVector<ProfilePoint>>
