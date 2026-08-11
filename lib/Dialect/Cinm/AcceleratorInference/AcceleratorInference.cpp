@@ -1097,28 +1097,49 @@ profileComputeBlock(cinm::ComputeBlockOp computeOp, InferencePlugin &plugin,
         computeOp.getLoc(),
         "this target declares no shared resource to profile over");
 
-  SmallVector<ProfilePoint> points;
-  for (int64_t resource : menu) {
+  // The menu points are independent searches, so they run concurrently. Each
+  // point gets its own plugin clone (initializeSpace mutates the plugin) and
+  // builds its own modules; the original block is only ever read. Gated on
+  // the same conditions as every other parallel evaluation here: the plugin
+  // must tolerate concurrent evaluation, and the context must have its
+  // thread-safe uniquing on.
+  MLIRContext *ctx = computeOp->getContext();
+  const unsigned baseWorkers =
+      opts.numWorkers ? opts.numWorkers
+                      : std::max(1u, std::thread::hardware_concurrency());
+  unsigned outerWorkers = 1;
+  if (plugin.supportsMultithreading() && ctx->isMultithreadingEnabled())
+    outerWorkers = std::min<unsigned>(menu.size(), baseWorkers);
+
+  // A per-point search may itself be parallel (exhaustive, sampling): divide
+  // the workers between the two levels instead of multiplying them.
+  InferenceOptions pointBase = opts;
+  pointBase.numWorkers = std::max(1u, baseWorkers / outerWorkers);
+
+  // One slot per menu value, so the profile comes out in menu order whatever
+  // the finish order.
+  struct Slot {
+    std::optional<ProfilePoint> point;
+    std::optional<DiagnosedSilenceableFailure> fail;
+  };
+  std::vector<Slot> slots(menu.size());
+
+  auto runPoint = [&](size_t i) {
+    const int64_t resource = menu[i];
     LLVM_DEBUG(llvm::dbgs() << "[cinm-inference] Profiling " << param << "="
                             << resource << "\n");
-    InferenceOptions pointOpts = opts;
+    std::unique_ptr<InferencePlugin> pointPlugin = plugin.clone();
+    InferenceOptions pointOpts = pointBase;
     pointOpts.pinnedParams[param] = static_cast<ParmValue>(resource);
     if (!opts.dumpDir.empty())
       pointOpts.dumpDir =
           opts.dumpDir + "/" + param.str() + "_" + std::to_string(resource);
 
-    InferenceTask task(pointOpts, plugin, computeOp);
+    InferenceTask task(pointOpts, *pointPlugin, computeOp);
     Maybe<TrialInfo> result = task.runDispatch();
     if (auto *fail = std::get_if<DiagnosedSilenceableFailure>(&result)) {
-      if (fail->isDefiniteFailure())
-        return std::move(*fail);
-      // An infeasible menu value (divisibility, capacity) is data, not an
-      // error: the profile simply has no point there.
-      LLVM_DEBUG(llvm::dbgs()
-                 << "[cinm-inference]   no point at " << param << "="
-                 << resource << ": " << fail->getMessage() << "\n");
-      (void)fail->silence();
-      continue;
+      slots[i].fail = std::move(*fail);
+      return;
     }
 
     TrialInfo &best = std::get<TrialInfo>(result);
@@ -1129,11 +1150,53 @@ profileComputeBlock(cinm::ComputeBlockOp computeOp, InferencePlugin &plugin,
     // search mode, `best`'s own module may already be lowered past the form
     // the plugin can read tile parameters from.
     TrialInfo probe = task.makeTrialInfo(best.config);
-    point.residency = plugin.measureResidency(probe);
-    points.push_back(std::move(point));
+    point.residency = pointPlugin->measureResidency(probe);
+    slots[i].point = std::move(point);
     LLVM_DEBUG(llvm::dbgs() << "[cinm-inference]   L(" << resource
                             << ") = " << best.cost << " ms\n");
+  };
+
+  if (outerWorkers <= 1) {
+    for (size_t i = 0; i < menu.size(); ++i)
+      runPoint(i);
+  } else {
+    std::atomic<size_t> next{0};
+    auto worker = [&] {
+      for (size_t i = next.fetch_add(1, std::memory_order_relaxed);
+           i < menu.size(); i = next.fetch_add(1, std::memory_order_relaxed))
+        runPoint(i);
+    };
+    std::vector<std::thread> threads;
+    threads.reserve(outerWorkers - 1);
+    for (unsigned t = 1; t < outerWorkers; ++t)
+      threads.emplace_back(worker);
+    worker();
+    for (std::thread &t : threads)
+      t.join();
   }
+
+  // Harvest in menu order. A definite failure wins over everything (its
+  // diagnostic is already emitted); an infeasible menu value (divisibility,
+  // capacity) is data, not an error -- the profile simply has no point there.
+  std::optional<DiagnosedSilenceableFailure> definite;
+  SmallVector<ProfilePoint> points;
+  for (auto [i, slot] : llvm::enumerate(slots)) {
+    if (slot.fail) {
+      if (slot.fail->isDefiniteFailure() && !definite) {
+        definite = std::move(*slot.fail);
+        continue;
+      }
+      LLVM_DEBUG(llvm::dbgs()
+                 << "[cinm-inference]   no point at " << param << "=" << menu[i]
+                 << ": " << slot.fail->getMessage() << "\n");
+      (void)slot.fail->silence();
+      continue;
+    }
+    if (slot.point)
+      points.push_back(std::move(*slot.point));
+  }
+  if (definite)
+    return std::move(*definite);
 
   if (points.empty())
     return emitSilenceableFailure(computeOp.getLoc())

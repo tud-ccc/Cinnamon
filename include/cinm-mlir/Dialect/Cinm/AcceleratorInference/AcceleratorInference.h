@@ -309,7 +309,11 @@ struct ProfilePoint {
 };
 
 /// Measure `computeOp`'s cost profile over the plugin's shared-resource menu
-/// by running one search per menu value with the resource pinned. `opts`
+/// by running one search per menu value with the resource pinned. The menu
+/// points are independent and run concurrently, each on its own clone of
+/// `plugin`, when the plugin tolerates concurrent evaluation and the context
+/// is multithreaded; `opts.numWorkers` caps the total across both levels
+/// (the sweep and any parallelism inside a single search). `opts` otherwise
 /// applies to each per-point search (maxEvals is per point); dumps, when
 /// enabled, go to a `<param>_<value>/` subdirectory per point. Menu values
 /// for which the pinned space has no valid configuration (divisibility,
