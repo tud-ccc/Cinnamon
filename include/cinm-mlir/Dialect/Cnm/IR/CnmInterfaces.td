@@ -60,31 +60,6 @@ def CnmAcceleratorAttrInterface : AttrInterface<"CnmAcceleratorAttrInterface", [
     // Defined out-of-line in CnmAttributes.h after WorkgroupType is complete.
     mlir::cnm::WorkgroupType getWorkgroupType() const;
 
-    // /// Return whether a given memory space belongs to this accelerator.
-    // bool ownsMemSpace(::mlir::cinm::CinmMemSpaceAttr space) const {
-    //   if (space.isAbsentMemspace() || space.isHostMemspace())
-    //       return false;
-
-    //   auto level = getPlatform().getLevel(space.getName());
-    //   if (!level)
-    //     return false;
-
-    //   return space == getGenericMemSpace(level);
-    // }
-
-    // /// Return whether all the operands of the given op (minus those of unknown memspace) are buffers belonging to this accelerator.
-    // bool ownsOperation(::mlir::Operation* op) const {
-    //   for (auto operand : op->getOperands()) {
-    //     if (auto buf = llvm::dyn_cast_or_null<::mlir::cinm::CinmBufferType>(operand.getType())) {
-    //       auto space = buf.getMemorySpace();
-    //       if (space.isAbsentMemspace())
-    //         continue;
-    //       if (!ownsMemSpace(space))
-    //         return false;
-    //     }
-    //   }
-    //   return true;
-    // }
   }];
 }
 
