@@ -4,14 +4,18 @@
 #include "cinm-mlir/Dialect/Cinm/IR/CinmBase.h"
 #include "cinm-mlir/Dialect/Cinm/IR/CinmOps.h"
 
+#include <llvm/Support/Casting.h>
 #include <mlir/Dialect/Affine/IR/AffineOps.h>
+#include <mlir/Dialect/Bufferization/IR/Bufferization.h>
 #include <mlir/Dialect/MemRef/IR/MemRef.h>
+#include <mlir/Dialect/Tensor/IR/Tensor.h>
 #include <mlir/Dialect/Utils/StaticValueUtils.h>
 #include <mlir/IR/AffineExpr.h>
 #include <mlir/IR/AffineMap.h>
 #include <mlir/IR/BuiltinTypeInterfaces.h>
 #include <mlir/IR/Matchers.h>
 #include <mlir/IR/OpDefinition.h>
+#include <mlir/Interfaces/CastInterfaces.h>
 #include <mlir/Interfaces/FunctionInterfaces.h>
 #include <mlir/Interfaces/ViewLikeInterface.h>
 #include <mlir/Transforms/DialectConversion.h>
@@ -47,6 +51,14 @@ bool isStaticValue(Value value) {
         llvm::none_of(view.getStaticSizes(), ShapedType::isDynamic) &&
         llvm::none_of(view.getStaticStrides(), ShapedType::isDynamic)) {
       value = view->getOperand(0);
+      continue;
+    }
+    if (llvm::isa_and_nonnull<
+            bufferization::ToBufferOp, bufferization::ToTensorOp,
+            CastOpInterface, tensor::ExpandShapeOp, tensor::CollapseShapeOp,
+            tensor::ReshapeOp, memref::CollapseShapeOp, memref::ReshapeOp>(
+            def)) {
+      value = def->getOperand(0);
       continue;
     }
     return false;
