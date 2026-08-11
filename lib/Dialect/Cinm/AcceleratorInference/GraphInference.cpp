@@ -231,11 +231,11 @@ runGraphAllocation(const ComputeGraph &graph, StringRef platformName,
   }
 
   // Allocation: exact solve over the profiles. The budget is the whole
-  // device -- the largest menu value -- since each connected component is
-  // interpreted as owning the grid.
+  // device, since each connected component is interpreted as owning the
+  // grid; the per-class menus never exceed it.
   std::unique_ptr<InferencePlugin> plugin = makePlugin(graph.platform);
   AllocationOptions allocOpts;
-  allocOpts.resourceBudget = plugin->sharedResourceMenu().back();
+  allocOpts.resourceBudget = plugin->sharedResourceMax();
   allocOpts.capacityBytes = plugin->sharedCapacityBytes();
   allocOpts.programReloadMs = opts.programReloadMs;
   std::optional<AllocationResult> alloc = allocateGraph(profiles, allocOpts);
@@ -312,7 +312,7 @@ inferAcceleratorConfigs(Operation *root, StringRef platformName,
     // single solution is a per-block override and bypasses it.
     if (opts.graphAllocation && !opts.evalSingleSolution &&
         !probe->sharedResourceParam().empty() &&
-        !probe->sharedResourceMenu().empty()) {
+        probe->sharedResourceMax() > 0) {
       StringAttr graphName = namer.getUniqueName(nameHint);
       LLVM_DEBUG(llvm::dbgs()
                  << "===== START GRAPH ALLOCATION " << graphName << " =====\n");

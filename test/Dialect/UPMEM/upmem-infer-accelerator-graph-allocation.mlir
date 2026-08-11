@@ -1,9 +1,10 @@
-// RUN: cinm-opt %s --cinm-isolate-compute-blocks --upmem-infer-accelerator="simulator=op-count max-evals=4 n-init=4 fixed-tasklets=4 graph-allocation=1" | FileCheck %s
+// RUN: cinm-opt %s --cinm-isolate-compute-blocks --upmem-infer-accelerator="simulator=op-count max-evals=4 n-init=4 fixed-tasklets=4 graph-allocation=1 allocation-granularity=4" | FileCheck %s
 
 // The graph-level two-level solve: profile each program-identity class over
-// the rank menu, allocate the grid exactly, stamp each group's winning
-// configuration onto its members. The platform has two ranks of 8 DPUs, so
-// the menu is {8, 16} and the grid budget is 16.
+// its menu (divisors of the iteration-space size, quantized to the
+// allocation granularity), allocate the grid exactly, stamp each group's
+// winning configuration onto its members. The platform has two ranks of
+// 8 DPUs, so the grid budget is 16 and the menu here is {4, 8, 16}.
 //
 // What is pinned here is the *structure* of the outcome -- who shares a
 // configuration, that the grid is not oversubscribed -- not which menu point
@@ -11,10 +12,12 @@
 
 #upmem = #upmem.platform<type = v1A, dimensions = 2x8x16>
 
-// Two different-shape gemvs: two classes, each a singleton. The grid must be
-// split between them (8 + 8): timesharing one of them would pay the 40 ms
-// program reload against sub-ms kernels, so partitioning wins by orders of
-// magnitude.
+// Two different-shape gemvs: two classes, each a singleton. Both are pinned
+// -- timesharing one of them would pay the 40 ms program reload against
+// sub-ms kernels -- and the split is not even: the large gemv dictates the
+// bottleneck and takes 8 DPUs, while the small one takes the *cheapest*
+// menu point that stays under that bottleneck (4 DPUs), since spending more
+// of the grid on it would make nothing faster.
 // CHECK-LABEL: func.func @chained
 func.func @chained(%A: tensor<256x256xi32>, %x: tensor<256xi32>, %B: tensor<128x128xi32>) -> tensor<128xi32>
     attributes {cinm.available_platforms = [#upmem]} {
@@ -24,7 +27,7 @@ func.func @chained(%A: tensor<256x256xi32>, %x: tensor<256xi32>, %B: tensor<128x
     cinm.yield %g : tensor<256xi32>
   }
   %s = tensor.extract_slice %r[0] [128] [1] : tensor<256xi32> to tensor<128xi32>
-  // CHECK: cinm.compute_block on accelerator #upmem.array<1x8x4
+  // CHECK: cinm.compute_block on accelerator #upmem.array<1x4x4
   %r2 = cinm.compute -> tensor<128xi32> {
     %g = cinm.op.gemv %B, %s : tensor<128x128xi32>, tensor<128xi32> -> tensor<128xi32>
     cinm.yield %g : tensor<128xi32>

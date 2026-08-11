@@ -1,5 +1,5 @@
 // RUN: cinm-opt --split-input-file --convert-cinm-to-cnm %s | FileCheck %s
-#upmem_platform = #upmem.platform<type=v1A, dimensions = 4x16>
+#upmem_platform = #upmem.platform<type=v1A, dimensions = 8x128>
 #upmem = #upmem.array<8x128x1, #upmem_platform>
 
 // Affine maps emitted for scatter/gather index computations.

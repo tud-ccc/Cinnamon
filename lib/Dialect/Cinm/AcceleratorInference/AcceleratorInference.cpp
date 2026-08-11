@@ -370,7 +370,7 @@ struct InferenceTask {
                             << options.nValidation << " points\n");
     {
       SimpleProgressBar validBar(static_cast<size_t>(options.nValidation),
-                                 "  validation ");
+                                 "  validation ", options.showProgress);
       // Phase 1: LHS candidate selection (serial, cheap — O(n×M) NN search).
       std::vector<size_t> validIdxs;
       validIdxs.reserve(options.nValidation);
@@ -613,7 +613,8 @@ struct InferenceTask {
     // k * 31 + rngSeed: k=0 gives rngSeed (matches single-seed path above).
     auto seedValue = [&](int k) { return k * 31 + options.rngSeed; };
 
-    MultiSeedProgress progress(options.nSeeds, cap, options.maxEvals);
+    MultiSeedProgress progress(options.nSeeds, cap, options.maxEvals,
+                               options.showProgress);
     if (!progress.active)
       LLVM_DEBUG(llvm::dbgs() << "[cinm-inference] (no progress bar)\n");
 
@@ -721,26 +722,7 @@ struct InferenceTask {
     LLVM_DEBUG(llvm::dbgs() << "[cinm-inference] Exhaustive search: " << N
                             << " configs, " << nThreads << " threads\n");
 
-    indicators::ProgressBar bar{
-        indicators::option::BarWidth{40},
-        indicators::option::MaxProgress{N},
-        indicators::option::PrefixText{"Exhaustive search "},
-        indicators::option::ShowPercentage{true},
-        indicators::option::ShowElapsedTime{true},
-        indicators::option::ShowRemainingTime{true},
-        indicators::option::Stream{std::cerr},
-    };
-    // Workers only touch this relaxed counter — zero synchronisation cost.
-    // A dedicated printer thread wakes every 100 ms and calls set_progress(),
-    // keeping all getenv/termcolor/mutex overhead off the worker threads.
-    std::atomic<size_t> barDone{0};
-    std::atomic<bool> barStop{false};
-    std::thread printerThread([&] {
-      while (!barStop.load(std::memory_order_relaxed)) {
-        std::this_thread::sleep_for(std::chrono::milliseconds(200));
-        bar.set_progress(barDone.load(std::memory_order_relaxed));
-      }
-    });
+    SimpleProgressBar bar(N, "Exhaustive search ", options.showProgress);
 
     std::atomic<size_t> nextIdx{0};
 
@@ -761,7 +743,7 @@ struct InferenceTask {
         if (i >= N)
           break;
         space.at(i, conf);
-        barDone.fetch_add(1, std::memory_order_relaxed);
+        bar.tick();
 
         auto trial = makeTrialInfo(conf, *threadRef);
         auto t0 = std::chrono::steady_clock::now();
@@ -788,9 +770,7 @@ struct InferenceTask {
     worker(0);
     for (auto &t : threads)
       t.join();
-    barStop.store(true, std::memory_order_relaxed);
-    printerThread.join();
-    bar.mark_as_completed();
+    bar.finish();
     auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
         std::chrono::steady_clock::now() - t0);
 
@@ -877,22 +857,8 @@ struct InferenceTask {
                             << " configs (max cost " << options.sampleMaxCostMs
                             << " ms), " << nThreads << " threads\n");
 
-    indicators::ProgressBar bar{
-        indicators::option::BarWidth{40},
-        indicators::option::MaxProgress{sampleN},
-        indicators::option::PrefixText{"Random sample search "},
-        indicators::option::ShowPercentage{true},
-        indicators::option::ShowElapsedTime{true},
-        indicators::option::ShowRemainingTime{true},
-        indicators::option::Stream{std::cerr},
-    };
-    std::atomic<bool> barStop{false};
-    std::thread printerThread([&] {
-      while (!barStop.load(std::memory_order_relaxed)) {
-        std::this_thread::sleep_for(std::chrono::milliseconds(200));
-        bar.set_progress(pool.numVisited());
-      }
-    });
+    SimpleProgressBar bar(sampleN, "Random sample search ",
+                          options.showProgress);
 
     std::mutex poolMutex;
     std::atomic<size_t> nAttempted{0};
@@ -938,6 +904,7 @@ struct InferenceTask {
       std::lock_guard<std::mutex> guard(poolMutex);
       pool.markVisited(idx);
       pool.recordObservation(idx, cost->total(), 0, evalTime, cpuMs);
+      bar.tick();
       return true;
     };
 
@@ -946,9 +913,7 @@ struct InferenceTask {
     auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
         std::chrono::steady_clock::now() - t0);
 
-    barStop.store(true, std::memory_order_relaxed);
-    printerThread.join();
-    bar.mark_as_completed();
+    bar.finish();
 
     LLVM_DEBUG(llvm::dbgs()
                << "[cinm-inference] Random sample: " << pool.numVisited()
@@ -1091,11 +1056,14 @@ Maybe<SmallVector<ProfilePoint>>
 profileComputeBlock(cinm::ComputeBlockOp computeOp, InferencePlugin &plugin,
                     const InferenceOptions &opts) {
   StringRef param = plugin.sharedResourceParam();
-  SmallVector<int64_t> menu = plugin.sharedResourceMenu();
-  if (param.empty() || menu.empty())
+  if (param.empty())
     return emitDefiniteFailure(
         computeOp.getLoc(),
         "this target declares no shared resource to profile over");
+  SmallVector<int64_t> menu = plugin.sharedResourceMenu(computeOp);
+  if (menu.empty())
+    return emitSilenceableFailure(computeOp.getLoc())
+           << "no profiling menu could be derived for this block";
 
   // The menu points are independent searches, so they run concurrently. Each
   // point gets its own plugin clone (initializeSpace mutates the plugin) and
@@ -1112,9 +1080,11 @@ profileComputeBlock(cinm::ComputeBlockOp computeOp, InferencePlugin &plugin,
     outerWorkers = std::min<unsigned>(menu.size(), baseWorkers);
 
   // A per-point search may itself be parallel (exhaustive, sampling): divide
-  // the workers between the two levels instead of multiplying them.
+  // the workers between the two levels instead of multiplying them. Progress
+  // bars from concurrent searches would interleave, so the sweep is silent.
   InferenceOptions pointBase = opts;
   pointBase.numWorkers = std::max(1u, baseWorkers / outerWorkers);
+  pointBase.showProgress = false;
 
   // One slot per menu value, so the profile comes out in menu order whatever
   // the finish order.

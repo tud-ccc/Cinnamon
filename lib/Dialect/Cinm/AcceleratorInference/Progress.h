@@ -28,8 +28,11 @@ struct SimpleProgressBar {
   std::atomic<bool> stop_{false};
   std::thread printer_;
 
-  SimpleProgressBar(size_t maxProgress, std::string prefix)
-      : active(canRenderProgress()) {
+  /// `enabled` = false silences the bar entirely (all methods become no-ops):
+  /// how a caller running many searches at once keeps them from interleaving
+  /// their renders.
+  SimpleProgressBar(size_t maxProgress, std::string prefix, bool enabled = true)
+      : active(enabled && canRenderProgress()) {
     if (!active)
       return;
     bar =
@@ -90,8 +93,9 @@ struct MultiSeedProgress {
   std::unique_ptr<std::atomic<int>[]> slotProgress_;  // [0..cap_)
   std::unique_ptr<std::atomic<int>[]> slotSeedValue_; // [0..cap_), -1 = idle
 
-  MultiSeedProgress(int nSeeds, unsigned cap, int maxEvals)
-      : active(canRenderProgress()), maxEvals(maxEvals), cap_(cap),
+  /// `enabled` = false silences all bars; see SimpleProgressBar.
+  MultiSeedProgress(int nSeeds, unsigned cap, int maxEvals, bool enabled = true)
+      : active(enabled && canRenderProgress()), maxEvals(maxEvals), cap_(cap),
         slotProgress_(std::make_unique<std::atomic<int>[]>(cap)),
         slotSeedValue_(std::make_unique<std::atomic<int>[]>(cap)) {
     for (unsigned i = 0; i < cap; ++i)

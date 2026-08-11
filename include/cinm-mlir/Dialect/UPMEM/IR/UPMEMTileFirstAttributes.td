@@ -61,6 +61,7 @@ def UpmemAcceleratorAttr: UPMEM_Attr<"UpmemAccelerator", [
     ]> {
   let summary = "Accelerator description for upmem";
   let hasCustomAssemblyFormat = 1;
+  let genVerifyDecl = 1;
   let mnemonic = "array";
 
   // let skipDefaultBuilders = 1;

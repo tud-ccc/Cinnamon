@@ -166,6 +166,12 @@ def UpmemInferAcceleratorPass : Pass<"upmem-infer-accelerator", "ModuleOp"> {
            "Graph allocation only: cost of switching a DPU set to a "
            "different program, per op per inference -- what a timeshared "
            "(non-pinned) placement pays and pinning avoids">,
+    Option<"allocationGranularity", "allocation-granularity", "int64_t",
+           "64",
+           "Graph allocation only: preferred quantum of a DPU-set size. The "
+           "profiling menu prefers multiples of it (rank-sized sets keep "
+           "host<->DPU transfers rank-parallel) but falls back to whatever "
+           "divides the problem size when no such multiple does">,
     Option<"fusionEdges", "fusion-edges", "bool", "true",
            "Declare a `fuse.<producer>-><consumer>` parameter for each "
            "producer/consumer pair of distributed ops in the block, coupling "

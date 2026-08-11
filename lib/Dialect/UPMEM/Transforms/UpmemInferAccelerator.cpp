@@ -23,6 +23,7 @@
 #include <chrono>
 #include <cstdint>
 #include <memory>
+#include <numeric>
 #include <string>
 #include <utility>
 
@@ -55,6 +56,7 @@
 #include <mlir/IR/BuiltinTypeInterfaces.h>
 #include <mlir/IR/BuiltinTypes.h>
 #include <mlir/IR/Diagnostics.h>
+#include <mlir/IR/IRMapping.h>
 #include <mlir/IR/Location.h>
 #include <mlir/IR/OpImplementation.h>
 #include <mlir/IR/PatternMatch.h>
@@ -180,6 +182,7 @@ static std::string searchNameFor(Operation *op) {
 }
 
 static SmallVector<SmallVector<unsigned>> linalgOperandDims(linalg::LinalgOp);
+static FailureOr<SmallVector<int64_t>> linalgLoopExtents(linalg::LinalgOp);
 
 struct UpmemInferencePlugin : cinm::InferencePlugin {
   upmem::UpmemPlatformAttr platform;
@@ -224,13 +227,105 @@ struct UpmemInferencePlugin : cinm::InferencePlugin {
   /// count: cost profiles are indexed by it.
   StringRef sharedResourceParam() const override { return "dpus"; }
 
-  /// DPUs are allocated in ranks; a menu entry per whole-rank multiple.
-  /// Rank-aligned allocation is what makes parallel host<->DPU transfers
-  /// efficient, so finer granularity would be dishonest about the hardware.
-  SmallVector<int64_t> sharedResourceMenu() const override {
+  int64_t sharedResourceMax() const override {
+    return int64_t(platform.getMaxNumRanks()) * platform.getMaxNumDpusPerRank();
+  }
+
+  /// Iteration-space sizes (product of loop extents) of every op the
+  /// pipeline would distribute in `block`, read off a throwaway linalg
+  /// conversion -- the same one the search space itself is derived from, so
+  /// the menu and the space agree about what gets distributed.
+  SmallVector<int64_t>
+  distributedIterationSizes(cinm::ComputeBlockOp block) const {
+    MLIRContext *ctx = block->getContext();
+    OpBuilder b(ctx);
+    Location loc = block.getLoc();
+    OwningOpRef<ModuleOp> module(ModuleOp::create(loc));
+    auto func = func::FuncOp::create(
+        loc, "menu_probe",
+        FunctionType::get(ctx, SmallVector<Type>(block->getOperandTypes()),
+                          SmallVector<Type>(block->getResultTypes())));
+    module->push_back(func);
+    Block *entry = func.addEntryBlock();
+    b.setInsertionPointToStart(entry);
+    IRMapping mapping;
+    for (auto [operand, arg] :
+         llvm::zip(block->getOperands(), entry->getArguments()))
+      mapping.map(operand, arg);
+    auto *clone = b.clone(*block, mapping);
+    func::ReturnOp::create(b, loc, clone->getResults());
+
+    auto pm = buildConvertPipeline(ctx, /*debug=*/false);
+    if (failed(pm->run(*module)))
+      return {};
+
+    SmallVector<int64_t> sizes;
+    module->walk([&](Operation *op) {
+      if (!isDistributionCandidate(op))
+        return;
+      auto extents = linalgLoopExtents(llvm::cast<linalg::LinalgOp>(op));
+      if (failed(extents))
+        return;
+      int64_t product = 1;
+      for (int64_t extent : *extents)
+        product *= extent;
+      sizes.push_back(product);
+    });
+    return sizes;
+  }
+
+  /// The DPU counts worth profiling `block` at. The workgroup must be filled
+  /// exactly -- the tiles of every distributed op multiply out to
+  /// dpus * tasklets -- and tasklets = 1 is always admissible, so the
+  /// divisibility-feasible DPU counts are exactly the divisors of each op's
+  /// iteration-space size: divisors of their gcd for the block. Among those
+  /// the menu prefers multiples of the allocation granularity (rank-sized
+  /// sets keep host<->DPU transfers rank-parallel), falling back to plain
+  /// divisors when the problem size admits no such multiple, and thins to a
+  /// bounded count. Divisibility is necessary, not sufficient: a menu value
+  /// the pinned search still finds infeasible (capacity) becomes a hole in
+  /// the profile.
+  SmallVector<int64_t>
+  sharedResourceMenu(cinm::ComputeBlockOp block) const override {
+    const int64_t maxDpus = sharedResourceMax();
+    const int64_t granularity =
+        std::max<int64_t>(1, opts.inference.allocationGranularity);
+
+    SmallVector<int64_t> sizes = distributedIterationSizes(block);
+    if (sizes.empty())
+      return {};
+    int64_t g = 0;
+    for (int64_t size : sizes)
+      g = std::gcd(g, size);
+
+    SmallVector<int64_t> divisors;
+    for (int64_t d = 1; d <= std::min(g, maxDpus); ++d)
+      if (g % d == 0)
+        divisors.push_back(d);
+
     SmallVector<int64_t> menu;
-    for (int k = 1; k <= platform.getMaxNumRanks(); ++k)
-      menu.push_back(int64_t(k) * platform.getMaxNumDpusPerRank());
+    for (int64_t d : divisors)
+      if (d % granularity == 0)
+        menu.push_back(d);
+    if (menu.empty())
+      for (int64_t d : divisors)
+        if (d >= granularity)
+          menu.push_back(d);
+    if (menu.empty())
+      menu = divisors;
+
+    // Sorted divisors are distributed roughly geometrically, so index-spaced
+    // thinning approximates log spacing and keeps both endpoints.
+    constexpr size_t kMaxMenu = 16;
+    if (menu.size() > kMaxMenu) {
+      SmallVector<int64_t> thinned;
+      for (size_t i = 0; i < kMaxMenu; ++i) {
+        size_t idx = (i * (menu.size() - 1)) / (kMaxMenu - 1);
+        if (thinned.empty() || thinned.back() != menu[idx])
+          thinned.push_back(menu[idx]);
+      }
+      menu = std::move(thinned);
+    }
     return menu;
   }
 
@@ -1009,6 +1104,7 @@ struct UpmemInferAcceleratorPass
     o.nSolveWorkers = nSolveWorkers;
     o.graphAllocation = graphAllocation;
     o.programReloadMs = programReloadMs;
+    o.allocationGranularity = allocationGranularity;
     upmemOpts.annotateOpCosts = annotateOpCosts;
     upmemOpts.useMRAMTiling = useMRAMTiling;
     upmemOpts.fusionEdges = fusionEdges;

@@ -45,7 +45,7 @@ func.func @reduce(%a: tensor<1024x512xi32>) -> tensor<1024xi32> {
 
 // -----
 
-#upmem_platform = #upmem.platform<type=v1A, dimensions = 4x16>
+#upmem_platform = #upmem.platform<type=v1A, dimensions = 8x128>
 #upmem = #upmem.array<8x128x1, #upmem_platform>
 
 // Gemm gives each leaf exactly one output element, so its tile is a dot
