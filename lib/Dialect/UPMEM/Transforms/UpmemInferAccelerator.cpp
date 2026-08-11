@@ -227,9 +227,7 @@ struct UpmemInferencePlugin : cinm::InferencePlugin {
   /// count: cost profiles are indexed by it.
   StringRef sharedResourceParam() const override { return "dpus"; }
 
-  int64_t sharedResourceMax() const override {
-    return int64_t(platform.getMaxNumRanks()) * platform.getMaxNumDpusPerRank();
-  }
+  int64_t sharedResourceMax() const override { return platform.getMaxDpus(); }
 
   /// Iteration-space sizes (product of loop extents) of every op the
   /// pipeline would distribute in `block`, read off a throwaway linalg
@@ -351,8 +349,7 @@ struct UpmemInferencePlugin : cinm::InferencePlugin {
     };
     const int64_t tasklets = valueOf("tasklets");
     const int64_t dpus = valueOf("dpus");
-    const int64_t ranks =
-        std::max<int64_t>(1, dpus / platform.getMaxNumDpusPerRank());
+    const int64_t ranks = platform.numRanksForTransfer(dpus);
 
     cinm::LevelResidency mram{
         platform.getMramLevel().getName().getValue().str(), 0, 0};
@@ -646,8 +643,7 @@ struct UpmemInferencePlugin : cinm::InferencePlugin {
 
   void initializeSpace(cinm::ComputeBlockOp refClone,
                        cinm::SpaceBuilder &b) override {
-    const int64_t maxDpus =
-        platform.getMaxNumRanks() * platform.getMaxNumDpusPerRank();
+    const int64_t maxDpus = platform.getMaxDpus();
     const int64_t maxTasklets = platform.getMaxNumTasklets();
     dpusVar_ = opts.fixedDpus > 0
                    ? b.intRange("dpus", opts.fixedDpus, opts.fixedDpus)
@@ -791,7 +787,7 @@ struct UpmemInferencePlugin : cinm::InferencePlugin {
     MLIRContext *ctx = trial.computeBlock->getContext();
     trial.computeBlock.setPlatformAttr({});
     trial.computeBlock.setAcceleratorAttr(
-        upmem::UpmemAcceleratorAttr::get(platform, 1, dpus, tasklets));
+        upmem::UpmemAcceleratorAttr::get(platform, dpus, tasklets));
 
     TRY(runLowering(trial));
     SimCost total = TRY_GET(simulator->simulate(trial.computeBlock.getBody()));

@@ -15,20 +15,25 @@ include "UPMEMBase.td"
 
 def DeviceHierarchyType : UPMEM_Type<"DeviceHierarchy"> {
   let mnemonic = "hierarchy";
-  let summary = "";
+  let summary = "A set of allocated DPUs and the tasklets running on them";
+  let description = [{
+    `!upmem.hierarchy<DxT>`: D DPUs running T tasklets each. The SDK
+    allocates DPU *counts* -- which ranks they land on is its business, and
+    unobservable -- so ranks are deliberately not part of the shape.
+  }];
 
-  let parameters = (ins "int32_t":$numRanks, "int32_t":$numDpusPerRank, "int32_t":$numTaskletsPerDpu);
+  let parameters = (ins "int32_t":$numDpus, "int32_t":$numTaskletsPerDpu);
 
   let hasCustomAssemblyFormat = 1;
   let extraClassDeclaration = [{
     int64_t getNumElements() const {
-      return getNumRanks() * getNumDpusPerRank() * getNumTaskletsPerDpu();
+      return getNumDpus() * getNumTaskletsPerDpu();
     }
 
-    int64_t getNumDims() const { return 3;}
+    int64_t getNumDims() const { return 2;}
 
-    SmallVector<int64_t, 3> getWgShape() const {
-      return {getNumRanks(), getNumDpusPerRank(), getNumTaskletsPerDpu()};
+    SmallVector<int64_t, 2> getWgShape() const {
+      return {getNumDpus(), getNumTaskletsPerDpu()};
     }
 
   }];

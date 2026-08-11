@@ -1,9 +1,9 @@
 // RUN: cinm-opt %s --cnm-ensure-scatter-gather-contiguous | FileCheck %s
 
-#map = affine_map<(d0, d1, d2) -> (d0 * 4 + d1)>
+#map = affine_map<(d0, d1) -> (d0)>
 // A gather has to partition its destination, so unlike a scatter it cannot
 // leave the tasklet dimension out of its map.
-#gmap = affine_map<(d0, d1, d2) -> (d0 * 64 + d1 * 16 + d2)>
+#gmap = affine_map<(d0, d1) -> (d0 * 16 + d1)>
 #upmem_2_4_16 = #upmem.array<2x4x16, <type = v1A, dimensions = 32x128x1>>
 
 // A scatter whose input is a strided subview (each of the 8 rows of 256

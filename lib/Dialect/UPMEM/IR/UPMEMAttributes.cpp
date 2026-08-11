@@ -95,17 +95,15 @@ Attribute UpmemAcceleratorAttr::parse(::mlir::AsmParser &p, ::mlir::Type) {
   if (p.parseLess())
     return {};
   SmallVector<int64_t> dims;
-  if (p.parseDimensionList(dims, false, false) || dims.size() != 3) {
+  if (p.parseDimensionList(dims, false, false) ||
+      (dims.size() != 2 && dims.size() != 3)) {
     return {};
   }
-
-  // int64_t ranks;
-  // int64_t dpus;
-  // int64_t tasklets;
-  // if (parseNamedVar(p, "ranks", ranks) || p.parseComma() ||
-  //     parseNamedVar(p, "dpus", dpus) || p.parseComma() ||
-  //     parseNamedVar(p, "tasklets", tasklets))
-  //   return {};
+  // The shape is dpus x tasklets. The legacy three-dim form spelled the DPU
+  // count as ranks x dpusPerRank, a split the SDK cannot actually honor;
+  // accept it and collapse the product.
+  if (dims.size() == 3)
+    dims = {dims[0] * dims[1], dims[2]};
 
   UpmemPlatformAttr platform = UpmemPlatformAttr::getDefault(p.getContext());
   if (p.parseOptionalComma().succeeded()) {
@@ -117,25 +115,23 @@ Attribute UpmemAcceleratorAttr::parse(::mlir::AsmParser &p, ::mlir::Type) {
 
   return UpmemAcceleratorAttr::getChecked(
       [&] { return p.emitError(p.getNameLoc()); }, p.getContext(), platform,
-      SmallVector<int64_t>{dims[0], dims[1], dims[2]});
+      dims);
 }
 
 LogicalResult UpmemAcceleratorAttr::verify(
     llvm::function_ref<::mlir::InFlightDiagnostic()> emitError,
     UpmemPlatformAttr platform, ArrayRef<int64_t> workgroupShape) {
-  if (workgroupShape.size() != 3)
-    return emitError() << "expected a ranks x dpus x tasklets workgroup shape";
+  if (workgroupShape.size() != 2)
+    return emitError() << "expected a dpus x tasklets workgroup shape";
   // The DPU count is what the platform can actually run out of: an
   // allocation request beyond it fails at runtime, so reject it at compile
-  // time. (Tasklet bounds are not checked yet: the rank/DPU split itself is
-  // a historical artifact under repair, and existing specs disagree with
+  // time. (Tasklet bounds are not checked yet: existing specs disagree with
   // their platforms about tasklets.)
-  const int64_t dpus = workgroupShape[0] * workgroupShape[1];
-  const int64_t maxDpus =
-      int64_t(platform.getMaxNumRanks()) * platform.getMaxNumDpusPerRank();
-  if (dpus > maxDpus)
+  const int64_t dpus = workgroupShape[0];
+  if (dpus > platform.getMaxDpus())
     return emitError() << "workgroup uses " << dpus
-                       << " DPUs but the platform has only " << maxDpus;
+                       << " DPUs but the platform has only "
+                       << platform.getMaxDpus();
   return success();
 }
 
@@ -149,13 +145,7 @@ LogicalResult UpmemAcceleratorAttr::verify(
 
 void UpmemAcceleratorAttr::print(::mlir::AsmPrinter &out) const {
   out << "<";
-  out.printDimensionList(
-      {getNumRanks(), getNumDpusPerRank(), getNumTaskletsPerDpu()});
-  // printNamedVar(out, "ranks", getNumRanks());
-  // out << ", ";
-  // printNamedVar(out, "dpus", getNumDpusPerRank());
-  // out << ", ";
-  // printNamedVar(out, "tasklets", getNumTaskletsPerDpu());
+  out.printDimensionList({getNumDpus(), getNumTaskletsPerDpu()});
   if (getPlatform() != UpmemPlatformAttr::getDefault(getContext())) {
     out << ", ";
     if (failed(out.printAlias(getPlatform())))
@@ -201,39 +191,61 @@ Attribute UpmemPlatformAttr::parse(::mlir::AsmParser &p, ::mlir::Type) {
   }
   bool isV1A = *type;
 
-  if (p.parseComma() || p.parseKeyword("dimensions") || p.parseEqual() ||
-      p.parseDimensionList(dims, false, false))
-    return {};
+  // The platform is a pool of `dpus` DPUs running up to `tasklets` tasklets
+  // each; `rank_size` (optional, default 64) only parameterizes the transfer
+  // cost model. The legacy `dimensions = ranks x dpusPerRank (x tasklets)?`
+  // form is still accepted: the DPU count collapses to the product and the
+  // per-rank figure becomes the rank size.
+  int64_t maxDpus = 0, tasklets = isV1A ? 24 : 16, rankSize = 64;
   cinm::CinmLevelArrayAttr levels;
-  if (p.parseOptionalComma().succeeded()) {
-    if (p.parseKeyword("levels") || p.parseEqual() ||
-        p.parseCustomAttributeWithFallback(levels))
+  if (p.parseComma())
+    return {};
+  if (p.parseOptionalKeyword("dimensions").succeeded()) {
+    if (p.parseEqual() || p.parseDimensionList(dims, false, false))
       return {};
+    if (dims.size() != 2 && dims.size() != 3) {
+      p.emitError(p.getNameLoc(), "Expected ranks x dpus (x tasklets)?, got ")
+          << dims.size() << " dimensions";
+      return {};
+    }
+    maxDpus = dims[0] * dims[1];
+    rankSize = dims[1];
+    if (dims.size() == 3)
+      tasklets = dims[2];
   } else {
-    levels = upmemLevels(p.getContext(), isV1A);
+    if (p.parseKeyword("dpus") || p.parseEqual() || p.parseInteger(maxDpus))
+      return {};
   }
+  while (p.parseOptionalComma().succeeded()) {
+    if (p.parseOptionalKeyword("tasklets").succeeded()) {
+      if (p.parseEqual() || p.parseInteger(tasklets))
+        return {};
+    } else if (p.parseOptionalKeyword("rank_size").succeeded()) {
+      if (p.parseEqual() || p.parseInteger(rankSize))
+        return {};
+    } else if (p.parseOptionalKeyword("levels").succeeded()) {
+      if (p.parseEqual() || p.parseCustomAttributeWithFallback(levels))
+        return {};
+    } else {
+      p.emitError(p.getCurrentLocation(),
+                  "expected tasklets, rank_size, or levels");
+      return {};
+    }
+  }
+  if (!levels)
+    levels = upmemLevels(p.getContext(), isV1A);
   if (p.parseGreater())
     return {};
 
-  if (dims.size() != 2 && dims.size() != 3) {
-    p.emitError(p.getNameLoc(), "Expected ranks x dpus (x tasklets)?, got ")
-        << dims.size() << " dimensions";
-    return {};
-  }
-
-  int ranks = dims[0], dpus = dims[1], tasklets = isV1A ? 24 : 16;
-  if (dims.size() == 3)
-    tasklets = dims[2];
-
-  return UpmemPlatformAttr::get(p.getContext(), levels, isV1A, ranks, dpus,
-                                tasklets);
+  return UpmemPlatformAttr::get(p.getContext(), levels, isV1A, rankSize,
+                                maxDpus, tasklets);
 }
 
 void UpmemPlatformAttr::print(::mlir::AsmPrinter &out) const {
-  out << "<type = " << (getIsV1a() ? "v1A" : "v1B") << ", dimensions = ";
-
-  out.printDimensionList(
-      {getMaxNumRanks(), getMaxNumDpusPerRank(), getMaxNumTasklets()});
+  out << "<type = " << (getIsV1a() ? "v1A" : "v1B")
+      << ", dpus = " << getMaxDpus() << ", tasklets = " << getMaxNumTasklets();
+  if (getRankSize() != 64)
+    out << ", rank_size = " << getRankSize();
   if (getLevels() != UpmemPlatformAttr::getDefault(getContext()).getLevels()) {
     out << ", levels = ";
     out.printStrippedAttrOrType(getLevels());
@@ -242,7 +254,9 @@ void UpmemPlatformAttr::print(::mlir::AsmPrinter &out) const {
 }
 
 UpmemPlatformAttr UpmemPlatformAttr::getDefault(MLIRContext *ctx) {
-  return UpmemPlatformAttr::get(ctx, upmemLevels(ctx, true), true, 8, 64, 24);
+  return UpmemPlatformAttr::get(ctx, upmemLevels(ctx, true), true,
+                                /*rankSize=*/64, /*maxDpus=*/512,
+                                /*maxNumTasklets=*/24);
 }
 
 cinm::CinmLevelAttrInterface
@@ -271,9 +285,10 @@ DiagnosedSilenceableFailure UpmemAcceleratorAttr::computeTilingFactors(
 
 ::llvm::SmallVector<::mlir::cinm::CinmLevelArrayAttr>
 UpmemAcceleratorAttr::getWorkgroupMemoryLevels() const {
+  // One entry per workgroup dimension (dpus, tasklets): the memories hang
+  // off the DPU dimension, tasklets own no memory of their own.
   auto empty = cinm::CinmLevelArrayAttr::get(getContext(), {});
-  return {empty,
-          cinm::CinmLevelArrayAttr::get(getContext(),
+  return {cinm::CinmLevelArrayAttr::get(getContext(),
                                         {getMramLevel(), getWramLevel()}),
           empty};
 }

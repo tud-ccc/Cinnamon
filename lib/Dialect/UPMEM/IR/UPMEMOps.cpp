@@ -202,17 +202,17 @@ static LogicalResult verifyTransferBlocks(Operation *op, MemRefType hostTy,
   return success();
 }
 
-/// The (rank, dpu) box of `hierarchy`. The tasklet dimension is deliberately
+/// The (dpu) box of `hierarchy`. The tasklet dimension is deliberately
 /// absent: a transfer targets a DPU's MRAM, which its tasklets share.
 static SmallVector<int64_t> arrayBox(upmem::DeviceHierarchyType hierarchy) {
-  return {hierarchy.getNumRanks(), hierarchy.getNumDpusPerRank()};
+  return {hierarchy.getNumDpus()};
 }
 
 LogicalResult upmem::GatherFromArrayOp::verify() {
   if (getScatterMap().getNumResults() !=
           getHostBuffer().getType().getShape().size() ||
-      getScatterMap().getNumDims() != 2)
-    return emitOpError("Scatter map should map (rank, dpu) to a start index in "
+      getScatterMap().getNumDims() != 1)
+    return emitOpError("Scatter map should map (dpu) to a start index in "
                        "the host buffer");
   return verifyTransferBlocks(*this, getHostBuffer().getType(), getScatterMap(),
                               getTransferCount(),
@@ -222,8 +222,8 @@ LogicalResult upmem::GatherFromArrayOp::verify() {
 LogicalResult upmem::ScatterOnArrayOp::verify() {
   if (getScatterMap().getNumResults() !=
           getHostBuffer().getType().getShape().size() ||
-      getScatterMap().getNumDims() != 2)
-    return emitOpError("Scatter map should map (rank, dpu) to a start index in "
+      getScatterMap().getNumDims() != 1)
+    return emitOpError("Scatter map should map (dpu) to a start index in "
                        "the host buffer");
   return verifyTransferBlocks(*this, getHostBuffer().getType(), getScatterMap(),
                               getTransferCount(),
@@ -235,8 +235,8 @@ LogicalResult upmem::ScatterOnArrayOp::verify() {
 template <class Op> static LogicalResult verifyBlockTransfer(Op op) {
   if (op.getScatterMap().getNumResults() !=
           op.getHostBuffer().getType().getShape().size() ||
-      op.getScatterMap().getNumDims() != 3)
-    return op.emitOpError("Scatter map should map (rank, dpu, block) to a "
+      op.getScatterMap().getNumDims() != 2)
+    return op.emitOpError("Scatter map should map (dpu, block) to a "
                           "start index in the host buffer");
   if (op.getNumBlocksPerDpu() < 1)
     return op.emitOpError("must transfer at least one block per DPU");

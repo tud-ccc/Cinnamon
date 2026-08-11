@@ -22,7 +22,7 @@
 // CHECK-LABEL: func.func @gemv
 func.func @gemv(%A: tensor<1024x512xi32>, %x: tensor<512xi32>) -> tensor<1024xi32> {
   // Host side: allocate the DPUs, scatter the operands, wait, gather back.
-  // CHECK: %[[DPU:.*]] = upmem.alloc_dpus with program @dpu_kernels::@program : !upmem.hierarchy<1x16x1>
+  // CHECK: %[[DPU:.*]] = upmem.alloc_dpus with program @dpu_kernels::@program : !upmem.hierarchy<16x1>
   // CHECK: upmem.scatter_on_array %{{.*}} onto @{{.*}} of %[[DPU]]
   // CHECK: upmem.wait_for %[[DPU]]
   // CHECK: upmem.gather_from_array %{{.*}} from @{{.*}} of %[[DPU]]

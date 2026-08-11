@@ -14,31 +14,31 @@
 // upmem.broadcast (which has no affine map at all) would be wrong here. This
 // must keep using upmem.scatter_on_array regardless of cinm1-codegen.
 
-// CHECK-DAG: #[[MAPD:[^ ]*]] = affine_map<(d0, d1) -> (d1, 0)>
+// CHECK-DAG: #[[MAPD:[^ ]*]] = affine_map<(d0) -> (d0, 0)>
 
 // CHECK-LABEL: func.func @main
-// CHECK: upmem.broadcast %{{.*}} onto @buf_0 of %{{.*}} : memref<8xi32> onto !upmem.hierarchy<1x4x2>
+// CHECK: upmem.broadcast %{{.*}} onto @buf_0 of %{{.*}} : memref<8xi32> onto !upmem.hierarchy<4x2>
 // CHECK-LABEL: func.func @dpu_varying
-// CHECK: upmem.scatter_on_array %{{.*}}[8 elts, #[[MAPD]]] onto @buf_0 of %{{.*}} : memref<4x8xi32> onto !upmem.hierarchy<1x4x2>
+// CHECK: upmem.scatter_on_array %{{.*}}[8 elts, #[[MAPD]]] onto @buf_0 of %{{.*}} : memref<4x8xi32> onto !upmem.hierarchy<4x2>
 
 // use-bc-xfer-codegen=false turns the shortcut off, so %c falls back to the
 // classic upmem.scatter_on_array (rank, dpu) form with an all-zero map.
-// NOBC-DAG: #[[MAPZ:[^ ]*]] = affine_map<(d0, d1) -> (0)>
+// NOBC-DAG: #[[MAPZ:[^ ]*]] = affine_map<(d0) -> (0)>
 // NOBC-LABEL: func.func @main
-// NOBC: upmem.scatter_on_array %{{.*}}[8 elts, #[[MAPZ]]] onto @buf_0 of %{{.*}} : memref<8xi32> onto !upmem.hierarchy<1x4x2>
+// NOBC: upmem.scatter_on_array %{{.*}}[8 elts, #[[MAPZ]]] onto @buf_0 of %{{.*}} : memref<8xi32> onto !upmem.hierarchy<4x2>
 
 // cinm1-codegen does *not* affect the broadcast shortcut -- it selects the
 // DPU-side codegen style: no WRAM sharing between tasklets (a private
 // pwram_alloc per tasklet rather than a shared wram static_alloc) and no
 // `noinit` on the MRAM allocation.
 // CINM1-LABEL: func.func @main
-// CINM1: upmem.broadcast %{{.*}} onto @buf of %{{.*}} : memref<8xi32> onto !upmem.hierarchy<1x4x2>
+// CINM1: upmem.broadcast %{{.*}} onto @buf of %{{.*}} : memref<8xi32> onto !upmem.hierarchy<4x2>
 // CINM1: upmem.dpu_program @program() tasklets(2) {
 // CINM1: memref.alloca() : memref<8xi32, #upmem.wram>
 // CINM1: upmem.static_alloc @buf(mram) : memref<8xi32, #upmem.mram>
 
-#mapC = affine_map<(d0, d1, d2) -> ()>
-#mapD = affine_map<(d0, d1, d2) -> (d1)>
+#mapC = affine_map<(d0, d1) -> ()>
+#mapD = affine_map<(d0, d1) -> (d0)>
 
 #upmem_platform = #upmem.platform<type=v1A, dimensions = 4x16>
 #upmem_1_4_2 = #upmem.array<1x4x2, #upmem_platform>

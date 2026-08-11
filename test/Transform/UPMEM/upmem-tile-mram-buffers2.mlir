@@ -20,9 +20,9 @@ func.func @fold_device_init(%A: memref<4096x32x128xi32>, %x: memref<32x128xi32>,
                             %out: memref<32x4096xi32>) {
   %wg = cnm.workgroup : !cnm.workgroup<#acc>
   %ba = cnm.declare_buffer() for %wg : !cnm.buffer<8x1x128xi32 on #acc, #upmem.mram>
-  cnm.scatter %A into %ba[affine_map<(d0, d1, d2, d3, d4, d5) -> (d1 * 64 + d2 * 8 + d3 - (d1 floordiv 64) * 4096, d1 floordiv 64, d5)>] of %wg : memref<4096x32x128xi32> into !cnm.buffer<8x1x128xi32 on #acc, #upmem.mram>
+  cnm.scatter %A into %ba[affine_map<(d0, d1, d2, d3, d4) -> (d0 * 64 + d1 * 8 + d2 - (d0 floordiv 64) * 4096, d0 floordiv 64, d4)>] of %wg : memref<4096x32x128xi32> into !cnm.buffer<8x1x128xi32 on #acc, #upmem.mram>
   %bx = cnm.declare_buffer() for %wg : !cnm.buffer<1x128xi32 on #acc, #upmem.mram>
-  cnm.scatter %x into %bx[affine_map<(d0, d1, d2, d3, d4) -> (d1 floordiv 64, d4)>] of %wg : memref<32x128xi32> into !cnm.buffer<1x128xi32 on #acc, #upmem.mram>
+  cnm.scatter %x into %bx[affine_map<(d0, d1, d2, d3) -> (d0 floordiv 64, d3)>] of %wg : memref<32x128xi32> into !cnm.buffer<1x128xi32 on #acc, #upmem.mram>
   %by = cnm.declare_buffer() for %wg : !cnm.buffer<1x8xi32 on #acc, #upmem.mram>
   cnm.launch %wg ins(%a = %ba : <8x1x128xi32, #upmem.mram>, %xx = %bx : <1x128xi32, #upmem.mram>) outs(%y = %by : <1x8xi32, #upmem.mram>) on !cnm.workgroup<#acc> {
     %z = arith.constant 0 : i32
@@ -34,7 +34,7 @@ func.func @fold_device_init(%A: memref<4096x32x128xi32>, %x: memref<32x128xi32>,
       linalg.yield %s : i32
     }
   }
-  cnm.gather %by[affine_map<(d0, d1, d2, d3, d4) -> (d1 floordiv 64, d1 * 64 + d2 * 8 + d4 - (d1 floordiv 64) * 4096)>] of %wg into %out : !cnm.buffer<1x8xi32 on #acc, #upmem.mram> into memref<32x4096xi32>
+  cnm.gather %by[affine_map<(d0, d1, d2, d3) -> (d0 floordiv 64, d0 * 64 + d1 * 8 + d3 - (d0 floordiv 64) * 4096)>] of %wg into %out : !cnm.buffer<1x8xi32 on #acc, #upmem.mram> into memref<32x4096xi32>
   cnm.free_workgroup %wg : !cnm.workgroup<#acc>
   return
 }
@@ -56,7 +56,7 @@ func.func @fold_device_init(%A: memref<4096x32x128xi32>, %x: memref<32x128xi32>,
 func.func @two_consumers(%in: memref<32x8xi32>, %out: memref<32x8xi32>) {
   %wg = cnm.workgroup : !cnm.workgroup<#acc>
   %bi = cnm.declare_buffer() for %wg : !cnm.buffer<1x8xi32 on #acc, #upmem.mram>
-  cnm.scatter %in into %bi[affine_map<(d0, d1, d2, d3, d4) -> (d1 floordiv 64, d4)>] of %wg : memref<32x8xi32> into !cnm.buffer<1x8xi32 on #acc, #upmem.mram>
+  cnm.scatter %in into %bi[affine_map<(d0, d1, d2, d3) -> (d0 floordiv 64, d3)>] of %wg : memref<32x8xi32> into !cnm.buffer<1x8xi32 on #acc, #upmem.mram>
   %by = cnm.declare_buffer() for %wg : !cnm.buffer<1x8xi32 on #acc, #upmem.mram>
   cnm.launch %wg ins(%a = %bi : <1x8xi32, #upmem.mram>) outs(%y = %by : <1x8xi32, #upmem.mram>) on !cnm.workgroup<#acc> {
     %z = arith.constant 0 : i32
@@ -64,7 +64,7 @@ func.func @two_consumers(%in: memref<32x8xi32>, %out: memref<32x8xi32>) {
     linalg.add ins(%a, %y : memref<1x8xi32, #upmem.mram>, memref<1x8xi32, #upmem.mram>) outs(%y : memref<1x8xi32, #upmem.mram>)
     linalg.add ins(%a, %y : memref<1x8xi32, #upmem.mram>, memref<1x8xi32, #upmem.mram>) outs(%y : memref<1x8xi32, #upmem.mram>)
   }
-  cnm.gather %by[affine_map<(d0, d1, d2, d3, d4) -> (d1 floordiv 64, d4)>] of %wg into %out : !cnm.buffer<1x8xi32 on #acc, #upmem.mram> into memref<32x8xi32>
+  cnm.gather %by[affine_map<(d0, d1, d2, d3) -> (d0 floordiv 64, d3)>] of %wg into %out : !cnm.buffer<1x8xi32 on #acc, #upmem.mram> into memref<32x8xi32>
   cnm.free_workgroup %wg : !cnm.workgroup<#acc>
   return
 }

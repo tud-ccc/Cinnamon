@@ -21,13 +21,13 @@
 // CHECK-LABEL: func.func @chained
 func.func @chained(%A: tensor<256x256xi32>, %x: tensor<256xi32>, %B: tensor<128x128xi32>) -> tensor<128xi32>
     attributes {cinm.available_platforms = [#upmem]} {
-  // CHECK: cinm.compute_block on accelerator #upmem.array<1x8x4
+  // CHECK: cinm.compute_block on accelerator #upmem.array<8x4
   %r = cinm.compute -> tensor<256xi32> {
     %g = cinm.op.gemv %A, %x : tensor<256x256xi32>, tensor<256xi32> -> tensor<256xi32>
     cinm.yield %g : tensor<256xi32>
   }
   %s = tensor.extract_slice %r[0] [128] [1] : tensor<256xi32> to tensor<128xi32>
-  // CHECK: cinm.compute_block on accelerator #upmem.array<1x4x4
+  // CHECK: cinm.compute_block on accelerator #upmem.array<4x4
   %r2 = cinm.compute -> tensor<128xi32> {
     %g = cinm.op.gemv %B, %s : tensor<128x128xi32>, tensor<128xi32> -> tensor<128xi32>
     cinm.yield %g : tensor<128xi32>

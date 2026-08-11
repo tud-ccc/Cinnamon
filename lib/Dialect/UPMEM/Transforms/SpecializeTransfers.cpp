@@ -150,8 +150,8 @@ bool blocksAreOneRun(AffineMap map, MemRefType hostTy, int64_t blockSize) {
     atZero.push_back(getAffineDimExpr(i, ctx));
     atOne.push_back(getAffineDimExpr(i, ctx));
   }
-  atZero[2] = getAffineConstantExpr(0, ctx);
-  atOne[2] = getAffineConstantExpr(1, ctx);
+  atZero[1] = getAffineConstantExpr(0, ctx);
+  atOne[1] = getAffineConstantExpr(1, ctx);
 
   AffineExpr step = simplifyAffineExpr(offset->replaceDims(atOne) -
                                            offset->replaceDims(atZero),
@@ -160,17 +160,16 @@ bool blocksAreOneRun(AffineMap map, MemRefType hostTy, int64_t blockSize) {
   return stride && stride.getValue() == blockSize;
 }
 
-/// The (rank, dpu, block) map with the block dimension pinned to its first
+/// The (dpu, block) map with the block dimension pinned to its first
 /// value: where the run starts.
 AffineMap dropBlockDim(AffineMap map) {
   MLIRContext *ctx = map.getContext();
   SmallVector<AffineExpr> substitution{getAffineDimExpr(0, ctx),
-                                       getAffineDimExpr(1, ctx),
                                        getAffineConstantExpr(0, ctx)};
   SmallVector<AffineExpr> results;
   for (AffineExpr e : map.getResults())
     results.push_back(e.replaceDims(substitution));
-  return AffineMap::get(2, map.getNumSymbols(), results, ctx);
+  return AffineMap::get(1, map.getNumSymbols(), results, ctx);
 }
 
 /// Adjacent, in-order blocks are one contiguous run, which the flat per-DPU

@@ -348,12 +348,10 @@ public:
   matchAndRewrite(upmem::AllocDPUsOp op, typename upmem::AllocDPUsOp::Adaptor,
                   ConversionPatternRewriter &rewriter) const override {
     const DeviceHierarchyType hierarchyShape = op.getResult().getType();
-    const Value rankCount = LLVM::ConstantOp::create(
-        rewriter, op.getLoc(),
-        rewriter.getI32IntegerAttr(hierarchyShape.getNumRanks()));
+    // The SDK allocates DPU counts, not rank layouts: one number suffices.
     const Value dpuCount = LLVM::ConstantOp::create(
         rewriter, op.getLoc(),
-        rewriter.getI32IntegerAttr(hierarchyShape.getNumDpusPerRank()));
+        rewriter.getI32IntegerAttr(hierarchyShape.getNumDpus()));
 
     const auto maybeFailed = createConstantForDpuProgramName(rewriter, op);
     if (failed(maybeFailed))
@@ -371,20 +369,17 @@ public:
         rewriter, op.getLoc(), sizeTy,
         rewriter.getIntegerAttr(sizeTy, maxBlocksPerDpu));
 
-    // struct dpu_set_t *upmemrt_dpu_alloc(int32_t num_ranks, int32_t
-    // num_dpus, const char *dpu_binary_path, size_t max_blocks_per_dpu);
+    // struct dpu_set_t *upmemrt_dpu_alloc(int32_t num_dpus,
+    //     const char *dpu_binary_path, size_t max_blocks_per_dpu);
     Type resultType = LLVM::LLVMPointerType::get(rewriter.getContext(), 0);
-    auto funcOp =
-        appendOrGetFuncOp(rewriter, "upmemrt_dpu_alloc", resultType,
-                          {rewriter.getI32Type(), rewriter.getI32Type(),
-                           untypedPtrType(getContext()), sizeTy},
-                          op);
+    auto funcOp = appendOrGetFuncOp(
+        rewriter, "upmemrt_dpu_alloc", resultType,
+        {rewriter.getI32Type(), untypedPtrType(getContext()), sizeTy}, op);
 
     if (llvm::failed(funcOp))
       return failure();
     rewriter.replaceOpWithNewOp<LLVM::CallOp>(
-        op, *funcOp,
-        ValueRange{rankCount, dpuCount, dpuProgramPath, maxBlocksPerDpuVal});
+        op, *funcOp, ValueRange{dpuCount, dpuProgramPath, maxBlocksPerDpuVal});
     return success();
   }
 };

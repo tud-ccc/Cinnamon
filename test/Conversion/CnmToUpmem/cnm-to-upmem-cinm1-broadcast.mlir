@@ -8,12 +8,12 @@
 // its own private WRAM buffer. %a's scatter map does depend on the thread
 // dim, so it keeps the usual per-tasklet MRAM layout.
 
-// CHECK-DAG: #[[MAPA:[^ ]*]] = affine_map<(d0, d1) -> (d1, 0, 0)>
-// CHECK-DAG: #[[MAPB:[^ ]*]] = affine_map<(d0, d1) -> (d1, 0)>
+// CHECK-DAG: #[[MAPA:[^ ]*]] = affine_map<(d0) -> (d0, 0, 0)>
+// CHECK-DAG: #[[MAPB:[^ ]*]] = affine_map<(d0) -> (d0, 0)>
 
 // CHECK-LABEL: func.func @main
-// CHECK: upmem.scatter_on_array %{{.*}}[16 elts, #[[MAPA]]] onto @buf_0 of %[[DPU:.*]] : memref<4x2x8xi32> onto !upmem.hierarchy<1x4x2>
-// CHECK: upmem.scatter_on_array %{{.*}}[8 elts, #[[MAPB]]] onto @buf of %[[DPU]] : memref<4x8xi32> onto !upmem.hierarchy<1x4x2>
+// CHECK: upmem.scatter_on_array %{{.*}}[16 elts, #[[MAPA]]] onto @buf_0 of %[[DPU:.*]] : memref<4x2x8xi32> onto !upmem.hierarchy<4x2>
+// CHECK: upmem.scatter_on_array %{{.*}}[8 elts, #[[MAPB]]] onto @buf of %[[DPU]] : memref<4x8xi32> onto !upmem.hierarchy<4x2>
 
 // CHECK: module @dpu_kernels
 // CHECK: upmem.dpu_program @program() tasklets(2) {
@@ -29,8 +29,8 @@
 // CHECK-NOT: scf.if
 // CHECK-NOT: upmem.barrier
 
-#mapA = affine_map<(d0, d1, d2) -> (d1, d2)>
-#mapB = affine_map<(d0, d1, d2) -> (d1)>
+#mapA = affine_map<(d0, d1) -> (d0, d1)>
+#mapB = affine_map<(d0, d1) -> (d0)>
 
 #upmem_platform = #upmem.platform<type=v1A, dimensions = 4x16>
 #upmem_1_4_2 = #upmem.array<1x4x2, #upmem_platform>

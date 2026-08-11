@@ -5,10 +5,10 @@
 #wram = #cinm.level<name = "wram", size_in_bytes = 64, alignment = 8, arity = 2>
 #upmem = #upmem.platform<type=v1A, dimensions = 30x64x20>
 #upmem2 = #upmem.platform<type=v1B, dimensions = 30x64, levels = [#mram, #wram]>
-#map = affine_map<(d0, d1) -> (d1 mod 4, 0)>
-#map1 = affine_map<(d0, d1) -> (d1, 0)>
-#map2 = affine_map<(d0, d1) -> (d0, d1)>
-#map3 = affine_map<(d0, d1) -> (d1 mod 8, 0)>
+#map = affine_map<(d0) -> (d0 mod 4, 0)>
+#map1 = affine_map<(d0) -> (d0 mod 128, 0)>
+#map2 = affine_map<(d0) -> (d0 floordiv 128, d0 mod 128)>
+#map3 = affine_map<(d0) -> (d0 mod 8, 0)>
 module {
   memref.global "private" constant @__constant_8x128xi32 : memref<8x128xi32> = dense<0> {alignment = 64 : i64}
 
@@ -19,7 +19,7 @@ module {
     %c128 = arith.constant 128 : index
     %c0 = arith.constant 0 : index
     %0 = memref.get_global @__constant_8x128xi32 : memref<8x128xi32>
-    %1 = upmem.alloc_dpus with program @dpu_kernels::@program : !upmem.hierarchy<8x128x1>
+    %1 = upmem.alloc_dpus with program @dpu_kernels::@program : !upmem.hierarchy<1024x1>
     %alloc = memref.alloc() {alignment = 64 : i64} : memref<128x1024xi32>
     scf.for %arg2 = %c0 to %c128 step %c1 {
       scf.for %arg3 = %c0 to %c1024 step %c1 {
@@ -27,13 +27,13 @@ module {
         memref.store %2, %alloc[%arg2, %arg3] : memref<128x1024xi32>
       }
     }
-    upmem.scatter_on_array %arg0[1024 elts, #map3] onto @buf_1 of %1 : memref<8x1024xi32> onto !upmem.hierarchy<8x128x1>
-    upmem.scatter_on_array %alloc[1024 elts, #map1] onto @buf_0 of %1 : memref<128x1024xi32> onto !upmem.hierarchy<8x128x1>
-    upmem.scatter_on_array %0[1 elts, #map2] onto @buf of %1 : memref<8x128xi32> onto !upmem.hierarchy<8x128x1>
-    upmem.wait_for %1 : !upmem.hierarchy<8x128x1>
+    upmem.scatter_on_array %arg0[1024 elts, #map3] onto @buf_1 of %1 : memref<8x1024xi32> onto !upmem.hierarchy<1024x1>
+    upmem.scatter_on_array %alloc[1024 elts, #map1] onto @buf_0 of %1 : memref<128x1024xi32> onto !upmem.hierarchy<1024x1>
+    upmem.scatter_on_array %0[1 elts, #map2] onto @buf of %1 : memref<8x128xi32> onto !upmem.hierarchy<1024x1>
+    upmem.wait_for %1 : !upmem.hierarchy<1024x1>
     %alloc_0 = memref.alloc() {alignment = 64 : i64} : memref<8x128xi32>
-    upmem.gather_from_array %alloc_0[1 elts, #map2] from @buf of %1 : memref<8x128xi32> from !upmem.hierarchy<8x128x1>
-    upmem.free_dpus %1 : !upmem.hierarchy<8x128x1>
+    upmem.gather_from_array %alloc_0[1 elts, #map2] from @buf of %1 : memref<8x128xi32> from !upmem.hierarchy<1024x1>
+    upmem.free_dpus %1 : !upmem.hierarchy<1024x1>
     return %alloc_0 : memref<8x128xi32>
   }
   module @dpu_kernels {
