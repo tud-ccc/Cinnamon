@@ -115,7 +115,28 @@ Attribute UpmemAcceleratorAttr::parse(::mlir::AsmParser &p, ::mlir::Type) {
   if (p.parseGreater())
     return {};
 
-  return UpmemAcceleratorAttr::get(platform, dims[0], dims[1], dims[2]);
+  return UpmemAcceleratorAttr::getChecked(
+      [&] { return p.emitError(p.getNameLoc()); }, p.getContext(), platform,
+      SmallVector<int64_t>{dims[0], dims[1], dims[2]});
+}
+
+LogicalResult UpmemAcceleratorAttr::verify(
+    llvm::function_ref<::mlir::InFlightDiagnostic()> emitError,
+    UpmemPlatformAttr platform, ArrayRef<int64_t> workgroupShape) {
+  if (workgroupShape.size() != 3)
+    return emitError() << "expected a ranks x dpus x tasklets workgroup shape";
+  // The DPU count is what the platform can actually run out of: an
+  // allocation request beyond it fails at runtime, so reject it at compile
+  // time. (Tasklet bounds are not checked yet: the rank/DPU split itself is
+  // a historical artifact under repair, and existing specs disagree with
+  // their platforms about tasklets.)
+  const int64_t dpus = workgroupShape[0] * workgroupShape[1];
+  const int64_t maxDpus =
+      int64_t(platform.getMaxNumRanks()) * platform.getMaxNumDpusPerRank();
+  if (dpus > maxDpus)
+    return emitError() << "workgroup uses " << dpus
+                       << " DPUs but the platform has only " << maxDpus;
+  return success();
 }
 
 // static void printNamedVar(AsmPrinter &out, llvm::StringLiteral name,

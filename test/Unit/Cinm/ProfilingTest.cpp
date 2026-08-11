@@ -54,7 +54,8 @@ struct MockPlugin : cinm::InferencePlugin {
   }
 
   StringRef sharedResourceParam() const override { return "dpus"; }
-  SmallVector<int64_t> sharedResourceMenu() const override {
+  int64_t sharedResourceMax() const override { return 128; }
+  SmallVector<int64_t> sharedResourceMenu(cinm::ComputeBlockOp) const override {
     // 128 exceeds the declared range: the pinned space is empty there and
     // the profile must simply have no point, not an error.
     return {16, 32, 64, 128};

@@ -40,7 +40,7 @@ func.func @gemv(%A: tensor<16x1024xi32>, %x: tensor<1024xi32>) -> tensor<16xi32>
 
 // -----
 
-#upmem_platform = #upmem.platform<type=v1A, dimensions = 4x16>
+#upmem_platform = #upmem.platform<type=v1A, dimensions = 8x128>
 #upmem = #upmem.array<8x128x1, #upmem_platform>
 
 // The gemm pattern builds its buffer types directly rather than going through

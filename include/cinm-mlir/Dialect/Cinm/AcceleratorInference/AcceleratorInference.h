@@ -127,10 +127,24 @@ struct InferencePlugin {
   /// allocation.
   virtual llvm::StringRef sharedResourceParam() const { return {}; }
 
-  /// The values the shared resource may take when the graph level hands it
-  /// out: the hardware's allocation granularity (rank multiples for UPMEM).
-  /// Only meaningful when sharedResourceParam() is non-empty.
-  virtual SmallVector<int64_t> sharedResourceMenu() const { return {}; }
+  /// The resource values worth profiling `block` at. The plugin derives them
+  /// from the block itself -- for UPMEM, divisors of the iteration-space
+  /// size, since the workgroup must be filled exactly, quantized by
+  /// InferenceOptions::allocationGranularity -- so different blocks get
+  /// different menus. The values are candidates, not promises: a menu value
+  /// the pinned search finds infeasible (capacity, say) becomes a hole in
+  /// the profile. Only meaningful when sharedResourceParam() is non-empty.
+  virtual SmallVector<int64_t>
+  sharedResourceMenu(cinm::ComputeBlockOp block) const {
+    (void)block;
+    return {};
+  }
+
+  /// The most of the shared resource the device has at all: the total DPU
+  /// count for UPMEM. This is the budget the graph-level allocation divides
+  /// between device sets, and an upper bound on every menu value. 0 when the
+  /// target has no notion of graph-level allocation.
+  virtual int64_t sharedResourceMax() const { return 0; }
 
   /// Per-device-unit capacity bound of the memory the co-residency packing
   /// fills: MRAM bytes per DPU for UPMEM. 0 = no capacity model, the
@@ -282,6 +296,19 @@ struct InferenceOptions {
   /// placement pays and pinning avoids. Assumed constant (40 ms) until
   /// measured on hardware.
   double programReloadMs = 40.0;
+
+  /// Graph allocation only: the quantum of a device-set size, in resource
+  /// units (DPUs). The menu prefers multiples of it -- rank-sized (or
+  /// half-rank) allocations keep host<->device transfers rank-parallel --
+  /// but it is a preference, not a constraint: when the problem size admits
+  /// no such multiple, the menu falls back to what divides the problem.
+  int64_t allocationGranularity = 64;
+
+  /// Render terminal progress bars for this search. Progress is already
+  /// self-suppressing when stdout is not a terminal; this turns it off even
+  /// on one -- what a caller running many searches concurrently does, since
+  /// interleaved bars from independent searches shred each other's renders.
+  bool showProgress = true;
 };
 
 // ===----------------------------------------------------------------------===//
