@@ -41,18 +41,6 @@ def CnmAcceleratorAttrInterface : AttrInterface<"CnmAcceleratorAttrInterface", [
       "return 0;"
     >,
 
-    // InterfaceMethod<
-    //   /*desc=*/"Make progress on scheduling in the given block.",
-    //   /*retTy=*/"::mlir::DiagnosedSilenceableFailure",
-    //   /*methodName=*/"makeSchedulingProgress",
-    //   /*args=*/(ins "::mlir::cinm::CinmAcceleratorScheduler&":$api)
-    // >,
-    // InterfaceMethod<
-    //   /*desc=*/"Return a parameterized memory space attr for the given level",
-    //   /*retTy=*/"::mlir::cinm::CinmMemSpaceAttr",
-    //   /*methodName=*/"getGenericMemSpace",
-    //   /*args=*/(ins "::mlir::cinm::CinmLevelDefAttr":$level)
-    // >
   ];
 
   let extraClassDeclaration = [{
