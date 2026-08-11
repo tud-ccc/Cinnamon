@@ -1,4 +1,5 @@
 #include "cinm-mlir/Dialect/Cinm/AcceleratorInference/GraphInference.h"
+#include "cinm-mlir/Dialect/Cinm/AcceleratorInference/GraphAllocation.h"
 #include "cinm-mlir/Dialect/Cinm/IR/CinmBase.h"
 #include "cinm-mlir/Dialect/Cinm/IR/CinmUtils.h"
 #include "cinm-mlir/Utils/Scheduling/SchedulingSupport.h"
@@ -204,6 +205,90 @@ static std::string dumpDirFor(StringRef baseDir, StringRef name,
   return path.string();
 }
 
+/// The two-level solve over one graph (Stage A/B/C of
+/// docs/GraphOptimizationDesign.md): profile each class over the resource
+/// menu, allocate the device exactly over the profiles, then stamp each
+/// group's winning configuration onto its members and commit them through the
+/// single-configuration evaluation path.
+static DiagnosedSilenceableFailure
+runGraphAllocation(const ComputeGraph &graph, StringRef platformName,
+                   InferencePluginFactory makePlugin,
+                   const InferenceOptions &opts, StringRef baseDumpDir,
+                   StringRef graphName) {
+  Location loc = graph.classes.front().representative().getLoc();
+
+  // Stage A: one profile per class, on its representative.
+  SmallVector<ClassProfile> profiles;
+  for (auto [ci, blockClass] : llvm::enumerate(graph.classes)) {
+    std::unique_ptr<InferencePlugin> plugin = makePlugin(graph.platform);
+    InferenceOptions profileOpts = opts;
+    if (!baseDumpDir.empty())
+      profileOpts.dumpDir = (std::filesystem::path(baseDumpDir.str()) /
+                             graphName.str() / ("class_" + std::to_string(ci)))
+                                .string();
+    SmallVector<ProfilePoint> points = TRY_GET(
+        profileComputeBlock(blockClass.representative(), *plugin, profileOpts));
+    profiles.push_back({blockClass.size(), std::move(points)});
+  }
+
+  // Stage B: exact allocation over the profiles. The budget is the whole
+  // device -- the largest menu value -- since each connected component is
+  // interpreted as owning the grid.
+  std::unique_ptr<InferencePlugin> plugin = makePlugin(graph.platform);
+  AllocationOptions allocOpts;
+  allocOpts.resourceBudget = plugin->sharedResourceMenu().back();
+  allocOpts.capacityBytes = plugin->sharedCapacityBytes();
+  allocOpts.programReloadMs = opts.programReloadMs;
+  std::optional<AllocationResult> alloc = allocateGraph(profiles, allocOpts);
+  if (!alloc)
+    return emitSilenceableFailure(loc)
+           << "no feasible device allocation for this graph: some class fits "
+              "no menu configuration";
+  LLVM_DEBUG({
+    llvm::dbgs() << "[cinm-inference] Graph '" << graphName << "': bottleneck "
+                 << alloc->bottleneckMs << " ms, " << alloc->resourceUsed
+                 << " / " << allocOpts.resourceBudget << " units pinned\n";
+    for (auto [ci, ca] : llvm::enumerate(alloc->perClass))
+      for (const GroupAllocation &g : ca.groups)
+        llvm::dbgs() << "  class " << ci << ": " << g.size << " member(s) on "
+                     << (g.resource ? std::to_string(g.resource)
+                                    : std::string("timeshare"))
+                     << ", load " << g.loadMs << " ms\n";
+  });
+
+  // Stage C: stamp each group's argmin onto its members and commit. The
+  // argmin is feasible under the packing by construction -- the allocator
+  // admitted the group only if k co-resident copies of this configuration's
+  // static footprint fit (C9) -- so no budgeted re-search is needed for the
+  // chosen points. A timeshared group has no reserved set; committing the
+  // best point's configuration prices its transient borrow of the device.
+  for (auto [ci, blockClass] : llvm::enumerate(graph.classes)) {
+    const ClassAllocation &classAlloc = alloc->perClass[ci];
+    const ClassProfile &profile = profiles[ci];
+    unsigned member = 0;
+    for (const GroupAllocation &group : classAlloc.groups) {
+      const ProfilePoint *point = nullptr;
+      for (const ProfilePoint &p : profile.points)
+        if (group.resource ? p.resource == group.resource
+                           : (!point || p.costMs < point->costMs))
+          point = &p;
+      assert(point && "allocator chose a resource the profile does not have");
+
+      for (unsigned i = 0; i < group.size; ++i, ++member) {
+        ComputeBlockOp block = graph.classes[ci].members[member];
+        std::unique_ptr<InferencePlugin> memberPlugin =
+            makePlugin(graph.platform);
+        InferenceOptions memberOpts = opts;
+        memberOpts.dumpDir.clear();
+        memberOpts.evalSingleSolution = point->config;
+        TRY(inferAcceleratorConfig(block, *memberPlugin, memberOpts));
+      }
+    }
+  }
+  (void)platformName;
+  return DiagnosedSilenceableFailure::success();
+}
+
 DiagnosedSilenceableFailure
 inferAcceleratorConfigs(Operation *root, StringRef platformName,
                         InferencePluginFactory makePlugin,
@@ -214,12 +299,30 @@ inferAcceleratorConfigs(Operation *root, StringRef platformName,
   utils::NameInventor namer(root->getContext(), "infer_");
 
   for (const ComputeGraph &graph : graphs) {
-    // Every block of the graph is still searched on its own, with the whole
-    // device to itself. Graph-level allocation (Stage A/B/C of
-    // docs/GraphOptimizationDesign.md) replaces this loop: the per-class
-    // search becomes a profiling run over a menu of device sizes, the sizes
-    // are then allotted across the graph, and only the winning budget is
-    // committed -- once per class, stamped onto every member.
+    ComputeBlockOp first = graph.classes.front().representative();
+    std::unique_ptr<InferencePlugin> probe = makePlugin(graph.platform);
+    if (!probe)
+      return emitSilenceableFailure(first.getLoc())
+             << "no inference plugin for platform '" << platformName << "'";
+
+    auto scope = first->getParentOfType<SymbolOpInterface>();
+    StringRef nameHint = scope && scope.getNameAttr() ? scope.getName() : "op";
+
+    // The two-level solve, when asked for and supported. A user-supplied
+    // single solution is a per-block override and bypasses it.
+    if (opts.graphAllocation && !opts.evalSingleSolution &&
+        !probe->sharedResourceParam().empty() &&
+        !probe->sharedResourceMenu().empty()) {
+      StringAttr graphName = namer.getUniqueName(nameHint);
+      LLVM_DEBUG(llvm::dbgs()
+                 << "===== START GRAPH ALLOCATION " << graphName << " =====\n");
+      TRY(runGraphAllocation(graph, platformName, makePlugin, opts, baseDumpDir,
+                             graphName));
+      continue;
+    }
+
+    // Otherwise every block is searched on its own, with the whole device to
+    // itself -- the pre-graph behavior.
     for (const BlockClass &blockClass : graph.classes)
       for (ComputeBlockOp block : blockClass.members) {
         std::unique_ptr<InferencePlugin> plugin = makePlugin(graph.platform);
@@ -227,10 +330,11 @@ inferAcceleratorConfigs(Operation *root, StringRef platformName,
           return emitSilenceableFailure(block.getLoc())
                  << "no inference plugin for platform '" << platformName << "'";
 
-        auto scope = block->getParentOfType<SymbolOpInterface>();
-        StringRef nameHint =
-            scope && scope.getNameAttr() ? scope.getName() : "op";
-        StringAttr name = namer.getUniqueName(nameHint);
+        auto blockScope = block->getParentOfType<SymbolOpInterface>();
+        StringRef blockHint = blockScope && blockScope.getNameAttr()
+                                  ? blockScope.getName()
+                                  : "op";
+        StringAttr name = namer.getUniqueName(blockHint);
         LLVM_DEBUG(llvm::dbgs()
                    << "===== START INFERENCE " << name << " =====\n");
 
