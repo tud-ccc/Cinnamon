@@ -25,18 +25,41 @@ namespace mlir::cinm {
 // docs/GraphOptimizationDesign.md calls the graph -- the unit over which DPU
 // sets are partitioned (C7), programs merged (C8) and weights packed (C9).
 
+/// An equivalence class of compute blocks with identical programs: same body
+/// structure, same operand/result types, same per-operand staticness — the
+/// canonicalization the design's C8 (program identity) requires. Constant
+/// *payloads* are not part of the signature: weights are scattered data, not
+/// program text, so three same-shape projections with different matrices are
+/// one class. Everything downstream operates on classes, not blocks: the
+/// class is searched once (its members are interchangeable) and the winning
+/// configuration is stamped onto every member.
+struct BlockClass {
+  /// The members, in walk order; the first is the representative that gets
+  /// searched. Since a block only ever consumes values defined before it,
+  /// walk order is a topological order of the dataflow between blocks.
+  SmallVector<ComputeBlockOp> members;
+
+  ComputeBlockOp representative() const { return members.front(); }
+  unsigned size() const { return members.size(); }
+};
+
 /// One group of compute blocks that is optimized as a whole: a connected
 /// component of the dataflow between blocks, restricted to the blocks that
-/// target one platform.
+/// target one platform, canonicalized into program-identity classes.
 struct ComputeGraph {
   /// The platform every block in the group targets. Blocks of one component
   /// that carry different platform attributes are different groups: they are
   /// different pieces of hardware, so nothing has to be decided jointly.
   CinmPlatformAttrInterface platform;
-  /// The blocks, in walk order. Since a block only ever consumes values
-  /// defined before it, this is a topological order of the dataflow between
-  /// them.
-  SmallVector<ComputeBlockOp> blocks;
+  /// The classes, ordered by first appearance of a member.
+  SmallVector<BlockClass> classes;
+
+  unsigned numBlocks() const {
+    unsigned n = 0;
+    for (const BlockClass &c : classes)
+      n += c.size();
+    return n;
+  }
 };
 
 /// The platform named `platformName` in the `cinm.available_platforms` list of
