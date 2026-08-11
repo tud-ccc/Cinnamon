@@ -24,15 +24,22 @@ using cinm::ProfilePoint;
 
 namespace {
 
+/// The tests state footprints in one memory level named "mem".
 ProfilePoint point(int64_t d, double cost, int64_t staticBytes = 0,
                    int64_t dynBytes = 0, double scatterMs = 0) {
   ProfilePoint p;
   p.resource = d;
   p.costMs = cost;
-  p.residency.staticMramBytes = staticBytes;
-  p.residency.dynMramBytes = dynBytes;
+  p.residency.levels.push_back({"mem", staticBytes, dynBytes});
   p.residency.weightScatterMs = scatterMs;
   return p;
+}
+
+/// Capacity list bounding that level; empty = unconstrained.
+SmallVector<cinm::LevelCapacity> memCapacity(int64_t bytes) {
+  if (bytes <= 0)
+    return {};
+  return {{"mem", bytes}};
 }
 
 /// Brute-force optimum: recursively assign every member of every class to a
@@ -44,13 +51,12 @@ double bruteForce(ArrayRef<ClassProfile> classes,
   struct Option {
     int64_t resource;
     double loadPerMember;
-    int64_t staticBytes, dynBytes;
+    const ProfilePoint *point; // null for the timeshare pseudo-allocation
   };
   std::vector<std::vector<Option>> options(classes.size());
   for (auto [ci, cls] : llvm::enumerate(classes)) {
     for (const ProfilePoint &p : cls.points)
-      options[ci].push_back({p.resource, p.costMs, p.residency.staticMramBytes,
-                             p.residency.dynMramBytes});
+      options[ci].push_back({p.resource, p.costMs, &p});
     if (opts.allowTimeshare && !cls.points.empty()) {
       double best = std::numeric_limits<double>::infinity();
       double scatter = 0;
@@ -59,9 +65,25 @@ double bruteForce(ArrayRef<ClassProfile> classes,
           best = p.costMs;
           scatter = p.residency.weightScatterMs;
         }
-      options[ci].push_back({0, best + opts.programReloadMs + scatter, 0, 0});
+      options[ci].push_back(
+          {0, best + opts.programReloadMs + scatter, nullptr});
     }
   }
+
+  // k co-residents fit iff, in every capacity-bounded level, their pinned
+  // footprints plus one shared working region fit.
+  auto fits = [&](const Option &o, unsigned k) {
+    if (!o.point)
+      return true;
+    for (const cinm::LevelCapacity &cap : opts.capacities) {
+      const cinm::LevelResidency *lr = o.point->residency.find(cap.level);
+      if (!lr || lr->staticBytes <= 0)
+        continue;
+      if (int64_t(k) * lr->staticBytes + lr->dynBytes > cap.bytes)
+        return false;
+    }
+    return true;
+  };
 
   double best = std::numeric_limits<double>::infinity();
   // For each class, enumerate groupings recursively; combine across classes.
@@ -81,9 +103,7 @@ double bruteForce(ArrayRef<ClassProfile> classes,
               }
               for (const Option &o : options[ci])
                 for (unsigned k = 1; k <= remaining; ++k) {
-                  if (opts.capacityBytes > 0 && o.staticBytes > 0 &&
-                      int64_t(k) * o.staticBytes + o.dynBytes >
-                          opts.capacityBytes)
+                  if (!fits(o, k))
                     continue;
                   group(remaining - k, budget - o.resource,
                         std::max(load, double(k) * o.loadPerMember));
@@ -150,7 +170,7 @@ TEST(GraphAllocation, QKVSharesOneSetWhileWeightsFit) {
         point(1024, 1.0, 1000, 100, 5.0)}});
   AllocationOptions opts;
   opts.resourceBudget = 4096;
-  opts.capacityBytes = 3500; // fits 3 x 1000 + 100
+  opts.capacities = memCapacity(3500); // fits 3 x 1000 + 100
 
   auto result = cinm::allocateGraph(classes, opts);
   ASSERT_TRUE(result);
@@ -171,7 +191,7 @@ TEST(GraphAllocation, QKVSharesOneSetWhileWeightsFit) {
 
   // Shrink MRAM so only two fit per set: the class must split 2+1, and the
   // budget only carries one 1024 set plus one 512 set.
-  opts.capacityBytes = 2200; // 2*1000+100 fits, 3*1000+100 does not
+  opts.capacities = memCapacity(2200); // 2*1000+100 fits, 3*1000+100 does not
   opts.resourceBudget = 1536;
   result = cinm::allocateGraph(classes, opts);
   ASSERT_TRUE(result);
@@ -215,7 +235,7 @@ TEST(GraphAllocation, MatchesBruteForceOnRandomInstances) {
     }
     AllocationOptions opts;
     opts.resourceBudget = 256 * (rng() % 8);
-    opts.capacityBytes = (rng() % 2) ? 2500 : 0;
+    opts.capacities = memCapacity((rng() % 2) ? 2500 : 0);
     opts.programReloadMs = (rng() % 2) ? 40.0 : 0.5;
     opts.allowTimeshare = rng() % 2;
 

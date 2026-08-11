@@ -66,13 +66,15 @@ struct MockPlugin : cinm::InferencePlugin {
   /// reports footprints derived from them, so the test can check the whole
   /// path from `cinm.static` on the original function to the profile point.
   cinm::ResidencyInfo measureResidency(cinm::TrialInfo &trial) override {
-    cinm::ResidencyInfo out;
+    cinm::LevelResidency mem{"mem", 0, 0};
     for (BlockArgument arg : trial.computeBlock.getBodyArguments())
       if (cinm::isStaticValue(arg))
-        out.staticMramBytes += 100;
+        mem.staticBytes += 100;
       else
-        out.dynMramBytes += 10;
-    out.weightScatterMs = double(out.staticMramBytes) / 100.0;
+        mem.dynBytes += 10;
+    cinm::ResidencyInfo out;
+    out.weightScatterMs = double(mem.staticBytes) / 100.0;
+    out.levels.push_back(std::move(mem));
     return out;
   }
 
@@ -127,8 +129,10 @@ TEST(Profiling, ProfilesTheMenuPointwise) {
     EXPECT_EQ(p.config.lookup("tile"), 1) << "the argmin tile is 1";
     // One static operand (%w, via the forwarded cinm.static arg attr) and
     // one dynamic (%x), as the mock's residency model counts them.
-    EXPECT_EQ(p.residency.staticMramBytes, 100);
-    EXPECT_EQ(p.residency.dynMramBytes, 10);
+    const cinm::LevelResidency *mem = p.residency.find("mem");
+    ASSERT_TRUE(mem);
+    EXPECT_EQ(mem->staticBytes, 100);
+    EXPECT_EQ(mem->dynBytes, 10);
     EXPECT_DOUBLE_EQ(p.residency.weightScatterMs, 1.0);
   }
 }

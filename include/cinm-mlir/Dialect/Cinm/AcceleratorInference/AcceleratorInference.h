@@ -49,18 +49,39 @@ struct TrialInfo {
   ConfWrapper conf() const { return ConfWrapper(*space, config); }
 };
 
-/// What one device unit (a DPU) holds under a given configuration, split by
-/// operand staticness (see isStaticValue): the currency of the graph-level
-/// co-residency packing. When several ops share a device set, their static
-/// (pinned) footprints all occupy memory at once and sum, while their
-/// dynamic working sets run sequentially, reuse one region, and take the
-/// max. `weightScatterMs` is what scattering the static operands once costs
-/// -- the price a *non*-pinned (timeshared) placement pays per inference,
-/// and what pinning amortizes.
+/// Footprint of one configuration in one memory level of the platform,
+/// split by operand staticness (see isStaticValue). Stated per *instance* of
+/// the level -- per DPU for a DPU-private memory, per tasklet for a
+/// tasklet-private one -- the same unit the level's declared capacity uses.
+struct LevelResidency {
+  /// The level's name, matching a CinmLevelDefAttr of the platform.
+  std::string level;
+  /// Bytes that stay resident across inferences (pinned weights). When
+  /// several ops share a device set, these all occupy the level at once and
+  /// sum. Scratch levels that hold nothing between kernels report 0, which
+  /// makes them never bind the packing.
+  int64_t staticBytes = 0;
+  /// Bytes of per-inference working set. Co-resident ops run sequentially,
+  /// reuse one region, and take the max.
+  int64_t dynBytes = 0;
+};
+
+/// What the device holds under a given configuration, per memory level: the
+/// currency of the graph-level co-residency packing. `weightScatterMs` is
+/// what scattering the static operands once costs -- the price a
+/// *non*-pinned (timeshared) placement pays per inference, and what pinning
+/// amortizes.
 struct ResidencyInfo {
-  int64_t staticMramBytes = 0;
-  int64_t dynMramBytes = 0;
+  SmallVector<LevelResidency> levels;
   double weightScatterMs = 0;
+
+  /// The entry for `level`, or null if none was measured.
+  const LevelResidency *find(llvm::StringRef level) const {
+    for (const LevelResidency &entry : levels)
+      if (entry.level == level)
+        return &entry;
+    return nullptr;
+  }
 };
 
 // ===----------------------------------------------------------------------===//
@@ -146,19 +167,16 @@ struct InferencePlugin {
   /// target has no notion of graph-level allocation.
   virtual int64_t sharedResourceMax() const { return 0; }
 
-  /// Per-device-unit capacity bound of the memory the co-residency packing
-  /// fills: MRAM bytes per DPU for UPMEM. 0 = no capacity model, the
-  /// packing is unconstrained.
-  virtual int64_t sharedCapacityBytes() const { return 0; }
-
-  /// Measure what one device unit holds under `trial`'s configuration, for
-  /// the co-residency packing and timeshare pricing of the graph-level
-  /// allocation. `trial` is a fresh, *unlowered* clone annotated with the
-  /// configuration to measure; operand staticness is readable through
-  /// isStaticValue (the framework forwards the original operands' staticness
-  /// onto the trial module's function arguments). The default reports empty
-  /// footprints: a target without a residency model pins nothing, and the
-  /// capacity check never rejects a packing.
+  /// Measure what the device holds under `trial`'s configuration, per
+  /// memory level, for the co-residency packing and timeshare pricing of the
+  /// graph-level allocation. Level names must match the platform's level
+  /// declarations, whose capacities bound the packing. `trial` is a fresh,
+  /// *unlowered* clone annotated with the configuration to measure; operand
+  /// staticness is readable through isStaticValue (the framework forwards
+  /// the original operands' staticness onto the trial module's function
+  /// arguments). The default reports no footprints: a target without a
+  /// residency model pins nothing, and the capacity check never rejects a
+  /// packing.
   virtual ResidencyInfo measureResidency(TrialInfo &trial) {
     (void)trial;
     return {};
