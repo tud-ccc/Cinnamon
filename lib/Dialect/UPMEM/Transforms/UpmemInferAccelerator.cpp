@@ -4,6 +4,7 @@
 #include <cinm-mlir/Conversion/LinalgToCnm/LinalgToCnm.h>
 #include <cinm-mlir/Dialect/Cinm/AcceleratorInference/AcceleratorInference.h>
 #include <cinm-mlir/Dialect/Cinm/AcceleratorInference/FusionEdges.h>
+#include <cinm-mlir/Dialect/Cinm/AcceleratorInference/GraphInference.h>
 #include <cinm-mlir/Dialect/Cinm/AcceleratorInference/SpaceBuilder.h>
 #include <cinm-mlir/Dialect/Cinm/IR/CinmAttributes.h>
 #include <cinm-mlir/Dialect/Cinm/IR/CinmBase.h>
@@ -21,7 +22,6 @@
 
 #include <chrono>
 #include <cstdint>
-#include <filesystem>
 #include <memory>
 #include <string>
 #include <utility>
@@ -79,6 +79,10 @@ using mlir::cinm::IntVar;
 using mlir::cinm::PermVar;
 using mlir::cinm::SpaceBuilder;
 using mlir::cinm::utils::Maybe;
+
+/// What `UpmemPlatformAttr::getName()` returns: the name a scope's
+/// `cinm.available_platforms` list uses to offer this backend.
+static constexpr llvm::StringLiteral kUpmemPlatformName = "upmem";
 
 /// UPMEM-specific inference options. Wraps the generic InferenceOptions and
 /// provides a place to add UPMEM-specific knobs in the future.
@@ -956,66 +960,27 @@ struct UpmemInferAcceleratorPass
 
   void runOnOperation() override {
     ModuleOp module = getOperation();
-    DiagnosedSilenceableFailure failed = DiagnosedSilenceableFailure::success();
-
     UpmemInferenceOptions upmemOpts = buildOptions();
-    auto dataDumpDir = std::move(upmemOpts.inference.dumpDir);
 
-    cinm::utils::NameInventor inferenceNamer(&getContext(), "infer_");
+    // Which blocks are searched, and in what grouping, is the framework's
+    // business (see GraphInference.h); this backend only says what "a UPMEM
+    // block" is -- a block whose scope offers the `upmem` platform -- and how
+    // to search one.
+    auto makePlugin = [&upmemOpts](cinm::CinmPlatformAttrInterface platform)
+        -> std::unique_ptr<cinm::InferencePlugin> {
+      auto upmemPlatform = llvm::dyn_cast<upmem::UpmemPlatformAttr>(platform);
+      if (!upmemPlatform)
+        return nullptr;
+      return std::make_unique<UpmemInferencePlugin>(
+          upmemPlatform, upmemOpts,
+          createSimulator(upmemOpts.simulator, upmemOpts.annotateOpCosts,
+                          upmemOpts.evalTimeoutMs));
+    };
 
-    IRRewriter rewriter(module->getContext());
-    module.walk([&](cinm::ComputeBlockOp computeOp) -> WalkResult {
-      // Look for a UpmemPlatformAttr in cinm.available_platforms on the
-      // compute op or its enclosing function.
-      upmem::UpmemPlatformAttr platform;
-      auto tryExtract = [&](mlir::Operation *op) {
-        auto arr = op->getAttrOfType<ArrayAttr>("cinm.available_platforms");
-        if (!arr)
-          return;
-        for (auto attr : arr)
-          if (auto p = llvm::dyn_cast<upmem::UpmemPlatformAttr>(attr)) {
-            platform = p;
-            break;
-          }
-      };
-      tryExtract(computeOp.getOperation());
-      if (!platform)
-        if (auto func = computeOp->getParentOfType<func::FuncOp>())
-          tryExtract(func.getOperation());
-      if (!platform)
-        return WalkResult::skip(); // not a UPMEM target
-
-      UpmemInferencePlugin plugin(platform, upmemOpts,
-                                  createSimulator(upmemOpts.simulator,
-                                                  upmemOpts.annotateOpCosts,
-                                                  upmemOpts.evalTimeoutMs));
-
-      if (!dataDumpDir.empty()) {
-        auto parentFunc = computeOp->getParentOfType<SymbolOpInterface>();
-        StringRef nameHint = parentFunc && parentFunc.getNameAttr()
-                                 ? parentFunc.getName()
-                                 : "op";
-        auto name = inferenceNamer.getUniqueName(nameHint);
-        LLVM_DEBUG(llvm::dbgs() << "===== START INFERENCE " << name << " =====";
-                   llvm::dbgs() << "==================";);
-
-        auto path = std::filesystem::path(dataDumpDir) / name.str();
-        // Multi-seed mode appends its own seed_<value>/ per seed, so pass the
-        // base (per-op) dir. Single-seed BO gets the seed_<rngSeed>/ suffix
-        // here. Neither exhaustive search nor random sampling are seeded BO
-        // runs, so both dump straight to the base dir.
-        if (!upmemOpts.inference.exhaustiveSearch &&
-            !upmemOpts.inference.sampleN && upmemOpts.inference.nSeeds <= 1)
-          path /= "seed_" + std::to_string(upmemOpts.inference.rngSeed);
-        upmemOpts.inference.dumpDir = path;
-      }
-      TRY_IN_WALK(failed, cinm::inferAcceleratorConfig(computeOp, plugin,
-                                                       upmemOpts.inference));
-      return WalkResult::skip();
-    });
-
-    if (!failed.succeeded()) {
-      (void)failed.checkAndReport();
+    auto result = cinm::inferAcceleratorConfigs(
+        module, kUpmemPlatformName, makePlugin, upmemOpts.inference);
+    if (!result.succeeded()) {
+      (void)result.checkAndReport();
       signalPassFailure();
     }
   }
