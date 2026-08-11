@@ -5,7 +5,10 @@
 #include "cinm-mlir/Dialect/Cinm/IR/CinmOps.h"
 
 #include <cinm-mlir/Utils/Scheduling/SchedulingSupport.h>
+#include <cstdint>
 #include <initializer_list>
+#include <limits>
+#include <llvm/ADT/SmallVector.h>
 #include <llvm/ADT/StringMap.h>
 #include <memory>
 #include <mlir/IR/BuiltinOps.h>
@@ -38,6 +41,10 @@ struct TrialInfo {
   cinm::ComputeBlockOp computeBlock;
   Configuration config;
   const ConfigSpace *space = nullptr;
+  /// The evaluated cost of `config` (SimCost::total()). NaN until the trial
+  /// has been evaluated; the framework fills it in when it records a best
+  /// trial, so a search's result carries its own objective value.
+  double cost = std::numeric_limits<double>::quiet_NaN();
 
   ConfWrapper conf() const { return ConfWrapper(*space, config); }
 };
@@ -98,6 +105,18 @@ struct InferencePlugin {
   /// Emit debug statistics (e.g. cache hit rate). Called after exhaustive
   /// search completes. Default is a no-op.
   virtual void printStats() const {}
+
+  /// The name of the search parameter that counts the shared device resource
+  /// the graph level allocates between compute blocks -- the DPU count for
+  /// UPMEM. Cost profiles (Stage A of docs/GraphOptimizationDesign.md) are
+  /// indexed by this parameter's value. Empty when the target has no notion
+  /// of graph-level allocation.
+  virtual llvm::StringRef sharedResourceParam() const { return {}; }
+
+  /// The values the shared resource may take when the graph level hands it
+  /// out: the hardware's allocation granularity (rank multiples for UPMEM).
+  /// Only meaningful when sharedResourceParam() is non-empty.
+  virtual SmallVector<int64_t> sharedResourceMenu() const { return {}; }
 };
 
 // ===----------------------------------------------------------------------===//
@@ -207,7 +226,50 @@ struct InferenceOptions {
   /// encoding silently reinterprets every stored configuration when it
   /// changes. Resolved against the space once it has been built.
   std::optional<llvm::StringMap<ParmValue>> evalSingleSolution;
+
+  /// Parameters pinned to a single value when the space is built: each named
+  /// parameter is constrained to equal the given value, on top of whatever
+  /// the plugin declares. This is how a decision taken above the search is
+  /// imposed on it -- the graph level fixing the device size for a Stage-A
+  /// profiling run, or a Stage-C budgeted re-search
+  /// (docs/GraphOptimizationDesign.md). A name the space does not declare is
+  /// an error, not a no-op: a search that ignores a pin measures something
+  /// other than what was asked.
+  llvm::StringMap<ParmValue> pinnedParams;
 };
+
+// ===----------------------------------------------------------------------===//
+// Stage A: cost profiles
+// ===----------------------------------------------------------------------===//
+
+/// One measured point of a compute block's cost profile L(D): the best cost
+/// a search found with the shared resource pinned to `resource`, and the
+/// configuration that achieved it. The profile is the complete summary of the
+/// block that the graph-level allocation consumes (an optimal-value-function
+/// projection; see the design's "Why the interface is exact").
+struct ProfilePoint {
+  /// The shared-resource value (sharedResourceParam) this point measured.
+  int64_t resource;
+  /// L(resource): total cost of the best configuration found, in ms.
+  double costMs;
+  /// The argmin configuration, keyed by space dimension name in the same
+  /// currency as InferenceOptions::evalSingleSolution, so it can be replayed
+  /// through a later search or evaluation without reinterpretation.
+  llvm::StringMap<ParmValue> config;
+};
+
+/// Stage A: measure `computeOp`'s cost profile over the plugin's
+/// shared-resource menu by running one search per menu value with the
+/// resource pinned (P6 pinning). `opts` applies to each per-point search
+/// (maxEvals is per point); dumps, when enabled, go to a `<param>_<value>/`
+/// subdirectory per point. Menu values for which the pinned space has no
+/// valid configuration (divisibility, capacity) yield no point rather than an
+/// error; the profile is measured pointwise and Stage B copes with holes.
+/// Fails only when every menu value is infeasible or a search fails
+/// definitively.
+utils::Maybe<SmallVector<ProfilePoint>>
+profileComputeBlock(cinm::ComputeBlockOp computeOp, InferencePlugin &plugin,
+                    const InferenceOptions &opts);
 
 /// Entry point for Bayesian inference.
 DiagnosedSilenceableFailure

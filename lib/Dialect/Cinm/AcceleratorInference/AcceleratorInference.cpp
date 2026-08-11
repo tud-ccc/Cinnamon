@@ -104,10 +104,19 @@ buildRefModule(cinm::ComputeBlockOp computeOp) {
   return {std::move(module), llvm::cast<cinm::ComputeBlockOp>(cloned)};
 }
 
-void buildConfigSpace(cinm::ComputeBlockOp refClone, InferencePlugin &plugin,
-                      ConfigSpace &space, const InferenceOptions &opts) {
+LogicalResult buildConfigSpace(cinm::ComputeBlockOp refClone,
+                               InferencePlugin &plugin, ConfigSpace &space,
+                               const InferenceOptions &opts) {
   SpaceBuilder builder;
   plugin.initializeSpace(refClone, builder);
+  // Pins come after the plugin's declarations and constrain them; a name the
+  // plugin never declared is a hard error, since running unpinned would
+  // silently measure something other than what the caller asked for.
+  for (const auto &entry : opts.pinnedParams)
+    if (!builder.pin(entry.first(), entry.second))
+      return emitError(refClone.getLoc())
+             << "cannot pin '" << entry.first()
+             << "': the search space declares no such integer parameter";
   builder.buildInto(space, opts.nSolveWorkers);
   LLVM_DEBUG({
     // Two different sizes, and the interesting thing about a space is the
@@ -126,6 +135,7 @@ void buildConfigSpace(cinm::ComputeBlockOp refClone, InferencePlugin &plugin,
       llvm::dbgs() << "  " << p.name << " in [" << p.dlo() << ", " << p.dhi()
                    << "] (" << p.numValues() << " values)\n";
   });
+  return success();
 }
 
 /// A fixed set of per-thread evaluation workers. Each worker owns a warmed-up
@@ -224,6 +234,10 @@ struct InferenceTask {
 
   std::mt19937 rng;
 
+  /// False when buildConfigSpace failed (an error has been emitted); every
+  /// run method then refuses to search.
+  bool spaceValid = true;
+
   InferenceTask(const InferenceOptions &options, InferencePlugin &plugin,
                 cinm::ComputeBlockOp original)
       : options(options), plugin(plugin), original(original),
@@ -232,7 +246,7 @@ struct InferenceTask {
     auto [refModule, refClone] = buildRefModule(original);
     this->refClone = refClone;
     this->refModule = std::move(refModule);
-    buildConfigSpace(refClone, plugin, space, options);
+    spaceValid = succeeded(buildConfigSpace(refClone, plugin, space, options));
     // initializeSpace is allowed to rewrite the reference in place (the UPMEM
     // plugin lowers it to linalg, so that every trial starts from the form the
     // space was read off), and a rewrite can replace the compute block op
@@ -529,6 +543,13 @@ struct InferenceTask {
                : 1u;
   }
 
+  /// Run whichever search mode `options` selects (single solution, random
+  /// sample, exhaustive, or (multi-seed) BO) and return the best trial with
+  /// its cost, without committing anything. Defined after the pass-mode
+  /// methods below; inferAcceleratorConfig and profileComputeBlock are the
+  /// two callers.
+  Maybe<TrialInfo> runDispatch();
+
   /// Run Bayesian optimisation (single seed). Delegates to runMultiSeed with
   /// nSeeds=1, which uses all available workers for the BO LHS phase and
   /// seeds the RNG directly with options.rngSeed (seedValue(0) = 0*31+rngSeed).
@@ -794,7 +815,24 @@ struct InferenceTask {
                  << "[cinm-inference] Pool dumped to " << path << "\n");
     }
 
-    return DiagnosedSilenceableFailure::success();
+    return bestObservedTrial(pool);
+  }
+
+  /// The best observation in `pool` as a TrialInfo carrying its cost. The
+  /// trial's module is a fresh *unlowered* clone -- the evaluations' modules
+  /// were discarded -- so this is an argmin report (what profiling consumes),
+  /// not something commitBestCandidate can splice.
+  Maybe<TrialInfo> bestObservedTrial(const CandidatePool &pool) {
+    const std::pair<const size_t, double> *best = nullptr;
+    for (const auto &entry : pool.costByIdx)
+      if (!best || entry.second < best->second)
+        best = &entry;
+    if (!best)
+      return emitSilenceableFailure(refClone.getLoc(),
+                                    "No configuration evaluated successfully");
+    TrialInfo trial = makeTrialInfo(pool[best->first]);
+    trial.cost = best->second;
+    return trial;
   }
 
   /// Like runExhaustive, but only evaluates a random sample of `sampleN`
@@ -919,7 +957,7 @@ struct InferenceTask {
                               << options.dumpDir << "\n");
     }
 
-    return DiagnosedSilenceableFailure::success();
+    return bestObservedTrial(pool);
   }
 };
 
@@ -967,6 +1005,7 @@ bool InferenceState::tryEval(size_t poolIdx, InferenceTask &task,
   anySuccess = true;
   if (costVal < bestCost) {
     bestCost = costVal;
+    trial.cost = costVal;
     bestTrial = std::move(trial);
   }
   return true;
@@ -975,6 +1014,40 @@ bool InferenceState::tryEval(size_t poolIdx, InferenceTask &task,
 // ===----------------------------------------------------------------------===//
 // inferAcceleratorConfig
 // ===----------------------------------------------------------------------===//
+
+Maybe<TrialInfo> InferenceTask::runDispatch() {
+  if (!spaceValid)
+    return emitDefiniteFailure(original.getLoc(),
+                               "the search space could not be built");
+
+  if (options.evalSingleSolution) {
+    // Resolve the named parameters against the space that was just built.
+    Configuration conf = TRY_GET(
+        resolveNamedConfig(*options.evalSingleSolution, original->getLoc()));
+    TrialInfo bestResult = makeTrialInfo(std::move(conf));
+    plugin.warmUp(original->getContext());
+    auto estimate = TRY_GET(plugin.evaluate(bestResult)); // may return early
+    bestResult.cost = estimate.total();
+    llvm::errs() << "Estimated cost: " << llvm::format("%.3f", estimate.total())
+                 << " ms\n";
+    estimate.forEachEntry(
+        [&](utils::CostCategory category, StringRef label, double value) {
+          llvm::errs() << "  " << utils::costCategoryName(category);
+          if (!label.empty())
+            llvm::errs() << "." << label;
+          llvm::errs() << ": " << llvm::format("%.3f", value) << " ms\n";
+        });
+    return bestResult;
+  }
+  if (options.sampleN > 0)
+    return runRandomSample(options.sampleN);
+  if (options.exhaustiveSearch)
+    return runExhaustive();
+  // Multi-seed: shares the space / valid scan / validation set across seeds,
+  // dumping each into a `seed_<value>/` subdir of options.dumpDir. Returns
+  // the globally best trial for committing.
+  return runMultiSeed(options.dumpDir);
+}
 
 DiagnosedSilenceableFailure
 inferAcceleratorConfig(cinm::ComputeBlockOp computeOp, InferencePlugin &plugin,
@@ -989,41 +1062,71 @@ inferAcceleratorConfig(cinm::ComputeBlockOp computeOp, InferencePlugin &plugin,
   LLVM_DEBUG(llvm::dbgs() << "[cinm-inference] Reference clone:\n";
              task.refClone->print(llvm::dbgs()); llvm::dbgs() << "\n");
 
-  TrialInfo bestResult;
-  if (opts.evalSingleSolution) {
-    // Resolve the named parameters against the space that was just built.
-    Configuration conf = TRY_GET(
-        task.resolveNamedConfig(*opts.evalSingleSolution, computeOp->getLoc()));
-    bestResult = task.makeTrialInfo(std::move(conf));
-    plugin.warmUp(computeOp->getContext());
-    auto estimate = TRY_GET(plugin.evaluate(bestResult)); // may return early
-    llvm::errs() << "Estimated cost: " << llvm::format("%.3f", estimate.total())
-                 << " ms\n";
-    estimate.forEachEntry(
-        [&](utils::CostCategory category, StringRef label, double value) {
-          llvm::errs() << "  " << utils::costCategoryName(category);
-          if (!label.empty())
-            llvm::errs() << "." << label;
-          llvm::errs() << ": " << llvm::format("%.3f", value) << " ms\n";
-        });
+  TrialInfo bestResult = TRY_GET(task.runDispatch());
 
-  } else if (opts.sampleN > 0) {
-    bestResult = TRY_GET(task.runRandomSample(opts.sampleN));
-  } else if (opts.exhaustiveSearch) {
-    bestResult = TRY_GET(task.runExhaustive());
-  } else if (opts.nSeeds > 1) {
-    // Multi-seed: shares the space / valid scan / validation set across seeds,
-    // dumping each into a `seed_<value>/` subdir of opts.dumpDir. Returns the
-    // globally best trial for committing.
-    bestResult = TRY_GET(task.runMultiSeed(opts.dumpDir));
-  } else {
-    bestResult = TRY_GET(task.runInference());
-  }
+  // Exhaustive and random-sample runs are data collection: their result
+  // reports the argmin but was never lowered, so there is nothing to commit.
+  if (!opts.evalSingleSolution && (opts.sampleN > 0 || opts.exhaustiveSearch))
+    return DiagnosedSilenceableFailure::success();
 
   LLVM_DEBUG(llvm::dbgs() << "[cinm-inference] Committing best config"
                           << bestResult.conf() << "\n");
 
   return plugin.commitBestCandidate(computeOp, std::move(bestResult));
+}
+
+// ===----------------------------------------------------------------------===//
+// profileComputeBlock (Stage A)
+// ===----------------------------------------------------------------------===//
+
+Maybe<SmallVector<ProfilePoint>>
+profileComputeBlock(cinm::ComputeBlockOp computeOp, InferencePlugin &plugin,
+                    const InferenceOptions &opts) {
+  StringRef param = plugin.sharedResourceParam();
+  SmallVector<int64_t> menu = plugin.sharedResourceMenu();
+  if (param.empty() || menu.empty())
+    return emitDefiniteFailure(
+        computeOp.getLoc(),
+        "this target declares no shared resource to profile over");
+
+  SmallVector<ProfilePoint> points;
+  for (int64_t resource : menu) {
+    LLVM_DEBUG(llvm::dbgs() << "[cinm-inference] Profiling " << param << "="
+                            << resource << "\n");
+    InferenceOptions pointOpts = opts;
+    pointOpts.pinnedParams[param] = static_cast<ParmValue>(resource);
+    if (!opts.dumpDir.empty())
+      pointOpts.dumpDir =
+          opts.dumpDir + "/" + param.str() + "_" + std::to_string(resource);
+
+    InferenceTask task(pointOpts, plugin, computeOp);
+    Maybe<TrialInfo> result = task.runDispatch();
+    if (auto *fail = std::get_if<DiagnosedSilenceableFailure>(&result)) {
+      if (fail->isDefiniteFailure())
+        return std::move(*fail);
+      // An infeasible menu value (divisibility, capacity) is data, not an
+      // error: the profile simply has no point there.
+      LLVM_DEBUG(llvm::dbgs()
+                 << "[cinm-inference]   no point at " << param << "="
+                 << resource << ": " << fail->getMessage() << "\n");
+      (void)fail->silence();
+      continue;
+    }
+
+    TrialInfo &best = std::get<TrialInfo>(result);
+    ProfilePoint point{resource, best.cost, {}};
+    for (size_t dim = 0; dim < task.space.numDims(); ++dim)
+      point.config[task.space.dimName(dim)] = best.config[dim];
+    points.push_back(std::move(point));
+    LLVM_DEBUG(llvm::dbgs() << "[cinm-inference]   L(" << resource
+                            << ") = " << best.cost << " ms\n");
+  }
+
+  if (points.empty())
+    return emitSilenceableFailure(computeOp.getLoc())
+           << "no value of '" << param
+           << "' in the allocation menu is feasible for this block";
+  return points;
 }
 
 static Operation *createCast(OpBuilder &builder, Location loc, Type toType,
