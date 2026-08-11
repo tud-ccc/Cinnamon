@@ -13,6 +13,7 @@
 #include "cinm-mlir/Dialect/Cinm/AcceleratorInference/AcceleratorInference.h"
 #include "cinm-mlir/Dialect/Cinm/AcceleratorInference/SpaceBuilder.h"
 #include "cinm-mlir/Dialect/Cinm/IR/CinmBase.h"
+#include "cinm-mlir/Dialect/Cinm/IR/CinmUtils.h"
 
 #include <gtest/gtest.h>
 
@@ -60,6 +61,21 @@ struct MockPlugin : cinm::InferencePlugin {
     return {16, 32, 64, 128};
   }
 
+  /// Counts the block's static operands (staticness must be readable from
+  /// inside a trial clone, where the original defs are out of reach) and
+  /// reports footprints derived from them, so the test can check the whole
+  /// path from `cinm.static` on the original function to the profile point.
+  cinm::ResidencyInfo measureResidency(cinm::TrialInfo &trial) override {
+    cinm::ResidencyInfo out;
+    for (BlockArgument arg : trial.computeBlock.getBodyArguments())
+      if (cinm::isStaticValue(arg))
+        out.staticMramBytes += 100;
+      else
+        out.dynMramBytes += 10;
+    out.weightScatterMs = double(out.staticMramBytes) / 100.0;
+    return out;
+  }
+
   cinm::IntVar dpus_, tile_;
 };
 
@@ -67,9 +83,9 @@ TEST(Profiling, ProfilesTheMenuPointwise) {
   MLIRContext ctx;
   ctx.loadDialect<cinm::CinmDialect, func::FuncDialect, arith::ArithDialect>();
   OwningOpRef<ModuleOp> module = parseSourceString<ModuleOp>(R"mlir(
-    func.func @f(%x: tensor<8xi32>) -> tensor<8xi32> {
-      %r = cinm.compute_block (%a = %x : tensor<8xi32>) -> tensor<8xi32> {
-        %y = arith.addi %a, %a : tensor<8xi32>
+    func.func @f(%w: tensor<8xi32> {cinm.static}, %x: tensor<8xi32>) -> tensor<8xi32> {
+      %r = cinm.compute_block (%a = %w : tensor<8xi32>, %b = %x : tensor<8xi32>) -> tensor<8xi32> {
+        %y = arith.addi %a, %b : tensor<8xi32>
         cinm.yield %y : tensor<8xi32>
       }
       return %r : tensor<8xi32>
@@ -109,6 +125,11 @@ TEST(Profiling, ProfilesTheMenuPointwise) {
     ASSERT_TRUE(p.config.contains("tile"));
     EXPECT_EQ(p.config.lookup("dpus"), expectD) << "the pin must hold";
     EXPECT_EQ(p.config.lookup("tile"), 1) << "the argmin tile is 1";
+    // One static operand (%w, via the forwarded cinm.static arg attr) and
+    // one dynamic (%x), as the mock's residency model counts them.
+    EXPECT_EQ(p.residency.staticMramBytes, 100);
+    EXPECT_EQ(p.residency.dynMramBytes, 10);
+    EXPECT_DOUBLE_EQ(p.residency.weightScatterMs, 1.0);
   }
 }
 

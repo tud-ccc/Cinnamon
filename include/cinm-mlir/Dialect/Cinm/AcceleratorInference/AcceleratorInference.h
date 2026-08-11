@@ -49,6 +49,20 @@ struct TrialInfo {
   ConfWrapper conf() const { return ConfWrapper(*space, config); }
 };
 
+/// What one device unit (a DPU) holds under a given configuration, split by
+/// operand staticness (see isStaticValue): the currency of the co-residency
+/// constraint C9 in docs/GraphOptimizationDesign.md. Static (pinned)
+/// footprints of co-resident ops sum; dynamic working sets of sequentially
+/// executing co-residents reuse one region and take the max.
+/// `weightScatterMs` is what scattering the static operands once costs -- the
+/// price a *non*-pinned (timeshared) placement pays per inference, and what
+/// pinning amortizes.
+struct ResidencyInfo {
+  int64_t staticMramBytes = 0;
+  int64_t dynMramBytes = 0;
+  double weightScatterMs = 0;
+};
+
 // ===----------------------------------------------------------------------===//
 // Plugin interface
 // ===----------------------------------------------------------------------===//
@@ -117,6 +131,18 @@ struct InferencePlugin {
   /// out: the hardware's allocation granularity (rank multiples for UPMEM).
   /// Only meaningful when sharedResourceParam() is non-empty.
   virtual SmallVector<int64_t> sharedResourceMenu() const { return {}; }
+
+  /// Measure what one device unit holds under `trial`'s configuration, for
+  /// the co-residency constraint C9 and the timeshare pricing of the design.
+  /// `trial` is a fresh, *unlowered* clone annotated with the configuration
+  /// to measure; operand staticness is readable through isStaticValue (the
+  /// framework forwards the original operands' staticness onto the trial
+  /// module's function arguments). The default reports empty footprints:
+  /// a target without a residency model pins nothing, and C9 is vacuous.
+  virtual ResidencyInfo measureResidency(TrialInfo &trial) {
+    (void)trial;
+    return {};
+  }
 };
 
 // ===----------------------------------------------------------------------===//
@@ -256,6 +282,9 @@ struct ProfilePoint {
   /// currency as InferenceOptions::evalSingleSolution, so it can be replayed
   /// through a later search or evaluation without reinterpretation.
   llvm::StringMap<ParmValue> config;
+  /// The argmin's residency summary (plugin-measured); consumed by the
+  /// graph-level C9 packing and timeshare pricing.
+  ResidencyInfo residency;
 };
 
 /// Stage A: measure `computeOp`'s cost profile over the plugin's

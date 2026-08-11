@@ -179,6 +179,8 @@ static std::string searchNameFor(Operation *op) {
   return shortOpName(op->getName().getStringRef());
 }
 
+static SmallVector<SmallVector<unsigned>> linalgOperandDims(linalg::LinalgOp);
+
 struct UpmemInferencePlugin : cinm::InferencePlugin {
   upmem::UpmemPlatformAttr platform;
   const UpmemInferenceOptions &opts;
@@ -229,6 +231,63 @@ struct UpmemInferencePlugin : cinm::InferencePlugin {
     for (int k = 1; k <= platform.getMaxNumRanks(); ++k)
       menu.push_back(int64_t(k) * platform.getMaxNumDpusPerRank());
     return menu;
+  }
+
+  /// Per-DPU MRAM footprint at a configuration, split by operand staticness,
+  /// mirroring exactly the capacity charge P5 posts on the space (see
+  /// handleLinalgOp): `tasklets × Σ_operands Π_dims mramTile[d]`, no sharing
+  /// assumed. The MRAM-level tile sizes are read back through the parameter
+  /// names stamped as kOuterTileParamsAttr; staticness resolves through the
+  /// trial's function-argument attributes (isStaticValue). An operand that is
+  /// not directly a block argument (a `linalg.fill` accumulator, a fused
+  /// intermediate) is charged as dynamic, which errs toward under-pinning.
+  cinm::ResidencyInfo measureResidency(cinm::TrialInfo &trial) override {
+    cinm::ResidencyInfo out;
+    auto valueOf = [&](StringRef name) -> int64_t {
+      for (size_t d = 0; d < trial.space->numDims(); ++d)
+        if (trial.space->dimName(d) == name)
+          return trial.config[d];
+      return -1;
+    };
+    const int64_t tasklets = valueOf("tasklets");
+    const int64_t dpus = valueOf("dpus");
+    const int64_t ranks =
+        std::max<int64_t>(1, dpus / platform.getMaxNumDpusPerRank());
+
+    cinm::ComputeBlockOp block = trial.computeBlock;
+    block.getBody().walk([&](linalg::LinalgOp op) {
+      auto tileParams = op->getAttrOfType<ArrayAttr>(kOuterTileParamsAttr);
+      if (!tileParams)
+        return;
+      SmallVector<int64_t> mramTile;
+      for (Attribute name : tileParams)
+        mramTile.push_back(valueOf(llvm::cast<StringAttr>(name).getValue()));
+
+      auto operandDims = linalgOperandDims(op);
+      for (auto [opnd, dims] : llvm::zip(op->getOpOperands(), operandDims)) {
+        auto shaped = llvm::cast<ShapedType>(opnd.get().getType());
+        const int64_t eltBytes =
+            std::max<int64_t>(1, shaped.getElementTypeBitWidth() / 8);
+        int64_t tileElts = 1;
+        for (unsigned dim : dims)
+          tileElts *= mramTile[dim];
+        const int64_t perDpuBytes = tasklets * tileElts * eltBytes;
+
+        auto arg = llvm::dyn_cast<BlockArgument>(opnd.get());
+        const bool isStatic = arg && arg.getOwner()->getParentOp() == block &&
+                              cinm::isStaticValue(arg);
+        if (isStatic) {
+          out.staticMramBytes += perDpuBytes;
+          // What a timeshared placement would pay per inference to restore
+          // these weights: the whole tensor through the scatter model.
+          out.weightScatterMs +=
+              transferCost(double(shaped.getNumElements()) * eltBytes, ranks);
+        } else {
+          out.dynMramBytes += perDpuBytes;
+        }
+      }
+    });
+    return out;
   }
 
   /// cinm -> linalg. Run once, on the reference the trials are cloned from,
