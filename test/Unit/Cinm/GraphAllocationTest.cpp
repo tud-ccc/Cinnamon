@@ -1,11 +1,11 @@
-//===- GraphAllocationTest.cpp - Stage B exact outer solve ----------------===//
+//===- GraphAllocationTest.cpp - Exact graph-level allocation -------------===//
 //
-// allocateGraph is the parametric min-max solve of the design's Stage B. The
-// closed-form tests pin the worked examples of the design document (2MM
-// partition-vs-timeshare, QKV co-residency under C9); the differential test
-// checks exactness against a brute-force enumeration of every grouping and
-// provisioning on small random instances -- the oracle the design says the
-// solver must agree with.
+// allocateGraph divides the device among a graph's classes by a parametric
+// min-max solve. The closed-form tests pin the canonical scenarios (a 2MM
+// chain choosing partitioning over timesharing, QKV projections packing into
+// one set while their weights fit); the differential test checks exactness
+// against a brute-force enumeration of every grouping and provisioning on
+// small random instances.
 //
 //===----------------------------------------------------------------------===//
 
@@ -98,8 +98,8 @@ double bruteForce(ArrayRef<ClassProfile> classes,
 TEST(GraphAllocation, TwoMMSequentialPartitions) {
   // Two different-shape gemms (two singleton classes), grid of 2048. Pinned
   // side by side they run in a pipeline; timesharing the whole grid would pay
-  // two program reloads per inference. Partitioning must win by orders of
-  // magnitude (the design's headline example).
+  // two program reloads per inference against sub-ms kernels, so
+  // partitioning must win by orders of magnitude.
   SmallVector<ClassProfile> classes;
   classes.push_back({1, {point(1024, 0.9), point(2048, 0.5)}});
   classes.push_back({1, {point(1024, 1.1), point(2048, 0.6)}});
@@ -138,7 +138,7 @@ TEST(GraphAllocation, TimeshareWinsWhenReloadIsFree) {
   EXPECT_DOUBLE_EQ(result->bottleneckMs, 1.1);
 }
 
-TEST(GraphAllocation, QKVSharesOneSetUnderC9) {
+TEST(GraphAllocation, QKVSharesOneSetWhileWeightsFit) {
   // Three same-shape projections (one class of 3). Weights fit 3x on one
   // set: one group of three sharing a program, load 3L, leaving the rest of
   // the grid free -- unless splitting into more sets is better, which it is
@@ -160,7 +160,7 @@ TEST(GraphAllocation, QKVSharesOneSetUnderC9) {
 
   // Tight budget: only 1024 units in total. One set of 1024 shared by all
   // three (load 3.0) beats three sets of ~341 (not on the menu) and beats
-  // timesharing (reload 40). C9 allows the packing (3*1000+100 <= 3500).
+  // timesharing (reload 40). The weights fit (3*1000 + 100 <= 3500).
   opts.resourceBudget = 1024;
   result = cinm::allocateGraph(classes, opts);
   ASSERT_TRUE(result);

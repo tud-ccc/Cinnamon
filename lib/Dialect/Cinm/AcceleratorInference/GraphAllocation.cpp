@@ -23,8 +23,8 @@ constexpr int64_t kNoBudget = std::numeric_limits<int64_t>::max();
 struct GroupOption {
   int64_t resource;     // 0 = unpinned
   double loadPerMember; // ms
-  int64_t staticBytes;  // per device unit, per member (C9's summing term)
-  int64_t dynBytes;     // per device unit, shared across members (max term)
+  int64_t staticBytes;  // per device unit, per member; co-residents' sum
+  int64_t dynBytes;     // per device unit, shared across members (max)
 };
 
 /// All provisioning options of one class.
@@ -33,7 +33,8 @@ struct ClassOptions {
   SmallVector<GroupOption> options;
 };
 
-/// Largest k such that k members may share a set under option `o` (C9):
+/// Largest k such that k members may share a set under option `o`: their k
+/// pinned footprints plus the one shared working region must fit the unit,
 /// k * static + dyn <= capacity. Unlimited when the capacity check is off.
 unsigned maxCoResidents(const GroupOption &o, int64_t capacityBytes,
                         unsigned multiplicity) {
@@ -109,8 +110,8 @@ std::optional<AllocationResult> allocateGraph(ArrayRef<ClassProfile> classes,
     }
     if (opts.allowTimeshare && bestPinned < kInf) {
       // Unpinned: borrow the best point's device count transiently; pay the
-      // program switch and the weight re-scatter every inference. No pinned
-      // footprint, so C9 does not constrain it.
+      // program switch and the weight re-scatter every inference. Nothing
+      // stays resident, so the capacity check does not constrain it.
       co.options.push_back(
           {0, bestPinned + opts.programReloadMs + bestScatter, 0, 0});
     }
@@ -164,7 +165,7 @@ std::optional<AllocationResult> allocateGraph(ArrayRef<ClassProfile> classes,
     }
     result.perClass.push_back(std::move(alloc));
   }
-  LLVM_DEBUG(llvm::dbgs() << "[cinm-inference] Stage B: bottleneck "
+  LLVM_DEBUG(llvm::dbgs() << "[cinm-inference] Allocation: bottleneck "
                           << result.bottleneckMs << " ms, "
                           << result.resourceUsed << " / " << opts.resourceBudget
                           << " resource units\n");

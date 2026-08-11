@@ -1,9 +1,9 @@
 //===- StaticValueTest.cpp - Staticness derivation ------------------------===//
 //
-// isStaticValue decides which operands the graph-level optimization may treat
-// as resident (docs/GraphOptimizationDesign.md, "What counts as static"). The
-// cases below are the definition, one per rule, plus the sound-rejection
-// cases: dynamic indexing and ops that combine two tensors.
+// isStaticValue decides which operands hold the same data on every inference
+// and so may be pinned on an accelerator. The cases below are the
+// definition, one per rule, plus the sound-rejection cases: dynamic indexing
+// and ops that combine two tensors.
 //
 //===----------------------------------------------------------------------===//
 

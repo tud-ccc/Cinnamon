@@ -54,11 +54,11 @@ using GraphKey = const void *;
 GraphKey keyOf(Value value) { return value.getAsOpaquePointer(); }
 GraphKey keyOf(Operation *op) { return op; }
 
-/// The program-identity signature of a compute block (C8 of
-/// docs/GraphOptimizationDesign.md): a structural fingerprint of the body
-/// with values replaced by local numbering, plus operand/result types and the
-/// per-operand staticness pattern. Two blocks with equal signatures lower to
-/// the same device program under the same configuration.
+/// The program-identity signature of a compute block: a structural
+/// fingerprint of the body with values replaced by local numbering, plus
+/// operand/result types and the per-operand staticness pattern. Two blocks
+/// with equal signatures lower to the same device program under the same
+/// configuration, which is what lets them share a device set.
 ///
 /// Constant payloads are deliberately not part of it: constants are
 /// materialized as data and moved to the device like any operand, so two
@@ -205,11 +205,10 @@ static std::string dumpDirFor(StringRef baseDir, StringRef name,
   return path.string();
 }
 
-/// The two-level solve over one graph (Stage A/B/C of
-/// docs/GraphOptimizationDesign.md): profile each class over the resource
+/// The two-level solve over one graph: profile each class over the resource
 /// menu, allocate the device exactly over the profiles, then stamp each
-/// group's winning configuration onto its members and commit them through the
-/// single-configuration evaluation path.
+/// group's winning configuration onto its members and commit them through
+/// the single-configuration evaluation path.
 static DiagnosedSilenceableFailure
 runGraphAllocation(const ComputeGraph &graph, StringRef platformName,
                    InferencePluginFactory makePlugin,
@@ -217,7 +216,7 @@ runGraphAllocation(const ComputeGraph &graph, StringRef platformName,
                    StringRef graphName) {
   Location loc = graph.classes.front().representative().getLoc();
 
-  // Stage A: one profile per class, on its representative.
+  // Profiling: one cost profile per class, on its representative.
   SmallVector<ClassProfile> profiles;
   for (auto [ci, blockClass] : llvm::enumerate(graph.classes)) {
     std::unique_ptr<InferencePlugin> plugin = makePlugin(graph.platform);
@@ -231,7 +230,7 @@ runGraphAllocation(const ComputeGraph &graph, StringRef platformName,
     profiles.push_back({blockClass.size(), std::move(points)});
   }
 
-  // Stage B: exact allocation over the profiles. The budget is the whole
+  // Allocation: exact solve over the profiles. The budget is the whole
   // device -- the largest menu value -- since each connected component is
   // interpreted as owning the grid.
   std::unique_ptr<InferencePlugin> plugin = makePlugin(graph.platform);
@@ -256,12 +255,13 @@ runGraphAllocation(const ComputeGraph &graph, StringRef platformName,
                      << ", load " << g.loadMs << " ms\n";
   });
 
-  // Stage C: stamp each group's argmin onto its members and commit. The
+  // Finalization: stamp each group's argmin onto its members and commit. The
   // argmin is feasible under the packing by construction -- the allocator
   // admitted the group only if k co-resident copies of this configuration's
-  // static footprint fit (C9) -- so no budgeted re-search is needed for the
-  // chosen points. A timeshared group has no reserved set; committing the
-  // best point's configuration prices its transient borrow of the device.
+  // static footprint fit next to one working region -- so no budgeted
+  // re-search is needed for the chosen points. A timeshared group has no
+  // reserved set; committing the best point's configuration prices its
+  // transient borrow of the device.
   for (auto [ci, blockClass] : llvm::enumerate(graph.classes)) {
     const ClassAllocation &classAlloc = alloc->perClass[ci];
     const ClassProfile &profile = profiles[ci];

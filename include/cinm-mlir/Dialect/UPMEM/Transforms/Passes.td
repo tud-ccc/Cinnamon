@@ -158,10 +158,10 @@ def UpmemInferAcceleratorPass : Pass<"upmem-infer-accelerator", "ModuleOp"> {
            "Run the graph-level two-level solve (profile each program class "
            "over the DPU rank menu, allocate the grid exactly across the "
            "graph's classes, stamp each group's winning configuration onto "
-           "its members; docs/GraphOptimizationDesign.md) instead of "
-           "searching every compute block independently with the whole "
-           "device to itself. Incompatible with fixed-dpus, which pins the "
-           "resource the profiling needs to sweep">,
+           "its members) instead of searching every compute block "
+           "independently with the whole device to itself. Incompatible "
+           "with fixed-dpus, which pins the resource the profiling needs "
+           "to sweep">,
     Option<"programReloadMs", "program-reload-ms", "double", "40.0",
            "Graph allocation only: cost of switching a DPU set to a "
            "different program, per op per inference -- what a timeshared "

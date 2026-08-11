@@ -220,7 +220,8 @@ struct UpmemInferencePlugin : cinm::InferencePlugin {
     return simulator && simulator->supportsMultithreading();
   }
 
-  /// The graph level allocates DPUs (design C7): profiles are L(dpus).
+  /// The resource the graph level divides between compute blocks is the DPU
+  /// count: cost profiles are indexed by it.
   StringRef sharedResourceParam() const override { return "dpus"; }
 
   /// DPUs are allocated in ranks; a menu entry per whole-rank multiple.
@@ -238,7 +239,7 @@ struct UpmemInferencePlugin : cinm::InferencePlugin {
   }
 
   /// Per-DPU MRAM footprint at a configuration, split by operand staticness,
-  /// mirroring exactly the capacity charge P5 posts on the space (see
+  /// mirroring exactly the MRAM capacity bound the search space posts (see
   /// handleLinalgOp): `tasklets × Σ_operands Π_dims mramTile[d]`, no sharing
   /// assumed. The MRAM-level tile sizes are read back through the parameter
   /// names stamped as kOuterTileParamsAttr; staticness resolves through the

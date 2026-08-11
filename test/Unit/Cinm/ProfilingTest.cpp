@@ -1,12 +1,11 @@
-//===- ProfilingTest.cpp - Stage A profile extraction ---------------------===//
+//===- ProfilingTest.cpp - Cost profile extraction ------------------------===//
 //
 // profileComputeBlock runs the single-op search once per shared-resource menu
-// value with the resource pinned, and records L(D) with its argmin
-// (docs/GraphOptimizationDesign.md, Stage A). The plugin here is a mock whose
-// cost function is known in closed form, so the test can check that the
-// profile is the pointwise optimum: the harness (pinning, per-point search,
-// harvesting, infeasible-point holes) is what is under test, not any real
-// lowering.
+// value with the resource pinned, and records the best cost with its argmin.
+// The plugin here is a mock whose cost function is known in closed form, so
+// the test can check that the profile is the pointwise optimum: the harness
+// (pinning, per-point search, harvesting, infeasible-point holes) is what is
+// under test, not any real lowering.
 //
 //===----------------------------------------------------------------------===//
 
