@@ -6,6 +6,7 @@ add_mlir_dialect_library(CinmAcceleratorInference
     ConstraintIR.cpp
     ConstraintGecode.cpp
     FusionEdges.cpp
+    GraphAllocation.cpp
     GraphInference.cpp
     SpaceBuilder.cpp
 
