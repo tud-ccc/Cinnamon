@@ -1,5 +1,6 @@
 #include "cinm-mlir/Dialect/Cinm/AcceleratorInference/GraphInference.h"
 #include "cinm-mlir/Dialect/Cinm/IR/CinmBase.h"
+#include "cinm-mlir/Dialect/Cinm/IR/CinmUtils.h"
 #include "cinm-mlir/Utils/Scheduling/SchedulingSupport.h"
 
 #include <filesystem>
@@ -52,6 +53,61 @@ using GraphKey = const void *;
 GraphKey keyOf(Value value) { return value.getAsOpaquePointer(); }
 GraphKey keyOf(Operation *op) { return op; }
 
+/// The program-identity signature of a compute block (C8 of
+/// docs/GraphOptimizationDesign.md): a structural fingerprint of the body
+/// with values replaced by local numbering, plus operand/result types and the
+/// per-operand staticness pattern. Two blocks with equal signatures lower to
+/// the same device program under the same configuration.
+///
+/// Constant payloads are deliberately not part of it: constants are
+/// materialized as data and moved to the device like any operand, so two
+/// bodies differing only in a weight tensor's values (or a scalar factor's)
+/// are the same program over different data. The debug tag is excluded as
+/// well — it names ops for humans and differs between structurally identical
+/// blocks.
+void appendOpSignature(Operation *op, DenseMap<Value, unsigned> &valueId,
+                       llvm::raw_ostream &os) {
+  os << op->getName() << "(";
+  for (Value operand : op->getOperands())
+    os << valueId.lookup(operand) << ",";
+  os << ")";
+  if (!op->hasTrait<OpTrait::ConstantLike>()) {
+    for (NamedAttribute attr : op->getAttrs())
+      if (attr.getName() != CinmDialect::DEBUG_TAG_NAME)
+        os << attr.getName().getValue() << "=" << attr.getValue() << ";";
+  }
+  for (Value result : op->getResults()) {
+    valueId[result] = valueId.size();
+    os << result.getType() << ";";
+  }
+  for (Region &region : op->getRegions())
+    for (Block &block : region) {
+      os << "^(";
+      for (BlockArgument arg : block.getArguments()) {
+        valueId[arg] = valueId.size();
+        os << arg.getType() << ",";
+      }
+      os << "):";
+      for (Operation &inner : block)
+        appendOpSignature(&inner, valueId, os);
+    }
+}
+
+std::string blockSignature(ComputeBlockOp block) {
+  std::string sig;
+  llvm::raw_string_ostream os(sig);
+  DenseMap<Value, unsigned> valueId;
+  for (Value operand : block->getOperands())
+    os << operand.getType() << (isStaticValue(operand) ? "S" : "D") << ";";
+  for (Type resultType : block->getResultTypes())
+    os << resultType << ";";
+  for (BlockArgument arg : block.getBodyArguments())
+    valueId[arg] = valueId.size();
+  for (Operation &op : block.getBody().front())
+    appendOpSignature(&op, valueId, os);
+  return sig;
+}
+
 } // namespace
 
 SmallVector<ComputeGraph> collectComputeGraphs(Operation *root,
@@ -97,25 +153,35 @@ SmallVector<ComputeGraph> collectComputeGraphs(Operation *root,
     return WalkResult::advance();
   });
 
-  // One graph per (component, platform) pair, in the order the components are
-  // first met so that the result does not depend on pointer values.
+  // One graph per (component, platform) pair, and one class per signature
+  // within a graph, each in the order first met so that the result does not
+  // depend on pointer values.
   llvm::MapVector<std::pair<GraphKey, Attribute>, unsigned> graphOf;
   SmallVector<ComputeGraph> graphs;
+  SmallVector<llvm::StringMap<unsigned>> classOf;
   for (auto [block, platform] : llvm::zip_equal(blocks, platforms)) {
     std::pair<GraphKey, Attribute> key{
         components.getOrInsertLeaderValue(keyOf(block.getOperation())),
         platform};
     auto [entry, inserted] = graphOf.try_emplace(key, graphs.size());
-    if (inserted)
+    if (inserted) {
       graphs.push_back(ComputeGraph{platform, {}});
-    graphs[entry->second].blocks.push_back(block);
+      classOf.emplace_back();
+    }
+    ComputeGraph &graph = graphs[entry->second];
+    auto [classEntry, classInserted] = classOf[entry->second].try_emplace(
+        blockSignature(block), static_cast<unsigned>(graph.classes.size()));
+    if (classInserted)
+      graph.classes.push_back(BlockClass{});
+    graph.classes[classEntry->second].members.push_back(block);
   }
 
   LLVM_DEBUG({
     llvm::dbgs() << "[cinm-inference] " << graphs.size() << " graph(s) on '"
                  << platformName << "'";
     for (const ComputeGraph &graph : graphs)
-      llvm::dbgs() << " (" << graph.blocks.size() << " blocks)";
+      llvm::dbgs() << " (" << graph.numBlocks() << " blocks in "
+                   << graph.classes.size() << " classes)";
     llvm::dbgs() << "\n";
   });
   return graphs;
@@ -150,29 +216,30 @@ inferAcceleratorConfigs(Operation *root, StringRef platformName,
   for (const ComputeGraph &graph : graphs) {
     // Every block of the graph is still searched on its own, with the whole
     // device to itself. Graph-level allocation (Stage A/B/C of
-    // docs/GraphOptimizationDesign.md) replaces this loop: the per-block
+    // docs/GraphOptimizationDesign.md) replaces this loop: the per-class
     // search becomes a profiling run over a menu of device sizes, the sizes
     // are then allotted across the graph, and only the winning budget is
-    // committed.
-    for (ComputeBlockOp block : graph.blocks) {
-      std::unique_ptr<InferencePlugin> plugin = makePlugin(graph.platform);
-      if (!plugin)
-        return emitSilenceableFailure(block.getLoc())
-               << "no inference plugin for platform '" << platformName << "'";
+    // committed -- once per class, stamped onto every member.
+    for (const BlockClass &blockClass : graph.classes)
+      for (ComputeBlockOp block : blockClass.members) {
+        std::unique_ptr<InferencePlugin> plugin = makePlugin(graph.platform);
+        if (!plugin)
+          return emitSilenceableFailure(block.getLoc())
+                 << "no inference plugin for platform '" << platformName << "'";
 
-      auto scope = block->getParentOfType<SymbolOpInterface>();
-      StringRef nameHint =
-          scope && scope.getNameAttr() ? scope.getName() : "op";
-      StringAttr name = namer.getUniqueName(nameHint);
-      LLVM_DEBUG(llvm::dbgs()
-                 << "===== START INFERENCE " << name << " =====\n");
+        auto scope = block->getParentOfType<SymbolOpInterface>();
+        StringRef nameHint =
+            scope && scope.getNameAttr() ? scope.getName() : "op";
+        StringAttr name = namer.getUniqueName(nameHint);
+        LLVM_DEBUG(llvm::dbgs()
+                   << "===== START INFERENCE " << name << " =====\n");
 
-      InferenceOptions blockOpts = opts;
-      if (!baseDumpDir.empty())
-        blockOpts.dumpDir = dumpDirFor(baseDumpDir, name, opts);
+        InferenceOptions blockOpts = opts;
+        if (!baseDumpDir.empty())
+          blockOpts.dumpDir = dumpDirFor(baseDumpDir, name, opts);
 
-      TRY(inferAcceleratorConfig(block, *plugin, blockOpts));
-    }
+        TRY(inferAcceleratorConfig(block, *plugin, blockOpts));
+      }
   }
 
   return DiagnosedSilenceableFailure::success();

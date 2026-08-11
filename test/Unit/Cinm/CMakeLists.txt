@@ -11,13 +11,19 @@
 
 add_unittest(CinmUnitTests
   ConstraintIRTest.cpp
+  GraphInferenceTest.cpp
   PermutationTest.cpp
   SplitDerivationTest.cpp
+  StaticValueTest.cpp
 )
 target_link_libraries(CinmUnitTests
     PRIVATE
         CinmAcceleratorInference
         MLIRIR
         MLIRSupport
+        MLIRParser
+        MLIRFuncDialect
+        MLIRArithDialect
+        MLIRTensorDialect
         LLVMSupport
 )
