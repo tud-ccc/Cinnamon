@@ -3,7 +3,9 @@
 #include "Progress.h"
 #include "cinm-mlir/Dialect/Cinm/AcceleratorInference/SpaceBuilder.h"
 #include "cinm-mlir/Dialect/Cinm/IR/CinmAttributes.h"
+#include "cinm-mlir/Dialect/Cinm/IR/CinmBase.h"
 #include "cinm-mlir/Dialect/Cinm/IR/CinmOps.h"
+#include "cinm-mlir/Dialect/Cinm/IR/CinmUtils.h"
 #include "cinm-mlir/Utils/Permutation.h"
 
 #include <chrono>
@@ -94,9 +96,15 @@ buildRefModule(cinm::ComputeBlockOp computeOp) {
   b.setInsertionPointToStart(entry);
 
   mlir::IRMapping mapping;
-  for (auto [operand, arg] :
-       llvm::zip(computeOp->getOperands(), entry->getArguments()))
-    mapping.map(operand, arg);
+  for (auto [i, operand] : llvm::enumerate(computeOp->getOperands())) {
+    mapping.map(operand, entry->getArgument(i));
+    // Staticness is a property of the *original* operands (weights reachable
+    // from annotated parameters, constants); the trial modules only see the
+    // host func's arguments, so forward it onto them. isStaticValue then
+    // resolves inside any trial exactly as it would in the original module.
+    if (isStaticValue(operand))
+      hostFunc.setArgAttr(i, CinmDialect::STATIC_ATTR_NAME, b.getUnitAttr());
+  }
 
   auto *cloned = b.clone(*computeOp, mapping);
   mlir::func::ReturnOp::create(b, loc, cloned->getResults());
@@ -1114,9 +1122,14 @@ profileComputeBlock(cinm::ComputeBlockOp computeOp, InferencePlugin &plugin,
     }
 
     TrialInfo &best = std::get<TrialInfo>(result);
-    ProfilePoint point{resource, best.cost, {}};
+    ProfilePoint point{resource, best.cost, {}, {}};
     for (size_t dim = 0; dim < task.space.numDims(); ++dim)
       point.config[task.space.dimName(dim)] = best.config[dim];
+    // Residency is measured on a fresh unlowered clone: depending on the
+    // search mode, `best`'s own module may already be lowered past the form
+    // the plugin can read tile parameters from.
+    TrialInfo probe = task.makeTrialInfo(best.config);
+    point.residency = plugin.measureResidency(probe);
     points.push_back(std::move(point));
     LLVM_DEBUG(llvm::dbgs() << "[cinm-inference]   L(" << resource
                             << ") = " << best.cost << " ms\n");
