@@ -36,6 +36,14 @@ def Cinm_Dialect : Dialect {
     constexpr static StringRef TILING_FACTORS_NAME = "cinm.tile_sizes";
 
     constexpr static StringRef AVAILABLE_PLATFORMS_NAME = "cinm.available_platforms";
+
+    /// A UnitAttr argument attribute marking a function parameter whose data
+    /// is identical on every invocation (model weights baked at deployment,
+    /// typically). Pinning such data on an accelerator amortizes its transfer
+    /// over the serving lifetime; see isStaticValue (CinmUtils.h) for the
+    /// full staticness derivation and docs/GraphOptimizationDesign.md for
+    /// what consumes it.
+    constexpr static StringRef STATIC_ATTR_NAME = "cinm.static";
     private:
         void registerOps();
         void registerTypes();

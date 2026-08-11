@@ -15,6 +15,23 @@
 
 namespace mlir::cinm {
 
+/// Whether `value` is known to hold the same data on every inference, so
+/// that pinning it on an accelerator amortizes its transfer over the serving
+/// lifetime (docs/GraphOptimizationDesign.md, "What counts as static").
+/// A value is static iff it is
+///  - a function argument carrying the `cinm.static` arg attribute
+///    (CinmDialect::STATIC_ATTR_NAME) -- the serving contract, declared by
+///    the frontend;
+///  - a compile-time constant;
+///  - a view of a static value taken at compile-time-constant offsets,
+///    sizes and strides (`tensor.extract_slice`, `memref.subview`) -- the
+///    same window of the same tensor each time. A dynamically-indexed view
+///    of static data is *not* static: the data moved per inference varies.
+/// A `cinm.compute_block` region argument delegates to the corresponding
+/// outer operand, so operands may be classified from inside the isolated
+/// body.
+bool isStaticValue(Value value);
+
 using BodyBuilderCallback = function_ref<SmallVector<Value>(
     OpBuilder &, Location, ValueRange, ValueRange)>;
 
