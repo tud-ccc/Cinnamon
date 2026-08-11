@@ -10,8 +10,8 @@
 // 64 over a 16-leaf workgroup, so both ops tile the 1024-element result the
 // same way. See docs/LaunchFusionDesign.md §A.
 
-#map = affine_map<(d0, d1, d2, d3) -> (d1 * 64 + d3)>
-#bcast = affine_map<(d0, d1, d2) -> ()>
+#map = affine_map<(d0, d1, d2) -> (d0 * 64 + d2)>
+#bcast = affine_map<(d0, d1) -> ()>
 #mat = affine_map<(d0, d1) -> (d0, d1)>
 #vec = affine_map<(d0, d1) -> (d1)>
 #res = affine_map<(d0, d1) -> (d0)>
@@ -86,9 +86,9 @@ func.func @round_trip(%A: tensor<1024x1024xi32>, %x: tensor<1024xi32>, %c: i32) 
 // between the two -- nothing fires. This is the case the fusion level exists to
 // choose *against*.
 
-#partial = affine_map<(d0, d1, d2, d3, d4) -> (d1 floordiv 4, d1 mod 4 * 256 + d4)>
-#whole = affine_map<(d0, d1, d2, d3) -> (d1 * 64 + d3)>
-#bcast = affine_map<(d0, d1, d2) -> ()>
+#partial = affine_map<(d0, d1, d2, d3) -> (d0 floordiv 4, d0 mod 4 * 256 + d3)>
+#whole = affine_map<(d0, d1, d2) -> (d0 * 64 + d2)>
+#bcast = affine_map<(d0, d1) -> ()>
 #id = affine_map<(d0) -> (d0)>
 #scalar = affine_map<(d0) -> ()>
 #merge_in = affine_map<(d0, d1) -> (d0, d1)>
@@ -146,8 +146,8 @@ func.func @split_reduction_is_left_alone(%partials: tensor<4x1024xi32>, %init: t
 // which block -- the consumer's map is the producer's reversed. Fusing would
 // hand each leaf somebody else's data.
 
-#fwd = affine_map<(d0, d1, d2, d3) -> (d1 * 64 + d3)>
-#rev = affine_map<(d0, d1, d2, d3) -> (960 - d1 * 64 + d3)>
+#fwd = affine_map<(d0, d1, d2) -> (d0 * 64 + d2)>
+#rev = affine_map<(d0, d1, d2) -> (960 - d0 * 64 + d2)>
 #id = affine_map<(d0) -> (d0)>
 
 #pf = #upmem.platform<type = v1A, dimensions = 4x16>
@@ -179,7 +179,7 @@ func.func @map_mismatch(%init: tensor<1024xi32>) -> tensor<1024xi32> {
 // The gathered value is wanted on the host as well, so the gather stays -- only
 // the transfer back in was certainly redundant.
 
-#map = affine_map<(d0, d1, d2, d3) -> (d1 * 64 + d3)>
+#map = affine_map<(d0, d1, d2) -> (d0 * 64 + d2)>
 #id = affine_map<(d0) -> (d0)>
 
 #pf = #upmem.platform<type = v1A, dimensions = 4x16>

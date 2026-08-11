@@ -13,7 +13,7 @@
 // CHECK-LABEL: func.func @gemv
 func.func @gemv(%A: tensor<256x256xi32>, %x: tensor<256xi32>) -> tensor<256xi32> {
   // The chosen accelerator is committed on the compute block.
-  // CHECK: cinm.compute_block on accelerator #upmem.array<1x16x4
+  // CHECK: cinm.compute_block on accelerator #upmem.array<16x4
 
   // Host side. Which *form* the result transfer takes -- one block per leaf or
   // a single array -- follows from the tiling the search happened to pick, so

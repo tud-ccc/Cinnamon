@@ -18,13 +18,21 @@ def UpmemPlatformAttr: UPMEM_Attr<"UpmemPlatform", [
   ]> {
 
   let summary = "Platform description for upmem";
+  let description = [{
+    The device as the allocator sees it: a pool of `maxDpus` DPUs running up
+    to `maxTasklets` tasklets each. Ranks are not an allocation dimension --
+    the SDK hands out DPU counts and places them on ranks opaquely (some
+    ranks even have defective DPUs) -- but `rankSize` is kept as a transfer
+    cost model parameter: parallel host<->DPU transfer bandwidth scales with
+    the number of ranks an allocation spans, roughly ceil(dpus / rankSize).
+  }];
   let mnemonic = "platform";
   let hasCustomAssemblyFormat = 1;
   let parameters = (ins
     "::mlir::cinm::CinmLevelArrayAttr":$levels,
     "bool":$isV1a,
-    "int":$maxNumRanks,
-    "int":$maxNumDpusPerRank,
+    "int":$rankSize,
+    "int":$maxDpus,
     "int":$maxNumTasklets
   );
 
@@ -36,6 +44,12 @@ def UpmemPlatformAttr: UPMEM_Attr<"UpmemPlatform", [
 
     ::mlir::cinm::CinmLevelAttrInterface getMemrefMemspace(mlir::cinm::CinmLevelDefAttr level) const;
 
+    /// Ranks an allocation of `dpus` spans, as the transfer cost model
+    /// estimates it. The SDK's placement is opaque, so this is a model, not
+    /// a guarantee.
+    int64_t numRanksForTransfer(int64_t dpus) const {
+      return std::max<int64_t>(1, (dpus + getRankSize() - 1) / getRankSize());
+    }
 
     ::mlir::cinm::CinmLevelDefAttr getMramLevel() const {
       return getLevels()[0];
@@ -72,21 +86,19 @@ def UpmemAcceleratorAttr: UPMEM_Attr<"UpmemAccelerator", [
   );
   let builders=[
     AttrBuilder<(ins
-      "int64_t":$ranks,
       "int64_t":$dpus,
       "int64_t":$tasklets
     ), [{
       auto platformDef = UpmemPlatformAttr::getDefault($_ctxt);
-      return get(std::move(platformDef), ranks, dpus, tasklets);
+      return get(std::move(platformDef), dpus, tasklets);
     }]>,
 
     AttrBuilderWithInferredContext<(ins
       "UpmemPlatformAttr":$platform,
-      "int64_t":$ranks,
       "int64_t":$dpus,
       "int64_t":$tasklets
     ), [{
-      return get(platform.getContext(), platform, {ranks, dpus, tasklets});
+      return get(platform.getContext(), platform, {dpus, tasklets});
     }]>
   ];
 
@@ -99,17 +111,14 @@ def UpmemAcceleratorAttr: UPMEM_Attr<"UpmemAccelerator", [
       return getPlatform().getWramLevel();
     }
 
-    int64_t getNumRanks() const {
+    int64_t getNumDpus() const {
       return getWorkgroupShape()[0];
     }
-    int64_t getNumDpusPerRank() const {
+    int64_t getNumTaskletsPerDpu() const {
       return getWorkgroupShape()[1];
     }
-    int64_t getNumTaskletsPerDpu() const {
-      return getWorkgroupShape()[2];
-    }
     ::mlir::OpAsmAliasResult getAlias(::llvm::raw_ostream &os) const {
-      os << "upmem_" << getNumRanks() << "_" << getNumDpusPerRank() << "_" << getNumTaskletsPerDpu();
+      os << "upmem_" << getNumDpus() << "_" << getNumTaskletsPerDpu();
       return ::mlir::OpAsmAliasResult::OverridableAlias;
     }
   }];

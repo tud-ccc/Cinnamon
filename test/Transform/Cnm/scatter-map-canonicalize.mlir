@@ -14,12 +14,12 @@
 #wg = #upmem.array<1x4x2, <type = v1A, dimensions = 32x128x1>>
 
 // CHECK-LABEL: func.func @block_is_implicit
-// CHECK:       cnm.scatter %{{.*}}[affine_map<(d0, d1, d2) -> (d1, d2 * 2)>]
-// STORED:      "cnm.scatter"{{.*}}<{scatterMap = affine_map<(d0, d1, d2, d3) -> (d1, d2 * 2, d3)>}> : (tensor<4x3x8xi32>
+// CHECK:       cnm.scatter %{{.*}}[affine_map<(d0, d1) -> (d0, d1 * 2)>]
+// STORED:      "cnm.scatter"{{.*}}<{scatterMap = affine_map<(d0, d1, d2) -> (d0, d1 * 2, d2)>}> : (tensor<4x3x8xi32>
 func.func @block_is_implicit(%a: tensor<4x3x8xi32>) {
   %wg = cnm.workgroup : !cnm.workgroup<#wg>
   %buf = cnm.declare_buffer() for %wg : !cnm.buffer<8xi32 on #wg>
-  cnm.scatter %a into %buf[affine_map<(d0, d1, d2) -> (d1, d2 * 2)>] of %wg
+  cnm.scatter %a into %buf[affine_map<(d0, d1) -> (d0, d1 * 2)>] of %wg
       : tensor<4x3x8xi32> into !cnm.buffer<8xi32 on #wg>
   cnm.free_workgroup %wg : !cnm.workgroup<#wg>
   return
@@ -33,11 +33,11 @@ func.func @block_is_implicit(%a: tensor<4x3x8xi32>) {
 // canonicalization produces anyway, and it prints back the same shorthand.
 
 // CHECK-LABEL: func.func @explicit_is_the_same_op
-// CHECK:       cnm.gather %{{.*}}[affine_map<(d0, d1, d2) -> (d1, d2)>]
+// CHECK:       cnm.gather %{{.*}}[affine_map<(d0, d1) -> (d0, d1)>]
 func.func @explicit_is_the_same_op(%out: tensor<4x2x8xi32>) {
   %wg = cnm.workgroup : !cnm.workgroup<#wg>
   %buf = cnm.declare_buffer() for %wg : !cnm.buffer<8xi32 on #wg>
-  %g = cnm.gather %buf[affine_map<(d0, d1, d2, d3) -> (d1, d2, d3)>] of %wg
+  %g = cnm.gather %buf[affine_map<(d0, d1, d2) -> (d0, d1, d2)>] of %wg
       into %out : !cnm.buffer<8xi32 on #wg> into tensor<4x2x8xi32>
   cnm.free_workgroup %wg : !cnm.workgroup<#wg>
   return
@@ -52,11 +52,11 @@ func.func @explicit_is_the_same_op(%out: tensor<4x2x8xi32>) {
 // there is no shorthand for this map and it prints in full.
 
 // CHECK-LABEL: func.func @host_dimension_is_longer
-// CHECK:       cnm.scatter %{{.*}}[affine_map<(d0, d1, d2, d3) -> (d1, d2, d3)>]
+// CHECK:       cnm.scatter %{{.*}}[affine_map<(d0, d1, d2) -> (d0, d1, d2)>]
 func.func @host_dimension_is_longer(%a: tensor<4x2x8xi32>) {
   %wg = cnm.workgroup : !cnm.workgroup<#wg>
   %buf = cnm.declare_buffer() for %wg : !cnm.buffer<2xi32 on #wg>
-  cnm.scatter %a into %buf[affine_map<(d0, d1, d2, d3) -> (d1, d2, d3)>] of %wg
+  cnm.scatter %a into %buf[affine_map<(d0, d1, d2) -> (d0, d1, d2)>] of %wg
       : tensor<4x2x8xi32> into !cnm.buffer<2xi32 on #wg>
   cnm.free_workgroup %wg : !cnm.workgroup<#wg>
   return
@@ -73,15 +73,15 @@ func.func @host_dimension_is_longer(%a: tensor<4x2x8xi32>) {
 // actually has.
 
 // CHECK-LABEL: func.func @layout_bounds_the_block
-// CHECK:       cnm.scatter %{{.*}}[affine_map<(d0, d1, d2) -> (d1)>] {{.*}} : memref<4x2x8xi32>
-// CHECK:       cnm.scatter %{{.*}}[affine_map<(d0, d1, d2, d3) -> (d1, d3)>] {{.*}} : memref<4x2x8xi32, strided<[64, 16, 1]>>
+// CHECK:       cnm.scatter %{{.*}}[affine_map<(d0, d1) -> (d0)>] {{.*}} : memref<4x2x8xi32>
+// CHECK:       cnm.scatter %{{.*}}[affine_map<(d0, d1, d2) -> (d0, d2)>] {{.*}} : memref<4x2x8xi32, strided<[64, 16, 1]>>
 func.func @layout_bounds_the_block(%packed: memref<4x2x8xi32>,
                                    %strided: memref<4x2x8xi32, strided<[64, 16, 1]>>) {
   %wg = cnm.workgroup : !cnm.workgroup<#wg>
   %buf = cnm.declare_buffer() for %wg : !cnm.buffer<2x8xi32 on #wg>
-  cnm.scatter %packed into %buf[affine_map<(d0, d1, d2, d3, d4) -> (d1, d3, d4)>] of %wg
+  cnm.scatter %packed into %buf[affine_map<(d0, d1, d2, d3) -> (d0, d2, d3)>] of %wg
       : memref<4x2x8xi32> into !cnm.buffer<2x8xi32 on #wg>
-  cnm.scatter %strided into %buf[affine_map<(d0, d1, d2, d3, d4) -> (d1, d3, d4)>] of %wg
+  cnm.scatter %strided into %buf[affine_map<(d0, d1, d2, d3) -> (d0, d2, d3)>] of %wg
       : memref<4x2x8xi32, strided<[64, 16, 1]>> into !cnm.buffer<2x8xi32 on #wg>
   cnm.free_workgroup %wg : !cnm.workgroup<#wg>
   return

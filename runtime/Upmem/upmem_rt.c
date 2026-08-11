@@ -179,10 +179,10 @@ void upmemrt_dpu_broadcast(struct dpu_set_t *dpu_set, void *host_buffer,
 #endif
 }
 
-struct dpu_set_t *upmemrt_dpu_alloc(int32_t num_ranks, int32_t num_dpus,
+struct dpu_set_t *upmemrt_dpu_alloc(int32_t num_dpus,
                                     const char *dpu_binary_path,
                                     size_t max_blocks_per_dpu) {
-  int32_t num_alloc_dpu = num_ranks * num_dpus;
+  int32_t num_alloc_dpu = num_dpus;
   struct dpu_set_t *dpu_set =
       (struct dpu_set_t *)malloc(sizeof(struct dpu_set_t));
 #ifdef UPMEM_RT_STATS

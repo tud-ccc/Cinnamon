@@ -1,13 +1,13 @@
 // RUN: cinm-opt %s --cnm-scatter-optimizations --split-input-file | FileCheck %s
 
-#map = affine_map<(d0, d1, d2) -> (d1, d2)>
+#map = affine_map<(d0, d1) -> (d0, d1)>
 #wg = #upmem.array<1x4x2, <type = v1A, dimensions = 32x128x1>>
 
 // A linalg.fill of a constant is uniform, so every workgroup element receives
 // the same bytes whatever the scatter map says. The 4x2 host tiles collapse to
 // one, and the map loses its results.
 
-// CHECK: #[[BC:.*]] = affine_map<(d0, d1, d2) -> ()>
+// CHECK: #[[BC:.*]] = affine_map<(d0, d1) -> ()>
 // CHECK-LABEL: func.func @fill
 // CHECK:       %[[TILE:.*]] = arith.constant dense<0> : tensor<1x8xi32>
 // CHECK:       cnm.scatter %[[TILE]] into %{{.*}}[#[[BC]]] of %{{.*}} : tensor<1x8xi32> into
@@ -26,12 +26,12 @@ func.func @fill() {
 
 // -----
 
-#map = affine_map<(d0, d1, d2) -> (d1, d2)>
+#map = affine_map<(d0, d1) -> (d0, d1)>
 #wg = #upmem.array<1x4x2, <type = v1A, dimensions = 32x128x1>>
 
 // Same for a splat constant, with a non-zero value to check it is carried over.
 
-// CHECK: #[[BC:.*]] = affine_map<(d0, d1, d2) -> ()>
+// CHECK: #[[BC:.*]] = affine_map<(d0, d1) -> ()>
 // CHECK-LABEL: func.func @splat_constant
 // CHECK:       %[[TILE:.*]] = arith.constant dense<7> : tensor<1x8xi32>
 // CHECK:       cnm.scatter %[[TILE]] into %{{.*}}[#[[BC]]] of %{{.*}} : tensor<1x8xi32> into
@@ -47,14 +47,14 @@ func.func @splat_constant() {
 
 // -----
 
-#map = affine_map<(d0, d1, d2) -> (d1, d2)>
+#map = affine_map<(d0, d1) -> (d0, d1)>
 #wg = #upmem.array<1x4x2, <type = v1A, dimensions = 32x128x1>>
 
 // After bufferization the uniform value is a constant global; the tile has to
 // be one too, so the pass emits a smaller global rather than an
 // arith.constant.
 
-// CHECK: #[[BC:.*]] = affine_map<(d0, d1, d2) -> ()>
+// CHECK: #[[BC:.*]] = affine_map<(d0, d1) -> ()>
 // CHECK: memref.global "private" constant @[[TILE:.*]] : memref<1x8xf32> = dense<1.000000e+00>
 // CHECK-LABEL: func.func @get_global
 // CHECK:       %[[T:.*]] = memref.get_global @[[TILE]] : memref<1x8xf32>
@@ -72,7 +72,7 @@ func.func @get_global() {
 
 // -----
 
-#map = affine_map<(d0, d1, d2) -> (d1, d2)>
+#map = affine_map<(d0, d1) -> (d0, d1)>
 #wg = #upmem.array<1x4x2, <type = v1A, dimensions = 32x128x1>>
 
 // A constant that is not a splat carries data the workgroup elements can tell
@@ -101,7 +101,7 @@ func.func @not_uniform() {
 
 // -----
 
-#bc = affine_map<(d0, d1, d2) -> ()>
+#bc = affine_map<(d0, d1) -> ()>
 #wg = #upmem.array<1x4x2, <type = v1A, dimensions = 32x128x1>>
 
 // A scatter that is already a single-tile broadcast is a fixpoint.
@@ -121,7 +121,7 @@ func.func @already_broadcast() {
 
 // -----
 
-#map = affine_map<(d0, d1, d2, d3, d4) -> (d1 floordiv 16, d1 * 256 + d2 * 32 + d4 - (d1 floordiv 16) * 4096)>
+#map = affine_map<(d0, d1, d2, d3) -> (d0 floordiv 16, d0 * 256 + d1 * 32 + d3 - (d0 floordiv 16) * 4096)>
 #wg = #upmem.array<1x512x8, <type = v1A, dimensions = 1x2048x24>>
 
 // The split-reduction identity seed, as --convert-linalg-to-cnm leaves it: a
@@ -129,7 +129,7 @@ func.func @already_broadcast() {
 // being 4096 times its size. Rank alone says nothing about how much is being
 // transferred.
 
-// CHECK: #[[BC:.*]] = affine_map<(d0, d1, d2) -> ()>
+// CHECK: #[[BC:.*]] = affine_map<(d0, d1) -> ()>
 // CHECK-LABEL: func.func @seed_same_rank_as_buffer
 // CHECK:       %[[TILE:.*]] = arith.constant dense<0> : tensor<1x32xi32>
 // CHECK:       cnm.scatter %[[TILE]] into %{{.*}}[#[[BC]]] of %{{.*}} : tensor<1x32xi32> into
@@ -148,7 +148,7 @@ func.func @seed_same_rank_as_buffer() {
 
 // -----
 
-#map = affine_map<(d0, d1, d2) -> (d1, d2)>
+#map = affine_map<(d0, d1) -> (d0, d1)>
 #wg = #upmem.array<1x4x2, <type = v1A, dimensions = 32x128x1>>
 
 // The buffer feeds a launch, so the constant does not have to be transferred
@@ -178,7 +178,7 @@ func.func @device_init() {
 
 // -----
 
-#map = affine_map<(d0, d1, d2) -> (d1, d2)>
+#map = affine_map<(d0, d1) -> (d0, d1)>
 #wg = #upmem.array<1x4x2, <type = v1A, dimensions = 32x128x1>>
 
 // The scatter seeds an accumulator once and the launch runs many times, so
@@ -210,8 +210,8 @@ func.func @seed_outside_loop() {
 
 // -----
 
-#map = affine_map<(d0, d1, d2) -> (d1, d2)>
-#gmap = affine_map<(d0, d1, d2, d3) -> (d1, d2, d3)>
+#map = affine_map<(d0, d1) -> (d0, d1)>
+#gmap = affine_map<(d0, d1, d2) -> (d0, d1, d2)>
 #wg = #upmem.array<1x4x2, <type = v1A, dimensions = 32x128x1>>
 
 // The host reads the buffer before the launch does, so it would observe an

@@ -9,10 +9,10 @@
 // run, so it stays upmem.scatter_blocks and each block is fetched from where
 // it really is.
 
-// CHECK-DAG: #[[MAPA3:[^ ]*]] = affine_map<(d0, d1, d2) -> (d1, d2 * 2, 0)>
+// CHECK-DAG: #[[MAPA3:[^ ]*]] = affine_map<(d0, d1) -> (d0, d1 * 2, 0)>
 
 // CHECK-LABEL: func.func @main
-// CHECK: upmem.scatter_blocks %{{.*}}[8 elts, #[[MAPA3]], 2 blocks] onto @buf of %[[DPU:.*]] : memref<4x3x8xi32> onto !upmem.hierarchy<1x4x2>
+// CHECK: upmem.scatter_blocks %{{.*}}[8 elts, #[[MAPA3]], 2 blocks] onto @buf of %[[DPU:.*]] : memref<4x3x8xi32> onto !upmem.hierarchy<4x2>
 
 // With use-sg-xfer-codegen=false the SDK's scatter transfer API is off, so
 // this transfer has no legal form: the packing that would have made the two
@@ -23,7 +23,7 @@
 // and the wrong bytes went to the DPUs silently.
 // NOSG: error: {{.*}}cannot be narrowed to a single per-DPU block
 
-#mapA = affine_map<(d0, d1, d2) -> (d1, d2 * 2)>
+#mapA = affine_map<(d0, d1) -> (d0, d1 * 2)>
 
 #upmem_platform = #upmem.platform<type=v1A, dimensions = 4x16>
 #upmem_1_4_2 = #upmem.array<1x4x2, #upmem_platform>

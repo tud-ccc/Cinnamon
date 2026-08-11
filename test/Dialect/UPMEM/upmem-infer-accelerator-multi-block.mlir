@@ -14,7 +14,7 @@
 // Chained through %r: one graph, two blocks.
 // CHECK-LABEL: func.func @chained
 func.func @chained(%A: tensor<256x256xi32>, %x: tensor<256xi32>) -> tensor<256xi32> {
-  // CHECK: cinm.compute_block on accelerator #upmem.array<1x16x4
+  // CHECK: cinm.compute_block on accelerator #upmem.array<16x4
   // CHECK-NOT: cinm.op.
   // CHECK: upmem.alloc_dpus
   %r = cinm.compute -> tensor<256xi32> attributes {cinm.available_platforms = [#upmem]} {
@@ -23,7 +23,7 @@ func.func @chained(%A: tensor<256x256xi32>, %x: tensor<256xi32>) -> tensor<256xi
   }
   // The second block of the same function is searched too -- it used to be
   // reached only because the walk happened to continue.
-  // CHECK: cinm.compute_block on accelerator #upmem.array<1x16x4
+  // CHECK: cinm.compute_block on accelerator #upmem.array<16x4
   // CHECK-NOT: cinm.op.
   // CHECK: upmem.alloc_dpus
   %r2 = cinm.compute -> tensor<256xi32> attributes {cinm.available_platforms = [#upmem]} {
@@ -38,13 +38,13 @@ func.func @chained(%A: tensor<256x256xi32>, %x: tensor<256xi32>) -> tensor<256xi
 // CHECK-LABEL: func.func @shared_input
 func.func @shared_input(%A: tensor<256x256xi32>, %x: tensor<256xi32>, %y: tensor<256xi32>)
     -> (tensor<256xi32>, tensor<256xi32>) {
-  // CHECK: cinm.compute_block on accelerator #upmem.array<1x16x4
+  // CHECK: cinm.compute_block on accelerator #upmem.array<16x4
   // CHECK: upmem.alloc_dpus
   %r = cinm.compute -> tensor<256xi32> attributes {cinm.available_platforms = [#upmem]} {
     %g = cinm.op.gemv %A, %x : tensor<256x256xi32>, tensor<256xi32> -> tensor<256xi32>
     cinm.yield %g : tensor<256xi32>
   }
-  // CHECK: cinm.compute_block on accelerator #upmem.array<1x16x4
+  // CHECK: cinm.compute_block on accelerator #upmem.array<16x4
   // CHECK: upmem.alloc_dpus
   %r2 = cinm.compute -> tensor<256xi32> attributes {cinm.available_platforms = [#upmem]} {
     %g = cinm.op.gemv %A, %y : tensor<256x256xi32>, tensor<256xi32> -> tensor<256xi32>

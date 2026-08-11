@@ -2,16 +2,16 @@
 // RUN: cinm-opt %s --mlir-print-op-generic | cinm-opt | FileCheck %s
 
 
-#map = affine_map<(d0, d1, d2) -> (d1 mod 4)>
-#map1 = affine_map<(d0, d1, d2) -> (d1)>
-#map2 = affine_map<(d0, d1, d2) -> (d0, d1)>
-#map3 = affine_map<(d0, d1, d2) -> (d1 mod 8)>
-#map4 = affine_map<(d0, d1, d2) -> (d1 mod 16)>
-#map5 = affine_map<(d0, d1, d2) -> (d1 mod 64)>
-#map6 = affine_map<(d0, d1, d2) -> (d0 * 2 + d1 floordiv 64, d1 mod 64)>
-#map7 = affine_map<(d0, d1, d2) -> (d1 mod 2)>
-#map8 = affine_map<(d0, d1, d2) -> ((d0 * 64 + d1) mod 512)>
-#map9 = affine_map<(d0, d1, d2) -> ((d0 * 64 + d1) floordiv 512, (d0 * 64 + d1) mod 512)>
+#map = affine_map<(d0, d1) -> (d0 mod 4)>
+#map1 = affine_map<(d0, d1) -> (d0 mod 128)>
+#map2 = affine_map<(d0, d1) -> (d0 floordiv 128, d0 mod 128)>
+#map3 = affine_map<(d0, d1) -> (d0 mod 8)>
+#map4 = affine_map<(d0, d1) -> (d0 mod 16)>
+#map5 = affine_map<(d0, d1) -> (d0 mod 64)>
+#map6 = affine_map<(d0, d1) -> (d0 floordiv 64, d0 mod 64)>
+#map7 = affine_map<(d0, d1) -> (d0 mod 2)>
+#map8 = affine_map<(d0, d1) -> (d0 mod 512)>
+#map9 = affine_map<(d0, d1) -> (d0 floordiv 512, d0 mod 512)>
 #map10 = affine_map<(d0) -> (d0)>
 #map11 = affine_map<(d0) -> ()>
 #upmem = #upmem.platform<type = v1A, dimensions = 32x128x1>
