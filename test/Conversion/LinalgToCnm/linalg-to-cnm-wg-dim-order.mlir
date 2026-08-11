@@ -34,7 +34,7 @@
 #m = affine_map<(m, k) -> (m, k)>
 #v = affine_map<(m, k) -> (k)>
 #r = affine_map<(m, k) -> (m)>
-#pf = #upmem.platform<type=v1A, dpus = 64, rank_size = 16>
+#pf = #upmem.platform<type=v1A, dpus = 64>
 #acc = #upmem.array<16x1, #pf>
 
 // The vector is indexed by the reduction dimension alone, so its scatter map

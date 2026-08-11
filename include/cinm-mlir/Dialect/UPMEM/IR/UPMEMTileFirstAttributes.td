@@ -20,18 +20,16 @@ def UpmemPlatformAttr: UPMEM_Attr<"UpmemPlatform", [
   let summary = "Platform description for upmem";
   let description = [{
     The device as the allocator sees it: a pool of `maxDpus` DPUs running up
-    to `maxTasklets` tasklets each. Ranks are not an allocation dimension --
+    to `maxTasklets` tasklets each. Ranks are not a dimension of anything --
     the SDK hands out DPU counts and places them on ranks opaquely (some
-    ranks even have defective DPUs) -- but `rankSize` is kept as a transfer
-    cost model parameter: parallel host<->DPU transfer bandwidth scales with
-    the number of ranks an allocation spans, roughly ceil(dpus / rankSize).
+    ranks even have defective DPUs), and transfer cost is a function of the
+    DPU count alone.
   }];
   let mnemonic = "platform";
   let hasCustomAssemblyFormat = 1;
   let parameters = (ins
     "::mlir::cinm::CinmLevelArrayAttr":$levels,
     "bool":$isV1a,
-    "int":$rankSize,
     "int":$maxDpus,
     "int":$maxNumTasklets
   );
@@ -43,13 +41,6 @@ def UpmemPlatformAttr: UPMEM_Attr<"UpmemPlatform", [
     // void collectSchedulingStartingPoints(::mlir::cinm::CinmSchedulingStarter &driver) const;
 
     ::mlir::cinm::CinmLevelAttrInterface getMemrefMemspace(mlir::cinm::CinmLevelDefAttr level) const;
-
-    /// Ranks an allocation of `dpus` spans, as the transfer cost model
-    /// estimates it. The SDK's placement is opaque, so this is a model, not
-    /// a guarantee.
-    int64_t numRanksForTransfer(int64_t dpus) const {
-      return std::max<int64_t>(1, (dpus + getRankSize() - 1) / getRankSize());
-    }
 
     ::mlir::cinm::CinmLevelDefAttr getMramLevel() const {
       return getLevels()[0];
