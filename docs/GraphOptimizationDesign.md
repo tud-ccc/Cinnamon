@@ -1,11 +1,7 @@
 # Design: graph-level DPU allocation and scope merging for the UPMEM backend
 
-Status: design for implementation, 2026-08-11; same day, updated with the
-staticness model, the factored outer solve (which removes partition
-enumeration), and the throughput-vs-latency analysis.
-This is the relocatable version of the paper-side design note; all references
-to the paper's sections and tables are inlined here so the document stands on
-its own in the implementation repo.
+Status: 2026-08-11. The prototype (T1–T5 of §4) is implemented; §7 records
+what exists and what remains. The document stands on its own.
 
 ## Background: the per-operator schedule model this builds on
 
@@ -14,8 +10,11 @@ Facts about the target that this design leans on:
 - A DPU owns 64 MiB MRAM and 64 KiB WRAM; the host scatters array slices into
   MRAM banks and gathers results back; tasklets stage MRAM tiles into WRAM by
   explicit DMA. Nothing is cached; every placement is explicit.
-- DPUs are allocated in ranks of 64, and rank-aligned allocation is what makes
-  parallel host↔DPU transfers efficient.
+- The SDK allocates DPU *counts*. Which ranks the DPUs land on is its
+  business and unobservable (some ranks even carry defective DPUs and are
+  smaller than their nominal 64), and measured transfer cost is a function of
+  the DPU count alone — so ranks are not a dimension of anything in this
+  design, and DPU-set sizes are plain integers.
 - Loading a program onto a DPU array takes ~40–80 ms — 50–100× a typical
   kernel execution — and scattering weights similarly dwarfs kernel runtime.
   (Measure both on the real system early; the whole design prices these.)
@@ -77,7 +76,17 @@ exclusively.
 
 ## 1. Graph-level decision variables
 
-For each offload candidate `i` (a region produced by `--assign-platforms`):
+The unit the allocation runs over — "the graph" — is a connected component
+of the dataflow between offloadable regions targeting one platform: two
+regions belong together when a value flows from one to the other or they
+read a common producer. Control flow is not interpreted; the relation is a
+deliberate over-approximation, and errs in the sound direction — the device
+is shared by everything pinned on it, so a missing edge would let two graphs
+hand out the same DPUs, while a spurious one only makes the allocation
+problem bigger. Each component is treated as owning the whole device.
+
+For each offload candidate `i` (a region the frontend's platform-assignment
+step marked as offloadable):
 
 - `o_i ∈ {host, device}` — offload decision. Prototype: decided up front by
   an Ideal Arithmetic Intensity ranking (operations per element of
@@ -89,9 +98,12 @@ For each offload candidate `i` (a region produced by `--assign-platforms`):
 
 For each set `s`:
 
-- `D_s` — its size, in **allocation-granularity units** (ranks of 64 DPUs).
-  This shrinks the outer domain to ~#ranks values and is hardware-honest, not
-  an approximation.
+- `D_s` — its size in DPUs, drawn from a small per-class menu of candidate
+  sizes derived from the problem itself (see Stage A): the counts that can
+  divide the op's iteration space at all, thinned to a bounded list. A
+  configurable granularity quantizes the menu — a *preference* for
+  round-numbered allocations, not a hardware constraint, since the SDK
+  accepts any count.
 
 "Merging" is not a separate variable: it is implied by `s_i = s_j`.
 
@@ -105,11 +117,12 @@ guessed: an operand is static iff it is
 
 - a program input the frontend has declared static (the serving contract:
   weights are baked at deployment; an annotation on function parameters),
-- a compile-time constant, or
+- a compile-time constant,
 - a view (slice/subview) of a static value at compile-time-constant
   offsets and strides — the "same window of the same tensor" case; a
   dynamically-indexed view of static data is *not* static, since the data
-  moved per inference varies.
+  moved per inference varies — or
+- a type cast of a static value: same data under another type.
 
 The classification propagates into offload regions through their operands.
 Two constraints consume it: C9 splits its capacity charge on it (static
@@ -156,10 +169,18 @@ they must not alias.
   what makes packing nearly always succeed (aggregate grid MRAM is orders of
   magnitude larger than typical weight sizes), but it must be an explicit
   constraint, not an assumption — that is the point of the whole exercise.
+  The constraint is stated *per memory level* of the platform, and the right
+  default is to bound every level: a level in which nothing persists between
+  kernels (WRAM, whose tiles are re-staged by DMA on every use) has zero
+  static footprint for every op, and its max-of-dynamic bound is already
+  implied by each op's own per-op feasibility — so scratch levels are
+  automatically non-binding and no per-target selection of "the" pinning
+  level is needed. On UPMEM the binding instance is MRAM, as written above.
 - **C10 (layout coupling — extension, not prototype)**: a producer/consumer
   pair on the same set may keep the intermediate on-device iff the consumer's
   scatter map for that operand equals the producer's gather map. Guarded by a
-  boolean via the constraint DSL's `Implies`. Note that when the guard is on,
+  boolean via the constraint system's implication form (constraints that
+  apply only when a guard holds). Note that when the guard is on,
   it *aliases* the h-factors of the shared tensor's dimensions across the two
   scopes — again removing degrees of freedom, not multiplying spaces.
 
@@ -231,25 +252,43 @@ constraints unchanged and swaps the objective evaluator.
 ### Stage A — per-class profiling
 
 For each signature class `c` (canonicalization precedes profiling; see C8)
-and each `D` in the menu (rank multiples), run the *existing* single-op
-search with P6 pinned: `D = D_menu[k]`. Record, per (class, D), the complete
-outer-facing summary:
+and each `D` in the menu, run the *existing* single-op search with P6
+pinned: `D = D_menu[k]`. Record, per (class, D), the complete outer-facing
+summary:
 
     L_c(D)   = best cost found,
     plus     the argmin configuration,
-    plus     the static and dynamic MRAM footprints at that argmin,
-    plus     the per-inference transfer cost of the dynamic operands.
+    plus     the static and dynamic footprints at that argmin,
+             per memory level (C9's terms),
+    plus     the cost of re-scattering the static operands once
+             (what a non-pinned placement pays per inference; the
+             dynamic operands' per-inference transfer is already
+             inside L).
 
-The last two fields are what let C9 and the timeshare pricing (§2) be
-evaluated by the outer solve without ever touching the IR or the backend
-again: the profile is the entire interface between the levels.
+The footprint and re-scatter fields are what let C9 and the timeshare
+pricing (§2) be evaluated by the outer solve without ever touching the IR or
+the backend again: the profile is the entire interface between the levels.
+
+**The menu is derived from the problem, not the hardware.** The workgroup
+must be filled exactly (P1–P3), and `T = 1` is always admissible, so the
+divisibility-feasible DPU counts of one op are exactly the divisors of its
+iteration-space size (any divisor of a product of extents factors into
+per-extent divisors); for a multi-op region, the divisors of the sizes' gcd.
+Among those, the menu prefers multiples of a configurable granularity, falls
+back to plain divisors when the problem size admits no such multiple (a
+non-power-of-two problem would otherwise get an empty menu), caps at the
+device size, and thins to a bounded, roughly geometrically spaced list.
+Divisibility is necessary, not sufficient — a menu value the pinned search
+still finds infeasible (capacity, say) simply yields no point, and the
+profile has a hole there.
 
 - Affordable precisely because evaluation is device-free.
-- Embarrassingly parallel across (c, D), and deduplication across class
-  members is free — multiplicity costs nothing at this stage.
-- Cheap seeding: one search with D free visits many D values; harvest
-  best-per-D from its trace and only top up under-sampled D values with short
-  pinned runs.
+- Embarrassingly parallel: the menu points are independent searches and run
+  concurrently; deduplication across class members is free — multiplicity
+  costs nothing at this stage.
+- Possible refinement (not implemented): one search with D free visits many
+  D values; harvest best-per-D from its trace and only top up under-sampled
+  D values with short pinned runs.
 - No monotonicity assumption: divisibility (P1, P3) makes L_c(D)
   non-monotone; the profile is measured pointwise, so that's fine. (The
   monotonicity the outer solve *does* use is in the objective — feasibility
@@ -278,8 +317,8 @@ menu. For a fixed bottleneck target `T` the classes decouple completely:
 each class independently computes the minimum DPU budget for which every
 group's load stays ≤ T — a small dynamic program over "cheapest way to cover
 j members", where covering a group of size `k` at size `D` is admissible iff
-`k·L_c(D) ≤ T` and C9 holds (`k·static_c(D) + dyn_c(D) ≤ C_MRAM`), at budget
-cost `D`. The target is feasible iff the class minima sum to ≤ D_max (C7);
+`k·L_c(D) ≤ T` and C9 holds in every capacity-bounded memory level
+(`k·static_c(D) + dyn_c(D) ≤ capacity`, per level), at budget cost `D`. The target is feasible iff the class minima sum to ≤ D_max (C7);
 feasibility is monotone in `T`, so binary search over the sorted candidates
 finds the optimum exactly. Cost: O(#classes · n_c² · |menu|) per probe,
 logarithmically many probes — exact at hundreds of ops, with **no CSP in the
@@ -303,19 +342,25 @@ footprints).
 
 ### Stage C — finalization under budgets
 
-Re-check the Stage-A argmin at the budgeted constraints; re-search (short,
-conditioned run) only if it became infeasible — possible in principle since
-Stage A profiled with full MRAM, rare in practice since weights ≪ MRAM.
-Merged ops search **one aliased space** here. Then lower each scope
-independently with its winning point.
+For the chosen points no budgeted re-check is needed at all: the allocator
+admits a group only if `k` co-resident copies of the argmin's static
+footprint fit beside one working region, so the Stage-A argmin at the
+allotted size is feasible under the packing *by construction*. Every member
+of a group is then finalized by evaluating exactly the group's argmin
+configuration and lowering with it — one evaluation per member, no search —
+which is also what implements C8's deterministic stamping: all members of a
+group commit the same point because it is handed to them, not re-found. A
+short conditioned re-search remains the fallback for extensions whose
+budgets can tighten a space after profiling (the shape-dynamic and
+layout-coupling variants).
 
 ### Why the interface is exact, not a heuristic cut
 
 Check against P1–P6: P1–P5 are intra-op; the only variable of scope `i` that
-any cross-op constraint mentions is `D_i` (C7) and the P5 capacity term (C9).
-Conditioning on `(D_i, MRAM budget)` therefore **separates the joint CSP
-exactly** — `L_c(D)` together with the argmin's capacity footprints is a
-complete summary of the class for the outer problem
+any cross-op constraint mentions is `D_i` (C7) and the P5 capacity terms
+(C9). Conditioning on `(D_i, capacity budgets)` therefore **separates the
+joint CSP exactly** — `L_c(D)` together with the argmin's capacity
+footprints is a complete summary of the class for the outer problem
 (an optimal-value-function projection, Benders-style / Alpa-style). What the
 decomposition loses is only:
 
@@ -357,7 +402,8 @@ objective prices it explicitly rather than assuming it: both rows above are
 just menu options of §2's solver (the timeshare row is the unpinned
 pseudo-allocation). The prototype takes reload as a 40 ms constant (per
 switch, not per byte — to be confirmed on hardware) and prices weight
-rescatter with the same transfer model the per-op simulator already uses.
+rescatter with the same measured scatter cost model the per-op simulator
+uses, a function of the DPU count and the byte volume.
 
 **2MM parallel** (`r = A·B; r2 = A·C`, shared input A, independent gemms):
 same allocation math; the objective's aggregation over the two sets is `max`
@@ -381,8 +427,8 @@ general case.) FFN matmuls (different shapes) → separate sets via the
   over the derived staticness classification (§1).
 - **T5 Two-level solving**: profiles (Stage A) → exact parametric allocation
   (Stage B) → budgeted finalization (Stage C).
-- **T6 (extension) On-device intermediate forwarding**: C10, `Implies`-guarded
-  h-factor aliasing.
+- **T6 (extension) On-device intermediate forwarding**: C10,
+  implication-guarded h-factor aliasing.
 
 T1–T5 are the prototype. T6 and dynamic kernels are extensions with clean
 hooks; each is one guarded constraint away, which itself demonstrates the
@@ -395,7 +441,8 @@ constraint system's compositionality.
   system's graph-level job reduces to *instantiating* per-op systems under
   budgets (Stage C), with C7/C9 as extra linear constraints and aliasing as
   variable identification. The solver returns at the graph level only for the
-  latency variant's budgeted-crashing subproblem; `Implies` covers T6 later.
+  latency variant's budgeted-crashing subproblem; guarded constraints cover
+  T6 later.
 - **P6** per op becomes `D_i = D_{s_i}` under a fixed outer candidate; P5 gets
   the reserve term. Both are edits to the *instantiation* of the per-op
   system, not to backend-declared templates — i.e. the graph level tightens
@@ -403,7 +450,8 @@ constraint system's compositionality.
   cycle is resolved by value-function profiles where the intra-op cycle was
   resolved by joint constraint solving.
 - An equivalent formulation writes C8/C9 with a boolean fuse variable and
-  `Implies` inside one big CSP; the choice here (solve the outer problem
+  guarded constraints inside one big CSP; the choice here (solve the outer
+  problem
   parametrically outside the CSP) is not merely simpler — it is what turns an
   NP-hard-looking joint problem into a polynomial one for the throughput
   objective, and it keeps the surrogate and the solver each on the problem
@@ -421,30 +469,44 @@ constraint system's compositionality.
 - Outer problem = moldable-task scheduling with compatibility + capacity side
   constraints (classic theory).
 - Virtual PIM: runtime multi-tenant DPU allocation on UPMEM — runtime
-  scheduling, not compile-time co-optimization; confirms rank granularity.
+  scheduling, not compile-time co-optimization.
 - Delta kept by this design: cross-operator constraints *derived and solved
   inside the compiler's constraint system*, on a physically-allocated
   workgroup; none of the above derive the space, and IREE's constraints are
   per-dispatch.
 
-## 7. Implementation order
+## 7. Implementation status
+
+Implemented (the T1–T5 prototype, end to end):
 
 1. Staticness classification: the annotation on program inputs plus the
-   derivation through constants and constant-indexed views. Consumed by C9
-   and by the signature.
-2. Signature canonicalization of offload scopes into classes, at graph
-   collection time — before any profiling, since the class is the unit
-   everything downstream operates on.
-3. P6 pinning + profile extraction from a single-op search trace (Stage A):
-   one profile per class, recording cost, argmin, static/dynamic footprints,
-   and dynamic-operand transfer.
-4. The parametric outer solve (Stage B) — pure framework code, no backend
-   change — validated against brute-force partition enumeration at small n.
-5. Budgeted re-instantiation of per-op systems + Stage C re-check, and
-   stamping the winning point onto every class member.
-6. Only then, if time: the latency objective (critical path / SP-tree DP),
-   T6, dynamic-shape kernels.
+   derivation through constants, constant-indexed views, and casts. Consumed
+   by C9 and by the signature.
+2. Graph collection and canonicalization: connected components of the
+   dataflow between offloadable regions (§1's over-approximation), each
+   partitioned into program-identity classes by a structural signature that
+   ignores constant payloads and includes the per-operand staticness
+   pattern. The class is the unit everything downstream operates on.
+3. Stage A: one profile per class, one pinned search per menu value, run
+   concurrently; the menu derived from the iteration-space divisors as
+   described there; each point recording cost, argmin, per-level
+   static/dynamic footprints, and the static operands' re-scatter cost.
+4. Stage B: the parametric outer solve, validated against brute-force
+   partition enumeration on small instances (the worked examples of §3
+   behave as predicted: different-shape ops partition the grid unevenly —
+   each gets the cheapest size under the bottleneck — same-shape ops share a
+   set or split it as budget and capacity allow, and timesharing wins
+   exactly when the reload constant is made small).
+5. Stage C: per-member finalization by direct evaluation of the group's
+   argmin (no re-search needed for chosen points, as argued there).
 
-Risk to verify early: measure program-reload and weight-scatter cost on the
-actual system to confirm the 40–80 ms figure (taken as a 40 ms constant until
-then) and the per-op-switch (not per-byte) cost model for reload.
+The whole flow is opt-in behind an option; the per-op whole-device search
+remains the default and the fallback for targets that declare no shared
+resource.
+
+Not yet implemented: the latency objective (critical path / SP-tree DP), T6
+layout coupling, shape-dynamic kernels, and the offload-selection ranking
+(T1 currently trusts the platform-assignment step). Risk still open: measure
+program-reload and weight-scatter cost on the actual system to confirm the
+40–80 ms figure (taken as a 40 ms constant until then) and the
+per-op-switch (not per-byte) cost model for reload.
