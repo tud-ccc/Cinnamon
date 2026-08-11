@@ -218,6 +218,19 @@ struct UpmemInferencePlugin : cinm::InferencePlugin {
     return simulator && simulator->supportsMultithreading();
   }
 
+  /// The graph level allocates DPUs (design C7): profiles are L(dpus).
+  StringRef sharedResourceParam() const override { return "dpus"; }
+
+  /// DPUs are allocated in ranks; a menu entry per whole-rank multiple.
+  /// Rank-aligned allocation is what makes parallel host<->DPU transfers
+  /// efficient, so finer granularity would be dishonest about the hardware.
+  SmallVector<int64_t> sharedResourceMenu() const override {
+    SmallVector<int64_t> menu;
+    for (int k = 1; k <= platform.getMaxNumRanks(); ++k)
+      menu.push_back(int64_t(k) * platform.getMaxNumDpusPerRank());
+    return menu;
+  }
+
   /// cinm -> linalg. Run once, on the reference the trials are cloned from,
   /// because its result does not depend on the configuration: the space is
   /// stated in terms of an *iteration space*, and only linalg carries one, so

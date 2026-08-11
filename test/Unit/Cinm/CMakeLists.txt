@@ -12,6 +12,7 @@
 add_unittest(CinmUnitTests
   ConstraintIRTest.cpp
   GraphInferenceTest.cpp
+  ProfilingTest.cpp
   PermutationTest.cpp
   SplitDerivationTest.cpp
   StaticValueTest.cpp

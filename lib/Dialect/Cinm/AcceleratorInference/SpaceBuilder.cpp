@@ -200,6 +200,14 @@ int SpaceBuilder::dimIndexByName(llvm::StringRef name) const {
   return -1;
 }
 
+bool SpaceBuilder::pin(llvm::StringRef name, ParmValue value) {
+  int idx = dimIndexByName(name);
+  if (idx < 0 || dims_[idx].kind == DimEntry::Permutation)
+    return false;
+  require(findVarByName(name) == value, (name + " pinned").str());
+  return true;
+}
+
 // ===----------------------------------------------------------------------===//
 // SpaceBuilder — constraint declaration
 // ===----------------------------------------------------------------------===//
