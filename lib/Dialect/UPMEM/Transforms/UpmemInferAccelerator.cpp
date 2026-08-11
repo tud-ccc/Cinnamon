@@ -68,6 +68,7 @@
 #include <mlir/Support/LogicalResult.h>
 #include <mlir/Support/WalkResult.h>
 #include <mlir/Transforms/Passes.h>
+#include <upmem_cost_model/ScatterGatherCm.h>
 
 #define DEBUG_TYPE "cinm-inference"
 
@@ -349,7 +350,6 @@ struct UpmemInferencePlugin : cinm::InferencePlugin {
     };
     const int64_t tasklets = valueOf("tasklets");
     const int64_t dpus = valueOf("dpus");
-    const int64_t ranks = platform.numRanksForTransfer(dpus);
 
     cinm::LevelResidency mram{
         platform.getMramLevel().getName().getValue().str(), 0, 0};
@@ -393,8 +393,8 @@ struct UpmemInferencePlugin : cinm::InferencePlugin {
           mram.staticBytes += perDpuBytes;
           // What a timeshared placement would pay per inference to restore
           // these weights: the whole tensor through the scatter model.
-          out.weightScatterMs +=
-              transferCost(double(shaped.getNumElements()) * eltBytes, ranks);
+          out.weightScatterMs += upmem_cm::scatterBlockCostMs(
+              dpus, (shaped.getNumElements()) * eltBytes);
         } else {
           mram.dynBytes += perDpuBytes;
         }

@@ -12,10 +12,6 @@ namespace mlir::upmem {
 using WaitForCostFn =
     std::function<SimCost(mlir::Operation * /*WaitForOp*/, bool /*annotate*/)>;
 
-inline double transferCost(double numBytes, int numRanks) {
-  return numBytes / 1024 / numRanks / 100'000;
-}
-
 /// Estimates the cost of a host-side UPMEM region (scatter/gather/loops/etc.)
 /// and optionally annotates each visited op with 'upmem.sim_cost'.
 /// WaitForOp cost is delegated to `waitForCb`; all other op costs use the

@@ -192,11 +192,9 @@ Attribute UpmemPlatformAttr::parse(::mlir::AsmParser &p, ::mlir::Type) {
   bool isV1A = *type;
 
   // The platform is a pool of `dpus` DPUs running up to `tasklets` tasklets
-  // each; `rank_size` (optional, default 64) only parameterizes the transfer
-  // cost model. The legacy `dimensions = ranks x dpusPerRank (x tasklets)?`
-  // form is still accepted: the DPU count collapses to the product and the
-  // per-rank figure becomes the rank size.
-  int64_t maxDpus = 0, tasklets = isV1A ? 24 : 16, rankSize = 64;
+  // each. The legacy `dimensions = ranks x dpusPerRank (x tasklets)?` form is
+  // still accepted: the DPU count collapses to the product.
+  int64_t maxDpus = 0, tasklets = isV1A ? 24 : 16;
   cinm::CinmLevelArrayAttr levels;
   if (p.parseComma())
     return {};
@@ -209,7 +207,6 @@ Attribute UpmemPlatformAttr::parse(::mlir::AsmParser &p, ::mlir::Type) {
       return {};
     }
     maxDpus = dims[0] * dims[1];
-    rankSize = dims[1];
     if (dims.size() == 3)
       tasklets = dims[2];
   } else {
@@ -220,15 +217,11 @@ Attribute UpmemPlatformAttr::parse(::mlir::AsmParser &p, ::mlir::Type) {
     if (p.parseOptionalKeyword("tasklets").succeeded()) {
       if (p.parseEqual() || p.parseInteger(tasklets))
         return {};
-    } else if (p.parseOptionalKeyword("rank_size").succeeded()) {
-      if (p.parseEqual() || p.parseInteger(rankSize))
-        return {};
     } else if (p.parseOptionalKeyword("levels").succeeded()) {
       if (p.parseEqual() || p.parseCustomAttributeWithFallback(levels))
         return {};
     } else {
-      p.emitError(p.getCurrentLocation(),
-                  "expected tasklets, rank_size, or levels");
+      p.emitError(p.getCurrentLocation(), "expected tasklets or levels");
       return {};
     }
   }
@@ -237,15 +230,13 @@ Attribute UpmemPlatformAttr::parse(::mlir::AsmParser &p, ::mlir::Type) {
   if (p.parseGreater())
     return {};
 
-  return UpmemPlatformAttr::get(p.getContext(), levels, isV1A, rankSize,
-                                maxDpus, tasklets);
+  return UpmemPlatformAttr::get(p.getContext(), levels, isV1A, maxDpus,
+                                tasklets);
 }
 
 void UpmemPlatformAttr::print(::mlir::AsmPrinter &out) const {
   out << "<type = " << (getIsV1a() ? "v1A" : "v1B")
       << ", dpus = " << getMaxDpus() << ", tasklets = " << getMaxNumTasklets();
-  if (getRankSize() != 64)
-    out << ", rank_size = " << getRankSize();
   if (getLevels() != UpmemPlatformAttr::getDefault(getContext()).getLevels()) {
     out << ", levels = ";
     out.printStrippedAttrOrType(getLevels());
@@ -255,8 +246,7 @@ void UpmemPlatformAttr::print(::mlir::AsmPrinter &out) const {
 
 UpmemPlatformAttr UpmemPlatformAttr::getDefault(MLIRContext *ctx) {
   return UpmemPlatformAttr::get(ctx, upmemLevels(ctx, true), true,
-                                /*rankSize=*/64, /*maxDpus=*/512,
-                                /*maxNumTasklets=*/24);
+                                /*maxDpus=*/512, /*maxNumTasklets=*/24);
 }
 
 cinm::CinmLevelAttrInterface

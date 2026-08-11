@@ -97,28 +97,6 @@ static SimCost costOfOpCb(Operation &op, bool annotate,
             return SimCost::forCpu(time_ns / 1e6, "copy"); // ns -> ms
           })
           // .Case<memref::LoadOp, memref::StoreOp>([](auto) { return 1e-7; })
-          .Case<cnm::ScatterOp>([](cnm::ScatterOp scatterOp) {
-            auto hostTy = scatterOp.getHostType();
-            double bytes = static_cast<double>(staticElementCount(hostTy)) *
-                           elementBytes(hostTy.getElementType());
-            int numRanks = 1;
-            if (auto accel = upmemAccelOf(scatterOp.getWg().getType()))
-              numRanks =
-                  accel->getPlatform().numRanksForTransfer(accel->getNumDpus());
-            return SimCost::forTransfer(transferCost(bytes, numRanks),
-                                        "scatter");
-          })
-          .Case<cnm::GatherOp>([](cnm::GatherOp gatherOp) {
-            auto hostTy = gatherOp.getHostType();
-            double bytes = static_cast<double>(staticElementCount(hostTy)) *
-                           elementBytes(hostTy.getElementType());
-            int numRanks = 1;
-            if (auto accel = upmemAccelOf(gatherOp.getWg().getType()))
-              numRanks =
-                  accel->getPlatform().numRanksForTransfer(accel->getNumDpus());
-            return SimCost::forTransferBack(transferCost(bytes, numRanks),
-                                            "gather");
-          })
           .Case<upmem::ScatterOnArrayOp>(
               [](upmem::ScatterOnArrayOp xferOp) -> SimCost {
                 auto hier = llvm::cast<DeviceHierarchyType>(
