@@ -13,6 +13,8 @@ add_mlir_dialect_library(CinmIR
         MLIRIR
         MLIRParser
         MLIRSideEffectInterfaces
+        MLIRFunctionInterfaces
+        MLIRViewLikeInterface
         MLIRArithDialect
         MLIRAffineDialect
         CinmUtils
