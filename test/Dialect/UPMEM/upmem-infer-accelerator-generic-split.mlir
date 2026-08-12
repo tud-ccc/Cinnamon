@@ -22,7 +22,8 @@
 
 // CHECK-LABEL: func.func @gemv_64MB
 func.func @gemv_64MB(%A: tensor<4096x4096xi32>, %x: tensor<4096xi32>) -> tensor<4096xi32> {
-  // CHECK: upmem.alloc_dpus with program @{{.*}} : !upmem.hierarchy<2048x8>
+  // CHECK: upmem.alloc_dpus : !upmem.hierarchy<2048x8>
+  // CHECK: upmem.load_program @{{.*}} on %{{.*}} : !upmem.hierarchy<2048x8>
   // CHECK: upmem.dpu_program @{{.*}}() tasklets(8) {
 
   // Per-DPU MRAM, matching the template's own constraint

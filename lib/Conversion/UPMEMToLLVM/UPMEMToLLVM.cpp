@@ -332,18 +332,6 @@ public:
   explicit AllocDPUOpToFuncCallLowering(LLVMTypeConverter &lowering)
       : ConvertOpToLLVMPattern<upmem::AllocDPUsOp>(lowering) {}
 
-  FailureOr<Value>
-  createConstantForDpuProgramName(ConversionPatternRewriter &rewriter,
-                                  upmem::AllocDPUsOp op) const {
-    auto leafName = op.getDpuProgramRef().getLeafReference().getValue();
-
-    LLVM::GlobalOp constant =
-        declareStringConstant(op->getParentOfType<ModuleOp>(), op->getLoc(),
-                              leafName, true, "dpu_program");
-    Value result = LLVM::AddressOfOp::create(rewriter, op->getLoc(), constant);
-    return success(result);
-  }
-
   LogicalResult
   matchAndRewrite(upmem::AllocDPUsOp op, typename upmem::AllocDPUsOp::Adaptor,
                   ConversionPatternRewriter &rewriter) const override {
@@ -352,11 +340,6 @@ public:
     const Value dpuCount = LLVM::ConstantOp::create(
         rewriter, op.getLoc(),
         rewriter.getI32IntegerAttr(hierarchyShape.getNumDpus()));
-
-    const auto maybeFailed = createConstantForDpuProgramName(rewriter, op);
-    if (failed(maybeFailed))
-      return failure();
-    const Value dpuProgramPath = *maybeFailed;
 
     // Computed by ConvertUPMEMToLLVMPass before conversion started (see
     // kMaxBlocksPerDpuAttrName): 0 if no upmem.scatter using this hierarchy
@@ -370,16 +353,46 @@ public:
         rewriter.getIntegerAttr(sizeTy, maxBlocksPerDpu));
 
     // struct dpu_set_t *upmemrt_dpu_alloc(int32_t num_dpus,
-    //     const char *dpu_binary_path, size_t max_blocks_per_dpu);
+    //     size_t max_blocks_per_dpu);
     Type resultType = LLVM::LLVMPointerType::get(rewriter.getContext(), 0);
-    auto funcOp = appendOrGetFuncOp(
-        rewriter, "upmemrt_dpu_alloc", resultType,
-        {rewriter.getI32Type(), untypedPtrType(getContext()), sizeTy}, op);
+    auto funcOp = appendOrGetFuncOp(rewriter, "upmemrt_dpu_alloc", resultType,
+                                    {rewriter.getI32Type(), sizeTy}, op);
 
     if (llvm::failed(funcOp))
       return failure();
     rewriter.replaceOpWithNewOp<LLVM::CallOp>(
-        op, *funcOp, ValueRange{dpuCount, dpuProgramPath, maxBlocksPerDpuVal});
+        op, *funcOp, ValueRange{dpuCount, maxBlocksPerDpuVal});
+    return success();
+  }
+};
+
+struct LoadProgramOpToFuncCallLowering
+    : public ConvertOpToLLVMPattern<upmem::LoadProgramOp> {
+public:
+  explicit LoadProgramOpToFuncCallLowering(LLVMTypeConverter &lowering)
+      : ConvertOpToLLVMPattern<upmem::LoadProgramOp>(lowering) {}
+
+  LogicalResult
+  matchAndRewrite(upmem::LoadProgramOp op,
+                  typename upmem::LoadProgramOp::Adaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    auto leafName = op.getDpuProgramRef().getLeafReference().getValue();
+    LLVM::GlobalOp constant =
+        declareStringConstant(op->getParentOfType<ModuleOp>(), op->getLoc(),
+                              leafName, true, "dpu_program");
+    Value dpuProgramPath =
+        LLVM::AddressOfOp::create(rewriter, op->getLoc(), constant);
+
+    // void upmemrt_dpu_load(struct dpu_set_t *set,
+    //     const char *dpu_binary_path);
+    auto funcOp = appendOrGetFuncOp(
+        rewriter, "upmemrt_dpu_load", LLVM::LLVMVoidType::get(getContext()),
+        {untypedPtrType(getContext()), untypedPtrType(getContext())}, op);
+
+    if (llvm::failed(funcOp))
+      return failure();
+    rewriter.replaceOpWithNewOp<LLVM::CallOp>(
+        op, *funcOp, ValueRange{adaptor.getHierarchy(), dpuProgramPath});
     return success();
   }
 };
@@ -846,6 +859,7 @@ void populateUPMEMToLLVMFinalTypeConversions(LLVMTypeConverter &typeConverter) {
 void populateUPMEMToLLVMConversionPatterns(LLVMTypeConverter &typeConverter,
                                            RewritePatternSet &patterns) {
   patterns.add<AllocDPUOpToFuncCallLowering>(typeConverter);
+  patterns.add<LoadProgramOpToFuncCallLowering>(typeConverter);
   patterns.add<ScatterOnArrayOpToFuncCallLowering>(typeConverter);
   patterns.add<ScatterBlocksOpToFuncCallLowering>(typeConverter);
   patterns.add<BroadcastOpToFuncCallLowering>(typeConverter);

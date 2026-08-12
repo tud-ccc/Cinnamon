@@ -8,7 +8,8 @@
 // CHECK: memref.global "private" constant @[[SEEDTILE:[^ ]*]] : memref<1xi32> = dense<0>
 // CHECK-LABEL: func.func @main
 // CHECK: %[[ALLOC:.*]] = memref.alloc() {{.*}} : memref<64x64xi32>
-// CHECK: %[[DPU:.*]] = upmem.alloc_dpus with program @dpu_kernels::@program : !upmem.hierarchy<16x1>
+// CHECK: %[[DPU:.*]] = upmem.alloc_dpus : !upmem.hierarchy<16x1>
+// CHECK: upmem.load_program @dpu_kernels::@program on %[[DPU]] : !upmem.hierarchy<16x1>
 // CHECK: affine.for %[[I:.*]] = 0 to 64 step 16 {
 // CHECK: affine.for %[[J:.*]] = 0 to 64 {
 // CHECK: %[[SV_A:.*]] = memref.subview %[[ALLOC]][%[[I]], 0] [16, 64] [1, 1] : memref<64x64xi32> to memref<16x64xi32, {{.*}}>

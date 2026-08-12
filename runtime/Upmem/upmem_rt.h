@@ -94,15 +94,25 @@ void upmemrt_dpu_broadcast(struct dpu_set_t *dpu_set, void *host_buffer,
 ///
 /// @param num_dpus             Number of DPUs to allocate. Which ranks they
 /// land on is the SDK's business and cannot be requested.
-/// @param dpu_binary_path      Path to the DPU program binary to load
 /// @param max_blocks_per_dpu   Largest number of blocks any
 /// upmemrt_dpu_scatter_blocks/gather_blocks call against this DPU set will
 /// use, or 0 if none will. Sets the UPMEM SDK's sgXferMaxBlocksPerDpu option
 /// (and enables scatter/gather transfers) only when actually needed, so
 /// programs that never use the scatter transfer API don't pay for its
 /// (larger) memory footprint.
+///
+/// Allocation does NOT load a program; pair with upmemrt_dpu_load. The two
+/// are separate calls (mirroring upmem.alloc_dpus / upmem.load_program)
+/// because a set is acquired once per residency lifetime while the program
+/// on it can change per launch -- and because their times are recorded in
+/// different categories (alloc is harness overhead, load amortizes only
+/// when it happens once per workload lifetime).
 struct dpu_set_t *upmemrt_dpu_alloc(int32_t num_dpus,
-                                    const char *dpu_binary_path,
                                     size_t max_blocks_per_dpu);
+
+/// Load the DPU program at @p dpu_binary_path onto every DPU of @p dpu_set
+/// (the SDK's dpu_load), replacing whatever ran there before. Recorded under
+/// the "load" timer category.
+void upmemrt_dpu_load(struct dpu_set_t *dpu_set, const char *dpu_binary_path);
 
 void upmemrt_dpu_launch(struct dpu_set_t *void_dpu_set);

@@ -28,7 +28,8 @@ func.func @gemv(%A: tensor<1024x512xi32>, %x: tensor<512xi32>) -> tensor<1024xi3
   %init = tensor.empty() : tensor<1024xi32>
 
   // Host side.
-  // CHECK: %[[DPU:.*]] = upmem.alloc_dpus with program @dpu_kernels::@program : !upmem.hierarchy<16x1>
+  // CHECK: %[[DPU:.*]] = upmem.alloc_dpus : !upmem.hierarchy<16x1>
+  // CHECK: upmem.load_program @dpu_kernels::@program on %[[DPU]] : !upmem.hierarchy<16x1>
   // CHECK: upmem.scatter_on_array %{{.*}} onto @{{.*}} of %[[DPU]]
   // CHECK: upmem.wait_for %[[DPU]]
   // CHECK: upmem.gather_from_array %{{.*}} from @{{.*}} of %[[DPU]]

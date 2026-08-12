@@ -19,7 +19,8 @@ module {
     %c128 = arith.constant 128 : index
     %c0 = arith.constant 0 : index
     %0 = memref.get_global @__constant_8x128xi32 : memref<8x128xi32>
-    %1 = upmem.alloc_dpus with program @dpu_kernels::@program : !upmem.hierarchy<1024x1>
+    %1 = upmem.alloc_dpus : !upmem.hierarchy<1024x1>
+    upmem.load_program @dpu_kernels::@program on %1 : !upmem.hierarchy<1024x1>
     %alloc = memref.alloc() {alignment = 64 : i64} : memref<128x1024xi32>
     scf.for %arg2 = %c0 to %c128 step %c1 {
       scf.for %arg3 = %c0 to %c1024 step %c1 {

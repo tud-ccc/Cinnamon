@@ -19,7 +19,8 @@ func.func @gemv(%A: tensor<256x256xi32>, %x: tensor<256xi32>) -> tensor<256xi32>
   // a single array -- follows from the tiling the search happened to pick, so
   // it is not pinned here: doing so would make this a test of where the search
   // lands, which the note above says it deliberately is not.
-  // CHECK: upmem.alloc_dpus with program
+  // CHECK: upmem.alloc_dpus
+  // CHECK: upmem.load_program
   // CHECK: upmem.scatter_on_array
   // CHECK: upmem.gather_{{from_array|blocks}}
 
