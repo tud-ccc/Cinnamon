@@ -1,8 +1,8 @@
 """doit tasks for the CINM 1.0 vs CINM 2.0 comparison experiment.
 
-Same pipeline as experiment.py's module docstring (screen -> CINM1 configs /
-CINM2 search -> compile -> run -> compare -> plot), but driven by doit
-instead of a plain top-to-bottom script: each stage declares its file
+Same pipeline as experiment.py's module docstring (working groups -> CINM1
+configs / CINM2 search -> compile -> run -> compare -> plot), but driven by
+doit instead of a plain top-to-bottom script: each stage declares its file
 inputs/outputs, so `doit` only reruns what's actually stale -- e.g. if a
 CINM1 compile fails and you fix cinm1.py and rerun, the CINM2 Bayesian
 search (expensive, already done) is not repeated.
@@ -12,14 +12,14 @@ Usage:
                           # tasks that create them dynamically have run once)
   doit                   # run everything up to the plots
   doit compile_cinm1     # just compile CINM 1.0's configs
-  doit forget screen     # force screening to rerun next time
+  doit forget pairs      # force the working groups to be re-enumerated
   doit retry_failed_compiles && doit  # clear + retry configs that failed to compile
   doit retry_failed_bench && doit bench_cinm1 bench_cinm2  # clear + retry configs that failed on hardware
 
 Stages are connected by files on disk, not in-memory state, since doit may
-skip any stage in a given invocation: pairs.csv (screen's output) and the
-CINM 2.0 search's pool.csv files are the source of truth read back by every
-downstream stage.
+skip any stage in a given invocation: pairs.csv (the working groups, see
+task_pairs) and the CINM 2.0 search's pool.csv files are the source of truth
+read back by every downstream stage.
 """
 
 from __future__ import annotations
@@ -42,6 +42,7 @@ sys.path.insert(0, str(EXPERIMENTS_DIR))
 
 
 from cinm_experiments import cinm1, cinmopt, compile_run, measurements, pools, ALL_PRIMS  # noqa: E402
+from cinm_experiments import prims as prim_defs  # noqa: E402
 from cinm_experiments.split_source import list_functions, split_source  # noqa: E402
 
 from plot import (
@@ -57,11 +58,8 @@ PRIMS = set(ALL_PRIMS).difference(("prim_gemv",))
 DATA_DIR = HERE / "data"
 
 OPTS = dict(
-    top_frac=0.10,
-    min_configs=200,
     n_seeds=32,
     iters=6,
-    screen_sim="cycle-accurate",
     workers=os.cpu_count(),
 )
 
@@ -110,11 +108,8 @@ class Paths:
     def split_module(self, prim: str, fn_name: str) -> pathlib.Path:
         return self.split_dir(prim) / f"{fn_name}.mlir"
 
-    def screen_dir(self, prim: str) -> pathlib.Path:
-        return self.prim_dir(prim) / "screen"
-
     def pairs_csv(self, prim: str, fn_name: str) -> pathlib.Path:
-        return self.screen_dir(prim) / fn_name / "pairs.csv"
+        return self.prim_dir(prim) / "pairs" / f"{fn_name}.csv"
 
     def cinm2_results_dir(self, prim: str) -> pathlib.Path:
         return self.prim_dir(prim) / "cinm2_results"
@@ -212,66 +207,57 @@ def task_split():
         }
 
 
-# ── screen ───────────────────────────────────────────────────────────────────
+# ── working groups ───────────────────────────────────────────────────────────
 
 
-def _screen_one(prim: str, fn_name: str, fn_module: pathlib.Path) -> bool:
-    screen_dir = PATHS.screen_dir(prim)
-    cinmopt.exhaustive_search(
-        fn_module,
-        screen_dir,
-        workers=OPTS["workers"],
-        infer_opts={
-            "use-mram-tiling": False,
-            "dump-full-pool": False,
-            "simulator": OPTS["screen_sim"],
-        },
-    )
+def _prim_def(prim: str) -> prim_defs.Prim:
+    """The Prim behind a "prim_<name>" source-module stem."""
+    return prim_defs.PRIMS[prim.removeprefix("prim_")]
 
-    # exhaustive_search names the dump dir after its own NameInventor
-    # ("infer_" prefix); rename it to the plain function name so every
-    # downstream reader can use one consistent path.
-    infer_dir = screen_dir / f"infer_{fn_name}"
-    fn_dir = screen_dir / fn_name
-    if fn_dir.exists():
-        shutil.rmtree(fn_dir)
-    infer_dir.rename(fn_dir)
 
-    pool_csv = fn_dir / "pool.csv"
-    top, n_valid, n_kept = pools.select_best(
-        pool_csv, top_frac=OPTS["top_frac"], min_configs=OPTS["min_configs"]
-    )
-    if top.empty:
-        raise RuntimeError(f"no valid configs for {prim}:{fn_name}")
-    pairs = (
-        top[["dpus", "tasklets"]]
-        .drop_duplicates()
-        .sort_values(["dpus", "tasklets"])
-        .reset_index(drop=True)
-    )
+def _write_pairs(prim: str, fn_name: str, out_csv: pathlib.Path) -> bool:
+    p = _prim_def(prim)
+    max_dpus, max_tasklets = prim_defs.platform_limits(p)
+    pairs = p.working_groups(fn_name, max_dpus=max_dpus, max_tasklets=max_tasklets)
+    if not pairs:
+        raise RuntimeError(f"no feasible working group for {prim}:{fn_name}")
     print(
-        f"  {fn_name:20s}  kept {n_kept} of {n_valid} valid rows"
+        f"  {fn_name:20s}  parallel extent {p.parallel_extent(fn_name)}"
         f" -> {len(pairs)} (dpus,tasklets) pairs"
     )
-    pairs.to_csv(PATHS.pairs_csv(prim, fn_name), index=False)
+    out_csv.parent.mkdir(parents=True, exist_ok=True)
+    pd.DataFrame(pairs, columns=["dpus", "tasklets"]).to_csv(out_csv, index=False)
     return True
 
 
-# @create_after(executed="split")
-def task_screen():
-    """Sweep CINM 2.0's configuration space with MRAM tiling disabled (CINM
-    1.0's own best configs are known to lie in this constrained subspace),
-    and select the (dpus, tasklets) working groups worth real hardware
-    measurements. One subtask per function -- its config space (problem
-    size, valid tile shapes) is its own."""
+def task_pairs():
+    """Enumerate the (dpus, tasklets) working groups to measure: every group
+    whose worker count divides the function's parallel extent, i.e. every one
+    the kernel can be distributed over at all (Prim.working_groups).
+
+    This replaced a screening stage that swept CINM 2.0's cost model over the
+    whole configuration space and kept the best-predicted 10% of working
+    groups. Nothing here consults a cost model: which groups are worth
+    measuring is exactly the question the experiment asks, and screening on a
+    prediction answered part of it in advance -- with CINM 2.0's own model,
+    the very thing under test. The condition left is structural (does the work
+    divide evenly?), so the set is the whole feasible space rather than a
+    sample of it, at the cost of measuring groups that turn out to be slow.
+
+    Cheap and deterministic -- it reads the problem dimensions and the
+    platform's limits, and runs no compiler -- so unlike the screening it
+    replaced there is nothing to preserve across runs; `doit forget pairs`
+    costs nothing. One subtask per function, whose extents are its own."""
     for prim in PRIMS:
         for fn_name in list_functions(PATHS.source_mlir(prim)):
-            fn_module = PATHS.split_module(prim, fn_name)
+            pairs_csv = PATHS.pairs_csv(prim, fn_name)
             yield {
                 "name": f"{prim}:{fn_name}",
-                "file_dep": [str(fn_module)],
-                "targets": [str(PATHS.pairs_csv(prim, fn_name))],
-                "actions": [(_screen_one, [prim, fn_name, fn_module])],
+                # The source module, not the split one: the extents and the
+                # #upmem.platform limits both come from it.
+                "file_dep": [str(PATHS.source_mlir(prim))],
+                "targets": [str(pairs_csv)],
+                "actions": [(_write_pairs, [prim, fn_name, pairs_csv])],
             }
 
 
@@ -323,9 +309,9 @@ def gen_seeds(pair_idx):
 @dataclasses.dataclass(frozen=True)
 class _Cinm2SearchGroup:
     """One CINM 2.0 BO search (n_seeds independent runs) that will run for
-    one function: either dpus/tasklets pinned to a screened (dpus, tasklets)
-    working group (the matched sweep, comparable 1:1 against CINM 1.0's own
-    config -- see compare()), or left free (the unconstrained sweep,
+    one function: either dpus/tasklets pinned to one of the enumerated (dpus,
+    tasklets) working groups (the matched sweep, comparable 1:1 against CINM
+    1.0's own config -- see compare()), or left free (the unconstrained sweep,
     comparable against CINM 1.0's best-ever config -- see
     task_compare_best/plot_best_speedup). _cinm2_search_groups yields these;
     task_cinm2_search builds identical search/compile/bench tasks from
@@ -343,11 +329,10 @@ class _Cinm2SearchGroup:
     extra_infer_opts: dict
     offset: int
     results_dir: pathlib.Path
-    search_file_dep: pathlib.Path
     seeds: tuple[int, ...]
 
 
-def _cinm2_search_groups(prim: str, fn_name: str, fn_module: pathlib.Path):
+def _cinm2_search_groups(prim: str, fn_name: str):
     pairs_csv = PATHS.pairs_csv(prim, fn_name)
     if pairs_csv.exists():
         pairs = pd.read_csv(pairs_csv)
@@ -361,11 +346,10 @@ def _cinm2_search_groups(prim: str, fn_name: str, fn_module: pathlib.Path):
                 extra_infer_opts={"fixed-dpus": dpus, "fixed-tasklets": tasklets},
                 offset=get_offset(pair_idx),
                 results_dir=PATHS.cinm2_results_dir(prim),
-                search_file_dep=pairs_csv,
                 seeds=tuple(gen_seeds(pair_idx)),
             )
     # Unconstrained sweep: dpus/tasklets left free, one search per function
-    # instead of one per screened pair. Reuses gen_seeds/get_offset(0) as-is
+    # instead of one per working group. Reuses gen_seeds/get_offset(0) as-is
     # (same seed count and offset as the matched sweep's pair 0) rather than
     # a separate scheme -- safe to reuse the same offset because results
     # land in cinm2_unconstrained_results_dir, never cinm2_results_dir, so
@@ -377,18 +361,17 @@ def _cinm2_search_groups(prim: str, fn_name: str, fn_module: pathlib.Path):
         extra_infer_opts={},
         offset=get_offset(0),
         results_dir=PATHS.cinm2_unconstrained_results_dir(prim),
-        search_file_dep=fn_module,
         seeds=tuple(gen_seeds(0)),
     )
 
 
 def _config_ids():
     """Yield (prim, system, fn_name, label, dpus, tasklets, pair_idx) for
-    every config that will exist once screening has written pairs.csv, for
+    every config that will exist once task_pairs has written pairs.csv, for
     every prim in PRIMS -- one flat sequence spanning ALL prims, in PRIMS
     order (flip PRIMS to reverse it), not one sequence per prim. Unlike a
-    compile_run.Config's params/lower, these identities are fully known
-    right after screening -- compile/run directories are keyed off (system,
+    compile_run.Config's params/lower, these identities are fully known as
+    soon as the working groups are -- compile/run directories are keyed off (system,
     fn_name, label) alone, and CINM 2.0's dpus/tasklets are pinned to the
     pair's before its search even starts -- so this is the single place
     task_compile_cinm1 and task_cinm2_search each derive the same set of
@@ -483,7 +466,7 @@ def _prev_bench_task_dep(
 
 
 @create_after(
-    executed="screen",
+    executed="pairs",
     creates=[
         "cinm2_search",
         "compile_cinm2",
@@ -495,7 +478,7 @@ def _prev_bench_task_dep(
 )
 def task_cinm2_search():
     """Run CINM 2.0's Bayesian search for every function, in both shapes
-    _cinm2_search_groups yields: once per screened (dpus, tasklets) working
+    _cinm2_search_groups yields: once per enumerated (dpus, tasklets) working
     group with that pair pinned (matched sweep, MRAM tiling enabled -- CINM
     2.0's normal codegen), and once more with dpus/tasklets left free
     (unconstrained sweep, feeds task_compare_best/plot_best_speedup's
@@ -515,12 +498,18 @@ def task_cinm2_search():
         compile_root = PATHS.compile_root(prim)
         for fn_name in list_functions(PATHS.source_mlir(prim)):
             fn_module = PATHS.split_module(prim, fn_name)
-            for group in _cinm2_search_groups(prim, fn_name, fn_module):
+            for group in _cinm2_search_groups(prim, fn_name):
                 basename_suffix = group.system.removeprefix("cinm2")
                 yield {
                     "basename": "cinm2_search" + basename_suffix,
                     "name": f"{prim}:{fn_name}:{group.task_label}",
-                    "file_dep": [str(group.search_file_dep)],
+                    # The function's own source, not the pairs.csv this
+                    # group's (dpus, tasklets) came from: enumerating one
+                    # more working group must not invalidate the searches
+                    # already done for the other groups in that same file
+                    # (each search's result depends on its own pinned pair,
+                    # which is in its task name, not on the rest of the set).
+                    "file_dep": [str(fn_module)],
                     "targets": [
                         str(
                             group.results_dir
@@ -578,7 +567,19 @@ def task_cinm2_search():
                     yield {
                         "basename": "bench_cinm2" + basename_suffix,
                         "name": f"{prim}:{fn_name}:{seed}",
-                        "file_dep": [str(marker)],
+                        # On the search's pool.csv as well as the compile
+                        # marker, because the marker cannot express this: it
+                        # is an empty file, so recompiling a seed whose search
+                        # found a *different* best config leaves it byte-identical
+                        # and the measurement of the config it replaced would
+                        # stay on disk, attributed to the new one. A cinm2 run
+                        # directory is keyed by seed, and which working group a
+                        # seed belongs to is the pair's position in pairs.csv
+                        # (get_offset) -- so enumerating a different set of
+                        # working groups is exactly the case where this
+                        # happens, and the stale measurement would be one of
+                        # another group entirely.
+                        "file_dep": [str(marker), str(pool_csv)],
                         "task_dep": _prev_bench_task_dep(
                             config_ids, index_of, prim, group.system, fn_name, seed
                         ),
@@ -640,9 +641,9 @@ def _compile_one(
     return True
 
 
-@create_after(executed="screen", creates=["bench_cinm1", "compile_cinm1"])
+@create_after(executed="pairs", creates=["bench_cinm1", "compile_cinm1"])
 def task_compile_cinm1():
-    """Compile CINM 1.0 once per selected working group -- no search, its
+    """Compile CINM 1.0 once per enumerated working group -- no search, its
     tile sizes are inferred deterministically. Also generates that config's
     bench_cinm1 task (basename "bench_cinm1", see _bench_one_config) right
     here, so the set of CINM 1.0 configs is derived exactly once instead of
@@ -668,7 +669,11 @@ def task_compile_cinm1():
         yield {
             "basename": "compile_cinm1",
             "name": f"{prim}:{fn_name}:{label}",
-            "file_dep": [str(PATHS.pairs_csv(prim, fn_name))],
+            # The function's own source, not the pairs.csv this config's
+            # (dpus, tasklets) came from -- same reason as cinm2_search's
+            # file_dep: this config is identified by its label, so enumerating
+            # one more working group must not recompile the others.
+            "file_dep": [str(fn_module)],
             "targets": [str(marker)],
             "actions": [(_compile_one, [config, compile_root, marker])],
         }
@@ -730,7 +735,7 @@ def _discover_cinm2_configs(
 
 
 def _discover_configs(prim: str) -> list[compile_run.Config]:
-    """Reconstruct every Config for a prim from what screen/cinm2_search
+    """Reconstruct every Config for a prim from what pairs/cinm2_search
     already wrote to disk (mirrors build_cinm1_configs/build_cinm2_configs
     in experiment.py, but reading state back instead of computing it) --
     CINM 1.0's matched sweep plus both of CINM 2.0's sweeps, matched and
@@ -966,7 +971,7 @@ def _compare_prim(prim: str) -> bool:
     return True
 
 
-# @create_after(executed="screen")
+# @create_after(executed="pairs")
 def task_compare():
     """Geomean speedup of CINM 2.0 (seed-median) over CINM 1.0 per working
     group, aggregated per benchmark."""
@@ -1039,7 +1044,7 @@ def _compare_best_prim(prim: str) -> bool:
     return True
 
 
-# @create_after(executed="screen")
+# @create_after(executed="pairs")
 def task_compare_best():
     """Best-vs-best comparison, one row per (fn_name, seed): CINM 1.0's best
     time anywhere in its matched-config sweep vs CINM 2.0's unconstrained
