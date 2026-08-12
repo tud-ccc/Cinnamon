@@ -15,16 +15,22 @@ namespace mlir::cinm {
 //
 // Divide a device among the compute blocks of one graph: each block is
 // assigned to a device set that holds its program and pinned weights for the
-// serving lifetime, and the steady-state throughput bottleneck -- the
-// busiest set's per-inference work -- is minimized. Works on measured cost
-// profiles only: no IR, no target, no search.
+// serving lifetime. Works on measured cost profiles only: no IR, no target,
+// no search. Two objectives, sharing everything but the evaluator.
 //
-// The solve is exact and polynomial. Only blocks with identical programs may
-// share a set, so the assignment decomposes per program-identity class, and
-// identical members make groups within a class interchangeable. That leaves
-// a min-max problem over finitely many achievable per-set loads: binary
-// search the smallest feasible bottleneck, using a per-class minimum-budget
-// dynamic program as the feasibility oracle.
+// *Throughput* minimizes the steady-state bottleneck -- the busiest set's
+// per-inference work -- and is solved exactly and polynomially. Only blocks
+// with identical programs may share a set, so the assignment decomposes per
+// program-identity class, and identical members make groups within a class
+// interchangeable. That leaves a min-max problem over finitely many
+// achievable per-set loads: binary search the smallest feasible bottleneck,
+// using a per-class minimum-budget dynamic program as the feasibility
+// oracle. Dependencies do not enter it: whatever the order, a set's
+// per-inference work is the sum over the ops it holds.
+//
+// *Latency* minimizes the makespan of one inference, which is a longest path
+// and so does depend on the dependencies. It is solved by a critical-path
+// greedy, with no claim to optimality; see allocateGraphForLatency.
 
 /// Allocation view of one program-identity class: how many members it has
 /// and its measured cost profile (best cost per device size). Points must be
@@ -82,19 +88,66 @@ struct ClassAllocation {
 };
 
 /// The outer solve's output: a budget per class (parallel to the input),
-/// and the steady-state bottleneck it achieves.
+/// and the objective value it achieves.
 struct AllocationResult {
   SmallVector<ClassAllocation> perClass;
-  /// max over all groups of loadMs: the steady-state per-inference time.
-  double bottleneckMs = 0;
+  /// The achieved objective, in ms: the steady-state bottleneck (the busiest
+  /// set's per-inference work) for the throughput solve, the makespan of one
+  /// inference for the latency solve.
+  double objectiveMs = 0;
   /// Sum of pinned groups' resources: how much of the budget is used.
   int64_t resourceUsed = 0;
+  /// Latency solve only: which group of its class each node was assigned to,
+  /// indexed by node. Empty after a throughput solve, whose class members are
+  /// interchangeable and may be handed to the groups in any order.
+  SmallVector<unsigned> groupOfNode;
 };
 
-/// Solve the allocation exactly. Returns std::nullopt when no allocation is
-/// feasible -- some class has members that neither fit any pinned
-/// configuration nor may timeshare.
+/// One node of the dependency graph the latency objective walks. Nodes must
+/// be given in a topological order -- every predecessor index smaller than
+/// the node's own -- which is what a walk of the IR produces naturally.
+struct GraphNode {
+  /// Index into the `classes` array the node's cost profile comes from.
+  unsigned classIndex = 0;
+  /// Position among that class's members. Co-resident members execute in
+  /// this order.
+  unsigned memberIndex = 0;
+  /// Nodes whose results this one consumes.
+  SmallVector<unsigned> predecessors;
+};
+
+/// Solve the throughput allocation exactly. Returns std::nullopt when no
+/// allocation is feasible -- some class has members that neither fit any
+/// pinned configuration nor may timeshare.
 std::optional<AllocationResult> allocateGraph(ArrayRef<ClassProfile> classes,
                                               const AllocationOptions &opts);
+
+/// Allocate for single-inference latency: the makespan of `nodes`, where a
+/// node costs its group's profiled time, co-resident nodes serialize in
+/// member order, and nodes on different sets overlap wherever the
+/// dependencies allow.
+///
+/// This is the critical-path greedy of the mixed task/data-parallel
+/// scheduling literature (CPA/CPR), and makes no claim to optimality. It
+/// starts from maximal merging -- one set per class at the smallest size
+/// that holds all its members, the cheapest feasible allocation -- and then
+/// repeatedly applies whichever move buys the largest makespan reduction per
+/// additional device unit: *grow* a set to the next size on its menu, or
+/// *split* a member out into a set of its own. Every accepted move spends
+/// budget, so the loop terminates. Timesharing is not offered: it can only
+/// lengthen the path.
+///
+/// Note what the starting point already achieves: members of one class that
+/// are sequentially dependent never run concurrently, so merging them costs
+/// no latency at all while dividing their budget by their number. On a
+/// layered model that collapses every layer's copy of a kernel onto one set
+/// for free, and the greedy then spends the whole device widening those sets.
+///
+/// Returns std::nullopt when even maximal merging at the smallest sizes
+/// exceeds the budget or violates a capacity.
+std::optional<AllocationResult>
+allocateGraphForLatency(ArrayRef<ClassProfile> classes,
+                        ArrayRef<GraphNode> nodes,
+                        const AllocationOptions &opts);
 
 } // namespace mlir::cinm

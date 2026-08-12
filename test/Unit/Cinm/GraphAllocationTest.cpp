@@ -131,13 +131,13 @@ TEST(GraphAllocation, TwoMMSequentialPartitions) {
   ASSERT_TRUE(result);
   // Both pinned at 1024: bottleneck = 1.1. All alternatives (either op
   // timeshared) cost >= 40 ms.
-  EXPECT_DOUBLE_EQ(result->bottleneckMs, 1.1);
+  EXPECT_DOUBLE_EQ(result->objectiveMs, 1.1);
   EXPECT_EQ(result->resourceUsed, 2048);
   for (const auto &cls : result->perClass) {
     ASSERT_EQ(cls.groups.size(), 1u);
     EXPECT_EQ(cls.groups[0].resource, 1024);
   }
-  EXPECT_DOUBLE_EQ(bruteForce(classes, opts), result->bottleneckMs);
+  EXPECT_DOUBLE_EQ(bruteForce(classes, opts), result->objectiveMs);
 }
 
 TEST(GraphAllocation, TimeshareWinsWhenReloadIsFree) {
@@ -153,9 +153,9 @@ TEST(GraphAllocation, TimeshareWinsWhenReloadIsFree) {
 
   auto result = cinm::allocateGraph(classes, opts);
   ASSERT_TRUE(result);
-  EXPECT_DOUBLE_EQ(result->bottleneckMs, bruteForce(classes, opts));
+  EXPECT_DOUBLE_EQ(result->objectiveMs, bruteForce(classes, opts));
   // One op pinned, the other timeshared (or both timeshared): bottleneck 1.1.
-  EXPECT_DOUBLE_EQ(result->bottleneckMs, 1.1);
+  EXPECT_DOUBLE_EQ(result->objectiveMs, 1.1);
 }
 
 TEST(GraphAllocation, QKVSharesOneSetWhileWeightsFit) {
@@ -175,8 +175,8 @@ TEST(GraphAllocation, QKVSharesOneSetWhileWeightsFit) {
   auto result = cinm::allocateGraph(classes, opts);
   ASSERT_TRUE(result);
   // Budget allows three separate sets at 1024: bottleneck 1.0.
-  EXPECT_DOUBLE_EQ(result->bottleneckMs, 1.0);
-  EXPECT_DOUBLE_EQ(bruteForce(classes, opts), result->bottleneckMs);
+  EXPECT_DOUBLE_EQ(result->objectiveMs, 1.0);
+  EXPECT_DOUBLE_EQ(bruteForce(classes, opts), result->objectiveMs);
 
   // Tight budget: only 1024 units in total. One set of 1024 shared by all
   // three (load 3.0) beats three sets of ~341 (not on the menu) and beats
@@ -184,10 +184,10 @@ TEST(GraphAllocation, QKVSharesOneSetWhileWeightsFit) {
   opts.resourceBudget = 1024;
   result = cinm::allocateGraph(classes, opts);
   ASSERT_TRUE(result);
-  EXPECT_DOUBLE_EQ(result->bottleneckMs, 3.0);
+  EXPECT_DOUBLE_EQ(result->objectiveMs, 3.0);
   ASSERT_EQ(result->perClass[0].groups.size(), 1u);
   EXPECT_EQ(result->perClass[0].groups[0].size, 3u);
-  EXPECT_DOUBLE_EQ(bruteForce(classes, opts), result->bottleneckMs);
+  EXPECT_DOUBLE_EQ(bruteForce(classes, opts), result->objectiveMs);
 
   // Shrink MRAM so only two fit per set: the class must split 2+1, and the
   // budget only carries one 1024 set plus one 512 set.
@@ -195,7 +195,7 @@ TEST(GraphAllocation, QKVSharesOneSetWhileWeightsFit) {
   opts.resourceBudget = 1536;
   result = cinm::allocateGraph(classes, opts);
   ASSERT_TRUE(result);
-  EXPECT_DOUBLE_EQ(bruteForce(classes, opts), result->bottleneckMs);
+  EXPECT_DOUBLE_EQ(bruteForce(classes, opts), result->objectiveMs);
   unsigned total = 0;
   for (const auto &g : result->perClass[0].groups) {
     EXPECT_LE(g.size, 2u);
@@ -246,9 +246,151 @@ TEST(GraphAllocation, MatchesBruteForceOnRandomInstances) {
       continue;
     }
     ASSERT_TRUE(result) << "iter " << iter;
-    EXPECT_DOUBLE_EQ(result->bottleneckMs, oracle) << "iter " << iter;
+    EXPECT_DOUBLE_EQ(result->objectiveMs, oracle) << "iter " << iter;
     EXPECT_LE(result->resourceUsed, opts.resourceBudget) << "iter " << iter;
   }
+}
+
+// ===----------------------------------------------------------------------===//
+// Latency: the critical-path greedy
+// ===----------------------------------------------------------------------===//
+
+using cinm::GraphNode;
+
+/// A node of class `c`, member `m`, waiting on `preds`.
+GraphNode node(unsigned c, unsigned m, SmallVector<unsigned> preds = {}) {
+  return GraphNode{c, m, std::move(preds)};
+}
+
+TEST(LatencyAllocation, ChainSpendsWhereItBuysMost) {
+  // Two different-shape ops, one feeding the other: the makespan is the sum,
+  // so the greedy is plain marginal allocation. Class 0 gains 1.0 ms for its
+  // second 512 units, class 1 only 0.2 -- with 1536 units to spend beyond the
+  // two minimum sets, class 0 should be the one that grows.
+  SmallVector<ClassProfile> classes;
+  classes.push_back({1, {point(512, 4.0), point(1024, 3.0), point(2048, 2.9)}});
+  classes.push_back({1, {point(512, 2.0), point(1024, 1.8), point(2048, 1.7)}});
+  SmallVector<GraphNode> nodes{node(0, 0), node(1, 0, {0})};
+  AllocationOptions opts;
+  opts.resourceBudget = 1536;
+
+  auto result = cinm::allocateGraphForLatency(classes, nodes, opts);
+  ASSERT_TRUE(result);
+  ASSERT_EQ(result->perClass[0].groups.size(), 1u);
+  ASSERT_EQ(result->perClass[1].groups.size(), 1u);
+  EXPECT_EQ(result->perClass[0].groups[0].resource, 1024);
+  EXPECT_EQ(result->perClass[1].groups[0].resource, 512);
+  EXPECT_DOUBLE_EQ(result->objectiveMs, 3.0 + 2.0);
+  EXPECT_LE(result->resourceUsed, opts.resourceBudget);
+}
+
+TEST(LatencyAllocation, MergingIsFreeAlongAChain) {
+  // Four members of one class in a dependency chain -- the shape of one
+  // kernel repeated across a model's layers. They never overlap, so one
+  // shared set costs no latency at all, and the whole budget goes into
+  // making that set as wide as the menu allows.
+  SmallVector<ClassProfile> classes;
+  classes.push_back({4, {point(256, 4.0), point(512, 2.0), point(1024, 1.0)}});
+  SmallVector<GraphNode> nodes{node(0, 0), node(0, 1, {0}), node(0, 2, {1}),
+                               node(0, 3, {2})};
+  AllocationOptions opts;
+  opts.resourceBudget = 1024;
+
+  auto result = cinm::allocateGraphForLatency(classes, nodes, opts);
+  ASSERT_TRUE(result);
+  ASSERT_EQ(result->perClass[0].groups.size(), 1u)
+      << "splitting a chain buys nothing and must not happen";
+  EXPECT_EQ(result->perClass[0].groups[0].size, 4u);
+  EXPECT_EQ(result->perClass[0].groups[0].resource, 1024);
+  EXPECT_DOUBLE_EQ(result->objectiveMs, 4 * 1.0);
+  // Every node on the one set.
+  for (unsigned g : result->groupOfNode)
+    EXPECT_EQ(g, 0u);
+}
+
+TEST(LatencyAllocation, ParallelMembersSplitWhenBudgetAllows) {
+  // Three independent members of one class -- QKV. Merged they serialize at
+  // 3L; split they run at once. With room for three sets, splitting wins.
+  SmallVector<ClassProfile> classes;
+  classes.push_back({3, {point(512, 2.0)}});
+  SmallVector<GraphNode> nodes{node(0, 0), node(0, 1), node(0, 2)};
+  AllocationOptions opts;
+  opts.resourceBudget = 1536;
+
+  auto result = cinm::allocateGraphForLatency(classes, nodes, opts);
+  ASSERT_TRUE(result);
+  EXPECT_EQ(result->perClass[0].groups.size(), 3u);
+  EXPECT_DOUBLE_EQ(result->objectiveMs, 2.0);
+
+  // Half the budget: only one member can be peeled off, so the makespan is
+  // the pair that stays together.
+  opts.resourceBudget = 1024;
+  result = cinm::allocateGraphForLatency(classes, nodes, opts);
+  ASSERT_TRUE(result);
+  EXPECT_EQ(result->perClass[0].groups.size(), 2u);
+  EXPECT_DOUBLE_EQ(result->objectiveMs, 4.0);
+}
+
+TEST(LatencyAllocation, CapacityForcesChunkingAndCanBeInfeasible) {
+  // Weights that only allow two co-residents: a class of four cannot be one
+  // set, so the start point is two sets of two.
+  SmallVector<ClassProfile> classes;
+  classes.push_back({4, {point(512, 1.0, /*static*/ 400, /*dyn*/ 100)}});
+  SmallVector<GraphNode> nodes{node(0, 0), node(0, 1, {0}), node(0, 2, {1}),
+                               node(0, 3, {2})};
+  AllocationOptions opts;
+  opts.resourceBudget = 1024;
+  opts.capacities = memCapacity(900); // 2*400 + 100 fits, 3*400 does not
+
+  auto result = cinm::allocateGraphForLatency(classes, nodes, opts);
+  ASSERT_TRUE(result);
+  EXPECT_EQ(result->perClass[0].groups.size(), 2u);
+  EXPECT_EQ(result->resourceUsed, 1024);
+
+  // The same instance with room for only one set is infeasible: the class
+  // cannot be held at all.
+  opts.resourceBudget = 512;
+  EXPECT_FALSE(cinm::allocateGraphForLatency(classes, nodes, opts));
+}
+
+TEST(LatencyAllocation, SymmetricBranchesGrowTogether) {
+  // Two independent members of one class, already on sets of their own: a
+  // set's cost is masked by its equally slow sibling, so widening either one
+  // alone gains nothing. The pair still has to be widened, which is what the
+  // non-worsening tie-break is for.
+  SmallVector<ClassProfile> classes;
+  classes.push_back({2, {point(256, 4.0), point(512, 2.0)}});
+  SmallVector<GraphNode> nodes{node(0, 0), node(0, 1)};
+  AllocationOptions opts;
+  opts.resourceBudget = 1024;
+
+  auto result = cinm::allocateGraphForLatency(classes, nodes, opts);
+  ASSERT_TRUE(result);
+  ASSERT_EQ(result->perClass[0].groups.size(), 2u);
+  for (const auto &group : result->perClass[0].groups)
+    EXPECT_EQ(group.resource, 512);
+  EXPECT_DOUBLE_EQ(result->objectiveMs, 2.0);
+}
+
+TEST(LatencyAllocation, DiamondOverlapsTheBranches) {
+  // A source feeding two independent branches that join: the branches are
+  // different classes, so they always sit on different sets and overlap.
+  // The makespan is source + max(branches) + sink, not the sum.
+  SmallVector<ClassProfile> classes;
+  classes.push_back({2, {point(256, 1.0)}}); // source and sink
+  classes.push_back({1, {point(256, 5.0)}}); // slow branch
+  classes.push_back({1, {point(256, 2.0)}}); // fast branch
+  SmallVector<GraphNode> nodes{node(0, 0), node(1, 0, {0}), node(2, 0, {0}),
+                               node(0, 1, {1, 2})};
+  AllocationOptions opts;
+  opts.resourceBudget = 1024;
+
+  auto result = cinm::allocateGraphForLatency(classes, nodes, opts);
+  ASSERT_TRUE(result);
+  // Source and sink are one class of two, and they are chained, so they
+  // share a set for free: 1 + 5 + 1.
+  EXPECT_DOUBLE_EQ(result->objectiveMs, 7.0);
+  EXPECT_EQ(result->perClass[0].groups.size(), 1u);
 }
 
 } // namespace

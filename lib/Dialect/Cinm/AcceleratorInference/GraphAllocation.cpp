@@ -4,6 +4,7 @@
 #include <cmath>
 #include <limits>
 
+#include <llvm/ADT/BitVector.h>
 #include <llvm/ADT/STLExtras.h>
 #include <llvm/Support/Debug.h>
 
@@ -15,6 +16,7 @@ namespace {
 
 constexpr double kInf = std::numeric_limits<double>::infinity();
 constexpr int64_t kNoBudget = std::numeric_limits<int64_t>::max();
+constexpr unsigned kNoNode = std::numeric_limits<unsigned>::max();
 
 /// One way a group of co-resident members may be provisioned: a profile
 /// point (pinned) or the timeshare pseudo-allocation. `loadPerMember` is the
@@ -165,13 +167,278 @@ std::optional<AllocationResult> allocateGraph(ArrayRef<ClassProfile> classes,
     int64_t used = minBudgetFor(cls, target, &alloc.groups);
     (void)used;
     for (const GroupAllocation &g : alloc.groups) {
-      result.bottleneckMs = std::max(result.bottleneckMs, g.loadMs);
+      result.objectiveMs = std::max(result.objectiveMs, g.loadMs);
       result.resourceUsed += g.resource;
     }
     result.perClass.push_back(std::move(alloc));
   }
   LLVM_DEBUG(llvm::dbgs() << "[cinm-inference] Allocation: bottleneck "
-                          << result.bottleneckMs << " ms, "
+                          << result.objectiveMs << " ms, "
+                          << result.resourceUsed << " / " << opts.resourceBudget
+                          << " resource units\n");
+  return result;
+}
+
+// ===----------------------------------------------------------------------===//
+// Latency: critical-path greedy
+// ===----------------------------------------------------------------------===//
+
+namespace {
+
+/// A device set under construction: which class it serves, which profile
+/// point provisions it, and which nodes live on it (ascending, i.e. the
+/// order they execute in).
+struct LatencyGroup {
+  unsigned classIndex;
+  unsigned point; ///< index into ClassProfile::points
+  SmallVector<unsigned> members;
+};
+
+/// Makespan of one inference under `groups`: a longest path over the
+/// dependency edges plus the serialization edges a set imposes on the nodes
+/// sharing it. `nodes` is topologically ordered, so one forward sweep does
+/// it -- the serialization edges cannot break that, since they run from an
+/// earlier member of a set to a later one and members are stored ascending.
+double makespanOf(ArrayRef<ClassProfile> classes, ArrayRef<GraphNode> nodes,
+                  ArrayRef<LatencyGroup> groups) {
+  SmallVector<double> cost(nodes.size(), 0.0);
+  SmallVector<unsigned> prevOnSet(nodes.size(), kNoNode);
+  for (const LatencyGroup &group : groups) {
+    double each = classes[group.classIndex].points[group.point].costMs;
+    for (auto [i, member] : llvm::enumerate(group.members)) {
+      cost[member] = each;
+      if (i)
+        prevOnSet[member] = group.members[i - 1];
+    }
+  }
+
+  SmallVector<double> finish(nodes.size(), 0.0);
+  double makespan = 0;
+  for (auto [i, node] : llvm::enumerate(nodes)) {
+    double start = 0;
+    for (unsigned pred : node.predecessors)
+      start = std::max(start, finish[pred]);
+    if (prevOnSet[i] != kNoNode)
+      start = std::max(start, finish[prevOnSet[i]]);
+    finish[i] = start + cost[i];
+    makespan = std::max(makespan, finish[i]);
+  }
+  return makespan;
+}
+
+/// The nodes with no slack: those on some longest path. Both a forward and a
+/// backward sweep, over the same edges makespanOf walks.
+llvm::BitVector criticalNodes(ArrayRef<ClassProfile> classes,
+                              ArrayRef<GraphNode> nodes,
+                              ArrayRef<LatencyGroup> groups) {
+  SmallVector<double> cost(nodes.size(), 0.0);
+  SmallVector<unsigned> prevOnSet(nodes.size(), kNoNode);
+  SmallVector<unsigned> nextOnSet(nodes.size(), kNoNode);
+  for (const LatencyGroup &group : groups) {
+    double each = classes[group.classIndex].points[group.point].costMs;
+    for (auto [i, member] : llvm::enumerate(group.members)) {
+      cost[member] = each;
+      if (i) {
+        prevOnSet[member] = group.members[i - 1];
+        nextOnSet[group.members[i - 1]] = member;
+      }
+    }
+  }
+
+  SmallVector<SmallVector<unsigned>> successors(nodes.size());
+  SmallVector<double> finish(nodes.size(), 0.0);
+  double makespan = 0;
+  for (auto [i, node] : llvm::enumerate(nodes)) {
+    double start = 0;
+    for (unsigned pred : node.predecessors) {
+      start = std::max(start, finish[pred]);
+      successors[pred].push_back(i);
+    }
+    if (prevOnSet[i] != kNoNode)
+      start = std::max(start, finish[prevOnSet[i]]);
+    finish[i] = start + cost[i];
+    makespan = std::max(makespan, finish[i]);
+  }
+
+  // Latest finish without pushing the makespan out. Successors and the next
+  // member on a set both have larger indices, so one reverse sweep does it.
+  SmallVector<double> latest(nodes.size(), makespan);
+  for (unsigned i = nodes.size(); i-- > 0;) {
+    for (unsigned succ : successors[i])
+      latest[i] = std::min(latest[i], latest[succ] - cost[succ]);
+    if (nextOnSet[i] != kNoNode)
+      latest[i] =
+          std::min(latest[i], latest[nextOnSet[i]] - cost[nextOnSet[i]]);
+  }
+
+  llvm::BitVector critical(nodes.size());
+  const double epsilon = 1e-9 * std::max(1.0, makespan);
+  for (unsigned i = 0; i < nodes.size(); ++i)
+    if (latest[i] - finish[i] <= epsilon)
+      critical.set(i);
+  return critical;
+}
+
+int64_t budgetOf(ArrayRef<ClassProfile> classes,
+                 ArrayRef<LatencyGroup> groups) {
+  int64_t total = 0;
+  for (const LatencyGroup &group : groups)
+    total += classes[group.classIndex].points[group.point].resource;
+  return total;
+}
+
+/// Cheapest point of `cls` that can hold `k` co-resident members, or nullopt
+/// if none can. Points ascend in resource, and a larger set means a smaller
+/// per-unit footprint, so the first match is also the cheapest.
+std::optional<unsigned> cheapestPointFor(const ClassProfile &cls,
+                                         ArrayRef<LevelCapacity> capacities,
+                                         unsigned k) {
+  for (auto [pi, p] : llvm::enumerate(cls.points))
+    if (maxCoResidents(p, capacities, k) >= k)
+      return static_cast<unsigned>(pi);
+  return std::nullopt;
+}
+
+} // namespace
+
+std::optional<AllocationResult>
+allocateGraphForLatency(ArrayRef<ClassProfile> classes,
+                        ArrayRef<GraphNode> nodes,
+                        const AllocationOptions &opts) {
+  // Start from maximal merging: one set per class, holding all its members at
+  // the smallest size that can hold them. This is the cheapest allocation
+  // there is, and on a layered model it is already most of the answer --
+  // members that are sequentially dependent never overlap, so sharing a set
+  // costs them nothing.
+  SmallVector<LatencyGroup> groups;
+  SmallVector<SmallVector<unsigned>> membersOf(classes.size());
+  for (auto [ni, node] : llvm::enumerate(nodes))
+    membersOf[node.classIndex].push_back(ni);
+  for (auto [ci, cls] : llvm::enumerate(classes)) {
+    SmallVector<unsigned> &members = membersOf[ci];
+    if (members.empty())
+      continue;
+    // If the whole class cannot be co-resident, chunk it into as few sets as
+    // its best point allows.
+    unsigned cap = 0;
+    for (const ProfilePoint &p : cls.points)
+      cap = std::max(cap, maxCoResidents(p, opts.capacities, members.size()));
+    if (cap == 0)
+      return std::nullopt;
+    for (unsigned at = 0; at < members.size(); at += cap) {
+      unsigned k = std::min<unsigned>(cap, members.size() - at);
+      std::optional<unsigned> point = cheapestPointFor(cls, opts.capacities, k);
+      if (!point)
+        return std::nullopt;
+      groups.push_back(
+          {static_cast<unsigned>(ci), *point,
+           SmallVector<unsigned>(llvm::ArrayRef(members).slice(at, k))});
+    }
+  }
+  int64_t used = budgetOf(classes, groups);
+  if (used > opts.resourceBudget)
+    return std::nullopt;
+
+  // Greedy: apply the move with the best makespan reduction per extra device
+  // unit until nothing improves. Every accepted move spends budget, so this
+  // terminates against opts.resourceBudget.
+  while (true) {
+    const double current = makespanOf(classes, nodes, groups);
+    const llvm::BitVector critical = criticalNodes(classes, nodes, groups);
+    SmallVector<LatencyGroup> best;
+    double bestScore = 0;
+    // Fallback for the case a pure improvement rule cannot see past: when a
+    // set's cost is masked by an equally slow sibling, widening either alone
+    // gains nothing and the greedy stalls one move short of widening both.
+    // So a *grow* that does not make things worse is taken when nothing
+    // better is on offer, provided the set carries a node with no slack --
+    // spare units spent there can still pay off, spent anywhere else they
+    // are pinned for nothing. (Splits are not eligible: a new set is real
+    // waste when it buys nothing.)
+    SmallVector<LatencyGroup> filler;
+    int64_t fillerSpend = 0;
+
+    auto consider = [&](SmallVector<LatencyGroup> trial, bool isGrow,
+                        bool isCritical) {
+      int64_t spend = budgetOf(classes, trial) - used;
+      if (spend <= 0 || used + spend > opts.resourceBudget)
+        return;
+      double gain = current - makespanOf(classes, nodes, trial);
+      if (gain > 0) {
+        double score = gain / double(spend);
+        if (score > bestScore) {
+          bestScore = score;
+          best = std::move(trial);
+        }
+        return;
+      }
+      if (gain == 0 && isGrow && isCritical &&
+          (filler.empty() || spend < fillerSpend)) {
+        fillerSpend = spend;
+        filler = std::move(trial);
+      }
+    };
+
+    for (auto [gi, group] : llvm::enumerate(groups)) {
+      const ClassProfile &cls = classes[group.classIndex];
+      bool onPath = llvm::any_of(
+          group.members, [&](unsigned member) { return critical[member]; });
+      // Grow: the same members on a larger set.
+      for (unsigned pi = group.point + 1; pi < cls.points.size(); ++pi) {
+        if (maxCoResidents(cls.points[pi], opts.capacities,
+                           group.members.size()) < group.members.size())
+          continue;
+        SmallVector<LatencyGroup> trial(groups);
+        trial[gi].point = pi;
+        consider(std::move(trial), /*isGrow=*/true, onPath);
+      }
+      // Split: one member peeled off onto a set of its own. Which member
+      // matters -- only one on the critical path pays off -- and so does how
+      // wide the new set is, since a split that lands on a slower size buys
+      // nothing. Both are enumerated.
+      if (group.members.size() < 2)
+        continue;
+      for (unsigned mi = 0; mi < group.members.size(); ++mi) {
+        for (auto [pi, p] : llvm::enumerate(cls.points)) {
+          if (maxCoResidents(p, opts.capacities, 1) < 1)
+            continue;
+          SmallVector<LatencyGroup> trial(groups);
+          unsigned member = trial[gi].members[mi];
+          trial[gi].members.erase(trial[gi].members.begin() + mi);
+          trial.push_back(
+              {group.classIndex, static_cast<unsigned>(pi), {member}});
+          consider(std::move(trial), /*isGrow=*/false, onPath);
+        }
+      }
+    }
+
+    if (bestScore > 0)
+      groups = std::move(best);
+    else if (!filler.empty())
+      groups = std::move(filler);
+    else
+      break;
+    used = budgetOf(classes, groups);
+  }
+
+  // Report: groups in class order, and the group each node landed on.
+  AllocationResult result;
+  result.perClass.resize(classes.size());
+  result.groupOfNode.assign(nodes.size(), 0);
+  for (const LatencyGroup &group : groups) {
+    const ProfilePoint &point = classes[group.classIndex].points[group.point];
+    ClassAllocation &alloc = result.perClass[group.classIndex];
+    unsigned index = alloc.groups.size();
+    alloc.groups.push_back({static_cast<unsigned>(group.members.size()),
+                            point.resource,
+                            double(group.members.size()) * point.costMs});
+    for (unsigned member : group.members)
+      result.groupOfNode[member] = index;
+  }
+  result.objectiveMs = makespanOf(classes, nodes, groups);
+  result.resourceUsed = used;
+  LLVM_DEBUG(llvm::dbgs() << "[cinm-inference] Allocation: makespan "
+                          << result.objectiveMs << " ms, "
                           << result.resourceUsed << " / " << opts.resourceBudget
                           << " resource units\n");
   return result;

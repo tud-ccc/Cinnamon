@@ -1118,6 +1118,7 @@ struct UpmemInferAcceleratorPass
     o.nSolveWorkers = nSolveWorkers;
     o.graphAllocation = graphAllocation;
     o.programReloadMs = programReloadMs;
+    o.latencyObjective = latencyObjective;
     o.allocationGranularity = allocationGranularity;
     upmemOpts.annotateOpCosts = annotateOpCosts;
     upmemOpts.useMRAMTiling = useMRAMTiling;
