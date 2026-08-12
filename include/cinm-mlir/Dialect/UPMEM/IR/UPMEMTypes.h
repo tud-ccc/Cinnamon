@@ -4,6 +4,7 @@
 
 #pragma once
 
+#include "cinm-mlir/Dialect/Cnm/IR/CnmInterfaces.h"
 #include "cinm-mlir/Dialect/UPMEM/IR/UPMEMAttributes.h"
 #include "mlir/Bytecode/BytecodeOpInterface.h"
 #include "mlir/Dialect/DLTI/Traits.h"
