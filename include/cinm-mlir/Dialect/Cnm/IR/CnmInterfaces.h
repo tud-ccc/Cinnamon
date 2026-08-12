@@ -19,4 +19,6 @@ class WorkgroupType;
 
 #include "cinm-mlir/Dialect/Cnm/IR/CnmInterfaces.h.inc"
 
+#include "cinm-mlir/Dialect/Cnm/IR/CnmTypeInterfaces.h.inc"
+
 //===----------------------------------------------------------------------===//

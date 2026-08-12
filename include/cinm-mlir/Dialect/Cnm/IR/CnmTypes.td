@@ -9,8 +9,9 @@
 
 include "mlir/IR/BuiltinTypeInterfaces.td"
 include "CnmBase.td"
+include "CnmInterfaces.td"
 
-def WorkgroupType : Cnm_Type<"Workgroup"> {
+def WorkgroupType : Cnm_Type<"Workgroup", [CnmWorkgroupTypeInterface]> {
   let mnemonic = "workgroup";
   let summary = "A piece of an accelerator, seen as a grid of leaves.";
   let description = [{
@@ -42,6 +43,11 @@ def WorkgroupType : Cnm_Type<"Workgroup"> {
     int64_t getNumElements() const {
       auto wgShape = getShape();
       return std::reduce(wgShape.begin(), wgShape.end(), 1, std::multiplies<>());
+    }
+    /// CnmWorkgroupTypeInterface.
+    ::llvm::SmallVector<int64_t> getWorkgroupShape() const {
+      auto shape = getShape();
+      return {shape.begin(), shape.end()};
     }
   }];
 }

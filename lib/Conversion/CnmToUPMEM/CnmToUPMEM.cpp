@@ -123,10 +123,10 @@ static int64_t blocksPerDpu(AffineMap map, cnm::BufferType bufferTy,
                               : static_cast<int64_t>(numTasklets) * perLeaf;
 }
 
-static LogicalResult convertCnmGatherToUpmem(RewriterBase &rewriter,
-                                             cnm::GatherOp op,
-                                             upmem::AllocDPUsOp upmemWgAlloc,
-                                             StringAttr refToBuffer) {
+static LogicalResult
+convertCnmGatherToUpmem(RewriterBase &rewriter, cnm::GatherOp op,
+                        TypedValue<upmem::DeviceHierarchyType> hierarchy,
+                        StringAttr refToBuffer) {
 
   rewriter.setInsertionPoint(op);
   Value outputBuf = op.getOutputBuf();
@@ -137,7 +137,7 @@ static LogicalResult convertCnmGatherToUpmem(RewriterBase &rewriter,
         convertTensorToMemref(op.getOutputBuf().getType()));
   }
 
-  const size_t numTasklets = upmemWgAlloc.getType().getNumTaskletsPerDpu();
+  const size_t numTasklets = hierarchy.getType().getNumTaskletsPerDpu();
   const cnm::BufferType bufferTy = op.getBuffer().getType();
   // A DMA moves whole blocks, and the canonical map carries none, so derive
   // the widest one it allows. Anything the host layout leaves non-contiguous
@@ -151,8 +151,7 @@ static LogicalResult convertCnmGatherToUpmem(RewriterBase &rewriter,
   upmem::GatherBlocksOp::create(
       rewriter, op->getLoc(), outputBuf, refToBuffer,
       op.getTransferCountInItems() / perLeaf,
-      keepTaskletDimAffineMapCnmToUpmem(map, bufferTy),
-      upmemWgAlloc.getResult(),
+      keepTaskletDimAffineMapCnmToUpmem(map, bufferTy), hierarchy,
       blocksPerDpu(map, bufferTy, numTasklets,
                    /*sharedAcrossTasklets=*/false));
 
@@ -166,11 +165,9 @@ static LogicalResult convertCnmGatherToUpmem(RewriterBase &rewriter,
   return success();
 }
 
-static LogicalResult convertCnmScatterToUpmem(RewriterBase &rewriter,
-                                              cnm::ScatterOp op,
-                                              bool sharedAcrossTasklets,
-                                              upmem::AllocDPUsOp upmemWgAlloc,
-                                              StringAttr refToBuffer) {
+static LogicalResult convertCnmScatterToUpmem(
+    RewriterBase &rewriter, cnm::ScatterOp op, bool sharedAcrossTasklets,
+    TypedValue<upmem::DeviceHierarchyType> hierarchy, StringAttr refToBuffer) {
 
   rewriter.setInsertionPoint(op);
   const Value tensor = op.getInput();
@@ -180,7 +177,7 @@ static LogicalResult convertCnmScatterToUpmem(RewriterBase &rewriter,
   const Value inputAsMemref = createOrFoldUnrealizedConversionCast(
       op.getLoc(), rewriter, hostBufferTy, tensor);
 
-  const size_t numTasklets = upmemWgAlloc.getType().getNumTaskletsPerDpu();
+  const size_t numTasklets = hierarchy.getType().getNumTaskletsPerDpu();
   const cnm::BufferType bufferTy = op.getBuffer().getType();
   // What the map leaves implicit is one contiguous run; a leaf may receive
   // several of them. The canonical map leaves nothing implicit, so derive the
@@ -192,8 +189,7 @@ static LogicalResult convertCnmScatterToUpmem(RewriterBase &rewriter,
   upmem::ScatterBlocksOp::create(
       rewriter, op->getLoc(), inputAsMemref, refToBuffer,
       op.getTransferCountInItems() / perLeaf,
-      keepTaskletDimAffineMapCnmToUpmem(map, bufferTy),
-      upmemWgAlloc.getResult(),
+      keepTaskletDimAffineMapCnmToUpmem(map, bufferTy), hierarchy,
       blocksPerDpu(map, bufferTy, numTasklets, sharedAcrossTasklets));
 
   rewriter.eraseOp(op);
@@ -390,6 +386,44 @@ static LogicalResult lowerBodyStagingOps(RewriterBase &rewriter,
   return success();
 }
 
+/// The workgroup forwarded into `launch`'s enclosing region, if any: a block
+/// argument of an ancestor block whose type implements
+/// cnm::CnmWorkgroupTypeInterface and whose shape matches `wgShape`. This is
+/// the forwarding contract of the group-residency design
+/// (docs/EvaluationImplementationPlan.md sec. 3.2): a whole-program schedule
+/// allocates a group's device set once, outside the compute blocks, and
+/// passes the handle in as an ordinary operand; a lowering that would
+/// otherwise allocate must use it instead.
+///
+/// Returns a null Value when nothing suitable is in scope (the per-block
+/// schedule -- allocate locally), and failure on a contract violation: an
+/// ambiguous choice between several matching arguments, or a matching
+/// argument that is not a `!upmem.hierarchy` (some other target's workgroup
+/// reached a UPMEM lowering).
+static FailureOr<Value> findForwardedWorkgroup(cnm::LaunchOp launch,
+                                               ArrayRef<int64_t> wgShape) {
+  SmallVector<BlockArgument> matches;
+  for (Block *block = launch->getBlock(); block;
+       block = block->getParentOp() ? block->getParentOp()->getBlock()
+                                    : nullptr) {
+    for (BlockArgument arg : block->getArguments()) {
+      auto wgTy = dyn_cast<cnm::CnmWorkgroupTypeInterface>(arg.getType());
+      if (!wgTy || !isa<upmem::DeviceHierarchyType>(arg.getType()))
+        continue;
+      if (llvm::SmallVector<int64_t>(wgShape) != wgTy.getWorkgroupShape())
+        continue;
+      matches.push_back(arg);
+    }
+  }
+  if (matches.empty())
+    return Value();
+  if (matches.size() > 1)
+    return launch->emitOpError(
+        "several workgroup-typed block arguments of matching shape are in "
+        "scope; cannot decide which one this launch runs on");
+  return Value(matches.front());
+}
+
 static LogicalResult convertCnmLaunchToUpmem(cnm::LaunchOp launch,
                                              RewriterBase &rewriter, Opts opts,
                                              SymbolTable rootModule,
@@ -416,14 +450,28 @@ static LogicalResult convertCnmLaunchToUpmem(cnm::LaunchOp launch,
 
   auto wgAlloc = cast<cnm::WorkgroupOp>(launch.getWg().getDefiningOp());
   rewriter.setInsertionPoint(wgAlloc);
-  auto upmemWgAlloc =
-      upmem::AllocDPUsOp::create(rewriter, wgAlloc->getLoc(), upmemTy);
-  // Load right where the workgroup was created -- the per-block schedule, in
-  // which residency and allocation coincide. A whole-program schedule hoists
-  // the alloc per group and places loads by residency instead; alloc and
-  // load are separate ops precisely so those two can differ.
+
+  // The device set this launch runs on: a workgroup FORWARDED from outside
+  // the enclosing region when one is in scope (a whole-program schedule
+  // allocated it once, per group, and passed it in -- see
+  // findForwardedWorkgroup), otherwise a fresh allocation right where the
+  // cnm.workgroup was (the per-block schedule, in which residency and
+  // allocation coincide). In both cases the program load stays HERE: which
+  // binary the set holds is this block's decision; only ownership of the
+  // set itself moves out. A residency schedule that also hoists the load
+  // does so after conversion, once the program symbol exists.
+  FailureOr<Value> forwarded = findForwardedWorkgroup(launch, wg);
+  if (failed(forwarded))
+    return failure();
+  TypedValue<upmem::DeviceHierarchyType> hierarchy;
+  if (*forwarded) {
+    hierarchy = cast<TypedValue<upmem::DeviceHierarchyType>>(*forwarded);
+  } else {
+    hierarchy = upmem::AllocDPUsOp::create(rewriter, wgAlloc->getLoc(), upmemTy)
+                    .getResult();
+  }
   upmem::LoadProgramOp::create(rewriter, wgAlloc->getLoc(), *programPath,
-                               upmemWgAlloc.getResult());
+                               hierarchy);
 
   llvm::MapVector<Value, upmem::StaticAllocOp> buffersToMramBuf;
   // llvm::MapVector<Value, upmem::StaticAllocOp> buffersToSharedWramBuf;
@@ -519,16 +567,15 @@ static LogicalResult convertCnmLaunchToUpmem(cnm::LaunchOp launch,
                            scatter.getBuffer().getType().getShape().size());
 
       if (!alloc || failed(convertCnmScatterToUpmem(
-                        rewriter, scatter, sharedAcrossTasklets, upmemWgAlloc,
+                        rewriter, scatter, sharedAcrossTasklets, hierarchy,
                         alloc.getSymNameAttr()))) {
         return failure();
       }
     }
     if (auto gather = llvm::dyn_cast_or_null<cnm::GatherOp>(user)) {
       auto alloc = buffersToMramBuf.lookup(gather.getBuffer());
-      if (!alloc ||
-          failed(convertCnmGatherToUpmem(rewriter, gather, upmemWgAlloc,
-                                         alloc.getSymNameAttr()))) {
+      if (!alloc || failed(convertCnmGatherToUpmem(rewriter, gather, hierarchy,
+                                                   alloc.getSymNameAttr()))) {
         return failure();
       }
     }
@@ -588,8 +635,7 @@ static LogicalResult convertCnmLaunchToUpmem(cnm::LaunchOp launch,
     return failure();
 
   rewriter.setInsertionPoint(launch);
-  upmem::WaitForOp::create(rewriter, launch->getLoc(),
-                           upmemWgAlloc.getResult());
+  upmem::WaitForOp::create(rewriter, launch->getLoc(), hierarchy);
 
   // cleanup
 
@@ -605,9 +651,12 @@ static LogicalResult convertCnmLaunchToUpmem(cnm::LaunchOp launch,
 
   for (auto user : wgAlloc.getResult().getUsers()) {
     if (auto free = llvm::dyn_cast_or_null<cnm::FreeWorkgroupOp>(user)) {
-      rewriter.setInsertionPoint(free);
-      upmem::FreeDPUsOp::create(rewriter, free->getLoc(),
-                                upmemWgAlloc.getResult());
+      // A forwarded set is not this block's to release: whoever allocated it
+      // frees it, so the cnm-level free simply disappears here.
+      if (!*forwarded) {
+        rewriter.setInsertionPoint(free);
+        upmem::FreeDPUsOp::create(rewriter, free->getLoc(), hierarchy);
+      }
       rewriter.eraseOp(free);
     }
   }
