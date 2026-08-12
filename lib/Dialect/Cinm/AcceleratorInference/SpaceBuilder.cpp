@@ -200,6 +200,21 @@ int SpaceBuilder::dimIndexByName(llvm::StringRef name) const {
   return -1;
 }
 
+void SpaceBuilder::describe(llvm::StringRef name, llvm::StringRef doc) {
+  int idx = dimIndexByName(name);
+  if (idx >= 0)
+    dims_[idx].doc = doc.str();
+}
+
+void SpaceBuilder::labelItems(llvm::StringRef name,
+                              llvm::ArrayRef<std::string> labels) {
+  int idx = dimIndexByName(name);
+  if (idx < 0 || dims_[idx].kind != DimEntry::Permutation ||
+      labels.size() != dims_[idx].permutationSize)
+    return;
+  dims_[idx].itemLabels.assign(labels.begin(), labels.end());
+}
+
 bool SpaceBuilder::pin(llvm::StringRef name, ParmValue value) {
   int idx = dimIndexByName(name);
   if (idx < 0 || dims_[idx].kind == DimEntry::Permutation)
@@ -274,6 +289,8 @@ void SpaceBuilder::buildInto(ConfigSpace &space, unsigned nWorkers) {
     }();
     // How the domain is stored and how its values are meant are independent;
     // the declaration carries the second on the handle.
+    param.doc = entry.doc;
+    param.itemLabels = entry.itemLabels;
 
     std::sort(entry.divisorFilters.begin(), entry.divisorFilters.end());
     entry.divisorFilters.erase(

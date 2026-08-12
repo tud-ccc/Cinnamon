@@ -72,6 +72,13 @@ void declareEdge(const DistributedOpInfo &producer,
   // a host round trip in between, i.e. no constraint at all, and `l + 2` means
   // the two ops additionally agree at memory level `l`.
   IntVar fuse = b.intRange(name, kUnfused, numLevels + kUnfused);
+  b.describe(name,
+             (std::to_string(kUnfused) +
+              " = unfused (two launches, host round trip); " +
+              std::to_string(kUnfused + 1) +
+              " = tilings agree at the workgroup level; each further step "
+              "also agrees one memory level deeper. Read by no pass -- it "
+              "only makes fusable configurations dense in the space"));
 
   // The producer has to materialize whole output tiles. A dimension it does not
   // index its result with is a reduction dimension; spreading one over the

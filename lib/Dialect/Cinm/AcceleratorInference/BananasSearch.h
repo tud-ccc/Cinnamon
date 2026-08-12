@@ -148,7 +148,7 @@ struct CandidatePool {
   /// Write a JSON sidecar at `path` summarising the search space: the
   /// Cartesian product of the declared domains, the number of configurations
   /// the space holds, and a per-parameter description (name, type, domain,
-  /// cardinality).
+  /// cardinality). Delegates to dumpSpaceJSON with this pool's size.
   void dumpMetadataJSON(const ConfigSpace &space,
                         std::filesystem::path path) const;
 
@@ -167,5 +167,17 @@ private:
   void fillNeighbors(std::unordered_set<size_t> &result, unsigned depth = 1,
                      bool frontierOnly = false);
 };
+
+/// Write the space.json sidecar at `path` for `space`, whose enumerated
+/// feasible set has `feasibleSize` configurations. Pool-free so it can serve
+/// dump-space-only mode, where no search (and hence no CandidatePool) exists;
+/// CandidatePool::dumpMetadataJSON delegates here. Besides the sizes and
+/// per-parameter domains, the dump carries everything a human transcribing an
+/// external schedule needs: per-parameter `doc` strings, the per-dimension
+/// names eval-solution expects, and -- for permutation parameters -- the item
+/// labels, the encoding rule, and the full orderings table with one
+/// copy-pasteable eval-solution assignment per ordering.
+void dumpSpaceJSON(const ConfigSpace &space, size_t feasibleSize,
+                   std::filesystem::path path);
 
 } // namespace mlir::cinm

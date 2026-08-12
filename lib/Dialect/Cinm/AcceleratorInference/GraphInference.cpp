@@ -243,8 +243,10 @@ static std::string dumpDirFor(StringRef baseDir, StringRef name,
   // Multi-seed mode appends its own seed_<value>/ per seed, so pass the base
   // (per-block) dir. Single-seed BO gets the seed_<rngSeed>/ suffix here.
   // Neither exhaustive search nor random sampling are seeded BO runs, so both
-  // dump straight to the base dir.
-  if (!opts.exhaustiveSearch && !opts.sampleN && opts.nSeeds <= 1)
+  // dump straight to the base dir -- as does dump-space-only, whose output
+  // does not depend on any seed.
+  if (!opts.exhaustiveSearch && !opts.sampleN && opts.nSeeds <= 1 &&
+      !opts.dumpSpaceOnly)
     path /= "seed_" + std::to_string(opts.rngSeed);
   return path.string();
 }
@@ -384,9 +386,11 @@ inferAcceleratorConfigs(Operation *root, StringRef platformName,
     StringRef nameHint = scope && scope.getNameAttr() ? scope.getName() : "op";
 
     // The two-level solve, when asked for and supported. A user-supplied
-    // single solution is a per-block override and bypasses it.
+    // single solution is a per-block override and bypasses it, as does
+    // dump-space-only: the space dump is a per-block artifact, so the
+    // per-block loop below is the path that produces it.
     if (opts.graphAllocation && !opts.evalSingleSolution &&
-        !probe->sharedResourceParam().empty() &&
+        !opts.dumpSpaceOnly && !probe->sharedResourceParam().empty() &&
         probe->sharedResourceMax() > 0) {
       StringAttr graphName = namer.getUniqueName(nameHint);
       LLVM_DEBUG(llvm::dbgs()

@@ -192,6 +192,11 @@ def UpmemInferAcceleratorPass : Pass<"upmem-infer-accelerator", "ModuleOp"> {
            "0 disables the timeout (default: 0)">,
     Option<"dumpFullPool", "dump-full-pool", "bool", "false",
            "Dump the full pool (all valid configurations) into pool.csv, otherwise only the visited configurations are dumped.">,
+    Option<"dumpSpaceOnly", "dump-space-only", "bool", "false",
+           "Build each block's config space, write its space.json into "
+           "dump-dir, and stop: no evaluation, no search, no commit. The IR "
+           "is left untouched. Use to inspect the space (parameter docs, "
+           "permutation encodings) without paying for a run.">,
     Option<"numWorkers", "n-workers", "unsigned", "0u",
            "Worker threads for exhaustive search (0 = hardware_concurrency)">,
     Option<"nSolveWorkers", "n-solve-workers", "unsigned", "1u",

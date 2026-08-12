@@ -547,6 +547,16 @@ void CandidatePool::dumpToCSV(const ConfigSpace &space,
 
 void CandidatePool::dumpMetadataJSON(const ConfigSpace &space,
                                      std::filesystem::path path) const {
+  dumpSpaceJSON(space, N, path);
+}
+
+/// Past this many items a permutation's orderings table is omitted (n! rows);
+/// the per-dimension encoding documentation still tells a reader how to write
+/// one by hand. Ops here have 2-4 iteration dims, so the cap is generous.
+static constexpr unsigned kMaxListedPermutationItems = 5;
+
+void dumpSpaceJSON(const ConfigSpace &space, size_t feasibleSize,
+                   std::filesystem::path path) {
   std::filesystem::create_directories(path.parent_path());
   std::ofstream out(path);
   if (!out)
@@ -571,9 +581,9 @@ void CandidatePool::dumpMetadataJSON(const ConfigSpace &space,
 
   out << "{\n";
   out << "  \"cartesian_size\": " << cartesian << ",\n";
-  out << "  \"feasible_size\": " << N << ",\n";
+  out << "  \"feasible_size\": " << feasibleSize << ",\n";
   out << "  \"space_feasible_density\": "
-      << (static_cast<double>(N) / cartesian) << ",\n";
+      << (static_cast<double>(feasibleSize) / cartesian) << ",\n";
   // Whatever the builder recorded about how it planned the space -- which
   // parameters it enumerated jointly, and where each constraint ended up. The
   // sizes above are the outcome of those decisions and do not explain them.
@@ -587,6 +597,11 @@ void CandidatePool::dumpMetadataJSON(const ConfigSpace &space,
     out << "\"name\": ";
     jsonStr(p.name);
     out << ", ";
+    if (!p.doc.empty()) {
+      out << "\"doc\": ";
+      jsonStr(p.doc);
+      out << ", ";
+    }
     // Both, because they differ for anything of arity > 1 and the difference
     // is the point: `cardinality` is one dimension's domain, `num_values` is
     // how many values the parameter has (n vs n! for an ordering of n items).
@@ -596,6 +611,75 @@ void CandidatePool::dumpMetadataJSON(const ConfigSpace &space,
     out << "\"kind\": ";
     jsonStr(paramKindName(p.kind()).str());
     out << ", ";
+    // The dimension names as pool.csv columns and eval-solution spell them.
+    // Redundant for arity 1 (it is the parameter's own name) but load-bearing
+    // for permutations, whose n dimensions are the parameter's contract with
+    // eval-solution and are otherwise documented nowhere outside the C++.
+    if (p.arity() > 1) {
+      out << "\"dims\": [";
+      for (size_t k = 0; k < p.arity(); ++k) {
+        if (k)
+          out << ", ";
+        jsonStr(p.dimName(k));
+      }
+      out << "], ";
+    }
+    if (p.kind() == ParamKind::Permutation) {
+      // Everything a transcriber needs to write an ordering by hand, so the
+      // encoding (ParmKind<Permutation>: dimension k holds the 1-BASED place
+      // of item k) never has to be reverse-engineered from ConfigSpace.cpp.
+      out << "\"items\": [";
+      for (unsigned k = 0; k < p.permutationSize; ++k) {
+        if (k)
+          out << ", ";
+        jsonStr(k < p.itemLabels.size() ? p.itemLabels[k]
+                                        : "item" + std::to_string(k));
+      }
+      out << "], ";
+      out << "\"encoding\": \"dimension k holds the 1-based place of item k; "
+             "place 1 is the outermost workgroup axis (slowest-varying "
+             "across leaves, cnm.workgroup_dim_order position 0). Items "
+             "declared conditionally active take the low places when active; "
+             "inactive items are forced to the remaining high places in "
+             "item-index order.\", ";
+      if (p.permutationSize <= kMaxListedPermutationItems) {
+        // All n! orderings, each with its exact eval-solution assignment --
+        // copy-pasteable, so transcription cannot mis-encode an order.
+        out << "\"orderings\": [\n";
+        llvm::SmallVector<unsigned> byPlace(p.permutationSize);
+        for (unsigned k = 0; k < p.permutationSize; ++k)
+          byPlace[k] = k; // byPlace[place] = item
+        auto label = [&](unsigned item) {
+          return item < p.itemLabels.size() ? p.itemLabels[item]
+                                            : "item" + std::to_string(item);
+        };
+        bool firstRow = true;
+        do {
+          out << (firstRow ? "" : ",\n") << "      {\"order\": ";
+          firstRow = false;
+          std::string pretty;
+          for (unsigned place = 0; place < p.permutationSize; ++place) {
+            if (place)
+              pretty += ">";
+            pretty += label(byPlace[place]);
+          }
+          jsonStr(pretty);
+          out << ", \"assignment\": {";
+          // Invert: dimension (item) k gets place-of-k + 1.
+          for (unsigned item = 0; item < p.permutationSize; ++item) {
+            unsigned place = 0;
+            while (byPlace[place] != item)
+              ++place;
+            if (item)
+              out << ", ";
+            jsonStr(p.dimName(item));
+            out << ": " << (place + 1);
+          }
+          out << "}}";
+        } while (std::next_permutation(byPlace.begin(), byPlace.end()));
+        out << "\n    ], ";
+      }
+    }
     if (auto *r = std::get_if<IntRange>(&p.domain)) {
       out << "\"type\": \"range\", ";
       out << "\"lo\": " << r->lo << ", ";

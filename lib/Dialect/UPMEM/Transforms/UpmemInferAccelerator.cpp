@@ -648,10 +648,13 @@ struct UpmemInferencePlugin : cinm::InferencePlugin {
     dpusVar_ = opts.fixedDpus > 0
                    ? b.intRange("dpus", opts.fixedDpus, opts.fixedDpus)
                    : b.intRange("dpus", 1, maxDpus);
+    b.describe("dpus", "number of DPUs the workgroup spans (ATiM: product of "
+                       "blockIdx extents)");
     taskletsVar_ =
         opts.fixedTasklets > 0
             ? b.intRange("tasklets", opts.fixedTasklets, opts.fixedTasklets)
             : b.intRange("tasklets", 1, maxTasklets);
+    b.describe("tasklets", "tasklets per DPU (ATiM: threadIdx extent)");
 
     // handleLinalgOp declares a tiling factor per iteration dimension per
     // level the platform reports, but only two of them have a consumer: the
@@ -994,6 +997,16 @@ UpmemInferencePlugin::handleLinalgOp(linalg::LinalgOp op, StringRef namePrefix,
       perLevel[levelIdx].push_back(
           levelIdx == 0 ? b.divisorsOf(name, extent)
                         : b.divisorsOf(name, perLevel[levelIdx - 1].back()));
+      b.describe(name,
+                 (level.getName().getValue() + " tile size of iteration dim " +
+                  dimNames[dim] + " (extent " + std::to_string(extent) +
+                  ") of " + (origin.empty() ? "this op" : origin) +
+                  (levelIdx == 0
+                       ? "; per LEAF -- across all dims, prod(extent/tile) == "
+                         "dpus*tasklets, so one such tile per (dpu, tasklet) "
+                         "worker, not per DPU; must divide the extent"
+                       : "; must divide the previous level's tile"))
+                     .str());
     }
   }
   // todo is this generic enough for CNM? I think so
@@ -1060,7 +1073,15 @@ UpmemInferencePlugin::handleLinalgOp(linalg::LinalgOp op, StringRef namePrefix,
     SmallVector<cinm::BoolExpr> distributed;
     for (auto [extent, block] : llvm::zip_equal(extentsCopy, blocks))
       distributed.push_back(extent / block > 1);
-    order = b.permutation((namePrefix + ".order").str(), distributed);
+    std::string orderName = (namePrefix + ".order").str();
+    order = b.permutation(orderName, distributed);
+    b.describe(orderName,
+               "which iteration dim occupies which workgroup axis "
+               "(cnm.workgroup_dim_order). An item is active only when its "
+               "dim is actually distributed (extent / " +
+                   levels.front().getName().getValue().str() +
+                   " tile > 1); see the encoding note");
+    b.labelItems(orderName, dimNames);
   }
 
   // Record which parameters this op's lowering consumes, on the op itself.
@@ -1115,6 +1136,7 @@ struct UpmemInferAcceleratorPass
     o.numWorkers = numWorkers;
     o.dumpFullPool = dumpFullPool;
     o.dumpDir = dumpDir;
+    o.dumpSpaceOnly = dumpSpaceOnly;
     o.nSolveWorkers = nSolveWorkers;
     o.graphAllocation = graphAllocation;
     o.programReloadMs = programReloadMs;

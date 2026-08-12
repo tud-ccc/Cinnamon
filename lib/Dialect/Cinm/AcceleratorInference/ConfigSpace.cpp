@@ -372,10 +372,47 @@ bool ConfigSpace::debugIsEncodable(const Configuration &conf,
   // Every value is one its parameter can take, so what rules the
   // configuration out is a constraint over several of them at once. Which one
   // is not recoverable here: the space holds the configurations the solver
-  // found, not the constraints it found them from.
+  // found, not the constraints it found them from. What IS recoverable, and
+  // localises the conflict nearly as well, is the nearest feasible
+  // configuration: the dimensions it differs in are where the conflict lives.
   if (std::binary_search(solutions_.begin(), solutions_.end(), conf))
     return true;
   os << "  - no configuration in this space assigns these values together\n";
+
+  size_t bestMismatches = std::numeric_limits<size_t>::max();
+  const Configuration *best = nullptr;
+  llvm::SmallVector<std::pair<size_t, ParmValue>> singleDimFixes;
+  for (const Configuration &sol : solutions_) {
+    size_t mismatches = 0;
+    size_t lastDim = 0;
+    for (size_t d = 0; d < numDims() && mismatches <= bestMismatches; ++d)
+      if (sol[d] != conf[d]) {
+        ++mismatches;
+        lastDim = d;
+      }
+    if (mismatches == 1)
+      singleDimFixes.push_back({lastDim, sol[lastDim]});
+    if (mismatches < bestMismatches) {
+      bestMismatches = mismatches;
+      best = &sol;
+    }
+  }
+  if (!singleDimFixes.empty()) {
+    os << "  - it becomes feasible by changing ONE value; for example:\n";
+    for (size_t i = 0; i < singleDimFixes.size() && i < 5; ++i)
+      os << "      " << dimName(singleDimFixes[i].first) << "="
+         << singleDimFixes[i].second << " (instead of "
+         << conf[singleDimFixes[i].first] << ")\n";
+    if (singleDimFixes.size() > 5)
+      os << "      ... and " << (singleDimFixes.size() - 5) << " more\n";
+  } else if (best) {
+    os << "  - the nearest feasible configuration differs in " << bestMismatches
+       << " value(s):\n";
+    for (size_t d = 0; d < numDims(); ++d)
+      if ((*best)[d] != conf[d])
+        os << "      " << dimName(d) << "=" << (*best)[d] << " (instead of "
+           << conf[d] << ")\n";
+  }
   return false;
 }
 
