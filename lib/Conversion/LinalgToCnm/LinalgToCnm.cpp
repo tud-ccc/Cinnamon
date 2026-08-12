@@ -19,6 +19,7 @@
 #include "cinm-mlir/Conversion/CnmPasses.h"
 #include "cinm-mlir/Dialect/Cinm/IR/CinmBase.h"
 #include "cinm-mlir/Dialect/Cinm/IR/CinmOps.h"
+#include "cinm-mlir/Dialect/Cinm/IR/CinmUtils.h"
 #include "cinm-mlir/Dialect/Cnm/IR/CnmBase.h"
 #include "cinm-mlir/Dialect/Cnm/IR/CnmOps.h"
 #include "cinm-mlir/Dialect/Cnm/IR/CnmTypes.h"
@@ -600,9 +601,10 @@ LogicalResult distribute(RewriterBase &rewriter, linalg::LinalgOp op,
       // the constraints on the scatter calls.
       auto scatter = cnm::ScatterOp::create(b, operand.get(), alloc, workgroup,
                                             tiling.scatterMap);
-      scatter->setAttr(
-          cinm::CinmDialect::DEBUG_TAG_NAME,
-          b.getStringAttr(Twine("linalg_operand", std::to_string(i))));
+      scatter->setAttr(cinm::CinmDialect::DEBUG_TAG_NAME,
+                       b.getStringAttr(cinm::isStaticValue(operand.get())
+                                           ? "static"
+                                           : "dyn"));
     }
 
     (isDestination ? launchOutputs : launchInputs).push_back(alloc);
