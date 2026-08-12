@@ -61,6 +61,7 @@ static XferBuf g_gather = {NULL, 0, 0};
 static LaunchBuf g_launch = {NULL, 0, 0};
 static LaunchBuf g_free = {NULL, 0, 0};
 static LaunchBuf g_alloc = {NULL, 0, 0};
+static LaunchBuf g_load = {NULL, 0, 0};
 static CopyBuf g_copy = {NULL, 0, 0};
 static int g_iteration = 0;
 
@@ -102,6 +103,10 @@ void upmemrt_record_free(uint64_t elapsed_ns, uint32_t num_dpus) {
 
 void upmemrt_record_alloc(uint64_t elapsed_ns, uint32_t num_dpus) {
   LaunchBuf_push(&g_alloc, (LaunchRecord){g_iteration, elapsed_ns, num_dpus});
+}
+
+void upmemrt_record_load(uint64_t elapsed_ns, uint32_t num_dpus) {
+  LaunchBuf_push(&g_load, (LaunchRecord){g_iteration, elapsed_ns, num_dpus});
 }
 
 void upmemrt_record_copy(uint64_t elapsed_ns, size_t bytes) {
@@ -168,6 +173,8 @@ void upmemrt_dump_stats(const char *prefix) {
   dump_launch(&g_free, path);
   snprintf(path, sizeof(path), "%s_alloc.csv", prefix);
   dump_launch(&g_alloc, path);
+  snprintf(path, sizeof(path), "%s_load.csv", prefix);
+  dump_launch(&g_load, path);
   snprintf(path, sizeof(path), "%s_copy.csv", prefix);
   dump_copy(&g_copy, path);
 }

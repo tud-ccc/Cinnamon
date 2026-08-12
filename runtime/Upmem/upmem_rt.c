@@ -213,11 +213,19 @@ struct dpu_set_t *upmemrt_dpu_alloc(int32_t num_dpus,
     profile[0] = '\0';
   }
   DPU_ASSERT(dpu_alloc(num_alloc_dpu, profile[0] ? profile : NULL, dpu_set));
+#ifdef UPMEM_RT_STATS
+  // Alloc and program load are separate rows on purpose: alloc is harness
+  // overhead the analysis always subtracts, while whether a LOAD amortizes
+  // depends on how often it recurs (once per workload vs per operator
+  // switch), which is the analysis's judgment to make, not this file's.
+  uint64_t t1 = upmemrt_now_ns();
+#endif
   DPU_ASSERT(dpu_load(*dpu_set, dpu_binary_path, NULL));
 #ifdef UPMEM_RT_STATS
   uint32_t nr_dpus = 0;
   dpu_get_nr_dpus(*dpu_set, &nr_dpus);
-  upmemrt_record_alloc(upmemrt_now_ns() - t0, nr_dpus);
+  upmemrt_record_alloc(t1 - t0, nr_dpus);
+  upmemrt_record_load(upmemrt_now_ns() - t1, nr_dpus);
 #endif
   return dpu_set;
 }

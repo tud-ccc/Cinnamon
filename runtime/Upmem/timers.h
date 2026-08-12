@@ -17,9 +17,10 @@ extern "C" {
 // tagged with this number until the next call.
 void upmemrt_start_stat_collection(int iter);
 
-// Write six CSV files: {prefix}_scatter.csv, {prefix}_gather.csv,
+// Write seven CSV files: {prefix}_scatter.csv, {prefix}_gather.csv,
 // {prefix}_launch.csv, {prefix}_free.csv, {prefix}_alloc.csv,
-// {prefix}_copy.csv, containing all rows collected since program start.
+// {prefix}_load.csv, {prefix}_copy.csv, containing all rows collected since
+// program start.
 void upmemrt_dump_stats(const char *prefix);
 
 // Internal: called by upmem_rt.c / memref_rt.cpp ────────────────────────────
@@ -51,6 +52,11 @@ void upmemrt_record_gather(uint64_t elapsed_ns, size_t bytes_per_dpu,
 void upmemrt_record_launch(uint64_t elapsed_ns, uint32_t num_dpus);
 void upmemrt_record_free(uint64_t elapsed_ns, uint32_t num_dpus);
 void upmemrt_record_alloc(uint64_t elapsed_ns, uint32_t num_dpus);
+// DPU program load (dpu_load), timed separately from allocation: whether a
+// load amortizes is a per-occurrence question (once per workload lifetime vs
+// once per operator switch -- see the paper's amortizability rule), so it
+// must never be folded into the alloc row the analysis blanket-subtracts.
+void upmemrt_record_load(uint64_t elapsed_ns, uint32_t num_dpus);
 // Host-side memrefCopy calls (e.g. the strided repack copies feeding
 // upmem.scatter buffers) -- not a DPU-facing operation, hence no num_dpus.
 void upmemrt_record_copy(uint64_t elapsed_ns, size_t bytes);

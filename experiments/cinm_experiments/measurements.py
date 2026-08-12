@@ -29,12 +29,24 @@ def _output_dir(obj: Union[pathlib.Path, RunResult]) -> pathlib.Path:
     return pathlib.Path(obj)
 
 
-def net_time_ms(output_dir: Union[pathlib.Path, RunResult]) -> float | None:
+def net_time_ms(
+    output_dir: Union[pathlib.Path, RunResult], *, discount_load: bool = True
+) -> float | None:
     """Mean net time in ms over all iterations recorded in output_dir, or
-    None if no total.csv-type file is present."""
+    None if no total.csv-type file is present.
+
+    Alloc and free are always subtracted (harness overhead). DPU program
+    load is subtracted by default -- the amortized convention this function
+    has always implemented; the runtime used to time load inside alloc, and
+    runs recorded since the split write a separate load.csv, so subtracting
+    it here keeps old and new runs comparable. Pass discount_load=False for
+    the whole-program (RQ4) analysis, where a load recurring per inference
+    is exactly the cost being measured (the per-transfer amortizability
+    rule: discounted only if once per workload lifetime)."""
     total_df = None
     alloc_ns = pd.Series(dtype=float)
     free_ns = pd.Series(dtype=float)
+    load_ns = pd.Series(dtype=float)
 
     for csv_path in _output_dir(output_dir).glob("*.csv"):
         t = _csv_type(csv_path)
@@ -46,6 +58,8 @@ def net_time_ms(output_dir: Union[pathlib.Path, RunResult]) -> float | None:
             alloc_ns = df.groupby("iteration")["elapsed_ns"].sum()
         elif t == "free":
             free_ns = df.groupby("iteration")["elapsed_ns"].sum()
+        elif t == "load" and discount_load:
+            load_ns = df.groupby("iteration")["elapsed_ns"].sum()
 
     if total_df is None or total_df.empty:
         return None
@@ -54,6 +68,7 @@ def net_time_ms(output_dir: Union[pathlib.Path, RunResult]) -> float | None:
         total_df["elapsed_ns"]
         - total_df["iteration"].map(alloc_ns).fillna(0)
         - total_df["iteration"].map(free_ns).fillna(0)
+        - total_df["iteration"].map(load_ns).fillna(0)
     )
     return float(net.mean()) / 1e6
 
@@ -101,6 +116,13 @@ def copy_time_ms(output_dir: Union[pathlib.Path, RunResult]) -> float | None:
     return _sum_time_ms(output_dir, "copy")
 
 
+def load_time_ms(output_dir: Union[pathlib.Path, RunResult]) -> float | None:
+    """Mean total DPU program load time in ms per iteration, or None if no
+    load.csv-type file is present (runs recorded before the alloc/load timer
+    split have it folded into alloc.csv and there is no way to recover it)."""
+    return _sum_time_ms(output_dir, "load")
+
+
 def _sum_time_ms_by_kind(
     output_dir: Union[pathlib.Path, RunResult], csv_type: str
 ) -> dict[str, float]:
@@ -144,6 +166,7 @@ _NET_BREAKDOWN_CATEGORIES = [
     "gather",
     "copy",
     "launch",
+    "load",  # only present with count_load=True (RQ4's undiscounted view)
     "unaccounted",
 ]
 
@@ -165,6 +188,7 @@ def net_breakdown_color_ix(cat):
         "unaccounted",
         "scatter:blocks",
         "scatter:broadcast",
+        "load",
     ]
     return order.index(_canonical_kind(cat))
 
@@ -174,12 +198,14 @@ def net_breakdown_sort_ix(cat):
 
 
 def net_breakdown_ms(
-    output_dir: Union[pathlib.Path, RunResult], by_kind: bool = False
+    output_dir: Union[pathlib.Path, RunResult],
+    by_kind: bool = False,
+    count_load: bool = False,
 ) -> dict[str, float] | None:
-    """Split net_time_ms (total - alloc - free) into scatter/gather/copy/
-    launch time plus whatever's left over as "unaccounted" -- host-side work
-    that happens outside any instrumented runtime call (e.g. computation in
-    the generated host loop nest). None if no total.csv-type file is
+    """Split net_time_ms (total - alloc - free - load) into scatter/gather/
+    copy/launch time plus whatever's left over as "unaccounted" -- host-side
+    work that happens outside any instrumented runtime call (e.g. computation
+    in the generated host loop nest). None if no total.csv-type file is
     present.
 
     If by_kind is True, the "scatter" bucket is instead split into one
@@ -188,36 +214,44 @@ def net_breakdown_ms(
     these dynamic keys aren't covered by NET_BREAKDOWN_CATEGORIES. Falls back
     to a single "scatter" bucket if the recorded CSV predates the `kind`
     column.
+
+    If count_load is True, program load is NOT discounted from net and
+    appears as its own "load" bucket -- the whole-program (RQ4) view, where
+    a load recurring per inference is exactly the cost under study.
     """
-    net = net_time_ms(output_dir)
+    net = net_time_ms(output_dir, discount_load=not count_load)
     if net is None:
         return None
     gather = gather_time_ms(output_dir) or 0.0
     copy = copy_time_ms(output_dir) or 0.0
     launch = launch_time_ms(output_dir) or 0.0
+    load = (load_time_ms(output_dir) or 0.0) if count_load else 0.0
+    extra = {"load": load} if count_load else {}
 
     scatter_by_kind = _sum_time_ms_by_kind(output_dir, "scatter") if by_kind else {}
     if scatter_by_kind:
         scatter_total = sum(scatter_by_kind.values())
-        unaccounted = net - scatter_total - gather - copy - launch
+        unaccounted = net - scatter_total - gather - copy - launch - load
         result = {f"scatter:{kind}": t for kind, t in scatter_by_kind.items()}
         result.update(
             {
                 "gather": gather,
                 "copy": copy,
                 "launch": launch,
+                **extra,
                 "unaccounted": unaccounted,
             }
         )
         return result
 
     scatter = scatter_time_ms(output_dir) or 0.0
-    unaccounted = net - scatter - gather - copy - launch
+    unaccounted = net - scatter - gather - copy - launch - load
     return {
         "scatter": scatter,
         "gather": gather,
         "copy": copy,
         "launch": launch,
+        **extra,
         "unaccounted": unaccounted,
     }
 
