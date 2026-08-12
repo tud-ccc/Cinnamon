@@ -162,6 +162,11 @@ def UpmemInferAcceleratorPass : Pass<"upmem-infer-accelerator", "ModuleOp"> {
            "independently with the whole device to itself. Incompatible "
            "with fixed-dpus, which pins the resource the profiling needs "
            "to sweep">,
+    Option<"latencyObjective", "latency-objective", "bool", "false",
+           "Graph allocation only: allocate for single-inference latency "
+           "(the makespan of the block dependency graph) instead of "
+           "steady-state throughput. Uses a critical-path greedy; the "
+           "throughput solve is the exact one">,
     Option<"programReloadMs", "program-reload-ms", "double", "40.0",
            "Graph allocation only: cost of switching a DPU set to a "
            "different program, per op per inference -- what a timeshared "

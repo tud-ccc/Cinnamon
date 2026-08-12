@@ -215,35 +215,59 @@ parametric solve.
 ### The latency variant
 
 Single-inference latency is the makespan of one inference's DAG: node `i`
-costs `L_i(D_{s_i})`, edges add inter-set transfer, and any non-pinned op
-adds reload/rescatter. Three things change against throughput, in increasing
-severity:
+costs `L_i(D_{s_i})`, ops sharing a set serialize, ops on different sets
+overlap wherever the DAG allows. Two things change against throughput.
+Dependencies now enter the objective — it is a longest path, not a max of
+sums, and DPUs allotted off the critical path buy nothing. And **merging
+acquires a cost**: co-resident ops serialize even where the DAG would let
+them run at once, so merging QKV keeps one program and one weight residency
+but triples that segment of the path. Class members consequently stop being
+interchangeable — *which* members share a set depends on where they sit in
+the DAG — so the factoring that makes the throughput solve exact does not
+survive.
 
-1. **Edges enter the objective.** Parallel branches overlap only when their
-   ops sit in different sets; the objective is a critical path, not a sum.
-   DPUs allotted off the critical path are wasted, and the path moves as the
-   allocation changes — classic moldable DAG scheduling.
-2. **Merging acquires a cost.** Ops sharing a set serialize even where the
-   DAG allows them in parallel — the set is one machine. Merging QKV keeps one
-   program and one weight residency but triples that segment of the path.
-   Under throughput, serializing DAG-parallel ops within a set is free (the
-   sum is unchanged); under latency it is the central trade-off. Class members
-   consequently stop being interchangeable — *which* members share a set now
-   depends on their positions in the DAG — and the per-class factoring of §2
-   weakens.
-3. **The parametric subproblem hardens, but the skeleton survives.** Bisect a
-   target makespan `T`; the feasibility question "does an allocation with
-   Σ D_s ≤ D_max meet `T`" is now a budgeted discrete time–cost trade-off
-   (project crashing) with serialization side constraints — NP-hard in
-   general, exactly solvable at our sizes by branch-and-bound (this is where
-   the constraint solver, which the throughput objective does not need at the
-   graph level, returns). For series-parallel dependency graphs — transformer
-   blocks are close — contracting each merged group to one serial node and
-   folding costs over the SP-tree (sum along series, max across parallel, min
-   over the D-menu per node) yields an exact dynamic program.
+This design does not chase optimality here; a static allocation that
+produces a defensible number is the goal. The method is the standard
+critical-path greedy of the mixed task/data-parallel scheduling literature
+(CPA / CPR): start from the cheapest feasible allocation, repeatedly apply
+whichever move buys the largest makespan reduction per additional DPU, and
+stop when nothing improves. Two moves suffice — *grow* a set to the next
+size on its menu, and *split* a member out of a set into one of its own —
+and scoring both by Δmakespan/ΔD keeps the merging decision inside the same
+loop instead of giving it a phase of its own. Every accepted move strictly
+increases the DPUs in use, so the loop terminates against the grid budget.
 
-The prototype targets throughput; the latency variant reuses the profiles and
-constraints unchanged and swaps the objective evaluator.
+**Residency makes this simpler here than in its usual setting.** Classical
+moldable scheduling time-shares processors — a task releases them when it
+finishes — so its allocation phase must balance the critical path against
+total processor-time *area*, and a list-scheduling phase must then pack
+tasks over time. Under residency nothing is ever released: the constraint is
+the flat `Σ D_s ≤ D_max`, every set is a dedicated machine, and evaluating a
+candidate allocation is one longest-path computation over the DAG augmented
+with the serialization edges inside each set. The area term and the packing
+phase both disappear. On a chain the critical-path filter is vacuous — every
+node is on it — and the loop degenerates to textbook marginal resource
+allocation: spend each next DPU wherever it buys the most. That is exactly
+optimal for convex profiles and a heuristic otherwise; ours are not convex,
+since divisibility puts holes in the menu.
+
+**Merging is free along a chain**, which is what makes this interesting on a
+real model. Layer `k`'s Q projection and layer `k+1`'s Q projection are the
+same program-identity class *and* sequentially dependent: they never run
+concurrently, so putting every layer's Q projection on one set costs exactly
+zero latency while dividing that class's budget by the layer count. The
+greedy reaches this by construction, because it starts from maximal merging
+— one set per class, at the smallest size that holds all its members — and
+splits only where splitting pays. The latency-driven static allocation of a
+transformer is therefore *one set per distinct kernel, with every layer's
+weights co-resident on it*: the same residency story §0 argues for, arrived
+at from the opposite objective.
+
+Everything else is shared with the throughput path: the same profiles, the
+same menus, the same capacity terms. Only the objective evaluator differs.
+Timesharing is not offered as an option under latency — it can only lengthen
+the path — so a graph whose classes do not all fit at their smallest sizes
+is reported infeasible rather than partially evicted.
 
 ## 2. The two-level solve
 
@@ -499,14 +523,18 @@ Implemented (the T1–T5 prototype, end to end):
    exactly when the reload constant is made small).
 5. Stage C: per-member finalization by direct evaluation of the group's
    argmin (no re-search needed for chosen points, as argued there).
+6. Both objectives: the exact parametric solve for throughput, and the
+   critical-path greedy for latency, over the same profiles. Graph
+   collection records the dependency edges between offloadable regions
+   (dataflow through the ops the graph does not own), which is what the
+   latency evaluator walks.
 
-The whole flow is opt-in behind an option; the per-op whole-device search
-remains the default and the fallback for targets that declare no shared
-resource.
+The whole flow is opt-in behind an option, and the objective is a second
+option; the per-op whole-device search remains the default and the fallback
+for targets that declare no shared resource.
 
-Not yet implemented: the latency objective (critical path / SP-tree DP), T6
-layout coupling, shape-dynamic kernels, and the offload-selection ranking
-(T1 currently trusts the platform-assignment step). Risk still open: measure
-program-reload and weight-scatter cost on the actual system to confirm the
-40–80 ms figure (taken as a 40 ms constant until then) and the
-per-op-switch (not per-byte) cost model for reload.
+Not yet implemented: T6 layout coupling, shape-dynamic kernels, and the
+offload-selection ranking (T1 currently trusts the platform-assignment
+step). Risk still open: measure program-reload and weight-scatter cost on
+the actual system to confirm the 40–80 ms figure (taken as a 40 ms constant
+until then) and the per-op-switch (not per-byte) cost model for reload.

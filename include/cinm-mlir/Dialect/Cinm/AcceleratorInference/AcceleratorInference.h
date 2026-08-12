@@ -315,6 +315,12 @@ struct InferenceOptions {
   /// measured on hardware.
   double programReloadMs = 40.0;
 
+  /// Graph allocation only: optimize single-inference latency (the makespan
+  /// of the dependency graph) instead of steady-state throughput (the
+  /// busiest set's per-inference work). The latency solve is a critical-path
+  /// greedy and makes no claim to optimality; the throughput solve is exact.
+  bool latencyObjective = false;
+
   /// Graph allocation only: the quantum of a device-set size, in resource
   /// units (DPUs). The menu prefers multiples of it -- rank-sized (or
   /// half-rank) allocations keep host<->device transfers rank-parallel --

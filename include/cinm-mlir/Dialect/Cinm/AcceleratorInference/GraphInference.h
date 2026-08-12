@@ -46,6 +46,21 @@ struct BlockClass {
   unsigned size() const { return members.size(); }
 };
 
+/// One block of a graph, as the dependency-aware objectives see it: which
+/// class it belongs to and what it waits for. Nodes are numbered in walk
+/// order, so a node's predecessors always have smaller indices -- the order
+/// is topological, and an evaluator can sweep it in one pass.
+struct BlockNode {
+  ComputeBlockOp block;
+  /// Index into ComputeGraph::classes.
+  unsigned classIndex = 0;
+  /// Position among that class's members, i.e. index into BlockClass::members.
+  unsigned memberIndex = 0;
+  /// Nodes whose results this block consumes, directly or through ops the
+  /// graph does not own. Indices into ComputeGraph::nodes.
+  SmallVector<unsigned> predecessors;
+};
+
 /// One group of compute blocks that is optimized as a whole: a connected
 /// component of the dataflow between blocks, restricted to the blocks that
 /// target one platform, canonicalized into program-identity classes.
@@ -56,13 +71,12 @@ struct ComputeGraph {
   CinmPlatformAttrInterface platform;
   /// The classes, ordered by first appearance of a member.
   SmallVector<BlockClass> classes;
+  /// Every block of the graph in walk order, with its dependency edges. The
+  /// throughput objective ignores these (see the design note); the latency
+  /// objective is a longest path over them.
+  SmallVector<BlockNode> nodes;
 
-  unsigned numBlocks() const {
-    unsigned n = 0;
-    for (const BlockClass &c : classes)
-      n += c.size();
-    return n;
-  }
+  unsigned numBlocks() const { return nodes.size(); }
 };
 
 /// The platform named `platformName` in the `cinm.available_platforms` list of

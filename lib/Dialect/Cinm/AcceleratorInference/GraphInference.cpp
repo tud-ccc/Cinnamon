@@ -109,6 +109,36 @@ std::string blockSignature(ComputeBlockOp block) {
   return sig;
 }
 
+/// The nodes of `nodeOfBlock` whose results `block` consumes, directly or
+/// through ops the graph does not own (a slice of a producer's result, a
+/// reshape, a host-side merge). Tracing back through those intermediates is
+/// what makes the edge set reflect the dataflow rather than the syntax.
+/// Sorted and deduplicated.
+SmallVector<unsigned>
+producingNodes(ComputeBlockOp block,
+               const DenseMap<Operation *, unsigned> &nodeOfBlock) {
+  SmallVector<unsigned> preds;
+  SmallVector<Value> worklist(block->getOperands());
+  DenseSet<Value> seen;
+  while (!worklist.empty()) {
+    Value value = worklist.pop_back_val();
+    if (!seen.insert(value).second)
+      continue;
+    Operation *def = value.getDefiningOp();
+    if (!def) // a block argument: outside the graph, nothing to trace
+      continue;
+    auto known = nodeOfBlock.find(def);
+    if (known != nodeOfBlock.end()) {
+      preds.push_back(known->second);
+      continue; // a graph node: an edge, not something to see through
+    }
+    llvm::append_range(worklist, def->getOperands());
+  }
+  llvm::sort(preds);
+  preds.erase(llvm::unique(preds), preds.end());
+  return preds;
+}
+
 } // namespace
 
 SmallVector<ComputeGraph> collectComputeGraphs(Operation *root,
@@ -166,7 +196,7 @@ SmallVector<ComputeGraph> collectComputeGraphs(Operation *root,
         platform};
     auto [entry, inserted] = graphOf.try_emplace(key, graphs.size());
     if (inserted) {
-      graphs.push_back(ComputeGraph{platform, {}});
+      graphs.push_back(ComputeGraph{platform, {}, {}});
       classOf.emplace_back();
     }
     ComputeGraph &graph = graphs[entry->second];
@@ -174,7 +204,21 @@ SmallVector<ComputeGraph> collectComputeGraphs(Operation *root,
         blockSignature(block), static_cast<unsigned>(graph.classes.size()));
     if (classInserted)
       graph.classes.push_back(BlockClass{});
-    graph.classes[classEntry->second].members.push_back(block);
+    BlockClass &blockClass = graph.classes[classEntry->second];
+    graph.nodes.push_back(BlockNode{block, classEntry->second,
+                                    blockClass.size(), /*predecessors=*/{}});
+    blockClass.members.push_back(block);
+  }
+
+  // Dependency edges, once every node of a graph is known: which of them
+  // produced the values a block consumes. Blocks are added in walk order, so
+  // a producer always has the smaller index and the numbering is topological.
+  for (ComputeGraph &graph : graphs) {
+    DenseMap<Operation *, unsigned> nodeOfBlock;
+    for (auto [i, node] : llvm::enumerate(graph.nodes))
+      nodeOfBlock[node.block.getOperation()] = i;
+    for (BlockNode &node : graph.nodes)
+      node.predecessors = producingNodes(node.block, nodeOfBlock);
   }
 
   LLVM_DEBUG({
@@ -242,14 +286,26 @@ runGraphAllocation(const ComputeGraph &graph, StringRef platformName,
     allocOpts.capacities.push_back(
         {level.getName().getValue().str(), level.getSizeInBytes()});
   allocOpts.programReloadMs = opts.programReloadMs;
-  std::optional<AllocationResult> alloc = allocateGraph(profiles, allocOpts);
+
+  std::optional<AllocationResult> alloc;
+  if (opts.latencyObjective) {
+    // The latency objective walks the dependency edges; hand it the graph's
+    // nodes, already in the topological order it requires.
+    SmallVector<GraphNode> nodes;
+    for (const BlockNode &node : graph.nodes)
+      nodes.push_back({node.classIndex, node.memberIndex, node.predecessors});
+    alloc = allocateGraphForLatency(profiles, nodes, allocOpts);
+  } else {
+    alloc = allocateGraph(profiles, allocOpts);
+  }
   if (!alloc)
     return emitSilenceableFailure(loc)
            << "no feasible device allocation for this graph: some class fits "
               "no menu configuration";
   LLVM_DEBUG({
-    llvm::dbgs() << "[cinm-inference] Graph '" << graphName << "': bottleneck "
-                 << alloc->bottleneckMs << " ms, " << alloc->resourceUsed
+    llvm::dbgs() << "[cinm-inference] Graph '" << graphName
+                 << "': " << (opts.latencyObjective ? "makespan" : "bottleneck")
+                 << " " << alloc->objectiveMs << " ms, " << alloc->resourceUsed
                  << " / " << allocOpts.resourceBudget << " units pinned\n";
     for (auto [ci, ca] : llvm::enumerate(alloc->perClass))
       for (const GroupAllocation &g : ca.groups)
@@ -266,11 +322,29 @@ runGraphAllocation(const ComputeGraph &graph, StringRef platformName,
   // re-search is needed for the chosen points. A timeshared group has no
   // reserved set; committing the best point's configuration prices its
   // transient borrow of the device.
+  // Which group each member landed on. The latency solve says so per node,
+  // since its members are not interchangeable; the throughput solve leaves
+  // that free, so members fill the groups in order.
+  SmallVector<SmallVector<unsigned>> groupOfMember(graph.classes.size());
+  for (auto [ci, blockClass] : llvm::enumerate(graph.classes))
+    groupOfMember[ci].resize(blockClass.size(), 0);
+  if (alloc->groupOfNode.empty()) {
+    for (auto [ci, classAlloc] : llvm::enumerate(alloc->perClass)) {
+      unsigned member = 0;
+      for (auto [gi, group] : llvm::enumerate(classAlloc.groups))
+        for (unsigned i = 0; i < group.size; ++i, ++member)
+          groupOfMember[ci][member] = gi;
+    }
+  } else {
+    for (auto [ni, node] : llvm::enumerate(graph.nodes))
+      groupOfMember[node.classIndex][node.memberIndex] = alloc->groupOfNode[ni];
+  }
+
   for (auto [ci, blockClass] : llvm::enumerate(graph.classes)) {
     const ClassAllocation &classAlloc = alloc->perClass[ci];
     const ClassProfile &profile = profiles[ci];
-    unsigned member = 0;
-    for (const GroupAllocation &group : classAlloc.groups) {
+    for (auto [mi, block] : llvm::enumerate(blockClass.members)) {
+      const GroupAllocation &group = classAlloc.groups[groupOfMember[ci][mi]];
       const ProfilePoint *point = nullptr;
       for (const ProfilePoint &p : profile.points)
         if (group.resource ? p.resource == group.resource
@@ -278,15 +352,12 @@ runGraphAllocation(const ComputeGraph &graph, StringRef platformName,
           point = &p;
       assert(point && "allocator chose a resource the profile does not have");
 
-      for (unsigned i = 0; i < group.size; ++i, ++member) {
-        ComputeBlockOp block = graph.classes[ci].members[member];
-        std::unique_ptr<InferencePlugin> memberPlugin =
-            makePlugin(graph.platform);
-        InferenceOptions memberOpts = opts;
-        memberOpts.dumpDir.clear();
-        memberOpts.evalSingleSolution = point->config;
-        TRY(inferAcceleratorConfig(block, *memberPlugin, memberOpts));
-      }
+      std::unique_ptr<InferencePlugin> memberPlugin =
+          makePlugin(graph.platform);
+      InferenceOptions memberOpts = opts;
+      memberOpts.dumpDir.clear();
+      memberOpts.evalSingleSolution = point->config;
+      TRY(inferAcceleratorConfig(block, *memberPlugin, memberOpts));
     }
   }
   (void)platformName;
