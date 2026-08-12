@@ -397,6 +397,20 @@ public:
     require(expr.node(), description);
   }
 
+  /// Attach a free-text description to the declared parameter `name`, dumped
+  /// into space.json (SearchParam::doc). Documentary only -- it changes
+  /// nothing about the space; it exists so a human transcribing an external
+  /// schedule can read what a parameter means without opening the declarer.
+  /// No-op if no parameter of that name has been declared.
+  void describe(llvm::StringRef name, llvm::StringRef doc);
+
+  /// Label the items of the declared permutation parameter `name` (one label
+  /// per item, e.g. the iteration-dim names {"M", "K"}), dumped into
+  /// space.json (SearchParam::itemLabels). Documentary only. No-op if no
+  /// permutation parameter of that name has been declared or if the label
+  /// count does not match its item count.
+  void labelItems(llvm::StringRef name, llvm::ArrayRef<std::string> labels);
+
   /// Pin the declared integer parameter `name` to exactly `value`. This is
   /// how a caller *outside* the plugin conditions the space on a decision
   /// taken at a higher level -- the graph level pinning the device size for
@@ -425,8 +439,10 @@ private:
     std::shared_ptr<size_t> idx;
     enum Kind { IntRange, Pow2, DivisorsOfConst, Permutation } kind;
     ParmValue lo, hi;
-    std::vector<ParmValue> divisorFilters; ///< keepDivisorsOf(n) for each n
-    unsigned permutationSize = 0;          ///< for Kind::Permutation
+    std::vector<ParmValue> divisorFilters;    ///< keepDivisorsOf(n) for each n
+    unsigned permutationSize = 0;             ///< for Kind::Permutation
+    std::string doc = {};                     ///< see describe()
+    std::vector<std::string> itemLabels = {}; ///< see labelItems()
   };
   /// Exactly one of the two is set: a constraint written in the DSL is a tree
   /// the solver is given, and one registered as a lambda is a filter run over

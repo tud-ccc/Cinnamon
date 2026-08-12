@@ -1032,6 +1032,23 @@ inferAcceleratorConfig(cinm::ComputeBlockOp computeOp, InferencePlugin &plugin,
 
   InferenceTask task(opts, plugin, computeOp);
 
+  // Space-dump mode: the space was built by the constructor above; write it
+  // out and stop. No evaluation, no commit -- the IR stays untouched, which
+  // is the point (see InferenceOptions::dumpSpaceOnly).
+  if (opts.dumpSpaceOnly) {
+    if (!task.spaceValid)
+      return emitDefiniteFailure(computeOp.getLoc(),
+                                 "the search space could not be built");
+    if (opts.dumpDir.empty())
+      return emitDefiniteFailure(
+          computeOp.getLoc(),
+          "dump-space-only without dump-dir would build the space and "
+          "write it nowhere; pass dump-dir");
+    dumpSpaceJSON(task.space, task.space.totalSize(),
+                  std::filesystem::path(opts.dumpDir) / "space.json");
+    return DiagnosedSilenceableFailure::success();
+  }
+
   LLVM_DEBUG(llvm::dbgs() << "[cinm-inference] Reference clone:\n";
              task.refClone->print(llvm::dbgs()); llvm::dbgs() << "\n");
 

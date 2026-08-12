@@ -232,6 +232,14 @@ struct InferenceOptions {
   /// from a final ensemble fit (omitted when fewer than 2 observations).
   std::string dumpDir;
 
+  /// Build each block's config space, write its space.json into dumpDir, and
+  /// stop: no evaluation, no search, no commit, and (in graph mode) no
+  /// allocation. The IR is left untouched. This is how the space is made
+  /// inspectable without paying for a run -- the manual-transcription
+  /// workflow reads the result (docs/EvaluationImplementationPlan.md §7).
+  /// Requires a non-empty dumpDir to be useful.
+  bool dumpSpaceOnly = false;
+
   /// When true, evaluate every valid configuration in the search space
   /// instead of running Bayesian optimisation. Useful for collecting ground-
   /// truth cost data and comparing against BO solutions. The pool is dumped

@@ -278,6 +278,15 @@ struct SearchParam {
   /// For ParmKind::Permutation: how many items are permuted. What the domain
   /// holds is the model's business and not something to recover n from.
   unsigned permutationSize = 0;
+  /// Free-text description, dumped into space.json. Purely documentary: it
+  /// exists so a human transcribing an external schedule into this space can
+  /// map `gemv.M.mram` to "MRAM tile of gemv's M dimension" without reading
+  /// the space builder. Set via SpaceBuilder::describe.
+  std::string doc;
+  /// For ParmKind::Permutation: human label of item `k` (the iteration dim
+  /// it stands for -- "M", "K", ...). Empty when the declarer set none; when
+  /// present, size() == permutationSize. Set via SpaceBuilder::labelItems.
+  std::vector<std::string> itemLabels;
 
   SearchParam(const SearchParam &) = delete;
   SearchParam(SearchParam &&) = default;
