@@ -137,6 +137,31 @@ space, write `space.json`, commit nothing, run no search/sampling. Today
 `space.json` + §7's procedure, without reading C++ sources.
 
 ### 3.2 Own phase (Phase 3a) — group residency: hoist alloc/load out of compute blocks (RQ4 blocker)
+
+**STATUS 2026-08-12 — foundations landed, commit-flow integration open.**
+Done, as atomic commits with tests:
+- *alloc/load split* (`upmem.alloc_dpus` allocation-only + new
+  `upmem.load_program`, flow-sensitive program resolution, LLVM lowering to
+  `upmemrt_dpu_alloc`/`upmemrt_dpu_load`, dedup/occupancy/verifier updates;
+  the load op verifies tasklet-count against the hierarchy).
+- *`cnm::CnmWorkgroupTypeInterface`* (type interface; implemented by
+  `!cnm.workgroup` and `!upmem.hierarchy`) and the **forwarding contract**:
+  `--convert-cnm-to-upmem` uses an in-scope ancestor block argument of
+  matching workgroup shape instead of allocating, keeps the load in place,
+  and does not free what it does not own (shape mismatch ⇒ local alloc;
+  ambiguity ⇒ error). `BufferType` needed no change: forwarded values only
+  ever stand in for the workgroup, and the substitution happens at
+  conversion time, so no cnm op signature changed either.
+Still open (the commit-flow half):
+- the core **insert-alloc/free hook** on the plugin interface, and
+  GraphInference finalization's **shared-workgroup mode** (first member of
+  a group triggers the hook's alloc at the container-function top +
+  forwards into each member's compute_block; frees collect at function
+  end) — `GraphInference.cpp` finalization is the disturbed path;
+- **load hoisting** for merged groups (one load per resident program after
+  dedup, instead of per block);
+- the acceptance case (3mm graph-allocation end-to-end, one alloc per
+  group; per-class profiling numbers identical before/after).
 The conflation is **dialect-level, not just instrumentation**. Today (see
 any graph-allocation output for 3mm): each `cinm.compute_block` body ends in
 its own `upmem.alloc_dpus with program @kernels_N::@program : !upmem.
