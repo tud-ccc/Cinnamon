@@ -416,8 +416,14 @@ static LogicalResult convertCnmLaunchToUpmem(cnm::LaunchOp launch,
 
   auto wgAlloc = cast<cnm::WorkgroupOp>(launch.getWg().getDefiningOp());
   rewriter.setInsertionPoint(wgAlloc);
-  auto upmemWgAlloc = upmem::AllocDPUsOp::create(rewriter, wgAlloc->getLoc(),
-                                                 upmemTy, *programPath);
+  auto upmemWgAlloc =
+      upmem::AllocDPUsOp::create(rewriter, wgAlloc->getLoc(), upmemTy);
+  // Load right where the workgroup was created -- the per-block schedule, in
+  // which residency and allocation coincide. A whole-program schedule hoists
+  // the alloc per group and places loads by residency instead; alloc and
+  // load are separate ops precisely so those two can differ.
+  upmem::LoadProgramOp::create(rewriter, wgAlloc->getLoc(), *programPath,
+                               upmemWgAlloc.getResult());
 
   llvm::MapVector<Value, upmem::StaticAllocOp> buffersToMramBuf;
   // llvm::MapVector<Value, upmem::StaticAllocOp> buffersToSharedWramBuf;

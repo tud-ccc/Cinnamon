@@ -17,7 +17,8 @@ module {
   memref.global "private" constant @seed : memref<1x8xi32> = dense<0>
   func.func @uniform_blocks() {
     %0 = memref.get_global @seed : memref<1x8xi32>
-    %1 = upmem.alloc_dpus with program @dpu_kernels::@program : !upmem.hierarchy<512x8>
+    %1 = upmem.alloc_dpus : !upmem.hierarchy<512x8>
+    upmem.load_program @dpu_kernels::@program on %1 : !upmem.hierarchy<512x8>
     upmem.scatter_blocks %0[8 elts, affine_map<(d0, d1) -> (0, 0)>, 8 blocks] onto @buf of %1
         : memref<1x8xi32> onto !upmem.hierarchy<512x8>
     return
@@ -44,7 +45,8 @@ module {
 // CHECK-NOT: upmem.scatter_blocks
 module {
   func.func @adjacent_blocks(%arg0: memref<128x32xi32>) {
-    %1 = upmem.alloc_dpus with program @dpu_kernels::@program : !upmem.hierarchy<128x4>
+    %1 = upmem.alloc_dpus : !upmem.hierarchy<128x4>
+    upmem.load_program @dpu_kernels::@program on %1 : !upmem.hierarchy<128x4>
     upmem.scatter_blocks %arg0[8 elts, affine_map<(d0, d1) -> (d0, d1 * 8)>, 4 blocks] onto @buf of %1
         : memref<128x32xi32> onto !upmem.hierarchy<128x4>
     return
@@ -69,7 +71,8 @@ module {
 // CHECK-NOT: upmem.scatter_on_array
 module {
   func.func @blocks_with_gaps(%arg0: memref<128x64xi32>) {
-    %1 = upmem.alloc_dpus with program @dpu_kernels::@program : !upmem.hierarchy<128x4>
+    %1 = upmem.alloc_dpus : !upmem.hierarchy<128x4>
+    upmem.load_program @dpu_kernels::@program on %1 : !upmem.hierarchy<128x4>
     upmem.scatter_blocks %arg0[8 elts, affine_map<(d0, d1) -> (d0, d1 * 16)>, 4 blocks] onto @buf of %1
         : memref<128x64xi32> onto !upmem.hierarchy<128x4>
     return
@@ -95,7 +98,8 @@ module {
 // CHECK-NOT: upmem.scatter_on_array
 module {
   func.func @whole_buffer(%arg0: memref<32xi32>) {
-    %1 = upmem.alloc_dpus with program @dpu_kernels::@program : !upmem.hierarchy<128x1>
+    %1 = upmem.alloc_dpus : !upmem.hierarchy<128x1>
+    upmem.load_program @dpu_kernels::@program on %1 : !upmem.hierarchy<128x1>
     upmem.scatter_on_array %arg0[32 elts, affine_map<(d0) -> (0)>] onto @buf of %1
         : memref<32xi32> onto !upmem.hierarchy<128x1>
     return
@@ -119,7 +123,8 @@ module {
 // CHECK-NOT: upmem.broadcast
 module {
   func.func @per_dpu_rows(%arg0: memref<128x32xi32>) {
-    %1 = upmem.alloc_dpus with program @dpu_kernels::@program : !upmem.hierarchy<128x1>
+    %1 = upmem.alloc_dpus : !upmem.hierarchy<128x1>
+    upmem.load_program @dpu_kernels::@program on %1 : !upmem.hierarchy<128x1>
     upmem.scatter_on_array %arg0[32 elts, affine_map<(d0) -> (d0, 0)>] onto @buf of %1
         : memref<128x32xi32> onto !upmem.hierarchy<128x1>
     return
@@ -145,7 +150,8 @@ module {
 // CHECK-NOT: upmem.broadcast
 module {
   func.func @gather_never_broadcasts(%arg0: memref<128x32xi32>) {
-    %1 = upmem.alloc_dpus with program @dpu_kernels::@program : !upmem.hierarchy<128x4>
+    %1 = upmem.alloc_dpus : !upmem.hierarchy<128x4>
+    upmem.load_program @dpu_kernels::@program on %1 : !upmem.hierarchy<128x4>
     upmem.gather_blocks %arg0[8 elts, affine_map<(d0, d1) -> (d0, d1 * 8)>, 4 blocks] from @buf of %1
         : memref<128x32xi32> from !upmem.hierarchy<128x4>
     return

@@ -106,13 +106,13 @@ struct UPMEMDedupKernelsPass
       }
     });
 
-    // Update call ops to call unique func op representants.
+    // Update load ops to reference unique func op representants.
     llvm::SmallVector<StringRef, 2> flatRef;
-    module->walk([&](upmem::AllocDPUsOp allocDpus) {
-      auto symtable = SymbolTable::getNearestSymbolTable(allocDpus);
+    module->walk([&](upmem::LoadProgramOp load) {
+      auto symtable = SymbolTable::getNearestSymbolTable(load);
       auto prog =
           SymbolTable(symtable).lookupNearestSymbolFrom<upmem::DpuProgramOp>(
-              allocDpus, allocDpus.getDpuProgramRef());
+              load, load.getDpuProgramRef());
       if (!prog)
         return;
       upmem::DpuProgramOp callee = getRepresentant[prog.getSymNameAttr()];
@@ -120,7 +120,7 @@ struct UPMEMDedupKernelsPass
         return;
       auto ref = getSymbolPath(symtable, callee);
       if (llvm::succeeded(ref)) {
-        allocDpus.setDpuProgramRefAttr(*ref);
+        load.setDpuProgramRefAttr(*ref);
       }
     });
 

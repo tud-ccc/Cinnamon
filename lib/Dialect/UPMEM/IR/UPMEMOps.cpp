@@ -54,48 +54,59 @@ void upmem::UPMEMDialect::registerOps() {
 // getDpuProgram helpers
 // ===----------------------------------------------------------------------===//
 
-// AllocDPUsOp owns the symbol reference, so it does the real lookup.
-upmem::DpuProgramOp upmem::AllocDPUsOp::getDpuProgram() {
+// LoadProgramOp owns the symbol reference, so it does the real lookup.
+upmem::DpuProgramOp upmem::LoadProgramOp::getDpuProgram() {
   auto *sym =
       SymbolTable::lookupNearestSymbolFrom(getOperation(), getDpuProgramRef());
   return dyn_cast_or_null<upmem::DpuProgramOp>(sym);
 }
 
-// Every transfer op carries the hierarchy value produced by AllocDPUsOp.
+/// The program resident on `hierarchy` when `at` executes. Which program a
+/// set holds is a property of the point in the schedule, not of the value:
+/// the nearest upmem.load_program preceding `at` in its own block decides.
+/// When no load precedes it there (the load can sit in an ancestor region,
+/// e.g. at the top of the container function while `at` is inside a compute
+/// block), a unique load anywhere on the value is unambiguous and is used;
+/// several loads none of which precedes `at` locally cannot be told apart
+/// without dominance analysis, and this returns null rather than guessing.
+static upmem::DpuProgramOp programLoadedOn(Value hierarchy, Operation *at) {
+  for (Operation *prev = at->getPrevNode(); prev; prev = prev->getPrevNode())
+    if (auto load = dyn_cast<upmem::LoadProgramOp>(prev))
+      if (load.getHierarchy() == hierarchy)
+        return load.getDpuProgram();
+
+  upmem::LoadProgramOp unique;
+  for (Operation *user : hierarchy.getUsers())
+    if (auto load = dyn_cast<upmem::LoadProgramOp>(user)) {
+      if (unique)
+        return {};
+      unique = load;
+    }
+  return unique ? unique.getDpuProgram() : upmem::DpuProgramOp{};
+}
+
 upmem::DpuProgramOp upmem::ScatterOnArrayOp::getDpuProgram() {
-  auto alloc =
-      dyn_cast_or_null<upmem::AllocDPUsOp>(getHierarchy().getDefiningOp());
-  return alloc ? alloc.getDpuProgram() : upmem::DpuProgramOp{};
+  return programLoadedOn(getHierarchy(), getOperation());
 }
 
 upmem::DpuProgramOp upmem::GatherFromArrayOp::getDpuProgram() {
-  auto alloc =
-      dyn_cast_or_null<upmem::AllocDPUsOp>(getHierarchy().getDefiningOp());
-  return alloc ? alloc.getDpuProgram() : upmem::DpuProgramOp{};
+  return programLoadedOn(getHierarchy(), getOperation());
 }
 
 upmem::DpuProgramOp upmem::ScatterBlocksOp::getDpuProgram() {
-  auto alloc =
-      dyn_cast_or_null<upmem::AllocDPUsOp>(getHierarchy().getDefiningOp());
-  return alloc ? alloc.getDpuProgram() : upmem::DpuProgramOp{};
+  return programLoadedOn(getHierarchy(), getOperation());
 }
 
 upmem::DpuProgramOp upmem::GatherBlocksOp::getDpuProgram() {
-  auto alloc =
-      dyn_cast_or_null<upmem::AllocDPUsOp>(getHierarchy().getDefiningOp());
-  return alloc ? alloc.getDpuProgram() : upmem::DpuProgramOp{};
+  return programLoadedOn(getHierarchy(), getOperation());
 }
 
 upmem::DpuProgramOp upmem::BroadcastOp::getDpuProgram() {
-  auto alloc =
-      dyn_cast_or_null<upmem::AllocDPUsOp>(getHierarchy().getDefiningOp());
-  return alloc ? alloc.getDpuProgram() : upmem::DpuProgramOp{};
+  return programLoadedOn(getHierarchy(), getOperation());
 }
 
 upmem::DpuProgramOp upmem::WaitForOp::getDpuProgram() {
-  auto alloc =
-      dyn_cast_or_null<upmem::AllocDPUsOp>(getDpuSet().getDefiningOp());
-  return alloc ? alloc.getDpuProgram() : upmem::DpuProgramOp{};
+  return programLoadedOn(getDpuSet(), getOperation());
 }
 
 MemRefType upmem::detail::flatMemRefType(Type ty) {
@@ -276,22 +287,20 @@ LogicalResult upmem::BroadcastOp::verify() {
 /// something else.
 static FailureOr<upmem::StaticAllocOp>
 resolveDpuBuffer(Operation *op, Value hierarchy, FlatSymbolRefAttr dpuBufRef,
-                 SymbolTableCollection &symbolTable) {
-  auto allocOp = hierarchy.getDefiningOp<upmem::AllocDPUsOp>();
-  if (!allocOp)
-    return upmem::StaticAllocOp{}; // hierarchy is a block argument; can't
-                                   // verify statically
-
-  auto program = symbolTable.lookupNearestSymbolFrom<upmem::DpuProgramOp>(
-      op, allocOp.getDpuProgramRefAttr());
+                 SymbolTableCollection & /*symbolTable*/) {
+  // Which program the set holds is flow-sensitive since the alloc/load
+  // split (see programLoadedOn): when it cannot be resolved statically --
+  // forwarded hierarchy with no local load, or several candidate loads --
+  // skip the static check rather than guess.
+  upmem::DpuProgramOp program = programLoadedOn(hierarchy, op);
   if (!program)
-    return op->emitOpError("cannot resolve dpu_program for the hierarchy");
+    return upmem::StaticAllocOp{};
 
   Operation *bufOp = SymbolTable::lookupSymbolIn(program, dpuBufRef);
   if (!bufOp)
     return op->emitOpError("buffer reference ")
-           << dpuBufRef << " does not refer to any symbol in "
-           << allocOp.getDpuProgramRefAttr();
+           << dpuBufRef << " does not refer to any symbol in @"
+           << program.getSymName();
 
   auto staticAlloc = dyn_cast<upmem::StaticAllocOp>(bufOp);
   if (!staticAlloc)
@@ -366,20 +375,22 @@ upmem::BroadcastOp::verifySymbolUses(SymbolTableCollection &symbolTable) {
   return success();
 }
 
-::mlir::LogicalResult upmem::AllocDPUsOp::verifySymbolUses(
+::mlir::LogicalResult upmem::LoadProgramOp::verifySymbolUses(
     ::mlir::SymbolTableCollection &symbolTable) {
 
-  if (getDpuProgramRefAttr()) {
-    upmem::DpuProgramOp program =
-        symbolTable.lookupNearestSymbolFrom<upmem::DpuProgramOp>(
-            *this, getDpuProgramRefAttr());
+  upmem::DpuProgramOp program =
+      symbolTable.lookupNearestSymbolFrom<upmem::DpuProgramOp>(
+          *this, getDpuProgramRefAttr());
 
-    if (!program)
-      return emitOpError("requires ") << getDpuProgramRefAttr()
-                                      << " to refer to an upmem.dpu_program op";
-  }
-  // TODO verify that tasklet count of the dpu_program matches the last item of
-  // the hierarchy (result type)
+  if (!program)
+    return emitOpError("requires ")
+           << getDpuProgramRefAttr() << " to refer to an upmem.dpu_program op";
+  if (program.getNumTasklets() !=
+      getHierarchy().getType().getNumTaskletsPerDpu())
+    return emitOpError("loads a program compiled for ")
+           << program.getNumTasklets() << " tasklet(s) onto a hierarchy of "
+           << getHierarchy().getType().getNumTaskletsPerDpu()
+           << " tasklet(s) per DPU";
   return success();
 }
 

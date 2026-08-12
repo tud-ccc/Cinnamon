@@ -482,21 +482,48 @@ def DpuProgramOp : Upmem_Op<"dpu_program",
 }
 
 
-def AllocDPUsOp: Upmem_Op <"alloc_dpus",  [ DeclareOpInterfaceMethods<SymbolUserOpInterface>, MemoryEffects<[MemAlloc<DpuResource>]> ]> {
-  let summary = "UPMEM alloc dpus";
+def AllocDPUsOp: Upmem_Op <"alloc_dpus",  [ MemoryEffects<[MemAlloc<DpuResource>]> ]> {
+  let summary = "acquire a set of DPUs from the runtime";
   let description = [{
-    The upmem.alloc_dpus op calls initialization routine of the UPMEM SDK.
-    It loads the specified DPU program onto the DPUs. This is an expensive
-    operation that should be hoisted outside of loops. If we are going to
-    run the same program several times, the same allocation should be reused.
-    The DPU program still needs input buffers to be scattered before it can
-    be executed.
+    Calls the allocation routine of the UPMEM SDK, acquiring the DPUs the
+    hierarchy type names. Allocation is deliberately separate from program
+    load (`upmem.load_program`): a set is acquired once per residency
+    lifetime -- for a whole-program schedule, once per group at the top of
+    the container function -- while which binary runs on it can change per
+    launch. Bundling the two would make every program switch pay an
+    allocation, and would hide the load time inside the alloc time, which
+    the measurement convention discounts.
+
+    ```mlir
+    %dpus = upmem.alloc_dpus : !upmem.hierarchy<64x16>
+    ```
   }];
-  let arguments = (ins SymbolRefAttr:$dpu_program_ref);
+  let arguments = (ins);
   let results = (outs DeviceHierarchyType:$wg);
 
   let assemblyFormat = [{
-     `with` `program` $dpu_program_ref attr-dict `:` qualified(type($wg))
+     attr-dict `:` qualified(type($wg))
+  }];
+}
+
+def LoadProgramOp: Upmem_Op <"load_program", [ DeclareOpInterfaceMethods<SymbolUserOpInterface>, MemoryEffects<[MemWrite<DpuResource>]> ]> {
+  let summary = "load a DPU program onto an allocated DPU set";
+  let description = [{
+    Loads the referenced `upmem.dpu_program` onto every DPU of `hierarchy`
+    (the SDK's `dpu_load`). Expensive -- typically 50-100x a kernel launch --
+    so where it sits is a scheduling decision: once per workload lifetime
+    when the program stays resident, per operator switch when the set is
+    timeshared. Replaces whatever program a previous `upmem.load_program`
+    put on the same set.
+
+    ```mlir
+    upmem.load_program @dpu_kernels::@program on %dpus : !upmem.hierarchy<64x16>
+    ```
+  }];
+  let arguments = (ins SymbolRefAttr:$dpu_program_ref, DeviceHierarchyType:$hierarchy);
+
+  let assemblyFormat = [{
+     $dpu_program_ref `on` $hierarchy attr-dict `:` qualified(type($hierarchy))
   }];
 
   let extraClassDeclaration = [{
@@ -527,8 +554,9 @@ def FreeDPUsOp: Upmem_Op <"free_dpus", [MemoryEffects<[MemFree<DpuResource>]>]>{
 def WaitForOp : Upmem_Op<"wait_for", [MemoryEffects<[MemRead<DpuResource>, MemWrite<DpuResource>]>]> {
   let summary = "launch DPU execution and block until all DPUs complete";
   let description = [{
-    Triggers execution of the DPU program previously loaded by `upmem.alloc_dpus`
-    on all DPUs in the hierarchy. Blocks the host until every DPU finishes.
+    Triggers execution of the DPU program previously loaded by
+    `upmem.load_program` on all DPUs in the hierarchy. Blocks the host until
+    every DPU finishes.
     After this op, the results can be retrieved with `upmem.gather_from_array`.
 
     ```mlir

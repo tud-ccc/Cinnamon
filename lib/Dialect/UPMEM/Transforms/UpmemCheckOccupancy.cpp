@@ -28,11 +28,11 @@ struct Capacities {
   int64_t wram = 0;
 };
 
-/// Read the capacities off the accelerator `alloc` runs on. Returns nullopt if
+/// Read the capacities off the accelerator `load` runs on. Returns nullopt if
 /// the accelerator, its platform, or either level is missing -- the caller
 /// reports that, rather than quietly checking nothing.
-std::optional<Capacities> capacitiesOf(AllocDPUsOp alloc) {
-  auto block = alloc->getParentOfType<cinm::ComputeBlockOp>();
+std::optional<Capacities> capacitiesOf(LoadProgramOp load) {
+  auto block = load->getParentOfType<cinm::ComputeBlockOp>();
   if (!block)
     return std::nullopt;
   auto accelerator = block.getAcceleratorAttr();
@@ -42,7 +42,7 @@ std::optional<Capacities> capacitiesOf(AllocDPUsOp alloc) {
   if (!platform)
     return std::nullopt;
 
-  MLIRContext *ctx = alloc->getContext();
+  MLIRContext *ctx = load->getContext();
   Capacities result;
   for (auto [space, out] : {std::pair{DpuMemSpace::MRAM, &result.mram},
                             std::pair{DpuMemSpace::WRAM, &result.wram}}) {
@@ -65,19 +65,19 @@ struct UpmemCheckOccupancyPass
     // Only programs something actually loads are checked: --upmem-dedup-kernels
     // can leave a program behind with no users, and a dead kernel occupies
     // nothing.
-    llvm::DenseMap<Operation *, AllocDPUsOp> loaders;
-    module->walk([&](AllocDPUsOp alloc) {
-      if (DpuProgramOp program = alloc.getDpuProgram())
-        loaders.try_emplace(program, alloc);
+    llvm::DenseMap<Operation *, LoadProgramOp> loaders;
+    module->walk([&](LoadProgramOp load) {
+      if (DpuProgramOp program = load.getDpuProgram())
+        loaders.try_emplace(program, load);
     });
 
-    for (auto [op, alloc] : loaders) {
+    for (auto [op, load] : loaders) {
       auto program = cast<DpuProgramOp>(op);
       Capacities capacities{mramSize, wramSize};
       if (!mramSize || !wramSize) {
-        std::optional<Capacities> declared = capacitiesOf(alloc);
+        std::optional<Capacities> declared = capacitiesOf(load);
         if (!declared) {
-          alloc->emitError("cannot check whether @")
+          load->emitError("cannot check whether @")
               << program.getSymName()
               << " fits: no accelerator with an mram and a wram level is in "
                  "scope, and the mram-size/wram-size options do not supply "

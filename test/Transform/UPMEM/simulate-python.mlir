@@ -19,7 +19,8 @@ module {
       %dim_0 = memref.dim  %2, %c1 : memref<?x?xf32>
       %alloc = memref.alloc(%dim) {alignment = 64 : i64, upmem.sim_cost = 1.000000e+00 : f64} : memref<?xf32>
       %4 = bufferization.to_tensor %alloc : memref<?xf32> to tensor<?xf32>
-      %5 = upmem.alloc_dpus with program @dpu_kernels_0::@program  : !upmem.hierarchy<1x16>
+      %5 = upmem.alloc_dpus : !upmem.hierarchy<1x16>
+      upmem.load_program @dpu_kernels_0::@program on %5 : !upmem.hierarchy<1x16>
       scf.for %arg4 = %c0 to %dim step %c16 {
         %subview = memref.subview %alloc[%arg4] [16] [1]  : memref<?xf32> to memref<16xf32, strided<[1], offset: ?>>
         memref.copy %3, %subview  : memref<16xf32> to memref<16xf32, strided<[1], offset: ?>>
