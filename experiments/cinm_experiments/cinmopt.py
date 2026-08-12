@@ -107,6 +107,39 @@ def exhaustive_search(
     return out_dir
 
 
+def dump_space(
+    src: pathlib.Path,
+    out_dir: pathlib.Path,
+    *,
+    infer_opts: dict | None = None,
+    cinm_opt: pathlib.Path = DEFAULT_CINM_OPT,
+) -> pathlib.Path:
+    """Build each function's config space and dump
+    {out_dir}/infer_{fn_name}/space.json, evaluating nothing and committing
+    nothing (the pass's dump-space-only mode). The dump carries per-param
+    doc strings and, for permutation params, the full orderings table with
+    copy-pasteable eval-solution assignments -- the input of the manual
+    ATiM-transcription workflow. Cheap: no simulator runs, only the
+    constraint solve. Returns out_dir."""
+    out_dir = pathlib.Path(out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    opts = {
+        "dump-dir": str(out_dir),
+        "dump-space-only": True,
+        **(infer_opts or {}),
+    }
+    r = _run(
+        src,
+        opts,
+        out_file=out_dir / "out.mlir",
+        cinm_opt=cinm_opt,
+        log_file=out_dir / "cinm-opt.log",
+    )
+    if r.returncode != 0:
+        raise RuntimeError(f"dump_space failed for {src}; see {out_dir}/cinm-opt.log")
+    return out_dir
+
+
 def random_sample(
     src: pathlib.Path,
     out_dir: pathlib.Path,

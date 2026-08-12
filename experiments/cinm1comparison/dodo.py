@@ -27,7 +27,6 @@ from __future__ import annotations
 import dataclasses
 import os
 import pathlib
-import shutil
 import sys
 
 import pandas as pd
@@ -42,6 +41,7 @@ sys.path.insert(0, str(EXPERIMENTS_DIR))
 
 
 from cinm_experiments import cinm1, cinmopt, compile_run, measurements, pools, ALL_PRIMS  # noqa: E402
+from cinm_experiments import doit_blocks  # noqa: E402
 from cinm_experiments import prims as prim_defs  # noqa: E402
 from cinm_experiments.split_source import list_functions, split_source  # noqa: E402
 
@@ -127,48 +127,33 @@ class Paths:
     def cinm2_unconstrained_results_dir(self, prim: str) -> pathlib.Path:
         return self.prim_dir(prim) / "cinm2_unconstrained_results"
 
-    def compile_root(self, prim: str) -> pathlib.Path:
-        return self.prim_dir(prim) / "compiled"
+    def roots(self, prim: str) -> doit_blocks.MeasureRoots:
+        """The per-prim compile/run layout, as the shared doit_blocks
+        machinery consumes it. The bench marker it derives is per-config and
+        touched whether the run succeeded or not (bench_one_config), so an
+        interrupted `doit bench` resumes config-by-config."""
+        return doit_blocks.MeasureRoots(
+            compile_root=self.prim_dir(prim) / "compiled",
+            run_root=self.prim_dir(prim) / "run",
+        )
 
-    def config_dir(self, prim: str, config: compile_run.Config) -> pathlib.Path:
-        return self.compile_root(prim) / config.system / config.fn_name / config.label
+    def compile_root(self, prim: str) -> pathlib.Path:
+        return self.roots(prim).compile_root
 
     def compile_marker(self, prim: str, config: compile_run.Config) -> pathlib.Path:
-        return self.config_dir(prim, config) / "compile.done"
+        return self.roots(prim).compile_marker_of(config)
 
     def bench_bin(self, prim: str, config: compile_run.Config) -> pathlib.Path:
-        return self.config_dir(prim, config) / "bin" / f"bench_{config.fn_name}"
+        return self.roots(prim).bench_bin_of(config)
 
     def run_root(self, prim: str) -> pathlib.Path:
-        return self.prim_dir(prim) / "run"
-
-    def run_config_dir_id(
-        self, prim: str, system: str, fn_name: str, label: str
-    ) -> pathlib.Path:
-        return self.run_root(prim) / system / fn_name / label
-
-    def run_config_dir(self, prim: str, config: compile_run.Config) -> pathlib.Path:
-        return self.run_config_dir_id(prim, config.system, config.fn_name, config.label)
+        return self.roots(prim).run_root
 
     def run_output_dir(self, prim: str, config: compile_run.Config) -> pathlib.Path:
-        return self.run_config_dir(prim, config) / "output"
-
-    def bench_marker_id(
-        self, prim: str, system: str, fn_name: str, label: str
-    ) -> pathlib.Path:
-        """Per-config bench-attempted marker (touched whether the run
-        succeeded or not -- see _bench_one_config), sibling of that config's
-        output/ dir. Lets doit save bench progress config-by-config instead
-        of only per-prim, so an interrupted `doit bench` resumes where it
-        left off. Takes the bare (system, fn_name, label) identity rather
-        than a full Config so bench_cinm1/bench_cinm2 tasks can reference
-        each other's markers (to chain hardware runs into one global
-        sequence, see task_compile_cinm1/task_cinm2_search) without needing
-        each other's Config objects (fn_module/lower/params)."""
-        return self.run_config_dir_id(prim, system, fn_name, label) / "bench.done"
+        return self.roots(prim).run_output_dir_of(config)
 
     def bench_marker(self, prim: str, config: compile_run.Config) -> pathlib.Path:
-        return self.bench_marker_id(prim, config.system, config.fn_name, config.label)
+        return self.roots(prim).bench_marker_of(config)
 
     def comparison_csv(self, prim: str) -> pathlib.Path:
         return self.prim_dir(prim) / "comparison.csv"
@@ -320,8 +305,8 @@ class _Cinm2SearchGroup:
     system must be "cinm2" + <the basename suffix task_cinm2_search should
     append to "cinm2_search"/"compile_cinm2"/"bench_cinm2">, e.g. "cinm2" (no
     suffix) or "cinm2_unconstrained" ("_unconstrained" suffix) -- not an
-    independently-chosen tag -- because _prev_bench_task_dep reconstructs a
-    predecessor config's bench basename as f"bench_{system}" purely from its
+    independently-chosen tag -- because _bench_task_name reconstructs a
+    config's bench basename as f"bench_{system}" purely from its
     system string (config_ids doesn't carry the suffix separately)."""
 
     system: str  # "cinm2" | "cinm2_unconstrained"
@@ -380,7 +365,7 @@ def _config_ids():
     independently.
 
     Spanning every prim in one sequence (rather than scoping this per prim,
-    as it used to) matters for _prev_bench_task_dep: each prim's benches
+    as it used to) matters for the bench chain (_bench_chain): each prim's benches
     must run strictly one at a time (real hardware, wall-clock timing), but
     with two independent per-prim chains -- each starting its own unchained
     i==0 -- nothing stopped doit's dispatcher from interleaving them (both
@@ -420,49 +405,27 @@ def _config_ids():
                 yield prim, "cinm2_unconstrained", fn_name, str(seed), None, None, None
 
 
-def _config_index(config_ids: list[tuple]) -> dict[tuple[str, str, str, str], int]:
-    return {
-        (prim, system, fn_name, label): i
-        for i, (prim, system, fn_name, label, *_rest) in enumerate(config_ids)
-    }
+def _bench_task_name(prim: str, system: str, fn_name: str, label: str) -> str:
+    """The fully qualified bench task name of one config -- the system is
+    the basename suffix (see _Cinm2SearchGroup on why system and basename
+    must agree)."""
+    return f"bench_{system}:{prim}:{fn_name}:{label}"
 
 
-def _prev_bench_task_dep(
-    config_ids: list[tuple],
-    index_of: dict[tuple[str, str, str, str], int],
-    prim: str,
-    system: str,
-    fn_name: str,
-    label: str,
-) -> list[str]:
-    """task_dep entry (or none, for the first config overall) on the
-    bench_cinm1/bench_cinm2 subtask immediately before (prim, system,
-    fn_name, label) in `config_ids`'s order. Chains those tasks -- which,
-    unlike compile, must run strictly one at a time so concurrent hardware
-    runs don't skew wall-clock timing -- into one global sequence across
-    every prim and system, even though they're generated by different task
-    creator functions (doit doesn't allow two creators to share a basename,
-    so there's no single 'bench' task group to chain within).
-
-    The predecessor can belong to a *different* prim than `prim` (the last
-    entry of one prim's sequence chains to the first entry of the next, per
-    _config_ids) -- so the returned task name uses the predecessor's own
-    prim, not the `prim` argument.
-
-    Must be task_dep, not file_dep on the predecessor's bench.done marker:
-    doit's implicit file_dep -> task_dep inference (control.py
-    set_implicit_deps) is computed once, right when each delayed creator's
-    tasks are generated, against whatever targets are already known at that
-    moment -- it does NOT retroactively wire up a file_dep against a target
-    a *different*, not-yet-expanded delayed creator produces later. Naming
-    the task directly resolves correctly instead (via the loader's
-    delayed-placeholder machinery), regardless of which creator happens to
-    run first."""
-    i = index_of[(prim, system, fn_name, label)]
-    if i == 0:
-        return []
-    prev_prim, prev_system, prev_fn_name, prev_label = config_ids[i - 1][:4]
-    return [f"bench_{prev_system}:{prev_prim}:{prev_fn_name}:{prev_label}"]
+def _bench_chain(config_ids: list[tuple]) -> doit_blocks.BenchChain:
+    """The single strict hardware-bench sequence, spanning every prim and
+    system, in _config_ids order -- the predecessor of a task can belong to
+    a different prim (the last entry of one prim's sequence chains to the
+    first of the next). Both task creators build it from the same
+    config_ids, so they agree on the order without sharing state; see
+    doit_blocks.BenchChain for why chaining must be by task_dep and what
+    interleaving it prevents."""
+    chain = doit_blocks.BenchChain()
+    chain.register_all(
+        _bench_task_name(prim, system, fn_name, label)
+        for prim, system, fn_name, label, *_rest in config_ids
+    )
+    return chain
 
 
 @create_after(
@@ -492,10 +455,10 @@ def task_cinm2_search():
         )
 
     config_ids = list(_config_ids())
-    index_of = _config_index(config_ids)
+    chain = _bench_chain(config_ids)
     for prim in PRIMS:
         op = prim.removeprefix("prim_")
-        compile_root = PATHS.compile_root(prim)
+        roots = PATHS.roots(prim)
         for fn_name in list_functions(PATHS.source_mlir(prim)):
             fn_module = PATHS.split_module(prim, fn_name)
             for group in _cinm2_search_groups(prim, fn_name):
@@ -559,7 +522,10 @@ def task_cinm2_search():
                         "file_dep": [str(pool_csv)],
                         "targets": [str(marker)],
                         "actions": [
-                            (_compile_best, [config, pool_csv, compile_root, marker])
+                            (
+                                doit_blocks.compile_best,
+                                [config, pool_csv, roots, marker],
+                            )
                         ],
                     }
 
@@ -580,17 +546,15 @@ def task_cinm2_search():
                         # happens, and the stale measurement would be one of
                         # another group entirely.
                         "file_dep": [str(marker), str(pool_csv)],
-                        "task_dep": _prev_bench_task_dep(
-                            config_ids, index_of, prim, group.system, fn_name, seed
+                        "task_dep": chain.prev_of(
+                            _bench_task_name(prim, group.system, fn_name, seed)
                         ),
                         "targets": [str(bench_marker)],
                         "actions": [
                             (
-                                _bench_one_config,
-                                [config],
+                                doit_blocks.bench_one_config,
+                                [config, roots],
                                 dict(
-                                    compile_root=compile_root,
-                                    run_root=PATHS.run_root(prim),
                                     iters=OPTS["iters"],
                                     bench_marker=bench_marker,
                                 ),
@@ -602,59 +566,24 @@ def task_cinm2_search():
 # ── compile ──────────────────────────────────────────────────────────────────
 
 
-def _compile_best(
-    config: compile_run.Config,
-    pool_csv: pathlib.Path,
-    compile_root: pathlib.Path,
-    marker: pathlib.Path,
-) -> bool:
-    """Never raises: a config that fails to compile is recorded (printed +
-    left out of the marker's sibling bin/) but must not block sibling
-    configs' bench task from running -- doit treats a raised exception as a
-    hard failure and skips every downstream task that depends on it, which
-    is more than we want for one bad config out of many. discover_compiled()
-    already treats a missing bench_* binary as a per-config failure, so
-    downstream stages tolerate this fine."""
-    config.params = pools.best_in_pool(pool_csv)
-    if not config.params:
-        return False
-    return _compile_one(config, compile_root, marker)
-
-
-def _compile_one(
-    config: compile_run.Config, compile_root: pathlib.Path, marker: pathlib.Path
-) -> bool:
-    """Never raises: a config that fails to compile is recorded (printed +
-    left out of the marker's sibling bin/) but must not block sibling
-    configs' bench task from running -- doit treats a raised exception as a
-    hard failure and skips every downstream task that depends on it, which
-    is more than we want for one bad config out of many. discover_compiled()
-    already treats a missing bench_* binary as a per-config failure, so
-    downstream stages tolerate this fine."""
-    compiled = compile_run.compile_config(config, compile_root=compile_root)
-    if not compiled.ok:
-        print(
-            f"  FAIL compile: {config.system} {config.fn_name} {config.label}: {compiled.error}"
-        )
-    marker.parent.mkdir(parents=True, exist_ok=True)
-    marker.touch()
-    return True
+# Compile/bench actions live in cinm_experiments.doit_blocks (compile_one,
+# compile_best, bench_one_config) -- shared with the other experiment dodos.
 
 
 @create_after(executed="pairs", creates=["bench_cinm1", "compile_cinm1"])
 def task_compile_cinm1():
     """Compile CINM 1.0 once per enumerated working group -- no search, its
     tile sizes are inferred deterministically. Also generates that config's
-    bench_cinm1 task (basename "bench_cinm1", see _bench_one_config) right
-    here, so the set of CINM 1.0 configs is derived exactly once instead of
-    separately for compile and bench."""
+    bench_cinm1 task (basename "bench_cinm1", see doit_blocks.bench_one_config)
+    right here, so the set of CINM 1.0 configs is derived exactly once instead
+    of separately for compile and bench."""
     config_ids = list(_config_ids())
-    index_of = _config_index(config_ids)
+    chain = _bench_chain(config_ids)
     for prim, system, fn_name, label, dpus, tasklets, _ in config_ids:
         if system != "cinm1":
             continue
         op = prim.removeprefix("prim_")
-        compile_root = PATHS.compile_root(prim)
+        roots = PATHS.roots(prim)
         fn_module = PATHS.split_module(prim, fn_name)
         config = compile_run.Config(
             system="cinm1",
@@ -675,7 +604,7 @@ def task_compile_cinm1():
             # one more working group must not recompile the others.
             "file_dep": [str(fn_module)],
             "targets": [str(marker)],
-            "actions": [(_compile_one, [config, compile_root, marker])],
+            "actions": [(doit_blocks.compile_one, [config, roots, marker])],
         }
 
         bench_marker = PATHS.bench_marker(prim, config)
@@ -683,17 +612,13 @@ def task_compile_cinm1():
             "basename": "bench_cinm1",
             "name": f"{prim}:{fn_name}:{label}",
             "file_dep": [str(marker)],
-            "task_dep": _prev_bench_task_dep(
-                config_ids, index_of, prim, system, fn_name, label
-            ),
+            "task_dep": chain.prev_of(_bench_task_name(prim, system, fn_name, label)),
             "targets": [str(bench_marker)],
             "actions": [
                 (
-                    _bench_one_config,
-                    [config],
+                    doit_blocks.bench_one_config,
+                    [config, roots],
                     dict(
-                        compile_root=compile_root,
-                        run_root=PATHS.run_root(prim),
                         iters=OPTS["iters"],
                         bench_marker=bench_marker,
                     ),
@@ -769,40 +694,6 @@ def _discover_configs(prim: str) -> list[compile_run.Config]:
     return configs
 
 
-def _bench_one_config(
-    config: compile_run.Config,
-    *,
-    compile_root: pathlib.Path,
-    run_root: pathlib.Path,
-    iters: int,
-    bench_marker: pathlib.Path,
-) -> bool:
-    """Never raises, like _compile_one/_compile_best: a config whose compile
-    failed (compile.done marker present, no bench_* binary -- compile is
-    fallible, see _compile_one) is skipped rather than treated as a hard
-    doit failure, so it doesn't block sibling configs' bench tasks. The
-    bench.done marker is always touched, even when the hardware run itself
-    fails, so a flaky config doesn't get retried on every `doit` invocation
-    -- rerun it explicitly via `doit retry_failed_bench`."""
-    compiled = compile_run.discover_compiled([config], compile_root=compile_root)[0]
-    if not compiled.ok:
-        print(
-            f"  SKIP bench (not compiled): {config.system} {config.fn_name} {config.label}"
-        )
-    else:
-        r = compile_run.run_config(compiled, run_root=run_root, iters=iters)
-        if not r.ok and compile_run.is_dpu_allocation_error(r.error):
-            # retry
-            r = compile_run.run_config(compiled, run_root=run_root, iters=iters)
-        if not r.ok:
-            print(
-                f"  FAIL run: {config.system} {config.fn_name} {config.label}: {r.error[:200]}"
-            )
-    bench_marker.parent.mkdir(parents=True, exist_ok=True)
-    bench_marker.touch()
-    return True
-
-
 def task_bench():
     return {
         "actions": None,
@@ -814,26 +705,13 @@ def task_bench():
 
 
 def _retry_failed_bench() -> bool:
-    """Delete the bench.done marker of every config whose compile succeeded
-    but whose run didn't leave a measurable result (see _bench_one_config
-    and measurements.net_time_ms) -- i.e. every config that failed on
-    hardware instead of just being un-benched yet. With the marker gone,
-    the next `doit bench_cinm1 bench_cinm2` (or plain `doit`) retries just
-    those configs; configs that already benched successfully are
+    """Per-prim doit_blocks.clear_failed_bench: clears the bench.done marker
+    of every config that failed on hardware (compile succeeded, no
+    measurable result), so the next `doit bench_cinm1 bench_cinm2` (or plain
+    `doit`) retries just those; successfully benched configs are
     untouched."""
-    n = 0
     for prim in PRIMS:
-        for c in _discover_configs(prim):
-            bin_path = PATHS.bench_bin(prim, c)
-            bench_marker = PATHS.bench_marker(prim, c)
-            if not (bin_path.exists() and bench_marker.exists()):
-                continue
-            output_dir = PATHS.run_output_dir(prim, c)
-            if measurements.net_time_ms(output_dir) is None:
-                print(f"  retry bench: {c.system} {c.fn_name} {c.label}")
-                bench_marker.unlink()
-                n += 1
-    print(f"cleared {n} failed bench(es)")
+        doit_blocks.clear_failed_bench(_discover_configs(prim), PATHS.roots(prim))
     return True
 
 
@@ -852,22 +730,12 @@ def task_retry_failed_bench():
 
 
 def _retry_failed_compiles() -> bool:
-    """Delete the compile output of every config whose compile.done marker
-    exists but whose bench_* binary doesn't -- i.e. every config _compile_one
-    recorded as failed (see its docstring) instead of leaving broken. With
-    the marker gone, the next `doit compile_cinm1` / `compile_cinm2` (or
-    plain `doit`) sees a missing target and retries just those configs;
-    configs that already compiled are untouched."""
-    n = 0
+    """Per-prim doit_blocks.clear_failed_compiles: removes the compile
+    output of every config recorded as failed (marker without binary), so
+    the next `doit` sees a missing target and retries just those; compiled
+    configs are untouched."""
     for prim in PRIMS:
-        for c in _discover_configs(prim):
-            marker = PATHS.compile_marker(prim, c)
-            bench_bin = PATHS.bench_bin(prim, c)
-            if marker.exists() and not bench_bin.exists():
-                print(f"  retry: {c.system} {c.fn_name} {c.label}")
-                shutil.rmtree(marker.parent)
-                n += 1
-    print(f"cleared {n} failed compile(s)")
+        doit_blocks.clear_failed_compiles(_discover_configs(prim), PATHS.roots(prim))
     return True
 
 

@@ -74,9 +74,9 @@ def best_per_seed(results_dir: pathlib.Path):
 
 
 def best_in_pool(pool_csv: pathlib.Path):
-    """Yield (fn_name, seed, params_dict) for the lowest-cost visited row of
-    every {results_dir}/{fn_name}/seed_{N}/pool.csv (the output of
-    cinmopt.bo_multiseed)."""
+    """The lowest-cost visited row of pool_csv as a params dict (the form
+    eval_solution() consumes), or None if the pool is missing or has no
+    valid visited row."""
     if not pool_csv.exists():
         return None
     df = pd.read_csv(pool_csv)
@@ -88,3 +88,34 @@ def best_in_pool(pool_csv: pathlib.Path):
     cols = param_cols(df)
     row = df.loc[df["cost"].astype(float).idxmin()]
     return {c: int(row[c]) for c in cols}
+
+
+def _rows_to_params(df: pd.DataFrame) -> list[dict]:
+    cols = param_cols(df)
+    return [{c: int(row[c]) for c in cols} for _, row in df.iterrows()]
+
+
+def top_k(pool_csv: pathlib.Path, k: int) -> list[dict]:
+    """The k lowest-predicted-cost valid configs of pool_csv, each as a
+    params dict for eval_solution() -- the evaluation pipeline's B3 block
+    (best-of-space by the cost model; docs/EvaluationImplementationPlan.md).
+    Rows whose cost is not a number (never evaluated / timed out) are
+    excluded, which for a full exhaustive pool means only configs the
+    simulator could price compete for the top."""
+    df = load_valid(pool_csv)
+    if df.empty:
+        return []
+    return _rows_to_params(df.sort_values("cost").head(k))
+
+
+def sample_rows(pool_csv: pathlib.Path) -> list[dict]:
+    """Every visited config of pool_csv as a params dict for
+    eval_solution(), in row order -- the evaluation pipeline's B1->B2 glue
+    (the uniform sample's pool.csv only contains the sampled rows unless
+    dump-full-pool was forced on, and only visited ones carry a cost)."""
+    if not pool_csv.exists():
+        return []
+    df = pd.read_csv(pool_csv)
+    if "visited" in df.columns:
+        df = df[df["visited"] == 1]
+    return _rows_to_params(df)
