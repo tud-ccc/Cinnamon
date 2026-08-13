@@ -280,6 +280,13 @@ def UpmemAnnotateCostsPass
            "If non-empty, write a detailed cost breakdown (one row per "
            "compute_block x cost category x sub-label, e.g. transfer/scatter) "
            "to this CSV path">,
+    Option<"programDumpDir", "program-dump-dir", "std::string", "\"\"",
+           "If non-empty, also write each simulated DPU program to "
+           "<dir>/<kernel>.cnmprog.json in the symbolic interchange format "
+           "the Python reference cost model reads (Predictor/cnmprog.py), so "
+           "the two simulators can be cross-checked on the same program. "
+           "Debugging aid; ignored by the opcount simulator, which builds no "
+           "instruction-level program">,
   ];
 }
 

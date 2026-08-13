@@ -287,44 +287,92 @@ static LogicalResult printOperation(CppEmitter &emitter,
   return success();
 }
 
+/// Emits the `[...]` subscript for a memref access as a single linearized
+/// element index, `i0*s0 + i1*s1 + ...` over the memref's own strides.
+///
+/// Every DPU buffer is declared as a flat array (see the memref::AllocaOp and
+/// StaticAllocOp emitters), so a rank-N access has to be flattened.
+///
+/// An access whose layout has no static strides is an error rather
+/// than a guess -- there is no correct flat subscript to emit for it.
+static LogicalResult printLinearSubscript(CppEmitter &emitter, Operation *op,
+                                          MemRefType type,
+                                          Operation::operand_range indices) {
+  raw_ostream &os = emitter.ostream();
+  os << "[";
+
+  SmallVector<int64_t> strides;
+  int64_t offset = 0;
+  if (!indices.empty()) {
+    if (failed(type.getStridesAndOffset(strides, offset)))
+      return op->emitError(
+          "cannot emit C for this access: memref layout is not strided");
+    if (ShapedType::isDynamic(offset) ||
+        llvm::any_of(strides, ShapedType::isDynamic))
+      return op->emitError("cannot emit C for this access: memref has dynamic "
+                           "strides or offset");
+  }
+
+  bool empty = true;
+  auto separate = [&] {
+    if (!empty)
+      os << " + ";
+    empty = false;
+  };
+
+  if (offset != 0) {
+    separate();
+    os << offset;
+  }
+
+  for (auto [index, stride] : llvm::zip_equal(indices, strides)) {
+    if (stride == 0)
+      continue;
+    // A constant-zero index contributes nothing whatever the stride.
+    if (auto cst = index.getDefiningOp<arith::ConstantOp>())
+      if (auto intAttr = dyn_cast<IntegerAttr>(cst.getValue())) {
+        if (intAttr.getInt() == 0)
+          continue;
+        separate();
+        os << intAttr.getInt() * stride;
+        continue;
+      }
+    separate();
+    if (stride != 1)
+      os << "(";
+    if (failed(printValueOrConstant(emitter, index)))
+      return failure();
+    if (stride != 1)
+      os << " * " << stride << ")";
+  }
+
+  if (empty)
+    os << "0";
+  os << "]";
+  return success();
+}
+
 static LogicalResult printOperation(CppEmitter &emitter,
                                     memref::LoadOp loadOp) {
   raw_ostream &os = emitter.ostream();
   if (failed(emitter.emitAssignPrefix(*loadOp)))
     return failure();
 
-  os << emitter.getOrCreateName(loadOp->getOperand(0));
-  if (loadOp->getNumOperands() > 1) {
-    os << "[";
-    if (printValueOrConstant(emitter, loadOp->getOperand(1)).failed()) {
-      return failure();
-    }
-    os << "]";
-  } else {
-    os << "[0]";
-  }
-  return success();
+  os << emitter.getOrCreateName(loadOp.getMemRef());
+  return printLinearSubscript(emitter, loadOp, loadOp.getMemRefType(),
+                              loadOp.getIndices());
 }
 
 static LogicalResult printOperation(CppEmitter &emitter,
                                     memref::StoreOp storeOp) {
   raw_ostream &os = emitter.ostream();
-  os << emitter.getOrCreateName(storeOp->getOperand(1));
-  if (storeOp.getNumOperands() > 2) {
-    os << "[";
-    if (printValueOrConstant(emitter, storeOp->getOperand(2)).failed()) {
-      return failure();
-    }
-    os << "]";
-  } else {
-    os << "[0]";
-  }
+  os << emitter.getOrCreateName(storeOp.getMemRef());
+  if (failed(printLinearSubscript(emitter, storeOp, storeOp.getMemRefType(),
+                                  storeOp.getIndices())))
+    return failure();
   os << " = ";
 
-  if (printValueOrConstant(emitter, storeOp->getOperand(0)).failed()) {
-    return failure();
-  }
-  return success();
+  return printValueOrConstant(emitter, storeOp.getValueToStore());
 }
 
 static LogicalResult
