@@ -55,9 +55,11 @@ def a2_numbers() -> list[str]:
     if rejected:
         out.append(_cmd("atwoRejectedLowersPct", f"{100.0 * lowers / rejected:.1f}"))
         # Rule of three: when nothing in the rejected region lowers, the 95%
-        # upper bound on the false-negative rate is 3/n.
+        # upper bound on the false-negative rate is 3/n -- pooled over every
+        # probed function, so it is small (0.038% at 7800) and needs
+        # significant digits, not decimal places.
         if lowers == 0:
-            out.append(_cmd("atwoFalseNegativeBoundPct", f"{300.0 / rejected:.1f}"))
+            out.append(_cmd("atwoFalseNegativeBoundPct", f"{300.0 / rejected:.2g}"))
     return out
 
 
