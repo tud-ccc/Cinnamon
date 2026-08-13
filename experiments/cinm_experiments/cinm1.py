@@ -11,7 +11,7 @@ order:
      sets a `cinm.available_platforms = [#foo]` list attribute, not a
      committed platform/accelerator -- to_cinm1_accelerator() gets there with
      a text substitution on a copy of the file, injecting a fixed CINM 1.0
-     accelerator attribute (`on accelerator #upmem.array<1xDxT, #foo>`)
+     accelerator attribute (`on accelerator #upmem.array<DxT, #foo>`)
      directly.
   2. --cinm-infer-tile-sizes (+ tiling + isolate/deisolate) then picks tile
      sizes deterministically for that fixed working group.
@@ -44,13 +44,13 @@ def to_cinm1_accelerator(text: str, dpus: int, tasklets: int) -> str:
     """Replace `cinm.available_platforms = [#foo]` (--cinm-assign-platforms'
     output -- a list of candidates, not a committed platform/accelerator)
     with a fixed CINM 1.0 accelerator attribute directly on the op:
-    `cinm.compute on accelerator #upmem.array<1xDxT, #foo>`. Assumes a single
+    `cinm.compute on accelerator #upmem.array<DxT, #foo>`. Assumes a single
     candidate platform, which always holds in this codebase."""
     m = _AVAILABLE_PLATFORMS_RE.search(text)
     if not m:
         raise RuntimeError("no cinm.available_platforms attribute found")
     platform = m.group(1)
-    accel = f"on accelerator #upmem.array<1x{dpus}x{tasklets}, {platform}>"
+    accel = f"on accelerator #upmem.array<{dpus}x{tasklets}, {platform}>"
     replaced, n = _COMPUTE_RE.subn(f"cinm.compute {accel}", text)
     if n == 0:
         raise RuntimeError("no cinm.compute op found")
