@@ -275,6 +275,40 @@ Record space-construction/enumeration wall time into `space.json`
 (it is RQ2's "offline/setup time" for our side; the search side is already
 in `timings.csv`).
 
+### 3.6 Optional extension (nice-to-have, gates nothing) — concurrent group execution via the `async` dialect
+
+Recorded 2026-08-13. The whole-program arm gives independent operator
+classes *disjoint* groups, so blocks with no data dependency (3MM's
+parallel structure, the transformer's QKV) could in principle execute
+concurrently — but execution is synchronous end to end: `upmem.wait_for`
+blocks the host thread until the launch retires, so blocks serialize in
+program order regardless of the allocation. Two consequences:
+
+- **Interpretation guard for RQ4** (mirrored as a comment in the paper's
+  §8.4): the parallel instances demonstrate that whole-program allocation
+  *preserves staticity* — no reload, no rescatter — which is the actual
+  contribution. They do **not** demonstrate concurrency speedup, and
+  fig:wholeprogram's text must not read as if disjoint groups overlap in
+  time. All RQ4 deltas come from the load/scatter terms.
+- **The extension, if we want the parallel bars to also show overlap**: a
+  pass lowering the committed `cinm.compute_block` graph onto the upstream
+  `async` dialect (https://mlir.llvm.org/docs/Dialects/AsyncDialect/).
+  Sketch: outline each compute_block into an `async.func`; each SSA edge
+  between blocks becomes an `async.token`/`async.value<...>` dependency;
+  `async.await` only where a result is consumed by the host or at function
+  exit. Correctness structure falls out of what Phase 3a already built:
+  pinned groups are disjoint by construction, so concurrent launches on
+  different groups have no device-level hazard, while members of one
+  (merged or timeshared) group are exactly the ones whose tokens must
+  chain — the dependency edges plus a per-group serialization token give
+  both. Runtime side: either link MLIR's async runtime and make `upmemrt`
+  thread-safe, or — cheaper — keep one host thread and use the UPMEM SDK's
+  own `dpu_launch(set, DPU_ASYNCHRONOUS)` with a per-set `dpu_sync` behind
+  `upmem.wait_for`, which overlaps sets without host threading.
+- Not scheduled in any phase. If it lands, it slots after Phase 3a with no
+  changes to the RQ4 harness (same drivers, same breakdown; the kernel
+  segments of independent blocks simply overlap in wall clock).
+
 ---
 
 ## 4. Harness changes (`experiments/cinm_experiments/`)
@@ -522,7 +556,9 @@ cut.)
 
 **Phase 4 — conditional / polish**
 A2 rejected-region sampling (§3.4); N1 only if RQ3 shows kernel-dominated
-residual; numbers.py; freeze `results/` for the paper.
+residual; numbers.py; freeze `results/` for the paper. Strictly optional
+beyond that: §3.6 async lowering for concurrent group execution — only if
+everything above has landed.
 
 ---
 
