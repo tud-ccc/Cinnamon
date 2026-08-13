@@ -93,6 +93,11 @@ struct UpmemInferenceOptions {
   cinm::InferenceOptions inference;
   bool annotateOpCosts = false;
   bool useMRAMTiling = true;
+  // Scatter specialisation (constant scatter -> broadcast, on-device init
+  // of uniform buffers) fires at the cnm level and again at the upmem
+  // level; this switch disables both sites, or the A1 ablation
+  // under-reports the capability.
+  bool scatterSpecialisation = true;
   bool fusionEdges = true;
   bool debugPrintsInPipeline = false;
   UpmemSimulatorId simulator = UpmemSimulatorId::CYCLE_ACCURATE;
@@ -458,8 +463,9 @@ struct UpmemInferencePlugin : cinm::InferencePlugin {
   /// linalg -> cnm -> bufferized, everything up to and including
   /// bufferization. Split from the back pipeline only because the latter has
   /// to see the launch bodies as linalg on memrefs.
-  static std::unique_ptr<PassManager> buildFrontPipeline(MLIRContext *ctx,
-                                                         bool debug) {
+  static std::unique_ptr<PassManager>
+  buildFrontPipeline(MLIRContext *ctx, const UpmemInferenceOptions &opts) {
+    bool debug = opts.debugPrintsInPipeline;
     auto pm = std::make_unique<PassManager>(ctx);
 
     // Step 2: distribute onto the workgroup, with the buffers in MRAM. The
@@ -499,7 +505,8 @@ struct UpmemInferencePlugin : cinm::InferencePlugin {
 
     // Step 3: bufferize
     pm->addPass(bufferization::createEmptyTensorEliminationPass());
-    pm->addPass(cnm::createCnmScatterOptimizationsPass());
+    if (opts.scatterSpecialisation)
+      pm->addPass(cnm::createCnmScatterOptimizationsPass());
     pm->addPass(createCSEPass());
     pm->addPass(createCanonicalizerPass());
     if (debug)
@@ -558,8 +565,9 @@ struct UpmemInferencePlugin : cinm::InferencePlugin {
 
   /// Everything after the launch bodies have been staged down to the leaf
   /// level.
-  static std::unique_ptr<PassManager> buildBackPipeline(MLIRContext *ctx,
-                                                        bool debug) {
+  static std::unique_ptr<PassManager>
+  buildBackPipeline(MLIRContext *ctx, const UpmemInferenceOptions &opts) {
+    bool debug = opts.debugPrintsInPipeline;
     auto pm = std::make_unique<PassManager>(ctx);
 
     // Staging has to see linalg on memrefs, so it runs after bufferization and
@@ -587,8 +595,15 @@ struct UpmemInferencePlugin : cinm::InferencePlugin {
     pm->addPass(cnm::createConvertCnmToUPMEMPass({}));
     // Right after the conversion, so the rest of the back pipeline sees the
     // narrowest transfer form each map allows -- in particular the occupancy
-    // check and the cost model, which read the ops' shapes.
-    pm->addPass(createUpmemSpecializeTransfersPass());
+    // check and the cost model, which read the ops' shapes. The broadcast
+    // narrowing is the upmem-level half of scatter specialisation; the
+    // block-collapsing rewrites are pure transfer-form narrowing and stay on
+    // either way.
+    {
+      UpmemSpecializeTransfersPassOptions specOpts;
+      specOpts.useBcXferCodegen = opts.scatterSpecialisation;
+      pm->addPass(createUpmemSpecializeTransfersPass(specOpts));
+    }
     pm->addPass(bufferization::createBufferLoopHoistingPass());
     {
       // auto &nested = pm->nestAny();
@@ -642,8 +657,8 @@ struct UpmemInferencePlugin : cinm::InferencePlugin {
 
   void warmUp(mlir::MLIRContext *ctx) override {
     if (!frontPipeline) {
-      frontPipeline = buildFrontPipeline(ctx, opts.debugPrintsInPipeline);
-      backPipeline = buildBackPipeline(ctx, opts.debugPrintsInPipeline);
+      frontPipeline = buildFrontPipeline(ctx, opts);
+      backPipeline = buildBackPipeline(ctx, opts);
     }
     simulator->warmUp();
   }
@@ -826,8 +841,8 @@ struct UpmemInferencePlugin : cinm::InferencePlugin {
     mlir::Location loc = trial.computeBlock->getLoc();
     MLIRContext *ctx = trial.computeBlock->getContext();
     if (!frontPipeline) {
-      frontPipeline = buildFrontPipeline(ctx, opts.debugPrintsInPipeline);
-      backPipeline = buildBackPipeline(ctx, opts.debugPrintsInPipeline);
+      frontPipeline = buildFrontPipeline(ctx, opts);
+      backPipeline = buildBackPipeline(ctx, opts);
     }
 
     // 1. Resolve this configuration's tiling factors and iteration orders onto
@@ -1165,6 +1180,7 @@ struct UpmemInferAcceleratorPass
     o.allocationGranularity = allocationGranularity;
     upmemOpts.annotateOpCosts = annotateOpCosts;
     upmemOpts.useMRAMTiling = useMRAMTiling;
+    upmemOpts.scatterSpecialisation = enableScatterSpecialisation;
     upmemOpts.fusionEdges = fusionEdges;
     upmemOpts.fixedDpus = fixedDpus;
     upmemOpts.fixedTasklets = fixedTasklets;
