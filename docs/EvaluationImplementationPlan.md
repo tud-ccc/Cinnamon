@@ -369,15 +369,13 @@ behaviour-preserving refactor, verified by `doit list` parity there.
   permutation tables (also used by the A2 Cartesian sampler and §7 helper).
 
 ### 4.3 P1 — predicted-vs-measured join for RQ3
-`aggregate.py` already aggregates predicted `cost.csv` per compile and
-`measurements.PREDICTED_TO_MEASURED` already aligns buckets. Missing:
-a `fidelity_frame(sample_dir)` that emits one row per (config, term) with
-`predicted_ms, measured_ms, share_of_total` for terms
-{transfer, kernel, combined} — the direct input of fig:fidelity and the
-paper's share-of-time weighting. Check the sample's compile step actually
-dumps `cost.csv` per config (it comes from `annotate-op-costs` /
-compute_cost path in `compile_run.py` — wire it into B2 if not on by
-default).
+**DONE 2026-08-13**: `cinm_experiments/fidelity.py::fidelity_frame` — one
+row per (config, term ∈ {transfer, kernel, combined}) with `predicted_ms,
+measured_ms, share_of_total`, joining ir/cost.csv (predicted) against
+output/*.csv (measured); configs missing either side are skipped. The
+check resolved itself: the bench Makefile's `bench-single` target already
+depends on `$(IR_DIR)/cost.csv`, so every B2 compile dumps the predicted
+breakdown — nothing to wire.
 
 ### 4.4 P1 — cinm1 arm fixes
 `cinm1.py` exists; the dodo TODO already lists "Fix the CINM1-like flow".
@@ -488,6 +486,20 @@ were obtained. Provenance, per source:
   it strengthens the "context only" framing).
 
 ### 6.2 Inventory (each = one script in `evaluation/`, input = `results/*.csv` only)
+
+**STATUS 2026-08-13: the whole layer exists and is verified.** B6 lives in
+`evaluation/assemble.py` (+ `doit assemble` with one sub-task per table;
+MISSING notes instead of failures; a stale assembly is removed when its
+inputs vanish), and all seven scripts below are written, each skipping
+cleanly when its input CSV is not assembled and taking `--results/--out`
+so they were verified end-to-end on synthetic data (figures rendered and
+inspected; tabulars escape LaTeX specials). `doit plots` runs assemble +
+every script and is safe at any stage; `rq2.csv`/`tab:walltime` already
+render real space-build times. One trap fixed on the way:
+`aggregate.iter_config_dirs` used to *create* the directory it reads,
+which would have let A1's "restricted space went empty" cells be
+fabricated from a reader-conjured directory — readers no longer mkdir,
+and A1's infeasible verdict now requires per-fn directories to exist.
 
 | Artifact | Script | Inputs (results/) | Notes |
 |---|---|---|---|
