@@ -23,12 +23,20 @@ CXXFLAGS = -O3 -std=c++17 \
            -I$(ROOT)/runtime/Upmem \
            -I$(UPMEM_HOME)/include/dpu
 
-LDFLAGS = -lUpmemDialectRuntime -ldpu -ldpuverbose -Wl,-s \
+# openblas backs the bench drivers' golden references (experiments/bench/
+# common.hpp): every run checks its output against an independent
+# implementation before its timings are written.
+LDFLAGS = -lUpmemDialectRuntime -ldpu -ldpuverbose -lopenblas -Wl,-s \
           -L$(UPMEM_HOME)/lib \
           -L$(ROOT)/build/lib
 
 # Passes to lower a upmem-level module to host LLVM IR.
 # Bufferize function boundaries first, then the standard lowering sequence.
+# buffer-results-to-out-params needs modify-public-functions: the benchmark
+# entry point is public, and without it the pass leaves the function returning
+# a freshly allocated memref. The bench drivers pass an out buffer and read the
+# result back from it, so the returned buffer would be dropped on the floor and
+# the output never written.
 # Unwrapping puts the per-block program loads onto the actual DPU-set values;
 # dedup then gives structurally identical programs one symbol, and the hoist
 # pass collapses each set's uniform loads into a single one at its
@@ -40,7 +48,7 @@ LOWER_PIPELINE = \
     --upmem-dedup-kernels \
     --upmem-hoist-load-programs \
     --one-shot-bufferize="bufferize-function-boundaries function-boundary-type-conversion=identity-layout-map" \
-    --buffer-results-to-out-params=hoist-static-allocs \
+    --buffer-results-to-out-params="hoist-static-allocs modify-public-functions" \
 		--affine-scalrep --affine-super-vectorize=vectorize-reductions\ virtual-vector-size=8 --affine-expand-index-ops-as-affine \
 		--convert-vector-to-amx --convert-vector-to-scf --convert-vector-to-llvm \
     --canonicalize --cse

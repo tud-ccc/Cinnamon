@@ -1,4 +1,20 @@
+// Shared harness for every bench driver in this directory.
+//
+// A driver supplies only what is specific to its primitive -- the kernel
+// signature, a table of problem sizes, how to fill the operands, and a golden
+// reference -- and calls bench::run<Op>(). Everything else (operand
+// distribution, timing loop, stats dump, CSV format, verification) lives here
+// so those decisions are made once.
+//
+// Every driver is built as a single translation unit with
+// -DBENCH_FN=<function_name>; the problem size is looked up from that name at
+// runtime, so the Makefile needs nothing beyond the function name.
+//
+// Binary interface: bench_<fn> <output_dir> [<iters>]
 
+#pragma once
+
+#include <algorithm>
 #include <cassert>
 #include <cinttypes>
 #include <cstdint>
@@ -6,8 +22,10 @@
 #include <cstdlib>
 #include <cstring>
 #include <ctime>
-#include <memory>
+#include <limits>
 #include <vector>
+
+#include <cblas.h>
 
 #ifndef BENCH_FN
 #error "BENCH_FN must be defined at compile time (-DBENCH_FN=<function_name>)"
@@ -19,16 +37,232 @@
 #define STRINGIFY(x) #x
 #define TOSTR(x) STRINGIFY(x)
 
-static DTY my_rand() { return (DTY)(rand() % 128); }
-
-static std::vector<DTY> alloc_mat(size_t n) {
-  std::vector<DTY> p(n);
-  for (size_t i = 0; i < n; i++)
-    p[i] = my_rand();
-  return p;
-}
-
 extern "C" {
 void upmemrt_start_stat_collection(int iter);
 void upmemrt_dump_stats(const char *prefix);
 }
+
+namespace bench {
+
+// ─── Operand data ────────────────────────────────────────────────────────────
+
+/// Upper bound (exclusive) on generated operand values.
+///
+/// Matches the ATiM evaluation's distribution (its evaluation/base.py uses
+/// intdist=50) so latency comparisons against it are like for like.
+///
+/// This is not a free parameter. On this hardware an integer multiply is a
+/// __mulsi3 call costing one step per significant bit of its smaller operand,
+/// so the range directly sets the price of the hottest instruction in every
+/// multiply-bearing kernel. The cost model's kMulOperandBits is derived from
+/// it and has to move with it. The range also has to keep reductions inside
+/// DTY -- see check_representable(), which enforces that per benchmark rather
+/// than leaving it to be assumed.
+inline constexpr int kOperandRange = 50;
+
+inline DTY next_operand() { return (DTY)(rand() % kOperandRange); }
+
+inline std::vector<DTY> random_vector(size_t n) {
+  std::vector<DTY> v(n);
+  for (size_t i = 0; i < n; i++)
+    v[i] = next_operand();
+  return v;
+}
+
+// ─── Problem sizes ───────────────────────────────────────────────────────────
+
+/// One row of a driver's size table: the exported function name and up to
+/// three dimensions, interpreted by that driver.
+struct Size {
+  const char *fn;
+  size_t dims[3];
+};
+
+/// The dimensions for BENCH_FN. Exits with a pointed message when the name is
+/// absent: a new benchmark size needs a table entry, and silently guessing a
+/// shape would mean benchmarking something other than what was compiled.
+template <size_t N> inline const size_t *lookup(const Size (&table)[N]) {
+  const char *fn = TOSTR(BENCH_FN);
+  for (const Size &s : table)
+    if (!strcmp(fn, s.fn))
+      return s.dims;
+  fprintf(stderr,
+          "%s: no size entry for '%s' -- add one to this driver's kSizes\n",
+          TOSTR(BENCH_FN), fn);
+  exit(1);
+}
+
+// ─── Golden references ───────────────────────────────────────────────────────
+//
+// References are computed in double, which holds every value these benchmarks
+// can produce exactly (operands are small non-negative integers and the
+// longest reduction is well inside 2^53), so results compare for equality
+// rather than tolerance. Matrix references go through CBLAS -- an
+// implementation with nothing in common with the code under test, which is the
+// point of having a reference at all.
+
+/// Largest double working buffer a reference may allocate, in bytes. Matrices
+/// here reach hundreds of megabytes as int32, so a reference converts them a
+/// row block at a time rather than materialising a whole double copy.
+inline constexpr size_t kRefBlockBytes = 64u << 20;
+
+/// out[0..m) = A * x, with A an m×n row-major matrix.
+inline void gemv_ref(const DTY *A, const std::vector<DTY> &x, size_t m,
+                     size_t n, double *out) {
+  std::vector<double> xd(x.begin(), x.end());
+  size_t rows_per_block =
+      std::max<size_t>(1, kRefBlockBytes / (n * sizeof(double)));
+  std::vector<double> block;
+  for (size_t r0 = 0; r0 < m; r0 += rows_per_block) {
+    size_t rows = std::min(rows_per_block, m - r0);
+    block.assign(A + r0 * n, A + (r0 + rows) * n);
+    cblas_dgemv(CblasRowMajor, CblasNoTrans, (int)rows, (int)n, 1.0,
+                block.data(), (int)n, xd.data(), 1, 0.0, out + r0, 1);
+  }
+}
+
+inline std::vector<double> gemv_ref(const std::vector<DTY> &A,
+                                    const std::vector<DTY> &x, size_t m,
+                                    size_t n) {
+  std::vector<double> out(m);
+  gemv_ref(A.data(), x, m, n, out.data());
+  return out;
+}
+
+/// out[i] = alpha*u[i] + beta*v[i], elementwise over n.
+inline std::vector<double> axpby_ref(const std::vector<DTY> &u,
+                                     const std::vector<DTY> &v, double alpha,
+                                     double beta, size_t n) {
+  std::vector<double> out(u.begin(), u.begin() + n);
+  std::vector<double> vd(v.begin(), v.begin() + n);
+  cblas_dscal((int)n, alpha, out.data(), 1);
+  cblas_daxpy((int)n, beta, vd.data(), 1, out.data(), 1);
+  return out;
+}
+
+/// Sum of the first n elements. Accumulated straight from the int32 input so
+/// the reduction needs no double copy of a buffer that can reach 256 MB.
+inline double sum_ref(const std::vector<DTY> &v, size_t n) {
+  double acc = 0;
+  for (size_t i = 0; i < n; i++)
+    acc += (double)v[i];
+  return acc;
+}
+
+// ─── Verification ────────────────────────────────────────────────────────────
+
+/// Reports whether every golden value fits in DTY. A benchmark whose exact
+/// result overflows its own element type cannot be verified and is not
+/// measuring anything meaningful, so this is a sizing error in the benchmark
+/// rather than a fault in the kernel, and it is reported as such.
+inline bool check_representable(const std::vector<double> &want) {
+  constexpr double lo = (double)std::numeric_limits<DTY>::min();
+  constexpr double hi = (double)std::numeric_limits<DTY>::max();
+  for (size_t i = 0; i < want.size(); i++) {
+    if (want[i] < lo || want[i] > hi) {
+      fprintf(stderr,
+              "\n%s: OVERFLOW -- exact result[%zu] = %.0f does not fit in a "
+              "%zu-bit element type.\nThe benchmark size and operand range "
+              "(bench::kOperandRange = %d) are incompatible; the kernel cannot "
+              "produce this value.\n",
+              TOSTR(BENCH_FN), i, want[i], 8 * sizeof(DTY), kOperandRange);
+      return false;
+    }
+  }
+  return true;
+}
+
+/// Compares kernel output against the golden result, reporting the first few
+/// differences. Exact equality: both sides are integers held exactly.
+inline bool check(const std::vector<DTY> &got,
+                  const std::vector<double> &want) {
+  assert(got.size() == want.size() && "reference length mismatch");
+  if (!check_representable(want))
+    return false;
+
+  size_t bad = 0;
+  for (size_t i = 0; i < got.size(); i++) {
+    if ((double)got[i] == want[i])
+      continue;
+    if (++bad <= 5)
+      fprintf(stderr, "  [%zu] got %lld, expected %.0f\n", i, (long long)got[i],
+              want[i]);
+  }
+  if (bad == 0) {
+    printf("%s: verified %zu element(s) against reference\n", TOSTR(BENCH_FN),
+           got.size());
+    return true;
+  }
+  fprintf(stderr, "\n%s: MISMATCH -- %zu of %zu elements differ\n",
+          TOSTR(BENCH_FN), bad, got.size());
+  return false;
+}
+
+// ─── Driver ──────────────────────────────────────────────────────────────────
+
+inline uint64_t now_ns() {
+  struct timespec t;
+  clock_gettime(CLOCK_MONOTONIC, &t);
+  return (uint64_t)t.tv_sec * 1000000000ULL + (uint64_t)t.tv_nsec;
+}
+
+inline void write_totals(const char *out_dir,
+                         const std::vector<uint64_t> &elapsed_ns) {
+  char prefix[1024];
+  snprintf(prefix, sizeof(prefix), "%s/" TOSTR(BENCH_FN), out_dir);
+  upmemrt_dump_stats(prefix);
+
+  char path[1024];
+  snprintf(path, sizeof(path), "%s/" TOSTR(BENCH_FN) "_total.csv", out_dir);
+  FILE *f = fopen(path, "w");
+  assert(f && "failed to open total CSV");
+  fprintf(f, "iter,elapsed_ns\n");
+  for (size_t i = 0; i < elapsed_ns.size(); i++)
+    fprintf(f, "%zu,%" PRIu64 "\n", i, elapsed_ns[i]);
+  fclose(f);
+}
+
+/// Runs one benchmark end to end.
+///
+/// `Op` supplies:
+///   static constexpr Size kSizes[]   -- problem sizes by function name
+///   void setup(const size_t *dims)   -- allocate and fill operands
+///   void run()                       -- one call of BENCH_FN
+///   const std::vector<DTY> &output() const -- what the kernel produced
+///   std::vector<double> reference() const -- what it should have produced
+///
+/// Verification happens after the timed loop but before anything is written,
+/// so a run that computed the wrong answer leaves no timing data behind to be
+/// plotted later.
+template <class Op> int run(int argc, char **argv) {
+  if (argc < 2) {
+    fprintf(stderr, "usage: %s <output_dir> [<iters>]\n", argv[0]);
+    return 1;
+  }
+  const char *out_dir = argv[1];
+  int iters = argc > 2 ? atoi(argv[2]) : 5;
+
+  srand(0);
+  Op op;
+  op.setup(lookup(Op::kSizes));
+  printf("  iters=%d\n", iters);
+  fflush(stdout);
+
+  std::vector<uint64_t> elapsed_ns(iters);
+  for (int iter = 0; iter < iters; iter++) {
+    upmemrt_start_stat_collection(iter);
+    uint64_t t0 = now_ns();
+    op.run();
+    elapsed_ns[iter] = now_ns() - t0;
+    printf("  iter %d  %.3f ms\n", iter, elapsed_ns[iter] / 1e6);
+    fflush(stdout);
+  }
+
+  if (!check(op.output(), op.reference()))
+    return 1;
+
+  write_totals(out_dir, elapsed_ns);
+  return 0;
+}
+
+} // namespace bench
