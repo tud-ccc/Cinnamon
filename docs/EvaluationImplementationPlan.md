@@ -288,9 +288,20 @@ can never drift from the space, and B3 is not a dependency. Draws that
 land feasible contribute to accepted-but-fails for free. Per-function
 `probe.csv` (resumable, deterministic draw, n_a2=300 from OPTS), CPU-only
 and parallel across benchmarks; `results/a2.csv` and
-`tables/numbers.tex` assemble from whatever exists. Optionally still
-open: runs-fine on hardware for any rejected-but-lowers point that
-appears.
+`tables/numbers.tex` assemble from whatever exists.
+
+**Campaign RUN 2026-08-13**: 26 functions × 300 = 7800 probes, every one
+`rejected_fails` — zero rejected-but-lowers (pooled rule-of-three bound
+on the false-negative rate: 0.038% at 95%), zero draws landed feasible
+(density ~1e-10 makes that expected), and consequently the runs-fine
+follow-up is moot. One honest caveat for the paper text: a uniform
+Cartesian draw mostly lands deep in the infeasible region (dpus=1972,
+wram tiles in the thousands), so this measures the constraint system
+over the whole domain, not specifically at the feasibility *boundary*
+where a false negative would be subtle. If a reviewer asks, the natural
+refinement is a near-boundary variant — perturb feasible configurations
+by one step per parameter (the machinery exists: debugIsEncodable
+already computes nearest-feasible neighbours) — optional, not planned.
 `accepted-but-fails` needs nothing: any compile/run failure in B1/B3's
 measured sets is that counter, and the paper wants it run first — which the
 phase order (§8) honours since B1 is Phase 1.
