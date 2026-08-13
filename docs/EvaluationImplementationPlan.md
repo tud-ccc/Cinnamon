@@ -301,10 +301,14 @@ program order regardless of the allocation. Two consequences:
   different groups have no device-level hazard, while members of one
   (merged or timeshared) group are exactly the ones whose tokens must
   chain — the dependency edges plus a per-group serialization token give
-  both. Runtime side: either link MLIR's async runtime and make `upmemrt`
-  thread-safe, or — cheaper — keep one host thread and use the UPMEM SDK's
-  own `dpu_launch(set, DPU_ASYNCHRONOUS)` with a per-set `dpu_sync` behind
-  `upmem.wait_for`, which overlaps sets without host threading.
+  both. The async dialect is used to *represent* the concurrent program
+  and its dependencies — building our own future/token type and await op
+  into cinm would just re-invent `!async.token`/`!async.value` — but that
+  does not commit us to the async *runtime*: the tokens can be lowered
+  directly to upmem-dialect calls backed by the UPMEM SDK's own
+  asynchronous primitives (`dpu_launch(set, DPU_ASYNCHRONOUS)`, per-set
+  `dpu_sync` behind `upmem.wait_for`), keeping one host thread and no
+  `upmemrt` thread-safety work.
 - Not scheduled in any phase. If it lands, it slots after Phase 3a with no
   changes to the RQ4 harness (same drivers, same breakdown; the kernel
   segments of independent blocks simply overlap in wall clock).
