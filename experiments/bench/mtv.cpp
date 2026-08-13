@@ -9,28 +9,9 @@
 //
 // Binary interface: bench_<fn> <output_dir> [<iters>]
 
-#include <cassert>
-#include <cinttypes>
-#include <cstdint>
-#include <cstdio>
-#include <cstdlib>
-#include <cstring>
-#include <ctime>
+#include "common.hpp"
 
-#ifndef BENCH_FN
-#error "BENCH_FN must be defined at compile time (-DBENCH_FN=<function_name>)"
-#endif
-
-#define DTY int32_t
-#define STRINGIFY(x) #x
-#define TOSTR(x) STRINGIFY(x)
-
-extern "C" void BENCH_FN(DTY *, DTY *, DTY, DTY *);
-
-extern "C" {
-void upmemrt_start_stat_collection(int iter);
-void upmemrt_dump_stats(const char *prefix);
-}
+extern "C" void BENCH_FN(DTY *, DTY *, DTY *);
 
 struct GemvSpec {
   size_t m, n;
@@ -50,14 +31,6 @@ static GemvSpec spec() {
   exit(1);
 }
 
-static DTY *alloc_mat(size_t n) {
-  DTY *p = (DTY *)malloc(n * sizeof(DTY));
-  assert(p && "malloc failed");
-  for (size_t i = 0; i < n; i++)
-    p[i] = (DTY)(rand() % 1000 + 1) / 100.0f;
-  return p;
-}
-
 int main(int argc, char *argv[]) {
   if (argc < 2) {
     fprintf(stderr, "usage: %s <output_dir> [<iters>]\n", argv[0]);
@@ -68,22 +41,20 @@ int main(int argc, char *argv[]) {
 
   GemvSpec s = spec();
   srand(0);
-  DTY *A = alloc_mat(s.m * s.n);
-  DTY *x = alloc_mat(s.n);
-  DTY c = rand() % 2024;
-  DTY *out = alloc_mat(s.m); // output buffer; reused across iters
+  auto A = alloc_mat(s.m * s.n);
+  auto x = alloc_mat(s.n);
+  auto out = alloc_mat(s.m); // output buffer; reused across iters
 
   printf("%s  M=%zu N=%zu  iters=%d\n", TOSTR(BENCH_FN), s.m, s.n, iters);
   fflush(stdout);
 
-  uint64_t *elapsed_ns = (uint64_t *)malloc(iters * sizeof(uint64_t));
-  assert(elapsed_ns);
+  std::vector<uint64_t> elapsed_ns(iters);
 
   for (int iter = 0; iter < iters; iter++) {
     upmemrt_start_stat_collection(iter);
     struct timespec t0, t1;
     clock_gettime(CLOCK_MONOTONIC, &t0);
-    BENCH_FN(A, x, c, out);
+    BENCH_FN(A.data(), x.data(), out.data());
     clock_gettime(CLOCK_MONOTONIC, &t1);
     elapsed_ns[iter] = (uint64_t)(t1.tv_sec - t0.tv_sec) * 1000000000ULL +
                        (uint64_t)(t1.tv_nsec - t0.tv_nsec);
@@ -105,9 +76,5 @@ int main(int argc, char *argv[]) {
     fprintf(f, "%d,%" PRIu64 "\n", i, elapsed_ns[i]);
   fclose(f);
 
-  free(elapsed_ns);
-  free(out);
-  free(x);
-  free(A);
   return 0;
 }
