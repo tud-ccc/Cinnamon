@@ -77,6 +77,22 @@ retry tasks); it must be **factored into `cinm_experiments/doit_blocks.py`**
 Consumers: sample (E1/RQ3/A2), top-k (E1), search picks (E1/RQ1/A1/N1),
 transcriptions (E1/RQ1), cinm1 sweep (RQ1), RQ4 arms.
 
+**STATUS 2026-08-13 — B3, B4 and B5 are wired** (`doit exhaust_pred /
+compile_topk / search / search_ablate / compile_search[_ablate] /
+compile_points / invariants_report`), sharing one `_measure_stack`
+factory: per-stack strict bench chains, stacks serialized sample → topk →
+search → ablated → points via closing `_barrier` tasks so every bench
+group stays referenceable while its inputs don't exist. The ablated
+searches pass `use-mram-tiling=false` / `enable-scatter-specialisation=
+false` (§3.3). B5's file format is documented in
+`evaluation/points/README.md`; `invariants_report` recomputes D/T/
+transfer-bytes/WRAM from the compiled artifact (regex over the upmem
+assembly, verified against a real lowered module). **Nothing has run**:
+the campaigns wait on the gating TODOs (Hamid's cost model first), per
+the 2026-08-13 decision. Also fixed along the way: the assemble layer now
+consumes MeasureRoots' `<system>` path level explicitly (it previously
+would have read the system dir as a function name).
+
 ### B3 `topk` — best-of-space by the cost model
 `cinmopt.exhaustive_search` (predicted costs only, no hardware) with
 `eval-timeout-ms=300` — a timeout is safe *here*, unlike B1: it only
