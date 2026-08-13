@@ -1,16 +1,17 @@
 """doit tasks for the paper evaluation (§8 of the paper).
 
-This pipeline collects the measurements behind the paper's §8: the shared
-uniform sample (B1), the space dumps the transcription workflow reads (B0),
-and -- as later phases land -- the top-k, search, transcription-point,
-cinm1-sweep and RQ4 stacks. Structure and conventions follow
-cinm1comparison/dodo.py: stages connected by files, fallible-per-config
-compiles, ONE strict hardware-bench chain, retry tasks. The shared
-machinery lives in cinm_experiments.doit_blocks.
+This pipeline collects the measurements behind the paper's §8: space
+dumps, the shared uniform sample, the exhaustive top-k stack, the BO
+searches (default + ablated spaces), the transcribed points with their
+invariant cross-check, the A2 probe stack, and the assemble/plot layer
+that folds whatever exists into results/ and figures. Structure and
+conventions follow cinm1comparison/dodo.py: stages connected by files,
+fallible-per-config compiles, ONE strict hardware-bench order (per-stack
+chains, stacks serialized sample -> topk -> search -> ablated -> points),
+retry tasks. The shared machinery lives in cinm_experiments.doit_blocks.
 
-Phase 0 scope (this file today): B0 `space` + B1 `sample` -> compile ->
-bench, with retries; the A2 probe stack; the B6 assemble layer and the
-plot/table scripts it feeds.
+Still to come: the cinm1 (D,T) sweep with coverage accounting, and the
+RQ4 multi-op workloads/arms.
 
 Usage:
   doit space             # dump every benchmark's space.json (no simulator)
@@ -48,14 +49,18 @@ OPTS = dict(
     # §2's best-vs-median, A2's accepted-but-fails). Changing the seed
     # invalidates every measured row, so it is part of the methodology.
     sample_seed=1815,
-    k_top=200,  # B3 (not yet wired): measured ground truth for top-k overlap
-    n_seeds=32,  # B4 (not yet wired): matches the cinm1comparison campaign
+    k_top=200,  # B3: measured ground truth for top-k overlap up to k=200
+    n_seeds=32,  # B4: matches the cinm1comparison campaign
     iters=6,  # measurement repetitions per hardware run
     # The hybrid model's switching point, same value as the search stack
     # (cinm1comparison): cycle-accurate within the budget, fast model past
     # it. Part of the model's definition, not a performance knob -- B1's
     # predicted costs and every search must use the same value.
     eval_timeout_ms=400,
+    # B3's exhaustive predicted sweep only. A timeout is safe here, unlike
+    # in B1: it can only mis-price configs slower than 300 ms, which cannot
+    # be in the top anyway, and it speeds the sweep up considerably.
+    exhaust_timeout_ms=300,
     # A2's Cartesian draw. Same rule-of-three arithmetic as n_sample: with
     # feasible densities around 1e-10 essentially every draw lands in the
     # rejected region, so 0-lowers-of-300 bounds the false-negative rate of
@@ -232,46 +237,48 @@ def _sample_configs(bench: str) -> list[compile_run.Config]:
     return configs
 
 
-def _bench_task_name(bench: str, fn_name: str, label: str) -> str:
-    return f"bench_sample:{bench}:{fn_name}:{label}"
+# One entry of a measure stack: which benchmark it belongs to, the config
+# to compile+bench, the files whose change invalidates it, and its roots.
+StackEntry = tuple[
+    str, "compile_run.Config", list[pathlib.Path], "doit_blocks.MeasureRoots"
+]
 
 
-@create_after(executed="sample", creates=["compile_sample", "bench_sample"])
-def task_compile_sample():
-    """Compile + bench every sampled config. Compiles are fallible per
-    config; benches form ONE strict chain across all benchmarks (hardware
-    timing, see doit_blocks.BenchChain). An eval-solution compile failure
-    here is A2 DATA (accepted-but-fails must be 0), not just noise -- keep
-    the logs."""
+def _measure_stack(stack: str, entries: list[StackEntry], *, prev_stack: str | None):
+    """Yield compile_{stack} / bench_{stack} tasks for a list of configs.
+
+    Compiles are parallel and fallible per config. Benches form ONE strict
+    chain within the stack, and the stack itself is serialized behind
+    prev_stack's whole bench group, so hardware only ever runs one config
+    at a time in a fixed global order: sample -> topk -> search -> ablated
+    searches -> points. A `_barrier` no-op closes every bench group even
+    when the stack has no configs yet (its inputs haven't been produced),
+    so the next stack's group dependency always resolves.
+    """
     chain = doit_blocks.BenchChain()
-    per_bench: list[tuple[str, compile_run.Config]] = []
-    for bench in WORKLOADS:
-        for config in _sample_configs(bench):
-            per_bench.append((bench, config))
-            chain.register(_bench_task_name(bench, config.fn_name, config.label))
+    for bench, config, _, _ in entries:
+        chain.register(f"bench_{stack}:{bench}:{config.fn_name}:{config.label}")
 
-    for bench, config in per_bench:
-        roots = sample_roots(bench)
+    prev_group = [f"bench_{prev_stack}"] if prev_stack else []
+    for bench, config, deps, roots in entries:
+        name = f"{bench}:{config.fn_name}:{config.label}"
         marker = roots.compile_marker_of(config)
-        pool_csv = sample_pool_csv(bench, config.fn_name)
         yield {
-            "basename": "compile_sample",
-            "name": f"{bench}:{config.fn_name}:{config.label}",
-            "file_dep": [str(pool_csv), str(config.fn_module)],
+            "basename": f"compile_{stack}",
+            "name": name,
+            "file_dep": [str(d) for d in deps] + [str(config.fn_module)],
             "targets": [str(marker)],
             "actions": [(doit_blocks.compile_one, [config, roots, marker])],
         }
-
         bench_marker = roots.bench_marker_of(config)
+        prev = chain.prev_of(f"bench_{stack}:{name}")
         yield {
-            "basename": "bench_sample",
-            "name": f"{bench}:{config.fn_name}:{config.label}",
-            # pool.csv too: a redrawn sample (parameter change) must
+            "basename": f"bench_{stack}",
+            "name": name,
+            # The stack inputs too: a redrawn pool / rewritten point must
             # invalidate the measurements, not silently re-attribute them.
-            "file_dep": [str(marker), str(pool_csv)],
-            "task_dep": chain.prev_of(
-                _bench_task_name(bench, config.fn_name, config.label)
-            ),
+            "file_dep": [str(marker)] + [str(d) for d in deps],
+            "task_dep": prev if prev else prev_group,
             "targets": [str(bench_marker)],
             "actions": [
                 (
@@ -281,6 +288,35 @@ def task_compile_sample():
                 )
             ],
         }
+    yield {
+        "basename": f"bench_{stack}",
+        "name": "_barrier",
+        "actions": [],
+        "task_dep": (
+            [f"bench_{stack}:{e[0]}:{e[1].fn_name}:{e[1].label}" for e in entries[-1:]]
+            or prev_group
+        ),
+        "uptodate": [True],
+    }
+
+
+@create_after(executed="sample", creates=["compile_sample", "bench_sample"])
+def task_compile_sample():
+    """Compile + bench every sampled config. An eval-solution compile
+    failure here is accepted-but-fails DATA (the paper says it must be 0),
+    not just noise -- keep the logs."""
+    entries: list[StackEntry] = []
+    for bench in WORKLOADS:
+        for config in _sample_configs(bench):
+            entries.append(
+                (
+                    bench,
+                    config,
+                    [sample_pool_csv(bench, config.fn_name)],
+                    sample_roots(bench),
+                )
+            )
+    yield from _measure_stack("sample", entries, prev_stack=None)
 
 
 # ── A2: rejected-region probing (CPU-only, no hardware) ─────────────────────
@@ -424,18 +460,26 @@ def rq4_roots(prog: str, arm: str) -> doit_blocks.MeasureRoots:
 import assemble  # noqa: E402  (sibling module; HERE is on sys.path via doit)
 
 
-def _pair(roots: doit_blocks.MeasureRoots) -> tuple[pathlib.Path, pathlib.Path]:
-    return (roots.compile_root, roots.run_root)
+def _pair(
+    roots: doit_blocks.MeasureRoots, system: str
+) -> tuple[pathlib.Path, pathlib.Path]:
+    """The (compile, run) roots the assemblers iterate. MeasureRoots nests a
+    <system> directory under each root (compile_root/<system>/<fn>/<label>),
+    while the assemble layer walks <fn>/<label> -- so the system level is
+    consumed here, not guessed there."""
+    return (roots.compile_root / system, roots.run_root / system)
 
 
 def _assemble_e1() -> bool:
     return assemble.assemble_e1(
         {
             bench: {
-                "sample": _pair(sample_roots(bench)),
-                "topk": _pair(topk_roots(bench)),
-                "search": _pair(search_roots(bench)),
-                "atim_transcribed": _pair(points_roots(bench, "atim")),
+                "sample": _pair(sample_roots(bench), "sample"),
+                "topk": _pair(topk_roots(bench), "topk"),
+                "search": _pair(search_roots(bench), "search"),
+                "atim_transcribed": _pair(
+                    points_roots(bench, "atim"), "atim_transcribed"
+                ),
             }
             for bench in WORKLOADS
         },
@@ -448,12 +492,12 @@ def _assemble_rq1() -> bool:
     return assemble.assemble_rq1(
         {
             bench: {
-                "ours": _pair(search_roots(bench)),
+                "ours": _pair(search_roots(bench), "search"),
                 "cinm1": (
-                    DATA_DIR / bench / "cinm1" / "compiled",
-                    DATA_DIR / bench / "cinm1" / "run",
+                    DATA_DIR / bench / "cinm1" / "compiled" / "cinm1",
+                    DATA_DIR / bench / "cinm1" / "run" / "cinm1",
                 ),
-                "cinm1_rule": _pair(points_roots(bench, "cinm1rule")),
+                "cinm1_rule": _pair(points_roots(bench, "cinm1rule"), "cinm1_rule"),
             }
             for bench in WORKLOADS
         },
@@ -476,7 +520,7 @@ def _assemble_rq2() -> bool:
 
 def _assemble_rq3() -> bool:
     return assemble.assemble_rq3(
-        {bench: _pair(sample_roots(bench)) for bench in WORKLOADS},
+        {bench: _pair(sample_roots(bench), "sample") for bench in WORKLOADS},
         RESULTS_DIR / "rq3.csv",
     )
 
@@ -487,7 +531,8 @@ def _assemble_a1() -> bool:
             (bench, space): _pair(
                 search_roots(bench)
                 if space == "default"
-                else ablate_roots(bench, space)
+                else ablate_roots(bench, space),
+                "search",
             )
             for bench in WORKLOADS
             for space in ["default", *ABLATE_SPACES]
@@ -499,7 +544,7 @@ def _assemble_a1() -> bool:
 def _assemble_rq4() -> bool:
     return assemble.assemble_rq4(
         {
-            (prog, arm): _pair(rq4_roots(prog, arm))
+            (prog, arm): _pair(rq4_roots(prog, arm), arm)
             for prog in RQ4_PROGRAMS
             for arm in ("peroper", "wholeprog")
         },
@@ -636,12 +681,309 @@ def task_retry_failed_bench():
     return {"actions": [_retry_failed_bench], "uptodate": [False]}
 
 
-# ── still to come ────────────────────────────────────────────────────────────
-# B3 topk:    exhaustive predicted sweep (eval-timeout-ms=300) -> pools.top_k
-#             -> same B2 shape as the sample stack.
-# B4 search:  bo_multiseed(n_seeds) x {default, ablated spaces, simulators};
-#             timings.csv feeds RQ2.
-# B5 points:  points/atim/{bench}.json + points/cinm1rule/{bench}.json ->
-#             eval-solution runs + invariants report.
-# cinm1:      the (D,T) sweep with coverage accounting.
-# assemble/plot: results/*.csv, missing-tolerant.
+# ── B3: best-of-space by the cost model ─────────────────────────────────────
+
+
+def exhaust_dir(bench: str) -> pathlib.Path:
+    return DATA_DIR / bench / "topk" / "exhaust"
+
+
+def exhaust_pool_csv(bench: str, fn_name: str) -> pathlib.Path:
+    return exhaust_dir(bench) / f"infer_{fn_name}" / "pool.csv"
+
+
+def _exhaust_one(bench: str) -> bool:
+    cinmopt.exhaustive_search(
+        source_mlir(bench),
+        exhaust_dir(bench),
+        infer_opts={
+            # Same model pairing as B1/B4 -- predicted costs must be
+            # comparable across stacks -- but with the shorter sweep
+            # timeout: it can only mis-price configs that cannot compete
+            # for the top anyway.
+            "simulator": "hybrid",
+            "eval-timeout-ms": OPTS["exhaust_timeout_ms"],
+        },
+    )
+    return True
+
+
+def task_exhaust_pred():
+    """B3, predicted half: exhaustively price every feasible configuration
+    (no hardware, CPU-heavy). The full pool is also the feasible-set oracle
+    for whatever wants membership with costs attached."""
+    for bench in WORKLOADS:
+        yield {
+            "name": bench,
+            "file_dep": [str(source_mlir(bench))],
+            "targets": [
+                str(exhaust_pool_csv(bench, fn))
+                for fn in list_functions(source_mlir(bench))
+            ],
+            "actions": [(_exhaust_one, [bench])],
+        }
+
+
+def _topk_configs(bench: str) -> list[compile_run.Config]:
+    configs = []
+    for fn_name in list_functions(source_mlir(bench)):
+        pool_csv = exhaust_pool_csv(bench, fn_name)
+        if not pool_csv.exists():
+            continue
+        for i, params in enumerate(pools.top_k(pool_csv, OPTS["k_top"])):
+            configs.append(
+                compile_run.Config(
+                    system="topk",
+                    fn_name=fn_name,
+                    label=f"k{i:03d}",
+                    params=params,
+                    fn_module=split_module(bench, fn_name),
+                    prim=bench.removeprefix("prim_"),
+                    lower=cinmopt.eval_solution_lowerer(),
+                )
+            )
+    return configs
+
+
+@create_after(executed="exhaust_pred", creates=["compile_topk", "bench_topk"])
+def task_compile_topk():
+    """B3, measured half: compile + bench the k_top best-predicted configs
+    per function. Their measured costs ground the top-k-overlap metric
+    exactly (instead of only within the sample) and feed best-of-
+    {sample U topk}. Labels are rank order ("k000" = predicted best)."""
+    entries: list[StackEntry] = []
+    for bench in WORKLOADS:
+        for config in _topk_configs(bench):
+            entries.append(
+                (
+                    bench,
+                    config,
+                    [exhaust_pool_csv(bench, config.fn_name)],
+                    topk_roots(bench),
+                )
+            )
+    yield from _measure_stack("topk", entries, prev_stack="sample")
+
+
+# ── B4: the BO search stack, default + ablated spaces ───────────────────────
+
+# The capability each restricted space turns off, as pass options. The
+# space itself is what changes (use-mram-tiling constrains MRAM tile ==
+# WRAM tile; the scatter toggle disables both specialisation sites in the
+# trial lowering); the search machinery is identical.
+ABLATE_INFER_OPTS = {
+    "no_mram": {"use-mram-tiling": False},
+    "no_scatter": {"enable-scatter-specialisation": False},
+    "neither": {"use-mram-tiling": False, "enable-scatter-specialisation": False},
+}
+
+
+def _search_dump_dir(bench: str, space: str) -> pathlib.Path:
+    return (
+        search_dir(bench) / "dump"
+        if space == "default"
+        else DATA_DIR / bench / f"search_ablate_{space}" / "dump"
+    )
+
+
+def _run_search(bench: str, space: str) -> bool:
+    cinmopt.bo_multiseed(
+        source_mlir(bench),
+        _search_dump_dir(bench, space),
+        n_seeds=OPTS["n_seeds"],
+        infer_opts={
+            "simulator": "hybrid",
+            "eval-timeout-ms": OPTS["eval_timeout_ms"],
+            **ABLATE_INFER_OPTS.get(space, {}),
+        },
+    )
+    return True
+
+
+def task_search():
+    """B4: the multi-seed BO search over the default space (no hardware;
+    simulator only). Each seed's pick is compiled+benched downstream; the
+    per-seed timings.csv is the search-walltime raw data."""
+    for bench in WORKLOADS:
+        yield {
+            "name": bench,
+            "file_dep": [str(source_mlir(bench))],
+            "targets": [str(_search_dump_dir(bench, "default") / "out.mlir")],
+            "actions": [(_run_search, [bench, "default"])],
+        }
+
+
+def task_search_ablate():
+    """B4 over the three restricted spaces -- the capability ablation. An
+    ablated search that finds nothing feasible is a result (the capability
+    buys feasibility), which the assembly records as such."""
+    for bench in WORKLOADS:
+        for space in ABLATE_SPACES:
+            yield {
+                "name": f"{bench}:{space}",
+                "file_dep": [str(source_mlir(bench))],
+                "targets": [str(_search_dump_dir(bench, space) / "out.mlir")],
+                "actions": [(_run_search, [bench, space])],
+            }
+
+
+def _search_pick_configs(bench: str, space: str) -> list[compile_run.Config]:
+    """One config per (fn, seed): the seed's best-by-predicted-cost pick.
+    Every seed is kept -- the spread of the picks over seeds is itself a
+    reported number, so deduplicating identical picks would erase it."""
+    configs = []
+    dump = _search_dump_dir(bench, space)
+    if not dump.exists():
+        return configs
+    for fn_name, seed, params in pools.best_per_seed(dump):
+        configs.append(
+            compile_run.Config(
+                system="search",
+                fn_name=fn_name,
+                label=f"seed{int(seed):02d}",
+                params=params,
+                fn_module=split_module(bench, fn_name),
+                prim=bench.removeprefix("prim_"),
+                lower=cinmopt.eval_solution_lowerer(),
+            )
+        )
+    return configs
+
+
+@create_after(executed="search", creates=["compile_search", "bench_search"])
+def task_compile_search():
+    """Compile + bench every seed's pick from the default-space search --
+    the flow's own answer, and the seed-spread raw data."""
+    entries: list[StackEntry] = []
+    for bench in WORKLOADS:
+        for config in _search_pick_configs(bench, "default"):
+            entries.append(
+                (
+                    bench,
+                    config,
+                    [_search_dump_dir(bench, "default") / "out.mlir"],
+                    search_roots(bench),
+                )
+            )
+    yield from _measure_stack("search", entries, prev_stack="topk")
+
+
+@create_after(
+    executed="search_ablate", creates=["compile_search_ablate", "bench_search_ablate"]
+)
+def task_compile_search_ablate():
+    """Compile + bench the ablated searches' picks, one stack for all
+    three restricted spaces."""
+    entries: list[StackEntry] = []
+    for bench in WORKLOADS:
+        for space in ABLATE_SPACES:
+            for config in _search_pick_configs(bench, space):
+                entries.append(
+                    (
+                        bench,
+                        config,
+                        [_search_dump_dir(bench, space) / "out.mlir"],
+                        ablate_roots(bench, space),
+                    )
+                )
+    yield from _measure_stack("search_ablate", entries, prev_stack="search")
+
+
+# ── B5: manually-authored points, evaluated in our system ───────────────────
+
+POINTS_DIR = HERE / "points"
+POINT_SOURCES = {"atim": "atim_transcribed", "cinm1rule": "cinm1_rule"}
+
+
+def _load_points(source: str, bench: str) -> list[dict]:
+    """The checked-in transcription of `bench` from points/{source}/, or []
+    when it has not been authored yet. See points/README.md for the file
+    format; several candidates per point are the answer to transcription
+    ambiguity (measure every reading)."""
+    import json
+
+    path = POINTS_DIR / source / f"{bench}.json"
+    if not path.exists():
+        return []
+    return json.loads(path.read_text())
+
+
+def _point_configs(source: str, bench: str) -> list[compile_run.Config]:
+    configs = []
+    for point in _load_points(source, bench):
+        for candidate in point["candidates"]:
+            configs.append(
+                compile_run.Config(
+                    system=POINT_SOURCES[source],
+                    fn_name=point["fn_name"],
+                    label=candidate["label"],
+                    params=candidate["params"],
+                    fn_module=split_module(bench, point["fn_name"]),
+                    prim=bench.removeprefix("prim_"),
+                    lower=cinmopt.eval_solution_lowerer(),
+                )
+            )
+    return configs
+
+
+def task_compile_points():
+    """B5: compile + bench every checked-in transcription candidate
+    (ATiM's tuned schedule, CINM 1.0's rule decision) through the
+    eval-solution path. Files that don't exist yet contribute nothing."""
+    entries: list[StackEntry] = []
+    for source in POINT_SOURCES:
+        for bench in WORKLOADS:
+            for config in _point_configs(source, bench):
+                entries.append(
+                    (
+                        bench,
+                        config,
+                        [POINTS_DIR / source / f"{bench}.json"],
+                        points_roots(bench, source),
+                    )
+                )
+    yield from _measure_stack("points", entries, prev_stack="search_ablate")
+
+
+def _invariants_report(source: str, bench: str) -> bool:
+    import invariants
+
+    any_report = False
+    for point in _load_points(source, bench):
+        for candidate in point["candidates"]:
+            roots = points_roots(bench, source)
+            lowered = (
+                roots.config_dir(
+                    POINT_SOURCES[source], point["fn_name"], candidate["label"]
+                )
+                / "lowered.mlir"
+            )
+            if not lowered.exists():
+                print(f"  not compiled yet: {point['fn_name']} {candidate['label']}")
+                continue
+            report = invariants.report(lowered, candidate.get("expected", {}))
+            out = lowered.parent / "invariants.txt"
+            out.write_text(report)
+            print(f"── {bench}:{point['fn_name']}:{candidate['label']}")
+            print(report)
+            any_report = True
+    if not any_report:
+        print(f"no compiled candidates for {source}/{bench}")
+    return True
+
+
+def task_invariants_report():
+    """The transcription cross-check: recompute D, T, per-operand transfer
+    bytes and tasklet count from each candidate's compiled artifact and
+    print them next to the values the transcriber derived from the trace.
+    A disagreement means the transcription (or its reading of the trace)
+    is wrong -- before any hardware time is spent on it."""
+    for source in POINT_SOURCES:
+        for bench in WORKLOADS:
+            if not (POINTS_DIR / source / f"{bench}.json").exists():
+                continue
+            yield {
+                "name": f"{source}:{bench}",
+                "actions": [(_invariants_report, [source, bench])],
+                "uptodate": [False],
+            }
