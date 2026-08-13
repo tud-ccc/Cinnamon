@@ -29,8 +29,16 @@ LDFLAGS = -lUpmemDialectRuntime -ldpu -ldpuverbose -Wl,-s \
 
 # Passes to lower a upmem-level module to host LLVM IR.
 # Bufferize function boundaries first, then the standard lowering sequence.
+# Unwrapping puts the per-block program loads onto the actual DPU-set values;
+# dedup then gives structurally identical programs one symbol, and the hoist
+# pass collapses each set's uniform loads into a single one at its
+# allocation -- a resident program is loaded once per set lifetime, not once
+# per member block. (The DPU-side %.kernels.mlir target compiles from the
+# pre-LOWER module, so deduplicated symbols still resolve to a binary.)
 LOWER_PIPELINE = \
     --cinm-unwrap-compute-blocks \
+    --upmem-dedup-kernels \
+    --upmem-hoist-load-programs \
     --one-shot-bufferize="bufferize-function-boundaries function-boundary-type-conversion=identity-layout-map" \
     --buffer-results-to-out-params=hoist-static-allocs \
 		--affine-scalrep --affine-super-vectorize=vectorize-reductions\ virtual-vector-size=8 --affine-expand-index-ops-as-affine \

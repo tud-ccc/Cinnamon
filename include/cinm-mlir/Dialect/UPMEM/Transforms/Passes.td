@@ -18,6 +18,28 @@ def UPMEMDedupKernelsPass: Pass<"upmem-dedup-kernels", "ModuleOp"> {
   ];
 }
 
+def UpmemHoistLoadProgramsPass : Pass<"upmem-hoist-load-programs"> {
+  let summary = "Load each DPU set's resident program once, where the set is allocated";
+  let description = [{
+    A DPU set whose every `upmem.load_program` references the same program
+    holds that program for its whole lifetime; this pass replaces those
+    loads with a single one placed directly after the set's definition, so
+    a resident program is loaded once per allocation instead of once per
+    member block or per loop iteration. A set that loads several distinct
+    programs is timeshared -- the placement of its loads *is* the schedule
+    -- and is left untouched, as is any load whose set is a block argument,
+    since the set's allocation is then not visible from here.
+
+    Program identity is symbol equality: run `--upmem-dedup-kernels` first
+    so structurally identical programs share one symbol, and run after
+    `--cinm-unwrap-compute-blocks` so sets forwarded into compute blocks
+    have become ordinary SSA values.
+  }];
+  let dependentDialects = [
+    "::mlir::upmem::UPMEMDialect"
+  ];
+}
+
 def UpmemTileMRAMBuffersPass: Pass<"upmem-tile-mram-buffers"> {
   let summary = "Stage a launch body's non-leaf buffers down to the leaf memory level";
   let description = [{
