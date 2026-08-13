@@ -138,7 +138,8 @@ space, write `space.json`, commit nothing, run no search/sampling. Today
 
 ### 3.2 Own phase (Phase 3a) — group residency: hoist alloc/load out of compute blocks (RQ4 blocker)
 
-**STATUS 2026-08-12 — foundations landed, commit-flow integration open.**
+**STATUS 2026-08-13 — COMPLETE** (up to the hardware profiling-parity
+check, which waits for Phase 1's campaign).
 Done, as atomic commits with tests:
 - *alloc/load split* (`upmem.alloc_dpus` allocation-only + new
   `upmem.load_program`, flow-sensitive program resolution, LLVM lowering to
@@ -166,10 +167,21 @@ Done (the commit-flow half):
 - the acceptance case: lit test (two classes → two hoisted allocs) and 3mm
   end-to-end (three groups per function, one alloc each, loads on
   forwarded args, frees at exit).
+Done (2026-08-13, closing the section):
+- **load hoisting**: new `--upmem-hoist-load-programs` pass — a set whose
+  every load references the same program gets a single load directly
+  after its allocation; timeshared sets and block-argument sets stay
+  untouched. Runs in the bench Makefile's host lowering after
+  `--cinm-unwrap-compute-blocks --upmem-dedup-kernels` (program identity
+  is symbol equality, so dedup must normalize first). On committed 3mm:
+  three alloc+load pairs at the function top, the two identical gemv
+  programs folded to one symbol. Wiring this up exposed a real
+  **miscompile in `--upmem-dedup-kernels`**: the representative map was
+  keyed by `sym_name`, and every kernel module names its program
+  `@program`, so all loads were retargeted to whichever equivalence
+  class the walk recorded last — fixed (keyed by op) and regression-
+  tested before any campaign uses dedup.
 Still open:
-- **load hoisting** for merged groups (one load per resident program after
-  dedup, instead of one per block per launch) — per-block loads are
-  correct but pay a reload per operator even within a group;
 - re-run one class's profiling before/after on hardware once Phase 1's
   campaign starts, as the cheap regression check that hoisting did not
   leak into the profiling path (structurally it cannot: profiles are
@@ -248,32 +260,38 @@ Smaller, independent pieces (can land before or with 3a):
   lifetime" without needing the init/deinit functions to exist yet.
 
 ### 3.3 P1 — scatter-specialisation toggle (A1 blocker)
-No current option disables constant-scatter→broadcast / on-device init.
-It fires at the **cnm and upmem levels** (both sites must honour the flag or
-the ablation under-reports — paper §8 A1 note). One
-`enable-scatter-specialisation=false` surfaced through
-`--upmem-infer-accelerator` (it must restrict the *space* too, if any
-parameter denotes the specialised forms) and through the standalone
-pipelines for parity checks. `use-mram-tiling` already exists (`Passes.td`).
+**DONE 2026-08-13.** `enable-scatter-specialisation=false` on
+`--upmem-infer-accelerator` disables both sites in the trial lowering:
+the cnm site is `--cnm-scatter-optimizations` (constant scatter →
+broadcast + on-device init of uniform buffers), skipped; the upmem site
+is the broadcast narrowing inside `--upmem-specialize-transfers`, run
+with `use-bc-xfer-codegen=false`. The block-collapsing transfer rewrites
+stay on either way — they narrow form, not capability. **No space
+parameter denotes the specialised forms**, so the space is identical
+under both settings (the lit test replays the same eval-solution vector
+through both). The standalone pipelines already control both sites
+directly (omit the cnm pass; `use-bc-xfer-codegen=false`), which is what
+the RQ1 parity check uses. `use-mram-tiling` already existed.
 
 ### 3.4 P1 — A2's rejected-region sampling
-Cheap route **confirmed**: `eval-solution` validates by membership in the
-materialised feasible set (`space.isEncodable`,
-`AcceleratorInference.cpp:326-337` — "Membership is the whole check"), so an
-`eval-solution-force=true` flag that skips that one check and attempts the
-lowering is a small change; the guarded error message stays the default.
-Then A2 = python-side: sample the Cartesian domains from `space.json`, drop
-rows in the feasible set (membership via `dump-full-pool` of B3),
-`eval-solution-force` the rest, count lowers-fine (and optionally
-runs-fine).
+**Compiler half DONE 2026-08-13**: `eval-solution-force=true` skips the
+membership check (completeness and unknown-name checks still apply, the
+guarded error stays the default) and lets the lowering deliver its own
+verdict; lit-tested on a rejected point in both modes.
+Then A2 = python-side (still to write, Phase 4): sample the Cartesian
+domains from `space.json`, drop rows in the feasible set (membership via
+`dump-full-pool` of B3), `eval-solution-force` the rest, count
+lowers-fine (and optionally runs-fine).
 `accepted-but-fails` needs nothing: any compile/run failure in B1/B3's
 measured sets is that counter, and the paper wants it run first — which the
 phase order (§8) honours since B1 is Phase 1.
 
 ### 3.5 P2 — small RQ2 completeness item
-Record space-construction/enumeration wall time into `space.json`
-(it is RQ2's "offline/setup time" for our side; the search side is already
-in `timings.csv`).
+**DONE 2026-08-13.** `buildConfigSpace` times its whole body
+(declaration, solve, enumeration) into `ConfigSpace::buildWallSeconds`;
+every `space.json` reports it as `space_build_seconds` (it is RQ2's
+"offline/setup time" for our side; the search side is already in
+`timings.csv`).
 
 ### 3.6 Optional extension (nice-to-have, gates nothing) — concurrent group execution via the `async` dialect
 
@@ -543,13 +561,16 @@ cinm1 sweep + coverage (§4.4); rule-decision points; ablation toggles
 PrIM results arrive.
 
 **Phase 3a — group-residency refactor (compiler-only, no experiments)**
-§3.2's target design: WorkgroupType → type interface, BufferType on the
-interface, core insert-alloc/free hook, hoisted per-group alloc/load.
-Self-contained, tested on its own (lit tests + the 3mm graph-allocation
-output as the acceptance case: one alloc per group, forwarded into blocks).
-Start early — it is the long pole of the whole evaluation. The runtime
-`load` timer lands at the *start* of this phase (or even Phase 0), so all
-earlier campaigns already separate load from alloc.
+STATUS 2026-08-13: **landed** (was the long pole). §3.2's target design:
+type interface, insert-alloc/free hook, hoisted per-group alloc, read_only
+operand casts, and load hoisting (`--upmem-hoist-load-programs` after
+dedup in the bench Makefile — which exposed and fixed a dedup miscompile,
+see §3.2). Acceptance held: committed 3mm lowers end-to-end with one
+alloc+load per group at the function top and zero defensive copies. The
+runtime `load` timer landed in Phase 0, so all campaigns separate load
+from alloc. Remaining: the profiling-parity spot check on hardware once
+Phase 1 runs. §3.3 (ablation toggle) and §3.4's compiler half landed the
+same day, so Phase 2/4's compiler prerequisites are also done.
 
 **Phase 3b — RQ4 measurements**
 §4.5 drivers + transformer block + `3mm_{seq,par}.mlir`; both arms;
