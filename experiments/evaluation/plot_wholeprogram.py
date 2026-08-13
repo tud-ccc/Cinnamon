@@ -7,7 +7,8 @@ whole point is the load and rescatter cost the per-operator arm pays per
 inference. Colors come from measurements.net_breakdown_color_ix so every
 breakdown figure in the repo shades a bucket the same way.
 
-Execution is synchronous (see the plan's §3.6 note): parallel variants
+Execution is synchronous (upmem.wait_for blocks the host, so blocks on
+disjoint groups still run in program order): parallel variants
 show staticity preservation, not overlap, and this figure must not imply
 otherwise.
 """

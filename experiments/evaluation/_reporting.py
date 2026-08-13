@@ -1,4 +1,4 @@
-"""Shared bits of the plot/table scripts (plan §6.2).
+"""Shared bits of the plot/table scripts.
 
 Every script reads exactly one results/*.csv, writes into plots/ or
 tables/, and exits 0 with a note when its input is not assembled yet --

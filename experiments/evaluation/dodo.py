@@ -1,4 +1,4 @@
-"""doit tasks for the paper evaluation (docs/EvaluationImplementationPlan.md).
+"""doit tasks for the paper evaluation (§8 of the paper).
 
 This pipeline collects the measurements behind the paper's §8: the shared
 uniform sample (B1), the space dumps the transcription workflow reads (B0),
@@ -9,8 +9,8 @@ compiles, ONE strict hardware-bench chain, retry tasks. The shared
 machinery lives in cinm_experiments.doit_blocks.
 
 Phase 0 scope (this file today): B0 `space` + B1 `sample` -> compile ->
-bench, with retries. See the plan's §5 for the stacks still to come and
-the layout they will occupy.
+bench, with retries; the A2 probe stack; the B6 assemble layer and the
+plot/table scripts it feeds.
 
 Usage:
   doit space             # dump every benchmark's space.json (no simulator)
@@ -39,8 +39,7 @@ from cinm_experiments.split_source import list_functions, split_source  # noqa: 
 
 # ── the paper's constants ────────────────────────────────────────────────────
 # These values appear verbatim in the paper (CI arithmetic, A3, RQ3), so they
-# are set once here and never inline; the rationale for each is the OPTS
-# table in docs/EvaluationImplementationPlan.md §5.
+# are set once here and never inline; each carries its own rationale.
 OPTS = dict(
     # 3/n rule of three: 0-of-300 beaten => the point is in the top 1% of the
     # feasible space (95% CI) -- the number the paper quotes.
@@ -148,7 +147,7 @@ def _dump_space(bench: str) -> bool:
 def task_space():
     """B0: dump every function's space.json -- sizes for tab:sufficiency,
     per-param docs + permutation tables for the manual ATiM transcription
-    (plan §7). No simulator runs; safe anywhere."""
+    workflow. No simulator runs; safe anywhere."""
     for bench in WORKLOADS:
         yield {
             "name": bench,
@@ -195,7 +194,7 @@ def task_sample():
     function, drawn uniformly at random from the enumerated feasible set
     with a fixed seed, predicted costs recorded. Serves E1(b), RQ3's
     fidelity ground truth, §2's best-vs-median, and A2's accepted-but-fails
-    check all at once (plan §2-B1); nothing downstream may redraw it."""
+    check all at once; nothing downstream may redraw it."""
     for bench in WORKLOADS:
         yield {
             "name": bench,
@@ -284,7 +283,7 @@ def task_compile_sample():
         }
 
 
-# ── A2: rejected-region probing (plan §3.4; CPU-only, no hardware) ──────────
+# ── A2: rejected-region probing (CPU-only, no hardware) ─────────────────────
 
 
 def a2_dir(bench: str) -> pathlib.Path:
@@ -369,7 +368,7 @@ RESULTS_DIR = HERE / "results"
 OFFLINE_DIR = HERE / "offline"
 
 
-# ── stack path conventions (plan §5 layout) ─────────────────────────────────
+# ── stack path conventions ──────────────────────────────────────────────────
 # The stacks below B1 are not all wired yet; their paths are fixed here so
 # the assemble layer can already glob them and report MISSING, and so the
 # future task families land in agreed places.
@@ -410,7 +409,7 @@ def points_roots(bench: str, source: str) -> doit_blocks.MeasureRoots:
     )
 
 
-RQ4_PROGRAMS: list[str] = []  # filled when §4.5's workloads land
+RQ4_PROGRAMS: list[str] = []  # filled when the multi-op workloads land
 
 
 def rq4_roots(prog: str, arm: str) -> doit_blocks.MeasureRoots:
@@ -510,7 +509,7 @@ def _assemble_rq4() -> bool:
 
 def task_assemble():
     """B6: one sub-task per results table, each globbing whatever B1-B5
-    produced and printing MISSING notes instead of failing (plan §2-B6)."""
+    produced and printing MISSING notes instead of failing."""
     for name, action in [
         ("e1", _assemble_e1),
         ("rq1", _assemble_rq1),
@@ -538,7 +537,7 @@ PLOT_SCRIPTS = [
 
 
 def task_plots():
-    """The §6.2 inventory: every plot/table derivable from the current
+    """Every plot/table derivable from the current
     results/ -- each script skips (exit 0) when its input CSV is not
     assembled yet, so `doit plots` is safe at any stage of the campaign."""
     for script in PLOT_SCRIPTS:
@@ -552,7 +551,7 @@ def task_plots():
 
 def _assemble_a2() -> bool:
     """results/a2.csv: per-function verdict counts. Missing-tolerant
-    (plan §2-B6): functions not yet probed are simply absent, and partial
+    : functions not yet probed are simply absent, and partial
     probe.csvs contribute the rows they have."""
     import csv
 
@@ -601,7 +600,7 @@ def task_assemble_a2():
 
 def task_numbers():
     """tables/numbers.tex: the paper's inline numbers as \\newcommand defs,
-    from whatever results/*.csv exist (plan §6.2; the script is
+    from whatever results/*.csv exist (the script is
     paper_numbers.py -- a numbers.py here would shadow the stdlib module)."""
     return {
         "actions": [f"python {HERE / 'paper_numbers.py'}"],
@@ -637,12 +636,12 @@ def task_retry_failed_bench():
     return {"actions": [_retry_failed_bench], "uptodate": [False]}
 
 
-# ── still to come (plan §5) ──────────────────────────────────────────────────
+# ── still to come ────────────────────────────────────────────────────────────
 # B3 topk:    exhaustive predicted sweep (eval-timeout-ms=300) -> pools.top_k
 #             -> same B2 shape as the sample stack.
 # B4 search:  bo_multiseed(n_seeds) x {default, ablated spaces, simulators};
 #             timings.csv feeds RQ2.
 # B5 points:  points/atim/{bench}.json + points/cinm1rule/{bench}.json ->
-#             eval-solution runs + invariants report (plan §7).
-# cinm1:      the (D,T) sweep with coverage accounting (plan §4.4).
-# assemble/plot: results/*.csv, missing-tolerant (plan §2-B6, §6).
+#             eval-solution runs + invariants report.
+# cinm1:      the (D,T) sweep with coverage accounting.
+# assemble/plot: results/*.csv, missing-tolerant.

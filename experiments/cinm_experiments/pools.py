@@ -98,7 +98,7 @@ def _rows_to_params(df: pd.DataFrame) -> list[dict]:
 def top_k(pool_csv: pathlib.Path, k: int) -> list[dict]:
     """The k lowest-predicted-cost valid configs of pool_csv, each as a
     params dict for eval_solution() -- the evaluation pipeline's B3 block
-    (best-of-space by the cost model; docs/EvaluationImplementationPlan.md).
+    (best-of-space by the cost model).
     Rows whose cost is not a number (never evaluated / timed out) are
     excluded, which for a full exhaustive pool means only configs the
     simulator could price compete for the top."""

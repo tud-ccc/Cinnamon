@@ -1,7 +1,7 @@
 """B6: fold whatever data/ holds into results/*.csv, tolerant of holes.
 
 One function per results table. Each globs the stacks that feed it, joins
-with the offline interchange CSVs (plan §6.1) when they exist, and reports
+with the offline interchange CSVs when they exist, and reports
 what is MISSING instead of failing -- this is the layer that makes
 "plotting with partial results" true: the plot/table scripts read only
 results/*.csv and never touch data/.
@@ -13,7 +13,7 @@ Schemas (the single source of truth for the plot scripts):
                atim_offline}; every *measured* config row is kept (the
                percentile in tab:sufficiency needs the whole sample
                distribution, not just its best).
-- rq1.csv      the §6.1 interchange schema: benchmark, fn_name, system,
+- rq1.csv      the offline interchange schema: benchmark, fn_name, system,
                config_label, total_ms, scatter_ms, kernel_ms, gather_ms,
                load_ms, tuning_wallclock_s, notes. Offline rows pass
                through; ours/cinm1 rows are computed here.
@@ -40,7 +40,9 @@ import pandas as pd
 from cinm_experiments import fidelity, measurements
 from cinm_experiments.aggregate import iter_config_dirs
 
-# §6.1: the offline interchange columns, shared by rq1.csv.
+# The offline interchange columns (offline/{atim,prim,cpu}.csv), shared
+# by rq1.csv. One row per measured point, component columns nullable;
+# nothing else in the pipeline knows how offline rows were obtained.
 INTERCHANGE_COLUMNS = [
     "benchmark",
     "fn_name",
@@ -80,7 +82,7 @@ def _write(frame: pd.DataFrame, out_csv: pathlib.Path, missing: list[str]) -> bo
 def measured_rows(
     compile_root: pathlib.Path, run_root: pathlib.Path, system: str
 ) -> pd.DataFrame:
-    """One §6.1-shaped row per benched config under a B2 stack (net total +
+    """One interchange-shaped row per benched config under a B2 stack (net total +
     component means, label from the config dir). Empty frame when the stack
     has not run."""
     rows = []
@@ -117,7 +119,7 @@ def assemble_e1(
 ) -> bool:
     """stacks: benchmark -> {system: (compile_root, run_root)} over the
     sample, topk, search and atim_transcribed stacks. Offline ATiM rows
-    (already benchmark-tagged, §6.1 schema) are folded in under
+    (already benchmark-tagged, interchange schema) are folded in under
     system=atim_offline."""
     frames, missing = [], []
     for bench, systems in sorted(stacks.items()):

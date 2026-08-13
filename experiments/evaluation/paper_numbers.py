@@ -2,15 +2,15 @@
 
 Reads whatever results/*.csv exist and writes tables/numbers.tex; a source
 that is not there yet contributes a comment instead of a definition, so a
-partial data/ still yields a compilable include (plan §6.2). The paper
+partial data/ still yields a compilable include. The paper
 never hard-codes one of these numbers inline: it says \\atwoRejectedCount
 and friends, and this script is the single producer.
 
 LaTeX command names contain no digits, so "A2" becomes "atwo" etc.
 
-(The plan calls this script numbers.py; it is paper_numbers.py because a
-sibling numbers.py shadows the stdlib `numbers` module for everything that
-runs with this directory on sys.path -- doit itself, via tqdm.)
+(Not numbers.py: a sibling numbers.py shadows the stdlib `numbers` module
+for everything that runs with this directory on sys.path -- doit itself,
+via tqdm.)
 """
 
 from __future__ import annotations

@@ -5,7 +5,7 @@ a dump without a run; every search/sample mode also writes one next to its
 pool.csv). This module is the Python-side reader: the evaluation pipeline
 uses it for tab:sufficiency's size columns and for the A2 Cartesian
 sampler, and the ATiM-transcription helper uses the permutation tables
-(docs/EvaluationImplementationPlan.md §7).
+workflow).
 """
 
 from __future__ import annotations
