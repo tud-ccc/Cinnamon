@@ -20,6 +20,13 @@
 // CHECK: cinm.compute_block on accelerator
 // CHECK-SAME: !upmem.hierarchy<
 // CHECK-NOT: upmem.alloc_dpus
+//
+// The commit marks casts of operands the body only reads (per the transfer
+// ops' declared effects) as read_only, so the enclosing function's later
+// bufferization does not pay a defensive alloc+copy for them. Both gemv
+// inputs are scattered, never gathered into, so both casts qualify.
+// CHECK: bufferization.to_buffer %arg{{[0-9]+}} read_only
+// CHECK: bufferization.to_buffer %arg{{[0-9]+}} read_only
 // CHECK: upmem.load_program @{{.*}} on %arg{{[0-9]+}} : !upmem.hierarchy<
 // CHECK-NOT: upmem.alloc_dpus
 // CHECK-NOT: upmem.free_dpus

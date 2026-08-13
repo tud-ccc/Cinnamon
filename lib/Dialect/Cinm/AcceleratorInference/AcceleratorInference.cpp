@@ -1204,6 +1204,44 @@ static Operation *createCast(OpBuilder &builder, Location loc, Type toType,
                                                   operand);
 }
 
+/// Whether every use of `root`, following view-like aliases (subview,
+/// expand_shape, ...), at most READS the buffer according to declared memory
+/// effects. Conservative: an aliasing user without MemoryEffectOpInterface,
+/// or with a write effect on the value, means "possibly written".
+///
+/// This is what licenses `read_only` on the bufferization.to_buffer casts
+/// the commit inserts below. The spliced body is already-bufferized code
+/// inside a tensor-land compute block, so one-shot-bufferize cannot re-run
+/// its own conflict analysis on it -- it sees only the to_buffer boundary
+/// and, without the attribute, must assume the buffer is mutated and copy
+/// the operand defensively (ComputeBufferizableInterface's isValueWritten
+/// walks exactly to this cast). The effects, unlike the tensor SSA graph,
+/// survive lowering, so they are the honest source of the answer.
+static bool onlyReadsBuffer(Value root) {
+  SmallVector<Value> worklist{root};
+  while (!worklist.empty()) {
+    Value value = worklist.pop_back_val();
+    for (OpOperand &use : value.getUses()) {
+      Operation *user = use.getOwner();
+      if (auto view = dyn_cast<ViewLikeOpInterface>(user)) {
+        if (view.getViewSource() == use.get()) {
+          llvm::append_range(worklist, user->getResults());
+          continue;
+        }
+      }
+      auto mem = dyn_cast<MemoryEffectOpInterface>(user);
+      if (!mem)
+        return false;
+      SmallVector<MemoryEffects::EffectInstance> effects;
+      mem.getEffectsOnValue(use.get(), effects);
+      for (const MemoryEffects::EffectInstance &effect : effects)
+        if (isa<MemoryEffects::Write>(effect.getEffect()))
+          return false;
+    }
+  }
+  return true;
+}
+
 DiagnosedSilenceableFailure
 InferencePlugin::commitBestCandidate(cinm::ComputeBlockOp original,
                                      TrialInfo bestTrial) {
@@ -1254,6 +1292,14 @@ InferencePlugin::commitBestCandidate(cinm::ComputeBlockOp original,
       builder.setInsertionPointAfterValue(arg);
       auto cast = createCast(builder, arg.getLoc(), innerTy, arg);
       arg.replaceAllUsesExcept(cast->getResult(0), cast);
+      // An operand the body only reads (a scattered input, per the transfer
+      // ops' declared effects) must say so on its cast, or the enclosing
+      // function's bufferization pays an alloc+copy for it (see
+      // onlyReadsBuffer). Checked after the use replacement above, since it
+      // is the cast's uses that carry the answer.
+      if (auto toBuffer = dyn_cast<bufferization::ToBufferOp>(cast))
+        if (onlyReadsBuffer(toBuffer.getResult()))
+          toBuffer.setReadOnly(true);
     }
   }
   for (auto [res, yieldOpnd] : original.zipResultsWithYieldOperands()) {
