@@ -93,14 +93,17 @@ struct UPMEMDedupKernelsPass
   void runOnOperation() override {
     auto module = getOperation();
 
-    // Find unique representant per equivalent func ops.
+    // Find unique representant per equivalent func ops. Keyed by the op:
+    // programs in different nested kernel modules routinely share the same
+    // sym_name (every conversion-emitted module calls its program
+    // @program), so the name identifies nothing.
     DenseSet<upmem::DpuProgramOp, DuplicateUPMEMFuncOpEquivalenceInfo>
         uniqueUPMEMFuncOps;
-    DenseMap<StringAttr, upmem::DpuProgramOp> getRepresentant;
+    DenseMap<upmem::DpuProgramOp, upmem::DpuProgramOp> getRepresentant;
     DenseSet<upmem::DpuProgramOp> toBeErased;
     module.walk([&](upmem::DpuProgramOp f) {
       auto [repr, inserted] = uniqueUPMEMFuncOps.insert(f);
-      getRepresentant[f.getSymNameAttr()] = *repr;
+      getRepresentant[f] = *repr;
       if (!inserted) {
         toBeErased.insert(f);
       }
@@ -115,7 +118,7 @@ struct UPMEMDedupKernelsPass
               load, load.getDpuProgramRef());
       if (!prog)
         return;
-      upmem::DpuProgramOp callee = getRepresentant[prog.getSymNameAttr()];
+      upmem::DpuProgramOp callee = getRepresentant.lookup(prog);
       if (!callee)
         return;
       auto ref = getSymbolPath(symtable, callee);
