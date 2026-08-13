@@ -8,6 +8,8 @@
 #include "cinm-mlir/Dialect/Cinm/IR/CinmUtils.h"
 #include "cinm-mlir/Utils/Permutation.h"
 
+#include <llvm/ADT/ScopeExit.h>
+
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
@@ -115,6 +117,12 @@ buildRefModule(cinm::ComputeBlockOp computeOp) {
 LogicalResult buildConfigSpace(cinm::ComputeBlockOp refClone,
                                InferencePlugin &plugin, ConfigSpace &space,
                                const InferenceOptions &opts) {
+  auto buildStart = std::chrono::steady_clock::now();
+  auto recordBuildTime = llvm::make_scope_exit([&] {
+    space.buildWallSeconds = std::chrono::duration<double>(
+                                 std::chrono::steady_clock::now() - buildStart)
+                                 .count();
+  });
   SpaceBuilder builder;
   plugin.initializeSpace(refClone, builder);
   // Pins come after the plugin's declarations and constrain them; a name the
