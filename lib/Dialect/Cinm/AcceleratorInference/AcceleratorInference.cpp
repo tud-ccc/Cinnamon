@@ -325,8 +325,15 @@ struct InferenceTask {
     // Membership is the whole check: the space holds exactly the feasible
     // configurations, so anything it does not contain violates a constraint.
     // Letting such a point through would have the pipeline reject it much
-    // further down for a reason that reads like a lowering bug.
+    // further down for a reason that reads like a lowering bug -- except
+    // when that is the point: under evalSolutionForce the lowering's own
+    // verdict on an infeasible configuration is the measurement.
     if (!space.isEncodable(conf)) {
+      if (options.evalSolutionForce) {
+        llvm::errs() << "eval-solution-force: configuration is outside the "
+                        "feasible set, attempting the lowering anyway\n";
+        return conf;
+      }
       std::string details;
       llvm::raw_string_ostream detailsOs(details);
       space.debugIsEncodable(conf, detailsOs);

@@ -1204,6 +1204,7 @@ struct UpmemInferAcceleratorPass
       }
       o.evalSingleSolution = std::move(named);
     }
+    o.evalSolutionForce = evalSolutionForce;
     return upmemOpts;
   }
 

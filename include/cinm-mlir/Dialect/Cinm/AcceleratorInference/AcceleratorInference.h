@@ -329,6 +329,16 @@ struct InferenceOptions {
   /// changes. Resolved against the space once it has been built.
   std::optional<llvm::StringMap<ParmValue>> evalSingleSolution;
 
+  /// With evalSingleSolution: skip the feasible-set membership check and
+  /// attempt the lowering anyway. Membership is normally the whole check
+  /// (the space holds exactly the feasible configurations), so forcing past
+  /// it measures the constraint system itself: a rejected configuration
+  /// that lowers and runs fine is a false negative of the space, which is
+  /// exactly what the rejected-region experiment counts. Completeness and
+  /// unknown-name checks still apply -- a value for every dimension is
+  /// structural, not a feasibility judgement.
+  bool evalSolutionForce = false;
+
   /// Parameters pinned to a single value when the space is built: each named
   /// parameter is constrained to equal the given value, on top of whatever
   /// the plugin declares. This is how a decision taken above the search is

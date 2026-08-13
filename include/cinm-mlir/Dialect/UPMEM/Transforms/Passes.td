@@ -245,7 +245,14 @@ def UpmemInferAcceleratorPass : Pass<"upmem-infer-accelerator", "ModuleOp"> {
                "`eval-solution=blockM=8,blockK=128`. Every parameter the space "
                "declares must be named; unknown names are an error. Named "
                "rather than positional so that changing the space cannot "
-               "silently reinterpret a stored configuration.">
+               "silently reinterpret a stored configuration.">,
+    Option<"evalSolutionForce", "eval-solution-force", "bool", "false",
+           "With eval-solution: skip the feasible-set membership check and "
+           "attempt the lowering anyway. The lowering's own verdict on an "
+           "infeasible configuration is the measurement -- a rejected "
+           "configuration that lowers fine is a false negative of the "
+           "constraint system. Completeness and unknown-name checks still "
+           "apply.">
   ];
 }
 
