@@ -152,16 +152,28 @@ Done, as atomic commits with tests:
   ambiguity ⇒ error). `BufferType` needed no change: forwarded values only
   ever stand in for the workgroup, and the substitution happens at
   conversion time, so no cnm op signature changed either.
-Still open (the commit-flow half):
-- the core **insert-alloc/free hook** on the plugin interface, and
-  GraphInference finalization's **shared-workgroup mode** (first member of
-  a group triggers the hook's alloc at the container-function top +
-  forwards into each member's compute_block; frees collect at function
-  end) — `GraphInference.cpp` finalization is the disturbed path;
+Done (the commit-flow half):
+- the **insert-alloc/free hook** (`InferencePlugin::materializeWorkgroupAlloc/
+  Free`) and finalization's **shared-workgroup mode**: each pinned group's
+  set is allocated once at the container-function top, freed at every exit,
+  and forwarded into members as an ordinary compute_block operand; the
+  member's lowering uses it and no longer allocs/frees. Timeshared groups
+  and hook-less targets keep per-block allocation. Notes for posterity: the
+  workgroup interface had to move into the *cinm* dialect (the
+  compute_block canonicalizer must exempt forwarded workgroups from
+  unused-arg deletion, and CinmIR cannot depend on CnmIR), and the
+  forwarded-workgroup search must not cross IsolatedFromAbove boundaries.
+- the acceptance case: lit test (two classes → two hoisted allocs) and 3mm
+  end-to-end (three groups per function, one alloc each, loads on
+  forwarded args, frees at exit).
+Still open:
 - **load hoisting** for merged groups (one load per resident program after
-  dedup, instead of per block);
-- the acceptance case (3mm graph-allocation end-to-end, one alloc per
-  group; per-class profiling numbers identical before/after).
+  dedup, instead of one per block per launch) — per-block loads are
+  correct but pay a reload per operator even within a group;
+- re-run one class's profiling before/after on hardware once Phase 1's
+  campaign starts, as the cheap regression check that hoisting did not
+  leak into the profiling path (structurally it cannot: profiles are
+  computed before finalization runs the hooks).
 The conflation is **dialect-level, not just instrumentation**. Today (see
 any graph-allocation output for 3mm): each `cinm.compute_block` body ends in
 its own `upmem.alloc_dpus with program @kernels_N::@program : !upmem.
