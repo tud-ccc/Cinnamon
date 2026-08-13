@@ -31,6 +31,7 @@ from doit.reporter import ProgressBarReporter
 HERE = pathlib.Path(__file__).resolve().parent
 EXPERIMENTS_DIR = HERE.parent
 sys.path.insert(0, str(EXPERIMENTS_DIR))
+sys.path.insert(0, str(HERE))  # sibling modules (assemble) under doit
 
 from cinm_experiments import cinmopt, compile_run, doit_blocks, pools, ALL_PRIMS  # noqa: E402
 from cinm_experiments import space as space_mod  # noqa: E402
@@ -365,6 +366,188 @@ def task_a2():
 
 
 RESULTS_DIR = HERE / "results"
+OFFLINE_DIR = HERE / "offline"
+
+
+# ── stack path conventions (plan §5 layout) ─────────────────────────────────
+# The stacks below B1 are not all wired yet; their paths are fixed here so
+# the assemble layer can already glob them and report MISSING, and so the
+# future task families land in agreed places.
+
+
+def topk_roots(bench: str) -> doit_blocks.MeasureRoots:
+    return doit_blocks.MeasureRoots(
+        compile_root=DATA_DIR / bench / "topk" / "compiled",
+        run_root=DATA_DIR / bench / "topk" / "run",
+    )
+
+
+def search_dir(bench: str) -> pathlib.Path:
+    return DATA_DIR / bench / "search"
+
+
+def search_roots(bench: str) -> doit_blocks.MeasureRoots:
+    return doit_blocks.MeasureRoots(
+        compile_root=search_dir(bench) / "compiled",
+        run_root=search_dir(bench) / "run",
+    )
+
+
+def ablate_roots(bench: str, space: str) -> doit_blocks.MeasureRoots:
+    root = DATA_DIR / bench / f"search_ablate_{space}"
+    return doit_blocks.MeasureRoots(
+        compile_root=root / "compiled", run_root=root / "run"
+    )
+
+
+ABLATE_SPACES = ["no_mram", "no_scatter", "neither"]
+
+
+def points_roots(bench: str, source: str) -> doit_blocks.MeasureRoots:
+    root = DATA_DIR / bench / f"points_{source}"
+    return doit_blocks.MeasureRoots(
+        compile_root=root / "compiled", run_root=root / "run"
+    )
+
+
+RQ4_PROGRAMS: list[str] = []  # filled when §4.5's workloads land
+
+
+def rq4_roots(prog: str, arm: str) -> doit_blocks.MeasureRoots:
+    root = DATA_DIR / prog / f"rq4_{arm}"
+    return doit_blocks.MeasureRoots(
+        compile_root=root / "compiled", run_root=root / "run"
+    )
+
+
+# ── B6: assemble results/*.csv from whatever exists ─────────────────────────
+
+import assemble  # noqa: E402  (sibling module; HERE is on sys.path via doit)
+
+
+def _pair(roots: doit_blocks.MeasureRoots) -> tuple[pathlib.Path, pathlib.Path]:
+    return (roots.compile_root, roots.run_root)
+
+
+def _assemble_e1() -> bool:
+    return assemble.assemble_e1(
+        {
+            bench: {
+                "sample": _pair(sample_roots(bench)),
+                "topk": _pair(topk_roots(bench)),
+                "search": _pair(search_roots(bench)),
+                "atim_transcribed": _pair(points_roots(bench, "atim")),
+            }
+            for bench in WORKLOADS
+        },
+        OFFLINE_DIR / "atim.csv",
+        RESULTS_DIR / "e1.csv",
+    )
+
+
+def _assemble_rq1() -> bool:
+    return assemble.assemble_rq1(
+        {
+            bench: {
+                "ours": _pair(search_roots(bench)),
+                "cinm1": (
+                    DATA_DIR / bench / "cinm1" / "compiled",
+                    DATA_DIR / bench / "cinm1" / "run",
+                ),
+                "cinm1_rule": _pair(points_roots(bench, "cinm1rule")),
+            }
+            for bench in WORKLOADS
+        },
+        {system: OFFLINE_DIR / f"{system}.csv" for system in ("prim", "atim", "cpu")},
+        RESULTS_DIR / "rq1.csv",
+    )
+
+
+def _assemble_rq2() -> bool:
+    return assemble.assemble_rq2(
+        {bench: search_dir(bench) for bench in WORKLOADS},
+        {
+            (bench, fn): space_json(bench, fn)
+            for bench in WORKLOADS
+            for fn in list_functions(source_mlir(bench))
+        },
+        RESULTS_DIR / "rq2.csv",
+    )
+
+
+def _assemble_rq3() -> bool:
+    return assemble.assemble_rq3(
+        {bench: _pair(sample_roots(bench)) for bench in WORKLOADS},
+        RESULTS_DIR / "rq3.csv",
+    )
+
+
+def _assemble_a1() -> bool:
+    return assemble.assemble_a1(
+        {
+            (bench, space): _pair(
+                search_roots(bench)
+                if space == "default"
+                else ablate_roots(bench, space)
+            )
+            for bench in WORKLOADS
+            for space in ["default", *ABLATE_SPACES]
+        },
+        RESULTS_DIR / "a1.csv",
+    )
+
+
+def _assemble_rq4() -> bool:
+    return assemble.assemble_rq4(
+        {
+            (prog, arm): _pair(rq4_roots(prog, arm))
+            for prog in RQ4_PROGRAMS
+            for arm in ("peroper", "wholeprog")
+        },
+        RESULTS_DIR / "rq4.csv",
+    )
+
+
+def task_assemble():
+    """B6: one sub-task per results table, each globbing whatever B1-B5
+    produced and printing MISSING notes instead of failing (plan §2-B6)."""
+    for name, action in [
+        ("e1", _assemble_e1),
+        ("rq1", _assemble_rq1),
+        ("rq2", _assemble_rq2),
+        ("rq3", _assemble_rq3),
+        ("a1", _assemble_a1),
+        ("rq4", _assemble_rq4),
+    ]:
+        yield {
+            "name": name,
+            "actions": [action],
+            "uptodate": [False],  # missing-tolerant: always re-derive
+        }
+
+
+PLOT_SCRIPTS = [
+    "table_sufficiency.py",
+    "plot_quality.py",
+    "table_quality.py",
+    "table_walltime.py",
+    "plot_fidelity.py",
+    "plot_wholeprogram.py",
+    "table_capability.py",
+]
+
+
+def task_plots():
+    """The §6.2 inventory: every plot/table derivable from the current
+    results/ -- each script skips (exit 0) when its input CSV is not
+    assembled yet, so `doit plots` is safe at any stage of the campaign."""
+    for script in PLOT_SCRIPTS:
+        yield {
+            "name": pathlib.Path(script).stem,
+            "actions": [f"python {HERE / script}"],
+            "task_dep": ["assemble", "assemble_a2"],
+            "uptodate": [False],
+        }
 
 
 def _assemble_a2() -> bool:
