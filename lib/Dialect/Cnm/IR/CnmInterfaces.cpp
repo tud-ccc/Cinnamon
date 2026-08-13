@@ -10,5 +10,3 @@ using namespace mlir::cnm;
 //===- Generated implementation -------------------------------------------===//
 
 #include "cinm-mlir/Dialect/Cnm/IR/CnmInterfaces.cpp.inc"
-
-#include "cinm-mlir/Dialect/Cnm/IR/CnmTypeInterfaces.cpp.inc"

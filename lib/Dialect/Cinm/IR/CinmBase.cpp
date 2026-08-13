@@ -7,6 +7,7 @@
 #include "cinm-mlir/Dialect/Cinm/IR/CinmAttributes.h"
 #include "cinm-mlir/Dialect/Cinm/IR/CinmDialect.h"
 #include "cinm-mlir/Dialect/Cinm/IR/CinmOps.h"
+#include "cinm-mlir/Dialect/Cinm/IR/CinmWorkgroupTypeInterface.h"
 #include "cinm-mlir/Dialect/Cinm/IR/TilingInterface.h"
 #include <cstdint>
 #include <llvm/ADT/SmallVector.h>
@@ -32,6 +33,7 @@ using namespace mlir::cinm;
 #include "cinm-mlir/Dialect/Cinm/IR/CinmAttributes.cpp.inc"
 #include "cinm-mlir/Dialect/Cinm/IR/CinmComputeOpInterface.cpp.inc"
 #include "cinm-mlir/Dialect/Cinm/IR/CinmPlatformAttrInterface.cpp.inc"
+#include "cinm-mlir/Dialect/Cinm/IR/CinmWorkgroupTypeInterface.cpp.inc"
 // #define GET_ATTRDEF_CLASSES
 
 //===----------------------------------------------------------------------===//

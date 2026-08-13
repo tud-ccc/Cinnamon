@@ -22,5 +22,4 @@ add_mlir_dialect_library(UPMEMIR
         MLIRMemRefDialect
         MLIRSupport
         CinmIR
-        CnmIR
 )

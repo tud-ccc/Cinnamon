@@ -181,6 +181,37 @@ struct InferencePlugin {
     (void)trial;
     return {};
   }
+
+  /// Materialize the device set a pinned group of compute blocks owns, at
+  /// the builder's insertion point -- the graph level calls this once per
+  /// group, at the top of the group's container function -- and return a
+  /// handle whose type implements cinm::WorkgroupTypeInterface. `config`
+  /// is the group's winning configuration, in evalSingleSolution currency;
+  /// the plugin reads whatever parameters determine the set's shape (dpus
+  /// and tasklets, for UPMEM). The framework forwards the handle into every
+  /// member block as an operand, and the member's lowering uses it instead
+  /// of allocating its own set (the forwarding contract; see CnmToUPMEM's
+  /// findForwardedWorkgroup). Return null when the target has no hoisted
+  /// allocation: members then allocate per block, as without graph
+  /// allocation. The default is exactly that.
+  virtual Value
+  materializeWorkgroupAlloc(OpBuilder &builder, Location loc,
+                            const llvm::StringMap<ParmValue> &config) {
+    (void)builder;
+    (void)loc;
+    (void)config;
+    return Value();
+  }
+
+  /// Release a device set materialized by materializeWorkgroupAlloc, at the
+  /// builder's insertion point (the graph level calls this once per exit of
+  /// the container function).
+  virtual void materializeWorkgroupFree(OpBuilder &builder, Location loc,
+                                        Value workgroup) {
+    (void)builder;
+    (void)loc;
+    (void)workgroup;
+  }
 };
 
 // ===----------------------------------------------------------------------===//
@@ -235,9 +266,8 @@ struct InferenceOptions {
   /// Build each block's config space, write its space.json into dumpDir, and
   /// stop: no evaluation, no search, no commit, and (in graph mode) no
   /// allocation. The IR is left untouched. This is how the space is made
-  /// inspectable without paying for a run -- the manual-transcription
-  /// workflow reads the result (docs/EvaluationImplementationPlan.md §7).
-  /// Requires a non-empty dumpDir to be useful.
+  /// inspectable -- parameter docs, permutation encodings -- without paying
+  /// for a run. Requires a non-empty dumpDir to be useful.
   bool dumpSpaceOnly = false;
 
   /// When true, evaluate every valid configuration in the search space

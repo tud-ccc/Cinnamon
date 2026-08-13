@@ -405,6 +405,27 @@ struct UpmemInferencePlugin : cinm::InferencePlugin {
     return out;
   }
 
+  /// One upmem.alloc_dpus for the whole group, shaped by the group's winning
+  /// configuration. The load is NOT emitted here: which binary the set holds
+  /// is each member's decision at lowering time (see CnmToUPMEM), and the
+  /// program symbol does not even exist yet when this runs.
+  Value materializeWorkgroupAlloc(
+      OpBuilder &builder, Location loc,
+      const llvm::StringMap<cinm::ParmValue> &config) override {
+    int64_t dpus = config.lookup("dpus");
+    int64_t tasklets = config.lookup("tasklets");
+    if (dpus <= 0 || tasklets <= 0)
+      return Value();
+    auto ty =
+        upmem::DeviceHierarchyType::get(builder.getContext(), dpus, tasklets);
+    return upmem::AllocDPUsOp::create(builder, loc, ty).getResult();
+  }
+
+  void materializeWorkgroupFree(OpBuilder &builder, Location loc,
+                                Value workgroup) override {
+    upmem::FreeDPUsOp::create(builder, loc, workgroup);
+  }
+
   /// cinm -> linalg. Run once, on the reference the trials are cloned from,
   /// because its result does not depend on the configuration: the space is
   /// stated in terms of an *iteration space*, and only linalg carries one, so

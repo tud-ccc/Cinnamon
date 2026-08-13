@@ -12,9 +12,9 @@ include "mlir/IR/AttrTypeBase.td"
 include "mlir/IR/EnumAttr.td"
 include "mlir/IR/OpBase.td"
 include "UPMEMBase.td"
-include "cinm-mlir/Dialect/Cnm/IR/CnmInterfaces.td"
+include "cinm-mlir/Dialect/Cinm/IR/CinmWorkgroupTypeInterface.td"
 
-def DeviceHierarchyType : UPMEM_Type<"DeviceHierarchy", [CnmWorkgroupTypeInterface]> {
+def DeviceHierarchyType : UPMEM_Type<"DeviceHierarchy", [CinmWorkgroupTypeInterface]> {
   let mnemonic = "hierarchy";
   let summary = "A set of allocated DPUs and the tasklets running on them";
   let description = [{
@@ -37,7 +37,7 @@ def DeviceHierarchyType : UPMEM_Type<"DeviceHierarchy", [CnmWorkgroupTypeInterfa
       return {getNumDpus(), getNumTaskletsPerDpu()};
     }
 
-    /// cnm::CnmWorkgroupTypeInterface -- what lets a hierarchy allocated
+    /// cinm::WorkgroupTypeInterface -- what lets a hierarchy allocated
     /// outside a compute block be recognized as a forwarded workgroup by
     /// code that cannot name this dialect.
     ::llvm::SmallVector<int64_t> getWorkgroupShape() const {
