@@ -10,6 +10,8 @@
 #include <llvm/ADT/DenseSet.h>
 #include <llvm/ADT/SmallVector.h>
 #include <llvm/Support/Debug.h>
+#include <llvm/Support/FileSystem.h>
+#include <llvm/Support/Path.h>
 #include <llvm/Support/raw_ostream.h>
 
 #include <mlir/Dialect/Arith/IR/Arith.h>
@@ -54,7 +56,6 @@ struct DpuTranslator {
   llvm::DenseMap<Value, ProgramBuilder::ValId> val_map;
   llvm::DenseMap<Value, SubviewInfo> sv_map;
   llvm::SmallVector<Value, 4> iv_stack;
-  llvm::DenseSet<Value> skip_vals;
   int buf_ctr = 0;
 
   explicit DpuTranslator(ProgramBuilder &b) : builder(b) {}
@@ -258,11 +259,6 @@ struct DpuTranslator {
   }
 
   void translateStore(memref::StoreOp op) {
-    if (skip_vals.count(op.getValue()))
-      return;
-    if (op.getValue().getDefiningOp() &&
-        isa<scf::ForOp>(op.getValue().getDefiningOp()))
-      return;
     auto bufIt = buf_map.find(op.getMemRef());
     if (bufIt == buf_map.end())
       return;
@@ -284,8 +280,8 @@ struct DpuTranslator {
 
   // Detect reduction: for iter_args(%acc = %init) { %s = addf %acc, %compute;
   // yield %s } followed immediately by memref.store %forResult, %accBuf[...].
-  // If detected, emits beginLoop + body + createReduceStore + endLoop and marks
-  // the forResult so the following store is skipped.
+  // If detected, emits beginLoop + body + the accumulating arith op + endLoop,
+  // and maps the loop result so the following store is translated normally.
   bool tryTranslateReduction(scf::ForOp forOp) {
     if (forOp.getNumRegionIterArgs() != 1)
       return false;
@@ -316,10 +312,8 @@ struct DpuTranslator {
     if (!storeOp)
       return false;
 
-    auto accBufIt = buf_map.find(storeOp.getMemRef());
-    if (accBufIt == buf_map.end())
+    if (!buf_map.count(storeOp.getMemRef()))
       return false;
-    ProgramBuilder::BufId accBufId = accBufIt->second;
 
     int64_t lb = getConstInt(forOp.getLowerBound());
     int64_t ub = getConstInt(forOp.getUpperBound());
@@ -334,14 +328,20 @@ struct DpuTranslator {
       translateOp(op);
     }
 
+    // The accumulator is an scf.for iter_arg -- a register, not memory -- so
+    // the only per-iteration cost is the arithmetic.
     auto cvIt = val_map.find(computeVal);
-    if (cvIt != val_map.end())
-      builder.createReduceStore(accBufId, ArithOp::ADD, cvIt->second);
+    if (cvIt != val_map.end()) {
+      auto initIt = val_map.find(forOp.getInitArgs()[0]);
+      ProgramBuilder::ValId accVal =
+          initIt != val_map.end() ? initIt->second : cvIt->second;
+      val_map[forResult] = builder.createArith(
+          ArithOp::ADD, mlirTypeToDtype(forResult.getType()), accVal,
+          cvIt->second);
+    }
 
     builder.endLoop();
     iv_stack.pop_back();
-
-    skip_vals.insert(forResult);
     return true;
   }
 
@@ -456,24 +456,55 @@ struct DpuTranslator {
 
 enum class SimMode { FAST = 0, CYCLEACCURATE = 1, HYBRID = 2 };
 
+/// Writes `json` to <dir>/<stem>.cnmprog.json, creating the directory if
+/// needed. Failures warn rather than fail the pass: a dump is a debugging
+/// aid, and losing one should never turn a working compile into a broken one.
+void writeProgramDump(llvm::StringRef dir, llvm::StringRef stem,
+                      llvm::StringRef json, Operation *diagOp) {
+  if (auto ec = llvm::sys::fs::create_directories(dir)) {
+    diagOp->emitWarning() << "upmem: could not create program dump directory '"
+                          << dir << "': " << ec.message();
+    return;
+  }
+  llvm::SmallString<128> outPath(dir);
+  llvm::sys::path::append(outPath, stem + ".cnmprog.json");
+  std::error_code ec;
+  llvm::raw_fd_ostream out(outPath, ec);
+  if (ec) {
+    diagOp->emitWarning() << "upmem: could not write program dump '" << outPath
+                          << "': " << ec.message();
+    return;
+  }
+  out << json;
+}
+
 struct CppSimulator : UpmemSimulator {
   bool annotateOpCosts;
   std::chrono::milliseconds timeoutMs;
   SimMode mode;
+  /// Non-empty enables the JSON program dump; see createCycleAccurateSimulator.
+  std::string programDumpDir;
 
   explicit CppSimulator(bool annotateOpCosts,
-                        std::chrono::milliseconds timeoutMs, SimMode mode)
-      : annotateOpCosts(annotateOpCosts), timeoutMs(timeoutMs), mode(mode) {}
+                        std::chrono::milliseconds timeoutMs, SimMode mode,
+                        llvm::StringRef programDumpDir = {})
+      : annotateOpCosts(annotateOpCosts), timeoutMs(timeoutMs), mode(mode),
+        programDumpDir(programDumpDir.str()) {}
 
   std::unique_ptr<UpmemSimulator> clone() override {
-    return std::make_unique<CppSimulator>(annotateOpCosts, timeoutMs, mode);
+    return std::make_unique<CppSimulator>(annotateOpCosts, timeoutMs, mode,
+                                          programDumpDir);
   }
 
   bool supportsMultithreading() const override { return true; }
 
   Maybe<SimCost> simulate(Region &region) override {
     std::chrono::milliseconds tms = timeoutMs;
-    auto waitForCb = [tms, mode = this->mode](Operation *op, bool) -> SimCost {
+    // Shared across the copies simulateHostRegion may make of this callback,
+    // so unnamed programs still get distinct dump filenames.
+    auto dumpCtr = std::make_shared<std::atomic<unsigned>>(0);
+    auto waitForCb = [tms, mode = this->mode, dumpDir = this->programDumpDir,
+                      dumpCtr](Operation *op, bool) -> SimCost {
       auto waitFor = llvm::cast<WaitForOp>(op);
       DpuProgramOp dpuProg = waitFor.getDpuProgram();
       if (!dpuProg)
@@ -482,6 +513,18 @@ struct CppSimulator : UpmemSimulator {
       ProgramBuilder builder;
       DpuTranslator tr(builder);
       tr.translateProgram(dpuProg);
+
+      if (!dumpDir.empty()) {
+        llvm::StringRef name;
+        if (auto sym = dpuProg->getAttrOfType<StringAttr>(
+                SymbolTable::getSymbolAttrName()))
+          name = sym.getValue();
+        std::string stem =
+            name.empty() ? ("kernel_" + std::to_string(dumpCtr->fetch_add(1)))
+                         : name.str();
+        writeProgramDump(dumpDir, stem, builder.emitJson(T, stem), op);
+      }
+
       auto kernelNs = builder.simulate(T, tms, mode == SimMode::FAST);
       if (!kernelNs.has_value() && mode == SimMode::HYBRID) {
         // In hybrid mode we first try to simulate with the cycle accurate
@@ -494,8 +537,8 @@ struct CppSimulator : UpmemSimulator {
       auto hierarchy =
           llvm::cast<DeviceHierarchyType>(waitFor.getDpuSet().getType());
       int numDpus = hierarchy.getNumDpus();
-      // auto launchOverhead = 0;
-      auto launchOverhead = 0.0254524 * numDpus / 64;
+      auto launchOverhead = 0;
+      // auto launchOverhead = 0.0254524 * numDpus / 64;
       // auto launchOverhead = 0.041958 * log2(numDpus);
       // auto launchOverhead =
       //      -2.347115 - 0.001803433284655423 * numDpus +
@@ -514,19 +557,22 @@ struct CppSimulator : UpmemSimulator {
 
 std::unique_ptr<mlir::upmem::UpmemSimulator>
 mlir::upmem::createCycleAccurateSimulator(bool annotateOpCosts,
-                                          std::chrono::milliseconds timeoutMs) {
+                                          std::chrono::milliseconds timeoutMs,
+                                          llvm::StringRef programDumpDir) {
   return std::make_unique<CppSimulator>(annotateOpCosts, timeoutMs,
-                                        SimMode::CYCLEACCURATE);
+                                        SimMode::CYCLEACCURATE, programDumpDir);
 }
 std::unique_ptr<mlir::upmem::UpmemSimulator>
 mlir::upmem::createFastSimulator(bool annotateOpCosts,
-                                 std::chrono::milliseconds timeoutMs) {
+                                 std::chrono::milliseconds timeoutMs,
+                                 llvm::StringRef programDumpDir) {
   return std::make_unique<CppSimulator>(annotateOpCosts, timeoutMs,
-                                        SimMode::FAST);
+                                        SimMode::FAST, programDumpDir);
 }
 std::unique_ptr<mlir::upmem::UpmemSimulator>
 mlir::upmem::createHybridSimulator(bool annotateOpCosts,
-                                   std::chrono::milliseconds timeoutMs) {
+                                   std::chrono::milliseconds timeoutMs,
+                                   llvm::StringRef programDumpDir) {
   return std::make_unique<CppSimulator>(annotateOpCosts, timeoutMs,
-                                        SimMode::HYBRID);
+                                        SimMode::HYBRID, programDumpDir);
 }

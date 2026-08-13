@@ -161,9 +161,12 @@ _LEGACY_KINDS = {
 # without recomputing it.
 _NET_BREAKDOWN_CATEGORIES = [
     "scatter",  # also where scatter:on_array lands, see _canonical_kind
+    "scatter:array",
     "scatter:blocks",
     "scatter:broadcast",
     "gather",
+    "gather:array",
+    "gather:blocks",
     "copy",
     "launch",
     "load",  # only present with count_load=True (RQ4's undiscounted view)
@@ -179,22 +182,37 @@ def _canonical_kind(cat):
     return "scatter" if cat == "scatter:on_array" else cat
 
 
+_COLOR_ORDER = [
+    "scatter",
+    "gather",
+    "copy",
+    "launch",
+    "unaccounted",
+    "scatter:array",
+    "scatter:blocks",
+    "scatter:broadcast",
+    "gather:array",
+    "gather:blocks",
+    "load",
+]
+
+
+def _ix(order: list[str], cat) -> int:
+    """Position of `cat` in `order`, or one past the end for a name not
+    listed there. Unlisted names do occur by design -- both the per-kind
+    breakdown buckets and predicted_bucket's fallback mint bucket names from
+    data (a new transfer-op `kind`, an unmapped cost label), and landing in a
+    shared last slot keeps them visible in a plot instead of raising."""
+    cat = _canonical_kind(cat)
+    return order.index(cat) if cat in order else len(order)
+
+
 def net_breakdown_color_ix(cat):
-    order = [
-        "scatter",
-        "gather",
-        "copy",
-        "launch",
-        "unaccounted",
-        "scatter:blocks",
-        "scatter:broadcast",
-        "load",
-    ]
-    return order.index(_canonical_kind(cat))
+    return _ix(_COLOR_ORDER, cat)
 
 
 def net_breakdown_sort_ix(cat):
-    return _NET_BREAKDOWN_CATEGORIES.index(_canonical_kind(cat))
+    return _ix(_NET_BREAKDOWN_CATEGORIES, cat)
 
 
 def net_breakdown_ms(
@@ -208,12 +226,15 @@ def net_breakdown_ms(
     in the generated host loop nest). None if no total.csv-type file is
     present.
 
-    If by_kind is True, the "scatter" bucket is instead split into one
-    "scatter:<kind>" entry per transfer op kind recorded in scatter.csv's
-    `kind` column (e.g. "scatter:on_array", "scatter:blocks") -- note
-    these dynamic keys aren't covered by NET_BREAKDOWN_CATEGORIES. Falls back
-    to a single "scatter" bucket if the recorded CSV predates the `kind`
-    column.
+    If by_kind is True, the "scatter" and "gather" buckets are instead split
+    into one "scatter:<kind>"/"gather:<kind>" entry per transfer op kind
+    recorded in that CSV's `kind` column (e.g. "scatter:on_array",
+    "scatter:blocks", "gather:array") -- note these dynamic keys aren't
+    covered by NET_BREAKDOWN_CATEGORIES. Each side independently falls back
+    to its single flat bucket if the recorded CSV predates the `kind` column.
+    These are the same bucket names PREDICTED_TO_MEASURED maps the cost
+    model's predicted categories onto, so predicted_breakdown_ms' output can
+    be compared against this one bucket by bucket.
 
     If count_load is True, program load is NOT discounted from net and
     appears as its own "load" bucket -- the whole-program (RQ4) view, where
@@ -222,33 +243,28 @@ def net_breakdown_ms(
     net = net_time_ms(output_dir, discount_load=not count_load)
     if net is None:
         return None
+    scatter = scatter_time_ms(output_dir) or 0.0
     gather = gather_time_ms(output_dir) or 0.0
     copy = copy_time_ms(output_dir) or 0.0
     launch = launch_time_ms(output_dir) or 0.0
     load = (load_time_ms(output_dir) or 0.0) if count_load else 0.0
     extra = {"load": load} if count_load else {}
 
-    scatter_by_kind = _sum_time_ms_by_kind(output_dir, "scatter") if by_kind else {}
-    if scatter_by_kind:
-        scatter_total = sum(scatter_by_kind.values())
-        unaccounted = net - scatter_total - gather - copy - launch - load
-        result = {f"scatter:{kind}": t for kind, t in scatter_by_kind.items()}
-        result.update(
-            {
-                "gather": gather,
-                "copy": copy,
-                "launch": launch,
-                **extra,
-                "unaccounted": unaccounted,
-            }
-        )
-        return result
+    transfers = {"scatter": scatter, "gather": gather}
+    if by_kind:
+        # Each direction falls back to its own flat bucket independently: a
+        # run may well record kinds for scatter but not gather (gather.csv
+        # grew the column at the same time, but old output/ dirs get mixed
+        # with new ones when only part of a sweep is re-run).
+        for direction in ("scatter", "gather"):
+            by_k = _sum_time_ms_by_kind(output_dir, direction)
+            if by_k:
+                del transfers[direction]
+                transfers.update({f"{direction}:{k}": t for k, t in by_k.items()})
 
-    scatter = scatter_time_ms(output_dir) or 0.0
-    unaccounted = net - scatter - gather - copy - launch - load
+    unaccounted = net - sum(transfers.values()) - copy - launch - load
     return {
-        "scatter": scatter,
-        "gather": gather,
+        **transfers,
         "copy": copy,
         "launch": launch,
         **extra,
@@ -300,6 +316,63 @@ def predicted_bucket(category: str, cost_label: str) -> str:
     (as found in aggregate.aggregate_predicted_costs' output) should be
     compared against -- see PREDICTED_TO_MEASURED."""
     return PREDICTED_TO_MEASURED.get((category, cost_label), category)
+
+
+def predicted_breakdown_ms(cost_csv: pathlib.Path) -> dict[str, float] | None:
+    """The cost model's per-op prediction (ir/cost.csv, written during
+    compile by --upmem-annotate-costs) folded onto net_breakdown_ms's
+    buckets via predicted_bucket, so the two can be compared bucket by
+    bucket. None if the file doesn't exist (e.g. a compile predating
+    cost.csv, or a lowering that emits no per-op breakdown)."""
+    cost_csv = pathlib.Path(cost_csv)
+    if not cost_csv.exists():
+        return None
+    df = pd.read_csv(cost_csv)
+    result: dict[str, float] = {}
+    # Summed over blocks: a cost.csv has one row per (block, category, label)
+    # and the measured side has no notion of blocks to split them by.
+    for (category, cost_label), group in df.groupby(["category", "label"]):
+        bucket = predicted_bucket(str(category), str(cost_label))
+        result[bucket] = result.get(bucket, 0.0) + float(group["cost_ms"].sum())
+    return result
+
+
+def breakdown_comparison(
+    output_dir: Union[pathlib.Path, RunResult], cost_csv: pathlib.Path
+) -> pd.DataFrame | None:
+    """One row per breakdown bucket with predicted_ms (from cost_csv, folded
+    by predicted_breakdown_ms), measured_ms (from net_breakdown_ms(
+    by_kind=True)) and rel_error -- the signed relative error
+    (predicted - measured) / measured, so over-prediction is positive.
+
+    Buckets present on only one side are kept with 0.0 on the other, since a
+    prediction with no measured counterpart (or vice versa) is exactly the
+    kind of mismatch this comparison is meant to surface -- but their
+    rel_error is NaN where measured_ms is 0, there being nothing to be
+    relative to. Rows are in net_breakdown_sort_ix order. None if either side
+    is missing entirely."""
+    measured = net_breakdown_ms(output_dir, by_kind=True)
+    predicted = predicted_breakdown_ms(cost_csv)
+    if measured is None or predicted is None:
+        return None
+    rows = []
+    buckets = sorted(
+        set(measured) | set(predicted), key=lambda b: (net_breakdown_sort_ix(b), b)
+    )
+    for bucket in buckets:
+        m = measured.get(bucket, 0.0)
+        p = predicted.get(bucket, 0.0)
+        rows.append(
+            {
+                "bucket": bucket,
+                "predicted_ms": p,
+                "measured_ms": m,
+                "rel_error": (p - m) / m if m else float("nan"),
+            }
+        )
+    return pd.DataFrame(
+        rows, columns=["bucket", "predicted_ms", "measured_ms", "rel_error"]
+    )
 
 
 def results_to_frame(results: list[RunResult]) -> pd.DataFrame:

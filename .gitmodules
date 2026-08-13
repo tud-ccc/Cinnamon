@@ -1,3 +1,6 @@
 [submodule "third-party/upmem-cost-model"]
 	path = third-party/upmem-cost-model
 	url = git@github.com:h4midf/cnm_cost_model.git
+[submodule "third-party/cnm-cost-model"]
+	path = third-party/cnm-cost-model
+	url = git@github.com:tud-ccc/cnm-cost-model.git

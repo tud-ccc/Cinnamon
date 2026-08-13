@@ -38,7 +38,7 @@ struct UpmemAnnotateCostsPass
 
     auto timeout = std::chrono::milliseconds(evalTimeoutMs);
     std::unique_ptr<UpmemSimulator> sim =
-        createSimulator(simulator, true, timeout);
+        createSimulator(simulator, true, timeout, programDumpDir);
 
     struct CsvRow {
       unsigned blockId;

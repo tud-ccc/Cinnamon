@@ -91,27 +91,41 @@ inline raw_ostream &operator<<(raw_ostream &os, UpmemSimulatorId simid) {
 /// Falls back to the op-count simulator on any Python error.
 /// When annotateOpCosts is true, annotates host-side ops with 'upmem.sim_cost'
 /// and annotates each WaitForOp with the Python-estimated cycle count.
+/// `programDumpDir`, when non-empty, additionally writes each simulated DPU
+/// program to `<dir>/<kernel>.cnmprog.json` — the symbolic interchange format
+/// the Python reference cost model reads (see
+/// upmem-cost-model's ProgramBuilder::emitJson and the Python side's
+/// Predictor/cnmprog.py), for cross-checking this simulator against it.
+///
+/// Only ever set this on a one-shot path such as --upmem-annotate-costs. The
+/// search pipeline simulates once per candidate configuration, so a dump there
+/// would write a file per evaluation.
 std::unique_ptr<UpmemSimulator> createCycleAccurateSimulator(
     bool annotateOpCosts = false,
-    std::chrono::milliseconds timeoutMs = std::chrono::milliseconds(0));
+    std::chrono::milliseconds timeoutMs = std::chrono::milliseconds(0),
+    llvm::StringRef programDumpDir = {});
 
 std::unique_ptr<UpmemSimulator> createFastSimulator(
     bool annotateOpCosts = false,
-    std::chrono::milliseconds timeoutMs = std::chrono::milliseconds(0));
+    std::chrono::milliseconds timeoutMs = std::chrono::milliseconds(0),
+    llvm::StringRef programDumpDir = {});
 
 std::unique_ptr<UpmemSimulator> createHybridSimulator(
     bool annotateOpCosts = false,
-    std::chrono::milliseconds timeoutMs = std::chrono::milliseconds(0));
+    std::chrono::milliseconds timeoutMs = std::chrono::milliseconds(0),
+    llvm::StringRef programDumpDir = {});
 
 inline std::unique_ptr<UpmemSimulator> createSimulator(
     UpmemSimulatorId simulator, bool annotateOpCosts = false,
-    std::chrono::milliseconds timeoutMs = std::chrono::milliseconds(0)) {
+    std::chrono::milliseconds timeoutMs = std::chrono::milliseconds(0),
+    llvm::StringRef programDumpDir = {}) {
   if (simulator == UpmemSimulatorId::CYCLE_ACCURATE)
-    return createCycleAccurateSimulator(annotateOpCosts, timeoutMs);
+    return createCycleAccurateSimulator(annotateOpCosts, timeoutMs,
+                                        programDumpDir);
   if (simulator == UpmemSimulatorId::HYBRID)
-    return createHybridSimulator(annotateOpCosts, timeoutMs);
+    return createHybridSimulator(annotateOpCosts, timeoutMs, programDumpDir);
   if (simulator == UpmemSimulatorId::FAST)
-    return createFastSimulator(annotateOpCosts, timeoutMs);
+    return createFastSimulator(annotateOpCosts, timeoutMs, programDumpDir);
   else if (simulator == UpmemSimulatorId::OPCOUNT)
     return createOpCountSimulator(annotateOpCosts);
 
