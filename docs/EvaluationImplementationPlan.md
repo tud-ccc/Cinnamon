@@ -278,10 +278,19 @@ the RQ1 parity check uses. `use-mram-tiling` already existed.
 membership check (completeness and unknown-name checks still apply, the
 guarded error stays the default) and lets the lowering deliver its own
 verdict; lit-tested on a rejected point in both modes.
-Then A2 = python-side (still to write, Phase 4): sample the Cartesian
-domains from `space.json`, drop rows in the feasible set (membership via
-`dump-full-pool` of B3), `eval-solution-force` the rest, count
-lowers-fine (and optionally runs-fine).
+**Python half DONE 2026-08-13** (`cinmopt.probe_solution` +
+`evaluation/dodo.py` `a2`/`assemble_a2`/`numbers` tasks), with one
+simplification over the sketch above: membership needs no materialised
+pool at all. The forced run itself reports it — the pass prints its
+"outside the feasible set" note exactly when `space.isEncodable` rejects
+— so one cinm-opt run per draw yields (rejected?, lowers?), the verdict
+can never drift from the space, and B3 is not a dependency. Draws that
+land feasible contribute to accepted-but-fails for free. Per-function
+`probe.csv` (resumable, deterministic draw, n_a2=300 from OPTS), CPU-only
+and parallel across benchmarks; `results/a2.csv` and
+`tables/numbers.tex` assemble from whatever exists. Optionally still
+open: runs-fine on hardware for any rejected-but-lowers point that
+appears.
 `accepted-but-fails` needs nothing: any compile/run failure in B1/B3's
 measured sets is that counter, and the paper wants it run first — which the
 phase order (§8) honours since B1 is Phase 1.
@@ -401,6 +410,7 @@ a stated precision, not correctness):
 | `iters` | 6 | per-run measurement repetitions, as in cinm1comparison. |
 | `sample_seed` | fixed constant | B1's sample is *the* shared sample; the seed is part of the paper's methodology statement. |
 | `exhaust_timeout_ms` | 300 | B3 only (never B1): mis-prices only configs >300 ms, which cannot be top-k; large exhaustive-sweep speedup. |
+| `n_a2` | 300 | same rule-of-three arithmetic as n_sample: densities ~1e-10 put essentially every draw in the rejected region, so 0-lowers-of-300 bounds the constraint system's false-negative rate at 1% (95%). Own seed (`a2_seed`): a Cartesian draw, never conflated with the shared feasible sample. |
 
 ```
 experiments/evaluation/
@@ -414,6 +424,7 @@ experiments/evaluation/
   data/{bench}/search/          # B4 seed_k/ + B2 on picks
   data/{bench}/search_ablate_{mram,scatter,both}/   # A1
   data/{bench}/cinm1/           # RQ1 sweep (D,T)/
+  data/{bench}/a2/{fn}/probe.csv                    # A2 forced probes
   data/{bench}/points_{atim,cinm1rule}/             # B5
   data/{prog}/rq4_{peroper,wholeprog}/              # RQ4 arms
   results/                 # B6 assembled CSVs, one per table/figure
@@ -476,7 +487,7 @@ were obtained. Provenance, per source:
 | fig:fidelity | `plot_fidelity.py` | rq3.csv | predicted-vs-measured panels per term + combined; Spearman/Kendall/top-k overlap, MAPE on transfer term |
 | fig:wholeprogram | `plot_wholeprogram.py` | rq4.csv | stacked kernel/scatter/load, two arms × {2mm,3mm}×{seq,par,mixed} + transformer |
 | tab:capability | `table_capability.py` | a1.csv | geomean slowdowns; infeasible cells printed as ∅, not dropped |
-| (text numbers) | `numbers.py` | a2.csv, e1.csv, rq2.csv | A2's two fractions, A3 seed spread, best-vs-median for §2 — emitted as `\newcommand` defs in `tables/numbers.tex` |
+| (text numbers) | `paper_numbers.py` (a `numbers.py` here would shadow the stdlib module doit imports through tqdm) | a2.csv, e1.csv, rq2.csv | A2's two fractions, A3 seed spread, best-vs-median for §2 — emitted as `\newcommand` defs in `tables/numbers.tex`; **exists**, A2 wired, e1/rq2 slots degrade to comments until their assemblers land |
 
 Style: reuse `cinm1comparison/plot.py` + `cinm_experiments/plots.py`
 conventions (geomean helpers, breakdown colors from
@@ -580,10 +591,15 @@ evidence — if earlier phases slip, RQ4 must not be the thing that gets
 cut.)
 
 **Phase 4 — conditional / polish**
-A2 rejected-region sampling (§3.4); N1 only if RQ3 shows kernel-dominated
-residual; numbers.py; freeze `results/` for the paper. Strictly optional
-beyond that: §3.6 async lowering for concurrent group execution — only if
-everything above has landed.
+STATUS 2026-08-13: the code half is in — A2 rejected-region sampling
+(§3.4: `doit a2 assemble_a2 numbers`, CPU-only, runnable *now*, no
+hardware or earlier phase needed) and `paper_numbers.py` (A2 numbers
+wired; e1/rq2 slots open). Still to do here: run the A2 campaign
+(~n_a2 × #fns probes, parallel via `doit -n`), N1 only if RQ3 shows a
+kernel-dominated residual, wire e1/rq2 numbers once their assemblers
+exist, freeze `results/` for the paper. Strictly optional beyond that:
+§3.6 async lowering for concurrent group execution — only if everything
+above has landed.
 
 ---
 
