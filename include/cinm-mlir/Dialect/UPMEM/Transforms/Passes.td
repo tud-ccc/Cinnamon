@@ -176,6 +176,14 @@ def UpmemInferAcceleratorPass : Pass<"upmem-infer-accelerator", "ModuleOp"> {
            "Cost transform before surrogate training: linear, log2, log10, ln, sqrt, cbrt">,
     Option<"useMRAMTiling", "use-mram-tiling", "bool", "true",
            "Enable MRAM tiling in the UPMEM lowering">,
+    Option<"enableScatterSpecialisation", "enable-scatter-specialisation",
+           "bool", "true",
+           "Enable scatter specialisation in the trial lowering: constant "
+           "scatters narrow to broadcasts and uniform buffers initialize "
+           "on-device. It fires at the cnm level and again at the upmem "
+           "level; false disables both sites. No space parameter denotes "
+           "the specialised forms, so the space itself is unchanged. "
+           "The capability-ablation switch (paper A1)">,
     Option<"graphAllocation", "graph-allocation", "bool", "false",
            "Run the graph-level two-level solve (profile each program class "
            "over the DPU rank menu, allocate the grid exactly across the "
