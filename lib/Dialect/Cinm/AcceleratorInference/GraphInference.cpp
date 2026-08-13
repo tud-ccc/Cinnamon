@@ -2,6 +2,7 @@
 #include "cinm-mlir/Dialect/Cinm/AcceleratorInference/GraphAllocation.h"
 #include "cinm-mlir/Dialect/Cinm/IR/CinmBase.h"
 #include "cinm-mlir/Dialect/Cinm/IR/CinmUtils.h"
+#include "cinm-mlir/Dialect/Cinm/IR/CinmWorkgroupTypeInterface.h"
 #include "cinm-mlir/Utils/Scheduling/SchedulingSupport.h"
 
 #include <filesystem>
@@ -14,11 +15,14 @@
 #include <llvm/Support/Casting.h>
 #include <llvm/Support/Debug.h>
 
+#include <mlir/IR/Builders.h>
 #include <mlir/IR/BuiltinAttributes.h>
 #include <mlir/IR/Operation.h>
 #include <mlir/IR/SymbolTable.h>
 #include <mlir/IR/Value.h>
 #include <mlir/IR/Visitors.h>
+#include <mlir/Interfaces/ControlFlowInterfaces.h>
+#include <mlir/Interfaces/FunctionInterfaces.h>
 
 #define DEBUG_TYPE "cinm-inference"
 
@@ -342,17 +346,92 @@ runGraphAllocation(const ComputeGraph &graph, StringRef platformName,
       groupOfMember[node.classIndex][node.memberIndex] = alloc->groupOfNode[ni];
   }
 
+  // The group's winning profile point: pinned groups replay the point at
+  // their allocated resource, timeshared groups their best point overall.
+  auto pointOf = [](const ClassProfile &profile,
+                    const GroupAllocation &group) -> const ProfilePoint * {
+    const ProfilePoint *point = nullptr;
+    for (const ProfilePoint &p : profile.points)
+      if (group.resource ? p.resource == group.resource
+                         : (!point || p.costMs < point->costMs))
+        point = &p;
+    assert(point && "allocator chose a resource the profile does not have");
+    return point;
+  };
+
+  // Materialize each PINNED group's device set once, at the top of its
+  // container function, with frees at every function exit -- residency is
+  // per workload lifetime, and function-top placement is its stand-in until
+  // a real init phase exists. The handle is forwarded into each member
+  // below; the member's
+  // lowering then uses it instead of allocating (CnmToUPMEM's
+  // findForwardedWorkgroup). Timeshared groups have no set of their own and
+  // keep the per-launch allocation, which prices exactly the eviction the
+  // allocator chose for them. Targets whose plugin does not materialize
+  // (the default hook) fall back to per-block allocation unchanged.
+  SmallVector<SmallVector<Value>> wgOfGroup(graph.classes.size());
+  for (auto [ci, blockClass] : llvm::enumerate(graph.classes)) {
+    const ClassAllocation &classAlloc = alloc->perClass[ci];
+    wgOfGroup[ci].assign(classAlloc.groups.size(), Value());
+    for (auto [gi, group] : llvm::enumerate(classAlloc.groups)) {
+      if (!group.resource)
+        continue;
+      // Any member locates the container function; a graph is a connected
+      // dataflow component, so they all share one.
+      ComputeBlockOp first;
+      for (auto [mi, member] : llvm::enumerate(blockClass.members))
+        if (groupOfMember[ci][mi] == gi) {
+          first = member;
+          break;
+        }
+      if (!first)
+        continue; // empty group: nothing to own the set
+      auto container = first->getParentOfType<FunctionOpInterface>();
+      if (!container || container.getFunctionBody().empty())
+        continue;
+
+      const ProfilePoint *point = pointOf(profiles[ci], group);
+      OpBuilder builder(container->getContext());
+      builder.setInsertionPointToStart(&container.getFunctionBody().front());
+      Value wg = plugin->materializeWorkgroupAlloc(builder, first.getLoc(),
+                                                   point->config);
+      if (!wg)
+        continue;
+      if (!isa<WorkgroupTypeInterface>(wg.getType()))
+        return emitDefiniteFailure(
+            first.getLoc(),
+            "materializeWorkgroupAlloc returned a value whose type does not "
+            "implement WorkgroupTypeInterface; members could never "
+            "recognize it as their workgroup");
+      for (Block &blk : container.getFunctionBody())
+        if (Operation *term = blk.getTerminator();
+            term && term->hasTrait<OpTrait::ReturnLike>()) {
+          builder.setInsertionPoint(term);
+          plugin->materializeWorkgroupFree(builder, first.getLoc(), wg);
+        }
+      wgOfGroup[ci][gi] = wg;
+      LLVM_DEBUG(llvm::dbgs() << "[cinm-inference] class " << ci << " group "
+                              << gi << ": device set hoisted to top of @"
+                              << container.getName() << "\n");
+    }
+  }
+
   for (auto [ci, blockClass] : llvm::enumerate(graph.classes)) {
     const ClassAllocation &classAlloc = alloc->perClass[ci];
     const ClassProfile &profile = profiles[ci];
-    for (auto [mi, block] : llvm::enumerate(blockClass.members)) {
+    for (auto [mi, memberRef] : llvm::enumerate(blockClass.members)) {
+      ComputeBlockOp block = memberRef; // op handles are cheap to copy
       const GroupAllocation &group = classAlloc.groups[groupOfMember[ci][mi]];
-      const ProfilePoint *point = nullptr;
-      for (const ProfilePoint &p : profile.points)
-        if (group.resource ? p.resource == group.resource
-                           : (!point || p.costMs < point->costMs))
-          point = &p;
-      assert(point && "allocator chose a resource the profile does not have");
+      const ProfilePoint *point = pointOf(profile, group);
+
+      // Forward the group's set into the member: one more operand, one more
+      // block argument (compute_block zips them 1:1). The commit below
+      // clones the block into a trial module, so the argument is present
+      // during the member's own lowering, which is where it takes effect.
+      if (Value wg = wgOfGroup[ci][groupOfMember[ci][mi]]) {
+        block->insertOperands(block->getNumOperands(), {wg});
+        block.getBody().front().addArgument(wg.getType(), block.getLoc());
+      }
 
       std::unique_ptr<InferencePlugin> memberPlugin =
           makePlugin(graph.platform);

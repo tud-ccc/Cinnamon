@@ -28,6 +28,10 @@ set(LLVM_TARGET_DEFINITIONS ${prefix}PlatformAttrInterface.td)
 mlir_tablegen(${prefix}PlatformAttrInterface.h.inc -gen-attr-interface-decls)
 mlir_tablegen(${prefix}PlatformAttrInterface.cpp.inc -gen-attr-interface-defs)
 
+set(LLVM_TARGET_DEFINITIONS ${prefix}WorkgroupTypeInterface.td)
+mlir_tablegen(${prefix}WorkgroupTypeInterface.h.inc -gen-type-interface-decls)
+mlir_tablegen(${prefix}WorkgroupTypeInterface.cpp.inc -gen-type-interface-defs)
+
 
 set(LLVM_TARGET_DEFINITIONS ${prefix}Ops.td)
 mlir_tablegen(${prefix}Ops.h.inc -gen-op-decls -attrdefs-dialect=${filter})

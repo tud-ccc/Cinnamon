@@ -1,5 +1,6 @@
 #include "cinm-mlir/Conversion/CnmToUPMEM/CnmToUPMEM.h"
 #include "cinm-mlir/Conversion/CommonPatterns.h"
+#include "cinm-mlir/Dialect/Cinm/IR/CinmWorkgroupTypeInterface.h"
 #include "cinm-mlir/Dialect/Cnm/IR/CnmOps.h"
 #include "cinm-mlir/Dialect/Cnm/IR/CnmScatterMap.h"
 #include "cinm-mlir/Dialect/Cnm/IR/CnmTypes.h"
@@ -388,40 +389,46 @@ static LogicalResult lowerBodyStagingOps(RewriterBase &rewriter,
 
 /// The workgroup forwarded into `launch`'s enclosing region, if any: a block
 /// argument of an ancestor block whose type implements
-/// cnm::CnmWorkgroupTypeInterface and whose shape matches `wgShape`. This is
-/// the forwarding contract of the group-residency design
-/// (docs/EvaluationImplementationPlan.md sec. 3.2): a whole-program schedule
+/// cinm::WorkgroupTypeInterface and whose shape matches `wgShape`. This is
+/// the forwarding contract of the group-residency design: a whole-program
+/// schedule
 /// allocates a group's device set once, outside the compute blocks, and
 /// passes the handle in as an ordinary operand; a lowering that would
 /// otherwise allocate must use it instead.
 ///
 /// Returns a null Value when nothing suitable is in scope (the per-block
-/// schedule -- allocate locally), and failure on a contract violation: an
-/// ambiguous choice between several matching arguments, or a matching
-/// argument that is not a `!upmem.hierarchy` (some other target's workgroup
-/// reached a UPMEM lowering).
+/// schedule -- allocate locally), and failure on a contract violation:
+/// several matching arguments of one block. Across nesting levels the
+/// INNERMOST match wins -- the closest scope that was handed a workgroup is
+/// the one that means it for this launch. The walk never crosses an
+/// IsolatedFromAbove boundary: a value from outside such a region (the
+/// host function of a trial module, say) is not usable inside it, however
+/// well its shape matches.
 static FailureOr<Value> findForwardedWorkgroup(cnm::LaunchOp launch,
                                                ArrayRef<int64_t> wgShape) {
-  SmallVector<BlockArgument> matches;
-  for (Block *block = launch->getBlock(); block;
-       block = block->getParentOp() ? block->getParentOp()->getBlock()
-                                    : nullptr) {
+  for (Block *block = launch->getBlock(); block;) {
+    SmallVector<BlockArgument> matches;
     for (BlockArgument arg : block->getArguments()) {
-      auto wgTy = dyn_cast<cnm::CnmWorkgroupTypeInterface>(arg.getType());
+      auto wgTy = dyn_cast<cinm::WorkgroupTypeInterface>(arg.getType());
       if (!wgTy || !isa<upmem::DeviceHierarchyType>(arg.getType()))
         continue;
       if (llvm::SmallVector<int64_t>(wgShape) != wgTy.getWorkgroupShape())
         continue;
       matches.push_back(arg);
     }
+    if (matches.size() > 1)
+      return launch->emitOpError(
+          "several workgroup-typed block arguments of matching shape are in "
+          "scope; cannot decide which one this launch runs on");
+    if (matches.size() == 1)
+      return Value(matches.front());
+
+    Operation *parent = block->getParentOp();
+    if (!parent || parent->hasTrait<OpTrait::IsIsolatedFromAbove>())
+      break;
+    block = parent->getBlock();
   }
-  if (matches.empty())
-    return Value();
-  if (matches.size() > 1)
-    return launch->emitOpError(
-        "several workgroup-typed block arguments of matching shape are in "
-        "scope; cannot decide which one this launch runs on");
-  return Value(matches.front());
+  return Value();
 }
 
 static LogicalResult convertCnmLaunchToUpmem(cnm::LaunchOp launch,

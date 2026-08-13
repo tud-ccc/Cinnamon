@@ -4,6 +4,7 @@
 
 #pragma once
 
+#include "cinm-mlir/Dialect/Cinm/IR/CinmWorkgroupTypeInterface.h"
 #include "cinm-mlir/Dialect/Cnm/IR/CnmInterfaces.h"
 #include "mlir/Dialect/Utils/IndexingUtils.h"
 #include <functional>

@@ -5,6 +5,7 @@
 #include "cinm-mlir/Dialect/Cinm/IR/CinmOps.h"
 #include "cinm-mlir/Conversion/CommonPatterns.h"
 #include "cinm-mlir/Dialect/Cinm/IR/CinmAttributes.h"
+#include "cinm-mlir/Dialect/Cinm/IR/CinmWorkgroupTypeInterface.h"
 #include "cinm-mlir/Dialect/Cinm/IR/TilingInterface.h"
 
 #include <cstdint>
@@ -1092,14 +1093,24 @@ struct ReduceOpNormalizeDim : OpRewritePattern<cinm::ReduceOp> {
 };
 struct ComputeBlockOpDeleteUnusedArgs : OpRewritePattern<cinm::ComputeBlockOp> {
   using OpRewritePattern<ComputeBlockOp>::OpRewritePattern;
+
+  /// An argument this pattern must not treat as dead however unused it is: a
+  /// forwarded workgroup (WorkgroupTypeInterface) is a residency declaration
+  /// consumed only when the block is LOWERED -- the graph level allocated a
+  /// device set outside and handed it in, and nothing at the cinm level has
+  /// any reason to reference it yet. Deleting it would silently demote the
+  /// member back to allocating its own set.
+  static bool isKept(BlockArgument arg) {
+    return !arg.use_empty() || isa<WorkgroupTypeInterface>(arg.getType());
+  }
+
   LogicalResult matchAndRewrite(cinm::ComputeBlockOp op,
                                 PatternRewriter &rewriter) const override {
 
     SmallVector<Value> keptOperands;
-    SmallVector<BlockArgument> keptBbargs;
     keptOperands.reserve(op->getNumOperands());
     for (auto [bbarg, opnd] : op.zipArgsWithOperands()) {
-      if (!bbarg.use_empty()) {
+      if (isKept(bbarg)) {
         keptOperands.push_back(opnd);
       }
     }
@@ -1109,7 +1120,7 @@ struct ComputeBlockOpDeleteUnusedArgs : OpRewritePattern<cinm::ComputeBlockOp> {
     rewriter.modifyOpInPlace(op, [&]() {
       op->setOperands(std::move(keptOperands));
       op.getBody().front().eraseArguments(
-          [](auto arg) { return arg.use_empty(); });
+          [](BlockArgument arg) { return !isKept(arg); });
     });
 
     return success();
