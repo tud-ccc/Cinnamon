@@ -519,6 +519,12 @@ struct ConfigSpace {
   /// attached one.
   std::unique_ptr<SpaceMetadata> metadata;
 
+  /// Wall-clock seconds spent declaring, solving and enumerating this space
+  /// (buildConfigSpace, end to end). This is the search's offline setup
+  /// cost, reported in space.json so walltime accounting can include it.
+  /// Zero when never measured.
+  double buildWallSeconds = 0;
+
   ConfigSpace() = default;
   ConfigSpace(const ConfigSpace &) = delete;
 

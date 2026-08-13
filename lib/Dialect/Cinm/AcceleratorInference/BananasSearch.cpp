@@ -584,6 +584,10 @@ void dumpSpaceJSON(const ConfigSpace &space, size_t feasibleSize,
   out << "  \"feasible_size\": " << feasibleSize << ",\n";
   out << "  \"space_feasible_density\": "
       << (static_cast<double>(feasibleSize) / cartesian) << ",\n";
+  // The offline setup cost of the search: declaring, solving and
+  // enumerating the space. Reported here because no other artifact of a run
+  // records it, and walltime comparisons must not credit it for free.
+  out << "  \"space_build_seconds\": " << space.buildWallSeconds << ",\n";
   // Whatever the builder recorded about how it planned the space -- which
   // parameters it enumerated jointly, and where each constraint ended up. The
   // sizes above are the outcome of those decisions and do not explain them.
