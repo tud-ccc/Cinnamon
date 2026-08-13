@@ -33,6 +33,7 @@ EXPERIMENTS_DIR = HERE.parent
 sys.path.insert(0, str(EXPERIMENTS_DIR))
 
 from cinm_experiments import cinmopt, compile_run, doit_blocks, pools, ALL_PRIMS  # noqa: E402
+from cinm_experiments import space as space_mod  # noqa: E402
 from cinm_experiments.split_source import list_functions, split_source  # noqa: E402
 
 # ── the paper's constants ────────────────────────────────────────────────────
@@ -55,6 +56,14 @@ OPTS = dict(
     # it. Part of the model's definition, not a performance knob -- B1's
     # predicted costs and every search must use the same value.
     eval_timeout_ms=400,
+    # A2's Cartesian draw. Same rule-of-three arithmetic as n_sample: with
+    # feasible densities around 1e-10 essentially every draw lands in the
+    # rejected region, so 0-lowers-of-300 bounds the false-negative rate of
+    # the constraint system at 1% (95%). Its own seed: the draw is over the
+    # Cartesian domains, not the feasible set, and must not be conflated
+    # with the shared sample.
+    n_a2=300,
+    a2_seed=1848,
 )
 
 WORKLOADS = list(ALL_PRIMS)
@@ -272,6 +281,150 @@ def task_compile_sample():
                 )
             ],
         }
+
+
+# ── A2: rejected-region probing (plan §3.4; CPU-only, no hardware) ──────────
+
+
+def a2_dir(bench: str) -> pathlib.Path:
+    return DATA_DIR / bench / "a2"
+
+
+def a2_probe_csv(bench: str, fn_name: str) -> pathlib.Path:
+    return a2_dir(bench) / fn_name / "probe.csv"
+
+
+def a2_done_marker(bench: str, fn_name: str) -> pathlib.Path:
+    return a2_dir(bench) / fn_name / "probe.done"
+
+
+def _probe_a2(bench: str, fn_name: str) -> bool:
+    """Draw n_a2 assignments uniformly from the Cartesian domains of this
+    function's space and force-lower each; probe.csv records one verdict
+    per draw. Membership and lowering verdict both come from the single
+    forced cinm-opt run (see cinmopt.probe_solution), so no materialised
+    feasible pool is needed. Resumable: rows already present are kept, the
+    draw is deterministic (fixed seed), and the .done marker only appears
+    once every draw has a row."""
+    space = space_mod.load(space_json(bench, fn_name))
+    draws = space.sample_cartesian(OPTS["n_a2"], seed=OPTS["a2_seed"])
+
+    csv_path = a2_probe_csv(bench, fn_name)
+    csv_path.parent.mkdir(parents=True, exist_ok=True)
+    dims = space.dim_names
+    header = ",".join(["label", *dims, "verdict"])
+
+    done: set[str] = set()
+    if csv_path.exists():
+        lines = csv_path.read_text().splitlines()
+        if lines and lines[0] != header:
+            # The space (or the draw) changed under the file: stale rows
+            # would silently mis-attribute verdicts, so start over.
+            lines = []
+            csv_path.unlink()
+        done = {line.split(",", 1)[0] for line in lines[1:]}
+
+    logs_dir = csv_path.parent / "logs"
+    logs_dir.mkdir(exist_ok=True)
+    with open(csv_path, "a") as out:
+        if not done:
+            out.write(header + "\n")
+        for i, params in enumerate(draws):
+            label = f"a{i:03d}"
+            if label in done:
+                continue
+            verdict = cinmopt.probe_solution(
+                split_module(bench, fn_name),
+                params,
+                log_file=logs_dir / f"{label}.log",
+            )
+            out.write(
+                ",".join([label, *(str(params[d]) for d in dims), verdict]) + "\n"
+            )
+            out.flush()
+    a2_done_marker(bench, fn_name).touch()
+    return True
+
+
+def task_a2():
+    """A2 probe: per function, force-lower a Cartesian sample from outside
+    (mostly) the feasible set. CPU-only and parallel across benchmarks
+    (`doit -n 7 a2`); a draw that happens to land feasible contributes to
+    the accepted-but-fails counter instead of the rejected-region one."""
+    for bench in WORKLOADS:
+        for fn_name in list_functions(source_mlir(bench)):
+            yield {
+                "name": f"{bench}:{fn_name}",
+                "file_dep": [
+                    str(space_json(bench, fn_name)),
+                    str(split_module(bench, fn_name)),
+                ],
+                "targets": [str(a2_done_marker(bench, fn_name))],
+                "actions": [(_probe_a2, [bench, fn_name])],
+            }
+
+
+RESULTS_DIR = HERE / "results"
+
+
+def _assemble_a2() -> bool:
+    """results/a2.csv: per-function verdict counts. Missing-tolerant
+    (plan §2-B6): functions not yet probed are simply absent, and partial
+    probe.csvs contribute the rows they have."""
+    import csv
+
+    rows = []
+    for bench in WORKLOADS:
+        for fn_name in list_functions(source_mlir(bench)):
+            probe = a2_probe_csv(bench, fn_name)
+            if not probe.exists():
+                continue
+            counts = {
+                "accepted": 0,
+                "accepted_fails": 0,
+                "rejected_lowers": 0,
+                "rejected_fails": 0,
+            }
+            with open(probe) as f:
+                for row in csv.DictReader(f):
+                    if row["verdict"] in counts:
+                        counts[row["verdict"]] += 1
+            rows.append(
+                {
+                    "bench": bench,
+                    "fn": fn_name,
+                    "n_probed": sum(counts.values()),
+                    **{f"n_{k}": v for k, v in counts.items()},
+                }
+            )
+    if not rows:
+        print("assemble_a2: no probe.csv present yet, nothing to assemble")
+        return True
+    RESULTS_DIR.mkdir(exist_ok=True)
+    with open(RESULTS_DIR / "a2.csv", "w", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=list(rows[0].keys()))
+        writer.writeheader()
+        writer.writerows(rows)
+    return True
+
+
+def task_assemble_a2():
+    """Assemble results/a2.csv from whatever probes exist."""
+    return {
+        "actions": [_assemble_a2],
+        "uptodate": [False],  # missing-tolerant: always re-derive
+    }
+
+
+def task_numbers():
+    """tables/numbers.tex: the paper's inline numbers as \\newcommand defs,
+    from whatever results/*.csv exist (plan §6.2; the script is
+    paper_numbers.py -- a numbers.py here would shadow the stdlib module)."""
+    return {
+        "actions": [f"python {HERE / 'paper_numbers.py'}"],
+        "task_dep": ["assemble_a2"],
+        "uptodate": [False],
+    }
 
 
 # ── retries ──────────────────────────────────────────────────────────────────

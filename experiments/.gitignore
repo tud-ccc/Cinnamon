@@ -1,4 +1,7 @@
 data
-.doit.db
 foodata
-run
+.doit.db
+# derived: assembled CSVs and emitted .tex/PDFs; frozen by hand for the paper
+evaluation/results
+evaluation/tables
+evaluation/plots

@@ -257,6 +257,54 @@ def eval_solution(
     )
 
 
+# What --upmem-infer-accelerator prints (to the log; _run merges stderr into
+# it) when eval-solution-force meets a configuration the space rejects. This
+# is the membership verdict itself -- the same space.isEncodable check the
+# guarded error uses -- so probing needs no separately materialised pool.
+_FORCE_REJECTED_MARKER = "outside the feasible set"
+
+
+def probe_solution(
+    src: pathlib.Path,
+    params: dict,
+    *,
+    log_file: pathlib.Path,
+    cinm_opt: pathlib.Path = DEFAULT_CINM_OPT,
+    nice: bool = True,
+) -> str:
+    """Force-lower exactly one configuration and classify what happened:
+
+    - "accepted":        in the feasible set, and the lowering succeeded;
+    - "accepted_fails":  in the feasible set, but the lowering failed --
+                         the paper's accepted-but-fails counter (must be 0);
+    - "rejected_lowers": outside the feasible set, yet it lowers fine --
+                         a false negative of the constraint system, which is
+                         what the rejected-region experiment counts;
+    - "rejected_fails":  outside the feasible set, and the lowering agrees.
+
+    Membership comes from the pass's own check (the eval-solution-force
+    note in the log), so the verdict cannot drift from what the space
+    actually contains. The simulator is op-count: only the lowering's
+    verdict matters here, not the cost estimate. The lowered module is
+    discarded; the log stays, for failure classification."""
+    result = eval_solution(
+        src,
+        params,
+        out_file=pathlib.Path("/dev/null"),
+        extra_infer_opts={
+            "eval-solution-force": True,
+            "simulator": "op-count",
+        },
+        cinm_opt=cinm_opt,
+        nice=nice,
+        log_file=log_file,
+    )
+    rejected = _FORCE_REJECTED_MARKER in log_file.read_text(errors="replace")
+    if rejected:
+        return "rejected_lowers" if result.returncode == 0 else "rejected_fails"
+    return "accepted" if result.returncode == 0 else "accepted_fails"
+
+
 def eval_solution_lowerer(
     *, cinm_opt: pathlib.Path = DEFAULT_CINM_OPT, extra_infer_opts: dict = {}
 ):
