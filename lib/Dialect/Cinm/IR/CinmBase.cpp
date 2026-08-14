@@ -132,6 +132,18 @@ CinmDialect::verifyOperationAttribute(::mlir::Operation *op,
              << CinmDialect::DEBUG_TAG_NAME << " must be a string attribute";
     return success();
   }
+  if (attribute.getName() == CinmDialect::STATIC_ATTR_NAME) {
+    // On a function argument this declares the serving contract that the
+    // argument holds the same data on every inference (see
+    // cinm::isStaticValue). On an operation it records that a conclusion was
+    // already drawn about its operands -- a repack of static data is
+    // amortizable over the serving lifetime, which decides how it is timed --
+    // at the point where the defining ops were still reachable.
+    if (!llvm::isa<UnitAttr>(attribute.getValue()))
+      return op->emitOpError("Attribute ")
+             << CinmDialect::STATIC_ATTR_NAME << " must be a unit attribute";
+    return success();
+  }
   return op->emitOpError("unknown attribute ") << attribute.getName();
 }
 

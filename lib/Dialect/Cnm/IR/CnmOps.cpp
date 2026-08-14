@@ -304,6 +304,36 @@ LogicalResult LocalTransferOp::verify() {
   return success();
 }
 
+LogicalResult CompactBufferOp::verify() {
+  auto srcTy = getSource().getType();
+  auto dstTy = getTarget().getType();
+  AffineMap map = getMap();
+
+  if (srcTy.getElementType() != dstTy.getElementType())
+    return emitOpError("source element type ")
+           << srcTy.getElementType() << " does not match target element type "
+           << dstTy.getElementType();
+
+  if (map.getNumDims() != static_cast<unsigned>(dstTy.getRank()))
+    return emitOpError("map takes ")
+           << map.getNumDims() << " index(es) but the target has rank "
+           << dstTy.getRank()
+           << "; the map's domain is the target's index space";
+  if (map.getNumResults() != static_cast<unsigned>(srcTy.getRank()))
+    return emitOpError("map produces ")
+           << map.getNumResults() << " index(es) but the source has rank "
+           << srcTy.getRank() << "; the map's results are source indices";
+
+  // Producing something a single flat transfer can move is the reason the op
+  // exists, so a target that is not contiguous is a contradiction rather than
+  // a case to handle.
+  if (!memrefIsContiguous(dstTy))
+    return emitOpError("target is not contiguous: ")
+           << dstTy << ". A compacted buffer is by definition packed";
+
+  return success();
+}
+
 LogicalResult LocalTransferOp::fold(FoldAdaptor,
                                     SmallVectorImpl<OpFoldResult> &) {
   // Promotion hands us dynamically shaped views of statically shaped buffers;

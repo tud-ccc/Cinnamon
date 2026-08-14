@@ -300,6 +300,71 @@ def LocalTransferOp: Cnm_Op<"local_transfer"> {
     }];
 }
 
+def CompactBufferOp: Cnm_Op<"compact_buffer"> {
+    let summary = "Repack a host value into a contiguous buffer.";
+    let description = [{
+        Writes every element of `target` from the element of `source` that
+        `map` names:
+
+        ```
+        target[i0, .., iN] = source[map(i0, .., iN)]
+        ```
+
+        so the map's domain is `target`'s index space and its results are
+        `source` indices. `target` must be contiguous -- producing something a
+        single flat transfer can move is the whole point of the op.
+
+        It exists because a repack is a real cost that has to be attributable.
+        Expressed as `memref.alloc` + `memref.copy`, a repack is
+        indistinguishable from any other copy, and whether it even appears in a
+        measurement depends on a lowering heuristic: MemRefToLLVM turns
+        `memref.copy` into `llvm.intr.memcpy` when both sides are contiguous
+        and only calls the instrumented `memrefCopy` otherwise, so exactly the
+        repacks that have been made tidy are the ones that disappear. Naming
+        the operation lets the backend route it somewhere it can be timed, and
+        gives the cost model something to predict.
+
+        A repack whose source is a `cinm.static` value costs nothing per
+        inference -- it can be hoisted out of the serving loop and amortized
+        over the workload's lifetime -- while one on a per-inference operand
+        cannot. That difference decides whether the time is discounted, so it
+        is carried on the op as the `cinm.static` unit attribute rather than
+        being re-derived downstream, where the defining op may no longer be
+        reachable.
+
+        ```mlir
+        // Pack a K-major tile of a row-major matrix so each staged slice is
+        // one contiguous run.
+        cnm.compact_buffer %a into %packed
+            [affine_map<(c, m, j) -> (m, c * 64 + j)>]
+            : memref<4096x4096xi32> into memref<8x8x64xi32>
+        ```
+    }];
+
+    let arguments = (ins Arg<AnyMemRef, "the memref to repack",
+                             [MemReadAt<0, FullEffect>]>:$source,
+                         Arg<AnyMemRef, "the contiguous memref to fill",
+                             [MemWriteAt<0, FullEffect>]>:$target,
+                         AffineMapAttr:$map);
+    let results = (outs);
+
+    let hasVerifier = 1;
+    let assemblyFormat = [{
+        $source `into` $target `[` $map `]` attr-dict
+            `:` type($source) `into` type($target)
+    }];
+
+    let extraClassDeclaration = [{
+        /// Whether this repack is amortizable over the serving lifetime, i.e.
+        /// whether its source holds the same data on every inference. Set
+        /// when the op is created; see cinm::isStaticValue.
+        bool isStatic() {
+            return (*this)->hasAttr(
+                ::mlir::cinm::CinmDialect::STATIC_ATTR_NAME);
+        }
+    }];
+}
+
 def ReturnOp: Cnm_Op<"return", [Terminator]> {
     let summary = "Terminates a `cnm.launch` region.";
     let description = [{
