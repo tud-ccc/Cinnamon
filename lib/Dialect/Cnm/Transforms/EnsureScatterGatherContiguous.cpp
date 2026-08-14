@@ -11,6 +11,8 @@
 //
 //===----------------------------------------------------------------------===//
 
+#include <cinm-mlir/Dialect/Cinm/IR/CinmBase.h>
+#include <cinm-mlir/Dialect/Cinm/IR/CinmUtils.h>
 #include <cinm-mlir/Dialect/Cnm/IR/CnmOps.h>
 #include <cinm-mlir/Dialect/Cnm/IR/CnmScatterMap.h>
 #include <cinm-mlir/Dialect/Cnm/Transforms/Passes.h>
@@ -56,24 +58,44 @@ bool isFullyContiguous(TypedValue<ShapedType> value) {
   return mlir::scatteredMemrefIsContiguous(value, memrefTy.getShape());
 }
 
-void ensureScatterContiguous(cnm::ScatterOp op, OpBuilder &b) {
+void ensureScatterContiguous(cnm::ScatterOp op, OpBuilder &b, bool staticOnly) {
   auto input = op.getInput();
   if (!isa<MemRefType>(input.getType()) || isFullyContiguous(input))
+    return;
+  bool isStatic = cinm::isStaticValue(input);
+  // Packing a per-inference operand costs a copy on every call, which is
+  // usually worse than letting the backend move it as several blocks per DPU.
+  if (staticOnly && !isStatic)
     return;
 
   Location loc = op.getLoc();
   b.setInsertionPoint(op);
   Value packed = allocateContiguousLike(b, loc, input);
-  memref::CopyOp::create(b, loc, input, packed);
+  // The packed buffer has the input's shape, so each of its elements comes
+  // from the same index of the input: only the layout changes.
+  auto rank = cast<MemRefType>(input.getType()).getRank();
+  auto compact = cnm::CompactBufferOp::create(
+      b, loc, input, packed,
+      AffineMap::getMultiDimIdentityMap(rank, b.getContext()));
+  if (isStatic)
+    compact->setAttr(cinm::CinmDialect::STATIC_ATTR_NAME, b.getUnitAttr());
   op.getInputMutable().assign(packed);
 
   // b.setInsertionPointAfter(op);
   // memref::DeallocOp::create(b, loc, packed);
 }
 
-void ensureGatherContiguous(cnm::GatherOp op, OpBuilder &b) {
+// The gather side stays a memref.copy: it writes a packed buffer back out to
+// a strided one, and cnm.compact_buffer only describes the packing direction.
+// That copy has a strided target, so MemRefToLLVM routes it through the
+// instrumented memrefCopy anyway and it is not lost from the accounting.
+void ensureGatherContiguous(cnm::GatherOp op, OpBuilder &b, bool staticOnly) {
   auto outputBuf = op.getOutputBuf();
   if (!isa<MemRefType>(outputBuf.getType()) || isFullyContiguous(outputBuf))
+    return;
+  // A gather destination is written every inference by definition, so there
+  // is nothing here that could amortize.
+  if (staticOnly)
     return;
 
   Location loc = op.getLoc();
@@ -228,15 +250,17 @@ template <class Op> void deriveBlockForm(Op op, OpBuilder &b) {
 struct CnmEnsureScatterGatherContiguousPass
     : public cnm::impl::CnmEnsureScatterGatherContiguousPassBase<
           CnmEnsureScatterGatherContiguousPass> {
+  using Base::Base;
+
   void runOnOperation() override {
     OpBuilder builder(&getContext());
 
     getOperation()->walk([&](Operation *op) {
       if (auto scatter = dyn_cast<cnm::ScatterOp>(op)) {
-        ensureScatterContiguous(scatter, builder);
+        ensureScatterContiguous(scatter, builder, staticOnly);
         deriveBlockForm(scatter, builder);
       } else if (auto gather = dyn_cast<cnm::GatherOp>(op)) {
-        ensureGatherContiguous(gather, builder);
+        ensureGatherContiguous(gather, builder, staticOnly);
         deriveBlockForm(gather, builder);
       }
     });

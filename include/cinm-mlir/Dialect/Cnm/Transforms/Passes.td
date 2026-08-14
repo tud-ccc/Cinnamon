@@ -105,10 +105,27 @@ def CnmEnsureScatterGatherContiguousPass : Pass<"cnm-ensure-scatter-gather-conti
     actually contiguous in the host memref. This pass detects host memrefs
     that are not contiguous (e.g. because they are subviews of a larger
     tensor) and inserts an intermediate contiguous buffer: a `memref.alloc`
-    plus a `memref.copy` before a scatter (or after a gather), so that the
-    memref handed to the op is always safe to transfer with a flat memcpy.
+    plus a `cnm.compact_buffer` before a scatter (or a `memref.copy` after a
+    gather), so that the memref handed to the op is always safe to transfer
+    with a flat memcpy.
+
+    Whether packing is the right answer is a cost question, not a correctness
+    one -- `upmem.scatter_blocks` can transfer a non-contiguous host buffer as
+    several blocks per DPU instead. Packing wins when the operand is
+    `cinm.static`, because then the repack happens once per workload lifetime
+    and its cost amortizes away; on a per-inference operand the several-blocks
+    transfer is usually cheaper than paying for a copy every call. See
+    `static-only`.
   }];
-  let dependentDialects = ["memref::MemRefDialect"];
+  let options = [
+    Option<"staticOnly", "static-only", "bool", "false",
+           "Only pack operands whose data is the same on every inference "
+           "(cinm.static), leaving the rest for the backend to transfer as "
+           "several blocks per DPU. Off by default, which packs whatever is "
+           "not contiguous -- always correct, and what callers that do not "
+           "reason about cost should want.">,
+  ];
+  let dependentDialects = ["memref::MemRefDialect", "cnm::CnmDialect"];
 }
 
 def CnmScatterOptimizationsPass : Pass<"cnm-scatter-optimizations"> {
