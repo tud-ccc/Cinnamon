@@ -1,5 +1,5 @@
 // RUN: cinm-opt %s \
-// RUN:   --convert-linalg-to-cnm='cnm-buffer-level=mram per-dim-attrs=upmem.leaf_tile_sizes' \
+// RUN:   --convert-linalg-to-cnm='cnm-buffer-level=mram per-dim-attrs=upmem.leaf_tile_sizes leaf-tile-attr=upmem.leaf_tile_sizes' \
 // RUN:   --canonicalize --cse \
 // RUN:   --eliminate-empty-tensors --one-shot-bufferize --cse --canonicalize \
 // RUN:   --upmem-tile-mram-buffers --canonicalize --cse \
@@ -42,16 +42,22 @@ func.func @gemv_64MB(%A: tensor<4096x4096xi32>, %x: tensor<4096xi32>, %y: tensor
   // The per-DPU footprint matches the template's MRAM constraint exactly
   // (mramRow*mramCol + mramCol + mramRow = 64*128 + 128 + 64):
   //
-  //   A  8 tasklets x (8 x 1 x 128) = 8192
-  //   x                    1 x 128  =  128   <- shared, no tasklet dimension
-  //   y  8 tasklets x (1 x 8)       =   64
+  //   A  8 tasklets x (2 chunks x 8 x 1 x 64) = 8192
+  //   x               (2 chunks x     1 x 64) =  128   <- shared, no tasklet dim
+  //   y  8 tasklets x (1 x 8)                 =   64
+  //
+  // K is staged 64 at a time out of the 128 each leaf holds, so `leaf-tile-attr`
+  // cuts it in two and puts the chunk dimension outermost. The footprint is
+  // unchanged -- it is the same elements in a different order -- but each
+  // staged chunk is now one contiguous run, which is the only thing
+  // upmem.local_transfer can move.
   //
   // The absence of a leading tasklet dimension on the vector is the load
   // bearing part: it is what `isMramBroadcastOverThreads` decides, and it only
   // holds because the scatter map for the vector simplifies to `dpu floordiv
   // 64` -- no tasklet term at all.
-  // CHECK-DAG: upmem.static_alloc @{{.*}}(mram) {{.*}} : memref<8x8x1x128xi32, #upmem.mram>
-  // CHECK-DAG: upmem.static_alloc @{{.*}}(mram) {{.*}} : memref<1x128xi32, #upmem.mram>
+  // CHECK-DAG: upmem.static_alloc @{{.*}}(mram) {{.*}} : memref<8x2x8x1x64xi32, #upmem.mram>
+  // CHECK-DAG: upmem.static_alloc @{{.*}}(mram) {{.*}} : memref<2x1x64xi32, #upmem.mram>
   // CHECK-DAG: upmem.static_alloc @{{.*}}(mram) {{.*}} : memref<8x1x8xi32, #upmem.mram>
 
   // CHECK: upmem.return

@@ -1,5 +1,6 @@
 // RUN: cinm-opt %s \
-// RUN:   --convert-linalg-to-cnm=cnm-buffer-level=mram --canonicalize --cse \
+// RUN:   --convert-linalg-to-cnm='cnm-buffer-level=mram leaf-tile-attr=upmem.leaf_tile_sizes' \
+// RUN:   --canonicalize --cse \
 // RUN:   --eliminate-empty-tensors --one-shot-bufferize --cse --canonicalize \
 // RUN:   --upmem-tile-mram-buffers --canonicalize --cse \
 // RUN:   --cnm-ensure-scatter-gather-contiguous \

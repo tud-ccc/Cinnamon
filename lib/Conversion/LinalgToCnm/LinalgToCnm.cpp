@@ -65,6 +65,7 @@ struct OperandTiling {
 /// does not mean threading another argument through every helper.
 struct DistributionOptions {
   StringRef bufferLevel;
+  StringRef leafTileAttr;
   bool allowFloatReassociation;
   ArrayRef<std::string> perDimAttrs;
   ArrayRef<int64_t> workgroupDimOrder;
@@ -102,6 +103,70 @@ static Operation *cloneOnBuffers(ImplicitLocOpBuilder &b, linalg::LinalgOp op,
     state.addRegion(std::move(cloned));
   }
   return b.create(state);
+}
+
+/// How each iteration dimension is cut for the tile the body will later stage
+/// into leaf memory, and where the pieces land in the split iteration space.
+///
+/// A leaf's buffer laid out in operand order is generally strided when sliced
+/// by a staged tile: for an M x K tile staged K-chunk at a time, the chunk's M
+/// rows sit K elements apart. Cutting the dimension in two and putting the
+/// chunk dimension outermost makes that slice one contiguous run, which is the
+/// only thing a DMA moves. The iteration space has to be cut the same way, or
+/// the body would no longer index the buffer it was given.
+struct LeafSplit {
+  /// Per original dimension, how many staged chunks it is cut into; 1 means
+  /// the whole dimension is staged at once and it is not split.
+  SmallVector<int64_t> chunks;
+  /// Per original dimension, the extent of one staged tile.
+  SmallVector<int64_t> tiles;
+  /// Per original dimension, its pieces' positions in the split space.
+  /// `chunkDim` is -1 for a dimension that was not split.
+  SmallVector<int64_t> chunkDim, tileDim;
+  unsigned numDims = 0;
+
+  bool splits() const {
+    return llvm::any_of(chunks, [](int64_t c) { return c > 1; });
+  }
+};
+
+/// Reads the staged tile from `op` and works out the resulting split. A
+/// dimension is split only when its block is a proper multiple of its tile:
+/// equal means the whole block is staged at once, and a tile that does not
+/// divide the block describes no regular chunking.
+static LeafSplit computeLeafSplit(linalg::LinalgOp op, ArrayRef<int64_t> blocks,
+                                  const DistributionOptions &options) {
+  unsigned numLoops = op.getNumLoops();
+  LeafSplit split;
+  split.chunks.assign(numLoops, 1);
+  split.tiles.assign(blocks.begin(), blocks.end());
+  split.chunkDim.assign(numLoops, -1);
+  split.tileDim.assign(numLoops, 0);
+
+  ArrayRef<int64_t> leaf;
+  DenseI64ArrayAttr attr;
+  if (!options.leafTileAttr.empty())
+    attr = op->getAttrOfType<DenseI64ArrayAttr>(options.leafTileAttr);
+  if (attr && attr.size() == static_cast<int64_t>(numLoops))
+    leaf = attr.asArrayRef();
+
+  for (unsigned d = 0; d < numLoops; ++d)
+    if (!leaf.empty() && leaf[d] > 0 && leaf[d] < blocks[d] &&
+        blocks[d] % leaf[d] == 0) {
+      split.chunks[d] = blocks[d] / leaf[d];
+      split.tiles[d] = leaf[d];
+    }
+
+  // A dimension's chunk sits immediately before its tile, so the split space
+  // reads as the original one with dimensions expanded in place.
+  unsigned next = 0;
+  for (unsigned d = 0; d < numLoops; ++d) {
+    if (split.chunks[d] > 1)
+      split.chunkDim[d] = next++;
+    split.tileDim[d] = next++;
+  }
+  split.numDims = next;
+  return split;
 }
 
 /// Every indexing map must be a projected permutation: the tiling of an
@@ -511,6 +576,20 @@ LogicalResult distribute(RewriterBase &rewriter, linalg::LinalgOp op,
     return failure();
   op = *split;
 
+  LeafSplit leafSplit = computeLeafSplit(op, blocks, options);
+  if (leafSplit.splits() && !isa<linalg::GenericOp>(op.getOperation())) {
+    // A named op's maps and iterator kinds are implied by its name, so the
+    // split space cannot be stated on it.
+    FailureOr<linalg::GenericOp> generic =
+        linalg::generalizeNamedOp(rewriter, op);
+    if (failed(generic))
+      return op->emitOpError(
+          "cannot be generalized, so its buffers cannot be laid out for the "
+          "tile the body stages");
+    op = *generic;
+    leafSplit = computeLeafSplit(op, blocks, options);
+  }
+
   auto indexingMaps = op.getIndexingMapsArray();
   unsigned numLoops = op.getNumLoops();
 
@@ -549,25 +628,78 @@ LogicalResult distribute(RewriterBase &rewriter, linalg::LinalgOp op,
                           : leaf.floorDiv(strides[dim]) % counts[dim];
 
   // Per-operand tiling, derived from the indexing maps. The scatter map names
-  // a host element for every element of every leaf's buffer: the operand is
-  // scattered as it stands, in whatever layout it already has.
+  // a host element for every element of every leaf's buffer.
+  //
+  // Without a split the operand is scattered as it stands, in whatever layout
+  // it already has. With one, each of its dimensions that gets staged in
+  // chunks contributes two buffer dimensions, and all the chunk dimensions are
+  // placed before all the tile dimensions -- that ordering is the whole point,
+  // since it is what makes one staged chunk a contiguous run. The scatter map
+  // absorbs the reordering, so the host value is still read where it lies.
   SmallVector<OperandTiling> tilings;
+  SmallVector<AffineMap> bodyMaps;
   for (auto [operand, map] : llvm::zip(op->getOpOperands(), indexingMaps)) {
     OperandTiling tiling;
     SmallVector<AffineExpr> scatterResults;
-    unsigned operandRank = map.getNumResults();
+    SmallVector<AffineExpr> bodyResults;
+
+    // Chunk dimensions first, then tile dimensions, each in operand order.
+    SmallVector<unsigned> chunkPositions, tilePositions;
     for (auto [position, expr] : llvm::enumerate(map.getResults())) {
       unsigned dim = cast<AffineDimExpr>(expr).getPosition();
-      tiling.blocks.push_back(blocks[dim]);
-      AffineExpr within = getAffineDimExpr(wgShape.size() + position, ctx);
+      if (leafSplit.chunks[dim] > 1)
+        chunkPositions.push_back(position);
+      tilePositions.push_back(position);
+    }
+    auto dimOf = [&](unsigned position) {
+      return cast<AffineDimExpr>(map.getResult(position)).getPosition();
+    };
+    for (unsigned position : chunkPositions) {
+      tiling.blocks.push_back(leafSplit.chunks[dimOf(position)]);
+      bodyResults.push_back(
+          getAffineDimExpr(leafSplit.chunkDim[dimOf(position)], ctx));
+    }
+    for (unsigned position : tilePositions) {
+      tiling.blocks.push_back(leafSplit.tiles[dimOf(position)]);
+      bodyResults.push_back(
+          getAffineDimExpr(leafSplit.tileDim[dimOf(position)], ctx));
+    }
+
+    // The host element for a buffer element: which tile the leaf holds, then
+    // which chunk of it, then where in the chunk.
+    unsigned numChunkDims = chunkPositions.size();
+    for (auto [index, position] : llvm::enumerate(tilePositions)) {
+      unsigned dim = dimOf(position);
+      AffineExpr within =
+          getAffineDimExpr(wgShape.size() + numChunkDims + index, ctx);
+      if (leafSplit.chunks[dim] > 1) {
+        unsigned chunkIndex =
+            llvm::find(chunkPositions, position) - chunkPositions.begin();
+        within = getAffineDimExpr(wgShape.size() + chunkIndex, ctx) *
+                     leafSplit.tiles[dim] +
+                 within;
+      }
       scatterResults.push_back(tileCoords[dim] * blocks[dim] + within);
     }
+
     SmallVector<int64_t> bounds(wgShape);
     llvm::append_range(bounds, tiling.blocks);
     tiling.scatterMap = simplifyAffineMapWithBounds(
-        AffineMap::get(wgShape.size() + operandRank, 0, scatterResults, ctx),
+        AffineMap::get(wgShape.size() + tiling.blocks.size(), 0, scatterResults,
+                       ctx),
         bounds);
     tilings.push_back(std::move(tiling));
+    bodyMaps.push_back(AffineMap::get(leafSplit.numDims, 0, bodyResults, ctx));
+  }
+
+  // The body iterates the split space; a split dimension's pieces inherit its
+  // kind, so a chunked reduction stays two reductions.
+  SmallVector<utils::IteratorType> bodyIterators(leafSplit.numDims);
+  for (unsigned d = 0, e = op.getNumLoops(); d < e; ++d) {
+    utils::IteratorType kind = op.getIteratorTypesArray()[d];
+    if (leafSplit.chunkDim[d] >= 0)
+      bodyIterators[leafSplit.chunkDim[d]] = kind;
+    bodyIterators[leafSplit.tileDim[d]] = kind;
   }
 
   //===--------------------------------------------------------------------===//
@@ -626,8 +758,33 @@ LogicalResult distribute(RewriterBase &rewriter, linalg::LinalgOp op,
     }
     OpBuilder::InsertionGuard bodyGuard(b);
     b.setInsertionPointToStart(&body);
-    cloneOnBuffers(b, op, body.getArguments().take_front(numInputs),
-                   body.getArguments().drop_front(numInputs));
+    ValueRange bodyIns = body.getArguments().take_front(numInputs);
+    ValueRange bodyOuts = body.getArguments().drop_front(numInputs);
+    if (leafSplit.splits()) {
+      // Clone exactly as the unsplit path does -- that is what gets the body
+      // region and its attributes right -- then restate the maps and iterator
+      // kinds over the split space the buffers were reshaped into.
+      Operation *cloned = cloneOnBuffers(b, op, bodyIns, bodyOuts);
+      auto generic = cast<linalg::GenericOp>(cloned);
+      generic.setIndexingMapsAttr(b.getAffineMapArrayAttr(bodyMaps));
+      generic.setIteratorTypesAttr(b.getArrayAttr(llvm::map_to_vector(
+          bodyIterators, [&](utils::IteratorType kind) -> Attribute {
+            return linalg::IteratorTypeAttr::get(b.getContext(), kind);
+          })));
+      // The staging pass tiles the split space: one chunk at a time along the
+      // dimensions that were cut, the whole extent along the rest.
+      if (!options.leafTileAttr.empty()) {
+        SmallVector<int64_t> staged(leafSplit.numDims);
+        for (unsigned d = 0, e = leafSplit.chunks.size(); d < e; ++d) {
+          if (leafSplit.chunkDim[d] >= 0)
+            staged[leafSplit.chunkDim[d]] = 1;
+          staged[leafSplit.tileDim[d]] = leafSplit.tiles[d];
+        }
+        generic->setAttr(options.leafTileAttr, b.getDenseI64ArrayAttr(staged));
+      }
+    } else {
+      cloneOnBuffers(b, op, bodyIns, bodyOuts);
+    }
     cnm::ReturnOp::create(b);
   }
 
@@ -674,9 +831,9 @@ struct ConvertLinalgToCnmPass
       }
     });
 
-    DistributionOptions options{bufferLevel, allowFloatReassociation,
-                                perDimAttrs, workgroupDimOrder,
-                                workgroupDimOrderIndex};
+    DistributionOptions options{
+        bufferLevel, leafTileAttr,      allowFloatReassociation,
+        perDimAttrs, workgroupDimOrder, workgroupDimOrderIndex};
 
     IRRewriter rewriter(&getContext());
     for (linalg::LinalgOp op : targets)

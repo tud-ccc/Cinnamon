@@ -482,6 +482,10 @@ struct UpmemInferencePlugin : cinm::InferencePlugin {
       // dimension; the leaf tile sizes have to follow it, or
       // --upmem-tile-mram-buffers below silently stages the whole tile.
       cnmOpts.perDimAttrs = {UPMEMDialect::LEAF_TILE_SIZES_NAME.str()};
+      // Lay each leaf's buffers out for the tile --upmem-tile-mram-buffers
+      // will stage below, so that one staged chunk is a contiguous run and
+      // the transfer is a single DMA.
+      cnmOpts.leafTileAttr = UPMEMDialect::LEAF_TILE_SIZES_NAME.str();
       pm->addPass(cnm::createConvertLinalgToCnmPass(cnmOpts));
     }
     pm->addPass(createCanonicalizerPass());
