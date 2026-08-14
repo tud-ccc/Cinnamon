@@ -328,7 +328,11 @@ FailureOr<AffineMap> viewIndexMap(Operation *op, MLIRContext *ctx) {
         groupIndices.push_back(getAffineDimExpr(d, ctx));
         groupShape.push_back(resultTy.getDimSize(d));
       }
-      results.push_back(mlir::linearize(ctx, groupIndices, groupShape));
+      // linearize/delinearize take strides, not extents: within a group the
+      // last dimension is contiguous and each earlier one steps over all of
+      // those after it.
+      results.push_back(mlir::linearize(
+          ctx, groupIndices, mlir::computeSuffixProduct(groupShape)));
     }
     return AffineMap::get(resultTy.getRank(), 0, results, ctx);
   }
@@ -341,8 +345,8 @@ FailureOr<AffineMap> viewIndexMap(Operation *op, MLIRContext *ctx) {
       SmallVector<int64_t> groupShape;
       for (int64_t d : group)
         groupShape.push_back(srcTy.getDimSize(d));
-      SmallVector<AffineExpr> groupIndices =
-          mlir::delinearize(getAffineDimExpr(pos, ctx), groupShape);
+      SmallVector<AffineExpr> groupIndices = mlir::delinearize(
+          getAffineDimExpr(pos, ctx), mlir::computeSuffixProduct(groupShape));
       for (auto [d, index] : llvm::zip_equal(group, groupIndices))
         results[d] = index;
     }
@@ -358,9 +362,12 @@ FailureOr<AffineMap> viewIndexMap(Operation *op, MLIRContext *ctx) {
     SmallVector<AffineExpr> resultIndices;
     for (int64_t d = 0; d < resultTy.getRank(); ++d)
       resultIndices.push_back(getAffineDimExpr(d, ctx));
-    AffineExpr flat = mlir::linearize(ctx, resultIndices, resultTy.getShape());
-    return AffineMap::get(resultTy.getRank(), 0,
-                          mlir::delinearize(flat, srcTy.getShape()), ctx);
+    AffineExpr flat = mlir::linearize(
+        ctx, resultIndices, mlir::computeSuffixProduct(resultTy.getShape()));
+    return AffineMap::get(
+        resultTy.getRank(), 0,
+        mlir::delinearize(flat, mlir::computeSuffixProduct(srcTy.getShape())),
+        ctx);
   }
 
   return failure();

@@ -20,6 +20,7 @@
 
 #include <llvm/ADT/SmallVector.h>
 #include <mlir/Dialect/MemRef/IR/MemRef.h>
+#include <mlir/Dialect/Utils/IndexingUtils.h>
 #include <mlir/IR/Builders.h>
 #include <mlir/IR/BuiltinTypes.h>
 #include <mlir/IR/PatternMatch.h>
@@ -58,40 +59,145 @@ bool isFullyContiguous(TypedValue<ShapedType> value) {
   return mlir::scatteredMemrefIsContiguous(value, memrefTy.getShape());
 }
 
-/// Reorders `op`'s host value into workgroup x buffer order, so that each
-/// leaf's share becomes one whole-buffer block instead of several.
+/// The constants `map` divides each of its dimensions by, which is what has to
+/// fall on a dimension boundary for the map to be linear in them.
 ///
-/// The packed value's index space is exactly the scatter's own -- workgroup
-/// coordinates then buffer coordinates -- so the repack's map is the scatter
-/// map written out pointwise, and the scatter is left naming nothing but the
-/// leaf it addresses.
-void packIntoOneBlockPerLeaf(cnm::ScatterOp op, OpBuilder &b, bool isStatic) {
+/// Fails when a floordiv or mod is applied to anything but a bare dimension:
+/// no split makes that linear.
+LogicalResult
+collectSplitPoints(AffineMap map,
+                   SmallVectorImpl<SmallVector<int64_t>> &points) {
+  points.assign(map.getNumDims(), {});
+  bool supported = true;
+  for (AffineExpr result : map.getResults())
+    result.walk([&](AffineExpr e) {
+      auto binary = dyn_cast<AffineBinaryOpExpr>(e);
+      if (!binary)
+        return;
+      AffineExprKind kind = binary.getKind();
+      if (kind != AffineExprKind::FloorDiv && kind != AffineExprKind::Mod &&
+          kind != AffineExprKind::CeilDiv)
+        return;
+      auto dim = dyn_cast<AffineDimExpr>(binary.getLHS());
+      auto constant = dyn_cast<AffineConstantExpr>(binary.getRHS());
+      if (!dim || !constant || kind == AffineExprKind::CeilDiv) {
+        supported = false;
+        return;
+      }
+      SmallVector<int64_t> &forDim = points[dim.getPosition()];
+      if (!llvm::is_contained(forDim, constant.getValue()))
+        forDim.push_back(constant.getValue());
+    });
+  return success(supported);
+}
+
+/// The extents a dimension of `extent` is split into so that each of `points`
+/// falls on a boundary: `extent/c0, c0/c1, ..., ck`. Empty when nothing needs
+/// splitting; fails when a point does not divide what encloses it.
+FailureOr<SmallVector<int64_t>> splitBasis(int64_t extent,
+                                           SmallVector<int64_t> points) {
+  llvm::sort(points, std::greater<int64_t>());
+  SmallVector<int64_t> basis;
+  int64_t inner = extent;
+  for (int64_t point : points) {
+    // A point at or beyond the extent introduces no boundary: the quotient is
+    // constant over the whole dimension and has already been folded away.
+    if (point <= 0 || point >= inner)
+      continue;
+    if (inner % point != 0)
+      return failure();
+    basis.push_back(inner / point);
+    inner = point;
+  }
+  if (basis.empty())
+    return SmallVector<int64_t>{};
+  basis.push_back(inner);
+  return basis;
+}
+
+/// Reorders `op`'s host value into workgroup x buffer order, so that each
+/// leaf's share becomes one whole-buffer block instead of several. Returns
+/// false when no repack it could emit is expressible, leaving `op` alone.
+///
+/// The packed value's index space is the scatter's own -- workgroup
+/// coordinates then buffer coordinates -- except that a dimension the map
+/// divides is split at the divisor. The repack is a strided copy, which walks
+/// its target with one constant stride per dimension, and `d floordiv c` is
+/// not that: the source offset jumps every c steps of d. Making c a boundary
+/// turns the jump into a stride of its own. The scatter is then left naming
+/// nothing but the leaf it addresses, delinearized over those splits.
+bool packIntoOneBlockPerLeaf(cnm::ScatterOp op, OpBuilder &b, bool isStatic) {
   Location loc = op.getLoc();
+  MLIRContext *ctx = b.getContext();
   auto hostTy = cast<MemRefType>(op.getInput().getType());
   cnm::BufferType bufferTy = op.getBuffer().getType();
 
-  SmallVector<int64_t> packedShape = cnm::getScatterIndexSpace(bufferTy);
-  auto packedTy = MemRefType::get(packedShape, hostTy.getElementType());
+  AffineMap map =
+      cnm::inflateScatterMapToPointwise(op.getScatterMap(), bufferTy);
+  SmallVector<int64_t> indexSpace = cnm::getScatterIndexSpace(bufferTy);
+
+  SmallVector<SmallVector<int64_t>> points;
+  if (failed(collectSplitPoints(map, points)))
+    return false;
+  SmallVector<SmallVector<int64_t>> bases;
+  for (auto [extent, forDim] : llvm::zip_equal(indexSpace, points)) {
+    FailureOr<SmallVector<int64_t>> basis = splitBasis(extent, forDim);
+    if (failed(basis))
+      return false;
+    bases.push_back(*basis);
+  }
+
+  // The packed shape, and each old dimension written in terms of the new ones
+  // it became (for the repack's map) and the reverse (for the scatter's).
+  SmallVector<int64_t> packedShape;
+  SmallVector<AffineExpr> toNew;
+  SmallVector<AffineExpr> toOld;
+  for (auto [old, extent, basis] : llvm::enumerate(indexSpace, bases)) {
+    AffineExpr oldDim = getAffineDimExpr(old, ctx);
+    if (basis.empty()) {
+      toNew.push_back(getAffineDimExpr(packedShape.size(), ctx));
+      toOld.push_back(oldDim);
+      packedShape.push_back(extent);
+      continue;
+    }
+    SmallVector<int64_t> strides = mlir::computeSuffixProduct(basis);
+    SmallVector<AffineExpr> newDims;
+    for (int64_t split : basis) {
+      newDims.push_back(getAffineDimExpr(packedShape.size(), ctx));
+      packedShape.push_back(split);
+    }
+    toNew.push_back(mlir::linearize(ctx, newDims, strides));
+    llvm::append_range(toOld, mlir::delinearize(oldDim, strides));
+  }
+
+  AffineMap packedMap = simplifyAffineMapWithBounds(
+      map.replaceDimsAndSymbols(toNew, {}, packedShape.size(), 0), packedShape);
 
   b.setInsertionPoint(op);
-  Value packed = memref::AllocOp::create(b, loc, packedTy);
-  auto compact = cnm::CompactBufferOp::create(
-      b, loc, op.getInput(), packed,
-      cnm::inflateScatterMapToPointwise(op.getScatterMap(), bufferTy));
+  Value packed = memref::AllocOp::create(
+      b, loc, MemRefType::get(packedShape, hostTy.getElementType()));
+  auto compact =
+      cnm::CompactBufferOp::create(b, loc, op.getInput(), packed, packedMap);
   if (isStatic)
     compact->setAttr(cinm::CinmDialect::STATIC_ATTR_NAME, b.getUnitAttr());
 
   op.getInputMutable().assign(packed);
-  op.setScatterMap(
-      AffineMap::getMultiDimIdentityMap(packedShape.size(), b.getContext()));
+  op.setScatterMap(simplifyAffineMapWithBounds(
+      AffineMap::get(indexSpace.size(), 0, toOld, ctx), indexSpace));
+  return true;
 }
 
-/// Whether a leaf's share arrives as several blocks rather than one. Only
-/// meaningful once the block form has been derived: straight out of
-/// distribution the map is pointwise, which names every element its own block.
+/// Whether a leaf's share arrives as several blocks rather than one.
+///
+/// The stored map is pointwise and names every element its own block, so this
+/// asks about the widest block that map and the host layout allow -- the same
+/// derivation the backend will make.
 bool isFragmented(cnm::ScatterOp op) {
-  return cnm::getScatterBlocksPerLeaf(op.getScatterMap(),
-                                      op.getBuffer().getType()) > 1;
+  cnm::BufferType bufferTy = op.getBuffer().getType();
+  return cnm::getScatterBlocksPerLeaf(cnm::deflateScatterMap(op.getScatterMap(),
+                                                             bufferTy,
+                                                             op.getHostType()),
+                                      bufferTy) > 1;
 }
 
 void ensureScatterContiguous(cnm::ScatterOp op, OpBuilder &b, bool staticOnly) {
