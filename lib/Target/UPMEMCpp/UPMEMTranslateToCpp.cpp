@@ -447,6 +447,13 @@ static LogicalResult getBasePtrAndOffset(CppEmitter &emitter, Value v,
   offsetExpr.resize(0);
   offsetExpr.append("0");
 
+  // The offset is expressed in bytes: both sides of a DMA are addressed as
+  // char arrays (an MRAM buffer is declared as one, and a WRAM array is cast
+  // to one), so an offset in elements would land at 1/sizeof(element) of the
+  // intended address.
+  const int64_t elementBytes =
+      llvm::cast<MemRefType>(v.getType()).getElementTypeBitWidth() / 8;
+
   // Peel ignorable ops, then check for an optional single subview.
   v = skipIgnorableOps(v);
   if (auto view =
@@ -486,7 +493,7 @@ static LogicalResult getBasePtrAndOffset(CppEmitter &emitter, Value v,
       offsetExpr.append(" + (");
       emitter.appendNameOrInt(off, offsetExpr);
       offsetExpr.append(" * ");
-      offsetExpr.append(std::to_string(stride));
+      offsetExpr.append(std::to_string(stride * elementBytes));
       offsetExpr.append(")");
     }
     v = source;
