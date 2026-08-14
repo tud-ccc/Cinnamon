@@ -1018,13 +1018,18 @@ Maybe<TrialInfo> InferenceTask::runDispatch() {
     bestResult.cost = estimate.total();
     llvm::errs() << "Estimated cost: " << llvm::format("%.3f", estimate.total())
                  << " ms\n";
-    estimate.forEachEntry(
-        [&](utils::CostCategory category, StringRef label, double value) {
-          llvm::errs() << "  " << utils::costCategoryName(category);
-          if (!label.empty())
-            llvm::errs() << "." << label;
-          llvm::errs() << ": " << llvm::format("%.3f", value) << " ms\n";
-        });
+    estimate.forEachEntry([&](utils::CostCategory category, StringRef label,
+                              double value, bool excluded) {
+      llvm::errs() << "  " << utils::costCategoryName(category);
+      if (!label.empty())
+        llvm::errs() << "." << label;
+      llvm::errs() << ": " << llvm::format("%.3f", value) << " ms";
+      // Reported but not part of the estimate above: amortized over the
+      // serving lifetime rather than paid per inference.
+      if (excluded)
+        llvm::errs() << " (excluded)";
+      llvm::errs() << "\n";
+    });
     return bestResult;
   }
   if (options.sampleN > 0)

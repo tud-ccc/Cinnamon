@@ -159,6 +159,14 @@ inline llvm::StringRef costCategoryName(CostCategory c) {
 /// Combinators (loops, sequences of ops) combine costs label-wise so that
 /// e.g. a loop trip count scales every label independently rather than an
 /// opaque aggregate.
+///
+/// An entry may additionally be marked *excluded* (markExcluded): work the
+/// program performs, and that the breakdown keeps reporting under its own
+/// category and label, but that the totals do not charge -- a transfer of
+/// data that is the same on every inference is paid once by a serving
+/// deployment, not per inference. Excluding is a statement about how often
+/// the cost is paid, not about whether it happened, so the entry stays
+/// visible to anything scoring the model against a run.
 class SimCost {
 public:
   SimCost() = default;
@@ -170,7 +178,7 @@ public:
                              llvm::StringRef label = {}) {
     SimCost c;
     if (value != 0.0)
-      c.add(category, label, value);
+      c.add(category, label, value, /*excluded=*/false);
     return c;
   }
   static SimCost forKernel(double v, llvm::StringRef label = {}) {
@@ -186,66 +194,96 @@ public:
     return forCategory(CostCategory::TransferBack, v, label);
   }
 
-  /// Sum of every category/label.
+  /// Mark every entry as excluded from the totals, keeping it under the
+  /// category and label it was recorded with. See the class comment.
+  SimCost &markExcluded() {
+    for (auto &bucket : buckets)
+      for (auto &e : bucket)
+        e.excluded = true;
+    return *this;
+  }
+
+  /// Sum of every category/label, minus the excluded entries.
   double total() const {
     double t = 0.0;
     for (auto &bucket : buckets)
       for (auto &e : bucket)
-        t += e.second;
+        if (!e.excluded)
+          t += e.value;
     return t;
   }
-  /// Sum of every label under `category`.
+  /// Sum of the excluded entries -- what the program pays that total() does
+  /// not charge it.
+  double excludedTotal() const {
+    double t = 0.0;
+    for (auto &bucket : buckets)
+      for (auto &e : bucket)
+        if (e.excluded)
+          t += e.value;
+    return t;
+  }
+  /// Sum of every label under `category`, minus the excluded entries.
   double categoryTotal(CostCategory category) const {
     double t = 0.0;
     for (auto &e : buckets[static_cast<size_t>(category)])
-      t += e.second;
+      if (!e.excluded)
+        t += e.value;
     return t;
   }
   bool isFinite() const {
     for (auto &bucket : buckets)
       for (auto &e : bucket)
-        if (!std::isfinite(e.second))
+        if (!std::isfinite(e.value))
           return false;
     return true;
   }
 
-  /// Invokes `fn(CostCategory, StringRef label, double value)` for every
-  /// entry, for reporting/debugging.
+  /// Invokes `fn(CostCategory, StringRef label, double value, bool excluded)`
+  /// for every entry, excluded ones included, for reporting/debugging.
   template <typename Fn> void forEachEntry(Fn &&fn) const {
     for (size_t i = 0; i < kNumCostCategories; ++i)
       for (auto &e : buckets[i])
-        fn(static_cast<CostCategory>(i), llvm::StringRef(e.first), e.second);
+        fn(static_cast<CostCategory>(i), llvm::StringRef(e.label), e.value,
+           e.excluded);
   }
 
   SimCost &operator+=(const SimCost &o) {
     for (size_t i = 0; i < kNumCostCategories; ++i)
       for (auto &e : o.buckets[i])
-        add(static_cast<CostCategory>(i), e.first, e.second);
+        add(static_cast<CostCategory>(i), e.label, e.value, e.excluded);
     return *this;
   }
   SimCost &operator*=(double scale) {
     for (auto &bucket : buckets)
       for (auto &e : bucket)
-        e.second *= scale;
+        e.value *= scale;
     return *this;
   }
   SimCost &operator/=(double scale) { return *this *= (1.0 / scale); }
 
 private:
-  // Per category, the (label, value) pairs tagged under it. Most categories
-  // only ever see a handful of distinct labels, so a small inline vector
-  // avoids hashing/heap allocation in the common case.
-  using Bucket = llvm::SmallVector<std::pair<std::string, double>, 2>;
+  struct Entry {
+    std::string label;
+    double value;
+    bool excluded;
+  };
+  // Per category, the entries tagged under it. Most categories only ever see
+  // a handful of distinct labels, so a small inline vector avoids
+  // hashing/heap allocation in the common case.
+  using Bucket = llvm::SmallVector<Entry, 2>;
   std::array<Bucket, kNumCostCategories> buckets;
 
-  void add(CostCategory category, llvm::StringRef label, double value) {
+  // Excluded and charged cost under one label stay separate entries: they
+  // answer different questions and each side has readers.
+  void add(CostCategory category, llvm::StringRef label, double value,
+           bool excluded) {
     auto &bucket = buckets[static_cast<size_t>(category)];
     for (auto &e : bucket)
-      if (e.first == label) {
-        e.second += value;
+      if (e.label == label && e.excluded == excluded) {
+        e.value += value;
         return;
       }
-    bucket.emplace_back(label.str(), value);
+    bucket.push_back({label.str(), value, excluded});
   }
 };
 

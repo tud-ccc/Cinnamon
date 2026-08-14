@@ -55,6 +55,42 @@ static double elementBytes(Type elemTy) {
   return 4.0;
 }
 
+/// Whether a serving deployment would pay this transfer once rather than on
+/// every inference. Two conditions, the same ones
+/// measurements._amortizable_index asks of the runtime's timing rows: the
+/// data it moves is the same on every inference (`upmem.timing_tag` says
+/// `static:`, decided by the cnm -> upmem conversion, the last stage that
+/// could still see where the host value came from), and it runs once per
+/// invocation -- a transfer under a loop moves a different tile every trip,
+/// so no single load-time transfer replaces it. An untagged transfer is not
+/// amortizable: unattributed means unproven.
+static bool isAmortizableTransfer(Operation *op) {
+  auto tag = op->getAttrOfType<StringAttr>(UPMEMDialect::TIMING_TAG_NAME);
+  if (!tag || !tag.getValue().starts_with("static:"))
+    return false;
+  for (Operation *parent = op->getParentOp(); parent;
+       parent = parent->getParentOp())
+    if (llvm::isa<LoopLikeOpInterface>(parent))
+      return false;
+  return true;
+}
+
+/// Cost of a host -> device transfer, excluded from the totals when the data
+/// stays pinned on the device across inferences (isAmortizableTransfer). The
+/// cost keeps its transfer category and label, so the breakdown still reports
+/// it; what changes is that SimCost::total() -- what the search minimizes --
+/// stops charging it, which is what measurements.net_time_ms does to the same
+/// transfers on the measured side.
+///
+/// The other direction is never excluded: a gather writes a result, which is
+/// produced on every inference by definition.
+static SimCost scatterCost(Operation *op, double ms, llvm::StringRef label) {
+  SimCost cost = SimCost::forTransfer(ms, label);
+  if (isAmortizableTransfer(op))
+    cost.markExcluded();
+  return cost;
+}
+
 static SimCost costOfRegionCb(Region &region, bool annotate,
                               const WaitForCostFn &cb);
 
@@ -102,7 +138,8 @@ static SimCost costOfOpCb(Operation &op, bool annotate,
                 auto hier = llvm::cast<DeviceHierarchyType>(
                     xferOp.getHierarchy().getType());
                 int numDpus = hier.getNumDpus();
-                return SimCost::forTransfer(
+                return scatterCost(
+                    xferOp,
                     upmem_cm::scatterBlockCostMs(
                         numDpus, xferOp.getDpuBufferSizeInBytes()),
                     "array");
@@ -123,11 +160,11 @@ static SimCost costOfOpCb(Operation &op, bool annotate,
             int numDpus = hier.getNumDpus();
             // getDpuBufferSizeInBytes() is the size of a single block; the
             // actual per-DPU transfer covers numBlocksPerDpu of them.
-            return SimCost::forTransfer(
-                upmem_cm::scatterSgCostMs(numDpus,
-                                          xferOp.getDpuBufferSizeInBytes(),
-                                          xferOp.getNumBlocksPerDpu()),
-                "blocks");
+            return scatterCost(xferOp,
+                               upmem_cm::scatterSgCostMs(
+                                   numDpus, xferOp.getDpuBufferSizeInBytes(),
+                                   xferOp.getNumBlocksPerDpu()),
+                               "blocks");
           })
           .Case<upmem::GatherBlocksOp>([](auto xferOp) -> SimCost {
             auto hier = llvm::cast<DeviceHierarchyType>(
@@ -148,10 +185,10 @@ static SimCost costOfOpCb(Operation &op, bool annotate,
             int numDpus = hier.getNumDpus();
             // Same size is sent to every DPU; model it like a scatter of
             // that buffer's full size.
-            return SimCost::forTransfer(
-                upmem_cm::broadcastCostMs(numDpus,
-                                          xferOp.getDpuBufferSizeInBytes()),
-                "broadcast");
+            return scatterCost(xferOp,
+                               upmem_cm::broadcastCostMs(
+                                   numDpus, xferOp.getDpuBufferSizeInBytes()),
+                               "broadcast");
           })
           .Case<LocalTransferOp>([](auto xferOp) {
             auto srcTy = llvm::cast<MemRefType>(xferOp.getSource().getType());

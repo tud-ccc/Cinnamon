@@ -34,7 +34,17 @@ def _predicted_terms(cost_csv: pathlib.Path) -> dict[str, float] | None:
         term: float(df.loc[df["category"].isin(cats), "cost_ms"].sum())
         for term, cats in _PREDICTED_TERM_CATEGORIES.items()
     }
-    terms["combined"] = float(df["cost_ms"].sum())
+    # combined drops the cost model's `excluded` rows (transfers of data
+    # pinned on the device across inferences, see SimCost) to match the
+    # measured combined, which is net_time_ms -- it subtracts the runtime rows
+    # of those same transfers. The transfer term keeps them, because the
+    # measured transfer term is the raw scatter+gather time; the asymmetry is
+    # the measured side's, and predicting it is the point. Older cost.csvs
+    # have no such column and nothing to drop.
+    charged = (
+        df if "excluded" not in df.columns else df.loc[~df["excluded"].astype(bool)]
+    )
+    terms["combined"] = float(charged["cost_ms"].sum())
     return terms
 
 

@@ -461,7 +461,10 @@ def predicted_breakdown_ms(cost_csv: pathlib.Path) -> dict[str, float] | None:
     df = pd.read_csv(cost_csv)
     result: dict[str, float] = {}
     # Summed over blocks: a cost.csv has one row per (block, category, label)
-    # and the measured side has no notion of blocks to split them by.
+    # and the measured side has no notion of blocks to split them by. Rows
+    # flagged `excluded` are summed like the rest: they predict a transfer
+    # that runs, which is what breakdown_comparison scores against (it reads
+    # the undiscounted measured side for the same reason).
     for (category, cost_label), group in df.groupby(["category", "label"]):
         bucket = predicted_bucket(str(category), str(cost_label))
         result[bucket] = result.get(bucket, 0.0) + float(group["cost_ms"].sum())

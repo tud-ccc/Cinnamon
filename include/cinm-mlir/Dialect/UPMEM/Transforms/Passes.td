@@ -279,7 +279,9 @@ def UpmemAnnotateCostsPass
     Option<"costsCsv", "costs-csv", "std::string", "\"\"",
            "If non-empty, write a detailed cost breakdown (one row per "
            "compute_block x cost category x sub-label, e.g. transfer/scatter) "
-           "to this CSV path">,
+           "to this CSV path. A row flagged `excluded` is cost the program "
+           "pays that block_total_ms leaves out -- a transfer of data that "
+           "stays pinned on the device across inferences">,
     Option<"programDumpDir", "program-dump-dir", "std::string", "\"\"",
            "If non-empty, also write each simulated DPU program to "
            "<dir>/<kernel>.cnmprog.json in the symbolic interchange format "

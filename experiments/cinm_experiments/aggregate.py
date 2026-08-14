@@ -103,7 +103,7 @@ def aggregate_predicted_costs(
     compile_dir: pathlib.Path, out_dir: pathlib.Path
 ) -> pd.DataFrame:
     """Merge every config's ir/cost.csv (block_id/location/category/label/
-    cost_ms/block_total_ms -- the cost-model breakdown written during
+    cost_ms/excluded/block_total_ms -- the cost-model breakdown written during
     compile by UpmemAnnotateCosts, see cinmopt.eval_solution_lowerer) across
     compile_dir into one predicted_costs.csv, tagged with fn_name and every
     column from that config's config.csv -- same join key (fn_name/label/
@@ -120,6 +120,10 @@ def aggregate_predicted_costs(
     config's metadata, since config.csv also has a `label` column (the
     config's row id, e.g. "row_00157") -- without the rename, assigning the
     config's `label` column would silently clobber the block label.
+
+    `excluded` rows are cost the program pays that block_total_ms leaves out
+    (a transfer of data pinned on the device across inferences, see SimCost);
+    a consumer picks its own view by filtering on that column.
 
     Skips configs with no config.csv (not compiled) or no ir/cost.csv (e.g.
     a plugin/simulator that doesn't emit a per-op breakdown)."""
