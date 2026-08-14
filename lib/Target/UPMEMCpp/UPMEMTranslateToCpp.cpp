@@ -10,6 +10,7 @@
 #include "cinm-mlir/Dialect/UPMEM/IR/UPMEMOccupancy.h"
 #include "cinm-mlir/Dialect/UPMEM/IR/UPMEMOps.h"
 #include "cinm-mlir/Target/UPMEMCpp/UPMEMCppEmitter.h"
+#include "cinm-mlir/Utils/CinmUtils.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/ControlFlow/IR/ControlFlowOps.h"
@@ -494,6 +495,23 @@ static LogicalResult getBasePtrAndOffset(CppEmitter &emitter, Value v,
   return getBasePtrOfAlloc(v.getDefiningOp(), basePtr);
 }
 
+/// Diagnoses a transfer whose region is not packed, naming the shape and
+/// strides so the offending layout is identifiable from the message alone.
+static LogicalResult reportNonContiguous(upmem::LocalTransferOp op,
+                                         StringRef side, MemRefType ty) {
+  SmallVector<int64_t> strides;
+  int64_t offset = 0;
+  InFlightDiagnostic diag =
+      op->emitOpError("cannot emit a DMA for a non-contiguous ")
+      << side << ": " << ty
+      << ". A transfer lowers to one flat copy of its whole element count, "
+         "which would move the right number of bytes from the wrong "
+         "addresses. Give the buffer a layout whose staged slices are packed";
+  if (succeeded(ty.getStridesAndOffset(strides, offset)))
+    diag << " (strides " << strides << ")";
+  return diag;
+}
+
 static LogicalResult printLocalTransfer(CppEmitter &emitter,
                                         upmem::LocalTransferOp memcpyOp) {
   using upmem::DpuMemSpace::MRAM;
@@ -517,6 +535,11 @@ static LogicalResult printLocalTransfer(CppEmitter &emitter,
   if (from.getType().getNumElements() != to.getType().getNumElements())
     return memcpyOp->emitOpError(
         "Copy source and target don't have same number of elements");
+
+  if (!memrefIsContiguous(from.getType()))
+    return reportNonContiguous(memcpyOp, "source", from.getType());
+  if (!memrefIsContiguous(to.getType()))
+    return reportNonContiguous(memcpyOp, "target", to.getType());
 
   auto remainingBytes = from.getType().getNumElements() *
                         from.getType().getElementTypeBitWidth() / 8;

@@ -10,6 +10,15 @@ namespace mlir {
 
 SmallString<20> getUniqueFunctionName(ModuleOp &moduleOp, StringRef prefix);
 
+/// Whether \p ty 's elements occupy one unbroken run of memory, i.e. whether
+/// it can be moved by a single contiguous copy.
+///
+/// Unit dimensions address nothing and so constrain nothing; every other
+/// dimension's stride must equal the product of the sizes below it. A dynamic
+/// size, a dynamic stride or a layout that is not strided all count as not
+/// contiguous, since none of them can be shown to be at compile time.
+bool memrefIsContiguous(MemRefType ty);
+
 /// Check that the memref is contiguous in the dimensions corresponding to the
 /// bufShape, which is a suffix of the shape of the input tensor/memref.
 bool scatteredMemrefIsContiguous(TypedValue<ShapedType> value,
