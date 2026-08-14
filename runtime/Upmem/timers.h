@@ -60,6 +60,15 @@ void upmemrt_record_load(uint64_t elapsed_ns, uint32_t num_dpus);
 // Host-side memrefCopy calls (e.g. the strided repack copies feeding
 // upmem.scatter buffers) -- not a DPU-facing operation, hence no num_dpus.
 void upmemrt_record_copy(uint64_t elapsed_ns, size_t bytes);
+// A cnm.compact_buffer repack, recorded apart from plain copies so it can be
+// attributed to the layout decision that required it.
+// `kind` is "static" when the repacked operand holds the same data on every
+// inference and the cost therefore amortizes over the serving lifetime, "dyn"
+// when it is paid per inference. The analysis discounts only the former, so
+// the two must never share a row. Like the transfer `kind`s, stored by
+// pointer: pass a string literal.
+void upmemrt_record_compact(uint64_t elapsed_ns, size_t bytes,
+                            const char *kind);
 
 #else // UPMEM_RT_STATS not defined ─────────────────────────────────────────
 
