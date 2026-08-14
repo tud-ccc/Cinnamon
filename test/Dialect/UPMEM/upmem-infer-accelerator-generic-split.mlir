@@ -28,19 +28,24 @@ func.func @gemv_64MB(%A: tensor<4096x4096xi32>, %x: tensor<4096xi32>) -> tensor<
 
   // Per-DPU MRAM, matching the template's own constraint
   // mramRow*mramCol + mramCol + mramRow = 64*128 + 128 + 64:
-  //   A  8 tasklets x (8 x 1 x 128) = 8192
-  //   x                    1 x 128  =  128   <- shared across the tasklets
-  //   y  8 tasklets x (1 x 8)       =   64
+  //   A  8 tasklets x (2 chunks x 8 x 1 x 64) = 8192
+  //   x               (2 chunks x     1 x 64) =  128   <- shared across tasklets
+  //   y  8 tasklets x (1 x 8)                 =   64
+  // K is staged 64 at a time out of the 128 a leaf holds, so the buffers that
+  // carry it are cut into two chunks with the chunk dimension outermost --
+  // same element counts, ordered so one staged chunk is a contiguous run.
   // The WRAM tiles A and x are staged into hold one wramCol=64 chunk each.
   // They are allocas, so they hoist to the top of the kernel instead of being
   // allocated once per trip of the K loop -- which is why they are checked
   // here, in one order-free group with the MRAM buffers, rather than inside
   // the loop below.
-  // CHECK-DAG: upmem.static_alloc @{{.*}}(mram) {{.*}} : memref<8x8x1x128xi32, #upmem.mram>
-  // CHECK-DAG: upmem.static_alloc @{{.*}}(mram) {{.*}} : memref<1x128xi32, #upmem.mram>
+  // CHECK-DAG: upmem.static_alloc @{{.*}}(mram) {{.*}} : memref<8x2x8x1x64xi32, #upmem.mram>
+  // CHECK-DAG: upmem.static_alloc @{{.*}}(mram) {{.*}} : memref<2x1x64xi32, #upmem.mram>
   // CHECK-DAG: upmem.static_alloc @{{.*}}(mram) {{.*}} : memref<8x1x8xi32, #upmem.mram>
-  // CHECK-DAG: memref.alloca() : memref<8x1x64xi32, #upmem.wram>
-  // CHECK-DAG: memref.alloca() : memref<1x64xi32, #upmem.wram>
+  // Each carries the leading unit chunk dimension the split introduced: one
+  // chunk is exactly what a trip of the K loop stages.
+  // CHECK-DAG: memref.alloca() : memref<1x8x1x64xi32, #upmem.wram>
+  // CHECK-DAG: memref.alloca() : memref<1x1x64xi32, #upmem.wram>
 
   // The 128-wide K tile is walked in those chunks, with the output staged
   // once outside the loop. This is also what checks that the leaf tile sizes
@@ -58,7 +63,9 @@ func.func @gemv_64MB(%A: tensor<4096x4096xi32>, %x: tensor<4096xi32>) -> tensor<
   // CHECK: }
   // CHECK-NOT: upmem.local_transfer %{{.*}} into %[[WY]]
   // CHECK: scf.for %{{.*}} = %{{.*}} to %{{.*}} step %{{.*}} {
-  // CHECK: upmem.local_transfer %{{.*}} into %{{.*}} : memref<8x1x64xi32, {{.*}}#upmem.mram> to memref<8x1x64xi32, #upmem.wram>
+  // One chunk per trip, and it is contiguous in MRAM -- which is the point of
+  // the layout: upmem.local_transfer is a DMA of a single run.
+  // CHECK: upmem.local_transfer %{{.*}} into %{{.*}} : memref<1x8x1x64xi32, strided<[512, 64, 64, 1], offset: ?>, #upmem.mram> to memref<1x8x1x64xi32, #upmem.wram>
   // CHECK: }
   // CHECK: upmem.local_transfer %[[WY]] into
   // CHECK: upmem.return

@@ -445,7 +445,11 @@ struct UpmemInferencePlugin : cinm::InferencePlugin {
     pm->addPass(createCanonicalizerPass());
     if (debug)
       pm->addPass(createPrintIRPass({.label = "after-cinm-to-linalg"}));
-    // pm->addPass(linalg::createLinalgGeneralizeNamedOpsPass());
+    // The layout decision below restates the iteration space, which a named
+    // op cannot express -- its maps and iterator kinds are implied by its
+    // name. Generalizing here keeps that concern out of the distribution
+    // pass itself.
+    pm->addPass(createLinalgGeneralizeNamedOpsPass());
     pm->addPass(createLinalgElementwiseOpFusionPass());
     pm->addPass(createCanonicalizerPass());
     if (debug)

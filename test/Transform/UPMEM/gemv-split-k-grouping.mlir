@@ -1,4 +1,4 @@
-// RUN: cinm-opt %s \
+// RUN: cinm-opt %s --linalg-generalize-named-ops \
 // RUN:   --convert-linalg-to-cnm='cnm-buffer-level=mram per-dim-attrs=upmem.leaf_tile_sizes leaf-tile-attr=upmem.leaf_tile_sizes' \
 // RUN:   --canonicalize --cse \
 // RUN:   --eliminate-empty-tensors --one-shot-bufferize --cse --canonicalize \

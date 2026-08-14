@@ -35,18 +35,23 @@ func.func @gemv_64MB(%A: tensor<4096x4096xi32>, %x: tensor<4096xi32>) -> tensor<
   // m goes and `gemv.order[1]` where k goes, place 1 being the outermost
   // workgroup axis.
 
+  // K is staged 64 at a time out of the 128 a leaf holds, so every buffer
+  // carrying K is cut into two chunks with the chunk dimension outermost --
+  // that is what makes one staged chunk a contiguous run. The element counts
+  // below are unaffected by it; only the order is.
+
   // k outermost (place 1), the default rule: the eight tasklets of a DPU
   // differ in their m-tile and share one k-tile of the vector. 128 elements
   // per DPU. This is the grouping the independent autotuner found best
   // (taskletCols = 1).
-  // SHARED-DAG: upmem.static_alloc {{.*}} : memref<1x128xi32, #upmem.mram>
+  // SHARED-DAG: upmem.static_alloc {{.*}} : memref<2x1x64xi32, #upmem.mram>
 
   // k innermost, so adjacent leaves differ in it and each tasklet needs its
   // own k-tile. Same configuration otherwise, 8x the vector storage.
-  // REPLICATED-DAG: upmem.static_alloc {{.*}} : memref<8x1x128xi32, #upmem.mram>
+  // REPLICATED-DAG: upmem.static_alloc {{.*}} : memref<8x2x1x64xi32, #upmem.mram>
 
   // The matrix is tiled per tasklet either way, and the accumulator likewise.
-  // CHECK-DAG: upmem.static_alloc {{.*}} : memref<8x8x1x128xi32, #upmem.mram>
+  // CHECK-DAG: upmem.static_alloc {{.*}} : memref<8x2x8x1x64xi32, #upmem.mram>
   // CHECK-DAG: upmem.static_alloc {{.*}} : memref<8x1x8xi32, #upmem.mram>
 
   // Two dimensions are spread over the workgroup here (4096/8 m-tiles and
