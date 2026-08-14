@@ -24,10 +24,10 @@ upmem.dpu_program @k() tasklets(8) {
   %t = upmem.tasklet_dim()
 
   // memref<8x2x8x64xi32> has strides [1024, 512, 64, 1], so offsets
-  // (%t, %c, 0, 0) give %t*1024 + %c*512. The old formula multiplied by the
-  // subview's sizes in reverse instead and produced %c*64 + %t.
+  // (%t, %c, 0, 0) give %t*1024 + %c*512 elements. The subscript is applied to
+  // a char array, so it has to be those in bytes: %t*4096 + %c*2048.
   // CHECK: for (int32_t [[C:v[0-9]+]] = 0; [[C]] < 2; [[C]] += 1) {
-  // CHECK: mram_read(&a[0 + ({{v[0-9]+}} * 1024) + ([[C]] * 512) + 0]
+  // CHECK: mram_read(&a[0 + ({{v[0-9]+}} * 4096) + ([[C]] * 2048) + 0]
   scf.for %c = %c0 to %c2 step %c1 {
     %w = memref.alloca() : memref<8x64xi32, #upmem.wram>
     %s = memref.subview %a[%t, %c, 0, 0] [1, 1, 8, 64] [1, 1, 1, 1]
