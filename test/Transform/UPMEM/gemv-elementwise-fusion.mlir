@@ -34,12 +34,14 @@
 // FUSED-NOT:   upmem.dpu_program
 
 // K is split 4 ways: each leaf holds a partial sum over a quarter of K, the
-// gather brings back a 4x4x256 tensor of partials and the host reduces it. No
-// leaf ever holds a finished block, so there is nothing to fuse and both
-// dispatches stay.
+// gather brings back 4096 partials and the host reduces them. No leaf ever
+// holds a finished block, so there is nothing to fuse and both dispatches
+// stay. The partials come back shaped 4x16x64 rather than 4x4x256 because M
+// is staged in 64-row chunks, and the buffers carrying a staged dimension are
+// cut along it -- the same elements, grouped by what a transfer moves.
 // SPLIT-LABEL: func.func @gemv_4MB
 // SPLIT:       upmem.alloc_dpus
-// SPLIT:       upmem.gather_from_array {{.*}} : memref<4x4x256xi32>
+// SPLIT:       upmem.gather_from_array {{.*}} : memref<4x16x64xi32>
 // SPLIT:       upmem.alloc_dpus
 // SPLIT:       upmem.dpu_program
 // SPLIT:       upmem.dpu_program

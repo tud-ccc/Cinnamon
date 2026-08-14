@@ -577,18 +577,13 @@ LogicalResult distribute(RewriterBase &rewriter, linalg::LinalgOp op,
   op = *split;
 
   LeafSplit leafSplit = computeLeafSplit(op, blocks, options);
-  if (leafSplit.splits() && !isa<linalg::GenericOp>(op.getOperation())) {
-    // A named op's maps and iterator kinds are implied by its name, so the
-    // split space cannot be stated on it.
-    FailureOr<linalg::GenericOp> generic =
-        linalg::generalizeNamedOp(rewriter, op);
-    if (failed(generic))
-      return op->emitOpError(
-          "cannot be generalized, so its buffers cannot be laid out for the "
-          "tile the body stages");
-    op = *generic;
-    leafSplit = computeLeafSplit(op, blocks, options);
-  }
+  // Laying a buffer out for the tile its body stages restates the iteration
+  // space, and a named op's maps and iterator kinds are implied by its name,
+  // so there is nowhere to state it.
+  if (leafSplit.splits() && !isa<linalg::GenericOp>(op.getOperation()))
+    return op->emitOpError(
+        "is not linalg.generic, "
+        "run --linalg-generalize-named-ops before this pass");
 
   auto indexingMaps = op.getIndexingMapsArray();
   unsigned numLoops = op.getNumLoops();

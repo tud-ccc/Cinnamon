@@ -8,15 +8,22 @@
 
 // A scatter whose input is a strided subview (each of the 8 rows of 256
 // elements sits inside a wider 512-element row) is not safe to transfer with
-// a single flat memcpy. The pass must insert a packing alloc + copy and
+// a single flat memcpy. The pass must insert a packing alloc + repack and
 // rewire the scatter to use it.
+//
+// The repack is a cnm.compact_buffer rather than a memref.copy so the backend
+// can route it somewhere it is timed: a memref.copy between two contiguous
+// memrefs lowers to llvm.intr.memcpy and would never show up in a
+// measurement. Its map is the identity -- the shape is unchanged and only the
+// layout is -- and being emitted first it takes #map, moving the scatter's
+// own map to #map1.
 
 // CHECK-LABEL: func.func @scatter_noncontiguous
 // CHECK:       %[[BIG:.*]] = memref.alloc() : memref<8x512xi32>
 // CHECK:       %[[VIEW:.*]] = memref.subview %[[BIG]]
 // CHECK:       %[[PACK:.*]] = memref.alloc() : memref<8x256xi32>
-// CHECK-NEXT:  memref.copy %[[VIEW]], %[[PACK]]
-// CHECK-NEXT:  cnm.scatter %[[PACK]] into %{{.*}}[#map] of %{{.*}} : memref<8x256xi32> into
+// CHECK-NEXT:  cnm.compact_buffer %[[VIEW]] into %[[PACK]][#map] : memref<8x256xi32, strided<[512, 1]>> into memref<8x256xi32>
+// CHECK-NEXT:  cnm.scatter %[[PACK]] into %{{.*}}[#map1] of %{{.*}} : memref<8x256xi32> into
 func.func @scatter_noncontiguous() {
   %wg = cnm.workgroup : !cnm.workgroup<#upmem_2_4_16>
   %buf = cnm.declare_buffer() for %wg : !cnm.buffer<256xi32 on #upmem_2_4_16>
@@ -33,8 +40,8 @@ func.func @scatter_noncontiguous() {
 
 // CHECK-LABEL: func.func @scatter_already_contiguous
 // CHECK:       %[[BUF:.*]] = memref.alloc() : memref<8x256xi32>
-// CHECK-NEXT:  cnm.scatter %[[BUF]] into %{{.*}}[#map] of %{{.*}}
-// CHECK-NOT:   memref.copy
+// CHECK-NEXT:  cnm.scatter %[[BUF]] into %{{.*}}[#map1] of %{{.*}}
+// CHECK-NOT:   cnm.compact_buffer
 func.func @scatter_already_contiguous() {
   %wg = cnm.workgroup : !cnm.workgroup<#upmem_2_4_16>
   %buf = cnm.declare_buffer() for %wg : !cnm.buffer<256xi32 on #upmem_2_4_16>
@@ -53,7 +60,7 @@ func.func @scatter_already_contiguous() {
 // CHECK:       %[[BIG:.*]] = memref.alloc() : memref<128x512xi32>
 // CHECK:       %[[VIEW:.*]] = memref.subview %[[BIG]]
 // CHECK:       %[[PACK:.*]] = memref.alloc() : memref<128x256xi32>
-// CHECK-NEXT:  cnm.gather %{{.*}}[#map1] of %{{.*}} into %[[PACK]] : {{.*}} into memref<128x256xi32>
+// CHECK-NEXT:  cnm.gather %{{.*}}[#map2] of %{{.*}} into %[[PACK]] : {{.*}} into memref<128x256xi32>
 // CHECK-NEXT:  memref.copy %[[PACK]], %[[VIEW]]
 // CHECK-NEXT:  memref.dealloc %[[PACK]]
 func.func @gather_noncontiguous() {
@@ -72,7 +79,7 @@ func.func @gather_noncontiguous() {
 
 // CHECK-LABEL: func.func @gather_already_contiguous
 // CHECK:       %[[OUT:.*]] = memref.alloc() : memref<128x256xi32>
-// CHECK-NEXT:  cnm.gather %{{.*}}[#map1] of %{{.*}} into %[[OUT]]
+// CHECK-NEXT:  cnm.gather %{{.*}}[#map2] of %{{.*}} into %[[OUT]]
 // CHECK-NOT:   memref.copy
 func.func @gather_already_contiguous() {
   %wg = cnm.workgroup : !cnm.workgroup<#upmem_2_4_16>
