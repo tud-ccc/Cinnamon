@@ -28,7 +28,10 @@
 // KEEP:       cnm.scatter %arg0 into
 
 // PACK-LABEL: func.func @fragmented_static
-// PACK:       %[[P:.*]] = memref.alloc() : memref<2x1x2x8xi32>
+// The allocation carries the conclusion too: afterwards it is the only thing
+// left saying its contents are the same on every inference, which is what the
+// backend asks when deciding how to time the transfer out of it.
+// PACK:       %[[P:.*]] = memref.alloc() {cinm.static} : memref<2x1x2x8xi32>
 // PACK-NEXT:  cnm.compact_buffer %arg0 into %[[P]][#[[M:.*]]] {cinm.static} : memref<4x8xi32> into memref<2x1x2x8xi32>
 // PACK-NEXT:  cnm.scatter %[[P]] into %{{.*}}[#{{.*}}] of
 
@@ -79,7 +82,7 @@ func.func @fragmented_dynamic(%a: memref<4x8xi32>) {
 // PACK-LABEL: func.func @divided_dim
 // STATIC-LABEL: func.func @divided_dim
 // STATIC:     cnm.compact_buffer %arg0 into %{{.*}} {cinm.static}
-// PACK:       %[[P:.*]] = memref.alloc() : memref<2x4x1x2x8xi32>
+// PACK:       %[[P:.*]] = memref.alloc() {cinm.static} : memref<2x4x1x2x8xi32>
 // PACK-NEXT:  cnm.compact_buffer %arg0 into %[[P]][#[[DIV_COMPACT]]] {cinm.static} : memref<2x8x8xi32> into memref<2x4x1x2x8xi32>
 // The scatter reaches the split dimensions by taking its leaf index apart.
 // PACK-NEXT:  cnm.scatter %[[P]] into %{{.*}}[#[[DIV_SCATTER]]] of
