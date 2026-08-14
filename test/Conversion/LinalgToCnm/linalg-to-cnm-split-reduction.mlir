@@ -47,8 +47,13 @@ func.func @gemv_split_k(%A: tensor<1024x512xi32>, %x: tensor<512xi32>, %y: tenso
 
   // The partials come back with the k-tile as a separate dimension, and the
   // merge accumulates them into the *original* %y, folding it in exactly once.
+  //
+  // splitReduction emits the merge with the partial-sum dimension outermost,
+  // which sweeps the whole output once per k-tile. It is interchanged to run
+  // that dimension innermost, so one output element stays live across its
+  // whole sum and --affine-scalrep can hold it in a register.
   // CHECK: %[[MERGED:.*]] = cnm.gather {{.*}} into tensor<4x1024xi32>
-  // CHECK: linalg.generic {{.*}} iterator_types = ["reduction", "parallel"]} ins(%[[MERGED]] : tensor<4x1024xi32>) outs(%arg2 : tensor<1024xi32>)
+  // CHECK: linalg.generic {{.*}} iterator_types = ["parallel", "reduction"]} ins(%[[MERGED]] : tensor<4x1024xi32>) outs(%arg2 : tensor<1024xi32>)
   // CHECK: arith.addi
   %r = cinm.compute on accelerator #acc -> tensor<1024xi32> {
     %g = linalg.contract indexing_maps = [#m, #v, #r]

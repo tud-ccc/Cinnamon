@@ -228,6 +228,54 @@ getTileCounts(linalg::LinalgOp op, ArrayRef<int64_t> blocks,
   return counts;
 }
 
+/// Reshapes the host-side merge `splitReduction` just emitted.
+///
+/// It comes out with the partial-sum dimension outermost, so the merge sweeps
+/// the whole output once per leaf, reloading and restoring every element each
+/// time. Running the reduction innermost instead keeps one output element live
+/// across its whole sum, which is what lets --affine-scalrep hold it in a
+/// register and a vectorizer widen the parallel dimension rather than the
+/// accumulation.
+///
+/// Its `outs` is the original op's, which sits where the frontend put it --
+/// before everything this pass emits in between. Sinking it to its only
+/// consumer gives loop fusion an adjacent pair, and stops a buffer that is
+/// dead until the end from living across the whole device section.
+static LogicalResult shapeHostMerge(RewriterBase &rewriter,
+                                    linalg::SplitReductionResult split) {
+  linalg::LinalgOp mergeOp = split.resultCombiningLinalgOp;
+  auto merge = dyn_cast<linalg::GenericOp>(mergeOp.getOperation());
+  if (!merge)
+    return success();
+
+  // Parallel dimensions first, keeping their order, then the reduction ones.
+  // `interchange` is the permutation to read the current dimensions in.
+  SmallVector<unsigned> permutation;
+  for (utils::IteratorType wanted :
+       {utils::IteratorType::parallel, utils::IteratorType::reduction})
+    for (auto [dim, kind] : llvm::enumerate(merge.getIteratorTypesArray()))
+      if (kind == wanted)
+        permutation.push_back(dim);
+
+  if (!llvm::is_sorted(permutation)) {
+    OpBuilder::InsertionGuard guard(rewriter);
+    rewriter.setInsertionPoint(merge);
+    FailureOr<linalg::GenericOp> interchanged =
+        linalg::interchangeGenericOp(rewriter, merge, permutation);
+    if (failed(interchanged))
+      return merge->emitOpError(
+          "could not put the host-side merge's reduction innermost");
+    merge = *interchanged;
+  }
+
+  if (Operation *init = merge.getDpsInits()[0].getDefiningOp())
+    if (init->getBlock() == merge->getBlock() && init->isBeforeInBlock(merge) &&
+        llvm::hasSingleElement(init->getUsers()))
+      rewriter.moveOpBefore(init, merge);
+
+  return success();
+}
+
 /// Spread across the workgroup every reduction dimension whose block size asks
 /// for it, by rewriting the op into a partial-reduction op plus a host-side
 /// merge (design §G4).
@@ -299,6 +347,9 @@ splitDistributedReductions(RewriterBase &rewriter, linalg::LinalgOp op,
              << *target
              << ": its combiner was not recognised as one with a neutral "
                 "element";
+
+    if (failed(shapeHostMerge(rewriter, *split)))
+      return failure();
 
     // The rewritten iteration space is [split dim] ++ [parallel dims] ++
     // [reduction dims], with the split dimension holding one tile per leaf and
