@@ -478,17 +478,27 @@ void upmem::LocalTransferOp::getCanonicalizationPatterns(
 
 namespace {
 
-template <class Op, int NUM_DIMS>
+// A transfer map is evaluated over the DPU index alone, or, for the block
+// forms, over (dpu, block). Those extents are what may be assumed while
+// simplifying it. The block extent is `numBlocksPerDpu`, which is a property
+// of the transfer and not of the hierarchy: one tasklet's data may arrive as
+// several blocks, so the tasklet count would be both wrong and, being
+// smaller, wrong in the direction that silently discards the high bits of the
+// block index.
+template <class Op, bool HasBlockDim>
 class SimplifyScatterMap : public OpRewritePattern<Op> {
   using OpRewritePattern<Op>::OpRewritePattern;
 
   LogicalResult matchAndRewrite(Op op,
                                 PatternRewriter &rewriter) const override {
-    auto map = op.getScatterMap();
-    auto shape = op.getHierarchy().getType().getWgShape();
-    auto simplified = simplifyAffineMapWithBounds(
+    AffineMap map = op.getScatterMap();
+    SmallVector<int64_t> domain{op.getHierarchy().getType().getNumDpus()};
+    if constexpr (HasBlockDim)
+      domain.push_back(op.getNumBlocksPerDpu());
+    if (map.getNumDims() != domain.size())
+      return failure();
 
-        map, ArrayRef<int64_t>(shape).drop_back(3 - NUM_DIMS));
+    AffineMap simplified = simplifyAffineMapWithBounds(map, domain);
     if (simplified == map)
       return failure();
 
@@ -500,17 +510,17 @@ class SimplifyScatterMap : public OpRewritePattern<Op> {
 
 void upmem::ScatterBlocksOp::getCanonicalizationPatterns(
     ::mlir::RewritePatternSet &results, ::mlir::MLIRContext *context) {
-  results.insert<SimplifyScatterMap<ScatterBlocksOp, 3>>(context);
+  results.insert<SimplifyScatterMap<ScatterBlocksOp, true>>(context);
 }
 void upmem::ScatterOnArrayOp::getCanonicalizationPatterns(
     ::mlir::RewritePatternSet &results, ::mlir::MLIRContext *context) {
-  results.insert<SimplifyScatterMap<ScatterOnArrayOp, 2>>(context);
+  results.insert<SimplifyScatterMap<ScatterOnArrayOp, false>>(context);
 }
 void upmem::GatherBlocksOp::getCanonicalizationPatterns(
     ::mlir::RewritePatternSet &results, ::mlir::MLIRContext *context) {
-  results.insert<SimplifyScatterMap<GatherBlocksOp, 3>>(context);
+  results.insert<SimplifyScatterMap<GatherBlocksOp, true>>(context);
 }
 void upmem::GatherFromArrayOp::getCanonicalizationPatterns(
     ::mlir::RewritePatternSet &results, ::mlir::MLIRContext *context) {
-  results.insert<SimplifyScatterMap<GatherFromArrayOp, 2>>(context);
+  results.insert<SimplifyScatterMap<GatherFromArrayOp, false>>(context);
 }

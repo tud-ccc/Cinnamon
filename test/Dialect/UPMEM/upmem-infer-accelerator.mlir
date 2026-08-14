@@ -15,13 +15,13 @@ func.func @gemv(%A: tensor<256x256xi32>, %x: tensor<256xi32>) -> tensor<256xi32>
   // The chosen accelerator is committed on the compute block.
   // CHECK: cinm.compute_block on accelerator #upmem.array<16x4
 
-  // Host side. Which *form* the result transfer takes -- one block per leaf or
-  // a single array -- follows from the tiling the search happened to pick, so
-  // it is not pinned here: doing so would make this a test of where the search
+  // Host side. Which *form* a transfer takes -- several blocks per DPU or a
+  // single array -- follows from the tiling the search happened to pick, so it
+  // is not pinned here: doing so would make this a test of where the search
   // lands, which the note above says it deliberately is not.
   // CHECK: upmem.alloc_dpus
   // CHECK: upmem.load_program
-  // CHECK: upmem.scatter_on_array
+  // CHECK: upmem.scatter_{{on_array|blocks}}
   // CHECK: upmem.gather_{{from_array|blocks}}
 
   // Device side. The MRAM/WRAM split is reached through cnm and

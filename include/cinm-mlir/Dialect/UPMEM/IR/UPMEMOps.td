@@ -228,11 +228,11 @@ class ScatterGatherLike<string mnemonic, string kw, MemoryEffect effect, MemoryE
 
     `transferCount` is the number of elements (not bytes) to copy per DPU.
 
-    `scatterMap` is an affine map `(rank, dpu) -> (i, ...)` that computes the
-    starting index in `hostBuffer` for each DPU. It must have exactly two
-    dimensions (rank and dpu) and as many results as the rank of `hostBuffer`.
-    The verifier checks that the block starting there stays inside one
-    contiguous run of `hostBuffer`.
+    `scatterMap` is an affine map `(dpu) -> (i, ...)` that computes the
+    starting index in `hostBuffer` for each DPU. It must have exactly one
+    dimension and as many results as the rank of `hostBuffer`. The verifier
+    checks that the block starting there stays inside one contiguous run of
+    `hostBuffer`.
   }];
 
   let extraClassDeclaration = [{
@@ -275,9 +275,9 @@ def ScatterOnArrayOp: ScatterGatherLike<"scatter_on_array", "onto", MemRead, Mem
 
     ```mlir
     // scatter 1024 elements into @input_buf on each DPU;
-    // DPU (r, d) reads from hostBuf[d, 0]
-    upmem.scatter_on_array %hostBuf[1024 elts, affine_map<(r, d) -> (d, 0)>] onto @input_buf of %dpus
-        : memref<128x1024xi32> onto !upmem.hierarchy<1x128x16>
+    // DPU d reads from hostBuf[d, 0]
+    upmem.scatter_on_array %hostBuf[1024 elts, affine_map<(d) -> (d, 0)>] onto @input_buf of %dpus
+        : memref<128x1024xi32> onto !upmem.hierarchy<128x16>
     ```
   }];
 
@@ -296,8 +296,8 @@ def GatherFromArrayOp: ScatterGatherLike<"gather_from_array", "from", MemWrite, 
 
     ```mlir
     // gather 128 result elements per DPU back into hostBuf[d, 0]
-    upmem.gather_from_array %hostBuf[128 elts, affine_map<(r, d) -> (d, 0)>] from @output_buf of %dpus
-        : memref<128x128xi32> from !upmem.hierarchy<1x128x16>
+    upmem.gather_from_array %hostBuf[128 elts, affine_map<(d) -> (d, 0)>] from @output_buf of %dpus
+        : memref<128x128xi32> from !upmem.hierarchy<128x16>
     ```
   }];
 
@@ -320,9 +320,9 @@ class BlockTransferLike<string mnemonic, string kw, MemoryEffect effect, MemoryE
     and is the same for every block. Each block must be contiguous in
     `hostBuffer`, but different blocks need not be contiguous with one another.
 
-    `scatterMap` is an affine map `(rank, dpu, block) -> (i, ...)` that
-    computes the starting index in `hostBuffer` of one block. It must have
-    exactly three dimensions and as many results as the rank of `hostBuffer`.
+    `scatterMap` is an affine map `(dpu, block) -> (i, ...)` that computes the
+    starting index in `hostBuffer` of one block. It must have exactly two
+    dimensions and as many results as the rank of `hostBuffer`.
 
     `numBlocksPerDpu` gives the number of blocks transferred per DPU, i.e. the
     extent of the `block` dimension. This is independent of the number of
@@ -367,10 +367,10 @@ def ScatterBlocksOp: BlockTransferLike<"scatter_blocks", "onto", MemRead, MemWri
     another.
 
     ```mlir
-    // scatter 8-element blocks into @input_buf on each DPU; DPU (r, d)'s
+    // scatter 8-element blocks into @input_buf on each DPU; DPU d's
     // block b is read from hostBuf[d, b, 0]
-    upmem.scatter_blocks %hostBuf[8 elts, affine_map<(r, d, b) -> (d, b, 0)>, 4 blocks] onto @input_buf of %dpus
-        : memref<1x4x8xi32> onto !upmem.hierarchy<1x4x4>
+    upmem.scatter_blocks %hostBuf[8 elts, affine_map<(d, b) -> (d, b, 0)>, 4 blocks] onto @input_buf of %dpus
+        : memref<4x4x8xi32> onto !upmem.hierarchy<4x4>
     ```
   }];
 }
@@ -383,10 +383,10 @@ def GatherBlocksOp: BlockTransferLike<"gather_blocks", "from", MemWrite, MemRead
     in `hostBuffer` that are not contiguous with one another.
 
     ```mlir
-    // gather 8-element blocks from @output_buf on each DPU; DPU (r, d)'s
+    // gather 8-element blocks from @output_buf on each DPU; DPU d's
     // block b is written to hostBuf[d, b, 0]
-    upmem.gather_blocks %hostBuf[8 elts, affine_map<(r, d, b) -> (d, b, 0)>, 4 blocks] from @output_buf of %dpus
-        : memref<1x4x8xi32> from !upmem.hierarchy<1x4x4>
+    upmem.gather_blocks %hostBuf[8 elts, affine_map<(d, b) -> (d, b, 0)>, 4 blocks] from @output_buf of %dpus
+        : memref<4x4x8xi32> from !upmem.hierarchy<4x4>
     ```
   }];
 }
@@ -415,7 +415,7 @@ def BroadcastOp: Upmem_Op<"broadcast", [
     ```mlir
     // broadcast 1024 elements into @input_buf on every DPU
     upmem.broadcast %hostBuf onto @input_buf of %dpus
-        : memref<1024xi32> onto !upmem.hierarchy<1x128x16>
+        : memref<1024xi32> onto !upmem.hierarchy<128x16>
     ```
   }];
 
@@ -555,7 +555,7 @@ def FreeDPUsOp: Upmem_Op <"free_dpus", [MemoryEffects<[MemFree<DpuResource>]>]>{
     After this point the hierarchy value must not be used.
 
     ```mlir
-    upmem.free_dpus %dpus : !upmem.hierarchy<1x64x16>
+    upmem.free_dpus %dpus : !upmem.hierarchy<64x16>
     ```
   }];
   let arguments = (ins DeviceHierarchyType:$hierarchy);
@@ -574,7 +574,7 @@ def WaitForOp : Upmem_Op<"wait_for", [MemoryEffects<[MemRead<DpuResource>, MemWr
     After this op, the results can be retrieved with `upmem.gather_from_array`.
 
     ```mlir
-    upmem.wait_for %dpus : !upmem.hierarchy<1x64x16>
+    upmem.wait_for %dpus : !upmem.hierarchy<64x16>
     ```
   }];
 
