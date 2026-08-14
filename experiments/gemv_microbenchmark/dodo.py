@@ -31,6 +31,7 @@ sys.path.insert(0, str(EXPERIMENTS_DIR))
 from doit.tools import check_timestamp_unchanged
 from doit.reporter import ProgressBarReporter  # noqa: E402
 from cinm_experiments import compile_run, cinmopt, measurements  # noqa: E402
+from cinm_experiments.split_source import list_functions, split_source  # noqa: E402
 from cinm_experiments.paths import DEFAULT_CINM_OPT
 
 DOIT_CONFIG = {
@@ -42,9 +43,13 @@ DOIT_CONFIG = {
 DATA_ROOT = HERE / "data"
 ITERS = 10
 
-# mtv 64MB: 4096x4096
-
-source = "/home/clement.fournier/Work/cinm-mlir/experiments/cinm1comparison/data/prim_mtv/_split/mtv_64MB.mlir"
+# mtv 64MB: 4096x4096, split out of the shared prim source rather than read
+# from another experiment's data directory. That source is what carries
+# `{cinm.static}` on %A, without which the weight transfer and any repack of
+# it are charged to every inference instead of amortizing.
+SOURCE = EXPERIMENTS_DIR / "prim_mtv.mlir"
+SPLIT_DIR = DATA_ROOT / "_split"
+source = SPLIT_DIR / "mtv_64MB.mlir"
 CONFIGS = [
     # compile_run.Config(
     # system="cinm2",
@@ -87,8 +92,8 @@ CONFIGS = [
             "gemv.K.mram": 512,  # mramCol / taskletCols
             "gemv.M.wram": 8,  # wramRow
             "gemv.K.wram": 64,  # wramCol
-            "gemv.order[0]": 2,
-            "gemv.order[1]": 1,
+            "gemv.order[0]": 1,
+            "gemv.order[1]": 2,
         },
         fn_module=source,
         prim="mtv",
@@ -122,7 +127,7 @@ CONFIGS = [
         fn_module=source,
         prim="mtv",
         lower=cinmopt.eval_solution_lowerer(
-            extra_infer_opts={"simulator": "cycle-accurate"}
+            extra_infer_opts={"simulator": "cycle-accurate", "debug-pipeline": "true"}
         ),
     ),
     # compile_run.Config(
@@ -172,6 +177,26 @@ CONFIGS = [
     #     lower=cinm1.lowerer(use_upmem_scatter_api=True),
     # ),
 ]
+
+
+def _split_one() -> bool:
+    split_source(
+        SOURCE, SPLIT_DIR
+    )  # dict return value isn't JSON-picklable for doit's DB
+    return True
+
+
+def task_split():
+    """Split the prim source into one module per function.
+
+    Only mtv_64MB is compiled here, but the split writes every function the
+    source holds: which ones exist is the source's business, and listing them
+    up front is what lets task_compile depend on this by file."""
+    return {
+        "file_dep": [SOURCE],
+        "targets": [SPLIT_DIR / f"{fn}.mlir" for fn in list_functions(SOURCE)],
+        "actions": [_split_one],
+    }
 
 
 def _config_dir(root: pathlib.Path, config: compile_run.Config) -> pathlib.Path:

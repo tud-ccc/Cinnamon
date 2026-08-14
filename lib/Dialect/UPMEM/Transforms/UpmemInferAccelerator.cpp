@@ -117,7 +117,7 @@ static void addAffineOpts(OpPassManager &pm) {
   pm.addPass(affine::createRaiseMemrefToAffine());
   pm.addPass(createCanonicalizerPass());
   pm.addPass(affine::createAffineExpandIndexOpsAsAffinePass());
-  // pm.addPass(affine::createLoopFusionPass());
+  pm.addPass(affine::createLoopFusionPass());
   pm.addPass(createSROA());
   pm.addPass(createCanonicalizerPass());
   pm.addPass(affine::createRaiseMemrefToAffine());
@@ -585,6 +585,8 @@ struct UpmemInferencePlugin : cinm::InferencePlugin {
     pm->addPass(createCSEPass());
     if (debug)
       pm->addPass(createPrintIRPass({.label = "after-tile-mram-buffers"}));
+    pm->addPass(createLinalgGeneralizeNamedOpsPass());
+    pm->addPass(createLinalgElementwiseOpFusionPass());
     pm->addPass(createConvertLinalgToAffineLoopsPass());
     // Keep the reduction accumulator in a register. Straight out of linalg the
     // innermost loop reloads and restores the output element on every

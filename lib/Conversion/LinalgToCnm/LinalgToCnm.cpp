@@ -268,10 +268,12 @@ static LogicalResult shapeHostMerge(RewriterBase &rewriter,
     merge = *interchanged;
   }
 
-  if (Operation *init = merge.getDpsInits()[0].getDefiningOp())
+  auto *initOpnd = merge.getDpsInitOperand(0);
+  if (Operation *init = initOpnd->get().getDefiningOp()) {
     if (init->getBlock() == merge->getBlock() && init->isBeforeInBlock(merge) &&
         llvm::hasSingleElement(init->getUsers()))
       rewriter.moveOpBefore(init, merge);
+  }
 
   return success();
 }
