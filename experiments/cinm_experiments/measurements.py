@@ -30,7 +30,10 @@ def _output_dir(obj: Union[pathlib.Path, RunResult]) -> pathlib.Path:
 
 
 def net_time_ms(
-    output_dir: Union[pathlib.Path, RunResult], *, discount_load: bool = True
+    output_dir: Union[pathlib.Path, RunResult],
+    *,
+    discount_load: bool = True,
+    discount_static_compact: bool = True,
 ) -> float | None:
     """Mean net time in ms over all iterations recorded in output_dir, or
     None if no total.csv-type file is present.
@@ -42,11 +45,18 @@ def net_time_ms(
     it here keeps old and new runs comparable. Pass discount_load=False for
     the whole-program (RQ4) analysis, where a load recurring per inference
     is exactly the cost being measured (the per-transfer amortizability
-    rule: discounted only if once per workload lifetime)."""
+    rule: discounted only if once per workload lifetime).
+
+    Repacks (cnm.compact_buffer, compact.csv) follow the same rule, which is
+    why the runtime records them with a `kind`: a repack of a `cinm.static`
+    operand happens once per workload lifetime and is subtracted, while one on
+    a per-inference operand is a real recurring cost and is not. Pass
+    discount_static_compact=False to price the un-amortized case."""
     total_df = None
     alloc_ns = pd.Series(dtype=float)
     free_ns = pd.Series(dtype=float)
     load_ns = pd.Series(dtype=float)
+    static_compact_ns = pd.Series(dtype=float)
 
     for csv_path in _output_dir(output_dir).glob("*.csv"):
         t = _csv_type(csv_path)
@@ -60,6 +70,9 @@ def net_time_ms(
             free_ns = df.groupby("iteration")["elapsed_ns"].sum()
         elif t == "load" and discount_load:
             load_ns = df.groupby("iteration")["elapsed_ns"].sum()
+        elif t == "compact" and discount_static_compact and "kind" in df.columns:
+            static = df[df["kind"] == "static"]
+            static_compact_ns = static.groupby("iteration")["elapsed_ns"].sum()
 
     if total_df is None or total_df.empty:
         return None
@@ -69,6 +82,7 @@ def net_time_ms(
         - total_df["iteration"].map(alloc_ns).fillna(0)
         - total_df["iteration"].map(free_ns).fillna(0)
         - total_df["iteration"].map(load_ns).fillna(0)
+        - total_df["iteration"].map(static_compact_ns).fillna(0)
     )
     return float(net.mean()) / 1e6
 
@@ -114,6 +128,14 @@ def copy_time_ms(output_dir: Union[pathlib.Path, RunResult]) -> float | None:
     strided repack copies feeding upmem.scatter buffers), or None if no
     copy.csv-type file is present."""
     return _sum_time_ms(output_dir, "copy")
+
+
+def compact_time_ms(output_dir: Union[pathlib.Path, RunResult]) -> float | None:
+    """Mean total cnm.compact_buffer repack time in ms per iteration, both
+    kinds together, or None if no compact.csv-type file is present. Use
+    net_breakdown_ms(by_kind=True) to see the amortizable and per-inference
+    repacks apart."""
+    return _sum_time_ms(output_dir, "compact")
 
 
 def load_time_ms(output_dir: Union[pathlib.Path, RunResult]) -> float | None:
@@ -168,6 +190,9 @@ _NET_BREAKDOWN_CATEGORIES = [
     "gather:array",
     "gather:blocks",
     "copy",
+    "compact",  # flat form, when the run predates the compact `kind` column
+    "compact:static",  # amortizable; discounted from net unless asked otherwise
+    "compact:dyn",  # paid per inference, so never discounted
     "launch",
     "load",  # only present with count_load=True (RQ4's undiscounted view)
     "unaccounted",
@@ -194,6 +219,9 @@ _COLOR_ORDER = [
     "gather:array",
     "gather:blocks",
     "load",
+    "compact",
+    "compact:static",
+    "compact:dyn",
 ]
 
 
@@ -219,6 +247,7 @@ def net_breakdown_ms(
     output_dir: Union[pathlib.Path, RunResult],
     by_kind: bool = False,
     count_load: bool = False,
+    discount_static_compact: bool = True,
 ) -> dict[str, float] | None:
     """Split net_time_ms (total - alloc - free - load) into scatter/gather/
     copy/launch time plus whatever's left over as "unaccounted" -- host-side
@@ -240,7 +269,11 @@ def net_breakdown_ms(
     appears as its own "load" bucket -- the whole-program (RQ4) view, where
     a load recurring per inference is exactly the cost under study.
     """
-    net = net_time_ms(output_dir, discount_load=not count_load)
+    net = net_time_ms(
+        output_dir,
+        discount_load=not count_load,
+        discount_static_compact=discount_static_compact,
+    )
     if net is None:
         return None
     scatter = scatter_time_ms(output_dir) or 0.0
@@ -249,6 +282,19 @@ def net_breakdown_ms(
     launch = launch_time_ms(output_dir) or 0.0
     load = (load_time_ms(output_dir) or 0.0) if count_load else 0.0
     extra = {"load": load} if count_load else {}
+
+    # Only the repacks net_time_ms left in are shown, so the buckets keep
+    # summing to net: with the default discount that is the per-inference ones,
+    # and the amortizable ones are already out of the total.
+    compacts = _sum_time_ms_by_kind(output_dir, "compact")
+    if not compacts:
+        flat = compact_time_ms(output_dir)
+        compacts = {"": flat} if flat else {}
+    if discount_static_compact:
+        compacts.pop("static", None)
+    compact_buckets = {
+        (f"compact:{kind}" if kind else "compact"): t for kind, t in compacts.items()
+    }
 
     transfers = {"scatter": scatter, "gather": gather}
     if by_kind:
@@ -262,10 +308,18 @@ def net_breakdown_ms(
                 del transfers[direction]
                 transfers.update({f"{direction}:{k}": t for k, t in by_k.items()})
 
-    unaccounted = net - sum(transfers.values()) - copy - launch - load
+    unaccounted = (
+        net
+        - sum(transfers.values())
+        - sum(compact_buckets.values())
+        - copy
+        - launch
+        - load
+    )
     return {
         **transfers,
         "copy": copy,
+        **compact_buckets,
         "launch": launch,
         **extra,
         "unaccounted": unaccounted,

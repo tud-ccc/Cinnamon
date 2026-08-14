@@ -6,31 +6,35 @@
 #include <cstring>
 #include <mlir/ExecutionEngine/CRunnerUtils.h>
 
-extern "C" void memrefCopy(int64_t elemSize, UnrankedMemRefType<char> *srcArg,
-                           UnrankedMemRefType<char> *dstArg) {
-  DynamicMemRefType<char> src(*srcArg);
-  DynamicMemRefType<char> dst(*dstArg);
+/// Copies `srcArg` into `dstArg`, both possibly strided, and reports the
+/// number of bytes moved through `bytesMoved`.
+///
+/// Shared by memrefCopy and upmemrt_compact: a repack is the same data
+/// movement as any other strided copy and differs only in what it is
+/// attributed to, so the two entry points wrap this rather than each carrying
+/// their own copy loop.
+static void copyStrided(int64_t elemSize, int64_t rank, const int64_t *sizes,
+                        const char *srcBase, const int64_t *srcStridesIn,
+                        char *dstBase, const int64_t *dstStridesIn,
+                        size_t *bytesMoved) {
+  struct {
+    const int64_t *sizes, *strides;
+  } src{sizes, srcStridesIn}, dst{sizes, dstStridesIn};
 
-  int64_t rank = src.rank;
-
-#ifdef UPMEM_RT_STATS
-  uint64_t t0 = upmemrt_now_ns();
   int64_t numElements = 1;
   for (int64_t rankp = 0; rankp < rank; ++rankp)
-    numElements *= src.sizes[rankp];
-#endif
+    numElements *= sizes[rankp];
+  *bytesMoved = 0;
 
   // Handle empty shapes -> nothing to copy.
   for (int rankp = 0; rankp < rank; ++rankp)
-    if (src.sizes[rankp] == 0) {
-#ifdef UPMEM_RT_STATS
-      upmemrt_record_copy(upmemrt_now_ns() - t0, 0);
-#endif
+    if (sizes[rankp] == 0)
       return;
-    }
 
-  char *srcPtr = src.data + src.offset * elemSize;
-  char *dstPtr = dst.data + dst.offset * elemSize;
+  *bytesMoved = (size_t)(numElements * elemSize);
+
+  const char *srcPtr = srcBase;
+  char *dstPtr = dstBase;
 
   // Merge the maximal run of innermost axes that are contiguous in both src
   // and dst into a single bulk memcpy, instead of copying elemSize bytes at
@@ -50,9 +54,6 @@ extern "C" void memrefCopy(int64_t elemSize, UnrankedMemRefType<char> *srcArg,
     // The whole operand is one contiguous run (this also covers rank == 0,
     // where the loop above never executes and chunkElems stays 1).
     memcpy(dstPtr, srcPtr, chunkBytes);
-#ifdef UPMEM_RT_STATS
-    upmemrt_record_copy(upmemrt_now_ns() - t0, numElements * elemSize);
-#endif
     return;
   }
 
@@ -85,12 +86,8 @@ extern "C" void memrefCopy(int64_t elemSize, UnrankedMemRefType<char> *srcArg,
       if (src.sizes[axis] != newIndex)
         break;
       // We reached the end of this axis. If this is axis 0, we are done.
-      if (axis == 0) {
-#ifdef UPMEM_RT_STATS
-        upmemrt_record_copy(upmemrt_now_ns() - t0, numElements * elemSize);
-#endif
+      if (axis == 0)
         return;
-      }
       // Else, reset to 0 and undo the advancement of the linear index that
       // this axis had. Then continue with the axis one outer.
       indices[axis] = 0;
@@ -98,4 +95,54 @@ extern "C" void memrefCopy(int64_t elemSize, UnrankedMemRefType<char> *srcArg,
       writeIndex -= dst.sizes[axis] * dstStrides[axis];
     }
   }
+}
+
+extern "C" void memrefCopy(int64_t elemSize, UnrankedMemRefType<char> *srcArg,
+                           UnrankedMemRefType<char> *dstArg) {
+#ifdef UPMEM_RT_STATS
+  uint64_t t0 = upmemrt_now_ns();
+#endif
+  DynamicMemRefType<char> src(*srcArg);
+  DynamicMemRefType<char> dst(*dstArg);
+  size_t bytes = 0;
+  copyStrided(elemSize, src.rank, src.sizes, src.data + src.offset * elemSize,
+              src.strides, dst.data + dst.offset * elemSize, dst.strides,
+              &bytes);
+#ifdef UPMEM_RT_STATS
+  upmemrt_record_copy(upmemrt_now_ns() - t0, bytes);
+#endif
+}
+
+/// A cnm.compact_buffer repack: the same copy as memrefCopy, timed into its
+/// own row so it is attributable to the layout decision that required it, and
+/// separated by `isStatic` because only a repack of data that is identical on
+/// every inference amortizes over the serving lifetime.
+///
+/// Going through a named entry point rather than memref.copy is deliberate:
+/// MemRefToLLVM lowers a copy between two contiguous memrefs to
+/// llvm.intr.memcpy, so a tidy repack would otherwise never be measured at
+/// all.
+extern "C" void upmemrt_compact(void *dst, const void *src, int64_t rank,
+                                const int64_t *sizes, const int64_t *srcStrides,
+                                int64_t elemSize, int32_t isStatic) {
+#ifdef UPMEM_RT_STATS
+  uint64_t t0 = upmemrt_now_ns();
+#endif
+  // The target is contiguous by the op's definition, so its strides are the
+  // packed ones and need not be passed.
+  int64_t dstStrides[16];
+  int64_t packed = 1;
+  for (int64_t i = rank - 1; i >= 0; --i) {
+    dstStrides[i] = packed;
+    packed *= sizes[i];
+  }
+  size_t bytes = 0;
+  copyStrided(elemSize, rank, sizes, (const char *)src, srcStrides, (char *)dst,
+              dstStrides, &bytes);
+#ifdef UPMEM_RT_STATS
+  upmemrt_record_compact(upmemrt_now_ns() - t0, bytes,
+                         isStatic ? "static" : "dyn");
+#else
+  (void)isStatic;
+#endif
 }
