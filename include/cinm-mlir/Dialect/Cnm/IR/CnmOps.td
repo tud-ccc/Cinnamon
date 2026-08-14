@@ -349,6 +349,16 @@ def CompactBufferOp: Cnm_Op<"compact_buffer"> {
     let results = (outs);
 
     let hasVerifier = 1;
+    // Folds a repack of a repack into one. Chains arise when an operand needs
+    // packing for more than one reason -- a strided host layout and a leaf
+    // ordering, say -- each decided by a different pass with no view of the
+    // other.
+    let hasCanonicalizer = 1;
+    // Absorbs memref.cast on either operand, so a repack keeps the most static
+    // type available -- the backend sizes the copy from it, and the verifier
+    // needs a provably contiguous target. Same rule memref.copy and
+    // cnm.local_transfer use.
+    let hasFolder = 1;
     let assemblyFormat = [{
         $source `into` $target `[` $map `]` attr-dict
             `:` type($source) `into` type($target)

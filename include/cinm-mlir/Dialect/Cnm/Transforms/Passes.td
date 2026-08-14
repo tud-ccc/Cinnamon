@@ -118,6 +118,16 @@ def CnmEnsureScatterGatherContiguousPass : Pass<"cnm-ensure-scatter-gather-conti
     `static-only`.
   }];
   let options = [
+    Option<"packFragmented", "pack-fragmented", "bool", "false",
+           "Also pack an operand whose transfer is contiguous but arrives as "
+           "several blocks per leaf, so that it becomes one whole-buffer block "
+           "instead. The repack reorders the host value into workgroup x "
+           "buffer order, which is what makes a leaf's share a single run.\n\n"
+           "Whether that is worth it is a cost question: many small transfers "
+           "per leaf against one repack. It is unconditionally right for a "
+           "backend that has no several-blocks transfer at all -- CINM 1's "
+           "code generation had only the whole-array form -- which is what "
+           "this option reproduces.">,
     Option<"staticOnly", "static-only", "bool", "false",
            "Only pack operands whose data is the same on every inference "
            "(cinm.static), leaving the rest for the backend to transfer as "

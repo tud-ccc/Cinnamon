@@ -111,7 +111,7 @@ _STEP4 = [
 def _step5(use_upmem_scatter_api: bool):
     step = ["--lower-affine"]
     if not use_upmem_scatter_api:
-        step.append("--cnm-ensure-scatter-gather-contiguous")
+        step.append("--cnm-ensure-scatter-gather-contiguous=pack-fragmented")
     step.extend(
         ["--buffer-loop-hoisting", "--buffer-hoisting", "--canonicalize", "--cse"]
     )

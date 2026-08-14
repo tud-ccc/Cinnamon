@@ -58,6 +58,42 @@ bool isFullyContiguous(TypedValue<ShapedType> value) {
   return mlir::scatteredMemrefIsContiguous(value, memrefTy.getShape());
 }
 
+/// Reorders `op`'s host value into workgroup x buffer order, so that each
+/// leaf's share becomes one whole-buffer block instead of several.
+///
+/// The packed value's index space is exactly the scatter's own -- workgroup
+/// coordinates then buffer coordinates -- so the repack's map is the scatter
+/// map written out pointwise, and the scatter is left naming nothing but the
+/// leaf it addresses.
+void packIntoOneBlockPerLeaf(cnm::ScatterOp op, OpBuilder &b, bool isStatic) {
+  Location loc = op.getLoc();
+  auto hostTy = cast<MemRefType>(op.getInput().getType());
+  cnm::BufferType bufferTy = op.getBuffer().getType();
+
+  SmallVector<int64_t> packedShape = cnm::getScatterIndexSpace(bufferTy);
+  auto packedTy = MemRefType::get(packedShape, hostTy.getElementType());
+
+  b.setInsertionPoint(op);
+  Value packed = memref::AllocOp::create(b, loc, packedTy);
+  auto compact = cnm::CompactBufferOp::create(
+      b, loc, op.getInput(), packed,
+      cnm::inflateScatterMapToPointwise(op.getScatterMap(), bufferTy));
+  if (isStatic)
+    compact->setAttr(cinm::CinmDialect::STATIC_ATTR_NAME, b.getUnitAttr());
+
+  op.getInputMutable().assign(packed);
+  unsigned wgRank = bufferTy.getWorkgroupShape().size();
+  op.setScatterMap(AffineMap::getMultiDimIdentityMap(wgRank, b.getContext()));
+}
+
+/// Whether a leaf's share arrives as several blocks rather than one. Only
+/// meaningful once the block form has been derived: straight out of
+/// distribution the map is pointwise, which names every element its own block.
+bool isFragmented(cnm::ScatterOp op) {
+  return cnm::getScatterBlocksPerLeaf(op.getScatterMap(),
+                                      op.getBuffer().getType()) > 1;
+}
+
 void ensureScatterContiguous(cnm::ScatterOp op, OpBuilder &b, bool staticOnly) {
   auto input = op.getInput();
   if (!isa<MemRefType>(input.getType()) || isFullyContiguous(input))
@@ -259,6 +295,13 @@ struct CnmEnsureScatterGatherContiguousPass
       if (auto scatter = dyn_cast<cnm::ScatterOp>(op)) {
         ensureScatterContiguous(scatter, builder, staticOnly);
         deriveBlockForm(scatter, builder);
+        // Now that the widest block form is known, a transfer that still needs
+        // several blocks per leaf can be traded for one repack.
+        if (packFragmented && isFragmented(scatter) &&
+            isa<MemRefType>(scatter.getInput().getType()) &&
+            (!staticOnly || cinm::isStaticValue(scatter.getInput())))
+          packIntoOneBlockPerLeaf(scatter, builder,
+                                  cinm::isStaticValue(scatter.getInput()));
       } else if (auto gather = dyn_cast<cnm::GatherOp>(op)) {
         ensureGatherContiguous(gather, builder, staticOnly);
         deriveBlockForm(gather, builder);

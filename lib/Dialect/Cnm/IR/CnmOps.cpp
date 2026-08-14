@@ -334,6 +334,156 @@ LogicalResult CompactBufferOp::verify() {
   return success();
 }
 
+namespace {
+
+/// A view's result indices written in terms of its source's, for the
+/// reshaping views that only relabel a buffer without moving anything.
+///
+/// memref.reshape is included but is the restricted case: its shape is a
+/// runtime operand, so there is a map to derive only when both types are
+/// statically shaped. Its contract already requires identity layouts on both
+/// sides, which is what makes the relabel a plain row-major
+/// linearize/delinearize.
+FailureOr<AffineMap> viewIndexMap(Operation *op, MLIRContext *ctx) {
+  if (auto expand = dyn_cast<memref::ExpandShapeOp>(op)) {
+    MemRefType resultTy = expand.getType();
+    SmallVector<AffineExpr> results;
+    for (ReassociationIndices group : expand.getReassociationIndices()) {
+      SmallVector<AffineExpr> groupIndices;
+      SmallVector<int64_t> groupShape;
+      for (int64_t d : group) {
+        groupIndices.push_back(getAffineDimExpr(d, ctx));
+        groupShape.push_back(resultTy.getDimSize(d));
+      }
+      results.push_back(mlir::linearize(ctx, groupIndices, groupShape));
+    }
+    return AffineMap::get(resultTy.getRank(), 0, results, ctx);
+  }
+
+  if (auto collapse = dyn_cast<memref::CollapseShapeOp>(op)) {
+    MemRefType srcTy = collapse.getSrcType();
+    SmallVector<AffineExpr> results(srcTy.getRank());
+    for (auto [pos, group] :
+         llvm::enumerate(collapse.getReassociationIndices())) {
+      SmallVector<int64_t> groupShape;
+      for (int64_t d : group)
+        groupShape.push_back(srcTy.getDimSize(d));
+      SmallVector<AffineExpr> groupIndices =
+          mlir::delinearize(getAffineDimExpr(pos, ctx), groupShape);
+      for (auto [d, index] : llvm::zip_equal(group, groupIndices))
+        results[d] = index;
+    }
+    return AffineMap::get(collapse.getType().getRank(), 0, results, ctx);
+  }
+
+  if (auto reshape = dyn_cast<memref::ReshapeOp>(op)) {
+    auto srcTy = dyn_cast<MemRefType>(reshape.getSource().getType());
+    auto resultTy = dyn_cast<MemRefType>(reshape.getType());
+    if (!srcTy || !resultTy || !srcTy.hasStaticShape() ||
+        !resultTy.hasStaticShape())
+      return failure();
+    SmallVector<AffineExpr> resultIndices;
+    for (int64_t d = 0; d < resultTy.getRank(); ++d)
+      resultIndices.push_back(getAffineDimExpr(d, ctx));
+    AffineExpr flat = mlir::linearize(ctx, resultIndices, resultTy.getShape());
+    return AffineMap::get(resultTy.getRank(), 0,
+                          mlir::delinearize(flat, srcTy.getShape()), ctx);
+  }
+
+  return failure();
+}
+
+/// Absorbs a reshaping view of a repack's source into the repack's own map.
+///
+/// The view moves nothing, so reading through it is the same as reading the
+/// buffer underneath at relabelled indices -- which is exactly what the map is
+/// for. Doing it here rather than inside the chain fold below keeps that fold
+/// to the one thing it is about.
+struct AbsorbViewIntoCompact : public OpRewritePattern<CompactBufferOp> {
+  using OpRewritePattern<CompactBufferOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(CompactBufferOp op,
+                                PatternRewriter &rewriter) const override {
+    Operation *view = op.getSource().getDefiningOp();
+    if (!view ||
+        !isa<memref::ExpandShapeOp, memref::CollapseShapeOp, memref::ReshapeOp>(
+            view))
+      return failure();
+    FailureOr<AffineMap> viewMap = viewIndexMap(view, getContext());
+    if (failed(viewMap))
+      return failure();
+
+    rewriter.modifyOpInPlace(op, [&] {
+      op.getSourceMutable().assign(view->getOperand(0));
+      op.setMap(viewMap->compose(op.getMap()));
+    });
+    return success();
+  }
+};
+
+/// Collapses `a -> mid -> b` into `a -> b`.
+///
+/// The intermediate exists only to be read straight back, so the two repacks
+/// are one: composing the maps names, for each element of the final buffer,
+/// the element of the original it ultimately comes from.
+///
+/// Only fires when nothing else touches the intermediate, since a repack
+/// writes it and dropping the write would be visible to any other reader. The
+/// merged op inherits the *first* repack's `cinm.static`: it now reads that
+/// op's source, and the second could not have been tagged anyway -- its source
+/// was a fresh allocation, which is never a declared static value.
+struct FoldChainedCompacts : public OpRewritePattern<CompactBufferOp> {
+  using OpRewritePattern<CompactBufferOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(CompactBufferOp op,
+                                PatternRewriter &rewriter) const override {
+    Value mid = op.getSource();
+    CompactBufferOp producer;
+    for (Operation *user : mid.getUsers())
+      if (auto candidate = dyn_cast<CompactBufferOp>(user))
+        if (candidate != op && candidate.getTarget() == mid) {
+          producer = candidate;
+          break;
+        }
+    if (!producer)
+      return failure();
+
+    if (!llvm::all_of(mid.getUsers(), [&](Operation *user) {
+          return user == op || user == producer;
+        }))
+      return failure();
+    if (producer->getBlock() != op->getBlock() ||
+        !producer->isBeforeInBlock(op))
+      return failure();
+
+    rewriter.modifyOpInPlace(op, [&] {
+      op.getSourceMutable().assign(producer.getSource());
+      op.setMap(producer.getMap().compose(op.getMap()));
+      if (producer.isStatic())
+        op->setAttr(cinm::CinmDialect::STATIC_ATTR_NAME,
+                    rewriter.getUnitAttr());
+      else
+        op->removeAttr(cinm::CinmDialect::STATIC_ATTR_NAME);
+    });
+    rewriter.eraseOp(producer);
+    return success();
+  }
+};
+
+} // namespace
+
+LogicalResult CompactBufferOp::fold(FoldAdaptor,
+                                    SmallVectorImpl<OpFoldResult> &) {
+  // Folding only ever swaps an operand for a *more* static type, so a target
+  // that verified as contiguous stays contiguous.
+  return memref::foldMemRefCast(*this);
+}
+
+void CompactBufferOp::getCanonicalizationPatterns(RewritePatternSet &results,
+                                                  MLIRContext *context) {
+  results.add<AbsorbViewIntoCompact, FoldChainedCompacts>(context);
+}
+
 LogicalResult LocalTransferOp::fold(FoldAdaptor,
                                     SmallVectorImpl<OpFoldResult> &) {
   // Promotion hands us dynamically shaped views of statically shaped buffers;
