@@ -135,7 +135,10 @@ logs.
    - *ATiM*: their reproduction script, with their runtime module
      instrumented to time components under the same convention as ours;
      the same runs yield `tuning_wallclock_s`. E1's ATiM rows must be
-     traceable to the trace file the transcription used.
+     traceable to the trace file the transcription used. `atim_eval.py`
+     records the measurements and `build_interchange.py --install
+     <here>/offline` derives this file from them; regenerating it needs
+     no hardware.
      `excluded_transfer_*` is what their timing convention leaves out:
      the operands named by `pragma_explicit_h2d`, device transfer only
      (their runtime's copy into a padded host buffer is staging, and is
