@@ -93,7 +93,7 @@ CONFIGS = [
         fn_module=source,
         prim="mtv",
         lower=cinmopt.eval_solution_lowerer(
-            extra_infer_opts={"simulator": "cycle-accurate"}
+            extra_infer_opts={"simulator": "cycle-accurate", "debug-pipeline": "true"}
         ),
     ),
     compile_run.Config(
