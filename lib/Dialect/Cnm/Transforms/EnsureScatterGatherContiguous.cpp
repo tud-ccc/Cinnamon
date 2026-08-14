@@ -259,26 +259,46 @@ Value expandHost(OpBuilder &b, Location loc, Value host,
   return host;
 }
 
-template <class Op> void deriveBlockForm(Op op, OpBuilder &b) {
-  AffineMap map = op.getScatterMap();
-  auto bufferTy = op.getBuffer().getType();
+/// Reshapes the host value so that the widest block the map allows lines up
+/// with a dimension boundary.
+///
+/// The map itself is left alone. A block is one run of memory, so what block a
+/// transfer moves depends on the host layout as much as on the map -- it is a
+/// derivation, and each backend makes it for itself (cnm::deflateScatterMap).
+/// Recording it on the op as a shorthand map would be a second description of
+/// the same transfer, which then has to be kept in agreement with the first.
+/// What is *not* derivable is this reshape: it is a real change to the IR, and
+/// making it here keeps it out of every backend that moves blocks.
+template <class Op> void alignHostToBlocks(Op op, OpBuilder &b) {
   Value host = op.getHostValue();
-  int64_t before = cnm::getNumImplicitHostDims(map, bufferTy);
-  BlockForm form = computeBlockForm(map, bufferTy, op.getHostType());
-  if (form.implicit == before)
-    return;
   // Splitting rewrites the value, which only works once it is a memref.
-  if (!form.splits.empty() && !isa<MemRefType>(host.getType()))
+  if (!isa<MemRefType>(host.getType()))
+    return;
+  BlockForm form = computeBlockForm(op.getScatterMap(),
+                                    op.getBuffer().getType(), op.getHostType());
+  if (form.splits.empty())
     return;
 
-  if (!form.splits.empty()) {
-    b.setInsertionPoint(op);
-    Value expanded = expandHost(b, op.getLoc(), host, form.splits);
-    op.getHostValueMutable().assign(expanded);
+  b.setInsertionPoint(op);
+  Value expanded = expandHost(b, op.getLoc(), host, form.splits);
+  op.getHostValueMutable().assign(expanded);
+
+  // The map indexed the host before the split and has to keep naming one index
+  // per host dimension. Splitting dimension p into (outer, inner) splits its
+  // index the same way, which follows from the reshape alone -- no need to
+  // reuse how the block form arrived at the split. Positions decrease along
+  // `splits`, so an insertion never moves one still to come.
+  AffineMap map = op.getScatterMap();
+  SmallVector<AffineExpr> results(map.getResults());
+  for (auto [position, inner] : form.splits) {
+    AffineExpr index = results[position];
+    results[position] = index.floorDiv(inner);
+    results.insert(results.begin() + position + 1, index % inner);
   }
-  op.setScatterMap(AffineMap::get(map.getNumDims() - form.implicit,
-                                  map.getNumSymbols(), form.results,
-                                  map.getContext()));
+  op.setScatterMap(simplifyAffineMapWithBounds(
+      AffineMap::get(map.getNumDims(), map.getNumSymbols(), results,
+                     map.getContext()),
+      cnm::getScatterMapDomain(map, op.getBuffer().getType())));
 }
 
 } // namespace
@@ -294,9 +314,9 @@ struct CnmEnsureScatterGatherContiguousPass
     getOperation()->walk([&](Operation *op) {
       if (auto scatter = dyn_cast<cnm::ScatterOp>(op)) {
         ensureScatterContiguous(scatter, builder, staticOnly);
-        deriveBlockForm(scatter, builder);
-        // Now that the widest block form is known, a transfer that still needs
-        // several blocks per leaf can be traded for one repack.
+        alignHostToBlocks(scatter, builder);
+        // Now that the widest block form is reachable, a transfer that still
+        // needs several blocks per leaf can be traded for one repack.
         if (packFragmented && isFragmented(scatter) &&
             isa<MemRefType>(scatter.getInput().getType()) &&
             (!staticOnly || cinm::isStaticValue(scatter.getInput())))
@@ -304,7 +324,7 @@ struct CnmEnsureScatterGatherContiguousPass
                                   cinm::isStaticValue(scatter.getInput()));
       } else if (auto gather = dyn_cast<cnm::GatherOp>(op)) {
         ensureGatherContiguous(gather, builder, staticOnly);
-        deriveBlockForm(gather, builder);
+        alignHostToBlocks(gather, builder);
       }
     });
   }
