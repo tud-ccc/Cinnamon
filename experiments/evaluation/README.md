@@ -128,13 +128,18 @@ logs.
 1. **`offline/{atim,prim,cpu}.csv`** — measured baseline rows in the
    interchange schema (`assemble.INTERCHANGE_COLUMNS`): `benchmark,
    fn_name, system, config_label, total_ms, scatter_ms, kernel_ms,
-   gather_ms, load_ms, tuning_wallclock_s, notes`; component columns
-   nullable, one row per measured point. Nothing else in the pipeline
-   knows how these were obtained. Provenance requirements:
+   gather_ms, load_ms, excluded_transfer_ms, excluded_transfer_bytes,
+   tuning_wallclock_s, notes`; component columns nullable, one row per
+   measured point. Nothing else in the pipeline knows how these were
+   obtained. Provenance requirements:
    - *ATiM*: their reproduction script, with their runtime module
      instrumented to time components under the same convention as ours;
      the same runs yield `tuning_wallclock_s`. E1's ATiM rows must be
      traceable to the trace file the transcription used.
+     `excluded_transfer_*` is what their timing convention leaves out:
+     the operands named by `pragma_explicit_h2d`, device transfer only
+     (their runtime's copy into a padded host buffer is staging, and is
+     excluded on both sides — see `notes` for which operands).
    - *PrIM*: the hand-optimized kernels, timed under the same
      convention.
    - *CPU*: TVM-autotuned CPU baselines (the context bar is itself
