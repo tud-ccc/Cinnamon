@@ -641,6 +641,20 @@ struct UpmemInferencePlugin : cinm::InferencePlugin {
     // passes above still see affine loops.
     {
       auto &dpuPm = pm->nest<ModuleOp>().nest<DpuProgramOp>();
+      // The DPU compiler unrolls nothing by itself, so a short innermost loop
+      // pays a counter increment, a branch and an address computation per
+      // operand on every iteration -- about half the instructions of a
+      // multiply-accumulate body. Unrolling here rather than asking the DPU
+      // compiler for it keeps the cost model reading the code that runs.
+      //
+      // `unrollUpToFactor` is what makes the factor a *bound*: it unrolls by
+      // min(trip count, factor), so a loop shorter than 64 comes out fully
+      // unrolled instead of untouched -- plain `unroll-factor=64` fails
+      // outright on anything shorter (loopUnrollByFactor bails when the trip
+      // count is below the factor). Only innermost loops are considered, and
+      // only once, so an outer loop is never unrolled around a body this has
+      dpuPm.addPass(affine::createLoopUnrollPass(/*unrollFactor=*/129,
+                                                 /*unrollUpToFactor=*/true));
       addAffineOpts(dpuPm);
       dpuPm.addPass(createLowerAffinePass());
     }

@@ -41,7 +41,7 @@ DOIT_CONFIG = {
 }
 
 DATA_ROOT = HERE / "data"
-ITERS = 10
+ITERS = 50
 
 # mtv 64MB: 4096x4096, split out of the shared prim source rather than read
 # from another experiment's data directory. That source is what carries
@@ -118,6 +118,35 @@ CONFIGS = [
             "gemv.M.mram": 8,  # mramRow * taskletCols / tasklets
             "gemv.K.mram": 128,  # mramCol / taskletCols
             "gemv.M.wram": 8,  # wramRow
+            "gemv.K.wram": 64,  # wramCol
+            # The workgroup mapping: k-tile index outermost, so the tasklets of
+            # a DPU split rows and share the vector (taskletCols = 1).
+            "gemv.order[0]": 2,
+            "gemv.order[1]": 1,
+        },
+        fn_module=source,
+        prim="mtv",
+        lower=cinmopt.eval_solution_lowerer(
+            extra_infer_opts={"simulator": "cycle-accurate", "debug-pipeline": "true"}
+        ),
+    ),
+    compile_run.Config(
+        system="cinm2_16threads",
+        fn_name="mtv_64MB",
+        # This one is the atim2048 optimum,
+        # expressed as a point in the cinm2
+        # search space. It corresponds precisely
+        # to the ATiM optimum because of the
+        # workgroup mapping strategy, which is
+        # now the gemv.order parameter below;
+        # 0 is the strategy CINM2 used to assume.
+        label="atim2048optimum",
+        params={
+            "dpus": 2048,
+            "tasklets": 16,
+            "gemv.M.mram": 4,  # mramRow * taskletCols / tasklets
+            "gemv.K.mram": 128,  # mramCol / taskletCols
+            "gemv.M.wram": 4,  # wramRow
             "gemv.K.wram": 64,  # wramCol
             # The workgroup mapping: k-tile index outermost, so the tasklets of
             # a DPU split rows and share the vector (taskletCols = 1).
