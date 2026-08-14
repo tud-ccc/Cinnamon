@@ -481,8 +481,15 @@ def breakdown_comparison(
     kind of mismatch this comparison is meant to surface -- but their
     rel_error is NaN where measured_ms is 0, there being nothing to be
     relative to. Rows are in net_breakdown_sort_ix order. None if either side
-    is missing entirely."""
-    measured = net_breakdown_ms(output_dir, by_kind=True)
+    is missing entirely.
+
+    The measured side is the undiscounted one. The cost model predicts what
+    the program executes, so that is what its accuracy has to be judged
+    against; amortizing a weight transfer is a statement about how often a
+    deployment pays it, not about whether it happened. Comparing against the
+    amortized view would score the model on transfers that were deliberately
+    subtracted from it."""
+    measured = net_breakdown_ms(output_dir, by_kind=True, discount_static_compact=False)
     predicted = predicted_breakdown_ms(cost_csv)
     if measured is None or predicted is None:
         return None
