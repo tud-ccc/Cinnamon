@@ -1068,36 +1068,6 @@ static LogicalResult printDPUReset(CppEmitter &emitter) {
   return success();
 }
 
-/// Trip count above which an innermost loop is left rolled. The bound is on
-/// instruction memory, which is 24 KB on a DPU: a multiply-accumulate body
-/// unrolls to a handful of instructions, so 64 copies of one is comfortable
-/// while an unbounded expansion is not.
-constexpr int64_t kMaxUnrollTripCount = 64;
-
-/// Whether to ask the DPU compiler to fully unroll `forOp`.
-///
-/// It unrolls nothing by itself, so a short innermost loop keeps its counter
-/// increment, its branch, and an address computation per operand on every
-/// iteration -- four of the eight instructions in a multiply-accumulate body.
-/// Unrolling drops the loop control and turns the addresses into constant
-/// offsets.
-///
-/// Only innermost loops: unrolling one that contains another duplicates the
-/// whole nest, and the trip count then bounds nothing.
-static bool shouldFullyUnroll(scf::ForOp forOp) {
-  WalkResult nested = forOp.getBody()->walk(
-      [](LoopLikeOpInterface) { return WalkResult::interrupt(); });
-  if (nested.wasInterrupted())
-    return false;
-
-  std::optional<int64_t> lb = getConstantIntValue(forOp.getLowerBound());
-  std::optional<int64_t> ub = getConstantIntValue(forOp.getUpperBound());
-  std::optional<int64_t> step = getConstantIntValue(forOp.getStep());
-  if (!lb || !ub || !step || *step <= 0 || *ub <= *lb)
-    return false;
-  return llvm::divideCeil(*ub - *lb, *step) <= kMaxUnrollTripCount;
-}
-
 static LogicalResult printOperation(CppEmitter &emitter, scf::ForOp forOp) {
 
   raw_indented_ostream &os = emitter.ostream();
@@ -1123,9 +1093,6 @@ static LogicalResult printOperation(CppEmitter &emitter, scf::ForOp forOp) {
     os << ";";
     os << "\n";
   }
-
-  if (shouldFullyUnroll(forOp))
-    os << "#pragma clang loop unroll(full)\n";
 
   os << "for (";
   if (failed(
