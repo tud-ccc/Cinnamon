@@ -9,8 +9,8 @@
 #m = affine_map<(m, k) -> (m, k)>
 #v = affine_map<(m, k) -> (k)>
 #r = affine_map<(m, k) -> (m)>
-#scatterA = affine_map<(d0, d1) -> (d0 * 2 + d1)>
-#scatterY = affine_map<(d0, d1) -> (d0 * 2 + d1)>
+#scatterA = affine_map<(d0, d1, i, j) -> (d0 * 2 + d1, i, j)>
+#scatterY = affine_map<(d0, d1, i) -> (d0 * 2 + d1, i)>
 #pf = #upmem.platform<type = v1A, dpus = 64, tasklets = 24>
 #acc = #upmem.array<4x2, #pf>
 
@@ -62,7 +62,7 @@ func.func @gemv(%hostA: memref<8x16x64xi32>, %hostY: memref<8x16xi32>) {
 
 #pf = #upmem.platform<type = v1A, dpus = 64, tasklets = 24>
 #acc = #upmem.array<4x2, #pf>
-#bcast = affine_map<(d0, d1) -> (d0)>
+#bcast = affine_map<(d0, d1, i) -> (d0, i)>
 
 // When the scatter map does not depend on the tasklet dimension, every tasklet
 // sees the same MRAM buffer: no leading tasklet dimension and nothing to slice.

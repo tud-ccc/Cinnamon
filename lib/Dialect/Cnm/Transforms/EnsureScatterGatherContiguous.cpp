@@ -82,8 +82,8 @@ void packIntoOneBlockPerLeaf(cnm::ScatterOp op, OpBuilder &b, bool isStatic) {
     compact->setAttr(cinm::CinmDialect::STATIC_ATTR_NAME, b.getUnitAttr());
 
   op.getInputMutable().assign(packed);
-  unsigned wgRank = bufferTy.getWorkgroupShape().size();
-  op.setScatterMap(AffineMap::getMultiDimIdentityMap(wgRank, b.getContext()));
+  op.setScatterMap(
+      AffineMap::getMultiDimIdentityMap(packedShape.size(), b.getContext()));
 }
 
 /// Whether a leaf's share arrives as several blocks rather than one. Only

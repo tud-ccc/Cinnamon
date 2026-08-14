@@ -83,12 +83,13 @@ struct BroadcastUniformScatter : OpRewritePattern<cnm::ScatterOp> {
 
     Value tile =
         materializeUniformTile(rewriter, op, inputTy, tileShape, *uniform);
-    // Every leaf now takes the whole of `tile` as one block, so the map has
-    // nothing left to name: no buffer dimension is retained, and the host
-    // dimensions they cover are all of them.
+    // Every leaf now takes the whole of `tile`, so the map ignores the
+    // workgroup coordinates and reads the tile at the buffer's own index.
+    cnm::BufferType bufferTy = op.getBuffer().getType();
+    unsigned wgRank = bufferTy.getWorkgroupShape().size();
+    unsigned bufRank = bufferTy.getShape().size();
     AffineMap broadcast =
-        AffineMap::get(op.getBuffer().getType().getWorkgroupShape().size(), 0,
-                       {}, getContext());
+        AffineMap::getMinorIdentityMap(wgRank + bufRank, bufRank, getContext());
     rewriter.modifyOpInPlace(op, [&] {
       op.getInputMutable().assign(tile);
       op.setScatterMap(broadcast);

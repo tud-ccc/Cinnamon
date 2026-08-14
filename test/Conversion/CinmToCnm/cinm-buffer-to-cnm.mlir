@@ -3,8 +3,8 @@
 #upmem = #upmem.array<1024x1, #upmem_platform>
 
 // Affine maps emitted for scatter/gather index computations.
-// CHECK-DAG: #[[MAP_ROW_MOD8:[^ ]*]] = affine_map<(d0, d1) -> (d0 mod 8)>
-// CHECK-DAG: #[[MAP_ROW_SUM:[^ ]*]] = affine_map<(d0, d1) -> (d0 mod 128)>
+// CHECK-DAG: #[[MAP_ROW_MOD8:[^ ]*]] = affine_map<(d0, d1, d2) -> (d0 mod 8, d2)>
+// CHECK-DAG: #[[MAP_ROW_SUM:[^ ]*]] = affine_map<(d0, d1, d2) -> (d0 mod 128, d2)>
 // CHECK-DAG: #[[MAP_ROW_COL:[^ ]*]] = affine_map<(d0, d1) -> (d0 floordiv 128, d0 mod 128)>
 // CHECK-DAG: #[[MAP_ID:[^ ]*]] = affine_map<(d0) -> (d0)>
 // CHECK-DAG: #[[MAP_SCALAR:[^ ]*]] = affine_map<(d0) -> ()>

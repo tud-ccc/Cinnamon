@@ -39,17 +39,12 @@ func.func @launch_arg_level_mismatch() {
 #upmem = #upmem.platform<type = v1A, dpus = 4096, tasklets = 1>
 #wg4x2 = #upmem.array<4x2, #upmem>
 
-// A map may name a host index for every buffer element, or leave a suffix of
-// the buffer dimensions implicit and transfer them as a block. Both extremes
-// are well-formed, and describe the same transfer here.
-func.func @scatter_map_forms(%host: memref<8x16xi32>) {
+// A map names a host index for every buffer element: leaf (d, t) element i
+// comes from host[d * 2 + t, i].
+func.func @scatter_map_is_pointwise(%host: memref<8x16xi32>) {
   %wg = cnm.workgroup : !cnm.workgroup<#wg4x2>
   %buf = cnm.declare_buffer() for %wg : !cnm.buffer<16xi32 on #wg4x2>
-  // pointwise: leaf (d, t) element i comes from host[d * 2 + t, i]
   cnm.scatter %host into %buf[affine_map<(d0, d1, i) -> (d0 * 2 + d1, i)>] of %wg
-      : memref<8x16xi32> into !cnm.buffer<16xi32 on #wg4x2>
-  // one 16-element block per leaf, covering the trailing host dimension
-  cnm.scatter %host into %buf[affine_map<(d0, d1) -> (d0 * 2 + d1)>] of %wg
       : memref<8x16xi32> into !cnm.buffer<16xi32 on #wg4x2>
   cnm.free_workgroup %wg : !cnm.workgroup<#wg4x2>
   return
@@ -63,7 +58,7 @@ func.func @scatter_map_forms(%host: memref<8x16xi32>) {
 func.func @scatter_map_wrong_result_count(%host: memref<8x16xi32>) {
   %wg = cnm.workgroup : !cnm.workgroup<#wg4x2>
   %buf = cnm.declare_buffer() for %wg : !cnm.buffer<16xi32 on #wg4x2>
-  // expected-error @below {{map has 1 result(s) and leaves 0 buffer dimension(s) implicit, which does not add up to the 2 dimension(s) of the host value}}
+  // expected-error @below {{map has 1 result(s); a pointwise map has one per host dimension, of which there are 2}}
   cnm.scatter %host into %buf[affine_map<(d0, d1, i) -> (d0 * 2 + d1)>] of %wg
       : memref<8x16xi32> into !cnm.buffer<16xi32 on #wg4x2>
   cnm.free_workgroup %wg : !cnm.workgroup<#wg4x2>
@@ -78,7 +73,7 @@ func.func @scatter_map_wrong_result_count(%host: memref<8x16xi32>) {
 func.func @scatter_map_too_many_dims(%host: memref<8x16xi32>) {
   %wg = cnm.workgroup : !cnm.workgroup<#wg4x2>
   %buf = cnm.declare_buffer() for %wg : !cnm.buffer<16xi32 on #wg4x2>
-  // expected-error @below {{map has 4 dimension(s); expected the workgroup's 2, optionally followed by up to 1 leading buffer dimension(s)}}
+  // expected-error @below {{map has 4 dimension(s); a pointwise map has the workgroup's 2 followed by the buffer's 1}}
   cnm.scatter %host into %buf[affine_map<(d0, d1, i, j) -> (d0 * 2 + d1, i + j)>] of %wg
       : memref<8x16xi32> into !cnm.buffer<16xi32 on #wg4x2>
   cnm.free_workgroup %wg : !cnm.workgroup<#wg4x2>
@@ -90,14 +85,16 @@ func.func @scatter_map_too_many_dims(%host: memref<8x16xi32>) {
 #upmem = #upmem.platform<type = v1A, dpus = 4096, tasklets = 1>
 #wg4x2 = #upmem.array<4x2, #upmem>
 
-// An implicit block is a whole sub-array of the host value, so the dimensions
-// it covers have to match it extent for extent.
-func.func @scatter_block_shape_mismatch(%host: memref<8x32xi32>) {
+// The block form -- naming only where a leaf's block starts and leaving the
+// buffer dimensions it spans to the shapes -- says the same thing, but is not
+// what is stored: a consumer that moves blocks derives one for itself, and
+// having two spellings would mean an analysis has to tell them apart.
+func.func @scatter_map_block_form_rejected(%host: memref<8x16xi32>) {
   %wg = cnm.workgroup : !cnm.workgroup<#wg4x2>
   %buf = cnm.declare_buffer() for %wg : !cnm.buffer<16xi32 on #wg4x2>
-  // expected-error @below {{the implicit block has shape 16 but the host dimensions it covers have shape 32}}
+  // expected-error @below {{map has 2 dimension(s); a pointwise map has the workgroup's 2 followed by the buffer's 1}}
   cnm.scatter %host into %buf[affine_map<(d0, d1) -> (d0 * 2 + d1)>] of %wg
-      : memref<8x32xi32> into !cnm.buffer<16xi32 on #wg4x2>
+      : memref<8x16xi32> into !cnm.buffer<16xi32 on #wg4x2>
   cnm.free_workgroup %wg : !cnm.workgroup<#wg4x2>
   return
 }
@@ -113,7 +110,7 @@ func.func @scatter_out_of_bounds(%host: memref<8x16xi32>) {
   %wg = cnm.workgroup : !cnm.workgroup<#wg4x2>
   %buf = cnm.declare_buffer() for %wg : !cnm.buffer<16xi32 on #wg4x2>
   // expected-error @below {{transfer reaches element 143 of a host value that has only 128}}
-  cnm.scatter %host into %buf[affine_map<(d0, d1) -> (d0 * 2 + d1 + 1)>] of %wg
+  cnm.scatter %host into %buf[affine_map<(d0, d1, i) -> (d0 * 2 + d1 + 1, i)>] of %wg
       : memref<8x16xi32> into !cnm.buffer<16xi32 on #wg4x2>
   cnm.free_workgroup %wg : !cnm.workgroup<#wg4x2>
   return
@@ -130,7 +127,7 @@ func.func @scatter_out_of_bounds_through_mod(%host: memref<8x4xi32>) {
   %wg = cnm.workgroup : !cnm.workgroup<#wg4x2>
   %buf = cnm.declare_buffer() for %wg : !cnm.buffer<4xi32 on #wg4x2>
   // expected-error @below {{transfer reaches element 47 of a host value that has only 32}}
-  cnm.scatter %host into %buf[affine_map<(d0, d1) -> ((d0 * 2 + d1) mod 8 + 4)>] of %wg
+  cnm.scatter %host into %buf[affine_map<(d0, d1, i) -> ((d0 * 2 + d1) mod 8 + 4, i)>] of %wg
       : memref<8x4xi32> into !cnm.buffer<4xi32 on #wg4x2>
   cnm.free_workgroup %wg : !cnm.workgroup<#wg4x2>
   return
@@ -142,11 +139,11 @@ func.func @scatter_out_of_bounds_through_mod(%host: memref<8x4xi32>) {
 #wg4x2 = #upmem.array<4x2, #upmem>
 
 // A scatter may be non-injective -- that is a broadcast, and the point of it.
-// Every leaf gets the whole host value, so the map has nothing left to name.
+// Every leaf gets the whole host value, so the map ignores which leaf it is.
 func.func @scatter_may_broadcast(%host: memref<16xi32>) {
   %wg = cnm.workgroup : !cnm.workgroup<#wg4x2>
   %buf = cnm.declare_buffer() for %wg : !cnm.buffer<16xi32 on #wg4x2>
-  cnm.scatter %host into %buf[affine_map<(d0, d1) -> ()>] of %wg
+  cnm.scatter %host into %buf[affine_map<(d0, d1, i) -> (i)>] of %wg
       : memref<16xi32> into !cnm.buffer<16xi32 on #wg4x2>
   cnm.free_workgroup %wg : !cnm.workgroup<#wg4x2>
   return
@@ -162,7 +159,7 @@ func.func @gather_must_be_injective(%host: memref<16xi32>) {
   %wg = cnm.workgroup : !cnm.workgroup<#wg4x2>
   %buf = cnm.declare_buffer() for %wg : !cnm.buffer<16xi32 on #wg4x2>
   // expected-error @below {{map is not injective: two leaves would write the same host element}}
-  cnm.gather %buf[affine_map<(d0, d1) -> ()>] of %wg into %host
+  cnm.gather %buf[affine_map<(d0, d1, i) -> (i)>] of %wg into %host
       : !cnm.buffer<16xi32 on #wg4x2> into memref<16xi32>
   cnm.free_workgroup %wg : !cnm.workgroup<#wg4x2>
   return

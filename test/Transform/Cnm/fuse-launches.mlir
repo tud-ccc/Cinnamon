@@ -11,7 +11,10 @@
 // same way. See docs/LaunchFusionDesign.md §A.
 
 #map = affine_map<(d0, d1, d2) -> (d0 * 64 + d2)>
-#bcast = affine_map<(d0, d1) -> ()>
+// The same distribution over a rank-2 buffer, so one more dimension.
+#rowmap = affine_map<(d0, d1, d2, d3) -> (d0 * 64 + d2, d3)>
+#bcast = affine_map<(d0, d1, d2) -> (d2)>
+#scalar_bcast = affine_map<(d0, d1) -> ()>
 #mat = affine_map<(d0, d1) -> (d0, d1)>
 #vec = affine_map<(d0, d1) -> (d1)>
 #res = affine_map<(d0, d1) -> (d0)>
@@ -52,7 +55,7 @@ func.func @round_trip(%A: tensor<1024x1024xi32>, %x: tensor<1024xi32>, %c: i32) 
   %cst = cnm.declare_buffer() for %wg1 : !cnm.buffer<i32 on #acc, #upmem.mram>
   %in = cnm.declare_buffer() for %wg1 : !cnm.buffer<64xi32 on #acc, #upmem.mram>
   %r = cinm.compute on accelerator #acc -> tensor<1024xi32> {
-    cnm.scatter %A into %mat[#map] of %wg0 : tensor<1024x1024xi32> into !cnm.buffer<64x1024xi32 on #acc, #upmem.mram>
+    cnm.scatter %A into %mat[#rowmap] of %wg0 : tensor<1024x1024xi32> into !cnm.buffer<64x1024xi32 on #acc, #upmem.mram>
     cnm.scatter %x into %vec[#bcast] of %wg0 : tensor<1024xi32> into !cnm.buffer<1024xi32 on #acc, #upmem.mram>
     cnm.launch %wg0 ins(%a = %mat : <64x1024xi32, #upmem.mram>, %b = %vec : <1024xi32, #upmem.mram>) outs(%p = %prod : <64xi32, #upmem.mram>) on !cnm.workgroup<#acc> {
       linalg.contract indexing_maps = [#mat, #vec, #res] ins(%a, %b : memref<64x1024xi32, #upmem.mram>, memref<1024xi32, #upmem.mram>) outs(%p : memref<64xi32, #upmem.mram>)
@@ -61,7 +64,7 @@ func.func @round_trip(%A: tensor<1024x1024xi32>, %x: tensor<1024xi32>, %c: i32) 
     %g = cnm.gather %prod[#map] of %wg0 into %e0 : !cnm.buffer<64xi32 on #acc, #upmem.mram> into tensor<1024xi32>
     %s = tensor.from_elements %c : tensor<i32>
     cnm.scatter %g into %in[#map] of %wg1 : tensor<1024xi32> into !cnm.buffer<64xi32 on #acc, #upmem.mram>
-    cnm.scatter %s into %cst[#bcast] of %wg1 : tensor<i32> into !cnm.buffer<i32 on #acc, #upmem.mram>
+    cnm.scatter %s into %cst[#scalar_bcast] of %wg1 : tensor<i32> into !cnm.buffer<i32 on #acc, #upmem.mram>
     cnm.launch %wg1 ins(%a = %in : <64xi32, #upmem.mram>, %b = %cst : <i32, #upmem.mram>) outs(%o = %out : <64xi32, #upmem.mram>) on !cnm.workgroup<#acc> {
       linalg.generic {indexing_maps = [#id, #scalar, #id], iterator_types = ["parallel"]} ins(%a, %b : memref<64xi32, #upmem.mram>, memref<i32, #upmem.mram>) outs(%o : memref<64xi32, #upmem.mram>) {
       ^bb0(%in_0: i32, %in_1: i32, %o_0: i32):

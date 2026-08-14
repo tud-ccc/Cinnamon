@@ -2,8 +2,8 @@
 // RUN: cinm-opt %s --mlir-print-op-generic | cinm-opt | FileCheck %s
 
 
-#map = affine_map<(d0, d1) -> (d0 mod 4)>
-#map1 = affine_map<(d0, d1) -> (d0 mod 128)>
+#map = affine_map<(d0, d1, d2) -> (d0 mod 4, d2)>
+#map1 = affine_map<(d0, d1, d2) -> (d0 mod 128, d2)>
 #map2 = affine_map<(d0, d1) -> (d0 floordiv 128, d0 mod 128)>
 #map3 = affine_map<(d0, d1) -> (d0 mod 8)>
 #map4 = affine_map<(d0, d1) -> (d0 mod 16)>
