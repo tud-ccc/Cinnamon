@@ -23,7 +23,7 @@
 // and the wrong bytes went to the DPUs silently.
 // NOSG: error: {{.*}}cannot be narrowed to a single per-DPU block
 
-#mapA = affine_map<(d0, d1) -> (d0, d1 * 2)>
+#mapA = affine_map<(d0, d1, i) -> (d0, d1 * 2, i)>
 
 #upmem_platform = #upmem.platform<type = v1A, dpus = 64, tasklets = 24>
 #upmem_1_4_2 = #upmem.array<4x2, #upmem_platform>

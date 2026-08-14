@@ -38,33 +38,6 @@
 using namespace mlir;
 using namespace mlir::cnm;
 
-//===----------------------------------------------------------------------===//
-// Scatter/gather map assembly
-//
-// The canonical form of a scatter map is the fully explicit one (see the
-// canonicalization below), but the form that reads best is the one that only
-// names the host dimensions the map actually chooses -- the rest are a block,
-// and the shapes already say which. So the map is printed with as much left
-// implicit as the buffer and host shapes allow, and parsed back verbatim: the
-// two forms denote the same transfer, and canonicalization puts the parsed
-// one back into explicit form.
-//
-// These are the `custom<ScatterMap>` directive of cnm.scatter and cnm.gather,
-// so they have to be declared before the generated assembly formats use them.
-//===----------------------------------------------------------------------===//
-
-template <class Op>
-static void printScatterMap(OpAsmPrinter &p, Op op, AffineMapAttr mapAttr) {
-  AffineMap deflated = cnm::deflateScatterMap(
-      mapAttr.getValue(), op.getBuffer().getType(), op.getHostType());
-  p.printAttribute(AffineMapAttr::get(deflated));
-}
-
-static ParseResult parseScatterMap(OpAsmParser &parser,
-                                   AffineMapAttr &mapAttr) {
-  return parser.parseAttribute(mapAttr);
-}
-
 //===- Generated implementation -------------------------------------------===//
 
 #define GET_OP_CLASSES
@@ -500,15 +473,8 @@ LogicalResult LocalTransferOp::fold(FoldAdaptor,
 }
 namespace {
 
-/// Puts the map in canonical form: fully explicit, then simplified over its
-/// domain. Inflating first means an analysis never has to tell two spellings
-/// of the same transfer apart, and that how a map happens to be written says
-/// nothing -- a consumer that cares about the block form derives it with
-/// cnm::deflateScatterMap, from the map and the host layout.
-///
-/// So this loses no information that --cnm-ensure-scatter-gather-contiguous
-/// puts there: what that pass contributes and canonicalization cannot undo is
-/// on the host value, whose shape and layout the derivation reads.
+/// Simplifies the map over its own domain, which the workgroup and buffer
+/// shapes give exactly.
 template <class Op> class SimplifyScatterMap : public OpRewritePattern<Op> {
   using OpRewritePattern<Op>::OpRewritePattern;
 
@@ -517,8 +483,7 @@ template <class Op> class SimplifyScatterMap : public OpRewritePattern<Op> {
     auto bufferTy = op.getBuffer().getType();
     auto map = op.getScatterMap();
     auto simplified =
-        simplifyAffineMapWithBounds(inflateScatterMapToPointwise(map, bufferTy),
-                                    getScatterIndexSpace(bufferTy));
+        simplifyAffineMapWithBounds(map, getScatterIndexSpace(bufferTy));
     if (simplified == map)
       return failure();
 
@@ -538,12 +503,10 @@ void ScatterOp::getCanonicalizationPatterns(::mlir::RewritePatternSet &results,
   results.insert<SimplifyScatterMap<ScatterOp>>(context);
 }
 
-/// The map's domain is the workgroup shape followed by the first `p` of the
-/// buffer's own dimensions, for any `p`. The `bufferRank - p` dimensions left
-/// out are transferred as a block, and the same number of host dimensions are
-/// left out of the results: they are the block's shape, so they have to match
-/// extent for extent. `p = bufferRank` names a host element per buffer
-/// element; `p = 0` is one whole-buffer block per leaf.
+/// The map is pointwise: its domain is the workgroup shape followed by all of
+/// the buffer's own dimensions, and it has one result per host dimension. What
+/// travels as one block is not recorded here; a consumer that moves blocks
+/// derives it with cnm::deflateScatterMap, from the map and the host layout.
 ///
 /// `requireInjective` is set for gathers only: two leaves reading the same
 /// host element is a broadcast, two leaves *writing* it is a race.
@@ -555,26 +518,18 @@ static LogicalResult verifyScatterGatherMap(Operation *op, ShapedType hostTy,
   ArrayRef<int64_t> bufShape = bufferTy.getShape();
   ArrayRef<int64_t> hostShape = hostTy.getShape();
 
-  if (map.getNumInputs() < wgShape.size() ||
-      map.getNumInputs() > wgShape.size() + bufShape.size())
+  if (map.getNumInputs() != wgShape.size() + bufShape.size())
     return op->emitOpError("map has ")
-           << map.getNumInputs() << " dimension(s); expected the workgroup's "
-           << wgShape.size() << ", optionally followed by up to "
-           << bufShape.size() << " leading buffer dimension(s)";
+           << map.getNumInputs()
+           << " dimension(s); a pointwise map has the workgroup's "
+           << wgShape.size() << " followed by the buffer's " << bufShape.size();
 
-  int64_t blockRank = cnm::getNumImplicitHostDims(map, bufferTy);
-  if (static_cast<int64_t>(map.getNumResults()) + blockRank !=
-      static_cast<int64_t>(hostShape.size()))
+  if (map.getNumResults() != hostShape.size())
     return op->emitOpError("map has ")
-           << map.getNumResults() << " result(s) and leaves " << blockRank
-           << " buffer dimension(s) implicit, which does not add up to the "
-           << hostShape.size() << " dimension(s) of the host value";
-
-  ArrayRef<int64_t> blockShape = cnm::getScatterBlockShape(map, bufferTy);
-  if (hostShape.take_back(blockRank) != blockShape)
-    return op->emitOpError("the implicit block has shape ")
-           << blockShape << " but the host dimensions it covers have shape "
-           << hostShape.take_back(blockRank);
+           << map.getNumResults()
+           << " result(s); a pointwise map has one per host dimension, of "
+              "which there are "
+           << hostShape.size();
 
   // What is left is where the transfer lands, which needs the host value's
   // element order. A memref with a non-identity layout does not have one until
@@ -586,8 +541,7 @@ static LogicalResult verifyScatterGatherMap(Operation *op, ShapedType hostTy,
     if (!memrefTy.getLayout().isIdentity())
       return success();
 
-  FailureOr<AffineExpr> offset = cnm::linearizeScatterMap(
-      cnm::inflateScatterMapToPointwise(map, bufferTy), hostShape);
+  FailureOr<AffineExpr> offset = cnm::linearizeScatterMap(map, hostShape);
   if (failed(offset))
     return success();
   SmallVector<int64_t> extents = cnm::getScatterIndexSpace(bufferTy);

@@ -105,18 +105,16 @@ def ScatterOp: Cnm_Op<"scatter", [InferWorkgroupTypeFromBuffer<"buffer", "wg">]>
         buf[w][i_0..i_{p-1}, rest] = input[map(w, i_0..i_{p-1}) ++ rest]
         ```
 
-        The map's domain is the workgroup shape `w_0..w_{n-1}` followed by the
-        first `p` of the buffer's own dimensions, for any `p`. The
-        `bufferRank - p` dimensions it leaves out are transferred as a block,
-        and the same number of trailing host dimensions are left out of the
-        results: they are that block's own shape and must match extent for
-        extent. `p = bufferRank` names a host element per buffer element;
-        `p = 0` sends one whole-buffer block to each leaf.
+        The map is *pointwise*: its domain is the workgroup shape
+        `w_0..w_{n-1}` followed by all of the buffer's own dimensions, and it
+        has one result per host dimension. So it names a host element for
+        every buffer element and leaves nothing implicit, which is what makes
+        two transfers comparable without first agreeing on a spelling.
 
-        Both spellings denote the same transfer. The explicit one is
-        canonical, and the shorthand is what is printed -- see
-        CnmScatterMap.h, which is also where the block form is derived by
-        consumers that move whole blocks.
+        Nothing here says what moves as one block. That is a question about
+        the host value's layout as much as about the map, so a consumer that
+        moves whole blocks derives the answer for itself -- see
+        cnm::deflateScatterMap in CnmScatterMap.h.
 
         A scatter need not be injective: two leaves reading the same host
         element is a broadcast, which is how an operand shared across a
@@ -125,7 +123,7 @@ def ScatterOp: Cnm_Op<"scatter", [InferWorkgroupTypeFromBuffer<"buffer", "wg">]>
 
         ```mlir
         // Leaf (_, d1, d2) receives row d1 of a 16x1024 host matrix.
-        cnm.scatter %a into %buf[affine_map<(d0, d1, d2) -> (d1)>] of %wg
+        cnm.scatter %a into %buf[affine_map<(d0, d1, d2, d3) -> (d1, d3)>] of %wg
             : tensor<16x1024xi32> into !cnm.buffer<1024xi32 on #acc>
         ```
     }];
@@ -152,15 +150,14 @@ def ScatterOp: Cnm_Op<"scatter", [InferWorkgroupTypeFromBuffer<"buffer", "wg">]>
     let hasVerifier = 1;
     let hasCanonicalizer = 1;
 
-    let assemblyFormat = "$input `into` $buffer `[` custom<ScatterMap>($scatterMap) `]` `of` $wg attr-dict `:` type($input) `into` qualified(type($buffer))";
+    let assemblyFormat = "$input `into` $buffer `[` $scatterMap `]` `of` $wg attr-dict `:` type($input) `into` qualified(type($buffer))";
 }
 
 def GatherOp: Cnm_Op<"gather", [InferWorkgroupTypeFromBuffer<"buffer", "wg">, InferTensorTypeAdaptor, DestinationStyleOpInterface]> {
     let summary = "Collect a workgroup's buffer back into a host value.";
     let description = [{
-        The inverse of `cnm.scatter`: `gatherMap` is read the same way, and
-        the same shorthand applies, but the elements travel from the leaves to
-        `outputBuf`.
+        The inverse of `cnm.scatter`: `gatherMap` is pointwise and read the
+        same way, but the elements travel from the leaves to `outputBuf`.
 
         The one asymmetry is that a gather map must be injective. Two leaves
         reading the same host element is a broadcast; two leaves *writing* it
@@ -172,7 +169,7 @@ def GatherOp: Cnm_Op<"gather", [InferWorkgroupTypeFromBuffer<"buffer", "wg">, In
         produces a result; on memrefs it writes in place and produces nothing.
 
         ```mlir
-        %y = cnm.gather %buf[affine_map<(d0, d1, d2) -> (d1)>] of %wg into %init
+        %y = cnm.gather %buf[affine_map<(d0, d1, d2, d3) -> (d1, d3)>] of %wg into %init
             : !cnm.buffer<64xi32 on #acc> into tensor<16x64xi32>
         ```
     }];
@@ -210,7 +207,7 @@ def GatherOp: Cnm_Op<"gather", [InferWorkgroupTypeFromBuffer<"buffer", "wg">, In
 
     let hasVerifier = 1;
     let hasCanonicalizer = 1;
-    let assemblyFormat = "$buffer `[` custom<ScatterMap>($gatherMap) `]` `of` $wg attr-dict `into` $outputBuf `:` qualified(type($buffer)) `into` type($outputBuf)";
+    let assemblyFormat = "$buffer `[` $gatherMap `]` `of` $wg attr-dict `into` $outputBuf `:` qualified(type($buffer)) `into` type($outputBuf)";
 }
 
 def LaunchOp: Cnm_Op<"launch", [AffineScope, AttrSizedOperandSegments, AutomaticAllocationScope, IsolatedFromAbove, SingleBlockImplicitTerminator<"ReturnOp">]> {

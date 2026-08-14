@@ -8,8 +8,8 @@
 // code's decision), and the set is NOT freed -- it is not this function's
 // to release.
 
-#map = affine_map<(d0, d1) -> (d0)>
-#map1 = affine_map<(d0, d1) -> (0)>
+#map = affine_map<(d0, d1, i) -> (d0, i)>
+#map1 = affine_map<(d0, d1, i) -> (0, i)>
 #map2 = affine_map<(d0, d1) -> (d0, 0)>
 
 #map31 = affine_map<(d0) -> (d0)>

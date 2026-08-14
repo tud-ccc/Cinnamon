@@ -9,6 +9,7 @@
 #include "cinm-mlir/Dialect/Cnm/IR/CnmBase.h"
 #include "cinm-mlir/Dialect/Cnm/IR/CnmInterfaces.h"
 #include "cinm-mlir/Dialect/Cnm/IR/CnmOps.h"
+#include "cinm-mlir/Dialect/Cnm/IR/CnmScatterMap.h"
 #include "cinm-mlir/Dialect/Cnm/IR/CnmTypes.h"
 #include "cinm-mlir/Utils/CinmUtils.h"
 
@@ -315,9 +316,12 @@ convertInputIntoAlloc(Value &inputBuf, Value workGroup, cnm::WorkgroupType wgTy,
 
   Value alloc = cnm::DeclareBufferOp::create(rewriter, bufTy, workGroup);
 
-  // Scatter into buffer
+  // Scatter into buffer. computeShapeOfTensors names only where a leaf's
+  // block starts; a cnm.scatter map is pointwise, so write out the rest.
   if (needScatter) {
-    cnm::ScatterOp::create(rewriter, inputBuf, alloc, workGroup, scatterMap);
+    cnm::ScatterOp::create(
+        rewriter, inputBuf, alloc, workGroup,
+        cnm::inflateScatterMapToPointwise(scatterMap, bufTy));
   }
   result = alloc;
 
@@ -463,7 +467,11 @@ LogicalResult convertCinmToCnm(
     } else {
       outBuf = reshaped;
     }
-    auto res = cnm::GatherOp::create(builder, cnmAlloc, workgroup, map, outBuf);
+    auto res = cnm::GatherOp::create(
+        builder, cnmAlloc, workgroup,
+        cnm::inflateScatterMapToPointwise(
+            map, cast<cnm::BufferType>(cnmAlloc.getType())),
+        outBuf);
     if (isa<TensorType>(reshaped.getType())) {
       auto correspondingResult = results[i];
       if (auto resultShapedTy =
@@ -939,10 +947,16 @@ struct ConvertCinmGemmToCnm : public CinmToCnmPattern<cinm::GemmOp> {
                              "cannot be mapped onto workgroup (")
              << wgShape << ")";
     }
-    cnm::ScatterOp::create(builder, op.getLhs(), bufferA, workgroup,
-                           std::move(scatterA));
+    // computeScatterMapForGemm names only where a leaf's block starts; a
+    // cnm.scatter map is pointwise, so write out the rest.
+    scatterA = cnm::inflateScatterMapToPointwise(scatterA, bufferType);
+    scatterB = cnm::inflateScatterMapToPointwise(scatterB, bufferType);
+    scatterGatherC =
+        cnm::inflateScatterMapToPointwise(scatterGatherC, bufferCType);
+
+    cnm::ScatterOp::create(builder, op.getLhs(), bufferA, workgroup, scatterA);
     cnm::ScatterOp::create(builder, transposeRight, bufferB, workgroup,
-                           std::move(scatterB));
+                           scatterB);
 
     // Scatter init: bias (if any) or zero.  The `out` operand is only the
     // gather target; its contents are not read by the kernel.
