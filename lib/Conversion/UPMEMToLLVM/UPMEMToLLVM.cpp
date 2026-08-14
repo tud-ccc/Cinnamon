@@ -1,6 +1,7 @@
 #include "cinm-mlir/Conversion/UPMEMToLLVM/UPMEMToLLVM.h"
 #include "cinm-mlir/Conversion/CommonPatterns.h"
 #include "cinm-mlir/Conversion/UPMEMPasses.h"
+#include "cinm-mlir/Dialect/Cnm/IR/CnmOps.h"
 #include "cinm-mlir/Dialect/UPMEM/IR/UPMEMAttributes.h"
 #include "cinm-mlir/Dialect/UPMEM/IR/UPMEMOps.h"
 #include "cinm-mlir/Dialect/UPMEM/IR/UPMEMTypes.h"
@@ -289,6 +290,169 @@ appendOrGetFuncOp(OpBuilder &rewriter, StringRef funcName, Type resultType,
   return LLVM::lookupOrCreateFn(rewriter, module, funcName, paramTypes,
                                 resultType);
 }
+
+/// The source access `map` describes, expressed against `srcTy`'s own layout,
+/// as one stride per target dimension plus a constant element offset.
+///
+/// Everything a repack needs is known statically -- the op's verifier forces a
+/// contiguous target, hence static strides -- so the runtime is handed
+/// constants rather than a memref descriptor. This is what makes that
+/// possible, and it fails when the access is not affine in the target indices
+/// with constant coefficients, which is the one shape the flat runtime loop
+/// cannot walk.
+static LogicalResult strideDescriptionOf(AffineMap map, MemRefType srcTy,
+                                         SmallVectorImpl<int64_t> &strides,
+                                         int64_t &offset) {
+  SmallVector<int64_t> srcStrides;
+  int64_t srcOffset = 0;
+  if (failed(srcTy.getStridesAndOffset(srcStrides, srcOffset)))
+    return failure();
+  if (ShapedType::isDynamic(srcOffset) ||
+      llvm::any_of(srcStrides, ShapedType::isDynamic))
+    return failure();
+
+  // Linearize the map's results against the source's own strides: one
+  // expression in the target's indices giving a flat element index.
+  MLIRContext *ctx = map.getContext();
+  AffineExpr flat = getAffineConstantExpr(srcOffset, ctx);
+  for (auto [result, stride] : llvm::zip_equal(map.getResults(), srcStrides))
+    flat = flat + result * stride;
+  flat = simplifyAffineExpr(flat, map.getNumDims(), map.getNumSymbols());
+
+  unsigned numDims = map.getNumDims();
+  auto evalWith = [&](std::optional<unsigned> one) -> std::optional<int64_t> {
+    SmallVector<AffineExpr> subs;
+    for (unsigned i = 0; i < numDims; ++i)
+      subs.push_back(getAffineConstantExpr(one && *one == i ? 1 : 0, ctx));
+    AffineExpr v = simplifyAffineExpr(flat.replaceDims(subs), 0, 0);
+    if (auto c = dyn_cast<AffineConstantExpr>(v))
+      return c.getValue();
+    return std::nullopt;
+  };
+
+  std::optional<int64_t> base = evalWith(std::nullopt);
+  if (!base)
+    return failure();
+  offset = *base;
+
+  strides.assign(numDims, 0);
+  AffineExpr reconstructed = getAffineConstantExpr(offset, ctx);
+  for (unsigned d = 0; d < numDims; ++d) {
+    std::optional<int64_t> withD = evalWith(d);
+    if (!withD)
+      return failure();
+    strides[d] = *withD - offset;
+    reconstructed = reconstructed + getAffineDimExpr(d, ctx) * strides[d];
+  }
+  // Linear in each index separately is not enough; the access must be linear
+  // overall, so check the reconstruction against the real expression.
+  if (simplifyAffineExpr(reconstructed - flat, numDims, map.getNumSymbols()) !=
+      getAffineConstantExpr(0, ctx))
+    return failure();
+  return success();
+}
+
+/// A module-level constant i64 array, reused across repacks that need the same
+/// numbers: the values are compile-time constants, so a global costs nothing
+/// at runtime, unlike an alloca that a repack inside a loop would repeat.
+static FailureOr<Value> constantI64Array(ConversionPatternRewriter &rewriter,
+                                         Location loc, Operation *op,
+                                         ArrayRef<int64_t> values,
+                                         StringRef prefix) {
+  auto module = op->getParentOfType<ModuleOp>();
+  SmallString<64> name(prefix);
+  for (int64_t v : values)
+    (name += "_") += Twine(v).str();
+
+  auto i64 = IntegerType::get(rewriter.getContext(), 64);
+  auto arrayTy = LLVM::LLVMArrayType::get(i64, values.size());
+  auto global = module.lookupSymbol<LLVM::GlobalOp>(name);
+  if (!global) {
+    OpBuilder::InsertionGuard guard(rewriter);
+    rewriter.setInsertionPointToStart(module.getBody());
+    global = LLVM::GlobalOp::create(
+        rewriter, loc, arrayTy, /*isConstant=*/true, LLVM::Linkage::Internal,
+        name,
+        DenseElementsAttr::get(
+            RankedTensorType::get({static_cast<int64_t>(values.size())}, i64),
+            values));
+  }
+  return LLVM::AddressOfOp::create(rewriter, loc, global).getResult();
+}
+
+/// Lowers a repack to the runtime's own entry point rather than to a copy.
+///
+/// A named call is what makes the cost visible: MemRefToLLVM turns a
+/// memref.copy between contiguous memrefs into llvm.intr.memcpy, so a repack
+/// expressed that way would never appear in a measurement. The runtime records
+/// it under the op's `cinm.static` tag, which decides whether it amortizes.
+struct CompactBufferOpToFuncCallLowering
+    : public ConvertOpToLLVMPattern<cnm::CompactBufferOp> {
+public:
+  explicit CompactBufferOpToFuncCallLowering(LLVMTypeConverter &lowering)
+      : ConvertOpToLLVMPattern<cnm::CompactBufferOp>(lowering) {}
+
+  LogicalResult
+  matchAndRewrite(cnm::CompactBufferOp op,
+                  typename cnm::CompactBufferOp::Adaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    Location loc = op.getLoc();
+    MemRefType srcTy = op.getSource().getType();
+    MemRefType dstTy = op.getTarget().getType();
+    if (!dstTy.hasStaticShape())
+      return op.emitOpError("target must have a static shape to be repacked");
+
+    SmallVector<int64_t> strides;
+    int64_t elemOffset = 0;
+    if (failed(strideDescriptionOf(op.getMap(), srcTy, strides, elemOffset)))
+      return op.emitOpError(
+          "source access is not affine in the target's indices with constant "
+          "coefficients, so it cannot be described to the runtime");
+
+    auto i64 = rewriter.getI64Type();
+    auto i32 = rewriter.getI32Type();
+    auto ptrTy = LLVM::LLVMPointerType::get(rewriter.getContext());
+    int64_t elemBytes = srcTy.getElementTypeBitWidth() / 8;
+
+    FailureOr<Value> sizesPtr = constantI64Array(
+        rewriter, loc, op, dstTy.getShape(), "__upmemrt_compact_sizes");
+    FailureOr<Value> stridesPtr = constantI64Array(rewriter, loc, op, strides,
+                                                   "__upmemrt_compact_strides");
+    if (failed(sizesPtr) || failed(stridesPtr))
+      return failure();
+
+    // The map's constant term is folded into the source pointer, so the
+    // runtime only ever walks from a base with per-dimension strides.
+    MemRefDescriptor srcDesc(adaptor.getSource());
+    Value srcPtr = srcDesc.alignedPtr(rewriter, loc);
+    Value elemOffsetVal = LLVM::ConstantOp::create(
+        rewriter, loc, i64, rewriter.getI64IntegerAttr(elemOffset));
+    srcPtr = LLVM::GEPOp::create(rewriter, loc, ptrTy, srcTy.getElementType(),
+                                 srcPtr, ValueRange{elemOffsetVal});
+    Value dstPtr =
+        MemRefDescriptor(adaptor.getTarget()).alignedPtr(rewriter, loc);
+
+    auto konst = [&](Type ty, int64_t v) {
+      return LLVM::ConstantOp::create(rewriter, loc, ty,
+                                      rewriter.getIntegerAttr(ty, v))
+          .getResult();
+    };
+
+    auto funcOp =
+        appendOrGetFuncOp(rewriter, "upmemrt_compact",
+                          LLVM::LLVMVoidType::get(rewriter.getContext()),
+                          {ptrTy, ptrTy, i64, ptrTy, ptrTy, i64, i32}, op);
+    if (failed(funcOp))
+      return failure();
+
+    rewriter.replaceOpWithNewOp<LLVM::CallOp>(
+        op, *funcOp,
+        ValueRange{dstPtr, srcPtr, konst(i64, dstTy.getRank()), *sizesPtr,
+                   *stridesPtr, konst(i64, elemBytes),
+                   konst(i32, op.isStatic() ? 1 : 0)});
+    return success();
+  }
+};
 
 struct FreeDPUsOpToFuncCallLowering
     : public ConvertOpToLLVMPattern<upmem::FreeDPUsOp> {
@@ -867,6 +1031,7 @@ void populateUPMEMToLLVMConversionPatterns(LLVMTypeConverter &typeConverter,
   patterns.add<GatherBlocksOpToFuncCallLowering>(typeConverter);
   patterns.add<WaitForOpToFuncCallLowering>(typeConverter);
   patterns.add<FreeDPUsOpToFuncCallLowering>(typeConverter);
+  patterns.add<CompactBufferOpToFuncCallLowering>(typeConverter);
   patterns.add<EraseDpuProgram>(typeConverter);
 }
 
@@ -920,6 +1085,10 @@ struct ConvertUPMEMToLLVMPass
 
     ConversionTarget target(getContext());
     target.addIllegalDialect<upmem::UPMEMDialect>();
+    // A repack survives cnm-to-upmem conversion untouched -- it is host-side
+    // data movement, not a device op -- so this is where the UPMEM backend
+    // gets to choose the runtime entry point that makes it measurable.
+    target.addIllegalOp<cnm::CompactBufferOp>();
 
     target.markUnknownOpDynamicallyLegal([](Operation *) { return true; });
 
