@@ -15,8 +15,9 @@ Schemas (the single source of truth for the plot scripts):
                distribution, not just its best).
 - rq1.csv      the offline interchange schema: benchmark, fn_name, system,
                config_label, total_ms, scatter_ms, kernel_ms, gather_ms,
-               load_ms, tuning_wallclock_s, notes. Offline rows pass
-               through; ours/cinm1 rows are computed here.
+               load_ms, excluded_transfer_ms, excluded_transfer_bytes,
+               tuning_wallclock_s, notes. Offline rows pass through;
+               ours/cinm1 rows are computed here.
 - rq2.csv      benchmark, fn_name, system, seed, n_candidates,
                search_wallclock_s, space_build_s, notes.
 - rq3.csv      benchmark + fidelity.fidelity_frame columns (fn_name, label,
@@ -43,6 +44,15 @@ from cinm_experiments.aggregate import iter_config_dirs
 # The offline interchange columns (offline/{atim,prim,cpu}.csv), shared
 # by rq1.csv. One row per measured point, component columns nullable;
 # nothing else in the pipeline knows how offline rows were obtained.
+#
+# `excluded_transfer_ms` is the operand movement a system performs but does
+# not report -- ATiM's `pragma_explicit_h2d` operands, our `cinm.static`
+# ones. It is not part of `total_ms` on either side, by construction: that is
+# what makes it worth its own column rather than a component of one. A
+# single-operator benchmark can only justify leaving it out if there is
+# something to amortize it against, which is a property of the workload
+# (`mtv`'s weight has it, `va`'s operands do not), so the number has to
+# travel per row rather than be assumed.
 INTERCHANGE_COLUMNS = [
     "benchmark",
     "fn_name",
@@ -53,6 +63,8 @@ INTERCHANGE_COLUMNS = [
     "kernel_ms",
     "gather_ms",
     "load_ms",
+    "excluded_transfer_ms",
+    "excluded_transfer_bytes",
     "tuning_wallclock_s",
     "notes",
 ]
