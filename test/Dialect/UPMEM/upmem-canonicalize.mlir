@@ -32,3 +32,31 @@ module @dpu_kernels {
     upmem.return
   }
 }
+
+// -----
+
+// A transfer map is simplified under the extents of its own domain. For the
+// block forms the second dimension is the block index, bounded by
+// numBlocksPerDpu (8 here) and not by the hierarchy's tasklet count (2): one
+// tasklet's data may arrive as several blocks. Assuming the smaller bound
+// would let `d1 floordiv 4` fold to 0 and `d1 mod 4` to `d1`, so every DPU
+// would read its first four blocks four times over and never see the rest.
+
+// CHECK-DAG: #[[MAP:.*]] = affine_map<(d0, d1) -> (d0, d1 floordiv 4, d1 mod 4, 0)>
+
+// CHECK-LABEL: func.func @block_dim_is_bounded_by_num_blocks
+func.func @block_dim_is_bounded_by_num_blocks(%host: memref<4x2x4x8xi32>) {
+  %dpus = upmem.alloc_dpus : !upmem.hierarchy<4x2>
+  upmem.load_program @dpu_kernels::@program on %dpus : !upmem.hierarchy<4x2>
+  // CHECK: upmem.scatter_blocks %{{.*}}[8 elts, #[[MAP]], 8 blocks]
+  upmem.scatter_blocks %host[8 elts, affine_map<(d0, d1) -> (d0, d1 floordiv 4, d1 mod 4, 0)>, 8 blocks] onto @buf of %dpus : memref<4x2x4x8xi32> onto !upmem.hierarchy<4x2>
+  upmem.free_dpus %dpus : !upmem.hierarchy<4x2>
+  return
+}
+
+module @dpu_kernels {
+  upmem.dpu_program @program() tasklets(2) {
+    %buf = upmem.static_alloc @buf(mram) : memref<64xi32, "mram">
+    upmem.return
+  }
+}
