@@ -79,6 +79,18 @@ def ConvertLinalgToCnmPass : Pass<"convert-linalg-to-cnm"> {
              "reduction rewrites the op and adds a dimension, so these are "
              "carried onto the new op with a 1 inserted for it. Without this "
              "a later pass would silently read a stale or missing list.">,
+      Option<"leafTileAttr", "leaf-tile-attr", "std::string", [{""}],
+             "Name of a per-iteration-dimension attribute giving the tile the "
+             "launch body will later stage into its leaf memory. When set, "
+             "every dimension whose block size is a proper multiple of its "
+             "leaf tile is split in two -- an outer chunk dimension and an "
+             "inner tile dimension -- and each operand's buffer is laid out "
+             "with all its chunk dimensions outermost. That makes the slice a "
+             "leaf stages for one chunk a single contiguous run, which is the "
+             "only thing a DMA can move; laid out in operand order it is "
+             "generally strided. The attribute is rewritten onto the split "
+             "space (1 per chunk dimension) so the staging pass tiles the new "
+             "dimensions correctly. Empty disables the split.">,
       ListOption<"workgroupDimOrder", "workgroup-dim-order", "int64_t",
              "Which iteration dimension occupies which workgroup axis, "
              "outermost (slowest-varying across leaves) first. A permutation "
