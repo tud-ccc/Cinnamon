@@ -3,7 +3,10 @@
 // -----
 #upmem = #upmem.platform<type = v1A, dpus = 2048, tasklets = 24>
 
-func.func @ttv_4MB(%A: tensor<32x64x512xi32>, %x: tensor<512xi32>) -> tensor<32x64xi32>
+// %A is the weight operand: same data on every inference, so its
+// transfer and any repack of it amortize over the serving lifetime
+// (cinm.static, see cinm::isStaticValue). %x is the per-inference input.
+func.func @ttv_4MB(%A: tensor<32x64x512xi32> {cinm.static}, %x: tensor<512xi32>) -> tensor<32x64xi32>
   attributes {cinm.available_platforms = [#upmem]} {
   %4 = cinm.compute -> tensor<32x64xi32> attributes {cinm.available_platforms = [#upmem]}{
     %e = tensor.empty(): tensor<32x512xi32>
@@ -21,7 +24,7 @@ func.func @ttv_4MB(%A: tensor<32x64x512xi32>, %x: tensor<512xi32>) -> tensor<32x
 // -----
 #upmem = #upmem.platform<type = v1A, dpus = 2048, tasklets = 24>
 
-func.func @ttv_64MB(%A: tensor<128x256x512xi32>, %x: tensor<512xi32>) -> tensor<128x256xi32>
+func.func @ttv_64MB(%A: tensor<128x256x512xi32> {cinm.static}, %x: tensor<512xi32>) -> tensor<128x256xi32>
   attributes {cinm.available_platforms = [#upmem]} {
   %4 = cinm.compute -> tensor<128x256xi32> attributes {cinm.available_platforms = [#upmem]}{
     %e = tensor.empty(): tensor<128x512xi32>
@@ -39,7 +42,7 @@ func.func @ttv_64MB(%A: tensor<128x256x512xi32>, %x: tensor<512xi32>) -> tensor<
 // -----
 #upmem = #upmem.platform<type = v1A, dpus = 2048, tasklets = 24>
 
-func.func @ttv_256MB(%A: tensor<256x512x512xi32>, %x: tensor<512xi32>) -> tensor<256x512xi32>
+func.func @ttv_256MB(%A: tensor<256x512x512xi32> {cinm.static}, %x: tensor<512xi32>) -> tensor<256x512xi32>
   attributes {cinm.available_platforms = [#upmem]} {
   %4 = cinm.compute -> tensor<256x512xi32> attributes {cinm.available_platforms = [#upmem]}{
     %e = tensor.empty(): tensor<256x512xi32>
@@ -57,7 +60,7 @@ func.func @ttv_256MB(%A: tensor<256x512x512xi32>, %x: tensor<512xi32>) -> tensor
 // -----
 #upmem = #upmem.platform<type = v1A, dpus = 2048, tasklets = 24>
 
-func.func @ttv_512MB(%A: tensor<512x512x512xi32>, %x: tensor<512xi32>) -> tensor<512x512xi32>
+func.func @ttv_512MB(%A: tensor<512x512x512xi32> {cinm.static}, %x: tensor<512xi32>) -> tensor<512x512xi32>
   attributes {cinm.available_platforms = [#upmem]} {
   %4 = cinm.compute -> tensor<512x512xi32> attributes {cinm.available_platforms = [#upmem]}{
     %e = tensor.empty(): tensor<512x512xi32>
