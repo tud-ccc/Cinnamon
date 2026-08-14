@@ -40,12 +40,17 @@ struct UpmemAnnotateCostsPass
     std::unique_ptr<UpmemSimulator> sim =
         createSimulator(simulator, true, timeout, programDumpDir);
 
+    // One row per (block, category, label, excluded). `excluded` rows are
+    // costs the program pays that block_total_ms does not include (see
+    // SimCost), so a consumer that wants the undiscounted view has to add
+    // them back rather than read the block total.
     struct CsvRow {
       unsigned blockId;
       std::string location;
       llvm::StringRef category;
       std::string label;
       double costMs;
+      bool excluded;
       double blockTotalMs;
     };
     llvm::SmallVector<CsvRow> rows;
@@ -69,11 +74,11 @@ struct UpmemAnnotateCostsPass
         llvm::raw_string_ostream(location) << computeBlock.getLoc();
         double blockTotal = cost.total();
         cost.forEachEntry([&](CostCategory category, llvm::StringRef label,
-                              double value) {
+                              double value, bool excluded) {
           rows.push_back(
               {blockId, location, costCategoryName(category),
                label.empty() ? costCategoryName(category).str() : label.str(),
-               value, blockTotal});
+               value, excluded, blockTotal});
         });
       }
       ++blockId;
@@ -88,11 +93,11 @@ struct UpmemAnnotateCostsPass
                                << costsCsv << "' for writing";
       return;
     }
-    out << "block_id,location,category,label,cost_ms,block_total_ms\n";
+    out << "block_id,location,category,label,cost_ms,excluded,block_total_ms\n";
     for (auto &r : rows)
       out << r.blockId << "," << csvQuote(r.location) << "," << r.category.str()
           << "," << csvQuote(r.label) << "," << r.costMs << ","
-          << r.blockTotalMs << "\n";
+          << (r.excluded ? 1 : 0) << "," << r.blockTotalMs << "\n";
   }
 };
 
