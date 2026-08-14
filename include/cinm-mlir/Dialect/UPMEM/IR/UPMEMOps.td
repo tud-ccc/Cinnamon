@@ -165,6 +165,19 @@ def LocalTransferOp : Upmem_Op<"local_transfer"> {
     ```mlir
     upmem.local_transfer (wram to mram) %source into %dest : memref<2048xf32, "wram"> to memref<2048xf32, "mram">
     ```
+
+    Both operands must denote a *contiguous* region: this is a DMA of a
+    single run of memory, and the hardware has no strided transfer. A
+    `memref.subview` that skips over its source therefore cannot be
+    transferred, and a buffer whose staged slices need to be contiguous has
+    to be laid out so that they are -- typically by tiling the buffer with
+    the staged tile and making the tile the innermost dimensions. Unit
+    dimensions are exempt, as they constrain no addresses.
+
+    Enforcing this here rather than in the backend keeps the failure at the
+    op that is wrong: without it a strided transfer lowers to a DMA of the
+    right byte count from the wrong addresses, which is silently incorrect
+    rather than a compile error.
   }];
 
   let arguments = (ins Arg<AnyMemRef, "the memref to copy from",
@@ -173,6 +186,7 @@ def LocalTransferOp : Upmem_Op<"local_transfer"> {
                            [MemWriteAt<0, FullEffect>]>:$target);
 
   let hasCanonicalizer = 1;
+  let hasVerifier = 1;
   let assemblyFormat = [{
     $source `into` $target attr-dict `:` type($source) `to` type($target)
   }];

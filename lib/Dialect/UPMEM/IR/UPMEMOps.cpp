@@ -449,6 +449,28 @@ public:
 };
 
 } // namespace
+
+LogicalResult upmem::LocalTransferOp::verify() {
+  for (auto [side, ty] :
+       {std::pair<StringRef, MemRefType>{"source", getSource().getType()},
+        std::pair<StringRef, MemRefType>{"target", getTarget().getType()}}) {
+    if (memrefIsContiguous(ty))
+      continue;
+    InFlightDiagnostic diag = emitOpError(side)
+                              << " is not contiguous: " << ty
+                              << ". A local transfer is a DMA of one run of "
+                                 "memory; a strided region would move the "
+                                 "right number of bytes to or from the wrong "
+                                 "addresses";
+    SmallVector<int64_t> strides;
+    int64_t offset = 0;
+    if (succeeded(ty.getStridesAndOffset(strides, offset)))
+      diag << " (strides " << strides << ")";
+    return diag;
+  }
+  return success();
+}
+
 void upmem::LocalTransferOp::getCanonicalizationPatterns(
     RewritePatternSet &results, MLIRContext *context) {
   results.add<FoldCastForLocalTransfer>(context);

@@ -135,6 +135,24 @@ SmallString<20> getUniqueFunctionName(ModuleOp &moduleOp, StringRef prefix) {
   return name;
 }
 
+bool memrefIsContiguous(MemRefType ty) {
+  SmallVector<int64_t> strides;
+  int64_t offset = 0;
+  if (failed(ty.getStridesAndOffset(strides, offset)))
+    return false;
+  int64_t expected = 1;
+  for (int i = ty.getRank() - 1; i >= 0; --i) {
+    int64_t size = ty.getDimSize(i);
+    if (size == 1)
+      continue;
+    if (ShapedType::isDynamic(size) || ShapedType::isDynamic(strides[i]) ||
+        strides[i] != expected)
+      return false;
+    expected *= size;
+  }
+  return true;
+}
+
 /// Check that the memref is contiguous in the dimensions corresponding to the
 /// bufShape, which is a suffix of the shape of the input tensor/memref.
 bool scatteredMemrefIsContiguous(TypedValue<ShapedType> value,
