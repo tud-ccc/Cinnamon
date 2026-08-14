@@ -128,19 +128,24 @@ struct ConvertCnmScatterToGPU : public OpConversionPattern<cnm::ScatterOp> {
     dst = createOrFoldUnrealizedConversionCast(
         op.getLoc(), rewriter, convertCnmBufferToMemRefType(bufferType), dst);
 
+    // Each iteration copies one block, so the widest block the map allows is
+    // the fewest copies. The stored map is pointwise and carries no block, so
+    // derive one -- the same choice cnm-to-upmem makes for itself.
+    const AffineMap map = cnm::deflateScatterMap(op.getScatterMap(), bufferType,
+                                                 op.getHostType());
     // One iteration per transfer: over the workgroup, and over the buffer
     // dimensions the map retains when a leaf receives several blocks.
     const SmallVector<int64_t> domain =
-        cnm::getScatterMapDomain(op.getScatterMap(), bufferType);
+        cnm::getScatterMapDomain(map, bufferType);
     const SmallVector<int64_t> loopSteps(domain.size(), 1);
     const ArrayRef<int64_t> blockShape =
-        cnm::getScatterBlockShape(op.getScatterMap(), bufferType);
+        cnm::getScatterBlockShape(map, bufferType);
     cinm::createNestedAffineForLoops(
         rewriter, op.getLoc(), domain, loopSteps, ValueRange{},
         [&](OpBuilder &builder, Location loc, ValueRange indices,
             ValueRange) -> SmallVector<Value> {
           const SmallVector<Value> mappedIndices =
-              createAffineApply(builder, loc, op.getScatterMap(), indices);
+              createAffineApply(builder, loc, map, indices);
           createMemrefSubviewCopy(builder, loc, src, dst, blockShape,
                                   mappedIndices, indices);
           return {};
@@ -165,17 +170,19 @@ struct ConvertCnmGatherToGPU : public OpConversionPattern<cnm::GatherOp> {
         op.getLoc(), rewriter, convertCnmBufferToMemRefType(bufferType), src);
     Value dst = rewriter.getRemappedValue(op.getOperand(2));
 
+    const AffineMap map =
+        cnm::deflateScatterMap(op.getGatherMap(), bufferType, op.getHostType());
     const SmallVector<int64_t> domain =
-        cnm::getScatterMapDomain(op.getGatherMap(), bufferType);
+        cnm::getScatterMapDomain(map, bufferType);
     const SmallVector<int64_t> loopSteps(domain.size(), 1);
     const ArrayRef<int64_t> blockShape =
-        cnm::getScatterBlockShape(op.getGatherMap(), bufferType);
+        cnm::getScatterBlockShape(map, bufferType);
     cinm::createNestedAffineForLoops(
         rewriter, op.getLoc(), domain, loopSteps, ValueRange{},
         [&](OpBuilder &builder, Location loc, ValueRange indices,
             ValueRange) -> SmallVector<Value> {
           const SmallVector<Value> mappedIndices =
-              createAffineApply(builder, loc, op.getGatherMap(), indices);
+              createAffineApply(builder, loc, map, indices);
           createMemrefSubviewCopy(builder, loc, src, dst, blockShape, indices,
                                   mappedIndices);
           return {};
