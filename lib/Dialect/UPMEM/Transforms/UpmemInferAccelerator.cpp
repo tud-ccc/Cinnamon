@@ -599,7 +599,13 @@ struct UpmemInferencePlugin : cinm::InferencePlugin {
     pm->addPass(createCSEPass());
 
     // Step 6: cnm → upmem
-    pm->addPass(cnm::createCnmEnsureScatterGatherContiguousPass());
+    if (debug)
+      pm->addPass(createPrintIRPass({.label = "before-cnm-sg-contiguous"}));
+    pm->addPass(cnm::createCnmEnsureScatterGatherContiguousPass(
+        {.packFragmented = true, .staticOnly = true}));
+    pm->addPass(createCanonicalizerPass());
+    if (debug)
+      pm->addPass(createPrintIRPass({.label = "after-cnm-sg-contiguous"}));
     pm->addPass(cnm::createConvertCnmToUPMEMPass({}));
     // Right after the conversion, so the rest of the back pipeline sees the
     // narrowest transfer form each map allows -- in particular the occupancy

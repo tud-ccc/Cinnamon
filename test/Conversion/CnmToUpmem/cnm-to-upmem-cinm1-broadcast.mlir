@@ -12,8 +12,8 @@
 // CHECK-DAG: #[[MAPB:[^ ]*]] = affine_map<(d0) -> (d0, 0)>
 
 // CHECK-LABEL: func.func @main
-// CHECK: upmem.scatter_on_array %{{.*}}[16 elts, #[[MAPA]]] onto @buf_0 of %[[DPU:.*]] : memref<4x2x8xi32> onto !upmem.hierarchy<4x2>
-// CHECK: upmem.scatter_on_array %{{.*}}[8 elts, #[[MAPB]]] onto @buf of %[[DPU]] : memref<4x8xi32> onto !upmem.hierarchy<4x2>
+// CHECK: upmem.scatter_on_array %{{.*}}[16 elts, #[[MAPA]]] onto @buf_0 of %[[DPU:.*]] {{{.*}}} : memref<4x2x8xi32> onto !upmem.hierarchy<4x2>
+// CHECK: upmem.scatter_on_array %{{.*}}[8 elts, #[[MAPB]]] onto @buf of %[[DPU]] {{{.*}}} : memref<4x8xi32> onto !upmem.hierarchy<4x2>
 
 // CHECK: module @dpu_kernels
 // CHECK: upmem.dpu_program @program() tasklets(2) {

@@ -59,6 +59,19 @@ bool isFullyContiguous(TypedValue<ShapedType> value) {
   return mlir::scatteredMemrefIsContiguous(value, memrefTy.getShape());
 }
 
+/// Records that a repack moves data that is the same on every inference.
+///
+/// The tag goes on the repack, which is what decides how it is timed, and on
+/// the allocation it fills, which is what makes the conclusion reachable
+/// afterwards: whoever later asks whether the packed buffer is static (the
+/// backend, deciding how to time the transfer *out* of it) sees only a
+/// memref.alloc, and an allocation says nothing about its contents.
+void markStatic(Operation *repack, Value packed, OpBuilder &b) {
+  repack->setAttr(cinm::CinmDialect::STATIC_ATTR_NAME, b.getUnitAttr());
+  packed.getDefiningOp()->setAttr(cinm::CinmDialect::STATIC_ATTR_NAME,
+                                  b.getUnitAttr());
+}
+
 /// The constants `map` divides each of its dimensions by, which is what has to
 /// fall on a dimension boundary for the map to be linear in them.
 ///
@@ -179,7 +192,7 @@ bool packIntoOneBlockPerLeaf(cnm::ScatterOp op, OpBuilder &b, bool isStatic) {
   auto compact =
       cnm::CompactBufferOp::create(b, loc, op.getInput(), packed, packedMap);
   if (isStatic)
-    compact->setAttr(cinm::CinmDialect::STATIC_ATTR_NAME, b.getUnitAttr());
+    markStatic(compact, packed, b);
 
   op.getInputMutable().assign(packed);
   op.setScatterMap(simplifyAffineMapWithBounds(
@@ -220,7 +233,7 @@ void ensureScatterContiguous(cnm::ScatterOp op, OpBuilder &b, bool staticOnly) {
       b, loc, input, packed,
       AffineMap::getMultiDimIdentityMap(rank, b.getContext()));
   if (isStatic)
-    compact->setAttr(cinm::CinmDialect::STATIC_ATTR_NAME, b.getUnitAttr());
+    markStatic(compact, packed, b);
   op.getInputMutable().assign(packed);
 
   // b.setInsertionPointAfter(op);

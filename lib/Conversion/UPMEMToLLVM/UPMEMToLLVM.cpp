@@ -121,17 +121,13 @@ static Value reifyAsString(ImplicitLocOpBuilder &builder, ModuleOp container,
   return LLVM::AddressOfOp::create(builder, global);
 }
 
-// Name of the discardable string attribute an upmem.scatter/gather/broadcast/
-// scatter_blocks op may carry to label its transfer's stats rows (see
-// timers.h/upmemrt_record_scatter's `tag` parameter). Absent means untagged.
-constexpr StringLiteral kTimingTagAttrName = "upmem.timing_tag";
-
 /// Reifies the op's `upmem.timing_tag` attribute (if present) as a string
 /// constant, or a null pointer otherwise, for use as the `tag` argument of
-/// the runtime transfer functions.
+/// the runtime transfer functions (see timers.h/upmemrt_record_scatter).
 static Value reifyTimingTag(ImplicitLocOpBuilder &builder, ModuleOp container,
                             Operation *op) {
-  if (auto tagAttr = op->getAttrOfType<StringAttr>(kTimingTagAttrName))
+  if (auto tagAttr =
+          op->getAttrOfType<StringAttr>(upmem::UPMEMDialect::TIMING_TAG_NAME))
     return reifyAsString(builder, container, tagAttr.getValue(), "timing_tag");
   return LLVM::ZeroOp::create(builder, untypedPtrType(builder.getContext()));
 }

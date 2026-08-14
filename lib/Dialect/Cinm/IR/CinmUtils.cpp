@@ -40,6 +40,14 @@ bool isStaticValue(Value value) {
     if (matchPattern(def, m_Constant()))
       return true;
 
+    // A conclusion someone else already drew. A buffer is filled by an op that
+    // writes it rather than produced by one, so nothing reachable from here
+    // says where its contents came from -- and the pass that does know may sit
+    // in a dialect this library cannot name. It records the answer on the
+    // allocation instead, which is the one place both sides can see.
+    if (def && def->hasAttr(CinmDialect::STATIC_ATTR_NAME))
+      return true;
+
     // A pure slicing op reads one source at offsets/sizes/strides; with all
     // of those static it has exactly one operand, which ODS puts first
     // (`$source` in tensor.extract_slice and memref.subview). The operand
@@ -53,11 +61,11 @@ bool isStaticValue(Value value) {
       value = view->getOperand(0);
       continue;
     }
-    if (llvm::isa_and_nonnull<
-            bufferization::ToBufferOp, bufferization::ToTensorOp,
-            CastOpInterface, tensor::ExpandShapeOp, tensor::CollapseShapeOp,
-            tensor::ReshapeOp, memref::CollapseShapeOp, memref::ReshapeOp>(
-            def)) {
+    if (llvm::isa_and_nonnull<bufferization::ToBufferOp,
+                              bufferization::ToTensorOp, CastOpInterface,
+                              tensor::ExpandShapeOp, tensor::CollapseShapeOp,
+                              tensor::ReshapeOp, memref::CollapseShapeOp,
+                              memref::ReshapeOp, memref::ExpandShapeOp>(def)) {
       value = def->getOperand(0);
       continue;
     }

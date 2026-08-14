@@ -38,6 +38,13 @@ def UPMEM_Dialect : Dialect {
       /// ops implementing CinmTilingInterface -- these sit on linalg ops.
       constexpr static StringRef LEAF_TILE_SIZES_NAME = "upmem.leaf_tile_sizes";
 
+      /// A StringAttr labelling a transfer op's rows in the runtime's timing
+      /// CSVs, as `static:<id>` or `dyn:<id>`: whether the data it moves is
+      /// the same on every inference (cinm::isStaticValue, asked while the
+      /// host value's definition is still in the IR), and which op moved it.
+      /// Absent means the transfer is unattributed.
+      constexpr static StringRef TIMING_TAG_NAME = "upmem.timing_tag";
+
     private:
         void registerOps();
         void registerTypes();

@@ -29,6 +29,40 @@ def _output_dir(obj: Union[pathlib.Path, RunResult]) -> pathlib.Path:
     return pathlib.Path(obj)
 
 
+def _amortizable_index(df: pd.DataFrame) -> pd.Index:
+    """The rows of `df` a serving deployment would pay once rather than per
+    inference.
+
+    A row qualifies on two counts. Its `tag` must say the data it moves is the
+    same on every inference -- `static:<id>`, written by the cnm -> upmem
+    conversion, which is the last stage that can still see where the host
+    value came from. And its id must appear exactly once in the iteration:
+    a transfer inside a loop moves a different tile on every trip, so no
+    single load-time transfer replaces it however static its source is. That
+    second half cannot be read off the IR, which is why it is asked here.
+
+    Rows with no tag are not amortizable: unattributed means unproven.
+    """
+    if "tag" not in df.columns:
+        return df.index[[]]
+    tag = df["tag"].astype("string")
+    static = df[tag.notna() & tag.str.startswith("static:")]
+    if static.empty:
+        return df.index[[]]
+    once = static.groupby(["iteration", "tag"]).filter(lambda g: len(g) == 1)
+    return once.index
+
+
+def amortizable_ns(df: pd.DataFrame) -> pd.Series:
+    """Per-iteration nanoseconds in `df` that a serving deployment would pay
+    once rather than per inference, keyed by iteration. See
+    _amortizable_index for which rows those are."""
+    rows = df.loc[_amortizable_index(df)]
+    if rows.empty:
+        return pd.Series(dtype=float)
+    return rows.groupby("iteration")["elapsed_ns"].sum()
+
+
 def net_time_ms(
     output_dir: Union[pathlib.Path, RunResult],
     *,
@@ -50,13 +84,16 @@ def net_time_ms(
     Repacks (cnm.compact_buffer, compact.csv) follow the same rule, which is
     why the runtime records them with a `kind`: a repack of a `cinm.static`
     operand happens once per workload lifetime and is subtracted, while one on
-    a per-inference operand is a real recurring cost and is not. Pass
+    a per-inference operand is a real recurring cost and is not. So do the
+    transfers themselves: pinning a weight on the accelerator is the whole
+    point of declaring it static, and a scatter of one is paid at load time
+    rather than per inference (see amortizable_ns). Pass
     discount_static_compact=False to price the un-amortized case."""
     total_df = None
     alloc_ns = pd.Series(dtype=float)
     free_ns = pd.Series(dtype=float)
     load_ns = pd.Series(dtype=float)
-    static_compact_ns = pd.Series(dtype=float)
+    static_ns: list[pd.Series] = []
 
     for csv_path in _output_dir(output_dir).glob("*.csv"):
         t = _csv_type(csv_path)
@@ -72,7 +109,9 @@ def net_time_ms(
             load_ns = df.groupby("iteration")["elapsed_ns"].sum()
         elif t == "compact" and discount_static_compact and "kind" in df.columns:
             static = df[df["kind"] == "static"]
-            static_compact_ns = static.groupby("iteration")["elapsed_ns"].sum()
+            static_ns.append(static.groupby("iteration")["elapsed_ns"].sum())
+        elif t == "scatter" and discount_static_compact:
+            static_ns.append(amortizable_ns(df))
 
     if total_df is None or total_df.empty:
         return None
@@ -82,8 +121,9 @@ def net_time_ms(
         - total_df["iteration"].map(alloc_ns).fillna(0)
         - total_df["iteration"].map(free_ns).fillna(0)
         - total_df["iteration"].map(load_ns).fillna(0)
-        - total_df["iteration"].map(static_compact_ns).fillna(0)
     )
+    for series in static_ns:
+        net = net - total_df["iteration"].map(series).fillna(0)
     return float(net.mean()) / 1e6
 
 
@@ -145,13 +185,39 @@ def load_time_ms(output_dir: Union[pathlib.Path, RunResult]) -> float | None:
     return _sum_time_ms(output_dir, "load")
 
 
-def _sum_time_ms_by_kind(
+def amortizable_time_ms(
     output_dir: Union[pathlib.Path, RunResult], csv_type: str
+) -> float:
+    """Mean per-iteration time in ms that amortizable_ns identifies in the
+    given csv_type. 0.0 when there is nothing to amortize."""
+    for csv_path in _output_dir(output_dir).glob("*.csv"):
+        if _csv_type(csv_path) != csv_type:
+            continue
+        df = pd.read_csv(csv_path)
+        df = df.rename(columns={_iter_col(df): "iteration"})
+        series = amortizable_ns(df)
+        if series.empty:
+            return 0.0
+        # Iterations with nothing amortizable contribute zero, not nothing:
+        # reindexing over every iteration in the file keeps the mean per
+        # iteration rather than per iteration that happened to have one.
+        iterations = df["iteration"].unique()
+        return float(series.reindex(iterations).fillna(0).mean()) / 1e6
+    return 0.0
+
+
+def _sum_time_ms_by_kind(
+    output_dir: Union[pathlib.Path, RunResult],
+    csv_type: str,
+    drop_amortizable: bool = False,
 ) -> dict[str, float]:
     """Like _sum_time_ms, but broken down per `kind` column value (e.g.
     "on_array"/"blocks" for scatter, see timers.h's `kind` parameter) instead
     of summed across all of them. Returns {} if no matching csv-type file is
-    present, or if it predates the `kind` column."""
+    present, or if it predates the `kind` column.
+
+    With drop_amortizable, the rows net_time_ms has already taken out of the
+    total are left out here too, so the buckets still sum to net."""
     for csv_path in _output_dir(output_dir).glob("*.csv"):
         if _csv_type(csv_path) != csv_type:
             continue
@@ -159,9 +225,13 @@ def _sum_time_ms_by_kind(
         df = df.rename(columns={_iter_col(df): "iteration"})
         if "kind" not in df.columns:
             return {}
+        iterations = df["iteration"].unique()
+        if drop_amortizable:
+            df = df.drop(index=_amortizable_index(df))
         result = {}
         for kind, group in df.groupby("kind"):
-            mean = float(group.groupby("iteration")["elapsed_ns"].sum().mean())
+            per_iter = group.groupby("iteration")["elapsed_ns"].sum()
+            mean = float(per_iter.reindex(iterations).fillna(0).mean())
             if not isnan(mean):
                 result[str(kind)] = mean / 1e6
         return result
@@ -277,6 +347,9 @@ def net_breakdown_ms(
     if net is None:
         return None
     scatter = scatter_time_ms(output_dir) or 0.0
+    if discount_static_compact:
+        # Already out of net, so it has to be out of the bucket too.
+        scatter -= amortizable_time_ms(output_dir, "scatter")
     gather = gather_time_ms(output_dir) or 0.0
     copy = copy_time_ms(output_dir) or 0.0
     launch = launch_time_ms(output_dir) or 0.0
@@ -303,7 +376,11 @@ def net_breakdown_ms(
         # grew the column at the same time, but old output/ dirs get mixed
         # with new ones when only part of a sweep is re-run).
         for direction in ("scatter", "gather"):
-            by_k = _sum_time_ms_by_kind(output_dir, direction)
+            by_k = _sum_time_ms_by_kind(
+                output_dir,
+                direction,
+                drop_amortizable=discount_static_compact,
+            )
             if by_k:
                 del transfers[direction]
                 transfers.update({f"{direction}:{k}": t for k, t in by_k.items()})

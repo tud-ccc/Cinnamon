@@ -25,7 +25,12 @@ namespace mlir::cinm {
 ///  - a view of a static value taken at compile-time-constant offsets,
 ///    sizes and strides (`tensor.extract_slice`, `memref.subview`) -- the
 ///    same window of the same tensor each time. A dynamically-indexed view
-///    of static data is *not* static: the data moved per inference varies.
+///    of static data is *not* static: the data moved per inference varies;
+///  - produced by an op carrying `cinm.static` itself. A buffer is filled by
+///    an op that writes it, not produced by one, so a pass that packs static
+///    data into a fresh allocation records that on the allocation -- the
+///    derivation cannot rediscover it, and the writing op may belong to a
+///    dialect this library does not depend on.
 /// A `cinm.compute_block` region argument delegates to the corresponding
 /// outer operand, so operands may be classified from inside the isolated
 /// body.

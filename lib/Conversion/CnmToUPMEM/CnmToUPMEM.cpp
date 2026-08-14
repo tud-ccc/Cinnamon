@@ -124,10 +124,26 @@ static int64_t blocksPerDpu(AffineMap map, cnm::BufferType bufferTy,
                               : static_cast<int64_t>(numTasklets) * perLeaf;
 }
 
+// What a transfer's timing rows are labelled with: whether the data it moves
+// is the same on every inference, and which op moved it.
+//
+// Both are decided here. This is the last point at which the host value's
+// definition is in the IR to be asked -- after the conversion there is a bare
+// pointer and a length -- and an id per op is what lets the analysis tell one
+// transfer's rows from another's, and one execution from a loop's worth of
+// them. A static transfer amortizes over the serving lifetime only if it
+// happens once per inference, which is a question about the rows, not the IR.
+static void labelTransfer(Operation *op, Value hostValue, unsigned id) {
+  std::string tag = (cinm::isStaticValue(hostValue) ? "static:" : "dyn:") +
+                    std::to_string(id);
+  op->setAttr(upmem::UPMEMDialect::TIMING_TAG_NAME,
+              StringAttr::get(op->getContext(), tag));
+}
+
 static LogicalResult
 convertCnmGatherToUpmem(RewriterBase &rewriter, cnm::GatherOp op,
                         TypedValue<upmem::DeviceHierarchyType> hierarchy,
-                        StringAttr refToBuffer) {
+                        StringAttr refToBuffer, unsigned id) {
 
   rewriter.setInsertionPoint(op);
   Value outputBuf = op.getOutputBuf();
@@ -149,12 +165,13 @@ convertCnmGatherToUpmem(RewriterBase &rewriter, cnm::GatherOp op,
 
   // A gathered buffer always has a per-tasklet dimension: results the
   // tasklets could not tell apart would race.
-  upmem::GatherBlocksOp::create(
+  auto gather = upmem::GatherBlocksOp::create(
       rewriter, op->getLoc(), outputBuf, refToBuffer,
       op.getTransferCountInItems() / perLeaf,
       keepTaskletDimAffineMapCnmToUpmem(map, bufferTy), hierarchy,
       blocksPerDpu(map, bufferTy, numTasklets,
                    /*sharedAcrossTasklets=*/false));
+  labelTransfer(gather, op.getHostValue(), id);
 
   if (!isBufferized) {
     Value outputAsTensor = createOrFoldUnrealizedConversionCast(
@@ -166,9 +183,11 @@ convertCnmGatherToUpmem(RewriterBase &rewriter, cnm::GatherOp op,
   return success();
 }
 
-static LogicalResult convertCnmScatterToUpmem(
-    RewriterBase &rewriter, cnm::ScatterOp op, bool sharedAcrossTasklets,
-    TypedValue<upmem::DeviceHierarchyType> hierarchy, StringAttr refToBuffer) {
+static LogicalResult
+convertCnmScatterToUpmem(RewriterBase &rewriter, cnm::ScatterOp op,
+                         bool sharedAcrossTasklets,
+                         TypedValue<upmem::DeviceHierarchyType> hierarchy,
+                         StringAttr refToBuffer, unsigned id) {
 
   rewriter.setInsertionPoint(op);
   const Value tensor = op.getInput();
@@ -187,11 +206,14 @@ static LogicalResult convertCnmScatterToUpmem(
       cnm::deflateScatterMap(op.getScatterMap(), bufferTy, inputTy);
   const int64_t perLeaf = cnm::getScatterBlocksPerLeaf(map, bufferTy);
 
-  upmem::ScatterBlocksOp::create(
+  auto scatter = upmem::ScatterBlocksOp::create(
       rewriter, op->getLoc(), inputAsMemref, refToBuffer,
       op.getTransferCountInItems() / perLeaf,
       keepTaskletDimAffineMapCnmToUpmem(map, bufferTy), hierarchy,
       blocksPerDpu(map, bufferTy, numTasklets, sharedAcrossTasklets));
+  // The host value, not the cast of it: a cast is not one of the definitions
+  // the staticness derivation walks through.
+  labelTransfer(scatter, op.getHostValue(), id);
 
   rewriter.eraseOp(op);
   return success();
@@ -434,7 +456,8 @@ static FailureOr<Value> findForwardedWorkgroup(cnm::LaunchOp launch,
 static LogicalResult convertCnmLaunchToUpmem(cnm::LaunchOp launch,
                                              RewriterBase &rewriter, Opts opts,
                                              SymbolTable rootModule,
-                                             ModuleOp dpuKernelModule) {
+                                             ModuleOp dpuKernelModule,
+                                             unsigned &nextTransferId) {
 
   rewriter.clearInsertionPoint();
 
@@ -575,14 +598,15 @@ static LogicalResult convertCnmLaunchToUpmem(cnm::LaunchOp launch,
 
       if (!alloc || failed(convertCnmScatterToUpmem(
                         rewriter, scatter, sharedAcrossTasklets, hierarchy,
-                        alloc.getSymNameAttr()))) {
+                        alloc.getSymNameAttr(), nextTransferId++))) {
         return failure();
       }
     }
     if (auto gather = llvm::dyn_cast_or_null<cnm::GatherOp>(user)) {
       auto alloc = buffersToMramBuf.lookup(gather.getBuffer());
       if (!alloc || failed(convertCnmGatherToUpmem(rewriter, gather, hierarchy,
-                                                   alloc.getSymNameAttr()))) {
+                                                   alloc.getSymNameAttr(),
+                                                   nextTransferId++))) {
         return failure();
       }
     }
@@ -733,9 +757,12 @@ struct ConvertCnmToUPMEMPass
     SymbolTable rootSymTable(parentModule);
 
     IRRewriter rewriter(&getContext());
+    // Runs over every launch, so a transfer's label identifies it within the
+    // whole module and not just within its own launch.
+    unsigned nextTransferId = 0;
     for (auto launch : launchOps) {
       if (failed(convertCnmLaunchToUpmem(launch, rewriter, opts, rootSymTable,
-                                         dpuKernelModule))) {
+                                         dpuKernelModule, nextTransferId))) {
         signalPassFailure();
         return;
       }
