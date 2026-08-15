@@ -94,6 +94,15 @@ def simulatorClValues {
     )}];
 }
 
+def packFragmentedClValues {
+  string values = [{
+  ::llvm::cl::values(
+    clEnumValN(PackFragmentedTransfers::NONE, "none", "Leave every fragmented transfer in the block form"),
+    clEnumValN(PackFragmentedTransfers::STATIC, "static", "Repack only operands that are the same on every inference, so the repack amortizes"),
+    clEnumValN(PackFragmentedTransfers::ALL, "all", "Repack per-inference operands too: a copy per call, but every scatter stays in the flat whole-array form")
+    )}];
+}
+
 def acquisitionClValues {
   string values = [{
   ::llvm::cl::values(
@@ -204,6 +213,15 @@ def UpmemInferAcceleratorPass : Pass<"upmem-infer-accelerator", "ModuleOp"> {
            "level; false disables both sites. No space parameter denotes "
            "the specialised forms, so the space itself is unchanged. "
            "The capability-ablation switch (paper A1)">,
+    Option<"packFragmentedTransfers", "pack-fragmented-transfers",
+           "PackFragmentedTransfers", "PackFragmentedTransfers::STATIC",
+           "Which operands whose transfer arrives as several blocks per leaf "
+           "are repacked into one whole-buffer block, trading those blocks "
+           "for a repack of the host value (see "
+           "--cnm-ensure-scatter-gather-contiguous's pack-fragmented). Only "
+           "`all` keeps a scatter out of the block form when its operand "
+           "changes per inference",
+           packFragmentedClValues.values>,
     Option<"graphAllocation", "graph-allocation", "bool", "false",
            "Run the graph-level two-level solve (profile each program class "
            "over the DPU rank menu, allocate the grid exactly across the "

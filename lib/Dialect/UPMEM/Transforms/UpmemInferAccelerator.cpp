@@ -100,6 +100,11 @@ struct UpmemInferenceOptions {
   // level; this switch disables both sites, or the A1 ablation
   // under-reports the capability.
   bool scatterSpecialisation = true;
+  /// Which fragmented transfers --cnm-ensure-scatter-gather-contiguous
+  /// repacks into one block per leaf. Repacking a per-inference operand buys
+  /// the flat whole-array transfer at the price of a copy on every call,
+  /// which is why the default stops at the operands that amortize.
+  PackFragmentedTransfers packFragmented = PackFragmentedTransfers::STATIC;
   bool fusionEdges = true;
   bool debugPrintsInPipeline = false;
   UpmemSimulatorId simulator = UpmemSimulatorId::CYCLE_ACCURATE;
@@ -608,7 +613,9 @@ struct UpmemInferencePlugin : cinm::InferencePlugin {
     if (debug)
       pm->addPass(createPrintIRPass({.label = "before-cnm-sg-contiguous"}));
     pm->addPass(cnm::createCnmEnsureScatterGatherContiguousPass(
-        {.packFragmented = true, .staticOnly = true}));
+        {.packFragmented = opts.packFragmented != PackFragmentedTransfers::NONE,
+         .staticOnly =
+             opts.packFragmented == PackFragmentedTransfers::STATIC}));
     pm->addPass(createCanonicalizerPass());
     if (debug)
       pm->addPass(createPrintIRPass({.label = "after-cnm-sg-contiguous"}));
@@ -1286,6 +1293,7 @@ struct UpmemInferAcceleratorPass
     upmemOpts.annotateOpCosts = annotateOpCosts;
     upmemOpts.useMRAMTiling = useMRAMTiling;
     upmemOpts.scatterSpecialisation = enableScatterSpecialisation;
+    upmemOpts.packFragmented = packFragmentedTransfers;
     upmemOpts.fusionEdges = fusionEdges;
     upmemOpts.fixedDpus = fixedDpus;
     upmemOpts.fixedTasklets = fixedTasklets;
