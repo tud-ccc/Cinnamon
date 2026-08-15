@@ -52,11 +52,9 @@ OPTS = dict(
     k_top=200,  # B3: measured ground truth for top-k overlap up to k=200
     n_seeds=32,  # B4: matches the cinm1comparison campaign
     iters=6,  # measurement repetitions per hardware run
-    # The hybrid model's switching point, same value as the search stack
-    # (cinm1comparison): cycle-accurate within the budget, fast model past
-    # it. Part of the model's definition, not a performance knob -- B1's
-    # predicted costs and every search must use the same value.
-    eval_timeout_ms=400,
+    # Simulator to use for all trials, except the top-k search (timeout is only used in top-k search).
+    simulator="cycle-accurate",
+    eval_timeout_ms=0,
     # B3's exhaustive predicted sweep only. A timeout is safe here, unlike
     # in B1: it can only mis-price configs slower than 300 ms, which cannot
     # be in the top anyway, and it speeds the sweep up considerably.
@@ -174,20 +172,10 @@ def _draw_sample(bench: str) -> bool:
         n_samples=OPTS["n_sample"],
         seed=OPTS["sample_seed"],
         infer_opts={
-            # EXACTLY the model the search stack consumes -- simulator and
-            # timeout together, because they are one model: hybrid runs
-            # cycle-accurate under eval-timeout-ms and answers with the fast
-            # model when it fires (UpmemPythonSimulator.cpp, SimMode::HYBRID)
-            # -- with no timeout, "hybrid" is just cycle-accurate. RQ3's
-            # fidelity claim is about what the flow chooses with, so the
-            # sample's predicted costs must come from the same pairing the
-            # search uses. The timeout does NOT censor the sample: a
-            # timed-out config is priced by the fallback, not dropped.
-            "simulator": "hybrid",
+            "simulator": OPTS["simulator"],
             "eval-timeout-ms": OPTS["eval_timeout_ms"],
-            # What WOULD censor the sample is the cost cap, which rejects
-            # and resamples: off, or the E1 percentile (rule of three needs
-            # a uniform draw) and RQ3's rank correlation are void.
+            # No timeout during random sampling - we want uniform sampling
+            # and only one simulator contributing to it.
             "sample-max-cost-ms": 0,
         },
     )
@@ -701,7 +689,7 @@ def _exhaust_one(bench: str) -> bool:
             # comparable across stacks -- but with the shorter sweep
             # timeout: it can only mis-price configs that cannot compete
             # for the top anyway.
-            "simulator": "hybrid",
+            "simulator": OPTS["simulator"],
             "eval-timeout-ms": OPTS["exhaust_timeout_ms"],
         },
     )
@@ -792,7 +780,7 @@ def _run_search(bench: str, space: str) -> bool:
         _search_dump_dir(bench, space),
         n_seeds=OPTS["n_seeds"],
         infer_opts={
-            "simulator": "hybrid",
+            "simulator": OPTS["simulator"],
             "eval-timeout-ms": OPTS["eval_timeout_ms"],
             **ABLATE_INFER_OPTS.get(space, {}),
         },
