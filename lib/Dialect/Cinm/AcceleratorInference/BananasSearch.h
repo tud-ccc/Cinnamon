@@ -56,6 +56,64 @@ struct ValidationSet {
   void dumpToCSV(std::filesystem::path path) const;
 };
 
+/// Per-round record of what the surrogate-guided phase did: where the round's
+/// time went, and where in the candidate ranking the accepted point sat.
+struct RoundRecord {
+  int round;        // Phase-2 round, 0-based
+  size_t nObs;      // observations available to the fit, before this round
+  size_t nCand;     // candidates ranked this round
+  size_t nNeighbor; // of which came from the observed points' neighbourhood
+  size_t selIdx;    // pool index accepted
+  double selMu, selSigma;
+  // Position of the accepted point in the candidate ranking under each
+  // criterion: the acquisition itself, the mean alone (pure exploitation), and
+  // the spread alone (pure exploration, so 0 is the most uncertain candidate).
+  // Their spread is what separates a point the surrogate believes is good from
+  // one it merely knows nothing about.
+  size_t rankAcq, rankMu, rankSigma;
+  bool fromNeighbor; // provenance of the accepted point
+  // Where the round's wall clock went. The fit is what a batch would amortise,
+  // so its ratio to the evaluation is the size of the prize.
+  double fitMs, predictMs, acceptMs;
+};
+
+/// Per-(round, q) measurement of the top-q candidates under the acquisition,
+/// whether or not q points were actually evaluated.
+struct BatchRecord {
+  int round;
+  size_t q;
+  /// q² over the summed RBF similarity of every ordered pair: how many
+  /// mutually distinguishable points the batch really holds. q when the members
+  /// sit further apart than the kernel width, 1 when they collapse onto one
+  /// location. The kernel width is the candidate set's median pairwise
+  /// distance, so the measure is comparable across rounds and problems.
+  double qEff;
+  /// The same measure on a uniformly drawn q-subset of the candidates. In a
+  /// discrete space of this width pairwise distances concentrate, so qEff is
+  /// well under q even for an unclustered batch; only the ratio to this
+  /// reference says whether the acquisition did the concentrating.
+  double qEffRef;
+  double meanPdist;  // mean pairwise distance, normalised feature space
+  double dispersion; // meanPdist / mean pairwise distance of a random q-subset
+  double overlapMu;  // |top-q by acq ∩ top-q by mu| / q
+  double overlapSigma; // |top-q by acq ∩ top-q by sigma| / q
+  /// Per-dimension normalised entropy of the values the batch spans. Reveals
+  /// which dimensions the surrogate has committed to and which it still
+  /// spreads over, which the scalar distances cannot separate.
+  std::vector<double> dimEntropy;
+};
+
+/// Diagnostics accumulated across the surrogate-guided phase of one seed.
+struct SearchDiagnostics {
+  std::vector<RoundRecord> rounds;
+  std::vector<BatchRecord> batches;
+
+  bool empty() const { return rounds.empty(); }
+  void dumpRoundsCSV(std::filesystem::path path) const;
+  void dumpBatchesCSV(const ConfigSpace &space,
+                      std::filesystem::path path) const;
+};
+
 /// Addressable candidate pool over a ConfigSpace's flat index range [0, N).
 /// Configurations are not pre-stored; index i maps to the config at
 /// ConfigSpace::at(i). Every index is a candidate: a space holds only the
@@ -87,6 +145,9 @@ struct CandidatePool {
   /// nextCandidateIndices fine-tunes from the previous fit rather than
   /// reinitialising from random weights.
   std::unique_ptr<BananasEnsemble> ensemble_;
+
+  /// Filled by nextCandidateIndices when opts.dumpDir is set.
+  SearchDiagnostics diag;
 
   bool exhaustive;
 
@@ -129,14 +190,19 @@ struct CandidatePool {
                         std::function<bool(size_t)> accept,
                         unsigned workers = 1);
 
-  /// Fit a BANANAS MLP ensemble on the observed subset (Xo/yo) and return
-  /// the k unvisited pool indices with the lowest UCB acquisition score.
-  /// Unvisited entries are derived from the visited bitvector; observations
-  /// come from the incrementally maintained Xo/yo matrices (zero-copy view).
+  /// Fit a BANANAS MLP ensemble on the observed subset (Xo/yo) and accept the
+  /// unvisited pool index the acquisition ranks best. Unvisited entries are
+  /// derived from the visited bitvector; observations come from the
+  /// incrementally maintained Xo/yo matrices (zero-copy view).
+  ///
+  /// `round` counts Phase-2 rounds and paces the validation snapshots; `nObs`
+  /// is the observation count the snapshots are stamped with, so the validation
+  /// series stays indexed by evaluations spent even when a round spends more
+  /// than one.
   bool nextCandidateIndices(const InferenceOptions &opts, std::mt19937 &rng,
                             std::function<bool(size_t)> accept,
                             ValidationSet &validSet, ValidationSet &trainingSet,
-                            int iter);
+                            int round, size_t nObs);
 
   /// Dump the full candidate pool to a CSV file at `path`.
   /// Columns: one per search param, then "cost" (empty if not evaluated),
@@ -160,6 +226,16 @@ private:
   /// generation (nextCandidateIndices).
   void fillRandom(std::unordered_set<size_t> &result, size_t target,
                   std::mt19937 &rng);
+  /// Append this round's RoundRecord (selection fields left for the caller to
+  /// fill once a candidate is accepted) and one BatchRecord per configured
+  /// batch size.
+  void recordRoundDiagnostics(const InferenceOptions &opts, std::mt19937 &rng,
+                              int round, size_t nObs,
+                              llvm::ArrayRef<size_t> candIdx,
+                              const arma::mat &candEncoded,
+                              size_t nNeighborCands, const arma::uvec &order,
+                              const arma::uvec &orderMu,
+                              const arma::uvec &orderSigma);
   /// Collect unvisited grid-neighbours of all observed configurations,
   /// up to `depth` discrete steps away (BFS). When `frontierOnly` is true,
   /// only nodes at exactly `depth` steps are added; otherwise all reachable

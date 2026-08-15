@@ -506,6 +506,9 @@ struct InferenceTask {
     if (log)
       *log << "[cinm-inference] Phase 2 (surrogate): budget=" << state.budget
            << "\n";
+    // Counts surrogate-guided rounds, which is not the observation count: a
+    // round costs one fit and may spend more than one evaluation.
+    int round = 0;
     while (state.hasBudget()) {
       if (pool.numVisited() >= pool.size())
         break;
@@ -518,7 +521,7 @@ struct InferenceTask {
       }
 
       auto succeeded = pool.nextCandidateIndices(
-          options, rng, evalTrain, validSet, trainingSet, pool.nObs);
+          options, rng, evalTrain, validSet, trainingSet, round++, pool.nObs);
       if (!succeeded)
         break;
     }
@@ -530,6 +533,8 @@ struct InferenceTask {
       pool.dumpMetadataJSON(space, dumpPath / "space.json");
       validSet.dumpToCSV(dumpPath / "validation.csv");
       trainingSet.dumpToCSV(dumpPath / "training.csv");
+      pool.diag.dumpRoundsCSV(dumpPath / "rounds.csv");
+      pool.diag.dumpBatchesCSV(space, dumpPath / "batchdiag.csv");
       if (!timings.empty()) {
         std::ofstream timOut(dumpPath / "timings.csv");
         if (timOut) {

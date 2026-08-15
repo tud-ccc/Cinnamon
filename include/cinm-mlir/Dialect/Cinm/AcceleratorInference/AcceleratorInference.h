@@ -257,6 +257,14 @@ struct InferenceOptions {
   /// away) is added. When false, all points within `neighborDepth` steps are
   /// added.
   bool neighborFrontierOnly = false;
+  /// Batch sizes at which per-round search diagnostics are computed: for each
+  /// q, the top-q candidates under the acquisition are measured for clustering
+  /// and for how much of the ranking the mean alone explains. The batch is
+  /// hypothetical -- only the accepted candidates are evaluated -- so a run
+  /// that selects one point per round still reports what a q-wide batch would
+  /// have covered. Only computed when `dumpDir` is set (see rounds.csv and
+  /// batchdiag.csv).
+  std::vector<size_t> diagBatchSizes = {2, 4, 8, 16, 32, 64};
   /// If non-empty, dump the full candidate pool to a CSV file in this
   /// directory at the end of inference. Columns: one per search param,
   /// then observed cost (empty if not evaluated), then mu / sigma / acq
