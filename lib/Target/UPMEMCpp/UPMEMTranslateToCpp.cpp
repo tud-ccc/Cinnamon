@@ -33,6 +33,8 @@
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/FormatVariadic.h"
 #include <cstddef>
+#include <numeric>
+
 #include <llvm/ADT/SmallVector.h>
 #include <llvm/ADT/StringRef.h>
 #include <llvm/IR/Constant.h>
@@ -441,11 +443,24 @@ static LogicalResult getBasePtrOfAlloc(Operation *op, Value &basePtr) {
       });
 }
 
+/// Computes the base pointer and byte offset of a DMA endpoint.
+///
+/// `offsetAlign` receives the largest power of two the emitted offset is
+/// provably a multiple of. A term whose index is a constant contributes its
+/// own value; a term whose index is only known at run time contributes just
+/// its multiplier, which is all that can be said about it statically. The DMA
+/// engine requires both endpoints to be 8-byte aligned, and
+/// checkDmaAlignment() is what turns a weaker guarantee than that into an
+/// error.
 static LogicalResult getBasePtrAndOffset(CppEmitter &emitter, Value v,
                                          Value &basePtr,
-                                         std::string &offsetExpr) {
+                                         std::string &offsetExpr,
+                                         int64_t &offsetAlign) {
   offsetExpr.resize(0);
   offsetExpr.append("0");
+  // Zero is a multiple of everything, so the neutral element of the running
+  // gcd is 0 rather than 1.
+  offsetAlign = 0;
 
   // The offset is expressed in bytes: both sides of a DMA are addressed as
   // char arrays (an MRAM buffer is declared as one, and a WRAM array is cast
@@ -490,16 +505,47 @@ static LogicalResult getBasePtrAndOffset(CppEmitter &emitter, Value v,
       // read by humans.
       if (isConstantIntValue(off, 0))
         continue;
+      const int64_t multiplier = stride * elementBytes;
+      std::optional<int64_t> constantOff = getConstantIntValue(off);
+      offsetAlign = std::gcd(
+          offsetAlign, constantOff ? *constantOff * multiplier : multiplier);
       offsetExpr.append(" + (");
       emitter.appendNameOrInt(off, offsetExpr);
       offsetExpr.append(" * ");
-      offsetExpr.append(std::to_string(stride * elementBytes));
+      offsetExpr.append(std::to_string(multiplier));
       offsetExpr.append(")");
     }
     v = source;
   }
 
   return getBasePtrOfAlloc(v.getDefiningOp(), basePtr);
+}
+
+/// Granularity of an MRAM DMA, in bytes. `mram_read`/`mram_write` require the
+/// MRAM address, the WRAM address and the length to all be multiples of this.
+static constexpr int64_t kDmaAlignBytes = 8;
+
+/// Rejects a transfer endpoint whose address is not provably DMA-aligned.
+///
+/// A tile smaller than the DMA granule is the usual way to get here: the
+/// per-tasklet slice of a shared MRAM buffer sits at `tasklet * tileBytes`,
+/// which is only 8-byte aligned when the tile itself is a whole number of
+/// granules. The hardware drops the low bits of a misaligned MRAM address, so
+/// the tasklets of a DPU would silently overwrite each other's slices --
+/// hence an error here rather than a best-effort address.
+static LogicalResult checkDmaAlignment(upmem::LocalTransferOp op,
+                                       StringRef side, int64_t offsetAlign,
+                                       StringRef offsetExpr) {
+  if (offsetAlign % kDmaAlignBytes == 0)
+    return success();
+  return op->emitOpError("cannot emit a DMA whose ")
+         << side << " address is not " << kDmaAlignBytes
+         << "-byte aligned: the byte offset `" << offsetExpr
+         << "` is only known to be a multiple of " << offsetAlign
+         << ". An MRAM DMA drops the low bits of a misaligned address, so this "
+            "would move the right bytes to the wrong place. Size the staged "
+            "tile so that its footprint is a multiple of "
+         << kDmaAlignBytes << " bytes";
 }
 
 /// Diagnoses a transfer whose region is not packed, naming the shape and
@@ -551,16 +597,38 @@ static LogicalResult printLocalTransfer(CppEmitter &emitter,
   auto remainingBytes = from.getType().getNumElements() *
                         from.getType().getElementTypeBitWidth() / 8;
 
+  // Rounding the length up to the granule would write past the end of the
+  // staged tile, into whatever the neighbouring tasklet owns.
+  if (remainingBytes % kDmaAlignBytes != 0)
+    return memcpyOp->emitOpError("cannot emit a DMA of ")
+           << remainingBytes << " bytes: a transfer length must be a multiple "
+           << "of " << kDmaAlignBytes
+           << ", and rounding it up would move bytes belonging to the next "
+              "tile. Size the staged tile so that its footprint is a multiple "
+              "of "
+           << kDmaAlignBytes << " bytes";
+
   Value fromBase, toBase;
   std::string fromOffset, toOffset;
-  if (failed(getBasePtrAndOffset(emitter, from, fromBase, fromOffset)) ||
-      failed(getBasePtrAndOffset(emitter, to, toBase, toOffset)))
+  int64_t fromAlign, toAlign;
+  if (failed(getBasePtrAndOffset(emitter, from, fromBase, fromOffset,
+                                 fromAlign)) ||
+      failed(getBasePtrAndOffset(emitter, to, toBase, toOffset, toAlign)))
+    return failure();
+
+  // Both ends of the DMA are addressed by the engine, so both have to be
+  // aligned. The allocations themselves are `__dma_aligned`; only the offset
+  // within them can break it.
+  if (failed(checkDmaAlignment(memcpyOp, "source", fromAlign, fromOffset)) ||
+      failed(checkDmaAlignment(memcpyOp, "target", toAlign, toOffset)))
     return failure();
 
   size_t offsetBytes = 0;
   while (remainingBytes > 0) {
     size_t chunkSizeBytes = std::min(2048l, remainingBytes);
-    chunkSizeBytes = llvm::alignTo(chunkSizeBytes, 8);
+    // Chunks stay whole granules, so `offsetBytes` keeps both addresses
+    // aligned across the loop.
+    chunkSizeBytes = llvm::alignDown(chunkSizeBytes, kDmaAlignBytes);
 
     if (printMRAMCopyBytes(emitter, fromSpace, fromBase, toBase, chunkSizeBytes,
                            fromOffset, toOffset, offsetBytes)
