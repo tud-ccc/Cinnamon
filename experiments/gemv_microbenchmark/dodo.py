@@ -71,6 +71,83 @@ def prim_config(**kwargs) -> compile_run.Config:
     return compile_run.Config(**kwargs)
 
 
+# One legal schedule per primitive, for the functional pass -- see the entries
+# they build at the end of CONFIGS. Each came out of a short cycle-accurate
+# search over that primitive's 4MB size, pinned to 4 DPUs, and was then checked
+# to translate to DPU C: these are points the pipeline accepts end to end and
+# not merely points the constraint system admits.
+FUNCTIONAL_POINTS: dict[str, dict[str, int]] = {
+    "gemv": {
+        "dpus": 4,
+        "tasklets": 8,
+        "gemv.M.mram": 256,
+        "gemv.M.wram": 8,
+        "gemv.K.mram": 128,
+        "gemv.K.wram": 64,
+        "gemv.order[0]": 1,
+        "gemv.order[1]": 2,
+        # gemv fuses the scaling of its result into the same launch, so that
+        # op's own tiling is part of the point.
+        "generic.D0.mram": 32,
+        "generic.D0.wram": 8,
+        "fuse.gemv->generic": 1,
+    },
+    "geva": {
+        "dpus": 4,
+        "tasklets": 8,
+        "generic.D0.mram": 32768,
+        "generic.D0.wram": 256,
+    },
+    "mmtv": {
+        "dpus": 4,
+        "tasklets": 8,
+        "batch_gemv.B.mram": 16,
+        "batch_gemv.B.wram": 4,
+        "batch_gemv.M.mram": 8,
+        "batch_gemv.M.wram": 4,
+        "batch_gemv.K.mram": 256,
+        "batch_gemv.K.wram": 8,
+        "batch_gemv.order[0]": 1,
+        "batch_gemv.order[1]": 3,
+        "batch_gemv.order[2]": 2,
+    },
+    "mtv": {
+        "dpus": 4,
+        "tasklets": 8,
+        "gemv.M.mram": 128,
+        "gemv.M.wram": 4,
+        "gemv.K.mram": 256,
+        "gemv.K.wram": 32,
+        "gemv.order[0]": 2,
+        "gemv.order[1]": 1,
+    },
+    "red": {
+        "dpus": 4,
+        "tasklets": 8,
+        "generic.D0.mram": 16384,
+        "generic.D0.wram": 512,
+    },
+    "ttv": {
+        "dpus": 4,
+        "tasklets": 8,
+        "generic.D0.mram": 32,
+        "generic.D0.wram": 2,
+        "generic.D1.mram": 4,
+        "generic.D1.wram": 4,
+        "generic.D2.mram": 256,
+        "generic.D2.wram": 64,
+        "generic.order[0]": 3,
+        "generic.order[1]": 2,
+        "generic.order[2]": 1,
+    },
+    "va": {
+        "dpus": 4,
+        "tasklets": 8,
+        "elementwise.D0.mram": 32768,
+        "elementwise.D0.wram": 128,
+    },
+}
+
 CONFIGS = [
     prim_config(
         system="atim",
@@ -120,29 +197,29 @@ CONFIGS = [
             extra_infer_opts={"simulator": "cycle-accurate", "debug-pipeline": "true"}
         ),
     ),
-    prim_config(
-        system="cinm2",
-        fn_name="mmtv_4MB",
-        # A point I found via search with 512 evals
-        label="mmtv",
-        params={
-            "dpus": 256,
-            "tasklets": 16,
-            "batch_gemv.B.mram": 1,
-            "batch_gemv.B.wram": 1,
-            "batch_gemv.M.mram": 2,
-            "batch_gemv.M.wram": 2,
-            "batch_gemv.K.mram": 128,
-            "batch_gemv.K.wram": 128,
-            "batch_gemv.order[0]": 2,
-            "batch_gemv.order[1]": 3,
-            "batch_gemv.order[2]": 1,
-        },
-        prim="mmtv",
-        lower=cinmopt.eval_solution_lowerer(
-            extra_infer_opts={"simulator": "cycle-accurate", "debug-pipeline": "true"}
-        ),
-    ),
+    # prim_config(
+    #     system="cinm2",
+    #     fn_name="mmtv_4MB",
+    #     # A point I found via search with 512 evals
+    #     label="mmtv",
+    #     params={
+    #         "dpus": 256,
+    #         "tasklets": 16,
+    #         "batch_gemv.B.mram": 1,
+    #         "batch_gemv.B.wram": 1,
+    #         "batch_gemv.M.mram": 2,
+    #         "batch_gemv.M.wram": 2,
+    #         "batch_gemv.K.mram": 128,
+    #         "batch_gemv.K.wram": 128,
+    #         "batch_gemv.order[0]": 2,
+    #         "batch_gemv.order[1]": 3,
+    #         "batch_gemv.order[2]": 1,
+    #     },
+    #     prim="mmtv",
+    #     lower=cinmopt.eval_solution_lowerer(
+    #         extra_infer_opts={"simulator": "cycle-accurate", "debug-pipeline": "true"}
+    #     ),
+    # ),
     #
     # compile_run.Config(
     #     system="cinm2",
@@ -190,6 +267,34 @@ CONFIGS = [
     #     prim="mtv",
     #     lower=cinm1.lowerer(use_upmem_scatter_api=True),
     # ),
+    #
+    # One configuration per primitive, at the smallest size each declares, for
+    # the functional pass: what these check is that the pipeline computes the
+    # right answer, so the point is coverage of the primitives and not of the
+    # schedule space. Each was taken from a short cycle-accurate search and
+    # then verified to reach DPU C, so a failure here is the kernel being
+    # wrong rather than the configuration being unbuildable.
+    #
+    # Between them they cover the two shapes that DMA granularity makes
+    # awkward: red's accumulator is one scalar per tasklet, which the pooled
+    # write-back has to carry, and geva's coefficients are broadcast scalars,
+    # which the short-read path has to.
+    *[
+        prim_config(
+            system="cinm2",
+            fn_name=f"{prim}_4MB",
+            label="functional",
+            params=params,
+            prim=prim,
+            lower=cinmopt.eval_solution_lowerer(
+                extra_infer_opts={
+                    "simulator": "cycle-accurate",
+                    "debug-pipeline": "true",
+                }
+            ),
+        )
+        for prim, params in FUNCTIONAL_POINTS.items()
+    ],
 ]
 
 
@@ -248,7 +353,7 @@ def task_compile():
     for config in CONFIGS:
         compile_marker = config.dir(DATA_ROOT) / "compile.done"
         yield {
-            "name": config.label + ":" + config.system,
+            "name": _group_key(config) + ":" + config.system,
             # todo add directory check?
             # "uptodate": [check_timestamp_unchanged(compile_marker)],
             "file_dep": [config.fn_module, DEFAULT_CINM_OPT],
@@ -266,7 +371,7 @@ def task_bench():
         compile_marker = config.dir(DATA_ROOT) / "compile.done"
         run_marker = config.dir(DATA_ROOT) / "bench.done"
         yield {
-            "name": config.label + ":" + config.system,
+            "name": _group_key(config) + ":" + config.system,
             "uptodate": [check_timestamp_unchanged(compile_marker)],
             "file_dep": [compile_marker],
             "targets": [run_marker],
@@ -274,12 +379,23 @@ def task_bench():
         }
 
 
+def _group_key(config: compile_run.Config) -> str:
+    """What makes two configs comparable: the same function under the same
+    label, differing only in the system that compiled them.
+
+    The function has to be part of it. A label is only unique within one
+    function -- Config says so -- so keying on the label alone would put two
+    primitives that happen to share one in the same plot, and give their
+    compile tasks the same name."""
+    return f"{config.fn_name}:{config.label}"
+
+
 def _by_label() -> dict[str, list[compile_run.Config]]:
-    """CONFIGS grouped by label -- one plot per label, comparing whichever
-    systems were configured for it."""
+    """CONFIGS grouped into comparable sets -- one plot each, comparing
+    whichever systems were configured for it."""
     by_label: dict[str, list[compile_run.Config]] = {}
     for c in CONFIGS:
-        by_label.setdefault(c.label, []).append(c)
+        by_label.setdefault(_group_key(c), []).append(c)
     return by_label
 
 

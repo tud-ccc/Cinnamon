@@ -622,17 +622,6 @@ static LogicalResult printLocalTransfer(CppEmitter &emitter,
     return success();
   }
 
-  // Rounding the length up to the granule would write past the end of the
-  // staged tile, into whatever the neighbouring tasklet owns.
-  if (remainingBytes % kDmaAlignBytes != 0)
-    return memcpyOp->emitOpError("cannot emit a DMA of ")
-           << remainingBytes << " bytes: a transfer length must be a multiple "
-           << "of " << kDmaAlignBytes
-           << ", and rounding it up would move bytes belonging to the next "
-              "tile. Size the staged tile so that its footprint is a multiple "
-              "of "
-           << kDmaAlignBytes << " bytes";
-
   Value fromBase, toBase;
   std::string fromOffset, toOffset;
   int64_t fromAlign, toAlign;
@@ -640,6 +629,27 @@ static LogicalResult printLocalTransfer(CppEmitter &emitter,
                                  fromAlign)) ||
       failed(getBasePtrAndOffset(emitter, to, toBase, toOffset, toAlign)))
     return failure();
+
+  // A short read may take the granule it cannot avoid; a short write may not.
+  //
+  // Both round the length up, but only the write does damage: the bytes it
+  // rounds up over belong to the next tile, and it overwrites them. A read
+  // merely fetches a few bytes nobody looks at, and they have somewhere to
+  // land -- every buffer is declared padded to a whole granule (see
+  // printBufferDecl and the memref.alloca emitter), so as long as the
+  // destination is a whole one rather than a slice of it, the tail of the
+  // rounded-up read stays inside it. That is what a broadcast scalar staged
+  // into WRAM is: geva's coefficients are four bytes at offset zero.
+  bool isRead = fromSpace == MRAM;
+  bool destIsWholeBuffer = toAlign == 0;
+  if (remainingBytes % kDmaAlignBytes != 0 && !(isRead && destIsWholeBuffer))
+    return memcpyOp->emitOpError("cannot emit a DMA of ")
+           << remainingBytes << " bytes: a transfer length must be a multiple "
+           << "of " << kDmaAlignBytes
+           << ", and rounding it up would move bytes belonging to the next "
+              "tile. Size the staged tile so that its footprint is a multiple "
+              "of "
+           << kDmaAlignBytes << " bytes";
 
   // Both ends of the DMA are addressed by the engine, so both have to be
   // aligned. The allocations themselves are `__dma_aligned`; only the offset
@@ -650,10 +660,14 @@ static LogicalResult printLocalTransfer(CppEmitter &emitter,
 
   size_t offsetBytes = 0;
   while (remainingBytes > 0) {
-    size_t chunkSizeBytes = std::min(2048l, remainingBytes);
+    int64_t chunkSizeBytes = std::min(2048l, remainingBytes);
     // Chunks stay whole granules, so `offsetBytes` keeps both addresses
-    // aligned across the loop.
-    chunkSizeBytes = llvm::alignDown(chunkSizeBytes, kDmaAlignBytes);
+    // aligned across the loop. A tail shorter than one granule can only be
+    // the permitted short read, which rounds up: there is nothing to round
+    // down to, and rounding down would not terminate.
+    chunkSizeBytes = chunkSizeBytes >= kDmaAlignBytes
+                         ? llvm::alignDown(chunkSizeBytes, kDmaAlignBytes)
+                         : llvm::alignTo(chunkSizeBytes, kDmaAlignBytes);
 
     if (printMRAMCopyBytes(emitter, fromSpace, fromBase, toBase, chunkSizeBytes,
                            fromOffset, toOffset, offsetBytes)
@@ -661,7 +675,7 @@ static LogicalResult printLocalTransfer(CppEmitter &emitter,
       return failure();
     }
     offsetBytes += chunkSizeBytes;
-    remainingBytes -= chunkSizeBytes;
+    remainingBytes -= std::min(remainingBytes, chunkSizeBytes);
     if (remainingBytes > 0) {
       os << ";\n";
     }

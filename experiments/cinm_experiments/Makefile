@@ -49,6 +49,7 @@ LOWER_PIPELINE = \
     --upmem-hoist-load-programs \
     --one-shot-bufferize="bufferize-function-boundaries function-boundary-type-conversion=identity-layout-map" \
     --buffer-results-to-out-params="hoist-static-allocs modify-public-functions" \
+    --convert-linalg-to-affine-loops \
 		--affine-scalrep --affine-super-vectorize=vectorize-reductions\ virtual-vector-size=8 --affine-expand-index-ops-as-affine \
 		--convert-vector-to-amx --convert-vector-to-scf --convert-vector-to-llvm \
     --canonicalize --cse

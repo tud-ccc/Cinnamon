@@ -8,8 +8,8 @@
 // (cinm.static, see cinm::isStaticValue). %x is the per-inference input.
 func.func @gemv_4MB(%A: tensor<1024x1024xi32> {cinm.static}, %x: tensor<1024xi32>, %c: i32 {cinm.static}) -> tensor<1024xi32>
   attributes {cinm.available_platforms = [#upmem]} {
-  %cs = tensor.splat %c : tensor<1024xi32>
   %5 = cinm.compute -> tensor<1024xi32> {
+    %cs = tensor.splat %c : tensor<1024xi32>
     %4 = cinm.op.gemv %A, %x : tensor<1024x1024xi32>, tensor<1024xi32> -> tensor<1024xi32>
     %5 = cinm.op.elementwise mul %4, %cs : tensor<1024xi32>
     cinm.yield %5 : tensor<1024xi32>
