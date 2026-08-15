@@ -15,6 +15,10 @@
 #include "cinm-mlir/Dialect/UPMEM/IR/UPMEMOps.h"
 
 namespace mlir::upmem {
+/// Bytes reserved on every tasklet's stack for the runtime itself (locals,
+/// saved registers, the barrier structures) on top of what the kernel's own
+/// buffers need.
+constexpr int64_t kStackReserveBytes = 1024;
 
 /// Bytes one tasklet's stack needs: a fixed reserve for the runtime, plus
 /// every `upmem.pwram_alloc` in the program, which the translator emits as a
