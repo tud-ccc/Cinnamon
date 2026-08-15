@@ -272,6 +272,17 @@ static Value getTaskletSlice(RewriterBase &rewriter, Location loc,
                                    offsets, sizes, strides);
 }
 
+/// The DMA granule of `memspace`'s level, in bits, as the platform declares
+/// it. Falls back to the 8 bytes every UPMEM level uses when the platform
+/// says nothing, which is the value the C emitter enforces anyway.
+static int64_t dmaGranuleBits(cnm::CnmAcceleratorAttrInterface accelerator,
+                              Attribute memspace) {
+  if (auto platform = accelerator.getPlatform())
+    if (cinm::CinmLevelDefAttr level = platform.getLevelOfMemspace(memspace))
+      return level.getAlignment() * 8;
+  return 64;
+}
+
 static void createTransfer(RewriterBase &rewriter, bool toWram, Location loc,
                            upmem::StaticAllocOp mramBuf,
                            TypedValue<MemRefType> wramBuffer) {
@@ -506,6 +517,11 @@ static LogicalResult convertCnmLaunchToUpmem(cnm::LaunchOp launch,
   llvm::MapVector<Value, upmem::StaticAllocOp> buffersToMramBuf;
   // llvm::MapVector<Value, upmem::StaticAllocOp> buffersToSharedWramBuf;
   llvm::MapVector<Value, TypedValue<MemRefType>> buffersToWramBufValue;
+  // Output buffers whose per-tasklet result is smaller than a DMA granule, so
+  // no tasklet can write its own back. Their WRAM buffer is one shared array
+  // with a slot per tasklet, flushed to MRAM in a single transfer; the value
+  // recorded here is that whole array, which is what the flush moves.
+  llvm::DenseSet<Value> pooledWritebackBuffers;
   // Buffers the launch body computes on in MRAM directly. It has already been
   // given its own WRAM staging (--upmem-tile-mram-buffers), so this pass must
   // not add a second one around it: the body binds straight to MRAM.
@@ -543,7 +559,53 @@ static LogicalResult convertCnmLaunchToUpmem(cnm::LaunchOp launch,
       bool wramIsShared = !opts.cinm1codegen && mramIsBroadcast;
       bool stagedInBody = bufferType.getLevel() == mramMemspaceAttr;
 
-      if (stagedInBody) {
+      // A DMA moves whole granules between granule-aligned addresses, so a
+      // tasklet can only write back its own slice of the MRAM buffer when
+      // that slice is a whole number of them: slice t sits at `t *
+      // tileBytes`, and a shorter tile both misaligns the odd slices and
+      // makes the rounded-up length spill into the next one. A reduction is
+      // the standard way to get here -- one accumulator per tasklet is four
+      // bytes whatever the tile shape.
+      //
+      // Such an output is pooled instead: every tasklet writes its result
+      // into its slot of one shared WRAM array, and after a barrier tasklet 0
+      // flushes the whole array to MRAM in a single aligned transfer. The
+      // MRAM layout is unchanged, so the host gather is none the wiser.
+      //
+      // Only when the slots add up to whole granules, though. They usually do
+      // -- a tasklet count is even -- but one tasklet holding one scalar
+      // leaves the flush as sub-granule as the write it replaces, and the
+      // host gather would round its own copy up over the next DPU's result.
+      // Pooling cannot rescue that, so it stays a transfer the emitter
+      // refuses and the search space rules out.
+      const int64_t tileBits =
+          computeProduct(bufShape) *
+          bufferType.getElementType().getIntOrFloatBitWidth();
+      const int64_t granuleBits = dmaGranuleBits(
+          launch.getWg().getType().getAccelerator(), mramMemspaceAttr);
+      bool pooledWriteback =
+          !mramIsBroadcast &&
+          llvm::is_contained(launch.getOutBuffers(), alloc.getResult()) &&
+          tileBits % granuleBits != 0 &&
+          (tileBits * upmemTy.getNumTaskletsPerDpu()) % granuleBits == 0;
+
+      if (pooledWriteback) {
+        // One slot per tasklet, so the flush is one contiguous run whose
+        // shape matches the MRAM buffer's exactly. The body binds to this
+        // tasklet's slot, below -- including when it stages the buffer
+        // itself, where its own write-back becomes a WRAM-to-WRAM copy into
+        // the slot, which is exactly the pooling this is here to do.
+        SmallVector<int64_t> pooledShape{upmemTy.getNumTaskletsPerDpu()};
+        llvm::append_range(pooledShape, bufShape);
+        auto pooled = upmem::StaticAllocOp::create(
+            rewriter, alloc->getLoc(),
+            MemRefType::get(pooledShape, bufferType.getElementType(),
+                            MemRefLayoutAttrInterface{}, wramMemspaceAttr),
+            upmem::DpuMemSpace::WRAM, "buf", true);
+        dpuProgramSymTable.insert(pooled);
+        buffersToWramBufValue[alloc.getResult()] = pooled.getBuffer();
+        pooledWritebackBuffers.insert(alloc.getResult());
+      } else if (stagedInBody) {
         // No WRAM buffer and no transfers here: the body already stages what
         // it needs. It binds to the tasklet's slice of the MRAM buffer, which
         // is created below once its shape is known.
@@ -629,6 +691,18 @@ static LogicalResult convertCnmLaunchToUpmem(cnm::LaunchOp launch,
       mapping.map(memref, getTaskletSlice(rewriter, cnmBuf.getLoc(),
                                           buffersToMramBuf[cnmBuf],
                                           cast<MemRefType>(memref.getType())));
+      continue;
+    }
+    if (pooledWritebackBuffers.contains(cnmBuf)) {
+      // The body writes into this tasklet's slot of the shared array; the
+      // flush below moves all the slots at once. Slicing in WRAM is free of
+      // the alignment rule that forced the pooling in the first place.
+      mapping.map(
+          memref,
+          getTaskletSlice(rewriter, cnmBuf.getLoc(),
+                          cast<upmem::StaticAllocOp>(
+                              buffersToWramBufValue[cnmBuf].getDefiningOp()),
+                          cast<MemRefType>(memref.getType())));
       continue;
     }
     auto wrambuf = buffersToWramBufValue.lookup(cnmBuf);

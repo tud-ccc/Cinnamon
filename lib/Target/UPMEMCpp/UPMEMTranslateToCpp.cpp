@@ -573,11 +573,21 @@ static LogicalResult printLocalTransfer(CppEmitter &emitter,
   auto from = memcpyOp.getSource();
   auto to = memcpyOp.getTarget();
   upmem::DpuMemSpace fromSpace;
+  bool withinWram = false;
   if (isInMemspace(from.getType(), MRAM) && isInMemspace(to.getType(), WRAM)) {
     fromSpace = MRAM;
   } else if (isInMemspace(from.getType(), WRAM) &&
              isInMemspace(to.getType(), MRAM)) {
     fromSpace = WRAM;
+  } else if (isInMemspace(from.getType(), WRAM) &&
+             isInMemspace(to.getType(), WRAM)) {
+    // Both ends in WRAM: a plain copy, not a DMA. This is what a tasklet
+    // writing its result into its slot of a pooled buffer becomes, and the
+    // reason the granule rules below do not apply to it -- WRAM is addressed
+    // by the core, byte by byte, so neither the length nor the offset has
+    // anything to be aligned to.
+    fromSpace = WRAM;
+    withinWram = true;
   } else {
     return memcpyOp->emitOpError(
         "TODO only supports transfers from mram to wram or the reverse");
@@ -596,6 +606,21 @@ static LogicalResult printLocalTransfer(CppEmitter &emitter,
 
   auto remainingBytes = from.getType().getNumElements() *
                         from.getType().getElementTypeBitWidth() / 8;
+
+  Value fromBaseW, toBaseW;
+  std::string fromOffsetW, toOffsetW;
+  int64_t fromAlignW, toAlignW;
+  if (withinWram) {
+    if (failed(getBasePtrAndOffset(emitter, from, fromBaseW, fromOffsetW,
+                                   fromAlignW)) ||
+        failed(getBasePtrAndOffset(emitter, to, toBaseW, toOffsetW, toAlignW)))
+      return failure();
+    os << "memcpy(&((char*) " << emitter.getOrCreateName(toBaseW) << ")["
+       << toOffsetW << "], &((const char*) "
+       << emitter.getOrCreateName(fromBaseW) << ")[" << fromOffsetW << "], "
+       << remainingBytes << ")";
+    return success();
+  }
 
   // Rounding the length up to the granule would write past the end of the
   // staged tile, into whatever the neighbouring tasklet owns.
@@ -1535,7 +1560,8 @@ static LogicalResult printOperation(CppEmitter &emitter, ModuleOp moduleOp) {
         "#include <perfcounter.h>\n\n"
         "#include <stdint.h>\n"
         "#include <stdio.h>\n"
-        "#include <stdlib.h>\n\n"
+        "#include <stdlib.h>\n"
+        "#include <string.h>\n\n"
         "#include \"expf.c\"\n"
         "\n\n";
 
