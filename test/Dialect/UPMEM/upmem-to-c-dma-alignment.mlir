@@ -26,5 +26,20 @@ upmem.dpu_program @aligned() tasklets(8) {
   upmem.return
 }
 
+// A short *read* is allowed to round up, and the LENGTH case above shows the
+// matching write is not. Only the write does damage: the bytes it rounds up
+// over belong to the next tile. The read fetches a few nobody looks at, into
+// a destination declared padded to a whole granule. Refusing it would strand
+// every broadcast scalar -- geva's coefficients are four bytes at offset 0.
+// CHECK-LABEL: void short_read(
+// CHECK: mram_read(&a[0 + 0], &((char*) {{v[0-9]+}})[0 + 0], 8)
+upmem.dpu_program @short_read() tasklets(8) {
+  %a = upmem.static_alloc @a(mram) noinit : memref<1xi32, #upmem.mram>
+  %w = memref.alloca() : memref<1xi32, #upmem.wram>
+  upmem.local_transfer %a into %w
+    : memref<1xi32, #upmem.mram> to memref<1xi32, #upmem.wram>
+  upmem.return
+}
+
 // LENGTH: cannot emit a DMA of 4 bytes
 // OFFSET: source address is not 8-byte aligned

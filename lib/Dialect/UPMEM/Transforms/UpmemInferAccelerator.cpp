@@ -597,8 +597,10 @@ struct UpmemInferencePlugin : cinm::InferencePlugin {
     // per multiply-accumulate.
     pm->addNestedPass<func::FuncOp>(
         affine::createAffineScalarReplacementPass());
-    auto &funcPm = pm->nest<func::FuncOp>();
-    addAffineOpts(funcPm);
+    {
+      auto &funcPm = pm->nest<func::FuncOp>();
+      addAffineOpts(funcPm);
+    }
     pm->addPass(createCanonicalizerPass());
     pm->addPass(createCSEPass());
 
@@ -624,10 +626,12 @@ struct UpmemInferencePlugin : cinm::InferencePlugin {
     }
     pm->addPass(bufferization::createBufferLoopHoistingPass());
     {
-      // auto &nested = pm->nestAny();
-      // bufferization::buildBufferDeallocationPipeline(nested); // fixme
+      // Another round of affine opts on the upmem host IR,
+      // because some optimizations are prevented by cnm.launch
+      // having a region that affine cannot analyze.
+      auto &funcPm = pm->nest<func::FuncOp>();
+      addAffineOpts(funcPm);
     }
-    pm->addPass(createCSEPass());
     pm->addPass(createUPMEMDedupKernelsPass());
     pm->addPass(createCSEPass());
     {
