@@ -108,6 +108,14 @@ bool isZeroSplatFoldable(Value v) {
   return splat && isZeroAttr(*splat);
 }
 
+ShapedType asShaped(Type ty) {
+  if (auto shaped = llvm::dyn_cast_or_null<ShapedType>(ty))
+    return shaped;
+  assert(TensorType::isValidElementType(ty) &&
+         "expected a shaped or scalar operand type");
+  return RankedTensorType::get({}, ty);
+}
+
 SmallString<20> getUniqueFunctionName(ModuleOp &moduleOp, StringRef prefix) {
   // Note: here we don't use SymbolTable as we run into a bug in the LLVM
   // conversion. Old memref.globals are not cleaned up in time, and for a while

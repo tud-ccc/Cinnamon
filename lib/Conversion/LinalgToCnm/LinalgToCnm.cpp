@@ -190,7 +190,7 @@ static FailureOr<SmallVector<int64_t>> getLoopExtents(linalg::LinalgOp op) {
   SmallVector<int64_t> extents(op.getNumLoops(), ShapedType::kDynamic);
   for (auto [operand, map] :
        llvm::zip(op->getOpOperands(), op.getIndexingMapsArray())) {
-    auto shape = cast<ShapedType>(operand.get().getType()).getShape();
+    auto shape = asShaped(operand.get().getType()).getShape();
     for (auto [pos, expr] : llvm::enumerate(map.getResults()))
       extents[cast<AffineDimExpr>(expr).getPosition()] = shape[pos];
   }
@@ -330,8 +330,7 @@ splitDistributedReductions(RewriterBase &rewriter, linalg::LinalgOp op,
 
     // Reassociating a float reduction changes the result, so it is opt-in
     // rather than something the search does behind the user's back (§G6).
-    Type elementType =
-        cast<ShapedType>(op.getDpsInits()[0].getType()).getElementType();
+    Type elementType = asShaped(op.getDpsInits()[0].getType()).getElementType();
     if (isa<FloatType>(elementType) && !options.allowFloatReassociation)
       return op->emitOpError("splitting reduction dimension ")
              << *target << " " << ratio
@@ -765,7 +764,7 @@ LogicalResult distribute(RewriterBase &rewriter, linalg::LinalgOp op,
   SmallVector<Value> launchInputs, launchOutputs;
   for (auto [i, operand, tiling] :
        llvm::enumerate(op->getOpOperands(), tilings)) {
-    auto operandTy = cast<ShapedType>(operand.get().getType());
+    auto operandTy = asShaped(operand.get().getType());
     auto bufferTy = cnm::BufferType::get(
         tiling.blocks, operandTy.getElementType(), accelerator, level->space);
     Value alloc = cnm::DeclareBufferOp::create(b, bufferTy, workgroup);
@@ -776,10 +775,22 @@ LogicalResult distribute(RewriterBase &rewriter, linalg::LinalgOp op,
       // A freshly allocated destination has undefined contents, so there is
       // nothing to bring over.
     } else {
+      // cnm.scatter moves shaped values, and an operand no iteration
+      // dimension indexes need not be one: fusion pulls a loop-invariant
+      // scalar in as an operand with an empty indexing map, which is what
+      // geva's two coefficients become. Its buffer is already the rank-0 one
+      // that scalar stands for, so materializing the tensor to match puts it
+      // on the same path as every other operand -- and the right one, since a
+      // value every leaf needs whole is exactly what the scatter below is
+      // then optimized into a broadcast.
+      Value source = operand.get();
+      if (!isa<ShapedType>(source.getType()))
+        source = tensor::FromElementsOp::create(b, operandTy, source);
+
       // This scatter can then be optimized into a broadcast.
       // For now this happens in the backend dialect, which has knowledge of
       // the constraints on the scatter calls.
-      auto scatter = cnm::ScatterOp::create(b, operand.get(), alloc, workgroup,
+      auto scatter = cnm::ScatterOp::create(b, source, alloc, workgroup,
                                             tiling.scatterMap);
       scatter->setAttr(cinm::CinmDialect::DEBUG_TAG_NAME,
                        b.getStringAttr(cinm::isStaticValue(operand.get())
@@ -840,7 +851,7 @@ LogicalResult distribute(RewriterBase &rewriter, linalg::LinalgOp op,
   SmallVector<Value> results;
   for (auto [index, init] : llvm::enumerate(op.getDpsInits())) {
     const OperandTiling &tiling = tilings[numInputs + index];
-    auto initTy = cast<ShapedType>(init.getType());
+    auto initTy = asShaped(init.getType());
     Value destination =
         tensor::EmptyOp::create(b, initTy.getShape(), initTy.getElementType());
     results.push_back(cnm::GatherOp::create(b, launchOutputs[index], workgroup,

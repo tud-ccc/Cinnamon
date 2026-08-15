@@ -17,6 +17,7 @@
 #include <cinm-mlir/Dialect/UPMEM/IR/UPMEMOps.h>
 #include <cinm-mlir/Dialect/UPMEM/Transforms/Passes.h>
 #include <cinm-mlir/Dialect/UPMEM/Transforms/UpmemSimulator.h>
+#include <cinm-mlir/Utils/CinmUtils.h>
 #include <cinm-mlir/Utils/Scheduling/SchedulingSupport.h>
 
 #include "SimulatorBase.h"
@@ -379,7 +380,7 @@ struct UpmemInferencePlugin : cinm::InferencePlugin {
 
       auto operandDims = linalgOperandDims(op);
       for (auto [opnd, dims] : llvm::zip(op->getOpOperands(), operandDims)) {
-        auto shaped = llvm::cast<ShapedType>(opnd.get().getType());
+        auto shaped = asShaped(opnd.get().getType());
         const int64_t eltBytes =
             std::max<int64_t>(1, shaped.getElementTypeBitWidth() / 8);
         int64_t mramElts = 1, wramElts = 1;
@@ -1013,7 +1014,7 @@ static FailureOr<SmallVector<int64_t>> linalgLoopExtents(linalg::LinalgOp op) {
        llvm::zip(op->getOpOperands(), op.getIndexingMapsArray())) {
     if (!map.isProjectedPermutation())
       return failure();
-    auto shape = cast<ShapedType>(operand.get().getType()).getShape();
+    auto shape = asShaped(operand.get().getType()).getShape();
     for (auto [pos, expr] : llvm::enumerate(map.getResults()))
       extents[cast<AffineDimExpr>(expr).getPosition()] = shape[pos];
   }
@@ -1055,7 +1056,7 @@ UpmemInferencePlugin::handleLinalgOp(linalg::LinalgOp op, StringRef namePrefix,
 
   auto dpus = dpusVar_;
   auto tasklets = taskletsVar_;
-  Type eltTy = cast<ShapedType>(op.getDpsInits()[0].getType()).getElementType();
+  Type eltTy = asShaped(op.getDpsInits()[0].getType()).getElementType();
 
   // Determine the names of the search params. Each dimension gets one
   // parameter per memory level (a tiling factor).
@@ -1156,6 +1157,16 @@ UpmemInferencePlugin::handleLinalgOp(linalg::LinalgOp op, StringRef namePrefix,
   // implied -- a dimension's outer tile is a multiple of its leaf tile -- but
   // it is the host transfer that the outer one describes, so it is posted on
   // its own terms rather than left to follow.
+  //
+  // An operand no iteration dimension indexes -- geva's two scalar
+  // coefficients, say -- is exempt, and has to be: its tile is one element
+  // whatever the tiling, so the constraint would empty the space rather than
+  // shape it. Exempting it is sound and not a special case for scalars.
+  // Nothing distributes such an operand, so its MRAM buffer gets no
+  // per-tasklet dimension and every tasklet reads it at offset 0; the address
+  // is aligned, and the declared buffer is padded to a whole granule, so the
+  // rounded-up read stays inside it. What makes a fractional tile unsafe is
+  // being sliced per tasklet, which needs a dimension to slice along.
   const int64_t eltBits = eltTy.getIntOrFloatBitWidth();
   SmallVector<std::string> operandNames = linalgOperandNames(op);
   for (auto [levelIdx, level] : llvm::enumerate(levels)) {
@@ -1166,8 +1177,11 @@ UpmemInferencePlugin::handleLinalgOp(linalg::LinalgOp op, StringRef namePrefix,
         granuleBits / std::gcd(granuleBits, eltBits);
     if (elemsPerGranule <= 1)
       continue;
-    for (auto [name, tile] :
-         llvm::zip_equal(operandNames, operandTiles(perLevel[levelIdx])))
+    for (auto [idx, name, tile] :
+         llvm::zip_equal(llvm::seq<size_t>(0, operandNames.size()),
+                         operandNames, operandTiles(perLevel[levelIdx]))) {
+      if (operandDims[idx].empty())
+        continue;
       b.require(cinm::divides(cinm::ParmValue(elemsPerGranule), tile),
                 (name + "'s " + level.getName().getValue() +
                  " tile must be a whole number of " +
@@ -1175,6 +1189,7 @@ UpmemInferencePlugin::handleLinalgOp(linalg::LinalgOp op, StringRef namePrefix,
                  "-byte DMA granules, i.e. a multiple of " +
                  std::to_string(elemsPerGranule) + " elements")
                     .str());
+    }
   }
 
   // Which tile dimension varies fastest across the leaves (design §G3). The

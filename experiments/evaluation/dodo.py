@@ -169,6 +169,7 @@ def _draw_sample(bench: str) -> bool:
     cinmopt.random_sample(
         source_mlir(bench),
         sample_dir(bench),
+        workers=2,
         n_samples=OPTS["n_sample"],
         seed=OPTS["sample_seed"],
         infer_opts={
