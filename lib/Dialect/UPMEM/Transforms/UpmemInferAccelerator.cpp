@@ -13,6 +13,7 @@
 #include <cinm-mlir/Dialect/Cinm/Transforms/Passes.h>
 #include <cinm-mlir/Dialect/Cnm/Transforms/Passes.h>
 #include <cinm-mlir/Dialect/UPMEM/IR/UPMEMAttributes.h>
+#include <cinm-mlir/Dialect/UPMEM/IR/UPMEMOccupancy.h>
 #include <cinm-mlir/Dialect/UPMEM/IR/UPMEMOps.h>
 #include <cinm-mlir/Dialect/UPMEM/Transforms/Passes.h>
 #include <cinm-mlir/Dialect/UPMEM/Transforms/UpmemSimulator.h>
@@ -1125,7 +1126,7 @@ UpmemInferencePlugin::handleLinalgOp(linalg::LinalgOp op, StringRef namePrefix,
     return operands;
   };
   auto footprint = [&operandTiles, tasklets](ArrayRef<IntVar> sizes) {
-    return tasklets * cinm::sum(operandTiles(sizes));
+    return tasklets * (kStackReserveBytes + cinm::sum(operandTiles(sizes)));
   };
 
   // One bound per level, against the capacity the platform declares for it.
