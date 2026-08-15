@@ -36,6 +36,7 @@ META_COLS = {
     "cost",
     "eval_iter",
     "eval_time_ms",
+    "cpu_time_ms",
     "mu",
     "sigma",
     "acq",
