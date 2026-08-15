@@ -1,6 +1,10 @@
-"""doit tasks for the mtv_64MB CINM 1.0 vs CINM 2.0 comparison: one compile
-task per config, one run task per config (each depending on its own
-compile), then a plot task depending on both runs.
+"""doit tasks for the CINM 1.0 vs CINM 2.0 comparison: one compile task per
+config, one run task per config (each depending on its own compile), then a
+plot task depending on both runs.
+
+A config names a prim and one of its functions; the source to split and the
+module to compile follow from those, so benchmarking another prim is a new
+entry in CONFIGS and nothing else.
 
 Config objects hold a `lower` Callable (the cinm-opt lowering pipeline),
 which can never be JSON-encoded, so they can't be passed between tasks via
@@ -41,15 +45,32 @@ DOIT_CONFIG = {
 }
 
 DATA_ROOT = HERE / "data"
+SPLIT_DIR = DATA_ROOT / "_split"
 ITERS = 50
 
-# mtv 64MB: 4096x4096, split out of the shared prim source rather than read
-# from another experiment's data directory. That source is what carries
-# `{cinm.static}` on %A, without which the weight transfer and any repack of
-# it are charged to every inference instead of amortizing.
-SOURCE = EXPERIMENTS_DIR / "prim_mtv.mlir"
-SPLIT_DIR = DATA_ROOT / "_split"
-source = SPLIT_DIR / "mtv_64MB.mlir"
+
+def _prim_source(prim: str) -> pathlib.Path:
+    """The shared multi-function source that a prim's functions are split out
+    of, named after the prim rather than spelled out per config.
+
+    These sources, rather than another experiment's data directory, are what
+    carry `{cinm.static}` on the weight operand; without it the weight
+    transfer and any repack of it are charged to every inference instead of
+    amortizing."""
+    return EXPERIMENTS_DIR / f"prim_{prim}.mlir"
+
+
+def prim_config(**kwargs) -> compile_run.Config:
+    """A compile_run.Config whose `fn_module` is the module task_split writes
+    for `fn_name`.
+
+    So a config names the function it wants and the prim it belongs to, and
+    the paths follow: adding an experiment for another prim needs no source
+    path here and no split task of its own."""
+    kwargs.setdefault("fn_module", SPLIT_DIR / f"{kwargs['fn_name']}.mlir")
+    return compile_run.Config(**kwargs)
+
+
 CONFIGS = [
     # compile_run.Config(
     # system="cinm2",
@@ -77,7 +98,7 @@ CONFIGS = [
     # prim="mtv",
     # lower=cinmopt.eval_solution_lowerer(),
     # ),
-    compile_run.Config(
+    prim_config(
         system="atim",
         fn_name="mtv_64MB",
         # This one is the atim2048 optimum,
@@ -100,13 +121,12 @@ CONFIGS = [
             "gemv.order[0]": 2,
             "gemv.order[1]": 1,
         },
-        fn_module=source,
         prim="mtv",
         lower=cinmopt.eval_solution_lowerer(
             extra_infer_opts={"simulator": "cycle-accurate", "debug-pipeline": "true"}
         ),
     ),
-    compile_run.Config(
+    prim_config(
         system="cinm2",
         fn_name="mtv_64MB",
         # A point I found via search with 512 evals
@@ -121,8 +141,30 @@ CONFIGS = [
             "gemv.order[0]": 2,
             "gemv.order[1]": 1,
         },
-        fn_module=source,
         prim="mtv",
+        lower=cinmopt.eval_solution_lowerer(
+            extra_infer_opts={"simulator": "cycle-accurate", "debug-pipeline": "true"}
+        ),
+    ),
+    prim_config(
+        system="cinm2",
+        fn_name="mmtv_4MB",
+        # A point I found via search with 512 evals
+        label="mmtv",
+        params={
+            "dpus": 256,
+            "tasklets": 16,
+            "batch_gemv.B.mram": 1,
+            "batch_gemv.B.wram": 1,
+            "batch_gemv.M.mram": 2,
+            "batch_gemv.M.wram": 2,
+            "batch_gemv.K.mram": 128,
+            "batch_gemv.K.wram": 128,
+            "batch_gemv.order[0]": 2,
+            "batch_gemv.order[1]": 3,
+            "batch_gemv.order[2]": 1,
+        },
+        prim="mmtv",
         lower=cinmopt.eval_solution_lowerer(
             extra_infer_opts={"simulator": "cycle-accurate", "debug-pipeline": "true"}
         ),
@@ -177,24 +219,28 @@ CONFIGS = [
 ]
 
 
-def _split_one() -> bool:
+def _split_one(source: pathlib.Path) -> bool:
     split_source(
-        SOURCE, SPLIT_DIR
+        source, SPLIT_DIR
     )  # dict return value isn't JSON-picklable for doit's DB
     return True
 
 
 def task_split():
-    """Split the prim source into one module per function.
+    """Split every prim source CONFIGS draws on into one module per function.
 
-    Only mtv_64MB is compiled here, but the split writes every function the
-    source holds: which ones exist is the source's business, and listing them
-    up front is what lets task_compile depend on this by file."""
-    return {
-        "file_dep": [SOURCE],
-        "targets": [SPLIT_DIR / f"{fn}.mlir" for fn in list_functions(SOURCE)],
-        "actions": [_split_one],
-    }
+    One subtask per source, derived from the configs, so a config for a prim
+    that has not been benchmarked here before brings its own split with it.
+    Each split writes every function its source holds and not just the
+    configured ones: which exist is the source's business, and listing them up
+    front is what lets task_compile depend on this by file."""
+    for source in sorted({_prim_source(c.prim) for c in CONFIGS}):
+        yield {
+            "name": source.stem,
+            "file_dep": [source],
+            "targets": [SPLIT_DIR / f"{fn}.mlir" for fn in list_functions(source)],
+            "actions": [(_split_one, [source])],
+        }
 
 
 def _config_dir(root: pathlib.Path, config: compile_run.Config) -> pathlib.Path:
