@@ -5,24 +5,31 @@ mod upmemcm
 b:
     cd .. && just build
 
+[no-cd]
 run *ARGS:
-    source $(realpath ../.venv/bin/activate) && python run.py run {{ARGS}}
+    source $(realpath {{}}/.venv/bin/activate) && python run.py run {{ARGS}}
 
+[no-cd]
 run_exhaustive *ARGS:
     source $(realpath ../.venv/bin/activate) && python run.py exhaustive {{ARGS}}
 
+[no-cd]
 seeds *ARGS:
     source $(realpath ../.venv/bin/activate) && python run.py seeds {{ARGS}}
 
+[no-cd]
 plot *ARGS:
     source $(realpath ../.venv/bin/activate) && python run.py plot {{ARGS}}
 
+[no-cd]
 view *ARGS:
     source $(realpath ../.venv/bin/activate) && python run.py view {{ARGS}}
 
+[no-cd]
 analyze *ARGS:
     source $(realpath ../.venv/bin/activate) && python run.py analyze {{ARGS}}
 
+[no-cd]
 meta_bo *ARGS:
     #!/bin/zsh
     source $(realpath ../.venv/bin/activate)
