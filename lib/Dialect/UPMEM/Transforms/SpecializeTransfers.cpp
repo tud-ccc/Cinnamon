@@ -137,27 +137,74 @@ Operation *broadcastWholeBuffer(upmem::ScatterOnArrayOp op,
 }
 
 /// Whether every DPU's blocks form a single run: the element offset of block
-/// `b` advances by exactly one block per step, so the `numBlocksPerDpu`
-/// blocks are adjacent and in order.
-bool blocksAreOneRun(AffineMap map, MemRefType hostTy, int64_t blockSize) {
+/// `b` is exactly `b` blocks past block 0, so the `numBlocksPerDpu` blocks are
+/// adjacent and in order.
+///
+/// This has to hold for every `b`, not merely for the first step. A map whose
+/// block dimension carries a `floordiv` or a `mod` -- which is what a leaf
+/// holding several blocks produces, the block index splitting into a tasklet
+/// part and a within-leaf part -- advances by one block inside a leaf and
+/// jumps at each leaf boundary. Sampling `b = 0 -> 1` sees only the step
+/// inside the first leaf and reads that as one run, collapsing a gather whose
+/// per-DPU regions in fact overlap.
+///
+/// So the residual is checked over the whole block range instead, by
+/// evaluating it at every block index.
+///
+/// Evaluating rather than simplifying, because these maps reach the block
+/// index through a chain of floordivs and mods -- the compacted buffer's
+/// index decomposed dimension by dimension -- whose terms telescope back to
+/// `block * blockSize` only over the range. No amount of local rewriting
+/// folds that to zero, so a symbolic residual refuses collapses that are
+/// perfectly good, and the flat form is the one worth having.
+///
+/// Subtracting block 0 cancels the DPU term, so the residual is normally a
+/// function of the block index alone and the sweep is one-dimensional. A
+/// residual that still mentions the DPU is refused rather than swept over
+/// both: it is rare, and the sweep would be the size of the workgroup.
+bool blocksAreOneRun(AffineMap map, MemRefType hostTy, int64_t blockSize,
+                     int64_t numBlocks) {
+  /// How many block indices are worth evaluating. Generous next to the ~10
+  /// blocks a transfer usually has, and small next to a pass's own runtime.
+  constexpr int64_t kMaxBlocksToCheck = 1 << 20;
+  if (numBlocks > kMaxBlocksToCheck)
+    return false;
+
   FailureOr<AffineExpr> offset = linearizeToElementOffset(map, hostTy);
   if (failed(offset))
     return false;
 
   MLIRContext *ctx = map.getContext();
-  SmallVector<AffineExpr> atZero, atOne;
-  for (unsigned i = 0; i < map.getNumDims(); ++i) {
+  SmallVector<AffineExpr> atZero;
+  for (unsigned i = 0; i < map.getNumDims(); ++i)
     atZero.push_back(getAffineDimExpr(i, ctx));
-    atOne.push_back(getAffineDimExpr(i, ctx));
-  }
   atZero[1] = getAffineConstantExpr(0, ctx);
-  atOne[1] = getAffineConstantExpr(1, ctx);
 
-  AffineExpr step = simplifyAffineExpr(offset->replaceDims(atOne) -
-                                           offset->replaceDims(atZero),
-                                       map.getNumDims(), 0);
-  auto stride = dyn_cast<AffineConstantExpr>(step);
-  return stride && stride.getValue() == blockSize;
+  AffineExpr block = getAffineDimExpr(1, ctx);
+  // Simplified so that the DPU term, which appears on both sides of the
+  // subtraction, actually cancels rather than merely being cancellable.
+  AffineExpr residual = simplifyAffineExpr(
+      *offset - offset->replaceDims(atZero) - block * blockSize,
+      map.getNumDims(), 0);
+
+  bool mentionsDpu = false;
+  residual.walk([&](AffineExpr e) {
+    if (auto dim = dyn_cast<AffineDimExpr>(e))
+      mentionsDpu |= dim.getPosition() == 0;
+  });
+  if (mentionsDpu)
+    return false;
+
+  SmallVector<AffineExpr> point(map.getNumDims(),
+                                getAffineConstantExpr(0, ctx));
+  for (int64_t b = 0; b < numBlocks; ++b) {
+    point[1] = getAffineConstantExpr(b, ctx);
+    auto value = dyn_cast<AffineConstantExpr>(
+        simplifyAffineExpr(residual.replaceDims(point), 0, 0));
+    if (!value || value.getValue() != 0)
+      return false;
+  }
+  return true;
 }
 
 /// The (dpu, block) map with the block dimension pinned to its first
@@ -180,7 +227,8 @@ Operation *collapseBlocksToOneRun(BlockOp op, RewriterBase &rewriter) {
   int64_t blockSize = op.getTransferCount();
   int64_t total = static_cast<int64_t>(op.getNumBlocksPerDpu()) * blockSize;
   if (op.getNumBlocksPerDpu() > 1 &&
-      !blocksAreOneRun(op.getScatterMap(), hostTy, blockSize))
+      !blocksAreOneRun(op.getScatterMap(), hostTy, blockSize,
+                       op.getNumBlocksPerDpu()))
     return nullptr;
   // The flat form's own contract: the whole run must be contiguous, which a
   // one-block-at-a-time transfer never had to be.
