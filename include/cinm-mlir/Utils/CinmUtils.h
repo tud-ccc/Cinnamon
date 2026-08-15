@@ -2,6 +2,7 @@
 #include <llvm/ADT/StringRef.h>
 #include <mlir/Dialect/SCF/Transforms/TileUsingInterface.h>
 #include <mlir/IR/BuiltinOps.h>
+#include <mlir/IR/BuiltinTypes.h>
 #include <mlir/Interfaces/TilingInterface.h>
 
 #include <optional>
@@ -9,6 +10,11 @@
 namespace mlir {
 
 SmallString<20> getUniqueFunctionName(ModuleOp &moduleOp, StringRef prefix);
+
+/// Return the type if it's a shaped type, otherwise a
+/// ranked tensor type of rank 0 if the type is a valid
+/// tensor element, otherwise asserts.
+ShapedType asShaped(Type ty);
 
 /// Whether \p ty 's elements occupy one unbroken run of memory, i.e. whether
 /// it can be moved by a single contiguous copy.
