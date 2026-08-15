@@ -9,6 +9,16 @@ import re
 
 _FN_RE = re.compile(r"func\.func @(\w+)")
 
+#: The chunk separator. This module splits on it anchored to its own line,
+#: but MLIR's --split-input-file splits on it as a bare substring, so a line
+#: like `// // -----` -- how a prim source comments out a whole function --
+#: stays inside a chunk here and then splits it again downstream. The extra
+#: empty modules that produces travel all the way to mlir-translate, where
+#: they surface as host ops that were never converted. Chunks are written
+#: with the marker defused so both splitters agree that a chunk is one module.
+_MARKER = "// -----"
+_DEFUSED_MARKER = "// - - - - -"
+
 
 def list_functions(src_mlir: pathlib.Path) -> list[str]:
     """Function names in split-chunk order, without writing anything --
@@ -44,6 +54,6 @@ def split_source(
             raise ValueError(f"{src_mlir}: no func.func found in a split chunk")
         name = m.group(1)
         path = out_dir / f"{name}.mlir"
-        path.write_text(chunk)
+        path.write_text(chunk.replace(_MARKER, _DEFUSED_MARKER))
         modules[name] = path
     return modules
