@@ -439,13 +439,15 @@ struct InferenceTask {
 
   /// Core Bayesian-optimisation loop for one seed over a pre-built pool and
   /// (pre-evaluated) validation set. `withEval` supplies the evaluator;
-  /// `stateMx` serialises bookkeeping when the LHS phase evaluates concurrently
-  /// (null when the caller is single-threaded). `onProgress` receives the
-  /// running observation count after each successful evaluation. When
-  /// `outBestCost` is non-null it receives the seed's best cost.
+  /// `evalWorkers` is how many evaluations may run at once, which both the LHS
+  /// phase and a surrogate round's batch use, and `stateMx` serialises the
+  /// bookkeeping they share (null when the caller is single-threaded, in which
+  /// case `evalWorkers` must be 1). `onProgress` receives the running
+  /// observation count after each successful evaluation. When `outBestCost` is
+  /// non-null it receives the seed's best cost.
   Maybe<TrialInfo> runSeedBO(std::mt19937 &rng, CandidatePool &pool,
                              ValidationSet validSet, const EvalLease &withEval,
-                             std::mutex *stateMx, unsigned sampleWorkers,
+                             std::mutex *stateMx, unsigned evalWorkers,
                              const std::string &dumpDir,
                              const std::function<void(int)> &onProgress = {},
                              double *outBestCost = nullptr,
@@ -500,11 +502,12 @@ struct InferenceTask {
     if (log)
       *log << "[cinm-inference] Phase 1 (Generate initial population): "
            << nInit << " configs\n";
-    pool.sampleInitialSet(nInit, rng, evalTrain, sampleWorkers);
+    pool.sampleInitialSet(nInit, rng, evalTrain, evalWorkers);
 
     // Phase 2: surrogate-guided.
     if (log)
       *log << "[cinm-inference] Phase 2 (surrogate): budget=" << state.budget
+           << " batch=" << options.boBatchSize << " workers=" << evalWorkers
            << "\n";
     // Counts surrogate-guided rounds, which is not the observation count: a
     // round costs one fit and may spend more than one evaluation.
@@ -520,9 +523,13 @@ struct InferenceTask {
         continue;
       }
 
-      auto succeeded = pool.nextCandidateIndices(
-          options, rng, evalTrain, validSet, trainingSet, round++, pool.nObs);
-      if (!succeeded)
+      // Never overshoot the budget: the batch is what the round will spend.
+      size_t batch = std::min<size_t>(std::max<size_t>(options.boBatchSize, 1),
+                                      static_cast<size_t>(state.budget));
+      auto accepted = pool.nextCandidateIndices(options, rng, evalTrain,
+                                                validSet, trainingSet, round++,
+                                                pool.nObs, batch, evalWorkers);
+      if (accepted == 0)
         break;
     }
 
@@ -682,7 +689,7 @@ struct InferenceTask {
         double bestCost = std::numeric_limits<double>::max();
         // Each seed is single-threaded; outer cap-parallelism covers all cores.
         auto result = runSeedBO(seedRng, pool, std::move(vs), withEval,
-                                /*stateMx=*/nullptr, /*sampleWorkers=*/1, dir,
+                                /*stateMx=*/nullptr, /*evalWorkers=*/1, dir,
                                 onProgress, &bestCost, log);
         progress.seedDone(slot);
 

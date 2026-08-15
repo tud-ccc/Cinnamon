@@ -4,6 +4,9 @@
 
 #pragma once
 
+// The inference pass options name types from both: the simulator backend, and
+// InferenceOptions::Acquisition.
+#include <cinm-mlir/Dialect/Cinm/AcceleratorInference/AcceleratorInference.h>
 #include <cinm-mlir/Dialect/UPMEM/Transforms/UpmemSimulator.h>
 
 #include <mlir/Dialect/Affine/IR/AffineOps.h>

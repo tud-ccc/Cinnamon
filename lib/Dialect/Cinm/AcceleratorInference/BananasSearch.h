@@ -33,8 +33,8 @@ struct BananasEnsemble; // defined in BananasSearch.cpp
 struct ValidationSet {
   const ConfigSpace *space_;
 
-  std::vector<size_t> indices;   // pool indices of validation configs
-  arma::mat encoded;             // D × nVal encoded matrix, built incrementally
+  std::vector<size_t> indices; // pool indices of validation configs
+  arma::mat encoded;           // D × nVal encoded matrix, built incrementally
   std::vector<double> trueCosts; // true cost for each validation config
 
   struct Snapshot {
@@ -56,32 +56,45 @@ struct ValidationSet {
   void dumpToCSV(std::filesystem::path path) const;
 };
 
+/// One candidate the acquisition picked, and where it sat in the ranking.
+struct SelectionRecord {
+  size_t idx; // pool index
+  double mu, sigma;
+  // Position in the candidate ranking under each criterion: the acquisition
+  // itself, the mean alone (pure exploitation), and the spread alone (pure
+  // exploration, so 0 is the most uncertain candidate). Their spread is what
+  // separates a point the surrogate believes is good from one it merely knows
+  // nothing about.
+  size_t rankAcq, rankMu, rankSigma;
+  bool fromNeighbor; // came from an observed point's neighbourhood
+  bool accepted;     // evaluation succeeded
+};
+
 /// Per-round record of what the surrogate-guided phase did: where the round's
-/// time went, and where in the candidate ranking the accepted point sat.
+/// time went, and which candidates it drew.
 struct RoundRecord {
   int round;        // Phase-2 round, 0-based
   size_t nObs;      // observations available to the fit, before this round
   size_t nCand;     // candidates ranked this round
   size_t nNeighbor; // of which came from the observed points' neighbourhood
-  size_t selIdx;    // pool index accepted
-  double selMu, selSigma;
-  // Position of the accepted point in the candidate ranking under each
-  // criterion: the acquisition itself, the mean alone (pure exploitation), and
-  // the spread alone (pure exploration, so 0 is the most uncertain candidate).
-  // Their spread is what separates a point the surrogate believes is good from
-  // one it merely knows nothing about.
-  size_t rankAcq, rankMu, rankSigma;
-  bool fromNeighbor; // provenance of the accepted point
-  // Where the round's wall clock went. The fit is what a batch would amortise,
-  // so its ratio to the evaluation is the size of the prize.
+  // Where the round's wall clock went. One fit serves the whole batch, so its
+  // ratio to the evaluation is what raising the batch size trades against.
+  // `acceptMs` is the batch's elapsed time, not the sum of its evaluations:
+  // with workers to spare they overlap.
   double fitMs, predictMs, acceptMs;
+  std::vector<SelectionRecord> selections;
 };
 
-/// Per-(round, q) measurement of the top-q candidates under the acquisition,
-/// whether or not q points were actually evaluated.
+/// Measurement of one batch of candidates: either the batch a round actually
+/// evaluated, or the top-q of the ranking at a size the round did not use.
+/// Both are recorded at every q, so what an alternative batch size would have
+/// covered is measurable from a run that never used it.
 struct BatchRecord {
   int round;
   size_t q;
+  /// Whether this is the batch the round evaluated (true) or the ranking's
+  /// top-q measured for comparison (false).
+  bool selected;
   /// q² over the summed RBF similarity of every ordered pair: how many
   /// mutually distinguishable points the batch really holds. q when the members
   /// sit further apart than the kernel width, 1 when they collapse onto one
@@ -190,19 +203,28 @@ struct CandidatePool {
                         std::function<bool(size_t)> accept,
                         unsigned workers = 1);
 
-  /// Fit a BANANAS MLP ensemble on the observed subset (Xo/yo) and accept the
-  /// unvisited pool index the acquisition ranks best. Unvisited entries are
-  /// derived from the visited bitvector; observations come from the
-  /// incrementally maintained Xo/yo matrices (zero-copy view).
+  /// Fit a BANANAS MLP ensemble on the observed subset (Xo/yo), draw
+  /// `batchSize` unvisited candidates from the acquisition, and evaluate them
+  /// through `accept`. Unvisited entries are derived from the visited
+  /// bitvector; observations come from the incrementally maintained Xo/yo
+  /// matrices (zero-copy view). Returns how many were accepted, 0 meaning the
+  /// round made no progress and the search should stop.
+  ///
+  /// `accept` runs on a thread pool when `workers > 1`, so it must be
+  /// thread-safe exactly as sampleInitialSet requires. A batch that accepts
+  /// nothing falls back to walking the rest of the ranking for a single point,
+  /// which is what keeps a rejected batch from ending the search.
   ///
   /// `round` counts Phase-2 rounds and paces the validation snapshots; `nObs`
   /// is the observation count the snapshots are stamped with, so the validation
   /// series stays indexed by evaluations spent even when a round spends more
   /// than one.
-  bool nextCandidateIndices(const InferenceOptions &opts, std::mt19937 &rng,
-                            std::function<bool(size_t)> accept,
-                            ValidationSet &validSet, ValidationSet &trainingSet,
-                            int round, size_t nObs);
+  size_t nextCandidateIndices(const InferenceOptions &opts, std::mt19937 &rng,
+                              std::function<bool(size_t)> accept,
+                              ValidationSet &validSet,
+                              ValidationSet &trainingSet, int round,
+                              size_t nObs, size_t batchSize = 1,
+                              unsigned workers = 1);
 
   /// Dump the full candidate pool to a CSV file at `path`.
   /// Columns: one per search param, then "cost" (empty if not evaluated),
@@ -229,13 +251,11 @@ private:
   /// Append this round's RoundRecord (selection fields left for the caller to
   /// fill once a candidate is accepted) and one BatchRecord per configured
   /// batch size.
-  void recordRoundDiagnostics(const InferenceOptions &opts, std::mt19937 &rng,
-                              int round, size_t nObs,
-                              llvm::ArrayRef<size_t> candIdx,
-                              const arma::mat &candEncoded,
-                              size_t nNeighborCands, const arma::uvec &order,
-                              const arma::uvec &orderMu,
-                              const arma::uvec &orderSigma);
+  void recordRoundDiagnostics(
+      const InferenceOptions &opts, std::mt19937 &rng, int round, size_t nObs,
+      llvm::ArrayRef<size_t> candIdx, const arma::mat &candEncoded,
+      size_t nNeighborCands, const arma::uvec &order, const arma::uvec &orderMu,
+      const arma::uvec &orderSigma, llvm::ArrayRef<arma::uword> selected);
   /// Collect unvisited grid-neighbours of all observed configurations,
   /// up to `depth` discrete steps away (BFS). When `frontierOnly` is true,
   /// only nodes at exactly `depth` steps are added; otherwise all reachable
