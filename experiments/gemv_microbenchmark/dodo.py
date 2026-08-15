@@ -72,32 +72,6 @@ def prim_config(**kwargs) -> compile_run.Config:
 
 
 CONFIGS = [
-    # compile_run.Config(
-    # system="cinm2",
-    # fn_name="mtv_64MB",
-    # label="default",
-    # # FIXME: not expressible in the generic search space yet.
-    # # This configuration relies on *sequential outer trips*: with
-    # # dpus=256 tasklets=4 (1024 leaves) it covers the 4096x4096 problem in
-    # # 4 trips over M and 4 over K. The generic space requires the tile
-    # # counts to fill the workgroup exactly and has no notion of trips --
-    # # design §G2 parked them in --cinm-tiling, which the generic pipeline
-    # # no longer runs. Left in the old parameter names deliberately so it
-    # # fails loudly rather than being silently reinterpreted.
-    # params={
-    # "dpus": DPUS,
-    # "tasklets": TASKLETS,
-    # "taskletCols": 1,
-    # "wramRow": 1,
-    # "wramCol": 1024,
-    # "dpuCols": 1,
-    # "mramRow": 4,
-    # "mramCol": 1024,
-    # },
-    # fn_module=source,
-    # prim="mtv",
-    # lower=cinmopt.eval_solution_lowerer(),
-    # ),
     prim_config(
         system="atim",
         fn_name="mtv_64MB",
@@ -108,7 +82,7 @@ CONFIGS = [
         # workgroup mapping strategy, which is
         # now the gemv.order parameter below;
         # 0 is the strategy CINM2 used to assume.
-        label="atim2048optimum",
+        label="mtv",
         params={
             "dpus": 2048,
             "tasklets": 8,
@@ -130,13 +104,13 @@ CONFIGS = [
         system="cinm2",
         fn_name="mtv_64MB",
         # A point I found via search with 512 evals
-        label="atim2048optimum",
+        label="mtv",
         params={
             "dpus": 2048,
-            "tasklets": 16,
-            "gemv.M.mram": 1,
-            "gemv.M.wram": 1,
-            "gemv.K.mram": 512,
+            "tasklets": 8,
+            "gemv.M.mram": 4,
+            "gemv.M.wram": 4,
+            "gemv.K.mram": 256,
             "gemv.K.wram": 64,
             "gemv.order[0]": 2,
             "gemv.order[1]": 1,
