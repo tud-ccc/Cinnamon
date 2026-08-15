@@ -1034,6 +1034,17 @@ linalgOperandDims(linalg::LinalgOp op) {
   return dims;
 }
 
+/// Names for the operands of `op`, in the order linalgOperandDims() lists
+/// them, so a constraint over one operand's tile says which operand it is.
+static SmallVector<std::string> linalgOperandNames(linalg::LinalgOp op) {
+  SmallVector<std::string> names;
+  int64_t inputs = op.getNumDpsInputs();
+  for (int64_t idx = 0, end = op->getNumOperands(); idx < end; ++idx)
+    names.push_back(idx < inputs ? "input " + std::to_string(idx)
+                                 : "output " + std::to_string(idx - inputs));
+  return names;
+}
+
 std::optional<cinm::DistributedOpInfo>
 UpmemInferencePlugin::handleLinalgOp(linalg::LinalgOp op, StringRef namePrefix,
                                      SpaceBuilder &b) {
@@ -1099,7 +1110,11 @@ UpmemInferencePlugin::handleLinalgOp(linalg::LinalgOp op, StringRef namePrefix,
   // that would have fitted. That is the direction the bound is meant to err
   // in; the tight test is still done on the lowered program.
   auto operandDims = linalgOperandDims(op);
-  auto footprint = [operandDims, tasklets](ArrayRef<IntVar> sizes) {
+  // The tile of each operand at one level, as a count of elements: the
+  // product of that level's tiling factors over the dimensions the operand is
+  // indexed by. This is both the unit the capacity bound sums and the unit a
+  // transfer moves, which is why the DMA constraint below shares it.
+  auto operandTiles = [operandDims](ArrayRef<IntVar> sizes) {
     SmallVector<cinm::IntExpr> operands;
     for (const auto &dims : operandDims) {
       SmallVector<cinm::IntExpr> factors;
@@ -1107,7 +1122,10 @@ UpmemInferencePlugin::handleLinalgOp(linalg::LinalgOp op, StringRef namePrefix,
         factors.push_back(sizes[dim]);
       operands.push_back(cinm::prod(std::move(factors)));
     }
-    return tasklets * cinm::sum(std::move(operands));
+    return operands;
+  };
+  auto footprint = [&operandTiles, tasklets](ArrayRef<IntVar> sizes) {
+    return tasklets * cinm::sum(operandTiles(sizes));
   };
 
   // One bound per level, against the capacity the platform declares for it.
@@ -1121,6 +1139,41 @@ UpmemInferencePlugin::handleLinalgOp(linalg::LinalgOp op, StringRef namePrefix,
     // against CINM1 codegen. To be removed.
     b.require(footprint(blocks) <= levels.back().getSizeInElements(eltTy),
               "MRAM tile should be equal to WRAM tile (no tiling in MRAM)");
+  }
+
+  // DMA granularity. Every operand tile is staged by one transfer -- host to
+  // MRAM at the outer level, MRAM to WRAM at the leaf -- and the engine
+  // addresses whole granules only. A tile that is a fraction of one cannot be
+  // moved correctly: the per-tasklet slices of a shared buffer sit at
+  // `tasklet * tileBytes`, so a fractional tile puts every other slice at a
+  // misaligned address, and the length has to be rounded up into the slice
+  // next door. The C emitter refuses such a program, so without this a
+  // configuration of this shape costs a trial and yields nothing.
+  //
+  // Stated per level, since the granule is the level's own declared property.
+  // Both UPMEM levels declare 8 bytes, which makes the outer constraint
+  // implied -- a dimension's outer tile is a multiple of its leaf tile -- but
+  // it is the host transfer that the outer one describes, so it is posted on
+  // its own terms rather than left to follow.
+  const int64_t eltBits = eltTy.getIntOrFloatBitWidth();
+  SmallVector<std::string> operandNames = linalgOperandNames(op);
+  for (auto [levelIdx, level] : llvm::enumerate(levels)) {
+    const int64_t granuleBits = level.getAlignment() * 8;
+    // The smallest tile that is a whole number of granules. Counted in bits
+    // so that an element narrower than a byte stays exact.
+    const int64_t elemsPerGranule =
+        granuleBits / std::gcd(granuleBits, eltBits);
+    if (elemsPerGranule <= 1)
+      continue;
+    for (auto [name, tile] :
+         llvm::zip_equal(operandNames, operandTiles(perLevel[levelIdx])))
+      b.require(cinm::divides(cinm::ParmValue(elemsPerGranule), tile),
+                (name + "'s " + level.getName().getValue() +
+                 " tile must be a whole number of " +
+                 std::to_string(level.getAlignment()) +
+                 "-byte DMA granules, i.e. a multiple of " +
+                 std::to_string(elemsPerGranule) + " elements")
+                    .str());
   }
 
   // Which tile dimension varies fastest across the leaves (design §G3). The
