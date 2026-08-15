@@ -320,6 +320,243 @@ static arma::rowvec computeAcq(const arma::rowvec &mu,
 }
 
 // ===----------------------------------------------------------------------===//
+// Search diagnostics
+// ===----------------------------------------------------------------------===//
+
+/// Rescale every feature to [0,1] across the candidate set, so that distances
+/// weigh each dimension by the spread the candidates actually cover rather than
+/// by the units the encoder happened to emit.
+static arma::mat normaliseFeatures(const arma::mat &enc) {
+  arma::mat out = enc;
+  for (arma::uword d = 0; d < out.n_rows; ++d) {
+    const double lo = out.row(d).min(), hi = out.row(d).max();
+    out.row(d) = (out.row(d) - lo) / ((hi > lo) ? (hi - lo) : 1.0);
+  }
+  return out;
+}
+
+static double meanPairwiseDistance(const arma::mat &enc,
+                                   llvm::ArrayRef<arma::uword> cols) {
+  if (cols.size() < 2)
+    return 0.0;
+  double sum = 0;
+  size_t n = 0;
+  for (size_t i = 0; i + 1 < cols.size(); ++i)
+    for (size_t j = i + 1; j < cols.size(); ++j, ++n)
+      sum += arma::norm(enc.col(cols[i]) - enc.col(cols[j]), 2);
+  return n ? sum / n : 0.0;
+}
+
+/// Median distance between randomly drawn candidate pairs. Serves as the RBF
+/// width: at this scale a pair of typical candidates is neither identical nor
+/// unrelated, which is what makes the effective batch size read as a fraction
+/// of the candidate set's own spread instead of an absolute length.
+static double medianPairDistance(const arma::mat &enc, std::mt19937 &rng) {
+  const arma::uword M = enc.n_cols;
+  if (M < 2)
+    return 1.0;
+  constexpr size_t kPairs = 256;
+  std::uniform_int_distribution<arma::uword> pick(0, M - 1);
+  std::vector<double> dists;
+  dists.reserve(kPairs);
+  for (size_t k = 0; k < kPairs; ++k) {
+    arma::uword a = pick(rng), b = pick(rng);
+    if (a != b)
+      dists.push_back(arma::norm(enc.col(a) - enc.col(b), 2));
+  }
+  if (dists.empty())
+    return 1.0;
+  auto mid = dists.begin() + dists.size() / 2;
+  std::nth_element(dists.begin(), mid, dists.end());
+  return *mid > 0 ? *mid : 1.0;
+}
+
+/// Fraction of `a`'s first q entries that also appear in `b`'s first q.
+static double topQOverlap(const arma::uvec &a, const arma::uvec &b, size_t q) {
+  std::unordered_set<arma::uword> top(b.begin(), b.begin() + q);
+  size_t hits = 0;
+  for (size_t i = 0; i < q; ++i)
+    hits += top.count(a(i));
+  return static_cast<double>(hits) / static_cast<double>(q);
+}
+
+/// Measure the top-`q` slice of `order` -- the batch a q-wide round would
+/// evaluate -- for internal spread and for how much of the acquisition ranking
+/// the mean and the spread each account for on their own.
+static BatchRecord measureBatch(int round, size_t q, const arma::mat &normEnc,
+                                double bandwidth, const arma::uvec &order,
+                                const arma::uvec &orderMu,
+                                const arma::uvec &orderSigma,
+                                llvm::ArrayRef<ParmValue> candDimVals,
+                                llvm::ArrayRef<size_t> dimDistinct,
+                                std::mt19937 &rng) {
+  BatchRecord rec{};
+  rec.round = round;
+  rec.q = q;
+
+  llvm::SmallVector<arma::uword> batch(order.begin(), order.begin() + q);
+
+  // Effective batch size: q² / ΣΣ k, which is q for mutually distant members
+  // and 1 for a batch that has collapsed onto a single location.
+  auto effectiveSize = [&](llvm::ArrayRef<arma::uword> cols) {
+    if (cols.empty())
+      return 1.0;
+    double kSum = 0;
+    for (arma::uword a : cols)
+      for (arma::uword b : cols) {
+        double d = arma::norm(normEnc.col(a) - normEnc.col(b), 2);
+        kSum += std::exp(-(d * d) / (2 * bandwidth * bandwidth));
+      }
+    const double n = static_cast<double>(cols.size());
+    return kSum > 0 ? (n * n) / kSum : 1.0;
+  };
+  rec.qEff = effectiveSize(batch);
+  rec.meanPdist = meanPairwiseDistance(normEnc, batch);
+
+  // Reference batch: same size, drawn uniformly from the candidates. The
+  // ratios against it are what say whether the acquisition concentrated the
+  // batch or merely inherited whatever spread the candidate set had.
+  llvm::SmallVector<arma::uword> randBatch;
+  std::uniform_int_distribution<arma::uword> pick(0, normEnc.n_cols - 1);
+  std::unordered_set<arma::uword> seen;
+  for (size_t guard = 0; randBatch.size() < q && guard < q * 10; ++guard) {
+    arma::uword c = pick(rng);
+    if (seen.insert(c).second)
+      randBatch.push_back(c);
+  }
+  rec.qEffRef = effectiveSize(randBatch);
+  double refPdist = meanPairwiseDistance(normEnc, randBatch);
+  rec.dispersion = refPdist > 0 ? rec.meanPdist / refPdist : 0.0;
+
+  rec.overlapMu = topQOverlap(order, orderMu, q);
+  rec.overlapSigma = topQOverlap(order, orderSigma, q);
+
+  // Per-dimension entropy of the values the batch spans, normalised so that 1
+  // is the most spread a batch of this size could be over the values the
+  // candidate set offers on that dimension.
+  const size_t nDims = dimDistinct.size();
+  rec.dimEntropy.assign(nDims, 0.0);
+  for (size_t d = 0; d < nDims; ++d) {
+    std::unordered_map<ParmValue, size_t> counts;
+    for (arma::uword c : batch)
+      counts[candDimVals[c * nDims + d]]++;
+    double h = 0;
+    for (auto [_, n] : counts) {
+      double p = static_cast<double>(n) / static_cast<double>(q);
+      h -= p * std::log(p);
+    }
+    double maxH = std::log(static_cast<double>(std::min(q, dimDistinct[d])));
+    rec.dimEntropy[d] = maxH > 0 ? h / maxH : 0.0;
+  }
+  return rec;
+}
+
+/// Position of candidate `pos` within a ranking.
+static size_t rankOf(const arma::uvec &order, arma::uword pos) {
+  for (size_t i = 0; i < order.n_elem; ++i)
+    if (order(i) == pos)
+      return i;
+  return order.n_elem;
+}
+
+void CandidatePool::recordRoundDiagnostics(
+    const InferenceOptions &opts, std::mt19937 &rng, int round, size_t nObs,
+    llvm::ArrayRef<size_t> candIdx, const arma::mat &candEncoded,
+    size_t nNeighborCands, const arma::uvec &order, const arma::uvec &orderMu,
+    const arma::uvec &orderSigma) {
+  RoundRecord rec{};
+  rec.round = round;
+  rec.nObs = nObs;
+  rec.nCand = candIdx.size();
+  rec.nNeighbor = nNeighborCands;
+  // Overwritten once a candidate is accepted; a round that accepts none leaves
+  // the sentinel and dumps empty selection cells.
+  rec.selIdx = std::numeric_limits<size_t>::max();
+  diag.rounds.push_back(rec);
+
+  // Decode every candidate once: the entropies below are per-dimension over
+  // configuration values, which the encoded features do not expose (one
+  // parameter may span several features, and one-hot columns are not values).
+  const size_t nDims = space_->numDims();
+  std::vector<ParmValue> candDimVals(candIdx.size() * nDims);
+  std::vector<std::unordered_set<ParmValue>> distinct(nDims);
+  Configuration conf;
+  for (size_t c = 0; c < candIdx.size(); ++c) {
+    space_->at(candIdx[c], conf);
+    size_t d = 0;
+    for (ParmValue v : conf) {
+      if (d >= nDims)
+        break;
+      candDimVals[c * nDims + d] = v;
+      distinct[d].insert(v);
+      ++d;
+    }
+  }
+  llvm::SmallVector<size_t> dimDistinct(nDims);
+  for (size_t d = 0; d < nDims; ++d)
+    dimDistinct[d] = std::max<size_t>(distinct[d].size(), 1);
+
+  const arma::mat normEnc = normaliseFeatures(candEncoded);
+  const double bandwidth = medianPairDistance(normEnc, rng);
+
+  for (size_t q : opts.diagBatchSizes) {
+    if (q < 2 || q > order.n_elem)
+      continue;
+    diag.batches.push_back(measureBatch(round, q, normEnc, bandwidth, order,
+                                        orderMu, orderSigma, candDimVals,
+                                        dimDistinct, rng));
+  }
+}
+
+void SearchDiagnostics::dumpRoundsCSV(std::filesystem::path path) const {
+  if (rounds.empty())
+    return;
+  std::filesystem::create_directories(path.parent_path());
+  std::ofstream out(path);
+  if (!out)
+    return;
+  out << "round,n_obs,n_cand,n_neighbor,sel_idx,sel_mu,sel_sigma,"
+         "rank_acq,rank_mu,rank_sigma,from_neighbor,"
+         "fit_ms,predict_ms,accept_ms\n";
+  for (const auto &r : rounds) {
+    out << r.round << "," << r.nObs << "," << r.nCand << "," << r.nNeighbor
+        << ",";
+    // A round where every candidate was rejected has no selection to report,
+    // but its fit time still counts towards the search's wall clock.
+    if (r.selIdx != std::numeric_limits<size_t>::max())
+      out << r.selIdx << "," << r.selMu << "," << r.selSigma << "," << r.rankAcq
+          << "," << r.rankMu << "," << r.rankSigma << ","
+          << (r.fromNeighbor ? 1 : 0);
+    else
+      out << ",,,,,,";
+    out << "," << r.fitMs << "," << r.predictMs << "," << r.acceptMs << "\n";
+  }
+}
+
+void SearchDiagnostics::dumpBatchesCSV(const ConfigSpace &space,
+                                       std::filesystem::path path) const {
+  if (batches.empty())
+    return;
+  std::filesystem::create_directories(path.parent_path());
+  std::ofstream out(path);
+  if (!out)
+    return;
+  out << "round,q,q_eff,q_eff_ref,mean_pdist,dispersion,overlap_mu,"
+         "overlap_sigma";
+  for (size_t d = 0; d < space.numDims(); ++d)
+    out << ",ent_" << space.dimName(d);
+  out << "\n";
+  for (const auto &b : batches) {
+    out << b.round << "," << b.q << "," << b.qEff << "," << b.qEffRef << ","
+        << b.meanPdist << "," << b.dispersion << "," << b.overlapMu << ","
+        << b.overlapSigma;
+    for (double e : b.dimEntropy)
+      out << "," << e;
+    out << "\n";
+  }
+}
+
+// ===----------------------------------------------------------------------===//
 // Next-candidate selection
 // ===----------------------------------------------------------------------===//
 
@@ -387,13 +624,27 @@ bool CandidatePool::nextCandidateIndices(const InferenceOptions &opts,
                                          std::function<bool(size_t)> accept,
                                          ValidationSet &validSet,
                                          ValidationSet &trainingValidSet,
-                                         int iter) {
+                                         int round, size_t nObsAtRound) {
+  using Clock = std::chrono::steady_clock;
+  auto elapsedMs = [](Clock::time_point since) {
+    return std::chrono::duration<double, std::milli>(Clock::now() - since)
+        .count();
+  };
+  const bool wantDiag = !opts.dumpDir.empty();
+
   // --- Build candidate set ---
   // Start with the grid-neighbours of every already-observed configuration.
   // Neighbours differ in exactly one dimension by one discrete step, so they
   // are the most likely region to contain a better point.
   std::unordered_set<size_t> candSet;
   fillNeighbors(candSet, opts.neighborDepth);
+  // Everything in the set at this point came from the neighbourhood, and
+  // fillRandom dedups against the same set, so a snapshot here is what
+  // separates the two provenances afterwards.
+  std::unordered_set<size_t> neighborCands;
+  if (wantDiag)
+    neighborCands = candSet;
+  const size_t nNeighborCands = candSet.size();
   // Add random candidates.
   fillRandom(candSet, opts.nCandidates, rng);
 
@@ -433,14 +684,19 @@ bool CandidatePool::nextCandidateIndices(const InferenceOptions &opts,
     ensemble_ = std::make_unique<BananasEnsemble>(opts.nEnsemble, opts.hidden,
                                                   opts.depth);
   ensemble_->scale_ = opts.objectiveScale;
+  auto tFit = Clock::now();
   ensemble_->fit(Xo_obs, yo_obs, opts.epochs);
+  const double fitMs = elapsedMs(tFit);
+
+  auto tPredict = Clock::now();
   auto [mu, sigma] = ensemble_->predict(candEncoded);
+  const double predictMs = elapsedMs(tPredict);
 
   // validation logging
-  recordValidationData(trainingValidSet, ensemble_.get(), iter);
+  recordValidationData(trainingValidSet, ensemble_.get(), nObsAtRound);
 
-  if (opts.validationInterval > 0 && iter % opts.validationInterval == 0) {
-    recordValidationData(validSet, ensemble_.get(), iter);
+  if (opts.validationInterval > 0 && round % opts.validationInterval == 0) {
+    recordValidationData(validSet, ensemble_.get(), nObsAtRound);
   }
 
   arma::rowvec scores = computeAcq(mu, sigma, opts.kappa);
@@ -452,10 +708,47 @@ bool CandidatePool::nextCandidateIndices(const InferenceOptions &opts,
   });
   arma::uvec order = arma::sort_index(scores, "ascend");
 
+  // The two degenerate rankings the acquisition interpolates between: the mean
+  // alone is pure exploitation, the spread alone pure exploration. Where a
+  // selection sits between them is what the diagnostics report.
+  arma::rowvec muGuard = mu, sigmaGuard = sigma;
+  muGuard.for_each([](double &x) {
+    if (!std::isfinite(x))
+      x = arma::datum::inf;
+  });
+  sigmaGuard.for_each([](double &x) {
+    if (!std::isfinite(x))
+      x = 0.0;
+  });
+  arma::uvec orderMu = arma::sort_index(muGuard, "ascend");
+  arma::uvec orderSigma = arma::sort_index(sigmaGuard, "descend");
+
+  if (wantDiag)
+    recordRoundDiagnostics(opts, rng, round, nObsAtRound, candIdx, candEncoded,
+                           nNeighborCands, order, orderMu, orderSigma);
+
+  auto tAccept = Clock::now();
   for (size_t i = 0; i < order.n_elem; ++i) {
-    if (accept(candIdx[order(i)]))
+    const size_t pos = order(i);
+    if (accept(candIdx[pos])) {
+      if (wantDiag && !diag.rounds.empty()) {
+        RoundRecord &rec = diag.rounds.back();
+        rec.selIdx = candIdx[pos];
+        rec.selMu = mu(pos);
+        rec.selSigma = sigma(pos);
+        rec.rankAcq = i;
+        rec.rankMu = rankOf(orderMu, pos);
+        rec.rankSigma = rankOf(orderSigma, pos);
+        rec.fromNeighbor = neighborCands.count(candIdx[pos]) > 0;
+        rec.fitMs = fitMs;
+        rec.predictMs = predictMs;
+        rec.acceptMs = elapsedMs(tAccept);
+      }
       return true;
+    }
   }
+  if (wantDiag && !diag.rounds.empty())
+    diag.rounds.back().acceptMs = elapsedMs(tAccept);
   return false;
 }
 
