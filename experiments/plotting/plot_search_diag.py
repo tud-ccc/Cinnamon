@@ -37,6 +37,7 @@ import matplotlib.pyplot as plt
 BATCH_META_COLS = {
     "round",
     "q",
+    "selected",
     "q_eff",
     "q_eff_ref",
     "mean_pdist",
@@ -58,6 +59,14 @@ def load_run(rundir):
     return rundir.name, rounds, batches
 
 
+def per_round(rounds):
+    """One row per round. rounds.csv carries one row per selected candidate,
+    repeating the round's columns across a batch, so anything summed over
+    rounds -- the fit, the batch's elapsed evaluation -- must come from here
+    rather than from the per-selection rows."""
+    return rounds.drop_duplicates(subset="round")
+
+
 def load_budget(rundir, rounds):
     """End-to-end wall clock split by phase.
 
@@ -77,8 +86,9 @@ def load_budget(rundir, rounds):
         import json
 
         build = json.load(open(space_path)).get("space_build_seconds", 0.0)
-    fit = (rounds["fit_ms"] + rounds["predict_ms"]).sum() / 1000
-    evaluation = rounds["accept_ms"].sum() / 1000
+    ru = per_round(rounds)
+    fit = (ru["fit_ms"] + ru["predict_ms"]).sum() / 1000
+    evaluation = ru["accept_ms"].sum() / 1000
     return {
         "space build": build,
         "init + validation": max(total - fit - evaluation, 0.0),
@@ -105,6 +115,22 @@ def entropy_cols(batches):
     return [c for c in batches.columns if c.startswith("ent_")]
 
 
+def hypothetical(batches):
+    """The ranking's top-q rows, measured at every configured q whether or not
+    the round used that size. Comparable across runs; `actual` is not, since
+    its q is whatever batch size the run was given."""
+    if batches is None or "selected" not in batches.columns:
+        return batches
+    return batches[batches["selected"] == 0]
+
+
+def actual(batches):
+    """The rows for the batch each round really evaluated."""
+    if batches is None or "selected" not in batches.columns:
+        return batches.iloc[0:0] if batches is not None else None
+    return batches[batches["selected"] == 1]
+
+
 # ── Derived quantities ─────────────────────────────────────────────────────────
 def amortisation_table(rounds, workers, ev=None, rng=None, draws=20000):
     """Speedup a q-wide round would reach over q sequential rounds, at equal
@@ -123,12 +149,13 @@ def amortisation_table(rounds, workers, ev=None, rng=None, draws=20000):
     here are heavy-tailed. Both are estimated by resampling the round's own
     observed evaluation times.
     """
-    fit = (rounds["fit_ms"] + rounds["predict_ms"]).to_numpy()
+    ru = per_round(rounds)
+    fit = (ru["fit_ms"] + ru["predict_ms"]).to_numpy()
     # Per-evaluation times when pool.csv supplied them: a batch holds q
-    # evaluations, whereas a round's accept_ms bundles however many attempts it
-    # made before one was accepted, which inflates the tail it is modelling.
+    # evaluations, whereas a round's accept_ms is the whole batch's elapsed
+    # time, which is neither one evaluation nor their sum.
     if ev is None:
-        ev = rounds["accept_ms"].to_numpy()
+        ev = ru["accept_ms"].to_numpy()
     rng = rng or np.random.default_rng(0)
     fit_mean, ev_mean = fit.mean(), ev.mean()
 
@@ -204,9 +231,14 @@ def truncation_sweep(ev, fit_mean, workers, fallback_ms, q, rng=None):
 
 
 def summarise(name, rounds, batches):
-    fit = rounds["fit_ms"] + rounds["predict_ms"]
-    ev = rounds["accept_ms"]
-    out = [f"── {name} ──", f"  rounds: {len(rounds)}"]
+    ru = per_round(rounds)
+    fit = ru["fit_ms"] + ru["predict_ms"]
+    ev = ru["accept_ms"]
+    out = [
+        f"── {name} ──",
+        f"  rounds: {len(ru)}   selections: {len(rounds)}"
+        f"   batch: {rounds['batch_size'].max():.0f}",
+    ]
     out.append(
         f"  surrogate fit:  median {fit.median():8.1f} ms   "
         f"total {fit.sum() / 1000:7.1f} s   "
@@ -234,6 +266,15 @@ def summarise(name, rounds, batches):
             f"{100 * sel['from_neighbor'].mean():.0f}%"
         )
 
+    real = actual(batches)
+    if real is not None and len(real):
+        out.append(
+            f"  batch evaluated (q={real['q'].mean():.0f}): effective size "
+            f"{real['q_eff'].mean():5.2f} vs uniform {real['q_eff_ref'].mean():5.2f}"
+            f" (ratio {(real['q_eff'] / real['q_eff_ref']).mean():4.2f})   "
+            f"dispersion {real['dispersion'].mean():4.2f}"
+        )
+    batches = hypothetical(batches)
     if batches is not None and len(batches):
         for q in sorted(batches["q"].unique()):
             b = batches[batches["q"] == q]
@@ -253,15 +294,16 @@ def plot_time_split(runs, ax):
     what a batch can amortise; if evaluation sits above the fit, batching buys
     parallelism rather than amortisation."""
     for name, rounds, _ in runs:
+        ru = per_round(rounds)
         ax.plot(
-            rounds["round"],
-            rounds["fit_ms"] + rounds["predict_ms"],
+            ru["round"],
+            ru["fit_ms"] + ru["predict_ms"],
             label=f"{name}: surrogate fit",
             lw=1.4,
         )
         ax.plot(
-            rounds["round"],
-            rounds["accept_ms"],
+            ru["round"],
+            ru["accept_ms"],
             label=f"{name}: evaluation",
             lw=1.4,
             ls="--",
@@ -285,6 +327,7 @@ def plot_effective_batch(runs, ax):
     for name, _, batches in runs:
         if batches is None or not len(batches):
             continue
+        batches = hypothetical(batches)
         g = batches.groupby("q")
         qs = np.array(sorted(batches["q"].unique()))
         ax.plot(
@@ -316,6 +359,7 @@ def plot_explore_exploit(runs, ax, q=None):
     for name, _, batches in runs:
         if batches is None or not len(batches):
             continue
+        batches = hypothetical(batches)
         qq = q if q is not None else batches["q"].max()
         b = batches[batches["q"] == qq]
         ax.plot(b["round"], b["overlap_mu"], label=f"{name}: with mu (exploit)")
@@ -350,6 +394,7 @@ def plot_dim_entropy(name, batches, ax, q=None):
     dark are dimensions the surrogate has committed to; rows that stay bright
     are still being explored."""
     cols = entropy_cols(batches)
+    batches = hypothetical(batches)
     qq = q if q is not None else batches["q"].max()
     b = batches[batches["q"] == qq].sort_values("round")
     mat = b[cols].to_numpy().T
@@ -393,9 +438,10 @@ def plot_time_budget(name, rounds, budget, outpath):
     ax0.set_title(f"End-to-end search budget ({total:.0f} s)")
     ax0.legend(fontsize=7, loc="lower center", bbox_to_anchor=(0.5, -0.62), ncol=2)
 
-    n = rounds["n_obs"].to_numpy()
-    fit = (rounds["fit_ms"] + rounds["predict_ms"]).to_numpy()
-    ev = rounds["accept_ms"].to_numpy()
+    ru = per_round(rounds)
+    n = ru["n_obs"].to_numpy()
+    fit = (ru["fit_ms"] + ru["predict_ms"]).to_numpy()
+    ev = ru["accept_ms"].to_numpy()
     ax1.scatter(n, ev, s=8, alpha=0.35, color="tab:orange")
     ax1.scatter(n, fit, s=8, alpha=0.5, color="tab:blue")
     # The evaluation cost is heavy-tailed, so its level is shown as a median
@@ -500,7 +546,8 @@ def main():
         )
         print()
         if ev is not None and len(ev) > 1:
-            fit_mean = (rounds["fit_ms"] + rounds["predict_ms"]).mean()
+            ru = per_round(rounds)
+            fit_mean = (ru["fit_ms"] + ru["predict_ms"]).mean()
             print(
                 f"  capping the evaluation tail, q={args.tail_q}, "
                 f"{args.workers} workers, fallback {args.fallback_ms:.0f} ms:"

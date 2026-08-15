@@ -1240,6 +1240,8 @@ struct UpmemInferAcceleratorPass
     o.rngSeed = rngSeed;
     o.nSeeds = nSeeds;
     o.kappa = kappa;
+    o.boBatchSize = boBatchSize;
+    o.acquisition = acquisition;
     o.epochs = epochs;
     o.nEnsemble = nEnsemble;
     o.hidden = hidden;

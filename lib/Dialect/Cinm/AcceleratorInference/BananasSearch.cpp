@@ -319,6 +319,87 @@ static arma::rowvec computeAcq(const arma::rowvec &mu,
   return mu - kappa * sigma;
 }
 
+/// Pick `q` distinct candidate positions to evaluate this round.
+///
+/// LCB takes the ranking's head, which for q > 1 is q neighbours of one
+/// optimum. Thompson draws an independent posterior sample per slot and takes
+/// each draw's minimum: two slots agree wherever the ensemble is confident and
+/// diverge wherever it is not, so the batch's spread is the surrogate's own
+/// uncertainty rather than a separately tuned quantity.
+static llvm::SmallVector<arma::uword> selectBatch(const InferenceOptions &opts,
+                                                  const arma::rowvec &mu,
+                                                  const arma::rowvec &sigma,
+                                                  const arma::uvec &acqOrder,
+                                                  size_t q, std::mt19937 &rng) {
+  const size_t M = acqOrder.n_elem;
+  q = std::min(q, M);
+  llvm::SmallVector<arma::uword> batch;
+  batch.reserve(q);
+
+  if (opts.acquisition == InferenceOptions::Acquisition::LCB) {
+    for (size_t i = 0; i < q; ++i)
+      batch.push_back(acqOrder(i));
+    return batch;
+  }
+
+  std::unordered_set<arma::uword> taken;
+  std::normal_distribution<double> gauss(0.0, 1.0);
+  for (size_t slot = 0; slot < q; ++slot) {
+    double best = std::numeric_limits<double>::infinity();
+    arma::uword bestPos = M;
+    for (arma::uword i = 0; i < static_cast<arma::uword>(mu.n_elem); ++i) {
+      if (taken.count(i))
+        continue;
+      const double s = std::isfinite(sigma(i)) ? sigma(i) : 0.0;
+      const double m = std::isfinite(mu(i)) ? mu(i) : arma::datum::inf;
+      const double draw = m + s * gauss(rng);
+      if (draw < best) {
+        best = draw;
+        bestPos = i;
+      }
+    }
+    // Every candidate drew a non-finite score, so this slot has nothing to
+    // add; the acquisition ranking backfills the rest.
+    if (bestPos == M)
+      break;
+    taken.insert(bestPos);
+    batch.push_back(bestPos);
+  }
+  for (size_t i = 0; batch.size() < q && i < M; ++i)
+    if (taken.insert(acqOrder(i)).second)
+      batch.push_back(acqOrder(i));
+  return batch;
+}
+
+/// Run `accept` over `batch`, concurrently when `workers > 1`. Returns the
+/// number accepted and records the outcome against each selection.
+static size_t evaluateBatch(llvm::ArrayRef<arma::uword> batch,
+                            llvm::ArrayRef<size_t> candIdx,
+                            const std::function<bool(size_t)> &accept,
+                            unsigned workers,
+                            llvm::MutableArrayRef<SelectionRecord> outcomes) {
+  std::atomic<size_t> accepted{0};
+  auto runOne = [&](size_t slot) {
+    const bool ok = accept(candIdx[batch[slot]]);
+    if (ok)
+      accepted.fetch_add(1, std::memory_order_relaxed);
+    if (slot < outcomes.size())
+      outcomes[slot].accepted = ok;
+  };
+
+  if (workers <= 1 || batch.size() <= 1) {
+    for (size_t i = 0; i < batch.size(); ++i)
+      runOne(i);
+    return accepted.load();
+  }
+
+  llvm::DefaultThreadPool threadPool(llvm::hardware_concurrency(workers));
+  for (size_t i = 0; i < batch.size(); ++i)
+    threadPool.async([&runOne, i]() { runOne(i); });
+  threadPool.wait();
+  return accepted.load();
+}
+
 // ===----------------------------------------------------------------------===//
 // Search diagnostics
 // ===----------------------------------------------------------------------===//
@@ -371,30 +452,33 @@ static double medianPairDistance(const arma::mat &enc, std::mt19937 &rng) {
   return *mid > 0 ? *mid : 1.0;
 }
 
-/// Fraction of `a`'s first q entries that also appear in `b`'s first q.
-static double topQOverlap(const arma::uvec &a, const arma::uvec &b, size_t q) {
+/// Fraction of `batch` that appears in `b`'s first `batch.size()` entries.
+static double topQOverlap(llvm::ArrayRef<arma::uword> batch,
+                          const arma::uvec &b) {
+  const size_t q = batch.size();
   std::unordered_set<arma::uword> top(b.begin(), b.begin() + q);
   size_t hits = 0;
-  for (size_t i = 0; i < q; ++i)
-    hits += top.count(a(i));
-  return static_cast<double>(hits) / static_cast<double>(q);
+  for (arma::uword x : batch)
+    hits += top.count(x);
+  return q ? static_cast<double>(hits) / static_cast<double>(q) : 0.0;
 }
 
-/// Measure the top-`q` slice of `order` -- the batch a q-wide round would
-/// evaluate -- for internal spread and for how much of the acquisition ranking
-/// the mean and the spread each account for on their own.
-static BatchRecord measureBatch(int round, size_t q, const arma::mat &normEnc,
-                                double bandwidth, const arma::uvec &order,
+/// Measure `batch` for internal spread and for how much of it the mean and the
+/// spread each account for on their own. Serves both the batch a round actually
+/// evaluated and the hypothetical top-q of the ranking, which is what lets the
+/// two be compared at the same q.
+static BatchRecord measureBatch(int round, llvm::ArrayRef<arma::uword> batch,
+                                const arma::mat &normEnc, double bandwidth,
                                 const arma::uvec &orderMu,
                                 const arma::uvec &orderSigma,
                                 llvm::ArrayRef<ParmValue> candDimVals,
                                 llvm::ArrayRef<size_t> dimDistinct,
-                                std::mt19937 &rng) {
+                                std::mt19937 &rng, bool selected) {
+  const size_t q = batch.size();
   BatchRecord rec{};
   rec.round = round;
   rec.q = q;
-
-  llvm::SmallVector<arma::uword> batch(order.begin(), order.begin() + q);
+  rec.selected = selected;
 
   // Effective batch size: q² / ΣΣ k, which is q for mutually distant members
   // and 1 for a batch that has collapsed onto a single location.
@@ -428,8 +512,8 @@ static BatchRecord measureBatch(int round, size_t q, const arma::mat &normEnc,
   double refPdist = meanPairwiseDistance(normEnc, randBatch);
   rec.dispersion = refPdist > 0 ? rec.meanPdist / refPdist : 0.0;
 
-  rec.overlapMu = topQOverlap(order, orderMu, q);
-  rec.overlapSigma = topQOverlap(order, orderSigma, q);
+  rec.overlapMu = topQOverlap(batch, orderMu);
+  rec.overlapSigma = topQOverlap(batch, orderSigma);
 
   // Per-dimension entropy of the values the batch spans, normalised so that 1
   // is the most spread a batch of this size could be over the values the
@@ -463,16 +547,14 @@ void CandidatePool::recordRoundDiagnostics(
     const InferenceOptions &opts, std::mt19937 &rng, int round, size_t nObs,
     llvm::ArrayRef<size_t> candIdx, const arma::mat &candEncoded,
     size_t nNeighborCands, const arma::uvec &order, const arma::uvec &orderMu,
-    const arma::uvec &orderSigma) {
+    const arma::uvec &orderSigma, llvm::ArrayRef<arma::uword> selected) {
   RoundRecord rec{};
   rec.round = round;
   rec.nObs = nObs;
   rec.nCand = candIdx.size();
   rec.nNeighbor = nNeighborCands;
-  // Overwritten once a candidate is accepted; a round that accepts none leaves
-  // the sentinel and dumps empty selection cells.
-  rec.selIdx = std::numeric_limits<size_t>::max();
-  diag.rounds.push_back(rec);
+  // Timings and selections are filled in once the round has run.
+  diag.rounds.push_back(std::move(rec));
 
   // Decode every candidate once: the entropies below are per-dimension over
   // configuration values, which the encoded features do not expose (one
@@ -499,12 +581,21 @@ void CandidatePool::recordRoundDiagnostics(
   const arma::mat normEnc = normaliseFeatures(candEncoded);
   const double bandwidth = medianPairDistance(normEnc, rng);
 
+  // The batch the round evaluated. Measuring it is the only way to see whether
+  // the acquisition in use actually spreads a batch; the top-q rows below
+  // describe the ranking, which is the same object whatever draws from it.
+  if (selected.size() >= 2)
+    diag.batches.push_back(measureBatch(round, selected, normEnc, bandwidth,
+                                        orderMu, orderSigma, candDimVals,
+                                        dimDistinct, rng, /*selected=*/true));
+
   for (size_t q : opts.diagBatchSizes) {
     if (q < 2 || q > order.n_elem)
       continue;
-    diag.batches.push_back(measureBatch(round, q, normEnc, bandwidth, order,
+    llvm::ArrayRef<arma::uword> topQ(order.memptr(), q);
+    diag.batches.push_back(measureBatch(round, topQ, normEnc, bandwidth,
                                         orderMu, orderSigma, candDimVals,
-                                        dimDistinct, rng));
+                                        dimDistinct, rng, /*selected=*/false));
   }
 }
 
@@ -515,21 +606,33 @@ void SearchDiagnostics::dumpRoundsCSV(std::filesystem::path path) const {
   std::ofstream out(path);
   if (!out)
     return;
-  out << "round,n_obs,n_cand,n_neighbor,sel_idx,sel_mu,sel_sigma,"
-         "rank_acq,rank_mu,rank_sigma,from_neighbor,"
-         "fit_ms,predict_ms,accept_ms\n";
+  // One row per selected candidate. The round-level columns repeat across a
+  // batch's rows, so anything summed over rounds (the fit time, the batch's
+  // elapsed evaluation) must be taken per distinct round, not per row.
+  out << "round,n_obs,n_cand,n_neighbor,batch_size,batch_pos,"
+         "sel_idx,sel_mu,sel_sigma,rank_acq,rank_mu,rank_sigma,"
+         "from_neighbor,accepted,fit_ms,predict_ms,accept_ms\n";
   for (const auto &r : rounds) {
-    out << r.round << "," << r.nObs << "," << r.nCand << "," << r.nNeighbor
-        << ",";
+    auto roundCols = [&]() {
+      out << r.round << "," << r.nObs << "," << r.nCand << "," << r.nNeighbor
+          << "," << r.selections.size() << ",";
+    };
     // A round where every candidate was rejected has no selection to report,
     // but its fit time still counts towards the search's wall clock.
-    if (r.selIdx != std::numeric_limits<size_t>::max())
-      out << r.selIdx << "," << r.selMu << "," << r.selSigma << "," << r.rankAcq
-          << "," << r.rankMu << "," << r.rankSigma << ","
-          << (r.fromNeighbor ? 1 : 0);
-    else
-      out << ",,,,,,";
-    out << "," << r.fitMs << "," << r.predictMs << "," << r.acceptMs << "\n";
+    if (r.selections.empty()) {
+      roundCols();
+      out << ",,,,,,,," << r.fitMs << "," << r.predictMs << "," << r.acceptMs
+          << "\n";
+      continue;
+    }
+    for (size_t i = 0; i < r.selections.size(); ++i) {
+      const SelectionRecord &s = r.selections[i];
+      roundCols();
+      out << i << "," << s.idx << "," << s.mu << "," << s.sigma << ","
+          << s.rankAcq << "," << s.rankMu << "," << s.rankSigma << ","
+          << (s.fromNeighbor ? 1 : 0) << "," << (s.accepted ? 1 : 0) << ","
+          << r.fitMs << "," << r.predictMs << "," << r.acceptMs << "\n";
+    }
   }
 }
 
@@ -541,15 +644,15 @@ void SearchDiagnostics::dumpBatchesCSV(const ConfigSpace &space,
   std::ofstream out(path);
   if (!out)
     return;
-  out << "round,q,q_eff,q_eff_ref,mean_pdist,dispersion,overlap_mu,"
+  out << "round,q,selected,q_eff,q_eff_ref,mean_pdist,dispersion,overlap_mu,"
          "overlap_sigma";
   for (size_t d = 0; d < space.numDims(); ++d)
     out << ",ent_" << space.dimName(d);
   out << "\n";
   for (const auto &b : batches) {
-    out << b.round << "," << b.q << "," << b.qEff << "," << b.qEffRef << ","
-        << b.meanPdist << "," << b.dispersion << "," << b.overlapMu << ","
-        << b.overlapSigma;
+    out << b.round << "," << b.q << "," << (b.selected ? 1 : 0) << "," << b.qEff
+        << "," << b.qEffRef << "," << b.meanPdist << "," << b.dispersion << ","
+        << b.overlapMu << "," << b.overlapSigma;
     for (double e : b.dimEntropy)
       out << "," << e;
     out << "\n";
@@ -619,12 +722,13 @@ void recordValidationData(ValidationSet &validSet, BananasEnsemble *ensemble_,
   }
 }
 
-bool CandidatePool::nextCandidateIndices(const InferenceOptions &opts,
-                                         std::mt19937 &rng,
-                                         std::function<bool(size_t)> accept,
-                                         ValidationSet &validSet,
-                                         ValidationSet &trainingValidSet,
-                                         int round, size_t nObsAtRound) {
+size_t CandidatePool::nextCandidateIndices(const InferenceOptions &opts,
+                                           std::mt19937 &rng,
+                                           std::function<bool(size_t)> accept,
+                                           ValidationSet &validSet,
+                                           ValidationSet &trainingValidSet,
+                                           int round, size_t nObsAtRound,
+                                           size_t batchSize, unsigned workers) {
   using Clock = std::chrono::steady_clock;
   auto elapsedMs = [](Clock::time_point since) {
     return std::chrono::duration<double, std::milli>(Clock::now() - since)
@@ -649,7 +753,7 @@ bool CandidatePool::nextCandidateIndices(const InferenceOptions &opts,
   fillRandom(candSet, opts.nCandidates, rng);
 
   if (candSet.empty())
-    return false;
+    return 0;
 
   std::vector<size_t> candIdx(candSet.begin(), candSet.end());
   arma::mat candEncoded = encodeSubset(*space_, candIdx);
@@ -670,8 +774,8 @@ bool CandidatePool::nextCandidateIndices(const InferenceOptions &opts,
     // candidate.
     for (size_t idx : candIdx)
       if (accept(idx))
-        return true;
-    return false;
+        return 1;
+    return 0;
   }
 
   arma::mat Xo_obs = Xo.cols(finiteCols);
@@ -723,33 +827,53 @@ bool CandidatePool::nextCandidateIndices(const InferenceOptions &opts,
   arma::uvec orderMu = arma::sort_index(muGuard, "ascend");
   arma::uvec orderSigma = arma::sort_index(sigmaGuard, "descend");
 
+  llvm::SmallVector<arma::uword> batch =
+      selectBatch(opts, mu, sigma, order, std::max<size_t>(batchSize, 1), rng);
+
   if (wantDiag)
     recordRoundDiagnostics(opts, rng, round, nObsAtRound, candIdx, candEncoded,
-                           nNeighborCands, order, orderMu, orderSigma);
+                           nNeighborCands, order, orderMu, orderSigma, batch);
+
+  // Describe the batch before evaluating it: `accepted` is filled in by
+  // evaluateBatch, the rest is what the acquisition saw when it chose.
+  std::vector<SelectionRecord> selections;
+  if (wantDiag) {
+    selections.reserve(batch.size());
+    for (arma::uword pos : batch)
+      selections.push_back({candIdx[pos], mu(pos), sigma(pos),
+                            rankOf(order, pos), rankOf(orderMu, pos),
+                            rankOf(orderSigma, pos),
+                            neighborCands.count(candIdx[pos]) > 0, false});
+  }
 
   auto tAccept = Clock::now();
-  for (size_t i = 0; i < order.n_elem; ++i) {
-    const size_t pos = order(i);
-    if (accept(candIdx[pos])) {
-      if (wantDiag && !diag.rounds.empty()) {
-        RoundRecord &rec = diag.rounds.back();
-        rec.selIdx = candIdx[pos];
-        rec.selMu = mu(pos);
-        rec.selSigma = sigma(pos);
-        rec.rankAcq = i;
-        rec.rankMu = rankOf(orderMu, pos);
-        rec.rankSigma = rankOf(orderSigma, pos);
-        rec.fromNeighbor = neighborCands.count(candIdx[pos]) > 0;
-        rec.fitMs = fitMs;
-        rec.predictMs = predictMs;
-        rec.acceptMs = elapsedMs(tAccept);
-      }
-      return true;
+  size_t accepted = evaluateBatch(batch, candIdx, accept, workers, selections);
+
+  // The whole batch was rejected -- every candidate failed to lower. Walking
+  // the rest of the ranking for one usable point keeps that from ending the
+  // search, and is the entire behaviour when batchSize is 1.
+  if (accepted == 0) {
+    std::unordered_set<arma::uword> tried(batch.begin(), batch.end());
+    for (size_t i = 0; i < order.n_elem && accepted == 0; ++i) {
+      const arma::uword pos = order(i);
+      if (tried.count(pos) || !accept(candIdx[pos]))
+        continue;
+      accepted = 1;
+      if (wantDiag)
+        selections.push_back({candIdx[pos], mu(pos), sigma(pos), i,
+                              rankOf(orderMu, pos), rankOf(orderSigma, pos),
+                              neighborCands.count(candIdx[pos]) > 0, true});
     }
   }
-  if (wantDiag && !diag.rounds.empty())
-    diag.rounds.back().acceptMs = elapsedMs(tAccept);
-  return false;
+
+  if (wantDiag) {
+    RoundRecord &rec = diag.rounds.back();
+    rec.fitMs = fitMs;
+    rec.predictMs = predictMs;
+    rec.acceptMs = elapsedMs(tAccept);
+    rec.selections = std::move(selections);
+  }
+  return accepted;
 }
 
 // ===----------------------------------------------------------------------===//

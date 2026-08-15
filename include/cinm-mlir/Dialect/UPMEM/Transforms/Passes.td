@@ -94,6 +94,14 @@ def simulatorClValues {
     )}];
 }
 
+def acquisitionClValues {
+  string values = [{
+  ::llvm::cl::values(
+    clEnumValN(::mlir::cinm::InferenceOptions::Acquisition::LCB, "lcb", "Rank by mu - kappa*sigma and take the best"),
+    clEnumValN(::mlir::cinm::InferenceOptions::Acquisition::Thompson, "thompson", "One posterior draw per batch slot, each slot taking its draw's minimum")
+    )}];
+}
+
 def UpmemInferAcceleratorPass : Pass<"upmem-infer-accelerator", "ModuleOp"> {
   let summary = "Infer UPMEM accelerator parameters for cinm.compute ops";
   let description = [{
@@ -128,7 +136,19 @@ def UpmemInferAcceleratorPass : Pass<"upmem-infer-accelerator", "ModuleOp"> {
            "sharing the config space / valid-config scan / validation set. Each "
            "seed dumps to a seed_<value>/ subdirectory. 1 = single-seed">,
     Option<"kappa", "kappa", "double", "2.0",
-           "UCB exploration weight for the BANANAS surrogate">,
+           "UCB exploration weight for the BANANAS surrogate; used by the lcb "
+           "acquisition only">,
+    Option<"boBatchSize", "bo-batch-size", "size_t", "1",
+           "Candidates selected and evaluated per surrogate fit. One round "
+           "costs one fit whatever this is, so a larger batch amortises the "
+           "fit and, given spare evaluation workers, overlaps the evaluations. "
+           "Use with acquisition=thompson: the best q under lcb are "
+           "near-duplicates of one another">,
+    Option<"acquisition", "acquisition",
+           "::mlir::cinm::InferenceOptions::Acquisition",
+           "::mlir::cinm::InferenceOptions::Acquisition::Thompson",
+           "How a round turns surrogate predictions into candidates",
+           acquisitionClValues.values>,
     Option<"epochs", "epochs", "int", "1800",
            "Training epochs per MLP ensemble member">,
     Option<"nEnsemble", "n-ensemble", "int", "5",

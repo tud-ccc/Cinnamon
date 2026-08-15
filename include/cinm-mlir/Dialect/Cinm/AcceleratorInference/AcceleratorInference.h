@@ -239,6 +239,28 @@ struct InferenceOptions {
   /// effect in exhaustive or single-solution modes.
   int nSeeds = 1;
 
+  /// How a round turns the surrogate's predictions into the candidates it
+  /// evaluates.
+  enum class Acquisition {
+    /// Rank by mu - kappa*sigma and take the best. Deterministic given the
+    /// surrogate, so the best q under it are the q points nearest one
+    /// optimum -- fine for a single pick, redundant as a batch.
+    LCB,
+    /// One posterior draw per batch slot: score each candidate as
+    /// mu + sigma*z with fresh z, and take that draw's minimum. Slots
+    /// disagree wherever the ensemble does, so the batch spreads exactly as
+    /// far as the surrogate is unsure and no further -- no diversity knob to
+    /// tune, and identical to LCB in expectation for a single pick.
+    Thompson,
+  };
+  Acquisition acquisition = Acquisition::LCB;
+
+  /// Candidates selected and evaluated per surrogate fit. One round costs one
+  /// fit whatever this is, so raising it amortises the fit and, when the
+  /// evaluator has workers to spare, overlaps the evaluations. Values above 1
+  /// want Thompson: LCB's top q are near-duplicates of each other.
+  size_t boBatchSize = 1;
+
   // Surrogate model (BANANAS) hyperparameters.
   double kappa = 2.0; ///< UCB exploration weight
   int epochs = 5000;  ///< Training epochs per ensemble member
