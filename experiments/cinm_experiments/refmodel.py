@@ -39,6 +39,19 @@ _MS_RE = re.compile(r":\s*([0-9.eE+-]+)\s*ms")
 
 DUMP_SUFFIX = ".cnmprog.json"
 
+# The reference model adds this constant to every price it reports
+# (`base_time` in Predictor/configuration.py, added at the end of each
+# Simulator entry point): its own allowance for the host-side cost of getting
+# a kernel started, calibrated on its own benchmarks. It is not part of what
+# the program costs, and every quantity here is a program cost, so it comes
+# straight back off -- see BASE_TIME_MS's use in price().
+#
+# Leaving it in would not be a rounding error. It is 23104 cycles, which is
+# under half a percent of a 15ms kernel but four fifths of a 2048-DPU one,
+# and it would be counted twice over besides: the comparison already adds a
+# launch overhead of its own, from the C++ model, to both engines.
+BASE_TIME_MS = 0.066011
+
 
 @dataclasses.dataclass
 class KernelPrice:
@@ -46,8 +59,9 @@ class KernelPrice:
 
     kernel: str  # the upmem.dpu_program symbol the dump is named after
     path: pathlib.Path
-    ms: float | None  # None if the reference model would not price it
+    ms: float | None  # the program alone; None if the model would not price it
     error: str = ""
+    reported_ms: float | None = None  # what cnmprog.py printed, base_time in
 
 
 def price(
@@ -91,7 +105,8 @@ def price(
         return KernelPrice(
             kernel, json_path, None, f"unparseable output: {r.stdout.strip()!r}"
         )
-    return KernelPrice(kernel, json_path, float(m.group(1)))
+    reported = float(m.group(1))
+    return KernelPrice(kernel, json_path, reported - BASE_TIME_MS, "", reported)
 
 
 OVERHEAD_LABEL = "launchOverhead"
