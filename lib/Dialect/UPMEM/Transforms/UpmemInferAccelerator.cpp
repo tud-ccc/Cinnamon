@@ -1164,19 +1164,22 @@ UpmemInferencePlugin::handleLinalgOp(linalg::LinalgOp op, StringRef namePrefix,
   // length is a fraction of one is rounded up, and the rounding must not reach
   // into data that belongs to something else.
   //
-  // The unit that has to fit is a DPU's whole buffer for an operand, not one
-  // tasklet's tile. Lowering compacts the per-tasklet slices and moves them in
-  // a single transfer, so a tasklet holding a single element is fine as long
-  // as the DPU's tiles together fill whole granules -- which, with enough
-  // tasklets, they do. Bounding the slice instead would reject the tall thin
-  // tilings that give a DPU its parallelism, and reject them at the shapes
-  // where the aggregate is most obviously aligned.
+  // The unit that has to fit is one staged tile, because one DMA moves one
+  // tile: an operand's MRAM buffer is indexed per leaf, and a tasklet walks
+  // its own leaf tiles in a loop, so consecutive transfers start a tile
+  // apart. A tile that is a fraction of a granule puts every other transfer
+  // at a misaligned address, and an MRAM DMA drops the low bits of one --
+  // moving the right bytes to the wrong place rather than failing.
   //
-  // Only written operands are bounded. A read is staged into a buffer this
-  // program allocates, and an allocation is padded to a whole granule, so an
-  // over-long read lands in that padding and the extra elements are never
-  // looked at. A write has nowhere safe to spill: the granule it rounds into
-  // is the next slice's data.
+  // It is the tile and not the DPU's whole buffer even though the host moves
+  // that buffer in one transfer, and not the per-tasklet slice either: with
+  // `tasklets` on the outer dimension that stride is already a whole number
+  // of tiles. The leaf tile is the innermost stride, so it is the one that
+  // has to be aligned, and both larger units follow from it.
+  //
+  // Reads are bounded as well as writes. Over-reading past the end of a tile
+  // is harmless -- the allocation is padded -- but that is a length, and what
+  // is unsafe here is the start address.
   //
   // Stated per level, since the granule is the level's own declared property.
   // Both UPMEM levels declare 8 bytes, which makes the outer constraint
@@ -1191,11 +1194,10 @@ UpmemInferencePlugin::handleLinalgOp(linalg::LinalgOp op, StringRef namePrefix,
   // per-tasklet dimension and every tasklet reaches it at offset 0.
   const int64_t eltBits = eltTy.getIntOrFloatBitWidth();
   SmallVector<std::string> operandNames = linalgOperandNames(op);
-  const size_t firstInit = op.getNumDpsInputs();
   for (auto [levelIdx, level] : llvm::enumerate(levels)) {
     const int64_t granuleBits = level.getAlignment() * 8;
-    // The smallest transfer that is a whole number of granules. Counted in
-    // bits so that an element narrower than a byte stays exact.
+    // The smallest tile that is a whole number of granules. Counted in bits
+    // so that an element narrower than a byte stays exact.
     const int64_t elemsPerGranule =
         granuleBits / std::gcd(granuleBits, eltBits);
     if (elemsPerGranule <= 1)
@@ -1203,16 +1205,15 @@ UpmemInferencePlugin::handleLinalgOp(linalg::LinalgOp op, StringRef namePrefix,
     for (auto [idx, name, tile] :
          llvm::zip_equal(llvm::seq<size_t>(0, operandNames.size()),
                          operandNames, operandTiles(perLevel[levelIdx]))) {
-      if (operandDims[idx].empty() || idx < firstInit)
+      if (operandDims[idx].empty())
         continue;
-      b.require(
-          cinm::divides(cinm::ParmValue(elemsPerGranule), tasklets * tile),
-          (name + "'s " + level.getName().getValue() +
-           " buffer must be a whole number of " +
-           std::to_string(level.getAlignment()) +
-           "-byte DMA granules, i.e. tasklets * tile a multiple of " +
-           std::to_string(elemsPerGranule) + " elements")
-              .str());
+      b.require(cinm::divides(cinm::ParmValue(elemsPerGranule), tile),
+                (name + "'s " + level.getName().getValue() +
+                 " tile must be a whole number of " +
+                 std::to_string(level.getAlignment()) +
+                 "-byte DMA granules, i.e. a multiple of " +
+                 std::to_string(elemsPerGranule) + " elements")
+                    .str());
     }
   }
 
