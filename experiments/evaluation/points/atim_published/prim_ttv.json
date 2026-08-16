@@ -29,31 +29,6 @@
         "notes": "generic=D0>D1>D2 is one reading of ATiM's blockIdx axes; their DPU linearization is not stated in the TIR"
       },
       {
-        "label": "r1",
-        "params": {
-          "dpus": 2048,
-          "tasklets": 16,
-          "generic.D0.mram": 1,
-          "generic.D0.wram": 1,
-          "generic.D1.mram": 4,
-          "generic.D1.wram": 4,
-          "generic.D2.mram": 512,
-          "generic.D2.wram": 16,
-          "generic.order[0]": 1,
-          "generic.order[1]": 3,
-          "generic.order[2]": 2
-        },
-        "expected": {
-          "D": [
-            2048
-          ],
-          "T": [
-            16
-          ]
-        },
-        "notes": "generic=D0>D2>D1 is one reading of ATiM's blockIdx axes; their DPU linearization is not stated in the TIR"
-      },
-      {
         "label": "r2",
         "params": {
           "dpus": 2048,
@@ -77,81 +52,6 @@
           ]
         },
         "notes": "generic=D1>D0>D2 is one reading of ATiM's blockIdx axes; their DPU linearization is not stated in the TIR"
-      },
-      {
-        "label": "r3",
-        "params": {
-          "dpus": 2048,
-          "tasklets": 16,
-          "generic.D0.mram": 1,
-          "generic.D0.wram": 1,
-          "generic.D1.mram": 4,
-          "generic.D1.wram": 4,
-          "generic.D2.mram": 512,
-          "generic.D2.wram": 16,
-          "generic.order[0]": 3,
-          "generic.order[1]": 1,
-          "generic.order[2]": 2
-        },
-        "expected": {
-          "D": [
-            2048
-          ],
-          "T": [
-            16
-          ]
-        },
-        "notes": "generic=D1>D2>D0 is one reading of ATiM's blockIdx axes; their DPU linearization is not stated in the TIR"
-      },
-      {
-        "label": "r4",
-        "params": {
-          "dpus": 2048,
-          "tasklets": 16,
-          "generic.D0.mram": 1,
-          "generic.D0.wram": 1,
-          "generic.D1.mram": 4,
-          "generic.D1.wram": 4,
-          "generic.D2.mram": 512,
-          "generic.D2.wram": 16,
-          "generic.order[0]": 2,
-          "generic.order[1]": 3,
-          "generic.order[2]": 1
-        },
-        "expected": {
-          "D": [
-            2048
-          ],
-          "T": [
-            16
-          ]
-        },
-        "notes": "generic=D2>D0>D1 is one reading of ATiM's blockIdx axes; their DPU linearization is not stated in the TIR"
-      },
-      {
-        "label": "r5",
-        "params": {
-          "dpus": 2048,
-          "tasklets": 16,
-          "generic.D0.mram": 1,
-          "generic.D0.wram": 1,
-          "generic.D1.mram": 4,
-          "generic.D1.wram": 4,
-          "generic.D2.mram": 512,
-          "generic.D2.wram": 16,
-          "generic.order[0]": 3,
-          "generic.order[1]": 2,
-          "generic.order[2]": 1
-        },
-        "expected": {
-          "D": [
-            2048
-          ],
-          "T": [
-            16
-          ]
-        },
-        "notes": "generic=D2>D1>D0 is one reading of ATiM's blockIdx axes; their DPU linearization is not stated in the TIR"
       }
     ]
   },
@@ -341,31 +241,6 @@
         "notes": "generic=D0>D1>D2 is one reading of ATiM's blockIdx axes; their DPU linearization is not stated in the TIR"
       },
       {
-        "label": "r1",
-        "params": {
-          "dpus": 2048,
-          "tasklets": 16,
-          "generic.D0.mram": 1,
-          "generic.D0.wram": 1,
-          "generic.D1.mram": 8,
-          "generic.D1.wram": 8,
-          "generic.D2.mram": 512,
-          "generic.D2.wram": 16,
-          "generic.order[0]": 1,
-          "generic.order[1]": 3,
-          "generic.order[2]": 2
-        },
-        "expected": {
-          "D": [
-            2048
-          ],
-          "T": [
-            16
-          ]
-        },
-        "notes": "generic=D0>D2>D1 is one reading of ATiM's blockIdx axes; their DPU linearization is not stated in the TIR"
-      },
-      {
         "label": "r2",
         "params": {
           "dpus": 2048,
@@ -389,81 +264,6 @@
           ]
         },
         "notes": "generic=D1>D0>D2 is one reading of ATiM's blockIdx axes; their DPU linearization is not stated in the TIR"
-      },
-      {
-        "label": "r3",
-        "params": {
-          "dpus": 2048,
-          "tasklets": 16,
-          "generic.D0.mram": 1,
-          "generic.D0.wram": 1,
-          "generic.D1.mram": 8,
-          "generic.D1.wram": 8,
-          "generic.D2.mram": 512,
-          "generic.D2.wram": 16,
-          "generic.order[0]": 3,
-          "generic.order[1]": 1,
-          "generic.order[2]": 2
-        },
-        "expected": {
-          "D": [
-            2048
-          ],
-          "T": [
-            16
-          ]
-        },
-        "notes": "generic=D1>D2>D0 is one reading of ATiM's blockIdx axes; their DPU linearization is not stated in the TIR"
-      },
-      {
-        "label": "r4",
-        "params": {
-          "dpus": 2048,
-          "tasklets": 16,
-          "generic.D0.mram": 1,
-          "generic.D0.wram": 1,
-          "generic.D1.mram": 8,
-          "generic.D1.wram": 8,
-          "generic.D2.mram": 512,
-          "generic.D2.wram": 16,
-          "generic.order[0]": 2,
-          "generic.order[1]": 3,
-          "generic.order[2]": 1
-        },
-        "expected": {
-          "D": [
-            2048
-          ],
-          "T": [
-            16
-          ]
-        },
-        "notes": "generic=D2>D0>D1 is one reading of ATiM's blockIdx axes; their DPU linearization is not stated in the TIR"
-      },
-      {
-        "label": "r5",
-        "params": {
-          "dpus": 2048,
-          "tasklets": 16,
-          "generic.D0.mram": 1,
-          "generic.D0.wram": 1,
-          "generic.D1.mram": 8,
-          "generic.D1.wram": 8,
-          "generic.D2.mram": 512,
-          "generic.D2.wram": 16,
-          "generic.order[0]": 3,
-          "generic.order[1]": 2,
-          "generic.order[2]": 1
-        },
-        "expected": {
-          "D": [
-            2048
-          ],
-          "T": [
-            16
-          ]
-        },
-        "notes": "generic=D2>D1>D0 is one reading of ATiM's blockIdx axes; their DPU linearization is not stated in the TIR"
       }
     ]
   },
@@ -497,31 +297,6 @@
         "notes": "generic=D0>D1>D2 is one reading of ATiM's blockIdx axes; their DPU linearization is not stated in the TIR"
       },
       {
-        "label": "r1",
-        "params": {
-          "dpus": 1024,
-          "tasklets": 16,
-          "generic.D0.mram": 1,
-          "generic.D0.wram": 1,
-          "generic.D1.mram": 2,
-          "generic.D1.wram": 2,
-          "generic.D2.mram": 512,
-          "generic.D2.wram": 16,
-          "generic.order[0]": 1,
-          "generic.order[1]": 3,
-          "generic.order[2]": 2
-        },
-        "expected": {
-          "D": [
-            1024
-          ],
-          "T": [
-            16
-          ]
-        },
-        "notes": "generic=D0>D2>D1 is one reading of ATiM's blockIdx axes; their DPU linearization is not stated in the TIR"
-      },
-      {
         "label": "r2",
         "params": {
           "dpus": 1024,
@@ -545,81 +320,6 @@
           ]
         },
         "notes": "generic=D1>D0>D2 is one reading of ATiM's blockIdx axes; their DPU linearization is not stated in the TIR"
-      },
-      {
-        "label": "r3",
-        "params": {
-          "dpus": 1024,
-          "tasklets": 16,
-          "generic.D0.mram": 1,
-          "generic.D0.wram": 1,
-          "generic.D1.mram": 2,
-          "generic.D1.wram": 2,
-          "generic.D2.mram": 512,
-          "generic.D2.wram": 16,
-          "generic.order[0]": 3,
-          "generic.order[1]": 1,
-          "generic.order[2]": 2
-        },
-        "expected": {
-          "D": [
-            1024
-          ],
-          "T": [
-            16
-          ]
-        },
-        "notes": "generic=D1>D2>D0 is one reading of ATiM's blockIdx axes; their DPU linearization is not stated in the TIR"
-      },
-      {
-        "label": "r4",
-        "params": {
-          "dpus": 1024,
-          "tasklets": 16,
-          "generic.D0.mram": 1,
-          "generic.D0.wram": 1,
-          "generic.D1.mram": 2,
-          "generic.D1.wram": 2,
-          "generic.D2.mram": 512,
-          "generic.D2.wram": 16,
-          "generic.order[0]": 2,
-          "generic.order[1]": 3,
-          "generic.order[2]": 1
-        },
-        "expected": {
-          "D": [
-            1024
-          ],
-          "T": [
-            16
-          ]
-        },
-        "notes": "generic=D2>D0>D1 is one reading of ATiM's blockIdx axes; their DPU linearization is not stated in the TIR"
-      },
-      {
-        "label": "r5",
-        "params": {
-          "dpus": 1024,
-          "tasklets": 16,
-          "generic.D0.mram": 1,
-          "generic.D0.wram": 1,
-          "generic.D1.mram": 2,
-          "generic.D1.wram": 2,
-          "generic.D2.mram": 512,
-          "generic.D2.wram": 16,
-          "generic.order[0]": 3,
-          "generic.order[1]": 2,
-          "generic.order[2]": 1
-        },
-        "expected": {
-          "D": [
-            1024
-          ],
-          "T": [
-            16
-          ]
-        },
-        "notes": "generic=D2>D1>D0 is one reading of ATiM's blockIdx axes; their DPU linearization is not stated in the TIR"
       }
     ]
   }
