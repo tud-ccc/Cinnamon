@@ -46,8 +46,8 @@
 // scatter/gather API mishandles once a DPU's blocks stop ascending.
 // SPLIT-LABEL: func.func @gemv_4MB
 // SPLIT:       upmem.alloc_dpus
-// SPLIT:       upmem.gather_from_array {{.*}} : memref<4x4x1x4x1x64xi32>
-// SPLIT:       cnm.expand_buffer {{.*}} : memref<4x4x1x4x1x64xi32> into memref<4x16x64xi32>
+// SPLIT:       upmem.gather_from_array {{.*}} : memref<4x4x4x64xi32>
+// SPLIT:       cnm.expand_buffer {{.*}} : memref<4x4x4x64xi32> into memref<4x16x64xi32>
 // SPLIT:       upmem.alloc_dpus
 // SPLIT:       upmem.dpu_program
 // SPLIT:       upmem.dpu_program

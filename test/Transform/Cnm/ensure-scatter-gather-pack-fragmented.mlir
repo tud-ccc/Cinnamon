@@ -10,8 +10,8 @@
 
 // The alias block precedes every function, so the maps @divided_dim expects
 // are bound here rather than next to it.
-// PACK-DAG: #[[DIV_COMPACT:.*]] = affine_map<(d0, d1, d2, d3, d4) -> (d0, d1 + d3 * 4, d4)>
-// PACK-DAG: #[[DIV_SCATTER:.*]] = affine_map<(d0, d1, d2, d3) -> (d0 floordiv 4, d0 mod 4, 0, d2, d3)>
+// PACK-DAG: #[[DIV_COMPACT:.*]] = affine_map<(d0, d1, d2, d3) -> (d0, d1 + d2 * 4, d3)>
+// PACK-DAG: #[[DIV_SCATTER:.*]] = affine_map<(d0, d1, d2, d3) -> (d0 floordiv 4, d0 mod 4, d2, d3)>
 
 // A host value that is perfectly contiguous, but whose leaves do not each read
 // one run of it: leaf w takes rows w and w+2, so its share is two runs of 8.
@@ -31,8 +31,10 @@
 // The allocation carries the conclusion too: afterwards it is the only thing
 // left saying its contents are the same on every inference, which is what the
 // backend asks when deciding how to time the transfer out of it.
-// PACK:       %[[P:.*]] = memref.alloc() {cinm.static} : memref<2x1x2x8xi32>
-// PACK-NEXT:  cnm.compact_buffer %arg0 into %[[P]][#[[M:.*]]] {cinm.static} : memref<4x8xi32> into memref<2x1x2x8xi32>
+// The workgroup's tasklet dimension is absent from the packed shape: this
+// map never reads along it, so one copy per DPU is all there is to hold.
+// PACK:       %[[P:.*]] = memref.alloc() {cinm.static} : memref<2x2x8xi32>
+// PACK-NEXT:  cnm.compact_buffer %arg0 into %[[P]][#[[M:.*]]] {cinm.static} : memref<4x8xi32> into memref<2x2x8xi32>
 // PACK-NEXT:  cnm.scatter %[[P]] into %{{.*}}[#{{.*}}] of
 
 // The repack of a declared weight amortizes over the serving lifetime, so
@@ -82,8 +84,8 @@ func.func @fragmented_dynamic(%a: memref<4x8xi32>) {
 // PACK-LABEL: func.func @divided_dim
 // STATIC-LABEL: func.func @divided_dim
 // STATIC:     cnm.compact_buffer %arg0 into %{{.*}} {cinm.static}
-// PACK:       %[[P:.*]] = memref.alloc() {cinm.static} : memref<2x4x1x2x8xi32>
-// PACK-NEXT:  cnm.compact_buffer %arg0 into %[[P]][#[[DIV_COMPACT]]] {cinm.static} : memref<2x8x8xi32> into memref<2x4x1x2x8xi32>
+// PACK:       %[[P:.*]] = memref.alloc() {cinm.static} : memref<2x4x2x8xi32>
+// PACK-NEXT:  cnm.compact_buffer %arg0 into %[[P]][#[[DIV_COMPACT]]] {cinm.static} : memref<2x8x8xi32> into memref<2x4x2x8xi32>
 // The scatter reaches the split dimensions by taking its leaf index apart.
 // PACK-NEXT:  cnm.scatter %[[P]] into %{{.*}}[#[[DIV_SCATTER]]] of
 func.func @divided_dim(%a: memref<2x8x8xi32> {cinm.static}) {
