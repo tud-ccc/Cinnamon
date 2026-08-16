@@ -199,31 +199,32 @@ LogicalResult coalesceRun(IRRewriter &rewriter, affine::AffineForOp loop,
   // in the expression itself. Stepping by `k` would leave `strip * 1` scaled
   // by the element size, and the emitter's alignment check is syntactic: it
   // cannot see that the loop skips the odd values.
-  auto outer = rewriter.create<affine::AffineForOp>(loc, 0, (ub - lb) / k);
+  auto outer = affine::AffineForOp::create(rewriter, loc, 0, (ub - lb) / k);
   AffineExpr strip = rewriter.getAffineDimExpr(0);
   AffineMap stripStartMap = AffineMap::get(1, 0, lb + strip * k);
 
   SmallVector<int64_t> stripShape(bufferType.getShape());
   stripShape[dim] *= k;
   rewriter.setInsertionPointToStart(outer.getBody());
-  auto stripBuffer = rewriter.create<memref::AllocaOp>(
-      loc, MemRefType::get(stripShape, bufferType.getElementType(),
-                           MemRefLayoutAttrInterface{},
-                           bufferType.getMemorySpace()));
-  auto stripStart = rewriter.create<affine::AffineApplyOp>(
-      loc, stripStartMap, ValueRange{outer.getInductionVar()});
+  auto stripBuffer = memref::AllocaOp::create(
+      rewriter, loc,
+      MemRefType::get(stripShape, bufferType.getElementType(),
+                      MemRefLayoutAttrInterface{},
+                      bufferType.getMemorySpace()));
+  auto stripStart = affine::AffineApplyOp::create(
+      rewriter, loc, stripStartMap, ValueRange{outer.getInductionVar()});
 
   SmallVector<OpFoldResult> offsets = staging.tile.getMixedOffsets();
   SmallVector<OpFoldResult> sizes = staging.tile.getMixedSizes();
   SmallVector<OpFoldResult> strides = staging.tile.getMixedStrides();
   offsets[dim] = stripStart.getResult();
   sizes[dim] = rewriter.getIndexAttr(k);
-  auto stripTile = rewriter.create<memref::SubViewOp>(
-      loc, staging.tile.getSource(), offsets, sizes, strides);
+  auto stripTile = memref::SubViewOp::create(
+      rewriter, loc, staging.tile.getSource(), offsets, sizes, strides);
 
   if (staging.read)
-    rewriter.create<cnm::LocalTransferOp>(loc, stripTile.getResult(),
-                                          stripBuffer.getResult());
+    cnm::LocalTransferOp::create(rewriter, loc, stripTile.getResult(),
+                                 stripBuffer.getResult());
 
   // The original loop becomes the walk over the strip.
   rewriter.moveOpBefore(loop, outer.getBody()->getTerminator());
@@ -233,14 +234,14 @@ LogicalResult coalesceRun(IRRewriter &rewriter, affine::AffineForOp loop,
 
   if (staging.write) {
     rewriter.setInsertionPointAfter(loop);
-    rewriter.create<cnm::LocalTransferOp>(loc, stripBuffer.getResult(),
-                                          stripTile.getResult());
+    cnm::LocalTransferOp::create(rewriter, loc, stripBuffer.getResult(),
+                                 stripTile.getResult());
   }
 
   // Inside, the body works on this trip's slice of the strip.
   rewriter.setInsertionPointToStart(loop.getBody());
-  auto within = rewriter.create<affine::AffineApplyOp>(
-      loc,
+  auto within = affine::AffineApplyOp::create(
+      rewriter, loc,
       AffineMap::get(2, 0,
                      rewriter.getAffineDimExpr(0) - lb -
                          rewriter.getAffineDimExpr(1) * k),
@@ -255,8 +256,9 @@ LogicalResult coalesceRun(IRRewriter &rewriter, affine::AffineForOp loop,
   sliceOffsets[dim] = within.getResult();
   // The result type is inferred rather than the buffer's: this trip's slice
   // starts at a dynamic offset into the strip, which the layout has to say.
-  auto slice = rewriter.create<memref::SubViewOp>(
-      loc, stripBuffer.getResult(), sliceOffsets, sliceSizes, sliceStrides);
+  auto slice =
+      memref::SubViewOp::create(rewriter, loc, stripBuffer.getResult(),
+                                sliceOffsets, sliceSizes, sliceStrides);
 
   if (staging.read)
     rewriter.eraseOp(staging.read);
