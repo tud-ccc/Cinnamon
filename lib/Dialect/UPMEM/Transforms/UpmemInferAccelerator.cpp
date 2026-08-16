@@ -1137,8 +1137,14 @@ UpmemInferencePlugin::handleLinalgOp(linalg::LinalgOp op, StringRef namePrefix,
     }
     return operands;
   };
-  auto footprint = [&operandTiles, tasklets](ArrayRef<IntVar> sizes) {
-    return tasklets * (kStackReserveBytes + cinm::sum(operandTiles(sizes)));
+  // The stack a tasklet reserves, in the same unit as the tiles it is added
+  // to and the capacity it is charged against: elements, not bytes. Rounded
+  // up, so a reserve that is not a whole number of elements still fits.
+  const int64_t stackReserve =
+      llvm::divideCeil(kStackReserveBytes * 8, eltTy.getIntOrFloatBitWidth());
+  auto footprint = [&operandTiles, tasklets,
+                    stackReserve](ArrayRef<IntVar> sizes) {
+    return tasklets * (stackReserve + cinm::sum(operandTiles(sizes)));
   };
 
   // One bound per level, against the capacity the platform declares for it.
@@ -1154,14 +1160,23 @@ UpmemInferencePlugin::handleLinalgOp(linalg::LinalgOp op, StringRef namePrefix,
               "MRAM tile should be equal to WRAM tile (no tiling in MRAM)");
   }
 
-  // DMA granularity. Every operand tile is staged by one transfer -- host to
-  // MRAM at the outer level, MRAM to WRAM at the leaf -- and the engine
-  // addresses whole granules only. A tile that is a fraction of one cannot be
-  // moved correctly: the per-tasklet slices of a shared buffer sit at
-  // `tasklet * tileBytes`, so a fractional tile puts every other slice at a
-  // misaligned address, and the length has to be rounded up into the slice
-  // next door. The C emitter refuses such a program, so without this a
-  // configuration of this shape costs a trial and yields nothing.
+  // DMA granularity. The engine addresses whole granules, so a transfer whose
+  // length is a fraction of one is rounded up, and the rounding must not reach
+  // into data that belongs to something else.
+  //
+  // The unit that has to fit is a DPU's whole buffer for an operand, not one
+  // tasklet's tile. Lowering compacts the per-tasklet slices and moves them in
+  // a single transfer, so a tasklet holding a single element is fine as long
+  // as the DPU's tiles together fill whole granules -- which, with enough
+  // tasklets, they do. Bounding the slice instead would reject the tall thin
+  // tilings that give a DPU its parallelism, and reject them at the shapes
+  // where the aggregate is most obviously aligned.
+  //
+  // Only written operands are bounded. A read is staged into a buffer this
+  // program allocates, and an allocation is padded to a whole granule, so an
+  // over-long read lands in that padding and the extra elements are never
+  // looked at. A write has nowhere safe to spill: the granule it rounds into
+  // is the next slice's data.
   //
   // Stated per level, since the granule is the level's own declared property.
   // Both UPMEM levels declare 8 bytes, which makes the outer constraint
@@ -1172,18 +1187,15 @@ UpmemInferencePlugin::handleLinalgOp(linalg::LinalgOp op, StringRef namePrefix,
   // An operand no iteration dimension indexes -- geva's two scalar
   // coefficients, say -- is exempt, and has to be: its tile is one element
   // whatever the tiling, so the constraint would empty the space rather than
-  // shape it. Exempting it is sound and not a special case for scalars.
-  // Nothing distributes such an operand, so its MRAM buffer gets no
-  // per-tasklet dimension and every tasklet reads it at offset 0; the address
-  // is aligned, and the declared buffer is padded to a whole granule, so the
-  // rounded-up read stays inside it. What makes a fractional tile unsafe is
-  // being sliced per tasklet, which needs a dimension to slice along.
+  // shape it. Nothing distributes such an operand, so its buffer gets no
+  // per-tasklet dimension and every tasklet reaches it at offset 0.
   const int64_t eltBits = eltTy.getIntOrFloatBitWidth();
   SmallVector<std::string> operandNames = linalgOperandNames(op);
+  const size_t firstInit = op.getNumDpsInputs();
   for (auto [levelIdx, level] : llvm::enumerate(levels)) {
     const int64_t granuleBits = level.getAlignment() * 8;
-    // The smallest tile that is a whole number of granules. Counted in bits
-    // so that an element narrower than a byte stays exact.
+    // The smallest transfer that is a whole number of granules. Counted in
+    // bits so that an element narrower than a byte stays exact.
     const int64_t elemsPerGranule =
         granuleBits / std::gcd(granuleBits, eltBits);
     if (elemsPerGranule <= 1)
@@ -1191,15 +1203,16 @@ UpmemInferencePlugin::handleLinalgOp(linalg::LinalgOp op, StringRef namePrefix,
     for (auto [idx, name, tile] :
          llvm::zip_equal(llvm::seq<size_t>(0, operandNames.size()),
                          operandNames, operandTiles(perLevel[levelIdx]))) {
-      if (operandDims[idx].empty())
+      if (operandDims[idx].empty() || idx < firstInit)
         continue;
-      b.require(cinm::divides(cinm::ParmValue(elemsPerGranule), tile),
-                (name + "'s " + level.getName().getValue() +
-                 " tile must be a whole number of " +
-                 std::to_string(level.getAlignment()) +
-                 "-byte DMA granules, i.e. a multiple of " +
-                 std::to_string(elemsPerGranule) + " elements")
-                    .str());
+      b.require(
+          cinm::divides(cinm::ParmValue(elemsPerGranule), tasklets * tile),
+          (name + "'s " + level.getName().getValue() +
+           " buffer must be a whole number of " +
+           std::to_string(level.getAlignment()) +
+           "-byte DMA granules, i.e. tasklets * tile a multiple of " +
+           std::to_string(elemsPerGranule) + " elements")
+              .str());
     }
   }
 
