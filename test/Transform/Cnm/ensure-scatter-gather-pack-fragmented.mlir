@@ -33,7 +33,7 @@
 // backend asks when deciding how to time the transfer out of it.
 // The workgroup's tasklet dimension is absent from the packed shape: this
 // map never reads along it, so one copy per DPU is all there is to hold.
-// PACK:       %[[P:.*]] = memref.alloc() {cinm.static} : memref<2x2x8xi32>
+// PACK:       %[[P:.*]] = memref.get_global @{{.*}} : memref<2x2x8xi32> {cinm.static}
 // PACK-NEXT:  cnm.compact_buffer %arg0 into %[[P]][#[[M:.*]]] {cinm.static} : memref<4x8xi32> into memref<2x2x8xi32>
 // PACK-NEXT:  cnm.scatter %[[P]] into %{{.*}}[#{{.*}}] of
 
@@ -84,7 +84,7 @@ func.func @fragmented_dynamic(%a: memref<4x8xi32>) {
 // PACK-LABEL: func.func @divided_dim
 // STATIC-LABEL: func.func @divided_dim
 // STATIC:     cnm.compact_buffer %arg0 into %{{.*}} {cinm.static}
-// PACK:       %[[P:.*]] = memref.alloc() {cinm.static} : memref<2x4x2x8xi32>
+// PACK:       %[[P:.*]] = memref.get_global @{{.*}} : memref<2x4x2x8xi32> {cinm.static}
 // PACK-NEXT:  cnm.compact_buffer %arg0 into %[[P]][#[[DIV_COMPACT]]] {cinm.static} : memref<2x8x8xi32> into memref<2x4x2x8xi32>
 // The scatter reaches the split dimensions by taking its leaf index apart.
 // PACK-NEXT:  cnm.scatter %[[P]] into %{{.*}}[#[[DIV_SCATTER]]] of
