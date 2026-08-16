@@ -407,14 +407,16 @@ module {
 
 // -----
 
-// broadcast host buffer shape is not compatible with the target buffer's
-// shape, even up to extent-1 dimensions.
+// broadcast host buffer shape is not compatible with the target buffer's.
+// Grouping is allowed -- memref<32xi32> would be fine against this target,
+// being the same elements in the same order -- but reordering is not: these
+// two hold the same 32 elements and a verbatim copy would scatter them.
 module {
-  func.func @test(%arg0: memref<32xi32>) {
+  func.func @test(%arg0: memref<16x2xi32>) {
     %1 = upmem.alloc_dpus : !upmem.hierarchy<1024x1>
     upmem.load_program @dpu_kernels::@program on %1 : !upmem.hierarchy<1024x1>
-    // expected-error @+1 {{host buffer shape 'memref<32xi32>' is not compatible with target buffer 'memref<2x16xi32, "mram">' (shapes must be equal up to extent-1 dimensions)}}
-    upmem.broadcast %arg0 onto @buf of %1 : memref<32xi32> onto !upmem.hierarchy<1024x1>
+    // expected-error @+1 {{host buffer shape 'memref<16x2xi32>' is not compatible with target buffer 'memref<2x16xi32, "mram">'}}
+    upmem.broadcast %arg0 onto @buf of %1 : memref<16x2xi32> onto !upmem.hierarchy<1024x1>
     return
   }
   module @dpu_kernels {
