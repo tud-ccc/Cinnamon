@@ -41,23 +41,18 @@ func.func @gemv_64MB(%A: tensor<4096x4096xi32>, %x: tensor<4096xi32>) -> tensor<
   // below are unaffected by it; only the order is.
 
   // k outermost (place 1), the default rule: the eight tasklets of a DPU
-  // differ in their m-tile and share one k-tile of the vector. This is the
-  // grouping the independent autotuner found best (taskletCols = 1).
+  // differ in their m-tile and share one k-tile of the vector. 128 elements
+  // per DPU. This is the grouping the independent autotuner found best
+  // (taskletCols = 1).
   //
-  // The vector nonetheless takes a tasklet dimension here, so 1024 elements
-  // per DPU rather than the 128 the sharing would allow. Its transfer is
-  // fragmented, and a fragmented transfer is repacked -- the block form it
-  // would otherwise keep is one the SDK mishandles. The repack reorders into
-  // workgroup x buffer order, which mentions the tasklet, and
-  // isMramBroadcastOverThreads reads the sharing off the map. So the sharing
-  // is lost to a repack that only the *fragmentation* requires: packing over
-  // the dimensions the map actually uses would keep both. Until then this is
-  // a real cost on exactly the configuration the evaluation cares about.
-  // SHARED-DAG: upmem.static_alloc {{.*}} : memref<8x2x1x64xi32, #upmem.mram>
+  // The vector's transfer is also fragmented, so it is repacked -- and the
+  // repack keeps the sharing, because it packs over the dimensions the map
+  // reads along and this map never reads along the tasklet. That is what
+  // isMramBroadcastOverThreads asks, so it still sees a broadcast.
+  // SHARED-DAG: upmem.static_alloc {{.*}} : memref<2x1x64xi32, #upmem.mram>
 
   // k innermost, so adjacent leaves differ in it and each tasklet needs its
-  // own k-tile. Same configuration otherwise, and the same storage -- for a
-  // different reason, this one intrinsic.
+  // own k-tile. Same configuration otherwise, 8x the vector storage.
   // REPLICATED-DAG: upmem.static_alloc {{.*}} : memref<8x2x1x64xi32, #upmem.mram>
 
   // The matrix is tiled per tasklet either way, and the accumulator likewise.

@@ -164,11 +164,26 @@ bool packIntoOneBlockPerLeaf(Op op, OpBuilder &b, bool isStatic) {
 
   // The packed shape, and each old dimension written in terms of the new ones
   // it became (for the repack's map) and the reverse (for the scatter's).
+  //
+  // A dimension the map never reads along contributes nothing: every value of
+  // it names the same data, so the packed value holds one copy and the new
+  // map leaves the dimension unused exactly as the old one did. Keeping it
+  // out matters most for the tasklet dimension, which is how the backend
+  // recognizes an operand every tasklet reads the same
+  // (isMramBroadcastOverThreads) and stores it once per DPU instead of once
+  // per tasklet. Writing it into the packed shape would replicate the data
+  // and hide the sharing, for a repack that only the fragmentation asked for.
+  llvm::SmallBitVector unused = getUnusedDimsBitVector({map});
   SmallVector<int64_t> packedShape;
   SmallVector<AffineExpr> toNew;
   SmallVector<AffineExpr> toOld;
   for (auto [old, extent, basis] : llvm::enumerate(indexSpace, bases)) {
     AffineExpr oldDim = getAffineDimExpr(old, ctx);
+    if (unused[old]) {
+      // Substituting anything is safe: `map` does not mention this dimension.
+      toNew.push_back(getAffineConstantExpr(0, ctx));
+      continue;
+    }
     if (basis.empty()) {
       toNew.push_back(getAffineDimExpr(packedShape.size(), ctx));
       toOld.push_back(oldDim);
