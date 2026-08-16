@@ -447,11 +447,49 @@ static LogicalResult getBasePtrOfAlloc(Operation *op, Value &basePtr) {
 ///
 /// `offsetAlign` receives the largest power of two the emitted offset is
 /// provably a multiple of. A term whose index is a constant contributes its
-/// own value; a term whose index is only known at run time contributes just
-/// its multiplier, which is all that can be said about it statically. The DMA
-/// engine requires both endpoints to be 8-byte aligned, and
+/// own value; a term whose index is only known at run time contributes its
+/// multiplier times whatever knownMultipleOf() can establish about the index.
+/// The DMA engine requires both endpoints to be 8-byte aligned, and
 /// checkDmaAlignment() is what turns a weaker guarantee than that into an
 /// error.
+/// What an index is provably a multiple of, or 1 when nothing can be said.
+///
+/// A strided loop is why this is worth doing rather than falling back on the
+/// multiplier alone. --upmem-coalesce-local-transfers moves several tiles per
+/// transfer and addresses them at `strip * k`, which is aligned exactly
+/// because of the `* k`; without looking through the multiply the offset reads
+/// as an arbitrary index scaled by one tile, and a transfer that is correct by
+/// construction gets rejected.
+///
+/// Deliberately syntactic and shallow: it recognises the arithmetic the index
+/// lowering emits and claims nothing otherwise. Under-reporting costs a
+/// rejected program, which is visible; over-reporting would emit a misaligned
+/// DMA, which is not.
+static int64_t knownMultipleOf(OpFoldResult ofr) {
+  if (std::optional<int64_t> constant = getConstantIntValue(ofr))
+    return *constant ? std::abs(*constant) : 0;
+  auto value = dyn_cast<Value>(ofr);
+  if (!value)
+    return 1;
+  Operation *def = value.getDefiningOp();
+  if (!def)
+    return 1; // a block argument: an induction variable, say
+  if (auto mul = dyn_cast<arith::MulIOp>(def))
+    return knownMultipleOf(mul.getLhs()) * knownMultipleOf(mul.getRhs());
+  // A sum is a multiple of what both sides share.
+  if (auto add = dyn_cast<arith::AddIOp>(def))
+    return std::gcd(knownMultipleOf(add.getLhs()),
+                    knownMultipleOf(add.getRhs()));
+  if (auto sub = dyn_cast<arith::SubIOp>(def))
+    return std::gcd(knownMultipleOf(sub.getLhs()),
+                    knownMultipleOf(sub.getRhs()));
+  if (auto shl = dyn_cast<arith::ShLIOp>(def))
+    if (std::optional<int64_t> by = getConstantIntValue(shl.getRhs()))
+      if (*by >= 0 && *by < 62)
+        return knownMultipleOf(shl.getLhs()) << *by;
+  return 1;
+}
+
 static LogicalResult getBasePtrAndOffset(CppEmitter &emitter, Value v,
                                          Value &basePtr,
                                          std::string &offsetExpr,
@@ -506,9 +544,7 @@ static LogicalResult getBasePtrAndOffset(CppEmitter &emitter, Value v,
       if (isConstantIntValue(off, 0))
         continue;
       const int64_t multiplier = stride * elementBytes;
-      std::optional<int64_t> constantOff = getConstantIntValue(off);
-      offsetAlign = std::gcd(
-          offsetAlign, constantOff ? *constantOff * multiplier : multiplier);
+      offsetAlign = std::gcd(offsetAlign, knownMultipleOf(off) * multiplier);
       offsetExpr.append(" + (");
       emitter.appendNameOrInt(off, offsetExpr);
       offsetExpr.append(" * ");

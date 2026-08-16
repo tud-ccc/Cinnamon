@@ -4,6 +4,7 @@ add_mlir_dialect_library(UPMEMTransforms
     UpmemLegalizeForTranslation.cpp
     UpmemAnnotateCosts.cpp
     UpmemCheckOccupancy.cpp
+    UpmemCoalesceLocalTransfers.cpp
     UpmemInferAccelerator.cpp
     UpmemOpCountSimulator.cpp
     UpmemPythonSimulator.cpp
