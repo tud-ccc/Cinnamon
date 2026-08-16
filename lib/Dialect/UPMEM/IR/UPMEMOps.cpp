@@ -317,18 +317,49 @@ verifyScatterGatherSymbolUses(Operation *op, Value hierarchy,
   return resolveDpuBuffer(op, hierarchy, dpuBufRef, symbolTable);
 }
 
-/// Returns true if `a` and `b` are equal once dimensions of extent 1 are
-/// dropped from each -- i.e. one is reachable from the other by only
-/// inserting/removing unit dims (as memref.expand_shape/collapse_shape would).
+/// Returns true if `a` and `b` describe the same dense buffer: the same
+/// elements in the same order, so that a verbatim copy between them is right.
+///
+/// Not shape equality, because the two sides group the same run of elements
+/// differently. A broadcast operand is one the workgroup shares along some
+/// distributed dimension, and the host side keeps that dimension separate --
+/// a 16-tasklet buffer whose operand is shared along an iteration dimension
+/// split two ways arrives shaped (2, 8, ...) where the device buffer is
+/// (16, ...). Row-major over (2, 8) and over (16) is the same sequence.
+///
+/// Consecutive dimensions may therefore be grouped on either side, and unit
+/// dimensions ignored, but nothing may be reordered: (32, 16) and (16, 32)
+/// hold the same elements in different orders and a verbatim copy between
+/// them would move the right bytes to the wrong places.
 static bool shapesCompatibleUpToUnitDims(ArrayRef<int64_t> a,
                                          ArrayRef<int64_t> b) {
-  auto dropUnitDims = [](ArrayRef<int64_t> shape) {
+  auto significantDims = [](ArrayRef<int64_t> shape) {
     SmallVector<int64_t> result;
     llvm::copy_if(shape, std::back_inserter(result),
                   [](int64_t d) { return d != 1; });
     return result;
   };
-  return dropUnitDims(a) == dropUnitDims(b);
+  SmallVector<int64_t> lhs = significantDims(a), rhs = significantDims(b);
+  if (llvm::any_of(lhs, ShapedType::isDynamic) ||
+      llvm::any_of(rhs, ShapedType::isDynamic))
+    return true; // nothing to check against
+
+  // One shape has to be reachable from the other by collapsing consecutive
+  // dimensions -- one of them refines the other. Merely having a common
+  // refinement is no test at all: collapsing both sides to a single dimension
+  // always succeeds when the totals agree, which would accept a transpose.
+  auto refines = [](ArrayRef<int64_t> fine, ArrayRef<int64_t> coarse) {
+    size_t i = 0;
+    for (int64_t group : coarse) {
+      int64_t covered = 1;
+      while (covered < group && i < fine.size())
+        covered *= fine[i++];
+      if (covered != group)
+        return false;
+    }
+    return i == fine.size();
+  };
+  return refines(lhs, rhs) || refines(rhs, lhs);
 }
 
 LogicalResult
@@ -370,7 +401,9 @@ upmem::BroadcastOp::verifySymbolUses(SymbolTableCollection &symbolTable) {
     return emitOpError("host buffer shape ")
            << getHostBuffer().getType()
            << " is not compatible with target buffer " << staticAlloc.getType()
-           << " (shapes must be equal up to extent-1 dimensions)";
+           << " (a broadcast copies the buffer verbatim, so one shape must be "
+              "reachable from the other by collapsing consecutive dimensions "
+              "and ignoring extent-1 ones)";
 
   return success();
 }
