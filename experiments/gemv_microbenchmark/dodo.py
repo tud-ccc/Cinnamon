@@ -749,9 +749,10 @@ def _gather(confs, *, quiet: bool = False):
             continue
         ratio = "  n/a" if c.ratio is None else f"{c.ratio:.2f}x"
         print(
-            f"{c.name:<12s} hw={_ms(measured[c.name])}  cpp={_ms(c.cpp_ms)}  "
-            f"ref={_ms(c.ref_ms)}  ref/cpp={ratio}  "
-            f"({len(c.kernels)} kernel{'s' if len(c.kernels) != 1 else ''})"
+            f"{c.name:<12s} hw={_ms(measured[c.name])}  cpp={_ms(c.cpp_launch_ms)}  "
+            f"ref={_ms(c.ref_launch_ms)}  ref/cpp={ratio}  "
+            f"(+{c.overhead_ms:.3f}ms launch, "
+            f"{len(c.kernels)} kernel{'s' if len(c.kernels) != 1 else ''})"
         )
         for k in c.kernels:
             if k.ms is None:
@@ -861,8 +862,8 @@ def task_crosscheck():
             )
         )
         for label, values in (
-            ("cpp", [_pct(c.cpp_ms, measured[c.name]) for c in comparisons]),
-            ("ref", [_pct(c.ref_ms, measured[c.name]) for c in comparisons]),
+            ("cpp", [_pct(c.cpp_launch_ms, measured[c.name]) for c in comparisons]),
+            ("ref", [_pct(c.ref_launch_ms, measured[c.name]) for c in comparisons]),
         ):
             seen = [v for v in values if v is not None]
             if seen:
@@ -883,7 +884,11 @@ def task_crosscheck():
         )
 
         # Measured first: it is the yardstick the two estimates are read
-        # against, not a third opinion.
+        # against, not a third opinion. Both estimates carry the C++ model's
+        # launch overhead, including the reference model's, which has none of
+        # its own -- a measured launch pays it whichever engine priced the
+        # program, so leaving it off one side would be comparing two
+        # different things (see refmodel.Comparison).
         tallest = _grouped_bars(
             top,
             x,
@@ -893,10 +898,10 @@ def task_crosscheck():
                     [measured[c.name] for c in comparisons],
                     _HW_COLOR,
                 ),
-                ("C++ cost model", [c.cpp_ms for c in comparisons], _CPP_COLOR),
+                ("C++ cost model", [c.cpp_launch_ms for c in comparisons], _CPP_COLOR),
                 (
                     "Python reference model",
-                    [c.ref_ms for c in comparisons],
+                    [c.ref_launch_ms for c in comparisons],
                     _REF_COLOR,
                 ),
             ],
@@ -914,12 +919,12 @@ def task_crosscheck():
             deviations = [
                 (
                     "C++ cost model",
-                    [_pct(c.cpp_ms, measured[c.name]) for c in comparisons],
+                    [_pct(c.cpp_launch_ms, measured[c.name]) for c in comparisons],
                     _CPP_COLOR,
                 ),
                 (
                     "Python reference model",
-                    [_pct(c.ref_ms, measured[c.name]) for c in comparisons],
+                    [_pct(c.ref_launch_ms, measured[c.name]) for c in comparisons],
                     _REF_COLOR,
                 ),
             ]
@@ -944,7 +949,7 @@ def task_crosscheck():
         # Headroom for the value labels, and for the legend to sit over the
         # bars rather than on top of the tallest one.
         top.set_ylim(0, tallest * 1.45)
-        top.set_ylabel("kernel time (ms)")
+        top.set_ylabel("launch time (ms)")
         bottom.set_ylabel(f"deviation from\n{baseline} (%)")
         top.legend(loc="upper left")
         fig.suptitle(
@@ -1013,8 +1018,16 @@ def task_ranking():
         for label in _CROSSCHECK_GROUPS:
             confs = [c for c in CONFIGS if c.label == label]
             comparisons, measured = _gather(confs, quiet=True)
+            # The launch quantities, not the bare programs: what a bigger
+            # working group buys you is exactly what the overhead it costs
+            # eats into, so a speedup computed without it is not the one the
+            # hardware reports.
             by_label[label] = {
-                c.name: {"hw": measured[c.name], "cpp": c.cpp_ms, "ref": c.ref_ms}
+                c.name: {
+                    "hw": measured[c.name],
+                    "cpp": c.cpp_launch_ms,
+                    "ref": c.ref_launch_ms,
+                }
                 for c in comparisons
             }
 

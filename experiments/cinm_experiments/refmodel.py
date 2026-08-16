@@ -94,30 +94,57 @@ def price(
     return KernelPrice(kernel, json_path, float(m.group(1)))
 
 
-def cpp_kernel_ms(costs_csv: pathlib.Path) -> float | None:
-    """The C++ cost model's kernel time over every compute block in a
-    costs_csv, which is the side of the breakdown the dumped programs stand
-    for -- transfers are host-side and have no counterpart in a dump.
-    launchOverhead is a kernel-category row too, and is left out: it is
-    charged per launch by the host model, not computed from the program."""
+OVERHEAD_LABEL = "launchOverhead"
+
+
+def _kernel_rows_ms(costs_csv: pathlib.Path, *, overhead: bool) -> float | None:
     costs_csv = pathlib.Path(costs_csv)
     if not costs_csv.exists():
         return None
     total = 0.0
     with open(costs_csv, newline="") as f:
         for row in csv.DictReader(f):
-            if row["category"] == "kernel" and row["label"] != "launchOverhead":
+            if row["category"] == "kernel" and (
+                (row["label"] == OVERHEAD_LABEL) == overhead
+            ):
                 total += float(row["cost_ms"])
     return total
 
 
+def cpp_kernel_ms(costs_csv: pathlib.Path) -> float | None:
+    """What the C++ cost model makes of the programs themselves: its
+    kernel-category rows other than launchOverhead, summed over the compute
+    blocks. This is the quantity a dump stands for, and so the one the
+    reference model's price is comparable to -- transfers are host-side and
+    have no counterpart in a dump."""
+    return _kernel_rows_ms(costs_csv, overhead=False)
+
+
+def cpp_overhead_ms(costs_csv: pathlib.Path) -> float | None:
+    """The C++ cost model's launchOverhead rows: what it charges per launch
+    on top of the program, as a function of the working group rather than of
+    anything in the program (see UpmemPythonSimulator.cpp). 0.0 when the
+    model charges none -- a zero-valued cost is not written as a row."""
+    return _kernel_rows_ms(costs_csv, overhead=True)
+
+
 @dataclasses.dataclass
 class Comparison:
-    """Both engines' verdict on one dump directory's programs."""
+    """Both engines' verdict on one dump directory's programs.
+
+    Two quantities per engine, and which one to use depends on what the
+    comparison is. `cpp_ms` and `ref_ms` are the programs alone, and are what
+    the two engines can be held against each other on. Against a measured
+    launch it has to be `cpp_launch_ms` and `ref_launch_ms`, which add the
+    launch overhead: the hardware pays it whatever the program is, the C++
+    model charges it as a function of the working group, and the reference
+    model does not model it at all -- comparing its bare program price to a
+    measurement would dock it for a term it never claimed."""
 
     name: str
     dump_dir: pathlib.Path
     cpp_ms: float | None
+    overhead_ms: float
     kernels: list[KernelPrice]
 
     @property
@@ -133,9 +160,22 @@ class Comparison:
         return sum(k.ms for k in self.kernels)
 
     @property
+    def cpp_launch_ms(self) -> float | None:
+        """What the C++ model says a launch of these programs costs."""
+        return None if self.cpp_ms is None else self.cpp_ms + self.overhead_ms
+
+    @property
+    def ref_launch_ms(self) -> float | None:
+        """The same for the reference model, borrowing the C++ model's
+        overhead since the reference has none of its own. The borrowed term
+        is identical for both, so it cancels out of their difference and
+        only ever moves them together against the measurement."""
+        return None if self.ref_ms is None else self.ref_ms + self.overhead_ms
+
+    @property
     def ratio(self) -> float | None:
-        """reference / C++. 1.0 is agreement; >1 means the reference model
-        prices the program higher."""
+        """reference / C++ on the programs alone. 1.0 is agreement; >1 means
+        the reference model prices the program higher."""
         if self.ref_ms is None or not self.cpp_ms:
             return None
         return self.ref_ms / self.cpp_ms
@@ -155,6 +195,7 @@ def compare(
         name=name or dump_dir.parent.name,
         dump_dir=dump_dir,
         cpp_ms=cpp_kernel_ms(dump_dir / "cost.csv"),
+        overhead_ms=cpp_overhead_ms(dump_dir / "cost.csv") or 0.0,
         kernels=[price(d, **price_kwargs) for d in dumps],
     )
 
@@ -162,7 +203,9 @@ def compare(
 def comparison_rows(comparisons: list[Comparison]) -> list[dict]:
     """One flat row per kernel, for a CSV. Only ref_kernel_ms is per-kernel:
     the C++ side is only available as the total the kernel contributes to, so
-    the two totals repeat down a multi-kernel config's rows."""
+    the totals repeat down a multi-kernel config's rows. The program totals
+    and the launch overhead are kept in separate columns rather than added
+    up, so a reader can see which comparison a number belongs to."""
     return [
         {
             "name": c.name,
@@ -170,6 +213,7 @@ def comparison_rows(comparisons: list[Comparison]) -> list[dict]:
             "ref_kernel_ms": k.ms,
             "ref_total_ms": c.ref_ms,
             "cpp_total_ms": c.cpp_ms,
+            "launch_overhead_ms": c.overhead_ms,
             "ratio": c.ratio,
             "error": k.error,
         }
