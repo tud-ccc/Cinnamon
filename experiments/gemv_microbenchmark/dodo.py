@@ -660,9 +660,12 @@ def task_fidelity():
         }
 
 
-# The two engines of the cross-check, each with its own fixed color -- not the
-# fidelity plot's pair, which stands for measured-vs-predicted and would read
-# as a hardware comparison here. Neither of these bars is hardware.
+# One fixed color per source of a number: neutral for the machine, a hue each
+# for the two models. Not the fidelity plot's blue for the measured bar -- next
+# to the reference model's purple it is barely a different color (7 OKLab units
+# apart to normal vision, 2 under protanopia, against ~20 for the pair below),
+# and the two would be read as one series.
+_HW_COLOR = "#4D4D4D"
 _CPP_COLOR = "#DD8452"
 _REF_COLOR = "#8172B3"
 
@@ -676,21 +679,33 @@ def _dump_dir(config: compile_run.Config) -> pathlib.Path:
 def task_crosscheck():
     """Price each functional point's dumped DPU programs with the Python
     reference cost model and print/plot the gap to the C++ estimate of the
-    same programs.
+    same programs, with the launch time the hardware actually took beside
+    them where the point has been benchmarked.
 
-    The question is how far apart the two engines are, not whether they
-    agree, so the report is the ratio and both absolute times -- nothing here
-    asserts a tolerance. A program the reference model refuses to price (it
-    rejects what it has no calibrated entry for rather than guessing) is
-    reported as such and left out of the ratio, since it is a hole in the
-    comparison rather than a difference of zero."""
+    The question is how far apart these three are, not whether they agree, so
+    the report is the times and the deviations -- nothing here asserts a
+    tolerance. A program the reference model refuses to price (it rejects
+    what it has no calibrated entry for rather than guessing) is reported as
+    such and left out of the ratio, since it is a hole in the comparison
+    rather than a difference of zero.
+
+    The measured counterpart of a kernel cost is the launch time, the same
+    pairing task_fidelity uses (measurements.PREDICTED_TO_MEASURED). It is
+    optional: this task otherwise needs no hardware, so a point that has
+    never been benchmarked loses its bar and not its row."""
 
     def _ms(value):
         return f"{'n/a':>8}  " if value is None else f"{value:8.3f}ms"
 
+    def _pct(value, base):
+        """`value` against `base` in percent, None if either is missing."""
+        if value is None or not base:
+            return None
+        return (value / base - 1.0) * 100
+
     def action(out_path, csv_path, confs):
         out_path.parent.mkdir(parents=True, exist_ok=True)
-        comparisons = []
+        comparisons, measured = [], {}
         for config in confs:
             c = refmodel.compare(_dump_dir(config), name=config.fn_name)
             if c is None:
@@ -700,10 +715,13 @@ def task_crosscheck():
                 )
                 continue
             comparisons.append(c)
+            measured[c.name] = measurements.launch_time_ms(
+                config.dir(DATA_ROOT) / "output"
+            )
             ratio = "  n/a" if c.ratio is None else f"{c.ratio:.2f}x"
             print(
-                f"{c.name:<12s} cpp={_ms(c.cpp_ms)}  ref={_ms(c.ref_ms)}  "
-                f"ref/cpp={ratio}  "
+                f"{c.name:<12s} hw={_ms(measured[c.name])}  cpp={_ms(c.cpp_ms)}  "
+                f"ref={_ms(c.ref_ms)}  ref/cpp={ratio}  "
                 f"({len(c.kernels)} kernel{'s' if len(c.kernels) != 1 else ''})"
             )
             for k in c.kernels:
@@ -719,9 +737,13 @@ def task_crosscheck():
         import matplotlib.pyplot as plt
         import numpy as np
 
-        pd.DataFrame(refmodel.comparison_rows(comparisons)).to_csv(
-            csv_path, index=False
+        df = pd.DataFrame(refmodel.comparison_rows(comparisons))
+        df.insert(
+            df.columns.get_loc("cpp_total_ms") + 1,
+            "measured_launch_ms",
+            df["name"].map(measured),
         )
+        df.to_csv(csv_path, index=False)
 
         priced = [c for c in comparisons if c.ratio is not None]
         print(
@@ -733,71 +755,110 @@ def task_crosscheck():
                 else ""
             )
         )
+        for label, values in (
+            ("cpp", [_pct(c.cpp_ms, measured[c.name]) for c in comparisons]),
+            ("ref", [_pct(c.ref_ms, measured[c.name]) for c in comparisons]),
+        ):
+            seen = [v for v in values if v is not None]
+            if seen:
+                print(
+                    f"vs hardware: {label} in "
+                    f"[{min(seen):+.0f}%, {max(seen):+.0f}%] over {len(seen)} points"
+                )
 
         x = np.arange(len(comparisons))
         fig, (top, bottom) = plt.subplots(
             2,
             1,
-            figsize=(max(6.0, 1.2 * len(comparisons)), 6.0),
+            # Three bars per config, each labeled: the width has to grow with
+            # the config count or the labels of adjacent bars run together.
+            figsize=(max(6.0, 1.7 * len(comparisons)), 6.0),
             sharex=True,
             gridspec_kw={"height_ratios": [2, 1]},
         )
 
-        top.bar(
-            x - 0.2,
-            [c.cpp_ms or 0.0 for c in comparisons],
-            0.38,
-            label="C++ cost model",
-            color=_CPP_COLOR,
-        )
-        top.bar(
-            x + 0.2,
-            [c.ref_ms or 0.0 for c in comparisons],
-            0.38,
-            label="Python reference model",
-            color=_REF_COLOR,
-        )
-        # Every bar is labeled: with two engines and a handful of configs the
-        # numbers are the point, and an unpriced config has to say so rather
-        # than show a zero-height bar that reads as "instant".
-        tallest = max(
-            [v for c in comparisons for v in (c.cpp_ms, c.ref_ms) if v], default=1.0
-        )
-        for xi, c in zip(x, comparisons):
-            for dx, value in ((-0.2, c.cpp_ms), (0.2, c.ref_ms)):
-                top.text(
-                    xi + dx,
-                    (value or 0.0) + 0.02 * tallest,
-                    "n/a" if value is None else f"{value:.2f}",
-                    ha="center",
-                    va="bottom",
-                    fontsize=7,
-                )
-
-        # The gap, not the ratio: two engines that agree to within a few
-        # percent draw two bars of the same height up there, and a ratio panel
-        # of near-1.0 bars hides the difference just as well. Zero-centred
-        # percent shows it, and the sign gets the color of whichever engine
-        # came out higher -- the same idiom as the fidelity plot above.
-        gaps = [None if c.ratio is None else (c.ratio - 1.0) * 100 for c in comparisons]
-        bottom.bar(
-            x,
-            [g or 0.0 for g in gaps],
-            0.6,
-            color=[_CPP_COLOR if (g or 0) < 0 else _REF_COLOR for g in gaps],
-        )
-        bottom.axhline(0.0, color="black", linewidth=0.8)
-        widest_gap = max((abs(g) for g in gaps if g is not None), default=1.0)
-        for xi, g in zip(x, gaps):
-            bottom.text(
-                xi,
-                (g or 0.0)
-                + (0.04 * widest_gap if (g or 0) >= 0 else -0.04 * widest_gap),
-                "n/a" if g is None else f"{g:+.1f}%",
-                ha="center",
-                va="bottom" if (g or 0) >= 0 else "top",
-                fontsize=8,
+        def grouped(ax, series, fmt, floor=0.0):
+            """One labeled bar per series per config, side by side. A missing
+            value is labeled n/a at the baseline rather than drawn as a
+            zero-height bar, which would read as a measurement of zero."""
+            width = 0.8 / len(series)
+            offsets = (np.arange(len(series)) - (len(series) - 1) / 2) * width
+            span = max(
+                (abs(v) for _, values, _ in series for v in values if v is not None),
+                default=1.0,
             )
+            for (label, values, color), dx in zip(series, offsets):
+                ax.bar(
+                    x + dx,
+                    [v if v is not None else floor for v in values],
+                    width * 0.9,
+                    label=label,
+                    color=color,
+                )
+                for xi, v in zip(x, values):
+                    above = v is None or v >= floor
+                    ax.text(
+                        xi + dx,
+                        (v if v is not None else floor)
+                        + (0.03 * span if above else -0.03 * span),
+                        "n/a" if v is None else fmt.format(v),
+                        ha="center",
+                        va="bottom" if above else "top",
+                        fontsize=7,
+                    )
+            return span
+
+        # Measured first: it is the yardstick the two estimates are read
+        # against, not a third opinion.
+        tallest = grouped(
+            top,
+            [
+                (
+                    "measured (launch)",
+                    [measured[c.name] for c in comparisons],
+                    _HW_COLOR,
+                ),
+                ("C++ cost model", [c.cpp_ms for c in comparisons], _CPP_COLOR),
+                (
+                    "Python reference model",
+                    [c.ref_ms for c in comparisons],
+                    _REF_COLOR,
+                ),
+            ],
+            "{:.2f}",
+        )
+
+        # Absolute times can't show a gap of a few percent -- two bars of the
+        # same height -- so the gap gets its own zero-centred panel. Measured
+        # is the baseline where there is one, which puts both models' error on
+        # one scale and leaves the distance between the two bars reading as
+        # the model-to-model gap; with nothing measured, that gap is all there
+        # is to show.
+        if any(v is not None for v in measured.values()):
+            baseline = "measured"
+            deviations = [
+                (
+                    "C++ cost model",
+                    [_pct(c.cpp_ms, measured[c.name]) for c in comparisons],
+                    _CPP_COLOR,
+                ),
+                (
+                    "Python reference model",
+                    [_pct(c.ref_ms, measured[c.name]) for c in comparisons],
+                    _REF_COLOR,
+                ),
+            ]
+        else:
+            baseline = "C++ cost model"
+            deviations = [
+                (
+                    "Python reference model",
+                    [_pct(c.ref_ms, c.cpp_ms) for c in comparisons],
+                    _REF_COLOR,
+                )
+            ]
+        grouped(bottom, deviations, "{:+.1f}%")
+        bottom.axhline(0.0, color="black", linewidth=0.8)
         bottom.margins(y=0.3)
         bottom.set_xticks(x)
         bottom.set_xticklabels([c.name for c in comparisons], rotation=45, ha="right")
@@ -809,10 +870,10 @@ def task_crosscheck():
         # bars rather than on top of the tallest one.
         top.set_ylim(0, tallest * 1.45)
         top.set_ylabel("kernel time (ms)")
-        bottom.set_ylabel("ref - C++ (%)")
+        bottom.set_ylabel(f"deviation from\n{baseline} (%)")
         top.legend(loc="upper left")
         fig.suptitle(
-            "Two cost models on the same dumped DPU programs"
+            "Two cost models and the machine, on the same DPU programs"
             + (
                 "\nn/a: the reference model declines to price the program"
                 if len(priced) < len(comparisons)
@@ -829,16 +890,19 @@ def task_crosscheck():
     csv_path = HERE / "plots" / "crosscheck.csv"
     # The dumps come with a compile, so compile.done is the dependency that
     # always exists. The cost.csv beside them is what actually changes when
-    # they are re-dumped without recompiling (a new emitter, say), so it joins
-    # the list once a config has one.
-    dumped = [d / "cost.csv" for c in confs if (d := _dump_dir(c)).is_dir()]
+    # they are re-dumped without recompiling (a new emitter, say), and
+    # bench.done is what changes when the measured bar does; both join the
+    # list for the configs that have them, neither is required.
+    optional = [d / "cost.csv" for c in confs if (d := _dump_dir(c)).is_dir()] + [
+        b for c in confs if (b := c.dir(DATA_ROOT) / "bench.done").exists()
+    ]
     yield {
         "name": "functional",
         "uptodate": [
             check_timestamp_unchanged(c.dir(DATA_ROOT) / "compile.done", "ctime")
             for c in confs
         ],
-        "file_dep": [c.dir(DATA_ROOT) / "compile.done" for c in confs] + dumped,
+        "file_dep": [c.dir(DATA_ROOT) / "compile.done" for c in confs] + optional,
         "targets": [out_path, csv_path],
         "actions": [(action, [out_path, csv_path, confs])],
     }
