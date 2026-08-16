@@ -805,15 +805,19 @@ def task_crosscheck():
         for ax in (top, bottom):
             ax.grid(axis="y", linestyle="--", alpha=0.4)
             ax.set_axisbelow(True)
-        # Headroom for the rotated value labels, and for the legend to sit
-        # over the bars rather than on top of the tallest one.
+        # Headroom for the value labels, and for the legend to sit over the
+        # bars rather than on top of the tallest one.
         top.set_ylim(0, tallest * 1.45)
         top.set_ylabel("kernel time (ms)")
         bottom.set_ylabel("ref - C++ (%)")
         top.legend(loc="upper left")
         fig.suptitle(
-            "Two cost models on the same dumped DPU programs\n"
-            "n/a: the reference model declines to price the program"
+            "Two cost models on the same dumped DPU programs"
+            + (
+                "\nn/a: the reference model declines to price the program"
+                if len(priced) < len(comparisons)
+                else ""
+            )
         )
         fig.tight_layout()
         fig.savefig(out_path, dpi=150)
@@ -823,13 +827,18 @@ def task_crosscheck():
     confs = [c for c in CONFIGS if c.label == "functional"]
     out_path = HERE / "plots" / "crosscheck.png"
     csv_path = HERE / "plots" / "crosscheck.csv"
+    # The dumps come with a compile, so compile.done is the dependency that
+    # always exists. The cost.csv beside them is what actually changes when
+    # they are re-dumped without recompiling (a new emitter, say), so it joins
+    # the list once a config has one.
+    dumped = [d / "cost.csv" for c in confs if (d := _dump_dir(c)).is_dir()]
     yield {
         "name": "functional",
         "uptodate": [
             check_timestamp_unchanged(c.dir(DATA_ROOT) / "compile.done", "ctime")
             for c in confs
         ],
-        "file_dep": [c.dir(DATA_ROOT) / "compile.done" for c in confs],
+        "file_dep": [c.dir(DATA_ROOT) / "compile.done" for c in confs] + dumped,
         "targets": [out_path, csv_path],
         "actions": [(action, [out_path, csv_path, confs])],
     }
