@@ -305,6 +305,91 @@ def probe_solution(
     return "accepted" if result.returncode == 0 else "accepted_fails"
 
 
+def annotate_costs(
+    src: pathlib.Path,
+    *,
+    log_file: pathlib.Path,
+    program_dump_dir: pathlib.Path | None = None,
+    costs_csv: pathlib.Path | None = None,
+    simulator: str = "cycle-accurate",
+    eval_timeout_ms: int | None = None,
+    cinm_opt: pathlib.Path = DEFAULT_CINM_OPT,
+) -> subprocess.CompletedProcess:
+    """Run --upmem-annotate-costs over an already-lowered module (the "upmem
+    dialect" stage Config.lower produces), for its side outputs rather than
+    for the annotated IR, which is discarded.
+
+    `program_dump_dir` writes one <kernel>.cnmprog.json per simulated DPU
+    program: the symbolic interchange format the Python reference cost model
+    reads (third-party/cnm-cost-model/Predictor/cnmprog.py), so the same
+    program can be priced by both engines. `costs_csv` is the C++ side's own
+    per-category breakdown of that same run -- the number the dumps get
+    compared against."""
+    opts: dict = {"simulator": simulator}
+    if eval_timeout_ms is not None:
+        opts["eval-timeout-ms"] = eval_timeout_ms
+    if program_dump_dir is not None:
+        opts["program-dump-dir"] = str(program_dump_dir)
+    if costs_csv is not None:
+        opts["costs-csv"] = str(costs_csv)
+    cmd = [
+        str(cinm_opt),
+        str(src),
+        f"--upmem-annotate-costs={_infer_opts_str(opts)}",
+        "-o",
+        "/dev/null",
+    ]
+    with open(log_file, "w") as log:
+        log.write(shlex.join(cmd) + "\n\n")
+        log.flush()  # see _run: the child writes to the fd directly
+        return subprocess.run(cmd, stdout=log, stderr=subprocess.STDOUT, text=True)
+
+
+def with_program_dump(
+    lower,
+    *,
+    dir_name: str = "cnmprog",
+    simulator: str = "cycle-accurate",
+    eval_timeout_ms: int | None = None,
+    cinm_opt: pathlib.Path = DEFAULT_CINM_OPT,
+):
+    """Wrap a Config.lower callable so that a successful lowering is followed
+    by an annotate_costs run dumping each DPU program to
+    <out_file.parent>/<dir_name>/, next to a cost.csv of the same run.
+
+    A second cinm-opt invocation rather than an option on the lowering itself:
+    the search's simulator runs on every candidate configuration, and only the
+    committed one is worth dumping. A failure of the dump is reported but does
+    not fail the lowering -- the dumps are a cross-check of the cost model,
+    not an input to the compile that follows."""
+
+    def _lower(
+        fn_module: pathlib.Path,
+        out_file: pathlib.Path,
+        log_file: pathlib.Path,
+        **params,
+    ) -> subprocess.CompletedProcess:
+        r = lower(fn_module, out_file, log_file, **params)
+        if r.returncode != 0:
+            return r
+        dump_dir = pathlib.Path(out_file).parent / dir_name
+        dump_dir.mkdir(parents=True, exist_ok=True)
+        dump = annotate_costs(
+            out_file,
+            log_file=dump_dir / "cinm-opt.log",
+            program_dump_dir=dump_dir,
+            costs_csv=dump_dir / "cost.csv",
+            simulator=simulator,
+            eval_timeout_ms=eval_timeout_ms,
+            cinm_opt=cinm_opt,
+        )
+        if dump.returncode != 0:
+            print(f"  WARN program dump failed, see {dump_dir}/cinm-opt.log")
+        return r
+
+    return _lower
+
+
 def eval_solution_lowerer(
     *, cinm_opt: pathlib.Path = DEFAULT_CINM_OPT, extra_infer_opts: dict = {}
 ):

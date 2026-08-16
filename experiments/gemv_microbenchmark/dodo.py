@@ -286,11 +286,20 @@ CONFIGS = [
             label="functional",
             params=params,
             prim=prim,
-            lower=cinmopt.eval_solution_lowerer(
-                extra_infer_opts={
-                    "simulator": "cycle-accurate",
-                    "debug-pipeline": "true",
-                }
+            # Each of these also dumps its lowered DPU programs to
+            # <config dir>/cnmprog/*.cnmprog.json, with the C++ cost model's
+            # own verdict on the same run in cnmprog/cost.csv beside them, so
+            # the estimate can be checked against the Python reference model
+            # (third-party/cnm-cost-model/Predictor/cnmprog.py). These are the
+            # points that are known to run correctly on hardware, which makes
+            # them the ones worth pricing twice.
+            lower=cinmopt.with_program_dump(
+                cinmopt.eval_solution_lowerer(
+                    extra_infer_opts={
+                        "simulator": "cycle-accurate",
+                        "debug-pipeline": "true",
+                    }
+                )
             ),
         )
         for prim, params in FUNCTIONAL_POINTS.items()
