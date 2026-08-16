@@ -233,8 +233,20 @@ StackEntry = tuple[
 ]
 
 
-def _measure_stack(stack: str, entries: list[StackEntry], *, prev_stack: str | None):
+def _measure_stack(
+    stack: str,
+    entries: list[StackEntry],
+    *,
+    prev_stack: str | None,
+    qualify_by_system: bool = False,
+):
     """Yield compile_{stack} / bench_{stack} tasks for a list of configs.
+
+    `qualify_by_system` puts the config's system in the task name. A stack
+    drawing on several sources needs it -- the transcriptions of ATiM's
+    published and reproduced schedules are different configs that share a
+    benchmark, a function and a candidate label -- and a stack with one
+    source must not have it, or its task names change under it.
 
     Compiles are parallel and fallible per config. Benches form ONE strict
     chain within the stack, and the stack itself is serialized behind
@@ -244,13 +256,20 @@ def _measure_stack(stack: str, entries: list[StackEntry], *, prev_stack: str | N
     when the stack has no configs yet (its inputs haven't been produced),
     so the next stack's group dependency always resolves.
     """
+
+    def task_name(bench, config) -> str:
+        parts = [bench, config.fn_name, config.label]
+        if qualify_by_system:
+            parts.insert(1, config.system)
+        return ":".join(parts)
+
     chain = doit_blocks.BenchChain()
     for bench, config, _, _ in entries:
-        chain.register(f"bench_{stack}:{bench}:{config.fn_name}:{config.label}")
+        chain.register(f"bench_{stack}:{task_name(bench, config)}")
 
     prev_group = [f"bench_{prev_stack}"] if prev_stack else []
     for bench, config, deps, roots in entries:
-        name = f"{bench}:{config.fn_name}:{config.label}"
+        name = task_name(bench, config)
         marker = roots.compile_marker_of(config)
         yield {
             "basename": f"compile_{stack}",
@@ -282,7 +301,7 @@ def _measure_stack(stack: str, entries: list[StackEntry], *, prev_stack: str | N
         "name": "_barrier",
         "actions": [],
         "task_dep": (
-            [f"bench_{stack}:{e[0]}:{e[1].fn_name}:{e[1].label}" for e in entries[-1:]]
+            [f"bench_{stack}:{task_name(e[0], e[1])}" for e in entries[-1:]]
             or prev_group
         ),
         "uptodate": [True],
@@ -943,7 +962,9 @@ def task_compile_points():
                         points_roots(bench, source),
                     )
                 )
-    yield from _measure_stack("points", entries, prev_stack="search_ablate")
+    yield from _measure_stack(
+        "points", entries, prev_stack="search_ablate", qualify_by_system=True
+    )
 
 
 def _invariants_report(source: str, bench: str) -> bool:

@@ -1,0 +1,98 @@
+[
+  {
+    "fn_name": "red_256MB",
+    "trace": "points/traces/red_33554432_1_1.reproduced.tir.py",
+    "candidates": [
+      {
+        "label": "r0",
+        "params": {
+          "dpus": 1024,
+          "tasklets": 8,
+          "generic.D0.mram": 4096,
+          "generic.D0.wram": 32
+        },
+        "expected": {
+          "D": [
+            1024
+          ],
+          "T": [
+            8
+          ]
+        },
+        "notes": ""
+      }
+    ]
+  },
+  {
+    "fn_name": "red_4MB",
+    "trace": "points/traces/red_524288_1_1.reproduced.tir.py",
+    "candidates": [
+      {
+        "label": "r0",
+        "params": {
+          "dpus": 128,
+          "tasklets": 8,
+          "generic.D0.mram": 512,
+          "generic.D0.wram": 256
+        },
+        "expected": {
+          "D": [
+            128
+          ],
+          "T": [
+            8
+          ]
+        },
+        "notes": ""
+      }
+    ]
+  },
+  {
+    "fn_name": "red_512MB",
+    "trace": "points/traces/red_67108864_1_1.reproduced.tir.py",
+    "candidates": [
+      {
+        "label": "r0",
+        "params": {
+          "dpus": 1024,
+          "tasklets": 16,
+          "generic.D0.mram": 4096,
+          "generic.D0.wram": 32
+        },
+        "expected": {
+          "D": [
+            1024
+          ],
+          "T": [
+            16
+          ]
+        },
+        "notes": ""
+      }
+    ]
+  },
+  {
+    "fn_name": "red_64MB",
+    "trace": "points/traces/red_8388608_1_1.reproduced.tir.py",
+    "candidates": [
+      {
+        "label": "r0",
+        "params": {
+          "dpus": 512,
+          "tasklets": 16,
+          "generic.D0.mram": 1024,
+          "generic.D0.wram": 128
+        },
+        "expected": {
+          "D": [
+            512
+          ],
+          "T": [
+            16
+          ]
+        },
+        "notes": ""
+      }
+    ]
+  }
+]

@@ -53,6 +53,30 @@ flags disagreements, so a mistranscription is caught before it costs
 hardware time. `doit compile_points bench_points` measures the candidates
 through the exact same pipeline as every other configuration.
 
+## Generating the ATiM points
+
+`python points/transcribe_atim.py` writes both `atim_*/` directories from
+the `*.tir.py` dumps in `points/traces/`. It reads the scheduled TIR rather
+than the `apply_trace_*` decision list, because the TIR already states what
+the decisions imply: thread-binding extents give D and T, `T.axis.spatial`
+gives each dimension's extent and the loops indexing it, and the `*_local`
+staging blocks give the WRAM tile as their own loop bounds.
+
+It generates; it does not certify. Run `doit compile_points
+invariants_report` afterwards and fix the JSON by hand where either
+disagrees — that is the workflow, not a fallback. The script prints what it
+could not derive, and checks the arithmetic it can before writing (tiles
+divide, each op's leaves fill the workgroup), so a point that cannot exist
+says so without costing a compile.
+
+Where it cannot know, it emits candidates instead of guessing: ATiM's TIR
+says a dimension sits on `blockIdx.x` or `blockIdx.y` but not which is the
+slower-varying DPU index, so every reading of the order is measured. That
+is why a three-dimensional benchmark yields six candidates.
+
+The hand procedure below is what the script automates. It is the reference
+for reading a trace when a generated point has to be corrected.
+
 ## Transcribing an ATiM trace
 
 Per benchmark, per trace file (e.g. ATiM's

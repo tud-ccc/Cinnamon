@@ -1,0 +1,226 @@
+[
+  {
+    "fn_name": "gemv_256MB",
+    "trace": "points/traces/gemv_8192_1_8192.published.tir.py",
+    "candidates": [
+      {
+        "label": "r0",
+        "params": {
+          "dpus": 2048,
+          "tasklets": 16,
+          "gemv.M.mram": 16,
+          "gemv.M.wram": 8,
+          "gemv.K.mram": 128,
+          "gemv.K.wram": 32,
+          "elementwise.D0.mram": 1,
+          "elementwise.D0.wram": 1,
+          "fuse.gemv->elementwise": 1,
+          "gemv.order[0]": 1,
+          "gemv.order[1]": 2
+        },
+        "expected": {
+          "D": [
+            2048
+          ],
+          "T": [
+            16
+          ]
+        },
+        "notes": "cinm.op.elementwise has no counterpart in ATiM's schedule (it fuses the operation into its kernel); D0 tiled to fill the workgroup; fuse.gemv->elementwise=1 (unfused): ATiM's K-split leaves partial sums; gemv=M>K is one reading of ATiM's blockIdx axes; their DPU linearization is not stated in the TIR"
+      },
+      {
+        "label": "r1",
+        "params": {
+          "dpus": 2048,
+          "tasklets": 16,
+          "gemv.M.mram": 16,
+          "gemv.M.wram": 8,
+          "gemv.K.mram": 128,
+          "gemv.K.wram": 32,
+          "elementwise.D0.mram": 1,
+          "elementwise.D0.wram": 1,
+          "fuse.gemv->elementwise": 1,
+          "gemv.order[0]": 2,
+          "gemv.order[1]": 1
+        },
+        "expected": {
+          "D": [
+            2048
+          ],
+          "T": [
+            16
+          ]
+        },
+        "notes": "cinm.op.elementwise has no counterpart in ATiM's schedule (it fuses the operation into its kernel); D0 tiled to fill the workgroup; fuse.gemv->elementwise=1 (unfused): ATiM's K-split leaves partial sums; gemv=K>M is one reading of ATiM's blockIdx axes; their DPU linearization is not stated in the TIR"
+      }
+    ]
+  },
+  {
+    "fn_name": "gemv_4MB",
+    "trace": "points/traces/gemv_1024_1_1024.published.tir.py",
+    "candidates": [
+      {
+        "label": "r0",
+        "params": {
+          "dpus": 256,
+          "tasklets": 16,
+          "gemv.M.mram": 4,
+          "gemv.M.wram": 2,
+          "gemv.K.mram": 64,
+          "gemv.K.wram": 32,
+          "elementwise.D0.mram": 1,
+          "elementwise.D0.wram": 1,
+          "fuse.gemv->elementwise": 1,
+          "gemv.order[0]": 1,
+          "gemv.order[1]": 2
+        },
+        "expected": {
+          "D": [
+            256
+          ],
+          "T": [
+            16
+          ]
+        },
+        "notes": "cinm.op.elementwise has no counterpart in ATiM's schedule (it fuses the operation into its kernel); D0 tiled to fill the workgroup; fuse.gemv->elementwise=1 (unfused): ATiM's K-split leaves partial sums; gemv=M>K is one reading of ATiM's blockIdx axes; their DPU linearization is not stated in the TIR"
+      },
+      {
+        "label": "r1",
+        "params": {
+          "dpus": 256,
+          "tasklets": 16,
+          "gemv.M.mram": 4,
+          "gemv.M.wram": 2,
+          "gemv.K.mram": 64,
+          "gemv.K.wram": 32,
+          "elementwise.D0.mram": 1,
+          "elementwise.D0.wram": 1,
+          "fuse.gemv->elementwise": 1,
+          "gemv.order[0]": 2,
+          "gemv.order[1]": 1
+        },
+        "expected": {
+          "D": [
+            256
+          ],
+          "T": [
+            16
+          ]
+        },
+        "notes": "cinm.op.elementwise has no counterpart in ATiM's schedule (it fuses the operation into its kernel); D0 tiled to fill the workgroup; fuse.gemv->elementwise=1 (unfused): ATiM's K-split leaves partial sums; gemv=K>M is one reading of ATiM's blockIdx axes; their DPU linearization is not stated in the TIR"
+      }
+    ]
+  },
+  {
+    "fn_name": "gemv_512MB",
+    "trace": "points/traces/gemv_8192_1_16384.published.tir.py",
+    "candidates": [
+      {
+        "label": "r0",
+        "params": {
+          "dpus": 2048,
+          "tasklets": 16,
+          "gemv.M.mram": 4,
+          "gemv.M.wram": 4,
+          "gemv.K.mram": 1024,
+          "gemv.K.wram": 16,
+          "elementwise.D0.mram": 1,
+          "elementwise.D0.wram": 1,
+          "fuse.gemv->elementwise": 1,
+          "gemv.order[0]": 1,
+          "gemv.order[1]": 2
+        },
+        "expected": {
+          "D": [
+            2048
+          ],
+          "T": [
+            16
+          ]
+        },
+        "notes": "cinm.op.elementwise has no counterpart in ATiM's schedule (it fuses the operation into its kernel); D0 tiled to fill the workgroup; fuse.gemv->elementwise=1 (unfused): ATiM's K-split leaves partial sums; gemv=M>K is one reading of ATiM's blockIdx axes; their DPU linearization is not stated in the TIR"
+      },
+      {
+        "label": "r1",
+        "params": {
+          "dpus": 2048,
+          "tasklets": 16,
+          "gemv.M.mram": 4,
+          "gemv.M.wram": 4,
+          "gemv.K.mram": 1024,
+          "gemv.K.wram": 16,
+          "elementwise.D0.mram": 1,
+          "elementwise.D0.wram": 1,
+          "fuse.gemv->elementwise": 1,
+          "gemv.order[0]": 2,
+          "gemv.order[1]": 1
+        },
+        "expected": {
+          "D": [
+            2048
+          ],
+          "T": [
+            16
+          ]
+        },
+        "notes": "cinm.op.elementwise has no counterpart in ATiM's schedule (it fuses the operation into its kernel); D0 tiled to fill the workgroup; fuse.gemv->elementwise=1 (unfused): ATiM's K-split leaves partial sums; gemv=K>M is one reading of ATiM's blockIdx axes; their DPU linearization is not stated in the TIR"
+      }
+    ]
+  },
+  {
+    "fn_name": "gemv_64MB",
+    "trace": "points/traces/gemv_4096_1_4096.published.tir.py",
+    "candidates": [
+      {
+        "label": "r0",
+        "params": {
+          "dpus": 2048,
+          "tasklets": 8,
+          "gemv.M.mram": 2,
+          "gemv.M.wram": 2,
+          "gemv.K.mram": 512,
+          "gemv.K.wram": 64,
+          "elementwise.D0.mram": 1,
+          "elementwise.D0.wram": 1,
+          "fuse.gemv->elementwise": 1,
+          "gemv.order[0]": 1,
+          "gemv.order[1]": 2
+        },
+        "expected": {
+          "D": [
+            2048
+          ],
+          "T": [
+            8
+          ]
+        },
+        "notes": "cinm.op.elementwise has no counterpart in ATiM's schedule (it fuses the operation into its kernel); D0 tiled to fill the workgroup; fuse.gemv->elementwise=1 (unfused): ATiM's K-split leaves partial sums; gemv=M>K is one reading of ATiM's blockIdx axes; their DPU linearization is not stated in the TIR"
+      },
+      {
+        "label": "r1",
+        "params": {
+          "dpus": 2048,
+          "tasklets": 8,
+          "gemv.M.mram": 2,
+          "gemv.M.wram": 2,
+          "gemv.K.mram": 512,
+          "gemv.K.wram": 64,
+          "elementwise.D0.mram": 1,
+          "elementwise.D0.wram": 1,
+          "fuse.gemv->elementwise": 1,
+          "gemv.order[0]": 2,
+          "gemv.order[1]": 1
+        },
+        "expected": {
+          "D": [
+            2048
+          ],
+          "T": [
+            8
+          ]
+        },
+        "notes": "cinm.op.elementwise has no counterpart in ATiM's schedule (it fuses the operation into its kernel); D0 tiled to fill the workgroup; fuse.gemv->elementwise=1 (unfused): ATiM's K-split leaves partial sums; gemv=K>M is one reading of ATiM's blockIdx axes; their DPU linearization is not stated in the TIR"
+      }
+    ]
+  }
+]
