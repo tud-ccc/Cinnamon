@@ -22,6 +22,8 @@ Usage:
                     # beyond an existing bench run)
   doit crosscheck   # price the dumped DPU programs with the Python reference
                     # cost model too, and report the gap (no hardware at all)
+  doit ranking      # whether either cost model keeps the order between the
+                    # same problem on 4 DPUs and on 2048
   doit forget run   # force both hardware runs to redo next time
 """
 
@@ -41,7 +43,7 @@ from cinm_experiments.split_source import list_functions, split_source  # noqa: 
 from cinm_experiments.paths import DEFAULT_CINM_OPT
 
 DOIT_CONFIG = {
-    "default_tasks": ["plot", "fidelity", "crosscheck"],
+    "default_tasks": ["plot", "fidelity", "crosscheck", "ranking"],
     "verbosity": 2,
     "reporter": ProgressBarReporter,
 }
@@ -305,6 +307,43 @@ CONFIGS = [
             ),
         )
         for prim, params in FUNCTIONAL_POINTS.items()
+    ],
+    #
+    # The same problems again at the other end of the machine. What the cost
+    # model has to get right here is not the millisecond but the order: a
+    # 2048-DPU working group should come out far ahead of the 4-DPU one, and
+    # a model that agreed to 5% on every point while ranking these two the
+    # wrong way round would be useless for search.
+    #
+    # The tasklet count is held at the 4-DPU points' 8 rather than searched,
+    # so a pair differs in the working group and the tiling it forces, and in
+    # nothing else. It also keeps the search out of the tasklets=1 corner,
+    # which the space admits and the DPU codegen then rejects for red: one
+    # tasklet makes the pooled accumulator write-back a 4-byte DMA, and a
+    # transfer length has to be a multiple of 8.
+    #
+    # gemv is missing on purpose: its space at 2048 DPUs is empty (the fused
+    # pair distributes 1024 rows, which cannot fill 2048 DPUs), so there is
+    # no configuration to rank rather than a configuration that ranks badly.
+    *[
+        prim_config(
+            system="cinm2",
+            fn_name=f"{prim}_4MB",
+            label="dpu2048",
+            params={"dpus": 2048, "tasklets": 8},
+            prim=prim,
+            lower=cinmopt.with_program_dump(
+                cinmopt.search_lowerer(
+                    max_evals=64,
+                    extra_infer_opts={
+                        "simulator": "cycle-accurate",
+                        "debug-pipeline": "true",
+                    },
+                )
+            ),
+        )
+        for prim in FUNCTIONAL_POINTS
+        if prim != "gemv"
     ],
 ]
 
@@ -676,11 +715,110 @@ def _dump_dir(config: compile_run.Config) -> pathlib.Path:
     return config.dir(DATA_ROOT) / "cnmprog"
 
 
+def _ms(value):
+    return f"{'n/a':>8}  " if value is None else f"{value:8.3f}ms"
+
+
+def _pct(value, base):
+    """`value` against `base` in percent, None if either is missing."""
+    if value is None or not base:
+        return None
+    return (value / base - 1.0) * 100
+
+
+def _gather(confs, *, quiet: bool = False):
+    """Both cost models' verdict on each config's dumped DPU programs, and
+    the launch time the hardware took for it.
+
+    Returns (comparisons, measured-by-name). The measurement is optional --
+    reading it needs no hardware, only a bench run that may not have
+    happened -- so a name can map to None."""
+    comparisons, measured = [], {}
+    for config in confs:
+        c = refmodel.compare(_dump_dir(config), name=config.fn_name)
+        if c is None:
+            if not quiet:
+                print(
+                    f"{config.fn_name}: no dumps in {_dump_dir(config)} "
+                    "(compiled before program dumping? `doit forget compile`)"
+                )
+            continue
+        comparisons.append(c)
+        measured[c.name] = measurements.launch_time_ms(config.dir(DATA_ROOT) / "output")
+        if quiet:
+            continue
+        ratio = "  n/a" if c.ratio is None else f"{c.ratio:.2f}x"
+        print(
+            f"{c.name:<12s} hw={_ms(measured[c.name])}  cpp={_ms(c.cpp_ms)}  "
+            f"ref={_ms(c.ref_ms)}  ref/cpp={ratio}  "
+            f"({len(c.kernels)} kernel{'s' if len(c.kernels) != 1 else ''})"
+        )
+        for k in c.kernels:
+            if k.ms is None:
+                print(f"    {k.kernel}: unpriced -- {k.error}")
+            elif len(c.kernels) > 1:
+                print(f"    {k.kernel}: {k.ms:.3f}ms")
+    return comparisons, measured
+
+
+def _grouped_bars(ax, x, series, fmt, floor=0.0):
+    """One labeled bar per series per x position, side by side. A missing
+    value is labeled n/a at the baseline rather than drawn as a zero-height
+    bar, which would read as a measurement of zero. Returns the largest
+    magnitude drawn, for callers that need to size headroom."""
+    import numpy as np
+
+    width = 0.8 / len(series)
+    offsets = (np.arange(len(series)) - (len(series) - 1) / 2) * width
+    span = max(
+        (abs(v) for _, values, _ in series for v in values if v is not None),
+        default=1.0,
+    )
+    # A label sits a fixed distance clear of its bar's end -- a fraction of
+    # the tallest bar on a linear axis, a fraction of its own height on a log
+    # one, where a constant offset would leave the short bars' labels floating
+    # a decade above them.
+    log = ax.get_yscale() == "log"
+
+    def clear_of(end, above):
+        if log:
+            return end * 1.08 if above else end / 1.08
+        return end + (0.03 * span if above else -0.03 * span)
+
+    for (label, values, color), dx in zip(series, offsets):
+        ax.bar(
+            x + dx,
+            [v if v is not None else floor for v in values],
+            width * 0.9,
+            label=label,
+            color=color,
+        )
+        for xi, v in zip(x, values):
+            above = v is None or v >= floor
+            ax.text(
+                xi + dx,
+                clear_of(v if v is not None else floor, above),
+                "n/a" if v is None else fmt.format(v),
+                ha="center",
+                va="bottom" if above else "top",
+                fontsize=7,
+            )
+    return span
+
+
+# Each group of configs the cross-check draws a figure for: the label they
+# carry in CONFIGS, and what that label means in the figure's title.
+_CROSSCHECK_GROUPS = {
+    "functional": "4 DPUs",
+    "dpu2048": "2048 DPUs, tiling searched",
+}
+
+
 def task_crosscheck():
-    """Price each functional point's dumped DPU programs with the Python
-    reference cost model and print/plot the gap to the C++ estimate of the
-    same programs, with the launch time the hardware actually took beside
-    them where the point has been benchmarked.
+    """Price each point's dumped DPU programs with the Python reference cost
+    model and print/plot the gap to the C++ estimate of the same programs,
+    with the launch time the hardware actually took beside them where the
+    point has been benchmarked. One figure per working-group size.
 
     The question is how far apart these three are, not whether they agree, so
     the report is the times and the deviations -- nothing here asserts a
@@ -694,42 +832,9 @@ def task_crosscheck():
     optional: this task otherwise needs no hardware, so a point that has
     never been benchmarked loses its bar and not its row."""
 
-    def _ms(value):
-        return f"{'n/a':>8}  " if value is None else f"{value:8.3f}ms"
-
-    def _pct(value, base):
-        """`value` against `base` in percent, None if either is missing."""
-        if value is None or not base:
-            return None
-        return (value / base - 1.0) * 100
-
-    def action(out_path, csv_path, confs):
+    def action(out_path, csv_path, confs, group):
         out_path.parent.mkdir(parents=True, exist_ok=True)
-        comparisons, measured = [], {}
-        for config in confs:
-            c = refmodel.compare(_dump_dir(config), name=config.fn_name)
-            if c is None:
-                print(
-                    f"{config.fn_name}: no dumps in {_dump_dir(config)} "
-                    "(compiled before program dumping? `doit forget compile`)"
-                )
-                continue
-            comparisons.append(c)
-            measured[c.name] = measurements.launch_time_ms(
-                config.dir(DATA_ROOT) / "output"
-            )
-            ratio = "  n/a" if c.ratio is None else f"{c.ratio:.2f}x"
-            print(
-                f"{c.name:<12s} hw={_ms(measured[c.name])}  cpp={_ms(c.cpp_ms)}  "
-                f"ref={_ms(c.ref_ms)}  ref/cpp={ratio}  "
-                f"({len(c.kernels)} kernel{'s' if len(c.kernels) != 1 else ''})"
-            )
-            for k in c.kernels:
-                if k.ms is None:
-                    print(f"    {k.kernel}: unpriced -- {k.error}")
-                elif len(c.kernels) > 1:
-                    print(f"    {k.kernel}: {k.ms:.3f}ms")
-
+        comparisons, measured = _gather(confs)
         if not comparisons:
             return
 
@@ -777,41 +882,11 @@ def task_crosscheck():
             gridspec_kw={"height_ratios": [2, 1]},
         )
 
-        def grouped(ax, series, fmt, floor=0.0):
-            """One labeled bar per series per config, side by side. A missing
-            value is labeled n/a at the baseline rather than drawn as a
-            zero-height bar, which would read as a measurement of zero."""
-            width = 0.8 / len(series)
-            offsets = (np.arange(len(series)) - (len(series) - 1) / 2) * width
-            span = max(
-                (abs(v) for _, values, _ in series for v in values if v is not None),
-                default=1.0,
-            )
-            for (label, values, color), dx in zip(series, offsets):
-                ax.bar(
-                    x + dx,
-                    [v if v is not None else floor for v in values],
-                    width * 0.9,
-                    label=label,
-                    color=color,
-                )
-                for xi, v in zip(x, values):
-                    above = v is None or v >= floor
-                    ax.text(
-                        xi + dx,
-                        (v if v is not None else floor)
-                        + (0.03 * span if above else -0.03 * span),
-                        "n/a" if v is None else fmt.format(v),
-                        ha="center",
-                        va="bottom" if above else "top",
-                        fontsize=7,
-                    )
-            return span
-
         # Measured first: it is the yardstick the two estimates are read
         # against, not a third opinion.
-        tallest = grouped(
+        tallest = _grouped_bars(
             top,
+            x,
             [
                 (
                     "measured (launch)",
@@ -857,7 +932,7 @@ def task_crosscheck():
                     _REF_COLOR,
                 )
             ]
-        grouped(bottom, deviations, "{:+.1f}%")
+        _grouped_bars(bottom, x, deviations, "{:+.1f}%")
         bottom.axhline(0.0, color="black", linewidth=0.8)
         bottom.margins(y=0.3)
         bottom.set_xticks(x)
@@ -873,7 +948,7 @@ def task_crosscheck():
         bottom.set_ylabel(f"deviation from\n{baseline} (%)")
         top.legend(loc="upper left")
         fig.suptitle(
-            "Two cost models and the machine, on the same DPU programs"
+            f"Two cost models and the machine, on the same DPU programs ({group})"
             + (
                 "\nn/a: the reference model declines to price the program"
                 if len(priced) < len(comparisons)
@@ -885,24 +960,183 @@ def task_crosscheck():
         plt.close(fig)
         print(f"wrote {out_path}")
 
-    confs = [c for c in CONFIGS if c.label == "functional"]
-    out_path = HERE / "plots" / "crosscheck.png"
-    csv_path = HERE / "plots" / "crosscheck.csv"
-    # The dumps come with a compile, so compile.done is the dependency that
-    # always exists. The cost.csv beside them is what actually changes when
-    # they are re-dumped without recompiling (a new emitter, say), and
-    # bench.done is what changes when the measured bar does; both join the
-    # list for the configs that have them, neither is required.
-    optional = [d / "cost.csv" for c in confs if (d := _dump_dir(c)).is_dir()] + [
+    for label, group in _CROSSCHECK_GROUPS.items():
+        confs = [c for c in CONFIGS if c.label == label]
+        if not confs:
+            continue
+        out_path = HERE / "plots" / f"crosscheck_{label}.png"
+        csv_path = HERE / "plots" / f"crosscheck_{label}.csv"
+        yield {
+            "name": label,
+            "uptodate": [
+                check_timestamp_unchanged(c.dir(DATA_ROOT) / "compile.done", "ctime")
+                for c in confs
+            ],
+            "file_dep": [c.dir(DATA_ROOT) / "compile.done" for c in confs]
+            + _optional_deps(confs),
+            "targets": [out_path, csv_path],
+            "actions": [(action, [out_path, csv_path, confs, group])],
+        }
+
+
+def _optional_deps(confs) -> list[pathlib.Path]:
+    """Inputs a cross-check reads that a config need not have yet: the dumps'
+    cost.csv, which is what changes when they are re-dumped without a
+    recompile (a new emitter, say), and bench.done, which is what changes
+    when the measured bar does. Depending on them where they exist makes
+    those two events redraw; requiring them would make the whole task wait on
+    hardware it otherwise does not need."""
+    return [d / "cost.csv" for c in confs if (d := _dump_dir(c)).is_dir()] + [
         b for c in confs if (b := c.dir(DATA_ROOT) / "bench.done").exists()
     ]
+
+
+def task_ranking():
+    """How well each cost model preserves the order of the same problem run
+    on 4 DPUs and on 2048, which is what a model used for search has to get
+    right even where its absolute error does not matter.
+
+    Two readings of that. Per prim: the 4-DPU/2048-DPU speedup each source
+    reports, so a model that has the winner right but the margin wrong is
+    visibly different from one that has the winner wrong. Over the whole set:
+    the fraction of measured pairs whose order a model reproduces, counting
+    every pair of points and not just the two that share a prim -- the
+    quantity a search actually consumes, since it compares configurations
+    across problems too.
+
+    Points the hardware has not run are left out of both: without a measured
+    order there is nothing to preserve."""
+
+    def action(out_path, csv_path):
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        by_label = {}
+        for label in _CROSSCHECK_GROUPS:
+            confs = [c for c in CONFIGS if c.label == label]
+            comparisons, measured = _gather(confs, quiet=True)
+            by_label[label] = {
+                c.name: {"hw": measured[c.name], "cpp": c.cpp_ms, "ref": c.ref_ms}
+                for c in comparisons
+            }
+
+        sources = ("hw", "cpp", "ref")
+        # A prim is comparable only if both of its points priced and ran: a
+        # speedup needs both ends, from the same source.
+        prims = [
+            name
+            for name in by_label.get("functional", {})
+            if name in by_label.get("dpu2048", {})
+            and all(
+                by_label[lbl][name][s]
+                for lbl in ("functional", "dpu2048")
+                for s in sources
+            )
+        ]
+        if not prims:
+            print("ranking: no prim has both working-group sizes measured and priced")
+            return
+
+        import pandas as pd
+        import matplotlib.pyplot as plt
+        import numpy as np
+
+        speedup = {
+            s: [by_label["functional"][p][s] / by_label["dpu2048"][p][s] for p in prims]
+            for s in sources
+        }
+
+        # Pairwise order agreement over every point of every group, which is
+        # what a search consumes -- not only the within-prim pairs the figure
+        # draws. Ties in the measured order would have no order to preserve;
+        # there are none here (distinct kernels, distinct times).
+        points = [
+            (f"{name}@{label}", v)
+            for label, entries in by_label.items()
+            for name, v in entries.items()
+            if all(v[s] for s in sources)
+        ]
+        agreement = {}
+        for s in ("cpp", "ref"):
+            pairs = [
+                (a, b) for i, (_, a) in enumerate(points) for _, b in points[i + 1 :]
+            ]
+            kept = [
+                (a[s] < b[s]) == (a["hw"] < b["hw"])
+                for a, b in pairs
+                if a["hw"] != b["hw"]
+            ]
+            agreement[s] = (sum(kept), len(kept))
+            print(
+                f"pairwise order agreement with hardware ({s}): "
+                f"{sum(kept)}/{len(kept)} pairs"
+            )
+
+        rows = []
+        for i, p in enumerate(prims):
+            row = {"name": p}
+            for label in ("functional", "dpu2048"):
+                for s in sources:
+                    row[f"{label}_{s}_ms"] = by_label[label][p][s]
+            for s in sources:
+                row[f"speedup_{s}"] = speedup[s][i]
+            rows.append(row)
+            print(
+                f"{p:<12s} speedup 4->2048  hw={speedup['hw'][i]:6.2f}x  "
+                f"cpp={speedup['cpp'][i]:6.2f}x  ref={speedup['ref'][i]:6.2f}x"
+            )
+        pd.DataFrame(rows).to_csv(csv_path, index=False)
+
+        x = np.arange(len(prims))
+        fig, ax = plt.subplots(figsize=(max(6.0, 1.7 * len(prims)), 5.0))
+        # Log scale, floor at 1: a speedup and a slowdown of the same factor
+        # are then the same distance from the no-change line, and the two ends
+        # of the machine differ by enough that a linear axis would flatten the
+        # small ones against it. Set before the bars so their labels are
+        # placed against the scale they will be drawn on.
+        ax.set_yscale("log")
+        tallest = max(v for s in sources for v in speedup[s])
+        ax.set_ylim(1.0, tallest * 4)
+        _grouped_bars(
+            ax,
+            x,
+            [
+                ("measured (launch)", speedup["hw"], _HW_COLOR),
+                ("C++ cost model", speedup["cpp"], _CPP_COLOR),
+                ("Python reference model", speedup["ref"], _REF_COLOR),
+            ],
+            "{:.1f}x",
+            floor=1.0,
+        )
+        ax.set_xticks(x)
+        ax.set_xticklabels(prims, rotation=45, ha="right")
+        ax.set_ylabel("speedup, 4 DPUs -> 2048 DPUs")
+        ax.grid(axis="y", linestyle="--", alpha=0.4)
+        ax.set_axisbelow(True)
+        # Above the bars rather than over them: on a log axis with an order of
+        # magnitude between the series there is no corner a legend can sit in.
+        ax.legend(loc="lower center", bbox_to_anchor=(0.5, 1.0), ncols=3, frameon=False)
+        fig.suptitle(
+            "Does the cost model keep the order when the machine grows?\n"
+            + "  ".join(
+                f"{s}: {n}/{d} pairs ordered as measured"
+                for s, (n, d) in agreement.items()
+            )
+        )
+        fig.tight_layout()
+        fig.savefig(out_path, dpi=150)
+        plt.close(fig)
+        print(f"wrote {out_path}")
+
+    confs = [c for c in CONFIGS if c.label in _CROSSCHECK_GROUPS]
+    out_path = HERE / "plots" / "ranking.png"
+    csv_path = HERE / "plots" / "ranking.csv"
     yield {
-        "name": "functional",
+        "name": "dpu4_vs_dpu2048",
         "uptodate": [
             check_timestamp_unchanged(c.dir(DATA_ROOT) / "compile.done", "ctime")
             for c in confs
         ],
-        "file_dep": [c.dir(DATA_ROOT) / "compile.done" for c in confs] + optional,
+        "file_dep": [c.dir(DATA_ROOT) / "compile.done" for c in confs]
+        + _optional_deps(confs),
         "targets": [out_path, csv_path],
-        "actions": [(action, [out_path, csv_path, confs])],
+        "actions": [(action, [out_path, csv_path])],
     }

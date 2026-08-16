@@ -305,6 +305,54 @@ def probe_solution(
     return "accepted" if result.returncode == 0 else "accepted_fails"
 
 
+def search_lowerer(
+    *,
+    max_evals: int = 64,
+    n_init: int | None = None,
+    dir_name: str = "search",
+    cinm_opt: pathlib.Path = DEFAULT_CINM_OPT,
+    extra_infer_opts: dict = {},
+):
+    """A Config.lower callable that searches instead of evaluating a fixed
+    point: the pass runs its own BO over the space and commits its winner,
+    with the working group pinned to the config's `dpus` (and `tasklets`, if
+    it names one) so that only the tiling is chosen.
+
+    The config's params are the pin here, not the point -- which is what
+    makes a config comparable to one at another working-group size: same
+    problem, same space, a different resource. The search record (pool.csv,
+    space.json) lands in <out_file.parent>/<dir_name>/."""
+
+    def _lower(
+        fn_module: pathlib.Path,
+        out_file: pathlib.Path,
+        log_file: pathlib.Path,
+        *,
+        dpus: int,
+        tasklets: int | None = None,
+        **ignored,
+    ) -> subprocess.CompletedProcess:
+        out_dir = pathlib.Path(out_file).parent / dir_name
+        out_dir.mkdir(parents=True, exist_ok=True)
+        opts = {
+            "fixed-dpus": dpus,
+            **({"fixed-tasklets": tasklets} if tasklets is not None else {}),
+            "max-evals": max_evals,
+            **({"n-init": n_init} if n_init is not None else {}),
+            "dump-dir": str(out_dir),
+            **extra_infer_opts,
+        }
+        return _run(
+            fn_module,
+            opts,
+            out_file=out_file,
+            cinm_opt=cinm_opt,
+            log_file=log_file,
+        )
+
+    return _lower
+
+
 def annotate_costs(
     src: pathlib.Path,
     *,
