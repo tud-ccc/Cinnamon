@@ -775,14 +775,7 @@ LogicalResult distribute(RewriterBase &rewriter, linalg::LinalgOp op,
       // A freshly allocated destination has undefined contents, so there is
       // nothing to bring over.
     } else {
-      // cnm.scatter moves shaped values, and an operand no iteration
-      // dimension indexes need not be one: fusion pulls a loop-invariant
-      // scalar in as an operand with an empty indexing map, which is what
-      // geva's two coefficients become. Its buffer is already the rank-0 one
-      // that scalar stands for, so materializing the tensor to match puts it
-      // on the same path as every other operand -- and the right one, since a
-      // value every leaf needs whole is exactly what the scatter below is
-      // then optimized into a broadcast.
+      // Scattering a single scalar, need to wrap it into a buffer.
       Value source = operand.get();
       if (!isa<ShapedType>(source.getType()))
         source = tensor::FromElementsOp::create(b, operandTy, source);
