@@ -214,13 +214,17 @@ def UpmemInferAcceleratorPass : Pass<"upmem-infer-accelerator", "ModuleOp"> {
            "the specialised forms, so the space itself is unchanged. "
            "The capability-ablation switch (paper A1)">,
     Option<"packFragmentedTransfers", "pack-fragmented-transfers",
-           "PackFragmentedTransfers", "PackFragmentedTransfers::STATIC",
+           "PackFragmentedTransfers", "PackFragmentedTransfers::ALL",
            "Which operands whose transfer arrives as several blocks per leaf "
            "are repacked into one whole-buffer block, trading those blocks "
            "for a repack of the host value (see "
-           "--cnm-ensure-scatter-gather-contiguous's pack-fragmented). Only "
-           "`all` keeps a scatter out of the block form when its operand "
-           "changes per inference",
+           "--cnm-ensure-scatter-gather-contiguous's pack-fragmented).\n\n"
+           "`all` is the default because the trade is not currently a free "
+           "choice: the SDK's scatter/gather API drops a DPU's blocks once "
+           "they stop ascending in host address, so a transfer left in the "
+           "block form can simply be wrong. `static` and `none` leave more "
+           "of them there and are for measuring what the repack costs, not "
+           "for producing results",
            packFragmentedClValues.values>,
     Option<"graphAllocation", "graph-allocation", "bool", "false",
            "Run the graph-level two-level solve (profile each program class "
