@@ -122,6 +122,36 @@ extern "C" void memrefCopy(int64_t elemSize, UnrankedMemRefType<char> *srcArg,
 /// MemRefToLLVM lowers a copy between two contiguous memrefs to
 /// llvm.intr.memcpy, so a tidy repack would otherwise never be measured at
 /// all.
+/// A cnm.expand_buffer repack: the mirror of upmemrt_compact, writing a
+/// contiguous buffer back out to a strided one. It is the gather-side half --
+/// a transfer that fills a packed buffer still has to put the data where the
+/// consumer expects it -- and is timed into the same rows, being the same
+/// cost for the same reason.
+extern "C" void upmemrt_expand(void *dst, const void *src, int64_t rank,
+                               const int64_t *sizes, const int64_t *dstStrides,
+                               int64_t elemSize, int32_t isStatic) {
+#ifdef UPMEM_RT_STATS
+  uint64_t t0 = upmemrt_now_ns();
+#endif
+  // The source is contiguous by the op's definition, so its strides are the
+  // packed ones and need not be passed.
+  int64_t srcStrides[16];
+  int64_t packed = 1;
+  for (int64_t i = rank - 1; i >= 0; --i) {
+    srcStrides[i] = packed;
+    packed *= sizes[i];
+  }
+  size_t bytes = 0;
+  copyStrided(elemSize, rank, sizes, (const char *)src, srcStrides, (char *)dst,
+              dstStrides, &bytes);
+#ifdef UPMEM_RT_STATS
+  upmemrt_record_compact(upmemrt_now_ns() - t0, bytes,
+                         isStatic ? "static" : "dyn");
+#else
+  (void)isStatic;
+#endif
+}
+
 extern "C" void upmemrt_compact(void *dst, const void *src, int64_t rank,
                                 const int64_t *sizes, const int64_t *srcStrides,
                                 int64_t elemSize, int32_t isStatic) {

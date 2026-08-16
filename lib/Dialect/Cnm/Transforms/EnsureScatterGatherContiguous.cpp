@@ -139,10 +139,12 @@ FailureOr<SmallVector<int64_t>> splitBasis(int64_t extent,
 /// not that: the source offset jumps every c steps of d. Making c a boundary
 /// turns the jump into a stride of its own. The scatter is then left naming
 /// nothing but the leaf it addresses, delinearized over those splits.
-bool packIntoOneBlockPerLeaf(cnm::ScatterOp op, OpBuilder &b, bool isStatic) {
+template <class Op>
+bool packIntoOneBlockPerLeaf(Op op, OpBuilder &b, bool isStatic) {
+  constexpr bool isScatter = std::is_same_v<Op, cnm::ScatterOp>;
   Location loc = op.getLoc();
   MLIRContext *ctx = b.getContext();
-  auto hostTy = cast<MemRefType>(op.getInput().getType());
+  auto hostTy = cast<MemRefType>(op.getHostValue().getType());
   cnm::BufferType bufferTy = op.getBuffer().getType();
 
   AffineMap map =
@@ -187,14 +189,28 @@ bool packIntoOneBlockPerLeaf(cnm::ScatterOp op, OpBuilder &b, bool isStatic) {
       map.replaceDimsAndSymbols(toNew, {}, packedShape.size(), 0), packedShape);
 
   b.setInsertionPoint(op);
+  Value host = op.getHostValue();
   Value packed = memref::AllocOp::create(
       b, loc, MemRefType::get(packedShape, hostTy.getElementType()));
-  auto compact =
-      cnm::CompactBufferOp::create(b, loc, op.getInput(), packed, packedMap);
-  if (isStatic)
-    markStatic(compact, packed, b);
 
-  op.getInputMutable().assign(packed);
+  // A scatter reads the host value, so the repack fills the packed buffer
+  // before the transfer. A gather writes it, so the packed buffer is what the
+  // transfer fills and the repack writes it back out afterwards -- the same
+  // map, walked in the other direction, which is why it is a different op and
+  // not this one with its operands exchanged.
+  if constexpr (isScatter) {
+    auto compact =
+        cnm::CompactBufferOp::create(b, loc, host, packed, packedMap);
+    if (isStatic)
+      markStatic(compact, packed, b);
+  } else {
+    b.setInsertionPointAfter(op);
+    auto expand = cnm::ExpandBufferOp::create(b, loc, packed, host, packedMap);
+    if (isStatic)
+      markStatic(expand, packed, b);
+  }
+
+  op.getHostValueMutable().assign(packed);
   op.setScatterMap(simplifyAffineMapWithBounds(
       AffineMap::get(indexSpace.size(), 0, toOld, ctx), indexSpace));
   return true;
@@ -205,7 +221,7 @@ bool packIntoOneBlockPerLeaf(cnm::ScatterOp op, OpBuilder &b, bool isStatic) {
 /// The stored map is pointwise and names every element its own block, so this
 /// asks about the widest block that map and the host layout allow -- the same
 /// derivation the backend will make.
-bool isFragmented(cnm::ScatterOp op) {
+template <class Op> bool isFragmented(Op op) {
   cnm::BufferType bufferTy = op.getBuffer().getType();
   return cnm::getScatterBlocksPerLeaf(cnm::deflateScatterMap(op.getScatterMap(),
                                                              bufferTy,
@@ -444,6 +460,14 @@ struct CnmEnsureScatterGatherContiguousPass
       } else if (auto gather = dyn_cast<cnm::GatherOp>(op)) {
         ensureGatherContiguous(gather, builder, staticOnly);
         alignHostToBlocks(gather, builder);
+        // A gather's destination is written every inference, so there is
+        // nothing here that could amortize and `staticOnly` would rule the
+        // repack out entirely. It is offered anyway when packing is on: a
+        // fragmented gather is the one case the backend has no correct
+        // transfer for, so the repack is not a trade but the only way.
+        if (packFragmented && isFragmented(gather) &&
+            isa<MemRefType>(gather.getOutputBuf().getType()))
+          packIntoOneBlockPerLeaf(gather, builder, /*isStatic=*/false);
       }
     });
   }
