@@ -750,9 +750,9 @@ def _gather(confs, *, quiet: bool = False):
         ratio = "  n/a" if c.ratio is None else f"{c.ratio:.2f}x"
         print(
             f"{c.name:<12s} hw={_ms(measured[c.name])}  cpp={_ms(c.cpp_launch_ms)}  "
-            f"ref={_ms(c.ref_launch_ms)}  ref/cpp={ratio}  "
-            f"(+{c.overhead_ms:.3f}ms launch, "
-            f"{len(c.kernels)} kernel{'s' if len(c.kernels) != 1 else ''})"
+            f"ref={_ms(c.ref_launch_ms)}  ref/cpp={ratio} on the programs  "
+            f"(launch terms: cpp +{c.overhead_ms:.3f}ms, ref "
+            f"+{refmodel.BASE_TIME_MS * len(c.kernels):.3f}ms)"
         )
         for k in c.kernels:
             if k.ms is None:
@@ -884,11 +884,12 @@ def task_crosscheck():
         )
 
         # Measured first: it is the yardstick the two estimates are read
-        # against, not a third opinion. Both estimates carry the C++ model's
-        # launch overhead, including the reference model's, which has none of
-        # its own -- a measured launch pays it whichever engine priced the
-        # program, so leaving it off one side would be comparing two
-        # different things (see refmodel.Comparison).
+        # against, not a third opinion. Each model answers with its own
+        # launch term included -- the C++ model's per-rank overhead, the
+        # reference model's constant base_time -- because against a measured
+        # launch what is being asked is whose complete answer is closer, and
+        # their launch terms are part of the answer. The programs alone are
+        # what the printed ref/cpp ratio compares (see refmodel.Comparison).
         tallest = _grouped_bars(
             top,
             x,

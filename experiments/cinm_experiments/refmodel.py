@@ -176,16 +176,26 @@ class Comparison:
 
     @property
     def cpp_launch_ms(self) -> float | None:
-        """What the C++ model says a launch of these programs costs."""
+        """What the C++ model says a launch of these programs costs: the
+        programs plus its launchOverhead rows, which are a function of the
+        working group (see UpmemPythonSimulator.cpp)."""
         return None if self.cpp_ms is None else self.cpp_ms + self.overhead_ms
 
     @property
     def ref_launch_ms(self) -> float | None:
-        """The same for the reference model, borrowing the C++ model's
-        overhead since the reference has none of its own. The borrowed term
-        is identical for both, so it cancels out of their difference and
-        only ever moves them together against the measurement."""
-        return None if self.ref_ms is None else self.ref_ms + self.overhead_ms
+        """The same for the reference model, and by the same standard: its
+        own complete answer, base_time included, exactly as cnmprog.py
+        reports it.
+
+        Not the C++ model's overhead added to the reference's program cost.
+        Both models do have a launch term, they just disagree about it --
+        one constant, one per-rank -- and against a measured launch the
+        question is which complete answer is closer, not how the programs
+        compare once the same term is bolted onto both. That second question
+        is what cpp_ms and ref_ms are for."""
+        if not self.kernels or self.unpriced:
+            return None
+        return sum(k.reported_ms for k in self.kernels)
 
     @property
     def ratio(self) -> float | None:
@@ -228,8 +238,15 @@ def comparison_rows(comparisons: list[Comparison]) -> list[dict]:
             "ref_kernel_ms": k.ms,
             "ref_total_ms": c.ref_ms,
             "cpp_total_ms": c.cpp_ms,
-            "launch_overhead_ms": c.overhead_ms,
             "ratio": c.ratio,
+            # What each model answers for a whole launch, each with its own
+            # launch term: the reference model's constant base_time, the C++
+            # model's per-rank launchOverhead. These are what the measured
+            # launch is compared against.
+            "ref_launch_ms": c.ref_launch_ms,
+            "cpp_launch_ms": c.cpp_launch_ms,
+            "cpp_launch_overhead_ms": c.overhead_ms,
+            "ref_launch_overhead_ms": BASE_TIME_MS * len(c.kernels),
             "error": k.error,
         }
         for c in comparisons
