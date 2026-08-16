@@ -53,12 +53,12 @@ OPTS = dict(
     n_seeds=32,  # B4: matches the cinm1comparison campaign
     iters=6,  # measurement repetitions per hardware run
     # Simulator to use for all trials, except the top-k search (timeout is only used in top-k search).
-    simulator="cycle-accurate",
+    simulator="fast",
     eval_timeout_ms=0,
     # B3's exhaustive predicted sweep only. A timeout is safe here, unlike
     # in B1: it can only mis-price configs slower than 300 ms, which cannot
     # be in the top anyway, and it speeds the sweep up considerably.
-    exhaust_timeout_ms=300,
+    exhaust_timeout_ms=1000,
     # A2's Cartesian draw. Same rule-of-three arithmetic as n_sample: with
     # feasible densities around 1e-10 essentially every draw lands in the
     # rejected region, so 0-lowers-of-300 bounds the false-negative rate of

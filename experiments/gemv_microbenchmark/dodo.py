@@ -387,17 +387,6 @@ def _compile_one(config: compile_run.Config, marker) -> bool:
     return True
 
 
-def _run_one(config: compile_run.Config, marker) -> bool:
-    compiled = compile_run.discover_compiled([config], compile_root=DATA_ROOT)[0]
-    result = compile_run.run_config(compiled, run_root=DATA_ROOT, iters=ITERS)
-    if not result.ok:
-        print(f"  FAIL run: {config.system}: {result.error[:200]}")
-        return False
-    marker.parent.mkdir(parents=True, exist_ok=True)
-    marker.touch()
-    return True
-
-
 def task_compile():
     """Compile each config to a upmem binary."""
     for config in CONFIGS:
@@ -412,11 +401,25 @@ def task_compile():
         }
 
 
+def _run_one(config: compile_run.Config, marker) -> bool:
+    compiled = compile_run.discover_compiled([config], compile_root=DATA_ROOT)[0]
+    result = compile_run.run_config(compiled, run_root=DATA_ROOT, iters=ITERS)
+    if not result.ok:
+        print(f"  FAIL run: {config.system}: {result.error[:200]}")
+        return False
+    marker.parent.mkdir(parents=True, exist_ok=True)
+    marker.touch()
+    return True
+
+
 def task_bench():
-    """Benchmark each compiled config on hardware. doit runs same-priority
-    tasks in the order they're yielded, so with CONFIGS' fixed order this
-    stays sequential across configs -- concurrent hardware runs would
-    contend for host/DPU resources and skew wall-clock timing."""
+    """Benchmark each compiled config on hardware, never two at once.
+
+    `exclusive` rather than a task_dep chain: concurrent runs would contend
+    for the host and the DPUs and skew every wall clock they produce, but the
+    configs are otherwise unrelated -- chaining them would order measurements
+    that have nothing to do with each other and make one failure skip every
+    config behind it."""
     for config in CONFIGS:
         compile_marker = config.dir(DATA_ROOT) / "compile.done"
         run_marker = config.dir(DATA_ROOT) / "bench.done"
@@ -424,6 +427,7 @@ def task_bench():
             "name": _group_key(config) + ":" + config.system,
             "uptodate": [check_timestamp_unchanged(compile_marker)],
             "file_dep": [compile_marker],
+            "exclusive": True,
             "targets": [run_marker],
             "actions": [(_run_one, [config, run_marker])],
         }
