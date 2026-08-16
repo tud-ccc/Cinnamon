@@ -194,7 +194,7 @@ unset(_var)
 # unset(_pkg)
 
 
-add_subdirectory("third-party/upmem-cost-model")
+add_subdirectory("third-party/cnm-cost-model/CppPredictor")
 
 
 add_subdirectory(include)
