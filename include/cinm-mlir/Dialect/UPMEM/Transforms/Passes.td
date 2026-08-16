@@ -40,6 +40,38 @@ def UpmemHoistLoadProgramsPass : Pass<"upmem-hoist-load-programs"> {
   ];
 }
 
+def UpmemCoalesceLocalTransfersPass: Pass<"upmem-coalesce-local-transfers"> {
+  let summary = "Make a launch body's staging transfers fewer and larger";
+  let description = [{
+    A `cnm.launch` body runs on one compute element, so every
+    `cnm.local_transfer` in it is that element's own: nothing else reads or
+    writes the leaf buffer it stages through, and moving a transfer needs no
+    synchronization. This pass exploits that in two ways.
+
+    A staging whose tile does not depend on the loop it sits in is **hoisted**:
+    the same bytes are read on every trip and written back unchanged in
+    between, so one read before the loop and one write after move the same
+    data. That is what makes an output tile cheap under a reduction -- the
+    reduction updates it every trip and only the final value has to travel.
+
+    A staging whose tile advances by one step per trip is **coalesced**: the
+    loop is split into a strip loop and a walk over the strip, and the transfer
+    moves the whole strip at once. The far-level buffer is indexed per tile, so
+    consecutive transfers start one tile apart; when a tile is a fraction of a
+    DMA granule every other one begins mid-granule, and an MRAM DMA drops the
+    low bits of such an address. The strip length is the least that reaches a
+    granule, which bounds what this costs in leaf-level space -- the buffer
+    grows by less than one granule -- and leaves the tile the search chose as
+    the tile the kernel computes on.
+  }];
+  let dependentDialects = [
+    "::mlir::cnm::CnmDialect",
+    "::mlir::upmem::UPMEMDialect",
+    "mlir::affine::AffineDialect",
+    "mlir::memref::MemRefDialect"
+  ];
+}
+
 def UpmemTileMRAMBuffersPass: Pass<"upmem-tile-mram-buffers"> {
   let summary = "Stage a launch body's non-leaf buffers down to the leaf memory level";
   let description = [{
@@ -80,7 +112,12 @@ def UpmemTileMRAMBuffersPass: Pass<"upmem-tile-mram-buffers"> {
            "Stage the output tile outside the reduction loops rather than "
            "around the op. An output is indexed only by parallel dimensions, "
            "so its tile is the same on every trip of a reduction loop; staging "
-           "it inside would transfer it back and forth once per trip.">
+           "it inside would transfer it back and forth once per trip -- and, "
+           "when the accumulator is initialized on device, would reinitialize "
+           "it every trip and keep only the last one's partial sum. That is "
+           "why this is not left to --upmem-coalesce-local-transfers, which "
+           "moves transfers but cannot re-associate a fill with the "
+           "accumulation it belongs to.">
   ];
 }
 

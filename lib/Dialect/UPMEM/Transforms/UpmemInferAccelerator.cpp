@@ -590,6 +590,12 @@ struct UpmemInferencePlugin : cinm::InferencePlugin {
     pm->addPass(createUpmemTileMRAMBuffersPass());
     pm->addPass(createCanonicalizerPass());
     pm->addPass(createCSEPass());
+    // After the canonicalizer, which folds a tile's offset down to the bare
+    // induction variable -- that is the form the coalescing recognises. Still
+    // before linalg is lowered to loops, while the transfers sit in the nest
+    // that produced them.
+    pm->addPass(createUpmemCoalesceLocalTransfersPass());
+    pm->addPass(createCanonicalizerPass());
     if (debug)
       pm->addPass(createPrintIRPass({.label = "after-tile-mram-buffers"}));
     pm->addPass(createLinalgGeneralizeNamedOpsPass());
@@ -1164,28 +1170,23 @@ UpmemInferencePlugin::handleLinalgOp(linalg::LinalgOp op, StringRef namePrefix,
   // length is a fraction of one is rounded up, and the rounding must not reach
   // into data that belongs to something else.
   //
-  // The unit that has to fit is one staged tile, because one DMA moves one
-  // tile: an operand's MRAM buffer is indexed per leaf, and a tasklet walks
-  // its own leaf tiles in a loop, so consecutive transfers start a tile
-  // apart. A tile that is a fraction of a granule puts every other transfer
-  // at a misaligned address, and an MRAM DMA drops the low bits of one --
-  // moving the right bytes to the wrong place rather than failing.
+  // Only the outer tile is bounded, not the leaf one, because
+  // --upmem-coalesce-local-transfers makes the leaf bound follow from it.
   //
-  // It is the tile and not the DPU's whole buffer even though the host moves
-  // that buffer in one transfer, and not the per-tasklet slice either: with
-  // `tasklets` on the outer dimension that stride is already a whole number
-  // of tiles. The leaf tile is the innermost stride, so it is the one that
-  // has to be aligned, and both larger units follow from it.
+  // A tasklet walks its own leaf tiles in a loop, so untouched, consecutive
+  // transfers start one leaf tile apart and a fractional tile puts every other
+  // one mid-granule. That pass moves `k` adjacent tiles per transfer, `k` the
+  // least count reaching a granule, which puts every start back on a boundary
+  // -- provided `k` divides the tiles per tasklet, or the last strip would run
+  // past the run. It always does, and this constraint is why. Write G for the
+  // elements in a granule, L for the leaf tile, T for the tiles per tasklet,
+  // and g for gcd(L, G), so that k = G/g. Requiring G | L*T here gives
+  // (G/g) | (L/g)*T, and G/g and L/g are coprime, so k | T. The bound on the
+  // outer tile is therefore the whole requirement, at either level.
   //
   // Reads are bounded as well as writes. Over-reading past the end of a tile
   // is harmless -- the allocation is padded -- but that is a length, and what
   // is unsafe here is the start address.
-  //
-  // Stated per level, since the granule is the level's own declared property.
-  // Both UPMEM levels declare 8 bytes, which makes the outer constraint
-  // implied -- a dimension's outer tile is a multiple of its leaf tile -- but
-  // it is the host transfer that the outer one describes, so it is posted on
-  // its own terms rather than left to follow.
   //
   // An operand no iteration dimension indexes -- geva's two scalar
   // coefficients, say -- is exempt, and has to be: its tile is one element
@@ -1195,6 +1196,9 @@ UpmemInferencePlugin::handleLinalgOp(linalg::LinalgOp op, StringRef namePrefix,
   const int64_t eltBits = eltTy.getIntOrFloatBitWidth();
   SmallVector<std::string> operandNames = linalgOperandNames(op);
   for (auto [levelIdx, level] : llvm::enumerate(levels)) {
+    // The leaf's own tile is left to the coalescing, per the argument above.
+    if (levelIdx + 1 == levels.size())
+      continue;
     const int64_t granuleBits = level.getAlignment() * 8;
     // The smallest tile that is a whole number of granules. Counted in bits
     // so that an element narrower than a byte stays exact.
