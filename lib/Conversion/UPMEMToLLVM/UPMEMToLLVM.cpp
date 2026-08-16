@@ -450,6 +450,78 @@ public:
   }
 };
 
+/// The mirror of CompactBufferOpToFuncCallLowering: the same strided walk,
+/// with the map describing the *target*'s addressing instead of the source's,
+/// because this op writes through the map rather than reading through it.
+struct ExpandBufferOpToFuncCallLowering
+    : public ConvertOpToLLVMPattern<cnm::ExpandBufferOp> {
+public:
+  explicit ExpandBufferOpToFuncCallLowering(LLVMTypeConverter &lowering)
+      : ConvertOpToLLVMPattern<cnm::ExpandBufferOp>(lowering) {}
+
+  LogicalResult
+  matchAndRewrite(cnm::ExpandBufferOp op,
+                  typename cnm::ExpandBufferOp::Adaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    Location loc = op.getLoc();
+    MemRefType srcTy = op.getSource().getType();
+    MemRefType dstTy = op.getTarget().getType();
+    if (!srcTy.hasStaticShape())
+      return op.emitOpError(
+          "source must have a static shape to be written out");
+
+    SmallVector<int64_t> strides;
+    int64_t elemOffset = 0;
+    if (failed(strideDescriptionOf(op.getMap(), dstTy, strides, elemOffset)))
+      return op.emitOpError(
+          "target access is not affine in the source's indices with constant "
+          "coefficients, so it cannot be described to the runtime");
+
+    auto i64 = rewriter.getI64Type();
+    auto i32 = rewriter.getI32Type();
+    auto ptrTy = LLVM::LLVMPointerType::get(rewriter.getContext());
+    int64_t elemBytes = srcTy.getElementTypeBitWidth() / 8;
+
+    FailureOr<Value> sizesPtr = constantI64Array(
+        rewriter, loc, op, srcTy.getShape(), "__upmemrt_expand_sizes");
+    FailureOr<Value> stridesPtr = constantI64Array(rewriter, loc, op, strides,
+                                                   "__upmemrt_expand_strides");
+    if (failed(sizesPtr) || failed(stridesPtr))
+      return failure();
+
+    // As in the compact lowering, the map's constant term is folded into the
+    // pointer the map addresses -- here the target's.
+    Value dstPtr =
+        MemRefDescriptor(adaptor.getTarget()).alignedPtr(rewriter, loc);
+    Value elemOffsetVal = LLVM::ConstantOp::create(
+        rewriter, loc, i64, rewriter.getI64IntegerAttr(elemOffset));
+    dstPtr = LLVM::GEPOp::create(rewriter, loc, ptrTy, dstTy.getElementType(),
+                                 dstPtr, ValueRange{elemOffsetVal});
+    Value srcPtr =
+        MemRefDescriptor(adaptor.getSource()).alignedPtr(rewriter, loc);
+
+    auto konst = [&](Type ty, int64_t v) {
+      return LLVM::ConstantOp::create(rewriter, loc, ty,
+                                      rewriter.getIntegerAttr(ty, v))
+          .getResult();
+    };
+
+    auto funcOp =
+        appendOrGetFuncOp(rewriter, "upmemrt_expand",
+                          LLVM::LLVMVoidType::get(rewriter.getContext()),
+                          {ptrTy, ptrTy, i64, ptrTy, ptrTy, i64, i32}, op);
+    if (failed(funcOp))
+      return failure();
+
+    rewriter.replaceOpWithNewOp<LLVM::CallOp>(
+        op, *funcOp,
+        ValueRange{dstPtr, srcPtr, konst(i64, srcTy.getRank()), *sizesPtr,
+                   *stridesPtr, konst(i64, elemBytes),
+                   konst(i32, op.isStatic() ? 1 : 0)});
+    return success();
+  }
+};
+
 struct FreeDPUsOpToFuncCallLowering
     : public ConvertOpToLLVMPattern<upmem::FreeDPUsOp> {
 public:
@@ -1028,6 +1100,7 @@ void populateUPMEMToLLVMConversionPatterns(LLVMTypeConverter &typeConverter,
   patterns.add<WaitForOpToFuncCallLowering>(typeConverter);
   patterns.add<FreeDPUsOpToFuncCallLowering>(typeConverter);
   patterns.add<CompactBufferOpToFuncCallLowering>(typeConverter);
+  patterns.add<ExpandBufferOpToFuncCallLowering>(typeConverter);
   patterns.add<EraseDpuProgram>(typeConverter);
 }
 

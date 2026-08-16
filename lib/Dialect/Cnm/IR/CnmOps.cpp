@@ -307,6 +307,36 @@ LogicalResult CompactBufferOp::verify() {
   return success();
 }
 
+LogicalResult ExpandBufferOp::verify() {
+  auto srcTy = getSource().getType();
+  auto dstTy = getTarget().getType();
+  AffineMap map = getMap();
+
+  if (srcTy.getElementType() != dstTy.getElementType())
+    return emitOpError("source element type ")
+           << srcTy.getElementType() << " does not match target element type "
+           << dstTy.getElementType();
+
+  // Mirror of CompactBufferOp: the map's domain is whichever side is walked
+  // densely, which for a write-out is the source.
+  if (map.getNumDims() != static_cast<unsigned>(srcTy.getRank()))
+    return emitOpError("map takes ")
+           << map.getNumDims() << " index(es) but the source has rank "
+           << srcTy.getRank()
+           << "; the map's domain is the source's index space";
+  if (map.getNumResults() != static_cast<unsigned>(dstTy.getRank()))
+    return emitOpError("map produces ")
+           << map.getNumResults() << " index(es) but the target has rank "
+           << dstTy.getRank() << "; the map's results are target indices";
+
+  if (!memrefIsContiguous(srcTy))
+    return emitOpError("source is not contiguous: ")
+           << srcTy
+           << ". This op writes out a buffer a single flat transfer filled";
+
+  return success();
+}
+
 namespace {
 
 /// A view's result indices written in terms of its source's, for the

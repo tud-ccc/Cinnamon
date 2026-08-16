@@ -372,6 +372,66 @@ def CompactBufferOp: Cnm_Op<"compact_buffer"> {
     }];
 }
 
+def ExpandBufferOp: Cnm_Op<"expand_buffer"> {
+    let summary = "Write a contiguous buffer back out to a scattered one.";
+    let description = [{
+        The inverse of `cnm.compact_buffer`: it walks the *source*'s index
+        space and writes each element where `map` says it belongs,
+
+        ```
+        target[map(i0, .., iN)] = source[i0, .., iN]
+        ```
+
+        so the map's domain is `source`'s index space and its results are
+        `target` indices. `source` must be contiguous.
+
+        Both directions are needed because a repack serves transfers that go
+        both ways. A scatter reads the host value, so packing it is a read
+        through the map -- `compact_buffer`. A gather writes the host value,
+        so the buffer the transfer filled has to be written back out through
+        the map, which is not the same op with its operands exchanged: that
+        would need the map inverted, and these maps carry the floordivs and
+        mods of a delinearized workgroup index.
+
+        Same reason as `compact_buffer` for being an op rather than a
+        `memref.copy`: a repack is a cost that has to be attributable, and a
+        copy between two contiguous memrefs lowers to `llvm.intr.memcpy` and
+        disappears from the accounting.
+
+        ```mlir
+        // Write per-leaf results, gathered contiguously, back into the
+        // partial-sum buffer the host reduction reads.
+        cnm.expand_buffer %packed into %partials
+            [affine_map<(d, t, j) -> (t, d * 64 + j)>]
+            : memref<4x8x64xi32> into memref<8x256xi32>
+        ```
+    }];
+
+    let arguments = (ins Arg<AnyMemRef, "the contiguous memref to write out",
+                             [MemReadAt<0, FullEffect>]>:$source,
+                         Arg<AnyMemRef, "the memref to scatter into",
+                             [MemWriteAt<0, FullEffect>]>:$target,
+                         AffineMapAttr:$map);
+    let results = (outs);
+
+    let hasVerifier = 1;
+    let assemblyFormat = [{
+        $source `into` $target `[` $map `]` attr-dict
+            `:` type($source) `into` type($target)
+    }];
+
+    let extraClassDeclaration = [{
+        /// Whether this repack is amortizable over the serving lifetime. A
+        /// gather's destination is written every inference, so this is
+        /// normally false; it is carried for symmetry with
+        /// `cnm.compact_buffer` and read by the same accounting.
+        bool isStatic() {
+            return (*this)->hasAttr(
+                ::mlir::cinm::CinmDialect::STATIC_ATTR_NAME);
+        }
+    }];
+}
+
 def ReturnOp: Cnm_Op<"return", [Terminator]> {
     let summary = "Terminates a `cnm.launch` region.";
     let description = [{

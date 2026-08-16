@@ -39,9 +39,15 @@
 // stay. The partials come back shaped 4x16x64 rather than 4x4x256 because M
 // is staged in 64-row chunks, and the buffers carrying a staged dimension are
 // cut along it -- the same elements, grouped by what a transfer moves.
+// A leaf's partials do not sit together in that 4x16x64 buffer -- K is what
+// the leaves differ in and it is the outermost dimension -- so the gather
+// fills a buffer laid out leaf by leaf and cnm.expand_buffer writes it back
+// out. The alternative is a transfer of one block per leaf, which the SDK's
+// scatter/gather API mishandles once a DPU's blocks stop ascending.
 // SPLIT-LABEL: func.func @gemv_4MB
 // SPLIT:       upmem.alloc_dpus
-// SPLIT:       upmem.gather_from_array {{.*}} : memref<4x16x64xi32>
+// SPLIT:       upmem.gather_from_array {{.*}} : memref<4x4x1x4x1x64xi32>
+// SPLIT:       cnm.expand_buffer {{.*}} : memref<4x4x1x4x1x64xi32> into memref<4x16x64xi32>
 // SPLIT:       upmem.alloc_dpus
 // SPLIT:       upmem.dpu_program
 // SPLIT:       upmem.dpu_program
