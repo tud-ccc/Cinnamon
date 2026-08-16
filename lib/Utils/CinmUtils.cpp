@@ -470,6 +470,33 @@ std::optional<bool> isAffineExprInjective(AffineExpr expr,
   return true;
 }
 
+/// The terms of a sum, as a flat list. `a + (b + c)` and `(a + b) + c` give
+/// the same one, which is what lets the rules below reason term by term.
+static void flattenAffineSum(AffineExpr expr,
+                             SmallVectorImpl<AffineExpr> &terms) {
+  if (auto add = llvm::dyn_cast<AffineBinaryOpExpr>(expr);
+      add && add.getKind() == AffineExprKind::Add) {
+    flattenAffineSum(add.getLHS(), terms);
+    flattenAffineSum(add.getRHS(), terms);
+    return;
+  }
+  terms.push_back(expr);
+}
+
+/// The constant a term is a multiple of, or nullopt when that is not
+/// something this can establish.
+static std::optional<int64_t> affineTermCoefficient(AffineExpr expr) {
+  if (llvm::isa<AffineDimExpr>(expr) || llvm::isa<AffineSymbolExpr>(expr))
+    return 1;
+  if (auto constant = llvm::dyn_cast<AffineConstantExpr>(expr))
+    return constant.getValue();
+  if (auto mul = llvm::dyn_cast<AffineBinaryOpExpr>(expr);
+      mul && mul.getKind() == AffineExprKind::Mul)
+    if (auto c = llvm::dyn_cast<AffineConstantExpr>(mul.getRHS()))
+      return c.getValue();
+  return std::nullopt;
+}
+
 /// Simplify the affine expression by flattening it and reconstructing it.
 static AffineExpr simplifyAffineExprWithBounds(
     AffineExpr expr, unsigned numDims, unsigned numSymbols,
@@ -526,6 +553,38 @@ static AffineExpr simplifyAffineExprWithBounds(
         }
       }
 
+      // Drop the terms of a remainder that the modulus divides: they
+      // contribute nothing to it.
+      //
+      //   (A + B) mod m  ==  B mod m       when m divides every term of A
+      //
+      // Splitting a host dimension to line a transfer's blocks up with it
+      // (cnm::alignHostToBlocks) produces exactly this shape -- the split of
+      // `dpu*32 + tasklet*4 + i` at 4 leaves `(dpu*32 + tasklet*4 + i) mod 4`,
+      // which is `i`. The recursive call is what then reaches that last step,
+      // through the bound rule above; it terminates because the expression it
+      // is given has strictly fewer terms.
+      if (kind == AffineExprKind::Mod && rhs > 1) {
+        SmallVector<AffineExpr> terms;
+        flattenAffineSum(sLHS, terms);
+        AffineExpr rest;
+        bool dropped = false;
+        for (AffineExpr term : terms) {
+          std::optional<int64_t> coeff = affineTermCoefficient(term);
+          if (coeff && *coeff % rhs == 0) {
+            dropped = true;
+            continue;
+          }
+          rest = rest ? rest + term : term;
+        }
+        if (dropped) {
+          if (!rest)
+            return getAffineConstantExpr(0, expr.getContext());
+          return simplifyAffineExprWithBounds(rest % rhs, numDims, numSymbols,
+                                              dimLowerBounds, dimUpperBounds);
+        }
+      }
+
       // Drop the low-order terms of a division that cannot influence the
       // quotient. If the dividend splits as A + B where A is a multiple of
       // some `g` dividing `rhs` and B is always smaller than `g`, then B can
@@ -546,28 +605,7 @@ static AffineExpr simplifyAffineExprWithBounds(
       // a real buffer.
       if (kind == AffineExprKind::FloorDiv && rhs > 1) {
         SmallVector<AffineExpr> terms;
-        std::function<void(AffineExpr)> flatten = [&](AffineExpr e) {
-          if (auto add = llvm::dyn_cast<AffineBinaryOpExpr>(e);
-              add && add.getKind() == AffineExprKind::Add) {
-            flatten(add.getLHS());
-            flatten(add.getRHS());
-          } else {
-            terms.push_back(e);
-          }
-        };
-        flatten(sLHS);
-
-        // The coefficient a term contributes, or nullopt if it is not a
-        // constant multiple of something we can reason about.
-        auto coefficientOf = [](AffineExpr e) -> std::optional<int64_t> {
-          if (llvm::isa<AffineDimExpr>(e) || llvm::isa<AffineSymbolExpr>(e))
-            return 1;
-          if (auto mul = llvm::dyn_cast<AffineBinaryOpExpr>(e);
-              mul && mul.getKind() == AffineExprKind::Mul)
-            if (auto c = llvm::dyn_cast<AffineConstantExpr>(mul.getRHS()))
-              return c.getValue();
-          return std::nullopt;
-        };
+        flattenAffineSum(sLHS, terms);
 
         for (int64_t g = rhs; g > 1; --g) {
           if (rhs % g != 0)
@@ -576,7 +614,7 @@ static AffineExpr simplifyAffineExprWithBounds(
           int64_t restUB = 0;
           bool usable = true;
           for (AffineExpr term : terms) {
-            std::optional<int64_t> coeff = coefficientOf(term);
+            std::optional<int64_t> coeff = affineTermCoefficient(term);
             if (coeff && *coeff % g == 0) {
               big = big ? big + term : term;
               continue;
