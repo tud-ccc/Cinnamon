@@ -2,12 +2,21 @@
 
 One JSON file per benchmark and source, checked in and reviewed like code:
 
-- `atim/{bench}.json` — ATiM's tuned schedule, transcribed from its trace
-  file into our parameter space (read the per-parameter `doc` strings and
-  the permutation tables in that benchmark's `space.json`; every dimension
-  the space declares must be named).
+- `atim_published/{bench}.json` — the schedule ATiM ships with its
+  artifact, transcribed from its trace file into our parameter space (read
+  the per-parameter `doc` strings and the permutation tables in that
+  benchmark's `space.json`; every dimension the space declares must be
+  named).
+- `atim_reproduced/{bench}.json` — the schedule ATiM's own autotuner found
+  when we ran it on this machine, transcribed the same way.
 - `cinm1rule/{bench}.json` — the configuration CINM 1.0's rule-based
   tiling decides for the same function.
+
+The two ATiM sources are kept apart everywhere downstream, not merged into
+one "ATiM". They come from different searches on different hardware, they
+transcribe to different points, and the better of the two is a
+configuration neither run produced. E1 decomposes the gap to a *specific*
+ATiM configuration, so which one it was has to stay on the row.
 
 File format — a list of points, one per function:
 

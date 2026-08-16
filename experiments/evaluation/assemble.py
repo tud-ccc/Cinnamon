@@ -9,10 +9,11 @@ results/*.csv and never touch data/.
 Schemas (the single source of truth for the plot scripts):
 
 - e1.csv       fn_name, system, config_label, total_ms, notes
-               system in {sample, topk, search, atim_transcribed,
-               atim_offline}; every *measured* config row is kept (the
-               percentile in tab:sufficiency needs the whole sample
-               distribution, not just its best).
+               system in {sample, topk, search, atim_{published,
+               reproduced}, atim_{published,reproduced}_transcribed};
+               every *measured* config row is kept (the percentile in
+               tab:sufficiency needs the whole sample distribution, not
+               just its best).
 - rq1.csv      the offline interchange schema: benchmark, fn_name, system,
                config_label, total_ms, scatter_ms, kernel_ms, gather_ms,
                load_ms, excluded_transfer_ms, excluded_transfer_bytes,
@@ -118,10 +119,25 @@ def measured_rows(
     return pd.DataFrame(rows)
 
 
-def _offline_rows(offline_csv: pathlib.Path) -> pd.DataFrame | None:
+def _offline_rows(
+    offline_csv: pathlib.Path, default_system: str
+) -> pd.DataFrame | None:
+    """Rows from one offline interchange CSV, each tagged with its system.
+
+    One file may hold several: ATiM's holds the schedules published with
+    their artifact and the ones we reproduced by tuning here, which were
+    produced by different searches on different machines and are only
+    comparable as separate systems. The file says which row is which, so
+    its `system` column wins; `default_system` names the rows of a file
+    that does not distinguish any (it is also what the MISSING report
+    calls the file).
+    """
     if not offline_csv.exists():
         return None
-    return pd.read_csv(offline_csv)
+    frame = pd.read_csv(offline_csv)
+    if "system" not in frame.columns:
+        return frame.assign(system=default_system)
+    return frame.assign(system=frame["system"].fillna(default_system))
 
 
 def assemble_e1(
@@ -130,9 +146,10 @@ def assemble_e1(
     out_csv: pathlib.Path,
 ) -> bool:
     """stacks: benchmark -> {system: (compile_root, run_root)} over the
-    sample, topk, search and atim_transcribed stacks. Offline ATiM rows
+    sample, topk, search and per-variant transcription stacks. Offline ATiM rows
     (already benchmark-tagged, interchange schema) are folded in under
-    system=atim_offline."""
+    the system each names -- atim_published and atim_reproduced -- or
+    under atim_offline if the file does not distinguish them."""
     frames, missing = [], []
     for bench, systems in sorted(stacks.items()):
         for system, (compile_root, run_root) in sorted(systems.items()):
@@ -141,14 +158,12 @@ def assemble_e1(
                 missing.append(f"{system} stack of {bench} ({run_root})")
             else:
                 frames.append(frame.assign(benchmark=bench))
-    offline = _offline_rows(offline_atim)
+    offline = _offline_rows(offline_atim, "atim_offline")
     if offline is None:
         missing.append(f"offline ATiM rows ({offline_atim})")
     else:
         frames.append(
-            offline.assign(system="atim_offline")[
-                ["benchmark", "fn_name", "system", "config_label", "total_ms"]
-            ]
+            offline[["benchmark", "fn_name", "system", "config_label", "total_ms"]]
         )
     frame = pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
     return _write(frame, out_csv, missing)
@@ -175,12 +190,19 @@ def assemble_rq2(
     search_roots: dict[str, pathlib.Path],
     space_jsons: dict[tuple[str, str], pathlib.Path],
     out_csv: pathlib.Path,
+    offline_atim: pathlib.Path | None = None,
 ) -> bool:
-    """Ours only; the ATiM walltime column is offline and joined by
-    table_walltime.py. search_roots: benchmark -> B4 dump root (holding
+    """search_roots: benchmark -> B4 dump root (holding
     infer_{fn}/seed_{k}/timings.csv); space_jsons: (benchmark, fn) ->
     space.json (its space_build_seconds is RQ2's setup-time row, available
-    since B0 -- so rq2.csv has rows before any search has run)."""
+    since B0 -- so rq2.csv has rows before any search has run).
+
+    offline_atim contributes the baseline's side of "what a search costs":
+    `tuning_wallclock_s` from the interchange CSV, as `search_wallclock_s`
+    under whatever system the row names. Only schedules tuned on this
+    machine carry one -- the published ones were tuned on the authors'
+    hardware, so they have no wall clock that compares to ours and are
+    dropped here rather than borrowed from a reproduced run."""
     rows, missing = [], []
     for (bench, fn_name), sj in sorted(space_jsons.items()):
         if not sj.exists():
@@ -220,6 +242,27 @@ def assemble_rq2(
             )
         if not any_seed:
             missing.append(f"search timings of {bench} ({root})")
+
+    if offline_atim is not None:
+        offline = _offline_rows(offline_atim, "atim")
+        if offline is None:
+            missing.append(f"offline ATiM rows ({offline_atim})")
+        else:
+            tuned_here = offline.dropna(subset=["tuning_wallclock_s"])
+            if tuned_here.empty:
+                missing.append(f"ATiM tuning wall clock ({offline_atim})")
+            for _, row in tuned_here.iterrows():
+                rows.append(
+                    {
+                        "benchmark": row["benchmark"],
+                        "fn_name": row["fn_name"],
+                        "system": row["system"],
+                        "seed": None,
+                        "n_candidates": None,
+                        "search_wallclock_s": float(row["tuning_wallclock_s"]),
+                        "space_build_s": None,
+                    }
+                )
     return _write(pd.DataFrame(rows), out_csv, missing)
 
 
@@ -242,11 +285,11 @@ def assemble_rq1(
             else:
                 frames.append(frame.assign(benchmark=bench))
     for system, path in sorted(offline_csvs.items()):
-        offline = _offline_rows(path)
+        offline = _offline_rows(path, system)
         if offline is None:
             missing.append(f"offline {system} rows ({path})")
         else:
-            frames.append(offline.assign(system=system))
+            frames.append(offline)
     frame = pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
     if not frame.empty:
         frame = frame.reindex(columns=INTERCHANGE_COLUMNS)

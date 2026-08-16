@@ -169,7 +169,7 @@ def _draw_sample(bench: str) -> bool:
     cinmopt.random_sample(
         source_mlir(bench),
         sample_dir(bench),
-        workers=2,
+        workers=32,
         n_samples=OPTS["n_sample"],
         seed=OPTS["sample_seed"],
         infer_opts={
@@ -466,9 +466,12 @@ def _assemble_e1() -> bool:
                 "sample": _pair(sample_roots(bench), "sample"),
                 "topk": _pair(topk_roots(bench), "topk"),
                 "search": _pair(search_roots(bench), "search"),
-                "atim_transcribed": _pair(
-                    points_roots(bench, "atim"), "atim_transcribed"
-                ),
+                **{
+                    POINT_SOURCES[source]: _pair(
+                        points_roots(bench, source), POINT_SOURCES[source]
+                    )
+                    for source in ("atim_published", "atim_reproduced")
+                },
             }
             for bench in WORKLOADS
         },
@@ -504,6 +507,7 @@ def _assemble_rq2() -> bool:
             for fn in list_functions(source_mlir(bench))
         },
         RESULTS_DIR / "rq2.csv",
+        OFFLINE_DIR / "atim.csv",
     )
 
 
@@ -881,7 +885,15 @@ def task_compile_search_ablate():
 # ── B5: manually-authored points, evaluated in our system ───────────────────
 
 POINTS_DIR = HERE / "points"
-POINT_SOURCES = {"atim": "atim_transcribed", "cinm1rule": "cinm1_rule"}
+# ATiM ships tuned schedules with its artifact and we also reproduced them by
+# tuning on this machine. They are transcribed from different traces into
+# different points, so they are separate sources: E1 decomposes the gap to a
+# specific ATiM configuration, and which one has to stay visible.
+POINT_SOURCES = {
+    "atim_published": "atim_published_transcribed",
+    "atim_reproduced": "atim_reproduced_transcribed",
+    "cinm1rule": "cinm1_rule",
+}
 
 
 def _load_points(source: str, bench: str) -> list[dict]:

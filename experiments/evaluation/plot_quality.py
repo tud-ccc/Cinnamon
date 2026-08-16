@@ -6,6 +6,12 @@ plotted as speedup relative to PrIM so the hand-optimized kernels are the
 1.0 line. Systems with no rows yet are skipped per benchmark; CINM 1.0 is
 deliberately absent here -- it goes to the companion table
 (table_quality.py), per the paper's figure note.
+
+ATiM gets two bars. The schedules published with their artifact and the
+ones we reproduced by tuning on this machine are different searches on
+different hardware, and the minimum over the pair would be a
+configuration neither run produced -- so they are separate systems here,
+never a single "ATiM".
 """
 
 from __future__ import annotations
@@ -20,7 +26,8 @@ import numpy as np
 
 from _reporting import load_or_skip, parse_dirs, save_fig
 
-SYSTEMS = ["prim", "atim", "ours", "cpu"]  # bar order; prim is the baseline
+# Bar order; prim is the baseline.
+SYSTEMS = ["prim", "atim_published", "atim_reproduced", "ours", "cpu"]
 
 
 def main() -> None:
