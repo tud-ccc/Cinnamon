@@ -1,4 +1,5 @@
 #include "SimulatorBase.h"
+#include "cinm-mlir/Dialect/Cinm/IR/CinmUtils.h"
 #include <cinm-mlir/Dialect/Cinm/IR/CinmAttributes.h>
 #include <cinm-mlir/Dialect/Cinm/IR/CinmOps.h>
 #include <cinm-mlir/Dialect/Cnm/IR/CnmOps.h>
@@ -122,6 +123,20 @@ static SimCost costOfOpCb(Operation &op, bool annotate,
             // Between 1.6 and 10 ns on chios.
             // It's lower with more iterations of the enclosing loop
             return SimCost::forCpu(3e-6, "other");
+          })
+          .Case<cnm::CompactBufferOp>([](cnm::CompactBufferOp op) {
+            // Use the same rule as memref,
+            // the allocation is put out of the hot path
+            // by statically allocating.
+            // The point here is just to put _some_ cost on the compaction.
+            auto hostTy = op.getSource().getType();
+            double bytes = static_cast<double>(staticElementCount(hostTy)) *
+                           elementBytes(hostTy.getElementType());
+            double time_ns = 0.63 * pow(bytes, 0.907);
+            auto cost = SimCost::forCpu(time_ns / 1e6, "compact"); // ns -> ms
+            if (cinm::isStaticValue(op.getSource()))
+              cost.markExcluded();
+            return cost;
           })
           .Case<memref::CopyOp>([](memref::CopyOp copyOp) {
             // Experiment: try to account for the copy happening

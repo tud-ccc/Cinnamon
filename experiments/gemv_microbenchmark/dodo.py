@@ -679,7 +679,7 @@ def task_fidelity():
         axes[1][0].set_ylabel("relative error (%)")
         axes[0][-1].legend(loc="upper right")
         fig.suptitle(
-            f"mtv_64MB predicted vs measured breakdown ({label})\n"
+            f"{label}: predicted vs measured breakdown\n"
             "relative error = (predicted - measured) / measured"
         )
         fig.tight_layout()
