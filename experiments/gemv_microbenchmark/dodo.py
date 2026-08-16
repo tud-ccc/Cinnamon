@@ -20,6 +20,8 @@ Usage:
   doit compile      # just compile both configs
   doit fidelity     # just the predicted-vs-measured plot (no hardware needed
                     # beyond an existing bench run)
+  doit crosscheck   # price the dumped DPU programs with the Python reference
+                    # cost model too, and report the gap (no hardware at all)
   doit forget run   # force both hardware runs to redo next time
 """
 
@@ -34,12 +36,12 @@ sys.path.insert(0, str(EXPERIMENTS_DIR))
 
 from doit.tools import check_timestamp_unchanged
 from doit.reporter import ProgressBarReporter  # noqa: E402
-from cinm_experiments import compile_run, cinmopt, measurements  # noqa: E402
+from cinm_experiments import compile_run, cinmopt, measurements, refmodel  # noqa: E402
 from cinm_experiments.split_source import list_functions, split_source  # noqa: E402
 from cinm_experiments.paths import DEFAULT_CINM_OPT
 
 DOIT_CONFIG = {
-    "default_tasks": ["plot", "fidelity"],
+    "default_tasks": ["plot", "fidelity", "crosscheck"],
     "verbosity": 2,
     "reporter": ProgressBarReporter,
 }
@@ -656,3 +658,178 @@ def task_fidelity():
             "targets": [out_path, csv_path],
             "actions": [(action, [out_path, csv_path, label, confs])],
         }
+
+
+# The two engines of the cross-check, each with its own fixed color -- not the
+# fidelity plot's pair, which stands for measured-vs-predicted and would read
+# as a hardware comparison here. Neither of these bars is hardware.
+_CPP_COLOR = "#DD8452"
+_REF_COLOR = "#8172B3"
+
+
+def _dump_dir(config: compile_run.Config) -> pathlib.Path:
+    """Where with_program_dump put this config's DPU programs and the C++
+    cost model's verdict on them (see cinmopt.with_program_dump)."""
+    return config.dir(DATA_ROOT) / "cnmprog"
+
+
+def task_crosscheck():
+    """Price each functional point's dumped DPU programs with the Python
+    reference cost model and print/plot the gap to the C++ estimate of the
+    same programs.
+
+    The question is how far apart the two engines are, not whether they
+    agree, so the report is the ratio and both absolute times -- nothing here
+    asserts a tolerance. A program the reference model refuses to price (it
+    rejects what it has no calibrated entry for rather than guessing) is
+    reported as such and left out of the ratio, since it is a hole in the
+    comparison rather than a difference of zero."""
+
+    def _ms(value):
+        return f"{'n/a':>8}  " if value is None else f"{value:8.3f}ms"
+
+    def action(out_path, csv_path, confs):
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        comparisons = []
+        for config in confs:
+            c = refmodel.compare(_dump_dir(config), name=config.fn_name)
+            if c is None:
+                print(
+                    f"{config.fn_name}: no dumps in {_dump_dir(config)} "
+                    "(compiled before program dumping? `doit forget compile`)"
+                )
+                continue
+            comparisons.append(c)
+            ratio = "  n/a" if c.ratio is None else f"{c.ratio:.2f}x"
+            print(
+                f"{c.name:<12s} cpp={_ms(c.cpp_ms)}  ref={_ms(c.ref_ms)}  "
+                f"ref/cpp={ratio}  "
+                f"({len(c.kernels)} kernel{'s' if len(c.kernels) != 1 else ''})"
+            )
+            for k in c.kernels:
+                if k.ms is None:
+                    print(f"    {k.kernel}: unpriced -- {k.error}")
+                elif len(c.kernels) > 1:
+                    print(f"    {k.kernel}: {k.ms:.3f}ms")
+
+        if not comparisons:
+            return
+
+        import pandas as pd
+        import matplotlib.pyplot as plt
+        import numpy as np
+
+        pd.DataFrame(refmodel.comparison_rows(comparisons)).to_csv(
+            csv_path, index=False
+        )
+
+        priced = [c for c in comparisons if c.ratio is not None]
+        print(
+            f"priced {len(priced)}/{len(comparisons)} configs"
+            + (
+                f"; ref/cpp in [{min(c.ratio for c in priced):.2f}, "
+                f"{max(c.ratio for c in priced):.2f}]"
+                if priced
+                else ""
+            )
+        )
+
+        x = np.arange(len(comparisons))
+        fig, (top, bottom) = plt.subplots(
+            2,
+            1,
+            figsize=(max(6.0, 1.2 * len(comparisons)), 6.0),
+            sharex=True,
+            gridspec_kw={"height_ratios": [2, 1]},
+        )
+
+        top.bar(
+            x - 0.2,
+            [c.cpp_ms or 0.0 for c in comparisons],
+            0.38,
+            label="C++ cost model",
+            color=_CPP_COLOR,
+        )
+        top.bar(
+            x + 0.2,
+            [c.ref_ms or 0.0 for c in comparisons],
+            0.38,
+            label="Python reference model",
+            color=_REF_COLOR,
+        )
+        # Every bar is labeled: with two engines and a handful of configs the
+        # numbers are the point, and an unpriced config has to say so rather
+        # than show a zero-height bar that reads as "instant".
+        tallest = max(
+            [v for c in comparisons for v in (c.cpp_ms, c.ref_ms) if v], default=1.0
+        )
+        for xi, c in zip(x, comparisons):
+            for dx, value in ((-0.2, c.cpp_ms), (0.2, c.ref_ms)):
+                top.text(
+                    xi + dx,
+                    (value or 0.0) + 0.02 * tallest,
+                    "n/a" if value is None else f"{value:.2f}",
+                    ha="center",
+                    va="bottom",
+                    fontsize=7,
+                )
+
+        # The gap, not the ratio: two engines that agree to within a few
+        # percent draw two bars of the same height up there, and a ratio panel
+        # of near-1.0 bars hides the difference just as well. Zero-centred
+        # percent shows it, and the sign gets the color of whichever engine
+        # came out higher -- the same idiom as the fidelity plot above.
+        gaps = [None if c.ratio is None else (c.ratio - 1.0) * 100 for c in comparisons]
+        bottom.bar(
+            x,
+            [g or 0.0 for g in gaps],
+            0.6,
+            color=[_CPP_COLOR if (g or 0) < 0 else _REF_COLOR for g in gaps],
+        )
+        bottom.axhline(0.0, color="black", linewidth=0.8)
+        widest_gap = max((abs(g) for g in gaps if g is not None), default=1.0)
+        for xi, g in zip(x, gaps):
+            bottom.text(
+                xi,
+                (g or 0.0)
+                + (0.04 * widest_gap if (g or 0) >= 0 else -0.04 * widest_gap),
+                "n/a" if g is None else f"{g:+.1f}%",
+                ha="center",
+                va="bottom" if (g or 0) >= 0 else "top",
+                fontsize=8,
+            )
+        bottom.margins(y=0.3)
+        bottom.set_xticks(x)
+        bottom.set_xticklabels([c.name for c in comparisons], rotation=45, ha="right")
+
+        for ax in (top, bottom):
+            ax.grid(axis="y", linestyle="--", alpha=0.4)
+            ax.set_axisbelow(True)
+        # Headroom for the rotated value labels, and for the legend to sit
+        # over the bars rather than on top of the tallest one.
+        top.set_ylim(0, tallest * 1.45)
+        top.set_ylabel("kernel time (ms)")
+        bottom.set_ylabel("ref - C++ (%)")
+        top.legend(loc="upper left")
+        fig.suptitle(
+            "Two cost models on the same dumped DPU programs\n"
+            "n/a: the reference model declines to price the program"
+        )
+        fig.tight_layout()
+        fig.savefig(out_path, dpi=150)
+        plt.close(fig)
+        print(f"wrote {out_path}")
+
+    confs = [c for c in CONFIGS if c.label == "functional"]
+    out_path = HERE / "plots" / "crosscheck.png"
+    csv_path = HERE / "plots" / "crosscheck.csv"
+    yield {
+        "name": "functional",
+        "uptodate": [
+            check_timestamp_unchanged(c.dir(DATA_ROOT) / "compile.done", "ctime")
+            for c in confs
+        ],
+        "file_dep": [c.dir(DATA_ROOT) / "compile.done" for c in confs],
+        "targets": [out_path, csv_path],
+        "actions": [(action, [out_path, csv_path, confs])],
+    }
