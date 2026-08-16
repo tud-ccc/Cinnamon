@@ -21,7 +21,7 @@
 // CHECK-LABEL: func.func @scatter_noncontiguous
 // CHECK:       %[[BIG:.*]] = memref.alloc() : memref<8x512xi32>
 // CHECK:       %[[VIEW:.*]] = memref.subview %[[BIG]]
-// CHECK:       %[[PACK:.*]] = memref.alloc() : memref<8x256xi32>
+// CHECK:       %[[PACK:.*]] = memref.get_global @{{.*}} : memref<8x256xi32>
 // CHECK-NEXT:  cnm.compact_buffer %[[VIEW]] into %[[PACK]][#map] : memref<8x256xi32, strided<[512, 1]>> into memref<8x256xi32>
 // CHECK-NEXT:  cnm.scatter %[[PACK]] into %{{.*}}[#map1] of %{{.*}} : memref<8x256xi32> into
 func.func @scatter_noncontiguous() {
@@ -59,10 +59,12 @@ func.func @scatter_already_contiguous() {
 // CHECK-LABEL: func.func @gather_noncontiguous
 // CHECK:       %[[BIG:.*]] = memref.alloc() : memref<128x512xi32>
 // CHECK:       %[[VIEW:.*]] = memref.subview %[[BIG]]
-// CHECK:       %[[PACK:.*]] = memref.alloc() : memref<128x256xi32>
+// The repack buffer is a module-level global, reused by every call rather
+// than allocated per call -- and so not freed after the copy either.
+// CHECK:       %[[PACK:.*]] = memref.get_global @{{.*}} : memref<128x256xi32>
 // CHECK-NEXT:  cnm.gather %{{.*}}[#map2] of %{{.*}} into %[[PACK]] : {{.*}} into memref<128x256xi32>
 // CHECK-NEXT:  memref.copy %[[PACK]], %[[VIEW]]
-// CHECK-NEXT:  memref.dealloc %[[PACK]]
+// CHECK-NOT:   memref.dealloc
 func.func @gather_noncontiguous() {
   %wg = cnm.workgroup : !cnm.workgroup<#upmem_2_4_16>
   %buf = cnm.declare_buffer() for %wg : !cnm.buffer<256xi32 on #upmem_2_4_16>

@@ -36,10 +36,49 @@ using namespace mlir;
 
 namespace {
 
-// Allocate a memref with the same shape/element type as `src` but with a
-// default (fully packed, row-major) layout, resolving any dynamic dimensions
-// from `src` itself.
-Value allocateContiguousLike(OpBuilder &b, Location loc, Value src) {
+/// A buffer for a repack to work in, reused by every call.
+///
+/// A module-level global rather than a fresh allocation. The repack runs on
+/// every inference, and an allocation never returns the same pages twice, so
+/// each call first-touches the whole buffer -- which costs more than the copy
+/// it exists to perform: 3.4 ms against 0.8 ms for 4 MiB on the machine this
+/// was written on. Nothing frees them either, so a long run grows without
+/// bound.
+///
+/// One slot per site, which is what makes reuse safe: the buffer is dead
+/// between calls. A scatter fills it and then transfers, a gather transfers
+/// and then drains it, so no call reads what another left. It is not
+/// re-entrant, though -- two concurrent calls into the same function would
+/// share the slot.
+///
+/// A dynamic shape has no global to be, so it still allocates.
+Value repackBuffer(OpBuilder &b, Location loc, Operation *site, MemRefType type,
+                   ValueRange dynSizes = {}) {
+  auto module = site->getParentOfType<ModuleOp>();
+  if (!module || !type.hasStaticShape())
+    return memref::AllocOp::create(b, loc, type, dynSizes);
+
+  memref::GlobalOp global;
+  {
+    OpBuilder::InsertionGuard guard(b);
+    b.setInsertionPointToStart(module.getBody());
+    // Named uniquely up front rather than left to SymbolTable::insert, which
+    // does not rename an op already placed in the block -- and a function
+    // repacks more than one operand.
+    global = memref::GlobalOp::create(
+        b, loc, getUniqueFunctionName(module, "__cnm_repack_"),
+        /*sym_visibility=*/b.getStringAttr("private"), type,
+        /*initial_value=*/Attribute{},
+        /*constant=*/false, /*alignment=*/IntegerAttr{});
+  }
+  return memref::GetGlobalOp::create(b, loc, type, global.getSymNameAttr());
+}
+
+// A buffer with the same shape/element type as `src` but with a default
+// (fully packed, row-major) layout, resolving any dynamic dimensions from
+// `src` itself.
+Value allocateContiguousLike(OpBuilder &b, Location loc, Operation *site,
+                             Value src) {
   auto ty = cast<MemRefType>(src.getType());
   SmallVector<Value> dynSizes;
   for (int64_t i = 0; i < ty.getRank(); ++i)
@@ -47,7 +86,7 @@ Value allocateContiguousLike(OpBuilder &b, Location loc, Value src) {
       dynSizes.push_back(memref::DimOp::create(b, loc, src, i));
 
   auto contiguousTy = MemRefType::get(ty.getShape(), ty.getElementType());
-  return memref::AllocOp::create(b, loc, contiguousTy, dynSizes);
+  return repackBuffer(b, loc, site, contiguousTy, dynSizes);
 }
 
 // `value` is contiguous enough for a flat per-DPU memcpy iff its whole shape
@@ -205,8 +244,8 @@ bool packIntoOneBlockPerLeaf(Op op, OpBuilder &b, bool isStatic) {
 
   b.setInsertionPoint(op);
   Value host = op.getHostValue();
-  Value packed = memref::AllocOp::create(
-      b, loc, MemRefType::get(packedShape, hostTy.getElementType()));
+  Value packed = repackBuffer(
+      b, loc, op, MemRefType::get(packedShape, hostTy.getElementType()));
 
   // A scatter reads the host value, so the repack fills the packed buffer
   // before the transfer. A gather writes it, so the packed buffer is what the
@@ -256,7 +295,7 @@ void ensureScatterContiguous(cnm::ScatterOp op, OpBuilder &b, bool staticOnly) {
 
   Location loc = op.getLoc();
   b.setInsertionPoint(op);
-  Value packed = allocateContiguousLike(b, loc, input);
+  Value packed = allocateContiguousLike(b, loc, op, input);
   // The packed buffer has the input's shape, so each of its elements comes
   // from the same index of the input: only the layout changes.
   auto rank = cast<MemRefType>(input.getType()).getRank();
@@ -286,12 +325,16 @@ void ensureGatherContiguous(cnm::GatherOp op, OpBuilder &b, bool staticOnly) {
 
   Location loc = op.getLoc();
   b.setInsertionPoint(op);
-  Value packed = allocateContiguousLike(b, loc, outputBuf);
+  Value packed = allocateContiguousLike(b, loc, op, outputBuf);
   op.getOutputBufMutable().assign(packed);
 
   b.setInsertionPointAfter(op);
   memref::CopyOp::create(b, loc, packed, outputBuf);
-  memref::DeallocOp::create(b, loc, packed);
+  // Only what was allocated here is freed here. repackBuffer usually hands
+  // back a module-level buffer meant to outlive the call, and freeing that
+  // would be freeing a global.
+  if (packed.getDefiningOp<memref::AllocOp>())
+    memref::DeallocOp::create(b, loc, packed);
 }
 
 // A leaf's tile is addressed element by element when it leaves
