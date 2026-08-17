@@ -113,7 +113,14 @@ IntVar SpaceBuilder::pow2Range(llvm::StringRef name, ParmValue expLo,
                                ParmValue expHi) {
   assert(expLo >= 0 && "search parameters are positive integers");
   IntVar v(name, ParmValue{1} << expHi);
-  dims_.push_back({v.name_, v.idx_, DimEntry::Pow2, expLo, expHi, {}});
+  dims_.push_back({v.name_,
+                   v.idx_,
+                   DimEntry::Pow2,
+                   expLo,
+                   expHi,
+                   {},
+                   0,
+                   Spacing::Multiplicative});
   return v;
 }
 
@@ -166,15 +173,36 @@ PermVar SpaceBuilder::permutation(llvm::StringRef name,
   return v;
 }
 
+// Both overloads declare the same kind of quantity -- something that divides
+// something else -- and so are spaced the same way. They differ only in
+// whether the bound is known here, which decides how the domain is *stored*:
+// a constant can be filtered down to the divisors themselves, a variable
+// leaves a range with the division posted as a constraint. That difference
+// must not reach the surrogate, or two levels of one tiling would be read on
+// different scales because one bound happened to be static.
 IntVar SpaceBuilder::divisorsOf(llvm::StringRef name, ParmValue n) {
   IntVar v(name, n);
-  dims_.push_back({v.name_, v.idx_, DimEntry::DivisorsOfConst, 1, n, {n}});
+  dims_.push_back({v.name_,
+                   v.idx_,
+                   DimEntry::DivisorsOfConst,
+                   1,
+                   n,
+                   {n},
+                   0,
+                   Spacing::Multiplicative});
   return v;
 }
 
 IntVar SpaceBuilder::divisorsOf(llvm::StringRef name, IntVar src) {
   IntVar v(name, src.maxVal());
-  dims_.push_back({v.name_, v.idx_, DimEntry::IntRange, 1, src.maxVal(), {}});
+  dims_.push_back({v.name_,
+                   v.idx_,
+                   DimEntry::IntRange,
+                   1,
+                   src.maxVal(),
+                   {},
+                   0,
+                   Spacing::Multiplicative});
   require(divides(v, src));
   return v;
 }
@@ -198,6 +226,12 @@ int SpaceBuilder::dimIndexByName(llvm::StringRef name) const {
     if (dims_[i].name == name.str())
       return i;
   return -1;
+}
+
+void SpaceBuilder::spacing(llvm::StringRef name, Spacing spacing) {
+  int idx = dimIndexByName(name);
+  if (idx >= 0)
+    dims_[idx].spacing = spacing;
 }
 
 void SpaceBuilder::describe(llvm::StringRef name, llvm::StringRef doc) {
@@ -288,7 +322,11 @@ void SpaceBuilder::buildInto(ConfigSpace &space, unsigned nWorkers) {
       llvm_unreachable("unknown DimKind");
     }();
     // How the domain is stored and how its values are meant are independent;
-    // the declaration carries the second on the handle.
+    // the declaration carries the second on the handle. Spacing is set here
+    // rather than left to the factory, and before keepDivisorsOf below,
+    // because the filter rewrites the domain and must not be able to revise
+    // what the values mean.
+    param.spacing = entry.spacing;
     param.doc = entry.doc;
     param.itemLabels = entry.itemLabels;
 

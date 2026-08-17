@@ -397,6 +397,20 @@ public:
     require(expr.node(), description);
   }
 
+  /// Declare how `name`'s values are spaced -- whether the surrogate should
+  /// read the distance between two of them as a difference or as a ratio, and
+  /// whether a step towards a neighbour adds one or doubles. See Spacing.
+  ///
+  /// Each declaration form sets the spacing it is normally used for
+  /// (intRange linear, pow2Range and both divisorsOf multiplicative), so this
+  /// is for the case the default gets wrong: a range that happens to hold
+  /// tile sizes, a divisor set that happens to hold an index. Unlike the
+  /// domain, spacing is never inferred from a filter -- a parameter's meaning
+  /// does not change because some of its values were removed.
+  ///
+  /// No-op if no parameter of that name has been declared.
+  void spacing(llvm::StringRef name, Spacing spacing);
+
   /// Attach a free-text description to the declared parameter `name`, dumped
   /// into space.json (SearchParam::doc). Documentary only -- it changes
   /// nothing about the space; it exists so a human transcribing an external
@@ -441,6 +455,7 @@ private:
     ParmValue lo, hi;
     std::vector<ParmValue> divisorFilters;    ///< keepDivisorsOf(n) for each n
     unsigned permutationSize = 0;             ///< for Kind::Permutation
+    Spacing spacing = Spacing::Linear;        ///< see spacing()
     std::string doc = {};                     ///< see describe()
     std::vector<std::string> itemLabels = {}; ///< see labelItems()
   };

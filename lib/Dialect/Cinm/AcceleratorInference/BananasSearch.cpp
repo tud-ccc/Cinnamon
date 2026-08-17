@@ -1046,6 +1046,15 @@ void dumpSpaceJSON(const ConfigSpace &space, size_t feasibleSize,
     out << "\"kind\": ";
     jsonStr(paramKindName(p.kind()).str());
     out << ", ";
+    if (p.kind() == ParamKind::Integer) {
+      // How the surrogate reads a distance between two of these values, which
+      // is a declared property and not one recoverable from the domain below:
+      // a "range" spelling can be multiplicative and a "values" one linear.
+      out << "\"spacing\": ";
+      jsonStr(p.spacing == Spacing::Multiplicative ? "multiplicative"
+                                                   : "linear");
+      out << ", ";
+    }
     // The dimension names as pool.csv columns and eval-solution spell them.
     // Redundant for arity 1 (it is the parameter's own name) but load-bearing
     // for permutations, whose n dimensions are the parameter's contract with
