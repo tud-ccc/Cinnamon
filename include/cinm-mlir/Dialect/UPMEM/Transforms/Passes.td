@@ -59,10 +59,12 @@ def UpmemCoalesceLocalTransfersPass: Pass<"upmem-coalesce-local-transfers"> {
     moves the whole strip at once. The far-level buffer is indexed per tile, so
     consecutive transfers start one tile apart; when a tile is a fraction of a
     DMA granule every other one begins mid-granule, and an MRAM DMA drops the
-    low bits of such an address. The strip length is the least that reaches a
-    granule, which bounds what this costs in leaf-level space -- the buffer
-    grows by less than one granule -- and leaves the tile the search chose as
-    the tile the kernel computes on.
+    low bits of such an address. Every fractional staging of the loop is
+    widened by that one split -- the walk it leaves behind no longer has
+    constant bounds, so one left out could never be widened afterwards -- and
+    the strip length is the least that reaches a granule for all of them at
+    once. That bounds what this costs in leaf-level space and leaves the tiles
+    the search chose as the tiles the kernel computes on.
   }];
   let dependentDialects = [
     "::mlir::cnm::CnmDialect",

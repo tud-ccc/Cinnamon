@@ -130,6 +130,10 @@ std::optional<unsigned> stripDim(memref::SubViewOp tile,
   if (!llvm::all_of(tile.getMixedStrides(),
                     [](OpFoldResult s) { return isConstantIntValue(s, 1); }))
     return std::nullopt;
+  // The widened tile is built outside the loop, so the memref it views has to
+  // be reachable from there.
+  if (!definedOutside(ValueRange{tile.getSource()}, loop))
+    return std::nullopt;
 
   SmallVector<OpFoldResult> offsets = tile.getMixedOffsets();
   SmallVector<OpFoldResult> sizes = tile.getMixedSizes();
@@ -168,29 +172,44 @@ int64_t coalescingFactor(int64_t tileElems, int64_t granuleBits,
   return elemsPerGranule / std::gcd(tileElems, elemsPerGranule);
 }
 
-/// Move `k` adjacent tiles per transfer instead of one.
+/// A staging the loop walks one tile at a time, and the dimension of its tile
+/// the induction variable addresses.
+struct Strip {
+  Staging staging;
+  unsigned dim;
+};
+
+/// Move `k` adjacent tiles per transfer instead of one, for every staging in
+/// `strips`.
 ///
 /// The loop is split in two -- an outer loop stepping `k` tiles, and the
-/// original walking the strip -- and the staging moves to the outer body,
-/// widened to the whole strip. The inner body works on a slice of the wider
-/// buffer, which is the only change it sees.
+/// original walking the strip -- and the stagings move to the outer body,
+/// each widened to the whole strip. The inner body works on a slice of each
+/// wider buffer, which is the only change it sees.
 ///
-/// This costs leaf-level space: the buffer grows from one tile to `k`.
-/// Bounded, and deliberately so -- `k` is the least factor that reaches a
-/// granule, so the buffer grows by less than one granule and the tile the
-/// search chose stays the tile the kernel computes on.
+/// All of the loop's stagings are widened together because the split replaces
+/// the loop: one left behind would sit in a loop whose bounds are no longer
+/// constant, and could never be widened afterwards.
+///
+/// This costs leaf-level space: each buffer grows from one tile to `k`.
+/// Bounded, and deliberately so -- `k` is the least strip length that puts
+/// every one of these stagings on a granule boundary, which is at most one
+/// granule's worth of elements, and the tiles the search chose stay the tiles
+/// the kernel computes on.
 LogicalResult coalesceRun(IRRewriter &rewriter, affine::AffineForOp loop,
-                          Staging staging, unsigned dim, int64_t k) {
-  auto bufferType = cast<MemRefType>(staging.buffer.getType());
-  if (dim >= unsigned(bufferType.getRank()))
-    return failure();
-
+                          ArrayRef<Strip> strips, int64_t k) {
   const int64_t lb = loop.getConstantLowerBound();
   const int64_t ub = loop.getConstantUpperBound();
   // A partial last strip would transfer tiles the loop never visits, writing
   // back whatever the buffer happened to hold for them.
   if ((ub - lb) % k != 0)
     return failure();
+  // Checked for every strip before anything is rewritten: the split is one
+  // transformation, and a failure partway through would leave the loop torn.
+  for (Strip s : strips)
+    if (s.dim >=
+        unsigned(cast<MemRefType>(s.staging.buffer.getType()).getRank()))
+      return failure();
 
   Location loc = loop.getLoc();
   rewriter.setInsertionPoint(loop);
@@ -203,28 +222,34 @@ LogicalResult coalesceRun(IRRewriter &rewriter, affine::AffineForOp loop,
   AffineExpr strip = rewriter.getAffineDimExpr(0);
   AffineMap stripStartMap = AffineMap::get(1, 0, lb + strip * k);
 
-  SmallVector<int64_t> stripShape(bufferType.getShape());
-  stripShape[dim] *= k;
   rewriter.setInsertionPointToStart(outer.getBody());
-  auto stripBuffer = memref::AllocaOp::create(
-      rewriter, loc,
-      MemRefType::get(stripShape, bufferType.getElementType(),
-                      MemRefLayoutAttrInterface{},
-                      bufferType.getMemorySpace()));
   auto stripStart = affine::AffineApplyOp::create(
       rewriter, loc, stripStartMap, ValueRange{outer.getInductionVar()});
 
-  SmallVector<OpFoldResult> offsets = staging.tile.getMixedOffsets();
-  SmallVector<OpFoldResult> sizes = staging.tile.getMixedSizes();
-  SmallVector<OpFoldResult> strides = staging.tile.getMixedStrides();
-  offsets[dim] = stripStart.getResult();
-  sizes[dim] = rewriter.getIndexAttr(k);
-  auto stripTile = memref::SubViewOp::create(
-      rewriter, loc, staging.tile.getSource(), offsets, sizes, strides);
+  SmallVector<memref::AllocaOp> stripBuffers;
+  SmallVector<memref::SubViewOp> stripTiles;
+  for (Strip s : strips) {
+    auto bufferType = cast<MemRefType>(s.staging.buffer.getType());
+    SmallVector<int64_t> stripShape(bufferType.getShape());
+    stripShape[s.dim] *= k;
+    stripBuffers.push_back(memref::AllocaOp::create(
+        rewriter, loc,
+        MemRefType::get(stripShape, bufferType.getElementType(),
+                        MemRefLayoutAttrInterface{},
+                        bufferType.getMemorySpace())));
 
-  if (staging.read)
-    cnm::LocalTransferOp::create(rewriter, loc, stripTile.getResult(),
-                                 stripBuffer.getResult());
+    SmallVector<OpFoldResult> offsets = s.staging.tile.getMixedOffsets();
+    SmallVector<OpFoldResult> sizes = s.staging.tile.getMixedSizes();
+    SmallVector<OpFoldResult> strides = s.staging.tile.getMixedStrides();
+    offsets[s.dim] = stripStart.getResult();
+    sizes[s.dim] = rewriter.getIndexAttr(k);
+    stripTiles.push_back(memref::SubViewOp::create(
+        rewriter, loc, s.staging.tile.getSource(), offsets, sizes, strides));
+
+    if (s.staging.read)
+      cnm::LocalTransferOp::create(rewriter, loc, stripTiles.back().getResult(),
+                                   stripBuffers.back().getResult());
+  }
 
   // The original loop becomes the walk over the strip.
   rewriter.moveOpBefore(loop, outer.getBody()->getTerminator());
@@ -232,13 +257,13 @@ LogicalResult coalesceRun(IRRewriter &rewriter, affine::AffineForOp loop,
   loop.setUpperBound(outer.getInductionVar(),
                      AffineMap::get(1, 0, lb + strip * k + k));
 
-  if (staging.write) {
-    rewriter.setInsertionPointAfter(loop);
-    cnm::LocalTransferOp::create(rewriter, loc, stripBuffer.getResult(),
-                                 stripTile.getResult());
-  }
+  rewriter.setInsertionPointAfter(loop);
+  for (size_t i = 0; i < strips.size(); ++i)
+    if (strips[i].staging.write)
+      cnm::LocalTransferOp::create(rewriter, loc, stripBuffers[i].getResult(),
+                                   stripTiles[i].getResult());
 
-  // Inside, the body works on this trip's slice of the strip.
+  // Inside, the body works on this trip's slice of each strip.
   rewriter.setInsertionPointToStart(loop.getBody());
   auto within = affine::AffineApplyOp::create(
       rewriter, loc,
@@ -246,28 +271,33 @@ LogicalResult coalesceRun(IRRewriter &rewriter, affine::AffineForOp loop,
                      rewriter.getAffineDimExpr(0) - lb -
                          rewriter.getAffineDimExpr(1) * k),
       ValueRange{loop.getInductionVar(), outer.getInductionVar()});
-  SmallVector<OpFoldResult> sliceOffsets(bufferType.getRank(),
-                                         rewriter.getIndexAttr(0));
-  SmallVector<OpFoldResult> sliceStrides(bufferType.getRank(),
-                                         rewriter.getIndexAttr(1));
-  SmallVector<OpFoldResult> sliceSizes;
-  for (int64_t extent : bufferType.getShape())
-    sliceSizes.push_back(rewriter.getIndexAttr(extent));
-  sliceOffsets[dim] = within.getResult();
-  // The result type is inferred rather than the buffer's: this trip's slice
-  // starts at a dynamic offset into the strip, which the layout has to say.
-  auto slice =
-      memref::SubViewOp::create(rewriter, loc, stripBuffer.getResult(),
-                                sliceOffsets, sliceSizes, sliceStrides);
+  for (size_t i = 0; i < strips.size(); ++i) {
+    Strip s = strips[i];
+    auto bufferType = cast<MemRefType>(s.staging.buffer.getType());
+    SmallVector<OpFoldResult> sliceOffsets(bufferType.getRank(),
+                                           rewriter.getIndexAttr(0));
+    SmallVector<OpFoldResult> sliceStrides(bufferType.getRank(),
+                                           rewriter.getIndexAttr(1));
+    SmallVector<OpFoldResult> sliceSizes;
+    for (int64_t extent : bufferType.getShape())
+      sliceSizes.push_back(rewriter.getIndexAttr(extent));
+    sliceOffsets[s.dim] = within.getResult();
+    // The result type is inferred rather than the buffer's: this trip's slice
+    // starts at a dynamic offset into the strip, which the layout has to say.
+    auto slice =
+        memref::SubViewOp::create(rewriter, loc, stripBuffers[i].getResult(),
+                                  sliceOffsets, sliceSizes, sliceStrides);
 
-  if (staging.read)
-    rewriter.eraseOp(staging.read);
-  if (staging.write)
-    rewriter.eraseOp(staging.write);
-  rewriter.replaceAllUsesWith(staging.buffer.getResult(), slice.getResult());
-  rewriter.eraseOp(staging.buffer);
-  if (staging.tile->use_empty())
-    rewriter.eraseOp(staging.tile);
+    if (s.staging.read)
+      rewriter.eraseOp(s.staging.read);
+    if (s.staging.write)
+      rewriter.eraseOp(s.staging.write);
+    rewriter.replaceAllUsesWith(s.staging.buffer.getResult(),
+                                slice.getResult());
+    rewriter.eraseOp(s.staging.buffer);
+    if (s.staging.tile->use_empty())
+      rewriter.eraseOp(s.staging.tile);
+  }
   return success();
 }
 
@@ -300,27 +330,42 @@ struct UpmemCoalesceLocalTransfersPass
     while (changed) {
       changed = false;
       launch.walk<WalkOrder::PreOrder>([&](affine::AffineForOp loop) {
-        for (Staging staging : collectStagings(loop)) {
+        SmallVector<Staging> stagings = collectStagings(loop);
+        for (Staging staging : stagings) {
           if (succeeded(hoistInvariant(rewriter, loop, staging))) {
             changed = true;
             return WalkResult::interrupt();
           }
-          if (!loop.hasConstantBounds() || loop.getStepAsInt() != 1)
-            continue;
+        }
+        if (!loop.hasConstantBounds() || loop.getStepAsInt() != 1)
+          return WalkResult::advance();
+
+        // Every fractional staging of this loop is widened in the same
+        // rewrite. The split replaces the loop by a strip loop and a walk with
+        // non-constant bounds, so a staging left behind would never come back
+        // round: `k` is the least strip length that reaches a granule for all
+        // of them at once.
+        SmallVector<Strip> strips;
+        int64_t k = 1;
+        for (Staging staging : stagings) {
           std::optional<unsigned> dim = stripDim(staging.tile, loop);
           if (!dim)
             continue;
           auto bufferType = cast<MemRefType>(staging.buffer.getType());
           if (!bufferType.hasStaticShape())
             continue;
-          int64_t k = coalescingFactor(bufferType.getNumElements(), granuleBits,
-                                       bufferType.getElementTypeBitWidth());
-          if (k <= 1)
+          int64_t factor =
+              coalescingFactor(bufferType.getNumElements(), granuleBits,
+                               bufferType.getElementTypeBitWidth());
+          if (factor <= 1)
             continue;
-          if (succeeded(coalesceRun(rewriter, loop, staging, *dim, k))) {
-            changed = true;
-            return WalkResult::interrupt();
-          }
+          strips.push_back({staging, *dim});
+          k = std::lcm(k, factor);
+        }
+        if (!strips.empty() &&
+            succeeded(coalesceRun(rewriter, loop, strips, k))) {
+          changed = true;
+          return WalkResult::interrupt();
         }
         return WalkResult::advance();
       });
