@@ -4,7 +4,7 @@
 // The pass measures the program rather than modelling the configuration it was
 // lowered from, so these cases are written as DPU programs with known
 // allocation sizes. Capacities come from the accelerator: a v1A DPU has 64 MiB
-// of MRAM, and 65536 - 8192 = 57344 bytes of WRAM once the runtime's share is
+// of MRAM, and 65536 - 1024 = 64512 bytes of WRAM once the runtime's share is
 // deducted.
 
 // CHECK-LABEL: func.func @fits
@@ -46,7 +46,7 @@ func.func @private_wram_is_per_tasklet() {
 }
 
 module @kernels {
-  // expected-error @below {{WRAM occupancy of 278528 bytes exceeds the 57344 bytes a DPU has (16 tasklets x 17408 bytes of stack, plus 0 bytes of static buffers)}}
+  // expected-error @below {{WRAM occupancy of 278528 bytes exceeds the 64512 bytes a DPU has (16 tasklets x 17408 bytes of stack, plus 0 bytes of static buffers)}}
   upmem.dpu_program @program() tasklets(16) {
     %wram = memref.alloca() : memref<4096xi32, #upmem.wram>
     upmem.return
@@ -69,9 +69,9 @@ func.func @static_wram_is_shared() {
 }
 
 module @kernels {
-  // expected-error @below {{WRAM occupancy of 59392 bytes exceeds the 57344 bytes a DPU has (2 tasklets x 1024 bytes of stack, plus 57344 bytes of static buffers)}}
+  // expected-error @below {{WRAM occupancy of 66560 bytes exceeds the 64512 bytes a DPU has (2 tasklets x 1024 bytes of stack, plus 64512 bytes of static buffers)}}
   upmem.dpu_program @program() tasklets(2) {
-    %wram = upmem.static_alloc @shared(wram) : memref<14336xi32, #upmem.wram>
+    %wram = upmem.static_alloc @shared(wram) : memref<16128xi32, #upmem.wram>
     upmem.return
   }
 }
