@@ -82,6 +82,12 @@ OPTS = dict(
     # with the shared sample.
     n_a2=300,
     a2_seed=1848,
+    infer_opts={
+        "bo-batch-size": 4,
+        "max-evals": 512,
+        "n-init": 64,
+        "acquisition": "thompson",
+    },
 )
 
 WORKLOADS = list(ALL_PRIMS)
@@ -854,9 +860,11 @@ def _run_search(bench: str, space: str) -> bool:
         source_mlir(bench),
         _search_dump_dir(bench, space),
         n_seeds=OPTS["n_seeds"],
+        workers=64,
         infer_opts={
             "simulator": OPTS["simulator"],
             "eval-timeout-ms": OPTS["eval_timeout_ms"],
+            **OPTS["infer_opts"],
             **ABLATE_INFER_OPTS.get(space, {}),
         },
     )
