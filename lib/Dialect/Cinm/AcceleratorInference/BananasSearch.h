@@ -4,6 +4,7 @@
 #include <cstddef>
 #include <filesystem>
 #include <memory>
+#include <mlir/IR/Diagnostics.h>
 #include <random>
 #include <unordered_map>
 #include <unordered_set>
@@ -33,8 +34,8 @@ struct BananasEnsemble; // defined in BananasSearch.cpp
 struct ValidationSet {
   const ConfigSpace *space_;
 
-  std::vector<size_t> indices; // pool indices of validation configs
-  arma::mat encoded;           // D × nVal encoded matrix, built incrementally
+  std::vector<size_t> indices;   // pool indices of validation configs
+  arma::mat encoded;             // D × nVal encoded matrix, built incrementally
   std::vector<double> trueCosts; // true cost for each validation config
 
   struct Snapshot {
@@ -162,21 +163,25 @@ struct CandidatePool {
   /// Filled by nextCandidateIndices when opts.dumpDir is set.
   SearchDiagnostics diag;
 
-  bool exhaustive;
+  const InferenceOptions &opts;
 
   /// `evalBudget` sizes Xo/yo (not N).
   CandidatePool(const ConfigSpace &space, size_t evalBudget,
-                bool exhaustive = false);
-  ~CandidatePool();
+                const InferenceOptions &opts);
 
+  ~CandidatePool();
   /// Number of configs in the pool.
   size_t size() const { return N; }
   /// Width of the surrogate's input vector (not the parameter count).
-  size_t numFeatures() const;
+  size_t numFeatures() const { return space_->numFeatures(); }
   bool empty() const { return N == 0; }
 
   /// Return the configuration at flat pool index i (allocated by value).
-  Configuration operator[](size_t i) const;
+  Configuration operator[](size_t i) const {
+    Configuration conf;
+    space_->at(i, conf);
+    return conf;
+  }
 
   void markVisited(size_t idx) { visited.insert(idx); }
   bool isVisited(size_t idx) const { return visited.count(idx); }
@@ -219,7 +224,7 @@ struct CandidatePool {
   /// is the observation count the snapshots are stamped with, so the validation
   /// series stays indexed by evaluations spent even when a round spends more
   /// than one.
-  size_t nextCandidateIndices(const InferenceOptions &opts, std::mt19937 &rng,
+  size_t nextCandidateIndices(std::mt19937 &rng,
                               std::function<bool(size_t)> accept,
                               ValidationSet &validSet,
                               ValidationSet &trainingSet, int round,

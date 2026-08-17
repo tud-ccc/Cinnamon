@@ -29,31 +29,22 @@ namespace mlir::cinm {
 // ===----------------------------------------------------------------------===//
 // CandidatePool construction
 // ===----------------------------------------------------------------------===//
-
 CandidatePool::CandidatePool(const ConfigSpace &space, size_t evalBudget,
-                             bool exhaustive)
+                             const InferenceOptions &opts)
     : space_(&space), N(space.totalSize()),
       // Exhaustive search never reads/writes Xo/yo (see recordObservation);
       // its evalBudget is the full totalSize(), which would otherwise try to
       // allocate a dense D×N matrix for a matrix that's never used.
-      Xo(space.numFeatures(), exhaustive ? 0 : evalBudget),
-      yo(1, exhaustive ? 0 : evalBudget), exhaustive(exhaustive) {}
+      Xo(space.numFeatures(), opts.exhaustiveSearch ? 0 : evalBudget),
+      yo(1, opts.exhaustiveSearch ? 0 : evalBudget), opts(opts) {}
 
 CandidatePool::~CandidatePool() = default;
-
-size_t CandidatePool::numFeatures() const { return space_->numFeatures(); }
-
-Configuration CandidatePool::operator[](size_t i) const {
-  Configuration conf;
-  space_->at(i, conf);
-  return conf;
-}
 
 void CandidatePool::recordObservation(size_t idx, double cost, size_t iter,
                                       std::chrono::milliseconds evalTime,
                                       uint64_t cpuTimeMs) {
   // assert(!std::isnan(cost));
-  if (!exhaustive) {
+  if (!opts.exhaustiveSearch) {
     if (nObs >= Xo.n_cols) {
       const size_t newCols = Xo.n_cols + 32;
       Xo.resize(Xo.n_rows, newCols);
@@ -722,8 +713,7 @@ void recordValidationData(ValidationSet &validSet, BananasEnsemble *ensemble_,
   }
 }
 
-size_t CandidatePool::nextCandidateIndices(const InferenceOptions &opts,
-                                           std::mt19937 &rng,
+size_t CandidatePool::nextCandidateIndices(std::mt19937 &rng,
                                            std::function<bool(size_t)> accept,
                                            ValidationSet &validSet,
                                            ValidationSet &trainingValidSet,
