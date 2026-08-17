@@ -307,9 +307,9 @@ struct InferenceOptions {
   /// since no model is trained).
   bool exhaustiveSearch = false;
 
-  /// When > 0, evaluate a random sample of this many configurations (drawn via
-  /// Latin Hypercube Sampling, see CandidatePool::sampleInitialSet) instead of
-  /// the whole space or running Bayesian optimisation. A cheap alternative to
+  /// When > 0, evaluate a random sample of this many configurations (drawn as
+  /// samplingMode says, see CandidatePool::sampleInitialSet) instead of the
+  /// whole space or running Bayesian optimisation. A cheap alternative to
   /// exhaustiveSearch when only a small ground-truth sample is needed --
   /// exhaustive search's cost is entirely its one simulator call per
   /// configuration, so sampling down to sampleN evaluations makes this
@@ -318,6 +318,26 @@ struct InferenceOptions {
   /// unvisited configs too). See also sampleMaxCostMs.
   unsigned sampleN = 0;
 
+  /// How the sampleN draw picks the configurations it evaluates.
+  enum class SamplingMode {
+    /// Latin Hypercube Sampling over the normalised parameter encoding, each
+    /// target snapped to its nearest unused config. Spreads the draw evenly
+    /// over the space, which is what makes it a good design to fit a model on
+    /// -- and exactly what makes it the wrong draw to compute a statistic
+    /// from: the picks are stratified, so they are not independent and no
+    /// config's inclusion probability is the plain 1/|space|.
+    LHS,
+    /// Independent uniform draws over the configs not yet picked. The only
+    /// mode under which the sample is an unbiased estimator of the space, so
+    /// the one to use when the sample feeds a percentile, a rank correlation
+    /// or a binomial confidence bound rather than a surrogate fit.
+    Uniform,
+  };
+  /// Only the sampleN draw reads this. BO's Phase-1 initial design and the
+  /// nValidation held-out set always use LHS: they want the space-filling
+  /// property, and nothing downstream of them is a population statistic.
+  SamplingMode samplingMode = SamplingMode::LHS;
+
   /// When sampleN > 0, a candidate predicted to cost more than this many ms
   /// is rejected (not counted towards sampleN, and never dumped) and
   /// resampled past -- without this, a uniform-random sample over the valid
@@ -325,6 +345,9 @@ struct InferenceOptions {
   /// on-hardware) cost is orders of magnitude above the rest of the sample,
   /// which is wasteful once every sampled config gets compiled and run on
   /// real hardware downstream.
+  ///
+  /// Note that this conditions the sample on the accepted region, so a draw
+  /// that has to stay a uniform sample of the whole space needs it at 0.
   double sampleMaxCostMs = 0;
 
   /// Number of held-out validation points sampled (via LHS) before BO begins.

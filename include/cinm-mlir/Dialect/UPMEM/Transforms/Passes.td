@@ -140,6 +140,14 @@ def packFragmentedClValues {
     )}];
 }
 
+def samplingModeClValues {
+  string values = [{
+  ::llvm::cl::values(
+    clEnumValN(::mlir::cinm::InferenceOptions::SamplingMode::LHS, "lhs", "Latin Hypercube Sampling: spreads the draw evenly over the space, but the picks are stratified rather than independent"),
+    clEnumValN(::mlir::cinm::InferenceOptions::SamplingMode::Uniform, "uniform", "Independent uniform draws without replacement: the only mode whose sample is an unbiased picture of the space")
+    )}];
+}
+
 def acquisitionClValues {
   string values = [{
   ::llvm::cl::values(
@@ -228,10 +236,21 @@ def UpmemInferAcceleratorPass : Pass<"upmem-infer-accelerator", "ModuleOp"> {
            "cheap alternative to exhaustive-search when only a small "
            "ground-truth sample is needed. Takes priority over "
            "exhaustive-search if both are set">,
+    Option<"samplingMode", "sampling-mode",
+           "::mlir::cinm::InferenceOptions::SamplingMode",
+           "::mlir::cinm::InferenceOptions::SamplingMode::LHS",
+           "How the sample-n draw picks configurations. Use uniform when the "
+           "sample feeds a statistic about the space -- a percentile, a rank "
+           "correlation, a confidence bound -- since lhs stratifies the picks "
+           "and voids that arithmetic. Read only by sample-n: BO's initial "
+           "design and the validation set always use lhs",
+           samplingModeClValues.values>,
     Option<"sampleMaxCostMs", "sample-max-cost-ms", "double", "2000.0",
            "When sample-n > 0, reject (and resample past) candidates predicted "
            "to cost more than this many ms, so the sample isn't dominated by "
-           "configs that would take minutes on real hardware">,
+           "configs that would take minutes on real hardware. Conditions the "
+           "sample on the accepted region, so set it to 0 with "
+           "sampling-mode=uniform if the draw has to stay unbiased">,
     Option<"nValidation", "n-validation", "int", "0",
            "Number of held-out validation points sampled before BO begins; "
            "0 disables surrogate validation">,

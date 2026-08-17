@@ -1,6 +1,6 @@
 # TIR those decisions produced, for ('gemv', 8192, 1, 8192) (reproduced).
-# from tvm.script import ir as I
-# from tvm.script import tir as T
+from tvm.script import ir as I
+from tvm.script import tir as T
 
 @I.ir_module
 class Module:
