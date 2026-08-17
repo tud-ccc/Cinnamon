@@ -218,7 +218,21 @@ bool packIntoOneBlockPerLeaf(Op op, OpBuilder &b, bool isStatic) {
   SmallVector<AffineExpr> toOld;
   for (auto [old, extent, basis] : llvm::enumerate(indexSpace, bases)) {
     AffineExpr oldDim = getAffineDimExpr(old, ctx);
-    if (unused[old]) {
+    // ...unless it is a *buffer* dimension of one element, which is kept.
+    // Dropping it would save nothing -- one value names one copy either way --
+    // and the shortfall in rank is expensive: the block-widening analysis
+    // (cnm::deflateScatterMap) walks the buffer's dimensions against the
+    // host's from the right, and a buffer dimension with no host counterpart
+    // puts the two out of step on its first comparison, so it stops before
+    // widening anything and every element becomes its own DMA. Leaf tiles
+    // that divide their level exactly leave such dimensions behind, so this
+    // is an ordinary shape and not a corner case.
+    //
+    // The workgroup's own dimensions are not part of that walk and keep being
+    // dropped, which is what the paragraph above is about.
+    const bool isBufferDim =
+        old >= indexSpace.size() - bufferTy.getShape().size();
+    if (unused[old] && !(isBufferDim && extent == 1)) {
       // Substituting anything is safe: `map` does not mention this dimension.
       toNew.push_back(getAffineConstantExpr(0, ctx));
       continue;
