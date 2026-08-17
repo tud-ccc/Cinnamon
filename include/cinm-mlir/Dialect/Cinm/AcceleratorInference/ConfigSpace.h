@@ -160,6 +160,28 @@ struct ValueList {
   std::vector<ParmValue> values;
 };
 
+/// How a parameter's values are spaced, and therefore what "the distance
+/// between two of them" means -- both to the surrogate and to a step towards a
+/// neighbour.
+///
+/// This is a property of what the quantity *is*, not of how its domain came to
+/// be written down. Tile sizes 2 and 4 stand in the same relation as 512 and
+/// 1024 whether that domain was spelled as an explicit list of divisors or as
+/// a range carrying a divides constraint, so a parameter declared either way
+/// has to be spaced the same. Reading it off the storage instead would make
+/// two levels of the same tiling disagree because one bound happened to be a
+/// constant and the other a variable.
+enum class Spacing {
+  /// Differences are what matters. Indices, level numbers, anything counted by
+  /// adding.
+  Linear,
+  /// Ratios are what matters: 2:4 is the step 512:1024 is. Tile sizes,
+  /// capacities, worker counts -- anything reached by multiplying or dividing.
+  /// Encoded as log2 before the domain scaling, and stepped by doubling and
+  /// halving rather than by one.
+  Multiplicative,
+};
+
 /// What a parameter's values *mean*, as opposed to how its domain is stored.
 ///
 /// Every parameter is stored as positive integers either way; the kind says
@@ -278,6 +300,13 @@ struct SearchParam {
   /// For ParmKind::Permutation: how many items are permuted. What the domain
   /// holds is the model's business and not something to recover n from.
   unsigned permutationSize = 0;
+  /// How this parameter's values are spaced. Held separately from `domain`
+  /// precisely so that rewriting the domain cannot change it -- keepDivisorsOf
+  /// turns an IntRange into a ValueList, and a spacing inferred from the
+  /// storage would silently flip when an unrelated filter was added. Set by
+  /// the factory that declares the parameter; overridable via
+  /// SpaceBuilder::spacing.
+  Spacing spacing = Spacing::Linear;
   /// Free-text description, dumped into space.json. Purely documentary: it
   /// exists so a human transcribing an external schedule into this space can
   /// map `gemv.M.mram` to "MRAM tile of gemv's M dimension" without reading
@@ -387,7 +416,16 @@ struct SearchParam {
   /// domain has no sub-index, so subIndexOf() cannot report this itself.
   bool contains(ParmValue value) const;
 
+  /// The sub-index whose value sits closest to `target` in the ratio sense --
+  /// off by a factor, not off by a count. Unlike subIndexOf this accepts a
+  /// value the domain does not hold, which is the point: it is how a
+  /// multiplicative step lands on a domain that has no entry at exactly twice
+  /// the current value. Always a valid sub-index for a non-empty domain.
+  size_t nearestSubIndex(double target) const;
+
   /// Retain only values that evenly divide n; converts a range to a ValueList.
+  /// Leaves `spacing` alone: how the values are spaced is a statement about
+  /// the quantity, and filtering some of them out does not revise it.
   SearchParam &keepDivisorsOf(ParmValue n);
 };
 
@@ -461,10 +499,16 @@ template <> struct ParmKind<Permutation> {
 
 /// Factory functions — build a SearchParam without adding it to a space yet.
 /// Use ConfigSpace::addParam to register the result.
+///
+/// `spacing` is the declarer's, since it is a statement about the quantity and
+/// not about the domain: makeRange defaults to Linear and makePow2Range to
+/// Multiplicative because that is what each is normally used for, but a range
+/// of tile sizes is Multiplicative and says so.
 SearchParam makeRange(StringRef name, ParmValue lo, ParmValue hi,
-                      ParmValue step = 1);
+                      ParmValue step = 1, Spacing spacing = Spacing::Linear);
 SearchParam makePow2Range(StringRef name, ParmValue loExp, ParmValue hiExp);
-SearchParam makeValues(StringRef name, std::vector<ParmValue> values);
+SearchParam makeValues(StringRef name, std::vector<ParmValue> values,
+                       Spacing spacing = Spacing::Linear);
 /// A parameter ranging over the orderings of `[0, n)`, occupying n dimensions
 /// of `[1, n]` -- see ParmKind<Permutation>. On its own this describes n
 /// independent numbers; what makes it an ordering is the distinctness the

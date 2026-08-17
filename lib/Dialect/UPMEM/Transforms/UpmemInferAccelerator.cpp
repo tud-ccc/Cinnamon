@@ -731,6 +731,13 @@ struct UpmemInferencePlugin : cinm::InferencePlugin {
             : b.intRange("tasklets", 1, maxTasklets);
     b.describe("tasklets", "tasklets per DPU (ATiM: threadIdx extent)");
 
+    // Both are worker counts, and the work per worker is the extent divided by
+    // them: doubling either halves it, whether that doubling is 1 to 2 or 1024
+    // to 2048. So they are ratios and not counts, however the range they are
+    // declared over reads.
+    b.spacing("dpus", cinm::Spacing::Multiplicative);
+    b.spacing("tasklets", cinm::Spacing::Multiplicative);
+
     // handleLinalgOp declares a tiling factor per iteration dimension per
     // level the platform reports, but only two of them have a consumer: the
     // outermost feeds `cnm.tile_sizes` and the innermost

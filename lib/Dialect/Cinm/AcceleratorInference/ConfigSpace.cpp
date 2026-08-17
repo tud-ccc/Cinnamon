@@ -62,14 +62,16 @@ size_t SearchParam::cardinality() const {
 void ParmKind<ParmValue>::appendFeatures(const SearchParam &param,
                                          llvm::ArrayRef<ParmValue> values,
                                          llvm::SmallVectorImpl<double> &out) {
-  // A value list is the divisors of an extent or a power-of-two range, so its
-  // values span orders of magnitude and are spaced multiplicatively; a
-  // contiguous range is not, and is scaled as it stands.
+  // A multiplicative quantity is taken into log space *before* the domain
+  // scaling, so that equal ratios come out equally far apart: 2 and 4 land as
+  // far apart as 512 and 1024. Both branches end in the same [0, 1], so the
+  // choice changes how a parameter's values are distributed within its
+  // feature, never how large that feature is next to another's.
   const size_t card = param.cardinality();
   const double lo = param.valueAt(0);
   const double hi = param.valueAt(card ? card - 1 : 0);
   double v = values[0], from = lo, to = hi;
-  if (std::holds_alternative<ValueList>(param.domain)) {
+  if (param.spacing == Spacing::Multiplicative) {
     v = std::log2(v);
     from = std::log2(lo);
     to = std::log2(hi);
@@ -80,11 +82,32 @@ void ParmKind<ParmValue>::appendFeatures(const SearchParam &param,
 void ParmKind<ParmValue>::appendNeighbours(
     const SearchParam &param, llvm::ArrayRef<ParmValue> values,
     llvm::SmallVectorImpl<llvm::SmallVector<ParmValue, 4>> &out) {
+  const size_t card = param.cardinality();
   const size_t sub = param.subIndexOf(values[0]);
+  llvm::SmallVector<size_t, 4> steps;
   if (sub > 0)
-    out.push_back({param.valueAt(sub - 1)});
-  if (sub + 1 < param.cardinality())
-    out.push_back({param.valueAt(sub + 1)});
+    steps.push_back(sub - 1);
+  if (sub + 1 < card)
+    steps.push_back(sub + 1);
+
+  // A multiplicative quantity also steps by doubling and halving. The adjacent
+  // values stay rather than being replaced: they are what keeps the
+  // neighbourhood connected across a domain that is not a chain of ratios --
+  // the divisors of 12 are not, and 4 would have no way to reach 6 -- and a
+  // step that leaves the feasible set costs nothing, since the caller drops
+  // it. What the ratio steps add is reach along a domain stored as a plain
+  // range under a divides constraint, where v±1 is almost never a divisor and
+  // v*2 usually is.
+  if (param.spacing == Spacing::Multiplicative && values[0] > 0) {
+    for (double target : {values[0] * 2.0, values[0] / 2.0}) {
+      size_t near = param.nearestSubIndex(target);
+      if (near != sub && !llvm::is_contained(steps, near))
+        steps.push_back(near);
+    }
+  }
+
+  for (size_t s : steps)
+    out.push_back({param.valueAt(s)});
 }
 
 // ===----------------------------------------------------------------------===//
@@ -181,13 +204,53 @@ size_t SearchParam::subIndexOf(ParmValue value) const {
       domain);
 }
 
+size_t SearchParam::nearestSubIndex(double target) const {
+  const size_t card = cardinality();
+  assert(card > 0 && "an empty domain has no nearest value");
+  // Ratio distance, since the only caller is a multiplicative step: between 6
+  // and 12, a target of 8 is nearer 6, and counting would have to be told so.
+  // Domains are positive by construction (SpaceBuilder.h §2), so the log is
+  // defined everywhere except a target of zero, which halving cannot reach.
+  const double want = std::log2(std::max(target, 1e-9));
+  auto dist = [&](size_t i) {
+    return std::abs(std::log2(static_cast<double>(valueAt(i))) - want);
+  };
+  auto better = [&](size_t cand, size_t best) {
+    return dist(cand) < dist(best) ? cand : best;
+  };
+
+  if (auto *range = std::get_if<IntRange>(&domain)) {
+    // The values ascend, so the nearest is one of the two that bracket the
+    // target. Landing on the bracket by arithmetic keeps this O(1): a domain
+    // stored as a range is exactly the one large enough for a scan to show up
+    // in the neighbourhood BFS.
+    double pos = (target - static_cast<double>(range->lo)) /
+                 static_cast<double>(range->step);
+    auto lower = static_cast<int64_t>(std::floor(pos));
+    size_t best = static_cast<size_t>(std::clamp<int64_t>(lower, 0, card - 1));
+    if (lower + 1 >= 0 && static_cast<size_t>(lower + 1) < card)
+      best = better(static_cast<size_t>(lower + 1), best);
+    return best;
+  }
+
+  // A value list carries no ordering guarantee, and the lists that reach here
+  // -- a divisor set, the powers of two -- are small enough that it does not
+  // matter.
+  size_t best = 0;
+  for (size_t i = 1; i < card; ++i)
+    best = better(i, best);
+  return best;
+}
+
 // ===----------------------------------------------------------------------===//
 // SearchParam factories
 // ===----------------------------------------------------------------------===//
 
 SearchParam makeRange(llvm::StringRef name, ParmValue lo, ParmValue hi,
-                      ParmValue step) {
-  return SearchParam(name, IntRange{lo, hi, step}, ParmVTable::of<ParmValue>());
+                      ParmValue step, Spacing spacing) {
+  SearchParam param(name, IntRange{lo, hi, step}, ParmVTable::of<ParmValue>());
+  param.spacing = spacing;
+  return param;
 }
 
 SearchParam makePow2Range(llvm::StringRef name, ParmValue loExp,
@@ -195,13 +258,20 @@ SearchParam makePow2Range(llvm::StringRef name, ParmValue loExp,
   std::vector<ParmValue> vals;
   for (int64_t e = loExp; e <= hiExp; ++e)
     vals.push_back(ParmValue(1) << e);
-  return SearchParam(name, ValueList{std::move(vals)},
-                     ParmVTable::of<ParmValue>());
+  SearchParam param(name, ValueList{std::move(vals)},
+                    ParmVTable::of<ParmValue>());
+  // Not overridable: a domain that *is* the powers of two is multiplicative by
+  // construction, whatever it is used for.
+  param.spacing = Spacing::Multiplicative;
+  return param;
 }
 
-SearchParam makeValues(llvm::StringRef name, std::vector<ParmValue> values) {
-  return SearchParam(name, ValueList{std::move(values)},
-                     ParmVTable::of<ParmValue>());
+SearchParam makeValues(llvm::StringRef name, std::vector<ParmValue> values,
+                       Spacing spacing) {
+  SearchParam param(name, ValueList{std::move(values)},
+                    ParmVTable::of<ParmValue>());
+  param.spacing = spacing;
+  return param;
 }
 
 SearchParam makePermutation(llvm::StringRef name, unsigned n) {
