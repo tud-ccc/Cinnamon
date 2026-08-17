@@ -16,8 +16,8 @@ func.func @coalesces_a_fractional_tile(%wg: !cnm.workgroup<#upmem.array<2048x8, 
     // The offset reads as `strip * 2`, so it is a whole number of granules in
     // the expression itself -- the emitter's alignment check is syntactic.
     // CHECK:      affine.for %[[STRIP:.*]] = 0 to 4 {
-    // CHECK-NEXT:   %[[BIG:.*]] = memref.alloca() : memref<2x1x1xi32, #upmem.wram>
     // CHECK-NEXT:   %[[START:.*]] = affine.apply #{{.*}}(%[[STRIP]])
+    // CHECK-NEXT:   %[[BIG:.*]] = memref.alloca() : memref<2x1x1xi32, #upmem.wram>
     // CHECK-NEXT:   %[[TILE:.*]] = memref.subview %{{.*}}[%[[START]], 0, 0] [2, 1, 1]
     // CHECK-NEXT:   cnm.local_transfer %[[TILE]] into %[[BIG]]
     // CHECK-NEXT:   affine.for %[[I:.*]] = #{{.*}}(%[[STRIP]]) to #{{.*}}(%[[STRIP]]) {
@@ -35,6 +35,52 @@ func.func @coalesces_a_fractional_tile(%wg: !cnm.workgroup<#upmem.array<2048x8, 
       %doubled = arith.addi %v, %v : i32
       memref.store %doubled, %staged[%c0, %c0, %c0] : memref<1x1x1xi32, #upmem.wram>
       cnm.local_transfer %staged into %tile : memref<1x1x1xi32, #upmem.wram> to memref<1x1x1xi32, strided<[1, 1, 1], offset: ?>, #upmem.mram>
+    }
+  }
+  return
+}
+
+// -----
+
+// Every fractional staging of a loop is widened by the same split. Splitting
+// for one of them and leaving the other behind would strand it: the walk the
+// split leaves has non-constant bounds, so a later sweep can no longer widen
+// it, and its transfers would stay mid-granule.
+
+#upmem = #upmem.platform<type = v1A, dpus = 2048, tasklets = 24>
+
+// CHECK-LABEL: @coalesces_every_staging_of_a_loop
+func.func @coalesces_every_staging_of_a_loop(%wg: !cnm.workgroup<#upmem.array<2048x8, <type = v1A, dpus = 2048, tasklets = 24>>>,
+                                             %in: !cnm.buffer<8x1x1xi32 on #upmem.array<2048x8, <type = v1A, dpus = 2048, tasklets = 24>>, #upmem.mram>,
+                                             %out: !cnm.buffer<8x1x1xi32 on #upmem.array<2048x8, <type = v1A, dpus = 2048, tasklets = 24>>, #upmem.mram>) {
+  cnm.launch %wg ins(%argIn = %in : <8x1x1xi32, #upmem.mram>) outs(%argOut = %out : <8x1x1xi32, #upmem.mram>) on !cnm.workgroup<#upmem.array<2048x8, <type = v1A, dpus = 2048, tasklets = 24>>> {
+    // Both strips start at the same `strip * 2`, and both buffers hold two
+    // tiles.
+    // CHECK:      affine.for %[[STRIP:.*]] = 0 to 4 {
+    // CHECK-NEXT:   %[[START:.*]] = affine.apply #{{.*}}(%[[STRIP]])
+    // CHECK-NEXT:   memref.alloca() : memref<2x1x1xi32, #upmem.wram>
+    // CHECK-NEXT:   memref.subview %{{.*}}[%[[START]], 0, 0] [2, 1, 1]
+    // CHECK-NEXT:   cnm.local_transfer
+    // CHECK-NEXT:   %[[BIGOUT:.*]] = memref.alloca() : memref<2x1x1xi32, #upmem.wram>
+    // CHECK-NEXT:   %[[TILEOUT:.*]] = memref.subview %{{.*}}[%[[START]], 0, 0] [2, 1, 1]
+    // CHECK-NEXT:   cnm.local_transfer
+    // CHECK-NEXT:   affine.for
+    // CHECK-NOT:      cnm.local_transfer
+    // CHECK:        }
+    // CHECK-NEXT:   cnm.local_transfer %[[BIGOUT]] into %[[TILEOUT]]
+    affine.for %i = 0 to 8 {
+      %inTile = memref.subview %argIn[%i, 0, 0] [1, 1, 1] [1, 1, 1] : memref<8x1x1xi32, #upmem.mram> to memref<1x1x1xi32, strided<[1, 1, 1], offset: ?>, #upmem.mram>
+      %stagedIn = memref.alloca() : memref<1x1x1xi32, #upmem.wram>
+      cnm.local_transfer %inTile into %stagedIn : memref<1x1x1xi32, strided<[1, 1, 1], offset: ?>, #upmem.mram> to memref<1x1x1xi32, #upmem.wram>
+      %outTile = memref.subview %argOut[%i, 0, 0] [1, 1, 1] [1, 1, 1] : memref<8x1x1xi32, #upmem.mram> to memref<1x1x1xi32, strided<[1, 1, 1], offset: ?>, #upmem.mram>
+      %stagedOut = memref.alloca() : memref<1x1x1xi32, #upmem.wram>
+      cnm.local_transfer %outTile into %stagedOut : memref<1x1x1xi32, strided<[1, 1, 1], offset: ?>, #upmem.mram> to memref<1x1x1xi32, #upmem.wram>
+      %c0 = arith.constant 0 : index
+      %v = memref.load %stagedIn[%c0, %c0, %c0] : memref<1x1x1xi32, #upmem.wram>
+      %acc = memref.load %stagedOut[%c0, %c0, %c0] : memref<1x1x1xi32, #upmem.wram>
+      %sum = arith.addi %v, %acc : i32
+      memref.store %sum, %stagedOut[%c0, %c0, %c0] : memref<1x1x1xi32, #upmem.wram>
+      cnm.local_transfer %stagedOut into %outTile : memref<1x1x1xi32, #upmem.wram> to memref<1x1x1xi32, strided<[1, 1, 1], offset: ?>, #upmem.mram>
     }
   }
   return

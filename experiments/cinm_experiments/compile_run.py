@@ -158,6 +158,7 @@ def compute_cost(config: Config, *, compile_root: pathlib.Path) -> CompiledConfi
     )
     lowered, r = _lower_config(config, config_dir)
     if r.returncode != 0:
+        (config_dir / "compile_error.txt").write_text("cinm-opt error, see log")
         return CompiledConfig(
             config, config_dir, False, f"cinm-opt failed, see {config_dir}/cinm-opt.log"
         )
@@ -165,7 +166,7 @@ def compute_cost(config: Config, *, compile_root: pathlib.Path) -> CompiledConfi
     ir_dir = config_dir / "ir"
     r = _run_make(config, config_dir, ir_dir, lowered, target="costs-only")
     if r.returncode != 0:
-        (config_dir / "make_stderr.txt").write_text(r.stderr)
+        (config_dir / "compile_error.txt").write_text(r.stderr)
         return CompiledConfig(
             config, config_dir, False, f"make failed:\n{r.stderr[-10000:]}"
         )
@@ -201,7 +202,7 @@ def run_config(
         err = traceback.format_exc()
 
     if err:
-        (output_dir.parent / "error.txt").write_text(err)
+        (output_dir.parent / "run_error.txt").write_text(err)
         return RunResult(compiled, False, output_dir, err[-1000:])
 
     return RunResult(compiled, True, output_dir)

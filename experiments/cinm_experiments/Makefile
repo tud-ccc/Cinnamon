@@ -95,10 +95,7 @@ $(IR_DIR)/%.llvm.mlir: $(IR_DIR)/%.final.mlir
 $(IR_DIR)/%.ll: $(IR_DIR)/%.llvm.mlir
 	$(CINM_TRANS) --allow-unregistered-dialect --mlir-to-llvmir $< -o $@
 
-$(IR_DIR)/%.opt.ll: $(IR_DIR)/%.ll
-	$(CLANG_BASE)/opt -O3 -S $< -o $@
-
-$(IR_DIR)/%.o: $(IR_DIR)/%.opt.ll
+$(IR_DIR)/%.o: $(IR_DIR)/%.ll
 	$(CLANG_BASE)/llc -O3 -filetype=obj -relocation-model=pic $< -o $@
 
 # ─── DPU kernel compilation ──────────────────────────────────────────────────

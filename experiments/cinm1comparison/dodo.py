@@ -305,9 +305,9 @@ class _Cinm2SearchGroup:
     system must be "cinm2" + <the basename suffix task_cinm2_search should
     append to "cinm2_search"/"compile_cinm2"/"bench_cinm2">, e.g. "cinm2" (no
     suffix) or "cinm2_unconstrained" ("_unconstrained" suffix) -- not an
-    independently-chosen tag -- because _bench_task_name reconstructs a
-    config's bench basename as f"bench_{system}" purely from its
-    system string (config_ids doesn't carry the suffix separately)."""
+    independently-chosen tag -- because task_cinm2_search derives that suffix
+    back out of the system string (system.removeprefix("cinm2")), which is
+    also how config_ids identifies the config's run directory."""
 
     system: str  # "cinm2" | "cinm2_unconstrained"
     task_label: str  # e.g. "D8_T4" | "unconstrained"
@@ -353,31 +353,13 @@ def _cinm2_search_groups(prim: str, fn_name: str):
 def _config_ids():
     """Yield (prim, system, fn_name, label, dpus, tasklets, pair_idx) for
     every config that will exist once task_pairs has written pairs.csv, for
-    every prim in PRIMS -- one flat sequence spanning ALL prims, in PRIMS
-    order (flip PRIMS to reverse it), not one sequence per prim. Unlike a
-    compile_run.Config's params/lower, these identities are fully known as
-    soon as the working groups are -- compile/run directories are keyed off (system,
-    fn_name, label) alone, and CINM 2.0's dpus/tasklets are pinned to the
-    pair's before its search even starts -- so this is the single place
-    task_compile_cinm1 and task_cinm2_search each derive the same set of
-    configs (and their bench_cinm1/bench_cinm2 tasks) from, instead of
-    re-deriving it (or, for CINM 2.0, waiting on search/compile results)
-    independently.
-
-    Spanning every prim in one sequence (rather than scoping this per prim,
-    as it used to) matters for the bench chain (_bench_chain): each prim's benches
-    must run strictly one at a time (real hardware, wall-clock timing), but
-    with two independent per-prim chains -- each starting its own unchained
-    i==0 -- nothing stopped doit's dispatcher from interleaving them (both
-    chains' heads become ready around the same time, and each completion
-    re-races its chain's next link against whatever the other chain already
-    had waiting), which is exactly what happened before this was one
-    sequence. The unconstrained (dpus/tasklets free) cinm2_unconstrained
-    configs are appended after every matched-config cinm1/cinm2 entry for
-    that same prim -- keeping them all in this one flat sequence chains the
-    unconstrained sweep's hardware benches onto the tail of the matched
-    sweep's for that prim, so all three systems' real-hardware runs still
-    execute strictly one at a time, in prim order."""
+    every prim in PRIMS. Unlike a compile_run.Config's params/lower, these
+    identities are fully known as soon as the working groups are --
+    compile/run directories are keyed off (system, fn_name, label) alone,
+    and CINM 2.0's dpus/tasklets are pinned to the pair's before its search
+    even starts -- so this is the single place task_compile_cinm1 derives
+    the set of CINM 1.0 configs (and their bench_cinm1 tasks) from, without
+    waiting on search or compile results."""
     for prim in PRIMS:
         for fn_name in list_functions(PATHS.source_mlir(prim)):
             pairs_csv = PATHS.pairs_csv(prim, fn_name)
@@ -403,29 +385,6 @@ def _config_ids():
         for fn_name in list_functions(PATHS.source_mlir(prim)):
             for seed in gen_seeds(0):
                 yield prim, "cinm2_unconstrained", fn_name, str(seed), None, None, None
-
-
-def _bench_task_name(prim: str, system: str, fn_name: str, label: str) -> str:
-    """The fully qualified bench task name of one config -- the system is
-    the basename suffix (see _Cinm2SearchGroup on why system and basename
-    must agree)."""
-    return f"bench_{system}:{prim}:{fn_name}:{label}"
-
-
-def _bench_chain(config_ids: list[tuple]) -> doit_blocks.BenchChain:
-    """The single strict hardware-bench sequence, spanning every prim and
-    system, in _config_ids order -- the predecessor of a task can belong to
-    a different prim (the last entry of one prim's sequence chains to the
-    first of the next). Both task creators build it from the same
-    config_ids, so they agree on the order without sharing state; see
-    doit_blocks.BenchChain for why chaining must be by task_dep and what
-    interleaving it prevents."""
-    chain = doit_blocks.BenchChain()
-    chain.register_all(
-        _bench_task_name(prim, system, fn_name, label)
-        for prim, system, fn_name, label, *_rest in config_ids
-    )
-    return chain
 
 
 @create_after(
@@ -454,8 +413,6 @@ def task_cinm2_search():
             f"n_seeds {OPTS['n_seeds']} too large for offset stride {_OFFSET_STRIDE}"
         )
 
-    config_ids = list(_config_ids())
-    chain = _bench_chain(config_ids)
     for prim in PRIMS:
         op = prim.removeprefix("prim_")
         roots = PATHS.roots(prim)
@@ -546,9 +503,8 @@ def task_cinm2_search():
                         # happens, and the stale measurement would be one of
                         # another group entirely.
                         "file_dep": [str(marker), str(pool_csv)],
-                        "task_dep": chain.prev_of(
-                            _bench_task_name(prim, group.system, fn_name, seed)
-                        ),
+                        # Real hardware: never beside anything else.
+                        "exclusive": True,
                         "targets": [str(bench_marker)],
                         "actions": [
                             (
@@ -577,9 +533,7 @@ def task_compile_cinm1():
     bench_cinm1 task (basename "bench_cinm1", see doit_blocks.bench_one_config)
     right here, so the set of CINM 1.0 configs is derived exactly once instead
     of separately for compile and bench."""
-    config_ids = list(_config_ids())
-    chain = _bench_chain(config_ids)
-    for prim, system, fn_name, label, dpus, tasklets, _ in config_ids:
+    for prim, system, fn_name, label, dpus, tasklets, _ in _config_ids():
         if system != "cinm1":
             continue
         op = prim.removeprefix("prim_")
@@ -612,7 +566,8 @@ def task_compile_cinm1():
             "basename": "bench_cinm1",
             "name": f"{prim}:{fn_name}:{label}",
             "file_dep": [str(marker)],
-            "task_dep": chain.prev_of(_bench_task_name(prim, system, fn_name, label)),
+            # Real hardware: never beside anything else.
+            "exclusive": True,
             "targets": [str(bench_marker)],
             "actions": [
                 (

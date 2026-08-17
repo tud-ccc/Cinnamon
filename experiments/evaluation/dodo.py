@@ -6,9 +6,9 @@ searches (default + ablated spaces), the transcribed points with their
 invariant cross-check, the A2 probe stack, and the assemble/plot layer
 that folds whatever exists into results/ and figures. Structure and
 conventions follow cinm1comparison/dodo.py: stages connected by files,
-fallible-per-config compiles, ONE strict hardware-bench order (per-stack
-chains, stacks serialized sample -> topk -> search -> ablated -> points),
-retry tasks. The shared machinery lives in cinm_experiments.doit_blocks.
+fallible-per-config compiles, exclusive hardware benches (one at a time,
+stacks serialized sample -> topk -> search -> ablated -> points), retry
+tasks. The shared machinery lives in cinm_experiments.doit_blocks.
 
 Still to come: the cinm1 (D,T) sweep with coverage accounting, and the
 RQ4 multi-op workloads/arms.
@@ -284,13 +284,13 @@ def _measure_stack(
     benchmark, a function and a candidate label -- and a stack with one
     source must not have it, or its task names change under it.
 
-    Compiles are parallel and fallible per config. Benches form ONE strict
-    chain within the stack, and the stack itself is serialized behind
-    prev_stack's whole bench group, so hardware only ever runs one config
-    at a time in a fixed global order: sample -> topk -> search -> ablated
-    searches -> points. A `_barrier` no-op closes every bench group even
-    when the stack has no configs yet (its inputs haven't been produced),
-    so the next stack's group dependency always resolves.
+    Compiles are parallel and fallible per config. Benches are `exclusive`,
+    so hardware only ever runs one config at a time (in no particular order
+    within the stack), and the stack as a whole is serialized behind
+    prev_stack's whole bench group, keeping the stack order sample -> topk
+    -> search -> ablated searches -> points. A `_barrier` no-op closes every
+    bench group even when the stack has no configs yet (its inputs haven't
+    been produced), so the next stack's group dependency always resolves.
     """
 
     def task_name(bench, config) -> str:
@@ -298,10 +298,6 @@ def _measure_stack(
         if qualify_by_system:
             parts.insert(1, config.system)
         return ":".join(parts)
-
-    chain = doit_blocks.BenchChain()
-    for bench, config, _, _ in entries:
-        chain.register(f"bench_{stack}:{task_name(bench, config)}")
 
     prev_group = [f"bench_{prev_stack}"] if prev_stack else []
     for bench, config, deps, roots in entries:
@@ -315,14 +311,15 @@ def _measure_stack(
             "actions": [(doit_blocks.compile_one, [config, roots, marker])],
         }
         bench_marker = roots.bench_marker_of(config)
-        prev = chain.prev_of(f"bench_{stack}:{name}")
         yield {
             "basename": f"bench_{stack}",
             "name": name,
             # The stack inputs too: a redrawn pool / rewritten point must
             # invalidate the measurements, not silently re-attribute them.
             "file_dep": [str(marker)] + [str(d) for d in deps],
-            "task_dep": prev if prev else prev_group,
+            "task_dep": prev_group,
+            # Real hardware: never beside anything else.
+            "exclusive": True,
             "targets": [str(bench_marker)],
             "actions": [
                 (
@@ -336,8 +333,14 @@ def _measure_stack(
         "basename": f"bench_{stack}",
         "name": "_barrier",
         "actions": [],
+        # Every entry, not just the last: the benches of a stack are
+        # unordered between themselves, so nothing else makes the last one
+        # imply the rest.
         "task_dep": (
-            [f"bench_{stack}:{task_name(e[0], e[1])}" for e in entries[-1:]]
+            [
+                f"bench_{stack}:{task_name(bench, config)}"
+                for bench, config, _, _ in entries
+            ]
             or prev_group
         ),
         "uptodate": [True],

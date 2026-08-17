@@ -9,8 +9,6 @@ holds the pieces that are the same whatever the experiment measures:
   (system, fn_name, label) config identity (compile_run.Config).
 - compile_one / compile_best: fallible-per-config compile actions.
 - bench_one_config: the always-touch-the-marker hardware bench action.
-- BenchChain: chains bench tasks into ONE strict sequence, across task
-  creators, so concurrent hardware runs never skew wall-clock timing.
 - clear_failed_compiles / clear_failed_bench: the retry-task actions.
 
 The dodo keeps what is experiment-specific: which configs exist, in which
@@ -132,6 +130,14 @@ def compile_best(
 
 
 # ── bench action (sequential hardware runs) ─────────────────────────────────
+#
+# A bench task must never share the machine: it times real hardware, so
+# anything running beside it (another bench, or a compile) skews the
+# wall-clock measurement. Give every task calling bench_one_config
+# `"exclusive": True` -- doit's parallel runners then hold it until whatever
+# is running has finished, and start nothing else while it runs. It is a
+# scheduling property only, so it orders nothing and changes nothing about
+# what is up to date; benches may run in any order.
 
 
 def bench_one_config(
@@ -170,50 +176,6 @@ def bench_one_config(
     return True
 
 
-# ── the global bench chain ───────────────────────────────────────────────────
-
-
-class BenchChain:
-    """Chains bench tasks -- which, unlike compile, must run strictly one at
-    a time so concurrent hardware runs don't skew wall-clock timing -- into
-    ONE sequence spanning every group of tasks, even when they are generated
-    by different task creator functions (doit doesn't allow two creators to
-    share a basename, so there is no single 'bench' task group to chain
-    within).
-
-    Usage: build the chain ONCE, in the full desired bench order, from every
-    bench task's fully qualified name ("basename:name"); then each task's
-    task_dep is prev_of(its own name). The order of registration is the
-    order of execution.
-
-    Must be task_dep, not file_dep on the predecessor's bench.done marker:
-    doit's implicit file_dep -> task_dep inference is computed once, when
-    each delayed creator's tasks are generated, against whatever targets are
-    already known at that moment -- it does NOT retroactively wire up a
-    file_dep against a target a different, not-yet-expanded delayed creator
-    produces later. Naming the task directly resolves correctly instead."""
-
-    def __init__(self):
-        self._order: list[str] = []
-        self._pos: dict[str, int] = {}
-
-    def register(self, task_full_name: str) -> None:
-        if task_full_name in self._pos:
-            raise ValueError(f"bench task registered twice: {task_full_name}")
-        self._pos[task_full_name] = len(self._order)
-        self._order.append(task_full_name)
-
-    def register_all(self, task_full_names) -> None:
-        for name in task_full_names:
-            self.register(name)
-
-    def prev_of(self, task_full_name: str) -> list[str]:
-        """The task_dep list for this bench task: its predecessor in the
-        chain, or nothing for the first task overall."""
-        i = self._pos[task_full_name]
-        return [] if i == 0 else [self._order[i - 1]]
-
-
 # ── retry actions ────────────────────────────────────────────────────────────
 
 
@@ -228,7 +190,9 @@ def clear_failed_compiles(configs, roots: MeasureRoots) -> int:
     for c in configs:
         marker = roots.compile_marker_of(c)
         bench_bin = roots.bench_bin_of(c)
-        if marker.exists() and not bench_bin.exists():
+        if (
+            c.dir(roots.compile_root) / "compile_error.txt"
+        ).exists() or not bench_bin.exists():
             print(f"  retry: {c.system} {c.fn_name} {c.label}")
             shutil.rmtree(marker.parent)
             n += 1
