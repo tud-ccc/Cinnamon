@@ -196,6 +196,26 @@ CONFIGS = [
             extra_infer_opts={"simulator": "cycle-accurate", "debug-pipeline": "true"}
         ),
     ),
+    prim_config(
+        system="cinm2",
+        fn_name="gemv_512MB",
+        # A point I found via search with 512 evals
+        label="weird",
+        params={
+            "dpus": 32,
+            "tasklets": 4,
+            "generic.D0.mram": 128,
+            "generic.D0.wram": 128,
+            "generic.D1.mram": 8192,
+            "generic.D1.wram": 1,
+            "generic.order[0]": 2,
+            "generic.order[1]": 1,
+        },
+        prim="gemv",
+        lower=cinmopt.eval_solution_lowerer(
+            extra_infer_opts={"simulator": "cycle-accurate", "debug-pipeline": "true"}
+        ),
+    ),
     # prim_config(
     #     system="cinm2",
     #     fn_name="mmtv_4MB",

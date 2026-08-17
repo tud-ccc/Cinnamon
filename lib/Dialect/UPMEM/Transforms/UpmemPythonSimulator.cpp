@@ -547,7 +547,7 @@ struct CppSimulator : UpmemSimulator {
       return SimCost::forKernel(kernelMs) +
              SimCost::forKernel(launchOverhead, "launchOverhead");
     };
-    return simulateHostRegion(region, annotateOpCosts, waitForCb);
+    return simulateHostRegionOrFail(region, annotateOpCosts, waitForCb);
   }
 };
 

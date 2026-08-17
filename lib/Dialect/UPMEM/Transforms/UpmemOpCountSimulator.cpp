@@ -287,7 +287,7 @@ struct OpCountSimulator : UpmemSimulator {
               hier.getNumTaskletsPerDpu(),
           "opcount");
     };
-    return simulateHostRegion(region, annotateOpCosts, waitForCb);
+    return simulateHostRegionOrFail(region, annotateOpCosts, waitForCb);
   }
 };
 
@@ -296,6 +296,36 @@ struct OpCountSimulator : UpmemSimulator {
 SimCost simulateHostRegion(Region &region, bool annotate,
                            const WaitForCostFn &waitForCb) {
   return costOfRegionCb(region, annotate, waitForCb);
+}
+
+mlir::cinm::utils::Maybe<SimCost>
+simulateHostRegionOrFail(Region &region, bool annotate,
+                         const WaitForCostFn &waitForCb) {
+  SimCost cost = costOfRegionCb(region, annotate, waitForCb);
+  if (cost.isFinite())
+    return cost;
+
+  // Name the entry that went non-finite: the whole point of refusing here is
+  // that the number is not a cost, and which model produced it is what a
+  // reader needs to know next.
+  std::string offenders;
+  llvm::raw_string_ostream os(offenders);
+  cost.forEachEntry(
+      [&](CostCategory category, llvm::StringRef label, double value, bool) {
+        if (std::isfinite(value))
+          return;
+        os << (offenders.empty() ? "" : ", ") << costCategoryName(category);
+        if (!label.empty())
+          os << "." << label;
+        os << " = " << value;
+      });
+  Operation *parent = region.getParentOp();
+  return mlir::emitSilenceableFailure(
+             parent ? parent->getLoc() : UnknownLoc::get(region.getContext()))
+         << "cost model produced a non-finite cost (" << offenders
+         << "); the configuration is refused rather than scored, since the "
+            "walk stops at the first such op and the remaining cost -- the "
+            "kernel included -- is never computed";
 }
 
 std::unique_ptr<UpmemSimulator> createOpCountSimulator(bool annotateOpCosts) {
