@@ -70,6 +70,55 @@ def _binom_upper(k: int, n: int, alpha: float = 0.05) -> float:
     return hi
 
 
+def _hyper_upper(k: int, n: int, m: int, alpha: float = 0.05) -> int:
+    """Exact one-sided upper confidence bound on K -- the number of configs in
+    a feasible space of m that beat the reference -- after drawing n of them
+    without replacement and finding k that do: the largest K whose chance of
+    producing k or fewer successes is still alpha. Returns a count, not a
+    fraction, since the caller needs both K and K/m.
+
+    The draw is a lazy Fisher-Yates over the enumerated feasible set, so the
+    trials are exchangeable but not independent and the count is
+    hypergeometric. That buys a ceiling the binomial does not have:
+    P(X <= k | K) is exactly zero once K > m - n + k, because the space
+    cannot hide more winners than the draw left untouched. The binomial keeps
+    assigning probability to "missed them all" past that point, which is why
+    it is the looser of the two and by how much: the gap is governed by the
+    sampling fraction n/m, negligible below a few percent and worth a factor
+    of two by the time the draw covers three quarters of the space.
+
+    Bisection over K, which P(X <= k | K) is non-increasing in -- the same
+    shape as _binom_upper, and stdlib for the same reason. Exact integer
+    binomials rather than lgamma: the terms are a few thousand digits at
+    m = 1.5M and the bound lands in a paper.
+    """
+    if n >= m:
+        # The sample is the space. Exactly k configs beat the reference;
+        # there is nothing left for a confidence bound to cover.
+        return k
+
+    total = math.comb(m, n)
+
+    def cdf(n_win: int) -> float:
+        return (
+            sum(
+                math.comb(n_win, i) * math.comb(m - n_win, n - i)
+                for i in range(k + 1)
+                if i <= n_win and n - i <= m - n_win
+            )
+            / total
+        )
+
+    lo, hi = k, m
+    while lo < hi:
+        mid = (lo + hi + 1) // 2
+        if cdf(mid) > alpha:
+            lo = mid
+        else:
+            hi = mid - 1
+    return lo
+
+
 def a2_numbers() -> list[str]:
     """A2's two fractions: rejected-but-lowers (the constraint system's
     false negatives) and accepted-but-fails (must be zero). Aggregated over
@@ -90,11 +139,20 @@ def a2_numbers() -> list[str]:
     if rejected:
         out.append(_cmd("atwoRejectedLowersPct", f"{100.0 * lowers / rejected:.1f}"))
         # Rule of three: when nothing in the rejected region lowers, the 95%
-        # upper bound on the false-negative rate is 3/n -- pooled over every
-        # probed function, so it is small (0.038% at 7800) and needs
-        # significant digits, not decimal places.
+        # upper bound on the false-negative rate is 1 - alpha^(1/n), which
+        # 3/n approximates -- pooled over every probed function, so it is
+        # small (0.038% at 7800) and needs significant digits, not decimal
+        # places. Binomial rather than the hypergeometric E1 uses: a2 probes
+        # each function's rejected region and a2.csv does not record how
+        # large that region is, so there is no population size to correct
+        # against and the with-replacement reading is the conservative one.
         if lowers == 0:
-            out.append(_cmd("atwoFalseNegativeBoundPct", f"{300.0 / rejected:.2g}"))
+            out.append(
+                _cmd(
+                    "atwoFalseNegativeBoundPct",
+                    f"{100.0 * _binom_upper(0, rejected):.2g}",
+                )
+            )
     return out
 
 
@@ -115,9 +173,18 @@ def sample_census_numbers() -> list[str]:
 
     Bounds are per benchmark, and the paper quotes the weakest, since each
     benchmark is a different space and "the top X%" has to hold for all of
-    them. Failed draws are reported separately and must be zero: unlike a
-    timeout, a failure leaves no row, so the sample would be a draw from the
-    space minus a region nobody characterised."""
+    them. That makes the headline number the one from the largest space; the
+    tightest is emitted alongside it, because the spaces span three orders of
+    magnitude and a single figure hides that the small ones are pinned far
+    harder. Both are hypergeometric, so the space sizes are emitted too --
+    without m the bound is not a number a reviewer can recompute.
+
+    Failed draws are reported separately and must be zero: unlike a timeout,
+    a failure leaves no row, so the sample would be a draw from the space
+    minus a region nobody characterised. Exhausted spaces are counted for the
+    same reason and in the same spirit -- if a draw ever covers its whole
+    space the claim there is enumeration, not inference, and the confidence
+    language has to come off that benchmark rather than be quoted at zero."""
     census = _read_csv("sample_census.csv")
     if census is None:
         return ["% sample_census.csv not assembled yet -- run `doit assemble`"]
@@ -136,27 +203,36 @@ def sample_census_numbers() -> list[str]:
         return out
 
     # Per (benchmark, fn): how many sampled configurations measured faster
-    # than the best transcribed ATiM point, out of how many were drawn.
-    timeouts = {(r["benchmark"], r["fn_name"]): int(r["n_timed_out"]) for r in census}
-    plain, censored = [], []
-    for key, n_to in sorted(timeouts.items()):
-        bench, fn = key
+    # than the best transcribed ATiM point, out of how many were drawn, and
+    # out of how many the feasible space holds.
+    by_fn = {(r["benchmark"], r["fn_name"]): r for r in census}
+    plain, censored, sizes, n_exhausted = [], [], [], 0
+    for (bench, fn), crow in sorted(by_fn.items()):
         sub = [r for r in rows if r["benchmark"] == bench and r["fn_name"] == fn]
         sample = [float(r["total_ms"]) for r in sub if r["system"] == "sample"]
         ref = [float(r["total_ms"]) for r in sub if r["system"] in TRANSCRIBED_SYSTEMS]
         if not sample or not ref:
             continue
         n = len(sample)
+        m = int(crow["space_size"])
+        n_to = int(crow["n_timed_out"])
         k = sum(1 for t in sample if t < min(ref))
-        plain.append(_binom_upper(k, n))
-        censored.append(_binom_upper(min(k + n_to, n), n))
+        if n >= m:
+            n_exhausted += 1
+        sizes.append(m)
+        plain.append(_hyper_upper(k, n, m) / m)
+        censored.append(_hyper_upper(min(k + n_to, n), n, m) / m)
 
     if not plain:
         out.append("% e1.csv has no sample/transcribed pair yet -- bounds pending")
         return out
     out += [
         _cmd("eoneSamplePercentileBoundPct", f"{100.0 * max(plain):.2g}"),
+        _cmd("eoneSamplePercentileBoundBestPct", f"{100.0 * min(plain):.2g}"),
         _cmd("eoneSamplePercentileBoundCensoredPct", f"{100.0 * max(censored):.2g}"),
+        _cmd("eoneSampleSpaceSizeMin", f"{min(sizes):,}"),
+        _cmd("eoneSampleSpaceSizeMax", f"{max(sizes):,}"),
+        _cmd("eoneSampleExhaustedCount", n_exhausted),
     ]
     return out
 
