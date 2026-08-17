@@ -7,3 +7,4 @@ mlir_tablegen(${prefix}Interfaces.h.inc -gen-attr-interface-decls)
 mlir_tablegen(${prefix}Interfaces.cpp.inc -gen-attr-interface-defs)
 
 mlir_gen_ir(Cnm)
+add_dependencies(CnmIRIncGen CinmIncGen)

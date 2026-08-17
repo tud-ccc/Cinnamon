@@ -20,10 +20,4 @@
 #include "cinm-mlir/Dialect/Cinm/IR/CinmPlatformAttr.h.inc"
 #define GET_ATTRDEF_CLASSES
 #include "cinm-mlir/Dialect/Cinm/IR/CinmAttributesForOps.h.inc"
-namespace mlir::cinm::detail {
-
-CinmVarDefArrayAttr
-instantiateDesignParams(CinmVarDefArrayAttr array,
-                        const llvm::MapVector<StringRef, long> &instantiations);
-}
 //===----------------------------------------------------------------------===//

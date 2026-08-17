@@ -7,6 +7,7 @@ add_mlir_dialect_library(CnmIR
 
     DEPENDS
         CnmIncGen
+        CinmIncGen
         CnmConversionPassIncGen
 
     LINK_LIBS PUBLIC

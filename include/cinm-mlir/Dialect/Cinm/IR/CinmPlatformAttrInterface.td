@@ -144,19 +144,6 @@ def CinmAcceleratorAttrInterface : AttrInterface<"CinmAcceleratorAttrInterface",
       /*methodName=*/"getPlatform",
       /*args=*/(ins)
     >,
-    InterfaceMethod<
-      // note: you can use cinm::VarDefArrayAttr to implement this one.
-      /*desc=*/"Return the design parameters of this accelerator.",
-      /*retTy=*/"::llvm::ArrayRef<::mlir::cinm::CinmVarDefAttr>",
-      /*methodName=*/"getDesignParams",
-      /*args=*/(ins)
-    >,
-    InterfaceMethod<
-      /*desc=*/"Return a new accelerator descriptor of the same type with new design parameter values.",
-      /*retTy=*/"::mlir::cinm::CinmAcceleratorAttrInterface",
-      /*methodName=*/"instantiateDesignParams",
-      /*args=*/(ins "const llvm::MapVector<StringRef, long>&":$instantiations)
-    >,
 
     InterfaceMethod<
       /*desc=*/"Compute tiling factors for the given op based on this accelerator's hardware parameters. Factors are appended to tilingFactors. Returns silenceableFailure if sizes cannot be determined automatically.",
@@ -173,45 +160,6 @@ def CinmAcceleratorAttrInterface : AttrInterface<"CinmAcceleratorAttrInterface",
 
   let extraClassDeclaration = [{
 
-    mlir::cinm::CinmVarDefAttr getBoundVar(StringRef name) const {
-      for (auto v : getDesignParams()) {
-        if (v.getBoundVarName() == name) return v;
-      }
-      return mlir::cinm::CinmVarDefAttr{};
-    }
-
-    mlir::cinm::CinmVarDefAttr getIndexVar(StringRef name) const {
-      for (auto v : getDesignParams()) {
-        if (v.getIndexVarName() == name) return v;
-      }
-      return mlir::cinm::CinmVarDefAttr{};
-    }
-
-    // /// Return whether a given memory space belongs to this accelerator.
-    // bool ownsMemSpace(::mlir::cinm::CinmMemSpaceAttr space) const {
-    //   if (space.isAbsentMemspace() || space.isHostMemspace())
-    //       return false;
-
-    //   auto level = getPlatform().getLevel(space.getName());
-    //   if (!level)
-    //     return false;
-
-    //   return space == getGenericMemSpace(level);
-    // }
-
-    // /// Return whether all the operands of the given op (minus those of unknown memspace) are buffers belonging to this accelerator.
-    // bool ownsOperation(::mlir::Operation* op) const {
-    //   for (auto operand : op->getOperands()) {
-    //     if (auto buf = llvm::dyn_cast_or_null<::mlir::cinm::CinmBufferType>(operand.getType())) {
-    //       auto space = buf.getMemorySpace();
-    //       if (space.isAbsentMemspace())
-    //         continue;
-    //       if (!ownsMemSpace(space))
-    //         return false;
-    //     }
-    //   }
-    //   return true;
-    // }
   }];
 }
 
