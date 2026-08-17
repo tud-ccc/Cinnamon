@@ -23,6 +23,11 @@ Schemas (the single source of truth for the plot scripts):
                search_wallclock_s, space_build_s, notes.
 - rq3.csv      benchmark + fidelity.fidelity_frame columns (fn_name, label,
                term, predicted_ms, measured_ms, share_of_total).
+- sample_census.csv
+               benchmark, fn_name, n_requested, n_accepted, n_rows,
+               n_timed_out, n_timed_out_in_pool, n_failed, n_over_budget,
+               space_size, sampling_mode -- what the B1 draw did, which is
+               what the percentile's confidence bound is computed against.
 - a1.csv       benchmark, fn_name, space, best_measured_ms, n_measured --
                n_measured = 0 rows are the paper's "the restricted space
                went empty" cells, printed as such, never dropped.
@@ -35,8 +40,10 @@ Schemas (the single source of truth for the plot scripts):
 
 from __future__ import annotations
 
+import json
 import pathlib
 
+import numpy as np
 import pandas as pd
 
 from cinm_experiments import fidelity, measurements
@@ -167,6 +174,60 @@ def assemble_e1(
         )
     frame = pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
     return _write(frame, out_csv, missing)
+
+
+def assemble_sample_census(
+    stats_jsons: dict[tuple[str, str], pathlib.Path],
+    pool_csvs: dict[tuple[str, str], pathlib.Path],
+    out_csv: pathlib.Path,
+) -> bool:
+    """What the B1 draw actually did, per (benchmark, fn): how many
+    configurations it requested, how many it kept, and how many of those
+    carry no prediction because the simulator ran out of its budget.
+
+    This is the input to the percentile's conservative reading. The rule of
+    three assumes n independent trials each of which we can score against the
+    reference; a timed-out row is a trial we drew and measured but cannot
+    score from the predicted side, so the honest bound is the one that scores
+    every one of them against us. That needs the count, which pool.csv only
+    half-carries -- `timed_out` is recoverable from its non-finite costs, but
+    `failed` and `over_budget` left no row at all.
+
+    `n_rows` is read back from pool.csv rather than trusted from the census,
+    because it is the pool that feeds B2: the two disagreeing means the draw
+    and the thing downstream measured are not the same sample."""
+    rows, missing = [], []
+    for (bench, fn_name), stats_path in sorted(stats_jsons.items()):
+        if not pathlib.Path(stats_path).exists():
+            missing.append(f"sample census of {bench}:{fn_name} ({stats_path})")
+            continue
+        with open(stats_path) as f:
+            stats = json.load(f)
+        pool_csv = pathlib.Path(pool_csvs[(bench, fn_name)])
+        n_rows, n_nonfinite = None, None
+        if pool_csv.exists():
+            pool = pd.read_csv(pool_csv)
+            if "visited" in pool.columns:
+                pool = pool[pool["visited"] == 1]
+            cost = pd.to_numeric(pool["cost"], errors="coerce")
+            n_rows = int(len(pool))
+            n_nonfinite = int((~np.isfinite(cost)).sum())
+        rows.append(
+            {
+                "benchmark": bench,
+                "fn_name": fn_name,
+                "n_requested": stats["requested"],
+                "n_accepted": stats["accepted"],
+                "n_rows": n_rows,
+                "n_timed_out": stats["timed_out"],
+                "n_timed_out_in_pool": n_nonfinite,
+                "n_failed": stats["failed"],
+                "n_over_budget": stats["over_budget"],
+                "space_size": stats["space_size"],
+                "sampling_mode": stats["sampling_mode"],
+            }
+        )
+    return _write(pd.DataFrame(rows), out_csv, missing)
 
 
 def assemble_rq3(

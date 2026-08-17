@@ -52,9 +52,24 @@ OPTS = dict(
     k_top=200,  # B3: measured ground truth for top-k overlap up to k=200
     n_seeds=32,  # B4: matches the cinm1comparison campaign
     iters=6,  # measurement repetitions per hardware run
-    # Simulator to use for all trials, except the top-k search (timeout is only used in top-k search).
-    simulator="fast",
-    eval_timeout_ms=0,
+    # Simulator to use for all trials.
+    simulator="cycle-accurate",
+    # Simulation wall-clock budget per configuration. The fat tail of the
+    # simulator is what this is for: a uniform draw turns up the occasional
+    # config whose simulation runs for minutes while the other 299 take
+    # milliseconds, and one of those stalls the whole sweep.
+    #
+    # Capping it does NOT condition the sample, because a timed-out config is
+    # kept rather than resampled past: it takes its slot with a non-finite
+    # predicted cost and still gets compiled and benchmarked downstream, so
+    # the measured distribution the percentile is computed over is still all
+    # n_sample draws. Only the predicted column has a hole in it, and
+    # sample_stats.json counts the holes so the reporting can state the
+    # bound that survives assuming every one of them beats the reference.
+    #
+    # This is also why sample-max-cost-ms must stay 0 (see _draw_sample):
+    # that one rejects and resamples, which is the thing that would bias.
+    eval_timeout_ms=10_000,
     # B3's exhaustive predicted sweep only. A timeout is safe here, unlike
     # in B1: it can only mis-price configs slower than 300 ms, which cannot
     # be in the top anyway, and it speeds the sweep up considerably.
@@ -109,6 +124,15 @@ def sample_dir(bench: str) -> pathlib.Path:
 
 def sample_pool_csv(bench: str, fn_name: str) -> pathlib.Path:
     return sample_dir(bench) / f"infer_{fn_name}" / "pool.csv"
+
+
+def sample_stats_json(bench: str, fn_name: str) -> pathlib.Path:
+    """The draw's census: how many candidates were requested, accepted, timed
+    out, and rejected, and for which reason. The rejections leave no row in
+    pool.csv, so this is the only record that the draw covered the whole
+    space -- without it the sample cannot be described as a draw from
+    anything, and the percentile has nothing to stand on."""
+    return sample_dir(bench) / f"infer_{fn_name}" / "sample_stats.json"
 
 
 def sample_roots(bench: str) -> doit_blocks.MeasureRoots:
@@ -175,9 +199,16 @@ def _draw_sample(bench: str) -> bool:
         infer_opts={
             "simulator": OPTS["simulator"],
             "eval-timeout-ms": OPTS["eval_timeout_ms"],
-            # No timeout during random sampling - we want uniform sampling
-            # and only one simulator contributing to it.
+            # Must stay 0. This one rejects a candidate and draws another in
+            # its place, which conditions the sample on the accepted region
+            # and voids the percentile arithmetic. eval-timeout-ms bounds the
+            # wall clock without doing that (see OPTS).
             "sample-max-cost-ms": 0,
+            # Independent uniform draws, not LHS: this sample is read as a
+            # picture of the space -- a percentile, a rank correlation, a
+            # confidence bound -- and LHS stratifies the picks, so they are
+            # not the independent trials that arithmetic assumes.
+            "sampling-mode": "uniform",
         },
     )
     return True
@@ -188,14 +219,19 @@ def task_sample():
     function, drawn uniformly at random from the enumerated feasible set
     with a fixed seed, predicted costs recorded. Serves E1(b), RQ3's
     fidelity ground truth, §2's best-vs-median, and A2's accepted-but-fails
-    check all at once; nothing downstream may redraw it."""
+    check all at once; nothing downstream may redraw it.
+
+    A config whose simulation exceeds eval_timeout_ms keeps its slot with a
+    non-finite predicted cost, so all n_sample rows still reach B2 and the
+    measured distribution stays whole; sample_stats.json counts them."""
     for bench in WORKLOADS:
         yield {
             "name": bench,
             "file_dep": [str(source_mlir(bench))],
             "targets": [
-                str(sample_pool_csv(bench, fn))
+                str(p)
                 for fn in list_functions(source_mlir(bench))
+                for p in (sample_pool_csv(bench, fn), sample_stats_json(bench, fn))
             ],
             "actions": [(_draw_sample, [bench])],
         }
@@ -537,6 +573,17 @@ def _assemble_rq3() -> bool:
     )
 
 
+def _assemble_sample_census() -> bool:
+    keys = [
+        (bench, fn) for bench in WORKLOADS for fn in list_functions(source_mlir(bench))
+    ]
+    return assemble.assemble_sample_census(
+        {k: sample_stats_json(*k) for k in keys},
+        {k: sample_pool_csv(*k) for k in keys},
+        RESULTS_DIR / "sample_census.csv",
+    )
+
+
 def _assemble_a1() -> bool:
     return assemble.assemble_a1(
         {
@@ -574,6 +621,7 @@ def task_assemble():
         ("rq3", _assemble_rq3),
         ("a1", _assemble_a1),
         ("rq4", _assemble_rq4),
+        ("sample_census", _assemble_sample_census),
     ]:
         yield {
             "name": name,

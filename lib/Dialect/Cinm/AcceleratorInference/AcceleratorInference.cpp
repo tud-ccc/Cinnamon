@@ -901,7 +901,16 @@ struct InferenceTask {
 
     std::mutex poolMutex;
     std::atomic<size_t> nAttempted{0};
-    std::atomic<size_t> nRejected{0};
+    // Split by reason, because the reasons do different things to the sample.
+    // An over-budget candidate is replaced by another draw, so it conditions
+    // the sample on the accepted region; a failed evaluation does the same but
+    // on a region nobody chose. Both have to be reportable for the sample to
+    // be describable as a draw from anything. A timed-out candidate is neither:
+    // it is kept, with a non-finite cost standing in for the value the
+    // simulator did not reach.
+    std::atomic<size_t> nFailed{0};
+    std::atomic<size_t> nOverBudget{0};
+    std::atomic<size_t> nTimedOut{0};
     double maxCostMs = options.sampleMaxCostMs;
 
     // Invoked concurrently on sampleInitialSet's own thread pool -- a fixed
@@ -936,9 +945,17 @@ struct InferenceTask {
         // up in the dump (dumpFullPool is off by default) and doesn't count
         // towards sampleN -- sampleInitialSet's own `used` bookkeeping
         // already ensures this exact candidate is never retried.
-        nRejected.fetch_add(1, std::memory_order_relaxed);
+        (cost ? nOverBudget : nFailed).fetch_add(1, std::memory_order_relaxed);
         return false;
       }
+      // A simulation that ran out of its eval-timeout-ms budget yields a
+      // non-finite cost rather than no cost, so the candidate keeps its slot
+      // in the sample: the draw stays a draw over the whole space, and the
+      // row still reaches the downstream compile+bench that supplies its
+      // measured runtime. Only the prediction is missing, and the census says
+      // for how many rows.
+      if (!std::isfinite(cost->total()))
+        nTimedOut.fetch_add(1, std::memory_order_relaxed);
 
       std::lock_guard<std::mutex> guard(poolMutex);
       pool.markVisited(idx);
@@ -957,14 +974,40 @@ struct InferenceTask {
     LLVM_DEBUG(llvm::dbgs()
                << "[cinm-inference] Random sample: " << pool.numVisited()
                << " / " << sampleN << " accepted (<= " << maxCostMs << " ms), "
-               << nRejected.load() << " rejected / " << nAttempted.load()
-               << " attempted, across " << nThreads << " threads in "
-               << elapsed.count() << " ms\n");
+               << nTimedOut.load() << " timed out, " << nOverBudget.load()
+               << " over budget, " << nFailed.load() << " failed / "
+               << nAttempted.load() << " attempted, across " << nThreads
+               << " threads in " << elapsed.count() << " ms\n");
     plugin.printStats();
 
     if (!options.dumpDir.empty()) {
       pool.dumpToCSV(space, options, options.dumpDir + "/pool.csv");
       pool.dumpMetadataJSON(space, options.dumpDir + "/space.json");
+      // The census of what the draw did, as a sibling of the pool it
+      // describes. Everything here except `timed_out` is unrecoverable from
+      // pool.csv -- a rejected candidate leaves no row -- and a sample whose
+      // rejections are unknown cannot be described as a draw from the space,
+      // so this file is what lets the downstream reporting state the bound it
+      // states.
+      std::string statsPath = options.dumpDir + "/sample_stats.json";
+      std::ofstream stats(statsPath);
+      if (stats) {
+        stats << "{\n"
+              << "  \"requested\": " << sampleN << ",\n"
+              << "  \"accepted\": " << pool.numVisited() << ",\n"
+              << "  \"attempted\": " << nAttempted.load() << ",\n"
+              << "  \"timed_out\": " << nTimedOut.load() << ",\n"
+              << "  \"over_budget\": " << nOverBudget.load() << ",\n"
+              << "  \"failed\": " << nFailed.load() << ",\n"
+              << "  \"space_size\": " << space.totalSize() << ",\n"
+              << "  \"sampling_mode\": \""
+              << (options.samplingMode == InferenceOptions::SamplingMode::LHS
+                      ? "lhs"
+                      : "uniform")
+              << "\",\n"
+              << "  \"max_cost_ms\": " << maxCostMs << "\n"
+              << "}\n";
+      }
       LLVM_DEBUG(llvm::dbgs() << "[cinm-inference] Pool and metadata dumped to "
                               << options.dumpDir << "\n");
     }
