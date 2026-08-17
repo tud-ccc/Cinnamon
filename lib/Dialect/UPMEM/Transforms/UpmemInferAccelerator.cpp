@@ -115,7 +115,7 @@ struct UpmemInferenceOptions {
   int64_t fixedTasklets = -1;
 };
 
-static void addAffineOpts(OpPassManager &pm) {
+static void addAffineOpts(OpPassManager &pm, bool fusion = true) {
   // pm.addPass(affine::createLoopUnrollPass(1, true));
   pm.addPass(createCanonicalizerPass());
   pm.addPass(affine::createAffineFoldMemRefAliasOps());
@@ -124,16 +124,15 @@ static void addAffineOpts(OpPassManager &pm) {
   pm.addPass(affine::createRaiseMemrefToAffine());
   pm.addPass(createCanonicalizerPass());
   pm.addPass(affine::createAffineExpandIndexOpsAsAffinePass());
-  pm.addPass(affine::createLoopFusionPass());
+  if (fusion)
+    pm.addPass(affine::createLoopFusionPass());
   pm.addPass(createSROA());
   pm.addPass(createCanonicalizerPass());
-  pm.addPass(affine::createRaiseMemrefToAffine());
   pm.addPass(affine::createAffineLoopInvariantCodeMotionPass());
   pm.addPass(affine::createAffineScalarReplacementPass());
   pm.addPass(createLoopInvariantCodeMotionPass());
   pm.addPass(affine::createAffineLoopInvariantCodeMotionPass());
   pm.addPass(createSROA());
-  pm.addPass(affine::createAffineScalarReplacementPass());
   pm.addPass(createCanonicalizerPass());
   pm.addPass(createCSEPass());
   pm.addPass(arith::createIntRangeOptimizationsPass());
@@ -601,17 +600,6 @@ struct UpmemInferencePlugin : cinm::InferencePlugin {
     pm->addPass(createLinalgGeneralizeNamedOpsPass());
     pm->addPass(createLinalgElementwiseOpFusionPass());
     pm->addPass(createConvertLinalgToAffineLoopsPass());
-    // Keep the reduction accumulator in a register. Straight out of linalg the
-    // innermost loop reloads and restores the output element on every
-    // iteration; the hand-written templates carry it in an scf.for iter_arg by
-    // construction, so without this the generic path pays two extra memory ops
-    // per multiply-accumulate.
-    pm->addNestedPass<func::FuncOp>(
-        affine::createAffineScalarReplacementPass());
-    {
-      auto &funcPm = pm->nest<func::FuncOp>();
-      addAffineOpts(funcPm);
-    }
     pm->addPass(createCanonicalizerPass());
     pm->addPass(createCSEPass());
 
@@ -644,6 +632,7 @@ struct UpmemInferencePlugin : cinm::InferencePlugin {
       // having a region that affine cannot analyze.
       auto &funcPm = pm->nest<func::FuncOp>();
       addAffineOpts(funcPm);
+      funcPm.addPass(createCanonicalizerPass());
     }
     pm->addPass(createUPMEMDedupKernelsPass());
     pm->addPass(createCSEPass());
@@ -674,7 +663,8 @@ struct UpmemInferencePlugin : cinm::InferencePlugin {
       // only once, so an outer loop is never unrolled around a body this has
       dpuPm.addPass(affine::createLoopUnrollPass(/*unrollFactor=*/129,
                                                  /*unrollUpToFactor=*/true));
-      addAffineOpts(dpuPm);
+      // Don't do fusion after unrolling, it's very slow
+      addAffineOpts(dpuPm, /*fusion=*/false);
       dpuPm.addPass(createLowerAffinePass());
     }
     // The C translator addresses a buffer as base pointer + one linear
