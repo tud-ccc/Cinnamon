@@ -204,12 +204,22 @@ public:
   }
 
   /// Sum of every category/label, minus the excluded entries.
+  ///
+  /// A non-finite entry makes the whole total non-finite whether or not it is
+  /// excluded, and the offending value is what comes back. Excluding a cost
+  /// says how often the program pays it, not whether the number is known: an
+  /// entry a model could not compute leaves the rest of the walk unreliable
+  /// too, and silently reporting the finite remainder would score a
+  /// configuration whose cost is unknown as one that is cheap.
   double total() const {
     double t = 0.0;
     for (auto &bucket : buckets)
-      for (auto &e : bucket)
+      for (auto &e : bucket) {
+        if (!std::isfinite(e.value))
+          return e.value;
         if (!e.excluded)
           t += e.value;
+      }
     return t;
   }
   /// Sum of the excluded entries -- what the program pays that total() does

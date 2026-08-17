@@ -19,4 +19,18 @@ using WaitForCostFn =
 SimCost simulateHostRegion(mlir::Region &region, bool annotate,
                            const WaitForCostFn &waitForCb);
 
+/// simulateHostRegion, refusing rather than returning a cost some part of
+/// which could not be computed.
+///
+/// A non-finite entry is not an expensive configuration, it is one the models
+/// were asked something outside what they can answer -- and the walk stops at
+/// the first of them, so what comes back is a *truncated* cost missing every
+/// op after it, kernel included. Reported as a number that would be a
+/// configuration scoring far below its true cost, and one that scores low
+/// wins a search. A failure is what the callers already know how to handle:
+/// the search records a failed evaluation and moves on.
+mlir::cinm::utils::Maybe<SimCost>
+simulateHostRegionOrFail(mlir::Region &region, bool annotate,
+                         const WaitForCostFn &waitForCb);
+
 } // namespace mlir::upmem
