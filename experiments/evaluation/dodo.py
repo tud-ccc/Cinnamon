@@ -564,7 +564,9 @@ def _assemble_rq1() -> bool:
 
 def _assemble_rq2() -> bool:
     return assemble.assemble_rq2(
-        {bench: search_dir(bench) for bench in WORKLOADS},
+        # the dump root, not search_dir: the timings live under
+        # {dump}/infer_{fn}/seed_{k}/, which is what assemble_rq2 globs
+        {bench: _search_dump_dir(bench, "default") for bench in WORKLOADS},
         {
             (bench, fn): space_json(bench, fn)
             for bench in WORKLOADS
@@ -855,12 +857,23 @@ def _search_dump_dir(bench: str, space: str) -> pathlib.Path:
     )
 
 
-def _run_search(bench: str, space: str) -> bool:
+def _search_out_mlir(bench: str, space: str, fn_name: str) -> pathlib.Path:
+    """The search's compiled output, and the task's sentinel that this
+    function's search ran to completion. One search per function, all sharing
+    a dump root, so it carries the function in its name -- the pool dumps
+    separate themselves into infer_{fn_name}/, this does not."""
+    return _search_dump_dir(bench, space) / f"out_{fn_name}.mlir"
+
+
+def _run_search(bench: str, fn_name: str, space: str) -> bool:
+    dump = _search_dump_dir(bench, space)
     cinmopt.bo_multiseed(
-        source_mlir(bench),
-        _search_dump_dir(bench, space),
+        split_module(bench, fn_name),
+        dump,
         n_seeds=OPTS["n_seeds"],
         workers=64,
+        out_file=_search_out_mlir(bench, space, fn_name),
+        log_file=dump / f"cinm-opt_{fn_name}.log",
         infer_opts={
             "simulator": OPTS["simulator"],
             "eval-timeout-ms": OPTS["eval_timeout_ms"],
@@ -874,14 +887,21 @@ def _run_search(bench: str, space: str) -> bool:
 def task_search():
     """B4: the multi-seed BO search over the default space (no hardware;
     simulator only). Each seed's pick is compiled+benched downstream; the
-    per-seed timings.csv is the search-walltime raw data."""
+    per-seed timings.csv is the search-walltime raw data.
+
+    One task per function, searching that function's split module: a
+    benchmark's functions are searched one after the other anyway, and
+    separating them means an interrupted run keeps the functions it
+    finished, and a failing one does not take the rest of the benchmark
+    down with it."""
     for bench in WORKLOADS:
-        yield {
-            "name": bench,
-            "file_dep": [str(source_mlir(bench))],
-            "targets": [str(_search_dump_dir(bench, "default") / "out.mlir")],
-            "actions": [(_run_search, [bench, "default"])],
-        }
+        for fn_name in list_functions(source_mlir(bench)):
+            yield {
+                "name": f"{bench}:{fn_name}",
+                "file_dep": [str(split_module(bench, fn_name))],
+                "targets": [str(_search_out_mlir(bench, "default", fn_name))],
+                "actions": [(_run_search, [bench, fn_name, "default"])],
+            }
 
 
 def task_search_ablate():
@@ -890,12 +910,13 @@ def task_search_ablate():
     buys feasibility), which the assembly records as such."""
     for bench in WORKLOADS:
         for space in ABLATE_SPACES:
-            yield {
-                "name": f"{bench}:{space}",
-                "file_dep": [str(source_mlir(bench))],
-                "targets": [str(_search_dump_dir(bench, space) / "out.mlir")],
-                "actions": [(_run_search, [bench, space])],
-            }
+            for fn_name in list_functions(source_mlir(bench)):
+                yield {
+                    "name": f"{bench}:{space}:{fn_name}",
+                    "file_dep": [str(split_module(bench, fn_name))],
+                    "targets": [str(_search_out_mlir(bench, space, fn_name))],
+                    "actions": [(_run_search, [bench, fn_name, space])],
+                }
 
 
 def _search_pick_configs(bench: str, space: str) -> list[compile_run.Config]:
@@ -932,7 +953,7 @@ def task_compile_search():
                 (
                     bench,
                     config,
-                    [_search_dump_dir(bench, "default") / "out.mlir"],
+                    [_search_out_mlir(bench, "default", config.fn_name)],
                     search_roots(bench),
                 )
             )
@@ -953,7 +974,7 @@ def task_compile_search_ablate():
                     (
                         bench,
                         config,
-                        [_search_dump_dir(bench, space) / "out.mlir"],
+                        [_search_out_mlir(bench, space, config.fn_name)],
                         ablate_roots(bench, space),
                     )
                 )

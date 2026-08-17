@@ -18,6 +18,18 @@ static bool resultGoesToFile() {
   return !v.empty() && v != "-";
 }
 
-bool canRenderProgress() {
-  return resultGoesToFile(); // && ::isatty(fileno(stdout));
+bool canRenderProgress() { return resultGoesToFile(); }
+
+bool progressIsTerminal() { return ::isatty(fileno(stdout)); }
+
+std::string formatElapsed(std::chrono::steady_clock::duration d) {
+  auto secs = static_cast<long long>(
+      std::chrono::duration_cast<std::chrono::seconds>(d).count());
+  char buf[32];
+  if (secs >= 3600)
+    std::snprintf(buf, sizeof(buf), "%lld:%02lld:%02lld", secs / 3600,
+                  (secs / 60) % 60, secs % 60);
+  else
+    std::snprintf(buf, sizeof(buf), "%02lld:%02lld", secs / 60, secs % 60);
+  return buf;
 }

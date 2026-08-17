@@ -195,15 +195,24 @@ def bo_multiseed(
     nice: bool = False,
     debug: bool = False,
     nolog: bool = False,
+    out_file: pathlib.Path | None = None,
+    log_file: pathlib.Path | None = None,
     cinm_opt: pathlib.Path = DEFAULT_CINM_OPT,
 ) -> pathlib.Path:
     """Run n_seeds independent BO searches sharing the config-space setup
     (the C++ multi-seed engine), dumping
     {out_dir}/infer_{fn_name}/seed_<k>/pool.csv for k = 1..n_seeds (seed k
     uses rng offset+k*31; "infer_" prefix as in exhaustive_search()). Returns
-    out_dir."""
+    out_dir.
+
+    out_file/log_file default to {out_dir}/out.mlir and {out_dir}/cinm-opt.log.
+    Naming them explicitly is what lets several single-function searches share
+    one dump root: their infer_{fn_name} subtrees never collide, but one
+    out.mlir per root would."""
     out_dir = pathlib.Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
+    out_file = out_file or out_dir / "out.mlir"
+    log_file = log_file or out_dir / "cinm-opt.log"
     opts = {
         "dump-dir": str(out_dir),
         "rng-seed": offset,
@@ -218,15 +227,15 @@ def bo_multiseed(
     r = _run(
         src,
         opts,
-        out_file=out_dir / "out.mlir",
+        out_file=out_file,
         cinm_opt=cinm_opt,
-        log_file=out_dir / "cinm-opt.log",
+        log_file=log_file,
         extra_opts=extra_opts,
         nice=nice,
         nolog=nolog,
     )
     if r.returncode != 0:
-        raise RuntimeError(f"bo_multiseed failed for {src}; see {out_dir}/cinm-opt.log")
+        raise RuntimeError(f"bo_multiseed failed for {src}; see {log_file}")
     return out_dir
 
 
