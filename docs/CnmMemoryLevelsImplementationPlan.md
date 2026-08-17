@@ -209,8 +209,9 @@ fix, scheduled first (M0).
 is a memref memory space, so parameterizing it with a size would make
 `memref<64xi32, #upmem.wram<size=57344>>` and `...<size=55296>`
 *different types* on different platforms. But WRAM capacity genuinely
-differs per platform — v1A 65536 vs v1B 63488, both less 8192
-([UPMEMAttributes.cpp:145-163](../lib/Dialect/UPMEM/IR/UPMEMAttributes.cpp#L145-L163)).
+differs per platform — v1A 65536 vs v1B 63488, both less the 1024 bytes
+the SDK's own WRAM sections take
+([UPMEMAttributes.cpp:145-178](../lib/Dialect/UPMEM/IR/UPMEMAttributes.cpp#L145-L178)).
 
 Hence decision 2: the interface carries identity only; size/alignment
 stay in `CinmLevelDefAttr` on the platform. Every existing size consumer

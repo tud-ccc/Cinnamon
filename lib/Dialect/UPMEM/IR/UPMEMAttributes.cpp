@@ -152,10 +152,18 @@ void UpmemAcceleratorAttr::print(::mlir::AsmPrinter &out) const {
   out << ">";
 }
 
+/// WRAM the SDK claims before the program gets any, on top of the per-tasklet
+/// frames `kStackReserveBytes` covers: the linker script gives `.data.sw_cache`
+/// 8 bytes per tasklet (192 at 24) and aligns the heap after it, and the
+/// runtime's own .data/.bss plus the barrier measure another 232. A capacity
+/// that does not deduct this admits a program whose stacks fill WRAM exactly
+/// and which the DPU linker then rejects.
+static constexpr int kRuntimeWramBytes = 1024;
+
 static cinm::CinmLevelArrayAttr upmemLevels(mlir::MLIRContext *ctx,
                                             bool isV1A) {
   int indices = 2;
-  int wramSize = isV1A ? 65536 : 63488;
+  int wramSize = (isV1A ? 65536 : 63488) - kRuntimeWramBytes;
 
   Builder builder(ctx);
   cinm::CinmLevelDefAttr mram =
