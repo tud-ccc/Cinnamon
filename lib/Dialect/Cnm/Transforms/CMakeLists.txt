@@ -9,6 +9,7 @@ add_mlir_dialect_library(CnmTransforms
 
 DEPENDS
     CnmIncGen
+    CinmIncGen
     CnmTransformPassesIncGen
 
 LINK_LIBS PUBLIC
@@ -23,4 +24,5 @@ LINK_LIBS PUBLIC
     MLIRSPIRVTarget
     MLIRTransformUtils
     CnmIR
+    CinmIR
 )

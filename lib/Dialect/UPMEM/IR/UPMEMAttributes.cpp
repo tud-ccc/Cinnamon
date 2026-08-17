@@ -133,14 +133,6 @@ LogicalResult UpmemAcceleratorAttr::verify(
   return success();
 }
 
-// static void printNamedVar(AsmPrinter &out, llvm::StringLiteral name,
-//                           int64_t var) {
-//   out << name << "(";
-//   // out.printStrippedAttrOrType(var);
-//   out << var;
-//   out << ")";
-// }
-
 void UpmemAcceleratorAttr::print(::mlir::AsmPrinter &out) const {
   out << "<";
   out.printDimensionList({getNumDpus(), getNumTaskletsPerDpu()});
@@ -162,18 +154,17 @@ static constexpr int kRuntimeWramBytes = 1024;
 
 static cinm::CinmLevelArrayAttr upmemLevels(mlir::MLIRContext *ctx,
                                             bool isV1A) {
-  int indices = 2;
   int wramSize = (isV1A ? 65536 : 63488) - kRuntimeWramBytes;
 
   Builder builder(ctx);
   cinm::CinmLevelDefAttr mram =
       builder.getAttr<cinm::CinmLevelDefAttr>(builder.getStringAttr("mram"),
                                               /*size_in_bytes*/ 67108864,
-                                              /*alignment*/ 8, indices);
+                                              /*alignment*/ 8);
   cinm::CinmLevelDefAttr wram =
       builder.getAttr<cinm::CinmLevelDefAttr>(builder.getStringAttr("wram"),
                                               /*size_in_bytes*/ wramSize,
-                                              /*alignment*/ 8, indices);
+                                              /*alignment*/ 8);
   return cinm::CinmLevelArrayAttr::get(builder.getContext(), {mram, wram});
 }
 
@@ -244,16 +235,6 @@ UpmemPlatformAttr::getMemrefMemspace(cinm::CinmLevelDefAttr level) const {
   return DpuMemSpaceAttr::get(getContext(), *space);
 }
 
-cinm::CinmAcceleratorAttrInterface
-UpmemAcceleratorAttr::instantiateDesignParams(
-    const llvm::MapVector<StringRef, long> &) const {
-  return *this;
-
-  // return UpmemAcceleratorAttr::get(
-  //     getContext(), getImpl()->platform,
-  //     cinm::detail::instantiateDesignParams(getImpl()->designParams,
-  //                                           instantiations));
-}
 DiagnosedSilenceableFailure UpmemAcceleratorAttr::computeTilingFactors(
     Operation *op, SmallVectorImpl<int64_t> &tilingFactors) const {
   return cinm::computeTilingFactorsForOp(
@@ -268,10 +249,6 @@ UpmemAcceleratorAttr::getWorkgroupMemoryLevels() const {
   return {cinm::CinmLevelArrayAttr::get(getContext(),
                                         {getMramLevel(), getWramLevel()}),
           empty};
-}
-
-ArrayRef<cinm::CinmVarDefAttr> UpmemAcceleratorAttr::getDesignParams() const {
-  return {};
 }
 
 int64_t UpmemAcceleratorAttr::bufferSizeOfLeaf() const {
