@@ -11,6 +11,8 @@
 // runtime, so the Makefile needs nothing beyond the function name.
 //
 // Binary interface: bench_<fn> <output_dir> [<iters>]
+// Environment: BENCH_CHECK=0 skips the golden-reference check (see
+// check_enabled()); unset or 1 verifies.
 
 #pragma once
 
@@ -23,6 +25,7 @@
 #include <cstring>
 #include <ctime>
 #include <limits>
+#include <strings.h>
 #include <vector>
 
 #include <cblas.h>
@@ -151,6 +154,35 @@ inline double sum_ref(const std::vector<DTY> &v, size_t n) {
 
 // ─── Verification ────────────────────────────────────────────────────────────
 
+/// Whether run() checks the kernel output against the golden reference, read
+/// from BENCH_CHECK so the same binary can do either.
+///
+/// Verification is the default, so a measurement campaign cannot quietly
+/// produce unverified numbers by omission. It is worth turning off for the
+/// search stacks, where the reference costs more than the kernel it checks:
+/// a CBLAS dgemv over a 512 MB operand runs on one host core against a
+/// kernel spread over 2048 DPUs.
+///
+/// Accepted spellings, case-insensitively: 1/on/true/yes and 0/off/false/no.
+/// Anything else is a mistake worth stopping for -- guessing would mean
+/// benchmarking under a verification setting other than the one asked for,
+/// which is exactly what this knob exists to make explicit.
+inline bool check_enabled() {
+  const char *v = getenv("BENCH_CHECK");
+  if (!v || !*v)
+    return true;
+  auto is = [v](const char *s) { return !strcasecmp(v, s); };
+  if (is("1") || is("on") || is("true") || is("yes"))
+    return true;
+  if (is("0") || is("off") || is("false") || is("no"))
+    return false;
+  fprintf(stderr,
+          "%s: BENCH_CHECK='%s' is not a boolean -- use 1/on/true/yes or "
+          "0/off/false/no\n",
+          TOSTR(BENCH_FN), v);
+  exit(1);
+}
+
 /// Reports whether every golden value fits in DTY. A benchmark whose exact
 /// result overflows its own element type cannot be verified and is not
 /// measuring anything meaningful, so this is a sizing error in the benchmark
@@ -233,7 +265,8 @@ inline void write_totals(const char *out_dir,
 ///
 /// Verification happens after the timed loop but before anything is written,
 /// so a run that computed the wrong answer leaves no timing data behind to be
-/// plotted later.
+/// plotted later. It can be switched off per run -- see check_enabled() -- in
+/// which case the run is timed and written like any other.
 template <class Op> int run(int argc, char **argv) {
   if (argc < 2) {
     fprintf(stderr, "usage: %s <output_dir> [<iters>]\n", argv[0]);
@@ -258,9 +291,14 @@ template <class Op> int run(int argc, char **argv) {
     fflush(stdout);
   }
 
-  // todo reactivate for real benchmark campaign
-  // if (!check(op.output(), op.reference()))
-  //   return 1;
+  // The reference is only built when it is going to be used: it is the
+  // expensive half of a skipped check, not the comparison.
+  if (check_enabled()) {
+    if (!check(op.output(), op.reference()))
+      return 1;
+  } else {
+    printf("%s: verification skipped (BENCH_CHECK)\n", TOSTR(BENCH_FN));
+  }
 
   write_totals(out_dir, elapsed_ns);
   return 0;

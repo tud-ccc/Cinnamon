@@ -33,8 +33,8 @@ CXXFLAGS = -O3 -std=c++17 \
            -I$(UPMEM_HOME)/include/dpu
 
 # openblas backs the bench drivers' golden references (experiments/bench/
-# common.hpp): every run checks its output against an independent
-# implementation before its timings are written.
+# common.hpp): a run checks its output against an independent implementation
+# before its timings are written, unless BENCH_CHECK=0 says otherwise.
 LDFLAGS = -lUpmemDialectRuntime -ldpu -ldpuverbose -lopenblas -Wl,-s \
           -L$(UPMEM_HOME)/lib \
           -L$(ROOT)/build/lib
