@@ -118,7 +118,7 @@ LogicalResult buildConfigSpace(cinm::ComputeBlockOp refClone,
                                InferencePlugin &plugin, ConfigSpace &space,
                                const InferenceOptions &opts) {
   auto buildStart = std::chrono::steady_clock::now();
-  auto recordBuildTime = llvm::make_scope_exit([&] {
+  auto recordBuildTime = llvm::scope_exit([&] {
     space.buildWallSeconds = std::chrono::duration<double>(
                                  std::chrono::steady_clock::now() - buildStart)
                                  .count();
@@ -379,7 +379,7 @@ struct InferenceTask {
       return result;
 
     unsigned nWorkers = evalPool.size();
-    CandidatePool samplePool(space, options.nValidation);
+    CandidatePool samplePool(space, options.nValidation, options);
     std::mt19937 vrng(options.rngSeed);
     LLVM_DEBUG(llvm::dbgs() << "[cinm-inference] Sampling validation set: "
                             << options.nValidation << " points\n");
@@ -526,9 +526,9 @@ struct InferenceTask {
       // Never overshoot the budget: the batch is what the round will spend.
       size_t batch = std::min<size_t>(std::max<size_t>(options.boBatchSize, 1),
                                       static_cast<size_t>(state.budget));
-      auto accepted = pool.nextCandidateIndices(options, rng, evalTrain,
-                                                validSet, trainingSet, round++,
-                                                pool.nObs, batch, evalWorkers);
+      auto accepted =
+          pool.nextCandidateIndices(rng, evalTrain, validSet, trainingSet,
+                                    round++, pool.nObs, batch, evalWorkers);
       if (accepted == 0)
         break;
     }
@@ -618,7 +618,7 @@ struct InferenceTask {
       auto evalPool = std::make_unique<EvaluatorPool>(
           plugin, *refModule, refClone->getContext(), nWorkers);
       EvalLease withEval = [&](auto &fn) { return evalPool->withWorker(fn); };
-      CandidatePool pool(space, static_cast<size_t>(options.maxEvals));
+      CandidatePool pool(space, static_cast<size_t>(options.maxEvals), options);
       std::mutex stateMx;
       llvm::raw_ostream *log = nullptr;
       LLVM_DEBUG(log = &llvm::dbgs());
@@ -662,7 +662,8 @@ struct InferenceTask {
         progress.startSeed(slot, sv);
 
         std::mt19937 seedRng(static_cast<unsigned>(sv));
-        CandidatePool pool(space, static_cast<size_t>(options.maxEvals));
+        CandidatePool pool(space, static_cast<size_t>(options.maxEvals),
+                           options);
         ValidationSet vs = validSet; // copy of shared contents
         std::string dir = baseDumpDir.empty()
                               ? std::string()
@@ -744,7 +745,7 @@ struct InferenceTask {
       pluginClones.back()->warmUp(ctx);
     }
 
-    CandidatePool pool(space, N, /*exhaustive=*/true);
+    CandidatePool pool(space, N, options);
 
     LLVM_DEBUG(llvm::dbgs() << "[cinm-inference] Exhaustive search: " << N
                             << " configs, " << nThreads << " threads\n");
@@ -877,7 +878,7 @@ struct InferenceTask {
             : 1u;
     MLIRContext *ctx = refClone->getContext();
 
-    CandidatePool pool(space, sampleN);
+    CandidatePool pool(space, sampleN, options);
 
     LLVM_DEBUG(llvm::dbgs() << "[cinm-inference] Random sample: requesting "
                             << sampleN << " / " << pool.size()
