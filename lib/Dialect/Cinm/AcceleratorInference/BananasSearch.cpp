@@ -403,7 +403,12 @@ static size_t evaluateBatch(llvm::ArrayRef<arma::uword> batch,
     return accepted.load();
   }
 
-  llvm::DefaultThreadPool threadPool(llvm::hardware_concurrency(workers));
+  // Never wider than the batch: a round dispatches one task per selection, so
+  // threads past that would be spawned only to find nothing to run. This pool
+  // is rebuilt every round, which a search spends microseconds on against
+  // evaluations that take seconds.
+  llvm::DefaultThreadPool threadPool(
+      llvm::hardware_concurrency(std::min<unsigned>(workers, batch.size())));
   for (size_t i = 0; i < batch.size(); ++i)
     threadPool.async([&runOne, i]() { runOne(i); });
   threadPool.wait();

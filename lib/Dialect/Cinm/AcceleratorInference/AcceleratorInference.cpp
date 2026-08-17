@@ -595,7 +595,9 @@ struct InferenceTask {
   /// Validation and evaluator warm-up always use resolveWorkers() — never
   /// capped by nSeeds. When nSeeds <= 1, all workers go to the single seed's
   /// LHS phase (identical to the old runInference). When nSeeds > 1, up to
-  /// min(nWorkers, nSeeds) seeds run concurrently, each single-threaded.
+  /// min(nWorkers, nSeeds) seeds run concurrently and the workers are split
+  /// between them, so that fewer seeds than workers still occupies the
+  /// machine: a seed is parallel inside itself as well as against its peers.
   ///
   /// Seed RNG: seedValue(k) = k * 31 + rngSeed, so k=0 → rngSeed exactly.
   Maybe<TrialInfo> runMultiSeed(const std::string &baseDumpDir) {
@@ -628,14 +630,44 @@ struct InferenceTask {
     }
 
     // Multi-seed: run nSeeds BO seeds concurrently, capped by nWorkers.
-    // Pool is sized to cap (not nWorkers) — one slot per concurrent seed.
     unsigned cap = std::min<unsigned>(
         nWorkers, static_cast<unsigned>(std::max(1, options.nSeeds)));
+
+    // The workers are split between the concurrent seeds rather than one
+    // apiece: with fewer seeds than workers, a seed per worker would leave
+    // every core but `cap` of them idle for the whole search. Slot t takes
+    // nWorkers/cap, and the first (nWorkers % cap) slots one more, so the
+    // split is even and the leases can never outnumber the pool.
+    //
+    // A seed cannot sustain more evaluators than its surrogate batch, though.
+    // A round dispatches boBatchSize evaluations and waits for them, so past
+    // that a worker only holds a plugin clone and a reference module clone
+    // while never running: the surrogate phase is the whole search, and
+    // sizing for the brief LHS phase instead would pay for those clones over
+    // all of it. So the real concurrency here is nSeeds*boBatchSize -- raise
+    // one of the two to use more cores, since no split can manufacture work
+    // that the search does not have.
+    const unsigned perSeedCeiling =
+        std::max<unsigned>(1u, static_cast<unsigned>(options.boBatchSize));
+    auto slotWorkers = [&](unsigned slot) {
+      return std::min(perSeedCeiling,
+                      nWorkers / cap + (slot < nWorkers % cap ? 1u : 0u));
+    };
+    unsigned poolSize = 0;
+    for (unsigned t = 0; t < cap; ++t)
+      poolSize += slotWorkers(t);
+
     auto evalPool = std::make_unique<EvaluatorPool>(
-        plugin, *refModule, refClone->getContext(), cap);
+        plugin, *refModule, refClone->getContext(), poolSize);
     EvalLease withEval = [&](auto &fn) { return evalPool->withWorker(fn); };
-    LLVM_DEBUG(llvm::dbgs() << "[cinm-inference] Multi-seed: " << options.nSeeds
-                            << " seeds, cap=" << cap << "\n");
+    LLVM_DEBUG({
+      llvm::dbgs() << "[cinm-inference] Multi-seed: " << options.nSeeds
+                   << " seeds, cap=" << cap << ", " << poolSize << " of "
+                   << nWorkers << " workers in use (" << slotWorkers(cap - 1);
+      if (slotWorkers(0) != slotWorkers(cap - 1))
+        llvm::dbgs() << "-" << slotWorkers(0);
+      llvm::dbgs() << " per seed)\n";
+    });
 
     // k * 31 + rngSeed: k=0 gives rngSeed (matches single-seed path above).
     auto seedValue = [&](int k) { return k * 31 + options.rngSeed; };
@@ -688,10 +720,14 @@ struct InferenceTask {
         LLVM_DEBUG(if (!log) log = &llvm::dbgs());
 
         double bestCost = std::numeric_limits<double>::max();
-        // Each seed is single-threaded; outer cap-parallelism covers all cores.
+        // This seed's own bookkeeping lock. Every structure runSeedBO touches
+        // -- the pool, the state, the training set -- belongs to this seed, so
+        // seeds never contend with each other, only with their own evaluators.
+        std::mutex seedMx;
+        const unsigned seedWorkers = slotWorkers(slot);
         auto result = runSeedBO(seedRng, pool, std::move(vs), withEval,
-                                /*stateMx=*/nullptr, /*evalWorkers=*/1, dir,
-                                onProgress, &bestCost, log);
+                                seedWorkers > 1 ? &seedMx : nullptr,
+                                seedWorkers, dir, onProgress, &bestCost, log);
         progress.seedDone(slot);
 
         std::lock_guard<std::mutex> g(bestMx);
