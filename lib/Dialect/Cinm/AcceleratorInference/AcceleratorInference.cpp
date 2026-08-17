@@ -858,11 +858,18 @@ struct InferenceTask {
   /// the valid space routinely turns up configs whose actual on-hardware
   /// cost is minutes instead of milliseconds, which is wasteful once every
   /// sampled config gets compiled and benchmarked downstream. Uses
-  /// CandidatePool::sampleInitialSet (Latin Hypercube Sampling, already
-  /// parallelized internally -- see its own doc comment) rather than
-  /// fillRandom precisely so the accept/reject decision can happen inside
-  /// the sampling loop itself: a rejected candidate is immediately replaced
-  /// by another LHS draw instead of being sampled once ahead of time.
+  /// CandidatePool::sampleInitialSet (already parallelized internally -- see
+  /// its own doc comment) rather than fillRandom precisely so the
+  /// accept/reject decision can happen inside the sampling loop itself: a
+  /// rejected candidate is immediately replaced by another draw instead of
+  /// being sampled once ahead of time.
+  ///
+  /// options.samplingMode picks how that draw is made. LHS spreads the sample
+  /// over the space, which is what a model wants to be fit on; Uniform is the
+  /// only mode whose sample is an unbiased picture of the space, so it is the
+  /// one to use when the sample feeds a statistic about the space rather than
+  /// a model. Note that sampleMaxCostMs conditions the sample either way, so
+  /// an unbiased draw wants it at 0.
   ///
   /// Exhaustive search's cost is entirely its simulator calls, one per
   /// configuration in the space -- so evaluating a bounded random subset
@@ -880,10 +887,14 @@ struct InferenceTask {
 
     CandidatePool pool(space, sampleN, options);
 
-    LLVM_DEBUG(llvm::dbgs() << "[cinm-inference] Random sample: requesting "
-                            << sampleN << " / " << pool.size()
-                            << " configs (max cost " << options.sampleMaxCostMs
-                            << " ms), " << nThreads << " threads\n");
+    LLVM_DEBUG(llvm::dbgs()
+               << "[cinm-inference] Random sample: requesting " << sampleN
+               << " / " << pool.size() << " configs ("
+               << (options.samplingMode == InferenceOptions::SamplingMode::LHS
+                       ? "lhs"
+                       : "uniform")
+               << ", max cost " << options.sampleMaxCostMs << " ms), "
+               << nThreads << " threads\n");
 
     SimpleProgressBar bar(sampleN, "Random sample search ",
                           options.showProgress);
@@ -937,7 +948,7 @@ struct InferenceTask {
     };
 
     auto t0 = std::chrono::steady_clock::now();
-    pool.sampleInitialSet(sampleN, rng, accept, nThreads);
+    pool.sampleInitialSet(sampleN, rng, accept, nThreads, options.samplingMode);
     auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
         std::chrono::steady_clock::now() - t0);
 

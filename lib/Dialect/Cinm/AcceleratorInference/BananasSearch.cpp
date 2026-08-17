@@ -102,41 +102,44 @@ static std::vector<size_t> allIndices(size_t n) {
 }
 
 // ===----------------------------------------------------------------------===//
-// Latin Hypercube Sampling
+// Initial-set sampling: Latin Hypercube or uniform
 // ===----------------------------------------------------------------------===//
 
 void CandidatePool::sampleInitialSet(size_t n, std::mt19937 &rng,
                                      std::function<bool(size_t)> accept,
-                                     unsigned workers) {
-  // size_t nAccepted = 0;
-  // while (nAccepted < n) {
-  //   std::unordered_set<size_t> result;
-  //   size_t want = n - nAccepted;
-  //   fillRandom(result, want, rng);
-  //   for (auto i : result) {
-  //     if (accept(i))
-  //       nAccepted++;
-  //   }
-  //   if (result.size() < want || nAccepted >= n)
-  //     return;
-  //   result.clear();
-  // }
-  // return;
-
+                                     unsigned workers,
+                                     InferenceOptions::SamplingMode mode) {
   const size_t D = numFeatures();
   const size_t M = size();
   if (n == 0 || M == 0)
     return;
 
-  // DxM matrix, one column per config.
-  arma::mat enc = encodeSubset(*space_, allIndices(M));
+  const bool lhs = mode == InferenceOptions::SamplingMode::LHS;
 
-  // Per-dimension [0,1] normalisation.
-  for (size_t d = 0; d < D; ++d) {
-    double lo = enc.row(d).min();
-    double hi = enc.row(d).max();
-    double range = (hi > lo) ? (hi - lo) : 1.0;
-    enc.row(d) = (enc.row(d) - lo) / range;
+  // LHS only: the normalised encoding the targets are snapped against.
+  arma::mat enc;
+  if (lhs) {
+    // DxM matrix, one column per config.
+    enc = encodeSubset(*space_, allIndices(M));
+
+    // Per-dimension [0,1] normalisation.
+    for (size_t d = 0; d < D; ++d) {
+      double lo = enc.row(d).min();
+      double hi = enc.row(d).max();
+      double range = (hi > lo) ? (hi - lo) : 1.0;
+      enc.row(d) = (enc.row(d) - lo) / range;
+    }
+  }
+
+  // Uniform only: a lazy Fisher-Yates over every index. Drawing the prefix one
+  // swap at a time makes each remaining index equally likely at every step,
+  // which is the property the mode exists for; rejection sampling against
+  // `used` would only approximate it, and degrades as the draw approaches M.
+  std::vector<size_t> shuffled;
+  size_t nDrawn = 0;
+  if (!lhs) {
+    shuffled.resize(M);
+    std::iota(shuffled.begin(), shuffled.end(), 0);
   }
 
   std::uniform_real_distribution<double> u01(0.0, 1.0);
@@ -144,14 +147,31 @@ void CandidatePool::sampleInitialSet(size_t n, std::mt19937 &rng,
   std::atomic<size_t> accepted{0};
 
   // accept() may run a simulator that takes seconds, so the accepted calls are
-  // dispatched to a thread pool. The (cheap) LHS target generation and greedy
-  // nearest-neighbour candidate selection stay on this thread; only accept()
-  // runs concurrently. `workers` sizes the pool (same knob as exhaustive
-  // search).
+  // dispatched to a thread pool. Candidate selection -- LHS target generation
+  // and greedy nearest-neighbour, or the Fisher-Yates swap -- stays on this
+  // thread; only accept() runs concurrently. `workers` sizes the pool (same
+  // knob as exhaustive search).
   llvm::DefaultThreadPool threadPool(
       llvm::hardware_concurrency(std::max(1u, workers)));
 
-  // Keep generating LHS batches until n configurations pass accept().
+  // Selection happens inline rather than into a batch vector so that it
+  // overlaps evaluation: LHS selection is O(want×M) and would otherwise block
+  // pool threads for the whole batch.
+  size_t nDispatched = 0;
+  auto dispatch = [&](size_t idx) {
+    used.insert(idx);
+    ++nDispatched;
+    threadPool.async([&accept, &accepted, idx, n]() {
+      if (accepted.load(std::memory_order_relaxed) >= n)
+        return;
+      if (accept(idx))
+        accepted.fetch_add(1, std::memory_order_relaxed);
+    });
+  };
+
+  // Keep generating batches until n configurations pass accept(). Both modes
+  // draw without replacement, so an index accept() rejects is never offered
+  // again and the accepted set stays a draw from what accept() would take.
   while (accepted.load(std::memory_order_relaxed) < n) {
     size_t want = n - accepted.load(std::memory_order_relaxed);
 
@@ -160,50 +180,49 @@ void CandidatePool::sampleInitialSet(size_t n, std::mt19937 &rng,
       break;
     want = std::min(want, nUnused);
 
-    // LHS targets for this batch.
-    std::vector<std::vector<double>> batchTargets(want, std::vector<double>(D));
-    for (size_t d = 0; d < D; ++d) {
-      std::vector<size_t> perm(want);
-      std::iota(perm.begin(), perm.end(), 0);
-      std::shuffle(perm.begin(), perm.end(), rng);
-      for (size_t i = 0; i < want; ++i)
-        batchTargets[i][d] = (static_cast<double>(perm[i]) + u01(rng)) /
-                             static_cast<double>(want);
+    nDispatched = 0;
+    if (lhs) {
+      // LHS targets for this batch.
+      std::vector<std::vector<double>> batchTargets(want,
+                                                    std::vector<double>(D));
+      for (size_t d = 0; d < D; ++d) {
+        std::vector<size_t> perm(want);
+        std::iota(perm.begin(), perm.end(), 0);
+        std::shuffle(perm.begin(), perm.end(), rng);
+        for (size_t i = 0; i < want; ++i)
+          batchTargets[i][d] = (static_cast<double>(perm[i]) + u01(rng)) /
+                               static_cast<double>(want);
+      }
+
+      // Greedy nearest-neighbour: each target → closest unused candidate.
+      for (size_t t = 0; t < want; ++t) {
+        double bestDist = std::numeric_limits<double>::max();
+        size_t bestPos = M; // position in candidates
+        for (size_t i = 0; i < M; ++i) {
+          if (used.count(i))
+            continue;
+          double dist = 0;
+          for (size_t d = 0; d < D; ++d) {
+            double diff = enc(d, i) - batchTargets[t][d];
+            dist += diff * diff;
+          }
+          if (dist < bestDist) {
+            bestDist = dist;
+            bestPos = i;
+          }
+        }
+        if (bestPos == M)
+          break;
+        dispatch(bestPos);
+      }
+    } else {
+      for (size_t t = 0; t < want && nDrawn < M; ++t) {
+        std::uniform_int_distribution<size_t> pick(nDrawn, M - 1);
+        std::swap(shuffled[nDrawn], shuffled[pick(rng)]);
+        dispatch(shuffled[nDrawn++]);
+      }
     }
 
-    // Greedy nearest-neighbour: each target → closest unused candidate.
-    // Dispatch each candidate to the thread pool immediately after selection
-    // so that NN selection and evaluation overlap (selection is O(want×M)
-    // and would otherwise block pool threads for the entire batch).
-    size_t nDispatched = 0;
-    for (size_t t = 0; t < want; ++t) {
-      double bestDist = std::numeric_limits<double>::max();
-      size_t bestPos = M; // position in candidates
-      for (size_t i = 0; i < M; ++i) {
-        if (used.count(i))
-          continue;
-        double dist = 0;
-        for (size_t d = 0; d < D; ++d) {
-          double diff = enc(d, i) - batchTargets[t][d];
-          dist += diff * diff;
-        }
-        if (dist < bestDist) {
-          bestDist = dist;
-          bestPos = i;
-        }
-      }
-      if (bestPos == M)
-        break;
-      used.insert(bestPos);
-      ++nDispatched;
-      size_t idx = bestPos;
-      threadPool.async([&accept, &accepted, idx, n]() {
-        if (accepted.load(std::memory_order_relaxed) >= n)
-          return;
-        if (accept(idx))
-          accepted.fetch_add(1, std::memory_order_relaxed);
-      });
-    }
     if (nDispatched == 0)
       break;
     // Barrier: the next batch's `want` depends on how many were accepted.

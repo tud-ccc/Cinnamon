@@ -200,13 +200,19 @@ struct CandidatePool {
                          uint64_t cpuTimeMs = 0);
   void recordFailedEvaluation(size_t idx, size_t iter = 0);
 
-  /// Select n row-indices from the pool using Latin Hypercube Sampling.
+  /// Select n row-indices from the pool, either by Latin Hypercube Sampling
+  /// over the normalised parameter encoding or by independent uniform draws
+  /// (see InferenceOptions::SamplingMode).
   /// `accept` is invoked for each selected index; it must be thread-safe when
   /// `workers > 1`, as up to `workers` calls run concurrently on a thread pool.
-  /// Sampling stops as soon as `n` calls have returned true.
+  /// Sampling stops as soon as `n` calls have returned true. An index `accept`
+  /// rejects is never offered again, so under Uniform the accepted set is a
+  /// uniform draw from the configs `accept` would have taken.
   void sampleInitialSet(size_t n_samples, std::mt19937 &rng,
                         std::function<bool(size_t)> accept,
-                        unsigned workers = 1);
+                        unsigned workers = 1,
+                        InferenceOptions::SamplingMode mode =
+                            InferenceOptions::SamplingMode::LHS);
 
   /// Fit a BANANAS MLP ensemble on the observed subset (Xo/yo), draw
   /// `batchSize` unvisited candidates from the acquisition, and evaluate them
