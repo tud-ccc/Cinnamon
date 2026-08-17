@@ -7,8 +7,9 @@ invariant cross-check, the A2 probe stack, and the assemble/plot layer
 that folds whatever exists into results/ and figures. Structure and
 conventions follow cinm1comparison/dodo.py: stages connected by files,
 fallible-per-config compiles, exclusive hardware benches (one at a time,
-stacks serialized sample -> topk -> search -> ablated -> points), retry
-tasks. The shared machinery lives in cinm_experiments.doit_blocks.
+in no particular order; the stacks are independent, so any one of them
+can be asked for on its own), retry tasks. The shared machinery lives in
+cinm_experiments.doit_blocks.
 
 Still to come: the cinm1 (D,T) sweep with coverage accounting, and the
 RQ4 multi-op workloads/arms.
@@ -83,9 +84,10 @@ OPTS = dict(
     n_a2=300,
     a2_seed=1848,
     infer_opts={
+        # todo Maybe bump this up for the real numbers
         "bo-batch-size": 4,
-        "max-evals": 512,
-        "n-init": 64,
+        "max-evals": 128,
+        "n-init": 32,
         "acquisition": "thompson",
     },
 )
@@ -315,7 +317,6 @@ def _measure_stack(
     stack: str,
     entries: list[StackEntry],
     *,
-    prev_stack: str | None,
     qualify_by_system: bool = False,
 ):
     """Yield compile_{stack} / bench_{stack} tasks for a list of configs.
@@ -327,12 +328,9 @@ def _measure_stack(
     source must not have it, or its task names change under it.
 
     Compiles are parallel and fallible per config. Benches are `exclusive`,
-    so hardware only ever runs one config at a time (in no particular order
-    within the stack), and the stack as a whole is serialized behind
-    prev_stack's whole bench group, keeping the stack order sample -> topk
-    -> search -> ablated searches -> points. A `_barrier` no-op closes every
-    bench group even when the stack has no configs yet (its inputs haven't
-    been produced), so the next stack's group dependency always resolves.
+    so hardware only ever runs one config at a time, in no particular order:
+    stacks are independent of each other, so any one of them can be asked
+    for on its own without dragging the others onto the hardware first.
     """
 
     def task_name(bench, config) -> str:
@@ -341,7 +339,6 @@ def _measure_stack(
             parts.insert(1, config.system)
         return ":".join(parts)
 
-    prev_group = [f"bench_{prev_stack}"] if prev_stack else []
     for bench, config, deps, roots in entries:
         name = task_name(bench, config)
         marker = roots.compile_marker_of(config)
@@ -359,7 +356,6 @@ def _measure_stack(
             # The stack inputs too: a redrawn pool / rewritten point must
             # invalidate the measurements, not silently re-attribute them.
             "file_dep": [str(marker)] + [str(d) for d in deps],
-            "task_dep": prev_group,
             # Real hardware: never beside anything else.
             "exclusive": True,
             "targets": [str(bench_marker)],
@@ -371,22 +367,6 @@ def _measure_stack(
                 )
             ],
         }
-    yield {
-        "basename": f"bench_{stack}",
-        "name": "_barrier",
-        "actions": [],
-        # Every entry, not just the last: the benches of a stack are
-        # unordered between themselves, so nothing else makes the last one
-        # imply the rest.
-        "task_dep": (
-            [
-                f"bench_{stack}:{task_name(bench, config)}"
-                for bench, config, _, _ in entries
-            ]
-            or prev_group
-        ),
-        "uptodate": [True],
-    }
 
 
 @create_after(executed="sample", creates=["compile_sample", "bench_sample"])
@@ -405,7 +385,7 @@ def task_compile_sample():
                     sample_roots(bench),
                 )
             )
-    yield from _measure_stack("sample", entries, prev_stack=None)
+    yield from _measure_stack("sample", entries)
 
 
 # ── A2: rejected-region probing (CPU-only, no hardware) ─────────────────────
@@ -868,7 +848,7 @@ def task_compile_topk():
                     topk_roots(bench),
                 )
             )
-    yield from _measure_stack("topk", entries, prev_stack="sample")
+    yield from _measure_stack("topk", entries)
 
 
 # ── B4: the BO search stack, default + ablated spaces ───────────────────────
@@ -990,7 +970,7 @@ def task_compile_search():
                     search_roots(bench),
                 )
             )
-    yield from _measure_stack("search", entries, prev_stack="topk")
+    yield from _measure_stack("search", entries)
 
 
 @create_after(
@@ -1011,7 +991,7 @@ def task_compile_search_ablate():
                         ablate_roots(bench, space),
                     )
                 )
-    yield from _measure_stack("search_ablate", entries, prev_stack="search")
+    yield from _measure_stack("search_ablate", entries)
 
 
 # ── B5: manually-authored points, evaluated in our system ───────────────────
@@ -1075,9 +1055,7 @@ def task_compile_points():
                         points_roots(bench, source),
                     )
                 )
-    yield from _measure_stack(
-        "points", entries, prev_stack="search_ablate", qualify_by_system=True
-    )
+    yield from _measure_stack("points", entries, qualify_by_system=True)
 
 
 def _invariants_report(source: str, bench: str) -> bool:

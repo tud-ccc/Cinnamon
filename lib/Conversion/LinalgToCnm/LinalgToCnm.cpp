@@ -337,6 +337,13 @@ splitDistributedReductions(RewriterBase &rewriter, linalg::LinalgOp op,
              << " ways reassociates a floating-point reduction, which changes "
                 "the result; pass allow-float-reassociation to permit it";
 
+    // splitReduction builds a fresh op and erases this one, so whatever the
+    // pipeline stamped here has to be read out first and carried across --
+    // otherwise a decision made upstream silently disappears exactly when a
+    // reduction is split.
+    unsigned oldNumLoops = op.getNumLoops();
+    DictionaryAttr carried = op->getDiscardableAttrDictionary();
+
     linalg::ControlSplitReductionFn control = [&](linalg::LinalgOp) {
       return linalg::SplitReductionOptions{ratio, /*index=*/0,
                                            /*innerParallel=*/false};
@@ -357,12 +364,8 @@ splitDistributedReductions(RewriterBase &rewriter, linalg::LinalgOp op,
     // the original reduction dimension now spanning exactly one block.
     blocks.insert(blocks.begin(), 1);
 
-    // splitReduction builds a fresh op, so whatever the pipeline stamped on
-    // this one has to be carried across -- otherwise a decision made upstream
-    // silently disappears exactly when a reduction is split. Lists indexed by
-    // iteration dimension additionally get an entry for the new dimension.
-    unsigned oldNumLoops = op.getNumLoops();
-    DictionaryAttr carried = op->getDiscardableAttrDictionary();
+    // Lists indexed by iteration dimension additionally get an entry for the
+    // new dimension.
     op = split->splitLinalgOp;
     op->setDiscardableAttrs(carried);
     for (StringRef name : llvm::concat<const std::string>(
