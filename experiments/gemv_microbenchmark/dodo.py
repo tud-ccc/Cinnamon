@@ -84,17 +84,12 @@ FUNCTIONAL_POINTS: dict[str, dict[str, int]] = {
     "gemv": {
         "dpus": 4,
         "tasklets": 8,
-        "gemv.M.mram": 256,
-        "gemv.M.wram": 8,
-        "gemv.K.mram": 128,
-        "gemv.K.wram": 64,
-        "gemv.order[0]": 1,
-        "gemv.order[1]": 2,
-        # gemv fuses the scaling of its result into the same launch, so that
-        # op's own tiling is part of the point.
-        "generic.D0.mram": 32,
-        "generic.D0.wram": 8,
-        "fuse.gemv->generic": 1,
+        "generic.D0.mram": 512,
+        "generic.D0.wram": 2,
+        "generic.D1.mram": 64,
+        "generic.D1.wram": 2,
+        "generic.order[0]": 1,
+        "generic.order[1]": 2,
     },
     "geva": {
         "dpus": 4,

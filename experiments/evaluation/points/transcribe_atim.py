@@ -1,6 +1,7 @@
 """Transcribe ATiM's scheduled TIR into our configuration space.
 
-    python points/transcribe_atim.py [--traces points/traces] [--only mtv_64MB]
+    python points/transcribe_atim.py [--traces points/traces]
+                                    [--only mtv_4MB mtv_64MB ...]
 
 Writes points/{atim_published,atim_reproduced}/{bench}.json from the
 `*.tir.py` dumps beside each trace, following the format and the reading
@@ -496,8 +497,16 @@ def space_json(bench: str, fn: str) -> pathlib.Path:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--traces", type=pathlib.Path, default=HERE / "traces")
-    parser.add_argument("--only", help="one fn_name, for iterating on a single point")
+    parser.add_argument(
+        "--only",
+        nargs="+",
+        metavar="FN_NAME",
+        help="fn_names to transcribe, for iterating on a few points; every"
+        " fn_name of a bench you want kept in its file has to be named",
+    )
     args = parser.parse_args()
+    only = set(args.only or ())
+    unmatched = set(only)
 
     by_source: dict[str, dict[str, list]] = collections.defaultdict(
         lambda: collections.defaultdict(list)
@@ -521,8 +530,9 @@ def main() -> int:
             continue
         bench = f"prim_{op}"
         fn = f"{op}_{size_label(LARGEST_OPERAND[op](m, n, k))}"
-        if args.only and fn != args.only:
+        if only and fn not in only:
             continue
+        unmatched.discard(fn)
         sj = space_json(bench, fn)
         if not sj.exists():
             problems.append(f"{fn}: no space.json ({sj}); run `doit space`")
@@ -541,6 +551,12 @@ def main() -> int:
                 "candidates": candidates,
             }
         )
+
+    # A name no trace answers to would otherwise be silent, and the file it was
+    # meant to keep a point in gets written without that point.
+    problems += [
+        f"{fn}: --only names it, but no trace produces it" for fn in sorted(unmatched)
+    ]
 
     written = 0
     for source, benches in sorted(by_source.items()):
