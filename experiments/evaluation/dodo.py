@@ -148,6 +148,34 @@ def sample_roots(bench: str) -> doit_blocks.MeasureRoots:
     )
 
 
+# ── one cinm-opt run per function ───────────────────────────────────────────
+# Every cinm-opt stage below (space, sample, exhaust, search) is one task per
+# function, run over that function's split module rather than the whole
+# benchmark. The functions were being processed one after another inside a
+# single run anyway, so this costs nothing and buys the granularity: an
+# interrupted stage keeps the functions it finished, a function that fails
+# does not take its siblings down, and the progress bar names the function
+# actually running.
+#
+# They keep sharing one dump root per (benchmark, stage) so the dumps stay
+# where everything downstream already looks for them -- infer_{fn_name}/
+# separates those by itself. What does not separate itself is the pass's own
+# output and log, hence the per-function names here; losing the log would
+# lose which function failed.
+
+
+def _per_fn_out_mlir(dump: pathlib.Path, fn_name: str) -> pathlib.Path:
+    return dump / f"out_{fn_name}.mlir"
+
+
+def _per_fn_run_files(dump: pathlib.Path, fn_name: str) -> dict:
+    """out_file/log_file for a cinm-opt run over one function's split module"""
+    return {
+        "out_file": _per_fn_out_mlir(dump, fn_name),
+        "log_file": dump / f"cinm-opt_{fn_name}.log",
+    }
+
+
 # ── split ────────────────────────────────────────────────────────────────────
 
 
@@ -172,8 +200,12 @@ def task_split():
 # ── B0: space dumps ──────────────────────────────────────────────────────────
 
 
-def _dump_space(bench: str) -> bool:
-    cinmopt.dump_space(source_mlir(bench), space_dir(bench))
+def _dump_space(bench: str, fn_name: str) -> bool:
+    cinmopt.dump_space(
+        split_module(bench, fn_name),
+        space_dir(bench),
+        **_per_fn_run_files(space_dir(bench), fn_name),
+    )
     return True
 
 
@@ -182,26 +214,26 @@ def task_space():
     per-param docs + permutation tables for the manual ATiM transcription
     workflow. No simulator runs; safe anywhere."""
     for bench in WORKLOADS:
-        yield {
-            "name": bench,
-            "file_dep": [str(source_mlir(bench))],
-            "targets": [
-                str(space_json(bench, fn)) for fn in list_functions(source_mlir(bench))
-            ],
-            "actions": [(_dump_space, [bench])],
-        }
+        for fn_name in list_functions(source_mlir(bench)):
+            yield {
+                "name": f"{bench}:{fn_name}",
+                "file_dep": [str(split_module(bench, fn_name))],
+                "targets": [str(space_json(bench, fn_name))],
+                "actions": [(_dump_space, [bench, fn_name])],
+            }
 
 
 # ── B1: the shared uniform sample ────────────────────────────────────────────
 
 
-def _draw_sample(bench: str) -> bool:
+def _draw_sample(bench: str, fn_name: str) -> bool:
     cinmopt.random_sample(
-        source_mlir(bench),
+        split_module(bench, fn_name),
         sample_dir(bench),
         workers=64,
         n_samples=OPTS["n_sample"],
         seed=OPTS["sample_seed"],
+        **_per_fn_run_files(sample_dir(bench), fn_name),
         infer_opts={
             "simulator": OPTS["simulator"],
             "eval-timeout-ms": OPTS["eval_timeout_ms"],
@@ -229,18 +261,22 @@ def task_sample():
 
     A config whose simulation exceeds eval_timeout_ms keeps its slot with a
     non-finite predicted cost, so all n_sample rows still reach B2 and the
-    measured distribution stays whole; sample_stats.json counts them."""
+    measured distribution stays whole; sample_stats.json counts them.
+
+    Splitting the draw per function does not change it: the pass seeds a
+    fresh RNG per function from sample_seed, so a function's rows do not
+    depend on which functions ran before it."""
     for bench in WORKLOADS:
-        yield {
-            "name": bench,
-            "file_dep": [str(source_mlir(bench))],
-            "targets": [
-                str(p)
-                for fn in list_functions(source_mlir(bench))
-                for p in (sample_pool_csv(bench, fn), sample_stats_json(bench, fn))
-            ],
-            "actions": [(_draw_sample, [bench])],
-        }
+        for fn_name in list_functions(source_mlir(bench)):
+            yield {
+                "name": f"{bench}:{fn_name}",
+                "file_dep": [str(split_module(bench, fn_name))],
+                "targets": [
+                    str(sample_pool_csv(bench, fn_name)),
+                    str(sample_stats_json(bench, fn_name)),
+                ],
+                "actions": [(_draw_sample, [bench, fn_name])],
+            }
 
 
 # ── B2 on the sample: compile + bench every sampled config ──────────────────
@@ -763,10 +799,11 @@ def exhaust_pool_csv(bench: str, fn_name: str) -> pathlib.Path:
     return exhaust_dir(bench) / f"infer_{fn_name}" / "pool.csv"
 
 
-def _exhaust_one(bench: str) -> bool:
+def _exhaust_one(bench: str, fn_name: str) -> bool:
     cinmopt.exhaustive_search(
-        source_mlir(bench),
+        split_module(bench, fn_name),
         exhaust_dir(bench),
+        **_per_fn_run_files(exhaust_dir(bench), fn_name),
         infer_opts={
             # Same model pairing as B1/B4 -- predicted costs must be
             # comparable across stacks -- but with the shorter sweep
@@ -784,15 +821,13 @@ def task_exhaust_pred():
     (no hardware, CPU-heavy). The full pool is also the feasible-set oracle
     for whatever wants membership with costs attached."""
     for bench in WORKLOADS:
-        yield {
-            "name": bench,
-            "file_dep": [str(source_mlir(bench))],
-            "targets": [
-                str(exhaust_pool_csv(bench, fn))
-                for fn in list_functions(source_mlir(bench))
-            ],
-            "actions": [(_exhaust_one, [bench])],
-        }
+        for fn_name in list_functions(source_mlir(bench)):
+            yield {
+                "name": f"{bench}:{fn_name}",
+                "file_dep": [str(split_module(bench, fn_name))],
+                "targets": [str(exhaust_pool_csv(bench, fn_name))],
+                "actions": [(_exhaust_one, [bench, fn_name])],
+            }
 
 
 def _topk_configs(bench: str) -> list[compile_run.Config]:
@@ -858,11 +893,10 @@ def _search_dump_dir(bench: str, space: str) -> pathlib.Path:
 
 
 def _search_out_mlir(bench: str, space: str, fn_name: str) -> pathlib.Path:
-    """The search's compiled output, and the task's sentinel that this
-    function's search ran to completion. One search per function, all sharing
-    a dump root, so it carries the function in its name -- the pool dumps
-    separate themselves into infer_{fn_name}/, this does not."""
-    return _search_dump_dir(bench, space) / f"out_{fn_name}.mlir"
+    """The search's compiled output, which doubles as the task's sentinel that
+    this function's search ran to completion -- unlike the other stages, a
+    search has no per-function dump that only exists once it is finished."""
+    return _per_fn_out_mlir(_search_dump_dir(bench, space), fn_name)
 
 
 def _run_search(bench: str, fn_name: str, space: str) -> bool:
@@ -872,8 +906,7 @@ def _run_search(bench: str, fn_name: str, space: str) -> bool:
         dump,
         n_seeds=OPTS["n_seeds"],
         workers=64,
-        out_file=_search_out_mlir(bench, space, fn_name),
-        log_file=dump / f"cinm-opt_{fn_name}.log",
+        **_per_fn_run_files(dump, fn_name),
         infer_opts={
             "simulator": OPTS["simulator"],
             "eval-timeout-ms": OPTS["eval_timeout_ms"],

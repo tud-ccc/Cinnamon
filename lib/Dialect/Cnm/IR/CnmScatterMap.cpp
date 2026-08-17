@@ -90,7 +90,17 @@ AffineMap mlir::cnm::deflateScatterMap(AffineMap map, BufferType buffer,
     if (blockElements * extent > contiguous)
       break;
     unsigned dim = wgRank + retained - 1;
-    if (results.back() != getAffineDimExpr(dim, map.getContext()))
+    // A dimension of one value indexes position 0 and nothing else, so the
+    // map is free to say `0` where it would otherwise say `dim` -- and
+    // simplification does exactly that, since a dimension bounded to a single
+    // value folds to a constant. Refusing that form would stop the widening
+    // on a dimension that is one element wide, and a leaf tile dividing its
+    // level exactly is enough to put one at the end of a buffer.
+    const bool isDegenerate =
+        extent == 1 && isa<AffineConstantExpr>(results.back()) &&
+        cast<AffineConstantExpr>(results.back()).getValue() == 0;
+    if (!isDegenerate &&
+        results.back() != getAffineDimExpr(dim, map.getContext()))
       break;
     // Dropping the dimension from the domain is only sound if nothing else
     // names it.

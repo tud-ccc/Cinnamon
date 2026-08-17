@@ -44,10 +44,14 @@
 // fills a buffer laid out leaf by leaf and cnm.expand_buffer writes it back
 // out. The alternative is a transfer of one block per leaf, which the SDK's
 // scatter/gather API mishandles once a DPU's blocks stop ascending.
+// The `1` in the packed shape is a buffer dimension of one element that the
+// map does not read. It is kept rather than dropped: it holds one copy either
+// way, and leaving it out would put the buffer's dimensions out of step with
+// the host's, which is what decides how wide a block the transfer may move.
 // SPLIT-LABEL: func.func @gemv_4MB
 // SPLIT:       upmem.alloc_dpus
-// SPLIT:       upmem.gather_from_array {{.*}} : memref<4x4x4x64xi32>
-// SPLIT:       cnm.expand_buffer {{.*}} : memref<4x4x4x64xi32> into memref<4x16x64xi32>
+// SPLIT:       upmem.gather_from_array {{.*}} : memref<4x4x4x1x64xi32>
+// SPLIT:       cnm.expand_buffer {{.*}} : memref<4x4x4x1x64xi32> into memref<4x16x64xi32>
 // SPLIT:       upmem.alloc_dpus
 // SPLIT:       upmem.dpu_program
 // SPLIT:       upmem.dpu_program

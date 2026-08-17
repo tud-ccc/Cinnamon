@@ -75,6 +75,8 @@ def exhaustive_search(
     workers: int | None = None,
     infer_opts: dict | None = None,
     nice: bool = True,
+    out_file: pathlib.Path | None = None,
+    log_file: pathlib.Path | None = None,
     cinm_opt: pathlib.Path = DEFAULT_CINM_OPT,
 ) -> pathlib.Path:
     """Exhaustively evaluate every valid config, dumping
@@ -82,9 +84,13 @@ def exhaustive_search(
     "infer_" prefix comes from the pass's own NameInventor; dump-full-pool is
     forced on, since screening needs the full pool, not just visited rows).
     Runs niced (nice -n 19) by default -- exhaustive search is CPU-hungry and
-    this is usually run alongside other work. Returns out_dir."""
+    this is usually run alongside other work. Returns out_dir.
+
+    See bo_multiseed for out_file/log_file."""
     out_dir = pathlib.Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
+    out_file = out_file or out_dir / "out.mlir"
+    log_file = log_file or out_dir / "cinm-opt.log"
     opts = {
         "dump-dir": str(out_dir),
         "exhaustive-search": True,
@@ -95,15 +101,13 @@ def exhaustive_search(
     r = _run(
         src,
         opts,
-        out_file=out_dir / "out.mlir",
+        out_file=out_file,
         cinm_opt=cinm_opt,
-        log_file=out_dir / "cinm-opt.log",
+        log_file=log_file,
         nice=nice,
     )
     if r.returncode != 0:
-        raise RuntimeError(
-            f"exhaustive_search failed for {src}; see {out_dir}/cinm-opt.log"
-        )
+        raise RuntimeError(f"exhaustive_search failed for {src}; see {log_file}")
     return out_dir
 
 
@@ -112,6 +116,8 @@ def dump_space(
     out_dir: pathlib.Path,
     *,
     infer_opts: dict | None = None,
+    out_file: pathlib.Path | None = None,
+    log_file: pathlib.Path | None = None,
     cinm_opt: pathlib.Path = DEFAULT_CINM_OPT,
 ) -> pathlib.Path:
     """Build each function's config space and dump
@@ -120,9 +126,13 @@ def dump_space(
     doc strings and, for permutation params, the full orderings table with
     copy-pasteable eval-solution assignments -- the input of the manual
     ATiM-transcription workflow. Cheap: no simulator runs, only the
-    constraint solve. Returns out_dir."""
+    constraint solve. Returns out_dir.
+
+    See bo_multiseed for out_file/log_file."""
     out_dir = pathlib.Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
+    out_file = out_file or out_dir / "out.mlir"
+    log_file = log_file or out_dir / "cinm-opt.log"
     opts = {
         "dump-dir": str(out_dir),
         "dump-space-only": True,
@@ -131,12 +141,12 @@ def dump_space(
     r = _run(
         src,
         opts,
-        out_file=out_dir / "out.mlir",
+        out_file=out_file,
         cinm_opt=cinm_opt,
-        log_file=out_dir / "cinm-opt.log",
+        log_file=log_file,
     )
     if r.returncode != 0:
-        raise RuntimeError(f"dump_space failed for {src}; see {out_dir}/cinm-opt.log")
+        raise RuntimeError(f"dump_space failed for {src}; see {log_file}")
     return out_dir
 
 
@@ -149,6 +159,8 @@ def random_sample(
     infer_opts: dict | None = None,
     seed: int | None = None,
     nice: bool = True,
+    out_file: pathlib.Path | None = None,
+    log_file: pathlib.Path | None = None,
     cinm_opt: pathlib.Path = DEFAULT_CINM_OPT,
 ) -> pathlib.Path:
     """Evaluate a random sample of n_samples valid configs (instead of every
@@ -159,9 +171,16 @@ def random_sample(
     the O(N) validity scan), so this is O(n_samples) instead, turning
     hours-long full-space sweeps into a low-minutes/seconds run. dump-full-pool
     is left off (the InferenceOptions default), so pool.csv only contains the
-    n_samples visited rows, not the whole space. Returns out_dir."""
+    n_samples visited rows, not the whole space. Returns out_dir.
+
+    See bo_multiseed for out_file/log_file. The draw itself does not depend on
+    how many functions src holds: the pass builds one InferenceTask per
+    compute block, each seeding its own RNG from rng-seed, so a per-function
+    run reproduces that function's rows exactly."""
     out_dir = pathlib.Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
+    out_file = out_file or out_dir / "out.mlir"
+    log_file = log_file or out_dir / "cinm-opt.log"
     opts = {
         "dump-dir": str(out_dir),
         "sample-n": n_samples,
@@ -172,15 +191,13 @@ def random_sample(
     r = _run(
         src,
         infer_opts=opts,
-        out_file=out_dir / "out.mlir",
+        out_file=out_file,
         cinm_opt=cinm_opt,
-        log_file=out_dir / "cinm-opt.log",
+        log_file=log_file,
         nice=nice,
     )
     if r.returncode != 0:
-        raise RuntimeError(
-            f"random_sample failed for {src}; see {out_dir}/cinm-opt.log"
-        )
+        raise RuntimeError(f"random_sample failed for {src}; see {log_file}")
     return out_dir
 
 
