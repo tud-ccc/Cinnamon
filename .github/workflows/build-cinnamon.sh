@@ -32,6 +32,15 @@ else
   warning "No Torch-MLIR installation at '$torch_mlir_install_dir'; the torch frontend will not be built"
 fi
 
+# LLVM wires up ccache itself via LLVM_CCACHE_BUILD; our own build has to ask.
+ccache_opts=()
+if command -v ccache >/dev/null 2>&1; then
+  ccache_opts=(
+    -DCMAKE_C_COMPILER_LAUNCHER=ccache
+    -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
+  )
+fi
+
 # ---- If a venv is active, make CMake use it (Python + pybind11) ----
 python_opts=()
 if [[ -n "${VIRTUAL_ENV:-}" ]]; then
@@ -73,10 +82,49 @@ if [[ "$need_config" -eq 1 ]]; then
     error "conan not found. Run setup-venv.sh, or install conan into the active environment."
     exit 1
   fi
-  status "Running conan install"
   mkdir -p "$cinnamon_build_dir"
+
+  # Our C++ dependencies must be built with the same compiler and standard
+  # library as Cinnamon itself, so the profile follows the resolved host
+  # compiler instead of being checked in with a hardcoded one.
+  conan_profile="$cinnamon_build_dir/conan-profile"
+  if "$CXX" --version 2>/dev/null | head -1 | grep -qi clang; then
+    conan_compiler=clang
+  else
+    conan_compiler=gcc
+  fi
+  case "$(uname -m)" in
+    aarch64|arm64) conan_arch=armv8 ;;
+    *)             conan_arch="$(uname -m)" ;;
+  esac
+  if [[ "$(uname -s)" == "Darwin" ]]; then
+    conan_os=Macos
+    conan_libcxx=libc++
+  else
+    conan_os=Linux
+    conan_libcxx=libstdc++11
+  fi
+  cat > "$conan_profile" <<EOF
+[settings]
+arch=$conan_arch
+build_type=$BUILD_TYPE
+compiler=$conan_compiler
+compiler.cppstd=20
+compiler.libcxx=$conan_libcxx
+compiler.version=$("$CXX" -dumpversion | cut -d. -f1)
+os=$conan_os
+
+[buildenv]
+CC=$CC
+CXX=$CXX
+
+[conf]
+tools.cmake.cmaketoolchain:generator=Ninja
+tools.build:compiler_executables={"c": "$CC", "cpp": "$CXX"}
+EOF
+  status "Running conan install"
   verbose_cmd conan install . --output-folder="$cinnamon_build_dir" --build=missing \
-    -s build_type="$BUILD_TYPE" -pr "$project_root/third-party/conan-profile"
+    -s build_type="$BUILD_TYPE" -pr "$conan_profile"
 
   user_opts=()
   if [[ -n "$CINNAMON_CMAKE_OPTIONS" ]]; then
@@ -93,6 +141,7 @@ if [[ "$need_config" -eq 1 ]]; then
     -DLLVM_ENABLE_EH=ON \
     -DLLVM_ENABLE_RTTI=ON \
     "${dep_opts[@]}" \
+    ${ccache_opts[@]+"${ccache_opts[@]}"} \
     ${python_opts[@]+"${python_opts[@]}"} \
     ${user_opts[@]+"${user_opts[@]}"}
   # shellcheck disable=SC1091
