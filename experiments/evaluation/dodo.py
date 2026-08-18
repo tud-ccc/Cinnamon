@@ -659,6 +659,7 @@ def task_assemble():
 
 PLOT_SCRIPTS = [
     "table_sufficiency.py",
+    "plot_sufficiency.py",
     "plot_quality.py",
     "table_quality.py",
     "table_walltime.py",

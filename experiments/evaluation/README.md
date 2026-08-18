@@ -10,7 +10,7 @@ is derivable from the data collected so far.
 
 | Exp | Question | Arms run by this pipeline | Side inputs |
 |-----|----------|---------------------------|-------------|
-| E1  | Does the space contain ATiM-grade points, and does the search find them? | transcribed ATiM points; best of {uniform sample ∪ top-k-by-model}; the search's pick | ATiM best + trace |
+| E1  | Does the space contain ATiM-grade points, and does the search find them? | transcribed ATiM points; the shared sample; measured top-k-by-model; every seed's search pick — "space best" is the best measured point of *any* of these arms | ATiM best + trace |
 | RQ1 | End-to-end quality vs baselines | search picks; CINM 1.0 (D,T) sweep + rule-decision point | PrIM, ATiM, CPU rows |
 | RQ2 | What a search costs | search `timings.csv` + space-build time | ATiM tuning wall clock |
 | RQ3 | Cost-model fidelity, per term | predicted-vs-measured join over the shared sample | — |
@@ -121,7 +121,18 @@ logs.
   compete for the top anyway.
 - **Every seed's search pick is measured**; the spread of picks over
   seeds is a reported number (A3), so identical picks are not
-  deduplicated.
+  deduplicated. The search is *reported* as its **median seed**, never
+  best-of-N — seed spreads reach ~8× (first campaign), so best-of-N would
+  report the max of a wide distribution as the outcome. The scalar for
+  search quality is **regret** (median seed / space best); the per-seed
+  scatter is the strip in fig:sufficiency.
+- **The exhibited witness**: "space best" means the best *measured* point
+  from any arm — sample, top-k, or a search pick. A witness does not care
+  where it came from; restricting it to sample∪topk made "best known"
+  false whenever a search pick won its row. Consequently, space best is
+  never compared against the search (it contains it); the search's
+  internal baseline is measured top-k, which shares the search's cost
+  model and so isolates the search loop from model fidelity.
 
 ## Side inputs (provided, not computed here)
 

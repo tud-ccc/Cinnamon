@@ -3,20 +3,24 @@ does the search find them?
 
 Per (benchmark, fn): (a) ATiM offline, (a') its transcription measured
 under our codegen (best reading when several -- the paper measures every
-reading of an ambiguous transcription), (b) best of sample+topk, (c) the
-search's pick -- plus two readings of (c) against the shared uniform draw:
-how much faster it is than the best of n draws, and where it lands in that
-distribution as a percentile, with the rule-of-three note when it beats
-the whole sample. Rows run by benchmark, then by operand size within each;
-a hole prints as --.
+reading of an ambiguous transcription), (b) space best -- the best
+MEASURED point of any arm, sample, top-k or a search pick, since an
+exhibited witness does not care where it came from -- then the sample
+median, and the search reported as its MEDIAN seed with the spread across
+seeds and the regret (c)/(b). Rows run by benchmark, then by operand size
+within each; a hole prints as --.
 
-The two carry different weight and the caption should not conflate them.
-The percentile is what the rule of three converts into a claim about the
-space ("0 of n beaten => top 3/n at 95%"); the speedup has no confidence
-attached and is a ratio of two extreme order statistics, so it is the
-noisier number. It is here because the percentile saturates: once the
-search works at all it reads 0.0% on every finished row, which is a fact
-worth stating once and a poor way to fill a column.
+The column adjacencies are the argument (the paper's E1 block spells it
+out): (b) reads against (a') -- sufficiency, against the external
+baseline. The sample median sits next to (b) as the best-vs-median spread
+-- C1's "the space is treacherous", never a bar the search cleared. The
+search reads against the space through regret alone; (b) contains the
+search picks, so a (b)-vs-(c) time comparison would be a max read against
+a median and is not printed. No percentile column: search-best saturates
+at 0.0% the moment the search works; the (a') percentile with its CI is
+paper_numbers.py's job, in prose. Median seed, never best-of-N: spreads
+reached ~8x in the first campaign, and the spread column is what keeps
+that honest.
 
 Cells whose sample is still filling are wrapped in \\textcolor{red} -- the
 paper must load xcolor. See _red for why partial is worse than noisy here.
@@ -26,17 +30,20 @@ their artifact, and the ones their autotuner found on this machine. Each
 gap is to a specific configuration, and taking the better of the two would
 decompose the gap to a configuration neither run produced.
 
-Every cell is `net (total)` in ms -- the caption has to say so. Net is the
-amortized number the rest of the pipeline is stated in; total adds back the
-operand movement that row's system performs but does not report
-(`excluded_transfer_ms`: ATiM's `pragma_explicit_h2d` operands, our
-`cinm.static` ones). The pair is here because the two systems do not draw
-that line in the same place -- ATiM excludes `va`'s and `geva`'s inputs,
-where we have no weight to amortize against and exclude nothing -- so a
-comparison of net against net is sound for some rows and not others, and
-which is which should be visible in the table rather than argued in prose.
-Where the two conventions agree the pair is redundant and prints the same
-number twice, which is itself the thing worth seeing.
+Point cells -- the four ATiM columns and space best -- are `net (total)`
+in ms; the caption has to say so. Net is the amortized number the rest of
+the pipeline is stated in; total adds back the operand movement that row's
+system performs but does not report (`excluded_transfer_ms`: ATiM's
+`pragma_explicit_h2d` operands, our `cinm.static` ones). The pair is
+there because the two systems do not draw that line in the same place --
+ATiM excludes `va`'s and `geva`'s inputs, where we have no weight to
+amortize against and exclude nothing -- so a comparison of net against
+net is sound for some rows and not others, and which is which should be
+visible in the table rather than argued in prose. Where the two
+conventions agree the pair prints the same number twice, which is itself
+the thing worth seeing. The statistic cells (sample median, search
+median) are net only: a median is not a row, so it has no single
+excluded-transfer number to add back.
 """
 
 from __future__ import annotations
@@ -118,11 +125,12 @@ def _red(cell: str, verified: bool) -> str:
 
     A partial stack is not merely a weaker version of a finished one. The
     pool is emitted in `dpus` order, so the rows measured first are the
-    low-DPU corner of the space -- the worst configurations by construction,
-    which nothing has to beat. Both statistics below therefore read at their
-    most flattering exactly while they are least earned, and neither is a
-    random subsample of the draw the rule of three assumes. Red says
-    provisional, not merely noisy.
+    low-DPU corner of the space -- the worst configurations by construction.
+    That skews every sample-derived cell, each in its own direction: space
+    best is weak (nothing good measured yet), which flatters regret; the
+    sample median is drawn from the worst corner, which slanders the space;
+    and neither is a random subsample of the draw the (a') percentile
+    machinery assumes. Red says provisional, not merely noisy.
 
     A hole is left alone: -- already says the stack has nothing to show, and
     colouring it would spend the reader's attention on the rows that make no
@@ -145,12 +153,12 @@ def main() -> None:
     ]
     lines = [
         "% tab:sufficiency, generated by table_sufficiency.py -- do not edit",
-        "\\begin{tabular}{ll" + "rr" * len(VARIANTS) + "rrrr}",
+        "\\begin{tabular}{ll" + "rr" * len(VARIANTS) + "rrrrr}",
         "\\toprule",
         " & & \\multicolumn{2}{c}{ATiM published}"
-        " & \\multicolumn{2}{c}{ATiM reproduced} & & & & \\\\",
+        " & \\multicolumn{2}{c}{ATiM reproduced} & & & & & \\\\",
         "benchmark & size (MB) & measured & transcribed & measured & transcribed"
-        " & sample$\\cup$topk & search & speedup & pctile \\\\",
+        " & space best & sample med & search med & spread & regret \\\\",
         "\\midrule",
     ]
     pool_sizes = _pool_sizes(results_dir)
@@ -161,36 +169,32 @@ def main() -> None:
     for (bench, fn), sub in groups:
         by = {s: g for s, g in sub.groupby("system")}
         sample = by.get("sample")
-        pool = sub[sub["system"].isin(["sample", "topk"])]
-        search_best = _best(by.get("search", sub.iloc[0:0]))
+        search = by.get("search")
+        # The exhibited witness: best measured point of any arm, the search's
+        # own picks included. A witness does not care where it came from, and
+        # a "best known" that excludes the search reads false the moment a
+        # pick wins its row. This is also why no cell compares the search
+        # against space best: (b) contains (c), so regret is the comparison,
+        # made once, in its own column.
+        witness = sub[sub["system"].isin(["sample", "topk", "search"])]
+        space_best = _best(witness)
         n_sample = len(sample) if sample is not None else 0
         n_pool = pool_sizes.get((bench, fn))
         verified = n_pool is not None and n_sample >= n_pool
-        speedup, pctile = "--", "--"
-        if sample is not None and search_best is not None and n_sample:
-            # Both statistics are net against net, and both take the shared
-            # uniform draw alone as their reference -- not sample+topk, whose
-            # top-k half is ranked by the model and so is not a draw from the
-            # space at all. One reference for the pair is what lets a caption
-            # state them in one sentence.
-            sample_best = _best(sample)
-            # What the search buys over the best of n uniform draws. It says
-            # more than the percentile, which saturates at 0% the moment the
-            # search works at all -- but it is a ratio of two extreme order
-            # statistics, so it is a point estimate with no confidence
-            # attached, and it is the noisier of the two.
-            speedup = _red(f"{sample_best[0] / search_best[0]:.2f}$\\times$", verified)
-            beaten = (
-                float(np.mean(sample["total_ms"].to_numpy() < search_best[0])) * 100
+        sample_med = f"{sample['total_ms'].median():.2f}" if n_sample else "--"
+        search_med, spread, regret = "--", "--", "--"
+        if search is not None and len(search):
+            # One row per seed (identical picks are not deduplicated), so
+            # the median over rows is the median seed -- the reported
+            # configuration per A3's rule, never best-of-N. The spread is
+            # what keeps that rule honest in print.
+            med = float(search["total_ms"].median())
+            search_med = f"{med:.2f}"
+            spread = (
+                f"{search['total_ms'].max() / search['total_ms'].min():.1f}$\\times$"
             )
-            # 0% beaten over n samples = top 3/n of the space at 95%
-            # (rule of three) -- the caption states the bound, the cell
-            # just carries the percentile. The bound is in n, so a partial
-            # stack shows the n it has actually earned.
-            pctile = f"{beaten:.1f}\\%"
-            if not verified:
-                seen = f"{n_sample}/{n_pool}" if n_pool else f"{n_sample}/?"
-                pctile = _red(f"{pctile} ({seen})", verified)
+            if space_best is not None:
+                regret = _red(f"{med / space_best[0]:.2f}$\\times$", verified)
         bench_clean = bench.removeprefix("prim_")
         fn_clean = fn.removeprefix(bench_clean + "_").removesuffix("MB")
         lines.append(
@@ -203,10 +207,11 @@ def main() -> None:
                         for variant in VARIANTS
                         for system in variant
                     ),
-                    _red(_fmt(_best(pool)), verified),
-                    _fmt(search_best),
-                    speedup,
-                    pctile,
+                    _red(_fmt(space_best), verified),
+                    _red(sample_med, verified),
+                    search_med,
+                    spread,
+                    regret,
                 ]
             )
             + " \\\\"
