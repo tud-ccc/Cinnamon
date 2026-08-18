@@ -38,6 +38,9 @@ cache_file="$llvm_build_dir/CMakeCache.txt"
 clean_reason=""
 if [[ "$reconfigure" -eq 1 ]]; then
   clean_reason="forced reconfigure (reconfigure=1)"
+elif [[ -d "$llvm_build_dir" && ! -f "$cache_file" ]] && [[ -n "$(ls -A "$llvm_build_dir" 2>/dev/null)" ]]; then
+  # Output present but no cache: a previous configure was interrupted or failed.
+  clean_reason="previous configure left the build dir incomplete"
 elif [[ -f "$cache_file" && ! "$(grep -o 'CMAKE_GENERATOR:INTERNAL=[^ ]*' "$cache_file" || true)" =~ Ninja ]]; then
   clean_reason="existing build is not Ninja"
 elif [[ -f "$cache_file" && -n "${PYBIN:-}" ]]; then

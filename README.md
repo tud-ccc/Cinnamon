@@ -26,8 +26,7 @@ Emerging compute-near-memory (CNM) and compute-in-memory (CIM) architectures hav
 - CMake (at least version 3.28)
 - [`just`](https://github.com/casey/just?tab=readme-ov-file#installation)
 - Python 3.10–3.12
-- A C++20 compiler. The Conan profile in `third-party/conan-profile` assumes
-  Clang; adjust it if you build with something else.
+- A C++20 host compiler: GCC 12 or newer, or Clang 16 or newer
 
 ```sh
 sudo apt-get install clang ninja-build mold libvulkan-dev python3.12-dev ccache
@@ -35,6 +34,11 @@ sudo apt-get install clang ninja-build mold libvulkan-dev python3.12-dev ccache
 
 Everything else — LLVM/MLIR, Torch-MLIR, the cost model, and the Python
 environment — is set up by the build scripts.
+
+The build picks a host compiler itself and exports it, so that CMake, Conan and
+every sub-build agree on one compiler and one standard library (libstdc++). Set
+`CC` and `CXX` to override the choice.
+
 
 ### Dependencies and submodules
 
@@ -67,19 +71,22 @@ Configuration is read from a `.env` file in the repository root (and from the
 environment, which takes precedence).
 
 ```sh
-# Recommended:
 CMAKE_GENERATOR=Ninja
-CMAKE_C_COMPILER=clang
-CMAKE_CXX_COMPILER=clang++
-CMAKE_LINKER_TYPE=MOLD
+
+# Only needed if the compiler the build picks is not the one you want.
+CC=/usr/bin/gcc-13
+CXX=/usr/bin/g++-13
 
 # Building LLVM uses a lot of memory, so it is worth limiting the number of
 # parallel compile, link and tablegen jobs. These values suit 32 GiB of RAM.
 LLVM_CMAKE_OPTIONS='-DLLVM_CCACHE_BUILD=ON -DLLVM_PARALLEL_COMPILE_JOBS=16 -DLLVM_PARALLEL_LINK_JOBS=2 -DLLVM_PARALLEL_TABLEGEN_JOBS=8'
 
-TORCH_MLIR_CMAKE_OPTIONS='-DCMAKE_CXX_COMPILER=clang++ -DCMAKE_C_COMPILER=clang'
-CINNAMON_CMAKE_OPTIONS='-DCMAKE_CXX_COMPILER=clang++ -DCMAKE_C_COMPILER=clang -DLLVM_ENABLE_LIBCXX=ON'
+CINNAMON_CMAKE_OPTIONS='-DBUILD_SHARED_LIBS=ON -DCMAKE_LINKER_TYPE=MOLD'
 ```
+
+Do not put `-DCMAKE_C_COMPILER` / `-DCMAKE_CXX_COMPILER` in the
+`*_CMAKE_OPTIONS` variables; use `CC` and `CXX` so that Conan gets the same
+compiler as CMake. The build refuses a compiler override it cannot use.
 
 Each dependency is described by three independent settings: where its sources
 are, where its build is, and whether we build it. Setting either path variable
