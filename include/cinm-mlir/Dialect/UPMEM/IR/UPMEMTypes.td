@@ -23,7 +23,7 @@ def DeviceHierarchyType : UPMEM_Type<"DeviceHierarchy", [CinmWorkgroupTypeInterf
     unobservable -- so ranks are deliberately not part of the shape.
   }];
 
-  let parameters = (ins "int32_t":$numDpus, "int32_t":$numTaskletsPerDpu);
+  let parameters = (ins "uint32_t":$numDpus, "uint32_t":$numTaskletsPerDpu);
 
   let hasCustomAssemblyFormat = 1;
   let extraClassDeclaration = [{
@@ -31,7 +31,7 @@ def DeviceHierarchyType : UPMEM_Type<"DeviceHierarchy", [CinmWorkgroupTypeInterf
       return getNumDpus() * getNumTaskletsPerDpu();
     }
 
-    int64_t getNumDims() const { return 2;}
+    int64_t getNumDims() const { return 2; }
 
     SmallVector<int64_t, 2> getWgShape() const {
       return {getNumDpus(), getNumTaskletsPerDpu()};

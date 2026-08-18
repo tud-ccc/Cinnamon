@@ -94,11 +94,27 @@ cmake --build "$torch_mlir_build_dir" --target all TorchMLIRPythonModules
 verbose_cmd cmake --install "$torch_mlir_build_dir" --prefix "$torch_mlir_install_dir"
 
 status "Building and installing Torch-MLIR Python package for $python_for_install"
+
+# With LLVM_INSTALL_DIR set, setup.py reads the package straight out of
+# <build>/python_packages/torch_mlir, which is where an out-of-tree build puts
+# it. Without it, setup.py would instead look under
+# <build>/tools/torch-mlir/python_packages, the in-tree layout.
+python_package_dir="$torch_mlir_build_dir/python_packages/torch_mlir"
+
+# MLIR's type stubs used to be checked into the LLVM sources and were symlinked
+# into this tree; since llvm efd96afedf they are generated into LLVM's build dir
+# instead, which leaves the old symlinks dangling. CMake will not replace a
+# symlink that already exists, so a reconfigure does not clear them, and
+# setup.py fails trying to copy them. They are only type hints, so drop any that
+# no longer resolve.
+if [[ -d "$python_package_dir" ]]; then
+  while IFS= read -r stale; do
+    info "Removing stale symlink $stale"
+    rm -f "$stale"
+  done < <(find "$python_package_dir" -xtype l)
+fi
+
 pushd "$torch_mlir_source_dir" >/dev/null
-python_package_dir=build/tools/torch-mlir/python_packages/torch_mlir
-python_package_rel_build_dir=../../../python_packages/torch_mlir
-mkdir -p "$(dirname "$python_package_dir")"
-ln -s "$python_package_rel_build_dir" "$python_package_dir" 2>/dev/null || true
-TORCH_MLIR_CMAKE_ALREADY_BUILT=1 TORCH_MLIR_CMAKE_BUILD_DIR=build PYTHONWARNINGS=ignore \
+TORCH_MLIR_CMAKE_ALREADY_BUILT=1 TORCH_MLIR_CMAKE_BUILD_DIR="$torch_mlir_build_dir" LLVM_INSTALL_DIR="$llvm_build_dir" PYTHONWARNINGS=ignore \
   verbose_cmd "$python_for_install" -m pip install --no-build-isolation --no-deps --force-reinstall .
 popd >/dev/null

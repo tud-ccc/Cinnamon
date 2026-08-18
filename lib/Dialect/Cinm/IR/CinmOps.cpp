@@ -322,7 +322,7 @@ LogicalResult ComputeBlockOp::verify() {
 }
 LogicalResult ReduceOp::verify() {
   uint64_t maxDim = getInput().getType().getRank();
-  if (getDimension() < 0 || getDimension() >= maxDim)
+  if (getDimension() >= maxDim)
     return emitOpError("Reduce op dimension should be within [0, ")
            << maxDim << ")";
 
@@ -1077,20 +1077,6 @@ struct ComputeBlockOpSimplifyYield : OpRewritePattern<cinm::ComputeBlockOp> {
   }
 };
 
-struct ReduceOpNormalizeDim : OpRewritePattern<cinm::ReduceOp> {
-  using OpRewritePattern<cinm::ReduceOp>::OpRewritePattern;
-  LogicalResult matchAndRewrite(cinm::ReduceOp op,
-                                PatternRewriter &rewriter) const override {
-
-    if (op.getDimension() >= 0)
-      return failure();
-    rewriter.modifyOpInPlace(op, [&]() {
-      op.setDimension(op.getDimension() + op.getInput().getType().getRank());
-    });
-
-    return success();
-  }
-};
 struct ComputeBlockOpDeleteUnusedArgs : OpRewritePattern<cinm::ComputeBlockOp> {
   using OpRewritePattern<ComputeBlockOp>::OpRewritePattern;
 
@@ -1164,11 +1150,6 @@ void ComputeBlockOp::getCanonicalizationPatterns(
 void ComputeOp::getCanonicalizationPatterns(::mlir::RewritePatternSet &results,
                                             ::mlir::MLIRContext *context) {
   results.insert<ComputeOpSimplifyYield>(context);
-}
-
-void ReduceOp::getCanonicalizationPatterns(::mlir::RewritePatternSet &results,
-                                           ::mlir::MLIRContext *context) {
-  results.insert<ReduceOpNormalizeDim>(context);
 }
 
 LogicalResult GemmOp::fold(FoldAdaptor adaptor,

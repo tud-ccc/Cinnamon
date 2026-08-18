@@ -518,7 +518,7 @@ struct InferenceTask {
 
       if (pool.nObs < 2) {
         // Not enough observations to fit a surrogate — pick first unvisited.
-        if (size_t idx = pool.firstUnvisited(); idx >= 0)
+        if (size_t idx = pool.firstUnvisited(); idx != pool.N)
           evalConf(idx, /*recordTraining=*/false);
         continue;
       }

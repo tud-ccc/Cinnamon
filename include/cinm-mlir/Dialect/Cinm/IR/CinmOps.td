@@ -233,9 +233,6 @@ def Cinm_ReduceOp : Cinm_Op<"op.reduce",
     AnyShaped:$input,
     // Destination buffer for the memref mode; absent in tensor mode.
     Optional<AnyShaped>:$out,
-    // This attribute is internal and to pass information
-    // to the result type inference, in case the result should
-    // not be implicitly rank-reduced (scalarized).
     ConfinedAttr<I64Attr, [IntNonNegative]>:$dimension,
     DefaultValuedAttr<BoolAttr, "{true}">:$rankReduce
   );
@@ -252,7 +249,6 @@ def Cinm_ReduceOp : Cinm_Op<"op.reduce",
     Optional<AnyType>:$result
   );
 
-  let hasCanonicalizer = 1;
   let hasVerifier = 1;
   let extraClassDeclaration = [{
     /// True when the op operates on tensors (produces a result).

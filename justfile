@@ -20,7 +20,7 @@ build_dir := "build"
 # Flags: -no-llvm -no-torch-mlir -no-upmem -no-python-venv -no-cinnamon-wheel
 #        -enable-gpu -enable-cuda -enable-roc -reconfigure -verbose
 configure *ARGS:
-    .github/workflows/build-local.sh -reconfigure {{ARGS}}
+    .github/workflows/build-local.sh {{ARGS}}
 
 
 # execute a specific ninja target
