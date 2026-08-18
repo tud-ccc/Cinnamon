@@ -9,7 +9,7 @@ DPU_CFLAGS   = -DSTACK_SIZE_DEFAULT=512 -I$(DPU_IDIR) -Wall -Wno-unused-variable
 HOST_CXXFLAGS = -O2 -I$(UPMEM_HOME)/include/dpu
 HOST_LDFLAGS  = -ldpu -ldpuverbose -L$(UPMEM_HOME)/lib
 
-CM_INCDIR    = ../../third-party/upmem-cost-model/include
+CM_INCDIR    = ../../third-party/cnm-cost-model/CppPredictor/include
 CM_LIB       = ../../build/lib/libUpmemCostModel.a
 SIM_CXXFLAGS = -O2 -std=c++20 -I$(CM_INCDIR) -pthread
 

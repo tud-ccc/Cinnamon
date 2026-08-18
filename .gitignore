@@ -4,7 +4,6 @@
 .idea/
 .venv/
 .vscode/
-third-party
 testbench/gen
 
 
@@ -12,6 +11,7 @@ testbench/gen
 # Edit at https://www.toptal.com/developers/gitignore?templates=cmake
 
 ### CMake ###
+CMakeUserPresets.json
 CMakeLists.txt.user
 CMakeCache.txt
 CMakeFiles
@@ -30,13 +30,22 @@ _deps
 # End of https://www.toptal.com/developers/gitignore/api/cmake
 build-*
 build
-llvm
 .cache
 sandbox
+
+# Third-party trees that are not submodules: vendor SDKs, generated
+# scaffolding, and scratch checkouts.
+/third-party/upmem
+/third-party/upmem-src
+/third-party/ALPINE/
+/third-party/alpine/
+/third-party/.venv/
 
 python/cinnamon/_resources
 .env
 **/__pycache__
 
 .experiments/
+.exp0/
 experiments/meta.log
+.claude

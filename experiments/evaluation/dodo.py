@@ -643,11 +643,11 @@ def task_assemble():
     produced and printing MISSING notes instead of failing."""
     for name, action in [
         ("e1", _assemble_e1),
-        # ("rq1", _assemble_rq1),
+        ("rq1", _assemble_rq1),
         ("rq2", _assemble_rq2),
         ("rq3", _assemble_rq3),
         ("a1", _assemble_a1),
-        # ("rq4", _assemble_rq4),
+        ("rq4", _assemble_rq4),
         ("sample_census", _assemble_sample_census),
     ]:
         yield {

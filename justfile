@@ -7,16 +7,18 @@ set dotenv-load := true
 # Allows running eg `just experiments run gemv`
 mod experiments
 
-# Make sure your LLVM is https://github.com/oowekyala/llvm-project/tree/tilefirst-llvm
+# LLVM comes from the third-party/llvm submodule
+# (https://github.com/tud-ccc/cinnamon-llvm, branch `cinnamon`). To build
+# against an LLVM you already have, set LLVM_BUILD_DIR; the submodule then
+# stays uninitialized. See the README.
 
-llvm_prefix := env_var_or_default("LLVM_BUILD_DIR", "")
-build_type := env_var_or_default("LLVM_BUILD_TYPE", "RelWithDebInfo")
-linker := env_var_or_default("CMAKE_LINKER_TYPE", "DEFAULT")
 upmem_dir := env_var_or_default("UPMEM_HOME", "third-party/upmem")
 build_dir := "build"
 
-# Do a full build as if in CI. Only needed the first time you build the project.
-# Parameters: no-upmem enable-gpu enable-cuda enable-roc no-torch-mlir no-python-venv
+# Full build: venv, then LLVM, Torch-MLIR and Cinnamon. Only needed the first
+# time; use `just build` afterwards.
+# Flags: -no-llvm -no-torch-mlir -no-upmem -no-python-venv -no-cinnamon-wheel
+#        -enable-gpu -enable-cuda -enable-roc -reconfigure -verbose
 configure *ARGS:
     .github/workflows/build-local.sh -reconfigure {{ARGS}}
 
@@ -29,7 +31,7 @@ doNinja *ARGS:
 @highlight:
     pygmentize -l docs/MlirLexer.py:MlirLexer -x -O style=github-dark /dev/stdin
 
-# Run tilefirst-opt with the given arguments. You can use this if you haven't updated your PATH.
+# Run cinm-opt with the given arguments. You can use this if you haven't updated your PATH.
 [no-cd]
 cinm-opt *ARGS: (doNinja "cinm-opt")
     #!/bin/sh
@@ -43,28 +45,18 @@ cinm-opt *ARGS: (doNinja "cinm-opt")
 cinm-translate *ARGS: (doNinja "cinm-translate")
     {{source_directory()}}/{{build_dir}}/bin/cinm-translate {{ARGS}}
 
+# Rebuild LLVM. Only needed after the third-party/llvm submodule moves.
 buildLlvm:
-  #!/bin/sh
-  cd third-party/llvm
-  just build
+    .github/workflows/build-llvm.sh
 
-# run build --first build needs cmake though
-build: buildLlvm doNinja
+# Incremental build of Cinnamon itself.
+build: doNinja
 
 cleanBuild:
     rm -rf {{build_dir}}
-    just cmake
-    just build
+    just configure
 
 alias b := build
-
-buildDependencies:
-  #!/bin/bash
-  source .venv/bin/activate
-  cd third-party/upmem-cost-model
-  cd packages/upmem_simulator && maturin develop --release && cd ../..
-  pip install -e packages/bo_search
-  pip install -e packages/cinm_integration
 
 
 # run all tests

@@ -5,19 +5,23 @@ script_dir="$( cd -- "$(dirname "$0")" >/dev/null 2>&1 ; pwd -P )"
 # shellcheck source=/dev/null
 source "$script_dir/common.sh"
 
-# ---- Safe defaults ----
-checkout_and_build_llvm="${checkout_and_build_llvm:-1}"
-reconfigure="${reconfigure:-0}"
-llvm_path="${llvm_path:?Define 'llvm_path' in common.sh}"
 LLVM_CMAKE_OPTIONS="${LLVM_CMAKE_OPTIONS:-}"
 
-# Your desired config (override via env if needed)
+# Desired config (override via env if needed)
 LLVM_PROJECTS="${LLVM_PROJECTS:-mlir;llvm}"
 LLVM_TARGETS_TO_BUILD="${LLVM_TARGETS_TO_BUILD:-host;AArch64}"
 LLVM_EXPERIMENTAL_TARGETS="${LLVM_EXPERIMENTAL_TARGETS:-SPIRV}"
 LLVM_BUILD_TARGETS="${LLVM_BUILD_TARGETS:-all llc opt mlir-opt mlir-translate}"
 
-# Tools
+if [[ "$build_llvm" -eq 0 ]]; then
+  status "Not building LLVM; using '$llvm_build_dir'"
+  export PATH="$llvm_build_dir/bin:$PATH"
+else
+
+# The submodule is only needed when we build LLVM ourselves. LLVM's history is
+# large, so fetch it shallowly.
+ensure_submodule third-party/llvm 1
+
 command -v ninja >/dev/null 2>&1 || { error "Ninja not found."; exit 1; }
 command -v cmake >/dev/null 2>&1 || { error "CMake not found."; exit 1; }
 
@@ -28,23 +32,16 @@ if [[ -n "$LLVM_CMAKE_OPTIONS" ]]; then
   EXTRA_CMAKE_OPTS=( $LLVM_CMAKE_OPTIONS )
 fi
 
-if [[ "${checkout_and_build_llvm}" -eq 0 ]]; then
-  status "Not rebuilding/reconfiguring LLVM."
-  export PATH="$llvm_path/build/bin:$PATH"
-  return 0
-fi
+cache_file="$llvm_build_dir/CMakeCache.txt"
 
-pushd "$llvm_path" >/dev/null
-
-
-# ---- Should we clean build/? ----
+# ---- Should we clean the build dir? ----
 clean_reason=""
-if [[ "${reconfigure}" -eq 1 && ! "${checkout_and_build_llvm}" -eq 0 ]]; then
+if [[ "$reconfigure" -eq 1 ]]; then
   clean_reason="forced reconfigure (reconfigure=1)"
-elif [[ -f build/CMakeCache.txt && ! "$(grep -o 'CMAKE_GENERATOR:INTERNAL=[^ ]*' build/CMakeCache.txt || true)" =~ Ninja ]]; then
+elif [[ -f "$cache_file" && ! "$(grep -o 'CMAKE_GENERATOR:INTERNAL=[^ ]*' "$cache_file" || true)" =~ Ninja ]]; then
   clean_reason="existing build is not Ninja"
-elif [[ -f build/CMakeCache.txt && -n "${PYBIN:-}" ]]; then
-  cached_py="$(grep -E '^Python3_EXECUTABLE:(FILEPATH|UNINITIALIZED)=' build/CMakeCache.txt | sed 's/.*=//' || true)"
+elif [[ -f "$cache_file" && -n "${PYBIN:-}" ]]; then
+  cached_py="$(grep -E '^Python3_EXECUTABLE:(FILEPATH|UNINITIALIZED)=' "$cache_file" | sed 's/.*=//' || true)"
   [[ -n "$cached_py" && "$cached_py" != "${PYBIN:-}" ]] && clean_reason="cached Python ($cached_py) != venv Python (${PYBIN:-system})"
 fi
 
@@ -65,61 +62,47 @@ CURRENT_HASH="$(printf '%s\n' \
   "PY=${PYBIN:-}" \
   "GEN=Ninja" | hash_cmd | awk '{print $1}')"
 
-mkdir -p build
-HASH_FILE="build/.config.hash"
+mkdir -p "$llvm_build_dir"
+HASH_FILE="$llvm_build_dir/.config.hash"
 if [[ -z "$clean_reason" && -f "$HASH_FILE" ]]; then
   OLD_HASH="$(cat "$HASH_FILE" 2>/dev/null || true)"
   [[ "$OLD_HASH" != "$CURRENT_HASH" ]] && clean_reason="configuration changed (hash mismatch)"
 fi
 
 if [[ -n "$clean_reason" ]]; then
-  status "Cleaning build/ because: $clean_reason"
-  rm -rf build
-  mkdir -p build
+  status "Cleaning '$llvm_build_dir' because: $clean_reason"
+  rm -rf "$llvm_build_dir"
+  mkdir -p "$llvm_build_dir"
 fi
 
-# ---- Configure helper ----
-configure() {
-  status "Configuring LLVM (Ninja; always run to catch changes)"
+status "Configuring LLVM (Ninja; always run to catch changes)"
+print_and_run cmake -S "$llvm_source_dir/llvm" -B "$llvm_build_dir" -G Ninja \
+  -Wno-dev \
+  -DCMAKE_BUILD_TYPE=Release \
+  -DBUILD_SHARED_LIBS=ON \
+  -DLLVM_BUILD_TOOLS=ON \
+  -DLLVM_CCACHE_BUILD=ON \
+  -DLLVM_ENABLE_PROJECTS="$LLVM_PROJECTS" \
+  -DLLVM_ENABLE_ASSERTIONS=ON \
+  -DLLVM_ENABLE_EH=ON \
+  -DLLVM_ENABLE_RTTI=ON \
+  -DLLVM_EXPERIMENTAL_TARGETS_TO_BUILD="$LLVM_EXPERIMENTAL_TARGETS" \
+  -DLLVM_INCLUDE_BENCHMARKS=OFF \
+  -DLLVM_INCLUDE_TESTS=OFF \
+  -DLLVM_OPTIMIZED_TABLEGEN=ON \
+  -DMLIR_ENABLE_BINDINGS_PYTHON=ON \
+  -DLLVM_TARGETS_TO_BUILD="$LLVM_TARGETS_TO_BUILD" \
+  "${EXTRA_CMAKE_OPTS[@]}"
 
-  print_and_run cmake -S llvm -B build -G Ninja \
-    -Wno-dev \
-    -DCMAKE_BUILD_TYPE=Release \
-    -DBUILD_SHARED_LIBS=ON \
-    -DLLVM_BUILD_TOOLS=ON \
-    -DLLVM_CCACHE_BUILD=ON \
-    -DLLVM_ENABLE_PROJECTS="$LLVM_PROJECTS" \
-    -DLLVM_ENABLE_ASSERTIONS=ON \
-    -DLLVM_ENABLE_EH=ON \
-    -DLLVM_ENABLE_RTTI=ON \
-    -DLLVM_EXPERIMENTAL_TARGETS_TO_BUILD="$LLVM_EXPERIMENTAL_TARGETS" \
-    -DLLVM_INCLUDE_BENCHMARKS=OFF \
-    -DLLVM_INCLUDE_TESTS=OFF \
-    -DLLVM_OPTIMIZED_TABLEGEN=ON \
-    -DMLIR_ENABLE_BINDINGS_PYTHON=ON \
-    -DLLVM_TARGETS_TO_BUILD="$LLVM_TARGETS_TO_BUILD" \
-    "${EXTRA_CMAKE_OPTS[@]}"
+# Save config hash so we can detect future changes
+echo "$CURRENT_HASH" > "$HASH_FILE"
 
-  # Save config hash so we can detect future changes
-  echo "$CURRENT_HASH" > "$HASH_FILE"
+[[ -f "$llvm_build_dir/build.ninja" ]] || { error "CMake configure did not produce build.ninja."; exit 1; }
 
-  # Sanity: ensure build.ninja exists
-  [[ -f build/build.ninja ]] || { error "CMake configure did not produce build/build.ninja."; exit 1; }
-}
-
-# ---- Always run configure (idempotent) ----
-configure
-
-# ---- Build with one clean-retry ----
 status "Building LLVM (Ninja)"
-cmake --build build --target ${LLVM_BUILD_TARGETS}
+# shellcheck disable=SC2086
+cmake --build "$llvm_build_dir" --target ${LLVM_BUILD_TARGETS}
 
-#if ! cmake --build build --target ${LLVM_BUILD_TARGETS}; then
-#  warning "Build failed — cleaning build/ and retrying from fresh configure…"
-#  rm -rf build
-#  configure
-#  cmake --build build --target ${LLVM_BUILD_TARGETS}
-#fi
+export PATH="$llvm_build_dir/bin:$PATH"
 
-export PATH="$llvm_path/build/bin:$PATH"
-popd >/dev/null
+fi
