@@ -86,8 +86,8 @@ OPTS = dict(
     infer_opts={
         # todo Maybe bump this up for the real numbers
         "bo-batch-size": 4,
-        "max-evals": 128,
-        "n-init": 32,
+        "max-evals": 256,
+        "n-init": 64,
         "acquisition": "thompson",
     },
 )

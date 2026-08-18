@@ -2,11 +2,22 @@
 E1 -- where every arm's points land inside the measured space.
 
 One panel per (benchmark, size): the shared uniform draw as a horizontal
-violin -- 300 measured points is a real distribution, where a violin over
-32 seeds would invent shape, which is why the seeds are a strip of dots
-instead. x is slowdown over the panel's space best (best measured point of
-any arm, the witness tab:sufficiency prints), log scale, so the tails stay
+half-violin -- 300 measured points is a real distribution, where a violin
+over 32 seeds would invent shape, which is why the seeds are a strip of
+dots instead. Only the upper half is drawn, resting on the x axis: it is
+the panel's backdrop, a wash saying where the space is, and the point
+arms float over it rather than beside it.
+
+x is slowdown over the panel's space best (best measured point of any arm,
+the witness tab:sufficiency prints), on a decade scale so the tails stay
 comparable across panels instead of the big sizes flattening everything.
+Everything in the panel is plotted in log10 of that ratio on a linear
+axis wearing decade ticks, rather than raw ratios on a log axis: the
+violin has to be a density *of* log x for its width to mean probability
+per unit of the axis it is drawn on. (In linear space the bandwidth is set
+by a spread that runs to hundreds, so the body reads as mass out in the
+tail when the mass is near 1.)
+
 Overlaid: every search seed's pick, top-k's best, and the transcribed ATiM
 point per variant. The one picture carries C1 (the violin body: most of
 the space is bad), E1 (each arm lands in the good region), and A3 (the
@@ -25,8 +36,9 @@ the low-DPU corner, not a random subsample).
 Colors: the three overlay arms are the first three categorical slots of
 the reference palette (all-pairs-validated triple); the two ATiM variants
 share one hue and differ by marker shape, so identity never rests on a
-fourth hue. The distribution body is neutral gray -- it is a density, not
-a series.
+fourth hue. The distribution body is unstroked neutral gray -- it is the
+panel's context, not a series, so it stays the quietest thing in the
+panel and the overlay arms carry the ink.
 """
 
 from __future__ import annotations
@@ -39,6 +51,7 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
+from matplotlib import ticker
 
 from _reporting import load_or_skip, parse_dirs, save_fig
 
@@ -46,13 +59,17 @@ from _reporting import load_or_skip, parse_dirs, save_fig
 C_SEARCH = "#2a78d6"  # blue: every seed's pick
 C_ATIM = "#eb6834"  # orange: transcribed ATiM, both variants (shape splits them)
 C_TOPK = "#1baf7a"  # aqua: best measured top-k point
-C_BODY = "#b8b6ae"  # neutral: the sample distribution body
+C_BODY = "#c3c2b7"  # neutral: the sample distribution body
+C_FAINT = "#898781"  # neutral: axis furniture and the absence markers
 C_MUTED = "#52514e"
 
 SIZE_ORDER = ["4MB", "64MB", "256MB", "512MB"]
 
-# (system, size-lane y): the violin sits above, the point arms below it.
-Y_VIOLIN, Y_SEEDS, Y_POINTS = 0.55, -0.15, -0.55
+# (system, size-lane y): the half-violin rests on the x axis, the point arms
+# ride above it.
+Y_VIOLIN, Y_SEEDS, Y_POINTS = 0.0, 0.60, 0.24
+# Full (two-sided) violin width, so the drawn half reaches half of this.
+VIOLIN_W = 1.7
 
 
 def _size_label(fn: str) -> str:
@@ -90,7 +107,7 @@ def main() -> None:
     for ax_row, bench in zip(axes, benches):
         for ax, size in zip(ax_row, SIZE_ORDER):
             ax.set_yticks([])
-            ax.set_ylim(-1.0, 1.15)
+            ax.set_ylim(0.0, 1.15)
             for spine in ("top", "right", "left"):
                 ax.spines[spine].set_visible(False)
             if (bench, size) not in exists:
@@ -103,11 +120,13 @@ def main() -> None:
                     transform=ax.transAxes,
                     ha="center",
                     va="center",
-                    color=C_BODY,
+                    color=C_FAINT,
                     fontsize=8,
                 )
                 ax.spines["bottom"].set_visible(False)
-                ax.tick_params(bottom=False, labelbottom=False)
+                # "both": the decade scale's minor ticks would otherwise
+                # survive the hidden spine as a floating strip of dashes.
+                ax.tick_params(bottom=False, labelbottom=False, which="both")
                 continue
 
             sub = df[
@@ -132,21 +151,25 @@ def main() -> None:
             # space best. Everything in the panel is a slowdown over it.
             best = min(a.min() for a in arms)
 
-            ax.axvline(1.0, color=C_BODY, lw=0.8, ls=":", zorder=0)
+            ax.axvline(0.0, color=C_FAINT, lw=0.8, ls=":", zorder=2)
             sample = by.get("sample")
             if sample is not None and len(sample) > 1:
                 parts = ax.violinplot(
-                    sample / best,
+                    np.log10(sample / best),
                     positions=[Y_VIOLIN],
                     vert=False,
-                    widths=0.85,
+                    widths=VIOLIN_W,
                     showextrema=False,
                 )
                 for body in parts["bodies"]:
+                    # Clip the mirrored half away: what is left is a ridge
+                    # standing on the x axis, under everything else.
+                    verts = body.get_paths()[0].vertices
+                    verts[:, 1] = np.clip(verts[:, 1], Y_VIOLIN, np.inf)
                     body.set_facecolor(C_BODY)
-                    body.set_edgecolor(C_MUTED)
-                    body.set_linewidth(0.6)
-                    body.set_alpha(0.75)
+                    body.set_edgecolor("none")
+                    body.set_alpha(0.5)
+                    body.set_zorder(0)
                 n = len(sample)
                 want = pool_n.get((bench, size))
                 partial = want is not None and n < want
@@ -165,7 +188,7 @@ def main() -> None:
                 rng = np.random.default_rng(0)  # fixed jitter, stable output
                 jitter = rng.uniform(-0.13, 0.13, len(search))
                 ax.scatter(
-                    search / best,
+                    np.log10(search / best),
                     Y_SEEDS + jitter,
                     s=9,
                     color=C_SEARCH,
@@ -176,7 +199,7 @@ def main() -> None:
             topk = by.get("topk")
             if topk is not None and len(topk):
                 ax.scatter(
-                    [topk.min() / best],
+                    [np.log10(topk.min() / best)],
                     [Y_POINTS],
                     s=42,
                     marker="D",
@@ -192,7 +215,7 @@ def main() -> None:
                 pts = by.get(system)
                 if pts is not None and len(pts):
                     ax.scatter(
-                        [pts.min() / best],
+                        [np.log10(pts.min() / best)],
                         [Y_POINTS],
                         s=42,
                         marker=marker,
@@ -212,15 +235,23 @@ def main() -> None:
             va="center",
             fontsize=9,
         )
+    # The axis is linear in log10(slowdown) but wears decade ticks, so it
+    # reads as a log axis while the violin's width stays a density per unit
+    # of the axis. sharex ties the tick machinery across the whole grid.
+    minor = [np.log10(m) + d for d in range(-3, 4) for m in range(2, 10)]
     for ax in axes[-1]:
-        ax.set_xscale("log")
+        ax.xaxis.set_major_locator(ticker.MultipleLocator(1.0))
+        ax.xaxis.set_major_formatter(
+            ticker.FuncFormatter(lambda v, _: f"$10^{{{v:.0f}}}$")
+        )
+        ax.xaxis.set_minor_locator(ticker.FixedLocator(minor))
     axes[-1][0].set_xlabel("slowdown over space best ($\\times$, log)", fontsize=8)
 
     handles = [
         plt.matplotlib.patches.Patch(
             facecolor=C_BODY,
-            edgecolor=C_MUTED,
-            alpha=0.75,
+            edgecolor="none",
+            alpha=0.5,
             label="uniform sample (measured)",
         ),
         plt.matplotlib.lines.Line2D(
