@@ -254,6 +254,7 @@ void upmemrt_dpu_launch(struct dpu_set_t *void_dpu_set) {
 #endif
   if (getenv("UPMEM_LOG")) {
     size_t i = 0;
+    (void)i;
     struct dpu_set_t dpu;
     DPU_FOREACH(*dpu_set, dpu, i) { dpu_log_read(dpu, stdout); }
   }
