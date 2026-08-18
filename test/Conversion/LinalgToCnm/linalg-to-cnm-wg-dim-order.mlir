@@ -46,8 +46,8 @@
 // k-tile outermost: `leaf floordiv 4`, constant over each run of four
 // consecutive leaves, which share their k-tile and differ in m.
 // RULE-DAG: #[[VEC:.+]] = affine_map<(d0, d1, d2, d3) -> (d0 floordiv 4, d3)>
-// RULE-DAG: #[[MAT:.+]] = affine_map<(d0, d1, d2, d3, d4) -> (d0 * 256 + d2 - (d0 floordiv 4) * 1024, d0 floordiv 4, d4)>
-// RULE-DAG: #[[OUT:.+]] = affine_map<(d0, d1, d2, d3) -> (d0 floordiv 4, d0 * 256 + d3 - (d0 floordiv 4) * 1024)>
+// RULE-DAG: #[[MAT:.+]] = affine_map<(d0, d1, d2, d3, d4) -> ((d0 mod 4) * 256 + d2, d0 floordiv 4, d4)>
+// RULE-DAG: #[[OUT:.+]] = affine_map<(d0, d1, d2, d3) -> (d0 floordiv 4, (d0 mod 4) * 256 + d3)>
 //
 // k-tile innermost: `leaf mod 4`, so adjacent leaves differ in their k-tile and
 // the vector is replicated across each run of four instead.

@@ -60,3 +60,31 @@ module @dpu_kernels {
     upmem.return
   }
 }
+
+// -----
+
+// Relinearizing an index from one tiling into another leaves telescoping
+// sums like `d1 + 16*(d1 floordiv 128) - 16*(d1 floordiv 16) - ...`, whose
+// pairs are the definition of a mod:  c*x - c*k*(x floordiv k) == c*(x mod k).
+// Simplification recognizes them, and merges nested divisions
+// ((x floordiv a) floordiv b == x floordiv (a*b)), so every result comes out
+// as a plain extract of a bit field of the block index.
+
+// CHECK-DAG: #[[MAP:.*]] = affine_map<(d0, d1) -> ((d1 floordiv 256) mod 4, d1 mod 16 + ((d1 floordiv 128) mod 2) * 16, d0 * 16 + (d1 mod 128) floordiv 16 + (d1 floordiv 1024) * 8)>
+
+// CHECK-LABEL: func.func @telescoping_sums_become_mods
+func.func @telescoping_sums_become_mods(%host: memref<4x32x64xi32>) {
+  %dpus = upmem.alloc_dpus : !upmem.hierarchy<4x16>
+  upmem.load_program @dpu_kernels::@program on %dpus : !upmem.hierarchy<4x16>
+  // CHECK: upmem.gather_blocks %{{.*}}[1 elts, #[[MAP]], 2048 blocks]
+  upmem.gather_blocks %host[1 elts, affine_map<(d0, d1) -> (((d1 floordiv 128) floordiv 2) mod 4, d1 + (d1 floordiv 128) * 16 - (d1 floordiv 16) * 16 - ((d1 floordiv 128) floordiv 2) * 32, d0 * 16 + (d1 mod 128) floordiv 16 + ((d1 floordiv 128) floordiv 8) * 8)>, 2048 blocks] from @buf of %dpus : memref<4x32x64xi32> from !upmem.hierarchy<4x16>
+  upmem.free_dpus %dpus : !upmem.hierarchy<4x16>
+  return
+}
+
+module @dpu_kernels {
+  upmem.dpu_program @program() tasklets(16) {
+    %buf = upmem.static_alloc @buf(mram) : memref<128xi32, "mram">
+    upmem.return
+  }
+}

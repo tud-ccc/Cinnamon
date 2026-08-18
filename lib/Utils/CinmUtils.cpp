@@ -497,6 +497,16 @@ static std::optional<int64_t> affineTermCoefficient(AffineExpr expr) {
   return std::nullopt;
 }
 
+/// A term of a sum, split into its base expression and constant coefficient:
+/// `x * c` gives (x, c), anything else is its own base with coefficient 1.
+static std::pair<AffineExpr, int64_t> affineTermBase(AffineExpr term) {
+  if (auto mul = llvm::dyn_cast<AffineBinaryOpExpr>(term);
+      mul && mul.getKind() == AffineExprKind::Mul)
+    if (auto c = llvm::dyn_cast<AffineConstantExpr>(mul.getRHS()))
+      return {mul.getLHS(), c.getValue()};
+  return {term, 1};
+}
+
 /// Simplify the affine expression by flattening it and reconstructing it.
 static AffineExpr simplifyAffineExprWithBounds(
     AffineExpr expr, unsigned numDims, unsigned numSymbols,
@@ -515,7 +525,6 @@ static AffineExpr simplifyAffineExprWithBounds(
       return getAffineConstantExpr(lb.value(), expr.getContext());
     return dimExpr;
   }
-  case AffineExprKind::Add:
   case AffineExprKind::Mul: {
     AffineBinaryOpExpr binaryExpr = cast<AffineBinaryOpExpr>(expr);
     return getAffineBinaryOpExpr(
@@ -524,6 +533,73 @@ static AffineExpr simplifyAffineExprWithBounds(
                                      dimLowerBounds, dimUpperBounds),
         simplifyAffineExprWithBounds(binaryExpr.getRHS(), numDims, numSymbols,
                                      dimLowerBounds, dimUpperBounds));
+  }
+  case AffineExprKind::Add: {
+    SmallVector<AffineExpr> terms;
+    flattenAffineSum(expr, terms);
+    for (AffineExpr &term : terms)
+      term = simplifyAffineExprWithBounds(term, numDims, numSymbols,
+                                          dimLowerBounds, dimUpperBounds);
+
+    // Telescope the pair of terms a subtracted floor division leaves behind:
+    //
+    //   c*x + (-c*k)*(x floordiv k)  ==  c*(x mod k)
+    //
+    // by the definition x mod k = x - k*(x floordiv k). When the base is
+    // itself a division, its dividing pair shows up pre-merged (the floordiv
+    // rule below turns (x floordiv a) floordiv k into x floordiv (a*k)), so
+    // the same telescoping is recognized through that form:
+    //
+    //   c*(x floordiv a) + (-c*k)*(x floordiv (a*k))  ==  c*((x floordiv a) mod
+    //   k)
+    //
+    // Delinearizing an index with respect to one tiling and relinearizing it
+    // with respect to another (cnm-to-upmem block derivation does this)
+    // produces sums like
+    //   d1 + 16*(d1 floordiv 128) - 16*(d1 floordiv 16) - ...
+    // whose pairs telescope into single mod terms. Each rewrite removes one
+    // term from the sum, so the loop terminates.
+    bool changed = true;
+    while (changed) {
+      changed = false;
+      for (size_t i = 0; i < terms.size() && !changed; ++i) {
+        auto [base, coefficient] = affineTermBase(terms[i]);
+        int64_t baseDivisor = 1;
+        AffineExpr baseOperand = base;
+        if (auto baseDiv = llvm::dyn_cast<AffineBinaryOpExpr>(base);
+            baseDiv && baseDiv.getKind() == AffineExprKind::FloorDiv)
+          if (auto a = llvm::dyn_cast<AffineConstantExpr>(baseDiv.getRHS());
+              a && a.getValue() > 0) {
+            baseDivisor = a.getValue();
+            baseOperand = baseDiv.getLHS();
+          }
+        for (size_t j = 0; j < terms.size() && !changed; ++j) {
+          if (i == j)
+            continue;
+          auto [divTerm, divCoefficient] = affineTermBase(terms[j]);
+          auto div = llvm::dyn_cast<AffineBinaryOpExpr>(divTerm);
+          if (!div || div.getKind() != AffineExprKind::FloorDiv ||
+              div.getLHS() != baseOperand)
+            continue;
+          auto m = llvm::dyn_cast<AffineConstantExpr>(div.getRHS());
+          if (!m || m.getValue() <= 0 || m.getValue() % baseDivisor != 0)
+            continue;
+          int64_t k = m.getValue() / baseDivisor;
+          if (k <= 1 || divCoefficient != -coefficient * k)
+            continue;
+          terms[i] = simplifyAffineExprWithBounds(
+              (base % k) * coefficient, numDims, numSymbols, dimLowerBounds,
+              dimUpperBounds);
+          terms.erase(terms.begin() + j);
+          changed = true;
+        }
+      }
+    }
+
+    AffineExpr sum = terms.front();
+    for (AffineExpr term : llvm::drop_begin(terms))
+      sum = sum + term;
+    return sum;
   }
   case AffineExprKind::FloorDiv:
   case AffineExprKind::CeilDiv:
@@ -545,6 +621,19 @@ static AffineExpr simplifyAffineExprWithBounds(
                                        dimLowerBounds, dimUpperBounds, true);
     if (auto constRhs = llvm::dyn_cast_or_null<AffineConstantExpr>(sRHS)) {
       auto rhs = constRhs.getValue();
+
+      // Merge nested divisions:  (x floordiv a) floordiv b == x floordiv (a*b)
+      // for positive constants a and b.
+      if (kind == AffineExprKind::FloorDiv && rhs > 0) {
+        if (auto inner = llvm::dyn_cast<AffineBinaryOpExpr>(sLHS);
+            inner && inner.getKind() == AffineExprKind::FloorDiv)
+          if (auto innerRhs =
+                  llvm::dyn_cast<AffineConstantExpr>(inner.getRHS());
+              innerRhs && innerRhs.getValue() > 0)
+            return simplifyAffineExprWithBounds(
+                inner.getLHS().floorDiv(innerRhs.getValue() * rhs), numDims,
+                numSymbols, dimLowerBounds, dimUpperBounds);
+      }
       if (lhsUB) {
         if (kind == AffineExprKind::Mod && *lhsUB < rhs) {
           return sLHS;
@@ -661,8 +750,15 @@ AffineMap simplifyAffineMapWithBounds(AffineMap map,
     e = simplifyAffineExpr(e, map.getNumDims(), map.getNumSymbols());
     e = simplifyAffineExprWithBounds(e, map.getNumDims(), map.getNumSymbols(),
                                      lowerBounds, upperBounds);
-    exprs.push_back(
-        simplifyAffineExpr(e, map.getNumDims(), map.getNumSymbols()));
+    // The upstream simplifier flattens `(x mod k) * c` into its defining
+    // floordiv pair and cannot reconstruct the mod under the coefficient,
+    // undoing the telescoping done above. Run it for its own
+    // canonicalizations, then telescope once more so the mod form is what
+    // survives.
+    e = simplifyAffineExpr(e, map.getNumDims(), map.getNumSymbols());
+    e = simplifyAffineExprWithBounds(e, map.getNumDims(), map.getNumSymbols(),
+                                     lowerBounds, upperBounds);
+    exprs.push_back(e);
   }
   return AffineMap::get(map.getNumDims(), map.getNumSymbols(), exprs,
                         map.getContext());
