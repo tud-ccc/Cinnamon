@@ -2,89 +2,79 @@
 set -euo pipefail
 
 script_dir="$( cd -- "$(dirname "$0")" >/dev/null 2>&1 ; pwd -P )"
+# shellcheck source=/dev/null
 source "$script_dir/common.sh"
 
-# ---- Safe defaults (avoid 'unbound variable') ----
-setup_python_venv="${setup_python_venv:-0}"
-reconfigure="${reconfigure:-0}"
-enable_cuda="${enable_cuda:-0}"
-enable_roc="${enable_roc:-0}"
-py_venv_path="${py_venv_path:?Define 'py_venv_path' in common.sh}"
-
-if [[ "$setup_python_venv" -eq 1 ]]; then
-  # Prefer a Python version that plays well with PyTorch wheels on many distros.
-  supported_python_executable="python3"
-  for cand in python3.12 python3.11 python3.10; do
-    if command -v "$cand" >/dev/null 2>&1; then
-      supported_python_executable="$cand"
-      break
-    fi
-  done
-
-  reconfigure_python_venv=0
-  if [[ ! -d "$py_venv_path" ]]; then
-    status "Creating Python venv ($supported_python_executable)"
-    if ! "$supported_python_executable" -m venv "$py_venv_path"; then
-      error "Cannot create venv at $py_venv_path"
-      exit 1
-    fi
-    # shellcheck disable=SC1091
-    source "$py_venv_path/bin/activate"
-    reconfigure_python_venv=1
-  else
-    status "Enabling Python venv"
-    # shellcheck disable=SC1091
-    source "$py_venv_path/bin/activate"
-  fi
-
-  # Determine which PyTorch index to use
-  if [[ "$enable_cuda" -eq 1 && "$enable_roc" -eq 1 ]]; then
-    warning "Both enable_cuda and enable_roc are set; defaulting to CUDA wheels."
-  fi
-
-  if   [[ "$enable_cuda" -eq 1 ]]; then torch_source="https://download.pytorch.org/whl/cu124"
-  elif [[ "$enable_roc"  -eq 1 ]]; then torch_source="https://download.pytorch.org/whl/rocm6.1"
-  else                                torch_source="https://download.pytorch.org/whl/cpu"
-  fi
-
-  if [[ "$reconfigure" -eq 1 || "$reconfigure_python_venv" -eq 1 ]]; then
-    status "Installing Python dependencies into venv"
-    verbose_cmd python -m pip install --upgrade pip
-    verbose_cmd python -m pip install "cmake==4.2.1"
-    # PyTorch first (per official guidance), then build tooling & bindings
-    verbose_cmd pip install torch torchvision torchaudio --index-url "$torch_source"
-    # Build dependencies
-    verbose_cmd pip install build wheel conan
-    # Note this needs to be done after LLVM has been cloned.
-    verbose_cmd python -m pip install -r third-party/llvm/mlir/python/requirements.txt
-    verbose_cmd python -m pip install -r experiments/requirements.txt
-    verbose_cmd conan export third-party/conan-recipes/mlpack --name mlpack --version 4.8.0
-    verbose_cmd conan export third-party/conan-recipes/gecode --name gecode --version 6.4.0
-  fi
-
-  # Ensure CMake will use this venv's Python and find pybind11's CMake config
-  PYBIN="$(command -v python)"
-  if ! PYBIND11_DIR="$("$PYBIN" - <<'PY'
-import sys
-try:
-    import pybind11
-    print(pybind11.get_cmake_dir())
-except Exception as e:
-    sys.exit(1)
-PY
-)"; then
-    # If import failed (e.g., user skipped reconfigure) warn and
-    error "pybind11 not found in venv; Run with -reconfigure or install MLIR dependencies manually"
-    exit 1
-  fi
-
-  # Export extra CMake flags for downstream scripts (LLVM/MLIR configure)
-  # - Use the venv Python
-  # - Point CMake to pybind11's CMake package dir
-  # - And force CMake to prefer the active virtualenv
-  export LLVM_CMAKE_OPTIONS="${LLVM_CMAKE_OPTIONS:-} -DPython3_EXECUTABLE=${PYBIN} -Dpybind11_DIR=${PYBIND11_DIR} -DPython3_FIND_VIRTUALENV=ONLY"
-
-elif [[ "$setup_python_venv" -eq 0 ]]; then
+if [[ "$setup_python_venv" -eq 0 ]]; then
   warning "Skipping Python venv setup"
   warning "Make sure your active Python has compatible torch, numpy, and pybind11 (>=3.0)."
+  exit 0
 fi
+
+# Prefer a Python version that plays well with PyTorch wheels on many distros.
+supported_python_executable="python3"
+for cand in python3.12 python3.11 python3.10; do
+  if command -v "$cand" >/dev/null 2>&1; then
+    supported_python_executable="$cand"
+    break
+  fi
+done
+
+reconfigure_python_venv=0
+if [[ ! -d "$py_venv_path" ]]; then
+  status "Creating Python venv ($supported_python_executable)"
+  if ! "$supported_python_executable" -m venv "$py_venv_path"; then
+    error "Cannot create venv at $py_venv_path"
+    exit 1
+  fi
+  reconfigure_python_venv=1
+  # common.sh could not activate a venv that did not exist yet.
+  # shellcheck disable=SC1091
+  source "$py_venv_path/bin/activate"
+fi
+
+# Determine which PyTorch index to use
+if [[ "$enable_cuda" -eq 1 && "$enable_roc" -eq 1 ]]; then
+  warning "Both enable_cuda and enable_roc are set; defaulting to CUDA wheels."
+fi
+
+if   [[ "$enable_cuda" -eq 1 ]]; then torch_source="https://download.pytorch.org/whl/cu124"
+elif [[ "$enable_roc"  -eq 1 ]]; then torch_source="https://download.pytorch.org/whl/rocm6.1"
+else                                  torch_source="https://download.pytorch.org/whl/cpu"
+fi
+
+if [[ "$reconfigure" -eq 1 || "$reconfigure_python_venv" -eq 1 ]]; then
+  status "Installing Python dependencies into venv"
+  verbose_cmd python -m pip install --upgrade pip
+  verbose_cmd python -m pip install "cmake==4.2.1"
+  # PyTorch first (per official guidance), then build tooling & bindings
+  verbose_cmd pip install torch torchvision torchaudio --index-url "$torch_source"
+  verbose_cmd pip install build wheel conan
+
+  # MLIR's Python bindings pin their own dependencies. The list lives in the
+  # LLVM sources, so it needs those checked out even when we don't build LLVM.
+  if [[ "$build_llvm" -eq 1 ]]; then
+    ensure_submodule third-party/llvm 1
+  fi
+  mlir_requirements="$llvm_source_dir/mlir/python/requirements.txt"
+  if [[ -f "$mlir_requirements" ]]; then
+    verbose_cmd python -m pip install -r "$mlir_requirements"
+  else
+    warning "No MLIR Python requirements at '$mlir_requirements'"
+    warning "Set LLVM_SOURCE_DIR to your LLVM checkout if the bindings fail to import."
+  fi
+
+  verbose_cmd python -m pip install -r "$project_root/experiments/requirements.txt"
+
+  # Neither package has an upstream Conan recipe; ours live in-tree.
+  verbose_cmd conan export "$project_root/third-party/conan-recipes/mlpack" --name mlpack --version 4.8.0
+  verbose_cmd conan export "$project_root/third-party/conan-recipes/gecode" --name gecode --version 6.4.0
+fi
+
+# Downstream scripts pick up this venv, and the pybind11 CMake flags derived
+# from it, when they source common.sh.
+if ! python -c 'import pybind11' 2>/dev/null; then
+  error "pybind11 not found in venv; run with -reconfigure or install MLIR dependencies manually"
+  exit 1
+fi
+status "Python environment ready at $py_venv_path"
