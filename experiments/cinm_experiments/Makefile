@@ -109,7 +109,7 @@ $(IR_DIR)/$(BENCH_FN).mlir: $(SRC_MLIR) | $(IR_DIR)
 $(IR_DIR)/%.o: $(IR_DIR)/%.mlir
 	$(CINM_OPT) $< $(LOWER_PIPELINE) $(TO_LLVM_PIPELINE) -o - \
 	    | $(CINM_TRANS) --allow-unregistered-dialect --mlir-to-llvmir -o - \
-	    | $(CLANG_BASE)/llc -O2 -filetype=obj -relocation-model=pic -o $@
+	    | $(CLANG_BASE)/opt -O3 | $(CLANG_BASE)/llc -O3 -filetype=obj -relocation-model=pic -o $@
 
 # The stages the rule above pipes through, for when a compile fails and the
 # intermediate IR is what you want to look at. Nothing depends on these; ask
