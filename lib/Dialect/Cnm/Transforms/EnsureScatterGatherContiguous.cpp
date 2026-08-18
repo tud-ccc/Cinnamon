@@ -111,11 +111,39 @@ void markStatic(Operation *repack, Value packed, OpBuilder &b) {
                                   b.getUnitAttr());
 }
 
-/// The constants `map` divides each of its dimensions by, which is what has to
-/// fall on a dimension boundary for the map to be linear in them.
+/// The dimension at the root of a chain of floordivs/mods by positive
+/// constants, and the product of the floordiv divisors along the chain -- the
+/// scale at which an operation applied on top of `expr` reads that dimension.
+/// A mod discards high parts but does not rescale what remains, so only
+/// floordivs contribute.
+std::optional<std::pair<unsigned, int64_t>>
+resolveDivModChain(AffineExpr expr) {
+  int64_t scale = 1;
+  while (auto binary = dyn_cast<AffineBinaryOpExpr>(expr)) {
+    AffineExprKind kind = binary.getKind();
+    if (kind != AffineExprKind::FloorDiv && kind != AffineExprKind::Mod)
+      return std::nullopt;
+    auto constant = dyn_cast<AffineConstantExpr>(binary.getRHS());
+    if (!constant || constant.getValue() <= 0)
+      return std::nullopt;
+    if (kind == AffineExprKind::FloorDiv)
+      scale *= constant.getValue();
+    expr = binary.getLHS();
+  }
+  if (auto dim = dyn_cast<AffineDimExpr>(expr))
+    return std::make_pair(dim.getPosition(), scale);
+  return std::nullopt;
+}
+
+/// The boundaries each of `map`'s dimensions has to be split at for the map
+/// to be linear in the pieces, in units of the dimension: each floordiv or
+/// mod marks one at its divisor times the scale its operand reads the
+/// dimension at. `(d floordiv a) mod b` thus needs boundaries at `a` (from
+/// the inner floordiv, visited on its own) and `a*b`; `(d mod a) floordiv b`
+/// needs `a` and `b`.
 ///
-/// Fails when a floordiv or mod is applied to anything but a bare dimension:
-/// no split makes that linear.
+/// Fails when a floordiv or mod is applied to anything but a chain of
+/// floordivs/mods over a bare dimension: no split makes that linear.
 LogicalResult
 collectSplitPoints(AffineMap map,
                    SmallVectorImpl<SmallVector<int64_t>> &points) {
@@ -130,15 +158,17 @@ collectSplitPoints(AffineMap map,
       if (kind != AffineExprKind::FloorDiv && kind != AffineExprKind::Mod &&
           kind != AffineExprKind::CeilDiv)
         return;
-      auto dim = dyn_cast<AffineDimExpr>(binary.getLHS());
+      std::optional<std::pair<unsigned, int64_t>> chain =
+          resolveDivModChain(binary.getLHS());
       auto constant = dyn_cast<AffineConstantExpr>(binary.getRHS());
-      if (!dim || !constant || kind == AffineExprKind::CeilDiv) {
+      if (!chain || !constant || kind == AffineExprKind::CeilDiv) {
         supported = false;
         return;
       }
-      SmallVector<int64_t> &forDim = points[dim.getPosition()];
-      if (!llvm::is_contained(forDim, constant.getValue()))
-        forDim.push_back(constant.getValue());
+      int64_t point = chain->second * constant.getValue();
+      SmallVector<int64_t> &forDim = points[chain->first];
+      if (!llvm::is_contained(forDim, point))
+        forDim.push_back(point);
     });
   return success(supported);
 }
@@ -255,6 +285,21 @@ bool packIntoOneBlockPerLeaf(Op op, OpBuilder &b, bool isStatic) {
 
   AffineMap packedMap = simplifyAffineMapWithBounds(
       map.replaceDimsAndSymbols(toNew, {}, packedShape.size(), 0), packedShape);
+
+  // Every division's boundary is a split, so the substitution folds them all
+  // away and the packed map is linear -- the form a strided repack can walk.
+  // One that survives means a form the analysis above missed; keep the op as
+  // it is rather than emit a repack on a map the lowering cannot walk.
+  bool linear = true;
+  for (AffineExpr result : packedMap.getResults())
+    result.walk([&](AffineExpr e) {
+      AffineExprKind kind = e.getKind();
+      if (kind == AffineExprKind::FloorDiv || kind == AffineExprKind::Mod ||
+          kind == AffineExprKind::CeilDiv)
+        linear = false;
+    });
+  if (!linear)
+    return false;
 
   b.setInsertionPoint(op);
   Value host = op.getHostValue();
