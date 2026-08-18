@@ -8,12 +8,15 @@ results/*.csv and never touch data/.
 
 Schemas (the single source of truth for the plot scripts):
 
-- e1.csv       fn_name, system, config_label, total_ms, notes
+- e1.csv       fn_name, system, config_label, total_ms,
+               excluded_transfer_ms, excluded_transfer_bytes, notes
                system in {sample, topk, search, atim_{published,
                reproduced}, atim_{published,reproduced}_transcribed};
                every *measured* config row is kept (the percentile in
                tab:sufficiency needs the whole sample distribution, not
-               just its best).
+               just its best). The excluded columns carry each row's own
+               convention, so a comparison across systems can check that
+               they agree instead of assuming it.
 - rq1.csv      the offline interchange schema: benchmark, fn_name, system,
                config_label, total_ms, scatter_ms, kernel_ms, gather_ms,
                load_ms, excluded_transfer_ms, excluded_transfer_bytes,
@@ -121,6 +124,19 @@ def measured_rows(
                 "kernel_ms": measurements.launch_time_ms(output),
                 "gather_ms": measurements.gather_time_ms(output),
                 "load_ms": measurements.load_time_ms(output),
+                # The scatter net_time_ms discounts, reported rather than
+                # left implicit in that default: it is the same quantity
+                # ATiM's pragma_explicit_h2d operands contribute to its
+                # column, and a comparison against them is only sound if
+                # both sides exclude or both include. Zero is the answer
+                # for a function with no `cinm.static` operand (`va`), not
+                # a missing measurement.
+                "excluded_transfer_ms": measurements.amortizable_time_ms(
+                    output, "scatter"
+                ),
+                "excluded_transfer_bytes": measurements.amortizable_transfer_bytes(
+                    output, "scatter"
+                ),
             }
         )
     return pd.DataFrame(rows)
@@ -170,7 +186,17 @@ def assemble_e1(
         missing.append(f"offline ATiM rows ({offline_atim})")
     else:
         frames.append(
-            offline[["benchmark", "fn_name", "system", "config_label", "total_ms"]]
+            offline[
+                [
+                    "benchmark",
+                    "fn_name",
+                    "system",
+                    "config_label",
+                    "total_ms",
+                    "excluded_transfer_ms",
+                    "excluded_transfer_bytes",
+                ]
+            ]
         )
     frame = pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
     return _write(frame, out_csv, missing)

@@ -206,6 +206,42 @@ def amortizable_time_ms(
     return 0.0
 
 
+def amortizable_bytes(df: pd.DataFrame) -> pd.Series:
+    """Per-iteration bytes on the wire in `df` that a serving deployment would
+    pay once rather than per inference, keyed by iteration. See
+    _amortizable_index for which rows those are.
+
+    What the transfer moves, not what the operand holds: a broadcast pushes
+    `bytes_per_dpu` into every DPU of the set, and that replication is traffic
+    the link actually carries, so it is counted once per DPU."""
+    rows = df.loc[_amortizable_index(df)]
+    if rows.empty:
+        return pd.Series(dtype=float)
+    wire = rows["bytes_per_dpu"] * rows["num_dpus"] * rows["num_blocks"]
+    return wire.groupby(rows["iteration"]).sum()
+
+
+def amortizable_transfer_bytes(
+    output_dir: Union[pathlib.Path, RunResult], csv_type: str
+) -> float:
+    """Mean per-iteration bytes that amortizable_bytes identifies in the given
+    csv_type. 0.0 when there is nothing to amortize.
+
+    The counterpart of amortizable_time_ms, and averaged the same way for the
+    same reason, so that the two divide into a bandwidth."""
+    for csv_path in _output_dir(output_dir).glob("*.csv"):
+        if _csv_type(csv_path) != csv_type:
+            continue
+        df = pd.read_csv(csv_path)
+        df = df.rename(columns={_iter_col(df): "iteration"})
+        series = amortizable_bytes(df)
+        if series.empty:
+            return 0.0
+        iterations = df["iteration"].unique()
+        return float(series.reindex(iterations).fillna(0).mean())
+    return 0.0
+
+
 def _sum_time_ms_by_kind(
     output_dir: Union[pathlib.Path, RunResult],
     csv_type: str,
