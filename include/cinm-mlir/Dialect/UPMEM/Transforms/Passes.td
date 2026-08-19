@@ -307,6 +307,15 @@ def UpmemInferAcceleratorPass : Pass<"upmem-infer-accelerator", "ModuleOp"> {
            "profiling menu prefers multiples of it (rank-sized sets keep "
            "host<->DPU transfers rank-parallel) but falls back to whatever "
            "divides the problem size when no such multiple does">,
+    Option<"allowFloatReassociation", "allow-float-reassociation", "bool",
+           "false",
+           "Permit distributing a floating-point reduction across the "
+           "workgroup (forwarded to --convert-linalg-to-cnm in the trial "
+           "pipeline). Doing so reassociates the sum and changes the result, "
+           "so it is off by default. Without it, a block whose only "
+           "iteration dimension is an f32 reduction (an rmsnorm sum of "
+           "squares, a softmax max/sum) has no feasible configuration and "
+           "graph allocation fails">,
     Option<"fusionEdges", "fusion-edges", "bool", "true",
            "Declare a `fuse.<producer>-><consumer>` parameter for each "
            "producer/consumer pair of distributed ops in the block, coupling "
