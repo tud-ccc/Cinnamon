@@ -29,6 +29,7 @@
 #include <vector>
 
 #include <cblas.h>
+#include <numa.h>
 
 #ifndef BENCH_FN
 #error "BENCH_FN must be defined at compile time (-DBENCH_FN=<function_name>)"
@@ -69,6 +70,33 @@ inline std::vector<DTY> random_vector(size_t n) {
   std::vector<DTY> v(n);
   for (size_t i = 0; i < n; i++)
     v[i] = next_operand();
+  return v;
+}
+
+/// Zero-initialised output buffer with its pages interleaved across NUMA
+/// nodes. Every driver's gather target must be allocated through this.
+///
+/// The gather (dpu_push_xfer FROM_DPU) is executed by per-rank SDK worker
+/// threads that libnuma pins to their rank's socket, and its bandwidth is set
+/// by where the destination pages live: faulted from the main thread (what a
+/// plain vector constructor does) they all land on one node, half the ranks
+/// write cross-socket, and a 256 MiB gather runs at ~6.5 MiB/ms; interleaved
+/// it runs at ~10.7-11.1 MiB/ms (measured on the 2-node bench machine, 2048
+/// DPUs x 128 KiB, matching the raw-SDK probe both ways). ATiM's harness
+/// gathers at ~10.3, so single-node placement here would charge our gather
+/// term a ~1.6x penalty that is page placement, not the compiler under test.
+///
+/// Interleave rather than first-touch-per-rank because the driver does not
+/// know the rank -> host-offset mapping; interleaving is within noise of the
+/// measured optimum. The policy is scoped to this allocation: operands stay
+/// on the default policy, since the scatter direction measures the same
+/// single-node and interleaved (~12 MiB/ms).
+inline std::vector<DTY> output_vector(size_t n) {
+  if (numa_available() < 0 || numa_max_node() == 0)
+    return std::vector<DTY>(n, 0);
+  numa_set_interleave_mask(numa_all_nodes_ptr);
+  std::vector<DTY> v(n, 0); // faulted here, under the interleave policy
+  numa_set_localalloc();
   return v;
 }
 

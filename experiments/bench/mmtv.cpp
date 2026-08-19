@@ -22,7 +22,7 @@ struct Mmtv {
     k = d[2];
     A = bench::random_vector(b * m * k);
     x = bench::random_vector(b * k);
-    out.assign(b * m, 0);
+    out = bench::output_vector(b * m);
     printf("%s  B=%zu M=%zu K=%zu", TOSTR(BENCH_FN), b, m, k);
   }
 

@@ -20,7 +20,7 @@ struct Mtv {
     n = d[1];
     A = bench::random_vector(m * n);
     x = bench::random_vector(n);
-    out.assign(m, 0);
+    out = bench::output_vector(m);
     printf("%s  M=%zu N=%zu", TOSTR(BENCH_FN), m, n);
   }
 

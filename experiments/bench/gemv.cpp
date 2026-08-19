@@ -23,7 +23,7 @@ struct Gemv {
     A = bench::random_vector(m * n);
     x = bench::random_vector(n);
     c = bench::next_operand();
-    out.assign(m, 0);
+    out = bench::output_vector(m);
     printf("%s  M=%zu N=%zu c=%lld", TOSTR(BENCH_FN), m, n, (long long)c);
   }
 

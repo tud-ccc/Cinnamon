@@ -18,7 +18,7 @@ struct Va {
     n = d[0];
     x = bench::random_vector(n);
     y = bench::random_vector(n);
-    out.assign(n, 0);
+    out = bench::output_vector(n);
     printf("%s  n=%zu", TOSTR(BENCH_FN), n);
   }
 

@@ -21,7 +21,7 @@ struct Geva {
     y = bench::random_vector(n);
     c = bench::next_operand();
     d = bench::next_operand();
-    out.assign(n, 0);
+    out = bench::output_vector(n);
     printf("%s  n=%zu c=%lld d=%lld", TOSTR(BENCH_FN), n, (long long)c,
            (long long)d);
   }
