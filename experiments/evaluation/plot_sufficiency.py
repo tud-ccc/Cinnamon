@@ -8,9 +8,12 @@ dots instead. Only the upper half is drawn, resting on the x axis: it is
 the panel's backdrop, a wash saying where the space is, and the point
 arms float over it rather than beside it.
 
-x is slowdown over the panel's space best (best measured point of any arm,
-the witness tab:sufficiency prints), on a decade scale so the tails stay
-comparable across panels instead of the big sizes flattening everything.
+x is slowdown over the transcribed ATiM (reproduced) point -- E1's
+yardstick: left of the dotted parity line is faster than the configuration
+ATiM's own tuning chose for this machine. A panel with no transcribed
+point yet anchors to its space best instead and says so in red. The scale
+is decades so the tails stay comparable across panels instead of the big
+sizes flattening everything.
 Everything in the panel is plotted in log10 of that ratio on a linear
 axis wearing decade ticks, rather than raw ratios on a log axis: the
 violin has to be a density *of* log x for its width to mean probability
@@ -18,10 +21,13 @@ per unit of the axis it is drawn on. (In linear space the bandwidth is set
 by a spread that runs to hundreds, so the body reads as mass out in the
 tail when the mass is near 1.)
 
-Overlaid: every search seed's pick, top-k's best, and the transcribed ATiM
-point per variant. The one picture carries C1 (the violin body: most of
-the space is bad), E1 (each arm lands in the good region), and A3 (the
-seed scatter) without being "about" the search.
+Overlaid: every search seed's pick, top-k's best, the transcribed ATiM
+(reproduced) point, and ATiM's own measurement of the same schedule under
+its own codegen -- expected right of the transcribed point where our
+codegen is ahead, which is itself part of E1's decomposition. The one
+picture carries C1 (the violin body: most of the space is bad), E1 (each
+arm lands in the good region), and A3 (the seed scatter) without being
+"about" the search.
 
 The full grid is every benchmark x every size -- deliberately oversized
 for the paper; the paper version picks one size per benchmark once the
@@ -34,11 +40,12 @@ same reason: the pool is benched in dpus order, so a partial sample is
 the low-DPU corner, not a random subsample).
 
 Colors: the three overlay arms are the first three categorical slots of
-the reference palette (all-pairs-validated triple); the two ATiM variants
-share one hue and differ by marker shape, so identity never rests on a
-fourth hue. The distribution body is unstroked neutral gray -- it is the
-panel's context, not a series, so it stays the quietest thing in the
-panel and the overlay arms carry the ink.
+the reference palette (all-pairs-validated triple); the two ATiM markers
+are the same schedule under two codegens, so they share one hue and
+differ by fill (transcribed filled, ATiM's own open), and identity never
+rests on a fourth hue. The distribution body is unstroked neutral gray --
+it is the panel's context, not a series, so it stays the quietest thing
+in the panel and the overlay arms carry the ink.
 """
 
 from __future__ import annotations
@@ -57,7 +64,7 @@ from _reporting import load_or_skip, parse_dirs, save_fig
 
 # Categorical slots 1-3 (validated as an all-pairs triple) + neutrals.
 C_SEARCH = "#2a78d6"  # blue: every seed's pick
-C_ATIM = "#eb6834"  # orange: transcribed ATiM, both variants (shape splits them)
+C_ATIM = "#eb6834"  # orange: ATiM's schedule, transcribed and as ATiM ran it
 C_TOPK = "#1baf7a"  # aqua: best measured top-k point
 C_BODY = "#c3c2b7"  # neutral: the sample distribution body
 C_FAINT = "#898781"  # neutral: axis furniture and the absence markers
@@ -147,15 +154,32 @@ def main() -> None:
                     fontsize=8,
                 )
                 continue
-            # The witness: best measured point of any arm, = tab:sufficiency's
-            # space best. Everything in the panel is a slowdown over it.
-            best = min(a.min() for a in arms)
+            # Everything in the panel is a slowdown over the transcribed ATiM
+            # (reproduced) point, E1's yardstick; its best candidate is the
+            # anchor. A panel without one anchors to space best (the witness
+            # tab:sufficiency prints) so its shape stays visible, and is
+            # flagged in red because its x means something different.
+            transcribed = by.get("atim_reproduced_transcribed")
+            if transcribed is not None and len(transcribed):
+                anchor = transcribed.min()
+            else:
+                anchor = min(a.min() for a in arms)
+                ax.text(
+                    0.02,
+                    0.93,
+                    "no ATiM anchor",
+                    transform=ax.transAxes,
+                    ha="left",
+                    va="top",
+                    fontsize=6,
+                    color="red",
+                )
 
             ax.axvline(0.0, color=C_FAINT, lw=0.8, ls=":", zorder=2)
             sample = by.get("sample")
             if sample is not None and len(sample) > 1:
                 parts = ax.violinplot(
-                    np.log10(sample / best),
+                    np.log10(sample / anchor),
                     positions=[Y_VIOLIN],
                     vert=False,
                     widths=VIOLIN_W,
@@ -188,7 +212,7 @@ def main() -> None:
                 rng = np.random.default_rng(0)  # fixed jitter, stable output
                 jitter = rng.uniform(-0.13, 0.13, len(search))
                 ax.scatter(
-                    np.log10(search / best),
+                    np.log10(search / anchor),
                     Y_SEEDS + jitter,
                     s=9,
                     color=C_SEARCH,
@@ -199,7 +223,7 @@ def main() -> None:
             topk = by.get("topk")
             if topk is not None and len(topk):
                 ax.scatter(
-                    [np.log10(topk.min() / best)],
+                    [np.log10(topk.min() / anchor)],
                     [Y_POINTS],
                     s=42,
                     marker="D",
@@ -208,22 +232,34 @@ def main() -> None:
                     linewidths=0.8,
                     zorder=4,
                 )
-            for system, marker in (
-                ("atim_published_transcribed", "^"),
-                ("atim_reproduced_transcribed", "v"),
-            ):
-                pts = by.get(system)
-                if pts is not None and len(pts):
-                    ax.scatter(
-                        [np.log10(pts.min() / best)],
-                        [Y_POINTS],
-                        s=42,
-                        marker=marker,
-                        color=C_ATIM,
-                        edgecolors="white",
-                        linewidths=0.8,
-                        zorder=4,
-                    )
+            # The same ATiM schedule twice: transcribed into our compiler
+            # (filled, the anchor -- it sits on the parity line by
+            # construction) and as ATiM's own harness measured it (open).
+            # The open marker landing right of the line is the codegen
+            # share of E1's gap decomposition.
+            if transcribed is not None and len(transcribed):
+                ax.scatter(
+                    [np.log10(transcribed.min() / anchor)],
+                    [Y_POINTS],
+                    s=42,
+                    marker="v",
+                    color=C_ATIM,
+                    edgecolors="white",
+                    linewidths=0.8,
+                    zorder=5,
+                )
+            atim_own = by.get("atim_reproduced")
+            if atim_own is not None and len(atim_own):
+                ax.scatter(
+                    [np.log10(atim_own.min() / anchor)],
+                    [Y_POINTS],
+                    s=42,
+                    marker="v",
+                    facecolors="white",
+                    edgecolors=C_ATIM,
+                    linewidths=1.1,
+                    zorder=4,
+                )
 
     for ax, size in zip(axes[0], SIZE_ORDER):
         ax.set_title(size.removesuffix("MB") + " MB", fontsize=9)
@@ -245,7 +281,9 @@ def main() -> None:
             ticker.FuncFormatter(lambda v, _: f"$10^{{{v:.0f}}}$")
         )
         ax.xaxis.set_minor_locator(ticker.FixedLocator(minor))
-    axes[-1][0].set_xlabel("slowdown over space best ($\\times$, log)", fontsize=8)
+    axes[-1][0].set_xlabel(
+        "slowdown over transcribed ATiM (reproduced) ($\\times$, log)", fontsize=8
+    )
 
     handles = [
         plt.matplotlib.patches.Patch(
@@ -276,22 +314,23 @@ def main() -> None:
         plt.matplotlib.lines.Line2D(
             [],
             [],
-            marker="^",
-            ls="",
-            color=C_ATIM,
-            markersize=6,
-            markeredgecolor="white",
-            label="ATiM transcribed (published)",
-        ),
-        plt.matplotlib.lines.Line2D(
-            [],
-            [],
             marker="v",
             ls="",
             color=C_ATIM,
             markersize=6,
             markeredgecolor="white",
             label="ATiM transcribed (reproduced)",
+        ),
+        plt.matplotlib.lines.Line2D(
+            [],
+            [],
+            marker="v",
+            ls="",
+            markerfacecolor="white",
+            markeredgecolor=C_ATIM,
+            color="none",
+            markersize=6,
+            label="ATiM as measured (reproduced)",
         ),
     ]
     fig.legend(

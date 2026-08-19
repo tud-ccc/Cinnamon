@@ -9,19 +9,21 @@ results/*.csv and never touch data/.
 Schemas (the single source of truth for the plot scripts):
 
 - e1.csv       fn_name, system, config_label, total_ms,
-               excluded_transfer_ms, excluded_transfer_bytes, notes
+               excluded_transfer_ms, excluded_transfer_bytes,
+               total_ours_ms, excluded_ours_ms, excluded_ours_bytes, notes
                system in {sample, topk, search, atim_{published,
                reproduced}, atim_{published,reproduced}_transcribed};
                every *measured* config row is kept (the percentile in
                tab:sufficiency needs the whole sample distribution, not
-               just its best). The excluded columns carry each row's own
-               convention, so a comparison across systems can check that
-               they agree instead of assuming it.
-- rq1.csv      the offline interchange schema: benchmark, fn_name, system,
-               config_label, total_ms, scatter_ms, kernel_ms, gather_ms,
-               load_ms, excluded_transfer_ms, excluded_transfer_bytes,
-               tuning_wallclock_s, notes. Offline rows pass through;
-               ours/cinm1 rows are computed here.
+               just its best). total_ms is ATiM's timing convention on
+               every row -- E1 compares against ATiM's own measurements,
+               so its headline has to share their accounting -- and the
+               *_ours_* columns carry the same rows under our rule; see
+               INTERCHANGE_COLUMNS.
+- rq1.csv      the offline interchange schema (INTERCHANGE_COLUMNS).
+               Offline rows pass through; ours/cinm1 rows are computed
+               here. total_ms is ATiM's convention on every row, the
+               *_ours_* columns ours, per the same comment.
 - rq2.csv      benchmark, fn_name, system, seed, n_candidates,
                search_wallclock_s, space_build_s, notes.
 - rq3.csv      benchmark + fidelity.fidelity_frame columns (fn_name, label,
@@ -56,14 +58,20 @@ from cinm_experiments.aggregate import iter_config_dirs
 # by rq1.csv. One row per measured point, component columns nullable;
 # nothing else in the pipeline knows how offline rows were obtained.
 #
-# `excluded_transfer_ms` is the operand movement a system performs but does
-# not report -- ATiM's `pragma_explicit_h2d` operands, our `cinm.static`
-# ones. It is not part of `total_ms` on either side, by construction: that is
-# what makes it worth its own column rather than a component of one. A
-# single-operator benchmark can only justify leaving it out if there is
-# something to amortize it against, which is a property of the workload
-# (`mtv`'s weight has it, `va`'s operands do not), so the number has to
-# travel per row rather than be assumed.
+# Every row carries the same measurement under both timing conventions
+# (the paper's timing-convention paragraph):
+#
+# - `total_ms` / `excluded_transfer_ms` / `excluded_transfer_bytes` are
+#   ATiM's convention -- every array operand's transfer lifted out of the
+#   total, which is also PrIM's convention and what the E1/RQ1 headline
+#   numbers use, so that they compare to the baselines' published figures.
+# - `total_ours_ms` / `excluded_ours_ms` / `excluded_ours_bytes` are our
+#   convention -- only amortizable transfers lifted (constant data, moved
+#   once per workload lifetime).
+#
+# The pairs coincide except on ATIM_ALSO_LIFTS, and both travel per row
+# because which transfers a convention removes is a property of the
+# workload and the schedule, not a constant of the system.
 INTERCHANGE_COLUMNS = [
     "benchmark",
     "fn_name",
@@ -76,9 +84,20 @@ INTERCHANGE_COLUMNS = [
     "load_ms",
     "excluded_transfer_ms",
     "excluded_transfer_bytes",
+    "total_ours_ms",
+    "excluded_ours_ms",
+    "excluded_ours_bytes",
     "tuning_wallclock_s",
     "notes",
 ]
+
+# Benchmarks where ATiM's convention excludes transfers our rule keeps
+# charged: its harness lifts every array operand out of the timed region,
+# but these operands are read exactly once and nothing amortizes them.
+# Everywhere else the two conventions select the same transfers (the
+# constant weight) and the column pairs coincide. Scalar broadcasts (GEVA's
+# alpha/beta) are charged by both.
+ATIM_ALSO_LIFTS = {"prim_red", "prim_va", "prim_geva"}
 
 
 def _write(frame: pd.DataFrame, out_csv: pathlib.Path, missing: list[str]) -> bool:
@@ -103,40 +122,45 @@ def _write(frame: pd.DataFrame, out_csv: pathlib.Path, missing: list[str]) -> bo
 
 
 def measured_rows(
-    compile_root: pathlib.Path, run_root: pathlib.Path, system: str
+    compile_root: pathlib.Path, run_root: pathlib.Path, system: str, benchmark: str
 ) -> pd.DataFrame:
     """One interchange-shaped row per benched config under a B2 stack (net total +
     component means, label from the config dir). Empty frame when the stack
-    has not run."""
+    has not run.
+
+    `benchmark` decides whether the two convention column pairs coincide:
+    net_time_ms is our convention (amortizable transfers lifted), and on
+    ATIM_ALSO_LIFTS the ATiM-convention pair additionally moves the charged
+    array scatters from the total into the excluded column."""
     rows = []
     for fn_name, config_dir in iter_config_dirs(pathlib.Path(run_root)):
         output = config_dir / "output"
         total = measurements.net_time_ms(output)
         if total is None:
             continue
+        excluded_ms = measurements.amortizable_time_ms(output, "scatter")
+        excluded_bytes = measurements.amortizable_transfer_bytes(output, "scatter")
+        vec_ms, vec_bytes = 0.0, 0.0
+        if benchmark in ATIM_ALSO_LIFTS:
+            vec_ms = measurements.charged_array_scatter_ms(output)
+            vec_bytes = measurements.charged_array_scatter_bytes(output)
         rows.append(
             {
                 "fn_name": fn_name,
                 "system": system,
                 "config_label": config_dir.name,
-                "total_ms": total,
+                "total_ms": total - vec_ms,
                 "scatter_ms": measurements.scatter_time_ms(output),
                 "kernel_ms": measurements.launch_time_ms(output),
                 "gather_ms": measurements.gather_time_ms(output),
                 "load_ms": measurements.load_time_ms(output),
-                # The scatter net_time_ms discounts, reported rather than
-                # left implicit in that default: it is the same quantity
-                # ATiM's pragma_explicit_h2d operands contribute to its
-                # column, and a comparison against them is only sound if
-                # both sides exclude or both include. Zero is the answer
-                # for a function with no `cinm.static` operand (`va`), not
-                # a missing measurement.
-                "excluded_transfer_ms": measurements.amortizable_time_ms(
-                    output, "scatter"
-                ),
-                "excluded_transfer_bytes": measurements.amortizable_transfer_bytes(
-                    output, "scatter"
-                ),
+                # Zero is the answer for a function whose transfers are all
+                # charged under the convention, not a missing measurement.
+                "excluded_transfer_ms": excluded_ms + vec_ms,
+                "excluded_transfer_bytes": excluded_bytes + vec_bytes,
+                "total_ours_ms": total,
+                "excluded_ours_ms": excluded_ms,
+                "excluded_ours_bytes": excluded_bytes,
             }
         )
     return pd.DataFrame(rows)
@@ -159,8 +183,38 @@ def _offline_rows(
         return None
     frame = pd.read_csv(offline_csv)
     if "system" not in frame.columns:
-        return frame.assign(system=default_system)
-    return frame.assign(system=frame["system"].fillna(default_system))
+        frame = frame.assign(system=default_system)
+    else:
+        frame = frame.assign(system=frame["system"].fillna(default_system))
+    return _with_our_convention(frame)
+
+
+def _with_our_convention(frame: pd.DataFrame) -> pd.DataFrame:
+    """Fill the our-convention column pair on offline rows.
+
+    An offline total is already under the source harness's convention
+    (ATiM's, which PrIM shares); on ATIM_ALSO_LIFTS our convention charges
+    the excluded transfer, so it moves back into the total. Rows that
+    exclude nothing (CPU) pass through unchanged. A file that already
+    carries the columns keeps them."""
+    if "total_ours_ms" in frame.columns or "total_ms" not in frame.columns:
+        return frame
+    excluded_ms = (
+        pd.to_numeric(frame.get("excluded_transfer_ms"), errors="coerce").fillna(0.0)
+        if "excluded_transfer_ms" in frame.columns
+        else 0.0
+    )
+    excluded_bytes = (
+        pd.to_numeric(frame.get("excluded_transfer_bytes"), errors="coerce").fillna(0.0)
+        if "excluded_transfer_bytes" in frame.columns
+        else 0.0
+    )
+    lifted = frame["benchmark"].isin(ATIM_ALSO_LIFTS)
+    frame = frame.copy()
+    frame["total_ours_ms"] = frame["total_ms"] + np.where(lifted, excluded_ms, 0.0)
+    frame["excluded_ours_ms"] = np.where(lifted, 0.0, excluded_ms)
+    frame["excluded_ours_bytes"] = np.where(lifted, 0.0, excluded_bytes)
+    return frame
 
 
 def assemble_e1(
@@ -176,7 +230,7 @@ def assemble_e1(
     frames, missing = [], []
     for bench, systems in sorted(stacks.items()):
         for system, (compile_root, run_root) in sorted(systems.items()):
-            frame = measured_rows(compile_root, run_root, system)
+            frame = measured_rows(compile_root, run_root, system, bench)
             if frame.empty:
                 missing.append(f"{system} stack of {bench} ({run_root})")
             else:
@@ -195,6 +249,9 @@ def assemble_e1(
                     "total_ms",
                     "excluded_transfer_ms",
                     "excluded_transfer_bytes",
+                    "total_ours_ms",
+                    "excluded_ours_ms",
+                    "excluded_ours_bytes",
                 ]
             ]
         )
@@ -366,7 +423,7 @@ def assemble_rq1(
     frames, missing = [], []
     for bench, stacks in sorted(ours_stacks.items()):
         for system, (compile_root, run_root) in sorted(stacks.items()):
-            frame = measured_rows(compile_root, run_root, system)
+            frame = measured_rows(compile_root, run_root, system, bench)
             if frame.empty:
                 missing.append(f"{system} rows of {bench} ({run_root})")
             else:
@@ -397,7 +454,7 @@ def assemble_a1(
         if not run_root.exists():
             missing.append(f"{space} search of {bench} ({run_root})")
             continue
-        frame = measured_rows(compile_root, run_root, space)
+        frame = measured_rows(compile_root, run_root, space, bench)
         if frame.empty:
             # The stack ran and nothing measured: that IS the result --
             # "without this capability the space went empty" (paper A1).
@@ -424,7 +481,9 @@ def assemble_a1(
                     "benchmark": bench,
                     "fn_name": fn_name,
                     "space": space,
-                    "best_measured_ms": float(sub["total_ms"].min()),
+                    # A1 is a self-comparison with no baseline to share
+                    # accounting with, so it uses our convention.
+                    "best_measured_ms": float(sub["total_ours_ms"].min()),
                     "n_measured": len(sub),
                 }
             )

@@ -77,6 +77,66 @@ is why a three-dimensional benchmark yields six candidates.
 The hand procedure below is what the script automates. It is the reference
 for reading a trace when a generated point has to be corrected.
 
+## Checking a transcription against ATiM's kernel
+
+`python points/dump_atim_c.py` writes `points/traces/{stem}.dpu.c` beside
+every `{stem}.tir.py`: the DPU source ATiM's own UPMEM backend generates for
+that schedule, obtained by parsing the dump back into its module and calling
+`tvm.build` on it the way `evaluation/base.py:pre_kernel` does.
+
+That side-by-side is what decides whether a candidate is faithful, because
+the invariants a point declares do not separate the candidates. Two readings
+of the same trace can agree on D, T and every tiling factor and still bind a
+different loop to the tasklet axis; what that changes is which operand ends
+up replicated per tasklet, and that is legible only in the per-DPU buffer
+declarations at the top of each kernel. Line the two `.dpu.c` files up and
+compare the buffer sizes first, then the index expressions of each
+`mram_read`: an operand ATiM indexes without a `tasklet_id` term is shared
+across the DPU's tasklets, and a transcription that indexes it with one is
+sending the same bytes several times over.
+
+It needs ATiM's TVM and the UPMEM SDK, not DPUs. The script re-execs itself
+under an interpreter that can import that TVM (`--python`, `$ATIM_PYTHON`,
+then ATiM's `atim-venv`), since the evaluation's own venv cannot — NumPy 2.0
+removed the aliases TVM's ctypes layer reads at import. Point it at the
+checkout with `--atim` or `$ATIM_HOME`, and export `UPMEM_HOME`.
+
+Do not read ATiM's `logs/results_*/<lambda>_0/upmem.c` instead. It is
+whatever schedule that tuning run built last, carries no record of which,
+and is not necessarily the incumbent that was measured.
+
+## What ATiM's transfers cost, and what it excludes
+
+`python points/atim_transfer_report.py` reports, per operand of every
+trace, how many `dpu_push_xfer` calls its transfer is broken into and — from
+ATiM's own `static_h2d.csv` — what that cost and the bandwidth it reached.
+`--csv` writes the same table for downstream use.
+
+Bytes do not predict the cost; push count does. `ExtractPimTransferSchedule`
+collapses an operand into a single push only when each DPU's MRAM image is a
+contiguous slice of the host buffer. Where the schedule permutes the host
+and device index order the DPU image is a transposed view, no contiguous
+mapping survives past the innermost agreeing axis, and the pass pushes that
+run — as little as two int32 — once per iteration of everything outside it.
+Each push costs a flat ~0.5 ms at 2048 DPUs whatever it carries, so the
+measured bandwidth splits into two regimes with nothing in between:
+
+| trace | operand | MiB | pushes | scatter ms | MiB/ms |
+| --- | --- | --- | --- | --- | --- |
+| `mmtv_256_512_512.reproduced` | A | 256 | 16384 | 9359.4 | 0.03 |
+| `mmtv_256_512_512.published` | A | 256 | 1 | 20.7 | 12.36 |
+
+Both move the same 256 MiB to the same 2048 DPUs with the same 131072 bytes
+each, and their kernels differ only in `threadIdx.x` (16 against 4).
+
+Read the `lifted` column before comparing anything against ATiM's reported
+numbers. An operand in `pragma_explicit_h2d` is lifted into its own
+`copy_<symbol>` function and charged as one-time weight residency, so its
+cost appears in *none* of the reported H2D/Kernel/D2H — the row above hides
+9.4 seconds behind a 6.9 ms total. A transcription measured against those
+numbers has to exclude the same transfer, or it loses on bookkeeping rather
+than on generated code.
+
 ## Transcribing an ATiM trace
 
 Per benchmark, per trace file (e.g. ATiM's

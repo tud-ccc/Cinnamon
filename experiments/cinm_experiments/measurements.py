@@ -242,6 +242,56 @@ def amortizable_transfer_bytes(
     return 0.0
 
 
+def _charged_array_scatter(df: pd.DataFrame) -> pd.DataFrame:
+    """The scatter rows of array operands that _amortizable_index leaves
+    charged: what our convention prices but a harness that lifts every array
+    operand out of its timed region (ATiM's, PrIM's) does not. Broadcast rows
+    are not array operands -- ATiM charges its scalars -- so they stay
+    charged under both conventions and out of this set."""
+    if "kind" not in df.columns:
+        return df.iloc[0:0]
+    arrays = df[df["kind"] == "array"]
+    return arrays.drop(index=_amortizable_index(df), errors="ignore")
+
+
+def charged_array_scatter_ms(output_dir: Union[pathlib.Path, RunResult]) -> float:
+    """Mean per-iteration ms of _charged_array_scatter in scatter.csv, 0.0
+    when every array scatter is already amortized. This is the term the
+    assemble layer moves between the two timing conventions on the
+    benchmarks where they disagree."""
+    for csv_path in _output_dir(output_dir).glob("*.csv"):
+        if _csv_type(csv_path) != "scatter":
+            continue
+        df = pd.read_csv(csv_path)
+        df = df.rename(columns={_iter_col(df): "iteration"})
+        rows = _charged_array_scatter(df)
+        if rows.empty:
+            return 0.0
+        series = rows.groupby("iteration")["elapsed_ns"].sum()
+        iterations = df["iteration"].unique()
+        return float(series.reindex(iterations).fillna(0).mean()) / 1e6
+    return 0.0
+
+
+def charged_array_scatter_bytes(output_dir: Union[pathlib.Path, RunResult]) -> float:
+    """Mean per-iteration wire bytes of _charged_array_scatter in
+    scatter.csv, counted like amortizable_bytes (per DPU reached), so the
+    two compose into one excluded-bytes figure."""
+    for csv_path in _output_dir(output_dir).glob("*.csv"):
+        if _csv_type(csv_path) != "scatter":
+            continue
+        df = pd.read_csv(csv_path)
+        df = df.rename(columns={_iter_col(df): "iteration"})
+        rows = _charged_array_scatter(df)
+        if rows.empty:
+            return 0.0
+        wire = rows["bytes_per_dpu"] * rows["num_dpus"] * rows["num_blocks"]
+        series = wire.groupby(rows["iteration"]).sum()
+        iterations = df["iteration"].unique()
+        return float(series.reindex(iterations).fillna(0).mean())
+    return 0.0
+
+
 def _sum_time_ms_by_kind(
     output_dir: Union[pathlib.Path, RunResult],
     csv_type: str,

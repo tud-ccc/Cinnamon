@@ -1,5 +1,7 @@
 // result = sum(x)   (cinm.op.reduce add), returned by value.
 
+#define DTY int64_t
+
 #include "common.hpp"
 
 extern "C" DTY BENCH_FN(DTY *);
