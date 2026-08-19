@@ -27,12 +27,12 @@ func.func @gemv(%A: tensor<1024x512xi32>, %x: tensor<512xi32>) -> tensor<1024xi3
   // CHECK-NOT: linalg.transpose
   // CHECK-NOT: tensor.reshape
   // CHECK: %[[BA:.*]] = cnm.declare_buffer() for %[[WG]] : !cnm.buffer<64x512xi32 on
-  // CHECK: cnm.scatter %arg0 into %[[BA]][#{{.*}}] of %[[WG]] {cinm.debug_tag = "linalg_operand0"} : tensor<1024x512xi32> into !cnm.buffer<64x512xi32
+  // CHECK: cnm.scatter %arg0 into %[[BA]][#{{.*}}] of %[[WG]] {cinm.debug_tag = "dyn"} : tensor<1024x512xi32> into !cnm.buffer<64x512xi32
 
   // x is indexed only by the reduction dimension, which is not split, so every
   // leaf gets the same slice: a broadcast.
   // CHECK: %[[BX:.*]] = cnm.declare_buffer() for %[[WG]] : !cnm.buffer<512xi32 on
-  // CHECK: cnm.scatter %arg1 into %[[BX]][#{{.*}}] of %[[WG]] {cinm.debug_tag = "linalg_operand1"} : tensor<512xi32> into !cnm.buffer<512xi32
+  // CHECK: cnm.scatter %arg1 into %[[BX]][#{{.*}}] of %[[WG]] {cinm.debug_tag = "dyn"} : tensor<512xi32> into !cnm.buffer<512xi32
 
   // The destination is a fresh tensor.empty, so its undefined contents are not
   // scattered: the alloc is followed straight by the launch.

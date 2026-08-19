@@ -1,7 +1,7 @@
 // RUN: cinm-opt %s \
 // RUN:   --convert-cinm-to-cnm=cnm-buffer-level=mram --canonicalize --cse \
 // RUN:   --eliminate-empty-tensors --one-shot-bufferize --cse --canonicalize \
-// RUN:   --upmem-tile-mram-buffers=tile-sizes=16,128 --canonicalize --cse \
+// RUN:   --upmem-tile-mram-buffers=tile-sizes=16,512 --canonicalize --cse \
 // RUN:   --cnm-ensure-scatter-gather-contiguous \
 // RUN:   --convert-cnm-to-upmem --upmem-specialize-transfers \
 // RUN: | FileCheck %s
@@ -41,19 +41,21 @@ func.func @gemv(%A: tensor<1024x512xi32>, %x: tensor<512xi32>) -> tensor<1024xi3
   // tasklet's slice of the MRAM allocations.
   // CHECK: %[[VY:.*]] = memref.subview %[[MY]]{{.*}} to memref<64xi32, {{.*}}, #upmem.mram>
 
-  // The 64x512 tile does not fit WRAM, so the body walks it in 16x128 tiles.
-  // The output tile is staged once outside the reduction loop.
+  // The 64x512 tile does not fit WRAM, so the body walks it 16 whole rows at
+  // a time. Whole rows on purpose: this pipeline has no MRAM layout step, so
+  // a tile is contiguous only if it covers full rows, which is what
+  // upmem.local_transfer (a DMA of a single run) requires. Each trip stages
+  // its slice of the output, the row block and the whole vector.
   // CHECK: affine.for
   // CHECK: %[[WY:.*]] = memref.alloca() : memref<16xi32, #upmem.wram>
   // CHECK: upmem.local_transfer %{{.*}} into %[[WY]]
-  // CHECK: affine.for
-  // CHECK: %[[WA:.*]] = memref.alloca() : memref<16x128xi32, #upmem.wram>
-  // CHECK: %[[WX:.*]] = memref.alloca() : memref<128xi32, #upmem.wram>
+  // CHECK: %[[WA:.*]] = memref.alloca() : memref<16x512xi32, #upmem.wram>
+  // CHECK: %[[WX:.*]] = memref.alloca() : memref<512xi32, #upmem.wram>
   // CHECK: upmem.local_transfer %{{.*}} into %[[WA]]
   // CHECK: upmem.local_transfer %{{.*}} into %[[WX]]
-  // CHECK: linalg.contract {{.*}} ins(%[[WA]], %[[WX]] : memref<16x128xi32, #upmem.wram>, memref<128xi32, #upmem.wram>) outs(%[[WY]] : memref<16xi32, #upmem.wram>)
-  // CHECK: }
+  // CHECK: linalg.contract {{.*}} ins(%[[WA]], %[[WX]] : memref<16x512xi32, #upmem.wram>, memref<512xi32, #upmem.wram>) outs(%[[WY]] : memref<16xi32, #upmem.wram>)
   // CHECK: upmem.local_transfer %[[WY]] into %{{.*}} : memref<16xi32, #upmem.wram> to memref<16xi32, {{.*}}, #upmem.mram>
+  // CHECK: }
   // CHECK: upmem.return
 
   // Nothing from the middle of the stack should survive.
