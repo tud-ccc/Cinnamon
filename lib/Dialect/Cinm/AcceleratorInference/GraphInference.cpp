@@ -272,8 +272,13 @@ runGraphAllocation(const ComputeGraph &graph, StringRef platformName,
                    StringRef graphName) {
   Location loc = graph.classes.front().representative().getLoc();
 
-  // Profiling: one cost profile per class, on its representative.
-  SmallVector<ClassProfile> profiles;
+  // Profiling: one cost profile per class, on its representative. A class the
+  // platform cannot run at any menu point is not an error at the graph level:
+  // its members simply stay on the host (they keep no accelerator annotation,
+  // which is what the downstream lowering treats as host execution) and the
+  // solve runs over the remaining classes. Only definite failures abort.
+  SmallVector<ClassProfile> profiles; // one entry per *kept* class
+  SmallVector<int> solveIndexOfClass(graph.classes.size(), -1);
   for (auto [ci, blockClass] : llvm::enumerate(graph.classes)) {
     std::unique_ptr<InferencePlugin> plugin = makePlugin(graph.platform);
     InferenceOptions profileOpts = opts;
@@ -281,10 +286,26 @@ runGraphAllocation(const ComputeGraph &graph, StringRef platformName,
       profileOpts.dumpDir = (std::filesystem::path(baseDumpDir.str()) /
                              graphName.str() / ("class_" + std::to_string(ci)))
                                 .string();
-    SmallVector<ProfilePoint> points = TRY_GET(
-        profileComputeBlock(blockClass.representative(), *plugin, profileOpts));
-    profiles.push_back({blockClass.size(), std::move(points)});
+    utils::Maybe<SmallVector<ProfilePoint>> points =
+        profileComputeBlock(blockClass.representative(), *plugin, profileOpts);
+    if (auto *fail = std::get_if<DiagnosedSilenceableFailure>(&points)) {
+      if (fail->isDefiniteFailure())
+        return std::move(*fail);
+      (void)fail->silence();
+      blockClass.representative().emitWarning()
+          << "no feasible '" << platformName
+          << "' configuration for this block; it stays on the host, along "
+             "with the "
+          << (blockClass.size() - 1) << " other block(s) of its class";
+      continue;
+    }
+    solveIndexOfClass[ci] = static_cast<int>(profiles.size());
+    profiles.push_back(
+        {blockClass.size(),
+         std::move(std::get<SmallVector<ProfilePoint>>(points))});
   }
+  if (profiles.empty())
+    return DiagnosedSilenceableFailure::success(); // whole graph on the host
 
   // Allocation: exact solve over the profiles. The budget is the whole
   // device, since each connected component is interpreted as owning the
@@ -300,12 +321,34 @@ runGraphAllocation(const ComputeGraph &graph, StringRef platformName,
   allocOpts.programReloadMs = opts.programReloadMs;
 
   std::optional<AllocationResult> alloc;
+  SmallVector<int> solveIndexOfNode(graph.nodes.size(), -1);
   if (opts.latencyObjective) {
     // The latency objective walks the dependency edges; hand it the graph's
-    // nodes, already in the topological order it requires.
+    // nodes, already in the topological order it requires. Nodes of skipped
+    // (host) classes leave the graph, but the ordering they carried must
+    // not: a consumer inherits the device predecessors of a skipped
+    // producer. Nodes are topological, so one forward pass settles it.
     SmallVector<GraphNode> nodes;
-    for (const BlockNode &node : graph.nodes)
-      nodes.push_back({node.classIndex, node.memberIndex, node.predecessors});
+    SmallVector<SmallVector<unsigned>> skippedPreds(graph.nodes.size());
+    for (auto [ni, node] : llvm::enumerate(graph.nodes)) {
+      SmallVector<unsigned> preds;
+      for (unsigned p : node.predecessors) {
+        if (solveIndexOfNode[p] >= 0)
+          preds.push_back(static_cast<unsigned>(solveIndexOfNode[p]));
+        else
+          llvm::append_range(preds, skippedPreds[p]);
+      }
+      llvm::sort(preds);
+      preds.erase(llvm::unique(preds), preds.end());
+      if (solveIndexOfClass[node.classIndex] < 0) {
+        skippedPreds[ni] = std::move(preds);
+        continue;
+      }
+      solveIndexOfNode[ni] = static_cast<int>(nodes.size());
+      nodes.push_back(
+          {static_cast<unsigned>(solveIndexOfClass[node.classIndex]),
+           node.memberIndex, std::move(preds)});
+    }
     alloc = allocateGraphForLatency(profiles, nodes, allocOpts);
   } else {
     alloc = allocateGraph(profiles, allocOpts);
@@ -341,7 +384,11 @@ runGraphAllocation(const ComputeGraph &graph, StringRef platformName,
   for (auto [ci, blockClass] : llvm::enumerate(graph.classes))
     groupOfMember[ci].resize(blockClass.size(), 0);
   if (alloc->groupOfNode.empty()) {
-    for (auto [ci, classAlloc] : llvm::enumerate(alloc->perClass)) {
+    for (auto [ci, blockClass] : llvm::enumerate(graph.classes)) {
+      if (solveIndexOfClass[ci] < 0)
+        continue;
+      const ClassAllocation &classAlloc =
+          alloc->perClass[solveIndexOfClass[ci]];
       unsigned member = 0;
       for (auto [gi, group] : llvm::enumerate(classAlloc.groups))
         for (unsigned i = 0; i < group.size; ++i, ++member)
@@ -349,7 +396,9 @@ runGraphAllocation(const ComputeGraph &graph, StringRef platformName,
     }
   } else {
     for (auto [ni, node] : llvm::enumerate(graph.nodes))
-      groupOfMember[node.classIndex][node.memberIndex] = alloc->groupOfNode[ni];
+      if (solveIndexOfNode[ni] >= 0)
+        groupOfMember[node.classIndex][node.memberIndex] =
+            alloc->groupOfNode[solveIndexOfNode[ni]];
   }
 
   // The group's winning profile point: pinned groups replay the point at
@@ -377,7 +426,9 @@ runGraphAllocation(const ComputeGraph &graph, StringRef platformName,
   // (the default hook) fall back to per-block allocation unchanged.
   SmallVector<SmallVector<Value>> wgOfGroup(graph.classes.size());
   for (auto [ci, blockClass] : llvm::enumerate(graph.classes)) {
-    const ClassAllocation &classAlloc = alloc->perClass[ci];
+    if (solveIndexOfClass[ci] < 0)
+      continue;
+    const ClassAllocation &classAlloc = alloc->perClass[solveIndexOfClass[ci]];
     wgOfGroup[ci].assign(classAlloc.groups.size(), Value());
     for (auto [gi, group] : llvm::enumerate(classAlloc.groups)) {
       if (!group.resource)
@@ -396,7 +447,8 @@ runGraphAllocation(const ComputeGraph &graph, StringRef platformName,
       if (!container || container.getFunctionBody().empty())
         continue;
 
-      const ProfilePoint *point = pointOf(profiles[ci], group);
+      const ProfilePoint *point =
+          pointOf(profiles[solveIndexOfClass[ci]], group);
       OpBuilder builder(container->getContext());
       builder.setInsertionPointToStart(&container.getFunctionBody().front());
       Value wg = plugin->materializeWorkgroupAlloc(builder, first.getLoc(),
@@ -423,8 +475,10 @@ runGraphAllocation(const ComputeGraph &graph, StringRef platformName,
   }
 
   for (auto [ci, blockClass] : llvm::enumerate(graph.classes)) {
-    const ClassAllocation &classAlloc = alloc->perClass[ci];
-    const ClassProfile &profile = profiles[ci];
+    if (solveIndexOfClass[ci] < 0)
+      continue;
+    const ClassAllocation &classAlloc = alloc->perClass[solveIndexOfClass[ci]];
+    const ClassProfile &profile = profiles[solveIndexOfClass[ci]];
     for (auto [mi, memberRef] : llvm::enumerate(blockClass.members)) {
       ComputeBlockOp block = memberRef; // op handles are cheap to copy
       const GroupAllocation &group = classAlloc.groups[groupOfMember[ci][mi]];
