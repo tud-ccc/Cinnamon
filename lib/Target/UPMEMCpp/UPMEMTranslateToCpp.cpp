@@ -355,9 +355,25 @@ static LogicalResult printLinearSubscript(CppEmitter &emitter, Operation *op,
   return success();
 }
 
+static bool isInMemspace(MemRefType ty, upmem::DpuMemSpace space);
+
+/// Direct element access only exists in WRAM. An MRAM buffer lives in a
+/// separate address space the core cannot dereference -- its bytes move
+/// through mram_read/mram_write -- so a load or store on one is a lowering
+/// bug, and emitting `buf[i]` for it would compile to a wrong-address read.
+static LogicalResult verifyDirectAccess(Operation *op, MemRefType type) {
+  if (isInMemspace(type, upmem::DpuMemSpace::MRAM))
+    return op->emitError(
+        "cannot emit C for a direct element access to MRAM: only "
+        "upmem.local_transfer moves MRAM bytes");
+  return success();
+}
+
 static LogicalResult printOperation(CppEmitter &emitter,
                                     memref::LoadOp loadOp) {
   raw_ostream &os = emitter.ostream();
+  if (failed(verifyDirectAccess(loadOp, loadOp.getMemRefType())))
+    return failure();
   if (failed(emitter.emitAssignPrefix(*loadOp)))
     return failure();
 
@@ -369,6 +385,8 @@ static LogicalResult printOperation(CppEmitter &emitter,
 static LogicalResult printOperation(CppEmitter &emitter,
                                     memref::StoreOp storeOp) {
   raw_ostream &os = emitter.ostream();
+  if (failed(verifyDirectAccess(storeOp, storeOp.getMemRefType())))
+    return failure();
   os << emitter.getOrCreateName(storeOp.getMemRef());
   if (failed(printLinearSubscript(emitter, storeOp, storeOp.getMemRefType(),
                                   storeOp.getIndices())))
@@ -1414,9 +1432,23 @@ static LogicalResult printBufferDecl(CppEmitter &emitter,
     qualifier = "__mram __dma_aligned";
   }
 
-  // We emit static buffers as array of bytes to be able to pad them.
+  // MRAM buffers are emitted as arrays of bytes to be able to pad them; their
+  // bytes only ever move through mram_read/mram_write, which index in bytes
+  // anyway. A WRAM buffer is dereferenced element by element (memref.load /
+  // memref.store print `name[i]` with `i` an *element* index), so it keeps
+  // its element type -- as a byte array those accesses would read one byte at
+  // an offset scaled wrong by the element width. The transfer emitters cast
+  // the WRAM side to char* themselves, so byte addressing still works there.
   auto &out = emitter.ostream();
-  out << "char " << qualifier << " ";
+  auto bufferType = op.getBuffer().getType();
+  auto eltWidthBytes = bufferType.getElementTypeBitWidth() / 8;
+  if (op.isWram()) {
+    if (failed(emitter.emitType(op->getLoc(), bufferType.getElementType())))
+      return failure();
+    out << " " << qualifier << " ";
+  } else {
+    out << "char " << qualifier << " ";
+  }
   if (auto name = op.getSymName()) {
     if (failed(emitter.recordStaticName(op.getBuffer(), *name)))
       return failure();
@@ -1426,12 +1458,17 @@ static LogicalResult printBufferDecl(CppEmitter &emitter,
     out << *name;
   }
 
-  auto bufferType = op.getBuffer().getType();
-  auto eltWidthBytes = bufferType.getElementTypeBitWidth() / 8;
-  auto sizeInBytes = bufferType.getNumElements() * eltWidthBytes;
-  sizeInBytes = llvm::alignTo(sizeInBytes, 8);
-
-  out << "[" << sizeInBytes << "]";
+  if (op.isWram()) {
+    // Padded to the 8-byte transfer granularity, in elements.
+    out << "["
+        << llvm::alignTo(bufferType.getNumElements(),
+                         std::max<int64_t>(1, 8 / eltWidthBytes))
+        << "]";
+  } else {
+    auto sizeInBytes = bufferType.getNumElements() * eltWidthBytes;
+    sizeInBytes = llvm::alignTo(sizeInBytes, 8);
+    out << "[" << sizeInBytes << "]";
+  }
   if (op.getZeroinit()) {
     out << " {0}";
   }
@@ -1612,7 +1649,7 @@ static LogicalResult printOperation(CppEmitter &emitter, ModuleOp moduleOp) {
         "#include <stdio.h>\n"
         "#include <stdlib.h>\n"
         "#include <string.h>\n\n"
-        "#include \"expf.c\"\n"
+        // "#include \"expf.c\"\n"
         "\n\n";
 
   os << "BARRIER_INIT(my_barrier, NR_TASKLETS);\n\n";

@@ -10,7 +10,13 @@
 // CHECK: char __mram __dma_aligned bufa[262144]; // int64_t[32][1024]
 // CHECK: char __mram __dma_aligned bufx[8192]; // int64_t[1024]
 // CHECK: char __mram __dma_aligned bufy[256]; // int64_t[32]
+// WRAM buffers keep their element type: they are dereferenced element by
+// element, and as byte arrays those accesses would read one byte at an
+// offset scaled wrong by the element width. MRAM buffers stay byte arrays --
+// their bytes only move through mram_read/mram_write, which index in bytes.
+// CHECK: int64_t __dma_aligned [[V1:v[0-9]+]][1]; // int64_t[1][1][1][1]
 // CHECK: void gemv(void) {
+// CHECK: int64_t {{v[0-9]+}} = [[V1]][0];
 // CHECK: for (int32_t [[I:v[0-9]+]] = 0; [[I]] < 32; [[I]] += 1) {
 // CHECK: for (int32_t [[K:v[0-9]+]] = 0; [[K]] < 1024; [[K]] += 1) {
 // CHECK: barrier_wait(&my_barrier);
