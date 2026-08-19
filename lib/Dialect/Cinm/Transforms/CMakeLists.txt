@@ -8,6 +8,7 @@ add_mlir_dialect_library(CinmTransforms
     CleanupLinalgPass.cpp
     ComputeTransforms.cpp
     CinmTilingImplementations.cpp
+    CompleteComputeGraph.cpp
     DecomposeAccumulations.cpp
     DecomposeGemmToGemv.cpp
     ExpandComputeScope.cpp
