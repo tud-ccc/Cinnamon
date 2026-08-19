@@ -116,7 +116,6 @@ func.func @generic_fill(%a: tensor<8x8xf32>, %b: tensor<8xf32>) -> tensor<8xf32>
 // rematerialized inside it, possibly moving the %dest before the block.
 
 // CHECK-LABEL: func @dest_defined_later
-// CHECK:       %[[E:.*]] = tensor.empty() : tensor<8xf32>
 // CHECK:       %[[O:.*]] = tensor.empty() : tensor<64xf32>
 // CHECK:       cinm.compute_block ({{.*}}, %[[O2:.*]] = %[[O]] : tensor<64xf32>) -> tensor<64xf32>
 // CHECK:         tensor.insert_slice %{{.*}} into %[[O2]][0] [8] [1]

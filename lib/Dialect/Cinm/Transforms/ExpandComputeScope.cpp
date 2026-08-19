@@ -116,9 +116,25 @@ public:
       return it->second;
     if (canRematerializeBefore(v, target))
       return remat(v);
-    if (!isAvailableBefore(v, target))
-      return failure();
-    return capture(v);
+    if (isAvailableBefore(v, target))
+      return capture(v);
+    // Defined after the block, like the fresh destination of a
+    // tensor.insert_slice usually is. A pure producer can be moved before the
+    // block instead -- moving an op earlier only widens what it dominates --
+    // and captured like any other operand; moving is a plan here and IR only
+    // once the candidate is accepted (applyHoists), so a rejected candidate
+    // leaves everything in place.
+    if (canHoistBefore(v))
+      return hoist(v);
+    return failure();
+  }
+
+  /// Moves the producers `add` planned to hoist before the block, dependency
+  /// order preserved. Call once the rewrite is decided, before the block is
+  /// rebuilt.
+  void applyHoists(RewriterBase &rewriter) {
+    for (Operation *def : hoists)
+      rewriter.moveOpBefore(def, target);
   }
 
   /// Whether the value behind `id` is produced inside the block.
@@ -170,6 +186,42 @@ private:
     return id;
   }
 
+  /// Whether `v`'s producer can be moved before the block: pure, in the
+  /// block's own block, and everything it takes from the outside either
+  /// already available there or hoistable itself.
+  bool canHoistBefore(Value v, unsigned depth = kMaxRematDepth) const {
+    Operation *def = v.getDefiningOp();
+    if (depth == 0 || !def || def->getBlock() != target->getBlock() ||
+        !isMemoryEffectFree(def))
+      return false;
+    SmallVector<Value> externals;
+    getExternalValues(def, externals);
+    return llvm::all_of(externals, [&](Value external) {
+      return isAvailableBefore(external, target) ||
+             canHoistBefore(external, depth - 1);
+    });
+  }
+
+  /// Plans `v`'s producer to be moved before the block and captures `v`. The
+  /// producer's own late operands are planned first, so the recorded order is
+  /// a valid program order; they stay outside the block with it, so only `v`
+  /// itself becomes an input.
+  unsigned hoist(Value v) {
+    planHoist(v.getDefiningOp());
+    return capture(v);
+  }
+
+  void planHoist(Operation *def) {
+    if (!plannedHoists.insert(def).second)
+      return;
+    SmallVector<Value> externals;
+    getExternalValues(def, externals);
+    for (Value external : externals)
+      if (!isAvailableBefore(external, target))
+        planHoist(external.getDefiningOp());
+    hoists.push_back(def);
+  }
+
   /// Registers `v` as produced inside the block. What its producer takes from
   /// the outside is added first, so that entries are always in materialization
   /// order.
@@ -193,6 +245,9 @@ private:
   SmallVector<Entry> entries;
   SmallVector<Value> values;
   DenseMap<Value, unsigned> ids;
+  /// Producers to move before the block, in a valid program order.
+  SmallVector<Operation *> hoists;
+  SmallPtrSet<Operation *, 4> plannedHoists;
 };
 
 /// Creates a copy of `op` with the given operands and result types, moving the
@@ -294,6 +349,7 @@ struct AbsorbResultConsumer : OpRewritePattern<cinm::ComputeBlockOp> {
     SmallVector<Type> resultTypes(op->getResultTypes());
     resultTypes[resultIdx] = consumer->getResult(0).getType();
 
+    inputs->applyHoists(rewriter);
     unsigned numOldArgs = op.getBody().front().getNumArguments();
     auto newOp = rebuildComputeBlock(
         rewriter, op, inputs->getOperands(), resultTypes,
