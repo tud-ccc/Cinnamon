@@ -300,6 +300,44 @@ def CinmExpandComputeScopePass : Pass<"cinm-expand-compute-scope"> {
   ];
 }
 
+def CinmCompleteComputeGraphPass : Pass<"cinm-complete-compute-graph"> {
+  let summary = "Wrap the host code between compute blocks into host compute blocks, connecting the compute graph";
+  let description = [{
+    For every function that already contains `cinm.compute` ops, wraps the
+    remaining operations of the function body into new `cinm.compute` ops
+    pinned to `#cinm.host_platform`, so that every operation belongs to some
+    compute block and the dataflow between blocks forms a single connected
+    graph -- the input the graph scheduling algorithm needs to see the whole
+    application, including the parts that run on the host CPU.
+
+    Maximal runs of consecutive non-compute ops become one host block each.
+    Constants and `tensor.empty` are left outside: they are free, and
+    yielding an undefined tensor out of an isolated block would leave
+    bufferization no sane place for the allocation.
+
+    A control flow op that contains no compute op is absorbed whole into a
+    host block. One that does contain compute ops cannot be wrapped: by
+    default the pass emits a warning and leaves it in place, which leaves the
+    graph disconnected around it. With `demote-nested-compute`, the nested
+    compute ops are dissolved into plain host code instead, so the whole
+    control flow op becomes a single host node. A call whose callee contains
+    compute ops is likewise left in place (with a warning); run `--inline`
+    first to avoid those.
+
+    Functions that contain no compute op at all are left untouched.
+  }];
+
+  let options = [
+    Option<"demoteNestedCompute", "demote-nested-compute", "bool", "false",
+           "Dissolve compute ops nested inside control flow ops so the whole "
+           "control flow op can be wrapped as a single host block">
+  ];
+
+  let dependentDialects = [
+    "mlir::cinm::CinmDialect"
+  ];
+}
+
 def CinmInferTileSizesPass : Pass<"cinm-infer-tile-sizes"> {
   let summary = "Infer and annotate cinm.tile_sizes on tileable ops using the enclosing accelerator";
   let description = [{

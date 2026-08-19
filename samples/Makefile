@@ -12,7 +12,7 @@ clean:
 $(NAME)_unrolled.mlir: $(NAME).mlir
 	cinm-opt $< --transform-interpreter > $@
 
-$(NAME)_linalg.mlir: $(NAME).mlir
+$(NAME)_linalg.mlir: $(NAME)_unrolled.mlir
 	cinm-opt $< --inline \
 	 --convert-cinm-ops-to-linalg --convert-tensor-to-linalg --linalg-generalize-named-ops --linalg-fuse-elementwise-ops    \
 	 --eliminate-empty-tensors --cse \
@@ -20,9 +20,9 @@ $(NAME)_linalg.mlir: $(NAME).mlir
 
 $(NAME)_with_compute.mlir: $(NAME)_linalg.mlir
 	cinm-opt $< --cinm-assign-platforms \
-	--cinm-isolate-compute-blocks --cinm-expand-compute-scope --cinm-deisolate-compute-blocks \
+	--cinm-isolate-compute-blocks --cinm-expand-compute-scope --cinm-deisolate-compute-blocks --cinm-complete-compute-graph \
    > $@
 
 
 $(NAME)_buffered.mlir: $(NAME)_with_compute.mlir
-	cinm-opt $< --cinm-isolate-compute-blocks --eliminate-empty-tensors --cse --canonicalize --one-shot-bufferize=function-boundary-type-conversion=identity-layout-map\ bufferize-function-boundaries\ allow-return-allocs-from-loops=false --buffer-hoisting --buffer-loop-hoisting --canonicalize --cse --buffer-results-to-out-params=hoist-static-allocs --cse --canonicalize > $@
+	cinm-opt $< --cnm-isolate-linalg-captures --cinm-isolate-compute-blocks --eliminate-empty-tensors --cse --canonicalize --one-shot-bufferize=function-boundary-type-conversion=identity-layout-map\ bufferize-function-boundaries\ allow-return-allocs-from-loops=false --buffer-hoisting --buffer-loop-hoisting --canonicalize --cse --buffer-results-to-out-params=hoist-static-allocs --cse --canonicalize > $@

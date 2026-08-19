@@ -168,11 +168,9 @@ func.func @rot(%v: tensor<768xf32> {bufferization.writable = true}, %i: index, %
 func.func @mha(%q: tensor<768xf32>, %kc: tensor<1024x768xf32>, %vc: tensor<1024x768xf32>, %pos: index) -> tensor<768xf32> {
 	%c0 = arith.constant 0 : index
 	%c1 = arith.constant 1 : index
-	%c6 = arith.constant 6 : index
 	%c48 = arith.constant 48 : index
 	%c768 = arith.constant 768 : index
 	%c1024 = arith.constant 1024 : index
-	%c0f = arith.constant 0.0 : f32
 	%scale = arith.constant 6.92820323028 : f32 // sqrt(head_size)
 	%ninf = arith.constant 0xFF800000 : f32
 
@@ -181,20 +179,15 @@ func.func @mha(%q: tensor<768xf32>, %kc: tensor<1024x768xf32>, %vc: tensor<1024x
 	%xb_init = tensor.empty() : tensor<768xf32>
 	%xb = scf.for %hoff = %c0 to %c768 step %c48 iter_args(%xbi = %xb_init) -> (tensor<768xf32>) {
 
-    %attn_init = tensor.empty() : tensor<1024xf32>
-    // %attn_init_zeroed = linalg.fill ins(%ninf : f32) outs(%attn_init: tensor<1024xf32>) -> tensor<1024xf32>
+		// attention scores over the whole sequence: one GEMV against the head's
+		// slice of the key cache; the positions after %pos are masked below
+		%qs = tensor.extract_slice %q [%hoff] [48] [1] : tensor<768xf32> to tensor<48xf32>
+		%kh = tensor.extract_slice %kc [0, %hoff] [1024, 48] [1, 1] : tensor<1024x768xf32> to tensor<1024x48xf32>
+		%scores = cinm.op.gemv %kh, %qs : tensor<1024x48xf32>, tensor<48xf32> -> tensor<1024xf32>
+		%scalev = tensor.splat %scale : tensor<1024xf32>
+		%attn0 = cinm.op.elementwise div %scores, %scalev : tensor<1024xf32>
 
-		%attn0 = scf.for %i = %c0 to %pos2 step %c1 iter_args(%attn_i = %attn_init) -> (tensor<1024xf32>) {
-			%qs = tensor.extract_slice %q [%hoff] [48] [1] : tensor<768xf32> to tensor<48xf32>
-			%k = tensor.extract_slice %kc [%i, %hoff] [1, 48] [1, 1] : tensor<1024x768xf32> to tensor<48xf32>
-      %0 = cinm.op.elementwise mul %qs, %k : tensor<48xf32>
-      %1 = cinm.op.reduce add (%0) : tensor<48xf32> -> f32
-      %score = arith.divf %1, %scale : f32
-			%attn_i2 = tensor.insert %score into %attn_i [%i] : tensor<1024xf32>
-			scf.yield %attn_i2 : tensor<1024xf32>
-		}
-
-    // fill the rest with ninf
+		// causal mask: fill the scores after %pos with ninf
 		%attn = scf.for %i = %pos2 to %c1024 step %c1 iter_args(%attn_i = %attn0) -> (tensor<1024xf32>) {
 			%attn_i2 = tensor.insert %ninf into %attn_i [%i] : tensor<1024xf32>
 			scf.yield %attn_i2 : tensor<1024xf32>
@@ -202,22 +195,15 @@ func.func @mha(%q: tensor<768xf32>, %kc: tensor<1024x768xf32>, %vc: tensor<1024x
 
 		%attn3 = func.call @softmax(%attn) : (tensor<1024xf32>) -> tensor<1024xf32>
 
-		%xb_slice_init =  tensor.extract_slice %xbi [%hoff] [48] [1] : tensor<768xf32> to tensor<48xf32>
-    %init_zeroed = linalg.fill ins(%c0f : f32) outs(%xb_slice_init: tensor<48xf32>) -> tensor<48xf32>
-		%xbi0 = tensor.insert_slice %init_zeroed into %xbi [%hoff] [48] [1] : tensor<48xf32> into tensor<768xf32>
+		// weighted sum of the value cache rows, as a vector-matrix product over
+		// the whole sequence: the masked positions have attention weight 0
+		%vh = tensor.extract_slice %vc [0, %hoff] [1024, 48] [1, 1] : tensor<1024x768xf32> to tensor<1024x48xf32>
+		%attn2d = tensor.expand_shape %attn3 [[0, 1]] output_shape [1, 1024] : tensor<1024xf32> into tensor<1x1024xf32>
+		%xbh2d = cinm.op.gemm %attn2d, %vh : tensor<1x1024xf32>, tensor<1024x48xf32> -> tensor<1x48xf32>
+		%xbh = tensor.collapse_shape %xbh2d [[0, 1]] : tensor<1x48xf32> into tensor<48xf32>
+		%xbr = tensor.insert_slice %xbh into %xbi [%hoff] [48] [1] : tensor<48xf32> into tensor<768xf32>
 
-		%xb1 = scf.for %i = %c0 to %pos2 step %c1 iter_args(%xbi1 = %xbi0) -> (tensor<768xf32>) {
-      %xb_slice_i =  tensor.extract_slice %xbi1 [%hoff] [48] [1] : tensor<768xf32> to tensor<48xf32>
-			%v = tensor.extract_slice %vc [%i, %hoff] [1, 48] [1, 1] : tensor<1024x768xf32> to tensor<48xf32>
-			%a = tensor.extract %attn3 [%i] : tensor<1024xf32>
-      %av = tensor.splat %a : tensor<48xf32>
-      %0 = cinm.op.elementwise mul %v, %av : tensor<48xf32>
-      %1 = cinm.op.elementwise add %xb_slice_i, %0 into %xb_slice_i: tensor<48xf32> into tensor<48xf32>
-      %xbr = tensor.insert_slice %1 into %xbi1 [%hoff] [48] [1] : tensor<48xf32> into tensor<768xf32>
-			scf.yield %xbr : tensor<768xf32>
-		}
-
-		scf.yield %xb1 : tensor<768xf32>
+		scf.yield %xbr : tensor<768xf32>
 	}
 
 	return %xb : tensor<768xf32>
@@ -269,6 +255,21 @@ module attributes {transform.with_named_sequence} {
 
     // Full unroll: trip count is 6 (0 to 6 step 1)
     transform.loop.unroll %layer_loop { factor = 6 } : !transform.any_op
+
+    // Also unroll the head loop of @mha (0 to 768 step 48), so that after
+    // inlining no compute op is left under a loop and
+    // --cinm-complete-compute-graph can connect the whole graph.
+    %mha = transform.structured.match ops{["func.func"]}
+                attributes{sym_name = "mha"} in %root
+        : (!transform.any_op) -> !transform.any_op
+    %mha_loops = transform.structured.match ops{["scf.for"]} in %mha
+        : (!transform.any_op) -> !transform.any_op
+    // The loops come in post-order: the nested mask loop first, the head
+    // loop in the overflow handle.
+    %mask_loop, %head_loop =
+        transform.split_handle %mha_loops {overflow_result = 1}
+        : (!transform.any_op) -> (!transform.any_op, !transform.any_op)
+    transform.loop.unroll %head_loop { factor = 16 } : !transform.any_op
     transform.yield
   }
 }
