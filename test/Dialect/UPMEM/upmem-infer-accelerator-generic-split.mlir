@@ -55,12 +55,11 @@ func.func @gemv_64MB(%A: tensor<4096x4096xi32>, %x: tensor<4096xi32>) -> tensor<
   // The accumulator arrives zeroed rather than loaded: its seed is a uniform
   // constant, so --cnm-scatter-optimizations dropped the host transfer for a
   // fill on the launch parameter and --upmem-tile-mram-buffers folded that
-  // into the staging buffer. A tasklet writes its own 8 elements instead of
-  // reading MRAM it is about to overwrite.
+  // into the staging buffer. A tasklet writes its own 8 elements (the fill
+  // unrolls at this size) instead of reading MRAM it is about to overwrite.
   // CHECK: %[[WY:.*]] = memref.alloca() : memref<1x8xi32, #upmem.wram>
-  // CHECK: scf.for %[[Z:.*]] = %{{.*}} to %{{.*}} step %{{.*}} {
-  // CHECK: memref.store %{{.*}}, %[[WY]][%{{.*}}, %[[Z]]]
-  // CHECK: }
+  // CHECK: memref.store %{{.*}}, %[[WY]][%{{.*}}, %{{.*}}]
+  // CHECK: memref.store %{{.*}}, %[[WY]][%{{.*}}, %{{.*}}]
   // CHECK-NOT: upmem.local_transfer %{{.*}} into %[[WY]]
   // CHECK: scf.for %{{.*}} = %{{.*}} to %{{.*}} step %{{.*}} {
   // One chunk per trip, and it is contiguous in MRAM -- which is the point of

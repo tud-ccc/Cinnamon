@@ -1,8 +1,8 @@
 // RUN: cinm-opt %s | cinm-opt | FileCheck %s
 // RUN: cinm-opt %s --mlir-print-op-generic | cinm-opt | FileCheck %s
 
-#mram = #cinm.level<name = "mram", size_in_bytes = 458, alignment = 8, arity = 2>
-#wram = #cinm.level<name = "wram", size_in_bytes = 64, alignment = 8, arity = 2>
+#mram = #cinm.level<name = "mram", size_in_bytes = 458, alignment = 8>
+#wram = #cinm.level<name = "wram", size_in_bytes = 64, alignment = 8>
 #upmem = #upmem.platform<type = v1A, dpus = 1920, tasklets = 20>
 #upmem2 = #upmem.platform<type = v1B, dpus = 1920, tasklets = 16, levels = [#mram, #wram]>
 #map = affine_map<(d0) -> (d0 mod 4, 0)>
