@@ -244,6 +244,7 @@ bool packIntoOneBlockPerLeaf(Op op, OpBuilder &b, bool isStatic) {
   // and hide the sharing, for a repack that only the fragmentation asked for.
   llvm::SmallBitVector unused = getUnusedDimsBitVector({map});
   SmallVector<int64_t> packedShape;
+  SmallVector<bool> fromWorkgroup;
   SmallVector<AffineExpr> toNew;
   SmallVector<AffineExpr> toOld;
   for (auto [old, extent, basis] : llvm::enumerate(indexSpace, bases)) {
@@ -271,6 +272,7 @@ bool packIntoOneBlockPerLeaf(Op op, OpBuilder &b, bool isStatic) {
       toNew.push_back(getAffineDimExpr(packedShape.size(), ctx));
       toOld.push_back(oldDim);
       packedShape.push_back(extent);
+      fromWorkgroup.push_back(!isBufferDim);
       continue;
     }
     SmallVector<int64_t> strides = mlir::computeSuffixProduct(basis);
@@ -278,6 +280,7 @@ bool packIntoOneBlockPerLeaf(Op op, OpBuilder &b, bool isStatic) {
     for (int64_t split : basis) {
       newDims.push_back(getAffineDimExpr(packedShape.size(), ctx));
       packedShape.push_back(split);
+      fromWorkgroup.push_back(!isBufferDim);
     }
     toNew.push_back(mlir::linearize(ctx, newDims, strides));
     llvm::append_range(toOld, mlir::delinearize(oldDim, strides));
@@ -300,6 +303,39 @@ bool packIntoOneBlockPerLeaf(Op op, OpBuilder &b, bool isStatic) {
     });
   if (!linear)
     return false;
+
+  // A workgroup-origin dimension the packed map does not read is replication:
+  // splitting turned `d floordiv c` into an outer part the map reads and a
+  // mod part it does not, and every value of the mod part names the same
+  // data. Writing it into the packed shape would materialize one copy per
+  // value -- 8x the operand, for MMTV's vector -- where the scatter can
+  // instead point those workgroup elements at the same packed slice. So the
+  // dimension is dropped from the packed value and from the scatter's view
+  // of it; buffer-origin dimensions are kept for the rank alignment above.
+  //
+  // Scatters only: the same shape on a gather means several leaves write one
+  // host location, and collapsing them onto one packed slice would turn that
+  // program's write-order question into concurrent DMA into the same bytes.
+  // The per-value copies are what keeps those writes apart.
+  llvm::SmallBitVector packedUnused = getUnusedDimsBitVector({packedMap});
+  llvm::SmallBitVector toDrop(packedShape.size());
+  if (isScatter)
+    for (unsigned i = 0; i < packedShape.size(); ++i)
+      if (packedUnused[i] && fromWorkgroup[i])
+        toDrop.set(i);
+  if (toDrop.any()) {
+    packedMap = mlir::compressDims(packedMap, toDrop);
+    SmallVector<int64_t> keptShape;
+    SmallVector<AffineExpr> keptToOld;
+    for (unsigned i = 0; i < packedShape.size(); ++i) {
+      if (toDrop[i])
+        continue;
+      keptShape.push_back(packedShape[i]);
+      keptToOld.push_back(toOld[i]);
+    }
+    packedShape = std::move(keptShape);
+    toOld = std::move(keptToOld);
+  }
 
   b.setInsertionPoint(op);
   Value host = op.getHostValue();
@@ -468,6 +504,19 @@ BlockForm computeBlockForm(AffineMap map, cnm::BufferType bufferTy,
     int64_t extent = bufShape[bufDim];
     if (blockElements * extent > contiguous)
       break;
+
+    if (extent == 1) {
+      // A one-element buffer dimension has no host dimension to pair with:
+      // the map cannot name it (a dimension bounded to one value simplifies
+      // away), so the pairwise walk would stop here -- on a shape every leaf
+      // tile that divides its level exactly produces. Split a unit host
+      // dimension off for it to pair with instead. The expand is a view, and
+      // the map gains a constant zero for it, which is exactly the
+      // degenerate form deflateScatterMap widens through.
+      form.splits.push_back({position, 1});
+      ++form.implicit;
+      continue;
+    }
 
     AffineExpr expr = form.results[position];
     if (expr == getAffineDimExpr(mapDim, map.getContext()) &&

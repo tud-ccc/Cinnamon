@@ -41,10 +41,16 @@ static void copyStrided(int64_t elemSize, int64_t rank, const int64_t *sizes,
   // a time: e.g. for a [256, 1, 4, 1024] tile whose innermost axis is
   // contiguous in both operands, this does 1024 memcpy(4KB) calls instead of
   // 1048576 memcpy(4B) calls.
+  //
+  // A size-1 axis never advances, so it joins the chunk whatever its stride
+  // says -- a repack's packed shape routinely carries one (paired with a
+  // one-element buffer dimension) with a stride of 0, and stopping the merge
+  // there would shrink a whole-row memcpy back down to a few bytes.
   int64_t chunkElems = 1;
   int64_t chunkAxis = rank; // first axis NOT absorbed into the chunk
-  while (chunkAxis > 0 && src.strides[chunkAxis - 1] == chunkElems &&
-         dst.strides[chunkAxis - 1] == chunkElems) {
+  while (chunkAxis > 0 && (src.sizes[chunkAxis - 1] == 1 ||
+                           (src.strides[chunkAxis - 1] == chunkElems &&
+                            dst.strides[chunkAxis - 1] == chunkElems))) {
     chunkElems *= src.sizes[chunkAxis - 1];
     --chunkAxis;
   }
