@@ -34,6 +34,11 @@ namespace mlir::cinm {
 
 CinmPlatformAttrInterface findAvailablePlatform(Operation *op,
                                                 StringRef platformName) {
+  // The nearest declaration wins: an op that carries the attribute states
+  // its complete set of platforms, and the enclosing declarations are only
+  // defaults for the ops that carry none. A host-pinned block inside a
+  // function that advertises an accelerator platform is *not* a candidate
+  // for that platform.
   for (Operation *scope = op; scope; scope = scope->getParentOp()) {
     auto available =
         scope->getAttrOfType<ArrayAttr>(CinmDialect::AVAILABLE_PLATFORMS_NAME);
@@ -43,6 +48,7 @@ CinmPlatformAttrInterface findAvailablePlatform(Operation *op,
       if (auto platform = llvm::dyn_cast<CinmPlatformAttrInterface>(attr))
         if (platform.getName() == platformName)
           return platform;
+    return {};
   }
   return {};
 }

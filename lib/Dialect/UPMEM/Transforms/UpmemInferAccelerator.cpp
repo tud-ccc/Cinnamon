@@ -106,6 +106,11 @@ struct UpmemInferenceOptions {
   /// which is why the default stops at the operands that amortize.
   PackFragmentedTransfers packFragmented = PackFragmentedTransfers::STATIC;
   bool fusionEdges = true;
+  // Permit distributing a floating-point reduction across the workgroup,
+  // which reassociates the sum. Off by default; without it a block whose
+  // only iteration dimension is an f32 reduction has no feasible
+  // configuration at all.
+  bool allowFloatReassociation = false;
   bool debugPrintsInPipeline = false;
   UpmemSimulatorId simulator = UpmemSimulatorId::CYCLE_ACCURATE;
   std::chrono::milliseconds evalTimeoutMs = std::chrono::milliseconds(2000);
@@ -496,6 +501,7 @@ struct UpmemInferencePlugin : cinm::InferencePlugin {
       // will stage below, so that one staged chunk is a contiguous run and
       // the transfer is a single DMA.
       cnmOpts.leafTileAttr = UPMEMDialect::LEAF_TILE_SIZES_NAME.str();
+      cnmOpts.allowFloatReassociation = opts.allowFloatReassociation;
       pm->addPass(cnm::createConvertLinalgToCnmPass(cnmOpts));
     }
     pm->addPass(createCanonicalizerPass());
@@ -870,11 +876,21 @@ struct UpmemInferencePlugin : cinm::InferencePlugin {
     int64_t tasklets = taskletsVar_[conf];
 
     MLIRContext *ctx = trial.computeBlock->getContext();
+    mlir::Location loc = trial.computeBlock->getLoc();
     trial.computeBlock.setPlatformAttr({});
     trial.computeBlock.setAcceleratorAttr(
         upmem::UpmemAcceleratorAttr::get(platform, dpus, tasklets));
 
     TRY(runLowering(trial));
+    // A canonicalizer in the pipelines can rebuild the compute block op
+    // itself, e.g. to drop a block argument the lowering made unused, so the
+    // handle taken before the lowering may dangle. Find the block again.
+    trial.computeBlock = nullptr;
+    trial.module->walk(
+        [&](cinm::ComputeBlockOp op) { trial.computeBlock = op; });
+    if (!trial.computeBlock)
+      return mlir::emitSilenceableFailure(
+          loc, "the lowering removed the compute block from the trial module");
     SimCost total = TRY_GET(simulator->simulate(trial.computeBlock.getBody()));
     annotateCost(ctx, trial, total.total());
     return total;
@@ -1311,6 +1327,7 @@ struct UpmemInferAcceleratorPass
     upmemOpts.scatterSpecialisation = enableScatterSpecialisation;
     upmemOpts.packFragmented = packFragmentedTransfers;
     upmemOpts.fusionEdges = fusionEdges;
+    upmemOpts.allowFloatReassociation = allowFloatReassociation;
     upmemOpts.fixedDpus = fixedDpus;
     upmemOpts.fixedTasklets = fixedTasklets;
     upmemOpts.simulator = simulator;
