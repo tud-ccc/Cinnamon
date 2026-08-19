@@ -4,28 +4,6 @@
     "trace": "points/traces/gemv_8192_1_8192.published.tir.py",
     "candidates": [
       {
-        "label": "r0",
-        "params": {
-          "dpus": 2048,
-          "tasklets": 16,
-          "generic.D0.mram": 16,
-          "generic.D0.wram": 8,
-          "generic.D1.mram": 128,
-          "generic.D1.wram": 32,
-          "generic.order[0]": 1,
-          "generic.order[1]": 2
-        },
-        "expected": {
-          "D": [
-            2048
-          ],
-          "T": [
-            16
-          ]
-        },
-        "notes": "generic=D0>D1 is one reading of ATiM's blockIdx axes; their DPU linearization is not stated in the TIR"
-      },
-      {
         "label": "r1",
         "params": {
           "dpus": 2048,
@@ -82,28 +60,6 @@
     "trace": "points/traces/gemv_8192_1_16384.published.tir.py",
     "candidates": [
       {
-        "label": "r0",
-        "params": {
-          "dpus": 2048,
-          "tasklets": 16,
-          "generic.D0.mram": 4,
-          "generic.D0.wram": 4,
-          "generic.D1.mram": 1024,
-          "generic.D1.wram": 16,
-          "generic.order[0]": 1,
-          "generic.order[1]": 2
-        },
-        "expected": {
-          "D": [
-            2048
-          ],
-          "T": [
-            16
-          ]
-        },
-        "notes": "generic=D0>D1 is one reading of ATiM's blockIdx axes; their DPU linearization is not stated in the TIR"
-      },
-      {
         "label": "r1",
         "params": {
           "dpus": 2048,
@@ -131,28 +87,6 @@
     "fn_name": "gemv_64MB",
     "trace": "points/traces/gemv_4096_1_4096.published.tir.py",
     "candidates": [
-      {
-        "label": "r0",
-        "params": {
-          "dpus": 2048,
-          "tasklets": 8,
-          "generic.D0.mram": 2,
-          "generic.D0.wram": 2,
-          "generic.D1.mram": 512,
-          "generic.D1.wram": 64,
-          "generic.order[0]": 1,
-          "generic.order[1]": 2
-        },
-        "expected": {
-          "D": [
-            2048
-          ],
-          "T": [
-            8
-          ]
-        },
-        "notes": "generic=D0>D1 is one reading of ATiM's blockIdx axes; their DPU linearization is not stated in the TIR"
-      },
       {
         "label": "r1",
         "params": {

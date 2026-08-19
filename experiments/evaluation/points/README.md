@@ -77,6 +77,30 @@ is why a three-dimensional benchmark yields six candidates.
 The hand procedure below is what the script automates. It is the reference
 for reading a trace when a generated point has to be corrected.
 
+## Filtering candidates down to the faithful readings
+
+`python points/filter_candidates.py` decides mechanically which candidates
+of a point match ATiM's kernel, and `--prune` rewrites the JSONs keeping
+only those. The criterion is the per-DPU operand footprint: the readings of
+a trace agree on every tiling factor, so `expected` cannot separate them,
+but they assign different dimensions to the DPU axes and so each DPU holds
+a different slice of each operand. Both sides state that number — ATiM in
+the `__mram` declarations of `points/traces/*.dpu.c`, ours in the compiled
+candidate's transfers, read by the same extraction the invariants report
+uses — and the multisets have to match, scattered and gathered separately.
+
+Where several candidates survive, the readings produce byte-identical
+footprints and remain genuinely indistinguishable at this level; they all
+stay and are all measured, as with any other transcription ambiguity. A
+multi-candidate point where *none* survives is reported as a problem: that
+is a mistranscription or a stale compile, not a choice. Single-candidate
+points are compared informationally only — RED, for one, can never match,
+because ATiM combines its tasklets on the DPU and gathers one scalar where
+our lowering gathers every tasklet's partial.
+
+The filter needs the candidates compiled (`doit compile_points`) and the
+kernels dumped (`points/dump_atim_c.py`); it runs nothing on hardware.
+
 ## Checking a transcription against ATiM's kernel
 
 `python points/dump_atim_c.py` writes `points/traces/{stem}.dpu.c` beside

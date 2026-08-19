@@ -22,23 +22,27 @@ import re
 
 _HIERARCHY = re.compile(r"upmem\.alloc_dpus\s*:\s*!upmem\.hierarchy<(\d+)x(\d+)>")
 _TASKLETS = re.compile(r"upmem\.dpu_program\s+@\S+?\(\)\s+tasklets\((\d+)\)")
+# An optional discardable-attribute dict between the operands and the type,
+# e.g. the {upmem.timing_tag = "static:3"} the transfer ops carry.
+_ATTRS = r"(?:\s*\{[^}]*\})?"
 # upmem.scatter_blocks %x[32 elts, #map, 8 blocks] onto @buf of %h :
 #   memref<...xi32> onto !upmem.hierarchy<256x1>
 _BLOCKS_XFER = re.compile(
     r"upmem\.(scatter_blocks|gather_blocks)\s+\S+\[(\d+) elts, #\S+, (\d+) blocks\]"
-    r"\s+(?:onto|from)\s+(@\S+)\s+of\s+\S+\s*:\s*memref<[^>]*[iuf](\d+)>"
+    r"\s+(?:onto|from)\s+(@\S+)\s+of\s+\S+" + _ATTRS + r"\s*:\s*memref<[^>]*[iuf](\d+)>"
     r"\s+(?:onto|from)\s+!upmem\.hierarchy<(\d+)x(\d+)>"
 )
 # upmem.scatter_on_array %x[128 elts, #map] onto @buf of %h : ...
 _ARRAY_XFER = re.compile(
     r"upmem\.(scatter_on_array|gather_from_array)\s+\S+\[(\d+) elts, #\S+\]"
-    r"\s+(?:onto|from)\s+(@\S+)\s+of\s+\S+\s*:\s*memref<[^>]*[iuf](\d+)>"
+    r"\s+(?:onto|from)\s+(@\S+)\s+of\s+\S+" + _ATTRS + r"\s*:\s*memref<[^>]*[iuf](\d+)>"
     r"\s+(?:onto|from)\s+!upmem\.hierarchy<(\d+)x(\d+)>"
 )
 # upmem.broadcast %t onto @buf of %h : memref<...> onto !upmem.hierarchy<DxT>
 _BROADCAST = re.compile(
-    r"upmem\.broadcast\s+\S+\s+onto\s+(@\S+)\s+of\s+\S+\s*:"
-    r"\s*memref<([0-9x]+)x[iuf](\d+)[^>]*>\s+onto\s+!upmem\.hierarchy<(\d+)x(\d+)>"
+    r"upmem\.broadcast\s+\S+\s+onto\s+(@\S+)\s+of\s+\S+"
+    + _ATTRS
+    + r"\s*:\s*memref<([0-9x]+)x[iuf](\d+)[^>]*>\s+onto\s+!upmem\.hierarchy<(\d+)x(\d+)>"
 )
 _WRAM_ALLOCA = re.compile(
     r"memref\.alloca\(\)\s*:\s*memref<([0-9x]+)x[iuf](\d+),\s*#upmem\.wram>"
