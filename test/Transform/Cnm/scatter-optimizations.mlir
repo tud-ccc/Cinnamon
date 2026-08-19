@@ -237,3 +237,42 @@ func.func @read_before_launch(%out: tensor<4x2x1x8xi32>) {
   cnm.free_workgroup %wg : !cnm.workgroup<#wg>
   return
 }
+
+// -----
+
+#wg = #upmem.array<4x2, <type = v1A, dpus = 4096, tasklets = 1>>
+
+// A fill spelled as a linalg.generic broadcasting a 0-d constant tensor --
+// how the cinm lowering emits an accumulator's zero init. It is as uniform as
+// a linalg.fill, so the same rewrite applies: the scatter disappears and the
+// leaves initialize their share themselves.
+
+// CHECK-LABEL: func.func @device_init_generic_fill
+// CHECK-NOT:   cnm.scatter
+// CHECK:       cnm.launch %{{.*}} ins(%[[A:.*]] = %{{.*}}) outs(%[[B:.*]] = %{{.*}})
+// CHECK-NEXT:    %[[C:.*]] = arith.constant 0 : i32
+// CHECK-NEXT:    linalg.fill ins(%[[C]] : i32) outs(%[[B]] : memref<1x8xi32>)
+// CHECK:         linalg.add
+// CHECK-NOT:   cnm.scatter
+func.func @device_init_generic_fill() {
+  %wg = cnm.workgroup : !cnm.workgroup<#wg>
+  %in = cnm.declare_buffer() for %wg : !cnm.buffer<1x8xi32 on #wg>
+  %acc = cnm.declare_buffer() for %wg : !cnm.buffer<1x8xi32 on #wg>
+  %cst = arith.constant dense<0> : tensor<i32>
+  %empty = tensor.empty() : tensor<4x2x1x8xi32>
+  %init = linalg.generic {
+      indexing_maps = [affine_map<(d0, d1, d2, d3) -> ()>,
+                       affine_map<(d0, d1, d2, d3) -> (d0, d1, d2, d3)>],
+      iterator_types = ["parallel", "parallel", "parallel", "parallel"]}
+      ins(%cst : tensor<i32>) outs(%empty : tensor<4x2x1x8xi32>) {
+    ^bb0(%in_elem: i32, %out_elem: i32):
+      linalg.yield %in_elem : i32
+  } -> tensor<4x2x1x8xi32>
+  cnm.scatter %init into %acc[affine_map<(d0, d1, d2, d3) -> (d0, d1, d2, d3)>] of %wg
+      : tensor<4x2x1x8xi32> into !cnm.buffer<1x8xi32 on #wg>
+  cnm.launch %wg ins(%a = %in : <1x8xi32>) outs(%b = %acc : <1x8xi32>) on !cnm.workgroup<#wg> {
+    linalg.add ins(%a, %b : memref<1x8xi32>, memref<1x8xi32>) outs(%b : memref<1x8xi32>)
+  }
+  cnm.free_workgroup %wg : !cnm.workgroup<#wg>
+  return
+}

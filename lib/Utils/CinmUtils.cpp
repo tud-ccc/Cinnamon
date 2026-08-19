@@ -10,6 +10,7 @@
 #include <mlir/Dialect/Affine/IR/AffineOps.h>
 #include <mlir/Dialect/Arith/IR/Arith.h>
 #include <mlir/Dialect/Linalg/IR/Linalg.h>
+#include <mlir/Dialect/Linalg/IR/LinalgInterfaces.h>
 #include <mlir/Dialect/MemRef/IR/MemRef.h>
 #include <mlir/Dialect/Tensor/IR/Tensor.h>
 #include <mlir/Dialect/Utils/IndexingUtils.h>
@@ -60,11 +61,31 @@ std::optional<TypedAttr> getUniformValue(Value v) {
       return scalar;
     return std::nullopt;
   }
-  if (auto fill = v.getDefiningOp<linalg::FillOp>()) {
-    TypedAttr scalar;
-    if (fill.getInputs().size() == 1 &&
-        matchPattern(fill.getInputs()[0], m_Constant(&scalar)))
-      return scalar;
+  // A fill spelled as a `linalg.generic`, which is how the cinm lowering
+  // emits an accumulator's zero init: a broadcast of a 0-d constant tensor.
+  if (auto generic = v.getDefiningOp<linalg::GenericOp>()) {
+    // The scalar-input spelling, which upstream recognizes as a fill.
+    if (std::optional<Value> scalar = linalg::isaFillOpInterface(generic)) {
+      TypedAttr attr;
+      if (matchPattern(*scalar, m_Constant(&attr)))
+        return attr;
+      return std::nullopt;
+    }
+    // The 0-d-tensor-input spelling, which isaFillOpInterface rejects (its
+    // input is shaped, not scalar). The op must overwrite every element of
+    // its result -- all-parallel iterators, an onto result map, a payload
+    // that ignores what the init held -- and yield its sole input, whose
+    // every element is the same by recursion; the input's indexing map is
+    // then irrelevant.
+    if (generic->getNumResults() == 1 && generic.getNumDpsInputs() == 1 &&
+        generic.getNumParallelLoops() == generic.getNumLoops() &&
+        generic.getIndexingMapMatchingResult(generic->getResult(0))
+            .isPermutation() &&
+        !generic.payloadUsesValueFromOperand(generic.getDpsInitOperand(0))) {
+      auto yield = cast<linalg::YieldOp>(generic.getBody()->getTerminator());
+      if (yield.getValues()[0] == generic.getBody()->getArgument(0))
+        return getUniformValue(generic.getInputs()[0]);
+    }
     return std::nullopt;
   }
 

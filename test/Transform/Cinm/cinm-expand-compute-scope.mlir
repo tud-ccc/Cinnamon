@@ -63,10 +63,10 @@ func.func @two_results(%a: tensor<8x8xf32>, %b: tensor<8xf32>, %d0: tensor<64xf3
 // CHECK-SAME:    (%[[A:.*]]: tensor<8x8xf32>, %[[S:.*]]: f32)
 // CHECK-NOT:   tensor.splat
 // CHECK-NOT:   linalg.fill
-// CHECK:       cinm.compute_block (%{{.*}} = %[[A]] : tensor<8x8xf32>, %[[BS:.*]] = %[[S]] : f32) -> tensor<8xf32>
+// CHECK:       %[[E:.*]] = tensor.empty()
+// CHECK:       cinm.compute_block (%{{.*}} = %[[A]] : tensor<8x8xf32>, %[[BS:.*]] = %[[S]] : f32, %[[E2:.*]] = %[[E]] : tensor<8xf32>) -> tensor<8xf32>
 // CHECK:         %[[SP:.*]] = tensor.splat %[[BS]]
-// CHECK:         %[[E:.*]] = tensor.empty()
-// CHECK:         %[[F:.*]] = linalg.fill {{.*}} outs(%[[E]]
+// CHECK:         %[[F:.*]] = linalg.fill {{.*}} outs(%[[E2]]
 // CHECK:         cinm.op.gemv %{{.*}}, %[[SP]] into %[[F]]
 func.func @splat_and_fill(%a: tensor<8x8xf32>, %s: f32) -> tensor<8xf32> {
   %zero = arith.constant 0.0 : f32
@@ -90,10 +90,10 @@ func.func @splat_and_fill(%a: tensor<8x8xf32>, %s: f32) -> tensor<8xf32> {
 
 // CHECK-LABEL: func @generic_fill
 // CHECK-NOT:   linalg.generic
-// CHECK:       cinm.compute_block (%[[X:.*]] = %{{.*}} : tensor<8x8xf32>, %{{.*}} = %{{.*}} : tensor<8xf32>) -> tensor<8xf32>
+// CHECK:       %[[E:.*]] = tensor.empty()
+// CHECK:       cinm.compute_block (%[[X:.*]] = %{{.*}} : tensor<8x8xf32>, %{{.*}} = %{{.*}} : tensor<8xf32>, %[[E2:.*]] = %[[E]] : tensor<8xf32>) -> tensor<8xf32>
 // CHECK:         %[[CST:.*]] = arith.constant 1.500000e+00 : f32
-// CHECK:         %[[E:.*]] = tensor.empty()
-// CHECK:         %[[F:.*]] = linalg.generic {{.*}} outs(%[[E]] : tensor<8xf32>)
+// CHECK:         %[[F:.*]] = linalg.generic {{.*}} outs(%[[E2]] : tensor<8xf32>)
 // CHECK:           linalg.yield %[[CST]]
 // CHECK:         cinm.op.gemv %[[X]], %{{.*}} into %[[F]]
 func.func @generic_fill(%a: tensor<8x8xf32>, %b: tensor<8xf32>) -> tensor<8xf32> {
@@ -113,12 +113,13 @@ func.func @generic_fill(%a: tensor<8x8xf32>, %b: tensor<8xf32>) -> tensor<8xf32>
 // -----
 
 // A destination defined after the block is fine as long as it can be
-// rematerialized inside it.
+// rematerialized inside it, possibly moving the %dest before the block.
 
 // CHECK-LABEL: func @dest_defined_later
-// CHECK:       cinm.compute_block ({{.*}}) -> tensor<64xf32>
-// CHECK:         %[[E:.*]] = tensor.empty() : tensor<64xf32>
-// CHECK:         tensor.insert_slice %{{.*}} into %[[E]][0] [8] [1]
+// CHECK:       %[[E:.*]] = tensor.empty() : tensor<8xf32>
+// CHECK:       %[[O:.*]] = tensor.empty() : tensor<64xf32>
+// CHECK:       cinm.compute_block ({{.*}}, %[[O2:.*]] = %[[O]] : tensor<64xf32>) -> tensor<64xf32>
+// CHECK:         tensor.insert_slice %{{.*}} into %[[O2]][0] [8] [1]
 func.func @dest_defined_later(%a: tensor<8x8xf32>, %b: tensor<8xf32>) -> tensor<64xf32> {
   %r = cinm.compute_block (%x = %a : tensor<8x8xf32>, %y = %b : tensor<8xf32>) -> tensor<8xf32> {
     %v = cinm.op.gemv %x, %y : tensor<8x8xf32>, tensor<8xf32> -> tensor<8xf32>

@@ -39,19 +39,17 @@
 // stay. The partials come back shaped 4x16x64 rather than 4x4x256 because M
 // is staged in 64-row chunks, and the buffers carrying a staged dimension are
 // cut along it -- the same elements, grouped by what a transfer moves.
-// A leaf's partials do not sit together in that 4x16x64 buffer -- K is what
-// the leaves differ in and it is the outermost dimension -- so the gather
-// fills a buffer laid out leaf by leaf and cnm.expand_buffer writes it back
-// out. The alternative is a transfer of one block per leaf, which the SDK's
-// scatter/gather API mishandles once a DPU's blocks stop ascending.
-// The `1` in the packed shape is a buffer dimension of one element that the
-// map does not read. It is kept rather than dropped: it holds one copy either
-// way, and leaving it out would put the buffer's dimensions out of step with
-// the host's, which is what decides how wide a block the transfer may move.
+// Each leaf's partials are one contiguous 256-element run of the 4x1024
+// partials buffer, so the gather writes them straight out: the host value is
+// reshaped (a view, memref.expand_shape) until the run lines up with a
+// dimension boundary, unit dimensions included so the buffer's `1` has a host
+// counterpart to pair with, and no repack is needed on either side of the
+// transfer.
 // SPLIT-LABEL: func.func @gemv_4MB
 // SPLIT:       upmem.alloc_dpus
-// SPLIT:       upmem.gather_from_array {{.*}} : memref<4x4x4x1x64xi32>
-// SPLIT:       cnm.expand_buffer {{.*}} : memref<4x4x4x1x64xi32> into memref<4x16x64xi32>
+// SPLIT:       %[[EXP:.*]] = memref.expand_shape {{.*}} output_shape [4, 4, 4, 1, 64] : memref<4x1024xi32> into memref<4x4x4x1x64xi32>
+// SPLIT:       upmem.gather_from_array %[[EXP]][256 elts, #{{.*}}] {{.*}} : memref<4x4x4x1x64xi32>
+// SPLIT-NOT:   cnm.expand_buffer
 // SPLIT:       upmem.alloc_dpus
 // SPLIT:       upmem.dpu_program
 // SPLIT:       upmem.dpu_program
