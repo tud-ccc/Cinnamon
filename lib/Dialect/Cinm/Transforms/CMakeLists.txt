@@ -14,6 +14,7 @@ add_mlir_dialect_library(CinmTransforms
     ExpandComputeScope.cpp
     GemvMinWrite.cpp
     RelowerStandaloneOps.cpp
+    SimplifyComputeSignatures.cpp
     SoftmaxToCinmPass.cpp
     TilingPass.cpp
 

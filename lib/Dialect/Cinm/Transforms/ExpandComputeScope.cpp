@@ -1,9 +1,12 @@
 //===- ExpandComputeScope.cpp - Grow cinm.compute_block regions -----------===//
 //
-// Widens cinm.compute_block regions by pulling in the ops that produce their
-// operands (tensor.extract_slice, tensor.splat, linalg.fill, ...) and the
-// tensor.insert_slice ops that consume their results, so that the shaping of
-// the offloaded data happens inside the region.
+// Widens cinm.compute_block regions by pulling in the ops that initialize
+// their operands (tensor.splat, linalg.fill, ...), so that the
+// initialization can happen on the device instead of being computed on the
+// host and transferred. Slicing ops (tensor.extract_slice) deliberately stay
+// outside: after loop unrolling their offsets are per-iteration constants,
+// and absorbing them makes structurally identical blocks look distinct to
+// the graph scheduler's signature-based deduplication.
 //
 //===----------------------------------------------------------------------===//
 
@@ -35,12 +38,14 @@ bool isRematerializable(Operation *def) {
   if (!isMemoryEffectFree(def))
     return false;
   // Constants are kept inside blocks by --cinm-isolate-compute-blocks too.
+  // tensor.empty is deliberately NOT rematerializable: an empty absorbed into
+  // an isolated block bufferizes to an allocation inside it, and
+  // --buffer-hoisting moves allocations out of RegionBranchOpInterface ops
+  // without regard for IsolatedFromAbove. Left outside, the empty becomes a
+  // block operand and the absorbed fill writes the operand buffer in place.
   if (def->hasTrait<OpTrait::ConstantLike>() ||
-      isa<tensor::SplatOp, tensor::ExtractSliceOp, linalg::FillOp>(def))
+      isa<tensor::SplatOp, linalg::FillOp>(def))
     return true;
-  if (auto empty = dyn_cast_or_null<tensor::EmptyOp>(def)) {
-    return empty.getType().getNumElements() == 1;
-  }
 
   if (auto generic = llvm::dyn_cast_or_null<linalg::GenericOp>(def)) {
     return linalg::isaFillOpInterface(generic).has_value() ||
@@ -118,23 +123,7 @@ public:
       return remat(v);
     if (isAvailableBefore(v, target))
       return capture(v);
-    // Defined after the block, like the fresh destination of a
-    // tensor.insert_slice usually is. A pure producer can be moved before the
-    // block instead -- moving an op earlier only widens what it dominates --
-    // and captured like any other operand; moving is a plan here and IR only
-    // once the candidate is accepted (applyHoists), so a rejected candidate
-    // leaves everything in place.
-    if (canHoistBefore(v))
-      return hoist(v);
     return failure();
-  }
-
-  /// Moves the producers `add` planned to hoist before the block, dependency
-  /// order preserved. Call once the rewrite is decided, before the block is
-  /// rebuilt.
-  void applyHoists(RewriterBase &rewriter) {
-    for (Operation *def : hoists)
-      rewriter.moveOpBefore(def, target);
   }
 
   /// Whether the value behind `id` is produced inside the block.
@@ -186,42 +175,6 @@ private:
     return id;
   }
 
-  /// Whether `v`'s producer can be moved before the block: pure, in the
-  /// block's own block, and everything it takes from the outside either
-  /// already available there or hoistable itself.
-  bool canHoistBefore(Value v, unsigned depth = kMaxRematDepth) const {
-    Operation *def = v.getDefiningOp();
-    if (depth == 0 || !def || def->getBlock() != target->getBlock() ||
-        !isMemoryEffectFree(def))
-      return false;
-    SmallVector<Value> externals;
-    getExternalValues(def, externals);
-    return llvm::all_of(externals, [&](Value external) {
-      return isAvailableBefore(external, target) ||
-             canHoistBefore(external, depth - 1);
-    });
-  }
-
-  /// Plans `v`'s producer to be moved before the block and captures `v`. The
-  /// producer's own late operands are planned first, so the recorded order is
-  /// a valid program order; they stay outside the block with it, so only `v`
-  /// itself becomes an input.
-  unsigned hoist(Value v) {
-    planHoist(v.getDefiningOp());
-    return capture(v);
-  }
-
-  void planHoist(Operation *def) {
-    if (!plannedHoists.insert(def).second)
-      return;
-    SmallVector<Value> externals;
-    getExternalValues(def, externals);
-    for (Value external : externals)
-      if (!isAvailableBefore(external, target))
-        planHoist(external.getDefiningOp());
-    hoists.push_back(def);
-  }
-
   /// Registers `v` as produced inside the block. What its producer takes from
   /// the outside is added first, so that entries are always in materialization
   /// order.
@@ -245,9 +198,6 @@ private:
   SmallVector<Entry> entries;
   SmallVector<Value> values;
   DenseMap<Value, unsigned> ids;
-  /// Producers to move before the block, in a valid program order.
-  SmallVector<Operation *> hoists;
-  SmallPtrSet<Operation *, 4> plannedHoists;
 };
 
 /// Creates a copy of `op` with the given operands and result types, moving the
@@ -278,124 +228,6 @@ cinm::ComputeBlockOp rebuildComputeBlock(
   rewriter.inlineBlockBefore(oldBody, newBody, newBody->end(), argRepl);
   return newOp;
 }
-
-/// Whether `user`, which takes a block result as its first operand, can be
-/// moved into that block. Such an op must be pure and have a single result,
-/// which the block then yields in place of the one it consumes.
-bool isAbsorbableConsumer(Operation *user) {
-  if (isa<tensor::InsertSliceOp>(user))
-    return true;
-  // Extracting the only element of a result turns it into a scalar, which
-  // spares materializing a one-element buffer outside the block.
-  if (auto extract = llvm::dyn_cast<tensor::ExtractOp>(user)) {
-    RankedTensorType tensorTy = extract.getTensor().getType();
-    return tensorTy.hasStaticShape() && tensorTy.getNumElements() == 1;
-  }
-  return false;
-}
-
-/// Moves the op consuming a result of the block into the block.
-///
-///   %r = cinm.compute_block (...) -> tensor<8xf32> { ... cinm.yield %v }
-///   %s = tensor.insert_slice %r into %d[%i] [8] [1]
-/// becomes
-///   %s = cinm.compute_block (..., %bd = %d, %bi = %i) -> tensor<64xf32> {
-///          ...
-///          %w = tensor.insert_slice %v into %bd[%bi] [8] [1]
-///          cinm.yield %w
-///        }
-struct AbsorbResultConsumer : OpRewritePattern<cinm::ComputeBlockOp> {
-  using OpRewritePattern::OpRewritePattern;
-
-  LogicalResult matchAndRewrite(cinm::ComputeBlockOp op,
-                                PatternRewriter &rewriter) const override {
-    // Inputs of the rewritten block: everything the block already takes, plus
-    // what the consumer needs.
-    std::optional<BlockInputs> inputs;
-    Operation *consumer = nullptr;
-    unsigned resultIdx = 0;
-    SmallVector<unsigned> consumerIds;
-
-    for (OpResult result : op->getResults()) {
-      if (!result.hasOneUse())
-        continue;
-      OpOperand &use = *result.getUses().begin();
-      Operation *candidate = use.getOwner();
-      // The result must be the data the consumer works on, e.g. the inserted
-      // slice rather than the destination of a tensor.insert_slice.
-      if (use.getOperandNumber() != 0 || !isAbsorbableConsumer(candidate))
-        continue;
-      // Being in the same block guarantees the consumer is executed exactly
-      // once, right after the compute block.
-      if (candidate->getBlock() != op->getBlock())
-        continue;
-      // Whatever else the consumer takes, e.g. a destination or an index, has
-      // to be usable from the position of the compute block. Start from a fresh
-      // input set, so that a rejected candidate leaves nothing behind.
-      BlockInputs candidateInputs(op, op.getOperands());
-      SmallVector<unsigned> ids;
-      if (failed(addAll(candidateInputs, candidate->getOperands().drop_front(),
-                        ids)))
-        continue;
-      consumer = candidate;
-      resultIdx = result.getResultNumber();
-      consumerIds = std::move(ids);
-      inputs.emplace(std::move(candidateInputs));
-      break;
-    }
-    if (!consumer)
-      return failure();
-
-    SmallVector<Type> resultTypes(op->getResultTypes());
-    resultTypes[resultIdx] = consumer->getResult(0).getType();
-
-    inputs->applyHoists(rewriter);
-    unsigned numOldArgs = op.getBody().front().getNumArguments();
-    auto newOp = rebuildComputeBlock(
-        rewriter, op, inputs->getOperands(), resultTypes,
-        [&](RewriterBase &builder, Block *body,
-            SmallVectorImpl<Value> &argRepl) {
-          inputs->materialize(builder, body);
-          llvm::append_range(argRepl,
-                             body->getArguments().take_front(numOldArgs));
-        });
-
-    // Redo the consumer inside the block, on the yielded value.
-    Operation *yield = newOp.getBody().front().getTerminator();
-    rewriter.setInsertionPoint(yield);
-    IRMapping mapping;
-    mapping.map(consumer->getOperand(0), yield->getOperand(resultIdx));
-    for (auto [operand, id] :
-         llvm::zip(consumer->getOperands().drop_front(), consumerIds))
-      mapping.map(operand, inputs->getValue(id));
-    Operation *absorbed = rewriter.clone(*consumer, mapping);
-    rewriter.modifyOpInPlace(
-        yield, [&]() { yield->setOperand(resultIdx, absorbed->getResult(0)); });
-
-    for (auto [idx, result] : llvm::enumerate(op->getResults())) {
-      if (idx == resultIdx)
-        rewriter.replaceAllUsesWith(consumer->getResult(0),
-                                    newOp->getResult(idx));
-      else
-        rewriter.replaceAllUsesWith(result, newOp->getResult(idx));
-    }
-    rewriter.eraseOp(consumer);
-    rewriter.eraseOp(op);
-    return success();
-  }
-
-private:
-  static LogicalResult addAll(BlockInputs &inputs, OperandRange values,
-                              SmallVectorImpl<unsigned> &ids) {
-    for (Value value : values) {
-      FailureOr<unsigned> id = inputs.add(value);
-      if (failed(id))
-        return failure();
-      ids.push_back(*id);
-    }
-    return success();
-  }
-};
 
 /// Moves the ops producing the operands of the block into the block.
 ///
@@ -445,14 +277,8 @@ struct ExpandComputeScopePass
   using Base::Base;
 
   void runOnOperation() override {
-    if (!absorbOperands && !absorbResults)
-      return;
-
     RewritePatternSet patterns(&getContext());
-    if (absorbOperands)
-      patterns.add<AbsorbOperandProducers>(&getContext());
-    if (absorbResults)
-      patterns.add<AbsorbResultConsumer>(&getContext());
+    patterns.add<AbsorbOperandProducers>(&getContext());
 
     if (failed(applyPatternsGreedily(getOperation(), std::move(patterns))))
       signalPassFailure();

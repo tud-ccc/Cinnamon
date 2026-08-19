@@ -256,29 +256,32 @@ def CinmAssignPlatformsPass : Pass<"cinm-assign-platforms", "mlir::func::FuncOp"
 }
 
 def CinmExpandComputeScopePass : Pass<"cinm-expand-compute-scope"> {
-  let summary = "Grow cinm.compute_block regions by absorbing the ops that shape their operands and results";
+  let summary = "Grow cinm.compute_block regions by absorbing the ops that initialize their operands";
   let description = [{
-    Widens the scope of `cinm.compute_block` operations so that the shaping of
-    their inputs and outputs happens inside the offloaded region, which lets
-    bufferization (and the offloading lowerings) see the whole data movement:
+    Widens the scope of `cinm.compute_block` operations so that the
+    initialization of their inputs happens inside the offloaded region, where
+    it can become on-device initialization instead of a host computation plus
+    a transfer: the op producing a block operand is rematerialized inside the
+    block, and the block takes what that op needs instead. This is done for
+    the pure ops that only initialize data, namely `tensor.splat`,
+    `linalg.fill`, constants, and the `linalg.generic` ops that are a fill,
+    a broadcast or a transpose. A `tensor.empty` stays outside and becomes a
+    block operand (the absorbed fill then writes the operand buffer in
+    place): absorbed, it would bufferize to an allocation inside the
+    isolated region, which `--buffer-hoisting` breaks out of.
+    Producers are pulled in transitively, so e.g. a `linalg.fill` of a
+    `tensor.empty` moves in as a whole and only the fill value is passed in.
+    A producer that captures values in its region (a `linalg.generic` in
+    fill form holds the fill value in its body) has those moved in too.
 
-      * a `tensor.insert_slice` that consumes a block result is moved into the
-        block. The destination tensor (and any dynamic offset/size/stride)
-        becomes a block operand, and the block now yields the full tensor.
-
-      * likewise a `tensor.extract` on a single-element result: it moves into
-        the block, which then returns the scalar directly instead of a
-        one-element tensor that has to be materialized outside.
-
-      * the op producing a block operand is rematerialized inside the block, and
-        the block takes what that op needs instead. This is done for the pure
-        ops that only shape or initialize data, namely `tensor.extract_slice`,
-        `tensor.splat`, `tensor.empty`, `linalg.fill`, constants, and the
-        `linalg.generic` ops that are a fill, a broadcast or a transpose.
-        Producers are pulled in transitively, so e.g. a `linalg.fill` of a
-        `tensor.empty` moves in as a whole and only the fill value is passed in.
-        A producer that captures values in its region (a `linalg.generic` in
-        fill form holds the fill value in its body) has those moved in too.
+    Slicing ops (`tensor.extract_slice`) and result consumers
+    (`tensor.insert_slice`) deliberately stay outside the block. After loop
+    unrolling their offsets are per-iteration constants, and absorbing them
+    bakes those constants into otherwise identical block bodies, which makes
+    the graph scheduler's signature-based deduplication see one class per
+    iteration instead of one class overall. Staticness is not lost by leaving
+    a slice outside: `isStaticValue` follows static-offset slices to the
+    annotated weight behind them.
 
     Only `cinm.compute_block` is handled: the operands of an isolated block are
     explicit, so the data crossing the offloading boundary is unambiguous. Run
@@ -286,17 +289,40 @@ def CinmExpandComputeScopePass : Pass<"cinm-expand-compute-scope"> {
     produced by `--cinm-assign-platforms`) into `cinm.compute_block` ops.
   }];
 
-  let options = [
-    Option<"absorbOperands", "absorb-operands", "bool", "true",
-           "Rematerialize the producers of the block operands inside the block">,
-    Option<"absorbResults", "absorb-results", "bool", "true",
-           "Move tensor.insert_slice ops consuming a block result into the block">
-  ];
-
   let dependentDialects = [
     "mlir::cinm::CinmDialect",
     "mlir::linalg::LinalgDialect",
     "mlir::tensor::TensorDialect"
+  ];
+}
+
+def CinmSimplifyComputeSignaturesPass
+    : Pass<"cinm-simplify-compute-signatures"> {
+  let summary = "Drop unused arguments and passthrough results of compute ops";
+  let description = [{
+    Narrows the boundary of `cinm.compute` and `cinm.compute_block` ops:
+
+      * a result whose yielded value is defined outside the region (for
+        `cinm.compute`) or is a passthrough of a block argument (for
+        `cinm.compute_block`) is dropped, and its uses are redirected to the
+        outer value;
+
+      * a `cinm.compute_block` argument with no uses inside the region is
+        dropped together with its operand. A forwarded workgroup
+        (WorkgroupTypeInterface) is kept however unused: it is a residency
+        declaration that only the lowering consumes.
+
+    These rewrites used to be canonicalization patterns, but they change the
+    op's signature, and the accelerator search relies on a block keeping its
+    boundary through the trial pipelines (which run the canonicalizer many
+    times): the winning trial's body is spliced back into the original op by
+    zipping operands and results positionally. Keeping them out of the
+    canonicalizer and in this pass, which the search pipelines never run,
+    is what makes that splice sound.
+  }];
+
+  let dependentDialects = [
+    "mlir::cinm::CinmDialect"
   ];
 }
 
