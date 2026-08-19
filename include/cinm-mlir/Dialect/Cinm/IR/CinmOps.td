@@ -433,7 +433,6 @@ def Cinm_ComputeOp : Cinm_Base_Op<"compute", [
   ];
 
  let hasCustomAssemblyFormat = 1;
- let hasCanonicalizer = 1;
  let hasVerifier = 1;
 }
 
@@ -505,7 +504,6 @@ def Cinm_ComputeBlockOp : Cinm_Base_Op<"compute_block", [
 
  let hasCustomAssemblyFormat = 1;
  let hasVerifier = 1;
- let hasCanonicalizer = 1;
 }
 
 //===----------------------------------------------------------------------===//
