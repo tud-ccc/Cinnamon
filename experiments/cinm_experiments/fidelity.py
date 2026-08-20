@@ -48,24 +48,38 @@ def _predicted_terms(cost_csv: pathlib.Path) -> dict[str, float] | None:
     return terms
 
 
-def _measured_terms(output_dir: pathlib.Path) -> dict[str, float] | None:
+def _measured_terms(
+    output_dir: pathlib.Path,
+) -> tuple[dict[str, float], dict[str, float]] | None:
+    """(raw, charged) per term. The raw transfer term is the whole
+    scatter+gather time, which is what the transfer panel compares against
+    (its predicted side keeps the `excluded` rows for the same reason). The
+    charged one drops the amortizable static scatters, because net_time_ms
+    subtracts those: only the charged time is a part of combined, so only it
+    can be expressed as a share of it."""
     net = measurements.net_time_ms(output_dir)
     if net is None:
         return None
     scatter = measurements.scatter_time_ms(output_dir) or 0.0
     gather = measurements.gather_time_ms(output_dir) or 0.0
     kernel = measurements.launch_time_ms(output_dir) or 0.0
-    return {"transfer": scatter + gather, "kernel": kernel, "combined": net}
+    amortized = measurements.amortizable_time_ms(output_dir, "scatter")
+    raw = {"transfer": scatter + gather, "kernel": kernel, "combined": net}
+    charged = dict(raw, transfer=scatter - amortized + gather)
+    return raw, charged
 
 
 def fidelity_frame(compile_root: pathlib.Path, run_root: pathlib.Path) -> pd.DataFrame:
     """One row per (fn_name, label, term) with predicted_ms, measured_ms and
-    share_of_total (the measured term's share of measured combined -- the
-    paper's share-of-time weighting). Configs missing either side are
-    skipped: a compile without a bench has no measured truth, a bench whose
-    compile predates cost.csv has no prediction. Empty frame when nothing
-    joins -- the assemble layer turns that into a MISSING note, not an
-    error."""
+    the two measured times the paper's share-of-time weighting is a ratio of:
+    charged_ms (what this term contributes to measured combined) over net_ms
+    (measured combined itself, repeated on every term's row). The share is
+    left to the reporting layer to divide, so that it can total the two sums
+    over a set of configs rather than average per-config ratios. Configs
+    missing either side are skipped: a compile without a bench has no measured
+    truth, a bench whose compile predates cost.csv has no prediction. Empty
+    frame when nothing joins -- the assemble layer turns that into a MISSING
+    note, not an error."""
     rows = []
     for fn_name, config_dir in iter_config_dirs(pathlib.Path(run_root)):
         compile_dir = pathlib.Path(compile_root) / fn_name / config_dir.name
@@ -73,7 +87,7 @@ def fidelity_frame(compile_root: pathlib.Path, run_root: pathlib.Path) -> pd.Dat
         measured = _measured_terms(config_dir / "output")
         if predicted is None or measured is None:
             continue
-        total = measured["combined"]
+        raw, charged = measured
         for term in ("transfer", "kernel", "combined"):
             rows.append(
                 {
@@ -81,8 +95,9 @@ def fidelity_frame(compile_root: pathlib.Path, run_root: pathlib.Path) -> pd.Dat
                     "label": config_dir.name,
                     "term": term,
                     "predicted_ms": predicted[term],
-                    "measured_ms": measured[term],
-                    "share_of_total": measured[term] / total if total else float("nan"),
+                    "measured_ms": raw[term],
+                    "charged_ms": charged[term],
+                    "net_ms": raw["combined"],
                 }
             )
     columns = [
@@ -91,6 +106,7 @@ def fidelity_frame(compile_root: pathlib.Path, run_root: pathlib.Path) -> pd.Dat
         "term",
         "predicted_ms",
         "measured_ms",
-        "share_of_total",
+        "charged_ms",
+        "net_ms",
     ]
     return pd.DataFrame(rows, columns=columns)

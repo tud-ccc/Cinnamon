@@ -27,7 +27,7 @@ Schemas (the single source of truth for the plot scripts):
 - rq2.csv      benchmark, fn_name, system, seed, n_candidates,
                search_wallclock_s, space_build_s, notes.
 - rq3.csv      benchmark + fidelity.fidelity_frame columns (fn_name, label,
-               term, predicted_ms, measured_ms, share_of_total).
+               term, predicted_ms, measured_ms, charged_ms, net_ms).
 - sample_census.csv
                benchmark, fn_name, n_requested, n_accepted, n_rows,
                n_timed_out, n_timed_out_in_pool, n_failed, n_over_budget,

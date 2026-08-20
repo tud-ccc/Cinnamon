@@ -1,8 +1,9 @@
 """fig:fidelity -- predicted vs measured, one panel per term (rq3.csv).
 
 Log-log scatter with a y=x reference; per-panel Spearman rho, MAPE, and the
-share of measured time the term accounts for (the paper's argument that
-transfer-term fidelity is what matters is made with that share). Top-k
+share of measured time the term accounts for -- summed over the suite, so
+transfer and kernel add up to at most the whole of it (the paper's argument
+that transfer-term fidelity is what matters is made with that share). Top-k
 overlap against the measured ranking is printed for the combined term.
 """
 
@@ -53,7 +54,10 @@ def main() -> None:
         ax.set_ylabel("predicted (ms)")
         rho = spearmanr(p, m).statistic if len(sub) > 2 else float("nan")
         mape = float(np.mean(np.abs((p - m) / m)) * 100)
-        share = float(sub["share_of_total"].mean() * 100)
+        # Summed over configs, not averaged per config: the share is what
+        # fraction of the suite's measured time the term is, so a 0.1 ms
+        # config must not weigh as much as a 100 ms one.
+        share = float(sub["charged_ms"].sum() / sub["net_ms"].sum() * 100)
         stats = f"$\\rho$={rho:.2f}  MAPE={mape:.0f}%"
         if term != "combined":
             stats += f"  share={share:.0f}%"
