@@ -372,6 +372,57 @@ def UpmemInferAcceleratorPass : Pass<"upmem-infer-accelerator", "ModuleOp"> {
   ];
 }
 
+def UpmemLowerStampedPass : Pass<"upmem-lower-stamped", "ModuleOp"> {
+  let summary = "Lower a module whose compute blocks carry stamped configurations";
+  let description = [{
+    Lowers the artifact --upmem-infer-accelerator=stamp-configs=1 produces:
+    compute blocks in linalg form, annotated with an accelerator and with
+    resolved cnm.tile_sizes / upmem.leaf_tile_sizes / cnm.workgroup_dim_order
+    on each distributed op. The same pipelines the search's trials ran are run
+    once here, over the whole module: distribution to cnm, then one global
+    one-shot bufferization -- across compute block boundaries and function
+    boundaries, so the defensive copies a per-block bufferization pays at
+    every block edge disappear -- then staging, cnm-to-upmem, and the
+    occupancy check. Host code is carried through the same bufferization and
+    ends as loops; ops without stamped tile sizes are never distributed.
+
+    The lowering options must match what the search measured: a module
+    stamped under one setting of use-mram-tiling or
+    pack-fragmented-transfers and lowered under another runs a program the
+    costs were never read from.
+  }];
+  let dependentDialects = [
+    "::mlir::cinm::CinmDialect",
+    "::mlir::cnm::CnmDialect",
+    "::mlir::upmem::UPMEMDialect",
+    "::mlir::func::FuncDialect",
+    "mlir::LLVM::LLVMDialect",
+    "mlir::affine::AffineDialect",
+    "mlir::bufferization::BufferizationDialect",
+    "mlir::linalg::LinalgDialect",
+    "mlir::tensor::TensorDialect",
+    "mlir::vector::VectorDialect"
+  ];
+  let options = [
+    Option<"useMRAMTiling", "use-mram-tiling", "bool", "true",
+           "Enable MRAM tiling in the UPMEM lowering">,
+    Option<"enableScatterSpecialisation", "enable-scatter-specialisation",
+           "bool", "true",
+           "Enable scatter specialisation (see --upmem-infer-accelerator)">,
+    Option<"packFragmentedTransfers", "pack-fragmented-transfers",
+           "PackFragmentedTransfers", "PackFragmentedTransfers::ALL",
+           "Which fragmented transfers are repacked (see "
+           "--upmem-infer-accelerator)",
+           packFragmentedClValues.values>,
+    Option<"allowFloatReassociation", "allow-float-reassociation", "bool",
+           "false",
+           "Permit distributing a floating-point reduction across the "
+           "workgroup (see --upmem-infer-accelerator)">,
+    Option<"debugPipeline", "debug-pipeline", "bool", "",
+           "Print IR between the pipeline's stages">
+  ];
+}
+
 def UpmemAnnotateCostsPass
     : Pass<"upmem-annotate-costs"> {
   let summary = "Annotate UPMEM ops with estimated simulation costs";

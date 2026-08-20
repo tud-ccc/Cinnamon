@@ -77,6 +77,7 @@
 namespace mlir::upmem {
 
 #define GEN_PASS_DEF_UPMEMINFERACCELERATORPASS
+#define GEN_PASS_DEF_UPMEMLOWERSTAMPEDPASS
 #include <cinm-mlir/Dialect/UPMEM/Transforms/Passes.h.inc>
 
 namespace {
@@ -478,8 +479,13 @@ struct UpmemInferencePlugin : cinm::InferencePlugin {
   /// linalg -> cnm -> bufferized, everything up to and including
   /// bufferization. Split from the back pipeline only because the latter has
   /// to see the launch bodies as linalg on memrefs.
+  ///
+  /// `globalBufferize` is the finalization variant (--upmem-lower-stamped):
+  /// bufferization crosses function boundaries, so one analysis covers the
+  /// whole stamped module instead of one trial wrapper function.
   static std::unique_ptr<PassManager>
-  buildFrontPipeline(MLIRContext *ctx, const UpmemInferenceOptions &opts) {
+  buildFrontPipeline(MLIRContext *ctx, const UpmemInferenceOptions &opts,
+                     bool globalBufferize = false) {
     bool debug = opts.debugPrintsInPipeline;
     auto pm = std::make_unique<PassManager>(ctx);
 
@@ -523,8 +529,15 @@ struct UpmemInferencePlugin : cinm::InferencePlugin {
     pm->addPass(createCanonicalizerPass());
     pm->addPass(createCSEPass());
 
-    // Step 3: bufferize
-    pm->addPass(bufferization::createEmptyTensorEliminationPass());
+    // Step 3: bufferize. Empty-tensor elimination cannot run over the whole
+    // stamped module: it traces a block's yielded result to its eventual
+    // destination THROUGH the region boundary and replaces the empty inside
+    // the isolated block with the outside destination value -- the in-place
+    // write we want, expressed illegally. Until block results are
+    // destination-passed at the block level, the global variant skips it and
+    // pays the copy at the boundary instead.
+    if (!globalBufferize)
+      pm->addPass(bufferization::createEmptyTensorEliminationPass());
     if (opts.scatterSpecialisation)
       pm->addPass(cnm::createCnmScatterOptimizationsPass());
     pm->addPass(createCSEPass());
@@ -532,13 +545,15 @@ struct UpmemInferencePlugin : cinm::InferencePlugin {
     if (debug)
       pm->addPass(createPrintIRPass({.label = "before-bufferization"}));
     {
-      bufferization::OneShotBufferizePassOptions opts;
-      opts.unknownTypeConversion =
+      bufferization::OneShotBufferizePassOptions bufOpts;
+      bufOpts.unknownTypeConversion =
           bufferization::LayoutMapOption::IdentityLayoutMap;
-      // opts.bufferizeFunctionBoundaries = true;
-      // opts.functionBoundaryTypeConversion =
-      //     bufferization::LayoutMapOption::IdentityLayoutMap;
-      pm->addPass(bufferization::createOneShotBufferizePass(opts));
+      if (globalBufferize) {
+        bufOpts.bufferizeFunctionBoundaries = true;
+        bufOpts.functionBoundaryTypeConversion =
+            bufferization::LayoutMapOption::IdentityLayoutMap;
+      }
+      pm->addPass(bufferization::createOneShotBufferizePass(bufOpts));
     }
     pm->addPass(createCSEPass());
     pm->addPass(createCanonicalizerPass());
@@ -1431,6 +1446,34 @@ struct UpmemInferAcceleratorPass
       (void)result.checkAndReport();
       signalPassFailure();
     }
+  }
+};
+
+struct UpmemLowerStampedPass
+    : impl::UpmemLowerStampedPassBase<UpmemLowerStampedPass> {
+  using Base::Base;
+
+  void runOnOperation() override {
+    ModuleOp module = getOperation();
+    MLIRContext *ctx = module.getContext();
+
+    UpmemInferenceOptions opts;
+    opts.useMRAMTiling = useMRAMTiling;
+    opts.scatterSpecialisation = enableScatterSpecialisation;
+    opts.packFragmented = packFragmentedTransfers;
+    opts.allowFloatReassociation = allowFloatReassociation;
+    opts.debugPrintsInPipeline = debugPipeline;
+
+    // The trials' own pipelines, run once over the whole module. Only ops
+    // stamped with cnm.tile_sizes are distributed, so the host code rides
+    // along: it is bufferized by the same global one-shot analysis -- which
+    // is what removes the defensive copies a per-block bufferization pays at
+    // every block edge -- and lowered to loops by the same passes.
+    auto front = UpmemInferencePlugin::buildFrontPipeline(
+        ctx, opts, /*globalBufferize=*/true);
+    auto back = UpmemInferencePlugin::buildBackPipeline(ctx, opts);
+    if (failed(front->run(module)) || failed(back->run(module)))
+      signalPassFailure();
   }
 };
 
