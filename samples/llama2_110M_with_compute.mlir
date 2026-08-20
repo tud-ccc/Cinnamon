@@ -45,7 +45,7 @@ module {
       %extracted = tensor.extract %779[] : tensor<f32>
       cinm.yield %extracted : f32
     }
-    %2 = cinm.compute on platform #cinm.host_platform -> f32 attributes {cinm.available_platforms = [#cinm.host_platform]} {
+    %2 = cinm.compute -> f32 attributes {cinm.available_platforms = [#cinm.host_platform]} {
       %778 = arith.divf %1, %cst_4 : f32
       %779 = arith.addf %778, %cst_5 : f32
       %780 = math.rsqrt %779 : f32
@@ -106,7 +106,7 @@ module {
       cinm.yield %779 : tensor<768xf32>
     }
     %inserted_slice = tensor.insert_slice %7 into %arg3[0, %arg1, 0] [1, 1, 768] [1, 1, 1] : tensor<768xf32> into tensor<6x1024x768xf32>
-    %8:3 = cinm.compute on platform #cinm.host_platform -> f32, tensor<768xf32>, tensor<768xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
+    %8:3 = cinm.compute -> f32, tensor<768xf32>, tensor<768xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
       %778 = arith.index_cast %arg1 : index to i64
       %779 = arith.uitofp %778 : i64 to f32
       %780:2 = scf.for %arg16 = %c0 to %c768 step %c2 iter_args(%arg17 = %5, %arg18 = %6) -> (tensor<768xf32>, tensor<768xf32>) {
@@ -155,7 +155,7 @@ module {
     %inserted_slice_15 = tensor.insert_slice %8#2 into %arg2[0, %arg1, 0] [1, 1, 768] [1, 1, 1] : tensor<768xf32> into tensor<6x1024x768xf32>
     %extracted_slice_16 = tensor.extract_slice %inserted_slice_15[0, 0, 0] [1, 1024, 768] [1, 1, 1] : tensor<6x1024x768xf32> to tensor<1024x768xf32>
     %extracted_slice_17 = tensor.extract_slice %inserted_slice[0, 0, 0] [1, 1024, 768] [1, 1, 1] : tensor<6x1024x768xf32> to tensor<1024x768xf32>
-    %9 = cinm.compute on platform #cinm.host_platform -> index attributes {cinm.available_platforms = [#cinm.host_platform]} {
+    %9 = cinm.compute -> index attributes {cinm.available_platforms = [#cinm.host_platform]} {
       %778 = arith.addi %arg1, %c1 : index
       cinm.yield %778 : index
     }
@@ -183,7 +183,7 @@ module {
       } -> tensor<1024xf32>
       cinm.yield %778 : tensor<1024xf32>
     }
-    %13 = cinm.compute on platform #cinm.host_platform -> tensor<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
+    %13 = cinm.compute -> tensor<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
       %778 = scf.for %arg16 = %9 to %c1024 step %c1 iter_args(%arg17 = %12) -> (tensor<1024xf32>) {
         %inserted = tensor.insert %cst_3 into %arg17[%arg16] : tensor<1024xf32>
         scf.yield %inserted : tensor<1024xf32>
@@ -268,7 +268,7 @@ module {
       } -> tensor<1024xf32>
       cinm.yield %778 : tensor<1024xf32>
     }
-    %20 = cinm.compute on platform #cinm.host_platform -> tensor<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
+    %20 = cinm.compute -> tensor<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
       %778 = scf.for %arg16 = %9 to %c1024 step %c1 iter_args(%arg17 = %19) -> (tensor<1024xf32>) {
         %inserted = tensor.insert %cst_3 into %arg17[%arg16] : tensor<1024xf32>
         scf.yield %inserted : tensor<1024xf32>
@@ -353,7 +353,7 @@ module {
       } -> tensor<1024xf32>
       cinm.yield %778 : tensor<1024xf32>
     }
-    %27 = cinm.compute on platform #cinm.host_platform -> tensor<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
+    %27 = cinm.compute -> tensor<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
       %778 = scf.for %arg16 = %9 to %c1024 step %c1 iter_args(%arg17 = %26) -> (tensor<1024xf32>) {
         %inserted = tensor.insert %cst_3 into %arg17[%arg16] : tensor<1024xf32>
         scf.yield %inserted : tensor<1024xf32>
@@ -438,7 +438,7 @@ module {
       } -> tensor<1024xf32>
       cinm.yield %778 : tensor<1024xf32>
     }
-    %34 = cinm.compute on platform #cinm.host_platform -> tensor<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
+    %34 = cinm.compute -> tensor<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
       %778 = scf.for %arg16 = %9 to %c1024 step %c1 iter_args(%arg17 = %33) -> (tensor<1024xf32>) {
         %inserted = tensor.insert %cst_3 into %arg17[%arg16] : tensor<1024xf32>
         scf.yield %inserted : tensor<1024xf32>
@@ -523,7 +523,7 @@ module {
       } -> tensor<1024xf32>
       cinm.yield %778 : tensor<1024xf32>
     }
-    %41 = cinm.compute on platform #cinm.host_platform -> tensor<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
+    %41 = cinm.compute -> tensor<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
       %778 = scf.for %arg16 = %9 to %c1024 step %c1 iter_args(%arg17 = %40) -> (tensor<1024xf32>) {
         %inserted = tensor.insert %cst_3 into %arg17[%arg16] : tensor<1024xf32>
         scf.yield %inserted : tensor<1024xf32>
@@ -608,7 +608,7 @@ module {
       } -> tensor<1024xf32>
       cinm.yield %778 : tensor<1024xf32>
     }
-    %48 = cinm.compute on platform #cinm.host_platform -> tensor<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
+    %48 = cinm.compute -> tensor<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
       %778 = scf.for %arg16 = %9 to %c1024 step %c1 iter_args(%arg17 = %47) -> (tensor<1024xf32>) {
         %inserted = tensor.insert %cst_3 into %arg17[%arg16] : tensor<1024xf32>
         scf.yield %inserted : tensor<1024xf32>
@@ -693,7 +693,7 @@ module {
       } -> tensor<1024xf32>
       cinm.yield %778 : tensor<1024xf32>
     }
-    %55 = cinm.compute on platform #cinm.host_platform -> tensor<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
+    %55 = cinm.compute -> tensor<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
       %778 = scf.for %arg16 = %9 to %c1024 step %c1 iter_args(%arg17 = %54) -> (tensor<1024xf32>) {
         %inserted = tensor.insert %cst_3 into %arg17[%arg16] : tensor<1024xf32>
         scf.yield %inserted : tensor<1024xf32>
@@ -778,7 +778,7 @@ module {
       } -> tensor<1024xf32>
       cinm.yield %778 : tensor<1024xf32>
     }
-    %62 = cinm.compute on platform #cinm.host_platform -> tensor<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
+    %62 = cinm.compute -> tensor<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
       %778 = scf.for %arg16 = %9 to %c1024 step %c1 iter_args(%arg17 = %61) -> (tensor<1024xf32>) {
         %inserted = tensor.insert %cst_3 into %arg17[%arg16] : tensor<1024xf32>
         scf.yield %inserted : tensor<1024xf32>
@@ -863,7 +863,7 @@ module {
       } -> tensor<1024xf32>
       cinm.yield %778 : tensor<1024xf32>
     }
-    %69 = cinm.compute on platform #cinm.host_platform -> tensor<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
+    %69 = cinm.compute -> tensor<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
       %778 = scf.for %arg16 = %9 to %c1024 step %c1 iter_args(%arg17 = %68) -> (tensor<1024xf32>) {
         %inserted = tensor.insert %cst_3 into %arg17[%arg16] : tensor<1024xf32>
         scf.yield %inserted : tensor<1024xf32>
@@ -948,7 +948,7 @@ module {
       } -> tensor<1024xf32>
       cinm.yield %778 : tensor<1024xf32>
     }
-    %76 = cinm.compute on platform #cinm.host_platform -> tensor<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
+    %76 = cinm.compute -> tensor<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
       %778 = scf.for %arg16 = %9 to %c1024 step %c1 iter_args(%arg17 = %75) -> (tensor<1024xf32>) {
         %inserted = tensor.insert %cst_3 into %arg17[%arg16] : tensor<1024xf32>
         scf.yield %inserted : tensor<1024xf32>
@@ -1033,7 +1033,7 @@ module {
       } -> tensor<1024xf32>
       cinm.yield %778 : tensor<1024xf32>
     }
-    %83 = cinm.compute on platform #cinm.host_platform -> tensor<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
+    %83 = cinm.compute -> tensor<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
       %778 = scf.for %arg16 = %9 to %c1024 step %c1 iter_args(%arg17 = %82) -> (tensor<1024xf32>) {
         %inserted = tensor.insert %cst_3 into %arg17[%arg16] : tensor<1024xf32>
         scf.yield %inserted : tensor<1024xf32>
@@ -1118,7 +1118,7 @@ module {
       } -> tensor<1024xf32>
       cinm.yield %778 : tensor<1024xf32>
     }
-    %90 = cinm.compute on platform #cinm.host_platform -> tensor<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
+    %90 = cinm.compute -> tensor<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
       %778 = scf.for %arg16 = %9 to %c1024 step %c1 iter_args(%arg17 = %89) -> (tensor<1024xf32>) {
         %inserted = tensor.insert %cst_3 into %arg17[%arg16] : tensor<1024xf32>
         scf.yield %inserted : tensor<1024xf32>
@@ -1203,7 +1203,7 @@ module {
       } -> tensor<1024xf32>
       cinm.yield %778 : tensor<1024xf32>
     }
-    %97 = cinm.compute on platform #cinm.host_platform -> tensor<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
+    %97 = cinm.compute -> tensor<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
       %778 = scf.for %arg16 = %9 to %c1024 step %c1 iter_args(%arg17 = %96) -> (tensor<1024xf32>) {
         %inserted = tensor.insert %cst_3 into %arg17[%arg16] : tensor<1024xf32>
         scf.yield %inserted : tensor<1024xf32>
@@ -1288,7 +1288,7 @@ module {
       } -> tensor<1024xf32>
       cinm.yield %778 : tensor<1024xf32>
     }
-    %104 = cinm.compute on platform #cinm.host_platform -> tensor<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
+    %104 = cinm.compute -> tensor<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
       %778 = scf.for %arg16 = %9 to %c1024 step %c1 iter_args(%arg17 = %103) -> (tensor<1024xf32>) {
         %inserted = tensor.insert %cst_3 into %arg17[%arg16] : tensor<1024xf32>
         scf.yield %inserted : tensor<1024xf32>
@@ -1373,7 +1373,7 @@ module {
       } -> tensor<1024xf32>
       cinm.yield %778 : tensor<1024xf32>
     }
-    %111 = cinm.compute on platform #cinm.host_platform -> tensor<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
+    %111 = cinm.compute -> tensor<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
       %778 = scf.for %arg16 = %9 to %c1024 step %c1 iter_args(%arg17 = %110) -> (tensor<1024xf32>) {
         %inserted = tensor.insert %cst_3 into %arg17[%arg16] : tensor<1024xf32>
         scf.yield %inserted : tensor<1024xf32>
@@ -1458,7 +1458,7 @@ module {
       } -> tensor<1024xf32>
       cinm.yield %778 : tensor<1024xf32>
     }
-    %118 = cinm.compute on platform #cinm.host_platform -> tensor<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
+    %118 = cinm.compute -> tensor<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
       %778 = scf.for %arg16 = %9 to %c1024 step %c1 iter_args(%arg17 = %117) -> (tensor<1024xf32>) {
         %inserted = tensor.insert %cst_3 into %arg17[%arg16] : tensor<1024xf32>
         scf.yield %inserted : tensor<1024xf32>
@@ -1546,7 +1546,7 @@ module {
       %extracted = tensor.extract %779[] : tensor<f32>
       cinm.yield %extracted : f32
     }
-    %126 = cinm.compute on platform #cinm.host_platform -> f32 attributes {cinm.available_platforms = [#cinm.host_platform]} {
+    %126 = cinm.compute -> f32 attributes {cinm.available_platforms = [#cinm.host_platform]} {
       %778 = arith.divf %125, %cst_4 : f32
       %779 = arith.addf %778, %cst_5 : f32
       %780 = math.rsqrt %779 : f32
@@ -1622,7 +1622,7 @@ module {
       %extracted = tensor.extract %779[] : tensor<f32>
       cinm.yield %extracted : f32
     }
-    %134 = cinm.compute on platform #cinm.host_platform -> f32 attributes {cinm.available_platforms = [#cinm.host_platform]} {
+    %134 = cinm.compute -> f32 attributes {cinm.available_platforms = [#cinm.host_platform]} {
       %778 = arith.divf %133, %cst_4 : f32
       %779 = arith.addf %778, %cst_5 : f32
       %780 = math.rsqrt %779 : f32
@@ -1682,7 +1682,7 @@ module {
       cinm.yield %779 : tensor<768xf32>
     }
     %inserted_slice_154 = tensor.insert_slice %138 into %inserted_slice[1, %arg1, 0] [1, 1, 768] [1, 1, 1] : tensor<768xf32> into tensor<6x1024x768xf32>
-    %139:2 = cinm.compute on platform #cinm.host_platform -> tensor<768xf32>, tensor<768xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
+    %139:2 = cinm.compute -> tensor<768xf32>, tensor<768xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
       %778:2 = scf.for %arg16 = %c0 to %c768 step %c2 iter_args(%arg17 = %136, %arg18 = %137) -> (tensor<768xf32>, tensor<768xf32>) {
         %779 = arith.remui %arg16, %c48 : index
         %780 = arith.index_cast %779 : index to i64
@@ -1752,7 +1752,7 @@ module {
       } -> tensor<1024xf32>
       cinm.yield %778 : tensor<1024xf32>
     }
-    %142 = cinm.compute on platform #cinm.host_platform -> tensor<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
+    %142 = cinm.compute -> tensor<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
       %778 = scf.for %arg16 = %9 to %c1024 step %c1 iter_args(%arg17 = %141) -> (tensor<1024xf32>) {
         %inserted = tensor.insert %cst_3 into %arg17[%arg16] : tensor<1024xf32>
         scf.yield %inserted : tensor<1024xf32>
@@ -1835,7 +1835,7 @@ module {
       } -> tensor<1024xf32>
       cinm.yield %778 : tensor<1024xf32>
     }
-    %149 = cinm.compute on platform #cinm.host_platform -> tensor<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
+    %149 = cinm.compute -> tensor<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
       %778 = scf.for %arg16 = %9 to %c1024 step %c1 iter_args(%arg17 = %148) -> (tensor<1024xf32>) {
         %inserted = tensor.insert %cst_3 into %arg17[%arg16] : tensor<1024xf32>
         scf.yield %inserted : tensor<1024xf32>
@@ -1920,7 +1920,7 @@ module {
       } -> tensor<1024xf32>
       cinm.yield %778 : tensor<1024xf32>
     }
-    %156 = cinm.compute on platform #cinm.host_platform -> tensor<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
+    %156 = cinm.compute -> tensor<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
       %778 = scf.for %arg16 = %9 to %c1024 step %c1 iter_args(%arg17 = %155) -> (tensor<1024xf32>) {
         %inserted = tensor.insert %cst_3 into %arg17[%arg16] : tensor<1024xf32>
         scf.yield %inserted : tensor<1024xf32>
@@ -2005,7 +2005,7 @@ module {
       } -> tensor<1024xf32>
       cinm.yield %778 : tensor<1024xf32>
     }
-    %163 = cinm.compute on platform #cinm.host_platform -> tensor<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
+    %163 = cinm.compute -> tensor<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
       %778 = scf.for %arg16 = %9 to %c1024 step %c1 iter_args(%arg17 = %162) -> (tensor<1024xf32>) {
         %inserted = tensor.insert %cst_3 into %arg17[%arg16] : tensor<1024xf32>
         scf.yield %inserted : tensor<1024xf32>
@@ -2090,7 +2090,7 @@ module {
       } -> tensor<1024xf32>
       cinm.yield %778 : tensor<1024xf32>
     }
-    %170 = cinm.compute on platform #cinm.host_platform -> tensor<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
+    %170 = cinm.compute -> tensor<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
       %778 = scf.for %arg16 = %9 to %c1024 step %c1 iter_args(%arg17 = %169) -> (tensor<1024xf32>) {
         %inserted = tensor.insert %cst_3 into %arg17[%arg16] : tensor<1024xf32>
         scf.yield %inserted : tensor<1024xf32>
@@ -2175,7 +2175,7 @@ module {
       } -> tensor<1024xf32>
       cinm.yield %778 : tensor<1024xf32>
     }
-    %177 = cinm.compute on platform #cinm.host_platform -> tensor<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
+    %177 = cinm.compute -> tensor<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
       %778 = scf.for %arg16 = %9 to %c1024 step %c1 iter_args(%arg17 = %176) -> (tensor<1024xf32>) {
         %inserted = tensor.insert %cst_3 into %arg17[%arg16] : tensor<1024xf32>
         scf.yield %inserted : tensor<1024xf32>
@@ -2260,7 +2260,7 @@ module {
       } -> tensor<1024xf32>
       cinm.yield %778 : tensor<1024xf32>
     }
-    %184 = cinm.compute on platform #cinm.host_platform -> tensor<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
+    %184 = cinm.compute -> tensor<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
       %778 = scf.for %arg16 = %9 to %c1024 step %c1 iter_args(%arg17 = %183) -> (tensor<1024xf32>) {
         %inserted = tensor.insert %cst_3 into %arg17[%arg16] : tensor<1024xf32>
         scf.yield %inserted : tensor<1024xf32>
@@ -2345,7 +2345,7 @@ module {
       } -> tensor<1024xf32>
       cinm.yield %778 : tensor<1024xf32>
     }
-    %191 = cinm.compute on platform #cinm.host_platform -> tensor<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
+    %191 = cinm.compute -> tensor<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
       %778 = scf.for %arg16 = %9 to %c1024 step %c1 iter_args(%arg17 = %190) -> (tensor<1024xf32>) {
         %inserted = tensor.insert %cst_3 into %arg17[%arg16] : tensor<1024xf32>
         scf.yield %inserted : tensor<1024xf32>
@@ -2430,7 +2430,7 @@ module {
       } -> tensor<1024xf32>
       cinm.yield %778 : tensor<1024xf32>
     }
-    %198 = cinm.compute on platform #cinm.host_platform -> tensor<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
+    %198 = cinm.compute -> tensor<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
       %778 = scf.for %arg16 = %9 to %c1024 step %c1 iter_args(%arg17 = %197) -> (tensor<1024xf32>) {
         %inserted = tensor.insert %cst_3 into %arg17[%arg16] : tensor<1024xf32>
         scf.yield %inserted : tensor<1024xf32>
@@ -2515,7 +2515,7 @@ module {
       } -> tensor<1024xf32>
       cinm.yield %778 : tensor<1024xf32>
     }
-    %205 = cinm.compute on platform #cinm.host_platform -> tensor<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
+    %205 = cinm.compute -> tensor<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
       %778 = scf.for %arg16 = %9 to %c1024 step %c1 iter_args(%arg17 = %204) -> (tensor<1024xf32>) {
         %inserted = tensor.insert %cst_3 into %arg17[%arg16] : tensor<1024xf32>
         scf.yield %inserted : tensor<1024xf32>
@@ -2600,7 +2600,7 @@ module {
       } -> tensor<1024xf32>
       cinm.yield %778 : tensor<1024xf32>
     }
-    %212 = cinm.compute on platform #cinm.host_platform -> tensor<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
+    %212 = cinm.compute -> tensor<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
       %778 = scf.for %arg16 = %9 to %c1024 step %c1 iter_args(%arg17 = %211) -> (tensor<1024xf32>) {
         %inserted = tensor.insert %cst_3 into %arg17[%arg16] : tensor<1024xf32>
         scf.yield %inserted : tensor<1024xf32>
@@ -2685,7 +2685,7 @@ module {
       } -> tensor<1024xf32>
       cinm.yield %778 : tensor<1024xf32>
     }
-    %219 = cinm.compute on platform #cinm.host_platform -> tensor<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
+    %219 = cinm.compute -> tensor<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
       %778 = scf.for %arg16 = %9 to %c1024 step %c1 iter_args(%arg17 = %218) -> (tensor<1024xf32>) {
         %inserted = tensor.insert %cst_3 into %arg17[%arg16] : tensor<1024xf32>
         scf.yield %inserted : tensor<1024xf32>
@@ -2770,7 +2770,7 @@ module {
       } -> tensor<1024xf32>
       cinm.yield %778 : tensor<1024xf32>
     }
-    %226 = cinm.compute on platform #cinm.host_platform -> tensor<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
+    %226 = cinm.compute -> tensor<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
       %778 = scf.for %arg16 = %9 to %c1024 step %c1 iter_args(%arg17 = %225) -> (tensor<1024xf32>) {
         %inserted = tensor.insert %cst_3 into %arg17[%arg16] : tensor<1024xf32>
         scf.yield %inserted : tensor<1024xf32>
@@ -2855,7 +2855,7 @@ module {
       } -> tensor<1024xf32>
       cinm.yield %778 : tensor<1024xf32>
     }
-    %233 = cinm.compute on platform #cinm.host_platform -> tensor<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
+    %233 = cinm.compute -> tensor<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
       %778 = scf.for %arg16 = %9 to %c1024 step %c1 iter_args(%arg17 = %232) -> (tensor<1024xf32>) {
         %inserted = tensor.insert %cst_3 into %arg17[%arg16] : tensor<1024xf32>
         scf.yield %inserted : tensor<1024xf32>
@@ -2940,7 +2940,7 @@ module {
       } -> tensor<1024xf32>
       cinm.yield %778 : tensor<1024xf32>
     }
-    %240 = cinm.compute on platform #cinm.host_platform -> tensor<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
+    %240 = cinm.compute -> tensor<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
       %778 = scf.for %arg16 = %9 to %c1024 step %c1 iter_args(%arg17 = %239) -> (tensor<1024xf32>) {
         %inserted = tensor.insert %cst_3 into %arg17[%arg16] : tensor<1024xf32>
         scf.yield %inserted : tensor<1024xf32>
@@ -3025,7 +3025,7 @@ module {
       } -> tensor<1024xf32>
       cinm.yield %778 : tensor<1024xf32>
     }
-    %247 = cinm.compute on platform #cinm.host_platform -> tensor<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
+    %247 = cinm.compute -> tensor<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
       %778 = scf.for %arg16 = %9 to %c1024 step %c1 iter_args(%arg17 = %246) -> (tensor<1024xf32>) {
         %inserted = tensor.insert %cst_3 into %arg17[%arg16] : tensor<1024xf32>
         scf.yield %inserted : tensor<1024xf32>
@@ -3113,7 +3113,7 @@ module {
       %extracted = tensor.extract %779[] : tensor<f32>
       cinm.yield %extracted : f32
     }
-    %255 = cinm.compute on platform #cinm.host_platform -> f32 attributes {cinm.available_platforms = [#cinm.host_platform]} {
+    %255 = cinm.compute -> f32 attributes {cinm.available_platforms = [#cinm.host_platform]} {
       %778 = arith.divf %254, %cst_4 : f32
       %779 = arith.addf %778, %cst_5 : f32
       %780 = math.rsqrt %779 : f32
@@ -3188,7 +3188,7 @@ module {
       %extracted = tensor.extract %779[] : tensor<f32>
       cinm.yield %extracted : f32
     }
-    %262 = cinm.compute on platform #cinm.host_platform -> f32 attributes {cinm.available_platforms = [#cinm.host_platform]} {
+    %262 = cinm.compute -> f32 attributes {cinm.available_platforms = [#cinm.host_platform]} {
       %778 = arith.divf %261, %cst_4 : f32
       %779 = arith.addf %778, %cst_5 : f32
       %780 = math.rsqrt %779 : f32
@@ -3248,7 +3248,7 @@ module {
       cinm.yield %779 : tensor<768xf32>
     }
     %inserted_slice_295 = tensor.insert_slice %266 into %inserted_slice_154[2, %arg1, 0] [1, 1, 768] [1, 1, 1] : tensor<768xf32> into tensor<6x1024x768xf32>
-    %267:2 = cinm.compute on platform #cinm.host_platform -> tensor<768xf32>, tensor<768xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
+    %267:2 = cinm.compute -> tensor<768xf32>, tensor<768xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
       %778:2 = scf.for %arg16 = %c0 to %c768 step %c2 iter_args(%arg17 = %264, %arg18 = %265) -> (tensor<768xf32>, tensor<768xf32>) {
         %779 = arith.remui %arg16, %c48 : index
         %780 = arith.index_cast %779 : index to i64
@@ -3318,7 +3318,7 @@ module {
       } -> tensor<1024xf32>
       cinm.yield %778 : tensor<1024xf32>
     }
-    %270 = cinm.compute on platform #cinm.host_platform -> tensor<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
+    %270 = cinm.compute -> tensor<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
       %778 = scf.for %arg16 = %9 to %c1024 step %c1 iter_args(%arg17 = %269) -> (tensor<1024xf32>) {
         %inserted = tensor.insert %cst_3 into %arg17[%arg16] : tensor<1024xf32>
         scf.yield %inserted : tensor<1024xf32>
@@ -3401,7 +3401,7 @@ module {
       } -> tensor<1024xf32>
       cinm.yield %778 : tensor<1024xf32>
     }
-    %277 = cinm.compute on platform #cinm.host_platform -> tensor<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
+    %277 = cinm.compute -> tensor<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
       %778 = scf.for %arg16 = %9 to %c1024 step %c1 iter_args(%arg17 = %276) -> (tensor<1024xf32>) {
         %inserted = tensor.insert %cst_3 into %arg17[%arg16] : tensor<1024xf32>
         scf.yield %inserted : tensor<1024xf32>
@@ -3486,7 +3486,7 @@ module {
       } -> tensor<1024xf32>
       cinm.yield %778 : tensor<1024xf32>
     }
-    %284 = cinm.compute on platform #cinm.host_platform -> tensor<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
+    %284 = cinm.compute -> tensor<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
       %778 = scf.for %arg16 = %9 to %c1024 step %c1 iter_args(%arg17 = %283) -> (tensor<1024xf32>) {
         %inserted = tensor.insert %cst_3 into %arg17[%arg16] : tensor<1024xf32>
         scf.yield %inserted : tensor<1024xf32>
@@ -3571,7 +3571,7 @@ module {
       } -> tensor<1024xf32>
       cinm.yield %778 : tensor<1024xf32>
     }
-    %291 = cinm.compute on platform #cinm.host_platform -> tensor<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
+    %291 = cinm.compute -> tensor<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
       %778 = scf.for %arg16 = %9 to %c1024 step %c1 iter_args(%arg17 = %290) -> (tensor<1024xf32>) {
         %inserted = tensor.insert %cst_3 into %arg17[%arg16] : tensor<1024xf32>
         scf.yield %inserted : tensor<1024xf32>
@@ -3656,7 +3656,7 @@ module {
       } -> tensor<1024xf32>
       cinm.yield %778 : tensor<1024xf32>
     }
-    %298 = cinm.compute on platform #cinm.host_platform -> tensor<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
+    %298 = cinm.compute -> tensor<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
       %778 = scf.for %arg16 = %9 to %c1024 step %c1 iter_args(%arg17 = %297) -> (tensor<1024xf32>) {
         %inserted = tensor.insert %cst_3 into %arg17[%arg16] : tensor<1024xf32>
         scf.yield %inserted : tensor<1024xf32>
@@ -3741,7 +3741,7 @@ module {
       } -> tensor<1024xf32>
       cinm.yield %778 : tensor<1024xf32>
     }
-    %305 = cinm.compute on platform #cinm.host_platform -> tensor<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
+    %305 = cinm.compute -> tensor<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
       %778 = scf.for %arg16 = %9 to %c1024 step %c1 iter_args(%arg17 = %304) -> (tensor<1024xf32>) {
         %inserted = tensor.insert %cst_3 into %arg17[%arg16] : tensor<1024xf32>
         scf.yield %inserted : tensor<1024xf32>
@@ -3826,7 +3826,7 @@ module {
       } -> tensor<1024xf32>
       cinm.yield %778 : tensor<1024xf32>
     }
-    %312 = cinm.compute on platform #cinm.host_platform -> tensor<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
+    %312 = cinm.compute -> tensor<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
       %778 = scf.for %arg16 = %9 to %c1024 step %c1 iter_args(%arg17 = %311) -> (tensor<1024xf32>) {
         %inserted = tensor.insert %cst_3 into %arg17[%arg16] : tensor<1024xf32>
         scf.yield %inserted : tensor<1024xf32>
@@ -3911,7 +3911,7 @@ module {
       } -> tensor<1024xf32>
       cinm.yield %778 : tensor<1024xf32>
     }
-    %319 = cinm.compute on platform #cinm.host_platform -> tensor<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
+    %319 = cinm.compute -> tensor<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
       %778 = scf.for %arg16 = %9 to %c1024 step %c1 iter_args(%arg17 = %318) -> (tensor<1024xf32>) {
         %inserted = tensor.insert %cst_3 into %arg17[%arg16] : tensor<1024xf32>
         scf.yield %inserted : tensor<1024xf32>
@@ -3996,7 +3996,7 @@ module {
       } -> tensor<1024xf32>
       cinm.yield %778 : tensor<1024xf32>
     }
-    %326 = cinm.compute on platform #cinm.host_platform -> tensor<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
+    %326 = cinm.compute -> tensor<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
       %778 = scf.for %arg16 = %9 to %c1024 step %c1 iter_args(%arg17 = %325) -> (tensor<1024xf32>) {
         %inserted = tensor.insert %cst_3 into %arg17[%arg16] : tensor<1024xf32>
         scf.yield %inserted : tensor<1024xf32>
@@ -4081,7 +4081,7 @@ module {
       } -> tensor<1024xf32>
       cinm.yield %778 : tensor<1024xf32>
     }
-    %333 = cinm.compute on platform #cinm.host_platform -> tensor<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
+    %333 = cinm.compute -> tensor<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
       %778 = scf.for %arg16 = %9 to %c1024 step %c1 iter_args(%arg17 = %332) -> (tensor<1024xf32>) {
         %inserted = tensor.insert %cst_3 into %arg17[%arg16] : tensor<1024xf32>
         scf.yield %inserted : tensor<1024xf32>
@@ -4166,7 +4166,7 @@ module {
       } -> tensor<1024xf32>
       cinm.yield %778 : tensor<1024xf32>
     }
-    %340 = cinm.compute on platform #cinm.host_platform -> tensor<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
+    %340 = cinm.compute -> tensor<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
       %778 = scf.for %arg16 = %9 to %c1024 step %c1 iter_args(%arg17 = %339) -> (tensor<1024xf32>) {
         %inserted = tensor.insert %cst_3 into %arg17[%arg16] : tensor<1024xf32>
         scf.yield %inserted : tensor<1024xf32>
@@ -4251,7 +4251,7 @@ module {
       } -> tensor<1024xf32>
       cinm.yield %778 : tensor<1024xf32>
     }
-    %347 = cinm.compute on platform #cinm.host_platform -> tensor<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
+    %347 = cinm.compute -> tensor<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
       %778 = scf.for %arg16 = %9 to %c1024 step %c1 iter_args(%arg17 = %346) -> (tensor<1024xf32>) {
         %inserted = tensor.insert %cst_3 into %arg17[%arg16] : tensor<1024xf32>
         scf.yield %inserted : tensor<1024xf32>
@@ -4336,7 +4336,7 @@ module {
       } -> tensor<1024xf32>
       cinm.yield %778 : tensor<1024xf32>
     }
-    %354 = cinm.compute on platform #cinm.host_platform -> tensor<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
+    %354 = cinm.compute -> tensor<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
       %778 = scf.for %arg16 = %9 to %c1024 step %c1 iter_args(%arg17 = %353) -> (tensor<1024xf32>) {
         %inserted = tensor.insert %cst_3 into %arg17[%arg16] : tensor<1024xf32>
         scf.yield %inserted : tensor<1024xf32>
@@ -4421,7 +4421,7 @@ module {
       } -> tensor<1024xf32>
       cinm.yield %778 : tensor<1024xf32>
     }
-    %361 = cinm.compute on platform #cinm.host_platform -> tensor<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
+    %361 = cinm.compute -> tensor<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
       %778 = scf.for %arg16 = %9 to %c1024 step %c1 iter_args(%arg17 = %360) -> (tensor<1024xf32>) {
         %inserted = tensor.insert %cst_3 into %arg17[%arg16] : tensor<1024xf32>
         scf.yield %inserted : tensor<1024xf32>
@@ -4506,7 +4506,7 @@ module {
       } -> tensor<1024xf32>
       cinm.yield %778 : tensor<1024xf32>
     }
-    %368 = cinm.compute on platform #cinm.host_platform -> tensor<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
+    %368 = cinm.compute -> tensor<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
       %778 = scf.for %arg16 = %9 to %c1024 step %c1 iter_args(%arg17 = %367) -> (tensor<1024xf32>) {
         %inserted = tensor.insert %cst_3 into %arg17[%arg16] : tensor<1024xf32>
         scf.yield %inserted : tensor<1024xf32>
@@ -4591,7 +4591,7 @@ module {
       } -> tensor<1024xf32>
       cinm.yield %778 : tensor<1024xf32>
     }
-    %375 = cinm.compute on platform #cinm.host_platform -> tensor<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
+    %375 = cinm.compute -> tensor<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
       %778 = scf.for %arg16 = %9 to %c1024 step %c1 iter_args(%arg17 = %374) -> (tensor<1024xf32>) {
         %inserted = tensor.insert %cst_3 into %arg17[%arg16] : tensor<1024xf32>
         scf.yield %inserted : tensor<1024xf32>
@@ -4679,7 +4679,7 @@ module {
       %extracted = tensor.extract %779[] : tensor<f32>
       cinm.yield %extracted : f32
     }
-    %383 = cinm.compute on platform #cinm.host_platform -> f32 attributes {cinm.available_platforms = [#cinm.host_platform]} {
+    %383 = cinm.compute -> f32 attributes {cinm.available_platforms = [#cinm.host_platform]} {
       %778 = arith.divf %382, %cst_4 : f32
       %779 = arith.addf %778, %cst_5 : f32
       %780 = math.rsqrt %779 : f32
@@ -4754,7 +4754,7 @@ module {
       %extracted = tensor.extract %779[] : tensor<f32>
       cinm.yield %extracted : f32
     }
-    %390 = cinm.compute on platform #cinm.host_platform -> f32 attributes {cinm.available_platforms = [#cinm.host_platform]} {
+    %390 = cinm.compute -> f32 attributes {cinm.available_platforms = [#cinm.host_platform]} {
       %778 = arith.divf %389, %cst_4 : f32
       %779 = arith.addf %778, %cst_5 : f32
       %780 = math.rsqrt %779 : f32
@@ -4814,7 +4814,7 @@ module {
       cinm.yield %779 : tensor<768xf32>
     }
     %inserted_slice_436 = tensor.insert_slice %394 into %inserted_slice_295[3, %arg1, 0] [1, 1, 768] [1, 1, 1] : tensor<768xf32> into tensor<6x1024x768xf32>
-    %395:2 = cinm.compute on platform #cinm.host_platform -> tensor<768xf32>, tensor<768xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
+    %395:2 = cinm.compute -> tensor<768xf32>, tensor<768xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
       %778:2 = scf.for %arg16 = %c0 to %c768 step %c2 iter_args(%arg17 = %392, %arg18 = %393) -> (tensor<768xf32>, tensor<768xf32>) {
         %779 = arith.remui %arg16, %c48 : index
         %780 = arith.index_cast %779 : index to i64
@@ -4884,7 +4884,7 @@ module {
       } -> tensor<1024xf32>
       cinm.yield %778 : tensor<1024xf32>
     }
-    %398 = cinm.compute on platform #cinm.host_platform -> tensor<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
+    %398 = cinm.compute -> tensor<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
       %778 = scf.for %arg16 = %9 to %c1024 step %c1 iter_args(%arg17 = %397) -> (tensor<1024xf32>) {
         %inserted = tensor.insert %cst_3 into %arg17[%arg16] : tensor<1024xf32>
         scf.yield %inserted : tensor<1024xf32>
@@ -4967,7 +4967,7 @@ module {
       } -> tensor<1024xf32>
       cinm.yield %778 : tensor<1024xf32>
     }
-    %405 = cinm.compute on platform #cinm.host_platform -> tensor<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
+    %405 = cinm.compute -> tensor<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
       %778 = scf.for %arg16 = %9 to %c1024 step %c1 iter_args(%arg17 = %404) -> (tensor<1024xf32>) {
         %inserted = tensor.insert %cst_3 into %arg17[%arg16] : tensor<1024xf32>
         scf.yield %inserted : tensor<1024xf32>
@@ -5052,7 +5052,7 @@ module {
       } -> tensor<1024xf32>
       cinm.yield %778 : tensor<1024xf32>
     }
-    %412 = cinm.compute on platform #cinm.host_platform -> tensor<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
+    %412 = cinm.compute -> tensor<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
       %778 = scf.for %arg16 = %9 to %c1024 step %c1 iter_args(%arg17 = %411) -> (tensor<1024xf32>) {
         %inserted = tensor.insert %cst_3 into %arg17[%arg16] : tensor<1024xf32>
         scf.yield %inserted : tensor<1024xf32>
@@ -5137,7 +5137,7 @@ module {
       } -> tensor<1024xf32>
       cinm.yield %778 : tensor<1024xf32>
     }
-    %419 = cinm.compute on platform #cinm.host_platform -> tensor<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
+    %419 = cinm.compute -> tensor<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
       %778 = scf.for %arg16 = %9 to %c1024 step %c1 iter_args(%arg17 = %418) -> (tensor<1024xf32>) {
         %inserted = tensor.insert %cst_3 into %arg17[%arg16] : tensor<1024xf32>
         scf.yield %inserted : tensor<1024xf32>
@@ -5222,7 +5222,7 @@ module {
       } -> tensor<1024xf32>
       cinm.yield %778 : tensor<1024xf32>
     }
-    %426 = cinm.compute on platform #cinm.host_platform -> tensor<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
+    %426 = cinm.compute -> tensor<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
       %778 = scf.for %arg16 = %9 to %c1024 step %c1 iter_args(%arg17 = %425) -> (tensor<1024xf32>) {
         %inserted = tensor.insert %cst_3 into %arg17[%arg16] : tensor<1024xf32>
         scf.yield %inserted : tensor<1024xf32>
@@ -5307,7 +5307,7 @@ module {
       } -> tensor<1024xf32>
       cinm.yield %778 : tensor<1024xf32>
     }
-    %433 = cinm.compute on platform #cinm.host_platform -> tensor<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
+    %433 = cinm.compute -> tensor<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
       %778 = scf.for %arg16 = %9 to %c1024 step %c1 iter_args(%arg17 = %432) -> (tensor<1024xf32>) {
         %inserted = tensor.insert %cst_3 into %arg17[%arg16] : tensor<1024xf32>
         scf.yield %inserted : tensor<1024xf32>
@@ -5392,7 +5392,7 @@ module {
       } -> tensor<1024xf32>
       cinm.yield %778 : tensor<1024xf32>
     }
-    %440 = cinm.compute on platform #cinm.host_platform -> tensor<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
+    %440 = cinm.compute -> tensor<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
       %778 = scf.for %arg16 = %9 to %c1024 step %c1 iter_args(%arg17 = %439) -> (tensor<1024xf32>) {
         %inserted = tensor.insert %cst_3 into %arg17[%arg16] : tensor<1024xf32>
         scf.yield %inserted : tensor<1024xf32>
@@ -5477,7 +5477,7 @@ module {
       } -> tensor<1024xf32>
       cinm.yield %778 : tensor<1024xf32>
     }
-    %447 = cinm.compute on platform #cinm.host_platform -> tensor<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
+    %447 = cinm.compute -> tensor<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
       %778 = scf.for %arg16 = %9 to %c1024 step %c1 iter_args(%arg17 = %446) -> (tensor<1024xf32>) {
         %inserted = tensor.insert %cst_3 into %arg17[%arg16] : tensor<1024xf32>
         scf.yield %inserted : tensor<1024xf32>
@@ -5562,7 +5562,7 @@ module {
       } -> tensor<1024xf32>
       cinm.yield %778 : tensor<1024xf32>
     }
-    %454 = cinm.compute on platform #cinm.host_platform -> tensor<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
+    %454 = cinm.compute -> tensor<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
       %778 = scf.for %arg16 = %9 to %c1024 step %c1 iter_args(%arg17 = %453) -> (tensor<1024xf32>) {
         %inserted = tensor.insert %cst_3 into %arg17[%arg16] : tensor<1024xf32>
         scf.yield %inserted : tensor<1024xf32>
@@ -5647,7 +5647,7 @@ module {
       } -> tensor<1024xf32>
       cinm.yield %778 : tensor<1024xf32>
     }
-    %461 = cinm.compute on platform #cinm.host_platform -> tensor<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
+    %461 = cinm.compute -> tensor<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
       %778 = scf.for %arg16 = %9 to %c1024 step %c1 iter_args(%arg17 = %460) -> (tensor<1024xf32>) {
         %inserted = tensor.insert %cst_3 into %arg17[%arg16] : tensor<1024xf32>
         scf.yield %inserted : tensor<1024xf32>
@@ -5732,7 +5732,7 @@ module {
       } -> tensor<1024xf32>
       cinm.yield %778 : tensor<1024xf32>
     }
-    %468 = cinm.compute on platform #cinm.host_platform -> tensor<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
+    %468 = cinm.compute -> tensor<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
       %778 = scf.for %arg16 = %9 to %c1024 step %c1 iter_args(%arg17 = %467) -> (tensor<1024xf32>) {
         %inserted = tensor.insert %cst_3 into %arg17[%arg16] : tensor<1024xf32>
         scf.yield %inserted : tensor<1024xf32>
@@ -5817,7 +5817,7 @@ module {
       } -> tensor<1024xf32>
       cinm.yield %778 : tensor<1024xf32>
     }
-    %475 = cinm.compute on platform #cinm.host_platform -> tensor<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
+    %475 = cinm.compute -> tensor<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
       %778 = scf.for %arg16 = %9 to %c1024 step %c1 iter_args(%arg17 = %474) -> (tensor<1024xf32>) {
         %inserted = tensor.insert %cst_3 into %arg17[%arg16] : tensor<1024xf32>
         scf.yield %inserted : tensor<1024xf32>
@@ -5902,7 +5902,7 @@ module {
       } -> tensor<1024xf32>
       cinm.yield %778 : tensor<1024xf32>
     }
-    %482 = cinm.compute on platform #cinm.host_platform -> tensor<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
+    %482 = cinm.compute -> tensor<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
       %778 = scf.for %arg16 = %9 to %c1024 step %c1 iter_args(%arg17 = %481) -> (tensor<1024xf32>) {
         %inserted = tensor.insert %cst_3 into %arg17[%arg16] : tensor<1024xf32>
         scf.yield %inserted : tensor<1024xf32>
@@ -5987,7 +5987,7 @@ module {
       } -> tensor<1024xf32>
       cinm.yield %778 : tensor<1024xf32>
     }
-    %489 = cinm.compute on platform #cinm.host_platform -> tensor<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
+    %489 = cinm.compute -> tensor<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
       %778 = scf.for %arg16 = %9 to %c1024 step %c1 iter_args(%arg17 = %488) -> (tensor<1024xf32>) {
         %inserted = tensor.insert %cst_3 into %arg17[%arg16] : tensor<1024xf32>
         scf.yield %inserted : tensor<1024xf32>
@@ -6072,7 +6072,7 @@ module {
       } -> tensor<1024xf32>
       cinm.yield %778 : tensor<1024xf32>
     }
-    %496 = cinm.compute on platform #cinm.host_platform -> tensor<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
+    %496 = cinm.compute -> tensor<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
       %778 = scf.for %arg16 = %9 to %c1024 step %c1 iter_args(%arg17 = %495) -> (tensor<1024xf32>) {
         %inserted = tensor.insert %cst_3 into %arg17[%arg16] : tensor<1024xf32>
         scf.yield %inserted : tensor<1024xf32>
@@ -6157,7 +6157,7 @@ module {
       } -> tensor<1024xf32>
       cinm.yield %778 : tensor<1024xf32>
     }
-    %503 = cinm.compute on platform #cinm.host_platform -> tensor<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
+    %503 = cinm.compute -> tensor<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
       %778 = scf.for %arg16 = %9 to %c1024 step %c1 iter_args(%arg17 = %502) -> (tensor<1024xf32>) {
         %inserted = tensor.insert %cst_3 into %arg17[%arg16] : tensor<1024xf32>
         scf.yield %inserted : tensor<1024xf32>
@@ -6245,7 +6245,7 @@ module {
       %extracted = tensor.extract %779[] : tensor<f32>
       cinm.yield %extracted : f32
     }
-    %511 = cinm.compute on platform #cinm.host_platform -> f32 attributes {cinm.available_platforms = [#cinm.host_platform]} {
+    %511 = cinm.compute -> f32 attributes {cinm.available_platforms = [#cinm.host_platform]} {
       %778 = arith.divf %510, %cst_4 : f32
       %779 = arith.addf %778, %cst_5 : f32
       %780 = math.rsqrt %779 : f32
@@ -6320,7 +6320,7 @@ module {
       %extracted = tensor.extract %779[] : tensor<f32>
       cinm.yield %extracted : f32
     }
-    %518 = cinm.compute on platform #cinm.host_platform -> f32 attributes {cinm.available_platforms = [#cinm.host_platform]} {
+    %518 = cinm.compute -> f32 attributes {cinm.available_platforms = [#cinm.host_platform]} {
       %778 = arith.divf %517, %cst_4 : f32
       %779 = arith.addf %778, %cst_5 : f32
       %780 = math.rsqrt %779 : f32
@@ -6380,7 +6380,7 @@ module {
       cinm.yield %779 : tensor<768xf32>
     }
     %inserted_slice_577 = tensor.insert_slice %522 into %inserted_slice_436[4, %arg1, 0] [1, 1, 768] [1, 1, 1] : tensor<768xf32> into tensor<6x1024x768xf32>
-    %523:2 = cinm.compute on platform #cinm.host_platform -> tensor<768xf32>, tensor<768xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
+    %523:2 = cinm.compute -> tensor<768xf32>, tensor<768xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
       %778:2 = scf.for %arg16 = %c0 to %c768 step %c2 iter_args(%arg17 = %520, %arg18 = %521) -> (tensor<768xf32>, tensor<768xf32>) {
         %779 = arith.remui %arg16, %c48 : index
         %780 = arith.index_cast %779 : index to i64
@@ -6450,7 +6450,7 @@ module {
       } -> tensor<1024xf32>
       cinm.yield %778 : tensor<1024xf32>
     }
-    %526 = cinm.compute on platform #cinm.host_platform -> tensor<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
+    %526 = cinm.compute -> tensor<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
       %778 = scf.for %arg16 = %9 to %c1024 step %c1 iter_args(%arg17 = %525) -> (tensor<1024xf32>) {
         %inserted = tensor.insert %cst_3 into %arg17[%arg16] : tensor<1024xf32>
         scf.yield %inserted : tensor<1024xf32>
@@ -6533,7 +6533,7 @@ module {
       } -> tensor<1024xf32>
       cinm.yield %778 : tensor<1024xf32>
     }
-    %533 = cinm.compute on platform #cinm.host_platform -> tensor<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
+    %533 = cinm.compute -> tensor<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
       %778 = scf.for %arg16 = %9 to %c1024 step %c1 iter_args(%arg17 = %532) -> (tensor<1024xf32>) {
         %inserted = tensor.insert %cst_3 into %arg17[%arg16] : tensor<1024xf32>
         scf.yield %inserted : tensor<1024xf32>
@@ -6618,7 +6618,7 @@ module {
       } -> tensor<1024xf32>
       cinm.yield %778 : tensor<1024xf32>
     }
-    %540 = cinm.compute on platform #cinm.host_platform -> tensor<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
+    %540 = cinm.compute -> tensor<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
       %778 = scf.for %arg16 = %9 to %c1024 step %c1 iter_args(%arg17 = %539) -> (tensor<1024xf32>) {
         %inserted = tensor.insert %cst_3 into %arg17[%arg16] : tensor<1024xf32>
         scf.yield %inserted : tensor<1024xf32>
@@ -6703,7 +6703,7 @@ module {
       } -> tensor<1024xf32>
       cinm.yield %778 : tensor<1024xf32>
     }
-    %547 = cinm.compute on platform #cinm.host_platform -> tensor<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
+    %547 = cinm.compute -> tensor<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
       %778 = scf.for %arg16 = %9 to %c1024 step %c1 iter_args(%arg17 = %546) -> (tensor<1024xf32>) {
         %inserted = tensor.insert %cst_3 into %arg17[%arg16] : tensor<1024xf32>
         scf.yield %inserted : tensor<1024xf32>
@@ -6788,7 +6788,7 @@ module {
       } -> tensor<1024xf32>
       cinm.yield %778 : tensor<1024xf32>
     }
-    %554 = cinm.compute on platform #cinm.host_platform -> tensor<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
+    %554 = cinm.compute -> tensor<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
       %778 = scf.for %arg16 = %9 to %c1024 step %c1 iter_args(%arg17 = %553) -> (tensor<1024xf32>) {
         %inserted = tensor.insert %cst_3 into %arg17[%arg16] : tensor<1024xf32>
         scf.yield %inserted : tensor<1024xf32>
@@ -6873,7 +6873,7 @@ module {
       } -> tensor<1024xf32>
       cinm.yield %778 : tensor<1024xf32>
     }
-    %561 = cinm.compute on platform #cinm.host_platform -> tensor<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
+    %561 = cinm.compute -> tensor<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
       %778 = scf.for %arg16 = %9 to %c1024 step %c1 iter_args(%arg17 = %560) -> (tensor<1024xf32>) {
         %inserted = tensor.insert %cst_3 into %arg17[%arg16] : tensor<1024xf32>
         scf.yield %inserted : tensor<1024xf32>
@@ -6958,7 +6958,7 @@ module {
       } -> tensor<1024xf32>
       cinm.yield %778 : tensor<1024xf32>
     }
-    %568 = cinm.compute on platform #cinm.host_platform -> tensor<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
+    %568 = cinm.compute -> tensor<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
       %778 = scf.for %arg16 = %9 to %c1024 step %c1 iter_args(%arg17 = %567) -> (tensor<1024xf32>) {
         %inserted = tensor.insert %cst_3 into %arg17[%arg16] : tensor<1024xf32>
         scf.yield %inserted : tensor<1024xf32>
@@ -7043,7 +7043,7 @@ module {
       } -> tensor<1024xf32>
       cinm.yield %778 : tensor<1024xf32>
     }
-    %575 = cinm.compute on platform #cinm.host_platform -> tensor<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
+    %575 = cinm.compute -> tensor<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
       %778 = scf.for %arg16 = %9 to %c1024 step %c1 iter_args(%arg17 = %574) -> (tensor<1024xf32>) {
         %inserted = tensor.insert %cst_3 into %arg17[%arg16] : tensor<1024xf32>
         scf.yield %inserted : tensor<1024xf32>
@@ -7128,7 +7128,7 @@ module {
       } -> tensor<1024xf32>
       cinm.yield %778 : tensor<1024xf32>
     }
-    %582 = cinm.compute on platform #cinm.host_platform -> tensor<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
+    %582 = cinm.compute -> tensor<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
       %778 = scf.for %arg16 = %9 to %c1024 step %c1 iter_args(%arg17 = %581) -> (tensor<1024xf32>) {
         %inserted = tensor.insert %cst_3 into %arg17[%arg16] : tensor<1024xf32>
         scf.yield %inserted : tensor<1024xf32>
@@ -7213,7 +7213,7 @@ module {
       } -> tensor<1024xf32>
       cinm.yield %778 : tensor<1024xf32>
     }
-    %589 = cinm.compute on platform #cinm.host_platform -> tensor<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
+    %589 = cinm.compute -> tensor<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
       %778 = scf.for %arg16 = %9 to %c1024 step %c1 iter_args(%arg17 = %588) -> (tensor<1024xf32>) {
         %inserted = tensor.insert %cst_3 into %arg17[%arg16] : tensor<1024xf32>
         scf.yield %inserted : tensor<1024xf32>
@@ -7298,7 +7298,7 @@ module {
       } -> tensor<1024xf32>
       cinm.yield %778 : tensor<1024xf32>
     }
-    %596 = cinm.compute on platform #cinm.host_platform -> tensor<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
+    %596 = cinm.compute -> tensor<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
       %778 = scf.for %arg16 = %9 to %c1024 step %c1 iter_args(%arg17 = %595) -> (tensor<1024xf32>) {
         %inserted = tensor.insert %cst_3 into %arg17[%arg16] : tensor<1024xf32>
         scf.yield %inserted : tensor<1024xf32>
@@ -7383,7 +7383,7 @@ module {
       } -> tensor<1024xf32>
       cinm.yield %778 : tensor<1024xf32>
     }
-    %603 = cinm.compute on platform #cinm.host_platform -> tensor<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
+    %603 = cinm.compute -> tensor<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
       %778 = scf.for %arg16 = %9 to %c1024 step %c1 iter_args(%arg17 = %602) -> (tensor<1024xf32>) {
         %inserted = tensor.insert %cst_3 into %arg17[%arg16] : tensor<1024xf32>
         scf.yield %inserted : tensor<1024xf32>
@@ -7468,7 +7468,7 @@ module {
       } -> tensor<1024xf32>
       cinm.yield %778 : tensor<1024xf32>
     }
-    %610 = cinm.compute on platform #cinm.host_platform -> tensor<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
+    %610 = cinm.compute -> tensor<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
       %778 = scf.for %arg16 = %9 to %c1024 step %c1 iter_args(%arg17 = %609) -> (tensor<1024xf32>) {
         %inserted = tensor.insert %cst_3 into %arg17[%arg16] : tensor<1024xf32>
         scf.yield %inserted : tensor<1024xf32>
@@ -7553,7 +7553,7 @@ module {
       } -> tensor<1024xf32>
       cinm.yield %778 : tensor<1024xf32>
     }
-    %617 = cinm.compute on platform #cinm.host_platform -> tensor<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
+    %617 = cinm.compute -> tensor<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
       %778 = scf.for %arg16 = %9 to %c1024 step %c1 iter_args(%arg17 = %616) -> (tensor<1024xf32>) {
         %inserted = tensor.insert %cst_3 into %arg17[%arg16] : tensor<1024xf32>
         scf.yield %inserted : tensor<1024xf32>
@@ -7638,7 +7638,7 @@ module {
       } -> tensor<1024xf32>
       cinm.yield %778 : tensor<1024xf32>
     }
-    %624 = cinm.compute on platform #cinm.host_platform -> tensor<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
+    %624 = cinm.compute -> tensor<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
       %778 = scf.for %arg16 = %9 to %c1024 step %c1 iter_args(%arg17 = %623) -> (tensor<1024xf32>) {
         %inserted = tensor.insert %cst_3 into %arg17[%arg16] : tensor<1024xf32>
         scf.yield %inserted : tensor<1024xf32>
@@ -7723,7 +7723,7 @@ module {
       } -> tensor<1024xf32>
       cinm.yield %778 : tensor<1024xf32>
     }
-    %631 = cinm.compute on platform #cinm.host_platform -> tensor<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
+    %631 = cinm.compute -> tensor<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
       %778 = scf.for %arg16 = %9 to %c1024 step %c1 iter_args(%arg17 = %630) -> (tensor<1024xf32>) {
         %inserted = tensor.insert %cst_3 into %arg17[%arg16] : tensor<1024xf32>
         scf.yield %inserted : tensor<1024xf32>
@@ -7811,7 +7811,7 @@ module {
       %extracted = tensor.extract %779[] : tensor<f32>
       cinm.yield %extracted : f32
     }
-    %639 = cinm.compute on platform #cinm.host_platform -> f32 attributes {cinm.available_platforms = [#cinm.host_platform]} {
+    %639 = cinm.compute -> f32 attributes {cinm.available_platforms = [#cinm.host_platform]} {
       %778 = arith.divf %638, %cst_4 : f32
       %779 = arith.addf %778, %cst_5 : f32
       %780 = math.rsqrt %779 : f32
@@ -7886,7 +7886,7 @@ module {
       %extracted = tensor.extract %779[] : tensor<f32>
       cinm.yield %extracted : f32
     }
-    %646 = cinm.compute on platform #cinm.host_platform -> f32 attributes {cinm.available_platforms = [#cinm.host_platform]} {
+    %646 = cinm.compute -> f32 attributes {cinm.available_platforms = [#cinm.host_platform]} {
       %778 = arith.divf %645, %cst_4 : f32
       %779 = arith.addf %778, %cst_5 : f32
       %780 = math.rsqrt %779 : f32
@@ -7946,7 +7946,7 @@ module {
       cinm.yield %779 : tensor<768xf32>
     }
     %inserted_slice_718 = tensor.insert_slice %650 into %inserted_slice_577[5, %arg1, 0] [1, 1, 768] [1, 1, 1] : tensor<768xf32> into tensor<6x1024x768xf32>
-    %651:2 = cinm.compute on platform #cinm.host_platform -> tensor<768xf32>, tensor<768xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
+    %651:2 = cinm.compute -> tensor<768xf32>, tensor<768xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
       %778:2 = scf.for %arg16 = %c0 to %c768 step %c2 iter_args(%arg17 = %648, %arg18 = %649) -> (tensor<768xf32>, tensor<768xf32>) {
         %779 = arith.remui %arg16, %c48 : index
         %780 = arith.index_cast %779 : index to i64
@@ -8016,7 +8016,7 @@ module {
       } -> tensor<1024xf32>
       cinm.yield %778 : tensor<1024xf32>
     }
-    %654 = cinm.compute on platform #cinm.host_platform -> tensor<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
+    %654 = cinm.compute -> tensor<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
       %778 = scf.for %arg16 = %9 to %c1024 step %c1 iter_args(%arg17 = %653) -> (tensor<1024xf32>) {
         %inserted = tensor.insert %cst_3 into %arg17[%arg16] : tensor<1024xf32>
         scf.yield %inserted : tensor<1024xf32>
@@ -8099,7 +8099,7 @@ module {
       } -> tensor<1024xf32>
       cinm.yield %778 : tensor<1024xf32>
     }
-    %661 = cinm.compute on platform #cinm.host_platform -> tensor<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
+    %661 = cinm.compute -> tensor<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
       %778 = scf.for %arg16 = %9 to %c1024 step %c1 iter_args(%arg17 = %660) -> (tensor<1024xf32>) {
         %inserted = tensor.insert %cst_3 into %arg17[%arg16] : tensor<1024xf32>
         scf.yield %inserted : tensor<1024xf32>
@@ -8184,7 +8184,7 @@ module {
       } -> tensor<1024xf32>
       cinm.yield %778 : tensor<1024xf32>
     }
-    %668 = cinm.compute on platform #cinm.host_platform -> tensor<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
+    %668 = cinm.compute -> tensor<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
       %778 = scf.for %arg16 = %9 to %c1024 step %c1 iter_args(%arg17 = %667) -> (tensor<1024xf32>) {
         %inserted = tensor.insert %cst_3 into %arg17[%arg16] : tensor<1024xf32>
         scf.yield %inserted : tensor<1024xf32>
@@ -8269,7 +8269,7 @@ module {
       } -> tensor<1024xf32>
       cinm.yield %778 : tensor<1024xf32>
     }
-    %675 = cinm.compute on platform #cinm.host_platform -> tensor<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
+    %675 = cinm.compute -> tensor<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
       %778 = scf.for %arg16 = %9 to %c1024 step %c1 iter_args(%arg17 = %674) -> (tensor<1024xf32>) {
         %inserted = tensor.insert %cst_3 into %arg17[%arg16] : tensor<1024xf32>
         scf.yield %inserted : tensor<1024xf32>
@@ -8354,7 +8354,7 @@ module {
       } -> tensor<1024xf32>
       cinm.yield %778 : tensor<1024xf32>
     }
-    %682 = cinm.compute on platform #cinm.host_platform -> tensor<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
+    %682 = cinm.compute -> tensor<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
       %778 = scf.for %arg16 = %9 to %c1024 step %c1 iter_args(%arg17 = %681) -> (tensor<1024xf32>) {
         %inserted = tensor.insert %cst_3 into %arg17[%arg16] : tensor<1024xf32>
         scf.yield %inserted : tensor<1024xf32>
@@ -8439,7 +8439,7 @@ module {
       } -> tensor<1024xf32>
       cinm.yield %778 : tensor<1024xf32>
     }
-    %689 = cinm.compute on platform #cinm.host_platform -> tensor<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
+    %689 = cinm.compute -> tensor<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
       %778 = scf.for %arg16 = %9 to %c1024 step %c1 iter_args(%arg17 = %688) -> (tensor<1024xf32>) {
         %inserted = tensor.insert %cst_3 into %arg17[%arg16] : tensor<1024xf32>
         scf.yield %inserted : tensor<1024xf32>
@@ -8524,7 +8524,7 @@ module {
       } -> tensor<1024xf32>
       cinm.yield %778 : tensor<1024xf32>
     }
-    %696 = cinm.compute on platform #cinm.host_platform -> tensor<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
+    %696 = cinm.compute -> tensor<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
       %778 = scf.for %arg16 = %9 to %c1024 step %c1 iter_args(%arg17 = %695) -> (tensor<1024xf32>) {
         %inserted = tensor.insert %cst_3 into %arg17[%arg16] : tensor<1024xf32>
         scf.yield %inserted : tensor<1024xf32>
@@ -8609,7 +8609,7 @@ module {
       } -> tensor<1024xf32>
       cinm.yield %778 : tensor<1024xf32>
     }
-    %703 = cinm.compute on platform #cinm.host_platform -> tensor<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
+    %703 = cinm.compute -> tensor<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
       %778 = scf.for %arg16 = %9 to %c1024 step %c1 iter_args(%arg17 = %702) -> (tensor<1024xf32>) {
         %inserted = tensor.insert %cst_3 into %arg17[%arg16] : tensor<1024xf32>
         scf.yield %inserted : tensor<1024xf32>
@@ -8694,7 +8694,7 @@ module {
       } -> tensor<1024xf32>
       cinm.yield %778 : tensor<1024xf32>
     }
-    %710 = cinm.compute on platform #cinm.host_platform -> tensor<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
+    %710 = cinm.compute -> tensor<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
       %778 = scf.for %arg16 = %9 to %c1024 step %c1 iter_args(%arg17 = %709) -> (tensor<1024xf32>) {
         %inserted = tensor.insert %cst_3 into %arg17[%arg16] : tensor<1024xf32>
         scf.yield %inserted : tensor<1024xf32>
@@ -8779,7 +8779,7 @@ module {
       } -> tensor<1024xf32>
       cinm.yield %778 : tensor<1024xf32>
     }
-    %717 = cinm.compute on platform #cinm.host_platform -> tensor<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
+    %717 = cinm.compute -> tensor<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
       %778 = scf.for %arg16 = %9 to %c1024 step %c1 iter_args(%arg17 = %716) -> (tensor<1024xf32>) {
         %inserted = tensor.insert %cst_3 into %arg17[%arg16] : tensor<1024xf32>
         scf.yield %inserted : tensor<1024xf32>
@@ -8864,7 +8864,7 @@ module {
       } -> tensor<1024xf32>
       cinm.yield %778 : tensor<1024xf32>
     }
-    %724 = cinm.compute on platform #cinm.host_platform -> tensor<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
+    %724 = cinm.compute -> tensor<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
       %778 = scf.for %arg16 = %9 to %c1024 step %c1 iter_args(%arg17 = %723) -> (tensor<1024xf32>) {
         %inserted = tensor.insert %cst_3 into %arg17[%arg16] : tensor<1024xf32>
         scf.yield %inserted : tensor<1024xf32>
@@ -8949,7 +8949,7 @@ module {
       } -> tensor<1024xf32>
       cinm.yield %778 : tensor<1024xf32>
     }
-    %731 = cinm.compute on platform #cinm.host_platform -> tensor<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
+    %731 = cinm.compute -> tensor<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
       %778 = scf.for %arg16 = %9 to %c1024 step %c1 iter_args(%arg17 = %730) -> (tensor<1024xf32>) {
         %inserted = tensor.insert %cst_3 into %arg17[%arg16] : tensor<1024xf32>
         scf.yield %inserted : tensor<1024xf32>
@@ -9034,7 +9034,7 @@ module {
       } -> tensor<1024xf32>
       cinm.yield %778 : tensor<1024xf32>
     }
-    %738 = cinm.compute on platform #cinm.host_platform -> tensor<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
+    %738 = cinm.compute -> tensor<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
       %778 = scf.for %arg16 = %9 to %c1024 step %c1 iter_args(%arg17 = %737) -> (tensor<1024xf32>) {
         %inserted = tensor.insert %cst_3 into %arg17[%arg16] : tensor<1024xf32>
         scf.yield %inserted : tensor<1024xf32>
@@ -9119,7 +9119,7 @@ module {
       } -> tensor<1024xf32>
       cinm.yield %778 : tensor<1024xf32>
     }
-    %745 = cinm.compute on platform #cinm.host_platform -> tensor<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
+    %745 = cinm.compute -> tensor<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
       %778 = scf.for %arg16 = %9 to %c1024 step %c1 iter_args(%arg17 = %744) -> (tensor<1024xf32>) {
         %inserted = tensor.insert %cst_3 into %arg17[%arg16] : tensor<1024xf32>
         scf.yield %inserted : tensor<1024xf32>
@@ -9204,7 +9204,7 @@ module {
       } -> tensor<1024xf32>
       cinm.yield %778 : tensor<1024xf32>
     }
-    %752 = cinm.compute on platform #cinm.host_platform -> tensor<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
+    %752 = cinm.compute -> tensor<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
       %778 = scf.for %arg16 = %9 to %c1024 step %c1 iter_args(%arg17 = %751) -> (tensor<1024xf32>) {
         %inserted = tensor.insert %cst_3 into %arg17[%arg16] : tensor<1024xf32>
         scf.yield %inserted : tensor<1024xf32>
@@ -9289,7 +9289,7 @@ module {
       } -> tensor<1024xf32>
       cinm.yield %778 : tensor<1024xf32>
     }
-    %759 = cinm.compute on platform #cinm.host_platform -> tensor<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
+    %759 = cinm.compute -> tensor<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
       %778 = scf.for %arg16 = %9 to %c1024 step %c1 iter_args(%arg17 = %758) -> (tensor<1024xf32>) {
         %inserted = tensor.insert %cst_3 into %arg17[%arg16] : tensor<1024xf32>
         scf.yield %inserted : tensor<1024xf32>
@@ -9377,7 +9377,7 @@ module {
       %extracted = tensor.extract %779[] : tensor<f32>
       cinm.yield %extracted : f32
     }
-    %767 = cinm.compute on platform #cinm.host_platform -> f32 attributes {cinm.available_platforms = [#cinm.host_platform]} {
+    %767 = cinm.compute -> f32 attributes {cinm.available_platforms = [#cinm.host_platform]} {
       %778 = arith.divf %766, %cst_4 : f32
       %779 = arith.addf %778, %cst_5 : f32
       %780 = math.rsqrt %779 : f32
@@ -9452,7 +9452,7 @@ module {
       cinm.yield %extracted : f32
     }
     %774 = tensor.empty() : tensor<34048x768xf32>
-    %775:2 = cinm.compute on platform #cinm.host_platform -> f32, tensor<34048x768xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
+    %775:2 = cinm.compute -> f32, tensor<34048x768xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
       %778 = arith.divf %773, %cst_4 : f32
       %779 = arith.addf %778, %cst_5 : f32
       %780 = math.rsqrt %779 : f32

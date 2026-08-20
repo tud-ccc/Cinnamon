@@ -392,11 +392,11 @@ def Cinm_ComputeOp : Cinm_Base_Op<"compute", [
 ]> {
   let summary = "Delimits a block of IR that is to be offloaded";
   let description = [{
-    This operation declares either a platform or an accelerator on
-    which the computation is to be done. If none of those are provided,
-    CINM's DSE will first assign a platform. The full lowering flow
-    requires concretizing a platform into a compatible accelerator,
-    which can be used for further lowerings.
+    This operation may declare an accelerator on which the computation is to
+    be done. The candidate platforms for the search are declared separately,
+    via the `cinm.available_platforms` attribute (on the op or an enclosing
+    op). The full lowering flow requires concretizing a platform into a
+    compatible accelerator, which can be used for further lowerings.
 
     An accelerator is required for instance to run --cinm-infer-tile-sizes
     or --convert-cinm-to-cnm.
@@ -415,14 +415,12 @@ def Cinm_ComputeOp : Cinm_Base_Op<"compute", [
   }];
 
   let arguments = (ins
-      OptionalAttr<CinmPlatformAttrInterface>:$platform,
       OptionalAttr<CinmAcceleratorAttrInterface>:$accelerator
   );
 
   let results = (outs Variadic<AnyType>:$results);
   let regions = (region SizedRegion<1>:$body);
 
-  let hasVerifier = 1;
   let skipDefaultBuilders = 1;
   let builders = [
     OpBuilder<(ins "TypeRange":$results), [{
@@ -433,7 +431,6 @@ def Cinm_ComputeOp : Cinm_Base_Op<"compute", [
   ];
 
  let hasCustomAssemblyFormat = 1;
- let hasVerifier = 1;
 }
 
 
@@ -455,7 +452,7 @@ def Cinm_ComputeBlockOp : Cinm_Base_Op<"compute_block", [
       cinm.yield %conv : tensor<...>
     }
 
-    %rbuf = cinm.compute_block on platform #upmem.array<4x64> (%a = %v : tensor<...>) -> tensor<...> {
+    %rbuf = cinm.compute_block on accelerator #upmem.accelerator<...> (%a = %v : tensor<...>) -> tensor<...> {
       %flt = arith.constant <"...">: tensor<...>
       %conv = cinm.op.gemm %a, %flt: tensor<...>, tensor<...>
       cinm.yield %conv : tensor<...>
@@ -465,7 +462,6 @@ def Cinm_ComputeBlockOp : Cinm_Base_Op<"compute_block", [
 
   let arguments = (ins
       Variadic<AnyType>:$operands,
-      OptionalAttr<CinmPlatformAttrInterface>:$platform,
       OptionalAttr<CinmAcceleratorAttrInterface>:$accelerator
   );
 
@@ -503,7 +499,6 @@ def Cinm_ComputeBlockOp : Cinm_Base_Op<"compute_block", [
   ];
 
  let hasCustomAssemblyFormat = 1;
- let hasVerifier = 1;
 }
 
 //===----------------------------------------------------------------------===//

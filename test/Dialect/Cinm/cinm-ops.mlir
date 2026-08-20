@@ -49,7 +49,7 @@ func.func @simple(%t00: tensor<6x6xi32>, %t10 : tensor<6xf32> , %m00: memref<6xf
     }
 
     // different forms for compute
-    cinm.compute_block on platform #cinm.host_platform () {
+    cinm.compute_block () attributes { cinm.available_platforms = [#cinm.host_platform] } {
         cinm.yield
     }
     cinm.compute_block() attributes { maxDpuBufferSize = 64 } {

@@ -186,36 +186,25 @@ static bool dimsCompatible(int64_t a, int64_t b) {
   return success();
 }
 
-static ParseResult parsePlatformOrAccelerator(OpAsmParser &parser,
-                                              OperationState &result,
-                                              StringRef platformAttrName,
-                                              StringRef acceleratorAttrName) {
+static ParseResult parseAccelerator(OpAsmParser &parser, OperationState &result,
+                                    StringRef acceleratorAttrName) {
   if (parser.parseOptionalKeyword("on").succeeded()) {
     auto loc = parser.getCurrentLocation();
-    if (parser.parseOptionalKeyword("platform").succeeded()) {
-      CinmPlatformAttrInterface platform;
-      if (parser.parseAttribute(platform))
-        return failure();
-      result.addAttribute(platformAttrName, platform);
-      return success();
-    } else if (parser.parseOptionalKeyword("accelerator").succeeded()) {
+    if (parser.parseOptionalKeyword("accelerator").succeeded()) {
       CinmAcceleratorAttrInterface accelerator;
       if (parser.parseAttribute(accelerator))
         return failure();
       result.addAttribute(acceleratorAttrName, accelerator);
       return success();
     }
-    return parser.emitError(loc,
-                            "Expected `platform` or `accelerator` keyword");
+    return parser.emitError(loc, "Expected `accelerator` keyword");
   }
   return success();
 }
 
 ParseResult ComputeBlockOp::parse(::mlir::OpAsmParser &parser,
                                   ::mlir::OperationState &result) {
-  if (parsePlatformOrAccelerator(parser, result,
-                                 getPlatformAttrName(result.name),
-                                 getAcceleratorAttrName(result.name)))
+  if (parseAccelerator(parser, result, getAcceleratorAttrName(result.name)))
     return failure();
 
   SmallVector<OpAsmParser::Argument> regionArgs;
@@ -249,9 +238,7 @@ ParseResult ComputeBlockOp::parse(::mlir::OpAsmParser &parser,
 }
 
 void ComputeBlockOp::print(OpAsmPrinter &out) {
-  if (auto platform = getPlatform()) {
-    out << " on platform " << platform;
-  } else if (auto accelerator = getAccelerator()) {
+  if (auto accelerator = getAccelerator()) {
     out << " on accelerator " << accelerator;
   }
   out << " (";
@@ -265,17 +252,15 @@ void ComputeBlockOp::print(OpAsmPrinter &out) {
     out << " -> ";
     llvm::interleaveComma(getResultTypes(), out);
   }
-  out.printOptionalAttrDictWithKeyword(
-      (*this)->getAttrs(), {getPlatformAttrName(), getAcceleratorAttrName()});
+  out.printOptionalAttrDictWithKeyword((*this)->getAttrs(),
+                                       {getAcceleratorAttrName()});
   out << ' ';
   out.printRegion(getRegion(), false);
 }
 
 ParseResult ComputeOp::parse(::mlir::OpAsmParser &parser,
                              ::mlir::OperationState &result) {
-  if (parsePlatformOrAccelerator(parser, result,
-                                 getPlatformAttrName(result.name),
-                                 getAcceleratorAttrName(result.name)))
+  if (parseAccelerator(parser, result, getAcceleratorAttrName(result.name)))
     return failure();
 
   if (parser.parseOptionalArrow().succeeded()) {
@@ -295,31 +280,19 @@ ParseResult ComputeOp::parse(::mlir::OpAsmParser &parser,
 }
 
 void ComputeOp::print(OpAsmPrinter &out) {
-  if (auto platform = getPlatform()) {
-    out << " on platform " << platform;
-  } else if (auto accelerator = getAccelerator()) {
+  if (auto accelerator = getAccelerator()) {
     out << " on accelerator " << accelerator;
   }
   if (!getResults().empty()) {
     out << " -> ";
     llvm::interleaveComma(getResultTypes(), out);
   }
-  out.printOptionalAttrDictWithKeyword(
-      (*this)->getAttrs(), {getPlatformAttrName(), getAcceleratorAttrName()});
+  out.printOptionalAttrDictWithKeyword((*this)->getAttrs(),
+                                       {getAcceleratorAttrName()});
   out << ' ';
   out.printRegion(getRegion(), false);
 }
 
-LogicalResult ComputeOp::verify() {
-  if (getPlatform() && getAccelerator())
-    return emitOpError("Cannot specify both platform and accelerator");
-  return success();
-}
-LogicalResult ComputeBlockOp::verify() {
-  if (getPlatform() && getAccelerator())
-    return emitOpError("Cannot specify both platform and accelerator");
-  return success();
-}
 LogicalResult ReduceOp::verify() {
   uint64_t maxDim = getInput().getType().getRank();
   if (getDimension() >= maxDim)

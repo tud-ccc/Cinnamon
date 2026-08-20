@@ -1403,7 +1403,6 @@ InferencePlugin::commitBestCandidate(cinm::ComputeBlockOp original,
   }
 
   original.getBody().takeBody(bestTrial.computeBlock.getBody());
-  original.setPlatformAttr({}); // remove platform attr
   original->setAttrs(bestTrial.computeBlock->getAttrs());
 
   // Fix up any type mismatches introduced by bufferization.

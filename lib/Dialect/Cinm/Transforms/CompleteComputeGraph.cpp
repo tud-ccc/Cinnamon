@@ -204,7 +204,6 @@ private:
     auto compute = ComputeOp::create(rewriter, group.front()->getLoc(),
                                      ValueRange(escaping).getTypes());
     auto host = HostPlatformAttr::get(rewriter.getContext());
-    compute.setPlatformAttr(host);
     // Shadows the cinm.available_platforms attribute of the enclosing
     // function, which advertises the offloading platforms.
     compute->setAttr(CinmDialect::AVAILABLE_PLATFORMS_NAME,

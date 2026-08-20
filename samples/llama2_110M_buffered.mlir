@@ -31,7 +31,7 @@ module {
       %760 = memref.load %alloc_751[] : memref<f32>
       cinm.yield %760 : f32
     }
-    %1 = cinm.compute_block on platform #cinm.host_platform (%arg16 = %0 : f32) -> f32 attributes {cinm.available_platforms = [#cinm.host_platform]} {
+    %1 = cinm.compute_block (%arg16 = %0 : f32) -> f32 attributes {cinm.available_platforms = [#cinm.host_platform]} {
       %cst = arith.constant 7.680000e+02 : f32
       %cst_751 = arith.constant 9.99999974E-6 : f32
       %760 = arith.divf %arg16, %cst : f32
@@ -97,7 +97,7 @@ module {
       cinm.yield %arg16 : memref<768xf32, strided<[1], offset: ?>>
     }
     memref.copy %5, %subview_6 : memref<768xf32, strided<[1], offset: ?>> to memref<768xf32, strided<[1], offset: ?>>
-    %6:3 = cinm.compute_block on platform #cinm.host_platform (%arg16 = %arg1 : index, %arg17 = %3 : memref<768xf32>, %arg18 = %4 : memref<768xf32, strided<[1], offset: ?>>) -> f32, memref<768xf32>, memref<768xf32, strided<[1], offset: ?>> attributes {cinm.available_platforms = [#cinm.host_platform]} {
+    %6:3 = cinm.compute_block (%arg16 = %arg1 : index, %arg17 = %3 : memref<768xf32>, %arg18 = %4 : memref<768xf32, strided<[1], offset: ?>>) -> f32, memref<768xf32>, memref<768xf32, strided<[1], offset: ?>> attributes {cinm.available_platforms = [#cinm.host_platform]} {
       %c48 = arith.constant 48 : index
       %cst = arith.constant 4.800000e+01 : f32
       %cst_751 = arith.constant 1.000000e+04 : f32
@@ -148,7 +148,7 @@ module {
     memref.copy %6#2, %subview_5 : memref<768xf32, strided<[1], offset: ?>> to memref<768xf32, strided<[1], offset: ?>>
     %subview_7 = memref.subview %arg2[0, 0, 0] [1, 1024, 768] [1, 1, 1] : memref<6x1024x768xf32> to memref<1024x768xf32, strided<[768, 1]>>
     %subview_8 = memref.subview %arg3[0, 0, 0] [1, 1024, 768] [1, 1, 1] : memref<6x1024x768xf32> to memref<1024x768xf32, strided<[768, 1]>>
-    %7 = cinm.compute_block on platform #cinm.host_platform (%arg16 = %arg1 : index) -> index attributes {cinm.available_platforms = [#cinm.host_platform]} {
+    %7 = cinm.compute_block (%arg16 = %arg1 : index) -> index attributes {cinm.available_platforms = [#cinm.host_platform]} {
       %c1 = arith.constant 1 : index
       %760 = arith.addi %arg16, %c1 : index
       cinm.yield %760 : index
@@ -179,7 +179,7 @@ module {
       }
       cinm.yield %arg17 : memref<1024xf32>
     }
-    %10 = cinm.compute_block on platform #cinm.host_platform (%arg16 = %7 : index, %arg17 = %9 : memref<1024xf32>) -> memref<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
+    %10 = cinm.compute_block (%arg16 = %7 : index, %arg17 = %9 : memref<1024xf32>) -> memref<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
       %cst = arith.constant 0xFF800000 : f32
       %c1024 = arith.constant 1024 : index
       %c1 = arith.constant 1 : index
@@ -268,7 +268,7 @@ module {
       }
       cinm.yield %arg17 : memref<1024xf32>
     }
-    %17 = cinm.compute_block on platform #cinm.host_platform (%arg16 = %7 : index, %arg17 = %16 : memref<1024xf32>) -> memref<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
+    %17 = cinm.compute_block (%arg16 = %7 : index, %arg17 = %16 : memref<1024xf32>) -> memref<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
       %cst = arith.constant 0xFF800000 : f32
       %c1024 = arith.constant 1024 : index
       %c1 = arith.constant 1 : index
@@ -356,7 +356,7 @@ module {
       }
       cinm.yield %arg17 : memref<1024xf32>
     }
-    %24 = cinm.compute_block on platform #cinm.host_platform (%arg16 = %7 : index, %arg17 = %23 : memref<1024xf32>) -> memref<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
+    %24 = cinm.compute_block (%arg16 = %7 : index, %arg17 = %23 : memref<1024xf32>) -> memref<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
       %cst = arith.constant 0xFF800000 : f32
       %c1024 = arith.constant 1024 : index
       %c1 = arith.constant 1 : index
@@ -444,7 +444,7 @@ module {
       }
       cinm.yield %arg17 : memref<1024xf32>
     }
-    %31 = cinm.compute_block on platform #cinm.host_platform (%arg16 = %7 : index, %arg17 = %30 : memref<1024xf32>) -> memref<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
+    %31 = cinm.compute_block (%arg16 = %7 : index, %arg17 = %30 : memref<1024xf32>) -> memref<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
       %cst = arith.constant 0xFF800000 : f32
       %c1024 = arith.constant 1024 : index
       %c1 = arith.constant 1 : index
@@ -532,7 +532,7 @@ module {
       }
       cinm.yield %arg17 : memref<1024xf32>
     }
-    %38 = cinm.compute_block on platform #cinm.host_platform (%arg16 = %7 : index, %arg17 = %37 : memref<1024xf32>) -> memref<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
+    %38 = cinm.compute_block (%arg16 = %7 : index, %arg17 = %37 : memref<1024xf32>) -> memref<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
       %cst = arith.constant 0xFF800000 : f32
       %c1024 = arith.constant 1024 : index
       %c1 = arith.constant 1 : index
@@ -620,7 +620,7 @@ module {
       }
       cinm.yield %arg17 : memref<1024xf32>
     }
-    %45 = cinm.compute_block on platform #cinm.host_platform (%arg16 = %7 : index, %arg17 = %44 : memref<1024xf32>) -> memref<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
+    %45 = cinm.compute_block (%arg16 = %7 : index, %arg17 = %44 : memref<1024xf32>) -> memref<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
       %cst = arith.constant 0xFF800000 : f32
       %c1024 = arith.constant 1024 : index
       %c1 = arith.constant 1 : index
@@ -708,7 +708,7 @@ module {
       }
       cinm.yield %arg17 : memref<1024xf32>
     }
-    %52 = cinm.compute_block on platform #cinm.host_platform (%arg16 = %7 : index, %arg17 = %51 : memref<1024xf32>) -> memref<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
+    %52 = cinm.compute_block (%arg16 = %7 : index, %arg17 = %51 : memref<1024xf32>) -> memref<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
       %cst = arith.constant 0xFF800000 : f32
       %c1024 = arith.constant 1024 : index
       %c1 = arith.constant 1 : index
@@ -796,7 +796,7 @@ module {
       }
       cinm.yield %arg17 : memref<1024xf32>
     }
-    %59 = cinm.compute_block on platform #cinm.host_platform (%arg16 = %7 : index, %arg17 = %58 : memref<1024xf32>) -> memref<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
+    %59 = cinm.compute_block (%arg16 = %7 : index, %arg17 = %58 : memref<1024xf32>) -> memref<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
       %cst = arith.constant 0xFF800000 : f32
       %c1024 = arith.constant 1024 : index
       %c1 = arith.constant 1 : index
@@ -884,7 +884,7 @@ module {
       }
       cinm.yield %arg17 : memref<1024xf32>
     }
-    %66 = cinm.compute_block on platform #cinm.host_platform (%arg16 = %7 : index, %arg17 = %65 : memref<1024xf32>) -> memref<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
+    %66 = cinm.compute_block (%arg16 = %7 : index, %arg17 = %65 : memref<1024xf32>) -> memref<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
       %cst = arith.constant 0xFF800000 : f32
       %c1024 = arith.constant 1024 : index
       %c1 = arith.constant 1 : index
@@ -972,7 +972,7 @@ module {
       }
       cinm.yield %arg17 : memref<1024xf32>
     }
-    %73 = cinm.compute_block on platform #cinm.host_platform (%arg16 = %7 : index, %arg17 = %72 : memref<1024xf32>) -> memref<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
+    %73 = cinm.compute_block (%arg16 = %7 : index, %arg17 = %72 : memref<1024xf32>) -> memref<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
       %cst = arith.constant 0xFF800000 : f32
       %c1024 = arith.constant 1024 : index
       %c1 = arith.constant 1 : index
@@ -1060,7 +1060,7 @@ module {
       }
       cinm.yield %arg17 : memref<1024xf32>
     }
-    %80 = cinm.compute_block on platform #cinm.host_platform (%arg16 = %7 : index, %arg17 = %79 : memref<1024xf32>) -> memref<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
+    %80 = cinm.compute_block (%arg16 = %7 : index, %arg17 = %79 : memref<1024xf32>) -> memref<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
       %cst = arith.constant 0xFF800000 : f32
       %c1024 = arith.constant 1024 : index
       %c1 = arith.constant 1 : index
@@ -1148,7 +1148,7 @@ module {
       }
       cinm.yield %arg17 : memref<1024xf32>
     }
-    %87 = cinm.compute_block on platform #cinm.host_platform (%arg16 = %7 : index, %arg17 = %86 : memref<1024xf32>) -> memref<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
+    %87 = cinm.compute_block (%arg16 = %7 : index, %arg17 = %86 : memref<1024xf32>) -> memref<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
       %cst = arith.constant 0xFF800000 : f32
       %c1024 = arith.constant 1024 : index
       %c1 = arith.constant 1 : index
@@ -1236,7 +1236,7 @@ module {
       }
       cinm.yield %arg17 : memref<1024xf32>
     }
-    %94 = cinm.compute_block on platform #cinm.host_platform (%arg16 = %7 : index, %arg17 = %93 : memref<1024xf32>) -> memref<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
+    %94 = cinm.compute_block (%arg16 = %7 : index, %arg17 = %93 : memref<1024xf32>) -> memref<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
       %cst = arith.constant 0xFF800000 : f32
       %c1024 = arith.constant 1024 : index
       %c1 = arith.constant 1 : index
@@ -1324,7 +1324,7 @@ module {
       }
       cinm.yield %arg17 : memref<1024xf32>
     }
-    %101 = cinm.compute_block on platform #cinm.host_platform (%arg16 = %7 : index, %arg17 = %100 : memref<1024xf32>) -> memref<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
+    %101 = cinm.compute_block (%arg16 = %7 : index, %arg17 = %100 : memref<1024xf32>) -> memref<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
       %cst = arith.constant 0xFF800000 : f32
       %c1024 = arith.constant 1024 : index
       %c1 = arith.constant 1 : index
@@ -1412,7 +1412,7 @@ module {
       }
       cinm.yield %arg17 : memref<1024xf32>
     }
-    %108 = cinm.compute_block on platform #cinm.host_platform (%arg16 = %7 : index, %arg17 = %107 : memref<1024xf32>) -> memref<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
+    %108 = cinm.compute_block (%arg16 = %7 : index, %arg17 = %107 : memref<1024xf32>) -> memref<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
       %cst = arith.constant 0xFF800000 : f32
       %c1024 = arith.constant 1024 : index
       %c1 = arith.constant 1 : index
@@ -1500,7 +1500,7 @@ module {
       }
       cinm.yield %arg17 : memref<1024xf32>
     }
-    %115 = cinm.compute_block on platform #cinm.host_platform (%arg16 = %7 : index, %arg17 = %114 : memref<1024xf32>) -> memref<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
+    %115 = cinm.compute_block (%arg16 = %7 : index, %arg17 = %114 : memref<1024xf32>) -> memref<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
       %cst = arith.constant 0xFF800000 : f32
       %c1024 = arith.constant 1024 : index
       %c1 = arith.constant 1 : index
@@ -1587,7 +1587,7 @@ module {
       %760 = memref.load %alloc_751[] : memref<f32>
       cinm.yield %760 : f32
     }
-    %122 = cinm.compute_block on platform #cinm.host_platform (%arg16 = %121 : f32) -> f32 attributes {cinm.available_platforms = [#cinm.host_platform]} {
+    %122 = cinm.compute_block (%arg16 = %121 : f32) -> f32 attributes {cinm.available_platforms = [#cinm.host_platform]} {
       %cst = arith.constant 7.680000e+02 : f32
       %cst_751 = arith.constant 9.99999974E-6 : f32
       %760 = arith.divf %arg16, %cst : f32
@@ -1667,7 +1667,7 @@ module {
       %760 = memref.load %alloc_751[] : memref<f32>
       cinm.yield %760 : f32
     }
-    %128 = cinm.compute_block on platform #cinm.host_platform (%arg16 = %127 : f32) -> f32 attributes {cinm.available_platforms = [#cinm.host_platform]} {
+    %128 = cinm.compute_block (%arg16 = %127 : f32) -> f32 attributes {cinm.available_platforms = [#cinm.host_platform]} {
       %cst = arith.constant 7.680000e+02 : f32
       %cst_751 = arith.constant 9.99999974E-6 : f32
       %760 = arith.divf %arg16, %cst : f32
@@ -1732,7 +1732,7 @@ module {
       cinm.yield %arg16 : memref<768xf32, strided<[1], offset: ?>>
     }
     memref.copy %132, %subview_132 : memref<768xf32, strided<[1], offset: ?>> to memref<768xf32, strided<[1], offset: ?>>
-    %133:2 = cinm.compute_block on platform #cinm.host_platform (%arg16 = %6#0 : f32, %arg17 = %130 : memref<768xf32>, %arg18 = %131 : memref<768xf32, strided<[1], offset: ?>>) -> memref<768xf32>, memref<768xf32, strided<[1], offset: ?>> attributes {cinm.available_platforms = [#cinm.host_platform]} {
+    %133:2 = cinm.compute_block (%arg16 = %6#0 : f32, %arg17 = %130 : memref<768xf32>, %arg18 = %131 : memref<768xf32, strided<[1], offset: ?>>) -> memref<768xf32>, memref<768xf32, strided<[1], offset: ?>> attributes {cinm.available_platforms = [#cinm.host_platform]} {
       %c48 = arith.constant 48 : index
       %cst = arith.constant 4.800000e+01 : f32
       %cst_751 = arith.constant 1.000000e+04 : f32
@@ -1806,7 +1806,7 @@ module {
       }
       cinm.yield %arg17 : memref<1024xf32>
     }
-    %136 = cinm.compute_block on platform #cinm.host_platform (%arg16 = %7 : index, %arg17 = %135 : memref<1024xf32>) -> memref<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
+    %136 = cinm.compute_block (%arg16 = %7 : index, %arg17 = %135 : memref<1024xf32>) -> memref<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
       %cst = arith.constant 0xFF800000 : f32
       %c1024 = arith.constant 1024 : index
       %c1 = arith.constant 1 : index
@@ -1893,7 +1893,7 @@ module {
       }
       cinm.yield %arg17 : memref<1024xf32>
     }
-    %143 = cinm.compute_block on platform #cinm.host_platform (%arg16 = %7 : index, %arg17 = %142 : memref<1024xf32>) -> memref<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
+    %143 = cinm.compute_block (%arg16 = %7 : index, %arg17 = %142 : memref<1024xf32>) -> memref<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
       %cst = arith.constant 0xFF800000 : f32
       %c1024 = arith.constant 1024 : index
       %c1 = arith.constant 1 : index
@@ -1981,7 +1981,7 @@ module {
       }
       cinm.yield %arg17 : memref<1024xf32>
     }
-    %150 = cinm.compute_block on platform #cinm.host_platform (%arg16 = %7 : index, %arg17 = %149 : memref<1024xf32>) -> memref<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
+    %150 = cinm.compute_block (%arg16 = %7 : index, %arg17 = %149 : memref<1024xf32>) -> memref<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
       %cst = arith.constant 0xFF800000 : f32
       %c1024 = arith.constant 1024 : index
       %c1 = arith.constant 1 : index
@@ -2069,7 +2069,7 @@ module {
       }
       cinm.yield %arg17 : memref<1024xf32>
     }
-    %157 = cinm.compute_block on platform #cinm.host_platform (%arg16 = %7 : index, %arg17 = %156 : memref<1024xf32>) -> memref<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
+    %157 = cinm.compute_block (%arg16 = %7 : index, %arg17 = %156 : memref<1024xf32>) -> memref<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
       %cst = arith.constant 0xFF800000 : f32
       %c1024 = arith.constant 1024 : index
       %c1 = arith.constant 1 : index
@@ -2157,7 +2157,7 @@ module {
       }
       cinm.yield %arg17 : memref<1024xf32>
     }
-    %164 = cinm.compute_block on platform #cinm.host_platform (%arg16 = %7 : index, %arg17 = %163 : memref<1024xf32>) -> memref<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
+    %164 = cinm.compute_block (%arg16 = %7 : index, %arg17 = %163 : memref<1024xf32>) -> memref<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
       %cst = arith.constant 0xFF800000 : f32
       %c1024 = arith.constant 1024 : index
       %c1 = arith.constant 1 : index
@@ -2245,7 +2245,7 @@ module {
       }
       cinm.yield %arg17 : memref<1024xf32>
     }
-    %171 = cinm.compute_block on platform #cinm.host_platform (%arg16 = %7 : index, %arg17 = %170 : memref<1024xf32>) -> memref<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
+    %171 = cinm.compute_block (%arg16 = %7 : index, %arg17 = %170 : memref<1024xf32>) -> memref<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
       %cst = arith.constant 0xFF800000 : f32
       %c1024 = arith.constant 1024 : index
       %c1 = arith.constant 1 : index
@@ -2333,7 +2333,7 @@ module {
       }
       cinm.yield %arg17 : memref<1024xf32>
     }
-    %178 = cinm.compute_block on platform #cinm.host_platform (%arg16 = %7 : index, %arg17 = %177 : memref<1024xf32>) -> memref<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
+    %178 = cinm.compute_block (%arg16 = %7 : index, %arg17 = %177 : memref<1024xf32>) -> memref<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
       %cst = arith.constant 0xFF800000 : f32
       %c1024 = arith.constant 1024 : index
       %c1 = arith.constant 1 : index
@@ -2421,7 +2421,7 @@ module {
       }
       cinm.yield %arg17 : memref<1024xf32>
     }
-    %185 = cinm.compute_block on platform #cinm.host_platform (%arg16 = %7 : index, %arg17 = %184 : memref<1024xf32>) -> memref<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
+    %185 = cinm.compute_block (%arg16 = %7 : index, %arg17 = %184 : memref<1024xf32>) -> memref<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
       %cst = arith.constant 0xFF800000 : f32
       %c1024 = arith.constant 1024 : index
       %c1 = arith.constant 1 : index
@@ -2509,7 +2509,7 @@ module {
       }
       cinm.yield %arg17 : memref<1024xf32>
     }
-    %192 = cinm.compute_block on platform #cinm.host_platform (%arg16 = %7 : index, %arg17 = %191 : memref<1024xf32>) -> memref<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
+    %192 = cinm.compute_block (%arg16 = %7 : index, %arg17 = %191 : memref<1024xf32>) -> memref<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
       %cst = arith.constant 0xFF800000 : f32
       %c1024 = arith.constant 1024 : index
       %c1 = arith.constant 1 : index
@@ -2597,7 +2597,7 @@ module {
       }
       cinm.yield %arg17 : memref<1024xf32>
     }
-    %199 = cinm.compute_block on platform #cinm.host_platform (%arg16 = %7 : index, %arg17 = %198 : memref<1024xf32>) -> memref<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
+    %199 = cinm.compute_block (%arg16 = %7 : index, %arg17 = %198 : memref<1024xf32>) -> memref<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
       %cst = arith.constant 0xFF800000 : f32
       %c1024 = arith.constant 1024 : index
       %c1 = arith.constant 1 : index
@@ -2685,7 +2685,7 @@ module {
       }
       cinm.yield %arg17 : memref<1024xf32>
     }
-    %206 = cinm.compute_block on platform #cinm.host_platform (%arg16 = %7 : index, %arg17 = %205 : memref<1024xf32>) -> memref<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
+    %206 = cinm.compute_block (%arg16 = %7 : index, %arg17 = %205 : memref<1024xf32>) -> memref<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
       %cst = arith.constant 0xFF800000 : f32
       %c1024 = arith.constant 1024 : index
       %c1 = arith.constant 1 : index
@@ -2773,7 +2773,7 @@ module {
       }
       cinm.yield %arg17 : memref<1024xf32>
     }
-    %213 = cinm.compute_block on platform #cinm.host_platform (%arg16 = %7 : index, %arg17 = %212 : memref<1024xf32>) -> memref<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
+    %213 = cinm.compute_block (%arg16 = %7 : index, %arg17 = %212 : memref<1024xf32>) -> memref<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
       %cst = arith.constant 0xFF800000 : f32
       %c1024 = arith.constant 1024 : index
       %c1 = arith.constant 1 : index
@@ -2861,7 +2861,7 @@ module {
       }
       cinm.yield %arg17 : memref<1024xf32>
     }
-    %220 = cinm.compute_block on platform #cinm.host_platform (%arg16 = %7 : index, %arg17 = %219 : memref<1024xf32>) -> memref<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
+    %220 = cinm.compute_block (%arg16 = %7 : index, %arg17 = %219 : memref<1024xf32>) -> memref<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
       %cst = arith.constant 0xFF800000 : f32
       %c1024 = arith.constant 1024 : index
       %c1 = arith.constant 1 : index
@@ -2949,7 +2949,7 @@ module {
       }
       cinm.yield %arg17 : memref<1024xf32>
     }
-    %227 = cinm.compute_block on platform #cinm.host_platform (%arg16 = %7 : index, %arg17 = %226 : memref<1024xf32>) -> memref<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
+    %227 = cinm.compute_block (%arg16 = %7 : index, %arg17 = %226 : memref<1024xf32>) -> memref<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
       %cst = arith.constant 0xFF800000 : f32
       %c1024 = arith.constant 1024 : index
       %c1 = arith.constant 1 : index
@@ -3037,7 +3037,7 @@ module {
       }
       cinm.yield %arg17 : memref<1024xf32>
     }
-    %234 = cinm.compute_block on platform #cinm.host_platform (%arg16 = %7 : index, %arg17 = %233 : memref<1024xf32>) -> memref<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
+    %234 = cinm.compute_block (%arg16 = %7 : index, %arg17 = %233 : memref<1024xf32>) -> memref<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
       %cst = arith.constant 0xFF800000 : f32
       %c1024 = arith.constant 1024 : index
       %c1 = arith.constant 1 : index
@@ -3125,7 +3125,7 @@ module {
       }
       cinm.yield %arg17 : memref<1024xf32>
     }
-    %241 = cinm.compute_block on platform #cinm.host_platform (%arg16 = %7 : index, %arg17 = %240 : memref<1024xf32>) -> memref<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
+    %241 = cinm.compute_block (%arg16 = %7 : index, %arg17 = %240 : memref<1024xf32>) -> memref<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
       %cst = arith.constant 0xFF800000 : f32
       %c1024 = arith.constant 1024 : index
       %c1 = arith.constant 1 : index
@@ -3212,7 +3212,7 @@ module {
       %760 = memref.load %alloc_751[] : memref<f32>
       cinm.yield %760 : f32
     }
-    %248 = cinm.compute_block on platform #cinm.host_platform (%arg16 = %247 : f32) -> f32 attributes {cinm.available_platforms = [#cinm.host_platform]} {
+    %248 = cinm.compute_block (%arg16 = %247 : f32) -> f32 attributes {cinm.available_platforms = [#cinm.host_platform]} {
       %cst = arith.constant 7.680000e+02 : f32
       %cst_751 = arith.constant 9.99999974E-6 : f32
       %760 = arith.divf %arg16, %cst : f32
@@ -3291,7 +3291,7 @@ module {
       %760 = memref.load %alloc_751[] : memref<f32>
       cinm.yield %760 : f32
     }
-    %254 = cinm.compute_block on platform #cinm.host_platform (%arg16 = %253 : f32) -> f32 attributes {cinm.available_platforms = [#cinm.host_platform]} {
+    %254 = cinm.compute_block (%arg16 = %253 : f32) -> f32 attributes {cinm.available_platforms = [#cinm.host_platform]} {
       %cst = arith.constant 7.680000e+02 : f32
       %cst_751 = arith.constant 9.99999974E-6 : f32
       %760 = arith.divf %arg16, %cst : f32
@@ -3356,7 +3356,7 @@ module {
       cinm.yield %arg16 : memref<768xf32, strided<[1], offset: ?>>
     }
     memref.copy %258, %subview_256 : memref<768xf32, strided<[1], offset: ?>> to memref<768xf32, strided<[1], offset: ?>>
-    %259:2 = cinm.compute_block on platform #cinm.host_platform (%arg16 = %6#0 : f32, %arg17 = %256 : memref<768xf32>, %arg18 = %257 : memref<768xf32, strided<[1], offset: ?>>) -> memref<768xf32>, memref<768xf32, strided<[1], offset: ?>> attributes {cinm.available_platforms = [#cinm.host_platform]} {
+    %259:2 = cinm.compute_block (%arg16 = %6#0 : f32, %arg17 = %256 : memref<768xf32>, %arg18 = %257 : memref<768xf32, strided<[1], offset: ?>>) -> memref<768xf32>, memref<768xf32, strided<[1], offset: ?>> attributes {cinm.available_platforms = [#cinm.host_platform]} {
       %c48 = arith.constant 48 : index
       %cst = arith.constant 4.800000e+01 : f32
       %cst_751 = arith.constant 1.000000e+04 : f32
@@ -3430,7 +3430,7 @@ module {
       }
       cinm.yield %arg17 : memref<1024xf32>
     }
-    %262 = cinm.compute_block on platform #cinm.host_platform (%arg16 = %7 : index, %arg17 = %261 : memref<1024xf32>) -> memref<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
+    %262 = cinm.compute_block (%arg16 = %7 : index, %arg17 = %261 : memref<1024xf32>) -> memref<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
       %cst = arith.constant 0xFF800000 : f32
       %c1024 = arith.constant 1024 : index
       %c1 = arith.constant 1 : index
@@ -3517,7 +3517,7 @@ module {
       }
       cinm.yield %arg17 : memref<1024xf32>
     }
-    %269 = cinm.compute_block on platform #cinm.host_platform (%arg16 = %7 : index, %arg17 = %268 : memref<1024xf32>) -> memref<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
+    %269 = cinm.compute_block (%arg16 = %7 : index, %arg17 = %268 : memref<1024xf32>) -> memref<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
       %cst = arith.constant 0xFF800000 : f32
       %c1024 = arith.constant 1024 : index
       %c1 = arith.constant 1 : index
@@ -3605,7 +3605,7 @@ module {
       }
       cinm.yield %arg17 : memref<1024xf32>
     }
-    %276 = cinm.compute_block on platform #cinm.host_platform (%arg16 = %7 : index, %arg17 = %275 : memref<1024xf32>) -> memref<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
+    %276 = cinm.compute_block (%arg16 = %7 : index, %arg17 = %275 : memref<1024xf32>) -> memref<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
       %cst = arith.constant 0xFF800000 : f32
       %c1024 = arith.constant 1024 : index
       %c1 = arith.constant 1 : index
@@ -3693,7 +3693,7 @@ module {
       }
       cinm.yield %arg17 : memref<1024xf32>
     }
-    %283 = cinm.compute_block on platform #cinm.host_platform (%arg16 = %7 : index, %arg17 = %282 : memref<1024xf32>) -> memref<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
+    %283 = cinm.compute_block (%arg16 = %7 : index, %arg17 = %282 : memref<1024xf32>) -> memref<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
       %cst = arith.constant 0xFF800000 : f32
       %c1024 = arith.constant 1024 : index
       %c1 = arith.constant 1 : index
@@ -3781,7 +3781,7 @@ module {
       }
       cinm.yield %arg17 : memref<1024xf32>
     }
-    %290 = cinm.compute_block on platform #cinm.host_platform (%arg16 = %7 : index, %arg17 = %289 : memref<1024xf32>) -> memref<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
+    %290 = cinm.compute_block (%arg16 = %7 : index, %arg17 = %289 : memref<1024xf32>) -> memref<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
       %cst = arith.constant 0xFF800000 : f32
       %c1024 = arith.constant 1024 : index
       %c1 = arith.constant 1 : index
@@ -3869,7 +3869,7 @@ module {
       }
       cinm.yield %arg17 : memref<1024xf32>
     }
-    %297 = cinm.compute_block on platform #cinm.host_platform (%arg16 = %7 : index, %arg17 = %296 : memref<1024xf32>) -> memref<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
+    %297 = cinm.compute_block (%arg16 = %7 : index, %arg17 = %296 : memref<1024xf32>) -> memref<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
       %cst = arith.constant 0xFF800000 : f32
       %c1024 = arith.constant 1024 : index
       %c1 = arith.constant 1 : index
@@ -3957,7 +3957,7 @@ module {
       }
       cinm.yield %arg17 : memref<1024xf32>
     }
-    %304 = cinm.compute_block on platform #cinm.host_platform (%arg16 = %7 : index, %arg17 = %303 : memref<1024xf32>) -> memref<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
+    %304 = cinm.compute_block (%arg16 = %7 : index, %arg17 = %303 : memref<1024xf32>) -> memref<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
       %cst = arith.constant 0xFF800000 : f32
       %c1024 = arith.constant 1024 : index
       %c1 = arith.constant 1 : index
@@ -4045,7 +4045,7 @@ module {
       }
       cinm.yield %arg17 : memref<1024xf32>
     }
-    %311 = cinm.compute_block on platform #cinm.host_platform (%arg16 = %7 : index, %arg17 = %310 : memref<1024xf32>) -> memref<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
+    %311 = cinm.compute_block (%arg16 = %7 : index, %arg17 = %310 : memref<1024xf32>) -> memref<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
       %cst = arith.constant 0xFF800000 : f32
       %c1024 = arith.constant 1024 : index
       %c1 = arith.constant 1 : index
@@ -4133,7 +4133,7 @@ module {
       }
       cinm.yield %arg17 : memref<1024xf32>
     }
-    %318 = cinm.compute_block on platform #cinm.host_platform (%arg16 = %7 : index, %arg17 = %317 : memref<1024xf32>) -> memref<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
+    %318 = cinm.compute_block (%arg16 = %7 : index, %arg17 = %317 : memref<1024xf32>) -> memref<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
       %cst = arith.constant 0xFF800000 : f32
       %c1024 = arith.constant 1024 : index
       %c1 = arith.constant 1 : index
@@ -4221,7 +4221,7 @@ module {
       }
       cinm.yield %arg17 : memref<1024xf32>
     }
-    %325 = cinm.compute_block on platform #cinm.host_platform (%arg16 = %7 : index, %arg17 = %324 : memref<1024xf32>) -> memref<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
+    %325 = cinm.compute_block (%arg16 = %7 : index, %arg17 = %324 : memref<1024xf32>) -> memref<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
       %cst = arith.constant 0xFF800000 : f32
       %c1024 = arith.constant 1024 : index
       %c1 = arith.constant 1 : index
@@ -4309,7 +4309,7 @@ module {
       }
       cinm.yield %arg17 : memref<1024xf32>
     }
-    %332 = cinm.compute_block on platform #cinm.host_platform (%arg16 = %7 : index, %arg17 = %331 : memref<1024xf32>) -> memref<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
+    %332 = cinm.compute_block (%arg16 = %7 : index, %arg17 = %331 : memref<1024xf32>) -> memref<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
       %cst = arith.constant 0xFF800000 : f32
       %c1024 = arith.constant 1024 : index
       %c1 = arith.constant 1 : index
@@ -4397,7 +4397,7 @@ module {
       }
       cinm.yield %arg17 : memref<1024xf32>
     }
-    %339 = cinm.compute_block on platform #cinm.host_platform (%arg16 = %7 : index, %arg17 = %338 : memref<1024xf32>) -> memref<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
+    %339 = cinm.compute_block (%arg16 = %7 : index, %arg17 = %338 : memref<1024xf32>) -> memref<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
       %cst = arith.constant 0xFF800000 : f32
       %c1024 = arith.constant 1024 : index
       %c1 = arith.constant 1 : index
@@ -4485,7 +4485,7 @@ module {
       }
       cinm.yield %arg17 : memref<1024xf32>
     }
-    %346 = cinm.compute_block on platform #cinm.host_platform (%arg16 = %7 : index, %arg17 = %345 : memref<1024xf32>) -> memref<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
+    %346 = cinm.compute_block (%arg16 = %7 : index, %arg17 = %345 : memref<1024xf32>) -> memref<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
       %cst = arith.constant 0xFF800000 : f32
       %c1024 = arith.constant 1024 : index
       %c1 = arith.constant 1 : index
@@ -4573,7 +4573,7 @@ module {
       }
       cinm.yield %arg17 : memref<1024xf32>
     }
-    %353 = cinm.compute_block on platform #cinm.host_platform (%arg16 = %7 : index, %arg17 = %352 : memref<1024xf32>) -> memref<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
+    %353 = cinm.compute_block (%arg16 = %7 : index, %arg17 = %352 : memref<1024xf32>) -> memref<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
       %cst = arith.constant 0xFF800000 : f32
       %c1024 = arith.constant 1024 : index
       %c1 = arith.constant 1 : index
@@ -4661,7 +4661,7 @@ module {
       }
       cinm.yield %arg17 : memref<1024xf32>
     }
-    %360 = cinm.compute_block on platform #cinm.host_platform (%arg16 = %7 : index, %arg17 = %359 : memref<1024xf32>) -> memref<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
+    %360 = cinm.compute_block (%arg16 = %7 : index, %arg17 = %359 : memref<1024xf32>) -> memref<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
       %cst = arith.constant 0xFF800000 : f32
       %c1024 = arith.constant 1024 : index
       %c1 = arith.constant 1 : index
@@ -4749,7 +4749,7 @@ module {
       }
       cinm.yield %arg17 : memref<1024xf32>
     }
-    %367 = cinm.compute_block on platform #cinm.host_platform (%arg16 = %7 : index, %arg17 = %366 : memref<1024xf32>) -> memref<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
+    %367 = cinm.compute_block (%arg16 = %7 : index, %arg17 = %366 : memref<1024xf32>) -> memref<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
       %cst = arith.constant 0xFF800000 : f32
       %c1024 = arith.constant 1024 : index
       %c1 = arith.constant 1 : index
@@ -4836,7 +4836,7 @@ module {
       %760 = memref.load %alloc_751[] : memref<f32>
       cinm.yield %760 : f32
     }
-    %374 = cinm.compute_block on platform #cinm.host_platform (%arg16 = %373 : f32) -> f32 attributes {cinm.available_platforms = [#cinm.host_platform]} {
+    %374 = cinm.compute_block (%arg16 = %373 : f32) -> f32 attributes {cinm.available_platforms = [#cinm.host_platform]} {
       %cst = arith.constant 7.680000e+02 : f32
       %cst_751 = arith.constant 9.99999974E-6 : f32
       %760 = arith.divf %arg16, %cst : f32
@@ -4915,7 +4915,7 @@ module {
       %760 = memref.load %alloc_751[] : memref<f32>
       cinm.yield %760 : f32
     }
-    %380 = cinm.compute_block on platform #cinm.host_platform (%arg16 = %379 : f32) -> f32 attributes {cinm.available_platforms = [#cinm.host_platform]} {
+    %380 = cinm.compute_block (%arg16 = %379 : f32) -> f32 attributes {cinm.available_platforms = [#cinm.host_platform]} {
       %cst = arith.constant 7.680000e+02 : f32
       %cst_751 = arith.constant 9.99999974E-6 : f32
       %760 = arith.divf %arg16, %cst : f32
@@ -4980,7 +4980,7 @@ module {
       cinm.yield %arg16 : memref<768xf32, strided<[1], offset: ?>>
     }
     memref.copy %384, %subview_380 : memref<768xf32, strided<[1], offset: ?>> to memref<768xf32, strided<[1], offset: ?>>
-    %385:2 = cinm.compute_block on platform #cinm.host_platform (%arg16 = %6#0 : f32, %arg17 = %382 : memref<768xf32>, %arg18 = %383 : memref<768xf32, strided<[1], offset: ?>>) -> memref<768xf32>, memref<768xf32, strided<[1], offset: ?>> attributes {cinm.available_platforms = [#cinm.host_platform]} {
+    %385:2 = cinm.compute_block (%arg16 = %6#0 : f32, %arg17 = %382 : memref<768xf32>, %arg18 = %383 : memref<768xf32, strided<[1], offset: ?>>) -> memref<768xf32>, memref<768xf32, strided<[1], offset: ?>> attributes {cinm.available_platforms = [#cinm.host_platform]} {
       %c48 = arith.constant 48 : index
       %cst = arith.constant 4.800000e+01 : f32
       %cst_751 = arith.constant 1.000000e+04 : f32
@@ -5054,7 +5054,7 @@ module {
       }
       cinm.yield %arg17 : memref<1024xf32>
     }
-    %388 = cinm.compute_block on platform #cinm.host_platform (%arg16 = %7 : index, %arg17 = %387 : memref<1024xf32>) -> memref<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
+    %388 = cinm.compute_block (%arg16 = %7 : index, %arg17 = %387 : memref<1024xf32>) -> memref<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
       %cst = arith.constant 0xFF800000 : f32
       %c1024 = arith.constant 1024 : index
       %c1 = arith.constant 1 : index
@@ -5141,7 +5141,7 @@ module {
       }
       cinm.yield %arg17 : memref<1024xf32>
     }
-    %395 = cinm.compute_block on platform #cinm.host_platform (%arg16 = %7 : index, %arg17 = %394 : memref<1024xf32>) -> memref<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
+    %395 = cinm.compute_block (%arg16 = %7 : index, %arg17 = %394 : memref<1024xf32>) -> memref<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
       %cst = arith.constant 0xFF800000 : f32
       %c1024 = arith.constant 1024 : index
       %c1 = arith.constant 1 : index
@@ -5229,7 +5229,7 @@ module {
       }
       cinm.yield %arg17 : memref<1024xf32>
     }
-    %402 = cinm.compute_block on platform #cinm.host_platform (%arg16 = %7 : index, %arg17 = %401 : memref<1024xf32>) -> memref<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
+    %402 = cinm.compute_block (%arg16 = %7 : index, %arg17 = %401 : memref<1024xf32>) -> memref<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
       %cst = arith.constant 0xFF800000 : f32
       %c1024 = arith.constant 1024 : index
       %c1 = arith.constant 1 : index
@@ -5317,7 +5317,7 @@ module {
       }
       cinm.yield %arg17 : memref<1024xf32>
     }
-    %409 = cinm.compute_block on platform #cinm.host_platform (%arg16 = %7 : index, %arg17 = %408 : memref<1024xf32>) -> memref<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
+    %409 = cinm.compute_block (%arg16 = %7 : index, %arg17 = %408 : memref<1024xf32>) -> memref<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
       %cst = arith.constant 0xFF800000 : f32
       %c1024 = arith.constant 1024 : index
       %c1 = arith.constant 1 : index
@@ -5405,7 +5405,7 @@ module {
       }
       cinm.yield %arg17 : memref<1024xf32>
     }
-    %416 = cinm.compute_block on platform #cinm.host_platform (%arg16 = %7 : index, %arg17 = %415 : memref<1024xf32>) -> memref<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
+    %416 = cinm.compute_block (%arg16 = %7 : index, %arg17 = %415 : memref<1024xf32>) -> memref<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
       %cst = arith.constant 0xFF800000 : f32
       %c1024 = arith.constant 1024 : index
       %c1 = arith.constant 1 : index
@@ -5493,7 +5493,7 @@ module {
       }
       cinm.yield %arg17 : memref<1024xf32>
     }
-    %423 = cinm.compute_block on platform #cinm.host_platform (%arg16 = %7 : index, %arg17 = %422 : memref<1024xf32>) -> memref<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
+    %423 = cinm.compute_block (%arg16 = %7 : index, %arg17 = %422 : memref<1024xf32>) -> memref<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
       %cst = arith.constant 0xFF800000 : f32
       %c1024 = arith.constant 1024 : index
       %c1 = arith.constant 1 : index
@@ -5581,7 +5581,7 @@ module {
       }
       cinm.yield %arg17 : memref<1024xf32>
     }
-    %430 = cinm.compute_block on platform #cinm.host_platform (%arg16 = %7 : index, %arg17 = %429 : memref<1024xf32>) -> memref<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
+    %430 = cinm.compute_block (%arg16 = %7 : index, %arg17 = %429 : memref<1024xf32>) -> memref<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
       %cst = arith.constant 0xFF800000 : f32
       %c1024 = arith.constant 1024 : index
       %c1 = arith.constant 1 : index
@@ -5669,7 +5669,7 @@ module {
       }
       cinm.yield %arg17 : memref<1024xf32>
     }
-    %437 = cinm.compute_block on platform #cinm.host_platform (%arg16 = %7 : index, %arg17 = %436 : memref<1024xf32>) -> memref<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
+    %437 = cinm.compute_block (%arg16 = %7 : index, %arg17 = %436 : memref<1024xf32>) -> memref<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
       %cst = arith.constant 0xFF800000 : f32
       %c1024 = arith.constant 1024 : index
       %c1 = arith.constant 1 : index
@@ -5757,7 +5757,7 @@ module {
       }
       cinm.yield %arg17 : memref<1024xf32>
     }
-    %444 = cinm.compute_block on platform #cinm.host_platform (%arg16 = %7 : index, %arg17 = %443 : memref<1024xf32>) -> memref<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
+    %444 = cinm.compute_block (%arg16 = %7 : index, %arg17 = %443 : memref<1024xf32>) -> memref<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
       %cst = arith.constant 0xFF800000 : f32
       %c1024 = arith.constant 1024 : index
       %c1 = arith.constant 1 : index
@@ -5845,7 +5845,7 @@ module {
       }
       cinm.yield %arg17 : memref<1024xf32>
     }
-    %451 = cinm.compute_block on platform #cinm.host_platform (%arg16 = %7 : index, %arg17 = %450 : memref<1024xf32>) -> memref<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
+    %451 = cinm.compute_block (%arg16 = %7 : index, %arg17 = %450 : memref<1024xf32>) -> memref<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
       %cst = arith.constant 0xFF800000 : f32
       %c1024 = arith.constant 1024 : index
       %c1 = arith.constant 1 : index
@@ -5933,7 +5933,7 @@ module {
       }
       cinm.yield %arg17 : memref<1024xf32>
     }
-    %458 = cinm.compute_block on platform #cinm.host_platform (%arg16 = %7 : index, %arg17 = %457 : memref<1024xf32>) -> memref<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
+    %458 = cinm.compute_block (%arg16 = %7 : index, %arg17 = %457 : memref<1024xf32>) -> memref<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
       %cst = arith.constant 0xFF800000 : f32
       %c1024 = arith.constant 1024 : index
       %c1 = arith.constant 1 : index
@@ -6021,7 +6021,7 @@ module {
       }
       cinm.yield %arg17 : memref<1024xf32>
     }
-    %465 = cinm.compute_block on platform #cinm.host_platform (%arg16 = %7 : index, %arg17 = %464 : memref<1024xf32>) -> memref<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
+    %465 = cinm.compute_block (%arg16 = %7 : index, %arg17 = %464 : memref<1024xf32>) -> memref<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
       %cst = arith.constant 0xFF800000 : f32
       %c1024 = arith.constant 1024 : index
       %c1 = arith.constant 1 : index
@@ -6109,7 +6109,7 @@ module {
       }
       cinm.yield %arg17 : memref<1024xf32>
     }
-    %472 = cinm.compute_block on platform #cinm.host_platform (%arg16 = %7 : index, %arg17 = %471 : memref<1024xf32>) -> memref<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
+    %472 = cinm.compute_block (%arg16 = %7 : index, %arg17 = %471 : memref<1024xf32>) -> memref<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
       %cst = arith.constant 0xFF800000 : f32
       %c1024 = arith.constant 1024 : index
       %c1 = arith.constant 1 : index
@@ -6197,7 +6197,7 @@ module {
       }
       cinm.yield %arg17 : memref<1024xf32>
     }
-    %479 = cinm.compute_block on platform #cinm.host_platform (%arg16 = %7 : index, %arg17 = %478 : memref<1024xf32>) -> memref<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
+    %479 = cinm.compute_block (%arg16 = %7 : index, %arg17 = %478 : memref<1024xf32>) -> memref<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
       %cst = arith.constant 0xFF800000 : f32
       %c1024 = arith.constant 1024 : index
       %c1 = arith.constant 1 : index
@@ -6285,7 +6285,7 @@ module {
       }
       cinm.yield %arg17 : memref<1024xf32>
     }
-    %486 = cinm.compute_block on platform #cinm.host_platform (%arg16 = %7 : index, %arg17 = %485 : memref<1024xf32>) -> memref<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
+    %486 = cinm.compute_block (%arg16 = %7 : index, %arg17 = %485 : memref<1024xf32>) -> memref<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
       %cst = arith.constant 0xFF800000 : f32
       %c1024 = arith.constant 1024 : index
       %c1 = arith.constant 1 : index
@@ -6373,7 +6373,7 @@ module {
       }
       cinm.yield %arg17 : memref<1024xf32>
     }
-    %493 = cinm.compute_block on platform #cinm.host_platform (%arg16 = %7 : index, %arg17 = %492 : memref<1024xf32>) -> memref<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
+    %493 = cinm.compute_block (%arg16 = %7 : index, %arg17 = %492 : memref<1024xf32>) -> memref<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
       %cst = arith.constant 0xFF800000 : f32
       %c1024 = arith.constant 1024 : index
       %c1 = arith.constant 1 : index
@@ -6460,7 +6460,7 @@ module {
       %760 = memref.load %alloc_751[] : memref<f32>
       cinm.yield %760 : f32
     }
-    %500 = cinm.compute_block on platform #cinm.host_platform (%arg16 = %499 : f32) -> f32 attributes {cinm.available_platforms = [#cinm.host_platform]} {
+    %500 = cinm.compute_block (%arg16 = %499 : f32) -> f32 attributes {cinm.available_platforms = [#cinm.host_platform]} {
       %cst = arith.constant 7.680000e+02 : f32
       %cst_751 = arith.constant 9.99999974E-6 : f32
       %760 = arith.divf %arg16, %cst : f32
@@ -6539,7 +6539,7 @@ module {
       %760 = memref.load %alloc_751[] : memref<f32>
       cinm.yield %760 : f32
     }
-    %506 = cinm.compute_block on platform #cinm.host_platform (%arg16 = %505 : f32) -> f32 attributes {cinm.available_platforms = [#cinm.host_platform]} {
+    %506 = cinm.compute_block (%arg16 = %505 : f32) -> f32 attributes {cinm.available_platforms = [#cinm.host_platform]} {
       %cst = arith.constant 7.680000e+02 : f32
       %cst_751 = arith.constant 9.99999974E-6 : f32
       %760 = arith.divf %arg16, %cst : f32
@@ -6604,7 +6604,7 @@ module {
       cinm.yield %arg16 : memref<768xf32, strided<[1], offset: ?>>
     }
     memref.copy %510, %subview_504 : memref<768xf32, strided<[1], offset: ?>> to memref<768xf32, strided<[1], offset: ?>>
-    %511:2 = cinm.compute_block on platform #cinm.host_platform (%arg16 = %6#0 : f32, %arg17 = %508 : memref<768xf32>, %arg18 = %509 : memref<768xf32, strided<[1], offset: ?>>) -> memref<768xf32>, memref<768xf32, strided<[1], offset: ?>> attributes {cinm.available_platforms = [#cinm.host_platform]} {
+    %511:2 = cinm.compute_block (%arg16 = %6#0 : f32, %arg17 = %508 : memref<768xf32>, %arg18 = %509 : memref<768xf32, strided<[1], offset: ?>>) -> memref<768xf32>, memref<768xf32, strided<[1], offset: ?>> attributes {cinm.available_platforms = [#cinm.host_platform]} {
       %c48 = arith.constant 48 : index
       %cst = arith.constant 4.800000e+01 : f32
       %cst_751 = arith.constant 1.000000e+04 : f32
@@ -6678,7 +6678,7 @@ module {
       }
       cinm.yield %arg17 : memref<1024xf32>
     }
-    %514 = cinm.compute_block on platform #cinm.host_platform (%arg16 = %7 : index, %arg17 = %513 : memref<1024xf32>) -> memref<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
+    %514 = cinm.compute_block (%arg16 = %7 : index, %arg17 = %513 : memref<1024xf32>) -> memref<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
       %cst = arith.constant 0xFF800000 : f32
       %c1024 = arith.constant 1024 : index
       %c1 = arith.constant 1 : index
@@ -6765,7 +6765,7 @@ module {
       }
       cinm.yield %arg17 : memref<1024xf32>
     }
-    %521 = cinm.compute_block on platform #cinm.host_platform (%arg16 = %7 : index, %arg17 = %520 : memref<1024xf32>) -> memref<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
+    %521 = cinm.compute_block (%arg16 = %7 : index, %arg17 = %520 : memref<1024xf32>) -> memref<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
       %cst = arith.constant 0xFF800000 : f32
       %c1024 = arith.constant 1024 : index
       %c1 = arith.constant 1 : index
@@ -6853,7 +6853,7 @@ module {
       }
       cinm.yield %arg17 : memref<1024xf32>
     }
-    %528 = cinm.compute_block on platform #cinm.host_platform (%arg16 = %7 : index, %arg17 = %527 : memref<1024xf32>) -> memref<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
+    %528 = cinm.compute_block (%arg16 = %7 : index, %arg17 = %527 : memref<1024xf32>) -> memref<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
       %cst = arith.constant 0xFF800000 : f32
       %c1024 = arith.constant 1024 : index
       %c1 = arith.constant 1 : index
@@ -6941,7 +6941,7 @@ module {
       }
       cinm.yield %arg17 : memref<1024xf32>
     }
-    %535 = cinm.compute_block on platform #cinm.host_platform (%arg16 = %7 : index, %arg17 = %534 : memref<1024xf32>) -> memref<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
+    %535 = cinm.compute_block (%arg16 = %7 : index, %arg17 = %534 : memref<1024xf32>) -> memref<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
       %cst = arith.constant 0xFF800000 : f32
       %c1024 = arith.constant 1024 : index
       %c1 = arith.constant 1 : index
@@ -7029,7 +7029,7 @@ module {
       }
       cinm.yield %arg17 : memref<1024xf32>
     }
-    %542 = cinm.compute_block on platform #cinm.host_platform (%arg16 = %7 : index, %arg17 = %541 : memref<1024xf32>) -> memref<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
+    %542 = cinm.compute_block (%arg16 = %7 : index, %arg17 = %541 : memref<1024xf32>) -> memref<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
       %cst = arith.constant 0xFF800000 : f32
       %c1024 = arith.constant 1024 : index
       %c1 = arith.constant 1 : index
@@ -7117,7 +7117,7 @@ module {
       }
       cinm.yield %arg17 : memref<1024xf32>
     }
-    %549 = cinm.compute_block on platform #cinm.host_platform (%arg16 = %7 : index, %arg17 = %548 : memref<1024xf32>) -> memref<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
+    %549 = cinm.compute_block (%arg16 = %7 : index, %arg17 = %548 : memref<1024xf32>) -> memref<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
       %cst = arith.constant 0xFF800000 : f32
       %c1024 = arith.constant 1024 : index
       %c1 = arith.constant 1 : index
@@ -7205,7 +7205,7 @@ module {
       }
       cinm.yield %arg17 : memref<1024xf32>
     }
-    %556 = cinm.compute_block on platform #cinm.host_platform (%arg16 = %7 : index, %arg17 = %555 : memref<1024xf32>) -> memref<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
+    %556 = cinm.compute_block (%arg16 = %7 : index, %arg17 = %555 : memref<1024xf32>) -> memref<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
       %cst = arith.constant 0xFF800000 : f32
       %c1024 = arith.constant 1024 : index
       %c1 = arith.constant 1 : index
@@ -7293,7 +7293,7 @@ module {
       }
       cinm.yield %arg17 : memref<1024xf32>
     }
-    %563 = cinm.compute_block on platform #cinm.host_platform (%arg16 = %7 : index, %arg17 = %562 : memref<1024xf32>) -> memref<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
+    %563 = cinm.compute_block (%arg16 = %7 : index, %arg17 = %562 : memref<1024xf32>) -> memref<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
       %cst = arith.constant 0xFF800000 : f32
       %c1024 = arith.constant 1024 : index
       %c1 = arith.constant 1 : index
@@ -7381,7 +7381,7 @@ module {
       }
       cinm.yield %arg17 : memref<1024xf32>
     }
-    %570 = cinm.compute_block on platform #cinm.host_platform (%arg16 = %7 : index, %arg17 = %569 : memref<1024xf32>) -> memref<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
+    %570 = cinm.compute_block (%arg16 = %7 : index, %arg17 = %569 : memref<1024xf32>) -> memref<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
       %cst = arith.constant 0xFF800000 : f32
       %c1024 = arith.constant 1024 : index
       %c1 = arith.constant 1 : index
@@ -7469,7 +7469,7 @@ module {
       }
       cinm.yield %arg17 : memref<1024xf32>
     }
-    %577 = cinm.compute_block on platform #cinm.host_platform (%arg16 = %7 : index, %arg17 = %576 : memref<1024xf32>) -> memref<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
+    %577 = cinm.compute_block (%arg16 = %7 : index, %arg17 = %576 : memref<1024xf32>) -> memref<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
       %cst = arith.constant 0xFF800000 : f32
       %c1024 = arith.constant 1024 : index
       %c1 = arith.constant 1 : index
@@ -7557,7 +7557,7 @@ module {
       }
       cinm.yield %arg17 : memref<1024xf32>
     }
-    %584 = cinm.compute_block on platform #cinm.host_platform (%arg16 = %7 : index, %arg17 = %583 : memref<1024xf32>) -> memref<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
+    %584 = cinm.compute_block (%arg16 = %7 : index, %arg17 = %583 : memref<1024xf32>) -> memref<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
       %cst = arith.constant 0xFF800000 : f32
       %c1024 = arith.constant 1024 : index
       %c1 = arith.constant 1 : index
@@ -7645,7 +7645,7 @@ module {
       }
       cinm.yield %arg17 : memref<1024xf32>
     }
-    %591 = cinm.compute_block on platform #cinm.host_platform (%arg16 = %7 : index, %arg17 = %590 : memref<1024xf32>) -> memref<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
+    %591 = cinm.compute_block (%arg16 = %7 : index, %arg17 = %590 : memref<1024xf32>) -> memref<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
       %cst = arith.constant 0xFF800000 : f32
       %c1024 = arith.constant 1024 : index
       %c1 = arith.constant 1 : index
@@ -7733,7 +7733,7 @@ module {
       }
       cinm.yield %arg17 : memref<1024xf32>
     }
-    %598 = cinm.compute_block on platform #cinm.host_platform (%arg16 = %7 : index, %arg17 = %597 : memref<1024xf32>) -> memref<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
+    %598 = cinm.compute_block (%arg16 = %7 : index, %arg17 = %597 : memref<1024xf32>) -> memref<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
       %cst = arith.constant 0xFF800000 : f32
       %c1024 = arith.constant 1024 : index
       %c1 = arith.constant 1 : index
@@ -7821,7 +7821,7 @@ module {
       }
       cinm.yield %arg17 : memref<1024xf32>
     }
-    %605 = cinm.compute_block on platform #cinm.host_platform (%arg16 = %7 : index, %arg17 = %604 : memref<1024xf32>) -> memref<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
+    %605 = cinm.compute_block (%arg16 = %7 : index, %arg17 = %604 : memref<1024xf32>) -> memref<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
       %cst = arith.constant 0xFF800000 : f32
       %c1024 = arith.constant 1024 : index
       %c1 = arith.constant 1 : index
@@ -7909,7 +7909,7 @@ module {
       }
       cinm.yield %arg17 : memref<1024xf32>
     }
-    %612 = cinm.compute_block on platform #cinm.host_platform (%arg16 = %7 : index, %arg17 = %611 : memref<1024xf32>) -> memref<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
+    %612 = cinm.compute_block (%arg16 = %7 : index, %arg17 = %611 : memref<1024xf32>) -> memref<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
       %cst = arith.constant 0xFF800000 : f32
       %c1024 = arith.constant 1024 : index
       %c1 = arith.constant 1 : index
@@ -7997,7 +7997,7 @@ module {
       }
       cinm.yield %arg17 : memref<1024xf32>
     }
-    %619 = cinm.compute_block on platform #cinm.host_platform (%arg16 = %7 : index, %arg17 = %618 : memref<1024xf32>) -> memref<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
+    %619 = cinm.compute_block (%arg16 = %7 : index, %arg17 = %618 : memref<1024xf32>) -> memref<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
       %cst = arith.constant 0xFF800000 : f32
       %c1024 = arith.constant 1024 : index
       %c1 = arith.constant 1 : index
@@ -8084,7 +8084,7 @@ module {
       %760 = memref.load %alloc_751[] : memref<f32>
       cinm.yield %760 : f32
     }
-    %626 = cinm.compute_block on platform #cinm.host_platform (%arg16 = %625 : f32) -> f32 attributes {cinm.available_platforms = [#cinm.host_platform]} {
+    %626 = cinm.compute_block (%arg16 = %625 : f32) -> f32 attributes {cinm.available_platforms = [#cinm.host_platform]} {
       %cst = arith.constant 7.680000e+02 : f32
       %cst_751 = arith.constant 9.99999974E-6 : f32
       %760 = arith.divf %arg16, %cst : f32
@@ -8163,7 +8163,7 @@ module {
       %760 = memref.load %alloc_751[] : memref<f32>
       cinm.yield %760 : f32
     }
-    %632 = cinm.compute_block on platform #cinm.host_platform (%arg16 = %631 : f32) -> f32 attributes {cinm.available_platforms = [#cinm.host_platform]} {
+    %632 = cinm.compute_block (%arg16 = %631 : f32) -> f32 attributes {cinm.available_platforms = [#cinm.host_platform]} {
       %cst = arith.constant 7.680000e+02 : f32
       %cst_751 = arith.constant 9.99999974E-6 : f32
       %760 = arith.divf %arg16, %cst : f32
@@ -8228,7 +8228,7 @@ module {
       cinm.yield %arg16 : memref<768xf32, strided<[1], offset: ?>>
     }
     memref.copy %636, %subview_628 : memref<768xf32, strided<[1], offset: ?>> to memref<768xf32, strided<[1], offset: ?>>
-    %637:2 = cinm.compute_block on platform #cinm.host_platform (%arg16 = %6#0 : f32, %arg17 = %634 : memref<768xf32>, %arg18 = %635 : memref<768xf32, strided<[1], offset: ?>>) -> memref<768xf32>, memref<768xf32, strided<[1], offset: ?>> attributes {cinm.available_platforms = [#cinm.host_platform]} {
+    %637:2 = cinm.compute_block (%arg16 = %6#0 : f32, %arg17 = %634 : memref<768xf32>, %arg18 = %635 : memref<768xf32, strided<[1], offset: ?>>) -> memref<768xf32>, memref<768xf32, strided<[1], offset: ?>> attributes {cinm.available_platforms = [#cinm.host_platform]} {
       %c48 = arith.constant 48 : index
       %cst = arith.constant 4.800000e+01 : f32
       %cst_751 = arith.constant 1.000000e+04 : f32
@@ -8302,7 +8302,7 @@ module {
       }
       cinm.yield %arg17 : memref<1024xf32>
     }
-    %640 = cinm.compute_block on platform #cinm.host_platform (%arg16 = %7 : index, %arg17 = %639 : memref<1024xf32>) -> memref<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
+    %640 = cinm.compute_block (%arg16 = %7 : index, %arg17 = %639 : memref<1024xf32>) -> memref<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
       %cst = arith.constant 0xFF800000 : f32
       %c1024 = arith.constant 1024 : index
       %c1 = arith.constant 1 : index
@@ -8389,7 +8389,7 @@ module {
       }
       cinm.yield %arg17 : memref<1024xf32>
     }
-    %647 = cinm.compute_block on platform #cinm.host_platform (%arg16 = %7 : index, %arg17 = %646 : memref<1024xf32>) -> memref<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
+    %647 = cinm.compute_block (%arg16 = %7 : index, %arg17 = %646 : memref<1024xf32>) -> memref<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
       %cst = arith.constant 0xFF800000 : f32
       %c1024 = arith.constant 1024 : index
       %c1 = arith.constant 1 : index
@@ -8477,7 +8477,7 @@ module {
       }
       cinm.yield %arg17 : memref<1024xf32>
     }
-    %654 = cinm.compute_block on platform #cinm.host_platform (%arg16 = %7 : index, %arg17 = %653 : memref<1024xf32>) -> memref<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
+    %654 = cinm.compute_block (%arg16 = %7 : index, %arg17 = %653 : memref<1024xf32>) -> memref<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
       %cst = arith.constant 0xFF800000 : f32
       %c1024 = arith.constant 1024 : index
       %c1 = arith.constant 1 : index
@@ -8565,7 +8565,7 @@ module {
       }
       cinm.yield %arg17 : memref<1024xf32>
     }
-    %661 = cinm.compute_block on platform #cinm.host_platform (%arg16 = %7 : index, %arg17 = %660 : memref<1024xf32>) -> memref<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
+    %661 = cinm.compute_block (%arg16 = %7 : index, %arg17 = %660 : memref<1024xf32>) -> memref<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
       %cst = arith.constant 0xFF800000 : f32
       %c1024 = arith.constant 1024 : index
       %c1 = arith.constant 1 : index
@@ -8653,7 +8653,7 @@ module {
       }
       cinm.yield %arg17 : memref<1024xf32>
     }
-    %668 = cinm.compute_block on platform #cinm.host_platform (%arg16 = %7 : index, %arg17 = %667 : memref<1024xf32>) -> memref<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
+    %668 = cinm.compute_block (%arg16 = %7 : index, %arg17 = %667 : memref<1024xf32>) -> memref<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
       %cst = arith.constant 0xFF800000 : f32
       %c1024 = arith.constant 1024 : index
       %c1 = arith.constant 1 : index
@@ -8741,7 +8741,7 @@ module {
       }
       cinm.yield %arg17 : memref<1024xf32>
     }
-    %675 = cinm.compute_block on platform #cinm.host_platform (%arg16 = %7 : index, %arg17 = %674 : memref<1024xf32>) -> memref<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
+    %675 = cinm.compute_block (%arg16 = %7 : index, %arg17 = %674 : memref<1024xf32>) -> memref<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
       %cst = arith.constant 0xFF800000 : f32
       %c1024 = arith.constant 1024 : index
       %c1 = arith.constant 1 : index
@@ -8829,7 +8829,7 @@ module {
       }
       cinm.yield %arg17 : memref<1024xf32>
     }
-    %682 = cinm.compute_block on platform #cinm.host_platform (%arg16 = %7 : index, %arg17 = %681 : memref<1024xf32>) -> memref<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
+    %682 = cinm.compute_block (%arg16 = %7 : index, %arg17 = %681 : memref<1024xf32>) -> memref<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
       %cst = arith.constant 0xFF800000 : f32
       %c1024 = arith.constant 1024 : index
       %c1 = arith.constant 1 : index
@@ -8917,7 +8917,7 @@ module {
       }
       cinm.yield %arg17 : memref<1024xf32>
     }
-    %689 = cinm.compute_block on platform #cinm.host_platform (%arg16 = %7 : index, %arg17 = %688 : memref<1024xf32>) -> memref<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
+    %689 = cinm.compute_block (%arg16 = %7 : index, %arg17 = %688 : memref<1024xf32>) -> memref<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
       %cst = arith.constant 0xFF800000 : f32
       %c1024 = arith.constant 1024 : index
       %c1 = arith.constant 1 : index
@@ -9005,7 +9005,7 @@ module {
       }
       cinm.yield %arg17 : memref<1024xf32>
     }
-    %696 = cinm.compute_block on platform #cinm.host_platform (%arg16 = %7 : index, %arg17 = %695 : memref<1024xf32>) -> memref<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
+    %696 = cinm.compute_block (%arg16 = %7 : index, %arg17 = %695 : memref<1024xf32>) -> memref<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
       %cst = arith.constant 0xFF800000 : f32
       %c1024 = arith.constant 1024 : index
       %c1 = arith.constant 1 : index
@@ -9093,7 +9093,7 @@ module {
       }
       cinm.yield %arg17 : memref<1024xf32>
     }
-    %703 = cinm.compute_block on platform #cinm.host_platform (%arg16 = %7 : index, %arg17 = %702 : memref<1024xf32>) -> memref<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
+    %703 = cinm.compute_block (%arg16 = %7 : index, %arg17 = %702 : memref<1024xf32>) -> memref<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
       %cst = arith.constant 0xFF800000 : f32
       %c1024 = arith.constant 1024 : index
       %c1 = arith.constant 1 : index
@@ -9181,7 +9181,7 @@ module {
       }
       cinm.yield %arg17 : memref<1024xf32>
     }
-    %710 = cinm.compute_block on platform #cinm.host_platform (%arg16 = %7 : index, %arg17 = %709 : memref<1024xf32>) -> memref<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
+    %710 = cinm.compute_block (%arg16 = %7 : index, %arg17 = %709 : memref<1024xf32>) -> memref<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
       %cst = arith.constant 0xFF800000 : f32
       %c1024 = arith.constant 1024 : index
       %c1 = arith.constant 1 : index
@@ -9269,7 +9269,7 @@ module {
       }
       cinm.yield %arg17 : memref<1024xf32>
     }
-    %717 = cinm.compute_block on platform #cinm.host_platform (%arg16 = %7 : index, %arg17 = %716 : memref<1024xf32>) -> memref<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
+    %717 = cinm.compute_block (%arg16 = %7 : index, %arg17 = %716 : memref<1024xf32>) -> memref<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
       %cst = arith.constant 0xFF800000 : f32
       %c1024 = arith.constant 1024 : index
       %c1 = arith.constant 1 : index
@@ -9357,7 +9357,7 @@ module {
       }
       cinm.yield %arg17 : memref<1024xf32>
     }
-    %724 = cinm.compute_block on platform #cinm.host_platform (%arg16 = %7 : index, %arg17 = %723 : memref<1024xf32>) -> memref<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
+    %724 = cinm.compute_block (%arg16 = %7 : index, %arg17 = %723 : memref<1024xf32>) -> memref<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
       %cst = arith.constant 0xFF800000 : f32
       %c1024 = arith.constant 1024 : index
       %c1 = arith.constant 1 : index
@@ -9445,7 +9445,7 @@ module {
       }
       cinm.yield %arg17 : memref<1024xf32>
     }
-    %731 = cinm.compute_block on platform #cinm.host_platform (%arg16 = %7 : index, %arg17 = %730 : memref<1024xf32>) -> memref<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
+    %731 = cinm.compute_block (%arg16 = %7 : index, %arg17 = %730 : memref<1024xf32>) -> memref<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
       %cst = arith.constant 0xFF800000 : f32
       %c1024 = arith.constant 1024 : index
       %c1 = arith.constant 1 : index
@@ -9533,7 +9533,7 @@ module {
       }
       cinm.yield %arg17 : memref<1024xf32>
     }
-    %738 = cinm.compute_block on platform #cinm.host_platform (%arg16 = %7 : index, %arg17 = %737 : memref<1024xf32>) -> memref<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
+    %738 = cinm.compute_block (%arg16 = %7 : index, %arg17 = %737 : memref<1024xf32>) -> memref<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
       %cst = arith.constant 0xFF800000 : f32
       %c1024 = arith.constant 1024 : index
       %c1 = arith.constant 1 : index
@@ -9621,7 +9621,7 @@ module {
       }
       cinm.yield %arg17 : memref<1024xf32>
     }
-    %745 = cinm.compute_block on platform #cinm.host_platform (%arg16 = %7 : index, %arg17 = %744 : memref<1024xf32>) -> memref<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
+    %745 = cinm.compute_block (%arg16 = %7 : index, %arg17 = %744 : memref<1024xf32>) -> memref<1024xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
       %cst = arith.constant 0xFF800000 : f32
       %c1024 = arith.constant 1024 : index
       %c1 = arith.constant 1 : index
@@ -9708,7 +9708,7 @@ module {
       %760 = memref.load %alloc_751[] : memref<f32>
       cinm.yield %760 : f32
     }
-    %752 = cinm.compute_block on platform #cinm.host_platform (%arg16 = %751 : f32) -> f32 attributes {cinm.available_platforms = [#cinm.host_platform]} {
+    %752 = cinm.compute_block (%arg16 = %751 : f32) -> f32 attributes {cinm.available_platforms = [#cinm.host_platform]} {
       %cst = arith.constant 7.680000e+02 : f32
       %cst_751 = arith.constant 9.99999974E-6 : f32
       %760 = arith.divf %arg16, %cst : f32
@@ -9787,7 +9787,7 @@ module {
       cinm.yield %760 : f32
     }
     %alloc_747 = memref.alloc() {alignment = 64 : i64} : memref<34048x768xf32>
-    %758:2 = cinm.compute_block on platform #cinm.host_platform (%arg16 = %757 : f32, %arg17 = %alloc_747 : memref<34048x768xf32>) -> f32, memref<34048x768xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
+    %758:2 = cinm.compute_block (%arg16 = %757 : f32, %arg17 = %alloc_747 : memref<34048x768xf32>) -> f32, memref<34048x768xf32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
       %cst = arith.constant 9.99999974E-6 : f32
       %cst_751 = arith.constant 7.680000e+02 : f32
       %760 = memref.get_global @__constant_xf32 : memref<f32>
