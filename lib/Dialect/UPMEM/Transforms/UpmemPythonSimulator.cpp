@@ -57,6 +57,10 @@ struct DpuTranslator {
   llvm::DenseMap<Value, SubviewInfo> sv_map;
   llvm::SmallVector<Value, 4> iv_stack;
   int buf_ctr = 0;
+  /// Set when a loop's trip count could not be resolved statically. The
+  /// translated program is truncated at that loop, so its cost is not a cost
+  /// at all and the caller must refuse it rather than report it.
+  bool unresolvedTripCount = false;
 
   explicit DpuTranslator(ProgramBuilder &b) : builder(b) {}
 
@@ -104,12 +108,42 @@ struct DpuTranslator {
     return false;
   }
 
-  int64_t getConstInt(Value v) {
-    if (auto *def = v.getDefiningOp())
-      if (auto c = dyn_cast<arith::ConstantOp>(def))
-        if (auto ia = dyn_cast<IntegerAttr>(c.getValue()))
-          return ia.getInt();
-    return 0;
+  /// `hi - lo`, when that difference is a compile-time constant.
+  ///
+  /// The endpoints themselves need not be. Tiling emits loops whose bounds
+  /// both move with an enclosing induction variable while their difference
+  /// stays fixed -- `%ub = arith.addi %lb, %cK` -- and it is the difference,
+  /// not the endpoints, that sets the trip count.
+  std::optional<int64_t> constantDelta(Value hi, Value lo) {
+    if (auto cHi = getConstantIntValue(hi))
+      if (auto cLo = getConstantIntValue(lo))
+        return *cHi - *cLo;
+    if (auto add = hi.getDefiningOp<arith::AddIOp>()) {
+      if (add.getLhs() == lo)
+        return getConstantIntValue(add.getRhs());
+      if (add.getRhs() == lo)
+        return getConstantIntValue(add.getLhs());
+    }
+    return std::nullopt;
+  }
+
+  /// The loop's trip count, or nothing when it cannot be resolved statically.
+  ///
+  /// A count that cannot be resolved is refused rather than guessed. Standing
+  /// in a placeholder is what makes a mispriced kernel indistinguishable from
+  /// a cheap one, and the caller already has a failure path for questions the
+  /// models cannot answer.
+  std::optional<int64_t> getTripCount(scf::ForOp forOp) {
+    std::optional<int64_t> step = getConstantIntValue(forOp.getStep());
+    if (!step || *step <= 0)
+      return std::nullopt;
+    std::optional<int64_t> delta =
+        constantDelta(forOp.getUpperBound(), forOp.getLowerBound());
+    if (!delta)
+      return std::nullopt;
+    if (*delta <= 0)
+      return 0;
+    return (*delta + *step - 1) / *step;
   }
 
   // ── Per-op translation ────────────────────────────────────────────────────
@@ -282,7 +316,7 @@ struct DpuTranslator {
   // yield %s } followed immediately by memref.store %forResult, %accBuf[...].
   // If detected, emits beginLoop + body + the accumulating arith op + endLoop,
   // and maps the loop result so the following store is translated normally.
-  bool tryTranslateReduction(scf::ForOp forOp) {
+  bool tryTranslateReduction(scf::ForOp forOp, int64_t trips) {
     if (forOp.getNumRegionIterArgs() != 1)
       return false;
 
@@ -315,12 +349,8 @@ struct DpuTranslator {
     if (!buf_map.count(storeOp.getMemRef()))
       return false;
 
-    int64_t lb = getConstInt(forOp.getLowerBound());
-    int64_t ub = getConstInt(forOp.getUpperBound());
-    int64_t step = getConstInt(forOp.getStep());
-
     iv_stack.push_back(forOp.getInductionVar());
-    builder.beginLoop(lb, ub, step);
+    builder.beginLoop(0, trips, 1);
 
     for (Operation &op : *forOp.getBody()) {
       if (&op == addOp || isa<scf::YieldOp>(&op))
@@ -346,15 +376,19 @@ struct DpuTranslator {
   }
 
   void translateFor(scf::ForOp forOp) {
-    if (tryTranslateReduction(forOp))
+    std::optional<int64_t> trips = getTripCount(forOp);
+    if (!trips) {
+      LLVM_DEBUG(llvm::dbgs() << "upmem: unresolved trip count for " << forOp
+                              << "; refusing to price this kernel\n");
+      unresolvedTripCount = true;
+      return;
+    }
+
+    if (tryTranslateReduction(forOp, *trips))
       return;
 
-    int64_t lb = getConstInt(forOp.getLowerBound());
-    int64_t ub = getConstInt(forOp.getUpperBound());
-    int64_t step = getConstInt(forOp.getStep());
-
     iv_stack.push_back(forOp.getInductionVar());
-    builder.beginLoop(lb, ub, step);
+    builder.beginLoop(0, *trips, 1);
 
     for (Operation &op : *forOp.getBody()) {
       if (isa<scf::YieldOp>(&op))
@@ -513,6 +547,12 @@ struct CppSimulator : UpmemSimulator {
       ProgramBuilder builder;
       DpuTranslator tr(builder);
       tr.translateProgram(dpuProg);
+
+      // A program the translator could not finish is refused, not priced:
+      // simulateHostRegionOrFail turns a non-finite cost into a failed
+      // evaluation, which the search records and moves past.
+      if (tr.unresolvedTripCount)
+        return SimCost::forKernel(std::numeric_limits<double>::infinity());
 
       if (!dumpDir.empty()) {
         llvm::StringRef name;
