@@ -301,6 +301,33 @@ def CinmExpandComputeScopePass : Pass<"cinm-expand-compute-scope"> {
   ];
 }
 
+def CinmAbsorbResultDestinationsPass
+    : Pass<"cinm-absorb-result-destinations"> {
+  let summary = "Destination-pass compute block results by absorbing their consumers";
+  let description = [{
+    Moves the destination-style consumer of a `cinm.compute_block` result --
+    a `tensor.insert_slice` inserting it somewhere, or a
+    `bufferization.materialize_in_destination` pinning where it lands -- into
+    the block. The destination becomes a block operand and the block yields
+    the full destination tensor, so the block is destination-passed: a global
+    bufferization can then arrange for the block to write its result straight
+    into the destination buffer, with no copy at the block boundary.
+
+    This deliberately does NOT run before the accelerator search: absorbing a
+    consumer bakes its constant offsets into the block body, which makes
+    structurally identical blocks look distinct to the graph scheduler's
+    signature-based deduplication (see --cinm-expand-compute-scope). It is a
+    finalization rewrite: run it after configurations are stamped and before
+    --upmem-lower-stamped, which also runs it itself.
+  }];
+
+  let dependentDialects = [
+    "mlir::cinm::CinmDialect",
+    "mlir::bufferization::BufferizationDialect",
+    "mlir::tensor::TensorDialect"
+  ];
+}
+
 def CinmSimplifyComputeSignaturesPass
     : Pass<"cinm-simplify-compute-signatures"> {
   let summary = "Drop unused arguments and passthrough results of compute ops";

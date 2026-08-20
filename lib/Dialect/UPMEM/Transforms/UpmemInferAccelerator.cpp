@@ -529,14 +529,18 @@ struct UpmemInferencePlugin : cinm::InferencePlugin {
     pm->addPass(createCanonicalizerPass());
     pm->addPass(createCSEPass());
 
-    // Step 3: bufferize. Empty-tensor elimination cannot run over the whole
-    // stamped module: it traces a block's yielded result to its eventual
-    // destination THROUGH the region boundary and replaces the empty inside
-    // the isolated block with the outside destination value -- the in-place
-    // write we want, expressed illegally. Until block results are
-    // destination-passed at the block level, the global variant skips it and
-    // pays the copy at the boundary instead.
-    if (!globalBufferize)
+    // Step 3: bufferize. Over a whole stamped module, empty-tensor
+    // elimination must run scoped to each compute block: at module scope its
+    // analysis crosses the region boundary (the block-argument/operand
+    // equivalence the RegionBranchOpInterface reports) and rewrites a
+    // block-internal empty in terms of a value outside the isolated region.
+    // Scoped to the block it sees the destination-passed block arguments
+    // (--cinm-absorb-result-destinations) and nothing illegal.
+    if (globalBufferize)
+      pm->nest<func::FuncOp>()
+          .nest(cinm::ComputeBlockOp::getOperationName())
+          .addPass(bufferization::createEmptyTensorEliminationPass());
+    else
       pm->addPass(bufferization::createEmptyTensorEliminationPass());
     if (opts.scatterSpecialisation)
       pm->addPass(cnm::createCnmScatterOptimizationsPass());
@@ -1463,6 +1467,20 @@ struct UpmemLowerStampedPass
     opts.packFragmented = packFragmentedTransfers;
     opts.allowFloatReassociation = allowFloatReassociation;
     opts.debugPrintsInPipeline = debugPipeline;
+
+    // Destination-pass the blocks first: a result routed into a destination
+    // (tensor.insert_slice, bufferization.materialize_in_destination) has the
+    // destination pulled in as a block operand, so the global bufferization
+    // below can arrange the in-place write. Only sound after the search:
+    // absorbing bakes per-block constants into the bodies, which would split
+    // the scheduler's signature classes.
+    {
+      auto pre = std::make_unique<PassManager>(ctx);
+      pre->addPass(cinm::createCinmAbsorbResultDestinationsPass());
+      pre->addPass(createCanonicalizerPass());
+      if (failed(pre->run(module)))
+        return signalPassFailure();
+    }
 
     // The trials' own pipelines, run once over the whole module. Only ops
     // stamped with cnm.tile_sizes are distributed, so the host code rides
