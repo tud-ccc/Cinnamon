@@ -18,7 +18,7 @@ from typing import Callable
 from tqdm import tqdm
 
 from . import parallel
-from .paths import COMPILE_MAKEFILE_DIR
+from .paths import COMPILE_MAKEFILE_DIR, DEFAULT_CINM_OPT
 
 
 @dataclasses.dataclass
@@ -93,27 +93,35 @@ def _lower_config(
 
 
 def _run_make(
-    config: Config,
+    fn_name: str,
+    prim: str,
     config_dir: pathlib.Path,
     ir_dir: pathlib.Path,
     lowered: pathlib.Path,
     *,
     target: str,
     extra_vars: dict[str, str] | None = None,
+    force: bool = False,
+    write_script: bool = True,
 ) -> subprocess.CompletedProcess:
+    """`force` passes -B, for the callers whose inputs did not change but
+    whose *compiler* did; `write_script` off keeps make.sh describing how the
+    config was built rather than the last thing that touched its ir/."""
     cmd = [
         "make",
         "-C",
         str(COMPILE_MAKEFILE_DIR),
+        *(["-B"] if force else []),
         f"SRC_MLIR={lowered.resolve()}",
         f"IR_DIR={ir_dir.resolve()}",
-        f"BENCH_FN={config.fn_name}",
-        f"PRIM={config.prim}",
+        f"BENCH_FN={fn_name}",
+        f"PRIM={prim}",
         *(f"{k}={v}" for k, v in (extra_vars or {}).items()),
         target,
     ]
-    with open(config_dir / "make.sh", "w") as f:
-        f.write(f"#!/bin/sh\n{shlex.join(cmd)}\n")
+    if write_script:
+        with open(config_dir / "make.sh", "w") as f:
+            f.write(f"#!/bin/sh\n{shlex.join(cmd)}\n")
     return subprocess.run(cmd, capture_output=True, text=True)
 
 
@@ -129,7 +137,8 @@ def compile_config(config: Config, *, compile_root: pathlib.Path) -> CompiledCon
 
     ir_dir, bin_dir = config_dir / "ir", config_dir / "bin"
     r = _run_make(
-        config,
+        config.fn_name,
+        config.prim,
         config_dir,
         ir_dir,
         lowered,
@@ -164,7 +173,9 @@ def compute_cost(config: Config, *, compile_root: pathlib.Path) -> CompiledConfi
         )
 
     ir_dir = config_dir / "ir"
-    r = _run_make(config, config_dir, ir_dir, lowered, target="costs-only")
+    r = _run_make(
+        config.fn_name, config.prim, config_dir, ir_dir, lowered, target="costs-only"
+    )
     if r.returncode != 0:
         (config_dir / "compile_error.txt").write_text(r.stderr)
         return CompiledConfig(
@@ -172,6 +183,40 @@ def compute_cost(config: Config, *, compile_root: pathlib.Path) -> CompiledConfi
         )
 
     return CompiledConfig(config, config_dir, True)
+
+
+def recompute_cost(config_dir: pathlib.Path, *, prim: str) -> str | None:
+    """Re-price an already-compiled config: re-run the cost-annotation pass
+    over its existing lowered.mlir and rewrite ir/cost.csv. Returns an error
+    message, or None on success.
+
+    Unlike compute_cost this does not lower anything. Lowering is what turns
+    a config's parameters into a program, and that does not change when the
+    cost model does -- so when the model is refit or fixed, the whole sample
+    can be re-priced without recompiling it, and the predictions stay
+    comparable to measurements taken from the binaries already on disk.
+
+    The pass is forced (-B): its input is unchanged and only cinm-opt itself
+    is newer, which make cannot see. CINM_OPT is passed rather than left to
+    the Makefile's own default so that the binary priced against is the one
+    the caller can name as a dependency."""
+    lowered = config_dir / "lowered.mlir"
+    if not lowered.exists():
+        return f"no lowered.mlir in {config_dir}"
+    r = _run_make(
+        config_dir.parent.name,
+        prim,
+        config_dir,
+        config_dir / "ir",
+        lowered,
+        target="costs-only",
+        extra_vars={"CINM_OPT": str(DEFAULT_CINM_OPT)},
+        force=True,
+        write_script=False,
+    )
+    if r.returncode != 0:
+        return f"make costs-only failed:\n{r.stderr[-4000:]}"
+    return None
 
 
 def run_config(

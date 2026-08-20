@@ -84,7 +84,7 @@ $(IR_DIR) $(BIN_DIR):
 	mkdir -p $@
 
 $(IR_DIR)/cost.csv: $(SRC_MLIR) | $(IR_DIR)
-	cinm-opt $< --upmem-annotate-costs="simulator=hybrid eval-timeout-ms=400 costs-csv=$@"
+	$(CINM_OPT) $< --upmem-annotate-costs="simulator=hybrid eval-timeout-ms=400 costs-csv=$@"
 
 # Predicted costs only -- no DPU kernel compilation, no host object/link step.
 # Just the cinm-opt cost-annotation pass above, so this is much cheaper than

@@ -37,6 +37,7 @@ sys.path.insert(0, str(HERE))  # sibling modules (assemble) under doit
 
 from cinm_experiments import cinmopt, compile_run, doit_blocks, pools, ALL_PRIMS  # noqa: E402
 from cinm_experiments import space as space_mod  # noqa: E402
+from cinm_experiments.paths import DEFAULT_CINM_OPT  # noqa: E402
 from cinm_experiments.split_source import list_functions, split_source  # noqa: E402
 
 # ── the paper's constants ────────────────────────────────────────────────────
@@ -767,6 +768,63 @@ def task_retry_failed_bench():
     """Not part of the default pipeline; run explicitly after fixing the
     cause, then rerun `doit bench_sample`."""
     return {"actions": [_retry_failed_bench], "uptodate": [False]}
+
+
+# ── re-pricing what is already compiled ─────────────────────────────────────
+
+
+def _compiled_config_dirs() -> list[tuple[str, pathlib.Path]]:
+    """(prim, config_dir) for every compiled config under data/, whichever
+    stack it belongs to. Every stack lays its compiles out the same way --
+    <bench>/<stack>/compiled/<system>/<fn_name>/<label> -- so one glob finds
+    them all, including the stacks whose task family has not landed yet.
+
+    The filesystem is the enumeration here, not the config lists the compile
+    tasks are built from: this re-prices what was compiled, which is not
+    always what the current dodo would choose to compile."""
+    dirs = []
+    for lowered in sorted(DATA_DIR.glob("*/*/compiled/*/*/*/lowered.mlir")):
+        bench = lowered.relative_to(DATA_DIR).parts[0]
+        dirs.append((bench.removeprefix("prim_"), lowered.parent))
+    return dirs
+
+
+def _recost_one(config_dir: pathlib.Path, prim: str) -> bool:
+    err = compile_run.recompute_cost(config_dir, prim=prim)
+    if err:
+        print(f"  FAIL cost: {config_dir}: {err}")
+        return False
+    return True
+
+
+def task_recost():
+    """Re-run the cost model over every already-compiled config and rewrite
+    its ir/cost.csv. Lowers nothing, compiles no DPU kernel, links no binary
+    and touches no hardware -- just the --upmem-annotate-costs pass over the
+    lowered.mlir already on disk.
+
+    This is the task to run when the cost model itself changes (a fix, a
+    refit of the latency tables) and the predictions have to catch up with
+    it. The measured side is untouched and stays valid, because the binaries
+    and the schedules they were built from have not changed -- only what we
+    predict about them. Follow it with `doit assemble` to fold the new
+    predictions into results/rq3.csv.
+
+    Keyed on the cinm-opt binary, so it is up to date until the compiler is
+    rebuilt and then re-prices everything exactly once. Not in
+    default_tasks: a rebuild should not silently re-price the sample in the
+    middle of someone else's run.
+
+    Per-config and fallible: one config that fails to price is reported and
+    leaves its stale cost.csv behind, and (with `continue`) the rest still
+    run."""
+    for prim, config_dir in _compiled_config_dirs():
+        yield {
+            "name": str(config_dir.relative_to(DATA_DIR)),
+            "file_dep": [str(config_dir / "lowered.mlir"), str(DEFAULT_CINM_OPT)],
+            "targets": [str(config_dir / "ir" / "cost.csv")],
+            "actions": [(_recost_one, [config_dir, prim])],
+        }
 
 
 # ── B3: best-of-space by the cost model ─────────────────────────────────────

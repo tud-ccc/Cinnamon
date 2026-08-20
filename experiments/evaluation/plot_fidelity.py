@@ -21,7 +21,7 @@ from scipy.stats import spearmanr
 from _reporting import load_or_skip, parse_dirs, save_fig
 
 TERMS = ["transfer", "kernel", "combined"]
-TOP_K = 20
+TOP_K = 100
 
 
 def _topk_overlap(predicted, measured, k: int) -> float:
