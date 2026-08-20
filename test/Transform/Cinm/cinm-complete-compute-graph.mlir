@@ -7,7 +7,7 @@
 
 // CHECK-LABEL: func @bridge
 // CHECK:       %[[V:.*]] = cinm.compute -> tensor<8xf32>
-// CHECK:       %[[H:.*]]:2 = cinm.compute on platform #cinm.host_platform -> f32, tensor<8xf32> attributes {cinm.available_platforms = [#cinm.host_platform]}
+// CHECK:       %[[H:.*]]:2 = cinm.compute -> f32, tensor<8xf32> attributes {cinm.available_platforms = [#cinm.host_platform]}
 // CHECK:         %[[E:.*]] = tensor.extract %[[V]]
 // CHECK:         %[[Y:.*]] = arith.mulf %[[E]], %[[E]]
 // CHECK:         %[[SP:.*]] = tensor.splat %[[Y]]
@@ -66,7 +66,7 @@ func.func @views_are_edges(%a: tensor<8x8xf32>, %x: tensor<8xf32>, %d: tensor<64
 // CHECK-LABEL: func @absorb_loop
 // CHECK:       arith.constant
 // CHECK:       %[[V:.*]] = cinm.compute -> tensor<8xf32>
-// CHECK:       %[[H:.*]] = cinm.compute on platform #cinm.host_platform -> tensor<8xf32>
+// CHECK:       %[[H:.*]] = cinm.compute -> tensor<8xf32> attributes {cinm.available_platforms = [#cinm.host_platform]}
 // CHECK-NOT:     arith.constant
 // CHECK:         %[[L:.*]] = scf.for {{.*}} iter_args(%[[ACC:.*]] = %[[V]])
 // CHECK:         cinm.yield %[[L]]
@@ -102,7 +102,7 @@ func.func @absorb_loop(%t: tensor<8xf32>) -> tensor<8xf32> {
 // CHECK:       return
 
 // DEMOTE-LABEL: func @barrier
-// DEMOTE:       cinm.compute on platform #cinm.host_platform -> tensor<8xf32>
+// DEMOTE:       cinm.compute -> tensor<8xf32> attributes {cinm.available_platforms = [#cinm.host_platform]}
 // DEMOTE:         scf.for
 // DEMOTE-NOT:       cinm.compute
 // DEMOTE:           cinm.op.elementwise add

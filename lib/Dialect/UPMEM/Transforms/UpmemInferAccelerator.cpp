@@ -877,7 +877,6 @@ struct UpmemInferencePlugin : cinm::InferencePlugin {
 
     MLIRContext *ctx = trial.computeBlock->getContext();
     mlir::Location loc = trial.computeBlock->getLoc();
-    trial.computeBlock.setPlatformAttr({});
     trial.computeBlock.setAcceleratorAttr(
         upmem::UpmemAcceleratorAttr::get(platform, dpus, tasklets));
 

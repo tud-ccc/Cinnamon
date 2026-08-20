@@ -15,19 +15,11 @@ def CinmComputeOpInterface : OpInterface<"ComputeOpInterface"> {
     let description = [{
       Interface for ops that delimit a region of code for offloading
       (`cinm.compute` and `cinm.compute_block`). Provides access to
-      the optional platform and accelerator attributes that describe
-      the hardware target.
+      the optional accelerator attribute that describes the hardware
+      target.
     }];
 
     let methods = [
-        InterfaceMethod<
-            "Returns the optional platform attribute.",
-            "::std::optional<::mlir::cinm::CinmPlatformAttrInterface>",
-            "getPlatform",
-            (ins),
-            "",
-            "">,
-
         InterfaceMethod<
             "Returns the optional accelerator attribute.",
             "::std::optional<::mlir::cinm::CinmAcceleratorAttrInterface>",
