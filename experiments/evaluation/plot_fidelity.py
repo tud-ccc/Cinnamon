@@ -43,14 +43,14 @@ def main() -> None:
             continue
         p, m = sub["predicted_ms"].to_numpy(), sub["measured_ms"].to_numpy()
         for bench, b in sub.groupby("benchmark"):
-            ax.scatter(b["predicted_ms"], b["measured_ms"], s=8, alpha=0.5, label=bench)
+            ax.scatter(b["measured_ms"], b["predicted_ms"], s=8, alpha=0.5, label=bench)
         lo = min(p[p > 0].min(), m.min())
         hi = max(p.max(), m.max())
         ax.plot([lo, hi], [lo, hi], "k--", lw=1)
         ax.set_xscale("log")
         ax.set_yscale("log")
-        ax.set_xlabel("predicted (ms)")
-        ax.set_ylabel("measured (ms)")
+        ax.set_xlabel("measured (ms)")
+        ax.set_ylabel("predicted (ms)")
         rho = spearmanr(p, m).statistic if len(sub) > 2 else float("nan")
         mape = float(np.mean(np.abs((p - m) / m)) * 100)
         share = float(sub["share_of_total"].mean() * 100)
