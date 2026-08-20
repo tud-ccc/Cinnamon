@@ -6,6 +6,7 @@
 #include "cinm-mlir/Utils/Scheduling/SchedulingSupport.h"
 
 #include <filesystem>
+#include <fstream>
 #include <string>
 #include <utility>
 
@@ -261,6 +262,105 @@ static std::string dumpDirFor(StringRef baseDir, StringRef name,
   return path.string();
 }
 
+/// Wrap `s` in double quotes, doubling any embedded quotes (RFC 4180).
+static std::string csvQuote(StringRef s) {
+  std::string out = "\"";
+  for (char c : s) {
+    if (c == '"')
+      out += '"';
+    out += c;
+  }
+  out += '"';
+  return out;
+}
+
+/// Write the measured cost profiles of one graph to `path` as CSV: one row
+/// per (class, menu point), plus one measurement-less row per class that no
+/// menu point could run, so the file describes every class of the graph.
+/// This is exactly what the allocator solves over, laid out for offline
+/// analysis of the choice it made.
+static void dumpProfilesCSV(const std::filesystem::path &path,
+                            const ComputeGraph &graph,
+                            ArrayRef<ClassProfile> profiles,
+                            ArrayRef<int> solveIndexOfClass) {
+  // Level columns are the platform's declared levels, but a plugin may report
+  // residency in a level the platform does not declare -- such a level never
+  // binds the packing, yet dropping it here would lose measured data -- so the
+  // column set is the union, platform levels first.
+  SmallVector<std::string> levels;
+  for (CinmLevelDefAttr level : graph.platform.getLevels())
+    levels.push_back(level.getName().getValue().str());
+  for (const ClassProfile &profile : profiles)
+    for (const ProfilePoint &point : profile.points)
+      for (const LevelResidency &entry : point.residency.levels)
+        if (!llvm::is_contained(levels, entry.level))
+          levels.push_back(entry.level);
+
+  std::error_code ec;
+  std::filesystem::create_directories(path.parent_path(), ec);
+  std::ofstream out(path);
+  if (!out)
+    return;
+  out << "class,debug_tag,location,multiplicity,resource,cost_ms,"
+         "weight_scatter_ms,config";
+  for (const std::string &level : levels)
+    out << ",static_" << level << ",dyn_" << level;
+  out << "\n";
+
+  for (auto [ci, blockClass] : llvm::enumerate(graph.classes)) {
+    ComputeBlockOp rep = blockClass.representative();
+    auto tag = rep->getAttrOfType<StringAttr>(CinmDialect::DEBUG_TAG_NAME);
+    std::string location;
+    llvm::raw_string_ostream(location) << rep.getLoc();
+    auto classCols = [&]() {
+      out << ci << "," << csvQuote(tag ? tag.getValue() : StringRef()) << ","
+          << csvQuote(location) << "," << blockClass.size() << ",";
+    };
+
+    if (solveIndexOfClass[ci] < 0) {
+      // A class that stays on the host is kept for the record, with every
+      // measured column empty.
+      classCols();
+      out << ",,,";
+      for (size_t i = 0, e = 2 * levels.size(); i < e; ++i)
+        out << ",";
+      out << "\n";
+      continue;
+    }
+
+    for (const ProfilePoint &point : profiles[solveIndexOfClass[ci]].points) {
+      // The configuration is one `dim=value;...` column rather than one column
+      // per dimension: the space is stated per class, so the classes of one
+      // graph need not agree on their dimensions. Sorted, since a StringMap
+      // has no order of its own.
+      SmallVector<StringRef> dims;
+      for (const auto &entry : point.config)
+        dims.push_back(entry.getKey());
+      llvm::sort(dims);
+      std::string config;
+      llvm::raw_string_ostream cfg(config);
+      llvm::interleave(
+          dims, cfg,
+          [&](StringRef dim) { cfg << dim << "=" << point.config.lookup(dim); },
+          ";");
+
+      classCols();
+      out << point.resource << "," << point.costMs << ","
+          << point.residency.weightScatterMs << "," << csvQuote(config);
+      for (const std::string &level : levels) {
+        const LevelResidency *entry = point.residency.find(level);
+        out << ",";
+        if (entry)
+          out << entry->staticBytes;
+        out << ",";
+        if (entry)
+          out << entry->dynBytes;
+      }
+      out << "\n";
+    }
+  }
+}
+
 /// The two-level solve over one graph: profile each class over the resource
 /// menu, allocate the device exactly over the profiles, then stamp each
 /// group's winning configuration onto its members and commit them through
@@ -304,6 +404,11 @@ runGraphAllocation(const ComputeGraph &graph, StringRef platformName,
         {blockClass.size(),
          std::move(std::get<SmallVector<ProfilePoint>>(points))});
   }
+  if (!baseDumpDir.empty())
+    dumpProfilesCSV(std::filesystem::path(baseDumpDir.str()) / graphName.str() /
+                        "profiles.csv",
+                    graph, profiles, solveIndexOfClass);
+
   if (profiles.empty())
     return DiagnosedSilenceableFailure::success(); // whole graph on the host
 
