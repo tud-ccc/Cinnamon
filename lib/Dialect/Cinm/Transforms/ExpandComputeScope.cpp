@@ -229,6 +229,104 @@ cinm::ComputeBlockOp rebuildComputeBlock(
   return newOp;
 }
 
+/// Moves a tensor.extract that unpacks a single-element block result into the
+/// block, which then yields the scalar directly. The one-element tensor is an
+/// implementation detail of linalg's reduction form; yielding it would force a
+/// one-element buffer to be materialized outside the block.
+///
+///   %r = cinm.compute_block (...) -> tensor<f32> { ... cinm.yield %v }
+///   %s = tensor.extract %r[]
+/// becomes
+///   %s = cinm.compute_block (...) -> f32 {
+///          ...
+///          %w = tensor.extract %v[]
+///          cinm.yield %w
+///        }
+struct AbsorbScalarExtract : OpRewritePattern<cinm::ComputeBlockOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(cinm::ComputeBlockOp op,
+                                PatternRewriter &rewriter) const override {
+    std::optional<BlockInputs> inputs;
+    tensor::ExtractOp consumer;
+    unsigned resultIdx = 0;
+    SmallVector<unsigned> indexIds;
+
+    for (OpResult result : op->getResults()) {
+      if (!result.hasOneUse())
+        continue;
+      OpOperand &use = *result.getUses().begin();
+      auto candidate = llvm::dyn_cast<tensor::ExtractOp>(use.getOwner());
+      if (!candidate || use.getOperandNumber() != 0)
+        continue;
+      RankedTensorType tensorTy = candidate.getTensor().getType();
+      if (!tensorTy.hasStaticShape() || tensorTy.getNumElements() != 1)
+        continue;
+      // Being in the same block guarantees the consumer is executed exactly
+      // once, right after the compute block.
+      if (candidate->getBlock() != op->getBlock())
+        continue;
+      // The indices (constants, for a single-element tensor) have to be
+      // usable from the position of the compute block.
+      BlockInputs candidateInputs(op, op.getOperands());
+      SmallVector<unsigned> ids;
+      bool ok = true;
+      for (Value index : candidate.getIndices()) {
+        FailureOr<unsigned> id = candidateInputs.add(index);
+        if (failed(id)) {
+          ok = false;
+          break;
+        }
+        ids.push_back(*id);
+      }
+      if (!ok)
+        continue;
+      consumer = candidate;
+      resultIdx = result.getResultNumber();
+      indexIds = std::move(ids);
+      inputs.emplace(std::move(candidateInputs));
+      break;
+    }
+    if (!consumer)
+      return failure();
+
+    SmallVector<Type> resultTypes(op->getResultTypes());
+    resultTypes[resultIdx] = consumer.getType();
+
+    unsigned numOldArgs = op.getBody().front().getNumArguments();
+    auto newOp = rebuildComputeBlock(
+        rewriter, op, inputs->getOperands(), resultTypes,
+        [&](RewriterBase &builder, Block *body,
+            SmallVectorImpl<Value> &argRepl) {
+          inputs->materialize(builder, body);
+          llvm::append_range(argRepl,
+                             body->getArguments().take_front(numOldArgs));
+        });
+
+    // Redo the extract inside the block, on the yielded value.
+    Operation *yield = newOp.getBody().front().getTerminator();
+    rewriter.setInsertionPoint(yield);
+    SmallVector<Value> indices;
+    for (unsigned id : indexIds)
+      indices.push_back(inputs->getValue(id));
+    Value scalar = tensor::ExtractOp::create(
+        rewriter, consumer.getLoc(), yield->getOperand(resultIdx), indices);
+    rewriter.modifyOpInPlace(yield,
+                             [&]() { yield->setOperand(resultIdx, scalar); });
+
+    for (auto [idx, result] : llvm::enumerate(op->getResults())) {
+      if (idx == resultIdx)
+        rewriter.replaceAllUsesWith(consumer.getResult(),
+                                    newOp->getResult(idx));
+      else
+        rewriter.replaceAllUsesWith(result, newOp->getResult(idx));
+    }
+    rewriter.eraseOp(consumer);
+    rewriter.eraseOp(op);
+    return success();
+  }
+};
+
 /// Moves the ops producing the operands of the block into the block.
 ///
 ///   %e = tensor.extract_slice %s[%i] [8] [1]
@@ -278,7 +376,7 @@ struct ExpandComputeScopePass
 
   void runOnOperation() override {
     RewritePatternSet patterns(&getContext());
-    patterns.add<AbsorbOperandProducers>(&getContext());
+    patterns.add<AbsorbOperandProducers, AbsorbScalarExtract>(&getContext());
 
     if (failed(applyPatternsGreedily(getOperation(), std::move(patterns))))
       signalPassFailure();

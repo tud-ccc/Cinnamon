@@ -2,19 +2,49 @@
 // RUN: cinm-opt %s --cinm-complete-compute-graph=demote-nested-compute --split-input-file 2>/dev/null | FileCheck %s --check-prefix=DEMOTE
 
 // The host ops between the two compute ops become a single host block. Its
-// results are the values that escape the group: the inserted tensor (used by
-// the return) and the extracted slice (used by the second compute op).
+// results are the values that escape the group: the scalar (used by the
+// return) and the splatted tensor (used by the second compute op).
 
 // CHECK-LABEL: func @bridge
 // CHECK:       %[[V:.*]] = cinm.compute -> tensor<8xf32>
-// CHECK:       %[[H:.*]]:2 = cinm.compute on platform #cinm.host_platform -> tensor<64xf32>, tensor<8xf32> attributes {cinm.available_platforms = [#cinm.host_platform]}
-// CHECK:         %[[S:.*]] = tensor.insert_slice %[[V]]
-// CHECK:         %[[E:.*]] = tensor.extract_slice %[[S]]
-// CHECK:         cinm.yield %[[S]], %[[E]]
+// CHECK:       %[[H:.*]]:2 = cinm.compute on platform #cinm.host_platform -> f32, tensor<8xf32> attributes {cinm.available_platforms = [#cinm.host_platform]}
+// CHECK:         %[[E:.*]] = tensor.extract %[[V]]
+// CHECK:         %[[Y:.*]] = arith.mulf %[[E]], %[[E]]
+// CHECK:         %[[SP:.*]] = tensor.splat %[[Y]]
+// CHECK:         cinm.yield %[[Y]], %[[SP]]
 // CHECK:       %[[W:.*]] = cinm.compute -> tensor<8xf32>
 // CHECK:         cinm.op.elementwise mul %[[H]]#1, %[[H]]#1
 // CHECK:       return %[[H]]#0, %[[W]]
-func.func @bridge(%a: tensor<8x8xf32>, %x: tensor<8xf32>, %d: tensor<64xf32>) -> (tensor<64xf32>, tensor<8xf32>) {
+func.func @bridge(%a: tensor<8x8xf32>, %x: tensor<8xf32>) -> (f32, tensor<8xf32>) {
+  %c0 = arith.constant 0 : index
+  %v = cinm.compute -> tensor<8xf32> {
+    %g = cinm.op.gemv %a, %x : tensor<8x8xf32>, tensor<8xf32> -> tensor<8xf32>
+    cinm.yield %g : tensor<8xf32>
+  }
+  %e = tensor.extract %v[%c0] : tensor<8xf32>
+  %y = arith.mulf %e, %e : f32
+  %sp = tensor.splat %y : tensor<8xf32>
+  %w = cinm.compute -> tensor<8xf32> {
+    %m = cinm.op.elementwise mul %sp, %sp : tensor<8xf32>
+    cinm.yield %m : tensor<8xf32>
+  }
+  return %y, %w : f32, tensor<8xf32>
+}
+
+// -----
+
+// Slicing, reshaping and destination-pinning ops are the edges of the graph,
+// not nodes: they stay outside any host block, and no block is created when
+// nothing but views separates two compute ops.
+
+// CHECK-LABEL: func @views_are_edges
+// CHECK-NOT:   #cinm.host_platform
+// CHECK:       %[[V:.*]] = cinm.compute -> tensor<8xf32>
+// CHECK:       %[[S:.*]] = tensor.insert_slice %[[V]]
+// CHECK:       %[[E:.*]] = tensor.extract_slice %[[S]]
+// CHECK:       cinm.compute -> tensor<8xf32>
+// CHECK:         cinm.op.elementwise mul
+func.func @views_are_edges(%a: tensor<8x8xf32>, %x: tensor<8xf32>, %d: tensor<64xf32>) -> (tensor<64xf32>, tensor<8xf32>) {
   %v = cinm.compute -> tensor<8xf32> {
     %g = cinm.op.gemv %a, %x : tensor<8x8xf32>, tensor<8xf32> -> tensor<8xf32>
     cinm.yield %g : tensor<8xf32>
@@ -107,17 +137,14 @@ func.func @no_compute(%t: tensor<8xf32>, %d: tensor<64xf32>) -> tensor<64xf32> {
 // -----
 
 // A call whose callee contains compute ops is a hole in the graph, like
-// control flow that cannot be wrapped. The host ops around it still get
-// their blocks.
+// control flow that cannot be wrapped.
 
 // CHECK-LABEL: func @opaque_call
 // CHECK:       %[[V:.*]] = cinm.compute -> tensor<64xf32>
-// CHECK:       %[[H1:.*]] = cinm.compute on platform #cinm.host_platform -> tensor<8xf32>
-// CHECK:         tensor.extract_slice %[[V]]
-// CHECK:       %[[C:.*]] = call @callee(%[[H1]])
-// CHECK:       %[[H2:.*]] = cinm.compute on platform #cinm.host_platform -> tensor<64xf32>
-// CHECK:         tensor.insert_slice %[[C]]
-// CHECK:       return %[[H2]]
+// CHECK:       %[[E:.*]] = tensor.extract_slice %[[V]]
+// CHECK:       %[[C:.*]] = call @callee(%[[E]])
+// CHECK:       %[[S:.*]] = tensor.insert_slice %[[C]]
+// CHECK:       return %[[S]]
 func.func @opaque_call(%t: tensor<64xf32>) -> tensor<64xf32> {
   %v = cinm.compute -> tensor<64xf32> {
     %m = cinm.op.elementwise mul %t, %t : tensor<64xf32>

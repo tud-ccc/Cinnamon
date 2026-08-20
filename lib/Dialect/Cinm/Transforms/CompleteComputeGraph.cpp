@@ -99,10 +99,25 @@ private:
         block.without_terminator(), [](Operation &op) { return &op; });
 
     SmallVector<Operation *> group;
+    SmallPtrSet<Operation *, 8> groupSet;
+    auto flush = [&]() {
+      wrapGroup(group, rewriter);
+      groupSet.clear();
+    };
+    // Whether `op` consumes a value the current group produces. Such an op,
+    // when left outside, must come after the group's block: flushing first
+    // places the block before it. Skipped ops have no regions, so operands
+    // are all there is to check.
+    auto dependsOnGroup = [&](Operation *op) {
+      return llvm::any_of(op->getOperands(), [&](Value v) {
+        Operation *def = v.getDefiningOp();
+        return def && groupSet.contains(def);
+      });
+    };
     for (Operation *op : ops) {
       // An existing compute op is already a node of the graph.
       if (isa<ComputeOpInterface>(op)) {
-        wrapGroup(group, rewriter);
+        flush();
         continue;
       }
       // Constants stay outside: they are free, and they are typically used
@@ -115,6 +130,21 @@ private:
       // --eliminate-empty-tensors knows how to fold into a destination.
       if (op->hasTrait<OpTrait::ConstantLike>() || isa<tensor::EmptyOp>(op))
         continue;
+      // View and routing ops stay outside as well: slicing, reshaping and
+      // destination-pinning are how values travel between nodes, not
+      // computation. The graph collection sees through them -- they unite
+      // the blocks they touch into one component and dependency edges trace
+      // through them -- so they are the edges of the compute graph, and a
+      // node holding only edges would distort the schedule. (A single-element
+      // tensor.extract never reaches this pass: --cinm-expand-compute-scope
+      // absorbs it into the producing block, which yields the scalar.)
+      if (isa<tensor::ExtractSliceOp, tensor::InsertSliceOp,
+              tensor::CollapseShapeOp, tensor::ExpandShapeOp, tensor::ReshapeOp,
+              tensor::CastOp, bufferization::MaterializeInDestinationOp>(op)) {
+        if (dependsOnGroup(op))
+          flush();
+        continue;
+      }
       // An op with compute ops nested inside (a loop around an offloaded
       // block) cannot become part of a host block without hiding those
       // nodes. Either demote them to host code, or leave the op in place as
@@ -127,7 +157,7 @@ private:
               "op contains compute ops and cannot be wrapped into a host "
               "compute block; the compute graph is disconnected here "
               "(demote-nested-compute would dissolve them into host code)");
-          wrapGroup(group, rewriter);
+          flush();
           continue;
         }
       }
@@ -140,13 +170,14 @@ private:
               "callee contains compute ops, so the call cannot be wrapped "
               "into a host compute block; the compute graph is disconnected "
               "here (inline the callee first)");
-          wrapGroup(group, rewriter);
+          flush();
           continue;
         }
       }
       group.push_back(op);
+      groupSet.insert(op);
     }
-    wrapGroup(group, rewriter);
+    flush();
   }
 
   /// Moves the ops of `group` into a new host compute block inserted in their
