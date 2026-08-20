@@ -122,6 +122,21 @@ struct InferencePlugin {
   virtual DiagnosedSilenceableFailure
   commitBestCandidate(cinm::ComputeBlockOp original, TrialInfo bestTrial);
 
+  /// Commit under InferenceOptions::stampConfigs: write the winning
+  /// configuration onto `original` as attributes (the accelerator, and the
+  /// per-op parameters the lowering passes read), without splicing any
+  /// lowered code. `original` carries the parameter-name annotations the
+  /// space build left on it -- in stamp mode the space is built on the
+  /// original itself and the reference is cloned from it -- so the plugin
+  /// only has to resolve each name against `bestTrial`'s configuration.
+  virtual DiagnosedSilenceableFailure
+  stampBestCandidate(cinm::ComputeBlockOp original, TrialInfo &bestTrial) {
+    (void)bestTrial;
+    return emitDefiniteFailure(
+        original.getLoc(),
+        "this plugin does not implement configuration stamping");
+  }
+
   /// Return a fresh independent copy of this plugin, safe to use from a
   /// different thread. Called by the framework before parallel exhaustive
   /// search; `initializeSpace` has already run on `this` so any indices or
@@ -292,6 +307,16 @@ struct InferenceOptions {
   /// then observed cost (empty if not evaluated), then mu / sigma / acq
   /// from a final ensemble fit (omitted when fewer than 2 observations).
   std::string dumpDir;
+
+  /// Commit by stamping configurations instead of splicing lowered code: the
+  /// winning configuration is written onto the original block as attributes
+  /// (see InferencePlugin::stampBestCandidate) and the block's body stays in
+  /// the form the search read it in. A separate finalization pipeline then
+  /// lowers the whole module in one go, bufferizing across block boundaries.
+  /// Requires the module to already be in the plugin's converted (linalg)
+  /// form: the space is built directly on the original blocks, so the pass
+  /// runs the conversion once, up front, instead of once per reference.
+  bool stampConfigs = false;
 
   /// Build each block's config space, write its space.json into dumpDir, and
   /// stop: no evaluation, no search, no commit, and (in graph mode) no

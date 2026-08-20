@@ -775,25 +775,32 @@ struct UpmemInferencePlugin : cinm::InferencePlugin {
     // where the search space starts.
     MLIRContext *ctx = refClone->getContext();
     Location loc = refClone->getLoc();
-    ModuleOp refModule = refClone->getParentOfType<ModuleOp>();
-    {
-      auto pm = buildConvertPipeline(ctx, opts.debugPrintsInPipeline);
-      if (failed(pm->run(refModule))) {
-        emitError(loc, "could not convert the compute block to linalg, "
-                       "so no search space can be derived from it");
+    cinm::ComputeBlockOp block = refClone;
+    if (!opts.inference.stampConfigs) {
+      ModuleOp refModule = refClone->getParentOfType<ModuleOp>();
+      {
+        auto pm = buildConvertPipeline(ctx, opts.debugPrintsInPipeline);
+        if (failed(pm->run(refModule))) {
+          emitError(loc, "could not convert the compute block to linalg, "
+                         "so no search space can be derived from it");
+          return;
+        }
+      }
+
+      // Not `refClone`: the pipeline above may have replaced the compute
+      // block op (canonicalization rebuilds it to drop an unused block
+      // argument), so the handle the framework passed in can be dangling by
+      // now.
+      block = nullptr;
+      refModule.walk([&](cinm::ComputeBlockOp op) { block = op; });
+      if (!block) {
+        emitError(loc, "the converted reference has no compute block");
         return;
       }
     }
-
-    // Not `refClone`: the pipeline above may have replaced the compute block
-    // op (canonicalization rebuilds it to drop an unused block argument), so
-    // the handle the framework passed in can be dangling by now.
-    cinm::ComputeBlockOp block;
-    refModule.walk([&](cinm::ComputeBlockOp op) { block = op; });
-    if (!block) {
-      emitError(loc, "the converted reference has no compute block");
-      return;
-    }
+    // In stamp mode the block IS the original, sitting in the real module
+    // among other blocks: nothing is converted here (the pass ran the
+    // conversion once, up front) and nothing may walk the enclosing module.
 
     // Name each op's parameters after the cinm op it came from, e.g.
     // `gemv.M0`. Count the kinds first so that a block with two gemvs gets
@@ -839,6 +846,28 @@ struct UpmemInferencePlugin : cinm::InferencePlugin {
   /// silenceable failure below, it is just not printed per trial.
   bool logTrialDiagnostics() const {
     return opts.inference.evalSingleSolution.has_value();
+  }
+
+  /// Commit under stampConfigs: the accelerator and the resolved tiling
+  /// attributes are written onto the original -- whose ops carry the
+  /// parameter names, since the space was built on it -- and nothing is
+  /// spliced. The block's body stays in the converted linalg form for the
+  /// finalization pipeline to lower globally.
+  DiagnosedSilenceableFailure
+  stampBestCandidate(cinm::ComputeBlockOp original,
+                     cinm::TrialInfo &bestTrial) override {
+    auto conf = bestTrial.conf();
+    original.setAcceleratorAttr(upmem::UpmemAcceleratorAttr::get(
+        platform, dpusVar_[conf], taskletsVar_[conf]));
+    resolveParams(original, *bestTrial.space, bestTrial.config);
+    // The names did their job; the resolved attributes are the whole
+    // interface the finalization pipeline reads.
+    original.getBody().walk([](Operation *op) {
+      op->removeAttr(kOuterTileParamsAttr);
+      op->removeAttr(kLeafTileParamsAttr);
+      op->removeAttr(kOrderParamAttr);
+    });
+    return DiagnosedSilenceableFailure::success();
   }
 
   DiagnosedSilenceableFailure runPipeline(PassManager *pipeline, Location loc,
@@ -939,12 +968,20 @@ private:
   /// body it creates. Nothing has to find the op again half way down the
   /// pipeline.
   void stampSearchParams(cinm::TrialInfo &trial) const {
-    cinm::ConfWrapper conf = trial.conf();
+    resolveParams(trial.computeBlock, *trial.space, trial.config);
+  }
+
+  /// The same resolution, on any block carrying the parameter-name
+  /// annotations: the trial's clone during a search, or the original itself
+  /// when the commit stamps the winning configuration (stampBestCandidate).
+  void resolveParams(cinm::ComputeBlockOp block, const cinm::ConfigSpace &space,
+                     const cinm::Configuration &config) const {
+    cinm::ConfWrapper conf(space, config);
     // A name the space does not have reads as 0, which would stamp a tile size
     // of 0 and mis-tile silently. It cannot happen -- every name stamped below
     // was declared on the same SpaceBuilder -- so assert rather than handle it.
     auto value = [&](StringRef name) {
-      assert(trial.space->findParam(name) >= 0 &&
+      assert(space.findParam(name) >= 0 &&
              "op names a search parameter the space does not declare");
       return conf[name];
     };
@@ -955,7 +992,7 @@ private:
       return sizes;
     };
 
-    trial.computeBlock.getBody().walk([&](Operation *op) {
+    block.getBody().walk([&](Operation *op) {
       MLIRContext *ctx = op->getContext();
       OpBuilder b(ctx);
       if (auto names = op->getAttrOfType<ArrayAttr>(kOuterTileParamsAttr))
@@ -977,7 +1014,7 @@ private:
       // written twice, agreeing by inspection.
       if (auto name = op->getAttrOfType<StringAttr>(kOrderParamAttr)) {
         cinm::Permutation order =
-            trial.space->getAs<cinm::Permutation>(conf.conf, name.getValue());
+            space.getAs<cinm::Permutation>(conf.conf, name.getValue());
         SmallVector<int64_t> byAxis(order.size());
         for (size_t dim = 0; dim < order.size(); ++dim)
           byAxis[order[dim]] = static_cast<int64_t>(dim);
@@ -1321,6 +1358,7 @@ struct UpmemInferAcceleratorPass
     o.programReloadMs = programReloadMs;
     o.latencyObjective = latencyObjective;
     o.allocationGranularity = allocationGranularity;
+    o.stampConfigs = stampConfigs;
     upmemOpts.annotateOpCosts = annotateOpCosts;
     upmemOpts.useMRAMTiling = useMRAMTiling;
     upmemOpts.scatterSpecialisation = enableScatterSpecialisation;
@@ -1356,6 +1394,21 @@ struct UpmemInferAcceleratorPass
   void runOnOperation() override {
     ModuleOp module = getOperation();
     UpmemInferenceOptions upmemOpts = buildOptions();
+
+    // Stamp mode builds every block's search space on the block itself, so
+    // the whole module has to be in the converted (linalg) form the space is
+    // read off. Run the conversion once here instead of once per reference
+    // module; it only rewrites inside blocks and is a fixpoint on already
+    // converted code.
+    if (upmemOpts.inference.stampConfigs) {
+      auto pm = UpmemInferencePlugin::buildConvertPipeline(
+          module.getContext(), upmemOpts.debugPrintsInPipeline);
+      if (failed(pm->run(module))) {
+        module.emitError("could not convert the module to linalg form for "
+                         "configuration stamping");
+        return signalPassFailure();
+      }
+    }
 
     // Which blocks are searched, and in what grouping, is the framework's
     // business (see GraphInference.h); this backend only says what "a UPMEM

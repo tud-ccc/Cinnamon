@@ -259,6 +259,22 @@ struct InferenceTask {
       : options(options), plugin(plugin), original(original),
         rng(options.rngSeed) {
 
+    if (options.stampConfigs) {
+      // The space is built on the original itself: the parameter names land
+      // on the original's ops, and the reference (and every trial cloned from
+      // it) inherits them, so the winning configuration can be resolved back
+      // onto the original at commit time without any op correspondence
+      // maintained on the side. The module is already in the plugin's
+      // converted form -- the pass ran the conversion once, up front -- so
+      // initializeSpace rewrites nothing and `original` stays valid.
+      spaceValid =
+          succeeded(buildConfigSpace(original, plugin, space, options));
+      auto [refModule, refClone] = buildRefModule(original);
+      this->refClone = refClone;
+      this->refModule = std::move(refModule);
+      return;
+    }
+
     auto [refModule, refClone] = buildRefModule(original);
     this->refClone = refClone;
     this->refModule = std::move(refModule);
@@ -1185,6 +1201,8 @@ inferAcceleratorConfig(cinm::ComputeBlockOp computeOp, InferencePlugin &plugin,
   LLVM_DEBUG(llvm::dbgs() << "[cinm-inference] Committing best config"
                           << bestResult.conf() << "\n");
 
+  if (opts.stampConfigs)
+    return plugin.stampBestCandidate(computeOp, bestResult);
   return plugin.commitBestCandidate(computeOp, std::move(bestResult));
 }
 
