@@ -5,6 +5,7 @@
 #include "cinm-mlir/Dialect/Cinm/IR/CinmOps.h"
 
 #include <cinm-mlir/Utils/Scheduling/SchedulingSupport.h>
+#include <condition_variable>
 #include <cstdint>
 #include <initializer_list>
 #include <limits>
@@ -14,6 +15,7 @@
 #include <mlir/IR/BuiltinOps.h>
 #include <mlir/IR/OwningOpRef.h>
 #include <mlir/Support/LogicalResult.h>
+#include <mutex>
 #include <optional>
 #include <string>
 #include <vector>
@@ -494,6 +496,41 @@ struct ProfilePoint {
   ResidencyInfo residency;
 };
 
+/// Caps how many profiling searches run at once across all the sweeps sharing
+/// it. Several classes of one graph are profiled concurrently, and their costs
+/// are wildly uneven -- on a transformer one class is half the work -- so
+/// dividing the machine between them up front starves whichever class is the
+/// critical path. Letting every sweep offer all its points and gating the
+/// total instead means the threads go where the work still is: when the cheap
+/// classes are done, the expensive one has the machine to itself.
+class ProfileGate {
+public:
+  explicit ProfileGate(unsigned permits)
+      : available(permits), total(std::max(1u, permits)) {}
+
+  /// Permits held when idle -- what a sweep sizes its fan-out by.
+  unsigned capacity() const { return total; }
+
+  void acquire() {
+    std::unique_lock<std::mutex> lock(mutex);
+    condition.wait(lock, [this] { return available > 0; });
+    --available;
+  }
+  void release() {
+    {
+      std::lock_guard<std::mutex> lock(mutex);
+      ++available;
+    }
+    condition.notify_one();
+  }
+
+private:
+  std::mutex mutex;
+  std::condition_variable condition;
+  unsigned available;
+  unsigned total;
+};
+
 /// One search's outcome at one menu point. Several of these share a resource
 /// when `InferenceOptions::profileSeeds` asks for repeats; the spread between
 /// them is what separates a profile's real shape from its search noise.
@@ -521,10 +558,17 @@ struct ProfileSample {
 /// `opts.profileSeeds` repeats per menu point. The returned profile is
 /// unaffected by the repeats -- it is always seed 0's -- so the samples are
 /// a measurement of the search, not an input to anything.
+///
+/// `gate`, when given, is a concurrency budget shared with the other sweeps
+/// running alongside this one: the sweep then offers every point it has and
+/// each search runs single-threaded, so the permits land wherever work
+/// remains instead of being divided up front. Without it the sweep sizes its
+/// own fan-out out of `opts.numWorkers` and owns the machine.
 utils::Maybe<SmallVector<ProfilePoint>>
 profileComputeBlock(cinm::ComputeBlockOp computeOp, InferencePlugin &plugin,
                     const InferenceOptions &opts,
-                    SmallVectorImpl<ProfileSample> *samples = nullptr);
+                    SmallVectorImpl<ProfileSample> *samples = nullptr,
+                    ProfileGate *gate = nullptr);
 
 /// Entry point for Bayesian inference.
 DiagnosedSilenceableFailure

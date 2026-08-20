@@ -5,9 +5,12 @@
 #include "cinm-mlir/Dialect/Cinm/IR/CinmWorkgroupTypeInterface.h"
 #include "cinm-mlir/Utils/Scheduling/SchedulingSupport.h"
 
+#include <atomic>
 #include <filesystem>
 #include <fstream>
+#include <optional>
 #include <string>
+#include <thread>
 #include <utility>
 
 #include <llvm/ADT/EquivalenceClasses.h>
@@ -491,19 +494,85 @@ runGraphAllocation(const ComputeGraph &graph, StringRef platformName,
   // Indexed by graph class, unlike `profiles`: a class that found no feasible
   // configuration still ran searches, and what they cost is worth keeping.
   SmallVector<SmallVector<ProfileSample>> samples(graph.classes.size());
-  for (auto [ci, blockClass] : llvm::enumerate(graph.classes)) {
+
+  // The classes are independent searches over their own representatives, so
+  // they run concurrently. This is where a whole program's parallelism
+  // actually is: one class's sweep only sustains (menu points x batch size)
+  // evaluations, which on a many-core machine leaves most of it idle, while
+  // a graph offers a dozen of those at once.
+  //
+  // The budget is NOT divided between the classes, because their costs are
+  // nothing like equal -- on llama one class is half the work of the whole
+  // graph -- so a share-out starves whichever class is the critical path and
+  // gives its threads to classes that finish early anyway. Every class offers
+  // all of its points instead, and one shared gate caps how many searches run
+  // at once; the permits end up wherever work remains.
+  const unsigned baseWorkers =
+      opts.numWorkers ? opts.numWorkers
+                      : std::max(1u, std::thread::hardware_concurrency());
+  const bool threaded = loc.getContext()->isMultithreadingEnabled();
+  ProfileGate gate(baseWorkers);
+  const unsigned classThreads = threaded ? graph.classes.size() : 1;
+
+  // Collected per class, reduced in class order below: the allocation depends
+  // on the order of `profiles`, so the finish order must not reach it.
+  struct ClassResult {
+    std::optional<SmallVector<ProfilePoint>> points;
+    std::optional<DiagnosedSilenceableFailure> definite;
+  };
+  std::vector<ClassResult> results(graph.classes.size());
+
+  auto profileClass = [&](size_t ci) {
+    const BlockClass &blockClass = graph.classes[ci];
     std::unique_ptr<InferencePlugin> plugin = makePlugin(graph.platform);
     InferenceOptions profileOpts = opts;
+    profileOpts.numWorkers = baseWorkers;
     if (!baseDumpDir.empty())
       profileOpts.dumpDir = (std::filesystem::path(baseDumpDir.str()) /
                              graphName.str() / ("class_" + std::to_string(ci)))
                                 .string();
-    utils::Maybe<SmallVector<ProfilePoint>> points = profileComputeBlock(
-        blockClass.representative(), *plugin, profileOpts, &samples[ci]);
+    utils::Maybe<SmallVector<ProfilePoint>> points =
+        profileComputeBlock(blockClass.representative(), *plugin, profileOpts,
+                            &samples[ci], threaded ? &gate : nullptr);
     if (auto *fail = std::get_if<DiagnosedSilenceableFailure>(&points)) {
       if (fail->isDefiniteFailure())
-        return std::move(*fail);
-      (void)fail->silence();
+        results[ci].definite = std::move(*fail);
+      else
+        // Not an error at the graph level, and the warning that says so is
+        // emitted below: diagnostics from the sweep would come out in finish
+        // order, which is not an order the user can make sense of.
+        (void)fail->silence();
+      return;
+    }
+    results[ci].points = std::move(std::get<SmallVector<ProfilePoint>>(points));
+  };
+
+  if (classThreads <= 1) {
+    for (size_t ci = 0; ci < graph.classes.size(); ++ci)
+      profileClass(ci);
+  } else {
+    std::atomic<size_t> next{0};
+    auto worker = [&] {
+      for (size_t ci = next.fetch_add(1, std::memory_order_relaxed);
+           ci < graph.classes.size();
+           ci = next.fetch_add(1, std::memory_order_relaxed))
+        profileClass(ci);
+    };
+    std::vector<std::thread> threads;
+    threads.reserve(classThreads - 1);
+    for (unsigned t = 1; t < classThreads; ++t)
+      threads.emplace_back(worker);
+    worker();
+    for (std::thread &t : threads)
+      t.join();
+  }
+
+  // Reduce in class order, so the profile list, the diagnostics and the
+  // failure that wins are all the ones a serial sweep would have produced.
+  for (auto [ci, blockClass] : llvm::enumerate(graph.classes)) {
+    if (results[ci].definite)
+      return std::move(*results[ci].definite);
+    if (!results[ci].points) {
       blockClass.representative().emitWarning()
           << "no feasible '" << platformName
           << "' configuration for this block; it stays on the host, along "
@@ -512,9 +581,7 @@ runGraphAllocation(const ComputeGraph &graph, StringRef platformName,
       continue;
     }
     solveIndexOfClass[ci] = static_cast<int>(profiles.size());
-    profiles.push_back(
-        {blockClass.size(),
-         std::move(std::get<SmallVector<ProfilePoint>>(points))});
+    profiles.push_back({blockClass.size(), std::move(*results[ci].points)});
   }
   if (!baseDumpDir.empty()) {
     auto dir = std::filesystem::path(baseDumpDir.str()) / graphName.str();
