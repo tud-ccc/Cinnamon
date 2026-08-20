@@ -35,6 +35,7 @@ def _run(
     cinm_opt: pathlib.Path,
     log_file: pathlib.Path,
     extra_opts: list = [],
+    pre_passes: list = PRE_PASSES,
     nice: bool = False,
     nolog: bool = False,
 ) -> subprocess.CompletedProcess:
@@ -42,7 +43,7 @@ def _run(
         str(cinm_opt),
         str(src),
         "--split-input-file",
-        *PRE_PASSES,
+        *pre_passes,
         "--debug-only=cinm-inference",
         f"--upmem-infer-accelerator={_infer_opts_str(infer_opts)}",
         *extra_opts,
@@ -198,6 +199,62 @@ def random_sample(
     )
     if r.returncode != 0:
         raise RuntimeError(f"random_sample failed for {src}; see {log_file}")
+    return out_dir
+
+
+def graph_allocation(
+    src: pathlib.Path,
+    out_dir: pathlib.Path,
+    *,
+    workers: int | None = None,
+    infer_opts: dict | None = None,
+    nice: bool = True,
+    out_file: pathlib.Path | None = None,
+    log_file: pathlib.Path | None = None,
+    cinm_opt: pathlib.Path = DEFAULT_CINM_OPT,
+) -> pathlib.Path:
+    """Run the two-level graph solve over a whole program: profile every
+    program-identity class over the device-size menu, then partition the
+    device among the classes. Dumps per graph (a connected component of the
+    dataflow between compute blocks, named infer_<fn> by the pass's own
+    NameInventor) into {out_dir}/infer_<fn>/:
+
+      profiles.csv    one row per (class, menu point) -- the solver's input
+      allocation.csv  one summary row -- classes, groups, host/device split,
+                      objective
+      groups.csv      one row per device set the solve carved out
+      class_<i>/      the per-class search dumps (pool.csv, ...)
+
+    Unlike the per-block stacks this searches a whole module rather than a
+    split function: the classes of one program are what the device is
+    divided between, so they cannot be separated. Returns out_dir.
+
+    The source is expected to carry its compute blocks already (a
+    whole-program front end ends with --cinm-complete-compute-graph), so
+    only the isolation runs here: re-running --cinm-assign-platforms would
+    be a no-op on blocked IR, and leaving it out keeps the host-pinned
+    blocks the front end created plainly the front end's business."""
+    out_dir = pathlib.Path(out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    out_file = out_file or out_dir / "out.mlir"
+    log_file = log_file or out_dir / "cinm-opt.log"
+    opts = {
+        "dump-dir": str(out_dir),
+        "graph-allocation": True,
+        **({"n-workers": workers} if workers else {}),
+        **(infer_opts or {}),
+    }
+    r = _run(
+        src,
+        opts,
+        out_file=out_file,
+        cinm_opt=cinm_opt,
+        log_file=log_file,
+        pre_passes=["--cinm-isolate-compute-blocks"],
+        nice=nice,
+    )
+    if r.returncode != 0:
+        raise RuntimeError(f"graph_allocation failed for {src}; see {log_file}")
     return out_dir
 
 

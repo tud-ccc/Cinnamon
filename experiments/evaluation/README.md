@@ -53,8 +53,15 @@ data/{bench}/      per-stack raw data (gitignored)
   search_ablate_*/ same, restricted spaces
   points_*/        measured transcription candidates
   a2/              forced-lowering probes (probe.csv)
+wholeprogram/{prog}/  whole-program sources + the makefile of their front end
+data/wholeprog/{prog}/   its stages, then alloc/ — the graph solve's dumps
 results/ plots/ tables/   derived (gitignored); frozen by hand for the paper
 ```
+
+`plot_profiles.py` is the one plot script that does not read
+`results/*.csv`: the graph solve's dumps are solver artifacts, not
+assembled measurements, so it is pointed straight at a dump directory
+(see `doit plot_alloc`).
 
 ## Running
 
@@ -71,6 +78,7 @@ doit sample             # B1: draw the shared sample (simulator runs)
 doit exhaust_pred       # B3: price the whole feasible set (hours)
 doit search search_ablate   # B4: BO, default + 3 restricted spaces
 doit a2                 # forced-lowering probes of the rejected region
+doit wholeprog_front wholeprog_alloc plot_alloc   # whole-program graph solve
 doit compile_sample compile_topk compile_search compile_search_ablate compile_points
 doit invariants_report  # transcription cross-check (needs compile_points)
 ```

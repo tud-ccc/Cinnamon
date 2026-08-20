@@ -25,9 +25,11 @@ Usage:
 from __future__ import annotations
 
 import pathlib
+import subprocess
 import sys
 
 from doit import create_after
+from doit.tools import config_changed
 from doit.reporter import ProgressBarReporter
 
 HERE = pathlib.Path(__file__).resolve().parent
@@ -91,6 +93,27 @@ OPTS = dict(
         "n-init": 64,
         "acquisition": "thompson",
     },
+    # The whole-program stack's budget, per (class, device size). Far smaller
+    # than infer_opts, because a graph solve spends it once per menu point:
+    # llama's 12 device classes over a 64-granularity menu of a 2560-DPU
+    # device is ~450 searches where a per-operator run does one. What the
+    # profile has to get right is the shape of a class's cost against device
+    # size -- the allocator only ever compares points of one class to each
+    # other -- not the global best configuration.
+    wholeprog_infer_opts={
+        "bo-batch-size": 2,
+        "max-evals": 256,
+        "n-init": 64,
+        "acquisition": "thompson",
+    },
+    # Repeats of each menu point's search, for the noise band on the profile
+    # figures. A profile is a row of independent searches, so a difference
+    # between two menu points is only real if it clears the spread within
+    # them -- and differencing (the marginal-returns panel, the convexity
+    # question) amplifies that spread. Diagnostic only: the allocator is
+    # handed the first seed's point either way, so this cannot move an
+    # allocation. Costs a full profiling sweep per extra seed.
+    wholeprog_profile_seeds=16,
 )
 
 WORKLOADS = list(ALL_PRIMS)
@@ -523,6 +546,131 @@ def rq4_roots(prog: str, arm: str) -> doit_blocks.MeasureRoots:
     return doit_blocks.MeasureRoots(
         compile_root=root / "compiled", run_root=root / "run"
     )
+
+
+# ── whole-program graph allocation ──────────────────────────────────────────
+# The RQ4 workloads as the graph solver sees them: a whole program, unrolled
+# so every layer is its own set of compute blocks, run through the two-level
+# solve. No hardware and no measurement -- this stack produces the solver's
+# own view (per-class cost profiles, the device sets it carved out) and is
+# what plot_profiles.py draws. Measuring these programs is the RQ4 arms
+# above, which is a separate (and still unwired) stack.
+#
+# The front end lives in each program's own makefile, so the pipeline is
+# written down once and stays runnable by hand; the tasks below only pass it
+# the campaign's cinm-opt and an output directory under data/.
+
+WHOLEPROG_DIR = HERE / "wholeprogram"
+# program -> the directory holding its source and makefile. The program name
+# is the makefile's NAME, i.e. its source is <dir>/<prog>.mlir.
+WHOLEPROG_PROGRAMS = {"llama2_110M": WHOLEPROG_DIR / "llama2"}
+
+
+def wholeprog_dir(prog: str) -> pathlib.Path:
+    return DATA_DIR / "wholeprog" / prog
+
+
+def wholeprog_front_mlir(prog: str) -> pathlib.Path:
+    """The front end's last stage: compute blocks formed and the host code
+    between them wrapped, so the function is one connected dataflow graph."""
+    return wholeprog_dir(prog) / f"{prog}_with_compute.mlir"
+
+
+def wholeprog_alloc_dir(prog: str) -> pathlib.Path:
+    return wholeprog_dir(prog) / "alloc"
+
+
+def _wholeprog_front(prog: str) -> bool:
+    out_dir = wholeprog_dir(prog)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    subprocess.run(
+        [
+            "make",
+            "-C",
+            str(WHOLEPROG_PROGRAMS[prog]),
+            f"NAME={prog}",
+            f"OUT={out_dir.resolve()}",
+            f"CINM_OPT={DEFAULT_CINM_OPT}",
+            str(wholeprog_front_mlir(prog).resolve()),
+        ],
+        check=True,
+    )
+    return True
+
+
+def task_wholeprog_front():
+    """The whole-program front end (unroll, linalg, compute blocks) for each
+    RQ4-style program, via the program's own makefile. The unroll is the
+    expensive stage and the reason this is its own task: it turns the layer
+    and head loops into straight-line code, which is what gives the graph
+    solver a class per distinct kernel and a member per instance."""
+    for prog, src_dir in WHOLEPROG_PROGRAMS.items():
+        yield {
+            "name": prog,
+            "file_dep": [str(src_dir / f"{prog}.mlir"), str(src_dir / "Makefile")],
+            "targets": [str(wholeprog_front_mlir(prog))],
+            "actions": [(_wholeprog_front, [prog])],
+        }
+
+
+def _wholeprog_alloc(prog: str) -> bool:
+    cinmopt.graph_allocation(
+        wholeprog_front_mlir(prog),
+        wholeprog_alloc_dir(prog),
+        workers=64,
+        infer_opts={
+            "simulator": OPTS["simulator"],
+            "eval-timeout-ms": OPTS["eval_timeout_ms"],
+            **OPTS["wholeprog_infer_opts"],
+            "profile-seeds": OPTS["wholeprog_profile_seeds"],
+            # Stamping commits every member's configuration as attributes on
+            # one module (--upmem-lower-stamped lowers it afterwards), which
+            # is the only commit path that scales to a whole program.
+            "stamp-configs": True,
+            # Without it the f32-reduction-only blocks (rmsnorm's sum of
+            # squares, softmax's max and sum) have no feasible configuration
+            # at all and drop to the host, which would take the classes that
+            # matter most out of the picture.
+            "allow-float-reassociation": True,
+        },
+    )
+    return True
+
+
+def task_wholeprog_alloc():
+    """The two-level graph solve over each whole program: a cost profile per
+    class over the device-size menu, then the device divided between the
+    classes. Dumps profiles.csv / allocation.csv / groups.csv per graph;
+    simulator only, no hardware.
+
+    out.mlir (the stamped module) doubles as the completion sentinel: the
+    dumps are per graph and named by the pass, so there is no single dump
+    path known ahead of time to hang the target on."""
+    for prog in WHOLEPROG_PROGRAMS:
+        yield {
+            "name": prog,
+            "file_dep": [str(wholeprog_front_mlir(prog))],
+            "targets": [str(wholeprog_alloc_dir(prog) / "out.mlir")],
+            "uptodate": [config_changed(OPTS["wholeprog_infer_opts"])],
+            "actions": [(_wholeprog_alloc, [prog])],
+        }
+
+
+def task_plot_alloc():
+    """plots/wholeprog/<prog>/profiles.pdf: each program's per-class cost
+    profiles against device size, annotated with what the allocator did with
+    them. Reads the dumps directly (they are solver artifacts, not assembled
+    measurements) and skips with a note when a program has not been solved
+    yet, so it is safe to ask for at any point."""
+    for prog in WHOLEPROG_PROGRAMS:
+        yield {
+            "name": prog,
+            "actions": [
+                f"python {HERE / 'plot_profiles.py'} {wholeprog_alloc_dir(prog)}"
+                f" --out {HERE / 'plots' / 'wholeprog' / prog}"
+            ],
+            "uptodate": [False],
+        }
 
 
 # ── B6: assemble results/*.csv from whatever exists ─────────────────────────
