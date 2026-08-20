@@ -1132,6 +1132,22 @@ Maybe<TrialInfo> InferenceTask::runDispatch() {
     Configuration conf = TRY_GET(
         resolveNamedConfig(*options.evalSingleSolution, original->getLoc()));
     TrialInfo bestResult = makeTrialInfo(std::move(conf));
+
+    // Stamping writes the configuration onto the op as attributes and leaves
+    // the lowering to --upmem-lower-stamped, so nothing here ever reads the
+    // lowered module: evaluating it would price a compilation that is thrown
+    // away. That is the whole commit cost of a graph solve -- one lowering
+    // per member, where a transformer has hundreds of members sharing a
+    // dozen configurations already lowered and priced during profiling.
+    //
+    // What is given up is the check that this configuration lowers at all.
+    // In a graph solve it was checked: the configuration is a profile point
+    // of this block's own class, and class members are the same program by
+    // construction. A hand-written eval-solution finds out in the lowering
+    // pass instead of here.
+    if (options.stampConfigs)
+      return bestResult;
+
     plugin.warmUp(original->getContext());
     auto estimate = TRY_GET(plugin.evaluate(bestResult)); // may return early
     bestResult.cost = estimate.total();
@@ -1213,7 +1229,8 @@ inferAcceleratorConfig(cinm::ComputeBlockOp computeOp, InferencePlugin &plugin,
 Maybe<SmallVector<ProfilePoint>>
 profileComputeBlock(cinm::ComputeBlockOp computeOp, InferencePlugin &plugin,
                     const InferenceOptions &opts,
-                    SmallVectorImpl<ProfileSample> *samples) {
+                    SmallVectorImpl<ProfileSample> *samples,
+                    ProfileGate *gate) {
   StringRef param = plugin.sharedResourceParam();
   if (param.empty())
     return emitDefiniteFailure(
@@ -1240,22 +1257,54 @@ profileComputeBlock(cinm::ComputeBlockOp computeOp, InferencePlugin &plugin,
   const unsigned baseWorkers =
       opts.numWorkers ? opts.numWorkers
                       : std::max(1u, std::thread::hardware_concurrency());
-  unsigned outerWorkers = 1;
-  if (plugin.supportsMultithreading() && ctx->isMultithreadingEnabled())
-    // Sized by the menu, not by the job count: the per-point worker budget
-    // below is what a search's trajectory depends on, so deriving it from a
-    // count that the repeats inflate would make seed 0 of a 3-seed sweep a
-    // different search from a 1-seed sweep's only search -- and the repeats
-    // would no longer be a measurement of an unchanged experiment. The extra
-    // jobs queue through the same threads instead.
-    outerWorkers = std::min<unsigned>(menu.size(), baseWorkers);
+  const bool threaded =
+      plugin.supportsMultithreading() && ctx->isMultithreadingEnabled();
 
-  // A per-point search may itself be parallel (exhaustive, sampling): divide
-  // the workers between the two levels instead of multiplying them. Progress
-  // bars from concurrent searches would interleave, so the sweep is silent.
+  // Two different numbers, and conflating them is what leaves cores idle.
+  //
+  // The per-point worker budget is derived from the MENU alone. It decides
+  // how parallel one search is, and a search's trajectory depends on it, so
+  // it must not move when repeats are asked for: otherwise seed 0 of a
+  // 3-seed sweep would be a different search from a 1-seed sweep's only
+  // search, and the repeats would stop being a measurement of an unchanged
+  // experiment.
+  const unsigned menuThreads =
+      threaded ? std::min<unsigned>(menu.size(), baseWorkers) : 1;
   InferenceOptions pointBase = opts;
-  pointBase.numWorkers = std::max(1u, baseWorkers / outerWorkers);
+  // A gated sweep shares the machine with its siblings, so its searches are
+  // single-threaded and the gate decides how many run: parallelism comes from
+  // the number of points in flight, which is the level that still has work
+  // when one sweep is nearly done.
+  pointBase.numWorkers = gate ? 1 : std::max(1u, baseWorkers / menuThreads);
+  // Progress bars from concurrent searches would interleave.
   pointBase.showProgress = false;
+
+  // How many jobs run at once is a separate question, because a search does
+  // not sustain its whole budget: a surrogate round dispatches boBatchSize
+  // evaluations and waits for them, so past that the workers only hold
+  // clones while idling. Sizing the sweep by the budget therefore parks
+  // (budget - boBatchSize) cores per point for most of the run. Fill them by
+  // overlapping more jobs instead -- one more menu point, or one of the
+  // repeats, which would otherwise wait for a whole search to finish.
+  //
+  // When the budget is the binding constraint rather than the batch this
+  // works out to menuThreads exactly, i.e. to what the sweep did before.
+  const unsigned perJob =
+      std::min(pointBase.numWorkers,
+               std::max(1u, static_cast<unsigned>(opts.boBatchSize)));
+  unsigned outerWorkers = 1;
+  if (threaded)
+    // Gated: offer everything, since a thread waiting on a permit costs
+    // nothing and is what lets this sweep take the machine once its siblings
+    // finish. Ungated: fill the machine from this sweep alone.
+    outerWorkers =
+        gate ? std::min<size_t>(nJobs, gate->capacity())
+             : std::min<size_t>(nJobs, std::max(1u, baseWorkers / perJob));
+
+  LLVM_DEBUG(llvm::dbgs() << "[cinm-inference] sweep: " << nJobs
+                          << " jobs over " << outerWorkers << " thread(s), "
+                          << pointBase.numWorkers << " worker(s) per search"
+                          << (gate ? ", gated" : "") << "\n");
 
   // One slot per (menu value, seed), so the profile comes out in menu order
   // whatever the finish order. Slot i*nSeeds is the seed the profile keeps.
@@ -1268,6 +1317,20 @@ profileComputeBlock(cinm::ComputeBlockOp computeOp, InferencePlugin &plugin,
   auto runPoint = [&](size_t job) {
     const size_t i = job / nSeeds, seed = job % nSeeds;
     const int64_t resource = menu[i];
+    // Everything a search allocates -- the plugin clone, the trial modules --
+    // is held under the permit, so a waiting job costs a stack and nothing
+    // else.
+    struct Permit {
+      ProfileGate *gate;
+      explicit Permit(ProfileGate *g) : gate(g) {
+        if (gate)
+          gate->acquire();
+      }
+      ~Permit() {
+        if (gate)
+          gate->release();
+      }
+    } permit(gate);
     LLVM_DEBUG(llvm::dbgs() << "[cinm-inference] Profiling " << param << "="
                             << resource << " seed " << seed << "\n");
     std::unique_ptr<InferencePlugin> pointPlugin = plugin.clone();
