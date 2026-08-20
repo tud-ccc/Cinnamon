@@ -101,6 +101,53 @@ func.func @shared_splat(%s: f32) -> (tensor<8xf32>, tensor<8xf32>) {
 
 // -----
 
+// A result that exists only to be unpacked into a scalar is unpacked inside the
+// block, which then returns the scalar.
+
+#map = affine_map<(d0) -> (d0)>
+#map1 = affine_map<(d0) -> ()>
+
+// CHECK-LABEL: func @extract_scalar
+// CHECK:       %[[R:.*]] = cinm.compute_block ({{.*}}) -> f32
+// CHECK:         %[[S:.*]] = linalg.generic
+// CHECK:         %[[E:.*]] = tensor.extract %[[S]][] : tensor<f32>
+// CHECK:         cinm.yield %[[E]] : f32
+// CHECK:       return %[[R]] : f32
+func.func @extract_scalar(%in: tensor<1024xf32>) -> f32 {
+  %r = cinm.compute_block (%x = %in : tensor<1024xf32>) -> tensor<f32> {
+    %cst = arith.constant 0.0 : f32
+    %e = tensor.empty() : tensor<f32>
+    %f = linalg.fill ins(%cst : f32) outs(%e : tensor<f32>) -> tensor<f32>
+    %s = linalg.generic {indexing_maps = [#map, #map1], iterator_types = ["reduction"]} ins(%x : tensor<1024xf32>) outs(%f : tensor<f32>) {
+    ^bb0(%in2: f32, %out: f32):
+      %a = arith.addf %in2, %out : f32
+      linalg.yield %a : f32
+    } -> tensor<f32>
+    cinm.yield %s : tensor<f32>
+  }
+  %extracted = tensor.extract %r[] : tensor<f32>
+  return %extracted : f32
+}
+
+// -----
+
+// Only a single-element result is worth unpacking: a wider one still has to
+// leave the block as a tensor.
+
+// CHECK-LABEL: func @extract_from_wide_result
+// CHECK:       %[[R:.*]] = cinm.compute_block ({{.*}}) -> tensor<8xf32>
+// CHECK:       tensor.extract %[[R]]
+func.func @extract_from_wide_result(%a: tensor<8x8xf32>, %b: tensor<8xf32>, %i: index) -> f32 {
+  %r = cinm.compute_block (%x = %a : tensor<8x8xf32>, %y = %b : tensor<8xf32>) -> tensor<8xf32> {
+    %v = cinm.op.gemv %x, %y : tensor<8x8xf32>, tensor<8xf32> -> tensor<8xf32>
+    cinm.yield %v : tensor<8xf32>
+  }
+  %extracted = tensor.extract %r[%i] : tensor<8xf32>
+  return %extracted : f32
+}
+
+// -----
+
 // A producer with side effects is never duplicated.
 
 // CHECK-LABEL: func @side_effecting_producer

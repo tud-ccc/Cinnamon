@@ -274,7 +274,12 @@ def CinmExpandComputeScopePass : Pass<"cinm-expand-compute-scope"> {
     A producer that captures values in its region (a `linalg.generic` in
     fill form holds the fill value in its body) has those moved in too.
 
-    Slicing ops (`tensor.extract_slice`) and result consumers
+    A `tensor.extract` that unpacks a single-element block result also moves
+    into the block, which then yields the scalar directly: the one-element
+    tensor is an implementation detail of linalg's reduction form, and
+    yielding it would materialize a one-element buffer outside the block.
+
+    Slicing ops (`tensor.extract_slice`) and other result consumers
     (`tensor.insert_slice`) deliberately stay outside the block. After loop
     unrolling their offsets are per-iteration constants, and absorbing them
     bakes those constants into otherwise identical block bodies, which makes
