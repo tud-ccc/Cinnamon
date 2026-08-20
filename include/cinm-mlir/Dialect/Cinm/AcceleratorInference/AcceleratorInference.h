@@ -254,6 +254,15 @@ struct InferenceOptions {
   /// effect in exhaustive or single-solution modes.
   int nSeeds = 1;
 
+  /// Graph profiling only: how many independent searches to run per menu
+  /// point, for measuring how much of a profile's shape is search noise
+  /// rather than scaling. Purely diagnostic -- the point handed to the
+  /// allocator is always the first seed's, exactly what a single-seed run
+  /// would have produced, so turning this up cannot move an allocation. The
+  /// extra seeds are reported through profileComputeBlock's `samples`
+  /// out-parameter and cost a full search each.
+  int profileSeeds = 1;
+
   /// How a round turns the surrogate's predictions into the candidates it
   /// evaluates.
   enum class Acquisition {
@@ -485,6 +494,16 @@ struct ProfilePoint {
   ResidencyInfo residency;
 };
 
+/// One search's outcome at one menu point. Several of these share a resource
+/// when `InferenceOptions::profileSeeds` asks for repeats; the spread between
+/// them is what separates a profile's real shape from its search noise.
+struct ProfileSample {
+  int64_t resource;
+  /// Index of the repeat, 0 being the seed whose result the profile keeps.
+  unsigned seed;
+  double costMs;
+};
+
 /// Measure `computeOp`'s cost profile over the plugin's shared-resource menu
 /// by running one search per menu value with the resource pinned. The menu
 /// points are independent and run concurrently, each on its own clone of
@@ -497,9 +516,15 @@ struct ProfilePoint {
 /// capacity) yield no point rather than an error; the profile is measured
 /// pointwise and the allocation copes with holes. Fails only when every menu
 /// value is infeasible or a search fails definitively.
+///
+/// `samples`, when given, collects every search this ran, including the
+/// `opts.profileSeeds` repeats per menu point. The returned profile is
+/// unaffected by the repeats -- it is always seed 0's -- so the samples are
+/// a measurement of the search, not an input to anything.
 utils::Maybe<SmallVector<ProfilePoint>>
 profileComputeBlock(cinm::ComputeBlockOp computeOp, InferencePlugin &plugin,
-                    const InferenceOptions &opts);
+                    const InferenceOptions &opts,
+                    SmallVectorImpl<ProfileSample> *samples = nullptr);
 
 /// Entry point for Bayesian inference.
 DiagnosedSilenceableFailure

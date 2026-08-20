@@ -132,6 +132,17 @@ CinmDialect::verifyOperationAttribute(::mlir::Operation *op,
              << CinmDialect::DEBUG_TAG_NAME << " must be a string attribute";
     return success();
   }
+  if (attribute.getName() == CinmDialect::GRAPH_ALLOC_NAME) {
+    if (!isa<cinm::ComputeBlockOp>(op))
+      return op->emitOpError("Attribute ")
+             << CinmDialect::GRAPH_ALLOC_NAME
+             << " describes a compute block's place in a solved graph and "
+                "belongs on a cinm.compute_block op";
+    if (!llvm::isa<DictionaryAttr>(attribute.getValue()))
+      return op->emitOpError("Attribute ") << CinmDialect::GRAPH_ALLOC_NAME
+                                           << " must be a dictionary attribute";
+    return success();
+  }
   if (attribute.getName() == CinmDialect::STATIC_ATTR_NAME) {
     // On a function argument this declares the serving contract that the
     // argument holds the same data on every inference (see

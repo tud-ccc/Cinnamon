@@ -1352,6 +1352,7 @@ struct UpmemInferAcceleratorPass
     o.nInit = nInit;
     o.rngSeed = rngSeed;
     o.nSeeds = nSeeds;
+    o.profileSeeds = profileSeeds;
     o.kappa = kappa;
     o.boBatchSize = boBatchSize;
     o.acquisition = acquisition;

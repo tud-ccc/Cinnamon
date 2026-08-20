@@ -191,6 +191,13 @@ def UpmemInferAcceleratorPass : Pass<"upmem-infer-accelerator", "ModuleOp"> {
            "Number of independent BO seeds to run concurrently in one process, "
            "sharing the config space / valid-config scan / validation set. Each "
            "seed dumps to a seed_<value>/ subdirectory. 1 = single-seed">,
+    Option<"profileSeeds", "profile-seeds", "int", "1",
+           "Graph allocation only: how many independent searches to run per "
+           "menu point, dumped to profile_seeds.csv as a measurement of how "
+           "much of a profile's shape is search noise. Diagnostic: the "
+           "allocator is always handed the first seed's point, so raising "
+           "this cannot change an allocation, only what is reported about "
+           "it. Costs a full search per extra seed">,
     Option<"kappa", "kappa", "double", "2.0",
            "UCB exploration weight for the BANANAS surrogate; used by the lcb "
            "acquisition only">,

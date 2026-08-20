@@ -1212,7 +1212,8 @@ inferAcceleratorConfig(cinm::ComputeBlockOp computeOp, InferencePlugin &plugin,
 
 Maybe<SmallVector<ProfilePoint>>
 profileComputeBlock(cinm::ComputeBlockOp computeOp, InferencePlugin &plugin,
-                    const InferenceOptions &opts) {
+                    const InferenceOptions &opts,
+                    SmallVectorImpl<ProfileSample> *samples) {
   StringRef param = plugin.sharedResourceParam();
   if (param.empty())
     return emitDefiniteFailure(
@@ -1229,12 +1230,24 @@ profileComputeBlock(cinm::ComputeBlockOp computeOp, InferencePlugin &plugin,
   // the same conditions as every other parallel evaluation here: the plugin
   // must tolerate concurrent evaluation, and the context must have its
   // thread-safe uniquing on.
+  // Repeats are independent searches of the same pinned space, so they join
+  // the menu points as ordinary units of work: the sweep is over
+  // (menu point, seed) pairs, and the outer parallelism covers both.
+  const unsigned nSeeds = std::max(1, opts.profileSeeds);
+  const size_t nJobs = menu.size() * nSeeds;
+
   MLIRContext *ctx = computeOp->getContext();
   const unsigned baseWorkers =
       opts.numWorkers ? opts.numWorkers
                       : std::max(1u, std::thread::hardware_concurrency());
   unsigned outerWorkers = 1;
   if (plugin.supportsMultithreading() && ctx->isMultithreadingEnabled())
+    // Sized by the menu, not by the job count: the per-point worker budget
+    // below is what a search's trajectory depends on, so deriving it from a
+    // count that the repeats inflate would make seed 0 of a 3-seed sweep a
+    // different search from a 1-seed sweep's only search -- and the repeats
+    // would no longer be a measurement of an unchanged experiment. The extra
+    // jobs queue through the same threads instead.
     outerWorkers = std::min<unsigned>(menu.size(), baseWorkers);
 
   // A per-point search may itself be parallel (exhaustive, sampling): divide
@@ -1244,29 +1257,36 @@ profileComputeBlock(cinm::ComputeBlockOp computeOp, InferencePlugin &plugin,
   pointBase.numWorkers = std::max(1u, baseWorkers / outerWorkers);
   pointBase.showProgress = false;
 
-  // One slot per menu value, so the profile comes out in menu order whatever
-  // the finish order.
+  // One slot per (menu value, seed), so the profile comes out in menu order
+  // whatever the finish order. Slot i*nSeeds is the seed the profile keeps.
   struct Slot {
     std::optional<ProfilePoint> point;
     std::optional<DiagnosedSilenceableFailure> fail;
   };
-  std::vector<Slot> slots(menu.size());
+  std::vector<Slot> slots(nJobs);
 
-  auto runPoint = [&](size_t i) {
+  auto runPoint = [&](size_t job) {
+    const size_t i = job / nSeeds, seed = job % nSeeds;
     const int64_t resource = menu[i];
     LLVM_DEBUG(llvm::dbgs() << "[cinm-inference] Profiling " << param << "="
-                            << resource << "\n");
+                            << resource << " seed " << seed << "\n");
     std::unique_ptr<InferencePlugin> pointPlugin = plugin.clone();
     InferenceOptions pointOpts = pointBase;
     pointOpts.pinnedParams[param] = static_cast<ParmValue>(resource);
-    if (!opts.dumpDir.empty())
+    // Same derivation as the multi-seed BO engine's seedValue(), so repeat 0
+    // is rngSeed itself and reproduces the single-seed run exactly.
+    pointOpts.rngSeed = static_cast<int>(seed) * 31 + opts.rngSeed;
+    if (!opts.dumpDir.empty()) {
       pointOpts.dumpDir =
           opts.dumpDir + "/" + param.str() + "_" + std::to_string(resource);
+      if (nSeeds > 1)
+        pointOpts.dumpDir += "/seed_" + std::to_string(pointOpts.rngSeed);
+    }
 
     InferenceTask task(pointOpts, *pointPlugin, computeOp);
     Maybe<TrialInfo> result = task.runDispatch();
     if (auto *fail = std::get_if<DiagnosedSilenceableFailure>(&result)) {
-      slots[i].fail = std::move(*fail);
+      slots[job].fail = std::move(*fail);
       return;
     }
 
@@ -1276,23 +1296,26 @@ profileComputeBlock(cinm::ComputeBlockOp computeOp, InferencePlugin &plugin,
       point.config[task.space.dimName(dim)] = best.config[dim];
     // Residency is measured on a fresh unlowered clone: depending on the
     // search mode, `best`'s own module may already be lowered past the form
-    // the plugin can read tile parameters from.
-    TrialInfo probe = task.makeTrialInfo(best.config);
-    point.residency = pointPlugin->measureResidency(probe);
-    slots[i].point = std::move(point);
+    // the plugin can read tile parameters from. Only the kept seed needs it;
+    // the repeats exist to be compared on cost.
+    if (seed == 0) {
+      TrialInfo probe = task.makeTrialInfo(best.config);
+      point.residency = pointPlugin->measureResidency(probe);
+    }
+    slots[job].point = std::move(point);
     LLVM_DEBUG(llvm::dbgs() << "[cinm-inference]   L(" << resource
                             << ") = " << best.cost << " ms\n");
   };
 
   if (outerWorkers <= 1) {
-    for (size_t i = 0; i < menu.size(); ++i)
-      runPoint(i);
+    for (size_t job = 0; job < nJobs; ++job)
+      runPoint(job);
   } else {
     std::atomic<size_t> next{0};
     auto worker = [&] {
-      for (size_t i = next.fetch_add(1, std::memory_order_relaxed);
-           i < menu.size(); i = next.fetch_add(1, std::memory_order_relaxed))
-        runPoint(i);
+      for (size_t job = next.fetch_add(1, std::memory_order_relaxed);
+           job < nJobs; job = next.fetch_add(1, std::memory_order_relaxed))
+        runPoint(job);
     };
     std::vector<std::thread> threads;
     threads.reserve(outerWorkers - 1);
@@ -1308,7 +1331,8 @@ profileComputeBlock(cinm::ComputeBlockOp computeOp, InferencePlugin &plugin,
   // capacity) is data, not an error -- the profile simply has no point there.
   std::optional<DiagnosedSilenceableFailure> definite;
   SmallVector<ProfilePoint> points;
-  for (auto [i, slot] : llvm::enumerate(slots)) {
+  for (auto [job, slot] : llvm::enumerate(slots)) {
+    const size_t i = job / nSeeds, seed = job % nSeeds;
     if (slot.fail) {
       if (slot.fail->isDefiniteFailure() && !definite) {
         definite = std::move(*slot.fail);
@@ -1320,7 +1344,14 @@ profileComputeBlock(cinm::ComputeBlockOp computeOp, InferencePlugin &plugin,
       (void)slot.fail->silence();
       continue;
     }
-    if (slot.point)
+    if (!slot.point)
+      continue;
+    if (samples)
+      samples->push_back(
+          {menu[i], static_cast<unsigned>(seed), slot.point->costMs});
+    // Only the first repeat reaches the profile, so what the allocator solves
+    // over is exactly what a single-seed run would have handed it.
+    if (seed == 0)
       points.push_back(std::move(*slot.point));
   }
   if (definite)

@@ -43,6 +43,14 @@ def Cinm_Dialect : Dialect {
     /// over the serving lifetime; see isStaticValue (CinmUtils.h) for the
     /// full staticness derivation.
     constexpr static StringRef STATIC_ATTR_NAME = "cinm.static";
+
+    /// What the graph-level solve decided about a compute block, as a
+    /// dictionary of `graph` (the solved component's name), `class` (its
+    /// program-identity class), `member` (its position in that class) and,
+    /// unless the class stayed on the host, `group` (the device set it
+    /// landed on). Pure provenance -- nothing reads it back -- but it is
+    /// what lets the solve's CSV dumps be read against the IR they describe.
+    constexpr static StringRef GRAPH_ALLOC_NAME = "cinm.graph_alloc";
     private:
         void registerOps();
         void registerTypes();
