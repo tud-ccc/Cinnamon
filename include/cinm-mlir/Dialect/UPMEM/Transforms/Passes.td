@@ -284,6 +284,13 @@ def UpmemInferAcceleratorPass : Pass<"upmem-infer-accelerator", "ModuleOp"> {
            "of them there and are for measuring what the repack costs, not "
            "for producing results",
            packFragmentedClValues.values>,
+    Option<"stampConfigs", "stamp-configs", "bool", "false",
+           "Commit by writing the winning configuration onto each block as "
+           "attributes (accelerator, cnm.tile_sizes, upmem.leaf_tile_sizes, "
+           "cnm.workgroup_dim_order) instead of splicing lowered code. The "
+           "module is converted to linalg form up front and left in it; a "
+           "separate finalization pipeline lowers the stamped module in one "
+           "go, bufferizing across block boundaries.">,
     Option<"graphAllocation", "graph-allocation", "bool", "false",
            "Run the graph-level two-level solve (profile each program class "
            "over the DPU rank menu, allocate the grid exactly across the "
