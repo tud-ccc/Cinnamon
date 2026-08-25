@@ -157,6 +157,13 @@ All from `campaign.csv`; matplotlib scripts live next to the existing
   boxes, reliability CDF, best-of-k; CVD-validated fixed arm colors).
   Verified end-to-end on the existing bananas dumps: reliability shows
   P(run within 5%) ≈ 1.0 / 0.08 / 0.05 for small / medium / large spaces
-  -- the quantified version of the complaint. Next: run `doit campaign`
-  (overnight-ish: 4 arms × 26 fns × 32 seeds, simulator only), then read
-  the figures and pick the successor strategy.
+  -- the quantified version of the complaint. Next: run `doit campaign`,
+  then read the figures and pick the successor strategy.
+- 2026-08-25 (later): campaign scoped to 5 representative functions
+  (dodo.py `CAMPAIGN_FNS`: red_64MB the one small space where search does
+  work, gemv_4MB the low-variance medium, mtv_256MB the high-variance
+  medium, mmtv_4MB a ~500k space with cheap evals, ttv_512MB the worst
+  RNG dependence). 4 arms × 5 fns × 32 seeds ≈ an afternoon, not
+  overnight; set `CAMPAIGN_FNS = ()` for the full 26-function campaign
+  later. The plots restrict pooled statistics to functions every arm ran,
+  so scoped and full runs never mix into an unfair comparison.

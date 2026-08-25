@@ -276,6 +276,23 @@ def main() -> None:
     df["regret"] = regret_pct(df)
     df["class"] = df["fn"].map(fn_class)
 
+    # Compare arms only where every arm ran: with a scoped campaign
+    # (dodo.py's CAMPAIGN_FNS) the control arm covers all functions, and
+    # pooling over functions one arm has and another lacks would compare
+    # benchmarks, not strategies.
+    per_arm = df.groupby("arm")["fn"].agg(set)
+    common = set.intersection(*per_arm)
+    dropped = sorted(set(df["fn"]) - common)
+    if dropped:
+        print(
+            f"campaign plots: {len(common)} functions every arm ran; "
+            f"dropping {len(dropped)} covered only partially: {dropped}"
+        )
+    df = df[df["fn"].isin(common)]
+    if df.empty:
+        print("campaign plots: no function is covered by every arm -- nothing to draw")
+        return
+
     plot_anytime(df, out_dir, "campaign_anytime.pdf", "eval_idx", "evaluations spent")
     cpu = df.dropna(subset=["cpu_ms"]).assign(cpu_ms=lambda d: d["cpu_ms"] / 1000)
     plot_anytime(

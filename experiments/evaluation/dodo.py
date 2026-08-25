@@ -1153,6 +1153,16 @@ CAMPAIGN_ARMS = {
     "ga": {"search-strategy": "ga"},
 }
 
+# Campaign scope: the representative subset the arms run on by default, one
+# function per behaviour class of the diagnosis (SearchStrategyPlan.md §1):
+# red_64MB is the one small space where search does real work; gemv_4MB the
+# low-variance medium; mtv_256MB the high-variance medium where BO loses to
+# random; mmtv_4MB a ~500k space with cheap evaluations; ttv_512MB the worst
+# RNG dependence of the whole e1 campaign. Set to () to run all functions.
+# The plots restrict pooled statistics to functions every arm ran, so a
+# scoped campaign and a later full one never mix into an unfair comparison.
+CAMPAIGN_FNS = ("red_64MB", "gemv_4MB", "mtv_256MB", "mmtv_4MB", "ttv_512MB")
+
 
 def campaign_dump_dir(bench: str, arm: str) -> pathlib.Path:
     return (
@@ -1183,11 +1193,14 @@ def _run_campaign_arm(bench: str, fn_name: str, arm: str) -> bool:
 def task_campaign():
     """B7: the strategy-comparison arms (docs/SearchStrategyPlan.md), same
     seeds and budget as task_search so the shared init sample makes the
-    comparison paired. Simulator only; the regret analysis never leaves sim
-    space, so nothing here is compiled or benched downstream."""
+    comparison paired. Scoped to CAMPAIGN_FNS unless that is empty.
+    Simulator only; the regret analysis never leaves sim space, so nothing
+    here is compiled or benched downstream."""
     for bench in WORKLOADS:
         for arm in CAMPAIGN_ARMS:
             for fn_name in list_functions(source_mlir(bench)):
+                if CAMPAIGN_FNS and fn_name not in CAMPAIGN_FNS:
+                    continue
                 dump = campaign_dump_dir(bench, arm)
                 yield {
                     "name": f"{bench}:{arm}:{fn_name}",
