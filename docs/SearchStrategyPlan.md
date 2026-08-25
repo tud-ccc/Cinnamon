@@ -149,3 +149,14 @@ All from `campaign.csv`; matplotlib scripts live next to the existing
   (median 1.49 ms) concentrate far below uniform draws (median ~4.8 ms).
   All five arms now selectable; next: the regret harness
   (`campaign.csv` + plots), then the campaign itself.
+- 2026-08-25 (later): regret harness done. `doit campaign` runs the four
+  non-control arms (the `bananas` control is task_search's existing dump);
+  `doit assemble_campaign` builds results/campaign.csv + campaign_ref.csv
+  (assemble_campaign.py); `doit plot_campaign` draws the five figures
+  (plot_search_campaign.py: anytime in evals and CPU-s, final-regret
+  boxes, reliability CDF, best-of-k; CVD-validated fixed arm colors).
+  Verified end-to-end on the existing bananas dumps: reliability shows
+  P(run within 5%) ≈ 1.0 / 0.08 / 0.05 for small / medium / large spaces
+  -- the quantified version of the complaint. Next: run `doit campaign`
+  (overnight-ish: 4 arms × 26 fns × 32 seeds, simulator only), then read
+  the figures and pick the successor strategy.

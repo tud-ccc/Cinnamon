@@ -1139,6 +1139,84 @@ def task_search_ablate():
                 }
 
 
+# ── B7: search-strategy campaign (docs/SearchStrategyPlan.md) ────────────────
+
+# Arm → infer-opts overrides on top of OPTS["infer_opts"]. The `bananas`
+# control arm is not listed: it is task_search's own dump, which the
+# assembly reads as arm "bananas" (the strategy refactor kept the default
+# search bit-identical, so re-running it would only burn compute). Keep
+# assemble_campaign.py's ARM_DUMPS in sync with this table.
+CAMPAIGN_ARMS = {
+    "bananas_rand": {"n-random-candidates": 256},
+    "random": {"search-strategy": "random"},
+    "descent": {"search-strategy": "descent"},
+    "ga": {"search-strategy": "ga"},
+}
+
+
+def campaign_dump_dir(bench: str, arm: str) -> pathlib.Path:
+    return (
+        _search_dump_dir(bench, "default")
+        if arm == "bananas"
+        else DATA_DIR / bench / f"campaign_{arm}" / "dump"
+    )
+
+
+def _run_campaign_arm(bench: str, fn_name: str, arm: str) -> bool:
+    dump = campaign_dump_dir(bench, arm)
+    cinmopt.bo_multiseed(
+        split_module(bench, fn_name),
+        dump,
+        n_seeds=OPTS["n_seeds"],
+        workers=64,
+        **_per_fn_run_files(dump, fn_name),
+        infer_opts={
+            "simulator": OPTS["simulator"],
+            "eval-timeout-ms": OPTS["eval_timeout_ms"],
+            **OPTS["infer_opts"],
+            **CAMPAIGN_ARMS[arm],
+        },
+    )
+    return True
+
+
+def task_campaign():
+    """B7: the strategy-comparison arms (docs/SearchStrategyPlan.md), same
+    seeds and budget as task_search so the shared init sample makes the
+    comparison paired. Simulator only; the regret analysis never leaves sim
+    space, so nothing here is compiled or benched downstream."""
+    for bench in WORKLOADS:
+        for arm in CAMPAIGN_ARMS:
+            for fn_name in list_functions(source_mlir(bench)):
+                dump = campaign_dump_dir(bench, arm)
+                yield {
+                    "name": f"{bench}:{arm}:{fn_name}",
+                    "file_dep": [str(split_module(bench, fn_name))],
+                    "targets": [str(_per_fn_out_mlir(dump, fn_name))],
+                    "actions": [(_run_campaign_arm, [bench, fn_name, arm])],
+                }
+
+
+def task_assemble_campaign():
+    """results/campaign.csv (+ campaign_ref.csv): the anytime curves of
+    whatever arms have run, regret-referenced against the pooled best.
+    Missing-tolerant like every assemble step."""
+    return {
+        "actions": [f"python {HERE / 'assemble_campaign.py'}"],
+        "uptodate": [False],
+    }
+
+
+def task_plot_campaign():
+    """plots/campaign_*.pdf: anytime regret (evals and CPU-seconds), final
+    regret, reliability, best-of-k -- see plot_search_campaign.py."""
+    return {
+        "actions": [f"python {HERE / 'plot_search_campaign.py'}"],
+        "task_dep": ["assemble_campaign"],
+        "uptodate": [False],
+    }
+
+
 def _search_pick_configs(bench: str, space: str) -> list[compile_run.Config]:
     """One config per (fn, seed): the seed's best-by-predicted-cost pick.
     Every seed is kept -- the spread of the picks over seeds is itself a
