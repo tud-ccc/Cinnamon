@@ -139,3 +139,13 @@ All from `campaign.csv`; matplotlib scripts live next to the existing
   rand=0. `search-strategy=random` evaluates uniform draws with the whole
   budget; no model columns in pool.csv, no rounds.csv. Next: descent + GA
   arms, then the regret harness (`campaign.csv` + plots).
+- 2026-08-25 (later): arms 4 and 5 done. `search-strategy=descent` is
+  batched steepest descent over grid neighbours with random restarts (first
+  climb starts from the best init observation); `search-strategy=ga` is a
+  steady-state GA (binary tournament, per-parameter crossover so
+  permutations never mix dimensions, neighbour-step mutation, random
+  immigrants on convergence, population = best `n-init` observations).
+  Smoke-tested on mtv_4MB: descent improves past init; GA's proposals
+  (median 1.49 ms) concentrate far below uniform draws (median ~4.8 ms).
+  All five arms now selectable; next: the regret harness
+  (`campaign.csv` + plots), then the campaign itself.

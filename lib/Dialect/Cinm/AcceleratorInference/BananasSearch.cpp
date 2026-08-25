@@ -472,6 +472,31 @@ static size_t evaluateBatch(llvm::ArrayRef<arma::uword> batch,
   return accepted.load();
 }
 
+/// Run `accept` over `indices`, concurrently when `workers > 1`. Returns the
+/// number accepted. The model-free strategies' evaluation loop; evaluateBatch
+/// above additionally records per-selection outcomes for the BANANAS
+/// diagnostics.
+static size_t evaluateIndices(llvm::ArrayRef<size_t> indices,
+                              const std::function<bool(size_t)> &accept,
+                              unsigned workers) {
+  std::atomic<size_t> accepted{0};
+  if (workers <= 1 || indices.size() <= 1) {
+    for (size_t idx : indices)
+      if (accept(idx))
+        ++accepted;
+    return accepted.load();
+  }
+  llvm::DefaultThreadPool threadPool(
+      llvm::hardware_concurrency(std::min<unsigned>(workers, indices.size())));
+  for (size_t idx : indices)
+    threadPool.async([&accept, &accepted, idx]() {
+      if (accept(idx))
+        accepted.fetch_add(1, std::memory_order_relaxed);
+    });
+  threadPool.wait();
+  return accepted.load();
+}
+
 // ===----------------------------------------------------------------------===//
 // Search diagnostics
 // ===----------------------------------------------------------------------===//
@@ -1286,9 +1311,7 @@ public:
         draw.insert(idx);
       }
       llvm::SmallVector<size_t> candIdx(draw.begin(), draw.end());
-      llvm::SmallVector<arma::uword> slots(candIdx.size());
-      std::iota(slots.begin(), slots.end(), 0);
-      size_t accepted = evaluateBatch(slots, candIdx, accept, workers, {});
+      size_t accepted = evaluateIndices(candIdx, accept, workers);
       if (accepted > 0)
         return accepted;
     }
@@ -1297,6 +1320,271 @@ public:
 
 private:
   CandidatePool &pool;
+};
+
+// ===----------------------------------------------------------------------===//
+// Descent strategy
+// ===----------------------------------------------------------------------===//
+
+/// Random-restart neighbourhood descent. An incumbent's unvisited grid
+/// neighbours are evaluated batch by batch; the climb moves to the best
+/// improving neighbour, and restarts from a random unvisited config once the
+/// neighbourhood is exhausted without improvement. The first climb starts
+/// from the best init observation, so the shared init sample seeds the
+/// descent exactly as it seeds the surrogate strategies.
+class DescentStrategy final : public SearchStrategy {
+public:
+  explicit DescentStrategy(CandidatePool &pool)
+      : pool(pool), space_(pool.space_) {}
+
+  size_t step(std::mt19937 &rng, const std::function<bool(size_t)> &accept,
+              int round, size_t nObsAtRound, size_t batchSize,
+              unsigned workers) override {
+    while (pool.numVisited() < pool.size()) {
+      if (cur == kNone && !startClimb(rng, accept))
+        continue; // restart evaluation failed; its config is now visited
+      if (restartAccepted) {
+        // The restart's own evaluation is this round's progress; the climb
+        // out of it begins next round.
+        restartAccepted = false;
+        return 1;
+      }
+      if (frontier.empty()) {
+        // Neighbourhood exhausted without improvement: local optimum.
+        cur = kNone;
+        continue;
+      }
+      llvm::SmallVector<size_t> batch;
+      while (!frontier.empty() && batch.size() < batchSize) {
+        size_t idx = frontier.back();
+        frontier.pop_back();
+        // The frontier is not re-checked on refill, and an index can be a
+        // neighbour of several incumbents.
+        if (!pool.isVisited(idx))
+          batch.push_back(idx);
+      }
+      if (batch.empty())
+        continue;
+      size_t accepted = evaluateIndices(batch, accept, workers);
+      // Steepest of the batch: move only if something improved.
+      size_t bestIdx = kNone;
+      double bestCost = curCost;
+      for (size_t idx : batch) {
+        auto it = pool.costByIdx.find(idx);
+        if (it != pool.costByIdx.end() && it->second < bestCost) {
+          bestIdx = it->first;
+          bestCost = it->second;
+        }
+      }
+      if (bestIdx != kNone) {
+        cur = bestIdx;
+        curCost = bestCost;
+        refillFrontier(rng);
+      }
+      if (accepted > 0)
+        return accepted;
+      // Every evaluation failed; failures cost no budget, keep climbing.
+    }
+    return 0;
+  }
+
+private:
+  static constexpr size_t kNone = std::numeric_limits<size_t>::max();
+
+  /// Set `cur` to a climb start: the best observation so far on the first
+  /// climb (free -- it is already evaluated), a random unvisited config
+  /// afterwards (evaluated here; `restartAccepted` tells step the round spent
+  /// budget on it). Returns false when the chosen start failed to evaluate or
+  /// the pool is exhausted.
+  bool startClimb(std::mt19937 &rng,
+                  const std::function<bool(size_t)> &accept) {
+    if (firstClimb) {
+      firstClimb = false;
+      for (auto [idx, cost] : pool.costByIdx)
+        if (cost < curCost) {
+          cur = idx;
+          curCost = cost;
+        }
+      if (cur != kNone) {
+        refillFrontier(rng);
+        return true;
+      }
+    }
+    std::unordered_set<size_t> draw;
+    pool.fillRandom(draw, 1, rng);
+    size_t idx = draw.empty() ? pool.firstUnvisited() : *draw.begin();
+    if (idx >= pool.N)
+      return false;
+    if (!accept(idx))
+      return false;
+    cur = idx;
+    curCost = pool.costByIdx.at(idx);
+    restartAccepted = true;
+    refillFrontier(rng);
+    return true;
+  }
+
+  void refillFrontier(std::mt19937 &rng) {
+    frontier.clear();
+    llvm::SmallVector<size_t> nbrs;
+    space_->neighborIndices(cur, nbrs);
+    for (size_t nb : nbrs)
+      if (!pool.isVisited(nb))
+        frontier.push_back(nb);
+    // Shuffled so that a batch that stops mid-neighbourhood is not biased
+    // towards whichever dimension neighborIndices enumerates first.
+    std::shuffle(frontier.begin(), frontier.end(), rng);
+  }
+
+  CandidatePool &pool;
+  const ConfigSpace *space_;
+  size_t cur = kNone;
+  double curCost = std::numeric_limits<double>::infinity();
+  /// Unvisited neighbours of `cur` not yet offered, shuffled.
+  std::vector<size_t> frontier;
+  bool firstClimb = true;
+  bool restartAccepted = false;
+};
+
+// ===----------------------------------------------------------------------===//
+// GA strategy
+// ===----------------------------------------------------------------------===//
+
+/// Steady-state genetic algorithm: tournament-select two parents from a
+/// population of the best observed configs, cross them per *parameter* (so a
+/// permutation parameter's dimensions never mix between parents), mutate by
+/// grid-neighbour steps, and let evaluated children compete into the
+/// population by cost. The population is seeded from the shared init sample.
+class GaStrategy final : public SearchStrategy {
+public:
+  explicit GaStrategy(CandidatePool &pool)
+      : pool(pool), space_(pool.space_),
+        popSize(std::max<size_t>(16, static_cast<size_t>(pool.opts.nInit))) {}
+
+  size_t step(std::mt19937 &rng, const std::function<bool(size_t)> &accept,
+              int round, size_t nObsAtRound, size_t batchSize,
+              unsigned workers) override {
+    if (population.empty())
+      seedPopulation();
+    while (pool.numVisited() < pool.size()) {
+      llvm::SmallVector<size_t> batch;
+      std::unordered_set<size_t> proposed;
+      for (size_t guard = 0; batch.size() < batchSize && guard < batchSize * 20;
+           ++guard) {
+        size_t child = proposeChild(rng);
+        if (child != kNone && !pool.isVisited(child) &&
+            proposed.insert(child).second)
+          batch.push_back(child);
+      }
+      if (batch.empty()) {
+        // Converged onto visited ground: random immigrants keep the search
+        // alive and reintroduce diversity.
+        std::unordered_set<size_t> draw;
+        pool.fillRandom(draw, batchSize, rng);
+        if (draw.empty())
+          return 0;
+        batch.assign(draw.begin(), draw.end());
+      }
+      size_t accepted = evaluateIndices(batch, accept, workers);
+      for (size_t idx : batch)
+        offerToPopulation(idx);
+      if (accepted > 0)
+        return accepted;
+    }
+    return 0;
+  }
+
+private:
+  static constexpr size_t kNone = std::numeric_limits<size_t>::max();
+
+  double costOf(size_t idx) const {
+    auto it = pool.costByIdx.find(idx);
+    return it == pool.costByIdx.end() ? std::numeric_limits<double>::infinity()
+                                      : it->second;
+  }
+
+  void seedPopulation() {
+    for (auto [idx, cost] : pool.costByIdx)
+      if (std::isfinite(cost))
+        population.push_back(idx);
+    llvm::sort(population,
+               [&](size_t a, size_t b) { return costOf(a) < costOf(b); });
+    if (population.size() > popSize)
+      population.resize(popSize);
+  }
+
+  /// Binary tournament over population slots; kNone when the population is
+  /// too small to breed.
+  size_t tournament(std::mt19937 &rng) const {
+    if (population.size() < 2)
+      return kNone;
+    std::uniform_int_distribution<size_t> pick(0, population.size() - 1);
+    size_t a = population[pick(rng)], b = population[pick(rng)];
+    return costOf(a) <= costOf(b) ? a : b;
+  }
+
+  size_t proposeChild(std::mt19937 &rng) {
+    size_t pa = tournament(rng), pb = tournament(rng);
+    if (pa == kNone || pb == kNone)
+      return kNone;
+    Configuration a, b;
+    space_->at(pa, a);
+    space_->at(pb, b);
+    // Uniform per-parameter crossover. Copying whole parameters keeps
+    // multi-dimension parameters internally consistent; the result can still
+    // violate cross-parameter constraints, in which case the child falls back
+    // to a parent and mutation must move it.
+    std::bernoulli_distribution coin(0.5);
+    Configuration child = a;
+    for (size_t p = 0; p < space_->numParams(); ++p)
+      if (coin(rng)) {
+        auto vals = space_->paramValues(b, p);
+        std::copy(vals.begin(), vals.end(),
+                  child.begin() + space_->dimOffset(p));
+      }
+    const bool feasible = space_->isEncodable(child);
+    size_t idx = feasible ? space_->indexOf(child) : pa;
+    // Mutation by neighbour steps -- neighbours never leave the constrained
+    // space. Forced when the child is a fallback parent (already visited) so
+    // the proposal is never a wasted duplicate.
+    unsigned steps = (!feasible || pool.isVisited(idx)) ? 1 : 0;
+    if (coin(rng))
+      ++steps;
+    llvm::SmallVector<size_t> nbrs;
+    for (unsigned m = 0; m < steps; ++m) {
+      nbrs.clear();
+      space_->neighborIndices(idx, nbrs);
+      if (nbrs.empty())
+        break;
+      std::uniform_int_distribution<size_t> pick(0, nbrs.size() - 1);
+      idx = nbrs[pick(rng)];
+    }
+    return idx;
+  }
+
+  /// Insert an evaluated config into the population if it beats the worst
+  /// member (or the population is not full yet). Failed evaluations have no
+  /// cost and are never inserted.
+  void offerToPopulation(size_t idx) {
+    double cost = costOf(idx);
+    if (!std::isfinite(cost))
+      return;
+    if (population.size() < popSize) {
+      population.push_back(idx);
+      return;
+    }
+    size_t worstSlot = 0;
+    for (size_t s = 1; s < population.size(); ++s)
+      if (costOf(population[s]) > costOf(population[worstSlot]))
+        worstSlot = s;
+    if (cost < costOf(population[worstSlot]))
+      population[worstSlot] = idx;
+  }
+
+  CandidatePool &pool;
+  const ConfigSpace *space_;
+  size_t popSize;
+  std::vector<size_t> population; // pool indices of evaluated configs
 };
 
 // ===----------------------------------------------------------------------===//
@@ -1313,6 +1601,10 @@ std::unique_ptr<SearchStrategy> makeSearchStrategy(CandidatePool &pool,
     return std::make_unique<BananasStrategy>(pool, validSet, trainingSet);
   case InferenceOptions::SearchStrategyKind::Random:
     return std::make_unique<RandomStrategy>(pool);
+  case InferenceOptions::SearchStrategyKind::Descent:
+    return std::make_unique<DescentStrategy>(pool);
+  case InferenceOptions::SearchStrategyKind::Ga:
+    return std::make_unique<GaStrategy>(pool);
   }
   llvm_unreachable("unknown search strategy");
 }

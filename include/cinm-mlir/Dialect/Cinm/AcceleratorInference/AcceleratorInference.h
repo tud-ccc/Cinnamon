@@ -276,6 +276,12 @@ struct InferenceOptions {
     /// Uniform random search over the unvisited configs: the floor every
     /// learned strategy has to beat at equal budget.
     Random,
+    /// Random-restart neighbourhood descent: batched steepest descent over
+    /// grid neighbours, restarting from a random config at local optima.
+    Descent,
+    /// Steady-state GA: tournament selection, per-parameter crossover,
+    /// neighbour-step mutation, population seeded from the init sample.
+    Ga,
   };
   SearchStrategyKind searchStrategy = SearchStrategyKind::Bananas;
 
