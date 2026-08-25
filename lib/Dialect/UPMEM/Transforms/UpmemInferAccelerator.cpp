@@ -1352,6 +1352,8 @@ struct UpmemInferAcceleratorPass
     o.nInit = nInit;
     o.rngSeed = rngSeed;
     o.nSeeds = nSeeds;
+    o.hostTransferBoundShare = hostTransferBoundShare;
+    o.profileRepair = profileRepair;
     o.profileSeeds = profileSeeds;
     o.kappa = kappa;
     o.boBatchSize = boBatchSize;

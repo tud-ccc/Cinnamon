@@ -304,8 +304,14 @@ static void dumpProfilesCSV(const std::filesystem::path &path,
   std::ofstream out(path);
   if (!out)
     return;
+  // raw_cost_ms is what this point's own pinned search measured; cost_ms is
+  // what the point offers after lower-envelope repair, and repaired_from
+  // names the smaller resource whose incumbent it carries (empty when the
+  // point kept its own). transfer_share is the incumbent's per-inference
+  // data-movement share (amortized weight scatters excluded); empty when it
+  // was not measured.
   out << "class,debug_tag,location,multiplicity,resource,cost_ms,"
-         "weight_scatter_ms,config";
+         "raw_cost_ms,repaired_from,transfer_share,weight_scatter_ms,config";
   for (const std::string &level : levels)
     out << ",static_" << level << ",dyn_" << level;
   out << "\n";
@@ -324,7 +330,7 @@ static void dumpProfilesCSV(const std::filesystem::path &path,
       // A class that stays on the host is kept for the record, with every
       // measured column empty.
       classCols();
-      out << ",,,";
+      out << ",,,,,,";
       for (size_t i = 0, e = 2 * levels.size(); i < e; ++i)
         out << ",";
       out << "\n";
@@ -348,8 +354,14 @@ static void dumpProfilesCSV(const std::filesystem::path &path,
           ";");
 
       classCols();
-      out << point.resource << "," << point.costMs << ","
-          << point.residency.weightScatterMs << "," << csvQuote(config);
+      out << point.resource << "," << point.costMs << "," << point.rawCostMs
+          << ",";
+      if (point.repairedFrom)
+        out << point.repairedFrom;
+      out << ",";
+      if (point.transferShare >= 0)
+        out << point.transferShare;
+      out << "," << point.residency.weightScatterMs << "," << csvQuote(config);
       for (const std::string &level : levels) {
         const LevelResidency *entry = point.residency.find(level);
         out << ",";
@@ -579,6 +591,32 @@ runGraphAllocation(const ComputeGraph &graph, StringRef platformName,
              "with the "
           << (blockClass.size() - 1) << " other block(s) of its class";
       continue;
+    }
+    // The transfer-bound gate (see InferenceOptions::hostTransferBoundShare):
+    // a class whose best point is the smallest menu value gains nothing from
+    // more devices, and when that point is also mostly transfer the device
+    // buys it essentially nothing at all -- the conjunction keeps
+    // compute-bound classes that merely scale poorly (attention-shaped
+    // matmuls) on the device. This is a heuristic in lieu of a host cost
+    // model (future work); the evidence behind it is the profile shape
+    // itself, see docs/SearchStrategyPlan.md.
+    if (opts.hostTransferBoundShare > 0) {
+      SmallVector<ProfilePoint> &pts = *results[ci].points;
+      const ProfilePoint *bestPt =
+          &*llvm::min_element(pts, [](const auto &a, const auto &b) {
+            return a.costMs < b.costMs;
+          });
+      if (bestPt->resource == pts.front().resource &&
+          bestPt->transferShare >= opts.hostTransferBoundShare) {
+        blockClass.representative().emitWarning()
+            << "transfer-bound on '" << platformName << "' ("
+            << static_cast<int>(bestPt->transferShare * 100)
+            << "% of its best point's cost is data movement, and more "
+               "devices do not improve it); it stays on the host, along "
+               "with the "
+            << (blockClass.size() - 1) << " other block(s) of its class";
+        continue;
+      }
     }
     solveIndexOfClass[ci] = static_cast<int>(profiles.size());
     profiles.push_back({blockClass.size(), std::move(*results[ci].points)});
