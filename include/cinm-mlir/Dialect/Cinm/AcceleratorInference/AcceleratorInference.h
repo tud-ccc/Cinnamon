@@ -322,9 +322,14 @@ struct InferenceOptions {
   /// addition to* the neighbour set. When 0, random draws only top the
   /// candidate set up to nCandidates -- which, on spaces whose neighbour set
   /// alone exceeds nCandidates, means no random candidates at all: the search
-  /// degenerates to a local hill climb from the init sample (see
-  /// docs/SearchStrategyPlan.md).
-  size_t nRandCandidates = 0;
+  /// degenerates to a local hill climb from the init sample.
+  ///
+  /// The default follows the strategy campaign's K-sweep
+  /// (docs/SearchStrategyPlan.md): on the largest space (ttv_512MB, 1.6M
+  /// configs) K=256/1024/4096 gave median regret 46/33/0.9%, with no
+  /// regression on smaller spaces and negligible screening cost (the
+  /// predict is ~ms; the fit does not grow with K).
+  size_t nRandCandidates = 4096;
   /// How many discrete steps away from observed points to include as
   /// candidates. 1 = immediate neighbors only; 2 = neighbors-of-neighbors, etc.
   unsigned neighborDepth = 1;

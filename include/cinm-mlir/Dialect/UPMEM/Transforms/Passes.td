@@ -240,12 +240,14 @@ def UpmemInferAcceleratorPass : Pass<"upmem-infer-accelerator", "ModuleOp"> {
     Option<"neighborDepth", "neighbor-depth", "unsigned", "2",
            "Number of discrete steps away from observed points to include as "
            "candidates (1 = immediate neighbors only)">,
-    Option<"nRandCandidates", "n-random-candidates", "size_t", "0",
+    Option<"nRandCandidates", "n-random-candidates", "size_t", "4096",
            "When > 0, each BANANAS round draws this many random candidates in "
-           "addition to the neighbour set. When 0, random draws only top the "
-           "candidate set up to the internal nCandidates cap, which adds none "
-           "once the neighbour set alone exceeds it (the search then "
-           "degenerates to a local hill climb from the init sample)">,
+           "addition to the neighbour set; the default follows the strategy "
+           "campaign's K-sweep (docs/SearchStrategyPlan.md). When 0, random "
+           "draws only top the candidate set up to the internal nCandidates "
+           "cap, which adds none once the neighbour set alone exceeds it (the "
+           "search then degenerates to a local hill climb from the init "
+           "sample -- the pre-campaign behaviour)">,
     Option<"neighborFrontierOnly", "neighbor-frontier-only", "bool", "false",
            "When true, only add candidates at exactly neighbor-depth steps away; "
            "otherwise add all points within that distance">,
