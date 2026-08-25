@@ -162,6 +162,18 @@ def _draw(ax, graph: Graph) -> None:
             label=_label(cls.iloc[0]),
         )
         color_of_class[class_ix] = line.get_color()
+        # Where lower-envelope repair replaced a point, the raw measurement
+        # is drawn dashed behind the profile: the gap between the two is the
+        # cliff a stalled search seed would have cut into the allocation.
+        if "raw_cost_ms" in cls and (cls["raw_cost_ms"] > cls["cost_ms"]).any():
+            ax.plot(
+                cls["resource"],
+                cls["raw_cost_ms"],
+                linestyle="--",
+                lw=0.8,
+                alpha=0.5,
+                color=line.get_color(),
+            )
         # How far independent searches of the same pinned space landed apart.
         # A wiggle in the line that the band covers is search luck, not shape.
         band = graph.spread(class_ix)

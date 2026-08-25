@@ -1364,6 +1364,20 @@ profileComputeBlock(cinm::ComputeBlockOp computeOp, InferencePlugin &plugin,
     if (seed == 0) {
       TrialInfo probe = task.makeTrialInfo(best.config);
       point.residency = pointPlugin->measureResidency(probe);
+      // The search only kept the incumbent's total; the transfer-bound gate
+      // and profiles.csv want its breakdown, so price it once more (the
+      // simulator is deterministic, so this reproduces costMs). A fresh
+      // trial module: evaluate() lowers what it is given.
+      TrialInfo breakdownProbe = task.makeTrialInfo(best.config);
+      auto priced = pointPlugin->evaluate(breakdownProbe);
+      if (auto *cost = std::get_if<utils::SimCost>(&priced)) {
+        const double total = cost->total();
+        if (std::isfinite(total) && total > 0)
+          point.transferShare =
+              (cost->categoryTotal(utils::CostCategory::Transfer) +
+               cost->categoryTotal(utils::CostCategory::TransferBack)) /
+              total;
+      }
     }
     slots[job].point = std::move(point);
     LLVM_DEBUG(llvm::dbgs() << "[cinm-inference]   L(" << resource
@@ -1424,6 +1438,32 @@ profileComputeBlock(cinm::ComputeBlockOp computeOp, InferencePlugin &plugin,
     return emitSilenceableFailure(computeOp.getLoc())
            << "no value of '" << param
            << "' in the allocation menu is feasible for this block";
+
+  // Lower-envelope repair (see InferenceOptions::profileRepair). Points are
+  // in menu order, i.e. ascending resource; a running argmin over the
+  // measured costs replaces any point a stalled seed left above the envelope
+  // with the best smaller point's incumbent. The residency travels with the
+  // configuration -- it describes what actually runs -- and rawCostMs keeps
+  // the measurement.
+  for (ProfilePoint &p : points)
+    p.rawCostMs = p.costMs;
+  if (opts.profileRepair) {
+    const ProfilePoint *best = nullptr;
+    for (ProfilePoint &p : points) {
+      if (best && best->costMs < p.costMs) {
+        p.costMs = best->costMs;
+        p.config = best->config;
+        p.residency = best->residency;
+        p.repairedFrom = best->resource;
+        LLVM_DEBUG(llvm::dbgs()
+                   << "[cinm-inference]   repaired L(" << p.resource
+                   << ") = " << p.rawCostMs << " -> " << p.costMs << " (from "
+                   << param << "=" << best->resource << ")\n");
+      } else {
+        best = &p;
+      }
+    }
+  }
   return points;
 }
 

@@ -218,3 +218,60 @@ All from `campaign.csv`; matplotlib scripts live next to the existing
   (§"fix the profile convexity directly"); re-running task_search and the
   wholeprogram stack under the new default invalidates their old dumps
   (landscape rule above applies to search-version drift too).
+- 2026-08-25 (later): dynamic stopping evaluated and REJECTED for now.
+  Retrospective replay of "stop after X evals without >1% improvement"
+  over the bananas_rand4k campaign seeds: patience 32/48 loses 52/21pp
+  median regret; patience 64 saves 46% of evals but costs mmtv_4MB
+  +49pp median; only patience >= 96-128 is quality-safe and saves just
+  12-24% of 0.4s evaluations. Improvement is bursty (plateau, then a
+  Thompson hit), so patience must approach half the budget to be safe.
+  Principled BO termination (Makarova et al. 2022 regret bounds; EI
+  thresholds) needs calibrated posteriors, which the ensemble's sigma is
+  not. Revisit only if profiling walltime becomes a bottleneck; prefer
+  menu-axis warm-starting then.
+- 2026-08-25 (later): profile repair implemented (profile-repair pass
+  option, default on). profileComputeBlock now applies a lower-envelope
+  running argmin over the menu: a point whose pinned search measured
+  worse than a smaller point's incumbent takes that incumbent (config,
+  cost, residency) -- allocating R devices can always run a smaller
+  point's configuration and idle the rest, so the repaired profile is
+  achievable by construction and non-increasing. No projection and no
+  extra evaluations needed (the plan's original cross-evaluation idea is
+  subsumed). profiles.csv gains raw_cost_ms + repaired_from;
+  plot_profiles.py draws the raw curve dashed behind the envelope.
+  Motivation confirmed on the existing llama dump: 12/12 classes
+  non-monotone (2-7 upward steps each); the small reduction classes rise
+  from the first menu step, which is physics (scatter overhead), not
+  noise -- repair flattens them, which is exactly what the allocator
+  should see. Note the *pinned-group replay* consequence: a repaired
+  point stamps the smaller resource's config, so a group allocated R may
+  run dpus=R'<R with the rest idle.
+- 2026-08-25 (later): repair verified on a fresh llama solve under the
+  full new stack (work-conserving pool + K=4096 search + repair): 52/96
+  points repaired, every class's profile non-increasing.
+- 2026-08-25 (later): offloading criterion for transfer-bound classes.
+  There is NO host cost model, so profitability cannot be a comparison
+  (framed as future work); candidate a-priori rule: offload only ops
+  with >= 1 static/amortizable operand. Tested against the llama
+  profiles -- the correlation is strong but both directions have
+  counterexamples:
+
+  | classes | static op? | profile | verdict |
+  |---|---|---|---|
+  | 0, 4-7 (reductions/elementwise) | no | min at first point | bad candidates (criterion agrees) |
+  | 2, 9, 10, 12 (projections/FFN) | yes | min deep in menu | good candidates (agrees) |
+  | 3, 8 (attention matmuls, x96) | **no** | min at 192/256 | **good** despite no static operand |
+  | 1 (rmsnorm-with-weight) | **yes** | min at first point | **bad** despite static operand |
+
+  The attention matmuls are the expensive counterexample: all-dynamic
+  operands but compute-heavy, so the static-operand rule would host a
+  large share of the work. The measured criterion implemented instead
+  (`host-transfer-bound-share`, default 0 = surface only): a class stays
+  on the host when its best profile point is the *smallest* menu value
+  AND that point's per-inference transfer share (new transfer_share
+  column; amortized weight scatters excluded; e1 evidence: va/geva/red
+  are 70-97% transfer, weight-stationary gemv/mtv are kernel-bound)
+  exceeds the threshold. The conjunction keeps compute-bound classes
+  that merely scale poorly. The static-operand rule remains the clean
+  a-priori story for the paper, with the profiles as its (mostly
+  supporting) evidence and attention as the honest exception.

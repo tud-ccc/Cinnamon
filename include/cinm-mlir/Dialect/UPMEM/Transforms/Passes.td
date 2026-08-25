@@ -201,6 +201,25 @@ def UpmemInferAcceleratorPass : Pass<"upmem-infer-accelerator", "ModuleOp"> {
            "Number of independent BO seeds to run concurrently in one process, "
            "sharing the config space / valid-config scan / validation set. Each "
            "seed dumps to a seed_<value>/ subdirectory. 1 = single-seed">,
+    Option<"hostTransferBoundShare", "host-transfer-bound-share", "double",
+           "0.0",
+           "Graph profiling only: when > 0, a class stays on the host when "
+           "its best profile point is the smallest menu value AND spends at "
+           "least this share of its per-inference cost on data movement "
+           "(amortized weight scatters excluded). Heuristic in lieu of a "
+           "host cost model: transfer-bound work gains ~nothing from the "
+           "device, while the conjunction keeps compute-bound classes that "
+           "merely scale poorly. 0 (default) only surfaces transfer_share "
+           "in profiles.csv">,
+    Option<"profileRepair", "profile-repair", "bool", "true",
+           "Graph profiling only: lower-envelope repair of each class's cost "
+           "profile. A menu point whose pinned search measured worse than a "
+           "smaller point's incumbent takes that incumbent (config, cost, "
+           "residency) -- allocating R devices can always run the best "
+           "configuration found at any R' <= R and idle the rest -- so the "
+           "profile handed to the allocator is non-increasing by "
+           "construction and search-seed cliffs cannot reach it. "
+           "profiles.csv keeps the raw measurement in raw_cost_ms">,
     Option<"profileSeeds", "profile-seeds", "int", "1",
            "Graph allocation only: how many independent searches to run per "
            "menu point, dumped to profile_seeds.csv as a measurement of how "
