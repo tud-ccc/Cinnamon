@@ -342,3 +342,35 @@ All from `campaign.csv`; matplotlib scripts live next to the existing
   and re-allocate -- correcting it should cut class 12's cost and free a
   large share of the device for the classes that actually carry the work.
   This is likely a bigger end-to-end win than anything left in the search.
+
+  **Update (2026-08-25): confirmed and fixed.** The hider is the lowering
+  of `tensor.pad` around the 32000->34048 vocab padding:
+  `insert_slice(%arg15 into <constant fill produced inside a cinm.compute>)`.
+  `%arg15` carries `cinm.static`, but the old isStaticValue could not
+  follow it -- two gaps: insert_slice has *two* operands (the walk only
+  followed single-operand views) and the destination is a compute-block
+  *result* (the walk crossed blocks only in the argument direction).
+  Fixed by the general rule "a pure op with static operands (and static
+  region captures) yields a static value", which subsumes both plus the
+  single-operand fast paths. Measured on a re-profile: at 64 DPUs the
+  class's residency moves 1.6 MB/DPU from dynamic to static
+  (dyn 1688544 -> 103572 B, static 3072 -> 1635648 B; x64 DPUs = the
+  104 MB weight), and its cost falls 194->163 ms @64, 116->73 @128,
+  68->40 @256 -- 16-41%, *understated* because that probe ran 32 evals
+  against the baseline's 256.
+
+  Two consequences to remember:
+  - Operand staticness is part of the class-identity key
+    (GraphInference.cpp:116), so this re-partitions the graph: llama went
+    12 -> 15 classes. **Class indices are not comparable across runs
+    either side of this change** -- match by source location. An earlier
+    index-based comparison here produced a bogus 700x and was withdrawn.
+  - The remaining cost at small device counts is kernel, not transfer, so
+    this does not by itself stop class 12 dominating; it should shrink
+    its share. Needs a full-budget re-profile + re-allocation to quantify.
+
+- [ ] **Re-profile llama at full budget under the staticness fix** and
+  re-run the allocation, then re-check: class 12's DPU share, whether the
+  transfer-bound gate still selects the same six classes (transfer_share
+  moves when weights stop being charged per-inference), and the
+  monotone/convex tallies.
