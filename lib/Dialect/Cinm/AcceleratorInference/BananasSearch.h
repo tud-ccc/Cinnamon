@@ -25,7 +25,7 @@ namespace mlir::cinm {
 
 struct ConfigSpace;
 struct InferenceOptions;
-struct BananasEnsemble; // defined in BananasSearch.cpp
+class SearchStrategy; // see SearchStrategy.h
 
 /// Holds a set of configurations, their true costs, and per-iteration surrogate
 /// predictions (mu/sigma). This is used to hold a validation set and evaluate
@@ -155,21 +155,12 @@ struct CandidatePool {
   // CPU time (CLOCK_THREAD_CPUTIME_ID) in milliseconds, keyed by pool index.
   std::unordered_map<size_t, uint64_t> cpuTimeByIdx;
 
-  /// Warm-start ensemble: persisted across BO iterations so each call to
-  /// nextCandidateIndices fine-tunes from the previous fit rather than
-  /// reinitialising from random weights.
-  std::unique_ptr<BananasEnsemble> ensemble_;
-
-  /// Filled by nextCandidateIndices when opts.dumpDir is set.
-  SearchDiagnostics diag;
-
   const InferenceOptions &opts;
 
   /// `evalBudget` sizes Xo/yo (not N).
   CandidatePool(const ConfigSpace &space, size_t evalBudget,
                 const InferenceOptions &opts);
 
-  ~CandidatePool();
   /// Number of configs in the pool.
   size_t size() const { return N; }
   /// Width of the surrogate's input vector (not the parameter count).
@@ -214,35 +205,14 @@ struct CandidatePool {
                         InferenceOptions::SamplingMode mode =
                             InferenceOptions::SamplingMode::LHS);
 
-  /// Fit a BANANAS MLP ensemble on the observed subset (Xo/yo), draw
-  /// `batchSize` unvisited candidates from the acquisition, and evaluate them
-  /// through `accept`. Unvisited entries are derived from the visited
-  /// bitvector; observations come from the incrementally maintained Xo/yo
-  /// matrices (zero-copy view). Returns how many were accepted, 0 meaning the
-  /// round made no progress and the search should stop.
-  ///
-  /// `accept` runs on a thread pool when `workers > 1`, so it must be
-  /// thread-safe exactly as sampleInitialSet requires. A batch that accepts
-  /// nothing falls back to walking the rest of the ranking for a single point,
-  /// which is what keeps a rejected batch from ending the search.
-  ///
-  /// `round` counts Phase-2 rounds and paces the validation snapshots; `nObs`
-  /// is the observation count the snapshots are stamped with, so the validation
-  /// series stays indexed by evaluations spent even when a round spends more
-  /// than one.
-  size_t nextCandidateIndices(std::mt19937 &rng,
-                              std::function<bool(size_t)> accept,
-                              ValidationSet &validSet,
-                              ValidationSet &trainingSet, int round,
-                              size_t nObs, size_t batchSize = 1,
-                              unsigned workers = 1);
-
   /// Dump the full candidate pool to a CSV file at `path`.
   /// Columns: one per search param, then "cost" (empty if not evaluated),
-  /// then "mu", "sigma", "acq" from a final ensemble fit (columns omitted
-  /// when fewer than 2 observations are available).
+  /// then "mu", "sigma", "acq" from `strategy`'s final model (columns omitted
+  /// when the strategy is null or has no model, e.g. fewer than 2
+  /// observations).
   void dumpToCSV(const ConfigSpace &space, const InferenceOptions &opts,
-                 std::filesystem::path path) const;
+                 std::filesystem::path path,
+                 const SearchStrategy *strategy = nullptr) const;
 
   /// Write a JSON sidecar at `path` summarising the search space: the
   /// Cartesian product of the declared domains, the number of configurations
@@ -251,22 +221,16 @@ struct CandidatePool {
   void dumpMetadataJSON(const ConfigSpace &space,
                         std::filesystem::path path) const;
 
-private:
+  // Shared candidate-generation primitives, used by search strategies (the
+  // BANANAS candidate set, a descent step, a GA mutation are all built from
+  // these).
+
   /// Insert idx into result if it is unvisited and not already present.
   bool tryInsert(std::unordered_set<size_t> &result, size_t idx);
   /// Add up to `target` random unvisited indices to `result` (rejection
-  /// sampling over [0, N), deduplicated via `result`). Used for BO candidate
-  /// generation (nextCandidateIndices).
+  /// sampling over [0, N), deduplicated via `result`).
   void fillRandom(std::unordered_set<size_t> &result, size_t target,
                   std::mt19937 &rng);
-  /// Append this round's RoundRecord (selection fields left for the caller to
-  /// fill once a candidate is accepted) and one BatchRecord per configured
-  /// batch size.
-  void recordRoundDiagnostics(
-      const InferenceOptions &opts, std::mt19937 &rng, int round, size_t nObs,
-      llvm::ArrayRef<size_t> candIdx, const arma::mat &candEncoded,
-      size_t nNeighborCands, const arma::uvec &order, const arma::uvec &orderMu,
-      const arma::uvec &orderSigma, llvm::ArrayRef<arma::uword> selected);
   /// Collect unvisited grid-neighbours of all observed configurations,
   /// up to `depth` discrete steps away (BFS). When `frontierOnly` is true,
   /// only nodes at exactly `depth` steps are added; otherwise all reachable

@@ -158,6 +158,13 @@ def acquisitionClValues {
     )}];
 }
 
+def searchStrategyClValues {
+  string values = [{
+  ::llvm::cl::values(
+    clEnumValN(::mlir::cinm::InferenceOptions::SearchStrategyKind::Bananas, "bananas", "BANANAS-style BO: MLP-ensemble surrogate ranked by an acquisition function over a neighbour+random candidate set")
+    )}];
+}
+
 def UpmemInferAcceleratorPass : Pass<"upmem-infer-accelerator", "ModuleOp"> {
   let summary = "Infer UPMEM accelerator parameters for cinm.compute ops";
   let description = [{
@@ -212,6 +219,13 @@ def UpmemInferAcceleratorPass : Pass<"upmem-infer-accelerator", "ModuleOp"> {
            "::mlir::cinm::InferenceOptions::Acquisition::Thompson",
            "How a round turns surrogate predictions into candidates",
            acquisitionClValues.values>,
+    Option<"searchStrategy", "search-strategy",
+           "::mlir::cinm::InferenceOptions::SearchStrategyKind",
+           "::mlir::cinm::InferenceOptions::SearchStrategyKind::Bananas",
+           "Search policy driving the post-init phase. Every strategy shares "
+           "the init sample and the evaluation machinery, so runs differing "
+           "only in this option are directly comparable",
+           searchStrategyClValues.values>,
     Option<"epochs", "epochs", "int", "1800",
            "Training epochs per MLP ensemble member">,
     Option<"nEnsemble", "n-ensemble", "int", "5",

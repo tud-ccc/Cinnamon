@@ -265,6 +265,17 @@ struct InferenceOptions {
   /// out-parameter and cost a full search each.
   int profileSeeds = 1;
 
+  /// Which algorithm drives the post-init search phase. Every strategy shares
+  /// the init sample (Phase 1) and the evaluation/bookkeeping machinery
+  /// (CandidatePool); the strategy is only the policy that decides what to
+  /// evaluate next each round.
+  enum class SearchStrategyKind {
+    /// BANANAS-style BO: MLP-ensemble surrogate ranked by an acquisition
+    /// function over a neighbour+random candidate set.
+    Bananas,
+  };
+  SearchStrategyKind searchStrategy = SearchStrategyKind::Bananas;
+
   /// How a round turns the surrogate's predictions into the candidates it
   /// evaluates.
   enum class Acquisition {
