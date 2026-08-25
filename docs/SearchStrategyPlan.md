@@ -2,9 +2,15 @@
 
 Status: in progress (2026-08-25). Context: the BANANAS-style BO search in
 `lib/Dialect/Cinm/AcceleratorInference/BananasSearch.cpp` shows strong
-seed-dependence (e1 campaign), which undermines the wholeprogram profiles'
-convexity and the greedy allocator's optimality argument. The search is not a
-paper contribution, so we are free to replace it wholesale.
+seed-dependence (e1 campaign), which cuts cliffs into the wholeprogram cost
+profiles and so undermines the greedy allocator's optimality argument. The
+search is not a paper contribution, so we are free to replace it wholesale.
+
+Terminology, because conflating these two caused a wrong claim early on:
+a profile is **monotone** when cost never rises with more devices, and
+**convex** when the marginal gain (ms saved per added device) never rises.
+Convexity implies monotonicity, not the reverse. Lower-envelope repair
+buys monotonicity outright; convexity it only improves.
 
 ## Diagnosis (from the e1 dumps, `experiments/evaluation/data/*/search/dump`)
 
@@ -121,8 +127,10 @@ All from `campaign.csv`; matplotlib scripts live next to the existing
    algorithm and what k the wholeprogram searches would need.
 5. **Profile convexity check** (wholeprogram tie-in, later): per device
    class, cost-vs-devices profile under each arm with the per-seed spread,
-   before vs after profile repair; count of convexity violations as the
-   summary stat.
+   before vs after profile repair; counts of *both* monotonicity and
+   convexity violations as the summary stats -- they are different
+   properties and repair only guarantees the first (plot_profiles.py's
+   marginal panel already reports the convex/total tally).
 
 ## Progress log
 
@@ -249,6 +257,27 @@ All from `campaign.csv`; matplotlib scripts live next to the existing
 - 2026-08-25 (later): repair verified on a fresh llama solve under the
   full new stack (work-conserving pool + K=4096 search + repair): 52/96
   points repaired, every class's profile non-increasing.
+- 2026-08-25 (later): **correction -- repair does not deliver convexity.**
+  Measured on that solve: monotone 0/12 -> 12/12 classes, but convex only
+  0/12 -> 8/12, with 8 accelerating steps left in classes 3, 8, 10, 12.
+  Two mechanisms, and they want different answers:
+  * 2 of the 8 are *induced by repair* (class 8 @192, class 12 @1216): a
+    repaired plateau followed by a real improvement is by definition an
+    accelerating return. Repair trades a monotonicity violation for a
+    convexity one.
+  * 6 are genuine cost-model structure (threshold effects; class 10 @256
+    jumps ~10x in marginal gain). Not search noise: with
+    profile-seeds=2 the seed spread is 0.0% on classes 3/8/10 (only
+    class 12 has real spread, up to 21.8%).
+
+  Why this is nonetheless mostly benign: the latency greedy's grow move
+  (GraphAllocation.cpp, `for (pi = group.point + 1; ...)`) enumerates
+  *every* larger menu point and scores gain/spend, which is exactly the
+  slope set of the profile's **lower convex hull** -- so the allocator
+  already reasons over the hull and cannot stall on a plateau. The paper
+  claim to make is therefore "profiles are monotone by construction and
+  the allocator solves over their convex hull", not "profiles are
+  convex". TODO below turns that from an argument into a measurement.
 - 2026-08-25 (later): offloading criterion for transfer-bound classes.
   There is NO host cost model, so profitability cannot be a comparison
   (framed as future work); candidate a-priori rule: offload only ops
@@ -275,3 +304,41 @@ All from `campaign.csv`; matplotlib scripts live next to the existing
   that merely scale poorly. The static-operand rule remains the clean
   a-priori story for the paper, with the profiles as its (mostly
   supporting) evidence and attention as the honest exception.
+
+## Open TODOs
+
+- [ ] **Measure the greedy's optimality gap on llama** (empirical answer to
+  the residual non-convexity). The allocation is small enough to solve
+  exactly: 12 classes x <=16 menu points, budget 2560 DPUs at 64
+  granularity = 40 units. Brute-force / DP the throughput and latency
+  objectives over the dumped profiles.csv and compare with what
+  allocateGraph* chose. If the gap is 0 the convexity question is closed
+  empirically and the paper can say so; if not, the fix is per-class hull
+  pre-processing rather than more search budget. Note the likely outcome
+  (predicted 2026-08-25): the gap is probably ~0 and, more importantly,
+  probably *uninformative*, because class 12 dominates the allocation --
+  see below. Worth doing anyway since it is cheap and it retires an
+  objection.
+
+- [ ] **Class 12 dominates the llama allocation; part of that is an
+  artifact.** It takes 1344 of 2560 DPUs (52.5% of the device) while
+  contributing 6.2% of total work (23.6 ms of 383.4 ms), because it is
+  the one class with multiplicity 1: every other class has 12-96 members
+  that can be split across sets, so the only lever on this one is more
+  devices. Its profile scales 194 ms @64 -> 17.4 ms @2048, so the
+  allocator is right to feed it.
+  The artifact: at 2048 DPUs its residency is 3648 B static vs 55860 B
+  dynamic MRAM (94% dynamic), and ~10.6 ms of its 17.4 ms is charged as
+  per-inference transfer against only 0.96 ms of amortized weight
+  scatter. For the final vocabulary projection the weight matrix is the
+  same on every inference and should be static. measureResidency's own
+  caveat is the likely cause -- "an operand that is not directly a block
+  argument (a linalg.fill accumulator, a fused intermediate) is charged
+  as dynamic" -- so a reshape/cast between the weight and the op would
+  hide it. Actions: (a) confirm by inspecting the class-12 block's
+  operands in llama2_110M_with_compute.mlir; (b) if confirmed, teach
+  staticness detection to see through the intervening ops (or pre-pad /
+  pre-materialise the weight so it *is* a block argument); (c) re-profile
+  and re-allocate -- correcting it should cut class 12's cost and free a
+  large share of the device for the classes that actually carry the work.
+  This is likely a bigger end-to-end win than anything left in the search.
