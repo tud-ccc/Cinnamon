@@ -1362,6 +1362,7 @@ struct UpmemInferAcceleratorPass
     o.hidden = hidden;
     o.depth = depth;
     o.neighborDepth = neighborDepth;
+    o.nRandCandidates = nRandCandidates;
     o.neighborFrontierOnly = neighborFrontierOnly;
     o.exhaustiveSearch = exhaustiveSearch;
     o.sampleN = sampleN;

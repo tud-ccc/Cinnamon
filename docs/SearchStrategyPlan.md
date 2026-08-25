@@ -133,3 +133,9 @@ All from `campaign.csv`; matplotlib scripts live next to the existing
   cycle-accurate, 2 seeds × 48 evals: all dumps well-formed, best cost in
   line with the campaign. Next: arm 2 (fillRandom fix) + `random` strategy,
   then the regret harness.
+- 2026-08-25 (later): arms 2 and 3 done. `n-random-candidates=K` draws K
+  random candidates on top of the neighbour set (0 = legacy top-up
+  behaviour); verified rand=K on every round of mtv_4MB where legacy had
+  rand=0. `search-strategy=random` evaluates uniform draws with the whole
+  budget; no model columns in pool.csv, no rounds.csv. Next: descent + GA
+  arms, then the regret harness (`campaign.csv` + plots).

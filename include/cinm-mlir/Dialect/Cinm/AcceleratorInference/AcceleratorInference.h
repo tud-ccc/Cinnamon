@@ -273,6 +273,9 @@ struct InferenceOptions {
     /// BANANAS-style BO: MLP-ensemble surrogate ranked by an acquisition
     /// function over a neighbour+random candidate set.
     Bananas,
+    /// Uniform random search over the unvisited configs: the floor every
+    /// learned strategy has to beat at equal budget.
+    Random,
   };
   SearchStrategyKind searchStrategy = SearchStrategyKind::Bananas;
 
@@ -309,6 +312,13 @@ struct InferenceOptions {
   /// Max number of candidate configs passed to the surrogate for ranking
   /// each round (neighbors of observed points + random draws).
   size_t nCandidates = 500;
+  /// When > 0, each BANANAS round draws this many random candidates *in
+  /// addition to* the neighbour set. When 0, random draws only top the
+  /// candidate set up to nCandidates -- which, on spaces whose neighbour set
+  /// alone exceeds nCandidates, means no random candidates at all: the search
+  /// degenerates to a local hill climb from the init sample (see
+  /// docs/SearchStrategyPlan.md).
+  size_t nRandCandidates = 0;
   /// How many discrete steps away from observed points to include as
   /// candidates. 1 = immediate neighbors only; 2 = neighbors-of-neighbors, etc.
   unsigned neighborDepth = 1;

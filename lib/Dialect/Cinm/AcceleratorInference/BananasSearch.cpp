@@ -818,8 +818,14 @@ size_t BananasStrategy::step(std::mt19937 &rng,
   if (wantDiag)
     neighborCands = candSet;
   const size_t nNeighborCands = candSet.size();
-  // Add random candidates.
-  pool.fillRandom(candSet, opts.nCandidates, rng);
+  // Add random candidates: on top of the neighbours when nRandCandidates
+  // says so, otherwise only up to the nCandidates total -- which adds none
+  // once the neighbour set alone exceeds it.
+  pool.fillRandom(candSet,
+                  opts.nRandCandidates > 0
+                      ? candSet.size() + opts.nRandCandidates
+                      : opts.nCandidates,
+                  rng);
 
   if (candSet.empty())
     return 0;
@@ -1250,6 +1256,50 @@ void ValidationSet::dumpToCSV(std::filesystem::path path) const {
 }
 
 // ===----------------------------------------------------------------------===//
+// Random strategy
+// ===----------------------------------------------------------------------===//
+
+/// Uniform random search: each round draws `batchSize` unvisited configs
+/// uniformly and evaluates them. No model, no candidate set -- the whole
+/// budget goes into evaluations. The floor every learned strategy has to
+/// beat at equal budget (see docs/SearchStrategyPlan.md).
+class RandomStrategy final : public SearchStrategy {
+public:
+  explicit RandomStrategy(CandidatePool &pool) : pool(pool) {}
+
+  size_t step(std::mt19937 &rng, const std::function<bool(size_t)> &accept,
+              int round, size_t nObsAtRound, size_t batchSize,
+              unsigned workers) override {
+    // Keep drawing until something is accepted: a returned 0 ends the whole
+    // search (the driver's stop condition), which a failed draw does not
+    // justify here. Termination: every drawn config is marked visited whether
+    // its evaluation succeeds or not, so each pass shrinks the unvisited set.
+    while (pool.numVisited() < pool.size()) {
+      std::unordered_set<size_t> draw;
+      pool.fillRandom(draw, batchSize, rng);
+      if (draw.empty()) {
+        // Rejection sampling gave up (near-exhausted pool); fall back to a
+        // scan so the search visits the stragglers rather than stopping.
+        size_t idx = pool.firstUnvisited();
+        if (idx == pool.N)
+          break;
+        draw.insert(idx);
+      }
+      llvm::SmallVector<size_t> candIdx(draw.begin(), draw.end());
+      llvm::SmallVector<arma::uword> slots(candIdx.size());
+      std::iota(slots.begin(), slots.end(), 0);
+      size_t accepted = evaluateBatch(slots, candIdx, accept, workers, {});
+      if (accepted > 0)
+        return accepted;
+    }
+    return 0;
+  }
+
+private:
+  CandidatePool &pool;
+};
+
+// ===----------------------------------------------------------------------===//
 // SearchStrategy factory
 // ===----------------------------------------------------------------------===//
 
@@ -1261,6 +1311,8 @@ std::unique_ptr<SearchStrategy> makeSearchStrategy(CandidatePool &pool,
   switch (pool.opts.searchStrategy) {
   case InferenceOptions::SearchStrategyKind::Bananas:
     return std::make_unique<BananasStrategy>(pool, validSet, trainingSet);
+  case InferenceOptions::SearchStrategyKind::Random:
+    return std::make_unique<RandomStrategy>(pool);
   }
   llvm_unreachable("unknown search strategy");
 }

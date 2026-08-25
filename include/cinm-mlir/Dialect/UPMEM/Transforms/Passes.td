@@ -161,7 +161,8 @@ def acquisitionClValues {
 def searchStrategyClValues {
   string values = [{
   ::llvm::cl::values(
-    clEnumValN(::mlir::cinm::InferenceOptions::SearchStrategyKind::Bananas, "bananas", "BANANAS-style BO: MLP-ensemble surrogate ranked by an acquisition function over a neighbour+random candidate set")
+    clEnumValN(::mlir::cinm::InferenceOptions::SearchStrategyKind::Bananas, "bananas", "BANANAS-style BO: MLP-ensemble surrogate ranked by an acquisition function over a neighbour+random candidate set"),
+    clEnumValN(::mlir::cinm::InferenceOptions::SearchStrategyKind::Random, "random", "Uniform random search over the unvisited configs: the floor every learned strategy has to beat at equal budget")
     )}];
 }
 
@@ -237,6 +238,12 @@ def UpmemInferAcceleratorPass : Pass<"upmem-infer-accelerator", "ModuleOp"> {
     Option<"neighborDepth", "neighbor-depth", "unsigned", "2",
            "Number of discrete steps away from observed points to include as "
            "candidates (1 = immediate neighbors only)">,
+    Option<"nRandCandidates", "n-random-candidates", "size_t", "0",
+           "When > 0, each BANANAS round draws this many random candidates in "
+           "addition to the neighbour set. When 0, random draws only top the "
+           "candidate set up to the internal nCandidates cap, which adds none "
+           "once the neighbour set alone exceeds it (the search then "
+           "degenerates to a local hill climb from the init sample)">,
     Option<"neighborFrontierOnly", "neighbor-frontier-only", "bool", "false",
            "When true, only add candidates at exactly neighbor-depth steps away; "
            "otherwise add all points within that distance">,
