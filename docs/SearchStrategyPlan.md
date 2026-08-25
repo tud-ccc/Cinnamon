@@ -187,3 +187,34 @@ All from `campaign.csv`; matplotlib scripts live next to the existing
   reference optimum pools only campaign dumps. Any results/campaign.csv
   assembled before this note mixes landscapes -- re-assemble after the
   campaign runs.
+- 2026-08-25 (later): scoped campaign ran (5 arms x 5 fns x 32 seeds).
+  Verdict, as P(seed within 5% of the pooled reference):
+
+  | arm          | all  | gemv_4MB | mtv_256MB | mmtv_4MB | ttv_512MB |
+  |--------------|------|----------|-----------|----------|-----------|
+  | bananas      | 0.21 | 0.03     | 0.00      | 0.00     | 0.00      |
+  | bananas_rand | 0.64 | 0.91     | 1.00      | 0.09     | 0.19      |
+  | random       | 0.26 | 0.16     | 0.06      | 0.03     | 0.03      |
+  | descent      | 0.21 | 0.03     | 0.03      | 0.00     | 0.00      |
+  | ga           | 0.23 | 0.09     | 0.00      | 0.03     | 0.00      |
+
+  The candidate-set bug was the whole BANANAS story: plain bananas is
+  *worse than random* on every hard space, and descent tracks it (broken
+  BANANAS was a hill climb). GA at this budget sits between descent and
+  random; neither control arm warrants further investment. Remaining gap:
+  the 9-dim large spaces.
+- 2026-08-25 (later): K-sweep on the gap. ttv_512MB (1.6M configs),
+  32 seeds: K=256/1024/4096 -> median regret 45.8/32.9/0.9%, P(<=5%)
+  0.19/0.44/0.66. mmtv_4MB K=256/1024 -> med 26.3/18.8. No regression on
+  mtv_256MB at K=4096 (P stays 1.00); screening cost negligible
+  (predict 64 ms vs fit 299 ms per round). **Decision: n-random-candidates
+  defaults to 4096** (pass option + InferenceOptions), so every consumer
+  -- task_search, wholeprogram profile searches -- gets the fixed search;
+  K=0 restores the pre-campaign behaviour. Campaign arms pin K explicitly
+  (bananas=0, bananas_rand=256, new bananas_rand4k=4096); the
+  bananas_rand4k arm has no dumps yet -- run `doit campaign` to add it
+  (~25 min scoped). Still open: p90 on ttv is 46% (a minority of seeds
+  stall), so the wholeprogram profile still wants repair/warm-start
+  (§"fix the profile convexity directly"); re-running task_search and the
+  wholeprogram stack under the new default invalidates their old dumps
+  (landscape rule above applies to search-version drift too).

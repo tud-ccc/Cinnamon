@@ -36,6 +36,7 @@ RESULTS_DIR = HERE / "results"
 ARM_DUMPS = {
     "bananas": "*/campaign_bananas/dump",
     "bananas_rand": "*/campaign_bananas_rand/dump",
+    "bananas_rand4k": "*/campaign_bananas_rand4k/dump",
     "random": "*/campaign_random/dump",
     "descent": "*/campaign_descent/dump",
     "ga": "*/campaign_ga/dump",

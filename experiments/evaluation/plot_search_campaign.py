@@ -34,12 +34,13 @@ import pandas as pd
 
 from _reporting import load_or_skip, parse_dirs, save_fig
 
-# Fixed arm order and colors (Okabe-Ito subset; adjacent pairs pass the
-# CVD floor). Color follows the arm across every figure.
-ARMS = ["bananas", "bananas_rand", "random", "descent", "ga"]
+# Fixed arm order and colors (Okabe-Ito subset; all pairs pass the CVD
+# floor). Color follows the arm across every figure.
+ARMS = ["bananas", "bananas_rand", "bananas_rand4k", "random", "descent", "ga"]
 ARM_COLOR = {
     "bananas": "#0072B2",
     "bananas_rand": "#E69F00",
+    "bananas_rand4k": "#56B4E9",
     "random": "#009E73",
     "descent": "#D55E00",
     "ga": "#CC79A7",

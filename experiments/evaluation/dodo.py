@@ -1149,9 +1149,13 @@ def task_search_ablate():
 # region ~2x costlier). Arms must all be priced on one landscape, so
 # nothing from data/*/search or data/*/sample enters the campaign. Keep
 # assemble_campaign.py's ARM_DUMPS in sync with this table.
+# Every bananas-family arm pins n-random-candidates explicitly: the pass
+# default moved to 4096 after the K-sweep, and an arm whose meaning shifts
+# under it would silently mislabel dumps already on disk.
 CAMPAIGN_ARMS = {
-    "bananas": {},
+    "bananas": {"n-random-candidates": 0},
     "bananas_rand": {"n-random-candidates": 256},
+    "bananas_rand4k": {"n-random-candidates": 4096},
     "random": {"search-strategy": "random"},
     "descent": {"search-strategy": "descent"},
     "ga": {"search-strategy": "ga"},
