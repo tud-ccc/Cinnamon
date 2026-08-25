@@ -19,10 +19,19 @@
 #include <mlir/Interfaces/FunctionInterfaces.h>
 #include <mlir/Interfaces/ViewLikeInterface.h>
 #include <mlir/Transforms/DialectConversion.h>
+#include <mlir/Transforms/RegionUtils.h>
 
 namespace mlir::cinm {
 
-bool isStaticValue(Value value) {
+/// Depth budget for the operand recursion below. A padded weight is three
+/// steps deep; a chain long enough to exhaust this is answered
+/// conservatively (not static) rather than walked, which costs an
+/// amortisation opportunity and never correctness.
+static constexpr unsigned kStaticValueDepth = 24;
+
+static bool isStaticValueImpl(Value value, unsigned depth) {
+  if (depth == 0)
+    return false;
   while (true) {
     if (auto arg = llvm::dyn_cast<BlockArgument>(value)) {
       Operation *owner = arg.getOwner()->getParentOp();
@@ -69,8 +78,46 @@ bool isStaticValue(Value value) {
       value = def->getOperand(0);
       continue;
     }
+
+    // A compute block's i-th result is its terminator's i-th yielded value.
+    // The dual of the block-argument case above: together they let the walk
+    // cross a block in either direction, which is what a value that was
+    // computed inside one -- a padded weight, a pre-scaled one -- needs.
+    if (auto block = llvm::dyn_cast<ComputeBlockOp>(def)) {
+      value = block.getBody().front().getTerminator()->getOperand(
+          llvm::cast<OpResult>(value).getResultNumber());
+      continue;
+    }
+
+    // General rule, and the one the cases above are fast paths for: a pure
+    // op applied to static operands yields a static result, since "static"
+    // means "does not vary between inferences" and a pure op is a
+    // deterministic function of its inputs. This is what sees through the
+    // lowering of tensor.pad -- insert_slice(weight, into: constant fill) --
+    // which no single-operand walk can follow, and through any other
+    // precomputation over weights.
+    //
+    // Regions are part of the input: a body may capture values from above
+    // (the fill constant, but equally something per-inference), so those are
+    // checked too. An op with neither operands nor captures is static
+    // vacuously, which is the right answer for tensor.empty: uninitialised
+    // contents do not vary with the inference either.
+    if (def && mlir::isMemoryEffectFree(def)) {
+      llvm::SetVector<Value> captured;
+      if (def->getNumRegions() > 0)
+        mlir::getUsedValuesDefinedAbove(def->getRegions(), captured);
+      auto stillStatic = [&](Value operand) {
+        return isStaticValueImpl(operand, depth - 1);
+      };
+      return llvm::all_of(def->getOperands(), stillStatic) &&
+             llvm::all_of(captured, stillStatic);
+    }
     return false;
   }
+}
+
+bool isStaticValue(Value value) {
+  return isStaticValueImpl(value, kStaticValueDepth);
 }
 
 SmallVector<Value> createNestedAffineForLoops(OpBuilder &builder, Location loc,
