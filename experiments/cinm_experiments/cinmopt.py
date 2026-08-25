@@ -51,7 +51,7 @@ def _run(
         str(out_file),
     ]
     if nice:
-        cmd = ["nice", "-n", "19", *cmd]
+        cmd = ["nice", "-n", "1", *cmd]
     with open(log_file, "w") as log:
         log.write(shlex.join(cmd) + "\n\n")
         # subprocess.run(stdout=log) hands the child the fd directly, which
