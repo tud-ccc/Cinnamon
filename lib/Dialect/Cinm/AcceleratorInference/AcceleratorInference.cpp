@@ -1,6 +1,7 @@
 #include "cinm-mlir/Dialect/Cinm/AcceleratorInference/AcceleratorInference.h"
 #include "BananasSearch.h"
 #include "Progress.h"
+#include "SearchStrategy.h"
 #include "cinm-mlir/Dialect/Cinm/AcceleratorInference/SpaceBuilder.h"
 #include "cinm-mlir/Dialect/Cinm/IR/CinmAttributes.h"
 #include "cinm-mlir/Dialect/Cinm/IR/CinmBase.h"
@@ -471,6 +472,12 @@ struct InferenceTask {
     // Record the training set in its own "validation set" to output the same
     // kind of data for plotting.
     ValidationSet trainingSet(space);
+    // The search policy for Phase 2. Everything around it -- init sampling,
+    // budget accounting, evaluation bookkeeping, dumps -- is shared by every
+    // strategy, so runs differing only in options.searchStrategy are directly
+    // comparable.
+    std::unique_ptr<SearchStrategy> strategy =
+        makeSearchStrategy(pool, validSet, trainingSet);
     InferenceState state(options.maxEvals, refClone.getLoc());
     state.log = log;
 
@@ -542,9 +549,8 @@ struct InferenceTask {
       // Never overshoot the budget: the batch is what the round will spend.
       size_t batch = std::min<size_t>(std::max<size_t>(options.boBatchSize, 1),
                                       static_cast<size_t>(state.budget));
-      auto accepted =
-          pool.nextCandidateIndices(rng, evalTrain, validSet, trainingSet,
-                                    round++, pool.nObs, batch, evalWorkers);
+      auto accepted = strategy->step(rng, evalTrain, round++, pool.nObs, batch,
+                                     evalWorkers);
       if (accepted == 0)
         break;
     }
@@ -552,12 +558,11 @@ struct InferenceTask {
     if (!dumpDir.empty()) {
       auto dumpPath = std::filesystem::path(dumpDir);
       std::filesystem::create_directories(dumpPath);
-      pool.dumpToCSV(space, options, dumpPath / "pool.csv");
+      pool.dumpToCSV(space, options, dumpPath / "pool.csv", strategy.get());
       pool.dumpMetadataJSON(space, dumpPath / "space.json");
       validSet.dumpToCSV(dumpPath / "validation.csv");
       trainingSet.dumpToCSV(dumpPath / "training.csv");
-      pool.diag.dumpRoundsCSV(dumpPath / "rounds.csv");
-      pool.diag.dumpBatchesCSV(space, dumpPath / "batchdiag.csv");
+      strategy->dumpDiagnostics(dumpPath);
       if (!timings.empty()) {
         std::ofstream timOut(dumpPath / "timings.csv");
         if (timOut) {

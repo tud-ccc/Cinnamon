@@ -1356,6 +1356,7 @@ struct UpmemInferAcceleratorPass
     o.kappa = kappa;
     o.boBatchSize = boBatchSize;
     o.acquisition = acquisition;
+    o.searchStrategy = searchStrategy;
     o.epochs = epochs;
     o.nEnsemble = nEnsemble;
     o.hidden = hidden;

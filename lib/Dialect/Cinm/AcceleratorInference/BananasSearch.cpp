@@ -1,4 +1,5 @@
 #include "BananasSearch.h"
+#include "SearchStrategy.h"
 #include "cinm-mlir/Dialect/Cinm/AcceleratorInference/AcceleratorInference.h"
 
 #include <algorithm>
@@ -37,8 +38,6 @@ CandidatePool::CandidatePool(const ConfigSpace &space, size_t evalBudget,
       // allocate a dense D×N matrix for a matrix that's never used.
       Xo(space.numFeatures(), opts.exhaustiveSearch ? 0 : evalBudget),
       yo(1, opts.exhaustiveSearch ? 0 : evalBudget), opts(opts) {}
-
-CandidatePool::~CandidatePool() = default;
 
 void CandidatePool::recordObservation(size_t idx, double cost, size_t iter,
                                       std::chrono::milliseconds evalTime,
@@ -320,6 +319,64 @@ struct BananasEnsemble {
 };
 
 // ===----------------------------------------------------------------------===//
+// BANANAS strategy
+// ===----------------------------------------------------------------------===//
+
+/// BANANAS-style BO policy: each round fits the MLP ensemble on the pool's
+/// observations and draws a batch from an acquisition function over a
+/// neighbour+random candidate set. Owns the warm-started ensemble, the
+/// per-round diagnostics, and the validation-snapshot pacing.
+class BananasStrategy final : public SearchStrategy {
+public:
+  BananasStrategy(CandidatePool &pool, ValidationSet &validSet,
+                  ValidationSet &trainingValidSet)
+      : pool(pool), space_(pool.space_), opts(pool.opts), validSet(validSet),
+        trainingValidSet(trainingValidSet) {}
+
+  size_t step(std::mt19937 &rng, const std::function<bool(size_t)> &accept,
+              int round, size_t nObsAtRound, size_t batchSize,
+              unsigned workers) override;
+
+  bool hasModel() const override { return ensemble_ != nullptr; }
+
+  bool predict(const arma::mat &X, arma::rowvec &mu,
+               arma::rowvec &sigma) const override {
+    if (!ensemble_)
+      return false;
+    std::tie(mu, sigma) = ensemble_->predict(X);
+    return true;
+  }
+
+  void dumpDiagnostics(const std::filesystem::path &dir) const override {
+    diag.dumpRoundsCSV(dir / "rounds.csv");
+    diag.dumpBatchesCSV(*space_, dir / "batchdiag.csv");
+  }
+
+private:
+  /// Append this round's RoundRecord (selection fields left for step to fill
+  /// once a candidate is accepted) and one BatchRecord per configured batch
+  /// size.
+  void recordRoundDiagnostics(std::mt19937 &rng, int round, size_t nObs,
+                              llvm::ArrayRef<size_t> candIdx,
+                              const arma::mat &candEncoded,
+                              size_t nNeighborCands, const arma::uvec &order,
+                              const arma::uvec &orderMu,
+                              const arma::uvec &orderSigma,
+                              llvm::ArrayRef<arma::uword> selected);
+
+  CandidatePool &pool;
+  const ConfigSpace *space_;
+  const InferenceOptions &opts;
+  ValidationSet &validSet;
+  ValidationSet &trainingValidSet;
+  /// Warm-start ensemble: persisted across rounds so each step fine-tunes
+  /// from the previous fit rather than reinitialising from random weights.
+  std::unique_ptr<BananasEnsemble> ensemble_;
+  /// Filled per round when opts.dumpDir is set.
+  SearchDiagnostics diag;
+};
+
+// ===----------------------------------------------------------------------===//
 // Acquisition function
 // ===----------------------------------------------------------------------===//
 
@@ -558,10 +615,10 @@ static size_t rankOf(const arma::uvec &order, arma::uword pos) {
   return order.n_elem;
 }
 
-void CandidatePool::recordRoundDiagnostics(
-    const InferenceOptions &opts, std::mt19937 &rng, int round, size_t nObs,
-    llvm::ArrayRef<size_t> candIdx, const arma::mat &candEncoded,
-    size_t nNeighborCands, const arma::uvec &order, const arma::uvec &orderMu,
+void BananasStrategy::recordRoundDiagnostics(
+    std::mt19937 &rng, int round, size_t nObs, llvm::ArrayRef<size_t> candIdx,
+    const arma::mat &candEncoded, size_t nNeighborCands,
+    const arma::uvec &order, const arma::uvec &orderMu,
     const arma::uvec &orderSigma, llvm::ArrayRef<arma::uword> selected) {
   RoundRecord rec{};
   rec.round = round;
@@ -737,12 +794,10 @@ void recordValidationData(ValidationSet &validSet, BananasEnsemble *ensemble_,
   }
 }
 
-size_t CandidatePool::nextCandidateIndices(std::mt19937 &rng,
-                                           std::function<bool(size_t)> accept,
-                                           ValidationSet &validSet,
-                                           ValidationSet &trainingValidSet,
-                                           int round, size_t nObsAtRound,
-                                           size_t batchSize, unsigned workers) {
+size_t BananasStrategy::step(std::mt19937 &rng,
+                             const std::function<bool(size_t)> &accept,
+                             int round, size_t nObsAtRound, size_t batchSize,
+                             unsigned workers) {
   using Clock = std::chrono::steady_clock;
   auto elapsedMs = [](Clock::time_point since) {
     return std::chrono::duration<double, std::milli>(Clock::now() - since)
@@ -755,7 +810,7 @@ size_t CandidatePool::nextCandidateIndices(std::mt19937 &rng,
   // Neighbours differ in exactly one dimension by one discrete step, so they
   // are the most likely region to contain a better point.
   std::unordered_set<size_t> candSet;
-  fillNeighbors(candSet, opts.neighborDepth);
+  pool.fillNeighbors(candSet, opts.neighborDepth);
   // Everything in the set at this point came from the neighbourhood, and
   // fillRandom dedups against the same set, so a snapshot here is what
   // separates the two provenances afterwards.
@@ -764,7 +819,7 @@ size_t CandidatePool::nextCandidateIndices(std::mt19937 &rng,
     neighborCands = candSet;
   const size_t nNeighborCands = candSet.size();
   // Add random candidates.
-  fillRandom(candSet, opts.nCandidates, rng);
+  pool.fillRandom(candSet, opts.nCandidates, rng);
 
   if (candSet.empty())
     return 0;
@@ -776,10 +831,10 @@ size_t CandidatePool::nextCandidateIndices(std::mt19937 &rng,
   // Build compact training matrices excluding INF-cost observations.
   // Training the MLP on INF targets causes gradient explosion → NaN weights
   // → NaN predictions → arma::sort_index abort.
-  arma::uvec finiteCols(nObs);
+  arma::uvec finiteCols(pool.nObs);
   arma::uword nFinite = 0;
-  for (arma::uword i = 0; i < static_cast<arma::uword>(nObs); ++i)
-    if (std::isfinite(yo(0, i)))
+  for (arma::uword i = 0; i < static_cast<arma::uword>(pool.nObs); ++i)
+    if (std::isfinite(pool.yo(0, i)))
       finiteCols(nFinite++) = i;
   finiteCols.resize(nFinite);
 
@@ -792,8 +847,8 @@ size_t CandidatePool::nextCandidateIndices(std::mt19937 &rng,
     return 0;
   }
 
-  arma::mat Xo_obs = Xo.cols(finiteCols);
-  arma::mat yo_obs = yo.cols(finiteCols);
+  arma::mat Xo_obs = pool.Xo.cols(finiteCols);
+  arma::mat yo_obs = pool.yo.cols(finiteCols);
 
   // Warm-start: reuse weights from the previous iteration. Reinitialise only
   // when the ensemble doesn't exist yet or its configuration has changed.
@@ -845,7 +900,7 @@ size_t CandidatePool::nextCandidateIndices(std::mt19937 &rng,
       selectBatch(opts, mu, sigma, order, std::max<size_t>(batchSize, 1), rng);
 
   if (wantDiag)
-    recordRoundDiagnostics(opts, rng, round, nObsAtRound, candIdx, candEncoded,
+    recordRoundDiagnostics(rng, round, nObsAtRound, candIdx, candEncoded,
                            nNeighborCands, order, orderMu, orderSigma, batch);
 
   // Describe the batch before evaluating it: `accepted` is filled in by
@@ -896,14 +951,16 @@ size_t CandidatePool::nextCandidateIndices(std::mt19937 &rng,
 
 void CandidatePool::dumpToCSV(const ConfigSpace &space,
                               const InferenceOptions &opts,
-                              std::filesystem::path path) const {
+                              std::filesystem::path path,
+                              const SearchStrategy *strategy) const {
   std::filesystem::create_directories(path.parent_path());
   std::ofstream out(path);
   if (!out)
     return;
 
-  // Use the warm-started ensemble to get per-candidate statistics.
-  const bool hasModel = ensemble_ && nObs >= 2 && !empty();
+  // Use the strategy's warm-started model to get per-candidate statistics.
+  const bool hasModel =
+      strategy && strategy->hasModel() && nObs >= 2 && !empty();
   // Per-index predictions; indexed by position in the dumped rows.
   arma::rowvec mu_v, sigma_v, acq_v;
   if (hasModel) {
@@ -924,9 +981,7 @@ void CandidatePool::dumpToCSV(const ConfigSpace &space,
         encoded(d, ix) = features[d];
       ix++;
     }
-    auto [m, s] = ensemble_->predict(encoded);
-    mu_v = m;
-    sigma_v = s;
+    strategy->predict(encoded, mu_v, sigma_v);
     acq_v = computeAcq(mu_v, sigma_v, opts.kappa);
   }
 
@@ -1192,6 +1247,22 @@ void ValidationSet::dumpToCSV(std::filesystem::path path) const {
           << snap.sigma(j) << "\n";
     }
   }
+}
+
+// ===----------------------------------------------------------------------===//
+// SearchStrategy factory
+// ===----------------------------------------------------------------------===//
+
+SearchStrategy::~SearchStrategy() = default;
+
+std::unique_ptr<SearchStrategy> makeSearchStrategy(CandidatePool &pool,
+                                                   ValidationSet &validSet,
+                                                   ValidationSet &trainingSet) {
+  switch (pool.opts.searchStrategy) {
+  case InferenceOptions::SearchStrategyKind::Bananas:
+    return std::make_unique<BananasStrategy>(pool, validSet, trainingSet);
+  }
+  llvm_unreachable("unknown search strategy");
 }
 
 } // namespace mlir::cinm
