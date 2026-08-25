@@ -162,7 +162,9 @@ def searchStrategyClValues {
   string values = [{
   ::llvm::cl::values(
     clEnumValN(::mlir::cinm::InferenceOptions::SearchStrategyKind::Bananas, "bananas", "BANANAS-style BO: MLP-ensemble surrogate ranked by an acquisition function over a neighbour+random candidate set"),
-    clEnumValN(::mlir::cinm::InferenceOptions::SearchStrategyKind::Random, "random", "Uniform random search over the unvisited configs: the floor every learned strategy has to beat at equal budget")
+    clEnumValN(::mlir::cinm::InferenceOptions::SearchStrategyKind::Random, "random", "Uniform random search over the unvisited configs: the floor every learned strategy has to beat at equal budget"),
+    clEnumValN(::mlir::cinm::InferenceOptions::SearchStrategyKind::Descent, "descent", "Random-restart neighbourhood descent: batched steepest descent over grid neighbours, restarting from a random config at local optima"),
+    clEnumValN(::mlir::cinm::InferenceOptions::SearchStrategyKind::Ga, "ga", "Steady-state GA: tournament selection, per-parameter crossover, neighbour-step mutation, population seeded from the init sample")
     )}];
 }
 
