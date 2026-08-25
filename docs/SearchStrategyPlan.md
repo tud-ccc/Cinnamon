@@ -167,3 +167,23 @@ All from `campaign.csv`; matplotlib scripts live next to the existing
   overnight; set `CAMPAIGN_FNS = ()` for the full 26-function campaign
   later. The plots restrict pooled statistics to functions every arm ran,
   so scoped and full runs never mix into an unfair comparison.
+- 2026-08-25 (later): multiseed engine made work-conserving. EvaluatorPool
+  leases now block (they previously popped an empty freelist -- UB held off
+  only by the per-seed split), and every seed may keep boBatchSize
+  evaluations in flight against one shared pool, so a seed stalled on a
+  slow simulation donates its capacity instead of idling its dedicated
+  workers. Measured on mtv_256MB, 32 seeds x 64 workers: utilization 43%
+  -> 68%, stage wall 363s -> 197s. `doit -n` remains unnecessary.
+- 2026-08-25 (later): while validating that change, found that the
+  2026-08-20 lowering commits (bccdf4cc and neighbours) moved the
+  simulated cost landscape: on mtv_256MB seed_67, 121/163 configurations
+  revisited by an identical-RNG rerun cost within 1% of the e1 dump, but
+  the gemv.order=(2,1) region costs ~2x more (e1's best config: 3.26 ->
+  5.29 ms). The search engine itself is unchanged (63/64 identical init
+  draws; deterministic reruns). Consequence: **pre-Aug-20 dumps
+  (data/*/search, data/*/sample, e1's sim-space numbers) must never be
+  compared or pooled with newly generated sim costs.** The campaign's
+  bananas control is therefore a re-run arm (campaign_bananas), and the
+  reference optimum pools only campaign dumps. Any results/campaign.csv
+  assembled before this note mixes landscapes -- re-assemble after the
+  campaign runs.

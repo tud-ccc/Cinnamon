@@ -5,15 +5,20 @@ campaign.csv holds one row per budget-consuming evaluation of every
 (arm, function, seed): eval_idx is the evaluation's rank within its seed
 (init sample included), best_so_far the running minimum over finite
 costs, elapsed_ms/cpu_ms the seed's cumulative clocks at that evaluation
-(timings.csv merged by rank; empty where the counts disagree). The
-`bananas` control arm is task_search's own dump -- the strategy refactor
-kept it bit-identical, so it is not re-run.
+(timings.csv merged by rank; empty where the counts disagree).
+
+Only campaign_* dumps are read -- never data/*/search or data/*/sample.
+Those predate the 2026-08-20 lowering changes, which moved the simulated
+cost of identical configurations by up to 2x, so folding them into the
+curves or the reference would mix two cost landscapes (see
+docs/SearchStrategyPlan.md's progress log). The `bananas` control is
+therefore a campaign arm of its own, re-run on the current lowering.
 
 campaign_ref.csv holds the per-function reference optimum: the pooled
-minimum over every arm's observations plus the shared uniform sample.
-Not a true optimum but a lower envelope that tightens as arms run; it is
-recorded so regret can be recomputed when it moves. Missing-tolerant like
-every assemble step: arms not yet run simply contribute no rows.
+minimum over every arm's observations. Not a true optimum but a lower
+envelope that tightens as arms run; it is recorded so regret can be
+recomputed when it moves. Missing-tolerant like every assemble step:
+arms not yet run simply contribute no rows.
 """
 
 from __future__ import annotations
@@ -27,9 +32,9 @@ DATA_DIR = HERE / "data"
 RESULTS_DIR = HERE / "results"
 
 # Arm -> dump glob (relative to data/). Keep in sync with dodo.py's
-# CAMPAIGN_ARMS; `bananas` reads the default search stack's dump.
+# CAMPAIGN_ARMS.
 ARM_DUMPS = {
-    "bananas": "*/search/dump",
+    "bananas": "*/campaign_bananas/dump",
     "bananas_rand": "*/campaign_bananas_rand/dump",
     "random": "*/campaign_random/dump",
     "descent": "*/campaign_descent/dump",
@@ -107,15 +112,6 @@ def assemble() -> bool:
                         "cpu_ms": cpu,
                     }
                 )
-
-    # The shared uniform sample tightens the reference but contributes no
-    # curve: it is a draw, not a search.
-    for pool_csv in sorted(DATA_DIR.glob("*/sample/infer_*/pool.csv")):
-        fn = pool_csv.parent.name.removeprefix("infer_")
-        with open(pool_csv) as f:
-            for row in csv.DictReader(f):
-                if row["cost"]:
-                    fold_ref(fn, float(row["cost"]))
 
     if not rows:
         print("assemble_campaign: no campaign dumps present yet, nothing to assemble")

@@ -1142,11 +1142,15 @@ def task_search_ablate():
 # ── B7: search-strategy campaign (docs/SearchStrategyPlan.md) ────────────────
 
 # Arm → infer-opts overrides on top of OPTS["infer_opts"]. The `bananas`
-# control arm is not listed: it is task_search's own dump, which the
-# assembly reads as arm "bananas" (the strategy refactor kept the default
-# search bit-identical, so re-running it would only burn compute). Keep
+# control is re-run rather than read from task_search's dump: the search
+# dumps predate the 2026-08-20 lowering changes, which moved the simulated
+# cost of identical configurations by up to 2x (verified on mtv_256MB
+# seed_67: 121/163 revisited configs within 1%, the gemv.order=(2,1)
+# region ~2x costlier). Arms must all be priced on one landscape, so
+# nothing from data/*/search or data/*/sample enters the campaign. Keep
 # assemble_campaign.py's ARM_DUMPS in sync with this table.
 CAMPAIGN_ARMS = {
+    "bananas": {},
     "bananas_rand": {"n-random-candidates": 256},
     "random": {"search-strategy": "random"},
     "descent": {"search-strategy": "descent"},
@@ -1165,11 +1169,7 @@ CAMPAIGN_FNS = ("red_64MB", "gemv_4MB", "mtv_256MB", "mmtv_4MB", "ttv_512MB")
 
 
 def campaign_dump_dir(bench: str, arm: str) -> pathlib.Path:
-    return (
-        _search_dump_dir(bench, "default")
-        if arm == "bananas"
-        else DATA_DIR / bench / f"campaign_{arm}" / "dump"
-    )
+    return DATA_DIR / bench / f"campaign_{arm}" / "dump"
 
 
 def _run_campaign_arm(bench: str, fn_name: str, arm: str) -> bool:
