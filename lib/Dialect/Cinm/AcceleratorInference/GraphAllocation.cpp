@@ -444,4 +444,85 @@ allocateGraphForLatency(ArrayRef<ClassProfile> classes,
   return result;
 }
 
+AllocationScore scoreAllocation(ArrayRef<ClassProfile> classes,
+                                ArrayRef<GraphNode> nodes,
+                                const AllocationResult &result) {
+  AllocationScore score;
+
+  // Throughput needs no schedule: a set's load is its size times its point's
+  // cost, whichever members it holds, and the objective is the worst set.
+  for (const ClassAllocation &classAlloc : result.perClass)
+    for (const GroupAllocation &group : classAlloc.groups)
+      score.throughputMs = std::max(score.throughputMs, group.loadMs);
+
+  // Latency needs one. Rebuild the sets as the makespan walk wants them:
+  // the profile point each was provisioned at, and its members ascending.
+  SmallVector<LatencyGroup> groups;
+  // Where a class's groups start in `groups`, so the member deal below can
+  // find them, and how many of this class's nodes have been dealt so far.
+  SmallVector<unsigned> firstGroupOfClass(result.perClass.size(), 0);
+  for (auto [ci, classAlloc] : llvm::enumerate(result.perClass)) {
+    firstGroupOfClass[ci] = groups.size();
+    for (const GroupAllocation &group : classAlloc.groups) {
+      // A timeshared set runs no fixed point, so there is no per-node cost
+      // and no makespan to report for this allocation.
+      if (group.resource == 0) {
+        score.latencyMs = std::numeric_limits<double>::quiet_NaN();
+        return score;
+      }
+      // Groups carry the resource they were provisioned at, not the index of
+      // the point that provisioned them; points are unique in resource and
+      // ascending, so the resource recovers it.
+      const auto &points = classes[ci].points;
+      auto it = llvm::find_if(points, [&](const ProfilePoint &p) {
+        return p.resource == group.resource;
+      });
+      if (it == points.end()) {
+        score.latencyMs = std::numeric_limits<double>::quiet_NaN();
+        return score;
+      }
+      groups.push_back({static_cast<unsigned>(ci),
+                        static_cast<unsigned>(it - points.begin()),
+                        {}});
+    }
+  }
+
+  if (!result.groupOfNode.empty()) {
+    // The latency solve already decided; nodes are walked in order, so each
+    // set's members come out ascending as LatencyGroup requires.
+    for (auto [ni, node] : llvm::enumerate(nodes)) {
+      if (ni >= result.groupOfNode.size())
+        break;
+      unsigned slot =
+          firstGroupOfClass[node.classIndex] + result.groupOfNode[ni];
+      if (slot < groups.size())
+        groups[slot].members.push_back(ni);
+    }
+  } else {
+    // Round-robin deal, skipping sets already at their size (they need not
+    // be equal). See the header for why consecutive nodes are spread.
+    SmallVector<unsigned> nextOfClass(result.perClass.size(), 0);
+    for (auto [ni, node] : llvm::enumerate(nodes)) {
+      const unsigned ci = node.classIndex;
+      if (ci >= result.perClass.size())
+        continue;
+      ArrayRef<GroupAllocation> classGroups = result.perClass[ci].groups;
+      if (classGroups.empty())
+        continue;
+      for (unsigned tried = 0; tried < classGroups.size(); ++tried) {
+        const unsigned g = (nextOfClass[ci] + tried) % classGroups.size();
+        LatencyGroup &target = groups[firstGroupOfClass[ci] + g];
+        if (target.members.size() < classGroups[g].size) {
+          target.members.push_back(ni);
+          nextOfClass[ci] = (g + 1) % classGroups.size();
+          break;
+        }
+      }
+    }
+  }
+
+  score.latencyMs = makespanOf(classes, nodes, groups);
+  return score;
+}
+
 } // namespace mlir::cinm

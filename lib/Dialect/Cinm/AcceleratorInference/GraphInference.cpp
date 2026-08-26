@@ -6,6 +6,7 @@
 #include "cinm-mlir/Utils/Scheduling/SchedulingSupport.h"
 
 #include <atomic>
+#include <cmath>
 #include <filesystem>
 #include <fstream>
 #include <optional>
@@ -422,7 +423,8 @@ static void dumpAllocationCSV(
     const std::filesystem::path &path, const ComputeGraph &graph,
     StringRef graphName, StringRef platformName, const InferenceOptions &opts,
     const AllocationOptions &allocOpts, const AllocationResult &alloc,
-    ArrayRef<ClassProfile> profiles, ArrayRef<int> solveIndexOfClass) {
+    ArrayRef<ClassProfile> profiles, ArrayRef<int> solveIndexOfClass,
+    const AllocationScore &score) {
   unsigned deviceBlocks = 0, groups = 0, pinnedGroups = 0;
   for (auto [ci, blockClass] : llvm::enumerate(graph.classes))
     if (solveIndexOfClass[ci] >= 0)
@@ -439,14 +441,22 @@ static void dumpAllocationCSV(
   std::ofstream out(path);
   if (!out)
     return;
-  out << "graph,platform,objective,objective_ms,n_blocks,n_blocks_device,"
+  // objective_ms is the value of the objective this run solved for;
+  // throughput_ms and latency_ms score the same allocation under *both*, so
+  // the cost of having optimised the other one is readable off one row.
+  // latency_ms is empty when a set is timeshared (see scoreAllocation).
+  out << "graph,platform,objective,objective_ms,throughput_ms,latency_ms,"
+         "n_blocks,n_blocks_device,"
          "n_blocks_host,n_classes,n_classes_device,n_classes_host,n_groups,"
          "n_groups_pinned,n_groups_timeshared,resource_used,resource_budget\n";
   out << csvQuote(graphName) << "," << csvQuote(platformName) << ","
       << (opts.latencyObjective ? "latency" : "throughput") << ","
-      << alloc.objectiveMs << "," << graph.numBlocks() << "," << deviceBlocks
-      << "," << (graph.numBlocks() - deviceBlocks) << ","
-      << graph.classes.size() << "," << profiles.size() << ","
+      << alloc.objectiveMs << "," << score.throughputMs << ",";
+  if (std::isfinite(score.latencyMs))
+    out << score.latencyMs;
+  out << "," << graph.numBlocks() << "," << deviceBlocks << ","
+      << (graph.numBlocks() - deviceBlocks) << "," << graph.classes.size()
+      << "," << profiles.size() << ","
       << (graph.classes.size() - profiles.size()) << "," << groups << ","
       << pinnedGroups << "," << (groups - pinnedGroups) << ","
       << alloc.resourceUsed << "," << allocOpts.resourceBudget << "\n";
@@ -645,13 +655,15 @@ runGraphAllocation(const ComputeGraph &graph, StringRef platformName,
 
   std::optional<AllocationResult> alloc;
   SmallVector<int> solveIndexOfNode(graph.nodes.size(), -1);
-  if (opts.latencyObjective) {
-    // The latency objective walks the dependency edges; hand it the graph's
-    // nodes, already in the topological order it requires. Nodes of skipped
-    // (host) classes leave the graph, but the ordering they carried must
-    // not: a consumer inherits the device predecessors of a skipped
-    // producer. Nodes are topological, so one forward pass settles it.
-    SmallVector<GraphNode> nodes;
+  // The dependency edges, in the topological order the makespan requires.
+  // Built for either objective: the latency solve optimises over them, and
+  // the throughput solve is *scored* over them afterwards so both objectives
+  // are reported for whichever allocation was chosen. Nodes of skipped
+  // (host) classes leave the graph, but the ordering they carried must not:
+  // a consumer inherits the device predecessors of a skipped producer. Nodes
+  // are topological, so one forward pass settles it.
+  SmallVector<GraphNode> nodes;
+  {
     SmallVector<SmallVector<unsigned>> skippedPreds(graph.nodes.size());
     for (auto [ni, node] : llvm::enumerate(graph.nodes)) {
       SmallVector<unsigned> preds;
@@ -672,10 +684,11 @@ runGraphAllocation(const ComputeGraph &graph, StringRef platformName,
           {static_cast<unsigned>(solveIndexOfClass[node.classIndex]),
            node.memberIndex, std::move(preds)});
     }
-    alloc = allocateGraphForLatency(profiles, nodes, allocOpts);
-  } else {
-    alloc = allocateGraph(profiles, allocOpts);
   }
+  if (opts.latencyObjective)
+    alloc = allocateGraphForLatency(profiles, nodes, allocOpts);
+  else
+    alloc = allocateGraph(profiles, allocOpts);
   if (!alloc)
     return emitSilenceableFailure(loc)
            << "no feasible device allocation for this graph: some class fits "
@@ -695,8 +708,12 @@ runGraphAllocation(const ComputeGraph &graph, StringRef platformName,
 
   if (!baseDumpDir.empty()) {
     auto dir = std::filesystem::path(baseDumpDir.str()) / graphName.str();
+    // Score the allocation under both objectives, not just the one solved
+    // for: the off-diagonal is what says whether the choice mattered.
+    const AllocationScore score = scoreAllocation(profiles, nodes, *alloc);
     dumpAllocationCSV(dir / "allocation.csv", graph, graphName, platformName,
-                      opts, allocOpts, *alloc, profiles, solveIndexOfClass);
+                      opts, allocOpts, *alloc, profiles, solveIndexOfClass,
+                      score);
     dumpGroupsCSV(dir / "groups.csv", graph, graphName, *alloc, profiles,
                   solveIndexOfClass);
   }
