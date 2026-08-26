@@ -104,6 +104,7 @@ OPTS = dict(
         "bo-batch-size": 2,
         "max-evals": 256,
         "n-init": 64,
+        "n-random-candidates": 4096,
         "acquisition": "thompson",
     },
     # Repeats of each menu point's search, for the noise band on the profile
@@ -113,7 +114,7 @@ OPTS = dict(
     # question) amplifies that spread. Diagnostic only: the allocator is
     # handed the first seed's point either way, so this cannot move an
     # allocation. Costs a full profiling sweep per extra seed.
-    wholeprog_profile_seeds=16,
+    wholeprog_profile_seeds=2,
 )
 
 WORKLOADS = list(ALL_PRIMS)
@@ -576,8 +577,16 @@ def wholeprog_front_mlir(prog: str) -> pathlib.Path:
     return wholeprog_dir(prog) / f"{prog}_with_compute.mlir"
 
 
-def wholeprog_alloc_dir(prog: str) -> pathlib.Path:
-    return wholeprog_dir(prog) / "alloc"
+# The two allocation objectives, solved separately over the same profiles.
+# They are different questions -- throughput charges only the busiest device
+# set, latency the critical path of the dataflow -- and they partition the
+# device differently, so neither substitutes for the other and each gets its
+# own dump root and figures.
+WHOLEPROG_OBJECTIVES = ("throughput", "latency")
+
+
+def wholeprog_alloc_dir(prog: str, objective: str) -> pathlib.Path:
+    return wholeprog_dir(prog) / f"alloc_{objective}"
 
 
 def _wholeprog_front(prog: str) -> bool:
@@ -613,16 +622,18 @@ def task_wholeprog_front():
         }
 
 
-def _wholeprog_alloc(prog: str) -> bool:
+def _wholeprog_alloc(prog: str, objective: str) -> bool:
     cinmopt.graph_allocation(
         wholeprog_front_mlir(prog),
-        wholeprog_alloc_dir(prog),
+        wholeprog_alloc_dir(prog, objective),
         workers=64,
         infer_opts={
             "simulator": OPTS["simulator"],
             "eval-timeout-ms": OPTS["eval_timeout_ms"],
             **OPTS["wholeprog_infer_opts"],
             "profile-seeds": OPTS["wholeprog_profile_seeds"],
+            # The pass spells the choice as a flag, not a name.
+            "latency-objective": objective == "latency",
             # Stamping commits every member's configuration as attributes on
             # one module (--upmem-lower-stamped lowers it afterwards), which
             # is the only commit path that scales to a whole program.
@@ -647,13 +658,21 @@ def task_wholeprog_alloc():
     dumps are per graph and named by the pass, so there is no single dump
     path known ahead of time to hang the target on."""
     for prog in WHOLEPROG_PROGRAMS:
-        yield {
-            "name": prog,
-            "file_dep": [str(wholeprog_front_mlir(prog))],
-            "targets": [str(wholeprog_alloc_dir(prog) / "out.mlir")],
-            "uptodate": [config_changed(OPTS["wholeprog_infer_opts"])],
-            "actions": [(_wholeprog_alloc, [prog])],
-        }
+        for objective in WHOLEPROG_OBJECTIVES:
+            yield {
+                "name": f"{prog}:{objective}",
+                "file_dep": [str(wholeprog_front_mlir(prog))],
+                "targets": [str(wholeprog_alloc_dir(prog, objective) / "out.mlir")],
+                # The objective joins the search options in the signature:
+                # it changes the solve, so flipping it has to invalidate the
+                # run the way a changed budget does.
+                "uptodate": [
+                    config_changed(
+                        {**OPTS["wholeprog_infer_opts"], "objective": objective}
+                    )
+                ],
+                "actions": [(_wholeprog_alloc, [prog, objective])],
+            }
 
 
 def task_plot_alloc():
@@ -663,14 +682,16 @@ def task_plot_alloc():
     measurements) and skips with a note when a program has not been solved
     yet, so it is safe to ask for at any point."""
     for prog in WHOLEPROG_PROGRAMS:
-        yield {
-            "name": prog,
-            "actions": [
-                f"python {HERE / 'plot_profiles.py'} {wholeprog_alloc_dir(prog)}"
-                f" --out {HERE / 'plots' / 'wholeprog' / prog}"
-            ],
-            "uptodate": [False],
-        }
+        for objective in WHOLEPROG_OBJECTIVES:
+            yield {
+                "name": f"{prog}:{objective}",
+                "actions": [
+                    f"python {HERE / 'plot_profiles.py'}"
+                    f" {wholeprog_alloc_dir(prog, objective)}"
+                    f" --out {HERE / 'plots' / 'wholeprog' / prog / objective}"
+                ],
+                "uptodate": [False],
+            }
 
 
 # ── B6: assemble results/*.csv from whatever exists ─────────────────────────
@@ -1169,7 +1190,8 @@ CAMPAIGN_ARMS = {
 # RNG dependence of the whole e1 campaign. Set to () to run all functions.
 # The plots restrict pooled statistics to functions every arm ran, so a
 # scoped campaign and a later full one never mix into an unfair comparison.
-CAMPAIGN_FNS = ("red_64MB", "gemv_4MB", "mtv_256MB", "mmtv_4MB", "ttv_512MB")
+# CAMPAIGN_FNS = ("red_64MB", "gemv_4MB", "mtv_256MB", "mmtv_4MB", "ttv_512MB")
+CAMPAIGN_FNS = ()
 
 
 def campaign_dump_dir(bench: str, arm: str) -> pathlib.Path:
