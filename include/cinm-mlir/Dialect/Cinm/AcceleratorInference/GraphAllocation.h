@@ -150,4 +150,36 @@ allocateGraphForLatency(ArrayRef<ClassProfile> classes,
                         ArrayRef<GraphNode> nodes,
                         const AllocationOptions &opts);
 
+/// Both objectives' values for one allocation, so an allocation solved for
+/// one can be reported under the other -- the off-diagonal of that 2x2 is
+/// what says whether the choice of objective mattered at all.
+struct AllocationScore {
+  /// Steady-state bottleneck: the busiest set's per-inference work. Exact
+  /// for any allocation, since a set's load does not depend on which of its
+  /// class's interchangeable members it holds.
+  double throughputMs = 0;
+  /// Makespan of one inference. NaN when the allocation timeshares a set:
+  /// an unpinned group runs no fixed profile point, so its nodes have no
+  /// per-node cost to schedule.
+  double latencyMs = 0;
+};
+
+/// Score `result` under both objectives. `nodes` supplies the dependency
+/// structure the makespan needs and must be topologically ordered, exactly
+/// as allocateGraphForLatency requires.
+///
+/// A latency solve records which set each node landed on, and that
+/// assignment is used as-is. A throughput solve does not -- its group sizes
+/// are fixed but its members are interchangeable (see
+/// AllocationResult::groupOfNode) -- so one is chosen here: the class's
+/// nodes are dealt round-robin across its sets in node order. That spreads
+/// consecutive nodes, which are the ones most likely to be independent,
+/// across different sets rather than serializing them onto one. The
+/// resulting makespan is therefore *a* schedule consistent with the
+/// allocation and an upper bound on its best one, not the optimum -- which
+/// is itself a scheduling problem. Report it as such.
+AllocationScore scoreAllocation(ArrayRef<ClassProfile> classes,
+                                ArrayRef<GraphNode> nodes,
+                                const AllocationResult &result);
+
 } // namespace mlir::cinm
