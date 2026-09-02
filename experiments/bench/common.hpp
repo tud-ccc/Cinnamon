@@ -73,6 +73,18 @@ inline std::vector<DTY> random_vector(size_t n) {
   return v;
 }
 
+/// Like random_vector, with operands drawn from [0, range) instead of
+/// [0, kOperandRange). The chained-matmul benchmarks (2mm/3mm) need this:
+/// with default-range operands the second matmul stage overflows i32, so
+/// they draw 0/1 inputs, which keep every stage exact in both the i32
+/// kernel and the double reference.
+inline std::vector<DTY> random_vector(size_t n, int range) {
+  std::vector<DTY> v(n);
+  for (size_t i = 0; i < n; i++)
+    v[i] = (DTY)(rand() % range);
+  return v;
+}
+
 /// Zero-initialised output buffer with its pages interleaved across NUMA
 /// nodes. Every driver's gather target must be allocated through this.
 ///
@@ -158,6 +170,24 @@ inline std::vector<double> gemv_ref(const std::vector<DTY> &A,
   std::vector<double> out(m);
   gemv_ref(A.data(), x, m, n, out.data());
   return out;
+}
+
+/// out = A * B, with A m×k and B k×n, both row-major. Templated over the
+/// element types so a chained reference can feed one stage's double output
+/// into the next (2mm/3mm); everything accumulates in double, which is
+/// exact for these benchmarks' operand ranges (see the note above).
+template <class TA, class TB>
+inline void matmul_ref(const TA *A, const TB *B, size_t m, size_t k, size_t n,
+                       double *out) {
+  for (size_t i = 0; i < m; i++) {
+    for (size_t j = 0; j < n; j++)
+      out[i * n + j] = 0.0;
+    for (size_t l = 0; l < k; l++) {
+      const double a = (double)A[i * k + l];
+      for (size_t j = 0; j < n; j++)
+        out[i * n + j] += a * (double)B[l * n + j];
+    }
+  }
 }
 
 /// out[i] = alpha*u[i] + beta*v[i], elementwise over n.

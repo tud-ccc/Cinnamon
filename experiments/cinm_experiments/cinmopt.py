@@ -544,3 +544,44 @@ def eval_solution_lowerer(
         )
 
     return _lower
+
+
+def stamped_lowerer(
+    *,
+    infer_opts: dict,
+    cinm_opt: pathlib.Path = DEFAULT_CINM_OPT,
+):
+    """A (fn_module, out_file, log_file) -> CompletedProcess callable for
+    compile_run.Config.lower that SEARCHES rather than replays: run
+    --upmem-infer-accelerator with stamp-configs over the whole module,
+    then --upmem-lower-stamped in the same invocation, producing the
+    upmem-dialect stage the compile Makefile takes over from.
+
+    This is the RQ4 arms' lowering. The arm is chosen by `infer_opts`:
+    with graph-allocation (+ latency-objective) the allocation stage
+    partitions the device and merges classes first; without it every
+    compute block is tuned independently -- the per-operator paradigm.
+    The graph solver's dumps (profiles.csv, allocation.csv, ...) land in
+    a dump/ directory beside the lowered module, so the objective side
+    table can be assembled from the same artifact that was measured."""
+
+    def _lower(
+        fn_module: pathlib.Path,
+        out_file: pathlib.Path,
+        log_file: pathlib.Path,
+        **params,  # informational (dpus etc.); the search decides, not them
+    ) -> subprocess.CompletedProcess:
+        return _run(
+            fn_module,
+            infer_opts={
+                "stamp-configs": True,
+                "dump-dir": str(pathlib.Path(out_file).parent / "dump"),
+                **infer_opts,
+            },
+            out_file=out_file,
+            cinm_opt=cinm_opt,
+            log_file=log_file,
+            extra_opts=["--upmem-lower-stamped"],
+        )
+
+    return _lower

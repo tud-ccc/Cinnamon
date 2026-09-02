@@ -1,3 +1,6 @@
+//#! cinm-opt --cinm-assign-platforms --cinm-isolate-compute-blocks --upmem-infer-accelerator --split-input-file
+
+// -----
 #upmem = #upmem.platform<type = v1A, dpus = 4096, tasklets = 1>
 
     func.func @_3mm_d8(%A: tensor<8x128xi32> {cinm.static}, %B: tensor<128x256xi32>, %C: tensor<256x128xi32> {cinm.static},  %D: tensor<128x128xi32>) -> (tensor<8x128xi32>, tensor<8x128xi32>)

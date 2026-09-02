@@ -12,7 +12,8 @@ can be asked for on its own), retry tasks. The shared machinery lives in
 cinm_experiments.doit_blocks.
 
 Still to come: the cinm1 (D,T) sweep with coverage accounting, and the
-RQ4 multi-op workloads/arms.
+RQ4 arms for the llama workload (the 2mm/3mm arms are wired; llama needs
+a bench driver).
 
 Usage:
   doit space             # dump every benchmark's space.json (no simulator)
@@ -212,8 +213,9 @@ def _split_one(src: pathlib.Path, out_dir: pathlib.Path) -> bool:
 
 
 def task_split():
-    """Split each benchmark's source into one module per function."""
-    for bench in WORKLOADS:
+    """Split each benchmark's (and RQ4 workload's) source into one module
+    per function."""
+    for bench in WORKLOADS + RQ4_PROGRAMS:
         src = source_mlir(bench)
         fns = list_functions(src)
         yield {
@@ -539,7 +541,24 @@ def points_roots(bench: str, source: str) -> doit_blocks.MeasureRoots:
     )
 
 
-RQ4_PROGRAMS: list[str] = []  # filled when the multi-op workloads land
+# The multi-op workloads: 2MM and 3MM as dependency structures (sequential,
+# parallel, parallel-then-sequential, diamond), one source file per
+# structure with d8..d64 size variants, split per function like the prims.
+# llama joins once it has a bench driver.
+RQ4_PROGRAMS = ["2mm_seq", "2mm_par", "3mm_parseq", "3mm_diamond"]
+
+# Arm -> infer-opts overrides. Everything else -- code generation, cost
+# model, search budget, seed -- is shared, so the arms differ only in
+# whether the allocation stage runs: that held-constant design is RQ4's
+# whole argument. The per-operator arm is the paradigm's cost structure
+# (PIM-LLM's allocation policy under our codegen); the whole-program arm
+# solves under the latency objective, the same objective the per-operator
+# arm optimizes per scope.
+RQ4_ARMS = {
+    "wholeprog": {"graph-allocation": True, "latency-objective": True},
+    "peroper": {},
+}
+RQ4_SEED = 67  # e1's first seed; single-seeded until A3-style repeats land
 
 
 def rq4_roots(prog: str, arm: str) -> doit_blocks.MeasureRoots:
@@ -547,6 +566,48 @@ def rq4_roots(prog: str, arm: str) -> doit_blocks.MeasureRoots:
     return doit_blocks.MeasureRoots(
         compile_root=root / "compiled", run_root=root / "run"
     )
+
+
+def _rq4_configs(prog: str, arm: str) -> list[compile_run.Config]:
+    """One config per size variant of `prog` under `arm`. The lowering IS
+    the arm: search the module (with or without the allocation stage),
+    commit by stamping, lower the stamped result -- so compile_one produces
+    a module whose set sharing already encodes the arm's residency, and the
+    shared Makefile pipeline (dedup + load hoisting per set) realises it."""
+    lower = cinmopt.stamped_lowerer(
+        infer_opts={
+            "simulator": OPTS["simulator"],
+            "eval-timeout-ms": OPTS["eval_timeout_ms"],
+            "rng-seed": RQ4_SEED,
+            **OPTS["wholeprog_infer_opts"],
+            **RQ4_ARMS[arm],
+        },
+    )
+    return [
+        compile_run.Config(
+            system=arm,
+            fn_name=fn_name,
+            label=f"seed{RQ4_SEED}",
+            params={"dpus": 2048},
+            fn_module=split_module(prog, fn_name),
+            prim=prog,
+            lower=lower,
+        )
+        for fn_name in list_functions(source_mlir(prog))
+    ]
+
+
+def task_compile_rq4():
+    """RQ4's two arms over every multi-op workload: per-operator and
+    whole-program, same budgets and seed, measured end to end downstream.
+    Compiling a config runs its arm's search (simulator only); the bench
+    tasks are the hardware half and stay exclusive like every other stack."""
+    entries: list[StackEntry] = []
+    for prog in RQ4_PROGRAMS:
+        for arm in RQ4_ARMS:
+            for config in _rq4_configs(prog, arm):
+                entries.append((prog, config, [], rq4_roots(prog, arm)))
+    yield from _measure_stack("rq4", entries, qualify_by_system=True)
 
 
 # ── whole-program graph allocation ──────────────────────────────────────────

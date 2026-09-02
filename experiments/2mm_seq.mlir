@@ -1,3 +1,6 @@
+//#! cinm-opt --cinm-assign-platforms --cinm-isolate-compute-blocks --upmem-infer-accelerator --split-input-file
+
+// -----
 
 #upmem = #upmem.platform<type = v1A, dpus = 2048, tasklets = 24>
 
