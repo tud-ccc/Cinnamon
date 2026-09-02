@@ -22,7 +22,7 @@ allocator has not been told.
 
 Two ways out, and they are not alternatives so much as now-and-later.
 
-## 2. Option A (now): make the latency model match the machine
+## 2. Option A: make the latency model match the machine -- DONE (2026-08-25)
 
 Add the program-order edge the runtime actually imposes -- every node waits
 for the previous one -- so "latency" means what a synchronous run measures:
@@ -41,6 +41,24 @@ the sum of the blocks' costs, each priced at the device size its set got.
   upper bound can be dropped.
 - Cost: hours. Do this before the RQ4 runs land, or the latency arm's
   numbers describe a machine we do not have.
+
+**Implemented.** The edge is in both `makespanOf` and `criticalNodes` --
+they must walk the same edges or the greedy's slack calls nodes free that
+the objective charges. Verified: `latency_ms` now equals the sum of
+`size * cost_ms` over groups.csv exactly, for allocations solved under
+either objective, while each solver's own `objective_ms` still reproduces
+on the diagonal.
+
+The visible behaviour change is on independent blocks, which is the point.
+In the `@qk` test (two independent same-shape gemvs) the latency objective
+used to give each its own half-grid set and widen the pair together; it now
+merges them onto one set holding the whole grid, since they run one after
+the other either way and two runs at full width beat two at half width. The
+test's FileCheck still passes -- it pins that both members commit the same
+shape, not which -- but its rationale comment described the old model and
+has been corrected. Throughput is unchanged (it still splits the grid),
+so the two objectives now differ on that case in the opposite direction
+from before.
 
 ## 3. Option B (later): real asynchronous execution
 
