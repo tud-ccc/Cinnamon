@@ -195,10 +195,22 @@ struct LatencyGroup {
 };
 
 /// Makespan of one inference under `groups`: a longest path over the
-/// dependency edges plus the serialization edges a set imposes on the nodes
-/// sharing it. `nodes` is topologically ordered, so one forward sweep does
-/// it -- the serialization edges cannot break that, since they run from an
-/// earlier member of a set to a later one and members are stored ascending.
+/// dependency edges, the serialization edges a set imposes on the nodes
+/// sharing it, and the program order.
+///
+/// That last edge is what the machine imposes and the other two do not:
+/// `upmem.wait_for` blocks the host, so a block does not start until the
+/// previous one has finished even when they share no data and no device set.
+/// Without it this would price a concurrency the runtime does not provide,
+/// and the allocator would optimise for a machine we do not have (see
+/// docs/AsyncExecutionAndBaselines.md; the edge comes out again if the
+/// asynchronous lowering lands). With it the makespan is the sum of the
+/// blocks' costs, each priced at the device size its set was given -- so the
+/// objective is still a real choice over profile points, just "minimise
+/// total work" rather than "minimise the critical path".
+///
+/// `nodes` is topologically ordered *and* in program order, so one forward
+/// sweep does it -- every edge runs from a smaller index to a larger one.
 double makespanOf(ArrayRef<ClassProfile> classes, ArrayRef<GraphNode> nodes,
                   ArrayRef<LatencyGroup> groups) {
   SmallVector<double> cost(nodes.size(), 0.0);
@@ -220,6 +232,9 @@ double makespanOf(ArrayRef<ClassProfile> classes, ArrayRef<GraphNode> nodes,
       start = std::max(start, finish[pred]);
     if (prevOnSet[i] != kNoNode)
       start = std::max(start, finish[prevOnSet[i]]);
+    // Program order: the host blocks on every launch.
+    if (i)
+      start = std::max(start, finish[i - 1]);
     finish[i] = start + cost[i];
     makespan = std::max(makespan, finish[i]);
   }
@@ -256,12 +271,17 @@ llvm::BitVector criticalNodes(ArrayRef<ClassProfile> classes,
     }
     if (prevOnSet[i] != kNoNode)
       start = std::max(start, finish[prevOnSet[i]]);
+    if (i)
+      start = std::max(start, finish[i - 1]);
     finish[i] = start + cost[i];
     makespan = std::max(makespan, finish[i]);
   }
 
-  // Latest finish without pushing the makespan out. Successors and the next
-  // member on a set both have larger indices, so one reverse sweep does it.
+  // Latest finish without pushing the makespan out. Successors, the next
+  // member on a set and the next node in program order all have larger
+  // indices, so one reverse sweep does it. The same edge set as above: a
+  // slack computed over fewer edges than the makespan walks would call nodes
+  // free that are not.
   SmallVector<double> latest(nodes.size(), makespan);
   for (unsigned i = nodes.size(); i-- > 0;) {
     for (unsigned succ : successors[i])
@@ -269,6 +289,8 @@ llvm::BitVector criticalNodes(ArrayRef<ClassProfile> classes,
     if (nextOnSet[i] != kNoNode)
       latest[i] =
           std::min(latest[i], latest[nextOnSet[i]] - cost[nextOnSet[i]]);
+    if (i + 1 < nodes.size())
+      latest[i] = std::min(latest[i], latest[i + 1] - cost[i + 1]);
   }
 
   llvm::BitVector critical(nodes.size());

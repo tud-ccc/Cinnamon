@@ -42,9 +42,16 @@ func.func @chained(%A: tensor<256x256xi32>, %x: tensor<256xi32>, %B: tensor<128x
 // Two same-shape gemvs over different (static) weights: one class of two,
 // and independent of each other. Program identity requires both members to
 // commit the *same* configuration -- whether the solver co-locates them on
-// one set or gives each its own equally-sized set. Under latency they are
-// parallel, so they end up on a set each and the pair is widened together:
-// widening only one would leave the other dictating the makespan.
+// one set or gives each its own equally-sized set, which is what the two
+// objectives disagree about here.
+//
+// Being independent buys them nothing in time: the host blocks on every
+// launch, so they run one after the other whichever sets they sit on (see
+// makespanOf). Latency therefore merges them onto ONE set holding the whole
+// grid -- two runs at full width beat two runs at half width -- while
+// throughput, which only charges the busiest set, splits the grid and gives
+// each its own. Both commit one shape, which is what the shared SHAPE
+// capture below pins; the sizes differ between the two runs.
 // CHECK-LABEL: func.func @qk
 func.func @qk(%Wq: tensor<256x256xi32> {cinm.static}, %Wk: tensor<256x256xi32> {cinm.static}, %x: tensor<256xi32>)
     -> (tensor<256xi32>, tensor<256xi32>)

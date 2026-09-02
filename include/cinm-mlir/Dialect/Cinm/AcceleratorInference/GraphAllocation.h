@@ -172,12 +172,16 @@ struct AllocationScore {
 /// assignment is used as-is. A throughput solve does not -- its group sizes
 /// are fixed but its members are interchangeable (see
 /// AllocationResult::groupOfNode) -- so one is chosen here: the class's
-/// nodes are dealt round-robin across its sets in node order. That spreads
-/// consecutive nodes, which are the ones most likely to be independent,
-/// across different sets rather than serializing them onto one. The
-/// resulting makespan is therefore *a* schedule consistent with the
-/// allocation and an upper bound on its best one, not the optimum -- which
-/// is itself a scheduling problem. Report it as such.
+/// nodes are dealt round-robin across its sets in node order.
+///
+/// Under the synchronous execution model the makespan walks (every block
+/// waits for the previous one, see makespanOf) that choice does not change
+/// the answer: a total order fixes the makespan at the sum of the costs
+/// whichever set an interchangeable member sits on. Both scores are
+/// therefore exact today. The deal is kept because it stops being neutral
+/// the moment independent blocks can overlap -- then this becomes one
+/// schedule consistent with the allocation, and an upper bound on its best
+/// one rather than its optimum.
 AllocationScore scoreAllocation(ArrayRef<ClassProfile> classes,
                                 ArrayRef<GraphNode> nodes,
                                 const AllocationResult &result);
