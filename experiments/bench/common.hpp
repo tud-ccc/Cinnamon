@@ -73,18 +73,6 @@ inline std::vector<DTY> random_vector(size_t n) {
   return v;
 }
 
-/// Like random_vector, with operands drawn from [0, range) instead of
-/// [0, kOperandRange). The chained-matmul benchmarks (2mm/3mm) need this:
-/// with default-range operands the second matmul stage overflows i32, so
-/// they draw 0/1 inputs, which keep every stage exact in both the i32
-/// kernel and the double reference.
-inline std::vector<DTY> random_vector(size_t n, int range) {
-  std::vector<DTY> v(n);
-  for (size_t i = 0; i < n; i++)
-    v[i] = (DTY)(rand() % range);
-  return v;
-}
-
 /// Zero-initialised output buffer with its pages interleaved across NUMA
 /// nodes. Every driver's gather target must be allocated through this.
 ///
@@ -172,22 +160,34 @@ inline std::vector<double> gemv_ref(const std::vector<DTY> &A,
   return out;
 }
 
-/// out = A * B, with A m×k and B k×n, both row-major. Templated over the
-/// element types so a chained reference can feed one stage's double output
-/// into the next (2mm/3mm); everything accumulates in double, which is
-/// exact for these benchmarks' operand ranges (see the note above).
+/// out = A * B, with A m×k and B k×n, both row-major, under i32 wraparound.
+/// Accumulated in uint32_t: mod-2^32 arithmetic is order-independent and
+/// bit-identical to the device's two's-complement i32, so the chained
+/// benchmarks (2mm/3mm) verify exactly at any operand magnitude -- their
+/// later stages overflow i32 by construction, and the kernel's wraparound
+/// is part of what is verified. Templated so a stage can consume a previous
+/// stage's uint32_t output.
 template <class TA, class TB>
-inline void matmul_ref(const TA *A, const TB *B, size_t m, size_t k, size_t n,
-                       double *out) {
+inline void matmul_ref_wrap(const TA *A, const TB *B, size_t m, size_t k,
+                            size_t n, uint32_t *out) {
   for (size_t i = 0; i < m; i++) {
     for (size_t j = 0; j < n; j++)
-      out[i * n + j] = 0.0;
+      out[i * n + j] = 0u;
     for (size_t l = 0; l < k; l++) {
-      const double a = (double)A[i * k + l];
+      const uint32_t a = (uint32_t)A[i * k + l];
       for (size_t j = 0; j < n; j++)
-        out[i * n + j] += a * (double)B[l * n + j];
+        out[i * n + j] += a * (uint32_t)B[l * n + j];
     }
   }
+}
+
+/// A wrapped reference reinterpreted as the i32 values the kernel produces,
+/// in the double golden format check() takes.
+inline std::vector<double> wrapped_golden(const std::vector<uint32_t> &v) {
+  std::vector<double> out(v.size());
+  for (size_t i = 0; i < v.size(); i++)
+    out[i] = (double)(int32_t)v[i];
+  return out;
 }
 
 /// out[i] = alpha*u[i] + beta*v[i], elementwise over n.

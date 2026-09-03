@@ -1,6 +1,8 @@
 // j = (A * B) * (C * D)   (diamond: two independent gemms join in a third);
-// A: d×1024, B: 1024×256, C: 256×512, D: 512×2048. Inputs are 0/1 so the
-// join stage stays exact in i32 (its terms reach 256 * 1024 * 512 < 2^31).
+// A: 8×N, B: N×N, C: N×N, D: N×8, j: 8×8. Size class = bytes of each N×N
+// i32 weight (see 2mm_seq.cpp); the statics are the inner factors B and C,
+// which keeps both intermediates skinny (8×N and N×8). References wrap in
+// u32 like the device's i32 (see matmul_ref_wrap).
 
 #include "common.hpp"
 
@@ -8,34 +10,35 @@ extern "C" void BENCH_FN(DTY *, DTY *, DTY *, DTY *, DTY *);
 
 struct Mm3Diamond {
   static constexpr bench::Size kSizes[] = {
-      {"_3mm_diam_d8", {8}},
-      {"_3mm_diam_d16", {16}},
-      {"_3mm_diam_d32", {32}},
-      {"_3mm_diam_d64", {64}},
+      {"_3mm_diam_1MB", {512}},
+      {"_3mm_diam_16MB", {2048}},
+      {"_3mm_diam_64MB", {4096}},
+      {"_3mm_diam_256MB", {8192}},
   };
 
-  size_t d;
+  static constexpr size_t d = 8;
+  size_t n;
   std::vector<DTY> A, B, C, D, out;
 
   void setup(const size_t *dims) {
-    d = dims[0];
-    A = bench::random_vector(d * 1024, 2);
-    B = bench::random_vector(1024 * 256, 2);
-    C = bench::random_vector(256 * 512, 2);
-    D = bench::random_vector(512 * 2048, 2);
-    out = bench::output_vector(d * 2048);
-    printf("%s  d=%zu", TOSTR(BENCH_FN), d);
+    n = dims[0];
+    A = bench::random_vector(d * n);
+    B = bench::random_vector(n * n);
+    C = bench::random_vector(n * n);
+    D = bench::random_vector(n * d);
+    out = bench::output_vector(d * d);
+    printf("%s  N=%zu", TOSTR(BENCH_FN), n);
   }
 
   void run() { BENCH_FN(A.data(), B.data(), C.data(), D.data(), out.data()); }
   const std::vector<DTY> &output() const { return out; }
 
   std::vector<double> reference() const {
-    std::vector<double> l(d * 256), r(256 * 2048), j(d * 2048);
-    bench::matmul_ref(A.data(), B.data(), d, 1024, 256, l.data());
-    bench::matmul_ref(C.data(), D.data(), 256, 512, 2048, r.data());
-    bench::matmul_ref(l.data(), r.data(), d, 256, 2048, j.data());
-    return j;
+    std::vector<uint32_t> l(d * n), r(n * d), j(d * d);
+    bench::matmul_ref_wrap(A.data(), B.data(), d, n, n, l.data());
+    bench::matmul_ref_wrap(C.data(), D.data(), n, n, d, r.data());
+    bench::matmul_ref_wrap(l.data(), r.data(), d, n, d, j.data());
+    return bench::wrapped_golden(j);
   }
 };
 

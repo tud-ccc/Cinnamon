@@ -1,7 +1,8 @@
-// (r2, r3) = ((A * B) * C, A * D)   (a two-gemm chain plus one gemm parallel
-// to it, sharing A); A: d×128, B: 128×256, C: 256×128, D: 128×128. Two
-// out-params in result order, one backing vector (see 2mm_par.cpp). Inputs
-// are 0/1 so the chained stage stays exact in i32.
+// (r2, r3) = ((X * W1) * W2, X * W3)   (a two-gemm chain plus one gemm
+// parallel to it, sharing X); X: 8×N, W1, W2, W3: N×N. Size class = bytes
+// of each N×N i32 weight (see 2mm_seq.cpp). Two out-params in result order,
+// one backing vector (see 2mm_par.cpp). References wrap in u32 like the
+// device's i32 (see matmul_ref_wrap).
 
 #include "common.hpp"
 
@@ -9,37 +10,38 @@ extern "C" void BENCH_FN(DTY *, DTY *, DTY *, DTY *, DTY *, DTY *);
 
 struct Mm3ParSeq {
   static constexpr bench::Size kSizes[] = {
-      {"_3mm_d8", {8}},
-      {"_3mm_d16", {16}},
-      {"_3mm_d32", {32}},
-      {"_3mm_d64", {64}},
+      {"_3mm_1MB", {512}},
+      {"_3mm_16MB", {2048}},
+      {"_3mm_64MB", {4096}},
+      {"_3mm_256MB", {8192}},
   };
 
-  size_t d;
-  std::vector<DTY> A, B, C, D, out; // out = [r2: d*128 | r3: d*128]
+  static constexpr size_t d = 8;
+  size_t n;
+  std::vector<DTY> X, W1, W2, W3, out; // out = [r2: d*n | r3: d*n]
 
   void setup(const size_t *dims) {
-    d = dims[0];
-    A = bench::random_vector(d * 128, 2);
-    B = bench::random_vector(128 * 256, 2);
-    C = bench::random_vector(256 * 128, 2);
-    D = bench::random_vector(128 * 128, 2);
-    out = bench::output_vector(d * 128 + d * 128);
-    printf("%s  d=%zu", TOSTR(BENCH_FN), d);
+    n = dims[0];
+    X = bench::random_vector(d * n);
+    W1 = bench::random_vector(n * n);
+    W2 = bench::random_vector(n * n);
+    W3 = bench::random_vector(n * n);
+    out = bench::output_vector(2 * d * n);
+    printf("%s  N=%zu", TOSTR(BENCH_FN), n);
   }
 
   void run() {
-    BENCH_FN(A.data(), B.data(), C.data(), D.data(), out.data(),
-             out.data() + d * 128);
+    BENCH_FN(X.data(), W1.data(), W2.data(), W3.data(), out.data(),
+             out.data() + d * n);
   }
   const std::vector<DTY> &output() const { return out; }
 
   std::vector<double> reference() const {
-    std::vector<double> t(d * 256), r(d * 128 + d * 128);
-    bench::matmul_ref(A.data(), B.data(), d, 128, 256, t.data());
-    bench::matmul_ref(t.data(), C.data(), d, 256, 128, r.data());
-    bench::matmul_ref(A.data(), D.data(), d, 128, 128, r.data() + d * 128);
-    return r;
+    std::vector<uint32_t> t(d * n), r(2 * d * n);
+    bench::matmul_ref_wrap(X.data(), W1.data(), d, n, n, t.data());
+    bench::matmul_ref_wrap(t.data(), W2.data(), d, n, n, r.data());
+    bench::matmul_ref_wrap(X.data(), W3.data(), d, n, n, r.data() + d * n);
+    return bench::wrapped_golden(r);
   }
 };
 

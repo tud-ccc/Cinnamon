@@ -1,6 +1,8 @@
-// r2 = (A * B) * C   (two chained cinm.op.gemm); A: d×1024, B: 1024×256,
-// C: 256×2048. Inputs are 0/1 so both i32 stages stay exact (see the
-// overflow note on bench::random_vector's bounded overload).
+// r2 = (X * W1) * W2   (two chained cinm.op.gemm); X: 8×N, W1, W2: N×N.
+// The size class names the bytes of each N×N i32 weight (1MB -> N=512,
+// 16MB -> 2048, 64MB -> 4096, 256MB -> 8192). The reference wraps in u32
+// like the device's i32 (see matmul_ref_wrap), so operands use the default
+// range.
 
 #include "common.hpp"
 
@@ -8,32 +10,33 @@ extern "C" void BENCH_FN(DTY *, DTY *, DTY *, DTY *);
 
 struct Mm2Seq {
   static constexpr bench::Size kSizes[] = {
-      {"_2mm_seq_d8", {8}},
-      {"_2mm_seq_d16", {16}},
-      {"_2mm_seq_d32", {32}},
-      {"_2mm_seq_d64", {64}},
+      {"_2mm_seq_1MB", {512}},
+      {"_2mm_seq_16MB", {2048}},
+      {"_2mm_seq_64MB", {4096}},
+      {"_2mm_seq_256MB", {8192}},
   };
 
-  size_t d;
-  std::vector<DTY> A, B, C, out;
+  static constexpr size_t d = 8;
+  size_t n;
+  std::vector<DTY> X, W1, W2, out;
 
   void setup(const size_t *dims) {
-    d = dims[0];
-    A = bench::random_vector(d * 1024, 2);
-    B = bench::random_vector(1024 * 256, 2);
-    C = bench::random_vector(256 * 2048, 2);
-    out = bench::output_vector(d * 2048);
-    printf("%s  d=%zu", TOSTR(BENCH_FN), d);
+    n = dims[0];
+    X = bench::random_vector(d * n);
+    W1 = bench::random_vector(n * n);
+    W2 = bench::random_vector(n * n);
+    out = bench::output_vector(d * n);
+    printf("%s  N=%zu", TOSTR(BENCH_FN), n);
   }
 
-  void run() { BENCH_FN(A.data(), B.data(), C.data(), out.data()); }
+  void run() { BENCH_FN(X.data(), W1.data(), W2.data(), out.data()); }
   const std::vector<DTY> &output() const { return out; }
 
   std::vector<double> reference() const {
-    std::vector<double> t(d * 256), r(d * 2048);
-    bench::matmul_ref(A.data(), B.data(), d, 1024, 256, t.data());
-    bench::matmul_ref(t.data(), C.data(), d, 256, 2048, r.data());
-    return r;
+    std::vector<uint32_t> t(d * n), r(d * n);
+    bench::matmul_ref_wrap(X.data(), W1.data(), d, n, n, t.data());
+    bench::matmul_ref_wrap(t.data(), W2.data(), d, n, n, r.data());
+    return bench::wrapped_golden(r);
   }
 };
 

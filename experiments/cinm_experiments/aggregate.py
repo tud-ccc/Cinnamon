@@ -21,7 +21,7 @@ def iter_config_dirs(run_dir: pathlib.Path):
     """Yield (fn_name, config_dir) for every config directory under run_dir
     (run_dir/{fn_name}/{config_id}/), skipping non-directories and a stray
     _split/. The skip is by exact name, not any leading underscore: the RQ4
-    workloads' functions are named _2mm_seq_d8, _3mm_diam_d64 and so on,
+    workloads' functions are named _2mm_seq_1MB, _3mm_diam_64MB and so on,
     and a prefix rule silently dropped every one of them. A missing run_dir
     yields nothing -- and is NOT created: this is a reader, and a stack
     root it conjured up would make "never ran" indistinguishable from "ran
