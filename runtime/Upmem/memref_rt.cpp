@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <cstring>
 #include <mlir/ExecutionEngine/CRunnerUtils.h>
+#include <vector>
 
 /// Copies `srcArg` into `dstArg`, both possibly strided, and reports the
 /// number of bytes moved through `bytesMoved`.
@@ -158,9 +159,53 @@ extern "C" void upmemrt_expand(void *dst, const void *src, int64_t rank,
 #endif
 }
 
+extern "C" int upmemrt_cache_enabled(void);
+
+namespace {
+/// One static repack already performed into its staging buffer: the target,
+/// and the payload it holds, so a different source over the same buffer (a
+/// shared staging global) is redone rather than skipped.
+struct CompactRecord {
+  void *dst;
+  const void *src;
+  size_t bytes;
+};
+std::vector<CompactRecord> staticCompactsDone;
+
+/// Under UPMEM_RT_CACHE, true when this static repack's payload already
+/// sits in dst. Static data is identical on every inference, so the repack
+/// is idempotent and skipping it is the host-side mirror of the runtime's
+/// resident-scatter skip: with both in place amortization is physical, and
+/// steady-state iterations measure no repack because none happens -- even
+/// after the consuming set was evicted, since eviction invalidates the
+/// device copy, not the staging buffer. Recording happens here too, so the
+/// caller only ever asks.
+bool staticCompactResident(void *dst, const void *src, size_t bytes) {
+  if (!upmemrt_cache_enabled())
+    return false;
+  for (CompactRecord &r : staticCompactsDone)
+    if (r.dst == dst) {
+      if (r.src == src && r.bytes == bytes)
+        return true;
+      r.src = src;
+      r.bytes = bytes;
+      return false;
+    }
+  staticCompactsDone.push_back({dst, src, bytes});
+  return false;
+}
+} // namespace
+
 extern "C" void upmemrt_compact(void *dst, const void *src, int64_t rank,
                                 const int64_t *sizes, const int64_t *srcStrides,
                                 int64_t elemSize, int32_t isStatic) {
+  if (isStatic) {
+    size_t nbytes = (size_t)elemSize;
+    for (int64_t i = 0; i < rank; ++i)
+      nbytes *= (size_t)sizes[i];
+    if (staticCompactResident(dst, src, nbytes))
+      return;
+  }
 #ifdef UPMEM_RT_STATS
   uint64_t t0 = upmemrt_now_ns();
 #endif
