@@ -89,6 +89,19 @@ static bool isStaticValueImpl(Value value, unsigned depth) {
       continue;
     }
 
+    // memref.get_global hands out a *reference*: the op is pure, but the
+    // memory behind it holds whatever was last written there -- a repack
+    // staging buffer is refilled on every call. So it is static only when
+    // the global is a true constant; a mutable global's staticness is the
+    // filling pass's conclusion to draw, which it records as the attribute
+    // the check above already honours (EnsureScatterGatherContiguous stamps
+    // the get_global of a repack whose source is static).
+    if (auto getGlobal = llvm::dyn_cast_or_null<memref::GetGlobalOp>(def)) {
+      auto global = SymbolTable::lookupNearestSymbolFrom<memref::GlobalOp>(
+          def, getGlobal.getNameAttr());
+      return global && global.getConstant();
+    }
+
     // General rule, and the one the cases above are fast paths for: a pure
     // op applied to static operands yields a static result, since "static"
     // means "does not vary between inferences" and a pure op is a
@@ -97,12 +110,20 @@ static bool isStaticValueImpl(Value value, unsigned depth) {
     // which no single-operand walk can follow, and through any other
     // precomputation over weights.
     //
+    // Only for value-semantics results: a pure op returning a memref returns
+    // a reference, and purity says nothing about the memory behind it (see
+    // get_global above). Reference-typed chains are covered by the explicit
+    // view/cast cases, the recorded-attribute check, and the block-argument
+    // walk -- never by this rule.
+    //
     // Regions are part of the input: a body may capture values from above
     // (the fill constant, but equally something per-inference), so those are
     // checked too. An op with neither operands nor captures is static
     // vacuously, which is the right answer for tensor.empty: uninitialised
     // contents do not vary with the inference either.
-    if (def && mlir::isMemoryEffectFree(def)) {
+    if (def && mlir::isMemoryEffectFree(def) &&
+        llvm::none_of(def->getResultTypes(),
+                      [](Type t) { return llvm::isa<BaseMemRefType>(t); })) {
       llvm::SetVector<Value> captured;
       if (def->getNumRegions() > 0)
         mlir::getUsedValuesDefinedAbove(def->getRegions(), captured);
