@@ -19,8 +19,10 @@ def _csv_type(path: pathlib.Path) -> str:
 
 def iter_config_dirs(run_dir: pathlib.Path):
     """Yield (fn_name, config_dir) for every config directory under run_dir
-    (run_dir/{fn_name}/{config_id}/), skipping non-directories and any
-    fn_name starting with "_" (e.g. a stray _split/). A missing run_dir
+    (run_dir/{fn_name}/{config_id}/), skipping non-directories and a stray
+    _split/. The skip is by exact name, not any leading underscore: the RQ4
+    workloads' functions are named _2mm_seq_d8, _3mm_diam_d64 and so on,
+    and a prefix rule silently dropped every one of them. A missing run_dir
     yields nothing -- and is NOT created: this is a reader, and a stack
     root it conjured up would make "never ran" indistinguishable from "ran
     and measured nothing", which the A1 assembly treats as a result."""
@@ -29,7 +31,7 @@ def iter_config_dirs(run_dir: pathlib.Path):
         return
 
     for fn_dir in sorted(run_dir.iterdir()):
-        if not fn_dir.is_dir() or fn_dir.name.startswith("_"):
+        if not fn_dir.is_dir() or fn_dir.name == "_split":
             continue
         for config_dir in sorted(fn_dir.iterdir()):
             if config_dir.is_dir():
