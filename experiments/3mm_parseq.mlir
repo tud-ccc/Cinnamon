@@ -1,7 +1,7 @@
 //#! cinm-opt --cinm-assign-platforms --cinm-isolate-compute-blocks --upmem-infer-accelerator --split-input-file
 
 // -----
-#upmem = #upmem.platform<type = v1A, dpus = 4096, tasklets = 1>
+#upmem = #upmem.platform<type = v1A, dpus = 2048, tasklets = 24>
 
     func.func @_3mm_d8(%A: tensor<8x128xi32> {cinm.static}, %B: tensor<128x256xi32>, %C: tensor<256x128xi32> {cinm.static},  %D: tensor<128x128xi32>) -> (tensor<8x128xi32>, tensor<8x128xi32>)
     attributes { cinm.available_platforms = [#upmem] } {
@@ -12,7 +12,7 @@
     }
 
 // -----
-#upmem = #upmem.platform<type = v1A, dpus = 4096, tasklets = 1>
+#upmem = #upmem.platform<type = v1A, dpus = 2048, tasklets = 24>
 
     func.func @_3mm_d16(%A: tensor<16x128xi32>{cinm.static}, %B: tensor<128x256xi32>, %C: tensor<256x128xi32>{cinm.static},  %D: tensor<128x128xi32>) -> (tensor<16x128xi32>, tensor<16x128xi32>)
     attributes { cinm.available_platforms = [#upmem] } {
@@ -23,7 +23,7 @@
     }
 
 // -----
-#upmem = #upmem.platform<type = v1A, dpus = 4096, tasklets = 1>
+#upmem = #upmem.platform<type = v1A, dpus = 2048, tasklets = 24>
 
     func.func @_3mm_d32(%A: tensor<32x128xi32>{cinm.static}, %B: tensor<128x256xi32>, %C: tensor<256x128xi32>{cinm.static},  %D: tensor<128x128xi32>) -> (tensor<32x128xi32>, tensor<32x128xi32>)
     attributes { cinm.available_platforms = [#upmem] } {
@@ -34,7 +34,7 @@
     }
 
 // -----
-#upmem = #upmem.platform<type = v1A, dpus = 4096, tasklets = 1>
+#upmem = #upmem.platform<type = v1A, dpus = 2048, tasklets = 24>
 
     func.func @_3mm_d64(%A: tensor<64x128xi32>{cinm.static}, %B: tensor<128x256xi32>, %C: tensor<256x128xi32>{cinm.static},  %D: tensor<128x128xi32>) -> (tensor<64x128xi32>, tensor<64x128xi32>)
     attributes { cinm.available_platforms = [#upmem] } {
