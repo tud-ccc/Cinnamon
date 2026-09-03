@@ -110,6 +110,29 @@ void upmemrt_dpu_broadcast(struct dpu_set_t *dpu_set, void *host_buffer,
 struct dpu_set_t *upmemrt_dpu_alloc(int32_t num_dpus,
                                     size_t max_blocks_per_dpu);
 
+/// Like upmemrt_dpu_alloc, plus cross-inference residency: when the
+/// UPMEM_RT_CACHE=1 environment variable is set, the allocated set is
+/// cached in *slot (one compiler-emitted global per allocation site) and
+/// survives upmemrt_dpu_free, so later calls from the same site get the
+/// same set back -- with its loaded program and its static transfers still
+/// resident. When an allocation cannot be satisfied, least-recently-used
+/// cached sets are really freed until it fits, so sets whose sizes cannot
+/// coexist evict each other (paying realloc + reload + rescatter per
+/// switch) while a partition that fits stays resident forever. Without the
+/// environment variable this is exactly upmemrt_dpu_alloc and the slot is
+/// ignored, so cached-call binaries behave identically to old ones.
+///
+/// Residency of a static transfer (a "static:"-tagged scatter/broadcast)
+/// is tracked per (set, site tag) with the host pointer and size checked:
+/// a site re-scattering a different payload -- another group member's
+/// weights over the same MRAM symbol -- runs and re-records rather than
+/// being skipped, so the cache never claims residency the memory does not
+/// have. A program (re)load drops the set's transfer records.
+///
+/// Single-threaded, like the bench harness that drives it.
+struct dpu_set_t *upmemrt_dpu_alloc_cached(void **slot, int32_t num_dpus,
+                                           size_t max_blocks_per_dpu);
+
 /// Load the DPU program at @p dpu_binary_path onto every DPU of @p dpu_set
 /// (the SDK's dpu_load), replacing whatever ran there before. Recorded under
 /// the "load" timer category.
