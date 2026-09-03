@@ -345,6 +345,7 @@ def _measure_stack(
     entries: list[StackEntry],
     *,
     qualify_by_system: bool = False,
+    bench_env: dict[str, str] | None = None,
 ):
     """Yield compile_{stack} / bench_{stack} tasks for a list of configs.
 
@@ -390,7 +391,11 @@ def _measure_stack(
                 (
                     doit_blocks.bench_one_config,
                     [config, roots],
-                    dict(iters=OPTS["iters"], bench_marker=bench_marker),
+                    dict(
+                        iters=OPTS["iters"],
+                        bench_marker=bench_marker,
+                        env=bench_env,
+                    ),
                 )
             ],
         }
@@ -607,7 +612,16 @@ def task_compile_rq4():
         for arm in RQ4_ARMS:
             for config in _rq4_configs(prog, arm):
                 entries.append((prog, config, [], rq4_roots(prog, arm)))
-    yield from _measure_stack("rq4", entries, qualify_by_system=True)
+    # The residency cache is what makes each arm's amortization physical
+    # (whole-program sets stay resident, per-operator sets evict each other);
+    # only this stack benches under it, and iteration 0 -- which pays the
+    # one-time costs -- is dropped at assembly (assemble_rq4).
+    yield from _measure_stack(
+        "rq4",
+        entries,
+        qualify_by_system=True,
+        bench_env={"UPMEM_RT_CACHE": "1"},
+    )
 
 
 # ── whole-program graph allocation ──────────────────────────────────────────

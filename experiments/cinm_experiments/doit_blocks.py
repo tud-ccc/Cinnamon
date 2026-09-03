@@ -20,6 +20,7 @@ doit connects stages.
 from __future__ import annotations
 
 import dataclasses
+import os
 import pathlib
 import shutil
 
@@ -146,6 +147,7 @@ def bench_one_config(
     *,
     iters: int,
     bench_marker: pathlib.Path | None = None,
+    env: dict[str, str] | None = None,
 ) -> bool:
     """Never raises, like compile_one: a config whose compile failed
     (compile.done marker present, no bench_* binary) is skipped rather than
@@ -153,7 +155,32 @@ def bench_one_config(
     bench tasks. The bench.done marker is always touched, even when the
     hardware run itself fails, so a flaky config doesn't get retried on
     every doit invocation -- rerun it explicitly via the retry task
-    (clear_failed_bench)."""
+    (clear_failed_bench).
+
+    `env` is set for the duration of the run and restored after: the RQ4
+    stack benches under UPMEM_RT_CACHE=1 (the runtime residency cache), and
+    nothing else must inherit that."""
+    saved: dict[str, str | None] = {}
+    for k, v in (env or {}).items():
+        saved[k] = os.environ.get(k)
+        os.environ[k] = v
+    try:
+        return _bench_one_config(config, roots, iters=iters, bench_marker=bench_marker)
+    finally:
+        for k, v in saved.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+
+
+def _bench_one_config(
+    config: compile_run.Config,
+    roots: MeasureRoots,
+    *,
+    iters: int,
+    bench_marker: pathlib.Path | None = None,
+) -> bool:
     bench_marker = bench_marker or roots.bench_marker_of(config)
     compiled = compile_run.discover_compiled([config], compile_root=roots.compile_root)[
         0

@@ -19,6 +19,24 @@ def _iter_col(df: pd.DataFrame) -> str:
     return "iter" if "iter" in df.columns else "iteration"
 
 
+def _read_iters(csv_path, drop_first: bool) -> pd.DataFrame:
+    """One measurement CSV with its iteration column normalised, minus
+    iteration 0 when `drop_first` asks for steady state. Under the runtime
+    residency cache (UPMEM_RT_CACHE=1) the first inference pays the one-time
+    alloc / program-load / static-scatter costs that later inferences keep
+    resident, so steady-state numbers start at iteration 1 -- and a cost
+    recorded ONLY in iteration 0 (a load onto a set that stays resident) is
+    exactly what must drop to zero, so the drop is unconditional. A run with
+    a single recorded iteration therefore has no steady state: its total
+    comes back empty and net_time_ms reports None rather than passing the
+    warmup off as the answer."""
+    df = pd.read_csv(csv_path)
+    df = df.rename(columns={_iter_col(df): "iteration"})
+    if drop_first:
+        df = df[df["iteration"] > 0]
+    return df
+
+
 def _csv_type(path: pathlib.Path) -> str:
     return path.stem.rsplit("_", 1)[-1]
 
@@ -68,6 +86,7 @@ def net_time_ms(
     *,
     discount_load: bool = True,
     discount_static_compact: bool = True,
+    drop_first: bool = False,
 ) -> float | None:
     """Mean net time in ms over all iterations recorded in output_dir, or
     None if no total.csv-type file is present.
@@ -97,8 +116,7 @@ def net_time_ms(
 
     for csv_path in _output_dir(output_dir).glob("*.csv"):
         t = _csv_type(csv_path)
-        df = pd.read_csv(csv_path)
-        df = df.rename(columns={_iter_col(df): "iteration"})
+        df = _read_iters(csv_path, drop_first)
         if t == "total":
             total_df = df
         elif t == "alloc":
@@ -128,7 +146,9 @@ def net_time_ms(
 
 
 def _sum_time_ms(
-    output_dir: Union[pathlib.Path, RunResult], csv_type: str
+    output_dir: Union[pathlib.Path, RunResult],
+    csv_type: str,
+    drop_first: bool = False,
 ) -> float | None:
     """Mean per-iteration total time in ms spent in the given csv_type
     (summed over however many calls of that type happen within an
@@ -136,8 +156,7 @@ def _sum_time_ms(
     for csv_path in _output_dir(output_dir).glob("*.csv"):
         if _csv_type(csv_path) != csv_type:
             continue
-        df = pd.read_csv(csv_path)
-        df = df.rename(columns={_iter_col(df): "iteration"})
+        df = _read_iters(csv_path, drop_first)
         mean = float(df.groupby("iteration")["elapsed_ns"].sum().mean())
         if isnan(mean):
             return None
@@ -145,56 +164,69 @@ def _sum_time_ms(
     return None
 
 
-def launch_time_ms(output_dir: Union[pathlib.Path, RunResult]) -> float | None:
+def launch_time_ms(
+    output_dir: Union[pathlib.Path, RunResult], drop_first: bool = False
+) -> float | None:
     """Mean kernel-launch time in ms over all iterations recorded in
     output_dir, or None if no launch.csv-type file is present."""
-    return _sum_time_ms(output_dir, "launch")
+    return _sum_time_ms(output_dir, "launch", drop_first=drop_first)
 
 
-def scatter_time_ms(output_dir: Union[pathlib.Path, RunResult]) -> float | None:
+def scatter_time_ms(
+    output_dir: Union[pathlib.Path, RunResult], drop_first: bool = False
+) -> float | None:
     """Mean total host->DPU scatter time in ms per iteration, or None if no
     scatter.csv-type file is present."""
-    return _sum_time_ms(output_dir, "scatter")
+    return _sum_time_ms(output_dir, "scatter", drop_first=drop_first)
 
 
-def gather_time_ms(output_dir: Union[pathlib.Path, RunResult]) -> float | None:
+def gather_time_ms(
+    output_dir: Union[pathlib.Path, RunResult], drop_first: bool = False
+) -> float | None:
     """Mean total DPU->host gather time in ms per iteration, or None if no
     gather.csv-type file is present."""
-    return _sum_time_ms(output_dir, "gather")
+    return _sum_time_ms(output_dir, "gather", drop_first=drop_first)
 
 
-def copy_time_ms(output_dir: Union[pathlib.Path, RunResult]) -> float | None:
+def copy_time_ms(
+    output_dir: Union[pathlib.Path, RunResult], drop_first: bool = False
+) -> float | None:
     """Mean total host-side memrefCopy time in ms per iteration (e.g. the
     strided repack copies feeding upmem.scatter buffers), or None if no
     copy.csv-type file is present."""
-    return _sum_time_ms(output_dir, "copy")
+    return _sum_time_ms(output_dir, "copy", drop_first=drop_first)
 
 
-def compact_time_ms(output_dir: Union[pathlib.Path, RunResult]) -> float | None:
+def compact_time_ms(
+    output_dir: Union[pathlib.Path, RunResult], drop_first: bool = False
+) -> float | None:
     """Mean total cnm.compact_buffer repack time in ms per iteration, both
     kinds together, or None if no compact.csv-type file is present. Use
     net_breakdown_ms(by_kind=True) to see the amortizable and per-inference
     repacks apart."""
-    return _sum_time_ms(output_dir, "compact")
+    return _sum_time_ms(output_dir, "compact", drop_first=drop_first)
 
 
-def load_time_ms(output_dir: Union[pathlib.Path, RunResult]) -> float | None:
+def load_time_ms(
+    output_dir: Union[pathlib.Path, RunResult], drop_first: bool = False
+) -> float | None:
     """Mean total DPU program load time in ms per iteration, or None if no
     load.csv-type file is present (runs recorded before the alloc/load timer
     split have it folded into alloc.csv and there is no way to recover it)."""
-    return _sum_time_ms(output_dir, "load")
+    return _sum_time_ms(output_dir, "load", drop_first=drop_first)
 
 
 def amortizable_time_ms(
-    output_dir: Union[pathlib.Path, RunResult], csv_type: str
+    output_dir: Union[pathlib.Path, RunResult],
+    csv_type: str,
+    drop_first: bool = False,
 ) -> float:
     """Mean per-iteration time in ms that amortizable_ns identifies in the
     given csv_type. 0.0 when there is nothing to amortize."""
     for csv_path in _output_dir(output_dir).glob("*.csv"):
         if _csv_type(csv_path) != csv_type:
             continue
-        df = pd.read_csv(csv_path)
-        df = df.rename(columns={_iter_col(df): "iteration"})
+        df = _read_iters(csv_path, drop_first)
         series = amortizable_ns(df)
         if series.empty:
             return 0.0
@@ -296,6 +328,7 @@ def _sum_time_ms_by_kind(
     output_dir: Union[pathlib.Path, RunResult],
     csv_type: str,
     drop_amortizable: bool = False,
+    drop_first: bool = False,
 ) -> dict[str, float]:
     """Like _sum_time_ms, but broken down per `kind` column value (e.g.
     "on_array"/"blocks" for scatter, see timers.h's `kind` parameter) instead
@@ -307,8 +340,7 @@ def _sum_time_ms_by_kind(
     for csv_path in _output_dir(output_dir).glob("*.csv"):
         if _csv_type(csv_path) != csv_type:
             continue
-        df = pd.read_csv(csv_path)
-        df = df.rename(columns={_iter_col(df): "iteration"})
+        df = _read_iters(csv_path, drop_first)
         if "kind" not in df.columns:
             return {}
         iterations = df["iteration"].unique()
@@ -404,6 +436,7 @@ def net_breakdown_ms(
     by_kind: bool = False,
     count_load: bool = False,
     discount_static_compact: bool = True,
+    drop_first: bool = False,
 ) -> dict[str, float] | None:
     """Split net_time_ms (total - alloc - free - load) into scatter/gather/
     copy/launch time plus whatever's left over as "unaccounted" -- host-side
@@ -429,25 +462,28 @@ def net_breakdown_ms(
         output_dir,
         discount_load=not count_load,
         discount_static_compact=discount_static_compact,
+        drop_first=drop_first,
     )
     if net is None:
         return None
-    scatter = scatter_time_ms(output_dir) or 0.0
+    scatter = scatter_time_ms(output_dir, drop_first=drop_first) or 0.0
     if discount_static_compact:
         # Already out of net, so it has to be out of the bucket too.
-        scatter -= amortizable_time_ms(output_dir, "scatter")
-    gather = gather_time_ms(output_dir) or 0.0
-    copy = copy_time_ms(output_dir) or 0.0
-    launch = launch_time_ms(output_dir) or 0.0
-    load = (load_time_ms(output_dir) or 0.0) if count_load else 0.0
+        scatter -= amortizable_time_ms(output_dir, "scatter", drop_first=drop_first)
+    gather = gather_time_ms(output_dir, drop_first=drop_first) or 0.0
+    copy = copy_time_ms(output_dir, drop_first=drop_first) or 0.0
+    launch = launch_time_ms(output_dir, drop_first=drop_first) or 0.0
+    load = (
+        (load_time_ms(output_dir, drop_first=drop_first) or 0.0) if count_load else 0.0
+    )
     extra = {"load": load} if count_load else {}
 
     # Only the repacks net_time_ms left in are shown, so the buckets keep
     # summing to net: with the default discount that is the per-inference ones,
     # and the amortizable ones are already out of the total.
-    compacts = _sum_time_ms_by_kind(output_dir, "compact")
+    compacts = _sum_time_ms_by_kind(output_dir, "compact", drop_first=drop_first)
     if not compacts:
-        flat = compact_time_ms(output_dir)
+        flat = compact_time_ms(output_dir, drop_first=drop_first)
         compacts = {"": flat} if flat else {}
     if discount_static_compact:
         compacts.pop("static", None)
@@ -466,6 +502,7 @@ def net_breakdown_ms(
                 output_dir,
                 direction,
                 drop_amortizable=discount_static_compact,
+                drop_first=drop_first,
             )
             if by_k:
                 del transfers[direction]

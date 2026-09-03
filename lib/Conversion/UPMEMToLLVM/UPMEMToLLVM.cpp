@@ -287,6 +287,33 @@ appendOrGetFuncOp(OpBuilder &rewriter, StringRef funcName, Type resultType,
                                 resultType);
 }
 
+/// A fresh module-level null-initialised pointer global, one per call site.
+/// The runtime's residency cache (upmemrt_dpu_alloc_cached) parks the
+/// allocated DPU set here so it survives across invocations of the entry
+/// function: the global's address is the allocation site's identity, which
+/// is what lets the same site get the same set -- with its program and
+/// static transfers still resident -- back on the next inference.
+static LLVM::GlobalOp createSetCacheSlot(OpBuilder &rewriter, Operation *op) {
+  auto module = op->getParentOfType<ModuleOp>();
+  unsigned n = 0;
+  auto name = [&n] { return ("__upmemrt_set_slot_" + Twine(n)).str(); };
+  while (module.lookupSymbol(name()))
+    ++n;
+  OpBuilder::InsertionGuard guard(rewriter);
+  rewriter.setInsertionPointToStart(module.getBody());
+  auto ptrTy = LLVM::LLVMPointerType::get(rewriter.getContext());
+  auto global = LLVM::GlobalOp::create(
+      rewriter, op->getLoc(), ptrTy, /*isConstant=*/false,
+      LLVM::Linkage::Internal, name(), /*value=*/Attribute());
+  // Null initializer, spelled as a region: a pointer global has no
+  // attribute form for it.
+  Block *init = rewriter.createBlock(&global.getInitializerRegion());
+  rewriter.setInsertionPointToStart(init);
+  Value null = LLVM::ZeroOp::create(rewriter, op->getLoc(), ptrTy);
+  LLVM::ReturnOp::create(rewriter, op->getLoc(), null);
+  return global;
+}
+
 /// The source access `map` describes, expressed against `srcTy`'s own layout,
 /// as one stride per target dimension plus a constant element offset.
 ///
@@ -584,16 +611,22 @@ public:
         rewriter, op.getLoc(), sizeTy,
         rewriter.getIntegerAttr(sizeTy, maxBlocksPerDpu));
 
-    // struct dpu_set_t *upmemrt_dpu_alloc(int32_t num_dpus,
-    //     size_t max_blocks_per_dpu);
+    // struct dpu_set_t *upmemrt_dpu_alloc_cached(void **slot,
+    //     int32_t num_dpus, size_t max_blocks_per_dpu);
+    // The slot global identifies this allocation site to the runtime's
+    // residency cache (see createSetCacheSlot); without UPMEM_RT_CACHE=1
+    // the call behaves exactly like upmemrt_dpu_alloc.
     Type resultType = LLVM::LLVMPointerType::get(rewriter.getContext(), 0);
-    auto funcOp = appendOrGetFuncOp(rewriter, "upmemrt_dpu_alloc", resultType,
-                                    {rewriter.getI32Type(), sizeTy}, op);
+    LLVM::GlobalOp slot = createSetCacheSlot(rewriter, op);
+    Value slotAddr = LLVM::AddressOfOp::create(rewriter, op.getLoc(), slot);
+    auto funcOp = appendOrGetFuncOp(
+        rewriter, "upmemrt_dpu_alloc_cached", resultType,
+        {slotAddr.getType(), rewriter.getI32Type(), sizeTy}, op);
 
     if (llvm::failed(funcOp))
       return failure();
     rewriter.replaceOpWithNewOp<LLVM::CallOp>(
-        op, *funcOp, ValueRange{dpuCount, maxBlocksPerDpuVal});
+        op, *funcOp, ValueRange{slotAddr, dpuCount, maxBlocksPerDpuVal});
     return success();
   }
 };
