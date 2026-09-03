@@ -1,11 +1,17 @@
 """fig:wholeprogram -- per-operator vs whole-program arms (rq4.csv).
 
-One bar pair per (program, variant): the per-operator-tuned and the
+One panel per size class (1MB/16MB/64MB/256MB of weights per gemm), one
+bar pair per program inside it: the per-operator-tuned and the
 whole-program-tuned arm, each stacked into kernel (launch) / scatter /
-gather / load / rest. The stack uses the undiscounted breakdown -- RQ4's
-whole point is the load and rescatter cost the per-operator arm pays per
-inference. Colors come from measurements.net_breakdown_color_ix so every
-breakdown figure in the repo shades a bucket the same way.
+gather / load / repack / rest. Panels get their own y scale -- classes are
+two orders of magnitude apart, and the comparison lives inside a pair, not
+across panels. Read left to right, the panels sweep across the device's
+contention threshold: in the smallest class every per-operator set fits
+resident and the arms tie, while the larger classes force the per-operator
+sets to evict each other and the recurring load + rescatter cost appears
+in the plain bars only. The stack uses the undiscounted breakdown -- RQ4's
+whole point is that under UPMEM_RT_CACHE amortization is physical, so
+whatever still recurs in the steady state is real and charged.
 
 Execution is synchronous (upmem.wait_for blocks the host, so blocks on
 disjoint groups still run in program order): parallel variants
@@ -32,8 +38,22 @@ from cinm_experiments.measurements import net_breakdown_color_ix  # noqa: E402
 ARMS = ["peroper", "wholeprog"]
 ARM_LABEL = {"peroper": "per-operator", "wholeprog": "whole-program"}
 # Stack order: the terms the paper names first, the remainder on top.
-BUCKETS = ["launch", "scatter", "gather", "load", "copy", "unaccounted"]
-BUCKET_LABEL = {"launch": "kernel"}
+BUCKETS = [
+    "launch",
+    "scatter",
+    "gather",
+    "load",
+    "compact:static",
+    "compact:dyn",
+    "copy",
+    "unaccounted",
+]
+BUCKET_LABEL = {
+    "launch": "kernel",
+    "compact:static": "repack (static)",
+    "compact:dyn": "repack (dyn)",
+}
+CLASSES = ["1MB", "16MB", "64MB", "256MB"]
 _CMAP = plt.get_cmap("tab10")
 
 
@@ -43,53 +63,70 @@ def main() -> None:
     if df is None:
         return
 
-    # Best (minimum total) config per (program, arm) -- each arm shows the
-    # configuration its own tuning strategy picked.
-    best = df.loc[df.groupby(["program", "arm"])["total_ms"].idxmin()]
-    programs = sorted(best["program"].unique())
+    df = df.copy()
+    df["cls"] = df["fn_name"].str.rsplit("_", n=1).str[-1]
+    classes = [c for c in CLASSES if c in set(df["cls"])]
+    programs = sorted(df["program"].unique())
     width = 0.35
-    fig, ax = plt.subplots(figsize=(max(6, 1.6 * len(programs)), 4.5))
+
+    fig, axes = plt.subplots(
+        1,
+        len(classes),
+        figsize=(max(6, 1.9 * len(programs)) * len(classes) / 2.2, 4.0),
+        sharey=False,
+    )
+    axes = np.atleast_1d(axes)
     x = np.arange(len(programs))
-    for a, arm in enumerate(ARMS):
-        bottoms = np.zeros(len(programs))
-        for bucket in BUCKETS:
-            col = f"{bucket}_ms"
-            heights = np.array(
-                [
-                    float(
-                        best.loc[
-                            (best["program"] == p) & (best["arm"] == arm), col
-                        ].sum()
-                    )
-                    if col in best.columns
-                    else 0.0
-                    for p in programs
-                ]
-            )
-            if not heights.any():
-                continue
-            ax.bar(
-                x + (a - 0.5) * width,
-                heights,
-                width * 0.9,
-                bottom=bottoms,
-                color=_CMAP(net_breakdown_color_ix(bucket)),
-                # The left bar of each pair is the per-operator arm; the
-                # whole-program arm is hatched, so the pair reads without
-                # a second legend.
-                hatch="//" if arm == "wholeprog" else None,
-                label=BUCKET_LABEL.get(bucket, bucket) if a == 0 else None,
-            )
-            bottoms += heights
-    ax.set_xticks(x, programs, rotation=30, ha="right")
-    ax.set_ylabel("time per inference (ms), undiscounted")
-    ax.legend(
+    for ax, cls in zip(axes, classes):
+        sub = df[df["cls"] == cls]
+        for a, arm in enumerate(ARMS):
+            bottoms = np.zeros(len(programs))
+            for bucket in BUCKETS:
+                col = f"{bucket}_ms"
+                heights = np.array(
+                    [
+                        float(
+                            sub.loc[
+                                (sub["program"] == p) & (sub["arm"] == arm), col
+                            ].sum()
+                        )
+                        if col in sub.columns
+                        else 0.0
+                        for p in programs
+                    ]
+                )
+                # Clamp the residual bucket: a slightly negative unaccounted
+                # is timing jitter and must not corrupt the stack.
+                heights = np.maximum(heights, 0.0)
+                if not heights.any():
+                    continue
+                ax.bar(
+                    x + (a - 0.5) * width,
+                    heights,
+                    width * 0.9,
+                    bottom=bottoms,
+                    color=_CMAP(net_breakdown_color_ix(bucket)),
+                    # The left bar of each pair is the per-operator arm; the
+                    # whole-program arm is hatched, so the pair reads without
+                    # a second legend.
+                    hatch="//" if arm == "wholeprog" else None,
+                    label=(
+                        BUCKET_LABEL.get(bucket, bucket)
+                        if a == 0 and ax is axes[0]
+                        else None
+                    ),
+                )
+                bottoms += heights
+        ax.set_title(cls, fontsize=10)
+        ax.set_xticks(x, programs, rotation=30, ha="right", fontsize=8)
+    axes[0].set_ylabel("time per inference (ms), undiscounted")
+    axes[0].legend(
         fontsize=8,
         title=f"stacks; plain={ARM_LABEL['peroper']}, hatched={ARM_LABEL['wholeprog']}",
         title_fontsize=8,
         loc="upper left",
-        bbox_to_anchor=(1.01, 1.0),
     )
+    fig.tight_layout()
     save_fig(fig, out_dir, "wholeprogram.pdf")
 
 

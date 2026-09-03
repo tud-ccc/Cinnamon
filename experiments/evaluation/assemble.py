@@ -496,19 +496,26 @@ def assemble_rq4(
 ) -> bool:
     """arm_stacks: (program, arm) -> (compile_root, run_root); arm is
     peroper or wholeprog. One row per benched config with the undiscounted
-    breakdown (count_load=True): RQ4 prices exactly what per-operator
-    isolation hides, so nothing is amortized away here -- what amortizes
-    does so PHYSICALLY, through the runtime residency cache the RQ4 benches
-    run under (UPMEM_RT_CACHE=1), which is why iteration 0 is dropped: the
-    first inference pays the one-time costs, the steady state is what a
-    serving deployment sees."""
+    breakdown (count_load=True, discount_static_compact=False): RQ4 prices
+    exactly what per-operator isolation hides, so nothing is amortized away
+    by accounting here -- what amortizes does so PHYSICALLY, through the
+    runtime residency cache the RQ4 benches run under (UPMEM_RT_CACHE=1),
+    which is why iteration 0 is dropped: the first inference pays the
+    one-time costs, the steady state is what a serving deployment sees. A
+    static scatter or repack still occurring at iteration >= 1 is by that
+    same token NOT amortized (its set was evicted), and it is charged; the
+    accounting discounts exist for uncached runs and would silently forgive
+    the per-operator arm its recurring rescatters."""
     rows, missing = [], []
     for (program, arm), (compile_root, run_root) in sorted(arm_stacks.items()):
         found = False
         for fn_name, config_dir in iter_config_dirs(pathlib.Path(run_root)):
             output = config_dir / "output"
             breakdown = measurements.net_breakdown_ms(
-                output, count_load=True, drop_first=True
+                output,
+                count_load=True,
+                discount_static_compact=False,
+                drop_first=True,
             )
             if breakdown is None:
                 continue

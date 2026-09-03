@@ -231,6 +231,10 @@ static int rt_cache_enabled(void) {
   return enabled;
 }
 
+/// The cache flag for the other runtime translation units (the static-repack
+/// skip in memref_rt.cpp lives outside this file).
+int upmemrt_cache_enabled(void) { return rt_cache_enabled(); }
+
 static rt_cache_entry *rt_entry_of(struct dpu_set_t *set) {
   for (rt_cache_entry *e = rt_cache_head; e; e = e->next)
     if (e->set == set)
@@ -246,8 +250,13 @@ static void rt_drop_xfers(rt_cache_entry *e) {
   }
 }
 
-/// Really free a cached set: everything it held resident is gone.
-static void rt_evict(rt_cache_entry *victim) {
+/// Really free a cached set: everything it held resident is gone. Returns
+/// the nanoseconds the SDK free took (0 in non-stats builds) so a caller
+/// timing its own SDK work -- alloc_cached evicting mid-allocation -- can
+/// keep that span out of its record; it is already recorded as a free here,
+/// and counting it in both rows would net it out of the total twice.
+static uint64_t rt_evict(rt_cache_entry *victim) {
+  uint64_t elapsed = 0;
 #ifdef UPMEM_RT_STATS
   uint32_t nr_dpus = 0;
   dpu_get_nr_dpus(*victim->set, &nr_dpus);
@@ -255,7 +264,8 @@ static void rt_evict(rt_cache_entry *victim) {
 #endif
   DPU_ASSERT(dpu_free(*victim->set));
 #ifdef UPMEM_RT_STATS
-  upmemrt_record_free(upmemrt_now_ns() - t0, nr_dpus);
+  elapsed = upmemrt_now_ns() - t0;
+  upmemrt_record_free(elapsed, nr_dpus);
 #endif
   free(victim->set);
   rt_drop_xfers(victim);
@@ -265,6 +275,7 @@ static void rt_evict(rt_cache_entry *victim) {
     link = &(*link)->next;
   *link = victim->next;
   free(victim);
+  return elapsed;
 }
 
 static void rt_evict_all(void) {
@@ -345,6 +356,7 @@ struct dpu_set_t *upmemrt_dpu_alloc_cached(void **slot, int32_t num_dpus,
   uint64_t t0 = upmemrt_now_ns();
 #endif
   dpu_error_t err;
+  uint64_t evict_ns = 0;
   while ((err = rt_alloc_raw(num_dpus, max_blocks_per_dpu, set)) != DPU_OK) {
     // Exhausted: evict the least-recently-used set nothing is holding.
     rt_cache_entry *victim = NULL;
@@ -353,12 +365,12 @@ struct dpu_set_t *upmemrt_dpu_alloc_cached(void **slot, int32_t num_dpus,
         victim = e;
     if (!victim)
       DPU_ASSERT(err); // genuinely over-subscribed; fail as alloc would
-    rt_evict(victim);
+    evict_ns += rt_evict(victim);
   }
 #ifdef UPMEM_RT_STATS
   uint32_t nr_dpus = 0;
   dpu_get_nr_dpus(*set, &nr_dpus);
-  upmemrt_record_alloc(upmemrt_now_ns() - t0, nr_dpus);
+  upmemrt_record_alloc(upmemrt_now_ns() - t0 - evict_ns, nr_dpus);
 #endif
   rt_cache_entry *e = (rt_cache_entry *)calloc(1, sizeof(rt_cache_entry));
   e->slot = slot;

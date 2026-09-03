@@ -133,6 +133,13 @@ struct dpu_set_t *upmemrt_dpu_alloc(int32_t num_dpus,
 struct dpu_set_t *upmemrt_dpu_alloc_cached(void **slot, int32_t num_dpus,
                                            size_t max_blocks_per_dpu);
 
+/// Whether UPMEM_RT_CACHE residency is on (see upmemrt_dpu_alloc_cached).
+/// The static-repack skip in memref_rt.cpp keys off the same flag: under
+/// residency a repack of static data into its staging buffer is idempotent
+/// and skipped once performed, the host-side mirror of the resident-scatter
+/// skip.
+int upmemrt_cache_enabled(void);
+
 /// Load the DPU program at @p dpu_binary_path onto every DPU of @p dpu_set
 /// (the SDK's dpu_load), replacing whatever ran there before. Recorded under
 /// the "load" timer category.
