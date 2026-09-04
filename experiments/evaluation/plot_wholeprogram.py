@@ -62,7 +62,21 @@ BUCKET_LABEL = {
     "compact:dyn": "repack (dyn)",
 }
 CLASSES = ["1MB", "64MB", "256MB", "512MB"]
-_CMAP = plt.get_cmap("tab10")
+_TAB10 = plt.get_cmap("tab10").colors
+_TAB20 = plt.get_cmap("tab20").colors
+
+
+def _color(bucket):
+    """The bucket's colour. tab10 holds ten, and net_breakdown_color_ix
+    numbers more buckets than that -- load and the two repack buckets sit
+    past the end, where indexing tab10 silently clamps and painted all three
+    the same cyan as each other. Those take tab20's light variants instead,
+    which are distinct from every tab10 hue; the buckets tab10 does cover
+    keep the colour they have in every other breakdown figure."""
+    i = net_breakdown_color_ix(bucket)
+    if i < len(_TAB10):
+        return _TAB10[i]
+    return _TAB20[(2 * (i - len(_TAB10)) + 1) % len(_TAB20)]
 
 
 def draw(df, cpu):
@@ -85,6 +99,12 @@ def draw(df, cpu):
     )
     axes = np.atleast_1d(axes)
     x = np.arange(len(programs))
+    # Legend entries are collected across every panel, not taken from the
+    # first: a bucket can be absent there and present later -- program load
+    # is exactly that, always zero in the smallest class and the whole point
+    # of the figure in the larger ones -- and labelling only the first panel
+    # left it drawn but unnamed.
+    legend: dict[str, object] = {}
     for ax, cls in zip(axes, classes):
         sub = df[df["cls"] == cls]
         for a, arm in enumerate(ARMS):
@@ -108,22 +128,18 @@ def draw(df, cpu):
                 heights = np.maximum(heights, 0.0)
                 if not heights.any():
                     continue
-                ax.bar(
+                bars = ax.bar(
                     x + (a - (slots - 1) / 2) * width,
                     heights,
                     width * 0.9,
                     bottom=bottoms,
-                    color=_CMAP(net_breakdown_color_ix(bucket)),
+                    color=_color(bucket),
                     # The left bar of each pair is the per-operator arm; the
                     # whole-program arm is hatched, so the pair reads without
                     # a second legend.
                     hatch="//" if arm == "wholeprog" else None,
-                    label=(
-                        BUCKET_LABEL.get(bucket, bucket)
-                        if a == 0 and ax is axes[0]
-                        else None
-                    ),
                 )
+                legend.setdefault(BUCKET_LABEL.get(bucket, bucket), bars[0])
                 bottoms += heights
         if cpu is not None:
             sub_cpu = cpu[cpu["cls"] == cls]
@@ -134,17 +150,19 @@ def draw(df, cpu):
                 ]
             )
             if heights.any():
-                ax.bar(
+                bars = ax.bar(
                     x + (len(ARMS) - (slots - 1) / 2) * width,
                     heights,
                     width * 0.9,
                     color="0.55",
-                    label="TVM CPU (context)" if ax is axes[0] else None,
                 )
+                legend.setdefault("TVM CPU (context)", bars[0])
         ax.set_title(cls, fontsize=10)
         ax.set_xticks(x, programs, rotation=30, ha="right", fontsize=8)
     axes[0].set_ylabel("time per inference (ms), undiscounted")
     axes[0].legend(
+        legend.values(),
+        legend.keys(),
         fontsize=8,
         title=f"stacks; plain={ARM_LABEL['peroper']}, hatched={ARM_LABEL['wholeprog']}",
         title_fontsize=8,
