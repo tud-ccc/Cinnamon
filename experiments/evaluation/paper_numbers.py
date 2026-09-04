@@ -258,10 +258,16 @@ def _geomean(values: list[float]) -> float:
     return math.exp(sum(math.log(v) for v in values) / len(values))
 
 
-def _pct_faster(ratio: float) -> str:
-    """A ratio of times as the percentage the faster side is ahead by, the
-    convention both RQ4 percentages use: 1.12 -> "12", 3.5 -> "250"."""
-    return f"{100.0 * (ratio - 1.0):.0f}"
+def _speedup_cmds(name: str, ratio: float) -> list[str]:
+    """One ratio of times under both spellings the prose might want:
+    \\<name>Pct is the percentage the faster side is ahead by (1.12 -> "12",
+    3.5 -> "250"), \\<name>X the ratio itself (-> "1.1", "3.5"). Small
+    margins read better as percentages and large ones as factors, and which
+    is which is not known until the runs land, so both are emitted."""
+    return [
+        _cmd(f"{name}Pct", f"{100.0 * (ratio - 1.0):.0f}"),
+        _cmd(f"{name}X", f"{ratio:.1f}"),
+    ]
 
 
 def rq4_numbers() -> list[str]:
@@ -328,8 +334,8 @@ def rq4_numbers() -> list[str]:
         amortizable.append(recurring / num(po, "total_ms"))
 
     out = [
-        _cmd("rqFourKernelPerOpSpeedupPct", _pct_faster(_geomean(kernel))),
-        _cmd("rqFourTotalGraphSpeedupPct", _pct_faster(_geomean(total))),
+        *_speedup_cmds("rqFourKernelPerOpSpeedup", _geomean(kernel)),
+        *_speedup_cmds("rqFourTotalGraphSpeedup", _geomean(total)),
         _cmd("rqFourTotalGraphSpeedupMaxX", f"{max(total):.1f}"),
         _cmd("rqFourCellCount", len(total)),
         _cmd("rqFourEvictedCount", len(total_evicted)),
@@ -348,14 +354,8 @@ def rq4_numbers() -> list[str]:
         # The cells the claim is really about: where the arms' allocations
         # actually differ in residency, the ties left in.
         out += [
-            _cmd(
-                "rqFourKernelPerOpSpeedupEvictedPct",
-                _pct_faster(_geomean(kernel_evicted)),
-            ),
-            _cmd(
-                "rqFourTotalGraphSpeedupEvictedPct",
-                _pct_faster(_geomean(total_evicted)),
-            ),
+            *_speedup_cmds("rqFourKernelPerOpSpeedupEvicted", _geomean(kernel_evicted)),
+            *_speedup_cmds("rqFourTotalGraphSpeedupEvicted", _geomean(total_evicted)),
         ]
     return out
 
