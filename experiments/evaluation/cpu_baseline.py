@@ -70,9 +70,17 @@ PYTHON_GUESSES = (
     pathlib.Path.home() / "anaconda3/envs/atim-venv/bin/python",
 )
 
-# Size class -> N, the side of each N x N i32 weight. The source of truth is
-# experiments/{2mm,3mm}*.mlir; keep the two in step (1MB = 512^2 * 4 B).
-CLASSES = {"1MB": 512, "16MB": 2048, "64MB": 4096, "256MB": 8192}
+# Size class -> (K, M), the shape of each i32 weight: every weight in a
+# program holds K*M elements, in one orientation or the other. 512MB is not
+# square because no square i32 matrix is 512MB; 8192x16384 is the shape the
+# prim suite's 512MB gemv uses. The source of truth is
+# experiments/{2mm,3mm}*.mlir; keep the two in step (1MB = 512*512*4 B).
+CLASSES = {
+    "1MB": (512, 512),
+    "64MB": (4096, 4096),
+    "256MB": (8192, 8192),
+    "512MB": (8192, 16384),
+}
 D = 8  # activation rows, as in the workloads
 
 
@@ -146,7 +154,12 @@ def bootstrap(tvm_flag: str | None, python: str | None) -> pathlib.Path:
 # by construction, and the wrap is part of what both sides compute.
 
 
-def _programs(np, relay, tvm, n: int, dt: str = "int32", prefix: str = ""):
+def _programs(np, relay, tvm, k: int, m: int, dt: str = "int32", prefix: str = ""):
+    # Weights are k x m or m x k -- the same K*M elements in either
+    # orientation, as in the .mlir sources. A var declares the TRANSPOSED
+    # shape, since dense(a, b) contracts against b.T and build() transposes
+    # the value that goes with it: the weight W of shape (k, m) is declared
+    # var(m, k) and passed as W.
     def rnd(*shape):
         return np.random.randint(0, 50, size=shape).astype(dt)
 
@@ -172,8 +185,8 @@ def _programs(np, relay, tvm, n: int, dt: str = "int32", prefix: str = ""):
         }
 
     def two_mm_seq():
-        X, W1, W2 = rnd(D, n), rnd(n, n), rnd(n, n)
-        x, w1, w2 = var("x", D, n), var("w1", n, n), var("w2", n, n)
+        X, W1, W2 = rnd(D, k), rnd(k, m), rnd(m, k)
+        x, w1, w2 = var("x", D, k), var("w1", m, k), var("w2", k, m)
         return build(
             [x, w1, w2],
             dense(dense(x, w1), w2),
@@ -183,8 +196,8 @@ def _programs(np, relay, tvm, n: int, dt: str = "int32", prefix: str = ""):
         )
 
     def two_mm_par():
-        X, W1, W2 = rnd(D, n), rnd(n, n), rnd(n, n)
-        x, w1, w2 = var("x", D, n), var("w1", n, n), var("w2", n, n)
+        X, W1, W2 = rnd(D, k), rnd(k, m), rnd(k, m)
+        x, w1, w2 = var("x", D, k), var("w1", m, k), var("w2", m, k)
         return build(
             [x, w1, w2],
             relay.Tuple([dense(x, w1), dense(x, w2)]),
@@ -194,9 +207,9 @@ def _programs(np, relay, tvm, n: int, dt: str = "int32", prefix: str = ""):
         )
 
     def three_mm_parseq():
-        X, W1, W2, W3 = rnd(D, n), rnd(n, n), rnd(n, n), rnd(n, n)
-        x = var("x", D, n)
-        w1, w2, w3 = var("w1", n, n), var("w2", n, n), var("w3", n, n)
+        X, W1, W2, W3 = rnd(D, k), rnd(k, m), rnd(m, k), rnd(k, m)
+        x = var("x", D, k)
+        w1, w2, w3 = var("w1", m, k), var("w2", k, m), var("w3", m, k)
         return build(
             [x, w1, w2, w3],
             relay.Tuple([dense(dense(x, w1), w2), dense(x, w3)]),
@@ -210,9 +223,9 @@ def _programs(np, relay, tvm, n: int, dt: str = "int32", prefix: str = ""):
         # transposed -- (C@D).T = D.T @ C.T = dense(D.T, C) -- so the join is
         # dense(l, r.T) and nothing transposes at run time. D.T is supplied
         # as the input, the same host-side layout choice as a weight's.
-        A, B, C, Dt = rnd(D, n), rnd(n, n), rnd(n, n), rnd(D, n)
-        a, b = var("a", D, n), var("b", n, n)
-        c, dt_ = var("c", n, n), var("dt", D, n)
+        A, B, C, Dt = rnd(D, k), rnd(k, m), rnd(m, k), rnd(D, k)
+        a, b = var("a", D, k), var("b", m, k)
+        c, dt_ = var("c", m, k), var("dt", D, k)
         left = dense(a, b)
         right_t = dense(dt_, c)  # (C @ D).T
         return build(
@@ -340,12 +353,12 @@ def main() -> int:
     for cls in args.classes:
         if cls not in CLASSES:
             raise SystemExit(f"unknown size class {cls!r}; know {list(CLASSES)}")
-        n = CLASSES[cls]
-        names = args.programs or list(_programs(np, relay, tvm, n))
+        k, m = CLASSES[cls]
+        names = args.programs or list(_programs(np, relay, tvm, k, m))
         # Per-program variable prefixes: the tuning module holds all four at
         # once, and two programs' "x" must not collide there.
         programs = {
-            name: _programs(np, relay, tvm, n, prefix=f"{name}_")[name]()
+            name: _programs(np, relay, tvm, k, m, prefix=f"{name}_")[name]()
             for name in names
         }
 
@@ -377,7 +390,8 @@ def main() -> int:
                 {
                     "program": name,
                     "cls": cls,
-                    "n": n,
+                    "k": k,
+                    "m": m,
                     "total_ms": round(ms_time, 4),
                     "verified": int(verified),
                     "trials": args.trials,

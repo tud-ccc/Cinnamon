@@ -1,6 +1,6 @@
 """fig:wholeprogram -- per-operator vs whole-program arms (rq4.csv).
 
-One panel per size class (1MB/16MB/64MB/256MB of weights per gemm), one
+One panel per size class (1MB/64MB/256MB/512MB of weights per gemm), one
 bar pair per program inside it: the per-operator-tuned and the
 whole-program-tuned arm, each stacked into kernel (launch) / scatter /
 gather / load / repack / rest.
@@ -61,7 +61,7 @@ BUCKET_LABEL = {
     "compact:static": "repack (static)",
     "compact:dyn": "repack (dyn)",
 }
-CLASSES = ["1MB", "16MB", "64MB", "256MB"]
+CLASSES = ["1MB", "64MB", "256MB", "512MB"]
 _CMAP = plt.get_cmap("tab10")
 
 
