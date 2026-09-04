@@ -409,9 +409,16 @@ struct UpmemInferencePlugin : cinm::InferencePlugin {
         if (isStatic) {
           mram.staticBytes += perDpuBytes;
           // What a timeshared placement would pay per inference to restore
-          // these weights: the whole tensor through the scatter model.
-          out.weightScatterMs += upmem_cm::scatterBlockCostMs(
-              dpus, (shaped.getNumElements()) * eltBytes);
+          // these weights. scatterBlockCostMs' second parameter is the block
+          // one DPU receives, not the whole tensor -- it is what the
+          // simulator passes it (upmem::ScatterOnArrayOp's
+          // getDpuBufferSizeInBytes), and the regression behind it is fitted
+          // over blocks of a few kilobytes. Handing it the whole tensor
+          // extrapolated a 2 KB model to 256 MB and priced one re-scatter of
+          // this operand in tens of seconds, which foreclosed every
+          // timeshare option the allocator had.
+          out.weightScatterMs +=
+              upmem_cm::scatterBlockCostMs(dpus, perDpuBytes);
         } else {
           mram.dynBytes += perDpuBytes;
         }
