@@ -563,7 +563,14 @@ RQ4_ARMS = {
     "wholeprog": {"graph-allocation": True, "latency-objective": True},
     "peroper": {},
 }
-RQ4_SEED = 67  # e1's first seed; single-seeded until A3-style repeats land
+RQ4_SEED = 67  # e1's first seed; the representative run anything single points at
+
+# Both arms are searched under the same seeds, so every comparison is paired:
+# a cell's ratio is computed within a seed and only then aggregated, which is
+# what keeps a per-operator arm that got lucky on one seed from being averaged
+# against a whole-program arm that did not.
+RQ4_NUM_SEEDS = 8
+RQ4_SEEDS = [RQ4_SEED + 31 * k for k in range(RQ4_NUM_SEEDS)]
 
 
 def rq4_roots(prog: str, arm: str) -> doit_blocks.MeasureRoots:
@@ -574,32 +581,37 @@ def rq4_roots(prog: str, arm: str) -> doit_blocks.MeasureRoots:
 
 
 def _rq4_configs(prog: str, arm: str) -> list[compile_run.Config]:
-    """One config per size variant of `prog` under `arm`. The lowering IS
-    the arm: search the module (with or without the allocation stage),
-    commit by stamping, lower the stamped result -- so compile_one produces
-    a module whose set sharing already encodes the arm's residency, and the
-    shared Makefile pipeline (dedup + load hoisting per set) realises it."""
-    lower = cinmopt.stamped_lowerer(
-        infer_opts={
-            "simulator": OPTS["simulator"],
-            "eval-timeout-ms": OPTS["eval_timeout_ms"],
-            "rng-seed": RQ4_SEED,
-            **OPTS["wholeprog_infer_opts"],
-            **RQ4_ARMS[arm],
-        },
-    )
-    return [
-        compile_run.Config(
-            system=arm,
-            fn_name=fn_name,
-            label=f"seed{RQ4_SEED}",
-            params={"dpus": 2048},
-            fn_module=split_module(prog, fn_name),
-            prim=prog,
-            lower=lower,
+    """One config per (size variant, seed) of `prog` under `arm`. The
+    lowering IS the arm: search the module (with or without the allocation
+    stage), commit by stamping, lower the stamped result -- so compile_one
+    produces a module whose set sharing already encodes the arm's residency,
+    and the shared Makefile pipeline (dedup + load hoisting per set)
+    realises it. The seed goes into the label, so each repeat is its own
+    config directory and the assembler carries it through as config_label."""
+    configs = []
+    for seed in RQ4_SEEDS:
+        lower = cinmopt.stamped_lowerer(
+            infer_opts={
+                "simulator": OPTS["simulator"],
+                "eval-timeout-ms": OPTS["eval_timeout_ms"],
+                "rng-seed": seed,
+                **OPTS["wholeprog_infer_opts"],
+                **RQ4_ARMS[arm],
+            },
         )
-        for fn_name in list_functions(source_mlir(prog))
-    ]
+        configs += [
+            compile_run.Config(
+                system=arm,
+                fn_name=fn_name,
+                label=f"seed{seed}",
+                params={"dpus": 2048},
+                fn_module=split_module(prog, fn_name),
+                prim=prog,
+                lower=lower,
+            )
+            for fn_name in list_functions(source_mlir(prog))
+        ]
+    return configs
 
 
 def task_compile_rq4():

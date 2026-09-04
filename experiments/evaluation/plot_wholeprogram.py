@@ -79,6 +79,56 @@ def _color(bucket):
     return _TAB20[(2 * (i - len(_TAB10)) + 1) % len(_TAB20)]
 
 
+def _draw_spread(ax, sub, arm, programs, offsets, width, legend):
+    """The seed-to-seed spread of one arm's totals, over its stacked bar.
+
+    A range whisker rather than a standard deviation, and every seed's total
+    as its own dot. The per-operator arm's repeats are not a cloud around a
+    mean: an allocation either co-resides or evicts, so its totals can land
+    in two groups with nothing between them, and a bar plus a symmetric
+    interval would draw a distribution that never occurred. The dots show
+    the shape directly and cost almost nothing; the whisker only says where
+    the extremes are, which needs no assumption about what lies between.
+
+    The count under a per-operator bar is how many seeds kept their weights
+    resident, read off a recurring program load in the steady state -- under
+    UPMEM_RT_CACHE a resident set is never reloaded, so load_ms > 0 means
+    that seed's sets evicted each other. It is the frequency with which
+    per-operator search preserves residency by accident, which is a result
+    rather than an error term.
+    """
+    for i, p in enumerate(programs):
+        rows = sub[(sub["program"] == p) & (sub["arm"] == arm)]
+        totals = rows["total_ms"].to_numpy(dtype=float)
+        if len(totals) < 2:
+            continue
+        lo, hi = float(totals.min()), float(totals.max())
+        ax.vlines(offsets[i], lo, hi, color="0.15", linewidth=0.9, zorder=4)
+        # Deterministic jitter: seeds spread across the bar in a fixed order,
+        # so redrawing the same data gives the same picture.
+        jitter = np.linspace(-0.28, 0.28, len(totals)) * width
+        dots = ax.scatter(
+            offsets[i] + jitter,
+            totals,
+            s=5,
+            color="0.1",
+            zorder=5,
+            linewidths=0,
+        )
+        legend.setdefault(f"per-seed total (n={len(totals)})", dots)
+        if arm == "peroper" and "load_ms" in rows.columns:
+            resident = int((rows["load_ms"].to_numpy(dtype=float) <= 0).sum())
+            ax.annotate(
+                f"{resident}/{len(totals)}",
+                (offsets[i], hi),
+                textcoords="offset points",
+                xytext=(0, 3),
+                ha="center",
+                fontsize=5.5,
+                color="0.35",
+            )
+
+
 def draw(df, cpu):
     """The figure, with the CPU context bar iff `cpu` is a frame. Both
     variants are drawn from the same code so the device arms are laid out
@@ -109,27 +159,33 @@ def draw(df, cpu):
         sub = df[df["cls"] == cls]
         for a, arm in enumerate(ARMS):
             bottoms = np.zeros(len(programs))
+            offsets = x + (a - (slots - 1) / 2) * width
             for bucket in BUCKETS:
                 col = f"{bucket}_ms"
+                # Mean over seeds, never the sum: a cell holds one row per
+                # repeat. Segment means are linear, so they stack to the mean
+                # total, which is what lets the whisker below carry the whole
+                # bar's spread on its own.
                 heights = np.array(
                     [
                         float(
                             sub.loc[
                                 (sub["program"] == p) & (sub["arm"] == arm), col
-                            ].sum()
+                            ].mean()
                         )
                         if col in sub.columns
                         else 0.0
                         for p in programs
                     ]
                 )
+                heights = np.nan_to_num(heights)
                 # Clamp the residual bucket: a slightly negative unaccounted
                 # is timing jitter and must not corrupt the stack.
                 heights = np.maximum(heights, 0.0)
                 if not heights.any():
                     continue
                 bars = ax.bar(
-                    x + (a - (slots - 1) / 2) * width,
+                    offsets,
                     heights,
                     width * 0.9,
                     bottom=bottoms,
@@ -141,6 +197,7 @@ def draw(df, cpu):
                 )
                 legend.setdefault(BUCKET_LABEL.get(bucket, bucket), bars[0])
                 bottoms += heights
+            _draw_spread(ax, sub, arm, programs, offsets, width, legend)
         if cpu is not None:
             sub_cpu = cpu[cpu["cls"] == cls]
             heights = np.array(
@@ -155,6 +212,7 @@ def draw(df, cpu):
                     heights,
                     width * 0.9,
                     color="0.55",
+                    zorder=2,
                 )
                 legend.setdefault("TVM CPU (context)", bars[0])
         ax.set_title(cls, fontsize=10)

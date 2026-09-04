@@ -307,15 +307,26 @@ def rq4_numbers() -> list[str]:
         value = row.get(col) or 0.0
         return float(value)
 
-    cells: dict[tuple[str, str], dict[str, dict]] = {}
+    # (program, size variant, seed) -> arm -> row. The seed is part of the key
+    # so repeats pair within a seed rather than overwriting each other: both
+    # arms are searched under the same seeds, and a ratio only means anything
+    # taken between two runs that drew from the same one.
+    runs: dict[tuple[str, str, str], dict[str, dict]] = {}
     for row in rows:
-        cells.setdefault((row["program"], row["fn_name"]), {})[row["arm"]] = row
-    paired = [arms for arms in cells.values() if {"peroper", "wholeprog"} <= set(arms)]
+        key = (row["program"], row["fn_name"], row.get("config_label", ""))
+        runs.setdefault(key, {})[row["arm"]] = row
+    paired = {
+        key: arms for key, arms in runs.items() if {"peroper", "wholeprog"} <= set(arms)
+    }
     if not paired:
-        return ["% rq4.csv holds no cell with both arms -- percentages pending"]
+        return ["% rq4.csv holds no run with both arms -- percentages pending"]
 
     kernel, total, kernel_evicted, total_evicted, amortizable = [], [], [], [], []
-    for arms in paired:
+    # Per (program, variant): the per-seed totals of each arm, for the spread
+    # below, and how many seeds the per-operator arm kept resident.
+    by_cell: dict[tuple[str, str], dict[str, list[float]]] = {}
+    resident_runs = 0
+    for (program, fn_name, _seed), arms in paired.items():
         po, wp = arms["peroper"], arms["wholeprog"]
         if not (num(po, "launch_ms") > 0 and num(wp, "launch_ms") > 0):
             continue
@@ -325,21 +336,65 @@ def rq4_numbers() -> list[str]:
         t = num(po, "total_ms") / num(wp, "total_ms")
         kernel.append(k)
         total.append(t)
+        cell = by_cell.setdefault((program, fn_name), {"peroper": [], "wholeprog": []})
+        cell["peroper"].append(num(po, "total_ms"))
+        cell["wholeprog"].append(num(wp, "total_ms"))
         if num(po, "load_ms") > 0:
             kernel_evicted.append(k)
             total_evicted.append(t)
+        else:
+            resident_runs += 1
         recurring = (
             num(po, "load_ms") + num(po, "scatter_ms") + num(po, "compact:static_ms")
         )
         amortizable.append(recurring / num(po, "total_ms"))
 
+    seeds = sorted({key[2] for key in paired})
+    # A cell where the per-operator arm co-resides under some seeds and evicts
+    # under others is the fragility this experiment is really about, and it is
+    # also what makes a mean over seeds describe no run that happened. Counted
+    # rather than smoothed: a mixed cell has to be reported as mixed.
+    always_res, always_ev, mixed = 0, 0, 0
+    for (program, fn_name), _totals in by_cell.items():
+        flags = [
+            num(arms["peroper"], "load_ms") > 0
+            for key, arms in paired.items()
+            if key[0] == program and key[1] == fn_name
+        ]
+        if all(flags):
+            always_ev += 1
+        elif not any(flags):
+            always_res += 1
+        else:
+            mixed += 1
+
+    def spread(arm: str) -> float:
+        """Geomean over cells of max/min total across seeds: how much a run's
+        latency depends on which seed the search drew."""
+        ratios = [
+            max(t[arm]) / min(t[arm])
+            for t in by_cell.values()
+            if len(t[arm]) > 1 and min(t[arm]) > 0
+        ]
+        return _geomean(ratios) if ratios else 1.0
+
     out = [
         *_speedup_cmds("rqFourKernelPerOpSpeedup", _geomean(kernel)),
         *_speedup_cmds("rqFourTotalGraphSpeedup", _geomean(total)),
         _cmd("rqFourTotalGraphSpeedupMaxX", f"{max(total):.1f}"),
-        _cmd("rqFourCellCount", len(total)),
+        _cmd("rqFourCellCount", len(by_cell)),
+        _cmd("rqFourSeedCount", len(seeds)),
+        _cmd("rqFourRunCount", len(total)),
         _cmd("rqFourEvictedCount", len(total_evicted)),
-        _cmd("rqFourResidentCount", len(total) - len(total_evicted)),
+        _cmd("rqFourResidentCount", resident_runs),
+        _cmd("rqFourCellsAlwaysResidentCount", always_res),
+        _cmd("rqFourCellsAlwaysEvictingCount", always_ev),
+        _cmd("rqFourCellsMixedCount", mixed),
+        # Seed-to-seed spread of one arm's own latency. The pair is a result:
+        # it says whether the allocation stage makes performance predictable,
+        # not merely faster.
+        _cmd("rqFourPerOpSpreadX", f"{spread('peroper'):.1f}"),
+        _cmd("rqFourGraphSpreadX", f"{spread('wholeprog'):.1f}"),
         # A share of one arm's own total, so averaged arithmetically: the
         # geometric mean belongs to the ratios above, where the same pair of
         # runs is quoted in both directions. Pooling the cells instead would
