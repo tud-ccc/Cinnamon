@@ -107,7 +107,8 @@ static std::vector<size_t> allIndices(size_t n) {
 void CandidatePool::sampleInitialSet(size_t n, std::mt19937 &rng,
                                      std::function<bool(size_t)> accept,
                                      unsigned workers,
-                                     InferenceOptions::SamplingMode mode) {
+                                     InferenceOptions::SamplingMode mode,
+                                     std::function<bool()> abort) {
   const size_t D = numFeatures();
   const size_t M = size();
   if (n == 0 || M == 0)
@@ -160,18 +161,25 @@ void CandidatePool::sampleInitialSet(size_t n, std::mt19937 &rng,
   auto dispatch = [&](size_t idx) {
     used.insert(idx);
     ++nDispatched;
-    threadPool.async([&accept, &accepted, idx, n]() {
+    threadPool.async([&accept, &accepted, &abort, idx, n]() {
       if (accepted.load(std::memory_order_relaxed) >= n)
+        return;
+      // Checked here as well as between batches: a batch already queued when
+      // the point was given up would otherwise run to completion.
+      if (abort && abort())
         return;
       if (accept(idx))
         accepted.fetch_add(1, std::memory_order_relaxed);
     });
   };
 
-  // Keep generating batches until n configurations pass accept(). Both modes
-  // draw without replacement, so an index accept() rejects is never offered
-  // again and the accepted set stays a draw from what accept() would take.
+  // Keep generating batches until n configurations pass accept(), or until
+  // `abort` says the point is not worth drawing from. Both modes draw
+  // without replacement, so an index accept() rejects is never offered again
+  // and the accepted set stays a draw from what accept() would take.
   while (accepted.load(std::memory_order_relaxed) < n) {
+    if (abort && abort())
+      break;
     size_t want = n - accepted.load(std::memory_order_relaxed);
 
     size_t nUnused = M - used.size();
