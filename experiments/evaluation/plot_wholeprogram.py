@@ -3,13 +3,15 @@
 One panel per size class (1MB/16MB/64MB/256MB of weights per gemm), one
 bar pair per program inside it: the per-operator-tuned and the
 whole-program-tuned arm, each stacked into kernel (launch) / scatter /
-gather / load / repack / rest. Where cpu.csv is present a third, unstacked
-bar carries the same program on the host CPU via stock TVM
-(cpu_baseline.py) -- context for the two device bars, not a competitor:
-RQ4's question is what per-operator allocation costs on the device, and
-the CPU bar is there so a reader can place both arms against a machine
-they have a feel for. It is drawn in grey and flat, since a CPU run has
-no scatter or load segment to break out -- which is itself the comparison. Panels get their own y scale -- classes are
+gather / load / repack / rest.
+
+Two files come out. wholeprogram.pdf is the device-only figure, the one
+RQ4 argues from. wholeprogram_cpu.pdf, drawn whenever cpu.csv exists, adds
+a third unstacked bar per program: the same program on the host CPU via
+stock TVM (cpu_baseline.py) -- context for the two device bars, not a
+competitor, since RQ4's question is what per-operator allocation costs on
+the device. It is grey and flat, since a CPU run has no scatter or load
+segment to break out, which is itself the comparison. Panels get their own y scale -- classes are
 two orders of magnitude apart, and the comparison lives inside a pair, not
 across panels. Read left to right, the panels sweep across the device's
 contention threshold: in the smallest class every per-operator set fits
@@ -63,18 +65,14 @@ CLASSES = ["1MB", "16MB", "64MB", "256MB"]
 _CMAP = plt.get_cmap("tab10")
 
 
-def main() -> None:
-    results_dir, out_dir = parse_dirs("plots")
-    df = load_or_skip(results_dir, "rq4.csv")
-    if df is None:
-        return
-
-    df = df.copy()
-    df["cls"] = df["fn_name"].str.rsplit("_", n=1).str[-1]
-    cpu = load_or_skip(results_dir, "cpu.csv")
+def draw(df, cpu):
+    """The figure, with the CPU context bar iff `cpu` is a frame. Both
+    variants are drawn from the same code so the device arms are laid out
+    identically in each: the pair a reader compares must not shift because
+    a third bar joined it."""
     classes = [c for c in CLASSES if c in set(df["cls"])]
     programs = sorted(df["program"].unique())
-    # Three slots per program when the CPU context bar is available, two
+    # Three slots per program when the CPU context bar is drawn, two
     # otherwise, so the pair keeps the width it had before cpu.csv existed.
     slots = 3 if cpu is not None else 2
     width = 0.8 / slots
@@ -153,7 +151,26 @@ def main() -> None:
         loc="upper left",
     )
     fig.tight_layout()
-    save_fig(fig, out_dir, "wholeprogram.pdf")
+    return fig
+
+
+def main() -> None:
+    results_dir, out_dir = parse_dirs("plots")
+    df = load_or_skip(results_dir, "rq4.csv")
+    if df is None:
+        return
+
+    df = df.copy()
+    df["cls"] = df["fn_name"].str.rsplit("_", n=1).str[-1]
+
+    # The device-only figure is always drawn: it is the one RQ4 argues from,
+    # and it must not depend on whether the CPU run has happened. The
+    # context variant is drawn beside it when cpu.csv is there, under its
+    # own name, so the paper can include either without a rerun.
+    save_fig(draw(df, None), out_dir, "wholeprogram.pdf")
+    cpu = load_or_skip(results_dir, "cpu.csv")
+    if cpu is not None:
+        save_fig(draw(df, cpu), out_dir, "wholeprogram_cpu.pdf")
 
 
 if __name__ == "__main__":
