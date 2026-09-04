@@ -199,11 +199,17 @@ struct CandidatePool {
   /// Sampling stops as soon as `n` calls have returned true. An index `accept`
   /// rejects is never offered again, so under Uniform the accepted set is a
   /// uniform draw from the configs `accept` would have taken.
-  void sampleInitialSet(size_t n_samples, std::mt19937 &rng,
-                        std::function<bool(size_t)> accept,
-                        unsigned workers = 1,
-                        InferenceOptions::SamplingMode mode =
-                            InferenceOptions::SamplingMode::LHS);
+  /// Draw and accept() candidates until `n_samples` of them pass.
+  ///
+  /// `abort`, when given, is polled between batches and before each dispatch:
+  /// returning true stops the draw early. It is what keeps a point whose
+  /// candidates all fail to evaluate from walking the entire space looking
+  /// for `n_samples` that never appear.
+  void sampleInitialSet(
+      size_t n_samples, std::mt19937 &rng, std::function<bool(size_t)> accept,
+      unsigned workers = 1,
+      InferenceOptions::SamplingMode mode = InferenceOptions::SamplingMode::LHS,
+      std::function<bool()> abort = nullptr);
 
   /// Dump the full candidate pool to a CSV file at `path`.
   /// Columns: one per search param, then "cost" (empty if not evaluated),

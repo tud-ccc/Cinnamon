@@ -221,8 +221,32 @@ private:
 
 struct InferenceTask; // forward declaration for InferenceState::tryEval
 
+/// Consecutive failed evaluations, before any has succeeded, after which a
+/// search gives the point up as infeasible.
+///
+/// A failed evaluation does not spend budget -- it is a candidate the
+/// constraint system admitted and the lowering then rejected, which is not
+/// an observation. That is right for a point where most configurations
+/// work, and unbounded for one where none does: phase 1 draws until nInit
+/// candidates pass, phase 2 until the budget is spent, and neither
+/// condition can be reached, so the search walks the whole space. A 512MB
+/// gemm on 64 DPUs is such a point -- the space offers 14715
+/// configurations there and every one fails to lower -- and it stalled the
+/// whole-program arm indefinitely.
+///
+/// Four is deliberately small. It only ever fires before the first success,
+/// where the question is not "is this point good" but "does anything here
+/// lower at all", and four independent draws failing answers that about as
+/// well as four hundred. A point that recovers after three failures keeps
+/// its whole budget.
+static constexpr int kInfeasibleFailStreak = 4;
+
 struct InferenceState {
   bool anySuccess = false;
+  /// Failures since the last success, for kInfeasibleFailStreak. Atomic
+  /// because abandoned() is read by the search loops while evaluation
+  /// threads are committing results.
+  std::atomic<int> failStreak{0};
   TrialInfo bestTrial;
   double bestCost = std::numeric_limits<double>::max();
   DiagnosedSilenceableFailure err;
@@ -234,7 +258,14 @@ struct InferenceState {
       : err(mlir::emitSilenceableFailure(loc, "No candidates were evaluated")),
         budget(maxEvals) {}
 
-  bool hasBudget() const { return budget > 0; }
+  /// Whether this point has been given up as infeasible: nothing has
+  /// evaluated and the failures have run on long enough to say so.
+  bool abandoned() const {
+    return !anySuccess &&
+           failStreak.load(std::memory_order_relaxed) >= kInfeasibleFailStreak;
+  }
+
+  bool hasBudget() const { return budget > 0 && !abandoned(); }
 
   /// Evaluate the config at `poolIdx` and commit the result into shared state.
   /// The (expensive) evaluate() call runs outside any lock. When `lock` is
@@ -533,7 +564,13 @@ struct InferenceTask {
     if (log)
       *log << "[cinm-inference] Phase 1 (Generate initial population): "
            << nInit << " configs\n";
-    pool.sampleInitialSet(nInit, rng, evalTrain, evalWorkers);
+    // LHS explicitly, which is what this call has always used: it is the
+    // parameter before `abort`, not options.samplingMode (that one belongs
+    // to the census draw, which is a different sample for a different
+    // purpose).
+    pool.sampleInitialSet(nInit, rng, evalTrain, evalWorkers,
+                          InferenceOptions::SamplingMode::LHS,
+                          [&state] { return state.abandoned(); });
 
     // Phase 2: surrogate-guided.
     if (log)
@@ -1100,10 +1137,17 @@ bool InferenceState::tryEval(size_t poolIdx, InferenceTask &task,
     if (log)
       *log << "[cinm-inference]   -> failed\n";
     pool.recordFailedEvaluation(poolIdx, iter);
+    if (failStreak.fetch_add(1, std::memory_order_relaxed) + 1 ==
+            kInfeasibleFailStreak &&
+        !anySuccess && log)
+      *log << "[cinm-inference] " << kInfeasibleFailStreak
+           << " consecutive failures with nothing evaluated: giving this "
+              "point up as infeasible\n";
     return false;
   }
   // only decrement budget if evaluation succeeded
   --budget;
+  failStreak.store(0, std::memory_order_relaxed);
 
   costVal = std::get<utils::SimCost>(cost).total();
   if (log)
