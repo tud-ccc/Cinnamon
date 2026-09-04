@@ -3,7 +3,13 @@
 One panel per size class (1MB/16MB/64MB/256MB of weights per gemm), one
 bar pair per program inside it: the per-operator-tuned and the
 whole-program-tuned arm, each stacked into kernel (launch) / scatter /
-gather / load / repack / rest. Panels get their own y scale -- classes are
+gather / load / repack / rest. Where cpu.csv is present a third, unstacked
+bar carries the same program on the host CPU via stock TVM
+(cpu_baseline.py) -- context for the two device bars, not a competitor:
+RQ4's question is what per-operator allocation costs on the device, and
+the CPU bar is there so a reader can place both arms against a machine
+they have a feel for. It is drawn in grey and flat, since a CPU run has
+no scatter or load segment to break out -- which is itself the comparison. Panels get their own y scale -- classes are
 two orders of magnitude apart, and the comparison lives inside a pair, not
 across panels. Read left to right, the panels sweep across the device's
 contention threshold: in the smallest class every per-operator set fits
@@ -65,9 +71,13 @@ def main() -> None:
 
     df = df.copy()
     df["cls"] = df["fn_name"].str.rsplit("_", n=1).str[-1]
+    cpu = load_or_skip(results_dir, "cpu.csv")
     classes = [c for c in CLASSES if c in set(df["cls"])]
     programs = sorted(df["program"].unique())
-    width = 0.35
+    # Three slots per program when the CPU context bar is available, two
+    # otherwise, so the pair keeps the width it had before cpu.csv existed.
+    slots = 3 if cpu is not None else 2
+    width = 0.8 / slots
 
     fig, axes = plt.subplots(
         1,
@@ -101,7 +111,7 @@ def main() -> None:
                 if not heights.any():
                     continue
                 ax.bar(
-                    x + (a - 0.5) * width,
+                    x + (a - (slots - 1) / 2) * width,
                     heights,
                     width * 0.9,
                     bottom=bottoms,
@@ -117,6 +127,22 @@ def main() -> None:
                     ),
                 )
                 bottoms += heights
+        if cpu is not None:
+            sub_cpu = cpu[cpu["cls"] == cls]
+            heights = np.array(
+                [
+                    float(sub_cpu.loc[sub_cpu["program"] == p, "total_ms"].sum())
+                    for p in programs
+                ]
+            )
+            if heights.any():
+                ax.bar(
+                    x + (len(ARMS) - (slots - 1) / 2) * width,
+                    heights,
+                    width * 0.9,
+                    color="0.55",
+                    label="TVM CPU (context)" if ax is axes[0] else None,
+                )
         ax.set_title(cls, fontsize=10)
         ax.set_xticks(x, programs, rotation=30, ha="right", fontsize=8)
     axes[0].set_ylabel("time per inference (ms), undiscounted")

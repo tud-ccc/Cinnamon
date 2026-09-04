@@ -624,6 +624,32 @@ def task_compile_rq4():
     )
 
 
+# meta_schedule budget per size class for the CPU context bar. Tuning pays
+# off only where the kernel is compute-bound: at 1MB (cache-resident) it is
+# worth ~1.5-1.8x, while at 256MB the program streams weights from DRAM at
+# ~15 GB/s and 256 trials move it under 2%. The budget is per class rather
+# than per program because cpu_baseline.py tunes all four programs as one
+# module -- within a class they are built from the same two dense shapes.
+CPU_TRIALS = 256
+
+
+def task_cpu_baseline():
+    """The RQ4 workloads on the host CPU through stock TVM: fig:wholeprogram's
+    context bar. Exclusive, like the hardware benches -- it tunes and measures
+    on every core of the machine the DPU benches also run on."""
+    out = RESULTS_DIR / "cpu.csv"
+    yield {
+        "basename": "cpu_baseline",
+        "file_dep": [str(HERE / "cpu_baseline.py")],
+        "exclusive": True,
+        "targets": [str(out)],
+        "actions": [
+            f"python3 {HERE / 'cpu_baseline.py'} --trials {CPU_TRIALS} --out {out}"
+        ],
+        "verbosity": 2,
+    }
+
+
 # ── whole-program graph allocation ──────────────────────────────────────────
 # The RQ4 workloads as the graph solver sees them: a whole program, unrolled
 # so every layer is its own set of compute blocks, run through the two-level
