@@ -28,14 +28,19 @@ What is held to be a one-time cost, and why it is fair:
     still has to read every weight from DRAM on every inference, which is
     what its bar shows.
 
-Tuning: meta_schedule with a shared JSONDatabase per (target, size class),
-so the kernel shapes the four programs have in common are tuned once and
-reused -- there are only two distinct shapes per class, not one per program.
---trials is the budget per class (0 = untuned fallback schedules, seconds).
-Untuned is a weak bar (it does not saturate memory bandwidth); a few hundred
-trials is minutes and gets most of what tuning has to give. Whatever budget
-was used is recorded in the CSV, because a CPU bar without its tuning budget
-is not a number anyone can check.
+Tuning: meta_schedule over one module holding all four programs, one
+database per size class (see tune_class). --trials is the budget for that
+class; 0 builds with TVM's fallback schedules in seconds.
+
+How much the budget buys, measured on the bench machine (2x Xeon Silver
+4216), is a strong function of size class, and it is worth knowing before
+spending an afternoon on it. At 1MB the weights are cache-resident and the
+kernel is compute-bound: 64 trials is ~50 s and worth 1.5-1.8x. At 256MB
+the program streams 512 MB from DRAM per inference at ~15 GB/s, and 256
+trials (~13 min) move it under 2% -- with an activation only 8 rows tall
+there is no schedule that makes a weight cheaper to read once. The device
+arms are the ones RQ4 argues about; the CPU bar just needs to be honest,
+so the budget used is recorded in the CSV rather than left to be assumed.
 """
 
 from __future__ import annotations
