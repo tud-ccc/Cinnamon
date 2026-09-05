@@ -1166,7 +1166,7 @@ bool InferenceState::tryEval(size_t poolIdx, InferenceTask &task,
   if (std::holds_alternative<DiagnosedSilenceableFailure>(cost)) {
     err = std::move(std::get<DiagnosedSilenceableFailure>(cost));
     if (log)
-      *log << "[cinm-inference]   -> failed\n";
+      *log << "[cinm-inference]   -> failed: " << err.getMessage() << "\n";
     pool.recordFailedEvaluation(poolIdx, iter);
     const int streak = failStreak.fetch_add(1, std::memory_order_relaxed) + 1;
     const int failures = failCount.fetch_add(1, std::memory_order_relaxed) + 1;
