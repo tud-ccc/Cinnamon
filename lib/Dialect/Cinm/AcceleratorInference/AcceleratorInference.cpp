@@ -241,12 +241,38 @@ struct InferenceTask; // forward declaration for InferenceState::tryEval
 /// its whole budget.
 static constexpr int kInfeasibleFailStreak = 4;
 
+/// Failures a point may accumulate, as a multiple of its evaluation budget,
+/// before it is given up whatever it has managed to evaluate.
+///
+/// kInfeasibleFailStreak only fires before the first success, so it says
+/// nothing about a point that is feasible but low-yield -- and that is the
+/// expensive case, because neither phase counts failures against anything.
+/// Phase 1 draws until nInit candidates *pass* and phase 2 until the budget
+/// is *spent*, so the work both do scales with the reciprocal of the success
+/// rate. Profiling a 512MB gemm at 64 DPUs is 2.4% yield: collecting 64 +
+/// 256 successes there cost 10499 failed evaluations, around two thirds of
+/// everything that config's search did, for a device size the allocator
+/// cannot choose for a class that size.
+///
+/// Four budgets' worth is deliberately loose. A point at 33% yield -- still
+/// perfectly usable, and the allocator does pick those -- spends about two
+/// failures per success and stays well inside it, so the cap only bites
+/// where the yield is bad enough that the estimate was going to be thin
+/// regardless. A point stopped this way keeps the observations it has: it is
+/// profiled from fewer samples, not dropped.
+static constexpr int kFailBudgetFactor = 4;
+
 struct InferenceState {
   bool anySuccess = false;
   /// Failures since the last success, for kInfeasibleFailStreak. Atomic
   /// because abandoned() is read by the search loops while evaluation
   /// threads are committing results.
   std::atomic<int> failStreak{0};
+  /// Failures over the whole point, against failBudget. Both phases harvest
+  /// successes, so without this nothing bounds the work a low-yield point
+  /// does -- see kFailBudgetFactor.
+  std::atomic<int> failCount{0};
+  int failBudget;
   TrialInfo bestTrial;
   double bestCost = std::numeric_limits<double>::max();
   DiagnosedSilenceableFailure err;
@@ -255,12 +281,17 @@ struct InferenceState {
   llvm::raw_ostream *log = nullptr; // per-seed log stream; null = silent
 
   InferenceState(int maxEvals, mlir::Location loc)
-      : err(mlir::emitSilenceableFailure(loc, "No candidates were evaluated")),
+      : failBudget(std::max(1, maxEvals) * kFailBudgetFactor),
+        err(mlir::emitSilenceableFailure(loc, "No candidates were evaluated")),
         budget(maxEvals) {}
 
-  /// Whether this point has been given up as infeasible: nothing has
-  /// evaluated and the failures have run on long enough to say so.
+  /// Whether this point has been given up: either nothing has evaluated and
+  /// the failures have run on long enough to call it infeasible, or the
+  /// failures have outrun the budget by enough that harvesting the rest of
+  /// the successes is not worth what it costs (see kFailBudgetFactor).
   bool abandoned() const {
+    if (failCount.load(std::memory_order_relaxed) >= failBudget)
+      return true;
     return !anySuccess &&
            failStreak.load(std::memory_order_relaxed) >= kInfeasibleFailStreak;
   }
@@ -1137,12 +1168,19 @@ bool InferenceState::tryEval(size_t poolIdx, InferenceTask &task,
     if (log)
       *log << "[cinm-inference]   -> failed\n";
     pool.recordFailedEvaluation(poolIdx, iter);
-    if (failStreak.fetch_add(1, std::memory_order_relaxed) + 1 ==
-            kInfeasibleFailStreak &&
-        !anySuccess && log)
+    const int streak = failStreak.fetch_add(1, std::memory_order_relaxed) + 1;
+    const int failures = failCount.fetch_add(1, std::memory_order_relaxed) + 1;
+    if (log && streak == kInfeasibleFailStreak && !anySuccess)
       *log << "[cinm-inference] " << kInfeasibleFailStreak
            << " consecutive failures with nothing evaluated: giving this "
               "point up as infeasible\n";
+    else if (log && failures == failBudget)
+      // The evaluation budget, not what is left of it: `budget` is spent
+      // down as successes land.
+      *log << "[cinm-inference] " << failures
+           << " failed evaluations against an evaluation budget of "
+           << failBudget / kFailBudgetFactor
+           << ": giving this point up, profiled from what it evaluated\n";
     return false;
   }
   // only decrement budget if evaluation succeeded
