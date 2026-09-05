@@ -58,7 +58,25 @@ OPTS = dict(
     n_seeds=32,  # B4: matches the cinm1comparison campaign
     iters=6,  # measurement repetitions per hardware run
     # Simulator to use for all trials.
-    simulator="cycle-accurate",
+    #
+    # `fast` is the cycle-accurate simulator with one shortcut: a loop whose
+    # cost per repeat has stopped moving is charged at that rate instead of
+    # dispatched repeat by repeat. Same scheduler, same question, within
+    # 0.01% of the exhaustive run on the benchmarked programs, and it falls
+    # back to the exhaustive walk on programs whose loops never settle. Not
+    # to be confused with `op-count`, which is a different model and is never
+    # used here.
+    #
+    # It is the default because it cannot time out, and the timeout was
+    # silently deciding what got measured. Pricing a configuration costs more
+    # the more work each DPU does, so at small device counts the exhaustive
+    # walk ran past eval-timeout-ms and the configuration was refused: on the
+    # 512MB class the yield was 2.4% at 64 DPUs and 33% at 128, against 98%
+    # at 2048. Those points were not searched, they were sampled from
+    # whichever configurations happened to simulate quickly -- and the
+    # allocator reads exactly that profile shape when it chooses how wide to
+    # make each partition.
+    simulator="fast",
     # Simulation wall-clock budget per configuration. The fat tail of the
     # simulator is what this is for: a uniform draw turns up the occasional
     # config whose simulation runs for minutes while the other 299 take
